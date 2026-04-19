@@ -1,0 +1,28 @@
+{
+  "runtimeVersion": "step_browser_runtime_v0.004",
+  "notes": [
+    "Offline runtime package with fully local OBJ/STL/GLTF/FBX loader modules.",
+    "No CDN, esm.sh, or remote runtime import required at app startup when served over localhost."
+  ],
+  "files": [
+    "readme.txt",
+    "runtime_version.txt",
+    "vendor/BufferGeometryUtils.bundle.mjs",
+    "vendor/EBML.min.js",
+    "vendor/FBXLoader.bundle.mjs",
+    "vendor/GLTFLoader.bundle.mjs",
+    "vendor/NURBSCurve.bundle.mjs",
+    "vendor/NURBSUtils.bundle.mjs",
+    "vendor/OBJLoader.bundle.mjs",
+    "vendor/STLLoader.bundle.mjs",
+    "vendor/TransformControls.bundle.mjs",
+    "vendor/fflate.module.js",
+    "vendor/occt-import-js-worker.js",
+    "vendor/occt-import-js.js",
+    "vendor/occt-import-js.wasm",
+    "vendor/quill.core.css",
+    "vendor/quill.js",
+    "vendor/three.min.js",
+    "vendor/three.module.proxy.mjs"
+  ]
+}

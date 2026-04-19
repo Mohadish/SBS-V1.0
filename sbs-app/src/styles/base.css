@@ -1,0 +1,48 @@
+/* ============================================================
+   SBS Step Browser — Design System (from POC v0.266)
+   base.css: CSS variables, reset, layout
+   ============================================================ */
+
+:root{
+  --bg:#0f172a;
+  --panel:#111827;
+  --panel2:#0b1220;
+  --line:#243041;
+  --text:#e5e7eb;
+  --muted:#9ca3af;
+  --accent:#38bdf8;
+
+  --sidebar-left-width:  420px;
+  --sidebar-right-width: 320px;
+}
+
+*{box-sizing:border-box}
+html,body{margin:0;height:100%;background:var(--bg);color:var(--text);font-family:Arial,Helvetica,sans-serif;overflow:hidden}
+
+input,select,button,textarea{font-family:Arial,Helvetica,sans-serif;font-size:13px}
+
+/* ── App layout ──────────────────────────────────────────────── */
+#app{display:flex;height:100vh;width:100vw;overflow:hidden}
+
+#sidebar-left{width:var(--sidebar-left-width);min-width:360px;max-width:540px;border-right:1px solid var(--line);background:var(--panel);display:flex;flex-direction:column;flex-shrink:0}
+#sidebar-right{width:var(--sidebar-right-width);min-width:280px;max-width:380px;border-left:1px solid var(--line);background:var(--panel);display:flex;flex-direction:column;flex-shrink:0}
+
+#sidebar-left-content,
+#steps-panel{display:flex;flex-direction:column;height:100%;overflow:hidden;flex:1}
+
+#viewport-wrap{position:relative;flex:1;display:flex;flex-direction:column;min-width:0;min-height:0}
+#viewport-surface{position:relative;flex:1;min-height:0;margin:10px}
+#viewer{position:absolute;inset:0}
+
+/* ── Scrollbars ──────────────────────────────────────────────── */
+*{scrollbar-width:thin;scrollbar-color:#334155 #1e293b}
+::-webkit-scrollbar{width:6px;height:6px}
+::-webkit-scrollbar-track{background:#1e293b}
+::-webkit-scrollbar-thumb{background:#334155;border-radius:999px}
+
+/* ── Utility ──────────────────────────────────────────────────── */
+.muted{color:var(--muted)}
+.small{font-size:13px}
+.row{display:flex;align-items:center;justify-content:space-between;gap:6px}
+.grid2{display:grid;grid-template-columns:1fr 1fr;gap:6px;margin-top:8px}
+.grid3{display:grid;grid-template-columns:1fr 1fr 1fr;gap:6px;margin-top:8px}

@@ -1,0 +1,88 @@
+{
+  "files": [
+    {
+      "path": "vendor/three.min.js",
+      "urls": [
+        "https://cdn.jsdelivr.net/npm/three@0.152.2/build/three.min.js",
+        "https://unpkg.com/three@0.152.2/build/three.min.js"
+      ]
+    },
+    {
+      "path": "vendor/TransformControls.bundle.mjs",
+      "urls": [
+        "https://esm.sh/three@0.152.2/examples/jsm/controls/TransformControls.js?bundle",
+        "https://esm.sh/three@0.152.2/examples/jsm/controls/TransformControls.js"
+      ]
+    },
+    {
+      "path": "vendor/OBJLoader.bundle.mjs",
+      "urls": [
+        "https://esm.sh/three@0.152.2/examples/jsm/loaders/OBJLoader.js?bundle",
+        "https://esm.sh/three@0.152.2/examples/jsm/loaders/OBJLoader.js"
+      ]
+    },
+    {
+      "path": "vendor/STLLoader.bundle.mjs",
+      "urls": [
+        "https://esm.sh/three@0.152.2/examples/jsm/loaders/STLLoader.js?bundle",
+        "https://esm.sh/three@0.152.2/examples/jsm/loaders/STLLoader.js"
+      ]
+    },
+    {
+      "path": "vendor/GLTFLoader.bundle.mjs",
+      "urls": [
+        "https://esm.sh/three@0.152.2/examples/jsm/loaders/GLTFLoader.js?bundle",
+        "https://esm.sh/three@0.152.2/examples/jsm/loaders/GLTFLoader.js"
+      ]
+    },
+    {
+      "path": "vendor/FBXLoader.bundle.mjs",
+      "urls": [
+        "https://esm.sh/three@0.152.2/examples/jsm/loaders/FBXLoader.js?bundle",
+        "https://esm.sh/three@0.152.2/examples/jsm/loaders/FBXLoader.js"
+      ]
+    },
+    {
+      "path": "vendor/occt-import-js.js",
+      "urls": [
+        "https://cdn.jsdelivr.net/npm/occt-import-js@0.0.23/dist/occt-import-js.js",
+        "https://unpkg.com/occt-import-js@0.0.23/dist/occt-import-js.js"
+      ]
+    },
+    {
+      "path": "vendor/occt-import-js.wasm",
+      "urls": [
+        "https://cdn.jsdelivr.net/npm/occt-import-js@0.0.23/dist/occt-import-js.wasm",
+        "https://unpkg.com/occt-import-js@0.0.23/dist/occt-import-js.wasm"
+      ]
+    },
+    {
+      "path": "vendor/occt-import-js-worker.js",
+      "urls": [
+        "https://cdn.jsdelivr.net/npm/occt-import-js@0.0.23/dist/occt-import-js-worker.js",
+        "https://unpkg.com/occt-import-js@0.0.23/dist/occt-import-js-worker.js"
+      ]
+    },
+    {
+      "path": "vendor/EBML.min.js",
+      "urls": [
+        "https://unpkg.com/ts-ebml@3.0.1/dist/EBML.min.js",
+        "https://cdn.jsdelivr.net/npm/ts-ebml@3.0.1/dist/EBML.min.js"
+      ]
+    },
+    {
+      "path": "vendor/quill.js",
+      "urls": [
+        "https://cdn.jsdelivr.net/npm/quill@2.0.3/dist/quill.js",
+        "https://unpkg.com/quill@2.0.3/dist/quill.js"
+      ]
+    },
+    {
+      "path": "vendor/quill.core.css",
+      "urls": [
+        "https://cdn.jsdelivr.net/npm/quill@2.0.3/dist/quill.core.css",
+        "https://unpkg.com/quill@2.0.3/dist/quill.core.css"
+      ]
+    }
+  ]
+}

@@ -1,0 +1,164 @@
+================================================================================
+  SBS STEP BROWSER — Developer Help
+================================================================================
+
+RUNNING THE APP
+---------------
+  From the sbs-app directory:
+
+    npm start          — Launch the app (production mode)
+    npm run dev        — Launch in developer mode (DevTools enabled)
+    npm run build      — Package the app into a distributable (output: dist/)
+
+  First time only — install dependencies:
+
+    npm install
+    npm start
+
+
+PROJECT STRUCTURE
+-----------------
+  sbs-app/
+  ├── electron/
+  │   ├── main.js            — Electron main process (window, IPC, menus)
+  │   └── preload.js         — Secure bridge between main and renderer
+  ├── src/
+  │   ├── core/
+  │   │   ├── state.js       — Central state store + event bus
+  │   │   ├── scene.js       — Three.js scene, camera, renderer, controls
+  │   │   ├── schema.js      — Data model definitions + migration registry
+  │   │   ├── nodes.js       — Scene tree node helpers (find, walk, build map)
+  │   │   └── transforms.js  — Object transform / pivot helpers
+  │   ├── systems/
+  │   │   ├── materials.js   — Color presets, shader materials, selection highlight
+  │   │   └── steps.js       — Step timeline, snapshot capture/apply, transitions
+  │   ├── io/
+  │   │   ├── importers.js   — Model file loaders (STEP, OBJ, STL, GLTF, FBX, GLB)
+  │   │   └── project.js     — Save / load .sbsproj files
+  │   └── ui/
+  │       ├── sidebar-left.js  — Left sidebar (Files, Tree, Colors, Select, Cameras, Export tabs)
+  │       ├── sidebar-right.js — Right sidebar (Steps timeline)
+  │       ├── tree.js          — Scene tree component
+  │       ├── hud.js           — Viewport HUD overlays
+  │       ├── step-nav.js      — Step navigation controls
+  │       ├── status.js        — Status bar
+  │       └── context-menu.js  — Generic right-click context menu
+  ├── vendor/                — Bundled third-party libs (Three.js, OCCT, Quill, etc.)
+  ├── assets/                — Icons and static assets
+  └── package.json
+
+
+KEY CONCEPTS
+------------
+  Step
+    The core unit of the app. A step is a COMPLETE, SELF-CONTAINED world state:
+    every node's visibility, every transform, every material override, the camera,
+    and all annotations. Steps do not reference each other. Moving a step in the
+    timeline never breaks it.
+
+  Color Preset
+    Defines the visual appearance of one or more mesh surfaces.
+    Four parameters:
+      solidness           1.0 = fully solid, 0.0 = X-ray falloff, 0–1 smooth blend
+      metalness           0 = dielectric, 1 = fully metallic
+      roughness           0 = mirror, 1 = fully diffuse
+      reflectionIntensity 0 = matte (no specular), 0.5 = neutral, 1 = shiny
+
+    Solidness uses a unified shader curve — adjusting from 1.0 to 0.0 is always
+    a smooth, gradual transition (not a toggle). The curve shape (falloff power)
+    is fixed at 2.5 (soft rim effect).
+
+  Default Color
+    Every mesh has a "default" color preset — its global base appearance across
+    all steps unless a step specifically overrides it (via Assign to Selected).
+    Default presets are marked with a ★ star in the Colors tab.
+    A default preset cannot be deleted without choosing a replacement first.
+
+  Override Mode (Solid Override)
+    When enabled, ALL meshes use their assigned SBS color preset instead of the
+    original import materials. When disabled, original import materials show.
+
+  solidOverride
+    State flag controlling override mode. Toggle in the HUD or via the toolbar.
+
+
+SUPPORTED FILE FORMATS
+-----------------------
+  STEP  (.step, .stp)  — via OCCT WASM; colors and geometry preserved
+  OBJ   (.obj)         — geometry + MTL material colors
+  STL   (.stl)         — geometry only (default grey color applied)
+  GLTF  (.gltf)        — geometry + PBR materials + textures
+  GLB   (.glb)         — binary GLTF; textures embedded, deduplication per model
+  FBX   (.fbx)         — geometry + basic materials (via FBXLoader)
+
+  On load, base colors are auto-extracted from each model's materials and added
+  to the Colors tab as default presets. solidOverride is enabled automatically.
+
+
+SELECTION
+---------
+  Left-click       — Select single mesh
+  Shift+click      — Add to / remove from multi-selection
+  Ctrl+click       — Toggle individual mesh in multi-selection
+  Escape           — Deselect all
+
+  Selection highlight: 70% opacity overlay + 100% opacity edge outline.
+  The highlight color is configurable in the Select tab of the left sidebar.
+
+
+COLORS TAB — QUICK REFERENCE
+-----------------------------
+  Add Color         — Create a new color preset
+  Assign to Selected — Apply highlighted preset to currently selected meshes (this step)
+  ★ Set as Default  — Make highlighted preset the global base for selected meshes
+  ↩ Revert to Default — Reset selected meshes back to their default preset
+
+  Right-click a color row for additional options:
+    Select by active color   — Select all meshes using this preset right now
+    Select by default color  — Select all meshes with this as their default
+    Set as default / Revert  — Same as the tab buttons but via context menu
+
+  Expanded color card sliders:
+    Solidness           — 1.0 solid → 0.0 X-ray (smooth; no hard switch)
+    Metalness           — 0 = plastic, 1 = metal
+    Roughness           — 0 = mirror-like, 1 = chalk-like
+    Reflection Intensity — Scales specular highlights (0 = matte, 1 = shiny)
+
+  Strip textures checkbox — Remove all texture maps; render as pure solid color.
+
+
+SAVE / LOAD
+-----------
+  Projects save as .sbsproj (JSON). This file references external model files
+  by path — it does NOT embed the geometry. Keep model files alongside projects.
+
+  New Project    — Ctrl+N (or Files tab → New Project)
+  Open Project   — Ctrl+O
+  Save           — Ctrl+S
+  Save As        — Ctrl+Shift+S
+
+
+SCHEMA VERSIONS
+---------------
+  color: 3   (v3 — reflectionIntensity + fixed falloff power)
+             (v2 — solidness/falloffStrength replaced type/opacity)
+             (v1 — original format with type:'solid'|'falloff')
+
+  Old projects load and migrate automatically on open.
+
+
+DEVELOPMENT NOTES
+-----------------
+  Three.js r152 is loaded as a global (window.THREE) from vendor/three.min.js.
+  ES module loaders (GLTFLoader, OBJLoader, etc.) import THREE via
+  vendor/three.module.proxy.mjs which re-exports from window.THREE.
+
+  OCCT WASM (for STEP files) requires these CSP directives in index.html:
+    script-src  'wasm-unsafe-eval' 'unsafe-eval'
+    connect-src file: blob:
+    worker-src  blob: file:
+
+  The 'unsafe-eval' Electron security warning is dev-mode only.
+  It does not appear in packaged builds.
+
+================================================================================

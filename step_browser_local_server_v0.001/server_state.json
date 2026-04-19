@@ -1,0 +1,6 @@
+{
+  "host": "127.0.0.1",
+  "port": 8080,
+  "serve_root": "E:\\SBS-V1.0",
+  "default_app_relative_url": "/step_browser_poc_v0.224/step_browser_poc_v0.224.html"
+}

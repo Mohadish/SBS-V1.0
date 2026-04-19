@@ -1,0 +1,24 @@
+TRY  vendor/three.min.js <- https://cdn.jsdelivr.net/npm/three@0.152.2/build/three.min.js
+OK   vendor/three.min.js (633338 bytes) <- https://cdn.jsdelivr.net/npm/three@0.152.2/build/three.min.js
+TRY  vendor/TransformControls.bundle.mjs <- https://esm.sh/three@0.152.2/examples/jsm/controls/TransformControls.js?bundle
+OK   vendor/TransformControls.bundle.mjs (159 bytes) <- https://esm.sh/three@0.152.2/examples/jsm/controls/TransformControls.js?bundle
+TRY  vendor/OBJLoader.bundle.mjs <- https://esm.sh/three@0.152.2/examples/jsm/loaders/OBJLoader.js?bundle
+OK   vendor/OBJLoader.bundle.mjs (141 bytes) <- https://esm.sh/three@0.152.2/examples/jsm/loaders/OBJLoader.js?bundle
+TRY  vendor/STLLoader.bundle.mjs <- https://esm.sh/three@0.152.2/examples/jsm/loaders/STLLoader.js?bundle
+OK   vendor/STLLoader.bundle.mjs (141 bytes) <- https://esm.sh/three@0.152.2/examples/jsm/loaders/STLLoader.js?bundle
+TRY  vendor/GLTFLoader.bundle.mjs <- https://esm.sh/three@0.152.2/examples/jsm/loaders/GLTFLoader.js?bundle
+OK   vendor/GLTFLoader.bundle.mjs (143 bytes) <- https://esm.sh/three@0.152.2/examples/jsm/loaders/GLTFLoader.js?bundle
+TRY  vendor/FBXLoader.bundle.mjs <- https://esm.sh/three@0.152.2/examples/jsm/loaders/FBXLoader.js?bundle
+OK   vendor/FBXLoader.bundle.mjs (141 bytes) <- https://esm.sh/three@0.152.2/examples/jsm/loaders/FBXLoader.js?bundle
+TRY  vendor/occt-import-js.js <- https://cdn.jsdelivr.net/npm/occt-import-js@0.0.23/dist/occt-import-js.js
+OK   vendor/occt-import-js.js (96871 bytes) <- https://cdn.jsdelivr.net/npm/occt-import-js@0.0.23/dist/occt-import-js.js
+TRY  vendor/occt-import-js.wasm <- https://cdn.jsdelivr.net/npm/occt-import-js@0.0.23/dist/occt-import-js.wasm
+OK   vendor/occt-import-js.wasm (7604031 bytes) <- https://cdn.jsdelivr.net/npm/occt-import-js@0.0.23/dist/occt-import-js.wasm
+TRY  vendor/occt-import-js-worker.js <- https://cdn.jsdelivr.net/npm/occt-import-js@0.0.23/dist/occt-import-js-worker.js
+OK   vendor/occt-import-js-worker.js (318 bytes) <- https://cdn.jsdelivr.net/npm/occt-import-js@0.0.23/dist/occt-import-js-worker.js
+TRY  vendor/EBML.min.js <- https://unpkg.com/ts-ebml@3.0.1/dist/EBML.min.js
+OK   vendor/EBML.min.js (356225 bytes) <- https://unpkg.com/ts-ebml@3.0.1/dist/EBML.min.js
+TRY  vendor/quill.js <- https://cdn.jsdelivr.net/npm/quill@2.0.3/dist/quill.js
+OK   vendor/quill.js (209274 bytes) <- https://cdn.jsdelivr.net/npm/quill@2.0.3/dist/quill.js
+TRY  vendor/quill.core.css <- https://cdn.jsdelivr.net/npm/quill@2.0.3/dist/quill.core.css
+OK   vendor/quill.core.css (10229 bytes) <- https://cdn.jsdelivr.net/npm/quill@2.0.3/dist/quill.core.css

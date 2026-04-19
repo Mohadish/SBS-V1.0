@@ -1,0 +1,142 @@
+V0.144 helper update
+- This helper is required for V0.144 because helper-side text plate rendering now keeps right/bottom padding transparent, avoids stretch, and matches the updated text-box outline behavior.
+- Place this helper next to piper_shared, then run 01_check_setup.bat and 02_start_step_export_helper.bat.
+
+V0.135 helper package
+This helper package is unchanged in code from V0.134 and remains compatible with the V0.135 diagnostic app build.
+
+STEP EXPORT HELPER V0.134
+=========================
+
+Purpose
+-------
+This helper is the local FFmpeg sidecar for the deterministic MP4 / H.264 export path in step_browser_poc_v0.134.
+The browser now renders an exact PNG frame sequence plus one narration WAV, uploads those files to this helper,
+and this helper performs only the final FFmpeg encode into MP4 / H.264.
+
+Recommended placement
+---------------------
+Place this folder NEXT TO your existing voiceover / Piper helper folder.
+Example:
+
+D:\Nadav-Avi\project\development\Step-by-step-App\
+    piper_shared\
+    step_export_helper_v0.134\
+
+Default helper URL in the app
+-----------------------------
+http://127.0.0.1:8766
+
+What must exist before first use
+--------------------------------
+1. Python 3 must be installed and callable from either:
+   - py -3
+   - python
+
+2. FFmpeg must be available in ONE of these ways:
+   A. Recommended self-contained method:
+      Place ffmpeg.exe here:
+      step_export_helper_v0.134\ffmpeg\bin\ffmpeg.exe
+
+   B. Or install FFmpeg globally so "ffmpeg" works from Command Prompt.
+
+Quick start
+-----------
+1. Put this folder next to piper_shared.
+2. Put ffmpeg.exe into step_export_helper_v0.134\ffmpeg\bin\
+   OR install FFmpeg globally.
+3. Run: 01_check_setup.bat
+4. Run: 02_start_step_export_helper.bat
+5. Open step_browser_poc_v0.134.html
+6. In Export:
+   - choose MP4 / H.264 (Deterministic Helper)
+   - keep helper URL as http://127.0.0.1:8766 unless you changed the config
+7. Export
+
+What the helper stores
+----------------------
+During export, the helper creates a job folder inside:
+step_export_helper_v0.134\jobs\
+
+Each job contains:
+- frames\frame_00001.png ...
+- audio\narration.wav (when narration is enabled)
+- output\output.mp4
+- logs\ffmpeg_output.log
+- job.json
+
+That means you can inspect exactly what the browser rendered before FFmpeg encoded it.
+
+Files included
+--------------
+step_export_helper.py
+step_export_helper_config.json
+01_check_setup.bat
+02_start_step_export_helper.bat
+03_stop_step_export_helper.bat
+04_open_jobs_folder.bat
+05_manual_encode_existing_job.bat
+06_open_ffmpeg_download_page.bat
+readme.text
+
+Batch files
+-----------
+01_check_setup.bat
+    Checks Python and FFmpeg detection.
+
+02_start_step_export_helper.bat
+    Starts the local helper server on the port from step_export_helper_config.json.
+
+03_stop_step_export_helper.bat
+    Stops the helper by killing the process listening on port 8766.
+
+04_open_jobs_folder.bat
+    Opens the jobs folder so you can inspect rendered PNG frames, WAV, and logs.
+
+05_manual_encode_existing_job.bat
+    Re-runs FFmpeg for an existing job folder.
+
+06_open_ffmpeg_download_page.bat
+    Opens the official FFmpeg download page and a common Windows build page.
+
+Troubleshooting
+---------------
+If the app says the helper is offline:
+- make sure 02_start_step_export_helper.bat is still running
+- confirm the port in step_export_helper_config.json is 8766
+- open http://127.0.0.1:8766/health in a browser and confirm it responds
+
+If the helper says FFmpeg was not found:
+- put ffmpeg.exe into step_export_helper_v0.134\ffmpeg\bin\
+- OR install FFmpeg globally and re-run 01_check_setup.bat
+
+If an encode fails:
+- run 04_open_jobs_folder.bat
+- open the newest job folder
+- inspect logs\ffmpeg_output.log
+- you can retry with 05_manual_encode_existing_job.bat
+
+Important note
+--------------
+This helper is meant for local machine use only.
+Do not expose it to the network.
+
+
+V0.136 note:
+- Helper package is unchanged from V0.135; this release only changes the app-side deterministic transition stepping.
+
+
+V0.142 helper update
+- Added helper-side text plate rendering for deterministic MP4 export.
+- The helper now tries Playwright first, then a local Chrome/Edge headless screenshot fallback.
+- For rich text plates, FFmpeg is still required and a Chrome/Edge browser path may also be needed.
+- You can set browser_path in step_export_helper_config.json if auto-detection misses your browser.
+
+
+V0.142 helper update
+- Text-plate rendering now expects app-side step-specific HTML payloads instead of relying on the currently live DOM text box.
+- Text-plate screenshots now reproduce the viewport's scaled inner text wrapper to better match on-screen fit and reduce cropping.
+
+
+V0.148 note:
+This helper updates text-plate PNG rendering so text-box outlines are rendered as inset strokes inside the panel, matching the browser-side v0.147+ text box border behavior. Use this helper with step_browser_poc_v0.148 for best border/crop parity.

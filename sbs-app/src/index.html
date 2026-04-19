@@ -1,0 +1,89 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="dark">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <meta http-equiv="Content-Security-Policy"
+        content="default-src 'self'; script-src 'self' 'wasm-unsafe-eval' 'unsafe-eval'; style-src 'self' 'unsafe-inline';
+                 connect-src http://127.0.0.1:8765 http://127.0.0.1:8766 file: blob:;
+                 worker-src blob: file:; img-src 'self' blob: data:;" />
+  <title>SBS Step Browser</title>
+
+  <!-- Design system: variables + reset + components -->
+  <link rel="stylesheet" href="styles/base.css" />
+  <link rel="stylesheet" href="styles/components.css" />
+
+  <!-- Vendor: loaded before app modules -->
+  <!-- three.min.js must be first (global script; sets window.THREE) -->
+  <script src="../vendor/three.min.js"></script>
+  <script src="../vendor/occt-import-js.js"></script>
+  <script src="../vendor/EBML.min.js"></script>
+  <link  rel="stylesheet" href="../vendor/quill.core.css" />
+  <script src="../vendor/quill.js"></script>
+  <!-- OBJ / STL / GLTF loaders are ES modules imported by importers.js -->
+</head>
+<body>
+
+  <!-- ── Root layout ────────────────────────────────────────────────────── -->
+  <div id="app">
+
+    <!-- Left sidebar: files, folders, colors, notes, cameras, export -->
+    <aside id="sidebar-left" class="sidebar sidebar-left">
+      <div id="sidebar-left-content"></div>
+    </aside>
+
+    <!-- Main viewport area -->
+    <main id="viewport-wrap">
+
+      <!-- Step navigation bar (top of viewport) -->
+      <div id="step-nav-bar"></div>
+
+      <!-- 3D viewport -->
+      <div id="viewport-surface">
+        <div id="viewer"></div>
+        <div id="export-safe-frame" hidden>
+          <span id="export-safe-frame-label">Export frame</span>
+        </div>
+        <div id="selection-rect" aria-hidden="true"></div>
+        <div id="notes-overlay" aria-hidden="true">
+          <svg id="notes-overlay-svg"></svg>
+          <div id="notes-overlay-labels"></div>
+        </div>
+        <div id="screen-overlay"></div>
+      </div>
+
+      <!-- HUD: selection info -->
+      <aside id="hud" role="complementary" aria-label="Selection info">
+        <div id="hud-content"></div>
+      </aside>
+
+      <!-- Status bar -->
+      <div id="status-bar" role="status" aria-live="polite"></div>
+
+    </main>
+
+    <!-- Right sidebar: steps timeline -->
+    <aside id="sidebar-right" class="sidebar sidebar-right">
+      <div id="steps-panel"></div>
+    </aside>
+
+  </div>
+
+  <!-- ── Modal layer ────────────────────────────────────────────────────── -->
+  <div id="modal-layer" aria-modal="true"></div>
+
+  <!-- ── Context menus ──────────────────────────────────────────────────── -->
+  <div id="context-menu"       class="context-menu" role="menu"></div>
+  <div id="color-context-menu" class="context-menu" role="menu"></div>
+
+  <!-- ── Screen text toolbar (floating) ────────────────────────────────── -->
+  <div id="screen-text-toolbar" hidden></div>
+
+  <!-- ── Transform editor panel (floating) ─────────────────────────────── -->
+  <div id="transform-editor-panel" hidden></div>
+
+  <!-- ── App entry point ───────────────────────────────────────────────── -->
+  <script type="module" src="main.js"></script>
+
+</body>
+</html>

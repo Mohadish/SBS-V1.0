@@ -1,0 +1,31 @@
+step_browser_local_server_v0.001
+
+Purpose
+-------
+Serve the Step-by-step-App folders over local HTTP so browser security does not block
+WASM, workers, and module-style asset loading.
+
+Recommended folder layout
+-------------------------
+Step-by-step-App/
+  step_browser_runtime/
+  step_browser_poc_v0.222/
+  step_browser_local_server_v0.001/
+
+In that layout, this helper serves the parent folder (Step-by-step-App) and opens:
+  http://127.0.0.1:8080/step_browser_poc_v0.222/step_browser_poc_v0.222.html
+
+Files
+-----
+01_start_local_server.bat      Start the local HTTP server.
+02_open_configured_app.bat     Open the configured app URL in the browser.
+03_stop_local_server.bat       Stop any server window started by 01_start_local_server.bat.
+04_check_local_server_setup.bat Basic checks.
+local_server.py                Python HTTP server.
+step_browser_local_server_config.json  Host/port and default app path.
+
+Notes
+-----
+- This is not an internet service. It only serves files from your own machine on localhost.
+- This is the right way to run OCCT/WASM-based import locally without file:// browser restrictions.
+- You can change default_app_relative_url in the config if you move to a later app version.

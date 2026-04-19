@@ -1,0 +1,52 @@
+{
+  "name": "sbs-step-browser",
+  "version": "1.0.0",
+  "description": "SBS Step Browser — CAD Presentation Tool",
+  "main": "electron/main.js",
+  "scripts": {
+    "start": "electron .",
+    "dev":   "electron . --dev",
+    "build": "electron-builder"
+  },
+  "build": {
+    "appId": "com.sbs.stepbrowser",
+    "productName": "SBS Step Browser",
+    "directories": {
+      "output": "dist"
+    },
+    "win": {
+      "target": "nsis",
+      "icon": "assets/icons/icon.ico"
+    },
+    "mac": {
+      "target": "dmg",
+      "icon": "assets/icons/icon.icns"
+    },
+    "linux": {
+      "target": "AppImage",
+      "icon": "assets/icons/icon.png"
+    },
+    "files": [
+      "electron/**/*",
+      "src/**/*",
+      "assets/**/*",
+      "vendor/**/*",
+      "sbs_license/**/*",
+      "!sbs_license/keys/**",
+      "!sbs_license/issued_licenses/**",
+      "!**/node_modules/*/{CHANGELOG.md,README.md,README,readme.md,readme}",
+      "!**/*.{iml,o,hprof,orig,pyc,pyo,rbc,swp,csproj,sln,xproj}",
+      "!.editorconfig",
+      "!**/._*",
+      "!**/{.DS_Store,.git,.hg,.svn,CVS,RCS,SCCS,.gitignore,.gitattributes}",
+      "!**/{__pycache__,thumbs.db,.flowconfig,.idea,.vs,__tests__}",
+      "!**/{.eslintrc,.eslintignore,.babelrc}"
+    ]
+  },
+  "dependencies": {
+    "electron": "^28.3.3"
+  },
+  "devDependencies": {
+    "electron-builder": "^24.13.3"
+  }
+}

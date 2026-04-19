@@ -1,0 +1,195 @@
+/* ============================================================
+   SBS Step Browser — Components (from POC v0.266)
+   components.css: all UI components, copied from POC exactly
+   ============================================================ */
+
+/* ── Buttons / labels ────────────────────────────────────────── */
+.btn,.filelabel,.tabBtn{display:flex;align-items:center;justify-content:center;gap:6px;border:1px solid #334155;background:#182233;color:var(--text);border-radius:10px;padding:8px 10px;cursor:pointer;font-size:13px;text-align:center}
+.btn:hover,.filelabel:hover,.tabBtn:hover,.miniBtn:hover{background:#213149}
+.btn:disabled{opacity:.45;cursor:not-allowed}
+.miniBtn{height:30px;min-width:30px;border:1px solid #334155;background:#182233;color:var(--text);border-radius:8px;cursor:pointer;font-size:12px}
+
+/* ── Tab bar ─────────────────────────────────────────────────── */
+.tabBar{display:flex;gap:6px;padding:8px 10px;border-bottom:1px solid var(--line);background:#0f1828;flex-wrap:wrap}
+.tabBtn.active{background:#26415f;border-color:#4d7aa0}
+.tabPanel{display:none;flex:1;overflow:auto}
+.tabPanel.active{display:flex;flex-direction:column}
+.sidebar-panels{flex:1;overflow:hidden;display:flex;flex-direction:column;min-height:0}
+
+/* ── Top bar / section ───────────────────────────────────────── */
+.topbar{display:flex;gap:6px;padding:10px;border-bottom:1px solid var(--line);background:#0d1524;flex-wrap:wrap}
+.section{padding:10px;border-bottom:1px solid var(--line)}
+.title{font-size:11px;letter-spacing:.18em;text-transform:uppercase;color:var(--muted)}
+.filename{font-size:18px;font-weight:700;margin-top:4px;word-break:break-word}
+
+/* ── Forms ───────────────────────────────────────────────────── */
+input[type=file]{display:none}
+input[type=color],input[type=text],input[type=number],select{width:100%;height:34px;border:1px solid var(--line);border-radius:8px;background:#111827;color:var(--text);padding:0 10px}
+label.colorlab{display:block;font-size:12px;color:var(--muted);margin-top:4px}
+
+/* ── Cards ───────────────────────────────────────────────────── */
+.card{border:1px solid var(--line);background:var(--panel2);border-radius:12px;padding:10px;margin-top:8px}
+
+/* ── Scene Tree ──────────────────────────────────────────────── */
+.tree{flex:1;overflow:auto;padding:8px}
+.tree-row{display:flex;align-items:center;gap:6px;padding:5px 6px;border-radius:8px;cursor:pointer;border:1px solid transparent;user-select:none;font-size:13px}
+.tree-row:hover{background:#162235}
+.tree-row.selected{background:#1b273a;border-color:#435168}
+.tree-row.multi{background:#17314a;border-color:#4d7aa0}
+.tree-row.dropTarget{outline:2px solid var(--accent);background:#10283d}
+.twisty{width:14px;text-align:center;color:#cbd5e1;cursor:pointer;flex-shrink:0}
+.icon{width:14px;text-align:center;color:#cbd5e1;flex-shrink:0}
+.label{flex:1;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;min-width:0}
+.eye{width:22px;height:22px;border:none;background:transparent;color:#d1d5db;cursor:pointer;border-radius:8px;flex-shrink:0;font-size:14px;line-height:22px;text-align:center}
+.eye:hover{background:#243041;color:#ffffff}
+.tree-row[data-hidden="true"] .eye{color:#fb923c}
+.moveBtn{width:22px;height:22px;border:none;background:transparent;color:#ffffff;cursor:pointer;border-radius:8px;font-size:14px;line-height:1;flex-shrink:0}
+.moveBtn:hover{background:#243041}
+.moveBtn.blue{color:#60a5fa}
+.moveBtn.red{color:#f87171}
+.moveBtn.orange{color:#fb923c}
+.children{margin-left:12px}
+.tree-empty{padding:12px;color:var(--muted);font-size:12px;text-align:center}
+
+/* ── Steps sidebar ───────────────────────────────────────────── */
+.stepsHeader{padding:10px;border-bottom:1px solid var(--line);background:#0d1524}
+.stepsList{flex:1;overflow:auto;padding:8px}
+.stepRowWrap{position:relative;padding-left:20px;margin-bottom:8px}
+.stepRowWrap:last-child{margin-bottom:0}
+.animStepBtn{position:absolute;left:0;top:18px;width:18px;height:18px;border-radius:999px;border:1px solid #475569;background:#111827;color:#cbd5e1;display:flex;align-items:center;justify-content:center;font-size:11px;font-weight:700;cursor:pointer;box-shadow:0 2px 6px rgba(0,0,0,.25)}
+.animStepBtn:hover{filter:brightness(1.08)}
+.animStepBtn.off{background:#1f2937;color:#cbd5e1;border-color:#475569}
+.animStepBtn.green{background:#14532d;color:#dcfce7;border-color:#22c55e}
+.animStepBtn.orange{background:#7c2d12;color:#ffedd5;border-color:#f97316}
+.animStepBtn.red{background:#7f1d1d;color:#fee2e2;border-color:#ef4444}
+.stepItem{border:1px solid var(--line);background:#101827;border-radius:12px;padding:8px;margin-bottom:8px;cursor:pointer}
+.stepItem.active{border-color:#60a5fa;box-shadow:0 0 0 1px rgba(96,165,250,.35) inset}
+.stepItem.hiddenStep{opacity:.65}
+.stepTop{display:flex;align-items:center;gap:6px}
+.stepTopSpacer{min-width:0;flex:1}
+.stepName{flex:1;font-size:13px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.stepMeta{font-size:11px;color:var(--muted);margin-top:4px}
+.ghostDrop{outline:2px dashed #60a5fa}
+.miniToggle{width:28px;height:28px;border:1px solid #334155;background:#182233;color:var(--text);border-radius:8px;cursor:pointer}
+
+/* ── HUD / Status ────────────────────────────────────────────── */
+#hud{position:absolute;right:10px;top:10px;width:340px;border:1px solid var(--line);background:rgba(15,23,42,.88);backdrop-filter:blur(6px);border-radius:14px;padding:12px;box-shadow:0 10px 24px rgba(0,0,0,.35);max-height:calc(100% - 20px);overflow:auto;pointer-events:none}
+#hud-content{pointer-events:auto}
+#status-bar{position:absolute;left:10px;bottom:10px;border:1px solid var(--line);background:rgba(15,23,42,.88);border-radius:10px;padding:8px 10px;max-width:760px;font-size:13px}
+.swatch{width:12px;height:12px;border-radius:999px;border:1px solid rgba(255,255,255,.2);display:inline-block;vertical-align:middle}
+.kv{font-size:13px;margin:4px 0}
+
+/* ── Toggle switch ───────────────────────────────────────────── */
+.toggle{width:48px;height:26px;border-radius:999px;background:#334155;position:relative;border:none;cursor:pointer}
+.toggle.on{background:var(--accent)}
+.toggle .knob{width:18px;height:18px;background:white;border-radius:999px;position:absolute;top:4px;left:4px;transition:left .15s ease}
+.toggle.on .knob{left:26px}
+
+/* ── Mesh list ───────────────────────────────────────────────── */
+.meshlist{margin-top:8px;border-top:1px solid var(--line);padding-top:8px}
+.meshitem{padding:5px 7px;border:1px solid var(--line);border-radius:8px;margin-top:5px;background:#131d2b;font-size:12px}
+
+/* ── Modal ───────────────────────────────────────────────────── */
+.modalBack{position:fixed;inset:0;background:rgba(0,0,0,.55);display:none;align-items:center;justify-content:center;z-index:50}
+.modalBack.show{display:flex}
+.modal{width:520px;max-width:calc(100vw - 30px);background:#0f172a;border:1px solid var(--line);border-radius:18px;padding:16px;box-shadow:0 20px 40px rgba(0,0,0,.45)}
+
+/* ── Context menu ────────────────────────────────────────────── */
+.context-menu,.contextMenu{position:fixed;min-width:220px;background:#0f172a;border:1px solid var(--line);border-radius:14px;box-shadow:0 18px 36px rgba(0,0,0,.5);padding:6px;display:none;z-index:90}
+.context-menu.show,.contextMenu.show{display:block}
+/* BEM variant (used by context-menu.js) */
+.context-menu__item{width:100%;text-align:left;background:transparent;border:none;color:var(--text);padding:9px 10px;border-radius:10px;cursor:pointer;font-size:14px;display:block}
+.context-menu__item:hover{background:#162235}
+.context-menu__item:disabled{opacity:.4;cursor:not-allowed}
+.context-menu__item:disabled:hover{background:transparent}
+.context-menu__separator{height:1px;background:var(--line);margin:6px 2px}
+/* Legacy single-dash variant */
+.context-menu-item,.menuItem{width:100%;text-align:left;background:transparent;border:none;color:var(--text);padding:9px 10px;border-radius:10px;cursor:pointer;font-size:14px;display:block}
+.context-menu-item:hover,.menuItem:hover{background:#162235}
+.context-menu-sep,.menuSep{height:1px;background:var(--line);margin:6px 2px}
+
+/* ── Transform editor panel ──────────────────────────────────── */
+#transform-editor-panel,.transformEditorPanel{position:absolute;right:14px;top:86px;width:420px;max-width:min(420px,calc(100vw - 40px));max-height:calc(100vh - 120px);overflow:auto;display:none;z-index:35;background:rgba(15,23,42,.96);border:1px solid var(--line);border-radius:16px;box-shadow:0 18px 36px rgba(0,0,0,.42);padding:14px;backdrop-filter:blur(8px)}
+#transform-editor-panel[hidden]{display:none}
+
+/* ── Step nav bar ────────────────────────────────────────────── */
+#step-nav-bar,#stepNavBar{position:relative;z-index:25;border:1px solid var(--line);background:rgba(15,23,42,.92);backdrop-filter:blur(6px);border-radius:14px;padding:10px;margin:10px 10px 0 10px;box-shadow:0 10px 24px rgba(0,0,0,.35);display:flex;align-items:center;gap:10px;flex-wrap:wrap;flex:0 0 auto}
+.stepNavButtons{display:flex;gap:6px;align-items:center}
+.stepNavInfo{min-width:220px;flex:1}
+.stepNavLabel{font-size:11px;letter-spacing:.14em;text-transform:uppercase;color:var(--muted)}
+.stepNavName{font-size:16px;font-weight:700;margin-top:2px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.stepNavCounter{color:#e5e7eb}
+.stepNavEmpty{color:var(--muted)}
+
+/* ── Selection / export frame ────────────────────────────────── */
+#selection-rect,#selectionRect{position:absolute;border:1px solid #60a5fa;background:rgba(96,165,250,0.12);pointer-events:none;display:none;z-index:20}
+#export-safe-frame,#exportSafeFrame{position:absolute;display:none;pointer-events:none;border:2px dashed rgba(147,197,253,.95);border-radius:12px;box-shadow:0 0 0 9999px rgba(15,23,42,.28);z-index:21}
+#export-safe-frame.show,#exportSafeFrame.show{display:block}
+#export-safe-frame-label,#exportSafeFrameLabel{position:absolute;left:10px;top:10px;padding:5px 8px;border-radius:999px;background:rgba(15,23,42,.95);border:1px solid #475569;color:#dbeafe;font-size:11px;letter-spacing:.04em;white-space:nowrap}
+
+/* ── Notes overlay ───────────────────────────────────────────── */
+#notes-overlay,#notesOverlay{position:absolute;inset:0;pointer-events:none;z-index:18;overflow:hidden}
+#notes-overlay-svg,#notesOverlaySvg{position:absolute;inset:0;width:100%;height:100%;pointer-events:none;overflow:visible}
+#notes-overlay-labels,#notesOverlayLabels{position:absolute;inset:0;pointer-events:none}
+.sceneNote{position:absolute;width:max-content;max-width:260px;min-width:72px;background:rgba(15,23,42,.96);border:1px solid #475569;border-radius:14px;padding:8px;box-shadow:0 12px 24px rgba(0,0,0,.35);pointer-events:auto;cursor:grab;user-select:none;display:flex;align-items:center;justify-content:center;text-align:center;box-sizing:border-box}
+.sceneNote.dragging{cursor:grabbing;box-shadow:0 16px 30px rgba(0,0,0,.5)}
+.sceneNoteText{font-size:var(--note-font-size,15px);line-height:1.3;white-space:pre-wrap;word-break:break-word;overflow:visible;display:flex;align-items:center;justify-content:center;width:100%;height:100%;text-align:center}
+
+/* ── Screen overlay ──────────────────────────────────────────── */
+#screen-overlay,#screenOverlay{position:absolute;inset:0;pointer-events:none;z-index:24;overflow:hidden}
+.screenItem{position:absolute;pointer-events:auto;min-width:40px;min-height:32px;border:1px solid rgba(148,163,184,.55);border-radius:10px;background:rgba(15,23,42,.22);box-shadow:0 12px 28px rgba(0,0,0,.22);overflow:hidden;backdrop-filter:blur(1px)}
+.screenItem.active{outline:2px solid #60a5fa;outline-offset:1px}
+.screenItem.movable{cursor:move}
+
+/* ── Screen text toolbar ─────────────────────────────────────── */
+#screen-text-toolbar,#screenTextToolbar{position:absolute;display:none;flex-direction:column;align-items:stretch;gap:8px;width:172px;padding:10px;border-radius:12px;background:rgba(15,23,42,.96);border:1px solid rgba(148,163,184,.28);box-shadow:0 12px 26px rgba(0,0,0,.35);z-index:40;pointer-events:auto}
+#screen-text-toolbar.show,#screenTextToolbar.show{display:flex}
+
+/* ── Pills / badges ──────────────────────────────────────────── */
+.pill{display:inline-block;border:1px solid var(--line);border-radius:999px;padding:2px 8px;font-size:11px;color:#dbe4ef}
+.stepBadgeBtn{height:28px;min-width:46px;border:1px solid #334155;background:#182233;color:var(--text);border-radius:8px;cursor:pointer;font-size:11px;padding:0 8px}
+
+/* ── Color presets ───────────────────────────────────────────── */
+.colorRow{display:flex;align-items:center;gap:8px;padding:8px;border:1px solid var(--line);border-radius:10px;background:#101827;margin-top:6px;cursor:pointer}
+.colorRow.selected{border-color:white;box-shadow:0 0 0 1px rgba(255,255,255,.3) inset}
+.colorSwatch{width:36px;height:20px;border-radius:6px;border:1px solid rgba(255,255,255,.25);flex:0 0 auto}
+.colorMeta{font-size:11px;color:var(--muted)}
+/* Star badge on presets that are active as default colors */
+.defaultStar{color:#f59e0b;font-size:11px;margin-right:3px;line-height:1}
+
+/* ── Danger button ───────────────────────────────────────────── */
+.btn-danger{background:#7f1d1d;border-color:#ef4444;color:#fca5a5}
+.btn-danger:hover{background:#991b1b}
+
+/* ── SBS modal dialog ────────────────────────────────────────── */
+.sbs-dialog{border:1px solid var(--line);border-radius:14px;background:#0f172a;color:var(--text);padding:0;box-shadow:0 24px 48px rgba(0,0,0,.7);max-width:360px;width:90vw}
+.sbs-dialog::backdrop{background:rgba(0,0,0,.55)}
+.sbs-dialog__body{padding:20px}
+.sbs-dialog__title{font-size:15px;font-weight:700;margin-bottom:4px}
+
+/* ── Camera items ────────────────────────────────────────────── */
+.cameraRow{display:flex;gap:6px;align-items:center;justify-content:space-between}
+.cameraActions{display:flex;gap:6px;flex-wrap:wrap;margin-top:6px}
+.cameraItem{padding:8px;border:1px solid var(--line);border-radius:10px;background:#101827;margin-top:6px;font-size:12px}
+
+/* ── Asset rows ──────────────────────────────────────────────── */
+.assetRow{border:1px solid var(--line);border-radius:12px;background:#101827;padding:10px;margin-top:8px}
+.assetStatus{font-size:12px;font-weight:bold;padding:2px 8px;border-radius:999px;display:inline-block}
+.assetStatus.ok{background:rgba(34,197,94,.15);color:#86efac;border:1px solid rgba(34,197,94,.35)}
+.assetStatus.warning{background:rgba(249,115,22,.15);color:#fdba74;border:1px solid rgba(249,115,22,.35)}
+.assetStatus.missing{background:rgba(239,68,68,.15);color:#fca5a5;border:1px solid rgba(239,68,68,.35)}
+
+/* ── Step editor ─────────────────────────────────────────────── */
+.stepEditorWrap{width:100%;display:flex;flex-direction:column;gap:8px}
+.stepEditorToolbar{display:flex;gap:6px;align-items:center;flex-wrap:wrap}
+.stepEditor{min-height:120px;max-height:220px;overflow:auto;border:1px solid var(--line);background:#0b1220;color:var(--text);border-radius:10px;padding:10px;outline:none;line-height:1.45}
+.stepEditor:empty:before{content:attr(data-placeholder);color:var(--muted)}
+
+/* ── Help pop ────────────────────────────────────────────────── */
+.helpPop{display:none;margin-top:8px;padding:8px;border:1px solid var(--line);border-radius:10px;background:#101827}
+.helpPop.show{display:block}
+
+/* ── Status colors ───────────────────────────────────────────── */
+.status-ok    { color: #86efac }
+.status-warn  { color: #fdba74 }
+.status-danger{ color: #fca5a5 }

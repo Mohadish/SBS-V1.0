@@ -1,0 +1,1419 @@
+STEP Browser Viewer Update Log
+
+V0.07
+- Prior build baseline before orbit refinement.
+
+V0.08
+- Reworked Alt + middle-mouse orbit to use an offset-preserving pivot orbit.
+- Removed target-orbit snap/recenter behavior on orbit start.
+- Reordered left-side tabs to: File, Folder, Camera.
+- Added version tag in the Files tab.
+- Added this log file.
+
+V0.09
+- Fixed Isolate Selected to keep ancestor/root structure visible while hiding unrelated branches.
+- Added Select Children action to the context menu; it truly populates the active selection.
+- Added Selections tab with save/load/update/rename/delete for selection groups.
+- Selection groups store stable object IDs, not folder locations.
+- Added first-pass left-drag box selection in screen space (inside-boundary center-point test).
+
+V0.10
+- Fixed Isolate Selected so it acts on all selected items.
+- Empty-background click now clears selection.
+- Added selection undo/redo with Ctrl+Z and Ctrl+Y.
+
+V0.12
+- Corrected isolate logic to apply to the full multi-selection.
+- Corrected background click deselection.
+- Corrected selection history tracking and Ctrl+Z / Ctrl+Y behavior.
+- Reminder: use the local server launcher, not direct file opening.
+
+V0.13
+- Added visibility-state tracking to undo/redo.
+- Isolate/show/hide visibility changes can now be undone/redone.
+- Updated orbit to use Y-up with no roll.
+
+V0.14
+- Reworked Alt + middle-mouse orbit to use a world-Y-up pivot orbit without snap.
+- Removed roll drift while preserving the offset-style orbit behavior.
+
+V0.15
+- Fixed right-click context menu behavior so it preserves the current multi-selection when you right-click an object already in the selection set.
+- Right-click now only collapses to a single item if you click an unselected object.
+
+V0.18
+- Clean rebuild from V0.15.
+- Fixed context-menu Isolate to preserve and use the active multi-selection when right-clicking a selected object.
+- Avoided later broken patches that interfered with STEP loading.
+
+V0.19
+- Fixed context-menu Hide / Show so it now applies to the full active multi-selection when right-clicking a selected object.
+
+V0.20
+- Fixed camera preset save/load drift by storing the full camera state instead of only position+pivot.
+- Loading a camera view now restores orientation exactly rather than approximating it with lookAt().
+
+V0.21
+- Added New Folder action inside the Move To Folder popup.
+- New folder is created at root, auto-selected as destination, and the popup stays open for final Move confirmation.
+
+V0.22
+- Applied selection-aware hide/show behavior to the Folder tab eye icons.
+- Eye clicks now mirror the right-click Hide / Show behavior for multi-selected items.
+
+V0.27
+- Rebuilt from V0.22 to restore known-good STEP loading and UI behavior.
+- Added project save/load layer cleanly on top of that base.
+- Avoided the broken intermediate V0.23-V0.26 patch chain.
+
+V0.28
+- Added hierarchical folder translation offsets with move icon states.
+- Added move gizmo in viewport for active folder transforms.
+- Added Reset Move in context menu.
+- Saved folder move state and offsets in project files.
+
+V0.33
+- Rebuilt folder-move gizmo behavior from stable pre-overlay base.
+- Gizmo visible only for selected blue-state folder.
+- Gizmo rendered in overlay scene on top of geometry.
+- Selecting a blue-state moved folder now reactivates its gizmo target automatically.
+
+V0.34
+- Fixed overlay scene render clearing the main scene.
+- Restored STEP mesh visibility while keeping the gizmo overlay.
+
+V0.35
+- Extended undo/redo snapshots to include folder move state and offsets.
+- Added undo step creation when a gizmo drag completes.
+- Added undo tracking for move-state toggle and reset-move actions.
+
+V0.36
+- Added preset-based Colors tab and project persistence for color presets and assignments.
+- Solid override now uses assigned preset colors where available, with neutral fallback for unassigned objects.
+- Added Select By Color action on color preset right-click.
+
+V0.37
+- Added Delete Color action.
+- Unassigned meshes now keep original STEP colors while Solid override is on.
+- Deleting a color clears its assignments and restores affected meshes to STEP colors.
+
+V0.38
+- Implemented per-preset Method A falloff shader.
+- Added live popup editing for back color, back opacity, falloff power, and back edge darken.
+- Preset base color is now the front-facing falloff color.
+
+V0.39
+- Made color-row FX and gear button positions static.
+- Buttons now indicate state by color instead of layout changes.
+
+V0.40
+- Introduced scene-based multi-STEP loading with top-level model roots.
+- Added Add STEP workflow.
+- Namespaced imported object ids per model.
+- Initial multi-model project save/load support.
+- Cross-model moving disabled for now.
+
+V0.41
+- Fixed broken `async async` syntax in project save/load functions.
+- Restored app startup so STEP loading can run again.
+
+V0.42
+- Added asset verification workflow for project load with OK/Warning/Missing states.
+- Added STEP file marker persistence (name, size, modified time).
+- Project load can now resolve missing assets via Browse before applying the scene.
+
+V0.43
+- Wired the asset verification modal buttons (Load Project / Cancel / backdrop close).
+- Fixed the dead final verification step in project loading.
+
+V0.44
+- Replaced outdated single-model project restore with proper multi-model restore.
+- Added Remove STEP workflow.
+- Clarified browser limitation around automatic asset location.
+
+V0.45
+- Moved STEP removal to the model-root context menu as Remove from Scene.
+- Added selection outline overlay and configurable outline color.
+- Saved selection outline color in project state.
+
+V0.46
+- Added batch STEP browsing and auto-matching in project asset verification.
+- Matching uses filename, file size, and modified time scoring.
+
+V0.47
+- Added transform move support on top-level STEP model nodes.
+- Added repeatable 90° orientation correction on X/Y/Z for model roots.
+- Added model transform persistence and undo/redo tracking.
+- Replaced edge-curve selection outline with silhouette-style shape outline.
+
+V0.48
+- Softened selection shell overlay and reduced its offset.
+- Fixed Alt+middle pivot picking to work across all loaded STEP models.
+- Updated scene-size zoom calculation for multi-model scenes.
+
+V0.49
+- Added timeline/steps panel with full-scene snapshots per step.
+- Steps support duplicate, rename, delete, hide/skip, and drag reorder.
+- Project save/load now persists steps and the active step.
+
+V0.50
+- Fixed right-click raycast path for multi-STEP scenes.
+- Fixed step persistence by syncing active step before project save.
+- Active step can now be clicked again to restore its saved state/camera.
+- Restored step list and nextStepId from loaded project data.
+
+
+V0.51
+- Made Background color global instead of per-step.
+- Added Remove Color From Selected in the Colors tab.
+
+V0.52
+- Made Show Grid / Axes global instead of per-step.
+- Added per-step camera assignment using global saved cameras.
+
+V0.53
+- Changed STEP import placement to keep models at their origin-aligned hierarchy position.
+- Removed automatic recentering on import.
+
+V0.54
+- Added Current Step top bar with Previous / Next navigation.
+- Added keyboard step navigation (Left / Right / Space).
+- Added per-step rich text notes editor with formatting tools.
+
+V0.55
+- Added step-scoped in-scene notes anchored to object-local positions.
+- Added note overlay stickers, note manager, drag reposition, rebind, copy/paste, hide/show, and delete.
+
+V0.56
+- Merged in-scene notes with the step navigation and rich text step notes flow.
+
+V0.57
+- Restored the V0.54 Current Step bar flow while keeping working scene notes.
+- Fixed Scene Notes manager interaction flow for Move and Change Obj.
+- Fixed Edit dialog layering to open above the Scene Notes manager.
+
+V0.58
+- Restored the Current Step top bar layout to match the V0.54 layout source exactly.
+- Moved Step Notes back into the top overlay bar and removed the displaced bottom-right step editor.
+- Kept the working scene note system without changing the V0.54 step UI layout except for the notes badge / manager behavior.
+- Preserved previous/next step buttons, keyboard navigation, step number + name display, and rich text step notes behavior in the original top-bar layout.
+
+[V0.60]
+- Added stable model slot IDs for imported STEP models to preserve per-step tree state when new models are added later.
+- Step restore now matches models by stable slot instead of requiring an exact loaded-model count/order match.
+- Older steps hide models that did not exist in that step yet, instead of overwriting the whole scene tree.
+- Kept per-step hierarchy, visibility, transforms, colors, camera, and notes intact.
+- Guarded multi-model viewport interaction by preserving stable runtime roots and rebuilding only the targeted model slot tree.
+
+[V0.62]
+- Added a per-step animation readiness toggle button (A) to the left of each timeline step.
+- Clicking the button evaluates the transition from the previous visible step and shows a readiness report.
+- The report can be accepted or cancelled; accepted steps are color-coded green / orange / red by severity.
+- Clicking an enabled animation button again turns it back off (grey).
+- Animation readiness metadata now persists with the project file.
+
+[V0.71]
+- Rebuilt strictly from the uploaded V0.62 baseline.
+- Replaced camera transition with a single camera-state model that interpolates position, pivot, up vector, and quaternion.
+- Step activation now applies scene snapshots with camera suppressed, then uses one exact camera path for both restore and animation.
+- Added a global camera animation duration setting in the Files tab and persisted it in project save/load.
+- Restored shared viewport hit-testing for later-added models so right-click and note rebind use the same pick path.
+- Scene notes now support double-click and right-click to open a focused note manager for that note.
+
+
+[V0.72]
+- Changed the global animation timing control to milliseconds and set the default to 1500 ms.
+- Added migration logic so older saved timing values in seconds are converted safely on load.
+- Kept the working V0.71 camera animation, then applied target show/hide as a hard switch, then animated object movement last.
+- Object movement now uses per-mesh world-space interpolation by stable mesh ID and reapplies into the current live parent, so movement stays independent of folder hierarchy changes.
+- Reused the same global animation duration for both the camera phase and the object-movement phase.
+
+[V0.73]
+- Added transition finalization before evaluating a new step navigation command, so rapid step changes first snap the current animated transition to its intended final step state.
+- Transition finalize now applies the exact target camera, visibility, and moved object local transforms before starting the next step change.
+- Duplicated and newly created-from-current steps now receive fresh scene note IDs, so copied notes remain visually copied but edit/delete/hide actions affect only the note in the new step.
+
+[V0.74]
+- Reworked scene notes into linked note content plus step-local note instances.
+- Duplicating a step or creating a new step from the current one now carries note placement/object binding forward as a new instance, while linking the note text content by default.
+- Added Linked / Unique status to the Scene Notes manager and a Make Unique action to unlink a note’s text into its own private content record.
+- Editing a linked note now updates all linked copies of that note text, while Move, Change Obj, Hide/Show, and Delete remain local to that step’s note instance.
+- Changed note Copy / Paste to paste linked note content only, preserving the target note’s own object binding and screen position.
+- Added note-content persistence to project save/load, including migration for older notes that only stored inline text.
+
+[V0.75]
+- Reworked scene notes into object-attached notes instead of step-owned notes.
+- Added a new Notes tab with a project note library for reusable linked notes, including import and export of note-library files.
+- Notes now store their own object attachment, anchor point, visibility, and screen placement, so they behave more like scene entities and no longer break on step duplication.
+- Right-clicking an object now supports Add Note, Apply Selected Library Note, and Manage Notes for that object.
+- Right-clicking a visible note now opens a note-specific context menu instead of the full popup, with actions for Show/Hide, Edit, Move, Change Obj, Make Unique, and Delete.
+- Added note rows under mesh objects in the tree, including visibility toggles and right-click support, so notes can be managed directly from the hierarchy.
+- Added linked note templates plus Make Unique / unlink behavior: linked notes share library text updates, while unique notes keep private custom text.
+- Project save/load now persists note templates and object-attached notes, with migration from older step-owned notes into object notes on load.
+- Preserved and reinforced right-click hit-testing so newly added objects and visible notes keep responding correctly after the note-entity refactor.
+
+[V0.76]
+- Fixed the note architecture gap from V0.75 by making note visibility and note box placement step-aware instead of only global.
+- Notes remain object-attached, but each step can now store its own note visibility and screen offset overrides, similar to how step/layer state stores object visibility and movement.
+- New notes created while a step is active now start visible on that step and hidden by default elsewhere, so note placement can be authored per step without leaking automatically across the whole timeline.
+- Scene note rendering, tree note eye toggles, step note counts, note manager labels, and note context menus now all use the effective current-step note state.
+- Dragging a note now edits the current step’s note placement override instead of mutating the global note record.
+- Show/Hide on notes now toggles the current step’s note visibility override instead of the global note record.
+- Project save/load now preserves per-step noteStates through the existing step data, with cleanup of missing note references and migration of older legacy step notes into object notes plus step overrides.
+- Preserved right-click handling for notes and newly added objects while applying the note-state refactor.
+
+[V0.77]
+- Extended local model import beyond STEP/STP to also support IGES/IGS, BREP/BRP, OBJ, STL, glTF/GLB, and FBX through browser-side loaders.
+- Replaced the single STEP-only import entry point with a format-aware model loader that dispatches to OCCT for STEP/IGES/BREP and to Three.js loaders for OBJ/STL/glTF/GLB/FBX.
+- Expanded the Add Model picker and project asset browse dialogs to accept the new CAD/3D file types.
+- Added generic scene-tree construction for non-STEP imports, so imported OBJ/STL/glTF/GLB/FBX content is turned into the same model/group/mesh hierarchy used by the rest of the app.
+- Preserved the existing model-slot, tree, color, step, and note systems by registering imported meshes into the same mesh/node maps and material pipeline.
+- Updated user-facing status/help text to refer to generic model files instead of STEP-only workflows where applicable.
+
+
+[V0.78]
+- Fixed the broken glTF/GLB loader integration from V0.77 by replacing deprecated non-module Three.js loader script URLs with a module-based loader bootstrap.
+- The app now asynchronously loads OBJLoader, STLLoader, GLTFLoader, and FBXLoader through ESM-compatible CDN imports and exposes them to the existing non-module app runtime.
+- Added a shared readiness wait so OBJ/STL/glTF/FBX imports do not fire before the extra loaders are actually available.
+- Updated loader error messages to reflect module bootstrap failures rather than missing legacy script tags.
+- This hotfix specifically addresses the in-app "glTF loader script did not load." error from V0.77.
+
+[V0.80]
+- Changed the top-bar Duplicate Step action to insert the duplicated step directly after the active step instead of always appending it to the end of the list.
+- Kept New Step behavior unchanged, so it still creates a copy of the current active step and appends it at the end.
+- Fixed model orientation authoring so Rotate X/Y/Z and Reset Orientation now mark the active step dirty and sync the updated orientation into that step snapshot.
+- Fixed transform-step persistence for move mode changes and move gizmo drag completion by scheduling active-step snapshot sync after those transform edits.
+- This should make per-step model orientation and transform changes persist more reliably and give the transition system real stored states to animate between.
+
+
+
+[V0.81]
+- Re-evaluated per-step orientation persistence and found a destructive same-step activation path: clicking an already-active step could re-apply that step's older stored snapshot and wipe recent unsynced orientation edits.
+- Changed step activation so clicking the currently active step no longer reapplies its snapshot; if that step is dirty, it is synced first and then left live.
+- Changed Rotate X/Y/Z and Reset Orientation to write the active step snapshot immediately instead of waiting on the delayed dirty-timer pass.
+- Changed move-gizmo drag completion to also commit the active step snapshot immediately, so authored transform endpoints are less likely to be lost before a later click or step action.
+- Kept the V0.80 top-bar Duplicate Step behavior that inserts directly after the active step.
+- Also normalized note-state data when duplicating a step from the inline step-row duplicate button, so duplication behavior stays consistent across both duplicate entry points.
+
+[V0.82]
+- Reworked per-step orientation storage so model rotation now persists as a true local quaternion (`localQuaternion`) in step snapshots, instead of relying only on `orientationSteps` counts.
+- Kept `orientationSteps` only as a compatibility/helper field, while step capture, restore, undo/redo selection history, and project save/load now all preserve quaternion-based rotation state directly.
+- Changed the orientation tools (Rotate X/Y/Z and Reset Orientation) to author that quaternion state directly, so rotation order is no longer collapsed into a single Euler/count representation.
+- Updated transform application so transform-capable nodes apply their stored quaternion directly on restore, making orientation behave more like move/position storage.
+- Added base-mesh local transform restore before applying a step snapshot or project tree, so stale mesh-local transforms left behind by prior animation/runtime state cannot poison later step restores.
+- Preserved the V0.80 top-bar Duplicate Step behavior and kept the note-state duplication normalization path in place.
+
+V0.83
+- Tree housekeeping: double-clicking a folder/group/model row now runs the same child-selection behavior as Select Children, making it fast to grab everything under that branch.
+- Animation duration UI fixed: the duration field no longer rewrites itself on every keystroke, so values can be fully replaced normally and are only normalized on commit (change/blur).
+- Animation timing split into two independent settings in Open / Settings:
+  1) Camera movement duration (milliseconds)
+  2) Object movement duration (milliseconds)
+- Transition runtime updated so camera and object phases use their own durations.
+- Project save/load and scene snapshot currentState now carry both camera and object animation durations, with backward compatibility for older projects that only store one duration.
+- Internal HTML/app version labels updated to V0.83.
+
+[V0.84]
+- Added a new Export tab with a browser-native WebM export workflow built around canvas capture plus MediaRecorder.
+- Export UI now includes file name, frame rate, per-step hold duration, and a Start from active visible step option.
+- The export flow records the current 3D viewport only and runs through the visible step sequence automatically, honoring the existing step animation system and the separate camera/object animation durations already in the app.
+- Added runtime capability/status text plus Export / Cancel controls so browser support and current export state are visible in the UI.
+- Added project persistence for the new export settings (fps, hold duration, start-from-active) so they survive save/load.
+- Updated internal HTML/app version labels to V0.84.
+
+[V0.85]
+- Upgraded the Export tab from a minimal recorder into a more controllable video-export workspace.
+- Added an on-screen export safe frame overlay in the viewer so the authored camera motion can be checked against the intended export framing before recording.
+- Added export format presets and editable output dimensions, starting with HDTV 1080p, HDTV 720p, and PAL, while still allowing custom width/height values.
+- The export UI now shows the resolved aspect ratio and drives the safe frame from the current output dimensions.
+- WebM export now records at the chosen output resolution by temporarily switching the render surface to the export width/height and then restoring the normal viewer size afterward.
+- Added folder-target saving support through the browser file-system picker when available, plus fallback to a save dialog or browser download when direct folder write is not available.
+- Fixed the missing WebM blob download path by adding an explicit blob-download helper, so fallback browser downloads now actually trigger.
+- Added project persistence for export format preset, export width, export height, and safe-frame visibility.
+- Updated internal HTML/app version labels to V0.85.
+
+V0.86
+- Moved the viewport below the Current Step top bar by restructuring the viewer area into a step-nav header plus a dedicated viewport surface. This fixes the export safe-frame alignment and keeps overlays working inside the true viewport.
+- Added viewport double-click folder selection: double-clicking a picked object now selects its containing folder/group/model and all objects under it, so folder move controls become immediately available.
+- Added transient tree reveal for viewport selection. Selecting from the 3D scene now expands only a temporary path so the picked object is revealed, and those folders collapse back on deselect. User-managed folder expansion remains the persistent recall state.
+- Added Collapse All in the Folders tab.
+- Added Collapse to the folder/group/model right-click menu to collapse that subtree.
+- Updated internal version labeling to V0.86.
+
+V0.87
+- Export pipeline now composites scene notes directly into the rendered export surface, while keeping UI chrome (prompts, selection controls, editor panels) out of the final file.
+- Added export output formats: WebM VP8, WebM VP9, MP4/H.264 (runtime support gated), and PNG sequence.
+- Added runtime export format availability detection and UI messaging so unsupported MP4/H.264 stays visible but disabled on browsers that cannot encode it.
+- Video exports now record the dedicated export compositor canvas rather than the raw renderer canvas.
+- PNG sequence export saves numbered PNG frames to the selected folder when available, otherwise falls back to browser downloads per frame.
+- Saved/loaded project export settings now include the selected output format.
+
+[V0.88]
+- Added a seekable WebM finalization pass after MediaRecorder export using EBML metadata rewrite, so exported WebM VP8/VP9 files are rebuilt with timeline metadata for scrubbing in media players.
+- Kept MP4/H.264 runtime-gated export and PNG sequence export unchanged.
+- Export panel now reports whether the WebM seekable-finalization helper loaded successfully.
+
+
+[V0.89]
+- Added browser voice-over playback driven from each step's Current Step text field, using the browser speech-synthesis voice selected in the UI.
+- Added Play, Stop, and Speak controls in the Current Step bar, plus voice selection and rate/pitch/volume controls.
+- Sequence playback now starts from the active visible step and waits for both the transition timing and the spoken narration before advancing, so narration length can determine the effective step length.
+- Manual step activation now stops any running voice-over sequence cleanly.
+- Saved/loaded project current state now includes the voice-over settings.
+- Updated internal HTML/app version labels to V0.89.
+
+[V0.90]
+- Added exportable narration audio for video exports. The app now synthesizes each step's text field into a real WAV narration clip and mixes it into the movie export stream.
+- Added Export tab controls for narration audio: enable/disable, export voice, voice variant, narration speed, and narration pitch.
+- Video export timing now waits on the longer of the visual timing and the narration length, so step text can determine the effective movie step duration.
+- PNG sequence export remains image-only; narration settings apply only to video formats.
+- Bundled a local meSpeak runtime file with the export package and embedded the required config/voice data inside the HTML so narration export does not require a cloud TTS service.
+- Saved/loaded project current state now includes the export narration settings.
+- Updated internal HTML/app version labels to V0.90.
+
+V0.91
+- Fixed export narration initialization under file:// usage.
+- meSpeak embedded config/voice data now load through generated blob URLs instead of being passed as raw objects.
+- Export narration setup now waits for config and voice load completion before synthesis begins.
+- This addresses the [object Object] XHR path bug and the file-origin CORS failure seen in V0.90 export narration startup.
+
+
+V0.92
+- Reworked export narration into a two-pass flow: narration audio is now prepared for all export steps before video recording starts, instead of being synthesized live during the movie pass.
+- Fixed meSpeak raw audio generation to use synchronous raw WAV byte export (`rawdata:'array'`) before decoding, avoiding the previous callback-based export path that could stall the movie export.
+- Video export now caches a prepared narration plan per step and plays those prebuilt audio buffers during recording, so step narration no longer needs to be generated mid-export.
+- Export cancellation now also works during the narration-preparation phase.
+- Updated internal HTML/app version labels to V0.92.
+
+V0.93
+- Replaced the low-quality offline export narration path with a high-quality local-helper flow designed for OpenAI TTS.
+- Added export narration controls for OpenAI voice choice, helper URL, narration speed, and optional style instructions.
+- Export narration now talks to a tiny local helper over http://127.0.0.1:8765 instead of trying to keep an OpenAI API key in the browser.
+- The helper keeps the API key off the page and calls the OpenAI Audio speech endpoint to generate real narration audio during the export preparation pass.
+- Narrated movie export still uses the same two-pass flow: it prepares all narration first, then renders the video with those prepared audio clips mixed into the recording stream.
+- Added packaged helper files:
+  - openai_tts_helper.py
+  - start_openai_tts_helper.bat
+  - README_OpenAI_TTS_Helper.txt
+- Project save/load now carries the new narration helper URL and narration instruction text.
+- Updated internal HTML/app version labels to V0.93.
+
+
+
+V0.94
+- Replaced the OpenAI export narration helper path with a local Piper TTS helper path for narrated movie export.
+- Export narration now targets a local helper that generates WAV narration clips from the step text using Piper voices through a localhost HTTP helper.
+- Updated the Export tab narration UI to use Piper voice ids, defaulting to a high-quality local voice choice.
+- Added packaged Piper helper files:
+  - piper_tts_helper.py
+  - install_piper_tts_helper.bat
+  - start_piper_tts_helper.bat
+  - README_Piper_TTS_Helper.txt
+  - start_step_browser_local_server.bat
+- Kept the existing two-pass narration export flow: narration audio is prepared first, then the video is rendered with the prepared clips mixed into the recording stream.
+- Updated internal HTML/app version labels to V0.94.
+
+V0.95
+- Package simplified back to the lightweight release layout: HTML + log only.
+- Narrated export now assumes a shared Piper helper running separately on localhost instead of bundling helper files into every version folder.
+- Export UI text updated to reflect the shared-helper workflow.
+- Default shared Piper helper URL remains http://127.0.0.1:8765 so all versions can reuse the same external Piper install.
+
+V0.96
+- Changed selected objects to global runtime state instead of per-step state.
+- Step snapshots and project saves keep selectedId/selectedIds in the format for compatibility, but now save them as empty placeholders.
+- Activating a step now preserves the current valid selection instead of restoring selection from the step snapshot.
+- Loading a project now clears selection instead of restoring saved selection data.
+- Kept the shared Piper helper URL workflow unchanged (separate helper folder over localhost).
+
+V0.102
+- Rebuilt step-transition visibility and color logic from the clean uploaded V0.96 baseline instead of continuing from later mixed-state color patches.
+- Step activation now evaluates the real runtime transition on the spot from the current step (Step A) to the selected target step (Step B), so forward, backward, and non-sequential jumps use the same logic path.
+- Kept the working camera-phase visibility fades: objects that hide fade from visible to invisible during the camera move, and objects that show fade in without applying the whole target scene too early.
+- Added a dedicated camera-phase color crossfade layer that keeps the Step A object as the fade-out carrier and adds a Step B-colored ghost as the fade-in carrier.
+- Color-transition opacity now respects Step A / Step B effective visibility:
+  - hidden at Step A -> no Step A blink
+  - hidden at Step B -> no Step B blink
+- Excluded color-transition objects from the plain visibility-transition bucket so a single object cannot be driven by two competing fade systems at once.
+- Deferred target material/color commit until the end of the camera phase; the live object keeps Step A color during the camera move.
+- Added exact landing reapply + validation at transition settle/forced completion:
+  - clean up all temporary fade materials/ghosts
+  - reapply the target step snapshot structure
+  - reapply the target material state
+  - reapply target visibility/camera
+  - validate live visibility/material state against the stored target step
+- Added a repair pass: if landing validation detects a mismatch, the target step is reapplied once more immediately.
+- Goal of this pass: prevent wrong final colors, black flashes, and leftover semi-transparent materials so the landed step matches its stored state.
+
+V0.103
+- Kept the V0.102 Step A -> Step B transition logic intact and changed only the rendering behavior of temporary fade/crossfade visuals.
+- Added a controlled transparent transition render layer inside the main scene by dynamically sorting transition meshes back-to-front relative to the active camera during the camera phase.
+- Transition fade materials now keep depth testing on and depth writing off for the whole fade, reducing ordering artifacts while preserving normal scene occlusion.
+- Added explicit render-order management for transition carriers:
+  - fade-out live meshes get temporary camera-depth-based renderOrder values
+  - fade-in ghosts get temporary camera-depth-based renderOrder values
+  - color A/B pairs use a stable per-object order so the Step B-colored ghost does not randomly fall behind the Step A fade carrier
+  - falloff back-pass ghosts keep a stable sub-order behind their front pass
+- Restored original live mesh renderOrder values when transition cleanup runs, so landed step state stays exactly as stored.
+- Goal of this pass: improve the visual stacking of semi-transparent transition objects without altering the working step-state logic or final landing validation.
+
+V0.104
+- Kept the working V0.102/V0.103 step-transition logic intact.
+- Applied transition-only DoubleSide rendering to temporary opacity/color carriers.
+- Updated cloned fade materials to force DoubleSide during visibility fades and color crossfades.
+- Updated transition-built standard/falloff ghost materials to use DoubleSide during the camera phase.
+- Skipped the extra falloff back-pass on transition ghosts when DoubleSide is active, to avoid transition-only inside-out/backface artifacts.
+- Left settled step materials unchanged; final step state is still reapplied exactly as stored.
+
+V0.105
+- Kept the working V0.102 step-transition logic and exact landing reapply/validation intact.
+- Removed the transition-only DoubleSide experiment from V0.104.
+- Reworked temporary opacity/color transition carriers to use explicit front/back transition passes instead of DoubleSide rendering.
+- Transition-cloned front materials now render as FrontSide with transparent depth-test-on / depth-write-off behavior.
+- Added transition-only BackSide helper passes for standard/original fade carriers that did not already have one.
+- Preserved existing falloff front/back transition handling for shader-based materials.
+- Updated transition render-order assignment so each temporary back pass renders just before its matching front pass.
+- Restored live mesh materials and renderOrder values on cleanup so the landed step still matches the stored target step exactly.
+- Goal of this pass: reduce transparent overlap artifacts where farther objects pop over nearer fading objects during camera-phase opacity/color transitions.
+
+V0.108
+- Built directly from V0.105 as requested.
+- Kept the working V0.102 step-transition logic, cleanup flow, interruption handling, and exact landing reapply/validation intact.
+- Replaced temporary transition alpha blending with screen-door / dither fade rendering for transition-only materials.
+- Transition-cloned live fade carriers and transition ghosts now use opaque depth-tested, depth-writing materials with per-pixel discard driven by transition opacity.
+- Added a transition-only dither fade patch for cloned standard/original materials via shader injection on compile.
+- Updated falloff transition shaders to use the same transitionOpacity-driven dither coverage, preserving animated fades while avoiding the transparent sorting path.
+- Left settled step materials unchanged; the landed step is still reapplied exactly as stored.
+- Goal of this pass: preserve animated visibility/color transitions while reducing the far-over-near artifacts caused by transparent sorting during camera-phase fades.
+
+
+V0.109
+- Built from V0.108.
+- Kept the working Step A -> Step B transition logic and exact landing-state reapply/validation intact.
+- Kept screen-door dither fade for solid opacity/color transition carriers.
+- Restored smooth transparent blending for falloff FX materials while using transitionOpacity only as the dithered visibility gate.
+- Preserved settled step rendering as stored and limited the hybrid change to the temporary/render material path for falloff FX.
+
+V0.110
+- Fixed transition back-pass initialization so new color-transition ghost helpers inherit the current transition opacity instead of flashing in at full strength.
+- This prevents target-color duplicate shells from appearing early with the old inverted/back-side look.
+- Kept the V0.108/V0.109 dither+FX hybrid transition rendering and exact final step reapply intact.
+
+
+V0.111
+- Added a new Assets tab for loading local image assets, selecting them, placing them on the active step, and deleting them.
+- Added step-sensitive screen-space TextBox and ImageBox items that render above the 3D viewport and are not affected by the camera or object transforms.
+- Added inline editing for text boxes directly on the box with no popup dialog.
+- Added right-click background creation of a new text box at the clicked screen position, plus placement of the currently selected image asset.
+- Added right-click Move/Delete actions for screen text/image boxes and corner drag resizing from any corner.
+- Added project save/load support for screen image assets and per-step screen items.
+- Extended project asset verification so bulk/browse matching now includes image assets in addition to model files.
+- Kept the existing visibility/color transition logic and exact landing-state validation intact while adding the new screen-overlay system.
+
+V0.112
+- Added screen text box edit mode with right-click Edit and double-click-to-edit behavior.
+- Added a floating mini rich-text toolbar for selected text formatting: font size, color, bold, and italic, applied inline to selected text.
+- Text editing now commits when clicking outside the box, while keeping the screen-overlay system separate from 3D scene logic.
+- Added text box Copy, Cut, and background Paste actions so text boxes can be duplicated across steps.
+- Added Bring to Front and Send to Back actions for screen items to control screen-space stacking order.
+- Screen text boxes now store rich HTML content plus plain-text fallback for project save/load compatibility.
+
+
+V0.113
+- Improved screen text box responsiveness by making the editable content box-size-aware, wrapping long content more reliably, and keeping toolbar state synced to the current selection.
+- Added generic screen-item clipboard handling so both text boxes and image boxes can be copied/cut and pasted across steps.
+- Changed paste behavior to preserve the original copied screen position on the target step instead of pasting at the right-click location.
+- Added Copy/Cut support for image boxes and unified background Paste for whichever screen item type is currently on the clipboard.
+- Kept the existing screen-overlay system, step sensitivity, and 3D transition logic intact.
+
+V0.114
+- Rebuilt screen text boxes as a DOM-overlay rich-text workflow while keeping step sensitivity, move/resize, copy/cut/paste, and front/back ordering.
+- Stabilized text editing flow with direct inline editing, toolbar state tracking, and a safer font-size path.
+- Added export compositing for screen image boxes and screen text boxes so overlays render directly into PNG/video export output.
+- Preloaded screen-overlay export resources for step exports and preserved project asset handling for local image boxes.
+
+
+V0.115
+- Reworked collapsed font-size editing for screen text boxes so choosing a size now sets a pending typing size instead of inserting a sticky placeholder span into the content.
+- Typed characters now honor the pending font size reliably without forcing the whole box to stay large until cleared.
+- Kept selected-text font-size formatting, rich-text toolbar features, copy/cut/paste, and screen-overlay behavior intact.
+- Changed screen-text export bitmap generation from data-URL SVG loading to blob-backed SVG image loading for better browser reliability during export compositing.
+
+
+V0.116
+- Rebuilt screen text box editing around a Quill-based inline rich-text editor instead of the fragile custom contenteditable font-size path.
+- Kept the PowerPoint-like screen-overlay behavior intact: step-sensitive boxes, inline editing, right-click Edit/Move/Delete, double-click to edit, copy/cut/paste across steps, front/back ordering, and corner resize.
+- Text formatting now uses editor-native selection/cursor formatting for font size, color, bold, and italic, so changing size at the cursor should no longer get stuck globally until the box is cleared.
+- Text boxes now persist both semantic HTML and structured editor delta data for more reliable re-editing after save/load.
+- Kept image boxes and screen-item clipboard behavior intact.
+- Kept export compositing for screen overlays and added a plain-text bitmap fallback if rich text SVG rasterization fails during export.
+- Added Quill core CSS/JS from CDN alongside the existing CDN-based app dependencies.
+
+
+V0.117
+- Replaced screen text export rasterization with a delta-driven canvas renderer so exported text preserves font size, color, bold, and italic formatting from Quill text boxes.
+- Expanded screen text export cache keys to include stored Quill delta data.
+- Kept SVG/foreignObject and plain-text export only as fallbacks, so normal export no longer depends on the fragile rich-text bitmap path.
+
+V0.118
+- Hardened screen-text export so text boxes can no longer block export; removed SVG/foreignObject fallback from the main text export path and use canvas/plain-text fallback only.
+- Wrapped per-item screen-overlay export drawing in guards so one bad text/image item cannot abort the whole frame.
+- Project sessions now keep an empty scene root alive from startup/reset, and first-model load preserves existing step text/image overlays in an empty session.
+- Timeline A button now toggles animation directly on left-click; right-click opens the readiness report without forcing the popup on normal enable.
+
+V0.119
+- Restored DOM-based rich-text export rendering for screen text boxes as the primary export path.
+- Export now first rasterizes the text box HTML/Quill content via SVG foreignObject per item, preserving font size, color, bold, and italic more faithfully.
+- Kept export non-blocking: if DOM rasterization fails for a text box, it falls back to delta-driven canvas rendering, then plain-text canvas rendering.
+- Live text editor content is used for export when available, so active edits export with current formatting.
+- Updated in-file displayed version string to V0.119.
+
+V0.120
+- Added model-root context menu actions to copy and paste folder arrangements between steps.
+- Pasting a folder arrangement now warns the user, creates a hidden backup step named "[step name] backup", and applies only the tree arrangement without copying move offsets.
+- Improved animated transitions for meshes that move between different folder paths across steps by detecting reparent/path changes, preserving source visibility through the camera phase, and treating same-color reparent cases like a color-style crossfade.
+- Updated step duplication naming to numbered variants instead of repeated "Copy" suffixes. Examples: "Step 1-001" -> "Step 1-002", "introduction" -> "introduction 001".
+- New generic steps now use the numbered pattern "Step N-001".
+- Updated in-file displayed version string to V0.120.
+
+V0.121
+- Converted loaded model hierarchies to use folder nodes for imported non-mesh tree items, so native load trees participate in folder arrangement copy/paste and step serialization consistently.
+- Added preserved base local transform data (position, rotation, scale) for folder/model nodes so rebuilt trees keep imported hierarchy placement stable across step changes and project reloads.
+- Added legacy tree normalization so older group-based snapshots/project trees are interpreted as folders during step/project apply.
+- Updated folder-arrangement serialization/apply and mesh path comparison to treat legacy groups as folders for compatibility.
+- Updated in-file version label and saved-with version string to V0.121.
+
+V0.122
+- Added active-step display naming that counts only visible steps as "Step N" and labels hidden steps separately as "Step HN".
+- Enabled renaming the active step name from the step navigation display by double-clicking the displayed step name.
+- Improved step duplication naming so duplicates now scan existing siblings and continue the highest numbered suffix instead of repeating the source number.
+- Added a custom folder-arrangement paste warning modal with OK, Cancel, and Save Backup actions; Save Backup opens the project save flow and returns to the warning so the paste can still be confirmed afterward.
+- Updated step list metadata and in-file version/saved-with markers to V0.122.
+
+V0.123
+- Added a project-save access prompt during project load, before asset verification continues. Accepting the prompt links a writable .sbsproj file handle for direct saves; declining continues the load flow without a linked save target.
+- Added project save UI flow with Ctrl+S / Ctrl+Shift+S support. Ctrl+S now saves directly to the linked project file when access has been granted; otherwise it opens a Save Project interface. Ctrl+Shift+S always opens the Save Project interface with overwrite/save-as choices.
+- Added a blocking 'Saving in progress' modal during project writes so UI interaction is paused while a save is in progress.
+- Updated the Save Project flow to preserve a linked project file handle when available, and to fall back to Save As / browser download behavior when direct file access is unavailable.
+- Updated in-file version and saved-with markers to V0.123.
+
+v0.124
+- Project loading now uses the browser file picker when available, so the app can keep project-folder context.
+- Grant Access now opens the save picker in the loaded project's folder when that folder context is available.
+- Save As pickers reopen in the remembered project folder.
+- Project asset browsing now uses browser file handles when available and reopens in the remembered project/assets folder.
+- Strengthened save shortcut interception and added Ctrl+Alt+S as the Save As fallback alongside Ctrl+Shift+S.
+- Updated the in-file displayed version string to v0.124.
+
+v0.125
+- Unified project open/save/asset pickers around a shared workspace picker ID so Chromium browsers can reopen in the same remembered project folder more reliably.
+- Restricted explicit startIn handles to directory handles only, so file-handle based workspace reopening relies on the browser's remembered picker workspace instead of conflicting file-handle start locations.
+- Kept Ctrl+S overwrite behavior and the Save As fallback shortcuts intact.
+- Updated the in-file displayed version string to v0.125.
+
+v0.126
+- Re-anchored screen text boxes and image boxes to the export safe frame instead of raw viewer pixels.
+- Added normalized safe-frame geometry for screen items so their position and size stay proportional when the UI/viewer size changes.
+- Text boxes now keep their content scale relative to the safe frame height, reducing drift in font proportion when the UI zoom/layout changes.
+- Updated live overlay rendering, drag/resize, copy/paste, and export compositing to use the new safe-frame-relative layout model.
+- Updated the in-file displayed version string to V0.126.
+
+v0.127
+- Added folder/model transform upgrade with pivot-aware rotation support on top of v0.126.
+- Added move, pivot, and rotate tool buttons in the tree for transform-capable nodes.
+- Added local-space transform gizmo workflow using TransformControls for translate/rotate editing around the stored pivot.
+- Added stored pivotLocalOffset to transform nodes and included it in step snapshots, undo/redo history, project save/load, and tree rebuilds.
+- Updated transform math so folder/model transforms now apply translation plus rotation around a custom pivot while preserving stable object association.
+- Added non-blocking Edit Translation panel with live local/world Translate, Rotate, and Pivot fields (18 inputs total).
+- Added Apply/Cancel behavior for the transform editor: Apply commits and records history, Cancel restores the original transform state from panel-open.
+- Added right-click “Edit Translation…” for folder/model nodes.
+- Updated Reset Move to Reset Transform and reset translation, rotation, and pivot offsets together.
+- Updated in-file displayed version string to V0.127.
+
+
+V0.128
+- Rebuilt folder transform tools from the v0.126 baseline.
+- Restored visible move gizmo behavior and added separate visible pivot and rotate tools.
+- Move and pivot gizmos now sit on the folder/model pivot and follow local orientation.
+- Added local rotate gizmo with TransformControls.
+- Kept model Orientation Correction modal with 90-degree orthogonal rotation for model roots.
+- Added Edit Translation panel with 18 live local/world translate/rotate/pivot fields, apply/cancel behavior, and undo/redo-safe commits.
+- Added pivot transform persistence to steps, project save/load, arrangement copy/paste, and rebuilt tree state.
+
+V0.129
+- Reworked the folder/model transform gizmo on top of the v0.126/v0.128 transform baseline.
+- Replaced the previous hidden/nonfunctional rotate path with one combined custom gizmo that shows both translate axes and rotation arcs.
+- Added quarter-arc rotation handles around the XYZ axis endpoints and hover emphasis for active gizmo handles.
+- Move and rotate modes now both expose the combined gizmo; pivot mode exposes the same gizmo but applies translation/rotation to the pivot instead of the object.
+- Added stored per-node move/rotate/pivot channel states and enable flags, including red disabled state handling and orange pivot state.
+- Added per-icon right-click reset actions for move translation, rotation, and pivot.
+- Preserved the old model-root orthogonal Orientation Correction workflow.
+- Updated the in-file displayed version string to V0.129.
+
+
+V0.130
+- Reworked the folder/model transform interaction layer on top of V0.129 without changing the broader step/export/text/folder feature set.
+- Decoupled pivot storage from the effective object transform, so pivot acts as a manipulation anchor/tool and no longer contaminates the stored move offset channel.
+- Restored row-click transform behavior: clicking a transformable layer now selects it and shows the combined object gizmo directly.
+- Kept pivot as a separate mode: clicking the pivot icon now enters/restores pivot mode and toggles the stored pivot on/off without moving the object.
+- Changed move/rotate/pivot icons to behave as channel status indicators:
+  - white = no stored data
+  - blue = stored move/rotate data active
+  - red = stored channel present but disabled
+  - orange = stored pivot active
+- Fixed move/rotate icon left-click behavior so blue/red toggles now actually enable/disable the stored channel and visually revert/restore the result.
+- Added broader transform icon right-click menu with Reset Move Translation, Reset Rotation, Reset Pivot, Reset All Transform Channels, and Edit Translation.
+- Added larger invisible gizmo pick volumes for axis and arc handles to improve mouse hit detection while keeping the visible gizmo styling intact.
+- Corrected the X rotation arc orientation by flipping it 180 degrees on the Y axis relative to the previous build.
+- Updated the transform editor to display stored local/world move/rotate deltas and stored pivot offsets rather than live absolute values, so zero remains zero when nothing is recorded and disabled channels still show their stored values.
+- Updated local/world transform editor application so edits apply against the stored offset channels consistently.
+- Updated the in-file displayed version string to V0.130.
+
+V0.131
+- Fixed gizmo hit-testing so visible move/rotate handles use the active raycaster instead of an inert cloned ray; this restores click-and-drag interaction.
+- Increased gizmo pick volumes for axis and arc handles to improve click reliability while keeping the visuals unchanged.
+- Added Pivot section to Edit Translation with local pivot position and local pivot rotation fields.
+- Updated transform editor data binding so pivot position/rotation show stored step-specific values.
+- Updated in-file displayed version string to V0.131.
+
+
+V0.132
+- Fixed video export freezing when a step contains a text box.
+- Video export now uses the delta-driven canvas text renderer as the primary path, avoiding the fragile DOM/SVG foreignObject text bitmap route during video recording.
+- Still-image style text export remains available for non-video paths.
+- Added export text bitmap cache separation by export variant (video vs still) so the safe video renderer cannot be polluted by DOM/SVG cached bitmaps.
+- Updated in-file displayed version string to V0.132.
+
+V0.134
+- Built the new MP4 / H.264 path from the V0.132 baseline as a deterministic export pipeline instead of live MediaRecorder capture.
+- MP4 / H.264 now renders an exact PNG frame sequence plus one narration WAV, then hands only the final encode step to a local FFmpeg helper.
+- Added a dedicated Deterministic FFmpeg helper URL field in Export (default http://127.0.0.1:8766).
+- Added deterministic frame stepping that explicitly renders the 3D viewport before each captured frame, preventing the blank-visual output seen in the prior helper attempt.
+- Added exact offline narration WAV building for deterministic MP4 so voice-over timing follows the authored export timeline instead of real-time recorder timing.
+- Routed deterministic MP4 text-box rendering through the video-safe canvas text bitmap path instead of the fragile DOM/SVG foreignObject export path.
+- Updated canvas text export color handling so rgba(...) styling stays rgba instead of being flattened to hex.
+- Switched PNG sequence export to use the same video-safe text bitmap variant for better export stability.
+- Added deterministic helper packaging support: local Python HTTP helper, FFmpeg job folders, setup/start/stop/manual-encode batch files, and readme.text guidance for placement next to piper_shared.
+- Updated the in-file displayed version string to V0.134.
+
+V0.135
+- Built this as a diagnostic MP4 test version on top of V0.134 to isolate whether rich text itself is what breaks deterministic helper export.
+- Deterministic MP4 now skips text-box bitmap pre-rasterization and instead draws text boxes as simple plain-text note-style panels positioned from their safe-frame relative coordinates.
+- This MP4 test path intentionally ignores rich-text styling inside text boxes and uses only the stored plain text, so styled-text rendering is no longer part of the deterministic export path for this build.
+- Image screen items, scene notes, 3D viewport rendering, and narration/helper MP4 assembly continue to use the existing V0.134 pipeline.
+- Updated the in-file displayed version string to V0.135.
+
+V0.136
+- Built this as a targeted deterministic MP4 animation test version on top of V0.135.
+- Prevented the normal live animate() loop from auto-advancing camera/object transitions during deterministic MP4 export.
+- Deterministic MP4 now owns transition progression frame-by-frame instead of racing against real-time viewport updates.
+- This is intended to restore interpolated transition frames in the exported MP4 rather than sampling mostly landed step states like a slideshow.
+- Text boxes on the deterministic MP4 path remain in the V0.135 plain note-style diagnostic mode for isolation.
+- Updated the in-file displayed version string to V0.136.
+
+V0.141
+- Rebased deterministic MP4 text export on the stable V0.136 timing/sync path.
+- Added helper-rendered transparent PNG text plates for deterministic MP4 export.
+- Deterministic MP4 now requests a real PNG plate per text box from the local helper, loads those plates back as ordinary images, and draws them instead of the live text-box path during export.
+- If a helper text plate cannot be built, that specific text box falls back to the plain diagnostic box so the export can continue.
+- Updated the visible version label to V0.141 and project savedWithAppVersion markers to V0.141.
+
+V0.142
+- Kept the deterministic MP4 pipeline on the stable V0.136 timing/sync baseline while correcting helper text-plate generation.
+- Deterministic MP4 helper text plates now use the saved step-specific text-box HTML instead of live DOM lookup by item id, so duplicated text boxes in different steps no longer inherit the currently visible step's styling.
+- Added export-time text scale data to the helper text-plate request so helper PNG plates match the viewport's internal text fit scaling more closely.
+- Updated the helper's transparent text-plate HTML template to reproduce the viewport's scaled inner text wrapper before screenshotting to PNG, reducing clipping/cropping for helper-rendered text boxes.
+- Updated the visible version label to V0.142 and project savedWithAppVersion markers to V0.142.
+
+V0.143
+- Based on the stable V0.142/V0.136-derived deterministic MP4 path.
+- Enlarged helper-rendered text plates with a 200px right/bottom overscan and draw-back expansion to reduce helper PNG cropping on the lower and right edges.
+- Added text-box panel styling controls to the rich-text editor toolbar: background show/hide, background color, background opacity, outline show/hide, outline color, and outline thickness.
+- Moved the rich-text editor toolbar to a vertical left-side position so it interferes less with typing.
+- Live text boxes, still/video export drawing, and helper text-plate rendering now honor the text-box background and outline style settings.
+- Updated the visible version label to V0.143 and project savedWithAppVersion markers to V0.143.
+
+
+V0.144
+- Kept the deterministic MP4 pipeline on the stable V0.136/V0.142 baseline while correcting helper text-plate padding math.
+- Helper-rendered text plates now keep the visible panel at its original size and place the extra right/bottom area into transparent padding, reducing stretch when the PNG plate is pasted back into MP4 export.
+- Deterministic MP4 helper capture now uses the full padded canvas size while preserving the original text-box layout width/height used for wrapping and scale.
+- Moved the rich-text editor toolbar to the right side of the active text box when space allows, with a left-side fallback only when needed.
+- Improved text color editing so the selected rich text stays available while the color picker is open, allowing repeated color changes without immediately losing the selection.
+- Reworked live text-box outline styling to use an outside box-shadow style so changing outline thickness no longer pushes the text layout inward during editing.
+- Reduced sticky text-box selection by deselecting screen items more cleanly when clicking empty viewport space.
+- Updated the visible version label to V0.144 and project savedWithAppVersion markers to V0.144.
+
+V0.145
+- Kept the working V0.144 helper/export behavior and focused this release on rich-text editor responsiveness only.
+- Fixed the main edit-session UX bug by stopping bold/italic/font-size/color commands from re-rendering and replacing the live Quill text-box DOM while editing.
+- Toolbar formatting commands now apply directly to the saved Quill selection range, which allows repeated bold/italic/color/size changes in the same edit session.
+- Font size now responds on both input and change events, and toolbar controls lock the active text selection before applying edits.
+- Range and checkbox style controls now also lock the active text selection before interaction and listen on both input/change where appropriate.
+- Kept the text-box toolbar on the right-side layout introduced in V0.144.
+- Updated the visible version label to V0.145 and project savedWithAppVersion markers to V0.145.
+
+
+V0.146
+- Kept the working V0.144/V0.145 helper export path and focused this release on rich-text toolbar control responsiveness.
+- Stopped cancelling native mouse behavior for the toolbar dropdown and range controls, so font size, fill opacity, and outline thickness can be adjusted normally while editing.
+- Added extra selection-preserving hooks to the font-size dropdown and the fill/outline sliders so they stay responsive without dropping the active text selection.
+- Increased deterministic helper text-plate overscan slightly from 200px to 212px on the right and bottom to add a small extra bleed edge without changing the established 12px outline-width cap.
+- Updated the visible version label to V0.146 and project savedWithAppVersion markers to V0.146.
+[V0.147]
+- App-only cleanup on top of v0.146.
+- Text box border moved back inside the box using an inset visual stroke.
+- Border no longer affects text layout or pushes the text content.
+- No helper update required for this version.
+
+
+V0.148
+- Packaged a matching app/helper release to align export rendering after the v0.147 inset-border browser-side change.
+- Helper text-plate panel stroke now renders as an inset stroke inside the text-box plate instead of an outside shadow stroke.
+- Deterministic MP4 helper PNG plates should now match the browser-side inside-border treatment, reducing the exported outer-edge crop seen when using v0.147 with the older helper.
+- No timing, narration-sync, or text-box editing behavior changed from v0.147; this release is specifically about browser/helper border-render parity.
+- Updated the visible version label to V0.148 and project savedWithAppVersion markers to V0.148.
+
+V0.149
+- Added a new Header tab for global header overlays that appear on every step and always render on top.
+- Added three header item types: Header Text, Step Number, and Step Name.
+- Header items now share global position/style across all steps and render in both the viewer and export output.
+- Header items span the safe-frame width, do not use rich-text partial selection, and are styled as whole-box overlays.
+- Simplified the narration text editor toolbar by removing rich formatting controls.
+- Pasting into the narration text field now converts content to the basic plain style automatically.
+- Helper package unchanged from V0.148.
+
+V0.150
+- Reworked Header items to behave as linked text boxes across all steps instead of a separate fixed overlay system.
+- Header Text now uses full text-box behavior on every step, including the regular text-box popup workflow and box styling.
+- Step Number and Step Name now sync as linked text boxes with app-driven content, while sharing position, size, alignment, and box styling across all steps.
+- Added left / center / right alignment support to text boxes through the popup text toolbar.
+- Header-linked items now stay on top by sync and render ordering, and they export through the regular text-box pipeline.
+- Kept the successful V0.148 helper/export foundation unchanged; no new helper package is required for this version.
+
+V0.151
+- Fixed image boxes to preserve PNG transparency in the viewport and export paths by removing the forced image-box background fill/stroke treatment.
+- Updated export rendering for image boxes to use contain-fit placement with preserved proportions instead of stretching the image to the box size.
+- Added linked Header Image support in the Header tab, using the currently selected asset to create an image box that appears on every step and stays on top.
+- Header Image items now use the regular linked screen-item sync path, so they can be positioned and resized like other linked header items while remaining borderless/background-free.
+- Default image-box placement now respects the imported asset aspect ratio when dimensions are available.
+- Updated the visible version label to V0.151 and project savedWithAppVersion markers to V0.151.
+
+V0.169
+- Fixed chapter-aware step reordering so dropping before the first step or after the last step in a chapter now lands exactly where the blue insertion preview indicates.
+- Rebuilt step move/copy insertion to reconstruct the ordered step list by chapter instead of guessing a flat splice index across the whole timeline.
+- Fixed step clipboard paste so pasted steps are always shown instead of inheriting hidden state from the copied source steps.
+
+V0.170
+- Fixed project save/load for the chapter timeline by writing an explicit timelineChapterLayout with per-chapter ordered step id lists, chapter visibility/lock state, and collapsed state.
+- Load now restores chapter membership and chapter-relative step order from that explicit timeline layout instead of collapsing all steps back into the first chapter.
+- Reworked step thumbnail capture to render a clean 3D-only view with no selected objects highlighted.
+- Removed the noisy thumbnail auto-refresh path that captured during live interaction and animation; thumbnails now refresh only after settled step activation and after explicit final viewport changes such as finished camera moves, fit/isolate/show-all, transform commits, orientation commits, and selection/unselection clicks.
+- Thumbnail refresh no longer records the first frame of a transition animation when activating a step.
+
+V0.171
+- Fixed step-row left-click selection handoff so clicking a step outside the current multi-selection immediately clears the old selection and selects only the clicked step before any drag starts.
+- This prevents dragging a newly clicked step from accidentally moving the previously selected group.
+- Re-integrated Chapter Name and Chapter Number as real Header tab item types instead of falling back to custom headers during normalization.
+- Header tab rows now describe Chapter Name / Chapter Number as dynamic current-chapter fields, matching the existing Step Name / Step Number behavior.
+
+
+V0.172
+- Restored Chapter Number and Chapter Name as native always-visible Header tab buttons instead of relying on dynamic DOM insertion after the tab renders.
+- Header tab now clearly shows all four dynamic header field types together: Step Number, Step Name, Chapter Number, and Chapter Name.
+- Kept the existing dynamic header behavior intact so chapter-aware header items still render like the step-aware ones.
+
+V0.173
+- Wired the native Header tab Chapter Number and Chapter Name buttons to create real linked dynamic header items, matching the existing Step Number and Step Name behavior.
+- Updated export sequencing to use the chapter-aware visible timeline path, so hidden chapters are fully skipped during render/export instead of still contributing their steps.
+
+V0.174
+- Replaced export/playback visible-step collection with an explicit chapter-aware traversal.
+- Hidden chapters are now skipped entirely at the source when building export and playback step sequences.
+- Visible step order for export/playback now follows chapter order first, then step order within each visible chapter.
+- Orphaned steps without a valid chapter still export/play after visible chapters instead of being lost.
+
+V0.175
+- Added single-chapter drag-and-drop reordering in the timeline, with chapter insertion gaps before each chapter and after the last chapter.
+- Dragging a chapter now collapses it immediately for a cleaner reorder interaction, without affecting multi-step drag/drop.
+- Chapters can now be dropped between other chapters or at the end of the chapter list.
+
+V0.176
+- Kept the stable V0.175 step/chapter mechanics intact and applied a tighter V0.172-inspired timeline presentation.
+- Reduced chapter header, step cell, thumbnail, and action-button spacing so more steps fit in view at once.
+- Changed step and chapter drop gaps to collapse when inactive and expand only while active, so rows shift to make room for the blue insertion rectangle instead of permanently reserving that space.
+- Preserved the existing drag/drop hit logic and chapter reorder behavior; this is a cosmetic density and presentation pass only.
+
+
+V0.177
+- Removed the redundant chapter expand/collapse arrow from the chapter row and kept the lock-based open-state control as the only chapter-open affordance.
+- Simplified the step cell top strip by removing the duplicate step-name text there; the step name now appears only once in the lower label area.
+- Reworked scene-note interaction so note dragging updates smoothly from global pointer movement instead of relying only on viewport pointermove events.
+- Double-clicking a scene note now opens that note directly in the edit popup, isolated from any additional notes on the same object.
+- Expanded the scene-note right-click menu to include both direct edit and open-notes-panel actions, while keeping the existing note utilities.
+- Centered scene-note text horizontally and vertically inside the note box for a cleaner presentation.
+
+V0.178
+- New chapters now start in the collapsed state by default instead of opening immediately on creation.
+- Added three standard scene-note text sizes: Small, Medium, and Large, editable from the note popup for object notes.
+- Scene-note boxes now auto-fit their text more tightly with reduced padding (about 8px) while keeping centered text.
+- Updated scene-note rendering and export drawing so the chosen note text size is reflected consistently in the viewer and export output.
+
+
+V0.179
+- Added global scene-note text size controls at the top of the Notes tab: Small, Medium, and Large.
+- Default preset values are Small = 18, Medium = 36, Large = 48, and each value can be edited in the range 5–150.
+- These preset values are global project settings and rescale all notes together across all steps.
+- Scene-note sizing now interprets those values relative to the export safe-frame height, so a value like 36 approximates 36px on a 1080-high safe frame and scales proportionally on other viewport/export sizes.
+- The note editor continues to offer Small / Medium / Large plus Custom, and custom values now also use the same 5–150 safe-frame-relative unit system.
+- Updated live note rendering and export note rendering to use the same safe-frame-relative sizing path.
+
+V0.180
+- Fixed grouped-step drag selection handoff: left-clicking a step that is already inside the current multi-selection now preserves the whole selected group for dragging.
+- Left-clicking a step outside the current multi-selection still clears the old group immediately and selects only the clicked step before drag starts.
+- Added a viewport-state comparison for step activation so the camera phase is skipped entirely when the source and target viewport states are effectively identical.
+- In no-camera-change transitions, object animation now starts immediately instead of spending camera animation time moving from the same viewport state to itself.
+
+V0.181
+- Optimized deterministic MP4 helper text-plate preparation by deduplicating identical text-box renders across steps using a content/style render signature instead of rendering every step/item plate separately.
+- Added controlled parallel helper text-plate rendering so multiple unique plates can be prepared at the same time instead of fully serial step-by-step processing.
+- Switched helper plate image loading to a more direct drawable-loading path for deterministic export, reducing overhead after the helper returns a plate URL.
+- Kept the deterministic MP4 visual output model intact while reducing pre-render wait time, especially for repeated captions, repeated headers, and duplicated steps.
+
+
+V0.182
+- Hardened version synchronization so the Open / Settings version label now updates generically for the current build instead of only recognizing an old V0.176 text marker.
+- Updated project save metadata and note-library export metadata to stamp V0.182 consistently, keeping delivered build identity aligned across UI and exported/saved payloads.
+- No helper changes in this release; this is an app-only packaging and metadata integrity pass built directly on the stable V0.181 baseline.
+
+
+V0.183
+- Added a new Cables tab with an initial cable-routing workflow: create a cable, place a start connector on a model face, add anchored route points, and place an end connector.
+- Added solid 3D cable loft rendering with editable thickness and color, plus connector blocks at the start and end sized from per-connector W/H/D values.
+- Cable anchors now store face-local position and normal relative to the object they were placed on, so cable routing follows model transforms and step changes.
+- Added clickable 3D cable handles for start, route, and end points; the active point can be edited from the tab with local XYZ offset values relative to its anchored object.
+- Added right-click cable-point actions for change anchor, remove route point, and create offshoot, plus a tab action to start a new offshoot cable from the selected junction or cable end.
+- Added optional connector reference-image storage for the start and end blocks, project save/load support for cable data, and a simple animated flow bead that can travel along the routed cable as a first proof of concept.
+
+
+V0.184
+- Fixed the viewport-breaking cable-tab initialization loop: ensureCablesTab no longer re-enters bindCableUi recursively, restoring normal app startup and 3D viewer availability.
+- Fixed the thumbnail-refresh wrapper regression by targeting the real isolateSelected function instead of a non-existent isolateSelection symbol.
+- Removed the stray local mespeak.js script reference that was generating file-path load errors in standalone app runs; no helper changes were required.
+- Kept the V0.183 cable baseline in place while stabilizing startup, version stamping, and packaging for a safe app-only recovery release.
+
+V0.185
+- Reworked Cables tab into a lighter cable-list workflow: each cable now appears as its own row with Place Cable, Edit, and Hide/Show actions.
+- New Cable now creates a cable entry first instead of forcing immediate placement, matching the requested create-then-route flow.
+- Added floating/sticky Edit Cable popup with focused controls for routing, color, thickness, connector images/sizes, point offsets, and offshoot actions.
+- Added Set as Final Routing Position for route points in both the editor and the viewport right-click menu.
+- Added viewport cable-body context menu for Edit / Place-Continue / Hide / Delete.
+- Added cable entities into the folder tree under a dedicated Cables folder, with tree selection/context integration for cables.
+- Synced cable names/visibility into the tree and kept version/package alignment updated to V0.185.
+
+
+V0.186
+- Overhauled the cable runtime integration so cable tree syncing and cable-scene rebuilding now happen only on explicit cable actions instead of piggybacking on generic render paths.
+- Removed the heavy global cable hooks from scene-note rendering and generic tree rendering that were causing the app to lag and interaction to jam immediately after creating the first cable.
+- Added a lightweight step-activation cable refresh so routed cables still rebuild cleanly when changing steps, without forcing continuous cable/tree work during normal viewport redraws.
+- Kept the cable list / Place Cable workflow from V0.185, but converted the implementation into a safer baseline focused on responsiveness and controllable order-of-operations.
+
+
+V0.187
+- Replaced the unstable in-app cable experiment with a standalone cable proof-of-concept focused only on cable placement interaction.
+- New minimal interface includes a viewport with five draggable boxes, a cable list, a selected-cable editor, and a simple assembly/cables tree panel.
+- Cable workflow is intentionally reduced to: create cable, click Place Cable, left-click boxes or empty space to build the route, and right-click a box to finish the cable.
+- Finished cables remain editable at the prototype level through name/color/thickness controls, cable visibility toggling, and draggable free route points.
+- Box-anchored cable nodes update live when boxes are dragged, validating the core anchor-and-route concept before reintegrating it into the main application.
+
+
+V0.188
+- Advanced the standalone cable proof-of-concept into a lightweight 3D sandbox with orthographic 3D projection, floor-grid space, and boxes that now exist as rotatable/liftable 3D objects instead of flat 2D rectangles.
+- Added start/end connector blocks as small 3D rectangular prisms that snap onto clicked box faces; the cable now exits from the back of the connector block rather than directly from the object face.
+- Added box-face anchoring data (face + local U/V coordinates) for connector and route nodes so attachment points stay object-local and automatically follow box movement and rotation.
+- Added draggable anchored route handles: selecting a cable point on a box now lets the point slide across that box face, similar to adjusting a note tail attachment on an object.
+- Added free 3D route points that can be dragged across the floor plane after placement, with inspector controls to lift them vertically.
+- Added inspector controls for selected boxes (lift and yaw rotation), selected cables (name/color/thickness), and selected route points/connectors (face, local placement, connector length, deletion for non-terminal route points).
+- Kept the cable itself as a thick line for now, intentionally preserving the simple routing readout while preparing the architecture for a later true 3D tube/pipe cable body.
+
+V0.189
+- Replaced the fake isometric cable prototype with a true real-time 3D sandbox using a perspective camera, OrbitControls, TransformControls, lit 3D meshes, floor grid, and a fully rotatable/pannable/zoomable viewport.
+- Added five real 3D boxes that can be selected, moved, and rotated; all box-anchored cable points now live in object-local space so their cable routing follows object transforms automatically.
+- Added real 3D start/end socket blocks that snap to clicked box faces, begin perpendicular to the surface, and drive the cable from the back face center of the connector block.
+- Added route placement in 3D: while placing a cable, clicking box faces creates anchored route points, clicking the floor creates free route points, and pressing Escape converts the last route point into the final socket.
+- Added direct selection/editing of boxes, sockets, and route points through TransformControls; moving or rotating a socket updates the attached cable pivot, and moving a route point updates the cable path live.
+- Upgraded the cable body from a flat 2D readout into real 3D cylinder segments between pivot points so the route reads as a spatial cable path rather than a screen-space line.
+- Added viewport right-click context menus for boxes, points/sockets, and cable segments, plus focused cable controls in the inspector for naming, color, radius, framing, continued placement, and deletion.
+- Kept this build intentionally sandbox-scoped so the cable behavior can be judged cleanly before reintegrating the final architecture back into the main step/export application.
+
+
+V0.190 - Local file startup fix for 3D cable sandbox
+- Fixed standalone file:// startup for the v0.189 3D cable sandbox by adding an import map for the three.js ES module and addons so OrbitControls and TransformControls resolve correctly when the HTML is opened directly from disk.
+- Updated the module imports to use the mapped specifiers (three and three/addons/...) instead of direct addon URLs that still contained internal bare imports, which caused the browser error 'Failed to resolve module specifier "three"'.
+- Kept the sandbox otherwise unchanged so the user can test the real 3D environment, socket placement, cable cylinders, and transform controls without further behavior changes.
+
+V0.191 - Points-first cable branching/socket architecture pass
+- Reworked the 3D cable sandbox from a start/end socket-first workflow into a true points-first routing model: cable placement now creates a sequence of connection points, and sockets are optional add-on entities attached to individual points.
+- Added point context actions in the viewport and inspector: change anchor object while preserving world position, add/select socket, create branch, and remove point with protection against deleting points that still own branch offshoots.
+- Added socket entities as real cable children with their own name, color, and depth properties plus their own selectable 3D visuals; moving or rotating a socket now updates the linked point and therefore the cable route.
+- Added socket context actions: change anchor object through the linked point relationship and remove socket without deleting the point.
+
+V0.192
+- Added a new Cables tab to the stable V0.181 viewer shell and integrated the point-first cable workflow from the V0.191 sandbox instead of the earlier socket-first prototype.
+- Cable entries now stay collapsed to one line each in the Cables tab, with offshoot cables nested under their parent cable as single-line branch rows.
+- New cables are created as empty cable records first; placement only starts when Place is pressed on a cable row or from the cable edit panel.
+- Cable routing in the integrated viewer now creates connection points on model surfaces or free floor points, with sockets remaining optional attachments that can be added later to any point.
+- Added cable point right-click actions: Change Anchor Object, Add Socket, Create Branch, and Remove Point, with branch-protected point removal.
+- Added socket right-click actions: Change Anchor Object and Remove Socket.
+- Added cable segment right-click actions: Select Cable, Place / Continue, Insert Point Here, Hide / Show In Step, and Delete Cable.
+- Added branch cable creation from a point, with the new offshoot cable starting from a locked branch-start junction tied to the source point.
+- Added insert-point-on-segment support, followed immediately by re-anchor mode so the user can assign that new point to a different object.
+- Added a dedicated cable edit mode in the right sidebar: when editing a cable, point, or socket, the normal Steps panel is replaced with a focused cable editor; Done returns to the Steps panel.
+- Added cable edit controls for cable name, color, radius, placement, and step-sensitive visibility, plus point actions and socket name/color/depth controls.
+- Added TransformControls-based move / rotate editing for cable points and sockets inside the integrated viewer environment, including translate/rotate switching for sockets.
+- Added step-sensitive cable visibility state so each cable or offshoot can be hidden or shown independently per step.
+- Added project save/load support for cable data and cable step visibility states within the integrated app build.
+- Kept the cable system scene-managed and separate from the imported model hierarchy to reduce risk to the working export, sync, and layout pipeline while establishing the first stable integrated cable tab architecture.
+[v0.193] - 2026-04-02
+- Recovery build for missing Cables tab in v0.192.
+- Fixed cable integration bootstrap to use the app's global const app / els instead of requiring window.app / window.els.
+- Exported app and els to window during cable bootstrap for compatibility with integration hooks.
+- Cables tab should now be inserted into the visible tab bar and cable panel initialization should run.
+- No helper changes.
+
+[v0.194] - 2026-04-02
+- Added live anchor-follow updates for mesh-anchored cable points so they now move with their linked objects, matching the note-tail style anchoring behavior more closely.
+- Added a lightweight anchor sync watcher so cable points and sockets refresh when their anchor objects move, instead of staying visually behind until another cable action happens.
+- Improved point selection feedback: selected cable points now highlight more clearly and immediately show a translate gizmo for direct offset editing.
+- Added a point-side Move action in the cable editor so moving the selected point is explicit as well as visible.
+- Added a global cable scale control in the Cables tab (percent-based) to scale cable thickness, point markers, and sockets together.
+- Persisted the global cable scale in project save/load data.
+- Tuned the default global cable scale down so cables and sockets start much less oversized in the integrated viewer.
+- Kept cable branch dependencies refreshing with parent cable updates so offshoot starts stay aligned when their source cable changes.
+- No helper changes.
+
+[V0.195] - 2026-04-02
+- Cable anchors now refresh continuously against linked object world transforms using a requestAnimationFrame ticker instead of waiting for later cable edits.
+- Upgraded anchor signature tracking to include full world-matrix updates through parent chains so folder/object motion propagates to linked cable points immediately.
+- Point selection now scales/highlights from the active cable radius and always opens in translate mode with the cable gizmo attached.
+- Socket selection now defaults to translate mode on click so sockets can be repositioned immediately, while W/E can still switch transform mode afterward.
+- Point marker size and socket scale are now derived from the produced cable radius and the global cable scale, instead of using a separate fixed-size visual rule.
+- Socket point persistence now respects socket scale when converting socket movement back into the underlying cable point position.
+
+V0.196 - cable realtime anchor refresh + point/socket selection recovery
+- forced cable anchor refreshes to run through folder/object transform updates and during active gizmo drags so anchored cables follow in real time.
+- kept the cable anchor ticker but upgraded it to force refreshes during transform interactions.
+- prioritized point/socket ray hits over segment hits so clicking joints selects editable points/sockets more reliably.
+- reduced joint sphere sizing so point markers are derived more conservatively from cable radius and no longer overshoot the cable diameter as aggressively.
+- updated saved/exported version references to V0.196.
+
+[V0.197] - 2026-04-02
+- Recovery build for the v0.196 cable refresh failure.
+- Fixed refreshAllCables so it no longer passes Array.forEach index/array arguments into refreshCable, which was causing seen.has is not a function errors inside the cable refresh loop.
+- Hardened refreshCable so visited tracking only uses a real Set and no longer crashes when called from different refresh paths.
+- Reworked bulk cable refresh to use a shared Set and optional UI refresh, avoiding repeated sidebar/editor rebuilds during runtime cable sync.
+- Stopped forcing cable rebuilds from the wrapped updateMoveGizmo path, removing the tight interaction feedback loop that blocked normal object movement when cables were present.
+- Changed the anchor ticker to poll for actual transform changes instead of forcing a rebuild on every frame.
+- Kept folder-transform-triggered cable sync, but made it use the safer change-detection path.
+- Removed the stray local mespeak.js script include from this build to avoid standalone file:// startup noise.
+- Fixed the stale isolateSelection wrapper to target the app's real isolateSelected function.
+- No helper changes.
+
+[V0.198] - 2026-04-02
+- Point and socket selection now reattaches the cable transform gizmo more aggressively, with larger world-scaled handles so the gizmo is visible and usable immediately on selection.
+- Point edit mode now exposes two anchor actions: Change Anchor (Keep Offset) and Change Anchor + Snap.
+- Socket edit mode now exposes two anchor actions: Change Anchor (Keep Offset) and Change Anchor + Snap.
+- Point and socket context menus now include both re-anchor variants as separate commands.
+- Change Anchor + Snap now rebinds the point to the newly picked object and resets the point offset to the picked surface location; sockets also reset their orientation to the new surface-normal default.
+- Added cable step-activation guards so cable anchor syncing is suppressed during the snapshot-to-transition handoff, reducing the one-frame cable pop toward the target position during animated step changes.
+- Kept cable anchor syncing active afterward, while avoiding extra sync work during cable transform drags.
+- No helper changes.
+
+[V0.199] - 2026-04-02
+- Fixed cable transform controls to use the visible TransformControls helper in the scene, instead of adding the control object itself. This restores the actual XYZ gizmo for cable point and socket editing.
+- Updated cable transform attach/detach so the helper visibility follows selection state and the gizmo scales more clearly with camera distance.
+- Added a cable-transform pointer interception guard so the app's own box-selection/input layer does not steal pointer input while the cable gizmo is being grabbed.
+- Kept the v0.198 split re-anchor behavior (Keep Offset vs Change Anchor + Snap) unchanged.
+- No helper changes.
+
+V0.200 - Cable gizmo recovery
+- Reworked cable point/socket editing to use a dedicated scene-level transform anchor instead of attaching the gizmo directly to live cable visuals.
+- Point selection now positions a visible XYZ transform gizmo at the point world position; socket selection positions the gizmo at the socket body with translate/rotate support.
+- Dragging the cable gizmo now writes back into point/socket offsets and then refreshes the cable, instead of fighting the cable refresh path.
+- Paused background anchored-cable sync while dragging the cable gizmo to avoid the gizmo being overridden by live refresh updates.
+- Kept existing re-anchor options: Change Anchor (Keep Offset) and Change Anchor + Snap.
+
+V0.201 - Cable gizmo visibility hardening
+- Moved the cable TransformControls helper into the overlay render scene so it is not buried inside model geometry.
+- Forced cable gizmo helper materials to render with depth testing and depth writing disabled, with high render order, so the XYZ handles remain visible on top of the scene.
+- Increased the default cable gizmo size and the camera-distance scaling range to make point/socket gizmos much easier to see.
+- Kept the dedicated transform-anchor editing path from v0.200, but made helper parenting/visibility refresh explicit on every cable selection sync.
+- No helper changes.
+
+V0.202 - Replaced fragile cable transform-anchor editing with direct TransformControls attachment to live cable point/socket visuals, mirroring the working v0.191 prototype path. Point/socket drags now persist directly from the moved visual back into anchor-local offsets and refresh the cable without relying on a separate hidden transform anchor.
+
+
+V0.204 - Cable mock XYZ mover on top of V0.202
+- Reverted to the V0.202 branch and stopped depending on the broken in-scene cable TransformControls path for point/socket editing.
+- Added a standalone mock XYZ cable gizmo overlay that appears when a cable point or socket is selected.
+- The mock gizmo is anchored to the selected point/socket on screen and provides X/Y/Z movement buttons with hold-to-repeat nudging.
+- Added socket rotation buttons (Rx/Ry/Rz) to the same mock gizmo so socket orientation can be adjusted without the invisible gizmo path.
+- Moving a selected point or socket now writes directly into the cable node's anchor-local/world offset, refreshes the cable immediately, and preserves selection highlighting.
+- Kept the existing re-anchor options: Change Anchor (Keep Offset) and Change Anchor + Snap.
+- No helper changes.
+
+[v0.205]
+- Reworked the cable point/socket mover into a compact around-the-point mock gizmo instead of a large popup panel.
+- Fixed the mock gizmo event handling so its own pointer capture no longer blocks the move/rotate buttons.
+- Added a close/deselect control for the cable mock gizmo.
+- Strengthened cable point/socket world/local conversion by forcing anchor object matrix updates before applying offsets.
+- Kept the existing re-anchor options and cable integration behavior from v0.204.
+
+
+[v0.206]
+- Built on top of v0.205 and replaced the large HTML mock cable popup with a cable-only 3D gizmo rendered in the overlay scene.
+- Added RGB 3D axis arrows that appear on the selected cable point or socket and point in the actual move directions.
+- Clicking and holding an axis arrow now nudges the selected point/socket repeatedly along that axis using the existing stable cable write-back path.
+- Added 3D rotation rings for sockets in rotate mode; left-click rotates positive and right-click or Shift-click rotates negative.
+- Hid the old HTML mock gizmo so it no longer occupies screen space or lingers after selection changes.
+- Kept the existing Change Anchor (Keep Offset) and Change Anchor + Snap behaviors from v0.205.
+
+
+[v0.207]
+- Replaced the cable-only 3D gizmo path with the app's shared standard viewport gizmo for cable point/socket editing.
+- Cable points now use the same drag-style XYZ object gizmo behavior as the main app instead of hold-to-nudge controls.
+- Socket editing now uses the shared gizmo too, with rotation drag support and gizmo alignment driven by the socket normal/world orientation.
+- Strengthened exclusive selection ownership so selecting a cable point/socket clears object gizmo ownership, and selecting objects/background clears cable gizmo ownership.
+- Enlarged translate hover/click pickup on the shared gizmo with extra invisible endpoint proxies so axis grabs are easier from more viewing angles.
+- Disabled the custom cable 3D gizmo overlay so only the shared app gizmo appears where needed.
+- No helper changes.
+
+
+[v0.208]
+- Fixed the shared gizmo drag event routing for cable points and sockets by handling `cableMoveDrag` and `cableRotateDrag` in the main pointermove/pointerup handlers.
+- This fixes the v0.207 behavior where the gizmo appeared on a cable point/socket but did not move until a normal object drag began.
+- Changed right-click while placing a cable to stop placement immediately instead of opening a placement menu.
+- Removed the cable edit `Done` button from the sidebar flow.
+- Cleared cable selection when switching back to normal viewport/object selection so cable gizmos do not linger on unrelated items.
+- No helper changes.
+
+
+[v0.209]
+- When cable selection is cleared, the right sidebar now returns to the normal Steps panel instead of lingering on an empty Cable Edit state.
+- Reworked cable color editing so the picker no longer applies immediately on first click; cable and socket colors now support previewing the chosen value and applying it explicitly.
+- Added a global cable highlight color in the Cables tab.
+- Added a per-cable step-sensitive highlight toggle (star) in the cable list and in cable edit mode.
+- Highlighted cables use the shared global highlight color for the current step and return to their normal color when highlight is removed.
+- Added a Continue Cable action on open cable ends (point or socket context menu) so an existing cable can be extended from its first or last node.
+- Saved and restored the global highlight color and per-cable highlight flags with the project / step state.
+- No helper changes.
+
+[v0.210]
+- Cable points now inherit the cable display color, including the global highlight color when a cable is highlighted.
+- Selected cable points now use the app selection overlay color so point selection reads more like other selected scene items.
+- Added planar move pads to the shared viewport gizmo: XY, XZ, and YZ.
+- The new plane pads are wired into the same drag path used by object movement and cable point/socket movement, enabling two-axis movement in one gesture.
+- Expanded gizmo hover/pick support to include the new plane pads alongside the existing axis handles.
+- No helper changes.
+
+
+V0.211
+- Right-clicking the shared gizmo now opens the Edit Translation panel for the active folder/model.
+- Transform editor now supports pivot/gizmo edit mode, so edits adjust the gizmo/pivot relative to the model instead of moving the model itself when opened from the gizmo.
+- Transform editor changes apply live and are recorded for undo when the panel closes; removed Apply/Cancel button workflow.
+- Picking a different gizmo now auto-closes the current transform editor session.
+- Escape/close now commit transform editor changes instead of reverting them.
+
+V0.212
+- Transform editor reworked so World shows the absolute node delta from original load state, Local applies one-shot movement/rotation along the current gizmo axes and resets to zero, and Pivot remains the stored pivot offset/orientation relative to its original basis.
+- When the transform editor is open and a different dummy/gizmo is selected, the editor now commits the previous edits and updates to the newly active gizmo automatically.
+
+V0.213
+- Local transform editor fields now wait for Enter before executing movement or rotation; they no longer apply on each keystroke or on field change.
+- Blurring a Local field without pressing Enter now restores the displayed values instead of applying the typed draft value.
+
+=== v0.214 ===
+- Transform Editor Local fields now preview live while typing.
+- Local transform preview updates the viewport continuously as values are edited.
+- Pressing Enter on a Local field commits the previewed transform and resets Local inputs back to zero.
+- Local preview state is preserved while editing instead of executing only on Enter.
+=== v0.215 ===
+- Fixed Local transform preview so each typed value is evaluated as an absolute draft from the committed baseline, instead of accumulating from prior preview frames.
+- Pressing Enter on a Local field now keeps the current previewed result, zeros the Local inputs, and does not re-apply the same delta again.
+- The Edit Translation panel now auto-closes when the gizmo is no longer visible/active, so clicking away hides the editor and preserves the current committed world state.
+=== v0.216 ===
+- When starting a move drag on a node whose move channel is red but still has a stored position offset, the app now automatically clears only the stored position offset first, keeps the existing rotation, and starts dragging from the currently visible reset position.
+- This avoids the confusing jump to the hidden pre-applied position when grabbing the move gizmo on a red move channel.
+V0.217
+- Move gizmo now always starts from the object's currently visible position by baking the visible position into the base pose and clearing the stored move offset at drag start.
+- Keeps the current rotation intact while making repeated moves behave like a fresh move from the visible pose.
+
+V0.218 - Step narration/navigation editor housekeeping
+- Renamed the step text placeholder to "Add navigation for this step here..."
+- Forced the step narration editor to behave as left-to-right English text input
+- Added LTR direction/text alignment attributes during load and focus so spaces and caret flow behave normally
+
+V0.220 - Shared local runtime branch from uploaded v0.218
+- Repointed external JS/CSS dependencies to a shared sibling runtime folder at ../step_browser_runtime/vendor/
+- Removed online CDN and esm.sh loader references from the app HTML and switched OBJ/STL/GLTF/FBX loading to static local runtime scripts
+- Updated startup status messages to report missing local runtime files instead of missing CDN files
+- Keeps the app package light while allowing a separately installed shared runtime folder to be reused across future versions
+
+V0.221
+- Fix shared runtime strategy to match the uploaded v0.218 loader architecture.
+- Replace broken classic-script runtime references for TransformControls / OBJ / STL / GLTF / FBX with local module bundle imports from ../step_browser_runtime/vendor/*.bundle.mjs.
+- Keep three.min.js, occt-import-js, EBML, and Quill as local shared runtime files.
+- This build expects step_browser_runtime_v0.003 or later.
+
+V0.222 - Local runtime file:// stabilization
+- Removed file://-blocked module bootstrap for local Three.js addon modules; OBJ/STL/glTF/FBX extras now stay disabled when opening directly from disk instead of throwing startup CORS errors.
+- Kept core local runtime loading for three.min.js, occt-import-js, EBML, and Quill, so core STEP/IGES/BREP workflow can still run from a double-click local HTML.
+- Fixed stale thumbnail-dirty wrapper regression that referenced resetOrientation/rotateOrientationAxis even though this build uses resetModelOrientation/rotateModelByQuarter.
+- Updated version alignment to V0.222.
+
+V0.223 - Clarity lighting + global geometry outlines
+- Added an adjustable camera-following fill light in the Files tab with enable toggle, color, intensity, distance, decay, and XYZ camera-relative offsets.
+- Added a global geometry outline option in the Colors tab with enable toggle, outline color, opacity, and crease-angle controls.
+- Geometry outlines apply across base model materials and color overrides, and are also applied to transition ghosts so animated viewport/export playback keeps the same edge-treatment style.
+- Project save/load now preserves the new camera fill light and global geometry outline settings.
+- No helper changes.
+
+V0.224 - Outline fade sync for visibility transitions
+- Synced global geometry outlines to the same per-object fade factor used by visibility transitions, so disappearing objects now fade their outlines out instead of dropping them on the last frame.
+- Synced outline opacity for appearing transition ghosts as well, so outlines now build in gradually with the geometry instead of popping in fully on frame one.
+- Added cleanup/reset handling so outlines return to their normal global opacity after transitions complete.
+- No helper changes.
+
+V0.225 - Outline fade follows no-camera transitions
+- Fixed the no-camera-transition path so visibility and color fade items now stay active through the object animation phase instead of being pre-resolved before the animation starts.
+- Global geometry outlines now ride the same fade timing during object-only transitions, so appear/disappear animations no longer leave the outline popping at full strength when the camera is static.
+- Visibility transition ghosts now strip cloned edge-line children before rebuilding their managed outline overlay, preventing duplicate full-opacity outlines from bypassing the fade control.
+- No helper changes.
+
+V0.227 - Header setup import/export + text overlay style carryover
+- Added Save Header Setup and Load Header Setup actions in the Header tab so a full header layout can be exported and loaded into a clean project later.
+- Header setup export/import carries header definitions, placement, linked header image assets, and the current text overlay creation defaults in a dedicated .sbsheader JSON payload.
+- Added shared last-used text overlay defaults for headers and text boxes: new items now inherit the latest font styling, alignment, fill, and outline settings instead of resetting to the original defaults each time.
+- Project save/load now preserves the text overlay creation defaults so new header/text elements keep the same styling after reopening the project.
+- No helper changes.
+
+V0.228 - Header lock passthrough + no-scroll text boxes
+- Removed text box scrolling for all screen text boxes and header text boxes; when text exceeds the box, it now crops instead of showing internal scrollbars.
+- Added a Header tab lock/unlock toggle that makes header overlays ignore mouse interaction in the viewport so 3D objects underneath can be clicked and manipulated without header interference.
+- While the header is unlocked, header text and header image boxes can now be repositioned directly by click-dragging the box, without first using the right-click Move command.
+- Header lock state is now preserved in project save/load and included in header setup export/import.
+- No helper changes.
+
+
+V0.229 - Locked header render cleanup + timeline click behavior
+- When the header is locked, header overlay items now drop the editor chrome and render without the extra top gradient, container blur, default border, or editor shadow so they match the clean render appearance more closely.
+- Timeline step rows now keep normal click behavior focused on activation: click activates the step, while Ctrl/Cmd-click only changes timeline selection and does not trigger step activation.
+- Double-clicking a step row now jumps straight to that step's final end state by skipping the transition animation.
+- No helper changes.
+
+
+=== v0.230 ===
+- Timeline step click behavior refined: a normal click now performs select + activate in one action.
+- Removed the early pointerdown-only selection path that could consume the first click without reliably triggering step activation.
+- Ctrl/Cmd-click keeps the existing selection-toggle behavior without activating the step.
+- Double-click still jumps directly to the final state of the step.
+- No helper changes required.
+
+
+=== v0.231 ===
+- Fixed timeline drag/drop reordering when moving selected steps downward within the same chapter.
+- The drop insertion index is now normalized after removing the dragged steps from their original positions, so dropping between later steps no longer snaps the selection to the chapter end.
+- Upward moves and cross-chapter drops keep their existing behavior, while downward moves now land where the blue drop indicator shows.
+- No helper changes required.
+
+
+=== v0.232 ===
+- Reworked the active color system into a project-global assignment model: an object now keeps one persistent assigned color across all steps instead of step-owned material states.
+- Deactivated per-step color snapshot restore and per-step color-transition ghosting through wrapper overrides, while leaving the original implementation in the source inside a clearly labeled ignore block for future reference.
+- Simplified active color presets to solid colors only and disabled the falloff/shader settings path from active use to reduce instability.
+- Step snapshots saved from this version now strip color assignment state, while project save data keeps the global color presets and object-color assignments.
+- The override toggle is now treated as always-on for the active build so assigned object colors remain persistent project-wide.
+- No helper changes required.
+
+=== v0.233 ===
+- Reintroduced step-sensitive color assignments on top of the stabilized v0.232 base.
+- Replaced color-change ghosting with direct live-material RGB interpolation, so visible color transitions now animate by shifting the mesh material color values instead of spawning extra color-transition objects.
+- Kept the simplified color scope to solid colors only; falloff/shader color rendering remains deactivated and preserved in-source only as reference.
+- Updated the active color application path so meshes keep their original material structure while assigned step colors tint that material by RGB shift.
+- Step snapshots and project saves now keep per-step color assignments again, and color editing/assignment changes sync back into the active step.
+- No helper changes required.
+
+
+=== v0.234 ===
+- Extended the v0.233 RGB-shift color transition path so it now works together with visibility fade transitions on the same object.
+- Objects that both change color and appear/disappear now use one coordinated transition item, so RGB interpolation runs alongside the opacity fade instead of being skipped or delayed.
+- Hide transitions now fade the live object out while shifting its color toward the target step color, and show transitions now fade the transition ghost in while shifting from the source step color toward the target step color.
+- Visible-to-visible color changes keep the direct live-material RGB interpolation approach from v0.233, with no return to color-only ghost duplication.
+- No helper changes required.
+
+=== v0.235 ===
+- Fixed transition stage ordering so visibility fades and RGB color shifts no longer continue during the object-move animation phase.
+- Added a dedicated scene phase for transitions with no camera movement, ensuring visibility/color changes finish before object motion begins.
+- Camera-driven transitions still allow scene fades during the camera stage, but once the move stage starts it now performs object motion only and lands cleanly on the target state.
+- This reduces the stage-leak behavior where visibility changes could appear to happen on the animation step.
+- No helper changes required.
+
+=== v0.236 ===
+- Fixed timeline drag/drop so moving selected steps no longer reassigns the active step during the drop operation.
+- Reordering steps is now a pure structural move: the dragged steps keep their own stored compositions, order, and chapter placement instead of inheriting the scene state of whatever step was active on screen.
+- The previously active step now remains active after a drag move whenever it still exists, preventing the moved steps from being silently rebound to the visible scene.
+- No helper changes required.
+
+
+=== v0.237 ===
+- Reintroduced falloff as a first-class color preset type through a new "New Falloff" action in the Colors panel, while preserving the existing solid color workflow.
+- Restored the falloff shader/settings path and allowed presets to switch between Solid and Falloff directly from the list and context menu.
+- Added a dedicated falloff transition phase after the camera phase and after ordinary scene/material changes, so falloff material swaps no longer try to blend at the same time as the standard color stage.
+- Hidden objects no longer keep falloff materials: when a falloff-assigned object lands in a hidden state, it now reverts to its solid display material instead of retaining the falloff shader off-screen.
+- No helper changes required.
+
+[v0.238] - 2026-04-14
+- Improved the Colors panel FX button responsiveness for falloff presets.
+- FX now toggles on pointer-down with stronger event handling so it no longer misses or behaves inconsistently.
+- FX button visual state is now clearer, and shader settings remain tied to the actual falloff state.
+[V0.239] - 2026-04-14
+- Fixed a phase handoff bug between scene visibility/RGB transitions and falloff transitions.
+- Falloff phase no longer reintroduces source visibility for objects whose visibility already changed in phase 2.
+- Reasserted target visibility when entering the falloff phase to keep scene state stable across the new operation order.
+
+
+[V0.240] - 2026-04-14
+- Fixed the phase handoff bug between the falloff transition phase and the object animation phase.
+- Objects that convert between Solid and Falloff now keep their target material state when step 4 begins instead of popping back to the source state during object movement.
+- Applied the target falloff/solid material state immediately after falloff cleanup and before object animation starts, while preserving the settled visibility state.
+
+[v0.241]
+- Fixed the remaining transition handoff bug for the 2 -> 4 path (visibility change + object movement with no falloff phase).
+- Added a move-phase priming step so object animation now begins from the already-settled target visibility/material scene state, while only transforms are rewound for interpolation.
+- Prevents moved objects from popping back to their source visibility state when phase 4 begins after phase 2.
+
+[v0.242] - 2026-04-14
+- Added a targeted falloff-to-hidden transition rule: when an object starts in Falloff and ends hidden, the app now preserves the live falloff material through the invisibility portion of the transition instead of eagerly applying the next target material at falloff-phase end.
+- Deferred the target material swap for those objects until the final landing after phase 4 completes, eliminating the hidden-state material artifact while preserving the existing phase order.
+- Other falloff transitions still land as before; the new rule only affects source-falloff objects transitioning to invisible.
+
+v0.243 - Removed hidden falloff->solid transition ghost for invisible-target handoff
+- Identified the legacy-style duplicate mesh path in the falloff color transition system: buildColorTransitionGhostForNode() was still being instantiated for falloff transitions even when the target object was becoming invisible.
+- Updated the falloff transition builder so source-falloff -> target-invisible no longer creates a target ghost mesh copy at all.
+- Updated falloff transition playback so that case fades the prepared live falloff mesh directly instead of cross-swapping against a hidden target-material clone.
+- Keeps target material application deferred until final landing for that invisible-target path, reducing the pop-in artifact caused by the legacy color swap approach.
+
+[v0.244]
+- Isolated the active transition pipeline into uniquely named V2 handlers for color/falloff transitions.
+- Routed start/update transition flow through the isolated V2 pipeline to reduce interference from legacy material refresh paths.
+- Stopped broad live material refresh during deferred-material snapshot staging (suppressMaterialState path).
+- Reworked falloff hide/vanish handling in the isolated pipeline to fade the prepared source falloff mesh out directly instead of relying on target-side reconstruction.
+
+[v0.245]
+- Corrective release: exported applyHybridRecipeToMesh for the isolated falloff transition pipeline so timeline animation no longer fails with ReferenceError during transition start.
+- Keeps the v0.244 isolation pass intact while restoring basic transition execution.
+
+
+[v0.246]
+- Fixed the isolated transition pipeline crash caused by helper functions that were scoped inside an earlier closure and not accessible to the v0.244+ isolated material transition path.
+- Exported the display-color and RGB-shift helper functions needed by the isolated pipeline and bound the isolated code to those helpers explicitly.
+- Restores transition startup/animation without changing helper packages.
+
+
+[v0.247]
+- Corrective release for isolated transition pipeline.
+- Exported applyMaterialStateToScene so the isolated phase handoff can reapply target material state without a ReferenceError.
+- No helper changes.
+
+[v0.248]
+- Quarantined target-side ghost creation for visible falloff -> non-falloff transitions in the isolated pipeline.
+- These transitions now hold the source falloff representation through phase 3 and land directly into the target material at phase end, instead of spawning the solid transition ghost artifact.
+- Tagged internally via quarantineTargetGhost to keep this path isolated for later refinement.
+- No helper changes.
+
+[v0.249]
+- Reintroduced a controlled target-side show ghost specifically for visible falloff -> visible solid transitions using the standard visibility-ghost path instead of the prior color-ghost path.
+- Falloff now fades out while the solid fades in, preventing the solid from popping in only at landing.
+- Kept the earlier quarantine against the old target color ghost artifact path.
+
+[2026-04-15] v0.250
+- Fixed isolated pipeline camera->falloff handoff for falloff hide transitions.
+- Replaced full applyVisibility() at falloff phase entry with a hybrid visibility pass that preserves source visibility for falloff vanish items until the falloff phase completes.
+- Prevents falloff hide from snapping invisible when a camera move precedes the hide action.
+
+
+[v0.251]
+- Added hard purge of residual transition ghosts/hatch artifacts when a transition is interrupted, restarted, force-finished, or errors out.
+- Added scene scan cleanup for orphaned visibility/color transition ghosts and transition back-pass remnants.
+- Helps prevent stuck dotted/shutter fade artifacts from persisting across rapid step jumps.
+
+[v0.252]
+- Added a new Metallic toggle button (M) next to the FX button in each color cell.
+- Metallic and Falloff are now mutually exclusive material modes for color presets.
+- The shared settings button now opens Falloff settings for falloff presets and Metallic settings for metallic presets.
+- Added metallic preset parameters: metalness, roughness, and reflection intensity.
+- Added a stable generated global reflection environment for metallic solid presets.
+- Wired metallic solid recipes into the solid display and transition material path without enabling any falloff-metallic mixed mode.
+- No helper changes.
+
+[v0.253]
+- Removed the M toggle button from color cells.
+- Updated the shared gear button so solids open Shader Settings and falloff colors open Falloff Settings.
+- Renamed the solid material popup to Shader Settings.
+- Added a color picker to Shader Settings, wired directly to the preset color for faster editing.
+- Added three shader preset buttons in Shader Settings:
+  - Solid: metalness 0.5, roughness 0.5, reflection intensity 0.01
+  - Metalic: metalness 0.85, roughness 0.28, reflection intensity 1.15
+  - Plastic: metalness 0.5, roughness 0.3, reflection intensity 0.45
+- Unified solid shader settings so non-falloff colors always carry metalness, roughness, and reflection intensity parameters through the solid material path.
+- Kept falloff separate from solid shader settings; no falloff-metallic mixed mode was added.
+- No helper changes.
+
+[v0.254]
+- Added gradual interpolation of standard shader values during ordinary non-falloff material transitions.
+- Standard-to-standard transitions now animate metalness, roughness, and reflection intensity alongside RGB/opacity.
+- Kept falloff transitions separate and unchanged.
+
+[v0.260]
+- Branched from the stable v0.254 baseline.
+- Added an import-time normalization pass for OBJ and FBX models before they enter app state.
+- OBJ/FBX imported mesh materials are now converted into Step Browser-managed MeshStandard material equivalents at load time, instead of relying on legacy loader-native material classes.
+- Preserved important source appearance settings during normalization, including base color, maps, transparency, opacity, side, emissive, normal/bump/displacement data, and depth settings.
+- Kept the existing transition architecture from v0.254 unchanged; no ghost/cleanup/falloff experiments were reintroduced.
+- Goal of this branch: bring OBJ/FBX into the same solid shader/material fold earlier so assigned colors and shader settings behave more consistently without destabilizing transitions.
+- No helper changes.
+
+V0.261 - Fixed hidden falloff material leak. Hidden falloff objects now revert to their original material while hidden instead of landing on a synthetic RGB-shift solid state. This prevents later reveal/transition bugs caused by rogue hidden solid materials inheriting the falloff hue.
+
+V0.262 - Fixed two falloff-hide edge cases on the stable v0.261 line. (1) At the scene-to-falloff handoff, falloff hide items now preserve source visibility instead of being pre-hidden, which prevents FV>FH and FV>SH vanish transitions from snapping out when color/material change is involved. (2) At the end of the falloff phase, hidden falloff targets now receive their real target material state using the target effective visibility map, so hidden falloff objects no longer land in an unstable synthetic solid-like state while hidden.
+
+
+V0.263 - Falloff hide stability and thumbnail refresh improvements. Kept deferred FV->FH/FV->SH prepared outlines alive through the camera and standard scene phases so outlines no longer disappear and then pop back just before the falloff vanish. Added material refresh after user visibility edits so manually showing a hidden falloff-assigned object re-applies the current step material instead of leaving a stale solid state visible. Added a debounced camera-controls change trigger so step thumbnails refresh more promptly after view adjustments.
+
+v0.264
+- Built from uploaded v0.263 HTML source.
+- Fixed export move-end validation for transitions that end hidden, especially FV -> FH cases.
+- Hidden target meshes no longer fail move-end validation only because their live material is no longer the visible falloff material.
+- Validator now skips material identity checks for target-hidden meshes while still validating visibility and transform landing.
+
+Note: The prior cumulative log was not available in the uploaded source for this recovery patch, so this packaged log starts from the available build input.
+
+Step Browser POC cumulative log
+
+V0.265
+- Built from uploaded v0.263 HTML baseline.
+- Adjusted export transition timing estimation to account for the separate falloff phase.
+- Export duration budgeting now uses camera + (object duration * 2) instead of camera + object duration.
+- Updated related playback/thumbnail timing helpers to the same transition estimate.
+- Goal: prevent export capture from ending too early and snapping object motion when FV -> FH is present.
+
+Note: prior cumulative log was not available in the uploaded single HTML source, so this log starts from the patch context available in this turn.
+
+v0.266
+- Fixed export/live landing validation for target-hidden meshes by skipping material-identity checks when a mesh is expected to be hidden.
+- This prevents falloff hidden targets (FV -> FH / FV -> SH families) from triggering exact-landing reapply during move-end validation, which could snap object motion during export.
+- Updated in-app version text to V0.266.
+
+Note: Built from the uploaded v0.263 HTML source, so prior cumulative log content was not available in the provided file.
+
+
