@@ -1,0 +1,29 @@
+# Dependencies
+node_modules/
+sbs-app/node_modules/
+.venv/
+piper_shared/.venv/
+piper_shared/voices/
+step_export_helper_v0.148/ffmpeg/
+
+# Build outputs
+dist/
+build/
+out/
+
+# Logs
+*.log
+npm-debug.log*
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Env
+.env
+.env.local
+
+# Cache
+.cache/
+.parcel-cache/
+.vite/
