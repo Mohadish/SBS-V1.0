@@ -260,6 +260,9 @@ class MaterialsSystem {
 
     // Selected nodeIds (mesh level) — set externally
     this._selectedMeshIds      = new Set();
+
+    // Active colour transition (set by beginColorTransition, cleared when done)
+    this._colorTransition      = null;
   }
 
   // ─── Setup ───────────────────────────────────────────────────────────────
@@ -748,6 +751,7 @@ gl_FragColor.a = 1.0;
    * or after a snapshot is applied.
    */
   applyAll() {
+    this._colorTransition = null;   // cancel any in-progress colour animation
     const overrideMode = state.get('solidOverride');
     const presets      = state.get('colorPresets');
     const presetById   = new Map(presets.map(p => [p.id, p]));
@@ -808,6 +812,133 @@ gl_FragColor.a = 1.0;
     if (!snapshot) return;
     this.meshColorAssignments = { ...snapshot };
     this.applyAll();
+  }
+
+
+  // ═══════════════════════════════════════════════════════════════════════
+  //  COLOUR TRANSITION (smooth interpolation between step material states)
+  // ═══════════════════════════════════════════════════════════════════════
+
+  /** Snapshot current material uniform values for every mesh. */
+  _captureUniformValues() {
+    const values = new Map();
+    for (const [nodeId, mesh] of this.meshById) {
+      const mat = mesh.material;
+      let color     = new THREE.Color(1, 1, 1);
+      let solidness = 1.0;
+      if (mat?.isShaderMaterial && mat.uniforms?.uColor) {
+        color = mat.uniforms.uColor.value.clone();
+      } else if (mat?.color) {
+        color = mat.color.clone();
+      }
+      if (mat?.isShaderMaterial && mat.uniforms?.uSolidness) {
+        solidness = mat.uniforms.uSolidness.value;
+      } else if (typeof mat?.opacity === 'number') {
+        solidness = mat.opacity;
+      }
+      const back = this._outlineBackMeshes.get(nodeId);
+      const backOpacity = back?.material?.uniforms?.uOpacity?.value ?? 0;
+      values.set(nodeId, { color, solidness, backOpacity });
+    }
+    return values;
+  }
+
+  /** Push captured uniform values back onto current materials. */
+  _applyUniformValues(values) {
+    for (const [nodeId, v] of values) {
+      const mesh = this.meshById.get(nodeId);
+      if (!mesh) continue;
+      const mat = mesh.material;
+      if (mat?.isShaderMaterial && mat.uniforms?.uColor) {
+        mat.uniforms.uColor.value.copy(v.color);
+      }
+      if (mat?.isShaderMaterial && mat.uniforms?.uSolidness) {
+        mat.uniforms.uSolidness.value = v.solidness;
+      } else if (mat && !mat.isShaderMaterial && typeof mat.opacity === 'number') {
+        mat.opacity = v.solidness;
+      }
+      const back = this._outlineBackMeshes.get(nodeId);
+      if (back?.material?.uniforms?.uOpacity) {
+        back.material.uniforms.uOpacity.value = v.backOpacity;
+        back.visible = v.backOpacity > 0.001;
+      }
+    }
+  }
+
+  /**
+   * Begin an animated colour transition to a new material snapshot.
+   * Called by steps.js during animated step transitions instead of applySnapshot.
+   *
+   * Flow:
+   *   1. Capture FROM state (current uniforms)
+   *   2. applyAll() → builds new materials at target values (also clears _colorTransition)
+   *   3. Capture TO state (new uniforms)
+   *   4. Reset materials back to FROM values
+   *   5. Store transition — advanceColorTransition() will interpolate each frame
+   *
+   * @param {object}   toSnapshot   meshColorAssignments snapshot
+   * @param {number}   durationMs   animation duration
+   * @param {function} easeFn       easing function (t → t)
+   */
+  beginColorTransition(toSnapshot, durationMs, easeFn) {
+    const fromValues = this._captureUniformValues();
+
+    // applyAll clears _colorTransition and builds target materials
+    this.meshColorAssignments = { ...toSnapshot };
+    this.applyAll();
+
+    const toValues = this._captureUniformValues();
+
+    this._applyUniformValues(fromValues);   // reset to from state
+
+    this._colorTransition = {
+      fromValues, toValues,
+      startMs:    performance.now(),
+      durationMs: Math.max(durationMs, 1),
+      easeFn,
+    };
+  }
+
+  /**
+   * Advance the active colour transition by one frame.
+   * Called each tick from steps._advanceObjectTransitions.
+   */
+  advanceColorTransition(nowMs) {
+    const tr = this._colorTransition;
+    if (!tr) return;
+
+    const raw   = Math.min((nowMs - tr.startMs) / tr.durationMs, 1);
+    const alpha = tr.easeFn(raw);
+
+    for (const [nodeId, from] of tr.fromValues) {
+      const to   = tr.toValues.get(nodeId);
+      if (!to) continue;
+      const mesh = this.meshById.get(nodeId);
+      if (!mesh) continue;
+      const mat  = mesh.material;
+
+      if (mat?.isShaderMaterial && mat.uniforms?.uColor) {
+        mat.uniforms.uColor.value.setRGB(
+          from.color.r + (to.color.r - from.color.r) * alpha,
+          from.color.g + (to.color.g - from.color.g) * alpha,
+          from.color.b + (to.color.b - from.color.b) * alpha,
+        );
+      }
+      if (mat?.isShaderMaterial && mat.uniforms?.uSolidness) {
+        mat.uniforms.uSolidness.value = from.solidness + (to.solidness - from.solidness) * alpha;
+      } else if (mat && !mat.isShaderMaterial && typeof mat.opacity === 'number') {
+        mat.opacity = from.solidness + (to.solidness - from.solidness) * alpha;
+      }
+
+      const back = this._outlineBackMeshes.get(nodeId);
+      if (back?.material?.uniforms?.uOpacity) {
+        const backOp = from.backOpacity + (to.backOpacity - from.backOpacity) * alpha;
+        back.material.uniforms.uOpacity.value = backOp;
+        back.visible = backOp > 0.001 || to.backOpacity > 0.001;
+      }
+    }
+
+    if (raw >= 1) this._colorTransition = null;
   }
 
 

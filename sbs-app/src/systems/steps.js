@@ -270,9 +270,9 @@ class StepManager {
       }
     }
 
-    // ── Materials: apply immediately ──────────────────────────────────
+    // ── Materials: animate colour/solidness/outline-opacity ──────────────
     if (toSnapshot.materials && this._materials) {
-      this._materials.applySnapshot(toSnapshot.materials);
+      this._materials.beginColorTransition(toSnapshot.materials, objDurationMs, easeFn);
     }
 
     // Wait for all animations to complete
@@ -290,6 +290,9 @@ class StepManager {
 
   // ─── Object transition tick ────────────────────────────────────────────
   _advanceObjectTransitions(nowMs) {
+    // Advance material colour transition every frame (independent of object transforms)
+    this._materials?.advanceColorTransition(nowMs);
+
     if (!this._objectTransitions.length) return;
 
     const { nodeById } = state.pick('nodeById');
