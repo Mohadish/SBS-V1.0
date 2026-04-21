@@ -25,10 +25,22 @@ contextBridge.exposeInMainWorld('sbsNative', {
   readFile:  (filePath, encoding) => ipcRenderer.invoke('fs:readFile',  filePath, encoding),
   writeFile: (filePath, data, enc)=> ipcRenderer.invoke('fs:writeFile', filePath, data, enc),
   fileExists:(filePath)           => ipcRenderer.invoke('fs:exists',    filePath),
+  statFile:  (filePath)           => ipcRenderer.invoke('fs:stat',      filePath),
 
   // ── App ──────────────────────────────────────────────────────────────────
   getVersion:         ()          => ipcRenderer.invoke('app:getVersion'),
   showInFolder:       (filePath)  => ipcRenderer.invoke('shell:showItemInFolder', filePath),
+
+  // ── Menu messages (main → renderer) ─────────────────────────────────────
+  onMenu: (channel, cb) => {
+    const allowed = [
+      'menu:newProject', 'menu:openProject', 'menu:saveProject', 'menu:saveProjectAs',
+      'menu:loadModel',  'menu:browseAssets',
+      'menu:fitAll',     'menu:showAll',
+    ];
+    if (!allowed.includes(channel)) return;
+    ipcRenderer.on(channel, (_e, ...args) => cb(...args));
+  },
 
   // ── Environment ──────────────────────────────────────────────────────────
   isElectron: true,

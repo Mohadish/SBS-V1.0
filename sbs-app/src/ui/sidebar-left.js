@@ -8,21 +8,26 @@
 import { state }           from '../core/state.js';
 import { steps }           from '../systems/steps.js';
 import { materials }       from '../systems/materials.js';
+import * as actions        from '../systems/actions.js';
 import { sceneCore }       from '../core/scene.js';
 import { loadModelFile }   from '../io/importers.js';
+import { showAssetVerifyDialog } from './asset-verify.js';
 import {
   saveProject, loadProject, pickProjectFile, getSuggestedFilename,
+  buildIdRemapFromSpec, applyIdRemap, applySpecFieldsToNodes,
 }                          from '../io/project.js';
 import { initTree, renderTree, expandPathToNode, collapseAll } from './tree.js';
 import { setStatus }       from './status.js';
-import { createCameraView, generateId }  from '../core/schema.js';
+import { createCameraView, generateId, APP_VERSION, APP_RELEASED } from '../core/schema.js';
 import { buildNodeMap }    from '../core/nodes.js';
 import { showContextMenu } from './context-menu.js';
 
 const TABS = ['files', 'tree', 'colors', 'select', 'cameras', 'export'];
-let _activeTab  = 'files';
-let _container  = null;
-let _treeInited = false;
+let _activeTab   = 'files';
+let _container   = null;
+let _treeInited  = false;
+const _assetStatus   = new Map();   // assetId → 'ok' | 'missing'
+const _phantomNodes  = new Map();   // assetId → phantom tree node (for relink)
 
 // ── Init ─────────────────────────────────────────────────────────────────────
 
@@ -68,6 +73,15 @@ export function initSidebarLeft() {
   state.on('change:selectionOutlineColor', () => { if (_activeTab === 'select')  _renderSelectTab(); });
 
   _renderActiveTab();
+
+  // ── Electron native menu → renderer ──────────────────────────────────────
+  if (window.sbsNative?.onMenu) {
+    window.sbsNative.onMenu('menu:newProject',    _onNewProject);
+    window.sbsNative.onMenu('menu:openProject',   _onOpenProject);
+    window.sbsNative.onMenu('menu:saveProject',   () => _onSaveProject(false));
+    window.sbsNative.onMenu('menu:saveProjectAs', () => _onSaveProject(true));
+    window.sbsNative.onMenu('menu:browseAssets',  _onBrowseAssets);
+  }
 }
 
 function _switchTab(tab) {
@@ -128,15 +142,23 @@ function _renderFilesTab() {
     </div>
 
     <div class="section">
-      <div class="title">Assets (${assets.length})</div>
+      <div style="display:flex;align-items:center;justify-content:space-between">
+        <div class="title">Assets (${assets.length})</div>
+        ${assets.length > 0 ? `<button class="btn" id="btn-browse-assets" style="font-size:11px;padding:3px 8px">Browse All…</button>` : ''}
+      </div>
       <div id="asset-list" style="margin-top:6px">${
         assets.length === 0
           ? '<span class="small muted">No assets loaded.</span>'
-          : assets.map(a => `
+          : assets.map((a, i) => {
+              const st  = _assetStatus.get(a.id) || 'ok';
+              const ico = st === 'ok' ? '✅' : st === 'warning' ? '⚠️' : '❌';
+              return `
               <div class="card" style="margin-top:6px;padding:8px;display:flex;align-items:center;gap:8px">
-                <span>🧩</span>
-                <span class="small" title="${_esc(a.originalPath || a.name)}" style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${_esc(a.name)}</span>
-              </div>`).join('')
+                <span style="font-size:13px;flex-shrink:0">${ico}</span>
+                <span class="small" title="${_esc(a.originalPath || a.name)}" style="flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${_esc(a.name)}</span>
+                <button class="btn" data-browse-asset="${i}" style="font-size:11px;padding:3px 8px;flex-shrink:0">Browse…</button>
+              </div>`;
+            }).join('')
       }</div>
     </div>
 
@@ -146,6 +168,13 @@ function _renderFilesTab() {
         <button class="btn" id="btn-fit-all">Fit All</button>
         <button class="btn" id="btn-toggle-grid">Grid</button>
         <button class="btn" id="btn-toggle-theme">Theme</button>
+      </div>
+    </div>
+
+    <div class="section" style="margin-top:auto;padding-top:12px">
+      <div class="small muted" style="text-align:center;line-height:1.6">
+        SBS ${_esc(APP_VERSION)}<br>
+        <span style="font-size:10px">${_esc(APP_RELEASED)}</span>
       </div>
     </div>
   `;
@@ -162,6 +191,15 @@ function _renderFilesTab() {
     const files = Array.from(e.target.files || []);
     e.target.value = '';
     for (const f of files) _loadModelFile(f);
+  });
+
+  el.querySelector('#btn-browse-assets')?.addEventListener('click', _onBrowseAssets);
+
+  el.querySelectorAll('[data-browse-asset]').forEach(btn => {
+    const idx   = parseInt(btn.dataset.browseAsset);
+    const asset = (state.get('assets') || [])[idx];
+    if (!asset) return;
+    btn.addEventListener('click', () => _onBrowseSingleAsset(asset));
   });
 }
 
@@ -194,22 +232,135 @@ async function _onOpenProject() {
     if (!picked) return;
 
     const { file, path = null } = picked;
-    const { assets: resolvedAssets } = await loadProject(file, path);
+
+    // Clear existing scene before loading new project
+    if (sceneCore.rootGroup) {
+      while (sceneCore.rootGroup.children.length) {
+        sceneCore.rootGroup.remove(sceneCore.rootGroup.children[0]);
+      }
+    }
+    steps.object3dById.clear();
+    steps.meshById.clear();
+    materials.meshById.clear();
+    materials.originalMaterials.clear();
+    materials.meshColorAssignments = {};
+    materials.meshDefaultColors    = {};
+    state.setState({ treeData: null, nodeById: new Map() });
+
+    // Clear stale asset status before new project loads
+    _assetStatus.clear();
+    _phantomNodes.clear();
+
+    const { project, assets: resolvedAssets } = await loadProject(file, path);
+
+    // Pre-mark all assets missing — updated to 'ok' as each model loads successfully
+    for (const { assetEntry } of resolvedAssets) {
+      _assetStatus.set(assetEntry.id, 'missing');
+    }
+    if (_activeTab === 'files') _renderFilesTab();
+
+    // Saved scene tree — used for ID remapping after model loads
+    const savedSceneRoot = project.tree?.root;
+    const isElectron     = !!window.sbsNative?.isElectron;
+
+    // If project was saved before asset-tracking: assets list is empty but tree has models.
+    // Synthesize asset entries from tree model nodes so the dialog can fire.
+    if (resolvedAssets.length === 0 && savedSceneRoot?.children?.length) {
+      savedSceneRoot.children
+        .filter(n => n.type === 'model')
+        .forEach(n => {
+          resolvedAssets.push({
+            assetEntry: {
+              id:           generateId('asset'),
+              name:         n.name || 'Unknown model',
+              type:         'model',
+              originalPath: '',
+              relativePath: '',
+            },
+            resolvedPath: null,
+          });
+        });
+    }
+
+    // Asset verification — shows dialog on web or when paths are missing.
+    // Resolves with Map<assetId, File> for user-provided files.
+    let userFiles = new Map();
+    if (resolvedAssets.length > 0) {
+      try {
+        userFiles = await showAssetVerifyDialog(resolvedAssets, isElectron);
+      } catch (err) {
+        if (err?.message === 'cancelled') { setStatus('Project load cancelled.'); return; }
+        console.error('Asset verify error:', err);
+        // Continue load — treat as no user files provided
+      }
+    }
+
+    let modelSpecIndex = 0;
 
     for (const { assetEntry, resolvedPath } of resolvedAssets) {
-      if (!resolvedPath) continue;
       setStatus(`Loading ${assetEntry.name}…`, 'info', 0);
-      if (window.sbsNative?.readFile) {
-        // Electron: read as base64, convert back to binary File
+      let modelNode = null;
+
+      const userFile = userFiles.get(assetEntry.id);
+
+      if (userFile) {
+        // User-provided via dialog (web re-link or Electron re-link)
+        modelNode = await _loadModelFile(userFile, assetEntry, true);
+      } else if (isElectron && resolvedPath && window.sbsNative?.readFile) {
+        // Electron auto-load from saved path
         const result = await window.sbsNative.readFile(resolvedPath, 'base64');
         if (result?.ok) {
           const bytes = Uint8Array.from(atob(result.data), c => c.charCodeAt(0));
-          const f = new File([bytes], assetEntry.name);
-          await _loadModelFile(f, assetEntry);
+          modelNode = await _loadModelFile(new File([bytes], assetEntry.name), assetEntry, true);
         }
       }
-      // Web: user must re-pick files; asset-verify UI handles this separately
+
+      // Track asset status
+      _assetStatus.set(assetEntry.id, modelNode ? 'ok' : 'missing');
+
+      const specNode = savedSceneRoot?.children?.[modelSpecIndex]
+                    ?? assetEntry._legacyTreeSpec
+                    ?? null;
+
+      if (modelNode) {
+        // Remap freshly-generated IDs → saved IDs from project spec
+        if (specNode) {
+          const idMap = buildIdRemapFromSpec(modelNode, specNode);
+          applyIdRemap(modelNode, idMap);
+          materials.remapMeshIds(idMap);
+          for (const [newId, savedId] of idMap) {
+            if (newId === savedId) continue;
+            if (steps.object3dById.has(newId)) {
+              steps.object3dById.set(savedId, steps.object3dById.get(newId));
+              steps.object3dById.delete(newId);
+            }
+          }
+          const root    = state.get('treeData');
+          const nodeById = buildNodeMap(root);
+          state.setState({ nodeById });
+          applySpecFieldsToNodes(specNode, nodeById);
+        }
+      } else if (specNode) {
+        // ❌ Missing asset — insert phantom tree nodes from saved spec so steps still work
+        _insertPhantomNodes(specNode, assetEntry.id);
+      }
+
+      modelSpecIndex++;
     }
+
+    // Restore saved color assignments + defaults (base state before any step)
+    const savedDefaults    = project.colors?.defaults    || {};
+    const savedAssignments = project.colors?.assignments || savedDefaults;
+    materials.meshDefaultColors    = { ...savedDefaults };
+    materials.meshColorAssignments = { ...savedAssignments };
+    materials.applyAll();
+
+    // Activate first step → restores per-step color overrides + visibility + camera
+    const allSteps = state.get('steps');
+    if (allSteps?.length) {
+      steps.activateStep(allSteps[0].id, false);
+    }
+
     setStatus(`Opened: ${state.get('projectName')}.`);
   } catch (err) {
     console.error('Open project failed:', err);
@@ -231,16 +382,129 @@ async function _onSaveProject(forceDialog = false) {
   }
 }
 
-async function _loadModelFile(file, assetEntry = null) {
+async function _loadModelFile(file, assetEntry = null, skipColorExtraction = false) {
   setStatus(`Loading ${file.name}…`, 'info', 0);
   try {
-    await loadModelFile(file, { assetEntry });
+    const modelNode = await loadModelFile(file, { assetEntry, skipColorExtraction });
     setStatus(`Loaded ${file.name}.`);
     state.markDirty();
+    if (assetEntry?.id) {
+      _assetStatus.set(assetEntry.id, 'ok');
+      if (_activeTab === 'files') _renderFilesTab();
+    }
+    return modelNode ?? null;
   } catch (err) {
     console.error('Model load error:', err);
     setStatus(`Failed to load ${file.name}: ${err.message}`, 'danger');
+    if (assetEntry?.id) {
+      _assetStatus.set(assetEntry.id, 'missing');
+      if (_activeTab === 'files') _renderFilesTab();
+    }
+    return null;
   }
+}
+
+// ── Phantom nodes for missing assets ─────────────────────────────────────────
+
+function _cloneSpecAsPhantom(specNode) {
+  const node = {
+    id:           specNode.id,
+    name:         specNode.name || 'Unknown',
+    type:         specNode.type || 'folder',
+    missing:      true,
+    localVisible: true,
+    object3d:     null,
+    children:     (specNode.children || []).map(_cloneSpecAsPhantom),
+  };
+  return node;
+}
+
+function _insertPhantomNodes(specNode, assetId) {
+  const phantom  = _cloneSpecAsPhantom(specNode);
+  const root     = state.get('treeData');
+  if (!root) return;
+  root.children  = root.children || [];
+  root.children.push(phantom);
+  const nodeById = buildNodeMap(root);
+  state.setState({ treeData: { ...root }, nodeById });
+  if (assetId) _phantomNodes.set(assetId, phantom);
+}
+
+// ── Browse assets (relink) ────────────────────────────────────────────────────
+
+async function _onBrowseAssets() {
+  const assets = state.get('assets') || [];
+  if (!assets.length) return;
+  const isElectron = !!window.sbsNative?.isElectron;
+  const entries = assets.map(a => ({ assetEntry: a, resolvedPath: a.originalPath || null }));
+  let userFiles;
+  try {
+    userFiles = await showAssetVerifyDialog(entries, isElectron, { forceShow: true });
+  } catch { return; }
+
+  for (const [assetId, file] of userFiles) {
+    const asset = assets.find(a => a.id === assetId);
+    if (asset) await _relinkAsset(file, asset);
+  }
+  _renderFilesTab();
+}
+
+async function _onBrowseSingleAsset(asset) {
+  const isElectron = !!window.sbsNative?.isElectron;
+  const entries = [{ assetEntry: asset, resolvedPath: asset.originalPath || null }];
+  let userFiles;
+  try {
+    userFiles = await showAssetVerifyDialog(entries, isElectron, { forceShow: true });
+  } catch { return; }
+
+  for (const [assetId, file] of userFiles) {
+    if (assetId === asset.id) await _relinkAsset(file, asset);
+  }
+  _renderFilesTab();
+}
+
+/**
+ * Relink a previously-missing asset:
+ * 1. Load file
+ * 2. Remap new IDs → saved IDs (via phantom node)
+ * 3. Remove phantom from tree
+ * 4. Restore colors + reactivate current step
+ */
+async function _relinkAsset(file, assetEntry) {
+  const phantom = _phantomNodes.get(assetEntry.id);
+
+  const modelNode = await _loadModelFile(file, assetEntry, true);
+  if (!modelNode) return;
+
+  if (phantom) {
+    // Remap fresh IDs → saved IDs stored in phantom
+    const idMap = buildIdRemapFromSpec(modelNode, phantom);
+    applyIdRemap(modelNode, idMap);
+    materials.remapMeshIds(idMap);
+    for (const [newId, savedId] of idMap) {
+      if (newId === savedId) continue;
+      if (steps.object3dById.has(newId)) {
+        steps.object3dById.set(savedId, steps.object3dById.get(newId));
+        steps.object3dById.delete(newId);
+      }
+    }
+
+    // Remove phantom from tree
+    const root = state.get('treeData');
+    if (root) {
+      root.children = (root.children || []).filter(c => c !== phantom);
+      const nodeById = buildNodeMap(root);
+      state.setState({ treeData: { ...root }, nodeById });
+    }
+    _phantomNodes.delete(assetEntry.id);
+  }
+
+  // Re-apply saved default + assignment colors to newly loaded meshes
+  materials.applyAll();
+
+  // Reactivate current step to restore step-level color overrides
+  const activeStep = state.get('activeStepId');
+  if (activeStep) steps.activateStep(activeStep, false);
 }
 
 function _onFitAll() {
@@ -420,8 +684,7 @@ function _renderColorsTab() {
   el.querySelector('#btn-assign-preset').addEventListener('click', () => {
     if (!_expandedPresetId) { setStatus('Expand a color preset first.'); return; }
     if (!meshIds.length)    { setStatus('Select mesh objects first.'); return; }
-    materials.assignPreset(meshIds, _expandedPresetId);
-    steps.scheduleSync();
+    actions.assignPreset(meshIds, _expandedPresetId);
     setStatus(`Applied color to ${meshIds.length} mesh(es).`);
   });
 
@@ -435,16 +698,14 @@ function _renderColorsTab() {
       `This changes the base color globally — all steps will use this color unless they have a specific override.`
     );
     if (!ok) return;
-    materials.assignDefaultColor(meshIds, _expandedPresetId);
-    steps.scheduleSync();
+    actions.assignDefaultColor(meshIds, _expandedPresetId);
     setStatus(`Default color set for ${meshIds.length} mesh(es).`);
   });
 
   // ── Revert to default ─────────────────────────────────────────────────────
   el.querySelector('#btn-revert-default').addEventListener('click', () => {
     if (!meshIds.length) { setStatus('Select mesh objects first.'); return; }
-    materials.revertToDefault(meshIds);
-    steps.scheduleSync();
+    actions.revertToDefault(meshIds);
     setStatus(`Reverted ${meshIds.length} mesh(es) to default color.`);
   });
 
@@ -453,43 +714,43 @@ function _renderColorsTab() {
   if (presets.length === 0) return;
   list.innerHTML = '';
 
-  const defaultIds = materials.getDefaultPresetIds();
+  const defaultIds      = materials.getDefaultPresetIds();
+  const missingMeshIds  = _collectPhantomMeshIds();
+  const missingPresets  = _getMissingAssetPresets(missingMeshIds);
+
+  const HATCH = 'repeating-linear-gradient(135deg,rgba(120,120,120,0.18) 0px,rgba(120,120,120,0.18) 4px,transparent 4px,transparent 11px)';
 
   for (const preset of presets) {
-    const expanded   = _expandedPresetId === preset.id;
-    const solidness  = preset.solidness ?? 1.0;
-    const isDefault  = defaultIds.has(preset.id);
-    const modeLabel  = solidness >= 0.999 ? 'Solid'
-                     : solidness <= 0.001 ? 'X-ray'
-                     : `${Math.round(solidness * 100)}% Solid`;
+    const expanded      = _expandedPresetId === preset.id;
+    const solidness     = preset.solidness ?? 1.0;
+    const isDefault     = defaultIds.has(preset.id);
+    const usedByMissing = missingPresets.has(preset.id);
+    const modeLabel     = solidness >= 0.999 ? 'Solid'
+                        : solidness <= 0.001 ? 'X-ray'
+                        : `${Math.round(solidness * 100)}% Solid`;
 
     const row = document.createElement('div');
     row.className = 'colorRow' + (expanded ? ' selected' : '');
+    row.style.cursor = 'pointer';
+    if (usedByMissing) row.style.backgroundImage = HATCH;
+
     row.innerHTML = `
       <span class="colorSwatch" style="background:${preset.color || '#4a90d9'}"></span>
       <span class="small" style="flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">
         ${isDefault ? '<span class="defaultStar" title="Used as a default color">★</span>' : ''}${_esc(preset.name)}
       </span>
       <span class="colorMeta">${modeLabel}</span>
-      <button class="miniBtn cp-edit" title="${expanded ? 'Collapse' : 'Edit'}">${expanded ? '▲' : '▼'}</button>
-      <button class="miniBtn cp-del" title="${isDefault ? 'Default color — replacement required' : 'Delete'}">🗑</button>
     `;
 
-    // Right-click context menu
-    row.addEventListener('contextmenu', e => {
-      e.preventDefault();
-      _showColorContextMenu(preset, e.clientX, e.clientY, meshIds);
-    });
-
-    row.querySelector('.cp-edit').addEventListener('click', e => {
-      e.stopPropagation();
+    // Click anywhere on bar → toggle expand
+    row.addEventListener('click', () => {
       _expandedPresetId = expanded ? null : preset.id;
       _renderColorsTab();
     });
 
-    row.querySelector('.cp-del').addEventListener('click', e => {
-      e.stopPropagation();
-      _deletePresetWithProtection(preset, presets);
+    row.addEventListener('contextmenu', e => {
+      e.preventDefault();
+      _showColorContextMenu(preset, e.clientX, e.clientY, meshIds);
     });
 
     list.appendChild(row);
@@ -498,7 +759,15 @@ function _renderColorsTab() {
     if (expanded) {
       const pane = document.createElement('div');
       pane.className = 'card';
+
+      const missingWarningHtml = usedByMissing ? `
+        <div style="display:flex;align-items:flex-start;gap:6px;padding:7px 10px;margin-bottom:10px;border-radius:8px;background:rgba(245,158,11,0.12);border:1px solid rgba(245,158,11,0.35)">
+          <span style="font-size:14px;flex-shrink:0">⚠️</span>
+          <span class="small" style="color:#f59e0b;line-height:1.5">This color is assigned to a <strong>missing asset</strong>. Changes are saved and will apply when the asset is relinked.</span>
+        </div>` : '';
+
       pane.innerHTML = `
+        ${missingWarningHtml}
         <label class="colorlab">Name
           <input type="text" class="cp-name" value="${_esc(preset.name)}" style="margin-top:6px" />
         </label>
@@ -540,40 +809,41 @@ function _renderColorsTab() {
           <input type="checkbox" class="cp-remove-textures" ${preset.removeTextures ? 'checked' : ''} />
           <span class="small">Strip textures (pure solid color)</span>
         </label>
+        <div style="display:flex;justify-content:flex-end;margin-top:12px">
+          <button class="btn cp-del" title="${isDefault ? 'Default color — replacement required' : usedByMissing ? 'Used by missing asset' : 'Delete'}">🗑 Delete</button>
+        </div>
       `;
 
-      const _upd = (key, val) => materials.updatePreset(preset.id, { [key]: val });
+      // live update (no undo entry) — undo entry created on commit
+      const _live = (key, val) => materials.updatePreset(preset.id, { [key]: val });
+      const _upd  = (key, val) => actions.updatePreset(preset.id, { [key]: val });
+
       pane.querySelector('.cp-name').addEventListener('change', e => {
         _upd('name', e.target.value.trim() || preset.name); _renderColorsTab();
       });
-      pane.querySelector('.cp-color').addEventListener('input', e => {
-        _upd('color', e.target.value);
+
+      const colorPicker = pane.querySelector('.cp-color');
+      colorPicker.addEventListener('focus',  () => actions.beginPresetEdit(preset.id));
+      colorPicker.addEventListener('input',  e => {
+        _live('color', e.target.value);
         row.querySelector('.colorSwatch').style.background = e.target.value;
       });
-      const solSlider = pane.querySelector('.cp-solidness');
-      const solVal    = pane.querySelector('.cp-sol-val');
-      solSlider.addEventListener('input', e => {
-        solVal.textContent = Number(e.target.value).toFixed(2);
-        _upd('solidness', Number(e.target.value));
-      });
-      const metSlider = pane.querySelector('.cp-metalness');
-      const metVal    = pane.querySelector('.cp-met-val');
-      metSlider.addEventListener('input', e => {
-        metVal.textContent = Number(e.target.value).toFixed(2);
-        _upd('metalness', Number(e.target.value));
-      });
-      const rouSlider = pane.querySelector('.cp-roughness');
-      const rouVal    = pane.querySelector('.cp-rou-val');
-      rouSlider.addEventListener('input', e => {
-        rouVal.textContent = Number(e.target.value).toFixed(2);
-        _upd('roughness', Number(e.target.value));
-      });
-      const refSlider = pane.querySelector('.cp-reflection');
-      const refVal    = pane.querySelector('.cp-ref-val');
-      refSlider.addEventListener('input', e => {
-        refVal.textContent = Number(e.target.value).toFixed(2);
-        _upd('reflectionIntensity', Number(e.target.value));
-      });
+      colorPicker.addEventListener('change', () => actions.commitPresetEdit(preset.id));
+
+      const _wireSliderUndo = (slider, valEl, key, fmt = v => Number(v).toFixed(2)) => {
+        slider.addEventListener('pointerdown', () => actions.beginPresetEdit(preset.id));
+        slider.addEventListener('input', e => {
+          valEl.textContent = fmt(e.target.value);
+          _live(key, Number(e.target.value));
+        });
+        slider.addEventListener('pointerup', () => actions.commitPresetEdit(preset.id));
+      };
+
+      _wireSliderUndo(pane.querySelector('.cp-solidness'),   pane.querySelector('.cp-sol-val'), 'solidness');
+      _wireSliderUndo(pane.querySelector('.cp-metalness'),   pane.querySelector('.cp-met-val'), 'metalness');
+      _wireSliderUndo(pane.querySelector('.cp-roughness'),   pane.querySelector('.cp-rou-val'), 'roughness');
+      _wireSliderUndo(pane.querySelector('.cp-reflection'),  pane.querySelector('.cp-ref-val'), 'reflectionIntensity');
+
       pane.querySelector('.cp-outline').addEventListener('change', e => {
         const v = e.target.value;
         _upd('outlineEnabled', v === 'null' ? null : v === 'true');
@@ -581,9 +851,43 @@ function _renderColorsTab() {
       pane.querySelector('.cp-remove-textures').addEventListener('change', e => {
         _upd('removeTextures', e.target.checked);
       });
+      pane.querySelector('.cp-del').addEventListener('click', () =>
+        _deletePresetWithProtection(preset, presets, missingMeshIds));
+
       list.appendChild(pane);
     }
   }
+}
+
+// ── Missing-asset helpers for color tab ───────────────────────────────────────
+
+function _collectPhantomMeshIds() {
+  const ids = new Set();
+  const walk = node => {
+    if (node.type === 'mesh') ids.add(node.id);
+    for (const c of (node.children || [])) walk(c);
+  };
+  for (const phantom of _phantomNodes.values()) walk(phantom);
+  return ids;
+}
+
+function _getMissingAssetPresets(missingMeshIds) {
+  const used = new Set();
+  // Current active assignments
+  for (const [meshId, pid] of Object.entries(materials.meshColorAssignments)) {
+    if (missingMeshIds.has(meshId) && pid) used.add(pid);
+  }
+  // Permanent defaults
+  for (const [meshId, pid] of Object.entries(materials.meshDefaultColors)) {
+    if (missingMeshIds.has(meshId) && pid) used.add(pid);
+  }
+  // Step-level snapshot assignments
+  for (const step of (state.get('steps') || [])) {
+    for (const [meshId, pid] of Object.entries(step.snapshot?.materials || {})) {
+      if (missingMeshIds.has(meshId) && pid) used.add(pid);
+    }
+  }
+  return used;
 }
 
 // ── Color right-click context menu ────────────────────────────────────────────
@@ -639,44 +943,59 @@ function _showColorContextMenu(preset, x, y, selectedMeshIds) {
   ], x, y);
 }
 
-// ── Delete with default-color protection ──────────────────────────────────────
-function _deletePresetWithProtection(preset, allPresets) {
-  const count = materials.defaultColorMeshCount(preset.id);
+// ── Delete with default-color + missing-asset protection ─────────────────────
+function _deletePresetWithProtection(preset, allPresets, missingMeshIds) {
+  const defaultCount  = materials.defaultColorMeshCount(preset.id);
+  const missingIds    = missingMeshIds || _collectPhantomMeshIds();
 
-  if (count > 0) {
-    // Preset is a default — must choose a replacement before deleting
-    _showReplacementPicker(preset, allPresets, count);
+  // Count missing-asset mesh usages: defaults + active assignments + step snapshots
+  let missingCount = 0;
+  const _hasMissing = (map) => Object.entries(map).some(([id, pid]) => pid === preset.id && missingIds.has(id));
+  if (_hasMissing(materials.meshDefaultColors))    missingCount++;
+  if (_hasMissing(materials.meshColorAssignments)) missingCount++;
+  for (const step of (state.get('steps') || [])) {
+    if (_hasMissing(step.snapshot?.materials || {})) { missingCount++; break; }
+  }
+
+  if (defaultCount > 0 || missingCount > 0) {
+    _showReplacementPicker(preset, allPresets, defaultCount, missingCount);
     return;
   }
 
-  // Not a default — normal flow
   if (!confirm(`Delete "${preset.name}"?`)) return;
   if (_expandedPresetId === preset.id) _expandedPresetId = null;
-  materials.deletePreset(preset.id);
+  actions.deletePreset(preset.id);
 }
 
-function _showReplacementPicker(preset, allPresets, count) {
+function _showReplacementPicker(preset, allPresets, defaultCount, missingCount = 0) {
   const others = allPresets.filter(p => p.id !== preset.id);
 
+  const hasMissing = missingCount > 0;
+  const hasDefault = defaultCount > 0;
+
   if (others.length === 0) {
-    alert(
-      `Cannot delete "${preset.name}" — it is the default color for ${count} mesh(es)\n` +
-      `and no other presets exist.\n\nCreate a replacement preset first.`
-    );
+    const reason = hasDefault
+      ? `it is the default color for ${defaultCount} mesh(es)`
+      : `it is assigned to ${missingCount} mesh(es) on a missing asset`;
+    alert(`Cannot delete "${preset.name}" — ${reason}\nand no other presets exist.\n\nCreate a replacement preset first.`);
     return;
   }
 
-  // Build a native <dialog> modal for the replacement picker
+  let bodyText = '';
+  if (hasDefault && hasMissing) {
+    bodyText = `<strong>${_esc(preset.name)}</strong> is the default color for <strong>${defaultCount}</strong> mesh(es) and is also assigned to <strong>${missingCount}</strong> mesh(es) on a ⚠️ missing asset.<br><br>Choose a replacement — changes will be saved and applied when the missing asset is relinked.`;
+  } else if (hasDefault) {
+    bodyText = `<strong>${_esc(preset.name)}</strong> is the default color for <strong>${defaultCount}</strong> mesh(es).<br>Choose a replacement before deleting.`;
+  } else {
+    bodyText = `<strong>${_esc(preset.name)}</strong> is assigned to <strong>${missingCount}</strong> mesh(es) on a ⚠️ <strong>missing asset</strong>.<br><br>Choose a replacement color — it will be saved and applied when the asset is relinked.`;
+  }
+
   const dlg = document.createElement('dialog');
   dlg.className = 'sbs-dialog';
   dlg.innerHTML = `
     <div class="sbs-dialog__body">
-      <div class="sbs-dialog__title">Replace Default Color</div>
-      <p class="small" style="margin:8px 0 12px">
-        <strong>${_esc(preset.name)}</strong> is the default color for
-        <strong>${count}</strong> mesh(es).<br>
-        Choose a replacement before deleting:
-      </p>
+      <div class="sbs-dialog__title">Replace Color Before Deleting</div>
+      <p class="small" style="margin:8px 0 12px;line-height:1.6">${bodyText}</p>
       <select id="dlg-replace-sel" style="width:100%;margin-bottom:14px">
         ${others.map(p => `
           <option value="${_esc(p.id)}">
@@ -700,11 +1019,32 @@ function _showReplacementPicker(preset, allPresets, count) {
   dlg.querySelector('#dlg-confirm').addEventListener('click', () => {
     const newId = dlg.querySelector('#dlg-replace-sel').value;
     if (!newId) return;
+    // Reassign default colors (live meshes)
     materials.reassignDefault(preset.id, newId);
+    // Reassign missing-asset mesh colors: defaults, active assignments, and all step snapshots
+    const missingIds = _collectPhantomMeshIds();
+    for (const meshId of missingIds) {
+      if (materials.meshDefaultColors[meshId] === preset.id)
+        materials.meshDefaultColors[meshId] = newId;
+      if (materials.meshColorAssignments[meshId] === preset.id)
+        materials.meshColorAssignments[meshId] = newId;
+    }
+    // Patch step snapshots
+    const allSteps = state.get('steps') || [];
+    let stepsDirty = false;
+    for (const step of allSteps) {
+      const mats = step.snapshot?.materials;
+      if (!mats) continue;
+      for (const meshId of missingIds) {
+        if (mats[meshId] === preset.id) { mats[meshId] = newId; stepsDirty = true; }
+      }
+    }
+    if (stepsDirty) state.setState({ steps: [...allSteps] });
     if (_expandedPresetId === preset.id) _expandedPresetId = null;
-    materials.deletePreset(preset.id);
+    actions.deletePreset(preset.id);
     dlg.close(); dlg.remove();
-    setStatus(`Replaced default color and deleted "${preset.name}".`);
+    state.markDirty();
+    setStatus(`Replaced color and deleted "${preset.name}".`);
   });
 }
 

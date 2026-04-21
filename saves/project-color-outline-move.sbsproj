@@ -1,0 +1,1728 @@
+{
+  "_sbs": {
+    "app_version": "V.0.0.3",
+    "format_version": 1,
+    "created": "2026-04-21T05:44:34.018Z",
+    "saved": "2026-04-21T05:44:34.018Z",
+    "min_compatible_version": "1.0.0"
+  },
+  "assets": {
+    "schema_version": 1,
+    "items": [
+      {
+        "id": "asset_mo86euraem30_20",
+        "name": "panle.obj",
+        "type": "obj",
+        "originalPath": "E:\\SBS-V1.0 - Claude\\saves\\remote asset test\\XXX\\panle.obj",
+        "relativePath": "",
+        "fileHash": null,
+        "fileSize": 2072194,
+        "lastModified": 1776243251085,
+        "importedAt": "2026-04-21T05:21:26.326Z"
+      },
+      {
+        "id": "asset_mo86f3ihkglq_41",
+        "name": "Hirarchy + colors.stp",
+        "type": "step",
+        "originalPath": "E:\\SBS-V1.0 - Claude\\saves\\Hirarchy + colors.stp",
+        "relativePath": "",
+        "fileHash": null,
+        "fileSize": 78594,
+        "lastModified": 1773759258439,
+        "importedAt": "2026-04-21T05:21:37.673Z"
+      }
+    ]
+  },
+  "tree": {
+    "schema_version": 1,
+    "root": {
+      "id": "scene_root",
+      "name": "Scene",
+      "type": "scene",
+      "assetId": null,
+      "localVisible": true,
+      "children": [
+        {
+          "id": "model_mo86euravja6_19",
+          "name": "panle.obj",
+          "type": "model",
+          "assetId": "asset_mo86euraem30_20",
+          "localVisible": true,
+          "children": [
+            {
+              "id": "node_mo86eur6hgpa_1",
+              "name": "panle.obj",
+              "type": "folder",
+              "assetId": null,
+              "localVisible": true,
+              "children": [
+                {
+                  "id": "mesh_mo86eur73op2_3",
+                  "name": "cover",
+                  "type": "mesh",
+                  "assetId": null,
+                  "localVisible": true,
+                  "children": [],
+                  "localOffset": [
+                    0,
+                    0,
+                    0
+                  ],
+                  "localQuaternion": [
+                    0,
+                    0,
+                    0,
+                    1
+                  ],
+                  "baseLocalPosition": [
+                    0,
+                    0,
+                    0
+                  ],
+                  "baseLocalQuaternion": [
+                    0,
+                    0,
+                    0,
+                    1
+                  ],
+                  "baseLocalScale": [
+                    1,
+                    1,
+                    1
+                  ],
+                  "pivotLocalOffset": [
+                    0,
+                    0,
+                    0
+                  ],
+                  "pivotLocalQuaternion": [
+                    0,
+                    0,
+                    0,
+                    1
+                  ],
+                  "pivotEnabled": true,
+                  "moveEnabled": true,
+                  "rotateEnabled": true,
+                  "meshIndex": null,
+                  "colorPresetId": null
+                },
+                {
+                  "id": "mesh_mo86eur8j7kc_5",
+                  "name": "cover_pos1",
+                  "type": "mesh",
+                  "assetId": null,
+                  "localVisible": true,
+                  "children": [],
+                  "localOffset": [
+                    0,
+                    0,
+                    0
+                  ],
+                  "localQuaternion": [
+                    0,
+                    0,
+                    0,
+                    1
+                  ],
+                  "baseLocalPosition": [
+                    0,
+                    0,
+                    0
+                  ],
+                  "baseLocalQuaternion": [
+                    0,
+                    0,
+                    0,
+                    1
+                  ],
+                  "baseLocalScale": [
+                    1,
+                    1,
+                    1
+                  ],
+                  "pivotLocalOffset": [
+                    0,
+                    0,
+                    0
+                  ],
+                  "pivotLocalQuaternion": [
+                    0,
+                    0,
+                    0,
+                    1
+                  ],
+                  "pivotEnabled": true,
+                  "moveEnabled": true,
+                  "rotateEnabled": true,
+                  "meshIndex": null,
+                  "colorPresetId": null
+                },
+                {
+                  "id": "mesh_mo86eur8pwgy_7",
+                  "name": "cover_pos3",
+                  "type": "mesh",
+                  "assetId": null,
+                  "localVisible": true,
+                  "children": [],
+                  "localOffset": [
+                    0,
+                    0,
+                    0
+                  ],
+                  "localQuaternion": [
+                    0,
+                    0,
+                    0,
+                    1
+                  ],
+                  "baseLocalPosition": [
+                    0,
+                    0,
+                    0
+                  ],
+                  "baseLocalQuaternion": [
+                    0,
+                    0,
+                    0,
+                    1
+                  ],
+                  "baseLocalScale": [
+                    1,
+                    1,
+                    1
+                  ],
+                  "pivotLocalOffset": [
+                    0,
+                    0,
+                    0
+                  ],
+                  "pivotLocalQuaternion": [
+                    0,
+                    0,
+                    0,
+                    1
+                  ],
+                  "pivotEnabled": true,
+                  "moveEnabled": true,
+                  "rotateEnabled": true,
+                  "meshIndex": null,
+                  "colorPresetId": null
+                },
+                {
+                  "id": "mesh_mo86eur8nm18_9",
+                  "name": "cover_pos4",
+                  "type": "mesh",
+                  "assetId": null,
+                  "localVisible": true,
+                  "children": [],
+                  "localOffset": [
+                    0,
+                    0,
+                    0
+                  ],
+                  "localQuaternion": [
+                    0,
+                    0,
+                    0,
+                    1
+                  ],
+                  "baseLocalPosition": [
+                    0,
+                    0,
+                    0
+                  ],
+                  "baseLocalQuaternion": [
+                    0,
+                    0,
+                    0,
+                    1
+                  ],
+                  "baseLocalScale": [
+                    1,
+                    1,
+                    1
+                  ],
+                  "pivotLocalOffset": [
+                    0,
+                    0,
+                    0
+                  ],
+                  "pivotLocalQuaternion": [
+                    0,
+                    0,
+                    0,
+                    1
+                  ],
+                  "pivotEnabled": true,
+                  "moveEnabled": true,
+                  "rotateEnabled": true,
+                  "meshIndex": null,
+                  "colorPresetId": null
+                },
+                {
+                  "id": "mesh_mo86eur81e0x_11",
+                  "name": "cover_pos005",
+                  "type": "mesh",
+                  "assetId": null,
+                  "localVisible": true,
+                  "children": [],
+                  "localOffset": [
+                    0,
+                    0,
+                    0
+                  ],
+                  "localQuaternion": [
+                    0,
+                    0,
+                    0,
+                    1
+                  ],
+                  "baseLocalPosition": [
+                    0,
+                    0,
+                    0
+                  ],
+                  "baseLocalQuaternion": [
+                    0,
+                    0,
+                    0,
+                    1
+                  ],
+                  "baseLocalScale": [
+                    1,
+                    1,
+                    1
+                  ],
+                  "pivotLocalOffset": [
+                    0,
+                    0,
+                    0
+                  ],
+                  "pivotLocalQuaternion": [
+                    0,
+                    0,
+                    0,
+                    1
+                  ],
+                  "pivotEnabled": true,
+                  "moveEnabled": true,
+                  "rotateEnabled": true,
+                  "meshIndex": null,
+                  "colorPresetId": null
+                },
+                {
+                  "id": "mesh_mo86eur9ncnm_13",
+                  "name": "Object001",
+                  "type": "mesh",
+                  "assetId": null,
+                  "localVisible": true,
+                  "children": [],
+                  "localOffset": [
+                    0,
+                    0,
+                    0
+                  ],
+                  "localQuaternion": [
+                    0,
+                    0,
+                    0,
+                    1
+                  ],
+                  "baseLocalPosition": [
+                    0,
+                    0,
+                    0
+                  ],
+                  "baseLocalQuaternion": [
+                    0,
+                    0,
+                    0,
+                    1
+                  ],
+                  "baseLocalScale": [
+                    1,
+                    1,
+                    1
+                  ],
+                  "pivotLocalOffset": [
+                    0,
+                    0,
+                    0
+                  ],
+                  "pivotLocalQuaternion": [
+                    0,
+                    0,
+                    0,
+                    1
+                  ],
+                  "pivotEnabled": true,
+                  "moveEnabled": true,
+                  "rotateEnabled": true,
+                  "meshIndex": null,
+                  "colorPresetId": null
+                },
+                {
+                  "id": "mesh_mo86eur929l8_15",
+                  "name": "Object002",
+                  "type": "mesh",
+                  "assetId": null,
+                  "localVisible": true,
+                  "children": [],
+                  "localOffset": [
+                    0,
+                    0,
+                    0
+                  ],
+                  "localQuaternion": [
+                    0,
+                    0,
+                    0,
+                    1
+                  ],
+                  "baseLocalPosition": [
+                    0,
+                    0,
+                    0
+                  ],
+                  "baseLocalQuaternion": [
+                    0,
+                    0,
+                    0,
+                    1
+                  ],
+                  "baseLocalScale": [
+                    1,
+                    1,
+                    1
+                  ],
+                  "pivotLocalOffset": [
+                    0,
+                    0,
+                    0
+                  ],
+                  "pivotLocalQuaternion": [
+                    0,
+                    0,
+                    0,
+                    1
+                  ],
+                  "pivotEnabled": true,
+                  "moveEnabled": true,
+                  "rotateEnabled": true,
+                  "meshIndex": null,
+                  "colorPresetId": null
+                },
+                {
+                  "id": "mesh_mo86eur9lsei_17",
+                  "name": "Object003",
+                  "type": "mesh",
+                  "assetId": null,
+                  "localVisible": true,
+                  "children": [],
+                  "localOffset": [
+                    0,
+                    0,
+                    0
+                  ],
+                  "localQuaternion": [
+                    0,
+                    0,
+                    0,
+                    1
+                  ],
+                  "baseLocalPosition": [
+                    0,
+                    0,
+                    0
+                  ],
+                  "baseLocalQuaternion": [
+                    0,
+                    0,
+                    0,
+                    1
+                  ],
+                  "baseLocalScale": [
+                    1,
+                    1,
+                    1
+                  ],
+                  "pivotLocalOffset": [
+                    0,
+                    0,
+                    0
+                  ],
+                  "pivotLocalQuaternion": [
+                    0,
+                    0,
+                    0,
+                    1
+                  ],
+                  "pivotEnabled": true,
+                  "moveEnabled": true,
+                  "rotateEnabled": true,
+                  "meshIndex": null,
+                  "colorPresetId": null
+                }
+              ],
+              "localOffset": [
+                0,
+                0,
+                0
+              ],
+              "localQuaternion": [
+                -0.02017096176404411,
+                -0.30245975466831226,
+                0.06341104464331913,
+                0.9508366150526287
+              ],
+              "baseLocalPosition": [
+                0,
+                0,
+                0
+              ],
+              "baseLocalQuaternion": [
+                0,
+                0,
+                0,
+                1
+              ],
+              "baseLocalScale": [
+                1,
+                1,
+                1
+              ],
+              "pivotLocalOffset": [
+                0,
+                0,
+                0
+              ],
+              "pivotLocalQuaternion": [
+                0,
+                0,
+                0,
+                1
+              ],
+              "pivotEnabled": true,
+              "moveEnabled": true,
+              "rotateEnabled": true,
+              "meshIndex": null,
+              "colorPresetId": null,
+              "orientationSteps": [
+                0,
+                0,
+                0
+              ]
+            }
+          ],
+          "localOffset": [
+            0,
+            0,
+            0
+          ],
+          "localQuaternion": [
+            0,
+            0,
+            0,
+            1
+          ],
+          "baseLocalPosition": [
+            0,
+            0,
+            0
+          ],
+          "baseLocalQuaternion": [
+            0,
+            0,
+            0,
+            1
+          ],
+          "baseLocalScale": [
+            1,
+            1,
+            1
+          ],
+          "pivotLocalOffset": [
+            0,
+            0,
+            0
+          ],
+          "pivotLocalQuaternion": [
+            0,
+            0,
+            0,
+            1
+          ],
+          "pivotEnabled": true,
+          "moveEnabled": true,
+          "rotateEnabled": true,
+          "meshIndex": null,
+          "colorPresetId": null,
+          "orientationSteps": [
+            0,
+            0,
+            0
+          ]
+        },
+        {
+          "id": "model_mo86f3iht0u2_40",
+          "name": "Hirarchy + colors.stp",
+          "type": "model",
+          "assetId": "asset_mo86f3ihkglq_41",
+          "localVisible": true,
+          "children": [
+            {
+              "id": "node_mo86f3i8s86y_24",
+              "name": "Node",
+              "type": "folder",
+              "assetId": null,
+              "localVisible": true,
+              "children": [
+                {
+                  "id": "node_mo86f3i8q4ik_26",
+                  "name": "Document",
+                  "type": "folder",
+                  "assetId": null,
+                  "localVisible": true,
+                  "children": [
+                    {
+                      "id": "mesh_mo86f3i8g7tm_28",
+                      "name": "Document",
+                      "type": "mesh",
+                      "assetId": null,
+                      "localVisible": true,
+                      "children": [],
+                      "localOffset": [
+                        0,
+                        0,
+                        0
+                      ],
+                      "localQuaternion": [
+                        0,
+                        0,
+                        0,
+                        1
+                      ],
+                      "baseLocalPosition": [
+                        0,
+                        0,
+                        0
+                      ],
+                      "baseLocalQuaternion": [
+                        0,
+                        0,
+                        0,
+                        1
+                      ],
+                      "baseLocalScale": [
+                        1,
+                        1,
+                        1
+                      ],
+                      "pivotLocalOffset": [
+                        0,
+                        0,
+                        0
+                      ],
+                      "pivotLocalQuaternion": [
+                        0,
+                        0,
+                        0,
+                        1
+                      ],
+                      "pivotEnabled": true,
+                      "moveEnabled": true,
+                      "rotateEnabled": true,
+                      "meshIndex": 0,
+                      "colorPresetId": null
+                    },
+                    {
+                      "id": "mesh_mo86f3iblaj8_30",
+                      "name": "Document",
+                      "type": "mesh",
+                      "assetId": null,
+                      "localVisible": true,
+                      "children": [],
+                      "localOffset": [
+                        0,
+                        0,
+                        0
+                      ],
+                      "localQuaternion": [
+                        0,
+                        0,
+                        0,
+                        1
+                      ],
+                      "baseLocalPosition": [
+                        0,
+                        0,
+                        0
+                      ],
+                      "baseLocalQuaternion": [
+                        0,
+                        0,
+                        0,
+                        1
+                      ],
+                      "baseLocalScale": [
+                        1,
+                        1,
+                        1
+                      ],
+                      "pivotLocalOffset": [
+                        0,
+                        0,
+                        0
+                      ],
+                      "pivotLocalQuaternion": [
+                        0,
+                        0,
+                        0,
+                        1
+                      ],
+                      "pivotEnabled": true,
+                      "moveEnabled": true,
+                      "rotateEnabled": true,
+                      "meshIndex": 1,
+                      "colorPresetId": null
+                    },
+                    {
+                      "id": "mesh_mo86f3iexxyo_32",
+                      "name": "Document",
+                      "type": "mesh",
+                      "assetId": null,
+                      "localVisible": true,
+                      "children": [],
+                      "localOffset": [
+                        0,
+                        0,
+                        0
+                      ],
+                      "localQuaternion": [
+                        0,
+                        0,
+                        0,
+                        1
+                      ],
+                      "baseLocalPosition": [
+                        0,
+                        0,
+                        0
+                      ],
+                      "baseLocalQuaternion": [
+                        0,
+                        0,
+                        0,
+                        1
+                      ],
+                      "baseLocalScale": [
+                        1,
+                        1,
+                        1
+                      ],
+                      "pivotLocalOffset": [
+                        0,
+                        0,
+                        0
+                      ],
+                      "pivotLocalQuaternion": [
+                        0,
+                        0,
+                        0,
+                        1
+                      ],
+                      "pivotEnabled": true,
+                      "moveEnabled": true,
+                      "rotateEnabled": true,
+                      "meshIndex": 2,
+                      "colorPresetId": null
+                    },
+                    {
+                      "id": "mesh_mo86f3ifl414_34",
+                      "name": "Document",
+                      "type": "mesh",
+                      "assetId": null,
+                      "localVisible": true,
+                      "children": [],
+                      "localOffset": [
+                        0,
+                        0,
+                        0
+                      ],
+                      "localQuaternion": [
+                        0,
+                        0,
+                        0,
+                        1
+                      ],
+                      "baseLocalPosition": [
+                        0,
+                        0,
+                        0
+                      ],
+                      "baseLocalQuaternion": [
+                        0,
+                        0,
+                        0,
+                        1
+                      ],
+                      "baseLocalScale": [
+                        1,
+                        1,
+                        1
+                      ],
+                      "pivotLocalOffset": [
+                        0,
+                        0,
+                        0
+                      ],
+                      "pivotLocalQuaternion": [
+                        0,
+                        0,
+                        0,
+                        1
+                      ],
+                      "pivotEnabled": true,
+                      "moveEnabled": true,
+                      "rotateEnabled": true,
+                      "meshIndex": 3,
+                      "colorPresetId": null
+                    },
+                    {
+                      "id": "mesh_mo86f3if6dgh_36",
+                      "name": "Document",
+                      "type": "mesh",
+                      "assetId": null,
+                      "localVisible": true,
+                      "children": [],
+                      "localOffset": [
+                        0,
+                        0,
+                        0
+                      ],
+                      "localQuaternion": [
+                        0,
+                        0,
+                        0,
+                        1
+                      ],
+                      "baseLocalPosition": [
+                        0,
+                        0,
+                        0
+                      ],
+                      "baseLocalQuaternion": [
+                        0,
+                        0,
+                        0,
+                        1
+                      ],
+                      "baseLocalScale": [
+                        1,
+                        1,
+                        1
+                      ],
+                      "pivotLocalOffset": [
+                        0,
+                        0,
+                        0
+                      ],
+                      "pivotLocalQuaternion": [
+                        0,
+                        0,
+                        0,
+                        1
+                      ],
+                      "pivotEnabled": true,
+                      "moveEnabled": true,
+                      "rotateEnabled": true,
+                      "meshIndex": 4,
+                      "colorPresetId": null
+                    },
+                    {
+                      "id": "mesh_mo86f3ifsqy8_38",
+                      "name": "Document",
+                      "type": "mesh",
+                      "assetId": null,
+                      "localVisible": true,
+                      "children": [],
+                      "localOffset": [
+                        0,
+                        0,
+                        0
+                      ],
+                      "localQuaternion": [
+                        0,
+                        0,
+                        0,
+                        1
+                      ],
+                      "baseLocalPosition": [
+                        0,
+                        0,
+                        0
+                      ],
+                      "baseLocalQuaternion": [
+                        0,
+                        0,
+                        0,
+                        1
+                      ],
+                      "baseLocalScale": [
+                        1,
+                        1,
+                        1
+                      ],
+                      "pivotLocalOffset": [
+                        0,
+                        0,
+                        0
+                      ],
+                      "pivotLocalQuaternion": [
+                        0,
+                        0,
+                        0,
+                        1
+                      ],
+                      "pivotEnabled": true,
+                      "moveEnabled": true,
+                      "rotateEnabled": true,
+                      "meshIndex": 5,
+                      "colorPresetId": null
+                    }
+                  ],
+                  "localOffset": [
+                    0,
+                    0,
+                    0
+                  ],
+                  "localQuaternion": [
+                    -0.5112711635583786,
+                    -0.0847076701725549,
+                    -0.8437328588827457,
+                    0.13979009539000858
+                  ],
+                  "baseLocalPosition": [
+                    0,
+                    0,
+                    0
+                  ],
+                  "baseLocalQuaternion": [
+                    0,
+                    0,
+                    0,
+                    1
+                  ],
+                  "baseLocalScale": [
+                    1,
+                    1,
+                    1
+                  ],
+                  "pivotLocalOffset": [
+                    0,
+                    0,
+                    0
+                  ],
+                  "pivotLocalQuaternion": [
+                    0,
+                    0,
+                    0,
+                    1
+                  ],
+                  "pivotEnabled": true,
+                  "moveEnabled": true,
+                  "rotateEnabled": true,
+                  "meshIndex": null,
+                  "colorPresetId": null,
+                  "orientationSteps": [
+                    0,
+                    0,
+                    0
+                  ]
+                }
+              ],
+              "localOffset": [
+                0,
+                0,
+                0
+              ],
+              "localQuaternion": [
+                0,
+                0,
+                0,
+                1
+              ],
+              "baseLocalPosition": [
+                0,
+                0,
+                0
+              ],
+              "baseLocalQuaternion": [
+                0,
+                0,
+                0,
+                1
+              ],
+              "baseLocalScale": [
+                1,
+                1,
+                1
+              ],
+              "pivotLocalOffset": [
+                0,
+                0,
+                0
+              ],
+              "pivotLocalQuaternion": [
+                0,
+                0,
+                0,
+                1
+              ],
+              "pivotEnabled": true,
+              "moveEnabled": true,
+              "rotateEnabled": true,
+              "meshIndex": null,
+              "colorPresetId": null,
+              "orientationSteps": [
+                0,
+                0,
+                0
+              ]
+            }
+          ],
+          "localOffset": [
+            0,
+            0,
+            0
+          ],
+          "localQuaternion": [
+            0,
+            0,
+            0,
+            1
+          ],
+          "baseLocalPosition": [
+            0,
+            0,
+            0
+          ],
+          "baseLocalQuaternion": [
+            0,
+            0,
+            0,
+            1
+          ],
+          "baseLocalScale": [
+            1,
+            1,
+            1
+          ],
+          "pivotLocalOffset": [
+            0,
+            0,
+            0
+          ],
+          "pivotLocalQuaternion": [
+            0,
+            0,
+            0,
+            1
+          ],
+          "pivotEnabled": true,
+          "moveEnabled": true,
+          "rotateEnabled": true,
+          "meshIndex": null,
+          "colorPresetId": null,
+          "orientationSteps": [
+            0,
+            0,
+            0
+          ]
+        }
+      ],
+      "localOffset": [
+        0,
+        0,
+        0
+      ],
+      "localQuaternion": [
+        0,
+        0,
+        0,
+        1
+      ],
+      "baseLocalPosition": [
+        0,
+        0,
+        0
+      ],
+      "baseLocalQuaternion": [
+        0,
+        0,
+        0,
+        1
+      ],
+      "baseLocalScale": [
+        1,
+        1,
+        1
+      ],
+      "pivotLocalOffset": [
+        0,
+        0,
+        0
+      ],
+      "pivotLocalQuaternion": [
+        0,
+        0,
+        0,
+        1
+      ],
+      "pivotEnabled": true,
+      "moveEnabled": true,
+      "rotateEnabled": true,
+      "meshIndex": null,
+      "colorPresetId": null
+    }
+  },
+  "steps": {
+    "schema_version": 1,
+    "items": [
+      {
+        "id": "step_mo86fcpbgjgx_45",
+        "name": "New Step",
+        "chapterId": null,
+        "hidden": false,
+        "voiceText": "",
+        "voiceEnabled": true,
+        "transition": {
+          "durationMs": 1500,
+          "cameraEasing": "smooth",
+          "objectEasing": "smooth",
+          "visibilityFade": true
+        },
+        "snapshot": {
+          "visibility": {
+            "scene_root": true,
+            "model_mo86euravja6_19": true,
+            "node_mo86eur6hgpa_1": true,
+            "mesh_mo86eur73op2_3": true,
+            "mesh_mo86eur8j7kc_5": true,
+            "mesh_mo86eur8pwgy_7": true,
+            "mesh_mo86eur8nm18_9": true,
+            "mesh_mo86eur81e0x_11": true,
+            "mesh_mo86eur9ncnm_13": true,
+            "mesh_mo86eur929l8_15": true,
+            "mesh_mo86eur9lsei_17": true,
+            "model_mo86f3iht0u2_40": true,
+            "node_mo86f3i8s86y_24": true,
+            "node_mo86f3i8q4ik_26": true,
+            "mesh_mo86f3i8g7tm_28": true,
+            "mesh_mo86f3iblaj8_30": true,
+            "mesh_mo86f3iexxyo_32": true,
+            "mesh_mo86f3ifl414_34": true,
+            "mesh_mo86f3if6dgh_36": true,
+            "mesh_mo86f3ifsqy8_38": true
+          },
+          "transforms": {
+            "model_mo86euravja6_19": {
+              "localOffset": [
+                0,
+                0,
+                0
+              ],
+              "localQuaternion": [
+                0,
+                0,
+                0,
+                1
+              ],
+              "orientationSteps": [
+                0,
+                0,
+                0
+              ],
+              "pivotLocalOffset": [
+                0,
+                0,
+                0
+              ],
+              "pivotLocalQuaternion": [
+                0,
+                0,
+                0,
+                1
+              ],
+              "moveEnabled": true,
+              "rotateEnabled": true,
+              "pivotEnabled": true
+            },
+            "node_mo86eur6hgpa_1": {
+              "localOffset": [
+                0,
+                0,
+                0
+              ],
+              "localQuaternion": [
+                -0.02017096176404411,
+                -0.30245975466831226,
+                0.06341104464331913,
+                0.9508366150526287
+              ],
+              "orientationSteps": [
+                0,
+                0,
+                0
+              ],
+              "pivotLocalOffset": [
+                0,
+                0,
+                0
+              ],
+              "pivotLocalQuaternion": [
+                0,
+                0,
+                0,
+                1
+              ],
+              "moveEnabled": true,
+              "rotateEnabled": true,
+              "pivotEnabled": true
+            },
+            "model_mo86f3iht0u2_40": {
+              "localOffset": [
+                0,
+                0,
+                0
+              ],
+              "localQuaternion": [
+                0,
+                0,
+                0,
+                1
+              ],
+              "orientationSteps": [
+                0,
+                0,
+                0
+              ],
+              "pivotLocalOffset": [
+                0,
+                0,
+                0
+              ],
+              "pivotLocalQuaternion": [
+                0,
+                0,
+                0,
+                1
+              ],
+              "moveEnabled": true,
+              "rotateEnabled": true,
+              "pivotEnabled": true
+            },
+            "node_mo86f3i8s86y_24": {
+              "localOffset": [
+                0,
+                0,
+                0
+              ],
+              "localQuaternion": [
+                0,
+                0,
+                0,
+                1
+              ],
+              "orientationSteps": [
+                0,
+                0,
+                0
+              ],
+              "pivotLocalOffset": [
+                0,
+                0,
+                0
+              ],
+              "pivotLocalQuaternion": [
+                0,
+                0,
+                0,
+                1
+              ],
+              "moveEnabled": true,
+              "rotateEnabled": true,
+              "pivotEnabled": true
+            },
+            "node_mo86f3i8q4ik_26": {
+              "localOffset": [
+                0,
+                0,
+                0
+              ],
+              "localQuaternion": [
+                -0.5112711635583786,
+                -0.0847076701725549,
+                -0.8437328588827457,
+                0.13979009539000858
+              ],
+              "orientationSteps": [
+                0,
+                0,
+                0
+              ],
+              "pivotLocalOffset": [
+                0,
+                0,
+                0
+              ],
+              "pivotLocalQuaternion": [
+                0,
+                0,
+                0,
+                1
+              ],
+              "moveEnabled": true,
+              "rotateEnabled": true,
+              "pivotEnabled": true
+            }
+          },
+          "materials": {
+            "mesh_mo86eur73op2_3": "color_mo86eurh6z4f_23",
+            "mesh_mo86eur8j7kc_5": "color_mo86eurh6z4f_23",
+            "mesh_mo86eur8pwgy_7": "color_mo86eurh6z4f_23",
+            "mesh_mo86eur8nm18_9": "color_mo86eurh6z4f_23",
+            "mesh_mo86eur81e0x_11": "color_mo86eurh6z4f_23",
+            "mesh_mo86eur9ncnm_13": "color_mo86eurh6z4f_23",
+            "mesh_mo86eur929l8_15": "color_mo86eurh6z4f_23",
+            "mesh_mo86eur9lsei_17": "color_mo86eurh6z4f_23",
+            "mesh_mo86f3i8g7tm_28": "color_mo86f3ii7p2x_43",
+            "mesh_mo86f3iblaj8_30": "color_mo86f3ii7p2x_43",
+            "mesh_mo86f3iexxyo_32": "color_mo86f3ii7p2x_43",
+            "mesh_mo86f3ifl414_34": "color_mo86f3ii7p2x_43",
+            "mesh_mo86f3if6dgh_36": "color_mo86f3ii7p2x_43",
+            "mesh_mo86f3ifsqy8_38": "color_mo86f3ii7p2x_43"
+          },
+          "camera": {
+            "position": [
+              47.22916777129952,
+              25.289095655321944,
+              49.702961811105226
+            ],
+            "quaternion": [
+              -0.2260189296908542,
+              0.3338446612545174,
+              0.08279250852160051,
+              0.91137730172852
+            ],
+            "pivot": [
+              5.774402379989624,
+              -8.628439664840698,
+              0.7109663486480713
+            ],
+            "up": [
+              0,
+              1,
+              0
+            ],
+            "fov": 45
+          },
+          "notes": [],
+          "screenItems": [],
+          "headerItems": [],
+          "cables": []
+        }
+      },
+      {
+        "id": "step_mo86fcupxgys_46",
+        "name": "New Step",
+        "chapterId": null,
+        "hidden": false,
+        "voiceText": "",
+        "voiceEnabled": true,
+        "transition": {
+          "durationMs": 1500,
+          "cameraEasing": "smooth",
+          "objectEasing": "smooth",
+          "visibilityFade": true
+        },
+        "snapshot": {
+          "visibility": {
+            "scene_root": true,
+            "model_mo86euravja6_19": true,
+            "node_mo86eur6hgpa_1": true,
+            "mesh_mo86eur73op2_3": true,
+            "mesh_mo86eur8j7kc_5": true,
+            "mesh_mo86eur8pwgy_7": true,
+            "mesh_mo86eur8nm18_9": true,
+            "mesh_mo86eur81e0x_11": true,
+            "mesh_mo86eur9ncnm_13": true,
+            "mesh_mo86eur929l8_15": true,
+            "mesh_mo86eur9lsei_17": true,
+            "model_mo86f3iht0u2_40": true,
+            "node_mo86f3i8s86y_24": true,
+            "node_mo86f3i8q4ik_26": true,
+            "mesh_mo86f3i8g7tm_28": true,
+            "mesh_mo86f3iblaj8_30": true,
+            "mesh_mo86f3iexxyo_32": true,
+            "mesh_mo86f3ifl414_34": true,
+            "mesh_mo86f3if6dgh_36": true,
+            "mesh_mo86f3ifsqy8_38": true
+          },
+          "transforms": {
+            "model_mo86euravja6_19": {
+              "localOffset": [
+                0,
+                0,
+                0
+              ],
+              "localQuaternion": [
+                0,
+                0,
+                0,
+                1
+              ],
+              "orientationSteps": [
+                0,
+                0,
+                0
+              ],
+              "pivotLocalOffset": [
+                0,
+                0,
+                0
+              ],
+              "pivotLocalQuaternion": [
+                0,
+                0,
+                0,
+                1
+              ],
+              "moveEnabled": true,
+              "rotateEnabled": true,
+              "pivotEnabled": true
+            },
+            "node_mo86eur6hgpa_1": {
+              "localOffset": [
+                0,
+                0,
+                0
+              ],
+              "localQuaternion": [
+                0,
+                0,
+                0.4964082333182277,
+                0.8680892038804976
+              ],
+              "orientationSteps": [
+                0,
+                0,
+                0
+              ],
+              "pivotLocalOffset": [
+                0,
+                0,
+                0
+              ],
+              "pivotLocalQuaternion": [
+                0,
+                0,
+                0,
+                1
+              ],
+              "moveEnabled": true,
+              "rotateEnabled": true,
+              "pivotEnabled": true
+            },
+            "model_mo86f3iht0u2_40": {
+              "localOffset": [
+                0,
+                0,
+                0
+              ],
+              "localQuaternion": [
+                0,
+                0,
+                0,
+                1
+              ],
+              "orientationSteps": [
+                0,
+                0,
+                0
+              ],
+              "pivotLocalOffset": [
+                0,
+                0,
+                0
+              ],
+              "pivotLocalQuaternion": [
+                0,
+                0,
+                0,
+                1
+              ],
+              "moveEnabled": true,
+              "rotateEnabled": true,
+              "pivotEnabled": true
+            },
+            "node_mo86f3i8s86y_24": {
+              "localOffset": [
+                0,
+                0,
+                0
+              ],
+              "localQuaternion": [
+                0,
+                0,
+                0,
+                1
+              ],
+              "orientationSteps": [
+                0,
+                0,
+                0
+              ],
+              "pivotLocalOffset": [
+                0,
+                0,
+                0
+              ],
+              "pivotLocalQuaternion": [
+                0,
+                0,
+                0,
+                1
+              ],
+              "moveEnabled": true,
+              "rotateEnabled": true,
+              "pivotEnabled": true
+            },
+            "node_mo86f3i8q4ik_26": {
+              "localOffset": [
+                0,
+                0,
+                0
+              ],
+              "localQuaternion": [
+                0,
+                -0.5182408629897884,
+                0,
+                0.8552347092626674
+              ],
+              "orientationSteps": [
+                0,
+                0,
+                0
+              ],
+              "pivotLocalOffset": [
+                0,
+                0,
+                0
+              ],
+              "pivotLocalQuaternion": [
+                0,
+                0,
+                0,
+                1
+              ],
+              "moveEnabled": true,
+              "rotateEnabled": true,
+              "pivotEnabled": true
+            }
+          },
+          "materials": {
+            "mesh_mo86eur73op2_3": "color_mo86f8zavf2r_44",
+            "mesh_mo86eur8j7kc_5": "color_mo86f3ii7p2x_43",
+            "mesh_mo86eur8pwgy_7": "color_mo86f3ii7p2x_43",
+            "mesh_mo86eur8nm18_9": "color_mo86f3ii7p2x_43",
+            "mesh_mo86eur81e0x_11": "color_mo86f3ii7p2x_43",
+            "mesh_mo86eur9ncnm_13": "color_mo86f8zavf2r_44",
+            "mesh_mo86eur929l8_15": "color_mo86f8zavf2r_44",
+            "mesh_mo86eur9lsei_17": "color_mo86f8zavf2r_44",
+            "mesh_mo86f3i8g7tm_28": "color_mo86f3ii7p2x_43",
+            "mesh_mo86f3iblaj8_30": "color_mo86f3ii7p2x_43",
+            "mesh_mo86f3iexxyo_32": "color_mo86f3ii7p2x_43",
+            "mesh_mo86f3ifl414_34": "color_mo86f3ii7p2x_43",
+            "mesh_mo86f3if6dgh_36": "color_mo86f3ii7p2x_43",
+            "mesh_mo86f3ifsqy8_38": "color_mo86f3ii7p2x_43"
+          },
+          "camera": {
+            "position": [
+              47.22916777129952,
+              25.289095655321944,
+              49.702961811105226
+            ],
+            "quaternion": [
+              -0.2260189296908542,
+              0.3338446612545174,
+              0.08279250852160051,
+              0.91137730172852
+            ],
+            "pivot": [
+              5.774402379989624,
+              -8.628439664840698,
+              0.7109663486480713
+            ],
+            "up": [
+              0,
+              1,
+              0
+            ],
+            "fov": 45
+          },
+          "notes": [],
+          "screenItems": [],
+          "headerItems": [],
+          "cables": []
+        }
+      }
+    ]
+  },
+  "chapters": {
+    "schema_version": 1,
+    "items": []
+  },
+  "cameras": {
+    "schema_version": 1,
+    "items": []
+  },
+  "colors": {
+    "schema_version": 3,
+    "items": [
+      {
+        "id": "color_mo86eurh6z4f_23",
+        "name": "wire_000225197",
+        "color": "#ffffff",
+        "solidness": 1,
+        "metalness": 0.12,
+        "roughness": 0.7857142857142857,
+        "reflectionIntensity": 0.5,
+        "outlineEnabled": null,
+        "removeTextures": false,
+        "backFaceEnabled": false,
+        "backFaceColor": "#ffffff",
+        "backFaceOpacity": 0.35,
+        "backFaceEdgeDarken": 0.45
+      },
+      {
+        "id": "color_mo86f3ii7p2x_43",
+        "name": "#000000",
+        "color": "#000000",
+        "solidness": 1,
+        "metalness": 0.05,
+        "roughness": 0.55,
+        "reflectionIntensity": 0.5,
+        "outlineEnabled": null,
+        "removeTextures": false,
+        "backFaceEnabled": false,
+        "backFaceColor": "#ffffff",
+        "backFaceOpacity": 0.35,
+        "backFaceEdgeDarken": 0.45
+      },
+      {
+        "id": "color_mo86f8zavf2r_44",
+        "name": "Color 3",
+        "color": "#4a90d9",
+        "solidness": 0.35,
+        "metalness": 0.05,
+        "roughness": 0.45,
+        "reflectionIntensity": 0.5,
+        "outlineEnabled": null,
+        "removeTextures": false,
+        "backFaceEnabled": false,
+        "backFaceColor": "#ffffff",
+        "backFaceOpacity": 0.35,
+        "backFaceEdgeDarken": 0.45
+      }
+    ],
+    "assignments": {
+      "mesh_mo86eur73op2_3": "color_mo86eurh6z4f_23",
+      "mesh_mo86eur8j7kc_5": "color_mo86eurh6z4f_23",
+      "mesh_mo86eur8pwgy_7": "color_mo86eurh6z4f_23",
+      "mesh_mo86eur8nm18_9": "color_mo86eurh6z4f_23",
+      "mesh_mo86eur81e0x_11": "color_mo86eurh6z4f_23",
+      "mesh_mo86eur9ncnm_13": "color_mo86eurh6z4f_23",
+      "mesh_mo86eur929l8_15": "color_mo86eurh6z4f_23",
+      "mesh_mo86eur9lsei_17": "color_mo86eurh6z4f_23",
+      "mesh_mo86f3i8g7tm_28": "color_mo86f3ii7p2x_43",
+      "mesh_mo86f3iblaj8_30": "color_mo86f3ii7p2x_43",
+      "mesh_mo86f3iexxyo_32": "color_mo86f3ii7p2x_43",
+      "mesh_mo86f3ifl414_34": "color_mo86f3ii7p2x_43",
+      "mesh_mo86f3if6dgh_36": "color_mo86f3ii7p2x_43",
+      "mesh_mo86f3ifsqy8_38": "color_mo86f3ii7p2x_43"
+    },
+    "defaults": {
+      "mesh_mo86eur73op2_3": "color_mo86eurh6z4f_23",
+      "mesh_mo86eur8j7kc_5": "color_mo86eurh6z4f_23",
+      "mesh_mo86eur8pwgy_7": "color_mo86eurh6z4f_23",
+      "mesh_mo86eur8nm18_9": "color_mo86eurh6z4f_23",
+      "mesh_mo86eur81e0x_11": "color_mo86eurh6z4f_23",
+      "mesh_mo86eur9ncnm_13": "color_mo86eurh6z4f_23",
+      "mesh_mo86eur929l8_15": "color_mo86eurh6z4f_23",
+      "mesh_mo86eur9lsei_17": "color_mo86eurh6z4f_23",
+      "mesh_mo86f3i8g7tm_28": "color_mo86f3ii7p2x_43",
+      "mesh_mo86f3iblaj8_30": "color_mo86f3ii7p2x_43",
+      "mesh_mo86f3iexxyo_32": "color_mo86f3ii7p2x_43",
+      "mesh_mo86f3ifl414_34": "color_mo86f3ii7p2x_43",
+      "mesh_mo86f3if6dgh_36": "color_mo86f3ii7p2x_43",
+      "mesh_mo86f3ifsqy8_38": "color_mo86f3ii7p2x_43"
+    }
+  },
+  "notes": {
+    "schema_version": 1,
+    "templates": [],
+    "presets": {
+      "small": 18,
+      "medium": 36,
+      "large": 48
+    }
+  },
+  "selections": {
+    "schema_version": 1,
+    "groups": [],
+    "outlineColor": "#00ffff"
+  },
+  "settings": {
+    "schema_version": 1,
+    "backgroundColor": "#0f172a",
+    "solidOverride": true,
+    "gridVisible": true,
+    "cameraAnimDurationMs": 1500,
+    "objectAnimDurationMs": 1500,
+    "cameraFillLight": {
+      "enabled": false,
+      "color": "#ffffff",
+      "intensity": 1.1,
+      "distance": 0,
+      "decay": 2,
+      "offsetX": -120,
+      "offsetY": 70,
+      "offsetZ": 140
+    },
+    "geometryOutline": {
+      "enabled": true,
+      "color": "#000000",
+      "opacity": 0.9,
+      "creaseAngle": 35
+    },
+    "export": {
+      "fileName": "sbs_export",
+      "outputFormat": "webm_vp8",
+      "formatPreset": "hdtv_1080",
+      "width": 1920,
+      "height": 1080,
+      "fps": 30,
+      "stepHoldMs": 800,
+      "startFromActive": true,
+      "showSafeFrame": true,
+      "narrationEnabled": true,
+      "narrationVoice": "en_US-lessac-high",
+      "narrationSpeed": 1,
+      "narrationHelperUrl": "http://127.0.0.1:8765",
+      "deterministicHelperUrl": "http://127.0.0.1:8766",
+      "exportFolderPath": null
+    }
+  }
+}

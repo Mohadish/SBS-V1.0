@@ -6,8 +6,9 @@
  * stepTopSpacer, stepName, stepMeta, ghostDrop, miniToggle.
  */
 
-import { state } from '../core/state.js';
-import { steps } from '../systems/steps.js';
+import { state }    from '../core/state.js';
+import { steps }    from '../systems/steps.js';
+import * as actions from '../systems/actions.js';
 import { createChapter } from '../core/schema.js';
 import { setStatus } from './status.js';
 
@@ -243,7 +244,7 @@ function _buildStepCard(step, idx, isActive, total) {
     if (_dragId && _dragId !== step.id) {
       const all   = state.get('steps') || [];
       const toIdx = all.findIndex(s => s.id === step.id);
-      if (toIdx >= 0) steps.reorderStep(_dragId, toIdx);
+      if (toIdx >= 0) actions.reorderStep(_dragId, toIdx);
     }
   });
 
@@ -305,22 +306,22 @@ function _buildTransitionRow(step) {
   `;
 
   wrap.querySelector('.tran-override').addEventListener('change', e => {
-    steps.updateTransition(stepId, { durationOverride: e.target.checked });
+    actions.updateTransition(stepId, { durationOverride: e.target.checked });
   });
   wrap.querySelector('.tran-cam-dur')?.addEventListener('change', e => {
-    steps.updateTransition(stepId, { cameraDurationMs: Number(e.target.value) });
+    actions.updateTransition(stepId, { cameraDurationMs: Number(e.target.value) });
   });
   wrap.querySelector('.tran-obj-dur')?.addEventListener('change', e => {
-    steps.updateTransition(stepId, { objectDurationMs: Number(e.target.value) });
+    actions.updateTransition(stepId, { objectDurationMs: Number(e.target.value) });
   });
   wrap.querySelector('.tran-cam-ease').addEventListener('change', e => {
-    steps.updateTransition(stepId, { cameraEasing: e.target.value });
+    actions.updateTransition(stepId, { cameraEasing: e.target.value });
   });
   wrap.querySelector('.tran-obj-ease').addEventListener('change', e => {
-    steps.updateTransition(stepId, { objectEasing: e.target.value });
+    actions.updateTransition(stepId, { objectEasing: e.target.value });
   });
   wrap.querySelector('.tran-fade').addEventListener('change', e => {
-    steps.updateTransition(stepId, { visibilityFade: e.target.checked });
+    actions.updateTransition(stepId, { visibilityFade: e.target.checked });
   });
 
   return wrap;
@@ -371,7 +372,7 @@ function _deleteChapter(chapterId) {
 async function _onAddStep() {
   await steps.flushSync();
   const chapterId = state.get('_pendingChapterId') ?? null;
-  const step = steps.createStepFromCurrent('New Step', { chapterId });
+  const step = actions.createStep('New Step', { chapterId });
   if (chapterId) state.setState({ _pendingChapterId: null });
   setStatus(`Created step "${step.name}".`);
 }
@@ -382,12 +383,12 @@ function _renameStep(stepId) {
   const name = prompt('Step name:', step.name || '');
   if (name === null) return;
   const trimmed = name.trim();
-  if (trimmed) steps.renameStep(stepId, trimmed);
+  if (trimmed) actions.renameStep(stepId, trimmed);
 }
 
 function _duplicateStep(stepId) {
   steps.flushSync().then(() => {
-    const copy = steps.duplicateStep(stepId);
+    const copy = actions.duplicateStep(stepId);
     if (copy) setStatus(`Duplicated "${copy.name}".`);
   });
 }
@@ -396,7 +397,7 @@ function _deleteStep(stepId) {
   const step = steps.getStepById(stepId);
   if (!step) return;
   if (!confirm(`Delete step "${step.name}"?`)) return;
-  steps.deleteStep(stepId);
+  actions.deleteStep(stepId);
   setStatus(`Deleted step "${step.name}".`);
 }
 

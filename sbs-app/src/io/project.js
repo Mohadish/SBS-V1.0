@@ -26,6 +26,7 @@ import {
   migrateSection,
   generateId,
 }                                     from '../core/schema.js';
+import { materials }                  from '../systems/materials.js';
 
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -75,8 +76,10 @@ export function serialize() {
   // ── Camera views ─────────────────────────────────────────────────────────
   project.cameras.items = JSON.parse(JSON.stringify(state.get('cameraViews') || []));
 
-  // ── Color presets ─────────────────────────────────────────────────────────
-  project.colors.items = JSON.parse(JSON.stringify(state.get('colorPresets') || []));
+  // ── Color presets + mesh assignments ─────────────────────────────────────
+  project.colors.items       = JSON.parse(JSON.stringify(state.get('colorPresets') || []));
+  project.colors.assignments = { ...materials.meshColorAssignments };
+  project.colors.defaults    = { ...materials.meshDefaultColors };
 
   // ── Notes ─────────────────────────────────────────────────────────────────
   project.notes.templates = JSON.parse(JSON.stringify(state.get('noteTemplates') || []));
@@ -140,11 +143,17 @@ export async function saveProject(options = {}) {
     : `${suggestedName.replace(/\.(json|sbsproj)$/i, '')}.sbsproj`;
 
   // ── Path 1: Electron IPC ─────────────────────────────────────────────────
-  // Preload exposes: sbsNative.saveProject(name) → path | null
-  //                  sbsNative.writeFile(path, data, enc) → { ok }
+  // 'auto'   → overwrite existing path silently; open dialog only if unsaved
+  // 'saveAs' → always open dialog
   if (window.sbsNative?.saveProject) {
-    const savePath = electronPath || await window.sbsNative.saveProject(filename);
-    if (!savePath) return { saved: false, cancelled: true };
+    const existingPath = state.get('projectPath');
+    let savePath;
+    if (mode === 'auto' && existingPath) {
+      savePath = existingPath;          // silent overwrite — no dialog
+    } else {
+      savePath = electronPath || await window.sbsNative.saveProject(filename);
+      if (!savePath) return { saved: false, cancelled: true };
+    }
     const writeResult = await window.sbsNative.writeFile(savePath, content, 'utf-8');
     if (!writeResult?.ok) throw new Error(writeResult?.error || 'Write failed');
     _setProjectMeta(savePath);
@@ -153,12 +162,16 @@ export async function saveProject(options = {}) {
   }
 
   // ── Path 2: File System Access API ───────────────────────────────────────
+  // 'auto'   → reuse stored handle silently; open picker only if no handle yet
+  // 'saveAs' → always open picker
   if (window.showSaveFilePicker) {
     try {
-      const saveHandle = (mode === 'overwrite' && handle)
-        ? handle
+      const storedHandle = state.get('fsaFileHandle');
+      const saveHandle = (mode === 'auto' && storedHandle)
+        ? storedHandle
         : await window.showSaveFilePicker({ suggestedName: filename, types: FILE_TYPES });
       await _writeToHandle(saveHandle, content);
+      state.setState({ fsaFileHandle: saveHandle });   // persist for next auto-save
       _setProjectMeta(saveHandle.name);
       state.markClean();
       return { saved: true, handle: saveHandle };

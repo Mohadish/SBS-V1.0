@@ -338,6 +338,29 @@ export function captureVisibilitySnapshot(root) {
 }
 
 /**
+ * Capture per-node visibility thresholds (0.0–1.0) from the tree.
+ * Only nodes with a non-zero threshold are included (saves space).
+ */
+export function captureVisibilityThresholds(root) {
+  const out = {};
+  flatten(root).forEach(n => {
+    const t = n.visibilityThreshold ?? 0;
+    if (t > 0) out[n.id] = t;
+  });
+  return out;
+}
+
+/**
+ * Restore per-node visibility thresholds from a snapshot onto the tree.
+ * Nodes not in the snapshot get threshold reset to 0.
+ */
+export function applyVisibilityThresholds(nodeById, thresholds) {
+  for (const [id, node] of nodeById) {
+    node.visibilityThreshold = thresholds?.[id] ?? 0;
+  }
+}
+
+/**
  * Apply a visibility snapshot to the tree (mutation).
  * Nodes in the snapshot that no longer exist are ignored.
  * Nodes not in the snapshot are left unchanged.

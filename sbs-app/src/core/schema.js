@@ -27,7 +27,8 @@ export const SCHEMA_VERSIONS = {
   screen:     1,
 };
 
-export const APP_VERSION = '1.0.0';
+export const APP_VERSION  = 'V.0.0.3';
+export const APP_RELEASED = '2026-04-20';
 
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -242,6 +243,11 @@ export function createEmptySnapshot() {
   return {
     // Visibility: nodeId → boolean
     visibility: {},
+
+    // Visibility thresholds: nodeId → 0.0–1.0
+    // Controls at what point in the transition the visibility change fires.
+    // 0.0 = immediately, 1.0 = at the very end. Default 0.
+    visibilityThresholds: {},
 
     // Transforms: nodeId → { localOffset, localQuaternion, pivotLocalOffset, pivotLocalQuaternion }
     transforms: {},

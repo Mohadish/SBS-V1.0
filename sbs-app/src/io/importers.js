@@ -49,6 +49,9 @@ export function getFileExt(name) {
   return parts.length > 1 ? parts.pop() : '';
 }
 
+// ── Module-level flag: skip color extraction when loading a saved project ─
+let _loadingFromProject = false;
+
 // ── Singleton OCCT instance ───────────────────────────────────────────────
 let _occt = null;
 async function ensureOCCT() {
@@ -285,6 +288,25 @@ function buildNodeFromThreeObject(obj, obj3dMap) {
 function finalizeModelImport(group3d, innerRoot, name, assetInfo, obj3dMap, extractColors = true, colorOpts = {}) {
   const modelId = generateId('model');
 
+  // Ensure this asset is tracked in state.assets (needed for save/load)
+  const assetId = assetInfo?.id || generateId('asset');
+  const currentAssets = state.get('assets') || [];
+  if (!currentAssets.some(a => a.id === assetId)) {
+    state.setState({
+      assets: [...currentAssets, {
+        id:           assetId,
+        name:         name,
+        type:         assetInfo?.type || 'model',
+        originalPath: assetInfo?.originalPath || '',
+        relativePath: assetInfo?.relativePath || '',
+        fileHash:      null,
+        fileSize:      assetInfo?.fileSize      ?? null,
+        lastModified:  assetInfo?.lastModified  ?? null,
+        importedAt:    new Date().toISOString(),
+      }],
+    });
+  }
+
   // Create the model node (wraps the entire loaded file)
   const modelNode = createNode('model', {
     id:   modelId,
@@ -292,7 +314,7 @@ function finalizeModelImport(group3d, innerRoot, name, assetInfo, obj3dMap, extr
   });
   modelNode.object3d = group3d;
   modelNode.children = [innerRoot];
-  modelNode.assetId  = assetInfo?.id ?? null;
+  modelNode.assetId  = assetId;
   obj3dMap.set(modelId, group3d);
   storeBaseTransformFromObject3D(modelNode, group3d);
 
@@ -351,7 +373,8 @@ function finalizeModelImport(group3d, innerRoot, name, assetInfo, obj3dMap, extr
   // simple per-mesh colors with no texture maps.
   // GLTF/GLB/FBX skip this — their materials already have texture maps,
   // normal maps, PBR values, etc., and solidOverride would destroy them.
-  if (extractColors) {
+  // Also skipped when loading from a saved project (presets already restored).
+  if (extractColors && !_loadingFromProject) {
     const newMeshIds = [];
     for (const [nodeId, obj] of obj3dMap) {
       if (obj?.isMesh) newMeshIds.push(nodeId);
@@ -362,6 +385,32 @@ function finalizeModelImport(group3d, innerRoot, name, assetInfo, obj3dMap, extr
   // Update materials (applies presets when solidOverride is on,
   // or restores originals when it is off)
   materials.applyAll();
+
+  // When a new model is added (not loading from a saved project), propagate
+  // the new mesh default color assignments into ALL existing step snapshots.
+  // This simulates the object having been present since step 1 — every step
+  // inherits the defaults and can override them independently.
+  if (!_loadingFromProject) {
+    const newDefaults = { ...materials.meshDefaultColors };
+    const allSteps = state.get('steps');
+    if (Array.isArray(allSteps) && allSteps.length) {
+      let changed = false;
+      for (const step of allSteps) {
+        if (!step?.snapshot) continue;
+        if (!step.snapshot.materials) step.snapshot.materials = {};
+        for (const [meshId, presetId] of Object.entries(newDefaults)) {
+          // Only inject if this step doesn't already have an assignment for this mesh
+          if (!(meshId in step.snapshot.materials)) {
+            step.snapshot.materials[meshId] = presetId;
+            changed = true;
+          }
+        }
+      }
+      if (changed) state.setState({ steps: [...allSteps] });
+    }
+    // Immediately sync the active step so it reflects the new scene state
+    steps.syncActiveStepNow();
+  }
 
   // Notify
   state.emit('model:loaded', { modelNode, name, assetInfo });
@@ -378,7 +427,7 @@ function finalizeModelImport(group3d, innerRoot, name, assetInfo, obj3dMap, extr
 /**
  * Load a STEP / IGES / BREP file via occt-import-js.
  */
-async function loadOcctFile(file, format) {
+async function loadOcctFile(file, format, assetEntry = null) {
   state.emit('status', `Initializing ${format.toUpperCase()} importer…`);
   const occt = await ensureOCCT();
 
@@ -408,15 +457,19 @@ async function loadOcctFile(file, format) {
   );
 
   return finalizeModelImport(group3d, innerRoot, file.name, {
-    type: format,
-    fileSize: file.size,
+    id:           assetEntry?.id,
+    type:         format,
+    fileSize:     file.size,
+    lastModified: file.lastModified ?? null,
+    originalPath: assetEntry?.originalPath || file.path || '',
+    relativePath: assetEntry?.relativePath || '',
   }, obj3dMap);
 }
 
 /**
  * Load an OBJ file.
  */
-async function loadObjFile(file) {
+async function loadObjFile(file, assetEntry = null) {
   state.emit('status', 'Reading OBJ file…');
   const text   = await file.text();
   const loader = new OBJLoader();
@@ -430,14 +483,19 @@ async function loadObjFile(file) {
   const innerRoot = buildNodeFromThreeObject(obj, obj3dMap);
 
   return finalizeModelImport(group3d, innerRoot, file.name, {
-    type: 'obj', fileSize: file.size,
+    id:           assetEntry?.id,
+    type:         'obj',
+    fileSize:     file.size,
+    lastModified: file.lastModified ?? null,
+    originalPath: assetEntry?.originalPath || file.path || '',
+    relativePath: assetEntry?.relativePath || '',
   }, obj3dMap);
 }
 
 /**
  * Load an STL file.
  */
-async function loadStlFile(file) {
+async function loadStlFile(file, assetEntry = null) {
   state.emit('status', 'Reading STL file…');
   const buffer = await file.arrayBuffer();
   const loader = new STLLoader();
@@ -453,14 +511,19 @@ async function loadStlFile(file) {
   const innerRoot = buildNodeFromThreeObject(mesh, obj3dMap);
 
   return finalizeModelImport(group3d, innerRoot, file.name, {
-    type: 'stl', fileSize: file.size,
+    id:           assetEntry?.id,
+    type:         'stl',
+    fileSize:     file.size,
+    lastModified: file.lastModified ?? null,
+    originalPath: assetEntry?.originalPath || file.path || '',
+    relativePath: assetEntry?.relativePath || '',
   }, obj3dMap);
 }
 
 /**
  * Load a GLTF / GLB file.
  */
-async function loadGltfFile(file) {
+async function loadGltfFile(file, assetEntry = null) {
   const ext  = getFileExt(file.name);
   state.emit('status', `Reading ${ext.toUpperCase()} file…`);
 
@@ -485,7 +548,12 @@ async function loadGltfFile(file) {
         // have white (#ffffff) meshes won't share the same preset, so tinting
         // one model won't accidentally affect the other.
         resolve(finalizeModelImport(group3d, innerRoot, file.name, {
-          type: ext, fileSize: file.size,
+          id:           assetEntry?.id,
+          type:         ext,
+          fileSize:     file.size,
+    lastModified: file.lastModified ?? null,
+          originalPath: assetEntry?.originalPath || file.path || '',
+          relativePath: assetEntry?.relativePath || '',
         }, obj3dMap, true, { globalDedup: false }));
       } catch (err) { reject(err); }
     }, reject);
@@ -506,15 +574,17 @@ async function loadGltfFile(file) {
  */
 export async function loadModelFile(file, opts = {}) {
   if (!file) return null;
-  const ext = getFileExt(file.name);
+  const ext          = getFileExt(file.name);
+  const assetEntry   = opts.assetEntry ?? null;
 
+  _loadingFromProject = !!opts.skipColorExtraction;
   try {
-    if (['step', 'stp'].includes(ext))   return await loadOcctFile(file, 'step');
-    if (['iges', 'igs'].includes(ext))   return await loadOcctFile(file, 'iges');
-    if (['brep', 'brp'].includes(ext))   return await loadOcctFile(file, 'brep');
-    if (ext === 'obj')                   return await loadObjFile(file);
-    if (ext === 'stl')                   return await loadStlFile(file);
-    if (['gltf', 'glb'].includes(ext))   return await loadGltfFile(file);
+    if (['step', 'stp'].includes(ext))   return await loadOcctFile(file, 'step', assetEntry);
+    if (['iges', 'igs'].includes(ext))   return await loadOcctFile(file, 'iges', assetEntry);
+    if (['brep', 'brp'].includes(ext))   return await loadOcctFile(file, 'brep', assetEntry);
+    if (ext === 'obj')                   return await loadObjFile(file, assetEntry);
+    if (ext === 'stl')                   return await loadStlFile(file, assetEntry);
+    if (['gltf', 'glb'].includes(ext))   return await loadGltfFile(file, assetEntry);
 
     state.emit('status', `Unsupported file type: .${ext || 'unknown'}.`);
     return null;
@@ -522,6 +592,8 @@ export async function loadModelFile(file, opts = {}) {
     console.error('[importers] Load failed:', err);
     state.emit('status', `Failed to load "${file.name}": ${err.message}`);
     return null;
+  } finally {
+    _loadingFromProject = false;
   }
 }
 

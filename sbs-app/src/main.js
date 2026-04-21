@@ -20,6 +20,10 @@ import { state }          from './core/state.js';
 import { sceneCore }      from './core/scene.js';
 import { steps }          from './systems/steps.js';
 import { materials }      from './systems/materials.js';
+import { setupUndoKeyboard, setSelection as actionSetSelection, clearSelection as actionClearSelection, resetTransform } from './systems/actions.js';
+import { gizmo }           from './ui/gizmo.js';
+import { undoManager }    from './systems/undo.js';
+import { selectionActs }  from './systems/select-act.js';
 
 // ── Data helpers ──────────────────────────────────────────────────────────────
 import {
@@ -40,7 +44,7 @@ import { initHud }                from './ui/hud.js';
 import { initStepNav }            from './ui/step-nav.js';
 import { initStepsPanel }         from './ui/steps-panel.js';
 import { initSidebarLeft }        from './ui/sidebar-left.js';
-import { initContextMenu, hideContextMenu } from './ui/context-menu.js';
+import { initContextMenu, hideContextMenu, showContextMenu } from './ui/context-menu.js';
 
 // ══════════════════════════════════════════════════════════════════════════════
 //  1. STATE — restore persisted preferences
@@ -55,6 +59,7 @@ state.setState({ isElectron: !!window.sbsNative?.isElectron });
 
 const viewer = document.getElementById('viewer');
 sceneCore.init(viewer, { antialias: true, preserveDrawingBuffer: true });
+gizmo.init();
 
 function _syncBackground() {
   if (!window.THREE) return;
@@ -90,6 +95,24 @@ initSidebarLeft();
 initStepNav();
 initStepsPanel();
 initHud();
+setupUndoKeyboard();
+
+// Clear undo history when a new project loads (fresh slate)
+state.on('change:projectPath', () => { undoManager.clear(); selectionActs.clear(); });
+
+// ── Gizmo: follow selection ───────────────────────────────────────────────────
+function _syncGizmoToSelection() {
+  const selId  = state.get('selectedId');
+  const nodeById = state.get('nodeById');
+  if (!selId || !nodeById) { gizmo.hide(); return; }
+  const node = nodeById.get(selId);
+  if (!node || node.type === 'mesh' || node.type === 'scene') { gizmo.hide(); return; }
+  const obj3d = steps.object3dById?.get(selId);
+  if (!obj3d) { gizmo.hide(); return; }
+  gizmo.show(node, obj3d);
+}
+state.on('selection:change',    _syncGizmoToSelection);
+state.on('change:treeData',     _syncGizmoToSelection);
 
 // ══════════════════════════════════════════════════════════════════════════════
 //  6. VIEWPORT EVENT HANDLERS
@@ -116,6 +139,7 @@ let _dragStartX = 0, _dragStartY = 0;
 let _isDragging = false;
 let _justDragged = false;   // skip click event that fires right after a drag
 let _dragOnCanvas = false;  // drag only counts when it started on the canvas
+let _gizmoConsumed = false; // gizmo took the pointerdown — suppress next click
 
 function _showMarquee(x1, y1, x2, y2) {
   const left = Math.min(x1, x2), top  = Math.min(y1, y2);
@@ -164,18 +188,41 @@ function _pickInRect(x1, y1, x2, y2) {
 
 canvas.addEventListener('pointerdown', e => {
   if (e.button !== 0) return;
+
+  // Gizmo gets first chance
+  if (gizmo.onPointerDown(e.clientX, e.clientY)) {
+    canvas.setPointerCapture(e.pointerId);
+    _gizmoConsumed = true;
+    return;
+  }
+
   _dragStartX   = e.clientX;
   _dragStartY   = e.clientY;
   _isDragging   = false;
   _dragOnCanvas = true;   // drag started on the 3-D viewport
 }, { capture: false });
 
-// ── Pointer move: grow marquee once drag threshold exceeded ──────────────────
+// ── Pointer move: gizmo drag or grow marquee ─────────────────────────────────
+
+canvas.addEventListener('pointermove', e => {
+  if (!(e.buttons & 1)) {
+    // No button — update hover
+    gizmo.onHover(e.clientX, e.clientY);
+    return;
+  }
+
+  // Active gizmo drag
+  if (gizmo.isDragging) {
+    gizmo.onPointerMove(e.clientX, e.clientY);
+    return;
+  }
+});
 
 window.addEventListener('pointermove', e => {
   if (!(e.buttons & 1)) return;            // left button must be held
   if (!_dragOnCanvas) return;              // only when drag started on viewport
   if (sceneCore.controls?.active) return;  // orbit/pan owns the pointer
+  if (gizmo.isDragging) return;            // gizmo owns the pointer
 
   const dx = e.clientX - _dragStartX;
   const dy = e.clientY - _dragStartY;
@@ -187,9 +234,14 @@ window.addEventListener('pointermove', e => {
   }
 }, { passive: true });
 
-// ── Pointer up: finalise selection ───────────────────────────────────────────
+// ── Pointer up: finalise gizmo or selection ───────────────────────────────────
 
 window.addEventListener('pointerup', e => {
+  if (gizmo.isDragging) {
+    gizmo.onPointerUp();
+    return;
+  }
+
   _dragOnCanvas = false;     // reset regardless
 
   if (!_isDragging) return;
@@ -199,10 +251,7 @@ window.addEventListener('pointerup', e => {
 
   const found = _pickInRect(_dragStartX, _dragStartY, e.clientX, e.clientY);
   if (found.size === 0) {
-    if (!e.ctrlKey && !e.metaKey) {
-      state.clearSelection();
-      materials.applySelectionHighlight(new Set());
-    }
+    if (!e.ctrlKey && !e.metaKey) actionClearSelection();
     return;
   }
 
@@ -211,15 +260,15 @@ window.addEventListener('pointerup', e => {
     : found;
 
   const primary = [...multi][0];
-  state.setSelection(primary, multi);
-  materials.applySelectionHighlight(multi);
+  actionSetSelection(primary, multi);
 });
 
 // ── Click: select object ─────────────────────────────────────────────────────
 
 canvas.addEventListener('click', e => {
   if (e.button !== 0) return;
-  // Suppress the click that fires immediately after a drag-select
+  // Suppress click after gizmo interaction or drag-select
+  if (_gizmoConsumed) { _gizmoConsumed = false; return; }
   if (_justDragged) { _justDragged = false; return; }
   hideContextMenu();
 
@@ -229,34 +278,22 @@ canvas.addEventListener('click', e => {
 
   const hit = sceneCore.pick(e.clientX, e.clientY);
   if (!hit) {
-    if (!e.ctrlKey && !e.metaKey) {
-      state.clearSelection();
-      materials.applySelectionHighlight(new Set());
-    }
+    if (!e.ctrlKey && !e.metaKey) actionClearSelection();
     return;
   }
 
   const meshNodeId = hit.object.userData?.meshNodeId;
   if (!meshNodeId) return;
 
-  // Always select the clicked mesh directly (file-explorer behaviour).
-  // Double-click selects whole container (handled separately below).
   const target = meshNodeId;
-
-  // target is a node ID string
-  const multi = new Set(state.get('multiSelectedIds') || []);
+  const multi  = new Set(state.get('multiSelectedIds') || []);
   if (e.ctrlKey || e.metaKey) {
-    // Ctrl/Cmd: toggle in/out of selection
     if (multi.has(target)) multi.delete(target);
     else                   multi.add(target);
-    state.setSelection(target, multi);
+    actionSetSelection(target, multi);
   } else {
-    // Plain click: replace selection
-    state.setSelection(target, new Set([target]));
+    actionSetSelection(target, new Set([target]));
   }
-
-  // Highlight exactly the selected mesh IDs
-  materials.applySelectionHighlight(state.get('multiSelectedIds'));
 });
 
 // ── Double-click: select all children of container ───────────────────────────
@@ -293,6 +330,30 @@ canvas.addEventListener('dblclick', e => {
 canvas.addEventListener('contextmenu', e => {
   e.preventDefault();
   hideContextMenu();
+
+  const selId = state.get('selectedId');
+  const nodeById = state.get('nodeById');
+  const node = selId && nodeById ? nodeById.get(selId) : null;
+  const isTransformable = node && node.type !== 'mesh' && node.type !== 'scene';
+
+  const items = [];
+  if (isTransformable) {
+    items.push({ label: '↺ Reset transform', action: () => resetTransform(selId) });
+    items.push({ label: '─', disabled: true });
+  }
+  items.push({
+    label: 'Fit view  [F]',
+    action: () => {
+      if (!sceneCore.rootGroup || !window.THREE) return;
+      const box = new THREE.Box3().setFromObject(sceneCore.rootGroup);
+      if (!box.isEmpty()) sceneCore.animateCameraTo(sceneCore.fitStateForBox(box, 1.15), 800, 'smooth');
+    },
+  });
+  if (selId) {
+    items.push({ label: 'Deselect  [Esc]', action: () => { actionClearSelection(); gizmo.hide(); } });
+  }
+
+  if (items.length) showContextMenu(items, e.clientX, e.clientY);
 });
 
 // ── Window resize ─────────────────────────────────────────────────────────────
@@ -348,8 +409,11 @@ window.addEventListener('keydown', async e => {
 
   // ── Selection ────────────────────────────────────────────────────────────
   if (key === 'Escape') {
+    if (gizmo.isDragging) { gizmo.onPointerUp(); return; }
+    gizmo.setMode('all');
     state.clearSelection();
     materials.applySelectionHighlight([]);
+    gizmo.hide();
     return;
   }
 

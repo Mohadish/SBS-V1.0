@@ -17,6 +17,7 @@
 import { state }                from '../core/state.js';
 import { sceneCore }            from '../core/scene.js';
 import { steps }                from '../systems/steps.js';
+import * as actions             from '../systems/actions.js';
 import {
   findNode,
   findParent,
@@ -122,8 +123,9 @@ function _buildRow(node, depth) {
   row.style.paddingLeft = `${6 + depth * 14}px`;
   row.dataset.nodeId = node.id;
   row.dataset.hidden = node.localVisible ? 'false' : 'true';
-  row.draggable = node.type !== 'scene';
+  row.draggable = node.type !== 'scene' && !node.missing;
   if (!node.localVisible) row.style.opacity = '0.45';
+  if (node.missing) row.style.opacity = '0.5';
 
   // ── Twisty ──────────────────────────────────────────────────
   const twisty = document.createElement('span');
@@ -169,8 +171,28 @@ function _buildRow(node, depth) {
     _toggleVisibility(node);
   });
 
+  // ── Visibility threshold ──────────────────────────────────────
+  // Small button showing the pop-threshold (0=instant … 1=end-of-transition).
+  // Dim / blank when 0; blue + percentage when non-zero.
+  const thresh = node.visibilityThreshold ?? 0;
+  const threshBtn = document.createElement('button');
+  threshBtn.className   = 'vis-threshold';
+  threshBtn.title       = 'Visibility delay: at what point in the transition this node pops (0=instant, 1=end)';
+  threshBtn.textContent = thresh > 0 ? `${Math.round(thresh * 100)}%` : '·';
+  threshBtn.style.cssText = [
+    'font-size:9px',
+    'min-width:20px',
+    'padding:1px 3px',
+    `opacity:${thresh > 0 ? 1 : 0.22}`,
+    `color:${thresh > 0 ? '#93c5fd' : 'inherit'}`,
+  ].join(';');
+  threshBtn.addEventListener('click', e => {
+    e.stopPropagation();
+    _editThreshold(node, threshBtn);
+  });
+
   // ── Assemble row ──────────────────────────────────────────────
-  row.append(twisty, icon, label, transformGroup, eye);
+  row.append(twisty, icon, label, transformGroup, eye, threshBtn);
 
   // ── Events ───────────────────────────────────────────────────
   row.addEventListener('click', e => _onRowClick(e, node));
@@ -217,9 +239,9 @@ function _onRowClick(e, node) {
   if (e.ctrlKey || e.metaKey) {
     if (multiIds.has(node.id)) multiIds.delete(node.id);
     else multiIds.add(node.id);
-    state.setSelection(node.id, multiIds);
+    actions.setSelection(node.id, multiIds);
   } else {
-    state.setSelection(node.id, new Set([node.id]));
+    actions.setSelection(node.id, new Set([node.id]));
   }
 
   steps.scheduleSync();
@@ -240,6 +262,79 @@ function _collectAllIds(node, out) {
   (node.children || []).forEach(c => _collectAllIds(c, out));
 }
 
+// ── Visibility threshold ─────────────────────────────────────────────────────
+
+function _editThreshold(node, btn) {
+  // Small inline popover with a 0–100 slider + number input
+  const existing = document.querySelector('.threshold-popover');
+  if (existing) existing.remove();
+
+  const rect   = btn.getBoundingClientRect();
+  const pop    = document.createElement('div');
+  pop.className = 'threshold-popover';
+  pop.style.cssText = [
+    'position:fixed',
+    `left:${rect.left}px`,
+    `top:${rect.bottom + 4}px`,
+    'background:#1e293b',
+    'border:1px solid #334155',
+    'border-radius:6px',
+    'padding:8px 10px',
+    'display:flex',
+    'align-items:center',
+    'gap:6px',
+    'z-index:9999',
+    'box-shadow:0 4px 12px rgba(0,0,0,0.4)',
+  ].join(';');
+
+  const current = Math.round((node.visibilityThreshold ?? 0) * 100);
+
+  const slider = document.createElement('input');
+  slider.type  = 'range';
+  slider.min   = '0';
+  slider.max   = '100';
+  slider.step  = '5';
+  slider.value = current;
+  slider.style.width = '100px';
+
+  const num = document.createElement('input');
+  num.type  = 'number';
+  num.min   = '0';
+  num.max   = '100';
+  num.step  = '5';
+  num.value = current;
+  num.style.cssText = 'width:48px;padding:2px 4px;background:#0f172a;border:1px solid #334155;border-radius:4px;color:#e2e8f0;font-size:11px';
+
+  const label = document.createElement('span');
+  label.textContent = '%';
+  label.style.cssText = 'font-size:11px;color:#94a3b8';
+
+  function _apply(v) {
+    const clamped = Math.max(0, Math.min(100, parseInt(v, 10) || 0));
+    slider.value = clamped;
+    num.value    = clamped;
+    node.visibilityThreshold = clamped / 100;
+    steps.scheduleSync();
+    renderTree();
+  }
+
+  slider.addEventListener('input',  () => _apply(slider.value));
+  num.addEventListener('change',    () => _apply(num.value));
+  num.addEventListener('keydown',   e => { if (e.key === 'Enter') { _apply(num.value); pop.remove(); } });
+
+  pop.append(slider, num, label);
+  document.body.appendChild(pop);
+
+  // Close on outside click
+  const _close = e => {
+    if (!pop.contains(e.target) && e.target !== btn) {
+      pop.remove();
+      document.removeEventListener('pointerdown', _close, true);
+    }
+  };
+  setTimeout(() => document.addEventListener('pointerdown', _close, true), 0);
+}
+
 // ── Visibility ───────────────────────────────────────────────────────────────
 
 function _toggleVisibility(node) {
@@ -251,15 +346,7 @@ function _toggleVisibility(node) {
     ? Array.from(multiIds)
     : [node.id];
 
-  const newVis = !node.localVisible;
-  for (const id of ids) {
-    const n = nodeById.get(id);
-    if (n) n.localVisible = newVis;
-  }
-
-  applyAllVisibility(state.get('treeData'), steps.object3dById);
-  state.emit('change:treeData', state.get('treeData'));
-  steps.scheduleSync();
+  actions.toggleVisibility(ids);
 }
 
 // ── Context menu ──────────────────────────────────────────────────────────────
@@ -275,6 +362,11 @@ function _onRowContextMenu(e, node) {
 function _buildContextMenuItems(node) {
   const items = [];
   const nodeById = state.get('nodeById');
+
+  if (node.missing) {
+    items.push({ label: `❌ Missing asset (read-only)`, disabled: true });
+    return items;
+  }
 
   if (node.type !== 'scene') {
     items.push({
@@ -356,7 +448,7 @@ function _onDragEnd() {
 }
 
 function _onDragOver(e, node) {
-  if (node.type === 'mesh') return;
+  if (node.type === 'mesh' || node.missing) return;
   e.preventDefault();
   if (_dropTarget !== node.id) {
     _dropTarget = node.id;
@@ -375,7 +467,7 @@ function _onDrop(e, targetNode) {
   e.preventDefault();
   _dropTarget = null;
 
-  if (targetNode.type === 'mesh') return;
+  if (targetNode.type === 'mesh' || targetNode.missing) return;
 
   const root    = state.get('treeData');
   if (!root) return;

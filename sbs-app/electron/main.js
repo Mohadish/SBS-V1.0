@@ -145,6 +145,7 @@ function buildMenu() {
         { label: 'Save Project As…',  accelerator: 'CmdOrCtrl+Shift+S', click: () => mainWindow?.webContents.send('menu:saveProjectAs') },
         { type: 'separator' },
         { label: 'Load Model…',       accelerator: 'CmdOrCtrl+L', click: () => mainWindow?.webContents.send('menu:loadModel') },
+        { label: 'Browse Assets…',    accelerator: 'CmdOrCtrl+B', click: () => mainWindow?.webContents.send('menu:browseAssets') },
         { type: 'separator' },
         isMac ? { role: 'close' } : { role: 'quit' },
       ],
@@ -311,6 +312,14 @@ ipcMain.handle('fs:writeFile', async (_, filePath, data, encoding = 'utf-8') => 
 // Check if a file exists
 ipcMain.handle('fs:exists', async (_, filePath) => {
   return fs.existsSync(filePath);
+});
+
+// Stat a file — returns { size, mtimeMs } or null
+ipcMain.handle('fs:stat', async (_, filePath) => {
+  try {
+    const s = fs.statSync(filePath);
+    return { size: s.size, mtimeMs: s.mtimeMs };
+  } catch { return null; }
 });
 
 // Get app version

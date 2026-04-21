@@ -526,7 +526,7 @@ class MaterialsSystem {
       envMapIntensity,
       transparent:     !isOpaque || (orig?.transparent ?? false),
       opacity:         isOpaque ? (Number.isFinite(orig?.opacity) ? orig.opacity : 1) : solidness,
-      depthWrite:      isOpaque,
+      depthWrite:      true,
       side:            orig?.side ?? THREE.FrontSide,
       // Solid-enough textured meshes write stencil so back outlines respect them
       stencilWrite:    solidness >= 0.9,
@@ -577,9 +577,9 @@ class MaterialsSystem {
     const solidness  = preset.solidness ?? 1.0;
     const isOpaque   = this._isOpaque(preset);   // >= 0.999 — controls alpha blending queue
 
-    // depthWrite only for truly opaque meshes — the smart outline shader
-    // classifies front/back edges via face normals so no depth-write trick needed.
-    const writesDepth = isOpaque;
+    // depthWrite always true — closed CAD bodies must write depth even when transparent
+    // so complex/concave geometry doesn't bleed through itself.
+    const writesDepth = true;
 
     const mat = new THREE.ShaderMaterial({
       uniforms: {
@@ -824,21 +824,49 @@ gl_FragColor.a = 1.0;
     const values = new Map();
     for (const [nodeId, mesh] of this.meshById) {
       const mat = mesh.material;
-      let color     = new THREE.Color(1, 1, 1);
-      let solidness = 1.0;
+      let color               = new THREE.Color(1, 1, 1);
+      let solidness           = 1.0;
+      let metalness           = 0.05;
+      let roughness           = 0.45;
+      let reflectionIntensity = 0.5;
+
       if (mat?.isShaderMaterial && mat.uniforms?.uColor) {
         color = mat.uniforms.uColor.value.clone();
       } else if (mat?.color) {
         color = mat.color.clone();
       }
+
       if (mat?.isShaderMaterial && mat.uniforms?.uSolidness) {
         solidness = mat.uniforms.uSolidness.value;
       } else if (typeof mat?.opacity === 'number') {
         solidness = mat.opacity;
       }
+
+      if (mat?.isShaderMaterial && mat.uniforms?.uMetalness) {
+        metalness = mat.uniforms.uMetalness.value;
+      } else if (typeof mat?.metalness === 'number') {
+        metalness = mat.metalness;
+      }
+
+      if (mat?.isShaderMaterial && mat.uniforms?.uRoughness) {
+        roughness = mat.uniforms.uRoughness.value;
+      } else if (typeof mat?.roughness === 'number') {
+        roughness = mat.roughness;
+      }
+
+      if (mat?.isShaderMaterial && mat.uniforms?.uReflectionIntensity) {
+        reflectionIntensity = mat.uniforms.uReflectionIntensity.value;
+      } else if (typeof mat?.envMapIntensity === 'number') {
+        // texture path stores reflectionIntensity * 0.5 as envMapIntensity
+        reflectionIntensity = mat.envMapIntensity / 0.5;
+      }
+
       const back = this._outlineBackMeshes.get(nodeId);
-      const backOpacity = back?.material?.uniforms?.uOpacity?.value ?? 0;
-      values.set(nodeId, { color, solidness, backOpacity });
+      const backOpacity = back?.material?.uniforms?.uOpacity?.value
+                       ?? back?.material?.uniforms?.uDitherOpacity?.value
+                       ?? 0;
+
+      values.set(nodeId, { color, solidness, metalness, roughness, reflectionIntensity, backOpacity });
     }
     return values;
   }
@@ -849,17 +877,43 @@ gl_FragColor.a = 1.0;
       const mesh = this.meshById.get(nodeId);
       if (!mesh) continue;
       const mat = mesh.material;
+
       if (mat?.isShaderMaterial && mat.uniforms?.uColor) {
         mat.uniforms.uColor.value.copy(v.color);
+      } else if (mat?.color) {
+        mat.color.copy(v.color);
       }
+
       if (mat?.isShaderMaterial && mat.uniforms?.uSolidness) {
         mat.uniforms.uSolidness.value = v.solidness;
       } else if (mat && !mat.isShaderMaterial && typeof mat.opacity === 'number') {
         mat.opacity = v.solidness;
       }
+
+      if (mat?.isShaderMaterial && mat.uniforms?.uMetalness) {
+        mat.uniforms.uMetalness.value = v.metalness;
+      } else if (mat && typeof mat.metalness === 'number') {
+        mat.metalness = v.metalness;
+      }
+
+      if (mat?.isShaderMaterial && mat.uniforms?.uRoughness) {
+        mat.uniforms.uRoughness.value = v.roughness;
+      } else if (mat && typeof mat.roughness === 'number') {
+        mat.roughness = v.roughness;
+      }
+
+      if (mat?.isShaderMaterial && mat.uniforms?.uReflectionIntensity) {
+        mat.uniforms.uReflectionIntensity.value = v.reflectionIntensity;
+      } else if (mat && typeof mat.envMapIntensity === 'number') {
+        mat.envMapIntensity = v.reflectionIntensity * 0.5;
+      }
+
       const back = this._outlineBackMeshes.get(nodeId);
       if (back?.material?.uniforms?.uOpacity) {
         back.material.uniforms.uOpacity.value = v.backOpacity;
+        back.visible = v.backOpacity > 0.001;
+      } else if (back?.material?.uniforms?.uDitherOpacity) {
+        back.material.uniforms.uDitherOpacity.value = v.backOpacity;
         back.visible = v.backOpacity > 0.001;
       }
     }
@@ -891,6 +945,23 @@ gl_FragColor.a = 1.0;
 
     this._applyUniformValues(fromValues);   // reset to from state
 
+    // Fix transparent + stencilWrite to match FROM solidness on all transitioning meshes.
+    // applyAll() built materials for the TARGET solidness — transparent and stencilWrite
+    // flags are wrong for the FROM state, causing immediate visual pops.
+    for (const [nodeId, from] of fromValues) {
+      const to = toValues.get(nodeId);
+      if (!to) continue;
+      if (from.solidness >= 0.999 && to.solidness >= 0.999) continue;
+      const mesh = this.meshById.get(nodeId);
+      if (!mesh) continue;
+      const mat = mesh.material;
+      if (mat) {
+        mat.transparent   = true;
+        mat.stencilWrite  = false;
+        mat.needsUpdate   = true;
+      }
+    }
+
     this._colorTransition = {
       fromValues, toValues,
       startMs:    performance.now(),
@@ -917,28 +988,70 @@ gl_FragColor.a = 1.0;
       if (!mesh) continue;
       const mat  = mesh.material;
 
+      const lerp = (a, b) => a + (b - a) * alpha;
+
+      // Color
       if (mat?.isShaderMaterial && mat.uniforms?.uColor) {
         mat.uniforms.uColor.value.setRGB(
-          from.color.r + (to.color.r - from.color.r) * alpha,
-          from.color.g + (to.color.g - from.color.g) * alpha,
-          from.color.b + (to.color.b - from.color.b) * alpha,
+          lerp(from.color.r, to.color.r),
+          lerp(from.color.g, to.color.g),
+          lerp(from.color.b, to.color.b),
+        );
+      } else if (mat?.color) {
+        mat.color.setRGB(
+          lerp(from.color.r, to.color.r),
+          lerp(from.color.g, to.color.g),
+          lerp(from.color.b, to.color.b),
         );
       }
+
+      // Solidness / opacity — also keep stencilWrite in sync so back outline fades correctly
+      const lerpedSolidness = lerp(from.solidness, to.solidness);
       if (mat?.isShaderMaterial && mat.uniforms?.uSolidness) {
-        mat.uniforms.uSolidness.value = from.solidness + (to.solidness - from.solidness) * alpha;
+        mat.uniforms.uSolidness.value = lerpedSolidness;
       } else if (mat && !mat.isShaderMaterial && typeof mat.opacity === 'number') {
-        mat.opacity = from.solidness + (to.solidness - from.solidness) * alpha;
+        mat.opacity = lerpedSolidness;
       }
 
+      // Metalness
+      if (mat?.isShaderMaterial && mat.uniforms?.uMetalness) {
+        mat.uniforms.uMetalness.value = lerp(from.metalness, to.metalness);
+      } else if (mat && typeof mat.metalness === 'number') {
+        mat.metalness = lerp(from.metalness, to.metalness);
+      }
+
+      // Roughness
+      if (mat?.isShaderMaterial && mat.uniforms?.uRoughness) {
+        mat.uniforms.uRoughness.value = lerp(from.roughness, to.roughness);
+      } else if (mat && typeof mat.roughness === 'number') {
+        mat.roughness = lerp(from.roughness, to.roughness);
+      }
+
+      // Reflection intensity
+      if (mat?.isShaderMaterial && mat.uniforms?.uReflectionIntensity) {
+        mat.uniforms.uReflectionIntensity.value = lerp(from.reflectionIntensity, to.reflectionIntensity);
+      } else if (mat && typeof mat.envMapIntensity === 'number') {
+        mat.envMapIntensity = lerp(from.reflectionIntensity, to.reflectionIntensity) * 0.5;
+      }
+
+      // Back outline opacity
       const back = this._outlineBackMeshes.get(nodeId);
+      const backOp = lerp(from.backOpacity, to.backOpacity);
       if (back?.material?.uniforms?.uOpacity) {
-        const backOp = from.backOpacity + (to.backOpacity - from.backOpacity) * alpha;
         back.material.uniforms.uOpacity.value = backOp;
+        back.visible = backOp > 0.001 || to.backOpacity > 0.001;
+      } else if (back?.material?.uniforms?.uDitherOpacity) {
+        back.material.uniforms.uDitherOpacity.value = backOp;
         back.visible = backOp > 0.001 || to.backOpacity > 0.001;
       }
     }
 
-    if (raw >= 1) this._colorTransition = null;
+    if (raw >= 1) {
+      this._colorTransition = null;
+      // Rebuild materials at final target values so transparent/depthWrite flags
+      // are correctly set (transition may have forced transparent=true on opaque targets).
+      this.applyAll();
+    }
   }
 
 
@@ -964,6 +1077,47 @@ gl_FragColor.a = 1.0;
     meshNodeIds.forEach(id => { delete this.meshColorAssignments[id]; });
     state.markDirty();
     this.applyAll();
+  }
+
+  /**
+   * Remap mesh node IDs after model reload (fresh IDs → saved IDs).
+   * Called during project open / asset relink so color assignments survive.
+   * @param {Map<string,string>} idMap  freshId → savedId
+   */
+  remapMeshIds(idMap) {
+    const remapObj = (obj) => {
+      const remapped = {};
+      for (const [k, v] of Object.entries(obj)) {
+        const newKey = idMap.has(k) ? idMap.get(k) : k;
+        remapped[newKey] = v;
+      }
+      return remapped;
+    };
+
+    // Remap the live mesh registry (fresh IDs → saved IDs)
+    // Must happen first so applyAll() can match saved assignments to meshes.
+    for (const [freshId, savedId] of idMap) {
+      if (freshId === savedId) continue;
+      if (this.meshById.has(freshId)) {
+        this.meshById.set(savedId, this.meshById.get(freshId));
+        this.meshById.delete(freshId);
+      }
+      if (this._outlineMeshes.has(freshId)) {
+        this._outlineMeshes.set(savedId, this._outlineMeshes.get(freshId));
+        this._outlineMeshes.delete(freshId);
+      }
+      if (this._outlineBackMeshes.has(freshId)) {
+        this._outlineBackMeshes.set(savedId, this._outlineBackMeshes.get(freshId));
+        this._outlineBackMeshes.delete(freshId);
+      }
+      if (this._originalMaterials?.has(freshId)) {
+        this._originalMaterials.set(savedId, this._originalMaterials.get(freshId));
+        this._originalMaterials.delete(freshId);
+      }
+    }
+
+    this.meshColorAssignments = remapObj(this.meshColorAssignments);
+    this.meshDefaultColors    = remapObj(this.meshDefaultColors);
   }
 
   /**
@@ -1019,7 +1173,7 @@ gl_FragColor.a = 1.0;
    * depth-write dependency.
    */
   _buildAnnotatedEdgeGeometry(geometry, thresholdAngle = 35) {
-    const geo     = geometry.toNonIndexed();
+    const geo     = geometry.index ? geometry.toNonIndexed() : geometry.clone();
     const posAttr = geo.attributes.position;
     const triCount = posAttr.count / 3;
 
