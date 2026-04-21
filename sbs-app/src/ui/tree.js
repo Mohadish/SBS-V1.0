@@ -171,28 +171,8 @@ function _buildRow(node, depth) {
     _toggleVisibility(node);
   });
 
-  // ── Visibility threshold ──────────────────────────────────────
-  // Small button showing the pop-threshold (0=instant … 1=end-of-transition).
-  // Dim / blank when 0; blue + percentage when non-zero.
-  const thresh = node.visibilityThreshold ?? 0;
-  const threshBtn = document.createElement('button');
-  threshBtn.className   = 'vis-threshold';
-  threshBtn.title       = 'Visibility delay: at what point in the transition this node pops (0=instant, 1=end)';
-  threshBtn.textContent = thresh > 0 ? `${Math.round(thresh * 100)}%` : '·';
-  threshBtn.style.cssText = [
-    'font-size:9px',
-    'min-width:20px',
-    'padding:1px 3px',
-    `opacity:${thresh > 0 ? 1 : 0.22}`,
-    `color:${thresh > 0 ? '#93c5fd' : 'inherit'}`,
-  ].join(';');
-  threshBtn.addEventListener('click', e => {
-    e.stopPropagation();
-    _editThreshold(node, threshBtn);
-  });
-
   // ── Assemble row ──────────────────────────────────────────────
-  row.append(twisty, icon, label, transformGroup, eye, threshBtn);
+  row.append(twisty, icon, label, transformGroup, eye);
 
   // ── Events ───────────────────────────────────────────────────
   row.addEventListener('click', e => _onRowClick(e, node));
@@ -262,78 +242,6 @@ function _collectAllIds(node, out) {
   (node.children || []).forEach(c => _collectAllIds(c, out));
 }
 
-// ── Visibility threshold ─────────────────────────────────────────────────────
-
-function _editThreshold(node, btn) {
-  // Small inline popover with a 0–100 slider + number input
-  const existing = document.querySelector('.threshold-popover');
-  if (existing) existing.remove();
-
-  const rect   = btn.getBoundingClientRect();
-  const pop    = document.createElement('div');
-  pop.className = 'threshold-popover';
-  pop.style.cssText = [
-    'position:fixed',
-    `left:${rect.left}px`,
-    `top:${rect.bottom + 4}px`,
-    'background:#1e293b',
-    'border:1px solid #334155',
-    'border-radius:6px',
-    'padding:8px 10px',
-    'display:flex',
-    'align-items:center',
-    'gap:6px',
-    'z-index:9999',
-    'box-shadow:0 4px 12px rgba(0,0,0,0.4)',
-  ].join(';');
-
-  const current = Math.round((node.visibilityThreshold ?? 0) * 100);
-
-  const slider = document.createElement('input');
-  slider.type  = 'range';
-  slider.min   = '0';
-  slider.max   = '100';
-  slider.step  = '5';
-  slider.value = current;
-  slider.style.width = '100px';
-
-  const num = document.createElement('input');
-  num.type  = 'number';
-  num.min   = '0';
-  num.max   = '100';
-  num.step  = '5';
-  num.value = current;
-  num.style.cssText = 'width:48px;padding:2px 4px;background:#0f172a;border:1px solid #334155;border-radius:4px;color:#e2e8f0;font-size:11px';
-
-  const label = document.createElement('span');
-  label.textContent = '%';
-  label.style.cssText = 'font-size:11px;color:#94a3b8';
-
-  function _apply(v) {
-    const clamped = Math.max(0, Math.min(100, parseInt(v, 10) || 0));
-    slider.value = clamped;
-    num.value    = clamped;
-    node.visibilityThreshold = clamped / 100;
-    steps.scheduleSync();
-    renderTree();
-  }
-
-  slider.addEventListener('input',  () => _apply(slider.value));
-  num.addEventListener('change',    () => _apply(num.value));
-  num.addEventListener('keydown',   e => { if (e.key === 'Enter') { _apply(num.value); pop.remove(); } });
-
-  pop.append(slider, num, label);
-  document.body.appendChild(pop);
-
-  // Close on outside click
-  const _close = e => {
-    if (!pop.contains(e.target) && e.target !== btn) {
-      pop.remove();
-      document.removeEventListener('pointerdown', _close, true);
-    }
-  };
-  setTimeout(() => document.addEventListener('pointerdown', _close, true), 0);
-}
 
 // ── Visibility ───────────────────────────────────────────────────────────────
 

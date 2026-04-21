@@ -244,11 +244,6 @@ export function createEmptySnapshot() {
     // Visibility: nodeId → boolean
     visibility: {},
 
-    // Visibility thresholds: nodeId → 0.0–1.0
-    // Controls at what point in the transition the visibility change fires.
-    // 0.0 = immediately, 1.0 = at the very end. Default 0.
-    visibilityThresholds: {},
-
     // Transforms: nodeId → { localOffset, localQuaternion, pivotLocalOffset, pivotLocalQuaternion }
     transforms: {},
 
