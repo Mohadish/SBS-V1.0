@@ -263,6 +263,9 @@ class MaterialsSystem {
 
     // Active colour transition (set by beginColorTransition, cleared when done)
     this._colorTransition      = null;
+
+    // Active visibility fade transitions: nodeId → { from, to, startMs, durationMs, easeFn, hide }
+    this._visTransitions       = new Map();
   }
 
   // ─── Setup ───────────────────────────────────────────────────────────────
@@ -791,6 +794,25 @@ gl_FragColor.a = 1.0;
 
     this.applyGeometryOutlines();
     this.applySelectionHighlight();
+
+    // Re-apply any in-progress visibility fade values.
+    // applyAll() just rebuilt material objects (resetting transitionOpacity to 1.0)
+    // and applyGeometryOutlines() reset outline opacities — both need correction
+    // for meshes that are currently mid-fade.
+    if (this._visTransitions?.size) {
+      const now             = performance.now();
+      const outlineSettings = state.get('geometryOutline');
+      for (const [nodeId, tr] of this._visTransitions) {
+        const raw   = Math.min((now - tr.startMs) / tr.durationMs, 1);
+        const alpha = tr.easeFn(raw);
+        const t      = tr.from + (tr.to - tr.from) * alpha;
+        // backOp uses alpha (0→1 progress) so it fades correctly for both hide and show.
+        // hiding:  fromBackOp → 0    (alpha 0→1)
+        // showing: 0 → toBackOp     (alpha 0→1)
+        const backOp = tr.fromBackOp + (tr.toBackOp - tr.fromBackOp) * alpha;
+        this._setNodeTransitionOpacity(nodeId, t, outlineSettings, backOp);
+      }
+    }
   }
 
 
@@ -810,6 +832,7 @@ gl_FragColor.a = 1.0;
    */
   applySnapshot(snapshot) {
     if (!snapshot) return;
+    this.cancelVisibilityTransitions();   // snap any in-flight vis fades to final state
     this.meshColorAssignments = { ...snapshot };
     this.applyAll();
   }
@@ -962,6 +985,17 @@ gl_FragColor.a = 1.0;
       }
     }
 
+    // Patch toBackOp for showing-vis-transitions now that meshColorAssignments
+    // has been updated to the target snapshot (so solidness is the target solidness).
+    // Must NOT read toValues.backOpacity — applyAll's vis-reapply zeroed those.
+    if (this._visTransitions.size) {
+      const outlineSettings = state.get('geometryOutline');
+      for (const [nodeId, tr] of this._visTransitions) {
+        if (tr.hide) continue;
+        tr.toBackOp = this._computeTargetBackOp(nodeId, outlineSettings);
+      }
+    }
+
     this._colorTransition = {
       fromValues, toValues,
       startMs:    performance.now(),
@@ -1034,15 +1068,18 @@ gl_FragColor.a = 1.0;
         mat.envMapIntensity = lerp(from.reflectionIntensity, to.reflectionIntensity) * 0.5;
       }
 
-      // Back outline opacity
-      const back = this._outlineBackMeshes.get(nodeId);
-      const backOp = lerp(from.backOpacity, to.backOpacity);
-      if (back?.material?.uniforms?.uOpacity) {
-        back.material.uniforms.uOpacity.value = backOp;
-        back.visible = backOp > 0.001 || to.backOpacity > 0.001;
-      } else if (back?.material?.uniforms?.uDitherOpacity) {
-        back.material.uniforms.uDitherOpacity.value = backOp;
-        back.visible = backOp > 0.001 || to.backOpacity > 0.001;
+      // Back outline opacity — skip if a visibility transition is already driving it
+      // (advanceVisibilityTransitions runs after this and uses stored fromBackOp/toBackOp)
+      if (!this._visTransitions.has(nodeId)) {
+        const back   = this._outlineBackMeshes.get(nodeId);
+        const backOp = lerp(from.backOpacity, to.backOpacity);
+        if (back?.material?.uniforms?.uOpacity) {
+          back.material.uniforms.uOpacity.value = backOp;
+          back.visible = backOp > 0.001 || to.backOpacity > 0.001;
+        } else if (back?.material?.uniforms?.uDitherOpacity) {
+          back.material.uniforms.uDitherOpacity.value = backOp;
+          back.visible = backOp > 0.001 || to.backOpacity > 0.001;
+        }
       }
     }
 
@@ -1052,6 +1089,180 @@ gl_FragColor.a = 1.0;
       // are correctly set (transition may have forced transparent=true on opaque targets).
       this.applyAll();
     }
+  }
+
+
+  // ═══════════════════════════════════════════════════════════════════════
+  //  VISIBILITY FADE TRANSITIONS (per-mesh dither fade on show/hide)
+  // ═══════════════════════════════════════════════════════════════════════
+
+  /**
+   * Set transitionOpacity + outline opacities for a single mesh node at time t (0–1).
+   * t=0 → fully invisible (dithered out), t=1 → fully visible.
+   *
+   * Back outline is driven by the stored fromBackOp/toBackOp values captured at
+   * transition start — NOT recomputed from current solidness — so a simultaneous
+   * colour transition (e.g. solidness 0.3 → 1.0) can't clobber the back-fade curve.
+   *
+   * @param {string}  nodeId
+   * @param {number}  t                0–1 visibility opacity (drives dither + front outline)
+   * @param {object}  [outlineSettings] pre-fetched geometryOutline state
+   * @param {number}  [backOp]          pre-computed back outline opacity (skip if undefined)
+   */
+  _setNodeTransitionOpacity(nodeId, t, outlineSettings, backOp) {
+    const mesh = this.meshById.get(nodeId);
+    if (!mesh) return;
+
+    const settings = outlineSettings ?? state.get('geometryOutline');
+
+    // ── Mesh material dither fade ────────────────────────────────────────
+    this._setMaterialFade(mesh.material, t);
+    const backPass = mesh.userData.falloffBackPass;
+    if (backPass) this._setMaterialFade(backPass.material, t);
+
+    if (!settings?.enabled) return;
+
+    const globalOpacity = settings.opacity ?? 0.9;
+
+    // ── Front outline: scale by t ────────────────────────────────────────
+    const front = this._outlineMeshes.get(nodeId);
+    if (front?.material?.uniforms?.uOpacity !== undefined) {
+      front.material.uniforms.uOpacity.value = globalOpacity * t;
+    }
+
+    // ── Back outline: use pre-computed value if provided ─────────────────
+    if (backOp !== undefined) {
+      const back = this._outlineBackMeshes.get(nodeId);
+      if (back?.material?.uniforms?.uOpacity !== undefined) {
+        back.material.uniforms.uOpacity.value = backOp;
+        back.visible = backOp > 0.001;
+      }
+    }
+  }
+
+  /**
+   * Compute the steady-state back-outline opacity for a node from its current
+   * meshColorAssignments entry. Call after updating assignments to target snapshot.
+   */
+  _computeTargetBackOp(nodeId, outlineSettings) {
+    const settings = outlineSettings ?? state.get('geometryOutline');
+    if (!settings?.enabled) return 0;
+    const overrideMode  = state.get('solidOverride');
+    const presets       = state.get('colorPresets') || [];
+    const presetById    = new Map(presets.map(p => [p.id, p]));
+    const presetId      = this.meshColorAssignments[nodeId];
+    const preset        = presetId ? presetById.get(presetId) : null;
+    const solidness     = (overrideMode && preset) ? (preset.solidness ?? 1.0) : 1.0;
+    const globalOpacity = settings.opacity ?? 0.9;
+    return Math.min(1, Math.max(0, (0.9 - solidness) / 0.6)) * globalOpacity;
+  }
+
+  /**
+   * Begin visibility fade transitions for a set of hiding / showing mesh nodes.
+   * Must be called BEFORE beginColorTransition (so applyAll reapplies fades).
+   *
+   * Hiding meshes: caller keeps obj.visible=true; we fade transitionOpacity 1→0,
+   *   then set obj.visible=false when complete.
+   * Showing meshes: obj.visible is already true; we fade transitionOpacity 0→1.
+   *
+   * @param {string[]}   hidingIds    mesh nodeIds going visible → hidden
+   * @param {string[]}   showingIds   mesh nodeIds going hidden → visible
+   * @param {number}     durationMs
+   * @param {function}   easeFn
+   */
+  beginVisibilityTransitions(hidingIds, showingIds, durationMs, easeFn) {
+    const now             = performance.now();
+    const outlineSettings = state.get('geometryOutline');
+
+    for (const nodeId of hidingIds) {
+      // Capture the back outline's current opacity as the "from" value.
+      // This must happen BEFORE beginColorTransition updates meshColorAssignments,
+      // so the FROM solidness is still correct.
+      const back       = this._outlineBackMeshes.get(nodeId);
+      const fromBackOp = back?.material?.uniforms?.uOpacity?.value ?? 0;
+
+      // alpha=0 at start → backOp = fromBackOp + (0 - fromBackOp)*0 = fromBackOp
+      this._setNodeTransitionOpacity(nodeId, 1.0, outlineSettings, fromBackOp);
+      this._visTransitions.set(nodeId, {
+        from: 1.0, to: 0.0,
+        fromBackOp, toBackOp: 0,           // back outline fades fromBackOp → 0
+        startMs: now, durationMs: Math.max(durationMs, 1),
+        easeFn, hide: true,
+      });
+    }
+
+    for (const nodeId of showingIds) {
+      // alpha=0 at start → backOp = 0 + (toBackOp - 0)*0 = 0
+      // toBackOp is patched by beginColorTransition after target materials are built.
+      this._setNodeTransitionOpacity(nodeId, 0.0, outlineSettings, 0);
+      this._visTransitions.set(nodeId, {
+        from: 0.0, to: 1.0,
+        fromBackOp: 0, toBackOp: 0,        // toBackOp patched by beginColorTransition
+        startMs: now, durationMs: Math.max(durationMs, 1),
+        easeFn, hide: false,
+      });
+    }
+  }
+
+  /**
+   * Advance per-mesh visibility fade transitions by one frame.
+   * Called each tick by steps._advanceObjectTransitions (AFTER advanceColorTransition).
+   *
+   * @param {number}  nowMs
+   * @param {Map}     object3dById   steps.object3dById
+   */
+  advanceVisibilityTransitions(nowMs, object3dById) {
+    if (!this._visTransitions.size) return;
+
+    const outlineSettings = state.get('geometryOutline');
+    const done            = [];
+
+    for (const [nodeId, tr] of this._visTransitions) {
+      const raw   = Math.min((nowMs - tr.startMs) / tr.durationMs, 1);
+      const alpha = tr.easeFn(raw);
+      const t     = tr.from + (tr.to - tr.from) * alpha;
+
+      // alpha (0→1) drives back opacity correctly for both directions:
+      //   hiding:  fromBackOp→0       showing: 0→toBackOp
+      const backOp = tr.fromBackOp + (tr.toBackOp - tr.fromBackOp) * alpha;
+      this._setNodeTransitionOpacity(nodeId, t, outlineSettings, backOp);
+
+      if (raw >= 1) done.push(nodeId);
+    }
+
+    for (const nodeId of done) {
+      const tr = this._visTransitions.get(nodeId);
+      this._visTransitions.delete(nodeId);
+
+      if (tr.hide) {
+        // Fade complete — now actually hide the Three.js object
+        const obj = object3dById.get(nodeId);
+        if (obj) obj.visible = false;
+        // Reset transitionOpacity to 1.0 so the object renders normally if shown again
+        const mesh = this.meshById.get(nodeId);
+        if (mesh) this._setMaterialFade(mesh.material, 1.0);
+        const bp = mesh?.userData?.falloffBackPass;
+        if (bp) this._setMaterialFade(bp.material, 1.0);
+      }
+      // showing: already at t=1.0, outline opacity already at target — nothing more to do
+    }
+  }
+
+  /**
+   * Cancel all in-progress visibility transitions immediately.
+   * Resets transitionOpacity to 1.0 on all fading meshes.
+   * The caller (applySnapshot / applySnapshotInstant) is responsible for setting
+   * obj.visible to the correct final state.
+   */
+  cancelVisibilityTransitions() {
+    if (!this._visTransitions.size) return;
+    for (const [nodeId] of this._visTransitions) {
+      const mesh = this.meshById.get(nodeId);
+      if (mesh) this._setMaterialFade(mesh.material, 1.0);
+      const bp = mesh?.userData?.falloffBackPass;
+      if (bp) this._setMaterialFade(bp.material, 1.0);
+    }
+    this._visTransitions.clear();
   }
 
 

@@ -250,23 +250,47 @@ class StepManager {
       });
     }
 
-    // ── Visibility: apply immediately or fade (fade TODO: opacity anim) ──
-    // For now apply visibility at the midpoint of the animation
-    // (matches original POC behaviour where visibility pops at the start)
-    if (transition.visibilityFade) {
-      // Apply visibility at the 50% mark via a timeout
-      const halfDuration = Math.max(durationMs, objDurationMs) / 2;
-      setTimeout(() => {
-        if (toSnapshot.visibility) {
-          applyVisibilitySnapshot(nodeById, toSnapshot.visibility);
-          applyAllVisibilityToScene(nodeById, this.object3dById);
+    // ── Visibility: dither-fade meshes in/out ────────────────────────────
+    // Instead of instant obj.visible toggle (which pops the stencil buffer and
+    // makes back-outlines jump), we keep meshes visible and fade them via
+    // transitionOpacity dither, then hide them when the fade completes.
+    if (toSnapshot.visibility) {
+      // Record current effective (Three.js) visibility of every tracked mesh.
+      const prevMeshVis = new Map();
+      if (this._materials) {
+        for (const [nodeId] of this._materials.meshById) {
+          const obj = this.object3dById.get(nodeId);
+          prevMeshVis.set(nodeId, obj ? obj.visible : false);
         }
-      }, halfDuration);
-    } else {
-      // Instant
-      if (toSnapshot.visibility) {
-        applyVisibilitySnapshot(nodeById, toSnapshot.visibility);
-        applyAllVisibilityToScene(nodeById, this.object3dById);
+      }
+
+      // Apply the data-model visibility change and propagate to Three.js.
+      applyVisibilitySnapshot(nodeById, toSnapshot.visibility);
+      applyAllVisibilityToScene(nodeById, this.object3dById);
+
+      // Compute which mesh nodes changed effective (Three.js) visibility.
+      const hidingMeshIds  = [];
+      const showingMeshIds = [];
+      if (this._materials) {
+        for (const [nodeId] of this._materials.meshById) {
+          const prevVis = prevMeshVis.get(nodeId) ?? false;
+          const obj     = this.object3dById.get(nodeId);
+          const newVis  = obj ? obj.visible : false;
+          if (prevVis && !newVis) {
+            hidingMeshIds.push(nodeId);
+            if (obj) obj.visible = true;   // keep visible — fade will hide it
+          } else if (!prevVis && newVis) {
+            showingMeshIds.push(nodeId);
+          }
+        }
+      }
+
+      // Start per-mesh dither fades (BEFORE beginColorTransition so that
+      // applyAll() inside beginColorTransition reapplies fade values).
+      if (this._materials && (hidingMeshIds.length || showingMeshIds.length)) {
+        this._materials.beginVisibilityTransitions(
+          hidingMeshIds, showingMeshIds, objDurationMs, easeFn,
+        );
       }
     }
 
@@ -292,6 +316,9 @@ class StepManager {
   _advanceObjectTransitions(nowMs) {
     // Advance material colour transition every frame (independent of object transforms)
     this._materials?.advanceColorTransition(nowMs);
+
+    // Advance per-mesh visibility fades (runs AFTER colour — overrides back-outline opacity)
+    this._materials?.advanceVisibilityTransitions(nowMs, this.object3dById);
 
     if (!this._objectTransitions.length) return;
 
