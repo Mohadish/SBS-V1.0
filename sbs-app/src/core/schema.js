@@ -101,6 +101,12 @@ export function createEmptyProject() {
       outlineColor: '#00ffff',
     },
 
+    // Animation presets — phased transition definitions
+    animationPresets: {
+      schema_version: 1,
+      items: [],          // AnimationPreset[]
+    },
+
     // App-level settings saved with the project
     settings: {
       schema_version: 1,
@@ -222,10 +228,11 @@ export function createStep(overrides = {}) {
 
     // Transition settings (how to animate INTO this step)
     transition: {
-      durationMs:       1500,       // camera + object animation duration
+      durationMs:       1500,       // camera + object animation duration (simultaneous fallback)
       cameraEasing:     'smooth',   // 'smooth' | 'linear' | 'instant'
       objectEasing:     'smooth',
       visibilityFade:   true,       // fade visibility changes
+      animPresetId:     null,       // null = use project default (or simultaneous fallback)
     },
 
     // ── THE SNAPSHOT: complete scene state ────────────────────────────────
@@ -421,6 +428,25 @@ export function createCameraView(overrides = {}) {
     id:       generateId('cam'),
     name:     'View',
     ...createCameraState(),
+    ...overrides,
+  };
+}
+
+
+// ═══════════════════════════════════════════════════════════════════════════
+//  ANIMATION PRESET
+// ═══════════════════════════════════════════════════════════════════════════
+/**
+ * An animation preset defines phased transition behaviour.
+ * Syntax: 'camera(500), color(300), obj+visibility(400)'
+ * Phases run sequentially; types within a phase run simultaneously.
+ */
+export function createAnimationPreset(overrides = {}) {
+  return {
+    id:        generateId('anim'),
+    name:      'New Animation',
+    animation: 'camera(500), color(500), visibility(500), obj(500)',
+    isDefault: false,
     ...overrides,
   };
 }

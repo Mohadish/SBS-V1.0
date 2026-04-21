@@ -64,6 +64,7 @@ export function initStepsPanel() {
   state.on('change:activeStepId',         renderStepsPanel);
   state.on('change:cameraAnimDurationMs', _syncDurationInputs);
   state.on('change:objectAnimDurationMs', _syncDurationInputs);
+  state.on('change:animationPresets',     renderStepsPanel);
 
   _syncDurationInputs();
   renderStepsPanel();
@@ -254,18 +255,50 @@ function _buildStepCard(step, idx, isActive, total) {
 // ── Transition row ────────────────────────────────────────────────────────────
 
 function _buildTransitionRow(step) {
-  const t         = step.transition || {};
-  const globalCam = state.get('cameraAnimDurationMs') ?? 1500;
-  const globalObj = state.get('objectAnimDurationMs') ?? 1500;
+  const t           = step.transition || {};
+  const globalCam   = state.get('cameraAnimDurationMs') ?? 1500;
+  const globalObj   = state.get('objectAnimDurationMs') ?? 1500;
   const hasOverride = t.durationOverride === true;
-  const stepId = step.id;
+  const stepId      = step.id;
+  const animPresets = state.get('animationPresets') || [];
+
+  // Resolve which preset is active (step → project default → none)
+  const stepPresetId   = t.animPresetId ?? null;
+  const defaultPreset  = animPresets.find(p => p.isDefault);
+  const activePresetId = stepPresetId || defaultPreset?.id || null;
+  const activePreset   = animPresets.find(p => p.id === activePresetId);
 
   const wrap = document.createElement('div');
   wrap.className = 'card';
   wrap.style.marginTop = '6px';
   wrap.style.fontSize  = '12px';
 
+  // ── Animation preset selector ─────────────────────────────────────────────
+  const presetOptions = [
+    `<option value="" ${!stepPresetId ? 'selected' : ''}>Project default${defaultPreset ? ` (${_escStep(defaultPreset.name)})` : ' — none'}</option>`,
+    ...animPresets.map(p =>
+      `<option value="${_escStep(p.id)}" ${stepPresetId === p.id ? 'selected' : ''}>${_escStep(p.name)}</option>`
+    ),
+  ].join('');
+
+  // When a preset is active, show its animation string and hide legacy controls
+  const usingPreset = !!activePreset;
+
   wrap.innerHTML = `
+    ${animPresets.length > 0 ? `
+    <label class="colorlab">Animation preset
+      <select class="tran-anim-preset" style="margin-top:4px">
+        ${presetOptions}
+      </select>
+    </label>
+    ${usingPreset ? `
+    <div class="small muted" style="margin-top:5px;padding:4px 6px;background:rgba(255,255,255,0.04);border-radius:4px;font-family:monospace;font-size:10px;word-break:break-all">
+      ${_escStep(activePreset.animation)}
+    </div>` : ''}
+    <div style="margin-top:8px;border-top:1px solid rgba(255,255,255,0.08);padding-top:8px"></div>
+    ` : ''}
+
+    ${!usingPreset ? `
     <label style="display:flex;align-items:center;gap:6px;cursor:pointer;">
       <input type="checkbox" class="tran-override" ${hasOverride ? 'checked' : ''} />
       <span class="small muted">Override global durations</span>
@@ -281,6 +314,9 @@ function _buildTransitionRow(step) {
       </label>
     </div>` : `
     <div class="small muted" style="margin-top:6px;">📐 Camera: ${globalCam}ms &nbsp; Objects: ${globalObj}ms</div>`}
+    ` : `
+    <div class="small muted" style="margin-top:2px;">Durations defined by preset above.</div>
+    `}
 
     <div class="grid2" style="margin-top:8px;">
       <label class="colorlab">Camera easing
@@ -305,7 +341,11 @@ function _buildTransitionRow(step) {
     </label>
   `;
 
-  wrap.querySelector('.tran-override').addEventListener('change', e => {
+  // ── Event listeners ───────────────────────────────────────────────────────
+  wrap.querySelector('.tran-anim-preset')?.addEventListener('change', e => {
+    actions.updateTransition(stepId, { animPresetId: e.target.value || null });
+  });
+  wrap.querySelector('.tran-override')?.addEventListener('change', e => {
     actions.updateTransition(stepId, { durationOverride: e.target.checked });
   });
   wrap.querySelector('.tran-cam-dur')?.addEventListener('change', e => {
@@ -325,6 +365,11 @@ function _buildTransitionRow(step) {
   });
 
   return wrap;
+}
+
+function _escStep(s) {
+  return String(s ?? '').replace(/[&<>"']/g,
+    c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[c]);
 }
 
 // ── Chapter actions ──────────────────────────────────────────────────────────

@@ -25,6 +25,7 @@
 import state                        from '../core/state.js';
 import sceneCore                    from '../core/scene.js';
 import { createStep, createEmptySnapshot } from '../core/schema.js';
+import { parseAnimation, resolveAnimationString } from './animation.js';
 import {
   captureVisibilitySnapshot,
   applyVisibilitySnapshot,
@@ -201,7 +202,8 @@ class StepManager {
 
   /**
    * Animate from the current scene state to a step snapshot.
-   * Kicks off camera animation (via sceneCore) and object transitions (via tick hook).
+   * If the step (or project) has an animation preset, runs phases sequentially.
+   * Otherwise falls back to the previous simultaneous mode (global cam/obj durations).
    *
    * @param {Snapshot} toSnapshot
    * @param {object}   transition  step.transition settings
@@ -210,106 +212,204 @@ class StepManager {
   async applySnapshotAnimated(toSnapshot, transition = {}) {
     if (!toSnapshot) { this.applySnapshotInstant(toSnapshot); return; }
 
-    // Resolve durations: per-step override takes precedence, otherwise global settings
-    const globalCam  = state.get('cameraAnimDurationMs') ?? 1500;
-    const globalObj  = state.get('objectAnimDurationMs') ?? 1500;
-    const useOverride = transition.durationOverride === true;
-    const durationMs  = useOverride
-      ? (transition.cameraDurationMs ?? globalCam)
-      : globalCam;
-    const objDurationMs = useOverride
-      ? (transition.objectDurationMs ?? globalObj)
-      : globalObj;
-    const easing     = transition.cameraEasing ?? 'smooth';
-    const objEasing  = transition.objectEasing ?? 'smooth';
+    const globalCam = state.get('cameraAnimDurationMs') ?? 1500;
+    const globalObj = state.get('objectAnimDurationMs') ?? 1500;
+    const easing    = transition.cameraEasing ?? 'smooth';
+    const objEasing = transition.objectEasing ?? 'smooth';
+    const easeFn    = EASING[objEasing] ?? easeSmooth;
     const { nodeById } = state.pick('nodeById');
 
-    // ── Camera ──────────────────────────────────────────────────────────
-    const cameraP = toSnapshot.camera
-      ? sceneCore.animateCameraTo(toSnapshot.camera, durationMs, easing)
-      : Promise.resolve();
-
-    // ── Object transforms ─────────────────────────────────────────────
+    // ── Precompute diffs (shared by both animation paths) ────────────────
     const currentTransforms = captureAllTransforms(state.get('treeData'));
-    const changedNodeIds     = diffTransforms(currentTransforms, toSnapshot.transforms ?? {});
+    const changedNodeIds    = diffTransforms(currentTransforms, toSnapshot.transforms ?? {});
 
-    const easeFn = EASING[objEasing] ?? easeSmooth;
-    const startMs = performance.now();
+    // Apply target visibility now and compute which meshes are hiding/showing.
+    // Hiding meshes are kept obj.visible=true for dither-fade.
+    // Showing meshes will be snapped to opacity=0 so they're invisible before
+    // their visibility phase.
+    const { hidingMeshIds, showingMeshIds } = this._prepareVisibility(
+      nodeById, toSnapshot.visibility,
+    );
 
-    // Cancel any existing object transitions
-    this._objectTransitions = [];
+    // ── Resolve animation preset ─────────────────────────────────────────
+    const animStr = resolveAnimationString(
+      transition, state.get('animationPresets') || [],
+    );
+    const phases = animStr ? parseAnimation(animStr) : null;
 
-    for (const nodeId of changedNodeIds) {
-      const from = currentTransforms[nodeId];
-      const to   = toSnapshot.transforms?.[nodeId];
-      if (!from || !to) continue;
+    let cameraHandled = false;
 
-      this._objectTransitions.push({
-        nodeId, from, to,
-        startMs, durationMs: objDurationMs, easeFn,
+    if (phases) {
+      // ── PHASED MODE ───────────────────────────────────────────────────
+      // Showing meshes must be invisible during pre-vis phases.
+      if (showingMeshIds.length) {
+        this._materials?.snapShowingToZero(showingMeshIds);
+      }
+
+      cameraHandled = await this._runPhasedAnimation(toSnapshot, phases, {
+        currentTransforms, changedNodeIds,
+        hidingMeshIds, showingMeshIds,
+        easing, easeFn,
       });
-    }
+    } else {
+      // ── SIMULTANEOUS MODE (legacy / no preset) ────────────────────────
+      cameraHandled = true;
+      const useOverride  = transition.durationOverride === true;
+      const cameraDur    = useOverride ? (transition.cameraDurationMs ?? globalCam) : globalCam;
+      const objDur       = useOverride ? (transition.objectDurationMs  ?? globalObj) : globalObj;
 
-    // ── Visibility: dither-fade meshes in/out ────────────────────────────
-    // Instead of instant obj.visible toggle (which pops the stencil buffer and
-    // makes back-outlines jump), we keep meshes visible and fade them via
-    // transitionOpacity dither, then hide them when the fade completes.
-    if (toSnapshot.visibility) {
-      // Record current effective (Three.js) visibility of every tracked mesh.
-      const prevMeshVis = new Map();
-      if (this._materials) {
-        for (const [nodeId] of this._materials.meshById) {
-          const obj = this.object3dById.get(nodeId);
-          prevMeshVis.set(nodeId, obj ? obj.visible : false);
-        }
+      // Camera
+      const cameraP = toSnapshot.camera
+        ? sceneCore.animateCameraTo(toSnapshot.camera, cameraDur, easing)
+        : Promise.resolve();
+
+      // Object transforms
+      this._objectTransitions = [];
+      const startMs = performance.now();
+      for (const nodeId of changedNodeIds) {
+        const from = currentTransforms[nodeId];
+        const to   = toSnapshot.transforms?.[nodeId];
+        if (!from || !to) continue;
+        this._objectTransitions.push({ nodeId, from, to, startMs, durationMs: objDur, easeFn });
       }
 
-      // Apply the data-model visibility change and propagate to Three.js.
-      applyVisibilitySnapshot(nodeById, toSnapshot.visibility);
-      applyAllVisibilityToScene(nodeById, this.object3dById);
-
-      // Compute which mesh nodes changed effective (Three.js) visibility.
-      const hidingMeshIds  = [];
-      const showingMeshIds = [];
-      if (this._materials) {
-        for (const [nodeId] of this._materials.meshById) {
-          const prevVis = prevMeshVis.get(nodeId) ?? false;
-          const obj     = this.object3dById.get(nodeId);
-          const newVis  = obj ? obj.visible : false;
-          if (prevVis && !newVis) {
-            hidingMeshIds.push(nodeId);
-            if (obj) obj.visible = true;   // keep visible — fade will hide it
-          } else if (!prevVis && newVis) {
-            showingMeshIds.push(nodeId);
-          }
-        }
-      }
-
-      // Start per-mesh dither fades (BEFORE beginColorTransition so that
-      // applyAll() inside beginColorTransition reapplies fade values).
-      if (this._materials && (hidingMeshIds.length || showingMeshIds.length)) {
-        this._materials.beginVisibilityTransitions(
-          hidingMeshIds, showingMeshIds, objDurationMs, easeFn,
+      // Visibility fades (BEFORE beginColorTransition)
+      if (hidingMeshIds.length || showingMeshIds.length) {
+        this._materials?.beginVisibilityTransitions(
+          hidingMeshIds, showingMeshIds, objDur, easeFn,
         );
       }
+
+      // Color/material transition
+      if (toSnapshot.materials && this._materials) {
+        this._materials.beginColorTransition(toSnapshot.materials, objDur, easeFn);
+      }
+
+      const objectP = new Promise(resolve => {
+        if (!this._objectTransitions.length) { resolve(); return; }
+        this._onObjectTransitionsDone = resolve;
+      });
+
+      await Promise.all([cameraP, objectP]);
     }
-
-    // ── Materials: animate colour/solidness/outline-opacity ──────────────
-    if (toSnapshot.materials && this._materials) {
-      this._materials.beginColorTransition(toSnapshot.materials, objDurationMs, easeFn);
-    }
-
-    // Wait for all animations to complete
-    const objectP = new Promise(resolve => {
-      if (this._objectTransitions.length === 0) { resolve(); return; }
-      // Will resolve when last transition finishes in _advanceObjectTransitions
-      this._onObjectTransitionsDone = resolve;
-    });
-
-    await Promise.all([cameraP, objectP]);
 
     // ── Final: snap to exact target state ─────────────────────────────
-    this.applySnapshotInstant(toSnapshot, { suppressCamera: true });
+    // suppressCamera=true only when camera was already animated to target.
+    this.applySnapshotInstant(toSnapshot, { suppressCamera: cameraHandled });
+  }
+
+  /**
+   * Apply target visibility to the scene and compute which mesh nodes changed.
+   * Hiding meshes have obj.visible kept=true (for fade-out).
+   * Returns arrays of hiding/showing nodeIds for the animation system.
+   *
+   * @private
+   */
+  _prepareVisibility(nodeById, visibilitySnapshot) {
+    const hidingMeshIds  = [];
+    const showingMeshIds = [];
+    if (!visibilitySnapshot || !this._materials) {
+      return { hidingMeshIds, showingMeshIds };
+    }
+
+    // Record current Three.js visibility
+    const prevMeshVis = new Map();
+    for (const [nodeId] of this._materials.meshById) {
+      const obj = this.object3dById.get(nodeId);
+      prevMeshVis.set(nodeId, obj ? obj.visible : false);
+    }
+
+    // Apply target visibility to data model + Three.js objects
+    applyVisibilitySnapshot(nodeById, visibilitySnapshot);
+    applyAllVisibilityToScene(nodeById, this.object3dById);
+
+    // Compute which meshes changed effective visibility
+    for (const [nodeId] of this._materials.meshById) {
+      const prevVis = prevMeshVis.get(nodeId) ?? false;
+      const obj     = this.object3dById.get(nodeId);
+      const newVis  = obj ? obj.visible : false;
+      if (prevVis && !newVis) {
+        hidingMeshIds.push(nodeId);
+        if (obj) obj.visible = true;   // keep visible — fade will hide it
+      } else if (!prevVis && newVis) {
+        showingMeshIds.push(nodeId);
+      }
+    }
+
+    return { hidingMeshIds, showingMeshIds };
+  }
+
+  /**
+   * Run phases sequentially. Each phase starts its subset of animations and
+   * waits for phaseDuration before advancing to the next phase.
+   * Returns true (camera was handled by a phase) or false.
+   *
+   * @private
+   */
+  async _runPhasedAnimation(toSnapshot, phases, opts) {
+    const { currentTransforms, changedNodeIds, hidingMeshIds, showingMeshIds, easing, easeFn } = opts;
+
+    let cameraHandled = false;
+    let objHandled    = false;
+    let colorHandled  = false;
+    let visHandled    = false;
+
+    for (const phase of phases) {
+      const { types, durationMs } = phase;
+      const phasePromises = [];
+
+      // Camera
+      if (types.includes('camera') && !cameraHandled && toSnapshot.camera) {
+        cameraHandled = true;
+        phasePromises.push(sceneCore.animateCameraTo(toSnapshot.camera, durationMs, easing));
+      }
+
+      // Object transforms
+      if (types.includes('obj') && !objHandled && changedNodeIds.length) {
+        objHandled = true;
+        this._objectTransitions = [];
+        const startMs = performance.now();
+        for (const nodeId of changedNodeIds) {
+          const from = currentTransforms[nodeId];
+          const to   = toSnapshot.transforms?.[nodeId];
+          if (!from || !to) continue;
+          this._objectTransitions.push({ nodeId, from, to, startMs, durationMs, easeFn });
+        }
+        if (this._objectTransitions.length) {
+          phasePromises.push(new Promise(resolve => {
+            this._onObjectTransitionsDone = resolve;
+          }));
+        }
+      }
+
+      // Visibility fades (BEFORE color so applyAll inside beginColorTransition
+      // can reapply fade values via the _visTransitions reapply block)
+      if (types.includes('visibility') && !visHandled &&
+          (hidingMeshIds.length || showingMeshIds.length)) {
+        visHandled = true;
+        this._materials?.beginVisibilityTransitions(
+          hidingMeshIds, showingMeshIds, durationMs, easeFn,
+        );
+      }
+
+      // Color/material transition
+      if (types.includes('color') && !colorHandled &&
+          toSnapshot.materials && this._materials) {
+        colorHandled = true;
+        this._materials.beginColorTransition(toSnapshot.materials, durationMs, easeFn);
+        // beginColorTransition calls applyAll() which resets transitionOpacity=1.0
+        // on all meshes. If the vis phase hasn't run yet, re-zero showing meshes
+        // so they stay invisible until their phase starts.
+        if (!visHandled && showingMeshIds.length) {
+          this._materials.snapShowingToZero(showingMeshIds);
+        }
+      }
+
+      // Wait for this phase's duration (and any sub-promises that finish sooner)
+      await Promise.all([_sleep(durationMs), ...phasePromises]);
+    }
+
+    return cameraHandled;
   }
 
   // ─── Object transition tick ────────────────────────────────────────────
@@ -377,10 +477,15 @@ class StepManager {
     state.setActiveStep(stepId);
     state.markDirty();
 
-    const { durationMs = 1500 } = step.transition ?? {};
+    const tr = step.transition ?? {};
+    const { durationMs = 1500 } = tr;
 
-    if (animate && durationMs > 0) {
-      await this.applySnapshotAnimated(step.snapshot, step.transition ?? {});
+    // Animate if: animate=true AND (legacy durationMs > 0 OR a phased preset is active)
+    const animStr = resolveAnimationString(tr, state.get('animationPresets') || []);
+    const shouldAnimate = animate && (durationMs > 0 || animStr !== null);
+
+    if (shouldAnimate) {
+      await this.applySnapshotAnimated(step.snapshot, tr);
     } else {
       this.applySnapshotInstant(step.snapshot);
     }
@@ -733,6 +838,13 @@ function applyAllTransformsToScene(nodeById, object3dById) {
   // Batch matrix world update
   const root3d = sceneCore.rootGroup;
   if (root3d) root3d.updateMatrixWorld(true);
+}
+
+
+// ── Helpers ────────────────────────────────────────────────────────────────
+
+function _sleep(ms) {
+  return new Promise(resolve => setTimeout(resolve, Math.max(0, ms)));
 }
 
 

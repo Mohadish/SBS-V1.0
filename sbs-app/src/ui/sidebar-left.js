@@ -21,8 +21,9 @@ import { setStatus }       from './status.js';
 import { createCameraView, generateId, APP_VERSION, APP_RELEASED } from '../core/schema.js';
 import { buildNodeMap }    from '../core/nodes.js';
 import { showContextMenu } from './context-menu.js';
+import { renderAnimationTab } from './animation-tab.js';
 
-const TABS = ['files', 'tree', 'colors', 'select', 'cameras', 'export'];
+const TABS = ['files', 'tree', 'colors', 'select', 'cameras', 'animation', 'export'];
 let _activeTab   = 'files';
 let _container   = null;
 let _treeInited  = false;
@@ -42,6 +43,7 @@ export function initSidebarLeft() {
       <button class="tabBtn"        data-tab="colors">Colors</button>
       <button class="tabBtn"        data-tab="select">Select</button>
       <button class="tabBtn"        data-tab="cameras">Cameras</button>
+      <button class="tabBtn"        data-tab="animation">Anim</button>
       <button class="tabBtn"        data-tab="export">Export</button>
     </div>
     <div class="sidebar-panels" id="left-panels"></div>
@@ -68,9 +70,10 @@ export function initSidebarLeft() {
   state.on('materials:defaultColorsChanged',() => { if (_activeTab === 'colors')  _renderColorsTab(); });
   state.on('change:selectedId',            () => { if (_activeTab === 'colors')  _renderColorsTab(); });
   state.on('change:multiSelectedIds',      () => { if (_activeTab === 'colors')  _renderColorsTab(); });
-  state.on('change:cameraViews',           () => { if (_activeTab === 'cameras') _renderCamerasTab(); });
-  state.on('change:projectDirty',          () => { if (_activeTab === 'files')   _renderFilesTab(); });
-  state.on('change:selectionOutlineColor', () => { if (_activeTab === 'select')  _renderSelectTab(); });
+  state.on('change:cameraViews',           () => { if (_activeTab === 'cameras')   _renderCamerasTab(); });
+  state.on('change:projectDirty',          () => { if (_activeTab === 'files')    _renderFilesTab(); });
+  state.on('change:selectionOutlineColor', () => { if (_activeTab === 'select')   _renderSelectTab(); });
+  state.on('change:animationPresets',      () => { if (_activeTab === 'animation') _renderAnimTab(); });
 
   _renderActiveTab();
 
@@ -98,13 +101,18 @@ function _panel(tab) { return document.getElementById(`tab-panel-${tab}`); }
 
 function _renderActiveTab() {
   switch (_activeTab) {
-    case 'files':   _renderFilesTab();   break;
-    case 'tree':    _renderTreeTab();    break;
-    case 'colors':  _renderColorsTab();  break;
-    case 'select':  _renderSelectTab();  break;
-    case 'cameras': _renderCamerasTab(); break;
-    case 'export':  _renderExportTab();  break;
+    case 'files':     _renderFilesTab();   break;
+    case 'tree':      _renderTreeTab();    break;
+    case 'colors':    _renderColorsTab();  break;
+    case 'select':    _renderSelectTab();  break;
+    case 'cameras':   _renderCamerasTab(); break;
+    case 'animation': _renderAnimTab();    break;
+    case 'export':    _renderExportTab();  break;
   }
+}
+
+function _renderAnimTab() {
+  renderAnimationTab(_panel('animation'));
 }
 
 

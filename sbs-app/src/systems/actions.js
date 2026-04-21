@@ -15,6 +15,7 @@ import { undoManager }          from './undo.js';
 import { selectionActs }        from './select-act.js';
 import { materials }            from '../systems/materials.js';
 import steps                    from '../systems/steps.js';
+import { createAnimationPreset } from '../core/schema.js';
 import {
   applyAllVisibility,
   captureTransformSnapshot,
@@ -444,6 +445,100 @@ export function resetTransform(nodeId) {
       const o = steps.object3dById?.get(nodeId);
       if (o) applyNodeTransformToObject3D(n, o);
       steps.scheduleSync();
+    },
+  );
+}
+
+
+// ═══════════════════════════════════════════════════════════════════════════
+//  ANIMATION PRESET ACTIONS
+// ═══════════════════════════════════════════════════════════════════════════
+
+export function createAnimPreset(name) {
+  const preset   = createAnimationPreset({ name: name || 'New Animation' });
+  const presets  = [...(state.get('animationPresets') || []), preset];
+  state.setState({ animationPresets: presets });
+  state.markDirty();
+  undoManager.push(
+    `Create animation "${preset.name}"`,
+    () => {
+      state.setState({ animationPresets: (state.get('animationPresets') || []).filter(p => p.id !== preset.id) });
+      state.markDirty();
+    },
+    () => {
+      state.setState({ animationPresets: [...(state.get('animationPresets') || []), preset] });
+      state.markDirty();
+    },
+  );
+  return preset;
+}
+
+export function updateAnimPreset(presetId, patch) {
+  const presets  = state.get('animationPresets') || [];
+  const preset   = presets.find(p => p.id === presetId);
+  if (!preset) return;
+  const from     = { ...preset };
+  Object.assign(preset, patch);
+  state.setState({ animationPresets: [...presets] });
+  state.markDirty();
+  undoManager.push(
+    'Edit animation',
+    () => {
+      const ps = state.get('animationPresets') || [];
+      const p  = ps.find(x => x.id === presetId);
+      if (p) { Object.assign(p, from); state.setState({ animationPresets: [...ps] }); }
+      state.markDirty();
+    },
+    () => {
+      const ps = state.get('animationPresets') || [];
+      const p  = ps.find(x => x.id === presetId);
+      if (p) { Object.assign(p, patch); state.setState({ animationPresets: [...ps] }); }
+      state.markDirty();
+    },
+  );
+}
+
+export function setDefaultAnimPreset(presetId) {
+  const presets = (state.get('animationPresets') || []).map(p => ({
+    ...p,
+    isDefault: p.id === presetId,
+  }));
+  state.setState({ animationPresets: presets });
+  state.markDirty();
+}
+
+export function deleteAnimPreset(presetId) {
+  const presets     = state.get('animationPresets') || [];
+  const preset      = { ...presets.find(p => p.id === presetId) };
+  if (!preset.id) return;
+  const newPresets  = presets.filter(p => p.id !== presetId);
+
+  // Clear any step references to this preset
+  const stepsBefore = JSON.parse(JSON.stringify(state.get('steps') || []));
+  const stepsAfter  = stepsBefore.map(s =>
+    s.transition?.animPresetId === presetId
+      ? { ...s, transition: { ...s.transition, animPresetId: null } }
+      : s,
+  );
+
+  state.setState({ animationPresets: newPresets, steps: stepsAfter });
+  state.markDirty();
+
+  undoManager.push(
+    `Delete animation "${preset.name}"`,
+    () => {
+      state.setState({
+        animationPresets: [...(state.get('animationPresets') || []), preset],
+        steps: stepsBefore,
+      });
+      state.markDirty();
+    },
+    () => {
+      state.setState({
+        animationPresets: (state.get('animationPresets') || []).filter(p => p.id !== presetId),
+        steps: stepsAfter,
+      });
+      state.markDirty();
     },
   );
 }

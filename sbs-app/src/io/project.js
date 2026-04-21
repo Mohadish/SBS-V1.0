@@ -89,6 +89,9 @@ export function serialize() {
   project.selections.groups       = JSON.parse(JSON.stringify(state.get('selectionGroups') || []));
   project.selections.outlineColor = state.get('selectionOutlineColor') || '#00ffff';
 
+  // ── Animation presets ──────────────────────────────────────────────────────
+  project.animationPresets.items = JSON.parse(JSON.stringify(state.get('animationPresets') || []));
+
   // ── Settings ──────────────────────────────────────────────────────────────
   const cfg = project.settings;
   cfg.backgroundColor      = state.get('backgroundColor')      ?? '#0f172a';
@@ -426,15 +429,16 @@ export function applyProjectToState(project) {
 
   // ── Content arrays ────────────────────────────────────────────────────────
   state.setState({
-    steps:                project.steps?.items       || [],
-    chapters:             project.chapters?.items    || [],
-    cameraViews:          project.cameras?.items     || [],
-    colorPresets:         project.colors?.items      || [],
-    noteTemplates:        project.notes?.templates   || [],
-    notePresets:          project.notes?.presets     || state.get('notePresets'),
-    selectionGroups:      project.selections?.groups || [],
-    selectionOutlineColor:project.selections?.outlineColor || '#00ffff',
-    assets:               project.assets?.items      || [],
+    steps:                project.steps?.items              || [],
+    chapters:             project.chapters?.items           || [],
+    cameraViews:          project.cameras?.items            || [],
+    colorPresets:         project.colors?.items             || [],
+    animationPresets:     project.animationPresets?.items   || [],
+    noteTemplates:        project.notes?.templates          || [],
+    notePresets:          project.notes?.presets            || state.get('notePresets'),
+    selectionGroups:      project.selections?.groups        || [],
+    selectionOutlineColor:project.selections?.outlineColor  || '#00ffff',
+    assets:               project.assets?.items             || [],
   });
 
   state.markClean();

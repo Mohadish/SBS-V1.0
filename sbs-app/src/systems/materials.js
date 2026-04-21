@@ -1249,6 +1249,20 @@ gl_FragColor.a = 1.0;
   }
 
   /**
+   * Immediately zero transitionOpacity on "showing" meshes before a phased animation.
+   * Called before the visibility phase starts so meshes remain invisible during
+   * earlier phases (e.g. camera), then fade in when the visibility phase begins.
+   *
+   * @param {string[]} showingIds  mesh node IDs that will be fading in
+   */
+  snapShowingToZero(showingIds) {
+    const outlineSettings = state.get('geometryOutline');
+    for (const nodeId of showingIds) {
+      this._setNodeTransitionOpacity(nodeId, 0.0, outlineSettings, 0);
+    }
+  }
+
+  /**
    * Cancel all in-progress visibility transitions immediately.
    * Resets transitionOpacity to 1.0 on all fading meshes.
    * The caller (applySnapshot / applySnapshotInstant) is responsible for setting
