@@ -30,16 +30,23 @@ import {
   captureVisibilitySnapshot,
   applyVisibilitySnapshot,
   diffVisibility,
+  captureParentMap,
+  applyParentMap,
+  buildNodeMap,
+  flatten,
+  serializeModelTree,
 } from '../core/nodes.js';
 import {
   captureAllTransforms,
+  captureTransformSnapshot,
   applyAllTransformSnapshots,
-  diffTransforms,
   interpolateTransformSnapshot,
   applyTransformSnapshot,
   applyNodeTransformToObject3D,
   isTransformNode,
   ensureTransformDefaults,
+  lerpVec3,
+  slerpQuaternion,
 } from '../core/transforms.js';
 
 // ── Easing helpers (mirror scene.js — no circular dependency) ─────────────
@@ -54,17 +61,33 @@ const EASING = { smooth: easeSmooth, linear: easeLinear, instant: () => 1 };
 class StepManager {
   constructor() {
     // Active object animation transitions
-    // [{ nodeId, fromSnap, toSnap, startMs, durationMs, easeFn }]
     this._objectTransitions = [];
+
+    // Animation cancellation: increment to invalidate any in-flight animation
+    this._animGeneration = 0;
+
+    // Snap-to-final: track whether an animated transition is in progress and
+    // what its target snapshot is so we can commit it before starting a new one.
+    this._animRunning               = false;
+    this._currentTargetSnap         = null;
+    this._currentTargetWorldTransforms = null;  // stored so snapCurrentToFinal can position ALL nodes (incl. mesh)
+    this._activationToken           = 0;   // incremented per activateStep call; prevents stale async from clearing flags
+
+    // Transform-write gate: transforms (and tree structure) in a step snapshot
+    // must ONLY be overwritten when an explicit user action commits them
+    // (gizmo drag, reset, hierarchy move).  Normal dirty syncs (visibility,
+    // material changes) must never touch transform/tree data.
+    // Set to true by scheduleTransformSync(); cleared after each sync.
+    this._syncIncludesTransforms = false;
+
+    // Resolve fn for the objectTransitions-done promise (null when idle)
+    this._onObjectTransitionsDone = null;
 
     // Dirty tracking — pending snapshot sync
     this._dirty   = false;
     this._syncTimer = null;
 
     // Maps shared with the rest of the app:
-    //   object3dById: Map<nodeId, THREE.Object3D>
-    //   meshById:     Map<nodeId, THREE.Mesh>
-    // These are set externally after models load.
     this.object3dById = new Map();
     this.meshById     = new Map();
 
@@ -120,8 +143,13 @@ class StepManager {
       // Visibility
       visibility: treeData ? captureVisibilitySnapshot(treeData) : {},
 
-      // Transforms (only transform-capable nodes)
+      // Transforms (localOffset/quaternion — authoritative, always current)
       transforms: treeData ? captureAllTransforms(treeData) : {},
+
+      // Full tree structure (replaces parentMap — mirrors v0.266 architecture).
+      // Stored as a lightweight serialised tree: id, name, type, localVisible, children.
+      // Transforms are NOT duplicated here — they live in snapshot.transforms.
+      tree: treeData ? serializeModelTree(treeData) : null,
 
       // Material overrides
       materials: this._materials ? this._materials.captureSnapshot() : {},
@@ -172,7 +200,31 @@ class StepManager {
    */
   applySnapshotInstant(snapshot, opts = {}) {
     if (!snapshot) return;
-    const { nodeById } = state.pick('nodeById');
+    let { nodeById } = state.pick('nodeById');
+
+    // ── Tree arrangement (hierarchy rebuild) ────────────────────────────────
+    // v0.266 approach: tear down all folder groups, rebuild from full tree spec.
+    // Falls back to parentMap for old snapshots that pre-date the tree field.
+    if (snapshot.tree) {
+      const root = state.get('treeData');
+      if (root) {
+        // Clean up all stale folder Three.js groups first
+        cleanupFolderGroups(root, this.object3dById);
+        // Rebuild hierarchy from spec (folders recreated, meshes reparented)
+        rebuildFromTreeSpec(snapshot.tree, nodeById, this.object3dById, null);
+        nodeById = buildNodeMap(root);
+        state.setState({ nodeById });
+        state.emit('change:treeData', root);
+      }
+    } else if (snapshot.parentMap) {
+      // Backward compat: old snapshots without tree field
+      const root = state.get('treeData');
+      applyParentMap(root, snapshot.parentMap);
+      syncThreeJsHierarchy(snapshot.parentMap, nodeById, this.object3dById);
+      nodeById = buildNodeMap(root);
+      state.setState({ nodeById });
+      state.emit('change:treeData', root);
+    }
 
     // Visibility
     if (snapshot.visibility) {
@@ -212,16 +264,68 @@ class StepManager {
   async applySnapshotAnimated(toSnapshot, transition = {}) {
     if (!toSnapshot) { this.applySnapshotInstant(toSnapshot); return; }
 
+    // ── Cancel any in-flight animation ───────────────────────────────────
+    this._animGeneration++;
+    const myGen = this._animGeneration;
+    // Resolve any dangling object-transitions promise so old awaits unblock
+    if (this._onObjectTransitionsDone) {
+      this._onObjectTransitionsDone();
+      this._onObjectTransitionsDone = null;
+    }
+    this._objectTransitions = [];
+
+    // ── Pre-warm: ensure all world matrices are current ──────────────────
+    // Without this, getWorldPosition() returns stale values on first run.
+    this._warmMatrices();
+
     const globalCam = state.get('cameraAnimDurationMs') ?? 1500;
     const globalObj = state.get('objectAnimDurationMs') ?? 1500;
     const easing    = transition.cameraEasing ?? 'smooth';
     const objEasing = transition.objectEasing ?? 'smooth';
     const easeFn    = EASING[objEasing] ?? easeSmooth;
-    const { nodeById } = state.pick('nodeById');
+    let { nodeById } = state.pick('nodeById');
 
-    // ── Precompute diffs (shared by both animation paths) ────────────────
-    const currentTransforms = captureAllTransforms(state.get('treeData'));
-    const changedNodeIds    = diffTransforms(currentTransforms, toSnapshot.transforms ?? {});
+    // ── Capture FROM world positions (before any hierarchy or transform change) ─
+    this._warmMatrices();
+    const fromWorldTransforms = captureWorldTransforms(state.get('treeData'), this.object3dById);
+
+    // ── Rebuild target tree hierarchy (v0.266 approach) ──────────────────────
+    // 1. Tear down all folder groups — they'll be recreated for the target step.
+    // 2. Rebuild hierarchy from the target snapshot's tree spec.
+    // 3. Apply target transforms so Three.js positions are correct for TO capture.
+    // Falls back to parentMap for old snapshots without a tree field.
+    const root = state.get('treeData');
+    if (toSnapshot.tree && root) {
+      cleanupFolderGroups(root, this.object3dById);
+      rebuildFromTreeSpec(toSnapshot.tree, nodeById, this.object3dById, null);
+      nodeById = buildNodeMap(root);
+      state.setState({ nodeById });
+      state.emit('change:treeData', root);
+    } else if (toSnapshot.parentMap && root) {
+      applyParentMap(root, toSnapshot.parentMap);
+      nodeById = buildNodeMap(root);
+      state.setState({ nodeById });
+      syncThreeJsHierarchy(toSnapshot.parentMap, nodeById, this.object3dById);
+      state.emit('change:treeData', root);
+    }
+
+    // ── Apply target transforms in the new hierarchy, then read TO world positions ─
+    // Now that Three.js has the correct parent-child structure, applying transforms
+    // gives us the exact world positions each object will occupy at the end of
+    // the animation — no need for a save/restore cycle.
+    if (toSnapshot.transforms) {
+      applyAllTransformSnapshots(nodeById, toSnapshot.transforms);
+      applyAllTransformsToScene(nodeById, this.object3dById);
+    }
+    this._warmMatrices();
+    const toWorldTransforms = captureWorldTransforms(state.get('treeData'), this.object3dById);
+    this._currentTargetWorldTransforms = toWorldTransforms;
+
+    const changedNodeIds = diffWorldTransforms(fromWorldTransforms, toWorldTransforms);
+
+    // Depth map (DFS order = parents before children — kept for transition sorting)
+    const depthMap = {};
+    flatten(state.get('treeData')).forEach((node, i) => { depthMap[node.id] = i; });
 
     // Apply target visibility now and compute which meshes are hiding/showing.
     // Hiding meshes are kept obj.visible=true for dither-fade.
@@ -230,6 +334,24 @@ class StepManager {
     const { hidingMeshIds, showingMeshIds } = this._prepareVisibility(
       nodeById, toSnapshot.visibility,
     );
+
+    // ── Place objects at FROM world positions (v0.266 approach) ─────────────
+    // Objects stay in their TARGET hierarchy (no detach). We use world→local
+    // math to set each transform node to its FROM world position within the
+    // new parent's coordinate space. Parents are processed before children
+    // (DFS order from flatten) so parent matrices are current when children
+    // compute their local positions.
+    this._warmMatrices();
+    flatten(state.get('treeData')).forEach(node => {
+      if (!isAnimatableNode(node)) return;
+      const obj = this.object3dById.get(node.id);
+      if (!obj) return;
+      const wt = fromWorldTransforms[node.id];
+      if (!wt) return;  // new nodes (e.g. folder that didn't exist in FROM): keep at target position
+      const wasVisible = obj.visible;
+      _setWorldTransformOnObject(obj, wt.position, wt.quaternion);
+      obj.visible = wasVisible;
+    });
 
     // ── Resolve animation preset ─────────────────────────────────────────
     const animStr = resolveAnimationString(
@@ -247,9 +369,9 @@ class StepManager {
       }
 
       cameraHandled = await this._runPhasedAnimation(toSnapshot, phases, {
-        currentTransforms, changedNodeIds,
+        changedNodeIds, fromWorldTransforms, toWorldTransforms, depthMap,
         hidingMeshIds, showingMeshIds,
-        easing, easeFn,
+        easing, easeFn, myGen,
       });
     } else {
       // ── SIMULTANEOUS MODE (legacy / no preset) ────────────────────────
@@ -263,15 +385,17 @@ class StepManager {
         ? sceneCore.animateCameraTo(toSnapshot.camera, cameraDur, easing)
         : Promise.resolve();
 
-      // Object transforms
+      // Object transforms — world-space lerp (v0.266: objects stay in target hierarchy)
       this._objectTransitions = [];
       const startMs = performance.now();
       for (const nodeId of changedNodeIds) {
-        const from = currentTransforms[nodeId];
-        const to   = toSnapshot.transforms?.[nodeId];
-        if (!from || !to) continue;
-        this._objectTransitions.push({ nodeId, from, to, startMs, durationMs: objDur, easeFn });
+        const worldFrom = fromWorldTransforms[nodeId];
+        const worldTo   = toWorldTransforms[nodeId];
+        if (!worldFrom || !worldTo) continue;
+        this._objectTransitions.push({ nodeId, worldFrom, worldTo, startMs, durationMs: objDur, easeFn, isWorld: true, depth: depthMap[nodeId] ?? 0 });
       }
+      // Sort parents before children so world→local math uses correct parent matrices
+      this._objectTransitions.sort((a, b) => a.depth - b.depth);
 
       // Visibility fades (BEFORE beginColorTransition)
       if (hidingMeshIds.length || showingMeshIds.length) {
@@ -293,9 +417,42 @@ class StepManager {
       await Promise.all([cameraP, objectP]);
     }
 
+    // ── Guard: if a newer animation started while we awaited, bail out ──
+    if (this._animGeneration !== myGen) return;
+
     // ── Final: snap to exact target state ─────────────────────────────
-    // suppressCamera=true only when camera was already animated to target.
     this.applySnapshotInstant(toSnapshot, { suppressCamera: cameraHandled });
+  }
+
+  /**
+   * Force Three.js to recompute all world matrices.
+   * Called before reading getWorldPosition() — without this, matrices are
+   * stale on first run and world-position calculations return wrong values.
+   * @private
+   */
+  _warmMatrices() {
+    const root3d = sceneCore.rootGroup;
+    if (root3d) root3d.updateMatrixWorld(true);
+  }
+
+  /**
+   * Silently pre-warm the transition to a given step without rendering.
+   * Ensures matrices are ready so the NEXT real transition starts cleanly.
+   * Called discreetly after each step activation.
+   * @private
+   */
+  _prewarm(nextStepId) {
+    if (!nextStepId) return;
+    // Defer to avoid blocking the current activation render
+    setTimeout(() => {
+      this._warmMatrices();
+      // Touch world positions of all transform nodes to prime the cache
+      const THREE = window.THREE;
+      if (!THREE) return;
+      for (const [, obj] of this.object3dById) {
+        obj.getWorldPosition(new THREE.Vector3());
+      }
+    }, 0);
   }
 
   /**
@@ -347,7 +504,7 @@ class StepManager {
    * @private
    */
   async _runPhasedAnimation(toSnapshot, phases, opts) {
-    const { currentTransforms, changedNodeIds, hidingMeshIds, showingMeshIds, easing, easeFn } = opts;
+    const { changedNodeIds, fromWorldTransforms, toWorldTransforms, depthMap, hidingMeshIds, showingMeshIds, easing, easeFn, myGen } = opts;
 
     let cameraHandled = false;
     let objHandled    = false;
@@ -364,17 +521,19 @@ class StepManager {
         phasePromises.push(sceneCore.animateCameraTo(toSnapshot.camera, durationMs, easing));
       }
 
-      // Object transforms
+      // Object transforms — world-space lerp (v0.266: objects stay in target hierarchy)
       if (types.includes('obj') && !objHandled && changedNodeIds.length) {
         objHandled = true;
         this._objectTransitions = [];
         const startMs = performance.now();
         for (const nodeId of changedNodeIds) {
-          const from = currentTransforms[nodeId];
-          const to   = toSnapshot.transforms?.[nodeId];
-          if (!from || !to) continue;
-          this._objectTransitions.push({ nodeId, from, to, startMs, durationMs, easeFn });
+          const worldFrom = fromWorldTransforms[nodeId];
+          const worldTo   = toWorldTransforms[nodeId];
+          if (!worldFrom || !worldTo) continue;
+          this._objectTransitions.push({ nodeId, worldFrom, worldTo, startMs, durationMs, easeFn, isWorld: true, depth: depthMap[nodeId] ?? 0 });
         }
+        // Sort parents before children so world→local conversion uses correct parent matrices
+        this._objectTransitions.sort((a, b) => a.depth - b.depth);
         if (this._objectTransitions.length) {
           phasePromises.push(new Promise(resolve => {
             this._onObjectTransitionsDone = resolve;
@@ -407,6 +566,9 @@ class StepManager {
 
       // Wait for this phase's duration (and any sub-promises that finish sooner)
       await Promise.all([_sleep(durationMs), ...phasePromises]);
+
+      // Bail if a newer animation was started while we slept
+      if (myGen !== undefined && this._animGeneration !== myGen) return false;
     }
 
     return cameraHandled;
@@ -433,11 +595,23 @@ class StepManager {
       const node = nodeById.get(tr.nodeId);
       const obj  = this.object3dById.get(tr.nodeId);
 
-      if (node && obj && isTransformNode(node)) {
-        const interp = interpolateTransformSnapshot(tr.from, tr.to, alpha);
-        applyTransformSnapshot(node, interp);
-        applyNodeTransformToObject3D(node, obj, false);
-        obj.updateMatrixWorld(true);
+      if (node && obj && isAnimatableNode(node)) {
+        if (tr.isWorld) {
+          // World-space lerp. Objects stay in their target hierarchy; we use
+          // world→local conversion (v0.266 approach) so the correct local
+          // position is set regardless of which folder the node is in.
+          // Parents are processed before children (depth sort) so parent
+          // matrices are current when children compute their local positions.
+          const lerpedPos  = lerpVec3(tr.worldFrom.position,  tr.worldTo.position,  alpha);
+          const lerpedQuat = slerpQuaternion(tr.worldFrom.quaternion, tr.worldTo.quaternion, alpha);
+          _setWorldTransformOnObject(obj, lerpedPos, lerpedQuat);
+        } else {
+          // Legacy: localOffset lerp (fallback for old snapshots without worldTransforms)
+          const interp = interpolateTransformSnapshot(tr.from, tr.to, alpha);
+          applyTransformSnapshot(node, interp);
+          applyNodeTransformToObject3D(node, obj, false);
+          obj.updateMatrixWorld(true);
+        }
       }
 
       if (raw >= 1) done.push(tr);
@@ -473,6 +647,12 @@ class StepManager {
     const step  = steps.find(s => s.id === stepId);
     if (!step) return;
 
+    // If another animation is in progress (direct step card click mid-anim),
+    // snap it to final so the scene is clean before starting a new transition.
+    // snapCurrentToFinal does NOT rebuild the tree — it only snaps object positions
+    // and materials since the tree/node data is already at the target state.
+    this.snapCurrentToFinal();
+
     // Update state (fires 'step:activate' event for notes/screen overlay)
     state.setActiveStep(stepId);
     state.markDirty();
@@ -484,29 +664,116 @@ class StepManager {
     const animStr = resolveAnimationString(tr, state.get('animationPresets') || []);
     const shouldAnimate = animate && (durationMs > 0 || animStr !== null);
 
+    // Stamp a unique token for this activation. Only the activation that OWNS
+    // the current token is allowed to clear _animRunning when it completes.
+    // Prevents a stale async from resetting the flag mid-animation of a newer step.
+    const myToken = ++this._activationToken;
+
     if (shouldAnimate) {
+      this._animRunning       = true;
+      this._currentTargetSnap = step.snapshot;
       await this.applySnapshotAnimated(step.snapshot, tr);
+      // Only clear flags if we're still the active animation (no newer step started)
+      if (myToken === this._activationToken) {
+        this._animRunning                  = false;
+        this._currentTargetSnap            = null;
+        this._currentTargetWorldTransforms = null;
+      }
     } else {
+      this._animRunning       = false;
+      this._currentTargetSnap = null;
       this.applySnapshotInstant(step.snapshot);
     }
 
     state.emit('step:applied', step);
+
+    // Silently pre-warm the NEXT step's transition so its matrices are
+    // ready before the user clicks. Discreet — deferred, no render output.
+    const allSteps  = state.get('steps').filter(s => !s.hidden && !s.isBaseStep);
+    const curIdx    = allSteps.findIndex(s => s.id === stepId);
+    const nextStep  = allSteps[curIdx + 1];
+    if (nextStep) this._prewarm(nextStep.id);
   }
 
   /**
    * Activate a step by index (0-based).
    */
   activateStepByIndex(index, animate = true) {
-    const steps = state.get('steps').filter(s => !s.hidden);
+    const steps = state.get('steps').filter(s => !s.hidden && !s.isBaseStep);
     const step  = steps[index];
     if (step) return this.activateStep(step.id, animate);
   }
 
   /**
+   * Snap the current in-flight animation to its final state immediately.
+   * Does NOT navigate to a new step — caller should do that on the next interaction.
+   * Returns true if an animation was in progress and was snapped.
+   *
+   * WHY we do NOT call applySnapshotInstant here:
+   *   applySnapshotAnimated already rebuilds the target tree (cleanupFolderGroups +
+   *   rebuildFromTreeSpec) and writes target transforms to node.localOffset
+   *   synchronously before its first await.  What is still animating is only the
+   *   Three.js object positions (world-space lerp) and material colours.
+   *   Calling applySnapshotInstant would re-run the tree rebuild on a scene that
+   *   is already in the target tree state, causing double-rebuild corruption.
+   *   Instead we only snap the Two things that are mid-transition:
+   *     1. Three.js object positions → applyAllTransformsToScene (reads node.localOffset)
+   *     2. Material colours          → materials.applySnapshot
+   */
+  snapCurrentToFinal() {
+    if (!this._animRunning) return false;
+
+    // Cancel the in-flight animation so applySnapshotAnimated bails on resume
+    this._animGeneration++;
+    if (this._onObjectTransitionsDone) {
+      this._onObjectTransitionsDone();
+      this._onObjectTransitionsDone = null;
+    }
+    this._objectTransitions = [];
+
+    // Snap ALL animatable nodes (model, folder, AND mesh) to their target world positions.
+    // We must use _setWorldTransformOnObject here — NOT applyAllTransformsToScene —
+    // because mesh nodes are animated via world-space lerp but are NOT covered by
+    // applyAllTransformsToScene (which only processes isTransformNode = model/folder).
+    // After a snap, mesh obj.position would be left at a mid-animation local value,
+    // and the next animation would capture those wrong world positions as FROM, causing
+    // a cascade offset that accumulates with every interrupted animation.
+    if (this._currentTargetWorldTransforms) {
+      const root = state.get('treeData');
+      // DFS order (flatten) = parents before children, so parent matrices are correct
+      // when children compute their world→local conversion.
+      flatten(root).forEach(node => {
+        if (!isAnimatableNode(node)) return;
+        const obj = this.object3dById.get(node.id);
+        if (!obj) return;
+        const wt = this._currentTargetWorldTransforms[node.id];
+        if (!wt) return;
+        _setWorldTransformOnObject(obj, wt.position, wt.quaternion);
+      });
+      this._warmMatrices();
+    }
+
+    // Snap material colours to target
+    if (this._currentTargetSnap?.materials && this._materials) {
+      this._materials.applySnapshot(this._currentTargetSnap.materials);
+    }
+
+    this._animRunning                  = false;
+    this._currentTargetSnap            = null;
+    this._currentTargetWorldTransforms = null;
+    return true;
+  }
+
+  /**
    * Activate next/previous visible step relative to current active.
+   * If an animation is in progress, snaps it to final instead of navigating —
+   * the next call (next key press) will then navigate.
    */
   activateRelativeStep(delta, animate = true) {
-    const steps     = state.get('steps').filter(s => !s.hidden);
+    // If animating: snap to final only. Don't chain into a new step.
+    if (this.snapCurrentToFinal()) return;
+
+    const steps = state.get('steps').filter(s => !s.hidden && !s.isBaseStep);
     const activeId  = state.get('activeStepId');
     const currentIdx = steps.findIndex(s => s.id === activeId);
     const nextIdx    = Math.max(0, Math.min(steps.length - 1, currentIdx + delta));
@@ -520,6 +787,9 @@ class StepManager {
   /**
    * Mark the active step as needing a snapshot update.
    * The timer will call syncActiveStepNow() shortly.
+   * NOTE: transforms and tree structure are NOT updated by this path —
+   * use scheduleTransformSync() for any mutation that changes node positions,
+   * rotations, or the scene hierarchy.
    */
   scheduleSync() {
     this._dirty = true;
@@ -527,9 +797,30 @@ class StepManager {
   }
 
   /**
+   * Like scheduleSync(), but also allows the next sync to overwrite the step's
+   * transform and tree data.  Call this ONLY from explicit user transform
+   * actions: gizmo drag commit, reset, hierarchy rearrangement.
+   */
+  scheduleTransformSync() {
+    this._syncIncludesTransforms = true;
+    this._dirty = true;
+    state.setState({ _stepDirty: true });
+  }
+
+  /**
    * Immediately update the active step's snapshot with current scene state.
+   *
+   * Transform-immutability contract:
+   *   Transforms (node localOffset/localQuaternion) and the scene tree structure
+   *   are ONLY written when _syncIncludesTransforms is true — i.e. when the sync
+   *   was explicitly requested by a user transform action (gizmo commit, reset,
+   *   hierarchy move).  All other syncs (visibility, materials, notes) preserve
+   *   the step's existing transform/tree data verbatim.
    */
   syncActiveStepNow() {
+    // Never capture mid-animation: scene is in intermediate state and would
+    // corrupt the active step's snapshot with wrong transforms / colors.
+    if (this._animRunning) return;
     const activeId = state.get('activeStepId');
     if (!activeId) return;
 
@@ -546,6 +837,21 @@ class StepManager {
       newSnapshot.camera = step.snapshot.camera;
     }
 
+    // TRANSFORM IMMUTABILITY: only overwrite transforms/tree when this sync
+    // was triggered by an explicit transform-commit action.  Otherwise restore
+    // the step's existing values so that navigation, visibility changes, or
+    // material edits can never bleed transform data into a step.
+    const includesTransforms = this._syncIncludesTransforms;
+    this._syncIncludesTransforms = false;   // always reset after use
+    if (!includesTransforms && step.snapshot) {
+      if (step.snapshot.transforms !== undefined) {
+        newSnapshot.transforms = step.snapshot.transforms;
+      }
+      if (step.snapshot.tree !== undefined) {
+        newSnapshot.tree = step.snapshot.tree;
+      }
+    }
+
     step.snapshot = newSnapshot;
     this._dirty   = false;
     state.setState({ _stepDirty: false, steps: [...steps] });
@@ -557,7 +863,8 @@ class StepManager {
    * Call before saving, exporting, or navigating.
    */
   flushSync() {
-    if (this._dirty) this.syncActiveStepNow();
+    if (this._dirty && !this._animRunning) this.syncActiveStepNow();
+    // Note: _syncIncludesTransforms is consumed inside syncActiveStepNow and reset there.
   }
 
   /**
@@ -614,6 +921,73 @@ class StepManager {
   }
 
   /**
+   * Inject a newly-loaded model into every existing step snapshot so that
+   * switching to any step never hides/removes the model.
+   *
+   * For each step that does NOT already contain the model:
+   *   • snapshot.tree      — model spec appended to scene_root children
+   *   • snapshot.visibility — all model nodes set to visible (true)
+   *   • snapshot.transforms — all transform nodes get their current transforms
+   *
+   * @param {TreeNode} modelNode  the live tree node returned by loadModelFile
+   */
+  injectModelIntoAllSteps(modelNode) {
+    if (!modelNode) return;
+    const stepsArr = state.get('steps') || [];
+    if (!stepsArr.length) return;
+
+    // Serialise the model's current tree structure (no transforms — stored separately)
+    const modelSpec = serializeModelTree(modelNode);
+
+    // Collect the model's current visibility and transforms from the live tree
+    const modelVisibility = {};
+    const modelTransforms = {};
+    flatten(modelNode).forEach(node => {
+      modelVisibility[node.id] = node.localVisible !== false;
+      if (isTransformNode(node)) {
+        modelTransforms[node.id] = captureTransformSnapshot(node);
+      }
+    });
+
+    // Helper: does a serialised tree already contain a node with this id?
+    function specContainsId(spec, id) {
+      if (!spec) return false;
+      if (spec.id === id) return true;
+      return (spec.children || []).some(c => specContainsId(c, id));
+    }
+
+    const updated = stepsArr.map(step => {
+      const snap = step.snapshot;
+      if (!snap) return step;
+
+      // Skip if this step already has the model in its tree
+      if (snap.tree && specContainsId(snap.tree, modelNode.id)) return step;
+
+      // Append to the scene_root's children list in the serialised tree
+      let newTree = snap.tree;
+      if (newTree) {
+        newTree = {
+          ...newTree,
+          children: [...(newTree.children || []), modelSpec],
+        };
+      }
+
+      return {
+        ...step,
+        snapshot: {
+          ...snap,
+          tree:       newTree,
+          visibility: { ...modelVisibility, ...(snap.visibility || {}) },
+          transforms: { ...modelTransforms, ...(snap.transforms || {}) },
+        },
+      };
+    });
+
+    state.setState({ steps: updated });
+    state.markDirty();
+  }
+
+  /**
    * Duplicate any step by ID and insert a copy after it.
    * @param {string} stepId
    * @returns {Step|null}
@@ -665,8 +1039,10 @@ class StepManager {
     state.markDirty();
 
     if (activeId === stepId) {
-      // Activate next step, or previous, or clear
-      const next = newSteps[idx] ?? newSteps[idx - 1] ?? null;
+      // Activate next user step, or previous, skipping the base step
+      const userSteps     = newSteps.filter(s => !s.isBaseStep);
+      const userIdxBefore = steps.slice(0, idx).filter(s => !s.isBaseStep).length;
+      const next = userSteps[userIdxBefore] ?? userSteps[userIdxBefore - 1] ?? null;
       if (next) {
         this.activateStep(next.id, false);
       } else {
@@ -777,11 +1153,53 @@ class StepManager {
   }
 
   getVisibleSteps() {
-    return state.get('steps').filter(s => !s.hidden);
+    return state.get('steps').filter(s => !s.hidden && !s.isBaseStep);
   }
 
   getStepIndex(stepId) {
     return state.get('steps').findIndex(s => s.id === stepId);
+  }
+
+  // ─── Base Step (Step 0) ──────────────────────────────────────────────────
+
+  /**
+   * Return the hidden base step, or null if not present.
+   * The base step is never shown in the timeline and is not user-navigable.
+   */
+  getBaseStep() {
+    return state.get('steps').find(s => s.isBaseStep) ?? null;
+  }
+
+  /**
+   * Create or update the hidden base step with the CURRENT scene state.
+   * Called by saveProject() before serialisation so the file contains an
+   * exact scene snapshot that can be used as a staging area on load.
+   */
+  upsertBaseStep() {
+    const stepsArr = state.get('steps') || [];
+    const snapshot = this.captureSnapshot();
+    const existing = stepsArr.find(s => s.isBaseStep);
+    if (existing) {
+      existing.snapshot = snapshot;
+      state.setState({ steps: [...stepsArr] });
+    } else {
+      const base = createStep({ name: '__base__' });
+      base.isBaseStep = true;
+      base.hidden     = true;
+      base.snapshot   = snapshot;
+      base.transition = { durationMs: 0 };
+      state.setState({ steps: [base, ...stepsArr] });
+    }
+  }
+
+  /**
+   * Apply the base step snapshot instantly (no animation, no activeStepId change).
+   * Call after project load, before activating the first user step, to stage
+   * the scene in the exact saved state.
+   */
+  activateBaseStep() {
+    const base = this.getBaseStep();
+    if (base?.snapshot) this.applySnapshotInstant(base.snapshot, { suppressCamera: true });
   }
 
 
@@ -795,7 +1213,7 @@ class StepManager {
   }
 
   _nextStepLabel(steps) {
-    const num = steps.length + 1;
+    const num = steps.filter(s => !s.isBaseStep).length + 1;
     return `Step ${num}`;
   }
 }
@@ -827,6 +1245,132 @@ function applyAllVisibilityToScene(nodeById, object3dById) {
 }
 
 /**
+ * Remove all custom folder Three.js groups under a subtree from the scene.
+ * Must be called before rebuildFromTreeSpec so stale groups don't linger.
+ *
+ * @param {TreeNode}             rootNode     model or scene node to clean under
+ * @param {Map<string,Object3D>} object3dById
+ */
+function cleanupFolderGroups(rootNode, object3dById) {
+  if (!rootNode) return;
+  flatten(rootNode).forEach(node => {
+    if (node.type !== 'folder') return;
+    const obj = object3dById.get(node.id) ?? node.object3d;
+    if (obj?.parent) obj.parent.remove(obj);
+    if (node.id) object3dById.delete(node.id);
+  });
+}
+
+/**
+ * Rebuild the Three.js hierarchy and data tree from a serialised tree spec.
+ * Mirrors v0.266's rebuildTreeFromSpec:
+ *   - folder nodes → fresh THREE.Group each time, added to parent3d
+ *   - model nodes  → reuse existing model Three.js group (parentObject3d IS the group)
+ *   - mesh nodes   → reuse live node from nodeById, reparent to parent3d
+ *
+ * Mutates the LIVE data-tree nodes (name, children, localVisible) in place,
+ * so nodeById stays valid after the call.  Returns the rebuilt root node,
+ * or null if the spec root isn't found in the live tree.
+ *
+ * @param {object}               spec          serialised tree (from serializeModelTree)
+ * @param {Map<string,TreeNode>} nodeById      current live map
+ * @param {Map<string,Object3D>} object3dById  Three.js object registry
+ * @param {Object3D}             parentObject3d parent Three.js object for this level
+ * @returns {TreeNode|null}
+ */
+function rebuildFromTreeSpec(spec, nodeById, object3dById, parentObject3d) {
+  if (!spec) return null;
+  const THREE = window.THREE;
+  const specType = spec.type === 'group' ? 'folder' : spec.type;
+  let node = null;
+
+  if (specType === 'folder') {
+    // Always create a fresh group — old group was cleaned up by cleanupFolderGroups
+    if (!THREE) return null;
+    const group = new THREE.Group();
+    group.name = spec.name || 'Folder';
+    group.userData.isCustomFolder = true;
+    if (parentObject3d) parentObject3d.add(group);
+    object3dById.set(spec.id, group);
+
+    // Build or reuse the data node
+    const existing = nodeById.get(spec.id);
+    node = existing ?? { id: spec.id, type: 'folder' };
+    node.name         = spec.name || node.name || 'Folder';
+    node.localVisible = spec.localVisible !== false;
+    node.object3d     = group;
+    node.children     = [];
+    if (!existing) nodeById.set(spec.id, node);
+
+  } else if (specType === 'model') {
+    // Model node: reuse existing group, reparent to new folder/scene parent if needed.
+    node = nodeById.get(spec.id);
+    if (!node) return null;
+    node.name         = spec.name || node.name;
+    node.localVisible = spec.localVisible !== false;
+    node.children     = [];
+    const modelObj = object3dById.get(spec.id) ?? node.object3d;
+    if (modelObj && parentObject3d && modelObj.parent !== parentObject3d) {
+      if (modelObj.parent) modelObj.parent.remove(modelObj);
+      parentObject3d.add(modelObj);
+    }
+
+  } else if (specType === 'mesh') {
+    // Mesh: reuse live node, reparent Three.js object to new parent
+    node = nodeById.get(spec.id);
+    if (!node) return null;
+    node.name         = spec.name || node.name;
+    node.localVisible = spec.localVisible !== false;
+    node.children     = [];
+    const obj = object3dById.get(spec.id) ?? node.object3d;
+    if (obj && parentObject3d && obj.parent !== parentObject3d) {
+      if (obj.parent) obj.parent.remove(obj);
+      parentObject3d.add(obj);
+    }
+
+  } else {
+    // scene root or unknown — pass through; use node.object3d as parent for children
+    node = nodeById.get(spec.id);
+    if (!node) return null;
+    node.children = [];
+  }
+
+  // Determine which Three.js object children should attach to.
+  // folder/model/scene all own a group; mesh nodes don't.
+  const childParent = (specType === 'mesh')
+    ? parentObject3d
+    : (object3dById.get(spec.id) ?? node?.object3d ?? parentObject3d);
+
+  for (const childSpec of (spec.children || [])) {
+    const childNode = rebuildFromTreeSpec(childSpec, nodeById, object3dById, childParent);
+    if (childNode) node.children.push(childNode);
+  }
+
+  return node;
+}
+
+/**
+ * Force Three.js parent-child hierarchy to match a target parentMap.
+ * Checks CURRENT Three.js parent vs target and moves only if different.
+ * Works even when objects are at an unexpected location (e.g. rootGroup
+ * after animation detach) — does not rely on detected data-tree moves.
+ *
+ * @param {Object}                 parentMap    { [nodeId]: parentId }
+ * @param {Map<string,TreeNode>}   nodeById
+ * @param {Map<string,Object3D>}   object3dById
+ */
+function syncThreeJsHierarchy(parentMap, nodeById, object3dById) {
+  if (!parentMap) return;
+  for (const [nodeId, targetParentId] of Object.entries(parentMap)) {
+    const obj       = object3dById.get(nodeId)         ?? nodeById.get(nodeId)?.object3d;
+    const parentObj = object3dById.get(targetParentId) ?? nodeById.get(targetParentId)?.object3d;
+    if (!obj || !parentObj || obj.parent === parentObj) continue;
+    if (obj.parent) obj.parent.remove(obj);
+    parentObj.add(obj);
+  }
+}
+
+/**
  * Apply transforms from nodeById data to Three.js objects.
  */
 function applyAllTransformsToScene(nodeById, object3dById) {
@@ -838,6 +1382,236 @@ function applyAllTransformsToScene(nodeById, object3dById) {
   // Batch matrix world update
   const root3d = sceneCore.rootGroup;
   if (root3d) root3d.updateMatrixWorld(true);
+}
+
+
+// ─── World-space transform helpers ────────────────────────────────────────
+
+/**
+ * Set a Three.js Object3D to a given WORLD position + quaternion, regardless
+ * of what parent hierarchy it is currently in. Mirrors v0.266's
+ * setObjectWorldTransform — does a proper world→local conversion so the
+ * object's LOCAL position/quaternion produce the requested world transform.
+ *
+ * Call after the target hierarchy has been built and parent matrices are
+ * current (i.e. after _warmMatrices). Also updates the object's own matrix
+ * so subsequent sibling/child calls see the correct parent matrix.
+ *
+ * @param {THREE.Object3D} obj
+ * @param {number[]}       worldPos   [x,y,z]
+ * @param {number[]}       worldQuat  [x,y,z,w]
+ */
+function _setWorldTransformOnObject(obj, worldPos, worldQuat) {
+  const THREE = window.THREE;
+  if (!THREE || !obj) return;
+
+  const parent = obj.parent;
+  // Ensure the parent's world matrix is current before converting.
+  // updateWorldMatrix(true, false) = update ancestors up the chain but NOT
+  // children (we only need the parent's matrix for the inversion below).
+  if (parent) parent.updateWorldMatrix(true, false);
+
+  // Build the target world matrix from the requested world pos + quat.
+  // We preserve the object's current SCALE (we only animate position/rotation).
+  const worldMatrix = new THREE.Matrix4().compose(
+    new THREE.Vector3(...worldPos),
+    new THREE.Quaternion(...worldQuat),
+    obj.scale.clone(),       // preserve current scale
+  );
+
+  // Convert world matrix → local matrix using the parent's world matrix.
+  const localMatrix = parent
+    ? new THREE.Matrix4().copy(parent.matrixWorld).invert().multiply(worldMatrix)
+    : worldMatrix;
+
+  localMatrix.decompose(obj.position, obj.quaternion, obj.scale);
+
+  // Update this object's own matrix so subsequent child calls see the
+  // correct parent matrix when they call parent.updateWorldMatrix().
+  obj.updateMatrixWorld(false);
+}
+
+/**
+ * True for nodes that participate in world-transform animation:
+ * model/folder nodes (user-positionable) AND mesh nodes (follow their parent
+ * but must be tracked so folder-reparenting jumps can be animated).
+ */
+function isAnimatableNode(node) {
+  return isTransformNode(node) || node?.type === 'mesh';
+}
+
+/**
+ * Capture world-space position + quaternion for every animatable node
+ * (model, folder, AND mesh). Mesh world transforms are captured so that
+ * reparenting to/from rotated folders can be animated smoothly.
+ * Call AFTER warmMatrices() so all matrices are current.
+ * @param {TreeNode}            root
+ * @param {Map<string,Object3D>} object3dById
+ * @returns { [nodeId]: { position: number[], quaternion: number[] } }
+ */
+function captureWorldTransforms(root, object3dById) {
+  const out  = {};
+  const THREE = window.THREE;
+  if (!THREE || !root) return out;
+  const _wp = new THREE.Vector3();
+  const _wq = new THREE.Quaternion();
+  flatten(root).forEach(node => {
+    if (!isAnimatableNode(node)) return;
+    const obj = object3dById.get(node.id);
+    if (!obj) return;
+    obj.getWorldPosition(_wp);
+    obj.getWorldQuaternion(_wq);
+    out[node.id] = {
+      position:     [_wp.x, _wp.y, _wp.z],
+      quaternion:   [_wq.x, _wq.y, _wq.z, _wq.w],
+      moveEnabled:   node.moveEnabled   !== false,
+      rotateEnabled: node.rotateEnabled !== false,
+      pivotEnabled:  node.pivotEnabled  !== false,
+    };
+  });
+  return out;
+}
+
+/**
+ * Back-convert a world-space position+quaternion to node-local space and store it.
+ * Updates node.localOffset / node.localQuaternion so applyNodeTransformToObject3D
+ * will produce exactly the requested world transform.
+ *
+ * The parent's world matrix must be current before calling this.
+ * Call obj.updateMatrixWorld(true) afterwards.
+ *
+ * @param {TreeNode}    node
+ * @param {Object3D}    obj
+ * @param {number[]}    worldPos   [x,y,z]
+ * @param {number[]|null} worldQuat [x,y,z,w]  (pass null to skip rotation)
+ */
+function setNodeWorldTransform(node, obj, worldPos, worldQuat) {
+  const THREE = window.THREE;
+  if (!THREE || !node || !obj) return;
+  ensureTransformDefaults(node);
+
+  const parent = obj.parent;
+
+  // ── Position ──────────────────────────────────────────────────────────────
+  const _wp = new THREE.Vector3(...worldPos);
+  const localPos = parent ? parent.worldToLocal(_wp.clone()) : _wp.clone();
+  const base = node.baseLocalPosition ?? [0, 0, 0];
+  node.localOffset = [localPos.x - base[0], localPos.y - base[1], localPos.z - base[2]];
+  node.moveEnabled = true;
+
+  // ── Rotation ──────────────────────────────────────────────────────────────
+  if (worldQuat) {
+    const _wq = new THREE.Quaternion(...worldQuat);
+    let localQ;
+    if (parent) {
+      // localQ_total = parentWorldQuat^-1 * worldQuat
+      const parentWQ = new THREE.Quaternion();
+      parent.getWorldQuaternion(parentWQ);
+      localQ = parentWQ.clone().invert().multiply(_wq);
+    } else {
+      localQ = _wq.clone();
+    }
+    // delta = base^-1 * localQ_total
+    const baseQ = new THREE.Quaternion(...(node.baseLocalQuaternion ?? [0, 0, 0, 1]));
+    const deltaQ = baseQ.clone().invert().multiply(localQ);
+    node.localQuaternion = [deltaQ.x, deltaQ.y, deltaQ.z, deltaQ.w];
+    node.rotateEnabled   = true;
+  }
+
+  applyNodeTransformToObject3D(node, obj, false);
+}
+
+/**
+ * Apply a worldTransforms snapshot to the scene top-down (DFS order).
+ * Processing parents before children ensures parent matrices are current
+ * when children do their world→local conversion.
+ *
+ * @param {TreeNode}               root
+ * @param {object}                 worldTransforms  { [nodeId]: { position, quaternion } }
+ * @param {Map<string,TreeNode>}   nodeById
+ * @param {Map<string,Object3D>}   object3dById
+ */
+function applyWorldTransformsToScene(root, worldTransforms, nodeById, object3dById) {
+  if (!root || !worldTransforms) return;
+  // Warm before any world→local conversion so parent matrices are current.
+  sceneCore.rootGroup?.updateMatrixWorld(true);
+  // flatten() = DFS = parent before children ✓
+  flatten(root).forEach(node => {
+    if (!isTransformNode(node)) return;
+    const wt  = worldTransforms[node.id];
+    if (!wt) return;
+    const obj = object3dById.get(node.id);
+    if (!obj) return;
+
+    // 1) Set position/quaternion via world→local conversion (forces enabled=true internally)
+    setNodeWorldTransform(node, obj, wt.position, wt.quaternion);
+
+    // 2) Restore the stored enabled flags (setNodeWorldTransform forces them true for math)
+    //    Then re-apply so Three.js reflects the correct muted/active state.
+    if (wt.moveEnabled   !== undefined) node.moveEnabled   = wt.moveEnabled;
+    if (wt.rotateEnabled !== undefined) node.rotateEnabled = wt.rotateEnabled;
+    if (wt.pivotEnabled  !== undefined) node.pivotEnabled  = wt.pivotEnabled;
+    applyNodeTransformToObject3D(node, obj, false);
+
+    obj.updateMatrixWorld(true);  // must update so children convert correctly
+  });
+}
+
+/**
+ * Compute what world positions the target snapshot would produce — WITHOUT
+ * permanently changing the scene.
+ *
+ * Strategy: apply target transforms → warm → read world positions → restore.
+ * Runs synchronously so no render frame fires between apply and restore.
+ * This makes world-pos animation fully staleness-free.
+ *
+ * @param {TreeNode}               root
+ * @param {Map<string,TreeNode>}   nodeById
+ * @param {Snapshot}               toSnapshot
+ * @param {Map<string,Object3D>}   object3dById
+ * @param {StepManager}            stepMgr  (for _warmMatrices)
+ * @returns { [nodeId]: { position, quaternion, ... } }
+ */
+function computeTargetWorldTransforms(root, nodeById, toSnapshot, object3dById, stepMgr) {
+  if (!toSnapshot.transforms) return {};
+
+  // 1) Save current node transform state
+  const savedTransforms = captureAllTransforms(root);
+
+  // 2) Apply target transforms to nodes + Three.js objects
+  applyAllTransformSnapshots(nodeById, toSnapshot.transforms);
+  applyAllTransformsToScene(nodeById, object3dById);
+  stepMgr._warmMatrices();
+
+  // 3) Read world positions (matrices just updated)
+  const toWT = captureWorldTransforms(root, object3dById);
+
+  // 4) Restore current state
+  applyAllTransformSnapshots(nodeById, savedTransforms);
+  applyAllTransformsToScene(nodeById, object3dById);
+  stepMgr._warmMatrices();
+
+  return toWT;
+}
+
+/**
+ * Diff two worldTransforms snapshots — return nodeIds where anything changed.
+ * @param {object} fromWT
+ * @param {object} toWT
+ * @returns {string[]}
+ */
+function diffWorldTransforms(fromWT, toWT) {
+  const changed = [];
+  const allIds = new Set([...Object.keys(fromWT ?? {}), ...Object.keys(toWT ?? {})]);
+  for (const id of allIds) {
+    const from = fromWT?.[id];
+    const to   = toWT?.[id];
+    if (!from || !to) { changed.push(id); continue; }
+    const posChanged = (from.position  ?? []).some((v, i) => Math.abs(v - (to.position?.[i]  ?? 0))       > 1e-5);
+    const rotChanged = (from.quaternion ?? []).some((v, i) => Math.abs(v - (to.quaternion?.[i] ?? (i===3?1:0))) > 1e-5);
+    if (posChanged || rotChanged) changed.push(id);
+  }
+  return changed;
 }
 
 
