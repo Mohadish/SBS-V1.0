@@ -667,7 +667,9 @@ async function _relinkAsset(file, assetEntry) {
       _removePhantomsFromMap(phantom);
 
       // Register live model nodes with their remapped (saved) IDs.
+      // Also clear any stale .missing flag so reinstated nodes render white.
       function _addToMap(node) {
+        node.missing = false;
         nodeById.set(node.id, node);
         (node.children || []).forEach(_addToMap);
       }
@@ -681,18 +683,10 @@ async function _relinkAsset(file, assetEntry) {
   // Re-apply base colors to newly loaded meshes.
   materials.applyAll();
 
-  // ── Reinstate from frame 0 ───────────────────────────────────────────────
-  // Apply the base step (step 0) first to establish a clean ground-truth
-  // scene state, then re-apply the user's current step on top.
+  // Reinstate from frame 0: apply the base step first to establish a clean
+  // ground-truth scene state, then re-apply the user's current step on top.
   steps.activateBaseStep();
   if (activeStep) steps.activateStep(activeStep, false);
-
-  // ── Final placeholder sweep ──────────────────────────────────────────────
-  // Traverse the entire Three.js scene and remove any remaining placeholder
-  // LineSegments (isPlaceholder=true).  This catches orphans from displaced
-  // meshes, custom folders, or any other path missed by the per-node disposal
-  // above — guaranteeing a clean scene after reintegration.
-  steps.removePlaceholders();
 }
 
 function _onFitAll() {

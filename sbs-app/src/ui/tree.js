@@ -169,7 +169,7 @@ function _buildRow(node, depth) {
   row.style.paddingLeft = `${6 + depth * 14}px`;
   row.dataset.nodeId = node.id;
   if (!node.localVisible) row.style.opacity = '0.45';
-  if (node.missing)       row.style.opacity = '0.5';
+  if (node.missing && node.type !== 'folder') row.style.opacity = '0.5';
   row.draggable = node.type !== 'scene';
 
   // Twisty
