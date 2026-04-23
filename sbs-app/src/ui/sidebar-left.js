@@ -144,9 +144,9 @@ function _renderFilesTab() {
     <div class="section">
       <div class="title">Load Model</div>
       <label class="filelabel" style="margin-top:8px;display:flex">
-        Load STEP / OBJ / STL / GLTF / FBX
+        Load STEP / OBJ / STL / GLTF
         <input type="file" id="model-file-input"
-               accept=".step,.stp,.iges,.igs,.brep,.obj,.stl,.gltf,.glb,.fbx" multiple />
+               accept=".step,.stp,.iges,.igs,.brep,.obj,.stl,.gltf,.glb" multiple />
       </label>
     </div>
 
