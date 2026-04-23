@@ -617,12 +617,25 @@ async function _relinkAsset(file, assetEntry) {
     // real meshes, but node.object3d on the phantom nodes still references the
     // LineSegments objects we created).
     function _disposePlaceholders(node) {
-      if (node.missing && node.type === 'mesh' && node.object3d?.isLineSegments) {
-        const ls = node.object3d;
-        if (ls.parent) ls.parent.remove(ls);
-        ls.geometry?.dispose();
-        ls.material?.dispose();
-        node.object3d = null;
+      if (node.missing) {
+        if (node.type === 'mesh' && node.object3d?.isLineSegments) {
+          // Dispose bbox placeholder LineSegments
+          const ls = node.object3d;
+          if (ls.parent) ls.parent.remove(ls);
+          ls.geometry?.dispose();
+          ls.material?.dispose();
+          node.object3d = null;
+        } else if (node.type === 'folder' && node.object3d) {
+          // Dispose the persistent phantom folder group.
+          // cleanupFolderGroups preserved it — we must remove it explicitly
+          // now that the real model is back and will own this folder slot.
+          const grp = node.object3d;
+          if (grp.parent) grp.parent.remove(grp);
+          node.object3d = null;
+          if (steps.object3dById.get(node.id) === grp) {
+            steps.object3dById.delete(node.id);
+          }
+        }
       }
       (node.children || []).forEach(_disposePlaceholders);
     }
@@ -669,21 +682,17 @@ async function _relinkAsset(file, assetEntry) {
   materials.applyAll();
 
   // ── Reinstate from frame 0 ───────────────────────────────────────────────
-  // Apply the base step (step 0) first: runs a full cleanupFolderGroups +
-  // rebuildFromTreeSpec + applyAllTransforms cycle from the authoritative
-  // saved snapshot.  This gives us:
-  //   • correct node names  (from base snapshot tree spec)
-  //   • correct transforms  (from base snapshot.transforms)
-  //   • correct hierarchy   (folders rebuilt cleanly, displaced meshes seated)
-  //   • stale phantom folder groups flushed from object3dById
-  // After this call the scene is in the exact state it was at the last save —
-  // a reliable, known-good foundation for the step re-activation below.
+  // Apply the base step (step 0) first to establish a clean ground-truth
+  // scene state, then re-apply the user's current step on top.
   steps.activateBaseStep();
-
-  // Re-apply the user's current step on top of the clean base state.
-  // All step-specific transforms, visibility, materials, and camera are
-  // layered correctly because the scene hierarchy is already authoritative.
   if (activeStep) steps.activateStep(activeStep, false);
+
+  // ── Final placeholder sweep ──────────────────────────────────────────────
+  // Traverse the entire Three.js scene and remove any remaining placeholder
+  // LineSegments (isPlaceholder=true).  This catches orphans from displaced
+  // meshes, custom folders, or any other path missed by the per-node disposal
+  // above — guaranteeing a clean scene after reintegration.
+  steps.removePlaceholders();
 }
 
 function _onFitAll() {

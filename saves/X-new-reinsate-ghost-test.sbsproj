@@ -2,15 +2,15 @@
   "_sbs": {
     "app_version": "V.0.0.3",
     "format_version": 1,
-    "created": "2026-04-23T07:20:37.340Z",
-    "saved": "2026-04-23T07:20:37.340Z",
+    "created": "2026-04-23T08:02:43.434Z",
+    "saved": "2026-04-23T08:02:43.434Z",
     "min_compatible_version": "1.0.0"
   },
   "assets": {
     "schema_version": 1,
     "items": [
       {
-        "id": "asset_mob5jfrv28l7_19",
+        "id": "asset_mob6y9qmym42_19",
         "name": "panle.obj",
         "type": "obj",
         "originalPath": "E:\\SBS-V1.0 - Claude\\saves\\panle.obj",
@@ -18,10 +18,10 @@
         "fileHash": null,
         "fileSize": 2072194,
         "lastModified": 1776243251085,
-        "importedAt": "2026-04-23T07:20:19.099Z"
+        "importedAt": "2026-04-23T07:59:50.734Z"
       },
       {
-        "id": "asset_mob5jqlmqwox_32",
+        "id": "asset_mob6yetk6vqn_32",
         "name": "random-primitives.obj",
         "type": "obj",
         "originalPath": "E:\\SBS-V1.0 - Claude\\saves\\remote asset test\\random-primitives.obj",
@@ -29,7 +29,7 @@
         "fileHash": null,
         "fileSize": 263634,
         "lastModified": 1776247306528,
-        "importedAt": "2026-04-23T07:20:33.131Z"
+        "importedAt": "2026-04-23T07:59:57.320Z"
       }
     ]
   },
@@ -39,73 +39,55 @@
       "id": "scene_root",
       "name": "Scene",
       "type": "scene",
-      "assetId": null,
-      "localVisible": true,
       "children": [
         {
-          "id": "m_127m8xd",
+          "id": "m_00o8cxx",
           "name": "panle.obj",
           "type": "model",
-          "assetId": "asset_mob5jfrv28l7_19",
+          "missing": true,
           "localVisible": true,
+          "bbox": null,
+          "colorPresetId": null,
+          "meshIndex": null,
+          "sourceAssetId": null,
+          "baseLocalPosition": [
+            0,
+            0,
+            0
+          ],
+          "baseLocalScale": [
+            1,
+            1,
+            1
+          ],
           "children": [
             {
-              "id": "fd_156kx6l",
+              "id": "fd_13akm15",
               "name": "panle.obj",
               "type": "folder",
-              "assetId": null,
+              "missing": true,
               "localVisible": true,
+              "bbox": null,
+              "colorPresetId": null,
+              "meshIndex": null,
+              "sourceAssetId": null,
+              "baseLocalPosition": [
+                0,
+                0,
+                0
+              ],
+              "baseLocalScale": [
+                1,
+                1,
+                1
+              ],
               "children": [
                 {
-                  "id": "ms_02doqzq",
+                  "id": "ms_0yqmadu",
                   "name": "cover",
                   "type": "mesh",
-                  "assetId": null,
+                  "missing": true,
                   "localVisible": true,
-                  "children": [],
-                  "localOffset": [
-                    0,
-                    0,
-                    0
-                  ],
-                  "localQuaternion": [
-                    0,
-                    0,
-                    0,
-                    1
-                  ],
-                  "baseLocalPosition": [
-                    0,
-                    0,
-                    0
-                  ],
-                  "baseLocalQuaternion": [
-                    0,
-                    0,
-                    0,
-                    1
-                  ],
-                  "baseLocalScale": [
-                    1,
-                    1,
-                    1
-                  ],
-                  "pivotLocalOffset": [
-                    0,
-                    0,
-                    0
-                  ],
-                  "pivotLocalQuaternion": [
-                    0,
-                    0,
-                    0,
-                    1
-                  ],
-                  "pivotEnabled": true,
-                  "moveEnabled": true,
-                  "rotateEnabled": true,
-                  "meshIndex": null,
-                  "colorPresetId": null,
                   "bbox": {
                     "min": [
                       16.905000686645508,
@@ -118,58 +100,27 @@
                       7.94980001449585
                     ]
                   },
-                  "sourceAssetId": "asset_mob5jfrv28l7_19"
-                },
-                {
-                  "id": "ms_0qnlsld",
-                  "name": "cover_pos1",
-                  "type": "mesh",
-                  "assetId": null,
-                  "localVisible": true,
-                  "children": [],
-                  "localOffset": [
-                    0,
-                    0,
-                    0
-                  ],
-                  "localQuaternion": [
-                    0,
-                    0,
-                    0,
-                    1
-                  ],
+                  "colorPresetId": null,
+                  "meshIndex": null,
+                  "sourceAssetId": "asset_mob6y9qmym42_19",
                   "baseLocalPosition": [
                     0,
                     0,
                     0
-                  ],
-                  "baseLocalQuaternion": [
-                    0,
-                    0,
-                    0,
-                    1
                   ],
                   "baseLocalScale": [
                     1,
                     1,
                     1
                   ],
-                  "pivotLocalOffset": [
-                    0,
-                    0,
-                    0
-                  ],
-                  "pivotLocalQuaternion": [
-                    0,
-                    0,
-                    0,
-                    1
-                  ],
-                  "pivotEnabled": true,
-                  "moveEnabled": true,
-                  "rotateEnabled": true,
-                  "meshIndex": null,
-                  "colorPresetId": null,
+                  "children": []
+                },
+                {
+                  "id": "ms_0ia2lo5",
+                  "name": "cover_pos1",
+                  "type": "mesh",
+                  "missing": true,
+                  "localVisible": true,
                   "bbox": {
                     "min": [
                       18.325000762939453,
@@ -182,58 +133,27 @@
                       7.90500020980835
                     ]
                   },
-                  "sourceAssetId": "asset_mob5jfrv28l7_19"
-                },
-                {
-                  "id": "ms_05e1tg8",
-                  "name": "cover_pos3",
-                  "type": "mesh",
-                  "assetId": null,
-                  "localVisible": true,
-                  "children": [],
-                  "localOffset": [
-                    0,
-                    0,
-                    0
-                  ],
-                  "localQuaternion": [
-                    0,
-                    0,
-                    0,
-                    1
-                  ],
+                  "colorPresetId": null,
+                  "meshIndex": null,
+                  "sourceAssetId": "asset_mob6y9qmym42_19",
                   "baseLocalPosition": [
                     0,
                     0,
                     0
-                  ],
-                  "baseLocalQuaternion": [
-                    0,
-                    0,
-                    0,
-                    1
                   ],
                   "baseLocalScale": [
                     1,
                     1,
                     1
                   ],
-                  "pivotLocalOffset": [
-                    0,
-                    0,
-                    0
-                  ],
-                  "pivotLocalQuaternion": [
-                    0,
-                    0,
-                    0,
-                    1
-                  ],
-                  "pivotEnabled": true,
-                  "moveEnabled": true,
-                  "rotateEnabled": true,
-                  "meshIndex": null,
-                  "colorPresetId": null,
+                  "children": []
+                },
+                {
+                  "id": "ms_1kl8jzg",
+                  "name": "cover_pos3",
+                  "type": "mesh",
+                  "missing": true,
+                  "localVisible": true,
                   "bbox": {
                     "min": [
                       18.334999084472656,
@@ -246,58 +166,27 @@
                       -9.001999855041504
                     ]
                   },
-                  "sourceAssetId": "asset_mob5jfrv28l7_19"
-                },
-                {
-                  "id": "ms_1q6burw",
-                  "name": "cover_pos4",
-                  "type": "mesh",
-                  "assetId": null,
-                  "localVisible": true,
-                  "children": [],
-                  "localOffset": [
-                    0,
-                    0,
-                    0
-                  ],
-                  "localQuaternion": [
-                    0,
-                    0,
-                    0,
-                    1
-                  ],
+                  "colorPresetId": null,
+                  "meshIndex": null,
+                  "sourceAssetId": "asset_mob6y9qmym42_19",
                   "baseLocalPosition": [
                     0,
                     0,
                     0
-                  ],
-                  "baseLocalQuaternion": [
-                    0,
-                    0,
-                    0,
-                    1
                   ],
                   "baseLocalScale": [
                     1,
                     1,
                     1
                   ],
-                  "pivotLocalOffset": [
-                    0,
-                    0,
-                    0
-                  ],
-                  "pivotLocalQuaternion": [
-                    0,
-                    0,
-                    0,
-                    1
-                  ],
-                  "pivotEnabled": true,
-                  "moveEnabled": true,
-                  "rotateEnabled": true,
-                  "meshIndex": null,
-                  "colorPresetId": null,
+                  "children": []
+                },
+                {
+                  "id": "ms_09vn320",
+                  "name": "cover_pos4",
+                  "type": "mesh",
+                  "missing": true,
+                  "localVisible": true,
                   "bbox": {
                     "min": [
                       18.334999084472656,
@@ -310,58 +199,27 @@
                       -16.351999282836914
                     ]
                   },
-                  "sourceAssetId": "asset_mob5jfrv28l7_19"
-                },
-                {
-                  "id": "ms_1v4s4gj",
-                  "name": "cover_pos005",
-                  "type": "mesh",
-                  "assetId": null,
-                  "localVisible": true,
-                  "children": [],
-                  "localOffset": [
-                    0,
-                    0,
-                    0
-                  ],
-                  "localQuaternion": [
-                    0,
-                    0,
-                    0,
-                    1
-                  ],
+                  "colorPresetId": null,
+                  "meshIndex": null,
+                  "sourceAssetId": "asset_mob6y9qmym42_19",
                   "baseLocalPosition": [
                     0,
                     0,
                     0
-                  ],
-                  "baseLocalQuaternion": [
-                    0,
-                    0,
-                    0,
-                    1
                   ],
                   "baseLocalScale": [
                     1,
                     1,
                     1
                   ],
-                  "pivotLocalOffset": [
-                    0,
-                    0,
-                    0
-                  ],
-                  "pivotLocalQuaternion": [
-                    0,
-                    0,
-                    0,
-                    1
-                  ],
-                  "pivotEnabled": true,
-                  "moveEnabled": true,
-                  "rotateEnabled": true,
-                  "meshIndex": null,
-                  "colorPresetId": null,
+                  "children": []
+                },
+                {
+                  "id": "ms_1r4ifqf",
+                  "name": "cover_pos005",
+                  "type": "mesh",
+                  "missing": true,
+                  "localVisible": true,
                   "bbox": {
                     "min": [
                       18.325000762939453,
@@ -374,58 +232,27 @@
                       0.14800000190734863
                     ]
                   },
-                  "sourceAssetId": "asset_mob5jfrv28l7_19"
-                },
-                {
-                  "id": "ms_0shgxjr",
-                  "name": "Object001",
-                  "type": "mesh",
-                  "assetId": null,
-                  "localVisible": true,
-                  "children": [],
-                  "localOffset": [
-                    0,
-                    0,
-                    0
-                  ],
-                  "localQuaternion": [
-                    0,
-                    0,
-                    0,
-                    1
-                  ],
+                  "colorPresetId": null,
+                  "meshIndex": null,
+                  "sourceAssetId": "asset_mob6y9qmym42_19",
                   "baseLocalPosition": [
                     0,
                     0,
                     0
-                  ],
-                  "baseLocalQuaternion": [
-                    0,
-                    0,
-                    0,
-                    1
                   ],
                   "baseLocalScale": [
                     1,
                     1,
                     1
                   ],
-                  "pivotLocalOffset": [
-                    0,
-                    0,
-                    0
-                  ],
-                  "pivotLocalQuaternion": [
-                    0,
-                    0,
-                    0,
-                    1
-                  ],
-                  "pivotEnabled": true,
-                  "moveEnabled": true,
-                  "rotateEnabled": true,
-                  "meshIndex": null,
-                  "colorPresetId": null,
+                  "children": []
+                },
+                {
+                  "id": "ms_12vry03",
+                  "name": "Object001",
+                  "type": "mesh",
+                  "missing": true,
+                  "localVisible": true,
                   "bbox": {
                     "min": [
                       16.905000686645508,
@@ -438,58 +265,27 @@
                       7.347599983215332
                     ]
                   },
-                  "sourceAssetId": "asset_mob5jfrv28l7_19"
-                },
-                {
-                  "id": "ms_08c3knn",
-                  "name": "Object002",
-                  "type": "mesh",
-                  "assetId": null,
-                  "localVisible": true,
-                  "children": [],
-                  "localOffset": [
-                    0,
-                    0,
-                    0
-                  ],
-                  "localQuaternion": [
-                    0,
-                    0,
-                    0,
-                    1
-                  ],
+                  "colorPresetId": null,
+                  "meshIndex": null,
+                  "sourceAssetId": "asset_mob6y9qmym42_19",
                   "baseLocalPosition": [
                     0,
                     0,
                     0
-                  ],
-                  "baseLocalQuaternion": [
-                    0,
-                    0,
-                    0,
-                    1
                   ],
                   "baseLocalScale": [
                     1,
                     1,
                     1
                   ],
-                  "pivotLocalOffset": [
-                    0,
-                    0,
-                    0
-                  ],
-                  "pivotLocalQuaternion": [
-                    0,
-                    0,
-                    0,
-                    1
-                  ],
-                  "pivotEnabled": true,
-                  "moveEnabled": true,
-                  "rotateEnabled": true,
-                  "meshIndex": null,
-                  "colorPresetId": null,
+                  "children": []
+                },
+                {
+                  "id": "ms_12hbht3",
+                  "name": "Object002",
+                  "type": "mesh",
+                  "missing": true,
+                  "localVisible": true,
                   "bbox": {
                     "min": [
                       16.905000686645508,
@@ -502,58 +298,27 @@
                       7.497600078582764
                     ]
                   },
-                  "sourceAssetId": "asset_mob5jfrv28l7_19"
-                },
-                {
-                  "id": "ms_18r4vav",
-                  "name": "Object003",
-                  "type": "mesh",
-                  "assetId": null,
-                  "localVisible": true,
-                  "children": [],
-                  "localOffset": [
-                    0,
-                    0,
-                    0
-                  ],
-                  "localQuaternion": [
-                    0,
-                    0,
-                    0,
-                    1
-                  ],
+                  "colorPresetId": null,
+                  "meshIndex": null,
+                  "sourceAssetId": "asset_mob6y9qmym42_19",
                   "baseLocalPosition": [
                     0,
                     0,
                     0
-                  ],
-                  "baseLocalQuaternion": [
-                    0,
-                    0,
-                    0,
-                    1
                   ],
                   "baseLocalScale": [
                     1,
                     1,
                     1
                   ],
-                  "pivotLocalOffset": [
-                    0,
-                    0,
-                    0
-                  ],
-                  "pivotLocalQuaternion": [
-                    0,
-                    0,
-                    0,
-                    1
-                  ],
-                  "pivotEnabled": true,
-                  "moveEnabled": true,
-                  "rotateEnabled": true,
-                  "meshIndex": null,
-                  "colorPresetId": null,
+                  "children": []
+                },
+                {
+                  "id": "ms_1gfcygz",
+                  "name": "Object003",
+                  "type": "mesh",
+                  "missing": true,
+                  "localVisible": true,
                   "bbox": {
                     "min": [
                       16.905000686645508,
@@ -566,7 +331,20 @@
                       3.647599935531616
                     ]
                   },
-                  "sourceAssetId": "asset_mob5jfrv28l7_19"
+                  "colorPresetId": null,
+                  "meshIndex": null,
+                  "sourceAssetId": "asset_mob6y9qmym42_19",
+                  "baseLocalPosition": [
+                    0,
+                    0,
+                    0
+                  ],
+                  "baseLocalScale": [
+                    1,
+                    1,
+                    1
+                  ],
+                  "children": []
                 }
               ],
               "localOffset": [
@@ -576,25 +354,14 @@
               ],
               "localQuaternion": [
                 0,
+                0.6852627081999771,
                 0,
-                0,
-                1
+                0.7282959705713282
               ],
-              "baseLocalPosition": [
+              "orientationSteps": [
                 0,
                 0,
                 0
-              ],
-              "baseLocalQuaternion": [
-                0,
-                0,
-                0,
-                1
-              ],
-              "baseLocalScale": [
-                1,
-                1,
-                1
               ],
               "pivotLocalOffset": [
                 0,
@@ -607,15 +374,14 @@
                 0,
                 1
               ],
-              "pivotEnabled": true,
               "moveEnabled": true,
               "rotateEnabled": true,
-              "meshIndex": null,
-              "colorPresetId": null,
-              "orientationSteps": [
+              "pivotEnabled": true,
+              "baseLocalQuaternion": [
                 0,
                 0,
-                0
+                0,
+                1
               ]
             }
           ],
@@ -630,21 +396,10 @@
             0,
             1
           ],
-          "baseLocalPosition": [
+          "orientationSteps": [
             0,
             0,
             0
-          ],
-          "baseLocalQuaternion": [
-            0,
-            0,
-            0,
-            1
-          ],
-          "baseLocalScale": [
-            1,
-            1,
-            1
           ],
           "pivotLocalOffset": [
             0,
@@ -657,33 +412,32 @@
             0,
             1
           ],
-          "pivotEnabled": true,
           "moveEnabled": true,
           "rotateEnabled": true,
-          "meshIndex": null,
-          "colorPresetId": null,
-          "orientationSteps": [
+          "pivotEnabled": true,
+          "baseLocalQuaternion": [
             0,
             0,
-            0
+            0,
+            1
           ]
         },
         {
-          "id": "m_1gprtka",
+          "id": "m_0xgnohq",
           "name": "random-primitives.obj",
           "type": "model",
-          "assetId": "asset_mob5jqlmqwox_32",
+          "assetId": "asset_mob6yetk6vqn_32",
           "localVisible": true,
           "children": [
             {
-              "id": "fd_1lfimiu",
+              "id": "fd_1vf25le",
               "name": "random-primitives.obj",
               "type": "folder",
               "assetId": null,
               "localVisible": true,
               "children": [
                 {
-                  "id": "ms_0k9w30m",
+                  "id": "ms_1o3n3bm",
                   "name": "Box001",
                   "type": "mesh",
                   "assetId": null,
@@ -744,10 +498,10 @@
                       -0.3978999853134155
                     ]
                   },
-                  "sourceAssetId": "asset_mob5jqlmqwox_32"
+                  "sourceAssetId": "asset_mob6yetk6vqn_32"
                 },
                 {
-                  "id": "ms_0zjnps9",
+                  "id": "ms_05caw0t",
                   "name": "Cylinder001",
                   "type": "mesh",
                   "assetId": null,
@@ -808,10 +562,10 @@
                       15.629199981689453
                     ]
                   },
-                  "sourceAssetId": "asset_mob5jqlmqwox_32"
+                  "sourceAssetId": "asset_mob6yetk6vqn_32"
                 },
                 {
-                  "id": "ms_0t8ptdo",
+                  "id": "ms_0hf4ze0",
                   "name": "Teapot001",
                   "type": "mesh",
                   "assetId": null,
@@ -872,7 +626,7 @@
                       5.897900104522705
                     ]
                   },
-                  "sourceAssetId": "asset_mob5jqlmqwox_32"
+                  "sourceAssetId": "asset_mob6yetk6vqn_32"
                 }
               ],
               "localOffset": [
@@ -975,56 +729,14 @@
           ]
         }
       ],
-      "localOffset": [
-        0,
-        0,
-        0
-      ],
-      "localQuaternion": [
-        0,
-        0,
-        0,
-        1
-      ],
-      "baseLocalPosition": [
-        0,
-        0,
-        0
-      ],
-      "baseLocalQuaternion": [
-        0,
-        0,
-        0,
-        1
-      ],
-      "baseLocalScale": [
-        1,
-        1,
-        1
-      ],
-      "pivotLocalOffset": [
-        0,
-        0,
-        0
-      ],
-      "pivotLocalQuaternion": [
-        0,
-        0,
-        0,
-        1
-      ],
-      "pivotEnabled": true,
-      "moveEnabled": true,
-      "rotateEnabled": true,
-      "meshIndex": null,
-      "colorPresetId": null
+      "localVisible": true
     }
   },
   "steps": {
     "schema_version": 1,
     "items": [
       {
-        "id": "step_mob5jtuhgd75_34",
+        "id": "step_mob6yir232ow_34",
         "name": "__base__",
         "chapterId": null,
         "hidden": true,
@@ -1036,24 +748,24 @@
         "snapshot": {
           "visibility": {
             "scene_root": true,
-            "m_127m8xd": true,
-            "fd_156kx6l": true,
-            "ms_02doqzq": true,
-            "ms_0qnlsld": true,
-            "ms_05e1tg8": true,
-            "ms_1q6burw": true,
-            "ms_1v4s4gj": true,
-            "ms_0shgxjr": true,
-            "ms_08c3knn": true,
-            "ms_18r4vav": true,
-            "m_1gprtka": true,
-            "fd_1lfimiu": true,
-            "ms_0k9w30m": true,
-            "ms_0zjnps9": true,
-            "ms_0t8ptdo": true
+            "m_00o8cxx": true,
+            "fd_13akm15": true,
+            "ms_0yqmadu": true,
+            "ms_0ia2lo5": true,
+            "ms_1kl8jzg": true,
+            "ms_09vn320": true,
+            "ms_1r4ifqf": true,
+            "ms_12vry03": true,
+            "ms_12hbht3": true,
+            "ms_1gfcygz": true,
+            "m_0xgnohq": true,
+            "fd_1vf25le": true,
+            "ms_1o3n3bm": true,
+            "ms_05caw0t": true,
+            "ms_0hf4ze0": true
           },
           "transforms": {
-            "m_127m8xd": {
+            "m_00o8cxx": {
               "localOffset": [
                 0,
                 0,
@@ -1085,7 +797,39 @@
               "rotateEnabled": true,
               "pivotEnabled": true
             },
-            "fd_156kx6l": {
+            "fd_13akm15": {
+              "localOffset": [
+                0,
+                0,
+                0
+              ],
+              "localQuaternion": [
+                0,
+                0.6852627081999771,
+                0,
+                0.7282959705713282
+              ],
+              "orientationSteps": [
+                0,
+                0,
+                0
+              ],
+              "pivotLocalOffset": [
+                0,
+                0,
+                0
+              ],
+              "pivotLocalQuaternion": [
+                0,
+                0,
+                0,
+                1
+              ],
+              "moveEnabled": true,
+              "rotateEnabled": true,
+              "pivotEnabled": true
+            },
+            "m_0xgnohq": {
               "localOffset": [
                 0,
                 0,
@@ -1117,39 +861,7 @@
               "rotateEnabled": true,
               "pivotEnabled": true
             },
-            "m_1gprtka": {
-              "localOffset": [
-                0,
-                0,
-                0
-              ],
-              "localQuaternion": [
-                0,
-                0,
-                0,
-                1
-              ],
-              "orientationSteps": [
-                0,
-                0,
-                0
-              ],
-              "pivotLocalOffset": [
-                0,
-                0,
-                0
-              ],
-              "pivotLocalQuaternion": [
-                0,
-                0,
-                0,
-                1
-              ],
-              "moveEnabled": true,
-              "rotateEnabled": true,
-              "pivotEnabled": true
-            },
-            "fd_1lfimiu": {
+            "fd_1vf25le": {
               "localOffset": [
                 0,
                 0,
@@ -1189,19 +901,19 @@
             "localVisible": true,
             "children": [
               {
-                "id": "m_127m8xd",
+                "id": "m_00o8cxx",
                 "name": "panle.obj",
                 "type": "model",
                 "localVisible": true,
                 "children": [
                   {
-                    "id": "fd_156kx6l",
+                    "id": "fd_13akm15",
                     "name": "panle.obj",
                     "type": "folder",
                     "localVisible": true,
                     "children": [
                       {
-                        "id": "ms_02doqzq",
+                        "id": "ms_0yqmadu",
                         "name": "cover",
                         "type": "mesh",
                         "localVisible": true,
@@ -1220,7 +932,7 @@
                         }
                       },
                       {
-                        "id": "ms_0qnlsld",
+                        "id": "ms_0ia2lo5",
                         "name": "cover_pos1",
                         "type": "mesh",
                         "localVisible": true,
@@ -1239,7 +951,7 @@
                         }
                       },
                       {
-                        "id": "ms_05e1tg8",
+                        "id": "ms_1kl8jzg",
                         "name": "cover_pos3",
                         "type": "mesh",
                         "localVisible": true,
@@ -1258,7 +970,7 @@
                         }
                       },
                       {
-                        "id": "ms_1q6burw",
+                        "id": "ms_09vn320",
                         "name": "cover_pos4",
                         "type": "mesh",
                         "localVisible": true,
@@ -1277,7 +989,7 @@
                         }
                       },
                       {
-                        "id": "ms_1v4s4gj",
+                        "id": "ms_1r4ifqf",
                         "name": "cover_pos005",
                         "type": "mesh",
                         "localVisible": true,
@@ -1296,7 +1008,7 @@
                         }
                       },
                       {
-                        "id": "ms_0shgxjr",
+                        "id": "ms_12vry03",
                         "name": "Object001",
                         "type": "mesh",
                         "localVisible": true,
@@ -1315,7 +1027,7 @@
                         }
                       },
                       {
-                        "id": "ms_08c3knn",
+                        "id": "ms_12hbht3",
                         "name": "Object002",
                         "type": "mesh",
                         "localVisible": true,
@@ -1334,7 +1046,7 @@
                         }
                       },
                       {
-                        "id": "ms_18r4vav",
+                        "id": "ms_1gfcygz",
                         "name": "Object003",
                         "type": "mesh",
                         "localVisible": true,
@@ -1357,19 +1069,19 @@
                 ]
               },
               {
-                "id": "m_1gprtka",
+                "id": "m_0xgnohq",
                 "name": "random-primitives.obj",
                 "type": "model",
                 "localVisible": true,
                 "children": [
                   {
-                    "id": "fd_1lfimiu",
+                    "id": "fd_1vf25le",
                     "name": "random-primitives.obj",
                     "type": "folder",
                     "localVisible": true,
                     "children": [
                       {
-                        "id": "ms_0k9w30m",
+                        "id": "ms_1o3n3bm",
                         "name": "Box001",
                         "type": "mesh",
                         "localVisible": true,
@@ -1388,7 +1100,7 @@
                         }
                       },
                       {
-                        "id": "ms_0zjnps9",
+                        "id": "ms_05caw0t",
                         "name": "Cylinder001",
                         "type": "mesh",
                         "localVisible": true,
@@ -1407,7 +1119,7 @@
                         }
                       },
                       {
-                        "id": "ms_0t8ptdo",
+                        "id": "ms_0hf4ze0",
                         "name": "Teapot001",
                         "type": "mesh",
                         "localVisible": true,
@@ -1432,34 +1144,34 @@
             ]
           },
           "materials": {
-            "ms_02doqzq": "color_mob5jfrysj8x_22",
-            "ms_0qnlsld": "color_mob5jfrysj8x_22",
-            "ms_05e1tg8": "color_mob5jfrysj8x_22",
-            "ms_1q6burw": "color_mob5jfrysj8x_22",
-            "ms_1v4s4gj": "color_mob5jfrysj8x_22",
-            "ms_0shgxjr": "color_mob5jfrysj8x_22",
-            "ms_08c3knn": "color_mob5jfrysj8x_22",
-            "ms_18r4vav": "color_mob5jfrysj8x_22",
-            "ms_0k9w30m": "color_mob5jfrysj8x_22",
-            "ms_0zjnps9": "color_mob5jfrysj8x_22",
-            "ms_0t8ptdo": "color_mob5jfrysj8x_22"
+            "ms_0yqmadu": "color_mob6y9qqm35m_22",
+            "ms_0ia2lo5": "color_mob6y9qqm35m_22",
+            "ms_1kl8jzg": "color_mob6y9qqm35m_22",
+            "ms_09vn320": "color_mob6y9qqm35m_22",
+            "ms_1r4ifqf": "color_mob6y9qqm35m_22",
+            "ms_12vry03": "color_mob6y9qqm35m_22",
+            "ms_12hbht3": "color_mob6y9qqm35m_22",
+            "ms_1gfcygz": "color_mob6y9qqm35m_22",
+            "ms_1o3n3bm": "color_mob6y9qqm35m_22",
+            "ms_05caw0t": "color_mob6y9qqm35m_22",
+            "ms_0hf4ze0": "color_mob6y9qqm35m_22"
           },
           "camera": {
             "position": [
-              38.20970807850173,
-              34.44334339862367,
-              49.99537393445095
+              37.80160517001108,
+              28.009909001648552,
+              34.39047157123102
             ],
             "quaternion": [
-              -0.22601892969085427,
+              -0.22601892969085424,
               0.3338446612545174,
-              0.08279250852160057,
+              0.08279250852160054,
               0.91137730172852
             ],
             "pivot": [
-              -0.3979005813598633,
-              2.855299949645996,
-              4.368200063705444
+              8.624205483860958,
+              4.1374910766166275,
+              -0.0919098760373103
             ],
             "up": [
               0,
@@ -1476,7 +1188,7 @@
         "isBaseStep": true
       },
       {
-        "id": "step_mob5jfrzpdkq_23",
+        "id": "step_mob6y9qrjm79_23",
         "name": "Step 1",
         "chapterId": null,
         "hidden": false,
@@ -1491,25 +1203,26 @@
         },
         "snapshot": {
           "visibility": {
-            "m_1gprtka": true,
-            "fd_1lfimiu": true,
-            "ms_0k9w30m": true,
-            "ms_0zjnps9": true,
-            "ms_0t8ptdo": true,
             "scene_root": true,
-            "m_127m8xd": true,
-            "fd_156kx6l": true,
-            "ms_02doqzq": true,
-            "ms_0qnlsld": true,
-            "ms_05e1tg8": true,
-            "ms_1q6burw": true,
-            "ms_1v4s4gj": true,
-            "ms_0shgxjr": true,
-            "ms_08c3knn": true,
-            "ms_18r4vav": true
+            "m_00o8cxx": true,
+            "fd_13akm15": true,
+            "ms_0yqmadu": true,
+            "ms_0ia2lo5": true,
+            "ms_1kl8jzg": true,
+            "ms_09vn320": true,
+            "ms_12vry03": true,
+            "ms_12hbht3": true,
+            "ms_1gfcygz": true,
+            "m_0xgnohq": true,
+            "fd_1vf25le": true,
+            "ms_05caw0t": true,
+            "ms_0hf4ze0": true,
+            "folder_mob6zpyvr6c5_45": true,
+            "ms_1r4ifqf": true,
+            "ms_1o3n3bm": true
           },
           "transforms": {
-            "m_1gprtka": {
+            "m_00o8cxx": {
               "localOffset": [
                 0,
                 0,
@@ -1541,7 +1254,39 @@
               "rotateEnabled": true,
               "pivotEnabled": true
             },
-            "fd_1lfimiu": {
+            "fd_13akm15": {
+              "localOffset": [
+                0,
+                0,
+                0
+              ],
+              "localQuaternion": [
+                0,
+                0.6852627081999771,
+                0,
+                0.7282959705713282
+              ],
+              "orientationSteps": [
+                0,
+                0,
+                0
+              ],
+              "pivotLocalOffset": [
+                0,
+                0,
+                0
+              ],
+              "pivotLocalQuaternion": [
+                0,
+                0,
+                0,
+                1
+              ],
+              "moveEnabled": true,
+              "rotateEnabled": true,
+              "pivotEnabled": true
+            },
+            "m_0xgnohq": {
               "localOffset": [
                 0,
                 0,
@@ -1573,7 +1318,7 @@
               "rotateEnabled": true,
               "pivotEnabled": true
             },
-            "m_127m8xd": {
+            "fd_1vf25le": {
               "localOffset": [
                 0,
                 0,
@@ -1605,7 +1350,470 @@
               "rotateEnabled": true,
               "pivotEnabled": true
             },
-            "fd_156kx6l": {
+            "folder_mob6zpyvr6c5_45": {
+              "localOffset": [
+                0,
+                0,
+                0
+              ],
+              "localQuaternion": [
+                0,
+                0,
+                0.6890177452828338,
+                0.7247444699239588
+              ],
+              "orientationSteps": [
+                0,
+                0,
+                0
+              ],
+              "pivotLocalOffset": [
+                0,
+                0,
+                0
+              ],
+              "pivotLocalQuaternion": [
+                0,
+                0,
+                0,
+                1
+              ],
+              "moveEnabled": true,
+              "rotateEnabled": true,
+              "pivotEnabled": true
+            }
+          },
+          "tree": {
+            "id": "scene_root",
+            "name": "Scene",
+            "type": "scene",
+            "localVisible": true,
+            "children": [
+              {
+                "id": "m_00o8cxx",
+                "name": "panle.obj",
+                "type": "model",
+                "localVisible": true,
+                "children": [
+                  {
+                    "id": "fd_13akm15",
+                    "name": "panle.obj",
+                    "type": "folder",
+                    "localVisible": true,
+                    "children": [
+                      {
+                        "id": "ms_0yqmadu",
+                        "name": "cover",
+                        "type": "mesh",
+                        "localVisible": true,
+                        "children": [],
+                        "bbox": {
+                          "min": [
+                            16.905000686645508,
+                            -6.499800205230713,
+                            -19.746200561523438
+                          ],
+                          "max": [
+                            19.65999984741211,
+                            7.749899864196777,
+                            7.94980001449585
+                          ]
+                        }
+                      },
+                      {
+                        "id": "ms_0ia2lo5",
+                        "name": "cover_pos1",
+                        "type": "mesh",
+                        "localVisible": true,
+                        "children": [],
+                        "bbox": {
+                          "min": [
+                            18.325000762939453,
+                            -2.0799999237060547,
+                            5.15500020980835
+                          ],
+                          "max": [
+                            19.80500030517578,
+                            1.9199999570846558,
+                            7.90500020980835
+                          ]
+                        }
+                      },
+                      {
+                        "id": "ms_1kl8jzg",
+                        "name": "cover_pos3",
+                        "type": "mesh",
+                        "localVisible": true,
+                        "children": [],
+                        "bbox": {
+                          "min": [
+                            18.334999084472656,
+                            -1.2446000576019287,
+                            -11.745200157165527
+                          ],
+                          "max": [
+                            19.815000534057617,
+                            2.7453999519348145,
+                            -9.001999855041504
+                          ]
+                        }
+                      },
+                      {
+                        "id": "ms_09vn320",
+                        "name": "cover_pos4",
+                        "type": "mesh",
+                        "localVisible": true,
+                        "children": [],
+                        "bbox": {
+                          "min": [
+                            18.334999084472656,
+                            -1.4745999574661255,
+                            -19.095199584960938
+                          ],
+                          "max": [
+                            19.815000534057617,
+                            2.515399932861328,
+                            -16.351999282836914
+                          ]
+                        }
+                      },
+                      {
+                        "id": "ms_12vry03",
+                        "name": "Object001",
+                        "type": "mesh",
+                        "localVisible": true,
+                        "children": [],
+                        "bbox": {
+                          "min": [
+                            16.905000686645508,
+                            6.6016998291015625,
+                            6.654200077056885
+                          ],
+                          "max": [
+                            18.760000228881836,
+                            7.295599937438965,
+                            7.347599983215332
+                          ]
+                        }
+                      },
+                      {
+                        "id": "ms_12hbht3",
+                        "name": "Object002",
+                        "type": "mesh",
+                        "localVisible": true,
+                        "children": [],
+                        "bbox": {
+                          "min": [
+                            16.905000686645508,
+                            2.151700019836426,
+                            6.804200172424316
+                          ],
+                          "max": [
+                            18.760000228881836,
+                            2.845599889755249,
+                            7.497600078582764
+                          ]
+                        }
+                      },
+                      {
+                        "id": "ms_1gfcygz",
+                        "name": "Object003",
+                        "type": "mesh",
+                        "localVisible": true,
+                        "children": [],
+                        "bbox": {
+                          "min": [
+                            16.905000686645508,
+                            -6.048299789428711,
+                            2.954200029373169
+                          ],
+                          "max": [
+                            18.760000228881836,
+                            -5.354400157928467,
+                            3.647599935531616
+                          ]
+                        }
+                      }
+                    ]
+                  }
+                ]
+              },
+              {
+                "id": "m_0xgnohq",
+                "name": "random-primitives.obj",
+                "type": "model",
+                "localVisible": true,
+                "children": [
+                  {
+                    "id": "fd_1vf25le",
+                    "name": "random-primitives.obj",
+                    "type": "folder",
+                    "localVisible": true,
+                    "children": [
+                      {
+                        "id": "ms_05caw0t",
+                        "name": "Cylinder001",
+                        "type": "mesh",
+                        "localVisible": true,
+                        "children": [],
+                        "bbox": {
+                          "min": [
+                            -16.082599639892578,
+                            0,
+                            0.5996999740600586
+                          ],
+                          "max": [
+                            -0.8213000297546387,
+                            4.434000015258789,
+                            15.629199981689453
+                          ]
+                        }
+                      },
+                      {
+                        "id": "ms_0hf4ze0",
+                        "name": "Teapot001",
+                        "type": "mesh",
+                        "localVisible": true,
+                        "children": [],
+                        "bbox": {
+                          "min": [
+                            5.698800086975098,
+                            0,
+                            -0.9613999724388123
+                          ],
+                          "max": [
+                            16.730499267578125,
+                            5.401700019836426,
+                            5.897900104522705
+                          ]
+                        }
+                      }
+                    ]
+                  }
+                ]
+              },
+              {
+                "id": "folder_mob6zpyvr6c5_45",
+                "name": "New Folder",
+                "type": "folder",
+                "localVisible": true,
+                "children": [
+                  {
+                    "id": "ms_1r4ifqf",
+                    "name": "cover_pos005",
+                    "type": "mesh",
+                    "localVisible": true,
+                    "children": [],
+                    "bbox": {
+                      "min": [
+                        18.325000762939453,
+                        -2.0745999813079834,
+                        -2.5952000617980957
+                      ],
+                      "max": [
+                        19.80500030517578,
+                        1.9154000282287598,
+                        0.14800000190734863
+                      ]
+                    }
+                  },
+                  {
+                    "id": "ms_1o3n3bm",
+                    "name": "Box001",
+                    "type": "mesh",
+                    "localVisible": true,
+                    "children": [],
+                    "bbox": {
+                      "min": [
+                        -17.52630043029785,
+                        0,
+                        -6.8927998542785645
+                      ],
+                      "max": [
+                        -5.844900131225586,
+                        5.710599899291992,
+                        -0.3978999853134155
+                      ]
+                    }
+                  }
+                ]
+              }
+            ]
+          },
+          "materials": {
+            "ms_0yqmadu": "color_mob6y9qqm35m_22",
+            "ms_0ia2lo5": "color_mob6y9qqm35m_22",
+            "ms_1kl8jzg": "color_mob6y9qqm35m_22",
+            "ms_09vn320": "color_mob6y9qqm35m_22",
+            "ms_1r4ifqf": "color_mob6y9qqm35m_22",
+            "ms_12vry03": "color_mob6y9qqm35m_22",
+            "ms_12hbht3": "color_mob6y9qqm35m_22",
+            "ms_1gfcygz": "color_mob6y9qqm35m_22",
+            "ms_1o3n3bm": "color_mob6y9qqm35m_22",
+            "ms_05caw0t": "color_mob6y9qqm35m_22",
+            "ms_0hf4ze0": "color_mob6y9qqm35m_22"
+          },
+          "camera": {
+            "position": [
+              47.53740029650169,
+              24.49746775451495,
+              28.58418117375453
+            ],
+            "quaternion": [
+              -0.22601892969085424,
+              0.3338446612545174,
+              0.08279250852160054,
+              0.91137730172852
+            ],
+            "pivot": [
+              18.360000610351562,
+              0.6250498294830322,
+              -5.898200273513794
+            ],
+            "up": [
+              0,
+              1,
+              0
+            ],
+            "fov": 45
+          },
+          "notes": [],
+          "screenItems": [],
+          "headerItems": [],
+          "cables": []
+        }
+      },
+      {
+        "id": "step_mob6zhmkbn7j_44",
+        "name": "New Step",
+        "chapterId": null,
+        "hidden": false,
+        "voiceText": "",
+        "voiceEnabled": true,
+        "transition": {
+          "durationMs": 1500,
+          "cameraEasing": "smooth",
+          "objectEasing": "smooth",
+          "visibilityFade": true,
+          "animPresetId": null
+        },
+        "snapshot": {
+          "visibility": {
+            "scene_root": true,
+            "m_00o8cxx": true,
+            "fd_13akm15": true,
+            "ms_0yqmadu": true,
+            "ms_0ia2lo5": true,
+            "ms_1kl8jzg": true,
+            "ms_09vn320": true,
+            "ms_1r4ifqf": true,
+            "ms_12vry03": true,
+            "ms_12hbht3": true,
+            "ms_1gfcygz": true,
+            "m_0xgnohq": true,
+            "fd_1vf25le": true,
+            "ms_1o3n3bm": true,
+            "ms_05caw0t": true,
+            "ms_0hf4ze0": true
+          },
+          "transforms": {
+            "m_00o8cxx": {
+              "localOffset": [
+                0,
+                0,
+                0
+              ],
+              "localQuaternion": [
+                0,
+                0,
+                0,
+                1
+              ],
+              "orientationSteps": [
+                0,
+                0,
+                0
+              ],
+              "pivotLocalOffset": [
+                0,
+                0,
+                0
+              ],
+              "pivotLocalQuaternion": [
+                0,
+                0,
+                0,
+                1
+              ],
+              "moveEnabled": true,
+              "rotateEnabled": true,
+              "pivotEnabled": true
+            },
+            "fd_13akm15": {
+              "localOffset": [
+                0,
+                0,
+                0
+              ],
+              "localQuaternion": [
+                0,
+                0.6852627081999771,
+                0,
+                0.7282959705713282
+              ],
+              "orientationSteps": [
+                0,
+                0,
+                0
+              ],
+              "pivotLocalOffset": [
+                0,
+                0,
+                0
+              ],
+              "pivotLocalQuaternion": [
+                0,
+                0,
+                0,
+                1
+              ],
+              "moveEnabled": true,
+              "rotateEnabled": true,
+              "pivotEnabled": true
+            },
+            "m_0xgnohq": {
+              "localOffset": [
+                0,
+                0,
+                0
+              ],
+              "localQuaternion": [
+                0,
+                0,
+                0,
+                1
+              ],
+              "orientationSteps": [
+                0,
+                0,
+                0
+              ],
+              "pivotLocalOffset": [
+                0,
+                0,
+                0
+              ],
+              "pivotLocalQuaternion": [
+                0,
+                0,
+                0,
+                1
+              ],
+              "moveEnabled": true,
+              "rotateEnabled": true,
+              "pivotEnabled": true
+            },
+            "fd_1vf25le": {
               "localOffset": [
                 0,
                 0,
@@ -1645,19 +1853,19 @@
             "localVisible": true,
             "children": [
               {
-                "id": "m_127m8xd",
+                "id": "m_00o8cxx",
                 "name": "panle.obj",
                 "type": "model",
                 "localVisible": true,
                 "children": [
                   {
-                    "id": "fd_156kx6l",
+                    "id": "fd_13akm15",
                     "name": "panle.obj",
                     "type": "folder",
                     "localVisible": true,
                     "children": [
                       {
-                        "id": "ms_02doqzq",
+                        "id": "ms_0yqmadu",
                         "name": "cover",
                         "type": "mesh",
                         "localVisible": true,
@@ -1676,7 +1884,7 @@
                         }
                       },
                       {
-                        "id": "ms_0qnlsld",
+                        "id": "ms_0ia2lo5",
                         "name": "cover_pos1",
                         "type": "mesh",
                         "localVisible": true,
@@ -1695,7 +1903,7 @@
                         }
                       },
                       {
-                        "id": "ms_05e1tg8",
+                        "id": "ms_1kl8jzg",
                         "name": "cover_pos3",
                         "type": "mesh",
                         "localVisible": true,
@@ -1714,7 +1922,7 @@
                         }
                       },
                       {
-                        "id": "ms_1q6burw",
+                        "id": "ms_09vn320",
                         "name": "cover_pos4",
                         "type": "mesh",
                         "localVisible": true,
@@ -1733,7 +1941,7 @@
                         }
                       },
                       {
-                        "id": "ms_1v4s4gj",
+                        "id": "ms_1r4ifqf",
                         "name": "cover_pos005",
                         "type": "mesh",
                         "localVisible": true,
@@ -1752,7 +1960,7 @@
                         }
                       },
                       {
-                        "id": "ms_0shgxjr",
+                        "id": "ms_12vry03",
                         "name": "Object001",
                         "type": "mesh",
                         "localVisible": true,
@@ -1771,7 +1979,7 @@
                         }
                       },
                       {
-                        "id": "ms_08c3knn",
+                        "id": "ms_12hbht3",
                         "name": "Object002",
                         "type": "mesh",
                         "localVisible": true,
@@ -1790,7 +1998,7 @@
                         }
                       },
                       {
-                        "id": "ms_18r4vav",
+                        "id": "ms_1gfcygz",
                         "name": "Object003",
                         "type": "mesh",
                         "localVisible": true,
@@ -1813,19 +2021,19 @@
                 ]
               },
               {
-                "id": "m_1gprtka",
+                "id": "m_0xgnohq",
                 "name": "random-primitives.obj",
                 "type": "model",
                 "localVisible": true,
                 "children": [
                   {
-                    "id": "fd_1lfimiu",
+                    "id": "fd_1vf25le",
                     "name": "random-primitives.obj",
                     "type": "folder",
                     "localVisible": true,
                     "children": [
                       {
-                        "id": "ms_0k9w30m",
+                        "id": "ms_1o3n3bm",
                         "name": "Box001",
                         "type": "mesh",
                         "localVisible": true,
@@ -1844,7 +2052,7 @@
                         }
                       },
                       {
-                        "id": "ms_0zjnps9",
+                        "id": "ms_05caw0t",
                         "name": "Cylinder001",
                         "type": "mesh",
                         "localVisible": true,
@@ -1863,7 +2071,7 @@
                         }
                       },
                       {
-                        "id": "ms_0t8ptdo",
+                        "id": "ms_0hf4ze0",
                         "name": "Teapot001",
                         "type": "mesh",
                         "localVisible": true,
@@ -1888,17 +2096,513 @@
             ]
           },
           "materials": {
-            "ms_02doqzq": "color_mob5jfrysj8x_22",
-            "ms_0qnlsld": "color_mob5jfrysj8x_22",
-            "ms_05e1tg8": "color_mob5jfrysj8x_22",
-            "ms_1q6burw": "color_mob5jfrysj8x_22",
-            "ms_1v4s4gj": "color_mob5jfrysj8x_22",
-            "ms_0shgxjr": "color_mob5jfrysj8x_22",
-            "ms_08c3knn": "color_mob5jfrysj8x_22",
-            "ms_18r4vav": "color_mob5jfrysj8x_22",
-            "ms_0k9w30m": "color_mob5jfrysj8x_22",
-            "ms_0zjnps9": "color_mob5jfrysj8x_22",
-            "ms_0t8ptdo": "color_mob5jfrysj8x_22"
+            "ms_0yqmadu": "color_mob6y9qqm35m_22",
+            "ms_0ia2lo5": "color_mob6y9qqm35m_22",
+            "ms_1kl8jzg": "color_mob6y9qqm35m_22",
+            "ms_09vn320": "color_mob6y9qqm35m_22",
+            "ms_1r4ifqf": "color_mob6y9qqm35m_22",
+            "ms_12vry03": "color_mob6y9qqm35m_22",
+            "ms_12hbht3": "color_mob6y9qqm35m_22",
+            "ms_1gfcygz": "color_mob6y9qqm35m_22",
+            "ms_1o3n3bm": "color_mob6y9qqm35m_22",
+            "ms_05caw0t": "color_mob6y9qqm35m_22",
+            "ms_0hf4ze0": "color_mob6y9qqm35m_22"
+          },
+          "camera": {
+            "position": [
+              47.53740029650169,
+              24.49746775451495,
+              28.58418117375453
+            ],
+            "quaternion": [
+              -0.22601892969085424,
+              0.3338446612545174,
+              0.08279250852160054,
+              0.91137730172852
+            ],
+            "pivot": [
+              18.360000610351562,
+              0.6250498294830322,
+              -5.898200273513794
+            ],
+            "up": [
+              0,
+              1,
+              0
+            ],
+            "fov": 45
+          },
+          "notes": [],
+          "screenItems": [],
+          "headerItems": [],
+          "cables": []
+        }
+      },
+      {
+        "id": "step_mob706bmgidy_46",
+        "name": "New Step",
+        "chapterId": null,
+        "hidden": false,
+        "voiceText": "",
+        "voiceEnabled": true,
+        "transition": {
+          "durationMs": 1500,
+          "cameraEasing": "smooth",
+          "objectEasing": "smooth",
+          "visibilityFade": true,
+          "animPresetId": null
+        },
+        "snapshot": {
+          "visibility": {
+            "scene_root": true,
+            "m_00o8cxx": true,
+            "fd_13akm15": true,
+            "ms_0yqmadu": true,
+            "ms_0ia2lo5": true,
+            "ms_1kl8jzg": true,
+            "ms_09vn320": true,
+            "ms_1r4ifqf": true,
+            "ms_12vry03": true,
+            "ms_12hbht3": true,
+            "ms_1gfcygz": true,
+            "folder_mob70bmpuljg_47": true,
+            "ms_0hf4ze0": true,
+            "m_0xgnohq": true,
+            "fd_1vf25le": true,
+            "ms_1o3n3bm": true,
+            "ms_05caw0t": true
+          },
+          "transforms": {
+            "m_00o8cxx": {
+              "localOffset": [
+                0,
+                0,
+                0
+              ],
+              "localQuaternion": [
+                0,
+                0,
+                0,
+                1
+              ],
+              "orientationSteps": [
+                0,
+                0,
+                0
+              ],
+              "pivotLocalOffset": [
+                0,
+                0,
+                0
+              ],
+              "pivotLocalQuaternion": [
+                0,
+                0,
+                0,
+                1
+              ],
+              "moveEnabled": true,
+              "rotateEnabled": true,
+              "pivotEnabled": true
+            },
+            "fd_13akm15": {
+              "localOffset": [
+                0,
+                0,
+                0
+              ],
+              "localQuaternion": [
+                -0.2541586608674707,
+                0.6363869533197715,
+                0.2701193664569967,
+                0.6763509064201094
+              ],
+              "orientationSteps": [
+                0,
+                0,
+                0
+              ],
+              "pivotLocalOffset": [
+                0,
+                0,
+                0
+              ],
+              "pivotLocalQuaternion": [
+                0,
+                0,
+                0,
+                1
+              ],
+              "moveEnabled": true,
+              "rotateEnabled": true,
+              "pivotEnabled": true
+            },
+            "folder_mob70bmpuljg_47": {
+              "localOffset": [
+                0,
+                0,
+                0
+              ],
+              "localQuaternion": [
+                0,
+                0.6700844738244652,
+                0,
+                0.742284849595753
+              ],
+              "orientationSteps": [
+                0,
+                0,
+                0
+              ],
+              "pivotLocalOffset": [
+                0,
+                0,
+                0
+              ],
+              "pivotLocalQuaternion": [
+                0,
+                0,
+                0,
+                1
+              ],
+              "moveEnabled": true,
+              "rotateEnabled": true,
+              "pivotEnabled": true
+            },
+            "m_0xgnohq": {
+              "localOffset": [
+                0,
+                0,
+                0
+              ],
+              "localQuaternion": [
+                0,
+                0,
+                0,
+                1
+              ],
+              "orientationSteps": [
+                0,
+                0,
+                0
+              ],
+              "pivotLocalOffset": [
+                0,
+                0,
+                0
+              ],
+              "pivotLocalQuaternion": [
+                0,
+                0,
+                0,
+                1
+              ],
+              "moveEnabled": true,
+              "rotateEnabled": true,
+              "pivotEnabled": true
+            },
+            "fd_1vf25le": {
+              "localOffset": [
+                0,
+                0,
+                0
+              ],
+              "localQuaternion": [
+                0,
+                0,
+                0,
+                1
+              ],
+              "orientationSteps": [
+                0,
+                0,
+                0
+              ],
+              "pivotLocalOffset": [
+                0,
+                0,
+                0
+              ],
+              "pivotLocalQuaternion": [
+                0,
+                0,
+                0,
+                1
+              ],
+              "moveEnabled": true,
+              "rotateEnabled": true,
+              "pivotEnabled": true
+            }
+          },
+          "tree": {
+            "id": "scene_root",
+            "name": "Scene",
+            "type": "scene",
+            "localVisible": true,
+            "children": [
+              {
+                "id": "m_00o8cxx",
+                "name": "panle.obj",
+                "type": "model",
+                "localVisible": true,
+                "children": [
+                  {
+                    "id": "fd_13akm15",
+                    "name": "panle.obj",
+                    "type": "folder",
+                    "localVisible": true,
+                    "children": [
+                      {
+                        "id": "ms_0yqmadu",
+                        "name": "cover",
+                        "type": "mesh",
+                        "localVisible": true,
+                        "children": [],
+                        "bbox": {
+                          "min": [
+                            16.905000686645508,
+                            -6.499800205230713,
+                            -19.746200561523438
+                          ],
+                          "max": [
+                            19.65999984741211,
+                            7.749899864196777,
+                            7.94980001449585
+                          ]
+                        }
+                      },
+                      {
+                        "id": "ms_0ia2lo5",
+                        "name": "cover_pos1",
+                        "type": "mesh",
+                        "localVisible": true,
+                        "children": [],
+                        "bbox": {
+                          "min": [
+                            18.325000762939453,
+                            -2.0799999237060547,
+                            5.15500020980835
+                          ],
+                          "max": [
+                            19.80500030517578,
+                            1.9199999570846558,
+                            7.90500020980835
+                          ]
+                        }
+                      },
+                      {
+                        "id": "ms_1kl8jzg",
+                        "name": "cover_pos3",
+                        "type": "mesh",
+                        "localVisible": true,
+                        "children": [],
+                        "bbox": {
+                          "min": [
+                            18.334999084472656,
+                            -1.2446000576019287,
+                            -11.745200157165527
+                          ],
+                          "max": [
+                            19.815000534057617,
+                            2.7453999519348145,
+                            -9.001999855041504
+                          ]
+                        }
+                      },
+                      {
+                        "id": "ms_09vn320",
+                        "name": "cover_pos4",
+                        "type": "mesh",
+                        "localVisible": true,
+                        "children": [],
+                        "bbox": {
+                          "min": [
+                            18.334999084472656,
+                            -1.4745999574661255,
+                            -19.095199584960938
+                          ],
+                          "max": [
+                            19.815000534057617,
+                            2.515399932861328,
+                            -16.351999282836914
+                          ]
+                        }
+                      },
+                      {
+                        "id": "ms_1r4ifqf",
+                        "name": "cover_pos005",
+                        "type": "mesh",
+                        "localVisible": true,
+                        "children": [],
+                        "bbox": {
+                          "min": [
+                            18.325000762939453,
+                            -2.0745999813079834,
+                            -2.5952000617980957
+                          ],
+                          "max": [
+                            19.80500030517578,
+                            1.9154000282287598,
+                            0.14800000190734863
+                          ]
+                        }
+                      },
+                      {
+                        "id": "ms_12vry03",
+                        "name": "Object001",
+                        "type": "mesh",
+                        "localVisible": true,
+                        "children": [],
+                        "bbox": {
+                          "min": [
+                            16.905000686645508,
+                            6.6016998291015625,
+                            6.654200077056885
+                          ],
+                          "max": [
+                            18.760000228881836,
+                            7.295599937438965,
+                            7.347599983215332
+                          ]
+                        }
+                      },
+                      {
+                        "id": "ms_12hbht3",
+                        "name": "Object002",
+                        "type": "mesh",
+                        "localVisible": true,
+                        "children": [],
+                        "bbox": {
+                          "min": [
+                            16.905000686645508,
+                            2.151700019836426,
+                            6.804200172424316
+                          ],
+                          "max": [
+                            18.760000228881836,
+                            2.845599889755249,
+                            7.497600078582764
+                          ]
+                        }
+                      },
+                      {
+                        "id": "ms_1gfcygz",
+                        "name": "Object003",
+                        "type": "mesh",
+                        "localVisible": true,
+                        "children": [],
+                        "bbox": {
+                          "min": [
+                            16.905000686645508,
+                            -6.048299789428711,
+                            2.954200029373169
+                          ],
+                          "max": [
+                            18.760000228881836,
+                            -5.354400157928467,
+                            3.647599935531616
+                          ]
+                        }
+                      },
+                      {
+                        "id": "folder_mob70bmpuljg_47",
+                        "name": "New Folder",
+                        "type": "folder",
+                        "localVisible": true,
+                        "children": [
+                          {
+                            "id": "ms_0hf4ze0",
+                            "name": "Teapot001",
+                            "type": "mesh",
+                            "localVisible": true,
+                            "children": [],
+                            "bbox": {
+                              "min": [
+                                5.698800086975098,
+                                0,
+                                -0.9613999724388123
+                              ],
+                              "max": [
+                                16.730499267578125,
+                                5.401700019836426,
+                                5.897900104522705
+                              ]
+                            }
+                          }
+                        ]
+                      }
+                    ]
+                  }
+                ]
+              },
+              {
+                "id": "m_0xgnohq",
+                "name": "random-primitives.obj",
+                "type": "model",
+                "localVisible": true,
+                "children": [
+                  {
+                    "id": "fd_1vf25le",
+                    "name": "random-primitives.obj",
+                    "type": "folder",
+                    "localVisible": true,
+                    "children": [
+                      {
+                        "id": "ms_1o3n3bm",
+                        "name": "Box001",
+                        "type": "mesh",
+                        "localVisible": true,
+                        "children": [],
+                        "bbox": {
+                          "min": [
+                            -17.52630043029785,
+                            0,
+                            -6.8927998542785645
+                          ],
+                          "max": [
+                            -5.844900131225586,
+                            5.710599899291992,
+                            -0.3978999853134155
+                          ]
+                        }
+                      },
+                      {
+                        "id": "ms_05caw0t",
+                        "name": "Cylinder001",
+                        "type": "mesh",
+                        "localVisible": true,
+                        "children": [],
+                        "bbox": {
+                          "min": [
+                            -16.082599639892578,
+                            0,
+                            0.5996999740600586
+                          ],
+                          "max": [
+                            -0.8213000297546387,
+                            4.434000015258789,
+                            15.629199981689453
+                          ]
+                        }
+                      }
+                    ]
+                  }
+                ]
+              }
+            ]
+          },
+          "materials": {
+            "ms_0yqmadu": "color_mob6y9qqm35m_22",
+            "ms_0ia2lo5": "color_mob6y9qqm35m_22",
+            "ms_1kl8jzg": "color_mob6y9qqm35m_22",
+            "ms_09vn320": "color_mob6y9qqm35m_22",
+            "ms_1r4ifqf": "color_mob6y9qqm35m_22",
+            "ms_12vry03": "color_mob6y9qqm35m_22",
+            "ms_12hbht3": "color_mob6y9qqm35m_22",
+            "ms_1gfcygz": "color_mob6y9qqm35m_22",
+            "ms_1o3n3bm": "color_mob6y9qqm35m_22",
+            "ms_05caw0t": "color_mob6y9qqm35m_22",
+            "ms_0hf4ze0": "color_mob6y9qqm35m_22"
           },
           "camera": {
             "position": [
@@ -1944,7 +2648,7 @@
     "schema_version": 3,
     "items": [
       {
-        "id": "color_mob5jfrysj8x_22",
+        "id": "color_mob6y9qqm35m_22",
         "name": "wire_000225197",
         "color": "#ffffff",
         "solidness": 1,
@@ -1960,30 +2664,30 @@
       }
     ],
     "assignments": {
-      "ms_02doqzq": "color_mob5jfrysj8x_22",
-      "ms_0qnlsld": "color_mob5jfrysj8x_22",
-      "ms_05e1tg8": "color_mob5jfrysj8x_22",
-      "ms_1q6burw": "color_mob5jfrysj8x_22",
-      "ms_1v4s4gj": "color_mob5jfrysj8x_22",
-      "ms_0shgxjr": "color_mob5jfrysj8x_22",
-      "ms_08c3knn": "color_mob5jfrysj8x_22",
-      "ms_18r4vav": "color_mob5jfrysj8x_22",
-      "ms_0k9w30m": "color_mob5jfrysj8x_22",
-      "ms_0zjnps9": "color_mob5jfrysj8x_22",
-      "ms_0t8ptdo": "color_mob5jfrysj8x_22"
+      "ms_0yqmadu": "color_mob6y9qqm35m_22",
+      "ms_0ia2lo5": "color_mob6y9qqm35m_22",
+      "ms_1kl8jzg": "color_mob6y9qqm35m_22",
+      "ms_09vn320": "color_mob6y9qqm35m_22",
+      "ms_1r4ifqf": "color_mob6y9qqm35m_22",
+      "ms_12vry03": "color_mob6y9qqm35m_22",
+      "ms_12hbht3": "color_mob6y9qqm35m_22",
+      "ms_1gfcygz": "color_mob6y9qqm35m_22",
+      "ms_1o3n3bm": "color_mob6y9qqm35m_22",
+      "ms_05caw0t": "color_mob6y9qqm35m_22",
+      "ms_0hf4ze0": "color_mob6y9qqm35m_22"
     },
     "defaults": {
-      "ms_02doqzq": "color_mob5jfrysj8x_22",
-      "ms_0qnlsld": "color_mob5jfrysj8x_22",
-      "ms_05e1tg8": "color_mob5jfrysj8x_22",
-      "ms_1q6burw": "color_mob5jfrysj8x_22",
-      "ms_1v4s4gj": "color_mob5jfrysj8x_22",
-      "ms_0shgxjr": "color_mob5jfrysj8x_22",
-      "ms_08c3knn": "color_mob5jfrysj8x_22",
-      "ms_18r4vav": "color_mob5jfrysj8x_22",
-      "ms_0k9w30m": "color_mob5jfrysj8x_22",
-      "ms_0zjnps9": "color_mob5jfrysj8x_22",
-      "ms_0t8ptdo": "color_mob5jfrysj8x_22"
+      "ms_0yqmadu": "color_mob6y9qqm35m_22",
+      "ms_0ia2lo5": "color_mob6y9qqm35m_22",
+      "ms_1kl8jzg": "color_mob6y9qqm35m_22",
+      "ms_09vn320": "color_mob6y9qqm35m_22",
+      "ms_1r4ifqf": "color_mob6y9qqm35m_22",
+      "ms_12vry03": "color_mob6y9qqm35m_22",
+      "ms_12hbht3": "color_mob6y9qqm35m_22",
+      "ms_1gfcygz": "color_mob6y9qqm35m_22",
+      "ms_1o3n3bm": "color_mob6y9qqm35m_22",
+      "ms_05caw0t": "color_mob6y9qqm35m_22",
+      "ms_0hf4ze0": "color_mob6y9qqm35m_22"
     }
   },
   "notes": {

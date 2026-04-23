@@ -891,6 +891,33 @@ class StepManager {
   }
 
   /**
+   * Remove ALL bounding-box placeholder objects from the Three.js scene.
+   * Performs a full scene traverse so orphans from custom folders, displaced
+   * meshes, or detached groups are caught regardless of how they got there.
+   * Call after relink is complete to guarantee a clean scene.
+   */
+  removePlaceholders() {
+    const root3d = sceneCore.rootGroup;
+    if (!root3d) return;
+
+    const toRemove = [];
+    root3d.traverse(obj => {
+      if (obj.userData?.isPlaceholder) toRemove.push(obj);
+    });
+
+    for (const obj of toRemove) {
+      if (obj.parent) obj.parent.remove(obj);
+      obj.geometry?.dispose();
+      obj.material?.dispose();
+      // Remove from object3dById if it still points to this placeholder
+      const id = obj.userData.meshNodeId;
+      if (id && this.object3dById.get(id) === obj) {
+        this.object3dById.delete(id);
+      }
+    }
+  }
+
+  /**
    * Flush any pending dirty sync immediately.
    * Call before saving, exporting, or navigating.
    */
@@ -1287,6 +1314,11 @@ function cleanupFolderGroups(rootNode, object3dById) {
   if (!rootNode) return;
   flatten(rootNode).forEach(node => {
     if (node.type !== 'folder') return;
+    // Phantom (missing) folder groups are PRESERVED across rebuilds so that
+    // real meshes displaced inside them are not unnecessarily reparented on
+    // every step change.  Their Three.js groups are stable and reused by
+    // rebuildFromTreeSpec.  Disposal happens explicitly in _relinkAsset.
+    if (node.missing) return;
     const obj = object3dById.get(node.id) ?? node.object3d;
     if (obj?.parent) obj.parent.remove(obj);
     if (node.id) object3dById.delete(node.id);
@@ -1317,22 +1349,50 @@ function rebuildFromTreeSpec(spec, nodeById, object3dById, parentObject3d) {
   let node = null;
 
   if (specType === 'folder') {
-    // Always create a fresh group — old group was cleaned up by cleanupFolderGroups
     if (!THREE) return null;
-    const group = new THREE.Group();
-    group.name = spec.name || 'Folder';
-    group.userData.isCustomFolder = true;
-    if (parentObject3d) parentObject3d.add(group);
-    object3dById.set(spec.id, group);
+    const existingNode = nodeById.get(spec.id);
 
-    // Build or reuse the data node
-    const existing = nodeById.get(spec.id);
-    node = existing ?? { id: spec.id, type: 'folder' };
-    node.name         = spec.name || node.name || 'Folder';
-    node.localVisible = spec.localVisible !== false;
-    node.object3d     = group;
-    node.children     = [];
-    if (!existing) nodeById.set(spec.id, node);
+    if (existingNode?.missing) {
+      // ── Phantom folder — REUSE the existing Three.js Group ────────────────
+      // cleanupFolderGroups skips phantom folders so their groups persist.
+      // Reusing them means real meshes displaced inside don't get unnecessarily
+      // reparented on every step change, and transforms stay stable.
+      node = existingNode;
+      node.name         = spec.name || node.name || 'Folder';
+      node.localVisible = spec.localVisible !== false;
+      node.children     = [];
+
+      let phantomGroup = object3dById.get(spec.id) ?? node.object3d;
+      if (!phantomGroup) {
+        // First encounter — create the group now and keep it for future rebuilds.
+        phantomGroup = new THREE.Group();
+        phantomGroup.name = spec.name || 'Folder';
+        phantomGroup.userData.isPlaceholderFolder = true;
+        node.object3d = phantomGroup;
+      }
+      // Reparent if the hierarchy changed (user moved the folder)
+      if (parentObject3d && phantomGroup.parent !== parentObject3d) {
+        if (phantomGroup.parent) phantomGroup.parent.remove(phantomGroup);
+        parentObject3d.add(phantomGroup);
+      }
+      object3dById.set(spec.id, phantomGroup);
+
+    } else {
+      // ── Live folder — always create a fresh group ─────────────────────────
+      // The old group was removed by cleanupFolderGroups.
+      const group = new THREE.Group();
+      group.name = spec.name || 'Folder';
+      group.userData.isCustomFolder = true;
+      if (parentObject3d) parentObject3d.add(group);
+      object3dById.set(spec.id, group);
+
+      node = existingNode ?? { id: spec.id, type: 'folder' };
+      node.name         = spec.name || node.name || 'Folder';
+      node.localVisible = spec.localVisible !== false;
+      node.object3d     = group;
+      node.children     = [];
+      if (!existingNode) nodeById.set(spec.id, node);
+    }
 
   } else if (specType === 'model') {
     // Model node: reuse existing group, reparent to new folder/scene parent if needed.
@@ -1376,6 +1436,14 @@ function rebuildFromTreeSpec(spec, nodeById, object3dById, parentObject3d) {
     if (obj && parentObject3d && obj.parent !== parentObject3d) {
       if (obj.parent) obj.parent.remove(obj);
       parentObject3d.add(obj);
+    }
+
+    // Ensure userData reflects the current node ID on every tree rebuild.
+    // This guards against ID drift after the relink remap cycle — without
+    // this, hit.object.userData.meshNodeId could be stale and picking fails.
+    if (obj && obj.userData && !node.missing) {
+      obj.userData.meshNodeId = node.id;
+      obj.userData.nodeId     = node.id;
     }
 
   } else {
