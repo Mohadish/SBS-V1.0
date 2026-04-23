@@ -450,13 +450,17 @@ export function applyParentMap(root, parentMap) {
  */
 export function serializeModelTree(node) {
   if (!node) return null;
-  return {
+  const spec = {
     id:           node.id,
     name:         node.name || '',
     type:         node.type,
     localVisible: node.localVisible !== false,
     children:     (node.children || []).map(serializeModelTree).filter(Boolean),
   };
+  // Persist bbox for mesh nodes — used to render a bounding-box placeholder
+  // when the asset is missing on load, giving users a visible, interactive stand-in.
+  if (node.type === 'mesh' && node.bbox) spec.bbox = node.bbox;
+  return spec;
 }
 
 

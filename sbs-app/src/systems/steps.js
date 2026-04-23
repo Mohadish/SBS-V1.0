@@ -247,8 +247,37 @@ class StepManager {
       sceneCore.applyCameraState(snapshot.camera);
     }
 
+    // Sync placeholder outline colours with the step's material assignments.
+    // Must run AFTER applySnapshot so meshColorAssignments are up to date.
+    this._updatePlaceholderColors(nodeById);
+
     // Notes / screenItems / cables are applied by their own systems
     // (they listen to 'step:activate' on state)
+  }
+
+  /**
+   * Update the outline colour of every bounding-box placeholder (missing mesh)
+   * in the scene to match the current color-preset assignments.
+   * Called after every applySnapshotInstant so placeholders always reflect the
+   * step's color state.
+   * @private
+   */
+  _updatePlaceholderColors(nodeById) {
+    if (!nodeById) return;
+    const presets     = state.get('colorPresets') || [];
+    const presetMap   = new Map(presets.map(p => [p.id, p.color]));
+    const assignments = this._materials?.meshColorAssignments ?? {};
+
+    for (const [id, node] of nodeById) {
+      if (!node.missing || node.type !== 'mesh') continue;
+      const obj = this.object3dById.get(id);
+      if (!obj?.isLineSegments) continue;
+      // Prefer the step's explicit color assignment; fall back to the node's
+      // saved colorPresetId; fall back to the default amber.
+      const presetId = assignments[id] ?? node.colorPresetId ?? null;
+      const color    = presetId ? (presetMap.get(presetId) ?? '#ff8c00') : '#ff8c00';
+      obj.material.color.set(color);
+    }
   }
 
   /**
@@ -855,6 +884,10 @@ class StepManager {
     this._dirty   = false;
     state.setState({ _stepDirty: false, steps: [...steps] });
     state.emit('step:synced', step);
+
+    // Immediately reflect any color-preset changes on placeholder outlines.
+    const nodeById = state.get('nodeById');
+    if (nodeById) this._updatePlaceholderColors(nodeById);
   }
 
   /**
@@ -1315,13 +1348,31 @@ function rebuildFromTreeSpec(spec, nodeById, object3dById, parentObject3d) {
     }
 
   } else if (specType === 'mesh') {
-    // Mesh: reuse live node, reparent Three.js object to new parent
+    // Mesh: reuse live node, reparent Three.js object to new parent.
+    // For MISSING (phantom) mesh nodes, create or reuse a bounding-box
+    // placeholder so the object is visible, selectable, and arrangeable
+    // even while its asset file is absent.
     node = nodeById.get(spec.id);
     if (!node) return null;
     node.name         = spec.name || node.name;
     node.localVisible = spec.localVisible !== false;
+    // Inherit bbox from spec if node doesn't have it yet (e.g. phantom clone
+    // created before bbox serialisation was added — forward-compat fallback).
+    if (!node.bbox && spec.bbox) node.bbox = spec.bbox;
     node.children     = [];
-    const obj = object3dById.get(spec.id) ?? node.object3d;
+
+    let obj = object3dById.get(spec.id) ?? node.object3d;
+
+    if (!obj && node.missing) {
+      // Create a LineSegments bounding-box placeholder for this missing mesh.
+      // Reuse the existing one stored on node.object3d if already built.
+      obj = _createMeshPlaceholder(node);
+      if (obj) {
+        node.object3d = obj;
+        object3dById.set(node.id, obj);
+      }
+    }
+
     if (obj && parentObject3d && obj.parent !== parentObject3d) {
       if (obj.parent) obj.parent.remove(obj);
       parentObject3d.add(obj);
@@ -1346,6 +1397,77 @@ function rebuildFromTreeSpec(spec, nodeById, object3dById, parentObject3d) {
   }
 
   return node;
+}
+
+// ─── Placeholder helpers ───────────────────────────────────────────────────
+
+/**
+ * Resolve the outline color for a missing-asset placeholder.
+ * Uses the node's saved colorPresetId if available; falls back to amber.
+ */
+function _resolvePlaceholderColor(node) {
+  if (node.colorPresetId) {
+    const presets = state.get('colorPresets') || [];
+    const preset  = presets.find(p => p.id === node.colorPresetId);
+    if (preset?.color) return preset.color;
+  }
+  return '#ff8c00';   // amber — immediately recognisable as "missing asset"
+}
+
+/**
+ * Build a THREE.LineSegments bounding-box placeholder for a missing mesh node.
+ *
+ * The box matches the saved geometry extents (bbox) and is positioned at the
+ * bbox centre so it sits exactly where the real mesh would appear within its
+ * parent folder group.  The outline colour comes from the node's colorPresetId
+ * (or amber if no preset is assigned).
+ *
+ * The returned object has:
+ *   userData.meshNodeId    — enables picking / selection
+ *   userData.isPlaceholder — distinguishes it from real geometry
+ *
+ * @param {TreeNode} node   phantom mesh data node
+ * @returns {THREE.LineSegments|null}
+ */
+function _createMeshPlaceholder(node) {
+  const THREE = window.THREE;
+  if (!THREE) return null;
+
+  const bbox = node.bbox;
+  let edgesGeom;
+  let cx = 0, cy = 0, cz = 0;
+  if (bbox
+    && isFinite(bbox.min[0]) && isFinite(bbox.max[0])
+    && isFinite(bbox.min[1]) && isFinite(bbox.max[1])
+    && isFinite(bbox.min[2]) && isFinite(bbox.max[2])
+  ) {
+    const w = Math.max(bbox.max[0] - bbox.min[0], 1e-4);
+    const h = Math.max(bbox.max[1] - bbox.min[1], 1e-4);
+    const d = Math.max(bbox.max[2] - bbox.min[2], 1e-4);
+    edgesGeom = new THREE.EdgesGeometry(new THREE.BoxGeometry(w, h, d));
+    cx = (bbox.min[0] + bbox.max[0]) / 2;
+    cy = (bbox.min[1] + bbox.max[1]) / 2;
+    cz = (bbox.min[2] + bbox.max[2]) / 2;
+  } else {
+    // No saved bbox (old project format) — use a visible default cube.
+    // 50 units = 50 mm at SBS/OCCT scale, visible for typical mechanical parts.
+    edgesGeom = new THREE.EdgesGeometry(new THREE.BoxGeometry(50, 50, 50));
+  }
+
+  const color    = _resolvePlaceholderColor(node);
+  const material = new THREE.LineBasicMaterial({ color, transparent: true, opacity: 0.85 });
+  const lines    = new THREE.LineSegments(edgesGeom, material);
+
+  lines.userData.meshNodeId    = node.id;
+  lines.userData.isPlaceholder = true;
+
+  // Position directly at bbox centre within the parent folder group.
+  // We set lines.position explicitly here rather than relying on the transform
+  // system (applyAllTransformsToScene) because mesh nodes are not transform
+  // nodes — keeping it simple and robust.
+  lines.position.set(cx, cy, cz);
+
+  return lines;
 }
 
 /**

@@ -455,22 +455,47 @@ async function _loadModelFile(file, assetEntry = null, skipColorExtraction = fal
 
 function _cloneSpecAsPhantom(specNode) {
   const node = {
-    id:           specNode.id,
-    name:         specNode.name || 'Unknown',
-    type:         specNode.type || 'folder',
-    missing:      true,
-    localVisible: true,
-    object3d:     null,
-    children:     (specNode.children || []).map(_cloneSpecAsPhantom),
+    id:                specNode.id,
+    name:              specNode.name || 'Unknown',
+    type:              specNode.type || 'folder',
+    missing:           true,
+    localVisible:      specNode.localVisible !== false,
+    object3d:          null,
+    // Geometry bounds — used to render a bounding-box placeholder in the scene
+    // so missing objects have a real, visible, interactive stand-in.
+    bbox:              specNode.bbox              ?? null,
+    // Saved color — applied as outline tint on the placeholder box.
+    colorPresetId:     specNode.colorPresetId     ?? null,
+    // Fields needed for ID remapping and displaced-mesh tracking on relink.
+    meshIndex:         specNode.meshIndex         ?? null,
+    sourceAssetId:     specNode.sourceAssetId     ?? null,
+    baseLocalPosition: specNode.baseLocalPosition ?? [0, 0, 0],
+    baseLocalScale:    specNode.baseLocalScale    ?? [1, 1, 1],
+    children:          (specNode.children || []).map(_cloneSpecAsPhantom),
   };
   return node;
 }
 
 function _insertPhantomNodes(specNode, assetId) {
-  const phantom  = _cloneSpecAsPhantom(specNode);
-  const root     = state.get('treeData');
-  if (!root) return;
-  root.children  = root.children || [];
+  const phantom = _cloneSpecAsPhantom(specNode);
+
+  // If no models have loaded yet (all assets missing), treeData is null and
+  // the original code would return early — no phantoms ever created.
+  // Create a minimal scene root so phantoms have somewhere to live.
+  let root = state.get('treeData');
+  if (!root) {
+    root = {
+      id:       'scene_root',
+      name:     'Scene',
+      type:     'scene',
+      children: [],
+      object3d: sceneCore.rootGroup,
+      localVisible: true,
+    };
+    steps.object3dById.set('scene_root', sceneCore.rootGroup);
+  }
+
+  root.children = root.children || [];
   root.children.push(phantom);
   const nodeById = buildNodeMap(root);
   state.setState({ treeData: { ...root }, nodeById });
@@ -551,11 +576,24 @@ async function _onBrowseSingleAsset(asset) {
  * Relink a previously-missing asset:
  * 1. Load file
  * 2. Remap new IDs → saved IDs (via phantom node)
- * 3. Remove phantom from tree
- * 4. Restore colors + reactivate current step
+ * 3. Remove phantom from tree (surgical nodeById update)
+ * 4. Reinstate from frame 0 — apply base step to establish clean ground-truth
+ *    scene state, then re-apply the user's active step on top.
+ *
+ * WHY frame 0 first:
+ *   After _loadModelFile, the Three.js scene is in a mixed state — the live
+ *   model sits at file-default position while stale phantom folder groups from
+ *   earlier step navigation may still occupy object3dById.  Jumping straight to
+ *   activateStep tries to patch this inconsistent state and produces wrong
+ *   placements.  activateBaseStep() runs a full cleanupFolderGroups +
+ *   rebuildFromTreeSpec + applyAllTransforms cycle from the authoritative base
+ *   snapshot, giving every subsequent activateStep a clean, known-good
+ *   foundation to build on.
  */
 async function _relinkAsset(file, assetEntry) {
-  const phantom = _phantomNodes.get(assetEntry.id);
+  // Capture active step BEFORE any async work so we restore the right step.
+  const activeStep = state.get('activeStepId');
+  const phantom    = _phantomNodes.get(assetEntry.id);
 
   const modelNode = await _loadModelFile(file, assetEntry, true);
   if (!modelNode) return;
@@ -572,6 +610,23 @@ async function _relinkAsset(file, assetEntry) {
         steps.object3dById.delete(newId);
       }
     }
+
+    // Dispose any bounding-box placeholder objects created for phantom mesh nodes.
+    // Must run BEFORE the surgical nodeById update so node.object3d still points
+    // to the placeholder (finalizeModelImport already overwrote object3dById with
+    // real meshes, but node.object3d on the phantom nodes still references the
+    // LineSegments objects we created).
+    function _disposePlaceholders(node) {
+      if (node.missing && node.type === 'mesh' && node.object3d?.isLineSegments) {
+        const ls = node.object3d;
+        if (ls.parent) ls.parent.remove(ls);
+        ls.geometry?.dispose();
+        ls.material?.dispose();
+        node.object3d = null;
+      }
+      (node.children || []).forEach(_disposePlaceholders);
+    }
+    _disposePlaceholders(phantom);
 
     // Remove phantom from tree — surgical nodeById update (NOT buildNodeMap).
     //
@@ -610,11 +665,24 @@ async function _relinkAsset(file, assetEntry) {
     _phantomNodes.delete(assetEntry.id);
   }
 
-  // Re-apply saved default + assignment colors to newly loaded meshes
+  // Re-apply base colors to newly loaded meshes.
   materials.applyAll();
 
-  // Reactivate current step to restore step-level color overrides
-  const activeStep = state.get('activeStepId');
+  // ── Reinstate from frame 0 ───────────────────────────────────────────────
+  // Apply the base step (step 0) first: runs a full cleanupFolderGroups +
+  // rebuildFromTreeSpec + applyAllTransforms cycle from the authoritative
+  // saved snapshot.  This gives us:
+  //   • correct node names  (from base snapshot tree spec)
+  //   • correct transforms  (from base snapshot.transforms)
+  //   • correct hierarchy   (folders rebuilt cleanly, displaced meshes seated)
+  //   • stale phantom folder groups flushed from object3dById
+  // After this call the scene is in the exact state it was at the last save —
+  // a reliable, known-good foundation for the step re-activation below.
+  steps.activateBaseStep();
+
+  // Re-apply the user's current step on top of the clean base state.
+  // All step-specific transforms, visibility, materials, and camera are
+  // layered correctly because the scene hierarchy is already authoritative.
   if (activeStep) steps.activateStep(activeStep, false);
 }
 

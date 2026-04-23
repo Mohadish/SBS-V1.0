@@ -170,7 +170,7 @@ function _buildRow(node, depth) {
   row.dataset.nodeId = node.id;
   if (!node.localVisible) row.style.opacity = '0.45';
   if (node.missing)       row.style.opacity = '0.5';
-  row.draggable = node.type !== 'scene' && !node.missing;
+  row.draggable = node.type !== 'scene';
 
   // Twisty
   const twisty = document.createElement('span');
@@ -362,8 +362,7 @@ function _buildContextMenuItems(node) {
   const label    = count > 1 ? `${count} items` : `"${(node.name || '').slice(0, 24)}"`;
 
   if (node.missing) {
-    items.push({ label: '❌ Missing asset (read-only)', disabled: true });
-    return items;
+    items.push({ label: '⚠️ Missing asset — placeholder active', disabled: true });
   }
 
   // ── Visibility ──────────────────────────────────────────────────────────────
@@ -799,7 +798,7 @@ function _onDragEnd() {
 }
 
 function _onDragOver(e, node) {
-  if (!_isDragging || node.type === 'mesh' || node.missing) return;
+  if (!_isDragging || (node.type === 'mesh' && !node.missing)) return;
   e.preventDefault();
   e.dataTransfer.dropEffect = 'move';
   if (_dropTarget !== node.id) {
@@ -822,7 +821,7 @@ function _onDrop(e, targetNode) {
   e.preventDefault();
   _dropTarget = null;
 
-  if (targetNode.type === 'mesh' || targetNode.missing) { renderTree(); return; }
+  if (targetNode.type === 'mesh' && !targetNode.missing) { renderTree(); return; }
 
   const ids = _dragIds.filter(id => id !== targetNode.id);
   if (!ids.length) { setStatus('Cannot drop here.'); renderTree(); return; }

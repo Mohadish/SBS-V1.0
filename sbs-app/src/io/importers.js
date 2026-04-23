@@ -339,11 +339,20 @@ function buildNodeFromOcct(occtNode, meshes, parent3d, prefix, obj3dMap) {
     threeMesh.userData.nodeId = meshId;
     group.add(threeMesh);
 
+    // Store bounding box for placeholder visualisation when this asset is missing.
+    // buildGeometry() already calls computeBoundingBox(), so geom.boundingBox is ready.
+    const _bb = geom.boundingBox;
+    const meshBbox = _bb ? {
+      min: [_bb.min.x, _bb.min.y, _bb.min.z],
+      max: [_bb.max.x, _bb.max.y, _bb.max.z],
+    } : null;
+
     const meshNode = createNode('mesh', {
       id:         meshId,
       name:       threeMesh.name,
       meshIndex:  meshIndex,
     });
+    meshNode.bbox     = meshBbox;
     meshNode.object3d = threeMesh;  // runtime only
     obj3dMap.set(meshId, threeMesh);
 
@@ -376,14 +385,30 @@ function buildNodeFromThreeObject(obj, obj3dMap) {
     const meshId = generateId('mesh');
     obj.userData.meshNodeId = meshId;
 
-    // Normalize material
+    // Normalize material — always collapse to a single MeshStandardMaterial.
+    // Multi-material arrays (OBJ with multiple usemtl groups per mesh) must be
+    // merged: we take the first valid material.  Keeping an array would crash
+    // materials.registerMesh (which calls .clone() on the stored material) and
+    // cause extractBaseColors to silently skip the mesh (Array.isArray guard).
     if (Array.isArray(obj.material)) {
-      obj.material = obj.material.map(m => normalizeMaterial(m));
+      const mats   = obj.material.map(m => normalizeMaterial(m));
+      obj.material = mats.find(m => m) ?? normalizeMaterial(null);
     } else {
       obj.material = normalizeMaterial(obj.material);
     }
 
+    // Store bounding box for placeholder visualisation when this asset is missing.
     const meshNode = createNode('mesh', { id: meshId, name });
+    if (obj.geometry) {
+      if (!obj.geometry.boundingBox) obj.geometry.computeBoundingBox();
+      const _bb2 = obj.geometry.boundingBox;
+      if (_bb2 && isFinite(_bb2.min.x) && isFinite(_bb2.max.x)) {
+        meshNode.bbox = {
+          min: [_bb2.min.x, _bb2.min.y, _bb2.min.z],
+          max: [_bb2.max.x, _bb2.max.y, _bb2.max.z],
+        };
+      }
+    }
     meshNode.object3d = obj;
     obj3dMap.set(meshId, obj);
     materials.registerMesh(meshId, obj);
@@ -729,6 +754,121 @@ async function loadGltfFile(file, assetEntry = null) {
 }
 
 
+/**
+ * Load a DXF file (AutoCAD Drawing Exchange Format).
+ *
+ * Supported entities:
+ *   3DFACE  → triangulated Mesh (primary 3D geometry)
+ *   LINE    → LineSegments (wireframe / edge data)
+ *
+ * The parser only reads the ENTITIES section and ignores BLOCKS, HEADER, etc.
+ * Group codes 10/20/30 … 13/23/33 carry X/Y/Z for up to four vertices per entity.
+ */
+async function loadDxfFile(file, assetEntry = null) {
+  state.emit('status', 'Reading DXF file…');
+  const text = await file.text();
+  state.emit('status', 'Parsing DXF geometry…');
+
+  // ── Parse into (groupCode, value) pairs ─────────────────────────────────
+  const lines = text.replace(/\r/g, '').split('\n');
+  const pairs = [];
+  for (let i = 0; i + 1 < lines.length; i += 2) {
+    const code = parseInt(lines[i].trim(), 10);
+    if (!isNaN(code)) pairs.push([code, lines[i + 1].trim()]);
+  }
+
+  // ── Walk pairs and extract ENTITIES section geometry ─────────────────────
+  const facePositions = [];   // float data for 3DFACE → Mesh
+  const linePositions = [];   // float data for LINE   → LineSegments
+
+  let sectionType  = null;
+  let currentType  = null;
+  let currentData  = {};
+
+  const flush = () => {
+    if (!currentType || sectionType !== 'ENTITIES') return;
+    if (currentType === '3DFACE') {
+      const v = [[10,20,30],[11,21,31],[12,22,32],[13,23,33]].map(([x,y,z]) =>
+        [currentData[x]??0, currentData[y]??0, currentData[z]??0]
+      );
+      facePositions.push(...v[0], ...v[1], ...v[2]);
+      // Second triangle of the quad (skip if v2 === v3, i.e. degenerate)
+      if (v[2][0]!==v[3][0] || v[2][1]!==v[3][1] || v[2][2]!==v[3][2]) {
+        facePositions.push(...v[0], ...v[2], ...v[3]);
+      }
+    }
+    if (currentType === 'LINE') {
+      linePositions.push(
+        currentData[10]??0, currentData[20]??0, currentData[30]??0,
+        currentData[11]??0, currentData[21]??0, currentData[31]??0,
+      );
+    }
+  };
+
+  for (const [code, val] of pairs) {
+    if (code === 0) {
+      flush();
+      currentType = val.toUpperCase();
+      currentData = {};
+      if (currentType === 'SECTION') sectionType = null;
+      if (currentType === 'ENDSEC')  sectionType = null;
+      continue;
+    }
+    if (code === 2 && currentType === 'SECTION') { sectionType = val.toUpperCase(); continue; }
+    if (sectionType === 'ENTITIES') {
+      const n = parseFloat(val);
+      if (!isNaN(n)) currentData[code] = n;
+    }
+  }
+  flush();
+
+  if (facePositions.length === 0 && linePositions.length === 0) {
+    state.emit('status', `DXF "${file.name}": no 3DFACE or LINE geometry found.`);
+    return null;
+  }
+
+  // ── Build Three.js objects ───────────────────────────────────────────────
+  const group3d  = new THREE.Group();
+  group3d.name   = file.name;
+  const obj3dMap = new Map();
+  let primaryObj = null;   // the object used as innerRoot for the data tree
+
+  if (facePositions.length > 0) {
+    const geom = new THREE.BufferGeometry();
+    geom.setAttribute('position', new THREE.Float32BufferAttribute(facePositions, 3));
+    geom.computeVertexNormals();
+    geom.computeBoundingBox();
+    geom.computeBoundingSphere();
+    const mat  = new THREE.MeshStandardMaterial({ color: '#bfcad4', roughness: 0.55, metalness: 0.05 });
+    const mesh = new THREE.Mesh(geom, mat);
+    mesh.name  = file.name.replace(/\.[^.]+$/, '');
+    group3d.add(mesh);
+    primaryObj = mesh;
+  }
+
+  if (linePositions.length > 0) {
+    const geom  = new THREE.BufferGeometry();
+    geom.setAttribute('position', new THREE.Float32BufferAttribute(linePositions, 3));
+    const mat   = new THREE.LineBasicMaterial({ color: '#999999' });
+    const wires = new THREE.LineSegments(geom, mat);
+    wires.name  = file.name.replace(/\.[^.]+$/, '') + (primaryObj ? '_edges' : '');
+    group3d.add(wires);
+    if (!primaryObj) primaryObj = wires;
+  }
+
+  const innerRoot = buildNodeFromThreeObject(primaryObj, obj3dMap);
+
+  return finalizeModelImport(group3d, innerRoot, file.name, {
+    id:           assetEntry?.id,
+    type:         'dxf',
+    fileSize:     file.size,
+    lastModified: file.lastModified ?? null,
+    originalPath: assetEntry?.originalPath || file.path || '',
+    relativePath: assetEntry?.relativePath || '',
+  }, obj3dMap);
+}
+
+
 // ═══════════════════════════════════════════════════════════════════════════
 //  PUBLIC API
 // ═══════════════════════════════════════════════════════════════════════════
@@ -753,6 +893,7 @@ export async function loadModelFile(file, opts = {}) {
     if (ext === 'obj')                   return await loadObjFile(file, assetEntry);
     if (ext === 'stl')                   return await loadStlFile(file, assetEntry);
     if (['gltf', 'glb'].includes(ext))   return await loadGltfFile(file, assetEntry);
+    if (ext === 'dxf')                   return await loadDxfFile(file, assetEntry);
 
     state.emit('status', `Unsupported file type: .${ext || 'unknown'}.`);
     return null;
