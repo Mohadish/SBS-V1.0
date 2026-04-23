@@ -891,33 +891,6 @@ class StepManager {
   }
 
   /**
-   * Remove ALL bounding-box placeholder objects from the Three.js scene.
-   * Performs a full scene traverse so orphans from custom folders, displaced
-   * meshes, or detached groups are caught regardless of how they got there.
-   * Call after relink is complete to guarantee a clean scene.
-   */
-  removePlaceholders() {
-    const root3d = sceneCore.rootGroup;
-    if (!root3d) return;
-
-    const toRemove = [];
-    root3d.traverse(obj => {
-      if (obj.userData?.isPlaceholder) toRemove.push(obj);
-    });
-
-    for (const obj of toRemove) {
-      if (obj.parent) obj.parent.remove(obj);
-      obj.geometry?.dispose();
-      obj.material?.dispose();
-      // Remove from object3dById if it still points to this placeholder
-      const id = obj.userData.meshNodeId;
-      if (id && this.object3dById.get(id) === obj) {
-        this.object3dById.delete(id);
-      }
-    }
-  }
-
-  /**
    * Flush any pending dirty sync immediately.
    * Call before saving, exporting, or navigating.
    */
@@ -1406,6 +1379,8 @@ function rebuildFromTreeSpec(spec, nodeById, object3dById, parentObject3d) {
       if (modelObj.parent) modelObj.parent.remove(modelObj);
       parentObject3d.add(modelObj);
     }
+    // Clear stale missing flag once a real model group is attached.
+    if (modelObj && node.missing) node.missing = false;
 
   } else if (specType === 'mesh') {
     // Mesh: reuse live node, reparent Three.js object to new parent.
@@ -1437,6 +1412,9 @@ function rebuildFromTreeSpec(spec, nodeById, object3dById, parentObject3d) {
       if (obj.parent) obj.parent.remove(obj);
       parentObject3d.add(obj);
     }
+
+    // Clear stale missing flag once a real (non-placeholder) mesh is attached.
+    if (obj && !obj.userData?.isPlaceholder && node.missing) node.missing = false;
 
     // Ensure userData reflects the current node ID on every tree rebuild.
     // This guards against ID drift after the relink remap cycle — without

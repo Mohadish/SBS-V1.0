@@ -687,6 +687,9 @@ async function _relinkAsset(file, assetEntry) {
   // ground-truth scene state, then re-apply the user's current step on top.
   steps.activateBaseStep();
   if (activeStep) steps.activateStep(activeStep, false);
+
+  // Sweep any orphan bbox placeholders left in the scene from the phantom pass.
+  steps.removePlaceholders();
 }
 
 function _onFitAll() {
