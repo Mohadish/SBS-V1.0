@@ -44,7 +44,6 @@ import {
   applyTransformSnapshot,
   applyNodeTransformToObject3D,
   isTransformNode,
-  ensureTransformDefaults,
   lerpVec3,
   slerpQuaternion,
 } from '../core/transforms.js';
@@ -1470,128 +1469,6 @@ function captureWorldTransforms(root, object3dById) {
     };
   });
   return out;
-}
-
-/**
- * Back-convert a world-space position+quaternion to node-local space and store it.
- * Updates node.localOffset / node.localQuaternion so applyNodeTransformToObject3D
- * will produce exactly the requested world transform.
- *
- * The parent's world matrix must be current before calling this.
- * Call obj.updateMatrixWorld(true) afterwards.
- *
- * @param {TreeNode}    node
- * @param {Object3D}    obj
- * @param {number[]}    worldPos   [x,y,z]
- * @param {number[]|null} worldQuat [x,y,z,w]  (pass null to skip rotation)
- */
-function setNodeWorldTransform(node, obj, worldPos, worldQuat) {
-  const THREE = window.THREE;
-  if (!THREE || !node || !obj) return;
-  ensureTransformDefaults(node);
-
-  const parent = obj.parent;
-
-  // ── Position ──────────────────────────────────────────────────────────────
-  const _wp = new THREE.Vector3(...worldPos);
-  const localPos = parent ? parent.worldToLocal(_wp.clone()) : _wp.clone();
-  const base = node.baseLocalPosition ?? [0, 0, 0];
-  node.localOffset = [localPos.x - base[0], localPos.y - base[1], localPos.z - base[2]];
-  node.moveEnabled = true;
-
-  // ── Rotation ──────────────────────────────────────────────────────────────
-  if (worldQuat) {
-    const _wq = new THREE.Quaternion(...worldQuat);
-    let localQ;
-    if (parent) {
-      // localQ_total = parentWorldQuat^-1 * worldQuat
-      const parentWQ = new THREE.Quaternion();
-      parent.getWorldQuaternion(parentWQ);
-      localQ = parentWQ.clone().invert().multiply(_wq);
-    } else {
-      localQ = _wq.clone();
-    }
-    // delta = base^-1 * localQ_total
-    const baseQ = new THREE.Quaternion(...(node.baseLocalQuaternion ?? [0, 0, 0, 1]));
-    const deltaQ = baseQ.clone().invert().multiply(localQ);
-    node.localQuaternion = [deltaQ.x, deltaQ.y, deltaQ.z, deltaQ.w];
-    node.rotateEnabled   = true;
-  }
-
-  applyNodeTransformToObject3D(node, obj, false);
-}
-
-/**
- * Apply a worldTransforms snapshot to the scene top-down (DFS order).
- * Processing parents before children ensures parent matrices are current
- * when children do their world→local conversion.
- *
- * @param {TreeNode}               root
- * @param {object}                 worldTransforms  { [nodeId]: { position, quaternion } }
- * @param {Map<string,TreeNode>}   nodeById
- * @param {Map<string,Object3D>}   object3dById
- */
-function applyWorldTransformsToScene(root, worldTransforms, nodeById, object3dById) {
-  if (!root || !worldTransforms) return;
-  // Warm before any world→local conversion so parent matrices are current.
-  sceneCore.rootGroup?.updateMatrixWorld(true);
-  // flatten() = DFS = parent before children ✓
-  flatten(root).forEach(node => {
-    if (!isTransformNode(node)) return;
-    const wt  = worldTransforms[node.id];
-    if (!wt) return;
-    const obj = object3dById.get(node.id);
-    if (!obj) return;
-
-    // 1) Set position/quaternion via world→local conversion (forces enabled=true internally)
-    setNodeWorldTransform(node, obj, wt.position, wt.quaternion);
-
-    // 2) Restore the stored enabled flags (setNodeWorldTransform forces them true for math)
-    //    Then re-apply so Three.js reflects the correct muted/active state.
-    if (wt.moveEnabled   !== undefined) node.moveEnabled   = wt.moveEnabled;
-    if (wt.rotateEnabled !== undefined) node.rotateEnabled = wt.rotateEnabled;
-    if (wt.pivotEnabled  !== undefined) node.pivotEnabled  = wt.pivotEnabled;
-    applyNodeTransformToObject3D(node, obj, false);
-
-    obj.updateMatrixWorld(true);  // must update so children convert correctly
-  });
-}
-
-/**
- * Compute what world positions the target snapshot would produce — WITHOUT
- * permanently changing the scene.
- *
- * Strategy: apply target transforms → warm → read world positions → restore.
- * Runs synchronously so no render frame fires between apply and restore.
- * This makes world-pos animation fully staleness-free.
- *
- * @param {TreeNode}               root
- * @param {Map<string,TreeNode>}   nodeById
- * @param {Snapshot}               toSnapshot
- * @param {Map<string,Object3D>}   object3dById
- * @param {StepManager}            stepMgr  (for _warmMatrices)
- * @returns { [nodeId]: { position, quaternion, ... } }
- */
-function computeTargetWorldTransforms(root, nodeById, toSnapshot, object3dById, stepMgr) {
-  if (!toSnapshot.transforms) return {};
-
-  // 1) Save current node transform state
-  const savedTransforms = captureAllTransforms(root);
-
-  // 2) Apply target transforms to nodes + Three.js objects
-  applyAllTransformSnapshots(nodeById, toSnapshot.transforms);
-  applyAllTransformsToScene(nodeById, object3dById);
-  stepMgr._warmMatrices();
-
-  // 3) Read world positions (matrices just updated)
-  const toWT = captureWorldTransforms(root, object3dById);
-
-  // 4) Restore current state
-  applyAllTransformSnapshots(nodeById, savedTransforms);
-  applyAllTransformsToScene(nodeById, object3dById);
-  stepMgr._warmMatrices();
-
-  return toWT;
 }
 
 /**
