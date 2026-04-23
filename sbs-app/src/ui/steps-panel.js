@@ -12,8 +12,12 @@ import * as actions from '../systems/actions.js';
 import { createChapter } from '../core/schema.js';
 import { setStatus } from './status.js';
 
-let _container = null;
-let _dragId    = null;
+let _container    = null;
+let _dragId       = null;          // id of step being dragged
+let _dragChapterId = null;         // id of chapter being dragged (header drag)
+const _collapsed  = new Map();     // chapterId -> true if collapsed (ephemeral, per session)
+let _expandTimer  = null;          // setTimeout id for hover-to-expand
+const HOVER_EXPAND_MS = 500;
 
 // ── Init ────────────────────────────────────────────────────────────────────
 
@@ -102,20 +106,38 @@ export function renderStepsPanel() {
   const scrollTop = list.scrollTop;
   list.innerHTML  = '';
 
-  const chapterById    = new Map(allChapters.map(c => [c.id, c]));
-  const emittedChapters = new Set();
+  // Index each step by its position in the flat array so step cards still
+  // receive the correct global index (used for the index badge).
+  const flatIndex = new Map();
+  allSteps.forEach((s, i) => flatIndex.set(s.id, i));
 
-  allSteps.forEach((step, idx) => {
-    if (step.chapterId && !emittedChapters.has(step.chapterId)) {
-      const chapter = chapterById.get(step.chapterId);
-      if (chapter) {
-        list.appendChild(_buildChapterHeader(chapter));
-        emittedChapters.add(step.chapterId);
-      }
+  // Group steps by chapter, preserving each chapter's existing internal order.
+  const byChapter = new Map();                 // chapterId -> Step[]
+  const ungrouped = [];
+  const chapterIds = new Set(allChapters.map(c => c.id));
+  for (const s of allSteps) {
+    if (s.chapterId && chapterIds.has(s.chapterId)) {
+      if (!byChapter.has(s.chapterId)) byChapter.set(s.chapterId, []);
+      byChapter.get(s.chapterId).push(s);
+    } else {
+      ungrouped.push(s);
     }
-    const isActive = step.id === activeId;
-    list.appendChild(_buildStepCard(step, idx, isActive, allSteps.length));
-  });
+  }
+
+  // Render: chapters (in chapter-list order) → ungrouped steps at end.
+  for (const chapter of allChapters) {
+    list.appendChild(_buildChapterHeader(chapter));
+    if (_collapsed.get(chapter.id)) continue;   // skip steps when collapsed
+    const chSteps = byChapter.get(chapter.id) || [];
+    for (const step of chSteps) {
+      const idx = flatIndex.get(step.id);
+      list.appendChild(_buildStepCard(step, idx, step.id === activeId, allSteps.length));
+    }
+  }
+  for (const step of ungrouped) {
+    const idx = flatIndex.get(step.id);
+    list.appendChild(_buildStepCard(step, idx, step.id === activeId, allSteps.length));
+  }
 
   list.scrollTop = scrollTop;
 
@@ -127,21 +149,123 @@ export function renderStepsPanel() {
 
 function _buildChapterHeader(chapter) {
   const wrap = document.createElement('div');
+  wrap.className         = 'chapterHeader';
   wrap.dataset.chapterId = chapter.id;
-  wrap.style.cssText = 'padding:6px 4px 2px;display:flex;align-items:center;gap:6px;';
+  wrap.draggable         = true;
+  wrap.style.cssText = [
+    'padding:8px 8px',
+    'margin-top:10px',
+    'display:flex',
+    'align-items:center',
+    'gap:6px',
+    'background:rgba(255,255,255,0.04)',
+    'border:1px solid rgba(255,255,255,0.08)',
+    'border-radius:6px',
+    'cursor:grab',
+    'user-select:none',
+  ].join(';');
+
+  // Collapse / expand toggle
+  const isCollapsed = !!_collapsed.get(chapter.id);
+  const btnToggle   = _mkBtn(isCollapsed ? '▸' : '▾', isCollapsed ? 'Expand' : 'Collapse');
+  btnToggle.style.fontSize = '14px';
+  btnToggle.addEventListener('click', e => {
+    e.stopPropagation();
+    _collapsed.set(chapter.id, !isCollapsed);
+    renderStepsPanel();
+  });
 
   const name = document.createElement('span');
   name.className   = 'title';
   name.style.flex  = '1';
   name.textContent = chapter.name || 'Chapter';
 
-  const btnRename = _mkBtn('✎', 'Rename chapter');
+  const btnRename = _mkBtn('✎',  'Rename chapter');
   const btnDel    = _mkBtn('🗑', 'Delete chapter');
   btnRename.addEventListener('click', e => { e.stopPropagation(); _renameChapter(chapter.id); });
   btnDel.addEventListener('click',    e => { e.stopPropagation(); _deleteChapter(chapter.id); });
 
-  wrap.append(name, btnRename, btnDel);
+  wrap.append(btnToggle, name, btnRename, btnDel);
+
+  // ── Drag the whole chapter (and its steps) ────────────────────────────────
+  wrap.addEventListener('dragstart', e => {
+    _dragChapterId = chapter.id;
+    _dragId        = null;
+    e.dataTransfer.effectAllowed = 'move';
+    wrap.style.opacity = '0.5';
+  });
+  wrap.addEventListener('dragend', () => {
+    _dragChapterId = null;
+    _clearExpandTimer();
+    wrap.style.opacity = '';
+  });
+
+  // ── Drop zone: accepts steps (into chapter) AND chapters (reorder) ────────
+  wrap.addEventListener('dragover', e => {
+    e.preventDefault();
+    wrap.classList.add('ghostDrop');
+    wrap.style.outline = '2px solid var(--accent, #3b82f6)';
+    // Hover-to-expand if collapsed and a step is being dragged
+    if (_dragId && _collapsed.get(chapter.id) && !_expandTimer) {
+      _expandTimer = setTimeout(() => {
+        _collapsed.set(chapter.id, false);
+        _expandTimer = null;
+        renderStepsPanel();
+      }, HOVER_EXPAND_MS);
+    }
+  });
+  wrap.addEventListener('dragleave', () => {
+    wrap.classList.remove('ghostDrop');
+    wrap.style.outline = '';
+    _clearExpandTimer();
+  });
+  wrap.addEventListener('drop', e => {
+    e.preventDefault();
+    wrap.classList.remove('ghostDrop');
+    wrap.style.outline = '';
+    _clearExpandTimer();
+
+    if (_dragId) {
+      // Step dropped on a chapter header → move into that chapter (top of it).
+      const insertIdx = _chapterTopInsertIndex(chapter.id);
+      actions.moveStepToChapter(_dragId, chapter.id, insertIdx);
+    } else if (_dragChapterId && _dragChapterId !== chapter.id) {
+      // Chapter dropped on another chapter's header → reorder block.
+      const chapters = state.get('chapters') || [];
+      const toIdx    = chapters.findIndex(c => c.id === chapter.id);
+      if (toIdx >= 0) actions.reorderChapter(_dragChapterId, toIdx);
+    }
+  });
+
   return wrap;
+}
+
+function _clearExpandTimer() {
+  if (_expandTimer) { clearTimeout(_expandTimer); _expandTimer = null; }
+}
+
+/**
+ * Index in the full steps array where a step should land when dropped at the
+ * TOP of a chapter. Uses the full array directly so the returned index is
+ * correct for moveStepToChapter's splice semantics.
+ *   - If the chapter already has steps, return the index of its first step.
+ *   - If empty, return the index of the first step of the next chapter with
+ *     steps, or the end of the array.
+ */
+function _chapterTopInsertIndex(chapterId) {
+  const full        = state.get('steps') || [];
+  const allChapters = state.get('chapters') || [];
+
+  const firstOfCh = full.findIndex(s => !s.isBaseStep && s.chapterId === chapterId);
+  if (firstOfCh >= 0) return firstOfCh;
+
+  const idx = allChapters.findIndex(c => c.id === chapterId);
+  for (let j = idx + 1; j < allChapters.length; j++) {
+    const nextCid   = allChapters[j].id;
+    const firstNext = full.findIndex(s => !s.isBaseStep && s.chapterId === nextCid);
+    if (firstNext >= 0) return firstNext;
+  }
+  return full.length;
 }
 
 // ── Step card ────────────────────────────────────────────────────────────────
@@ -183,8 +307,8 @@ function _buildStepCard(step, idx, isActive, total) {
   camBadge.style.cssText = `opacity:${step.snapshot?.camera ? '0.55' : '0.2'};font-size:11px;flex-shrink:0;`;
 
   // Action buttons
-  const actions = document.createElement('div');
-  actions.style.cssText = 'display:flex;gap:3px;flex-shrink:0;';
+  const actionsRow = document.createElement('div');
+  actionsRow.style.cssText = 'display:flex;gap:3px;flex-shrink:0;';
 
   const btnCam    = _mkBtn('📷', 'Update camera for this step');
   const btnHide   = _mkBtn(step.hidden ? '🚫' : '👁', 'Toggle visibility in playback');
@@ -198,8 +322,8 @@ function _buildStepCard(step, idx, isActive, total) {
   btnDup.addEventListener('click',    e => { e.stopPropagation(); _duplicateStep(step.id); });
   btnDel.addEventListener('click',    e => { e.stopPropagation(); _deleteStep(step.id); });
 
-  actions.append(btnCam, btnHide, btnRename, btnDup, btnDel);
-  top.append(badge, nameLbl, spacer, camBadge, actions);
+  actionsRow.append(btnCam, btnHide, btnRename, btnDup, btnDel);
+  top.append(badge, nameLbl, spacer, camBadge, actionsRow);
 
   // ── Meta row ──────────────────────────────────────────────────────────────
   const meta = document.createElement('div');
@@ -227,12 +351,14 @@ function _buildStepCard(step, idx, isActive, total) {
 
   // Drag-and-drop
   card.addEventListener('dragstart', e => {
-    _dragId = step.id;
+    _dragId        = step.id;
+    _dragChapterId = null;
     e.dataTransfer.effectAllowed = 'move';
     card.style.opacity = '0.5';
   });
   card.addEventListener('dragend', () => {
     _dragId = null;
+    _clearExpandTimer();
     card.style.opacity = '';
   });
   card.addEventListener('dragover', e => {
@@ -248,7 +374,10 @@ function _buildStepCard(step, idx, isActive, total) {
     if (_dragId && _dragId !== step.id) {
       const all   = state.get('steps') || [];
       const toIdx = all.findIndex(s => s.id === step.id);
-      if (toIdx >= 0) actions.reorderStep(_dragId, toIdx);
+      if (toIdx >= 0) {
+        const targetChapterId = step.chapterId ?? null;
+        actions.moveStepToChapter(_dragId, targetChapterId, toIdx);
+      }
     }
   });
 

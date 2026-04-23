@@ -254,6 +254,40 @@ export function reorderStep(stepId, newIndex) {
   );
 }
 
+/**
+ * Move a step into a chapter (or out, if chapterId is null) and relocate
+ * it in the steps array. Single atomic action with undo.
+ */
+export function moveStepToChapter(stepId, chapterId, newIndex) {
+  const step = steps.getStepById(stepId);
+  if (!step) return;
+  const oldChapterId = step.chapterId ?? null;
+  const oldIndex     = steps.getStepIndex(stepId);
+  steps.moveStepToChapter(stepId, chapterId, newIndex);
+  undoManager.push(
+    'Move step',
+    () => { steps.moveStepToChapter(stepId, oldChapterId, oldIndex); },
+    () => { steps.moveStepToChapter(stepId, chapterId,    newIndex); },
+  );
+}
+
+/**
+ * Reorder a whole chapter (and its steps) to a new index in the chapter list.
+ */
+export function reorderChapter(chapterId, newChapterIdx) {
+  const chapters = state.get('chapters') || [];
+  const oldIdx   = chapters.findIndex(c => c.id === chapterId);
+  if (oldIdx < 0) return;
+  const prevSteps    = [...(state.get('steps') || [])];
+  const prevChapters = [...chapters];
+  steps.reorderChapter(chapterId, newChapterIdx);
+  undoManager.push(
+    'Reorder chapter',
+    () => { state.setState({ steps: prevSteps, chapters: prevChapters }); state.markDirty(); },
+    () => { steps.reorderChapter(chapterId, newChapterIdx); },
+  );
+}
+
 export function duplicateStep(stepId) {
   const copy = steps.duplicateStep(stepId);
   if (!copy) return null;

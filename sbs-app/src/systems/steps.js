@@ -1160,6 +1160,68 @@ class StepManager {
     state.markDirty();
   }
 
+  /**
+   * Move a step: set its chapterId and relocate it in the steps array.
+   * Atomic — emits a single state change so the UI renders once.
+   * @param {string}      stepId
+   * @param {string|null} chapterId   target chapter (null = ungrouped)
+   * @param {number}      newIndex    target index in the flat steps array
+   */
+  moveStepToChapter(stepId, chapterId, newIndex) {
+    const steps  = [...state.get('steps')];
+    const oldIdx = steps.findIndex(s => s.id === stepId);
+    if (oldIdx < 0) return;
+
+    const [step] = steps.splice(oldIdx, 1);
+    step.chapterId = chapterId ?? null;
+    steps.splice(Math.max(0, Math.min(steps.length, newIndex)), 0, step);
+
+    state.setState({ steps });
+    state.markDirty();
+    state.emit('steps:reordered');
+  }
+
+  /**
+   * Reorder a whole chapter — moves the chapter and every step that belongs to
+   * it as one block. The chapter list and the steps list are updated together.
+   * @param {string} chapterId
+   * @param {number} newChapterIdx   index in the chapters array
+   */
+  reorderChapter(chapterId, newChapterIdx) {
+    const chapters = [...(state.get('chapters') || [])];
+    const oldIdx   = chapters.findIndex(c => c.id === chapterId);
+    if (oldIdx < 0) return;
+
+    const [chapter] = chapters.splice(oldIdx, 1);
+    const clampedIdx = Math.max(0, Math.min(chapters.length, newChapterIdx));
+    chapters.splice(clampedIdx, 0, chapter);
+
+    // Rebuild steps order: for each chapter in new order, emit its steps in
+    // their original relative order; ungrouped steps keep their positions
+    // relative to the nearest preceding chapter.
+    const allSteps    = state.get('steps') || [];
+    const byChapter   = new Map();
+    const ungrouped   = [];
+    for (const s of allSteps) {
+      if (s.chapterId && chapters.some(c => c.id === s.chapterId)) {
+        if (!byChapter.has(s.chapterId)) byChapter.set(s.chapterId, []);
+        byChapter.get(s.chapterId).push(s);
+      } else {
+        ungrouped.push(s);
+      }
+    }
+    const newSteps = [];
+    for (const c of chapters) {
+      const chSteps = byChapter.get(c.id) || [];
+      newSteps.push(...chSteps);
+    }
+    newSteps.push(...ungrouped);
+
+    state.setState({ chapters, steps: newSteps });
+    state.markDirty();
+    state.emit('steps:reordered');
+  }
+
 
   // ═══════════════════════════════════════════════════════════════════════
   //  VOICE / NARRATION TEXT
