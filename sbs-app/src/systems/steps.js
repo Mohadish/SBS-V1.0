@@ -1234,6 +1234,25 @@ class StepManager {
     if (base?.snapshot) this.applySnapshotInstant(base.snapshot, { suppressCamera: true });
   }
 
+  /**
+   * Asset-reintegration contract.
+   *
+   * A reintegration ALWAYS begins by rebasing the scene to step 0 (home
+   * coordinates), then replays the user's active step on top, then sweeps
+   * any orphan placeholder bounding boxes. This guarantees every reintegrate
+   * is a clean full-cycle, not a partial patch.
+   *
+   * Call from _relinkAsset (or any future reintegration entry point) AFTER
+   * the id remap + phantom cleanup is complete.
+   *
+   * @param {string|null} activeStepId   step to re-apply after step 0 (null = stay on step 0)
+   */
+  reintegrateFromStep0(activeStepId) {
+    this.activateBaseStep();
+    if (activeStepId) this.activateStep(activeStepId, false);
+    this.removePlaceholders();
+  }
+
 
   // ═══════════════════════════════════════════════════════════════════════
   //  PRIVATE HELPERS

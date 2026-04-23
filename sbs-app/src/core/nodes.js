@@ -457,9 +457,14 @@ export function serializeModelTree(node) {
     localVisible: node.localVisible !== false,
     children:     (node.children || []).map(serializeModelTree).filter(Boolean),
   };
-  // Persist bbox for mesh nodes — used to render a bounding-box placeholder
-  // when the asset is missing on load, giving users a visible, interactive stand-in.
-  if (node.type === 'mesh' && node.bbox) spec.bbox = node.bbox;
+  // Persist bbox + geometry fingerprint for mesh nodes. Used for:
+  //   - bbox: rendering a placeholder box when the asset is missing.
+  //   - fingerprint + bbox centre: robust semantic match on reintegration so
+  //     duplicates (nuts / bolts) bind to the correct phantom.
+  if (node.type === 'mesh') {
+    if (node.bbox)        spec.bbox        = node.bbox;
+    if (node.fingerprint) spec.fingerprint = node.fingerprint;
+  }
   return spec;
 }
 

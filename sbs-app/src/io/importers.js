@@ -353,8 +353,9 @@ function buildNodeFromOcct(occtNode, meshes, parent3d, prefix, obj3dMap) {
       name:       threeMesh.name,
       meshIndex:  meshIndex,
     });
-    meshNode.bbox     = meshBbox;
-    meshNode.object3d = threeMesh;  // runtime only
+    meshNode.bbox        = meshBbox;
+    meshNode.fingerprint = _geomFingerprint(geom);
+    meshNode.object3d    = threeMesh;  // runtime only
     obj3dMap.set(meshId, threeMesh);
 
     node.children.push(meshNode);
@@ -409,6 +410,7 @@ function buildNodeFromThreeObject(obj, obj3dMap) {
           max: [_bb2.max.x, _bb2.max.y, _bb2.max.z],
         };
       }
+      meshNode.fingerprint = _geomFingerprint(obj.geometry);
     }
     meshNode.object3d = obj;
     obj3dMap.set(meshId, obj);

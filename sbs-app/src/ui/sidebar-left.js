@@ -683,13 +683,8 @@ async function _relinkAsset(file, assetEntry) {
   // Re-apply base colors to newly loaded meshes.
   materials.applyAll();
 
-  // Reinstate from frame 0: apply the base step first to establish a clean
-  // ground-truth scene state, then re-apply the user's current step on top.
-  steps.activateBaseStep();
-  if (activeStep) steps.activateStep(activeStep, false);
-
-  // Sweep any orphan bbox placeholders left in the scene from the phantom pass.
-  steps.removePlaceholders();
+  // Single reintegration contract: step 0 → active step → placeholder sweep.
+  steps.reintegrateFromStep0(activeStep);
 }
 
 function _onFitAll() {

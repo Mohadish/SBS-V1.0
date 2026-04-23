@@ -476,21 +476,28 @@ export function buildIdRemapFromSpec(liveNode, specNode, idMap = new Map()) {
   const liveChildren = liveNode.children || [];
   const specChildren = specNode.children || [];
 
-  // Match mesh children by meshIndex (most reliable)
-  const specMeshes  = specChildren.filter(c => c.type === 'mesh');
-  const liveMeshes  = liveChildren.filter(c => c.type === 'mesh');
+  // ── Mesh match — semantic identity first, then legacy fallbacks ───────────
+  //   1. fingerprint + bbox centre   (robust against re-export, disambiguates duplicates)
+  //   2. meshIndex                   (stable within a single file export)
+  //   3. positional                  (last resort)
+  const specMeshes = specChildren.filter(c => c.type === 'mesh');
+  const liveMeshes = liveChildren.filter(c => c.type === 'mesh');
+  const takenLive  = new Set();
 
   for (const specMesh of specMeshes) {
-    let liveMesh = null;
-    if (specMesh.meshIndex != null) {
-      liveMesh = liveMeshes.find(c => c.meshIndex === specMesh.meshIndex) ?? null;
+    let liveMesh = _matchBySemantic(specMesh, liveMeshes, takenLive);
+    if (!liveMesh && specMesh.meshIndex != null) {
+      liveMesh = liveMeshes.find(m => !takenLive.has(m) && m.meshIndex === specMesh.meshIndex) ?? null;
     }
     if (!liveMesh) {
-      // Fallback: positional match
       const idx = specMeshes.indexOf(specMesh);
-      liveMesh  = liveMeshes[idx] ?? null;
+      const candidate = liveMeshes[idx];
+      if (candidate && !takenLive.has(candidate)) liveMesh = candidate;
     }
-    if (liveMesh) buildIdRemapFromSpec(liveMesh, specMesh, idMap);
+    if (liveMesh) {
+      takenLive.add(liveMesh);
+      buildIdRemapFromSpec(liveMesh, specMesh, idMap);
+    }
   }
 
   // Match non-mesh children (folders) by position
@@ -501,6 +508,29 @@ export function buildIdRemapFromSpec(liveNode, specNode, idMap = new Map()) {
   });
 
   return idMap;
+}
+
+// Round bbox centre to 2 decimal places — absorbs re-export float noise.
+function _bboxCentreKey(bbox) {
+  if (!bbox) return null;
+  const r = v => Math.round(v * 100);
+  return `${r((bbox.min[0] + bbox.max[0]) / 2)},${r((bbox.min[1] + bbox.max[1]) / 2)},${r((bbox.min[2] + bbox.max[2]) / 2)}`;
+}
+
+// Match a spec mesh to an unused live mesh by (fingerprint + bbox centre).
+// Both must agree. Duplicate identical parts (nuts/bolts) are disambiguated
+// by bbox centre because each sits at a different location in the model.
+function _matchBySemantic(specMesh, liveMeshes, taken) {
+  if (!specMesh.fingerprint) return null;
+  const specCentre = _bboxCentreKey(specMesh.bbox);
+  if (!specCentre) return null;
+  for (const live of liveMeshes) {
+    if (taken.has(live)) continue;
+    if (live.fingerprint !== specMesh.fingerprint) continue;
+    if (_bboxCentreKey(live.bbox) !== specCentre) continue;
+    return live;
+  }
+  return null;
 }
 
 /**
