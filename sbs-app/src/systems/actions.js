@@ -399,7 +399,7 @@ export function commitTransformEdit(nodeId) {
       applyTransformSnapshot(n, from);
       const o = steps.object3dById?.get(nodeId);
       if (o) applyNodeTransformToObject3D(n, o);
-      steps.scheduleSync();
+      steps.scheduleTransformSync();
     },
     () => {
       const nb = state.get('nodeById');
@@ -408,10 +408,10 @@ export function commitTransformEdit(nodeId) {
       applyTransformSnapshot(n, to);
       const o = steps.object3dById?.get(nodeId);
       if (o) applyNodeTransformToObject3D(n, o);
-      steps.scheduleSync();
+      steps.scheduleTransformSync();
     },
   );
-  steps.scheduleSync();
+  steps.scheduleTransformSync();
 }
 
 /**
@@ -425,7 +425,7 @@ export function resetTransform(nodeId) {
   applyTransformSnapshot(node, { localOffset: [0,0,0], localQuaternion: [0,0,0,1], moveEnabled: true, rotateEnabled: true });
   const obj3d = steps.object3dById?.get(nodeId);
   if (obj3d) applyNodeTransformToObject3D(node, obj3d);
-  steps.scheduleSync();
+  steps.scheduleTransformSync();
   undoManager.push(
     'Reset transform',
     () => {
@@ -435,7 +435,7 @@ export function resetTransform(nodeId) {
       applyTransformSnapshot(n, from);
       const o = steps.object3dById?.get(nodeId);
       if (o) applyNodeTransformToObject3D(n, o);
-      steps.scheduleSync();
+      steps.scheduleTransformSync();
     },
     () => {
       const nb = state.get('nodeById');
@@ -444,7 +444,85 @@ export function resetTransform(nodeId) {
       applyTransformSnapshot(n, { localOffset: [0,0,0], localQuaternion: [0,0,0,1], moveEnabled: true, rotateEnabled: true });
       const o = steps.object3dById?.get(nodeId);
       if (o) applyNodeTransformToObject3D(n, o);
-      steps.scheduleSync();
+      steps.scheduleTransformSync();
+    },
+  );
+}
+
+
+/**
+ * Toggle a transform enabled flag blue ↔ red.
+ * No-op if the node has no delta for that axis (grey state — nothing to toggle).
+ * @param {string} nodeId
+ * @param {'moveEnabled'|'rotateEnabled'|'pivotEnabled'} flag
+ */
+export function toggleTransformEnabled(nodeId, flag) {
+  const nodeById = state.get('nodeById');
+  const node     = nodeById?.get(nodeId);
+  if (!node) return;
+  const from   = captureTransformSnapshot(node);
+  const newVal = !(node[flag] !== false);
+  node[flag]   = newVal;
+  const obj3d  = steps.object3dById?.get(nodeId);
+  if (obj3d) applyNodeTransformToObject3D(node, obj3d);
+  steps.scheduleTransformSync();
+  undoManager.push(
+    `Toggle ${flag}`,
+    () => {
+      const n = state.get('nodeById')?.get(nodeId); if (!n) return;
+      applyTransformSnapshot(n, from);
+      const o = steps.object3dById?.get(nodeId); if (o) applyNodeTransformToObject3D(n, o);
+      steps.scheduleTransformSync();
+    },
+    () => {
+      const n = state.get('nodeById')?.get(nodeId); if (!n) return;
+      n[flag] = newVal;
+      const o = steps.object3dById?.get(nodeId); if (o) applyNodeTransformToObject3D(n, o);
+      steps.scheduleTransformSync();
+    },
+  );
+}
+
+/**
+ * Reset move, rotation, or both to identity (grey state).
+ * @param {string} nodeId
+ * @param {'move'|'rotate'|'all'} field
+ */
+export function resetTransformField(nodeId, field) {
+  const nodeById = state.get('nodeById');
+  const node     = nodeById?.get(nodeId);
+  if (!node) return;
+  const from = captureTransformSnapshot(node);
+
+  if (field === 'move' || field === 'all') {
+    node.localOffset = [0, 0, 0];
+    node.moveEnabled = true;
+  }
+  if (field === 'rotate' || field === 'all') {
+    node.localQuaternion  = [0, 0, 0, 1];
+    node.orientationSteps = [0, 0, 0];
+    node.rotateEnabled    = true;
+  }
+
+  const obj3d = steps.object3dById?.get(nodeId);
+  if (obj3d) applyNodeTransformToObject3D(node, obj3d);
+  steps.scheduleTransformSync();
+
+  const label = field === 'all' ? 'Reset all transforms' : `Reset ${field}`;
+  undoManager.push(
+    label,
+    () => {
+      const n = state.get('nodeById')?.get(nodeId); if (!n) return;
+      applyTransformSnapshot(n, from);
+      const o = steps.object3dById?.get(nodeId); if (o) applyNodeTransformToObject3D(n, o);
+      steps.scheduleTransformSync();
+    },
+    () => {
+      const n = state.get('nodeById')?.get(nodeId); if (!n) return;
+      if (field === 'move' || field === 'all') { n.localOffset = [0,0,0]; n.moveEnabled = true; }
+      if (field === 'rotate' || field === 'all') { n.localQuaternion = [0,0,0,1]; n.orientationSteps = [0,0,0]; n.rotateEnabled = true; }
+      const o = steps.object3dById?.get(nodeId); if (o) applyNodeTransformToObject3D(n, o);
+      steps.scheduleTransformSync();
     },
   );
 }

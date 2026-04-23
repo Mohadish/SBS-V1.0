@@ -7,6 +7,13 @@
  * Colors:  X=red  Y=green  Z=blue  hover=yellow  active=white
  * States:  grey(idle) → yellow(hover, +scale) → white(drag)
  *
+ * Space modes:
+ *   'local'  — gizmo axes align with the parent node's orientation.
+ *              Drag and panel inputs operate in parent-local space.
+ *   'world'  — gizmo axes align with world axes. Drag deltas are
+ *              converted from world space to parent-local before
+ *              being stored in localOffset.
+ *
  * Integration:
  *   gizmo.init()                   — call once after scene ready
  *   gizmo.show(node, obj3d)        — call on selection change
@@ -15,7 +22,9 @@
  *   gizmo.onPointerDown(x, y) → bool  — true = gizmo consumed event
  *   gizmo.onPointerMove(x, y) → bool  — true = gizmo is dragging
  *   gizmo.onPointerUp()            — commit drag
+ *   gizmo.onRightClick(x, y) → bool  — true = gizmo opened panel
  *   gizmo.setMode(m)               — 'all' | 'translate' | 'rotate'
+ *   gizmo.toggleSpace()            — cycle 'local' ↔ 'world'
  */
 
 import { sceneCore }  from '../core/scene.js';
@@ -43,13 +52,20 @@ class GizmoController {
     this._node     = null;
     this._obj3d    = null;
     this._visible  = false;
-    this._mode     = 'all';  // 'all' | 'translate' | 'rotate'
+    this._mode     = 'all';        // 'all' | 'translate' | 'rotate'
+    this._spaceMode = 'local';     // 'local' | 'world'
 
     // Drag state (set on pointerdown, used through move)
     this._startOffset = [0, 0, 0];
     this._startQuat   = [0, 0, 0, 1];
     this._startWorld  = null;
     this._startAngle  = 0;
+
+    // Space label DOM element
+    this._spaceLabelEl = null;
+
+    // Transform panel DOM element
+    this._panel = null;
   }
 
   // ── Init ──────────────────────────────────────────────────────────────────
@@ -62,20 +78,38 @@ class GizmoController {
     sceneCore.overlayScene.add(this._group);
     this._buildGeometry();
     sceneCore.addTickHook(() => this._tick());
+    this._buildSpaceLabel();
+  }
+
+  _buildSpaceLabel() {
+    // Small on-screen badge showing current space mode
+    const el = document.createElement('div');
+    el.id = 'gizmo-space-label';
+    el.style.cssText = [
+      'position:absolute',
+      'bottom:54px',
+      'left:12px',
+      'font-size:11px',
+      'font-weight:700',
+      'letter-spacing:1px',
+      'color:#94a3b8',
+      'pointer-events:none',
+      'display:none',
+      'user-select:none',
+    ].join(';');
+    el.textContent = 'LOCAL';
+    document.getElementById('viewer')?.appendChild(el)
+      ?? document.body.appendChild(el);
+    this._spaceLabelEl = el;
   }
 
   _buildGeometry() {
     const T = window.THREE;
 
     // ── Translate arrows ────────────────────────────────────────────────────
-    // Arrow total reach ~0.97; rings sit at radius 0.55 — no overlap.
-    // Hit mesh must be in a wrapper Group so _orientAxis rotates around the
-    // gizmo origin (same pattern as visGroup); otherwise position.y offset
-    // stays in world-Y after the object rotation, putting X/Z hits in wrong place.
     for (const axis of ['x', 'y', 'z']) {
       const color = AX[axis];
 
-      // ── Visuals ──
       const shaftGeo = new T.CylinderGeometry(0.025, 0.025, 0.72, 8);
       const shaftMat = new T.MeshBasicMaterial({ color, depthTest: false });
       const shaft    = new T.Mesh(shaftGeo, shaftMat);
@@ -91,15 +125,12 @@ class GizmoController {
       this._orientAxis(visGroup, axis);
       this._group.add(visGroup);
 
-      // ── Hit (tapered: wide at tip, thin at base — same wrapper trick) ──
-      // CylinderGeometry(radiusTop, radiusBottom, height):
-      //   top = +Y of hitGroup = tip direction after orientation.
       const hitGeo   = new T.CylinderGeometry(0.18, 0.06, 0.97, 8);
       const hitMat   = new T.MeshBasicMaterial({ visible: false, depthTest: false });
       const hit      = new T.Mesh(hitGeo, hitMat);
-      hit.position.y = 0.485;          // center inside the wrapper's local Y
+      hit.position.y = 0.485;
 
-      const hitGroup = new T.Group();  // wrapper keeps position offset in local space
+      const hitGroup = new T.Group();
       hitGroup.add(hit);
       this._orientAxis(hitGroup, axis);
       this._group.add(hitGroup);
@@ -110,14 +141,12 @@ class GizmoController {
     }
 
     // ── Plane handles (XZ, XY, YZ) ─────────────────────────────────────────
-    // Separate visual and hit meshes so _applyMode can hide visuals independently.
     const planes = [
       { axis: 'xz', color: AX.y, pos: [0.22, 0, 0.22],    rotX: -Math.PI / 2, rotY: 0 },
       { axis: 'xy', color: AX.z, pos: [0.22, 0.22, 0],    rotX: 0,            rotY: 0 },
       { axis: 'yz', color: AX.x, pos: [0, 0.22, 0.22],    rotX: 0,            rotY: Math.PI / 2 },
     ];
     for (const p of planes) {
-      // Visual (colored, semi-transparent)
       const vGeo  = new T.PlaneGeometry(0.20, 0.20);
       const vMat  = new T.MeshBasicMaterial({ color: p.color, side: T.DoubleSide, transparent: true, opacity: 0.65, depthTest: false });
       const vis   = new T.Mesh(vGeo, vMat);
@@ -126,7 +155,6 @@ class GizmoController {
       vis.rotation.y = p.rotY;
       this._group.add(vis);
 
-      // Hit mesh (invisible, same size)
       const hGeo  = new T.PlaneGeometry(0.20, 0.20);
       const hMat  = new T.MeshBasicMaterial({ visible: false, side: T.DoubleSide, depthTest: false });
       const hit   = new T.Mesh(hGeo, hMat);
@@ -141,7 +169,6 @@ class GizmoController {
     }
 
     // ── Rotation rings ──────────────────────────────────────────────────────
-    // Radius 0.55 — well inside arrow tips (~0.97), clearly visible.
     for (const axis of ['x', 'y', 'z']) {
       const color = AX[axis];
 
@@ -151,7 +178,6 @@ class GizmoController {
       this._orientRing(ring, axis);
       this._group.add(ring);
 
-      // Hit torus (wider tube for easier grabbing)
       const hitGeo = new T.TorusGeometry(0.55, 0.085, 6, 56);
       const hitMat = new T.MeshBasicMaterial({ visible: false, depthTest: false });
       const hit    = new T.Mesh(hitGeo, hitMat);
@@ -167,17 +193,11 @@ class GizmoController {
   _orientAxis(obj, axis) {
     if (axis === 'x') obj.rotation.z = -Math.PI / 2;
     if (axis === 'z') obj.rotation.x =  Math.PI / 2;
-    // y = default (no rotation)
   }
 
   _orientRing(obj, axis) {
-    // TorusGeometry default: lies in XY plane, normal = Z.
-    // X ring: normal must be X → rotate around Y by 90°
-    // Y ring: normal must be Y → rotate around X by 90° (XY→XZ plane)
-    // Z ring: normal must be Z → no rotation (default)
     if (axis === 'x') obj.rotation.y = Math.PI / 2;
     if (axis === 'y') obj.rotation.x = Math.PI / 2;
-    // z: no rotation
   }
 
   // ── Public API ────────────────────────────────────────────────────────────
@@ -188,14 +208,15 @@ class GizmoController {
     this._obj3d   = obj3d;
     this._visible = true;
     this._group.visible = true;
-    this._mode = 'all';       // always start fresh — mode was left over from G/R keys
+    this._mode = 'all';
     this._applyMode();
     this._tick();
+    if (this._spaceLabelEl) this._spaceLabelEl.style.display = '';
+    this._updateSpaceLabel();
   }
 
   hide() {
     if (!this._group) return;
-    // Restore any element left in hover or drag state before clearing refs
     if (this._hovered) {
       this._setElColor(this._hovered, this._hovered.baseColor);
       this._setElScale(this._hovered, 1.0);
@@ -210,13 +231,44 @@ class GizmoController {
     this._hovered  = null;
     this._dragging = false;
     this._dragEl   = null;
+    if (this._spaceLabelEl) this._spaceLabelEl.style.display = 'none';
+    this._closePanel();
   }
 
   get isDragging() { return this._dragging; }
 
+  get spaceMode() { return this._spaceMode; }
+
   setMode(mode) {
-    this._mode = mode;  // 'all' | 'translate' | 'rotate'
+    this._mode = mode;
     if (this._visible) this._applyMode();
+  }
+
+  /**
+   * Set the gizmo's space mode explicitly.
+   * @param {'local'|'world'} mode
+   */
+  setSpace(mode) {
+    this._spaceMode = mode;
+    if (this._visible) {
+      this._tick();
+      this._updateSpaceLabel();
+    }
+    // Refresh panel if open
+    if (this._panel) this._refreshPanel();
+  }
+
+  /**
+   * Toggle between 'local' and 'world' space modes.
+   */
+  toggleSpace() {
+    this.setSpace(this._spaceMode === 'local' ? 'world' : 'local');
+  }
+
+  _updateSpaceLabel() {
+    if (!this._spaceLabelEl) return;
+    this._spaceLabelEl.textContent = this._spaceMode === 'local' ? 'LOCAL' : 'WORLD';
+    this._spaceLabelEl.style.color = this._spaceMode === 'local' ? '#60a5fa' : '#94a3b8';
   }
 
   _applyMode() {
@@ -225,7 +277,6 @@ class GizmoController {
         || (this._mode === 'translate' && (el.type === 'translate' || el.type === 'plane'))
         || (this._mode === 'rotate'    && el.type === 'rotate');
       for (const v of el.visuals) v.visible = show;
-      // Hit meshes are invisible by material; raycasting is filtered in _raycastElements.
     }
   }
 
@@ -237,6 +288,15 @@ class GizmoController {
     const pos = new T.Vector3();
     this._obj3d.getWorldPosition(pos);
     this._group.position.copy(pos);
+
+    // Orient gizmo: local mode = parent's world orientation, world mode = identity
+    if (this._spaceMode === 'local') {
+      const pq = this._parentWorldQuat();
+      if (pq) this._group.quaternion.copy(pq);
+      else    this._group.quaternion.identity();
+    } else {
+      this._group.quaternion.identity();
+    }
 
     // Constant screen-space size
     const cam    = sceneCore.camera;
@@ -266,14 +326,12 @@ class GizmoController {
     this._dragEl   = el;
     this._setElColor(el, ACTIVE_COL);
 
-    // Snapshot for undo
     if (this._node) actions.beginTransformEdit(this._node.id);
 
-    // Capture drag start state
     const T = window.THREE;
     const no = this._node;
-    this._startOffset = no?.localOffset       ? [...no.localOffset]       : [0, 0, 0];
-    this._startQuat   = no?.localQuaternion   ? [...no.localQuaternion]   : [0, 0, 0, 1];
+    this._startOffset = no?.localOffset     ? [...no.localOffset]     : [0, 0, 0];
+    this._startQuat   = no?.localQuaternion ? [...no.localQuaternion] : [0, 0, 0, 1];
 
     const plane = this._getDragPlane(el);
     this._startWorld = this._worldPoint(clientX, clientY, plane);
@@ -282,7 +340,7 @@ class GizmoController {
       const center = new T.Vector3();
       this._obj3d.getWorldPosition(center);
       const rel = this._startWorld.clone().sub(center);
-      this._startAngle = this._atan2ForAxis(rel, el.axis);
+      this._startAngle = this._atan2ForAxisInSpace(rel, el.axis);
     }
 
     return true;
@@ -302,6 +360,20 @@ class GizmoController {
       this._setElColor(this._dragEl, this._dragEl.baseColor);
       this._dragEl = null;
     }
+    // Refresh panel values after drag ends
+    if (this._panel) this._refreshPanel();
+  }
+
+  /**
+   * Called from canvas contextmenu handler.
+   * Returns true if the gizmo consumed the event (opened the panel).
+   */
+  onRightClick(clientX, clientY) {
+    if (!this._visible) return false;
+    const el = this._raycastElements(clientX, clientY);
+    if (!el) return false;
+    this._showTransformPanel(clientX, clientY);
+    return true;
   }
 
   // ── Drag logic ────────────────────────────────────────────────────────────
@@ -317,38 +389,48 @@ class GizmoController {
     if (!curr || !this._startWorld) return;
 
     if (el.type === 'translate') {
-      const delta  = curr.clone().sub(this._startWorld);
-      const axVec  = this._axisVec(el.axis);
-      const amount = delta.dot(axVec);
+      // Project world delta onto the drag axis, then convert to parent-local space.
+      const delta   = curr.clone().sub(this._startWorld);
+      const axVec   = this._axisVec(el.axis);
+      const amount  = delta.dot(axVec);
+      const worldD  = axVec.clone().multiplyScalar(amount);
+      const localD  = this._worldToLocalDelta(worldD);
       no.localOffset = [
-        this._startOffset[0] + axVec.x * amount,
-        this._startOffset[1] + axVec.y * amount,
-        this._startOffset[2] + axVec.z * amount,
+        this._startOffset[0] + localD.x,
+        this._startOffset[1] + localD.y,
+        this._startOffset[2] + localD.z,
       ];
       no.moveEnabled = true;
 
     } else if (el.type === 'plane') {
-      const delta  = curr.clone().sub(this._startWorld);
-      const [a, b] = el.axis.split('');
+      // Project world delta onto both plane axes, sum, convert to parent-local.
+      const delta   = curr.clone().sub(this._startWorld);
+      const [a, b]  = el.axis.split('');
+      const axA     = this._axisVec(a);
+      const axB     = this._axisVec(b);
+      const worldD  = axA.clone().multiplyScalar(delta.dot(axA))
+                        .add(axB.clone().multiplyScalar(delta.dot(axB)));
+      const localD  = this._worldToLocalDelta(worldD);
       no.localOffset = [
-        this._startOffset[0] + (a === 'x' || b === 'x' ? delta.x : 0),
-        this._startOffset[1] + (a === 'y' || b === 'y' ? delta.y : 0),
-        this._startOffset[2] + (a === 'z' || b === 'z' ? delta.z : 0),
+        this._startOffset[0] + localD.x,
+        this._startOffset[1] + localD.y,
+        this._startOffset[2] + localD.z,
       ];
       no.moveEnabled = true;
 
     } else if (el.type === 'rotate') {
       const center = new T.Vector3();
       this._obj3d.getWorldPosition(center);
-      const rel        = curr.clone().sub(center);
-      const currAngle  = this._atan2ForAxis(rel, el.axis);
+      const rel       = curr.clone().sub(center);
+      const currAngle = this._atan2ForAxisInSpace(rel, el.axis);
       // X and Y axes need delta inverted (right-hand rule vs screen drag direction)
-      const rawDelta   = currAngle - this._startAngle;
-      const delta      = (el.axis === 'x' || el.axis === 'y') ? -rawDelta : rawDelta;
-      const axVec      = this._axisVec(el.axis);
-      const deltaQ     = new T.Quaternion().setFromAxisAngle(axVec, delta);
-      const baseQ      = new T.Quaternion(this._startQuat[0], this._startQuat[1], this._startQuat[2], this._startQuat[3]);
-      const newQ       = deltaQ.multiply(baseQ);
+      const rawDelta  = currAngle - this._startAngle;
+      const delta     = (el.axis === 'x' || el.axis === 'y') ? -rawDelta : rawDelta;
+      // Rotation axis in parent-local space (depends on space mode)
+      const rotAxis   = this._rotAxisLocal(el.axis);
+      const deltaQ    = new T.Quaternion().setFromAxisAngle(rotAxis, delta);
+      const baseQ     = new T.Quaternion(this._startQuat[0], this._startQuat[1], this._startQuat[2], this._startQuat[3]);
+      const newQ      = deltaQ.multiply(baseQ);
       no.localQuaternion = [newQ.x, newQ.y, newQ.z, newQ.w];
       no.rotateEnabled   = true;
     }
@@ -356,6 +438,99 @@ class GizmoController {
     applyNodeTransformToObject3D(no, this._obj3d, true);
     steps.scheduleSync();
     this._tick();
+  }
+
+  // ── Space helpers ─────────────────────────────────────────────────────────
+
+  /**
+   * Get the parent's world quaternion, or null if no parent or identity parent.
+   */
+  _parentWorldQuat() {
+    const T = window.THREE;
+    const parent = this._obj3d?.parent;
+    if (!parent) return null;
+    const q = new T.Quaternion();
+    parent.getWorldQuaternion(q);
+    return q;
+  }
+
+  /**
+   * Return the axis vector for 'x'|'y'|'z' in WORLD space.
+   * In 'local' mode: rotate the local axis by the parent's world quaternion,
+   * so the gizmo axis aligns with the parent's local orientation.
+   * In 'world' mode: return the world-aligned unit vector.
+   */
+  _axisVec(axis) {
+    const T = window.THREE;
+    let v;
+    if (axis === 'x')      v = new T.Vector3(1, 0, 0);
+    else if (axis === 'y') v = new T.Vector3(0, 1, 0);
+    else                   v = new T.Vector3(0, 0, 1);
+
+    if (this._spaceMode === 'local') {
+      const pq = this._parentWorldQuat();
+      if (pq) v.applyQuaternion(pq);
+    }
+    return v;
+  }
+
+  /**
+   * Convert a world-space delta vector to parent-local space.
+   * Uses the inverse of the parent's world quaternion.
+   */
+  _worldToLocalDelta(worldDelta) {
+    const T = window.THREE;
+    const parent = this._obj3d?.parent;
+    if (!parent) return worldDelta.clone();
+    const pq = new T.Quaternion();
+    parent.getWorldQuaternion(pq);
+    return worldDelta.clone().applyQuaternion(pq.invert());
+  }
+
+  /**
+   * Return the rotation axis in PARENT-LOCAL space (for storing in localQuaternion).
+   * Local mode → plain local axis (1,0,0 etc.).
+   * World mode → world axis converted to parent-local via parentQ.invert().
+   */
+  _rotAxisLocal(axis) {
+    const T = window.THREE;
+    let v;
+    if (axis === 'x')      v = new T.Vector3(1, 0, 0);
+    else if (axis === 'y') v = new T.Vector3(0, 1, 0);
+    else                   v = new T.Vector3(0, 0, 1);
+
+    if (this._spaceMode === 'world') {
+      // World axis → parent-local
+      const parent = this._obj3d?.parent;
+      if (parent) {
+        const pq = new T.Quaternion();
+        parent.getWorldQuaternion(pq);
+        v.applyQuaternion(pq.invert());
+      }
+    }
+    // In local mode: (1,0,0) etc. is already parent-local — no transform needed
+    return v;
+  }
+
+  /**
+   * Compute the 2-D angle of `rel` projected onto the plane perpendicular to `axis`,
+   * using parent-local space (for consistent angle delta calculation regardless of
+   * parent rotation).
+   */
+  _atan2ForAxisInSpace(rel, axis) {
+    const T = window.THREE;
+    let r = rel.clone();
+    // Transform rel to parent-local space so the angle is measured in the
+    // parent-aligned plane, matching the orientation of the ring.
+    const pq = this._parentWorldQuat();
+    if (pq) r.applyQuaternion(pq.clone().invert());
+    return this._atan2ForAxis(r, axis);
+  }
+
+  _atan2ForAxis(rel, axis) {
+    if (axis === 'y') return Math.atan2(rel.z, rel.x);
+    if (axis === 'z') return Math.atan2(rel.y, rel.x);
+                      return Math.atan2(rel.y, rel.z);  // x
   }
 
   // ── Drag plane ────────────────────────────────────────────────────────────
@@ -396,7 +571,7 @@ class GizmoController {
     return rc.ray.intersectPlane(plane, hit) ? hit : null;
   }
 
-  // ── Raycasting against gizmo elements ────────────────────────────────────
+  // ── Raycasting ────────────────────────────────────────────────────────────
 
   _raycastElements(clientX, clientY) {
     if (!this._group) return null;
@@ -410,7 +585,6 @@ class GizmoController {
     rc.setFromCamera(ptr, sceneCore.camera);
     this._group.updateMatrixWorld(true);
 
-    // Only raycast visible-mode elements
     const active = this._elements.filter(e =>
       this._mode === 'all'
       || (this._mode === 'translate' && (e.type === 'translate' || e.type === 'plane'))
@@ -440,24 +614,260 @@ class GizmoController {
   }
 
   _setElScale(el, s) {
-    if (el.type !== 'plane') return;   // only scale plane handles on hover
+    if (el.type !== 'plane') return;
     for (const v of el.visuals) v.scale.setScalar(s);
   }
 
-  // ── Helpers ───────────────────────────────────────────────────────────────
+  // ── Transform Panel ───────────────────────────────────────────────────────
 
-  _axisVec(axis) {
-    const T = window.THREE;
-    if (axis === 'x') return new T.Vector3(1, 0, 0);
-    if (axis === 'y') return new T.Vector3(0, 1, 0);
-                      return new T.Vector3(0, 0, 1);
+  /**
+   * Show a floating transform input panel near the right-click position.
+   */
+  _showTransformPanel(clientX, clientY) {
+    this._closePanel();
+
+    const T  = window.THREE;
+    const no = this._node;
+    const obj = this._obj3d;
+    if (!no || !obj) return;
+
+    const panel = document.createElement('div');
+    this._panel = panel;
+
+    panel.style.cssText = [
+      'position:fixed',
+      `left:${clientX + 12}px`,
+      `top:${clientY - 8}px`,
+      'z-index:9999',
+      'background:#1e293b',
+      'border:1px solid #334155',
+      'border-radius:8px',
+      'padding:12px 14px',
+      'min-width:220px',
+      'box-shadow:0 8px 32px rgba(0,0,0,0.5)',
+      'font-size:12px',
+      'color:#e2e8f0',
+      'user-select:none',
+    ].join(';');
+
+    panel.innerHTML = this._panelHTML();
+    document.body.appendChild(panel);
+
+    this._wirePanel(panel, no, obj);
+
+    // Nudge panel into viewport
+    requestAnimationFrame(() => {
+      const r = panel.getBoundingClientRect();
+      const vw = window.innerWidth, vh = window.innerHeight;
+      if (r.right  > vw - 8) panel.style.left = `${vw - r.width  - 8}px`;
+      if (r.bottom > vh - 8) panel.style.top  = `${vh - r.height - 8}px`;
+    });
+
+    // Close on outside click or Escape
+    const onDown = (e) => {
+      if (!panel.contains(e.target)) this._closePanel();
+    };
+    const onKey = (e) => {
+      if (e.key === 'Escape') this._closePanel();
+    };
+    setTimeout(() => {
+      document.addEventListener('pointerdown', onDown, { capture: true, once: false });
+      document.addEventListener('keydown', onKey, { once: true });
+      panel._cleanup = () => {
+        document.removeEventListener('pointerdown', onDown, { capture: true });
+        document.removeEventListener('keydown', onKey);
+      };
+    }, 0);
   }
 
-  _atan2ForAxis(rel, axis) {
-    // Returns the 2-D angle of `rel` projected onto the plane perpendicular to `axis`
-    if (axis === 'y') return Math.atan2(rel.z, rel.x);
-    if (axis === 'z') return Math.atan2(rel.y, rel.x);
-                      return Math.atan2(rel.y, rel.z);  // x axis
+  _panelHTML() {
+    const no = this._node;
+    if (!no) return '';
+
+    // Position = localOffset (user-applied offset in parent-local space)
+    const [ox, oy, oz] = no.localOffset ?? [0, 0, 0];
+    const fmt = v => parseFloat(v.toFixed(4));
+
+    // Rotation = Euler from localQuaternion in degrees
+    const [ex, ey, ez] = this._quatToEulerDeg(no.localQuaternion ?? [0, 0, 0, 1]);
+    const fmtA = v => parseFloat(v.toFixed(2));
+
+    const spaceLocal = this._spaceMode === 'local';
+
+    return `
+      <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:10px;">
+        <span style="font-weight:700;font-size:13px;color:#f1f5f9;">Transform</span>
+        <div style="display:flex;gap:4px;">
+          <button data-space="local"  style="${this._spaceBtn(spaceLocal)}">LOCAL</button>
+          <button data-space="world"  style="${this._spaceBtn(!spaceLocal)}">WORLD</button>
+        </div>
+      </div>
+
+      <div style="margin-bottom:8px;">
+        <div style="font-size:10px;color:#64748b;margin-bottom:4px;letter-spacing:0.5px;">TRANSLATE (offset)</div>
+        ${this._axisRow('tx', 'X', fmt(ox), '#e05555')}
+        ${this._axisRow('ty', 'Y', fmt(oy), '#55cc55')}
+        ${this._axisRow('tz', 'Z', fmt(oz), '#5588e0')}
+      </div>
+
+      <div>
+        <div style="font-size:10px;color:#64748b;margin-bottom:4px;letter-spacing:0.5px;">ROTATE (°)</div>
+        ${this._axisRow('rx', 'X', fmtA(ex), '#e05555')}
+        ${this._axisRow('ry', 'Y', fmtA(ey), '#55cc55')}
+        ${this._axisRow('rz', 'Z', fmtA(ez), '#5588e0')}
+      </div>
+
+      <div style="margin-top:10px;display:flex;justify-content:flex-end;">
+        <button data-action="reset" style="font-size:11px;padding:3px 8px;background:#0f172a;border:1px solid #334155;border-radius:4px;color:#94a3b8;cursor:pointer;">↺ Reset</button>
+      </div>
+    `;
+  }
+
+  _spaceBtn(active) {
+    return [
+      'font-size:10px',
+      'padding:3px 7px',
+      'border-radius:4px',
+      'cursor:pointer',
+      'font-weight:700',
+      'letter-spacing:0.5px',
+      `background:${active ? '#1d4ed8' : '#0f172a'}`,
+      `border:1px solid ${active ? '#3b82f6' : '#334155'}`,
+      `color:${active ? '#eff6ff' : '#64748b'}`,
+    ].join(';');
+  }
+
+  _axisRow(id, label, value, color) {
+    return `
+      <div style="display:flex;align-items:center;gap:8px;margin-bottom:4px;">
+        <span style="color:${color};font-weight:700;width:12px;flex-shrink:0;">${label}</span>
+        <input data-field="${id}" type="number" value="${value}" step="0.01"
+          style="flex:1;background:#0f172a;border:1px solid #334155;border-radius:4px;
+                 color:#e2e8f0;padding:3px 6px;font-size:12px;outline:none;width:0;" />
+      </div>`;
+  }
+
+  _wirePanel(panel, no, obj) {
+    // Space toggle buttons
+    panel.querySelectorAll('[data-space]').forEach(btn => {
+      btn.addEventListener('click', () => {
+        this.setSpace(btn.dataset.space);
+        // Re-render panel in place
+        const pos = { left: panel.style.left, top: panel.style.top };
+        this._closePanel();
+        this._showTransformPanel(
+          parseInt(pos.left) - 12,
+          parseInt(pos.top)  + 8
+        );
+      });
+    });
+
+    // Reset button
+    panel.querySelector('[data-action="reset"]')?.addEventListener('click', () => {
+      actions.beginTransformEdit(no.id);
+      no.localOffset     = [0, 0, 0];
+      no.localQuaternion = [0, 0, 0, 1];
+      no.moveEnabled     = false;
+      no.rotateEnabled   = false;
+      applyNodeTransformToObject3D(no, obj, true);
+      actions.commitTransformEdit(no.id);
+      steps.scheduleTransformSync();
+      this._refreshPanel();
+    });
+
+    // Numeric inputs — live update on change and arrow-key increment
+    panel.querySelectorAll('[data-field]').forEach(inp => {
+      const field = inp.dataset.field;
+
+      const apply = () => {
+        const val = parseFloat(inp.value);
+        if (isNaN(val)) return;
+        this._applyPanelValue(field, val, no, obj);
+        steps.scheduleTransformSync();
+        this._tick();
+      };
+
+      inp.addEventListener('focus', () => actions.beginTransformEdit(no.id));
+      inp.addEventListener('blur',  () => { apply(); actions.commitTransformEdit(no.id); });
+      inp.addEventListener('input', apply);
+
+      // Stop propagation so arrow keys don't navigate steps while editing
+      inp.addEventListener('keydown', e => {
+        e.stopPropagation();
+        if (e.key === 'Enter') { inp.blur(); }
+      });
+    });
+  }
+
+  _applyPanelValue(field, val, no, obj) {
+    const off = [...(no.localOffset ?? [0, 0, 0])];
+
+    if (field === 'tx') { off[0] = val; no.localOffset = off; no.moveEnabled = true; }
+    if (field === 'ty') { off[1] = val; no.localOffset = off; no.moveEnabled = true; }
+    if (field === 'tz') { off[2] = val; no.localOffset = off; no.moveEnabled = true; }
+
+    if (field === 'rx' || field === 'ry' || field === 'rz') {
+      // Read current Euler in degrees, update one axis, convert back to quaternion
+      const [ex, ey, ez] = this._quatToEulerDeg(no.localQuaternion ?? [0, 0, 0, 1]);
+      const nx = field === 'rx' ? val : ex;
+      const ny = field === 'ry' ? val : ey;
+      const nz = field === 'rz' ? val : ez;
+      const q  = this._eulerDegToQuat(nx, ny, nz);
+      no.localQuaternion = [q.x, q.y, q.z, q.w];
+      no.rotateEnabled   = true;
+    }
+
+    applyNodeTransformToObject3D(no, obj, true);
+  }
+
+  /**
+   * Re-render current values into open panel without recreating it.
+   */
+  _refreshPanel() {
+    if (!this._panel || !this._node) return;
+    const no = this._node;
+
+    const [ox, oy, oz] = no.localOffset ?? [0, 0, 0];
+    const [ex, ey, ez] = this._quatToEulerDeg(no.localQuaternion ?? [0, 0, 0, 1]);
+    const fmt  = v => parseFloat(v.toFixed(4));
+    const fmtA = v => parseFloat(v.toFixed(2));
+
+    const setVal = (id, v) => {
+      const el = this._panel.querySelector(`[data-field="${id}"]`);
+      if (el && document.activeElement !== el) el.value = v;
+    };
+    setVal('tx', fmt(ox)); setVal('ty', fmt(oy)); setVal('tz', fmt(oz));
+    setVal('rx', fmtA(ex)); setVal('ry', fmtA(ey)); setVal('rz', fmtA(ez));
+
+    // Update space buttons
+    const spaceLocal = this._spaceMode === 'local';
+    this._panel.querySelector('[data-space="local"]')?.setAttribute('style', this._spaceBtn(spaceLocal));
+    this._panel.querySelector('[data-space="world"]')?.setAttribute('style', this._spaceBtn(!spaceLocal));
+  }
+
+  _closePanel() {
+    if (!this._panel) return;
+    this._panel._cleanup?.();
+    this._panel.remove();
+    this._panel = null;
+  }
+
+  // ── Euler / Quaternion helpers ────────────────────────────────────────────
+
+  _quatToEulerDeg(qArr) {
+    const T = window.THREE;
+    if (!T) return [0, 0, 0];
+    const q = new T.Quaternion(qArr[0], qArr[1], qArr[2], qArr[3]).normalize();
+    const e = new T.Euler().setFromQuaternion(q, 'XYZ');
+    const r2d = 180 / Math.PI;
+    return [e.x * r2d, e.y * r2d, e.z * r2d];
+  }
+
+  _eulerDegToQuat(dx, dy, dz) {
+    const T = window.THREE;
+    const d2r = Math.PI / 180;
+    const e = new T.Euler(dx * d2r, dy * d2r, dz * d2r, 'XYZ');
+    return new T.Quaternion().setFromEuler(e);
   }
 }
 

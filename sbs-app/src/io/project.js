@@ -27,6 +27,7 @@ import {
   generateId,
 }                                     from '../core/schema.js';
 import { materials }                  from '../systems/materials.js';
+import { steps   }                  from '../systems/steps.js';
 
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -138,6 +139,9 @@ export async function saveProject(options = {}) {
     suggestedName = getSuggestedFilename(),
     electronPath  = null,
   } = options;
+
+  steps.flushSync();       // ensure active step snapshot is current
+  steps.upsertBaseStep();  // capture scene into hidden Step 0 staging area
 
   const project  = serialize();
   const content  = JSON.stringify(project, null, 2);
@@ -518,6 +522,85 @@ export function applyIdRemap(node, idMap) {
 }
 
 /**
+ * Collect every mesh spec node from an entire saved scene tree into a flat array.
+ * Includes displaced meshes that live in custom folders outside their native model.
+ * The returned spec objects retain all saved properties (meshIndex, sourceAssetId, …).
+ *
+ * @param {object|null} specRoot  saved scene root (project.tree.root)
+ * @returns {object[]}  flat array of all mesh spec nodes in the tree
+ */
+export function collectAllMeshSpecs(specRoot) {
+  const specs = [];
+  function walk(node) {
+    if (!node) return;
+    if (node.type === 'mesh') specs.push(node);
+    for (const child of (node.children || [])) walk(child);
+  }
+  walk(specRoot);
+  return specs;
+}
+
+/**
+ * Extend an existing ID remap map with entries for "displaced" meshes — meshes
+ * that were moved out of their native model subtree (e.g. into a scene-root custom
+ * folder) before the project was saved.
+ *
+ * Standard buildIdRemapFromSpec() only walks the model's own saved spec subtree and
+ * therefore misses displaced meshes (they were removed from that subtree when the
+ * user moved them).  This function finds those meshes in the FULL saved tree and
+ * matches them to live mesh nodes by meshIndex + sourceAssetId.
+ *
+ * @param {TreeNode}  liveModelNode      freshly-loaded model node (pre-applyIdRemap)
+ * @param {object[]}  allSavedMeshSpecs  from collectAllMeshSpecs(savedSceneRoot)
+ * @param {string}    assetId            stable asset ID of the model being remapped
+ * @param {Map}       idMap              Map<newId, savedId> from buildIdRemapFromSpec (mutated)
+ * @returns {Map}  idMap, now including displaced-mesh entries
+ */
+export function buildDisplacedMeshIdRemap(liveModelNode, allSavedMeshSpecs, assetId, idMap) {
+  if (!liveModelNode || !allSavedMeshSpecs?.length) return idMap;
+
+  // Collect live mesh nodes from this model that were NOT remapped by the standard path.
+  const unmappedLive = [];
+  function collectUnmapped(node) {
+    if (node.type === 'mesh' && !idMap.has(node.id)) unmappedLive.push(node);
+    (node.children || []).forEach(collectUnmapped);
+  }
+  collectUnmapped(liveModelNode);
+  if (!unmappedLive.length) return idMap;
+
+  // Saved mesh IDs that are already claimed — don't double-match.
+  const claimedSavedIds = new Set(idMap.values());
+
+  // Filter saved mesh specs to candidates for this model's displaced meshes:
+  //   1. Not already matched by a previous remap.
+  //   2. Tagged with this model's assetId (via sourceAssetId set during load).
+  //   3. Legacy fallback: accept untagged specs (old project files — may be
+  //      ambiguous in multi-model projects but correct for single-model ones).
+  const candidates = allSavedMeshSpecs.filter(spec => {
+    if (claimedSavedIds.has(spec.id)) return false;
+    // sourceAssetId required — meshIndex values overlap across models so we
+    // cannot safely match without knowing which model a displaced spec belongs to.
+    // Old project files without sourceAssetId simply skip displaced remap (they
+    // load correctly via the standard in-subtree remap path).
+    return spec.sourceAssetId === assetId;
+  });
+  if (!candidates.length) return idMap;
+
+  // Match by meshIndex (deterministic OCCT tessellation order).
+  for (const live of unmappedLive) {
+    if (live.meshIndex == null) continue; // non-OCCT mesh — no reliable index
+    const idx = candidates.findIndex(spec => spec.meshIndex === live.meshIndex);
+    if (idx < 0) continue;
+    const match = candidates[idx];
+    idMap.set(live.id, match.id);
+    claimedSavedIds.add(match.id);
+    candidates.splice(idx, 1); // prevent double-claiming the same saved spec
+  }
+
+  return idMap;
+}
+
+/**
  * After remapping, apply saved fields from a spec back onto the live nodes:
  * names, transforms, visibility, colorPresetId.
  *
@@ -687,6 +770,8 @@ export const project = {
   parseProjectFile,
   applyProjectToState,
   buildIdRemapFromSpec,
+  collectAllMeshSpecs,
+  buildDisplacedMeshIdRemap,
   applyIdRemap,
   applySpecFieldsToNodes,
   resolveAssetPath,

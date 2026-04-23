@@ -509,30 +509,30 @@ export function slerpQuaternion(from, to, t) {
  * @returns {object}
  */
 export function interpolateTransformSnapshot(from, to, alpha) {
+  // Bake enabled flags into effective deltas BEFORE lerping.
+  // A red (muted) axis contributes zero delta — its data is preserved but not applied.
+  // This way we always interpolate between effective world contributions,
+  // not between raw stored values that may silently be ignored.
+  // moveEnabled/rotateEnabled/pivotEnabled are restored to the target state
+  // by applySnapshotInstant at the end of the animation.
+  const fromOffset  = from.moveEnabled   !== false ? (from.localOffset            ?? [0,0,0])   : [0,0,0];
+  const toOffset    = to.moveEnabled     !== false ? (to.localOffset              ?? [0,0,0])   : [0,0,0];
+  const fromQuat    = from.rotateEnabled !== false ? (from.localQuaternion        ?? [0,0,0,1]) : [0,0,0,1];
+  const toQuat      = to.rotateEnabled   !== false ? (to.localQuaternion          ?? [0,0,0,1]) : [0,0,0,1];
+  const fromPivOff  = from.pivotEnabled  !== false ? (from.pivotLocalOffset       ?? [0,0,0])   : [0,0,0];
+  const toPivOff    = to.pivotEnabled    !== false ? (to.pivotLocalOffset         ?? [0,0,0])   : [0,0,0];
+  const fromPivQ    = from.pivotEnabled  !== false ? (from.pivotLocalQuaternion   ?? [0,0,0,1]) : [0,0,0,1];
+  const toPivQ      = to.pivotEnabled    !== false ? (to.pivotLocalQuaternion     ?? [0,0,0,1]) : [0,0,0,1];
+
   return {
-    localOffset:          lerpVec3(
-      from.localOffset    ?? [0,0,0],
-      to.localOffset      ?? [0,0,0],
-      alpha,
-    ),
-    localQuaternion:      slerpQuaternion(
-      from.localQuaternion    ?? [0,0,0,1],
-      to.localQuaternion      ?? [0,0,0,1],
-      alpha,
-    ),
+    localOffset:          lerpVec3(fromOffset, toOffset, alpha),
+    localQuaternion:      slerpQuaternion(fromQuat, toQuat, alpha),
     orientationSteps:     to.orientationSteps ?? [0,0,0],  // discrete
-    pivotLocalOffset:     lerpVec3(
-      from.pivotLocalOffset   ?? [0,0,0],
-      to.pivotLocalOffset     ?? [0,0,0],
-      alpha,
-    ),
-    pivotLocalQuaternion: slerpQuaternion(
-      from.pivotLocalQuaternion  ?? [0,0,0,1],
-      to.pivotLocalQuaternion    ?? [0,0,0,1],
-      alpha,
-    ),
-    moveEnabled:   to.moveEnabled   !== false,
-    rotateEnabled: to.rotateEnabled !== false,
-    pivotEnabled:  to.pivotEnabled  !== false,
+    pivotLocalOffset:     lerpVec3(fromPivOff, toPivOff, alpha),
+    pivotLocalQuaternion: slerpQuaternion(fromPivQ, toPivQ, alpha),
+    // Always enabled during interpolation — effective values already baked in.
+    moveEnabled:   true,
+    rotateEnabled: true,
+    pivotEnabled:  true,
   };
 }

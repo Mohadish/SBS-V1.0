@@ -90,7 +90,7 @@ export function renderStepsPanel() {
   const list = document.getElementById('steps-list');
   if (!list) return;
 
-  const allSteps    = state.get('steps')    || [];
+  const allSteps    = (state.get('steps') || []).filter(s => !s.isBaseStep);
   const allChapters = state.get('chapters') || [];
   const activeId    = state.get('activeStepId');
 
@@ -219,8 +219,11 @@ function _buildStepCard(step, idx, isActive, total) {
     card.appendChild(_buildTransitionRow(step));
   }
 
-  // Click → activate
+  // Single click → animate to step
   card.addEventListener('click', () => steps.activateStep(step.id, true));
+
+  // Double click → instant jump to final state (skips animation)
+  card.addEventListener('dblclick', e => { e.stopPropagation(); steps.activateStep(step.id, false); });
 
   // Drag-and-drop
   card.addEventListener('dragstart', e => {
@@ -415,6 +418,12 @@ function _deleteChapter(chapterId) {
 // ── Step actions ─────────────────────────────────────────────────────────────
 
 async function _onAddStep() {
+  const root = state.get('treeData');
+  const hasModel = root?.children?.some(c => c.type === 'model');
+  if (!hasModel) {
+    setStatus('Load a model before creating steps.', 'warning');
+    return;
+  }
   await steps.flushSync();
   const chapterId = state.get('_pendingChapterId') ?? null;
   const step = actions.createStep('New Step', { chapterId });

@@ -1,0 +1,3326 @@
+{
+  "_sbs": {
+    "app_version": "V.0.0.3",
+    "format_version": 1,
+    "created": "2026-04-22T18:03:59.096Z",
+    "saved": "2026-04-22T18:03:59.096Z",
+    "min_compatible_version": "1.0.0"
+  },
+  "assets": {
+    "schema_version": 1,
+    "items": [
+      {
+        "id": "asset_moa0tbuz28sp_18",
+        "name": "Hirarchy + colors.stp",
+        "type": "step",
+        "originalPath": "E:\\SBS-V1.0 - Claude\\saves\\Hirarchy + colors.stp",
+        "relativePath": "",
+        "fileHash": null,
+        "fileSize": 78594,
+        "lastModified": 1773759258439,
+        "importedAt": "2026-04-22T12:20:16.331Z"
+      },
+      {
+        "id": "asset_moa0tib61dh9_44",
+        "name": "panle.obj",
+        "type": "obj",
+        "originalPath": "E:\\SBS-V1.0 - Claude\\saves\\panle.obj",
+        "relativePath": "",
+        "fileHash": null,
+        "fileSize": 2072194,
+        "lastModified": 1776243251085,
+        "importedAt": "2026-04-22T12:20:24.690Z"
+      }
+    ]
+  },
+  "tree": {
+    "schema_version": 1,
+    "root": {
+      "id": "scene_root",
+      "name": "Scene",
+      "type": "scene",
+      "assetId": null,
+      "localVisible": true,
+      "children": [
+        {
+          "id": "model_moa0tbuzq9pk_17",
+          "name": "Hirarchy + colors.stp",
+          "type": "model",
+          "assetId": "asset_moa0tbuz28sp_18",
+          "localVisible": true,
+          "children": [
+            {
+              "id": "node_moa0tbusjjxo_1",
+              "name": "Node",
+              "type": "folder",
+              "assetId": null,
+              "localVisible": true,
+              "children": [
+                {
+                  "id": "node_moa0tbuukthb_3",
+                  "name": "Document",
+                  "type": "folder",
+                  "assetId": null,
+                  "localVisible": true,
+                  "children": [
+                    {
+                      "id": "mesh_moa0tbuw9pjr_7",
+                      "name": "Document",
+                      "type": "mesh",
+                      "assetId": null,
+                      "localVisible": true,
+                      "children": [],
+                      "localOffset": [
+                        0,
+                        0,
+                        0
+                      ],
+                      "localQuaternion": [
+                        0,
+                        0,
+                        0,
+                        1
+                      ],
+                      "baseLocalPosition": [
+                        0,
+                        0,
+                        0
+                      ],
+                      "baseLocalQuaternion": [
+                        0,
+                        0,
+                        0,
+                        1
+                      ],
+                      "baseLocalScale": [
+                        1,
+                        1,
+                        1
+                      ],
+                      "pivotLocalOffset": [
+                        0,
+                        0,
+                        0
+                      ],
+                      "pivotLocalQuaternion": [
+                        0,
+                        0,
+                        0,
+                        1
+                      ],
+                      "pivotEnabled": true,
+                      "moveEnabled": true,
+                      "rotateEnabled": true,
+                      "meshIndex": 1,
+                      "colorPresetId": null,
+                      "sourceAssetId": "asset_moa0tbuz28sp_18"
+                    },
+                    {
+                      "id": "mesh_moa0tbuy9dyb_11",
+                      "name": "Document",
+                      "type": "mesh",
+                      "assetId": null,
+                      "localVisible": true,
+                      "children": [],
+                      "localOffset": [
+                        0,
+                        0,
+                        0
+                      ],
+                      "localQuaternion": [
+                        0,
+                        0,
+                        0,
+                        1
+                      ],
+                      "baseLocalPosition": [
+                        0,
+                        0,
+                        0
+                      ],
+                      "baseLocalQuaternion": [
+                        0,
+                        0,
+                        0,
+                        1
+                      ],
+                      "baseLocalScale": [
+                        1,
+                        1,
+                        1
+                      ],
+                      "pivotLocalOffset": [
+                        0,
+                        0,
+                        0
+                      ],
+                      "pivotLocalQuaternion": [
+                        0,
+                        0,
+                        0,
+                        1
+                      ],
+                      "pivotEnabled": true,
+                      "moveEnabled": true,
+                      "rotateEnabled": true,
+                      "meshIndex": 3,
+                      "colorPresetId": null,
+                      "sourceAssetId": "asset_moa0tbuz28sp_18"
+                    },
+                    {
+                      "id": "mesh_moa0tbuyiycb_13",
+                      "name": "Document",
+                      "type": "mesh",
+                      "assetId": null,
+                      "localVisible": true,
+                      "children": [],
+                      "localOffset": [
+                        0,
+                        0,
+                        0
+                      ],
+                      "localQuaternion": [
+                        0,
+                        0,
+                        0,
+                        1
+                      ],
+                      "baseLocalPosition": [
+                        0,
+                        0,
+                        0
+                      ],
+                      "baseLocalQuaternion": [
+                        0,
+                        0,
+                        0,
+                        1
+                      ],
+                      "baseLocalScale": [
+                        1,
+                        1,
+                        1
+                      ],
+                      "pivotLocalOffset": [
+                        0,
+                        0,
+                        0
+                      ],
+                      "pivotLocalQuaternion": [
+                        0,
+                        0,
+                        0,
+                        1
+                      ],
+                      "pivotEnabled": true,
+                      "moveEnabled": true,
+                      "rotateEnabled": true,
+                      "meshIndex": 4,
+                      "colorPresetId": null,
+                      "sourceAssetId": "asset_moa0tbuz28sp_18"
+                    },
+                    {
+                      "id": "mesh_moa0tbuyevp5_15",
+                      "name": "Document",
+                      "type": "mesh",
+                      "assetId": null,
+                      "localVisible": true,
+                      "children": [],
+                      "localOffset": [
+                        0,
+                        0,
+                        0
+                      ],
+                      "localQuaternion": [
+                        0,
+                        0,
+                        0,
+                        1
+                      ],
+                      "baseLocalPosition": [
+                        0,
+                        0,
+                        0
+                      ],
+                      "baseLocalQuaternion": [
+                        0,
+                        0,
+                        0,
+                        1
+                      ],
+                      "baseLocalScale": [
+                        1,
+                        1,
+                        1
+                      ],
+                      "pivotLocalOffset": [
+                        0,
+                        0,
+                        0
+                      ],
+                      "pivotLocalQuaternion": [
+                        0,
+                        0,
+                        0,
+                        1
+                      ],
+                      "pivotEnabled": true,
+                      "moveEnabled": true,
+                      "rotateEnabled": true,
+                      "meshIndex": 5,
+                      "colorPresetId": null,
+                      "sourceAssetId": "asset_moa0tbuz28sp_18"
+                    },
+                    {
+                      "id": "mesh_moa0tbuxrymb_9",
+                      "name": "Document",
+                      "type": "mesh",
+                      "assetId": null,
+                      "localVisible": true,
+                      "children": [],
+                      "localOffset": [
+                        0,
+                        0,
+                        0
+                      ],
+                      "localQuaternion": [
+                        0,
+                        0,
+                        0,
+                        1
+                      ],
+                      "baseLocalPosition": [
+                        0,
+                        0,
+                        0
+                      ],
+                      "baseLocalQuaternion": [
+                        0,
+                        0,
+                        0,
+                        1
+                      ],
+                      "baseLocalScale": [
+                        1,
+                        1,
+                        1
+                      ],
+                      "pivotLocalOffset": [
+                        0,
+                        0,
+                        0
+                      ],
+                      "pivotLocalQuaternion": [
+                        0,
+                        0,
+                        0,
+                        1
+                      ],
+                      "pivotEnabled": true,
+                      "moveEnabled": true,
+                      "rotateEnabled": true,
+                      "meshIndex": 2,
+                      "colorPresetId": null,
+                      "sourceAssetId": "asset_moa0tbuz28sp_18"
+                    }
+                  ],
+                  "localOffset": [
+                    0,
+                    0,
+                    0
+                  ],
+                  "localQuaternion": [
+                    0,
+                    0,
+                    0,
+                    1
+                  ],
+                  "baseLocalPosition": [
+                    0,
+                    0,
+                    0
+                  ],
+                  "baseLocalQuaternion": [
+                    0,
+                    0,
+                    0,
+                    1
+                  ],
+                  "baseLocalScale": [
+                    1,
+                    1,
+                    1
+                  ],
+                  "pivotLocalOffset": [
+                    0,
+                    0,
+                    0
+                  ],
+                  "pivotLocalQuaternion": [
+                    0,
+                    0,
+                    0,
+                    1
+                  ],
+                  "pivotEnabled": true,
+                  "moveEnabled": true,
+                  "rotateEnabled": true,
+                  "meshIndex": null,
+                  "colorPresetId": null,
+                  "orientationSteps": [
+                    0,
+                    0,
+                    0
+                  ]
+                }
+              ],
+              "localOffset": [
+                0,
+                0,
+                0
+              ],
+              "localQuaternion": [
+                0,
+                0,
+                0,
+                1
+              ],
+              "baseLocalPosition": [
+                0,
+                0,
+                0
+              ],
+              "baseLocalQuaternion": [
+                0,
+                0,
+                0,
+                1
+              ],
+              "baseLocalScale": [
+                1,
+                1,
+                1
+              ],
+              "pivotLocalOffset": [
+                0,
+                0,
+                0
+              ],
+              "pivotLocalQuaternion": [
+                0,
+                0,
+                0,
+                1
+              ],
+              "pivotEnabled": true,
+              "moveEnabled": true,
+              "rotateEnabled": true,
+              "meshIndex": null,
+              "colorPresetId": null,
+              "orientationSteps": [
+                0,
+                0,
+                0
+              ]
+            }
+          ],
+          "localOffset": [
+            0,
+            0,
+            0
+          ],
+          "localQuaternion": [
+            0,
+            0,
+            0.4873500832210236,
+            0.8732066744960562
+          ],
+          "baseLocalPosition": [
+            0,
+            0,
+            0
+          ],
+          "baseLocalQuaternion": [
+            0,
+            0,
+            0,
+            1
+          ],
+          "baseLocalScale": [
+            1,
+            1,
+            1
+          ],
+          "pivotLocalOffset": [
+            0,
+            0,
+            0
+          ],
+          "pivotLocalQuaternion": [
+            0,
+            0,
+            0,
+            1
+          ],
+          "pivotEnabled": true,
+          "moveEnabled": true,
+          "rotateEnabled": true,
+          "meshIndex": null,
+          "colorPresetId": null,
+          "orientationSteps": [
+            0,
+            0,
+            0
+          ]
+        },
+        {
+          "id": "model_moa0tib6wij4_43",
+          "name": "panle.obj",
+          "type": "model",
+          "assetId": "asset_moa0tib61dh9_44",
+          "localVisible": true,
+          "children": [
+            {
+              "id": "node_moa0tib57bty_25",
+              "name": "panle.obj",
+              "type": "folder",
+              "assetId": null,
+              "localVisible": true,
+              "children": [
+                {
+                  "id": "mesh_moa0tib5qmyh_29",
+                  "name": "cover_pos1",
+                  "type": "mesh",
+                  "assetId": null,
+                  "localVisible": true,
+                  "children": [],
+                  "localOffset": [
+                    0,
+                    0,
+                    0
+                  ],
+                  "localQuaternion": [
+                    0,
+                    0,
+                    0,
+                    1
+                  ],
+                  "baseLocalPosition": [
+                    0,
+                    0,
+                    0
+                  ],
+                  "baseLocalQuaternion": [
+                    0,
+                    0,
+                    0,
+                    1
+                  ],
+                  "baseLocalScale": [
+                    1,
+                    1,
+                    1
+                  ],
+                  "pivotLocalOffset": [
+                    0,
+                    0,
+                    0
+                  ],
+                  "pivotLocalQuaternion": [
+                    0,
+                    0,
+                    0,
+                    1
+                  ],
+                  "pivotEnabled": true,
+                  "moveEnabled": true,
+                  "rotateEnabled": true,
+                  "meshIndex": null,
+                  "colorPresetId": null,
+                  "sourceAssetId": "asset_moa0tib61dh9_44"
+                },
+                {
+                  "id": "mesh_moa0tib53jdj_31",
+                  "name": "cover_pos3",
+                  "type": "mesh",
+                  "assetId": null,
+                  "localVisible": true,
+                  "children": [],
+                  "localOffset": [
+                    0,
+                    0,
+                    0
+                  ],
+                  "localQuaternion": [
+                    0,
+                    0,
+                    0,
+                    1
+                  ],
+                  "baseLocalPosition": [
+                    0,
+                    0,
+                    0
+                  ],
+                  "baseLocalQuaternion": [
+                    0,
+                    0,
+                    0,
+                    1
+                  ],
+                  "baseLocalScale": [
+                    1,
+                    1,
+                    1
+                  ],
+                  "pivotLocalOffset": [
+                    0,
+                    0,
+                    0
+                  ],
+                  "pivotLocalQuaternion": [
+                    0,
+                    0,
+                    0,
+                    1
+                  ],
+                  "pivotEnabled": true,
+                  "moveEnabled": true,
+                  "rotateEnabled": true,
+                  "meshIndex": null,
+                  "colorPresetId": null,
+                  "sourceAssetId": "asset_moa0tib61dh9_44"
+                },
+                {
+                  "id": "mesh_moa0tib67ryv_33",
+                  "name": "cover_pos4",
+                  "type": "mesh",
+                  "assetId": null,
+                  "localVisible": true,
+                  "children": [],
+                  "localOffset": [
+                    0,
+                    0,
+                    0
+                  ],
+                  "localQuaternion": [
+                    0,
+                    0,
+                    0,
+                    1
+                  ],
+                  "baseLocalPosition": [
+                    0,
+                    0,
+                    0
+                  ],
+                  "baseLocalQuaternion": [
+                    0,
+                    0,
+                    0,
+                    1
+                  ],
+                  "baseLocalScale": [
+                    1,
+                    1,
+                    1
+                  ],
+                  "pivotLocalOffset": [
+                    0,
+                    0,
+                    0
+                  ],
+                  "pivotLocalQuaternion": [
+                    0,
+                    0,
+                    0,
+                    1
+                  ],
+                  "pivotEnabled": true,
+                  "moveEnabled": true,
+                  "rotateEnabled": true,
+                  "meshIndex": null,
+                  "colorPresetId": null,
+                  "sourceAssetId": "asset_moa0tib61dh9_44"
+                },
+                {
+                  "id": "mesh_moa0tib6ql6q_35",
+                  "name": "cover_pos005",
+                  "type": "mesh",
+                  "assetId": null,
+                  "localVisible": true,
+                  "children": [],
+                  "localOffset": [
+                    0,
+                    0,
+                    0
+                  ],
+                  "localQuaternion": [
+                    0,
+                    0,
+                    0,
+                    1
+                  ],
+                  "baseLocalPosition": [
+                    0,
+                    0,
+                    0
+                  ],
+                  "baseLocalQuaternion": [
+                    0,
+                    0,
+                    0,
+                    1
+                  ],
+                  "baseLocalScale": [
+                    1,
+                    1,
+                    1
+                  ],
+                  "pivotLocalOffset": [
+                    0,
+                    0,
+                    0
+                  ],
+                  "pivotLocalQuaternion": [
+                    0,
+                    0,
+                    0,
+                    1
+                  ],
+                  "pivotEnabled": true,
+                  "moveEnabled": true,
+                  "rotateEnabled": true,
+                  "meshIndex": null,
+                  "colorPresetId": null,
+                  "sourceAssetId": "asset_moa0tib61dh9_44"
+                },
+                {
+                  "id": "mesh_moa0tib6yy9m_37",
+                  "name": "Object001",
+                  "type": "mesh",
+                  "assetId": null,
+                  "localVisible": true,
+                  "children": [],
+                  "localOffset": [
+                    0,
+                    0,
+                    0
+                  ],
+                  "localQuaternion": [
+                    0,
+                    0,
+                    0,
+                    1
+                  ],
+                  "baseLocalPosition": [
+                    0,
+                    0,
+                    0
+                  ],
+                  "baseLocalQuaternion": [
+                    0,
+                    0,
+                    0,
+                    1
+                  ],
+                  "baseLocalScale": [
+                    1,
+                    1,
+                    1
+                  ],
+                  "pivotLocalOffset": [
+                    0,
+                    0,
+                    0
+                  ],
+                  "pivotLocalQuaternion": [
+                    0,
+                    0,
+                    0,
+                    1
+                  ],
+                  "pivotEnabled": true,
+                  "moveEnabled": true,
+                  "rotateEnabled": true,
+                  "meshIndex": null,
+                  "colorPresetId": null,
+                  "sourceAssetId": "asset_moa0tib61dh9_44"
+                },
+                {
+                  "id": "mesh_moa0tib6u2it_39",
+                  "name": "Object002",
+                  "type": "mesh",
+                  "assetId": null,
+                  "localVisible": true,
+                  "children": [],
+                  "localOffset": [
+                    0,
+                    0,
+                    0
+                  ],
+                  "localQuaternion": [
+                    0,
+                    0,
+                    0,
+                    1
+                  ],
+                  "baseLocalPosition": [
+                    0,
+                    0,
+                    0
+                  ],
+                  "baseLocalQuaternion": [
+                    0,
+                    0,
+                    0,
+                    1
+                  ],
+                  "baseLocalScale": [
+                    1,
+                    1,
+                    1
+                  ],
+                  "pivotLocalOffset": [
+                    0,
+                    0,
+                    0
+                  ],
+                  "pivotLocalQuaternion": [
+                    0,
+                    0,
+                    0,
+                    1
+                  ],
+                  "pivotEnabled": true,
+                  "moveEnabled": true,
+                  "rotateEnabled": true,
+                  "meshIndex": null,
+                  "colorPresetId": null,
+                  "sourceAssetId": "asset_moa0tib61dh9_44"
+                },
+                {
+                  "id": "mesh_moa0tib6go1g_41",
+                  "name": "Object003",
+                  "type": "mesh",
+                  "assetId": null,
+                  "localVisible": true,
+                  "children": [],
+                  "localOffset": [
+                    0,
+                    0,
+                    0
+                  ],
+                  "localQuaternion": [
+                    0,
+                    0,
+                    0,
+                    1
+                  ],
+                  "baseLocalPosition": [
+                    0,
+                    0,
+                    0
+                  ],
+                  "baseLocalQuaternion": [
+                    0,
+                    0,
+                    0,
+                    1
+                  ],
+                  "baseLocalScale": [
+                    1,
+                    1,
+                    1
+                  ],
+                  "pivotLocalOffset": [
+                    0,
+                    0,
+                    0
+                  ],
+                  "pivotLocalQuaternion": [
+                    0,
+                    0,
+                    0,
+                    1
+                  ],
+                  "pivotEnabled": true,
+                  "moveEnabled": true,
+                  "rotateEnabled": true,
+                  "meshIndex": null,
+                  "colorPresetId": null,
+                  "sourceAssetId": "asset_moa0tib61dh9_44"
+                },
+                {
+                  "id": "mesh_moa0tbuuhxe5_5",
+                  "name": "Document",
+                  "type": "mesh",
+                  "assetId": null,
+                  "localVisible": true,
+                  "children": [],
+                  "localOffset": [
+                    0,
+                    0,
+                    0
+                  ],
+                  "localQuaternion": [
+                    0,
+                    0,
+                    0,
+                    1
+                  ],
+                  "baseLocalPosition": [
+                    0,
+                    0,
+                    0
+                  ],
+                  "baseLocalQuaternion": [
+                    0,
+                    0,
+                    0,
+                    1
+                  ],
+                  "baseLocalScale": [
+                    1,
+                    1,
+                    1
+                  ],
+                  "pivotLocalOffset": [
+                    0,
+                    0,
+                    0
+                  ],
+                  "pivotLocalQuaternion": [
+                    0,
+                    0,
+                    0,
+                    1
+                  ],
+                  "pivotEnabled": true,
+                  "moveEnabled": true,
+                  "rotateEnabled": true,
+                  "meshIndex": null,
+                  "colorPresetId": null,
+                  "sourceAssetId": "asset_moa0tib61dh9_44"
+                }
+              ],
+              "localOffset": [
+                0,
+                0,
+                0
+              ],
+              "localQuaternion": [
+                0,
+                0,
+                0,
+                1
+              ],
+              "baseLocalPosition": [
+                0,
+                0,
+                0
+              ],
+              "baseLocalQuaternion": [
+                0,
+                0,
+                0,
+                1
+              ],
+              "baseLocalScale": [
+                1,
+                1,
+                1
+              ],
+              "pivotLocalOffset": [
+                0,
+                0,
+                0
+              ],
+              "pivotLocalQuaternion": [
+                0,
+                0,
+                0,
+                1
+              ],
+              "pivotEnabled": true,
+              "moveEnabled": true,
+              "rotateEnabled": true,
+              "meshIndex": null,
+              "colorPresetId": null,
+              "orientationSteps": [
+                0,
+                0,
+                0
+              ]
+            }
+          ],
+          "localOffset": [
+            0,
+            0,
+            0
+          ],
+          "localQuaternion": [
+            0,
+            0,
+            0,
+            1
+          ],
+          "baseLocalPosition": [
+            0,
+            0,
+            0
+          ],
+          "baseLocalQuaternion": [
+            0,
+            0,
+            0,
+            1
+          ],
+          "baseLocalScale": [
+            1,
+            1,
+            1
+          ],
+          "pivotLocalOffset": [
+            0,
+            0,
+            0
+          ],
+          "pivotLocalQuaternion": [
+            0,
+            0,
+            0,
+            1
+          ],
+          "pivotEnabled": true,
+          "moveEnabled": true,
+          "rotateEnabled": true,
+          "meshIndex": null,
+          "colorPresetId": null,
+          "orientationSteps": [
+            0,
+            0,
+            0
+          ]
+        },
+        {
+          "id": "folder_moa0wwienzh3_40",
+          "type": "folder",
+          "name": "mix",
+          "localVisible": true,
+          "children": [],
+          "localOffset": [
+            0,
+            0,
+            0
+          ],
+          "localQuaternion": [
+            -0.46021483403153607,
+            -0.4883731070142738,
+            -0.508472251699467,
+            0.539583157756267
+          ],
+          "orientationSteps": [
+            0,
+            0,
+            0
+          ],
+          "pivotLocalOffset": [
+            0,
+            0,
+            0
+          ],
+          "pivotLocalQuaternion": [
+            0,
+            0,
+            0,
+            1
+          ],
+          "moveEnabled": true,
+          "rotateEnabled": true,
+          "pivotEnabled": true,
+          "baseLocalPosition": [
+            0,
+            0,
+            0
+          ],
+          "baseLocalQuaternion": [
+            0,
+            0,
+            0,
+            1
+          ],
+          "baseLocalScale": [
+            1,
+            1,
+            1
+          ]
+        }
+      ],
+      "localOffset": [
+        0,
+        0,
+        0
+      ],
+      "localQuaternion": [
+        0,
+        0,
+        0,
+        1
+      ],
+      "baseLocalPosition": [
+        0,
+        0,
+        0
+      ],
+      "baseLocalQuaternion": [
+        0,
+        0,
+        0,
+        1
+      ],
+      "baseLocalScale": [
+        1,
+        1,
+        1
+      ],
+      "pivotLocalOffset": [
+        0,
+        0,
+        0
+      ],
+      "pivotLocalQuaternion": [
+        0,
+        0,
+        0,
+        1
+      ],
+      "pivotEnabled": true,
+      "moveEnabled": true,
+      "rotateEnabled": true,
+      "meshIndex": null,
+      "colorPresetId": null
+    }
+  },
+  "steps": {
+    "schema_version": 1,
+    "items": [
+      {
+        "id": "step_moa0u90j0zhn_48",
+        "name": "__base__",
+        "chapterId": null,
+        "hidden": true,
+        "voiceText": "",
+        "voiceEnabled": true,
+        "transition": {
+          "durationMs": 0
+        },
+        "snapshot": {
+          "visibility": {
+            "scene_root": true,
+            "model_moa0tbuzq9pk_17": true,
+            "node_moa0tbusjjxo_1": true,
+            "node_moa0tbuukthb_3": true,
+            "mesh_moa0tbuw9pjr_7": true,
+            "mesh_moa0tbuy9dyb_11": true,
+            "mesh_moa0tbuyiycb_13": true,
+            "mesh_moa0tbuyevp5_15": true,
+            "mesh_moa0tbuxrymb_9": true,
+            "model_moa0tib6wij4_43": true,
+            "node_moa0tib57bty_25": true,
+            "mesh_moa0tib5qmyh_29": true,
+            "mesh_moa0tib53jdj_31": true,
+            "mesh_moa0tib67ryv_33": true,
+            "mesh_moa0tib6ql6q_35": true,
+            "mesh_moa0tib6yy9m_37": true,
+            "mesh_moa0tib6u2it_39": true,
+            "mesh_moa0tib6go1g_41": true,
+            "mesh_moa0tbuuhxe5_5": true,
+            "folder_moa0wwienzh3_40": true
+          },
+          "transforms": {
+            "model_moa0tbuzq9pk_17": {
+              "localOffset": [
+                0,
+                0,
+                0
+              ],
+              "localQuaternion": [
+                0,
+                0,
+                0.4873500832210236,
+                0.8732066744960562
+              ],
+              "orientationSteps": [
+                0,
+                0,
+                0
+              ],
+              "pivotLocalOffset": [
+                0,
+                0,
+                0
+              ],
+              "pivotLocalQuaternion": [
+                0,
+                0,
+                0,
+                1
+              ],
+              "moveEnabled": true,
+              "rotateEnabled": true,
+              "pivotEnabled": true
+            },
+            "node_moa0tbusjjxo_1": {
+              "localOffset": [
+                0,
+                0,
+                0
+              ],
+              "localQuaternion": [
+                0,
+                0,
+                0,
+                1
+              ],
+              "orientationSteps": [
+                0,
+                0,
+                0
+              ],
+              "pivotLocalOffset": [
+                0,
+                0,
+                0
+              ],
+              "pivotLocalQuaternion": [
+                0,
+                0,
+                0,
+                1
+              ],
+              "moveEnabled": true,
+              "rotateEnabled": true,
+              "pivotEnabled": true
+            },
+            "node_moa0tbuukthb_3": {
+              "localOffset": [
+                0,
+                0,
+                0
+              ],
+              "localQuaternion": [
+                0,
+                0,
+                0,
+                1
+              ],
+              "orientationSteps": [
+                0,
+                0,
+                0
+              ],
+              "pivotLocalOffset": [
+                0,
+                0,
+                0
+              ],
+              "pivotLocalQuaternion": [
+                0,
+                0,
+                0,
+                1
+              ],
+              "moveEnabled": true,
+              "rotateEnabled": true,
+              "pivotEnabled": true
+            },
+            "model_moa0tib6wij4_43": {
+              "localOffset": [
+                0,
+                0,
+                0
+              ],
+              "localQuaternion": [
+                0,
+                0,
+                0,
+                1
+              ],
+              "orientationSteps": [
+                0,
+                0,
+                0
+              ],
+              "pivotLocalOffset": [
+                0,
+                0,
+                0
+              ],
+              "pivotLocalQuaternion": [
+                0,
+                0,
+                0,
+                1
+              ],
+              "moveEnabled": true,
+              "rotateEnabled": true,
+              "pivotEnabled": true
+            },
+            "node_moa0tib57bty_25": {
+              "localOffset": [
+                0,
+                0,
+                0
+              ],
+              "localQuaternion": [
+                0,
+                0,
+                0,
+                1
+              ],
+              "orientationSteps": [
+                0,
+                0,
+                0
+              ],
+              "pivotLocalOffset": [
+                0,
+                0,
+                0
+              ],
+              "pivotLocalQuaternion": [
+                0,
+                0,
+                0,
+                1
+              ],
+              "moveEnabled": true,
+              "rotateEnabled": true,
+              "pivotEnabled": true
+            },
+            "folder_moa0wwienzh3_40": {
+              "localOffset": [
+                0,
+                0,
+                0
+              ],
+              "localQuaternion": [
+                -0.46021483403153607,
+                -0.4883731070142738,
+                -0.508472251699467,
+                0.539583157756267
+              ],
+              "orientationSteps": [
+                0,
+                0,
+                0
+              ],
+              "pivotLocalOffset": [
+                0,
+                0,
+                0
+              ],
+              "pivotLocalQuaternion": [
+                0,
+                0,
+                0,
+                1
+              ],
+              "moveEnabled": true,
+              "rotateEnabled": true,
+              "pivotEnabled": true
+            }
+          },
+          "tree": {
+            "id": "scene_root",
+            "name": "Scene",
+            "type": "scene",
+            "localVisible": true,
+            "children": [
+              {
+                "id": "model_moa0tbuzq9pk_17",
+                "name": "Hirarchy + colors.stp",
+                "type": "model",
+                "localVisible": true,
+                "children": [
+                  {
+                    "id": "node_moa0tbusjjxo_1",
+                    "name": "Node",
+                    "type": "folder",
+                    "localVisible": true,
+                    "children": [
+                      {
+                        "id": "node_moa0tbuukthb_3",
+                        "name": "Document",
+                        "type": "folder",
+                        "localVisible": true,
+                        "children": [
+                          {
+                            "id": "mesh_moa0tbuw9pjr_7",
+                            "name": "Document",
+                            "type": "mesh",
+                            "localVisible": true,
+                            "children": []
+                          },
+                          {
+                            "id": "mesh_moa0tbuy9dyb_11",
+                            "name": "Document",
+                            "type": "mesh",
+                            "localVisible": true,
+                            "children": []
+                          },
+                          {
+                            "id": "mesh_moa0tbuyiycb_13",
+                            "name": "Document",
+                            "type": "mesh",
+                            "localVisible": true,
+                            "children": []
+                          },
+                          {
+                            "id": "mesh_moa0tbuyevp5_15",
+                            "name": "Document",
+                            "type": "mesh",
+                            "localVisible": true,
+                            "children": []
+                          },
+                          {
+                            "id": "mesh_moa0tbuxrymb_9",
+                            "name": "Document",
+                            "type": "mesh",
+                            "localVisible": true,
+                            "children": []
+                          }
+                        ]
+                      }
+                    ]
+                  }
+                ]
+              },
+              {
+                "id": "model_moa0tib6wij4_43",
+                "name": "panle.obj",
+                "type": "model",
+                "localVisible": true,
+                "children": [
+                  {
+                    "id": "node_moa0tib57bty_25",
+                    "name": "panle.obj",
+                    "type": "folder",
+                    "localVisible": true,
+                    "children": [
+                      {
+                        "id": "mesh_moa0tib5qmyh_29",
+                        "name": "cover_pos1",
+                        "type": "mesh",
+                        "localVisible": true,
+                        "children": []
+                      },
+                      {
+                        "id": "mesh_moa0tib53jdj_31",
+                        "name": "cover_pos3",
+                        "type": "mesh",
+                        "localVisible": true,
+                        "children": []
+                      },
+                      {
+                        "id": "mesh_moa0tib67ryv_33",
+                        "name": "cover_pos4",
+                        "type": "mesh",
+                        "localVisible": true,
+                        "children": []
+                      },
+                      {
+                        "id": "mesh_moa0tib6ql6q_35",
+                        "name": "cover_pos005",
+                        "type": "mesh",
+                        "localVisible": true,
+                        "children": []
+                      },
+                      {
+                        "id": "mesh_moa0tib6yy9m_37",
+                        "name": "Object001",
+                        "type": "mesh",
+                        "localVisible": true,
+                        "children": []
+                      },
+                      {
+                        "id": "mesh_moa0tib6u2it_39",
+                        "name": "Object002",
+                        "type": "mesh",
+                        "localVisible": true,
+                        "children": []
+                      },
+                      {
+                        "id": "mesh_moa0tib6go1g_41",
+                        "name": "Object003",
+                        "type": "mesh",
+                        "localVisible": true,
+                        "children": []
+                      },
+                      {
+                        "id": "mesh_moa0tbuuhxe5_5",
+                        "name": "Document",
+                        "type": "mesh",
+                        "localVisible": true,
+                        "children": []
+                      }
+                    ]
+                  }
+                ]
+              },
+              {
+                "id": "folder_moa0wwienzh3_40",
+                "name": "mix",
+                "type": "folder",
+                "localVisible": true,
+                "children": []
+              }
+            ]
+          },
+          "materials": {
+            "mesh_moa0tbuuhxe5_5": "color_moa0tbv2977x_21",
+            "mesh_moa0tbuw9pjr_7": "color_moa0tbv2977x_21",
+            "mesh_moa0tbuxrymb_9": "color_moa0tbv2977x_21",
+            "mesh_moa0tbuy9dyb_11": "color_moa0tbv2977x_21",
+            "mesh_moa0tbuyiycb_13": "color_moa0tbv2977x_21",
+            "mesh_moa0tbuyevp5_15": "color_moa0tbv2977x_21",
+            "mesh_moa0tib5f8fg_27": "color_moa0tibfa8uw_46",
+            "mesh_moa0tib5qmyh_29": "color_moa0tibfa8uw_46",
+            "mesh_moa0tib53jdj_31": "color_moa0tibfa8uw_46",
+            "mesh_moa0tib67ryv_33": "color_moa0tibfa8uw_46",
+            "mesh_moa0tib6ql6q_35": "color_moa0tibfa8uw_46",
+            "mesh_moa0tib6yy9m_37": "color_moa0tibfa8uw_46",
+            "mesh_moa0tib6u2it_39": "color_moa0tibfa8uw_46",
+            "mesh_moa0tib6go1g_41": "color_moa0tibfa8uw_46"
+          },
+          "camera": {
+            "position": [
+              47.22916777129952,
+              25.289095655321944,
+              49.702961811105226
+            ],
+            "quaternion": [
+              -0.2260189296908542,
+              0.3338446612545174,
+              0.08279250852160051,
+              0.91137730172852
+            ],
+            "pivot": [
+              5.774402379989624,
+              -8.628439664840698,
+              0.7109663486480713
+            ],
+            "up": [
+              0,
+              1,
+              0
+            ],
+            "fov": 45
+          },
+          "notes": [],
+          "screenItems": [],
+          "headerItems": [],
+          "cables": []
+        },
+        "isBaseStep": true
+      },
+      {
+        "id": "step_moa0tbv4rt3p_22",
+        "name": "Step 1",
+        "chapterId": null,
+        "hidden": false,
+        "voiceText": "",
+        "voiceEnabled": true,
+        "transition": {
+          "durationMs": 1500,
+          "cameraEasing": "smooth",
+          "objectEasing": "smooth",
+          "visibilityFade": true,
+          "animPresetId": null
+        },
+        "snapshot": {
+          "visibility": {
+            "scene_root": true,
+            "model_moa0tbuzq9pk_17": true,
+            "node_moa0tbusjjxo_1": true,
+            "node_moa0tbuukthb_3": true,
+            "mesh_moa0tbuw9pjr_7": true,
+            "mesh_moa0tbuy9dyb_11": true,
+            "mesh_moa0tbuyiycb_13": true,
+            "mesh_moa0tbuyevp5_15": true,
+            "model_moa0tib6wij4_43": true,
+            "node_moa0tib57bty_25": true,
+            "mesh_moa0tib5qmyh_29": true,
+            "mesh_moa0tib53jdj_31": true,
+            "mesh_moa0tib67ryv_33": true,
+            "mesh_moa0tib6ql6q_35": true,
+            "mesh_moa0tib6yy9m_37": true,
+            "mesh_moa0tib6u2it_39": true,
+            "mesh_moa0tib6go1g_41": true,
+            "folder_moa0tvycwtpy_47": true,
+            "mesh_moa0tbuxrymb_9": true,
+            "mesh_moa0tbuuhxe5_5": true
+          },
+          "transforms": {
+            "model_moa0tbuzq9pk_17": {
+              "localOffset": [
+                0,
+                0,
+                0
+              ],
+              "localQuaternion": [
+                0,
+                0,
+                0,
+                1
+              ],
+              "orientationSteps": [
+                0,
+                0,
+                0
+              ],
+              "pivotLocalOffset": [
+                0,
+                0,
+                0
+              ],
+              "pivotLocalQuaternion": [
+                0,
+                0,
+                0,
+                1
+              ],
+              "moveEnabled": true,
+              "rotateEnabled": true,
+              "pivotEnabled": true
+            },
+            "node_moa0tbusjjxo_1": {
+              "localOffset": [
+                0,
+                0,
+                0
+              ],
+              "localQuaternion": [
+                0,
+                0,
+                0,
+                1
+              ],
+              "orientationSteps": [
+                0,
+                0,
+                0
+              ],
+              "pivotLocalOffset": [
+                0,
+                0,
+                0
+              ],
+              "pivotLocalQuaternion": [
+                0,
+                0,
+                0,
+                1
+              ],
+              "moveEnabled": true,
+              "rotateEnabled": true,
+              "pivotEnabled": true
+            },
+            "node_moa0tbuukthb_3": {
+              "localOffset": [
+                0,
+                0,
+                0
+              ],
+              "localQuaternion": [
+                0,
+                0,
+                0,
+                1
+              ],
+              "orientationSteps": [
+                0,
+                0,
+                0
+              ],
+              "pivotLocalOffset": [
+                0,
+                0,
+                0
+              ],
+              "pivotLocalQuaternion": [
+                0,
+                0,
+                0,
+                1
+              ],
+              "moveEnabled": true,
+              "rotateEnabled": true,
+              "pivotEnabled": true
+            },
+            "model_moa0tib6wij4_43": {
+              "localOffset": [
+                0,
+                0,
+                0
+              ],
+              "localQuaternion": [
+                0,
+                0,
+                0,
+                1
+              ],
+              "orientationSteps": [
+                0,
+                0,
+                0
+              ],
+              "pivotLocalOffset": [
+                0,
+                0,
+                0
+              ],
+              "pivotLocalQuaternion": [
+                0,
+                0,
+                0,
+                1
+              ],
+              "moveEnabled": true,
+              "rotateEnabled": true,
+              "pivotEnabled": true
+            },
+            "node_moa0tib57bty_25": {
+              "localOffset": [
+                0,
+                0,
+                0
+              ],
+              "localQuaternion": [
+                0,
+                -0.7976350822447728,
+                0,
+                0.6031403448388896
+              ],
+              "orientationSteps": [
+                0,
+                0,
+                0
+              ],
+              "pivotLocalOffset": [
+                0,
+                0,
+                0
+              ],
+              "pivotLocalQuaternion": [
+                0,
+                0,
+                0,
+                1
+              ],
+              "moveEnabled": true,
+              "rotateEnabled": true,
+              "pivotEnabled": true
+            },
+            "folder_moa0tvycwtpy_47": {
+              "localOffset": [
+                0,
+                0,
+                0
+              ],
+              "localQuaternion": [
+                0,
+                0,
+                0,
+                1
+              ],
+              "orientationSteps": [
+                0,
+                0,
+                0
+              ],
+              "pivotLocalOffset": [
+                0,
+                0,
+                0
+              ],
+              "pivotLocalQuaternion": [
+                0,
+                0,
+                0,
+                1
+              ],
+              "moveEnabled": true,
+              "rotateEnabled": true,
+              "pivotEnabled": true
+            }
+          },
+          "tree": {
+            "id": "scene_root",
+            "name": "Scene",
+            "type": "scene",
+            "localVisible": true,
+            "children": [
+              {
+                "id": "model_moa0tbuzq9pk_17",
+                "name": "Hirarchy + colors.stp",
+                "type": "model",
+                "localVisible": true,
+                "children": [
+                  {
+                    "id": "node_moa0tbusjjxo_1",
+                    "name": "Node",
+                    "type": "folder",
+                    "localVisible": true,
+                    "children": [
+                      {
+                        "id": "node_moa0tbuukthb_3",
+                        "name": "Document",
+                        "type": "folder",
+                        "localVisible": true,
+                        "children": [
+                          {
+                            "id": "mesh_moa0tbuw9pjr_7",
+                            "name": "Document",
+                            "type": "mesh",
+                            "localVisible": true,
+                            "children": []
+                          },
+                          {
+                            "id": "mesh_moa0tbuy9dyb_11",
+                            "name": "Document",
+                            "type": "mesh",
+                            "localVisible": true,
+                            "children": []
+                          },
+                          {
+                            "id": "mesh_moa0tbuyiycb_13",
+                            "name": "Document",
+                            "type": "mesh",
+                            "localVisible": true,
+                            "children": []
+                          },
+                          {
+                            "id": "mesh_moa0tbuyevp5_15",
+                            "name": "Document",
+                            "type": "mesh",
+                            "localVisible": true,
+                            "children": []
+                          }
+                        ]
+                      }
+                    ]
+                  }
+                ]
+              },
+              {
+                "id": "model_moa0tib6wij4_43",
+                "name": "panle.obj",
+                "type": "model",
+                "localVisible": true,
+                "children": [
+                  {
+                    "id": "node_moa0tib57bty_25",
+                    "name": "panle.obj",
+                    "type": "folder",
+                    "localVisible": true,
+                    "children": [
+                      {
+                        "id": "mesh_moa0tib5qmyh_29",
+                        "name": "cover_pos1",
+                        "type": "mesh",
+                        "localVisible": true,
+                        "children": []
+                      },
+                      {
+                        "id": "mesh_moa0tib53jdj_31",
+                        "name": "cover_pos3",
+                        "type": "mesh",
+                        "localVisible": true,
+                        "children": []
+                      },
+                      {
+                        "id": "mesh_moa0tib67ryv_33",
+                        "name": "cover_pos4",
+                        "type": "mesh",
+                        "localVisible": true,
+                        "children": []
+                      },
+                      {
+                        "id": "mesh_moa0tib6ql6q_35",
+                        "name": "cover_pos005",
+                        "type": "mesh",
+                        "localVisible": true,
+                        "children": []
+                      },
+                      {
+                        "id": "mesh_moa0tib6yy9m_37",
+                        "name": "Object001",
+                        "type": "mesh",
+                        "localVisible": true,
+                        "children": []
+                      },
+                      {
+                        "id": "mesh_moa0tib6u2it_39",
+                        "name": "Object002",
+                        "type": "mesh",
+                        "localVisible": true,
+                        "children": []
+                      },
+                      {
+                        "id": "mesh_moa0tib6go1g_41",
+                        "name": "Object003",
+                        "type": "mesh",
+                        "localVisible": true,
+                        "children": []
+                      },
+                      {
+                        "id": "folder_moa0tvycwtpy_47",
+                        "name": "New Folder",
+                        "type": "folder",
+                        "localVisible": true,
+                        "children": [
+                          {
+                            "id": "mesh_moa0tbuxrymb_9",
+                            "name": "Document",
+                            "type": "mesh",
+                            "localVisible": true,
+                            "children": []
+                          }
+                        ]
+                      },
+                      {
+                        "id": "mesh_moa0tbuuhxe5_5",
+                        "name": "Document",
+                        "type": "mesh",
+                        "localVisible": true,
+                        "children": []
+                      }
+                    ]
+                  }
+                ]
+              }
+            ]
+          },
+          "materials": {
+            "mesh_moa0tbuuhxe5_5": "color_moa0tbv2977x_21",
+            "mesh_moa0tbuw9pjr_7": "color_moa0tbv2977x_21",
+            "mesh_moa0tbuxrymb_9": "color_moa0tbv2977x_21",
+            "mesh_moa0tbuy9dyb_11": "color_moa0tbv2977x_21",
+            "mesh_moa0tbuyiycb_13": "color_moa0tbv2977x_21",
+            "mesh_moa0tbuyevp5_15": "color_moa0tbv2977x_21",
+            "mesh_moa0tib5f8fg_27": "color_moa0tibfa8uw_46",
+            "mesh_moa0tib5qmyh_29": "color_moa0tibfa8uw_46",
+            "mesh_moa0tib53jdj_31": "color_moa0tibfa8uw_46",
+            "mesh_moa0tib67ryv_33": "color_moa0tibfa8uw_46",
+            "mesh_moa0tib6ql6q_35": "color_moa0tibfa8uw_46",
+            "mesh_moa0tib6yy9m_37": "color_moa0tibfa8uw_46",
+            "mesh_moa0tib6u2it_39": "color_moa0tibfa8uw_46",
+            "mesh_moa0tib6go1g_41": "color_moa0tibfa8uw_46"
+          },
+          "camera": {
+            "position": [
+              47.22916777129952,
+              25.289095655321944,
+              49.702961811105226
+            ],
+            "quaternion": [
+              -0.2260189296908542,
+              0.3338446612545174,
+              0.08279250852160051,
+              0.91137730172852
+            ],
+            "pivot": [
+              5.774402379989624,
+              -8.628439664840698,
+              0.7109663486480713
+            ],
+            "up": [
+              0,
+              1,
+              0
+            ],
+            "fov": 45
+          },
+          "notes": [],
+          "screenItems": [],
+          "headerItems": [],
+          "cables": []
+        }
+      },
+      {
+        "id": "step_moa0tet6bpot_23",
+        "name": "New Step",
+        "chapterId": null,
+        "hidden": false,
+        "voiceText": "",
+        "voiceEnabled": true,
+        "transition": {
+          "durationMs": 1500,
+          "cameraEasing": "smooth",
+          "objectEasing": "smooth",
+          "visibilityFade": true,
+          "animPresetId": null
+        },
+        "snapshot": {
+          "visibility": {
+            "model_moa0tib6wij4_43": true,
+            "node_moa0tib57bty_25": true,
+            "mesh_moa0tib5f8fg_27": true,
+            "mesh_moa0tib5qmyh_29": true,
+            "mesh_moa0tib53jdj_31": true,
+            "mesh_moa0tib67ryv_33": true,
+            "mesh_moa0tib6ql6q_35": true,
+            "mesh_moa0tib6yy9m_37": true,
+            "mesh_moa0tib6u2it_39": true,
+            "mesh_moa0tib6go1g_41": true,
+            "scene_root": true,
+            "model_moa0tbuzq9pk_17": true,
+            "node_moa0tbusjjxo_1": true,
+            "node_moa0tbuukthb_3": true,
+            "mesh_moa0tbuuhxe5_5": true,
+            "mesh_moa0tbuw9pjr_7": true,
+            "mesh_moa0tbuxrymb_9": true,
+            "mesh_moa0tbuy9dyb_11": true,
+            "mesh_moa0tbuyiycb_13": true,
+            "mesh_moa0tbuyevp5_15": true
+          },
+          "transforms": {
+            "model_moa0tib6wij4_43": {
+              "localOffset": [
+                0,
+                0,
+                0
+              ],
+              "localQuaternion": [
+                0,
+                0,
+                0,
+                1
+              ],
+              "orientationSteps": [
+                0,
+                0,
+                0
+              ],
+              "pivotLocalOffset": [
+                0,
+                0,
+                0
+              ],
+              "pivotLocalQuaternion": [
+                0,
+                0,
+                0,
+                1
+              ],
+              "moveEnabled": true,
+              "rotateEnabled": true,
+              "pivotEnabled": true
+            },
+            "node_moa0tib57bty_25": {
+              "localOffset": [
+                0,
+                0,
+                0
+              ],
+              "localQuaternion": [
+                0,
+                0,
+                0,
+                1
+              ],
+              "orientationSteps": [
+                0,
+                0,
+                0
+              ],
+              "pivotLocalOffset": [
+                0,
+                0,
+                0
+              ],
+              "pivotLocalQuaternion": [
+                0,
+                0,
+                0,
+                1
+              ],
+              "moveEnabled": true,
+              "rotateEnabled": true,
+              "pivotEnabled": true
+            },
+            "model_moa0tbuzq9pk_17": {
+              "localOffset": [
+                0,
+                0,
+                0
+              ],
+              "localQuaternion": [
+                0,
+                0,
+                0,
+                1
+              ],
+              "orientationSteps": [
+                0,
+                0,
+                0
+              ],
+              "pivotLocalOffset": [
+                0,
+                0,
+                0
+              ],
+              "pivotLocalQuaternion": [
+                0,
+                0,
+                0,
+                1
+              ],
+              "moveEnabled": true,
+              "rotateEnabled": true,
+              "pivotEnabled": true
+            },
+            "node_moa0tbusjjxo_1": {
+              "localOffset": [
+                0,
+                0,
+                0
+              ],
+              "localQuaternion": [
+                0,
+                0,
+                0,
+                1
+              ],
+              "orientationSteps": [
+                0,
+                0,
+                0
+              ],
+              "pivotLocalOffset": [
+                0,
+                0,
+                0
+              ],
+              "pivotLocalQuaternion": [
+                0,
+                0,
+                0,
+                1
+              ],
+              "moveEnabled": true,
+              "rotateEnabled": true,
+              "pivotEnabled": true
+            },
+            "node_moa0tbuukthb_3": {
+              "localOffset": [
+                0,
+                0,
+                0
+              ],
+              "localQuaternion": [
+                0,
+                0,
+                0,
+                1
+              ],
+              "orientationSteps": [
+                0,
+                0,
+                0
+              ],
+              "pivotLocalOffset": [
+                0,
+                0,
+                0
+              ],
+              "pivotLocalQuaternion": [
+                0,
+                0,
+                0,
+                1
+              ],
+              "moveEnabled": true,
+              "rotateEnabled": true,
+              "pivotEnabled": true
+            }
+          },
+          "tree": {
+            "id": "scene_root",
+            "name": "Scene",
+            "type": "scene",
+            "localVisible": true,
+            "children": [
+              {
+                "id": "model_moa0tbuzq9pk_17",
+                "name": "Hirarchy + colors.stp",
+                "type": "model",
+                "localVisible": true,
+                "children": [
+                  {
+                    "id": "node_moa0tbusjjxo_1",
+                    "name": "Node",
+                    "type": "folder",
+                    "localVisible": true,
+                    "children": [
+                      {
+                        "id": "node_moa0tbuukthb_3",
+                        "name": "Document",
+                        "type": "folder",
+                        "localVisible": true,
+                        "children": [
+                          {
+                            "id": "mesh_moa0tbuuhxe5_5",
+                            "name": "Document",
+                            "type": "mesh",
+                            "localVisible": true,
+                            "children": []
+                          },
+                          {
+                            "id": "mesh_moa0tbuw9pjr_7",
+                            "name": "Document",
+                            "type": "mesh",
+                            "localVisible": true,
+                            "children": []
+                          },
+                          {
+                            "id": "mesh_moa0tbuxrymb_9",
+                            "name": "Document",
+                            "type": "mesh",
+                            "localVisible": true,
+                            "children": []
+                          },
+                          {
+                            "id": "mesh_moa0tbuy9dyb_11",
+                            "name": "Document",
+                            "type": "mesh",
+                            "localVisible": true,
+                            "children": []
+                          },
+                          {
+                            "id": "mesh_moa0tbuyiycb_13",
+                            "name": "Document",
+                            "type": "mesh",
+                            "localVisible": true,
+                            "children": []
+                          },
+                          {
+                            "id": "mesh_moa0tbuyevp5_15",
+                            "name": "Document",
+                            "type": "mesh",
+                            "localVisible": true,
+                            "children": []
+                          }
+                        ]
+                      }
+                    ]
+                  }
+                ]
+              },
+              {
+                "id": "model_moa0tib6wij4_43",
+                "name": "panle.obj",
+                "type": "model",
+                "localVisible": true,
+                "children": [
+                  {
+                    "id": "node_moa0tib57bty_25",
+                    "name": "panle.obj",
+                    "type": "folder",
+                    "localVisible": true,
+                    "children": [
+                      {
+                        "id": "mesh_moa0tib5f8fg_27",
+                        "name": "cover",
+                        "type": "mesh",
+                        "localVisible": true,
+                        "children": []
+                      },
+                      {
+                        "id": "mesh_moa0tib5qmyh_29",
+                        "name": "cover_pos1",
+                        "type": "mesh",
+                        "localVisible": true,
+                        "children": []
+                      },
+                      {
+                        "id": "mesh_moa0tib53jdj_31",
+                        "name": "cover_pos3",
+                        "type": "mesh",
+                        "localVisible": true,
+                        "children": []
+                      },
+                      {
+                        "id": "mesh_moa0tib67ryv_33",
+                        "name": "cover_pos4",
+                        "type": "mesh",
+                        "localVisible": true,
+                        "children": []
+                      },
+                      {
+                        "id": "mesh_moa0tib6ql6q_35",
+                        "name": "cover_pos005",
+                        "type": "mesh",
+                        "localVisible": true,
+                        "children": []
+                      },
+                      {
+                        "id": "mesh_moa0tib6yy9m_37",
+                        "name": "Object001",
+                        "type": "mesh",
+                        "localVisible": true,
+                        "children": []
+                      },
+                      {
+                        "id": "mesh_moa0tib6u2it_39",
+                        "name": "Object002",
+                        "type": "mesh",
+                        "localVisible": true,
+                        "children": []
+                      },
+                      {
+                        "id": "mesh_moa0tib6go1g_41",
+                        "name": "Object003",
+                        "type": "mesh",
+                        "localVisible": true,
+                        "children": []
+                      }
+                    ]
+                  }
+                ]
+              }
+            ]
+          },
+          "materials": {
+            "mesh_moa0tbuuhxe5_5": "color_moa0tbv2977x_21",
+            "mesh_moa0tbuw9pjr_7": "color_moa0tbv2977x_21",
+            "mesh_moa0tbuxrymb_9": "color_moa0tbv2977x_21",
+            "mesh_moa0tbuy9dyb_11": "color_moa0tbv2977x_21",
+            "mesh_moa0tbuyiycb_13": "color_moa0tbv2977x_21",
+            "mesh_moa0tbuyevp5_15": "color_moa0tbv2977x_21",
+            "mesh_moa0tib5f8fg_27": "color_moa0tibfa8uw_46",
+            "mesh_moa0tib5qmyh_29": "color_moa0tibfa8uw_46",
+            "mesh_moa0tib53jdj_31": "color_moa0tibfa8uw_46",
+            "mesh_moa0tib67ryv_33": "color_moa0tibfa8uw_46",
+            "mesh_moa0tib6ql6q_35": "color_moa0tibfa8uw_46",
+            "mesh_moa0tib6yy9m_37": "color_moa0tibfa8uw_46",
+            "mesh_moa0tib6u2it_39": "color_moa0tibfa8uw_46",
+            "mesh_moa0tib6go1g_41": "color_moa0tibfa8uw_46"
+          },
+          "camera": {
+            "position": [
+              47.22916777129952,
+              25.289095655321944,
+              49.702961811105226
+            ],
+            "quaternion": [
+              -0.2260189296908542,
+              0.3338446612545174,
+              0.08279250852160051,
+              0.91137730172852
+            ],
+            "pivot": [
+              5.774402379989624,
+              -8.628439664840698,
+              0.7109663486480713
+            ],
+            "up": [
+              0,
+              1,
+              0
+            ],
+            "fov": 45
+          },
+          "notes": [],
+          "screenItems": [],
+          "headerItems": [],
+          "cables": []
+        }
+      },
+      {
+        "id": "step_moa0texrhikb_24",
+        "name": "New Step",
+        "chapterId": null,
+        "hidden": false,
+        "voiceText": "",
+        "voiceEnabled": true,
+        "transition": {
+          "durationMs": 1500,
+          "cameraEasing": "smooth",
+          "objectEasing": "smooth",
+          "visibilityFade": true,
+          "animPresetId": null
+        },
+        "snapshot": {
+          "visibility": {
+            "scene_root": true,
+            "model_moa0tbuzq9pk_17": true,
+            "node_moa0tbusjjxo_1": true,
+            "node_moa0tbuukthb_3": true,
+            "mesh_moa0tbuw9pjr_7": true,
+            "mesh_moa0tbuy9dyb_11": true,
+            "mesh_moa0tbuyiycb_13": true,
+            "mesh_moa0tbuyevp5_15": true,
+            "model_moa0tib6wij4_43": true,
+            "node_moa0tib57bty_25": true,
+            "mesh_moa0tib53jdj_31": true,
+            "mesh_moa0tib67ryv_33": true,
+            "mesh_moa0tib6ql6q_35": true,
+            "mesh_moa0tib6yy9m_37": true,
+            "mesh_moa0tib6u2it_39": true,
+            "mesh_moa0tib6go1g_41": true,
+            "mesh_moa0tbuuhxe5_5": true,
+            "folder_moa0wwienzh3_40": true,
+            "mesh_moa0tib5qmyh_29": true,
+            "mesh_moa0tbuxrymb_9": true
+          },
+          "transforms": {
+            "model_moa0tbuzq9pk_17": {
+              "localOffset": [
+                0,
+                0,
+                0
+              ],
+              "localQuaternion": [
+                0,
+                0,
+                0,
+                1
+              ],
+              "orientationSteps": [
+                0,
+                0,
+                0
+              ],
+              "pivotLocalOffset": [
+                0,
+                0,
+                0
+              ],
+              "pivotLocalQuaternion": [
+                0,
+                0,
+                0,
+                1
+              ],
+              "moveEnabled": true,
+              "rotateEnabled": true,
+              "pivotEnabled": true
+            },
+            "node_moa0tbusjjxo_1": {
+              "localOffset": [
+                0,
+                0,
+                0
+              ],
+              "localQuaternion": [
+                0,
+                0,
+                0,
+                1
+              ],
+              "orientationSteps": [
+                0,
+                0,
+                0
+              ],
+              "pivotLocalOffset": [
+                0,
+                0,
+                0
+              ],
+              "pivotLocalQuaternion": [
+                0,
+                0,
+                0,
+                1
+              ],
+              "moveEnabled": true,
+              "rotateEnabled": true,
+              "pivotEnabled": true
+            },
+            "node_moa0tbuukthb_3": {
+              "localOffset": [
+                0,
+                0,
+                0
+              ],
+              "localQuaternion": [
+                0,
+                0,
+                0,
+                1
+              ],
+              "orientationSteps": [
+                0,
+                0,
+                0
+              ],
+              "pivotLocalOffset": [
+                0,
+                0,
+                0
+              ],
+              "pivotLocalQuaternion": [
+                0,
+                0,
+                0,
+                1
+              ],
+              "moveEnabled": true,
+              "rotateEnabled": true,
+              "pivotEnabled": true
+            },
+            "model_moa0tib6wij4_43": {
+              "localOffset": [
+                0,
+                0,
+                0
+              ],
+              "localQuaternion": [
+                0,
+                0,
+                0,
+                1
+              ],
+              "orientationSteps": [
+                0,
+                0,
+                0
+              ],
+              "pivotLocalOffset": [
+                0,
+                0,
+                0
+              ],
+              "pivotLocalQuaternion": [
+                0,
+                0,
+                0,
+                1
+              ],
+              "moveEnabled": true,
+              "rotateEnabled": true,
+              "pivotEnabled": true
+            },
+            "node_moa0tib57bty_25": {
+              "localOffset": [
+                0,
+                0,
+                0
+              ],
+              "localQuaternion": [
+                0,
+                0,
+                0,
+                1
+              ],
+              "orientationSteps": [
+                0,
+                0,
+                0
+              ],
+              "pivotLocalOffset": [
+                0,
+                0,
+                0
+              ],
+              "pivotLocalQuaternion": [
+                0,
+                0,
+                0,
+                1
+              ],
+              "moveEnabled": true,
+              "rotateEnabled": true,
+              "pivotEnabled": true
+            },
+            "folder_moa0wwienzh3_40": {
+              "localOffset": [
+                0,
+                0,
+                0
+              ],
+              "localQuaternion": [
+                -0.46021483403153607,
+                -0.4883731070142738,
+                -0.508472251699467,
+                0.539583157756267
+              ],
+              "orientationSteps": [
+                0,
+                0,
+                0
+              ],
+              "pivotLocalOffset": [
+                0,
+                0,
+                0
+              ],
+              "pivotLocalQuaternion": [
+                0,
+                0,
+                0,
+                1
+              ],
+              "moveEnabled": true,
+              "rotateEnabled": true,
+              "pivotEnabled": true
+            }
+          },
+          "tree": {
+            "id": "scene_root",
+            "name": "Scene",
+            "type": "scene",
+            "localVisible": true,
+            "children": [
+              {
+                "id": "model_moa0tbuzq9pk_17",
+                "name": "Hirarchy + colors.stp",
+                "type": "model",
+                "localVisible": true,
+                "children": [
+                  {
+                    "id": "node_moa0tbusjjxo_1",
+                    "name": "Node",
+                    "type": "folder",
+                    "localVisible": true,
+                    "children": [
+                      {
+                        "id": "node_moa0tbuukthb_3",
+                        "name": "Document",
+                        "type": "folder",
+                        "localVisible": true,
+                        "children": [
+                          {
+                            "id": "mesh_moa0tbuw9pjr_7",
+                            "name": "Document",
+                            "type": "mesh",
+                            "localVisible": true,
+                            "children": []
+                          },
+                          {
+                            "id": "mesh_moa0tbuy9dyb_11",
+                            "name": "Document",
+                            "type": "mesh",
+                            "localVisible": true,
+                            "children": []
+                          },
+                          {
+                            "id": "mesh_moa0tbuyiycb_13",
+                            "name": "Document",
+                            "type": "mesh",
+                            "localVisible": true,
+                            "children": []
+                          },
+                          {
+                            "id": "mesh_moa0tbuyevp5_15",
+                            "name": "Document",
+                            "type": "mesh",
+                            "localVisible": true,
+                            "children": []
+                          }
+                        ]
+                      }
+                    ]
+                  }
+                ]
+              },
+              {
+                "id": "model_moa0tib6wij4_43",
+                "name": "panle.obj",
+                "type": "model",
+                "localVisible": true,
+                "children": [
+                  {
+                    "id": "node_moa0tib57bty_25",
+                    "name": "panle.obj",
+                    "type": "folder",
+                    "localVisible": true,
+                    "children": [
+                      {
+                        "id": "mesh_moa0tib53jdj_31",
+                        "name": "cover_pos3",
+                        "type": "mesh",
+                        "localVisible": true,
+                        "children": []
+                      },
+                      {
+                        "id": "mesh_moa0tib67ryv_33",
+                        "name": "cover_pos4",
+                        "type": "mesh",
+                        "localVisible": true,
+                        "children": []
+                      },
+                      {
+                        "id": "mesh_moa0tib6ql6q_35",
+                        "name": "cover_pos005",
+                        "type": "mesh",
+                        "localVisible": true,
+                        "children": []
+                      },
+                      {
+                        "id": "mesh_moa0tib6yy9m_37",
+                        "name": "Object001",
+                        "type": "mesh",
+                        "localVisible": true,
+                        "children": []
+                      },
+                      {
+                        "id": "mesh_moa0tib6u2it_39",
+                        "name": "Object002",
+                        "type": "mesh",
+                        "localVisible": true,
+                        "children": []
+                      },
+                      {
+                        "id": "mesh_moa0tib6go1g_41",
+                        "name": "Object003",
+                        "type": "mesh",
+                        "localVisible": true,
+                        "children": []
+                      }
+                    ]
+                  },
+                  {
+                    "id": "mesh_moa0tbuuhxe5_5",
+                    "name": "Document",
+                    "type": "mesh",
+                    "localVisible": true,
+                    "children": []
+                  }
+                ]
+              },
+              {
+                "id": "folder_moa0wwienzh3_40",
+                "name": "mix",
+                "type": "folder",
+                "localVisible": true,
+                "children": [
+                  {
+                    "id": "mesh_moa0tib5qmyh_29",
+                    "name": "cover_pos1",
+                    "type": "mesh",
+                    "localVisible": true,
+                    "children": []
+                  },
+                  {
+                    "id": "mesh_moa0tbuxrymb_9",
+                    "name": "Document",
+                    "type": "mesh",
+                    "localVisible": true,
+                    "children": []
+                  }
+                ]
+              }
+            ]
+          },
+          "materials": {
+            "mesh_moa0tbuuhxe5_5": "color_moa0tbv2977x_21",
+            "mesh_moa0tbuw9pjr_7": "color_moa0tbv2977x_21",
+            "mesh_moa0tbuxrymb_9": "color_moa0tbv2977x_21",
+            "mesh_moa0tbuy9dyb_11": "color_moa0tbv2977x_21",
+            "mesh_moa0tbuyiycb_13": "color_moa0tbv2977x_21",
+            "mesh_moa0tbuyevp5_15": "color_moa0tbv2977x_21",
+            "mesh_moa0tib5f8fg_27": "color_moa0tibfa8uw_46",
+            "mesh_moa0tib5qmyh_29": "color_moa0tibfa8uw_46",
+            "mesh_moa0tib53jdj_31": "color_moa0tibfa8uw_46",
+            "mesh_moa0tib67ryv_33": "color_moa0tibfa8uw_46",
+            "mesh_moa0tib6ql6q_35": "color_moa0tibfa8uw_46",
+            "mesh_moa0tib6yy9m_37": "color_moa0tibfa8uw_46",
+            "mesh_moa0tib6u2it_39": "color_moa0tibfa8uw_46",
+            "mesh_moa0tib6go1g_41": "color_moa0tibfa8uw_46"
+          },
+          "camera": {
+            "position": [
+              47.22916777129952,
+              25.289095655321944,
+              49.702961811105226
+            ],
+            "quaternion": [
+              -0.2260189296908542,
+              0.3338446612545174,
+              0.08279250852160051,
+              0.91137730172852
+            ],
+            "pivot": [
+              5.774402379989624,
+              -8.628439664840698,
+              0.7109663486480713
+            ],
+            "up": [
+              0,
+              1,
+              0
+            ],
+            "fov": 45
+          },
+          "notes": [],
+          "screenItems": [],
+          "headerItems": [],
+          "cables": []
+        }
+      },
+      {
+        "id": "step_moa0xp89q1v3_41",
+        "name": "New Step",
+        "chapterId": null,
+        "hidden": false,
+        "voiceText": "",
+        "voiceEnabled": true,
+        "transition": {
+          "durationMs": 1500,
+          "cameraEasing": "smooth",
+          "objectEasing": "smooth",
+          "visibilityFade": true,
+          "animPresetId": null
+        },
+        "snapshot": {
+          "visibility": {
+            "scene_root": true,
+            "model_moa0tbuzq9pk_17": true,
+            "node_moa0tbusjjxo_1": true,
+            "node_moa0tbuukthb_3": true,
+            "mesh_moa0tbuw9pjr_7": true,
+            "mesh_moa0tbuy9dyb_11": true,
+            "mesh_moa0tbuyiycb_13": true,
+            "mesh_moa0tbuyevp5_15": true,
+            "mesh_moa0tbuxrymb_9": true,
+            "model_moa0tib6wij4_43": true,
+            "node_moa0tib57bty_25": true,
+            "mesh_moa0tib5qmyh_29": true,
+            "mesh_moa0tib53jdj_31": true,
+            "mesh_moa0tib67ryv_33": true,
+            "mesh_moa0tib6ql6q_35": true,
+            "mesh_moa0tib6yy9m_37": true,
+            "mesh_moa0tib6u2it_39": true,
+            "mesh_moa0tib6go1g_41": true,
+            "mesh_moa0tbuuhxe5_5": true,
+            "folder_moa0wwienzh3_40": true
+          },
+          "transforms": {
+            "model_moa0tbuzq9pk_17": {
+              "localOffset": [
+                0,
+                0,
+                0
+              ],
+              "localQuaternion": [
+                0,
+                0,
+                0.4873500832210236,
+                0.8732066744960562
+              ],
+              "orientationSteps": [
+                0,
+                0,
+                0
+              ],
+              "pivotLocalOffset": [
+                0,
+                0,
+                0
+              ],
+              "pivotLocalQuaternion": [
+                0,
+                0,
+                0,
+                1
+              ],
+              "moveEnabled": true,
+              "rotateEnabled": true,
+              "pivotEnabled": true
+            },
+            "node_moa0tbusjjxo_1": {
+              "localOffset": [
+                0,
+                0,
+                0
+              ],
+              "localQuaternion": [
+                0,
+                0,
+                0,
+                1
+              ],
+              "orientationSteps": [
+                0,
+                0,
+                0
+              ],
+              "pivotLocalOffset": [
+                0,
+                0,
+                0
+              ],
+              "pivotLocalQuaternion": [
+                0,
+                0,
+                0,
+                1
+              ],
+              "moveEnabled": true,
+              "rotateEnabled": true,
+              "pivotEnabled": true
+            },
+            "node_moa0tbuukthb_3": {
+              "localOffset": [
+                0,
+                0,
+                0
+              ],
+              "localQuaternion": [
+                0,
+                0,
+                0,
+                1
+              ],
+              "orientationSteps": [
+                0,
+                0,
+                0
+              ],
+              "pivotLocalOffset": [
+                0,
+                0,
+                0
+              ],
+              "pivotLocalQuaternion": [
+                0,
+                0,
+                0,
+                1
+              ],
+              "moveEnabled": true,
+              "rotateEnabled": true,
+              "pivotEnabled": true
+            },
+            "model_moa0tib6wij4_43": {
+              "localOffset": [
+                0,
+                0,
+                0
+              ],
+              "localQuaternion": [
+                0,
+                0,
+                0,
+                1
+              ],
+              "orientationSteps": [
+                0,
+                0,
+                0
+              ],
+              "pivotLocalOffset": [
+                0,
+                0,
+                0
+              ],
+              "pivotLocalQuaternion": [
+                0,
+                0,
+                0,
+                1
+              ],
+              "moveEnabled": true,
+              "rotateEnabled": true,
+              "pivotEnabled": true
+            },
+            "node_moa0tib57bty_25": {
+              "localOffset": [
+                0,
+                0,
+                0
+              ],
+              "localQuaternion": [
+                0,
+                0,
+                0,
+                1
+              ],
+              "orientationSteps": [
+                0,
+                0,
+                0
+              ],
+              "pivotLocalOffset": [
+                0,
+                0,
+                0
+              ],
+              "pivotLocalQuaternion": [
+                0,
+                0,
+                0,
+                1
+              ],
+              "moveEnabled": true,
+              "rotateEnabled": true,
+              "pivotEnabled": true
+            },
+            "folder_moa0wwienzh3_40": {
+              "localOffset": [
+                0,
+                0,
+                0
+              ],
+              "localQuaternion": [
+                -0.46021483403153607,
+                -0.4883731070142738,
+                -0.508472251699467,
+                0.539583157756267
+              ],
+              "orientationSteps": [
+                0,
+                0,
+                0
+              ],
+              "pivotLocalOffset": [
+                0,
+                0,
+                0
+              ],
+              "pivotLocalQuaternion": [
+                0,
+                0,
+                0,
+                1
+              ],
+              "moveEnabled": true,
+              "rotateEnabled": true,
+              "pivotEnabled": true
+            }
+          },
+          "tree": {
+            "id": "scene_root",
+            "name": "Scene",
+            "type": "scene",
+            "localVisible": true,
+            "children": [
+              {
+                "id": "model_moa0tbuzq9pk_17",
+                "name": "Hirarchy + colors.stp",
+                "type": "model",
+                "localVisible": true,
+                "children": [
+                  {
+                    "id": "node_moa0tbusjjxo_1",
+                    "name": "Node",
+                    "type": "folder",
+                    "localVisible": true,
+                    "children": [
+                      {
+                        "id": "node_moa0tbuukthb_3",
+                        "name": "Document",
+                        "type": "folder",
+                        "localVisible": true,
+                        "children": [
+                          {
+                            "id": "mesh_moa0tbuw9pjr_7",
+                            "name": "Document",
+                            "type": "mesh",
+                            "localVisible": true,
+                            "children": []
+                          },
+                          {
+                            "id": "mesh_moa0tbuy9dyb_11",
+                            "name": "Document",
+                            "type": "mesh",
+                            "localVisible": true,
+                            "children": []
+                          },
+                          {
+                            "id": "mesh_moa0tbuyiycb_13",
+                            "name": "Document",
+                            "type": "mesh",
+                            "localVisible": true,
+                            "children": []
+                          },
+                          {
+                            "id": "mesh_moa0tbuyevp5_15",
+                            "name": "Document",
+                            "type": "mesh",
+                            "localVisible": true,
+                            "children": []
+                          },
+                          {
+                            "id": "mesh_moa0tbuxrymb_9",
+                            "name": "Document",
+                            "type": "mesh",
+                            "localVisible": true,
+                            "children": []
+                          }
+                        ]
+                      }
+                    ]
+                  }
+                ]
+              },
+              {
+                "id": "model_moa0tib6wij4_43",
+                "name": "panle.obj",
+                "type": "model",
+                "localVisible": true,
+                "children": [
+                  {
+                    "id": "node_moa0tib57bty_25",
+                    "name": "panle.obj",
+                    "type": "folder",
+                    "localVisible": true,
+                    "children": [
+                      {
+                        "id": "mesh_moa0tib5qmyh_29",
+                        "name": "cover_pos1",
+                        "type": "mesh",
+                        "localVisible": true,
+                        "children": []
+                      },
+                      {
+                        "id": "mesh_moa0tib53jdj_31",
+                        "name": "cover_pos3",
+                        "type": "mesh",
+                        "localVisible": true,
+                        "children": []
+                      },
+                      {
+                        "id": "mesh_moa0tib67ryv_33",
+                        "name": "cover_pos4",
+                        "type": "mesh",
+                        "localVisible": true,
+                        "children": []
+                      },
+                      {
+                        "id": "mesh_moa0tib6ql6q_35",
+                        "name": "cover_pos005",
+                        "type": "mesh",
+                        "localVisible": true,
+                        "children": []
+                      },
+                      {
+                        "id": "mesh_moa0tib6yy9m_37",
+                        "name": "Object001",
+                        "type": "mesh",
+                        "localVisible": true,
+                        "children": []
+                      },
+                      {
+                        "id": "mesh_moa0tib6u2it_39",
+                        "name": "Object002",
+                        "type": "mesh",
+                        "localVisible": true,
+                        "children": []
+                      },
+                      {
+                        "id": "mesh_moa0tib6go1g_41",
+                        "name": "Object003",
+                        "type": "mesh",
+                        "localVisible": true,
+                        "children": []
+                      },
+                      {
+                        "id": "mesh_moa0tbuuhxe5_5",
+                        "name": "Document",
+                        "type": "mesh",
+                        "localVisible": true,
+                        "children": []
+                      }
+                    ]
+                  }
+                ]
+              },
+              {
+                "id": "folder_moa0wwienzh3_40",
+                "name": "mix",
+                "type": "folder",
+                "localVisible": true,
+                "children": []
+              }
+            ]
+          },
+          "materials": {
+            "mesh_moa0tbuuhxe5_5": "color_moa0tbv2977x_21",
+            "mesh_moa0tbuw9pjr_7": "color_moa0tbv2977x_21",
+            "mesh_moa0tbuxrymb_9": "color_moa0tbv2977x_21",
+            "mesh_moa0tbuy9dyb_11": "color_moa0tbv2977x_21",
+            "mesh_moa0tbuyiycb_13": "color_moa0tbv2977x_21",
+            "mesh_moa0tbuyevp5_15": "color_moa0tbv2977x_21",
+            "mesh_moa0tib5f8fg_27": "color_moa0tibfa8uw_46",
+            "mesh_moa0tib5qmyh_29": "color_moa0tibfa8uw_46",
+            "mesh_moa0tib53jdj_31": "color_moa0tibfa8uw_46",
+            "mesh_moa0tib67ryv_33": "color_moa0tibfa8uw_46",
+            "mesh_moa0tib6ql6q_35": "color_moa0tibfa8uw_46",
+            "mesh_moa0tib6yy9m_37": "color_moa0tibfa8uw_46",
+            "mesh_moa0tib6u2it_39": "color_moa0tibfa8uw_46",
+            "mesh_moa0tib6go1g_41": "color_moa0tibfa8uw_46"
+          },
+          "camera": {
+            "position": [
+              47.22916777129952,
+              25.289095655321944,
+              49.702961811105226
+            ],
+            "quaternion": [
+              -0.2260189296908542,
+              0.3338446612545174,
+              0.08279250852160051,
+              0.91137730172852
+            ],
+            "pivot": [
+              5.774402379989624,
+              -8.628439664840698,
+              0.7109663486480713
+            ],
+            "up": [
+              0,
+              1,
+              0
+            ],
+            "fov": 45
+          },
+          "notes": [],
+          "screenItems": [],
+          "headerItems": [],
+          "cables": []
+        }
+      }
+    ]
+  },
+  "chapters": {
+    "schema_version": 1,
+    "items": []
+  },
+  "cameras": {
+    "schema_version": 1,
+    "items": []
+  },
+  "colors": {
+    "schema_version": 3,
+    "items": [
+      {
+        "id": "color_moa0tbv2977x_21",
+        "name": "#000000",
+        "color": "#000000",
+        "solidness": 1,
+        "metalness": 0.05,
+        "roughness": 0.55,
+        "reflectionIntensity": 0.5,
+        "outlineEnabled": null,
+        "removeTextures": false,
+        "backFaceEnabled": false,
+        "backFaceColor": "#ffffff",
+        "backFaceOpacity": 0.35,
+        "backFaceEdgeDarken": 0.45
+      },
+      {
+        "id": "color_moa0tibfa8uw_46",
+        "name": "wire_000225197",
+        "color": "#ffffff",
+        "solidness": 1,
+        "metalness": 0.12,
+        "roughness": 0.7857142857142857,
+        "reflectionIntensity": 0.5,
+        "outlineEnabled": null,
+        "removeTextures": false,
+        "backFaceEnabled": false,
+        "backFaceColor": "#ffffff",
+        "backFaceOpacity": 0.35,
+        "backFaceEdgeDarken": 0.45
+      }
+    ],
+    "assignments": {
+      "mesh_moa0tbuuhxe5_5": "color_moa0tbv2977x_21",
+      "mesh_moa0tbuw9pjr_7": "color_moa0tbv2977x_21",
+      "mesh_moa0tbuxrymb_9": "color_moa0tbv2977x_21",
+      "mesh_moa0tbuy9dyb_11": "color_moa0tbv2977x_21",
+      "mesh_moa0tbuyiycb_13": "color_moa0tbv2977x_21",
+      "mesh_moa0tbuyevp5_15": "color_moa0tbv2977x_21",
+      "mesh_moa0tib5f8fg_27": "color_moa0tibfa8uw_46",
+      "mesh_moa0tib5qmyh_29": "color_moa0tibfa8uw_46",
+      "mesh_moa0tib53jdj_31": "color_moa0tibfa8uw_46",
+      "mesh_moa0tib67ryv_33": "color_moa0tibfa8uw_46",
+      "mesh_moa0tib6ql6q_35": "color_moa0tibfa8uw_46",
+      "mesh_moa0tib6yy9m_37": "color_moa0tibfa8uw_46",
+      "mesh_moa0tib6u2it_39": "color_moa0tibfa8uw_46",
+      "mesh_moa0tib6go1g_41": "color_moa0tibfa8uw_46"
+    },
+    "defaults": {
+      "mesh_moa0tbuuhxe5_5": "color_moa0tbv2977x_21",
+      "mesh_moa0tbuw9pjr_7": "color_moa0tbv2977x_21",
+      "mesh_moa0tbuxrymb_9": "color_moa0tbv2977x_21",
+      "mesh_moa0tbuy9dyb_11": "color_moa0tbv2977x_21",
+      "mesh_moa0tbuyiycb_13": "color_moa0tbv2977x_21",
+      "mesh_moa0tbuyevp5_15": "color_moa0tbv2977x_21",
+      "mesh_moa0tib5f8fg_27": "color_moa0tibfa8uw_46",
+      "mesh_moa0tib5qmyh_29": "color_moa0tibfa8uw_46",
+      "mesh_moa0tib53jdj_31": "color_moa0tibfa8uw_46",
+      "mesh_moa0tib67ryv_33": "color_moa0tibfa8uw_46",
+      "mesh_moa0tib6ql6q_35": "color_moa0tibfa8uw_46",
+      "mesh_moa0tib6yy9m_37": "color_moa0tibfa8uw_46",
+      "mesh_moa0tib6u2it_39": "color_moa0tibfa8uw_46",
+      "mesh_moa0tib6go1g_41": "color_moa0tibfa8uw_46"
+    }
+  },
+  "notes": {
+    "schema_version": 1,
+    "templates": [],
+    "presets": {
+      "small": 18,
+      "medium": 36,
+      "large": 48
+    }
+  },
+  "selections": {
+    "schema_version": 1,
+    "groups": [],
+    "outlineColor": "#00ffff"
+  },
+  "animationPresets": {
+    "schema_version": 1,
+    "items": []
+  },
+  "settings": {
+    "schema_version": 1,
+    "backgroundColor": "#0f172a",
+    "solidOverride": true,
+    "gridVisible": true,
+    "cameraAnimDurationMs": 1500,
+    "objectAnimDurationMs": 1500,
+    "cameraFillLight": {
+      "enabled": false,
+      "color": "#ffffff",
+      "intensity": 1.1,
+      "distance": 0,
+      "decay": 2,
+      "offsetX": -120,
+      "offsetY": 70,
+      "offsetZ": 140
+    },
+    "geometryOutline": {
+      "enabled": false,
+      "color": "#000000",
+      "opacity": 0.9,
+      "creaseAngle": 35
+    },
+    "export": {
+      "fileName": "sbs_export",
+      "outputFormat": "webm_vp8",
+      "formatPreset": "hdtv_1080",
+      "width": 1920,
+      "height": 1080,
+      "fps": 30,
+      "stepHoldMs": 800,
+      "startFromActive": true,
+      "showSafeFrame": true,
+      "narrationEnabled": true,
+      "narrationVoice": "en_US-lessac-high",
+      "narrationSpeed": 1,
+      "narrationHelperUrl": "http://127.0.0.1:8765",
+      "deterministicHelperUrl": "http://127.0.0.1:8766",
+      "exportFolderPath": null
+    }
+  }
+}

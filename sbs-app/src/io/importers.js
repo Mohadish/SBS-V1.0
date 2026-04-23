@@ -35,6 +35,148 @@ import { OBJLoader }  from '../../vendor/OBJLoader.bundle.mjs';
 import { STLLoader }  from '../../vendor/STLLoader.bundle.mjs';
 import { GLTFLoader } from '../../vendor/GLTFLoader.bundle.mjs';
 
+// ═══════════════════════════════════════════════════════════════════════════
+//  STABLE-ID HELPERS
+// ═══════════════════════════════════════════════════════════════════════════
+
+/**
+ * Deterministic string hash (djb2 variant).
+ * Same input always produces the same 7-char base-36 output.
+ * Used to build stable node IDs so that reloading the same file always
+ * produces the same IDs — meaning phantom nodes match without heuristics.
+ */
+function _stableHash(str) {
+  let h = 5381;
+  for (let i = 0; i < str.length; i++) {
+    h = (Math.imul(h, 33) ^ str.charCodeAt(i)) >>> 0;
+  }
+  return h.toString(36).padStart(7, '0');
+}
+
+/**
+ * Compute a geometry fingerprint string from a THREE.BufferGeometry.
+ * Combines vertex count, face count, and rounded bounding-box extents.
+ * These values are intrinsic to the mesh — they are the same every time
+ * the identical file is loaded, regardless of tree position or load order.
+ *
+ * Used as the primary component of a mesh node's stable ID so that
+ * phantom placeholders can be matched to reloaded geometry by content,
+ * not by position.
+ *
+ * @param {THREE.BufferGeometry} geom
+ * @returns {string}
+ */
+function _geomFingerprint(geom) {
+  if (!geom) return 'empty';
+
+  const pos   = geom.attributes?.position;
+  const idx   = geom.index;
+  const verts = pos?.count ?? 0;
+  const faces = idx ? Math.floor(idx.count / 3) : Math.floor(verts / 3);
+
+  // Bounding box — rounded to 2 decimal places to absorb float noise.
+  // computeBoundingBox() is already called by buildGeometry for OCCT;
+  // for Three.js loaders we compute it on demand.
+  if (!geom.boundingBox) geom.computeBoundingBox();
+  const bb = geom.boundingBox;
+  let bbStr = 'x';
+  if (bb) {
+    const r = v => Math.round(v * 100);
+    bbStr = `${r(bb.min.x)},${r(bb.min.y)},${r(bb.min.z)},${r(bb.max.x)},${r(bb.max.y)},${r(bb.max.z)}`;
+  }
+
+  return `v${verts}:f${faces}:${bbStr}`;
+}
+
+/**
+ * Replace random generateId() IDs on an innerRoot node tree with
+ * deterministic stable hashes derived from mesh geometry content.
+ *
+ * Strategy for MESH nodes:
+ *   Primary key  — geometry fingerprint (vertex count + face count + bounding box).
+ *                  Intrinsic to the mesh. Same file → same fingerprint → same ID.
+ *   Tiebreaker   — meshIndex (OCCT) or DFS counter (non-OCCT).
+ *                  Handles the edge case of two geometrically identical parts
+ *                  in the same assembly (e.g. duplicate bolts).
+ *
+ * Strategy for FOLDER/GROUP nodes:
+ *   DFS counter — stable for the identical file; changes only if the internal
+ *                 node structure changes (user said folders are assumed stable).
+ *
+ * The geometry fingerprint makes IDs independently verifiable: scanning the
+ * reloaded model and hashing the same properties reproduces the exact same ID,
+ * so phantom placeholder reassignment is absolute — no positional guessing.
+ *
+ * Mutates node.id in-place. Updates obj3dMap and object3d.userData accordingly.
+ * Call BEFORE building nodeById or committing to state.
+ *
+ * @param {TreeNode} innerRoot  model content root (NOT the model wrapper node)
+ * @param {string}   assetId   stable asset ID (scope for all hashes)
+ * @param {Map}      obj3dMap  nodeId → Object3D  (updated in-place)
+ */
+function _remapToStableIds(innerRoot, assetId, obj3dMap) {
+  let _dfsCounter = 0;
+
+  function visit(node) {
+    const oldId = node.id;
+    let newId;
+
+    if (node.type === 'mesh') {
+      // ── Geometry-content hash (primary identity) ──────────────────────
+      const obj3d = obj3dMap.get(oldId);
+      const fp    = _geomFingerprint(obj3d?.geometry);
+
+      if (node.meshIndex != null) {
+        // OCCT: meshIndex is the tiebreaker — deterministic tessellation order.
+        // Even two geometrically identical parts get distinct IDs via meshIndex.
+        newId = `ms_${_stableHash(assetId + ':' + fp + ':m' + node.meshIndex)}`;
+      } else {
+        // OBJ / STL / GLTF: use DFS counter as tiebreaker.
+        // Stable for the same file; unique within the model.
+        newId = `ms_${_stableHash(assetId + ':' + fp + ':n' + _dfsCounter)}`;
+        _dfsCounter++;
+      }
+    } else {
+      // ── Folder / group node ───────────────────────────────────────────
+      // No geometry to hash. DFS counter is sufficient — folder structure
+      // is stable for the same file, and the user has confirmed folders
+      // are assumed to be unaffected during relink.
+      newId = `fd_${_stableHash(assetId + ':f' + _dfsCounter)}`;
+      _dfsCounter++;
+    }
+
+    // Update obj3dMap: old random key → new stable key
+    if (obj3dMap.has(oldId)) {
+      const obj3d = obj3dMap.get(oldId);
+      obj3dMap.delete(oldId);
+      obj3dMap.set(newId, obj3d);
+      if (obj3d?.userData) {
+        if (obj3d.userData.meshNodeId === oldId) obj3d.userData.meshNodeId = newId;
+        if (obj3d.userData.nodeId     === oldId) obj3d.userData.nodeId     = newId;
+      }
+    }
+
+    node.id = newId;
+
+    for (const child of (node.children || [])) visit(child);
+  }
+
+  visit(innerRoot);
+}
+
+/**
+ * Re-register all mesh nodes in a subtree with the materials system.
+ * Must be called AFTER _remapToStableIds so stable IDs are used.
+ * (buildNodeFromOcct/buildNodeFromThreeObject registered with random IDs.)
+ */
+function _reregisterMeshes(node) {
+  if (node.type === 'mesh' && node.object3d) {
+    materials.registerMesh(node.id, node.object3d);
+    node.object3d.userData.meshNodeId = node.id;
+  }
+  for (const child of (node.children || [])) _reregisterMeshes(child);
+}
+
 // ── OCCT tessellation parameters (match POC) ──────────────────────────────
 const OCCT_PARAMS = {
   linearUnit:            'millimeter',
@@ -286,10 +428,15 @@ function buildNodeFromThreeObject(obj, obj3dMap) {
  *                                     model loads (use for GLTF/GLB/FBX).
  */
 function finalizeModelImport(group3d, innerRoot, name, assetInfo, obj3dMap, extractColors = true, colorOpts = {}) {
-  const modelId = generateId('model');
+  // ── assetId first — it seeds all stable node IDs ─────────────────────────
+  const assetId = assetInfo?.id || generateId('asset');
+
+  // Stable model node ID — deterministic from assetId.
+  // Reloading the same file with the same assetEntry always produces this exact ID,
+  // so phantom nodes in step snapshots match without any positional heuristics.
+  const modelId = `m_${_stableHash(assetId)}`;
 
   // Ensure this asset is tracked in state.assets (needed for save/load)
-  const assetId = assetInfo?.id || generateId('asset');
   const currentAssets = state.get('assets') || [];
   if (!currentAssets.some(a => a.id === assetId)) {
     state.setState({
@@ -306,6 +453,27 @@ function finalizeModelImport(group3d, innerRoot, name, assetInfo, obj3dMap, extr
       }],
     });
   }
+
+  // Tag every mesh node with this asset's ID so displaced-mesh ID remapping can
+  // trace meshes back to their source model when they've been moved to custom folders.
+  // Preserved by stripNode() on save; used by buildDisplacedMeshIdRemap() on load.
+  function _tagMeshNodes(node, aid) {
+    if (node.type === 'mesh') node.sourceAssetId = aid;
+    (node.children || []).forEach(c => _tagMeshNodes(c, aid));
+  }
+  _tagMeshNodes(innerRoot, assetId);
+
+  // ── Stable ID remap ──────────────────────────────────────────────────────
+  // Replace random generateId() IDs with deterministic hashes.
+  // buildNodeFromOcct/buildNodeFromThreeObject registered meshes with random IDs —
+  // unregister those and re-register with stable IDs after the remap.
+  const preRemapMeshIds = [];
+  for (const [id, obj] of obj3dMap) {
+    if (obj?.isMesh) preRemapMeshIds.push(id);
+  }
+  _remapToStableIds(innerRoot, assetId, obj3dMap);
+  for (const oldId of preRemapMeshIds) materials.unregisterMesh(oldId);
+  _reregisterMeshes(innerRoot);
 
   // Create the model node (wraps the entire loaded file)
   const modelNode = createNode('model', {

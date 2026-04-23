@@ -35,7 +35,7 @@ export function renderStepNav() {
   if (!_el) return;
 
   const allSteps  = state.get('steps') || [];
-  const visible   = allSteps.filter(s => !s.hidden);
+  const visible   = allSteps.filter(s => !s.hidden && !s.isBaseStep);
   const activeId  = state.get('activeStepId');
   const activeIdx = visible.findIndex(s => s.id === activeId);
 

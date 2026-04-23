@@ -15,6 +15,7 @@ import { showAssetVerifyDialog } from './asset-verify.js';
 import {
   saveProject, loadProject, pickProjectFile, getSuggestedFilename,
   buildIdRemapFromSpec, applyIdRemap, applySpecFieldsToNodes,
+  collectAllMeshSpecs, buildDisplacedMeshIdRemap,
 }                          from '../io/project.js';
 import { initTree, renderTree, expandPathToNode, collapseAll } from './tree.js';
 import { setStatus }       from './status.js';
@@ -303,6 +304,15 @@ async function _onOpenProject() {
       }
     }
 
+    // Collect ALL saved mesh specs once (used for displaced-mesh remap below).
+    // Displaced meshes are those moved into custom folders outside their native model subtree.
+    const allSavedMeshSpecs = collectAllMeshSpecs(savedSceneRoot);
+
+    // Model-type spec nodes only — skip custom user-created folders at scene root.
+    // Previously the code used a positional index over ALL children which broke if
+    // any custom folder lived at scene root level before the model nodes.
+    const savedModelSpecs = (savedSceneRoot?.children || []).filter(c => c.type === 'model');
+
     let modelSpecIndex = 0;
 
     for (const { assetEntry, resolvedPath } of resolvedAssets) {
@@ -326,14 +336,21 @@ async function _onOpenProject() {
       // Track asset status
       _assetStatus.set(assetEntry.id, modelNode ? 'ok' : 'missing');
 
-      const specNode = savedSceneRoot?.children?.[modelSpecIndex]
+      // Find the saved spec node for this model (only among model-type children,
+      // not custom folders).  Fall back to legacy per-asset tree spec.
+      const specNode = savedModelSpecs[modelSpecIndex]
                     ?? assetEntry._legacyTreeSpec
                     ?? null;
 
       if (modelNode) {
-        // Remap freshly-generated IDs → saved IDs from project spec
+        // Remap freshly-generated IDs → saved IDs from project spec.
         if (specNode) {
           const idMap = buildIdRemapFromSpec(modelNode, specNode);
+
+          // Also remap "displaced" meshes: those moved to custom folders and therefore
+          // absent from specNode's subtree.  Matched by meshIndex + sourceAssetId.
+          buildDisplacedMeshIdRemap(modelNode, allSavedMeshSpecs, assetEntry.id, idMap);
+
           applyIdRemap(modelNode, idMap);
           materials.remapMeshIds(idMap);
           for (const [newId, savedId] of idMap) {
@@ -356,6 +373,12 @@ async function _onOpenProject() {
       modelSpecIndex++;
     }
 
+    // Insert phantom nodes for any scene-root custom folders from the saved tree
+    // that aren't yet in the live tree (they contain displaced meshes and need to
+    // exist so rebuildFromTreeSpec can reparent the correctly-remapped live meshes
+    // into them when the first step is activated).
+    _insertPhantomCustomFolders(savedSceneRoot);
+
     // Restore saved color assignments + defaults (base state before any step)
     const savedDefaults    = project.colors?.defaults    || {};
     const savedAssignments = project.colors?.assignments || savedDefaults;
@@ -363,10 +386,12 @@ async function _onOpenProject() {
     materials.meshColorAssignments = { ...savedAssignments };
     materials.applyAll();
 
-    // Activate first step → restores per-step color overrides + visibility + camera
-    const allSteps = state.get('steps');
-    if (allSteps?.length) {
-      steps.activateStep(allSteps[0].id, false);
+    // Stage scene from Step 0 (exact saved scene state), then activate first user step
+    steps.activateBaseStep();
+
+    const userSteps = (state.get('steps') || []).filter(s => !s.isBaseStep && !s.hidden);
+    if (userSteps.length) {
+      steps.activateStep(userSteps[0].id, false);
     }
 
     setStatus(`Opened: ${state.get('projectName')}.`);
@@ -396,6 +421,20 @@ async function _loadModelFile(file, assetEntry = null, skipColorExtraction = fal
     const modelNode = await loadModelFile(file, { assetEntry, skipColorExtraction });
     setStatus(`Loaded ${file.name}.`);
     state.markDirty();
+
+    if (modelNode && !assetEntry) {
+      // assetEntry is set only during project reload — skip auto-step logic then.
+      const existingSteps = state.get('steps') || [];
+      if (existingSteps.length === 0) {
+        // First model ever → auto-create first step so the scene is never stepless
+        steps.createStepFromCurrent('Step 1');
+      } else {
+        // Additional model → backfill into every existing step so switching
+        // steps never removes the new model from the scene.
+        steps.injectModelIntoAllSteps(modelNode);
+      }
+    }
+
     if (assetEntry?.id) {
       _assetStatus.set(assetEntry.id, 'ok');
       if (_activeTab === 'files') _renderFilesTab();
@@ -436,6 +475,43 @@ function _insertPhantomNodes(specNode, assetId) {
   const nodeById = buildNodeMap(root);
   state.setState({ treeData: { ...root }, nodeById });
   if (assetId) _phantomNodes.set(assetId, phantom);
+}
+
+/**
+ * Insert phantom nodes for any scene-root custom folders saved in the project
+ * that don't yet exist in the live tree (because they contain displaced meshes
+ * from models that are either still loading or missing).
+ *
+ * Call once after ALL models have loaded and been remapped, passing the full
+ * saved scene root so we can find custom folders (non-model children of scene root).
+ *
+ * @param {object|null} savedSceneRoot  project.tree.root
+ */
+function _insertPhantomCustomFolders(savedSceneRoot) {
+  if (!savedSceneRoot) return;
+  const root = state.get('treeData');
+  if (!root) return;
+
+  const nodeById = state.get('nodeById') || new Map();
+  let changed = false;
+
+  for (const child of (savedSceneRoot.children || [])) {
+    // Only non-model scene-root children (custom folders).
+    if (child.type === 'model') continue;
+    // Skip if already in the live tree (could have been reconstructed by a step).
+    if (nodeById.has(child.id)) continue;
+
+    // Insert as phantom — meshes inside may already have live counterparts
+    // (correctly remapped), in which case rebuildFromTreeSpec will reuse them.
+    const phantom = _cloneSpecAsPhantom(child);
+    root.children.push(phantom);
+    changed = true;
+  }
+
+  if (changed) {
+    const newNodeById = buildNodeMap(root);
+    state.setState({ treeData: { ...root }, nodeById: newNodeById });
+  }
 }
 
 // ── Browse assets (relink) ────────────────────────────────────────────────────
@@ -497,11 +573,38 @@ async function _relinkAsset(file, assetEntry) {
       }
     }
 
-    // Remove phantom from tree
+    // Remove phantom from tree — surgical nodeById update (NOT buildNodeMap).
+    //
+    // WHY: rebuildFromTreeSpec (called during activateStep/activateBaseStep) moves
+    // displaced live mesh nodes from other models into phantom folder data nodes as
+    // their children. buildNodeMap(root) walks only the live scene tree and would
+    // miss those displaced nodes (they're in the phantom subtree, not the other
+    // models' subtrees). Losing them from nodeById causes rebuildFromTreeSpec to
+    // silently drop them from every folder they were placed in after relink.
+    //
+    // INSTEAD: remove only truly-phantom entries (missing:true) from nodeById,
+    // preserve all live displaced nodes, and register the fresh live model nodes.
     const root = state.get('treeData');
     if (root) {
       root.children = (root.children || []).filter(c => c !== phantom);
-      const nodeById = buildNodeMap(root);
+
+      const nodeById = new Map(state.get('nodeById'));
+
+      // Delete phantom-only nodes (missing:true). Live nodes that ended up
+      // inside phantom folder children are NOT marked missing and are kept.
+      function _removePhantomsFromMap(node) {
+        if (node.missing) nodeById.delete(node.id);
+        (node.children || []).forEach(_removePhantomsFromMap);
+      }
+      _removePhantomsFromMap(phantom);
+
+      // Register live model nodes with their remapped (saved) IDs.
+      function _addToMap(node) {
+        nodeById.set(node.id, node);
+        (node.children || []).forEach(_addToMap);
+      }
+      _addToMap(modelNode);
+
       state.setState({ treeData: { ...root }, nodeById });
     }
     _phantomNodes.delete(assetEntry.id);
@@ -572,41 +675,80 @@ function _renderTreeTab() {
 }
 
 function _onCreateFolder() {
-  const root       = state.get('treeData');
-  const selectedId = state.get('selectedId');
-  const nodeById   = state.get('nodeById');
+  const root = state.get('treeData');
   if (!root) { setStatus('Load a model first.'); return; }
+  _showFolderNameDialog('New Folder', name => {
+    const selectedId = state.get('selectedId');
+    const nodeById   = state.get('nodeById');
 
-  const name = prompt('Folder name:', 'New Group');
-  if (!name?.trim()) return;
+    // Choose parent: selected container, or scene root
+    let parent = selectedId && nodeById ? nodeById.get(selectedId) : null;
+    if (!parent || parent.type === 'mesh') parent = root;
 
-  // Choose parent
-  let parent = selectedId && nodeById ? nodeById.get(selectedId) : null;
-  if (!parent || parent.type === 'mesh') parent = root;
+    const THREE = window.THREE;
+    if (!THREE) return;
 
-  const THREE = window.THREE;
-  if (!THREE) return;
+    const group = new THREE.Group();
+    group.name  = name;
+    group.userData.isCustomFolder = true;
 
-  const group = new THREE.Group();
-  group.name  = name.trim();
-  group.userData.isCustomFolder = true;
+    const node = {
+      id: generateId('folder'), name, type: 'folder',
+      localVisible: true, object3d: group, children: [],
+      localOffset: [0,0,0], localQuaternion: [0,0,0,1],
+      pivotLocalOffset: [0,0,0], pivotLocalQuaternion: [0,0,0,1],
+      baseLocalPosition: [0,0,0], baseLocalQuaternion: [0,0,0,1], baseLocalScale: [1,1,1],
+      moveEnabled: true, rotateEnabled: true, pivotEnabled: true,
+    };
 
-  const node = {
-    id: generateId('folder'), name: name.trim(), type: 'folder',
-    localVisible: true, object3d: group, children: [],
-    localOffset: [0,0,0], localQuaternion: [0,0,0,1],
-    pivotLocalOffset: [0,0,0], pivotLocalQuaternion: [0,0,0,1],
-    baseLocalPosition: [0,0,0], baseLocalQuaternion: [0,0,0,1], baseLocalScale: [1,1,1],
-    moveEnabled: true, rotateEnabled: true, pivotEnabled: true,
+    parent.children.push(node);
+    if (parent.object3d) parent.object3d.add(group);
+    steps.object3dById.set(node.id, group);  // register so gizmo can attach
+
+    state.setState({ nodeById: buildNodeMap(root) });
+    expandPathToNode(node.id);
+    steps.scheduleTransformSync();
+    setStatus(`Created folder "${node.name}".`);
+  });
+}
+
+function _showFolderNameDialog(defaultVal, onConfirm) {
+  const dlg = document.createElement('dialog');
+  dlg.className = 'sbs-dialog';
+  const esc = s => String(s ?? '').replace(/[&<>"']/g,
+    c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[c]);
+  dlg.innerHTML = `
+    <div class="sbs-dialog__body">
+      <div class="sbs-dialog__title">New Folder</div>
+      <input type="text" id="_fn-input" value="${esc(defaultVal)}"
+        style="margin-top:10px;width:100%;box-sizing:border-box" />
+      <div style="display:flex;gap:8px;justify-content:flex-end;margin-top:12px">
+        <button class="btn" id="_fn-cancel">Cancel</button>
+        <button class="btn" id="_fn-ok">Create</button>
+      </div>
+    </div>
+  `;
+  document.body.appendChild(dlg);
+
+  const input  = dlg.querySelector('#_fn-input');
+  const cancel = dlg.querySelector('#_fn-cancel');
+  const ok     = dlg.querySelector('#_fn-ok');
+
+  const confirm = () => {
+    const val = input.value.trim();
+    dlg.close(); dlg.remove();
+    if (val) onConfirm(val);
   };
 
-  parent.children.push(node);
-  if (parent.object3d) parent.object3d.add(group);
+  cancel.addEventListener('click', () => { dlg.close(); dlg.remove(); });
+  ok.addEventListener('click', confirm);
+  input.addEventListener('keydown', e => {
+    if (e.key === 'Enter') confirm();
+    if (e.key === 'Escape') { dlg.close(); dlg.remove(); }
+  });
 
-  state.setState({ nodeById: buildNodeMap(root) });
-  expandPathToNode(node.id);
-  steps.scheduleSync();
-  setStatus(`Created folder "${node.name}".`);
+  dlg.showModal();
+  requestAnimationFrame(() => { input.select(); });
 }
 
 

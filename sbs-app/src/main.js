@@ -331,6 +331,9 @@ canvas.addEventListener('contextmenu', e => {
   e.preventDefault();
   hideContextMenu();
 
+  // Gizmo gets first right-click: opens transform panel
+  if (gizmo.onRightClick(e.clientX, e.clientY)) return;
+
   const selId = state.get('selectedId');
   const nodeById = state.get('nodeById');
   const node = selId && nodeById ? nodeById.get(selId) : null;
@@ -396,6 +399,13 @@ window.addEventListener('keydown', async e => {
   if (key === 'ArrowRight') { e.preventDefault(); steps.activateRelativeStep(+1); return; }
   if (key === ' ')          { e.preventDefault(); steps.activateRelativeStep(+1); return; }
 
+  // ── Gizmo space toggle (Local ↔ World) ──────────────────────────────────
+  if (key === 'l' || key === 'L') {
+    e.preventDefault();
+    gizmo.toggleSpace();
+    return;
+  }
+
   // ── Fit ──────────────────────────────────────────────────────────────────
   if (key === 'f' || key === 'F') {
     e.preventDefault();
@@ -429,7 +439,7 @@ window.addEventListener('keydown', async e => {
       if (removed?.object3d?.parent) removed.object3d.parent.remove(removed.object3d);
       state.setState({ nodeById: buildNodeMap(root) });
       state.clearSelection();
-      steps.scheduleSync();
+      steps.scheduleTransformSync();
       state.markDirty();
       setStatus(`Deleted folder "${removed?.name}".`);
     }

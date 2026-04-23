@@ -372,6 +372,95 @@ export function diffVisibility(nodeById, visibility) {
 
 
 // ═══════════════════════════════════════════════════════════════════════════
+//  PARENT MAP  (step-sensitive tree arrangement)
+// ═══════════════════════════════════════════════════════════════════════════
+
+/**
+ * Capture every node's parent ID into a plain object.
+ * The root has no entry (it has no parent).
+ * { [nodeId]: parentId }
+ *
+ * @param {TreeNode} root
+ * @returns {Object}
+ */
+export function captureParentMap(root) {
+  const map = {};
+  function walk(node, parentId) {
+    if (parentId !== null) map[node.id] = parentId;
+    for (const child of (node.children || [])) walk(child, node.id);
+  }
+  if (root) walk(root, null);
+  return map;
+}
+
+/**
+ * Re-arrange the tree so every node is under the parent recorded in parentMap.
+ * Nodes or parents that no longer exist in the tree are silently skipped.
+ * Returns the list of moves performed: [{ nodeId, fromParentId, toParentId }]
+ * so the caller can sync Three.js object hierarchy.
+ *
+ * @param {TreeNode} root
+ * @param {Object}   parentMap  { [nodeId]: parentId }
+ * @returns {{ nodeId, fromParentId, toParentId }[]}
+ */
+export function applyParentMap(root, parentMap) {
+  if (!root || !parentMap) return [];
+  const nodeById = buildNodeMap(root);
+  const moves = [];
+
+  // Collect moves first (don't mutate while building the list)
+  for (const [nodeId, targetParentId] of Object.entries(parentMap)) {
+    const node         = nodeById.get(nodeId);
+    const targetParent = nodeById.get(targetParentId);
+    if (!node || !targetParent) continue;
+
+    const currentParent = getParentFromMap(nodeById, nodeId);
+    if (!currentParent || currentParent.id === targetParentId) continue;
+
+    moves.push({ nodeId, fromParentId: currentParent.id, toParentId: targetParentId });
+  }
+
+  // Execute data moves
+  for (const { nodeId, fromParentId, toParentId } of moves) {
+    const node       = nodeById.get(nodeId);
+    const fromParent = nodeById.get(fromParentId);
+    const toParent   = nodeById.get(toParentId);
+    if (!node || !fromParent || !toParent) continue;
+
+    const idx = fromParent.children.findIndex(c => c.id === nodeId);
+    if (idx >= 0) fromParent.children.splice(idx, 1);
+    toParent.children.push(node);
+  }
+
+  return moves;
+}
+
+
+// ═══════════════════════════════════════════════════════════════════════════
+//  TREE SERIALISATION  (for step snapshots — no Three.js)
+// ═══════════════════════════════════════════════════════════════════════════
+
+/**
+ * Recursively serialize a tree node to a plain, Three.js-free object.
+ * Used to store the full folder/model hierarchy in each step snapshot.
+ * Only structure is captured here — transforms are stored in snapshot.transforms.
+ *
+ * @param {TreeNode} node
+ * @returns {object|null}
+ */
+export function serializeModelTree(node) {
+  if (!node) return null;
+  return {
+    id:           node.id,
+    name:         node.name || '',
+    type:         node.type,
+    localVisible: node.localVisible !== false,
+    children:     (node.children || []).map(serializeModelTree).filter(Boolean),
+  };
+}
+
+
+// ═══════════════════════════════════════════════════════════════════════════
 //  SELECTION UTILITIES
 // ═══════════════════════════════════════════════════════════════════════════
 /**
