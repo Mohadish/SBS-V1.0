@@ -16,7 +16,7 @@ import { showContextMenu } from './context-menu.js';
 let _container    = null;
 let _dragId       = null;          // id of step being dragged
 let _dragChapterId = null;         // id of chapter being dragged (header drag)
-const _collapsed  = new Map();     // chapterId -> true if collapsed (ephemeral, per session)
+const _dragExpand = new Set();     // chapterIds force-expanded during a drag (hover override)
 let _expandTimer  = null;          // setTimeout id for hover-to-expand
 const HOVER_EXPAND_MS = 500;
 const DROP_COLOR  = '#3b82f6';     // blue insertion line
@@ -150,14 +150,14 @@ export function renderStepsPanel() {
 // ── Chapter header ───────────────────────────────────────────────────────────
 
 /**
- * Visual collapse state resolves lock + active-step-in-chapter overrides:
- *   - locked chapter        → always expanded
- *   - active step ∈ chapter → always expanded (ignore user collapse)
- *   - otherwise             → honour _collapsed map
+ * Collapse = lock is the only control.
+ *   - locked            → always expanded
+ *   - unlocked + active step inside → expanded (auto-expand)
+ *   - unlocked + no active step inside → collapsed
  */
 function _isChapterVisuallyCollapsed(chapter, activeId) {
   if (chapter.locked) return false;
-  if (!_collapsed.get(chapter.id)) return false;
+  if (_dragExpand.has(chapter.id)) return false;   // hover-over during drag
   if (activeId) {
     const active = (state.get('steps') || []).find(s => s.id === activeId);
     if (active?.chapterId === chapter.id) return false;
@@ -176,30 +176,13 @@ function _buildChapterHeader(chapter, number) {
     'display:flex',
     'align-items:center',
     'gap:6px',
-    'background:rgba(255,255,255,0.04)',
-    'border:1px solid rgba(255,255,255,0.08)',
+    'background:rgba(59,130,246,0.12)',
+    'border:1px solid rgba(59,130,246,0.45)',
     'border-radius:6px',
+    'color:#bfdbfe',
     'cursor:grab',
     'user-select:none',
   ].join(';');
-
-  // Collapse / expand toggle.
-  //   userCollapsed = user pressed ▸
-  //   actualCollapsed = what renders right now (lock + active-step override)
-  //   forcedOpen = user asked to collapse but something is holding it open
-  const userCollapsed   = !!_collapsed.get(chapter.id);
-  const activeId        = state.get('activeStepId');
-  const actualCollapsed = _isChapterVisuallyCollapsed(chapter, activeId);
-  const forcedOpen      = userCollapsed && !actualCollapsed;
-
-  const btnToggle = _mkBtn(actualCollapsed ? '▸' : '▾', userCollapsed ? 'Expand' : 'Collapse');
-  btnToggle.style.fontSize = '14px';
-  if (forcedOpen) btnToggle.style.opacity = '0.4';
-  btnToggle.addEventListener('click', e => {
-    e.stopPropagation();
-    _collapsed.set(chapter.id, !userCollapsed);
-    renderStepsPanel();
-  });
 
   // Numbered badge (position-based)
   const badge = document.createElement('span');
@@ -210,11 +193,13 @@ function _buildChapterHeader(chapter, number) {
   const name = document.createElement('span');
   name.className   = 'title';
   name.style.flex  = '1';
+  name.style.color = '#dbeafe';
   name.textContent = chapter.name || 'Chapter';
 
-  // Lock: on (blue) = always expanded; off (grey) = collapsable
+  // Lock: on (blue) = always expanded; off (grey) = collapsable. Lock is
+  // the only collapse control — arrow toggle removed to reduce redundancy.
   const btnLock = _mkBtn(chapter.locked ? '🔒' : '🔓', chapter.locked ? 'Unlock (allow collapse)' : 'Lock open');
-  btnLock.style.color   = chapter.locked ? '#3b82f6' : '#6b7280';
+  btnLock.style.color   = chapter.locked ? '#3b82f6' : '#94a3b8';
   btnLock.style.opacity = chapter.locked ? '1' : '0.75';
   btnLock.addEventListener('click', e => {
     e.stopPropagation();
@@ -226,7 +211,7 @@ function _buildChapterHeader(chapter, number) {
   btnRename.addEventListener('click', e => { e.stopPropagation(); _renameChapter(chapter.id); });
   btnDel.addEventListener('click',    e => { e.stopPropagation(); _deleteChapter(chapter.id); });
 
-  wrap.append(btnToggle, badge, name, btnLock, btnRename, btnDel);
+  wrap.append(badge, name, btnLock, btnRename, btnDel);
 
   // ── Drag the whole chapter (and its steps) ────────────────────────────────
   wrap.addEventListener('dragstart', e => {
@@ -239,6 +224,7 @@ function _buildChapterHeader(chapter, number) {
     _dragChapterId = null;
     _clearExpandTimer();
     _clearDropIndicators();
+    _endDragExpand();
     wrap.style.opacity = '';
   });
 
@@ -247,10 +233,11 @@ function _buildChapterHeader(chapter, number) {
     e.preventDefault();
     const side = _dragChapterId ? _dropSideFromEvent(wrap, e) : 'after';
     _setDropIndicator(wrap, side);
-    // Hover-to-expand if collapsed and a step is being dragged
-    if (_dragId && _collapsed.get(chapter.id) && !_expandTimer) {
+    // Hover-to-expand if chapter is visually collapsed and a step is being dragged.
+    const activeIdNow = state.get('activeStepId');
+    if (_dragId && !_expandTimer && _isChapterVisuallyCollapsed(chapter, activeIdNow)) {
       _expandTimer = setTimeout(() => {
-        _collapsed.set(chapter.id, false);
+        _dragExpand.add(chapter.id);
         _expandTimer = null;
         renderStepsPanel();
       }, HOVER_EXPAND_MS);
@@ -288,6 +275,10 @@ function _buildChapterHeader(chapter, number) {
 
 function _clearExpandTimer() {
   if (_expandTimer) { clearTimeout(_expandTimer); _expandTimer = null; }
+}
+
+function _endDragExpand() {
+  if (_dragExpand.size) { _dragExpand.clear(); renderStepsPanel(); }
 }
 
 // ── Drop indicator ──────────────────────────────────────────────────────────
@@ -352,12 +343,13 @@ function _buildStepCard(step, idx, isActive, total) {
   card.dataset.stepId = step.id;
   card.style.marginBottom = '8px';
 
+  // Top row is identical in both states.
+  card.appendChild(_buildStepTopCollapsed(step, idx));
+
   if (isActive) {
-    card.appendChild(_buildStepTopActive(step, idx));
-    card.appendChild(_buildStepMetaRow(step));
+    card.appendChild(_buildStepActionRow(step));
     card.appendChild(_buildTransitionRow(step));
   } else {
-    card.appendChild(_buildStepTopCollapsed(step, idx));
     // Right-click menu for collapsed step — replaces the button row.
     card.addEventListener('contextmenu', e => {
       e.preventDefault();
@@ -383,6 +375,7 @@ function _buildStepCard(step, idx, isActive, total) {
     _dragId = null;
     _clearExpandTimer();
     _clearDropIndicators();
+    _endDragExpand();
     card.style.opacity = '';
   });
   card.addEventListener('dragover', e => {
@@ -411,30 +404,10 @@ function _buildStepCard(step, idx, isActive, total) {
 
 // ── Step top rows ────────────────────────────────────────────────────────────
 
-/** Expanded (active) step: index badge, name, cam badge, action buttons. */
-function _buildStepTopActive(step, idx) {
-  const top = document.createElement('div');
-  top.className = 'stepTop';
-
-  const badge = document.createElement('span');
-  badge.className   = 'pill';
-  badge.style.cssText = 'flex-shrink:0;font-weight:700;';
-  badge.textContent = String(idx + 1).padStart(2, '0');
-
-  const nameLbl = document.createElement('span');
-  nameLbl.className   = 'stepName';
-  nameLbl.textContent = step.name || 'Unnamed Step';
-
-  const spacer = document.createElement('span');
-  spacer.className = 'stepTopSpacer';
-
-  const camBadge = document.createElement('span');
-  camBadge.textContent = '📷';
-  camBadge.title       = step.snapshot?.camera ? 'Camera saved' : 'No camera saved';
-  camBadge.style.cssText = `opacity:${step.snapshot?.camera ? '0.55' : '0.2'};font-size:11px;flex-shrink:0;`;
-
-  const actionsRow = document.createElement('div');
-  actionsRow.style.cssText = 'display:flex;gap:3px;flex-shrink:0;';
+/** Expanded-step action row — the 5 buttons below the top thumbnail/name row. */
+function _buildStepActionRow(step) {
+  const row = document.createElement('div');
+  row.style.cssText = 'display:flex;gap:4px;margin-top:6px;flex-wrap:wrap;';
 
   const btnCam    = _mkBtn('📷', 'Update camera for this step');
   const btnHide   = _mkBtn(step.hidden ? '🚫' : '👁', 'Toggle visibility in playback');
@@ -448,9 +421,8 @@ function _buildStepTopActive(step, idx) {
   btnDup.addEventListener('click',    e => { e.stopPropagation(); _duplicateStep(step.id); });
   btnDel.addEventListener('click',    e => { e.stopPropagation(); _deleteStep(step.id); });
 
-  actionsRow.append(btnCam, btnHide, btnRename, btnDup, btnDel);
-  top.append(badge, nameLbl, spacer, camBadge, actionsRow);
-  return top;
+  row.append(btnCam, btnHide, btnRename, btnDup, btnDel);
+  return row;
 }
 
 /** Collapsed (non-active) step: thumbnail placeholder, badge, name. No buttons. */
@@ -500,19 +472,6 @@ function _buildStepTopCollapsed(step, idx) {
   return top;
 }
 
-/** Cam/Obj durations + easing summary row. */
-function _buildStepMetaRow(step) {
-  const meta = document.createElement('div');
-  meta.className = 'stepMeta';
-  const t         = step.transition || {};
-  const globalCam = state.get('cameraAnimDurationMs') ?? 1500;
-  const globalObj = state.get('objectAnimDurationMs') ?? 1500;
-  const camMs     = t.durationOverride ? (t.cameraDurationMs ?? globalCam) : globalCam;
-  const objMs     = t.durationOverride ? (t.objectDurationMs ?? globalObj) : globalObj;
-  meta.textContent = `Cam ${camMs}ms · Obj ${objMs}ms · ${t.cameraEasing ?? 'smooth'}`;
-  return meta;
-}
-
 // ── Step context menu (right-click on collapsed card) ───────────────────────
 
 function _showStepContextMenu(step, x, y) {
@@ -531,103 +490,42 @@ function _showStepContextMenu(step, x, y) {
 
 function _buildTransitionRow(step) {
   const t           = step.transition || {};
-  const globalCam   = state.get('cameraAnimDurationMs') ?? 1500;
-  const globalObj   = state.get('objectAnimDurationMs') ?? 1500;
-  const hasOverride = t.durationOverride === true;
   const stepId      = step.id;
   const animPresets = state.get('animationPresets') || [];
-
-  // Resolve which preset is active (step → project default → none)
   const stepPresetId   = t.animPresetId ?? null;
   const defaultPreset  = animPresets.find(p => p.isDefault);
-  const activePresetId = stepPresetId || defaultPreset?.id || null;
-  const activePreset   = animPresets.find(p => p.id === activePresetId);
 
   const wrap = document.createElement('div');
   wrap.className = 'card';
-  wrap.style.marginTop = '6px';
-  wrap.style.fontSize  = '12px';
+  wrap.style.cssText = 'margin-top:6px;font-size:12px;display:flex;flex-direction:column;gap:6px;';
 
-  // ── Animation preset selector ─────────────────────────────────────────────
+  // Animation preset dropdown (no title / no description)
   const presetOptions = [
-    `<option value="" ${!stepPresetId ? 'selected' : ''}>Project default${defaultPreset ? ` (${_escStep(defaultPreset.name)})` : ' — none'}</option>`,
+    `<option value="" ${!stepPresetId ? 'selected' : ''}>Default${defaultPreset ? ` (${_escStep(defaultPreset.name)})` : ''}</option>`,
     ...animPresets.map(p =>
       `<option value="${_escStep(p.id)}" ${stepPresetId === p.id ? 'selected' : ''}>${_escStep(p.name)}</option>`
     ),
   ].join('');
 
-  // When a preset is active, show its animation string and hide legacy controls
-  const usingPreset = !!activePreset;
+  // Easing dropdowns (no titles)
+  const easingOptions = cur => ['smooth','linear','instant']
+    .map(v => `<option value="${v}" ${(cur ?? 'smooth') === v ? 'selected' : ''}>${v[0].toUpperCase()+v.slice(1)}</option>`)
+    .join('');
 
   wrap.innerHTML = `
-    ${animPresets.length > 0 ? `
-    <label class="colorlab">Animation preset
-      <select class="tran-anim-preset" style="margin-top:4px">
-        ${presetOptions}
-      </select>
-    </label>
-    ${usingPreset ? `
-    <div class="small muted" style="margin-top:5px;padding:4px 6px;background:rgba(255,255,255,0.04);border-radius:4px;font-family:monospace;font-size:10px;word-break:break-all">
-      ${_escStep(activePreset.animation)}
-    </div>` : ''}
-    <div style="margin-top:8px;border-top:1px solid rgba(255,255,255,0.08);padding-top:8px"></div>
-    ` : ''}
-
-    ${!usingPreset ? `
-    <label style="display:flex;align-items:center;gap:6px;cursor:pointer;">
-      <input type="checkbox" class="tran-override" ${hasOverride ? 'checked' : ''} />
-      <span class="small muted">Override global durations</span>
-    </label>
-
-    ${hasOverride ? `
-    <div class="grid2" style="margin-top:8px;">
-      <label class="colorlab">Camera (ms)
-        <input type="number" class="tran-cam-dur" value="${t.cameraDurationMs ?? globalCam}" min="0" max="30000" step="100" style="margin-top:4px;" />
-      </label>
-      <label class="colorlab">Objects (ms)
-        <input type="number" class="tran-obj-dur" value="${t.objectDurationMs ?? globalObj}" min="0" max="30000" step="100" style="margin-top:4px;" />
-      </label>
-    </div>` : `
-    <div class="small muted" style="margin-top:6px;">📐 Camera: ${globalCam}ms &nbsp; Objects: ${globalObj}ms</div>`}
-    ` : `
-    <div class="small muted" style="margin-top:2px;">Durations defined by preset above.</div>
-    `}
-
-    <div class="grid2" style="margin-top:8px;">
-      <label class="colorlab">Camera easing
-        <select class="tran-cam-ease" style="margin-top:4px;">
-          <option value="smooth"  ${(t.cameraEasing ?? 'smooth') === 'smooth'  ? 'selected' : ''}>Smooth</option>
-          <option value="linear"  ${(t.cameraEasing ?? 'smooth') === 'linear'  ? 'selected' : ''}>Linear</option>
-          <option value="instant" ${(t.cameraEasing ?? 'smooth') === 'instant' ? 'selected' : ''}>Instant</option>
-        </select>
-      </label>
-      <label class="colorlab">Object easing
-        <select class="tran-obj-ease" style="margin-top:4px;">
-          <option value="smooth"  ${(t.objectEasing ?? 'smooth') === 'smooth'  ? 'selected' : ''}>Smooth</option>
-          <option value="linear"  ${(t.objectEasing ?? 'smooth') === 'linear'  ? 'selected' : ''}>Linear</option>
-          <option value="instant" ${(t.objectEasing ?? 'smooth') === 'instant' ? 'selected' : ''}>Instant</option>
-        </select>
-      </label>
+    ${animPresets.length > 0 ? `<select class="tran-anim-preset">${presetOptions}</select>` : ''}
+    <div class="grid2">
+      <select class="tran-cam-ease">${easingOptions(t.cameraEasing)}</select>
+      <select class="tran-obj-ease">${easingOptions(t.objectEasing)}</select>
     </div>
-
-    <label style="display:flex;align-items:center;gap:6px;margin-top:8px;cursor:pointer;">
+    <label style="display:flex;align-items:center;gap:6px;cursor:pointer;">
       <input type="checkbox" class="tran-fade" ${t.visibilityFade !== false ? 'checked' : ''} />
       <span class="small muted">Fade visibility changes</span>
     </label>
   `;
 
-  // ── Event listeners ───────────────────────────────────────────────────────
   wrap.querySelector('.tran-anim-preset')?.addEventListener('change', e => {
     actions.updateTransition(stepId, { animPresetId: e.target.value || null });
-  });
-  wrap.querySelector('.tran-override')?.addEventListener('change', e => {
-    actions.updateTransition(stepId, { durationOverride: e.target.checked });
-  });
-  wrap.querySelector('.tran-cam-dur')?.addEventListener('change', e => {
-    actions.updateTransition(stepId, { cameraDurationMs: Number(e.target.value) });
-  });
-  wrap.querySelector('.tran-obj-dur')?.addEventListener('change', e => {
-    actions.updateTransition(stepId, { objectDurationMs: Number(e.target.value) });
   });
   wrap.querySelector('.tran-cam-ease').addEventListener('change', e => {
     actions.updateTransition(stepId, { cameraEasing: e.target.value });
