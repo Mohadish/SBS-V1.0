@@ -11,6 +11,7 @@ import { steps }    from '../systems/steps.js';
 import * as actions from '../systems/actions.js';
 import { createChapter } from '../core/schema.js';
 import { setStatus } from './status.js';
+import { showContextMenu } from './context-menu.js';
 
 let _container    = null;
 let _dragId       = null;          // id of step being dragged
@@ -351,66 +352,18 @@ function _buildStepCard(step, idx, isActive, total) {
   card.dataset.stepId = step.id;
   card.style.marginBottom = '8px';
 
-  // ── Top row ──────────────────────────────────────────────────────────────
-  const top = document.createElement('div');
-  top.className = 'stepTop';
-
-  // Index badge
-  const badge = document.createElement('span');
-  badge.className   = 'pill';
-  badge.style.cssText = 'flex-shrink:0;font-weight:700;';
-  badge.textContent = String(idx + 1).padStart(2, '0');
-
-  // Name
-  const nameLbl = document.createElement('span');
-  nameLbl.className   = 'stepName';
-  nameLbl.textContent = step.name || 'Unnamed Step';
-
-  // Spacer
-  const spacer = document.createElement('span');
-  spacer.className = 'stepTopSpacer';
-
-  // Camera badge
-  const camBadge = document.createElement('span');
-  camBadge.textContent = '📷';
-  camBadge.title       = step.snapshot?.camera ? 'Camera saved' : 'No camera saved';
-  camBadge.style.cssText = `opacity:${step.snapshot?.camera ? '0.55' : '0.2'};font-size:11px;flex-shrink:0;`;
-
-  // Action buttons
-  const actionsRow = document.createElement('div');
-  actionsRow.style.cssText = 'display:flex;gap:3px;flex-shrink:0;';
-
-  const btnCam    = _mkBtn('📷', 'Update camera for this step');
-  const btnHide   = _mkBtn(step.hidden ? '🚫' : '👁', 'Toggle visibility in playback');
-  const btnRename = _mkBtn('✎',  'Rename step');
-  const btnDup    = _mkBtn('⧉',  'Duplicate step');
-  const btnDel    = _mkBtn('🗑', 'Delete step');
-
-  btnCam.addEventListener('click',    e => { e.stopPropagation(); steps.saveStepCamera(step.id); setStatus('Camera saved for step.'); });
-  btnHide.addEventListener('click',   e => { e.stopPropagation(); steps.setStepHidden(step.id, !step.hidden); });
-  btnRename.addEventListener('click', e => { e.stopPropagation(); _renameStep(step.id); });
-  btnDup.addEventListener('click',    e => { e.stopPropagation(); _duplicateStep(step.id); });
-  btnDel.addEventListener('click',    e => { e.stopPropagation(); _deleteStep(step.id); });
-
-  actionsRow.append(btnCam, btnHide, btnRename, btnDup, btnDel);
-  top.append(badge, nameLbl, spacer, camBadge, actionsRow);
-
-  // ── Meta row ──────────────────────────────────────────────────────────────
-  const meta = document.createElement('div');
-  meta.className = 'stepMeta';
-  const t = step.transition || {};
-  const globalCam = state.get('cameraAnimDurationMs') ?? 1500;
-  const globalObj = state.get('objectAnimDurationMs') ?? 1500;
-  const camMs = t.durationOverride ? (t.cameraDurationMs ?? globalCam) : globalCam;
-  const objMs = t.durationOverride ? (t.objectDurationMs ?? globalObj) : globalObj;
-  meta.textContent = `Cam ${camMs}ms · Obj ${objMs}ms · ${t.cameraEasing ?? 'smooth'}`;
-
-  card.appendChild(top);
-  card.appendChild(meta);
-
-  // ── Transition settings (active step only) ────────────────────────────────
   if (isActive) {
+    card.appendChild(_buildStepTopActive(step, idx));
+    card.appendChild(_buildStepMetaRow(step));
     card.appendChild(_buildTransitionRow(step));
+  } else {
+    card.appendChild(_buildStepTopCollapsed(step, idx));
+    // Right-click menu for collapsed step — replaces the button row.
+    card.addEventListener('contextmenu', e => {
+      e.preventDefault();
+      e.stopPropagation();
+      _showStepContextMenu(step, e.clientX, e.clientY);
+    });
   }
 
   // Single click → animate to step
@@ -454,6 +407,124 @@ function _buildStepCard(step, idx, isActive, total) {
   });
 
   return card;
+}
+
+// ── Step top rows ────────────────────────────────────────────────────────────
+
+/** Expanded (active) step: index badge, name, cam badge, action buttons. */
+function _buildStepTopActive(step, idx) {
+  const top = document.createElement('div');
+  top.className = 'stepTop';
+
+  const badge = document.createElement('span');
+  badge.className   = 'pill';
+  badge.style.cssText = 'flex-shrink:0;font-weight:700;';
+  badge.textContent = String(idx + 1).padStart(2, '0');
+
+  const nameLbl = document.createElement('span');
+  nameLbl.className   = 'stepName';
+  nameLbl.textContent = step.name || 'Unnamed Step';
+
+  const spacer = document.createElement('span');
+  spacer.className = 'stepTopSpacer';
+
+  const camBadge = document.createElement('span');
+  camBadge.textContent = '📷';
+  camBadge.title       = step.snapshot?.camera ? 'Camera saved' : 'No camera saved';
+  camBadge.style.cssText = `opacity:${step.snapshot?.camera ? '0.55' : '0.2'};font-size:11px;flex-shrink:0;`;
+
+  const actionsRow = document.createElement('div');
+  actionsRow.style.cssText = 'display:flex;gap:3px;flex-shrink:0;';
+
+  const btnCam    = _mkBtn('📷', 'Update camera for this step');
+  const btnHide   = _mkBtn(step.hidden ? '🚫' : '👁', 'Toggle visibility in playback');
+  const btnRename = _mkBtn('✎',  'Rename step');
+  const btnDup    = _mkBtn('⧉',  'Duplicate step');
+  const btnDel    = _mkBtn('🗑', 'Delete step');
+
+  btnCam.addEventListener('click',    e => { e.stopPropagation(); steps.saveStepCamera(step.id); setStatus('Camera saved for step.'); });
+  btnHide.addEventListener('click',   e => { e.stopPropagation(); steps.setStepHidden(step.id, !step.hidden); });
+  btnRename.addEventListener('click', e => { e.stopPropagation(); _renameStep(step.id); });
+  btnDup.addEventListener('click',    e => { e.stopPropagation(); _duplicateStep(step.id); });
+  btnDel.addEventListener('click',    e => { e.stopPropagation(); _deleteStep(step.id); });
+
+  actionsRow.append(btnCam, btnHide, btnRename, btnDup, btnDel);
+  top.append(badge, nameLbl, spacer, camBadge, actionsRow);
+  return top;
+}
+
+/** Collapsed (non-active) step: thumbnail placeholder, badge, name. No buttons. */
+function _buildStepTopCollapsed(step, idx) {
+  const top = document.createElement('div');
+  top.className = 'stepTop';
+  top.style.cssText = 'display:flex;align-items:center;gap:8px;';
+
+  // Thumbnail placeholder — reserved slot for future preview capture.
+  const thumb = document.createElement('div');
+  thumb.className = 'stepThumb';
+  thumb.style.cssText = [
+    'flex:0 0 auto',
+    'width:48px',
+    'height:36px',
+    'background:rgba(255,255,255,0.06)',
+    'border:1px solid rgba(255,255,255,0.08)',
+    'border-radius:4px',
+    'display:flex',
+    'align-items:center',
+    'justify-content:center',
+    'font-size:10px',
+    'color:rgba(255,255,255,0.3)',
+  ].join(';');
+  thumb.textContent = '—';
+
+  const badge = document.createElement('span');
+  badge.className   = 'pill';
+  badge.style.cssText = 'flex-shrink:0;font-weight:700;';
+  badge.textContent = String(idx + 1).padStart(2, '0');
+
+  const nameLbl = document.createElement('span');
+  nameLbl.className   = 'stepName';
+  nameLbl.style.flex  = '1';
+  nameLbl.textContent = step.name || 'Unnamed Step';
+
+  top.append(thumb, badge, nameLbl);
+
+  // If hidden in playback, show a small indicator on the far right.
+  if (step.hidden) {
+    const hideInd = document.createElement('span');
+    hideInd.textContent = '🚫';
+    hideInd.title = 'Hidden in playback';
+    hideInd.style.cssText = 'flex-shrink:0;opacity:0.5;font-size:11px;';
+    top.appendChild(hideInd);
+  }
+  return top;
+}
+
+/** Cam/Obj durations + easing summary row. */
+function _buildStepMetaRow(step) {
+  const meta = document.createElement('div');
+  meta.className = 'stepMeta';
+  const t         = step.transition || {};
+  const globalCam = state.get('cameraAnimDurationMs') ?? 1500;
+  const globalObj = state.get('objectAnimDurationMs') ?? 1500;
+  const camMs     = t.durationOverride ? (t.cameraDurationMs ?? globalCam) : globalCam;
+  const objMs     = t.durationOverride ? (t.objectDurationMs ?? globalObj) : globalObj;
+  meta.textContent = `Cam ${camMs}ms · Obj ${objMs}ms · ${t.cameraEasing ?? 'smooth'}`;
+  return meta;
+}
+
+// ── Step context menu (right-click on collapsed card) ───────────────────────
+
+function _showStepContextMenu(step, x, y) {
+  showContextMenu([
+    { label: 'Rename…',       action: () => _renameStep(step.id) },
+    { label: 'Duplicate',     action: () => _duplicateStep(step.id) },
+    { label: step.hidden ? 'Show in playback' : 'Hide from playback',
+      action: () => steps.setStepHidden(step.id, !step.hidden) },
+    { label: 'Update camera', action: () => { steps.saveStepCamera(step.id); setStatus('Camera saved for step.'); } },
+    { separator: true },
+    { label: 'Delete',        action: () => _deleteStep(step.id) },
+  ], x, y);
 }
 
 // ── Transition row ────────────────────────────────────────────────────────────
