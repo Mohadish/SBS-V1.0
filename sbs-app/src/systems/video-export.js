@@ -21,6 +21,7 @@
 import { state }     from '../core/state.js';
 import { steps }     from './steps.js';
 import { sceneCore } from '../core/scene.js';
+import { rasterizeOverlay } from './overlay.js';
 
 // Vendored ES module (see sbs-app/vendor/mp4-muxer.mjs).
 import { Muxer as Mp4Muxer, ArrayBufferTarget } from '../../vendor/mp4-muxer.mjs';
@@ -123,6 +124,13 @@ async function _exportMp4({ fps = DEFAULT_FPS, bitrate = DEFAULT_BITRATE,
   // Frame pump — captures the canvas on every render tick and encodes as many
   // fixed-interval frame slots as have elapsed in wall-clock time. Timestamps
   // are regular so playback is smooth even if rAF hiccups.
+  //
+  // Composite: we draw the 3D canvas and the Konva overlay into an offscreen
+  // 2D canvas, then build the VideoFrame from that. This bakes the overlay
+  // (text boxes, images) into the encoded output.
+  const composite    = new OffscreenCanvas(width, height);
+  const compositeCtx = composite.getContext('2d');
+
   const frameIntervalUs = 1_000_000 / fps;
   let nextFrameUs = 0;
   const startMs = performance.now();
@@ -130,7 +138,14 @@ async function _exportMp4({ fps = DEFAULT_FPS, bitrate = DEFAULT_BITRATE,
   const unsubTick = sceneCore.addTickHook((nowMs) => {
     const elapsedUs = (nowMs - startMs) * 1000;
     while (nextFrameUs <= elapsedUs) {
-      const frame = new VideoFrame(canvas, { timestamp: nextFrameUs });
+      // 1. Lay down the 3D frame at native size.
+      compositeCtx.clearRect(0, 0, width, height);
+      compositeCtx.drawImage(canvas, 0, 0, width, height);
+      // 2. Bake the overlay on top (null if no overlay nodes exist).
+      const ov = rasterizeOverlay({ width, height });
+      if (ov) compositeCtx.drawImage(ov, 0, 0, width, height);
+      // 3. Encode.
+      const frame = new VideoFrame(composite, { timestamp: nextFrameUs });
       const keyFrame = Math.round(nextFrameUs / frameIntervalUs) % fps === 0;
       try { encoder.encode(frame, { keyFrame }); } catch (e) { frame.close(); throw e; }
       frame.close();

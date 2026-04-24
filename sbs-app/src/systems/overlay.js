@@ -267,20 +267,21 @@ function _recreateNode(spec) {
 // ─── Video-export compositing (used by Phase 2b) ───────────────────────────
 
 /**
- * Returns an HTMLCanvasElement with the overlay's current contents at the
- * given pixel size, or null if there's no overlay. Caller is responsible
- * for disposing.
+ * Rasterize the current overlay to a canvas sized to fit the given width
+ * (or height) while preserving aspect. Returns null if there's nothing on
+ * the overlay. Does not mutate the live stage.
+ *
+ * @param {{width?:number, height?:number}} [opts]
  */
-export function rasterizeOverlay(width, height) {
+export function rasterizeOverlay(opts = {}) {
   if (!_stage || _layer.getChildren().length === 0) return null;
-  const prevW = _stage.width();
-  const prevH = _stage.height();
-  _stage.width(width);
-  _stage.height(height);
-  const canvas = _layer.toCanvas({ pixelRatio: 1 });
-  _stage.width(prevW);
-  _stage.height(prevH);
-  return canvas;
+  const sw = _stage.width();
+  const sh = _stage.height();
+  if (!sw || !sh) return null;
+  const ratio = opts.width  ? opts.width  / sw
+              : opts.height ? opts.height / sh
+              : 1;
+  return _layer.toCanvas({ pixelRatio: ratio });
 }
 
 // ─── Internals ─────────────────────────────────────────────────────────────
