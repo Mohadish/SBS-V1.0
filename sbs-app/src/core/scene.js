@@ -211,6 +211,35 @@ export class SceneCore extends Emitter {
     this._render();
   }
 
+  /**
+   * Grab the current viewport as a small data-URL thumbnail (JPEG).
+   * Downscaled via an offscreen 2D canvas so storage stays tight.
+   * Returns null if the renderer isn't ready.
+   *
+   * @param {number} w         target width in px  (default 120)
+   * @param {number} h         target height in px (default 80)
+   * @param {number} quality   JPEG quality 0..1   (default 0.55)
+   * @returns {string|null}    data URL or null
+   */
+  captureThumbnail(w = 120, h = 80, quality = 0.55) {
+    const dom = this.renderer?.domElement;
+    if (!dom || !dom.width || !dom.height) return null;
+    // preserveDrawingBuffer is on (see WebGLRenderer init), so a direct read
+    // of the viewport canvas gives the last fully-rendered frame.
+    const off = document.createElement('canvas');
+    off.width  = w;
+    off.height = h;
+    const ctx = off.getContext('2d');
+    if (!ctx) return null;
+    try {
+      ctx.drawImage(dom, 0, 0, w, h);
+      return off.toDataURL('image/jpeg', quality);
+    } catch (e) {
+      // Context-loss / CORS edge cases: fail quietly, skip this tick.
+      return null;
+    }
+  }
+
   _render() {
     if (!this.renderer) return;
     // Main scene

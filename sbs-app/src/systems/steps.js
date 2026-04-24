@@ -93,8 +93,11 @@ class StepManager {
     // Materials system reference (set by materials.js on init)
     this._materials = null;
 
-    // Tick hook unsubscribe function
-    this._tickUnsubscribe = null;
+    // Tick hook unsubscribe functions
+    this._tickUnsubscribe      = null;
+    this._thumbTickUnsubscribe = null;
+    this._lastThumbMs          = 0;
+    this._thumbIntervalMs      = 200;   // 5 fps cap
   }
 
   // ─── Setup ───────────────────────────────────────────────────────────────
@@ -117,12 +120,44 @@ class StepManager {
     this._tickUnsubscribe = sceneCore.addTickHook((nowMs) => {
       this._advanceObjectTransitions(nowMs);
     });
+
+    // Thumbnail capture tick — 5 fps throttle, updates active step's preview.
+    this._thumbTickUnsubscribe = sceneCore.addTickHook((nowMs) => {
+      if (nowMs - this._lastThumbMs < this._thumbIntervalMs) return;
+      this.captureActiveThumbnail();
+    });
   }
 
   dispose() {
     clearInterval(this._syncTimer);
     this._tickUnsubscribe?.();
+    this._thumbTickUnsubscribe?.();
     this._objectTransitions = [];
+  }
+
+  /**
+   * Capture the current viewport as a thumbnail for the active step.
+   * Respects the 5-fps throttle unless `force` is true (used on step change
+   * to guarantee the outgoing step's final state is saved).
+   *
+   * Updates step.thumbnail in place WITHOUT calling markDirty or state.setState
+   * so the main timeline doesn't re-render on every frame. Emits 'step:thumb'
+   * so the steps panel can update only the affected <img> surgically.
+   *
+   * @param {boolean} force   bypass the throttle
+   */
+  captureActiveThumbnail(force = false) {
+    const now = performance.now();
+    if (!force && now - this._lastThumbMs < this._thumbIntervalMs) return;
+    const activeId = state.get('activeStepId');
+    if (!activeId) return;
+    const dataUrl = sceneCore.captureThumbnail(120, 80, 0.55);
+    if (!dataUrl) return;
+    const step = state.get('steps').find(s => s.id === activeId);
+    if (!step) return;
+    step.thumbnail = dataUrl;
+    this._lastThumbMs = now;
+    state.emit('step:thumb', { stepId: activeId, dataUrl });
   }
 
 
@@ -680,6 +715,10 @@ class StepManager {
     // snapCurrentToFinal does NOT rebuild the tree — it only snaps object positions
     // and materials since the tree/node data is already at the target state.
     this.snapCurrentToFinal();
+
+    // Capture the OUTGOING step's final viewport state before we switch away.
+    // Force bypasses the 5-fps throttle so nothing is lost on quick step changes.
+    if (state.get('activeStepId') !== stepId) this.captureActiveThumbnail(true);
 
     // Update state (fires 'step:activate' event for notes/screen overlay)
     state.setActiveStep(stepId);

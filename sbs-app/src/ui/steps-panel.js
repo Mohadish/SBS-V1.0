@@ -74,6 +74,8 @@ export function initStepsPanel() {
   state.on('change:cameraAnimDurationMs', _syncDurationInputs);
   state.on('change:objectAnimDurationMs', _syncDurationInputs);
   state.on('change:animationPresets',     renderStepsPanel);
+  // Surgical per-step thumbnail update — avoid re-rendering the whole list.
+  state.on('step:thumb', _onStepThumb);
 
   // Click outside the timeline panel collapses the expanded step AND clears
   // the multi-selection. The scene's active step is unchanged. Capture phase
@@ -98,6 +100,22 @@ function _onActiveStepChanged() {
   // When active step changes via keyboard or any other path, sync expansion.
   _expandedId = state.get('activeStepId');
   renderStepsPanel();
+}
+
+/**
+ * Update a single step's thumbnail <img> in place. If the slot was the
+ * placeholder div (no thumbnail yet), a full re-render swaps it for an
+ * <img>; after that, we just update src every tick with no DOM churn.
+ */
+function _onStepThumb({ stepId, dataUrl }) {
+  if (!stepId || !dataUrl) return;
+  const el = document.querySelector(`[data-thumb-step="${stepId}"]`);
+  if (!el) return;
+  if (el.tagName === 'IMG') {
+    el.src = dataUrl;
+  } else {
+    renderStepsPanel();   // placeholder -> img swap
+  }
 }
 
 function _syncAndRender() { renderStepsPanel(); }
@@ -369,8 +387,9 @@ function _buildStepCard(step, idx, isActive, isExpanded, total) {
   card.dataset.stepId = step.id;
   card.style.marginBottom = '8px';
 
-  // Top row is identical in both states.
-  card.appendChild(_buildStepTopCollapsed(step, idx));
+  // Top row identical in both states — except the thumbnail is hidden when
+  // the card is expanded (per the original step-layout spec).
+  card.appendChild(_buildStepTopCollapsed(step, idx, !isExpanded));
 
   if (isExpanded) {
     card.appendChild(_buildStepActionRow(step));
@@ -501,29 +520,50 @@ function _buildStepActionRow(step) {
   return row;
 }
 
-/** Collapsed (non-active) step: thumbnail placeholder, badge, name. No buttons. */
-function _buildStepTopCollapsed(step, idx) {
+/** Step top row: (optional) thumbnail + badge + name. No buttons. */
+function _buildStepTopCollapsed(step, idx, showThumb = true) {
   const top = document.createElement('div');
   top.className = 'stepTop';
   top.style.cssText = 'display:flex;align-items:center;gap:8px;';
 
-  // Thumbnail placeholder — reserved slot for future preview capture.
-  const thumb = document.createElement('div');
-  thumb.className = 'stepThumb';
-  thumb.style.cssText = [
-    'flex:0 0 auto',
-    'width:48px',
-    'height:36px',
-    'background:rgba(255,255,255,0.06)',
-    'border:1px solid rgba(255,255,255,0.08)',
-    'border-radius:4px',
-    'display:flex',
-    'align-items:center',
-    'justify-content:center',
-    'font-size:10px',
-    'color:rgba(255,255,255,0.3)',
-  ].join(';');
-  thumb.textContent = '—';
+  // Thumbnail — live preview of the viewport when this step is active.
+  // Hidden while the card is expanded (full controls take precedence).
+  // Falls back to an em-dash placeholder if no frame has been captured yet.
+  let thumb = null;
+  if (!showThumb) {
+    // skip — no thumbnail in expanded mode
+  } else if (step.thumbnail) {
+    thumb = document.createElement('img');
+    thumb.src = step.thumbnail;
+    thumb.className = 'stepThumb';
+    thumb.style.cssText = [
+      'flex:0 0 auto',
+      'width:72px',
+      'height:48px',
+      'object-fit:cover',
+      'background:#000',
+      'border:1px solid rgba(255,255,255,0.12)',
+      'border-radius:4px',
+    ].join(';');
+  } else {
+    thumb = document.createElement('div');
+    thumb.className = 'stepThumb';
+    thumb.style.cssText = [
+      'flex:0 0 auto',
+      'width:72px',
+      'height:48px',
+      'background:rgba(255,255,255,0.06)',
+      'border:1px solid rgba(255,255,255,0.08)',
+      'border-radius:4px',
+      'display:flex',
+      'align-items:center',
+      'justify-content:center',
+      'font-size:10px',
+      'color:rgba(255,255,255,0.3)',
+    ].join(';');
+    thumb.textContent = '—';
+  }
+  if (thumb) thumb.dataset.thumbStep = step.id;
 
   const badge = document.createElement('span');
   badge.className   = 'pill';
@@ -535,7 +575,8 @@ function _buildStepTopCollapsed(step, idx) {
   nameLbl.style.flex  = '1';
   nameLbl.textContent = step.name || 'Unnamed Step';
 
-  top.append(thumb, badge, nameLbl);
+  if (thumb) top.appendChild(thumb);
+  top.append(badge, nameLbl);
 
   // If hidden in playback, show a small indicator on the far right.
   if (step.hidden) {
