@@ -12,6 +12,7 @@ import * as actions from '../systems/actions.js';
 import { createChapter, generateId } from '../core/schema.js';
 import { setStatus } from './status.js';
 import { showContextMenu } from './context-menu.js';
+import { exportTimelineVideo, downloadBlob } from '../systems/video-export.js';
 
 let _container    = null;
 let _dragId       = null;          // id of step being dragged (single-drag fallback)
@@ -46,6 +47,7 @@ export function initStepsPanel() {
         <button class="btn" id="btn-add-step">+ Step</button>
         <button class="btn" id="btn-add-chapter">+ Chapter</button>
       </div>
+      <button class="btn" id="btn-export-video" style="margin-top:6px;width:100%;">🎬 Export video</button>
       <div class="card" style="margin-top:8px;">
         <div class="grid2">
           <label class="colorlab">Camera (ms)
@@ -64,6 +66,8 @@ export function initStepsPanel() {
     .addEventListener('click', _onAddStep);
   _container.querySelector('#btn-add-chapter')
     .addEventListener('click', _onAddChapter);
+  _container.querySelector('#btn-export-video')
+    .addEventListener('click', _onExportVideo);
 
   _container.querySelector('#global-cam-dur').addEventListener('change', e => {
     _setGlobalDuration('cameraAnimDurationMs', Number(e.target.value));
@@ -997,6 +1001,44 @@ async function _onAddStep() {
   const step = actions.createStep('New Step', { chapterId });
   if (chapterId) state.setState({ _pendingChapterId: null });
   setStatus(`Created step "${step.name}".`);
+}
+
+// ── Video export ────────────────────────────────────────────────────────────
+let _exportingCtrl = null;   // AbortController, null when idle
+
+async function _onExportVideo() {
+  const btn = document.getElementById('btn-export-video');
+  if (_exportingCtrl) {
+    _exportingCtrl.abort();
+    return;
+  }
+  _exportingCtrl = new AbortController();
+  const origText = btn.textContent;
+  btn.textContent = '■ Cancel export';
+
+  const projectName = state.get('projectName') || 'timeline';
+  const stamp       = new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19);
+
+  try {
+    await steps.flushSync();
+    const blob = await exportTimelineVideo({
+      signal: _exportingCtrl.signal,
+      onProgress: ({ current, total, stepName }) => {
+        setStatus(`Exporting ${current}/${total}: ${stepName}…`, 'info', 0);
+      },
+    });
+    downloadBlob(blob, `${projectName}-${stamp}.webm`);
+    setStatus(`Exported ${(blob.size / 1e6).toFixed(1)} MB.`);
+  } catch (err) {
+    if (err?.name === 'AbortError') setStatus('Export cancelled.', 'warning');
+    else {
+      console.error('Export failed:', err);
+      setStatus(`Export failed: ${err.message}`, 'danger');
+    }
+  } finally {
+    _exportingCtrl = null;
+    btn.textContent = origText;
+  }
 }
 
 async function _renameStep(stepId) {
