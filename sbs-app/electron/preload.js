@@ -42,6 +42,12 @@ contextBridge.exposeInMainWorld('sbsNative', {
     ipcRenderer.on(channel, (_e, ...args) => cb(...args));
   },
 
+  // ── Text-to-speech (OS voices via `say` npm) ─────────────────────────────
+  tts: {
+    listVoices: ()                        => ipcRenderer.invoke('tts:listVoices'),
+    synthesize: (text, voice, speed = 1)  => ipcRenderer.invoke('tts:synthesize', text, voice, speed),
+  },
+
   // ── Environment ──────────────────────────────────────────────────────────
   isElectron: true,
   platform: process.platform,   // 'win32' | 'darwin' | 'linux'

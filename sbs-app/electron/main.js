@@ -4,6 +4,8 @@ const { app, BrowserWindow, Menu, ipcMain, dialog, shell } = require('electron')
 const path  = require('path');
 const fs    = require('fs');
 const { spawn, execSync } = require('child_process');
+const os = require('os');
+const say = require('say');
 
 const IS_DEV   = process.argv.includes('--dev');
 const APP_ROOT = path.join(__dirname, '..');
@@ -328,4 +330,45 @@ ipcMain.handle('app:getVersion', () => app.getVersion());
 // Open file in system explorer
 ipcMain.handle('shell:showItemInFolder', (_, filePath) => {
   shell.showItemInFolder(filePath);
+});
+
+// ─── OS TTS (via `say` npm) ────────────────────────────────────────────────
+const _ttsTempDir = path.join(os.tmpdir(), 'sbs-tts');
+try { fs.mkdirSync(_ttsTempDir, { recursive: true }); } catch {}
+
+ipcMain.handle('tts:listVoices', async () => {
+  return new Promise((resolve) => {
+    try {
+      say.getInstalledVoices((err, voices) => {
+        if (err) { console.warn('[tts] listVoices:', err.message); resolve([]); return; }
+        resolve((voices || []).filter(Boolean));
+      });
+    } catch (e) {
+      console.warn('[tts] listVoices threw:', e.message);
+      resolve([]);
+    }
+  });
+});
+
+ipcMain.handle('tts:synthesize', async (_, text, voice, speed) => {
+  if (!text || !text.trim()) return { ok: false, error: 'Empty text.' };
+  const filename = path.join(_ttsTempDir, `tts-${Date.now()}-${Math.random().toString(36).slice(2, 8)}.wav`);
+  return new Promise((resolve) => {
+    try {
+      // say.export(text, voice, speed, filename, callback)
+      say.export(text, voice || null, Number(speed) || 1.0, filename, (err) => {
+        if (err) { resolve({ ok: false, error: err.message }); return; }
+        try {
+          const buf = fs.readFileSync(filename);
+          const b64 = buf.toString('base64');
+          try { fs.unlinkSync(filename); } catch {}
+          resolve({ ok: true, data: b64, mime: 'audio/wav' });
+        } catch (e) {
+          resolve({ ok: false, error: e.message });
+        }
+      });
+    } catch (e) {
+      resolve({ ok: false, error: e.message });
+    }
+  });
 });

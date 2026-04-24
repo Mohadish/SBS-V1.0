@@ -13,6 +13,7 @@ import { createChapter, generateId } from '../core/schema.js';
 import { setStatus } from './status.js';
 import { showContextMenu } from './context-menu.js';
 import { exportTimelineVideo, downloadBlob } from '../systems/video-export.js';
+import { listVoices as ttsListVoices, synthesize as ttsSynthesize } from '../systems/tts.js';
 
 let _container    = null;
 let _dragId       = null;          // id of step being dragged (single-drag fallback)
@@ -79,6 +80,7 @@ export function initStepsPanel() {
   state.on('change:steps',                _syncAndRender);
   state.on('change:chapters',             _syncAndRender);
   state.on('change:activeStepId',         _onActiveStepChanged);
+  state.on('step:applied',                _playStepNarration);
   state.on('change:cameraAnimDurationMs', _syncDurationInputs);
   state.on('change:objectAnimDurationMs', _syncDurationInputs);
   state.on('change:animationPresets',     renderStepsPanel);
@@ -128,6 +130,16 @@ function _onActiveStepChanged() {
   // When active step changes via keyboard or any other path, sync expansion.
   _expandedId = state.get('activeStepId');
   renderStepsPanel();
+}
+
+let _narrationAudio = null;
+function _playStepNarration(step) {
+  // Auto-play any saved TTS / mic clip when a step is applied.
+  if (_narrationAudio) { try { _narrationAudio.pause(); } catch {} _narrationAudio = null; }
+  const clip = step?.narration?.dataUrl;
+  if (!clip || step.isBaseStep) return;
+  _narrationAudio = new Audio(clip);
+  _narrationAudio.play().catch(err => console.warn('[narration] play:', err.message));
 }
 
 /**
@@ -546,6 +558,7 @@ function _buildStepCard(step, idx, isActive, isExpanded, total) {
   if (isExpanded) {
     card.appendChild(_buildStepActionRow(step));
     card.appendChild(_buildTransitionRow(step));
+    card.appendChild(_buildNarrationRow(step));
   }
 
   // Right-click: if step is part of a multi-selection, show the multi menu;
@@ -885,6 +898,128 @@ function _pasteChapterUnder(targetChapterId) {
   steps.normalizeOrder();
   state.markDirty();
   setStatus(`Pasted chapter "${newChapter.name}" with ${pastedSteps.length} step(s).`);
+}
+
+// ── Narration row (text-to-speech per step) ────────────────────────────────
+
+let _voiceCache = null;
+async function _voices() {
+  if (_voiceCache) return _voiceCache;
+  _voiceCache = await ttsListVoices();
+  return _voiceCache;
+}
+
+/** Narration editor for the active step: text + voice + speed + generate/play/clear. */
+function _buildNarrationRow(step) {
+  const wrap = document.createElement('div');
+  wrap.className = 'card';
+  wrap.style.cssText = 'margin-top:6px;font-size:12px;display:flex;flex-direction:column;gap:6px;';
+
+  const n = step.narration || {};
+  const hasClip = !!n.dataUrl;
+
+  // Text field.
+  const textArea = document.createElement('textarea');
+  textArea.rows = 2;
+  textArea.placeholder = 'Narration text…';
+  textArea.value = n.text || '';
+  textArea.style.cssText = 'width:100%;box-sizing:border-box;padding:6px 8px;font-size:13px;background:#111827;color:var(--text);border:1px solid var(--line);border-radius:6px;resize:vertical;caret-color:#f59e0b;';
+  textArea.addEventListener('change', () => {
+    step.narration = { ...(step.narration || {}), text: textArea.value };
+    state.markDirty();
+  });
+
+  // Voice dropdown (populated async).
+  const voiceSel = document.createElement('select');
+  voiceSel.style.cssText = 'flex:1;';
+  voiceSel.innerHTML = `<option value="">Loading voices…</option>`;
+  _voices().then(list => {
+    if (!list.length) {
+      voiceSel.innerHTML = `<option value="">No voices available</option>`;
+      return;
+    }
+    voiceSel.innerHTML = list.map(v =>
+      `<option value="${_escStep(v.id)}" ${v.id === n.voiceId ? 'selected' : ''}>${_escStep(v.name)} — ${_escStep(v.lang)}</option>`
+    ).join('');
+  });
+  voiceSel.addEventListener('change', () => {
+    step.narration = { ...(step.narration || {}), voiceId: voiceSel.value };
+    state.markDirty();
+  });
+
+  // Speed slider 0.5x … 2.0x.
+  const speedWrap = document.createElement('label');
+  speedWrap.style.cssText = 'display:flex;align-items:center;gap:6px;flex-shrink:0;';
+  const speedLbl = document.createElement('span'); speedLbl.className = 'small muted'; speedLbl.textContent = `${(n.speed ?? 1).toFixed(2)}×`;
+  const speedInp = document.createElement('input');
+  speedInp.type = 'range'; speedInp.min = '0.5'; speedInp.max = '2'; speedInp.step = '0.05';
+  speedInp.value = String(n.speed ?? 1);
+  speedInp.style.cssText = 'width:80px;';
+  speedInp.addEventListener('input', () => { speedLbl.textContent = `${Number(speedInp.value).toFixed(2)}×`; });
+  speedInp.addEventListener('change', () => {
+    step.narration = { ...(step.narration || {}), speed: Number(speedInp.value) };
+    state.markDirty();
+  });
+  speedWrap.append(speedLbl, speedInp);
+
+  // Buttons.
+  const btnRow = document.createElement('div');
+  btnRow.style.cssText = 'display:flex;gap:4px;flex-wrap:wrap;align-items:center;';
+  const btnGen   = _mkBtn('🎙 Generate', 'Synthesize this text with the chosen voice');
+  const btnPlay  = _mkBtn('▶',          'Preview saved clip');
+  const btnClear = _mkBtn('🗑',         'Remove saved clip');
+  const statusLbl = document.createElement('span');
+  statusLbl.className = 'small muted';
+  statusLbl.style.cssText = 'flex:1;min-width:0;';
+  statusLbl.textContent = hasClip ? `Clip · ${(n.durationMs/1000||0).toFixed(1)}s` : '(no clip)';
+
+  btnGen.addEventListener('click', async (e) => {
+    e.stopPropagation();
+    const text    = textArea.value.trim();
+    const voiceId = voiceSel.value;
+    const speed   = Number(speedInp.value) || 1.0;
+    if (!text)    { statusLbl.textContent = 'Type something first.'; return; }
+    if (!voiceId) { statusLbl.textContent = 'Pick a voice first.';   return; }
+    statusLbl.textContent = 'Synthesizing…';
+    btnGen.disabled = true;
+    try {
+      const out = await ttsSynthesize(text, voiceId, { speed });
+      step.narration = { kind: 'tts', text, voiceId, speed, ...out };
+      state.markDirty();
+      statusLbl.textContent = `Clip · ${(out.durationMs/1000).toFixed(1)}s`;
+    } catch (err) {
+      console.error('[tts]', err);
+      statusLbl.textContent = `Failed: ${err.message}`;
+    } finally {
+      btnGen.disabled = false;
+    }
+  });
+
+  btnPlay.addEventListener('click', (e) => {
+    e.stopPropagation();
+    const clip = step.narration?.dataUrl;
+    if (!clip) { statusLbl.textContent = 'Nothing to play.'; return; }
+    const a = new Audio(clip);
+    a.play().catch(err => { statusLbl.textContent = `Play failed: ${err.message}`; });
+  });
+
+  btnClear.addEventListener('click', (e) => {
+    e.stopPropagation();
+    if (!step.narration) return;
+    const { text: t, voiceId: v, speed: s } = step.narration;
+    step.narration = { text: t, voiceId: v, speed: s };    // drop audio, keep settings
+    state.markDirty();
+    statusLbl.textContent = '(no clip)';
+  });
+
+  btnRow.append(btnGen, btnPlay, btnClear, statusLbl);
+
+  const topRow = document.createElement('div');
+  topRow.style.cssText = 'display:flex;gap:6px;align-items:center;';
+  topRow.append(voiceSel, speedWrap);
+
+  wrap.append(textArea, topRow, btnRow);
+  return wrap;
 }
 
 // ── Transition row ────────────────────────────────────────────────────────────

@@ -5,7 +5,7 @@
   "main": "electron/main.js",
   "scripts": {
     "start": "electron .",
-    "dev":   "electron . --dev",
+    "dev": "electron . --dev",
     "build": "electron-builder"
   },
   "build": {
@@ -44,7 +44,8 @@
     ]
   },
   "dependencies": {
-    "electron": "^28.3.3"
+    "electron": "^28.3.3",
+    "say": "^0.16.0"
   },
   "devDependencies": {
     "electron-builder": "^24.13.3"
