@@ -18,6 +18,7 @@ let _dragChapterId = null;         // id of chapter being dragged (header drag)
 const _collapsed  = new Map();     // chapterId -> true if collapsed (ephemeral, per session)
 let _expandTimer  = null;          // setTimeout id for hover-to-expand
 const HOVER_EXPAND_MS = 500;
+const DROP_COLOR  = '#3b82f6';     // blue insertion line
 
 // ── Init ────────────────────────────────────────────────────────────────────
 
@@ -197,14 +198,15 @@ function _buildChapterHeader(chapter) {
   wrap.addEventListener('dragend', () => {
     _dragChapterId = null;
     _clearExpandTimer();
+    _clearDropIndicators();
     wrap.style.opacity = '';
   });
 
   // ── Drop zone: accepts steps (into chapter) AND chapters (reorder) ────────
   wrap.addEventListener('dragover', e => {
     e.preventDefault();
-    wrap.classList.add('ghostDrop');
-    wrap.style.outline = '2px solid var(--accent, #3b82f6)';
+    const side = _dragChapterId ? _dropSideFromEvent(wrap, e) : 'after';
+    _setDropIndicator(wrap, side);
     // Hover-to-expand if collapsed and a step is being dragged
     if (_dragId && _collapsed.get(chapter.id) && !_expandTimer) {
       _expandTimer = setTimeout(() => {
@@ -215,14 +217,13 @@ function _buildChapterHeader(chapter) {
     }
   });
   wrap.addEventListener('dragleave', () => {
-    wrap.classList.remove('ghostDrop');
-    wrap.style.outline = '';
+    _clearDropIndicators();
     _clearExpandTimer();
   });
   wrap.addEventListener('drop', e => {
     e.preventDefault();
-    wrap.classList.remove('ghostDrop');
-    wrap.style.outline = '';
+    const side = wrap.dataset.dropSide;
+    _clearDropIndicators();
     _clearExpandTimer();
 
     if (_dragId) {
@@ -231,9 +232,14 @@ function _buildChapterHeader(chapter) {
       actions.moveStepToChapter(_dragId, chapter.id, insertIdx);
     } else if (_dragChapterId && _dragChapterId !== chapter.id) {
       // Chapter dropped on another chapter's header → reorder block.
+      // side=before → insert chapter AT target's index (pushing target down)
+      // side=after  → insert chapter AFTER target (one past target's index)
       const chapters = state.get('chapters') || [];
-      const toIdx    = chapters.findIndex(c => c.id === chapter.id);
-      if (toIdx >= 0) actions.reorderChapter(_dragChapterId, toIdx);
+      let toIdx      = chapters.findIndex(c => c.id === chapter.id);
+      if (toIdx >= 0) {
+        if (side === 'after') toIdx += 1;
+        actions.reorderChapter(_dragChapterId, toIdx);
+      }
     }
   });
 
@@ -242,6 +248,31 @@ function _buildChapterHeader(chapter) {
 
 function _clearExpandTimer() {
   if (_expandTimer) { clearTimeout(_expandTimer); _expandTimer = null; }
+}
+
+// ── Drop indicator ──────────────────────────────────────────────────────────
+// Shows a 2px blue line ABOVE (side='before') or BELOW (side='after') a card
+// or header to mark exactly where the drag will land.
+function _setDropIndicator(el, side) {
+  if (!el) return;
+  _clearDropIndicators();
+  if (side === 'before') el.style.boxShadow = `0 -2px 0 0 ${DROP_COLOR}`;
+  else                    el.style.boxShadow = `0  2px 0 0 ${DROP_COLOR}`;
+  el.dataset.dropSide = side;
+}
+
+function _clearDropIndicators() {
+  const list = document.getElementById('steps-list');
+  if (!list) return;
+  list.querySelectorAll('.stepItem, .chapterHeader').forEach(el => {
+    el.style.boxShadow = '';
+    delete el.dataset.dropSide;
+  });
+}
+
+function _dropSideFromEvent(el, e) {
+  const rect = el.getBoundingClientRect();
+  return (e.clientY - rect.top) < rect.height / 2 ? 'before' : 'after';
 }
 
 /**
@@ -359,25 +390,27 @@ function _buildStepCard(step, idx, isActive, total) {
   card.addEventListener('dragend', () => {
     _dragId = null;
     _clearExpandTimer();
+    _clearDropIndicators();
     card.style.opacity = '';
   });
   card.addEventListener('dragover', e => {
     e.preventDefault();
-    card.classList.add('ghostDrop');
+    _setDropIndicator(card, _dropSideFromEvent(card, e));
   });
   card.addEventListener('dragleave', () => {
-    card.classList.remove('ghostDrop');
+    _clearDropIndicators();
   });
   card.addEventListener('drop', e => {
     e.preventDefault();
-    card.classList.remove('ghostDrop');
+    const side = card.dataset.dropSide || 'before';
+    _clearDropIndicators();
     if (_dragId && _dragId !== step.id) {
       const all   = state.get('steps') || [];
-      const toIdx = all.findIndex(s => s.id === step.id);
-      if (toIdx >= 0) {
-        const targetChapterId = step.chapterId ?? null;
-        actions.moveStepToChapter(_dragId, targetChapterId, toIdx);
-      }
+      let toIdx   = all.findIndex(s => s.id === step.id);
+      if (toIdx < 0) return;
+      if (side === 'after') toIdx += 1;
+      const targetChapterId = step.chapterId ?? null;
+      actions.moveStepToChapter(_dragId, targetChapterId, toIdx);
     }
   });
 
