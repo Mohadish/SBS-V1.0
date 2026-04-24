@@ -572,6 +572,7 @@ async function _deleteChapter(chapterId) {
   );
   const updatedChapters = chapters.filter(c => c.id !== chapterId);
   state.setState({ steps: allSteps, chapters: updatedChapters });
+  steps.normalizeOrder();
   state.markDirty();
   setStatus(`Deleted chapter "${chapter.name}".`);
 }

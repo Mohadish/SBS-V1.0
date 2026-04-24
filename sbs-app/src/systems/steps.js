@@ -933,9 +933,16 @@ class StepManager {
   createStepFromCurrent(name, overrides = {}) {
     const steps    = state.get('steps');
     const activeId = state.get('activeStepId');
+    const active   = steps.find(s => s.id === activeId);
+
+    // Inherit active step's chapter when none given — keeps new steps inside
+    // the user's current chapter so normalizeOrder doesn't relocate them.
+    const inheritedChapterId = overrides.chapterId !== undefined
+      ? overrides.chapterId
+      : (active?.chapterId ?? null);
 
     const label = name ?? this._nextStepLabel(steps);
-    const step  = createStep({ name: label, ...overrides });
+    const step  = createStep({ name: label, ...overrides, chapterId: inheritedChapterId });
     step.snapshot = this.captureSnapshot();
 
     // Insert after active step, or at end
@@ -945,6 +952,7 @@ class StepManager {
     newSteps.splice(insertAt, 0, step);
 
     state.setState({ steps: newSteps });
+    this.normalizeOrder();
     state.setActiveStep(step.id);
     state.markDirty();
     state.emit('step:created', step);
@@ -1128,6 +1136,7 @@ class StepManager {
     steps.splice(Math.max(0, Math.min(steps.length, newIndex)), 0, step);
 
     state.setState({ steps });
+    this.normalizeOrder();
     state.markDirty();
     state.emit('steps:reordered');
   }
@@ -1157,7 +1166,46 @@ class StepManager {
     if (!step) return;
     step.chapterId = chapterId ?? null;
     state.setState({ steps: [...steps] });
+    this.normalizeOrder();
     state.markDirty();
+  }
+
+  /**
+   * Re-sort state.steps so it matches visual order:
+   *   [base step] → [chapter 1 steps in their relative order]
+   *                → [chapter 2 steps ...]
+   *                → [ungrouped steps at end]
+   *
+   * The visual timeline (badges, next/prev) iterates state.steps directly,
+   * so keeping the array == display order is the single source of truth.
+   * Call after any mutation that may diverge the two (assign chapter,
+   * delete chapter, create step, move step).
+   */
+  normalizeOrder() {
+    const all       = state.get('steps') || [];
+    const chapters  = state.get('chapters') || [];
+    const chIds     = new Set(chapters.map(c => c.id));
+    const base      = all.filter(s =>  s.isBaseStep);
+    const nonBase   = all.filter(s => !s.isBaseStep);
+    const byCh      = new Map();
+    const ungrouped = [];
+    for (const s of nonBase) {
+      if (s.chapterId && chIds.has(s.chapterId)) {
+        if (!byCh.has(s.chapterId)) byCh.set(s.chapterId, []);
+        byCh.get(s.chapterId).push(s);
+      } else {
+        ungrouped.push(s);
+      }
+    }
+    const newOrder = [...base];
+    for (const c of chapters) newOrder.push(...(byCh.get(c.id) || []));
+    newOrder.push(...ungrouped);
+
+    // Only emit state change if order actually differs (avoid render churn).
+    const sameOrder = newOrder.length === all.length
+      && newOrder.every((s, i) => s === all[i]);
+    if (sameOrder) return;
+    state.setState({ steps: newOrder });
   }
 
   /**
@@ -1177,6 +1225,7 @@ class StepManager {
     steps.splice(Math.max(0, Math.min(steps.length, newIndex)), 0, step);
 
     state.setState({ steps });
+    this.normalizeOrder();
     state.markDirty();
     state.emit('steps:reordered');
   }
