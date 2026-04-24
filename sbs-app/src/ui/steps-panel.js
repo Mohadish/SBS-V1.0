@@ -554,8 +554,6 @@ function _buildStepCard(step, idx, isActive, isExpanded, total) {
   // Top row identical in both states — except the thumbnail is hidden when
   // the card is expanded (per the original step-layout spec).
   card.appendChild(_buildStepTopCollapsed(step, idx, !isExpanded));
-  // Narration bar (text + preview) — shown on every card, both states.
-  card.appendChild(_buildNarrationTopBar(step));
 
   if (isExpanded) {
     card.appendChild(_buildStepActionRow(step));
@@ -912,46 +910,15 @@ async function _voices() {
 }
 
 /**
- * Small narration row shown at the top of every step card (both collapsed and
- * expanded). Holds the step's voice-over text + a preview-play button. Voice
- * selection and global speed live in the Export tab, so this stays compact.
- */
-function _buildNarrationTopBar(step) {
-  const row = document.createElement('div');
-  row.style.cssText = 'display:flex;gap:4px;align-items:center;margin-top:4px;';
-
-  const input = document.createElement('input');
-  input.type = 'text';
-  input.placeholder = 'Voice-over text…';
-  input.value = step.narration?.text || '';
-  input.style.cssText = 'flex:1;min-width:0;height:24px;padding:0 6px;font-size:12px;background:rgba(255,255,255,0.04);color:var(--text);border:1px solid rgba(255,255,255,0.10);border-radius:4px;caret-color:#f59e0b;';
-  // Prevent the card's click from swallowing editor focus.
-  input.addEventListener('click', e => e.stopPropagation());
-  input.addEventListener('mousedown', e => e.stopPropagation());
-  input.addEventListener('change', () => {
-    const text = input.value;
-    // Text change invalidates any cached audio — user must re-preview / re-export.
-    step.narration = { text };
-    state.markDirty();
-  });
-
-  const btnPlay = _mkBtn('▶', 'Preview narration');
-  btnPlay.style.cssText = 'width:24px;height:24px;padding:0;font-size:11px;flex-shrink:0;';
-  btnPlay.addEventListener('click', async (e) => {
-    e.stopPropagation();
-    await _previewStepNarration(step, input.value);
-  });
-
-  row.append(input, btnPlay);
-  return row;
-}
-
-/**
- * Synthesize (if needed) and play the step's narration using the project-
+ * Synthesize (if needed) and play a step's narration using the project-
  * level voice + speed. Caches the audio on step.narration.dataUrl so repeat
  * previews don't re-synthesize.
+ *
+ * Exported so the step-nav bar (top of viewport) can trigger preview from
+ * its own text input.
  */
-async function _previewStepNarration(step, currentText) {
+export async function previewStepNarration(step, currentText) {
+  if (!step) return;
   const text = (currentText ?? step.narration?.text ?? '').trim();
   if (!text) { setStatus('Nothing to narrate.', 'warning'); return; }
 
@@ -960,7 +927,6 @@ async function _previewStepNarration(step, currentText) {
   const speed   = Number(exp.narrationSpeed) || 1.0;
   if (!voiceId) { setStatus('Pick a voice in the Export tab first.', 'warning'); return; }
 
-  // Use cached clip if still fresh (same text + voice + speed).
   const n = step.narration || {};
   const fresh = n.dataUrl && n.text === text && n.voiceId === voiceId && n.speed === speed;
   let clipUrl = fresh ? n.dataUrl : null;
