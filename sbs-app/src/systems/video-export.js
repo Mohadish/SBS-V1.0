@@ -78,27 +78,36 @@ async function _exportMp4({ fps = DEFAULT_FPS, bitrate = DEFAULT_BITRATE,
   const width  = canvas.width;
   const height = canvas.height;
 
-  // Pick a codec the host actually supports. Chromium/Electron supports H.264
-  // via its bundled OpenH264. Level 5.1 covers anything up to 4K@30.
+  // Pick a codec the host actually supports. Chromium/Electron builds vary:
+  // some ship OpenH264 encoding (H.264/avc), most ship software VP9 encoding,
+  // newer builds ship AV1. mp4-muxer accepts all three in an MP4 container
+  // and every one of them produces a scrubbable timeline.
   const codecCandidates = [
-    'avc1.640033',   // High, Level 5.1
-    'avc1.640028',   // High, Level 4.0
-    'avc1.42E01F',   // Baseline, Level 3.1
+    // H.264 (universal playback — preferred when available)
+    { webCodec: 'avc1.640033', muxerCodec: 'avc' },  // High, Level 5.1 (≤4K)
+    { webCodec: 'avc1.640028', muxerCodec: 'avc' },  // High, Level 4.0 (≤1080p30)
+    { webCodec: 'avc1.42E01F', muxerCodec: 'avc' },  // Baseline, Level 3.1
+    // VP9 (royalty-free; VP9-in-MP4 plays in Chrome, Firefox, Edge, VLC 3+, modern editors)
+    { webCodec: 'vp09.00.10.08', muxerCodec: 'vp9' },
+    // AV1 (royalty-free, modern; software-encoded on most setups)
+    { webCodec: 'av01.0.04M.08', muxerCodec: 'av1' },
   ];
-  let codec = null;
+  let chosen = null;
   for (const c of codecCandidates) {
-    const { supported } = await VideoEncoder.isConfigSupported({
-      codec: c, width, height, bitrate, framerate: fps,
-    });
-    if (supported) { codec = c; break; }
+    try {
+      const probe = await VideoEncoder.isConfigSupported({
+        codec: c.webCodec, width, height, bitrate, framerate: fps,
+      });
+      if (probe?.supported) { chosen = c; break; }
+    } catch { /* some builds throw on unknown strings — just try the next */ }
   }
-  if (!codec) throw new Error('H.264 encoding not supported on this build.');
+  if (!chosen) throw new Error('No supported video codec (H.264 / VP9 / AV1).');
 
   const muxer = new Mp4Muxer({
     target: new ArrayBufferTarget(),
     fastStart: 'in-memory',        // moov at front → scrubbable
     video: {
-      codec: 'avc',
+      codec: chosen.muxerCodec,
       width,
       height,
       frameRate: fps,
@@ -109,7 +118,7 @@ async function _exportMp4({ fps = DEFAULT_FPS, bitrate = DEFAULT_BITRATE,
     output: (chunk, meta) => muxer.addVideoChunk(chunk, meta),
     error:  (e) => { throw e; },
   });
-  encoder.configure({ codec, width, height, bitrate, framerate: fps });
+  encoder.configure({ codec: chosen.webCodec, width, height, bitrate, framerate: fps });
 
   // Frame pump — captures the canvas on every render tick and encodes as many
   // fixed-interval frame slots as have elapsed in wall-clock time. Timestamps
@@ -140,7 +149,7 @@ async function _exportMp4({ fps = DEFAULT_FPS, bitrate = DEFAULT_BITRATE,
   muxer.finalize();
 
   const blob = new Blob([muxer.target.buffer], { type: 'video/mp4' });
-  return { blob, extension: 'mp4' };
+  return { blob, extension: 'mp4', codec: chosen.muxerCodec };
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -179,7 +188,7 @@ async function _exportWebM({ format = 'webm_vp9', fps = DEFAULT_FPS,
   }
 
   const blob = new Blob(chunks, { type: mime });
-  return { blob, extension: 'webm' };
+  return { blob, extension: 'webm', codec: format === 'webm_vp8' ? 'vp8' : 'vp9' };
 }
 
 // ═══════════════════════════════════════════════════════════════════════════

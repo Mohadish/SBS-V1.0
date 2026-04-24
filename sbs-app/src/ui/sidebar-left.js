@@ -1503,7 +1503,7 @@ async function _onExportTabStart() {
     set('Preparing…');
     await steps.flushSync();
 
-    const { blob, extension } = await exportTimelineVideo({
+    const { blob, extension, codec } = await exportTimelineVideo({
       format:     exp.outputFormat || 'mp4',
       fps:        Number(exp.fps) || 30,
       stepHoldMs: Number(exp.stepHoldMs) || 800,
@@ -1513,11 +1513,11 @@ async function _onExportTabStart() {
       },
     });
 
-    set(`Encoding finished — downloading ${(blob.size / 1e6).toFixed(1)} MB`);
+    set(`Encoding finished (${codec?.toUpperCase()}) — downloading ${(blob.size / 1e6).toFixed(1)} MB`);
     const stamp = new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19);
     downloadBlob(blob, `${fileBase}-${stamp}.${extension}`);
-    set(`Done. Saved ${fileBase}-${stamp}.${extension} (${(blob.size / 1e6).toFixed(1)} MB).`);
-    setStatus(`Exported ${extension.toUpperCase()} (${(blob.size / 1e6).toFixed(1)} MB).`);
+    set(`Done. Saved ${fileBase}-${stamp}.${extension} (${(blob.size / 1e6).toFixed(1)} MB, ${codec?.toUpperCase()}).`);
+    setStatus(`Exported ${extension.toUpperCase()} / ${codec?.toUpperCase()} (${(blob.size / 1e6).toFixed(1)} MB).`);
   } catch (err) {
     if (err?.name === 'AbortError') { set('Cancelled.'); setStatus('Export cancelled.', 'warning'); }
     else {
