@@ -130,6 +130,8 @@ label.colorlab{display:block;font-size:12px;color:var(--muted);margin-top:4px}
 #export-safe-frame-label,#exportSafeFrameLabel{position:absolute;left:10px;top:10px;padding:5px 8px;border-radius:999px;background:rgba(15,23,42,.95);border:1px solid #475569;color:#dbeafe;font-size:11px;letter-spacing:.04em;white-space:nowrap}
 
 /* ── Notes overlay ───────────────────────────────────────────── */
+#overlay-stage{position:absolute;inset:0;z-index:20;pointer-events:none}
+#overlay-stage.editing{pointer-events:auto}
 #notes-overlay,#notesOverlay{position:absolute;inset:0;pointer-events:none;z-index:18;overflow:hidden}
 #notes-overlay-svg,#notesOverlaySvg{position:absolute;inset:0;width:100%;height:100%;pointer-events:none;overflow:visible}
 #notes-overlay-labels,#notesOverlayLabels{position:absolute;inset:0;pointer-events:none}

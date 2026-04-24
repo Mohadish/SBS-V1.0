@@ -20,6 +20,8 @@
   <script src="../vendor/EBML.min.js"></script>
   <link  rel="stylesheet" href="../vendor/quill.core.css" />
   <script src="../vendor/quill.js"></script>
+  <!-- Konva: 2D overlay editor (text boxes, images, shapes). Sets window.Konva. -->
+  <script src="../vendor/konva.min.js"></script>
   <!-- OBJ / STL / GLTF loaders are ES modules imported by importers.js -->
 </head>
 <body>
@@ -41,6 +43,8 @@
       <!-- 3D viewport -->
       <div id="viewport-surface">
         <div id="viewer"></div>
+        <!-- Konva overlay stage (textboxes, images) — sits on top of the 3D canvas -->
+        <div id="overlay-stage"></div>
         <div id="export-safe-frame" hidden>
           <span id="export-safe-frame-label">Export frame</span>
         </div>

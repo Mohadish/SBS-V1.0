@@ -45,6 +45,8 @@ import { initStepNav }            from './ui/step-nav.js';
 import { initStepsPanel }         from './ui/steps-panel.js';
 import { initSidebarLeft }        from './ui/sidebar-left.js';
 import { initContextMenu, hideContextMenu, showContextMenu } from './ui/context-menu.js';
+import { initOverlay }         from './systems/overlay.js';
+import { initOverlayToolbar }  from './ui/overlay-toolbar.js';
 
 // ══════════════════════════════════════════════════════════════════════════════
 //  1. STATE — restore persisted preferences
@@ -95,6 +97,8 @@ initSidebarLeft();
 initStepNav();
 initStepsPanel();
 initHud();
+initOverlay();
+initOverlayToolbar();
 setupUndoKeyboard();
 
 // Clear undo history when a new project loads (fresh slate)
