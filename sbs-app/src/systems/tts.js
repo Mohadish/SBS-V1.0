@@ -51,9 +51,15 @@ export async function listVoices() {
  */
 export async function synthesize(text, voiceId, opts = {}) {
   if (!text?.trim()) throw new Error('Narration text is empty.');
-  if (!voiceId)      throw new Error('No voice selected.');
+  if (!voiceId)      throw new Error('No voice selected — pick one in the Export tab.');
 
   const speed = Number(opts.speed) || 1.0;
+
+  // Reject legacy / unprefixed voice ids left over from older project files
+  // or older defaults (Piper etc.). User must re-pick a current voice.
+  if (!/^(os|kokoro):/.test(voiceId)) {
+    throw new Error(`Legacy voice "${voiceId}" — please pick a current voice in the Export tab.`);
+  }
 
   if (voiceId.startsWith('os:')) {
     if (!window.sbsNative?.tts) throw new Error('OS TTS unavailable (not running in Electron).');

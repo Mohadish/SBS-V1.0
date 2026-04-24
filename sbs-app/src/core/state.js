@@ -103,7 +103,7 @@ function createInitialState() {
       startFromActive:    true,
       showSafeFrame:      true,
       narrationEnabled:   true,
-      narrationVoice:     'en_US-lessac-high',
+      narrationVoice:     '',          // empty → user must pick in Export tab
       narrationSpeed:     1.0,
       narrationHelperUrl: 'http://127.0.0.1:8765',
       deterministicHelperUrl: 'http://127.0.0.1:8766',

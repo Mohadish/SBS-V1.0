@@ -362,7 +362,8 @@ function _migrateLegacyPoc(raw) {
     height:          cs.exportHeight          ?? 1080,
     fps:             cs.exportFps             ?? 30,
     stepHoldMs:      cs.exportStepHoldDuration ?? 800,
-    narrationVoice:  cs.exportNarrationVoice  || 'en_US-lessac-high',
+    // Drop legacy voice ids that don't belong to a current backend (os:/kokoro:).
+    narrationVoice:  (/^(os|kokoro):/.test(cs.exportNarrationVoice || '') ? cs.exportNarrationVoice : ''),
     narrationSpeed:  cs.exportNarrationSpeed  ?? 1.0,
     narrationHelperUrl:        cs.exportNarrationHelperUrl        || 'http://127.0.0.1:8765',
     deterministicHelperUrl:    cs.exportDeterministicHelperUrl    || 'http://127.0.0.1:8766',
