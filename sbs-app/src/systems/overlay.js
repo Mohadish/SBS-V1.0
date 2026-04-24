@@ -16,6 +16,7 @@
  */
 
 import { state } from '../core/state.js';
+import { openTextEditor } from '../ui/text-editor-modal.js';
 
 let _stage       = null;   // Konva.Stage
 let _layer       = null;   // Konva.Layer — holds all user content
@@ -95,22 +96,51 @@ export function setEditingMode(on) {
 
 // ─── Creating nodes ────────────────────────────────────────────────────────
 
-export function addTextBox({ text = 'Text', x, y, fontSize = 32, fill = '#ffffff', fontFamily = 'Arial' } = {}) {
+/**
+ * Open the rich-text editor modal. If the user saves, rasterize the HTML
+ * and drop a Konva.Image on the stage holding the rendered textbox.
+ * Returns the created node, or null if the user cancelled.
+ */
+export async function addTextBox() {
   if (!_stage) return null;
-  const cx = x ?? _stage.width()  / 2;
-  const cy = y ?? _stage.height() / 2;
-  const node = new Konva.Text({
-    x: cx - 80, y: cy - 20,
-    text, fontSize, fontFamily, fill,
-    padding: 4,
+  const html = await openTextEditor();
+  if (!html) return null;
+
+  const canvas = await _htmlToCanvas(html, { width: 400 });
+  if (!canvas) return null;
+
+  const node = new Konva.Image({
+    x: (_stage.width()  - canvas.width)  / 2,
+    y: (_stage.height() - canvas.height) / 2,
+    image: canvas,
+    width:  canvas.width,
+    height: canvas.height,
     draggable: true,
-    name: 'userText',
+    name: 'userTextBox',
   });
+  node.setAttr('textHtml',  html);
+  node.setAttr('textWidth', canvas.width);
   _layer.add(node);
   _attachNode(node);
   _setSelection(node);
   _scheduleSave();
   return node;
+}
+
+/** Re-open the modal for an existing text-box node, re-rasterize on save. */
+async function _editTextBox(node) {
+  const html = await openTextEditor(node.getAttr('textHtml') || '<div>Text</div>');
+  if (!html) return;
+  const targetW = node.getAttr('textWidth') || node.width() || 400;
+  const canvas  = await _htmlToCanvas(html, { width: targetW });
+  if (!canvas) return;
+  node.image(canvas);
+  node.width(canvas.width);
+  node.height(canvas.height);
+  node.setAttr('textHtml', html);
+  node.setAttr('textWidth', canvas.width);
+  _layer.batchDraw();
+  _scheduleSave();
 }
 
 /**
@@ -148,6 +178,10 @@ function _attachNode(node) {
   node.on('pointerdown', () => _setSelection(node));
   node.on('dragend transformend', _scheduleSave);
   if (node.getClassName() === 'Text') node.on('dblclick', () => _editText(node));
+  // Any Konva.Image tagged as a user text box re-opens the rich-text editor.
+  if (node.getClassName() === 'Image' && node.getAttr('textHtml')) {
+    node.on('dblclick', () => _editTextBox(node));
+  }
 }
 
 function _setSelection(node) {
@@ -251,11 +285,22 @@ function _recreateNode(spec) {
   if (!spec) return null;
   if (spec.className === 'Text')  return new Konva.Text({ ...spec.attrs, draggable: true });
   if (spec.className === 'Image') {
-    // Image needs an HTMLImageElement; we stashed the dataUrl in attrs.src.
-    const { src, ...rest } = spec.attrs || {};
+    const { src, textHtml, textWidth, ...rest } = spec.attrs || {};
     const node = new Konva.Image({ ...rest, draggable: true });
-    node.setAttr('src', src);
-    if (src) {
+    if (textHtml) {
+      // Rich-text box — re-rasterize from stored HTML.
+      node.setAttr('textHtml',  textHtml);
+      node.setAttr('textWidth', textWidth);
+      _htmlToCanvas(textHtml, { width: textWidth || 400 }).then(canvas => {
+        if (canvas) {
+          node.image(canvas);
+          node.width(canvas.width);
+          node.height(canvas.height);
+          _layer.batchDraw();
+        }
+      }).catch(e => console.warn('[overlay] text rasterize failed', e));
+    } else if (src) {
+      node.setAttr('src', src);
       _loadImage(src).then(img => { node.image(img); _layer.batchDraw(); })
         .catch(e => console.warn('[overlay] image load failed', e));
     }
@@ -345,4 +390,73 @@ function _loadImage(src) {
     img.onerror = reject;
     img.src = src;
   });
+}
+
+/**
+ * Rasterize a chunk of HTML to an HTMLCanvasElement via an inline SVG
+ * `<foreignObject>`. Inline styles only — nothing from the host page leaks
+ * in, so the rendering is deterministic and safe to export.
+ *
+ * @param {string} html  — HTML markup for the text box body
+ * @param {{width?:number, padding?:number, fontFamily?:string, fontSize?:number, color?:string}} [opts]
+ * @returns {Promise<HTMLCanvasElement|null>}
+ */
+async function _htmlToCanvas(html, opts = {}) {
+  const {
+    width      = 400,
+    padding    = 8,
+    fontFamily = 'Arial',
+    fontSize   = 16,
+    color      = '#ffffff',
+  } = opts;
+
+  // 1. Measure natural height by rendering into an off-screen div.
+  const host = document.createElement('div');
+  host.style.cssText = [
+    'position:absolute', 'left:-99999px', 'top:0',
+    `width:${width}px`,
+    `padding:${padding}px`,
+    `color:${color}`,
+    `font-family:${fontFamily}`,
+    `font-size:${fontSize}px`,
+    'box-sizing:border-box',
+    'white-space:pre-wrap',
+    'word-wrap:break-word',
+    'line-height:1.2',
+  ].join(';');
+  host.innerHTML = html;
+  document.body.appendChild(host);
+  const h = Math.max(1, Math.ceil(host.getBoundingClientRect().height));
+  document.body.removeChild(host);
+
+  // 2. Wrap the same markup inside an SVG foreignObject at the measured size.
+  const bodyStyle = [
+    `width:${width}px`,
+    `padding:${padding}px`,
+    `color:${color}`,
+    `font-family:${fontFamily}`,
+    `font-size:${fontSize}px`,
+    'box-sizing:border-box',
+    'white-space:pre-wrap',
+    'word-wrap:break-word',
+    'line-height:1.2',
+  ].join(';');
+  const svg =
+    `<svg xmlns="http://www.w3.org/2000/svg" width="${width}" height="${h}">` +
+      `<foreignObject width="${width}" height="${h}">` +
+        `<div xmlns="http://www.w3.org/1999/xhtml" style="${bodyStyle}">${html}</div>` +
+      `</foreignObject>` +
+    `</svg>`;
+  const dataUrl = 'data:image/svg+xml;charset=utf-8,' + encodeURIComponent(svg);
+
+  let img;
+  try { img = await _loadImage(dataUrl); }
+  catch (e) { console.warn('[overlay] html rasterize load failed', e); return null; }
+
+  const canvas = document.createElement('canvas');
+  canvas.width  = width;
+  canvas.height = h;
+  const ctx = canvas.getContext('2d');
+  ctx.drawImage(img, 0, 0, width, h);
+  return canvas;
 }
