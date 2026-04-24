@@ -99,10 +99,11 @@ export function initStepsPanel() {
   _syncDurationInputs();
   renderStepsPanel();
 
-  // List-level step-drop handling — one slot, never two conflicting indicators.
+  // List-level drop handling — one slot, never two conflicting indicators.
+  // Handles step drags and chapter drags with the same dashed slot UX.
   const list = _container.querySelector('#steps-list');
   list.addEventListener('dragover', e => {
-    if (!_dragIds.length) return;                  // only for step drags
+    if (!_dragIds.length && !_dragChapterId) return;
     e.preventDefault();
     _positionDropSlot(list, e.clientY);
   });
@@ -113,7 +114,7 @@ export function initStepsPanel() {
     _removeDropSlot();
   });
   list.addEventListener('drop', e => {
-    if (!_dragIds.length) return;
+    if (!_dragIds.length && !_dragChapterId) return;
     e.preventDefault();
     _commitDropSlot(list);
   });
@@ -295,23 +296,17 @@ function _buildChapterHeader(chapter, number) {
   wrap.addEventListener('dragend', () => {
     _dragChapterId = null;
     _clearExpandTimer();
-    _clearDropIndicators();
+    _removeDropSlot();
     _endDragExpand();
     wrap.style.opacity = '';
   });
 
-  // ── Drop zone ─────────────────────────────────────────────────────────────
-  // Step drag → the list-level handler manages the dashed drop slot; the
-  // chapter header only participates by offering hover-to-expand and (on
-  // drop) an explicit "into this chapter" target.
-  // Chapter drag → we still draw the box-shadow indicator so the user can
-  // see before/after on the target header.
+  // Chapter header is NOT a per-drop target anymore — all step and chapter
+  // drops go through the list-level drop-slot logic. The header still
+  // participates in hover-to-expand so that a collapsed chapter can be
+  // opened mid-drag to expose its steps.
   wrap.addEventListener('dragover', e => {
     e.preventDefault();
-    if (_dragChapterId) {
-      _setDropIndicator(wrap, _dropSideFromEvent(wrap, e));
-    }
-    // Hover-to-expand with debounced transition + scroll anchor.
     const activeIdNow = state.get('activeStepId');
     if (_dragId && _isChapterVisuallyCollapsed(chapter, activeIdNow)) {
       if (_expandTargetId !== chapter.id) {
@@ -323,26 +318,7 @@ function _buildChapterHeader(chapter, number) {
     }
   });
   wrap.addEventListener('dragleave', () => {
-    _clearDropIndicators();
     if (_expandTargetId === chapter.id) _clearExpandTimer();
-  });
-  wrap.addEventListener('drop', e => {
-    // Chapter-to-chapter reorder only. Step drops are entirely handled by
-    // the list-level drop-slot logic. Stop bubbling so the list handler
-    // doesn't also fire for chapter-block drops.
-    if (!_dragChapterId || _dragChapterId === chapter.id) return;
-    e.preventDefault();
-    e.stopPropagation();
-    const side = wrap.dataset.dropSide;
-    _clearDropIndicators();
-    _clearExpandTimer();
-
-    const chapters = state.get('chapters') || [];
-    let toIdx      = chapters.findIndex(c => c.id === chapter.id);
-    if (toIdx >= 0) {
-      if (side === 'after') toIdx += 1;
-      actions.reorderChapter(_dragChapterId, toIdx);
-    }
   });
 
   return wrap;
@@ -387,31 +363,6 @@ function _endDragExpand() {
   if (_dragExpandId !== null) { _dragExpandId = null; renderStepsPanel(); }
 }
 
-// ── Drop indicator ──────────────────────────────────────────────────────────
-// Shows a 2px blue line ABOVE (side='before') or BELOW (side='after') a card
-// or header to mark exactly where the drag will land.
-function _setDropIndicator(el, side) {
-  if (!el) return;
-  _clearDropIndicators();
-  if (side === 'before') el.style.boxShadow = `0 -2px 0 0 ${DROP_COLOR}`;
-  else                    el.style.boxShadow = `0  2px 0 0 ${DROP_COLOR}`;
-  el.dataset.dropSide = side;
-}
-
-function _clearDropIndicators() {
-  const list = document.getElementById('steps-list');
-  if (!list) return;
-  list.querySelectorAll('.stepItem, .chapterHeader').forEach(el => {
-    el.style.boxShadow = '';
-    delete el.dataset.dropSide;
-  });
-}
-
-function _dropSideFromEvent(el, e) {
-  const rect = el.getBoundingClientRect();
-  return (e.clientY - rect.top) < rect.height / 2 ? 'before' : 'after';
-}
-
 // ── Drop slot ───────────────────────────────────────────────────────────────
 // A single dashed placeholder inserted into the list while a step drag is in
 // progress. The surrounding cards shift to make room so the user sees exactly
@@ -420,8 +371,9 @@ function _dropSideFromEvent(el, e) {
 function _buildDropSlot() {
   const slot = document.createElement('div');
   slot.className = 'drop-slot';
+  // Slot height matches a collapsed step card for step drags, or a chapter
+  // header for chapter drags — set via _positionDropSlot each time.
   slot.style.cssText = [
-    'height:60px',                      // approx. collapsed-card height
     'margin:4px 0',
     'border:2px dashed ' + DROP_COLOR,
     'border-radius:10px',
@@ -438,47 +390,81 @@ function _removeDropSlot() {
 }
 
 /**
- * Place the drop slot at the correct vertical position for the current mouse
- * Y. Walks the list's children (step cards and chapter headers), picks the
- * first whose vertical midpoint is below the cursor, and inserts the slot
- * just before it — or at the end if the cursor is past everything.
+ * Place the drop slot at the correct vertical position for the current mouse Y.
  *
- * Chapter headers receive a box-shadow indicator when hovered (dropping ON
- * a header still means "add to top of this chapter"), so we skip them as
- * slot targets for now unless the mouse is clearly between cards.
+ * Step drag: walks every list child, picks the first whose midpoint is below
+ * the cursor, and inserts the slot just before it. Slot height ~ collapsed
+ * card.
+ *
+ * Chapter drag: only chapter headers are valid boundaries (dropping "inside"
+ * a chapter would be meaningless — chapters move as a block). The slot snaps
+ * to the nearest boundary between chapter sections. Slot height ~ header.
  */
 function _positionDropSlot(list, mouseY) {
   if (!_dropSlot) _dropSlot = _buildDropSlot();
 
-  const children = Array.from(list.children).filter(el => el !== _dropSlot);
   let insertBefore = null;
-  for (const el of children) {
-    const rect = el.getBoundingClientRect();
-    const mid  = rect.top + rect.height / 2;
-    if (mouseY < mid) { insertBefore = el; break; }
+
+  if (_dragChapterId) {
+    // Chapter drag — snap the slot to the start of the nearest chapter header.
+    _dropSlot.style.height = '40px';
+    const headers = Array.from(list.querySelectorAll('.chapterHeader'));
+    for (const h of headers) {
+      const rect = h.getBoundingClientRect();
+      const mid  = rect.top + rect.height / 2;
+      if (mouseY < mid) { insertBefore = h; break; }
+    }
+  } else {
+    // Step drag — slot goes between any two cards/headers.
+    _dropSlot.style.height = '60px';
+    const children = Array.from(list.children).filter(el => el !== _dropSlot);
+    for (const el of children) {
+      const rect = el.getBoundingClientRect();
+      const mid  = rect.top + rect.height / 2;
+      if (mouseY < mid) { insertBefore = el; break; }
+    }
   }
 
-  // If already in the right place, nothing to do. (Check parent too — after
-  // a renderStepsPanel the slot can be orphaned even with a matching sibling.)
+  // Already in the right place? (Check parent too — renderStepsPanel can
+  // orphan the slot with a stale sibling reference.)
   if (_dropSlot.parentNode === list && _dropSlot.nextSibling === insertBefore) return;
   if (insertBefore) list.insertBefore(_dropSlot, insertBefore);
   else              list.appendChild(_dropSlot);
 }
 
 /**
- * Called on drop. Translates the slot's DOM position into a state.steps
- * insert index + target chapterId, then dispatches the move action.
+ * Called on drop. Translates the slot's DOM position into a concrete move
+ * action. Two paths:
  *
- * Rules:
- *   - chapter id = nearest preceding non-slot node (step card's chapterId,
- *     or chapter header's chapterId).
- *   - insert index = position of the first step card AFTER the slot in
- *     state.steps; if none, append at end.
+ *   Step drag:    chapterId = nearest preceding step or chapter header;
+ *                 insert index = position of the first step card AFTER the
+ *                 slot in state.steps (fallback: append at end).
+ *
+ *   Chapter drag: target index = number of chapter headers appearing BEFORE
+ *                 the slot in the DOM. Dropping at the end places the
+ *                 chapter at the last index.
  */
 function _commitDropSlot(list) {
   if (!_dropSlot) return;
 
-  // Walk backwards from the slot to infer chapterId.
+  if (_dragChapterId) {
+    // Count chapter headers before the slot to derive the target index.
+    let targetIdx = 0;
+    for (let node = _dropSlot.previousElementSibling; node; node = node.previousElementSibling) {
+      if (node.classList.contains('chapterHeader')) targetIdx++;
+    }
+    const chapters = state.get('chapters') || [];
+    const fromIdx  = chapters.findIndex(c => c.id === _dragChapterId);
+    // Dropping into its own slot is a no-op.
+    _removeDropSlot();
+    if (fromIdx < 0 || targetIdx === fromIdx || targetIdx === fromIdx + 1) return;
+    // Adjust: if removing fromIdx shifts the array, a later targetIdx drops by 1.
+    const adjusted = fromIdx < targetIdx ? targetIdx - 1 : targetIdx;
+    actions.reorderChapter(_dragChapterId, adjusted);
+    return;
+  }
+
+  // Step drag.
   let targetChapterId = null;
   for (let node = _dropSlot.previousElementSibling; node; node = node.previousElementSibling) {
     if (node.classList.contains('stepItem')) {
@@ -492,7 +478,6 @@ function _commitDropSlot(list) {
     }
   }
 
-  // Walk forward to find the next step card → gives us the insert index.
   const all = state.get('steps') || [];
   let toIdx = all.length;
   for (let node = _dropSlot.nextElementSibling; node; node = node.nextElementSibling) {
@@ -628,7 +613,6 @@ function _buildStepCard(step, idx, isActive, isExpanded, total) {
     _dragId  = null;
     _dragIds = [];
     _clearExpandTimer();
-    _clearDropIndicators();
     _removeDropSlot();
     _endDragExpand();
     card.style.opacity = '';
