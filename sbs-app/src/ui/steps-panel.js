@@ -1016,19 +1016,23 @@ async function _onExportVideo() {
   const origText = btn.textContent;
   btn.textContent = '■ Cancel export';
 
-  const projectName = state.get('projectName') || 'timeline';
+  const exp         = state.get('export') || {};
+  const projectName = exp.fileName || state.get('projectName') || 'timeline';
   const stamp       = new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19);
 
   try {
     await steps.flushSync();
-    const blob = await exportTimelineVideo({
-      signal: _exportingCtrl.signal,
-      onProgress: ({ current, total, stepName }) => {
+    const { blob, extension } = await exportTimelineVideo({
+      format:      exp.outputFormat || 'mp4',
+      fps:         Number(exp.fps) || 30,
+      stepHoldMs:  Number(exp.stepHoldMs) || 400,
+      signal:      _exportingCtrl.signal,
+      onProgress:  ({ current, total, stepName }) => {
         setStatus(`Exporting ${current}/${total}: ${stepName}…`, 'info', 0);
       },
     });
-    downloadBlob(blob, `${projectName}-${stamp}.webm`);
-    setStatus(`Exported ${(blob.size / 1e6).toFixed(1)} MB.`);
+    downloadBlob(blob, `${projectName}-${stamp}.${extension}`);
+    setStatus(`Exported ${(blob.size / 1e6).toFixed(1)} MB as ${extension.toUpperCase()}.`);
   } catch (err) {
     if (err?.name === 'AbortError') setStatus('Export cancelled.', 'warning');
     else {

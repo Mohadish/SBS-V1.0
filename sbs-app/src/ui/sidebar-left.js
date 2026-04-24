@@ -23,6 +23,7 @@ import { createCameraView, generateId, APP_VERSION, APP_RELEASED } from '../core
 import { buildNodeMap }    from '../core/nodes.js';
 import { showContextMenu } from './context-menu.js';
 import { renderAnimationTab } from './animation-tab.js';
+import { exportTimelineVideo, downloadBlob } from '../systems/video-export.js';
 
 const TABS = ['files', 'tree', 'colors', 'select', 'cameras', 'animation', 'export'];
 let _activeTab   = 'files';
@@ -1422,9 +1423,10 @@ function _renderExportTab() {
 
         <label class="small muted" style="display:block;margin-top:10px;">Output format</label>
         <select id="exp-format" style="margin-top:8px;">
-          <option value="webm_vp8" ${exp.outputFormat==='webm_vp8'?'selected':''}>WebM VP8</option>
+          <option value="mp4"      ${exp.outputFormat==='mp4'     ?'selected':''}>MP4 (H.264) — recommended</option>
           <option value="webm_vp9" ${exp.outputFormat==='webm_vp9'?'selected':''}>WebM VP9</option>
-          <option value="png_seq"  ${exp.outputFormat==='png_seq' ?'selected':''}>PNG Sequence</option>
+          <option value="webm_vp8" ${exp.outputFormat==='webm_vp8'?'selected':''}>WebM VP8</option>
+          <option value="png_seq"  ${exp.outputFormat==='png_seq' ?'selected':''} disabled>PNG Sequence (not yet)</option>
         </select>
 
         <label class="small muted" style="display:block;margin-top:10px;">Format preset</label>
@@ -1446,7 +1448,7 @@ function _renderExportTab() {
 
       <div class="grid2" style="margin-top:8px;">
         <button class="btn" id="btn-export">Start Export</button>
-        <button class="btn" disabled>Cancel Export</button>
+        <button class="btn" id="btn-export-cancel" disabled>Cancel Export</button>
       </div>
 
       <div class="card" style="margin-top:8px;">
@@ -1475,8 +1477,63 @@ function _renderExportTab() {
     state.setExportOption('fps', Number(e.target.value)));
   el.querySelector('#exp-hold').addEventListener('change', e =>
     state.setExportOption('stepHoldMs', Number(e.target.value)));
-  el.querySelector('#btn-export').addEventListener('click', () =>
-    setStatus('Export not yet implemented in this build.', 'warn'));
+  el.querySelector('#btn-export').addEventListener('click', _onExportTabStart);
+  el.querySelector('#btn-export-cancel').addEventListener('click', _onExportTabCancel);
+}
+
+// ── Export tab: run export via the shared video-export pipeline ─────────────
+
+let _exportTabCtrl = null;   // AbortController, null when idle
+
+async function _onExportTabStart() {
+  if (_exportTabCtrl) return;                     // already running
+  _exportTabCtrl = new AbortController();
+
+  const startBtn  = document.getElementById('btn-export');
+  const cancelBtn = document.getElementById('btn-export-cancel');
+  const statusEl  = document.getElementById('exp-status');
+  if (startBtn)  startBtn.disabled  = true;
+  if (cancelBtn) cancelBtn.disabled = false;
+
+  const set = (txt) => { if (statusEl) statusEl.textContent = txt; };
+  const exp = state.get('export') || {};
+  const fileBase = (exp.fileName || 'sbs_export').replace(/\s+/g, '_');
+
+  try {
+    set('Preparing…');
+    await steps.flushSync();
+
+    const { blob, extension } = await exportTimelineVideo({
+      format:     exp.outputFormat || 'mp4',
+      fps:        Number(exp.fps) || 30,
+      stepHoldMs: Number(exp.stepHoldMs) || 800,
+      signal:     _exportTabCtrl.signal,
+      onProgress: ({ current, total, stepName }) => {
+        set(`Step ${current}/${total}: ${stepName}`);
+      },
+    });
+
+    set(`Encoding finished — downloading ${(blob.size / 1e6).toFixed(1)} MB`);
+    const stamp = new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19);
+    downloadBlob(blob, `${fileBase}-${stamp}.${extension}`);
+    set(`Done. Saved ${fileBase}-${stamp}.${extension} (${(blob.size / 1e6).toFixed(1)} MB).`);
+    setStatus(`Exported ${extension.toUpperCase()} (${(blob.size / 1e6).toFixed(1)} MB).`);
+  } catch (err) {
+    if (err?.name === 'AbortError') { set('Cancelled.'); setStatus('Export cancelled.', 'warning'); }
+    else {
+      console.error('Export failed:', err);
+      set(`Failed: ${err.message}`);
+      setStatus(`Export failed: ${err.message}`, 'danger');
+    }
+  } finally {
+    _exportTabCtrl = null;
+    if (startBtn)  startBtn.disabled  = false;
+    if (cancelBtn) cancelBtn.disabled = true;
+  }
+}
+
+function _onExportTabCancel() {
+  if (_exportTabCtrl) _exportTabCtrl.abort();
 }
 
 

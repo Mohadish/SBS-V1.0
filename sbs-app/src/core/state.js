@@ -94,7 +94,7 @@ function createInitialState() {
     // ── Export settings
     export: {
       fileName:           'sbs_export',
-      outputFormat:       'webm_vp8',
+      outputFormat:       'mp4',
       formatPreset:       'hdtv_1080',
       width:              1920,
       height:             1080,
