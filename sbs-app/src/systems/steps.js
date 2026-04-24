@@ -1159,6 +1159,14 @@ class StepManager {
   // ═══════════════════════════════════════════════════════════════════════
   //  CHAPTER MANAGEMENT
   // ═══════════════════════════════════════════════════════════════════════
+  /** Toggle a chapter's locked flag (locked => always expanded in timeline). */
+  setChapterLocked(chapterId, locked) {
+    const chapters = state.get('chapters') || [];
+    const updated  = chapters.map(c => c.id === chapterId ? { ...c, locked: !!locked } : c);
+    state.setState({ chapters: updated });
+    state.markDirty();
+  }
+
   /** Assign a step to a chapter (null = no chapter). */
   assignChapter(stepId, chapterId) {
     const steps = state.get('steps');

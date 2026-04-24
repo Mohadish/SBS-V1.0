@@ -358,6 +358,7 @@ export function createChapter(overrides = {}) {
     id:     generateId('chapter'),
     name:   'Chapter',
     hidden: false,
+    locked: false,   // true = always expanded in timeline, ignores collapse state
     ...overrides,
   };
 }

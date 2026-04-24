@@ -272,6 +272,22 @@ export function moveStepToChapter(stepId, chapterId, newIndex) {
 }
 
 /**
+ * Toggle a chapter's locked flag (locked => always expanded in timeline).
+ */
+export function setChapterLocked(chapterId, locked) {
+  const chapters = state.get('chapters') || [];
+  const prev     = chapters.find(c => c.id === chapterId);
+  if (!prev) return;
+  const prevVal = !!prev.locked;
+  steps.setChapterLocked(chapterId, locked);
+  undoManager.push(
+    'Lock chapter',
+    () => { steps.setChapterLocked(chapterId, prevVal); },
+    () => { steps.setChapterLocked(chapterId, !!locked); },
+  );
+}
+
+/**
  * Reorder a whole chapter (and its steps) to a new index in the chapter list.
  */
 export function reorderChapter(chapterId, newChapterIdx) {

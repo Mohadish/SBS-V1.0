@@ -126,15 +126,15 @@ export function renderStepsPanel() {
   }
 
   // Render: chapters (in chapter-list order) → ungrouped steps at end.
-  for (const chapter of allChapters) {
-    list.appendChild(_buildChapterHeader(chapter));
-    if (_collapsed.get(chapter.id)) continue;   // skip steps when collapsed
+  allChapters.forEach((chapter, chIdx) => {
+    list.appendChild(_buildChapterHeader(chapter, chIdx + 1));
+    if (_isChapterVisuallyCollapsed(chapter, activeId)) return;
     const chSteps = byChapter.get(chapter.id) || [];
     for (const step of chSteps) {
       const idx = flatIndex.get(step.id);
       list.appendChild(_buildStepCard(step, idx, step.id === activeId, allSteps.length));
     }
-  }
+  });
   for (const step of ungrouped) {
     const idx = flatIndex.get(step.id);
     list.appendChild(_buildStepCard(step, idx, step.id === activeId, allSteps.length));
@@ -148,7 +148,23 @@ export function renderStepsPanel() {
 
 // ── Chapter header ───────────────────────────────────────────────────────────
 
-function _buildChapterHeader(chapter) {
+/**
+ * Visual collapse state resolves lock + active-step-in-chapter overrides:
+ *   - locked chapter        → always expanded
+ *   - active step ∈ chapter → always expanded (ignore user collapse)
+ *   - otherwise             → honour _collapsed map
+ */
+function _isChapterVisuallyCollapsed(chapter, activeId) {
+  if (chapter.locked) return false;
+  if (!_collapsed.get(chapter.id)) return false;
+  if (activeId) {
+    const active = (state.get('steps') || []).find(s => s.id === activeId);
+    if (active?.chapterId === chapter.id) return false;
+  }
+  return true;
+}
+
+function _buildChapterHeader(chapter, number) {
   const wrap = document.createElement('div');
   wrap.className         = 'chapterHeader';
   wrap.dataset.chapterId = chapter.id;
@@ -166,27 +182,50 @@ function _buildChapterHeader(chapter) {
     'user-select:none',
   ].join(';');
 
-  // Collapse / expand toggle
-  const isCollapsed = !!_collapsed.get(chapter.id);
-  const btnToggle   = _mkBtn(isCollapsed ? '▸' : '▾', isCollapsed ? 'Expand' : 'Collapse');
+  // Collapse / expand toggle.
+  //   userCollapsed = user pressed ▸
+  //   actualCollapsed = what renders right now (lock + active-step override)
+  //   forcedOpen = user asked to collapse but something is holding it open
+  const userCollapsed   = !!_collapsed.get(chapter.id);
+  const activeId        = state.get('activeStepId');
+  const actualCollapsed = _isChapterVisuallyCollapsed(chapter, activeId);
+  const forcedOpen      = userCollapsed && !actualCollapsed;
+
+  const btnToggle = _mkBtn(actualCollapsed ? '▸' : '▾', userCollapsed ? 'Expand' : 'Collapse');
   btnToggle.style.fontSize = '14px';
+  if (forcedOpen) btnToggle.style.opacity = '0.4';
   btnToggle.addEventListener('click', e => {
     e.stopPropagation();
-    _collapsed.set(chapter.id, !isCollapsed);
+    _collapsed.set(chapter.id, !userCollapsed);
     renderStepsPanel();
   });
+
+  // Numbered badge (position-based)
+  const badge = document.createElement('span');
+  badge.className   = 'pill';
+  badge.style.cssText = 'flex-shrink:0;font-weight:700;font-size:11px;';
+  badge.textContent = String(number).padStart(2, '0');
 
   const name = document.createElement('span');
   name.className   = 'title';
   name.style.flex  = '1';
   name.textContent = chapter.name || 'Chapter';
 
+  // Lock: on (blue) = always expanded; off (grey) = collapsable
+  const btnLock = _mkBtn(chapter.locked ? '🔒' : '🔓', chapter.locked ? 'Unlock (allow collapse)' : 'Lock open');
+  btnLock.style.color   = chapter.locked ? '#3b82f6' : '#6b7280';
+  btnLock.style.opacity = chapter.locked ? '1' : '0.75';
+  btnLock.addEventListener('click', e => {
+    e.stopPropagation();
+    actions.setChapterLocked(chapter.id, !chapter.locked);
+  });
+
   const btnRename = _mkBtn('✎',  'Rename chapter');
   const btnDel    = _mkBtn('🗑', 'Delete chapter');
   btnRename.addEventListener('click', e => { e.stopPropagation(); _renameChapter(chapter.id); });
   btnDel.addEventListener('click',    e => { e.stopPropagation(); _deleteChapter(chapter.id); });
 
-  wrap.append(btnToggle, name, btnRename, btnDel);
+  wrap.append(btnToggle, badge, name, btnLock, btnRename, btnDel);
 
   // ── Drag the whole chapter (and its steps) ────────────────────────────────
   wrap.addEventListener('dragstart', e => {
@@ -580,12 +619,6 @@ async function _deleteChapter(chapterId) {
 // ── Step actions ─────────────────────────────────────────────────────────────
 
 async function _onAddStep() {
-  const root = state.get('treeData');
-  const hasModel = root?.children?.some(c => c.type === 'model');
-  if (!hasModel) {
-    setStatus('Load a model before creating steps.', 'warning');
-    return;
-  }
   await steps.flushSync();
   const chapterId = state.get('_pendingChapterId') ?? null;
   const step = actions.createStep('New Step', { chapterId });
