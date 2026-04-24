@@ -1244,9 +1244,12 @@ class StepManager {
         ungrouped.push(s);
       }
     }
-    const newOrder = [...base];
+    // Order: base → ungrouped → chapters (in chapter-list order).
+    // Placing ungrouped BEFORE chapter sections makes newly-created empty
+    // chapters appear at the true end of the timeline, and prevents older
+    // ungrouped steps from visually "falling under" a new chapter header.
+    const newOrder = [...base, ...ungrouped];
     for (const c of chapters) newOrder.push(...(byCh.get(c.id) || []));
-    newOrder.push(...ungrouped);
 
     // Only emit state change if order actually differs (avoid render churn).
     const sameOrder = newOrder.length === all.length

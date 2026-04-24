@@ -9,7 +9,7 @@
 import { state }    from '../core/state.js';
 import { steps }    from '../systems/steps.js';
 import * as actions from '../systems/actions.js';
-import { createChapter } from '../core/schema.js';
+import { createChapter, generateId } from '../core/schema.js';
 import { setStatus } from './status.js';
 import { showContextMenu } from './context-menu.js';
 
@@ -21,6 +21,7 @@ let _selectedIds  = new Set();     // set of step ids currently multi-selected
 const _dragExpand = new Set();     // chapterIds force-expanded during a drag (hover override)
 let _expandTimer  = null;          // setTimeout id for hover-to-expand
 let _expandedId   = null;          // id of step currently shown in expanded layout (null = all collapsed)
+let _clipboard    = null;          // { kind: 'steps'|'chapter', data: ... } — survives renders, cleared on new copy
 const HOVER_EXPAND_MS = 500;
 const DROP_COLOR  = '#3b82f6';     // blue insertion line
 
@@ -168,19 +169,20 @@ export function renderStepsPanel() {
     }
   }
 
-  // Render: chapters (in chapter-list order) → ungrouped steps at end.
+  // Render: ungrouped steps at top → chapters at bottom (in chapter-list order).
+  // A newly-created empty chapter naturally appears at the end of the timeline.
   const emitStep = (step) => {
     const idx      = flatIndex.get(step.id);
     const isActive   = step.id === activeId;
     const isExpanded = step.id === _expandedId;
     list.appendChild(_buildStepCard(step, idx, isActive, isExpanded, allSteps.length));
   };
+  ungrouped.forEach(emitStep);
   allChapters.forEach((chapter, chIdx) => {
     list.appendChild(_buildChapterHeader(chapter, chIdx + 1));
     if (_isChapterVisuallyCollapsed(chapter, activeId)) return;
     (byChapter.get(chapter.id) || []).forEach(emitStep);
   });
-  ungrouped.forEach(emitStep);
 
   list.scrollTop = scrollTop;
 
@@ -253,6 +255,13 @@ function _buildChapterHeader(chapter, number) {
   btnDel.addEventListener('click',    e => { e.stopPropagation(); _deleteChapter(chapter.id); });
 
   wrap.append(badge, name, btnLock, btnRename, btnDel);
+
+  // Right-click → chapter context menu (rename, copy, paste, lock, delete).
+  wrap.addEventListener('contextmenu', e => {
+    e.preventDefault();
+    e.stopPropagation();
+    _showChapterContextMenu(chapter, e.clientX, e.clientY);
+  });
 
   // ── Drag the whole chapter (and its steps) ────────────────────────────────
   wrap.addEventListener('dragstart', e => {
@@ -592,21 +601,27 @@ function _buildStepTopCollapsed(step, idx, showThumb = true) {
 // ── Step context menu (right-click on collapsed card) ───────────────────────
 
 function _showStepContextMenu(step, x, y) {
-  showContextMenu([
-    { label: 'Rename…',       action: () => _renameStep(step.id) },
-    { label: 'Duplicate',     action: () => _duplicateStep(step.id) },
+  const items = [
+    { label: 'Rename…',   action: () => _renameStep(step.id) },
+    { label: 'Duplicate', action: () => _duplicateStep(step.id) },
+    { label: 'Copy',      action: () => _copyStepsToClipboard([step.id]) },
+  ];
+  if (_clipboard?.kind === 'steps') {
+    items.push({ label: `Paste under (${_clipboard.data.length})`, action: () => _pasteStepsUnder(step.id) });
+  }
+  items.push(
     { label: step.hidden ? 'Show in playback' : 'Hide from playback',
       action: () => steps.setStepHidden(step.id, !step.hidden) },
     { label: 'Update camera', action: () => { steps.saveStepCamera(step.id); setStatus('Camera saved for step.'); } },
     { separator: true },
-    { label: 'Delete',        action: () => _deleteStep(step.id) },
-  ], x, y);
+    { label: 'Delete',    action: () => _deleteStep(step.id) },
+  );
+  showContextMenu(items, x, y);
 }
 
 /**
  * Right-click menu for a multi-selection. Rename + Duplicate are omitted —
- * they only make sense on a single step. Everything else applies to each
- * selected step in the given order.
+ * they only make sense on a single step. Copy applies to the whole set.
  */
 function _showMultiStepContextMenu(stepIds, x, y) {
   const stepsArr   = state.get('steps') || [];
@@ -614,6 +629,8 @@ function _showMultiStepContextMenu(stepIds, x, y) {
   const anyVisible = selSteps.some(s => !s.hidden);
 
   showContextMenu([
+    { label: `Copy (${selSteps.length})`,
+      action: () => _copyStepsToClipboard(stepIds) },
     { label: anyVisible ? 'Hide from playback' : 'Show in playback',
       action: () => selSteps.forEach(s => steps.setStepHidden(s.id, anyVisible)) },
     { label: 'Update camera',
@@ -628,6 +645,122 @@ function _showMultiStepContextMenu(stepIds, x, y) {
         renderStepsPanel();
       } },
   ], x, y);
+}
+
+/** Right-click on a chapter header — copy / paste operate on the whole chapter block. */
+function _showChapterContextMenu(chapter, x, y) {
+  const items = [
+    { label: 'Rename…', action: () => _renameChapter(chapter.id) },
+    { label: 'Copy',    action: () => _copyChapterToClipboard(chapter.id) },
+  ];
+  if (_clipboard?.kind === 'chapter') {
+    items.push({ label: 'Paste under', action: () => _pasteChapterUnder(chapter.id) });
+  }
+  if (_clipboard?.kind === 'steps') {
+    items.push({ label: `Paste steps into chapter (${_clipboard.data.length})`,
+                 action: () => _pasteStepsIntoChapter(chapter.id) });
+  }
+  items.push(
+    { separator: true },
+    { label: chapter.locked ? 'Unlock' : 'Lock open',
+      action: () => actions.setChapterLocked(chapter.id, !chapter.locked) },
+    { label: 'Delete', action: () => _deleteChapter(chapter.id) },
+  );
+  showContextMenu(items, x, y);
+}
+
+// ── Copy / paste clipboard operations ──────────────────────────────────────
+
+function _cloneStep(step) {
+  const copy = JSON.parse(JSON.stringify(step));
+  copy.id = generateId('step');
+  return copy;
+}
+
+function _copyStepsToClipboard(stepIds) {
+  const all = state.get('steps') || [];
+  const picked = stepIds
+    .map(id => all.find(s => s.id === id))
+    .filter(Boolean)
+    .sort((a, b) => all.indexOf(a) - all.indexOf(b));   // preserve visual order
+  if (!picked.length) return;
+  _clipboard = { kind: 'steps', data: JSON.parse(JSON.stringify(picked)) };
+  setStatus(`Copied ${picked.length} step(s).`);
+}
+
+function _pasteStepsUnder(targetStepId) {
+  if (_clipboard?.kind !== 'steps') return;
+  const all     = state.get('steps') || [];
+  const tgtIdx  = all.findIndex(s => s.id === targetStepId);
+  if (tgtIdx < 0) return;
+  const target  = all[tgtIdx];
+  const pasted  = _clipboard.data.map(s => {
+    const copy = _cloneStep(s);
+    copy.chapterId = target.chapterId ?? null;
+    return copy;
+  });
+  const newAll = [...all.slice(0, tgtIdx + 1), ...pasted, ...all.slice(tgtIdx + 1)];
+  state.setState({ steps: newAll });
+  steps.normalizeOrder();
+  state.markDirty();
+  setStatus(`Pasted ${pasted.length} step(s).`);
+}
+
+function _pasteStepsIntoChapter(chapterId) {
+  if (_clipboard?.kind !== 'steps') return;
+  const all    = state.get('steps') || [];
+  const pasted = _clipboard.data.map(s => {
+    const copy = _cloneStep(s);
+    copy.chapterId = chapterId;
+    return copy;
+  });
+  // Append at end of chapter (normalizeOrder will regroup regardless).
+  state.setState({ steps: [...all, ...pasted] });
+  steps.normalizeOrder();
+  state.markDirty();
+  setStatus(`Pasted ${pasted.length} step(s) into chapter.`);
+}
+
+function _copyChapterToClipboard(chapterId) {
+  const chapters = state.get('chapters') || [];
+  const chapter  = chapters.find(c => c.id === chapterId);
+  if (!chapter) return;
+  const chSteps  = (state.get('steps') || []).filter(s => s.chapterId === chapterId);
+  _clipboard = {
+    kind: 'chapter',
+    data: {
+      chapter: JSON.parse(JSON.stringify(chapter)),
+      steps:   JSON.parse(JSON.stringify(chSteps)),
+    },
+  };
+  setStatus(`Copied chapter "${chapter.name}" (${chSteps.length} step(s)).`);
+}
+
+function _pasteChapterUnder(targetChapterId) {
+  if (_clipboard?.kind !== 'chapter') return;
+  const { chapter: chTpl, steps: stepTpls } = _clipboard.data;
+
+  // New chapter with fresh id + name suffix to disambiguate.
+  const newChapter = { ...JSON.parse(JSON.stringify(chTpl)),
+                       id: generateId('chapter'),
+                       name: (chTpl.name || 'Chapter') + ' (copy)' };
+
+  const chapters = state.get('chapters') || [];
+  const tgtIdx   = chapters.findIndex(c => c.id === targetChapterId);
+  const insertAt = tgtIdx >= 0 ? tgtIdx + 1 : chapters.length;
+  const newChapters = [...chapters.slice(0, insertAt), newChapter, ...chapters.slice(insertAt)];
+
+  const pastedSteps = stepTpls.map(s => {
+    const copy = _cloneStep(s);
+    copy.chapterId = newChapter.id;
+    return copy;
+  });
+  const newSteps = [...(state.get('steps') || []), ...pastedSteps];
+
+  state.setState({ chapters: newChapters, steps: newSteps });
+  steps.normalizeOrder();
+  state.markDirty();
+  setStatus(`Pasted chapter "${newChapter.name}" with ${pastedSteps.length} step(s).`);
 }
 
 // ── Transition row ────────────────────────────────────────────────────────────
@@ -717,16 +850,23 @@ async function _deleteChapter(chapterId) {
   const chapters = state.get('chapters') || [];
   const chapter  = chapters.find(c => c.id === chapterId);
   if (!chapter) return;
-  const ok = await _confirmDialog(`Delete chapter "${chapter.name}"?\nSteps in this chapter will become ungrouped.`);
+
+  const allSteps  = state.get('steps') || [];
+  const stepsIn   = allSteps.filter(s => s.chapterId === chapterId);
+  const msg = stepsIn.length > 0
+    ? `Delete chapter "${chapter.name}"?\n\nThis will also delete ${stepsIn.length} step(s) inside it.`
+    : `Delete chapter "${chapter.name}"?`;
+  const ok = await _confirmDialog(msg);
   if (!ok) return;
-  const allSteps = (state.get('steps') || []).map(s =>
-    s.chapterId === chapterId ? { ...s, chapterId: null } : s,
-  );
+
+  const remainingSteps  = allSteps.filter(s => s.chapterId !== chapterId);
   const updatedChapters = chapters.filter(c => c.id !== chapterId);
-  state.setState({ steps: allSteps, chapters: updatedChapters });
+  state.setState({ steps: remainingSteps, chapters: updatedChapters });
   steps.normalizeOrder();
   state.markDirty();
-  setStatus(`Deleted chapter "${chapter.name}".`);
+  setStatus(stepsIn.length > 0
+    ? `Deleted chapter "${chapter.name}" and ${stepsIn.length} step(s).`
+    : `Deleted chapter "${chapter.name}".`);
 }
 
 // ── Step actions ─────────────────────────────────────────────────────────────
@@ -825,6 +965,8 @@ function _promptString(title, defaultVal = '') {
       if (e.key === 'Escape') done(null);
     });
     dlg.showModal();
-    requestAnimationFrame(() => input.select());
+    // Explicit focus — <dialog> sometimes auto-focuses the first button
+    // instead of the input, which eats the Enter keystroke.
+    requestAnimationFrame(() => { input.focus(); input.select(); });
   });
 }

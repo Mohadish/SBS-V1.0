@@ -112,9 +112,9 @@ function _buildEditPane(preset, presets, container) {
     </label>
 
     <label class="colorlab" style="margin-top:8px">Animation string
-      <input type="text" class="ap-anim" value="${_esc(preset.animation)}"
-             style="margin-top:6px;font-family:monospace;font-size:11px"
-             placeholder="camera(500), color(500), visibility(500), obj(500)" />
+      <textarea class="ap-anim" rows="2" wrap="soft"
+                style="margin-top:6px;width:100%;box-sizing:border-box;padding:8px 10px;font-family:monospace;font-size:14px;line-height:1.4;color:var(--text);background:#111827;border:1px solid var(--line);border-radius:8px;caret-color:#f59e0b;resize:vertical;min-height:44px"
+                placeholder="camera(500), color(500), visibility(500), obj(500)">${_esc(preset.animation)}</textarea>
     </label>
 
     <div class="ap-validation small" style="margin-top:5px"></div>
