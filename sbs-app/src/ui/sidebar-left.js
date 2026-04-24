@@ -24,6 +24,7 @@ import { buildNodeMap }    from '../core/nodes.js';
 import { showContextMenu } from './context-menu.js';
 import { renderAnimationTab } from './animation-tab.js';
 import { exportTimelineVideo, downloadBlob } from '../systems/video-export.js';
+import { listVoices as ttsListVoices } from '../systems/tts.js';
 
 const TABS = ['files', 'tree', 'colors', 'select', 'cameras', 'animation', 'export'];
 let _activeTab   = 'files';
@@ -1446,6 +1447,27 @@ function _renderExportTab() {
         </div>
       </div>
 
+      <div class="card" style="margin-top:8px;">
+        <div class="title" style="font-size:13px;">Narration</div>
+        <div class="small muted" style="margin-top:4px;">
+          Voice and speed used for all step narration. Changing these invalidates cached clips.
+        </div>
+
+        <label class="small muted" style="display:block;margin-top:8px;">Voice</label>
+        <select id="exp-voice" style="margin-top:6px;">
+          <option value="">Loading voices…</option>
+        </select>
+
+        <label class="small muted" style="display:block;margin-top:10px;">Speed — <span id="exp-voice-speed-lbl">${(exp.narrationSpeed ?? 1).toFixed(2)}×</span></label>
+        <input type="range" id="exp-voice-speed" min="0.5" max="2" step="0.05"
+               value="${exp.narrationSpeed ?? 1}" style="margin-top:4px;width:100%;" />
+
+        <label style="display:flex;align-items:center;gap:6px;margin-top:10px;cursor:pointer;">
+          <input type="checkbox" id="exp-narration-enabled" ${exp.narrationEnabled !== false ? 'checked' : ''} />
+          <span class="small muted">Include narration in export</span>
+        </label>
+      </div>
+
       <div class="grid2" style="margin-top:8px;">
         <button class="btn" id="btn-export">Start Export</button>
         <button class="btn" id="btn-export-cancel" disabled>Cancel Export</button>
@@ -1479,6 +1501,58 @@ function _renderExportTab() {
     state.setExportOption('stepHoldMs', Number(e.target.value)));
   el.querySelector('#btn-export').addEventListener('click', _onExportTabStart);
   el.querySelector('#btn-export-cancel').addEventListener('click', _onExportTabCancel);
+
+  // ── Narration controls ───────────────────────────────────────────────────
+  const voiceSel = el.querySelector('#exp-voice');
+  const speedInp = el.querySelector('#exp-voice-speed');
+  const speedLbl = el.querySelector('#exp-voice-speed-lbl');
+  const narrEn   = el.querySelector('#exp-narration-enabled');
+
+  ttsListVoices().then(list => {
+    if (!list.length) {
+      voiceSel.innerHTML = `<option value="">No OS voices available — restart Electron after install</option>`;
+      return;
+    }
+    const current = exp.narrationVoice || '';
+    voiceSel.innerHTML = [
+      `<option value="">— none —</option>`,
+      ...list.map(v => `<option value="${_esc(v.id)}" ${v.id === current ? 'selected' : ''}>${_esc(v.name)} — ${_esc(v.lang)}</option>`),
+    ].join('');
+  }).catch(err => {
+    voiceSel.innerHTML = `<option value="">Error loading voices: ${_esc(err.message)}</option>`;
+  });
+
+  voiceSel.addEventListener('change', () => {
+    state.setExportOption('narrationVoice', voiceSel.value);
+    _invalidateAllNarrationClips();
+  });
+  speedInp.addEventListener('input', () => { speedLbl.textContent = `${Number(speedInp.value).toFixed(2)}×`; });
+  speedInp.addEventListener('change', () => {
+    state.setExportOption('narrationSpeed', Number(speedInp.value));
+    _invalidateAllNarrationClips();
+  });
+  narrEn.addEventListener('change', () =>
+    state.setExportOption('narrationEnabled', !!narrEn.checked));
+}
+
+/**
+ * Voice or speed changed at the project level — drop all cached audio
+ * blobs on steps so the next preview / export re-synthesizes with the
+ * new settings. Leaves the narration TEXT untouched.
+ */
+function _invalidateAllNarrationClips() {
+  const steps = state.get('steps') || [];
+  let changed = 0;
+  for (const s of steps) {
+    if (s.narration?.dataUrl) {
+      s.narration = { text: s.narration.text || '' };
+      changed++;
+    }
+  }
+  if (changed) {
+    state.markDirty();
+    setStatus(`Voice settings changed — ${changed} cached clip(s) cleared.`);
+  }
 }
 
 // ── Export tab: run export via the shared video-export pipeline ─────────────

@@ -554,11 +554,12 @@ function _buildStepCard(step, idx, isActive, isExpanded, total) {
   // Top row identical in both states — except the thumbnail is hidden when
   // the card is expanded (per the original step-layout spec).
   card.appendChild(_buildStepTopCollapsed(step, idx, !isExpanded));
+  // Narration bar (text + preview) — shown on every card, both states.
+  card.appendChild(_buildNarrationTopBar(step));
 
   if (isExpanded) {
     card.appendChild(_buildStepActionRow(step));
     card.appendChild(_buildTransitionRow(step));
-    card.appendChild(_buildNarrationRow(step));
   }
 
   // Right-click: if step is part of a multi-selection, show the multi menu;
@@ -900,126 +901,88 @@ function _pasteChapterUnder(targetChapterId) {
   setStatus(`Pasted chapter "${newChapter.name}" with ${pastedSteps.length} step(s).`);
 }
 
-// ── Narration row (text-to-speech per step) ────────────────────────────────
+// ── Per-step narration (voice & speed are project-level, set in Export tab) ───
 
 let _voiceCache = null;
+export function resetVoiceCache() { _voiceCache = null; }
 async function _voices() {
   if (_voiceCache) return _voiceCache;
   _voiceCache = await ttsListVoices();
   return _voiceCache;
 }
 
-/** Narration editor for the active step: text + voice + speed + generate/play/clear. */
-function _buildNarrationRow(step) {
-  const wrap = document.createElement('div');
-  wrap.className = 'card';
-  wrap.style.cssText = 'margin-top:6px;font-size:12px;display:flex;flex-direction:column;gap:6px;';
+/**
+ * Small narration row shown at the top of every step card (both collapsed and
+ * expanded). Holds the step's voice-over text + a preview-play button. Voice
+ * selection and global speed live in the Export tab, so this stays compact.
+ */
+function _buildNarrationTopBar(step) {
+  const row = document.createElement('div');
+  row.style.cssText = 'display:flex;gap:4px;align-items:center;margin-top:4px;';
 
-  const n = step.narration || {};
-  const hasClip = !!n.dataUrl;
-
-  // Text field.
-  const textArea = document.createElement('textarea');
-  textArea.rows = 2;
-  textArea.placeholder = 'Narration text…';
-  textArea.value = n.text || '';
-  textArea.style.cssText = 'width:100%;box-sizing:border-box;padding:6px 8px;font-size:13px;background:#111827;color:var(--text);border:1px solid var(--line);border-radius:6px;resize:vertical;caret-color:#f59e0b;';
-  textArea.addEventListener('change', () => {
-    step.narration = { ...(step.narration || {}), text: textArea.value };
+  const input = document.createElement('input');
+  input.type = 'text';
+  input.placeholder = 'Voice-over text…';
+  input.value = step.narration?.text || '';
+  input.style.cssText = 'flex:1;min-width:0;height:24px;padding:0 6px;font-size:12px;background:rgba(255,255,255,0.04);color:var(--text);border:1px solid rgba(255,255,255,0.10);border-radius:4px;caret-color:#f59e0b;';
+  // Prevent the card's click from swallowing editor focus.
+  input.addEventListener('click', e => e.stopPropagation());
+  input.addEventListener('mousedown', e => e.stopPropagation());
+  input.addEventListener('change', () => {
+    const text = input.value;
+    // Text change invalidates any cached audio — user must re-preview / re-export.
+    step.narration = { text };
     state.markDirty();
   });
 
-  // Voice dropdown (populated async).
-  const voiceSel = document.createElement('select');
-  voiceSel.style.cssText = 'flex:1;';
-  voiceSel.innerHTML = `<option value="">Loading voices…</option>`;
-  _voices().then(list => {
-    if (!list.length) {
-      voiceSel.innerHTML = `<option value="">No voices available</option>`;
-      return;
-    }
-    voiceSel.innerHTML = list.map(v =>
-      `<option value="${_escStep(v.id)}" ${v.id === n.voiceId ? 'selected' : ''}>${_escStep(v.name)} — ${_escStep(v.lang)}</option>`
-    ).join('');
-  });
-  voiceSel.addEventListener('change', () => {
-    step.narration = { ...(step.narration || {}), voiceId: voiceSel.value };
-    state.markDirty();
-  });
-
-  // Speed slider 0.5x … 2.0x.
-  const speedWrap = document.createElement('label');
-  speedWrap.style.cssText = 'display:flex;align-items:center;gap:6px;flex-shrink:0;';
-  const speedLbl = document.createElement('span'); speedLbl.className = 'small muted'; speedLbl.textContent = `${(n.speed ?? 1).toFixed(2)}×`;
-  const speedInp = document.createElement('input');
-  speedInp.type = 'range'; speedInp.min = '0.5'; speedInp.max = '2'; speedInp.step = '0.05';
-  speedInp.value = String(n.speed ?? 1);
-  speedInp.style.cssText = 'width:80px;';
-  speedInp.addEventListener('input', () => { speedLbl.textContent = `${Number(speedInp.value).toFixed(2)}×`; });
-  speedInp.addEventListener('change', () => {
-    step.narration = { ...(step.narration || {}), speed: Number(speedInp.value) };
-    state.markDirty();
-  });
-  speedWrap.append(speedLbl, speedInp);
-
-  // Buttons.
-  const btnRow = document.createElement('div');
-  btnRow.style.cssText = 'display:flex;gap:4px;flex-wrap:wrap;align-items:center;';
-  const btnGen   = _mkBtn('🎙 Generate', 'Synthesize this text with the chosen voice');
-  const btnPlay  = _mkBtn('▶',          'Preview saved clip');
-  const btnClear = _mkBtn('🗑',         'Remove saved clip');
-  const statusLbl = document.createElement('span');
-  statusLbl.className = 'small muted';
-  statusLbl.style.cssText = 'flex:1;min-width:0;';
-  statusLbl.textContent = hasClip ? `Clip · ${(n.durationMs/1000||0).toFixed(1)}s` : '(no clip)';
-
-  btnGen.addEventListener('click', async (e) => {
+  const btnPlay = _mkBtn('▶', 'Preview narration');
+  btnPlay.style.cssText = 'width:24px;height:24px;padding:0;font-size:11px;flex-shrink:0;';
+  btnPlay.addEventListener('click', async (e) => {
     e.stopPropagation();
-    const text    = textArea.value.trim();
-    const voiceId = voiceSel.value;
-    const speed   = Number(speedInp.value) || 1.0;
-    if (!text)    { statusLbl.textContent = 'Type something first.'; return; }
-    if (!voiceId) { statusLbl.textContent = 'Pick a voice first.';   return; }
-    statusLbl.textContent = 'Synthesizing…';
-    btnGen.disabled = true;
+    await _previewStepNarration(step, input.value);
+  });
+
+  row.append(input, btnPlay);
+  return row;
+}
+
+/**
+ * Synthesize (if needed) and play the step's narration using the project-
+ * level voice + speed. Caches the audio on step.narration.dataUrl so repeat
+ * previews don't re-synthesize.
+ */
+async function _previewStepNarration(step, currentText) {
+  const text = (currentText ?? step.narration?.text ?? '').trim();
+  if (!text) { setStatus('Nothing to narrate.', 'warning'); return; }
+
+  const exp     = state.get('export') || {};
+  const voiceId = exp.narrationVoice;
+  const speed   = Number(exp.narrationSpeed) || 1.0;
+  if (!voiceId) { setStatus('Pick a voice in the Export tab first.', 'warning'); return; }
+
+  // Use cached clip if still fresh (same text + voice + speed).
+  const n = step.narration || {};
+  const fresh = n.dataUrl && n.text === text && n.voiceId === voiceId && n.speed === speed;
+  let clipUrl = fresh ? n.dataUrl : null;
+
+  if (!clipUrl) {
     try {
+      setStatus('Synthesizing…', 'info', 0);
       const out = await ttsSynthesize(text, voiceId, { speed });
-      step.narration = { kind: 'tts', text, voiceId, speed, ...out };
+      step.narration = { text, voiceId, speed, ...out };
       state.markDirty();
-      statusLbl.textContent = `Clip · ${(out.durationMs/1000).toFixed(1)}s`;
+      clipUrl = out.dataUrl;
+      setStatus(`Clip · ${(out.durationMs / 1000).toFixed(1)}s`);
     } catch (err) {
       console.error('[tts]', err);
-      statusLbl.textContent = `Failed: ${err.message}`;
-    } finally {
-      btnGen.disabled = false;
+      setStatus(`Narration failed: ${err.message}`, 'danger');
+      return;
     }
-  });
+  }
 
-  btnPlay.addEventListener('click', (e) => {
-    e.stopPropagation();
-    const clip = step.narration?.dataUrl;
-    if (!clip) { statusLbl.textContent = 'Nothing to play.'; return; }
-    const a = new Audio(clip);
-    a.play().catch(err => { statusLbl.textContent = `Play failed: ${err.message}`; });
-  });
-
-  btnClear.addEventListener('click', (e) => {
-    e.stopPropagation();
-    if (!step.narration) return;
-    const { text: t, voiceId: v, speed: s } = step.narration;
-    step.narration = { text: t, voiceId: v, speed: s };    // drop audio, keep settings
-    state.markDirty();
-    statusLbl.textContent = '(no clip)';
-  });
-
-  btnRow.append(btnGen, btnPlay, btnClear, statusLbl);
-
-  const topRow = document.createElement('div');
-  topRow.style.cssText = 'display:flex;gap:6px;align-items:center;';
-  topRow.append(voiceSel, speedWrap);
-
-  wrap.append(textArea, topRow, btnRow);
-  return wrap;
+  if (_narrationAudio) { try { _narrationAudio.pause(); } catch {} }
+  _narrationAudio = new Audio(clipUrl);
+  _narrationAudio.play().catch(err => setStatus(`Play failed: ${err.message}`, 'danger'));
 }
 
 // ── Transition row ────────────────────────────────────────────────────────────
