@@ -506,10 +506,10 @@ function _escStep(s) {
 
 // ── Chapter actions ──────────────────────────────────────────────────────────
 
-function _onAddChapter() {
-  const name = prompt('Chapter name:', 'Chapter');
+async function _onAddChapter() {
+  const name = await _promptString('Chapter name:', 'Chapter');
   if (!name) return;
-  const chapter = createChapter({ name: name.trim() });
+  const chapter = createChapter({ name });
   const chapters = [...(state.get('chapters') || []), chapter];
   state.setState({ chapters });
   state.markDirty();
@@ -517,24 +517,23 @@ function _onAddChapter() {
   state.setState({ _pendingChapterId: chapter.id });
 }
 
-function _renameChapter(chapterId) {
+async function _renameChapter(chapterId) {
   const chapters = state.get('chapters') || [];
   const chapter  = chapters.find(c => c.id === chapterId);
   if (!chapter) return;
-  const name = prompt('Chapter name:', chapter.name || '');
-  if (name === null) return;
-  const trimmed = name.trim();
-  if (!trimmed) return;
-  const updated = chapters.map(c => c.id === chapterId ? { ...c, name: trimmed } : c);
+  const name = await _promptString('Chapter name:', chapter.name || '');
+  if (!name) return;
+  const updated = chapters.map(c => c.id === chapterId ? { ...c, name } : c);
   state.setState({ chapters: updated });
   state.markDirty();
 }
 
-function _deleteChapter(chapterId) {
+async function _deleteChapter(chapterId) {
   const chapters = state.get('chapters') || [];
   const chapter  = chapters.find(c => c.id === chapterId);
   if (!chapter) return;
-  if (!confirm(`Delete chapter "${chapter.name}"?\nSteps in this chapter will become ungrouped.`)) return;
+  const ok = await _confirmDialog(`Delete chapter "${chapter.name}"?\nSteps in this chapter will become ungrouped.`);
+  if (!ok) return;
   const allSteps = (state.get('steps') || []).map(s =>
     s.chapterId === chapterId ? { ...s, chapterId: null } : s,
   );
@@ -560,13 +559,11 @@ async function _onAddStep() {
   setStatus(`Created step "${step.name}".`);
 }
 
-function _renameStep(stepId) {
+async function _renameStep(stepId) {
   const step = steps.getStepById(stepId);
   if (!step) return;
-  const name = prompt('Step name:', step.name || '');
-  if (name === null) return;
-  const trimmed = name.trim();
-  if (trimmed) actions.renameStep(stepId, trimmed);
+  const name = await _promptString('Step name:', step.name || '');
+  if (name) actions.renameStep(stepId, name);
 }
 
 function _duplicateStep(stepId) {
@@ -576,10 +573,11 @@ function _duplicateStep(stepId) {
   });
 }
 
-function _deleteStep(stepId) {
+async function _deleteStep(stepId) {
   const step = steps.getStepById(stepId);
   if (!step) return;
-  if (!confirm(`Delete step "${step.name}"?`)) return;
+  const ok = await _confirmDialog(`Delete step "${step.name}"?`);
+  if (!ok) return;
   actions.deleteStep(stepId);
   setStatus(`Deleted step "${step.name}".`);
 }
@@ -593,4 +591,60 @@ function _mkBtn(text, title) {
   btn.textContent = text;
   btn.style.fontSize = '13px';
   return btn;
+}
+
+// Promise-returning Yes/No modal — Electron renderer blocks window.confirm.
+function _confirmDialog(message) {
+  return new Promise(resolve => {
+    const dlg = document.createElement('dialog');
+    dlg.className = 'sbs-dialog';
+    dlg.innerHTML = `
+      <div class="sbs-dialog__body">
+        <div style="white-space:pre-wrap">${_escStep(message)}</div>
+        <div style="display:flex;gap:8px;justify-content:flex-end;margin-top:12px">
+          <button class="btn" id="_sp-no">Cancel</button>
+          <button class="btn" id="_sp-yes">OK</button>
+        </div>
+      </div>
+    `;
+    document.body.appendChild(dlg);
+    const done = v => { dlg.close(); dlg.remove(); resolve(v); };
+    dlg.querySelector('#_sp-no').addEventListener('click',  () => done(false));
+    dlg.querySelector('#_sp-yes').addEventListener('click', () => done(true));
+    dlg.addEventListener('keydown', e => {
+      if (e.key === 'Enter')  done(true);
+      if (e.key === 'Escape') done(false);
+    });
+    dlg.showModal();
+  });
+}
+
+// Promise-returning modal text input — Electron renderer blocks window.prompt.
+function _promptString(title, defaultVal = '') {
+  return new Promise(resolve => {
+    const dlg = document.createElement('dialog');
+    dlg.className = 'sbs-dialog';
+    dlg.innerHTML = `
+      <div class="sbs-dialog__body">
+        <div class="sbs-dialog__title">${_escStep(title)}</div>
+        <input type="text" id="_sp-input" value="${_escStep(defaultVal)}"
+          style="margin-top:10px;width:100%;box-sizing:border-box" />
+        <div style="display:flex;gap:8px;justify-content:flex-end;margin-top:12px">
+          <button class="btn" id="_sp-cancel">Cancel</button>
+          <button class="btn" id="_sp-ok">OK</button>
+        </div>
+      </div>
+    `;
+    document.body.appendChild(dlg);
+    const input  = dlg.querySelector('#_sp-input');
+    const done   = (val) => { dlg.close(); dlg.remove(); resolve(val); };
+    dlg.querySelector('#_sp-cancel').addEventListener('click', () => done(null));
+    dlg.querySelector('#_sp-ok').addEventListener('click', () => done(input.value.trim() || null));
+    input.addEventListener('keydown', e => {
+      if (e.key === 'Enter')  done(input.value.trim() || null);
+      if (e.key === 'Escape') done(null);
+    });
+    dlg.showModal();
+    requestAnimationFrame(() => input.select());
+  });
 }
