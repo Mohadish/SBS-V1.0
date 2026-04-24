@@ -272,6 +272,23 @@ export function moveStepToChapter(stepId, chapterId, newIndex) {
 }
 
 /**
+ * Move multiple steps as a contiguous block. Undo snapshots full state
+ * before + after because restoring individual positions becomes brittle
+ * when the set is large or crosses chapter boundaries.
+ */
+export function moveStepsToChapter(stepIds, chapterId, newIndex) {
+  if (!stepIds?.length) return;
+  const prevSteps = JSON.parse(JSON.stringify(state.get('steps') || []));
+  steps.moveStepsToChapter(stepIds, chapterId, newIndex);
+  const nextSteps = JSON.parse(JSON.stringify(state.get('steps') || []));
+  undoManager.push(
+    'Move steps',
+    () => { state.setState({ steps: prevSteps }); state.markDirty(); state.emit('steps:reordered'); },
+    () => { state.setState({ steps: nextSteps }); state.markDirty(); state.emit('steps:reordered'); },
+  );
+}
+
+/**
  * Toggle a chapter's locked flag (locked => always expanded in timeline).
  */
 export function setChapterLocked(chapterId, locked) {

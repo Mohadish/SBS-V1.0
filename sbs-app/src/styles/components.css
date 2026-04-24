@@ -64,6 +64,8 @@ label.colorlab{display:block;font-size:12px;color:var(--muted);margin-top:4px}
 .animStepBtn.red{background:#7f1d1d;color:#fee2e2;border-color:#ef4444}
 .stepItem{border:1px solid var(--line);background:#101827;border-radius:12px;padding:8px;margin-bottom:8px;cursor:pointer}
 .stepItem.active{border-color:#f59e0b;outline:2px solid #f59e0b;outline-offset:1px;box-shadow:0 0 0 1px rgba(245,158,11,.35) inset}
+.stepItem.selected{background:#17314a}
+.stepItem.selected.active{background:#1d334b}
 .stepItem.hiddenStep{opacity:.65}
 .stepTop{display:flex;align-items:center;gap:6px}
 .stepTopSpacer{min-width:0;flex:1}

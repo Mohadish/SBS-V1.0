@@ -1239,6 +1239,53 @@ class StepManager {
   }
 
   /**
+   * Move multiple steps as a contiguous block to a new index + chapter.
+   * Relative order of the moved steps is preserved (sorted by current
+   * array position before insertion).
+   *
+   * @param {string[]}     stepIds    ids of steps to move (order doesn't matter)
+   * @param {string|null}  chapterId  target chapter (null = ungrouped)
+   * @param {number}       newIndex   target insertion index in the full array
+   */
+  moveStepsToChapter(stepIds, chapterId, newIndex) {
+    if (!stepIds?.length) return;
+    const steps   = [...state.get('steps')];
+    const moveSet = new Set(stepIds);
+
+    // Collect the moved steps, preserving their current relative order.
+    const toMove = steps
+      .map((s, i) => ({ s, i }))
+      .filter(({ s }) => moveSet.has(s.id))
+      .sort((a, b) => a.i - b.i)
+      .map(({ s }) => s);
+    if (!toMove.length) return;
+
+    // Everything except the moved steps, in current order.
+    const remaining = steps.filter(s => !moveSet.has(s.id));
+
+    // Adjust insertIdx: every moved step originally before insertIdx shifts it left.
+    let adjusted = newIndex;
+    for (const s of toMove) {
+      if (steps.indexOf(s) < newIndex) adjusted--;
+    }
+    adjusted = Math.max(0, Math.min(remaining.length, adjusted));
+
+    // Stamp chapterId on every moved step.
+    for (const s of toMove) s.chapterId = chapterId ?? null;
+
+    const merged = [
+      ...remaining.slice(0, adjusted),
+      ...toMove,
+      ...remaining.slice(adjusted),
+    ];
+
+    state.setState({ steps: merged });
+    this.normalizeOrder();
+    state.markDirty();
+    state.emit('steps:reordered');
+  }
+
+  /**
    * Reorder a whole chapter — moves the chapter and every step that belongs to
    * it as one block. The chapter list and the steps list are updated together.
    * @param {string} chapterId

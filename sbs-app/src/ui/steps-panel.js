@@ -14,10 +14,13 @@ import { setStatus } from './status.js';
 import { showContextMenu } from './context-menu.js';
 
 let _container    = null;
-let _dragId       = null;          // id of step being dragged
+let _dragId       = null;          // id of step being dragged (single-drag fallback)
+let _dragIds      = [];            // ids of all steps being dragged (set when multi-drag)
 let _dragChapterId = null;         // id of chapter being dragged (header drag)
+let _selectedIds  = new Set();     // set of step ids currently multi-selected
 const _dragExpand = new Set();     // chapterIds force-expanded during a drag (hover override)
 let _expandTimer  = null;          // setTimeout id for hover-to-expand
+let _expandedId   = null;          // id of step currently shown in expanded layout (null = all collapsed)
 const HOVER_EXPAND_MS = 500;
 const DROP_COLOR  = '#3b82f6';     // blue insertion line
 
@@ -67,12 +70,33 @@ export function initStepsPanel() {
 
   state.on('change:steps',                _syncAndRender);
   state.on('change:chapters',             _syncAndRender);
-  state.on('change:activeStepId',         renderStepsPanel);
+  state.on('change:activeStepId',         _onActiveStepChanged);
   state.on('change:cameraAnimDurationMs', _syncDurationInputs);
   state.on('change:objectAnimDurationMs', _syncDurationInputs);
   state.on('change:animationPresets',     renderStepsPanel);
 
+  // Click outside the timeline panel collapses the expanded step AND clears
+  // the multi-selection. The scene's active step is unchanged. Capture phase
+  // so we see clicks before their own handlers cancel propagation.
+  document.addEventListener('click', e => {
+    if (!_container) return;
+    if (_container.contains(e.target)) return;
+    // Context menu (rendered outside the timeline) shouldn't count as "outside".
+    const ctx = document.getElementById('context-menu');
+    if (ctx && ctx.contains(e.target)) return;
+    let dirty = false;
+    if (_expandedId !== null) { _expandedId = null; dirty = true; }
+    if (_selectedIds.size)   { _selectedIds.clear(); dirty = true; }
+    if (dirty) renderStepsPanel();
+  }, true);
+
   _syncDurationInputs();
+  renderStepsPanel();
+}
+
+function _onActiveStepChanged() {
+  // When active step changes via keyboard or any other path, sync expansion.
+  _expandedId = state.get('activeStepId');
   renderStepsPanel();
 }
 
@@ -127,19 +151,18 @@ export function renderStepsPanel() {
   }
 
   // Render: chapters (in chapter-list order) → ungrouped steps at end.
+  const emitStep = (step) => {
+    const idx      = flatIndex.get(step.id);
+    const isActive   = step.id === activeId;
+    const isExpanded = step.id === _expandedId;
+    list.appendChild(_buildStepCard(step, idx, isActive, isExpanded, allSteps.length));
+  };
   allChapters.forEach((chapter, chIdx) => {
     list.appendChild(_buildChapterHeader(chapter, chIdx + 1));
     if (_isChapterVisuallyCollapsed(chapter, activeId)) return;
-    const chSteps = byChapter.get(chapter.id) || [];
-    for (const step of chSteps) {
-      const idx = flatIndex.get(step.id);
-      list.appendChild(_buildStepCard(step, idx, step.id === activeId, allSteps.length));
-    }
+    (byChapter.get(chapter.id) || []).forEach(emitStep);
   });
-  for (const step of ungrouped) {
-    const idx = flatIndex.get(step.id);
-    list.appendChild(_buildStepCard(step, idx, step.id === activeId, allSteps.length));
-  }
+  ungrouped.forEach(emitStep);
 
   list.scrollTop = scrollTop;
 
@@ -253,10 +276,11 @@ function _buildChapterHeader(chapter, number) {
     _clearDropIndicators();
     _clearExpandTimer();
 
-    if (_dragId) {
-      // Step dropped on a chapter header → move into that chapter (top of it).
+    if (_dragIds.length) {
+      // Step(s) dropped on a chapter header → move into that chapter (top of it).
       const insertIdx = _chapterTopInsertIndex(chapter.id);
-      actions.moveStepToChapter(_dragId, chapter.id, insertIdx);
+      if (_dragIds.length > 1) actions.moveStepsToChapter(_dragIds, chapter.id, insertIdx);
+      else                      actions.moveStepToChapter(_dragIds[0], chapter.id, insertIdx);
     } else if (_dragChapterId && _dragChapterId !== chapter.id) {
       // Chapter dropped on another chapter's header → reorder block.
       // side=before → insert chapter AT target's index (pushing target down)
@@ -332,11 +356,13 @@ function _chapterTopInsertIndex(chapterId) {
 
 // ── Step card ────────────────────────────────────────────────────────────────
 
-function _buildStepCard(step, idx, isActive, total) {
+function _buildStepCard(step, idx, isActive, isExpanded, total) {
+  const isSelected = _selectedIds.has(step.id);
   const card = document.createElement('div');
   card.className = [
     'stepItem',
     isActive    ? 'active'     : '',
+    isSelected  ? 'selected'   : '',
     step.hidden ? 'hiddenStep' : '',
   ].filter(Boolean).join(' ');
   card.draggable      = true;
@@ -346,33 +372,79 @@ function _buildStepCard(step, idx, isActive, total) {
   // Top row is identical in both states.
   card.appendChild(_buildStepTopCollapsed(step, idx));
 
-  if (isActive) {
+  if (isExpanded) {
     card.appendChild(_buildStepActionRow(step));
     card.appendChild(_buildTransitionRow(step));
-  } else {
-    // Right-click menu for collapsed step — replaces the button row.
-    card.addEventListener('contextmenu', e => {
-      e.preventDefault();
-      e.stopPropagation();
-      _showStepContextMenu(step, e.clientX, e.clientY);
-    });
   }
 
-  // Single click → animate to step
-  card.addEventListener('click', () => steps.activateStep(step.id, true));
+  // Right-click: if step is part of a multi-selection, show the multi menu;
+  // otherwise replace selection with this step and show the single menu.
+  card.addEventListener('contextmenu', e => {
+    e.preventDefault();
+    e.stopPropagation();
+    if (_selectedIds.size > 1 && _selectedIds.has(step.id)) {
+      _showMultiStepContextMenu(Array.from(_selectedIds), e.clientX, e.clientY);
+    } else {
+      _selectedIds = new Set([step.id]);
+      renderStepsPanel();
+      _showStepContextMenu(step, e.clientX, e.clientY);
+    }
+  });
+
+  // Click semantics:
+  //   Ctrl/Cmd-click → toggle in multi-selection (doesn't activate/expand)
+  //   Shift-click    → extend selection to a range (visual order)
+  //   plain click    → replace selection, activate + expand
+  card.addEventListener('click', e => {
+    if (e.ctrlKey || e.metaKey) {
+      if (_selectedIds.has(step.id)) _selectedIds.delete(step.id);
+      else                            _selectedIds.add(step.id);
+      renderStepsPanel();
+      return;
+    }
+    if (e.shiftKey && _selectedIds.size) {
+      const all = (state.get('steps') || []).filter(s => !s.isBaseStep);
+      const anchor = [..._selectedIds].pop();
+      const a = all.findIndex(s => s.id === anchor);
+      const b = all.findIndex(s => s.id === step.id);
+      if (a >= 0 && b >= 0) {
+        const [lo, hi] = a < b ? [a, b] : [b, a];
+        for (let i = lo; i <= hi; i++) _selectedIds.add(all[i].id);
+      }
+      renderStepsPanel();
+      return;
+    }
+    _selectedIds = new Set([step.id]);
+    _expandedId  = step.id;
+    steps.activateStep(step.id, true);
+    renderStepsPanel();
+  });
 
   // Double click → instant jump to final state (skips animation)
-  card.addEventListener('dblclick', e => { e.stopPropagation(); steps.activateStep(step.id, false); });
+  card.addEventListener('dblclick', e => {
+    e.stopPropagation();
+    _selectedIds = new Set([step.id]);
+    _expandedId  = step.id;
+    steps.activateStep(step.id, false);
+    renderStepsPanel();
+  });
 
   // Drag-and-drop
   card.addEventListener('dragstart', e => {
-    _dragId        = step.id;
     _dragChapterId = null;
+    // If the dragged step is part of a multi-selection, drag the whole set.
+    if (_selectedIds.has(step.id) && _selectedIds.size > 1) {
+      _dragIds = Array.from(_selectedIds);
+    } else {
+      _dragIds = [step.id];            // single-step drag, leave selection untouched
+    }
+    _dragId = step.id;
     e.dataTransfer.effectAllowed = 'move';
     card.style.opacity = '0.5';
   });
   card.addEventListener('dragend', () => {
-    _dragId = null;
+    _dragId  = null;
+    _dragIds = [];
     _clearExpandTimer();
     _clearDropIndicators();
     _endDragExpand();
@@ -389,13 +461,17 @@ function _buildStepCard(step, idx, isActive, total) {
     e.preventDefault();
     const side = card.dataset.dropSide || 'before';
     _clearDropIndicators();
-    if (_dragId && _dragId !== step.id) {
+    if (_dragIds.length && !_dragIds.includes(step.id)) {
       const all   = state.get('steps') || [];
       let toIdx   = all.findIndex(s => s.id === step.id);
       if (toIdx < 0) return;
       if (side === 'after') toIdx += 1;
       const targetChapterId = step.chapterId ?? null;
-      actions.moveStepToChapter(_dragId, targetChapterId, toIdx);
+      if (_dragIds.length > 1) {
+        actions.moveStepsToChapter(_dragIds, targetChapterId, toIdx);
+      } else {
+        actions.moveStepToChapter(_dragIds[0], targetChapterId, toIdx);
+      }
     }
   });
 
@@ -483,6 +559,33 @@ function _showStepContextMenu(step, x, y) {
     { label: 'Update camera', action: () => { steps.saveStepCamera(step.id); setStatus('Camera saved for step.'); } },
     { separator: true },
     { label: 'Delete',        action: () => _deleteStep(step.id) },
+  ], x, y);
+}
+
+/**
+ * Right-click menu for a multi-selection. Rename + Duplicate are omitted —
+ * they only make sense on a single step. Everything else applies to each
+ * selected step in the given order.
+ */
+function _showMultiStepContextMenu(stepIds, x, y) {
+  const stepsArr   = state.get('steps') || [];
+  const selSteps   = stepIds.map(id => stepsArr.find(s => s.id === id)).filter(Boolean);
+  const anyVisible = selSteps.some(s => !s.hidden);
+
+  showContextMenu([
+    { label: anyVisible ? 'Hide from playback' : 'Show in playback',
+      action: () => selSteps.forEach(s => steps.setStepHidden(s.id, anyVisible)) },
+    { label: 'Update camera',
+      action: () => { selSteps.forEach(s => steps.saveStepCamera(s.id)); setStatus(`Camera saved for ${selSteps.length} steps.`); } },
+    { separator: true },
+    { label: `Delete (${selSteps.length})`,
+      action: async () => {
+        const ok = await _confirmDialog(`Delete ${selSteps.length} steps?`);
+        if (!ok) return;
+        for (const s of selSteps) actions.deleteStep(s.id);
+        _selectedIds.clear();
+        renderStepsPanel();
+      } },
   ], x, y);
 }
 
