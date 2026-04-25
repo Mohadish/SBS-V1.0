@@ -7,52 +7,69 @@ const { spawn, execSync } = require('child_process');
 const os = require('os');
 const say = require('say');
 
-// Kokoro is heavy — defer require() to first call so app boot stays fast.
-// _kokoroInstance is the loaded TTS object (the thing with .generate()).
-// _kokoroLoadPromise is set during loading; cleared on failure so a later
-// retry isn't permanently stuck on a rejected promise.
-let _kokoroInstance    = null;
-let _kokoroLoadPromise = null;
-function _loadKokoro() {
-  if (_kokoroInstance)  return Promise.resolve(_kokoroInstance);
-  if (_kokoroLoadPromise) return _kokoroLoadPromise;
+// ─── Kokoro worker thread ─────────────────────────────────────────────────
+// Kokoro inference is CPU-heavy (~1× real-time) and synchronous in JS,
+// so doing it on the main process thread freezes every IPC handler — the
+// renderer's UI hangs because most user actions round-trip through main.
+// Move it to a worker_threads Worker. Main process stays responsive; the
+// worker queues synths internally (it handles one message at a time).
+const { Worker } = require('worker_threads');
 
-  _kokoroLoadPromise = (async () => {
-    const km = require('kokoro-js');
-    const tx = require('@huggingface/transformers');
+let _kokoroWorker = null;
+let _kokoroSeq    = 0;
+const _kokoroPending = new Map();   // id → { resolve, reject }
 
-    // Bundled model path. In dev: <repo>/sbs-app/kokoro-bundle. In a
-    // packaged app: process.resourcesPath/kokoro-bundle (placed there by
-    // electron-builder via build.extraResources).
-    const bundleDir = app.isPackaged
+function _kokoroBundlePaths() {
+  return {
+    bundleDir: app.isPackaged
       ? path.join(process.resourcesPath, 'kokoro-bundle')
-      : path.join(APP_ROOT, 'kokoro-bundle');
-
-    tx.env.localModelPath    = bundleDir + path.sep;
-    tx.env.allowLocalModels  = true;
-    tx.env.allowRemoteModels = false;
-    const cacheDir = path.join(app.getPath('userData'), 'kokoro-cache');
-    try { fs.mkdirSync(cacheDir, { recursive: true }); } catch {}
-    tx.env.cacheDir = cacheDir;
-
-    console.log(`[kokoro] bundle = ${bundleDir}, packaged=${app.isPackaged}`);
-    // dtype 'q8' → model_quantized.onnx (~88 MB). Solid balance of size +
-    // quality. transformers.js's dtype enum doesn't include 'q8f16'; valid
-    // values are: auto / fp32 / fp16 / q8 / int8 / uint8 / q4 / bnb4 / q4f16.
-    const tts = await km.KokoroTTS.from_pretrained(
-      'onnx-community/Kokoro-82M-v1.0-ONNX',
-      { dtype: 'q8' }
-    );
-    console.log('[kokoro] model loaded — voices:', Object.keys(tts.voices || {}).length);
-    _kokoroInstance = tts;
-    return tts;
-  })();
-
-  // If load fails, clear the promise so the next call retries cleanly
-  // instead of returning the same rejected one forever.
-  _kokoroLoadPromise.catch(() => { _kokoroLoadPromise = null; });
-  return _kokoroLoadPromise;
+      : path.join(APP_ROOT, 'kokoro-bundle'),
+    cacheDir: path.join(app.getPath('userData'), 'kokoro-cache'),
+  };
 }
+
+function _ensureKokoroWorker() {
+  if (_kokoroWorker) return _kokoroWorker;
+  const paths = _kokoroBundlePaths();
+  try { fs.mkdirSync(paths.cacheDir, { recursive: true }); } catch {}
+  console.log(`[kokoro] spawning worker — bundle=${paths.bundleDir}`);
+  _kokoroWorker = new Worker(path.join(__dirname, 'kokoro-worker.js'), {
+    workerData: paths,
+  });
+  _kokoroWorker.on('message', (msg) => {
+    if (msg?.kind === 'log') { console.log(msg.msg); return; }
+    const pending = _kokoroPending.get(msg.id);
+    if (!pending) return;
+    _kokoroPending.delete(msg.id);
+    if (msg.ok) pending.resolve(msg.wav);
+    else        pending.reject(new Error(msg.error || 'Kokoro worker error'));
+  });
+  _kokoroWorker.on('error', (err) => {
+    console.error('[kokoro-worker] error:', err);
+    // Reject every in-flight call; next request will respawn the worker.
+    for (const p of _kokoroPending.values()) p.reject(err);
+    _kokoroPending.clear();
+    _kokoroWorker = null;
+  });
+  _kokoroWorker.on('exit', (code) => {
+    if (code !== 0) console.warn(`[kokoro-worker] exited with code ${code}`);
+    _kokoroWorker = null;
+  });
+  return _kokoroWorker;
+}
+
+function _kokoroSynth(text, voice) {
+  return new Promise((resolve, reject) => {
+    const id = ++_kokoroSeq;
+    _kokoroPending.set(id, { resolve, reject });
+    _ensureKokoroWorker().postMessage({ kind: 'synth', id, text, voice });
+  });
+}
+
+// Stop the worker on app quit so it doesn't hold the process open.
+app.on('before-quit', () => {
+  if (_kokoroWorker) { try { _kokoroWorker.terminate(); } catch {} _kokoroWorker = null; }
+});
 
 const IS_DEV   = process.argv.includes('--dev');
 const APP_ROOT = path.join(__dirname, '..');
@@ -693,12 +710,10 @@ ipcMain.handle('tts:synthesize', async (_, text, voice, speed, opts) => {
 
   if (source === 'kokoro') {
     try {
-      const tts = await _loadKokoro();
       console.log(`[kokoro] generating "${text.slice(0, 40)}…" with voice ${voice}`);
-      const audio = await tts.generate(text, { voice });
-      // audio.toWav() returns a Uint8Array of WAV bytes.
-      const wav = audio.toWav();
-      const b64 = Buffer.from(wav).toString('base64');
+      const wavBuf = await _kokoroSynth(text, voice);
+      // wavBuf is a Buffer transferred from the worker.
+      const b64 = (Buffer.isBuffer(wavBuf) ? wavBuf : Buffer.from(wavBuf)).toString('base64');
       return { ok: true, data: b64, mime: 'audio/wav' };
     } catch (e) {
       console.warn('[kokoro] synth failed:', e?.message);
