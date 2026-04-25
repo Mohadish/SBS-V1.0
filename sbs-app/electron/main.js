@@ -525,9 +525,10 @@ ipcMain.handle('tts:listVoices', async () => {
   return voices;
 });
 
-// PowerShell that synthesizes ONE OneCore voice to a WAV file.
-// Args: $voiceName (DisplayName), $text, $outFile.
-const PS_SYNTH_ONECORE = `
+// Body of the OneCore synth script — uses $voiceName / $textToSpeak / $outFile,
+// which are SET BY US at the top of the encoded command (see below). Avoids
+// the $args binding gotcha that comes with `-Command` mode.
+const PS_SYNTH_ONECORE_BODY = `
 $ErrorActionPreference = 'Stop';
 $null = [Windows.Media.SpeechSynthesis.SpeechSynthesizer, Windows.Media.SpeechSynthesis, ContentType=WindowsRuntime];
 $null = [Windows.Storage.Streams.DataReader, Windows.Storage.Streams, ContentType=WindowsRuntime];
@@ -540,16 +541,31 @@ function Await($winRtTask, $resultType) {
   $netTask.Result;
 }
 $synth = New-Object Windows.Media.SpeechSynthesis.SpeechSynthesizer;
-$voice = [Windows.Media.SpeechSynthesis.SpeechSynthesizer]::AllVoices | Where-Object { $_.DisplayName -eq $args[0] } | Select-Object -First 1;
-if (-not $voice) { throw "OneCore voice not found: $($args[0])"; }
+$voice = [Windows.Media.SpeechSynthesis.SpeechSynthesizer]::AllVoices | Where-Object { $_.DisplayName -eq $voiceName } | Select-Object -First 1;
+if (-not $voice) { throw "OneCore voice not found: $voiceName"; }
 $synth.Voice = $voice;
-$stream = Await ($synth.SynthesizeTextToStreamAsync($args[1])) ([Windows.Media.SpeechSynthesis.SpeechSynthesisStream]);
+$stream = Await ($synth.SynthesizeTextToStreamAsync($textToSpeak)) ([Windows.Media.SpeechSynthesis.SpeechSynthesisStream]);
 $reader = New-Object Windows.Storage.Streams.DataReader($stream.GetInputStreamAt(0));
 [void](Await ($reader.LoadAsync([uint32]$stream.Size)) ([uint32]));
 $bytes = New-Object 'byte[]' ($stream.Size);
 $reader.ReadBytes($bytes);
-[System.IO.File]::WriteAllBytes($args[2], $bytes);
+[System.IO.File]::WriteAllBytes($outFile, $bytes);
 `;
+
+/** Escape for PS single-quoted string. Inside '...' only ' needs doubling. */
+function _psQuote(s) {
+  return "'" + String(s ?? '').replace(/'/g, "''") + "'";
+}
+
+/** Build a PS command string with our values inlined as variable assignments. */
+function _buildOneCoreSynthCommand(voiceName, text, outFile) {
+  return [
+    `$voiceName = ${_psQuote(voiceName)};`,
+    `$textToSpeak = ${_psQuote(text)};`,
+    `$outFile = ${_psQuote(outFile)};`,
+    PS_SYNTH_ONECORE_BODY,
+  ].join('\n');
+}
 
 ipcMain.handle('tts:synthesize', async (_, text, voice, speed, opts) => {
   if (!text || !text.trim()) return { ok: false, error: 'Empty text.' };
@@ -558,14 +574,17 @@ ipcMain.handle('tts:synthesize', async (_, text, voice, speed, opts) => {
 
   if (source === 'onecore' && process.platform === 'win32') {
     // Synthesize via Windows.Media.SpeechSynthesis (OneCore engine).
+    // Inline the inputs as PS variable assignments + base64-encode the
+    // whole script as UTF-16LE for -EncodedCommand. This bypasses both
+    // the $args/Command binding gotcha AND the ANSI-codepage mangling
+    // that would corrupt Hebrew / Arabic / Japanese text on the command line.
     return new Promise(resolve => {
       try {
-        const psArgs = [
-          '-NoProfile', '-NonInteractive', '-Command',
-          PS_SYNTH_ONECORE.replace(/\n/g, ' '),
-          '-Args', voice, text, filename,
-        ];
-        const child = spawn('powershell', psArgs, { stdio: ['ignore', 'ignore', 'pipe'] });
+        const cmd     = _buildOneCoreSynthCommand(voice, text, filename);
+        const encoded = Buffer.from(cmd, 'utf16le').toString('base64');
+        const child = spawn('powershell', [
+          '-NoProfile', '-NonInteractive', '-EncodedCommand', encoded,
+        ], { stdio: ['ignore', 'ignore', 'pipe'] });
         let err = '';
         child.stderr.on('data', d => err += d.toString());
         child.on('close', (code) => {
