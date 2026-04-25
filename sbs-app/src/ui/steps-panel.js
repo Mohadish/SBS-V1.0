@@ -14,6 +14,7 @@ import { setStatus } from './status.js';
 import { showContextMenu } from './context-menu.js';
 import { exportTimelineVideo, downloadBlob } from '../systems/video-export.js';
 import { listVoices as ttsListVoices, synthesize as ttsSynthesize } from '../systems/tts.js';
+import * as userSettings from '../core/user-settings.js';
 
 let _container    = null;
 let _dragId       = null;          // id of step being dragged (single-drag fallback)
@@ -917,12 +918,42 @@ async function _voices() {
 
 /**
  * Synthesize (if needed) and play a step's narration using the project-
- * level voice + speed. Caches the audio on step.narration.dataUrl so repeat
- * previews don't re-synthesize.
+ * level voice + speed. Cache hit → instant playback. Cache miss → play a
+ * fast OS-voice "placeholder" immediately AND kick the real synth into the
+ * background; the next click hits the real voice.
  *
- * Exported so the step-nav bar (top of viewport) can trigger preview from
- * its own text input.
+ * Synth de-dup: a Map keyed by stepId+text+voice+speed prevents queueing
+ * the same job twice. Clicking ▶ during a pending synth just attaches to
+ * the existing promise.
  */
+const _pendingSynths = new Map();   // dedupKey → Promise<{dataUrl, durationMs, mime}>
+
+function _ensureSynth(stepId, text, voiceId, speed) {
+  const key = `${stepId}|${voiceId}|${speed}|${text}`;
+  if (_pendingSynths.has(key)) return _pendingSynths.get(key);
+  const p = ttsSynthesize(text, voiceId, { speed });
+  _pendingSynths.set(key, p);
+  p.finally(() => _pendingSynths.delete(key));
+  return p;
+}
+
+let _voiceListCachedPromise = null;
+async function _pickFallbackVoice(preferLang) {
+  if (!_voiceListCachedPromise) _voiceListCachedPromise = ttsListVoices().catch(() => []);
+  const list = await _voiceListCachedPromise;
+  // Prefer fast OS voices (sapi5 first — they synthesize in tens of ms,
+  // OneCore is also fast). Match the project language if we can.
+  const sapi    = list.filter(v => v.source === 'sapi5');
+  const oneCore = list.filter(v => v.source === 'onecore');
+  const candidates = [...sapi, ...oneCore];
+  if (preferLang) {
+    const pref = preferLang.toLowerCase();
+    const langMatch = candidates.find(v => (v.lang || '').toLowerCase().includes(pref));
+    if (langMatch) return langMatch.id;
+  }
+  return candidates[0]?.id || null;
+}
+
 export async function previewStepNarration(step, currentText) {
   if (!step) return;
   const text = (currentText ?? step.narration?.text ?? '').trim();
@@ -933,28 +964,56 @@ export async function previewStepNarration(step, currentText) {
   const speed   = Number(exp.narrationSpeed) || 1.0;
   if (!voiceId) { setStatus('Pick a voice in the Export tab first.', 'warning'); return; }
 
+  // Cache fresh? Play immediately.
   const n = step.narration || {};
   const fresh = n.dataUrl && n.text === text && n.voiceId === voiceId && n.speed === speed;
-  let clipUrl = fresh ? n.dataUrl : null;
-
-  if (!clipUrl) {
-    try {
-      setStatus('Synthesizing…', 'info', 0);
-      const out = await ttsSynthesize(text, voiceId, { speed });
-      step.narration = { text, voiceId, speed, ...out };
-      state.markDirty();
-      clipUrl = out.dataUrl;
-      setStatus(`Clip · ${(out.durationMs / 1000).toFixed(1)}s`);
-    } catch (err) {
-      console.error('[tts]', err);
-      setStatus(`Narration failed: ${err.message}`, 'danger');
-      return;
-    }
+  if (fresh) {
+    _playClip(n.dataUrl);
+    setStatus(`Clip · ${(n.durationMs / 1000 || 0).toFixed(1)}s`);
+    return;
   }
 
+  // Cache miss — fire the real synth in the background (de-duped) AND play
+  // a fast OS-voice placeholder immediately. We DO NOT promote the job to
+  // the front of the worker queue; user wanted "snappy feedback now, real
+  // voice later" rather than "make this one preview jump the line".
+  const realSynth = _ensureSynth(step.id, text, voiceId, speed);
+  realSynth.then(out => {
+    if (step.narration?.text === text) {
+      step.narration = { text, voiceId, speed, ...out };
+      state.markDirty();
+      setStatus(`Real voice ready (${(out.durationMs / 1000).toFixed(1)}s) — click ▶ to hear it.`);
+    }
+  }).catch(err => {
+    console.warn('[tts] background synth:', err?.message);
+  });
+
+  // Placeholder via fast OS voice. If we can't find one, just status the
+  // user and skip — better silence than crashing.
+  setStatus('Synthesizing real voice — placeholder playing…', 'info', 0);
+  const fallback = await _pickFallbackVoice(_userPrefLang());
+  if (!fallback) { setStatus('Synthesizing… (no fallback voice available)', 'info', 0); return; }
+  try {
+    const out = await ttsSynthesize(text, fallback, { speed });
+    _playClip(out.dataUrl);
+  } catch (err) {
+    console.warn('[tts] fallback failed:', err?.message);
+  }
+}
+
+function _playClip(dataUrl) {
   if (_narrationAudio) { try { _narrationAudio.pause(); } catch {} }
-  _narrationAudio = new Audio(clipUrl);
+  _narrationAudio = new Audio(dataUrl);
   _narrationAudio.play().catch(err => setStatus(`Play failed: ${err.message}`, 'danger'));
+}
+
+function _userPrefLang() {
+  // Reads from user-settings cache. Returns '' if module not yet initialised
+  // (initUserSettings runs at boot in main.js, so by the time the user clicks
+  // ▶ on a step the cache is hot).
+  try {
+    return userSettings.get()?.ui?.preferredLanguages?.[0] || '';
+  } catch { return ''; }
 }
 
 // ── Transition row ────────────────────────────────────────────────────────────
