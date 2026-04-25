@@ -769,7 +769,15 @@ gl_FragColor.a = 1.0;
         continue;
       }
 
-      const presetId = this.meshColorAssignments[nodeId] ?? null;
+      // Resolution chain: per-step override → project default → none.
+      // Per-step assignments live in meshColorAssignments (set by step
+      // activation). Project-level defaults live in meshDefaultColors and
+      // act as a fallback whenever the step has no explicit override for
+      // this mesh — so "Set as default" persists across every step that
+      // doesn't override.
+      const presetId = this.meshColorAssignments[nodeId]
+                    ?? this.meshDefaultColors[nodeId]
+                    ?? null;
       const preset   = presetId ? presetById.get(presetId) : null;
 
       if (preset) {
@@ -1150,7 +1158,7 @@ gl_FragColor.a = 1.0;
     const overrideMode  = state.get('solidOverride');
     const presets       = state.get('colorPresets') || [];
     const presetById    = new Map(presets.map(p => [p.id, p]));
-    const presetId      = this.meshColorAssignments[nodeId];
+    const presetId      = this.meshColorAssignments[nodeId] ?? this.meshDefaultColors[nodeId];
     const preset        = presetId ? presetById.get(presetId) : null;
     const solidness     = (overrideMode && preset) ? (preset.solidness ?? 1.0) : 1.0;
     const globalOpacity = settings.opacity ?? 0.9;
@@ -1879,13 +1887,17 @@ gl_FragColor.a = 1.0;
   }
 
   /**
-   * Assign a preset as the permanent default color for the given meshes.
-   * Also updates the current-session assignment so the change is immediate.
+   * Assign a preset as the permanent project-level default color for the
+   * given meshes. Project-level — not step-sensitive. Drops any current
+   * per-step override on the same meshes so the new default takes effect
+   * immediately AND so the current step's snapshot stops carrying a stale
+   * explicit assignment after the next sync. Other steps with their own
+   * explicit overrides keep them.
    */
   assignDefaultColor(meshNodeIds, presetId) {
     meshNodeIds.forEach(id => {
-      this.meshDefaultColors[id]    = presetId;
-      this.meshColorAssignments[id] = presetId;
+      this.meshDefaultColors[id] = presetId;
+      delete this.meshColorAssignments[id];   // override → default fallback
     });
     state.markDirty();
     this.applyAll();

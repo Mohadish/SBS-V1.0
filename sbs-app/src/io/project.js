@@ -446,6 +446,13 @@ export function applyProjectToState(project) {
     assets:               project.assets?.items             || [],
   });
 
+  // Restore project-level color state. Both maps keyed by mesh id; the
+  // defaults persist across step activations (that's the point), the
+  // assignments are immediately overwritten by the first activateStep,
+  // but seeding them here keeps any "before any step" view consistent.
+  materials.meshDefaultColors    = { ...(project.colors?.defaults    || {}) };
+  materials.meshColorAssignments = { ...(project.colors?.assignments || {}) };
+
   state.markClean();
 }
 
