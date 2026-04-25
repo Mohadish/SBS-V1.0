@@ -21,8 +21,12 @@
 const DEFAULTS = {
   version: 1,
   ui: {
-    preferredLanguage: '',          // empty → "Any" (no filter)
-    osLocale:          '',          // mirror, set on first boot
+    // Empty array → "Any" (no filter). Each entry is a friendly language
+    // name e.g. "Hebrew" / "English" — matched against voice.lang.
+    preferredLanguages: [],
+    // Legacy single-string field, migrated into preferredLanguages on read.
+    preferredLanguage:  '',
+    osLocale:           '',         // mirror, set on first boot
   },
   export: {
     defaultFps:        30,
@@ -52,12 +56,20 @@ export function initUserSettings() {
     const stored = await window.sbsNative.userSettings.read();
     _cache = _mergeDefaults(stored || {});
 
-    // First-boot OS-locale capture — set preferredLanguage from OS if empty.
-    if (!_cache.ui.preferredLanguage) {
+    // Migrate legacy single-string preferredLanguage → preferredLanguages array.
+    if (_cache.ui.preferredLanguage && !(_cache.ui.preferredLanguages || []).length) {
+      _cache.ui.preferredLanguages = [_cache.ui.preferredLanguage];
+    }
+    if (!Array.isArray(_cache.ui.preferredLanguages)) _cache.ui.preferredLanguages = [];
+
+    // First-boot OS-locale capture.
+    if (!_cache.ui.osLocale) {
       const locale = await window.sbsNative.userSettings.locale().catch(() => '');
       if (locale) {
         _cache.ui.osLocale = locale;
-        _cache.ui.preferredLanguage = _localeToLanguageName(locale);
+        if (!_cache.ui.preferredLanguages.length) {
+          _cache.ui.preferredLanguages = [_localeToLanguageName(locale)];
+        }
         await window.sbsNative.userSettings.write(_cache);
       }
     }

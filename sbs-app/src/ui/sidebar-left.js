@@ -1529,10 +1529,15 @@ function _renderExportTab() {
       voiceSel.innerHTML = `<option value="">No OS voices available — restart Electron after install</option>`;
       return;
     }
-    // Filter by user's preferred language (Settings → Language). Empty = no filter.
-    const pref = userSettings.get().ui?.preferredLanguage || '';
-    const filtered = pref
-      ? list.filter(v => (v.lang || '').toLowerCase().includes(pref.toLowerCase()))
+    // Filter by user's preferred languages (Settings → Language). Empty = no filter.
+    const prefs = (userSettings.get().ui?.preferredLanguages || [])
+      .map(s => s.toLowerCase().trim())
+      .filter(Boolean);
+    const filtered = prefs.length
+      ? list.filter(v => {
+          const lang = (v.lang || '').toLowerCase();
+          return prefs.some(p => lang.includes(p));
+        })
       : list;
     const shown = filtered.length ? filtered : list;   // never show empty list
     const current = exp.narrationVoice || '';

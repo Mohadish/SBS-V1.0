@@ -363,6 +363,49 @@ ipcMain.handle('settings:write', (_, o) => _writeUserSettingsSync(o || {}));
 ipcMain.handle('settings:locale', () => app.getLocale());   // e.g. "en-US"
 ipcMain.handle('settings:path',  () => _userSettingsPath);
 
+/**
+ * Languages installed on the OS (display / input languages).
+ * Windows: Get-WinUserLanguageList via PowerShell.
+ * macOS / Linux: best-effort via app.getPreferredSystemLanguages.
+ *
+ * Returns: [{ tag: "he-IL", name: "Hebrew" }, ...]
+ */
+ipcMain.handle('settings:installedLanguages', async () => {
+  if (process.platform === 'win32') {
+    try {
+      const json = execSync(
+        'powershell -NoProfile -NonInteractive -Command "Get-WinUserLanguageList | Select-Object LanguageTag, EnglishName | ConvertTo-Json -Compress"',
+        { stdio: ['ignore', 'pipe', 'pipe'], timeout: 5000 }
+      ).toString().trim();
+      const parsed = JSON.parse(json || '[]');
+      const arr = Array.isArray(parsed) ? parsed : [parsed];
+      return arr.map(o => ({ tag: o.LanguageTag, name: o.EnglishName })).filter(o => o.tag && o.name);
+    } catch (e) {
+      console.warn('[settings] Get-WinUserLanguageList failed:', e.message);
+      // Fallback to app.getPreferredSystemLanguages.
+    }
+  }
+  try {
+    const tags = app.getPreferredSystemLanguages?.() || [app.getLocale()];
+    return tags.map(tag => ({ tag, name: _languageNameFromTag(tag) })).filter(o => o.tag);
+  } catch {
+    return [];
+  }
+});
+
+function _languageNameFromTag(tag) {
+  const t = (tag || '').toLowerCase().split(/[-_]/)[0];
+  const map = {
+    en:'English', he:'Hebrew', es:'Spanish', fr:'French', de:'German',
+    it:'Italian', pt:'Portuguese', ru:'Russian', zh:'Chinese', ja:'Japanese',
+    ko:'Korean', ar:'Arabic', hi:'Hindi', tr:'Turkish', pl:'Polish',
+    cs:'Czech', sk:'Slovak', hu:'Hungarian', el:'Greek', nl:'Dutch',
+    sv:'Swedish', no:'Norwegian', da:'Danish', fi:'Finnish', th:'Thai',
+    vi:'Vietnamese', id:'Indonesian', uk:'Ukrainian',
+  };
+  return map[t] || (tag || '').toUpperCase();
+}
+
 // ─── OS TTS (via `say` npm) ────────────────────────────────────────────────
 const _ttsTempDir = path.join(os.tmpdir(), 'sbs-tts');
 try { fs.mkdirSync(_ttsTempDir, { recursive: true }); } catch {}

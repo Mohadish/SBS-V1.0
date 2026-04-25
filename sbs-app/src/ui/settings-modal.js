@@ -95,36 +95,86 @@ function _showTab(name) {
 
 async function _renderLanguageTab(body) {
   const cur = userSettings.get();
-  const voices = await listVoices().catch(() => []);
-  const langs = Array.from(new Set(voices.map(v => v.lang).filter(Boolean))).sort();
+  const selected = new Set(cur.ui.preferredLanguages || []);
+
+  // Pull every input we have:
+  //  - OS-installed languages (Get-WinUserLanguageList on Win) — primary
+  //  - Languages of installed voices (in case OS list misses something)
+  // Union, deduped by friendly name.
+  const [osLangs, voices] = await Promise.all([
+    window.sbsNative?.userSettings?.installedLanguages?.() ?? Promise.resolve([]),
+    listVoices().catch(() => []),
+  ]);
+  const fromOs     = (osLangs || []).map(o => ({ name: _normalizeLangName(o.name), tag: o.tag, source: 'os' }));
+  const fromVoices = (voices  || []).map(v => ({ name: _normalizeLangName(v.lang), tag: '',  source: 'voice' }));
+
+  // Map by friendly name; merge sources so we can show whether voices exist.
+  const byName = new Map();
+  for (const e of [...fromOs, ...fromVoices]) {
+    if (!e.name) continue;
+    const cur = byName.get(e.name) || { name: e.name, tags: new Set(), hasVoice: false };
+    if (e.tag) cur.tags.add(e.tag);
+    if (e.source === 'voice') cur.hasVoice = true;
+    byName.set(e.name, cur);
+  }
+  const items = Array.from(byName.values()).sort((a, b) => a.name.localeCompare(b.name));
+
+  // Mark which of our selected languages have voices (for warning display).
+  const selectedWithoutVoices = [...selected].filter(name => {
+    const m = byName.get(name);
+    return m && !m.hasVoice;
+  });
 
   body.innerHTML = `
-    <h3 style="margin:0 0 6px 0;font-size:14px;">Preferred narration language</h3>
+    <h3 style="margin:0 0 6px 0;font-size:14px;">Preferred narration languages</h3>
     <p class="small muted" style="margin:0 0 10px 0;">
-      Filters the voice dropdown so you only see voices for one language.
-      Pick "Any" to see every installed voice.<br>
+      Tick the languages you want to use. The voice dropdown in the Export
+      tab will only show voices for the languages you pick. Untick all to
+      disable filtering.<br>
       OS locale detected: <code>${_esc(cur.ui.osLocale || '—')}</code>.
     </p>
 
-    <label class="colorlab">Language
-      <select id="settings-lang" style="margin-top:6px;">
-        <option value="">Any (no filter)</option>
-        ${langs.map(l => `<option value="${_esc(l)}" ${l === cur.ui.preferredLanguage ? 'selected' : ''}>${_esc(l)}</option>`).join('')}
-      </select>
-    </label>
+    <div id="settings-lang-list" style="display:flex;flex-direction:column;gap:4px;max-height:280px;overflow:auto;border:1px solid #334155;border-radius:6px;padding:8px;background:#0a101a;">
+      ${items.length === 0
+        ? '<div class="small muted">No installed languages detected.</div>'
+        : items.map(it => `
+          <label style="display:flex;align-items:center;gap:8px;cursor:pointer;padding:2px 4px;border-radius:4px;">
+            <input type="checkbox" data-lang-name="${_esc(it.name)}" ${selected.has(it.name) ? 'checked' : ''} />
+            <span style="flex:1;">${_esc(it.name)}</span>
+            ${it.hasVoice
+              ? '<span class="small" style="color:#86efac;">✓ voices installed</span>'
+              : '<span class="small muted">no voices yet</span>'}
+          </label>
+        `).join('')}
+    </div>
 
-    <p class="small muted" style="margin-top:14px;">
-      Don't see your language? Install a Windows language pack:<br>
-      <em>Settings → Time &amp; language → Language &amp; region → Add a language</em> (tick "Speech").
-      Then restart this app.
+    ${selectedWithoutVoices.length ? `
+      <p class="small" style="margin-top:10px;color:#f59e0b;">
+        ⚠ Selected without voices: ${selectedWithoutVoices.map(_esc).join(', ')}.
+        Install via <em>Windows Settings → Language → [language] → Speech</em>, then restart this app.
+      </p>` : ''}
+
+    <p class="small muted" style="margin-top:10px;">
+      Need another language? Install via <em>Settings → Time &amp; language →
+      Language &amp; region → Add a language</em> (tick "Speech"). Then restart.
     </p>
   `;
 
-  body.querySelector('#settings-lang').addEventListener('change', async (e) => {
-    await userSettings.patch({ ui: { preferredLanguage: e.target.value || '' } });
-    // Notify any listening UI to re-render their voice lists.
-    window.dispatchEvent(new CustomEvent('sbs:user-settings-changed', { detail: { section: 'ui' } }));
+  body.querySelectorAll('input[type=checkbox][data-lang-name]').forEach(cb => {
+    cb.addEventListener('change', async () => {
+      const name = cb.dataset.langName;
+      if (cb.checked) selected.add(name);
+      else            selected.delete(name);
+      await userSettings.patch({ ui: { preferredLanguages: [...selected] } });
+      window.dispatchEvent(new CustomEvent('sbs:user-settings-changed', { detail: { section: 'ui' } }));
+    });
   });
+}
+
+/** Shorten "Hebrew (Israel)" → "Hebrew" so OS + voice lists merge cleanly. */
+function _normalizeLangName(raw) {
+  if (!raw) return '';
+  return String(raw).split(/[(\u00ad/-]/)[0].trim();
 }
 
 function _renderExportTab(body) {

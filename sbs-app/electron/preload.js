@@ -45,10 +45,11 @@ contextBridge.exposeInMainWorld('sbsNative', {
 
   // ── User settings (machine-level prefs, persisted to userData/user-settings.json) ─
   userSettings: {
-    read:   ()    => ipcRenderer.invoke('settings:read'),
-    write:  (obj) => ipcRenderer.invoke('settings:write', obj),
-    locale: ()    => ipcRenderer.invoke('settings:locale'),
-    path:   ()    => ipcRenderer.invoke('settings:path'),
+    read:               ()    => ipcRenderer.invoke('settings:read'),
+    write:              (obj) => ipcRenderer.invoke('settings:write', obj),
+    locale:             ()    => ipcRenderer.invoke('settings:locale'),
+    path:               ()    => ipcRenderer.invoke('settings:path'),
+    installedLanguages: ()    => ipcRenderer.invoke('settings:installedLanguages'),
   },
 
   // ── Text-to-speech (OS voices via `say` npm) ─────────────────────────────
