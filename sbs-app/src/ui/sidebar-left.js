@@ -1250,14 +1250,24 @@ function _showReplacementPicker(preset, allPresets, defaultCount, missingCount =
       if (materials.meshColorAssignments[meshId] === preset.id)
         materials.meshColorAssignments[meshId] = newId;
     }
-    // Patch step snapshots
+    // Patch step snapshots. Architectural rule: a snapshot entry whose value
+    // equals the project default is NOT a real override — strip it so future
+    // default changes propagate. So when we replace oldId → newId, if newId
+    // matches the mesh's new default, drop the entry entirely instead of
+    // stamping it.
     const allSteps = state.get('steps') || [];
     let stepsDirty = false;
     for (const step of allSteps) {
       const mats = step.snapshot?.materials;
       if (!mats) continue;
       for (const meshId of missingIds) {
-        if (mats[meshId] === preset.id) { mats[meshId] = newId; stepsDirty = true; }
+        if (mats[meshId] !== preset.id) continue;
+        if (materials.meshDefaultColors[meshId] === newId) {
+          delete mats[meshId];                 // tracking-default → strip
+        } else {
+          mats[meshId] = newId;                // real override → swap
+        }
+        stepsDirty = true;
       }
     }
     if (stepsDirty) state.setState({ steps: [...allSteps] });
