@@ -83,7 +83,12 @@ async function _runOnce(signal, reason) {
       // project file on next save. Falls back to inline dataUrl when the
       // user hasn't picked a cache folder.
       const dataFile = await narrationCache
-        .saveClipToDisk({ text, voiceId, speed, dataUrl: out.dataUrl })
+        .saveClipToDisk({
+          text, voiceId, speed,
+          dataUrl:  out.dataUrl,
+          stepName: cur.name,
+          stepId:   cur.id,
+        })
         .catch(() => null);
       cur.narration = { text, voiceId, speed, ...out };
       if (dataFile) cur.narration.dataFile = dataFile;

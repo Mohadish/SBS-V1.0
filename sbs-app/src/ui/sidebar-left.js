@@ -1487,8 +1487,9 @@ function _renderExportTab() {
         <div style="margin-top:12px;border-top:1px solid #1f2937;padding-top:10px;">
           <div class="small muted" style="margin-bottom:4px;">Audio cache folder</div>
           <div class="small muted" style="margin-bottom:6px;font-size:11px;">
-            When set, synthesized clips are stored as WAV files here instead
-            of inflating the .sbsproj. Path is relative to the project file.
+            Slow neural voices (Kokoro etc.) cache to <code>&lt;voice&gt;/&lt;step&gt;__&lt;hash&gt;.wav</code>
+            here instead of bloating the .sbsproj. Fast OS voices skip this —
+            they re-synth instantly. Path is relative to the project file.
           </div>
           <div id="exp-cache-state" class="small" style="margin-bottom:6px;">
             <em style="opacity:0.6;">— inline (no folder set) —</em>
@@ -1625,12 +1626,15 @@ function _renderExportTab() {
     _renderCacheState();
 
     // One-shot: migrate any inline-cached clips to disk so the next save
-    // is small. Silent if there's nothing to do.
+    // is small. Skips fast OS voices (those don't disk-cache by design).
     setStatus(`Audio cache folder set: ${rel}. Migrating existing clips…`, 'info', 0);
-    const { migrated, failed } = await narrationCache.migrateInlineClipsToDisk(state.get('steps') || []);
-    if (migrated)        setStatus(`Cache folder set — ${migrated} clip(s) moved to disk${failed ? ` (${failed} failed)` : ''}.`);
-    else if (failed)     setStatus(`Cache folder set — ${failed} clip(s) failed to migrate.`, 'warning');
-    else                 setStatus(`Audio cache folder set: ${rel}`);
+    const { migrated, skipped, failed } = await narrationCache.migrateInlineClipsToDisk(state.get('steps') || []);
+    const parts = [];
+    if (migrated) parts.push(`${migrated} moved to disk`);
+    if (skipped)  parts.push(`${skipped} skipped (fast voice)`);
+    if (failed)   parts.push(`${failed} failed`);
+    setStatus(parts.length ? `Cache folder set — ${parts.join(', ')}.` : `Audio cache folder set: ${rel}`,
+              failed ? 'warning' : undefined);
   });
 
   btnClear.addEventListener('click', () => {

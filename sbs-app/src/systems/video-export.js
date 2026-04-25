@@ -383,7 +383,12 @@ async function _synthesizeMissingClips(stepsToPlay, onProgress, signal) {
       const text = s.narration.text;
       const out  = await ttsSynthesize(text, voiceId, { speed });
       const dataFile = await narrationCache
-        .saveClipToDisk({ text, voiceId, speed, dataUrl: out.dataUrl })
+        .saveClipToDisk({
+          text, voiceId, speed,
+          dataUrl:  out.dataUrl,
+          stepName: s.name,
+          stepId:   s.id,
+        })
         .catch(() => null);
       s.narration = { text, voiceId, speed, ...out };
       if (dataFile) s.narration.dataFile = dataFile;

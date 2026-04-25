@@ -994,9 +994,14 @@ export async function previewStepNarration(step, currentText) {
   realSynth.then(async out => {
     if (step.narration?.text !== text) return;
     // Try to write the WAV to the project's audio cache folder. If caching
-    // is disabled, dataFile stays undefined and we fall back to inline
-    // dataUrl in the project file.
-    const dataFile = await narrationCache.saveClipToDisk({ text, voiceId, speed, dataUrl: out.dataUrl }).catch(() => null);
+    // is disabled OR the voice is OS-fast (synth is already cheap), dataFile
+    // stays undefined and we fall back to inline dataUrl in the project file.
+    const dataFile = await narrationCache.saveClipToDisk({
+      text, voiceId, speed,
+      dataUrl:  out.dataUrl,
+      stepName: step.name,
+      stepId:   step.id,
+    }).catch(() => null);
     step.narration = { text, voiceId, speed, ...out };
     if (dataFile) step.narration.dataFile = dataFile;
     state.markDirty();

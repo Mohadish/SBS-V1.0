@@ -16,8 +16,24 @@
  *   <projectDir>/                       <- folder containing the .sbsproj
  *     myproject.sbsproj                 <- text JSON (small)
  *     <audioCacheFolder>/               <- e.g. "myproject_audio"
- *       a1b2c3d4...e5f6.wav             <- SHA-1(text|voice|speed)
- *       9f8e7d6c...3a2b.wav
+ *       <voiceSlug>/                    <- e.g. "kokoro-af-bella"
+ *         <stepSlug>__<hash>.wav        <- e.g. "intro__a1b2c3d4.wav"
+ *         <stepSlug>__<hash>.wav        <- different step / different text
+ *       <otherVoiceSlug>/               <- voice change → new folder
+ *         ...
+ *
+ *   Per-voice subfolders keep things tidy when the user switches voices —
+ *   old WAVs sit in their own folder rather than mixing with new ones.
+ *
+ *   Filename = "<stepSlug>__<hash>.wav"
+ *     stepSlug  — slug of step.name (or stepId fallback) so users can see
+ *                 which step a file belongs to when poking through Explorer
+ *     hash      — first 8 hex of SHA-1(text|speed) so the filename changes
+ *                 if the text or speed changes (forces a re-synth, leaves
+ *                 the old file as a tagged orphan you can identify)
+ *
+ *   We deliberately do NOT cache fast OS voices (`os:*`) — they synthesize
+ *   in tens of ms and caching them just clutters the folder.
  *
  * Step shape
  * ──────────
@@ -63,42 +79,81 @@ export function cacheFolderAbsolute() {
   return _join(projectDir, folder);
 }
 
-// ─── Filename hashing ───────────────────────────────────────────────────────
+// ─── Voice classification ───────────────────────────────────────────────────
 
 /**
- * SHA-1 of `text|voiceId|speed` → "<hex>.wav". Stable across sessions, so
- * the same clip text+voice+speed always resolves to the same file (dedupe).
+ * Fast voices synthesize in tens of milliseconds (Windows SAPI / OneCore via
+ * the `os:` namespace). Disk-caching them is a net negative — the file write
+ * costs more than the synth, and the folder fills with redundant clones every
+ * time a voice changes. The disk cache is reserved for slow neural backends
+ * (kokoro, future piper, etc.).
  */
-export async function clipFilename(text, voiceId, speed) {
-  const key = `${text}|${voiceId}|${Number(speed) || 1}`;
-  const buf = new TextEncoder().encode(key);
+export function isFastVoice(voiceId) {
+  return /^os:/.test(voiceId || '');
+}
+
+// ─── Path components ────────────────────────────────────────────────────────
+
+/**
+ * Filesystem-safe slug. Lowercases, replaces non-alphanumeric runs with `-`,
+ * trims leading/trailing dashes, caps length so we don't blow past Windows'
+ * 260-char path limit on deeply nested cache folders.
+ */
+function _slugify(s, max = 40) {
+  return String(s ?? '')
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, '-')
+    .replace(/^-+|-+$/g, '')
+    .slice(0, max);
+}
+
+/** First 8 hex chars of SHA-1(`text|speed`). Voice is implicit in the folder. */
+async function _shortHash(text, speed) {
+  const buf  = new TextEncoder().encode(`${text}|${Number(speed) || 1}`);
   const hash = await crypto.subtle.digest('SHA-1', buf);
-  const hex = [...new Uint8Array(hash)]
+  return [...new Uint8Array(hash).slice(0, 4)]
     .map(b => b.toString(16).padStart(2, '0'))
     .join('');
-  return `${hex}.wav`;
+}
+
+/**
+ * "<voiceSlug>/<stepSlug>__<hash>.wav" — what we store in step.narration.dataFile.
+ * stepName empty → fall back to stepId substring → fall back to "step".
+ */
+export async function clipRelativePath({ text, voiceId, speed, stepName, stepId }) {
+  const voiceSlug = _slugify(voiceId, 60) || 'voice';
+  const stepSlug  = _slugify(stepName, 40) || (stepId ? String(stepId).slice(0, 8) : 'step');
+  const hash      = await _shortHash(text, speed);
+  return `${voiceSlug}/${stepSlug}__${hash}.wav`;
 }
 
 // ─── Save / load ────────────────────────────────────────────────────────────
 
 /**
  * Write the WAV (decoded from a `data:audio/wav;base64,...` URL) into the
- * cache folder. Returns the relative filename (to be stored in
- * step.narration.dataFile), or `null` if caching is disabled / failed.
+ * cache folder. Returns the relative path (to be stored in
+ * step.narration.dataFile), or `null` if caching is disabled / skipped /
+ * failed.
  *
- * Idempotent: if the file already exists, no rewrite, just return name.
+ * Skipped when:
+ *   • caching disabled (no folder, or project unsaved)
+ *   • voice is "fast" (os:*) — synthesis is cheap, no point caching
+ *   • dataUrl missing
+ *
+ * Idempotent: if the file already exists, no rewrite, just return its path.
  */
-export async function saveClipToDisk({ text, voiceId, speed, dataUrl }) {
-  if (!isCacheEnabled() || !dataUrl)        return null;
-  if (!window.sbsNative?.writeFile)         return null;
+export async function saveClipToDisk({ text, voiceId, speed, dataUrl, stepName, stepId }) {
+  if (!isCacheEnabled() || !dataUrl) return null;
+  if (isFastVoice(voiceId))          return null;
+  if (!window.sbsNative?.writeFile)  return null;
 
-  const filename = await clipFilename(text, voiceId, speed);
-  const fullPath = _join(cacheFolderAbsolute(), filename);
+  const relPath  = await clipRelativePath({ text, voiceId, speed, stepName, stepId });
+  const fullPath = _join(cacheFolderAbsolute(), relPath);
 
-  // Skip rewrite if file already there (deduped synth, same hash).
+  // Skip rewrite if file already there (same step + same text hash).
   try {
     const exists = await window.sbsNative.fileExists(fullPath);
-    if (exists) return filename;
+    if (exists) return relPath;
   } catch { /* fallthrough — try to write */ }
 
   const base64 = _stripDataUrlPrefix(dataUrl);
@@ -109,7 +164,7 @@ export async function saveClipToDisk({ text, voiceId, speed, dataUrl }) {
     console.warn('[narration-cache] write failed:', res?.error);
     return null;
   }
-  return filename;
+  return relPath;
 }
 
 /**
@@ -144,18 +199,21 @@ export async function loadClipFromDisk(dataFile, mime = 'audio/wav') {
  * Returns { migrated, failed } counts. Caller decides how to surface this.
  */
 export async function migrateInlineClipsToDisk(steps) {
-  let migrated = 0, failed = 0;
-  if (!isCacheEnabled()) return { migrated, failed };
+  let migrated = 0, skipped = 0, failed = 0;
+  if (!isCacheEnabled()) return { migrated, skipped, failed };
   for (const s of steps || []) {
     const n = s?.narration;
     if (!n?.dataUrl || n.dataFile) continue;
-    if (!n.text || !n.voiceId)     continue;   // malformed entry
+    if (!n.text || !n.voiceId)     continue;          // malformed entry
+    if (isFastVoice(n.voiceId))    { skipped++; continue; }  // fast voice — never cached
     try {
       const dataFile = await saveClipToDisk({
-        text:    n.text,
-        voiceId: n.voiceId,
-        speed:   n.speed,
-        dataUrl: n.dataUrl,
+        text:     n.text,
+        voiceId:  n.voiceId,
+        speed:    n.speed,
+        dataUrl:  n.dataUrl,
+        stepName: s.name,
+        stepId:   s.id,
       });
       if (dataFile) { n.dataFile = dataFile; migrated++; }
       else            failed++;
@@ -164,7 +222,7 @@ export async function migrateInlineClipsToDisk(steps) {
       failed++;
     }
   }
-  return { migrated, failed };
+  return { migrated, skipped, failed };
 }
 
 /**
