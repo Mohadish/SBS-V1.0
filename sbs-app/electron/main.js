@@ -7,6 +7,35 @@ const { spawn, execSync } = require('child_process');
 const os = require('os');
 const say = require('say');
 
+// Kokoro is heavy — defer require() to first call so app boot stays fast.
+let _kokoroModule = null;
+let _kokoroModelPromise = null;
+function _loadKokoro() {
+  if (_kokoroModule) return Promise.resolve(_kokoroModule);
+  if (!_kokoroModelPromise) {
+    _kokoroModelPromise = (async () => {
+      _kokoroModule = require('kokoro-js');
+      // Cache models under userData so they survive across app launches.
+      // transformers.js honours env.cacheDir if exposed via env vars OR via
+      // its config object — the kokoro-js docs use a wrapper, so we set the
+      // standard transformers.js env var here.
+      const cacheDir = path.join(app.getPath('userData'), 'kokoro-cache');
+      try { fs.mkdirSync(cacheDir, { recursive: true }); } catch {}
+      const tx = require('@huggingface/transformers');
+      tx.env.cacheDir = cacheDir;
+      tx.env.allowLocalModels = true;
+      console.log(`[kokoro] cacheDir = ${cacheDir}`);
+      const tts = await _kokoroModule.KokoroTTS.from_pretrained(
+        'onnx-community/Kokoro-82M-v1.0-ONNX',
+        { dtype: 'q8f16' }
+      );
+      console.log('[kokoro] model loaded — voices:', Object.keys(tts.voices || {}).length);
+      return tts;
+    })();
+  }
+  return _kokoroModelPromise;
+}
+
 const IS_DEV   = process.argv.includes('--dev');
 const APP_ROOT = path.join(__dirname, '..');
 
@@ -433,31 +462,103 @@ ipcMain.handle('settings:installedLanguages', async () => {
 let _voiceListCache = null;
 async function _enumerateVoices() {
   if (_voiceListCache) return _voiceListCache;
-  if (process.platform !== 'win32') {
-    _voiceListCache = [];
-    return _voiceListCache;
+  const voices = [];
+
+  // Windows OS voices (SAPI 5 + OneCore via PowerShell).
+  if (process.platform === 'win32') {
+    try {
+      const raw = execSync(`powershell -NoProfile -NonInteractive -Command "${PS_LIST_VOICES.replace(/\n/g, ' ')}"`, {
+        stdio: ['ignore', 'pipe', 'pipe'], timeout: 8000,
+      }).toString().replace(/^\uFEFF/, '').trim();
+      if (raw) {
+        const parsed = JSON.parse(raw);
+        const arr = Array.isArray(parsed) ? parsed : [parsed];
+        for (const v of arr) voices.push({
+          name:    v.Name,
+          culture: v.Culture,
+          lang:    v.Language || _languageNameFromTag(v.Culture || ''),
+          gender:  v.Gender,
+          source:  v.Source,
+        });
+      }
+    } catch (e) {
+      console.warn('[tts] PS listVoices failed:', e.message);
+    }
   }
-  try {
-    const raw = execSync(`powershell -NoProfile -NonInteractive -Command "${PS_LIST_VOICES.replace(/\n/g, ' ')}"`, {
-      stdio: ['ignore', 'pipe', 'pipe'], timeout: 8000,
-    }).toString().replace(/^\uFEFF/, '').trim();
-    if (!raw) { _voiceListCache = []; return _voiceListCache; }
-    const parsed = JSON.parse(raw);
-    const arr = Array.isArray(parsed) ? parsed : [parsed];
-    _voiceListCache = arr.map(v => ({
-      name:    v.Name,
-      culture: v.Culture,
-      lang:    v.Language || _languageNameFromTag(v.Culture || ''),
-      gender:  v.Gender,
-      source:  v.Source,
-    }));
-    return _voiceListCache;
-  } catch (e) {
-    console.warn('[tts] PS listVoices failed:', e.message);
-    _voiceListCache = [];
-    return _voiceListCache;
+
+  // Kokoro voices — ALWAYS listed (independent of OS). Model not loaded
+  // unless user actually picks one; here we just add the names + langs from
+  // a static manifest so the dropdown populates instantly.
+  for (const v of _KOKORO_VOICES) {
+    voices.push({ name: v.name, culture: v.culture, lang: v.lang, gender: v.gender, source: 'kokoro' });
   }
+
+  _voiceListCache = voices;
+  return voices;
 }
+
+// Kokoro v1.0 voice manifest. Listing here (instead of querying the model
+// at boot) means the voice dropdown populates without forcing a model
+// download. Names exactly match the keys kokoro-js exposes on tts.voices.
+const _KOKORO_VOICES = [
+  // American English
+  { name: 'af_heart',    culture: 'en-US', lang: 'English (American)', gender: 'Female' },
+  { name: 'af_alloy',    culture: 'en-US', lang: 'English (American)', gender: 'Female' },
+  { name: 'af_aoede',    culture: 'en-US', lang: 'English (American)', gender: 'Female' },
+  { name: 'af_bella',    culture: 'en-US', lang: 'English (American)', gender: 'Female' },
+  { name: 'af_jessica',  culture: 'en-US', lang: 'English (American)', gender: 'Female' },
+  { name: 'af_kore',     culture: 'en-US', lang: 'English (American)', gender: 'Female' },
+  { name: 'af_nicole',   culture: 'en-US', lang: 'English (American)', gender: 'Female' },
+  { name: 'af_nova',     culture: 'en-US', lang: 'English (American)', gender: 'Female' },
+  { name: 'af_river',    culture: 'en-US', lang: 'English (American)', gender: 'Female' },
+  { name: 'af_sarah',    culture: 'en-US', lang: 'English (American)', gender: 'Female' },
+  { name: 'af_sky',      culture: 'en-US', lang: 'English (American)', gender: 'Female' },
+  { name: 'am_adam',     culture: 'en-US', lang: 'English (American)', gender: 'Male' },
+  { name: 'am_echo',     culture: 'en-US', lang: 'English (American)', gender: 'Male' },
+  { name: 'am_eric',     culture: 'en-US', lang: 'English (American)', gender: 'Male' },
+  { name: 'am_fenrir',   culture: 'en-US', lang: 'English (American)', gender: 'Male' },
+  { name: 'am_liam',     culture: 'en-US', lang: 'English (American)', gender: 'Male' },
+  { name: 'am_michael',  culture: 'en-US', lang: 'English (American)', gender: 'Male' },
+  { name: 'am_onyx',     culture: 'en-US', lang: 'English (American)', gender: 'Male' },
+  { name: 'am_puck',     culture: 'en-US', lang: 'English (American)', gender: 'Male' },
+  { name: 'am_santa',    culture: 'en-US', lang: 'English (American)', gender: 'Male' },
+  // British English
+  { name: 'bf_alice',    culture: 'en-GB', lang: 'English (British)',  gender: 'Female' },
+  { name: 'bf_emma',     culture: 'en-GB', lang: 'English (British)',  gender: 'Female' },
+  { name: 'bf_isabella', culture: 'en-GB', lang: 'English (British)',  gender: 'Female' },
+  { name: 'bf_lily',     culture: 'en-GB', lang: 'English (British)',  gender: 'Female' },
+  { name: 'bm_daniel',   culture: 'en-GB', lang: 'English (British)',  gender: 'Male' },
+  { name: 'bm_fable',    culture: 'en-GB', lang: 'English (British)',  gender: 'Male' },
+  { name: 'bm_george',   culture: 'en-GB', lang: 'English (British)',  gender: 'Male' },
+  { name: 'bm_lewis',    culture: 'en-GB', lang: 'English (British)',  gender: 'Male' },
+  // Spanish, French, Hindi, Italian, Japanese, Portuguese, Mandarin
+  { name: 'ef_dora',     culture: 'es-ES', lang: 'Spanish',            gender: 'Female' },
+  { name: 'em_alex',     culture: 'es-ES', lang: 'Spanish',            gender: 'Male' },
+  { name: 'em_santa',    culture: 'es-ES', lang: 'Spanish',            gender: 'Male' },
+  { name: 'ff_siwis',    culture: 'fr-FR', lang: 'French',             gender: 'Female' },
+  { name: 'hf_alpha',    culture: 'hi-IN', lang: 'Hindi',              gender: 'Female' },
+  { name: 'hf_beta',     culture: 'hi-IN', lang: 'Hindi',              gender: 'Female' },
+  { name: 'hm_omega',    culture: 'hi-IN', lang: 'Hindi',              gender: 'Male' },
+  { name: 'hm_psi',      culture: 'hi-IN', lang: 'Hindi',              gender: 'Male' },
+  { name: 'if_sara',     culture: 'it-IT', lang: 'Italian',            gender: 'Female' },
+  { name: 'im_nicola',   culture: 'it-IT', lang: 'Italian',            gender: 'Male' },
+  { name: 'jf_alpha',    culture: 'ja-JP', lang: 'Japanese',           gender: 'Female' },
+  { name: 'jf_gongitsune', culture: 'ja-JP', lang: 'Japanese',         gender: 'Female' },
+  { name: 'jf_nezumi',   culture: 'ja-JP', lang: 'Japanese',           gender: 'Female' },
+  { name: 'jf_tebukuro', culture: 'ja-JP', lang: 'Japanese',           gender: 'Female' },
+  { name: 'jm_kumo',     culture: 'ja-JP', lang: 'Japanese',           gender: 'Male' },
+  { name: 'pf_dora',     culture: 'pt-BR', lang: 'Portuguese (BR)',    gender: 'Female' },
+  { name: 'pm_alex',     culture: 'pt-BR', lang: 'Portuguese (BR)',    gender: 'Male' },
+  { name: 'pm_santa',    culture: 'pt-BR', lang: 'Portuguese (BR)',    gender: 'Male' },
+  { name: 'zf_xiaobei',  culture: 'zh-CN', lang: 'Chinese (Mandarin)', gender: 'Female' },
+  { name: 'zf_xiaoni',   culture: 'zh-CN', lang: 'Chinese (Mandarin)', gender: 'Female' },
+  { name: 'zf_xiaoxiao', culture: 'zh-CN', lang: 'Chinese (Mandarin)', gender: 'Female' },
+  { name: 'zf_xiaoyi',   culture: 'zh-CN', lang: 'Chinese (Mandarin)', gender: 'Female' },
+  { name: 'zm_yunjian',  culture: 'zh-CN', lang: 'Chinese (Mandarin)', gender: 'Male' },
+  { name: 'zm_yunxi',    culture: 'zh-CN', lang: 'Chinese (Mandarin)', gender: 'Male' },
+  { name: 'zm_yunxia',   culture: 'zh-CN', lang: 'Chinese (Mandarin)', gender: 'Male' },
+  { name: 'zm_yunyang',  culture: 'zh-CN', lang: 'Chinese (Mandarin)', gender: 'Male' },
+];
 
 function _languageNameFromTag(tag) {
   const t = (tag || '').toLowerCase().split(/[-_]/)[0];
@@ -569,8 +670,23 @@ function _buildOneCoreSynthCommand(voiceName, text, outFile) {
 
 ipcMain.handle('tts:synthesize', async (_, text, voice, speed, opts) => {
   if (!text || !text.trim()) return { ok: false, error: 'Empty text.' };
-  const source   = opts?.source || 'sapi5';   // renderer can hint 'onecore'
+  const source   = opts?.source || 'sapi5';   // renderer can hint 'onecore' / 'kokoro'
   const filename = path.join(_ttsTempDir, `tts-${Date.now()}-${Math.random().toString(36).slice(2, 8)}.wav`);
+
+  if (source === 'kokoro') {
+    try {
+      const tts = await _loadKokoro();
+      console.log(`[kokoro] generating "${text.slice(0, 40)}…" with voice ${voice}`);
+      const audio = await tts.generate(text, { voice });
+      // audio.toWav() returns a Uint8Array of WAV bytes.
+      const wav = audio.toWav();
+      const b64 = Buffer.from(wav).toString('base64');
+      return { ok: true, data: b64, mime: 'audio/wav' };
+    } catch (e) {
+      console.warn('[kokoro] synth failed:', e?.message);
+      return { ok: false, error: e?.message || 'Kokoro synthesis failed.' };
+    }
+  }
 
   if (source === 'onecore' && process.platform === 'win32') {
     // Synthesize via Windows.Media.SpeechSynthesis (OneCore engine).
