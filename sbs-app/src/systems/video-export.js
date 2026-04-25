@@ -148,8 +148,11 @@ async function _exportMp4({ fps = DEFAULT_FPS, bitrate = DEFAULT_BITRATE,
     },
   };
   if (audioTrackEnabled) {
-    // Try Opus first (royalty-free + works in MP4); fall back to AAC.
-    const audioCandidates = ['opus', 'mp4a.40.2'];
+    // Prefer AAC (universal MP4 player support — WMP, QuickTime, iOS, mobile).
+    // Fall back to Opus if the Electron build doesn't ship an AAC encoder.
+    // Opus-in-MP4 is technically valid but only VLC / browsers / pro tools
+    // play it; native OS players treat the audio track as missing.
+    const audioCandidates = ['mp4a.40.2', 'opus'];
     for (const c of audioCandidates) {
       try {
         const probe = await AudioEncoder.isConfigSupported({
