@@ -19,6 +19,7 @@
 import { state }     from '../core/state.js';
 import { setStatus } from '../ui/status.js';
 import { synthesize as ttsSynthesize } from './tts.js';
+import * as narrationCache from './narration-cache.js';
 
 let _runCtl = null;        // AbortController for the active run
 let _runPromise = null;    // settled when run finishes
@@ -51,13 +52,16 @@ async function _runOnce(signal, reason) {
   const allSteps = (state.get('steps') || []).filter(s => !s.hidden && !s.isBaseStep);
 
   // Build the work list — only steps with text whose cached clip doesn't
-  // match the current text+voice+speed.
+  // match the current text+voice+speed. A clip is "cached" if EITHER the
+  // inline dataUrl is set OR we have a dataFile pointing to disk (the
+  // disk-cache path skips re-synth on every project load).
   const todo = [];
   for (const s of allSteps) {
     const text = s.narration?.text?.trim();
     if (!text) continue;
     const n = s.narration;
-    const fresh = n?.dataUrl && n.text === text && n.voiceId === voiceId && n.speed === speed;
+    const matches = n?.text === text && n?.voiceId === voiceId && n?.speed === speed;
+    const fresh   = matches && (n?.dataUrl || n?.dataFile);
     if (!fresh) todo.push(s);
   }
   if (!todo.length) return;
@@ -68,15 +72,23 @@ async function _runOnce(signal, reason) {
     const s = todo[i];
     setStatus(`Caching narration ${i + 1}/${todo.length}…`, 'info', 0);
     try {
-      const out = await ttsSynthesize(s.narration.text, voiceId, { speed });
+      const text = s.narration.text;
+      const out  = await ttsSynthesize(text, voiceId, { speed });
       // It's possible the user navigated / edited mid-synth — re-check the
       // step still wants the same text before stamping the cache.
       if (signal.aborted) return;
       const cur = state.get('steps').find(x => x.id === s.id);
-      if (!cur || cur.narration?.text !== s.narration.text) continue;
-      cur.narration = { text: s.narration.text, voiceId, speed, ...out };
+      if (!cur || cur.narration?.text !== text) continue;
+      // Try to land the WAV on disk — drops the bulky base64 from the
+      // project file on next save. Falls back to inline dataUrl when the
+      // user hasn't picked a cache folder.
+      const dataFile = await narrationCache
+        .saveClipToDisk({ text, voiceId, speed, dataUrl: out.dataUrl })
+        .catch(() => null);
+      cur.narration = { text, voiceId, speed, ...out };
+      if (dataFile) cur.narration.dataFile = dataFile;
       // Don't markDirty — we DON'T want every cache to dirty the project.
-      // The dataUrls get written on next user-driven save anyway.
+      // The dataUrls / dataFile get written on next user-driven save.
     } catch (err) {
       console.warn('[precache] synth failed for', s.name, err?.message);
     }

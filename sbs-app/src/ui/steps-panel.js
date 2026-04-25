@@ -14,7 +14,8 @@ import { setStatus } from './status.js';
 import { showContextMenu } from './context-menu.js';
 import { exportTimelineVideo, downloadBlob } from '../systems/video-export.js';
 import { listVoices as ttsListVoices, synthesize as ttsSynthesize } from '../systems/tts.js';
-import * as userSettings from '../core/user-settings.js';
+import * as userSettings    from '../core/user-settings.js';
+import * as narrationCache  from '../systems/narration-cache.js';
 
 let _container    = null;
 let _dragId       = null;          // id of step being dragged (single-drag fallback)
@@ -143,10 +144,14 @@ function _playStepNarration(step) {
   if (_narrationAudio) { try { _narrationAudio.pause(); } catch {} _narrationAudio = null; }
   if (state.get('_exporting'))   return;
   if (state.get('narrationMuted')) return;
-  const clip = step?.narration?.dataUrl;
-  if (!clip || step.isBaseStep) return;
-  _narrationAudio = new Audio(clip);
-  _narrationAudio.play().catch(err => console.warn('[narration] play:', err.message));
+  if (!step || step.isBaseStep)    return;
+  // Resolves inline dataUrl OR lazy-loads from the audio cache folder.
+  // Returns null if neither path has a clip — silent fallthrough.
+  narrationCache.ensurePlayable(step).then(clip => {
+    if (!clip) return;
+    _narrationAudio = new Audio(clip);
+    _narrationAudio.play().catch(err => console.warn('[narration] play:', err.message));
+  });
 }
 
 /**
@@ -964,13 +969,21 @@ export async function previewStepNarration(step, currentText) {
   const speed   = Number(exp.narrationSpeed) || 1.0;
   if (!voiceId) { setStatus('Pick a voice in the Export tab first.', 'warning'); return; }
 
-  // Cache fresh? Play immediately.
+  // Cache fresh? Play immediately. "Fresh" means same text/voice/speed AND
+  // we have *something* playable — either inline dataUrl or a disk file we
+  // can lazy-load.
   const n = step.narration || {};
-  const fresh = n.dataUrl && n.text === text && n.voiceId === voiceId && n.speed === speed;
+  const matches = n.text === text && n.voiceId === voiceId && n.speed === speed;
+  const fresh   = matches && (n.dataUrl || n.dataFile);
   if (fresh) {
-    _playClip(n.dataUrl);
-    setStatus(`Clip · ${(n.durationMs / 1000 || 0).toFixed(1)}s`);
-    return;
+    const url = await narrationCache.ensurePlayable(step);
+    if (url) {
+      _playClip(url);
+      setStatus(`Clip · ${(n.durationMs / 1000 || 0).toFixed(1)}s`);
+      return;
+    }
+    // Disk read failed — fall through to re-synth.
+    console.warn('[tts] cached dataFile unreadable, re-synthesizing');
   }
 
   // Cache miss — fire the real synth in the background (de-duped) AND play
@@ -978,12 +991,16 @@ export async function previewStepNarration(step, currentText) {
   // the front of the worker queue; user wanted "snappy feedback now, real
   // voice later" rather than "make this one preview jump the line".
   const realSynth = _ensureSynth(step.id, text, voiceId, speed);
-  realSynth.then(out => {
-    if (step.narration?.text === text) {
-      step.narration = { text, voiceId, speed, ...out };
-      state.markDirty();
-      setStatus(`Real voice ready (${(out.durationMs / 1000).toFixed(1)}s) — click ▶ to hear it.`);
-    }
+  realSynth.then(async out => {
+    if (step.narration?.text !== text) return;
+    // Try to write the WAV to the project's audio cache folder. If caching
+    // is disabled, dataFile stays undefined and we fall back to inline
+    // dataUrl in the project file.
+    const dataFile = await narrationCache.saveClipToDisk({ text, voiceId, speed, dataUrl: out.dataUrl }).catch(() => null);
+    step.narration = { text, voiceId, speed, ...out };
+    if (dataFile) step.narration.dataFile = dataFile;
+    state.markDirty();
+    setStatus(`Real voice ready (${(out.durationMs / 1000).toFixed(1)}s) — click ▶ to hear it.`);
   }).catch(err => {
     console.warn('[tts] background synth:', err?.message);
   });

@@ -96,6 +96,12 @@ function createInitialState() {
     // The Preview ▶ button still works regardless. Persisted per project.
     narrationMuted: false,
 
+    // Project-relative folder where synthesized narration WAVs are cached on
+    // disk. When set, step.narration.dataFile (sha1.wav filename) replaces
+    // the bulky inline base64 dataUrl on save — keeps .sbsproj small.
+    // null → inline base64 in project file (legacy behaviour).
+    audioCacheFolder: null,
+
     export: {
       fileName:           'sbs_export',
       outputFormat:       'mp4',

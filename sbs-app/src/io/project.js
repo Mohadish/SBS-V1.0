@@ -71,6 +71,15 @@ export function serialize() {
   // ── Steps ────────────────────────────────────────────────────────────────
   project.steps.items = JSON.parse(JSON.stringify(state.get('steps') || []));
 
+  // When narration audio is cached on disk (dataFile present), drop the
+  // bulky inline base64 dataUrl from the saved file — the WAV lives in
+  // <projectDir>/<audioCacheFolder>/ and is loaded lazily on play / export.
+  for (const stp of project.steps.items) {
+    if (stp.narration?.dataFile && stp.narration?.dataUrl) {
+      delete stp.narration.dataUrl;
+    }
+  }
+
   // ── Chapters ─────────────────────────────────────────────────────────────
   project.chapters.items = JSON.parse(JSON.stringify(state.get('chapters') || []));
 
@@ -103,6 +112,7 @@ export function serialize() {
   cfg.cameraFillLight      = { ...(state.get('cameraFillLight') || {}) };
   cfg.geometryOutline      = { ...(state.get('geometryOutline') || {}) };
   cfg.export               = { ...(state.get('export')         || {}) };
+  cfg.audioCacheFolder     = state.get('audioCacheFolder')      ?? null;
 
   return project;
 }
@@ -430,6 +440,7 @@ export function applyProjectToState(project) {
     export:               s.export
                             ? { ...state.get('export'), ...s.export }
                             : state.get('export'),
+    audioCacheFolder:     s.audioCacheFolder ?? null,
   });
 
   // ── Content arrays ────────────────────────────────────────────────────────

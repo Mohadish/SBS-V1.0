@@ -357,6 +357,16 @@ ipcMain.handle('dialog:chooseExportFolder', async () => {
   return result.canceled ? null : result.filePaths[0];
 });
 
+// Generic folder picker — caller passes title + optional defaultPath.
+ipcMain.handle('dialog:chooseFolder', async (_, opts = {}) => {
+  const result = await dialog.showOpenDialog(mainWindow, {
+    title:       opts.title       || 'Choose Folder',
+    defaultPath: opts.defaultPath || undefined,
+    properties:  ['openDirectory', 'createDirectory'],
+  });
+  return result.canceled ? null : result.filePaths[0];
+});
+
 // Read a file (returns base64 for binary, utf-8 string for text)
 ipcMain.handle('fs:readFile', async (_, filePath, encoding = 'base64') => {
   try {

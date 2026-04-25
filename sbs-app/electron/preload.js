@@ -20,6 +20,7 @@ contextBridge.exposeInMainWorld('sbsNative', {
   openProject:        ()          => ipcRenderer.invoke('dialog:openProject'),
   saveProject:        (name)      => ipcRenderer.invoke('dialog:saveProject', name),
   chooseExportFolder: ()          => ipcRenderer.invoke('dialog:chooseExportFolder'),
+  chooseFolder:       (opts={})   => ipcRenderer.invoke('dialog:chooseFolder', opts),
 
   // ── File system ──────────────────────────────────────────────────────────
   readFile:  (filePath, encoding) => ipcRenderer.invoke('fs:readFile',  filePath, encoding),

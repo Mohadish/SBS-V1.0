@@ -24,6 +24,7 @@ import { sceneCore } from '../core/scene.js';
 import { rasterizeOverlay } from './overlay.js';
 import { decodeToAudioBuffer, resampleToMonoFloat32, mixTrackToFloat32 } from './audio-bridge.js';
 import { synthesize as ttsSynthesize } from './tts.js';
+import * as narrationCache from './narration-cache.js';
 
 // Vendored ES module (see sbs-app/vendor/mp4-muxer.mjs).
 import { Muxer as Mp4Muxer, ArrayBufferTarget } from '../../vendor/mp4-muxer.mjs';
@@ -365,7 +366,8 @@ async function _synthesizeMissingClips(stepsToPlay, onProgress, signal) {
     if (!text) continue;
     withText++;
     const n = s.narration;
-    const fresh = n?.dataUrl && n.text === text && n.voiceId === voiceId && n.speed === speed;
+    const matches = n?.text === text && n?.voiceId === voiceId && n?.speed === speed;
+    const fresh   = matches && (n?.dataUrl || n?.dataFile);
     if (fresh) { alreadyCached++; continue; }
     todo.push(s);
   }
@@ -378,9 +380,14 @@ async function _synthesizeMissingClips(stepsToPlay, onProgress, signal) {
     onProgress?.({ current: 0, total: 0, stepName: `Synthesizing ${i + 1}/${todo.length}: ${s.name}` });
     console.log(`[export] pre-synth ${i + 1}/${todo.length}: "${s.name}"`);
     try {
-      const out = await ttsSynthesize(s.narration.text, voiceId, { speed });
-      s.narration = { text: s.narration.text, voiceId, speed, ...out };
-      console.log(`[export]   ✓ ${(out.durationMs / 1000).toFixed(2)}s`);
+      const text = s.narration.text;
+      const out  = await ttsSynthesize(text, voiceId, { speed });
+      const dataFile = await narrationCache
+        .saveClipToDisk({ text, voiceId, speed, dataUrl: out.dataUrl })
+        .catch(() => null);
+      s.narration = { text, voiceId, speed, ...out };
+      if (dataFile) s.narration.dataFile = dataFile;
+      console.log(`[export]   ✓ ${(out.durationMs / 1000).toFixed(2)}s${dataFile ? ` → ${dataFile}` : ''}`);
     } catch (err) {
       console.warn(`[export]   ✗ synth failed for "${s.name}":`, err?.message);
     }
@@ -424,7 +431,9 @@ async function _buildNarrationTrack(stepsToPlay, perStepHold, sampleRate) {
   let hasAudio = false;
   for (let i = 0; i < segments.length; i++) {
     const seg = segments[i];
-    const url = seg.step.narration?.dataUrl;
+    // Resolve the playable url — inline dataUrl OR lazy-loaded from disk
+    // cache. Returns null if neither is available (no clip for this step).
+    const url = await narrationCache.ensurePlayable(seg.step);
     if (!url) continue;
     try {
       console.log(`[export] decode step ${i + 1}/${segments.length}: ${seg.step.name}`);

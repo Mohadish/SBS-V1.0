@@ -25,7 +25,8 @@ import { showContextMenu } from './context-menu.js';
 import { renderAnimationTab } from './animation-tab.js';
 import { exportTimelineVideo, downloadBlob } from '../systems/video-export.js';
 import { listVoices as ttsListVoices } from '../systems/tts.js';
-import * as userSettings from '../core/user-settings.js';
+import * as userSettings    from '../core/user-settings.js';
+import * as narrationCache  from '../systems/narration-cache.js';
 
 const TABS = ['files', 'tree', 'colors', 'select', 'cameras', 'animation', 'export'];
 let _activeTab   = 'files';
@@ -1482,6 +1483,21 @@ function _renderExportTab() {
           <input type="checkbox" id="exp-narration-enabled" ${exp.narrationEnabled !== false ? 'checked' : ''} />
           <span class="small muted">Include narration in export</span>
         </label>
+
+        <div style="margin-top:12px;border-top:1px solid #1f2937;padding-top:10px;">
+          <div class="small muted" style="margin-bottom:4px;">Audio cache folder</div>
+          <div class="small muted" style="margin-bottom:6px;font-size:11px;">
+            When set, synthesized clips are stored as WAV files here instead
+            of inflating the .sbsproj. Path is relative to the project file.
+          </div>
+          <div id="exp-cache-state" class="small" style="margin-bottom:6px;">
+            <em style="opacity:0.6;">— inline (no folder set) —</em>
+          </div>
+          <div class="grid2">
+            <button class="btn" id="btn-cache-pick">Choose folder…</button>
+            <button class="btn" id="btn-cache-clear">Clear</button>
+          </div>
+        </div>
       </div>
 
       <div class="grid2" style="margin-top:8px;">
@@ -1564,6 +1580,85 @@ function _renderExportTab() {
   });
   narrEn.addEventListener('change', () =>
     state.setExportOption('narrationEnabled', !!narrEn.checked));
+
+  // ── Audio cache folder ─────────────────────────────────────────────────
+  const cacheState = el.querySelector('#exp-cache-state');
+  const btnPick    = el.querySelector('#btn-cache-pick');
+  const btnClear   = el.querySelector('#btn-cache-clear');
+
+  const _renderCacheState = () => {
+    // Tab may have re-rendered; bail if our DOM is gone (don't leak into stale nodes).
+    if (!cacheState.isConnected) return;
+    const folder      = state.get('audioCacheFolder');
+    const projectPath = state.get('projectPath');
+    if (!folder) {
+      cacheState.innerHTML = `<em style="opacity:0.6;">— inline (no folder set) —</em>`;
+    } else if (!projectPath) {
+      cacheState.innerHTML = `<span style="color:#fbbf24;">Save the project first — folder needs a base path.</span>
+        <div class="small muted" style="margin-top:2px;">Will be: <code>${_esc(folder)}</code></div>`;
+    } else {
+      cacheState.innerHTML = `<span style="color:#86efac;">✓</span> <code>${_esc(folder)}</code>
+        <div class="small muted" style="margin-top:2px;">${_esc(projectPath.replace(/[\/\\][^\/\\]+$/, ''))}/</div>`;
+    }
+  };
+  _renderCacheState();
+
+  btnPick.addEventListener('click', async () => {
+    if (!window.sbsNative?.chooseFolder) return;
+    const projectPath = state.get('projectPath');
+    if (!projectPath) {
+      setStatus('Save the project first — the cache folder is stored relative to it.', 'warning');
+      return;
+    }
+    const projectDir = projectPath.replace(/[\/\\][^\/\\]+$/, '');
+    const picked = await window.sbsNative.chooseFolder({
+      title:       'Choose narration cache folder',
+      defaultPath: projectDir,
+    });
+    if (!picked) return;
+    // Convert to relative-to-project. If the user picked a folder OUTSIDE
+    // the project dir (e.g. on a different drive), keep the absolute path
+    // so portability still kinda works.
+    const rel = _toRelative(projectDir, picked);
+    state.setState({ audioCacheFolder: rel });
+    state.markDirty();
+    _renderCacheState();
+
+    // One-shot: migrate any inline-cached clips to disk so the next save
+    // is small. Silent if there's nothing to do.
+    setStatus(`Audio cache folder set: ${rel}. Migrating existing clips…`, 'info', 0);
+    const { migrated, failed } = await narrationCache.migrateInlineClipsToDisk(state.get('steps') || []);
+    if (migrated)        setStatus(`Cache folder set — ${migrated} clip(s) moved to disk${failed ? ` (${failed} failed)` : ''}.`);
+    else if (failed)     setStatus(`Cache folder set — ${failed} clip(s) failed to migrate.`, 'warning');
+    else                 setStatus(`Audio cache folder set: ${rel}`);
+  });
+
+  btnClear.addEventListener('click', () => {
+    if (!state.get('audioCacheFolder')) return;
+    state.setState({ audioCacheFolder: null });
+    state.markDirty();
+    setStatus('Audio cache folder cleared — new clips will inline into project file.');
+    _renderCacheState();
+  });
+
+  // Re-render on project save (projectPath becomes available) and on load.
+  state.on('change:projectPath',     _renderCacheState);
+  state.on('change:audioCacheFolder', _renderCacheState);
+}
+
+/**
+ * Express `picked` as a path relative to `base` when possible (no `..`
+ * traversal, same drive). Otherwise return the absolute path unchanged.
+ * Tolerates mixed slash styles on Windows.
+ */
+function _toRelative(base, picked) {
+  if (!base || !picked) return picked || '';
+  const norm = s => s.replace(/\\/g, '/').replace(/\/$/, '');
+  const b = norm(base);
+  const p = norm(picked);
+  if (p === b)              return '.';
+  if (p.startsWith(b + '/')) return p.slice(b.length + 1);
+  return p;   // outside project dir — keep absolute
 }
 
 /**
@@ -1575,7 +1670,10 @@ function _invalidateAllNarrationClips() {
   const steps = state.get('steps') || [];
   let changed = 0;
   for (const s of steps) {
-    if (s.narration?.dataUrl) {
+    // Either inline (dataUrl) or disk-cached (dataFile) clips need to go —
+    // the new voice/speed pair gets a different SHA-1, and the old WAV
+    // becomes a harmless orphan in the cache folder.
+    if (s.narration?.dataUrl || s.narration?.dataFile) {
       s.narration = { text: s.narration.text || '' };
       changed++;
     }
