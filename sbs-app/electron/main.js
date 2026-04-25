@@ -368,29 +368,67 @@ ipcMain.handle('settings:path',  () => _userSettingsPath);
  * Windows: Get-WinUserLanguageList via PowerShell.
  * macOS / Linux: best-effort via app.getPreferredSystemLanguages.
  *
+ * Always returns a non-empty list — falls back to a small hardcoded list of
+ * common languages if the OS query fails for any reason.
+ *
  * Returns: [{ tag: "he-IL", name: "Hebrew" }, ...]
  */
 ipcMain.handle('settings:installedLanguages', async () => {
+  let result = [];
+
   if (process.platform === 'win32') {
     try {
-      const json = execSync(
+      const raw = execSync(
         'powershell -NoProfile -NonInteractive -Command "Get-WinUserLanguageList | Select-Object LanguageTag, EnglishName | ConvertTo-Json -Compress"',
         { stdio: ['ignore', 'pipe', 'pipe'], timeout: 5000 }
-      ).toString().trim();
-      const parsed = JSON.parse(json || '[]');
-      const arr = Array.isArray(parsed) ? parsed : [parsed];
-      return arr.map(o => ({ tag: o.LanguageTag, name: o.EnglishName })).filter(o => o.tag && o.name);
+      ).toString();
+      // Strip BOM + trim before parse — PowerShell stdout sometimes has both.
+      const json = raw.replace(/^\uFEFF/, '').trim();
+      console.log('[settings] PowerShell language list output:', json);
+      if (json) {
+        const parsed = JSON.parse(json);
+        const arr = Array.isArray(parsed) ? parsed : [parsed];
+        result = arr
+          .map(o => ({ tag: o?.LanguageTag, name: o?.EnglishName }))
+          .filter(o => o.tag && o.name);
+      }
+      console.log(`[settings] Parsed ${result.length} OS language(s):`,
+        result.map(r => `${r.tag}=${r.name}`).join(', '));
     } catch (e) {
       console.warn('[settings] Get-WinUserLanguageList failed:', e.message);
-      // Fallback to app.getPreferredSystemLanguages.
     }
   }
-  try {
-    const tags = app.getPreferredSystemLanguages?.() || [app.getLocale()];
-    return tags.map(tag => ({ tag, name: _languageNameFromTag(tag) })).filter(o => o.tag);
-  } catch {
-    return [];
+
+  if (!result.length) {
+    // Try Electron's own preference list.
+    try {
+      const tags = app.getPreferredSystemLanguages?.() || [app.getLocale()];
+      result = tags.map(tag => ({ tag, name: _languageNameFromTag(tag) })).filter(o => o.tag && o.name);
+      console.log('[settings] Fell back to app.getPreferredSystemLanguages:', result);
+    } catch (e) {
+      console.warn('[settings] app locale fallback failed:', e.message);
+    }
   }
+
+  if (!result.length) {
+    // Last resort — give the user something to pick from.
+    result = [
+      { tag: 'en-US', name: 'English' },
+      { tag: 'he-IL', name: 'Hebrew' },
+      { tag: 'es-ES', name: 'Spanish' },
+      { tag: 'fr-FR', name: 'French' },
+      { tag: 'de-DE', name: 'German' },
+      { tag: 'it-IT', name: 'Italian' },
+      { tag: 'pt-BR', name: 'Portuguese' },
+      { tag: 'ru-RU', name: 'Russian' },
+      { tag: 'ja-JP', name: 'Japanese' },
+      { tag: 'zh-CN', name: 'Chinese' },
+      { tag: 'ar-SA', name: 'Arabic' },
+    ];
+    console.log('[settings] Using hardcoded language fallback list.');
+  }
+
+  return result;
 });
 
 function _languageNameFromTag(tag) {

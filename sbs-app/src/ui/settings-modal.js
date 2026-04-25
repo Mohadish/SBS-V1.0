@@ -134,29 +134,39 @@ async function _renderLanguageTab(body) {
       OS locale detected: <code>${_esc(cur.ui.osLocale || '—')}</code>.
     </p>
 
-    <div id="settings-lang-list" style="display:flex;flex-direction:column;gap:4px;max-height:280px;overflow:auto;border:1px solid #334155;border-radius:6px;padding:8px;background:#0a101a;">
+    <p class="small" style="margin:0 0 10px 0;padding:8px;background:rgba(245,158,11,0.10);border:1px solid rgba(245,158,11,0.35);border-radius:6px;color:#fbbf24;">
+      <strong>Heads up:</strong> Windows separates "language pack" (display
+      language) from "speech voices" (TTS). A language with <em>no voices
+      yet</em> means the speech feature wasn't installed for it. Open
+      <em>Windows Settings → Time &amp; language → Speech</em> and install
+      voices for the language you want, then restart this app.
+    </p>
+
+    <div id="settings-lang-list" style="display:flex;flex-direction:column;gap:4px;max-height:240px;overflow:auto;border:1px solid #334155;border-radius:6px;padding:8px;background:#0a101a;">
       ${items.length === 0
-        ? '<div class="small muted">No installed languages detected.</div>'
-        : items.map(it => `
-          <label style="display:flex;align-items:center;gap:8px;cursor:pointer;padding:2px 4px;border-radius:4px;">
-            <input type="checkbox" data-lang-name="${_esc(it.name)}" ${selected.has(it.name) ? 'checked' : ''} />
-            <span style="flex:1;">${_esc(it.name)}</span>
-            ${it.hasVoice
-              ? '<span class="small" style="color:#86efac;">✓ voices installed</span>'
-              : '<span class="small muted">no voices yet</span>'}
-          </label>
-        `).join('')}
+        ? '<div class="small muted">No installed languages detected. Try: Windows Settings → Time &amp; language → Language &amp; region.</div>'
+        : items.map(it => {
+            const id = `lang-${_esc(it.name).replace(/\s+/g, '-')}`;
+            return `
+              <label for="${id}" style="display:flex;align-items:center;gap:8px;cursor:pointer;padding:4px 6px;border-radius:4px;background:rgba(255,255,255,0.02);">
+                <input type="checkbox" id="${id}" data-lang-name="${_esc(it.name)}" ${selected.has(it.name) ? 'checked' : ''} />
+                <span style="flex:1;font-size:13px;">${_esc(it.name) || '<em style="opacity:0.5;">(unnamed)</em>'}</span>
+                ${it.hasVoice
+                  ? '<span class="small" style="color:#86efac;font-size:11px;">✓ voices ready</span>'
+                  : '<span class="small muted" style="font-size:11px;">no voices yet</span>'}
+              </label>
+            `;
+          }).join('')}
     </div>
 
     ${selectedWithoutVoices.length ? `
       <p class="small" style="margin-top:10px;color:#f59e0b;">
-        ⚠ Selected without voices: ${selectedWithoutVoices.map(_esc).join(', ')}.
-        Install via <em>Windows Settings → Language → [language] → Speech</em>, then restart this app.
+        ⚠ You picked <strong>${selectedWithoutVoices.map(_esc).join(', ')}</strong> but Windows hasn't installed speech voices for those.
+        Install via <em>Windows Settings → Time &amp; language → Speech</em>, then restart this app.
       </p>` : ''}
 
     <p class="small muted" style="margin-top:10px;">
-      Need another language? Install via <em>Settings → Time &amp; language →
-      Language &amp; region → Add a language</em> (tick "Speech"). Then restart.
+      Detected ${items.length} language(s) — ${items.filter(i => i.hasVoice).length} with voices, ${items.filter(i => !i.hasVoice).length} without.
     </p>
   `;
 
