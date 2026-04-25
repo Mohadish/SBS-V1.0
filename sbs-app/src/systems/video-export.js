@@ -82,13 +82,14 @@ async function _exportMp4({ fps = DEFAULT_FPS, bitrate = DEFAULT_BITRATE,
   const width  = canvas.width;
   const height = canvas.height;
 
-  // ── Build the step timeline. Each step's hold is extended so narration
-  // (if any) finishes before the next step starts. perStepHold[i] is what
-  // we await between activateStep calls during the live playback loop.
+  // ── Build the step timeline.
+  // Per-step hold is always added AFTER the step's narration (or after the
+  // animation if there's no narration). That way "Step hold (ms)" in the
+  // Export tab is a true global breath between steps, not a minimum that
+  // long narration silently overrides.
   const perStepHold = stepsToPlay.map(step => {
-    const animMs = step.transition?.durationMs ?? 1500;
     const narrMs = includeNarration ? (step.narration?.durationMs || 0) : 0;
-    return Math.max(stepHoldMs, narrMs - animMs);
+    return narrMs + stepHoldMs;
   });
 
   // Pick a codec the host actually supports. Chromium/Electron builds vary:
@@ -134,11 +135,11 @@ async function _exportMp4({ fps = DEFAULT_FPS, bitrate = DEFAULT_BITRATE,
       await _synthesizeMissingClips(stepsToPlay, onProgress, signal);
 
       // Recompute per-step holds AFTER pre-synth so the timeline accounts
-      // for newly-synthesized clip durations.
+      // for newly-synthesized clip durations. Same formula as initial setup
+      // (narration + global hold).
       for (let i = 0; i < stepsToPlay.length; i++) {
-        const animMs = stepsToPlay[i].transition?.durationMs ?? 1500;
         const narrMs = stepsToPlay[i].narration?.durationMs || 0;
-        perStepHold[i] = Math.max(stepHoldMs, narrMs - animMs);
+        perStepHold[i] = narrMs + stepHoldMs;
       }
 
       console.log('[export] building audio track…');
@@ -248,6 +249,7 @@ async function _exportMp4({ fps = DEFAULT_FPS, bitrate = DEFAULT_BITRATE,
   // Suppress live narration playback while the timeline runs for capture.
   state.setState({ _exporting: true });
   try {
+    await _hardResetToBase();
     console.log('[export] timeline playback…');
     await _playTimeline(stepsToPlay, perStepHold, onProgress, signal);
   } finally {
@@ -308,6 +310,7 @@ async function _exportWebM({ format = 'webm_vp9', fps = DEFAULT_FPS,
   recorder.start(250);
 
   try {
+    await _hardResetToBase();
     await _playTimeline(stepsToPlay, stepHoldMs, onProgress, signal);
   } finally {
     try { recorder.stop(); } catch {}
@@ -329,9 +332,8 @@ async function _playTimeline(stepsToPlay, holdsMsArg, onProgress, signal) {
     ? holdsMsArg
     : stepsToPlay.map(() => holdsMsArg);
 
-  steps.activateBaseStep();
-  await _wait(150);
-
+  // Hard reset already done by the caller (full snapshot apply with camera).
+  // We just play the steps.
   for (let i = 0; i < stepsToPlay.length; i++) {
     if (signal?.aborted) throw new DOMException('Export cancelled', 'AbortError');
     const step = stepsToPlay[i];
@@ -480,6 +482,25 @@ async function _encodeAudioMaster(pcm, sampleRate, encoder) {
 
 function _wait(ms) {
   return new Promise(r => setTimeout(r, ms));
+}
+
+/**
+ * Snap the scene to the base step (full snapshot, camera included) and wait
+ * for the renderer to settle. Used by every export entry point so the very
+ * first captured frame is the timeline's home state — never bleeds the
+ * camera/transform of whatever step happened to be active when the user
+ * pressed Export.
+ */
+async function _hardResetToBase() {
+  console.log('[export] hard reset to base step…');
+  try { steps.snapCurrentToFinal(); } catch {}
+  const baseStep = (state.get('steps') || []).find(s => s.isBaseStep);
+  if (baseStep?.snapshot) {
+    // applySnapshotInstant without suppressCamera — full reset including camera.
+    steps.applySnapshotInstant(baseStep.snapshot);
+  }
+  await new Promise(r => requestAnimationFrame(r));
+  await _wait(50);
 }
 
 function _withTimeout(promise, ms, label) {
