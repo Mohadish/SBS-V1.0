@@ -31,7 +31,10 @@ const REQUIRED_TOP = [
   'tokenizer.json',
   'tokenizer_config.json',
 ];
-const REQUIRED_ONNX = ['onnx/model_q8f16.onnx'];
+// transformers.js dtype 'q8' resolves to model_quantized.onnx (~88 MB).
+// We previously tried model_q8f16.onnx; that filename has no matching
+// dtype enum, so transformers.js refuses to load it.
+const REQUIRED_ONNX = ['onnx/model_quantized.onnx'];
 
 main().catch(err => { console.error(err); process.exit(1); });
 

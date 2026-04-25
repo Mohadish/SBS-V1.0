@@ -8,43 +8,50 @@ const os = require('os');
 const say = require('say');
 
 // Kokoro is heavy — defer require() to first call so app boot stays fast.
-let _kokoroModule = null;
-let _kokoroModelPromise = null;
+// _kokoroInstance is the loaded TTS object (the thing with .generate()).
+// _kokoroLoadPromise is set during loading; cleared on failure so a later
+// retry isn't permanently stuck on a rejected promise.
+let _kokoroInstance    = null;
+let _kokoroLoadPromise = null;
 function _loadKokoro() {
-  if (_kokoroModule) return Promise.resolve(_kokoroModule);
-  if (!_kokoroModelPromise) {
-    _kokoroModelPromise = (async () => {
-      _kokoroModule = require('kokoro-js');
-      const tx = require('@huggingface/transformers');
+  if (_kokoroInstance)  return Promise.resolve(_kokoroInstance);
+  if (_kokoroLoadPromise) return _kokoroLoadPromise;
 
-      // Bundled model path. In dev: <repo>/sbs-app/kokoro-bundle. In a
-      // packaged app: process.resourcesPath/kokoro-bundle (placed there by
-      // electron-builder via build.extraResources).
-      const bundleDir = app.isPackaged
-        ? path.join(process.resourcesPath, 'kokoro-bundle')
-        : path.join(APP_ROOT, 'kokoro-bundle');
+  _kokoroLoadPromise = (async () => {
+    const km = require('kokoro-js');
+    const tx = require('@huggingface/transformers');
 
-      // Point transformers.js at the local bundle and forbid remote fetches.
-      // localModelPath needs a trailing separator so HF model ids resolve as
-      // <localModelPath>/<repo>/<file>.
-      tx.env.localModelPath   = bundleDir + path.sep;
-      tx.env.allowLocalModels = true;
-      tx.env.allowRemoteModels = false;
-      // Cache fallback (in case anything still wants it).
-      const cacheDir = path.join(app.getPath('userData'), 'kokoro-cache');
-      try { fs.mkdirSync(cacheDir, { recursive: true }); } catch {}
-      tx.env.cacheDir = cacheDir;
+    // Bundled model path. In dev: <repo>/sbs-app/kokoro-bundle. In a
+    // packaged app: process.resourcesPath/kokoro-bundle (placed there by
+    // electron-builder via build.extraResources).
+    const bundleDir = app.isPackaged
+      ? path.join(process.resourcesPath, 'kokoro-bundle')
+      : path.join(APP_ROOT, 'kokoro-bundle');
 
-      console.log(`[kokoro] bundle = ${bundleDir}, packaged=${app.isPackaged}`);
-      const tts = await _kokoroModule.KokoroTTS.from_pretrained(
-        'onnx-community/Kokoro-82M-v1.0-ONNX',
-        { dtype: 'q8f16' }
-      );
-      console.log('[kokoro] model loaded — voices:', Object.keys(tts.voices || {}).length);
-      return tts;
-    })();
-  }
-  return _kokoroModelPromise;
+    tx.env.localModelPath    = bundleDir + path.sep;
+    tx.env.allowLocalModels  = true;
+    tx.env.allowRemoteModels = false;
+    const cacheDir = path.join(app.getPath('userData'), 'kokoro-cache');
+    try { fs.mkdirSync(cacheDir, { recursive: true }); } catch {}
+    tx.env.cacheDir = cacheDir;
+
+    console.log(`[kokoro] bundle = ${bundleDir}, packaged=${app.isPackaged}`);
+    // dtype 'q8' → model_quantized.onnx (~88 MB). Solid balance of size +
+    // quality. transformers.js's dtype enum doesn't include 'q8f16'; valid
+    // values are: auto / fp32 / fp16 / q8 / int8 / uint8 / q4 / bnb4 / q4f16.
+    const tts = await km.KokoroTTS.from_pretrained(
+      'onnx-community/Kokoro-82M-v1.0-ONNX',
+      { dtype: 'q8' }
+    );
+    console.log('[kokoro] model loaded — voices:', Object.keys(tts.voices || {}).length);
+    _kokoroInstance = tts;
+    return tts;
+  })();
+
+  // If load fails, clear the promise so the next call retries cleanly
+  // instead of returning the same rejected one forever.
+  _kokoroLoadPromise.catch(() => { _kokoroLoadPromise = null; });
+  return _kokoroLoadPromise;
 }
 
 const IS_DEV   = process.argv.includes('--dev');
