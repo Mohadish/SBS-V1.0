@@ -359,12 +359,14 @@ async function _buildNarrationTrack(stepsToPlay, perStepHold, sampleRate) {
     if (!url) continue;
     try {
       console.log(`[export] decode step ${i + 1}/${segments.length}: ${seg.step.name}`);
-      const audioBuf = await decodeToAudioBuffer(url, ctx);
-      const samples  = await resampleToMonoFloat32(audioBuf, sampleRate);
+      const audioBuf = await _withTimeout(decodeToAudioBuffer(url, ctx), 10_000, 'decodeAudioData');
+      console.log(`[export]   decoded — ${audioBuf.numberOfChannels}ch @ ${audioBuf.sampleRate}Hz, ${(audioBuf.duration).toFixed(2)}s`);
+      const samples  = await _withTimeout(resampleToMonoFloat32(audioBuf, sampleRate), 10_000, 'resample');
+      console.log(`[export]   resampled — ${samples.length} frames`);
       decoded.push({ startMs: seg.startMs, samples });
       hasAudio = true;
     } catch (err) {
-      console.warn('[export] decode failed for step', seg.step.name, err.message);
+      console.warn('[export] decode failed for step', seg.step.name, err?.message);
     }
   }
   try { ctx.close(); } catch {}
@@ -416,4 +418,11 @@ async function _encodeAudioMaster(pcm, sampleRate, encoder) {
 
 function _wait(ms) {
   return new Promise(r => setTimeout(r, ms));
+}
+
+function _withTimeout(promise, ms, label) {
+  return Promise.race([
+    promise,
+    new Promise((_, rej) => setTimeout(() => rej(new Error(`${label} timed out after ${ms}ms`)), ms)),
+  ]);
 }

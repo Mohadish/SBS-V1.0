@@ -58,28 +58,49 @@ function _dataUrlToArrayBuffer(dataUrl) {
 
 /**
  * Returns a Float32Array of mono samples at the target rate. Multichannel
- * inputs are averaged. If the source is already mono at the target rate,
- * returns its channel-0 data directly (zero-copy when possible).
+ * inputs are averaged. Pure JS — avoids OfflineAudioContext which can hang
+ * on Windows audio configurations under specific renderer states.
+ *
+ * Linear interpolation is plenty for speech narration (the dominant SBS
+ * use case) and predictable. Higher-quality SRC (sinc / kaiser) can be
+ * dropped in here later without touching callers.
  *
  * @param {AudioBuffer} buffer
  * @param {number}      targetRate   e.g. 48000
  * @returns {Promise<Float32Array>}
  */
 export async function resampleToMonoFloat32(buffer, targetRate) {
-  // Fast path — already mono at target rate.
-  if (buffer.sampleRate === targetRate && buffer.numberOfChannels === 1) {
-    return buffer.getChannelData(0).slice();
+  const mono = _mixToMono(buffer);
+  if (buffer.sampleRate === targetRate) return mono;
+  return _linearResample(mono, buffer.sampleRate, targetRate);
+}
+
+function _mixToMono(buffer) {
+  if (buffer.numberOfChannels === 1) return buffer.getChannelData(0).slice();
+  const len = buffer.length;
+  const out = new Float32Array(len);
+  for (let c = 0; c < buffer.numberOfChannels; c++) {
+    const ch = buffer.getChannelData(c);
+    for (let i = 0; i < len; i++) out[i] += ch[i];
   }
-  // Use OfflineAudioContext for high-quality SRC. It handles both rate
-  // conversion and channel mixdown in one render pass.
-  const dur     = buffer.length / buffer.sampleRate;
-  const offline = new OfflineAudioContext(1, Math.max(1, Math.ceil(dur * targetRate)), targetRate);
-  const src     = offline.createBufferSource();
-  src.buffer = buffer;
-  src.connect(offline.destination);
-  src.start(0);
-  const rendered = await offline.startRendering();
-  return rendered.getChannelData(0).slice();
+  const inv = 1 / buffer.numberOfChannels;
+  for (let i = 0; i < len; i++) out[i] *= inv;
+  return out;
+}
+
+function _linearResample(input, srcRate, dstRate) {
+  const ratio = srcRate / dstRate;
+  const len   = Math.floor(input.length / ratio);
+  const out   = new Float32Array(len);
+  const last  = input.length - 1;
+  for (let i = 0; i < len; i++) {
+    const x  = i * ratio;
+    const lo = Math.floor(x);
+    const hi = lo + 1 > last ? last : lo + 1;
+    const t  = x - lo;
+    out[i] = input[lo] * (1 - t) + input[hi] * t;
+  }
+  return out;
 }
 
 // ─── Float32 PCM → WAV data URL ─────────────────────────────────────────────
