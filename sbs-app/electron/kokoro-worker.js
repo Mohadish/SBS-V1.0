@@ -46,38 +46,69 @@ async function _load() {
       msg:  `[kokoro-worker] ORT backends: ${supported.map(b => b.name).join(', ') || '(none)'} → device=${device}`,
     });
 
-    parentPort.postMessage({ kind: 'log', msg: `[kokoro-worker] loading model from ${workerData.bundleDir} (device=${device})` });
-    const t0 = Date.now();
+    // Try a sequence of (device, dtype) pairs. The first that survives a
+    // smoke-test synth wins. Order matters:
+    //   1. dml + fp32  — fastest path, but needs model.onnx in the bundle
+    //                     (added by fetch-kokoro.js if available)
+    //   2. dml + fp16  — middle ground, smaller file, may fall over on some
+    //                     ops with this graph
+    //   3. dml + q8    — lightest, but DML rejects the q8 ConvTranspose in
+    //                     this Kokoro graph (verified failure)
+    //   4. cpu + q8    — guaranteed-working fallback, current baseline
+    //
+    // We don't just try-catch the load: q8 LOADS fine on DML, then dies at
+    // first synth with "ConvTranspose: parameter is incorrect". So every
+    // candidate gets a tiny smoke-test synth before we lock it in.
+    const fs       = require('fs');
+    const modelDir = path.join(workerData.bundleDir, 'onnx-community', 'Kokoro-82M-v1.0-ONNX', 'onnx');
+    const have     = (suffix) => fs.existsSync(path.join(modelDir, `model${suffix}.onnx`));
+    const candidates = [];
+    if (hasDml && have(''))           candidates.push({ device: 'dml', dtype: 'fp32' });
+    if (hasDml && have('_fp16'))      candidates.push({ device: 'dml', dtype: 'fp16' });
+    if (hasDml && have('_quantized')) candidates.push({ device: 'dml', dtype: 'q8'   });
+    candidates.push({ device: 'cpu', dtype: 'q8' });   // always as last resort
 
-    let tts;
-    try {
-      // q8 is what we tested on CPU. Try it on DML first; fall back to fp32
-      // if DML rejects the quantized graph (some EPs are pickier than CPU).
-      tts = await km.KokoroTTS.from_pretrained(
-        'onnx-community/Kokoro-82M-v1.0-ONNX',
-        { dtype: 'q8', device },
-      );
-      _activeBackend = device;
-    } catch (err) {
-      if (device !== 'cpu') {
+    parentPort.postMessage({
+      kind: 'log',
+      msg:  `[kokoro-worker] candidates: ${candidates.map(c => `${c.device}/${c.dtype}`).join(' → ')}`,
+    });
+
+    const t0 = Date.now();
+    let tts = null;
+    let chosen = null;
+    for (const c of candidates) {
+      try {
+        const tLoad = Date.now();
+        const cand = await km.KokoroTTS.from_pretrained(
+          'onnx-community/Kokoro-82M-v1.0-ONNX',
+          { dtype: c.dtype, device: c.device },
+        );
+        // Smoke-test: a 1-word synth picks up any op-not-supported errors
+        // that only fire at inference time (the q8/dml ConvTranspose issue).
+        const smokeVoice = Object.keys(cand.voices || {})[0] || 'af_bella';
+        const tSmoke = Date.now();
+        await cand.generate('test.', { voice: smokeVoice });
         parentPort.postMessage({
           kind: 'log',
-          msg:  `[kokoro-worker] ${device} load failed (${err?.message || err}); falling back to CPU`,
+          msg:  `[kokoro-worker] ✓ ${c.device}/${c.dtype} — load=${tSmoke - tLoad}ms, smoke=${Date.now() - tSmoke}ms`,
         });
-        tts = await km.KokoroTTS.from_pretrained(
-          'onnx-community/Kokoro-82M-v1.0-ONNX',
-          { dtype: 'q8', device: 'cpu' },
-        );
-        _activeBackend = 'cpu';
-      } else {
-        throw err;
+        tts = cand;
+        chosen = c;
+        break;
+      } catch (err) {
+        parentPort.postMessage({
+          kind: 'log',
+          msg:  `[kokoro-worker] ✗ ${c.device}/${c.dtype} — ${err?.message?.split('\n')[0] || err}`,
+        });
       }
     }
+    if (!tts) throw new Error('Kokoro: no working device/dtype combination');
 
+    _activeBackend = `${chosen.device}/${chosen.dtype}`;
     _instance = tts;
     parentPort.postMessage({
       kind: 'log',
-      msg:  `[kokoro-worker] model ready — backend=${_activeBackend}, ${Object.keys(tts.voices || {}).length} voices, load=${Date.now() - t0}ms`,
+      msg:  `[kokoro-worker] model ready — backend=${_activeBackend}, ${Object.keys(tts.voices || {}).length} voices, total=${Date.now() - t0}ms`,
     });
     return tts;
   })();

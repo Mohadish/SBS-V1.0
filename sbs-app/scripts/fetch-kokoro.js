@@ -31,10 +31,19 @@ const REQUIRED_TOP = [
   'tokenizer.json',
   'tokenizer_config.json',
 ];
-// transformers.js dtype 'q8' resolves to model_quantized.onnx (~88 MB).
-// We previously tried model_q8f16.onnx; that filename has no matching
-// dtype enum, so transformers.js refuses to load it.
-const REQUIRED_ONNX = ['onnx/model_quantized.onnx'];
+// transformers.js dtype mapping (DEFAULT_DTYPE_SUFFIX_MAPPING):
+//   fp32 → model.onnx           (~330 MB)  ← needed for DirectML on Windows;
+//                                              DML rejects q8 ConvTranspose ops
+//   fp16 → model_fp16.onnx      (~165 MB)  middle ground (not currently used)
+//   q8   → model_quantized.onnx (~88 MB)   CPU baseline, smallest
+//
+// We bundle q8 (always) and fp32 (when GPU is in scope). The worker tries
+// dml/fp32 → cpu/q8, picking the first combo that survives a smoke-test
+// synth at startup.
+const REQUIRED_ONNX = [
+  'onnx/model_quantized.onnx',   // q8 — CPU fallback, always required
+  'onnx/model.onnx',             // fp32 — DirectML primary path
+];
 
 main().catch(err => { console.error(err); process.exit(1); });
 
