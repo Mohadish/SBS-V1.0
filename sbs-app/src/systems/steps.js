@@ -151,9 +151,13 @@ class StepManager {
     if (!force && now - this._lastThumbMs < this._thumbIntervalMs) return;
     const activeId = state.get('activeStepId');
     if (!activeId) return;
-    // Render without the overlay scene so the gizmo / selection outlines
-    // never leak into the saved thumbnail.
+    // Hide the per-mesh selection overlay/outline children, render scene
+    // only (no gizmo overlay scene), capture, then restore visuals. The
+    // next rAF's regular _render redraws everything normally — no flicker
+    // on the live viewport.
+    this._materials?.setSelectionVisualsVisible(false);
     const dataUrl = sceneCore.captureThumbnail(120, 80, 0.55, true);
+    this._materials?.setSelectionVisualsVisible(true);
     if (!dataUrl) return;
     const step = state.get('steps').find(s => s.id === activeId);
     if (!step) return;

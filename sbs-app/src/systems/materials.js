@@ -1697,6 +1697,23 @@ gl_FragColor.a = 1.0;
     this.applySelectionHighlight();
   }
 
+  /**
+   * Hide or restore the per-mesh selection overlay/outline children. Used
+   * by the thumbnail capture path so saved previews never carry the cyan
+   * highlight of whatever was selected at capture time.
+   *
+   * Visibility-only toggle (no material changes), so the next render brings
+   * everything back instantly with zero side effects.
+   */
+  setSelectionVisualsVisible(visible) {
+    for (const mesh of this.meshById.values()) {
+      const overlay = mesh.userData?.sbsSelectionOverlay;
+      const outline = mesh.userData?.sbsSelectionOutline;
+      if (overlay) overlay.visible = visible;
+      if (outline) outline.visible = visible;
+    }
+  }
+
 
   // ═══════════════════════════════════════════════════════════════════════
   //  COLOR PRESET CRUD
