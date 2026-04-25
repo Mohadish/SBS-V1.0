@@ -49,6 +49,7 @@ import { initOverlay }         from './systems/overlay.js';
 import { initOverlayToolbar }  from './ui/overlay-toolbar.js';
 import { initUserSettings }    from './core/user-settings.js';
 import { openSettingsModal }   from './ui/settings-modal.js';
+import { schedulePrecache, cancel as cancelPrecache } from './systems/narration-precache.js';
 
 // ══════════════════════════════════════════════════════════════════════════════
 //  1. STATE — restore persisted preferences
@@ -108,6 +109,16 @@ initUserSettings().catch(err => console.warn('[settings] init failed:', err));
 
 // File → Settings… menu hook. Channel allowlist lives in preload.js.
 window.sbsNative?.onMenu?.('menu:openSettings', () => openSettingsModal());
+
+// Background narration pre-cache:
+//   • on project load — synthesize every step's saved text once, in the
+//     background, so Preview / Export are instant when the user gets there.
+//   • on narration-voice change in the Export tab — the existing path
+//     already invalidates clips; trigger a fresh pass to re-cache them.
+state.on('project:loaded', () => schedulePrecache('project-loaded'));
+// Any export-options change re-runs the pass. Internally idempotent — only
+// steps with stale/missing clips get re-synthesized.
+state.on('change:export',  () => schedulePrecache('export-options-change'));
 
 // Clear undo history when a new project loads (fresh slate)
 state.on('change:projectPath', () => { undoManager.clear(); selectionActs.clear(); });

@@ -460,6 +460,11 @@ export function applyProjectToState(project) {
   // default automatically.
   _migrateLegacyDefaultStamps();
 
+  // Background-cache every narration clip the project carries text for
+  // but no fresh audio. Runs serially; never blocks the UI. By the time
+  // the user starts navigating steps, most clips are already synthesized.
+  state.emit('project:loaded');
+
   state.markClean();
 }
 
