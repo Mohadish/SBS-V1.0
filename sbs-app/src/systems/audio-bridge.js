@@ -19,14 +19,39 @@
 // ─── Decode any browser-readable audio (WAV/MP3/Opus/etc.) → AudioBuffer ───
 
 /**
- * @param {string}        dataUrl    'data:audio/...;base64,...' or blob URL
+ * @param {string}        url        'data:audio/...;base64,...' or blob URL
  * @param {AudioContext}  audioCtx   any AudioContext (online or offline)
  * @returns {Promise<AudioBuffer>}
+ *
+ * Handles data: URLs without using fetch() so the renderer's CSP
+ * connect-src can stay strict (no 'data:' allowance needed).
  */
-export async function decodeToAudioBuffer(dataUrl, audioCtx) {
-  const response    = await fetch(dataUrl);
-  const arrayBuffer = await response.arrayBuffer();
+export async function decodeToAudioBuffer(url, audioCtx) {
+  let arrayBuffer;
+  if (url.startsWith('data:')) {
+    arrayBuffer = _dataUrlToArrayBuffer(url);
+  } else {
+    const response = await fetch(url);
+    arrayBuffer    = await response.arrayBuffer();
+  }
   return audioCtx.decodeAudioData(arrayBuffer);
+}
+
+function _dataUrlToArrayBuffer(dataUrl) {
+  const comma = dataUrl.indexOf(',');
+  if (comma < 0) throw new Error('Malformed data URL.');
+  const meta    = dataUrl.slice(5, comma);
+  const payload = dataUrl.slice(comma + 1);
+  const isBase64 = /;base64\b/.test(meta);
+  let binary;
+  if (isBase64) {
+    binary = atob(payload);
+  } else {
+    binary = decodeURIComponent(payload);
+  }
+  const bytes = new Uint8Array(binary.length);
+  for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
+  return bytes.buffer;
 }
 
 // ─── Resample any AudioBuffer to mono Float32 at a target rate ─────────────
