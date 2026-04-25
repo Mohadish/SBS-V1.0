@@ -173,8 +173,10 @@ async function _exportMp4({ fps = DEFAULT_FPS, bitrate = DEFAULT_BITRATE,
   });
   encoder.configure({ codec: chosen.webCodec, width, height, bitrate, framerate: fps });
 
-  // Audio encoder + chunked encode. Done BEFORE timeline playback so the
-  // audio track is fully muxed by the time the video frame pump runs.
+  // Audio encoder + chunked encode — runs CONCURRENTLY with the video frame
+  // pump. We capture the promise so we can await its completion before
+  // calling encoder.flush() at the end.
+  let audioEncodePromise = Promise.resolve();
   if (audioTrackEnabled) {
     audioEncoder = new AudioEncoder({
       output: (chunk, meta) => muxer.addAudioChunk(chunk, meta),
@@ -183,7 +185,8 @@ async function _exportMp4({ fps = DEFAULT_FPS, bitrate = DEFAULT_BITRATE,
     audioEncoder.configure({
       codec: audioCodec, sampleRate: AUDIO_RATE, numberOfChannels: AUDIO_CHANNELS, bitrate: AUDIO_BITRATE,
     });
-    _encodeAudioMaster(audioMaster.pcm, AUDIO_RATE, audioEncoder);
+    audioEncodePromise = _encodeAudioMaster(audioMaster.pcm, AUDIO_RATE, audioEncoder)
+      .catch(err => { console.warn('[export] audio pump aborted:', err?.message); });
   }
 
   // Frame pump — captures the canvas on every render tick and encodes as many
@@ -230,7 +233,8 @@ async function _exportMp4({ fps = DEFAULT_FPS, bitrate = DEFAULT_BITRATE,
   await encoder.flush();
   encoder.close();
   if (audioEncoder) {
-    await audioEncoder.flush();
+    await audioEncodePromise;          // make sure every chunk has been queued
+    await audioEncoder.flush();        // drain in-flight chunks
     audioEncoder.close();
   }
   muxer.finalize();
@@ -348,24 +352,43 @@ async function _buildNarrationTrack(stepsToPlay, perStepHold, sampleRate) {
   return { pcm, totalMs, hasAudio: true };
 }
 
-/** Push the master PCM into the AudioEncoder in 1024-frame chunks. */
-function _encodeAudioMaster(pcm, sampleRate, encoder) {
-  const CHUNK = 1024;
-  const total = pcm.length;
+/**
+ * Push the master PCM into the AudioEncoder in 1024-frame chunks.
+ * Yields to the event loop every YIELD_EVERY chunks so the renderer thread
+ * stays responsive during long encodes. Without the yields the loop can
+ * pump tens of thousands of synchronous encode() calls before returning,
+ * which is enough to make DevTools drop the connection on Windows builds.
+ */
+async function _encodeAudioMaster(pcm, sampleRate, encoder) {
+  const CHUNK       = 1024;
+  const YIELD_EVERY = 64;          // every ~1.4s of audio
+  const total       = pcm.length;
+  let chunkIdx = 0;
   for (let frame = 0; frame < total; frame += CHUNK) {
     const len   = Math.min(CHUNK, total - frame);
     const slice = pcm.subarray(frame, frame + len);
-    // AudioEncoder requires AudioData with format 'f32-planar' for mono.
-    const audioData = new AudioData({
-      format:           'f32-planar',
-      sampleRate,
-      numberOfFrames:   len,
-      numberOfChannels: 1,
-      timestamp:        Math.round((frame / sampleRate) * 1_000_000),
-      data:             slice,
-    });
-    try { encoder.encode(audioData); } catch (e) { audioData.close(); throw e; }
+    let audioData;
+    try {
+      audioData = new AudioData({
+        format:           'f32-planar',
+        sampleRate,
+        numberOfFrames:   len,
+        numberOfChannels: 1,
+        timestamp:        Math.round((frame / sampleRate) * 1_000_000),
+        data:             slice,
+      });
+      encoder.encode(audioData);
+    } catch (e) {
+      console.warn('[export] audio encode failed:', e?.message);
+      try { audioData?.close(); } catch {}
+      throw e;
+    }
     audioData.close();
+
+    if (++chunkIdx % YIELD_EVERY === 0) {
+      // Let the event loop breathe — UI redraws, DevTools heartbeats, etc.
+      await new Promise(r => setTimeout(r, 0));
+    }
   }
 }
 
