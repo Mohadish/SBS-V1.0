@@ -24,6 +24,7 @@
 
 import state                        from '../core/state.js';
 import sceneCore                    from '../core/scene.js';
+import { rasterizeOverlay }         from './overlay.js';
 import { createStep, createEmptySnapshot } from '../core/schema.js';
 import { parseAnimation, resolveAnimationString } from './animation.js';
 import {
@@ -153,10 +154,15 @@ class StepManager {
     if (!activeId) return;
     // Hide the per-mesh selection overlay/outline children, render scene
     // only (no gizmo overlay scene), capture, then restore visuals. The
-    // next rAF's regular _render redraws everything normally — no flicker
-    // on the live viewport.
+    // Konva 2D overlay (text boxes, images) is composited on top so the
+    // saved preview matches what the user sees.
+    // The next rAF's regular _render redraws everything normally — no
+    // flicker on the live viewport.
     this._materials?.setSelectionVisualsVisible(false);
-    const dataUrl = sceneCore.captureThumbnail(120, 80, 0.55, true);
+    const dataUrl = sceneCore.captureThumbnail(120, 80, 0.55, {
+      withoutOverlayScene: true,
+      extraLayers: (w, h) => [rasterizeOverlay({ width: w, height: h })],
+    });
     this._materials?.setSelectionVisualsVisible(true);
     if (!dataUrl) return;
     const step = state.get('steps').find(s => s.id === activeId);

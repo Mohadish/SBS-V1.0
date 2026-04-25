@@ -222,23 +222,26 @@ export class SceneCore extends Emitter {
    * @returns {string|null}    data URL or null
    */
   /**
-   * @param {number}  w
-   * @param {number}  h
-   * @param {number}  quality
-   * @param {boolean} [withoutOverlay=false]  When true, force a fresh render
-   *        of the scene WITHOUT the overlay scene (gizmo / transform handles
-   *        / selection outlines) so the captured bitmap is clean. The next
-   *        regular _render call (fired by the loop right after this hook)
-   *        restores the full scene + overlay before the browser swaps the
-   *        backbuffer, so there's no visible flicker on the live viewport.
+   * @param {number} w
+   * @param {number} h
+   * @param {number} quality
+   * @param {{ withoutOverlayScene?: boolean,
+   *           extraLayers?: (w:number, h:number) => Array<HTMLCanvasElement|null> }} [opts]
+   *   - withoutOverlayScene: when true, force a fresh render of the main
+   *     scene only (no gizmo / transform handles). The next regular _render
+   *     restores the full picture in the same rAF tick — no live flicker.
+   *   - extraLayers: optional fn returning canvases to composite on top of
+   *     the 3D layer (e.g. the Konva text/image overlay). Each layer is
+   *     drawn in order, scaled to (w,h).
    */
-  captureThumbnail(w = 120, h = 80, quality = 0.55, withoutOverlay = false) {
+  captureThumbnail(w = 120, h = 80, quality = 0.55, opts = {}) {
+    // Backwards-compat: accept boolean as the old withoutOverlay flag.
+    if (typeof opts === 'boolean') opts = { withoutOverlayScene: opts };
+
     const dom = this.renderer?.domElement;
     if (!dom || !dom.width || !dom.height) return null;
 
-    if (withoutOverlay) {
-      // Re-render scene only — the overlay scene (where the gizmo lives)
-      // will be re-added by the very next _render in the same tick.
+    if (opts.withoutOverlayScene) {
       this.renderer.autoClear = true;
       this.renderer.render(this.scene, this.camera);
     }
@@ -250,6 +253,12 @@ export class SceneCore extends Emitter {
     if (!ctx) return null;
     try {
       ctx.drawImage(dom, 0, 0, w, h);
+      if (typeof opts.extraLayers === 'function') {
+        const layers = opts.extraLayers(w, h) || [];
+        for (const layer of layers) {
+          if (layer) ctx.drawImage(layer, 0, 0, w, h);
+        }
+      }
       return off.toDataURL('image/jpeg', quality);
     } catch (e) {
       return null;
