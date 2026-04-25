@@ -82,14 +82,42 @@ export function cacheFolderAbsolute() {
 // ─── Voice classification ───────────────────────────────────────────────────
 
 /**
- * Fast voices synthesize in tens of milliseconds (Windows SAPI / OneCore via
- * the `os:` namespace). Disk-caching them is a net negative — the file write
- * costs more than the synth, and the folder fills with redundant clones every
- * time a voice changes. The disk cache is reserved for slow neural backends
- * (kokoro, future piper, etc.).
+ * Fast voices synthesize in tens of milliseconds (Windows SAPI / OneCore).
+ * Disk-caching them is a net negative — the file write costs more than the
+ * synth, and the folder fills with redundant clones on every voice change.
+ * The disk cache is reserved for slow neural backends (kokoro, future piper).
+ *
+ * Voice ID shapes we have to recognise:
+ *   "os:<source>|<name>"   — current format. The "os:" is a wrapper meaning
+ *                            "via window.sbsNative.tts"; the actual backend
+ *                            is in <source> (sapi5 | onecore | kokoro).
+ *   "kokoro:<name>"        — legacy direct-namespaced form.
+ *
+ * So we must parse the source out of the wrapper, not just check the
+ * prefix.
  */
 export function isFastVoice(voiceId) {
-  return /^os:/.test(voiceId || '');
+  if (!voiceId) return false;
+  const source = _voiceSource(voiceId);
+  return source === 'sapi5' || source === 'onecore';
+}
+
+/** Extract just the backend name from a voice id ('sapi5'|'onecore'|'kokoro'|''). */
+function _voiceSource(voiceId) {
+  if (!voiceId) return '';
+  const m = /^os:([^|]+)\|/.exec(voiceId);
+  if (m) return m[1].toLowerCase();
+  const k = /^([a-z0-9_-]+):/i.exec(voiceId);
+  return k ? k[1].toLowerCase() : '';
+}
+
+/** Extract the human-friendly speaker name from a voice id (everything after the source). */
+function _voiceName(voiceId) {
+  if (!voiceId) return '';
+  const m = /^os:[^|]+\|(.+)$/.exec(voiceId);
+  if (m) return m[1];
+  const k = /^[a-z0-9_-]+:(.+)$/i.exec(voiceId);
+  return k ? k[1] : voiceId;
 }
 
 // ─── Path components ────────────────────────────────────────────────────────
@@ -117,11 +145,23 @@ async function _shortHash(text, speed) {
 }
 
 /**
+ * Voice slug used as the subfolder name. Strips the "os:" wrapper so folders
+ * read as "<backend>-<speaker>" (e.g. "kokoro-af-sky") instead of carrying
+ * the meaningless "os-" prefix forward into the user-visible filesystem.
+ */
+function _voiceSlug(voiceId) {
+  const source = _voiceSource(voiceId);
+  const name   = _voiceName(voiceId);
+  if (source && name) return _slugify(`${source}-${name}`, 60) || 'voice';
+  return _slugify(voiceId, 60) || 'voice';
+}
+
+/**
  * "<voiceSlug>/<stepSlug>__<hash>.wav" — what we store in step.narration.dataFile.
  * stepName empty → fall back to stepId substring → fall back to "step".
  */
 export async function clipRelativePath({ text, voiceId, speed, stepName, stepId }) {
-  const voiceSlug = _slugify(voiceId, 60) || 'voice';
+  const voiceSlug = _voiceSlug(voiceId);
   const stepSlug  = _slugify(stepName, 40) || (stepId ? String(stepId).slice(0, 8) : 'step');
   const hash      = await _shortHash(text, speed);
   return `${voiceSlug}/${stepSlug}__${hash}.wav`;
@@ -314,11 +354,12 @@ export async function listVoiceFolders() {
 
 /**
  * Active voice slug derived from current export settings. Empty string when
- * no voice is configured or the slug would be empty.
+ * no voice is configured. Mirrors the slug embedded in dataFile paths so
+ * the README + purge logic can match folders.
  */
 export function activeVoiceSlug() {
   const voiceId = state.get('export')?.narrationVoice || '';
-  return _slugify(voiceId, 60);
+  return voiceId ? _voiceSlug(voiceId) : '';
 }
 
 /**
