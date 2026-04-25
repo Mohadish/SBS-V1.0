@@ -246,6 +246,198 @@ export async function ensurePlayable(step) {
   return url;
 }
 
+// ─── Folder inspection / cleanup ────────────────────────────────────────────
+
+/**
+ * List the per-voice subfolders that currently exist in the cache folder.
+ * Returns [{ name, totalBytes, fileCount, mtimeMs }] or null if cache is
+ * unavailable / folder doesn't exist yet.
+ *
+ * Used by the cleanup UI to show what's eating space and by writeReadme()
+ * to enumerate "stale" entries.
+ */
+export async function listVoiceFolders() {
+  if (!isCacheEnabled())            return null;
+  if (!window.sbsNative?.listDir)   return null;
+
+  const root = cacheFolderAbsolute();
+  const top  = await window.sbsNative.listDir(root);
+  if (!Array.isArray(top)) return [];
+
+  const out = [];
+  for (const entry of top) {
+    if (!entry.isDir) continue;
+    const sub = await window.sbsNative.listDir(_join(root, entry.name));
+    let totalBytes = 0, fileCount = 0;
+    if (Array.isArray(sub)) {
+      for (const f of sub) {
+        if (f.isDir) continue;
+        totalBytes += f.size || 0;
+        fileCount++;
+      }
+    }
+    out.push({
+      name:       entry.name,
+      totalBytes,
+      fileCount,
+      mtimeMs:    entry.mtimeMs || 0,
+    });
+  }
+  return out;
+}
+
+/**
+ * Active voice slug derived from current export settings. Empty string when
+ * no voice is configured or the slug would be empty.
+ */
+export function activeVoiceSlug() {
+  const voiceId = state.get('export')?.narrationVoice || '';
+  return _slugify(voiceId, 60);
+}
+
+/**
+ * Generate the human-readable manifest pinned at the top of the cache
+ * folder. Underscore prefix sorts above letter-prefixed subfolders in
+ * Explorer, so the user sees this file first when they open the folder.
+ *
+ * Idempotent — call this on voice change and on project save. No-op if
+ * caching is disabled.
+ */
+export async function writeReadme() {
+  if (!isCacheEnabled())             return;
+  if (!window.sbsNative?.writeFile)  return;
+
+  const folders = await listVoiceFolders();
+  if (folders === null) return;
+
+  const active = activeVoiceSlug();
+  const projectName = (state.get('projectPath') || 'Untitled').split(/[\/\\]/).pop();
+  const cacheAbs    = cacheFolderAbsolute();
+
+  const lines = [];
+  lines.push('SBS audio cache');
+  lines.push('===============');
+  lines.push('');
+  lines.push(`Project       : ${projectName}`);
+  lines.push(`Cache folder  : ${cacheAbs}`);
+  lines.push(`Active voice  : ${active || '(none)'}`);
+  lines.push('');
+  lines.push('Subfolders:');
+  if (!folders.length) {
+    lines.push('  (empty — no clips cached yet)');
+  } else {
+    folders.sort((a, b) => a.name.localeCompare(b.name));
+    const maxName = folders.reduce((m, f) => Math.max(m, f.name.length), 0);
+    for (const f of folders) {
+      const pad     = ' '.repeat(maxName - f.name.length);
+      const status  = f.name === active ? 'ACTIVE   <- keep' : 'stale    <- safe to delete';
+      const sizeMb  = (f.totalBytes / 1024 / 1024).toFixed(1);
+      lines.push(`  ${f.name}/${pad}  ${status}   (${f.fileCount} files, ${sizeMb} MB)`);
+    }
+  }
+  lines.push('');
+  lines.push('Notes');
+  lines.push('-----');
+  lines.push('  • File names: <step-slug>__<hash>.wav.');
+  lines.push('  • The hash is the first 8 hex of SHA-1(text|speed) — when a step');
+  lines.push("    text changes, the hash bumps and a new file is written. The");
+  lines.push("    old file becomes a tagged orphan (still has the step name in");
+  lines.push('    its prefix so you can identify which step it belonged to).');
+  lines.push('  • Fast OS voices (Microsoft / SAPI / OneCore) are NOT cached');
+  lines.push("    here — they synthesize in tens of ms, so caching is wasteful.");
+  lines.push('  • Use the Export tab buttons to bulk-purge stale folders.');
+  lines.push('  • This file is regenerated automatically — manual edits will be');
+  lines.push('    overwritten on the next voice change or project save.');
+  lines.push('');
+
+  const fullPath = _join(cacheAbs, '_README.txt');
+  try {
+    await window.sbsNative.writeFile(fullPath, lines.join('\r\n'), 'utf-8');
+  } catch (err) {
+    console.warn('[narration-cache] readme write failed:', err?.message);
+  }
+}
+
+/**
+ * Delete every subfolder whose slug doesn't match the active voice. The
+ * active folder is preserved. Steps whose dataFile pointed at a now-deleted
+ * folder are reset to text-only (next play re-synthesizes).
+ *
+ * Returns { deletedFolders, clearedSteps }.
+ */
+export async function purgeInactiveVoices(steps) {
+  const out = { deletedFolders: 0, clearedSteps: 0 };
+  if (!isCacheEnabled())              return out;
+  if (!window.sbsNative?.deletePath)  return out;
+
+  const folders = await listVoiceFolders();
+  if (!folders) return out;
+
+  const active = activeVoiceSlug();
+  const root   = cacheFolderAbsolute();
+  const dead   = new Set();
+  for (const f of folders) {
+    if (f.name === active) continue;
+    const target = _join(root, f.name);
+    const res = await window.sbsNative.deletePath(target, { recursive: true });
+    if (res?.ok) {
+      dead.add(f.name);
+      out.deletedFolders++;
+    } else {
+      console.warn('[narration-cache] purge failed for', f.name, res?.error);
+    }
+  }
+
+  // Drop dataFile pointers that landed inside one of the deleted folders.
+  for (const s of steps || []) {
+    const n = s?.narration;
+    if (!n?.dataFile) continue;
+    const folder = String(n.dataFile).split('/')[0];
+    if (dead.has(folder)) {
+      delete n.dataFile;
+      delete n.dataUrl;   // any in-memory hydration is now stale too
+      out.clearedSteps++;
+    }
+  }
+
+  await writeReadme();
+  return out;
+}
+
+/**
+ * Wipe the whole cache folder contents. Steps with disk-cached audio are
+ * reset to text-only. Returns { deletedFolders, deletedFiles, clearedSteps }.
+ */
+export async function purgeAll(steps) {
+  const out = { deletedFolders: 0, deletedFiles: 0, clearedSteps: 0 };
+  if (!isCacheEnabled())              return out;
+  if (!window.sbsNative?.deletePath)  return out;
+
+  const root    = cacheFolderAbsolute();
+  const top     = await window.sbsNative.listDir(root);
+  if (!Array.isArray(top)) return out;
+
+  for (const entry of top) {
+    const target = _join(root, entry.name);
+    const res = await window.sbsNative.deletePath(target, { recursive: true });
+    if (!res?.ok) continue;
+    if (entry.isDir) out.deletedFolders++;
+    else             out.deletedFiles++;
+  }
+
+  for (const s of steps || []) {
+    const n = s?.narration;
+    if (!n?.dataFile) continue;
+    delete n.dataFile;
+    delete n.dataUrl;
+    out.clearedSteps++;
+  }
+
+  // Re-emit a fresh README so the next user visit sees an empty manifest.
+  await writeReadme();
+  return out;
+}
+
 // ─── Internal ───────────────────────────────────────────────────────────────
 
 function _projectDir() {

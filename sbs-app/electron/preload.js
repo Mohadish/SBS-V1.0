@@ -27,6 +27,8 @@ contextBridge.exposeInMainWorld('sbsNative', {
   writeFile: (filePath, data, enc)=> ipcRenderer.invoke('fs:writeFile', filePath, data, enc),
   fileExists:(filePath)           => ipcRenderer.invoke('fs:exists',    filePath),
   statFile:  (filePath)           => ipcRenderer.invoke('fs:stat',      filePath),
+  listDir:   (dirPath)            => ipcRenderer.invoke('fs:listDir',   dirPath),
+  deletePath:(p, opts={})         => ipcRenderer.invoke('fs:deletePath', p, opts),
 
   // ── App ──────────────────────────────────────────────────────────────────
   getVersion:         ()          => ipcRenderer.invoke('app:getVersion'),

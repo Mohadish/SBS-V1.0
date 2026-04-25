@@ -400,6 +400,35 @@ ipcMain.handle('fs:stat', async (_, filePath) => {
   } catch { return null; }
 });
 
+// List directory contents — returns [{ name, isDir, size, mtimeMs }, ...].
+// Returns null if the dir doesn't exist or can't be read.
+ipcMain.handle('fs:listDir', async (_, dirPath) => {
+  try {
+    const entries = fs.readdirSync(dirPath, { withFileTypes: true });
+    return entries.map(e => {
+      let size = 0, mtimeMs = 0;
+      try {
+        const s = fs.statSync(path.join(dirPath, e.name));
+        size    = s.size;
+        mtimeMs = s.mtimeMs;
+      } catch { /* ignore */ }
+      return { name: e.name, isDir: e.isDirectory(), size, mtimeMs };
+    });
+  } catch { return null; }
+});
+
+// Delete a file or folder. `recursive: true` is required for non-empty dirs.
+// Returns { ok, error? }. Quietly succeeds when the path doesn't exist (idempotent).
+ipcMain.handle('fs:deletePath', async (_, targetPath, opts = {}) => {
+  try {
+    if (!fs.existsSync(targetPath)) return { ok: true };
+    fs.rmSync(targetPath, { recursive: !!opts.recursive, force: true });
+    return { ok: true };
+  } catch (err) {
+    return { ok: false, error: err.message };
+  }
+});
+
 // Get app version
 ipcMain.handle('app:getVersion', () => app.getVersion());
 

@@ -175,6 +175,7 @@ export async function saveProject(options = {}) {
     if (!writeResult?.ok) throw new Error(writeResult?.error || 'Write failed');
     _setProjectMeta(savePath);
     state.markClean();
+    state.emit('project:saved', { path: savePath });
     return { saved: true, path: savePath };
   }
 

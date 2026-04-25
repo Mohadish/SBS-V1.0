@@ -1498,6 +1498,11 @@ function _renderExportTab() {
             <button class="btn" id="btn-cache-pick">Choose folder…</button>
             <button class="btn" id="btn-cache-clear">Clear</button>
           </div>
+          <div class="grid2" style="margin-top:6px;">
+            <button class="btn" id="btn-cache-purge-stale" title="Delete every voice subfolder that isn't the active voice. Safe — re-synth happens on next play.">Clear inactive voices</button>
+            <button class="btn" id="btn-cache-purge-all" title="Wipe everything inside the cache folder. All clips re-synth on next play.">Clear all cache</button>
+          </div>
+          <div id="exp-cache-summary" class="small muted" style="margin-top:6px;font-size:11px;"></div>
         </div>
       </div>
 
@@ -1573,6 +1578,9 @@ function _renderExportTab() {
   voiceSel.addEventListener('change', () => {
     state.setExportOption('narrationVoice', voiceSel.value);
     _invalidateAllNarrationClips();
+    // Refresh the cache folder's _README.txt so its "Active voice" line
+    // tracks the new selection. Silent if no cache folder is configured.
+    narrationCache.writeReadme().catch(() => {});
   });
   speedInp.addEventListener('input', () => { speedLbl.textContent = `${Number(speedInp.value).toFixed(2)}×`; });
   speedInp.addEventListener('change', () => {
@@ -1583,9 +1591,12 @@ function _renderExportTab() {
     state.setExportOption('narrationEnabled', !!narrEn.checked));
 
   // ── Audio cache folder ─────────────────────────────────────────────────
-  const cacheState = el.querySelector('#exp-cache-state');
-  const btnPick    = el.querySelector('#btn-cache-pick');
-  const btnClear   = el.querySelector('#btn-cache-clear');
+  const cacheState   = el.querySelector('#exp-cache-state');
+  const cacheSummary = el.querySelector('#exp-cache-summary');
+  const btnPick      = el.querySelector('#btn-cache-pick');
+  const btnClear     = el.querySelector('#btn-cache-clear');
+  const btnPurgeStale= el.querySelector('#btn-cache-purge-stale');
+  const btnPurgeAll  = el.querySelector('#btn-cache-purge-all');
 
   const _renderCacheState = () => {
     // Tab may have re-rendered; bail if our DOM is gone (don't leak into stale nodes).
@@ -1601,6 +1612,37 @@ function _renderExportTab() {
       cacheState.innerHTML = `<span style="color:#86efac;">✓</span> <code>${_esc(folder)}</code>
         <div class="small muted" style="margin-top:2px;">${_esc(projectPath.replace(/[\/\\][^\/\\]+$/, ''))}/</div>`;
     }
+    _refreshCacheSummary();
+  };
+
+  // Asynchronously update the summary line under the cache buttons —
+  // shows folder count + total size + which voice is active. Quiet when
+  // caching isn't enabled or the folder hasn't been created yet.
+  const _refreshCacheSummary = () => {
+    if (!cacheSummary?.isConnected) return;
+    if (!narrationCache.isCacheEnabled()) {
+      cacheSummary.innerHTML = '';
+      return;
+    }
+    narrationCache.listVoiceFolders().then(folders => {
+      if (!cacheSummary.isConnected) return;
+      if (!folders) { cacheSummary.innerHTML = '(folder not yet created)'; return; }
+      if (!folders.length) { cacheSummary.innerHTML = '(empty — no clips cached yet)'; return; }
+      const active = narrationCache.activeVoiceSlug();
+      const totalBytes = folders.reduce((s, f) => s + f.totalBytes, 0);
+      const stale = folders.filter(f => f.name !== active);
+      const totalMb  = (totalBytes / 1024 / 1024).toFixed(1);
+      const staleMb  = (stale.reduce((s, f) => s + f.totalBytes, 0) / 1024 / 1024).toFixed(1);
+      cacheSummary.innerHTML =
+        `${folders.length} voice folder(s), ${totalMb} MB total · ${stale.length} stale (${staleMb} MB) · `
+        + `<a href="#" id="exp-cache-readme">open _README.txt</a>`;
+      const link = el.querySelector('#exp-cache-readme');
+      if (link) link.addEventListener('click', e => {
+        e.preventDefault();
+        const root = state.get('projectPath')?.replace(/[\/\\][^\/\\]+$/, '') + '/' + state.get('audioCacheFolder');
+        if (window.sbsNative?.showInFolder) window.sbsNative.showInFolder(`${root}/_README.txt`);
+      });
+    }).catch(() => { cacheSummary.innerHTML = ''; });
   };
   _renderCacheState();
 
@@ -1635,6 +1677,9 @@ function _renderExportTab() {
     if (failed)   parts.push(`${failed} failed`);
     setStatus(parts.length ? `Cache folder set — ${parts.join(', ')}.` : `Audio cache folder set: ${rel}`,
               failed ? 'warning' : undefined);
+    // Stamp the human-readable manifest at the top of the cache folder.
+    await narrationCache.writeReadme().catch(() => {});
+    _refreshCacheSummary();
   });
 
   btnClear.addEventListener('click', () => {
@@ -1645,9 +1690,54 @@ function _renderExportTab() {
     _renderCacheState();
   });
 
+  btnPurgeStale.addEventListener('click', async () => {
+    if (!narrationCache.isCacheEnabled()) {
+      setStatus('No cache folder set — nothing to purge.', 'warning');
+      return;
+    }
+    btnPurgeStale.disabled = true;
+    setStatus('Purging inactive voice folders…', 'info', 0);
+    try {
+      const r = await narrationCache.purgeInactiveVoices(state.get('steps') || []);
+      if (r.deletedFolders || r.clearedSteps) state.markDirty();
+      setStatus(`Purged ${r.deletedFolders} inactive folder(s); ${r.clearedSteps} step(s) reset to text-only.`);
+    } catch (err) {
+      setStatus(`Purge failed: ${err.message}`, 'danger');
+    } finally {
+      btnPurgeStale.disabled = false;
+      _refreshCacheSummary();
+    }
+  });
+
+  btnPurgeAll.addEventListener('click', async () => {
+    if (!narrationCache.isCacheEnabled()) {
+      setStatus('No cache folder set — nothing to purge.', 'warning');
+      return;
+    }
+    if (!window.confirm('Delete EVERYTHING inside the audio cache folder?\n\nAll clips will need to re-synth on next play / export.')) return;
+    btnPurgeAll.disabled = true;
+    setStatus('Wiping audio cache…', 'info', 0);
+    try {
+      const r = await narrationCache.purgeAll(state.get('steps') || []);
+      if (r.deletedFolders || r.deletedFiles || r.clearedSteps) state.markDirty();
+      setStatus(`Wiped cache — ${r.deletedFolders} folder(s), ${r.deletedFiles} loose file(s); ${r.clearedSteps} step(s) reset.`);
+    } catch (err) {
+      setStatus(`Wipe failed: ${err.message}`, 'danger');
+    } finally {
+      btnPurgeAll.disabled = false;
+      _refreshCacheSummary();
+    }
+  });
+
   // Re-render on project save (projectPath becomes available) and on load.
   state.on('change:projectPath',     _renderCacheState);
   state.on('change:audioCacheFolder', _renderCacheState);
+  // Refresh the cache folder's manifest after every successful save so the
+  // README reflects the saved-state truth (active voice, current sub-folders).
+  state.on('project:saved', () => {
+    narrationCache.writeReadme().catch(() => {});
+    _refreshCacheSummary();
+  });
 }
 
 /**
