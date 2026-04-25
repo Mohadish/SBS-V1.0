@@ -364,54 +364,50 @@ ipcMain.handle('settings:locale', () => app.getLocale());   // e.g. "en-US"
 ipcMain.handle('settings:path',  () => _userSettingsPath);
 
 /**
- * Languages installed on the OS (display / input languages).
- * Windows: Get-WinUserLanguageList via PowerShell.
- * macOS / Linux: best-effort via app.getPreferredSystemLanguages.
+ * Languages installed / preferred on the OS.
+ * Primary source: Electron's app.getPreferredSystemLanguages() — returns the
+ * user's configured language list (matches what Windows Settings Language &
+ * Region shows). Reliable across platforms, no shell-out.
  *
- * Always returns a non-empty list — falls back to a small hardcoded list of
- * common languages if the OS query fails for any reason.
+ * On Windows we ALSO mine voice cultures from our PS_LIST_VOICES result so
+ * a user with Hebrew speech voices but no Hebrew input language still sees
+ * Hebrew listed — narration is the point of this filter.
+ *
+ * Always returns a non-empty list (hardcoded common-language fallback).
  *
  * Returns: [{ tag: "he-IL", name: "Hebrew" }, ...]
  */
 ipcMain.handle('settings:installedLanguages', async () => {
-  let result = [];
+  const byTag = new Map();   // de-dupe by tag
 
+  // 1. Electron's preferred-system-languages list — primary, fast, reliable.
+  try {
+    const tags = app.getPreferredSystemLanguages?.() || [app.getLocale()];
+    for (const tag of tags) {
+      if (!tag) continue;
+      byTag.set(tag, { tag, name: _languageNameFromTag(tag) });
+    }
+  } catch (e) {
+    console.warn('[settings] app.getPreferredSystemLanguages failed:', e.message);
+  }
+
+  // 2. Voice cultures (best-effort) — captures languages the user installed
+  //    voices for but didn't add as an input language.
   if (process.platform === 'win32') {
     try {
-      const raw = execSync(
-        'powershell -NoProfile -NonInteractive -Command "Get-WinUserLanguageList | Select-Object LanguageTag, EnglishName | ConvertTo-Json -Compress"',
-        { stdio: ['ignore', 'pipe', 'pipe'], timeout: 5000 }
-      ).toString();
-      // Strip BOM + trim before parse — PowerShell stdout sometimes has both.
-      const json = raw.replace(/^\uFEFF/, '').trim();
-      console.log('[settings] PowerShell language list output:', json);
-      if (json) {
-        const parsed = JSON.parse(json);
-        const arr = Array.isArray(parsed) ? parsed : [parsed];
-        result = arr
-          .map(o => ({ tag: o?.LanguageTag, name: o?.EnglishName }))
-          .filter(o => o.tag && o.name);
+      const list = await _enumerateVoices();
+      for (const v of list) {
+        const tag = v.culture || v.Culture;
+        if (!tag || byTag.has(tag)) continue;
+        byTag.set(tag, { tag, name: _languageNameFromTag(tag) });
       }
-      console.log(`[settings] Parsed ${result.length} OS language(s):`,
-        result.map(r => `${r.tag}=${r.name}`).join(', '));
-    } catch (e) {
-      console.warn('[settings] Get-WinUserLanguageList failed:', e.message);
-    }
+    } catch { /* voice enumeration may be slow; skip silently */ }
   }
 
-  if (!result.length) {
-    // Try Electron's own preference list.
-    try {
-      const tags = app.getPreferredSystemLanguages?.() || [app.getLocale()];
-      result = tags.map(tag => ({ tag, name: _languageNameFromTag(tag) })).filter(o => o.tag && o.name);
-      console.log('[settings] Fell back to app.getPreferredSystemLanguages:', result);
-    } catch (e) {
-      console.warn('[settings] app locale fallback failed:', e.message);
-    }
-  }
+  let result = Array.from(byTag.values());
 
   if (!result.length) {
-    // Last resort — give the user something to pick from.
+    // Last resort — give the user something to pick.
     result = [
       { tag: 'en-US', name: 'English' },
       { tag: 'he-IL', name: 'Hebrew' },
@@ -427,9 +423,41 @@ ipcMain.handle('settings:installedLanguages', async () => {
     ];
     console.log('[settings] Using hardcoded language fallback list.');
   }
-
+  console.log(`[settings] Returning ${result.length} language(s):`,
+    result.map(r => `${r.tag}=${r.name}`).join(', '));
   return result;
 });
+
+// Internal — used by both tts:listVoices and settings:installedLanguages.
+// Cached for the process lifetime; voices can't change without a restart.
+let _voiceListCache = null;
+async function _enumerateVoices() {
+  if (_voiceListCache) return _voiceListCache;
+  if (process.platform !== 'win32') {
+    _voiceListCache = [];
+    return _voiceListCache;
+  }
+  try {
+    const raw = execSync(`powershell -NoProfile -NonInteractive -Command "${PS_LIST_VOICES.replace(/\n/g, ' ')}"`, {
+      stdio: ['ignore', 'pipe', 'pipe'], timeout: 8000,
+    }).toString().replace(/^\uFEFF/, '').trim();
+    if (!raw) { _voiceListCache = []; return _voiceListCache; }
+    const parsed = JSON.parse(raw);
+    const arr = Array.isArray(parsed) ? parsed : [parsed];
+    _voiceListCache = arr.map(v => ({
+      name:    v.Name,
+      culture: v.Culture,
+      lang:    v.Language || _languageNameFromTag(v.Culture || ''),
+      gender:  v.Gender,
+      source:  v.Source,
+    }));
+    return _voiceListCache;
+  } catch (e) {
+    console.warn('[tts] PS listVoices failed:', e.message);
+    _voiceListCache = [];
+    return _voiceListCache;
+  }
+}
 
 function _languageNameFromTag(tag) {
   const t = (tag || '').toLowerCase().split(/[-_]/)[0];
@@ -482,36 +510,19 @@ ConvertTo-Json -Compress -InputObject @($voices)
 
 ipcMain.handle('tts:listVoices', async () => {
   if (process.platform !== 'win32') {
-    // Non-Windows: fall back to the say-style enumeration.
     return new Promise(resolve => {
       try {
         say.getInstalledVoices((err, voices) => {
           if (err) { console.warn('[tts] listVoices:', err.message); resolve([]); return; }
-          resolve((voices || []).filter(Boolean).map(name => ({ name, source: 'os' })));
+          resolve((voices || []).filter(Boolean).map(name => ({ name, source: 'sapi5' })));
         });
       } catch (e) { resolve([]); }
     });
   }
-  try {
-    const raw = execSync(`powershell -NoProfile -NonInteractive -Command "${PS_LIST_VOICES.replace(/\n/g, ' ')}"`, {
-      stdio: ['ignore', 'pipe', 'pipe'], timeout: 8000,
-    }).toString().replace(/^\uFEFF/, '').trim();
-    if (!raw) return [];
-    const parsed = JSON.parse(raw);
-    const arr = Array.isArray(parsed) ? parsed : [parsed];
-    console.log(`[tts] enumerated ${arr.length} voice(s):`,
-      arr.map(v => `${v.Name}/${v.Source}/${v.Culture}`).join(', '));
-    return arr.map(v => ({
-      name:    v.Name,
-      culture: v.Culture,        // BCP-47 e.g. "he-IL"
-      lang:    v.Language || _languageNameFromTag(v.Culture || ''),
-      gender:  v.Gender,
-      source:  v.Source,         // 'sapi5' | 'onecore'
-    }));
-  } catch (e) {
-    console.warn('[tts] PS listVoices failed:', e.message);
-    return [];
-  }
+  const voices = await _enumerateVoices();
+  console.log(`[tts] returning ${voices.length} voice(s):`,
+    voices.map(v => `${v.name}/${v.source}/${v.culture}`).join(', '));
+  return voices;
 });
 
 // PowerShell that synthesizes ONE OneCore voice to a WAV file.
