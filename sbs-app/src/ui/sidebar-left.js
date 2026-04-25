@@ -1671,12 +1671,24 @@ function _renderExportTab() {
     // is small. Skips fast OS voices (those don't disk-cache by design).
     setStatus(`Audio cache folder set: ${rel}. Migrating existing clips…`, 'info', 0);
     const { migrated, skipped, failed } = await narrationCache.migrateInlineClipsToDisk(state.get('steps') || []);
-    const parts = [];
-    if (migrated) parts.push(`${migrated} moved to disk`);
-    if (skipped)  parts.push(`${skipped} skipped (fast voice)`);
-    if (failed)   parts.push(`${failed} failed`);
-    setStatus(parts.length ? `Cache folder set — ${parts.join(', ')}.` : `Audio cache folder set: ${rel}`,
-              failed ? 'warning' : undefined);
+
+    // Build a result message tuned to what actually happened. The most
+    // common confusing case is "0 migrated, N skipped" — happens when the
+    // project only has fast OS voices, which by design never disk-cache.
+    let msg, level;
+    if (failed) {
+      msg = `Cache folder set — ${migrated} moved, ${failed} failed${skipped ? `, ${skipped} skipped` : ''}.`;
+      level = 'warning';
+    } else if (migrated && skipped) {
+      msg = `Cache folder ready — ${migrated} clip(s) moved to disk, ${skipped} stayed inline (fast OS voices skip disk cache by design).`;
+    } else if (migrated) {
+      msg = `Cache folder ready — ${migrated} clip(s) moved to disk.`;
+    } else if (skipped) {
+      msg = `Cache folder ready, but nothing to migrate — your ${skipped} cached clip(s) all use fast OS voices, which skip disk cache by design. Switch to a Kokoro voice and the cache will fill.`;
+    } else {
+      msg = `Audio cache folder set: ${rel}. No cached clips yet — synth will populate it.`;
+    }
+    setStatus(msg, level);
     // Stamp the human-readable manifest at the top of the cache folder.
     await narrationCache.writeReadme().catch(() => {});
     _refreshCacheSummary();

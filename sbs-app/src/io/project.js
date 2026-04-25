@@ -28,6 +28,7 @@ import {
 }                                     from '../core/schema.js';
 import { materials }                  from '../systems/materials.js';
 import { steps   }                  from '../systems/steps.js';
+import * as narrationCache           from '../systems/narration-cache.js';
 
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -471,6 +472,15 @@ export function applyProjectToState(project) {
   // in materials.applyAll then resolves those meshes through the current
   // default automatically.
   _migrateLegacyDefaultStamps();
+
+  // Drop stale narration.dataFile pointers — pre voice-subfolder format
+  // (top-level "<40hex>.wav") and any fast OS voice that earlier versions
+  // mistakenly disk-cached. Without this, ensurePlayable hits ENOENT on
+  // every play of a touched step until it self-heals via re-synth.
+  const cleanedDataFiles = narrationCache.cleanStaleDataFiles(state.get('steps') || []);
+  if (cleanedDataFiles) {
+    console.log(`[project] dropped ${cleanedDataFiles} stale narration.dataFile pointer(s)`);
+  }
 
   // Background-cache every narration clip the project carries text for
   // but no fresh audio. Runs serially; never blocks the UI. By the time

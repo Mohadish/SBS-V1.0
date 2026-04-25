@@ -191,12 +191,38 @@ export async function loadClipFromDisk(dataFile, mime = 'audio/wav') {
 }
 
 /**
+ * Drop dataFile pointers that are no longer valid:
+ *   • legacy format (top-level "<40hex>.wav" with no "/" — pre voice-subfolder
+ *     scheme; the file is either gone or mis-located)
+ *   • fast OS voices (we no longer disk-cache those, so any leftover pointer
+ *     from earlier versions is bogus)
+ *
+ * This runs once on project load so the rest of the code (ensurePlayable,
+ * fresh-checks, save serialise) sees a clean slate. Returns the count.
+ */
+export function cleanStaleDataFiles(steps) {
+  let cleaned = 0;
+  for (const s of steps || []) {
+    const n = s?.narration;
+    if (!n?.dataFile) continue;
+    const legacyFormat = !String(n.dataFile).includes('/');   // pre voice-subfolder scheme
+    const fastVoice    = isFastVoice(n.voiceId);
+    if (legacyFormat || fastVoice) {
+      delete n.dataFile;
+      cleaned++;
+    }
+  }
+  return cleaned;
+}
+
+/**
  * One-shot migration — walk every step that has an inline dataUrl but no
  * dataFile yet, write the WAV to disk, stamp dataFile on the step. Used
  * right after the user picks a cache folder for a project that already
  * had inline-cached clips: the next save then drops them all from JSON.
  *
- * Returns { migrated, failed } counts. Caller decides how to surface this.
+ * Returns { migrated, skipped, failed } counts. Caller decides how to surface
+ * the result (skipped = fast OS voices, by design).
  */
 export async function migrateInlineClipsToDisk(steps) {
   let migrated = 0, skipped = 0, failed = 0;
