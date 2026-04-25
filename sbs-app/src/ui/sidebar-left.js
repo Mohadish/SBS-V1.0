@@ -24,7 +24,7 @@ import { buildNodeMap }    from '../core/nodes.js';
 import { showContextMenu } from './context-menu.js';
 import { renderAnimationTab } from './animation-tab.js';
 import { exportTimelineVideo, downloadBlob } from '../systems/video-export.js';
-import { listVoices as ttsListVoices } from '../systems/tts.js';
+import { listVoices as ttsListVoices, synthesize as ttsSynthesize } from '../systems/tts.js';
 
 const TABS = ['files', 'tree', 'colors', 'select', 'cameras', 'animation', 'export'];
 let _activeTab   = 'files';
@@ -1577,11 +1577,19 @@ async function _onExportTabStart() {
     set('Preparing…');
     await steps.flushSync();
 
+    // Pre-export pass — synthesize any missing narration clips so each step
+    // with text has a cached dataUrl by the time the encoder asks for it.
+    if (exp.narrationEnabled !== false && exp.narrationVoice) {
+      await _synthesizeMissingClips(exp, set, _exportTabCtrl.signal);
+    }
+    if (_exportTabCtrl.signal.aborted) throw new DOMException('Export cancelled', 'AbortError');
+
     const { blob, extension, codec } = await exportTimelineVideo({
-      format:     exp.outputFormat || 'mp4',
-      fps:        Number(exp.fps) || 30,
-      stepHoldMs: Number(exp.stepHoldMs) || 800,
-      signal:     _exportTabCtrl.signal,
+      format:           exp.outputFormat || 'mp4',
+      fps:              Number(exp.fps) || 30,
+      stepHoldMs:       Number(exp.stepHoldMs) || 800,
+      includeNarration: exp.narrationEnabled !== false,
+      signal:           _exportTabCtrl.signal,
       onProgress: ({ current, total, stepName }) => {
         set(`Step ${current}/${total}: ${stepName}`);
       },
@@ -1608,6 +1616,43 @@ async function _onExportTabStart() {
 
 function _onExportTabCancel() {
   if (_exportTabCtrl) _exportTabCtrl.abort();
+}
+
+/**
+ * Walk every visible step. For each step with narration text but a stale or
+ * missing dataUrl (text/voice/speed mismatch counts as stale), synthesize
+ * with the project's voice + speed and cache. Reports progress via `set`.
+ */
+async function _synthesizeMissingClips(exp, set, signal) {
+  const allSteps = (state.get('steps') || []).filter(s => !s.hidden && !s.isBaseStep);
+  const voiceId  = exp.narrationVoice;
+  const speed    = Number(exp.narrationSpeed) || 1.0;
+
+  const todo = [];
+  for (const s of allSteps) {
+    const text = s.narration?.text?.trim();
+    if (!text) continue;
+    const cached = s.narration?.dataUrl;
+    const fresh  = cached
+      && s.narration?.text   === text
+      && s.narration?.voiceId === voiceId
+      && s.narration?.speed   === speed;
+    if (!fresh) todo.push(s);
+  }
+  if (!todo.length) return;
+
+  for (let i = 0; i < todo.length; i++) {
+    if (signal?.aborted) return;
+    const s = todo[i];
+    set(`Synthesizing narration ${i + 1}/${todo.length}…`);
+    try {
+      const out = await ttsSynthesize(s.narration.text, voiceId, { speed });
+      s.narration = { text: s.narration.text, voiceId, speed, ...out };
+    } catch (err) {
+      console.warn('[export] synth failed for', s.name, err.message);
+    }
+  }
+  state.markDirty();
 }
 
 

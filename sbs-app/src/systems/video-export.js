@@ -22,6 +22,7 @@ import { state }     from '../core/state.js';
 import { steps }     from './steps.js';
 import { sceneCore } from '../core/scene.js';
 import { rasterizeOverlay } from './overlay.js';
+import { decodeToAudioBuffer, resampleToMonoFloat32, mixTrackToFloat32 } from './audio-bridge.js';
 
 // Vendored ES module (see sbs-app/vendor/mp4-muxer.mjs).
 import { Muxer as Mp4Muxer, ArrayBufferTarget } from '../../vendor/mp4-muxer.mjs';
@@ -69,6 +70,7 @@ export function downloadBlob(blob, filename) {
 
 async function _exportMp4({ fps = DEFAULT_FPS, bitrate = DEFAULT_BITRATE,
                             stepHoldMs = POST_STEP_HOLD_MS,
+                            includeNarration = true,
                             onProgress, signal } = {}) {
   const canvas = sceneCore.renderer?.domElement;
   if (!canvas) throw new Error('No 3D canvas available to export.');
@@ -78,6 +80,15 @@ async function _exportMp4({ fps = DEFAULT_FPS, bitrate = DEFAULT_BITRATE,
 
   const width  = canvas.width;
   const height = canvas.height;
+
+  // ── Build the step timeline. Each step's hold is extended so narration
+  // (if any) finishes before the next step starts. perStepHold[i] is what
+  // we await between activateStep calls during the live playback loop.
+  const perStepHold = stepsToPlay.map(step => {
+    const animMs = step.transition?.durationMs ?? 1500;
+    const narrMs = includeNarration ? (step.narration?.durationMs || 0) : 0;
+    return Math.max(stepHoldMs, narrMs - animMs);
+  });
 
   // Pick a codec the host actually supports. Chromium/Electron builds vary:
   // some ship OpenH264 encoding (H.264/avc), most ship software VP9 encoding,
@@ -104,7 +115,22 @@ async function _exportMp4({ fps = DEFAULT_FPS, bitrate = DEFAULT_BITRATE,
   }
   if (!chosen) throw new Error('No supported video codec (H.264 / VP9 / AV1).');
 
-  const muxer = new Mp4Muxer({
+  // ── Audio: pre-decode all narration clips → master Float32 timeline.
+  // Done before muxer/encoder setup so we know whether to add an audio track.
+  const AUDIO_RATE     = 48000;
+  const AUDIO_CHANNELS = 1;
+  const AUDIO_BITRATE  = 96_000;
+  let audioMaster   = null;       // Float32 PCM aligned to step start times
+  let audioCodec    = null;       // 'opus' | 'aac'
+  let audioEncoder  = null;
+  let audioTrackEnabled = false;
+
+  if (includeNarration) {
+    audioMaster = await _buildNarrationTrack(stepsToPlay, perStepHold, AUDIO_RATE);
+    audioTrackEnabled = audioMaster.hasAudio;
+  }
+
+  const muxerCfg = {
     target: new ArrayBufferTarget(),
     fastStart: 'in-memory',        // moov at front → scrubbable
     video: {
@@ -113,13 +139,52 @@ async function _exportMp4({ fps = DEFAULT_FPS, bitrate = DEFAULT_BITRATE,
       height,
       frameRate: fps,
     },
-  });
+  };
+  if (audioTrackEnabled) {
+    // Try Opus first (royalty-free + works in MP4); fall back to AAC.
+    const audioCandidates = ['opus', 'mp4a.40.2'];
+    for (const c of audioCandidates) {
+      try {
+        const probe = await AudioEncoder.isConfigSupported({
+          codec: c, sampleRate: AUDIO_RATE, numberOfChannels: AUDIO_CHANNELS, bitrate: AUDIO_BITRATE,
+        });
+        if (probe?.supported) {
+          audioCodec = c;
+          break;
+        }
+      } catch { /* try next */ }
+    }
+    if (audioCodec) {
+      muxerCfg.audio = {
+        codec:           audioCodec === 'opus' ? 'opus' : 'aac',
+        numberOfChannels: AUDIO_CHANNELS,
+        sampleRate:       AUDIO_RATE,
+      };
+    } else {
+      console.warn('[export] No audio encoder available — exporting without narration.');
+      audioTrackEnabled = false;
+    }
+  }
+  const muxer = new Mp4Muxer(muxerCfg);
 
   const encoder = new VideoEncoder({
     output: (chunk, meta) => muxer.addVideoChunk(chunk, meta),
     error:  (e) => { throw e; },
   });
   encoder.configure({ codec: chosen.webCodec, width, height, bitrate, framerate: fps });
+
+  // Audio encoder + chunked encode. Done BEFORE timeline playback so the
+  // audio track is fully muxed by the time the video frame pump runs.
+  if (audioTrackEnabled) {
+    audioEncoder = new AudioEncoder({
+      output: (chunk, meta) => muxer.addAudioChunk(chunk, meta),
+      error:  (e) => { console.error('[export] audio encoder', e); },
+    });
+    audioEncoder.configure({
+      codec: audioCodec, sampleRate: AUDIO_RATE, numberOfChannels: AUDIO_CHANNELS, bitrate: AUDIO_BITRATE,
+    });
+    _encodeAudioMaster(audioMaster.pcm, AUDIO_RATE, audioEncoder);
+  }
 
   // Frame pump — captures the canvas on every render tick and encodes as many
   // fixed-interval frame slots as have elapsed in wall-clock time. Timestamps
@@ -153,18 +218,28 @@ async function _exportMp4({ fps = DEFAULT_FPS, bitrate = DEFAULT_BITRATE,
     }
   });
 
+  // Suppress live narration playback while the timeline runs for capture.
+  state.setState({ _exporting: true });
   try {
-    await _playTimeline(stepsToPlay, stepHoldMs, onProgress, signal);
+    await _playTimeline(stepsToPlay, perStepHold, onProgress, signal);
   } finally {
     unsubTick();
+    state.setState({ _exporting: false });
   }
 
   await encoder.flush();
   encoder.close();
+  if (audioEncoder) {
+    await audioEncoder.flush();
+    audioEncoder.close();
+  }
   muxer.finalize();
 
   const blob = new Blob([muxer.target.buffer], { type: 'video/mp4' });
-  return { blob, extension: 'mp4', codec: chosen.muxerCodec };
+  return {
+    blob, extension: 'mp4',
+    codec: chosen.muxerCodec + (audioTrackEnabled ? '+' + audioCodec : ''),
+  };
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -210,7 +285,12 @@ async function _exportWebM({ format = 'webm_vp9', fps = DEFAULT_FPS,
 //  Shared — timeline playback loop
 // ═══════════════════════════════════════════════════════════════════════════
 
-async function _playTimeline(stepsToPlay, stepHoldMs, onProgress, signal) {
+async function _playTimeline(stepsToPlay, holdsMsArg, onProgress, signal) {
+  // holdsMsArg can be a single number (legacy) or one entry per step.
+  const holds = Array.isArray(holdsMsArg)
+    ? holdsMsArg
+    : stepsToPlay.map(() => holdsMsArg);
+
   steps.activateBaseStep();
   await _wait(150);
 
@@ -219,7 +299,73 @@ async function _playTimeline(stepsToPlay, stepHoldMs, onProgress, signal) {
     const step = stepsToPlay[i];
     onProgress?.({ current: i + 1, total: stepsToPlay.length, stepName: step.name });
     await steps.activateStep(step.id, true);
-    await _wait(stepHoldMs);
+    await _wait(holds[i] ?? POST_STEP_HOLD_MS);
+  }
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+//  Audio bridge — narration → mono PCM timeline → AudioEncoder
+// ═══════════════════════════════════════════════════════════════════════════
+
+/**
+ * Decode every step's narration clip and place its samples at the right
+ * offset within the master audio timeline. Returns { pcm, totalMs, hasAudio }.
+ */
+async function _buildNarrationTrack(stepsToPlay, perStepHold, sampleRate) {
+  // Compute step start time (cumulative animation + hold).
+  const segments = [];
+  let cursor = 0;
+  for (let i = 0; i < stepsToPlay.length; i++) {
+    const step  = stepsToPlay[i];
+    const anim  = step.transition?.durationMs ?? 1500;
+    segments.push({ step, startMs: cursor });
+    cursor += anim + perStepHold[i];
+  }
+  const totalMs = cursor;
+
+  // Decode each clip → mono Float32 at sampleRate. Use one OfflineAudioContext-
+  // capable AudioContext for decoding (decodeAudioData needs an AudioContext).
+  const Ctx = window.AudioContext || window.webkitAudioContext;
+  const ctx = new Ctx({ sampleRate });
+  const decoded = [];
+  let hasAudio = false;
+  for (const seg of segments) {
+    const url = seg.step.narration?.dataUrl;
+    if (!url) continue;
+    try {
+      const audioBuf = await decodeToAudioBuffer(url, ctx);
+      const samples  = await resampleToMonoFloat32(audioBuf, sampleRate);
+      decoded.push({ startMs: seg.startMs, samples });
+      hasAudio = true;
+    } catch (err) {
+      console.warn('[export] decode failed for step', seg.step.name, err.message);
+    }
+  }
+  try { ctx.close(); } catch {}
+
+  if (!hasAudio) return { pcm: null, totalMs, hasAudio: false };
+  const pcm = mixTrackToFloat32(decoded, totalMs, sampleRate);
+  return { pcm, totalMs, hasAudio: true };
+}
+
+/** Push the master PCM into the AudioEncoder in 1024-frame chunks. */
+function _encodeAudioMaster(pcm, sampleRate, encoder) {
+  const CHUNK = 1024;
+  const total = pcm.length;
+  for (let frame = 0; frame < total; frame += CHUNK) {
+    const len   = Math.min(CHUNK, total - frame);
+    const slice = pcm.subarray(frame, frame + len);
+    // AudioEncoder requires AudioData with format 'f32-planar' for mono.
+    const audioData = new AudioData({
+      format:           'f32-planar',
+      sampleRate,
+      numberOfFrames:   len,
+      numberOfChannels: 1,
+      timestamp:        Math.round((frame / sampleRate) * 1_000_000),
+      data:             slice,
+    });
+    try { encoder.encode(audioData); } catch (e) { audioData.close(); throw e; }
+    audioData.close();
   }
 }
 
