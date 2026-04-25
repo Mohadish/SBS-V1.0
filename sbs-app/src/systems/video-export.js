@@ -249,7 +249,7 @@ async function _exportMp4({ fps = DEFAULT_FPS, bitrate = DEFAULT_BITRATE,
   // Suppress live narration playback while the timeline runs for capture.
   state.setState({ _exporting: true });
   try {
-    await _hardResetToBase();
+    await _hardResetToFirstStep(stepsToPlay);
     console.log('[export] timeline playback…');
     await _playTimeline(stepsToPlay, perStepHold, onProgress, signal);
   } finally {
@@ -310,7 +310,7 @@ async function _exportWebM({ format = 'webm_vp9', fps = DEFAULT_FPS,
   recorder.start(250);
 
   try {
-    await _hardResetToBase();
+    await _hardResetToFirstStep(stepsToPlay);
     await _playTimeline(stepsToPlay, stepHoldMs, onProgress, signal);
   } finally {
     try { recorder.stop(); } catch {}
@@ -332,13 +332,14 @@ async function _playTimeline(stepsToPlay, holdsMsArg, onProgress, signal) {
     ? holdsMsArg
     : stepsToPlay.map(() => holdsMsArg);
 
-  // Hard reset already done by the caller (full snapshot apply with camera).
-  // We just play the steps.
+  // Hard reset already landed the scene exactly on the first export step
+  // (instant apply, like a double-click). We hold its final state for the
+  // configured duration, then transition into step 2 and onwards.
   for (let i = 0; i < stepsToPlay.length; i++) {
     if (signal?.aborted) throw new DOMException('Export cancelled', 'AbortError');
     const step = stepsToPlay[i];
     onProgress?.({ current: i + 1, total: stepsToPlay.length, stepName: step.name });
-    await steps.activateStep(step.id, true);
+    if (i > 0) await steps.activateStep(step.id, true);   // first step already there
     await _wait(holds[i] ?? POST_STEP_HOLD_MS);
   }
 }
@@ -397,11 +398,15 @@ async function _synthesizeMissingClips(stepsToPlay, onProgress, signal) {
  */
 async function _buildNarrationTrack(stepsToPlay, perStepHold, sampleRate) {
   // Compute step start time (cumulative animation + hold).
+  // The first export step is pre-activated by _hardResetToFirstStep, so its
+  // animation does NOT play in the video — treat its anim duration as 0
+  // when computing audio offsets, otherwise step-2's narration would
+  // start at (anim1 + hold1) instead of just hold1.
   const segments = [];
   let cursor = 0;
   for (let i = 0; i < stepsToPlay.length; i++) {
     const step  = stepsToPlay[i];
-    const anim  = step.transition?.durationMs ?? 1500;
+    const anim  = i === 0 ? 0 : (step.transition?.durationMs ?? 1500);
     segments.push({ step, startMs: cursor });
     cursor += anim + perStepHold[i];
   }
@@ -485,20 +490,25 @@ function _wait(ms) {
 }
 
 /**
- * Snap the scene to the base step (full snapshot, camera included) and wait
- * for the renderer to settle. Used by every export entry point so the very
- * first captured frame is the timeline's home state — never bleeds the
- * camera/transform of whatever step happened to be active when the user
- * pressed Export.
+ * Land the scene exactly on the first export step before any frame is
+ * captured. This is the equivalent of double-clicking that step in the
+ * timeline — `activateStep(id, false)` applies its snapshot instantly,
+ * including camera, transforms, materials, and overlay. The result: the
+ * very first captured frame is already the first step's final state, no
+ * camera bleed from whichever step the user happened to leave active.
+ *
+ * Subsequent steps animate normally during the export loop. The first
+ * step's transition does NOT appear in the recording — by design, since
+ * we use it as the starting frame.
  */
-async function _hardResetToBase() {
-  console.log('[export] hard reset to base step…');
+async function _hardResetToFirstStep(stepsToPlay) {
+  if (!stepsToPlay?.length) return;
+  console.log('[export] virtual double-click on first export step:', stepsToPlay[0].name);
   try { steps.snapCurrentToFinal(); } catch {}
-  const baseStep = (state.get('steps') || []).find(s => s.isBaseStep);
-  if (baseStep?.snapshot) {
-    // applySnapshotInstant without suppressCamera — full reset including camera.
-    steps.applySnapshotInstant(baseStep.snapshot);
-  }
+  // animate=false → instant apply, identical to a step-card double-click.
+  await steps.activateStep(stepsToPlay[0].id, false);
+  // Two rAF + a small buffer so render + tick hooks settle before capture.
+  await new Promise(r => requestAnimationFrame(r));
   await new Promise(r => requestAnimationFrame(r));
   await _wait(50);
 }
