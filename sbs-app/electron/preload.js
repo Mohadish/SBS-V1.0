@@ -52,10 +52,10 @@ contextBridge.exposeInMainWorld('sbsNative', {
     installedLanguages: ()    => ipcRenderer.invoke('settings:installedLanguages'),
   },
 
-  // ── Text-to-speech (OS voices via `say` npm) ─────────────────────────────
+  // ── Text-to-speech (OS voices via `say` npm + OneCore via PowerShell) ────
   tts: {
-    listVoices: ()                        => ipcRenderer.invoke('tts:listVoices'),
-    synthesize: (text, voice, speed = 1)  => ipcRenderer.invoke('tts:synthesize', text, voice, speed),
+    listVoices: ()                                     => ipcRenderer.invoke('tts:listVoices'),
+    synthesize: (text, voice, speed = 1, opts = {})    => ipcRenderer.invoke('tts:synthesize', text, voice, speed, opts),
   },
 
   // ── Environment ──────────────────────────────────────────────────────────
