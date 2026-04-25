@@ -23,6 +23,7 @@ import { steps }     from './steps.js';
 import { sceneCore } from '../core/scene.js';
 import { rasterizeOverlay } from './overlay.js';
 import { decodeToAudioBuffer, resampleToMonoFloat32, mixTrackToFloat32 } from './audio-bridge.js';
+import { synthesize as ttsSynthesize } from './tts.js';
 
 // Vendored ES module (see sbs-app/vendor/mp4-muxer.mjs).
 import { Muxer as Mp4Muxer, ArrayBufferTarget } from '../../vendor/mp4-muxer.mjs';
@@ -127,6 +128,19 @@ async function _exportMp4({ fps = DEFAULT_FPS, bitrate = DEFAULT_BITRATE,
 
   if (includeNarration) {
     try {
+      // Pre-synth: any step with narration text but no fresh cached clip
+      // gets synthesized now so audio bridge finds them all. Runs for every
+      // export entry point (timeline button, Export tab Start, etc.).
+      await _synthesizeMissingClips(stepsToPlay, onProgress, signal);
+
+      // Recompute per-step holds AFTER pre-synth so the timeline accounts
+      // for newly-synthesized clip durations.
+      for (let i = 0; i < stepsToPlay.length; i++) {
+        const animMs = stepsToPlay[i].transition?.durationMs ?? 1500;
+        const narrMs = stepsToPlay[i].narration?.durationMs || 0;
+        perStepHold[i] = Math.max(stepHoldMs, narrMs - animMs);
+      }
+
       console.log('[export] building audio track…');
       audioMaster = await _buildNarrationTrack(stepsToPlay, perStepHold, AUDIO_RATE);
       audioTrackEnabled = audioMaster.hasAudio;
@@ -325,6 +339,50 @@ async function _playTimeline(stepsToPlay, holdsMsArg, onProgress, signal) {
     await steps.activateStep(step.id, true);
     await _wait(holds[i] ?? POST_STEP_HOLD_MS);
   }
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+//  Pre-synthesis pass — any step with narration text but no fresh cached
+//  clip gets synthesized using the project voice + speed before encoding.
+// ═══════════════════════════════════════════════════════════════════════════
+
+async function _synthesizeMissingClips(stepsToPlay, onProgress, signal) {
+  const exp     = state.get('export') || {};
+  const voiceId = exp.narrationVoice;
+  const speed   = Number(exp.narrationSpeed) || 1.0;
+  if (!voiceId) {
+    console.log('[export] pre-synth skipped — no project voice configured.');
+    return;
+  }
+
+  const todo = [];
+  let withText = 0, alreadyCached = 0;
+  for (const s of stepsToPlay) {
+    const text = s.narration?.text?.trim();
+    if (!text) continue;
+    withText++;
+    const n = s.narration;
+    const fresh = n?.dataUrl && n.text === text && n.voiceId === voiceId && n.speed === speed;
+    if (fresh) { alreadyCached++; continue; }
+    todo.push(s);
+  }
+  console.log(`[export] pre-synth scan: ${stepsToPlay.length} step(s), ${withText} with text, ${alreadyCached} cached, ${todo.length} to synthesize`);
+  if (!todo.length) return;
+
+  for (let i = 0; i < todo.length; i++) {
+    if (signal?.aborted) throw new DOMException('Export cancelled', 'AbortError');
+    const s = todo[i];
+    onProgress?.({ current: 0, total: 0, stepName: `Synthesizing ${i + 1}/${todo.length}: ${s.name}` });
+    console.log(`[export] pre-synth ${i + 1}/${todo.length}: "${s.name}"`);
+    try {
+      const out = await ttsSynthesize(s.narration.text, voiceId, { speed });
+      s.narration = { text: s.narration.text, voiceId, speed, ...out };
+      console.log(`[export]   ✓ ${(out.durationMs / 1000).toFixed(2)}s`);
+    } catch (err) {
+      console.warn(`[export]   ✗ synth failed for "${s.name}":`, err?.message);
+    }
+  }
+  state.markDirty();
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
