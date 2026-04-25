@@ -829,19 +829,43 @@ gl_FragColor.a = 1.0;
   // ═══════════════════════════════════════════════════════════════════════
   /**
    * Capture current color assignments as a snapshot.
-   * Returns { [meshNodeId]: colorPresetId | null }
+   *
+   * Architectural rule: a snapshot entry whose value equals the project
+   * default for that mesh is NOT a real override — it's tracking the
+   * default. We strip those entries at capture so future changes to the
+   * project default propagate to this step automatically. The snapshot
+   * carries only true per-step overrides.
+   *
+   * Returns { [meshNodeId]: colorPresetId }
    */
   captureSnapshot() {
-    return { ...this.meshColorAssignments };
+    const out = {};
+    for (const [id, presetId] of Object.entries(this.meshColorAssignments)) {
+      if (presetId == null) continue;
+      if (this.meshDefaultColors[id] === presetId) continue;   // tracking default
+      out[id] = presetId;
+    }
+    return out;
   }
 
   /**
    * Apply a materials snapshot (restores color assignments + re-applies).
+   *
+   * Defensive filter: drop any entry that matches the current project
+   * default. Even if a legacy snapshot still carries default-tracking
+   * stamps, they are interpreted as inheritance-from-default so a later
+   * default change will re-resolve them via the fallback chain in applyAll.
    */
   applySnapshot(snapshot) {
     if (!snapshot) return;
     this.cancelVisibilityTransitions();   // snap any in-flight vis fades to final state
-    this.meshColorAssignments = { ...snapshot };
+    const filtered = {};
+    for (const [id, presetId] of Object.entries(snapshot)) {
+      if (presetId == null) continue;
+      if (this.meshDefaultColors[id] === presetId) continue;
+      filtered[id] = presetId;
+    }
+    this.meshColorAssignments = filtered;
     this.applyAll();
   }
 
@@ -1888,17 +1912,46 @@ gl_FragColor.a = 1.0;
 
   /**
    * Assign a preset as the permanent project-level default color for the
-   * given meshes. Project-level — not step-sensitive. Drops any current
-   * per-step override on the same meshes so the new default takes effect
-   * immediately AND so the current step's snapshot stops carrying a stale
-   * explicit assignment after the next sync. Other steps with their own
-   * explicit overrides keep them.
+   * given meshes. Project-level — not step-sensitive.
+   *
+   * Architectural rule (mirror of captureSnapshot's strip): an entry in any
+   * step's snapshot.materials whose value equals a mesh's project default
+   * is NOT a real override; it's tracking the default. So whenever a default
+   * changes, EVERY step snapshot is scanned once: any meshId entry that
+   * already matched the OLD default OR happens to match the NEW default is
+   * dropped. The lookup chain in applyAll then resolves those meshes through
+   * the new default automatically.
+   *
+   * This isn't a patch — it's the data-side enforcement of the same rule
+   * applied at capture/apply. Step snapshots only ever hold real overrides.
    */
   assignDefaultColor(meshNodeIds, presetId) {
+    const prevDefaults = {};
     meshNodeIds.forEach(id => {
+      prevDefaults[id] = this.meshDefaultColors[id];
       this.meshDefaultColors[id] = presetId;
       delete this.meshColorAssignments[id];   // override → default fallback
     });
+
+    // Sweep step snapshots: drop entries matching old or new default for
+    // each affected mesh. Any value still left in snapshot.materials after
+    // this sweep is a true explicit override.
+    const stepsArr = state.get('steps') || [];
+    let touched = false;
+    for (const step of stepsArr) {
+      const m = step.snapshot?.materials;
+      if (!m) continue;
+      for (const id of meshNodeIds) {
+        const v = m[id];
+        if (v === undefined) continue;
+        if (v === prevDefaults[id] || v === presetId) {
+          delete m[id];
+          touched = true;
+        }
+      }
+    }
+    if (touched) state.setState({ steps: [...stepsArr] });
+
     state.markDirty();
     this.applyAll();
     state.emit('materials:defaultColorsChanged');

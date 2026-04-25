@@ -453,7 +453,31 @@ export function applyProjectToState(project) {
   materials.meshDefaultColors    = { ...(project.colors?.defaults    || {}) };
   materials.meshColorAssignments = { ...(project.colors?.assignments || {}) };
 
+  // Legacy migration: pre-fix snapshots stamped meshDefaultColors values
+  // into step.snapshot.materials, so default changes never propagated.
+  // One-time pass strips every default-tracking entry; the lookup chain
+  // in materials.applyAll then resolves those meshes through the current
+  // default automatically.
+  _migrateLegacyDefaultStamps();
+
   state.markClean();
+}
+
+function _migrateLegacyDefaultStamps() {
+  const stepsArr = state.get('steps') || [];
+  const defaults = materials.meshDefaultColors || {};
+  let stripped = 0;
+  for (const step of stepsArr) {
+    const m = step.snapshot?.materials;
+    if (!m) continue;
+    for (const [id, presetId] of Object.entries(m)) {
+      if (defaults[id] === presetId) { delete m[id]; stripped++; }
+    }
+  }
+  if (stripped) {
+    console.log(`[migrate] Stripped ${stripped} default-tracking color stamp(s) from legacy snapshots.`);
+    state.setState({ steps: [...stepsArr] });
+  }
 }
 
 
