@@ -444,30 +444,144 @@ function _languageNameFromTag(tag) {
   return map[t] || (tag || '').toUpperCase();
 }
 
-// ─── OS TTS (via `say` npm) ────────────────────────────────────────────────
+// ─── OS TTS (PowerShell — SAPI 5 + OneCore engines) ───────────────────────
 const _ttsTempDir = path.join(os.tmpdir(), 'sbs-tts');
 try { fs.mkdirSync(_ttsTempDir, { recursive: true }); } catch {}
 
+// PowerShell that enumerates BOTH speech engines on Windows:
+//   • System.Speech (SAPI 5) — classic desktop voices like David, Zira
+//   • Windows.Media.SpeechSynthesis (OneCore) — Mobile/Natural voices like
+//     Asaf, Hila, and any "Speech voices" the user installed via Settings.
+// `say` only enumerates SAPI 5. Querying both ourselves catches OneCore voices.
+const PS_LIST_VOICES = `
+$ErrorActionPreference = 'SilentlyContinue';
+$voices = New-Object System.Collections.ArrayList;
+try {
+  Add-Type -AssemblyName System.Speech;
+  $synth = New-Object System.Speech.Synthesis.SpeechSynthesizer;
+  foreach ($v in $synth.GetInstalledVoices()) {
+    $info = $v.VoiceInfo;
+    [void]$voices.Add([PSCustomObject]@{
+      Name=$info.Name; Culture=$info.Culture.Name; Language=$info.Culture.EnglishName;
+      Gender=$info.Gender.ToString(); Source='sapi5';
+    });
+  }
+  $synth.Dispose();
+} catch {}
+try {
+  $null = [Windows.Media.SpeechSynthesis.SpeechSynthesizer, Windows.Media.SpeechSynthesis, ContentType=WindowsRuntime];
+  foreach ($v in [Windows.Media.SpeechSynthesis.SpeechSynthesizer]::AllVoices) {
+    [void]$voices.Add([PSCustomObject]@{
+      Name=$v.DisplayName; Culture=$v.Language; Language='';
+      Gender=$v.Gender.ToString(); Source='onecore';
+    });
+  }
+} catch {}
+ConvertTo-Json -Compress -InputObject @($voices)
+`;
+
 ipcMain.handle('tts:listVoices', async () => {
-  return new Promise((resolve) => {
-    try {
-      say.getInstalledVoices((err, voices) => {
-        if (err) { console.warn('[tts] listVoices:', err.message); resolve([]); return; }
-        resolve((voices || []).filter(Boolean));
-      });
-    } catch (e) {
-      console.warn('[tts] listVoices threw:', e.message);
-      resolve([]);
-    }
-  });
+  if (process.platform !== 'win32') {
+    // Non-Windows: fall back to the say-style enumeration.
+    return new Promise(resolve => {
+      try {
+        say.getInstalledVoices((err, voices) => {
+          if (err) { console.warn('[tts] listVoices:', err.message); resolve([]); return; }
+          resolve((voices || []).filter(Boolean).map(name => ({ name, source: 'os' })));
+        });
+      } catch (e) { resolve([]); }
+    });
+  }
+  try {
+    const raw = execSync(`powershell -NoProfile -NonInteractive -Command "${PS_LIST_VOICES.replace(/\n/g, ' ')}"`, {
+      stdio: ['ignore', 'pipe', 'pipe'], timeout: 8000,
+    }).toString().replace(/^\uFEFF/, '').trim();
+    if (!raw) return [];
+    const parsed = JSON.parse(raw);
+    const arr = Array.isArray(parsed) ? parsed : [parsed];
+    console.log(`[tts] enumerated ${arr.length} voice(s):`,
+      arr.map(v => `${v.Name}/${v.Source}/${v.Culture}`).join(', '));
+    return arr.map(v => ({
+      name:    v.Name,
+      culture: v.Culture,        // BCP-47 e.g. "he-IL"
+      lang:    v.Language || _languageNameFromTag(v.Culture || ''),
+      gender:  v.Gender,
+      source:  v.Source,         // 'sapi5' | 'onecore'
+    }));
+  } catch (e) {
+    console.warn('[tts] PS listVoices failed:', e.message);
+    return [];
+  }
 });
 
-ipcMain.handle('tts:synthesize', async (_, text, voice, speed) => {
+// PowerShell that synthesizes ONE OneCore voice to a WAV file.
+// Args: $voiceName (DisplayName), $text, $outFile.
+const PS_SYNTH_ONECORE = `
+$ErrorActionPreference = 'Stop';
+$null = [Windows.Media.SpeechSynthesis.SpeechSynthesizer, Windows.Media.SpeechSynthesis, ContentType=WindowsRuntime];
+$null = [Windows.Storage.Streams.DataReader, Windows.Storage.Streams, ContentType=WindowsRuntime];
+Add-Type -AssemblyName System.Runtime.WindowsRuntime;
+$asTaskGeneric = ([System.WindowsRuntimeSystemExtensions].GetMethods() | Where-Object { $_.Name -eq 'AsTask' -and $_.GetParameters().Count -eq 1 -and $_.GetParameters()[0].ParameterType.Name -eq 'IAsyncOperation\`1' })[0];
+function Await($winRtTask, $resultType) {
+  $asTask = $asTaskGeneric.MakeGenericMethod($resultType);
+  $netTask = $asTask.Invoke($null, @($winRtTask));
+  $netTask.Wait(-1) | Out-Null;
+  $netTask.Result;
+}
+$synth = New-Object Windows.Media.SpeechSynthesis.SpeechSynthesizer;
+$voice = [Windows.Media.SpeechSynthesis.SpeechSynthesizer]::AllVoices | Where-Object { $_.DisplayName -eq $args[0] } | Select-Object -First 1;
+if (-not $voice) { throw "OneCore voice not found: $($args[0])"; }
+$synth.Voice = $voice;
+$stream = Await ($synth.SynthesizeTextToStreamAsync($args[1])) ([Windows.Media.SpeechSynthesis.SpeechSynthesisStream]);
+$reader = New-Object Windows.Storage.Streams.DataReader($stream.GetInputStreamAt(0));
+[void](Await ($reader.LoadAsync([uint32]$stream.Size)) ([uint32]));
+$bytes = New-Object 'byte[]' ($stream.Size);
+$reader.ReadBytes($bytes);
+[System.IO.File]::WriteAllBytes($args[2], $bytes);
+`;
+
+ipcMain.handle('tts:synthesize', async (_, text, voice, speed, opts) => {
   if (!text || !text.trim()) return { ok: false, error: 'Empty text.' };
+  const source   = opts?.source || 'sapi5';   // renderer can hint 'onecore'
   const filename = path.join(_ttsTempDir, `tts-${Date.now()}-${Math.random().toString(36).slice(2, 8)}.wav`);
-  return new Promise((resolve) => {
+
+  if (source === 'onecore' && process.platform === 'win32') {
+    // Synthesize via Windows.Media.SpeechSynthesis (OneCore engine).
+    return new Promise(resolve => {
+      try {
+        const psArgs = [
+          '-NoProfile', '-NonInteractive', '-Command',
+          PS_SYNTH_ONECORE.replace(/\n/g, ' '),
+          '-Args', voice, text, filename,
+        ];
+        const child = spawn('powershell', psArgs, { stdio: ['ignore', 'ignore', 'pipe'] });
+        let err = '';
+        child.stderr.on('data', d => err += d.toString());
+        child.on('close', (code) => {
+          if (code !== 0) {
+            console.warn('[tts] OneCore synth failed:', err);
+            resolve({ ok: false, error: err.trim() || `PowerShell exited ${code}` });
+            return;
+          }
+          try {
+            const buf = fs.readFileSync(filename);
+            const b64 = buf.toString('base64');
+            try { fs.unlinkSync(filename); } catch {}
+            resolve({ ok: true, data: b64, mime: 'audio/wav' });
+          } catch (e) {
+            resolve({ ok: false, error: e.message });
+          }
+        });
+        child.on('error', e => resolve({ ok: false, error: e.message }));
+      } catch (e) {
+        resolve({ ok: false, error: e.message });
+      }
+    });
+  }
+
+  // SAPI 5 path — the existing `say` library handles this well.
+  return new Promise(resolve => {
     try {
-      // say.export(text, voice, speed, filename, callback)
       say.export(text, voice || null, Number(speed) || 1.0, filename, (err) => {
         if (err) { resolve({ ok: false, error: err.message }); return; }
         try {

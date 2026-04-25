@@ -16,7 +16,11 @@ let _voiceCache = null;
 
 /**
  * List every available voice across every backend.
- * Result: [{ id, name, backend, lang, raw }]
+ * Result: [{ id, name, backend, lang, source, raw }]
+ *
+ * Voice id format: 'os:<source>|<name>' so the synth route can split
+ * source ('sapi5' | 'onecore') from name and pick the right engine.
+ * Older 'os:<name>' ids stay parseable (no '|' → defaults to 'sapi5').
  */
 export async function listVoices() {
   if (_voiceCache) return _voiceCache;
@@ -26,12 +30,20 @@ export async function listVoices() {
     try {
       const osVoices = await window.sbsNative.tts.listVoices();
       for (const raw of osVoices) {
+        // Tolerate both shapes: structured object OR a legacy plain string.
+        const v = typeof raw === 'string' ? { name: raw } : raw;
+        if (!v?.name) continue;
+        const source = v.source || 'sapi5';
+        const lang   = v.lang   || _inferLang(v.name);
         voices.push({
-          id:      `os:${raw}`,
-          name:    raw,
+          id:      `os:${source}|${v.name}`,
+          name:    v.name,
           backend: 'os',
-          lang:    _inferLang(raw),
-          raw,
+          lang,
+          culture: v.culture || '',
+          gender:  v.gender  || '',
+          source,
+          raw:     v,
         });
       }
     } catch (e) {
@@ -63,8 +75,12 @@ export async function synthesize(text, voiceId, opts = {}) {
 
   if (voiceId.startsWith('os:')) {
     if (!window.sbsNative?.tts) throw new Error('OS TTS unavailable (not running in Electron).');
-    const voiceName = voiceId.slice(3);
-    const res = await window.sbsNative.tts.synthesize(text, voiceName, speed);
+    // Parse 'os:<source>|<name>' (new format) or 'os:<name>' (legacy).
+    const body = voiceId.slice(3);
+    const pipe = body.indexOf('|');
+    const source    = pipe >= 0 ? body.slice(0, pipe) : 'sapi5';
+    const voiceName = pipe >= 0 ? body.slice(pipe + 1) : body;
+    const res = await window.sbsNative.tts.synthesize(text, voiceName, speed, { source });
     if (!res.ok) throw new Error(res.error || 'TTS failed.');
     const dataUrl = `data:${res.mime};base64,${res.data}`;
     const durationMs = await _measureAudioDuration(dataUrl);
