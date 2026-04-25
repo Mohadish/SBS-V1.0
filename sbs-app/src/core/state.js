@@ -92,6 +92,10 @@ function createInitialState() {
     activeTransformMode: null,        // 'object' | 'pivot' | null
 
     // ── Export settings
+    // Suppress auto-play of step narration when navigating live in the app.
+    // The Preview ▶ button still works regardless. Persisted per project.
+    narrationMuted: false,
+
     export: {
       fileName:           'sbs_export',
       outputFormat:       'mp4',

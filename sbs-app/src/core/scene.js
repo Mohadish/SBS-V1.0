@@ -221,11 +221,28 @@ export class SceneCore extends Emitter {
    * @param {number} quality   JPEG quality 0..1   (default 0.55)
    * @returns {string|null}    data URL or null
    */
-  captureThumbnail(w = 120, h = 80, quality = 0.55) {
+  /**
+   * @param {number}  w
+   * @param {number}  h
+   * @param {number}  quality
+   * @param {boolean} [withoutOverlay=false]  When true, force a fresh render
+   *        of the scene WITHOUT the overlay scene (gizmo / transform handles
+   *        / selection outlines) so the captured bitmap is clean. The next
+   *        regular _render call (fired by the loop right after this hook)
+   *        restores the full scene + overlay before the browser swaps the
+   *        backbuffer, so there's no visible flicker on the live viewport.
+   */
+  captureThumbnail(w = 120, h = 80, quality = 0.55, withoutOverlay = false) {
     const dom = this.renderer?.domElement;
     if (!dom || !dom.width || !dom.height) return null;
-    // preserveDrawingBuffer is on (see WebGLRenderer init), so a direct read
-    // of the viewport canvas gives the last fully-rendered frame.
+
+    if (withoutOverlay) {
+      // Re-render scene only — the overlay scene (where the gizmo lives)
+      // will be re-added by the very next _render in the same tick.
+      this.renderer.autoClear = true;
+      this.renderer.render(this.scene, this.camera);
+    }
+
     const off = document.createElement('canvas');
     off.width  = w;
     off.height = h;
@@ -235,7 +252,6 @@ export class SceneCore extends Emitter {
       ctx.drawImage(dom, 0, 0, w, h);
       return off.toDataURL('image/jpeg', quality);
     } catch (e) {
-      // Context-loss / CORS edge cases: fail quietly, skip this tick.
       return null;
     }
   }

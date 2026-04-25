@@ -504,6 +504,9 @@ function _wait(ms) {
 async function _hardResetToFirstStep(stepsToPlay) {
   if (!stepsToPlay?.length) return;
   console.log('[export] virtual double-click on first export step:', stepsToPlay[0].name);
+  // Clear selection so the gizmo + selection outlines don't leak into the
+  // recorded frames. setSelection(null, empty) drops both primary + multi.
+  try { state.setSelection(null, new Set()); } catch {}
   try { steps.snapCurrentToFinal(); } catch {}
   // animate=false → instant apply, identical to a step-card double-click.
   await steps.activateStep(stepsToPlay[0].id, false);

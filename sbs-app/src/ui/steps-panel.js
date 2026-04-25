@@ -137,8 +137,11 @@ function _playStepNarration(step) {
   // Auto-play any saved TTS / mic clip when a step is applied.
   // Suppressed during video export — the encoder pulls audio from cached
   // PCM directly; live playback would just leak through the speakers.
+  // Also suppressed when the user has muted live narration via the
+  // step-nav speaker toggle.
   if (_narrationAudio) { try { _narrationAudio.pause(); } catch {} _narrationAudio = null; }
-  if (state.get('_exporting')) return;
+  if (state.get('_exporting'))   return;
+  if (state.get('narrationMuted')) return;
   const clip = step?.narration?.dataUrl;
   if (!clip || step.isBaseStep) return;
   _narrationAudio = new Audio(clip);

@@ -16,16 +16,14 @@ export function initStepNav() {
   if (!_el) return;
 
   _el.innerHTML = `
-    <div class="step-nav" style="display:flex;align-items:center;gap:8px;flex-wrap:nowrap;">
-      <div style="display:flex;align-items:center;gap:4px;flex-shrink:0;">
-        <button class="btn btn-icon step-nav__prev" title="Previous step (←)">&#8592;</button>
-        <span   class="step-nav__label" style="min-width:140px;text-align:center;"></span>
-        <button class="btn btn-icon step-nav__next" title="Next step (→)">&#8594;</button>
-      </div>
+    <div class="step-nav" style="display:flex;align-items:center;gap:6px;flex-wrap:nowrap;width:100%;">
+      <button class="btn btn-icon step-nav__prev" title="Previous step (←)" style="flex-shrink:0;">&#8592;</button>
+      <span   class="step-nav__label" style="flex-shrink:0;min-width:90px;text-align:center;font-size:12px;"></span>
+      <button class="btn btn-icon step-nav__next" title="Next step (→)" style="flex-shrink:0;">&#8594;</button>
       <input type="text" class="step-nav__narration" placeholder="Voice-over text for this step…"
-             style="flex:1;min-width:0;height:28px;padding:0 10px;font-size:13px;background:rgba(255,255,255,0.04);color:var(--text);border:1px solid rgba(255,255,255,0.10);border-radius:6px;caret-color:#f59e0b;" />
-      <button class="btn btn-icon step-nav__preview" title="Preview narration"
-              style="flex-shrink:0;">&#9654;</button>
+             style="flex:1 1 auto;min-width:0;height:28px;padding:0 10px;font-size:13px;background:rgba(255,255,255,0.04);color:var(--text);border:1px solid rgba(255,255,255,0.10);border-radius:6px;caret-color:#f59e0b;" />
+      <button class="btn btn-icon step-nav__mute" title="Auto-play narration on step change (toggle to mute)" style="flex-shrink:0;">🔊</button>
+      <button class="btn btn-icon step-nav__preview" title="Preview narration" style="flex-shrink:0;">&#9654;</button>
     </div>
   `;
 
@@ -63,10 +61,33 @@ export function initStepNav() {
     await previewStepNarration(step, narrInput.value);
   });
 
+  // Global narration mute toggle. When muted, step activation does NOT
+  // auto-play the saved clip; manual ▶ still works. State is persisted
+  // per project (state.narrationMuted).
+  const btnMute = _el.querySelector('.step-nav__mute');
+  btnMute.addEventListener('click', () => {
+    state.setState({ narrationMuted: !state.get('narrationMuted') });
+    state.markDirty();
+  });
+  state.on('change:narrationMuted', _renderMute);
+
   state.on('change:activeStepId', () => renderStepNav());
   state.on('change:steps',        () => renderStepNav());
 
   renderStepNav();
+  _renderMute();
+}
+
+function _renderMute() {
+  if (!_el) return;
+  const btn = _el.querySelector('.step-nav__mute');
+  if (!btn) return;
+  const muted = !!state.get('narrationMuted');
+  btn.textContent = muted ? '🔇' : '🔊';
+  btn.title = muted
+    ? 'Narration muted on step change — click to enable auto-play'
+    : 'Auto-play narration on step change — click to mute';
+  btn.style.color = muted ? '#ef4444' : '';
 }
 
 function _getActiveStep() {

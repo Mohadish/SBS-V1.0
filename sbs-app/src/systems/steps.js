@@ -151,7 +151,9 @@ class StepManager {
     if (!force && now - this._lastThumbMs < this._thumbIntervalMs) return;
     const activeId = state.get('activeStepId');
     if (!activeId) return;
-    const dataUrl = sceneCore.captureThumbnail(120, 80, 0.55);
+    // Render without the overlay scene so the gizmo / selection outlines
+    // never leak into the saved thumbnail.
+    const dataUrl = sceneCore.captureThumbnail(120, 80, 0.55, true);
     if (!dataUrl) return;
     const step = state.get('steps').find(s => s.id === activeId);
     if (!step) return;
