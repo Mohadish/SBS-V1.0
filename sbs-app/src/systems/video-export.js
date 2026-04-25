@@ -126,8 +126,15 @@ async function _exportMp4({ fps = DEFAULT_FPS, bitrate = DEFAULT_BITRATE,
   let audioTrackEnabled = false;
 
   if (includeNarration) {
-    audioMaster = await _buildNarrationTrack(stepsToPlay, perStepHold, AUDIO_RATE);
-    audioTrackEnabled = audioMaster.hasAudio;
+    try {
+      console.log('[export] building audio track…');
+      audioMaster = await _buildNarrationTrack(stepsToPlay, perStepHold, AUDIO_RATE);
+      audioTrackEnabled = audioMaster.hasAudio;
+      console.log(`[export] audio track ready: ${audioTrackEnabled ? `${(audioMaster.totalMs/1000).toFixed(1)}s` : 'no clips'}`);
+    } catch (err) {
+      console.warn('[export] audio bridge failed — exporting video only:', err);
+      audioTrackEnabled = false;
+    }
   }
 
   const muxerCfg = {
@@ -224,20 +231,30 @@ async function _exportMp4({ fps = DEFAULT_FPS, bitrate = DEFAULT_BITRATE,
   // Suppress live narration playback while the timeline runs for capture.
   state.setState({ _exporting: true });
   try {
+    console.log('[export] timeline playback…');
     await _playTimeline(stepsToPlay, perStepHold, onProgress, signal);
   } finally {
     unsubTick();
     state.setState({ _exporting: false });
   }
 
+  console.log('[export] flush video encoder…');
   await encoder.flush();
   encoder.close();
   if (audioEncoder) {
-    await audioEncodePromise;          // make sure every chunk has been queued
-    await audioEncoder.flush();        // drain in-flight chunks
-    audioEncoder.close();
+    console.log('[export] await audio pump…');
+    await audioEncodePromise;
+    console.log('[export] flush audio encoder…');
+    // Hard timeout so a hung encoder can't freeze the renderer indefinitely.
+    await Promise.race([
+      audioEncoder.flush(),
+      new Promise((_, rej) => setTimeout(() => rej(new Error('audio encoder flush timed out')), 30_000)),
+    ]).catch(err => { console.warn('[export]', err?.message); });
+    try { audioEncoder.close(); } catch {}
   }
+  console.log('[export] finalize muxer…');
   muxer.finalize();
+  console.log('[export] done.');
 
   const blob = new Blob([muxer.target.buffer], { type: 'video/mp4' });
   return {
@@ -327,16 +344,21 @@ async function _buildNarrationTrack(stepsToPlay, perStepHold, sampleRate) {
   }
   const totalMs = cursor;
 
-  // Decode each clip → mono Float32 at sampleRate. Use one OfflineAudioContext-
-  // capable AudioContext for decoding (decodeAudioData needs an AudioContext).
+  // Decode each clip with a *default-rate* AudioContext. Forcing a custom
+  // sampleRate on AudioContext can hang on Windows builds where the audio
+  // endpoint doesn't natively support the requested rate. Resampling to
+  // the encoder's rate happens inside resampleToMonoFloat32 via an
+  // OfflineAudioContext, which does support arbitrary rates.
   const Ctx = window.AudioContext || window.webkitAudioContext;
-  const ctx = new Ctx({ sampleRate });
+  const ctx = new Ctx();
   const decoded = [];
   let hasAudio = false;
-  for (const seg of segments) {
+  for (let i = 0; i < segments.length; i++) {
+    const seg = segments[i];
     const url = seg.step.narration?.dataUrl;
     if (!url) continue;
     try {
+      console.log(`[export] decode step ${i + 1}/${segments.length}: ${seg.step.name}`);
       const audioBuf = await decodeToAudioBuffer(url, ctx);
       const samples  = await resampleToMonoFloat32(audioBuf, sampleRate);
       decoded.push({ startMs: seg.startMs, samples });
