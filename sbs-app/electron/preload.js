@@ -37,9 +37,18 @@ contextBridge.exposeInMainWorld('sbsNative', {
       'menu:newProject', 'menu:openProject', 'menu:saveProject', 'menu:saveProjectAs',
       'menu:loadModel',  'menu:browseAssets',
       'menu:fitAll',     'menu:showAll',
+      'menu:openSettings',
     ];
     if (!allowed.includes(channel)) return;
     ipcRenderer.on(channel, (_e, ...args) => cb(...args));
+  },
+
+  // ── User settings (machine-level prefs, persisted to userData/user-settings.json) ─
+  userSettings: {
+    read:   ()    => ipcRenderer.invoke('settings:read'),
+    write:  (obj) => ipcRenderer.invoke('settings:write', obj),
+    locale: ()    => ipcRenderer.invoke('settings:locale'),
+    path:   ()    => ipcRenderer.invoke('settings:path'),
   },
 
   // ── Text-to-speech (OS voices via `say` npm) ─────────────────────────────

@@ -47,6 +47,8 @@ import { initSidebarLeft }        from './ui/sidebar-left.js';
 import { initContextMenu, hideContextMenu, showContextMenu } from './ui/context-menu.js';
 import { initOverlay }         from './systems/overlay.js';
 import { initOverlayToolbar }  from './ui/overlay-toolbar.js';
+import { initUserSettings }    from './core/user-settings.js';
+import { openSettingsModal }   from './ui/settings-modal.js';
 
 // ══════════════════════════════════════════════════════════════════════════════
 //  1. STATE — restore persisted preferences
@@ -100,6 +102,12 @@ initHud();
 initOverlay();
 initOverlayToolbar();
 setupUndoKeyboard();
+
+// Eager-load user-level prefs so subsequent UI can read them synchronously.
+initUserSettings().catch(err => console.warn('[settings] init failed:', err));
+
+// File → Settings… menu hook. Channel allowlist lives in preload.js.
+window.sbsNative?.onMenu?.('menu:openSettings', () => openSettingsModal());
 
 // Clear undo history when a new project loads (fresh slate)
 state.on('change:projectPath', () => { undoManager.clear(); selectionActs.clear(); });

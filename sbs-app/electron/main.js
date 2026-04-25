@@ -149,6 +149,8 @@ function buildMenu() {
         { label: 'Load Model…',       accelerator: 'CmdOrCtrl+L', click: () => mainWindow?.webContents.send('menu:loadModel') },
         { label: 'Browse Assets…',    accelerator: 'CmdOrCtrl+B', click: () => mainWindow?.webContents.send('menu:browseAssets') },
         { type: 'separator' },
+        { label: 'Settings…',         accelerator: 'CmdOrCtrl+,', click: () => mainWindow?.webContents.send('menu:openSettings') },
+        { type: 'separator' },
         isMac ? { role: 'close' } : { role: 'quit' },
       ],
     },
@@ -331,6 +333,35 @@ ipcMain.handle('app:getVersion', () => app.getVersion());
 ipcMain.handle('shell:showItemInFolder', (_, filePath) => {
   shell.showItemInFolder(filePath);
 });
+
+// ─── User settings (machine-level prefs, separate from project file) ───────
+const _userSettingsPath = path.join(app.getPath('userData'), 'user-settings.json');
+
+function _readUserSettingsSync() {
+  try {
+    if (!fs.existsSync(_userSettingsPath)) return {};
+    return JSON.parse(fs.readFileSync(_userSettingsPath, 'utf-8'));
+  } catch (e) {
+    console.warn('[settings] read failed:', e.message);
+    return {};
+  }
+}
+
+function _writeUserSettingsSync(obj) {
+  try {
+    fs.mkdirSync(path.dirname(_userSettingsPath), { recursive: true });
+    fs.writeFileSync(_userSettingsPath, JSON.stringify(obj, null, 2), 'utf-8');
+    return { ok: true };
+  } catch (e) {
+    console.warn('[settings] write failed:', e.message);
+    return { ok: false, error: e.message };
+  }
+}
+
+ipcMain.handle('settings:read',  ()    => _readUserSettingsSync());
+ipcMain.handle('settings:write', (_, o) => _writeUserSettingsSync(o || {}));
+ipcMain.handle('settings:locale', () => app.getLocale());   // e.g. "en-US"
+ipcMain.handle('settings:path',  () => _userSettingsPath);
 
 // ─── OS TTS (via `say` npm) ────────────────────────────────────────────────
 const _ttsTempDir = path.join(os.tmpdir(), 'sbs-tts');

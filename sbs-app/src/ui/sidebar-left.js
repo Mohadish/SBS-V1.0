@@ -25,6 +25,7 @@ import { showContextMenu } from './context-menu.js';
 import { renderAnimationTab } from './animation-tab.js';
 import { exportTimelineVideo, downloadBlob } from '../systems/video-export.js';
 import { listVoices as ttsListVoices } from '../systems/tts.js';
+import * as userSettings from '../core/user-settings.js';
 
 const TABS = ['files', 'tree', 'colors', 'select', 'cameras', 'animation', 'export'];
 let _activeTab   = 'files';
@@ -1416,6 +1417,11 @@ function _renderCamerasTab() {
 //  EXPORT TAB
 // ═══════════════════════════════════════════════════════════════════════════
 
+function _onUserSettingsChanged() {
+  // Live-rebuild the Export tab so the voice list reflects the new filter.
+  if (_panel('export')) _renderExportTab();
+}
+
 function _renderExportTab() {
   const el  = _panel('export');
   if (!el) return;
@@ -1523,14 +1529,24 @@ function _renderExportTab() {
       voiceSel.innerHTML = `<option value="">No OS voices available — restart Electron after install</option>`;
       return;
     }
+    // Filter by user's preferred language (Settings → Language). Empty = no filter.
+    const pref = userSettings.get().ui?.preferredLanguage || '';
+    const filtered = pref
+      ? list.filter(v => (v.lang || '').toLowerCase().includes(pref.toLowerCase()))
+      : list;
+    const shown = filtered.length ? filtered : list;   // never show empty list
     const current = exp.narrationVoice || '';
     voiceSel.innerHTML = [
       `<option value="">— none —</option>`,
-      ...list.map(v => `<option value="${_esc(v.id)}" ${v.id === current ? 'selected' : ''}>${_esc(v.name)} — ${_esc(v.lang)}</option>`),
+      ...shown.map(v => `<option value="${_esc(v.id)}" ${v.id === current ? 'selected' : ''}>${_esc(v.name)} — ${_esc(v.lang)}</option>`),
     ].join('');
   }).catch(err => {
     voiceSel.innerHTML = `<option value="">Error loading voices: ${_esc(err.message)}</option>`;
   });
+
+  // Re-render this tab when language preference changes (so the voice
+  // dropdown picks up the new filter without restart).
+  window.addEventListener('sbs:user-settings-changed', _onUserSettingsChanged);
 
   voiceSel.addEventListener('change', () => {
     state.setExportOption('narrationVoice', voiceSel.value);
