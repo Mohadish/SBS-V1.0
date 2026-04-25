@@ -35,13 +35,26 @@ export function initStepNav() {
   const narrInput  = _el.querySelector('.step-nav__narration');
   const btnPreview = _el.querySelector('.step-nav__preview');
 
-  // Save narration text on blur / Enter.
-  narrInput.addEventListener('change', () => {
+  // Save narration text live (every keystroke). The previous 'change'-event
+  // approach lost edits when the user arrow-navigated away without blurring
+  // — the input never fires 'change' if focus stays in the document, and
+  // re-render then overwrites the un-saved value.
+  // Direct mutation + markDirty doesn't trigger a panel re-render, so the
+  // input keeps focus while typing.
+  let _saveTimer = null;
+  const saveText = () => {
     const step = _getActiveStep();
     if (!step) return;
+    if ((step.narration?.text || '') === narrInput.value) return;
+    // Drop any cached audio when text changes — user must re-preview / re-export.
     step.narration = { text: narrInput.value };
     state.markDirty();
+  };
+  narrInput.addEventListener('input', () => {
+    clearTimeout(_saveTimer);
+    _saveTimer = setTimeout(saveText, 200);
   });
+  narrInput.addEventListener('blur', saveText);
   narrInput.addEventListener('keydown', e => { if (e.key === 'Enter') narrInput.blur(); });
 
   btnPreview.addEventListener('click', async () => {

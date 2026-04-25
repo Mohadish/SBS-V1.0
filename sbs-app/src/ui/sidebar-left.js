@@ -1629,27 +1629,33 @@ async function _synthesizeMissingClips(exp, set, signal) {
   const speed    = Number(exp.narrationSpeed) || 1.0;
 
   const todo = [];
+  let withText = 0, alreadyCached = 0;
   for (const s of allSteps) {
     const text = s.narration?.text?.trim();
     if (!text) continue;
+    withText++;
     const cached = s.narration?.dataUrl;
     const fresh  = cached
       && s.narration?.text   === text
       && s.narration?.voiceId === voiceId
       && s.narration?.speed   === speed;
-    if (!fresh) todo.push(s);
+    if (fresh) { alreadyCached++; continue; }
+    todo.push(s);
   }
+  console.log(`[export] pre-synth scan: ${allSteps.length} step(s), ${withText} with text, ${alreadyCached} already cached, ${todo.length} to synthesize`);
   if (!todo.length) return;
 
   for (let i = 0; i < todo.length; i++) {
     if (signal?.aborted) return;
     const s = todo[i];
     set(`Synthesizing narration ${i + 1}/${todo.length}…`);
+    console.log(`[export] pre-synth ${i + 1}/${todo.length}: "${s.name}" — ${s.narration.text.slice(0, 40)}${s.narration.text.length > 40 ? '…' : ''}`);
     try {
       const out = await ttsSynthesize(s.narration.text, voiceId, { speed });
       s.narration = { text: s.narration.text, voiceId, speed, ...out };
+      console.log(`[export]   ✓ ${(out.durationMs / 1000).toFixed(2)}s clip`);
     } catch (err) {
-      console.warn('[export] synth failed for', s.name, err.message);
+      console.warn('[export]   ✗ synth failed for', s.name, err?.message);
     }
   }
   state.markDirty();
