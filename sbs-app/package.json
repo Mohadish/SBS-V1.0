@@ -4,9 +4,10 @@
   "description": "SBS Step Browser — CAD Presentation Tool",
   "main": "electron/main.js",
   "scripts": {
-    "start": "electron .",
-    "dev": "electron . --dev",
-    "build": "electron-builder"
+    "start":        "electron .",
+    "dev":          "electron . --dev",
+    "build":        "electron-builder",
+    "fetch-models": "node scripts/fetch-kokoro.js"
   },
   "build": {
     "appId": "com.sbs.stepbrowser",
@@ -41,6 +42,13 @@
       "!**/{.DS_Store,.git,.hg,.svn,CVS,RCS,SCCS,.gitignore,.gitattributes}",
       "!**/{__pycache__,thumbs.db,.flowconfig,.idea,.vs,__tests__}",
       "!**/{.eslintrc,.eslintignore,.babelrc}"
+    ],
+    "extraResources": [
+      {
+        "from":   "kokoro-bundle",
+        "to":     "kokoro-bundle",
+        "filter": ["**/*"]
+      }
     ]
   },
   "dependencies": {

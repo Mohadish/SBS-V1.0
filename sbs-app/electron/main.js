@@ -15,16 +15,27 @@ function _loadKokoro() {
   if (!_kokoroModelPromise) {
     _kokoroModelPromise = (async () => {
       _kokoroModule = require('kokoro-js');
-      // Cache models under userData so they survive across app launches.
-      // transformers.js honours env.cacheDir if exposed via env vars OR via
-      // its config object — the kokoro-js docs use a wrapper, so we set the
-      // standard transformers.js env var here.
+      const tx = require('@huggingface/transformers');
+
+      // Bundled model path. In dev: <repo>/sbs-app/kokoro-bundle. In a
+      // packaged app: process.resourcesPath/kokoro-bundle (placed there by
+      // electron-builder via build.extraResources).
+      const bundleDir = app.isPackaged
+        ? path.join(process.resourcesPath, 'kokoro-bundle')
+        : path.join(APP_ROOT, 'kokoro-bundle');
+
+      // Point transformers.js at the local bundle and forbid remote fetches.
+      // localModelPath needs a trailing separator so HF model ids resolve as
+      // <localModelPath>/<repo>/<file>.
+      tx.env.localModelPath   = bundleDir + path.sep;
+      tx.env.allowLocalModels = true;
+      tx.env.allowRemoteModels = false;
+      // Cache fallback (in case anything still wants it).
       const cacheDir = path.join(app.getPath('userData'), 'kokoro-cache');
       try { fs.mkdirSync(cacheDir, { recursive: true }); } catch {}
-      const tx = require('@huggingface/transformers');
       tx.env.cacheDir = cacheDir;
-      tx.env.allowLocalModels = true;
-      console.log(`[kokoro] cacheDir = ${cacheDir}`);
+
+      console.log(`[kokoro] bundle = ${bundleDir}, packaged=${app.isPackaged}`);
       const tts = await _kokoroModule.KokoroTTS.from_pretrained(
         'onnx-community/Kokoro-82M-v1.0-ONNX',
         { dtype: 'q8f16' }

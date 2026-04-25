@@ -27,3 +27,11 @@ Thumbs.db
 .cache/
 .parcel-cache/
 .vite/
+
+# Claude per-user settings (paths are local)
+.claude/settings.local.json
+
+# Kokoro model bundle — fetched on demand via `npm run fetch-models`.
+# 110 MB binary blob, would balloon git history. electron-builder picks
+# it up via build.extraResources at packaging time.
+sbs-app/kokoro-bundle/
