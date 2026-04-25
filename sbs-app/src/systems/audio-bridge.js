@@ -16,17 +16,31 @@
  * sample-rate conversion for free.
  */
 
-// ─── Decode any browser-readable audio (WAV/MP3/Opus/etc.) → AudioBuffer ───
+// ─── Decode audio to a uniform shape  { pcm, sampleRate, channels } ───────
+//
+// We deliberately AVOID AudioContext.decodeAudioData for the common WAV
+// path because it can hang the renderer thread on some Windows audio
+// configurations (the audio backend gets stuck initialising). The WAV
+// format is trivial to parse by hand and SAPI always emits PCM WAV, so
+// the fast path covers our entire current TTS surface.
+//
+// If a future backend ever produces non-WAV audio we fall back to
+// AudioContext.decodeAudioData and pray. Caller should wrap in a timeout.
 
 /**
- * @param {string}        url        'data:audio/...;base64,...' or blob URL
- * @param {AudioContext}  audioCtx   any AudioContext (online or offline)
- * @returns {Promise<AudioBuffer>}
- *
- * Handles data: URLs without using fetch() so the renderer's CSP
- * connect-src can stay strict (no 'data:' allowance needed).
+ * @param {string} url 'data:audio/...;base64,...' or blob URL
+ * @param {AudioContext|(() => AudioContext)|null} [ctxOrFactory]
+ *        Context to use (or a factory that lazily creates one) for non-WAV
+ *        fallback decodes. Skipped entirely for the WAV fast path so we
+ *        never touch the audio backend if every clip is WAV.
+ * @returns {Promise<AudioBuffer|object>}  AudioBuffer-shape: { numberOfChannels, sampleRate, length, getChannelData(c) }
  */
-export async function decodeToAudioBuffer(url, audioCtx) {
+export async function decodeToAudioBuffer(url, ctxOrFactory) {
+  // Fast path — WAV manual parse, no AudioContext needed.
+  if (url.startsWith('data:audio/wav') || url.startsWith('data:audio/x-wav')) {
+    return _parseWavDataUrl(url);
+  }
+
   let arrayBuffer;
   if (url.startsWith('data:')) {
     arrayBuffer = _dataUrlToArrayBuffer(url);
@@ -34,7 +48,108 @@ export async function decodeToAudioBuffer(url, audioCtx) {
     const response = await fetch(url);
     arrayBuffer    = await response.arrayBuffer();
   }
-  return audioCtx.decodeAudioData(arrayBuffer);
+  if (_looksLikeWav(arrayBuffer)) return _parseWavBuffer(arrayBuffer);
+
+  // Non-WAV: fall back to AudioContext.decodeAudioData.
+  const ctx = typeof ctxOrFactory === 'function' ? ctxOrFactory() : ctxOrFactory;
+  if (!ctx) throw new Error('No AudioContext available for non-WAV decode.');
+  return ctx.decodeAudioData(arrayBuffer);
+}
+
+// ─── Manual WAV parser (PCM 8/16/32-bit, mono or multichannel) ─────────────
+
+function _parseWavDataUrl(url) {
+  return _parseWavBuffer(_dataUrlToArrayBuffer(url));
+}
+
+function _looksLikeWav(buf) {
+  if (buf.byteLength < 12) return false;
+  const v = new DataView(buf);
+  return _readStr(v, 0, 4) === 'RIFF' && _readStr(v, 8, 4) === 'WAVE';
+}
+
+function _readStr(view, offset, n) {
+  let s = '';
+  for (let i = 0; i < n; i++) s += String.fromCharCode(view.getUint8(offset + i));
+  return s;
+}
+
+/**
+ * Returns an AudioBuffer-shaped object so the rest of the bridge doesn't
+ * care whether we parsed manually or via decodeAudioData. Caller only
+ * uses .numberOfChannels, .sampleRate, .length, .getChannelData(c).
+ */
+function _parseWavBuffer(buf) {
+  if (!_looksLikeWav(buf)) throw new Error('Not a RIFF/WAVE file.');
+  const view = new DataView(buf);
+
+  // Walk chunks to find 'fmt ' and 'data'.
+  let fmtOff = -1, dataOff = -1, dataSize = 0;
+  let off = 12;
+  while (off + 8 <= view.byteLength) {
+    const id   = _readStr(view, off, 4);
+    const size = view.getUint32(off + 4, true);
+    if (id === 'fmt ') fmtOff = off + 8;
+    else if (id === 'data') { dataOff = off + 8; dataSize = size; break; }
+    off += 8 + size + (size & 1);   // chunks are padded to even sizes
+  }
+  if (fmtOff < 0 || dataOff < 0) throw new Error('WAV missing fmt or data chunk.');
+
+  const audioFormat   = view.getUint16(fmtOff, true);
+  const numChannels   = view.getUint16(fmtOff + 2, true);
+  const sampleRate    = view.getUint32(fmtOff + 4, true);
+  const bitsPerSample = view.getUint16(fmtOff + 14, true);
+
+  // audioFormat 1 = PCM, 3 = IEEE float, 0xFFFE = WAVE_FORMAT_EXTENSIBLE.
+  if (audioFormat !== 1 && audioFormat !== 3 && audioFormat !== 0xFFFE) {
+    throw new Error(`WAV format ${audioFormat} is not PCM/float (compressed WAVs unsupported).`);
+  }
+
+  const bytesPerSample = bitsPerSample / 8;
+  const totalFrames    = Math.floor(dataSize / (numChannels * bytesPerSample));
+  const channels = [];
+  for (let c = 0; c < numChannels; c++) channels.push(new Float32Array(totalFrames));
+
+  if ((audioFormat === 1 || audioFormat === 0xFFFE) && bitsPerSample === 16) {
+    const inv = 1 / 0x8000;
+    for (let i = 0; i < totalFrames; i++) {
+      const base = dataOff + i * numChannels * 2;
+      for (let c = 0; c < numChannels; c++) channels[c][i] = view.getInt16(base + c * 2, true) * inv;
+    }
+  } else if ((audioFormat === 1 || audioFormat === 0xFFFE) && bitsPerSample === 8) {
+    // 8-bit WAV is unsigned with a 128 bias.
+    for (let i = 0; i < totalFrames; i++) {
+      const base = dataOff + i * numChannels;
+      for (let c = 0; c < numChannels; c++) channels[c][i] = (view.getUint8(base + c) - 128) / 128;
+    }
+  } else if ((audioFormat === 1 || audioFormat === 0xFFFE) && bitsPerSample === 24) {
+    const inv = 1 / 0x800000;
+    for (let i = 0; i < totalFrames; i++) {
+      const base = dataOff + i * numChannels * 3;
+      for (let c = 0; c < numChannels; c++) {
+        const o = base + c * 3;
+        let s = view.getUint8(o) | (view.getUint8(o + 1) << 8) | (view.getUint8(o + 2) << 16);
+        if (s & 0x800000) s |= 0xFF000000;   // sign extend
+        channels[c][i] = s * inv;
+      }
+    }
+  } else if (audioFormat === 3 && bitsPerSample === 32) {
+    for (let i = 0; i < totalFrames; i++) {
+      const base = dataOff + i * numChannels * 4;
+      for (let c = 0; c < numChannels; c++) channels[c][i] = view.getFloat32(base + c * 4, true);
+    }
+  } else {
+    throw new Error(`Unsupported WAV bit depth ${bitsPerSample} for format ${audioFormat}.`);
+  }
+
+  // AudioBuffer-like object.
+  return {
+    numberOfChannels: numChannels,
+    sampleRate,
+    length:           totalFrames,
+    duration:         totalFrames / sampleRate,
+    getChannelData(c) { return channels[c]; },
+  };
 }
 
 function _dataUrlToArrayBuffer(dataUrl) {

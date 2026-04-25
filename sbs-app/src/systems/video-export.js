@@ -344,13 +344,14 @@ async function _buildNarrationTrack(stepsToPlay, perStepHold, sampleRate) {
   }
   const totalMs = cursor;
 
-  // Decode each clip with a *default-rate* AudioContext. Forcing a custom
-  // sampleRate on AudioContext can hang on Windows builds where the audio
-  // endpoint doesn't natively support the requested rate. Resampling to
-  // the encoder's rate happens inside resampleToMonoFloat32 via an
-  // OfflineAudioContext, which does support arbitrary rates.
+  // Decode each clip. WAV (the SAPI output format) is parsed manually
+  // in audio-bridge.js — no AudioContext touched. We only construct a
+  // fallback context lazily IF a non-WAV codec shows up. Avoiding the
+  // AudioContext entirely for the SAPI path side-steps a renderer hang
+  // we hit on Windows during decodeAudioData of step 1.
+  let ctx = null;
   const Ctx = window.AudioContext || window.webkitAudioContext;
-  const ctx = new Ctx();
+  const lazyCtx = () => ctx ?? (ctx = new Ctx());
   const decoded = [];
   let hasAudio = false;
   for (let i = 0; i < segments.length; i++) {
@@ -359,7 +360,7 @@ async function _buildNarrationTrack(stepsToPlay, perStepHold, sampleRate) {
     if (!url) continue;
     try {
       console.log(`[export] decode step ${i + 1}/${segments.length}: ${seg.step.name}`);
-      const audioBuf = await _withTimeout(decodeToAudioBuffer(url, ctx), 10_000, 'decodeAudioData');
+      const audioBuf = await _withTimeout(decodeToAudioBuffer(url, lazyCtx), 10_000, 'decodeAudioData');
       console.log(`[export]   decoded — ${audioBuf.numberOfChannels}ch @ ${audioBuf.sampleRate}Hz, ${(audioBuf.duration).toFixed(2)}s`);
       const samples  = await _withTimeout(resampleToMonoFloat32(audioBuf, sampleRate), 10_000, 'resample');
       console.log(`[export]   resampled — ${samples.length} frames`);
