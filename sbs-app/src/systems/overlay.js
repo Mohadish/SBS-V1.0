@@ -16,7 +16,6 @@
  */
 
 import { state } from '../core/state.js';
-import { openTextEditor }  from '../ui/text-editor-modal.js';
 import { showContextMenu } from '../ui/context-menu.js';
 
 let _stage       = null;   // Konva.Stage
@@ -109,14 +108,17 @@ export function setEditingMode(on) {
 // ─── Creating nodes ────────────────────────────────────────────────────────
 
 /**
- * Open the rich-text editor modal. If the user saves, rasterize the HTML
- * and drop a Konva.Image on the stage holding the rendered textbox.
- * Returns the created node, or null if the user cancelled.
+ * Drop a fresh text box onto the stage and immediately enter in-place
+ * edit mode. No modal — Phase 2 onwards we edit on the canvas.
+ *
+ * The initial raster is just placeholder text so the Konva.Image has
+ * something to host while the editable <div> is mounted on top. As
+ * soon as the user clicks outside (or presses Escape), the node
+ * re-rasterises from the contenteditable's HTML.
  */
 export async function addTextBox() {
   if (!_stage) return null;
-  const html = await openTextEditor();
-  if (!html) return null;
+  const html = '<div>Text</div>';
 
   const canvas = await _htmlToCanvas(html, { width: 400 });
   if (!canvas) return null;
@@ -139,8 +141,133 @@ export async function addTextBox() {
   _layer.add(node);
   _attachNode(node);
   _setSelection(node);
+  // Auto-enter edit mode so the user doesn't have to dbl-click first.
+  _enterTextEdit(node);
   _scheduleSave();
   return node;
+}
+
+// ─── Live in-place text editing (Phase 2) ───────────────────────────────────
+//
+// Replaces the modal popup. Double-click a text box → a contenteditable
+// <div> mounts over the canvas at the node's position, the rasterised
+// Konva.Image is hidden, the user types/edits/selects natively. On click
+// outside, we re-rasterise the HTML and bring the Konva.Image back.
+//
+// Phase 3 will add a floating style toolbar above this editable; the
+// toolbar will use mousedown.preventDefault() so clicking it doesn't
+// blur the selection.
+
+let _activeTextEditor = null;   // { node, div, onDocMouseDown, transformerWasVisible }
+
+/** Open the in-place editor on a text-box node. */
+function _enterTextEdit(node) {
+  if (_activeTextEditor) _exitTextEdit();
+  const containerRect = _container.getBoundingClientRect();
+  const pos = node.getAbsolutePosition();
+
+  const div = document.createElement('div');
+  div.contentEditable = 'true';
+  div.spellcheck      = false;
+  div.innerHTML       = node.getAttr('textHtml') || '<div>Text</div>';
+  div.dataset.sbsTextEditor = '1';
+  div.style.cssText = [
+    'position:fixed',
+    `left:${Math.round(containerRect.left + pos.x)}px`,
+    `top:${Math.round(containerRect.top + pos.y)}px`,
+    `width:${Math.round(node.width())}px`,
+    `min-height:${Math.round(node.height())}px`,
+    'padding:0',
+    'margin:0',
+    'border:2px dashed #f59e0b',
+    'border-radius:4px',
+    'background:rgba(15,23,42,0.55)',
+    'color:#fff',
+    'font-family:Arial,Helvetica,sans-serif',
+    'font-size:16px',
+    'line-height:1.25',
+    'outline:none',
+    'overflow:hidden',
+    'white-space:pre-wrap',
+    'word-wrap:break-word',
+    'box-sizing:border-box',
+    'z-index:10000',
+    'cursor:text',
+    'user-select:text',
+  ].join(';');
+  document.body.appendChild(div);
+
+  // Hide the raster + transformer while editing — the live <div> is the UI now.
+  node.visible(false);
+  const transformerWasVisible = _transformer.visible();
+  _transformer.visible(false);
+  _layer.batchDraw();
+  _uiLayer.batchDraw();
+
+  // Focus + put the caret at the end of the existing content.
+  div.focus();
+  const sel = window.getSelection();
+  if (sel) {
+    const range = document.createRange();
+    range.selectNodeContents(div);
+    range.collapse(false);
+    sel.removeAllRanges();
+    sel.addRange(range);
+  }
+
+  // Click-outside detection. Listen at the document on the capture phase
+  // so we beat anything else that might consume the click. Skip if the
+  // event landed inside the editor (or, later, the toolbar).
+  const onDocMouseDown = (e) => {
+    if (div.contains(e.target)) return;
+    if (e.target?.closest?.('[data-sbs-text-toolbar]')) return;   // Phase 3
+    _exitTextEdit();
+  };
+  // Defer one tick so the same dblclick that opened us doesn't immediately close us.
+  setTimeout(() => document.addEventListener('mousedown', onDocMouseDown, true), 0);
+
+  // Esc cancels (no save); Enter inserts a newline (browser default).
+  const onKeyDown = (e) => {
+    if (e.key === 'Escape') {
+      e.preventDefault();
+      _exitTextEdit({ discard: true });
+    }
+  };
+  div.addEventListener('keydown', onKeyDown);
+
+  _activeTextEditor = { node, div, onDocMouseDown, onKeyDown, transformerWasVisible };
+}
+
+/** Close the in-place editor, re-rasterise on the way out (unless discard). */
+async function _exitTextEdit(opts = {}) {
+  if (!_activeTextEditor) return;
+  const { node, div, onDocMouseDown, onKeyDown, transformerWasVisible } = _activeTextEditor;
+  document.removeEventListener('mousedown', onDocMouseDown, true);
+  div.removeEventListener('keydown', onKeyDown);
+
+  const html = div.innerHTML;
+  div.remove();
+  _activeTextEditor = null;
+
+  if (!opts.discard && html) {
+    const w = Math.max(20, Math.round(node.width()));
+    const canvas = await _htmlToCanvas(html, { width: w });
+    if (canvas) {
+      node.image(canvas);
+      node.width(canvas.width);
+      node.height(canvas.height);
+      node.setAttr('textHtml',  html);
+      node.setAttr('textWidth', canvas.width);
+      node.setAttr('naturalW',  canvas.width);
+      node.setAttr('naturalH',  canvas.height);
+    }
+  }
+
+  node.visible(true);
+  _transformer.visible(transformerWasVisible);
+  _layer.batchDraw();
+  _uiLayer.batchDraw();
+  _scheduleSave();
 }
 
 /**
@@ -169,26 +296,8 @@ async function _reflowTextBox(node) {
   _layer.batchDraw();
 }
 
-/** Re-open the modal for an existing text-box node, re-rasterize on save. */
-async function _editTextBox(node) {
-  const html = await openTextEditor(node.getAttr('textHtml') || '<div>Text</div>');
-  if (!html) return;
-  const targetW = node.getAttr('textWidth') || node.width() || 400;
-  const canvas  = await _htmlToCanvas(html, { width: targetW });
-  if (!canvas) return;
-  node.image(canvas);
-  node.width(canvas.width);
-  node.height(canvas.height);
-  node.scaleX(1);
-  node.scaleY(1);
-  node.setAttr('textHtml',  html);
-  node.setAttr('textWidth', canvas.width);
-  // Re-edit replaces the raster — the new canvas dims are now the natural size.
-  node.setAttr('naturalW',  canvas.width);
-  node.setAttr('naturalH',  canvas.height);
-  _layer.batchDraw();
-  _scheduleSave();
-}
+// (Old modal-based _editTextBox + openTextEditor import removed in Phase 2.
+// In-place editing via _enterTextEdit / _exitTextEdit is now the only path.)
 
 /**
  * @param {string|File} src  data URL or File object (e.g. from <input type="file">)
@@ -259,9 +368,9 @@ function _attachNode(node) {
     _showOverlayContextMenu(node, ev?.clientX ?? 0, ev?.clientY ?? 0);
   });
   if (node.getClassName() === 'Text') node.on('dblclick', () => _editText(node));
-  // Any Konva.Image tagged as a user text box re-opens the rich-text editor.
+  // Any Konva.Image tagged as a user text box opens the in-place editor.
   if (node.getClassName() === 'Image' && node.getAttr('textHtml')) {
-    node.on('dblclick', () => _editTextBox(node));
+    node.on('dblclick', () => _enterTextEdit(node));
   }
 }
 
