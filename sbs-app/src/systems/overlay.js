@@ -17,7 +17,7 @@
 
 import { state } from '../core/state.js';
 import { showContextMenu } from '../ui/context-menu.js';
-import { mountTextToolbar, unmountTextToolbar, execCommandApplier } from '../ui/text-toolbar.js';
+import { mountTextToolbar, unmountTextToolbar, execCommandApplier, setToolbarValues } from '../ui/text-toolbar.js';
 import { getTextToolbarSlot }  from '../ui/overlay-toolbar.js';
 
 let _stage       = null;   // Konva.Stage
@@ -254,15 +254,25 @@ function _enterTextEdit(node) {
   // [data-sbs-text-toolbar] so toolbar clicks won't dismiss the editor.
   const toolbarHost = getTextToolbarSlot();
   if (toolbarHost) mountTextToolbar(toolbarHost, execCommandApplier, div);
+  // Sync the dropdowns to whatever style is at the caret. Re-fires on
+  // every selection change so moving the caret across mixed-style runs
+  // updates the toolbar live.
+  const onSelectionChange = () => {
+    if (!_activeTextEditor || !div.contains(window.getSelection()?.anchorNode || null)) return;
+    setToolbarValues(_readStyleAtCaret(div));
+  };
+  document.addEventListener('selectionchange', onSelectionChange);
+  onSelectionChange();   // initial sync
 
-  _activeTextEditor = { node, div, onDocMouseDown, onKeyDown, prevOpacity };
+  _activeTextEditor = { node, div, onDocMouseDown, onKeyDown, prevOpacity, onSelectionChange };
 }
 
 /** Close the in-place editor, re-rasterise on the way out (unless discard). */
 async function _exitTextEdit(opts = {}) {
   if (!_activeTextEditor) return;
-  const { node, div, onDocMouseDown, onKeyDown, prevOpacity } = _activeTextEditor;
+  const { node, div, onDocMouseDown, onKeyDown, prevOpacity, onSelectionChange } = _activeTextEditor;
   document.removeEventListener('mousedown', onDocMouseDown, true);
+  if (onSelectionChange) document.removeEventListener('selectionchange', onSelectionChange);
   div.removeEventListener('keydown', onKeyDown);
   unmountTextToolbar();
 
@@ -359,14 +369,38 @@ export async function addImage(src) {
 
 function _attachNode(node) {
   // Single click selects (or toggles when held with Shift/Ctrl/Meta for
-  // multi-select). Multi-select is supported for ALL overlay nodes — the
-  // transformer happily wraps multiple at once and a single drag moves
-  // the whole group together. Toolbar style edits while multi-selected
-  // apply to every selected text box's HTML (Phase 5).
+  // multi-select).
   node.on('pointerdown', (e) => {
     const additive = !!(e.evt && (e.evt.shiftKey || e.evt.ctrlKey || e.evt.metaKey));
     _setSelection(node, additive);
   });
+
+  // Multi-node drag. Konva's per-node draggable only moves the grabbed
+  // node; siblings in the same selection stay put. Stash starting
+  // positions on dragstart, apply the grabbed-node's delta to every
+  // sibling on dragmove. dragend clears the cache.
+  let _multiDragStarts = null;
+  node.on('dragstart', () => {
+    const sel = _transformer?.nodes() || [];
+    if (sel.length <= 1) return;
+    _multiDragStarts = new Map();
+    for (const n of sel) _multiDragStarts.set(n, { x: n.x(), y: n.y() });
+  });
+  node.on('dragmove', () => {
+    if (!_multiDragStarts) return;
+    const start = _multiDragStarts.get(node);
+    if (!start) return;
+    const dx = node.x() - start.x;
+    const dy = node.y() - start.y;
+    for (const n of _multiDragStarts.keys()) {
+      if (n === node) continue;
+      const s = _multiDragStarts.get(n);
+      n.x(s.x + dx);
+      n.y(s.y + dy);
+    }
+    _layer.batchDraw();
+  });
+  node.on('dragend', () => { _multiDragStarts = null; });
 
   // LIVE resize during edit — when the user drags a transform anchor on a
   // text box that's currently being edited, the contenteditable resizes
@@ -522,9 +556,80 @@ function _refreshMultiToolbar() {
   const textBoxes = sel.filter(n => n.getAttr?.('textHtml'));
   if (textBoxes.length >= 1) {
     mountTextToolbar(host, _multiTextApplier);
+    setToolbarValues(_summariseStyleAcrossBoxes(textBoxes));
   } else {
     unmountTextToolbar();
   }
+}
+
+/**
+ * Walk every text box's HTML, collect inline font-size / font-family /
+ * colour declarations, and return a representative value per the user
+ * spec: unified value when consistent, LARGEST when sizes differ. For
+ * font / colour with mixed values we just pick the first one we see —
+ * better than nothing for a hint, and the user can always override.
+ */
+function _summariseStyleAcrossBoxes(nodes) {
+  const sizes = new Set();
+  const fonts = new Set();
+  const colors = new Set();
+  const tmp = document.createElement('div');
+  for (const n of nodes) {
+    tmp.innerHTML = n.getAttr('textHtml') || '';
+    tmp.querySelectorAll('[style]').forEach(el => {
+      if (el.style.fontSize)   sizes.add(_parsePxSize(el.style.fontSize));
+      if (el.style.fontFamily) fonts.add(_stripQuotes(el.style.fontFamily));
+      if (el.style.color)      colors.add(_normaliseColor(el.style.color));
+    });
+  }
+  sizes.delete(null);   // discard unparseable
+  return {
+    fontSize: sizes.size === 0 ? undefined
+            : sizes.size === 1 ? [...sizes][0]
+            : Math.max(...sizes),     // mixed → largest, per spec
+    fontName: fonts.size === 1 ? [...fonts][0] : undefined,
+    color:    colors.size === 1 ? [...colors][0] : undefined,
+  };
+}
+
+function _parsePxSize(s) {
+  const m = /^([\d.]+)\s*px/i.exec(String(s).trim());
+  return m ? Math.round(parseFloat(m[1])) : null;
+}
+
+/**
+ * Read the computed font-size / family / colour at the current caret /
+ * selection inside the contenteditable. Used in single-editor mode to
+ * keep the toolbar dropdowns in sync as the caret moves across text
+ * runs with different inline styles.
+ */
+function _readStyleAtCaret(editor) {
+  const sel = window.getSelection();
+  if (!sel || !sel.rangeCount) return {};
+  let n = sel.getRangeAt(0).startContainer;
+  if (n && n.nodeType === 3) n = n.parentNode;            // text node → element
+  if (!n || !(n instanceof Element)) return {};
+  if (!editor.contains(n)) return {};
+  const cs = window.getComputedStyle(n);
+  return {
+    fontSize: Math.round(parseFloat(cs.fontSize)) || undefined,
+    fontName: _stripQuotes(cs.fontFamily) || undefined,
+    color:    _normaliseColor(cs.color)   || undefined,
+  };
+}
+
+function _stripQuotes(s) {
+  return String(s).replace(/^["']|["']$/g, '').split(',')[0].trim();
+}
+
+function _normaliseColor(s) {
+  // Convert "rgb(r,g,b)" → "#rrggbb" so the colour input accepts it.
+  const m = /^rgb\(\s*(\d+)\s*,\s*(\d+)\s*,\s*(\d+)\s*\)/i.exec(String(s).trim());
+  if (m) {
+    const hex = (n) => Number(n).toString(16).padStart(2, '0');
+    return `#${hex(m[1])}${hex(m[2])}${hex(m[3])}`;
+  }
+  return String(s);
 }
 
 /**

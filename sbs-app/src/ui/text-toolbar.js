@@ -33,6 +33,12 @@ let _toolbar = null;   // host element (provided by overlay-toolbar.js)
 let _editor  = null;   // contenteditable in single-editor mode (null in multi-mode)
 let _applier = null;   // function(action, value) — caller-supplied dispatcher
 
+// References to the live dropdown / colour controls so callers can sync
+// them with the current selection's actual styling.
+let _sizeSel = null;
+let _fontSel = null;
+let _colorInput = null;
+
 /**
  * Build the text controls inside the supplied host element. Replaces any
  * existing children. The host is provided by overlay-toolbar so the
@@ -55,6 +61,11 @@ export function mountTextToolbar(host, applier, editorEl = null) {
   // Visual layout (left to right) — matches the user's right-to-left
   // mental order so reading the bar from the Edit toggle inward gives:
   //   font ▼ · size ▼ · color · S · U · I · B · ⫸ · ⫿ · ⫷
+  const colorCtl = _color('Text color', (v) => _apply('foreColor', v));
+  _sizeSel  = _select('size', SIZES.map(s => `${s}`), (v) => _apply('fontSize', Number(v)));
+  _fontSel  = _select('font', FONTS,                  (v) => _apply('fontName', v));
+  _colorInput = colorCtl.querySelector('input[type=color]');
+
   _toolbar.append(
     _btn('⫷', 'Align left',   () => _apply('justifyLeft')),
     _btn('⫿', 'Align center', () => _apply('justifyCenter')),
@@ -65,12 +76,34 @@ export function mountTextToolbar(host, applier, editorEl = null) {
     _btn('U', 'Underline (Ctrl+U)',() => _apply('underline'),     { textDecoration: 'underline' }),
     _btn('S', 'Strikethrough',     () => _apply('strikeThrough'), { textDecoration: 'line-through' }),
     _sep(),
-    _color('Text color',                    (v) => _apply('foreColor', v)),
-    _select('size', SIZES.map(s => `${s}`), (v) => _apply('fontSize', Number(v))),
-    _select('font', FONTS,                  (v) => _apply('fontName', v)),
+    colorCtl,
+    _sizeSel,
+    _fontSel,
   );
 
   _toolbar.style.display = 'flex';
+}
+
+/**
+ * Sync the dropdown / colour controls to the current selection's actual
+ * styling. Caller computes the values and passes them in — overlay.js
+ * does the lifting so the toolbar stays presentation-only.
+ *
+ *   { fontSize?:number, fontName?:string, color?:string }
+ *
+ * Pass ONLY the keys you can determine. For mixed-value selections the
+ * caller may pick a representative (per spec: largest size when sizes
+ * differ across multi-select).
+ */
+export function setToolbarValues({ fontSize, fontName, color } = {}) {
+  if (_sizeSel  && fontSize != null) _sizeSel.value = String(fontSize);
+  if (_fontSel  && fontName)         _fontSel.value = fontName;
+  if (_colorInput && color) {
+    _colorInput.value = color;
+    // Mirror the colour onto the "A" badge container.
+    const wrap = _colorInput.parentElement;
+    if (wrap) wrap.style.color = color;
+  }
 }
 
 export function unmountTextToolbar() {
@@ -80,8 +113,11 @@ export function unmountTextToolbar() {
     delete _toolbar.dataset.sbsTextToolbar;
     _toolbar = null;
   }
-  _editor  = null;
-  _applier = null;
+  _editor    = null;
+  _applier   = null;
+  _sizeSel   = null;
+  _fontSel   = null;
+  _colorInput = null;
 }
 
 /** Refocus the editable (if we have one) before forwarding to the applier. */
