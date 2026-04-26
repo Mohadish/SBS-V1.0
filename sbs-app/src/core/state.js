@@ -82,6 +82,11 @@ function createInitialState() {
       large:  48,
     },
 
+    // ── Header items — project-level overlay rendered on every step
+    headerItems:    [],               // HeaderItem[] — see systems/header.js
+    headersLocked:  false,            // when true, header items can't be moved/edited via the canvas
+    headersHidden:  false,            // when true, the whole header layer is suppressed (live + export)
+
     // ── UI state
     activeSidebarTab:   'files',      // which left sidebar tab is open
     gridVisible:        true,

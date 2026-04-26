@@ -107,6 +107,16 @@ export function createEmptyProject() {
       items: [],          // AnimationPreset[]
     },
 
+    // Header overlay items — project-level (NOT duplicated into steps).
+    // Renders on a dedicated layer above the per-step overlay so a single
+    // edit ripples to every step. Dynamic kinds (stepName, stepNumber,
+    // chapterName, chapterNumber) resolve their text per-step at render
+    // time. See systems/header.js.
+    headers: {
+      schema_version: 1,
+      items: [],          // HeaderItem[]
+    },
+
     // App-level settings saved with the project
     settings: {
       schema_version: 1,

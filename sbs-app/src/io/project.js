@@ -103,6 +103,12 @@ export function serialize() {
   // ── Animation presets ──────────────────────────────────────────────────────
   project.animationPresets.items = JSON.parse(JSON.stringify(state.get('animationPresets') || []));
 
+  // ── Headers (project-level overlay) ────────────────────────────────────────
+  project.headers = project.headers || { schema_version: 1, items: [] };
+  project.headers.items = JSON.parse(JSON.stringify(state.get('headerItems') || []));
+  project.headers.locked = !!state.get('headersLocked');
+  project.headers.hidden = !!state.get('headersHidden');
+
   // ── Settings ──────────────────────────────────────────────────────────────
   const cfg = project.settings;
   cfg.backgroundColor      = state.get('backgroundColor')      ?? '#0f172a';
@@ -457,6 +463,9 @@ export function applyProjectToState(project) {
     selectionGroups:      project.selections?.groups        || [],
     selectionOutlineColor:project.selections?.outlineColor  || '#00ffff',
     assets:               project.assets?.items             || [],
+    headerItems:          project.headers?.items            || [],
+    headersLocked:        !!project.headers?.locked,
+    headersHidden:        !!project.headers?.hidden,
   });
 
   // Restore project-level color state. Both maps keyed by mesh id; the
