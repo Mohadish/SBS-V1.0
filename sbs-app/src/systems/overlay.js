@@ -311,7 +311,7 @@ function _enterTextEdit(node) {
     const text = cd.getData('text/plain');
     if (html) {
       e.preventDefault();
-      const clean = _sanitiseTextboxHtml(html);
+      const clean = _trimPasteBlocks(_sanitiseTextboxHtml(html));
       // insertHTML is consistent with the rest of execCommand-based
       // editing in this module; it places the HTML at the caret.
       document.execCommand('insertHTML', false, clean);
@@ -1241,6 +1241,26 @@ function _sanitiseTextboxHtml(html) {
   const tmp = document.createElement('div');
   tmp.innerHTML = cleaned;
 
+  // Promote legacy <font color="..." face="..." size="..."> to
+  // <span style="color:...;font-family:...;font-size:...">. Chromium's
+  // execCommand still produces <font> in some configurations, and old
+  // clipboard payloads carry it. Without this, the allowlist below
+  // would unwrap <font> entirely and lose the styling.
+  const SIZE_PX = { 1: 10, 2: 12, 3: 16, 4: 18, 5: 24, 6: 32, 7: 48 };
+  tmp.querySelectorAll('font').forEach(f => {
+    const span = document.createElement('span');
+    const styles = [];
+    const c = f.getAttribute('color');
+    const fc = f.getAttribute('face');
+    const sz = f.getAttribute('size');
+    if (c)  styles.push(`color:${c}`);
+    if (fc) styles.push(`font-family:${fc}`);
+    if (sz && SIZE_PX[sz]) styles.push(`font-size:${SIZE_PX[sz]}px`);
+    if (styles.length) span.setAttribute('style', styles.join(';'));
+    while (f.firstChild) span.appendChild(f.firstChild);
+    f.replaceWith(span);
+  });
+
   function clean(node) {
     if (node.nodeType === 3) return;       // text node — keep as-is
     if (node.nodeType !== 1) { node.remove(); return; }
@@ -1273,6 +1293,54 @@ function _sanitiseTextboxHtml(html) {
     Array.from(node.childNodes).forEach(clean);
   }
   Array.from(tmp.childNodes).forEach(clean);
+  return tmp.innerHTML;
+}
+
+/**
+ * Trim block-level padding that browsers stuff around clipboard payloads.
+ *
+ * When the user copies "hello" from inside another textbox, the browser's
+ * cloneContents() often returns:
+ *   <div>hello</div>
+ * (the line's wrapper div, plus possibly empty <div><br></div> on either
+ * side). insertHTML drops that block-level structure where the caret is,
+ * which forces line breaks before AND after — the user sees an extra
+ * empty line above and below the pasted text.
+ *
+ * This helper:
+ *   • drops leading / trailing empty blocks (<div><br></div>, <p><br></p>)
+ *   • unwraps a single outer <div> / <p> wrapper, so a one-line paste
+ *     stays inline with the caret's current line.
+ *
+ * Multi-line pastes (multiple top-level blocks) are left as-is — the
+ * line-break behaviour is intentional in that case.
+ */
+function _trimPasteBlocks(html) {
+  const tmp = document.createElement('div');
+  tmp.innerHTML = html || '';
+
+  const isEmptyBlock = (el) => {
+    if (!el || el.nodeType !== 1) return false;
+    if (!/^(DIV|P)$/.test(el.tagName)) return false;
+    if (el.textContent.trim() !== '')  return false;
+    // <div><br></div> and similar — empty even with structural tags inside.
+    return !el.querySelector('img,svg,input,canvas');
+  };
+
+  while (tmp.firstChild && isEmptyBlock(tmp.firstChild)) tmp.removeChild(tmp.firstChild);
+  while (tmp.lastChild  && isEmptyBlock(tmp.lastChild))  tmp.removeChild(tmp.lastChild);
+
+  // Single outer block? Promote its children up — pasted content is now
+  // truly inline at the caret.
+  if (tmp.children.length === 1 &&
+      /^(DIV|P)$/.test(tmp.firstElementChild.tagName) &&
+      // Child must not itself contain block elements (otherwise the
+      // outer wrapper IS providing structural meaning).
+      !tmp.firstElementChild.querySelector('div,p')) {
+    const only = tmp.firstElementChild;
+    while (only.firstChild) tmp.insertBefore(only.firstChild, only);
+    only.remove();
+  }
   return tmp.innerHTML;
 }
 
