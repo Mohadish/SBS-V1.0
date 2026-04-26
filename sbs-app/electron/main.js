@@ -277,7 +277,16 @@ app.whenReady().then(() => {
 });
 
 app.on('window-all-closed', () => {
-  if (process.platform !== 'darwin') app.quit();
+  if (process.platform !== 'darwin') {
+    app.quit();
+    // Failsafe: the kokoro worker_thread + onnxruntime-node native binding
+    // sometimes don't unwind cleanly when terminate() is called mid-load
+    // (the native ORT thread can hold the process alive). Without this,
+    // CMD stays stuck after the window closes — npm waits on electron,
+    // electron waits on the worker, worker waits on native code. Force
+    // exit after a short grace period if normal shutdown didn't complete.
+    setTimeout(() => process.exit(0), 1500);
+  }
 });
 
 // ─── IPC handlers (renderer → main) ────────────────────────────────────────
