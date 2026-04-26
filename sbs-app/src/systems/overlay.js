@@ -267,43 +267,26 @@ function _enterTextEdit(node) {
   };
   div.addEventListener('keydown', onKeyDown);
 
-  // Sanitise on COPY (source side), not on paste. The user reported
-  // that paste-from-other-textboxes broke rasterisation, but paste from
-  // arbitrary external sources worked. So the problem is in what our
-  // OWN editor was putting on the clipboard — the cloned selection
-  // carried wrapper styles / nested padding the SVG-foreignObject
-  // rasteriser couldn't handle. Cleaning at copy time means:
-  //   • paste between our textboxes works (clean HTML in, clean raster)
-  //   • paste from external sources keeps native browser behaviour
-  //     (we don't touch what the OS hands us)
-  //   • formatting (bold/italic/colour/size/font/alignment) survives
-  //     copy → paste because the sanitiser explicitly preserves those
-  //     inline styles.
-  const onCopy = (e) => {
-    const sel = window.getSelection();
-    if (!sel || !sel.rangeCount) return;
-    const text = sel.toString();
-    const tmp = document.createElement('div');
-    tmp.appendChild(sel.getRangeAt(0).cloneContents());
-    const html = _sanitiseTextboxHtml(tmp.innerHTML);
-    e.preventDefault();
-    e.clipboardData?.setData('text/plain', text);
-    e.clipboardData?.setData('text/html', html);
-  };
-  div.addEventListener('copy', onCopy);
-  // Cut goes through the same sanitiser so cut→paste is symmetric.
-  div.addEventListener('cut', (e) => {
-    onCopy(e);
-    document.execCommand('delete');
-  });
+  // No custom COPY handler. The browser's native copy from a
+  // contenteditable serialises the selection with COMPUTED styles
+  // resolved onto the cloned spans — exactly what we want for paste
+  // round-trips between our textboxes. A custom onCopy that used
+  // cloneContents() lost those computed styles (cloneContents only
+  // captures literal inline styles on the selected nodes, not
+  // ancestor-inherited ones), which is why styled paste between
+  // textboxes was always coming through plain.
 
-  // Sanitise on paste too. The OS clipboard can hold HTML from anywhere
-  // (websites, Word, PDFs, mail clients) — we run their HTML through
-  // the same allowlist. If the payload has only plain text, fall back
-  // to insertText so the user still gets the content. Without this,
-  // arbitrary external HTML routinely breaks the rasteriser and the
-  // user sees the "show but don't apply, revert on click-out" loop
-  // we hit before.
+  // Sanitise on PASTE only. Catches:
+  //   • clipboard wrapper artefacts (<meta>, <!--StartFragment-->,
+  //     <!doctype>, <html><body>) that break SVG-foreignObject
+  //   • disallowed tags / attrs / inline images / scripts
+  //   • legacy <font> tags promoted to inline <span style>
+  //   • leading / trailing block padding that would force extra empty
+  //     lines around the inserted content
+  // Insertion goes through the Selection API, not execCommand —
+  // execCommand('insertHTML') in some Chromium versions silently strips
+  // inline styles on the inserted fragment. Manual insertNode preserves
+  // them verbatim.
   const onPaste = (e) => {
     const cd = e.clipboardData;
     if (!cd) return;
@@ -312,9 +295,7 @@ function _enterTextEdit(node) {
     if (html) {
       e.preventDefault();
       const clean = _trimPasteBlocks(_sanitiseTextboxHtml(html));
-      // insertHTML is consistent with the rest of execCommand-based
-      // editing in this module; it places the HTML at the caret.
-      document.execCommand('insertHTML', false, clean);
+      _insertHtmlAtCaret(div, clean);
     } else if (text) {
       e.preventDefault();
       document.execCommand('insertText', false, text);
@@ -339,20 +320,16 @@ function _enterTextEdit(node) {
   document.addEventListener('selectionchange', onSelectionChange);
   onSelectionChange();   // initial sync
 
-  _activeTextEditor = { node, div, onDocMouseDown, onKeyDown, onCopy, onPaste, prevOpacity, onSelectionChange };
+  _activeTextEditor = { node, div, onDocMouseDown, onKeyDown, onPaste, prevOpacity, onSelectionChange };
 }
 
 /** Close the in-place editor, re-rasterise on the way out (unless discard). */
 async function _exitTextEdit(opts = {}) {
   if (!_activeTextEditor) return;
-  const { node, div, onDocMouseDown, onKeyDown, onCopy, onPaste, prevOpacity, onSelectionChange } = _activeTextEditor;
+  const { node, div, onDocMouseDown, onKeyDown, onPaste, prevOpacity, onSelectionChange } = _activeTextEditor;
   document.removeEventListener('mousedown', onDocMouseDown, true);
   if (onSelectionChange) document.removeEventListener('selectionchange', onSelectionChange);
   div.removeEventListener('keydown', onKeyDown);
-  if (onCopy) {
-    div.removeEventListener('copy', onCopy);
-    div.removeEventListener('cut',  onCopy);
-  }
   if (onPaste) div.removeEventListener('paste', onPaste);
   unmountTextToolbar();
 
@@ -1426,6 +1403,40 @@ function _sanitiseTextboxHtml(html) {
  * Multi-line pastes (multiple top-level blocks) are left as-is — the
  * line-break behaviour is intentional in that case.
  */
+/**
+ * Insert sanitised HTML at the contenteditable's current caret /
+ * selection via the Selection API. Replacement for execCommand(
+ * 'insertHTML', ...) which silently drops inline styles in some
+ * Chromium builds.
+ *
+ * Caret is left immediately after the inserted content so the user
+ * can continue typing where the paste ended.
+ */
+function _insertHtmlAtCaret(editor, html) {
+  const sel = window.getSelection();
+  if (!sel || !sel.rangeCount) return;
+  const range = sel.getRangeAt(0);
+  if (!editor.contains(range.startContainer)) return;
+
+  // Replace the selection with the new content.
+  range.deleteContents();
+
+  const tmp = document.createElement('div');
+  tmp.innerHTML = html || '';
+  const frag = document.createDocumentFragment();
+  let last = null;
+  while (tmp.firstChild) last = frag.appendChild(tmp.firstChild);
+  range.insertNode(frag);
+
+  // Move the caret to just after the inserted content.
+  if (last) {
+    range.setStartAfter(last);
+    range.collapse(true);
+    sel.removeAllRanges();
+    sel.addRange(range);
+  }
+}
+
 function _trimPasteBlocks(html) {
   const tmp = document.createElement('div');
   tmp.innerHTML = html || '';
