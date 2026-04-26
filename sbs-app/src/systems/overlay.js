@@ -171,30 +171,30 @@ function _enterTextEdit(node) {
   div.spellcheck      = false;
   div.innerHTML       = node.getAttr('textHtml') || '<div>Text</div>';
   div.dataset.sbsTextEditor = '1';
+  // CSS MUST match _htmlToCanvas exactly — padding, font-family, font-size,
+  // line-height. Otherwise the rasterised result lands somewhere different
+  // from where the user typed and the click-out feels like a "jump".
   div.style.cssText = [
     'position:fixed',
     `left:${Math.round(containerRect.left + pos.x)}px`,
     `top:${Math.round(containerRect.top + pos.y)}px`,
     `width:${Math.round(node.width())}px`,
     `min-height:${Math.round(node.height())}px`,
-    'padding:0',
+    'padding:8px',                     // matches _htmlToCanvas default
     'margin:0',
-    // Outline (not border) — outline paints over the rect without
-    // displacing the content area. With border + box-sizing:border-box
-    // the editable's content was shifted ~2px from where the rasterised
-    // version drew, so the user saw a "jump" on click-out.
+    // outline (not border) so the dashed indicator doesn't take content space
     'border:0',
     'outline:2px dashed #f59e0b',
     'outline-offset:0',
     'background:rgba(15,23,42,0.55)',
-    'color:#fff',
-    'font-family:Arial,Helvetica,sans-serif',
-    'font-size:16px',
-    'line-height:1.25',
+    'color:#ffffff',                   // matches _htmlToCanvas default
+    'font-family:Arial',               // matches _htmlToCanvas default
+    'font-size:16px',                  // matches _htmlToCanvas default
+    'line-height:1.2',                 // matches _htmlToCanvas default
     'overflow:hidden',
     'white-space:pre-wrap',
     'word-wrap:break-word',
-    'box-sizing:border-box',
+    'box-sizing:border-box',           // matches _htmlToCanvas default
     'z-index:10000',
     'cursor:text',
     'user-select:text',
