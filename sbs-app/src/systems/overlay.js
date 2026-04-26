@@ -222,6 +222,13 @@ function _enterTextEdit(node) {
   _uiLayer.batchDraw();
   _layer.batchDraw();
 
+  // Tell Chromium to wrap new lines in <div> rather than <br>. With
+  // <br> at position 0 the browser treats it inconsistently — typing
+  // before the first character can swallow content. <div> gives every
+  // line a stable block container and Enter / Backspace at position 0
+  // behave predictably.
+  try { document.execCommand('defaultParagraphSeparator', false, 'div'); } catch {}
+
   // Focus + put the caret at the end of the existing content.
   div.focus();
   const sel = window.getSelection();
@@ -283,25 +290,24 @@ async function _exitTextEdit(opts = {}) {
   unmountTextToolbar();
 
   const html = div.innerHTML;
-  div.remove();
-  _activeTextEditor = null;
 
   if (!opts.discard && html) {
-    const w = Math.max(20, Math.round(node.width()));
-    const canvas = await _htmlToCanvas(html, { width: w });
-    if (canvas) {
-      node.image(canvas);
-      node.width(canvas.width);
-      node.height(canvas.height);
-      node.setAttr('textHtml',  html);
-      node.setAttr('textWidth', canvas.width);
-      node.setAttr('naturalW',  canvas.width);
-      node.setAttr('naturalH',  canvas.height);
-    }
+    // Rasterise BEFORE tearing the editor down. _reflowTextBox already
+    // honours node.getAttr('fillColor') so the textbox's background
+    // survives the round-trip — that was the bug where "any edit
+    // removes the background colour". Doing it while the editor is
+    // still mounted also kills the "nothing → raster" flicker the
+    // user called out: the new image is ready before the editable
+    // disappears.
+    node.setAttr('textHtml', html);
+    await _reflowTextBox(node);
   }
 
+  // Now swap visibility back. The new raster is in place, so removing
+  // the editor reveals it instantly without an empty frame.
   node.opacity(typeof prevOpacity === 'number' ? prevOpacity : 1);
-  // Snap the transformer back to selection-only state for this text box.
+  div.remove();
+  _activeTextEditor = null;
   _configTransformerForNode(node);
   _layer.batchDraw();
   _uiLayer.batchDraw();
