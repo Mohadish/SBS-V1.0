@@ -179,14 +179,18 @@ function _enterTextEdit(node) {
     `min-height:${Math.round(node.height())}px`,
     'padding:0',
     'margin:0',
-    'border:2px dashed #f59e0b',
-    'border-radius:4px',
+    // Outline (not border) — outline paints over the rect without
+    // displacing the content area. With border + box-sizing:border-box
+    // the editable's content was shifted ~2px from where the rasterised
+    // version drew, so the user saw a "jump" on click-out.
+    'border:0',
+    'outline:2px dashed #f59e0b',
+    'outline-offset:0',
     'background:rgba(15,23,42,0.55)',
     'color:#fff',
     'font-family:Arial,Helvetica,sans-serif',
     'font-size:16px',
     'line-height:1.25',
-    'outline:none',
     'overflow:hidden',
     'white-space:pre-wrap',
     'word-wrap:break-word',
@@ -604,7 +608,15 @@ export function rasterizeOverlay(opts = {}) {
 function _onKeyDown(e) {
   if (!_editing) return;
   if (e.key === 'Delete' || e.key === 'Backspace') {
-    if (document.activeElement && ['INPUT','TEXTAREA'].includes(document.activeElement.tagName)) return;
+    // Skip whenever ANY editable element has focus — INPUT, TEXTAREA, OR
+    // any contenteditable (our in-place text editor mounts a contenteditable
+    // <div>, so without this check Backspace would destroy the whole node
+    // mid-edit and stop further typing dead).
+    const ae = document.activeElement;
+    if (ae && (['INPUT','TEXTAREA'].includes(ae.tagName) || ae.isContentEditable)) return;
+    // Don't interfere while the in-place editor is open even if focus
+    // briefly slipped (e.g. during selection grab).
+    if (_activeTextEditor) return;
     if (deleteSelected()) e.preventDefault();
   }
 }
