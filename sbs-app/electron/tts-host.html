@@ -2,22 +2,29 @@
 <!--
   Hidden TTS host window.
   ──────────────────────
-  Lives in its own renderer process so Kokoro inference can use Chromium's
-  WebGPU stack — sidesteps the DirectML EP ConvTranspose bug we hit on the
-  worker_threads + ORT-node path. nodeIntegration is on (CONTROLLED window,
-  no remote content) so we can `require('kokoro-js')` directly without
-  bundling. transformers.js still routes `device:'webgpu'` to onnxruntime-
-  web's WebGPU backend, even when loaded via Node's require().
+  Lives in its own renderer process (nodeIntegration:false) so kokoro-js's
+  *web* build resolves cleanly to onnxruntime-web with WebGPU. The Node-
+  integrated path with require() pulled in onnxruntime-node's DirectML EP,
+  which choked on Kokoro's ConvTranspose ops on every dtype.
+
+  The preload (tts-host-preload.js) exposes IPC + config under window.ttsHost
+  / window.ttsConfig. tts-host.js loads the bundled web build directly via
+  ES module import — kokoro.web.js is a self-contained 2 MB bundle, so no
+  import map gymnastics required.
+
+  CSP allows file: + blob: + data: because we load model files locally and
+  ORT's WebGPU runtime spins up workers from blob URLs. wasm-unsafe-eval is
+  required by ORT's onnxruntime-web wasm shim.
 -->
 <html>
 <head>
   <meta charset="utf-8" />
   <meta http-equiv="Content-Security-Policy"
-        content="default-src 'self' file: blob: data:; script-src 'self' 'unsafe-eval' 'unsafe-inline' blob:; connect-src 'self' file: blob: data:;" />
+        content="default-src 'self' file: blob: data:; script-src 'self' 'unsafe-eval' 'wasm-unsafe-eval' blob: file:; connect-src 'self' file: blob: data:; worker-src 'self' blob:;" />
   <title>SBS TTS host</title>
 </head>
 <body>
   <div id="status">Loading Kokoro…</div>
-  <script src="./tts-host.js"></script>
+  <script type="module" src="./tts-host.js"></script>
 </body>
 </html>

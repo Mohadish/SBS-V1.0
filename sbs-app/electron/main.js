@@ -26,6 +26,15 @@ function _kokoroBundleDir() {
     : path.join(APP_ROOT, 'kokoro-bundle');
 }
 
+function _ortWebWasmDir() {
+  // onnxruntime-web's wasm/jsep blobs ship in node_modules/onnxruntime-web/dist/.
+  // The web build of transformers.js fetches them at runtime; we forward the
+  // absolute path so it can build a file:// URL.
+  return app.isPackaged
+    ? path.join(process.resourcesPath, 'app.asar.unpacked', 'node_modules', 'onnxruntime-web', 'dist')
+    : path.join(APP_ROOT, 'node_modules', 'onnxruntime-web', 'dist');
+}
+
 function _ensureTtsHost() {
   if (_ttsHostWindow && !_ttsHostWindow.isDestroyed()) return _ttsHostReady;
 
@@ -42,21 +51,23 @@ function _ensureTtsHost() {
     width:   400,
     height:  300,
     webPreferences: {
-      // nodeIntegration on so the host can require('kokoro-js') etc.
-      // without bundling. This is OUR controlled HTML/JS — no remote
-      // content ever loads here, so the usual XSS-via-Node concern
-      // doesn't apply. Even with Node enabled, transformers.js still
-      // routes device:'webgpu' to onnxruntime-web's WebGPU backend
-      // because Chromium exposes WebGPU regardless of nodeIntegration.
-      nodeIntegration:      true,
-      contextIsolation:     false,
-      sandbox:              false,
+      // nodeIntegration:false so kokoro-js's *web* build resolves cleanly.
+      // The Node-integrated path forces require('@huggingface/transformers')
+      // to pick the Node build → onnxruntime-node → DirectML EP → the
+      // ConvTranspose bug we burned three commits on. Web build resolves
+      // to onnxruntime-web → Chromium WebGPU stack → different code path.
+      nodeIntegration:      false,
+      contextIsolation:     true,
+      sandbox:              false,   // preload script needs Node
+      preload:              path.join(__dirname, 'tts-host-preload.js'),
       backgroundThrottling: false,   // don't pause when minimised / hidden
-      // Pass the bundle dir explicitly. In renderer, process.resourcesPath
-      // always points at Electron's install dir (not our app), so we can't
-      // detect dev-vs-packaged the same way main.js can. Forward the
-      // already-resolved path so the host has zero ambiguity.
-      additionalArguments: [`--sbs-kokoro-bundle=${_kokoroBundleDir()}`],
+      // Forward the resolved bundle + ort-wasm paths. In renderer,
+      // process.resourcesPath points at Electron's install dir (not our
+      // app), so detection from inside fails — we just hand them over.
+      additionalArguments: [
+        `--sbs-kokoro-bundle=${_kokoroBundleDir()}`,
+        `--sbs-ort-wasm=${_ortWebWasmDir()}`,
+      ],
     },
   });
   _ttsHostWindow.loadFile(path.join(__dirname, 'tts-host.html'));

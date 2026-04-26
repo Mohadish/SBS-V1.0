@@ -1,45 +1,50 @@
-'use strict';
-
 /**
- * TTS host — Kokoro inference inside a hidden Electron renderer.
- * ───────────────────────────────────────────────────────────────
- * Runs in its own renderer process (electron/tts-host.html). nodeIntegration
- * is enabled so we can require() kokoro-js / transformers.js without bundling.
- * The KEY insight: even when loaded via require() in a Node-integrated
- * renderer, transformers.js routes `device:'webgpu'` to its onnxruntime-web
- * backend — which has full WebGPU support via Chromium's GPU stack. So we
- * get GPU acceleration without bundling, without a build step, and without
- * the DirectML EP bugs that broke the worker_threads path.
+ * TTS host — Kokoro inference via the WEB build of kokoro-js + transformers.js.
+ * ─────────────────────────────────────────────────────────────────────────────
+ * Why the web build, not the Node build?
+ *   • The Node build resolves transformers.js → onnxruntime-node, which only
+ *     knows about cpu / dml / cuda execution providers. DirectML choked at
+ *     ConvTranspose for every dtype we tried (verified, well-traced).
+ *   • The Web build resolves transformers.js → onnxruntime-web, which uses
+ *     Chromium's WebGPU stack. Different EP, different bugs (none observed),
+ *     and the same code path running under WebGPU works on any DX12 GPU.
  *
- * Backend selection (in order):
- *   1. webgpu / fp32  — fastest path, requires DX12-class adapter
- *   2. webgpu / fp16  — half precision, smaller VRAM
- *   3. wasm    / q8   — guaranteed-working fallback (CPU, current speed)
+ * To use the web build inside Electron, we need a clean *browser* renderer:
+ * nodeIntegration:false, ES-module loading, no require(). This file is
+ * loaded via <script type="module"> from tts-host.html. IPC + config come
+ * through the preload (window.ttsHost, window.ttsConfig).
  *
- * Each candidate gets a 1-word smoke synth so we don't lock in a backend
- * that loads cleanly but blows up at inference (the failure mode that
- * burned us on DirectML).
+ * Backend selection: webgpu/fp32 → webgpu/fp16 → wasm/q8. Each candidate
+ * gets a 1-word smoke synth so a backend that loads but fails at inference
+ * gets caught at startup, not on the user's first click.
  */
 
-const { ipcRenderer } = require('electron');
-const path  = require('path');
+// kokoro.web.js is a self-contained ~2 MB ES module bundle (transformers.js
+// + onnxruntime-web inlined). Path is relative to *this* file, which lives
+// in electron/ — so "../node_modules/..." reaches sbs-app/node_modules/.
+import { KokoroTTS, env as kokoroEnv } from '../node_modules/kokoro-js/dist/kokoro.web.js';
 
 const $status = document.getElementById('status');
 function log(msg) {
   console.log(msg);
   if ($status) $status.textContent = String(msg);
-  try { ipcRenderer.send('tts-host:log', String(msg)); } catch {}
+  try { window.ttsHost.log(msg); } catch {}
 }
 
-function bundleDir() {
-  // Main passes the resolved path via webPreferences.additionalArguments.
-  // We can't detect dev-vs-packaged from the renderer reliably —
-  // process.resourcesPath here points at Electron's own install folder,
-  // not our app — so trust what main tells us.
-  const arg = (process.argv || []).find(a => a.startsWith('--sbs-kokoro-bundle='));
-  if (arg) return arg.slice('--sbs-kokoro-bundle='.length);
-  // Last-resort dev fallback (shouldn't be hit if main passes the arg):
-  return path.resolve(__dirname, '..', 'kokoro-bundle');
+const cfg = window.ttsConfig || {};
+const bundleDir  = cfg.bundleDir  || '';
+const ortWasmDir = cfg.ortWasmDir || '';
+
+if (!bundleDir) log('[tts-host] ⚠ no bundleDir — main forgot to set additionalArguments');
+log(`[tts-host] bundle dir: ${bundleDir}`);
+log(`[tts-host] ort wasm: ${ortWasmDir}`);
+
+// Tell ORT-web (via kokoro-js's re-exported env) where to fetch the wasm
+// blobs. These ship inside node_modules/onnxruntime-web/dist/ — main passes
+// the absolute path through preload args.
+if (ortWasmDir) {
+  kokoroEnv.wasmPaths = `file:///${ortWasmDir.replace(/\\/g, '/').replace(/\/?$/, '/')}`;
+  log(`[tts-host] wasmPaths: ${kokoroEnv.wasmPaths}`);
 }
 
 let _instance      = null;
@@ -51,17 +56,6 @@ async function _load() {
   if (_loadPromise) return _loadPromise;
 
   _loadPromise = (async () => {
-    const km = require('kokoro-js');
-    const tx = require('@huggingface/transformers');
-
-    const dir = bundleDir();
-    tx.env.localModelPath    = dir + path.sep;
-    tx.env.allowLocalModels  = true;
-    tx.env.allowRemoteModels = false;
-    tx.env.cacheDir          = path.join(dir, '.cache');
-
-    log(`[tts-host] bundle dir: ${dir}`);
-
     const candidates = [
       { device: 'webgpu', dtype: 'fp32' },
       { device: 'webgpu', dtype: 'fp16' },
@@ -69,18 +63,28 @@ async function _load() {
     ];
     log(`[tts-host] candidates: ${candidates.map(c => `${c.device}/${c.dtype}`).join(' → ')}`);
 
+    // transformers.js looks under <cache_dir>/<modelId>/...; our bundle
+    // layout is exactly kokoro-bundle/onnx-community/Kokoro-82M-v1.0-ONNX/...
+    // so cache_dir == bundleDir + trailing slash works directly. With
+    // local_files_only:true it never hits the network.
+    const cacheDir = bundleDir.replace(/\\/g, '/').replace(/\/?$/, '/');
+
     const t0 = performance.now();
     let chosen = null, tts = null;
     for (const c of candidates) {
       try {
         const tLoad = performance.now();
-        const cand  = await km.KokoroTTS.from_pretrained(
+        const cand  = await KokoroTTS.from_pretrained(
           'onnx-community/Kokoro-82M-v1.0-ONNX',
-          { dtype: c.dtype, device: c.device },
+          {
+            dtype:            c.dtype,
+            device:           c.device,
+            cache_dir:        cacheDir,
+            local_files_only: true,
+          },
         );
-        // Smoke-synth — a 1-word probe catches "device-loads-but-inference-
-        // fails" (the DirectML failure mode). Pick any voice key the model
-        // exposes; we don't care which for a probe.
+        // 1-word smoke probe — catches "device loads, inference dies" the
+        // way DirectML did. Pick any voice key the model exposes.
         const smokeVoice = Object.keys(cand.voices || {})[0] || 'af_bella';
         const tSmoke = performance.now();
         await cand.generate('test.', { voice: smokeVoice });
@@ -98,7 +102,7 @@ async function _load() {
     _instance = tts;
     log(`[tts-host] model ready — backend=${_activeBackend}, ${Object.keys(tts.voices || {}).length} voices, total=${Math.round(performance.now() - t0)}ms`);
     try {
-      ipcRenderer.send('tts-host:ready', {
+      window.ttsHost.ready({
         backend: _activeBackend,
         voices:  Object.keys(tts.voices || {}),
       });
@@ -119,21 +123,18 @@ async function _synth(text, voice) {
   return audio.toWav();   // Uint8Array
 }
 
-ipcRenderer.on('tts-host:synth', async (_e, { id, text, voice }) => {
+window.ttsHost.onSynth(async ({ id, text, voice }) => {
   try {
     const wav = await _synth(text, voice);
-    // Send as Buffer-compatible array — Electron IPC structured-clones
-    // typed arrays cleanly across the boundary.
-    ipcRenderer.send('tts-host:result', id, true, wav);
+    window.ttsHost.result(id, true, wav);
   } catch (err) {
-    ipcRenderer.send('tts-host:result', id, false, err?.message || String(err));
+    window.ttsHost.result(id, false, err?.message || String(err));
   }
 });
 
-ipcRenderer.on('tts-host:shutdown', () => {
+window.ttsHost.onShutdown(() => {
   log('[tts-host] shutdown requested');
 });
 
-// Kick off model load eagerly so the first user-driven synth doesn't pay
-// the warm-up cost.
+// Eager load so the first user-driven synth doesn't pay the warm-up cost.
 _load().catch(err => log(`[tts-host] load failed: ${err?.message || err}`));

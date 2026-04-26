@@ -44,7 +44,8 @@
       "!**/{.eslintrc,.eslintignore,.babelrc}"
     ],
     "asarUnpack": [
-      "node_modules/onnxruntime-node/**/*"
+      "node_modules/onnxruntime-node/**/*",
+      "node_modules/onnxruntime-web/dist/**/*"
     ],
     "extraResources": [
       {
