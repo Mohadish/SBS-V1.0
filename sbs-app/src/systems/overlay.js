@@ -55,10 +55,9 @@ export function initOverlay() {
     borderStroke:  '#f59e0b',
     anchorStroke:  '#f59e0b',
     anchorFill:    '#fff',
-    // Aspect-locked corner-only resize. Side anchors would let the user
-    // skew the rasterised text/image bitmap (the raster doesn't reflow
-    // — it just stretches). With keepRatio + corner anchors, every drag
-    // is a uniform scale; nothing distorts.
+    // Default: aspect-locked corner-only (matches image behaviour). When a
+    // text box is selected we flip these to free-resize via _configTransformer
+    // — text boxes reflow into the new dimensions instead of stretching.
     keepRatio:        true,
     enabledAnchors:   ['top-left', 'top-right', 'bottom-left', 'bottom-right'],
   });
@@ -144,6 +143,32 @@ export async function addTextBox() {
   return node;
 }
 
+/**
+ * Re-rasterize a text-box node at its CURRENT width, keeping the same
+ * stored HTML (and therefore the same font size). Used after a transform
+ * so the bitmap reflows into the new box instead of staying stretched
+ * from the previous size. Height auto-fits the wrapped content; the
+ * stored box height is left as-is (in Phase 2 we'll add overflow:hidden
+ * clipping when stored height < content height).
+ */
+async function _reflowTextBox(node) {
+  const html = node.getAttr('textHtml');
+  if (!html) return;
+  const w = Math.max(20, Math.round(node.width()));
+  const canvas = await _htmlToCanvas(html, { width: w });
+  if (!canvas) return;
+  node.image(canvas);
+  // Width follows the user's drag; height we sync to the rasterised
+  // content for now so nothing visually clips. (Phase 2 will let users
+  // intentionally clip by stretching height shorter than the text.)
+  node.width(canvas.width);
+  node.height(canvas.height);
+  node.setAttr('textWidth', canvas.width);
+  node.setAttr('naturalW',  canvas.width);
+  node.setAttr('naturalH',  canvas.height);
+  _layer.batchDraw();
+}
+
 /** Re-open the modal for an existing text-box node, re-rasterize on save. */
 async function _editTextBox(node) {
   const html = await openTextEditor(node.getAttr('textHtml') || '<div>Text</div>');
@@ -215,6 +240,13 @@ function _attachNode(node) {
       node.scaleX(1);
       node.scaleY(1);
     }
+    // Text boxes need to reflow the raster at the new width — otherwise
+    // the bitmap from the previous size stays stretched. Re-render through
+    // the existing _editTextBox path but skip its modal: we just want the
+    // raster updated at the new width with the existing HTML + font size.
+    if (node.getClassName() === 'Image' && node.getAttr('textHtml')) {
+      _reflowTextBox(node);
+    }
     _scheduleSave();
   });
   node.on('dragend', _scheduleSave);
@@ -279,10 +311,35 @@ function _showOverlayContextMenu(node, x, y) {
 function _setSelection(node) {
   if (node) {
     _transformer.nodes([node]);
+    _configTransformerForNode(node);
   } else {
     _transformer.nodes([]);
   }
   _uiLayer.batchDraw();
+}
+
+/**
+ * Flip the transformer's resize behaviour based on what's selected.
+ *   • Text boxes (Konva.Image with textHtml) — free resize on all 8
+ *     anchors, no aspect lock. The raster reflows on transformend.
+ *   • Plain images — aspect-locked uniform scale on the four corners.
+ *     Skewing the bitmap looks bad; users don't want that anyway.
+ *
+ * The transform sequence is identical for both; only the constraints differ.
+ */
+function _configTransformerForNode(node) {
+  const isTextBox = !!node.getAttr('textHtml');
+  if (isTextBox) {
+    _transformer.keepRatio(false);
+    _transformer.enabledAnchors([
+      'top-left', 'top-center', 'top-right',
+      'middle-left',           'middle-right',
+      'bottom-left', 'bottom-center', 'bottom-right',
+    ]);
+  } else {
+    _transformer.keepRatio(true);
+    _transformer.enabledAnchors(['top-left', 'top-right', 'bottom-left', 'bottom-right']);
+  }
 }
 
 // ─── Selected-node mutators (called from toolbar) ──────────────────────────

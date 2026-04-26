@@ -364,7 +364,33 @@ function _selectHeaderNode(node, additive) {
   const nodes = _layer.getChildren()
     .filter(c => c !== _transformer && _selection.has(c.getAttr('headerId')));
   _transformer.nodes(nodes);
+  _configTransformerForNodes(nodes);
   _layer.batchDraw();
+}
+
+/**
+ * Flip transformer behaviour based on the selected nodes' types.
+ * Mirrors overlay._configTransformerForNode but works for the multi-
+ * select case: if every selected node is a text item, free resize on
+ * all 8 anchors. If any selected node is an image, fall back to
+ * aspect-locked corners (mixing free + locked in one transformer
+ * isn't a thing in Konva).
+ */
+function _configTransformerForNodes(nodes) {
+  if (!_transformer) return;
+  if (nodes.length === 0) return;
+  const allText = nodes.every(n => n.getClassName?.() === 'Text');
+  if (allText) {
+    _transformer.keepRatio(false);
+    _transformer.enabledAnchors([
+      'top-left', 'top-center', 'top-right',
+      'middle-left',           'middle-right',
+      'bottom-left', 'bottom-center', 'bottom-right',
+    ]);
+  } else {
+    _transformer.keepRatio(true);
+    _transformer.enabledAnchors(['top-left', 'top-right', 'bottom-left', 'bottom-right']);
+  }
 }
 
 async function _hydrateImage(node, dataUrl) {
