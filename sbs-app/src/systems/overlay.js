@@ -303,28 +303,31 @@ async function _exitTextEdit(opts = {}) {
 }
 
 /**
- * Re-rasterize a text-box node at its CURRENT width, keeping the same
- * stored HTML (and therefore the same font size). Used after a transform
- * so the bitmap reflows into the new box instead of staying stretched
- * from the previous size. Height auto-fits the wrapped content; the
- * stored box height is left as-is (in Phase 2 we'll add overflow:hidden
- * clipping when stored height < content height).
+ * Re-rasterize a text-box node at its CURRENT width AND height. The
+ * raster reflows the stored HTML into the user-dragged box: text wraps
+ * at the new width, and content that overflows the dragged height is
+ * clipped (true text-frame behaviour). Font size is unchanged.
+ *
+ * Position and dragged dimensions are preserved — this fixes the Phase 1
+ * bug where the node snapped back to the content's natural height,
+ * making the user's height drag look ignored.
  */
 async function _reflowTextBox(node) {
   const html = node.getAttr('textHtml');
   if (!html) return;
   const w = Math.max(20, Math.round(node.width()));
-  const canvas = await _htmlToCanvas(html, { width: w });
+  const h = Math.max(20, Math.round(node.height()));
+  const canvas = await _htmlToCanvas(html, { width: w, height: h });
   if (!canvas) return;
   node.image(canvas);
-  // Width follows the user's drag; height we sync to the rasterised
-  // content for now so nothing visually clips. (Phase 2 will let users
-  // intentionally clip by stretching height shorter than the text.)
-  node.width(canvas.width);
-  node.height(canvas.height);
-  node.setAttr('textWidth', canvas.width);
-  node.setAttr('naturalW',  canvas.width);
-  node.setAttr('naturalH',  canvas.height);
+  // Keep the user's dragged dimensions; do NOT overwrite from canvas.*.
+  // The canvas was rendered at exactly w × h thanks to the explicit
+  // height option, so they'll match anyway.
+  node.width(w);
+  node.height(h);
+  node.setAttr('textWidth', w);
+  node.setAttr('naturalW',  w);
+  node.setAttr('naturalH',  h);
   _layer.batchDraw();
 }
 
@@ -467,9 +470,18 @@ function _attachNode(node) {
     _showOverlayContextMenu(node, ev?.clientX ?? 0, ev?.clientY ?? 0);
   });
   if (node.getClassName() === 'Text') node.on('dblclick', () => _editText(node));
-  // Any Konva.Image tagged as a user text box opens the in-place editor.
+  // Any Konva.Image tagged as a user text box opens the in-place editor —
+  // BUT only when this node is the sole selection. Editing one item of a
+  // multi-selection produced flickery height changes (the editable mounts
+  // at the node's geometry, but other selected nodes were getting their
+  // bbox refreshed too). Cleanest fix: dblclick while multi-selected does
+  // nothing; user has to click out of the group first, then dblclick.
   if (node.getClassName() === 'Image' && node.getAttr('textHtml')) {
-    node.on('dblclick', () => _enterTextEdit(node));
+    node.on('dblclick', () => {
+      const sel = _transformer?.nodes() || [];
+      if (sel.length > 1) return;
+      _enterTextEdit(node);
+    });
   }
 }
 
@@ -1021,40 +1033,53 @@ function _loadImage(src) {
  * in, so the rendering is deterministic and safe to export.
  *
  * @param {string} html  — HTML markup for the text box body
- * @param {{width?:number, padding?:number, fontFamily?:string, fontSize?:number, color?:string}} [opts]
+ * @param {{width?:number, height?:number, padding?:number, fontFamily?:string, fontSize?:number, color?:string}} [opts]
+ *   - height: when supplied, the canvas is exactly this tall and content
+ *     that overflows is clipped (overflow:hidden). Without it, the
+ *     canvas auto-fits to whatever height the content needs at `width`.
  * @returns {Promise<HTMLCanvasElement|null>}
  */
 async function _htmlToCanvas(html, opts = {}) {
   const {
     width      = 400,
+    height,                          // explicit height → fixed canvas, content clips
     padding    = 8,
     fontFamily = 'Arial',
     fontSize   = 16,
     color      = '#ffffff',
   } = opts;
 
-  // 1. Measure natural height by rendering into an off-screen div.
-  const host = document.createElement('div');
-  host.style.cssText = [
-    'position:absolute', 'left:-99999px', 'top:0',
-    `width:${width}px`,
-    `padding:${padding}px`,
-    `color:${color}`,
-    `font-family:${fontFamily}`,
-    `font-size:${fontSize}px`,
-    'box-sizing:border-box',
-    'white-space:pre-wrap',
-    'word-wrap:break-word',
-    'line-height:1.2',
-  ].join(';');
-  host.innerHTML = html;
-  document.body.appendChild(host);
-  const h = Math.max(1, Math.ceil(host.getBoundingClientRect().height));
-  document.body.removeChild(host);
+  let h;
+  if (typeof height === 'number' && Number.isFinite(height)) {
+    h = Math.max(1, Math.round(height));
+  } else {
+    // Auto-fit height by measuring an off-screen div at the same width.
+    const host = document.createElement('div');
+    host.style.cssText = [
+      'position:absolute', 'left:-99999px', 'top:0',
+      `width:${width}px`,
+      `padding:${padding}px`,
+      `color:${color}`,
+      `font-family:${fontFamily}`,
+      `font-size:${fontSize}px`,
+      'box-sizing:border-box',
+      'white-space:pre-wrap',
+      'word-wrap:break-word',
+      'line-height:1.2',
+    ].join(';');
+    host.innerHTML = html;
+    document.body.appendChild(host);
+    h = Math.max(1, Math.ceil(host.getBoundingClientRect().height));
+    document.body.removeChild(host);
+  }
 
-  // 2. Wrap the same markup inside an SVG foreignObject at the measured size.
+  // 2. Wrap the same markup inside an SVG foreignObject at the measured /
+  //    requested size. overflow:hidden lets the box clip content when the
+  //    user drags height shorter than what the text would need — true
+  //    text-frame behaviour rather than always growing to fit.
   const bodyStyle = [
     `width:${width}px`,
+    `height:${h}px`,
     `padding:${padding}px`,
     `color:${color}`,
     `font-family:${fontFamily}`,
@@ -1063,6 +1088,7 @@ async function _htmlToCanvas(html, opts = {}) {
     'white-space:pre-wrap',
     'word-wrap:break-word',
     'line-height:1.2',
+    'overflow:hidden',
   ].join(';');
   const svg =
     `<svg xmlns="http://www.w3.org/2000/svg" width="${width}" height="${h}">` +
