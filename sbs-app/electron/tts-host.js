@@ -125,19 +125,35 @@ async function _load() {
     // local_files_only:true it never hits the network.
     const cacheDir = bundleDir.replace(/\\/g, '/').replace(/\/?$/, '/');
 
-    // Per-candidate timeout — fp32 / fp16 model loads can take ~5-10s on a
-    // cold start, but if WebGPU init or the wasm fetch hangs we want to
-    // fail fast and try the next combo instead of locking up forever.
-    const PER_CANDIDATE_MS = 60_000;
+    // Per-candidate timeout. WebGPU first-load is slow because ORT-web
+    // compiles the entire ONNX graph into WGSL compute shaders — on a cold
+    // run with the 82 M-param Kokoro graph this can take 1-2 minutes.
+    // Subsequent runs hit Chromium's shader cache and start in seconds.
+    // We give it a generous 4 minutes before giving up.
+    const PER_CANDIDATE_MS = 240_000;
     const _withTimeout = (p, ms, label) => Promise.race([
       p,
       new Promise((_, rej) => setTimeout(() => rej(new Error(`${label} timed out after ${ms}ms`)), ms)),
     ]);
 
+    // Heartbeat — without this the user sees the candidate name and then
+    // nothing for ages. Heartbeat resets on every log() call so it only
+    // fires when the loader is genuinely silent.
+    let _lastLogAt = performance.now();
+    const _origLog = log;
+    // Wrap log so the heartbeat knows when something else logged.
+    // (We're inside _load's IIFE, so this rebind is local.)
+    function _heartbeatLog(msg) { _lastLogAt = performance.now(); _origLog(msg); }
+    const _heartbeatTimer = setInterval(() => {
+      const idle = Math.round((performance.now() - _lastLogAt) / 1000);
+      if (idle >= 10) _origLog(`[tts-host] still loading… (${idle}s idle, this is normal for first-run WebGPU shader compile)`);
+    }, 5000);
+
     const t0 = performance.now();
     let chosen = null, tts = null;
     for (const c of candidates) {
       try {
+        _heartbeatLog(`[tts-host] trying ${c.device}/${c.dtype} (this can take 1-2 minutes on first run for WebGPU)`);
         const tLoad = performance.now();
         const cand  = await _withTimeout(
           KokoroTTS.from_pretrained('onnx-community/Kokoro-82M-v1.0-ONNX', {
@@ -166,6 +182,7 @@ async function _load() {
         log(`[tts-host] ✗ ${c.device}/${c.dtype} — ${(err?.message || err).toString().split('\n')[0]}`);
       }
     }
+    clearInterval(_heartbeatTimer);
     if (!tts) throw new Error('Kokoro: no working device/dtype combination');
 
     _activeBackend = `${chosen.device}/${chosen.dtype}`;
