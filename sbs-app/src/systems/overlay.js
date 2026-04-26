@@ -370,8 +370,16 @@ export async function addImage(src) {
 function _attachNode(node) {
   // Single click selects (or toggles when held with Shift/Ctrl/Meta for
   // multi-select).
+  //
+  // Subtle but important: a plain click on a node that's ALREADY part of
+  // a multi-selection should preserve the group — that click is the user
+  // grabbing the group to drag, not asking to demote the selection to
+  // just this one node. Without this guard, every drag start collapses
+  // the selection to length-1 and the multi-drag handler bails.
   node.on('pointerdown', (e) => {
     const additive = !!(e.evt && (e.evt.shiftKey || e.evt.ctrlKey || e.evt.metaKey));
+    const current  = _transformer?.nodes() || [];
+    if (!additive && current.includes(node)) return;
     _setSelection(node, additive);
   });
 
@@ -583,13 +591,45 @@ function _summariseStyleAcrossBoxes(nodes) {
     });
   }
   sizes.delete(null);   // discard unparseable
+
+  // Mixed-font fallback: pick the font of the FIRST text run inside the
+  // LAST selected box. Per user spec — "first letter of the last box
+  // selected" — gives the user a meaningful representative instead of
+  // a stale Arial default.
+  let fontName;
+  if (fonts.size === 1) {
+    fontName = [...fonts][0];
+  } else if (fonts.size > 1) {
+    const last = nodes[nodes.length - 1];
+    fontName = _firstFontInHtml(last?.getAttr?.('textHtml') || '');
+  }
+
   return {
     fontSize: sizes.size === 0 ? undefined
             : sizes.size === 1 ? [...sizes][0]
             : Math.max(...sizes),     // mixed → largest, per spec
-    fontName: fonts.size === 1 ? [...fonts][0] : undefined,
+    fontName,
     color:    colors.size === 1 ? [...colors][0] : undefined,
   };
+}
+
+/**
+ * Pre-order DFS through a stored HTML fragment for the first element
+ * with an explicit inline fontFamily. Returns the family stripped of
+ * quotes / fallback list. Null when no element declares one.
+ */
+function _firstFontInHtml(html) {
+  const tmp = document.createElement('div');
+  tmp.innerHTML = html || '';
+  const visit = (el) => {
+    if (el.style?.fontFamily) return _stripQuotes(el.style.fontFamily);
+    for (const c of el.children || []) {
+      const f = visit(c);
+      if (f) return f;
+    }
+    return null;
+  };
+  return visit(tmp);
 }
 
 function _parsePxSize(s) {
