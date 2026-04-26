@@ -7,137 +7,82 @@ const { spawn, execSync } = require('child_process');
 const os = require('os');
 const say = require('say');
 
-// ─── Kokoro TTS host (hidden BrowserWindow + WebGPU) ──────────────────────
-// History: we tried CPU-only via worker_threads (slow), then DirectML EP
-// via worker_threads (failed at ConvTranspose). The clean GPU path is
-// Chromium's WebGPU stack, which lives in a renderer process — so we host
-// Kokoro in a hidden BrowserWindow and treat it as a synth backend
-// reachable over IPC. transformers.js officially supports `device:'webgpu'`,
-// works on any modern GPU (NVIDIA / AMD / Intel / integrated), no CUDA
-// install needed. Hidden window means main UI thread never sees the load.
-let _ttsHostWindow = null;
-let _ttsHostReady  = null;   // resolves when the host posts 'tts-host:ready'
-let _ttsHostSeq    = 0;
-const _ttsHostPending = new Map();   // id → { resolve, reject }
+// ─── Kokoro worker thread ─────────────────────────────────────────────────
+// Kokoro inference is CPU-heavy (~1× real-time) and synchronous in JS,
+// so doing it on the main process thread freezes every IPC handler — the
+// renderer's UI hangs because most user actions round-trip through main.
+// Move it to a worker_threads Worker. Main process stays responsive; the
+// worker queues synths internally (it handles one message at a time).
+const { Worker } = require('worker_threads');
 
-function _kokoroBundleDir() {
-  return app.isPackaged
-    ? path.join(process.resourcesPath, 'kokoro-bundle')
-    : path.join(APP_ROOT, 'kokoro-bundle');
+let _kokoroWorker = null;
+let _kokoroSeq    = 0;
+const _kokoroPending = new Map();   // id → { resolve, reject }
+
+function _kokoroBundlePaths() {
+  return {
+    bundleDir: app.isPackaged
+      ? path.join(process.resourcesPath, 'kokoro-bundle')
+      : path.join(APP_ROOT, 'kokoro-bundle'),
+    cacheDir: path.join(app.getPath('userData'), 'kokoro-cache'),
+  };
 }
 
-function _ortWebWasmDir() {
-  // onnxruntime-web's wasm/jsep blobs ship in node_modules/onnxruntime-web/dist/.
-  // The web build of transformers.js fetches them at runtime; we forward the
-  // absolute path so it can build a file:// URL.
-  return app.isPackaged
-    ? path.join(process.resourcesPath, 'app.asar.unpacked', 'node_modules', 'onnxruntime-web', 'dist')
-    : path.join(APP_ROOT, 'node_modules', 'onnxruntime-web', 'dist');
+function _ensureKokoroWorker() {
+  if (_kokoroWorker) return _kokoroWorker;
+  const paths = _kokoroBundlePaths();
+  try { fs.mkdirSync(paths.cacheDir, { recursive: true }); } catch {}
+  console.log(`[kokoro] spawning worker — bundle=${paths.bundleDir}`);
+  _kokoroWorker = new Worker(path.join(__dirname, 'kokoro-worker.js'), {
+    workerData: paths,
+  });
+  _kokoroWorker.on('message', (msg) => {
+    if (msg?.kind === 'log') { console.log(msg.msg); return; }
+    const pending = _kokoroPending.get(msg.id);
+    if (!pending) return;
+    _kokoroPending.delete(msg.id);
+    if (msg.ok) pending.resolve(msg.wav);
+    else        pending.reject(new Error(msg.error || 'Kokoro worker error'));
+  });
+  _kokoroWorker.on('error', (err) => {
+    console.error('[kokoro-worker] error:', err);
+    // Reject every in-flight call; next request will respawn the worker.
+    for (const p of _kokoroPending.values()) p.reject(err);
+    _kokoroPending.clear();
+    _kokoroWorker = null;
+  });
+  _kokoroWorker.on('exit', (code) => {
+    if (code !== 0) console.warn(`[kokoro-worker] exited with code ${code}`);
+    _kokoroWorker = null;
+  });
+  return _kokoroWorker;
 }
-
-function _ensureTtsHost() {
-  if (_ttsHostWindow && !_ttsHostWindow.isDestroyed()) return _ttsHostReady;
-
-  console.log('[tts-host] spawning hidden window');
-  _ttsHostReady = new Promise((resolve) => {
-    ipcMain.once('tts-host:ready', (_e, info) => {
-      console.log(`[tts-host] ready — backend=${info?.backend}, voices=${info?.voices?.length ?? '?'}`);
-      resolve(info);
-    });
-  });
-
-  _ttsHostWindow = new BrowserWindow({
-    show:    false,
-    width:   400,
-    height:  300,
-    webPreferences: {
-      // nodeIntegration:false so kokoro-js's *web* build resolves cleanly.
-      // The Node-integrated path forces require('@huggingface/transformers')
-      // to pick the Node build → onnxruntime-node → DirectML EP → the
-      // ConvTranspose bug we burned three commits on. Web build resolves
-      // to onnxruntime-web → Chromium WebGPU stack → different code path.
-      nodeIntegration:      false,
-      contextIsolation:     true,
-      sandbox:              false,   // preload script needs Node
-      preload:              path.join(__dirname, 'tts-host-preload.js'),
-      backgroundThrottling: false,   // don't pause when minimised / hidden
-      // Forward the resolved bundle + ort-wasm paths. In renderer,
-      // process.resourcesPath points at Electron's install dir (not our
-      // app), so detection from inside fails — we just hand them over.
-      additionalArguments: [
-        `--sbs-kokoro-bundle=${_kokoroBundleDir()}`,
-        `--sbs-ort-wasm=${_ortWebWasmDir()}`,
-      ],
-    },
-  });
-  _ttsHostWindow.loadFile(path.join(__dirname, 'tts-host.html'));
-  // Auto-open devtools in dev so silent failures (WebGPU adapter hang,
-  // wasm load 404, CSP blocks) surface where we can see them. The host
-  // has no UI so this is the only diagnostic surface.
-  if (IS_DEV) _ttsHostWindow.webContents.openDevTools({ mode: 'detach' });
-
-  _ttsHostWindow.on('closed', () => {
-    _ttsHostWindow = null;
-    _ttsHostReady  = null;
-    // Reject any in-flight requests; next call will respawn the host.
-    for (const p of _ttsHostPending.values()) p.reject(new Error('TTS host closed'));
-    _ttsHostPending.clear();
-  });
-
-  return _ttsHostReady;
-}
-
-ipcMain.on('tts-host:result', (_e, id, ok, payload) => {
-  const pending = _ttsHostPending.get(id);
-  if (!pending) return;
-  _ttsHostPending.delete(id);
-  if (ok) pending.resolve(payload);
-  else    pending.reject(new Error(payload || 'TTS host error'));
-});
-
-ipcMain.on('tts-host:log', (_e, msg) => {
-  console.log(msg);
-});
 
 function _kokoroSynth(text, voice) {
-  return new Promise(async (resolve, reject) => {
-    try {
-      await _ensureTtsHost();
-      const id = ++_ttsHostSeq;
-      _ttsHostPending.set(id, { resolve, reject });
-      _ttsHostWindow.webContents.send('tts-host:synth', { id, text, voice });
-    } catch (err) {
-      reject(err);
-    }
+  return new Promise((resolve, reject) => {
+    const id = ++_kokoroSeq;
+    _kokoroPending.set(id, { resolve, reject });
+    _ensureKokoroWorker().postMessage({ kind: 'synth', id, text, voice });
   });
 }
 
-// Tear down the host when the app quits so it doesn't keep the process alive.
+// Stop the worker on app quit so it doesn't hold the process open.
 app.on('before-quit', () => {
-  if (_ttsHostWindow && !_ttsHostWindow.isDestroyed()) {
-    try { _ttsHostWindow.webContents.send('tts-host:shutdown'); } catch {}
-    try { _ttsHostWindow.destroy(); } catch {}
-  }
-  _ttsHostWindow = null;
+  if (_kokoroWorker) { try { _kokoroWorker.terminate(); } catch {} _kokoroWorker = null; }
 });
 
-// (No custom protocol needed — the host runs with nodeIntegration on and
-// loads model files via Node fs through transformers.env.localModelPath.)
-
-// Single-instance lock — prevents a second `npm start` (or a stuck-but-
-// still-running Electron process from a previous launch) from cache-warring
-// over the userData directory. Without this, a hung renderer leaves the
-// main process alive; the next launch crashes with "Unable to move the
-// cache: Access is denied" and never reaches our model load. We just exit
-// cleanly here; the existing instance keeps going.
+// Single-instance lock — prevents a second `npm start` (or a stuck
+// Electron process from a previous launch) from cache-warring over the
+// userData directory. Without this, a hung renderer leaves the main
+// process alive; the next launch crashes with "Unable to move the cache:
+// Access is denied" and never reaches our model load. We exit cleanly
+// here; the existing instance keeps going.
 if (!app.requestSingleInstanceLock()) {
   console.log('[main] another instance is already running — exiting');
   app.quit();
   process.exit(0);
 }
 app.on('second-instance', () => {
-  // If a user double-clicks the launcher again, focus the existing window
-  // instead of starting fresh.
   if (mainWindow) {
     if (mainWindow.isMinimized()) mainWindow.restore();
     mainWindow.focus();
