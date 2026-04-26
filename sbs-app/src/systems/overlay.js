@@ -17,7 +17,7 @@
 
 import { state } from '../core/state.js';
 import { showContextMenu } from '../ui/context-menu.js';
-import { mountTextToolbar, unmountTextToolbar } from '../ui/text-toolbar.js';
+import { mountTextToolbar, unmountTextToolbar, execCommandApplier } from '../ui/text-toolbar.js';
 import { getTextToolbarSlot }  from '../ui/overlay-toolbar.js';
 
 let _stage       = null;   // Konva.Stage
@@ -253,7 +253,7 @@ function _enterTextEdit(node) {
   // the contenteditable. The click-outside detector already whitelists
   // [data-sbs-text-toolbar] so toolbar clicks won't dismiss the editor.
   const toolbarHost = getTextToolbarSlot();
-  if (toolbarHost) mountTextToolbar(toolbarHost, div);
+  if (toolbarHost) mountTextToolbar(toolbarHost, execCommandApplier, div);
 
   _activeTextEditor = { node, div, onDocMouseDown, onKeyDown, prevOpacity };
 }
@@ -500,6 +500,108 @@ function _setSelection(node, additive = false) {
   _transformer.nodes(nodes);
   _configTransformerForNodes(nodes);
   _uiLayer.batchDraw();
+
+  // Multi-textbox toolbar: when ≥1 text box is selected and we're not
+  // already inside the in-place editor, surface the style toolbar in
+  // "multi-mode". Each style click then routes through _multiTextApplier
+  // — which walks each selected box's HTML and changes only the touched
+  // property, leaving other inline styles intact.
+  _refreshMultiToolbar();
+}
+
+/**
+ * Decide whether the multi-textbox toolbar should be mounted/unmounted
+ * based on the current selection. Single-editor mode wins (it has its
+ * own mount + unmount calls in _enterTextEdit / _exitTextEdit).
+ */
+function _refreshMultiToolbar() {
+  if (_activeTextEditor) return;     // single-editor mode owns the slot
+  const host = getTextToolbarSlot();
+  if (!host) return;
+  const sel = _transformer?.nodes() || [];
+  const textBoxes = sel.filter(n => n.getAttr?.('textHtml'));
+  if (textBoxes.length >= 1) {
+    mountTextToolbar(host, _multiTextApplier);
+  } else {
+    unmountTextToolbar();
+  }
+}
+
+/**
+ * Apply a single style "action" to every text box in the current
+ * multi-selection. Each box's HTML is mutated so ONLY the touched
+ * property changes — other inline styles are preserved. Then the box
+ * is re-rasterised.
+ *
+ * Implementation strategy
+ * - For property-style actions (foreColor, fontSize, fontName) we walk
+ *   the box's HTML, strip any existing inline declaration of that one
+ *   property, then wrap the entire content in a span with the new
+ *   value. Net effect: the touched property gets a fresh outer override
+ *   that wins via CSS cascade; everything else (including unrelated
+ *   inline styles on inner spans) keeps working.
+ * - For toggle-style actions (bold, italic, underline, strike) we wrap
+ *   the entire content in the matching tag (<b>, <i>, <u>, <s>). Toggle
+ *   off isn't supported in multi-mode — applying the same action twice
+ *   nests the wrapper, which the rasteriser still renders correctly
+ *   (subsequent clicks are visually idempotent).
+ * - For alignment we wrap content in a <div style="text-align:...">.
+ */
+function _multiTextApplier(action, value) {
+  const sel = _transformer?.nodes() || [];
+  const targets = sel.filter(n => n.getAttr?.('textHtml'));
+  if (!targets.length) return;
+  for (const node of targets) {
+    const before = node.getAttr('textHtml') || '';
+    const after  = _applyActionToHtml(before, action, value);
+    if (after === before) continue;
+    node.setAttr('textHtml', after);
+    _reflowTextBox(node).catch(() => {});
+  }
+  _scheduleSave();
+}
+
+function _applyActionToHtml(html, action, value) {
+  const root = document.createElement('div');
+  root.innerHTML = html || '';
+
+  // Property-style actions: strip the matching inline style from every
+  // descendant, then wrap the whole content in a span declaring the new
+  // value. The outer wrapper wins via cascade.
+  const PROP_ACTIONS = {
+    foreColor: 'color',
+    fontName:  'fontFamily',
+    fontSize:  'fontSize',
+  };
+  if (PROP_ACTIONS[action]) {
+    const cssProp = PROP_ACTIONS[action];
+    root.querySelectorAll('[style]').forEach(el => { el.style[cssProp] = ''; });
+    const wrap = document.createElement('span');
+    wrap.style[cssProp] = action === 'fontSize' ? `${value}px` : String(value);
+    while (root.firstChild) wrap.appendChild(root.firstChild);
+    root.appendChild(wrap);
+    return root.innerHTML;
+  }
+
+  const TAG_ACTIONS = { bold: 'b', italic: 'i', underline: 'u', strikeThrough: 's' };
+  if (TAG_ACTIONS[action]) {
+    const wrap = document.createElement(TAG_ACTIONS[action]);
+    while (root.firstChild) wrap.appendChild(root.firstChild);
+    root.appendChild(wrap);
+    return root.innerHTML;
+  }
+
+  if (action === 'justifyLeft' || action === 'justifyCenter' || action === 'justifyRight') {
+    const align = action === 'justifyLeft' ? 'left'
+                : action === 'justifyRight' ? 'right' : 'center';
+    const wrap = document.createElement('div');
+    wrap.style.textAlign = align;
+    while (root.firstChild) wrap.appendChild(root.firstChild);
+    root.appendChild(wrap);
+    return root.innerHTML;
+  }
+
+  return html;   // unknown action — no-op
 }
 
 /**

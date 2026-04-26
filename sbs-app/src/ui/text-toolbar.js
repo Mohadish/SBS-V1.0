@@ -1,30 +1,26 @@
 /**
  * SBS — Text-edit floating toolbar.
  * ─────────────────────────────────
- * Mounted by overlay.js when the in-place text editor opens; dismounted
- * on exit. Operates on the live Selection inside the contenteditable via
- * document.execCommand (deprecated in spec, but every Chromium build
- * still implements it reliably and it gives us per-character styling
- * with zero deps).
+ * Mounted by overlay.js into the overlay-edit toolbar's left slot, both
+ * when the in-place text editor opens AND when ≥1 text box is multi-
+ * selected without an editor open. The toolbar itself is dumb: it
+ * builds the controls and dispatches every action via a caller-supplied
+ * applier(action, value) function. overlay.js decides what that means:
+ *
+ *   • single-editor mode  → execCommand on the live Selection inside
+ *                           the contenteditable (per-character styles).
+ *   • multi-textbox mode  → walks each selected text box's HTML and
+ *                           changes only the touched property; other
+ *                           inline styles are preserved.
  *
  * Critical detail: every interactive control here calls
  * `evt.preventDefault()` on mousedown so clicking the toolbar doesn't
  * blur the contenteditable and lose the selection. Without that, every
  * style click would just be "no selection, no-op".
  *
- * Toolbar controls:
- *   B / I / U / S  ─ bold / italic / underline / strike
- *   Font dropdown  ─ browser-built-in family list
- *   Size dropdown  ─ pixel sizes
- *   Color picker   ─ text color
- *   Align L/C/R    ─ paragraph alignment
- *
- * Apply scope:
- *   • If the user has a non-empty range selection → those characters only.
- *   • If selection is collapsed (just a caret) → execCommand applies to
- *     the next typed characters (browser-default behaviour).
- *   • Multi-textbox selection (Phase 5) is handled at the overlay layer,
- *     not here.
+ * Apply scope (single-editor mode):
+ *   • Non-empty range selection → those characters only.
+ *   • Caret only                → next typed characters (browser default).
  */
 
 const FONTS = [
@@ -34,18 +30,25 @@ const FONTS = [
 const SIZES = [10, 12, 14, 16, 20, 24, 28, 32, 40, 48, 64, 96, 128];
 
 let _toolbar = null;   // host element (provided by overlay-toolbar.js)
-let _editor  = null;   // the contenteditable <div> we're attached to
+let _editor  = null;   // contenteditable in single-editor mode (null in multi-mode)
+let _applier = null;   // function(action, value) — caller-supplied dispatcher
 
 /**
  * Build the text controls inside the supplied host element. Replaces any
  * existing children. The host is provided by overlay-toolbar so the
- * controls live on the same row as Add Text / Add Image / Delete /
- * Done — no separate floating bar.
+ * controls live on the same row as Add Text / Add Image / Delete.
+ *
+ * @param {HTMLElement}                       host
+ * @param {(action:string, value?:any)=>void} applier  — see file header
+ * @param {HTMLElement|null}                  editorEl — contenteditable
+ *   in single-editor mode (null in multi-mode); used only to refocus
+ *   before each apply so execCommand sees the editable as active.
  */
-export function mountTextToolbar(host, editorEl) {
+export function mountTextToolbar(host, applier, editorEl = null) {
   if (_toolbar) unmountTextToolbar();
   _toolbar = host;
   _editor  = editorEl;
+  _applier = applier || (() => {});
   _toolbar.innerHTML = '';
   _toolbar.dataset.sbsTextToolbar = '1';
 
@@ -53,18 +56,18 @@ export function mountTextToolbar(host, editorEl) {
   // mental order so reading the bar from the Edit toggle inward gives:
   //   font ▼ · size ▼ · color · S · U · I · B · ⫸ · ⫿ · ⫷
   _toolbar.append(
-    _btn('⫷', 'Align left',   () => _exec('justifyLeft')),
-    _btn('⫿', 'Align center', () => _exec('justifyCenter')),
-    _btn('⫸', 'Align right',  () => _exec('justifyRight')),
+    _btn('⫷', 'Align left',   () => _apply('justifyLeft')),
+    _btn('⫿', 'Align center', () => _apply('justifyCenter')),
+    _btn('⫸', 'Align right',  () => _apply('justifyRight')),
     _sep(),
-    _btn('B', 'Bold (Ctrl+B)',     () => _exec('bold'),          { fontWeight: 'bold' }),
-    _btn('I', 'Italic (Ctrl+I)',   () => _exec('italic'),        { fontStyle:  'italic' }),
-    _btn('U', 'Underline (Ctrl+U)',() => _exec('underline'),     { textDecoration: 'underline' }),
-    _btn('S', 'Strikethrough',     () => _exec('strikeThrough'), { textDecoration: 'line-through' }),
+    _btn('B', 'Bold (Ctrl+B)',     () => _apply('bold'),          { fontWeight: 'bold' }),
+    _btn('I', 'Italic (Ctrl+I)',   () => _apply('italic'),        { fontStyle:  'italic' }),
+    _btn('U', 'Underline (Ctrl+U)',() => _apply('underline'),     { textDecoration: 'underline' }),
+    _btn('S', 'Strikethrough',     () => _apply('strikeThrough'), { textDecoration: 'line-through' }),
     _sep(),
-    _color('Text color',                    (v) => _exec('foreColor', v)),
-    _select('size', SIZES.map(s => `${s}`), (v) => _execFontSize(Number(v))),
-    _select('font', FONTS,                  (v) => _exec('fontName', v)),
+    _color('Text color',                    (v) => _apply('foreColor', v)),
+    _select('size', SIZES.map(s => `${s}`), (v) => _apply('fontSize', Number(v))),
+    _select('font', FONTS,                  (v) => _apply('fontName', v)),
   );
 
   _toolbar.style.display = 'flex';
@@ -77,32 +80,37 @@ export function unmountTextToolbar() {
     delete _toolbar.dataset.sbsTextToolbar;
     _toolbar = null;
   }
-  _editor = null;
+  _editor  = null;
+  _applier = null;
+}
+
+/** Refocus the editable (if we have one) before forwarding to the applier. */
+function _apply(action, value) {
+  if (_editor) try { _editor.focus(); } catch {}
+  if (_applier) _applier(action, value);
 }
 
 /**
- * execCommand wrapper that preserves the editor's focus + selection.
- * Without re-focusing first, execCommand sometimes no-ops because the
- * editor already lost focus during the toolbar mousedown.
+ * Default applier for single-editor mode — uses execCommand against the
+ * contenteditable's live Selection. Exported so overlay.js can pass it
+ * in without reimplementing.
  */
-function _exec(cmd, arg) {
-  if (!_editor) return;
-  _editor.focus();
-  try { document.execCommand(cmd, false, arg); }
-  catch (err) { console.warn(`[text-toolbar] execCommand ${cmd} failed:`, err); }
+export function execCommandApplier(action, value) {
+  try {
+    if (action === 'fontSize') {
+      _execFontSizeOnSelection(Number(value));
+    } else {
+      document.execCommand(action, false, value);
+    }
+  } catch (err) { console.warn(`[text-toolbar] ${action} failed:`, err); }
 }
 
 /**
- * Pixel-size font sizing — execCommand('fontSize', 1..7) is the legacy
- * 7-step API and produces ugly rounding. We work around by wrapping the
- * selection in a span with explicit font-size CSS.
+ * Pixel-size font sizing — execCommand('fontSize', 1..7) uses a legacy
+ * 7-step API and looks awful at modern resolutions. Wrap the selection
+ * in a span with explicit CSS instead.
  */
-function _execFontSize(px) {
-  if (!_editor) return;
-  _editor.focus();
-  // execCommand('fontSize', 7) marks the selection with <font size="7"> —
-  // we then walk those marker fonts and replace with span style.
-  // Modern reliable path: insertHTML wrapping the selected text in a span.
+function _execFontSizeOnSelection(px) {
   const sel = window.getSelection();
   if (!sel || sel.rangeCount === 0) return;
   const range = sel.getRangeAt(0);
@@ -112,7 +120,6 @@ function _execFontSize(px) {
   try {
     span.appendChild(range.extractContents());
     range.insertNode(span);
-    // Restore selection over the new span content.
     range.selectNodeContents(span);
     sel.removeAllRanges();
     sel.addRange(range);
@@ -161,7 +168,6 @@ function _select(kind, options, onChange) {
     opt.textContent = o;
     sel.appendChild(opt);
   }
-  // Pick a reasonable default selection so the dropdown shows something useful.
   if (kind === 'font') sel.value = 'Arial';
   if (kind === 'size') sel.value = '16';
   sel.addEventListener('mousedown', e => e.stopPropagation()); // keep selection alive while menu opens
@@ -170,8 +176,6 @@ function _select(kind, options, onChange) {
 }
 
 function _color(title, onChange) {
-  // Native color picker. 'change' fires when user closes the picker.
-  // Wrap in a button-styled <label> so it matches the toolbar visually.
   const wrap = document.createElement('label');
   wrap.title = title;
   wrap.style.cssText = [
