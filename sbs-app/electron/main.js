@@ -71,8 +71,10 @@ function _ensureTtsHost() {
     },
   });
   _ttsHostWindow.loadFile(path.join(__dirname, 'tts-host.html'));
-  // Uncomment to inspect host-side WebGPU / kokoro logs visually:
-  // _ttsHostWindow.webContents.openDevTools({ mode: 'detach' });
+  // Auto-open devtools in dev so silent failures (WebGPU adapter hang,
+  // wasm load 404, CSP blocks) surface where we can see them. The host
+  // has no UI so this is the only diagnostic surface.
+  if (IS_DEV) _ttsHostWindow.webContents.openDevTools({ mode: 'detach' });
 
   _ttsHostWindow.on('closed', () => {
     _ttsHostWindow = null;
@@ -121,6 +123,26 @@ app.on('before-quit', () => {
 
 // (No custom protocol needed — the host runs with nodeIntegration on and
 // loads model files via Node fs through transformers.env.localModelPath.)
+
+// Single-instance lock — prevents a second `npm start` (or a stuck-but-
+// still-running Electron process from a previous launch) from cache-warring
+// over the userData directory. Without this, a hung renderer leaves the
+// main process alive; the next launch crashes with "Unable to move the
+// cache: Access is denied" and never reaches our model load. We just exit
+// cleanly here; the existing instance keeps going.
+if (!app.requestSingleInstanceLock()) {
+  console.log('[main] another instance is already running — exiting');
+  app.quit();
+  process.exit(0);
+}
+app.on('second-instance', () => {
+  // If a user double-clicks the launcher again, focus the existing window
+  // instead of starting fresh.
+  if (mainWindow) {
+    if (mainWindow.isMinimized()) mainWindow.restore();
+    mainWindow.focus();
+  }
+});
 
 const IS_DEV   = process.argv.includes('--dev');
 const APP_ROOT = path.join(__dirname, '..');

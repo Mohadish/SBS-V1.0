@@ -56,11 +56,36 @@ async function _load() {
   if (_loadPromise) return _loadPromise;
 
   _loadPromise = (async () => {
-    const candidates = [
-      { device: 'webgpu', dtype: 'fp32' },
-      { device: 'webgpu', dtype: 'fp16' },
-      { device: 'wasm',   dtype: 'q8'   },
+    // WebGPU pre-flight — if the renderer doesn't expose navigator.gpu or
+    // the adapter request fails, drop the webgpu candidates immediately.
+    // Without this, WebGPU init can hang silently on machines where the
+    // adapter is unreachable.
+    let webgpuOk = false;
+    if (navigator.gpu) {
+      try {
+        const adapter = await Promise.race([
+          navigator.gpu.requestAdapter(),
+          new Promise((_, rej) => setTimeout(() => rej(new Error('adapter request timed out')), 5000)),
+        ]);
+        if (adapter) {
+          webgpuOk = true;
+          log(`[tts-host] WebGPU adapter: ${adapter.info?.vendor || '?'} ${adapter.info?.architecture || ''}`);
+        } else {
+          log('[tts-host] WebGPU adapter: null (no GPU available)');
+        }
+      } catch (err) {
+        log(`[tts-host] WebGPU adapter check failed: ${err?.message || err}`);
+      }
+    } else {
+      log('[tts-host] navigator.gpu not present — webgpu candidates skipped');
+    }
+
+    const allCandidates = [
+      { device: 'webgpu', dtype: 'fp32', needsGpu: true  },
+      { device: 'webgpu', dtype: 'fp16', needsGpu: true  },
+      { device: 'wasm',   dtype: 'q8',   needsGpu: false },
     ];
+    const candidates = allCandidates.filter(c => !c.needsGpu || webgpuOk);
     log(`[tts-host] candidates: ${candidates.map(c => `${c.device}/${c.dtype}`).join(' → ')}`);
 
     // transformers.js looks under <cache_dir>/<modelId>/...; our bundle
@@ -69,25 +94,39 @@ async function _load() {
     // local_files_only:true it never hits the network.
     const cacheDir = bundleDir.replace(/\\/g, '/').replace(/\/?$/, '/');
 
+    // Per-candidate timeout — fp32 / fp16 model loads can take ~5-10s on a
+    // cold start, but if WebGPU init or the wasm fetch hangs we want to
+    // fail fast and try the next combo instead of locking up forever.
+    const PER_CANDIDATE_MS = 60_000;
+    const _withTimeout = (p, ms, label) => Promise.race([
+      p,
+      new Promise((_, rej) => setTimeout(() => rej(new Error(`${label} timed out after ${ms}ms`)), ms)),
+    ]);
+
     const t0 = performance.now();
     let chosen = null, tts = null;
     for (const c of candidates) {
       try {
         const tLoad = performance.now();
-        const cand  = await KokoroTTS.from_pretrained(
-          'onnx-community/Kokoro-82M-v1.0-ONNX',
-          {
+        const cand  = await _withTimeout(
+          KokoroTTS.from_pretrained('onnx-community/Kokoro-82M-v1.0-ONNX', {
             dtype:            c.dtype,
             device:           c.device,
             cache_dir:        cacheDir,
             local_files_only: true,
-          },
+          }),
+          PER_CANDIDATE_MS,
+          `${c.device}/${c.dtype} load`,
         );
         // 1-word smoke probe — catches "device loads, inference dies" the
         // way DirectML did. Pick any voice key the model exposes.
         const smokeVoice = Object.keys(cand.voices || {})[0] || 'af_bella';
         const tSmoke = performance.now();
-        await cand.generate('test.', { voice: smokeVoice });
+        await _withTimeout(
+          cand.generate('test.', { voice: smokeVoice }),
+          PER_CANDIDATE_MS,
+          `${c.device}/${c.dtype} smoke`,
+        );
         log(`[tts-host] ✓ ${c.device}/${c.dtype} — load=${Math.round(tSmoke - tLoad)}ms, smoke=${Math.round(performance.now() - tSmoke)}ms`);
         tts = cand;
         chosen = c;
