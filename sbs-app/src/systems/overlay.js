@@ -17,6 +17,7 @@
 
 import { state } from '../core/state.js';
 import { showContextMenu } from '../ui/context-menu.js';
+import { mountTextToolbar, unmountTextToolbar } from '../ui/text-toolbar.js';
 
 let _stage       = null;   // Konva.Stage
 let _layer       = null;   // Konva.Layer — holds all user content
@@ -239,6 +240,12 @@ function _enterTextEdit(node) {
   };
   div.addEventListener('keydown', onKeyDown);
 
+  // Mount the floating toolbar (B/I/U/S, font, size, color, align). It
+  // sits above the editor and operates on the live Selection inside it.
+  // The click-outside detector already whitelists [data-sbs-text-toolbar]
+  // so toolbar clicks won't dismiss the editor.
+  mountTextToolbar(div);
+
   _activeTextEditor = { node, div, onDocMouseDown, onKeyDown, transformerWasVisible };
 }
 
@@ -248,6 +255,7 @@ async function _exitTextEdit(opts = {}) {
   const { node, div, onDocMouseDown, onKeyDown, transformerWasVisible } = _activeTextEditor;
   document.removeEventListener('mousedown', onDocMouseDown, true);
   div.removeEventListener('keydown', onKeyDown);
+  unmountTextToolbar();
 
   const html = div.innerHTML;
   div.remove();
