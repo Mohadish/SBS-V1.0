@@ -95,6 +95,12 @@ function _syncSize() {
 
 export function isEditing() { return _editing; }
 
+/**
+ * Borrow the overlay's Konva.Stage for sibling layers (header.js).
+ * Returns null until initOverlay() has run.
+ */
+export function getStage() { return _stage; }
+
 export function setEditingMode(on) {
   _editing = !!on;
   if (_container) _container.classList.toggle('editing', _editing);

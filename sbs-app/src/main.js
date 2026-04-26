@@ -45,8 +45,9 @@ import { initStepNav }            from './ui/step-nav.js';
 import { initStepsPanel }         from './ui/steps-panel.js';
 import { initSidebarLeft }        from './ui/sidebar-left.js';
 import { initContextMenu, hideContextMenu, showContextMenu } from './ui/context-menu.js';
-import { initOverlay }         from './systems/overlay.js';
+import { initOverlay, getStage as getOverlayStage } from './systems/overlay.js';
 import { initOverlayToolbar }  from './ui/overlay-toolbar.js';
+import { initHeaderLayer }     from './systems/header.js';
 import { initUserSettings }    from './core/user-settings.js';
 import { openSettingsModal }   from './ui/settings-modal.js';
 import { schedulePrecache, cancel as cancelPrecache } from './systems/narration-precache.js';
@@ -102,6 +103,8 @@ initStepsPanel();
 initHud();
 initOverlay();
 initOverlayToolbar();
+// Header layer rides on top of the overlay stage; must init AFTER initOverlay.
+initHeaderLayer(getOverlayStage());
 setupUndoKeyboard();
 
 // Eager-load user-level prefs so subsequent UI can read them synchronously.

@@ -180,3 +180,227 @@ export function setHeadersLocked(locked) {
   state.setState({ headersLocked: !!locked });
   state.markDirty();
 }
+
+// ─── Live render layer (Konva) ──────────────────────────────────────────────
+
+let _layer       = null;   // Konva.Layer
+let _transformer = null;   // multi-select transformer for header items
+let _stage       = null;   // borrowed from overlay.js
+let _selection   = new Set();   // selected node ids (multi-select)
+let _imageCache  = new Map();   // dataUrl → HTMLImageElement (so re-renders are cheap)
+
+/**
+ * Attach a Konva.Layer to the overlay stage and start mirroring
+ * state.headerItems[] onto it. Idempotent — second call is a no-op.
+ *
+ * Caller passes the live overlay stage (overlay.getStage()). The layer
+ * sits ABOVE the per-step content + step-transformer layers, so headers
+ * are always on top.
+ */
+export function initHeaderLayer(stage) {
+  if (_layer || !stage || typeof Konva === 'undefined') return;
+  _stage = stage;
+  _layer = new Konva.Layer({ name: 'sbs-header' });
+  stage.add(_layer);
+
+  _transformer = new Konva.Transformer({
+    rotateEnabled:    true,
+    keepRatio:        true,
+    enabledAnchors:   ['top-left', 'top-right', 'bottom-left', 'bottom-right'],
+    anchorSize:       8,
+    borderStroke:     '#22d3ee',   // cyan — distinguishes from step-overlay's amber
+    anchorStroke:     '#22d3ee',
+    anchorFill:       '#fff',
+  });
+  _layer.add(_transformer);
+
+  // State subscriptions — anything that changes the rendered output triggers
+  // a refresh. Cheap re-render: we destroy and recreate nodes each time.
+  // Header lists are small (typically < 10 items); no need for diff-based
+  // reconciliation.
+  state.on('change:headerItems',   refreshHeaderLayer);
+  state.on('change:headersHidden', refreshHeaderLayer);
+  state.on('change:headersLocked', refreshHeaderLayer);
+  state.on('change:activeStepId',  refreshHeaderLayer);
+  state.on('change:steps',         refreshHeaderLayer);
+  state.on('change:chapters',      refreshHeaderLayer);
+  state.on('header:refresh',       refreshHeaderLayer);   // explicit kick from step/chapter rename
+
+  refreshHeaderLayer();
+}
+
+/**
+ * Wipe + redraw every header item against the current state. Called on
+ * every state change that could affect output. Selection is preserved
+ * by id when the same nodes still exist after rebuild.
+ */
+export function refreshHeaderLayer() {
+  if (!_layer) return;
+
+  const prevSelection = new Set(_selection);
+  // Remove all children except the transformer
+  for (const child of _layer.getChildren().slice()) {
+    if (child !== _transformer) child.destroy();
+  }
+
+  if (state.get('headersHidden')) {
+    _transformer.nodes([]);
+    _layer.batchDraw();
+    return;
+  }
+
+  const items = state.get('headerItems') || [];
+  const ctx   = buildRenderContext();
+  const lock  = !!state.get('headersLocked');
+  const newNodesById = new Map();
+
+  for (const item of items) {
+    if (!item?.visible) continue;
+    const node = _buildNode(item, ctx, lock);
+    if (!node) continue;
+    _layer.add(node);
+    newNodesById.set(item.id, node);
+  }
+
+  // Restore selection where the underlying item still exists.
+  const restored = [];
+  for (const id of prevSelection) {
+    const n = newNodesById.get(id);
+    if (n) restored.push(n);
+  }
+  _selection = new Set(restored.map(n => n.getAttr('headerId')));
+  _transformer.nodes(restored);
+  _layer.batchDraw();
+}
+
+/**
+ * Build a single Konva node for a header item. Text → Konva.Text;
+ * image → Konva.Image (with async dataUrl load). Returns null on bad
+ * input.
+ */
+function _buildNode(item, ctx, lock) {
+  if (item.kind === 'image') {
+    const node = new Konva.Image({
+      x: item.x,
+      y: item.y,
+      width:  item.w,
+      height: item.h,
+      draggable: !lock,
+      name: 'sbs-header-item',
+    });
+    node.setAttr('headerId',   item.id);
+    node.setAttr('headerKind', item.kind);
+    node.setAttr('naturalW',   item.naturalW || null);
+    node.setAttr('naturalH',   item.naturalH || null);
+    _attachItemHandlers(node, item, lock);
+    if (item.dataUrl) _hydrateImage(node, item.dataUrl);
+    return node;
+  }
+
+  // Text-flavoured kinds — resolve text live for dynamic kinds.
+  const text = resolveHeaderText(item, ctx);
+  const node = new Konva.Text({
+    x: item.x,
+    y: item.y,
+    width:  item.w,
+    height: item.h,
+    text:   text || ' ',                      // Konva collapses empty boxes; keep a space
+    fontSize:   item.fontSize   || 32,
+    fontStyle:  [item.fontStyle  === 'italic' ? 'italic' : '',
+                 item.fontWeight === 'bold'   ? 'bold'   : ''].filter(Boolean).join(' ') || 'normal',
+    fill:    item.color || '#ffffff',
+    align:   item.align || 'center',
+    verticalAlign: 'middle',
+    draggable: !lock,
+    name: 'sbs-header-item',
+    // Subtle text shadow so light text stays readable on light viewport bg.
+    shadowColor:   'rgba(0,0,0,0.45)',
+    shadowOffsetY: 1,
+    shadowBlur:    2,
+  });
+  node.setAttr('headerId',   item.id);
+  node.setAttr('headerKind', item.kind);
+  _attachItemHandlers(node, item, lock);
+  return node;
+}
+
+function _attachItemHandlers(node, item, lock) {
+  if (lock) return;
+  node.on('pointerdown', (e) => {
+    const additive = !!(e.evt && (e.evt.shiftKey || e.evt.ctrlKey || e.evt.metaKey));
+    _selectHeaderNode(node, additive);
+  });
+  // Persist drag / resize back to state.headerItems.
+  node.on('dragend transformend', () => {
+    // Flatten any scaleX/scaleY into width/height so the saved data stays
+    // a clean rect (mirrors the overlay.js commit pattern).
+    const sx = node.scaleX();
+    const sy = node.scaleY();
+    if (sx !== 1 || sy !== 1) {
+      node.width(node.width() * sx);
+      node.height(node.height() * sy);
+      node.scaleX(1);
+      node.scaleY(1);
+    }
+    updateHeaderItem(item.id, {
+      x: node.x(),
+      y: node.y(),
+      w: node.width(),
+      h: node.height(),
+    });
+  });
+}
+
+function _selectHeaderNode(node, additive) {
+  if (additive) {
+    if (_selection.has(node.getAttr('headerId'))) {
+      _selection.delete(node.getAttr('headerId'));
+    } else {
+      _selection.add(node.getAttr('headerId'));
+    }
+  } else {
+    _selection = new Set([node.getAttr('headerId')]);
+  }
+  const nodes = _layer.getChildren()
+    .filter(c => c !== _transformer && _selection.has(c.getAttr('headerId')));
+  _transformer.nodes(nodes);
+  _layer.batchDraw();
+}
+
+async function _hydrateImage(node, dataUrl) {
+  let img = _imageCache.get(dataUrl);
+  if (!img) {
+    img = await _loadImage(dataUrl).catch(() => null);
+    if (img) _imageCache.set(dataUrl, img);
+  }
+  if (!img || node.isDestroyed?.()) return;
+  node.image(img);
+  _layer?.batchDraw();
+}
+
+function _loadImage(src) {
+  return new Promise((resolve, reject) => {
+    const img = new Image();
+    img.onload  = () => resolve(img);
+    img.onerror = reject;
+    img.src = src;
+  });
+}
+
+/** Currently-selected header item ids. Read-only snapshot. */
+export function getHeaderSelection() {
+  return Array.from(_selection);
+}
+
+/** Imperatively select a header item by id (or null to clear). */
+export function selectHeader(id) {
+  if (!_layer) return;
+  if (!id) {
+    _selection.clear();
+    _transformer.nodes([]);
+    _layer.batchDraw();
+    return;
+  }
+  const node = _layer.getChildren().find(c => c.getAttr?.('headerId') === id);
+  if (node) _selectHeaderNode(node, false);
+}
