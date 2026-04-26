@@ -23,12 +23,13 @@ import { createCameraView, generateId, APP_VERSION, APP_RELEASED } from '../core
 import { buildNodeMap }    from '../core/nodes.js';
 import { showContextMenu } from './context-menu.js';
 import { renderAnimationTab } from './animation-tab.js';
+import { renderHeaderTab }    from './header-tab.js';
 import { exportTimelineVideo, downloadBlob } from '../systems/video-export.js';
 import { listVoices as ttsListVoices } from '../systems/tts.js';
 import * as userSettings    from '../core/user-settings.js';
 import * as narrationCache  from '../systems/narration-cache.js';
 
-const TABS = ['files', 'tree', 'colors', 'select', 'cameras', 'animation', 'export'];
+const TABS = ['files', 'tree', 'colors', 'select', 'cameras', 'animation', 'header', 'export'];
 let _activeTab   = 'files';
 let _container   = null;
 let _treeInited  = false;
@@ -49,6 +50,7 @@ export function initSidebarLeft() {
       <button class="tabBtn"        data-tab="select">Select</button>
       <button class="tabBtn"        data-tab="cameras">Cameras</button>
       <button class="tabBtn"        data-tab="animation">Anim</button>
+      <button class="tabBtn"        data-tab="header">Header</button>
       <button class="tabBtn"        data-tab="export">Export</button>
     </div>
     <div class="sidebar-panels" id="left-panels"></div>
@@ -79,6 +81,9 @@ export function initSidebarLeft() {
   state.on('change:projectDirty',          () => { if (_activeTab === 'files')    _renderFilesTab(); });
   state.on('change:selectionOutlineColor', () => { if (_activeTab === 'select')   _renderSelectTab(); });
   state.on('change:animationPresets',      () => { if (_activeTab === 'animation') _renderAnimTab(); });
+  state.on('change:headerItems',           () => { if (_activeTab === 'header')    _renderHeaderTabPanel(); });
+  state.on('change:headersHidden',         () => { if (_activeTab === 'header')    _renderHeaderTabPanel(); });
+  state.on('change:headersLocked',         () => { if (_activeTab === 'header')    _renderHeaderTabPanel(); });
 
   _renderActiveTab();
 
@@ -112,12 +117,17 @@ function _renderActiveTab() {
     case 'select':    _renderSelectTab();  break;
     case 'cameras':   _renderCamerasTab(); break;
     case 'animation': _renderAnimTab();    break;
+    case 'header':    _renderHeaderTabPanel(); break;
     case 'export':    _renderExportTab();  break;
   }
 }
 
 function _renderAnimTab() {
   renderAnimationTab(_panel('animation'));
+}
+
+function _renderHeaderTabPanel() {
+  renderHeaderTab(_panel('header'));
 }
 
 
