@@ -176,15 +176,22 @@ function _enterTextEdit(node) {
   // CSS MUST match _htmlToCanvas exactly — padding, font-family, font-size,
   // line-height. Otherwise the rasterised result lands somewhere different
   // from where the user typed and the click-out feels like a "jump".
+  // Live editor mounts with auto-height. Setting min-height was making
+  // the editable taller than the content (and hiding caret position
+  // strangeness on short content). With min-height:0 the box's height
+  // tracks whatever the user types — exactly matching the rasterised
+  // result on click-out.
+  // overflow stays visible during edit so the caret never gets clipped
+  // mid-line; the rasteriser still uses overflow:hidden internally
+  // (no-op when there's no fixed height anyway).
   div.style.cssText = [
     'position:fixed',
     `left:${Math.round(containerRect.left + pos.x)}px`,
     `top:${Math.round(containerRect.top + pos.y)}px`,
     `width:${Math.round(node.width())}px`,
-    `min-height:${Math.round(node.height())}px`,
+    'min-height:0',
     'padding:8px',                     // matches _htmlToCanvas default
     'margin:0',
-    // outline (not border) so the dashed indicator doesn't take content space
     'border:0',
     'outline:2px dashed #f59e0b',
     'outline-offset:0',
@@ -193,7 +200,6 @@ function _enterTextEdit(node) {
     'font-family:Arial',               // matches _htmlToCanvas default
     'font-size:16px',                  // matches _htmlToCanvas default
     'line-height:1.2',                 // matches _htmlToCanvas default
-    'overflow:hidden',
     'white-space:pre-wrap',
     'word-wrap:break-word',
     'box-sizing:border-box',           // matches _htmlToCanvas default
@@ -316,19 +322,19 @@ async function _reflowTextBox(node) {
   const html = node.getAttr('textHtml');
   if (!html) return;
   const w = Math.max(20, Math.round(node.width()));
-  const h = Math.max(20, Math.round(node.height()));
   const bgColor = node.getAttr('fillColor') || 'transparent';
-  const canvas = await _htmlToCanvas(html, { width: w, height: h, bgColor });
+  // Auto-height: do NOT pass `height` to the rasteriser. The canvas
+  // ends up exactly as tall as the wrapped text needs at this width.
+  // Box grows/shrinks vertically as the content does — true text-frame
+  // behaviour without a manual height handle for the user to fight.
+  const canvas = await _htmlToCanvas(html, { width: w, bgColor });
   if (!canvas) return;
   node.image(canvas);
-  // Keep the user's dragged dimensions; do NOT overwrite from canvas.*.
-  // The canvas was rendered at exactly w × h thanks to the explicit
-  // height option, so they'll match anyway.
-  node.width(w);
-  node.height(h);
-  node.setAttr('textWidth', w);
-  node.setAttr('naturalW',  w);
-  node.setAttr('naturalH',  h);
+  node.width(canvas.width);
+  node.height(canvas.height);
+  node.setAttr('textWidth', canvas.width);
+  node.setAttr('naturalW',  canvas.width);
+  node.setAttr('naturalH',  canvas.height);
   _layer.batchDraw();
 }
 
@@ -422,11 +428,14 @@ function _attachNode(node) {
     const editing = _activeTextEditor && _activeTextEditor.node === node;
     if (!editing) return;
     const div = _activeTextEditor.div;
-    const w = node.width()  * node.scaleX();
-    const h = node.height() * node.scaleY();
-    div.style.width     = `${Math.max(20, Math.round(w))}px`;
-    div.style.minHeight = `${Math.max(20, Math.round(h))}px`;
-    // Editor follows the node's anchored corner during top/left drags.
+    // Width-only resize for text boxes — height is content-driven, the
+    // editable's natural height grows / shrinks as the wrap reflows.
+    // We deliberately don't set a min-height here so the user sees real
+    // height feedback while dragging.
+    const w = node.width() * node.scaleX();
+    div.style.width = `${Math.max(20, Math.round(w))}px`;
+    div.style.minHeight = '0px';
+    // Editor follows the node's anchored corner during left-side drags.
     const containerRect = _container.getBoundingClientRect();
     const pos = node.getAbsolutePosition();
     div.style.left = `${Math.round(containerRect.left + pos.x)}px`;
@@ -447,12 +456,11 @@ function _attachNode(node) {
     }
     const editing = _activeTextEditor && _activeTextEditor.node === node;
     if (editing) {
-      // In edit mode the editor IS the source of truth — sync its
-      // dimensions and let the user keep typing. The raster gets
-      // rebuilt when they click out (commit path in _exitTextEdit).
+      // In edit mode the editor IS the source of truth — sync its width
+      // (height is content-driven, so we leave min-height at 0).
       const div = _activeTextEditor.div;
       div.style.width     = `${Math.max(20, Math.round(node.width()))}px`;
-      div.style.minHeight = `${Math.max(20, Math.round(node.height()))}px`;
+      div.style.minHeight = '0px';
     } else if (node.getClassName() === 'Image' && node.getAttr('textHtml')) {
       // Selection-only state: not currently expected (we removed text-box
       // anchors outside of edit mode), but if anything ever reaches here
@@ -862,13 +870,13 @@ function _configTransformerForNodes(nodes) {
   if (!_transformer || !nodes?.length) return;
   const allTextBoxes = nodes.every(n => n.getClassName?.() === 'Image' && n.getAttr('textHtml'));
   if (allTextBoxes) {
+    // Text boxes: WIDTH ONLY. Height is computed from content — taller
+    // text = taller box, automatically. Top/bottom/corner anchors are
+    // off because they'd let the user fight the auto-height; the user
+    // adjusts width and the box snaps to the right vertical extent.
     _transformer.keepRatio(false);
     _transformer.rotateEnabled(false);
-    _transformer.enabledAnchors([
-      'top-left', 'top-center', 'top-right',
-      'middle-left',           'middle-right',
-      'bottom-left', 'bottom-center', 'bottom-right',
-    ]);
+    _transformer.enabledAnchors(['middle-left', 'middle-right']);
     return;
   }
   // Anything with an image (or mixed) — lock aspect, corners only.
