@@ -28,6 +28,8 @@ import {
   setHeadersHidden,
   setHeadersLocked,
   selectHeader,
+  exportHeaderSetup,
+  importHeaderSetup,
 } from '../systems/header.js';
 
 const KIND_LABELS = {
@@ -73,8 +75,8 @@ export function renderHeaderTab(container) {
         <button class="btn" id="hdr-toggle-lock" title="Prevent header items from being moved on the canvas">
           ${locked ? '🔓 Unlock' : '🔒 Lock'}
         </button>
-        <button class="btn" id="hdr-save-setup" title="Export header layout as a .sbsheader file" disabled>Save Setup</button>
-        <button class="btn" id="hdr-load-setup" title="Import a .sbsheader file" disabled>Load Setup</button>
+        <button class="btn" id="hdr-save-setup" title="Export header layout as a .sbsheader file" ${items.length === 0 ? 'disabled' : ''}>Save Setup</button>
+        <button class="btn" id="hdr-load-setup" title="Import a .sbsheader file">Load Setup</button>
       </div>
 
       <div class="card" style="margin-top:10px;padding:0;">
@@ -103,6 +105,8 @@ export function renderHeaderTab(container) {
   // ─── Top-row toggles ───────────────────────────────────────────────────
   container.querySelector('#hdr-toggle-hidden').addEventListener('click', () => setHeadersHidden(!hidden));
   container.querySelector('#hdr-toggle-lock')  .addEventListener('click', () => setHeadersLocked(!locked));
+  container.querySelector('#hdr-save-setup')   .addEventListener('click', _onSaveSetup);
+  container.querySelector('#hdr-load-setup')   .addEventListener('click', _onLoadSetup);
 
   // ─── Per-row delegation ────────────────────────────────────────────────
   container.querySelector('#hdr-list')?.addEventListener('click', e => {
@@ -299,6 +303,74 @@ function _imageDims(dataUrl) {
     img.onerror = () => resolve({ width: 0, height: 0 });
     img.src = dataUrl;
   });
+}
+
+// ─── .sbsheader save / load ─────────────────────────────────────────────────
+
+async function _onSaveSetup() {
+  const payload = exportHeaderSetup();
+  if (!payload.items?.length) { setStatus('No header items to save.', 'warning'); return; }
+  const json = JSON.stringify(payload, null, 2);
+
+  // Electron path — full file picker.
+  if (window.sbsNative?.saveHeader && window.sbsNative?.writeFile) {
+    const path = await window.sbsNative.saveHeader('header_setup.sbsheader');
+    if (!path) return;
+    const res = await window.sbsNative.writeFile(path, json, 'utf-8');
+    if (res?.ok) setStatus(`Saved header setup → ${path.split(/[\\/]/).pop()}`);
+    else         setStatus(`Save failed: ${res?.error || 'unknown'}`, 'danger');
+    return;
+  }
+  // Browser fallback — anchor download.
+  const blob = new Blob([json], { type: 'application/json' });
+  const a    = document.createElement('a');
+  a.href     = URL.createObjectURL(blob);
+  a.download = 'header_setup.sbsheader';
+  a.click();
+  setTimeout(() => URL.revokeObjectURL(a.href), 1000);
+  setStatus('Saved header setup (downloaded).');
+}
+
+async function _onLoadSetup() {
+  let json = null;
+
+  if (window.sbsNative?.openHeader && window.sbsNative?.readFile) {
+    const path = await window.sbsNative.openHeader();
+    if (!path) return;
+    const res = await window.sbsNative.readFile(path, 'utf-8');
+    if (!res?.ok) { setStatus(`Load failed: ${res?.error || 'unknown'}`, 'danger'); return; }
+    json = res.data;
+  } else {
+    // Browser fallback — file picker.
+    json = await new Promise(resolve => {
+      const input = document.createElement('input');
+      input.type   = 'file';
+      input.accept = '.sbsheader,.json,application/json';
+      input.onchange = () => {
+        const f = input.files?.[0];
+        if (!f) { resolve(null); return; }
+        const r = new FileReader();
+        r.onload  = () => resolve(String(r.result || ''));
+        r.onerror = () => resolve(null);
+        r.readAsText(f);
+      };
+      input.click();
+    });
+    if (!json) return;
+  }
+
+  let payload;
+  try { payload = JSON.parse(json); }
+  catch (err) { setStatus('Invalid .sbsheader file (not JSON).', 'danger'); return; }
+
+  // Confirm if the user already has items — load is a wholesale replace.
+  const existing = (state.get('headerItems') || []).length;
+  if (existing > 0 && !confirm(`Replace ${existing} existing header item(s) with the loaded setup?`)) return;
+
+  const n = importHeaderSetup(payload);
+  if (n > 0) setStatus(`Loaded ${n} header item(s).`);
+  else       setStatus('No header items found in the file.', 'warning');
+  _activeItemId = null;
 }
 
 // ─── Esc helper ─────────────────────────────────────────────────────────────

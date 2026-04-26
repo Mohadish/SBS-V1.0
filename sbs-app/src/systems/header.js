@@ -392,6 +392,37 @@ export function getHeaderSelection() {
   return Array.from(_selection);
 }
 
+// ─── .sbsheader file format (cross-project portability) ────────────────────
+
+/** Build the JSON payload for a .sbsheader file from current state. */
+export function exportHeaderSetup() {
+  return {
+    _sbsheader: {
+      version: 1,
+      saved:   new Date().toISOString(),
+    },
+    items: JSON.parse(JSON.stringify(state.get('headerItems') || [])),
+  };
+}
+
+/**
+ * Load a .sbsheader payload, replacing the current headerItems list.
+ * Validates the wrapper shape; ignores unknown fields.
+ *
+ * Returns the number of items loaded (0 = invalid file / empty list).
+ */
+export function importHeaderSetup(payload) {
+  if (!payload || typeof payload !== 'object') return 0;
+  const items = Array.isArray(payload.items) ? payload.items : null;
+  if (!items) return 0;
+  // Re-stamp ids so loading the same file twice doesn't collide. Easier
+  // than tracking which ones to keep across loads.
+  const fresh = items.map(it => ({ ...it, id: generateId('hdr') }));
+  state.setState({ headerItems: fresh });
+  state.markDirty();
+  return fresh.length;
+}
+
 /** Imperatively select a header item by id (or null to clear). */
 export function selectHeader(id) {
   if (!_layer) return;

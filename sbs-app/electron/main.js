@@ -326,6 +326,24 @@ ipcMain.handle('dialog:saveProject', async (_, defaultName) => {
   return result.canceled ? null : result.filePath;
 });
 
+// Save / open .sbsheader files — header layout setup, portable across projects.
+ipcMain.handle('dialog:saveHeader', async (_, defaultName) => {
+  const result = await dialog.showSaveDialog(mainWindow, {
+    title: 'Save Header Setup',
+    defaultPath: defaultName || 'header_setup.sbsheader',
+    filters: [{ name: 'SBS Header Setup', extensions: ['sbsheader','json'] }],
+  });
+  return result.canceled ? null : result.filePath;
+});
+ipcMain.handle('dialog:openHeader', async () => {
+  const result = await dialog.showOpenDialog(mainWindow, {
+    title: 'Open Header Setup',
+    filters: [{ name: 'SBS Header Setup', extensions: ['sbsheader','json'] }],
+    properties: ['openFile'],
+  });
+  return result.canceled ? null : result.filePaths[0];
+});
+
 // Choose export output folder
 ipcMain.handle('dialog:chooseExportFolder', async () => {
   const result = await dialog.showOpenDialog(mainWindow, {

@@ -19,6 +19,8 @@ contextBridge.exposeInMainWorld('sbsNative', {
   openModel:          ()          => ipcRenderer.invoke('dialog:openModel'),
   openProject:        ()          => ipcRenderer.invoke('dialog:openProject'),
   saveProject:        (name)      => ipcRenderer.invoke('dialog:saveProject', name),
+  saveHeader:         (name)      => ipcRenderer.invoke('dialog:saveHeader', name),
+  openHeader:         ()          => ipcRenderer.invoke('dialog:openHeader'),
   chooseExportFolder: ()          => ipcRenderer.invoke('dialog:chooseExportFolder'),
   chooseFolder:       (opts={})   => ipcRenderer.invoke('dialog:chooseFolder', opts),
 
