@@ -32,12 +32,14 @@ function log(msg) {
 }
 
 function bundleDir() {
-  // Match main.js#_kokoroBundleDir — packaged vs dev layouts differ.
-  // process.resourcesPath lives in the renderer too (Electron exposes it).
-  const isPackaged = !!process.resourcesPath && process.resourcesPath.includes('resources');
-  return isPackaged
-    ? path.join(process.resourcesPath, 'kokoro-bundle')
-    : path.resolve(__dirname, '..', 'kokoro-bundle');
+  // Main passes the resolved path via webPreferences.additionalArguments.
+  // We can't detect dev-vs-packaged from the renderer reliably —
+  // process.resourcesPath here points at Electron's own install folder,
+  // not our app — so trust what main tells us.
+  const arg = (process.argv || []).find(a => a.startsWith('--sbs-kokoro-bundle='));
+  if (arg) return arg.slice('--sbs-kokoro-bundle='.length);
+  // Last-resort dev fallback (shouldn't be hit if main passes the arg):
+  return path.resolve(__dirname, '..', 'kokoro-bundle');
 }
 
 let _instance      = null;

@@ -52,6 +52,11 @@ function _ensureTtsHost() {
       contextIsolation:     false,
       sandbox:              false,
       backgroundThrottling: false,   // don't pause when minimised / hidden
+      // Pass the bundle dir explicitly. In renderer, process.resourcesPath
+      // always points at Electron's install dir (not our app), so we can't
+      // detect dev-vs-packaged the same way main.js can. Forward the
+      // already-resolved path so the host has zero ambiguity.
+      additionalArguments: [`--sbs-kokoro-bundle=${_kokoroBundleDir()}`],
     },
   });
   _ttsHostWindow.loadFile(path.join(__dirname, 'tts-host.html'));
