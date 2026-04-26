@@ -228,6 +228,13 @@ function _enterTextEdit(node) {
   // line a stable block container and Enter / Backspace at position 0
   // behave predictably.
   try { document.execCommand('defaultParagraphSeparator', false, 'div'); } catch {}
+  // Force execCommand to write inline-style spans (e.g.
+  //   <span style="color:red">...</span>)
+  // instead of legacy <font color="..."> markup. Without this Chromium
+  // defaults to <font> for foreColor/fontName/fontSize, which our
+  // sanitiser strips (not in the allowlist) — so copy/paste between
+  // textboxes was losing colour and font on every round trip.
+  try { document.execCommand('styleWithCSS', false, true); } catch {}
 
   // Focus + put the caret at the end of the existing content.
   div.focus();
@@ -290,6 +297,31 @@ function _enterTextEdit(node) {
     document.execCommand('delete');
   });
 
+  // Sanitise on paste too. The OS clipboard can hold HTML from anywhere
+  // (websites, Word, PDFs, mail clients) — we run their HTML through
+  // the same allowlist. If the payload has only plain text, fall back
+  // to insertText so the user still gets the content. Without this,
+  // arbitrary external HTML routinely breaks the rasteriser and the
+  // user sees the "show but don't apply, revert on click-out" loop
+  // we hit before.
+  const onPaste = (e) => {
+    const cd = e.clipboardData;
+    if (!cd) return;
+    const html = cd.getData('text/html');
+    const text = cd.getData('text/plain');
+    if (html) {
+      e.preventDefault();
+      const clean = _sanitiseTextboxHtml(html);
+      // insertHTML is consistent with the rest of execCommand-based
+      // editing in this module; it places the HTML at the caret.
+      document.execCommand('insertHTML', false, clean);
+    } else if (text) {
+      e.preventDefault();
+      document.execCommand('insertText', false, text);
+    }
+  };
+  div.addEventListener('paste', onPaste);
+
   // Mount the in-row toolbar (B/I/U/S, font, size, color, align). It
   // takes over the slot inside the existing overlay edit toolbar so all
   // controls live on the same row. Operates on the live Selection inside
@@ -307,13 +339,13 @@ function _enterTextEdit(node) {
   document.addEventListener('selectionchange', onSelectionChange);
   onSelectionChange();   // initial sync
 
-  _activeTextEditor = { node, div, onDocMouseDown, onKeyDown, onCopy, prevOpacity, onSelectionChange };
+  _activeTextEditor = { node, div, onDocMouseDown, onKeyDown, onCopy, onPaste, prevOpacity, onSelectionChange };
 }
 
 /** Close the in-place editor, re-rasterise on the way out (unless discard). */
 async function _exitTextEdit(opts = {}) {
   if (!_activeTextEditor) return;
-  const { node, div, onDocMouseDown, onKeyDown, onCopy, prevOpacity, onSelectionChange } = _activeTextEditor;
+  const { node, div, onDocMouseDown, onKeyDown, onCopy, onPaste, prevOpacity, onSelectionChange } = _activeTextEditor;
   document.removeEventListener('mousedown', onDocMouseDown, true);
   if (onSelectionChange) document.removeEventListener('selectionchange', onSelectionChange);
   div.removeEventListener('keydown', onKeyDown);
@@ -321,6 +353,7 @@ async function _exitTextEdit(opts = {}) {
     div.removeEventListener('copy', onCopy);
     div.removeEventListener('cut',  onCopy);
   }
+  if (onPaste) div.removeEventListener('paste', onPaste);
   unmountTextToolbar();
 
   const html = div.innerHTML;
@@ -1193,8 +1226,20 @@ function _sanitiseTextboxHtml(html) {
     'text-decoration', 'text-align',
   ];
 
+  // Strip clipboard wrapper artefacts before parsing. Chrome and Word
+  // routinely wrap clipboard payloads in <!--StartFragment-->,
+  // <meta charset='utf-8'>, <html><body>, doctypes, etc. The SVG-
+  // foreignObject rasteriser falls over on those — leaving them in
+  // was a major cause of "paste shows up live but doesn't apply".
+  const cleaned = String(html || '')
+    .replace(/<!--[\s\S]*?-->/g,         '')   // HTML comments
+    .replace(/<\?[\s\S]*?\?>/g,           '')   // <?xml ...?> processing instructions
+    .replace(/<!doctype[^>]*>/gi,         '')   // doctype
+    .replace(/<meta\b[^>]*>/gi,           '')   // <meta charset=...>
+    .replace(/<\/?(html|body|head)\b[^>]*>/gi, '');
+
   const tmp = document.createElement('div');
-  tmp.innerHTML = html || '';
+  tmp.innerHTML = cleaned;
 
   function clean(node) {
     if (node.nodeType === 3) return;       // text node — keep as-is
