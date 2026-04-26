@@ -20,6 +20,7 @@ import { setStatus } from './status.js';
 let _bar = null;
 let _mainBtn = null;
 let _tools = null;
+let _textSlot = null;   // populated by text-toolbar.js while editing
 
 export function initOverlayToolbar() {
   const surface = document.getElementById('viewport-surface');
@@ -46,7 +47,7 @@ export function initOverlayToolbar() {
   _bar.appendChild(_mainBtn);
 
   _tools = document.createElement('div');
-  _tools.style.cssText = 'display:none;gap:4px;align-items:center;';
+  _tools.style.cssText = 'display:none;gap:4px;align-items:center;flex-wrap:wrap;';
   const btnText = _btn('+ T', 'Add text box (opens editor)');
   const btnImg  = _btn('+ 🖼', 'Add image');
   const btnDel  = _btn('🗑',  'Delete selected');
@@ -63,10 +64,27 @@ export function initOverlayToolbar() {
   });
   btnDel.addEventListener('click', () => overlay.deleteSelected());
   btnDone.addEventListener('click', () => _setEditing(false));
-  _tools.append(btnText, btnImg, btnDel, _sep(), btnDone);
+
+  // Slot for the in-place text editor's controls (B/I/U/S, font, size,
+  // colour, align). Hidden by default; text-toolbar.mountTextToolbar()
+  // populates and shows it during edit sessions; unmount clears + hides.
+  _textSlot = document.createElement('div');
+  _textSlot.id = 'overlay-text-slot';
+  _textSlot.style.cssText = 'display:none;gap:4px;align-items:center;flex-wrap:wrap;';
+
+  _tools.append(btnText, btnImg, btnDel, _sep(), btnDone, _sep(), _textSlot);
   _bar.appendChild(_tools);
 
   surface.appendChild(_bar);
+}
+
+/**
+ * Returns the inline DIV that text-toolbar.js populates while the
+ * in-place text editor is open. Lives on the same row as the existing
+ * Add/Delete/Done buttons — no separate floating bar.
+ */
+export function getTextToolbarSlot() {
+  return _textSlot;
 }
 
 function _setEditing(on) {

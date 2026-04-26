@@ -18,6 +18,7 @@
 import { state } from '../core/state.js';
 import { showContextMenu } from '../ui/context-menu.js';
 import { mountTextToolbar, unmountTextToolbar } from '../ui/text-toolbar.js';
+import { getTextToolbarSlot }  from '../ui/overlay-toolbar.js';
 
 let _stage       = null;   // Konva.Stage
 let _layer       = null;   // Konva.Layer — holds all user content
@@ -202,12 +203,18 @@ function _enterTextEdit(node) {
   ].join(';');
   document.body.appendChild(div);
 
-  // Hide the raster + transformer while editing — the live <div> is the UI now.
-  node.visible(false);
-  const transformerWasVisible = _transformer.visible();
-  _transformer.visible(false);
-  _layer.batchDraw();
+  // Hide the rasterised image but KEEP the node addressable so the
+  // transformer stays attached — that way the user can resize the box
+  // mid-edit and the contenteditable follows live (see node.on('transform')
+  // in _attachNode).  We use opacity:0 (not visible:false) for this; the
+  // transformer's bounding box still tracks the node's geometry.
+  const prevOpacity = node.opacity();
+  node.opacity(0);
+  // Re-config the transformer for the editing node so 8 anchors show up
+  // (selection-only state has no anchors).
+  _configTransformerForNode(node);
   _uiLayer.batchDraw();
+  _layer.batchDraw();
 
   // Focus + put the caret at the end of the existing content.
   div.focus();
@@ -240,19 +247,21 @@ function _enterTextEdit(node) {
   };
   div.addEventListener('keydown', onKeyDown);
 
-  // Mount the floating toolbar (B/I/U/S, font, size, color, align). It
-  // sits above the editor and operates on the live Selection inside it.
-  // The click-outside detector already whitelists [data-sbs-text-toolbar]
-  // so toolbar clicks won't dismiss the editor.
-  mountTextToolbar(div);
+  // Mount the in-row toolbar (B/I/U/S, font, size, color, align). It
+  // takes over the slot inside the existing overlay edit toolbar so all
+  // controls live on the same row. Operates on the live Selection inside
+  // the contenteditable. The click-outside detector already whitelists
+  // [data-sbs-text-toolbar] so toolbar clicks won't dismiss the editor.
+  const toolbarHost = getTextToolbarSlot();
+  if (toolbarHost) mountTextToolbar(toolbarHost, div);
 
-  _activeTextEditor = { node, div, onDocMouseDown, onKeyDown, transformerWasVisible };
+  _activeTextEditor = { node, div, onDocMouseDown, onKeyDown, prevOpacity };
 }
 
 /** Close the in-place editor, re-rasterise on the way out (unless discard). */
 async function _exitTextEdit(opts = {}) {
   if (!_activeTextEditor) return;
-  const { node, div, onDocMouseDown, onKeyDown, transformerWasVisible } = _activeTextEditor;
+  const { node, div, onDocMouseDown, onKeyDown, prevOpacity } = _activeTextEditor;
   document.removeEventListener('mousedown', onDocMouseDown, true);
   div.removeEventListener('keydown', onKeyDown);
   unmountTextToolbar();
@@ -275,8 +284,9 @@ async function _exitTextEdit(opts = {}) {
     }
   }
 
-  node.visible(true);
-  _transformer.visible(transformerWasVisible);
+  node.opacity(typeof prevOpacity === 'number' ? prevOpacity : 1);
+  // Snap the transformer back to selection-only state for this text box.
+  _configTransformerForNode(node);
   _layer.batchDraw();
   _uiLayer.batchDraw();
   _scheduleSave();
@@ -349,6 +359,26 @@ export async function addImage(src) {
 
 function _attachNode(node) {
   node.on('pointerdown', () => _setSelection(node));
+
+  // LIVE resize during edit — when the user drags a transform anchor on a
+  // text box that's currently being edited, the contenteditable resizes
+  // in real time so the user sees text reflow instead of a stretched
+  // raster (the editor is HTML, the raster only comes back on click-out).
+  node.on('transform', () => {
+    const editing = _activeTextEditor && _activeTextEditor.node === node;
+    if (!editing) return;
+    const div = _activeTextEditor.div;
+    const w = node.width()  * node.scaleX();
+    const h = node.height() * node.scaleY();
+    div.style.width     = `${Math.max(20, Math.round(w))}px`;
+    div.style.minHeight = `${Math.max(20, Math.round(h))}px`;
+    // Editor follows the node's anchored corner during top/left drags.
+    const containerRect = _container.getBoundingClientRect();
+    const pos = node.getAbsolutePosition();
+    div.style.left = `${Math.round(containerRect.left + pos.x)}px`;
+    div.style.top  = `${Math.round(containerRect.top  + pos.y)}px`;
+  });
+
   // Flatten Konva's scaleX/scaleY into width/height on transformend so
   // toJSON round-trips a clean rect (and so future Resets compare against
   // a single source of truth instead of "width × scale").
@@ -361,11 +391,18 @@ function _attachNode(node) {
       node.scaleX(1);
       node.scaleY(1);
     }
-    // Text boxes need to reflow the raster at the new width — otherwise
-    // the bitmap from the previous size stays stretched. Re-render through
-    // the existing _editTextBox path but skip its modal: we just want the
-    // raster updated at the new width with the existing HTML + font size.
-    if (node.getClassName() === 'Image' && node.getAttr('textHtml')) {
+    const editing = _activeTextEditor && _activeTextEditor.node === node;
+    if (editing) {
+      // In edit mode the editor IS the source of truth — sync its
+      // dimensions and let the user keep typing. The raster gets
+      // rebuilt when they click out (commit path in _exitTextEdit).
+      const div = _activeTextEditor.div;
+      div.style.width     = `${Math.max(20, Math.round(node.width()))}px`;
+      div.style.minHeight = `${Math.max(20, Math.round(node.height()))}px`;
+    } else if (node.getClassName() === 'Image' && node.getAttr('textHtml')) {
+      // Selection-only state: not currently expected (we removed text-box
+      // anchors outside of edit mode), but if anything ever reaches here
+      // we still want the raster to reflow rather than stay stretched.
       _reflowTextBox(node);
     }
     _scheduleSave();
@@ -440,27 +477,42 @@ function _setSelection(node) {
 }
 
 /**
- * Flip the transformer's resize behaviour based on what's selected.
- *   • Text boxes (Konva.Image with textHtml) — free resize on all 8
- *     anchors, no aspect lock. The raster reflows on transformend.
- *   • Plain images — aspect-locked uniform scale on the four corners.
- *     Skewing the bitmap looks bad; users don't want that anyway.
+ * Flip the transformer's resize behaviour based on what's selected AND
+ * whether we're in the in-place text editor.
  *
- * The transform sequence is identical for both; only the constraints differ.
+ *   • Text box, NOT editing — selection visual only (border for feedback,
+ *     drag-to-move enabled, NO resize anchors, no rotate). Resize lives
+ *     in edit mode; single-click is a "move only" affordance.
+ *   • Text box, EDITING       — full 8 anchors, free resize, no rotate
+ *     (rotation on a contenteditable is awkward; we omit it).
+ *   • Plain image             — aspect-locked uniform scale on the four
+ *     corners. Skewing bitmaps looks bad.
  */
 function _configTransformerForNode(node) {
   const isTextBox = !!node.getAttr('textHtml');
-  if (isTextBox) {
+  const isEditingThis = !!_activeTextEditor && _activeTextEditor.node === node;
+
+  if (isTextBox && isEditingThis) {
     _transformer.keepRatio(false);
+    _transformer.rotateEnabled(false);
     _transformer.enabledAnchors([
       'top-left', 'top-center', 'top-right',
       'middle-left',           'middle-right',
       'bottom-left', 'bottom-center', 'bottom-right',
     ]);
-  } else {
-    _transformer.keepRatio(true);
-    _transformer.enabledAnchors(['top-left', 'top-right', 'bottom-left', 'bottom-right']);
+    return;
   }
+  if (isTextBox) {
+    // Selection-only state: border + draggable, no handles.
+    _transformer.keepRatio(false);
+    _transformer.rotateEnabled(false);
+    _transformer.enabledAnchors([]);
+    return;
+  }
+  // Image — Phase 1 default.
+  _transformer.keepRatio(true);
+  _transformer.rotateEnabled(true);
+  _transformer.enabledAnchors(['top-left', 'top-right', 'bottom-left', 'bottom-right']);
 }
 
 // ─── Selected-node mutators (called from toolbar) ──────────────────────────

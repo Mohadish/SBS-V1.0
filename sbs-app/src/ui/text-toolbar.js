@@ -33,90 +33,48 @@ const FONTS = [
 ];
 const SIZES = [10, 12, 14, 16, 20, 24, 28, 32, 40, 48, 64, 96, 128];
 
-let _toolbar = null;
+let _toolbar = null;   // host element (provided by overlay-toolbar.js)
 let _editor  = null;   // the contenteditable <div> we're attached to
 
 /**
- * Mount the toolbar. Call once per edit session — overlay.js does this
- * inside _enterTextEdit. The editorEl is the contenteditable div; we
- * position the toolbar just above it.
+ * Build the text controls inside the supplied host element. Replaces any
+ * existing children. The host is provided by overlay-toolbar so the
+ * controls live on the same row as Add Text / Add Image / Delete /
+ * Done — no separate floating bar.
  */
-export function mountTextToolbar(editorEl) {
+export function mountTextToolbar(host, editorEl) {
   if (_toolbar) unmountTextToolbar();
-  _editor = editorEl;
-
-  _toolbar = document.createElement('div');
+  _toolbar = host;
+  _editor  = editorEl;
+  _toolbar.innerHTML = '';
   _toolbar.dataset.sbsTextToolbar = '1';
-  _toolbar.style.cssText = [
-    'position:fixed',
-    'background:#0e1420',
-    'border:1px solid #334155',
-    'border-radius:8px',
-    'box-shadow:0 6px 24px rgba(0,0,0,0.4)',
-    'padding:6px 8px',
-    'display:flex','flex-wrap:wrap','align-items:center','gap:4px',
-    'z-index:10001',
-    'font-family:Arial,Helvetica,sans-serif',
-    'font-size:13px',
-    'color:#e5e7eb',
-    'user-select:none',
-  ].join(';');
 
-  // Build controls
   _toolbar.append(
-    _btn('B', 'Bold (Ctrl+B)', () => _exec('bold'),         { fontWeight: 'bold' }),
-    _btn('I', 'Italic (Ctrl+I)', () => _exec('italic'),     { fontStyle:  'italic' }),
-    _btn('U', 'Underline (Ctrl+U)', () => _exec('underline'),{ textDecoration: 'underline' }),
-    _btn('S', 'Strikethrough', () => _exec('strikeThrough'),{ textDecoration: 'line-through' }),
+    _btn('B', 'Bold (Ctrl+B)',     () => _exec('bold'),          { fontWeight: 'bold' }),
+    _btn('I', 'Italic (Ctrl+I)',   () => _exec('italic'),        { fontStyle:  'italic' }),
+    _btn('U', 'Underline (Ctrl+U)',() => _exec('underline'),     { textDecoration: 'underline' }),
+    _btn('S', 'Strikethrough',     () => _exec('strikeThrough'), { textDecoration: 'line-through' }),
     _sep(),
-    _select('font', FONTS,                            (v) => _exec('fontName', v)),
-    _select('size', SIZES.map(s => `${s}`),           (v) => _execFontSize(Number(v))),
-    _color('Text color',                              (v) => _exec('foreColor', v)),
+    _select('font', FONTS,                  (v) => _exec('fontName', v)),
+    _select('size', SIZES.map(s => `${s}`), (v) => _execFontSize(Number(v))),
+    _color('Text color',                    (v) => _exec('foreColor', v)),
     _sep(),
     _btn('⫷', 'Align left',   () => _exec('justifyLeft')),
     _btn('⫿', 'Align center', () => _exec('justifyCenter')),
     _btn('⫸', 'Align right',  () => _exec('justifyRight')),
   );
 
-  document.body.appendChild(_toolbar);
-  _positionToolbar();
-
-  // Reposition if window is resized (rare during a single edit session,
-  // but harmless to wire).
-  window.addEventListener('resize', _positionToolbar);
-  window.addEventListener('scroll',  _positionToolbar, true);
+  _toolbar.style.display = 'flex';
 }
 
 export function unmountTextToolbar() {
-  window.removeEventListener('resize', _positionToolbar);
-  window.removeEventListener('scroll',  _positionToolbar, true);
   if (_toolbar) {
-    try { _toolbar.remove(); } catch {}
+    _toolbar.innerHTML = '';
+    _toolbar.style.display = 'none';
+    delete _toolbar.dataset.sbsTextToolbar;
     _toolbar = null;
   }
   _editor = null;
-}
-
-// ─── Internals ──────────────────────────────────────────────────────────────
-
-function _positionToolbar() {
-  if (!_toolbar || !_editor) return;
-  const r  = _editor.getBoundingClientRect();
-  // Measure toolbar height for above/below decision.
-  const tw = _toolbar.offsetWidth;
-  const th = _toolbar.offsetHeight;
-  const margin = 8;
-
-  // Prefer above, fall through to below if no room.
-  let top  = r.top - th - margin;
-  if (top < 4) top = r.bottom + margin;
-
-  // Center over the editor, then clamp to viewport.
-  let left = r.left + (r.width - tw) / 2;
-  left = Math.max(4, Math.min(window.innerWidth - tw - 4, left));
-
-  _toolbar.style.left = `${Math.round(left)}px`;
-  _toolbar.style.top  = `${Math.round(top)}px`;
 }
 
 /**
