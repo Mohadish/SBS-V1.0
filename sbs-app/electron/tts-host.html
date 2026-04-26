@@ -1,0 +1,23 @@
+<!DOCTYPE html>
+<!--
+  Hidden TTS host window.
+  ──────────────────────
+  Lives in its own renderer process so Kokoro inference can use Chromium's
+  WebGPU stack — sidesteps the DirectML EP ConvTranspose bug we hit on the
+  worker_threads + ORT-node path. nodeIntegration is on (CONTROLLED window,
+  no remote content) so we can `require('kokoro-js')` directly without
+  bundling. transformers.js still routes `device:'webgpu'` to onnxruntime-
+  web's WebGPU backend, even when loaded via Node's require().
+-->
+<html>
+<head>
+  <meta charset="utf-8" />
+  <meta http-equiv="Content-Security-Policy"
+        content="default-src 'self' file: blob: data:; script-src 'self' 'unsafe-eval' 'unsafe-inline' blob:; connect-src 'self' file: blob: data:;" />
+  <title>SBS TTS host</title>
+</head>
+<body>
+  <div id="status">Loading Kokoro…</div>
+  <script src="./tts-host.js"></script>
+</body>
+</html>

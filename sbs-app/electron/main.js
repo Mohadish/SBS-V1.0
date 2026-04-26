@@ -7,69 +7,104 @@ const { spawn, execSync } = require('child_process');
 const os = require('os');
 const say = require('say');
 
-// ─── Kokoro worker thread ─────────────────────────────────────────────────
-// Kokoro inference is CPU-heavy (~1× real-time) and synchronous in JS,
-// so doing it on the main process thread freezes every IPC handler — the
-// renderer's UI hangs because most user actions round-trip through main.
-// Move it to a worker_threads Worker. Main process stays responsive; the
-// worker queues synths internally (it handles one message at a time).
-const { Worker } = require('worker_threads');
+// ─── Kokoro TTS host (hidden BrowserWindow + WebGPU) ──────────────────────
+// History: we tried CPU-only via worker_threads (slow), then DirectML EP
+// via worker_threads (failed at ConvTranspose). The clean GPU path is
+// Chromium's WebGPU stack, which lives in a renderer process — so we host
+// Kokoro in a hidden BrowserWindow and treat it as a synth backend
+// reachable over IPC. transformers.js officially supports `device:'webgpu'`,
+// works on any modern GPU (NVIDIA / AMD / Intel / integrated), no CUDA
+// install needed. Hidden window means main UI thread never sees the load.
+let _ttsHostWindow = null;
+let _ttsHostReady  = null;   // resolves when the host posts 'tts-host:ready'
+let _ttsHostSeq    = 0;
+const _ttsHostPending = new Map();   // id → { resolve, reject }
 
-let _kokoroWorker = null;
-let _kokoroSeq    = 0;
-const _kokoroPending = new Map();   // id → { resolve, reject }
-
-function _kokoroBundlePaths() {
-  return {
-    bundleDir: app.isPackaged
-      ? path.join(process.resourcesPath, 'kokoro-bundle')
-      : path.join(APP_ROOT, 'kokoro-bundle'),
-    cacheDir: path.join(app.getPath('userData'), 'kokoro-cache'),
-  };
+function _kokoroBundleDir() {
+  return app.isPackaged
+    ? path.join(process.resourcesPath, 'kokoro-bundle')
+    : path.join(APP_ROOT, 'kokoro-bundle');
 }
 
-function _ensureKokoroWorker() {
-  if (_kokoroWorker) return _kokoroWorker;
-  const paths = _kokoroBundlePaths();
-  try { fs.mkdirSync(paths.cacheDir, { recursive: true }); } catch {}
-  console.log(`[kokoro] spawning worker — bundle=${paths.bundleDir}`);
-  _kokoroWorker = new Worker(path.join(__dirname, 'kokoro-worker.js'), {
-    workerData: paths,
+function _ensureTtsHost() {
+  if (_ttsHostWindow && !_ttsHostWindow.isDestroyed()) return _ttsHostReady;
+
+  console.log('[tts-host] spawning hidden window');
+  _ttsHostReady = new Promise((resolve) => {
+    ipcMain.once('tts-host:ready', (_e, info) => {
+      console.log(`[tts-host] ready — backend=${info?.backend}, voices=${info?.voices?.length ?? '?'}`);
+      resolve(info);
+    });
   });
-  _kokoroWorker.on('message', (msg) => {
-    if (msg?.kind === 'log') { console.log(msg.msg); return; }
-    const pending = _kokoroPending.get(msg.id);
-    if (!pending) return;
-    _kokoroPending.delete(msg.id);
-    if (msg.ok) pending.resolve(msg.wav);
-    else        pending.reject(new Error(msg.error || 'Kokoro worker error'));
+
+  _ttsHostWindow = new BrowserWindow({
+    show:    false,
+    width:   400,
+    height:  300,
+    webPreferences: {
+      // nodeIntegration on so the host can require('kokoro-js') etc.
+      // without bundling. This is OUR controlled HTML/JS — no remote
+      // content ever loads here, so the usual XSS-via-Node concern
+      // doesn't apply. Even with Node enabled, transformers.js still
+      // routes device:'webgpu' to onnxruntime-web's WebGPU backend
+      // because Chromium exposes WebGPU regardless of nodeIntegration.
+      nodeIntegration:      true,
+      contextIsolation:     false,
+      sandbox:              false,
+      backgroundThrottling: false,   // don't pause when minimised / hidden
+    },
   });
-  _kokoroWorker.on('error', (err) => {
-    console.error('[kokoro-worker] error:', err);
-    // Reject every in-flight call; next request will respawn the worker.
-    for (const p of _kokoroPending.values()) p.reject(err);
-    _kokoroPending.clear();
-    _kokoroWorker = null;
+  _ttsHostWindow.loadFile(path.join(__dirname, 'tts-host.html'));
+  // Uncomment to inspect host-side WebGPU / kokoro logs visually:
+  // _ttsHostWindow.webContents.openDevTools({ mode: 'detach' });
+
+  _ttsHostWindow.on('closed', () => {
+    _ttsHostWindow = null;
+    _ttsHostReady  = null;
+    // Reject any in-flight requests; next call will respawn the host.
+    for (const p of _ttsHostPending.values()) p.reject(new Error('TTS host closed'));
+    _ttsHostPending.clear();
   });
-  _kokoroWorker.on('exit', (code) => {
-    if (code !== 0) console.warn(`[kokoro-worker] exited with code ${code}`);
-    _kokoroWorker = null;
-  });
-  return _kokoroWorker;
+
+  return _ttsHostReady;
 }
+
+ipcMain.on('tts-host:result', (_e, id, ok, payload) => {
+  const pending = _ttsHostPending.get(id);
+  if (!pending) return;
+  _ttsHostPending.delete(id);
+  if (ok) pending.resolve(payload);
+  else    pending.reject(new Error(payload || 'TTS host error'));
+});
+
+ipcMain.on('tts-host:log', (_e, msg) => {
+  console.log(msg);
+});
 
 function _kokoroSynth(text, voice) {
-  return new Promise((resolve, reject) => {
-    const id = ++_kokoroSeq;
-    _kokoroPending.set(id, { resolve, reject });
-    _ensureKokoroWorker().postMessage({ kind: 'synth', id, text, voice });
+  return new Promise(async (resolve, reject) => {
+    try {
+      await _ensureTtsHost();
+      const id = ++_ttsHostSeq;
+      _ttsHostPending.set(id, { resolve, reject });
+      _ttsHostWindow.webContents.send('tts-host:synth', { id, text, voice });
+    } catch (err) {
+      reject(err);
+    }
   });
 }
 
-// Stop the worker on app quit so it doesn't hold the process open.
+// Tear down the host when the app quits so it doesn't keep the process alive.
 app.on('before-quit', () => {
-  if (_kokoroWorker) { try { _kokoroWorker.terminate(); } catch {} _kokoroWorker = null; }
+  if (_ttsHostWindow && !_ttsHostWindow.isDestroyed()) {
+    try { _ttsHostWindow.webContents.send('tts-host:shutdown'); } catch {}
+    try { _ttsHostWindow.destroy(); } catch {}
+  }
+  _ttsHostWindow = null;
 });
+
+// (No custom protocol needed — the host runs with nodeIntegration on and
+// loads model files via Node fs through transformers.env.localModelPath.)
 
 const IS_DEV   = process.argv.includes('--dev');
 const APP_ROOT = path.join(__dirname, '..');
