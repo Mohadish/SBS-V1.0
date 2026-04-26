@@ -1287,6 +1287,23 @@ async function _htmlToCanvas(html, opts = {}) {
     bgColor    = 'transparent',      // textbox fill — rgba string preferred
   } = opts;
 
+  // XHTML normalisation. SVG foreignObject parses its inner content as
+  // XHTML, which is strict about void elements:
+  //   • Chromium's contenteditable emits <br> (HTML5 form). In XHTML,
+  //     an unclosed <br> is treated as an opening tag and CONSUMES every
+  //     sibling after it until the parent closes — so an empty line
+  //     followed by more text would visually drop the second part.
+  //   • An empty <div></div> renders zero-height in SVG, swallowing what
+  //     the user intended as a blank line.
+  // Both are repaired with regex tweaks before the SVG is built. Pure
+  // string substitutions, no DOM round-trip.
+  html = String(html || '')
+    .replace(/<br(\s[^>]*)?>/gi,            '<br$1/>')
+    .replace(/<hr(\s[^>]*)?>/gi,            '<hr$1/>')
+    .replace(/<img(\s[^>]*)?>/gi,           '<img$1/>')
+    .replace(/<div(\s[^>]*)?><\/div>/gi,    '<div$1><br/></div>')
+    .replace(/<p(\s[^>]*)?><\/p>/gi,        '<p$1><br/></p>');
+
   let h;
   if (typeof height === 'number' && Number.isFinite(height)) {
     h = Math.max(1, Math.round(height));
