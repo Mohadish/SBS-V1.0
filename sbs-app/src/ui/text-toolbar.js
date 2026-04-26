@@ -38,6 +38,8 @@ let _applier = null;   // function(action, value) — caller-supplied dispatcher
 let _sizeSel = null;
 let _fontSel = null;
 let _colorInput = null;
+let _fillInput  = null;
+let _alphaInput = null;
 
 /**
  * Build the text controls inside the supplied host element. Replaces any
@@ -61,10 +63,21 @@ export function mountTextToolbar(host, applier, editorEl = null) {
   // Visual layout (left to right) — matches the user's right-to-left
   // mental order so reading the bar from the Edit toggle inward gives:
   //   font ▼ · size ▼ · color · S · U · I · B · ⫸ · ⫿ · ⫷
-  const colorCtl = _color('Text color', (v) => _apply('foreColor', v));
-  _sizeSel  = _select('size', SIZES.map(s => `${s}`), (v) => _apply('fontSize', Number(v)));
-  _fontSel  = _select('font', FONTS,                  (v) => _apply('fontName', v));
+  const colorCtl = _color('Text color', 'A', '#fbbf24',
+                          (v) => _apply('foreColor', v));
+  // Fill = box background. Native colour input + alpha slider. The
+  // applier composes them into rgba(r,g,b,a) on every change so callers
+  // get a single value to store on the node.
+  const fillCtl = _color('Fill color (textbox background)', '■', '#1f2937',
+                         (v) => _apply('fillColor', _composeRgba(v, _alphaInput?.value)));
+  const alphaCtl = _alpha('Fill alpha (0 = transparent, 100 = opaque)',
+                          (v) => _apply('fillColor', _composeRgba(_fillInput?.value, v)));
+
+  _sizeSel    = _select('size', SIZES.map(s => `${s}`), (v) => _apply('fontSize', Number(v)));
+  _fontSel    = _select('font', FONTS,                  (v) => _apply('fontName', v));
   _colorInput = colorCtl.querySelector('input[type=color]');
+  _fillInput  = fillCtl.querySelector('input[type=color]');
+  _alphaInput = alphaCtl.querySelector('input[type=range]');
 
   _toolbar.append(
     _btn('⫷', 'Align left',   () => _apply('justifyLeft')),
@@ -76,6 +89,7 @@ export function mountTextToolbar(host, applier, editorEl = null) {
     _btn('U', 'Underline (Ctrl+U)',() => _apply('underline'),     { textDecoration: 'underline' }),
     _btn('S', 'Strikethrough',     () => _apply('strikeThrough'), { textDecoration: 'line-through' }),
     _sep(),
+    fillCtl, alphaCtl,
     colorCtl,
     _sizeSel,
     _fontSel,
@@ -89,20 +103,29 @@ export function mountTextToolbar(host, applier, editorEl = null) {
  * styling. Caller computes the values and passes them in — overlay.js
  * does the lifting so the toolbar stays presentation-only.
  *
- *   { fontSize?:number, fontName?:string, color?:string }
+ *   { fontSize?:number, fontName?:string, color?:string,
+ *     fillColor?:string,           // hex like "#1f2937"
+ *     fillAlpha?:number }          // 0..100
  *
  * Pass ONLY the keys you can determine. For mixed-value selections the
  * caller may pick a representative (per spec: largest size when sizes
  * differ across multi-select).
  */
-export function setToolbarValues({ fontSize, fontName, color } = {}) {
+export function setToolbarValues({ fontSize, fontName, color, fillColor, fillAlpha } = {}) {
   if (_sizeSel  && fontSize != null) _sizeSel.value = String(fontSize);
   if (_fontSel  && fontName)         _fontSel.value = fontName;
   if (_colorInput && color) {
     _colorInput.value = color;
-    // Mirror the colour onto the "A" badge container.
     const wrap = _colorInput.parentElement;
     if (wrap) wrap.style.color = color;
+  }
+  if (_fillInput && fillColor) {
+    _fillInput.value = fillColor;
+    const wrap = _fillInput.parentElement;
+    if (wrap) wrap.style.color = fillColor;
+  }
+  if (_alphaInput && fillAlpha != null) {
+    _alphaInput.value = String(Math.max(0, Math.min(100, fillAlpha)));
   }
 }
 
@@ -113,11 +136,13 @@ export function unmountTextToolbar() {
     delete _toolbar.dataset.sbsTextToolbar;
     _toolbar = null;
   }
-  _editor    = null;
-  _applier   = null;
-  _sizeSel   = null;
-  _fontSel   = null;
+  _editor     = null;
+  _applier    = null;
+  _sizeSel    = null;
+  _fontSel    = null;
   _colorInput = null;
+  _fillInput  = null;
+  _alphaInput = null;
 }
 
 /** Refocus the editable (if we have one) before forwarding to the applier. */
@@ -211,7 +236,7 @@ function _select(kind, options, onChange) {
   return sel;
 }
 
-function _color(title, onChange) {
+function _color(title, label = 'A', defaultBadge = '#fbbf24', onChange) {
   const wrap = document.createElement('label');
   wrap.title = title;
   wrap.style.cssText = [
@@ -221,13 +246,13 @@ function _color(title, onChange) {
     'display:inline-flex','align-items:center','justify-content:center',
     'cursor:pointer','font-size:13px','position:relative',
   ].join(';');
-  wrap.textContent = 'A';
+  wrap.textContent = label;
   wrap.style.fontWeight = 'bold';
-  wrap.style.color      = '#fbbf24';
+  wrap.style.color      = defaultBadge;
 
   const input = document.createElement('input');
   input.type  = 'color';
-  input.value = '#ffffff';
+  input.value = defaultBadge;
   input.style.cssText = 'position:absolute;inset:0;opacity:0;cursor:pointer;';
   wrap.appendChild(input);
 
@@ -235,4 +260,48 @@ function _color(title, onChange) {
   input.addEventListener('input',     () => { wrap.style.color = input.value; onChange(input.value); });
   input.addEventListener('change',    () => onChange(input.value));
   return wrap;
+}
+
+/**
+ * Alpha slider. 0..100 (percent of opacity). Calls onChange(percent)
+ * on every input event so the rasteriser sees live feedback.
+ */
+function _alpha(title, onChange) {
+  const wrap = document.createElement('label');
+  wrap.title = title;
+  wrap.style.cssText = [
+    'background:#1f2937','color:#94a3b8',
+    'border:1px solid #334155','border-radius:6px',
+    'height:28px','padding:0 6px',
+    'display:inline-flex','align-items:center','gap:4px',
+    'cursor:ns-resize','font-size:11px',
+  ].join(';');
+  wrap.textContent = 'α';
+
+  const input = document.createElement('input');
+  input.type  = 'range';
+  input.min   = '0';
+  input.max   = '100';
+  input.value = '100';
+  input.style.cssText = 'width:60px;cursor:ew-resize;';
+  wrap.appendChild(input);
+
+  input.addEventListener('mousedown', e => e.stopPropagation());
+  input.addEventListener('input', () => onChange(Number(input.value)));
+  return wrap;
+}
+
+/**
+ * Compose an rgba() string from a hex colour and alpha percent (0..100).
+ * Returns null when either input is missing.
+ */
+function _composeRgba(hex, alphaPercent) {
+  if (!hex) return null;
+  const m = /^#?([0-9a-f]{6})$/i.exec(String(hex).trim());
+  if (!m) return null;
+  const r = parseInt(m[1].slice(0, 2), 16);
+  const g = parseInt(m[1].slice(2, 4), 16);
+  const b = parseInt(m[1].slice(4, 6), 16);
+  const a = Math.max(0, Math.min(1, (Number(alphaPercent) || 0) / 100));
+  return `rgba(${r},${g},${b},${a})`;
 }

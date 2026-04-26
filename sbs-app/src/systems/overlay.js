@@ -253,7 +253,7 @@ function _enterTextEdit(node) {
   // the contenteditable. The click-outside detector already whitelists
   // [data-sbs-text-toolbar] so toolbar clicks won't dismiss the editor.
   const toolbarHost = getTextToolbarSlot();
-  if (toolbarHost) mountTextToolbar(toolbarHost, execCommandApplier, div);
+  if (toolbarHost) mountTextToolbar(toolbarHost, _singleEditorApplier, div);
   // Sync the dropdowns to whatever style is at the caret. Re-fires on
   // every selection change so moving the caret across mixed-style runs
   // updates the toolbar live.
@@ -317,7 +317,8 @@ async function _reflowTextBox(node) {
   if (!html) return;
   const w = Math.max(20, Math.round(node.width()));
   const h = Math.max(20, Math.round(node.height()));
-  const canvas = await _htmlToCanvas(html, { width: w, height: h });
+  const bgColor = node.getAttr('fillColor') || 'transparent';
+  const canvas = await _htmlToCanvas(html, { width: w, height: h, bgColor });
   if (!canvas) return;
   node.image(canvas);
   // Keep the user's dragged dimensions; do NOT overwrite from canvas.*.
@@ -616,13 +617,44 @@ function _summariseStyleAcrossBoxes(nodes) {
     fontName = _firstFontInHtml(last?.getAttr?.('textHtml') || '');
   }
 
+  // Fill is a node-level attr. Take the LAST selected box's value (or
+  // the only one if uniform). Decompose the rgba string into hex + alpha
+  // so the colour input + slider can show meaningful initial values.
+  const fills = nodes.map(n => n.getAttr('fillColor')).filter(Boolean);
+  const lastFill = fills[fills.length - 1] || null;
+  const fillBits = lastFill ? _decomposeRgba(lastFill) : null;
+
   return {
     fontSize: sizes.size === 0 ? undefined
             : sizes.size === 1 ? [...sizes][0]
             : Math.max(...sizes),     // mixed → largest, per spec
     fontName,
     color:    colors.size === 1 ? [...colors][0] : undefined,
+    fillColor: fillBits?.hex,
+    fillAlpha: fillBits?.alpha,
   };
+}
+
+/**
+ * Split an rgba()/rgb()/#hex string into { hex:'#rrggbb', alpha:0..100 }.
+ * Returns null on unparseable input.
+ */
+function _decomposeRgba(s) {
+  if (!s) return null;
+  const str = String(s).trim();
+  // rgba(r, g, b, a) — alpha as 0..1
+  let m = /^rgba?\(\s*(\d+)\s*,\s*(\d+)\s*,\s*(\d+)\s*(?:,\s*([\d.]+)\s*)?\)$/i.exec(str);
+  if (m) {
+    const hex = (n) => Number(n).toString(16).padStart(2, '0');
+    return {
+      hex:   `#${hex(m[1])}${hex(m[2])}${hex(m[3])}`,
+      alpha: m[4] != null ? Math.round(parseFloat(m[4]) * 100) : 100,
+    };
+  }
+  // #rrggbb
+  m = /^#?([0-9a-f]{6})$/i.exec(str);
+  if (m) return { hex: `#${m[1]}`, alpha: 100 };
+  return null;
 }
 
 /**
@@ -663,10 +695,18 @@ function _readStyleAtCaret(editor) {
   if (!n || !(n instanceof Element)) return {};
   if (!editor.contains(n)) return {};
   const cs = window.getComputedStyle(n);
+  // Fill is a node-level attr (textbox background) — read it from the
+  // active editor's owning node so the toolbar's fill controls also seed.
+  let fillBits = null;
+  if (_activeTextEditor?.node) {
+    fillBits = _decomposeRgba(_activeTextEditor.node.getAttr('fillColor'));
+  }
   return {
     fontSize: Math.round(parseFloat(cs.fontSize)) || undefined,
     fontName: _stripQuotes(cs.fontFamily) || undefined,
     color:    _normaliseColor(cs.color)   || undefined,
+    fillColor: fillBits?.hex,
+    fillAlpha: fillBits?.alpha,
   };
 }
 
@@ -708,6 +748,19 @@ function _multiTextApplier(action, value) {
   const sel = _transformer?.nodes() || [];
   const targets = sel.filter(n => n.getAttr?.('textHtml'));
   if (!targets.length) return;
+
+  // fillColor is a NODE-level property (textbox background), not an
+  // HTML inline style. Handle it without going through the HTML rewrite.
+  if (action === 'fillColor') {
+    if (!value) return;
+    for (const node of targets) {
+      node.setAttr('fillColor', value);
+      _reflowTextBox(node).catch(() => {});
+    }
+    _scheduleSave();
+    return;
+  }
+
   for (const node of targets) {
     const before = node.getAttr('textHtml') || '';
     const after  = _applyActionToHtml(before, action, value);
@@ -716,6 +769,22 @@ function _multiTextApplier(action, value) {
     _reflowTextBox(node).catch(() => {});
   }
   _scheduleSave();
+}
+
+/**
+ * Single-editor applier — wraps execCommandApplier with a fillColor
+ * branch that mutates the active text-box node directly. The editable's
+ * own background is updated live so the user sees the colour as they
+ * pick. _reflowTextBox runs on click-out to bake the bg into the raster.
+ */
+function _singleEditorApplier(action, value) {
+  if (action === 'fillColor') {
+    if (!_activeTextEditor || !value) return;
+    _activeTextEditor.node.setAttr('fillColor', value);
+    _activeTextEditor.div.style.backgroundColor = value;
+    return;
+  }
+  execCommandApplier(action, value);
 }
 
 function _applyActionToHtml(html, action, value) {
@@ -900,7 +969,7 @@ function _recreateNode(spec) {
   if (!spec) return null;
   if (spec.className === 'Text')  return new Konva.Text({ ...spec.attrs, draggable: true });
   if (spec.className === 'Image') {
-    const { src, textHtml, textWidth, naturalW, naturalH, ...rest } = spec.attrs || {};
+    const { src, textHtml, textWidth, naturalW, naturalH, fillColor, ...rest } = spec.attrs || {};
     const node = new Konva.Image({ ...rest, draggable: true });
     // Preserve any naturalW/naturalH that round-tripped through JSON; if
     // they're missing (older overlays predating the Reset feature), we
@@ -908,11 +977,15 @@ function _recreateNode(spec) {
     // Reset works on existing projects too.
     if (Number.isFinite(naturalW)) node.setAttr('naturalW', naturalW);
     if (Number.isFinite(naturalH)) node.setAttr('naturalH', naturalH);
+    if (fillColor)                 node.setAttr('fillColor', fillColor);
     if (textHtml) {
       // Rich-text box — re-rasterize from stored HTML.
       node.setAttr('textHtml',  textHtml);
       node.setAttr('textWidth', textWidth);
-      _htmlToCanvas(textHtml, { width: textWidth || 400 }).then(canvas => {
+      _htmlToCanvas(textHtml, {
+        width:  textWidth || 400,
+        bgColor: fillColor || 'transparent',
+      }).then(canvas => {
         if (canvas) {
           node.image(canvas);
           // Don't clobber width/height (the user may have resized) — but
@@ -1047,6 +1120,7 @@ async function _htmlToCanvas(html, opts = {}) {
     fontFamily = 'Arial',
     fontSize   = 16,
     color      = '#ffffff',
+    bgColor    = 'transparent',      // textbox fill — rgba string preferred
   } = opts;
 
   let h;
@@ -1084,6 +1158,7 @@ async function _htmlToCanvas(html, opts = {}) {
     `color:${color}`,
     `font-family:${fontFamily}`,
     `font-size:${fontSize}px`,
+    `background-color:${bgColor}`,
     'box-sizing:border-box',
     'white-space:pre-wrap',
     'word-wrap:break-word',
