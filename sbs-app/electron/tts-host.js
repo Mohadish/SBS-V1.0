@@ -111,10 +111,25 @@ async function _load() {
       log('[tts-host] navigator.gpu not present — webgpu candidates skipped');
     }
 
+    // Candidate order — wasm/q8 first by design.
+    // ────────────────────────────────────────
+    // We tried webgpu/fp32 + webgpu/fp16 on the user's RTX 4090. Each one
+    // loaded the model file fine but then hung ORT's WGSL shader compile
+    // step indefinitely (4+ minutes idle, no GPU activity). Likely an
+    // ORT-web + Chromium WebGPU issue specific to the Kokoro graph; not
+    // worth debugging until perf actually becomes the bottleneck.
+    //
+    // CPU q8 in onnxruntime-web has matched the worker_threads + ORT-node
+    // baseline (~1-9 s per clip depending on length), which is fine given
+    // the placeholder-voice + background-synth UX already in place.
+    //
+    // The webgpu candidates stay below as inert fallbacks so re-enabling
+    // them later is a one-line reorder, not a code restore.
     const allCandidates = [
-      { device: 'webgpu', dtype: 'fp32', needsGpu: true  },
-      { device: 'webgpu', dtype: 'fp16', needsGpu: true  },
       { device: 'wasm',   dtype: 'q8',   needsGpu: false },
+      // ── disabled (ORT-web shader compile hung on RTX 4090) ──
+      // { device: 'webgpu', dtype: 'fp32', needsGpu: true },
+      // { device: 'webgpu', dtype: 'fp16', needsGpu: true },
     ];
     const candidates = allCandidates.filter(c => !c.needsGpu || webgpuOk);
     log(`[tts-host] candidates: ${candidates.map(c => `${c.device}/${c.dtype}`).join(' → ')}`);
