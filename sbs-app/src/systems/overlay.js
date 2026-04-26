@@ -358,7 +358,15 @@ export async function addImage(src) {
 }
 
 function _attachNode(node) {
-  node.on('pointerdown', () => _setSelection(node));
+  // Single click selects (or toggles when held with Shift/Ctrl/Meta for
+  // multi-select). Multi-select is supported for ALL overlay nodes — the
+  // transformer happily wraps multiple at once and a single drag moves
+  // the whole group together. Toolbar style edits while multi-selected
+  // apply to every selected text box's HTML (Phase 5).
+  node.on('pointerdown', (e) => {
+    const additive = !!(e.evt && (e.evt.shiftKey || e.evt.ctrlKey || e.evt.metaKey));
+    _setSelection(node, additive);
+  });
 
   // LIVE resize during edit — when the user drags a transform anchor on a
   // text box that's currently being edited, the contenteditable resizes
@@ -466,13 +474,31 @@ function _showOverlayContextMenu(node, x, y) {
   showContextMenu(items, x, y);
 }
 
-function _setSelection(node) {
-  if (node) {
-    _transformer.nodes([node]);
-    _configTransformerForNode(node);
+/**
+ * Set or extend the overlay's node selection.
+ *   _setSelection(null)            — clear all
+ *   _setSelection(node)            — replace selection with [node]
+ *   _setSelection(node, additive)  — toggle node in/out of the existing
+ *                                    set (shift/ctrl/meta-click)
+ *
+ * Multi-select is honoured by Konva.Transformer natively: passing an
+ * array of nodes draws one bounding box around all of them and a drag
+ * moves the whole group together.
+ */
+function _setSelection(node, additive = false) {
+  let nodes;
+  if (!node) {
+    nodes = [];
+  } else if (additive) {
+    const current = _transformer.nodes() || [];
+    nodes = current.includes(node)
+      ? current.filter(n => n !== node)
+      : [...current, node];
   } else {
-    _transformer.nodes([]);
+    nodes = [node];
   }
+  _transformer.nodes(nodes);
+  _configTransformerForNodes(nodes);
   _uiLayer.batchDraw();
 }
 
@@ -495,8 +521,19 @@ function _setSelection(node) {
  * unless asked).
  */
 function _configTransformerForNode(node) {
-  const isTextBox = !!node.getAttr('textHtml');
-  if (isTextBox) {
+  _configTransformerForNodes(node ? [node] : []);
+}
+
+/**
+ * Multi-node-aware transformer config. If every selected node is a text
+ * box, free-resize 8 anchors. If anything else is in the set, downgrade
+ * to aspect-locked corners (no way to mix per-node configs in one
+ * transformer). Selection-only state with no nodes has no effect.
+ */
+function _configTransformerForNodes(nodes) {
+  if (!_transformer || !nodes?.length) return;
+  const allTextBoxes = nodes.every(n => n.getClassName?.() === 'Image' && n.getAttr('textHtml'));
+  if (allTextBoxes) {
     _transformer.keepRatio(false);
     _transformer.rotateEnabled(false);
     _transformer.enabledAnchors([
@@ -506,7 +543,7 @@ function _configTransformerForNode(node) {
     ]);
     return;
   }
-  // Image — Phase 1 default.
+  // Anything with an image (or mixed) — lock aspect, corners only.
   _transformer.keepRatio(true);
   _transformer.rotateEnabled(true);
   _transformer.enabledAnchors(['top-left', 'top-right', 'bottom-left', 'bottom-right']);
@@ -520,9 +557,9 @@ export function getSelected() {
 }
 
 export function deleteSelected() {
-  const n = getSelected();
-  if (!n) return false;
-  n.destroy();
+  const nodes = _transformer?.nodes() || [];
+  if (!nodes.length) return false;
+  for (const n of nodes) n.destroy();
   _setSelection(null);
   _layer.batchDraw();
   _scheduleSave();
