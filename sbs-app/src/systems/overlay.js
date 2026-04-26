@@ -260,21 +260,35 @@ function _enterTextEdit(node) {
   };
   div.addEventListener('keydown', onKeyDown);
 
-  // Force plain-text paste. External HTML (websites, Word, PDFs) brings
-  // in inline images, embedded styles, scripts — the SVG-foreignObject
-  // rasteriser chokes on most of it and returns null. The editor would
-  // happily show the paste (it's HTML), but the click-out raster failed
-  // silently, leaving textHtml + node.image out of sync. Re-editing
-  // showed the pasted content, click-out failed again — the user saw it
-  // as content "snapping back" repeatedly.
-  // Paste-as-plain-text: lose pasted formatting (acceptable for a
-  // presentation tool) in exchange for raster reliability.
-  const onPaste = (e) => {
+  // Sanitise on COPY (source side), not on paste. The user reported
+  // that paste-from-other-textboxes broke rasterisation, but paste from
+  // arbitrary external sources worked. So the problem is in what our
+  // OWN editor was putting on the clipboard — the cloned selection
+  // carried wrapper styles / nested padding the SVG-foreignObject
+  // rasteriser couldn't handle. Cleaning at copy time means:
+  //   • paste between our textboxes works (clean HTML in, clean raster)
+  //   • paste from external sources keeps native browser behaviour
+  //     (we don't touch what the OS hands us)
+  //   • formatting (bold/italic/colour/size/font/alignment) survives
+  //     copy → paste because the sanitiser explicitly preserves those
+  //     inline styles.
+  const onCopy = (e) => {
+    const sel = window.getSelection();
+    if (!sel || !sel.rangeCount) return;
+    const text = sel.toString();
+    const tmp = document.createElement('div');
+    tmp.appendChild(sel.getRangeAt(0).cloneContents());
+    const html = _sanitiseTextboxHtml(tmp.innerHTML);
     e.preventDefault();
-    const text = e.clipboardData?.getData('text/plain') || '';
-    if (text) document.execCommand('insertText', false, text);
+    e.clipboardData?.setData('text/plain', text);
+    e.clipboardData?.setData('text/html', html);
   };
-  div.addEventListener('paste', onPaste);
+  div.addEventListener('copy', onCopy);
+  // Cut goes through the same sanitiser so cut→paste is symmetric.
+  div.addEventListener('cut', (e) => {
+    onCopy(e);
+    document.execCommand('delete');
+  });
 
   // Mount the in-row toolbar (B/I/U/S, font, size, color, align). It
   // takes over the slot inside the existing overlay edit toolbar so all
@@ -293,17 +307,20 @@ function _enterTextEdit(node) {
   document.addEventListener('selectionchange', onSelectionChange);
   onSelectionChange();   // initial sync
 
-  _activeTextEditor = { node, div, onDocMouseDown, onKeyDown, onPaste, prevOpacity, onSelectionChange };
+  _activeTextEditor = { node, div, onDocMouseDown, onKeyDown, onCopy, prevOpacity, onSelectionChange };
 }
 
 /** Close the in-place editor, re-rasterise on the way out (unless discard). */
 async function _exitTextEdit(opts = {}) {
   if (!_activeTextEditor) return;
-  const { node, div, onDocMouseDown, onKeyDown, onPaste, prevOpacity, onSelectionChange } = _activeTextEditor;
+  const { node, div, onDocMouseDown, onKeyDown, onCopy, prevOpacity, onSelectionChange } = _activeTextEditor;
   document.removeEventListener('mousedown', onDocMouseDown, true);
   if (onSelectionChange) document.removeEventListener('selectionchange', onSelectionChange);
   div.removeEventListener('keydown', onKeyDown);
-  if (onPaste) div.removeEventListener('paste', onPaste);
+  if (onCopy) {
+    div.removeEventListener('copy', onCopy);
+    div.removeEventListener('cut',  onCopy);
+  }
   unmountTextToolbar();
 
   const html = div.innerHTML;
@@ -1154,6 +1171,66 @@ function _loadImage(src) {
  *     canvas auto-fits to whatever height the content needs at `width`.
  * @returns {Promise<HTMLCanvasElement|null>}
  */
+/**
+ * Whitelist sanitiser for HTML produced by the in-place text editor —
+ * runs at COPY time, so anything pasted between SBS textboxes is
+ * guaranteed to be safe for the SVG-foreignObject rasteriser.
+ *
+ * Allowed tags  : div, p, br, span, b, i, u, s, strong, em
+ * Allowed styles: color, background-color, font-size, font-family,
+ *                 font-weight, font-style, text-decoration, text-align
+ *
+ * Everything else is unwrapped (children promoted) or stripped.
+ * Class / id / data-* attributes are dropped. Original visual look is
+ * preserved for the formatting we actually support; cosmetic loss is
+ * acceptable for things we can't render anyway.
+ */
+function _sanitiseTextboxHtml(html) {
+  const ALLOWED_TAGS = new Set(['DIV', 'P', 'BR', 'SPAN', 'B', 'I', 'U', 'S', 'STRONG', 'EM']);
+  const ALLOWED_STYLES = [
+    'color', 'background-color',
+    'font-size', 'font-family', 'font-weight', 'font-style',
+    'text-decoration', 'text-align',
+  ];
+
+  const tmp = document.createElement('div');
+  tmp.innerHTML = html || '';
+
+  function clean(node) {
+    if (node.nodeType === 3) return;       // text node — keep as-is
+    if (node.nodeType !== 1) { node.remove(); return; }
+
+    if (!ALLOWED_TAGS.has(node.tagName)) {
+      // Unwrap: promote children, drop the wrapper.
+      const parent = node.parentNode;
+      while (node.firstChild) parent.insertBefore(node.firstChild, node);
+      parent.removeChild(node);
+      return;
+    }
+
+    // Stash allowed inline styles, then strip every attribute and
+    // re-apply just the kept styles. Removes class, id, data-*, and
+    // any unsafe inline declarations in one pass.
+    const keep = {};
+    for (const prop of ALLOWED_STYLES) {
+      const v = node.style?.getPropertyValue(prop);
+      if (v) keep[prop] = v;
+    }
+    for (let i = node.attributes.length - 1; i >= 0; i--) {
+      node.removeAttribute(node.attributes[i].name);
+    }
+    if (Object.keys(keep).length) {
+      const styleStr = Object.entries(keep).map(([k, v]) => `${k}:${v}`).join(';');
+      node.setAttribute('style', styleStr);
+    }
+
+    // Recurse into children (snapshot first — clean() may remove nodes).
+    Array.from(node.childNodes).forEach(clean);
+  }
+  Array.from(tmp.childNodes).forEach(clean);
+  return tmp.innerHTML;
+}
+
 async function _htmlToCanvas(html, opts = {}) {
   const {
     width      = 400,
