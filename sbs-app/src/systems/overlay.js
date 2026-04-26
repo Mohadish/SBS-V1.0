@@ -260,6 +260,22 @@ function _enterTextEdit(node) {
   };
   div.addEventListener('keydown', onKeyDown);
 
+  // Force plain-text paste. External HTML (websites, Word, PDFs) brings
+  // in inline images, embedded styles, scripts — the SVG-foreignObject
+  // rasteriser chokes on most of it and returns null. The editor would
+  // happily show the paste (it's HTML), but the click-out raster failed
+  // silently, leaving textHtml + node.image out of sync. Re-editing
+  // showed the pasted content, click-out failed again — the user saw it
+  // as content "snapping back" repeatedly.
+  // Paste-as-plain-text: lose pasted formatting (acceptable for a
+  // presentation tool) in exchange for raster reliability.
+  const onPaste = (e) => {
+    e.preventDefault();
+    const text = e.clipboardData?.getData('text/plain') || '';
+    if (text) document.execCommand('insertText', false, text);
+  };
+  div.addEventListener('paste', onPaste);
+
   // Mount the in-row toolbar (B/I/U/S, font, size, color, align). It
   // takes over the slot inside the existing overlay edit toolbar so all
   // controls live on the same row. Operates on the live Selection inside
@@ -277,16 +293,17 @@ function _enterTextEdit(node) {
   document.addEventListener('selectionchange', onSelectionChange);
   onSelectionChange();   // initial sync
 
-  _activeTextEditor = { node, div, onDocMouseDown, onKeyDown, prevOpacity, onSelectionChange };
+  _activeTextEditor = { node, div, onDocMouseDown, onKeyDown, onPaste, prevOpacity, onSelectionChange };
 }
 
 /** Close the in-place editor, re-rasterise on the way out (unless discard). */
 async function _exitTextEdit(opts = {}) {
   if (!_activeTextEditor) return;
-  const { node, div, onDocMouseDown, onKeyDown, prevOpacity, onSelectionChange } = _activeTextEditor;
+  const { node, div, onDocMouseDown, onKeyDown, onPaste, prevOpacity, onSelectionChange } = _activeTextEditor;
   document.removeEventListener('mousedown', onDocMouseDown, true);
   if (onSelectionChange) document.removeEventListener('selectionchange', onSelectionChange);
   div.removeEventListener('keydown', onKeyDown);
+  if (onPaste) div.removeEventListener('paste', onPaste);
   unmountTextToolbar();
 
   const html = div.innerHTML;
@@ -299,8 +316,18 @@ async function _exitTextEdit(opts = {}) {
     // still mounted also kills the "nothing → raster" flicker the
     // user called out: the new image is ready before the editable
     // disappears.
+    //
+    // If rasterisation fails (typically: HTML the SVG-foreignObject
+    // path can't render) we revert textHtml so the next dblclick
+    // reopens the LAST KNOWN-GOOD content rather than re-loading the
+    // bad HTML and getting stuck in a "click-out doesn't take" loop.
+    const prevHtml = node.getAttr('textHtml');
     node.setAttr('textHtml', html);
-    await _reflowTextBox(node);
+    const ok = await _reflowTextBox(node);
+    if (!ok) {
+      console.warn('[overlay] rasterise failed on click-out — reverting to previous text.');
+      node.setAttr('textHtml', prevHtml);
+    }
   }
 
   // Now swap visibility back. The new raster is in place, so removing
@@ -326,7 +353,7 @@ async function _exitTextEdit(opts = {}) {
  */
 async function _reflowTextBox(node) {
   const html = node.getAttr('textHtml');
-  if (!html) return;
+  if (!html) return false;
   const w = Math.max(20, Math.round(node.width()));
   const bgColor = node.getAttr('fillColor') || 'transparent';
   // Auto-height: do NOT pass `height` to the rasteriser. The canvas
@@ -334,7 +361,7 @@ async function _reflowTextBox(node) {
   // Box grows/shrinks vertically as the content does — true text-frame
   // behaviour without a manual height handle for the user to fight.
   const canvas = await _htmlToCanvas(html, { width: w, bgColor });
-  if (!canvas) return;
+  if (!canvas) return false;
   node.image(canvas);
   node.width(canvas.width);
   node.height(canvas.height);
@@ -342,6 +369,7 @@ async function _reflowTextBox(node) {
   node.setAttr('naturalW',  canvas.width);
   node.setAttr('naturalH',  canvas.height);
   _layer.batchDraw();
+  return true;
 }
 
 // (Old modal-based _editTextBox + openTextEditor import removed in Phase 2.
