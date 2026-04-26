@@ -16,7 +16,8 @@
  */
 
 import { state } from '../core/state.js';
-import { openTextEditor } from '../ui/text-editor-modal.js';
+import { openTextEditor }  from '../ui/text-editor-modal.js';
+import { showContextMenu } from '../ui/context-menu.js';
 
 let _stage       = null;   // Konva.Stage
 let _layer       = null;   // Konva.Layer — holds all user content
@@ -54,6 +55,12 @@ export function initOverlay() {
     borderStroke:  '#f59e0b',
     anchorStroke:  '#f59e0b',
     anchorFill:    '#fff',
+    // Aspect-locked corner-only resize. Side anchors would let the user
+    // skew the rasterised text/image bitmap (the raster doesn't reflow
+    // — it just stretches). With keepRatio + corner anchors, every drag
+    // is a uniform scale; nothing distorts.
+    keepRatio:        true,
+    enabledAnchors:   ['top-left', 'top-right', 'bottom-left', 'bottom-right'],
   });
   _uiLayer.add(_transformer);
 
@@ -120,6 +127,10 @@ export async function addTextBox() {
   });
   node.setAttr('textHtml',  html);
   node.setAttr('textWidth', canvas.width);
+  // Stash the natural (un-scaled) dimensions so right-click → Reset can
+  // restore the original raster size without recomputing the editor pass.
+  node.setAttr('naturalW',  canvas.width);
+  node.setAttr('naturalH',  canvas.height);
   _layer.add(node);
   _attachNode(node);
   _setSelection(node);
@@ -137,8 +148,13 @@ async function _editTextBox(node) {
   node.image(canvas);
   node.width(canvas.width);
   node.height(canvas.height);
-  node.setAttr('textHtml', html);
+  node.scaleX(1);
+  node.scaleY(1);
+  node.setAttr('textHtml',  html);
   node.setAttr('textWidth', canvas.width);
+  // Re-edit replaces the raster — the new canvas dims are now the natural size.
+  node.setAttr('naturalW',  canvas.width);
+  node.setAttr('naturalH',  canvas.height);
   _layer.batchDraw();
   _scheduleSave();
 }
@@ -167,6 +183,11 @@ export async function addImage(src) {
   });
   // Store the data URL so toJSON round-trips (Konva doesn't serialize HTMLImageElement).
   node.setAttr('src', dataUrl);
+  // Native pixel dimensions — used by right-click → Reset to restore the
+  // image to its raw size (1:1 with the source file). The fitted w/h above
+  // is just the on-create placement, not the "original" the user sees as canonical.
+  node.setAttr('naturalW', img.width);
+  node.setAttr('naturalH', img.height);
   _layer.add(node);
   _attachNode(node);
   _setSelection(node);
@@ -176,12 +197,77 @@ export async function addImage(src) {
 
 function _attachNode(node) {
   node.on('pointerdown', () => _setSelection(node));
-  node.on('dragend transformend', _scheduleSave);
+  // Flatten Konva's scaleX/scaleY into width/height on transformend so
+  // toJSON round-trips a clean rect (and so future Resets compare against
+  // a single source of truth instead of "width × scale").
+  node.on('transformend', () => {
+    const sx = node.scaleX();
+    const sy = node.scaleY();
+    if (sx !== 1 || sy !== 1) {
+      node.width(node.width() * sx);
+      node.height(node.height() * sy);
+      node.scaleX(1);
+      node.scaleY(1);
+    }
+    _scheduleSave();
+  });
+  node.on('dragend', _scheduleSave);
+  // Right-click → context menu with Reset Size + Delete.
+  node.on('contextmenu', (e) => {
+    e.evt?.preventDefault();
+    e.cancelBubble = true;
+    _setSelection(node);
+    const ev = e.evt;
+    _showOverlayContextMenu(node, ev?.clientX ?? 0, ev?.clientY ?? 0);
+  });
   if (node.getClassName() === 'Text') node.on('dblclick', () => _editText(node));
   // Any Konva.Image tagged as a user text box re-opens the rich-text editor.
   if (node.getClassName() === 'Image' && node.getAttr('textHtml')) {
     node.on('dblclick', () => _editTextBox(node));
   }
+}
+
+/**
+ * Reset a node's box back to the source-of-truth size:
+ *   text box → canvas dimensions at last raster (textWidth × naturalH)
+ *   image    → the source file's native pixel size (naturalW × naturalH)
+ *
+ * Position is preserved (we shrink/grow around the top-left). Aspect is
+ * preserved by definition — both axes go back to the natural dims.
+ */
+function resetNodeToOriginalSize(node) {
+  if (!node) return;
+  const naturalW = node.getAttr('naturalW');
+  const naturalH = node.getAttr('naturalH');
+  if (!Number.isFinite(naturalW) || !Number.isFinite(naturalH)) return;
+  node.width(naturalW);
+  node.height(naturalH);
+  node.scaleX(1);
+  node.scaleY(1);
+  _layer.batchDraw();
+  _uiLayer.batchDraw();
+  _scheduleSave();
+}
+
+function _showOverlayContextMenu(node, x, y) {
+  const items = [];
+  const hasNatural = Number.isFinite(node.getAttr('naturalW')) && Number.isFinite(node.getAttr('naturalH'));
+  items.push({
+    label:    'Reset to original size',
+    disabled: !hasNatural,
+    action:   () => resetNodeToOriginalSize(node),
+  });
+  items.push({ separator: true });
+  items.push({
+    label:  'Delete',
+    action: () => {
+      node.destroy();
+      _setSelection(null);
+      _layer.batchDraw();
+      _scheduleSave();
+    },
+  });
+  showContextMenu(items, x, y);
 }
 
 function _setSelection(node) {
@@ -285,8 +371,14 @@ function _recreateNode(spec) {
   if (!spec) return null;
   if (spec.className === 'Text')  return new Konva.Text({ ...spec.attrs, draggable: true });
   if (spec.className === 'Image') {
-    const { src, textHtml, textWidth, ...rest } = spec.attrs || {};
+    const { src, textHtml, textWidth, naturalW, naturalH, ...rest } = spec.attrs || {};
     const node = new Konva.Image({ ...rest, draggable: true });
+    // Preserve any naturalW/naturalH that round-tripped through JSON; if
+    // they're missing (older overlays predating the Reset feature), we
+    // backfill from the re-raster / image-load below so right-click →
+    // Reset works on existing projects too.
+    if (Number.isFinite(naturalW)) node.setAttr('naturalW', naturalW);
+    if (Number.isFinite(naturalH)) node.setAttr('naturalH', naturalH);
     if (textHtml) {
       // Rich-text box — re-rasterize from stored HTML.
       node.setAttr('textHtml',  textHtml);
@@ -294,15 +386,21 @@ function _recreateNode(spec) {
       _htmlToCanvas(textHtml, { width: textWidth || 400 }).then(canvas => {
         if (canvas) {
           node.image(canvas);
-          node.width(canvas.width);
-          node.height(canvas.height);
+          // Don't clobber width/height (the user may have resized) — but
+          // backfill naturalW/H from this fresh raster if they weren't saved.
+          if (!Number.isFinite(node.getAttr('naturalW'))) node.setAttr('naturalW', canvas.width);
+          if (!Number.isFinite(node.getAttr('naturalH'))) node.setAttr('naturalH', canvas.height);
           _layer.batchDraw();
         }
       }).catch(e => console.warn('[overlay] text rasterize failed', e));
     } else if (src) {
       node.setAttr('src', src);
-      _loadImage(src).then(img => { node.image(img); _layer.batchDraw(); })
-        .catch(e => console.warn('[overlay] image load failed', e));
+      _loadImage(src).then(img => {
+        node.image(img);
+        if (!Number.isFinite(node.getAttr('naturalW'))) node.setAttr('naturalW', img.width);
+        if (!Number.isFinite(node.getAttr('naturalH'))) node.setAttr('naturalH', img.height);
+        _layer.batchDraw();
+      }).catch(e => console.warn('[overlay] image load failed', e));
     }
     return node;
   }
