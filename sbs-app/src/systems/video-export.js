@@ -21,7 +21,8 @@
 import { state }     from '../core/state.js';
 import { steps }     from './steps.js';
 import { sceneCore } from '../core/scene.js';
-import { rasterizeOverlay } from './overlay.js';
+import { rasterizeOverlay }      from './overlay.js';
+import { rasterizeHeaderLayer }  from './header.js';
 import { decodeToAudioBuffer, resampleToMonoFloat32, mixTrackToFloat32 } from './audio-bridge.js';
 import { synthesize as ttsSynthesize } from './tts.js';
 import * as narrationCache from './narration-cache.js';
@@ -235,10 +236,16 @@ async function _exportMp4({ fps = DEFAULT_FPS, bitrate = DEFAULT_BITRATE,
       // 1. Lay down the 3D frame at native size.
       compositeCtx.clearRect(0, 0, width, height);
       compositeCtx.drawImage(canvas, 0, 0, width, height);
-      // 2. Bake the overlay on top (null if no overlay nodes exist).
+      // 2. Bake the per-step overlay on top.
       const ov = rasterizeOverlay({ width, height });
       if (ov) compositeCtx.drawImage(ov, 0, 0, width, height);
-      // 3. Encode.
+      // 3. Bake the project-level header layer above the overlay so
+      //    headers always sit on top — dynamic kinds (stepName /
+      //    stepNumber / chapter*) resolve their text against whichever
+      //    step is active at this exact tick, automatically.
+      const hd = rasterizeHeaderLayer({ width, height });
+      if (hd) compositeCtx.drawImage(hd, 0, 0, width, height);
+      // 4. Encode.
       const frame = new VideoFrame(composite, { timestamp: nextFrameUs });
       const keyFrame = Math.round(nextFrameUs / frameIntervalUs) % fps === 0;
       try { encoder.encode(frame, { keyFrame }); } catch (e) { frame.close(); throw e; }

@@ -423,6 +423,43 @@ export function importHeaderSetup(payload) {
   return fresh.length;
 }
 
+/**
+ * Rasterize the live header layer to a canvas sized to fit the given
+ * width (or height) while preserving aspect. Returns null when:
+ *   • there's no layer mounted (initHeaderLayer hasn't run), OR
+ *   • headersHidden is true, OR
+ *   • the layer has no visible items.
+ *
+ * Mirrors overlay.rasterizeOverlay() so the export pipeline composites
+ * both with the same code path. The transformer is excluded from the
+ * rasterised output (it's a UI affordance, not content).
+ *
+ * @param {{width?:number, height?:number}} [opts]
+ */
+export function rasterizeHeaderLayer(opts = {}) {
+  if (!_layer || !_stage) return null;
+  if (state.get('headersHidden')) return null;
+  // visible-children = real items (transformer + invisible items skipped)
+  const real = _layer.getChildren().filter(c => c !== _transformer);
+  if (real.length === 0) return null;
+
+  // Hide the transformer for the export snapshot so its handles/border
+  // don't bleed into the rendered frame. Restore after.
+  const wasVisible = _transformer.visible();
+  _transformer.visible(false);
+
+  const sw = _stage.width();
+  const sh = _stage.height();
+  if (!sw || !sh) { _transformer.visible(wasVisible); return null; }
+  const ratio = opts.width  ? opts.width  / sw
+              : opts.height ? opts.height / sh
+              : 1;
+  const canvas = _layer.toCanvas({ pixelRatio: ratio });
+
+  _transformer.visible(wasVisible);
+  return canvas;
+}
+
 /** Imperatively select a header item by id (or null to clear). */
 export function selectHeader(id) {
   if (!_layer) return;

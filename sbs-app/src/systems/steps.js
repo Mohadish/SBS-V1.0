@@ -154,8 +154,15 @@ class StepManager {
     if (!activeId) return;
     // Hide the per-mesh selection overlay/outline children, render scene
     // only (no gizmo overlay scene), capture, then restore visuals. The
-    // Konva 2D overlay (text boxes, images) is composited on top so the
-    // saved preview matches what the user sees.
+    // Konva 2D per-step overlay (text boxes, images) is composited on top
+    // so the saved preview matches what the user sees.
+    //
+    // Header layer is INTENTIONALLY excluded from thumbnails — headers
+    // would dominate a 120×80 preview and the same header repeats on
+    // every step's thumbnail, creating visual noise that hides what's
+    // actually different about each step. Headers still appear on the
+    // live viewport (above this layer) and in the exported video.
+    //
     // The next rAF's regular _render redraws everything normally — no
     // flicker on the live viewport.
     this._materials?.setSelectionVisualsVisible(false);
