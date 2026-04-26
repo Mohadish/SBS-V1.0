@@ -879,47 +879,158 @@ function _singleEditorApplier(action, value) {
   execCommandApplier(action, value);
 }
 
+/**
+ * Mass-mode style sweep — operates over ALL text in the box's HTML, not
+ * just a selection. Designed so that:
+ *
+ *   • Property actions (color / font / size)  — set every character's
+ *     value to `value`, stripping any conflicting inline declaration
+ *     from ancestors first so the new value isn't shadowed.
+ *
+ *   • Toggle actions (bold / italic / under / strike) — TOGGLE: if every
+ *     character already has the style applied, REMOVE it; otherwise
+ *     apply it uniformly. Mirrors how a normal word processor toggles
+ *     when you click B/I/U/S over a mixed selection.
+ *
+ *   • Alignment — wrap the whole content in a <div text-align:...>;
+ *     replace any existing wrapping alignment block.
+ *
+ * All styling is written as INLINE CSS on <span>s wrapping every text
+ * run, never legacy <b>/<i>/<u>/<s> tags. CSS gives us:
+ *   • correct underline / strike rendering in SVG-foreignObject
+ *     (no nested-<u> stacking, no thin-white-line artefact);
+ *   • clean removal (clear the inline property), instead of having to
+ *     unwrap tags;
+ *   • independent control of each property.
+ */
 function _applyActionToHtml(html, action, value) {
   const root = document.createElement('div');
   root.innerHTML = html || '';
 
-  // Property-style actions: strip the matching inline style from every
-  // descendant, then wrap the whole content in a span declaring the new
-  // value. The outer wrapper wins via cascade.
-  const PROP_ACTIONS = {
-    foreColor: 'color',
-    fontName:  'fontFamily',
-    fontSize:  'fontSize',
-  };
-  if (PROP_ACTIONS[action]) {
-    const cssProp = PROP_ACTIONS[action];
-    root.querySelectorAll('[style]').forEach(el => { el.style[cssProp] = ''; });
-    const wrap = document.createElement('span');
-    wrap.style[cssProp] = action === 'fontSize' ? `${value}px` : String(value);
-    while (root.firstChild) wrap.appendChild(root.firstChild);
-    root.appendChild(wrap);
-    return root.innerHTML;
-  }
+  switch (action) {
+    case 'foreColor': _massSetProperty(root, 'color',       String(value));        break;
+    case 'fontName':  _massSetProperty(root, 'fontFamily',  String(value));        break;
+    case 'fontSize':  _massSetProperty(root, 'fontSize',    `${Number(value)}px`); break;
 
-  const TAG_ACTIONS = { bold: 'b', italic: 'i', underline: 'u', strikeThrough: 's' };
-  if (TAG_ACTIONS[action]) {
-    const wrap = document.createElement(TAG_ACTIONS[action]);
-    while (root.firstChild) wrap.appendChild(root.firstChild);
-    root.appendChild(wrap);
-    return root.innerHTML;
-  }
+    case 'bold':          _massToggleProperty(root, 'fontWeight', 'bold');         break;
+    case 'italic':        _massToggleProperty(root, 'fontStyle',  'italic');       break;
+    case 'underline':     _massToggleDecoration(root, 'underline');                break;
+    case 'strikeThrough': _massToggleDecoration(root, 'line-through');             break;
 
-  if (action === 'justifyLeft' || action === 'justifyCenter' || action === 'justifyRight') {
-    const align = action === 'justifyLeft' ? 'left'
-                : action === 'justifyRight' ? 'right' : 'center';
-    const wrap = document.createElement('div');
-    wrap.style.textAlign = align;
-    while (root.firstChild) wrap.appendChild(root.firstChild);
-    root.appendChild(wrap);
-    return root.innerHTML;
-  }
+    case 'justifyLeft':   _massSetAlignment(root, 'left');   break;
+    case 'justifyCenter': _massSetAlignment(root, 'center'); break;
+    case 'justifyRight':  _massSetAlignment(root, 'right');  break;
 
-  return html;   // unknown action — no-op
+    default: return html;
+  }
+  return root.innerHTML;
+}
+
+// ─── Mass-style helpers ─────────────────────────────────────────────────────
+
+/** Strip property from all descendants then wrap every non-empty text run in a span with the new value. */
+function _massSetProperty(root, prop, value) {
+  root.querySelectorAll('[style]').forEach(el => { el.style[prop] = ''; });
+  _wrapTextNodes(root, (span) => { span.style[prop] = value; });
+}
+
+/** Toggle property ON if some text lacks it, OFF if every text has it. */
+function _massToggleProperty(root, prop, onValue) {
+  const allHaveIt = _everyTextRunHasProperty(root, prop, onValue);
+  // Always strip first — this makes both branches idempotent.
+  root.querySelectorAll('[style]').forEach(el => { el.style[prop] = ''; });
+  if (!allHaveIt) {
+    _wrapTextNodes(root, (span) => { span.style[prop] = onValue; });
+  }
+}
+
+/**
+ * Same toggle semantics for text-decoration values (underline /
+ * line-through), which are additive in CSS — multiple decorations can
+ * coexist on a single span. We toggle just THIS decoration in/out of
+ * the existing string.
+ */
+function _massToggleDecoration(root, decoration) {
+  const allHaveIt = _everyTextRunHasDecoration(root, decoration);
+  if (allHaveIt) {
+    root.querySelectorAll('[style]').forEach(el => {
+      el.style.textDecoration = _removeDecoration(el.style.textDecoration, decoration);
+    });
+  } else {
+    _wrapTextNodes(root, (span) => {
+      span.style.textDecoration = _addDecoration(span.style.textDecoration, decoration);
+    });
+  }
+}
+
+/** Wrap entire content in a <div text-align:...>, replacing any prior alignment wrapper. */
+function _massSetAlignment(root, align) {
+  // Strip text-align from existing descendants so the new wrapper wins cleanly.
+  root.querySelectorAll('[style]').forEach(el => { el.style.textAlign = ''; });
+  const wrap = document.createElement('div');
+  wrap.style.textAlign = align;
+  while (root.firstChild) wrap.appendChild(root.firstChild);
+  root.appendChild(wrap);
+}
+
+/** Wrap every non-empty text node in a fresh <span>, then call applyFn(span) so the caller can set styles. */
+function _wrapTextNodes(root, applyFn) {
+  const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT);
+  const targets = [];
+  let n;
+  while ((n = walker.nextNode())) {
+    if (n.textContent && n.textContent.length > 0) targets.push(n);
+  }
+  for (const tn of targets) {
+    const span = document.createElement('span');
+    applyFn(span);
+    tn.parentNode.insertBefore(span, tn);
+    span.appendChild(tn);
+  }
+}
+
+/** True iff every non-empty text run has an ancestor with `style[prop] === onValue`. */
+function _everyTextRunHasProperty(root, prop, onValue) {
+  const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT);
+  let n;
+  while ((n = walker.nextNode())) {
+    if (!n.textContent.trim()) continue;
+    let p = n.parentElement;
+    let found = false;
+    while (p && p !== root) {
+      if (p.style?.[prop] === onValue) { found = true; break; }
+      p = p.parentElement;
+    }
+    if (!found) return false;
+  }
+  return true;
+}
+
+function _everyTextRunHasDecoration(root, decoration) {
+  const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT);
+  let n;
+  while ((n = walker.nextNode())) {
+    if (!n.textContent.trim()) continue;
+    let p = n.parentElement;
+    let found = false;
+    while (p && p !== root) {
+      const td = String(p.style?.textDecoration || '');
+      if (td.includes(decoration)) { found = true; break; }
+      p = p.parentElement;
+    }
+    if (!found) return false;
+  }
+  return true;
+}
+
+function _removeDecoration(td, decoration) {
+  return String(td || '')
+    .split(/\s+/).filter(t => t && t !== decoration).join(' ').trim();
+}
+function _addDecoration(td, decoration) {
+  const list = String(td || '').split(/\s+/).filter(Boolean);
+  if (!list.includes(decoration)) list.push(decoration);
+  return list.join(' ');
 }
 
 /**
@@ -1319,27 +1430,44 @@ function _trimPasteBlocks(html) {
   const tmp = document.createElement('div');
   tmp.innerHTML = html || '';
 
-  const isEmptyBlock = (el) => {
-    if (!el || el.nodeType !== 1) return false;
-    if (!/^(DIV|P)$/.test(el.tagName)) return false;
-    if (el.textContent.trim() !== '')  return false;
-    // <div><br></div> and similar — empty even with structural tags inside.
-    return !el.querySelector('img,svg,input,canvas');
+  const isEmpty = (el) => {
+    if (!el) return false;
+    // Whitespace-only text nodes
+    if (el.nodeType === 3) return !el.textContent.trim();
+    if (el.nodeType !== 1) return false;
+    // Bare <br> at the boundary
+    if (el.tagName === 'BR') return true;
+    // <div>/<p> with nothing visible inside (just whitespace or <br>s)
+    if (/^(DIV|P)$/.test(el.tagName) &&
+        !el.textContent.trim() &&
+        !el.querySelector('img,svg,input,canvas')) {
+      return true;
+    }
+    return false;
   };
 
-  while (tmp.firstChild && isEmptyBlock(tmp.firstChild)) tmp.removeChild(tmp.firstChild);
-  while (tmp.lastChild  && isEmptyBlock(tmp.lastChild))  tmp.removeChild(tmp.lastChild);
+  const stripBoundaries = () => {
+    while (tmp.firstChild && isEmpty(tmp.firstChild)) tmp.removeChild(tmp.firstChild);
+    while (tmp.lastChild  && isEmpty(tmp.lastChild))  tmp.removeChild(tmp.lastChild);
+  };
 
-  // Single outer block? Promote its children up — pasted content is now
-  // truly inline at the caret.
-  if (tmp.children.length === 1 &&
-      /^(DIV|P)$/.test(tmp.firstElementChild.tagName) &&
-      // Child must not itself contain block elements (otherwise the
-      // outer wrapper IS providing structural meaning).
-      !tmp.firstElementChild.querySelector('div,p')) {
-    const only = tmp.firstElementChild;
-    while (only.firstChild) tmp.insertBefore(only.firstChild, only);
-    only.remove();
+  // Iterative unwrap. Each pass strips boundary padding and, if there's
+  // still exactly one outer block wrapper containing only inline content
+  // (no nested div/p), promotes its children up. Repeat — sometimes
+  // clipboard payloads nest several wrappers (e.g. <div><div><div>text)
+  // and we want the innermost text to land flat.
+  let safety = 5;
+  while (safety-- > 0) {
+    stripBoundaries();
+    if (tmp.children.length === 1 &&
+        /^(DIV|P)$/.test(tmp.firstElementChild.tagName) &&
+        !tmp.firstElementChild.querySelector('div,p')) {
+      const only = tmp.firstElementChild;
+      while (only.firstChild) tmp.insertBefore(only.firstChild, only);
+      only.remove();
+      continue;   // strip again, look for the next layer
+    }
+    break;
   }
   return tmp.innerHTML;
 }
