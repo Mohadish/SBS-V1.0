@@ -480,19 +480,23 @@ function _setSelection(node) {
  * Flip the transformer's resize behaviour based on what's selected AND
  * whether we're in the in-place text editor.
  *
- *   • Text box, NOT editing — selection visual only (border for feedback,
- *     drag-to-move enabled, NO resize anchors, no rotate). Resize lives
- *     in edit mode; single-click is a "move only" affordance.
- *   • Text box, EDITING       — full 8 anchors, free resize, no rotate
- *     (rotation on a contenteditable is awkward; we omit it).
+ *   • Text box, NOT editing — full 8 anchors, free resize. Raster reflows
+ *     at transformend (snap behaviour: brief stretch during drag, clean
+ *     reflow on release).
+ *   • Text box, EDITING       — full 8 anchors, free resize. The editor's
+ *     contenteditable resizes LIVE during drag (see node.on('transform')),
+ *     so the user sees the actual final layout while dragging — no
+ *     stretched-then-snap flash.
  *   • Plain image             — aspect-locked uniform scale on the four
  *     corners. Skewing bitmaps looks bad.
+ *
+ * Rotation is disabled on text boxes (rotating rasterised text + then
+ * editing a contenteditable inside a rotated bbox is tricky — defer
+ * unless asked).
  */
 function _configTransformerForNode(node) {
   const isTextBox = !!node.getAttr('textHtml');
-  const isEditingThis = !!_activeTextEditor && _activeTextEditor.node === node;
-
-  if (isTextBox && isEditingThis) {
+  if (isTextBox) {
     _transformer.keepRatio(false);
     _transformer.rotateEnabled(false);
     _transformer.enabledAnchors([
@@ -500,13 +504,6 @@ function _configTransformerForNode(node) {
       'middle-left',           'middle-right',
       'bottom-left', 'bottom-center', 'bottom-right',
     ]);
-    return;
-  }
-  if (isTextBox) {
-    // Selection-only state: border + draggable, no handles.
-    _transformer.keepRatio(false);
-    _transformer.rotateEnabled(false);
-    _transformer.enabledAnchors([]);
     return;
   }
   // Image — Phase 1 default.

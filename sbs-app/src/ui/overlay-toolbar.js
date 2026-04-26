@@ -28,11 +28,15 @@ export function initOverlayToolbar() {
 
   _bar = document.createElement('div');
   _bar.id = 'overlay-toolbar';
+  // Single row, no wrap. The Edit toggle is the right-anchored constant;
+  // tools (and the text-edit slot) extend to the LEFT as the user drills
+  // deeper — overlay-edit ON adds Add/Delete to the left of the toggle,
+  // text-edit ON adds the style controls further left.
   _bar.style.cssText = [
     'position:absolute',
     'top:8px', 'right:8px',
     'z-index:30',
-    'display:flex', 'gap:6px', 'align-items:center',
+    'display:flex', 'gap:6px', 'align-items:center', 'flex-wrap:nowrap',
     'background:rgba(10,15,25,0.85)',
     'border:1px solid rgba(255,255,255,0.08)',
     'border-radius:8px',
@@ -40,18 +44,24 @@ export function initOverlayToolbar() {
     'font-size:12px',
     'user-select:none',
     'backdrop-filter:blur(4px)',
+    'max-width:calc(100vw - 24px)',
+    'overflow-x:auto',
   ].join(';');
 
-  _mainBtn = _btn('✏ Edit overlay', 'Toggle overlay editing mode');
-  _mainBtn.addEventListener('click', () => _setEditing(!overlay.isEditing()));
-  _bar.appendChild(_mainBtn);
+  // Slot for the in-place text editor's controls (font / size / color /
+  // strike / U / I / B / align L|C|R). Sits LEFTMOST when editing text.
+  _textSlot = document.createElement('div');
+  _textSlot.id = 'overlay-text-slot';
+  _textSlot.style.cssText = 'display:none;gap:4px;align-items:center;flex-wrap:nowrap;';
 
+  // Tools = Add Text / Add Image / Delete. Visible when overlay editing
+  // is on. Sits between the text slot (left) and the Edit toggle (right).
+  // Order in DOM = visual left-to-right: Add T, Add Img, Delete.
   _tools = document.createElement('div');
-  _tools.style.cssText = 'display:none;gap:4px;align-items:center;flex-wrap:wrap;';
-  const btnText = _btn('+ T', 'Add text box (opens editor)');
+  _tools.style.cssText = 'display:none;gap:4px;align-items:center;flex-wrap:nowrap;';
+  const btnText = _btn('+ T',  'Add text box (opens editor)');
   const btnImg  = _btn('+ 🖼', 'Add image');
-  const btnDel  = _btn('🗑',  'Delete selected');
-  const btnDone = _btn('✓',  'Exit editing mode');
+  const btnDel  = _btn('🗑',   'Delete selected');
   btnText.addEventListener('click', async () => {
     const node = await overlay.addTextBox();
     if (node) setStatus('Text box added — double-click to edit.');
@@ -63,25 +73,24 @@ export function initOverlayToolbar() {
     catch (e) { setStatus(`Image load failed: ${e.message}`, 'danger'); }
   });
   btnDel.addEventListener('click', () => overlay.deleteSelected());
-  btnDone.addEventListener('click', () => _setEditing(false));
+  _tools.append(btnText, btnImg, btnDel);
 
-  // Slot for the in-place text editor's controls (B/I/U/S, font, size,
-  // colour, align). Hidden by default; text-toolbar.mountTextToolbar()
-  // populates and shows it during edit sessions; unmount clears + hides.
-  _textSlot = document.createElement('div');
-  _textSlot.id = 'overlay-text-slot';
-  _textSlot.style.cssText = 'display:none;gap:4px;align-items:center;flex-wrap:wrap;';
+  // The editing toggle is rightmost — always visible, single source of
+  // truth for entering/leaving overlay editing. The old "Done" button
+  // was redundant with this toggle and has been removed.
+  _mainBtn = _btn('✏ Edit overlay', 'Toggle overlay editing mode');
+  _mainBtn.addEventListener('click', () => _setEditing(!overlay.isEditing()));
 
-  _tools.append(btnText, btnImg, btnDel, _sep(), btnDone, _sep(), _textSlot);
-  _bar.appendChild(_tools);
+  // Append in left-to-right DOM order: text slot · tools · toggle.
+  _bar.append(_textSlot, _tools, _mainBtn);
 
   surface.appendChild(_bar);
 }
 
 /**
  * Returns the inline DIV that text-toolbar.js populates while the
- * in-place text editor is open. Lives on the same row as the existing
- * Add/Delete/Done buttons — no separate floating bar.
+ * in-place text editor is open. Lives on the same row as the Add /
+ * Delete buttons and the Edit toggle — no separate floating bar.
  */
 export function getTextToolbarSlot() {
   return _textSlot;

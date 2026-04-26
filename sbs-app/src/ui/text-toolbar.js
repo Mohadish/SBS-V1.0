@@ -49,19 +49,22 @@ export function mountTextToolbar(host, editorEl) {
   _toolbar.innerHTML = '';
   _toolbar.dataset.sbsTextToolbar = '1';
 
+  // Visual layout (left to right) — matches the user's right-to-left
+  // mental order so reading the bar from the Edit toggle inward gives:
+  //   font ▼ · size ▼ · color · S · U · I · B · ⫸ · ⫿ · ⫷
   _toolbar.append(
+    _btn('⫷', 'Align left',   () => _exec('justifyLeft')),
+    _btn('⫿', 'Align center', () => _exec('justifyCenter')),
+    _btn('⫸', 'Align right',  () => _exec('justifyRight')),
+    _sep(),
     _btn('B', 'Bold (Ctrl+B)',     () => _exec('bold'),          { fontWeight: 'bold' }),
     _btn('I', 'Italic (Ctrl+I)',   () => _exec('italic'),        { fontStyle:  'italic' }),
     _btn('U', 'Underline (Ctrl+U)',() => _exec('underline'),     { textDecoration: 'underline' }),
     _btn('S', 'Strikethrough',     () => _exec('strikeThrough'), { textDecoration: 'line-through' }),
     _sep(),
-    _select('font', FONTS,                  (v) => _exec('fontName', v)),
-    _select('size', SIZES.map(s => `${s}`), (v) => _execFontSize(Number(v))),
     _color('Text color',                    (v) => _exec('foreColor', v)),
-    _sep(),
-    _btn('⫷', 'Align left',   () => _exec('justifyLeft')),
-    _btn('⫿', 'Align center', () => _exec('justifyCenter')),
-    _btn('⫸', 'Align right',  () => _exec('justifyRight')),
+    _select('size', SIZES.map(s => `${s}`), (v) => _execFontSize(Number(v))),
+    _select('font', FONTS,                  (v) => _exec('fontName', v)),
   );
 
   _toolbar.style.display = 'flex';
