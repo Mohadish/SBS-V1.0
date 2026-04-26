@@ -19,11 +19,6 @@
  * gets caught at startup, not on the user's first click.
  */
 
-// kokoro.web.js is a self-contained ~2 MB ES module bundle (transformers.js
-// + onnxruntime-web inlined). Path is relative to *this* file, which lives
-// in electron/ — so "../node_modules/..." reaches sbs-app/node_modules/.
-import { KokoroTTS, env as kokoroEnv } from '../node_modules/kokoro-js/dist/kokoro.web.js';
-
 const $status = document.getElementById('status');
 function log(msg) {
   console.log(msg);
@@ -39,11 +34,47 @@ if (!bundleDir) log('[tts-host] ⚠ no bundleDir — main forgot to set addition
 log(`[tts-host] bundle dir: ${bundleDir}`);
 log(`[tts-host] ort wasm: ${ortWasmDir}`);
 
+// ─── Fetch interceptor ──────────────────────────────────────────────────
+// kokoro-js (even the .web bundle) hard-codes https://huggingface.co/...
+// URLs for config.json, tokenizer.json, model files, voice .bin files.
+// It only forwards dtype/device/progress_callback to the inner transformers
+// from_pretrained — cache_dir and local_files_only are silently dropped.
+// So we can't tell the library "use local files only" through the API.
+//
+// Solution: intercept fetch() at the renderer level. When we see an HF URL
+// for the Kokoro repo, rewrite it to a file:// URL pointing at the same
+// path inside kokoro-bundle/. The bundle layout mirrors the HF repo, so
+// the substitution is one-line. No actual network requests fire.
+const HF_PREFIX = 'https://huggingface.co/onnx-community/Kokoro-82M-v1.0-ONNX/resolve/main/';
+const _origFetch = window.fetch.bind(window);
+const _bundleFileUrl = (rel) => {
+  // Build a percent-encoded file:// URL from an absolute Windows-or-Unix
+  // path. encodeURI handles spaces (we have one in "SBS-V1.0 - Claude")
+  // and other reserved chars without mangling the slashes.
+  const abs = `${bundleDir.replace(/\\/g, '/').replace(/\/?$/, '/')}onnx-community/Kokoro-82M-v1.0-ONNX/${rel}`;
+  return encodeURI(`file:///${abs}`);
+};
+window.fetch = (input, init) => {
+  const u = typeof input === 'string' ? input : (input?.url || '');
+  if (u.startsWith(HF_PREFIX)) {
+    const rel    = u.slice(HF_PREFIX.length).split('?')[0];
+    const local  = _bundleFileUrl(rel);
+    log(`[tts-host] fetch ↪ ${rel} (local)`);
+    return _origFetch(local, init);
+  }
+  return _origFetch(input, init);
+};
+
+// kokoro.web.js is a self-contained ~2 MB ES module bundle (transformers.js
+// + onnxruntime-web inlined). Path is relative to *this* file, which lives
+// in electron/ — so "../node_modules/..." reaches sbs-app/node_modules/.
+const { KokoroTTS, env: kokoroEnv } = await import('../node_modules/kokoro-js/dist/kokoro.web.js');
+
 // Tell ORT-web (via kokoro-js's re-exported env) where to fetch the wasm
 // blobs. These ship inside node_modules/onnxruntime-web/dist/ — main passes
 // the absolute path through preload args.
 if (ortWasmDir) {
-  kokoroEnv.wasmPaths = `file:///${ortWasmDir.replace(/\\/g, '/').replace(/\/?$/, '/')}`;
+  kokoroEnv.wasmPaths = encodeURI(`file:///${ortWasmDir.replace(/\\/g, '/').replace(/\/?$/, '/')}`);
   log(`[tts-host] wasmPaths: ${kokoroEnv.wasmPaths}`);
 }
 

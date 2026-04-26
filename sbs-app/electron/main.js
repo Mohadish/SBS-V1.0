@@ -188,55 +188,10 @@ function ensureVendorFiles() {
   if (copied > 0) console.log(`[vendor] Copied ${copied} vendor file(s) to ${appVendor}`);
 }
 
-// ─── Python helper processes ───────────────────────────────────────────────
-let piperProcess   = null;
-let exportProcess  = null;
-
-function findPython() {
-  const candidates = ['python3', 'python', 'py'];
-  for (const cmd of candidates) {
-    try { execSync(`${cmd} --version`, { stdio: 'ignore' }); return cmd; }
-    catch (_) {}
-  }
-  return null;
-}
-
-function startHelpers() {
-  const python = findPython();
-  if (!python) {
-    console.warn('[main] Python not found — helpers will not start.');
-    return;
-  }
-
-  // Piper TTS helper (port 8765)
-  const piperScript = path.join(APP_ROOT, '..', 'piper_shared', 'piper_tts_helper.py');
-  if (fs.existsSync(piperScript)) {
-    piperProcess = spawn(python, [piperScript], {
-      cwd: path.dirname(piperScript),
-      stdio: 'ignore',
-      detached: false,
-    });
-    piperProcess.on('error', err => console.warn('[piper]', err.message));
-    console.log('[main] Piper TTS helper started.');
-  }
-
-  // Export helper (port 8766)
-  const exportScript = path.join(APP_ROOT, '..', 'step_export_helper_v0.148', 'step_export_helper.py');
-  if (fs.existsSync(exportScript)) {
-    exportProcess = spawn(python, [exportScript], {
-      cwd: path.dirname(exportScript),
-      stdio: 'ignore',
-      detached: false,
-    });
-    exportProcess.on('error', err => console.warn('[export-helper]', err.message));
-    console.log('[main] Export helper started.');
-  }
-}
-
-function stopHelpers() {
-  if (piperProcess)  { piperProcess.kill();  piperProcess  = null; }
-  if (exportProcess) { exportProcess.kill(); exportProcess = null; }
-}
+// (Legacy Python helpers — Piper TTS on :8765 and step-export on :8766 —
+// were removed once Kokoro replaced Piper for narration and the in-app
+// WebCodecs path replaced the export helper. The startHelpers/stopHelpers
+// scaffolding sat there spawning processes nothing called.)
 
 // ─── Main window ──────────────────────────────────────────────────────────
 let mainWindow = null;
@@ -368,7 +323,6 @@ function buildMenu() {
 // ─── App lifecycle ─────────────────────────────────────────────────────────
 app.whenReady().then(() => {
   ensureVendorFiles();
-  startHelpers();
   Menu.setApplicationMenu(buildMenu());
   createWindow();
 
@@ -378,11 +332,8 @@ app.whenReady().then(() => {
 });
 
 app.on('window-all-closed', () => {
-  stopHelpers();
   if (process.platform !== 'darwin') app.quit();
 });
-
-app.on('before-quit', () => stopHelpers());
 
 // ─── IPC handlers (renderer → main) ────────────────────────────────────────
 // These are the ONLY ways the renderer (UI) can talk to the file system.
