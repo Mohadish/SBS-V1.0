@@ -117,6 +117,13 @@ export function createEmptyProject() {
       items: [],          // HeaderItem[]
     },
 
+    // Text style templates — project-level presets that text boxes can
+    // bind to via styleId. See systems/style-templates.js.
+    styles: {
+      schema_version: 1,
+      items: [],          // StyleTemplate[]
+    },
+
     // App-level settings saved with the project
     settings: {
       schema_version: 1,

@@ -87,6 +87,14 @@ function createInitialState() {
     headersLocked:  false,            // when true, header items can't be moved/edited via the canvas
     headersHidden:  false,            // when true, the whole header layer is suppressed (live + export)
 
+    // ── Text style templates — project-level presets each text box can
+    // bind to via its `styleId` attr. When bound, the template's font /
+    // size / colour / weight / style / decoration / fill all OVERRIDE
+    // any inline styling on the box. Editing a template propagates
+    // live to every box that references it. Empty = no presets, every
+    // box is free-form. See systems/style-templates.js.
+    styleTemplates: [],               // StyleTemplate[]
+
     // ── UI state
     activeSidebarTab:   'files',      // which left sidebar tab is open
     gridVisible:        true,

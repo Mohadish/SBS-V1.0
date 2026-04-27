@@ -109,6 +109,12 @@ export function serialize() {
   project.headers.locked = !!state.get('headersLocked');
   project.headers.hidden = !!state.get('headersHidden');
 
+  // Text style templates — same shape as header items, lives in its
+  // own project section so it can be saved/loaded independently and
+  // bundled into the unified preset file alongside header items.
+  project.styles = project.styles || { schema_version: 1, items: [] };
+  project.styles.items = JSON.parse(JSON.stringify(state.get('styleTemplates') || []));
+
   // ── Settings ──────────────────────────────────────────────────────────────
   const cfg = project.settings;
   cfg.backgroundColor      = state.get('backgroundColor')      ?? '#0f172a';
@@ -466,6 +472,7 @@ export function applyProjectToState(project) {
     headerItems:          project.headers?.items            || [],
     headersLocked:        !!project.headers?.locked,
     headersHidden:        !!project.headers?.hidden,
+    styleTemplates:       project.styles?.items              || [],
   });
 
   // Restore project-level color state. Both maps keyed by mesh id; the
