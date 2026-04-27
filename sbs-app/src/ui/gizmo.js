@@ -310,8 +310,17 @@ class GizmoController {
     const isPivotEditing = node && state.get('pivotEditNodeId') === node.id;
     const usePivotPose   = pivotEnabled || isPivotEditing;
 
+    // During a rotate drag, lock the gizmo's pose to the snapshot taken
+    // at pointerdown. This stops the "rings spin under the cursor"
+    // artefact when the pivot itself is rotating (RED) or when the
+    // object is rotating around the pivot (BLUE). Translate drags
+    // re-track live so the gizmo follows the moving anchor.
+    const lockPose = this._dragging && this._dragEl?.type === 'rotate' && this._startGizmoPos;
+
     const pos = new T.Vector3();
-    if (usePivotPose) {
+    if (lockPose) {
+      pos.copy(this._startGizmoPos);
+    } else if (usePivotPose) {
       pos.copy(getPivotWorldPosition(node, this._obj3d));
     } else {
       this._obj3d.getWorldPosition(pos);
@@ -320,7 +329,10 @@ class GizmoController {
 
     // Orient gizmo: local mode = parent's world orientation (or pivot's
     // world orientation when in pivot mode), world mode = identity.
-    if (this._spaceMode === 'local') {
+    // Lock to snapshot during rotate drag for the same reason as pos.
+    if (lockPose && this._startRefQuat && this._spaceMode === 'local') {
+      this._group.quaternion.copy(this._startRefQuat);
+    } else if (this._spaceMode === 'local') {
       if (usePivotPose) {
         this._group.quaternion.copy(getPivotWorldQuaternion(node, this._obj3d));
       } else {
@@ -376,6 +388,26 @@ class GizmoController {
     // Pivot start values for RED-mode drags (writes to pivot fields).
     this._startPivotOffset = no?.pivotLocalOffset      ? [...no.pivotLocalOffset]      : [0, 0, 0];
     this._startPivotQuat   = no?.pivotLocalQuaternion  ? [...no.pivotLocalQuaternion]  : [0, 0, 0, 1];
+
+    // P-P1 fix: snapshot the gizmo's reference frame at pointerdown so
+    // axis vectors + angle projection stay stable through the whole
+    // drag. Without this, RED rotate (pivot rotates → ref frame
+    // changes) and BLUE rotate (object rotates → ref frame changes)
+    // both drifted as the angle plane shifted underfoot, and rotation
+    // felt slippery and off-axis.
+    const liveRef = this._gizmoReferenceQuat();
+    this._startRefQuat = liveRef ? liveRef.clone() : null;
+    // Also snapshot the gizmo's world position so we can lock the
+    // visual gizmo in place during a rotate drag (independent of the
+    // object's rotation), avoiding the "rings spin under the cursor"
+    // visual artefact.
+    const liveCenter = new T.Vector3();
+    if (no?.pivotEnabled || (state.get('pivotEditNodeId') === no?.id)) {
+      liveCenter.copy(getPivotWorldPosition(no, this._obj3d));
+    } else {
+      this._obj3d.getWorldPosition(liveCenter);
+    }
+    this._startGizmoPos = liveCenter;
 
     const plane = this._getDragPlane(el);
     this._startWorld = this._worldPoint(clientX, clientY, plane);
@@ -612,7 +644,11 @@ class GizmoController {
     else                   v = new T.Vector3(0, 0, 1);
 
     if (this._spaceMode === 'local') {
-      const refQ = this._gizmoReferenceQuat();
+      // During a drag, prefer the snapshot reference so axes stay
+      // stable even when the pivot/object rotates underneath us.
+      const refQ = (this._dragging && this._startRefQuat)
+        ? this._startRefQuat
+        : this._gizmoReferenceQuat();
       if (refQ) v.applyQuaternion(refQ);
     }
     return v;
@@ -622,6 +658,11 @@ class GizmoController {
    * The gizmo's current reference world quaternion. Drives _axisVec +
    * the orientation set in _tick. RED / BLUE mode → pivot world quat;
    * GREY → parent world quat.
+   *
+   * NOTE: callers in drag-hot paths should prefer this._startRefQuat
+   * (the snapshot at pointerdown) over this live value — the live one
+   * shifts as the object/pivot rotates and would make rotation drag
+   * drift.
    */
   _gizmoReferenceQuat() {
     if (!this._node || !this._obj3d) return this._parentWorldQuat();
@@ -679,7 +720,12 @@ class GizmoController {
   _atan2ForAxisInSpace(rel, axis) {
     const T = window.THREE;
     let r = rel.clone();
-    const refQ = this._gizmoReferenceQuat();
+    // Same snapshot-vs-live guard as _axisVec — atan2 needs to project
+    // onto a STABLE plane through the drag, not a live one that drifts
+    // as the object/pivot rotates.
+    const refQ = (this._dragging && this._startRefQuat)
+      ? this._startRefQuat
+      : this._gizmoReferenceQuat();
     if (refQ) r.applyQuaternion(refQ.clone().invert());
     return this._atan2ForAxis(r, axis);
   }
@@ -841,8 +887,13 @@ class GizmoController {
     const no = this._node;
     if (!no) return '';
 
-    // Position = localOffset (user-applied offset in parent-local space)
-    const [ox, oy, oz] = no.localOffset ?? [0, 0, 0];
+    // Translate inputs always live in the GIZMO'S reference frame —
+    // matches the axes the user sees on the gizmo. Drives the
+    // display path; _applyPanelValue does the inverse on write.
+    //   LOCAL + GREY → parent-local (no rotation; identity conversion)
+    //   LOCAL + BLUE → pivot frame (rotates through pivotLocalQ × totalLocalQ)
+    //   WORLD        → world frame (rotates through parentWorldQ)
+    const [ox, oy, oz] = this._offsetInPanelFrame(no);
     const fmt = v => parseFloat(v.toFixed(4));
 
     // Rotation = Euler from localQuaternion in degrees
@@ -957,11 +1008,16 @@ class GizmoController {
   }
 
   _applyPanelValue(field, val, no, obj) {
-    const off = [...(no.localOffset ?? [0, 0, 0])];
-
-    if (field === 'tx') { off[0] = val; no.localOffset = off; no.moveEnabled = true; }
-    if (field === 'ty') { off[1] = val; no.localOffset = off; no.moveEnabled = true; }
-    if (field === 'tz') { off[2] = val; no.localOffset = off; no.moveEnabled = true; }
+    if (field === 'tx' || field === 'ty' || field === 'tz') {
+      // Read current panel-frame translate, update one axis,
+      // convert back to parent-local for storage.
+      const cur = this._offsetInPanelFrame(no);
+      if (field === 'tx') cur[0] = val;
+      if (field === 'ty') cur[1] = val;
+      if (field === 'tz') cur[2] = val;
+      no.localOffset   = this._offsetFromPanelFrame(no, cur);
+      no.moveEnabled   = true;
+    }
 
     if (field === 'rx' || field === 'ry' || field === 'rz') {
       // Read current Euler in degrees, update one axis, convert back to quaternion
@@ -978,13 +1034,58 @@ class GizmoController {
   }
 
   /**
+   * Convert localOffset (parent-local) → panel display vector in the
+   * gizmo's current reference frame. See `_offsetFromPanelFrame` for
+   * the inverse + math derivation.
+   */
+  _offsetInPanelFrame(no) {
+    const T = window.THREE;
+    const parentToGizmo = this._parentToGizmoQuat();
+    const v = new T.Vector3(...(no.localOffset ?? [0, 0, 0]));
+    if (parentToGizmo) v.applyQuaternion(parentToGizmo);
+    return [v.x, v.y, v.z];
+  }
+
+  /** Inverse of _offsetInPanelFrame: panel-frame → parent-local localOffset. */
+  _offsetFromPanelFrame(no, panelVec) {
+    const T = window.THREE;
+    const parentToGizmo = this._parentToGizmoQuat();
+    const v = new T.Vector3(panelVec[0], panelVec[1], panelVec[2]);
+    if (parentToGizmo) v.applyQuaternion(parentToGizmo.clone().invert());
+    return [v.x, v.y, v.z];
+  }
+
+  /**
+   * Quaternion that rotates a vector from parent-local frame to the
+   * gizmo's current reference frame. This is gizmoRefQuat⁻¹ ×
+   * parentWorldQ — the parent-world cancels out the parent-local
+   * baseline and we land in the gizmo's frame.
+   *
+   *   LOCAL + no pivot → identity (gizmo IS parent frame)
+   *   LOCAL + pivot    → pivotLocalQ⁻¹ × totalLocalQ⁻¹
+   *   WORLD            → parentWorldQ (panel shows world coords)
+   *
+   * Returns null if obj3d isn't ready yet.
+   */
+  _parentToGizmoQuat() {
+    const T = window.THREE;
+    if (!this._obj3d) return null;
+    const parentQ = new T.Quaternion();
+    const parent = this._obj3d.parent;
+    if (parent) parent.getWorldQuaternion(parentQ);
+    const refQ = this._gizmoReferenceQuat() || parentQ;
+    return refQ.clone().invert().multiply(parentQ);
+  }
+
+  /**
    * Re-render current values into open panel without recreating it.
    */
   _refreshPanel() {
     if (!this._panel || !this._node) return;
     const no = this._node;
 
-    const [ox, oy, oz] = no.localOffset ?? [0, 0, 0];
+    // Translate displayed in the gizmo's reference frame (matches input).
+    const [ox, oy, oz] = this._offsetInPanelFrame(no);
     const [ex, ey, ez] = this._quatToEulerDeg(no.localQuaternion ?? [0, 0, 0, 1]);
     const fmt  = v => parseFloat(v.toFixed(4));
     const fmtA = v => parseFloat(v.toFixed(2));
