@@ -48,7 +48,8 @@ import { initContextMenu, hideContextMenu, showContextMenu } from './ui/context-
 import { initOverlay, getStage as getOverlayStage } from './systems/overlay.js';
 import { initOverlayToolbar }  from './ui/overlay-toolbar.js';
 import { initHeaderLayer }     from './systems/header.js';
-import { initCables }          from './systems/cables.js';   // C1: cables wire step:applied → applyStepSnapshot
+import { initCables }          from './systems/cables.js';        // C1: cables wire step:applied → applyStepSnapshot
+import { initCableRender }     from './systems/cables-render.js';  // C2: cables 3D render + per-frame anchor ticker
 import { initUserSettings }    from './core/user-settings.js';
 import { openSettingsModal }   from './ui/settings-modal.js';
 import { schedulePrecache, cancel as cancelPrecache } from './systems/narration-precache.js';
@@ -109,6 +110,10 @@ initHeaderLayer(getOverlayStage());
 // C1: cables system — subscribes to step:applied to merge per-step
 // variable overrides into state.cables. Must run AFTER steps.init.
 initCables();
+// C2: cables 3D render mounts CableRoot on sceneCore.scene + folds the
+// anchor refresh into sceneCore's existing tick. Must run AFTER scene
+// is up + initCables (so subscriptions land in the right order).
+initCableRender();
 setupUndoKeyboard();
 
 // Eager-load user-level prefs so subsequent UI can read them synchronously.
