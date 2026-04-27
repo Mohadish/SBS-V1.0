@@ -31,6 +31,7 @@ let _editing     = false;
 let _resizeObs   = null;
 let _saveTimer   = null;
 let _activeStepUnwatch = null;
+let _loadToken   = 0;     // bumped on every step-change load; older loads abort if outdated
 
 // ─── Init ──────────────────────────────────────────────────────────────────
 
@@ -47,8 +48,12 @@ export function initOverlay() {
     width:     _container.clientWidth  || 1,
     height:    _container.clientHeight || 1,
   });
-  _layer   = new Konva.Layer();
-  _uiLayer = new Konva.Layer();
+  // Name the overlay content layer explicitly so _loadFromActiveStep can
+  // pick the right layer back out of step.overlay JSON (which serialises
+  // ALL layers — content + UI + header — and a naive "first layer with
+  // children" search can mistakenly pick the UI or header layer).
+  _layer   = new Konva.Layer({ name: 'sbs-overlay-content' });
+  _uiLayer = new Konva.Layer({ name: 'sbs-overlay-ui' });
   _stage.add(_layer);
   _stage.add(_uiLayer);
 
@@ -157,6 +162,10 @@ export async function addTextBox() {
 
   const canvas = await _htmlToCanvas(html, { width: 400 });
   if (!canvas) return null;
+  if (!canvas.width || !canvas.height) {
+    console.warn('[overlay] addTextBox: 0-sized canvas — aborting', canvas.width, canvas.height);
+    return null;
+  }
 
   const node = new Konva.Image({
     x: (_stage.width()  - canvas.width)  / 2,
@@ -428,7 +437,13 @@ async function _exitTextEdit(opts = {}) {
 async function _reflowTextBox(node) {
   const html = node.getAttr('textHtml');
   if (!html) return false;
-  const w = Math.max(20, Math.round(node.width()));
+  // Defensive width: node.width() can return undefined / NaN if the node
+  // was just constructed without explicit width (e.g. legacy save). NaN
+  // through Math.round → NaN → canvas.width = NaN → canvas coerces to
+  // 0, which Konva later tries to drawImage and throws "0 width or
+  // height". Guard with a 400px fallback.
+  const rawW = Math.round(node.width());
+  const w = Number.isFinite(rawW) && rawW > 0 ? Math.max(20, rawW) : 400;
   const styleId = node.getAttr('styleId') || null;
   const tpl = styleId ? getStyleTemplate(styleId) : null;
 
@@ -460,6 +475,13 @@ async function _reflowTextBox(node) {
   // behaviour without a manual height handle for the user to fight.
   const canvas = await _htmlToCanvas(renderHtml, opts);
   if (!canvas) return false;
+  // Reject canvases with zero dim — drawImage on a 0×0 source throws
+  // synchronously inside Konva's _sceneFunc and corrupts subsequent
+  // draws on the layer. Better to skip than to poison the layer.
+  if (!canvas.width || !canvas.height) {
+    console.warn('[overlay] _reflowTextBox: 0-sized canvas, skipping image swap', { w, opts, html: html.slice(0, 80) });
+    return false;
+  }
   node.image(canvas);
   node.width(canvas.width);
   node.height(canvas.height);
@@ -1145,17 +1167,25 @@ function _serialiseStageJson() {
   return JSON.stringify(parsed);
 }
 
+let _loadRaf = 0;
 function _scheduleLoad() {
   // Defer by a frame so step.snapshot application completes before restore.
-  requestAnimationFrame(_loadFromActiveStep);
+  // Cancel any prior RAF so rapid step changes don't queue multiple loads.
+  if (_loadRaf) cancelAnimationFrame(_loadRaf);
+  _loadRaf = requestAnimationFrame(() => { _loadRaf = 0; _loadFromActiveStep(); });
 }
 
 function _onStepApplied() {
   _loadFromActiveStep();
 }
 
-function _loadFromActiveStep() {
+async function _loadFromActiveStep() {
   if (!_stage) return;
+  // Tag this load so a later step-change invalidates a still-running one.
+  // Without this, two rapid step switches can interleave: load #1's awaits
+  // resolve AFTER load #2 has already populated the layer, dumping load #1's
+  // (now-stale) nodes into the wrong step's layer.
+  const myToken = ++_loadToken;
   const activeId = state.get('activeStepId');
   const steps = state.get('steps') || [];
   const step  = steps.find(s => s.id === activeId);
@@ -1171,14 +1201,27 @@ function _loadFromActiveStep() {
     spec = JSON.parse(step.overlay);
   } catch { console.warn('[overlay] failed to parse step.overlay'); _layer.batchDraw(); return; }
 
-  // Find the content layer in the parsed spec and recreate its children here
-  // (the saved JSON contains its own stage + layers; we only want its user layer).
+  // Find the content layer in the parsed spec. CRITICAL: prefer the
+  // overlay layer by NAME ('userContent' or unnamed first layer) — the
+  // stage also contains _uiLayer (transformer) and the header layer,
+  // and a naive "first layer with children" scan can pick the wrong
+  // one when the overlay is empty but UI / header have nodes.
   const savedLayers = spec.children || [];
-  const saved = savedLayers.find(l => l.className === 'Layer' && (l.children || []).length > 0) || savedLayers[0];
+  const saved = savedLayers.find(l => l.className === 'Layer' && l.attrs?.name === 'sbs-overlay-content')
+             || savedLayers.find(l => l.className === 'Layer' && !l.attrs?.name && (l.children || []).length > 0)
+             || savedLayers.find(l => l.className === 'Layer' && (l.children || []).length > 0)
+             || savedLayers[0];
   if (!saved) { _layer.batchDraw(); return; }
 
+  // Build every node FULLY (await async raster) before adding it to the
+  // layer. Adding a Konva.Image to the layer before its image is set
+  // means Konva tries to draw a node with no image — usually fine, but
+  // when paired with a stale 0-dim attrs.image it throws "0 width or
+  // height" inside Konva's draw loop. Awaiting eliminates that race
+  // entirely and is what addTextBox / addImage already do for new nodes.
   for (const childSpec of (saved.children || [])) {
-    const node = _recreateNode(childSpec);
+    const node = await _recreateNode(childSpec);
+    if (myToken !== _loadToken) return;   // a newer load superseded us
     if (node) {
       _layer.add(node);
       _attachNode(node);
@@ -1187,42 +1230,38 @@ function _loadFromActiveStep() {
   _layer.batchDraw();
 }
 
-function _recreateNode(spec) {
+async function _recreateNode(spec) {
   if (!spec) return null;
   if (spec.className === 'Text')  return new Konva.Text({ ...spec.attrs, draggable: true });
   if (spec.className === 'Image') {
-    // `image` is stripped: Konva serialises HTMLCanvasElement / HTMLImageElement
-    // as `{}`, which fails the next draw with a 0×0 canvas error. We
-    // re-rasterise from textHtml or re-load from src below — never use
-    // the round-tripped image attr. _serialiseStageJson now scrubs it
-    // on save, but legacy projects may still carry it, so filter here too.
+    // `image` is stripped defensively. Konva 9 toObject filters non-plain
+    // objects out of attrs (so HTMLCanvasElement / HTMLImageElement do not
+    // round-trip through toJSON in current builds), but older saves or
+    // future Konva versions might leak one through — and even an empty `{}`
+    // here fails the next draw with a 0×0 error.
     const { src, textHtml, textWidth, naturalW, naturalH, fillColor, styleId, image, ...rest } = spec.attrs || {};
     void image;   // intentionally discarded
     const node = new Konva.Image({ ...rest, draggable: true });
-    // Preserve any naturalW/naturalH that round-tripped through JSON; if
-    // they're missing (older overlays predating the Reset feature), we
-    // backfill from the re-raster / image-load below so right-click →
-    // Reset works on existing projects too.
     if (Number.isFinite(naturalW)) node.setAttr('naturalW', naturalW);
     if (Number.isFinite(naturalH)) node.setAttr('naturalH', naturalH);
     if (fillColor)                 node.setAttr('fillColor', fillColor);
     if (styleId)                   node.setAttr('styleId', styleId);
     if (textHtml) {
-      // Rich-text box — _reflowTextBox handles raster + style-template
-      // override. Routing every load through _reflowTextBox means a
-      // template change always reflects on every step the next time
-      // it's loaded, no separate code path to maintain.
       node.setAttr('textHtml',  textHtml);
       node.setAttr('textWidth', textWidth);
-      _reflowTextBox(node).catch(e => console.warn('[overlay] text rasterize failed', e));
+      // AWAIT the raster — see _loadFromActiveStep comment. _reflowTextBox
+      // sets node.image(canvas) once the SVG-foreignObject paints. If we
+      // don't await, the layer can render the node before the image lands.
+      try { await _reflowTextBox(node); }
+      catch (e) { console.warn('[overlay] text rasterize failed', e); }
     } else if (src) {
       node.setAttr('src', src);
-      _loadImage(src).then(img => {
+      try {
+        const img = await _loadImage(src);
         node.image(img);
         if (!Number.isFinite(node.getAttr('naturalW'))) node.setAttr('naturalW', img.width);
         if (!Number.isFinite(node.getAttr('naturalH'))) node.setAttr('naturalH', img.height);
-        _layer.batchDraw();
-      }).catch(e => console.warn('[overlay] image load failed', e));
+      } catch (e) { console.warn('[overlay] image load failed', e); }
     }
     return node;
   }
@@ -1661,9 +1700,12 @@ async function _htmlToCanvas(html, opts = {}) {
   catch (e) { console.warn('[overlay] html rasterize load failed', e); return null; }
 
   const canvas = document.createElement('canvas');
-  canvas.width  = width;
-  canvas.height = h;
+  // Browser coerces canvas.width/height = NaN → 0. Force-clamp to sane
+  // minimums here, so callers downstream never see a 0-sized canvas
+  // even if `width` / `h` came in mangled.
+  canvas.width  = (Number.isFinite(width) && width > 0) ? width : 20;
+  canvas.height = (Number.isFinite(h)     && h     > 0) ? h     : 1;
   const ctx = canvas.getContext('2d');
-  ctx.drawImage(img, 0, 0, width, h);
+  ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
   return canvas;
 }
