@@ -161,6 +161,10 @@ const canvas = sceneCore.renderer.domElement;
 state.on('change:pivotSnapPickingNodeId', id => {
   canvas.style.cursor = id ? 'crosshair' : '';
 });
+// C3: same crosshair signal for cable placement mode.
+state.on('change:cablePlacingId', id => {
+  canvas.style.cursor = id ? 'crosshair' : '';
+});
 
 // ── Marquee (box-select) overlay ─────────────────────────────────────────────
 // A zero-cost transparent <div> that renders the drag rectangle.
@@ -242,6 +246,37 @@ canvas.addEventListener('pointerdown', e => {
     const hit = sceneCore.pick(e.clientX, e.clientY);
     if (hit) actions.snapPivotToHit(snapPickNodeId, hit);
     else     actions.cancelPivotSnapPicking();
+    return;
+  }
+
+  // C3: cable placement mode consumes the click — raycast for an
+  // anchored point if a mesh is hit, else drop a free point at the
+  // ground-plane intersection. Stays in placement mode for repeated
+  // clicks; user exits via Esc or the Stop Placement button.
+  const placingCableId = state.get('cablePlacingId');
+  if (placingCableId) {
+    e.preventDefault();
+    e.stopPropagation();
+    const hit = sceneCore.pick(e.clientX, e.clientY);
+    if (hit) {
+      actions.addCableAnchoredPoint(placingCableId, hit);
+    } else {
+      // No mesh hit — project the click onto the ground plane (Y=0)
+      // and drop a free point there.
+      const T = window.THREE;
+      const cam = sceneCore.camera;
+      const ndc = new T.Vector2(
+        ((e.clientX - canvas.getBoundingClientRect().left) / canvas.clientWidth) * 2 - 1,
+        -((e.clientY - canvas.getBoundingClientRect().top) / canvas.clientHeight) * 2 + 1,
+      );
+      const ray = new T.Raycaster();
+      ray.setFromCamera(ndc, cam);
+      const ground = new T.Plane(new T.Vector3(0, 1, 0), 0);
+      const out = new T.Vector3();
+      if (ray.ray.intersectPlane(ground, out)) {
+        actions.addCableFreePoint(placingCableId, out);
+      }
+    }
     return;
   }
 
@@ -488,6 +523,12 @@ window.addEventListener('keydown', async e => {
     // before tearing down the selection.
     if (state.get('pivotSnapPickingNodeId')) {
       actions.cancelPivotSnapPicking();
+      return;
+    }
+    // C3: cable placement is a modal too — Esc exits without
+    // touching the rest of the selection.
+    if (state.get('cablePlacingId')) {
+      actions.stopCablePlacement();
       return;
     }
     gizmo.setMode('all');

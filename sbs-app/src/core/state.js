@@ -135,6 +135,13 @@ function createInitialState() {
     cableGlobalScale:    1.0,         // 0.05–2.0 multiplier for radius / point + socket size
     cableHighlightColor: '#22d3ee',   // colour when cable.highlight=true
 
+    // C3: id of the cable currently in placement mode. While set, the
+    // viewport pointerdown handler intercepts left-clicks: hits on a
+    // mesh add an anchored point, hits elsewhere add a free point.
+    // Cleared on Esc, on the sidebar's Stop Placement button, or
+    // automatically on selection / step changes.
+    cablePlacingId: null,
+
     // ── UI state
     activeSidebarTab:   'files',      // which left sidebar tab is open
     gridVisible:        true,

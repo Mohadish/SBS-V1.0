@@ -25,12 +25,13 @@ import { showContextMenu } from './context-menu.js';
 import { renderAnimationTab } from './animation-tab.js';
 import { renderHeaderTab }    from './header-tab.js';
 import { renderStyleTab }     from './style-tab.js';
+import { renderCableTab }     from './cable-tab.js';
 import { exportTimelineVideo, downloadBlob } from '../systems/video-export.js';
 import { listVoices as ttsListVoices } from '../systems/tts.js';
 import * as userSettings    from '../core/user-settings.js';
 import * as narrationCache  from '../systems/narration-cache.js';
 
-const TABS = ['files', 'tree', 'colors', 'select', 'cameras', 'animation', 'header', 'style', 'export'];
+const TABS = ['files', 'tree', 'colors', 'select', 'cameras', 'animation', 'header', 'style', 'cables', 'export'];
 let _activeTab   = 'files';
 let _container   = null;
 let _treeInited  = false;
@@ -53,6 +54,7 @@ export function initSidebarLeft() {
       <button class="tabBtn"        data-tab="animation">Anim</button>
       <button class="tabBtn"        data-tab="header">Header</button>
       <button class="tabBtn"        data-tab="style">Style</button>
+      <button class="tabBtn"        data-tab="cables">🔌</button>
       <button class="tabBtn"        data-tab="export">Export</button>
     </div>
     <div class="sidebar-panels" id="left-panels"></div>
@@ -91,6 +93,9 @@ export function initSidebarLeft() {
   state.on('change:headersLocked',         () => { if (_activeTab === 'header')    _renderHeaderTabPanel(); });
   state.on('change:headerDefault',         () => { if (_activeTab === 'header')    _renderHeaderTabPanel(); });
   state.on('change:headerStepNumberPerChapter', () => { if (_activeTab === 'header') _renderHeaderTabPanel(); });
+  // C3: cable tab refreshes on cables list change + on placement-mode toggles.
+  state.on('change:cables',           () => { if (_activeTab === 'cables') _renderCableTabPanel(); });
+  state.on('change:cablePlacingId',   () => { if (_activeTab === 'cables') _renderCableTabPanel(); });
   state.on('change:styleTemplates',        () => {
     if (_activeTab === 'style')  _renderStyleTabPanel();
     if (_activeTab === 'header') _renderHeaderTabPanel();   // P4b: row dropdowns refresh + Save button enable
@@ -138,6 +143,7 @@ function _renderActiveTab() {
     case 'animation': _renderAnimTab();    break;
     case 'header':    _renderHeaderTabPanel(); break;
     case 'style':     _renderStyleTabPanel();  break;
+    case 'cables':    _renderCableTabPanel();  break;
     case 'export':    _renderExportTab();  break;
   }
 }
@@ -152,6 +158,10 @@ function _renderHeaderTabPanel() {
 
 function _renderStyleTabPanel() {
   renderStyleTab(_panel('style'));
+}
+
+function _renderCableTabPanel() {
+  renderCableTab(_panel('cables'));
 }
 
 

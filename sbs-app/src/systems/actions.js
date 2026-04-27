@@ -17,6 +17,7 @@ import { materials }            from '../systems/materials.js';
 import steps                    from '../systems/steps.js';
 import { createAnimationPreset } from '../core/schema.js';
 import * as editSession         from './edit-session.js';   // P7-A: gate Ctrl-Z while in overlay edit
+import * as cables              from './cables.js';          // C3: cable mutators (data layer)
 import {
   applyAllVisibility,
   captureTransformSnapshot,
@@ -897,6 +898,214 @@ export function snapPivotToHit(nodeId, hit) {
     },
   );
   return true;
+}
+
+
+// ═══════════════════════════════════════════════════════════════════════════
+//  CABLE ACTIONS  (C3)
+// ═══════════════════════════════════════════════════════════════════════════
+//
+// Thin undoable wrappers around cables.js mutators. Each user action
+// pushes ONE undo entry. The cable RENDER (cables-render.js) already
+// listens to `change:cables` and rebuilds — these actions just need to
+// drive state.setState through the cables.js helpers; no manual render
+// kicks needed.
+
+/** Add a fresh cable. Returns the new cable record. Undoable. */
+export function createCable(name) {
+  const cable = cables.addCable(name ? { name } : {});
+  undoManager.push(`Add cable${name ? ` "${name}"` : ''}`,
+    () => { cables.removeCable(cable.id); },
+    () => {
+      // Redo: re-create. cables.addCable assigns a new id, so we
+      // splice the saved record back in directly to keep ids stable
+      // (anchored points + branchSource refs survive).
+      const list = (state.get('cables') || []).filter(c => c.id !== cable.id);
+      state.setState({ cables: [...list, cable] });
+      state.markDirty();
+    },
+  );
+  return cable;
+}
+
+/** Delete a cable. Undoable — undo restores the full record. */
+export function deleteCable(cableId) {
+  const cable = cables.getCable(cableId);
+  if (!cable) return false;
+  const snapshot = JSON.parse(JSON.stringify(cable));   // deep-clone for restore
+  cables.removeCable(cableId);
+  undoManager.push(`Delete cable "${cable.name || ''}"`,
+    () => {
+      const list = (state.get('cables') || []).filter(c => c.id !== cableId);
+      state.setState({ cables: [...list, snapshot] });
+      state.markDirty();
+    },
+    () => { cables.removeCable(cableId); },
+  );
+  return true;
+}
+
+/** Toggle cable visibility. Undoable. */
+export function toggleCableVisibility(cableId) {
+  const cable = cables.getCable(cableId);
+  if (!cable) return;
+  const next = !cable.visible;
+  cables.updateCable(cableId, { visible: next });
+  undoManager.push(next ? 'Show cable' : 'Hide cable',
+    () => cables.updateCable(cableId, { visible: !next }),
+    () => cables.updateCable(cableId, { visible: next  }),
+  );
+}
+
+/** Toggle cable highlight. Undoable. */
+export function toggleCableHighlight(cableId) {
+  const cable = cables.getCable(cableId);
+  if (!cable) return;
+  const next = !cable.highlight;
+  cables.updateCable(cableId, { highlight: next });
+  undoManager.push(next ? 'Highlight cable' : 'Unhighlight cable',
+    () => cables.updateCable(cableId, { highlight: !next }),
+    () => cables.updateCable(cableId, { highlight: next  }),
+  );
+}
+
+/**
+ * Patch a cable's name / style fields. NOT undoable per-keystroke —
+ * caller is expected to debounce / commit on blur if precision is
+ * needed (mirrors the style-template slider pattern). Lightweight
+ * usage: type → blur → one updateCable + one undo entry.
+ */
+export function renameCable(cableId, name) {
+  const cable = cables.getCable(cableId);
+  if (!cable || cable.name === name) return;
+  const prev = cable.name;
+  cables.updateCable(cableId, { name });
+  undoManager.push(`Rename cable to "${name}"`,
+    () => cables.updateCable(cableId, { name: prev }),
+    () => cables.updateCable(cableId, { name      }),
+  );
+}
+
+/** Patch a cable's style.color or .radius. Undoable. */
+export function setCableStyle(cableId, stylePatch) {
+  const cable = cables.getCable(cableId);
+  if (!cable || !stylePatch) return;
+  const prev = { ...(cable.style || {}) };
+  cables.updateCableStyle(cableId, stylePatch);
+  const next = { ...(cables.getCable(cableId)?.style || {}) };
+  if (JSON.stringify(prev) === JSON.stringify(next)) return;
+  undoManager.push('Edit cable style',
+    () => cables.updateCableStyle(cableId, prev),
+    () => cables.updateCableStyle(cableId, next),
+  );
+}
+
+/**
+ * Add a free-position point to the active cable at the given world
+ * position. Returns the new node id, or null on failure.
+ */
+export function addCableFreePoint(cableId, worldPos) {
+  if (!worldPos) return null;
+  const node = cables.addCablePoint(cableId, {
+    type:       'point',
+    anchorType: 'free',
+    position:        [worldPos.x, worldPos.y, worldPos.z],
+    cachedWorldPos:  [worldPos.x, worldPos.y, worldPos.z],
+  });
+  if (!node) return null;
+  undoManager.push('Add cable point',
+    () => cables.removeCablePoint(cableId, node.id),
+    () => {
+      // Re-append (id preserved). Splice into nodes if missing.
+      const cable = cables.getCable(cableId);
+      if (!cable) return;
+      if (cable.nodes?.find(n => n.id === node.id)) return;
+      const list = (state.get('cables') || []).map(c =>
+        c.id === cableId ? { ...c, nodes: [...(c.nodes || []), node] } : c,
+      );
+      state.setState({ cables: list });
+      state.markDirty();
+    },
+  );
+  return node.id;
+}
+
+/**
+ * Add a mesh-anchored point at a raycast hit. The hit's point is
+ * stored in object-local space (so the cable follows the mesh as it
+ * animates), the face normal in object-local for default socket
+ * orientation, and a cachedWorldPos seed for the 3-tier resolver's
+ * fallback.
+ */
+export function addCableAnchoredPoint(cableId, hit) {
+  if (!hit?.point || !hit?.object) return null;
+  const T = window.THREE;
+  // Find the tree node id from the hit object — search up the parent
+  // chain until we find one with a registered id in nodeById's reverse
+  // map. For now, use the hit object's userData if our system tagged it.
+  const meshNodeId = _findTreeNodeIdForObject(hit.object);
+  if (!meshNodeId) {
+    // Fallback to free point at the hit world position.
+    return addCableFreePoint(cableId, hit.point);
+  }
+
+  // Capture object-local position + normal from hit.
+  const localPos = hit.object.worldToLocal(hit.point.clone());
+  const localNormal = hit.face?.normal ? hit.face.normal.clone().normalize() : null;
+
+  const node = cables.addCablePoint(cableId, {
+    type:       'point',
+    anchorType: 'mesh',
+    nodeId:           meshNodeId,
+    anchorLocal:      [localPos.x, localPos.y, localPos.z],
+    normalLocal:      localNormal ? [localNormal.x, localNormal.y, localNormal.z] : null,
+    cachedWorldPos:   [hit.point.x, hit.point.y, hit.point.z],
+  });
+  if (!node) return null;
+  undoManager.push('Add cable point',
+    () => cables.removeCablePoint(cableId, node.id),
+    () => {
+      const cable = cables.getCable(cableId);
+      if (!cable) return;
+      if (cable.nodes?.find(n => n.id === node.id)) return;
+      const list = (state.get('cables') || []).map(c =>
+        c.id === cableId ? { ...c, nodes: [...(c.nodes || []), node] } : c,
+      );
+      state.setState({ cables: list });
+      state.markDirty();
+    },
+  );
+  return node.id;
+}
+
+/** Helper: walk up the THREE object's parents looking for a tagged tree id. */
+function _findTreeNodeIdForObject(obj) {
+  // The tree's object3dById map is the inverse of what we need; the
+  // simplest path is to read state.nodeById and walk obj.parent looking
+  // for a name match against a tree node's stored object3d.
+  const o3dMap = steps.object3dById;
+  if (!o3dMap) return null;
+  // Build a quick reverse map: object3d → nodeId.
+  let cur = obj;
+  while (cur) {
+    for (const [nodeId, mapped] of o3dMap.entries()) {
+      if (mapped === cur) return nodeId;
+    }
+    cur = cur.parent;
+  }
+  return null;
+}
+
+/** Begin / stop placement mode. UI sets state.cablePlacingId. */
+export function startCablePlacement(cableId) {
+  if (!cables.getCable(cableId)) return;
+  state.setState({ cablePlacingId: cableId });
+}
+
+export function stopCablePlacement() {
+  if (state.get('cablePlacingId')) {
+    state.setState({ cablePlacingId: null });
+  }
 }
 
 

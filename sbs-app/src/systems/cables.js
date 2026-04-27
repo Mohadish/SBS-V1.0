@@ -273,6 +273,49 @@ export function updateCable(id, patch) {
   state.markDirty();
 }
 
+/** Patch the cable's `style` sub-object (color / radius / type). */
+export function updateCableStyle(id, stylePatch) {
+  if (!id || !stylePatch) return;
+  const cables = listCables().map(c =>
+    c.id === id ? { ...c, style: { ...(c.style || {}), ...stylePatch } } : c,
+  );
+  state.setState({ cables });
+  state.markDirty();
+}
+
+/**
+ * Append a node to the end of a cable's nodes list. Returns the new
+ * node (with a fresh id). Caller is responsible for picking the right
+ * `anchorType` + accompanying fields:
+ *   - 'mesh': nodeId + anchorLocal + normalLocal + cachedWorldPos
+ *   - 'free': position + cachedWorldPos
+ *   - 'branch': sourceCableId + sourceNodeId + branchCableIds[]
+ */
+export function addCablePoint(cableId, nodePartial = {}) {
+  const cable = getCable(cableId);
+  if (!cable) return null;
+  const node = createCableNode(nodePartial);
+  const cables = listCables().map(c =>
+    c.id === cableId ? { ...c, nodes: [...(c.nodes || []), node] } : c,
+  );
+  state.setState({ cables });
+  state.markDirty();
+  return node;
+}
+
+/** Remove a node from a cable by node id. Returns true if it was found. */
+export function removeCablePoint(cableId, nodeId) {
+  const cable = getCable(cableId);
+  if (!cable) return false;
+  const before = cable.nodes?.length ?? 0;
+  const nodes  = (cable.nodes || []).filter(n => n.id !== nodeId);
+  if (nodes.length === before) return false;
+  const cables = listCables().map(c => c.id === cableId ? { ...c, nodes } : c);
+  state.setState({ cables });
+  state.markDirty();
+  return true;
+}
+
 /** Remove a cable + cascade-clean its branch references. */
 export function removeCable(id) {
   if (!id) return;
