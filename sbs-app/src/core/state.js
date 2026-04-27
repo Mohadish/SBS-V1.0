@@ -87,6 +87,12 @@ function createInitialState() {
     headersLocked:  false,            // when true, header items can't be moved/edited via the canvas
     headersHidden:  false,            // when true, the whole header layer is suppressed (live + export)
 
+    // Mirrors overlay.isEditing() in state-land so other systems
+    // (e.g. header.js) can subscribe to edit-mode changes via
+    // change:overlayEditing. Source of truth is still overlay.js's
+    // setEditingMode — that function writes here.
+    overlayEditing: false,
+
     // ── Text style templates — project-level presets each text box can
     // bind to via its `styleId` attr. When bound, the template's font /
     // size / colour / weight / style / decoration / fill all OVERRIDE

@@ -155,6 +155,11 @@ export function setEditingMode(on) {
   _editing = !!on;
   if (_container) _container.classList.toggle('editing', _editing);
   if (!_editing) _setSelection(null);
+  // Mirror to state so non-overlay systems (header.js) can subscribe
+  // and turn their own interaction on/off in lockstep — see P1 of the
+  // header workstream. _editing remains the source of truth for code
+  // inside this module; state.overlayEditing is purely a broadcast.
+  state.setState({ overlayEditing: _editing });
 }
 
 // ─── Creating nodes ────────────────────────────────────────────────────────

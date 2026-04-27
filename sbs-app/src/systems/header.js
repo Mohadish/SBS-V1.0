@@ -218,13 +218,14 @@ export function initHeaderLayer(stage) {
   // a refresh. Cheap re-render: we destroy and recreate nodes each time.
   // Header lists are small (typically < 10 items); no need for diff-based
   // reconciliation.
-  state.on('change:headerItems',   refreshHeaderLayer);
-  state.on('change:headersHidden', refreshHeaderLayer);
-  state.on('change:headersLocked', refreshHeaderLayer);
-  state.on('change:activeStepId',  refreshHeaderLayer);
-  state.on('change:steps',         refreshHeaderLayer);
-  state.on('change:chapters',      refreshHeaderLayer);
-  state.on('header:refresh',       refreshHeaderLayer);   // explicit kick from step/chapter rename
+  state.on('change:headerItems',    refreshHeaderLayer);
+  state.on('change:headersHidden',  refreshHeaderLayer);
+  state.on('change:headersLocked',  refreshHeaderLayer);
+  state.on('change:overlayEditing', refreshHeaderLayer);   // P1: header items become inert when overlay editing is off
+  state.on('change:activeStepId',   refreshHeaderLayer);
+  state.on('change:steps',          refreshHeaderLayer);
+  state.on('change:chapters',       refreshHeaderLayer);
+  state.on('header:refresh',        refreshHeaderLayer);   // explicit kick from step/chapter rename
 
   refreshHeaderLayer();
 }
@@ -249,24 +250,35 @@ export function refreshHeaderLayer() {
     return;
   }
 
-  const items = state.get('headerItems') || [];
-  const ctx   = buildRenderContext();
-  const lock  = !!state.get('headersLocked');
+  const items   = state.get('headerItems') || [];
+  const ctx     = buildRenderContext();
+  const lock    = !!state.get('headersLocked');
+  const editing = !!state.get('overlayEditing');
+  // P1: header items are INERT (no drag, no select, no pointer events
+  // at all) unless the overlay is in editing mode AND headers aren't
+  // locked. Lock wins over edit mode — even with edit on, locked
+  // headers stay frozen (the safety feature). When inert, Konva
+  // listening:false makes clicks pass through to the stage.
+  const inert   = lock || !editing;
   const newNodesById = new Map();
 
   for (const item of items) {
     if (!item?.visible) continue;
-    const node = _buildNode(item, ctx, lock);
+    const node = _buildNode(item, ctx, inert);
     if (!node) continue;
     _layer.add(node);
     newNodesById.set(item.id, node);
   }
 
-  // Restore selection where the underlying item still exists.
+  // Restore selection where the underlying item still exists — but
+  // only when interaction is allowed; otherwise drop the selection so
+  // the cyan transformer doesn't linger over an inert header.
   const restored = [];
-  for (const id of prevSelection) {
-    const n = newNodesById.get(id);
-    if (n) restored.push(n);
+  if (!inert) {
+    for (const id of prevSelection) {
+      const n = newNodesById.get(id);
+      if (n) restored.push(n);
+    }
   }
   _selection = new Set(restored.map(n => n.getAttr('headerId')));
   _transformer.nodes(restored);
@@ -278,21 +290,22 @@ export function refreshHeaderLayer() {
  * image → Konva.Image (with async dataUrl load). Returns null on bad
  * input.
  */
-function _buildNode(item, ctx, lock) {
+function _buildNode(item, ctx, inert) {
   if (item.kind === 'image') {
     const node = new Konva.Image({
       x: item.x,
       y: item.y,
       width:  item.w,
       height: item.h,
-      draggable: !lock,
+      draggable: !inert,
+      listening: !inert,
       name: 'sbs-header-item',
     });
     node.setAttr('headerId',   item.id);
     node.setAttr('headerKind', item.kind);
     node.setAttr('naturalW',   item.naturalW || null);
     node.setAttr('naturalH',   item.naturalH || null);
-    _attachItemHandlers(node, item, lock);
+    if (!inert) _attachItemHandlers(node, item);
     if (item.dataUrl) _hydrateImage(node, item.dataUrl);
     return node;
   }
@@ -311,7 +324,8 @@ function _buildNode(item, ctx, lock) {
     fill:    item.color || '#ffffff',
     align:   item.align || 'center',
     verticalAlign: 'middle',
-    draggable: !lock,
+    draggable: !inert,
+    listening: !inert,
     name: 'sbs-header-item',
     // Subtle text shadow so light text stays readable on light viewport bg.
     shadowColor:   'rgba(0,0,0,0.45)',
@@ -320,12 +334,14 @@ function _buildNode(item, ctx, lock) {
   });
   node.setAttr('headerId',   item.id);
   node.setAttr('headerKind', item.kind);
-  _attachItemHandlers(node, item, lock);
+  if (!inert) _attachItemHandlers(node, item);
   return node;
 }
 
-function _attachItemHandlers(node, item, lock) {
-  if (lock) return;
+function _attachItemHandlers(node, item) {
+  // Caller (refreshHeaderLayer) only attaches handlers when the header
+  // is interactive (overlay editing on AND not locked). No lock-check
+  // needed here — by the time we're called, the node is interactive.
   node.on('pointerdown', (e) => {
     const additive = !!(e.evt && (e.evt.shiftKey || e.evt.ctrlKey || e.evt.metaKey));
     _selectHeaderNode(node, additive);
@@ -518,6 +534,12 @@ export function selectHeader(id) {
     _layer.batchDraw();
     return;
   }
+  // P1 gate: canvas selection only makes sense when the user can
+  // actually move / edit the header. In non-edit mode (or when locked)
+  // the header layer is inert — drawing a cyan transformer box around
+  // a non-interactive node would be misleading. The sidebar's per-item
+  // editor (font size, color, x/y, etc.) keeps working regardless.
+  if (!state.get('overlayEditing') || state.get('headersLocked')) return;
   const node = _layer.getChildren().find(c => c.getAttr?.('headerId') === id);
   if (node) _selectHeaderNode(node, false);
 }
