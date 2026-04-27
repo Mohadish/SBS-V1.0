@@ -427,10 +427,50 @@ function _attachItemHandlers(node, item) {
   // needed here — by the time we're called, the node is interactive.
   node.on('pointerdown', (e) => {
     const additive = !!(e.evt && (e.evt.shiftKey || e.evt.ctrlKey || e.evt.metaKey));
+    // Plain click on an already-selected node should preserve the
+    // group — that click is the user grabbing the multi-selection
+    // to drag, not asking to demote the selection to just this one.
+    // Without this guard, every multi-drag start collapses the
+    // selection to length-1 and only one node moves. Same fix
+    // overlay needed back in P0.
+    const currentIds = _selection;
+    if (!additive && currentIds.has(node.getAttr('headerId')) && currentIds.size > 1) return;
     _selectHeaderNode(node, additive);
   });
-  // Persist drag / resize back to state.headerItems.
+  // Multi-node drag. Konva's per-node draggable only moves the grabbed
+  // node; siblings in the same selection stay put. Stash starting
+  // positions on dragstart, apply the grabbed-node's delta to every
+  // sibling on dragmove. Mirrors overlay.js — same fix applied to the
+  // header layer's transformer + selection.
+  let _multiDragStarts = null;
+  node.on('dragstart', () => {
+    const sel = _transformer?.nodes() || [];
+    if (sel.length <= 1) return;
+    _multiDragStarts = new Map();
+    for (const n of sel) _multiDragStarts.set(n, { x: n.x(), y: n.y() });
+  });
+  node.on('dragmove', () => {
+    if (!_multiDragStarts) return;
+    const start = _multiDragStarts.get(node);
+    if (!start) return;
+    const dx = node.x() - start.x;
+    const dy = node.y() - start.y;
+    for (const n of _multiDragStarts.keys()) {
+      if (n === node) continue;
+      const s = _multiDragStarts.get(n);
+      n.x(s.x + dx);
+      n.y(s.y + dy);
+    }
+    _layer.batchDraw();
+  });
+
+  // Persist drag / resize back to state.headerItems. In multi-drag,
+  // ONLY the grabbed node fires dragend — the siblings we moved via
+  // x()/y() in dragmove don't emit events. So on dragend we walk the
+  // (former) drag set and write back each one's new position.
   node.on('dragend transformend', () => {
+    const draggedSet = _multiDragStarts ? [..._multiDragStarts.keys()] : [node];
+    _multiDragStarts = null;
     // Flatten any scaleX/scaleY into width/height so the saved data stays
     // a clean rect (mirrors the overlay.js commit pattern).
     const sx = node.scaleX();
@@ -441,12 +481,16 @@ function _attachItemHandlers(node, item) {
       node.scaleX(1);
       node.scaleY(1);
     }
-    updateHeaderItem(item.id, {
-      x: node.x(),
-      y: node.y(),
-      w: node.width(),
-      h: node.height(),
-    });
+    for (const n of draggedSet) {
+      const id = n.getAttr('headerId');
+      if (!id) continue;
+      updateHeaderItem(id, {
+        x: n.x(),
+        y: n.y(),
+        w: n.width(),
+        h: n.height(),
+      });
+    }
   });
 
   // P3: double-click custom-kind headers to enter the in-place text editor.

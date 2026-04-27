@@ -186,15 +186,65 @@ function _stripRedundantAncestorProps(root) {
   }
 }
 
+/**
+ * Walk up from the range's start container to root, collecting the
+ * INNERMOST declaration of each tracked property. Returns an object
+ * { color, fontFamily, fontSize, fontWeight, fontStyle, textDecoration }
+ * with only the keys that have a value — used to wrap an extracted
+ * fragment with the styling it would have inherited in the live doc.
+ *
+ * "Innermost wins" is consistent with CSS inheritance — and with how
+ * _stripRedundantAncestorProps treats overlapping declarations during
+ * normalisation, so the same wrapper is safe to add and let normalize
+ * clean up.
+ */
+function _captureInheritedStyles(root, range) {
+  const TRACKED = ['color', 'fontFamily', 'fontSize', 'fontWeight', 'fontStyle', 'textDecoration'];
+  const out = {};
+  let p = range.startContainer;
+  if (p && p.nodeType === 3) p = p.parentElement;
+  while (p && p !== root) {
+    if (p.style) {
+      for (const prop of TRACKED) {
+        const v = p.style[prop];
+        if (v && !out[prop]) out[prop] = v;
+      }
+    }
+    p = p.parentElement;
+  }
+  return out;
+}
+
 // ─── Range / caret paths ───────────────────────────────────────────────────
 
 function _applyToRange(root, range, action, value) {
   // Extract → transform in a sandbox → re-insert. This guarantees
   // changes don't fight with the live document while we work.
+  //
+  // Subtle: extractContents() can LOSE ancestor styles. For a partial
+  // range inside a single styled span (e.g. selecting "world" inside
+  //   <span style="text-decoration:underline">Hello world</span>)
+  // the fragment ends up as a bare text node "world" — the underline
+  // lived on the parent span which stays in the live doc. The toggle
+  // engine then sees a text run with NO underline ancestor, thinks
+  // "not underlined", and ADDS underline instead of removing it.
+  //
+  // Fix: capture inherited styles at the range boundary BEFORE
+  // extraction and wrap the extracted fragment with a span carrying
+  // them. The engine now sees the full styling and toggles correctly.
+  // Normalize's _stripRedundantAncestorProps cleans up any redundant
+  // wrappers afterward.
   const sel = window.getSelection();
+  const inherited = _captureInheritedStyles(root, range);
   const fragment = range.extractContents();
   const tmp = document.createElement('div');
   tmp.appendChild(fragment);
+  if (Object.keys(inherited).length) {
+    const wrap = document.createElement('span');
+    for (const [prop, val] of Object.entries(inherited)) wrap.style[prop] = val;
+    while (tmp.firstChild) wrap.appendChild(tmp.firstChild);
+    tmp.appendChild(wrap);
+  }
 
   normalize(tmp);
   _operate(tmp, action, value);
