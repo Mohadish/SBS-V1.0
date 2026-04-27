@@ -219,12 +219,65 @@ export async function addTextBox() {
 // toolbar will use mousedown.preventDefault() so clicking it doesn't
 // blur the selection.
 
-let _activeTextEditor = null;   // { node, div, onDocMouseDown, transformerWasVisible }
+let _activeTextEditor = null;   // { node, div, onDocMouseDown, transformerWasVisible, ctx }
+
+/**
+ * Default editor controller for OVERLAY textboxes — re-raster via
+ * _reflowTextBox, persist via _scheduleSave, style via setAttr('styleId').
+ * header.js builds its own controller (different layer, different
+ * persistence path, no per-step save). The controller is the only
+ * surface that varies between contexts; the editor itself is layer-
+ * agnostic — see enterTextEditor below.
+ */
+function _overlayEditorCtx(node) {
+  return {
+    transformer: _transformer,
+    configureTransformer: () => _configTransformerForNode(node),
+    reflow:        () => _reflowTextBox(node),
+    onCommit:      async (html) => {
+      const prev = node.getAttr('textHtml');
+      node.setAttr('textHtml', html);
+      const ok = await _reflowTextBox(node);
+      if (!ok) {
+        console.warn('[overlay] rasterise failed on click-out — reverting to previous text.');
+        node.setAttr('textHtml', prev);
+      }
+    },
+    onSave:        _scheduleSave,
+    getStyleId:    () => node.getAttr('styleId') || '',
+    setStyleId:    (id) => {
+      node.setAttr('styleId', id || null);
+      _reflowTextBox(node).catch(() => {});
+      _scheduleSave();
+    },
+  };
+}
+
+/**
+ * Public entry point for opening the in-place text editor on any
+ * Konva.Image-with-textHtml node (overlay textbox OR header textbox).
+ * Caller passes a `ctx` controller object that abstracts the
+ * layer-specific bits (transformer, persistence, re-raster, style
+ * binding); when omitted, the overlay default is used.
+ *
+ * The editor ITSELF is identical in both contexts — same div, same
+ * toolbar, same paste sanitiser, same style engine. Only the side-
+ * effects vary, which is what the controller captures.
+ */
+export function enterTextEditor(node, ctx) {
+  _enterTextEdit(node, ctx);
+}
 
 /** Open the in-place editor on a text-box node. */
-function _enterTextEdit(node) {
+function _enterTextEdit(node, ctxOverride) {
   if (_activeTextEditor) _exitTextEdit();
-  const containerRect = _container.getBoundingClientRect();
+  const ctx = ctxOverride || _overlayEditorCtx(node);
+  // Derive DOM container from the node's stage rather than overlay's
+  // module-local _container — this lets header.js reuse the editor
+  // without us hard-coding the overlay stage's div.
+  const stage = node.getLayer()?.getStage();
+  const containerEl = stage?.container() || _container;
+  const containerRect = containerEl.getBoundingClientRect();
   const pos = node.getAbsolutePosition();
 
   const div = document.createElement('div');
@@ -276,10 +329,17 @@ function _enterTextEdit(node) {
   const prevOpacity = node.opacity();
   node.opacity(0);
   // Re-config the transformer for the editing node so 8 anchors show up
-  // (selection-only state has no anchors).
-  _configTransformerForNode(node);
-  _uiLayer.batchDraw();
-  _layer.batchDraw();
+  // (selection-only state has no anchors). The controller knows which
+  // transformer to reach for — overlay's, header's, etc.
+  ctx.configureTransformer?.();
+  // Redraw the layers the transformer + node live in. node.getLayer() is
+  // the content layer; transformer might be on a different one (overlay
+  // has _uiLayer, header keeps both on _layer). Drawing both is cheap
+  // and avoids a stale frame on whichever the transformer sits in.
+  const nodeLayer  = node.getLayer();
+  const trLayer    = ctx.transformer?.getLayer?.();
+  nodeLayer?.batchDraw();
+  if (trLayer && trLayer !== nodeLayer) trLayer.batchDraw();
 
   // Tell Chromium to wrap new lines in <div> rather than <br>. With
   // <br> at position 0 the browser treats it inconsistently — typing
@@ -374,14 +434,21 @@ function _enterTextEdit(node) {
   const toolbarHost = getTextToolbarSlot();
   if (toolbarHost) {
     mountTextToolbar(toolbarHost, _singleEditorApplier, div);
-    // Style dropdown — single-editor mode binds the active node.
-    setStyleDropdown(listStyleTemplates(), node.getAttr('styleId') || '', (newId) => {
-      node.setAttr('styleId', newId || null);
-      _reflowTextBox(node).catch(() => {});
-      setStyleLocked(!!newId);
-      _scheduleSave();
-    });
-    setStyleLocked(!!node.getAttr('styleId'));
+    // Style dropdown — only mount when the controller actually supports
+    // style-template binding for this context. Headers don't (yet — P4),
+    // so we pass null to remove the dropdown rather than show a no-op
+    // control. Overlay textboxes always provide getStyleId/setStyleId.
+    if (ctx.setStyleId) {
+      const initialStyleId = ctx.getStyleId?.() || '';
+      setStyleDropdown(listStyleTemplates(), initialStyleId, (newId) => {
+        ctx.setStyleId(newId);
+        setStyleLocked(!!newId);
+      });
+      setStyleLocked(!!initialStyleId);
+    } else {
+      setStyleDropdown(null);    // explicitly hide
+      setStyleLocked(false);
+    }
   }
   // Sync the dropdowns to whatever style is at the caret. Re-fires on
   // every selection change so moving the caret across mixed-style runs
@@ -393,13 +460,13 @@ function _enterTextEdit(node) {
   document.addEventListener('selectionchange', onSelectionChange);
   onSelectionChange();   // initial sync
 
-  _activeTextEditor = { node, div, onDocMouseDown, onKeyDown, onPaste, prevOpacity, onSelectionChange };
+  _activeTextEditor = { node, div, onDocMouseDown, onKeyDown, onPaste, prevOpacity, onSelectionChange, ctx };
 }
 
 /** Close the in-place editor, re-rasterise on the way out (unless discard). */
 async function _exitTextEdit(opts = {}) {
   if (!_activeTextEditor) return;
-  const { node, div, onDocMouseDown, onKeyDown, onPaste, prevOpacity, onSelectionChange } = _activeTextEditor;
+  const { node, div, onDocMouseDown, onKeyDown, onPaste, prevOpacity, onSelectionChange, ctx } = _activeTextEditor;
   document.removeEventListener('mousedown', onDocMouseDown, true);
   if (onSelectionChange) document.removeEventListener('selectionchange', onSelectionChange);
   div.removeEventListener('keydown', onKeyDown);
@@ -409,25 +476,13 @@ async function _exitTextEdit(opts = {}) {
   const html = div.innerHTML;
 
   if (!opts.discard && html) {
-    // Rasterise BEFORE tearing the editor down. _reflowTextBox already
-    // honours node.getAttr('fillColor') so the textbox's background
-    // survives the round-trip — that was the bug where "any edit
-    // removes the background colour". Doing it while the editor is
-    // still mounted also kills the "nothing → raster" flicker the
-    // user called out: the new image is ready before the editable
-    // disappears.
-    //
-    // If rasterisation fails (typically: HTML the SVG-foreignObject
-    // path can't render) we revert textHtml so the next dblclick
-    // reopens the LAST KNOWN-GOOD content rather than re-loading the
-    // bad HTML and getting stuck in a "click-out doesn't take" loop.
-    const prevHtml = node.getAttr('textHtml');
-    node.setAttr('textHtml', html);
-    const ok = await _reflowTextBox(node);
-    if (!ok) {
-      console.warn('[overlay] rasterise failed on click-out — reverting to previous text.');
-      node.setAttr('textHtml', prevHtml);
-    }
+    // Commit goes through the controller so each context decides how to
+    // persist + re-raster (overlay: set textHtml attr + _reflowTextBox;
+    // header: updateHeaderItem with new textHtml). Awaited so the new
+    // raster is in place BEFORE we remove the editor — kills the
+    // "nothing → raster" flicker on click-out.
+    try { await ctx.onCommit?.(html); }
+    catch (e) { console.warn('[text-editor] commit failed', e); }
   }
 
   // Now swap visibility back. The new raster is in place, so removing
@@ -435,10 +490,12 @@ async function _exitTextEdit(opts = {}) {
   node.opacity(typeof prevOpacity === 'number' ? prevOpacity : 1);
   div.remove();
   _activeTextEditor = null;
-  _configTransformerForNode(node);
-  _layer.batchDraw();
-  _uiLayer.batchDraw();
-  _scheduleSave();
+  ctx.configureTransformer?.();
+  const nodeLayer = node.getLayer();
+  const trLayer   = ctx.transformer?.getLayer?.();
+  nodeLayer?.batchDraw();
+  if (trLayer && trLayer !== nodeLayer) trLayer.batchDraw();
+  ctx.onSave?.();
 }
 
 /**

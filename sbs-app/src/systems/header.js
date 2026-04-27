@@ -21,6 +21,11 @@
  *     fontStyle?:  'normal' | 'italic',
  *     color?:    string,           // hex
  *     align?:    'left' | 'center' | 'right',
+ *     textHtml?: string,           // P3: rich-text override produced by the canvas
+ *                                  //  editor on dblclick. When set (custom kind only),
+ *                                  //  render uses it verbatim and the field-driven
+ *                                  //  styling above becomes inactive — the user has
+ *                                  //  taken the styling control onto the canvas.
  *     // — image-only —
  *     dataUrl?:  string,           // inline base64 (kept inside .sbsproj for now)
  *     naturalW?: number,
@@ -42,9 +47,9 @@
  *   • step:rename / chapter:rename → re-render dynamic kinds
  */
 
-import { state }       from '../core/state.js';
-import { generateId }  from '../core/schema.js';
-import { htmlToCanvas } from './overlay.js';   // P2: shared SVG-foreignObject rasteriser
+import { state }            from '../core/state.js';
+import { generateId }       from '../core/schema.js';
+import { htmlToCanvas, enterTextEditor } from './overlay.js';   // P2/P3: shared rasteriser + editor
 
 // ─── Pure data helpers (no DOM / Konva — usable from export, tests) ─────────
 
@@ -343,16 +348,31 @@ function _buildNode(item, ctx, inert) {
 }
 
 /**
- * Build the inline textHtml for a text-flavoured header item from its
- * styling fields. Wraps the text in flex layout so it vertically
- * centres inside the box (matches the old Konva.Text verticalAlign
- * behaviour). Horizontal alignment via text-align on the inner block.
+ * Build the inline textHtml for a text-flavoured header item.
+ *
+ * P3: if the item has been canvas-edited (item.textHtml is set, custom
+ * kind only), use that HTML verbatim — wrap it in the flex centring
+ * shell so the rich content still vertically centres inside the box.
+ * Otherwise, derive a simple wrapped span from item fields (current
+ * sidebar-driven path).
+ *
+ * Dynamic kinds (stepNumber / stepName / chapter*) always derive — the
+ * text content updates per step / chapter, so a frozen textHtml from
+ * a previous step would be wrong.
  *
  * The `text-shadow` keeps the readability boost the old Konva.Text node
  * had (`shadowColor / shadowOffsetY / shadowBlur`) — implemented here in
  * CSS so the SVG-foreignObject rasterise picks it up.
  */
 function _buildHeaderTextHtml(item, ctx) {
+  if (item.kind === 'custom' && item.textHtml) {
+    // Drop into the same flex shell so the rich content vertically
+    // centres. The user's HTML carries its own font / colour / size /
+    // alignment; the shell just provides centring + the readability
+    // shadow that wrapped derived text still gets.
+    return `<div style="height:100%;display:flex;align-items:center;text-shadow:0 1px 2px rgba(0,0,0,0.45)"><div style="width:100%">${item.textHtml}</div></div>`;
+  }
+
   const text       = resolveHeaderText(item, ctx) || ' ';
   const escaped    = _escHtml(text);
   const align      = item.align      || 'center';
@@ -428,6 +448,57 @@ function _attachItemHandlers(node, item) {
       h: node.height(),
     });
   });
+
+  // P3: double-click custom-kind headers to enter the in-place text editor.
+  // Dynamic kinds (stepNumber etc.) skip this — their content is auto-
+  // resolved per step, so freezing user-typed text on them would be
+  // a footgun. Image kind also skips.
+  if (item.kind === 'custom') {
+    node.on('dblclick', () => {
+      const sel = _transformer?.nodes() || [];
+      if (sel.length > 1) return;          // mirror overlay: no edit while multi-selected
+      _openHeaderTextEditor(node, item);
+    });
+  }
+}
+
+/**
+ * Open the in-place text editor on a custom-kind header item. Reuses
+ * overlay.enterTextEditor by passing a header-flavoured controller —
+ * different transformer, different persistence target, no styleId
+ * binding for now (P4).
+ */
+function _openHeaderTextEditor(node, item) {
+  // Capture a snapshot of the current item so commit/save can rebuild
+  // the wrapped textHtml even after state has been re-emitted under us.
+  const itemSnapshot = { ...item };
+  const ctx = {
+    transformer: _transformer,
+    configureTransformer: () => _configTransformerForNodes(_transformer.nodes()),
+    onCommit: async (html) => {
+      // 1. Live update: store the raw editor HTML on the node and
+      //    re-raster in-place so _exitTextEdit's reveal lands on the
+      //    new content seamlessly.
+      node.setAttr('textHtml', html);
+      const wrapped = _buildHeaderTextHtml(
+        { ...itemSnapshot, kind: 'custom', textHtml: html },
+        buildRenderContext(),
+      );
+      await _hydrateHeaderText(node, wrapped, itemSnapshot);
+    },
+    onSave: () => {
+      // 2. Persist on the SAME tick the editor finishes — this triggers
+      //    refreshHeaderLayer which destroys the live node and rebuilds
+      //    a fresh one from item.textHtml. We only reach here AFTER the
+      //    editor's cleanup is done, so the destruction is safe.
+      const finalHtml = node.getAttr('textHtml');
+      if (finalHtml != null) updateHeaderItem(itemSnapshot.id, { textHtml: finalHtml });
+    },
+    // No styleId binding for headers in P3 — hides the dropdown in the
+    // toolbar. P4 will add: header items bind to a styleId the same way
+    // overlay textboxes do, with template-driven render override.
+  };
+  enterTextEditor(node, ctx);
 }
 
 function _selectHeaderNode(node, additive) {
