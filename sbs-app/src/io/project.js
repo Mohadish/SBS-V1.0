@@ -117,6 +117,16 @@ export function serialize() {
   project.styles = project.styles || { schema_version: 1, items: [] };
   project.styles.items = JSON.parse(JSON.stringify(state.get('styleTemplates') || []));
 
+  // Cables — 3D wires routed between mesh anchors and free points.
+  // The cable list is project-global (topology-hoisted); per-step
+  // variable overrides ride inside step.snapshot.cables, captured by
+  // steps.js. Project-level visual globals (scale + highlight colour)
+  // travel here too so they restore in one shot. See systems/cables.js.
+  project.cables = project.cables || { schema_version: 1, items: [] };
+  project.cables.items          = JSON.parse(JSON.stringify(state.get('cables') || []));
+  project.cables.globalScale    = state.get('cableGlobalScale')    ?? 1.0;
+  project.cables.highlightColor = state.get('cableHighlightColor') ?? '#22d3ee';
+
   // ── Settings ──────────────────────────────────────────────────────────────
   const cfg = project.settings;
   cfg.backgroundColor      = state.get('backgroundColor')      ?? '#0f172a';
@@ -479,6 +489,13 @@ export function applyProjectToState(project) {
     headerDefault:        project.headers?.default           || state.get('headerDefault'),
     headerStepNumberPerChapter: !!project.headers?.stepNumberPerChapter,
     styleTemplates:       project.styles?.items              || [],
+    // Cables — older .sbsproj files don't have this section; default
+    // to empty + factory globals so the load is clean. The 3-tier
+    // anchor resolver gracefully handles missing meshes via cached
+    // worldPos / worldQuat baked into each cable node by the saver.
+    cables:               project.cables?.items              || [],
+    cableGlobalScale:     project.cables?.globalScale        ?? 1.0,
+    cableHighlightColor:  project.cables?.highlightColor     ?? '#22d3ee',
   });
 
   // Restore project-level color state. Both maps keyed by mesh id; the

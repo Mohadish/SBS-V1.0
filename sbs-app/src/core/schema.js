@@ -471,19 +471,84 @@ export function createAnimationPreset(overrides = {}) {
 
 
 // ═══════════════════════════════════════════════════════════════════════════
-//  CABLE
+//  CABLE — 3D wire/conduit between mesh anchors and free points
 // ═══════════════════════════════════════════════════════════════════════════
+//
+// Topology-hoisted model: the IDENTITY of a cable (id + mesh anchor links +
+// branch chain) is project-global. The VARIABLE state (positions, style,
+// visibility, socket pose) is captured in each step's snapshot and re-
+// applied when the step activates. This lets a single cable carry one
+// route across all steps while still varying its appearance per step.
+//
+// Per-anchor cached world position + quaternion give us a 3-tier
+// fallback when the anchor target's mesh is gone (asset missing OR
+// user removed model from tree):
+//   1. mesh alive          → derive from mesh.matrixWorld + anchorLocal
+//   2. phantom placeholder → derive from the placeholder's transform
+//   3. cache               → use cachedWorldPos / cachedWorldQuat
+// The cache is refreshed every frame the mesh is alive, so a fresh
+// removal hands off to the cache with no visible jump.
+
+/**
+ * One node in a cable's chain. anchorType decides how its world
+ * position resolves:
+ *   - 'mesh'  : nodeId+anchorLocal on a scene-tree mesh
+ *   - 'free'  : world `position` directly
+ *   - 'branch': starts a branch off another cable's node — world pos
+ *               recurses through {sourceCableId, sourceNodeId}
+ *
+ * One socket max per node (BoxGeometry connector at the endpoint).
+ */
+export function createCableNode(overrides = {}) {
+  return {
+    id:                 generateId('cnode'),
+    type:               'point',          // 'point' | 'branch-start'
+    anchorType:         'free',           // 'mesh' | 'free' | 'branch'
+    nodeId:             null,             // scene-tree node id (when anchorType='mesh')
+    anchorLocal:        null,             // [x,y,z] local offset on the anchor mesh
+    normalLocal:        null,             // [x,y,z] face normal at pick time (drives socket orientation)
+    position:           null,             // [x,y,z] world position (when anchorType='free')
+    sourceCableId:      null,             // (when anchorType='branch') parent cable id
+    sourceNodeId:       null,             // (when anchorType='branch') parent node id
+    branchCableIds:     [],               // outgoing branches from this node — blocks delete
+    cachedWorldPos:     null,             // [x,y,z] last-known world pos — fallback when anchor target dies
+    cachedWorldQuat:    null,             // [x,y,z,w] last-known world quat — for sockets
+    socket:             null,             // CableSocket | null
+    ...overrides,
+  };
+}
+
+/**
+ * Connector box at a cable node. Orientation lives in `localQuaternion`
+ * when the host node is mesh-anchored (so it follows the mesh), else
+ * `quaternion` (world-space) for free / branch nodes. Render offsets the
+ * box half its depth along the +Z axis so the front face touches the
+ * cable point — see persistSocketFromVisual for the inverse math.
+ */
+export function createCableSocket(overrides = {}) {
+  return {
+    id:               generateId('csock'),
+    name:             '',
+    color:            '#ff9d57',
+    size:             { w: 10, h: 10, d: 18 },
+    localQuaternion:  null,               // [x,y,z,w] when host node is mesh-anchored
+    quaternion:       null,               // [x,y,z,w] world-space, for free/branch hosts
+    ...overrides,
+  };
+}
+
 export function createCable(overrides = {}) {
   return {
-    id:         generateId('cable'),
-    name:       '',
-    points:     [],                 // [CablePoint, ...]
-    sockets:    [],                 // [CableSocket, ...]
-    visible:    true,
+    id:           generateId('cable'),
+    name:         '',
+    nodes:        [],                     // CableNode[]
+    branchSource: null,                   // { cableId, nodeId } when this cable branches off another
+    visible:      true,
+    highlight:    false,
     style: {
-      color:     '#94a3b8',
-      thickness: 2,
-      type:      'catenary',        // 'catenary' | 'straight' | 'bezier'
+      color:     '#ffb24a',
+      radius:    3,                       // cylinder radius in world units
+      type:      'straight',              // 'straight' | 'catenary' | 'bezier' (only 'straight' rendered today)
     },
     ...overrides,
   };

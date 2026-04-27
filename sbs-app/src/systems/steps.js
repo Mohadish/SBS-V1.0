@@ -25,6 +25,7 @@
 import state                        from '../core/state.js';
 import sceneCore                    from '../core/scene.js';
 import { rasterizeOverlay }         from './overlay.js';
+import * as cablesSystem            from './cables.js';   // C1: per-step cable snapshot capture/apply
 import { createStep, createEmptySnapshot } from '../core/schema.js';
 import { parseAnimation, resolveAnimationString } from './animation.js';
 import {
@@ -231,12 +232,15 @@ class StepManager {
           : []
       )),
 
-      // Cables (deep-copy)
-      cables: JSON.parse(JSON.stringify(
-        state.get('activeStepId')
-          ? this._getActiveStep()?.snapshot?.cables ?? []
-          : []
-      )),
+      // Cables — per-step VARIABLE overrides only. Topology (id, mesh
+      // anchor links, branch chain) lives project-global in state.cables.
+      // captureCableStepSnapshot() extracts just the variable bits keyed
+      // by cable id; applyCableStepSnapshot() merges them back. Step
+      // snapshots without a cable id leave that cable's variables
+      // untouched on apply (so a fresh cable stays visible across all
+      // past steps until the user explicitly varies it). See
+      // systems/cables.js.
+      cables: cablesSystem.captureStepSnapshot(),
     };
   }
 

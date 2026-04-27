@@ -122,6 +122,19 @@ function createInitialState() {
     // box is free-form. See systems/style-templates.js.
     styleTemplates: [],               // StyleTemplate[]
 
+    // ── Cables — 3D wires/conduits routed between mesh anchors and
+    // free points. The LIVE state of cables (current step's view).
+    // step.snapshot.cables holds per-step variable overrides
+    // (positions of free nodes, style, visibility, socket pose). On
+    // step activate, the snapshot's overrides are merged in. Topology
+    // (id, mesh anchor links, branch chain) stays stable across steps.
+    // See systems/cables.js for the full data model and 3-tier
+    // anchor resolver (live mesh → phantom → cached fallback).
+    cables: [],                       // Cable[]
+    // Project-level cable visuals (apply to every cable unless overridden).
+    cableGlobalScale:    1.0,         // 0.05–2.0 multiplier for radius / point + socket size
+    cableHighlightColor: '#22d3ee',   // colour when cable.highlight=true
+
     // ── UI state
     activeSidebarTab:   'files',      // which left sidebar tab is open
     gridVisible:        true,

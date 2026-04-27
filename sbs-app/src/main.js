@@ -48,6 +48,7 @@ import { initContextMenu, hideContextMenu, showContextMenu } from './ui/context-
 import { initOverlay, getStage as getOverlayStage } from './systems/overlay.js';
 import { initOverlayToolbar }  from './ui/overlay-toolbar.js';
 import { initHeaderLayer }     from './systems/header.js';
+import { initCables }          from './systems/cables.js';   // C1: cables wire step:applied → applyStepSnapshot
 import { initUserSettings }    from './core/user-settings.js';
 import { openSettingsModal }   from './ui/settings-modal.js';
 import { schedulePrecache, cancel as cancelPrecache } from './systems/narration-precache.js';
@@ -105,6 +106,9 @@ initOverlay();
 initOverlayToolbar();
 // Header layer rides on top of the overlay stage; must init AFTER initOverlay.
 initHeaderLayer(getOverlayStage());
+// C1: cables system — subscribes to step:applied to merge per-step
+// variable overrides into state.cables. Must run AFTER steps.init.
+initCables();
 setupUndoKeyboard();
 
 // Eager-load user-level prefs so subsequent UI can read them synchronously.
