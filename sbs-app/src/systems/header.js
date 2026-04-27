@@ -117,13 +117,20 @@ export function resolveHeaderText(item, ctx) {
  * Build the render context (active step + chapter ordinals) from current
  * state. Pure read; doesn't mutate. Useful both for the live renderer
  * and ad-hoc callers (status text, thumbnails-with-headers, etc.).
+ *
+ * stepIndex is computed against the USER-VISIBLE step list (no base
+ * step, no hidden steps) to match the standard filter used everywhere
+ * else in steps.js. Without this filter, the hidden __base__ step at
+ * index 0 made every header "Step Number" off by one — the first
+ * user step rendered as "Step 2".
  */
 export function buildRenderContext() {
-  const steps    = state.get('steps') || [];
+  const allSteps = state.get('steps') || [];
+  const visible  = allSteps.filter(s => !s.hidden && !s.isBaseStep);
   const chapters = state.get('chapters') || [];
   const activeId = state.get('activeStepId');
-  const stepIndex = steps.findIndex(s => s.id === activeId);
-  const step     = stepIndex >= 0 ? steps[stepIndex] : null;
+  const stepIndex = visible.findIndex(s => s.id === activeId);
+  const step     = stepIndex >= 0 ? visible[stepIndex] : null;
   const chapterIndex = step?.chapterId
     ? chapters.findIndex(c => c.id === step.chapterId)
     : -1;
