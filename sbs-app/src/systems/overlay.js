@@ -23,6 +23,7 @@ import * as textEngine from './text-engine.js';
 import { getStyleTemplate, listStyleTemplates } from './style-templates.js';
 import { registerLayer, getLayerSelection, persistNodeIfHeader } from './cross-layer.js';
 import * as editSession from './edit-session.js';   // P7-A: in-session local undo + commit-time main-undo entry
+import { undoManager } from './undo.js';            // P7-B: mass-mode + structural ops push undo entries directly
 
 let _stage       = null;   // Konva.Stage
 let _layer       = null;   // Konva.Layer — holds all user content
@@ -213,6 +214,11 @@ export async function addTextBox() {
   _layer.add(node);
   _attachNode(node);
   _setSelection(node);
+  // P7-C-1: capture spec for undo / redo, push entry. Do this BEFORE
+  // entering edit mode — the editor opens its own edit-session that
+  // pushes a SEPARATE "Edit text" entry on commit, so the user gets
+  // two clean undo steps: Edit text → Add textbox.
+  _pushAddNodeUndo(node, 'Add text box');
   // Auto-enter edit mode so the user doesn't have to dbl-click first.
   _enterTextEdit(node);
   _scheduleSave();
@@ -687,6 +693,7 @@ export async function addImage(src) {
   _layer.add(node);
   _attachNode(node);
   _setSelection(node);
+  _pushAddNodeUndo(node, 'Add image');   // P7-C-1
   _scheduleSave();
   return node;
 }
@@ -719,12 +726,16 @@ function _attachNode(node) {
     const own  = _transformer?.nodes() || [];
     const peer = getLayerSelection('header');
     const sel  = [...own, ...peer];
-    if (sel.length <= 1) return;
+    // P7-C-2: ALWAYS snapshot drag-start positions, even for single-node
+    // drags — that snapshot is what dragend uses to push a "Move N
+    // item(s)" undo entry. Multi-drag delta logic (in dragmove) still
+    // gates on sel.length > 1.
+    const draggedSet = sel.length ? sel : [node];
     _multiDragStarts = new Map();
-    for (const n of sel) _multiDragStarts.set(n, { x: n.x(), y: n.y() });
+    for (const n of draggedSet) _multiDragStarts.set(n, { x: n.x(), y: n.y() });
   });
   node.on('dragmove', () => {
-    if (!_multiDragStarts) return;
+    if (!_multiDragStarts || _multiDragStarts.size <= 1) return;   // single-node = let Konva drag normally
     const start = _multiDragStarts.get(node);
     if (!start) return;
     const dx = node.x() - start.x;
@@ -742,15 +753,39 @@ function _attachNode(node) {
     _multiDragStarts.peerLayer?.batchDraw?.();
   });
   node.on('dragend', () => {
-    if (_multiDragStarts) {
-      // Persist any header siblings — overlay nodes are saved in one
-      // shot via _scheduleSave below (their positions ride along in
-      // _stage.toJSON()).
-      for (const n of _multiDragStarts.keys()) {
-        if (n !== node) persistNodeIfHeader(n);
-      }
-    }
+    const beforeMap = _multiDragStarts;
     _multiDragStarts = null;
+    if (!beforeMap) return;
+    // Cross-layer header persistence (header peers don't fire their
+    // own dragend since we moved them via x()/y() in dragmove).
+    for (const n of beforeMap.keys()) {
+      if (n !== node) persistNodeIfHeader(n);
+    }
+    // P7-C-2: push a "Move" undo entry for ALL nodes that ended up
+    // somewhere different from where they started. Single-node and
+    // multi-node drags both go through this path.
+    const before = [...beforeMap.entries()].map(([n, p]) => ({ n, x: p.x, y: p.y }));
+    const after  = before.map(b => ({ n: b.n, x: b.n.x(), y: b.n.y() }));
+    const moved  = before.some((b, i) => b.x !== after[i].x || b.y !== after[i].y);
+    if (moved) {
+      const label = before.length > 1 ? `Move ${before.length} items` : 'Move';
+      undoManager.push(label,
+        () => _restoreNodePositions(before),
+        () => _restoreNodePositions(after),
+      );
+    }
+  });
+
+  // P7-C-2: snapshot ALL transformer-tracked nodes' geometry on
+  // transformstart so transformend can push an undo entry covering
+  // the whole resize/rotate gesture (multi-node transforms move
+  // everything in the transformer). Like dragstart, only the grabbed
+  // node fires transformstart — but the transformer drives all its
+  // tracked nodes' attrs, so capturing the lot here is correct.
+  let _xformSnapBefore = null;
+  node.on('transformstart', () => {
+    const tracked = _transformer?.nodes() || [node];
+    _xformSnapBefore = tracked.map(n => _snapNodeGeom(n));
   });
 
   // LIVE resize during edit — when the user drags a transform anchor on a
@@ -800,6 +835,30 @@ function _attachNode(node) {
       // we still want the raster to reflow rather than stay stretched.
       _reflowTextBox(node);
     }
+
+    // P7-C-2: push a "Resize" undo entry covering every transformer
+    // node, captured before the gesture started. Restore writes back
+    // x/y/width/height + scale + rotation; for textboxes we also call
+    // _reflowTextBox so the raster matches the restored geometry.
+    if (_xformSnapBefore) {
+      const before = _xformSnapBefore;
+      _xformSnapBefore = null;
+      const after = before.map(b => _snapNodeGeom(b.n));
+      const changed = before.some((b, i) =>
+        b.x !== after[i].x || b.y !== after[i].y ||
+        b.width !== after[i].width || b.height !== after[i].height ||
+        b.scaleX !== after[i].scaleX || b.scaleY !== after[i].scaleY ||
+        b.rotation !== after[i].rotation,
+      );
+      if (changed) {
+        const label = before.length > 1 ? `Resize ${before.length} items` : 'Resize';
+        undoManager.push(label,
+          () => _restoreNodeGeom(before),
+          () => _restoreNodeGeom(after),
+        );
+      }
+    }
+
     _scheduleSave();
   });
   node.on('dragend', _scheduleSave);
@@ -864,6 +923,172 @@ function _serializeNode(node) {
   return out;
 }
 
+// ─── P7-C-2: drag / resize geometry snapshots ──────────────────────────────
+
+function _snapNodeGeom(node) {
+  return {
+    n:        node,
+    x:        node.x(),
+    y:        node.y(),
+    width:    node.width(),
+    height:   node.height(),
+    scaleX:   node.scaleX(),
+    scaleY:   node.scaleY(),
+    rotation: node.rotation(),
+  };
+}
+
+/**
+ * Restore positions only — used by drag undo. We don't touch w/h/scale/
+ * rotation here because pure drag never changed those. Returns false
+ * if every tracked node has been destroyed (step nav etc.) so
+ * undoManager can drop the dead entry.
+ */
+function _restoreNodePositions(snaps) {
+  let any = false;
+  let peerLayer = null;
+  for (const s of snaps) {
+    if (!s.n || s.n.isDestroyed?.()) continue;
+    any = true;
+    s.n.x(s.x);
+    s.n.y(s.y);
+    if (s.n.getLayer && s.n.getLayer() !== _layer) peerLayer = s.n.getLayer();
+  }
+  _layer.batchDraw();
+  peerLayer?.batchDraw?.();
+  // Header peers also need their state.headerItems entry resynced.
+  for (const s of snaps) {
+    if (s.n && !s.n.isDestroyed?.()) persistNodeIfHeader(s.n);
+  }
+  _scheduleSave();
+  return any ? undefined : false;
+}
+
+/**
+ * Restore full geometry — used by resize/rotate undo. Reflows text
+ * boxes after restore so the raster matches the restored size.
+ */
+async function _restoreNodeGeom(snaps) {
+  let any = false;
+  for (const s of snaps) {
+    if (!s.n || s.n.isDestroyed?.()) continue;
+    any = true;
+    s.n.x(s.x);
+    s.n.y(s.y);
+    s.n.width(s.width);
+    s.n.height(s.height);
+    s.n.scaleX(s.scaleX);
+    s.n.scaleY(s.scaleY);
+    s.n.rotation(s.rotation);
+    if (s.n.getClassName() === 'Image' && s.n.getAttr('textHtml')) {
+      await _reflowTextBox(s.n);
+    }
+  }
+  _layer.batchDraw();
+  _scheduleSave();
+  return any ? undefined : false;
+}
+
+// ─── P7-C-1: structural undo helpers ───────────────────────────────────────
+//
+// Add / paste / duplicate / delete each push ONE undoManager entry that
+// (un-)does its action without leaning on the now-destroyed node
+// reference. Konva nodes can't be revived after destroy(), so undo
+// re-creates from the serialised spec; the closure tracks the live
+// node ref to point at the freshly-created one for chained undo / redo.
+//
+// All three helpers share one principle: when a node we expect to
+// destroy is already gone (step navigation, project reload, etc.),
+// return false so undoManager skips the dead entry instead of
+// stalling.
+
+function _pushAddNodeUndo(node, label) {
+  const spec = _serializeNode(node);
+  if (!spec) return;
+  let nodeRef = node;
+  undoManager.push(label,
+    () => {
+      if (!nodeRef || nodeRef.isDestroyed?.()) return false;
+      nodeRef.destroy();
+      _setSelection(null);
+      _layer.batchDraw();
+      _scheduleSave();
+    },
+    async () => {
+      const fresh = await _recreateNode(spec);
+      if (!fresh) return;
+      _layer.add(fresh);
+      _attachNode(fresh);
+      _setSelection(fresh);
+      nodeRef = fresh;
+      _layer.batchDraw();
+      _scheduleSave();
+    },
+  );
+}
+
+function _pushAddNodesUndo(nodes, specs, label) {
+  if (!nodes?.length || !specs?.length) return;
+  let nodeRefs = [...nodes];
+  undoManager.push(label,
+    () => {
+      let any = false;
+      for (const n of nodeRefs) {
+        if (n && !n.isDestroyed?.()) { n.destroy(); any = true; }
+      }
+      _setSelection(null);
+      _layer.batchDraw();
+      _scheduleSave();
+      return any ? undefined : false;
+    },
+    async () => {
+      const fresh = [];
+      for (const spec of specs) {
+        const n = await _recreateNode(spec);
+        if (!n) continue;
+        _layer.add(n);
+        _attachNode(n);
+        fresh.push(n);
+      }
+      nodeRefs = fresh;
+      _transformer.nodes(fresh);
+      _configTransformerForNodes(fresh);
+      _layer.batchDraw();
+      _scheduleSave();
+    },
+  );
+}
+
+function _pushDeleteNodesUndo(specs, label) {
+  if (!specs?.length) return;
+  let nodeRefs = [];
+  undoManager.push(label,
+    async () => {
+      // Undo the delete = re-create the nodes from spec.
+      const fresh = [];
+      for (const spec of specs) {
+        const n = await _recreateNode(spec);
+        if (!n) continue;
+        _layer.add(n);
+        _attachNode(n);
+        fresh.push(n);
+      }
+      nodeRefs = fresh;
+      _layer.batchDraw();
+      _scheduleSave();
+    },
+    () => {
+      // Redo the delete = destroy the (re-created) nodes again.
+      for (const n of nodeRefs) {
+        if (n && !n.isDestroyed?.()) n.destroy();
+      }
+      _setSelection(null);
+      _layer.batchDraw();
+      _scheduleSave();
+    },
+  );
+}
+
 /**
  * Right-click → Copy. Snapshots every selected overlay node into the
  * module clipboard along with their captured x/y for paste-in-place.
@@ -893,6 +1118,11 @@ async function _pasteFromOverlayClipboard(opts = {}) {
   if (!_overlayClipboard?.length) return false;
   const { inPlace = false, offset = 20 } = opts;
   const newNodes = [];
+  // P7-C-1: capture each fresh node's POST-positioning spec so undo
+  // can both destroy them AND redo can recreate at the same spot.
+  // _serializeNode after we've set x/y picks up the offset / inPlace
+  // positioning the user actually saw.
+  const newSpecs = [];
   for (const entry of _overlayClipboard) {
     const node = await _recreateNode(entry.spec);
     if (!node) continue;
@@ -906,6 +1136,7 @@ async function _pasteFromOverlayClipboard(opts = {}) {
     _layer.add(node);
     _attachNode(node);
     newNodes.push(node);
+    newSpecs.push(_serializeNode(node));
   }
   if (!newNodes.length) return false;
 
@@ -914,6 +1145,8 @@ async function _pasteFromOverlayClipboard(opts = {}) {
   _configTransformerForNodes(newNodes);
   _layer.batchDraw();
   _uiLayer.batchDraw();
+  const label = opts.label || `Paste ${newSpecs.length} item${newSpecs.length > 1 ? 's' : ''}`;
+  _pushAddNodesUndo(newNodes, newSpecs, label);
   _scheduleSave();
   return true;
 }
@@ -921,7 +1154,7 @@ async function _pasteFromOverlayClipboard(opts = {}) {
 /** Duplicate = copy current selection then immediately paste with a small offset. */
 async function _duplicateSelected() {
   if (!_copyToOverlayClipboard()) return false;
-  return _pasteFromOverlayClipboard({ inPlace: false, offset: 20 });
+  return _pasteFromOverlayClipboard({ inPlace: false, offset: 20, label: 'Duplicate' });
 }
 
 /**
@@ -1204,27 +1437,76 @@ function _multiTextApplier(action, value) {
   const targets = sel.filter(n => n.getAttr?.('textHtml'));
   if (!targets.length) return;
 
+  // P7-B-1: snapshot every selected box's full styling state BEFORE
+  // we mutate, so a single mass-mode toolbar press maps to ONE
+  // main-undo entry — not N entries (one per box). The snapshot
+  // captures textHtml + fillColor + styleId; restore re-rasterises
+  // each touched node.
+  const before = targets.map(node => _snapTextBox(node));
+
   if (action === 'fillColor') {
     if (!value) return;
     for (const node of targets) {
       node.setAttr('fillColor', value);
       _reflowTextBox(node).catch(() => {});
     }
-    _scheduleSave();
-    return;
+  } else {
+    for (const node of targets) {
+      const beforeHtml = node.getAttr('textHtml') || '';
+      const root   = document.createElement('div');
+      root.innerHTML = beforeHtml;
+      textEngine.apply(root, null, action, value);
+      const after = root.innerHTML;
+      if (after === beforeHtml) continue;
+      node.setAttr('textHtml', after);
+      _reflowTextBox(node).catch(() => {});
+    }
   }
 
-  for (const node of targets) {
-    const before = node.getAttr('textHtml') || '';
-    const root   = document.createElement('div');
-    root.innerHTML = before;
-    textEngine.apply(root, null, action, value);
-    const after = root.innerHTML;
-    if (after === before) continue;
-    node.setAttr('textHtml', after);
-    _reflowTextBox(node).catch(() => {});
+  const after = targets.map(node => _snapTextBox(node));
+  const changed = before.some((b, i) =>
+    b.textHtml !== after[i].textHtml ||
+    b.fillColor !== after[i].fillColor ||
+    b.styleId !== after[i].styleId,
+  );
+  if (changed) {
+    const label = `Style ${targets.length} text box${targets.length > 1 ? 'es' : ''}`;
+    undoManager.push(label,
+      () => _restoreTextBoxes(before),
+      () => _restoreTextBoxes(after),
+    );
   }
   _scheduleSave();
+}
+
+/** Snapshot a single textbox node's user-visible styling state. */
+function _snapTextBox(node) {
+  return {
+    node,
+    textHtml:  node.getAttr('textHtml') || '',
+    fillColor: node.getAttr('fillColor') ?? null,
+    styleId:   node.getAttr('styleId')   ?? null,
+  };
+}
+
+/**
+ * Restore an array of textbox snapshots. Skips destroyed nodes
+ * gracefully (returns false from a single-snap restore so undoManager
+ * can drop entries that reference a node that's no longer there —
+ * e.g. step navigation invalidated the layer).
+ */
+async function _restoreTextBoxes(snaps) {
+  let anyAlive = false;
+  for (const s of snaps) {
+    if (!s.node || s.node.isDestroyed?.()) continue;
+    anyAlive = true;
+    s.node.setAttr('textHtml',  s.textHtml);
+    s.node.setAttr('fillColor', s.fillColor);
+    s.node.setAttr('styleId',   s.styleId);
+    await _reflowTextBox(s.node);
+  }
+  _scheduleSave();
+  return anyAlive ? undefined : false;
 }
 
 /**
@@ -1284,9 +1566,14 @@ export function getSelected() {
 export function deleteSelected() {
   const nodes = _transformer?.nodes() || [];
   if (!nodes.length) return false;
+  // P7-C-1: snapshot specs BEFORE destroying so undo can re-create the
+  // nodes from a stable serialised form (Konva nodes can't be revived
+  // after destroy(); the spec is what survives).
+  const specs = nodes.map(n => _serializeNode(n)).filter(Boolean);
   for (const n of nodes) n.destroy();
   _setSelection(null);
   _layer.batchDraw();
+  _pushDeleteNodesUndo(specs, `Delete ${specs.length} item${specs.length > 1 ? 's' : ''}`);
   _scheduleSave();
   return true;
 }
