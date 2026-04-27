@@ -17,7 +17,7 @@
 
 import { state } from '../core/state.js';
 import { showContextMenu } from '../ui/context-menu.js';
-import { mountTextToolbar, unmountTextToolbar, execCommandApplier, setToolbarValues } from '../ui/text-toolbar.js';
+import { mountTextToolbar, unmountTextToolbar, execCommandApplier, setToolbarValues, wasColorPickedRecently } from '../ui/text-toolbar.js';
 import { getTextToolbarSlot }  from '../ui/overlay-toolbar.js';
 import * as textEngine from './text-engine.js';
 
@@ -254,6 +254,10 @@ function _enterTextEdit(node) {
   const onDocMouseDown = (e) => {
     if (div.contains(e.target)) return;
     if (e.target?.closest?.('[data-sbs-text-toolbar]')) return;   // Phase 3
+    // Swallow the click that fires when the OS colour-picker dialog
+    // closes — without this, every "pick colour" gesture also exits
+    // the editor and discards subsequent style edits.
+    if (wasColorPickedRecently()) return;
     _exitTextEdit();
   };
   // Defer one tick so the same dblclick that opened us doesn't immediately close us.

@@ -142,6 +142,48 @@ export function normalize(root) {
     });
     if (!changed) break;
   }
+
+  // 6. Strip redundant ancestor property declarations.
+  //    Per CSS cascade only the INNERMOST ancestor's declaration of a
+  //    given property reaches the text. Outer declarations of the same
+  //    property are dead weight — they don't affect rendering of THIS
+  //    text run, but they DO inflate line-box layout (font-size on a
+  //    parent contributes to the line height even when an inner span
+  //    overrides it).
+  //    For every text run, walk its ancestor chain. The innermost
+  //    declaration of each property wins — strip the property from
+  //    every outer ancestor.
+  //    This is the layer that fixes "set size 40 → set size 20 → line
+  //    height stays at 40": the outer wrapper's stale font-size:40 was
+  //    surviving flatten when it had siblings, but it no longer needs
+  //    to declare font-size at all because the inner span:20 fully
+  //    covers the text inside it.
+  _stripRedundantAncestorProps(root);
+}
+
+function _stripRedundantAncestorProps(root) {
+  const TRACKED = ['color', 'font-family', 'font-size', 'font-weight', 'font-style'];
+  const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT);
+  let n;
+  while ((n = walker.nextNode())) {
+    if (!n.textContent.length) continue;
+    const seen = new Set();
+    let p = n.parentElement;
+    while (p && p !== root) {
+      if (p.style) {
+        for (const prop of TRACKED) {
+          const v = p.style.getPropertyValue(prop);
+          if (!v) continue;
+          if (seen.has(prop)) {
+            p.style[prop] = '';     // outer ancestor — strip, inner already wins
+          } else {
+            seen.add(prop);          // first (= innermost) declaration — keep
+          }
+        }
+      }
+      p = p.parentElement;
+    }
+  }
 }
 
 // ─── Range / caret paths ───────────────────────────────────────────────────

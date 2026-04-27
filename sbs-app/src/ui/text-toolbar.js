@@ -249,10 +249,33 @@ function _color(title, label = 'A', defaultBadge = '#fbbf24', onChange) {
   input.style.cssText = 'position:absolute;inset:0;opacity:0;cursor:pointer;';
   wrap.appendChild(input);
 
-  input.addEventListener('mousedown', e => e.stopPropagation());
-  input.addEventListener('input',     () => { wrap.style.color = input.value; onChange(input.value); });
-  input.addEventListener('change',    () => onChange(input.value));
+  // The native colour picker is an OS-level dialog. When the user closes
+  // it (by picking, or by clicking outside), the closing click also fires
+  // a mousedown on whatever's under the cursor — which the editor's
+  // click-outside detector then interprets as "exit edit mode". Result:
+  // the user picks a colour, then loses every other style edit they made
+  // because the editor commits early.
+  // Stamp a recent-pick timestamp on every color event; the editor's
+  // click-outside guard reads _wasColorPickedRecently() and skips one
+  // dismissal if so.
+  const stamp = () => { _lastColorEventAt = performance.now(); };
+  input.addEventListener('mousedown', (e) => { e.stopPropagation(); stamp(); });
+  input.addEventListener('focus',     stamp);
+  input.addEventListener('input',     () => { wrap.style.color = input.value; onChange(input.value); stamp(); });
+  input.addEventListener('change',    () => { onChange(input.value); stamp(); });
   return wrap;
+}
+
+let _lastColorEventAt = 0;
+const COLOR_DISMISS_GUARD_MS = 400;
+/**
+ * True iff a colour picker emitted any event within the last
+ * COLOR_DISMISS_GUARD_MS milliseconds. Read by overlay.js's
+ * click-outside detector to swallow exactly one dismissal that would
+ * otherwise close the editor when the OS picker dialog closes.
+ */
+export function wasColorPickedRecently() {
+  return (performance.now() - _lastColorEventAt) < COLOR_DISMISS_GUARD_MS;
 }
 
 /**
