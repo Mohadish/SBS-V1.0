@@ -667,7 +667,9 @@ async function _relinkAsset(file, assetEntry) {
       _removePhantomsFromMap(phantom);
 
       // Register live model nodes with their remapped (saved) IDs.
+      // Also clear any stale .missing flag so reinstated nodes render white.
       function _addToMap(node) {
+        node.missing = false;
         nodeById.set(node.id, node);
         (node.children || []).forEach(_addToMap);
       }
