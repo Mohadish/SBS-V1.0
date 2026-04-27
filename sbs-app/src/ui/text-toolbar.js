@@ -23,6 +23,9 @@
  *   • Caret only                → next typed characters (browser default).
  */
 
+import * as textEngine from '../systems/text-engine.js';
+import { ACTIONS } from '../systems/text-engine.js';
+
 const FONTS = [
   'Arial', 'Helvetica', 'Georgia', 'Times New Roman',
   'Courier New', 'Verdana', 'Tahoma', 'Trebuchet MS', 'Impact', 'Comic Sans MS',
@@ -60,34 +63,32 @@ export function mountTextToolbar(host, applier, editorEl = null) {
   _toolbar.innerHTML = '';
   _toolbar.dataset.sbsTextToolbar = '1';
 
-  // Visual layout (left to right) — matches the user's right-to-left
-  // mental order so reading the bar from the Edit toggle inward gives:
-  //   font ▼ · size ▼ · color · S · U · I · B · ⫸ · ⫿ · ⫷
+  // Visual layout (left to right):
+  //   ⫷ ⫿ ⫸  |  B I U  |  fill α  text-color  size ▼  font ▼
+  // Action names match the text-engine's ACTIONS list — no more
+  // execCommand-flavoured strings. Strikethrough was removed: edge
+  // cases weren't worth the value.
   const colorCtl = _color('Text color', 'A', '#fbbf24',
-                          (v) => _apply('foreColor', v));
-  // Fill = box background. Native colour input + alpha slider. The
-  // applier composes them into rgba(r,g,b,a) on every change so callers
-  // get a single value to store on the node.
-  const fillCtl = _color('Fill color (textbox background)', '■', '#1f2937',
-                         (v) => _apply('fillColor', _composeRgba(v, _alphaInput?.value)));
+                          (v) => _apply('color', v));
+  const fillCtl  = _color('Fill color (textbox background)', '■', '#1f2937',
+                          (v) => _apply('fillColor', _composeRgba(v, _alphaInput?.value)));
   const alphaCtl = _alpha('Fill alpha (0 = transparent, 100 = opaque)',
                           (v) => _apply('fillColor', _composeRgba(_fillInput?.value, v)));
 
-  _sizeSel    = _select('size', SIZES.map(s => `${s}`), (v) => _apply('fontSize', Number(v)));
-  _fontSel    = _select('font', FONTS,                  (v) => _apply('fontName', v));
+  _sizeSel    = _select('size', SIZES.map(s => `${s}`), (v) => _apply('fontSize',   Number(v)));
+  _fontSel    = _select('font', FONTS,                  (v) => _apply('fontFamily', v));
   _colorInput = colorCtl.querySelector('input[type=color]');
   _fillInput  = fillCtl.querySelector('input[type=color]');
   _alphaInput = alphaCtl.querySelector('input[type=range]');
 
   _toolbar.append(
-    _btn('⫷', 'Align left',   () => _apply('justifyLeft')),
-    _btn('⫿', 'Align center', () => _apply('justifyCenter')),
-    _btn('⫸', 'Align right',  () => _apply('justifyRight')),
+    _btn('⫷', 'Align left',         () => _apply('alignLeft')),
+    _btn('⫿', 'Align center',       () => _apply('alignCenter')),
+    _btn('⫸', 'Align right',        () => _apply('alignRight')),
     _sep(),
-    _btn('B', 'Bold (Ctrl+B)',     () => _apply('bold'),          { fontWeight: 'bold' }),
-    _btn('I', 'Italic (Ctrl+I)',   () => _apply('italic'),        { fontStyle:  'italic' }),
-    _btn('U', 'Underline (Ctrl+U)',() => _apply('underline'),     { textDecoration: 'underline' }),
-    _btn('S', 'Strikethrough',     () => _apply('strikeThrough'), { textDecoration: 'line-through' }),
+    _btn('B', 'Bold (Ctrl+B)',      () => _apply('bold'),      { fontWeight: 'bold' }),
+    _btn('I', 'Italic (Ctrl+I)',    () => _apply('italic'),    { fontStyle:  'italic' }),
+    _btn('U', 'Underline (Ctrl+U)', () => _apply('underline'), { textDecoration: 'underline' }),
     _sep(),
     fillCtl, alphaCtl,
     colorCtl,
@@ -152,253 +153,32 @@ function _apply(action, value) {
 }
 
 /**
- * Default applier for single-editor mode — uses execCommand against the
- * contenteditable's live Selection. Exported so overlay.js can pass it
- * in without reimplementing.
+ * Default applier for single-editor mode — drives the unified
+ * text-engine over the contenteditable's live selection.
+ *
+ * Engine actions: color, fontFamily, fontSize, bold, italic, underline,
+ * alignLeft, alignCenter, alignRight. fillColor is intercepted by
+ * overlay.js before reaching this applier (it's a node-level attr,
+ * not text styling).
  */
 export function execCommandApplier(action, value) {
-  try {
-    if (action === 'fontSize') {
-      _execFontSizeOnSelection(Number(value));
-    } else if (action === 'underline' || action === 'strikeThrough') {
-      // execCommand toggle semantics for underline/strike are unreliable
-      // when the selection straddles already-decorated and bare runs:
-      // browsers leave residue declarations behind that re-render as
-      // ghost underlines / strike-throughs. Run our own toggle that
-      // directly normalises text-decoration on every span in the
-      // selection.
-      _toggleDecorationOnSelection(action === 'underline' ? 'underline' : 'line-through');
-    } else {
-      document.execCommand(action, false, value);
-    }
-  } catch (err) { console.warn(`[text-toolbar] ${action} failed:`, err); }
-}
-
-/**
- * Toggle a text-decoration value across the current selection.
- * If every text run already carries the decoration, REMOVE it from all
- * spans inside the selection; otherwise ADD it uniformly to every text
- * run. Mirrors _massToggleDecoration in overlay.js — the toggle logic
- * is identical, just operating on the live Selection range instead of
- * a stored HTML string.
- *
- * Also strips legacy <u> / <s> tags inside the selection so they can't
- * paint extra underlines on top of a CSS-styled span.
- */
-function _toggleDecorationOnSelection(decoration) {
+  if (!_editor) return;
+  if (!ACTIONS.includes(action)) return;
   const sel = window.getSelection();
-  if (!sel || sel.rangeCount === 0) return;
-  const range = sel.getRangeAt(0);
-  if (range.collapsed) {
-    // Caret-only — defer to native toggle so the next typed character
-    // picks up the style, same as bold/italic.
-    document.execCommand(decoration === 'underline' ? 'underline' : 'strikeThrough');
-    return;
-  }
-
-  const fragment = range.extractContents();
-  const tmp = document.createElement('div');
-  tmp.appendChild(fragment);
-
-  // Unwrap legacy <u>/<s> tags — text-decoration is the modern path.
-  const legacy = decoration === 'underline' ? 'u' : 's,strike';
-  tmp.querySelectorAll(legacy).forEach(el => {
-    const parent = el.parentNode;
-    while (el.firstChild) parent.insertBefore(el.firstChild, el);
-    parent.removeChild(el);
-  });
-
-  // Decide toggle direction.
-  const allHaveIt = _everySpanHasDecoration(tmp, decoration);
-
-  if (allHaveIt) {
-    // Strip the decoration from every styled element.
-    tmp.querySelectorAll('[style]').forEach(el => {
-      el.style.textDecoration = _stripFromList(el.style.textDecoration, decoration);
-    });
-  } else {
-    // Apply uniformly: walk text nodes, wrap each in a span carrying
-    // the decoration. Coalesce with any existing decoration on that
-    // span.
-    const walker = document.createTreeWalker(tmp, NodeFilter.SHOW_TEXT);
-    const textNodes = [];
-    let n;
-    while ((n = walker.nextNode())) if (n.textContent.length) textNodes.push(n);
-    for (const tn of textNodes) {
-      const wrap = document.createElement('span');
-      wrap.style.textDecoration = decoration;
-      tn.parentNode.insertBefore(wrap, tn);
-      wrap.appendChild(tn);
-    }
-  }
-
-  // Re-insert.
-  const newFrag = document.createDocumentFragment();
-  let firstInserted = null, lastInserted = null;
-  while (tmp.firstChild) {
-    const node = tmp.firstChild;
-    if (!firstInserted) firstInserted = node;
-    lastInserted = node;
-    newFrag.appendChild(node);
-  }
-  range.insertNode(newFrag);
-
-  if (firstInserted && lastInserted && firstInserted.isConnected && lastInserted.isConnected) {
-    const newRange = document.createRange();
-    newRange.setStartBefore(firstInserted);
-    newRange.setEndAfter(lastInserted);
-    sel.removeAllRanges();
-    sel.addRange(newRange);
-  }
-}
-
-function _everySpanHasDecoration(root, decoration) {
-  const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT);
-  let n;
-  while ((n = walker.nextNode())) {
-    if (!n.textContent.trim()) continue;
-    let p = n.parentElement;
-    let found = false;
-    while (p && p !== root) {
-      const td = String(p.style?.textDecoration || '');
-      if (td.split(/\s+/).includes(decoration)) { found = true; break; }
-      p = p.parentElement;
-    }
-    if (!found) return false;
-  }
-  return true;
-}
-
-function _stripFromList(td, value) {
-  return String(td || '').split(/\s+/).filter(t => t && t !== value).join(' ');
-}
-
-/**
- * Pixel-size font sizing — execCommand('fontSize', 1..7) uses a legacy
- * 7-step API and looks awful at modern resolutions. Wrap the selection
- * in a span with explicit CSS instead.
- *
- * Then STRIP font-size from every descendant of the new span. Reason:
- * if the selected range already contained a span with an inline
- * font-size, extractContents pulls that span along with its style
- * declaration. Wrapping it in a new span gives us
- *   <span size:20><span size:40>TEXT</span></span>
- * The TEXT renders at 40 (inner cascade wins) — but worse, the line
- * height of the parent block is computed from the LARGEST font-size
- * declaration in the line, INCLUDING the now-redundant outer/inner
- * declarations. Result: visible text shrinks but the line keeps the
- * tall gap. Stripping nested font-size makes the size update affect
- * both the text AND the line height, which is what users expect.
- */
-function _execFontSizeOnSelection(px) {
-  const sel = window.getSelection();
-  if (!sel || sel.rangeCount === 0) return;
-  const range = sel.getRangeAt(0);
-
-  // Collapsed caret → set up a pending span so the user's next typed
-  // characters pick up the chosen size. Without this, picking a size
-  // with no selection silently no-op'd and the next characters used
-  // whatever style was at the caret (which is what bold/italic/etc.
-  // do natively via execCommand — fontSize was the odd one out).
-  // The ZWSP placeholder stops Chromium from collapsing the empty
-  // span away before the user types; it's stripped on click-out.
-  if (range.collapsed) {
-    const span = document.createElement('span');
-    span.style.fontSize = `${px}px`;
-    const tn = document.createTextNode('​');   // zero-width space
-    span.appendChild(tn);
-    range.insertNode(span);
-    range.setStart(tn, 1);
-    range.collapse(true);
-    sel.removeAllRanges();
-    sel.addRange(range);
-    return;
-  }
-
+  const range = (sel && sel.rangeCount && _editor.contains(sel.anchorNode))
+    ? sel.getRangeAt(0)
+    : null;
   try {
-    // Extract the selection so we can rebuild it freely.
-    const fragment = range.extractContents();
-    const tmp = document.createElement('div');
-    tmp.appendChild(fragment);
-
-    // 1. Strip font-size + line-height from every element in the
-    //    extracted fragment. The new declarations all live on the
-    //    fresh per-text-node spans we add below.
-    tmp.querySelectorAll('[style]').forEach(el => {
-      el.style.fontSize   = '';
-      el.style.lineHeight = '';
-    });
-
-    // 2. Wrap every non-empty text node in a fresh
-    //    <span style="font-size:Npx">. CRITICAL: we wrap text nodes,
-    //    not the whole selection. The previous version wrapped
-    //    everything in a single <span>, which is invalid when the
-    //    selection contains block elements (browsers hoist the <div>
-    //    out of the <span> and leave the span hollow — the new
-    //    font-size never reaches the text). Walking text nodes guards
-    //    against any selection topology.
-    const walker = document.createTreeWalker(tmp, NodeFilter.SHOW_TEXT);
-    const textNodes = [];
-    let n;
-    while ((n = walker.nextNode())) if (n.textContent.length) textNodes.push(n);
-    for (const tn of textNodes) {
-      const wrap = document.createElement('span');
-      wrap.style.fontSize = `${px}px`;
-      tn.parentNode.insertBefore(wrap, tn);
-      wrap.appendChild(tn);
-    }
-
-    // 3. Re-insert the rewritten content at the original range. Track
-    //    the first / last inserted nodes so we can restore the
-    //    selection over them after cleanup.
-    const newFrag = document.createDocumentFragment();
-    let firstInserted = null, lastInserted = null;
-    while (tmp.firstChild) {
-      const node = tmp.firstChild;
-      if (!firstInserted) firstInserted = node;
-      lastInserted = node;
-      newFrag.appendChild(node);
-    }
-    range.insertNode(newFrag);
-
-    // 4. Cleanup pass over the containing block:
-    //    • drop empty leftover spans — extractContents emptied the
-    //      original style wrappers (e.g. <span size:40></span>) but
-    //      they still declared the old font-size and inflated line
-    //      height
-    //    • strip stale line-height declarations so the rasteriser's
-    //      line-height:1.2 multiplier recomputes from the new size
-    let block = lastInserted || firstInserted;
-    while (block && block.parentElement && !/^(DIV|P|BODY)$/.test(block.tagName)) {
-      block = block.parentElement;
-    }
-    if (block) {
-      // Sweep INLINE wrappers only. The previous commit walked every
-      // descendant (`*`) which over-reached and broke the line-shrink
-      // case the same commit was trying to improve. Sticking to known
-      // inline style carriers keeps the original line-height-shrink
-      // fix working without removing structural elements that need
-      // to stay.
-      block.querySelectorAll('span,b,i,u,s,strong,em,font').forEach(el => {
-        const txt = (el.textContent || '').replace(/[​\s]+/g, '');
-        if (txt) return;
-        if (el.querySelector('br,img,svg,input,canvas')) return;
-        el.remove();
-      });
-      if (block.style) block.style.lineHeight = '';
-      block.querySelectorAll('[style]').forEach(el => { el.style.lineHeight = ''; });
-    }
-
-    // 5. Restore the selection over the rewritten content.
-    if (firstInserted && lastInserted && firstInserted.isConnected && lastInserted.isConnected) {
-      const newRange = document.createRange();
-      newRange.setStartBefore(firstInserted);
-      newRange.setEndAfter(lastInserted);
-      sel.removeAllRanges();
-      sel.addRange(newRange);
-    }
-  } catch (err) { console.warn('[text-toolbar] fontSize wrap failed:', err); }
+    textEngine.apply(_editor, range, action, value);
+  } catch (err) {
+    console.warn(`[text-toolbar] engine apply ${action} failed:`, err);
+  }
 }
+
+// (All single-editor styling logic lives in src/systems/text-engine.js.
+// execCommandApplier above forwards every action to engine.apply()
+// with the live Selection range. Mass-mode applier in overlay.js does
+// the same with no range, operating on each box's stored HTML.)
 
 // ─── Control factories ─────────────────────────────────────────────────────
 

@@ -19,6 +19,7 @@ import { state } from '../core/state.js';
 import { showContextMenu } from '../ui/context-menu.js';
 import { mountTextToolbar, unmountTextToolbar, execCommandApplier, setToolbarValues } from '../ui/text-toolbar.js';
 import { getTextToolbarSlot }  from '../ui/overlay-toolbar.js';
+import * as textEngine from './text-engine.js';
 
 let _stage       = null;   // Konva.Stage
 let _layer       = null;   // Konva.Layer — holds all user content
@@ -794,32 +795,17 @@ function _normaliseColor(s) {
 }
 
 /**
- * Apply a single style "action" to every text box in the current
- * multi-selection. Each box's HTML is mutated so ONLY the touched
- * property changes — other inline styles are preserved. Then the box
- * is re-rasterised.
- *
- * Implementation strategy
- * - For property-style actions (foreColor, fontSize, fontName) we walk
- *   the box's HTML, strip any existing inline declaration of that one
- *   property, then wrap the entire content in a span with the new
- *   value. Net effect: the touched property gets a fresh outer override
- *   that wins via CSS cascade; everything else (including unrelated
- *   inline styles on inner spans) keeps working.
- * - For toggle-style actions (bold, italic, underline, strike) we wrap
- *   the entire content in the matching tag (<b>, <i>, <u>, <s>). Toggle
- *   off isn't supported in multi-mode — applying the same action twice
- *   nests the wrapper, which the rasteriser still renders correctly
- *   (subsequent clicks are visually idempotent).
- * - For alignment we wrap content in a <div style="text-align:...">.
+ * Mass-mode applier: iterate selected text boxes, run the unified
+ * text-engine over each box's stored HTML with no Range (so it
+ * touches every text run). Then re-rasterise. fillColor is a
+ * node-level attr (not inline style) so it short-circuits ahead
+ * of the engine call.
  */
 function _multiTextApplier(action, value) {
   const sel = _transformer?.nodes() || [];
   const targets = sel.filter(n => n.getAttr?.('textHtml'));
   if (!targets.length) return;
 
-  // fillColor is a NODE-level property (textbox background), not an
-  // HTML inline style. Handle it without going through the HTML rewrite.
   if (action === 'fillColor') {
     if (!value) return;
     for (const node of targets) {
@@ -832,182 +818,15 @@ function _multiTextApplier(action, value) {
 
   for (const node of targets) {
     const before = node.getAttr('textHtml') || '';
-    const after  = _applyActionToHtml(before, action, value);
+    const root   = document.createElement('div');
+    root.innerHTML = before;
+    textEngine.apply(root, null, action, value);
+    const after = root.innerHTML;
     if (after === before) continue;
     node.setAttr('textHtml', after);
     _reflowTextBox(node).catch(() => {});
   }
   _scheduleSave();
-}
-
-/**
- * Single-editor applier — wraps execCommandApplier with a fillColor
- * branch that mutates the active text-box node directly. The editable's
- * own background is updated live so the user sees the colour as they
- * pick. _reflowTextBox runs on click-out to bake the bg into the raster.
- */
-function _singleEditorApplier(action, value) {
-  if (action === 'fillColor') {
-    if (!_activeTextEditor || !value) return;
-    _activeTextEditor.node.setAttr('fillColor', value);
-    _activeTextEditor.div.style.backgroundColor = value;
-    return;
-  }
-  execCommandApplier(action, value);
-}
-
-/**
- * Mass-mode style sweep — operates over ALL text in the box's HTML, not
- * just a selection. Designed so that:
- *
- *   • Property actions (color / font / size)  — set every character's
- *     value to `value`, stripping any conflicting inline declaration
- *     from ancestors first so the new value isn't shadowed.
- *
- *   • Toggle actions (bold / italic / under / strike) — TOGGLE: if every
- *     character already has the style applied, REMOVE it; otherwise
- *     apply it uniformly. Mirrors how a normal word processor toggles
- *     when you click B/I/U/S over a mixed selection.
- *
- *   • Alignment — wrap the whole content in a <div text-align:...>;
- *     replace any existing wrapping alignment block.
- *
- * All styling is written as INLINE CSS on <span>s wrapping every text
- * run, never legacy <b>/<i>/<u>/<s> tags. CSS gives us:
- *   • correct underline / strike rendering in SVG-foreignObject
- *     (no nested-<u> stacking, no thin-white-line artefact);
- *   • clean removal (clear the inline property), instead of having to
- *     unwrap tags;
- *   • independent control of each property.
- */
-function _applyActionToHtml(html, action, value) {
-  const root = document.createElement('div');
-  root.innerHTML = html || '';
-
-  switch (action) {
-    case 'foreColor': _massSetProperty(root, 'color',       String(value));        break;
-    case 'fontName':  _massSetProperty(root, 'fontFamily',  String(value));        break;
-    case 'fontSize':  _massSetProperty(root, 'fontSize',    `${Number(value)}px`); break;
-
-    case 'bold':          _massToggleProperty(root, 'fontWeight', 'bold');         break;
-    case 'italic':        _massToggleProperty(root, 'fontStyle',  'italic');       break;
-    case 'underline':     _massToggleDecoration(root, 'underline');                break;
-    case 'strikeThrough': _massToggleDecoration(root, 'line-through');             break;
-
-    case 'justifyLeft':   _massSetAlignment(root, 'left');   break;
-    case 'justifyCenter': _massSetAlignment(root, 'center'); break;
-    case 'justifyRight':  _massSetAlignment(root, 'right');  break;
-
-    default: return html;
-  }
-  return root.innerHTML;
-}
-
-// ─── Mass-style helpers ─────────────────────────────────────────────────────
-
-/** Strip property from all descendants then wrap every non-empty text run in a span with the new value. */
-function _massSetProperty(root, prop, value) {
-  root.querySelectorAll('[style]').forEach(el => { el.style[prop] = ''; });
-  _wrapTextNodes(root, (span) => { span.style[prop] = value; });
-}
-
-/** Toggle property ON if some text lacks it, OFF if every text has it. */
-function _massToggleProperty(root, prop, onValue) {
-  const allHaveIt = _everyTextRunHasProperty(root, prop, onValue);
-  // Always strip first — this makes both branches idempotent.
-  root.querySelectorAll('[style]').forEach(el => { el.style[prop] = ''; });
-  if (!allHaveIt) {
-    _wrapTextNodes(root, (span) => { span.style[prop] = onValue; });
-  }
-}
-
-/**
- * Same toggle semantics for text-decoration values (underline /
- * line-through), which are additive in CSS — multiple decorations can
- * coexist on a single span. We toggle just THIS decoration in/out of
- * the existing string.
- */
-function _massToggleDecoration(root, decoration) {
-  const allHaveIt = _everyTextRunHasDecoration(root, decoration);
-  if (allHaveIt) {
-    root.querySelectorAll('[style]').forEach(el => {
-      el.style.textDecoration = _removeDecoration(el.style.textDecoration, decoration);
-    });
-  } else {
-    _wrapTextNodes(root, (span) => {
-      span.style.textDecoration = _addDecoration(span.style.textDecoration, decoration);
-    });
-  }
-}
-
-/** Wrap entire content in a <div text-align:...>, replacing any prior alignment wrapper. */
-function _massSetAlignment(root, align) {
-  // Strip text-align from existing descendants so the new wrapper wins cleanly.
-  root.querySelectorAll('[style]').forEach(el => { el.style.textAlign = ''; });
-  const wrap = document.createElement('div');
-  wrap.style.textAlign = align;
-  while (root.firstChild) wrap.appendChild(root.firstChild);
-  root.appendChild(wrap);
-}
-
-/** Wrap every non-empty text node in a fresh <span>, then call applyFn(span) so the caller can set styles. */
-function _wrapTextNodes(root, applyFn) {
-  const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT);
-  const targets = [];
-  let n;
-  while ((n = walker.nextNode())) {
-    if (n.textContent && n.textContent.length > 0) targets.push(n);
-  }
-  for (const tn of targets) {
-    const span = document.createElement('span');
-    applyFn(span);
-    tn.parentNode.insertBefore(span, tn);
-    span.appendChild(tn);
-  }
-}
-
-/** True iff every non-empty text run has an ancestor with `style[prop] === onValue`. */
-function _everyTextRunHasProperty(root, prop, onValue) {
-  const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT);
-  let n;
-  while ((n = walker.nextNode())) {
-    if (!n.textContent.trim()) continue;
-    let p = n.parentElement;
-    let found = false;
-    while (p && p !== root) {
-      if (p.style?.[prop] === onValue) { found = true; break; }
-      p = p.parentElement;
-    }
-    if (!found) return false;
-  }
-  return true;
-}
-
-function _everyTextRunHasDecoration(root, decoration) {
-  const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT);
-  let n;
-  while ((n = walker.nextNode())) {
-    if (!n.textContent.trim()) continue;
-    let p = n.parentElement;
-    let found = false;
-    while (p && p !== root) {
-      const td = String(p.style?.textDecoration || '');
-      if (td.includes(decoration)) { found = true; break; }
-      p = p.parentElement;
-    }
-    if (!found) return false;
-  }
-  return true;
-}
-
-function _removeDecoration(td, decoration) {
-  return String(td || '')
-    .split(/\s+/).filter(t => t && t !== decoration).join(' ').trim();
-}
-function _addDecoration(td, decoration) {
-  const list = String(td || '').split(/\s+/).filter(Boolean);
-  if (!list.includes(decoration)) list.push(decoration);
-  return list.join(' ');
 }
 
 /**
