@@ -16,6 +16,7 @@ import { selectionActs }        from './select-act.js';
 import { materials }            from '../systems/materials.js';
 import steps                    from '../systems/steps.js';
 import { createAnimationPreset } from '../core/schema.js';
+import * as editSession         from './edit-session.js';   // P7-A: gate Ctrl-Z while in overlay edit
 import {
   applyAllVisibility,
   captureTransformSnapshot,
@@ -695,11 +696,36 @@ export function deleteAnimPreset(presetId) {
 
 export function setupUndoKeyboard() {
   window.addEventListener('keydown', e => {
-    if (_isInputFocused()) return;
     const mod = e.ctrlKey || e.metaKey;
-    if (mod && !e.shiftKey && e.key === 'z') { e.preventDefault(); undoManager.undo(); }
-    if (mod && e.key === 'y')                 { e.preventDefault(); undoManager.redo(); }
-    if (mod && e.shiftKey && e.key === 'Z')   { e.preventDefault(); undoManager.redo(); }
+    if (!mod) return;
+
+    // P7-A: when an edit session is open (textbox / header canvas
+    // editor mounted), Ctrl-Z / Ctrl-Y must NOT bleed into the main
+    // undo log — that's how a stray Ctrl-Z while editing was undoing
+    // timeline / step changes from the global stack. Route to the
+    // local session stack first; if the session is empty, swallow the
+    // event rather than fall through. The editor's own keydown
+    // handler on the contenteditable already covers Ctrl-Z/Y while
+    // the editor is FOCUSED; this branch handles the case where
+    // focus has drifted onto the toolbar / colour picker / etc. but
+    // a session is still open.
+    if (editSession.isActive()) {
+      if (!e.shiftKey && e.key === 'z') {
+        e.preventDefault();
+        editSession.undoLocal();   // false-return = local stack empty; we still swallow
+        return;
+      }
+      if (e.key === 'y' || (e.shiftKey && e.key === 'Z')) {
+        e.preventDefault();
+        editSession.redoLocal();
+        return;
+      }
+    }
+
+    if (_isInputFocused()) return;
+    if (!e.shiftKey && e.key === 'z') { e.preventDefault(); undoManager.undo(); }
+    if (e.key === 'y')                { e.preventDefault(); undoManager.redo(); }
+    if (e.shiftKey && e.key === 'Z')  { e.preventDefault(); undoManager.redo(); }
   });
 }
 
