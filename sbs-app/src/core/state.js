@@ -108,6 +108,12 @@ function createInitialState() {
     // setEditingMode — that function writes here.
     overlayEditing: false,
 
+    // When true, the "Step Number" header kind restarts at 1 inside
+    // each chapter (Step 1 of Chapter A, then Step 1 of Chapter B…).
+    // When false (default), it counts globally across all visible
+    // steps regardless of chapter boundaries.
+    headerStepNumberPerChapter: false,
+
     // ── Text style templates — project-level presets each text box can
     // bind to via its `styleId` attr. When bound, the template's font /
     // size / colour / weight / style / decoration / fill all OVERRIDE

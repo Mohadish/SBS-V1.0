@@ -90,6 +90,7 @@ export function initSidebarLeft() {
   state.on('change:headersHidden',         () => { if (_activeTab === 'header')    _renderHeaderTabPanel(); });
   state.on('change:headersLocked',         () => { if (_activeTab === 'header')    _renderHeaderTabPanel(); });
   state.on('change:headerDefault',         () => { if (_activeTab === 'header')    _renderHeaderTabPanel(); });
+  state.on('change:headerStepNumberPerChapter', () => { if (_activeTab === 'header') _renderHeaderTabPanel(); });
   state.on('change:styleTemplates',        () => {
     if (_activeTab === 'style')  _renderStyleTabPanel();
     if (_activeTab === 'header') _renderHeaderTabPanel();   // P4b: row dropdowns refresh + Save button enable

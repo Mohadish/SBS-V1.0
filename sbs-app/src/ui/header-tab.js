@@ -39,6 +39,7 @@ import {
   setHeaderDefault,
   setHeaderItemStyleId,
   setHeaderItemAlign,
+  setHeaderStepNumberPerChapter,
   selectHeader,
   exportHeaderSetup,
   importHeaderSetup,
@@ -63,6 +64,7 @@ export function renderHeaderTab(container) {
   const hidden  = !!state.get('headersHidden');
   const locked  = !!state.get('headersLocked');
   const def     = state.get('headerDefault')  || {};
+  const perCh   = !!state.get('headerStepNumberPerChapter');
 
   container.innerHTML = `
     <div class="section">
@@ -120,6 +122,19 @@ export function renderHeaderTab(container) {
         </div>
       </div>
 
+      <!-- Behaviour toggles for dynamic-kind headers. Currently just the
+           per-chapter step-number toggle; more can land here as needed. -->
+      <div class="card" style="margin-top:8px;padding:8px 10px;">
+        <label class="colorlab" style="display:flex;align-items:center;gap:8px;font-size:13px;">
+          <input type="checkbox" id="hdr-step-num-per-chapter" ${perCh ? 'checked' : ''} />
+          Restart "Step Number" per chapter
+        </label>
+        <div class="small muted" style="margin-top:4px;line-height:1.4;">
+          Off: Step Number counts globally (1, 2, 3 …) across the whole
+          project. On: counter restarts at 1 in each chapter.
+        </div>
+      </div>
+
       <div class="card" style="margin-top:10px;padding:0;">
         <div class="title" style="padding:8px 10px;border-bottom:1px solid var(--line);">
           Items <span class="small muted">(${items.length})</span>
@@ -158,6 +173,8 @@ export function renderHeaderTab(container) {
     e => setHeaderDefault({ fontWeight: e.target.checked ? 'bold' : 'normal' }));
   container.querySelector('#hdr-def-italic')?.addEventListener('change',
     e => setHeaderDefault({ fontStyle: e.target.checked ? 'italic' : 'normal' }));
+  container.querySelector('#hdr-step-num-per-chapter')?.addEventListener('change',
+    e => setHeaderStepNumberPerChapter(e.target.checked));
 
   // ─── Per-row delegation ────────────────────────────────────────────────
   // Buttons (eye / up / down / delete / align L|C|R) all handled here.

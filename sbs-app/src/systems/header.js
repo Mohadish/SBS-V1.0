@@ -130,8 +130,16 @@ export function buildRenderContext() {
   const visible  = allSteps.filter(s => !s.hidden && !s.isBaseStep);
   const chapters = state.get('chapters') || [];
   const activeId = state.get('activeStepId');
-  const stepIndex = visible.findIndex(s => s.id === activeId);
-  const step     = stepIndex >= 0 ? visible[stepIndex] : null;
+  const globalStepIndex = visible.findIndex(s => s.id === activeId);
+  const step     = globalStepIndex >= 0 ? visible[globalStepIndex] : null;
+  // Per-chapter step index (Step Number restarts at 1 each chapter)
+  // when the user has opted in via state.headerStepNumberPerChapter.
+  // Default false → global numbering (current behaviour).
+  let stepIndex = globalStepIndex;
+  if (state.get('headerStepNumberPerChapter') && step?.chapterId) {
+    const chapterSteps = visible.filter(s => s.chapterId === step.chapterId);
+    stepIndex = chapterSteps.findIndex(s => s.id === activeId);
+  }
   const chapterIndex = step?.chapterId
     ? chapters.findIndex(c => c.id === step.chapterId)
     : -1;
@@ -201,6 +209,16 @@ export function setHeadersHidden(hidden) {
 /** Lock toggle — when locked, canvas-level interaction (drag/resize) is off. */
 export function setHeadersLocked(locked) {
   state.setState({ headersLocked: !!locked });
+  state.markDirty();
+}
+
+/**
+ * Toggle per-chapter step numbering. When true, "Step Number" headers
+ * restart at 1 in each chapter; when false they count globally across
+ * all visible steps. Render listens via change:headerStepNumberPerChapter.
+ */
+export function setHeaderStepNumberPerChapter(on) {
+  state.setState({ headerStepNumberPerChapter: !!on });
   state.markDirty();
 }
 
@@ -289,6 +307,7 @@ export function initHeaderLayer(stage) {
   state.on('change:headersHidden',  refreshHeaderLayer);
   state.on('change:headersLocked',  refreshHeaderLayer);
   state.on('change:headerDefault',  refreshHeaderLayer);   // P4a: items in default mode pick up new styling
+  state.on('change:headerStepNumberPerChapter', refreshHeaderLayer);   // restart-per-chapter toggle
   state.on('change:styleTemplates', refreshHeaderLayer);   // P4b: items bound to a template re-render on template list change
   state.on('styleTemplate:updated', refreshHeaderLayer);   // P4b: header items bound to that template update too
   state.on('styleTemplate:removed', refreshHeaderLayer);   // P4b: items bound to a removed template fall back to default

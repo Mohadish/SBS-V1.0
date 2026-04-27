@@ -109,6 +109,7 @@ export function serialize() {
   project.headers.locked  = !!state.get('headersLocked');
   project.headers.hidden  = !!state.get('headersHidden');
   project.headers.default = JSON.parse(JSON.stringify(state.get('headerDefault') || {}));
+  project.headers.stepNumberPerChapter = !!state.get('headerStepNumberPerChapter');
 
   // Text style templates — same shape as header items, lives in its
   // own project section so it can be saved/loaded independently and
@@ -476,6 +477,7 @@ export function applyProjectToState(project) {
     // P4: project-level default styling. Falls back to current state default
     // when missing (so older .sbsproj files without this field load cleanly).
     headerDefault:        project.headers?.default           || state.get('headerDefault'),
+    headerStepNumberPerChapter: !!project.headers?.stepNumberPerChapter,
     styleTemplates:       project.styles?.items              || [],
   });
 
