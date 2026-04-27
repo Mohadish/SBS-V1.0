@@ -188,29 +188,61 @@ function _execFontSizeOnSelection(px) {
   if (!sel || sel.rangeCount === 0) return;
   const range = sel.getRangeAt(0);
   if (range.collapsed) return;   // no selection, can't apply size to nothing
-  const span = document.createElement('span');
-  span.style.fontSize = `${px}px`;
-  try {
-    span.appendChild(range.extractContents());
-    // Reset every nested font-size — only our outer span declares one
-    // now, so the line height tracks the new size cleanly.
-    span.querySelectorAll('[style]').forEach(el => { el.style.fontSize = ''; });
-    range.insertNode(span);
 
-    // CRITICAL cleanup: extractContents pulls a text node out of its
-    // wrapping span but LEAVES THE EMPTY SPAN behind. That empty span
-    // still declares the OLD font-size, and the line's height is the
-    // max font-size of every span in the line — including empty ones.
-    // So shrinking text from 40 → 20 looked like text shrunk but the
-    // gap above it stayed at 40's line height. Walk the containing
-    // block and clean up:
-    //   • drop empty inline elements (span/b/i/u/s/strong/em/font) that
-    //     have no visible text and no embedded media
-    //   • strip explicit line-height declarations from every element
-    //     and the block itself — Chromium sometimes writes an inline
-    //     line-height:Npx alongside a font-size change, and an
-    //     absolute line-height stays put even after the font shrinks
-    let block = span;
+  try {
+    // Extract the selection so we can rebuild it freely.
+    const fragment = range.extractContents();
+    const tmp = document.createElement('div');
+    tmp.appendChild(fragment);
+
+    // 1. Strip font-size + line-height from every element in the
+    //    extracted fragment. The new declarations all live on the
+    //    fresh per-text-node spans we add below.
+    tmp.querySelectorAll('[style]').forEach(el => {
+      el.style.fontSize   = '';
+      el.style.lineHeight = '';
+    });
+
+    // 2. Wrap every non-empty text node in a fresh
+    //    <span style="font-size:Npx">. CRITICAL: we wrap text nodes,
+    //    not the whole selection. The previous version wrapped
+    //    everything in a single <span>, which is invalid when the
+    //    selection contains block elements (browsers hoist the <div>
+    //    out of the <span> and leave the span hollow — the new
+    //    font-size never reaches the text). Walking text nodes guards
+    //    against any selection topology.
+    const walker = document.createTreeWalker(tmp, NodeFilter.SHOW_TEXT);
+    const textNodes = [];
+    let n;
+    while ((n = walker.nextNode())) if (n.textContent.length) textNodes.push(n);
+    for (const tn of textNodes) {
+      const wrap = document.createElement('span');
+      wrap.style.fontSize = `${px}px`;
+      tn.parentNode.insertBefore(wrap, tn);
+      wrap.appendChild(tn);
+    }
+
+    // 3. Re-insert the rewritten content at the original range. Track
+    //    the first / last inserted nodes so we can restore the
+    //    selection over them after cleanup.
+    const newFrag = document.createDocumentFragment();
+    let firstInserted = null, lastInserted = null;
+    while (tmp.firstChild) {
+      const node = tmp.firstChild;
+      if (!firstInserted) firstInserted = node;
+      lastInserted = node;
+      newFrag.appendChild(node);
+    }
+    range.insertNode(newFrag);
+
+    // 4. Cleanup pass over the containing block:
+    //    • drop empty leftover spans — extractContents emptied the
+    //      original style wrappers (e.g. <span size:40></span>) but
+    //      they still declared the old font-size and inflated line
+    //      height
+    //    • strip stale line-height declarations so the rasteriser's
+    //      line-height:1.2 multiplier recomputes from the new size
+    let block = lastInserted || firstInserted;
     while (block && block.parentElement && !/^(DIV|P|BODY)$/.test(block.tagName)) {
       block = block.parentElement;
     }
@@ -220,16 +252,18 @@ function _execFontSizeOnSelection(px) {
           el.remove();
         }
       });
-      // Strip stale line-height anywhere in the line — let CSS
-      // line-height:1.2 from the rasteriser's outer body recalculate
-      // from the new font size.
       if (block.style) block.style.lineHeight = '';
       block.querySelectorAll('[style]').forEach(el => { el.style.lineHeight = ''; });
     }
 
-    range.selectNodeContents(span);
-    sel.removeAllRanges();
-    sel.addRange(range);
+    // 5. Restore the selection over the rewritten content.
+    if (firstInserted && lastInserted && firstInserted.isConnected && lastInserted.isConnected) {
+      const newRange = document.createRange();
+      newRange.setStartBefore(firstInserted);
+      newRange.setEndAfter(lastInserted);
+      sel.removeAllRanges();
+      sel.addRange(newRange);
+    }
   } catch (err) { console.warn('[text-toolbar] fontSize wrap failed:', err); }
 }
 
