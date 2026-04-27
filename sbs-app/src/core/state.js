@@ -142,7 +142,13 @@ function createInitialState() {
 
     // ── Gizmo / transform
     activeMoveFolderId: null,
-    activeTransformMode: null,        // 'object' | 'pivot' | null
+    // Node currently in PIVOT EDIT mode (the RED state on the tree's
+    // pivot button). When set, the gizmo for that node sits at the
+    // pivot world pose with an orange dot at its hub, and gizmo drags
+    // write to pivotLocalOffset / pivotLocalQuaternion instead of
+    // moving the geometry. Cleared on viewport pointerdown anywhere
+    // outside the gizmo handles (RED → BLUE commit).
+    pivotEditNodeId: null,
 
     // ── Export settings
     // Suppress auto-play of step narration when navigating live in the app.

@@ -20,7 +20,8 @@ import { state }          from './core/state.js';
 import { sceneCore }      from './core/scene.js';
 import { steps }          from './systems/steps.js';
 import { materials }      from './systems/materials.js';
-import { setupUndoKeyboard, setSelection as actionSetSelection, clearSelection as actionClearSelection, resetTransform } from './systems/actions.js';
+import * as actions from './systems/actions.js';
+const { setupUndoKeyboard, setSelection: actionSetSelection, clearSelection: actionClearSelection, resetTransform } = actions;
 import { gizmo }           from './ui/gizmo.js';
 import { undoManager }    from './systems/undo.js';
 import { selectionActs }  from './systems/select-act.js';
@@ -229,6 +230,14 @@ canvas.addEventListener('pointerdown', e => {
     canvas.setPointerCapture(e.pointerId);
     _gizmoConsumed = true;
     return;
+  }
+
+  // P-P1: any viewport pointerdown OUTSIDE a gizmo handle while in
+  // pivot edit mode commits the edit (RED → BLUE per spec). Doesn't
+  // consume the event — selection / drag-select still proceeds normally
+  // (the user might click an object as a way to commit + select).
+  if (state.get('pivotEditNodeId')) {
+    actions.commitPivotEdit();
   }
 
   _dragStartX   = e.clientX;

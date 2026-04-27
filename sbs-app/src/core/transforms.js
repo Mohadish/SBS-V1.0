@@ -307,6 +307,124 @@ export function applyNodeTransformToObject3D(node, object3d, updateWorld = true)
   if (updateWorld) object3d.updateMatrixWorld(true);
 }
 
+// ═══════════════════════════════════════════════════════════════════════════
+//  PIVOT — virtual gizmo placement + rotation-around-pivot solver
+// ═══════════════════════════════════════════════════════════════════════════
+//
+// The pivot is purely virtual — `object3d.position` / `quaternion` NEVER
+// reflect it. We only use it to:
+//   1. position the gizmo (so the user sees a "rotate around here" anchor),
+//   2. back-solve `localOffset` when rotating, so the pivot's WORLD point
+//      stays fixed during the gesture (a door rotates around its hinge,
+//      not its origin).
+//
+// Cable code, raycasting, exports — all see the un-pivoted pose. Confirmed
+// in v0.266; intentional and preserved here.
+
+/**
+ * Rotate a vector [x,y,z] by a quaternion [x,y,z,w]. Returns a new array.
+ * Uses Three.js for the heavy lifting so we don't reimplement the formula
+ * (which we'd inevitably get wrong on edge cases).
+ */
+export function applyQuaternionToVector(q, v) {
+  const Q = new THREE.Quaternion(...normalizeQuaternion(q));
+  const V = new THREE.Vector3(...(v ?? [0, 0, 0]));
+  V.applyQuaternion(Q);
+  return [V.x, V.y, V.z];
+}
+
+/**
+ * World-space position of a node's pivot point. Returns a fresh
+ * THREE.Vector3 — caller can copy into the gizmo group.
+ *
+ * pivotLocalOffset is in OBJECT-LOCAL space; world pivot is the result
+ * of running it through obj3d.localToWorld().
+ */
+export function getPivotWorldPosition(node, object3d) {
+  ensureTransformDefaults(node);
+  const T = window.THREE;
+  const local = getAppliedPivotOffset(node);   // zeroes out when pivotEnabled=false
+  const v = new T.Vector3(local[0], local[1], local[2]);
+  if (object3d?.localToWorld) {
+    object3d.updateMatrixWorld?.(true);
+    object3d.localToWorld(v);
+  }
+  return v;
+}
+
+/**
+ * World-space orientation of the pivot frame = object's world quaternion *
+ * pivotLocalQuaternion. Used so the gizmo's axes align with the pivot
+ * frame, not the object frame, when in pivot mode.
+ */
+export function getPivotWorldQuaternion(node, object3d) {
+  ensureTransformDefaults(node);
+  const T = window.THREE;
+  const out = new T.Quaternion();
+  if (object3d?.getWorldQuaternion) {
+    object3d.updateMatrixWorld?.(true);
+    object3d.getWorldQuaternion(out);
+  }
+  const pivotQ = getAppliedPivotQuaternion(node);   // identity when disabled
+  out.multiply(new T.Quaternion(pivotQ[0], pivotQ[1], pivotQ[2], pivotQ[3]));
+  return out;
+}
+
+/**
+ * Set a node's stored delta quaternion AND back-solve localOffset so
+ * the pivot's WORLD point stays where it was BEFORE the rotation.
+ *
+ * Math (matches POC v0.266):
+ *   pivotInParent_pre = localPos + (pivot ⊗ totalQ_old)
+ *   newTotalQ        = baseQ * newDeltaQ
+ *   newLocalPos      = pivotInParent_pre - (pivot ⊗ newTotalQ)
+ *   localOffset      = newLocalPos - basePos
+ *
+ * Caller is still responsible for applyNodeTransformToObject3D() after.
+ *
+ * No-op when pivot is disabled or zero — falls through to plain
+ * setStoredQuaternion.
+ */
+export function setNodeLocalRotationPreservePivot(node, newDeltaQ) {
+  ensureTransformDefaults(node);
+  const pivot = getAppliedPivotOffset(node);
+  if (isNearZero(pivot)) {
+    // No effective pivot — plain rotation, position untouched.
+    setStoredQuaternion(node, newDeltaQ);
+    return;
+  }
+
+  // Capture pre-rotation pivot position in parent-local space.
+  const localPos      = getComputedLocalPosition(node);
+  const oldTotalQ     = getTotalLocalQuaternion(node);
+  const pivotPreRot   = applyQuaternionToVector(oldTotalQ, pivot);
+  const pivotInParent = [
+    localPos[0] + pivotPreRot[0],
+    localPos[1] + pivotPreRot[1],
+    localPos[2] + pivotPreRot[2],
+  ];
+
+  // Apply the new orientation, then back-solve localOffset.
+  const newDelta    = normalizeQuaternion(newDeltaQ);
+  const newTotalQ   = normalizeQuaternion(multiplyQuaternions(node.baseLocalQuaternion, newDelta));
+  const pivotPostRot = applyQuaternionToVector(newTotalQ, pivot);
+  const newLocalPos = [
+    pivotInParent[0] - pivotPostRot[0],
+    pivotInParent[1] - pivotPostRot[1],
+    pivotInParent[2] - pivotPostRot[2],
+  ];
+  const baseLocal = node.baseLocalPosition;
+  node.localOffset = [
+    newLocalPos[0] - baseLocal[0],
+    newLocalPos[1] - baseLocal[1],
+    newLocalPos[2] - baseLocal[2],
+  ];
+  setStoredQuaternion(node, newDelta);
+  node.moveEnabled   = true;
+  node.rotateEnabled = true;
+}
+
+
 /**
  * Apply transforms to all transform-capable nodes in the tree.
  * Pass a Map<nodeId, Object3D> that maps data nodes to their Three.js objects.

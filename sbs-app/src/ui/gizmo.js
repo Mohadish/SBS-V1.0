@@ -28,10 +28,14 @@
  */
 
 import { sceneCore }  from '../core/scene.js';
+import state          from '../core/state.js';
 import * as actions   from '../systems/actions.js';
 import steps          from '../systems/steps.js';
 import {
   applyNodeTransformToObject3D,
+  getPivotWorldPosition,
+  getPivotWorldQuaternion,
+  setNodeLocalRotationPreservePivot,
 } from '../core/transforms.js';
 
 // ── Constants ────────────────────────────────────────────────────────────────
@@ -188,6 +192,17 @@ class GizmoController {
       hit.userData._gEl = el;
       this._elements.push(el);
     }
+
+    // ── P-P1: pivot-edit indicator (orange dot at gizmo hub) ──────────────
+    // Visible only while in RED mode (state.pivotEditNodeId === active node).
+    // Sits at the gizmo's local origin so it lands on the pivot world point.
+    // Not raycastable — it's a status badge, not a draggable handle.
+    const dotGeo = new T.SphereGeometry(0.07, 16, 16);
+    const dotMat = new T.MeshBasicMaterial({ color: 0xff8c1a, depthTest: false });
+    const dot    = new T.Mesh(dotGeo, dotMat);
+    dot.visible  = false;
+    this._group.add(dot);
+    this._pivotDot = dot;
   }
 
   _orientAxis(obj, axis) {
@@ -285,18 +300,40 @@ class GizmoController {
   _tick() {
     if (!this._visible || !this._obj3d || !this._group) return;
     const T   = window.THREE;
+
+    // P-P1: pivot mode awareness.
+    //   GREY (pivotEnabled=false)   → gizmo at object world origin (default).
+    //   RED  (this node is in edit) → gizmo at pivot world pose; orange dot ON.
+    //   BLUE (pivotEnabled, no edit)→ gizmo at pivot world pose; orange dot OFF.
+    const node           = this._node;
+    const pivotEnabled   = node?.pivotEnabled === true;
+    const isPivotEditing = node && state.get('pivotEditNodeId') === node.id;
+    const usePivotPose   = pivotEnabled || isPivotEditing;
+
     const pos = new T.Vector3();
-    this._obj3d.getWorldPosition(pos);
+    if (usePivotPose) {
+      pos.copy(getPivotWorldPosition(node, this._obj3d));
+    } else {
+      this._obj3d.getWorldPosition(pos);
+    }
     this._group.position.copy(pos);
 
-    // Orient gizmo: local mode = parent's world orientation, world mode = identity
+    // Orient gizmo: local mode = parent's world orientation (or pivot's
+    // world orientation when in pivot mode), world mode = identity.
     if (this._spaceMode === 'local') {
-      const pq = this._parentWorldQuat();
-      if (pq) this._group.quaternion.copy(pq);
-      else    this._group.quaternion.identity();
+      if (usePivotPose) {
+        this._group.quaternion.copy(getPivotWorldQuaternion(node, this._obj3d));
+      } else {
+        const pq = this._parentWorldQuat();
+        if (pq) this._group.quaternion.copy(pq);
+        else    this._group.quaternion.identity();
+      }
     } else {
       this._group.quaternion.identity();
     }
+
+    // Orange dot at gizmo hub — only while editing the pivot.
+    if (this._pivotDot) this._pivotDot.visible = isPivotEditing;
 
     // Constant screen-space size
     const cam    = sceneCore.camera;
@@ -326,19 +363,30 @@ class GizmoController {
     this._dragEl   = el;
     this._setElColor(el, ACTIVE_COL);
 
-    if (this._node) actions.beginTransformEdit(this._node.id);
+    // P-P1: in pivot edit mode (RED) the parent enterPivotEdit/commitPivotEdit
+    // pair already brackets the undo session — skip beginTransformEdit so we
+    // don't push a redundant "Transform" entry during the gesture.
+    const inPivotEdit = !!this._node && state.get('pivotEditNodeId') === this._node.id;
+    if (this._node && !inPivotEdit) actions.beginTransformEdit(this._node.id);
 
     const T = window.THREE;
     const no = this._node;
-    this._startOffset = no?.localOffset     ? [...no.localOffset]     : [0, 0, 0];
-    this._startQuat   = no?.localQuaternion ? [...no.localQuaternion] : [0, 0, 0, 1];
+    this._startOffset      = no?.localOffset           ? [...no.localOffset]           : [0, 0, 0];
+    this._startQuat        = no?.localQuaternion       ? [...no.localQuaternion]       : [0, 0, 0, 1];
+    // Pivot start values for RED-mode drags (writes to pivot fields).
+    this._startPivotOffset = no?.pivotLocalOffset      ? [...no.pivotLocalOffset]      : [0, 0, 0];
+    this._startPivotQuat   = no?.pivotLocalQuaternion  ? [...no.pivotLocalQuaternion]  : [0, 0, 0, 1];
 
     const plane = this._getDragPlane(el);
     this._startWorld = this._worldPoint(clientX, clientY, plane);
 
     if (el.type === 'rotate' && this._startWorld) {
-      const center = new T.Vector3();
-      this._obj3d.getWorldPosition(center);
+      // Rotation centre depends on mode:
+      //   RED / BLUE pivot rotate → rotate around pivot world point
+      //   GREY                    → rotate around object origin
+      const center = (inPivotEdit || (no?.pivotEnabled === true))
+        ? getPivotWorldPosition(no, this._obj3d)
+        : new T.Vector3().copy(this._obj3d.getWorldPosition(new T.Vector3()));
       const rel = this._startWorld.clone().sub(center);
       this._startAngle = this._atan2ForAxisInSpace(rel, el.axis);
     }
@@ -355,7 +403,10 @@ class GizmoController {
   onPointerUp() {
     if (!this._dragging) return;
     this._dragging = false;
-    if (this._node) actions.commitTransformEdit(this._node.id);
+    // P-P1: skip commitTransformEdit while in pivot edit — the
+    // pivot session covers undo for the whole RED→BLUE gesture.
+    const inPivotEdit = !!this._node && state.get('pivotEditNodeId') === this._node.id;
+    if (this._node && !inPivotEdit) actions.commitTransformEdit(this._node.id);
     if (this._dragEl) {
       this._setElColor(this._dragEl, this._dragEl.baseColor);
       this._dragEl = null;
@@ -388,8 +439,79 @@ class GizmoController {
     const curr  = this._worldPoint(clientX, clientY, plane);
     if (!curr || !this._startWorld) return;
 
+    // P-P1: three drag modes.
+    //   RED  (state.pivotEditNodeId === node.id)
+    //         → drag writes pivotLocalOffset / pivotLocalQuaternion;
+    //           geometry untouched, only the gizmo's pivot pose moves.
+    //   BLUE (no.pivotEnabled, not editing) + rotate
+    //         → use setNodeLocalRotationPreservePivot so the pivot world
+    //           point stays fixed while the geometry orbits around it.
+    //   else → original behaviour (write localOffset / localQuaternion).
+    const inPivotEdit  = state.get('pivotEditNodeId') === no.id;
+    const pivotEnabled = no.pivotEnabled === true;
+
+    if (inPivotEdit && el.type === 'translate') {
+      // Pivot is in OBJECT-LOCAL space; convert world delta via inverse
+      // object world quaternion.
+      const delta   = curr.clone().sub(this._startWorld);
+      const axVec   = this._axisVec(el.axis);
+      const amount  = delta.dot(axVec);
+      const worldD  = axVec.clone().multiplyScalar(amount);
+      const localD  = this._worldToObjectLocalDelta(worldD);
+      no.pivotLocalOffset = [
+        this._startPivotOffset[0] + localD.x,
+        this._startPivotOffset[1] + localD.y,
+        this._startPivotOffset[2] + localD.z,
+      ];
+      no.pivotEnabled = true;
+      // Geometry doesn't move — but the gizmo position needs an update.
+      this._tick();
+      return;
+    }
+
+    if (inPivotEdit && el.type === 'plane') {
+      const delta   = curr.clone().sub(this._startWorld);
+      const [a, b]  = el.axis.split('');
+      const axA     = this._axisVec(a);
+      const axB     = this._axisVec(b);
+      const worldD  = axA.clone().multiplyScalar(delta.dot(axA))
+                        .add(axB.clone().multiplyScalar(delta.dot(axB)));
+      const localD  = this._worldToObjectLocalDelta(worldD);
+      no.pivotLocalOffset = [
+        this._startPivotOffset[0] + localD.x,
+        this._startPivotOffset[1] + localD.y,
+        this._startPivotOffset[2] + localD.z,
+      ];
+      no.pivotEnabled = true;
+      this._tick();
+      return;
+    }
+
+    if (inPivotEdit && el.type === 'rotate') {
+      // Rotate the pivot's local frame around its OWN axis (gizmo is at
+      // pivot world pose, so axis 'x'/'y'/'z' = pivot's local x/y/z).
+      const center = getPivotWorldPosition(no, this._obj3d);
+      const rel       = curr.clone().sub(center);
+      const currAngle = this._atan2ForAxisInSpace(rel, el.axis);
+      const rawDelta  = currAngle - this._startAngle;
+      const angle     = (el.axis === 'x' || el.axis === 'y') ? -rawDelta : rawDelta;
+      const localAxis = el.axis === 'x' ? new T.Vector3(1, 0, 0)
+                      : el.axis === 'y' ? new T.Vector3(0, 1, 0)
+                                        : new T.Vector3(0, 0, 1);
+      const deltaQ = new T.Quaternion().setFromAxisAngle(localAxis, angle);
+      const startQ = new T.Quaternion(
+        this._startPivotQuat[0], this._startPivotQuat[1], this._startPivotQuat[2], this._startPivotQuat[3],
+      );
+      const newQ = startQ.clone().multiply(deltaQ);
+      no.pivotLocalQuaternion = [newQ.x, newQ.y, newQ.z, newQ.w];
+      no.pivotEnabled = true;
+      this._tick();
+      return;
+    }
+
+    // ── Non-pivot-edit paths (default + BLUE rotate) ──────────────────────
+
     if (el.type === 'translate') {
-      // Project world delta onto the drag axis, then convert to parent-local space.
       const delta   = curr.clone().sub(this._startWorld);
       const axVec   = this._axisVec(el.axis);
       const amount  = delta.dot(axVec);
@@ -403,7 +525,6 @@ class GizmoController {
       no.moveEnabled = true;
 
     } else if (el.type === 'plane') {
-      // Project world delta onto both plane axes, sum, convert to parent-local.
       const delta   = curr.clone().sub(this._startWorld);
       const [a, b]  = el.axis.split('');
       const axA     = this._axisVec(a);
@@ -419,25 +540,46 @@ class GizmoController {
       no.moveEnabled = true;
 
     } else if (el.type === 'rotate') {
-      const center = new T.Vector3();
-      this._obj3d.getWorldPosition(center);
+      // Rotation centre: pivot in BLUE mode, object origin otherwise.
+      const center = pivotEnabled
+        ? getPivotWorldPosition(no, this._obj3d)
+        : new T.Vector3().copy(this._obj3d.getWorldPosition(new T.Vector3()));
       const rel       = curr.clone().sub(center);
       const currAngle = this._atan2ForAxisInSpace(rel, el.axis);
-      // X and Y axes need delta inverted (right-hand rule vs screen drag direction)
       const rawDelta  = currAngle - this._startAngle;
       const delta     = (el.axis === 'x' || el.axis === 'y') ? -rawDelta : rawDelta;
-      // Rotation axis in parent-local space (depends on space mode)
       const rotAxis   = this._rotAxisLocal(el.axis);
       const deltaQ    = new T.Quaternion().setFromAxisAngle(rotAxis, delta);
       const baseQ     = new T.Quaternion(this._startQuat[0], this._startQuat[1], this._startQuat[2], this._startQuat[3]);
       const newQ      = deltaQ.multiply(baseQ);
-      no.localQuaternion = [newQ.x, newQ.y, newQ.z, newQ.w];
-      no.rotateEnabled   = true;
+
+      if (pivotEnabled) {
+        // BLUE rotate — back-solve localOffset so pivot world stays fixed.
+        // setNodeLocalRotationPreservePivot writes BOTH localQuaternion and
+        // localOffset on the node, so we don't touch them ourselves.
+        setNodeLocalRotationPreservePivot(no, [newQ.x, newQ.y, newQ.z, newQ.w]);
+      } else {
+        no.localQuaternion = [newQ.x, newQ.y, newQ.z, newQ.w];
+        no.rotateEnabled   = true;
+      }
     }
 
     applyNodeTransformToObject3D(no, this._obj3d, true);
     steps.scheduleSync();
     this._tick();
+  }
+
+  /**
+   * World-delta → OBJECT-LOCAL delta (used when writing pivot offset,
+   * which is stored in object-local space). Different from
+   * _worldToLocalDelta which targets PARENT-local for localOffset.
+   */
+  _worldToObjectLocalDelta(worldDelta) {
+    const T = window.THREE;
+    if (!this._obj3d) return worldDelta.clone();
+    const oq = new T.Quaternion();
+    this._obj3d.getWorldQuaternion(oq);
+    return worldDelta.clone().applyQuaternion(oq.invert());
   }
 
   // ── Space helpers ─────────────────────────────────────────────────────────
@@ -456,8 +598,10 @@ class GizmoController {
 
   /**
    * Return the axis vector for 'x'|'y'|'z' in WORLD space.
-   * In 'local' mode: rotate the local axis by the parent's world quaternion,
-   * so the gizmo axis aligns with the parent's local orientation.
+   * In 'local' mode: rotate the local axis by the GIZMO'S reference
+   * world quaternion — that's the pivot's frame in pivot mode (RED or
+   * BLUE), parent's frame otherwise. Keeps gizmo handles aligned with
+   * what the user sees.
    * In 'world' mode: return the world-aligned unit vector.
    */
   _axisVec(axis) {
@@ -468,10 +612,23 @@ class GizmoController {
     else                   v = new T.Vector3(0, 0, 1);
 
     if (this._spaceMode === 'local') {
-      const pq = this._parentWorldQuat();
-      if (pq) v.applyQuaternion(pq);
+      const refQ = this._gizmoReferenceQuat();
+      if (refQ) v.applyQuaternion(refQ);
     }
     return v;
+  }
+
+  /**
+   * The gizmo's current reference world quaternion. Drives _axisVec +
+   * the orientation set in _tick. RED / BLUE mode → pivot world quat;
+   * GREY → parent world quat.
+   */
+  _gizmoReferenceQuat() {
+    if (!this._node || !this._obj3d) return this._parentWorldQuat();
+    const inPivotMode = this._node.pivotEnabled === true
+      || state.get('pivotEditNodeId') === this._node.id;
+    if (inPivotMode) return getPivotWorldQuaternion(this._node, this._obj3d);
+    return this._parentWorldQuat();
   }
 
   /**

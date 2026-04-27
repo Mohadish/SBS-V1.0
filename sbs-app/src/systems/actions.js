@@ -395,6 +395,13 @@ export function toggleVisibility(nodeIds) {
  * If the snapshot was evicted when undo fires, it silently skips (returns false).
  */
 export function setSelection(primaryId, multiIds) {
+  // P-P1: any selection change implicitly commits an open pivot edit.
+  // The user clicked a tree row / right-clicked something / etc — same
+  // semantics as clicking in the viewport. Skip if selecting the same
+  // node that's being edited (no real change in focus).
+  const editingId = state.get('pivotEditNodeId');
+  if (editingId && editingId !== primaryId) commitPivotEdit();
+
   const prevId    = state.get('selectedId');
   const prevMulti = new Set(state.get('multiSelectedIds') ?? []);
 
@@ -594,6 +601,148 @@ export function resetTransformField(nodeId, field) {
     },
   );
 }
+
+
+// ═══════════════════════════════════════════════════════════════════════════
+//  PIVOT ACTIONS  (3-state: GREY ↔ RED ↔ BLUE — see ui/tree.js + ui/gizmo.js)
+// ═══════════════════════════════════════════════════════════════════════════
+//
+// State machine recap:
+//   GREY  : pivotEnabled=false. Gizmo at object origin. Default.
+//   RED   : pivotEnabled=true AND state.pivotEditNodeId === node.id.
+//           Orange dot at gizmo hub. Drag MOVES the pivot data
+//           (pivotLocalOffset / pivotLocalQuaternion) — geometry
+//           untouched. Commit on viewport pointerdown anywhere
+//           outside a gizmo handle.
+//   BLUE  : pivotEnabled=true AND not editing. Gizmo at pivot pose.
+//           Drag rotation routes through setNodeLocalRotationPreservePivot
+//           so the pivot world point stays fixed.
+//
+// Transitions:
+//   GREY click  → enterPivotEdit (RED)
+//   RED  commit → commitPivotEdit (BLUE) [from viewport pointerdown]
+//   RED  click  → cancelPivotEdit (GREY or BLUE depending on seed)
+//   BLUE click  → setPivotEnabled(false) (GREY, data preserved)
+//   GREY click again → enterPivotEdit re-using stored data (RED)
+//
+// Undo: the whole RED → BLUE editing session is ONE entry "Edit pivot"
+// captured via the standard {begin, capture, commit} pattern used by
+// transform / preset edits. Cancel discards the entry.
+
+let _pivotBatch = null;
+
+/**
+ * GREY → RED. Enable pivot, mark this node as the editing target,
+ * snapshot for undo. Idempotent — calling on an already-editing node
+ * is a no-op.
+ */
+export function enterPivotEdit(nodeId) {
+  if (!nodeId) return;
+  if (state.get('pivotEditNodeId') === nodeId) return;
+  // If a different node was being edited, commit that one first so
+  // we never have two open edit sessions.
+  if (state.get('pivotEditNodeId')) commitPivotEdit();
+
+  const nodeById = state.get('nodeById');
+  const node = nodeById?.get(nodeId);
+  if (!node) return;
+
+  _pivotBatch = { nodeId, from: captureTransformSnapshot(node) };
+  node.pivotEnabled = true;
+  state.setState({ pivotEditNodeId: nodeId });
+  steps.scheduleTransformSync();
+}
+
+/**
+ * RED → BLUE. Close the edit session, push ONE undo entry covering
+ * the whole pivot adjustment. Called from main.js on viewport
+ * pointerdown anywhere outside the gizmo handles.
+ */
+export function commitPivotEdit() {
+  if (!_pivotBatch) return;
+  const { nodeId, from } = _pivotBatch;
+  _pivotBatch = null;
+  state.setState({ pivotEditNodeId: null });
+
+  const node = state.get('nodeById')?.get(nodeId);
+  if (!node) return;
+  const to = captureTransformSnapshot(node);
+  if (JSON.stringify(from) === JSON.stringify(to)) return;
+
+  undoManager.push('Edit pivot',
+    () => {
+      const n = state.get('nodeById')?.get(nodeId); if (!n) return;
+      applyTransformSnapshot(n, from);
+      const o = steps.object3dById?.get(nodeId);
+      if (o) applyNodeTransformToObject3D(n, o);
+      steps.scheduleTransformSync();
+    },
+    () => {
+      const n = state.get('nodeById')?.get(nodeId); if (!n) return;
+      applyTransformSnapshot(n, to);
+      const o = steps.object3dById?.get(nodeId);
+      if (o) applyNodeTransformToObject3D(n, o);
+      steps.scheduleTransformSync();
+    },
+  );
+  steps.scheduleTransformSync();
+}
+
+/**
+ * RED → GREY/BLUE. Roll back to the snapshot captured at
+ * enterPivotEdit, clear the edit flag. The visual landing state
+ * depends on the seed: if pivotEnabled was true at enter time
+ * (re-entering an existing pivot), the node lands BLUE again; if
+ * false (first-time enter from GREY), it lands GREY.
+ */
+export function cancelPivotEdit() {
+  if (!_pivotBatch) return;
+  const { nodeId, from } = _pivotBatch;
+  _pivotBatch = null;
+  state.setState({ pivotEditNodeId: null });
+
+  const node = state.get('nodeById')?.get(nodeId);
+  if (!node) return;
+  applyTransformSnapshot(node, from);
+  const obj3d = steps.object3dById?.get(nodeId);
+  if (obj3d) applyNodeTransformToObject3D(node, obj3d);
+  steps.scheduleTransformSync();
+}
+
+/**
+ * BLUE → GREY (when on=false) or GREY → BLUE (when on=true, with
+ * stored pivot data). Toggles pivotEnabled with an undo entry.
+ * Pivot data is preserved either direction.
+ */
+export function setPivotEnabled(nodeId, on) {
+  const node = state.get('nodeById')?.get(nodeId);
+  if (!node) return;
+  const prev = node.pivotEnabled !== false;
+  const next = !!on;
+  if (prev === next) return;
+  node.pivotEnabled = next;
+  const obj3d = steps.object3dById?.get(nodeId);
+  if (obj3d) applyNodeTransformToObject3D(node, obj3d);
+  steps.scheduleTransformSync();
+  undoManager.push(
+    next ? 'Enable pivot' : 'Disable pivot',
+    () => {
+      const n = state.get('nodeById')?.get(nodeId); if (!n) return;
+      n.pivotEnabled = prev;
+      const o = steps.object3dById?.get(nodeId); if (o) applyNodeTransformToObject3D(n, o);
+      steps.scheduleTransformSync();
+    },
+    () => {
+      const n = state.get('nodeById')?.get(nodeId); if (!n) return;
+      n.pivotEnabled = next;
+      const o = steps.object3dById?.get(nodeId); if (o) applyNodeTransformToObject3D(n, o);
+      steps.scheduleTransformSync();
+    },
+  );
+}
+
+/** Whether a pivot edit session is currently open. */
+export function isPivotEditing() { return _pivotBatch !== null; }
 
 
 // ═══════════════════════════════════════════════════════════════════════════

@@ -57,6 +57,9 @@ export function initTree(containerEl) {
   state.on('change:treeData', () => { _syncExpanded(); renderTree(); });
   state.on('selection:change', () => { _syncExpanded(); renderTree(); });
   state.on('change:activeStepId', () => renderTree());
+  // P-P1: pivot button color reflects active edit. Re-render when the
+  // edit session opens / closes so the button repaints in real time.
+  state.on('change:pivotEditNodeId', () => renderTree());
 
   renderTree();
 }
@@ -206,7 +209,7 @@ function _buildRow(node, depth) {
   if (isTransformNode(node)) {
     transformGroup.append(
       _mkTransformBtn('✥', 'Move',   'moveEnabled',   node),
-      _mkTransformBtn('◎', 'Pivot',  'pivotEnabled',  node),
+      _mkPivotBtn(node),
       _mkTransformBtn('⟳', 'Rotate', 'rotateEnabled', node),
     );
   }
@@ -280,6 +283,55 @@ function _mkTransformBtn(icon, title, flagKey, node) {
     e.preventDefault();
     if (!hasData) return;  // grey — inert
     actions.toggleTransformEnabled(node.id, flagKey);
+    renderTree();
+  });
+  return btn;
+}
+
+/**
+ * P-P1: pivot button — separate semantics from move/rotate.
+ *   GREY — pivotEnabled=false. Click → enterPivotEdit (RED).
+ *   RED  — this node currently in edit mode. Click → cancelPivotEdit
+ *          (rolls back; lands GREY or BLUE depending on seed).
+ *   BLUE — pivotEnabled=true, not editing. Click → setPivotEnabled(false)
+ *          (lands GREY; pivot offset/quat data preserved for re-activation).
+ *
+ * The button is ALWAYS clickable (no inert grey) — that's the entry
+ * point into pivot editing. Color follows the active state machine.
+ */
+function _mkPivotBtn(node) {
+  const isEditing = state.get('pivotEditNodeId') === node.id;
+  const enabled   = node.pivotEnabled === true;
+  const btnState  = isEditing ? 'red' : enabled ? 'blue' : 'grey';
+
+  const COLOR = { grey: '#6b7280', red: '#ef4444', blue: '#3b82f6' };
+  const TIPS  = {
+    grey: 'Pivot: at home (click to relocate)',
+    red:  'Pivot: editing — click viewport to commit, click here to cancel',
+    blue: 'Pivot: relocated (click to send home — data preserved)',
+  };
+
+  const btn = document.createElement('button');
+  btn.className   = 'moveBtn';
+  btn.textContent = '◎';
+  btn.title       = TIPS[btnState];
+  btn.style.color = COLOR[btnState];
+  btn.style.opacity = '1';
+  btn.style.cursor  = 'pointer';
+
+  btn.addEventListener('click', e => {
+    e.stopPropagation();
+    e.preventDefault();
+    if (btnState === 'grey') {
+      // GREY → RED: enable pivot + start edit session.
+      actions.enterPivotEdit(node.id);
+    } else if (btnState === 'red') {
+      // RED click on the button = cancel (revert to seed).
+      actions.cancelPivotEdit();
+    } else {
+      // BLUE → GREY: disable pivot, data preserved.
+      actions.setPivotEnabled(node.id, false);
+    }
     renderTree();
   });
   return btn;
