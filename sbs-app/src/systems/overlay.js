@@ -22,6 +22,7 @@ import { getTextToolbarSlot }  from '../ui/overlay-toolbar.js';
 import * as textEngine from './text-engine.js';
 import { getStyleTemplate, listStyleTemplates } from './style-templates.js';
 import { registerLayer, getLayerSelection, persistNodeIfHeader } from './cross-layer.js';
+import * as editSession from './edit-session.js';   // P7-A: in-session local undo + commit-time main-undo entry
 
 let _stage       = null;   // Konva.Stage
 let _layer       = null;   // Konva.Layer — holds all user content
@@ -256,6 +257,9 @@ function _overlayEditorCtx(node) {
     onSave:        _scheduleSave,
     getStyleId:    () => node.getAttr('styleId') || '',
     setStyleId:    (id) => {
+      // P7-A: snapshot before style binding changes so the toolbar
+      // dropdown is undoable inside the same session as B/I/U/etc.
+      editSession.record();
       node.setAttr('styleId', id || null);
       _reflowTextBox(node).catch(() => {});
       _scheduleSave();
@@ -392,10 +396,38 @@ function _enterTextEdit(node, ctxOverride) {
   setTimeout(() => document.addEventListener('mousedown', onDocMouseDown, true), 0);
 
   // Esc cancels (no save); Enter inserts a newline (browser default).
+  // Ctrl+Z / Ctrl+Y route to the local edit-session stack first — if a
+  // toolbar / engine op was the last thing, undoLocal() pops it and
+  // we preventDefault. If the local stack is empty (only typing has
+  // happened since the last toolbar op), we DON'T preventDefault so
+  // the browser's native contenteditable undo handles the keystrokes.
+  // This gives the user fine-grained Ctrl-Z inside the editor without
+  // duplicating the browser's typing-undo machinery.
   const onKeyDown = (e) => {
     if (e.key === 'Escape') {
       e.preventDefault();
       _exitTextEdit({ discard: true });
+      return;
+    }
+    const mod = e.ctrlKey || e.metaKey;
+    if (mod && !e.shiftKey && e.key === 'z') {
+      if (editSession.canUndoLocal()) {
+        e.preventDefault();
+        e.stopPropagation();
+        editSession.undoLocal();
+        // Toolbar mirrors the post-undo caret styling.
+        setToolbarValues(_readStyleAtCaret(div));
+      }
+      return;
+    }
+    if (mod && (e.key === 'y' || (e.shiftKey && e.key === 'Z'))) {
+      if (editSession.canRedoLocal()) {
+        e.preventDefault();
+        e.stopPropagation();
+        editSession.redoLocal();
+        setToolbarValues(_readStyleAtCaret(div));
+      }
+      return;
     }
   };
   div.addEventListener('keydown', onKeyDown);
@@ -471,6 +503,42 @@ function _enterTextEdit(node, ctxOverride) {
   onSelectionChange();   // initial sync
 
   _activeTextEditor = { node, div, onDocMouseDown, onKeyDown, onPaste, prevOpacity, onSelectionChange, ctx };
+
+  // P7-A: open an edit session so toolbar / engine ops can be undone
+  // locally (Ctrl-Z inside the editor) and the WHOLE session collapses
+  // into a SINGLE main-undo entry on commit. Snapshot captures editor
+  // HTML + node attrs we care about (fillColor for textbox bg, styleId
+  // for template binding). restoreLocal works on the LIVE editor div;
+  // restoreCommitted works on the BAKED Konva.Image after click-out.
+  editSession.begin({
+    label: 'Edit text',
+    snapshot: () => ({
+      html:      div.innerHTML,
+      fillColor: node.getAttr('fillColor') ?? null,
+      styleId:   node.getAttr('styleId')   ?? null,
+    }),
+    restoreLocal: (snap) => {
+      // Editor still mounted — write to the contenteditable + node attrs.
+      // The visible textbox stays opacity:0 so the editor is what the
+      // user sees; restoring node attrs is for the on-commit raster.
+      div.innerHTML = snap.html;
+      node.setAttr('fillColor', snap.fillColor);
+      node.setAttr('styleId',   snap.styleId);
+      div.style.backgroundColor = snap.fillColor || 'rgba(15,23,42,0.55)';
+    },
+    restoreCommitted: async (snap) => {
+      // Editor already torn down — operate on the Konva.Image directly.
+      // Skip if the node was destroyed (step change, deletion). Returning
+      // false from undoManager's command tells it to drop this entry from
+      // the redo path rather than spin on a dead reference.
+      if (!node || node.isDestroyed?.()) return false;
+      node.setAttr('textHtml',  snap.html);
+      node.setAttr('fillColor', snap.fillColor);
+      node.setAttr('styleId',   snap.styleId);
+      await _reflowTextBox(node);
+      _scheduleSave();
+    },
+  });
 }
 
 /** Close the in-place editor, re-rasterise on the way out (unless discard). */
@@ -494,6 +562,14 @@ async function _exitTextEdit(opts = {}) {
     try { await ctx.onCommit?.(html); }
     catch (e) { console.warn('[text-editor] commit failed', e); }
   }
+
+  // P7-A: close the edit session.
+  //   discard → restoreLocal(seed) reverts node attrs (editor div is
+  //             still mounted at this point, so the snapshot is valid).
+  //   commit  → push ONE main-undo entry capturing the seed → final diff,
+  //             so the user can Ctrl-Z this whole edit later (outside
+  //             the editor) without seeing every B/I/U press individually.
+  editSession.end({ commit: !opts.discard });
 
   // Now swap visibility back. The new raster is in place, so removing
   // the editor reveals it instantly without an empty frame.
@@ -1102,6 +1178,11 @@ function _normaliseColor(s) {
  * doesn't touch either.
  */
 function _singleEditorApplier(action, value) {
+  // P7-A: snapshot the pre-op state so Ctrl-Z inside the editor can
+  // step back through toolbar / engine ops one at a time. record() is
+  // a no-op when no session is active, so it's safe to call
+  // unconditionally here.
+  editSession.record();
   if (action === 'fillColor') {
     if (!_activeTextEditor || !value) return;
     _activeTextEditor.node.setAttr('fillColor', value);
