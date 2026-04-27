@@ -80,8 +80,16 @@ export function initOverlay() {
   _resizeObs.observe(_container);
 
   // Restore the currently-active step's overlay on load / step change.
-  state.on('step:applied', _onStepApplied);
+  // CRITICAL ORDER: flush any pending save against the OUTGOING step
+  // FIRST (synchronous), then load the new step. Without the flush, a
+  // 120-ms-debounced edit can race past activeStepId — the timer fires
+  // reading the NEW id and either loses the edit or writes the wrong
+  // step. We capture _pendingSaveStepId at schedule time precisely so
+  // this flush can target the correct (outgoing) step regardless of
+  // when it actually fires.
+  state.on('change:activeStepId', _flushPendingSave);
   state.on('change:activeStepId', _scheduleLoad);
+  state.on('step:applied', _onStepApplied);
 
   // Live style-template propagation. When a template changes, every
   // text box on the ACTIVE step that's bound to it re-rasterises.
@@ -1067,24 +1075,74 @@ export function updateSelectedText(patch) {
 }
 
 // ─── Per-step persistence ──────────────────────────────────────────────────
+//
+// Edits debounce through _scheduleSave (120 ms) so rapid changes coalesce.
+// We capture the step id AT SCHEDULE TIME (`_pendingSaveStepId`) — the
+// timer fire might happen after the user has already switched to a
+// different step, and writing to `state.get('activeStepId')` at that
+// point would land the edit on the wrong step (or on a step whose
+// overlay has just been cleared by the load path).
+//
+// _flushPendingSave runs synchronously on `change:activeStepId` BEFORE
+// the load handler, so the OUTGOING step's pending edits are committed
+// against the still-loaded _stage content. After flush, the load can
+// safely destroy the layer and reinstate the new step.
+
+let _pendingSaveStepId = null;
 
 function _scheduleSave() {
+  if (!_pendingSaveStepId) _pendingSaveStepId = state.get('activeStepId');
   clearTimeout(_saveTimer);
-  _saveTimer = setTimeout(_saveToActiveStep, 120);
+  _saveTimer = setTimeout(_flushPendingSave, 120);
 }
 
-function _saveToActiveStep() {
+function _flushPendingSave() {
+  clearTimeout(_saveTimer);
   _saveTimer = null;
-  const activeId = state.get('activeStepId');
-  if (!activeId) return;
+  const stepId = _pendingSaveStepId;
+  _pendingSaveStepId = null;
+  if (stepId) _writeOverlayToStep(stepId);
+}
+
+function _writeOverlayToStep(stepId) {
+  if (!_stage || !stepId) return;
   const steps = state.get('steps') || [];
-  const step  = steps.find(s => s.id === activeId);
+  const step  = steps.find(s => s.id === stepId);
   if (!step) return;
-  const json = _stage ? _stage.toJSON() : null;
-  // Only write if changed — no churn on read-only step activations.
+  const json = _serialiseStageJson();
   if (step.overlay === json) return;
   step.overlay = json;
   state.markDirty();
+}
+
+/**
+ * Konva.Stage.toJSON serialises every node attr — including
+ * Konva.Image's `image`, which is an HTMLCanvasElement we built via
+ * _htmlToCanvas. JSON.stringify(canvas) returns "{}" (canvases have no
+ * enumerable own properties), so the saved spec carries `image: {}`.
+ *
+ * On restore, `new Konva.Image({ image: {} })` accepts the empty object
+ * and the next batchDraw passes it to ctx.drawImage — which throws
+ * "image argument is a canvas with width or height of 0" and corrupts
+ * subsequent draws on the layer ("works once then stops").
+ *
+ * The image is recoverable from `textHtml` (rasterise via _reflowTextBox)
+ * or `src` (re-load via _loadImage), so the serialised image attr is
+ * pure dead weight. Scrub it on the way out.
+ */
+function _serialiseStageJson() {
+  if (!_stage) return null;
+  let parsed;
+  try { parsed = JSON.parse(_stage.toJSON()); }
+  catch { return _stage.toJSON(); }
+  const stripImage = (children) => {
+    for (const c of children || []) {
+      if (c?.attrs && 'image' in c.attrs) delete c.attrs.image;
+      if (c?.children) stripImage(c.children);
+    }
+  };
+  stripImage(parsed?.children);
+  return JSON.stringify(parsed);
 }
 
 function _scheduleLoad() {
@@ -1133,7 +1191,13 @@ function _recreateNode(spec) {
   if (!spec) return null;
   if (spec.className === 'Text')  return new Konva.Text({ ...spec.attrs, draggable: true });
   if (spec.className === 'Image') {
-    const { src, textHtml, textWidth, naturalW, naturalH, fillColor, styleId, ...rest } = spec.attrs || {};
+    // `image` is stripped: Konva serialises HTMLCanvasElement / HTMLImageElement
+    // as `{}`, which fails the next draw with a 0×0 canvas error. We
+    // re-rasterise from textHtml or re-load from src below — never use
+    // the round-tripped image attr. _serialiseStageJson now scrubs it
+    // on save, but legacy projects may still carry it, so filter here too.
+    const { src, textHtml, textWidth, naturalW, naturalH, fillColor, styleId, image, ...rest } = spec.attrs || {};
+    void image;   // intentionally discarded
     const node = new Konva.Image({ ...rest, draggable: true });
     // Preserve any naturalW/naturalH that round-tripped through JSON; if
     // they're missing (older overlays predating the Reset feature), we
