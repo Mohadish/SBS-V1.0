@@ -89,12 +89,19 @@ export function initSidebarLeft() {
   });
   state.on('change:headersHidden',         () => { if (_activeTab === 'header')    _renderHeaderTabPanel(); });
   state.on('change:headersLocked',         () => { if (_activeTab === 'header')    _renderHeaderTabPanel(); });
+  state.on('change:headerDefault',         () => { if (_activeTab === 'header')    _renderHeaderTabPanel(); });
   state.on('change:styleTemplates',        () => {
     if (_activeTab === 'style')  _renderStyleTabPanel();
-    if (_activeTab === 'header') _renderHeaderTabPanel();   // Save button enable
+    if (_activeTab === 'header') _renderHeaderTabPanel();   // P4b: row dropdowns refresh + Save button enable
   });
-  state.on('styleTemplate:updated',        () => { if (_activeTab === 'style')     _renderStyleTabPanel(); });
-  state.on('styleTemplate:removed',        () => { if (_activeTab === 'style')     _renderStyleTabPanel(); });
+  state.on('styleTemplate:updated',        () => {
+    if (_activeTab === 'style')  _renderStyleTabPanel();
+    if (_activeTab === 'header') _renderHeaderTabPanel();   // P4b: dropdown option labels refresh on rename
+  });
+  state.on('styleTemplate:removed',        () => {
+    if (_activeTab === 'style')  _renderStyleTabPanel();
+    if (_activeTab === 'header') _renderHeaderTabPanel();   // P4b: drop the removed template's option
+  });
 
   _renderActiveTab();
 

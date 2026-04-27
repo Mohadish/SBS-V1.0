@@ -2,19 +2,28 @@
  * SBS — Header Tab
  * =================
  * Sidebar UI for the project-level header overlay.
+ *
  * Buttons create header items by kind:
- *   • New Header Text       → freeform editable text
- *   • Step Number / Step Name      → dynamic per-step text
- *   • Chapter Number / Chapter Name → dynamic per-chapter text
- *   • Header Image          → upload + place an image
+ *   • Header Text (custom)         — freeform editable text (canvas dblclick)
+ *   • Step Number / Step Name      — dynamic per-step text
+ *   • Chapter Number / Chapter Name — dynamic per-chapter text
+ *   • Header Image                 — upload + place an image
  *
- * Each item gets a row with:
- *   eye toggle (hide/show) · label · ↑↓ reorder · ✎ edit · 🗑 delete
+ * Per-item row layout (P4b):
+ *   eye · label · [Style ▼] · L · C · R · ↑ · ↓ · ✕
+ *   (style dropdown — Default | Custom* | <templates>; *grayed for non-custom)
  *
- * Selecting a row opens its editor below (font/color/align/position
- * for text, just position for images).
+ * Selecting a row opens its editor below — P4b strips the editor down
+ * to just position / size (x / y / w / h). Styling is fully driven by
+ * the row Style dropdown + the global Default Style panel + (for
+ * custom kind) double-clicking the canvas to enter the rich text
+ * editor.
  *
- * Top-level controls: Hide All, Lock, Save/Load setup.
+ * Top-level panels:
+ *   • Default Style — project-level default styling for every item
+ *     whose styleId is '' (default mode). Source of truth for headers
+ *     that haven't picked a template or been canvas-edited.
+ *   • Hide All / Lock / Save Setup / Load Setup
  */
 
 import { state }      from '../core/state.js';
@@ -28,10 +37,13 @@ import {
   setHeadersHidden,
   setHeadersLocked,
   setHeaderDefault,
+  setHeaderItemStyleId,
+  setHeaderItemAlign,
   selectHeader,
   exportHeaderSetup,
   importHeaderSetup,
 } from '../systems/header.js';
+import { listStyleTemplates } from '../systems/style-templates.js';
 
 const KIND_LABELS = {
   custom:        'Header Text',
@@ -83,10 +95,9 @@ export function renderHeaderTab(container) {
         <button class="btn" id="hdr-load-setup" title="Import a .sbsheader file (replaces header items and/or styles)">Load Setup</button>
       </div>
 
-      <!-- P4: project-level default styling. New header items inherit
-           these values; existing items keep their own per-item fields
-           (until explicitly reset). Dynamic kinds without a styleId
-           binding render with these as fallback. -->
+      <!-- P4b: project-level Default Style. Drives every header item
+           in 'default' mode (styleId === ''). Note: alignment is NOT
+           here — it's per-item, set by the L/C/R buttons in each row. -->
       <div class="card" style="margin-top:10px;padding:0;">
         <div class="title" style="padding:8px 10px;border-bottom:1px solid var(--line);">
           Default Style
@@ -98,21 +109,14 @@ export function renderHeaderTab(container) {
           <label class="colorlab">Color
             <input type="color" id="hdr-def-color" value="${_esc(def.color ?? '#ffffff')}" />
           </label>
-          <label class="colorlab">Align
-            <select id="hdr-def-align">
-              <option value="left"   ${def.align === 'left'   ? 'selected' : ''}>Left</option>
-              <option value="center" ${(def.align ?? 'center') === 'center' ? 'selected' : ''}>Center</option>
-              <option value="right"  ${def.align === 'right'  ? 'selected' : ''}>Right</option>
-            </select>
-          </label>
           <label class="colorlab" style="display:flex;align-items:center;gap:8px;">
             <input type="checkbox" id="hdr-def-bold"   ${def.fontWeight === 'bold'   ? 'checked' : ''} /> Bold
             <input type="checkbox" id="hdr-def-italic" ${def.fontStyle  === 'italic' ? 'checked' : ''} /> Italic
           </label>
         </div>
         <div class="small muted" style="padding:0 10px 10px;line-height:1.4;">
-          Affects new header items + dynamic kinds without a bound style.
-          Existing items keep their per-item overrides.
+          Drives every header item set to "Default" in the Style dropdown.
+          Items bound to a template or in Custom mode override this.
         </div>
       </div>
 
@@ -123,7 +127,7 @@ export function renderHeaderTab(container) {
         <div id="hdr-list">
           ${items.length === 0
             ? `<div class="small muted" style="padding:10px;">No header items yet — pick a + button above.</div>`
-            : items.map((it, i) => _renderItemRow(it, i, items.length)).join('')}
+            : items.map((it, i) => _renderItemRow(it, i, items.length, styles)).join('')}
         </div>
       </div>
 
@@ -145,23 +149,23 @@ export function renderHeaderTab(container) {
   container.querySelector('#hdr-save-setup')   .addEventListener('click', _onSaveSetup);
   container.querySelector('#hdr-load-setup')   .addEventListener('click', _onLoadSetup);
 
-  // ─── Default Style inputs ──────────────────────────────────────────────
-  // Each writes a single-key patch via setHeaderDefault. The render path
-  // listens to change:headerDefault and re-rasterises items that pick up
-  // a new value via the resolution chain (item field → default → fallback).
+  // ─── Default Style inputs (no align — that's per-item) ─────────────────
   container.querySelector('#hdr-def-font-size')?.addEventListener('change',
     e => setHeaderDefault({ fontSize: Math.max(8, Number(e.target.value) || 32) }));
   container.querySelector('#hdr-def-color')?.addEventListener('change',
     e => setHeaderDefault({ color: e.target.value }));
-  container.querySelector('#hdr-def-align')?.addEventListener('change',
-    e => setHeaderDefault({ align: e.target.value }));
   container.querySelector('#hdr-def-bold')?.addEventListener('change',
     e => setHeaderDefault({ fontWeight: e.target.checked ? 'bold' : 'normal' }));
   container.querySelector('#hdr-def-italic')?.addEventListener('change',
     e => setHeaderDefault({ fontStyle: e.target.checked ? 'italic' : 'normal' }));
 
   // ─── Per-row delegation ────────────────────────────────────────────────
-  container.querySelector('#hdr-list')?.addEventListener('click', e => {
+  // Buttons (eye / up / down / delete / align L|C|R) all handled here.
+  // The Style dropdown has its own change listener (delegated below
+  // via a direct querySelector loop because <select> change doesn't
+  // bubble through closest the way clicks do).
+  const list = container.querySelector('#hdr-list');
+  list?.addEventListener('click', e => {
     const row = e.target.closest('[data-hdr-id]');
     if (!row) return;
     const id  = row.dataset.hdrId;
@@ -169,6 +173,9 @@ export function renderHeaderTab(container) {
     if (act === 'toggle')      { toggleHeaderItemVisible(id); return; }
     if (act === 'up')          { reorderHeaderItem(id, -1); return; }
     if (act === 'down')        { reorderHeaderItem(id, +1); return; }
+    if (act === 'align-left')  { setHeaderItemAlign(id, 'left');   return; }
+    if (act === 'align-center'){ setHeaderItemAlign(id, 'center'); return; }
+    if (act === 'align-right') { setHeaderItemAlign(id, 'right');  return; }
     if (act === 'delete')      {
       if (confirm('Delete this header item?')) {
         removeHeaderItem(id);
@@ -176,31 +183,91 @@ export function renderHeaderTab(container) {
       }
       return;
     }
-    // Plain click → open editor + select on canvas.
+    // Plain click anywhere else on the row → open editor + select on canvas.
     _activeItemId = id;
     selectHeader(id);
     _renderEditor(container);
   });
 
+  // Style dropdown change listener — delegated per-row.
+  list?.querySelectorAll('select[data-hdr-style]').forEach(sel => {
+    sel.addEventListener('change', e => {
+      const id      = sel.dataset.hdrStyle;
+      const newId   = e.target.value;
+      setHeaderItemStyleId(id, newId);
+    });
+    // Stop a row click from firing when the user opens the dropdown.
+    sel.addEventListener('mousedown', e => e.stopPropagation());
+    sel.addEventListener('click',     e => e.stopPropagation());
+  });
+
   if (_activeItemId) _renderEditor(container);
 }
 
-function _renderItemRow(item, index, total) {
+function _renderItemRow(item, index, total, styles) {
   const label   = KIND_LABELS[item.kind] || item.kind;
   const eye     = item.visible ? '👁' : '·';
   const preview = _itemPreviewText(item);
+  const isText  = item.kind !== 'image';
+  const styleSel = isText ? _renderStyleSelect(item, styles) : '';
+  const alignBtns = isText ? _renderAlignButtons(item) : '';
   return `
     <div class="row" data-hdr-id="${_esc(item.id)}"
-         style="display:flex;align-items:center;gap:6px;padding:8px 10px;border-bottom:1px solid var(--line);cursor:pointer;${_activeItemId === item.id ? 'background:rgba(34,211,238,0.08);' : ''}">
+         style="display:flex;align-items:center;gap:4px;padding:8px 10px;border-bottom:1px solid var(--line);cursor:pointer;flex-wrap:wrap;${_activeItemId === item.id ? 'background:rgba(34,211,238,0.08);' : ''}">
       <button class="btn icon" data-hdr-act="toggle" title="Show / hide this item" style="width:28px;height:24px;padding:0;opacity:${item.visible ? 1 : 0.4};">${eye}</button>
-      <div style="flex:1;min-width:0;">
+      <div style="flex:1;min-width:120px;">
         <div class="small" style="font-weight:600;">${_esc(label)}</div>
         <div class="small muted" style="font-size:11px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">${_esc(preview)}</div>
       </div>
+      ${styleSel}
+      ${alignBtns}
       <button class="btn icon" data-hdr-act="up"   title="Move up"   style="width:24px;height:24px;padding:0;${index === 0 ? 'opacity:0.3;' : ''}">↑</button>
       <button class="btn icon" data-hdr-act="down" title="Move down" style="width:24px;height:24px;padding:0;${index === total - 1 ? 'opacity:0.3;' : ''}">↓</button>
       <button class="btn icon" data-hdr-act="delete" title="Delete" style="width:24px;height:24px;padding:0;color:#f87171;">✕</button>
     </div>
+  `;
+}
+
+/**
+ * Render the per-row Style dropdown. Options:
+ *   - Default                 (styleId === '')
+ *   - Custom                  (styleId === 'custom') — only enabled for
+ *                              kind === 'custom'; greyed for dynamic
+ *                              kinds since their text is auto-resolved
+ *                              and a frozen rich edit would conflict.
+ *   - <each style template>   (styleId === <template-id>)
+ *
+ * The selected option follows item.styleId. If the item is bound to a
+ * template that no longer exists, the dropdown shows "Default" (matching
+ * the render path's graceful fallback).
+ */
+function _renderStyleSelect(item, styles) {
+  const isCustomKind = item.kind === 'custom';
+  const sid          = item.styleId || '';
+  const tplExists    = sid && sid !== 'custom' && styles.some(t => t.id === sid);
+  const effective    = tplExists ? sid : (sid === 'custom' && isCustomKind ? 'custom' : '');
+  return `
+    <select class="btn" data-hdr-style="${_esc(item.id)}"
+            title="Style binding for this header"
+            style="height:24px;padding:0 4px;font-size:12px;min-width:90px;max-width:130px;">
+      <option value=""        ${effective === ''       ? 'selected' : ''}>Default</option>
+      <option value="custom"  ${effective === 'custom' ? 'selected' : ''}
+                              ${isCustomKind ? '' : 'disabled'}>Custom</option>
+      ${styles.map(t =>
+        `<option value="${_esc(t.id)}" ${effective === t.id ? 'selected' : ''}>${_esc(t.name || 'Untitled')}</option>`
+      ).join('')}
+    </select>
+  `;
+}
+
+/** Three-button L/C/R align block. Highlights the current value. */
+function _renderAlignButtons(item) {
+  const a = item.align || 'left';
+  const sty = (active) => `width:22px;height:24px;padding:0;font-size:11px;${active ? 'background:rgba(34,211,238,0.3);' : ''}`;
+  return `
+    <button class="btn icon" data-hdr-act="align-left"   title="Align left"   style="${sty(a === 'left')}">L</button>
+    <button class="btn icon" data-hdr-act="align-center" title="Align center" style="${sty(a === 'center')}">C</button>
+    <button class="btn icon" data-hdr-act="align-right"  title="Align right"  style="${sty(a === 'right')}">R</button>
   `;
 }
 
@@ -210,43 +277,35 @@ function _itemPreviewText(item) {
   return `(auto: ${KIND_LABELS[item.kind]})`;
 }
 
+/**
+ * Per-item editor — P4b strips this down to position / size only.
+ * Styling lives on the row (Style dropdown + L/C/R) and on the Default
+ * Style panel above the items list. Custom-kind items expose a Text
+ * field for the plain fallback text used in 'default' / template modes
+ * (when in 'custom' mode the textHtml from canvas-edit is shown
+ * instead, and this field becomes the fallback for switching back).
+ */
 function _renderEditor(container) {
   const host = container.querySelector('#hdr-editor');
   if (!host) return;
   const item = (state.get('headerItems') || []).find(it => it.id === _activeItemId);
   if (!item) { host.innerHTML = ''; return; }
 
-  const isText  = item.kind !== 'image';
-  const isFree  = item.kind === 'custom';
+  const isFree = item.kind === 'custom';
 
   host.innerHTML = `
     <div class="section">
       <div class="title">${_esc(KIND_LABELS[item.kind])}</div>
+
       ${isFree ? `
         <label class="colorlab" style="margin-top:8px;">Text
-          <input type="text" id="hdr-text" value="${_esc(item.text || '')}" />
+          <input type="text" id="hdr-text" value="${_esc(item.text || '')}"
+                 placeholder="Header text (used in Default / template modes)" />
         </label>
-      ` : ''}
-
-      ${isText ? `
-        <div class="grid2" style="margin-top:8px;">
-          <label class="colorlab">Font size
-            <input type="number" id="hdr-font-size" min="8" max="200" step="1" value="${item.fontSize || 32}" />
-          </label>
-          <label class="colorlab">Color
-            <input type="color" id="hdr-color" value="${_esc(item.color || '#ffffff')}" />
-          </label>
-          <label class="colorlab">Align
-            <select id="hdr-align">
-              <option value="left"   ${item.align === 'left'   ? 'selected' : ''}>Left</option>
-              <option value="center" ${item.align === 'center' ? 'selected' : ''}>Center</option>
-              <option value="right"  ${item.align === 'right'  ? 'selected' : ''}>Right</option>
-            </select>
-          </label>
-          <label class="colorlab" style="display:flex;align-items:center;gap:8px;">
-            <input type="checkbox" id="hdr-bold"   ${item.fontWeight === 'bold' ? 'checked' : ''} /> Bold
-            <input type="checkbox" id="hdr-italic" ${item.fontStyle  === 'italic' ? 'checked' : ''} /> Italic
-          </label>
+        <div class="small muted" style="margin-top:4px;line-height:1.4;">
+          Plain text shown in <em>Default</em> or template modes.
+          For rich styling, switch the row dropdown to <em>Custom</em>
+          and double-click the header on the canvas to edit.
         </div>
       ` : ''}
 
@@ -280,22 +339,13 @@ function _renderEditor(container) {
   const bind = (sel, key, transform = v => v) => {
     const el = host.querySelector(sel);
     if (!el) return;
-    el.addEventListener('input',  () => updateHeaderItem(item.id, { [key]: transform(el.value) }));
     el.addEventListener('change', () => updateHeaderItem(item.id, { [key]: transform(el.value) }));
   };
-  bind('#hdr-text',      'text');
-  bind('#hdr-font-size', 'fontSize',  v => Math.max(8, Number(v) || 32));
-  bind('#hdr-color',     'color');
-  bind('#hdr-align',     'align');
-  bind('#hdr-x',         'x', v => Number(v) || 0);
-  bind('#hdr-y',         'y', v => Number(v) || 0);
-  bind('#hdr-w',         'w', v => Math.max(20, Number(v) || 0));
-  bind('#hdr-h',         'h', v => Math.max(20, Number(v) || 0));
-
-  host.querySelector('#hdr-bold')  ?.addEventListener('change', e =>
-    updateHeaderItem(item.id, { fontWeight: e.target.checked ? 'bold' : 'normal' }));
-  host.querySelector('#hdr-italic')?.addEventListener('change', e =>
-    updateHeaderItem(item.id, { fontStyle:  e.target.checked ? 'italic' : 'normal' }));
+  bind('#hdr-text', 'text');
+  bind('#hdr-x',    'x', v => Number(v) || 0);
+  bind('#hdr-y',    'y', v => Number(v) || 0);
+  bind('#hdr-w',    'w', v => Math.max(20, Number(v) || 0));
+  bind('#hdr-h',    'h', v => Math.max(20, Number(v) || 0));
 
   host.querySelector('#hdr-replace-image')?.addEventListener('click', () => _replaceImage(item.id));
 }

@@ -51,16 +51,22 @@ import { state }            from '../core/state.js';
 import { generateId }       from '../core/schema.js';
 import { htmlToCanvas, enterTextEditor } from './overlay.js';   // P2/P3: shared rasteriser + editor
 import { registerLayer, getLayerSelection, scheduleOverlaySave } from './cross-layer.js';
+import { getStyleTemplate } from './style-templates.js';        // P4b: per-item style binding
 
 // ─── Pure data helpers (no DOM / Konva — usable from export, tests) ─────────
 
-/** Default values for a freshly-created header item of the given kind. */
+/**
+ * Default values for a freshly-created header item of the given kind.
+ *
+ * P4b: per-item styling fields (fontSize / color / fontWeight / fontStyle)
+ * are GONE. Styling now resolves through item.styleId:
+ *   - '' or undefined          → project-level headerDefault
+ *   - 'custom' (kind='custom')  → item.textHtml from canvas editor
+ *   - <template-id>             → bound style template
+ * Only `align` survives as a per-item field — driven by L/C/R buttons
+ * in the row, defaults to 'left'.
+ */
 export function makeHeaderItem(kind = 'custom', opts = {}) {
-  // P4: new items seed their styling fields from state.headerDefault so
-  // the project-level default actually controls fresh items. Existing
-  // items keep whatever fields they were saved with — those serve as
-  // explicit per-item overrides on top of the default.
-  const def = state.get('headerDefault') || {};
   const base = {
     id:         generateId('hdr'),
     kind:       kind,
@@ -69,11 +75,8 @@ export function makeHeaderItem(kind = 'custom', opts = {}) {
     y:          opts.y ?? 40,
     w:          opts.w ?? 480,
     h:          opts.h ?? 64,
-    fontSize:   opts.fontSize   ?? def.fontSize   ?? 32,
-    fontWeight: opts.fontWeight ?? def.fontWeight ?? 'normal',
-    fontStyle:  opts.fontStyle  ?? def.fontStyle  ?? 'normal',
-    color:      opts.color      ?? def.color      ?? '#ffffff',
-    align:      opts.align      ?? def.align      ?? 'center',
+    styleId:    opts.styleId ?? '',          // '' = use headerDefault
+    align:      opts.align   ?? 'left',      // per-item L/C/R
   };
   if (kind === 'image') {
     return {
@@ -207,6 +210,24 @@ export function setHeaderDefault(patch) {
   state.markDirty();
 }
 
+/**
+ * Set the styleId binding on a header item. Convenience wrapper around
+ * updateHeaderItem so the Style dropdown in the sidebar row has a
+ * single, well-named entry point. Accepts:
+ *   - ''         → use project headerDefault
+ *   - 'custom'   → use item.textHtml (custom kind only; ignored otherwise)
+ *   - <id>       → bind to a style template
+ */
+export function setHeaderItemStyleId(id, styleId) {
+  updateHeaderItem(id, { styleId: styleId || '' });
+}
+
+/** Set the per-item alignment (L/C/R buttons). */
+export function setHeaderItemAlign(id, align) {
+  if (align !== 'left' && align !== 'center' && align !== 'right') return;
+  updateHeaderItem(id, { align });
+}
+
 // ─── Live render layer (Konva) ──────────────────────────────────────────────
 
 let _layer       = null;   // Konva.Layer
@@ -259,7 +280,10 @@ export function initHeaderLayer(stage) {
   state.on('change:headerItems',    refreshHeaderLayer);
   state.on('change:headersHidden',  refreshHeaderLayer);
   state.on('change:headersLocked',  refreshHeaderLayer);
-  state.on('change:headerDefault',  refreshHeaderLayer);   // P4: re-rasterise unbound items when the global default changes
+  state.on('change:headerDefault',  refreshHeaderLayer);   // P4a: items in default mode pick up new styling
+  state.on('change:styleTemplates', refreshHeaderLayer);   // P4b: items bound to a template re-render on template list change
+  state.on('styleTemplate:updated', refreshHeaderLayer);   // P4b: header items bound to that template update too
+  state.on('styleTemplate:removed', refreshHeaderLayer);   // P4b: items bound to a removed template fall back to default
   state.on('change:overlayEditing', refreshHeaderLayer);   // P1: header items become inert when overlay editing is off
   state.on('change:activeStepId',   refreshHeaderLayer);
   state.on('change:steps',          refreshHeaderLayer);
@@ -401,42 +425,51 @@ function _buildNode(item, ctx, inert) {
 /**
  * Build the inline textHtml for a text-flavoured header item.
  *
- * Resolution chain (most-specific wins):
- *   1. item.textHtml             — canvas editor commit (custom kind only).
- *                                   Wrapped HTML carries its own inline styles.
- *   2. item.<field>               — per-item explicit override (legacy
- *                                   sidebar path; field-level granularity).
- *   3. state.headerDefault.<field> — project-level default ("all my headers
- *                                    look like this"). Set via the Header tab.
- *   4. Hard-coded fallback        — Arial 32px white center, the same
- *                                   default the renderer used pre-P4.
+ * P4b resolution chain — driven by `item.styleId`:
  *
- * Dynamic kinds (stepNumber / stepName / chapter*) always derive — their
- * text content updates per step / chapter, so a frozen textHtml from a
- * previous step would be wrong.
+ *   styleId === 'custom'   (custom kind only, item.textHtml set):
+ *     → render the rich HTML the canvas editor saved, wrapped in the
+ *       flex-centring shell. The user's HTML carries inline styles;
+ *       only `align` is layered on top via the inner wrapper.
  *
- * The `text-shadow` keeps the readability boost the old Konva.Text node
- * had — implemented here in CSS so the SVG-foreignObject rasterise picks
- * it up.
+ *   styleId === <template-id> (template still exists):
+ *     → render plain text content with the template's font / colour
+ *       / weight / style / decoration. Per-item align still applies.
+ *
+ *   styleId === '' or '' (or template missing, or not-yet-set):
+ *     → render plain text content with state.headerDefault's styling.
+ *       Per-item align still applies.
+ *
+ * Dynamic kinds (stepNumber / stepName / chapter*) NEVER take the
+ * 'custom' branch — their content auto-resolves per step. Even if a
+ * user accidentally has styleId='custom' on one (legacy data), we
+ * fall through to the default branch.
+ *
+ * `text-shadow` keeps the readability boost the old Konva.Text node
+ * had — applied at the outer shell so it's consistent across all
+ * three render branches.
  */
 function _buildHeaderTextHtml(item, ctx) {
-  if (item.kind === 'custom' && item.textHtml) {
-    // Drop into the same flex shell so the rich content vertically
-    // centres. The user's HTML carries its own font / colour / size /
-    // alignment; the shell just provides centring + the readability
-    // shadow that wrapped derived text still gets.
-    return `<div style="height:100%;display:flex;align-items:center;text-shadow:0 1px 2px rgba(0,0,0,0.45)"><div style="width:100%">${item.textHtml}</div></div>`;
+  const align = _safeAlign(item.align);
+
+  // Branch 1: rich custom HTML (custom kind, opted in via styleId).
+  if (item.kind === 'custom' && item.styleId === 'custom' && item.textHtml) {
+    return `<div style="height:100%;display:flex;align-items:center;text-shadow:0 1px 2px rgba(0,0,0,0.45)"><div style="width:100%;text-align:${align}">${item.textHtml}</div></div>`;
   }
 
+  // Branch 2 + 3: plain text with template OR default styling.
+  const tpl = (item.styleId && item.styleId !== 'custom') ? getStyleTemplate(item.styleId) : null;
   const def = state.get('headerDefault') || {};
+  const src = tpl || def;
+
   const text       = resolveHeaderText(item, ctx) || ' ';
   const escaped    = _escHtml(text);
-  const align      = item.align      || def.align      || 'center';
-  const fontFamily = item.fontFamily || def.fontFamily || 'Arial';
-  const fontSize   = item.fontSize   || def.fontSize   || 32;
-  const color      = item.color      || def.color      || '#ffffff';
-  const fontWeight = (item.fontWeight ?? def.fontWeight) === 'bold'   ? 'bold'   : 'normal';
-  const fontStyle  = (item.fontStyle  ?? def.fontStyle)  === 'italic' ? 'italic' : 'normal';
+  const fontFamily = src.fontFamily     || 'Arial';
+  const fontSize   = src.fontSize       || 32;
+  const color      = src.color          || '#ffffff';
+  const fontWeight = src.fontWeight === 'bold'   ? 'bold'   : 'normal';
+  const fontStyle  = src.fontStyle  === 'italic' ? 'italic' : 'normal';
+  const decoration = src.textDecoration || '';
   const innerStyle = [
     `width:100%`,
     `text-align:${align}`,
@@ -444,10 +477,15 @@ function _buildHeaderTextHtml(item, ctx) {
     `font-size:${fontSize}px`,
     `font-weight:${fontWeight}`,
     `font-style:${fontStyle}`,
+    `text-decoration:${decoration || 'none'}`,
     `color:${color}`,
     `text-shadow:0 1px 2px rgba(0,0,0,0.45)`,
   ].join(';');
   return `<div style="height:100%;display:flex;align-items:center"><div style="${innerStyle}">${escaped}</div></div>`;
+}
+
+function _safeAlign(a) {
+  return (a === 'left' || a === 'center' || a === 'right') ? a : 'left';
 }
 
 function _escHtml(s) {
@@ -570,40 +608,57 @@ function _attachItemHandlers(node, item) {
 }
 
 /**
- * Open the in-place text editor on a custom-kind header item. Reuses
- * overlay.enterTextEditor by passing a header-flavoured controller —
- * different transformer, different persistence target, no styleId
- * binding for now (P4).
+ * Open the in-place text editor on a custom-kind header item.
+ *
+ * P4b: editor entry no longer pre-flips styleId. The user is allowed
+ * to peek inside the editor without committing to "custom" mode.
+ * Only an actual EDIT (innerHTML diverged from the seed) flips
+ * styleId to 'custom' on save. textHtml is preserved on save
+ * regardless, so a later "Custom" pick from the row dropdown
+ * restores the user's previous canvas-edit content.
  */
 function _openHeaderTextEditor(node, item) {
-  // Capture a snapshot of the current item so commit/save can rebuild
-  // the wrapped textHtml even after state has been re-emitted under us.
-  const itemSnapshot = { ...item };
+  // Snapshot so commit/save read stable values even if state churns
+  // under us (e.g. another refreshHeaderLayer).
+  const itemSnapshot   = { ...item };
+  const seedHtml       = node.getAttr('textHtml') || '';
+  let   committedHtml  = null;   // set by onCommit if user edited
   const ctx = {
     transformer: _transformer,
     configureTransformer: () => _configTransformerForNodes(_transformer.nodes()),
     onCommit: async (html) => {
-      // 1. Live update: store the raw editor HTML on the node and
-      //    re-raster in-place so _exitTextEdit's reveal lands on the
-      //    new content seamlessly.
+      // No-edit short-circuit — opening + closing the editor without
+      // touching anything must NOT silently flip the item to 'custom'
+      // mode. Compare to the seed HTML; only treat as a real commit
+      // when the content diverged.
+      if (html === seedHtml) return;
+
+      committedHtml = html;
+      // Live update: store the raw editor HTML on the node + re-raster
+      // in place so _exitTextEdit's reveal lands on the new content
+      // seamlessly (no nothing-then-raster flicker).
       node.setAttr('textHtml', html);
       const wrapped = _buildHeaderTextHtml(
-        { ...itemSnapshot, kind: 'custom', textHtml: html },
+        { ...itemSnapshot, kind: 'custom', styleId: 'custom', textHtml: html },
         buildRenderContext(),
       );
       await _hydrateHeaderText(node, wrapped, itemSnapshot);
     },
     onSave: () => {
-      // 2. Persist on the SAME tick the editor finishes — this triggers
-      //    refreshHeaderLayer which destroys the live node and rebuilds
-      //    a fresh one from item.textHtml. We only reach here AFTER the
-      //    editor's cleanup is done, so the destruction is safe.
-      const finalHtml = node.getAttr('textHtml');
-      if (finalHtml != null) updateHeaderItem(itemSnapshot.id, { textHtml: finalHtml });
+      // Editor cleanup is done by the time we land here — safe for
+      // updateHeaderItem to fire refreshHeaderLayer underneath us.
+      // Only persist if an actual edit happened; flip styleId so the
+      // row dropdown reflects the new "Custom" mode.
+      if (committedHtml == null) return;
+      updateHeaderItem(itemSnapshot.id, {
+        textHtml: committedHtml,
+        styleId:  'custom',
+      });
     },
-    // No styleId binding for headers in P3 — hides the dropdown in the
-    // toolbar. P4 will add: header items bind to a styleId the same way
-    // overlay textboxes do, with template-driven render override.
+    // styleId binding via the toolbar's Style dropdown stays disabled
+    // for headers — bindings happen through the row dropdown in the
+    // sidebar. Wiring the toolbar dropdown for headers is a possible
+    // future polish, not required by P4b.
   };
   enterTextEditor(node, ctx);
 }
