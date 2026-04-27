@@ -52,6 +52,7 @@ import { generateId }       from '../core/schema.js';
 import { htmlToCanvas, enterTextEditor } from './overlay.js';   // P2/P3: shared rasteriser + editor
 import { registerLayer, getLayerSelection, scheduleOverlaySave } from './cross-layer.js';
 import { getStyleTemplate } from './style-templates.js';        // P4b: per-item style binding
+import { undoManager }      from './undo.js';                   // P7-C: drag / resize undo entries
 
 // ─── Pure data helpers (no DOM / Konva — usable from export, tests) ─────────
 
@@ -541,14 +542,35 @@ function _attachItemHandlers(node, item) {
   // Multi-node drag — CROSS-LAYER. Combines this layer's selection with
   // the overlay layer's so a single grabbed header carries any selected
   // overlay textboxes / images along, and vice versa.
+  //
+  // P7-C-2 (header side): dragstart ALWAYS snapshots positions for undo,
+  // even single-node. dragmove keeps its multi-only delta logic.
+  // dragend pushes a "Move" entry that restores positions on both
+  // sides via _restoreCrossLayerPositions.
   let _multiDragStarts = null;
+  let _dragSnapBefore  = null;
+  let _xformSnapBefore = null;
   node.on('dragstart', () => {
     const own  = _transformer?.nodes() || [];
     const peer = getLayerSelection('overlay');
     const sel  = [...own, ...peer];
-    if (sel.length <= 1) return;
-    _multiDragStarts = new Map();
-    for (const n of sel) _multiDragStarts.set(n, { x: n.x(), y: n.y() });
+    const set  = sel.length ? sel : [node];
+    // Always snapshot for undo. Split into header / overlay so undo can
+    // restore each side via its own mechanism (state.setState batching
+    // for headers, direct Konva attr writes + scheduleOverlaySave for
+    // overlay peers).
+    _dragSnapBefore = { headers: [], overlays: [] };
+    for (const n of set) {
+      const id = n.getAttr?.('headerId');
+      if (id) _dragSnapBefore.headers .push({ id, n, x: n.x(), y: n.y() });
+      else    _dragSnapBefore.overlays.push({     n, x: n.x(), y: n.y() });
+    }
+    // Multi-drag delta only kicks in when we actually have peers to
+    // carry along — Konva drags the grabbed node natively for sel=1.
+    if (set.length > 1) {
+      _multiDragStarts = new Map();
+      for (const n of set) _multiDragStarts.set(n, { x: n.x(), y: n.y() });
+    }
   });
   node.on('dragmove', () => {
     if (!_multiDragStarts) return;
@@ -568,15 +590,55 @@ function _attachItemHandlers(node, item) {
     _multiDragStarts.peerLayer?.batchDraw?.();
   });
 
-  // Persist drag / resize back to data stores. In multi-drag, ONLY the
-  // grabbed node fires dragend — siblings (header AND overlay peers
-  // moved via cross-layer delta) don't emit events. We walk the full
-  // (former) drag set, persisting header items via updateHeaderItem
-  // and overlay peers via cross-layer.scheduleOverlaySave (one shot —
-  // overlay's _stage.toJSON captures all overlay node positions).
-  node.on('dragend transformend', () => {
-    const draggedSet = _multiDragStarts ? [..._multiDragStarts.keys()] : [node];
+  // Persist drag back to data stores + push undo entry. In multi-drag,
+  // ONLY the grabbed node fires dragend; siblings moved via x()/y() in
+  // dragmove don't emit. We walk the captured drag set (header AND
+  // overlay peers) and persist each appropriately.
+  node.on('dragend', () => {
+    const before = _dragSnapBefore;
+    _dragSnapBefore  = null;
     _multiDragStarts = null;
+    if (!before) return;
+
+    // Persist header peers via batched updateHeaderItem; one call per
+    // header node, but they all hit the same change:headerItems event
+    // and the layer rebuild handles the lot.
+    for (const s of before.headers) {
+      if (s.n && !s.n.isDestroyed?.()) {
+        updateHeaderItem(s.id, {
+          x: s.n.x(), y: s.n.y(), w: s.n.width(), h: s.n.height(),
+        });
+      }
+    }
+    // Persist overlay peers in one shot — overlay's _stage.toJSON
+    // captures every node's position.
+    if (before.overlays.length) scheduleOverlaySave();
+
+    // Push "Move" undo entry covering both sides.
+    const afterHeaders  = before.headers .map(s => ({ id: s.id, n: s.n, x: s.n.x(), y: s.n.y() }));
+    const afterOverlays = before.overlays.map(s => ({         n: s.n, x: s.n.x(), y: s.n.y() }));
+    const moved =
+      before.headers .some((b, i) => b.x !== afterHeaders [i].x || b.y !== afterHeaders [i].y) ||
+      before.overlays.some((b, i) => b.x !== afterOverlays[i].x || b.y !== afterOverlays[i].y);
+    if (moved) {
+      const total = before.headers.length + before.overlays.length;
+      const label = total > 1 ? `Move ${total} items` : 'Move';
+      undoManager.push(label,
+        () => _restoreCrossLayerPositions(before.headers, before.overlays),
+        () => _restoreCrossLayerPositions(afterHeaders, afterOverlays),
+      );
+    }
+  });
+
+  // Resize / rotate — header transformer only operates on header items
+  // (each layer has its own transformer), so this is single-layer.
+  // transformstart snapshots full geometry; transformend persists +
+  // pushes a "Resize" undo entry.
+  node.on('transformstart', () => {
+    const tracked = _transformer?.nodes() || [node];
+    _xformSnapBefore = tracked.map(n => _snapHeaderGeom(n));
+  });
+  node.on('transformend', () => {
     // Flatten any scaleX/scaleY into width/height so the saved data stays
     // a clean rect (mirrors the overlay.js commit pattern).
     const sx = node.scaleX();
@@ -587,18 +649,32 @@ function _attachItemHandlers(node, item) {
       node.scaleX(1);
       node.scaleY(1);
     }
-    let overlayPeerMoved = false;
-    for (const n of draggedSet) {
+    // Persist all transformer-tracked header items.
+    const tracked = _transformer?.nodes() || [node];
+    for (const n of tracked) {
       const id = n.getAttr?.('headerId');
-      if (id) {
-        updateHeaderItem(id, {
-          x: n.x(), y: n.y(), w: n.width(), h: n.height(),
-        });
-      } else {
-        overlayPeerMoved = true;
+      if (id) updateHeaderItem(id, {
+        x: n.x(), y: n.y(), w: n.width(), h: n.height(),
+      });
+    }
+    // Push "Resize" undo entry.
+    if (_xformSnapBefore) {
+      const before = _xformSnapBefore;
+      _xformSnapBefore = null;
+      const after = before.map(b => _snapHeaderGeom(b.n));
+      const changed = before.some((b, i) =>
+        b.x !== after[i].x || b.y !== after[i].y ||
+        b.width !== after[i].width || b.height !== after[i].height ||
+        b.rotation !== after[i].rotation,
+      );
+      if (changed) {
+        const label = before.length > 1 ? `Resize ${before.length} items` : 'Resize';
+        undoManager.push(label,
+          () => _restoreHeaderGeom(before),
+          () => _restoreHeaderGeom(after),
+        );
       }
     }
-    if (overlayPeerMoved) scheduleOverlaySave();
   });
 
   // P3: double-click custom-kind headers to enter the in-place text editor.
@@ -612,6 +688,81 @@ function _attachItemHandlers(node, item) {
       _openHeaderTextEditor(node, item);
     });
   }
+}
+
+// ─── P7-C-2 (header side): drag / resize undo helpers ──────────────────────
+
+function _snapHeaderGeom(n) {
+  return {
+    n,
+    x:        n.x(),
+    y:        n.y(),
+    width:    n.width(),
+    height:   n.height(),
+    scaleX:   n.scaleX(),
+    scaleY:   n.scaleY(),
+    rotation: n.rotation(),
+  };
+}
+
+/**
+ * Restore positions across both layers in ONE pass. Headers go through
+ * a single state.setState (so refreshHeaderLayer fires only once, not
+ * once per header). Overlay peers get direct Konva attr writes plus a
+ * single scheduleOverlaySave to commit the lot.
+ */
+function _restoreCrossLayerPositions(headerSnaps, overlaySnaps) {
+  let any = false;
+
+  // Header side — batched setState avoids N refreshes for N headers.
+  if (headerSnaps.length) {
+    const items = state.get('headerItems') || [];
+    const map   = new Map(headerSnaps.map(s => [s.id, s]));
+    const newItems = items.map(it => {
+      const s = map.get(it.id);
+      return s ? { ...it, x: s.x, y: s.y } : it;
+    });
+    state.setState({ headerItems: newItems });
+    state.markDirty();
+    any = true;
+  }
+
+  // Overlay side — direct attr write on the live Konva nodes; layer
+  // batchDraw + scheduleOverlaySave commits visual + persistence.
+  let overlayAlive = false;
+  for (const s of overlaySnaps) {
+    if (s.n && !s.n.isDestroyed?.()) {
+      s.n.x(s.x);
+      s.n.y(s.y);
+      overlayAlive = true;
+    }
+  }
+  if (overlayAlive) {
+    overlaySnaps[0].n?.getLayer?.()?.batchDraw?.();
+    scheduleOverlaySave();
+    any = true;
+  }
+
+  return any ? undefined : false;
+}
+
+/**
+ * Restore full geometry for header items (used by resize/rotate undo).
+ * Header transformer only tracks header items, so this is single-layer
+ * — one batched state.setState handles them all.
+ */
+function _restoreHeaderGeom(snaps) {
+  if (!snaps.length) return false;
+  const items = state.get('headerItems') || [];
+  const map   = new Map(snaps.map(s => [s.n?.getAttr?.('headerId'), s]).filter(([id]) => id));
+  if (!map.size) return false;
+  const newItems = items.map(it => {
+    const s = map.get(it.id);
+    return s ? { ...it, x: s.x, y: s.y, w: s.width, h: s.height } : it;
+  });
+  state.setState({ headerItems: newItems });
+  state.markDirty();
+  return undefined;
 }
 
 /**
