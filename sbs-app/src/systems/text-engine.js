@@ -71,7 +71,7 @@ export function apply(root, range, action, value) {
   // character picks up the style. Only meaningful in single-editor mode
   // (where there's a live selection); mass-mode callers pass null range.
   if (range && range.collapsed) {
-    _applyAtCaret(range, action, value);
+    _applyAtCaret(root, range, action, value);
     return;
   }
 
@@ -280,7 +280,7 @@ function _applyToRange(root, range, action, value) {
   }
 }
 
-function _applyAtCaret(range, action, value) {
+function _applyAtCaret(root, range, action, value) {
   // Block-level actions just operate on the line, not the caret.
   if (action === 'alignLeft' || action === 'alignCenter' || action === 'alignRight') {
     const align = _alignValue(action);
@@ -292,12 +292,25 @@ function _applyAtCaret(range, action, value) {
   }
 
   // Inline actions — drop a styled span at the caret with a ZWSP placeholder.
-  // Next-typed character lands inside it and inherits the style.
-  // Empty span without ZWSP gets stripped by browsers; the ZWSP keeps
-  // it alive until the user types over it. The rasteriser strips ZWSPs
-  // before shaping so the saved output stays clean.
+  // Next-typed character lands inside it and inherits the span's style.
+  //
+  // Toggle-aware: detect ancestor styles at the caret. For B/I, if the
+  // caret is in an already-bold/italic context, the toolbar press is a
+  // toggle-OFF — write the INVERTED value (font-weight:normal etc.) so
+  // the next typed character is NOT bold/italic, even though it sits
+  // inside the bolded ancestor. Without this the press silently stacks
+  // another bold span on top — visually invisible, breaks toggle UX.
+  //
+  // Underline has a CSS quirk: text-decoration on a descendant CAN'T
+  // remove a parent's underline (the parent's decoration paints across
+  // descendants regardless). At a collapsed caret inside an underlined
+  // ancestor, "untoggle" isn't really achievable without restructuring
+  // the document. We still write 'none' on the new span — better
+  // semantically — but the user may have to select text and toggle to
+  // visually remove underline.
+  const ancestorStyles = _captureInheritedStyles(root, range);
   const span = document.createElement('span');
-  _writeInlineStyle(span, action, value);
+  _writeInlineStyleAtCaret(span, action, value, ancestorStyles);
   const tn = document.createTextNode(ZWSP);
   span.appendChild(tn);
   range.insertNode(span);
@@ -306,6 +319,31 @@ function _applyAtCaret(range, action, value) {
   const sel = window.getSelection();
   sel.removeAllRanges();
   sel.addRange(range);
+}
+
+/**
+ * Caret-flavour of _writeInlineStyle: for toggle props (B/I/underline),
+ * inverts the ancestor value. For value-set props (color / font / size),
+ * writes the new value verbatim — those override via cascade regardless
+ * of ancestor.
+ */
+function _writeInlineStyleAtCaret(span, action, value, ancestor) {
+  switch (action) {
+    case 'color':       span.style.color           = String(value);          break;
+    case 'fontFamily':  span.style.fontFamily      = String(value);          break;
+    case 'fontSize':    span.style.fontSize        = `${Number(value)}px`;   break;
+    case 'bold':
+      span.style.fontWeight = ancestor?.fontWeight === 'bold' ? 'normal' : 'bold';
+      break;
+    case 'italic':
+      span.style.fontStyle  = ancestor?.fontStyle === 'italic' ? 'normal' : 'italic';
+      break;
+    case 'underline': {
+      const has = String(ancestor?.textDecoration || '').includes('underline');
+      span.style.textDecoration = has ? 'none' : 'underline';
+      break;
+    }
+  }
 }
 
 // ─── Operation dispatch ────────────────────────────────────────────────────
