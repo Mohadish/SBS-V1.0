@@ -76,6 +76,18 @@ export function initOverlay() {
     if (e.target === _stage) _setSelection(null);
   });
 
+  // Right-click on empty viewport → paste-only context menu (Paste / Paste
+  // in place / Delete-disabled). Lets the user paste a copied textbox or
+  // image without needing an existing node to right-click on. Selection
+  // and "Duplicate" only make sense on a node, so they're omitted here.
+  _stage.on('contextmenu', (e) => {
+    if (e.target !== _stage) return;          // node-level handler runs instead
+    if (!_editing) return;                     // overlay editing must be on
+    e.evt?.preventDefault?.();
+    const ev = e.evt;
+    _showEmptyViewportContextMenu(ev?.clientX ?? 0, ev?.clientY ?? 0);
+  });
+
   // Keyboard: Delete removes the selected node (only when editing).
   window.addEventListener('keydown', _onKeyDown);
 
@@ -700,17 +712,22 @@ function _copyToOverlayClipboard() {
 }
 
 /**
- * Paste from clipboard. With `inPlace:false` the new nodes drop at the
- * stage's centre (offset slightly so duplicates don't perfectly overlap);
- * with `inPlace:true` they land exactly where the original was when copied
- * — even across steps, since we stored the captured x/y per-node.
+ * Paste from clipboard. With `inPlace:false` the new nodes drop near
+ * their original position offset slightly so duplicates don't perfectly
+ * overlap; with `inPlace:true` they land exactly where the original
+ * was when copied — even across steps, since we stored the captured
+ * x/y per-node.
+ *
+ * Async because _recreateNode now awaits the textbox raster (the load
+ * path needed it to avoid a 0×0 race). Paste / Duplicate callers can
+ * fire-and-forget — we return a Promise<boolean> for completeness.
  */
-function _pasteFromOverlayClipboard(opts = {}) {
+async function _pasteFromOverlayClipboard(opts = {}) {
   if (!_overlayClipboard?.length) return false;
   const { inPlace = false, offset = 20 } = opts;
   const newNodes = [];
   for (const entry of _overlayClipboard) {
-    const node = _recreateNode(entry.spec);
+    const node = await _recreateNode(entry.spec);
     if (!node) continue;
     if (inPlace) {
       node.x(entry.capturedAt.x);
@@ -735,9 +752,23 @@ function _pasteFromOverlayClipboard(opts = {}) {
 }
 
 /** Duplicate = copy current selection then immediately paste with a small offset. */
-function _duplicateSelected() {
+async function _duplicateSelected() {
   if (!_copyToOverlayClipboard()) return false;
   return _pasteFromOverlayClipboard({ inPlace: false, offset: 20 });
+}
+
+/**
+ * Right-click on the empty viewport — only paste actions make sense
+ * here (no selection to copy, no node to duplicate). Disabled when
+ * the clipboard is empty so the menu still shows the user what's
+ * available, just greyed out.
+ */
+function _showEmptyViewportContextMenu(x, y) {
+  const hasClipboard = !!_overlayClipboard?.length;
+  showContextMenu([
+    { label: 'Paste',          disabled: !hasClipboard, action: () => _pasteFromOverlayClipboard({ inPlace: false }) },
+    { label: 'Paste in place', disabled: !hasClipboard, action: () => _pasteFromOverlayClipboard({ inPlace: true })  },
+  ], x, y);
 }
 
 function _showOverlayContextMenu(node, x, y) {
@@ -1305,16 +1336,28 @@ function _onKeyDown(e) {
 
   // Clipboard shortcuts for overlay NODES (textboxes, images). Only fire
   // when nothing is being typed — guard above bails on contenteditable.
+  // Paste / Duplicate are async (recreating a textbox awaits its raster),
+  // so we check clipboard / selection sync to decide whether to swallow
+  // the key, then fire-and-forget the async work.
   const mod = e.ctrlKey || e.metaKey;
   if (!mod) return;
   const k = e.key.toLowerCase();
   if (k === 'c') { if (_copyToOverlayClipboard()) e.preventDefault(); return; }
   if (k === 'v') {
     const inPlace = !!e.altKey;            // Ctrl+Alt+V → paste in place
-    if (_pasteFromOverlayClipboard({ inPlace })) e.preventDefault();
+    if (_overlayClipboard?.length) {
+      e.preventDefault();
+      _pasteFromOverlayClipboard({ inPlace });
+    }
     return;
   }
-  if (k === 'd') { if (_duplicateSelected()) e.preventDefault(); return; }
+  if (k === 'd') {
+    if (_transformer?.nodes()?.length) {
+      e.preventDefault();
+      _duplicateSelected();
+    }
+    return;
+  }
 }
 
 function _editText(node) {
