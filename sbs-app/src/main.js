@@ -156,6 +156,12 @@ state.on('change:treeData',     _syncGizmoToSelection);
 
 const canvas = sceneCore.renderer.domElement;
 
+// P-P1+: crosshair cursor while pivot-snap pick mode is active so the
+// user knows the next click is a target-pick. Cleared on snap or Esc.
+state.on('change:pivotSnapPickingNodeId', id => {
+  canvas.style.cursor = id ? 'crosshair' : '';
+});
+
 // ── Marquee (box-select) overlay ─────────────────────────────────────────────
 // A zero-cost transparent <div> that renders the drag rectangle.
 
@@ -224,6 +230,20 @@ function _pickInRect(x1, y1, x2, y2) {
 
 canvas.addEventListener('pointerdown', e => {
   if (e.button !== 0) return;
+
+  // P-P1+: snap-to-surface pick mode consumes the click — raycast
+  // against the scene, snap pivot if there's a hit, otherwise cancel.
+  // Runs BEFORE the gizmo so the user can target a face that happens
+  // to be behind / under a gizmo handle.
+  const snapPickNodeId = state.get('pivotSnapPickingNodeId');
+  if (snapPickNodeId) {
+    e.preventDefault();
+    e.stopPropagation();
+    const hit = sceneCore.pick(e.clientX, e.clientY);
+    if (hit) actions.snapPivotToHit(snapPickNodeId, hit);
+    else     actions.cancelPivotSnapPicking();
+    return;
+  }
 
   // Gizmo gets first chance
   if (gizmo.onPointerDown(e.clientX, e.clientY)) {
@@ -464,6 +484,12 @@ window.addEventListener('keydown', async e => {
   // ── Selection ────────────────────────────────────────────────────────────
   if (key === 'Escape') {
     if (gizmo.isDragging) { gizmo.onPointerUp(); return; }
+    // Snap-to-surface mode is its own little modal — cancel that
+    // before tearing down the selection.
+    if (state.get('pivotSnapPickingNodeId')) {
+      actions.cancelPivotSnapPicking();
+      return;
+    }
     gizmo.setMode('all');
     state.clearSelection();
     materials.applySelectionHighlight([]);

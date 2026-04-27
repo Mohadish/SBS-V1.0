@@ -744,6 +744,161 @@ export function setPivotEnabled(nodeId, on) {
 /** Whether a pivot edit session is currently open. */
 export function isPivotEditing() { return _pivotBatch !== null; }
 
+// ─── Pivot clipboard (copy / paste — only the "blue" / committed pivot) ───
+
+let _pivotClipboard = null;
+
+/** True when the clipboard holds a copied pivot ready for paste. */
+export function hasPivotClipboard() { return _pivotClipboard !== null; }
+
+/**
+ * Copy the active pivot from a folder. Captures pivotLocalOffset +
+ * pivotLocalQuaternion only — and only if the source actually has a
+ * relocated pivot (BLUE state). Grey/red sources are ignored.
+ *
+ * Typical use: identical-folder-across-steps. Set pivot on Step 5,
+ * navigate to Step 8, paste it on the same folder there. Per-step
+ * snapshot already captures pivot, so the paste lands as a per-step
+ * value.
+ */
+export function copyPivot(nodeId) {
+  const node = state.get('nodeById')?.get(nodeId);
+  if (!node || node.pivotEnabled !== true) return false;
+  _pivotClipboard = {
+    offset:     [...(node.pivotLocalOffset     ?? [0, 0, 0])],
+    quaternion: [...(node.pivotLocalQuaternion ?? [0, 0, 0, 1])],
+  };
+  return true;
+}
+
+/**
+ * Paste the clipboard pivot onto a folder. Enables pivot, sets offset
+ * and quaternion, leaves all other transforms alone. Undoable as one
+ * "Paste pivot" entry.
+ */
+export function pastePivot(nodeId) {
+  if (!_pivotClipboard) return false;
+  const node = state.get('nodeById')?.get(nodeId);
+  if (!node) return false;
+
+  const from  = captureTransformSnapshot(node);
+  node.pivotLocalOffset     = [..._pivotClipboard.offset];
+  node.pivotLocalQuaternion = [..._pivotClipboard.quaternion];
+  node.pivotEnabled         = true;
+  const obj3d = steps.object3dById?.get(nodeId);
+  if (obj3d) applyNodeTransformToObject3D(node, obj3d);
+  steps.scheduleTransformSync();
+  const to = captureTransformSnapshot(node);
+
+  undoManager.push('Paste pivot',
+    () => {
+      const n = state.get('nodeById')?.get(nodeId); if (!n) return;
+      applyTransformSnapshot(n, from);
+      const o = steps.object3dById?.get(nodeId); if (o) applyNodeTransformToObject3D(n, o);
+      steps.scheduleTransformSync();
+    },
+    () => {
+      const n = state.get('nodeById')?.get(nodeId); if (!n) return;
+      applyTransformSnapshot(n, to);
+      const o = steps.object3dById?.get(nodeId); if (o) applyNodeTransformToObject3D(n, o);
+      steps.scheduleTransformSync();
+    },
+  );
+  return true;
+}
+
+// ─── Snap pivot to surface (raycast pick + position+orient) ────────────────
+//
+// startPivotSnapPicking puts the app into "next viewport click picks
+// a face" mode — main.js intercepts pointerdown while
+// state.pivotSnapPickingNodeId is set. snapPivotToHit does the math
+// once a hit lands.
+
+export function startPivotSnapPicking(nodeId) {
+  if (!nodeId) return;
+  // Close any open pivot edit session first — snap is a one-shot
+  // commit and shouldn't co-exist with an in-progress drag edit.
+  if (state.get('pivotEditNodeId')) commitPivotEdit();
+  state.setState({ pivotSnapPickingNodeId: nodeId });
+}
+
+export function cancelPivotSnapPicking() {
+  if (state.get('pivotSnapPickingNodeId')) {
+    state.setState({ pivotSnapPickingNodeId: null });
+  }
+}
+
+/**
+ * Snap a node's pivot to a raycast hit's point + face normal:
+ *   - pivotLocalOffset = hit point in object-local space.
+ *   - pivotLocalQuaternion = orientation with Z aligned to the
+ *     world-space face normal; tangent plane (X / Y) chosen so X is
+ *     perpendicular to world up (or world right when normal is near
+ *     vertical, to avoid degenerate cross product).
+ *   - pivotEnabled = true (BLUE state).
+ *
+ * Undoable as one "Snap pivot to surface" entry. Clears
+ * pivotSnapPickingNodeId on success.
+ */
+export function snapPivotToHit(nodeId, hit) {
+  if (!hit || !hit.point || !hit.face || !hit.object) return false;
+  const node = state.get('nodeById')?.get(nodeId);
+  if (!node) return false;
+  const obj3d = steps.object3dById?.get(nodeId);
+  if (!obj3d) return false;
+
+  const T = window.THREE;
+  // Hit point → object-local for pivotLocalOffset.
+  const localPos = obj3d.worldToLocal(hit.point.clone());
+
+  // Face normal in WORLD space (transformDirection applies rotation only).
+  const worldNormal = hit.face.normal.clone()
+    .transformDirection(hit.object.matrixWorld)
+    .normalize();
+
+  // Build a world-space orthonormal basis: Z = normal, Y = world-up
+  // projected onto tangent plane, X = Y × Z. Fall back to world-X if
+  // the normal is too close to up.
+  const z = worldNormal;
+  let up = new T.Vector3(0, 1, 0);
+  if (Math.abs(up.dot(z)) > 0.99) up = new T.Vector3(1, 0, 0);
+  const x = new T.Vector3().crossVectors(up, z).normalize();
+  const y = new T.Vector3().crossVectors(z, x).normalize();
+  const m = new T.Matrix4().makeBasis(x, y, z);
+  const worldQ = new T.Quaternion().setFromRotationMatrix(m);
+
+  // pivotLocalQuaternion = obj.worldQ⁻¹ × worldQ.
+  const objWorldQ = new T.Quaternion();
+  obj3d.getWorldQuaternion(objWorldQ);
+  const pivotLocalQ = objWorldQ.clone().invert().multiply(worldQ);
+
+  const from = captureTransformSnapshot(node);
+  node.pivotLocalOffset     = [localPos.x, localPos.y, localPos.z];
+  node.pivotLocalQuaternion = [pivotLocalQ.x, pivotLocalQ.y, pivotLocalQ.z, pivotLocalQ.w];
+  node.pivotEnabled         = true;
+  applyNodeTransformToObject3D(node, obj3d);
+  steps.scheduleTransformSync();
+  const to = captureTransformSnapshot(node);
+
+  state.setState({ pivotSnapPickingNodeId: null });
+
+  undoManager.push('Snap pivot to surface',
+    () => {
+      const n = state.get('nodeById')?.get(nodeId); if (!n) return;
+      applyTransformSnapshot(n, from);
+      const o = steps.object3dById?.get(nodeId); if (o) applyNodeTransformToObject3D(n, o);
+      steps.scheduleTransformSync();
+    },
+    () => {
+      const n = state.get('nodeById')?.get(nodeId); if (!n) return;
+      applyTransformSnapshot(n, to);
+      const o = steps.object3dById?.get(nodeId); if (o) applyNodeTransformToObject3D(n, o);
+      steps.scheduleTransformSync();
+    },
+  );
+  return true;
+}
+
 
 // ═══════════════════════════════════════════════════════════════════════════
 //  ANIMATION PRESET ACTIONS

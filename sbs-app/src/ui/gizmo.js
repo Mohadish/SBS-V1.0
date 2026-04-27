@@ -945,6 +945,18 @@ class GizmoController {
         ${this._axisRow('rz', 'Z', fmtA(ez), '#5588e0')}
       </div>
 
+      ${isPivotMode ? `
+      <div style="margin-top:10px;">
+        <button data-action="snap-to-surface" style="width:100%;font-size:11px;padding:5px 8px;background:#1c2538;border:1px solid #fb923c;border-radius:4px;color:#fb923c;cursor:pointer;font-weight:600;letter-spacing:0.3px;">
+          ⌖ Snap pivot to surface…
+        </button>
+        <div style="font-size:10px;color:#64748b;margin-top:4px;line-height:1.4;">
+          Next click on a face in the viewport snaps the pivot to the
+          hit point with orientation aligned to the face normal.
+        </div>
+      </div>
+      ` : ''}
+
       <div style="margin-top:10px;display:flex;justify-content:flex-end;">
         <button data-action="reset" style="font-size:11px;padding:3px 8px;background:#0f172a;border:1px solid #334155;border-radius:4px;color:#94a3b8;cursor:pointer;">↺ Reset</button>
       </div>
@@ -1024,6 +1036,13 @@ class GizmoController {
       dragHandle.addEventListener('pointerup',     endDrag);
       dragHandle.addEventListener('pointercancel', endDrag);
     }
+
+    // Snap-to-surface button (PIVOT space mode only — see _panelHTML).
+    // Triggers the same pick-mode the tree's "Snap Pivot to Surface…"
+    // entry uses; main.js listens for the next viewport pointerdown.
+    panel.querySelector('[data-action="snap-to-surface"]')?.addEventListener('click', () => {
+      actions.startPivotSnapPicking(no.id);
+    });
 
     // Reset button
     panel.querySelector('[data-action="reset"]')?.addEventListener('click', () => {

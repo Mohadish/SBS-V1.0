@@ -507,6 +507,32 @@ function _buildContextMenuItems(node) {
     });
   }
 
+  // ── Pivot ────────────────────────────────────────────────────────────────
+  // Folder-only (model-root has no pivot per the P-P1 fix). Copy / Paste
+  // transfer the BLUE pivot value, useful for replicating pivot setups
+  // across steps or between similar folders. Snap-to-surface puts the
+  // app into a one-shot click-pick mode handled in main.js.
+  if (node.type === 'folder') {
+    const hasBluePivot = node.pivotEnabled === true && (
+      !isNearZero(node.pivotLocalOffset) || !isIdentityQuaternion(node.pivotLocalQuaternion)
+    );
+    items.push({ separator: true });
+    items.push({
+      label: 'Copy Pivot',
+      disabled: !hasBluePivot,
+      action: () => actions.copyPivot(node.id),
+    });
+    items.push({
+      label: 'Paste Pivot',
+      disabled: !actions.hasPivotClipboard(),
+      action: () => actions.pastePivot(node.id),
+    });
+    items.push({
+      label: 'Snap Pivot to Surface…',
+      action: () => actions.startPivotSnapPicking(node.id),
+    });
+  }
+
   items.push({ separator: true });
 
   // ── General ──────────────────────────────────────────────────────────────────

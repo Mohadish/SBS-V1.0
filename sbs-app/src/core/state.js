@@ -150,6 +150,14 @@ function createInitialState() {
     // outside the gizmo handles (RED → BLUE commit).
     pivotEditNodeId: null,
 
+    // Node id awaiting a "snap pivot to surface" raycast. When set,
+    // the next viewport pointerdown is intercepted: it raycasts
+    // against the scene, and on a hit positions+orients the pivot
+    // along the face normal (Z=normal, tangent plane = X/Y). Cleared
+    // on hit, on Esc, or on selection change. Triggered from the
+    // tree row "Snap Pivot to Surface" menu entry or the panel button.
+    pivotSnapPickingNodeId: null,
+
     // ── Export settings
     // Suppress auto-play of step narration when navigating live in the app.
     // The Preview ▶ button still works regardless. Persisted per project.
