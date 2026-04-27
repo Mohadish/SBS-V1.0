@@ -45,7 +45,8 @@ let _activeItemId = null;   // which item's editor is expanded
 
 export function renderHeaderTab(container) {
   if (!container) return;
-  const items   = state.get('headerItems') || [];
+  const items   = state.get('headerItems')    || [];
+  const styles  = state.get('styleTemplates') || [];
   const hidden  = !!state.get('headersHidden');
   const locked  = !!state.get('headersLocked');
 
@@ -55,8 +56,9 @@ export function renderHeaderTab(container) {
       <div class="small muted" style="margin-top:6px;line-height:1.5;">
         Header items render on every step, on top of the per-step overlay.
         Dynamic kinds (Step / Chapter Name / Number) update automatically.
-        Save Setup exports the layout as a <code>.sbsheader</code> file you
-        can load into other projects.
+        Save Setup exports header items <em>and</em> the project's text
+        style templates as a single <code>.sbsheader</code> file you can
+        load into other projects.
       </div>
 
       <div class="card" style="margin-top:10px;display:grid;grid-template-columns:1fr 1fr;gap:6px;">
@@ -75,8 +77,8 @@ export function renderHeaderTab(container) {
         <button class="btn" id="hdr-toggle-lock" title="Prevent header items from being moved on the canvas">
           ${locked ? '🔓 Unlock' : '🔒 Lock'}
         </button>
-        <button class="btn" id="hdr-save-setup" title="Export header layout as a .sbsheader file" ${items.length === 0 ? 'disabled' : ''}>Save Setup</button>
-        <button class="btn" id="hdr-load-setup" title="Import a .sbsheader file">Load Setup</button>
+        <button class="btn" id="hdr-save-setup" title="Export header items + style templates as a .sbsheader file" ${(items.length === 0 && styles.length === 0) ? 'disabled' : ''}>Save Setup</button>
+        <button class="btn" id="hdr-load-setup" title="Import a .sbsheader file (replaces header items and/or styles)">Load Setup</button>
       </div>
 
       <div class="card" style="margin-top:10px;padding:0;">
@@ -309,7 +311,9 @@ function _imageDims(dataUrl) {
 
 async function _onSaveSetup() {
   const payload = exportHeaderSetup();
-  if (!payload.items?.length) { setStatus('No header items to save.', 'warning'); return; }
+  const nItems  = payload.items?.length  || 0;
+  const nStyles = payload.styles?.length || 0;
+  if (!nItems && !nStyles) { setStatus('Nothing to save (no header items or styles).', 'warning'); return; }
   const json = JSON.stringify(payload, null, 2);
 
   // Electron path — full file picker.
@@ -363,13 +367,23 @@ async function _onLoadSetup() {
   try { payload = JSON.parse(json); }
   catch (err) { setStatus('Invalid .sbsheader file (not JSON).', 'danger'); return; }
 
-  // Confirm if the user already has items — load is a wholesale replace.
-  const existing = (state.get('headerItems') || []).length;
-  if (existing > 0 && !confirm(`Replace ${existing} existing header item(s) with the loaded setup?`)) return;
+  // Confirm if the user already has items — load is a wholesale replace
+  // for whichever section(s) the file contains.
+  const willHeaders = Array.isArray(payload?.items)  && payload.items.length  > 0;
+  const willStyles  = Array.isArray(payload?.styles) && payload.styles.length > 0;
+  const existHdr    = (state.get('headerItems')    || []).length;
+  const existStyle  = (state.get('styleTemplates') || []).length;
+  const warn = [];
+  if (willHeaders && existHdr   > 0) warn.push(`${existHdr} header item(s)`);
+  if (willStyles  && existStyle > 0) warn.push(`${existStyle} style template(s)`);
+  if (warn.length && !confirm(`Replace ${warn.join(' + ')} with the loaded setup?`)) return;
 
-  const n = importHeaderSetup(payload);
-  if (n > 0) setStatus(`Loaded ${n} header item(s).`);
-  else       setStatus('No header items found in the file.', 'warning');
+  const { headers, styles } = importHeaderSetup(payload);
+  const parts = [];
+  if (headers) parts.push(`${headers} header item(s)`);
+  if (styles)  parts.push(`${styles} style(s)`);
+  if (parts.length) setStatus(`Loaded ${parts.join(' + ')}.`);
+  else              setStatus('No header items or styles found in the file.', 'warning');
   _activeItemId = null;
 }
 

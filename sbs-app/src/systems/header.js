@@ -418,35 +418,58 @@ export function getHeaderSelection() {
   return Array.from(_selection);
 }
 
-// ─── .sbsheader file format (cross-project portability) ────────────────────
+// ─── .sbsheader file format (unified preset bundle) ───────────────────────
+//
+// v2 of the file format carries BOTH header items and text-style
+// templates so a single sidecar file is enough to import a project's
+// branding across projects. v1 (header items only) still loads —
+// styles section is just optional.
+//
+//   {
+//     "_sbsheader": { "version": 2, "saved": "..." },
+//     "items":  [ HeaderItem, ... ],     // header overlay items
+//     "styles": [ StyleTemplate, ... ]   // text style presets (v2)
+//   }
 
 /** Build the JSON payload for a .sbsheader file from current state. */
 export function exportHeaderSetup() {
   return {
     _sbsheader: {
-      version: 1,
+      version: 2,
       saved:   new Date().toISOString(),
     },
-    items: JSON.parse(JSON.stringify(state.get('headerItems') || [])),
+    items:  JSON.parse(JSON.stringify(state.get('headerItems')    || [])),
+    styles: JSON.parse(JSON.stringify(state.get('styleTemplates') || [])),
   };
 }
 
 /**
- * Load a .sbsheader payload, replacing the current headerItems list.
- * Validates the wrapper shape; ignores unknown fields.
+ * Load a .sbsheader payload, replacing the current header items AND
+ * style templates. Validates the wrapper shape; ignores unknown fields.
+ * v1 files (no styles section) load header items only — styles are
+ * left untouched.
  *
- * Returns the number of items loaded (0 = invalid file / empty list).
+ * Returns { headers, styles } counts (0 = none loaded for that section).
  */
 export function importHeaderSetup(payload) {
-  if (!payload || typeof payload !== 'object') return 0;
-  const items = Array.isArray(payload.items) ? payload.items : null;
-  if (!items) return 0;
-  // Re-stamp ids so loading the same file twice doesn't collide. Easier
-  // than tracking which ones to keep across loads.
-  const fresh = items.map(it => ({ ...it, id: generateId('hdr') }));
-  state.setState({ headerItems: fresh });
-  state.markDirty();
-  return fresh.length;
+  const result = { headers: 0, styles: 0 };
+  if (!payload || typeof payload !== 'object') return result;
+
+  if (Array.isArray(payload.items)) {
+    // Re-stamp ids so loading the same file twice doesn't collide.
+    const fresh = payload.items.map(it => ({ ...it, id: generateId('hdr') }));
+    state.setState({ headerItems: fresh });
+    result.headers = fresh.length;
+  }
+
+  if (Array.isArray(payload.styles)) {
+    const fresh = payload.styles.map(t => ({ ...t, id: generateId('style') }));
+    state.setState({ styleTemplates: fresh });
+    result.styles = fresh.length;
+  }
+
+  if (result.headers || result.styles) state.markDirty();
+  return result;
 }
 
 /**

@@ -83,10 +83,16 @@ export function initSidebarLeft() {
   state.on('change:projectDirty',          () => { if (_activeTab === 'files')    _renderFilesTab(); });
   state.on('change:selectionOutlineColor', () => { if (_activeTab === 'select')   _renderSelectTab(); });
   state.on('change:animationPresets',      () => { if (_activeTab === 'animation') _renderAnimTab(); });
-  state.on('change:headerItems',           () => { if (_activeTab === 'header')    _renderHeaderTabPanel(); });
+  state.on('change:headerItems',           () => {
+    if (_activeTab === 'header') _renderHeaderTabPanel();
+    if (_activeTab === 'style')  _renderStyleTabPanel();   // Save button enable
+  });
   state.on('change:headersHidden',         () => { if (_activeTab === 'header')    _renderHeaderTabPanel(); });
   state.on('change:headersLocked',         () => { if (_activeTab === 'header')    _renderHeaderTabPanel(); });
-  state.on('change:styleTemplates',        () => { if (_activeTab === 'style')     _renderStyleTabPanel(); });
+  state.on('change:styleTemplates',        () => {
+    if (_activeTab === 'style')  _renderStyleTabPanel();
+    if (_activeTab === 'header') _renderHeaderTabPanel();   // Save button enable
+  });
   state.on('styleTemplate:updated',        () => { if (_activeTab === 'style')     _renderStyleTabPanel(); });
   state.on('styleTemplate:removed',        () => { if (_activeTab === 'style')     _renderStyleTabPanel(); });
 

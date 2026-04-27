@@ -33,6 +33,8 @@ import {
   removeStyleTemplate,
   renameStyleTemplate,
 } from '../systems/style-templates.js';
+import { exportHeaderSetup, importHeaderSetup } from '../systems/header.js';
+import { setStatus } from './status.js';
 import { mountTextToolbar, unmountTextToolbar, setToolbarValues } from './text-toolbar.js';
 
 let _activeId  = null;        // which template is being edited
@@ -52,10 +54,17 @@ export function renderStyleTab(container) {
         canvas toolbar's "Style" dropdown — the box renders using the
         template's font / colour / fill instead of any inline styles.
         Editing a template updates every box that references it.
+        Save Setup exports styles <em>and</em> header items together as
+        a single <code>.sbsheader</code> preset file.
       </div>
 
       <div class="card" style="margin-top:10px;display:flex;gap:6px;">
         <button class="btn" id="style-new" style="flex:1;">+ New style</button>
+      </div>
+
+      <div class="card" style="margin-top:8px;display:grid;grid-template-columns:1fr 1fr;gap:6px;">
+        <button class="btn" id="style-save-setup" title="Export styles + header items as a .sbsheader preset file" ${(items.length === 0 && (state.get('headerItems') || []).length === 0) ? 'disabled' : ''}>Save Setup</button>
+        <button class="btn" id="style-load-setup" title="Import a .sbsheader file (replaces styles and/or header items)">Load Setup</button>
       </div>
 
       <div class="card" style="margin-top:8px;padding:0;">
@@ -73,7 +82,9 @@ export function renderStyleTab(container) {
     </div>
   `;
 
-  container.querySelector('#style-new').addEventListener('click', _onCreate);
+  container.querySelector('#style-new')       .addEventListener('click', _onCreate);
+  container.querySelector('#style-save-setup')?.addEventListener('click', _onSaveSetup);
+  container.querySelector('#style-load-setup')?.addEventListener('click', _onLoadSetup);
 
   // Per-row delegation.
   const list = container.querySelector('#style-list');
@@ -235,4 +246,86 @@ function _fillAlpha(rgba) {
 function _onCreate() {
   const tpl = addStyleTemplate({ name: `Style ${listStyleTemplates().length + 1}` });
   _setActive(tpl.id);
+}
+
+// ─── .sbsheader unified save / load ─────────────────────────────────────────
+//
+// The same .sbsheader file format carries BOTH header items and style
+// templates (v2). Exposing Save / Load here lets the user round-trip the
+// pair from either tab — picking the same file from either side restores
+// both sections.
+
+async function _onSaveSetup() {
+  const payload = exportHeaderSetup();
+  const nItems  = payload.items?.length  || 0;
+  const nStyles = payload.styles?.length || 0;
+  if (!nItems && !nStyles) { setStatus('Nothing to save (no styles or header items).', 'warning'); return; }
+  const json = JSON.stringify(payload, null, 2);
+
+  if (window.sbsNative?.saveHeader && window.sbsNative?.writeFile) {
+    const path = await window.sbsNative.saveHeader('header_setup.sbsheader');
+    if (!path) return;
+    const res = await window.sbsNative.writeFile(path, json, 'utf-8');
+    if (res?.ok) setStatus(`Saved preset → ${path.split(/[\\/]/).pop()}`);
+    else         setStatus(`Save failed: ${res?.error || 'unknown'}`, 'danger');
+    return;
+  }
+  // Browser fallback — anchor download.
+  const blob = new Blob([json], { type: 'application/json' });
+  const a    = document.createElement('a');
+  a.href     = URL.createObjectURL(blob);
+  a.download = 'header_setup.sbsheader';
+  a.click();
+  setTimeout(() => URL.revokeObjectURL(a.href), 1000);
+  setStatus('Saved preset (downloaded).');
+}
+
+async function _onLoadSetup() {
+  let json = null;
+
+  if (window.sbsNative?.openHeader && window.sbsNative?.readFile) {
+    const path = await window.sbsNative.openHeader();
+    if (!path) return;
+    const res = await window.sbsNative.readFile(path, 'utf-8');
+    if (!res?.ok) { setStatus(`Load failed: ${res?.error || 'unknown'}`, 'danger'); return; }
+    json = res.data;
+  } else {
+    json = await new Promise(resolve => {
+      const input = document.createElement('input');
+      input.type   = 'file';
+      input.accept = '.sbsheader,.json,application/json';
+      input.onchange = () => {
+        const f = input.files?.[0];
+        if (!f) { resolve(null); return; }
+        const r = new FileReader();
+        r.onload  = () => resolve(String(r.result || ''));
+        r.onerror = () => resolve(null);
+        r.readAsText(f);
+      };
+      input.click();
+    });
+    if (!json) return;
+  }
+
+  let payload;
+  try { payload = JSON.parse(json); }
+  catch (err) { setStatus('Invalid .sbsheader file (not JSON).', 'danger'); return; }
+
+  // Confirm a wholesale replace per section that's about to load.
+  const willHeaders = Array.isArray(payload?.items)  && payload.items.length  > 0;
+  const willStyles  = Array.isArray(payload?.styles) && payload.styles.length > 0;
+  const existHdr    = (state.get('headerItems')    || []).length;
+  const existStyle  = (state.get('styleTemplates') || []).length;
+  const warn = [];
+  if (willHeaders && existHdr   > 0) warn.push(`${existHdr} header item(s)`);
+  if (willStyles  && existStyle > 0) warn.push(`${existStyle} style template(s)`);
+  if (warn.length && !confirm(`Replace ${warn.join(' + ')} with the loaded preset?`)) return;
+
+  const { headers, styles } = importHeaderSetup(payload);
+  const parts = [];
+  if (styles)  parts.push(`${styles} style(s)`);
+  if (headers) parts.push(`${headers} header item(s)`);
+  if (parts.length) setStatus(`Loaded ${parts.join(' + ')}.`);
+  else              setStatus('No styles or header items found in the file.', 'warning');
+  _activeId = null;
 }
