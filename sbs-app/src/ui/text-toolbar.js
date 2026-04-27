@@ -55,13 +55,17 @@ let _alphaInput = null;
  *   in single-editor mode (null in multi-mode); used only to refocus
  *   before each apply so execCommand sees the editable as active.
  */
-export function mountTextToolbar(host, applier, editorEl = null) {
+export function mountTextToolbar(host, applier, editorEl = null, opts = {}) {
   if (_toolbar) unmountTextToolbar();
   _toolbar = host;
   _editor  = editorEl;
   _applier = applier || (() => {});
   _toolbar.innerHTML = '';
   _toolbar.dataset.sbsTextToolbar = '1';
+  // Style-tab mode hides alignment buttons (per spec, alignment is the
+  // ONLY thing styled boxes can vary at the box level; templates
+  // themselves don't carry alignment).
+  const showAlignment = opts.showAlignment !== false;
 
   // Visual layout (left to right):
   //   ⫷ ⫿ ⫸  |  B I U  |  fill α  text-color  size ▼  font ▼
@@ -81,11 +85,15 @@ export function mountTextToolbar(host, applier, editorEl = null) {
   _fillInput  = fillCtl.querySelector('input[type=color]');
   _alphaInput = alphaCtl.querySelector('input[type=range]');
 
+  if (showAlignment) {
+    _toolbar.append(
+      _btn('⫷', 'Align left',   () => _apply('alignLeft')),
+      _btn('⫿', 'Align center', () => _apply('alignCenter')),
+      _btn('⫸', 'Align right',  () => _apply('alignRight')),
+      _sep(),
+    );
+  }
   _toolbar.append(
-    _btn('⫷', 'Align left',         () => _apply('alignLeft')),
-    _btn('⫿', 'Align center',       () => _apply('alignCenter')),
-    _btn('⫸', 'Align right',        () => _apply('alignRight')),
-    _sep(),
     _btn('B', 'Bold (Ctrl+B)',      () => _apply('bold'),      { fontWeight: 'bold' }),
     _btn('I', 'Italic (Ctrl+I)',    () => _apply('italic'),    { fontStyle:  'italic' }),
     _btn('U', 'Underline (Ctrl+U)', () => _apply('underline'), { textDecoration: 'underline' }),
