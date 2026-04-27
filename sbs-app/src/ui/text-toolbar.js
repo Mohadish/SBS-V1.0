@@ -43,6 +43,8 @@ let _fontSel = null;
 let _colorInput = null;
 let _fillInput  = null;
 let _alphaInput = null;
+let _styleSel   = null;       // style-template dropdown (canvas mode only)
+let _styleSeparators = [];    // visual separators between locked + always-on controls
 
 /**
  * Build the text controls inside the supplied host element. Replaces any
@@ -93,7 +95,9 @@ export function mountTextToolbar(host, applier, editorEl = null, opts = {}) {
       _sep(),
     );
   }
-  _toolbar.append(
+  // Style-locked group — these controls are hidden when a styleId is
+  // active so the user only has alignment to vary.
+  const lockedGroup = [
     _btn('B', 'Bold (Ctrl+B)',      () => _apply('bold'),      { fontWeight: 'bold' }),
     _btn('I', 'Italic (Ctrl+I)',    () => _apply('italic'),    { fontStyle:  'italic' }),
     _btn('U', 'Underline (Ctrl+U)', () => _apply('underline'), { textDecoration: 'underline' }),
@@ -102,9 +106,67 @@ export function mountTextToolbar(host, applier, editorEl = null, opts = {}) {
     colorCtl,
     _sizeSel,
     _fontSel,
-  );
+  ];
+  _toolbar.append(...lockedGroup);
+  // Tag the group so setStyleLocked() can flip its visibility en masse.
+  for (const el of lockedGroup) el.dataset.sbsStyleLockable = '1';
 
   _toolbar.style.display = 'flex';
+}
+
+/**
+ * Replace the toolbar's style-template dropdown contents. Called by
+ * overlay.js whenever the templates list changes, the active selection
+ * changes, or the bound style of the active selection changes.
+ *
+ *   templates: [{ id, name }]
+ *   currentId: the styleId of the active selection (null/empty = none)
+ *   onChange:  (styleId|null) => void
+ *
+ * Pass templates: null to remove the dropdown entirely (e.g. style-tab
+ * mode where the dropdown is meaningless).
+ */
+export function setStyleDropdown(templates, currentId, onChange) {
+  if (!_toolbar) return;
+  if (_styleSel) _styleSel.remove();
+  _styleSel = null;
+  if (!Array.isArray(templates)) return;
+
+  const sel = document.createElement('select');
+  sel.title = 'Bind this text box to a style template';
+  sel.style.cssText = [
+    'background:#1f2937','color:#e5e7eb',
+    'border:1px solid #334155','border-radius:6px',
+    'height:28px','padding:0 6px','font-size:13px','cursor:pointer',
+    'min-width:120px','order:-1',   // keep style picker leftmost in flex order
+  ].join(';');
+  const noneOpt = document.createElement('option');
+  noneOpt.value = '';
+  noneOpt.textContent = '(no style)';
+  sel.appendChild(noneOpt);
+  for (const t of templates) {
+    const o = document.createElement('option');
+    o.value = t.id;
+    o.textContent = t.name || 'Untitled';
+    sel.appendChild(o);
+  }
+  sel.value = currentId || '';
+  sel.addEventListener('mousedown', e => e.stopPropagation());
+  sel.addEventListener('change', () => onChange(sel.value || null));
+  _toolbar.prepend(sel);
+  _styleSel = sel;
+}
+
+/**
+ * When a style is bound, hide the locked group so only Align L/C/R and
+ * the style dropdown remain. Call after every selection change /
+ * styleId update.
+ */
+export function setStyleLocked(locked) {
+  if (!_toolbar) return;
+  _toolbar.querySelectorAll('[data-sbs-style-lockable]').forEach(el => {
+    el.style.display = locked ? 'none' : '';
+  });
 }
 
 /**

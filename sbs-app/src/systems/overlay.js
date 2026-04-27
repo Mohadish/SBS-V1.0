@@ -17,9 +17,10 @@
 
 import { state } from '../core/state.js';
 import { showContextMenu } from '../ui/context-menu.js';
-import { mountTextToolbar, unmountTextToolbar, execCommandApplier, setToolbarValues, wasColorPickedRecently } from '../ui/text-toolbar.js';
+import { mountTextToolbar, unmountTextToolbar, execCommandApplier, setToolbarValues, wasColorPickedRecently, setStyleDropdown, setStyleLocked } from '../ui/text-toolbar.js';
 import { getTextToolbarSlot }  from '../ui/overlay-toolbar.js';
 import * as textEngine from './text-engine.js';
+import { getStyleTemplate, listStyleTemplates } from './style-templates.js';
 
 let _stage       = null;   // Konva.Stage
 let _layer       = null;   // Konva.Layer — holds all user content
@@ -81,6 +82,29 @@ export function initOverlay() {
   // Restore the currently-active step's overlay on load / step change.
   state.on('step:applied', _onStepApplied);
   state.on('change:activeStepId', _scheduleLoad);
+
+  // Live style-template propagation. When a template changes, every
+  // text box on the ACTIVE step that's bound to it re-rasterises.
+  // Inactive steps pick up the change next time they load (every
+  // text-box reload routes through _reflowTextBox, which reads the
+  // current template values).
+  state.on('styleTemplate:updated', _onStyleTemplateUpdated);
+  state.on('styleTemplate:removed', _onStyleTemplateUpdated);   // also re-rasterise when a template is deleted
+}
+
+function _onStyleTemplateUpdated(payload) {
+  if (!_layer) return;
+  const id = payload?.id;
+  // Re-rasterise every text box on the active layer whose styleId
+  // matches (or, on remove, whose styleId is now stale).
+  for (const child of _layer.getChildren()) {
+    if (child.getClassName?.() !== 'Image') continue;
+    if (!child.getAttr('textHtml')) continue;
+    const childStyleId = child.getAttr('styleId');
+    if (id && childStyleId !== id) continue;
+    if (!id && !childStyleId) continue;
+    _reflowTextBox(child).catch(() => {});
+  }
 }
 
 function _syncSize() {
@@ -314,7 +338,17 @@ function _enterTextEdit(node) {
   // the contenteditable. The click-outside detector already whitelists
   // [data-sbs-text-toolbar] so toolbar clicks won't dismiss the editor.
   const toolbarHost = getTextToolbarSlot();
-  if (toolbarHost) mountTextToolbar(toolbarHost, _singleEditorApplier, div);
+  if (toolbarHost) {
+    mountTextToolbar(toolbarHost, _singleEditorApplier, div);
+    // Style dropdown — single-editor mode binds the active node.
+    setStyleDropdown(listStyleTemplates(), node.getAttr('styleId') || '', (newId) => {
+      node.setAttr('styleId', newId || null);
+      _reflowTextBox(node).catch(() => {});
+      setStyleLocked(!!newId);
+      _scheduleSave();
+    });
+    setStyleLocked(!!node.getAttr('styleId'));
+  }
   // Sync the dropdowns to whatever style is at the caret. Re-fires on
   // every selection change so moving the caret across mixed-style runs
   // updates the toolbar live.
@@ -387,12 +421,36 @@ async function _reflowTextBox(node) {
   const html = node.getAttr('textHtml');
   if (!html) return false;
   const w = Math.max(20, Math.round(node.width()));
-  const bgColor = node.getAttr('fillColor') || 'transparent';
+  const styleId = node.getAttr('styleId') || null;
+  const tpl = styleId ? getStyleTemplate(styleId) : null;
+
+  // Style-template-bound boxes ignore their inline styling and inherit
+  // EVERYTHING from the template (per spec: assigning a style overrides
+  // any per-character formatting). Alignment is the only thing that
+  // survives — strip alignment from the inline styles (we keep the
+  // <div text-align:...> wrappers because alignment IS the box-level
+  // override).
+  let renderHtml = html;
+  let opts = { width: w, bgColor: node.getAttr('fillColor') || 'transparent' };
+  if (tpl) {
+    renderHtml = _stripInlineStylingExceptAlign(html);
+    opts = {
+      ...opts,
+      fontFamily:     tpl.fontFamily     || 'Arial',
+      fontSize:       tpl.fontSize       || 16,
+      color:          tpl.color          || '#ffffff',
+      fontWeight:     tpl.fontWeight     || 'normal',
+      fontStyle:      tpl.fontStyle      || 'normal',
+      textDecoration: tpl.textDecoration || '',
+      bgColor:        tpl.fillColor || opts.bgColor,
+    };
+  }
+
   // Auto-height: do NOT pass `height` to the rasteriser. The canvas
   // ends up exactly as tall as the wrapped text needs at this width.
   // Box grows/shrinks vertically as the content does — true text-frame
   // behaviour without a manual height handle for the user to fight.
-  const canvas = await _htmlToCanvas(html, { width: w, bgColor });
+  const canvas = await _htmlToCanvas(renderHtml, opts);
   if (!canvas) return false;
   node.image(canvas);
   node.width(canvas.width);
@@ -721,6 +779,20 @@ function _refreshMultiToolbar() {
   if (textBoxes.length >= 1) {
     mountTextToolbar(host, _multiTextApplier);
     setToolbarValues(_summariseStyleAcrossBoxes(textBoxes));
+    // Style dropdown — multi-mode assignment writes the same styleId
+    // to every selected text box. Show "(no style)" when the selection
+    // mixes bound + unbound, or different bound IDs.
+    const ids = new Set(textBoxes.map(n => n.getAttr('styleId') || ''));
+    const uniformId = ids.size === 1 ? [...ids][0] : '';
+    setStyleDropdown(listStyleTemplates(), uniformId, (newId) => {
+      for (const n of textBoxes) {
+        n.setAttr('styleId', newId || null);
+        _reflowTextBox(n).catch(() => {});
+      }
+      setStyleLocked(!!newId);
+      _scheduleSave();
+    });
+    setStyleLocked(uniformId ? true : false);
   } else {
     unmountTextToolbar();
   }
@@ -1061,7 +1133,7 @@ function _recreateNode(spec) {
   if (!spec) return null;
   if (spec.className === 'Text')  return new Konva.Text({ ...spec.attrs, draggable: true });
   if (spec.className === 'Image') {
-    const { src, textHtml, textWidth, naturalW, naturalH, fillColor, ...rest } = spec.attrs || {};
+    const { src, textHtml, textWidth, naturalW, naturalH, fillColor, styleId, ...rest } = spec.attrs || {};
     const node = new Konva.Image({ ...rest, draggable: true });
     // Preserve any naturalW/naturalH that round-tripped through JSON; if
     // they're missing (older overlays predating the Reset feature), we
@@ -1070,23 +1142,15 @@ function _recreateNode(spec) {
     if (Number.isFinite(naturalW)) node.setAttr('naturalW', naturalW);
     if (Number.isFinite(naturalH)) node.setAttr('naturalH', naturalH);
     if (fillColor)                 node.setAttr('fillColor', fillColor);
+    if (styleId)                   node.setAttr('styleId', styleId);
     if (textHtml) {
-      // Rich-text box — re-rasterize from stored HTML.
+      // Rich-text box — _reflowTextBox handles raster + style-template
+      // override. Routing every load through _reflowTextBox means a
+      // template change always reflects on every step the next time
+      // it's loaded, no separate code path to maintain.
       node.setAttr('textHtml',  textHtml);
       node.setAttr('textWidth', textWidth);
-      _htmlToCanvas(textHtml, {
-        width:  textWidth || 400,
-        bgColor: fillColor || 'transparent',
-      }).then(canvas => {
-        if (canvas) {
-          node.image(canvas);
-          // Don't clobber width/height (the user may have resized) — but
-          // backfill naturalW/H from this fresh raster if they weren't saved.
-          if (!Number.isFinite(node.getAttr('naturalW'))) node.setAttr('naturalW', canvas.width);
-          if (!Number.isFinite(node.getAttr('naturalH'))) node.setAttr('naturalH', canvas.height);
-          _layer.batchDraw();
-        }
-      }).catch(e => console.warn('[overlay] text rasterize failed', e));
+      _reflowTextBox(node).catch(e => console.warn('[overlay] text rasterize failed', e));
     } else if (src) {
       node.setAttr('src', src);
       _loadImage(src).then(img => {
@@ -1413,6 +1477,29 @@ function _trimPasteBlocks(html) {
   return tmp.innerHTML;
 }
 
+/**
+ * Strip every inline style EXCEPT text-align from a HTML fragment.
+ * Used when rendering style-template-bound text boxes — the template
+ * dictates colour / font / size / weight / etc., but per-line alignment
+ * is the user's per-box choice and survives.
+ */
+function _stripInlineStylingExceptAlign(html) {
+  const tmp = document.createElement('div');
+  tmp.innerHTML = String(html || '');
+  tmp.querySelectorAll('[style]').forEach(el => {
+    const align = el.style.textAlign;
+    el.removeAttribute('style');
+    if (align) el.style.textAlign = align;
+  });
+  // Drop legacy <font>/<u>/<s> entirely — template handles these.
+  tmp.querySelectorAll('font,u,s,strike').forEach(el => {
+    const parent = el.parentNode;
+    while (el.firstChild) parent.insertBefore(el.firstChild, el);
+    parent.removeChild(el);
+  });
+  return tmp.innerHTML;
+}
+
 async function _htmlToCanvas(html, opts = {}) {
   const {
     width      = 400,
@@ -1422,6 +1509,9 @@ async function _htmlToCanvas(html, opts = {}) {
     fontSize   = 16,
     color      = '#ffffff',
     bgColor    = 'transparent',      // textbox fill — rgba string preferred
+    fontWeight = 'normal',           // style-template overrides
+    fontStyle  = 'normal',
+    textDecoration = '',
   } = opts;
 
   // XHTML normalisation. SVG foreignObject parses its inner content as
@@ -1484,6 +1574,9 @@ async function _htmlToCanvas(html, opts = {}) {
     `color:${color}`,
     `font-family:${fontFamily}`,
     `font-size:${fontSize}px`,
+    `font-weight:${fontWeight}`,
+    `font-style:${fontStyle}`,
+    `text-decoration:${textDecoration || 'none'}`,
     `background-color:${bgColor}`,
     'box-sizing:border-box',
     'white-space:pre-wrap',
