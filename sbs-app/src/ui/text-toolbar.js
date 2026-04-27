@@ -170,6 +170,18 @@ export function execCommandApplier(action, value) {
  * Pixel-size font sizing — execCommand('fontSize', 1..7) uses a legacy
  * 7-step API and looks awful at modern resolutions. Wrap the selection
  * in a span with explicit CSS instead.
+ *
+ * Then STRIP font-size from every descendant of the new span. Reason:
+ * if the selected range already contained a span with an inline
+ * font-size, extractContents pulls that span along with its style
+ * declaration. Wrapping it in a new span gives us
+ *   <span size:20><span size:40>TEXT</span></span>
+ * The TEXT renders at 40 (inner cascade wins) — but worse, the line
+ * height of the parent block is computed from the LARGEST font-size
+ * declaration in the line, INCLUDING the now-redundant outer/inner
+ * declarations. Result: visible text shrinks but the line keeps the
+ * tall gap. Stripping nested font-size makes the size update affect
+ * both the text AND the line height, which is what users expect.
  */
 function _execFontSizeOnSelection(px) {
   const sel = window.getSelection();
@@ -180,6 +192,9 @@ function _execFontSizeOnSelection(px) {
   span.style.fontSize = `${px}px`;
   try {
     span.appendChild(range.extractContents());
+    // Reset every nested font-size — only our outer span declares one
+    // now, so the line height tracks the new size cleanly.
+    span.querySelectorAll('[style]').forEach(el => { el.style.fontSize = ''; });
     range.insertNode(span);
     range.selectNodeContents(span);
     sel.removeAllRanges();
