@@ -203,17 +203,28 @@ function _execFontSizeOnSelection(px) {
     // max font-size of every span in the line — including empty ones.
     // So shrinking text from 40 → 20 looked like text shrunk but the
     // gap above it stayed at 40's line height. Walk the containing
-    // block, drop any empty inline element with no visible content.
+    // block and clean up:
+    //   • drop empty inline elements (span/b/i/u/s/strong/em/font) that
+    //     have no visible text and no embedded media
+    //   • strip explicit line-height declarations from every element
+    //     and the block itself — Chromium sometimes writes an inline
+    //     line-height:Npx alongside a font-size change, and an
+    //     absolute line-height stays put even after the font shrinks
     let block = span;
     while (block && block.parentElement && !/^(DIV|P|BODY)$/.test(block.tagName)) {
       block = block.parentElement;
     }
     if (block) {
       block.querySelectorAll('span,b,i,u,s,strong,em,font').forEach(el => {
-        if (!el.textContent && !el.querySelector('br,img,svg,input,canvas')) {
+        if (!el.textContent.trim() && !el.querySelector('br,img,svg,input,canvas')) {
           el.remove();
         }
       });
+      // Strip stale line-height anywhere in the line — let CSS
+      // line-height:1.2 from the rasteriser's outer body recalculate
+      // from the new font size.
+      if (block.style) block.style.lineHeight = '';
+      block.querySelectorAll('[style]').forEach(el => { el.style.lineHeight = ''; });
     }
 
     range.selectNodeContents(span);
