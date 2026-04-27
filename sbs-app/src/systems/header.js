@@ -42,8 +42,9 @@
  *   • step:rename / chapter:rename → re-render dynamic kinds
  */
 
-import { state }    from '../core/state.js';
-import { generateId } from '../core/schema.js';
+import { state }       from '../core/state.js';
+import { generateId }  from '../core/schema.js';
+import { htmlToCanvas } from './overlay.js';   // P2: shared SVG-foreignObject rasteriser
 
 // ─── Pure data helpers (no DOM / Konva — usable from export, tests) ─────────
 
@@ -310,32 +311,94 @@ function _buildNode(item, ctx, inert) {
     return node;
   }
 
-  // Text-flavoured kinds — resolve text live for dynamic kinds.
-  const text = resolveHeaderText(item, ctx);
-  const node = new Konva.Text({
+  // Text-flavoured kinds — render via the SAME SVG-foreignObject pipeline
+  // overlay textboxes use, so headers inherit rich-text capabilities for
+  // free in P3 (canvas editor, mixed inline styles, style template binding).
+  // For now (P2), the styling still comes from item fields driven by the
+  // sidebar; we just build the textHtml inline at render time.
+  const node = new Konva.Image({
     x: item.x,
     y: item.y,
     width:  item.w,
     height: item.h,
-    text:   text || ' ',                      // Konva collapses empty boxes; keep a space
-    fontSize:   item.fontSize   || 32,
-    fontStyle:  [item.fontStyle  === 'italic' ? 'italic' : '',
-                 item.fontWeight === 'bold'   ? 'bold'   : ''].filter(Boolean).join(' ') || 'normal',
-    fill:    item.color || '#ffffff',
-    align:   item.align || 'center',
-    verticalAlign: 'middle',
     draggable: !inert,
     listening: !inert,
     name: 'sbs-header-item',
-    // Subtle text shadow so light text stays readable on light viewport bg.
-    shadowColor:   'rgba(0,0,0,0.45)',
-    shadowOffsetY: 1,
-    shadowBlur:    2,
   });
   node.setAttr('headerId',   item.id);
   node.setAttr('headerKind', item.kind);
+  // textHtml lives on the node so P3's canvas editor can read/write it
+  // the same way overlay textboxes do. P2 derives it from item fields
+  // every render — once P3 lands, the editor will write it directly
+  // and the item fields become a fallback / migration source.
+  const textHtml = _buildHeaderTextHtml(item, ctx);
+  node.setAttr('textHtml', textHtml);
   if (!inert) _attachItemHandlers(node, item);
+  // Async raster — Konva.Image draws nothing until the canvas lands,
+  // which is fine: empty image = no drawImage call (per Konva sceneFunc
+  // `if (image)` guard). _hydrateHeaderText is a no-op if the node was
+  // destroyed mid-await (e.g. another refresh fired).
+  _hydrateHeaderText(node, textHtml, item);
   return node;
+}
+
+/**
+ * Build the inline textHtml for a text-flavoured header item from its
+ * styling fields. Wraps the text in flex layout so it vertically
+ * centres inside the box (matches the old Konva.Text verticalAlign
+ * behaviour). Horizontal alignment via text-align on the inner block.
+ *
+ * The `text-shadow` keeps the readability boost the old Konva.Text node
+ * had (`shadowColor / shadowOffsetY / shadowBlur`) — implemented here in
+ * CSS so the SVG-foreignObject rasterise picks it up.
+ */
+function _buildHeaderTextHtml(item, ctx) {
+  const text       = resolveHeaderText(item, ctx) || ' ';
+  const escaped    = _escHtml(text);
+  const align      = item.align      || 'center';
+  const fontFamily = item.fontFamily || 'Arial';
+  const fontSize   = item.fontSize   || 32;
+  const color      = item.color      || '#ffffff';
+  const fontWeight = item.fontWeight === 'bold'   ? 'bold'   : 'normal';
+  const fontStyle  = item.fontStyle  === 'italic' ? 'italic' : 'normal';
+  const innerStyle = [
+    `width:100%`,
+    `text-align:${align}`,
+    `font-family:${fontFamily}`,
+    `font-size:${fontSize}px`,
+    `font-weight:${fontWeight}`,
+    `font-style:${fontStyle}`,
+    `color:${color}`,
+    `text-shadow:0 1px 2px rgba(0,0,0,0.45)`,
+  ].join(';');
+  return `<div style="height:100%;display:flex;align-items:center"><div style="${innerStyle}">${escaped}</div></div>`;
+}
+
+function _escHtml(s) {
+  return String(s ?? '').replace(/[&<>"']/g,
+    c => ({ '&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;' })[c]);
+}
+
+/**
+ * Rasterise the textHtml to a canvas and assign it to the Konva.Image
+ * node. Bails if the node was destroyed (e.g. a refresh fired mid-
+ * await) — Konva would otherwise throw on an orphan node.
+ */
+async function _hydrateHeaderText(node, textHtml, item) {
+  try {
+    const canvas = await htmlToCanvas(textHtml, {
+      width:   Math.max(1, item.w | 0),
+      height:  Math.max(1, item.h | 0),
+      padding: 0,           // Konva.Text had no padding; preserve visual parity
+    });
+    if (!canvas) return;
+    if (node.isDestroyed?.()) return;
+    if (!canvas.width || !canvas.height) return;   // defensive — _htmlToCanvas already clamps
+    node.image(canvas);
+    _layer?.batchDraw();
+  } catch (e) {
+    console.warn('[header] text rasterise failed', e);
+  }
 }
 
 function _attachItemHandlers(node, item) {
@@ -391,11 +454,15 @@ function _selectHeaderNode(node, additive) {
  * all 8 anchors. If any selected node is an image, fall back to
  * aspect-locked corners (mixing free + locked in one transformer
  * isn't a thing in Konva).
+ *
+ * P2: text-flavoured kinds are now Konva.Image (rendered from textHtml)
+ * not Konva.Text — so we distinguish by `headerKind`, not className.
+ * Anything that isn't kind 'image' resizes freely.
  */
 function _configTransformerForNodes(nodes) {
   if (!_transformer) return;
   if (nodes.length === 0) return;
-  const allText = nodes.every(n => n.getClassName?.() === 'Text');
+  const allText = nodes.every(n => n.getAttr?.('headerKind') !== 'image');
   if (allText) {
     _transformer.keepRatio(false);
     _transformer.enabledAnchors([

@@ -1651,6 +1651,15 @@ function _stripInlineStylingExceptAlign(html) {
   return tmp.innerHTML;
 }
 
+/**
+ * Public re-export so other systems (header.js) can rasterise their
+ * own HTML through the same SVG-foreignObject path the overlay uses.
+ * Same options + same XHTML normalisation, no duplication.
+ */
+export function htmlToCanvas(html, opts = {}) {
+  return _htmlToCanvas(html, opts);
+}
+
 async function _htmlToCanvas(html, opts = {}) {
   const {
     width      = 400,
