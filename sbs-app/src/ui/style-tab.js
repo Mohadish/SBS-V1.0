@@ -34,7 +34,8 @@ import {
   renameStyleTemplate,
 } from '../systems/style-templates.js';
 import { exportHeaderSetup, importHeaderSetup } from '../systems/header.js';
-import { setStatus } from './status.js';
+import { setStatus }    from './status.js';
+import { promptString } from './prompt.js';
 import { mountTextToolbar, unmountTextToolbar, setToolbarValues } from './text-toolbar.js';
 
 let _activeId  = null;        // which template is being edited
@@ -101,9 +102,11 @@ export function renderStyleTab(container) {
       return;
     }
     if (act === 'rename') {
+      // Electron renderer blocks window.prompt — use the shared modal.
       const tpl = listStyleTemplates().find(t => t.id === id);
-      const name = prompt('Style name:', tpl?.name || '');
-      if (name) renameStyleTemplate(id, name);
+      promptString('Style name:', tpl?.name || '').then(name => {
+        if (name) renameStyleTemplate(id, name);
+      });
       return;
     }
     _setActive(id);
