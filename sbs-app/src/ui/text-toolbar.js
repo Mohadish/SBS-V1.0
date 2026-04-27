@@ -196,6 +196,26 @@ function _execFontSizeOnSelection(px) {
     // now, so the line height tracks the new size cleanly.
     span.querySelectorAll('[style]').forEach(el => { el.style.fontSize = ''; });
     range.insertNode(span);
+
+    // CRITICAL cleanup: extractContents pulls a text node out of its
+    // wrapping span but LEAVES THE EMPTY SPAN behind. That empty span
+    // still declares the OLD font-size, and the line's height is the
+    // max font-size of every span in the line — including empty ones.
+    // So shrinking text from 40 → 20 looked like text shrunk but the
+    // gap above it stayed at 40's line height. Walk the containing
+    // block, drop any empty inline element with no visible content.
+    let block = span;
+    while (block && block.parentElement && !/^(DIV|P|BODY)$/.test(block.tagName)) {
+      block = block.parentElement;
+    }
+    if (block) {
+      block.querySelectorAll('span,b,i,u,s,strong,em,font').forEach(el => {
+        if (!el.textContent && !el.querySelector('br,img,svg,input,canvas')) {
+          el.remove();
+        }
+      });
+    }
+
     range.selectNodeContents(span);
     sel.removeAllRanges();
     sel.addRange(range);

@@ -1308,8 +1308,15 @@ function _loadImage(src) {
  */
 function _sanitiseTextboxHtml(html) {
   const ALLOWED_TAGS = new Set(['DIV', 'P', 'BR', 'SPAN', 'B', 'I', 'U', 'S', 'STRONG', 'EM']);
+  // background-color is INTENTIONALLY excluded. Web sources love to put
+  // a highlight colour on copied spans (search-result highlight, syntax
+  // highlighting, banner backgrounds). Pasting that into a textbox left
+  // visible coloured rectangles around the imported text that the user
+  // had no way to remove. Textbox fill (the user-facing "background"
+  // feature) is a node-level attr, not inline CSS, so dropping
+  // background-color here doesn't affect it.
   const ALLOWED_STYLES = [
-    'color', 'background-color',
+    'color',
     'font-size', 'font-family', 'font-weight', 'font-style',
     'text-decoration', 'text-align',
   ];
