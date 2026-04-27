@@ -160,10 +160,117 @@ export function execCommandApplier(action, value) {
   try {
     if (action === 'fontSize') {
       _execFontSizeOnSelection(Number(value));
+    } else if (action === 'underline' || action === 'strikeThrough') {
+      // execCommand toggle semantics for underline/strike are unreliable
+      // when the selection straddles already-decorated and bare runs:
+      // browsers leave residue declarations behind that re-render as
+      // ghost underlines / strike-throughs. Run our own toggle that
+      // directly normalises text-decoration on every span in the
+      // selection.
+      _toggleDecorationOnSelection(action === 'underline' ? 'underline' : 'line-through');
     } else {
       document.execCommand(action, false, value);
     }
   } catch (err) { console.warn(`[text-toolbar] ${action} failed:`, err); }
+}
+
+/**
+ * Toggle a text-decoration value across the current selection.
+ * If every text run already carries the decoration, REMOVE it from all
+ * spans inside the selection; otherwise ADD it uniformly to every text
+ * run. Mirrors _massToggleDecoration in overlay.js — the toggle logic
+ * is identical, just operating on the live Selection range instead of
+ * a stored HTML string.
+ *
+ * Also strips legacy <u> / <s> tags inside the selection so they can't
+ * paint extra underlines on top of a CSS-styled span.
+ */
+function _toggleDecorationOnSelection(decoration) {
+  const sel = window.getSelection();
+  if (!sel || sel.rangeCount === 0) return;
+  const range = sel.getRangeAt(0);
+  if (range.collapsed) {
+    // Caret-only — defer to native toggle so the next typed character
+    // picks up the style, same as bold/italic.
+    document.execCommand(decoration === 'underline' ? 'underline' : 'strikeThrough');
+    return;
+  }
+
+  const fragment = range.extractContents();
+  const tmp = document.createElement('div');
+  tmp.appendChild(fragment);
+
+  // Unwrap legacy <u>/<s> tags — text-decoration is the modern path.
+  const legacy = decoration === 'underline' ? 'u' : 's,strike';
+  tmp.querySelectorAll(legacy).forEach(el => {
+    const parent = el.parentNode;
+    while (el.firstChild) parent.insertBefore(el.firstChild, el);
+    parent.removeChild(el);
+  });
+
+  // Decide toggle direction.
+  const allHaveIt = _everySpanHasDecoration(tmp, decoration);
+
+  if (allHaveIt) {
+    // Strip the decoration from every styled element.
+    tmp.querySelectorAll('[style]').forEach(el => {
+      el.style.textDecoration = _stripFromList(el.style.textDecoration, decoration);
+    });
+  } else {
+    // Apply uniformly: walk text nodes, wrap each in a span carrying
+    // the decoration. Coalesce with any existing decoration on that
+    // span.
+    const walker = document.createTreeWalker(tmp, NodeFilter.SHOW_TEXT);
+    const textNodes = [];
+    let n;
+    while ((n = walker.nextNode())) if (n.textContent.length) textNodes.push(n);
+    for (const tn of textNodes) {
+      const wrap = document.createElement('span');
+      wrap.style.textDecoration = decoration;
+      tn.parentNode.insertBefore(wrap, tn);
+      wrap.appendChild(tn);
+    }
+  }
+
+  // Re-insert.
+  const newFrag = document.createDocumentFragment();
+  let firstInserted = null, lastInserted = null;
+  while (tmp.firstChild) {
+    const node = tmp.firstChild;
+    if (!firstInserted) firstInserted = node;
+    lastInserted = node;
+    newFrag.appendChild(node);
+  }
+  range.insertNode(newFrag);
+
+  if (firstInserted && lastInserted && firstInserted.isConnected && lastInserted.isConnected) {
+    const newRange = document.createRange();
+    newRange.setStartBefore(firstInserted);
+    newRange.setEndAfter(lastInserted);
+    sel.removeAllRanges();
+    sel.addRange(newRange);
+  }
+}
+
+function _everySpanHasDecoration(root, decoration) {
+  const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT);
+  let n;
+  while ((n = walker.nextNode())) {
+    if (!n.textContent.trim()) continue;
+    let p = n.parentElement;
+    let found = false;
+    while (p && p !== root) {
+      const td = String(p.style?.textDecoration || '');
+      if (td.split(/\s+/).includes(decoration)) { found = true; break; }
+      p = p.parentElement;
+    }
+    if (!found) return false;
+  }
+  return true;
+}
+
+function _stripFromList(td, value) {
+  return String(td || '').split(/\s+/).filter(t => t && t !== value).join(' ');
 }
 
 /**
@@ -266,14 +373,13 @@ function _execFontSizeOnSelection(px) {
       block = block.parentElement;
     }
     if (block) {
-      // Sweep ALL descendants — not just tag-name-allowlisted ones —
-      // for empty wrappers that still carry stale font-size or
-      // line-height declarations. Any element with no text content
-      // (after trimming whitespace + zero-width spaces), no embedded
-      // media, and not a meaningful <br> is safe to drop.
-      block.querySelectorAll('*').forEach(el => {
-        if (el === block) return;
-        if (el.tagName === 'BR') return;
+      // Sweep INLINE wrappers only. The previous commit walked every
+      // descendant (`*`) which over-reached and broke the line-shrink
+      // case the same commit was trying to improve. Sticking to known
+      // inline style carriers keeps the original line-height-shrink
+      // fix working without removing structural elements that need
+      // to stay.
+      block.querySelectorAll('span,b,i,u,s,strong,em,font').forEach(el => {
         const txt = (el.textContent || '').replace(/[​\s]+/g, '');
         if (txt) return;
         if (el.querySelector('br,img,svg,input,canvas')) return;
