@@ -1204,10 +1204,11 @@ async function _renameStep(stepId) {
 }
 
 function _duplicateStep(stepId) {
-  steps.flushSync().then(() => {
-    const copy = actions.duplicateStep(stepId);
-    if (copy) setStatus(`Duplicated "${copy.name}".`);
-  });
+  // flushSync is synchronous (returns undefined), so don't .then() it —
+  // that's what was throwing "Cannot read properties of undefined".
+  steps.flushSync();
+  const copy = actions.duplicateStep(stepId);
+  if (copy) setStatus(`Duplicated "${copy.name}".`);
 }
 
 async function _deleteStep(stepId) {

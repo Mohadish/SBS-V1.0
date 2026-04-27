@@ -39,6 +39,41 @@ export function promptString(title, defaultVal = '') {
   });
 }
 
+/**
+ * Multi-button choice dialog. Returns the clicked button's `id`, or
+ * null if the user dismissed via Esc / clicking the dialog backdrop.
+ *
+ *   buttons: [{ id, label, primary?: boolean, danger?: boolean }, ...]
+ *
+ * Use when the choice is more than yes/no — e.g. Replace / Add / Cancel.
+ * Confirm() is binary; this fills the gap without needing a dependency.
+ */
+export function chooseFromButtons(title, message, buttons) {
+  return new Promise(resolve => {
+    const dlg = document.createElement('dialog');
+    dlg.className = 'sbs-dialog';
+    const btnHtml = buttons.map(b => {
+      const colour = b.danger ? 'color:#f87171;' : (b.primary ? 'color:#22d3ee;font-weight:600;' : '');
+      return `<button class="btn" data-sbs-choice="${_esc(b.id)}" style="${colour}">${_esc(b.label)}</button>`;
+    }).join('');
+    dlg.innerHTML = `
+      <div class="sbs-dialog__body">
+        <div class="sbs-dialog__title">${_esc(title)}</div>
+        ${message ? `<div class="small muted" style="margin-top:8px;line-height:1.5;">${_esc(message)}</div>` : ''}
+        <div style="display:flex;gap:8px;justify-content:flex-end;margin-top:12px;flex-wrap:wrap;">${btnHtml}</div>
+      </div>
+    `;
+    document.body.appendChild(dlg);
+    const done = (id) => { dlg.close(); dlg.remove(); resolve(id); };
+    dlg.querySelectorAll('[data-sbs-choice]').forEach(btn => {
+      btn.addEventListener('click', () => done(btn.dataset.sbsChoice));
+    });
+    dlg.addEventListener('keydown', e => { if (e.key === 'Escape') done(null); });
+    dlg.addEventListener('cancel', e => { e.preventDefault(); done(null); });
+    dlg.showModal();
+  });
+}
+
 function _esc(s) {
   return String(s ?? '').replace(/[&<>"']/g,
     c => ({ '&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;' })[c]);

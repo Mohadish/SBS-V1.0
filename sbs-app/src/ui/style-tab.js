@@ -35,7 +35,7 @@ import {
 } from '../systems/style-templates.js';
 import { exportHeaderSetup, importHeaderSetup } from '../systems/header.js';
 import { setStatus }    from './status.js';
-import { promptString } from './prompt.js';
+import { promptString, chooseFromButtons } from './prompt.js';
 import { mountTextToolbar, unmountTextToolbar, setToolbarValues } from './text-toolbar.js';
 
 let _activeId  = null;        // which template is being edited
@@ -314,22 +314,42 @@ async function _onLoadSetup() {
   try { payload = JSON.parse(json); }
   catch (err) { setStatus('Invalid .sbsheader file (not JSON).', 'danger'); return; }
 
-  // Confirm a wholesale replace per section that's about to load.
-  const willHeaders = Array.isArray(payload?.items)  && payload.items.length  > 0;
-  const willStyles  = Array.isArray(payload?.styles) && payload.styles.length > 0;
-  const existHdr    = (state.get('headerItems')    || []).length;
-  const existStyle  = (state.get('styleTemplates') || []).length;
-  const warn = [];
-  if (willHeaders && existHdr   > 0) warn.push(`${existHdr} header item(s)`);
-  if (willStyles  && existStyle > 0) warn.push(`${existStyle} style template(s)`);
-  if (warn.length && !confirm(`Replace ${warn.join(' + ')} with the loaded preset?`)) return;
+  // Style tab loads the STYLE side of a .sbsheader, never the header
+  // items — those live in the Header tab and shouldn't disappear when
+  // the user is just trying to import some styles. Default Style block
+  // is also skipped from the Style tab.
+  const incoming = Array.isArray(payload?.styles) ? payload.styles.length : 0;
+  if (!incoming) {
+    setStatus('No style templates found in the file.', 'warning');
+    return;
+  }
+  const existing = (state.get('styleTemplates') || []).length;
 
-  const { headers, styles, defaultLoaded } = importHeaderSetup(payload);
-  const parts = [];
-  if (styles)        parts.push(`${styles} style(s)`);
-  if (headers)       parts.push(`${headers} header item(s)`);
-  if (defaultLoaded) parts.push(`default style`);
-  if (parts.length) setStatus(`Loaded ${parts.join(' + ')}.`);
-  else              setStatus('No styles, header items, or defaults found in the file.', 'warning');
+  let stylesMode = 'replace';
+  if (existing > 0) {
+    const choice = await chooseFromButtons(
+      'Load Style Setup',
+      `${incoming} style template(s) in the file. You currently have ${existing}. Replace, or add to the existing list (duplicate names get auto-renamed)?`,
+      [
+        { id: 'cancel',  label: 'Cancel' },
+        { id: 'add',     label: 'Add to list', primary: true },
+        { id: 'replace', label: 'Replace all', danger: true },
+      ],
+    );
+    if (!choice || choice === 'cancel') return;
+    stylesMode = choice;
+  }
+
+  const { styles } = importHeaderSetup(payload, {
+    itemsMode:   'skip',           // never touch headers from this tab
+    stylesMode,                    // user-chosen
+    defaultMode: 'skip',           // default belongs to the Header tab
+  });
+  if (styles) {
+    const note = stylesMode === 'add' ? ' (added to existing)' : ' (replaced)';
+    setStatus(`Loaded ${styles} style template(s)${note}.`);
+  } else {
+    setStatus('No styles loaded.', 'warning');
+  }
   _activeId = null;
 }

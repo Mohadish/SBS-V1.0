@@ -764,39 +764,86 @@ export function exportHeaderSetup() {
 }
 
 /**
- * Load a .sbsheader payload, replacing the current header items, style
- * templates, and (v3+) the header default. Validates the wrapper shape;
- * ignores unknown fields. v1 / v2 files still load — missing sections
- * just don't get touched.
+ * Load a .sbsheader payload. Behaviour per section is selectable via
+ * `opts` so callers can decide whether to replace existing data or
+ * append to it:
  *
- * Returns { headers, styles, defaultLoaded } — the boolean reports
- * whether the .sbsheader carried a default block (so the caller can
- * surface that in the status message).
+ *   opts.itemsMode   — 'replace' | 'add' | 'skip'   (default 'replace')
+ *   opts.stylesMode  — 'replace' | 'add' | 'skip'   (default 'replace')
+ *   opts.defaultMode — 'replace' | 'skip'           (default 'replace')
+ *
+ * In 'add' mode, names are de-duplicated against existing entries by
+ * appending " (2)", " (3)", etc. — so the import never silently
+ * overwrites existing items / templates.
+ *
+ * v1 (items only) / v2 (items + styles) / v3 (+ default) files all
+ * load — missing sections in the file just aren't touched regardless
+ * of mode.
+ *
+ * Returns { headers, styles, defaultLoaded } — counts + a boolean for
+ * whether the default block was applied.
  */
-export function importHeaderSetup(payload) {
+export function importHeaderSetup(payload, opts = {}) {
   const result = { headers: 0, styles: 0, defaultLoaded: false };
   if (!payload || typeof payload !== 'object') return result;
 
-  if (payload.default && typeof payload.default === 'object') {
+  const itemsMode   = opts.itemsMode   || 'replace';
+  const stylesMode  = opts.stylesMode  || 'replace';
+  const defaultMode = opts.defaultMode || 'replace';
+
+  if (payload.default && typeof payload.default === 'object' && defaultMode !== 'skip') {
     state.setState({ headerDefault: { ...state.get('headerDefault'), ...payload.default } });
     result.defaultLoaded = true;
   }
 
-  if (Array.isArray(payload.items)) {
-    // Re-stamp ids so loading the same file twice doesn't collide.
-    const fresh = payload.items.map(it => ({ ...it, id: generateId('hdr') }));
-    state.setState({ headerItems: fresh });
-    result.headers = fresh.length;
+  if (Array.isArray(payload.styles) && stylesMode !== 'skip') {
+    // Always re-stamp ids so loading the same file twice doesn't
+    // collide — applies to both replace and add modes.
+    const fresh = payload.styles.map(t => ({ ...t, id: generateId('style') }));
+    if (stylesMode === 'replace') {
+      state.setState({ styleTemplates: fresh });
+    } else {
+      // 'add' — append, dedupe names against existing list.
+      const existing = state.get('styleTemplates') || [];
+      const existingNames = new Set(existing.map(t => t.name));
+      const renamed = fresh.map(t => ({ ...t, name: _uniqueName(t.name || 'Untitled', existingNames) }));
+      state.setState({ styleTemplates: [...existing, ...renamed] });
+    }
+    result.styles = fresh.length;
   }
 
-  if (Array.isArray(payload.styles)) {
-    const fresh = payload.styles.map(t => ({ ...t, id: generateId('style') }));
-    state.setState({ styleTemplates: fresh });
-    result.styles = fresh.length;
+  if (Array.isArray(payload.items) && itemsMode !== 'skip') {
+    const fresh = payload.items.map(it => ({ ...it, id: generateId('hdr') }));
+    if (itemsMode === 'replace') {
+      state.setState({ headerItems: fresh });
+    } else {
+      // 'add' — append. Header items don't have unique-name semantics,
+      // so we skip the rename pass; duplicates are fine (the user
+      // explicitly accepted that for header import).
+      const existing = state.get('headerItems') || [];
+      state.setState({ headerItems: [...existing, ...fresh] });
+    }
+    result.headers = fresh.length;
   }
 
   if (result.headers || result.styles || result.defaultLoaded) state.markDirty();
   return result;
+}
+
+/**
+ * Append " (2)", " (3)", ... to `name` until it doesn't collide with
+ * any name in `taken`. Mutates `taken` to include the chosen name.
+ */
+function _uniqueName(name, taken) {
+  if (!taken.has(name)) { taken.add(name); return name; }
+  let n = 2;
+  let candidate = `${name} (${n})`;
+  while (taken.has(candidate)) {
+    n += 1;
+    candidate = `${name} (${n})`;
+  }
+  taken.add(candidate);
+  return candidate;
 }
 
 /**

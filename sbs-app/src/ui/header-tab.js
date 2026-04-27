@@ -467,23 +467,21 @@ async function _onLoadSetup() {
   try { payload = JSON.parse(json); }
   catch (err) { setStatus('Invalid .sbsheader file (not JSON).', 'danger'); return; }
 
-  // Confirm if the user already has items — load is a wholesale replace
-  // for whichever section(s) the file contains.
-  const willHeaders = Array.isArray(payload?.items)  && payload.items.length  > 0;
-  const willStyles  = Array.isArray(payload?.styles) && payload.styles.length > 0;
-  const existHdr    = (state.get('headerItems')    || []).length;
-  const existStyle  = (state.get('styleTemplates') || []).length;
-  const warn = [];
-  if (willHeaders && existHdr   > 0) warn.push(`${existHdr} header item(s)`);
-  if (willStyles  && existStyle > 0) warn.push(`${existStyle} style template(s)`);
-  if (warn.length && !confirm(`Replace ${warn.join(' + ')} with the loaded setup?`)) return;
-
-  const { headers, styles, defaultLoaded } = importHeaderSetup(payload);
+  // Header tab load is ALWAYS additive — items are appended (duplicates
+  // OK; user can clean up via the row ✕), templates are appended with
+  // auto-renaming so existing bindings keep pointing at the right
+  // template. The Default Style block is replaced (it's a single
+  // value; merging makes no sense).
+  const { headers, styles, defaultLoaded } = importHeaderSetup(payload, {
+    itemsMode:   'add',
+    stylesMode:  'add',
+    defaultMode: 'replace',
+  });
   const parts = [];
-  if (headers)       parts.push(`${headers} header item(s)`);
-  if (styles)        parts.push(`${styles} style(s)`);
-  if (defaultLoaded) parts.push(`default style`);
-  if (parts.length) setStatus(`Loaded ${parts.join(' + ')}.`);
+  if (headers)       parts.push(`${headers} header item(s) added`);
+  if (styles)        parts.push(`${styles} style(s) added`);
+  if (defaultLoaded) parts.push(`default style replaced`);
+  if (parts.length) setStatus(`Loaded — ${parts.join(', ')}.`);
   else              setStatus('No header items, styles, or defaults found in the file.', 'warning');
   _activeItemId = null;
 }
