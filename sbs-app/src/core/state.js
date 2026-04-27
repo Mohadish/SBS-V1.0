@@ -87,6 +87,22 @@ function createInitialState() {
     headersLocked:  false,            // when true, header items can't be moved/edited via the canvas
     headersHidden:  false,            // when true, the whole header layer is suppressed (live + export)
 
+    // P4: project-level default styling for header items. Acts as the
+    // fallback when an item has no styleId binding AND its own per-item
+    // styling fields aren't set. Lets the user define "all my headers
+    // look like this" once, and individual items override only when
+    // they need to. Same shape as a style template (minus id/name).
+    headerDefault: {
+      fontFamily:     'Arial',
+      fontSize:       32,
+      fontWeight:     'normal',     // 'normal' | 'bold'
+      fontStyle:      'normal',     // 'normal' | 'italic'
+      textDecoration: '',           // '' | 'underline'
+      color:          '#ffffff',
+      fillColor:      null,         // rgba string for textbox bg, or null
+      align:          'center',
+    },
+
     // Mirrors overlay.isEditing() in state-land so other systems
     // (e.g. header.js) can subscribe to edit-mode changes via
     // change:overlayEditing. Source of truth is still overlay.js's

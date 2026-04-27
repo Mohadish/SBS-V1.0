@@ -105,9 +105,10 @@ export function serialize() {
 
   // ── Headers (project-level overlay) ────────────────────────────────────────
   project.headers = project.headers || { schema_version: 1, items: [] };
-  project.headers.items = JSON.parse(JSON.stringify(state.get('headerItems') || []));
-  project.headers.locked = !!state.get('headersLocked');
-  project.headers.hidden = !!state.get('headersHidden');
+  project.headers.items   = JSON.parse(JSON.stringify(state.get('headerItems')   || []));
+  project.headers.locked  = !!state.get('headersLocked');
+  project.headers.hidden  = !!state.get('headersHidden');
+  project.headers.default = JSON.parse(JSON.stringify(state.get('headerDefault') || {}));
 
   // Text style templates — same shape as header items, lives in its
   // own project section so it can be saved/loaded independently and
@@ -472,6 +473,9 @@ export function applyProjectToState(project) {
     headerItems:          project.headers?.items            || [],
     headersLocked:        !!project.headers?.locked,
     headersHidden:        !!project.headers?.hidden,
+    // P4: project-level default styling. Falls back to current state default
+    // when missing (so older .sbsproj files without this field load cleanly).
+    headerDefault:        project.headers?.default           || state.get('headerDefault'),
     styleTemplates:       project.styles?.items              || [],
   });
 

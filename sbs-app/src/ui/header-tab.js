@@ -27,6 +27,7 @@ import {
   toggleHeaderItemVisible,
   setHeadersHidden,
   setHeadersLocked,
+  setHeaderDefault,
   selectHeader,
   exportHeaderSetup,
   importHeaderSetup,
@@ -49,6 +50,7 @@ export function renderHeaderTab(container) {
   const styles  = state.get('styleTemplates') || [];
   const hidden  = !!state.get('headersHidden');
   const locked  = !!state.get('headersLocked');
+  const def     = state.get('headerDefault')  || {};
 
   container.innerHTML = `
     <div class="section">
@@ -81,6 +83,39 @@ export function renderHeaderTab(container) {
         <button class="btn" id="hdr-load-setup" title="Import a .sbsheader file (replaces header items and/or styles)">Load Setup</button>
       </div>
 
+      <!-- P4: project-level default styling. New header items inherit
+           these values; existing items keep their own per-item fields
+           (until explicitly reset). Dynamic kinds without a styleId
+           binding render with these as fallback. -->
+      <div class="card" style="margin-top:10px;padding:0;">
+        <div class="title" style="padding:8px 10px;border-bottom:1px solid var(--line);">
+          Default Style
+        </div>
+        <div style="padding:10px;display:grid;grid-template-columns:1fr 1fr;gap:8px;">
+          <label class="colorlab">Font size
+            <input type="number" id="hdr-def-font-size" min="8" max="200" step="1" value="${def.fontSize ?? 32}" />
+          </label>
+          <label class="colorlab">Color
+            <input type="color" id="hdr-def-color" value="${_esc(def.color ?? '#ffffff')}" />
+          </label>
+          <label class="colorlab">Align
+            <select id="hdr-def-align">
+              <option value="left"   ${def.align === 'left'   ? 'selected' : ''}>Left</option>
+              <option value="center" ${(def.align ?? 'center') === 'center' ? 'selected' : ''}>Center</option>
+              <option value="right"  ${def.align === 'right'  ? 'selected' : ''}>Right</option>
+            </select>
+          </label>
+          <label class="colorlab" style="display:flex;align-items:center;gap:8px;">
+            <input type="checkbox" id="hdr-def-bold"   ${def.fontWeight === 'bold'   ? 'checked' : ''} /> Bold
+            <input type="checkbox" id="hdr-def-italic" ${def.fontStyle  === 'italic' ? 'checked' : ''} /> Italic
+          </label>
+        </div>
+        <div class="small muted" style="padding:0 10px 10px;line-height:1.4;">
+          Affects new header items + dynamic kinds without a bound style.
+          Existing items keep their per-item overrides.
+        </div>
+      </div>
+
       <div class="card" style="margin-top:10px;padding:0;">
         <div class="title" style="padding:8px 10px;border-bottom:1px solid var(--line);">
           Items <span class="small muted">(${items.length})</span>
@@ -109,6 +144,21 @@ export function renderHeaderTab(container) {
   container.querySelector('#hdr-toggle-lock')  .addEventListener('click', () => setHeadersLocked(!locked));
   container.querySelector('#hdr-save-setup')   .addEventListener('click', _onSaveSetup);
   container.querySelector('#hdr-load-setup')   .addEventListener('click', _onLoadSetup);
+
+  // ─── Default Style inputs ──────────────────────────────────────────────
+  // Each writes a single-key patch via setHeaderDefault. The render path
+  // listens to change:headerDefault and re-rasterises items that pick up
+  // a new value via the resolution chain (item field → default → fallback).
+  container.querySelector('#hdr-def-font-size')?.addEventListener('change',
+    e => setHeaderDefault({ fontSize: Math.max(8, Number(e.target.value) || 32) }));
+  container.querySelector('#hdr-def-color')?.addEventListener('change',
+    e => setHeaderDefault({ color: e.target.value }));
+  container.querySelector('#hdr-def-align')?.addEventListener('change',
+    e => setHeaderDefault({ align: e.target.value }));
+  container.querySelector('#hdr-def-bold')?.addEventListener('change',
+    e => setHeaderDefault({ fontWeight: e.target.checked ? 'bold' : 'normal' }));
+  container.querySelector('#hdr-def-italic')?.addEventListener('change',
+    e => setHeaderDefault({ fontStyle: e.target.checked ? 'italic' : 'normal' }));
 
   // ─── Per-row delegation ────────────────────────────────────────────────
   container.querySelector('#hdr-list')?.addEventListener('click', e => {
@@ -378,12 +428,13 @@ async function _onLoadSetup() {
   if (willStyles  && existStyle > 0) warn.push(`${existStyle} style template(s)`);
   if (warn.length && !confirm(`Replace ${warn.join(' + ')} with the loaded setup?`)) return;
 
-  const { headers, styles } = importHeaderSetup(payload);
+  const { headers, styles, defaultLoaded } = importHeaderSetup(payload);
   const parts = [];
-  if (headers) parts.push(`${headers} header item(s)`);
-  if (styles)  parts.push(`${styles} style(s)`);
+  if (headers)       parts.push(`${headers} header item(s)`);
+  if (styles)        parts.push(`${styles} style(s)`);
+  if (defaultLoaded) parts.push(`default style`);
   if (parts.length) setStatus(`Loaded ${parts.join(' + ')}.`);
-  else              setStatus('No header items or styles found in the file.', 'warning');
+  else              setStatus('No header items, styles, or defaults found in the file.', 'warning');
   _activeItemId = null;
 }
 

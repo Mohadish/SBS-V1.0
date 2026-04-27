@@ -56,6 +56,11 @@ import { registerLayer, getLayerSelection, scheduleOverlaySave } from './cross-l
 
 /** Default values for a freshly-created header item of the given kind. */
 export function makeHeaderItem(kind = 'custom', opts = {}) {
+  // P4: new items seed their styling fields from state.headerDefault so
+  // the project-level default actually controls fresh items. Existing
+  // items keep whatever fields they were saved with — those serve as
+  // explicit per-item overrides on top of the default.
+  const def = state.get('headerDefault') || {};
   const base = {
     id:         generateId('hdr'),
     kind:       kind,
@@ -64,11 +69,11 @@ export function makeHeaderItem(kind = 'custom', opts = {}) {
     y:          opts.y ?? 40,
     w:          opts.w ?? 480,
     h:          opts.h ?? 64,
-    fontSize:   opts.fontSize ?? 32,
-    fontWeight: opts.fontWeight ?? 'normal',
-    fontStyle:  opts.fontStyle  ?? 'normal',
-    color:      opts.color  ?? '#ffffff',
-    align:      opts.align  ?? 'center',
+    fontSize:   opts.fontSize   ?? def.fontSize   ?? 32,
+    fontWeight: opts.fontWeight ?? def.fontWeight ?? 'normal',
+    fontStyle:  opts.fontStyle  ?? def.fontStyle  ?? 'normal',
+    color:      opts.color      ?? def.color      ?? '#ffffff',
+    align:      opts.align      ?? def.align      ?? 'center',
   };
   if (kind === 'image') {
     return {
@@ -188,6 +193,20 @@ export function setHeadersLocked(locked) {
   state.markDirty();
 }
 
+/**
+ * Patch the project-level header default styling. Used by the sidebar's
+ * Default Style panel. Render listens via change:headerDefault and
+ * re-rasterises every text-flavoured item.
+ *
+ * Pass any subset — only the keys present in `patch` are updated.
+ */
+export function setHeaderDefault(patch) {
+  if (!patch || typeof patch !== 'object') return;
+  const cur = state.get('headerDefault') || {};
+  state.setState({ headerDefault: { ...cur, ...patch } });
+  state.markDirty();
+}
+
 // ─── Live render layer (Konva) ──────────────────────────────────────────────
 
 let _layer       = null;   // Konva.Layer
@@ -240,6 +259,7 @@ export function initHeaderLayer(stage) {
   state.on('change:headerItems',    refreshHeaderLayer);
   state.on('change:headersHidden',  refreshHeaderLayer);
   state.on('change:headersLocked',  refreshHeaderLayer);
+  state.on('change:headerDefault',  refreshHeaderLayer);   // P4: re-rasterise unbound items when the global default changes
   state.on('change:overlayEditing', refreshHeaderLayer);   // P1: header items become inert when overlay editing is off
   state.on('change:activeStepId',   refreshHeaderLayer);
   state.on('change:steps',          refreshHeaderLayer);
@@ -381,19 +401,23 @@ function _buildNode(item, ctx, inert) {
 /**
  * Build the inline textHtml for a text-flavoured header item.
  *
- * P3: if the item has been canvas-edited (item.textHtml is set, custom
- * kind only), use that HTML verbatim — wrap it in the flex centring
- * shell so the rich content still vertically centres inside the box.
- * Otherwise, derive a simple wrapped span from item fields (current
- * sidebar-driven path).
+ * Resolution chain (most-specific wins):
+ *   1. item.textHtml             — canvas editor commit (custom kind only).
+ *                                   Wrapped HTML carries its own inline styles.
+ *   2. item.<field>               — per-item explicit override (legacy
+ *                                   sidebar path; field-level granularity).
+ *   3. state.headerDefault.<field> — project-level default ("all my headers
+ *                                    look like this"). Set via the Header tab.
+ *   4. Hard-coded fallback        — Arial 32px white center, the same
+ *                                   default the renderer used pre-P4.
  *
- * Dynamic kinds (stepNumber / stepName / chapter*) always derive — the
- * text content updates per step / chapter, so a frozen textHtml from
- * a previous step would be wrong.
+ * Dynamic kinds (stepNumber / stepName / chapter*) always derive — their
+ * text content updates per step / chapter, so a frozen textHtml from a
+ * previous step would be wrong.
  *
  * The `text-shadow` keeps the readability boost the old Konva.Text node
- * had (`shadowColor / shadowOffsetY / shadowBlur`) — implemented here in
- * CSS so the SVG-foreignObject rasterise picks it up.
+ * had — implemented here in CSS so the SVG-foreignObject rasterise picks
+ * it up.
  */
 function _buildHeaderTextHtml(item, ctx) {
   if (item.kind === 'custom' && item.textHtml) {
@@ -404,14 +428,15 @@ function _buildHeaderTextHtml(item, ctx) {
     return `<div style="height:100%;display:flex;align-items:center;text-shadow:0 1px 2px rgba(0,0,0,0.45)"><div style="width:100%">${item.textHtml}</div></div>`;
   }
 
+  const def = state.get('headerDefault') || {};
   const text       = resolveHeaderText(item, ctx) || ' ';
   const escaped    = _escHtml(text);
-  const align      = item.align      || 'center';
-  const fontFamily = item.fontFamily || 'Arial';
-  const fontSize   = item.fontSize   || 32;
-  const color      = item.color      || '#ffffff';
-  const fontWeight = item.fontWeight === 'bold'   ? 'bold'   : 'normal';
-  const fontStyle  = item.fontStyle  === 'italic' ? 'italic' : 'normal';
+  const align      = item.align      || def.align      || 'center';
+  const fontFamily = item.fontFamily || def.fontFamily || 'Arial';
+  const fontSize   = item.fontSize   || def.fontSize   || 32;
+  const color      = item.color      || def.color      || '#ffffff';
+  const fontWeight = (item.fontWeight ?? def.fontWeight) === 'bold'   ? 'bold'   : 'normal';
+  const fontStyle  = (item.fontStyle  ?? def.fontStyle)  === 'italic' ? 'italic' : 'normal';
   const innerStyle = [
     `width:100%`,
     `text-align:${align}`,
@@ -661,35 +686,46 @@ export function getHeaderSelection() {
 // branding across projects. v1 (header items only) still loads —
 // styles section is just optional.
 //
+// v3 adds the project-level header default styling:
+//
 //   {
-//     "_sbsheader": { "version": 2, "saved": "..." },
-//     "items":  [ HeaderItem, ... ],     // header overlay items
-//     "styles": [ StyleTemplate, ... ]   // text style presets (v2)
+//     "_sbsheader": { "version": 3, "saved": "..." },
+//     "default": { fontFamily, fontSize, ... },   // P4: header default
+//     "items":  [ HeaderItem, ... ],
+//     "styles": [ StyleTemplate, ... ]
 //   }
 
 /** Build the JSON payload for a .sbsheader file from current state. */
 export function exportHeaderSetup() {
   return {
     _sbsheader: {
-      version: 2,
+      version: 3,
       saved:   new Date().toISOString(),
     },
-    items:  JSON.parse(JSON.stringify(state.get('headerItems')    || [])),
-    styles: JSON.parse(JSON.stringify(state.get('styleTemplates') || [])),
+    default: JSON.parse(JSON.stringify(state.get('headerDefault')  || {})),
+    items:   JSON.parse(JSON.stringify(state.get('headerItems')    || [])),
+    styles:  JSON.parse(JSON.stringify(state.get('styleTemplates') || [])),
   };
 }
 
 /**
- * Load a .sbsheader payload, replacing the current header items AND
- * style templates. Validates the wrapper shape; ignores unknown fields.
- * v1 files (no styles section) load header items only — styles are
- * left untouched.
+ * Load a .sbsheader payload, replacing the current header items, style
+ * templates, and (v3+) the header default. Validates the wrapper shape;
+ * ignores unknown fields. v1 / v2 files still load — missing sections
+ * just don't get touched.
  *
- * Returns { headers, styles } counts (0 = none loaded for that section).
+ * Returns { headers, styles, defaultLoaded } — the boolean reports
+ * whether the .sbsheader carried a default block (so the caller can
+ * surface that in the status message).
  */
 export function importHeaderSetup(payload) {
-  const result = { headers: 0, styles: 0 };
+  const result = { headers: 0, styles: 0, defaultLoaded: false };
   if (!payload || typeof payload !== 'object') return result;
+
+  if (payload.default && typeof payload.default === 'object') {
+    state.setState({ headerDefault: { ...state.get('headerDefault'), ...payload.default } });
+    result.defaultLoaded = true;
+  }
 
   if (Array.isArray(payload.items)) {
     // Re-stamp ids so loading the same file twice doesn't collide.
@@ -704,7 +740,7 @@ export function importHeaderSetup(payload) {
     result.styles = fresh.length;
   }
 
-  if (result.headers || result.styles) state.markDirty();
+  if (result.headers || result.styles || result.defaultLoaded) state.markDirty();
   return result;
 }
 

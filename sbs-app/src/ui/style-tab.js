@@ -324,11 +324,12 @@ async function _onLoadSetup() {
   if (willStyles  && existStyle > 0) warn.push(`${existStyle} style template(s)`);
   if (warn.length && !confirm(`Replace ${warn.join(' + ')} with the loaded preset?`)) return;
 
-  const { headers, styles } = importHeaderSetup(payload);
+  const { headers, styles, defaultLoaded } = importHeaderSetup(payload);
   const parts = [];
-  if (styles)  parts.push(`${styles} style(s)`);
-  if (headers) parts.push(`${headers} header item(s)`);
+  if (styles)        parts.push(`${styles} style(s)`);
+  if (headers)       parts.push(`${headers} header item(s)`);
+  if (defaultLoaded) parts.push(`default style`);
   if (parts.length) setStatus(`Loaded ${parts.join(' + ')}.`);
-  else              setStatus('No styles or header items found in the file.', 'warning');
+  else              setStatus('No styles, header items, or defaults found in the file.', 'warning');
   _activeId = null;
 }
