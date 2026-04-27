@@ -646,41 +646,41 @@ class GizmoController {
 
   /**
    * Return the rotation axis in PARENT-LOCAL space (for storing in localQuaternion).
-   * Local mode → plain local axis (1,0,0 etc.).
-   * World mode → world axis converted to parent-local via parentQ.invert().
+   *
+   * The world axis the user is rotating around comes from _axisVec (which
+   * is already pivot-aware and space-mode-aware). To store the rotation
+   * delta in parent-local — which is the frame node.localQuaternion lives
+   * in — we just convert that world axis through the parent's inverse
+   * world quaternion.
+   *
+   * Without this fix, a pivot with its own orientation made the ring
+   * visually point one way but rotate around the parent's axis instead
+   * of the pivot's.
    */
   _rotAxisLocal(axis) {
     const T = window.THREE;
-    let v;
-    if (axis === 'x')      v = new T.Vector3(1, 0, 0);
-    else if (axis === 'y') v = new T.Vector3(0, 1, 0);
-    else                   v = new T.Vector3(0, 0, 1);
-
-    if (this._spaceMode === 'world') {
-      // World axis → parent-local
-      const parent = this._obj3d?.parent;
-      if (parent) {
-        const pq = new T.Quaternion();
-        parent.getWorldQuaternion(pq);
-        v.applyQuaternion(pq.invert());
-      }
+    const worldAxis = this._axisVec(axis);   // pivot-aware in pivot mode + local
+    const parent = this._obj3d?.parent;
+    if (parent) {
+      const pq = new T.Quaternion();
+      parent.getWorldQuaternion(pq);
+      worldAxis.applyQuaternion(pq.invert());
     }
-    // In local mode: (1,0,0) etc. is already parent-local — no transform needed
-    return v;
+    return worldAxis;
   }
 
   /**
-   * Compute the 2-D angle of `rel` projected onto the plane perpendicular to `axis`,
-   * using parent-local space (for consistent angle delta calculation regardless of
-   * parent rotation).
+   * Compute the 2-D angle of `rel` projected onto the plane perpendicular
+   * to the gizmo's reference axis. In normal mode the reference is the
+   * parent-aligned frame; in pivot mode (RED or BLUE) the reference is
+   * the pivot frame, so the angle is measured in the same plane the
+   * user sees the rotation ring drawn on.
    */
   _atan2ForAxisInSpace(rel, axis) {
     const T = window.THREE;
     let r = rel.clone();
-    // Transform rel to parent-local space so the angle is measured in the
-    // parent-aligned plane, matching the orientation of the ring.
-    const pq = this._parentWorldQuat();
-    if (pq) r.applyQuaternion(pq.clone().invert());
+    const refQ = this._gizmoReferenceQuat();
+    if (refQ) r.applyQuaternion(refQ.clone().invert());
     return this._atan2ForAxis(r, axis);
   }
 

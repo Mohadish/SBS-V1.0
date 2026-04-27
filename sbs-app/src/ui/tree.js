@@ -209,7 +209,10 @@ function _buildRow(node, depth) {
   if (isTransformNode(node)) {
     transformGroup.append(
       _mkTransformBtn('✥', 'Move',   'moveEnabled',   node),
-      _mkPivotBtn(node),
+      // Pivot only on folders — the root model node carries the
+      // imported asset's reference frame and shouldn't have its pivot
+      // relocated (the user can't visually verify what that means).
+      ...(node.type === 'folder' ? [_mkPivotBtn(node)] : []),
       _mkTransformBtn('⟳', 'Rotate', 'rotateEnabled', node),
     );
   }
@@ -289,15 +292,17 @@ function _mkTransformBtn(icon, title, flagKey, node) {
 }
 
 /**
- * P-P1: pivot button — separate semantics from move/rotate.
+ * P-P1: pivot button — 3-way cycle (grey → red → blue → grey).
+ *
  *   GREY — pivotEnabled=false. Click → enterPivotEdit (RED).
- *   RED  — this node currently in edit mode. Click → cancelPivotEdit
- *          (rolls back; lands GREY or BLUE depending on seed).
+ *   RED  — this node currently in edit mode. Click → commitPivotEdit
+ *          (lands BLUE — same as clicking in the viewport).
  *   BLUE — pivotEnabled=true, not editing. Click → setPivotEnabled(false)
  *          (lands GREY; pivot offset/quat data preserved for re-activation).
  *
- * The button is ALWAYS clickable (no inert grey) — that's the entry
- * point into pivot editing. Color follows the active state machine.
+ * The button cycles the same way regardless of whether pivot data
+ * existed before. To CANCEL an in-progress edit, press Ctrl+Z after
+ * clicking through to BLUE — the whole session is one undo entry.
  */
 function _mkPivotBtn(node) {
   const isEditing = state.get('pivotEditNodeId') === node.id;
@@ -307,7 +312,7 @@ function _mkPivotBtn(node) {
   const COLOR = { grey: '#6b7280', red: '#ef4444', blue: '#3b82f6' };
   const TIPS  = {
     grey: 'Pivot: at home (click to relocate)',
-    red:  'Pivot: editing — click viewport to commit, click here to cancel',
+    red:  'Pivot: editing — click to commit (or click in viewport)',
     blue: 'Pivot: relocated (click to send home — data preserved)',
   };
 
@@ -326,8 +331,8 @@ function _mkPivotBtn(node) {
       // GREY → RED: enable pivot + start edit session.
       actions.enterPivotEdit(node.id);
     } else if (btnState === 'red') {
-      // RED click on the button = cancel (revert to seed).
-      actions.cancelPivotEdit();
+      // RED → BLUE: commit edit (same as clicking in viewport).
+      actions.commitPivotEdit();
     } else {
       // BLUE → GREY: disable pivot, data preserved.
       actions.setPivotEnabled(node.id, false);
