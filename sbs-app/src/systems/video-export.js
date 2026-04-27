@@ -21,8 +21,8 @@
 import { state }     from '../core/state.js';
 import { steps }     from './steps.js';
 import { sceneCore } from '../core/scene.js';
-import { rasterizeOverlay }      from './overlay.js';
-import { rasterizeHeaderLayer }  from './header.js';
+import { rasterizeOverlay, waitForOverlayStable }     from './overlay.js';
+import { rasterizeHeaderLayer, waitForHeaderStable }  from './header.js';
 import { decodeToAudioBuffer, resampleToMonoFloat32, mixTrackToFloat32 } from './audio-bridge.js';
 import { synthesize as ttsSynthesize } from './tts.js';
 import * as narrationCache from './narration-cache.js';
@@ -348,6 +348,13 @@ async function _playTimeline(stepsToPlay, holdsMsArg, onProgress, signal) {
     const step = stepsToPlay[i];
     onProgress?.({ current: i + 1, total: stepsToPlay.length, stepName: step.name });
     if (i > 0) await steps.activateStep(step.id, true);   // first step already there
+    // Drain any pending overlay / header async raster before holding —
+    // without this, the first frames of the hold can capture a partial
+    // overlay (textbox raster is still pending) or stale header (dynamic-
+    // kind hydrate hasn't completed). The wait-for-stable promises
+    // resolve as soon as every async raster of the latest refresh
+    // settles, so on a fully-cached layer they resolve immediately.
+    await Promise.all([waitForOverlayStable(), waitForHeaderStable()]);
     await _wait(holds[i] ?? POST_STEP_HOLD_MS);
   }
 }

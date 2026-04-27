@@ -346,6 +346,13 @@ export function initHeaderLayer(stage) {
 export function refreshHeaderLayer() {
   if (!_layer) return;
 
+  // Track every async hydrate (text raster, image load) kicked off
+  // by _buildNode during this refresh. waitForHeaderStable() returns
+  // a promise that resolves once they all settle — video export
+  // waits on it after each step transition so frames don't capture a
+  // half-rendered header layer.
+  _refreshPending = [];
+
   const prevSelection = new Set(_selection);
   // Remove all children except the transformer
   for (const child of _layer.getChildren().slice()) {
@@ -355,6 +362,7 @@ export function refreshHeaderLayer() {
   if (state.get('headersHidden')) {
     _transformer.nodes([]);
     _layer.batchDraw();
+    _currentRefreshPromise = Promise.resolve();
     return;
   }
 
@@ -391,7 +399,20 @@ export function refreshHeaderLayer() {
   _selection = new Set(restored.map(n => n.getAttr('headerId')));
   _transformer.nodes(restored);
   _layer.batchDraw();
+
+  // Settle the tracked refresh promise once all hydrate promises
+  // queued during _buildNode iterations complete.
+  _currentRefreshPromise = Promise.all(_refreshPending.slice()).then(() => {});
+  _refreshPending = [];
 }
+
+/** Resolves when the header layer has finished its latest async hydrates. */
+export function waitForHeaderStable() {
+  return _currentRefreshPromise;
+}
+
+let _currentRefreshPromise = Promise.resolve();
+let _refreshPending        = [];
 
 /**
  * Build a single Konva node for a header item. Text → Konva.Text;
@@ -414,7 +435,7 @@ function _buildNode(item, ctx, inert) {
     node.setAttr('naturalW',   item.naturalW || null);
     node.setAttr('naturalH',   item.naturalH || null);
     if (!inert) _attachItemHandlers(node, item);
-    if (item.dataUrl) _hydrateImage(node, item.dataUrl);
+    if (item.dataUrl) _refreshPending.push(_hydrateImage(node, item.dataUrl));
     return node;
   }
 
@@ -445,7 +466,9 @@ function _buildNode(item, ctx, inert) {
   // which is fine: empty image = no drawImage call (per Konva sceneFunc
   // `if (image)` guard). _hydrateHeaderText is a no-op if the node was
   // destroyed mid-await (e.g. another refresh fired).
-  _hydrateHeaderText(node, textHtml, item);
+  // Push the hydrate promise into _refreshPending so waitForHeaderStable
+  // can wait for it.
+  _refreshPending.push(_hydrateHeaderText(node, textHtml, item));
   return node;
 }
 

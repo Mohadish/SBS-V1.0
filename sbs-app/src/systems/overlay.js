@@ -1658,15 +1658,39 @@ function _serialiseStageJson() {
 }
 
 let _loadRaf = 0;
+let _currentLoadPromise = Promise.resolve();
 function _scheduleLoad() {
   // Defer by a frame so step.snapshot application completes before restore.
   // Cancel any prior RAF so rapid step changes don't queue multiple loads.
   if (_loadRaf) cancelAnimationFrame(_loadRaf);
-  _loadRaf = requestAnimationFrame(() => { _loadRaf = 0; _loadFromActiveStep(); });
+  // Track the load's promise so video export (and future deterministic
+  // callers) can await it via waitForOverlayStable() — without this,
+  // the first few frames after a step transition can capture a partial
+  // / empty layer because async raster is still in flight.
+  _currentLoadPromise = new Promise(resolve => {
+    _loadRaf = requestAnimationFrame(async () => {
+      _loadRaf = 0;
+      try { await _loadFromActiveStep(); }
+      finally { resolve(); }
+    });
+  });
 }
 
 function _onStepApplied() {
-  _loadFromActiveStep();
+  // Wrap with a tracked promise so external callers can await this
+  // path too. _loadFromActiveStep already async + token-guarded, so
+  // overlapping calls are safe.
+  _currentLoadPromise = (async () => { await _loadFromActiveStep(); })();
+}
+
+/**
+ * Resolves once the overlay layer has finished applying the latest
+ * step transition (RAF + async raster). Video export awaits this
+ * after every activateStep so frames captured during the hold are
+ * always against the FINAL overlay state, not a partially-loaded one.
+ */
+export function waitForOverlayStable() {
+  return _currentLoadPromise;
 }
 
 async function _loadFromActiveStep() {
