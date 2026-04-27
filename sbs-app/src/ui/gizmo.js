@@ -57,7 +57,7 @@ class GizmoController {
     this._obj3d    = null;
     this._visible  = false;
     this._mode     = 'all';        // 'all' | 'translate' | 'rotate'
-    this._spaceMode = 'local';     // 'local' | 'world'
+    this._spaceMode = 'local';     // 'local' | 'world' | 'pivot'
 
     // Drag state (set on pointerdown, used through move)
     this._startOffset = [0, 0, 0];
@@ -282,8 +282,13 @@ class GizmoController {
 
   _updateSpaceLabel() {
     if (!this._spaceLabelEl) return;
-    this._spaceLabelEl.textContent = this._spaceMode === 'local' ? 'LOCAL' : 'WORLD';
-    this._spaceLabelEl.style.color = this._spaceMode === 'local' ? '#60a5fa' : '#94a3b8';
+    const mode = this._spaceMode;
+    this._spaceLabelEl.textContent = mode === 'local' ? 'LOCAL'
+                                   : mode === 'world' ? 'WORLD'
+                                                       : 'PIVOT';
+    this._spaceLabelEl.style.color = mode === 'local' ? '#60a5fa'
+                                   : mode === 'pivot' ? '#fb923c'
+                                                       : '#94a3b8';
   }
 
   _applyMode() {
@@ -327,12 +332,15 @@ class GizmoController {
     }
     this._group.position.copy(pos);
 
-    // Orient gizmo: local mode = parent's world orientation (or pivot's
-    // world orientation when in pivot mode), world mode = identity.
+    // Orient gizmo: world space = identity (world axes); local + pivot
+    // space modes both use the gizmo's reference frame (parent or
+    // pivot, depending on pivotEnabled). PIVOT panel space is an
+    // INPUT-side toggle — visually the gizmo behaves like LOCAL.
     // Lock to snapshot during rotate drag for the same reason as pos.
-    if (lockPose && this._startRefQuat && this._spaceMode === 'local') {
+    const useFrameOrientation = this._spaceMode !== 'world';
+    if (lockPose && this._startRefQuat && useFrameOrientation) {
       this._group.quaternion.copy(this._startRefQuat);
-    } else if (this._spaceMode === 'local') {
+    } else if (useFrameOrientation) {
       if (usePivotPose) {
         this._group.quaternion.copy(getPivotWorldQuaternion(node, this._obj3d));
       } else {
@@ -643,7 +651,10 @@ class GizmoController {
     else if (axis === 'y') v = new T.Vector3(0, 1, 0);
     else                   v = new T.Vector3(0, 0, 1);
 
-    if (this._spaceMode === 'local') {
+    // local + pivot space modes both align gizmo handles with the
+    // gizmo's reference frame (parent or pivot, per pivotEnabled).
+    // World stays identity → axes are world.
+    if (this._spaceMode !== 'world') {
       // During a drag, prefer the snapshot reference so axes stay
       // stable even when the pivot/object rotates underneath us.
       const refQ = (this._dragging && this._startRefQuat)
@@ -887,39 +898,48 @@ class GizmoController {
     const no = this._node;
     if (!no) return '';
 
-    // Translate inputs always live in the GIZMO'S reference frame —
-    // matches the axes the user sees on the gizmo. Drives the
-    // display path; _applyPanelValue does the inverse on write.
-    //   LOCAL + GREY → parent-local (no rotation; identity conversion)
-    //   LOCAL + BLUE → pivot frame (rotates through pivotLocalQ × totalLocalQ)
-    //   WORLD        → world frame (rotates through parentWorldQ)
+    const isPivotMode = this._spaceMode === 'pivot';
+
+    // Translate values:
+    //   PIVOT mode  → pivotLocalOffset (object-local; the pivot's offset
+    //                  from its home position).
+    //   LOCAL/WORLD → localOffset, expressed in the gizmo's reference
+    //                  frame (see _offsetInPanelFrame).
     const [ox, oy, oz] = this._offsetInPanelFrame(no);
     const fmt = v => parseFloat(v.toFixed(4));
 
-    // Rotation = Euler from localQuaternion in degrees
-    const [ex, ey, ez] = this._quatToEulerDeg(no.localQuaternion ?? [0, 0, 0, 1]);
+    // Rotation values:
+    //   PIVOT mode  → Euler from pivotLocalQuaternion.
+    //   LOCAL/WORLD → Euler from localQuaternion (parent-local).
+    const rotSrc = isPivotMode
+      ? (no.pivotLocalQuaternion ?? [0, 0, 0, 1])
+      : (no.localQuaternion       ?? [0, 0, 0, 1]);
+    const [ex, ey, ez] = this._quatToEulerDeg(rotSrc);
     const fmtA = v => parseFloat(v.toFixed(2));
 
     const spaceLocal = this._spaceMode === 'local';
+    const spaceWorld = this._spaceMode === 'world';
+    const spacePivot = isPivotMode;
 
     return `
-      <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:10px;">
-        <span style="font-weight:700;font-size:13px;color:#f1f5f9;">Transform</span>
+      <div data-panel-drag="1" style="display:flex;align-items:center;justify-content:space-between;margin-bottom:10px;cursor:move;user-select:none;padding:2px 0;border-bottom:1px solid #1e293b;">
+        <span style="font-weight:700;font-size:13px;color:#f1f5f9;letter-spacing:0.3px;">Transform</span>
         <div style="display:flex;gap:4px;">
-          <button data-space="local"  style="${this._spaceBtn(spaceLocal)}">LOCAL</button>
-          <button data-space="world"  style="${this._spaceBtn(!spaceLocal)}">WORLD</button>
+          <button data-space="local" style="${this._spaceBtn(spaceLocal)}">LOCAL</button>
+          <button data-space="world" style="${this._spaceBtn(spaceWorld)}">WORLD</button>
+          <button data-space="pivot" style="${this._spaceBtn(spacePivot, '#fb923c', '#9a3412')}">PIVOT</button>
         </div>
       </div>
 
       <div style="margin-bottom:8px;">
-        <div style="font-size:10px;color:#64748b;margin-bottom:4px;letter-spacing:0.5px;">TRANSLATE (offset)</div>
+        <div style="font-size:10px;color:#64748b;margin-bottom:4px;letter-spacing:0.5px;">${isPivotMode ? 'PIVOT TRANSLATE (offset from home)' : 'TRANSLATE (offset)'}</div>
         ${this._axisRow('tx', 'X', fmt(ox), '#e05555')}
         ${this._axisRow('ty', 'Y', fmt(oy), '#55cc55')}
         ${this._axisRow('tz', 'Z', fmt(oz), '#5588e0')}
       </div>
 
       <div>
-        <div style="font-size:10px;color:#64748b;margin-bottom:4px;letter-spacing:0.5px;">ROTATE (°)</div>
+        <div style="font-size:10px;color:#64748b;margin-bottom:4px;letter-spacing:0.5px;">${isPivotMode ? 'PIVOT ROTATE (°)' : 'ROTATE (°)'}</div>
         ${this._axisRow('rx', 'X', fmtA(ex), '#e05555')}
         ${this._axisRow('ry', 'Y', fmtA(ey), '#55cc55')}
         ${this._axisRow('rz', 'Z', fmtA(ez), '#5588e0')}
@@ -931,7 +951,7 @@ class GizmoController {
     `;
   }
 
-  _spaceBtn(active) {
+  _spaceBtn(active, activeBg = '#1d4ed8', activeBorder = '#3b82f6') {
     return [
       'font-size:10px',
       'padding:3px 7px',
@@ -939,8 +959,8 @@ class GizmoController {
       'cursor:pointer',
       'font-weight:700',
       'letter-spacing:0.5px',
-      `background:${active ? '#1d4ed8' : '#0f172a'}`,
-      `border:1px solid ${active ? '#3b82f6' : '#334155'}`,
+      `background:${active ? activeBg : '#0f172a'}`,
+      `border:1px solid ${active ? activeBorder : '#334155'}`,
       `color:${active ? '#eff6ff' : '#64748b'}`,
     ].join(';');
   }
@@ -969,6 +989,41 @@ class GizmoController {
         );
       });
     });
+
+    // Drag the panel by its header (anything with data-panel-drag).
+    // Mouse-style window drag — captures pointer to keep tracking
+    // even when the cursor leaves the panel during a drag.
+    const dragHandle = panel.querySelector('[data-panel-drag]');
+    if (dragHandle) {
+      let dragging = false;
+      let offsetX  = 0;
+      let offsetY  = 0;
+      let pointerId = null;
+      dragHandle.addEventListener('pointerdown', e => {
+        // Don't start a drag from a clicked button inside the header.
+        if (e.target.closest('button')) return;
+        dragging = true;
+        pointerId = e.pointerId;
+        const rect = panel.getBoundingClientRect();
+        offsetX = e.clientX - rect.left;
+        offsetY = e.clientY - rect.top;
+        try { dragHandle.setPointerCapture(e.pointerId); } catch {}
+        e.preventDefault();
+      });
+      dragHandle.addEventListener('pointermove', e => {
+        if (!dragging) return;
+        panel.style.left = `${Math.round(e.clientX - offsetX)}px`;
+        panel.style.top  = `${Math.round(e.clientY - offsetY)}px`;
+      });
+      const endDrag = () => {
+        if (!dragging) return;
+        dragging = false;
+        try { dragHandle.releasePointerCapture(pointerId); } catch {}
+        pointerId = null;
+      };
+      dragHandle.addEventListener('pointerup',     endDrag);
+      dragHandle.addEventListener('pointercancel', endDrag);
+    }
 
     // Reset button
     panel.querySelector('[data-action="reset"]')?.addEventListener('click', () => {
@@ -1008,45 +1063,87 @@ class GizmoController {
   }
 
   _applyPanelValue(field, val, no, obj) {
+    const isPivotMode = this._spaceMode === 'pivot';
+
     if (field === 'tx' || field === 'ty' || field === 'tz') {
-      // Read current panel-frame translate, update one axis,
-      // convert back to parent-local for storage.
-      const cur = this._offsetInPanelFrame(no);
-      if (field === 'tx') cur[0] = val;
-      if (field === 'ty') cur[1] = val;
-      if (field === 'tz') cur[2] = val;
-      no.localOffset   = this._offsetFromPanelFrame(no, cur);
-      no.moveEnabled   = true;
+      if (isPivotMode) {
+        // PIVOT space mode: edit pivotLocalOffset directly (object-local).
+        const cur = [...(no.pivotLocalOffset ?? [0, 0, 0])];
+        if (field === 'tx') cur[0] = val;
+        if (field === 'ty') cur[1] = val;
+        if (field === 'tz') cur[2] = val;
+        no.pivotLocalOffset = cur;
+        no.pivotEnabled     = true;
+      } else {
+        // LOCAL / WORLD: edit localOffset, displayed in gizmo's reference frame.
+        const cur = this._offsetInPanelFrame(no);
+        if (field === 'tx') cur[0] = val;
+        if (field === 'ty') cur[1] = val;
+        if (field === 'tz') cur[2] = val;
+        no.localOffset = this._offsetFromPanelFrame(no, cur);
+        no.moveEnabled = true;
+      }
     }
 
     if (field === 'rx' || field === 'ry' || field === 'rz') {
-      // Read current Euler in degrees, update one axis, convert back to quaternion
-      const [ex, ey, ez] = this._quatToEulerDeg(no.localQuaternion ?? [0, 0, 0, 1]);
-      const nx = field === 'rx' ? val : ex;
-      const ny = field === 'ry' ? val : ey;
-      const nz = field === 'rz' ? val : ez;
-      const q  = this._eulerDegToQuat(nx, ny, nz);
-      no.localQuaternion = [q.x, q.y, q.z, q.w];
-      no.rotateEnabled   = true;
+      if (isPivotMode) {
+        // PIVOT space mode: edit pivotLocalQuaternion (Euler in pivot frame).
+        const [ex, ey, ez] = this._quatToEulerDeg(no.pivotLocalQuaternion ?? [0, 0, 0, 1]);
+        const nx = field === 'rx' ? val : ex;
+        const ny = field === 'ry' ? val : ey;
+        const nz = field === 'rz' ? val : ez;
+        const q  = this._eulerDegToQuat(nx, ny, nz);
+        no.pivotLocalQuaternion = [q.x, q.y, q.z, q.w];
+        no.pivotEnabled         = true;
+      } else {
+        // LOCAL / WORLD: edit localQuaternion. When pivotEnabled, route
+        // through the back-solver so the rotation pivots around the
+        // active pivot (not the home origin). Mirrors gizmo drag behaviour.
+        const [ex, ey, ez] = this._quatToEulerDeg(no.localQuaternion ?? [0, 0, 0, 1]);
+        const nx = field === 'rx' ? val : ex;
+        const ny = field === 'ry' ? val : ey;
+        const nz = field === 'rz' ? val : ez;
+        const q  = this._eulerDegToQuat(nx, ny, nz);
+        if (no.pivotEnabled) {
+          setNodeLocalRotationPreservePivot(no, [q.x, q.y, q.z, q.w]);
+        } else {
+          no.localQuaternion = [q.x, q.y, q.z, q.w];
+          no.rotateEnabled   = true;
+        }
+      }
     }
 
     applyNodeTransformToObject3D(no, obj, true);
   }
 
   /**
-   * Convert localOffset (parent-local) → panel display vector in the
-   * gizmo's current reference frame. See `_offsetFromPanelFrame` for
-   * the inverse + math derivation.
+   * Convert the panel's translate VALUES to display in the panel.
+   *
+   * In PIVOT space mode, the panel directly edits pivotLocalOffset
+   * (no rotation conversion — pivot data is already in object-local
+   * which we treat as the canonical "pivot frame").
+   *
+   * In LOCAL / WORLD modes, the panel edits localOffset displayed in
+   * the gizmo's reference frame — see `_parentToGizmoQuat`.
    */
   _offsetInPanelFrame(no) {
     const T = window.THREE;
+    if (this._spaceMode === 'pivot') {
+      const p = no.pivotLocalOffset ?? [0, 0, 0];
+      return [p[0], p[1], p[2]];
+    }
     const parentToGizmo = this._parentToGizmoQuat();
     const v = new T.Vector3(...(no.localOffset ?? [0, 0, 0]));
     if (parentToGizmo) v.applyQuaternion(parentToGizmo);
     return [v.x, v.y, v.z];
   }
 
-  /** Inverse of _offsetInPanelFrame: panel-frame → parent-local localOffset. */
+  /**
+   * Inverse of _offsetInPanelFrame for LOCAL/WORLD modes only —
+   * converts panel-frame → parent-local localOffset. Caller must
+   * handle PIVOT mode separately (writes pivotLocalOffset directly,
+   * no conversion needed).
+   */
   _offsetFromPanelFrame(no, panelVec) {
     const T = window.THREE;
     const parentToGizmo = this._parentToGizmoQuat();
@@ -1083,10 +1180,14 @@ class GizmoController {
   _refreshPanel() {
     if (!this._panel || !this._node) return;
     const no = this._node;
+    const isPivotMode = this._spaceMode === 'pivot';
 
     // Translate displayed in the gizmo's reference frame (matches input).
     const [ox, oy, oz] = this._offsetInPanelFrame(no);
-    const [ex, ey, ez] = this._quatToEulerDeg(no.localQuaternion ?? [0, 0, 0, 1]);
+    const rotSrc = isPivotMode
+      ? (no.pivotLocalQuaternion ?? [0, 0, 0, 1])
+      : (no.localQuaternion       ?? [0, 0, 0, 1]);
+    const [ex, ey, ez] = this._quatToEulerDeg(rotSrc);
     const fmt  = v => parseFloat(v.toFixed(4));
     const fmtA = v => parseFloat(v.toFixed(2));
 
@@ -1099,8 +1200,11 @@ class GizmoController {
 
     // Update space buttons
     const spaceLocal = this._spaceMode === 'local';
+    const spaceWorld = this._spaceMode === 'world';
+    const spacePivot = isPivotMode;
     this._panel.querySelector('[data-space="local"]')?.setAttribute('style', this._spaceBtn(spaceLocal));
-    this._panel.querySelector('[data-space="world"]')?.setAttribute('style', this._spaceBtn(!spaceLocal));
+    this._panel.querySelector('[data-space="world"]')?.setAttribute('style', this._spaceBtn(spaceWorld));
+    this._panel.querySelector('[data-space="pivot"]')?.setAttribute('style', this._spaceBtn(spacePivot, '#fb923c', '#9a3412'));
   }
 
   _closePanel() {
