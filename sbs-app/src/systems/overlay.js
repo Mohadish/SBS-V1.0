@@ -560,47 +560,116 @@ function _attachNode(node) {
   }
 }
 
+// ─── Overlay clipboard (in-memory, persists across step changes) ───────────
+//
+// A simple module-scoped buffer. Holds an array of node specs (one per
+// copied node) plus the position they were copied FROM, so paste-in-place
+// can drop them at the original coordinates regardless of which step is
+// active when the paste happens.
+//
+// Format mirrors the spec shape used by _recreateNode:
+//   { className, attrs }
+// ATTR LIST: x, y, width, height, src, textHtml, textWidth, naturalW,
+//            naturalH, fillColor, styleId, scaleX, scaleY, rotation
+// (image is intentionally NOT serialised — Konva can't round-trip an
+//  HTMLImageElement; we re-load from `src` or re-rasterise from textHtml.)
+let _overlayClipboard = null;
+
+function _serializeNode(node) {
+  if (!node) return null;
+  const a = node.attrs || {};
+  const out = {
+    className: node.getClassName(),
+    attrs: {
+      x:        a.x ?? 0,
+      y:        a.y ?? 0,
+      width:    a.width,
+      height:   a.height,
+      scaleX:   a.scaleX ?? 1,
+      scaleY:   a.scaleY ?? 1,
+      rotation: a.rotation ?? 0,
+    },
+  };
+  // Inline payload — only the fields _recreateNode looks at.
+  for (const k of ['src', 'textHtml', 'textWidth', 'naturalW', 'naturalH', 'fillColor', 'styleId']) {
+    if (a[k] != null) out.attrs[k] = a[k];
+  }
+  return out;
+}
+
 /**
- * Reset a node's box back to the source-of-truth size:
- *   text box → canvas dimensions at last raster (textWidth × naturalH)
- *   image    → the source file's native pixel size (naturalW × naturalH)
- *
- * Position is preserved (we shrink/grow around the top-left). Aspect is
- * preserved by definition — both axes go back to the natural dims.
+ * Right-click → Copy. Snapshots every selected overlay node into the
+ * module clipboard along with their captured x/y for paste-in-place.
  */
-function resetNodeToOriginalSize(node) {
-  if (!node) return;
-  const naturalW = node.getAttr('naturalW');
-  const naturalH = node.getAttr('naturalH');
-  if (!Number.isFinite(naturalW) || !Number.isFinite(naturalH)) return;
-  node.width(naturalW);
-  node.height(naturalH);
-  node.scaleX(1);
-  node.scaleY(1);
+function _copyToOverlayClipboard() {
+  const sel = _transformer?.nodes() || [];
+  if (!sel.length) return false;
+  _overlayClipboard = sel.map(n => ({
+    spec:        _serializeNode(n),
+    capturedAt:  { x: n.x() ?? 0, y: n.y() ?? 0 },
+  })).filter(e => e.spec);
+  return _overlayClipboard.length > 0;
+}
+
+/**
+ * Paste from clipboard. With `inPlace:false` the new nodes drop at the
+ * stage's centre (offset slightly so duplicates don't perfectly overlap);
+ * with `inPlace:true` they land exactly where the original was when copied
+ * — even across steps, since we stored the captured x/y per-node.
+ */
+function _pasteFromOverlayClipboard(opts = {}) {
+  if (!_overlayClipboard?.length) return false;
+  const { inPlace = false, offset = 20 } = opts;
+  const newNodes = [];
+  for (const entry of _overlayClipboard) {
+    const node = _recreateNode(entry.spec);
+    if (!node) continue;
+    if (inPlace) {
+      node.x(entry.capturedAt.x);
+      node.y(entry.capturedAt.y);
+    } else {
+      node.x((entry.capturedAt.x ?? 0) + offset);
+      node.y((entry.capturedAt.y ?? 0) + offset);
+    }
+    _layer.add(node);
+    _attachNode(node);
+    newNodes.push(node);
+  }
+  if (!newNodes.length) return false;
+
+  // Replace selection with the freshly-pasted nodes.
+  _transformer.nodes(newNodes);
+  _configTransformerForNodes(newNodes);
   _layer.batchDraw();
   _uiLayer.batchDraw();
   _scheduleSave();
+  return true;
+}
+
+/** Duplicate = copy current selection then immediately paste with a small offset. */
+function _duplicateSelected() {
+  if (!_copyToOverlayClipboard()) return false;
+  return _pasteFromOverlayClipboard({ inPlace: false, offset: 20 });
 }
 
 function _showOverlayContextMenu(node, x, y) {
-  const items = [];
-  const hasNatural = Number.isFinite(node.getAttr('naturalW')) && Number.isFinite(node.getAttr('naturalH'));
-  items.push({
-    label:    'Reset to original size',
-    disabled: !hasNatural,
-    action:   () => resetNodeToOriginalSize(node),
-  });
-  items.push({ separator: true });
-  items.push({
-    label:  'Delete',
-    action: () => {
-      node.destroy();
-      _setSelection(null);
-      _layer.batchDraw();
-      _scheduleSave();
+  const sel = _transformer?.nodes() || [node];
+  const hasClipboard = !!_overlayClipboard?.length;
+  showContextMenu([
+    { label: 'Duplicate',       action: _duplicateSelected },
+    { label: 'Copy',            action: _copyToOverlayClipboard },
+    { label: 'Paste',           disabled: !hasClipboard, action: () => _pasteFromOverlayClipboard({ inPlace: false }) },
+    { label: 'Paste in place',  disabled: !hasClipboard, action: () => _pasteFromOverlayClipboard({ inPlace: true })  },
+    { separator: true },
+    { label:  'Delete',
+      action: () => {
+        for (const n of sel) n.destroy();
+        _setSelection(null);
+        _layer.batchDraw();
+        _scheduleSave();
+      },
     },
-  });
-  showContextMenu(items, x, y);
+  ], x, y);
 }
 
 /**
@@ -1056,18 +1125,29 @@ export function rasterizeOverlay(opts = {}) {
 
 function _onKeyDown(e) {
   if (!_editing) return;
+  // Don't intercept anything while typing in any editable. Browsers'
+  // native Ctrl+C / Ctrl+V handle text selection inside contenteditable.
+  const ae = document.activeElement;
+  if (ae && (['INPUT','TEXTAREA'].includes(ae.tagName) || ae.isContentEditable)) return;
+  if (_activeTextEditor) return;
+
   if (e.key === 'Delete' || e.key === 'Backspace') {
-    // Skip whenever ANY editable element has focus — INPUT, TEXTAREA, OR
-    // any contenteditable (our in-place text editor mounts a contenteditable
-    // <div>, so without this check Backspace would destroy the whole node
-    // mid-edit and stop further typing dead).
-    const ae = document.activeElement;
-    if (ae && (['INPUT','TEXTAREA'].includes(ae.tagName) || ae.isContentEditable)) return;
-    // Don't interfere while the in-place editor is open even if focus
-    // briefly slipped (e.g. during selection grab).
-    if (_activeTextEditor) return;
     if (deleteSelected()) e.preventDefault();
+    return;
   }
+
+  // Clipboard shortcuts for overlay NODES (textboxes, images). Only fire
+  // when nothing is being typed — guard above bails on contenteditable.
+  const mod = e.ctrlKey || e.metaKey;
+  if (!mod) return;
+  const k = e.key.toLowerCase();
+  if (k === 'c') { if (_copyToOverlayClipboard()) e.preventDefault(); return; }
+  if (k === 'v') {
+    const inPlace = !!e.altKey;            // Ctrl+Alt+V → paste in place
+    if (_pasteFromOverlayClipboard({ inPlace })) e.preventDefault();
+    return;
+  }
+  if (k === 'd') { if (_duplicateSelected()) e.preventDefault(); return; }
 }
 
 function _editText(node) {
