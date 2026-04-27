@@ -795,6 +795,26 @@ function _normaliseColor(s) {
 }
 
 /**
+ * Single-editor applier — intercepts the node-level `fillColor` action
+ * (textbox background, not text styling), routes everything else to
+ * execCommandApplier (which now drives the unified text-engine over
+ * the live selection inside the contenteditable).
+ *
+ * fillColor is intercepted here because it modifies the Konva node's
+ * own attribute and the live editor's CSS background — the engine
+ * doesn't touch either.
+ */
+function _singleEditorApplier(action, value) {
+  if (action === 'fillColor') {
+    if (!_activeTextEditor || !value) return;
+    _activeTextEditor.node.setAttr('fillColor', value);
+    _activeTextEditor.div.style.backgroundColor = value;
+    return;
+  }
+  execCommandApplier(action, value);
+}
+
+/**
  * Mass-mode applier: iterate selected text boxes, run the unified
  * text-engine over each box's stored HTML with no Range (so it
  * touches every text run). Then re-rasterise. fillColor is a
