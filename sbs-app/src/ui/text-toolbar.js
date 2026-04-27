@@ -187,7 +187,26 @@ function _execFontSizeOnSelection(px) {
   const sel = window.getSelection();
   if (!sel || sel.rangeCount === 0) return;
   const range = sel.getRangeAt(0);
-  if (range.collapsed) return;   // no selection, can't apply size to nothing
+
+  // Collapsed caret → set up a pending span so the user's next typed
+  // characters pick up the chosen size. Without this, picking a size
+  // with no selection silently no-op'd and the next characters used
+  // whatever style was at the caret (which is what bold/italic/etc.
+  // do natively via execCommand — fontSize was the odd one out).
+  // The ZWSP placeholder stops Chromium from collapsing the empty
+  // span away before the user types; it's stripped on click-out.
+  if (range.collapsed) {
+    const span = document.createElement('span');
+    span.style.fontSize = `${px}px`;
+    const tn = document.createTextNode('​');   // zero-width space
+    span.appendChild(tn);
+    range.insertNode(span);
+    range.setStart(tn, 1);
+    range.collapse(true);
+    sel.removeAllRanges();
+    sel.addRange(range);
+    return;
+  }
 
   try {
     // Extract the selection so we can rebuild it freely.
@@ -247,10 +266,18 @@ function _execFontSizeOnSelection(px) {
       block = block.parentElement;
     }
     if (block) {
-      block.querySelectorAll('span,b,i,u,s,strong,em,font').forEach(el => {
-        if (!el.textContent.trim() && !el.querySelector('br,img,svg,input,canvas')) {
-          el.remove();
-        }
+      // Sweep ALL descendants — not just tag-name-allowlisted ones —
+      // for empty wrappers that still carry stale font-size or
+      // line-height declarations. Any element with no text content
+      // (after trimming whitespace + zero-width spaces), no embedded
+      // media, and not a meaningful <br> is safe to drop.
+      block.querySelectorAll('*').forEach(el => {
+        if (el === block) return;
+        if (el.tagName === 'BR') return;
+        const txt = (el.textContent || '').replace(/[​\s]+/g, '');
+        if (txt) return;
+        if (el.querySelector('br,img,svg,input,canvas')) return;
+        el.remove();
       });
       if (block.style) block.style.lineHeight = '';
       block.querySelectorAll('[style]').forEach(el => { el.style.lineHeight = ''; });

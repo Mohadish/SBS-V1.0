@@ -1509,9 +1509,17 @@ async function _htmlToCanvas(html, opts = {}) {
   //     followed by more text would visually drop the second part.
   //   • An empty <div></div> renders zero-height in SVG, swallowing what
   //     the user intended as a blank line.
-  // Both are repaired with regex tweaks before the SVG is built. Pure
-  // string substitutions, no DOM round-trip.
+  // Also strip zero-width spaces — the toolbar uses them as caret-style
+  // placeholders when a font-size / colour is picked with no selection
+  // (so the next typed character lands inside the styled span). Once
+  // the user has typed the actual character, the ZWSP has done its
+  // job and can be removed; if they didn't type anything, the empty
+  // wrapper is removed by the cleanup pass and the ZWSP goes with it.
+  // Either way, the rasterised output should never contain ZWSPs —
+  // they're invisible in the editor but can confuse downstream
+  // shaping / line-break logic in the SVG renderer.
   html = String(html || '')
+    .replace(/[​﻿]/g,             '')
     .replace(/<br(\s[^>]*)?>/gi,            '<br$1/>')
     .replace(/<hr(\s[^>]*)?>/gi,            '<hr$1/>')
     .replace(/<img(\s[^>]*)?>/gi,           '<img$1/>')
