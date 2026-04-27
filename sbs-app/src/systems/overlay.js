@@ -21,6 +21,7 @@ import { mountTextToolbar, unmountTextToolbar, execCommandApplier, setToolbarVal
 import { getTextToolbarSlot }  from '../ui/overlay-toolbar.js';
 import * as textEngine from './text-engine.js';
 import { getStyleTemplate, listStyleTemplates } from './style-templates.js';
+import { registerLayer, getLayerSelection, persistNodeIfHeader } from './cross-layer.js';
 
 let _stage       = null;   // Konva.Stage
 let _layer       = null;   // Konva.Layer — holds all user content
@@ -115,6 +116,15 @@ export function initOverlay() {
   // current template values).
   state.on('styleTemplate:updated', _onStyleTemplateUpdated);
   state.on('styleTemplate:removed', _onStyleTemplateUpdated);   // also re-rasterise when a template is deleted
+
+  // Register with the cross-layer registry so header.js can ask for
+  // the current overlay selection (for combined multi-drag) and ask
+  // us to persist after a cross-layer drag commits — see systems/
+  // cross-layer.js. No-op when called before init.
+  registerLayer('overlay', {
+    getSelection: () => _transformer?.nodes() || [],
+    scheduleSave: () => _scheduleSave(),
+  });
 }
 
 function _onStyleTemplateUpdated(payload) {
@@ -621,13 +631,18 @@ function _attachNode(node) {
     _setSelection(node, additive);
   });
 
-  // Multi-node drag. Konva's per-node draggable only moves the grabbed
-  // node; siblings in the same selection stay put. Stash starting
-  // positions on dragstart, apply the grabbed-node's delta to every
-  // sibling on dragmove. dragend clears the cache.
+  // Multi-node drag — now CROSS-LAYER. Konva's per-node draggable only
+  // moves the grabbed node; siblings (in the same OR the header layer)
+  // stay put. We stash starting positions across both layers' selections
+  // on dragstart, apply the grabbed-node's delta to every sibling on
+  // dragmove, and persist any header siblings on dragend (the grabbed
+  // node + overlay siblings are in step.overlay JSON, captured by the
+  // dragend handler below; header siblings need updateHeaderItem each).
   let _multiDragStarts = null;
   node.on('dragstart', () => {
-    const sel = _transformer?.nodes() || [];
+    const own  = _transformer?.nodes() || [];
+    const peer = getLayerSelection('header');
+    const sel  = [...own, ...peer];
     if (sel.length <= 1) return;
     _multiDragStarts = new Map();
     for (const n of sel) _multiDragStarts.set(n, { x: n.x(), y: n.y() });
@@ -644,9 +659,23 @@ function _attachNode(node) {
       n.x(s.x + dx);
       n.y(s.y + dy);
     }
+    // Both layers may need a redraw — header peer nodes live on a
+    // different Konva.Layer and won't auto-redraw from _layer.batchDraw().
     _layer.batchDraw();
+    _multiDragStarts.peerLayer ??= [..._multiDragStarts.keys()].find(n => n !== node && n.getLayer && n.getLayer() !== _layer)?.getLayer();
+    _multiDragStarts.peerLayer?.batchDraw?.();
   });
-  node.on('dragend', () => { _multiDragStarts = null; });
+  node.on('dragend', () => {
+    if (_multiDragStarts) {
+      // Persist any header siblings — overlay nodes are saved in one
+      // shot via _scheduleSave below (their positions ride along in
+      // _stage.toJSON()).
+      for (const n of _multiDragStarts.keys()) {
+        if (n !== node) persistNodeIfHeader(n);
+      }
+    }
+    _multiDragStarts = null;
+  });
 
   // LIVE resize during edit — when the user drags a transform anchor on a
   // text box that's currently being edited, the contenteditable resizes

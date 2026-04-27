@@ -50,6 +50,7 @@
 import { state }            from '../core/state.js';
 import { generateId }       from '../core/schema.js';
 import { htmlToCanvas, enterTextEditor } from './overlay.js';   // P2/P3: shared rasteriser + editor
+import { registerLayer, getLayerSelection, scheduleOverlaySave } from './cross-layer.js';
 
 // ─── Pure data helpers (no DOM / Konva — usable from export, tests) ─────────
 
@@ -220,6 +221,18 @@ export function initHeaderLayer(stage) {
   });
   _layer.add(_transformer);
 
+  // Click on empty stage → clear header selection too. Overlay already
+  // wires its own stage-pointerdown to clear its selection; without
+  // this, header items stayed selected (cyan transformer lingering)
+  // after the user clicked away to deselect overlay nodes.
+  stage.on('pointerdown', (e) => {
+    if (e.target !== stage) return;
+    if (_selection.size === 0) return;
+    _selection.clear();
+    _transformer.nodes([]);
+    _layer.batchDraw();
+  });
+
   // State subscriptions — anything that changes the rendered output triggers
   // a refresh. Cheap re-render: we destroy and recreate nodes each time.
   // Header lists are small (typically < 10 items); no need for diff-based
@@ -232,6 +245,24 @@ export function initHeaderLayer(stage) {
   state.on('change:steps',          refreshHeaderLayer);
   state.on('change:chapters',       refreshHeaderLayer);
   state.on('header:refresh',        refreshHeaderLayer);   // explicit kick from step/chapter rename
+
+  // Register with the cross-layer registry — overlay reads this to
+  // include header siblings in combined multi-drag, and to persist
+  // header positions after a cross-layer drag commits.
+  registerLayer('header', {
+    getSelection: () => {
+      if (!_layer) return [];
+      // Return only currently-selected real header items (filter out
+      // the transformer node itself + any item not in _selection).
+      return _layer.getChildren().filter(c =>
+        c !== _transformer && _selection.has(c.getAttr?.('headerId'))
+      );
+    },
+    persistFromNode: (n) => {
+      const id = n?.getAttr?.('headerId');
+      if (id) updateHeaderItem(id, { x: n.x(), y: n.y(), w: n.width(), h: n.height() });
+    },
+  });
 
   refreshHeaderLayer();
 }
@@ -437,14 +468,14 @@ function _attachItemHandlers(node, item) {
     if (!additive && currentIds.has(node.getAttr('headerId')) && currentIds.size > 1) return;
     _selectHeaderNode(node, additive);
   });
-  // Multi-node drag. Konva's per-node draggable only moves the grabbed
-  // node; siblings in the same selection stay put. Stash starting
-  // positions on dragstart, apply the grabbed-node's delta to every
-  // sibling on dragmove. Mirrors overlay.js — same fix applied to the
-  // header layer's transformer + selection.
+  // Multi-node drag — CROSS-LAYER. Combines this layer's selection with
+  // the overlay layer's so a single grabbed header carries any selected
+  // overlay textboxes / images along, and vice versa.
   let _multiDragStarts = null;
   node.on('dragstart', () => {
-    const sel = _transformer?.nodes() || [];
+    const own  = _transformer?.nodes() || [];
+    const peer = getLayerSelection('overlay');
+    const sel  = [...own, ...peer];
     if (sel.length <= 1) return;
     _multiDragStarts = new Map();
     for (const n of sel) _multiDragStarts.set(n, { x: n.x(), y: n.y() });
@@ -461,13 +492,18 @@ function _attachItemHandlers(node, item) {
       n.x(s.x + dx);
       n.y(s.y + dy);
     }
+    // Redraw both layers — overlay peers live on a different Konva.Layer.
     _layer.batchDraw();
+    _multiDragStarts.peerLayer ??= [..._multiDragStarts.keys()].find(n => n !== node && n.getLayer && n.getLayer() !== _layer)?.getLayer();
+    _multiDragStarts.peerLayer?.batchDraw?.();
   });
 
-  // Persist drag / resize back to state.headerItems. In multi-drag,
-  // ONLY the grabbed node fires dragend — the siblings we moved via
-  // x()/y() in dragmove don't emit events. So on dragend we walk the
-  // (former) drag set and write back each one's new position.
+  // Persist drag / resize back to data stores. In multi-drag, ONLY the
+  // grabbed node fires dragend — siblings (header AND overlay peers
+  // moved via cross-layer delta) don't emit events. We walk the full
+  // (former) drag set, persisting header items via updateHeaderItem
+  // and overlay peers via cross-layer.scheduleOverlaySave (one shot —
+  // overlay's _stage.toJSON captures all overlay node positions).
   node.on('dragend transformend', () => {
     const draggedSet = _multiDragStarts ? [..._multiDragStarts.keys()] : [node];
     _multiDragStarts = null;
@@ -481,16 +517,18 @@ function _attachItemHandlers(node, item) {
       node.scaleX(1);
       node.scaleY(1);
     }
+    let overlayPeerMoved = false;
     for (const n of draggedSet) {
-      const id = n.getAttr('headerId');
-      if (!id) continue;
-      updateHeaderItem(id, {
-        x: n.x(),
-        y: n.y(),
-        w: n.width(),
-        h: n.height(),
-      });
+      const id = n.getAttr?.('headerId');
+      if (id) {
+        updateHeaderItem(id, {
+          x: n.x(), y: n.y(), w: n.width(), h: n.height(),
+        });
+      } else {
+        overlayPeerMoved = true;
+      }
     }
+    if (overlayPeerMoved) scheduleOverlaySave();
   });
 
   // P3: double-click custom-kind headers to enter the in-place text editor.
