@@ -150,6 +150,12 @@ function createInitialState() {
     // and vice versa so the gizmo can only follow one target at a time.
     selectedCablePoint: null,
 
+    // C5 (Phase C): a cable point is awaiting a re-anchor pick. While
+    // set, the next viewport click on a mesh moves the point's anchor
+    // to that mesh + face position. Cleared on Esc, on a successful
+    // pick, or when selection changes.
+    cableReanchorPickingId: null,     // { cableId, nodeId } | null
+
     // ── UI state
     activeSidebarTab:   'files',      // which left sidebar tab is open
     gridVisible:        true,

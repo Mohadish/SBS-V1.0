@@ -211,6 +211,10 @@ state.on('change:pivotSnapPickingNodeId', id => {
 state.on('change:cablePlacingId', id => {
   canvas.style.cursor = id ? 'crosshair' : '';
 });
+// C5-C: same crosshair signal for cable re-anchor pick mode.
+state.on('change:cableReanchorPickingId', target => {
+  canvas.style.cursor = target ? 'crosshair' : '';
+});
 
 // ── Marquee (box-select) overlay ─────────────────────────────────────────────
 // A zero-cost transparent <div> that renders the drag rectangle.
@@ -292,6 +296,19 @@ canvas.addEventListener('pointerdown', e => {
     const hit = sceneCore.pick(e.clientX, e.clientY);
     if (hit) actions.snapPivotToHit(snapPickNodeId, hit);
     else     actions.cancelPivotSnapPicking();
+    return;
+  }
+
+  // C5-C: cable re-anchor pick mode — raycast for a mesh; if hit,
+  // re-anchor the staged cable point; else cancel silently. Runs
+  // before the gizmo so the user can target a face under a handle.
+  const reanchorTarget = state.get('cableReanchorPickingId');
+  if (reanchorTarget) {
+    e.preventDefault();
+    e.stopPropagation();
+    const hit = sceneCore.pick(e.clientX, e.clientY);
+    if (hit) actions.reanchorCablePoint(hit);
+    else     actions.cancelCableReanchorPicking();
     return;
   }
 
@@ -508,6 +525,28 @@ canvas.addEventListener('contextmenu', e => {
   e.preventDefault();
   hideContextMenu();
 
+  // C5-C: right-click on a cable point sphere → cable-point menu.
+  // Selects the point if it isn't already, then offers Re-anchor.
+  // Wins over the gizmo's transform-panel popup because the user's
+  // intent is the point itself, not the (translate-only) gizmo panel.
+  const cableHit = _pickCablePoint(e.clientX, e.clientY);
+  if (cableHit) {
+    actions.selectCablePoint(cableHit.cableId, cableHit.nodeId);
+    const items = [
+      {
+        label: '↺ Re-anchor…',
+        action: () => actions.startCableReanchorPicking(cableHit.cableId, cableHit.nodeId),
+      },
+      { label: '─', disabled: true },
+      {
+        label: 'Deselect  [Esc]',
+        action: () => actions.clearCablePointSelection(),
+      },
+    ];
+    showContextMenu(items, e.clientX, e.clientY);
+    return;
+  }
+
   // Gizmo gets first right-click: opens transform panel
   if (gizmo.onRightClick(e.clientX, e.clientY)) return;
 
@@ -607,6 +646,11 @@ window.addEventListener('keydown', async e => {
     // touching the rest of the selection.
     if (state.get('cablePlacingId')) {
       actions.stopCablePlacement();
+      return;
+    }
+    // C5-C: cable re-anchor pick mode — Esc cancels the pick.
+    if (state.get('cableReanchorPickingId')) {
+      actions.cancelCableReanchorPicking();
       return;
     }
     // Phase A: clear any cable-point selection alongside mesh selection.

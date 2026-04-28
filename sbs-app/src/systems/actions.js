@@ -1215,6 +1215,89 @@ export function applyCablePointCumulativeDelta(cableId, nodeId, worldDelta) {
   node.anchorLocal[2] = newLocal.z;
 }
 
+// ─── Cable re-anchor (Phase C) ────────────────────────────────────────────
+
+/**
+ * Enter re-anchor pick mode for a cable point. While set, the next
+ * viewport click on a mesh moves the point's anchor to that mesh +
+ * face. ESC cancels.
+ */
+export function startCableReanchorPicking(cableId, nodeId) {
+  const node = _findCableNode(cableId, nodeId);
+  if (!node || node.anchorType !== 'mesh') return;
+  state.setState({ cableReanchorPickingId: { cableId, nodeId } });
+}
+
+export function cancelCableReanchorPicking() {
+  if (state.get('cableReanchorPickingId')) {
+    state.setState({ cableReanchorPickingId: null });
+  }
+}
+
+/**
+ * Apply a re-anchor pick. `hit` is a raycast hit (sceneCore.pick) with
+ * .object + .point + .face. Re-anchors the currently-picking cable
+ * point to the new mesh's node id + local position + face normal.
+ * One undo entry — restores all four anchor fields together.
+ */
+export function reanchorCablePoint(hit) {
+  const target = state.get('cableReanchorPickingId');
+  if (!target || !hit?.point || !hit?.object) return false;
+  const node = _findCableNode(target.cableId, target.nodeId);
+  if (!node || node.anchorType !== 'mesh') {
+    cancelCableReanchorPicking();
+    return false;
+  }
+  const meshNodeId = _findTreeNodeIdForObject(hit.object);
+  if (!meshNodeId) {
+    // Hit was on a non-tree object (gizmo? cable spheres should be
+    // filtered by the picker). Bail without committing.
+    cancelCableReanchorPicking();
+    return false;
+  }
+
+  const localPos    = hit.object.worldToLocal(hit.point.clone());
+  const localNormal = hit.face?.normal ? hit.face.normal.clone().normalize() : null;
+
+  const before = {
+    nodeId:         node.nodeId,
+    anchorLocal:    Array.isArray(node.anchorLocal)    ? node.anchorLocal.slice()    : null,
+    normalLocal:    Array.isArray(node.normalLocal)    ? node.normalLocal.slice()    : null,
+    cachedWorldPos: Array.isArray(node.cachedWorldPos) ? node.cachedWorldPos.slice() : null,
+  };
+  const after = {
+    nodeId:         meshNodeId,
+    anchorLocal:    [localPos.x, localPos.y, localPos.z],
+    normalLocal:    localNormal ? [localNormal.x, localNormal.y, localNormal.z] : null,
+    cachedWorldPos: [hit.point.x, hit.point.y, hit.point.z],
+  };
+
+  // Apply the new anchor in place + bump cables for subscribers.
+  Object.assign(node, after);
+  state.setState({ cables: [...(state.get('cables') || [])] });
+  state.markDirty();
+  cancelCableReanchorPicking();
+
+  undoManager.push(
+    'Re-anchor cable point',
+    () => {
+      const n = _findCableNode(target.cableId, target.nodeId);
+      if (!n) return;
+      Object.assign(n, before);
+      state.setState({ cables: [...(state.get('cables') || [])] });
+      state.markDirty();
+    },
+    () => {
+      const n = _findCableNode(target.cableId, target.nodeId);
+      if (!n) return;
+      Object.assign(n, after);
+      state.setState({ cables: [...(state.get('cables') || [])] });
+      state.markDirty();
+    },
+  );
+  return true;
+}
+
 export function commitCablePointMove(cableId, nodeId) {
   if (!_cablePointMoveBatch
       || _cablePointMoveBatch.cableId !== cableId
