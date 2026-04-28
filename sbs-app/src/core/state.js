@@ -142,6 +142,14 @@ function createInitialState() {
     // automatically on selection / step changes.
     cablePlacingId: null,
 
+    // C5 (Phase A): currently selected cable point (sphere visual in the
+    // viewport). { cableId, nodeId } or null. Drives the cable-point
+    // highlight ring in cables-render and gates Phase B (gizmo follow)
+    // and later Phase C (re-anchor) work. Independent of selectedId
+    // (mesh selection) — clicking a cable point clears mesh selection
+    // and vice versa so the gizmo can only follow one target at a time.
+    selectedCablePoint: null,
+
     // ── UI state
     activeSidebarTab:   'files',      // which left sidebar tab is open
     gridVisible:        true,

@@ -50,7 +50,7 @@ import { initOverlay, getStage as getOverlayStage } from './systems/overlay.js';
 import { initOverlayToolbar }  from './ui/overlay-toolbar.js';
 import { initHeaderLayer }     from './systems/header.js';
 import { initCables }          from './systems/cables.js';        // C1: cables wire step:applied → applyStepSnapshot
-import { initCableRender }     from './systems/cables-render.js';  // C2: cables 3D render + per-frame anchor ticker
+import { initCableRender, getCablePointMeshes } from './systems/cables-render.js';  // C2: cables 3D render; C5-A: point raycast targets
 import { initUserSettings }    from './core/user-settings.js';
 import { openSettingsModal }   from './ui/settings-modal.js';
 import { schedulePrecache, cancel as cancelPrecache } from './systems/narration-precache.js';
@@ -362,14 +362,50 @@ window.addEventListener('pointerup', e => {
   actionSetSelection(primary, multi);
 });
 
+// ── Cable point picking (Phase A) ────────────────────────────────────────────
+// CableRoot lives directly on sceneCore.scene (not under rootGroup), so the
+// generic sceneCore.pick() can't see the point spheres. Run a dedicated
+// raycast against `getCablePointMeshes()` and return the closest hit's
+// userData. Caller checks for null.
+
+function _pickCablePoint(clientX, clientY) {
+  if (!window.THREE) return null;
+  const meshes = getCablePointMeshes();
+  if (!meshes.length) return null;
+  const T = window.THREE;
+  const rect = canvas.getBoundingClientRect();
+  const ndc = new T.Vector2(
+    ((clientX - rect.left) / rect.width)  * 2 - 1,
+    -((clientY - rect.top)  / rect.height) * 2 + 1,
+  );
+  const ray = new T.Raycaster();
+  ray.setFromCamera(ndc, sceneCore.camera);
+  const hits = ray.intersectObjects(meshes, false).filter(h => h.object.visible);
+  if (!hits.length) return null;
+  return {
+    cableId: hits[0].object.userData.cableId,
+    nodeId:  hits[0].object.userData.nodeId,
+    object:  hits[0].object,
+  };
+}
+
 // ── Click: select object ─────────────────────────────────────────────────────
 
 canvas.addEventListener('click', e => {
   if (e.button !== 0) return;
   // Suppress click after gizmo interaction or drag-select
   if (_gizmoConsumed) { _gizmoConsumed = false; return; }
-  if (_justDragged) { _justDragged = false; return; }
+  if (_justDragged)   { _justDragged   = false; return; }
   hideContextMenu();
+
+  // Phase A: cable points have priority over mesh selection AND don't
+  // require a loaded tree (cables can exist without a model). Run this
+  // BEFORE the tree/nbm guard or cables-only sessions never select.
+  const cableHit = _pickCablePoint(e.clientX, e.clientY);
+  if (cableHit) {
+    actions.selectCablePoint(cableHit.cableId, cableHit.nodeId);
+    return;
+  }
 
   const root    = state.get('treeData');
   const nbm     = state.get('nodeById');
@@ -377,12 +413,19 @@ canvas.addEventListener('click', e => {
 
   const hit = sceneCore.pick(e.clientX, e.clientY);
   if (!hit) {
-    if (!e.ctrlKey && !e.metaKey) actionClearSelection();
+    if (!e.ctrlKey && !e.metaKey) {
+      actionClearSelection();
+      actions.clearCablePointSelection();
+    }
     return;
   }
 
   const meshNodeId = hit.object.userData?.meshNodeId;
   if (!meshNodeId) return;
+
+  // Selecting a mesh clears any cable-point selection — the gizmo can
+  // only follow one target (mesh-folder OR cable-point), never both.
+  actions.clearCablePointSelection();
 
   const target = meshNodeId;
   const multi  = new Set(state.get('multiSelectedIds') || []);
@@ -531,6 +574,8 @@ window.addEventListener('keydown', async e => {
       actions.stopCablePlacement();
       return;
     }
+    // Phase A: clear any cable-point selection alongside mesh selection.
+    actions.clearCablePointSelection();
     gizmo.setMode('all');
     state.clearSelection();
     materials.applySelectionHighlight([]);

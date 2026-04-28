@@ -73,11 +73,29 @@ export function initCableRender() {
   state.on('change:cableGlobalScale',    _refreshAll);
   state.on('change:cableHighlightColor', _refreshAll);
 
+  // Phase A: re-apply per-point selection highlight on selection change.
+  // Cheap — no geometry rebuild, just material emissive flips.
+  state.on('change:selectedCablePoint',  _applySelectionHighlight);
+
   // Per-frame anchor sync — folds into existing render loop, no new rAF.
   _tickUnsub = sceneCore.addTickHook(_tickAnchorRefresh);
 
   _initialised = true;
   _refreshAll();
+}
+
+/**
+ * Phase A: returns every cable-point sphere mesh as a flat array, for
+ * use as a raycast target list in main.js. Empty when render isn't
+ * initialised or no cables exist. Mesh `userData` carries `{ cableId,
+ * nodeId }` set by `_rebuildCable`.
+ */
+export function getCablePointMeshes() {
+  const out = [];
+  for (const entry of _cableSubgroups.values()) {
+    for (const m of entry.points) out.push(m);
+  }
+  return out;
 }
 
 // ─── Full rebuild ────────────────────────────────────────────────────────
@@ -108,6 +126,9 @@ function _refreshAll() {
     _rebuildCable(cable, entry);
     entry.group.visible = cable.visible !== false;
   }
+
+  // Phase A: re-apply emissive on the (possibly new) point materials.
+  _applySelectionHighlight();
 }
 
 function _rebuildCable(cable, entry) {
@@ -145,9 +166,9 @@ function _rebuildCable(cable, entry) {
       new THREE.MeshStandardMaterial({ color: color.clone(), metalness: 0.2, roughness: 0.6 }),
     );
     sphere.position.copy(p);
-    sphere.scale.setScalar(radius * 1.1);   // slightly bigger than the cable radius
     sphere.userData.cableId = cable.id;
     sphere.userData.nodeId  = cable.nodes[i].id;
+    sphere.scale.setScalar(_pointScaleFor(cable.id, cable.nodes[i].id, radius));
     entry.group.add(sphere);
     entry.points.push(sphere);
   }
@@ -196,6 +217,39 @@ function _poseCylinder(mesh, a, b, radius) {
   mesh.scale.set(radius, len, radius);
 }
 
+/**
+ * Phase A: walk every point mesh and apply selection highlight —
+ * emissive on the selected sphere, zero on the rest. Fires on
+ * change:selectedCablePoint and at the end of _refreshAll. Scale
+ * boost is applied by _tickAnchorRefresh (which also handles per-
+ * frame radius rewrites) so we don't fight it here.
+ */
+const _SELECT_EMISSIVE = new THREE.Color('#22d3ee');
+function _applySelectionHighlight() {
+  const sel = state.get('selectedCablePoint');
+  for (const entry of _cableSubgroups.values()) {
+    for (const m of entry.points) {
+      const mat = m.material;
+      if (!mat?.emissive) continue;
+      const isSel = sel && m.userData.cableId === sel.cableId && m.userData.nodeId === sel.nodeId;
+      if (isSel) {
+        mat.emissive.copy(_SELECT_EMISSIVE);
+        mat.emissiveIntensity = 0.9;
+      } else {
+        mat.emissive.setRGB(0, 0, 0);
+        mat.emissiveIntensity = 0;
+      }
+    }
+  }
+}
+
+/** Multiplier for the selected point's sphere — applied in tick + rebuild. */
+function _pointScaleFor(cableId, nodeId, baseRadius) {
+  const sel = state.get('selectedCablePoint');
+  const isSel = sel && sel.cableId === cableId && sel.nodeId === nodeId;
+  return baseRadius * (isSel ? 1.4 : 1.1);
+}
+
 function _disposeSubgroup(entry) {
   for (const m of entry.points)   m.material?.dispose?.();
   for (const m of entry.segments) m.material?.dispose?.();
@@ -242,7 +296,7 @@ function _tickAnchorRefresh() {
       if (!p) { sphere.visible = false; continue; }
       sphere.visible = true;
       sphere.position.copy(p);
-      sphere.scale.setScalar(radius * 1.1);
+      sphere.scale.setScalar(_pointScaleFor(sphere.userData.cableId, sphere.userData.nodeId, radius));
     }
 
     // Reposition segments. positions[i] / positions[i+1] for segment i.

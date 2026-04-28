@@ -1108,6 +1108,36 @@ export function stopCablePlacement() {
   }
 }
 
+/**
+ * Phase A — cable point selection.
+ *
+ * Pure UI state, NO undo. Selecting a cable point clears any mesh
+ * selection so the gizmo (Phase B) can target one thing at a time;
+ * conversely, mesh selection callers should clear cable selection
+ * to keep the two mutually exclusive.
+ *
+ * Pass null to clear.
+ */
+export function selectCablePoint(cableId, nodeId) {
+  if (!cableId || !nodeId) {
+    clearCablePointSelection();
+    return;
+  }
+  // Clear mesh selection without going through setSelection (which
+  // would push an undo entry — selection of cable points is ephemeral).
+  if (state.get('selectedId') || (state.get('multiSelectedIds')?.size ?? 0) > 0) {
+    state.setSelection(null, new Set());
+    materials.applySelectionHighlight([]);
+  }
+  state.setState({ selectedCablePoint: { cableId, nodeId } });
+}
+
+export function clearCablePointSelection() {
+  if (state.get('selectedCablePoint')) {
+    state.setState({ selectedCablePoint: null });
+  }
+}
+
 
 // ═══════════════════════════════════════════════════════════════════════════
 //  ANIMATION PRESET ACTIONS
