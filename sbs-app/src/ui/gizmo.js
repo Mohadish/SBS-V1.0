@@ -272,11 +272,16 @@ class GizmoController {
     // world position even before the next tick fires.
     const p = target.getWorldPos();
     if (p) this._cableStandIn.position.copy(p);
-    this._cableStandIn.quaternion.identity();
+    // Surface-aligned frame: getWorldQuat returns a quat with +Z on
+    // the face normal so handles align with the surface (Z = lift,
+    // X/Y = slide). Fallbacks: mesh-world or identity for off-mesh.
+    const q = target.getWorldQuat ? target.getWorldQuat() : null;
+    if (q) this._cableStandIn.quaternion.copy(q);
+    else   this._cableStandIn.quaternion.identity();
     this._visible = true;
     this._group.visible = true;
     this._mode = 'translate';
-    this._spaceMode = 'world';   // cable points have no parent — world axes only
+    this._spaceMode = 'local';   // axes follow target.getWorldQuat (surface frame)
     this._applyMode();
     this._tick();
     if (this._spaceLabelEl) this._spaceLabelEl.style.display = '';
@@ -361,15 +366,31 @@ class GizmoController {
     const T   = window.THREE;
 
     // C5-B: cable-point mode — refresh stand-in to current target world
-    // pos every frame, then position+orient the gizmo group identically.
-    // World axes only; no pivot, no parent frame, no rotation handles.
+    // pose every frame, then mirror it onto the gizmo group. Frame is
+    // surface-aligned (target.getWorldQuat maps +Z to face normal) so
+    // translate handles read as "Z = lift off surface, X/Y = slide".
     if (this._cableTarget) {
       const p = this._cableTarget.getWorldPos();
       if (p) {
         this._cableStandIn.position.copy(p);
         this._group.position.copy(p);
       }
-      this._group.quaternion.identity();
+      // Lock pose during a drag so axes stay stable while the user
+      // moves the underlying point — same reason rotate-drag locks.
+      const lockPose = this._dragging && this._startRefQuat;
+      if (lockPose) {
+        this._group.quaternion.copy(this._startRefQuat);
+        this._cableStandIn.quaternion.copy(this._startRefQuat);
+      } else {
+        const q = this._cableTarget.getWorldQuat ? this._cableTarget.getWorldQuat() : null;
+        if (q) {
+          this._group.quaternion.copy(q);
+          this._cableStandIn.quaternion.copy(q);
+        } else {
+          this._group.quaternion.identity();
+          this._cableStandIn.quaternion.identity();
+        }
+      }
       const cam    = sceneCore.camera;
       const dist   = cam.position.distanceTo(this._group.position);
       const fovRad = (cam.fov * Math.PI) / 180;
@@ -794,6 +815,12 @@ class GizmoController {
    * drift.
    */
   _gizmoReferenceQuat() {
+    // C5-B: cable-point mode uses the target's surface-aligned quat
+    // so _axisVec, drag plane, and label all share the same frame.
+    if (this._cableTarget) {
+      const q = this._cableTarget.getWorldQuat ? this._cableTarget.getWorldQuat() : null;
+      return q || null;
+    }
     if (!this._node || !this._obj3d) return this._parentWorldQuat();
     const inPivotMode = this._node.pivotEnabled === true
       || state.get('pivotEditNodeId') === this._node.id;

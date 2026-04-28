@@ -185,6 +185,32 @@ function _buildCablePointGizmoTarget(cableId, nodeId) {
       const r   = resolveNodeWorldPosition(n, ctx);
       return r.pos ? new T.Vector3(r.pos[0], r.pos[1], r.pos[2]) : null;
     },
+    /**
+     * Surface-aligned gizmo frame. Returns a world quaternion mapping
+     * +Z to the host face's outward normal (so the Z handle moves the
+     * point along the normal, X/Y slide along the surface). Falls back
+     * to the host mesh's world quat if normalLocal isn't recorded;
+     * identity if no host can be resolved.
+     */
+    getWorldQuat() {
+      const cables = state.get('cables') || [];
+      const c = cables.find(x => x.id === cableId);
+      const n = c?.nodes?.find(x => x.id === nodeId);
+      if (!n || n.anchorType !== 'mesh' || !n.nodeId) return new T.Quaternion();
+      const sceneNode = state.get('nodeById')?.get?.(n.nodeId);
+      const obj = sceneNode?.object3d;
+      if (!obj) return new T.Quaternion();
+      const meshQ = new T.Quaternion();
+      obj.getWorldQuaternion(meshQ);
+      if (Array.isArray(n.normalLocal) && n.normalLocal.length === 3) {
+        const normalLocal = new T.Vector3(n.normalLocal[0], n.normalLocal[1], n.normalLocal[2]);
+        const worldNormal = normalLocal.applyQuaternion(meshQ).normalize();
+        const q = new T.Quaternion();
+        q.setFromUnitVectors(new T.Vector3(0, 0, 1), worldNormal);
+        return q;
+      }
+      return meshQ;
+    },
     beginMove() { actions.beginCablePointMove(cableId, nodeId); },
     applyCumulativeDelta(worldDelta) {
       actions.applyCablePointCumulativeDelta(cableId, nodeId, worldDelta);
@@ -572,11 +598,25 @@ canvas.addEventListener('contextmenu', e => {
   const cableHit = _pickCablePoint(e.clientX, e.clientY);
   if (cableHit) {
     actions.selectCablePoint(cableHit.cableId, cableHit.nodeId);
+    // Look up the host node so the menu can reflect socket state.
+    const cable = (state.get('cables') || []).find(c => c.id === cableHit.cableId);
+    const node  = cable?.nodes?.find(n => n.id === cableHit.nodeId);
+    const hasSocket = !!node?.socket;
     const items = [
       {
         label: '↺ Re-anchor…',
         action: () => actions.startCableReanchorPicking(cableHit.cableId, cableHit.nodeId),
       },
+      { label: '─', disabled: true },
+      hasSocket
+        ? {
+            label: '✕ Remove socket',
+            action: () => actions.removeCableSocket(cableHit.cableId, cableHit.nodeId),
+          }
+        : {
+            label: '＋ Add socket',
+            action: () => actions.addCableSocket(cableHit.cableId, cableHit.nodeId),
+          },
       { label: '─', disabled: true },
       {
         label: '✕ Delete this point',

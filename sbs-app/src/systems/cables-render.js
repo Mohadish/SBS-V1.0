@@ -43,6 +43,7 @@ let _initialised     = false;
 // Geometry templates (created once, reused via clone)
 let _UNIT_CYLINDER   = null;        // CylinderGeometry(1, 1, 1, 12) — scaled per-segment
 let _UNIT_SPHERE     = null;        // SphereGeometry(1, 16, 16)     — scaled per-point
+let _UNIT_BOX        = null;        // BoxGeometry(1, 1, 1)          — scaled per-socket
 
 // ─── Init ────────────────────────────────────────────────────────────────
 
@@ -63,6 +64,7 @@ export function initCableRender() {
 
   _UNIT_CYLINDER = new THREE.CylinderGeometry(1, 1, 1, 12, 1, false);
   _UNIT_SPHERE   = new THREE.SphereGeometry(1, 16, 16);
+  _UNIT_BOX      = new THREE.BoxGeometry(1, 1, 1);
 
   _cableRoot = new THREE.Group();
   _cableRoot.name = 'CableRoot';
@@ -131,7 +133,7 @@ function _refreshAll() {
   for (const cable of cables) {
     let entry = _cableSubgroups.get(cable.id);
     if (!entry) {
-      entry = { group: new THREE.Group(), points: [], segments: [] };
+      entry = { group: new THREE.Group(), points: [], segments: [], sockets: [] };
       entry.group.name = `Cable_${cable.id}`;
       _cableRoot.add(entry.group);
       _cableSubgroups.set(cable.id, entry);
@@ -150,8 +152,10 @@ function _rebuildCable(cable, entry) {
   // colour / highlight; dispose materials only.
   for (const m of entry.points)   { m.material?.dispose?.(); entry.group.remove(m); }
   for (const m of entry.segments) { m.material?.dispose?.(); entry.group.remove(m); }
+  for (const m of (entry.sockets || [])) { m.material?.dispose?.(); entry.group.remove(m); }
   entry.points   = [];
   entry.segments = [];
+  entry.sockets  = [];
 
   const ctx = { makeVec3: (x, y, z) => new THREE.Vector3(x, y, z) };
   const globalScale = state.get('cableGlobalScale') ?? 1.0;
@@ -204,6 +208,98 @@ function _rebuildCable(cable, entry) {
     entry.group.add(seg);
     entry.segments.push(seg);
   }
+
+  // C5-E1: socket boxes — one per node that carries a socket. Sized
+  // by socket.size, coloured by socket.color (independent of cable
+  // colour / highlight), oriented by the host mesh's world quat
+  // composed with socket.localQuaternion. Position offset by half-
+  // depth along socket-local +Z so the back face touches the cable
+  // point (matches schema doc + persistSocketFromVisual inverse math).
+  for (let i = 0; i < (cable.nodes || []).length; i++) {
+    const node = cable.nodes[i];
+    if (!node?.socket) continue;
+    const p = positions[i];
+    if (!p) continue;
+    const wq = _socketWorldQuat(node);
+    if (!wq) continue;
+    const size = node.socket.size || { w: 10, h: 10, d: 18 };
+    const w = (size.w || 10) * globalScale;
+    const h = (size.h || 10) * globalScale;
+    const d = (size.d || 18) * globalScale;
+    const sockColor = new THREE.Color(node.socket.color || '#ff9d57');
+    const box = new THREE.Mesh(
+      _UNIT_BOX,
+      new THREE.MeshStandardMaterial({ color: sockColor, metalness: 0.3, roughness: 0.5 }),
+    );
+    box.scale.set(w, h, d);
+    box.quaternion.copy(wq);
+    // Centre offset: +d/2 along the socket's world +Z so the BACK face
+    // (-Z in box-local) touches the cable point.
+    // Front face touches the cable point; the box extends the other
+     // way along its local +Z. With the IK shift on socket creation
+     // (addCableSocket lifts the anchor by d along the normal), the
+     // back face lands at the original anchored surface — the
+     // "plugged in" look. Without that shift, the box renders inside
+     // the surface, signalling that the user should move the point.
+    const zWorld = new THREE.Vector3(0, 0, 1).applyQuaternion(wq);
+    box.position.copy(p).addScaledVector(zWorld, -d / 2);
+    box.userData.cableId   = cable.id;
+    box.userData.nodeId    = node.id;
+    box.userData.kind      = 'socket';
+    entry.group.add(box);
+    entry.sockets.push(box);
+  }
+}
+
+/**
+ * Compute a socket's world-space quaternion. Mesh-anchored hosts
+ * compose the mesh's world quat with socket.localQuaternion (or fall
+ * back to a quaternion derived from node.normalLocal so a freshly-
+ * added socket sits flush on the surface). Branch / free hosts use
+ * socket.quaternion directly. Returns null when nothing is available
+ * — caller skips that socket's render.
+ */
+function _socketWorldQuat(node) {
+  const T = window.THREE;
+  const sock = node.socket;
+  if (!sock) return null;
+
+  // Mesh-anchored: compose meshWorldQuat * (sock.localQuaternion or
+  // a normal-derived default).
+  if (node.anchorType === 'mesh' && node.nodeId) {
+    const sceneNode = state.get('nodeById')?.get?.(node.nodeId);
+    const obj = sceneNode?.object3d;
+    if (!obj) return null;
+    const meshQ = new T.Quaternion();
+    obj.getWorldQuaternion(meshQ);
+    if (Array.isArray(sock.localQuaternion) && sock.localQuaternion.length === 4) {
+      const local = new T.Quaternion(
+        sock.localQuaternion[0], sock.localQuaternion[1],
+        sock.localQuaternion[2], sock.localQuaternion[3],
+      );
+      return meshQ.clone().multiply(local);
+    }
+    if (Array.isArray(node.normalLocal) && node.normalLocal.length === 3) {
+      // Default: orient socket's local +Z to the surface normal so the
+      // box "stands proud" of the face.
+      const normalLocal = new T.Vector3(
+        node.normalLocal[0], node.normalLocal[1], node.normalLocal[2],
+      );
+      const worldNormal = normalLocal.applyQuaternion(meshQ);
+      const q = new T.Quaternion();
+      q.setFromUnitVectors(new T.Vector3(0, 0, 1), worldNormal.clone().normalize());
+      return q;
+    }
+    return meshQ;
+  }
+
+  // Branch / free hosts.
+  if (Array.isArray(sock.quaternion) && sock.quaternion.length === 4) {
+    return new T.Quaternion(
+      sock.quaternion[0], sock.quaternion[1], sock.quaternion[2], sock.quaternion[3],
+    );
+  }
+  return new T.Quaternion();   // identity fallback
 }
 
 /**
@@ -266,8 +362,10 @@ function _pointScaleFor(cableId, nodeId, baseRadius) {
 function _disposeSubgroup(entry) {
   for (const m of entry.points)   m.material?.dispose?.();
   for (const m of entry.segments) m.material?.dispose?.();
+  for (const m of (entry.sockets || [])) m.material?.dispose?.();
   entry.points   = [];
   entry.segments = [];
+  entry.sockets  = [];
 }
 
 // ─── Per-frame anchor refresh ────────────────────────────────────────────
@@ -320,6 +418,31 @@ function _tickAnchorRefresh() {
       if (!a || !b) { seg.visible = false; continue; }
       _poseCylinder(seg, a, b, radius);
     }
+
+    // C5-E1: re-pose socket boxes so they ride the host mesh as it
+    // animates. Lookup by userData.nodeId since sockets aren't 1:1
+    // indexed against entry.points (only nodes with a socket exist).
+    if (entry.sockets && entry.sockets.length) {
+      const T = window.THREE;
+      for (const box of entry.sockets) {
+        const idx = (cable.nodes || []).findIndex(n => n.id === box.userData.nodeId);
+        if (idx < 0) { box.visible = false; continue; }
+        const node = cable.nodes[idx];
+        const p    = positions[idx];
+        if (!p || !node?.socket) { box.visible = false; continue; }
+        const wq = _socketWorldQuat(node);
+        if (!wq) { box.visible = false; continue; }
+        const size = node.socket.size || { w: 10, h: 10, d: 18 };
+        const w = (size.w || 10) * globalScale;
+        const h = (size.h || 10) * globalScale;
+        const d = (size.d || 18) * globalScale;
+        box.visible = true;
+        box.scale.set(w, h, d);
+        box.quaternion.copy(wq);
+        const zWorld = new T.Vector3(0, 0, 1).applyQuaternion(wq);
+        box.position.copy(p).addScaledVector(zWorld, -d / 2);
+      }
+    }
   }
 }
 
@@ -338,5 +461,6 @@ export function disposeCableRender() {
   }
   _UNIT_CYLINDER?.dispose?.(); _UNIT_CYLINDER = null;
   _UNIT_SPHERE?.dispose?.();   _UNIT_SPHERE   = null;
+  _UNIT_BOX?.dispose?.();      _UNIT_BOX      = null;
   _initialised = false;
 }

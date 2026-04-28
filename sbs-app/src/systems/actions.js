@@ -1215,6 +1215,112 @@ export function applyCablePointCumulativeDelta(cableId, nodeId, worldDelta) {
   node.anchorLocal[2] = newLocal.z;
 }
 
+// ─── Cable socket add / remove (Phase E1) ─────────────────────────────────
+
+/**
+ * Add a default socket to a cable point. The host node carries the
+ * socket; only one socket per node. If the node already has a socket
+ * this is a no-op (caller should remove first or use a future edit).
+ *
+ * Default orientation derives from node.normalLocal at render time,
+ * so a freshly-added socket sits flush on the host face automatically.
+ */
+export function addCableSocket(cableId, nodeId) {
+  const node = _findCableNode(cableId, nodeId);
+  if (!node || node.socket) return false;
+  // Size scales off the cable's radius so the connector reads as a
+  // chunky termination on the cable rather than a giant box.
+  const cable  = (state.get('cables') || []).find(c => c.id === cableId);
+  const radius = cable?.style?.radius ?? 3;
+  const socket = cables.createCableSocket({
+    size: { w: radius * 1.6, h: radius * 1.6, d: radius * 2.6 },
+  });
+
+  // IK shift: lift the cable point by the socket's depth along the
+  // surface normal so the socket's BACK face lands on the anchored
+  // surface and its FRONT face sits at the (new) cable point. Without
+  // this, the box would render inside the host mesh — a deliberate
+  // "needs adjustment" look the user will rarely want by default.
+  const beforeAnchor = Array.isArray(node.anchorLocal) ? node.anchorLocal.slice() : null;
+  let didShift = false;
+  if (node.anchorType === 'mesh'
+      && Array.isArray(node.anchorLocal)
+      && Array.isArray(node.normalLocal)
+      && node.normalLocal.length === 3) {
+    const d  = socket.size.d;
+    const nx = node.normalLocal[0];
+    const ny = node.normalLocal[1];
+    const nz = node.normalLocal[2];
+    node.anchorLocal = [
+      node.anchorLocal[0] + d * nx,
+      node.anchorLocal[1] + d * ny,
+      node.anchorLocal[2] + d * nz,
+    ];
+    didShift = true;
+  }
+
+  node.socket = socket;
+  state.setState({ cables: [...(state.get('cables') || [])] });
+  state.markDirty();
+  undoManager.push(
+    'Add socket',
+    () => {
+      const n = _findCableNode(cableId, nodeId);
+      if (!n) return;
+      n.socket = null;
+      if (didShift && beforeAnchor) n.anchorLocal = beforeAnchor.slice();
+      state.setState({ cables: [...(state.get('cables') || [])] });
+      state.markDirty();
+    },
+    () => {
+      const n = _findCableNode(cableId, nodeId);
+      if (!n) return;
+      n.socket = socket;
+      if (didShift) {
+        const d  = socket.size.d;
+        const nx = n.normalLocal[0];
+        const ny = n.normalLocal[1];
+        const nz = n.normalLocal[2];
+        n.anchorLocal = [
+          beforeAnchor[0] + d * nx,
+          beforeAnchor[1] + d * ny,
+          beforeAnchor[2] + d * nz,
+        ];
+      }
+      state.setState({ cables: [...(state.get('cables') || [])] });
+      state.markDirty();
+    },
+  );
+  return true;
+}
+
+export function removeCableSocket(cableId, nodeId) {
+  const node = _findCableNode(cableId, nodeId);
+  if (!node || !node.socket) return false;
+  const removed = node.socket;
+  node.socket = null;
+  state.setState({ cables: [...(state.get('cables') || [])] });
+  state.markDirty();
+  undoManager.push(
+    'Remove socket',
+    () => {
+      const n = _findCableNode(cableId, nodeId);
+      if (!n) return;
+      n.socket = removed;
+      state.setState({ cables: [...(state.get('cables') || [])] });
+      state.markDirty();
+    },
+    () => {
+      const n = _findCableNode(cableId, nodeId);
+      if (!n) return;
+      n.socket = null;
+      state.setState({ cables: [...(state.get('cables') || [])] });
+      state.markDirty();
+    },
+  );
+  return true;
+}
+
 // ─── Cable point delete / insert (Phase D) ────────────────────────────────
 
 /**
