@@ -250,20 +250,26 @@ class GizmoController {
   }
 
   /**
-   * C5-B: show the gizmo for a cable-point selection. Translate-only —
-   * cable points have no rotation. The stand-in object3d gets its
-   * position refreshed every tick from `target.getWorldPos()` so the
-   * gizmo follows the point as the host mesh animates.
+   * C5-B / E2: show the gizmo for a cable-target selection (point or
+   * socket). Cable points are translate-only; sockets get full
+   * translate + rotate. The stand-in object3d gets its position
+   * refreshed every tick from target.getWorldPos so the gizmo follows
+   * the host mesh as it animates.
    *
    * target = {
    *   cableId, nodeId,
    *   getWorldPos(): THREE.Vector3,
+   *   getWorldQuat?(): THREE.Quaternion,
    *   beginMove(),
-   *   applyDelta(worldDelta: THREE.Vector3),
+   *   applyCumulativeDelta(worldDelta),
    *   commitMove(),
+   *   hasRotate?: boolean,
+   *   beginRotate?(),
+   *   applyRotateAroundAxis?(worldAxis, angleRad),
+   *   commitRotate?(),
    * }
    */
-  showForCablePoint(target) {
+  showForCableTarget(target, mode = 'translate') {
     if (!this._group || !target) return;
     this._cableTarget = target;
     this._node    = null;
@@ -272,21 +278,24 @@ class GizmoController {
     // world position even before the next tick fires.
     const p = target.getWorldPos();
     if (p) this._cableStandIn.position.copy(p);
-    // Surface-aligned frame: getWorldQuat returns a quat with +Z on
-    // the face normal so handles align with the surface (Z = lift,
-    // X/Y = slide). Fallbacks: mesh-world or identity for off-mesh.
     const q = target.getWorldQuat ? target.getWorldQuat() : null;
     if (q) this._cableStandIn.quaternion.copy(q);
     else   this._cableStandIn.quaternion.identity();
     this._visible = true;
     this._group.visible = true;
-    this._mode = 'translate';
+    this._mode = mode;
     this._spaceMode = 'local';   // axes follow target.getWorldQuat (surface frame)
     this._applyMode();
     this._tick();
     if (this._spaceLabelEl) this._spaceLabelEl.style.display = '';
     this._updateSpaceLabel();
   }
+
+  /** Translate-only — for cable points. */
+  showForCablePoint(target) { this.showForCableTarget(target, 'translate'); }
+
+  /** Translate + rotate — for cable sockets. */
+  showForCableSocket(target) { this.showForCableTarget(target, 'all'); }
 
   hide() {
     if (!this._group) return;
@@ -477,10 +486,17 @@ class GizmoController {
     this._dragEl   = el;
     this._setElColor(el, ACTIVE_COL);
 
-    // C5-B: cable-point mode — open the move batch on the actions side
-    // instead of the tree-node transform-edit path.
+    // C5-B / E2: cable mode — open the right batch on the actions
+    // side. Rotate handles → beginRotate (sockets only); everything
+    // else → beginMove (translate / plane). The translate/rotate
+    // distinction matches the el.type so re-clicking a different
+    // handle within the same selection re-batches correctly.
     if (this._cableTarget) {
-      this._cableTarget.beginMove();
+      if (el.type === 'rotate' && this._cableTarget.beginRotate) {
+        this._cableTarget.beginRotate();
+      } else {
+        this._cableTarget.beginMove();
+      }
     }
 
     // P-P1: in pivot edit mode (RED) the parent enterPivotEdit/commitPivotEdit
@@ -543,11 +559,15 @@ class GizmoController {
   onPointerUp() {
     if (!this._dragging) return;
     this._dragging = false;
-    // C5-B: close out the cable-point move batch (one undo entry for
-    // the whole drag). Done before the tree-node path because cable
-    // mode never has _node set.
+    // C5-B / E2: close the active cable batch — rotate or move.
+    // Done before the tree-node path because cable mode never has
+    // _node set.
     if (this._cableTarget) {
-      this._cableTarget.commitMove();
+      if (this._dragEl?.type === 'rotate' && this._cableTarget.commitRotate) {
+        this._cableTarget.commitRotate();
+      } else {
+        this._cableTarget.commitMove();
+      }
     }
     // P-P1: skip commitTransformEdit while in pivot edit — the
     // pivot session covers undo for the whole RED→BLUE gesture.
@@ -585,24 +605,16 @@ class GizmoController {
     const curr  = this._worldPoint(clientX, clientY, plane);
     if (!curr || !this._startWorld) return;
 
-    // C5-B: cable-point translate — convert the cursor's world delta
-    // into a constrained delta along the active axis (or plane), and
-    // hand it to the action layer. Skip rotate (gizmo runs in
-    // translate-only mode for cable points).
+    // C5-B / E2: cable mode — translate / plane → applyCumulativeDelta;
+    // rotate (sockets only) → applyRotateAroundAxis with the cursor's
+    // angular delta around the gizmo axis. The cumulative-from-start
+    // pattern keeps everything idempotent across drag frames.
     if (this._cableTarget) {
       if (el.type === 'translate') {
         const delta  = curr.clone().sub(this._startWorld);
         const axVec  = this._axisVec(el.axis);
         const amount = delta.dot(axVec);
         const worldD = axVec.clone().multiplyScalar(amount);
-        // Reset to absolute by computing delta from the start, not from
-        // the previous frame — applyDelta needs the *cumulative* world
-        // shift since pointerdown to map cleanly to anchorLocal.
-        // (applyDelta handles the conversion to mesh-local.)
-        // We achieve "set to (start + worldD)" by re-snapshotting at
-        // begin and applying (worldD - prevWorldD) per frame, but
-        // simpler: applyCablePointWorldDelta is *additive* — so we
-        // restore from snapshot then re-apply each frame.
         this._cableTarget.applyCumulativeDelta(worldD);
       } else if (el.type === 'plane') {
         const delta   = curr.clone().sub(this._startWorld);
@@ -612,6 +624,14 @@ class GizmoController {
         const worldD  = axA.clone().multiplyScalar(delta.dot(axA))
                           .add(axB.clone().multiplyScalar(delta.dot(axB)));
         this._cableTarget.applyCumulativeDelta(worldD);
+      } else if (el.type === 'rotate' && this._cableTarget.applyRotateAroundAxis) {
+        const center = new T.Vector3().copy(this._obj3d.getWorldPosition(new T.Vector3()));
+        const rel = curr.clone().sub(center);
+        const currAngle = this._atan2ForAxisInSpace(rel, el.axis);
+        const rawDelta  = currAngle - this._startAngle;
+        const angle     = (el.axis === 'x' || el.axis === 'y') ? -rawDelta : rawDelta;
+        const worldAxis = this._axisVec(el.axis);
+        this._cableTarget.applyRotateAroundAxis(worldAxis, angle);
       }
       return;
     }

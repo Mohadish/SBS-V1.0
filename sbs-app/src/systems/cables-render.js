@@ -32,6 +32,7 @@
 import state    from '../core/state.js';
 import sceneCore from '../core/scene.js';
 import { resolveNodeWorldPosition, listCables } from './cables.js';
+import { socketActualSize } from './actions.js';
 
 // ─── Module state ────────────────────────────────────────────────────────
 
@@ -78,6 +79,8 @@ export function initCableRender() {
   // Phase A: re-apply per-point selection highlight on selection change.
   // Cheap — no geometry rebuild, just material emissive flips.
   state.on('change:selectedCablePoint',  _applySelectionHighlight);
+  // E2: same for socket selection.
+  state.on('change:selectedCableSocket', _applySelectionHighlight);
 
   // Per-frame anchor sync — folds into existing render loop, no new rAF.
   _tickUnsub = sceneCore.addTickHook(_tickAnchorRefresh);
@@ -111,6 +114,63 @@ export function getCableSegmentMeshes() {
     for (const m of entry.segments) out.push(m);
   }
   return out;
+}
+
+/**
+ * E2: returns every cable-socket box mesh as a flat array. Mesh
+ * `userData` carries `{ cableId, nodeId, kind:'socket' }`. Used for
+ * socket-pick raycasting in main.js.
+ */
+export function getCableSocketMeshes() {
+  const out = [];
+  for (const entry of _cableSubgroups.values()) {
+    for (const m of (entry.sockets || [])) out.push(m);
+  }
+  return out;
+}
+
+// ─── Insert-point ghost preview (Phase D follow-up) ──────────────────────
+//
+// During cable insert-pick mode, main.js calls setInsertHoverPosition
+// with the current cursor's world raycast hit so the user sees where
+// the new point would land. Yellow, semi-transparent, depthTest off
+// so it's always visible. Sized from the target cable's radius.
+
+let _insertHoverSphere = null;
+
+export function setInsertHoverPosition(worldPos) {
+  if (!_cableRoot || !window.THREE) return;
+  if (!_insertHoverSphere) {
+    _insertHoverSphere = new THREE.Mesh(
+      _UNIT_SPHERE,
+      new THREE.MeshStandardMaterial({
+        color: 0xfacc15,
+        emissive: 0xfacc15,
+        emissiveIntensity: 0.7,
+        transparent: true,
+        opacity: 0.75,
+        depthTest: false,
+      }),
+    );
+    _insertHoverSphere.renderOrder = 999;
+    _insertHoverSphere.visible = false;
+    _cableRoot.add(_insertHoverSphere);
+  }
+  if (!worldPos) {
+    _insertHoverSphere.visible = false;
+    return;
+  }
+  _insertHoverSphere.visible = true;
+  _insertHoverSphere.position.copy(worldPos);
+  // Size from the active insert target's cable so it visually matches
+  // the host cable's points.
+  const target = state.get('cableInsertPickingTarget');
+  let radius = 3;
+  if (target) {
+    const c = listCables().find(x => x.id === target.cableId);
+    radius = c?.style?.radius ?? 3;
+  }
+  _insertHoverSphere.scale.setScalar(radius * 1.4);
 }
 
 // ─── Full rebuild ────────────────────────────────────────────────────────
@@ -222,10 +282,11 @@ function _rebuildCable(cable, entry) {
     if (!p) continue;
     const wq = _socketWorldQuat(node);
     if (!wq) continue;
-    const size = node.socket.size || { w: 10, h: 10, d: 18 };
-    const w = (size.w || 10) * globalScale;
-    const h = (size.h || 10) * globalScale;
-    const d = (size.d || 18) * globalScale;
+    // Size = cable-radius * BASE_* * (percent / 100), with global scale.
+    const actual = socketActualSize(cable, node.socket);
+    const w = actual.w * globalScale;
+    const h = actual.h * globalScale;
+    const d = actual.d * globalScale;
     const sockColor = new THREE.Color(node.socket.color || '#ff9d57');
     const box = new THREE.Mesh(
       _UNIT_BOX,
@@ -335,15 +396,28 @@ function _poseCylinder(mesh, a, b, radius) {
  */
 const _SELECT_EMISSIVE = new THREE.Color('#22d3ee');
 function _applySelectionHighlight() {
-  const sel = state.get('selectedCablePoint');
+  const selPt   = state.get('selectedCablePoint');
+  const selSock = state.get('selectedCableSocket');
   for (const entry of _cableSubgroups.values()) {
     for (const m of entry.points) {
       const mat = m.material;
       if (!mat?.emissive) continue;
-      const isSel = sel && m.userData.cableId === sel.cableId && m.userData.nodeId === sel.nodeId;
+      const isSel = selPt && m.userData.cableId === selPt.cableId && m.userData.nodeId === selPt.nodeId;
       if (isSel) {
         mat.emissive.copy(_SELECT_EMISSIVE);
         mat.emissiveIntensity = 0.9;
+      } else {
+        mat.emissive.setRGB(0, 0, 0);
+        mat.emissiveIntensity = 0;
+      }
+    }
+    for (const m of (entry.sockets || [])) {
+      const mat = m.material;
+      if (!mat?.emissive) continue;
+      const isSel = selSock && m.userData.cableId === selSock.cableId && m.userData.nodeId === selSock.nodeId;
+      if (isSel) {
+        mat.emissive.copy(_SELECT_EMISSIVE);
+        mat.emissiveIntensity = 0.6;
       } else {
         mat.emissive.setRGB(0, 0, 0);
         mat.emissiveIntensity = 0;
@@ -432,10 +506,10 @@ function _tickAnchorRefresh() {
         if (!p || !node?.socket) { box.visible = false; continue; }
         const wq = _socketWorldQuat(node);
         if (!wq) { box.visible = false; continue; }
-        const size = node.socket.size || { w: 10, h: 10, d: 18 };
-        const w = (size.w || 10) * globalScale;
-        const h = (size.h || 10) * globalScale;
-        const d = (size.d || 18) * globalScale;
+        const actual = socketActualSize(cable, node.socket);
+        const w = actual.w * globalScale;
+        const h = actual.h * globalScale;
+        const d = actual.d * globalScale;
         box.visible = true;
         box.scale.set(w, h, d);
         box.quaternion.copy(wq);

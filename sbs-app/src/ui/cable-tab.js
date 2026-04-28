@@ -131,11 +131,20 @@ function _renderEditor(container) {
   const cable = listCables().find(c => c.id === _activeCableId);
   if (!cable) { host.innerHTML = ''; return; }
 
-  const sel = state.get('selectedCablePoint');
-  const selectedNodeId = sel && sel.cableId === cable.id ? sel.nodeId : null;
+  const selPt   = state.get('selectedCablePoint');
+  const selSock = state.get('selectedCableSocket');
+  const selectedPointNodeId  = selPt   && selPt.cableId   === cable.id ? selPt.nodeId   : null;
+  const selectedSocketNodeId = selSock && selSock.cableId === cable.id ? selSock.nodeId : null;
 
-  const pointsHtml = (cable.nodes || []).map((n, i) => _renderPointRow(n, i, selectedNodeId)).join('') ||
+  const pointsHtml = (cable.nodes || []).map((n, i) => _renderPointRow(n, i, selectedPointNodeId, selectedSocketNodeId)).join('') ||
     `<div class="small muted" style="padding:8px 10px;">No points yet — use the place button on the row above.</div>`;
+
+  const selectedSocketNode = selectedSocketNodeId
+    ? (cable.nodes || []).find(n => n.id === selectedSocketNodeId)
+    : null;
+  const socketEditorHtml = selectedSocketNode?.socket
+    ? _renderSocketEditor(cable.id, selectedSocketNode)
+    : '';
 
   host.innerHTML = `
     <div class="section">
@@ -161,9 +170,11 @@ function _renderEditor(container) {
         <div id="cbl-points">${pointsHtml}</div>
       </div>
 
+      ${socketEditorHtml}
+
       <div class="small muted" style="margin-top:6px;line-height:1.4;">
-        Click a row to select that point in the viewport. Right-click a
-        point in the viewport for Re-anchor / Insert / Delete.
+        Click a row to select. Right-click a point in the viewport for
+        Re-anchor / Add socket / Insert / Delete.
       </div>
     </div>
   `;
@@ -179,8 +190,19 @@ function _renderEditor(container) {
   host.querySelector('#cbl-radius')?.addEventListener('change',
     e => actions.setCableStyle(cable.id, { radius: Math.max(0.5, Number(e.target.value) || 3) }));
 
-  // Per-point row delegation (select / delete).
+  // Per-point + socket row delegation (select / delete / select socket).
   host.querySelector('#cbl-points')?.addEventListener('click', e => {
+    const sockRow = e.target.closest('[data-sock-id]');
+    if (sockRow) {
+      const ptId = sockRow.dataset.sockId;
+      const act  = e.target.closest('[data-sock-act]')?.dataset.sockAct;
+      if (act === 'remove') {
+        actions.removeCableSocket(cable.id, ptId);
+        return;
+      }
+      actions.selectCableSocket(cable.id, ptId);
+      return;
+    }
     const row = e.target.closest('[data-pt-id]');
     if (!row) return;
     const ptId = row.dataset.ptId;
@@ -189,12 +211,60 @@ function _renderEditor(container) {
       if (confirm('Delete this point?')) actions.deleteCablePoint(cable.id, ptId);
       return;
     }
+    if (act === 'add-socket') {
+      actions.addCableSocket(cable.id, ptId);
+      return;
+    }
     actions.selectCablePoint(cable.id, ptId);
   });
+
+  // Socket editor field bindings — values are percentages, with an
+  // optional lock-ratio checkbox that scales W/H/D proportionally
+  // off whichever input the user touched.
+  if (socketEditorHtml) {
+    const ptId = selectedSocketNodeId;
+    host.querySelector('#sock-color')?.addEventListener('change', e => {
+      actions.setCableSocketProps(cable.id, ptId, { color: e.target.value });
+    });
+    const wInput    = host.querySelector('#sock-w');
+    const hInput    = host.querySelector('#sock-h');
+    const dInput    = host.querySelector('#sock-d');
+    const lockInput = host.querySelector('#sock-lock');
+    const inputs = { w: wInput, h: hInput, d: dInput };
+    Object.entries(inputs).forEach(([key, input]) => {
+      if (!input) return;
+      input.addEventListener('change', () => {
+        const newVal = Number(input.value);
+        if (lockInput?.checked) {
+          // Compute ratio from the field that changed vs its prior
+          // value — read from cable state (live) since the input has
+          // already been overwritten.
+          const live = (state.get('cables') || [])
+            .find(c => c.id === cable.id)?.nodes
+            .find(n => n.id === ptId)?.socket?.size;
+          const oldVal = live ? live[key] : 100;
+          if (oldVal > 0) {
+            const ratio = newVal / oldVal;
+            for (const [k, inp] of Object.entries(inputs)) {
+              if (!inp || k === key) continue;
+              inp.value = String(Math.round(Number(inp.value) * ratio));
+            }
+          }
+        }
+        actions.setCableSocketProps(cable.id, ptId, {
+          size: {
+            w: Number(wInput.value),
+            h: Number(hInput.value),
+            d: Number(dInput.value),
+          },
+        });
+      });
+    });
+  }
 }
 
-function _renderPointRow(node, index, selectedNodeId) {
-  const isSelected = node.id === selectedNodeId;
+function _renderPointRow(node, index, selectedPointNodeId, selectedSocketNodeId) {
+  const isSelected = node.id === selectedPointNodeId;
   const tag = node.anchorType === 'mesh'   ? 'M'
             : node.anchorType === 'branch' ? 'B'
             : node.anchorType === 'free'   ? 'F'
@@ -203,7 +273,9 @@ function _renderPointRow(node, index, selectedNodeId) {
                  : node.anchorType === 'branch' ? '#a78bfa'
                  : node.anchorType === 'free'   ? '#f59e0b'
                                                 : '#ef4444';
-  return `
+  const hasSocket    = !!node.socket;
+  const sockSelected = node.id === selectedSocketNodeId;
+  const pointHtml = `
     <div class="row" data-pt-id="${_esc(node.id)}"
          style="display:flex;align-items:center;gap:8px;padding:6px 10px;border-bottom:1px solid var(--line);cursor:pointer;${isSelected ? 'background:rgba(34,211,238,0.10);' : ''}">
       <span class="small muted" style="width:18px;text-align:right;">${index + 1}</span>
@@ -212,7 +284,54 @@ function _renderPointRow(node, index, selectedNodeId) {
       <div class="small" style="flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">
         ${_esc(node.id)}
       </div>
+      ${hasSocket ? '' : `<button class="btn icon" data-pt-act="add-socket" title="Add socket" style="width:22px;height:22px;padding:0;color:#22d3ee;">＋</button>`}
       <button class="btn icon" data-pt-act="delete" title="Delete this point" style="width:22px;height:22px;padding:0;color:#f87171;">✕</button>
+    </div>
+  `;
+  if (!hasSocket) return pointHtml;
+  // Indented socket sub-row.
+  const sockColor = node.socket.color || '#ff9d57';
+  return pointHtml + `
+    <div class="row" data-sock-id="${_esc(node.id)}"
+         style="display:flex;align-items:center;gap:8px;padding:4px 10px 4px 32px;border-bottom:1px solid var(--line);cursor:pointer;background:${sockSelected ? 'rgba(34,211,238,0.10)' : 'rgba(255,255,255,0.02)'};">
+      <span style="display:inline-block;width:14px;height:14px;border-radius:3px;background:${_esc(sockColor)};border:1px solid rgba(0,0,0,0.4);"></span>
+      <div class="small" style="flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:#94a3b8;">
+        socket
+      </div>
+      <button class="btn icon" data-sock-act="remove" title="Remove socket" style="width:22px;height:22px;padding:0;color:#f87171;">✕</button>
+    </div>
+  `;
+}
+
+function _renderSocketEditor(cableId, node) {
+  const sock = node.socket;
+  const size = sock.size || { w: 100, h: 100, d: 100 };
+  return `
+    <div class="card" style="margin-top:10px;padding:10px;">
+      <div class="title" style="margin-bottom:8px;">Socket</div>
+      <div class="grid2" style="gap:6px;">
+        <label class="colorlab">Color
+          <input type="color" id="sock-color" value="${_esc(sock.color || '#ff9d57')}" />
+        </label>
+        <label class="colorlab" style="display:flex;align-items:center;gap:6px;">
+          <input type="checkbox" id="sock-lock" />
+          <span class="small">Lock ratio</span>
+        </label>
+      </div>
+      <div class="small muted" style="margin-top:8px;">Size as % of default (cable radius × 4 / 4 / 6).</div>
+      <div class="grid2" style="margin-top:4px;gap:6px;">
+        <label class="colorlab">W %
+          <input type="number" id="sock-w" min="10" max="500" step="5" value="${size.w}" />
+        </label>
+        <label class="colorlab">H %
+          <input type="number" id="sock-h" min="10" max="500" step="5" value="${size.h}" />
+        </label>
+      </div>
+      <div class="grid2" style="margin-top:6px;gap:6px;">
+        <label class="colorlab">D %
+          <input type="number" id="sock-d" min="10" max="500" step="5" value="${size.d}" />
+        </label>
+      </div>
     </div>
   `;
 }

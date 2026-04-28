@@ -50,7 +50,7 @@ import { initOverlay, getStage as getOverlayStage } from './systems/overlay.js';
 import { initOverlayToolbar }  from './ui/overlay-toolbar.js';
 import { initHeaderLayer }     from './systems/header.js';
 import { initCables, resolveNodeWorldPosition } from './systems/cables.js';        // C1: cables wire step:applied → applyStepSnapshot; C5-B: pos resolver for gizmo target
-import { initCableRender, getCablePointMeshes, getCableSegmentMeshes } from './systems/cables-render.js';  // C2: cables 3D render; C5-A: point raycast targets; C5-D: segment raycast for Insert
+import { initCableRender, getCablePointMeshes, getCableSegmentMeshes, getCableSocketMeshes, setInsertHoverPosition } from './systems/cables-render.js';  // C2: cables 3D render; C5-A: point raycast; C5-D: segment raycast + insert ghost; C5-E2: socket raycast
 import { initUserSettings }    from './core/user-settings.js';
 import { openSettingsModal }   from './ui/settings-modal.js';
 import { schedulePrecache, cancel as cancelPrecache } from './systems/narration-precache.js';
@@ -138,9 +138,17 @@ state.on('change:projectPath', () => { undoManager.clear(); selectionActs.clear(
 
 // ── Gizmo: follow selection ───────────────────────────────────────────────────
 function _syncGizmoToSelection() {
-  // C5-B: cable-point selection takes precedence over mesh selection
-  // (selectCablePoint clears mesh selection so they're mutually
-  // exclusive in practice — but check first to be safe).
+  // E2: socket selection takes the highest precedence — the actions
+  // make the three selection states mutually exclusive, but order
+  // here defensively in case a future caller sets two at once.
+  const sockSel = state.get('selectedCableSocket');
+  if (sockSel) {
+    const target = _buildCableSocketGizmoTarget(sockSel.cableId, sockSel.nodeId);
+    if (target) { gizmo.showForCableSocket(target); return; }
+    gizmo.hide();
+    return;
+  }
+  // C5-B: cable-point selection — translate-only gizmo.
   const cableSel = state.get('selectedCablePoint');
   if (cableSel) {
     const target = _buildCablePointGizmoTarget(cableSel.cableId, cableSel.nodeId);
@@ -218,9 +226,85 @@ function _buildCablePointGizmoTarget(cableId, nodeId) {
     commitMove() { actions.commitCablePointMove(cableId, nodeId); },
   };
 }
-state.on('selection:change',           _syncGizmoToSelection);
-state.on('change:treeData',            _syncGizmoToSelection);
-state.on('change:selectedCablePoint',  _syncGizmoToSelection);
+/**
+ * E2: build a cable-socket gizmo target. Same translate plumbing as
+ * the point target (translate moves the host point — socket follows
+ * by construction), plus rotate hooks that write the socket's
+ * localQuaternion. World quat composes mesh-world * localQuaternion
+ * (or a normal-derived default when localQuaternion isn't set yet).
+ */
+function _buildCableSocketGizmoTarget(cableId, nodeId) {
+  const cables = state.get('cables') || [];
+  const cable  = cables.find(c => c.id === cableId);
+  const node   = cable?.nodes?.find(n => n.id === nodeId);
+  if (!node || !node.socket || node.anchorType !== 'mesh') return null;
+  const T = window.THREE;
+  return {
+    cableId, nodeId,
+    hasRotate: true,
+    /**
+     * Stage 2: gizmo position = BACK face (the surface-touching end).
+     * Rotate / scale therefore pivot off the surface attachment, not
+     * the cable point. Falls through to the cable-point world pos if
+     * the back face can't be resolved (no socket / no host mesh).
+     */
+    getWorldPos() {
+      const back = actions.socketBackFaceWorld(cableId, nodeId);
+      if (back) return back;
+      const cs = state.get('cables') || [];
+      const c = cs.find(x => x.id === cableId);
+      const n = c?.nodes?.find(x => x.id === nodeId);
+      if (!n) return null;
+      const ctx = { makeVec3: (x, y, z) => new T.Vector3(x, y, z) };
+      const r   = resolveNodeWorldPosition(n, ctx);
+      return r.pos ? new T.Vector3(r.pos[0], r.pos[1], r.pos[2]) : null;
+    },
+    getWorldQuat() {
+      const cs = state.get('cables') || [];
+      const c = cs.find(x => x.id === cableId);
+      const n = c?.nodes?.find(x => x.id === nodeId);
+      if (!n?.socket || n.anchorType !== 'mesh' || !n.nodeId) return new T.Quaternion();
+      const sceneNode = state.get('nodeById')?.get?.(n.nodeId);
+      const obj = sceneNode?.object3d;
+      if (!obj) return new T.Quaternion();
+      const meshQ = new T.Quaternion();
+      obj.getWorldQuaternion(meshQ);
+      if (Array.isArray(n.socket.localQuaternion) && n.socket.localQuaternion.length === 4) {
+        const local = new T.Quaternion(
+          n.socket.localQuaternion[0], n.socket.localQuaternion[1],
+          n.socket.localQuaternion[2], n.socket.localQuaternion[3],
+        );
+        return meshQ.clone().multiply(local);
+      }
+      // No localQuaternion → derive from normalLocal (matches render).
+      if (Array.isArray(n.normalLocal) && n.normalLocal.length === 3) {
+        const normalLocal = new T.Vector3(n.normalLocal[0], n.normalLocal[1], n.normalLocal[2]);
+        const worldNormal = normalLocal.applyQuaternion(meshQ).normalize();
+        const q = new T.Quaternion();
+        q.setFromUnitVectors(new T.Vector3(0, 0, 1), worldNormal);
+        return q;
+      }
+      return meshQ;
+    },
+    // Translate routes to the cable point (the socket has no separate
+    // position offset — moving the host point moves the socket).
+    beginMove() { actions.beginCablePointMove(cableId, nodeId); },
+    applyCumulativeDelta(worldDelta) {
+      actions.applyCablePointCumulativeDelta(cableId, nodeId, worldDelta);
+    },
+    commitMove() { actions.commitCablePointMove(cableId, nodeId); },
+    // Rotate writes node.socket.localQuaternion via the dedicated batch.
+    beginRotate() { actions.beginCableSocketRotate(cableId, nodeId); },
+    applyRotateAroundAxis(worldAxis, angle) {
+      actions.applyCableSocketRotateAxisAngle(cableId, nodeId, worldAxis, angle);
+    },
+    commitRotate() { actions.commitCableSocketRotate(cableId, nodeId); },
+  };
+}
+state.on('selection:change',            _syncGizmoToSelection);
+state.on('change:treeData',             _syncGizmoToSelection);
+state.on('change:selectedCablePoint',   _syncGizmoToSelection);
+state.on('change:selectedCableSocket',  _syncGizmoToSelection);
 
 // ══════════════════════════════════════════════════════════════════════════════
 //  6. VIEWPORT EVENT HANDLERS
@@ -243,6 +327,10 @@ state.on('change:cableReanchorPickingId', target => {
 });
 // C5-D: same crosshair signal for cable insert-point pick mode.
 state.on('change:cableInsertPickingTarget', target => {
+  canvas.style.cursor = target ? 'crosshair' : '';
+});
+// C5-E2: same crosshair signal for socket re-anchor pick mode.
+state.on('change:cableSocketReanchorPickingId', target => {
   canvas.style.cursor = target ? 'crosshair' : '';
 });
 
@@ -342,15 +430,28 @@ canvas.addEventListener('pointerdown', e => {
     return;
   }
 
-  // C5-D: cable insert-point pick mode — splice a new anchored point
-  // before/after a chosen anchor node. Same pattern as re-anchor.
+  // C5-D: cable insert-point pick mode. A click on a mesh inserts a
+  // new anchored point; a click on empty space is ignored (the user
+  // is mid-aim — ESC cancels). The ghost preview (pointermove handler
+  // below) shows where the new point would land.
   const insertTarget = state.get('cableInsertPickingTarget');
   if (insertTarget) {
     e.preventDefault();
     e.stopPropagation();
     const hit = sceneCore.pick(e.clientX, e.clientY);
     if (hit) actions.insertCablePointAtHit(hit);
-    else     actions.cancelCableInsertPicking();
+    return;
+  }
+
+  // C5-E2: socket re-anchor pick — same pattern as point re-anchor
+  // but writes the socket's surface attachment to a new mesh + face.
+  const sockReanchor = state.get('cableSocketReanchorPickingId');
+  if (sockReanchor) {
+    e.preventDefault();
+    e.stopPropagation();
+    const hit = sceneCore.pick(e.clientX, e.clientY);
+    if (hit) actions.applyCableSocketReanchor(hit);
+    else     actions.cancelCableSocketReanchor();
     return;
   }
 
@@ -399,6 +500,15 @@ canvas.addEventListener('pointerdown', e => {
 
 canvas.addEventListener('pointermove', e => {
   if (!(e.buttons & 1)) {
+    // C5-D: insert-point pick mode — update the ghost-preview sphere
+    // to track the cursor's mesh hit so the user sees where the new
+    // point would land. Cleared on a hit-miss frame so it disappears
+    // when over empty space.
+    if (state.get('cableInsertPickingTarget')) {
+      const hit = sceneCore.pick(e.clientX, e.clientY);
+      setInsertHoverPosition(hit ? hit.point : null);
+      return;
+    }
     // No button — update hover
     gizmo.onHover(e.clientX, e.clientY);
     return;
@@ -409,6 +519,12 @@ canvas.addEventListener('pointermove', e => {
     gizmo.onPointerMove(e.clientX, e.clientY);
     return;
   }
+});
+
+// C5-D: clear the insert ghost whenever the pick mode ends (success
+// / Esc / external cancel). One subscription, idempotent.
+state.on('change:cableInsertPickingTarget', target => {
+  if (!target) setInsertHoverPosition(null);
 });
 
 window.addEventListener('pointermove', e => {
@@ -508,6 +624,30 @@ function _pickCableSegment(clientX, clientY) {
   };
 }
 
+/**
+ * E2: raycast cable socket boxes. Returns { cableId, nodeId } for the
+ * closest hit socket, or null.
+ */
+function _pickCableSocket(clientX, clientY) {
+  if (!window.THREE) return null;
+  const meshes = getCableSocketMeshes();
+  if (!meshes.length) return null;
+  const T = window.THREE;
+  const rect = canvas.getBoundingClientRect();
+  const ndc = new T.Vector2(
+    ((clientX - rect.left) / rect.width)  * 2 - 1,
+    -((clientY - rect.top)  / rect.height) * 2 + 1,
+  );
+  const ray = new T.Raycaster();
+  ray.setFromCamera(ndc, sceneCore.camera);
+  const hits = ray.intersectObjects(meshes, false).filter(h => h.object.visible);
+  if (!hits.length) return null;
+  return {
+    cableId: hits[0].object.userData.cableId,
+    nodeId:  hits[0].object.userData.nodeId,
+  };
+}
+
 // ── Click: select object ─────────────────────────────────────────────────────
 
 canvas.addEventListener('click', e => {
@@ -525,6 +665,14 @@ canvas.addEventListener('click', e => {
     actions.selectCablePoint(cableHit.cableId, cableHit.nodeId);
     return;
   }
+  // E2: socket pick after point pick — the point sphere sits at the
+  // socket's front face so it eats clicks at the very front; clicking
+  // the body of the box selects the socket.
+  const socketHit = _pickCableSocket(e.clientX, e.clientY);
+  if (socketHit) {
+    actions.selectCableSocket(socketHit.cableId, socketHit.nodeId);
+    return;
+  }
 
   const root    = state.get('treeData');
   const nbm     = state.get('nodeById');
@@ -535,6 +683,7 @@ canvas.addEventListener('click', e => {
     if (!e.ctrlKey && !e.metaKey) {
       actionClearSelection();
       actions.clearCablePointSelection();
+      actions.clearCableSocketSelection();
     }
     return;
   }
@@ -542,9 +691,10 @@ canvas.addEventListener('click', e => {
   const meshNodeId = hit.object.userData?.meshNodeId;
   if (!meshNodeId) return;
 
-  // Selecting a mesh clears any cable-point selection — the gizmo can
-  // only follow one target (mesh-folder OR cable-point), never both.
+  // Selecting a mesh clears any cable-point / socket selection — the
+  // gizmo can only follow one target at a time.
   actions.clearCablePointSelection();
+  actions.clearCableSocketSelection();
 
   const target = meshNodeId;
   const multi  = new Set(state.get('multiSelectedIds') || []);
@@ -626,6 +776,31 @@ canvas.addEventListener('contextmenu', e => {
       {
         label: 'Deselect  [Esc]',
         action: () => actions.clearCablePointSelection(),
+      },
+    ];
+    showContextMenu(items, e.clientX, e.clientY);
+    return;
+  }
+
+  // C5-E2: right-click on a socket box → socket menu (re-anchor +
+  // remove). Auto-select the socket so the gizmo follows.
+  const socketHit = _pickCableSocket(e.clientX, e.clientY);
+  if (socketHit) {
+    actions.selectCableSocket(socketHit.cableId, socketHit.nodeId);
+    const items = [
+      {
+        label: '↺ Re-anchor socket…',
+        action: () => actions.startCableSocketReanchor(socketHit.cableId, socketHit.nodeId),
+      },
+      { label: '─', disabled: true },
+      {
+        label: '✕ Remove socket',
+        action: () => actions.removeCableSocket(socketHit.cableId, socketHit.nodeId),
+      },
+      { label: '─', disabled: true },
+      {
+        label: 'Deselect  [Esc]',
+        action: () => actions.clearCableSocketSelection(),
       },
     ];
     showContextMenu(items, e.clientX, e.clientY);
@@ -758,8 +933,15 @@ window.addEventListener('keydown', async e => {
       actions.cancelCableInsertPicking();
       return;
     }
-    // Phase A: clear any cable-point selection alongside mesh selection.
+    // C5-E2: socket re-anchor pick — Esc cancels.
+    if (state.get('cableSocketReanchorPickingId')) {
+      actions.cancelCableSocketReanchor();
+      return;
+    }
+    // Phase A/E2: clear any cable-point + socket selection alongside
+    // the mesh selection.
     actions.clearCablePointSelection();
+    actions.clearCableSocketSelection();
     gizmo.setMode('all');
     state.clearSelection();
     materials.applySelectionHighlight([]);

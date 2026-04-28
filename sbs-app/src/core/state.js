@@ -150,6 +150,13 @@ function createInitialState() {
     // and vice versa so the gizmo can only follow one target at a time.
     selectedCablePoint: null,
 
+    // C5 (Phase E2): currently selected cable SOCKET. { cableId, nodeId }
+    // | null. Mutually exclusive with selectedCablePoint and the mesh
+    // selection — selecting any of the three clears the others. Drives
+    // the socket-edit panel in cable-tab and the full translate+rotate
+    // gizmo on the socket.
+    selectedCableSocket: null,
+
     // C5 (Phase C): a cable point is awaiting a re-anchor pick. While
     // set, the next viewport click on a mesh moves the point's anchor
     // to that mesh + face position. Cleared on Esc, on a successful
@@ -162,6 +169,12 @@ function createInitialState() {
     // where position is 'before' | 'after'. Cleared on Esc, on a
     // successful pick, or when selection changes.
     cableInsertPickingTarget: null,
+
+    // C5 (Phase E2 follow-up): a SOCKET is awaiting a re-anchor pick.
+    // Same modal-pick pattern as cableReanchorPickingId but the click
+    // re-anchors the socket (back face on new surface, cable point
+    // follows along the new normal). Cleared on Esc / successful pick.
+    cableSocketReanchorPickingId: null,    // { cableId, nodeId } | null
 
     // ── UI state
     activeSidebarTab:   'files',      // which left sidebar tab is open

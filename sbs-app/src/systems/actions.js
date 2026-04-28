@@ -1123,11 +1123,25 @@ export function selectCablePoint(cableId, nodeId) {
     clearCablePointSelection();
     return;
   }
+  // E2: when the node has a socket, the socket "owns" the position —
+  // selecting the point would just give a translate-only gizmo that
+  // can't drive the back-face / scale semantics the socket needs.
+  // Redirect to socket selection so the user always interacts with
+  // the right anchor.
+  const node = _findCableNode(cableId, nodeId);
+  if (node?.socket) {
+    selectCableSocket(cableId, nodeId);
+    return;
+  }
   // Clear mesh selection without going through setSelection (which
   // would push an undo entry — selection of cable points is ephemeral).
   if (state.get('selectedId') || (state.get('multiSelectedIds')?.size ?? 0) > 0) {
     state.setSelection(null, new Set());
     materials.applySelectionHighlight([]);
+  }
+  // Mutually exclusive with socket selection.
+  if (state.get('selectedCableSocket')) {
+    state.setState({ selectedCableSocket: null });
   }
   state.setState({ selectedCablePoint: { cableId, nodeId } });
 }
@@ -1135,6 +1149,32 @@ export function selectCablePoint(cableId, nodeId) {
 export function clearCablePointSelection() {
   if (state.get('selectedCablePoint')) {
     state.setState({ selectedCablePoint: null });
+  }
+}
+
+/**
+ * E2: cable-socket selection. Mutually exclusive with selectedCablePoint
+ * and the mesh selection — selecting one clears the others. Pure UI,
+ * no undo (selection is ephemeral).
+ */
+export function selectCableSocket(cableId, nodeId) {
+  if (!cableId || !nodeId) {
+    clearCableSocketSelection();
+    return;
+  }
+  if (state.get('selectedId') || (state.get('multiSelectedIds')?.size ?? 0) > 0) {
+    state.setSelection(null, new Set());
+    materials.applySelectionHighlight([]);
+  }
+  if (state.get('selectedCablePoint')) {
+    state.setState({ selectedCablePoint: null });
+  }
+  state.setState({ selectedCableSocket: { cableId, nodeId } });
+}
+
+export function clearCableSocketSelection() {
+  if (state.get('selectedCableSocket')) {
+    state.setState({ selectedCableSocket: null });
   }
 }
 
@@ -1225,36 +1265,106 @@ export function applyCablePointCumulativeDelta(cableId, nodeId, worldDelta) {
  * Default orientation derives from node.normalLocal at render time,
  * so a freshly-added socket sits flush on the host face automatically.
  */
+/**
+ * Socket size is now stored as percentages (100 = default). The
+ * actual world dimensions = cable.style.radius * SOCKET_BASE_*.
+ * Centralised here + in cables-render so the multiplier model is
+ * consistent across UI inputs, render scale, and the IK shift.
+ */
+export const SOCKET_BASE_W = 4;   // multiplier on cable radius
+export const SOCKET_BASE_H = 4;
+export const SOCKET_BASE_D = 6;
+
+export function socketActualSize(cable, socket) {
+  const radius = cable?.style?.radius ?? 3;
+  const sz = socket?.size || { w: 100, h: 100, d: 100 };
+  return {
+    w: SOCKET_BASE_W * radius * (sz.w / 100),
+    h: SOCKET_BASE_H * radius * (sz.h / 100),
+    d: SOCKET_BASE_D * radius * (sz.d / 100),
+  };
+}
+
+/**
+ * Stage 2 helpers — socket geometry math. The "forward" direction is
+ * the socket's local +Z axis (in mesh-local space when the host is
+ * mesh-anchored). The cable point sits at the FRONT face of the
+ * socket; the BACK face is at front - d * forward (still in mesh-
+ * local). Back face = where the socket is plugged in (the surface).
+ *
+ * All callers go through these so rotate / scale / gizmo-position
+ * code share one source of truth.
+ */
+function _socketForwardMeshLocal(node) {
+  const T = window.THREE;
+  if (!T) return new T.Vector3(0, 0, 1);
+  const sock = node?.socket;
+  if (Array.isArray(sock?.localQuaternion) && sock.localQuaternion.length === 4) {
+    const q = new T.Quaternion(
+      sock.localQuaternion[0], sock.localQuaternion[1],
+      sock.localQuaternion[2], sock.localQuaternion[3],
+    );
+    return new T.Vector3(0, 0, 1).applyQuaternion(q);
+  }
+  // Default orientation = +Z aligned to the surface normal in mesh-local.
+  if (Array.isArray(node?.normalLocal) && node.normalLocal.length === 3) {
+    return new T.Vector3(node.normalLocal[0], node.normalLocal[1], node.normalLocal[2]).normalize();
+  }
+  return new T.Vector3(0, 0, 1);
+}
+
+function _socketBackFaceMeshLocal(cable, node) {
+  const T = window.THREE;
+  if (!T || !node?.socket || !Array.isArray(node.anchorLocal)) return null;
+  const fwd = _socketForwardMeshLocal(node);
+  const d   = socketActualSize(cable, node.socket).d;
+  const front = new T.Vector3(node.anchorLocal[0], node.anchorLocal[1], node.anchorLocal[2]);
+  return front.clone().sub(fwd.multiplyScalar(d));
+}
+
+/** Back face in WORLD coordinates — for gizmo position. */
+export function socketBackFaceWorld(cableId, nodeId) {
+  const T = window.THREE;
+  if (!T) return null;
+  const cs = state.get('cables') || [];
+  const c  = cs.find(x => x.id === cableId);
+  const n  = c?.nodes?.find(x => x.id === nodeId);
+  if (!c || !n?.socket || n.anchorType !== 'mesh' || !n.nodeId) return null;
+  const sceneNode = state.get('nodeById')?.get?.(n.nodeId);
+  const obj = sceneNode?.object3d;
+  if (!obj) return null;
+  const backLocal = _socketBackFaceMeshLocal(c, n);
+  if (!backLocal) return null;
+  obj.updateMatrixWorld?.(true);
+  return obj.localToWorld(backLocal);
+}
+
 export function addCableSocket(cableId, nodeId) {
   const node = _findCableNode(cableId, nodeId);
   if (!node || node.socket) return false;
-  // Size scales off the cable's radius so the connector reads as a
-  // chunky termination on the cable rather than a giant box.
+  // Size as percentage of cable-radius defaults — direct dimension
+  // entry isn't part of the UI; user adjusts via 100% sliders + a
+  // lock-ratio checkbox in the cable-tab editor.
   const cable  = (state.get('cables') || []).find(c => c.id === cableId);
-  const radius = cable?.style?.radius ?? 3;
-  const socket = cables.createCableSocket({
-    size: { w: radius * 1.6, h: radius * 1.6, d: radius * 2.6 },
-  });
+  const socket = cables.createCableSocket({ size: { w: 100, h: 100, d: 100 } });
 
-  // IK shift: lift the cable point by the socket's depth along the
-  // surface normal so the socket's BACK face lands on the anchored
-  // surface and its FRONT face sits at the (new) cable point. Without
-  // this, the box would render inside the host mesh — a deliberate
-  // "needs adjustment" look the user will rarely want by default.
+  // IK shift: lift the cable point by the socket's actual depth along
+  // the surface normal so the back face lands on the anchored surface
+  // and the front face sits at the (new) cable point.
+  const actualD = socketActualSize(cable, socket).d;
   const beforeAnchor = Array.isArray(node.anchorLocal) ? node.anchorLocal.slice() : null;
   let didShift = false;
   if (node.anchorType === 'mesh'
       && Array.isArray(node.anchorLocal)
       && Array.isArray(node.normalLocal)
       && node.normalLocal.length === 3) {
-    const d  = socket.size.d;
     const nx = node.normalLocal[0];
     const ny = node.normalLocal[1];
     const nz = node.normalLocal[2];
     node.anchorLocal = [
-      node.anchorLocal[0] + d * nx,
-      node.anchorLocal[1] + d * ny,
-      node.anchorLocal[2] + d * nz,
+      node.anchorLocal[0] + actualD * nx,
+      node.anchorLocal[1] + actualD * ny,
+      node.anchorLocal[2] + actualD * nz,
     ];
     didShift = true;
   }
@@ -1277,14 +1387,13 @@ export function addCableSocket(cableId, nodeId) {
       if (!n) return;
       n.socket = socket;
       if (didShift) {
-        const d  = socket.size.d;
         const nx = n.normalLocal[0];
         const ny = n.normalLocal[1];
         const nz = n.normalLocal[2];
         n.anchorLocal = [
-          beforeAnchor[0] + d * nx,
-          beforeAnchor[1] + d * ny,
-          beforeAnchor[2] + d * nz,
+          beforeAnchor[0] + actualD * nx,
+          beforeAnchor[1] + actualD * ny,
+          beforeAnchor[2] + actualD * nz,
         ];
       }
       state.setState({ cables: [...(state.get('cables') || [])] });
@@ -1294,11 +1403,106 @@ export function addCableSocket(cableId, nodeId) {
   return true;
 }
 
+/**
+ * Patch a socket's variable fields (size / color / name). One undo
+ * entry comparing snapshot vs. patched. No IK adjustment — sliders
+ * change the box's footprint without re-running the lift.
+ */
+export function setCableSocketProps(cableId, nodeId, patch) {
+  const node = _findCableNode(cableId, nodeId);
+  if (!node?.socket || !patch) return false;
+  const cable = (state.get('cables') || []).find(c => c.id === cableId);
+  const before = JSON.parse(JSON.stringify(node.socket));
+  const beforeAnchor = Array.isArray(node.anchorLocal) ? node.anchorLocal.slice() : null;
+
+  // Snapshot OLD actual depth before applying the patch, so a depth
+  // change can update the cable point's anchor (back face fixed on
+  // the surface, front face = anchor sweeps along the forward axis).
+  const oldD = socketActualSize(cable, node.socket).d;
+
+  if (patch.color  !== undefined) node.socket.color = patch.color;
+  if (patch.name   !== undefined) node.socket.name  = patch.name;
+  if (patch.size) {
+    node.socket.size = {
+      ...node.socket.size,
+      ...(patch.size.w !== undefined ? { w: Math.max(10, +patch.size.w) } : {}),
+      ...(patch.size.h !== undefined ? { h: Math.max(10, +patch.size.h) } : {}),
+      ...(patch.size.d !== undefined ? { d: Math.max(10, +patch.size.d) } : {}),
+    };
+  }
+
+  // Recompute anchor when depth changed: keep back face fixed, slide
+  // front face (= cable point) along the forward direction by the
+  // depth delta. W / H / colour / name don't affect the anchor.
+  const newD = socketActualSize(cable, node.socket).d;
+  if (Array.isArray(node.anchorLocal) && Math.abs(newD - oldD) > 1e-6) {
+    const T = window.THREE;
+    const fwd = _socketForwardMeshLocal(node);
+    const delta = newD - oldD;
+    node.anchorLocal = [
+      node.anchorLocal[0] + delta * fwd.x,
+      node.anchorLocal[1] + delta * fwd.y,
+      node.anchorLocal[2] + delta * fwd.z,
+    ];
+  }
+
+  const after = JSON.parse(JSON.stringify(node.socket));
+  const afterAnchor = Array.isArray(node.anchorLocal) ? node.anchorLocal.slice() : null;
+  state.setState({ cables: [...(state.get('cables') || [])] });
+  state.markDirty();
+  undoManager.push(
+    'Edit socket',
+    () => {
+      const n = _findCableNode(cableId, nodeId);
+      if (!n?.socket) return;
+      Object.assign(n.socket, before);
+      n.socket.size = { ...before.size };
+      if (beforeAnchor) n.anchorLocal = beforeAnchor.slice();
+      state.setState({ cables: [...(state.get('cables') || [])] });
+      state.markDirty();
+    },
+    () => {
+      const n = _findCableNode(cableId, nodeId);
+      if (!n?.socket) return;
+      Object.assign(n.socket, after);
+      n.socket.size = { ...after.size };
+      if (afterAnchor) n.anchorLocal = afterAnchor.slice();
+      state.setState({ cables: [...(state.get('cables') || [])] });
+      state.markDirty();
+    },
+  );
+  return true;
+}
+
+/**
+ * Remove a socket cleanly: shrink the depth to 0 (which slides the
+ * cable point back along the forward direction onto the back face,
+ * the original anchored surface), then drop the socket data. Net
+ * effect is the cable point lands on the surface where the socket
+ * was plugged in. One undo entry restores both the socket AND the
+ * shifted-up anchor.
+ */
 export function removeCableSocket(cableId, nodeId) {
   const node = _findCableNode(cableId, nodeId);
   if (!node || !node.socket) return false;
-  const removed = node.socket;
+
+  const beforeSocket = JSON.parse(JSON.stringify(node.socket));
+  const beforeAnchor = Array.isArray(node.anchorLocal) ? node.anchorLocal.slice() : null;
+
+  // Slide the cable point onto the back face (the socket's surface
+  // attachment) by collapsing its depth contribution. We do this by
+  // overwriting anchorLocal with the back-face mesh-local position.
+  if (Array.isArray(node.anchorLocal)) {
+    const cable = (state.get('cables') || []).find(c => c.id === cableId);
+    const back  = _socketBackFaceMeshLocal(cable, node);
+    if (back) {
+      node.anchorLocal = [back.x, back.y, back.z];
+    }
+  }
   node.socket = null;
+
+  const afterAnchor = Array.isArray(node.anchorLocal) ? node.anchorLocal.slice() : null;
+
   state.setState({ cables: [...(state.get('cables') || [])] });
   state.markDirty();
   undoManager.push(
@@ -1306,7 +1510,8 @@ export function removeCableSocket(cableId, nodeId) {
     () => {
       const n = _findCableNode(cableId, nodeId);
       if (!n) return;
-      n.socket = removed;
+      n.socket = beforeSocket;
+      if (beforeAnchor) n.anchorLocal = beforeAnchor.slice();
       state.setState({ cables: [...(state.get('cables') || [])] });
       state.markDirty();
     },
@@ -1314,6 +1519,125 @@ export function removeCableSocket(cableId, nodeId) {
       const n = _findCableNode(cableId, nodeId);
       if (!n) return;
       n.socket = null;
+      if (afterAnchor) n.anchorLocal = afterAnchor.slice();
+      state.setState({ cables: [...(state.get('cables') || [])] });
+      state.markDirty();
+    },
+  );
+  return true;
+}
+
+// ─── Cable socket re-anchor (E2 follow-up) ────────────────────────────────
+
+export function startCableSocketReanchor(cableId, nodeId) {
+  const node = _findCableNode(cableId, nodeId);
+  if (!node?.socket || node.anchorType !== 'mesh') return;
+  state.setState({ cableSocketReanchorPickingId: { cableId, nodeId } });
+}
+
+export function cancelCableSocketReanchor() {
+  if (state.get('cableSocketReanchorPickingId')) {
+    state.setState({ cableSocketReanchorPickingId: null });
+  }
+}
+
+/**
+ * Apply a socket re-anchor pick. Snaps the back face to the new mesh
+ * + face position, resets the socket's orientation to align with the
+ * new surface normal, and re-runs the IK shift so the cable point
+ * sits at the new front face. One undo entry restores all of:
+ *   nodeId, anchorLocal, normalLocal, cachedWorldPos, socket.localQuaternion.
+ */
+export function applyCableSocketReanchor(hit) {
+  const target = state.get('cableSocketReanchorPickingId');
+  if (!target || !hit?.point || !hit?.object) return false;
+  const node = _findCableNode(target.cableId, target.nodeId);
+  if (!node?.socket || node.anchorType !== 'mesh') {
+    cancelCableSocketReanchor();
+    return false;
+  }
+  const meshNodeId = _findTreeNodeIdForObject(hit.object);
+  if (!meshNodeId) {
+    cancelCableSocketReanchor();
+    return false;
+  }
+  const cable = (state.get('cables') || []).find(c => c.id === target.cableId);
+  if (!cable) { cancelCableSocketReanchor(); return false; }
+
+  const T = window.THREE;
+  const localPos    = hit.object.worldToLocal(hit.point.clone());
+  const localNormal = hit.face?.normal
+    ? hit.face.normal.clone().normalize()
+    : new T.Vector3(0, 0, 1);
+
+  const before = {
+    nodeId:                node.nodeId,
+    anchorLocal:           Array.isArray(node.anchorLocal)    ? node.anchorLocal.slice()    : null,
+    normalLocal:           Array.isArray(node.normalLocal)    ? node.normalLocal.slice()    : null,
+    cachedWorldPos:        Array.isArray(node.cachedWorldPos) ? node.cachedWorldPos.slice() : null,
+    socketLocalQuaternion: Array.isArray(node.socket.localQuaternion)
+      ? node.socket.localQuaternion.slice()
+      : null,
+  };
+
+  // Compute new socket localQuaternion = the default orientation on
+  // the new surface (+Z aligned to local normal).
+  const q = new T.Quaternion();
+  q.setFromUnitVectors(new T.Vector3(0, 0, 1), localNormal);
+  const newSocketLocalQuat = [q.x, q.y, q.z, q.w];
+
+  // New anchor = back face on new surface + actualD * normal.
+  const actualD = socketActualSize(cable, node.socket).d;
+  const newAnchorLocal = [
+    localPos.x + actualD * localNormal.x,
+    localPos.y + actualD * localNormal.y,
+    localPos.z + actualD * localNormal.z,
+  ];
+
+  const after = {
+    nodeId:                meshNodeId,
+    anchorLocal:           newAnchorLocal,
+    normalLocal:           [localNormal.x, localNormal.y, localNormal.z],
+    cachedWorldPos:        [hit.point.x, hit.point.y, hit.point.z],
+    socketLocalQuaternion: newSocketLocalQuat,
+  };
+
+  // Apply.
+  node.nodeId         = after.nodeId;
+  node.anchorLocal    = after.anchorLocal.slice();
+  node.normalLocal    = after.normalLocal.slice();
+  node.cachedWorldPos = after.cachedWorldPos.slice();
+  node.socket.localQuaternion = after.socketLocalQuaternion.slice();
+
+  state.setState({ cables: [...(state.get('cables') || [])] });
+  state.markDirty();
+  cancelCableSocketReanchor();
+
+  undoManager.push(
+    'Re-anchor socket',
+    () => {
+      const n = _findCableNode(target.cableId, target.nodeId);
+      if (!n?.socket) return;
+      if (before.nodeId         !== null) n.nodeId         = before.nodeId;
+      if (before.anchorLocal)             n.anchorLocal    = before.anchorLocal.slice();
+      if (before.normalLocal)             n.normalLocal    = before.normalLocal.slice();
+      if (before.cachedWorldPos)          n.cachedWorldPos = before.cachedWorldPos.slice();
+      if (before.socketLocalQuaternion) {
+        n.socket.localQuaternion = before.socketLocalQuaternion.slice();
+      } else {
+        n.socket.localQuaternion = null;
+      }
+      state.setState({ cables: [...(state.get('cables') || [])] });
+      state.markDirty();
+    },
+    () => {
+      const n = _findCableNode(target.cableId, target.nodeId);
+      if (!n?.socket) return;
+      n.nodeId         = after.nodeId;
+      n.anchorLocal    = after.anchorLocal.slice();
+      n.normalLocal    = after.normalLocal.slice();
+      n.cachedWorldPos = after.cachedWorldPos.slice();
+      n.socket.localQuaternion = after.socketLocalQuaternion.slice();
       state.setState({ cables: [...(state.get('cables') || [])] });
       state.markDirty();
     },
@@ -1443,6 +1767,128 @@ export function insertCablePointAtHit(hit) {
     },
   );
   return true;
+}
+
+// ─── Cable socket rotate (Phase E2) ───────────────────────────────────────
+//
+// Drag-batched writes to node.socket.localQuaternion. Mirrors the
+// point-move lifecycle (begin / cumulative apply / commit). Mesh-
+// anchored hosts only — branch / free hosts could be added later if
+// needed (different math, no parent meshWorldQuat).
+
+// Snapshot during rotate carries enough to back-solve the cable
+// point's new anchorLocal each frame: the mesh-local back face
+// (fixed during pure rotation) and the start orientation.
+let _cableSocketRotateBatch = null;
+//   { cableId, nodeId,
+//     startQuat:[x,y,z,w], startAnchor:[x,y,z],
+//     backFaceLocal:[x,y,z], actualD:number }
+
+function _quatFromNormalLocal(node) {
+  const T = window.THREE;
+  if (!T) return [0, 0, 0, 1];
+  if (!Array.isArray(node?.normalLocal) || node.normalLocal.length !== 3) return [0, 0, 0, 1];
+  const v = new T.Vector3(node.normalLocal[0], node.normalLocal[1], node.normalLocal[2]).normalize();
+  const q = new T.Quaternion();
+  q.setFromUnitVectors(new T.Vector3(0, 0, 1), v);
+  return [q.x, q.y, q.z, q.w];
+}
+
+export function beginCableSocketRotate(cableId, nodeId) {
+  const node = _findCableNode(cableId, nodeId);
+  if (!node?.socket || !Array.isArray(node.anchorLocal)) return;
+  const cable = (state.get('cables') || []).find(c => c.id === cableId);
+  if (!cable) return;
+  // Persist the current localQuaternion (or seed it from normalLocal
+  // so the snapshot is the same orientation the renderer is using).
+  if (!Array.isArray(node.socket.localQuaternion) || node.socket.localQuaternion.length !== 4) {
+    node.socket.localQuaternion = _quatFromNormalLocal(node);
+  }
+  const back = _socketBackFaceMeshLocal(cable, node);
+  _cableSocketRotateBatch = {
+    cableId, nodeId,
+    startQuat:     node.socket.localQuaternion.slice(),
+    startAnchor:   node.anchorLocal.slice(),
+    backFaceLocal: back ? [back.x, back.y, back.z] : null,
+    actualD:       socketActualSize(cable, node.socket).d,
+  };
+}
+
+export function applyCableSocketRotateAxisAngle(cableId, nodeId, worldAxis, angle) {
+  if (!_cableSocketRotateBatch
+      || _cableSocketRotateBatch.cableId !== cableId
+      || _cableSocketRotateBatch.nodeId !== nodeId) return;
+  const node = _findCableNode(cableId, nodeId);
+  if (!node?.socket || node.anchorType !== 'mesh' || !node.nodeId) return;
+  const T = window.THREE;
+  if (!T) return;
+  const sceneNode = state.get('nodeById')?.get?.(node.nodeId);
+  const obj = sceneNode?.object3d;
+  if (!obj) return;
+  obj.updateMatrixWorld?.(true);
+  const meshQ = new T.Quaternion();
+  obj.getWorldQuaternion(meshQ);
+  const meshQinv = meshQ.clone().invert();
+  // Transport the world rotation axis into mesh-local.
+  const localAxis = worldAxis.clone().applyQuaternion(meshQinv).normalize();
+  const deltaQ = new T.Quaternion().setFromAxisAngle(localAxis, angle);
+  const snap = _cableSocketRotateBatch.startQuat;
+  const snapQ = new T.Quaternion(snap[0], snap[1], snap[2], snap[3]);
+  // Pre-multiply: rotation is around a fixed mesh-local axis (axis
+  // doesn't follow the socket as it spins).
+  const newQ = deltaQ.clone().multiply(snapQ);
+  node.socket.localQuaternion = [newQ.x, newQ.y, newQ.z, newQ.w];
+
+  // Back-solve the cable point: the BACK face stays fixed during
+  // rotation (it's the surface attachment); the FRONT face (= cable
+  // point) sweeps around it. New anchor = backFaceLocal + d * newForward.
+  const back = _cableSocketRotateBatch.backFaceLocal;
+  const d    = _cableSocketRotateBatch.actualD;
+  if (back && Number.isFinite(d)) {
+    const newForward = new T.Vector3(0, 0, 1).applyQuaternion(newQ);
+    node.anchorLocal = [
+      back[0] + d * newForward.x,
+      back[1] + d * newForward.y,
+      back[2] + d * newForward.z,
+    ];
+  }
+}
+
+export function commitCableSocketRotate(cableId, nodeId) {
+  if (!_cableSocketRotateBatch
+      || _cableSocketRotateBatch.cableId !== cableId
+      || _cableSocketRotateBatch.nodeId !== nodeId) return;
+  const node = _findCableNode(cableId, nodeId);
+  const beforeQuat   = _cableSocketRotateBatch.startQuat;
+  const beforeAnchor = _cableSocketRotateBatch.startAnchor;
+  const afterQuat    = node?.socket?.localQuaternion ? node.socket.localQuaternion.slice() : null;
+  const afterAnchor  = Array.isArray(node?.anchorLocal) ? node.anchorLocal.slice() : null;
+  _cableSocketRotateBatch = null;
+  if (!afterQuat) return;
+  if (beforeQuat[0] === afterQuat[0] && beforeQuat[1] === afterQuat[1]
+      && beforeQuat[2] === afterQuat[2] && beforeQuat[3] === afterQuat[3]) return;
+
+  state.setState({ cables: [...(state.get('cables') || [])] });
+  state.markDirty();
+  undoManager.push(
+    'Rotate socket',
+    () => {
+      const n = _findCableNode(cableId, nodeId);
+      if (!n?.socket) return;
+      n.socket.localQuaternion = beforeQuat.slice();
+      if (beforeAnchor) n.anchorLocal = beforeAnchor.slice();
+      state.setState({ cables: [...(state.get('cables') || [])] });
+      state.markDirty();
+    },
+    () => {
+      const n = _findCableNode(cableId, nodeId);
+      if (!n?.socket) return;
+      n.socket.localQuaternion = afterQuat.slice();
+      if (afterAnchor) n.anchorLocal = afterAnchor.slice();
+      state.setState({ cables: [...(state.get('cables') || [])] });
+      state.markDirty();
+    },
+  );
 }
 
 // ─── Cable re-anchor (Phase C) ────────────────────────────────────────────

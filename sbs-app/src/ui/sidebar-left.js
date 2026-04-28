@@ -98,6 +98,7 @@ export function initSidebarLeft() {
   state.on('change:cables',              () => { if (_activeTab === 'cables') _renderCableTabPanel(); });
   state.on('change:cablePlacingId',      () => { if (_activeTab === 'cables') _renderCableTabPanel(); });
   state.on('change:selectedCablePoint',  () => { if (_activeTab === 'cables') _renderCableTabPanel(); });
+  state.on('change:selectedCableSocket', () => { if (_activeTab === 'cables') _renderCableTabPanel(); });
   state.on('change:styleTemplates',        () => {
     if (_activeTab === 'style')  _renderStyleTabPanel();
     if (_activeTab === 'header') _renderHeaderTabPanel();   // P4b: row dropdowns refresh + Save button enable
