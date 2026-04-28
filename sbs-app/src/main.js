@@ -49,7 +49,7 @@ import { initContextMenu, hideContextMenu, showContextMenu } from './ui/context-
 import { initOverlay, getStage as getOverlayStage } from './systems/overlay.js';
 import { initOverlayToolbar }  from './ui/overlay-toolbar.js';
 import { initHeaderLayer }     from './systems/header.js';
-import { initCables }          from './systems/cables.js';        // C1: cables wire step:applied → applyStepSnapshot
+import { initCables, resolveNodeWorldPosition } from './systems/cables.js';        // C1: cables wire step:applied → applyStepSnapshot; C5-B: pos resolver for gizmo target
 import { initCableRender, getCablePointMeshes } from './systems/cables-render.js';  // C2: cables 3D render; C5-A: point raycast targets
 import { initUserSettings }    from './core/user-settings.js';
 import { openSettingsModal }   from './ui/settings-modal.js';
@@ -138,6 +138,18 @@ state.on('change:projectPath', () => { undoManager.clear(); selectionActs.clear(
 
 // ── Gizmo: follow selection ───────────────────────────────────────────────────
 function _syncGizmoToSelection() {
+  // C5-B: cable-point selection takes precedence over mesh selection
+  // (selectCablePoint clears mesh selection so they're mutually
+  // exclusive in practice — but check first to be safe).
+  const cableSel = state.get('selectedCablePoint');
+  if (cableSel) {
+    const target = _buildCablePointGizmoTarget(cableSel.cableId, cableSel.nodeId);
+    if (target) { gizmo.showForCablePoint(target); return; }
+    // Fall through to hide if target couldn't be built (free / branch
+    // / unresolved anchor — gizmo only handles mesh anchors).
+    gizmo.hide();
+    return;
+  }
   const selId  = state.get('selectedId');
   const nodeById = state.get('nodeById');
   if (!selId || !nodeById) { gizmo.hide(); return; }
@@ -147,8 +159,42 @@ function _syncGizmoToSelection() {
   if (!obj3d) { gizmo.hide(); return; }
   gizmo.show(node, obj3d);
 }
-state.on('selection:change',    _syncGizmoToSelection);
-state.on('change:treeData',     _syncGizmoToSelection);
+
+/**
+ * C5-B: build a cable-point gizmo target — only succeeds for mesh-
+ * anchored nodes. Free / branch nodes return null (gizmo stays hidden,
+ * point is still selectable for visual context but not movable). The
+ * world-pos getter resolves through the cables system's 3-tier
+ * resolver so a missing host mesh falls through to the cached pose.
+ */
+function _buildCablePointGizmoTarget(cableId, nodeId) {
+  const cables = state.get('cables') || [];
+  const cable  = cables.find(c => c.id === cableId);
+  const node   = cable?.nodes?.find(n => n.id === nodeId);
+  if (!node || node.anchorType !== 'mesh') return null;
+  const T = window.THREE;
+  return {
+    cableId, nodeId,
+    getWorldPos() {
+      const cables = state.get('cables') || [];
+      const c = cables.find(x => x.id === cableId);
+      const n = c?.nodes?.find(x => x.id === nodeId);
+      if (!n) return null;
+      // Use the cables-system resolver to handle live / cached / phantom.
+      const ctx = { makeVec3: (x, y, z) => new T.Vector3(x, y, z) };
+      const r   = resolveNodeWorldPosition(n, ctx);
+      return r.pos ? new T.Vector3(r.pos[0], r.pos[1], r.pos[2]) : null;
+    },
+    beginMove() { actions.beginCablePointMove(cableId, nodeId); },
+    applyCumulativeDelta(worldDelta) {
+      actions.applyCablePointCumulativeDelta(cableId, nodeId, worldDelta);
+    },
+    commitMove() { actions.commitCablePointMove(cableId, nodeId); },
+  };
+}
+state.on('selection:change',           _syncGizmoToSelection);
+state.on('change:treeData',            _syncGizmoToSelection);
+state.on('change:selectedCablePoint',  _syncGizmoToSelection);
 
 // ══════════════════════════════════════════════════════════════════════════════
 //  6. VIEWPORT EVENT HANDLERS
@@ -249,9 +295,12 @@ canvas.addEventListener('pointerdown', e => {
     return;
   }
 
-  // C3: cable placement mode consumes the click — raycast for an
-  // anchored point if a mesh is hit, else drop a free point at the
-  // ground-plane intersection. Stays in placement mode for repeated
+  // C3: cable placement mode consumes the click — raycast for a
+  // mesh anchor; if no mesh is hit the click is silently ignored.
+  // Free points (ground-plane fallback) were dropped in Phase B per
+  // the "every cable node attaches to an object" rule. To wire a
+  // cable in air, future helper/null tree nodes will provide an
+  // attachable surface. Stays in placement mode for repeated
   // clicks; user exits via Esc or the Stop Placement button.
   const placingCableId = state.get('cablePlacingId');
   if (placingCableId) {
@@ -261,21 +310,7 @@ canvas.addEventListener('pointerdown', e => {
     if (hit) {
       actions.addCableAnchoredPoint(placingCableId, hit);
     } else {
-      // No mesh hit — project the click onto the ground plane (Y=0)
-      // and drop a free point there.
-      const T = window.THREE;
-      const cam = sceneCore.camera;
-      const ndc = new T.Vector2(
-        ((e.clientX - canvas.getBoundingClientRect().left) / canvas.clientWidth) * 2 - 1,
-        -((e.clientY - canvas.getBoundingClientRect().top) / canvas.clientHeight) * 2 + 1,
-      );
-      const ray = new T.Raycaster();
-      ray.setFromCamera(ndc, cam);
-      const ground = new T.Plane(new T.Vector3(0, 1, 0), 0);
-      const out = new T.Vector3();
-      if (ray.ray.intersectPlane(ground, out)) {
-        actions.addCableFreePoint(placingCableId, out);
-      }
+      setStatus('Cable points must attach to a mesh — click an object.', 'warn', 1500);
     }
     return;
   }

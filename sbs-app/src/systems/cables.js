@@ -67,18 +67,15 @@ export function getCable(id) {
   return listCables().find(c => c.id === id) || null;
 }
 
-// ─── Step snapshot — capture/apply variable fields per cable ──────────────
+// ─── Step snapshot — visibility-only model ────────────────────────────────
 //
-// What's TOPOLOGY (project-global, never per-step):
-//   - cable.id, branchSource
-//   - node.id, type, anchorType, nodeId (mesh ref), anchorLocal,
-//     normalLocal, sourceCableId, sourceNodeId, branchCableIds
-//   - socket existence (yes / no), socket.id, socket.size
-// What's VARIABLE (captured per step):
-//   - cable.visible, cable.highlight, cable.style.{color,radius,type}
-//   - free-node `position`
-//   - socket.color, socket.name, socket.localQuaternion / quaternion
-//   - cachedWorldPos / cachedWorldQuat (refreshed at apply too)
+// Per design (Phase B): cable identity AND geometry are project-global.
+// Only cable-level on/off + highlight vary per step. Everything else
+// (style, anchors, socket pose, free-node positions if they exist for
+// legacy data) is global — moving a cable point or recolouring a cable
+// affects every step. This avoids the "step 5 has yellow, step 6 has
+// blue" surprise and matches user mental model: cables are wired into
+// the assembly once, then animation rides on the host meshes.
 
 /**
  * Extract the per-step variable state from every cable in
@@ -92,37 +89,7 @@ export function captureStepSnapshot() {
     out[cable.id] = {
       visible:   !!cable.visible,
       highlight: !!cable.highlight,
-      style:     cable.style ? {
-        color:  cable.style.color,
-        radius: cable.style.radius,
-        type:   cable.style.type,
-      } : null,
-      nodes: {},
     };
-    for (const node of cable.nodes || []) {
-      const nodeOut = {};
-      // Free nodes carry world `position`; mesh-anchored nodes derive
-      // from their host mesh, so capturing `position` here is just for
-      // free-node per-step variation.
-      if (node.anchorType === 'free' && Array.isArray(node.position)) {
-        nodeOut.position = node.position.slice();
-      }
-      // Cache fields ride along — on apply they re-seed the live cache
-      // so step-jumps into a step where the mesh is dead still place
-      // the node where it was at capture time.
-      if (Array.isArray(node.cachedWorldPos))  nodeOut.cachedWorldPos  = node.cachedWorldPos.slice();
-      if (Array.isArray(node.cachedWorldQuat)) nodeOut.cachedWorldQuat = node.cachedWorldQuat.slice();
-      // Socket fields — only the variable bits.
-      if (node.socket) {
-        nodeOut.socket = {
-          color: node.socket.color,
-          name:  node.socket.name,
-        };
-        if (Array.isArray(node.socket.localQuaternion)) nodeOut.socket.localQuaternion = node.socket.localQuaternion.slice();
-        if (Array.isArray(node.socket.quaternion))      nodeOut.socket.quaternion      = node.socket.quaternion.slice();
-      }
-      if (Object.keys(nodeOut).length) out[cable.id].nodes[node.id] = nodeOut;
-    }
   }
   return out;
 }
@@ -144,25 +111,6 @@ export function applyStepSnapshot(snap) {
     const next = { ...cable };
     if (override.visible   !== undefined) next.visible   = !!override.visible;
     if (override.highlight !== undefined) next.highlight = !!override.highlight;
-    if (override.style) next.style = { ...(cable.style || {}), ...override.style };
-    if (override.nodes) {
-      next.nodes = (cable.nodes || []).map(node => {
-        const nOver = override.nodes[node.id];
-        if (!nOver) return node;
-        const nnext = { ...node };
-        if (nOver.position)        nnext.position        = nOver.position.slice();
-        if (nOver.cachedWorldPos)  nnext.cachedWorldPos  = nOver.cachedWorldPos.slice();
-        if (nOver.cachedWorldQuat) nnext.cachedWorldQuat = nOver.cachedWorldQuat.slice();
-        if (nOver.socket && node.socket) {
-          nnext.socket = { ...node.socket };
-          if (nOver.socket.color !== undefined)        nnext.socket.color           = nOver.socket.color;
-          if (nOver.socket.name  !== undefined)        nnext.socket.name            = nOver.socket.name;
-          if (nOver.socket.localQuaternion)            nnext.socket.localQuaternion = nOver.socket.localQuaternion.slice();
-          if (nOver.socket.quaternion)                 nnext.socket.quaternion      = nOver.socket.quaternion.slice();
-        }
-        return nnext;
-      });
-    }
     return next;
   });
   state.setState({ cables });

@@ -1138,6 +1138,123 @@ export function clearCablePointSelection() {
   }
 }
 
+// ─── Cable point move (Phase B) ───────────────────────────────────────────
+//
+// Drag-batched, mesh-anchor-only writes to cable.nodes[i].anchorLocal.
+// Free / branch nodes are silently skipped — gizmo only shows for mesh
+// anchors per the design rule "every cable node attaches to an object".
+//
+// Lifecycle (matches the gizmo's pointerdown/move/up):
+//   1. beginCablePointMove(cableId, nodeId)
+//        snapshots current anchorLocal so we can build undo at commit
+//   2. setCablePointAnchorLocal(cableId, nodeId, [x,y,z]) per drag frame
+//        mutates the cable node IN PLACE (no setState — the cables-render
+//        per-frame ticker re-reads anchorLocal and updates the sphere
+//        without a heavy geometry rebuild)
+//   3. commitCablePointMove(cableId, nodeId)
+//        emits change:cables (so save/load + downstream subscribers see
+//        the new value), marks project dirty, pushes one undo entry
+//        comparing snapshot → current.
+//
+// `applyCablePointWorldDelta` is the convenient call site for the gizmo
+// translate write-back: it converts a world-space delta into the anchor
+// mesh's local space and writes the new anchorLocal in place.
+
+let _cablePointMoveBatch = null;   // { cableId, nodeId, snapshot:[x,y,z] }
+
+function _findCableNode(cableId, nodeId) {
+  const cable = (state.get('cables') || []).find(c => c.id === cableId);
+  if (!cable) return null;
+  const node  = (cable.nodes || []).find(n => n.id === nodeId);
+  return node || null;
+}
+
+export function beginCablePointMove(cableId, nodeId) {
+  const node = _findCableNode(cableId, nodeId);
+  if (!node || node.anchorType !== 'mesh' || !Array.isArray(node.anchorLocal)) return;
+  _cablePointMoveBatch = {
+    cableId, nodeId,
+    snapshot: node.anchorLocal.slice(),
+  };
+}
+
+/**
+ * Cumulative drag write — `worldDelta` is measured from the SNAPSHOT
+ * captured by beginCablePointMove (i.e. the pose at pointerdown), not
+ * from the previous frame. This makes per-frame calls idempotent: the
+ * gizmo can call this every pointermove with the running cursor delta
+ * and the result is always anchored to the start, no creep.
+ *
+ * Conversion: new anchorLocal = mesh.worldToLocal( start_world_pos + worldDelta )
+ *   where start_world_pos = mesh.localToWorld(snapshot anchorLocal)
+ */
+export function applyCablePointCumulativeDelta(cableId, nodeId, worldDelta) {
+  if (!_cablePointMoveBatch
+      || _cablePointMoveBatch.cableId !== cableId
+      || _cablePointMoveBatch.nodeId !== nodeId) return;
+  const node = _findCableNode(cableId, nodeId);
+  if (!node || node.anchorType !== 'mesh' || !Array.isArray(node.anchorLocal)) return;
+  const T = window.THREE;
+  if (!T) return;
+  const nodeById = state.get('nodeById');
+  const sceneNode = nodeById?.get?.(node.nodeId);
+  const obj = sceneNode?.object3d;
+  if (!obj) return;
+
+  obj.updateMatrixWorld?.(true);
+  const startLocal = _cablePointMoveBatch.snapshot;
+  const startWorld = new T.Vector3(startLocal[0], startLocal[1], startLocal[2]);
+  obj.localToWorld(startWorld);
+  const newWorld   = startWorld.clone().add(worldDelta);
+  const newLocal   = newWorld.clone();
+  obj.worldToLocal(newLocal);
+  // In-place mutation — the per-frame cable ticker picks this up next
+  // frame and updates the sphere visual without a geometry rebuild.
+  node.anchorLocal[0] = newLocal.x;
+  node.anchorLocal[1] = newLocal.y;
+  node.anchorLocal[2] = newLocal.z;
+}
+
+export function commitCablePointMove(cableId, nodeId) {
+  if (!_cablePointMoveBatch
+      || _cablePointMoveBatch.cableId !== cableId
+      || _cablePointMoveBatch.nodeId !== nodeId) {
+    return;
+  }
+  const node = _findCableNode(cableId, nodeId);
+  if (!node) { _cablePointMoveBatch = null; return; }
+  const before = _cablePointMoveBatch.snapshot;
+  const after  = node.anchorLocal.slice();
+  _cablePointMoveBatch = null;
+
+  // No real change — drag was a no-op (e.g. user grabbed a handle but
+  // didn't move). Skip undo entry, skip dirty.
+  if (before[0] === after[0] && before[1] === after[1] && before[2] === after[2]) return;
+
+  // Bump cables to refresh subscribers (geometry rebuild on rebuild
+  // path is harmless — we already updated in place during drag).
+  state.setState({ cables: [...(state.get('cables') || [])] });
+  state.markDirty();
+
+  undoManager.push(
+    'Move cable point',
+    () => {
+      const n = _findCableNode(cableId, nodeId);
+      if (!n) return;
+      n.anchorLocal = before.slice();
+      state.setState({ cables: [...(state.get('cables') || [])] });
+      state.markDirty();
+    },
+    () => {
+      const n = _findCableNode(cableId, nodeId);
+      if (!n) return;
+      n.anchorLocal = after.slice();
+      state.setState({ cables: [...(state.get('cables') || [])] });
+      state.markDirty();
+    },
+  );
+}
+
 
 // ═══════════════════════════════════════════════════════════════════════════
 //  ANIMATION PRESET ACTIONS

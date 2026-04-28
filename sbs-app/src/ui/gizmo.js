@@ -65,6 +65,18 @@ class GizmoController {
     this._startWorld  = null;
     this._startAngle  = 0;
 
+    // C5-B: cable-point target. Non-null when the gizmo is following a
+    // selected cable point instead of a tree node. Shape:
+    //   { cableId, nodeId, getWorldPos(): THREE.Vector3,
+    //     beginMove(), applyDelta(worldDelta), commitMove() }
+    // _node remains null in this mode and _obj3d points to a hidden
+    // stand-in Object3D positioned at the target's world pos each tick
+    // — this lets the rest of the gizmo code (which dereferences _obj3d
+    // for getWorldPosition) work unchanged. Translate writes are routed
+    // through target.applyDelta in _doDrag instead of node.localOffset.
+    this._cableTarget    = null;
+    this._cableStandIn   = null;   // hidden THREE.Object3D — see init()
+
     // Space label DOM element
     this._spaceLabelEl = null;
 
@@ -83,6 +95,12 @@ class GizmoController {
     this._buildGeometry();
     sceneCore.addTickHook(() => this._tick());
     this._buildSpaceLabel();
+
+    // C5-B: hidden stand-in for cable-point mode. Lives off-scene; only
+    // its position field is read by getWorldPosition. Re-positioned each
+    // tick when _cableTarget is set so the rest of the gizmo's world-pos
+    // logic (axis vectors, drag plane) keeps working unchanged.
+    this._cableStandIn = new T.Object3D();
   }
 
   _buildSpaceLabel() {
@@ -219,11 +237,46 @@ class GizmoController {
 
   show(node, obj3d) {
     if (!this._group) return;
+    this._cableTarget = null;          // exit cable-point mode if entering
     this._node    = node;
     this._obj3d   = obj3d;
     this._visible = true;
     this._group.visible = true;
     this._mode = 'all';
+    this._applyMode();
+    this._tick();
+    if (this._spaceLabelEl) this._spaceLabelEl.style.display = '';
+    this._updateSpaceLabel();
+  }
+
+  /**
+   * C5-B: show the gizmo for a cable-point selection. Translate-only —
+   * cable points have no rotation. The stand-in object3d gets its
+   * position refreshed every tick from `target.getWorldPos()` so the
+   * gizmo follows the point as the host mesh animates.
+   *
+   * target = {
+   *   cableId, nodeId,
+   *   getWorldPos(): THREE.Vector3,
+   *   beginMove(),
+   *   applyDelta(worldDelta: THREE.Vector3),
+   *   commitMove(),
+   * }
+   */
+  showForCablePoint(target) {
+    if (!this._group || !target) return;
+    this._cableTarget = target;
+    this._node    = null;
+    this._obj3d   = this._cableStandIn;
+    // Seed stand-in pose so onPointerDown's plane raycast has a valid
+    // world position even before the next tick fires.
+    const p = target.getWorldPos();
+    if (p) this._cableStandIn.position.copy(p);
+    this._cableStandIn.quaternion.identity();
+    this._visible = true;
+    this._group.visible = true;
+    this._mode = 'translate';
+    this._spaceMode = 'world';   // cable points have no parent — world axes only
     this._applyMode();
     this._tick();
     if (this._spaceLabelEl) this._spaceLabelEl.style.display = '';
@@ -240,12 +293,13 @@ class GizmoController {
       this._setElColor(this._dragEl, this._dragEl.baseColor);
     }
     this._group.visible = false;
-    this._visible  = false;
-    this._node     = null;
-    this._obj3d    = null;
-    this._hovered  = null;
-    this._dragging = false;
-    this._dragEl   = null;
+    this._visible      = false;
+    this._node         = null;
+    this._obj3d        = null;
+    this._cableTarget  = null;
+    this._hovered      = null;
+    this._dragging     = false;
+    this._dragEl       = null;
     if (this._spaceLabelEl) this._spaceLabelEl.style.display = 'none';
     this._closePanel();
   }
@@ -305,6 +359,25 @@ class GizmoController {
   _tick() {
     if (!this._visible || !this._obj3d || !this._group) return;
     const T   = window.THREE;
+
+    // C5-B: cable-point mode — refresh stand-in to current target world
+    // pos every frame, then position+orient the gizmo group identically.
+    // World axes only; no pivot, no parent frame, no rotation handles.
+    if (this._cableTarget) {
+      const p = this._cableTarget.getWorldPos();
+      if (p) {
+        this._cableStandIn.position.copy(p);
+        this._group.position.copy(p);
+      }
+      this._group.quaternion.identity();
+      const cam    = sceneCore.camera;
+      const dist   = cam.position.distanceTo(this._group.position);
+      const fovRad = (cam.fov * Math.PI) / 180;
+      const viewH  = 2 * dist * Math.tan(fovRad / 2);
+      this._group.scale.setScalar(viewH * SCREEN_SIZE);
+      if (this._pivotDot) this._pivotDot.visible = false;
+      return;
+    }
 
     // P-P1: pivot mode awareness.
     //   GREY (pivotEnabled=false)   → gizmo at object world origin (default).
@@ -383,6 +456,12 @@ class GizmoController {
     this._dragEl   = el;
     this._setElColor(el, ACTIVE_COL);
 
+    // C5-B: cable-point mode — open the move batch on the actions side
+    // instead of the tree-node transform-edit path.
+    if (this._cableTarget) {
+      this._cableTarget.beginMove();
+    }
+
     // P-P1: in pivot edit mode (RED) the parent enterPivotEdit/commitPivotEdit
     // pair already brackets the undo session — skip beginTransformEdit so we
     // don't push a redundant "Transform" entry during the gesture.
@@ -443,6 +522,12 @@ class GizmoController {
   onPointerUp() {
     if (!this._dragging) return;
     this._dragging = false;
+    // C5-B: close out the cable-point move batch (one undo entry for
+    // the whole drag). Done before the tree-node path because cable
+    // mode never has _node set.
+    if (this._cableTarget) {
+      this._cableTarget.commitMove();
+    }
     // P-P1: skip commitTransformEdit while in pivot edit — the
     // pivot session covers undo for the whole RED→BLUE gesture.
     const inPivotEdit = !!this._node && state.get('pivotEditNodeId') === this._node.id;
@@ -473,11 +558,44 @@ class GizmoController {
     const T   = window.THREE;
     const el  = this._dragEl;
     const no  = this._node;
-    if (!el || !no || !this._obj3d) return;
+    if (!el || !this._obj3d) return;
 
     const plane = this._getDragPlane(el);
     const curr  = this._worldPoint(clientX, clientY, plane);
     if (!curr || !this._startWorld) return;
+
+    // C5-B: cable-point translate — convert the cursor's world delta
+    // into a constrained delta along the active axis (or plane), and
+    // hand it to the action layer. Skip rotate (gizmo runs in
+    // translate-only mode for cable points).
+    if (this._cableTarget) {
+      if (el.type === 'translate') {
+        const delta  = curr.clone().sub(this._startWorld);
+        const axVec  = this._axisVec(el.axis);
+        const amount = delta.dot(axVec);
+        const worldD = axVec.clone().multiplyScalar(amount);
+        // Reset to absolute by computing delta from the start, not from
+        // the previous frame — applyDelta needs the *cumulative* world
+        // shift since pointerdown to map cleanly to anchorLocal.
+        // (applyDelta handles the conversion to mesh-local.)
+        // We achieve "set to (start + worldD)" by re-snapshotting at
+        // begin and applying (worldD - prevWorldD) per frame, but
+        // simpler: applyCablePointWorldDelta is *additive* — so we
+        // restore from snapshot then re-apply each frame.
+        this._cableTarget.applyCumulativeDelta(worldD);
+      } else if (el.type === 'plane') {
+        const delta   = curr.clone().sub(this._startWorld);
+        const [a, b]  = el.axis.split('');
+        const axA     = this._axisVec(a);
+        const axB     = this._axisVec(b);
+        const worldD  = axA.clone().multiplyScalar(delta.dot(axA))
+                          .add(axB.clone().multiplyScalar(delta.dot(axB)));
+        this._cableTarget.applyCumulativeDelta(worldD);
+      }
+      return;
+    }
+
+    if (!no) return;
 
     // P-P1: three drag modes.
     //   RED  (state.pivotEditNodeId === node.id)
