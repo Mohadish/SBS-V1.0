@@ -1215,6 +1215,130 @@ export function applyCablePointCumulativeDelta(cableId, nodeId, worldDelta) {
   node.anchorLocal[2] = newLocal.z;
 }
 
+// ─── Cable point delete / insert (Phase D) ────────────────────────────────
+
+/**
+ * Delete a single cable point. Captures the node + its position in
+ * the cable's node list so undo can splice it back in at the same
+ * spot. Clears selection if the deleted point was selected.
+ */
+export function deleteCablePoint(cableId, nodeId) {
+  const cable = (state.get('cables') || []).find(c => c.id === cableId);
+  if (!cable) return false;
+  const idx   = (cable.nodes || []).findIndex(n => n.id === nodeId);
+  if (idx < 0) return false;
+
+  const removed = cable.nodes[idx];
+
+  const wasSelected = (() => {
+    const sel = state.get('selectedCablePoint');
+    return sel && sel.cableId === cableId && sel.nodeId === nodeId;
+  })();
+
+  cables.removeCablePoint(cableId, nodeId);
+  if (wasSelected) clearCablePointSelection();
+
+  undoManager.push(
+    'Delete cable point',
+    () => {
+      // Splice the node back in at its original index.
+      const cur = state.get('cables') || [];
+      const list = cur.map(c => {
+        if (c.id !== cableId) return c;
+        const nodes = (c.nodes || []).slice();
+        nodes.splice(Math.min(idx, nodes.length), 0, removed);
+        return { ...c, nodes };
+      });
+      state.setState({ cables: list });
+      state.markDirty();
+    },
+    () => {
+      cables.removeCablePoint(cableId, nodeId);
+      if (wasSelected) clearCablePointSelection();
+    },
+  );
+  return true;
+}
+
+/**
+ * Enter insert-point pick mode. While set, the next viewport click on
+ * a mesh adds a new anchored cable point to the cable at the slot
+ * before/after the anchor node. ESC cancels.
+ */
+export function startCableInsertPicking(cableId, anchorNodeId, position) {
+  if (position !== 'before' && position !== 'after') return;
+  const cable = (state.get('cables') || []).find(c => c.id === cableId);
+  if (!cable || !(cable.nodes || []).find(n => n.id === anchorNodeId)) return;
+  state.setState({ cableInsertPickingTarget: { cableId, anchorNodeId, position } });
+}
+
+export function cancelCableInsertPicking() {
+  if (state.get('cableInsertPickingTarget')) {
+    state.setState({ cableInsertPickingTarget: null });
+  }
+}
+
+/**
+ * Apply an insert-point pick. Builds a mesh-anchored node at the hit
+ * and splices it into the cable at the position chosen at picking
+ * start. One undo entry — removes the spliced node on undo.
+ */
+export function insertCablePointAtHit(hit) {
+  const target = state.get('cableInsertPickingTarget');
+  if (!target || !hit?.point || !hit?.object) return false;
+  const meshNodeId = _findTreeNodeIdForObject(hit.object);
+  if (!meshNodeId) {
+    cancelCableInsertPicking();
+    return false;
+  }
+  const cable = (state.get('cables') || []).find(c => c.id === target.cableId);
+  if (!cable) { cancelCableInsertPicking(); return false; }
+  const anchorIdx = (cable.nodes || []).findIndex(n => n.id === target.anchorNodeId);
+  if (anchorIdx < 0) { cancelCableInsertPicking(); return false; }
+  const insertIdx = target.position === 'before' ? anchorIdx : anchorIdx + 1;
+
+  const localPos    = hit.object.worldToLocal(hit.point.clone());
+  const localNormal = hit.face?.normal ? hit.face.normal.clone().normalize() : null;
+
+  const newNode = cables.createCableNode({
+    type:           'point',
+    anchorType:     'mesh',
+    nodeId:         meshNodeId,
+    anchorLocal:    [localPos.x, localPos.y, localPos.z],
+    normalLocal:    localNormal ? [localNormal.x, localNormal.y, localNormal.z] : null,
+    cachedWorldPos: [hit.point.x, hit.point.y, hit.point.z],
+  });
+
+  const list = (state.get('cables') || []).map(c => {
+    if (c.id !== target.cableId) return c;
+    const nodes = (c.nodes || []).slice();
+    nodes.splice(insertIdx, 0, newNode);
+    return { ...c, nodes };
+  });
+  state.setState({ cables: list });
+  state.markDirty();
+  cancelCableInsertPicking();
+
+  undoManager.push(
+    'Insert cable point',
+    () => {
+      cables.removeCablePoint(target.cableId, newNode.id);
+    },
+    () => {
+      const cur = state.get('cables') || [];
+      const list2 = cur.map(c => {
+        if (c.id !== target.cableId) return c;
+        const nodes = (c.nodes || []).slice();
+        nodes.splice(Math.min(insertIdx, nodes.length), 0, newNode);
+        return { ...c, nodes };
+      });
+      state.setState({ cables: list2 });
+      state.markDirty();
+    },
+  );
+  return true;
+}
+
 // ─── Cable re-anchor (Phase C) ────────────────────────────────────────────
 
 /**

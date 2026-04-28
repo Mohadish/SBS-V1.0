@@ -98,6 +98,19 @@ export function getCablePointMeshes() {
   return out;
 }
 
+/**
+ * Phase D: returns every cable-segment cylinder mesh as a flat array.
+ * Mesh `userData` carries `{ cableId, fromNodeId, toNodeId }`. Used
+ * by main.js to drive a "Insert point here" right-click on a segment.
+ */
+export function getCableSegmentMeshes() {
+  const out = [];
+  for (const entry of _cableSubgroups.values()) {
+    for (const m of entry.segments) out.push(m);
+  }
+  return out;
+}
+
 // ─── Full rebuild ────────────────────────────────────────────────────────
 
 function _refreshAll() {

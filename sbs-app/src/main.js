@@ -50,7 +50,7 @@ import { initOverlay, getStage as getOverlayStage } from './systems/overlay.js';
 import { initOverlayToolbar }  from './ui/overlay-toolbar.js';
 import { initHeaderLayer }     from './systems/header.js';
 import { initCables, resolveNodeWorldPosition } from './systems/cables.js';        // C1: cables wire step:applied → applyStepSnapshot; C5-B: pos resolver for gizmo target
-import { initCableRender, getCablePointMeshes } from './systems/cables-render.js';  // C2: cables 3D render; C5-A: point raycast targets
+import { initCableRender, getCablePointMeshes, getCableSegmentMeshes } from './systems/cables-render.js';  // C2: cables 3D render; C5-A: point raycast targets; C5-D: segment raycast for Insert
 import { initUserSettings }    from './core/user-settings.js';
 import { openSettingsModal }   from './ui/settings-modal.js';
 import { schedulePrecache, cancel as cancelPrecache } from './systems/narration-precache.js';
@@ -215,6 +215,10 @@ state.on('change:cablePlacingId', id => {
 state.on('change:cableReanchorPickingId', target => {
   canvas.style.cursor = target ? 'crosshair' : '';
 });
+// C5-D: same crosshair signal for cable insert-point pick mode.
+state.on('change:cableInsertPickingTarget', target => {
+  canvas.style.cursor = target ? 'crosshair' : '';
+});
 
 // ── Marquee (box-select) overlay ─────────────────────────────────────────────
 // A zero-cost transparent <div> that renders the drag rectangle.
@@ -309,6 +313,18 @@ canvas.addEventListener('pointerdown', e => {
     const hit = sceneCore.pick(e.clientX, e.clientY);
     if (hit) actions.reanchorCablePoint(hit);
     else     actions.cancelCableReanchorPicking();
+    return;
+  }
+
+  // C5-D: cable insert-point pick mode — splice a new anchored point
+  // before/after a chosen anchor node. Same pattern as re-anchor.
+  const insertTarget = state.get('cableInsertPickingTarget');
+  if (insertTarget) {
+    e.preventDefault();
+    e.stopPropagation();
+    const hit = sceneCore.pick(e.clientX, e.clientY);
+    if (hit) actions.insertCablePointAtHit(hit);
+    else     actions.cancelCableInsertPicking();
     return;
   }
 
@@ -441,6 +457,31 @@ function _pickCablePoint(clientX, clientY) {
   };
 }
 
+/**
+ * Phase D: raycast cable segment cylinders. Returns { cableId,
+ * fromNodeId, toNodeId } for the closest hit segment, or null.
+ */
+function _pickCableSegment(clientX, clientY) {
+  if (!window.THREE) return null;
+  const meshes = getCableSegmentMeshes();
+  if (!meshes.length) return null;
+  const T = window.THREE;
+  const rect = canvas.getBoundingClientRect();
+  const ndc = new T.Vector2(
+    ((clientX - rect.left) / rect.width)  * 2 - 1,
+    -((clientY - rect.top)  / rect.height) * 2 + 1,
+  );
+  const ray = new T.Raycaster();
+  ray.setFromCamera(ndc, sceneCore.camera);
+  const hits = ray.intersectObjects(meshes, false).filter(h => h.object.visible);
+  if (!hits.length) return null;
+  return {
+    cableId:    hits[0].object.userData.cableId,
+    fromNodeId: hits[0].object.userData.fromNodeId,
+    toNodeId:   hits[0].object.userData.toNodeId,
+  };
+}
+
 // ── Click: select object ─────────────────────────────────────────────────────
 
 canvas.addEventListener('click', e => {
@@ -525,10 +566,9 @@ canvas.addEventListener('contextmenu', e => {
   e.preventDefault();
   hideContextMenu();
 
-  // C5-C: right-click on a cable point sphere → cable-point menu.
-  // Selects the point if it isn't already, then offers Re-anchor.
-  // Wins over the gizmo's transform-panel popup because the user's
-  // intent is the point itself, not the (translate-only) gizmo panel.
+  // C5-C/D: right-click on a cable point sphere → point menu (re-anchor,
+  // delete). Wins over the gizmo's transform-panel popup because the
+  // user's intent is the point itself.
   const cableHit = _pickCablePoint(e.clientX, e.clientY);
   if (cableHit) {
     actions.selectCablePoint(cableHit.cableId, cableHit.nodeId);
@@ -539,8 +579,28 @@ canvas.addEventListener('contextmenu', e => {
       },
       { label: '─', disabled: true },
       {
+        label: '✕ Delete this point',
+        action: () => actions.deleteCablePoint(cableHit.cableId, cableHit.nodeId),
+      },
+      { label: '─', disabled: true },
+      {
         label: 'Deselect  [Esc]',
         action: () => actions.clearCablePointSelection(),
+      },
+    ];
+    showContextMenu(items, e.clientX, e.clientY);
+    return;
+  }
+
+  // C5-D: right-click on a cable segment cylinder → "Insert point here".
+  // Action enters pick-anchor mode; the next mesh click sets the new
+  // point's anchor and splices it between the segment's two endpoints.
+  const segHit = _pickCableSegment(e.clientX, e.clientY);
+  if (segHit) {
+    const items = [
+      {
+        label: '＋ Insert point here…',
+        action: () => actions.startCableInsertPicking(segHit.cableId, segHit.fromNodeId, 'after'),
       },
     ];
     showContextMenu(items, e.clientX, e.clientY);
@@ -651,6 +711,11 @@ window.addEventListener('keydown', async e => {
     // C5-C: cable re-anchor pick mode — Esc cancels the pick.
     if (state.get('cableReanchorPickingId')) {
       actions.cancelCableReanchorPicking();
+      return;
+    }
+    // C5-D: cable insert-point pick mode — Esc cancels the pick.
+    if (state.get('cableInsertPickingTarget')) {
+      actions.cancelCableInsertPicking();
       return;
     }
     // Phase A: clear any cable-point selection alongside mesh selection.

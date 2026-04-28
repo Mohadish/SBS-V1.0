@@ -156,6 +156,13 @@ function createInitialState() {
     // pick, or when selection changes.
     cableReanchorPickingId: null,     // { cableId, nodeId } | null
 
+    // C5 (Phase D): an insertion is staged — the next click on a mesh
+    // adds a new point to the cable at the indicated index relative to
+    // the anchor node. Shape: { cableId, anchorNodeId, position }
+    // where position is 'before' | 'after'. Cleared on Esc, on a
+    // successful pick, or when selection changes.
+    cableInsertPickingTarget: null,
+
     // ── UI state
     activeSidebarTab:   'files',      // which left sidebar tab is open
     gridVisible:        true,

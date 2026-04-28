@@ -93,9 +93,11 @@ export function initSidebarLeft() {
   state.on('change:headersLocked',         () => { if (_activeTab === 'header')    _renderHeaderTabPanel(); });
   state.on('change:headerDefault',         () => { if (_activeTab === 'header')    _renderHeaderTabPanel(); });
   state.on('change:headerStepNumberPerChapter', () => { if (_activeTab === 'header') _renderHeaderTabPanel(); });
-  // C3: cable tab refreshes on cables list change + on placement-mode toggles.
-  state.on('change:cables',           () => { if (_activeTab === 'cables') _renderCableTabPanel(); });
-  state.on('change:cablePlacingId',   () => { if (_activeTab === 'cables') _renderCableTabPanel(); });
+  // C3/D: cable tab refreshes on cables list change, placement, and on
+  // cable-point selection (so the editor's per-point list highlights).
+  state.on('change:cables',              () => { if (_activeTab === 'cables') _renderCableTabPanel(); });
+  state.on('change:cablePlacingId',      () => { if (_activeTab === 'cables') _renderCableTabPanel(); });
+  state.on('change:selectedCablePoint',  () => { if (_activeTab === 'cables') _renderCableTabPanel(); });
   state.on('change:styleTemplates',        () => {
     if (_activeTab === 'style')  _renderStyleTabPanel();
     if (_activeTab === 'header') _renderHeaderTabPanel();   // P4b: row dropdowns refresh + Save button enable

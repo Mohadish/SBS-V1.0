@@ -131,6 +131,12 @@ function _renderEditor(container) {
   const cable = listCables().find(c => c.id === _activeCableId);
   if (!cable) { host.innerHTML = ''; return; }
 
+  const sel = state.get('selectedCablePoint');
+  const selectedNodeId = sel && sel.cableId === cable.id ? sel.nodeId : null;
+
+  const pointsHtml = (cable.nodes || []).map((n, i) => _renderPointRow(n, i, selectedNodeId)).join('') ||
+    `<div class="small muted" style="padding:8px 10px;">No points yet — use the place button on the row above.</div>`;
+
   host.innerHTML = `
     <div class="section">
       <div class="title">Editing: ${_esc(cable.name || '(unnamed)')}</div>
@@ -148,9 +154,16 @@ function _renderEditor(container) {
         </label>
       </div>
 
+      <div class="card" style="margin-top:10px;padding:0;">
+        <div class="title" style="padding:8px 10px;border-bottom:1px solid var(--line);">
+          Points <span class="small muted">(${(cable.nodes || []).length})</span>
+        </div>
+        <div id="cbl-points">${pointsHtml}</div>
+      </div>
+
       <div class="small muted" style="margin-top:6px;line-height:1.4;">
-        Tip: use the eye / star / +/- buttons in the row above for
-        per-cable visibility, highlight, and placement.
+        Click a row to select that point in the viewport. Right-click a
+        point in the viewport for Re-anchor / Insert / Delete.
       </div>
     </div>
   `;
@@ -165,6 +178,43 @@ function _renderEditor(container) {
     e => actions.setCableStyle(cable.id, { color: e.target.value }));
   host.querySelector('#cbl-radius')?.addEventListener('change',
     e => actions.setCableStyle(cable.id, { radius: Math.max(0.5, Number(e.target.value) || 3) }));
+
+  // Per-point row delegation (select / delete).
+  host.querySelector('#cbl-points')?.addEventListener('click', e => {
+    const row = e.target.closest('[data-pt-id]');
+    if (!row) return;
+    const ptId = row.dataset.ptId;
+    const act  = e.target.closest('[data-pt-act]')?.dataset.ptAct;
+    if (act === 'delete') {
+      if (confirm('Delete this point?')) actions.deleteCablePoint(cable.id, ptId);
+      return;
+    }
+    actions.selectCablePoint(cable.id, ptId);
+  });
+}
+
+function _renderPointRow(node, index, selectedNodeId) {
+  const isSelected = node.id === selectedNodeId;
+  const tag = node.anchorType === 'mesh'   ? 'M'
+            : node.anchorType === 'branch' ? 'B'
+            : node.anchorType === 'free'   ? 'F'
+                                            : '?';
+  const tagColor = node.anchorType === 'mesh'   ? '#22c55e'
+                 : node.anchorType === 'branch' ? '#a78bfa'
+                 : node.anchorType === 'free'   ? '#f59e0b'
+                                                : '#ef4444';
+  return `
+    <div class="row" data-pt-id="${_esc(node.id)}"
+         style="display:flex;align-items:center;gap:8px;padding:6px 10px;border-bottom:1px solid var(--line);cursor:pointer;${isSelected ? 'background:rgba(34,211,238,0.10);' : ''}">
+      <span class="small muted" style="width:18px;text-align:right;">${index + 1}</span>
+      <span title="${_esc(node.anchorType || '')} anchor"
+            style="display:inline-block;width:18px;height:18px;border-radius:4px;background:${tagColor};color:#000;font-size:11px;font-weight:700;text-align:center;line-height:18px;">${tag}</span>
+      <div class="small" style="flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">
+        ${_esc(node.id)}
+      </div>
+      <button class="btn icon" data-pt-act="delete" title="Delete this point" style="width:22px;height:22px;padding:0;color:#f87171;">✕</button>
+    </div>
+  `;
 }
 
 // ─── Create / lifecycle ─────────────────────────────────────────────────────
