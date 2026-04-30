@@ -46,6 +46,7 @@ import { initStepNav }            from './ui/step-nav.js';
 import { initStepsPanel }         from './ui/steps-panel.js';
 import { initSidebarLeft }        from './ui/sidebar-left.js';
 import { initContextMenu, hideContextMenu, showContextMenu } from './ui/context-menu.js';
+import { showMoveToFolderDialog } from './ui/tree.js';
 import { initOverlay, getStage as getOverlayStage } from './systems/overlay.js';
 import { initOverlayToolbar }  from './ui/overlay-toolbar.js';
 import { initHeaderLayer }     from './systems/header.js';
@@ -876,14 +877,53 @@ canvas.addEventListener('contextmenu', e => {
 
   const selId = state.get('selectedId');
   const nodeById = state.get('nodeById');
+  const multiIds = state.get('multiSelectedIds') || new Set();
   const node = selId && nodeById ? nodeById.get(selId) : null;
   const isTransformable = node && node.type !== 'mesh' && node.type !== 'scene';
+  const hasSel = !!selId && multiIds.size > 0;
 
   const items = [];
   if (isTransformable) {
     items.push({ label: '↺ Reset transform', action: () => resetTransform(selId) });
     items.push({ label: '─', disabled: true });
   }
+  if (hasSel) {
+    items.push({
+      label: '👁 Hide / Show',
+      action: () => actions.toggleVisibility(multiIds),
+    });
+    items.push({
+      label: '◎ Isolate',
+      action: () => actions.isolateSelection(),
+    });
+    if (actions.hasIsolateSnapshot()) {
+      items.push({
+        label: '◌ Un-isolate',
+        action: () => actions.unisolate(),
+      });
+    }
+    items.push({
+      label: '⊕ Move to folder…',
+      action: () => showMoveToFolderDialog([...multiIds]),
+    });
+    items.push({
+      label: '⊡ Fit to selection',
+      action: () => _fitToSelection(multiIds),
+    });
+    items.push({ label: '─', disabled: true });
+  }
+  items.push({
+    label: '◉ Update camera (this step)',
+    action: () => {
+      const activeId = state.get('activeStepId');
+      if (activeId) {
+        steps.saveStepCamera(activeId);
+        setStatus('Camera saved for step.');
+      } else {
+        setStatus('No active step.', 'warn');
+      }
+    },
+  });
   items.push({
     label: 'Fit view  [F]',
     action: () => {
@@ -898,6 +938,27 @@ canvas.addEventListener('contextmenu', e => {
 
   if (items.length) showContextMenu(items, e.clientX, e.clientY);
 });
+
+/**
+ * Compute a Box3 over the union of all selected nodes' object3ds and
+ * animate the camera to fit. Skips meshes that don't have a live obj3d.
+ */
+function _fitToSelection(ids) {
+  if (!window.THREE || !ids?.size) return;
+  const T = window.THREE;
+  const box = new T.Box3();
+  let any = false;
+  for (const id of ids) {
+    const obj = steps.object3dById?.get(id);
+    if (!obj) continue;
+    obj.updateMatrixWorld?.(true);
+    box.expandByObject(obj);
+    any = true;
+  }
+  if (!any || box.isEmpty()) return;
+  sceneCore.animateCameraTo(sceneCore.fitStateForBox(box, 1.25), 800, 'smooth');
+}
+
 
 // ── Window resize ─────────────────────────────────────────────────────────────
 

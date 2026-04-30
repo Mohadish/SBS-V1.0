@@ -551,7 +551,7 @@ function _buildContextMenuItems(node) {
   if (node.type !== 'scene') {
     items.push({
       label: count > 1 ? `Move ${count} items to Folder…` : 'Move to Folder…',
-      action: () => _showMoveToFolderDialog(targetIds),
+      action: () => showMoveToFolderDialog(targetIds),
     });
   }
 
@@ -725,96 +725,134 @@ function _moveIdsIntoNode(ids, targetNode) {
 
 // ── Move To Folder dialog ─────────────────────────────────────────────────────
 
-function _showMoveToFolderDialog(nodeIds) {
+/**
+ * Unified "move to folder" dialog. One screen, one primary button.
+ *
+ * Flow:
+ *   • Dropdown listing existing folders + a "+ Create new folder" entry.
+ *   • Always-visible "New folder name" input — greyed-out when dropdown
+ *     is on an existing folder (text persists for re-edits), white +
+ *     editable when on "+ Create new folder".
+ *   • Typing into the (greyed) input snaps dropdown to "+ Create new
+ *     folder" and re-activates the input.
+ *   • Clicking the (greyed) input re-activates it AND flips dropdown.
+ *   • Picking an existing folder regreys the input (text stays).
+ *   • Primary button text follows the dropdown:
+ *       existing folder  → "Move here"
+ *       + Create new     → "Create and move here"  (creates folder
+ *                           at scene root then moves selection in)
+ *   • Cancel / Esc closes without action.
+ */
+export function showMoveToFolderDialog(nodeIds) {
+  if (!nodeIds || !nodeIds.length) return;
   const root = state.get('treeData');
   if (!root) return;
+  const options = _collectFolderOptions(root, nodeIds);
 
   const dlg = document.createElement('dialog');
   dlg.className = 'sbs-dialog';
-
-  function _rebuildDialog(selectedFolderId) {
-    const options = _collectFolderOptions(root, nodeIds);
-    dlg.innerHTML = `
-      <div class="sbs-dialog__body">
-        <div class="sbs-dialog__title">Move to Folder</div>
-        <p class="small" style="margin:6px 0 12px;color:#94a3b8">
-          Moving ${nodeIds.length} item${nodeIds.length > 1 ? 's' : ''}
-        </p>
-        <label class="colorlab">Destination
-          <select id="mtf-sel" style="margin-top:6px">
-            ${options.map(o =>
-              `<option value="${_esc(o.id)}" ${o.id === selectedFolderId ? 'selected' : ''}>${_esc(o.label)}</option>`
-            ).join('')}
-            <option value="__new__">＋ Create New Folder…</option>
-          </select>
-        </label>
-        <div id="mtf-new-row" style="display:none;margin-top:10px">
-          <label class="colorlab">New folder name
-            <input type="text" id="mtf-new-name" placeholder="Folder name" style="margin-top:6px" />
-          </label>
-          <button class="btn" id="mtf-create-btn" style="margin-top:8px;width:100%">Create Folder</button>
-        </div>
-        <div style="display:flex;gap:8px;justify-content:flex-end;margin-top:16px">
-          <button class="btn" id="mtf-cancel">Cancel</button>
-          <button class="btn" id="mtf-accept">Move Here</button>
-        </div>
+  dlg.innerHTML = `
+    <div class="sbs-dialog__body">
+      <div class="sbs-dialog__title">Move to Folder</div>
+      <p class="small" style="margin:6px 0 12px;color:#94a3b8">
+        Moving ${nodeIds.length} item${nodeIds.length > 1 ? 's' : ''}
+      </p>
+      <label class="colorlab">Destination
+        <select id="mtf-sel" style="margin-top:6px">
+          ${options.map(o =>
+            `<option value="${_esc(o.id)}">${_esc(o.label)}</option>`
+          ).join('')}
+          <option value="__new__">＋ Create new folder…</option>
+        </select>
+      </label>
+      <label class="colorlab" style="margin-top:10px">New folder name
+        <input type="text" id="mtf-new-name" placeholder="Folder name" style="margin-top:6px" />
+      </label>
+      <div style="display:flex;gap:8px;justify-content:flex-end;margin-top:16px">
+        <button class="btn" id="mtf-cancel">Cancel</button>
+        <button class="btn" id="mtf-accept">Move here</button>
       </div>
-    `;
+    </div>
+  `;
 
-    const sel      = dlg.querySelector('#mtf-sel');
-    const newRow   = dlg.querySelector('#mtf-new-row');
-    const newName  = dlg.querySelector('#mtf-new-name');
-    const createBtn = dlg.querySelector('#mtf-create-btn');
+  const sel     = dlg.querySelector('#mtf-sel');
+  const input   = dlg.querySelector('#mtf-new-name');
+  const accept  = dlg.querySelector('#mtf-accept');
+  const cancel  = dlg.querySelector('#mtf-cancel');
 
-    sel.addEventListener('change', () => {
-      newRow.style.display = sel.value === '__new__' ? '' : 'none';
-      if (sel.value === '__new__') newName.focus();
-    });
+  // Greyed-out style for input when dropdown is an existing folder.
+  const greyStyle  = () => { input.style.color = '#64748b'; input.style.opacity = '0.6'; };
+  const whiteStyle = () => { input.style.color = ''; input.style.opacity = ''; };
+  const refresh = () => {
+    if (sel.value === '__new__') {
+      whiteStyle();
+      accept.textContent = 'Create and move here';
+    } else {
+      greyStyle();
+      accept.textContent = 'Move here';
+    }
+  };
+  refresh();   // initial state
 
-    createBtn.addEventListener('click', () => {
-      const name = newName.value.trim();
-      if (!name) { newName.focus(); return; }
+  sel.addEventListener('change', refresh);
+  // Typing into the (possibly greyed) input snaps to "+ Create new".
+  input.addEventListener('input', () => {
+    if (sel.value !== '__new__' && input.value.trim()) {
+      sel.value = '__new__';
+    }
+    refresh();
+  });
+  // Clicking a greyed-out input also flips to "+ Create new".
+  input.addEventListener('focus', () => {
+    if (sel.value !== '__new__') {
+      sel.value = '__new__';
+      refresh();
+    }
+  });
 
-      // Create folder at scene root
-      const THREE = window.THREE;
-      const group = THREE ? new THREE.Group() : null;
-      if (group) { group.name = name; group.userData.isCustomFolder = true; }
+  cancel.addEventListener('click', () => { dlg.close(); dlg.remove(); });
 
-      const folderNode = {
-        id: generateId('folder'), name, type: 'folder',
-        localVisible: true, object3d: group, children: [],
-        localOffset: [0,0,0], localQuaternion: [0,0,0,1],
-        pivotLocalOffset: [0,0,0], pivotLocalQuaternion: [0,0,0,1],
-        baseLocalPosition: [0,0,0], baseLocalQuaternion: [0,0,0,1], baseLocalScale: [1,1,1],
-        moveEnabled: true, rotateEnabled: true, pivotEnabled: true,
-      };
-
-      root.children.push(folderNode);
-      if (root.object3d && group) root.object3d.add(group);
-      if (group) steps.object3dById.set(folderNode.id, group);  // register so gizmo can attach
-      state.setState({ nodeById: buildNodeMap(root) });
-
-      // Rebuild dialog with new folder selected
-      _rebuildDialog(folderNode.id);
-    });
-
-    dlg.querySelector('#mtf-cancel').addEventListener('click', () => {
+  accept.addEventListener('click', () => {
+    if (sel.value === '__new__') {
+      const name = input.value.trim();
+      if (!name) { input.focus(); return; }
+      // Create folder at scene root, then move selection into it.
+      const folderNode = _createFolderAtRoot(name, root);
+      if (!folderNode) return;
       dlg.close(); dlg.remove();
-    });
-
-    dlg.querySelector('#mtf-accept').addEventListener('click', () => {
-      const folderId = sel.value;
-      if (!folderId || folderId === '__new__') return;
-      const targetNode = state.get('nodeById')?.get(folderId) || findNode(root, folderId);
+      _moveIdsIntoNode(nodeIds, folderNode);
+    } else {
+      const targetNode = state.get('nodeById')?.get(sel.value) || findNode(root, sel.value);
       if (!targetNode) return;
       dlg.close(); dlg.remove();
       _moveIdsIntoNode(nodeIds, targetNode);
-    });
-  }
+    }
+  });
 
-  _rebuildDialog(null);
+  // Esc on the dialog itself closes (dialog default behaviour).
+  dlg.addEventListener('cancel', () => { dlg.remove(); });
+
   document.body.appendChild(dlg);
   dlg.showModal();
+}
+
+function _createFolderAtRoot(name, root) {
+  const THREE = window.THREE;
+  const group = THREE ? new THREE.Group() : null;
+  if (group) { group.name = name; group.userData.isCustomFolder = true; }
+  const folderNode = {
+    id: generateId('folder'), name, type: 'folder',
+    localVisible: true, object3d: group, children: [],
+    localOffset: [0,0,0], localQuaternion: [0,0,0,1],
+    pivotLocalOffset: [0,0,0], pivotLocalQuaternion: [0,0,0,1],
+    baseLocalPosition: [0,0,0], baseLocalQuaternion: [0,0,0,1], baseLocalScale: [1,1,1],
+    moveEnabled: true, rotateEnabled: true, pivotEnabled: true,
+  };
+  root.children.push(folderNode);
+  if (root.object3d && group) root.object3d.add(group);
+  if (group) steps.object3dById.set(folderNode.id, group);
+  state.setState({ nodeById: buildNodeMap(root) });
+  return folderNode;
 }
 
 /**

@@ -24,6 +24,10 @@ import {
   applyTransformSnapshot,
   applyNodeTransformToObject3D,
 }                               from '../core/transforms.js';
+import {
+  moveNode    as _nodes_moveNode,
+  buildNodeMap as _nodes_buildNodeMap,
+}                               from '../core/nodes.js';
 
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -359,6 +363,166 @@ export function updateTransition(stepId, patch) {
 // ═══════════════════════════════════════════════════════════════════════════
 //  VISIBILITY
 // ═══════════════════════════════════════════════════════════════════════════
+
+/**
+ * Isolate the given node ids — hide every node NOT in the keep set
+ * (selected ids + all their descendants + all their ancestors). The
+ * outgoing visibility is snapshotted so unisolate() can restore. One
+ * undo entry per call. Re-running isolate replaces the snapshot
+ * (subsequent undo restores to whatever was visible BEFORE this call).
+ */
+let _isolateSnapshot = null;   // Map<nodeId, boolean>
+
+function _collectKeepSet(rootIds) {
+  const nodeById = state.get('nodeById');
+  if (!nodeById) return new Set();
+  const keep = new Set();
+  // Ancestors of each root id (so parent folders stay visible)
+  const root = state.get('treeData');
+  const ancestorsOf = (targetId) => {
+    const stack = [{ node: root, path: [] }];
+    while (stack.length) {
+      const { node, path } = stack.pop();
+      if (node.id === targetId) { for (const p of path) keep.add(p); return; }
+      for (const c of (node.children || [])) stack.push({ node: c, path: [...path, node.id] });
+    }
+  };
+  // Descendants of each root id (so the kid meshes of an isolated folder show)
+  const collectDesc = (id) => {
+    const node = nodeById.get(id);
+    if (!node) return;
+    keep.add(id);
+    for (const c of (node.children || [])) collectDesc(c.id);
+  };
+  for (const id of rootIds) {
+    collectDesc(id);
+    ancestorsOf(id);
+  }
+  return keep;
+}
+
+export function isolateSelection() {
+  const nodeById = state.get('nodeById');
+  if (!nodeById) return;
+  const ids = state.get('multiSelectedIds');
+  if (!ids?.size) return;
+  const keep = _collectKeepSet(ids);
+
+  // Snapshot CURRENT visibility for unisolate.
+  const snapshot = new Map();
+  for (const [id, n] of nodeById) snapshot.set(id, n.localVisible !== false);
+  _isolateSnapshot = snapshot;
+
+  // Apply isolation: anything not in keep → hidden.
+  const flipped = [];   // ids whose visibility actually changed
+  for (const [id, n] of nodeById) {
+    const want = keep.has(id);
+    if (want !== (n.localVisible !== false)) {
+      n.localVisible = want;
+      flipped.push(id);
+    }
+  }
+  if (!flipped.length) return;
+  _syncVis();
+
+  undoManager.push(
+    'Isolate',
+    () => {
+      const nb = state.get('nodeById');
+      for (const [id, was] of snapshot) { const n = nb.get(id); if (n) n.localVisible = was; }
+      _syncVis();
+    },
+    () => {
+      const nb = state.get('nodeById');
+      for (const id of flipped) { const n = nb.get(id); if (n) n.localVisible = keep.has(id); }
+      _syncVis();
+    },
+  );
+}
+
+export function unisolate() {
+  if (!_isolateSnapshot) return;
+  const nodeById = state.get('nodeById');
+  if (!nodeById) return;
+  const before = new Map();
+  for (const [id, n] of nodeById) before.set(id, n.localVisible !== false);
+  for (const [id, was] of _isolateSnapshot) { const n = nodeById.get(id); if (n) n.localVisible = was; }
+  _syncVis();
+  const restored = _isolateSnapshot;
+  _isolateSnapshot = null;
+  undoManager.push(
+    'Un-isolate',
+    () => {
+      const nb = state.get('nodeById');
+      for (const [id, b] of before) { const n = nb.get(id); if (n) n.localVisible = b; }
+      _syncVis();
+    },
+    () => {
+      const nb = state.get('nodeById');
+      for (const [id, w] of restored) { const n = nb.get(id); if (n) n.localVisible = w; }
+      _syncVis();
+    },
+  );
+}
+
+export function hasIsolateSnapshot() { return !!_isolateSnapshot; }
+
+/**
+ * Move every id under the destination folder. One undo entry restores
+ * each node's original parent. Skips moves that would put a node into
+ * itself or its own descendant. Triggers a tree rebuild + nodeById
+ * refresh so the rest of the app sees the new hierarchy.
+ */
+export function moveNodesToFolder(ids, destFolderId) {
+  const root = state.get('treeData');
+  if (!root || !ids?.length || !destFolderId) return;
+  // Snapshot original parents so undo can splice each node back.
+  const before = [];
+  for (const id of ids) {
+    const parent = _findNodeParent(root, id);
+    if (!parent) continue;
+    const idx = (parent.children || []).findIndex(c => c.id === id);
+    before.push({ id, parentId: parent.id, index: idx });
+  }
+  // Apply moves (skip self / descendant of destination).
+  const moved = [];
+  for (const { id } of before) {
+    if (_nodes_moveNode(root, id, destFolderId)) moved.push(id);
+  }
+  if (!moved.length) return;
+  state.setState({ nodeById: _nodes_buildNodeMap(root), treeData: root });
+  steps.scheduleTransformSync();
+  state.markDirty();
+  undoManager.push(
+    moved.length === 1 ? 'Move to folder' : `Move ${moved.length} to folder`,
+    () => {
+      const r = state.get('treeData');
+      // Reverse order so children restore before parents (no descendant conflicts).
+      for (const b of [...before].reverse()) {
+        _nodes_moveNode(r, b.id, b.parentId, b.index);
+      }
+      state.setState({ nodeById: _nodes_buildNodeMap(r), treeData: r });
+      steps.scheduleTransformSync();
+      state.markDirty();
+    },
+    () => {
+      const r = state.get('treeData');
+      for (const id of moved) _nodes_moveNode(r, id, destFolderId);
+      state.setState({ nodeById: _nodes_buildNodeMap(r), treeData: r });
+      steps.scheduleTransformSync();
+      state.markDirty();
+    },
+  );
+}
+
+function _findNodeParent(node, targetId) {
+  for (const c of (node.children || [])) {
+    if (c.id === targetId) return node;
+    const sub = _findNodeParent(c, targetId);
+    if (sub) return sub;
+  }
+  return null;
+}
 
 export function toggleVisibility(nodeIds) {
   const nodeById   = state.get('nodeById');
