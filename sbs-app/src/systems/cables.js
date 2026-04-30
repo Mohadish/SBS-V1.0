@@ -232,20 +232,25 @@ export function updateCableStyle(id, stylePatch) {
 }
 
 /**
- * Append a node to the end of a cable's nodes list. Returns the new
- * node (with a fresh id). Caller is responsible for picking the right
- * `anchorType` + accompanying fields:
+ * Append a node to a cable's nodes list (or prepend when
+ * opts.atStart is true). Returns the new node. Caller is responsible
+ * for picking the right `anchorType` + accompanying fields:
  *   - 'mesh': nodeId + anchorLocal + normalLocal + cachedWorldPos
  *   - 'free': position + cachedWorldPos
  *   - 'branch': sourceCableId + sourceNodeId + branchCableIds[]
  */
-export function addCablePoint(cableId, nodePartial = {}) {
+export function addCablePoint(cableId, nodePartial = {}, opts = {}) {
   const cable = getCable(cableId);
   if (!cable) return null;
   const node = createCableNode(nodePartial);
-  const cables = listCables().map(c =>
-    c.id === cableId ? { ...c, nodes: [...(c.nodes || []), node] } : c,
-  );
+  const atStart = !!opts.atStart;
+  const cables = listCables().map(c => {
+    if (c.id !== cableId) return c;
+    const nodes = atStart
+      ? [node, ...(c.nodes || [])]
+      : [...(c.nodes || []), node];
+    return { ...c, nodes };
+  });
   state.setState({ cables });
   state.markDirty();
   return node;

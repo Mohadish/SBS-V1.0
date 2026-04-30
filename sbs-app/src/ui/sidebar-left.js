@@ -99,6 +99,8 @@ export function initSidebarLeft() {
   state.on('change:cablePlacingId',      () => { if (_activeTab === 'cables') _renderCableTabPanel(); });
   state.on('change:selectedCablePoint',  () => { if (_activeTab === 'cables') _renderCableTabPanel(); });
   state.on('change:selectedCableSocket', () => { if (_activeTab === 'cables') _renderCableTabPanel(); });
+  state.on('change:cableGlobalRadius',   () => { if (_activeTab === 'cables') _renderCableTabPanel(); });
+  state.on('change:cableHighlightColor', () => { if (_activeTab === 'cables') _renderCableTabPanel(); });
   state.on('change:styleTemplates',        () => {
     if (_activeTab === 'style')  _renderStyleTabPanel();
     if (_activeTab === 'header') _renderHeaderTabPanel();   // P4b: row dropdowns refresh + Save button enable
@@ -376,11 +378,15 @@ async function _onOpenProject() {
         // User-provided via dialog (web re-link or Electron re-link)
         modelNode = await _loadModelFile(userFile, assetEntry, true);
       } else if (isElectron && resolvedPath && window.sbsNative?.readFile) {
-        // Electron auto-load from saved path
-        const result = await window.sbsNative.readFile(resolvedPath, 'base64');
+        // Electron auto-load from saved path. Use the 'buffer' encoding
+        // so IPC marshals raw bytes as a Uint8Array — for large OBJs
+        // (200+ MB) the legacy base64 + atob + charCodeAt loop blew
+        // the renderer heap (string × 4/3 + decoded copy + per-char
+        // mapper allocations cascaded into "invalid array length").
+        const result = await window.sbsNative.readFile(resolvedPath, 'buffer');
         if (result?.ok) {
-          const bytes = Uint8Array.from(atob(result.data), c => c.charCodeAt(0));
-          modelNode = await _loadModelFile(new File([bytes], assetEntry.name), assetEntry, true);
+          // result.data is already a Uint8Array (Buffer over IPC).
+          modelNode = await _loadModelFile(new File([result.data], assetEntry.name), assetEntry, true);
         }
       }
 

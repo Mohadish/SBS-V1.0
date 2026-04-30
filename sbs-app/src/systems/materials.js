@@ -266,6 +266,10 @@ class MaterialsSystem {
 
     // Active visibility fade transitions: nodeId → { from, to, startMs, durationMs, easeFn, hide }
     this._visTransitions       = new Map();
+    // Showing meshes that have been snap-zero'd ahead of their fade phase.
+    // applyAll's reapply block honours this set so a color transition's
+    // final applyAll doesn't pop them to opacity 1 between phases.
+    this._pendingShowingHidden = new Set();
   }
 
   // ─── Setup ───────────────────────────────────────────────────────────────
@@ -821,6 +825,17 @@ gl_FragColor.a = 1.0;
         this._setNodeTransitionOpacity(nodeId, t, outlineSettings, backOp);
       }
     }
+    // Pending showing-hidden meshes: snapped-to-zero ahead of their
+    // visibility phase. Without this, a color transition's final
+    // applyAll would pop them visible for one frame before the
+    // visibility phase fades them in.
+    if (this._pendingShowingHidden?.size) {
+      const outlineSettings = state.get('geometryOutline');
+      for (const nodeId of this._pendingShowingHidden) {
+        if (this._visTransitions.has(nodeId)) continue;   // active fade owns it
+        this._setNodeTransitionOpacity(nodeId, 0.0, outlineSettings, 0);
+      }
+    }
   }
 
 
@@ -1233,6 +1248,9 @@ gl_FragColor.a = 1.0;
         startMs: now, durationMs: Math.max(durationMs, 1),
         easeFn, hide: false,
       });
+      // Hand off ownership: vis transition now drives this node's
+      // opacity, so applyAll's pending-showing snap should ignore it.
+      this._pendingShowingHidden.delete(nodeId);
     }
   }
 
@@ -1291,6 +1309,7 @@ gl_FragColor.a = 1.0;
     const outlineSettings = state.get('geometryOutline');
     for (const nodeId of showingIds) {
       this._setNodeTransitionOpacity(nodeId, 0.0, outlineSettings, 0);
+      this._pendingShowingHidden.add(nodeId);
     }
   }
 

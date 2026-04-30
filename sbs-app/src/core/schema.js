@@ -547,7 +547,11 @@ export function createCable(overrides = {}) {
     highlight:    false,
     style: {
       color:     '#ffb24a',
-      radius:    3,                       // cylinder radius in world units
+      // Phase G: per-cable size % multiplier on cableGlobalRadius
+      // (default 100). Effective radius = globalRadius × (size/100).
+      // Legacy `radius` field is still read by cableEffectiveRadius()
+      // when `size` is missing, so old projects keep their look.
+      size:      100,
       type:      'straight',              // 'straight' | 'catenary' | 'bezier' (only 'straight' rendered today)
     },
     ...overrides,

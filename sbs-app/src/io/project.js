@@ -30,6 +30,22 @@ import { materials }                  from '../systems/materials.js';
 import { steps   }                  from '../systems/steps.js';
 import * as narrationCache           from '../systems/narration-cache.js';
 
+/**
+ * H1 migration: append `cable(500)` / `overlay(500)` slots to legacy
+ * animation preset strings so projects saved before these phases
+ * existed pick them up automatically. Idempotent — re-running on a
+ * preset that already mentions a slot leaves it untouched.
+ */
+function _migrateAnimationPresets(items) {
+  return items.map(p => {
+    if (!p?.animation || typeof p.animation !== 'string') return p;
+    let str = p.animation;
+    if (!/\bcable\b/.test(str))   str = `${str.trim().replace(/,?\s*$/, '')}, cable(500)`;
+    if (!/\boverlay\b/.test(str)) str = `${str.trim().replace(/,?\s*$/, '')}, overlay(500)`;
+    return str === p.animation ? p : { ...p, animation: str };
+  });
+}
+
 
 // ═══════════════════════════════════════════════════════════════════════════
 //  SERIALISE (state → JSON)
@@ -475,7 +491,7 @@ export function applyProjectToState(project) {
     chapters:             project.chapters?.items           || [],
     cameraViews:          project.cameras?.items            || [],
     colorPresets:         project.colors?.items             || [],
-    animationPresets:     project.animationPresets?.items   || [],
+    animationPresets:     _migrateAnimationPresets(project.animationPresets?.items || []),
     noteTemplates:        project.notes?.templates          || [],
     notePresets:          project.notes?.presets            || state.get('notePresets'),
     selectionGroups:      project.selections?.groups        || [],

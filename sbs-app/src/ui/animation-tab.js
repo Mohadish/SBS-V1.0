@@ -135,9 +135,12 @@ function _buildEditPane(preset, presets, container) {
   // Show initial validation
   _updateValidation(pane.querySelector('.ap-validation'), preset.animation);
 
+  // Commit on blur (change event); the state subscription will pick up
+  // the new value and re-render the list (no explicit renderAnimationTab
+  // call here — that destroyed + recreated the textarea every commit,
+  // which broke focus and made keystrokes intermittently land on body).
   pane.querySelector('.ap-name').addEventListener('change', e => {
     actions.updateAnimPreset(preset.id, { name: e.target.value.trim() || preset.name });
-    renderAnimationTab(container.closest('[id^="tab-panel"]') || container);
   });
 
   const animInput = pane.querySelector('.ap-anim');
@@ -147,7 +150,6 @@ function _buildEditPane(preset, presets, container) {
   animInput.addEventListener('change', e => {
     const val = e.target.value.trim();
     if (val) actions.updateAnimPreset(preset.id, { animation: val });
-    renderAnimationTab(container.closest('[id^="tab-panel"]') || container);
   });
 
   pane.querySelector('.ap-default').addEventListener('change', e => {
@@ -156,7 +158,6 @@ function _buildEditPane(preset, presets, container) {
     } else {
       actions.updateAnimPreset(preset.id, { isDefault: false });
     }
-    renderAnimationTab(container.closest('[id^="tab-panel"]') || container);
   });
 
   pane.querySelector('.ap-del').addEventListener('click', () => {

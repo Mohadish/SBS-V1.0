@@ -132,7 +132,13 @@ function createInitialState() {
     // anchor resolver (live mesh → phantom → cached fallback).
     cables: [],                       // Cable[]
     // Project-level cable visuals (apply to every cable unless overridden).
-    cableGlobalScale:    1.0,         // 0.05–2.0 multiplier for radius / point + socket size
+    cableGlobalScale:    1.0,         // legacy 0.05–2.0 multiplier — superseded by cableGlobalRadius
+    // Phase G: project-level absolute radius. Each cable's effective
+    // radius = cableGlobalRadius * (cable.style.size / 100). With the
+    // default 1.0 here and per-cable size = 100%, a fresh cable
+    // renders at thickness = 1.0 — much thinner than the old default
+    // of 3 and with finer slider granularity (size step = 5%).
+    cableGlobalRadius:   1.0,
     cableHighlightColor: '#22d3ee',   // colour when cable.highlight=true
 
     // C3: id of the cable currently in placement mode. While set, the
@@ -141,6 +147,12 @@ function createInitialState() {
     // Cleared on Esc, on the sidebar's Stop Placement button, or
     // automatically on selection / step changes.
     cablePlacingId: null,
+
+    // Phase G follow-up: when true, points placed during cablePlacingId
+    // mode are PREPENDED to nodes[] (extends from the cable's start)
+    // instead of appended. Driven by "Continue routing" right-clicked
+    // on the FIRST node of a non-branch cable. Cleared with placement.
+    cablePlacingAtStart: false,
 
     // C5 (Phase A): currently selected cable point (sphere visual in the
     // viewport). { cableId, nodeId } or null. Drives the cable-point

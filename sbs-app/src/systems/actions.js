@@ -951,21 +951,26 @@ export function toggleCableVisibility(cableId) {
   if (!cable) return;
   const next = !cable.visible;
   cables.updateCable(cableId, { visible: next });
+  // Cable visibility is part of the per-step snapshot — scheduleSync
+  // pushes the change into the active step so navigating away and
+  // back preserves it (and the next step keeps its own value).
+  steps.scheduleSync();
   undoManager.push(next ? 'Show cable' : 'Hide cable',
-    () => cables.updateCable(cableId, { visible: !next }),
-    () => cables.updateCable(cableId, { visible: next  }),
+    () => { cables.updateCable(cableId, { visible: !next }); steps.scheduleSync(); },
+    () => { cables.updateCable(cableId, { visible: next  }); steps.scheduleSync(); },
   );
 }
 
-/** Toggle cable highlight. Undoable. */
+/** Toggle cable highlight. Undoable. Per-step. */
 export function toggleCableHighlight(cableId) {
   const cable = cables.getCable(cableId);
   if (!cable) return;
   const next = !cable.highlight;
   cables.updateCable(cableId, { highlight: next });
+  steps.scheduleSync();
   undoManager.push(next ? 'Highlight cable' : 'Unhighlight cable',
-    () => cables.updateCable(cableId, { highlight: !next }),
-    () => cables.updateCable(cableId, { highlight: next  }),
+    () => { cables.updateCable(cableId, { highlight: !next }); steps.scheduleSync(); },
+    () => { cables.updateCable(cableId, { highlight: next  }); steps.scheduleSync(); },
   );
 }
 
@@ -986,17 +991,96 @@ export function renameCable(cableId, name) {
   );
 }
 
-/** Patch a cable's style.color or .radius. Undoable. */
+/** Patch a cable's style. Undoable. When `size` % changes, slides
+ *  any attached sockets' cable points along the forward axis so the
+ *  socket back face stays put on the surface (same IK as the global
+ *  radius adjuster — both feed into the cable's effective radius).
+ */
 export function setCableStyle(cableId, stylePatch) {
   const cable = cables.getCable(cableId);
   if (!cable || !stylePatch) return;
   const prev = { ...(cable.style || {}) };
+  // Snapshot anchorLocal of all socketed nodes BEFORE the patch — we
+  // need both the old + new effective radius to compute the slide.
+  const beforeAnchors = new Map();
+  if (stylePatch.size !== undefined) {
+    for (const n of (cable.nodes || [])) {
+      if (n.socket && n.anchorType === 'mesh' && Array.isArray(n.anchorLocal)) {
+        beforeAnchors.set(n.id, n.anchorLocal.slice());
+      }
+    }
+  }
+  const r0 = cableEffectiveRadius(cable);
+
   cables.updateCableStyle(cableId, stylePatch);
   const next = { ...(cables.getCable(cableId)?.style || {}) };
   if (JSON.stringify(prev) === JSON.stringify(next)) return;
+
+  // Apply the IK slide for sockets if size changed.
+  if (stylePatch.size !== undefined) {
+    const c2 = cables.getCable(cableId);
+    const r1 = cableEffectiveRadius(c2);
+    const ratio = r1 / (r0 || 1);
+    if (Math.abs(r1 - r0) > 1e-6) {
+      for (const n of (c2.nodes || [])) {
+        if (!n.socket || n.anchorType !== 'mesh' || !Array.isArray(n.anchorLocal)) continue;
+        const sizeDPct = (n.socket.size?.d ?? 100) / 100;
+        const oldDepth = SOCKET_BASE_D * r0 * sizeDPct;
+        const newDepth = SOCKET_BASE_D * r1 * sizeDPct;
+        const delta = newDepth - oldDepth;
+        const fwd = _socketForwardMeshLocal(n);
+        n.anchorLocal = [
+          n.anchorLocal[0] + delta * fwd.x,
+          n.anchorLocal[1] + delta * fwd.y,
+          n.anchorLocal[2] + delta * fwd.z,
+        ];
+      }
+      state.setState({ cables: [...(state.get('cables') || [])] });
+      state.markDirty();
+    }
+  }
+
   undoManager.push('Edit cable style',
-    () => cables.updateCableStyle(cableId, prev),
-    () => cables.updateCableStyle(cableId, next),
+    () => {
+      cables.updateCableStyle(cableId, prev);
+      // Restore pre-patch anchors so the slide is fully reversible.
+      if (beforeAnchors.size) {
+        const c = cables.getCable(cableId);
+        if (c) {
+          for (const n of (c.nodes || [])) {
+            const before = beforeAnchors.get(n.id);
+            if (before) n.anchorLocal = before.slice();
+          }
+          state.setState({ cables: [...(state.get('cables') || [])] });
+        }
+      }
+    },
+    () => {
+      cables.updateCableStyle(cableId, next);
+      // Re-apply the slide on redo.
+      if (stylePatch.size !== undefined) {
+        const c2 = cables.getCable(cableId);
+        if (c2) {
+          const r1redo = cableEffectiveRadius(c2);
+          for (const n of (c2.nodes || [])) {
+            if (!n.socket || n.anchorType !== 'mesh') continue;
+            const before = beforeAnchors.get(n.id);
+            if (!before) continue;
+            const sizeDPct = (n.socket.size?.d ?? 100) / 100;
+            const oldDepth = SOCKET_BASE_D * r0 * sizeDPct;
+            const newDepth = SOCKET_BASE_D * r1redo * sizeDPct;
+            const delta = newDepth - oldDepth;
+            const fwd = _socketForwardMeshLocal(n);
+            n.anchorLocal = [
+              before[0] + delta * fwd.x,
+              before[1] + delta * fwd.y,
+              before[2] + delta * fwd.z,
+            ];
+          }
+          state.setState({ cables: [...(state.get('cables') || [])] });
+        }
+      }
+    },
   );
 }
 
@@ -1053,6 +1137,10 @@ export function addCableAnchoredPoint(cableId, hit) {
   const localPos = hit.object.worldToLocal(hit.point.clone());
   const localNormal = hit.face?.normal ? hit.face.normal.clone().normalize() : null;
 
+  // Direction-aware add: prepend if the user is "Continue routing"
+  // off the cable's first node, otherwise append.
+  const atStart = !!state.get('cablePlacingAtStart');
+
   const node = cables.addCablePoint(cableId, {
     type:       'point',
     anchorType: 'mesh',
@@ -1060,7 +1148,7 @@ export function addCableAnchoredPoint(cableId, hit) {
     anchorLocal:      [localPos.x, localPos.y, localPos.z],
     normalLocal:      localNormal ? [localNormal.x, localNormal.y, localNormal.z] : null,
     cachedWorldPos:   [hit.point.x, hit.point.y, hit.point.z],
-  });
+  }, { atStart });
   if (!node) return null;
   undoManager.push('Add cable point',
     () => cables.removeCablePoint(cableId, node.id),
@@ -1068,9 +1156,11 @@ export function addCableAnchoredPoint(cableId, hit) {
       const cable = cables.getCable(cableId);
       if (!cable) return;
       if (cable.nodes?.find(n => n.id === node.id)) return;
-      const list = (state.get('cables') || []).map(c =>
-        c.id === cableId ? { ...c, nodes: [...(c.nodes || []), node] } : c,
-      );
+      const list = (state.get('cables') || []).map(c => {
+        if (c.id !== cableId) return c;
+        const nodes = atStart ? [node, ...(c.nodes || [])] : [...(c.nodes || []), node];
+        return { ...c, nodes };
+      });
       state.setState({ cables: list });
       state.markDirty();
     },
@@ -1096,15 +1186,21 @@ function _findTreeNodeIdForObject(obj) {
   return null;
 }
 
-/** Begin / stop placement mode. UI sets state.cablePlacingId. */
-export function startCablePlacement(cableId) {
+/** Begin / stop placement mode. UI sets state.cablePlacingId.
+ *  Pass `{ atStart: true }` to extend from the cable's first node
+ *  (points get prepended to nodes[]). Default appends to the end.
+ */
+export function startCablePlacement(cableId, opts = {}) {
   if (!cables.getCable(cableId)) return;
-  state.setState({ cablePlacingId: cableId });
+  state.setState({
+    cablePlacingId:      cableId,
+    cablePlacingAtStart: !!opts.atStart,
+  });
 }
 
 export function stopCablePlacement() {
-  if (state.get('cablePlacingId')) {
-    state.setState({ cablePlacingId: null });
+  if (state.get('cablePlacingId') || state.get('cablePlacingAtStart')) {
+    state.setState({ cablePlacingId: null, cablePlacingAtStart: false });
   }
 }
 
@@ -1275,14 +1371,105 @@ export const SOCKET_BASE_W = 4;   // multiplier on cable radius
 export const SOCKET_BASE_H = 4;
 export const SOCKET_BASE_D = 6;
 
+/**
+ * Phase G: a cable's effective radius is the project-level
+ * cableGlobalRadius multiplied by the per-cable size %, fallback
+ * to legacy cable.style.radius for older project files that don't
+ * have the `size` field yet.
+ */
+export function cableEffectiveRadius(cable) {
+  const globalR = state.get('cableGlobalRadius') ?? 1.0;
+  const sizePct = cable?.style?.size;
+  if (typeof sizePct === 'number') return globalR * (sizePct / 100);
+  // Legacy path — old projects stored an absolute radius. Treat it
+  // as if a same-thickness % so existing cables don't suddenly grow.
+  const legacyR = cable?.style?.radius;
+  if (typeof legacyR === 'number') return legacyR;
+  return globalR;
+}
+
 export function socketActualSize(cable, socket) {
-  const radius = cable?.style?.radius ?? 3;
+  const radius = cableEffectiveRadius(cable);
   const sz = socket?.size || { w: 100, h: 100, d: 100 };
   return {
     w: SOCKET_BASE_W * radius * (sz.w / 100),
     h: SOCKET_BASE_H * radius * (sz.h / 100),
     d: SOCKET_BASE_D * radius * (sz.d / 100),
   };
+}
+
+/**
+ * Phase G: project-level cable global radius. Push undo entry so the
+ * before/after value is reversible. setState fires change:cableGlobalRadius
+ * which the render module subscribes to via _refreshAll.
+ */
+export function setCableGlobalRadius(value) {
+  const before = state.get('cableGlobalRadius') ?? 1.0;
+  const after  = Math.max(0.05, +value || 1.0);
+  if (before === after) return;
+
+  // Sockets are sized by global radius — depth grew/shrank, so the
+  // cable point's anchor (which sits at the socket's front face) must
+  // slide along the forward axis to keep the back face on the surface.
+  // Per-node mutate; the undo path flips r0/r1 to walk the math back.
+  const adjust = (r0, r1) => {
+    const cur = state.get('cables') || [];
+    for (const c of cur) {
+      for (const n of (c.nodes || [])) {
+        if (!n.socket || n.anchorType !== 'mesh' || !Array.isArray(n.anchorLocal)) continue;
+        const sizeDPct = (n.socket.size?.d ?? 100) / 100;
+        const oldDepth = SOCKET_BASE_D * r0 * sizeDPct;
+        const newDepth = SOCKET_BASE_D * r1 * sizeDPct;
+        const delta = newDepth - oldDepth;
+        const fwd = _socketForwardMeshLocal(n);
+        n.anchorLocal = [
+          n.anchorLocal[0] + delta * fwd.x,
+          n.anchorLocal[1] + delta * fwd.y,
+          n.anchorLocal[2] + delta * fwd.z,
+        ];
+      }
+    }
+  };
+
+  state.setState({ cableGlobalRadius: after });
+  adjust(before, after);
+  state.setState({ cables: [...(state.get('cables') || [])] });
+  state.markDirty();
+
+  undoManager.push(
+    'Set cable global radius',
+    () => {
+      state.setState({ cableGlobalRadius: before });
+      adjust(after, before);
+      state.setState({ cables: [...(state.get('cables') || [])] });
+      state.markDirty();
+    },
+    () => {
+      state.setState({ cableGlobalRadius: after });
+      adjust(before, after);
+      state.setState({ cables: [...(state.get('cables') || [])] });
+      state.markDirty();
+    },
+  );
+}
+
+/**
+ * Phase G: project-level highlight colour. Applied by cables-render
+ * to any cable with cable.highlight === true. Single undo entry per
+ * commit (UI uses the change event so picker dragging doesn't
+ * spam undo).
+ */
+export function setCableHighlightColor(value) {
+  const before = state.get('cableHighlightColor') ?? '#22d3ee';
+  const after  = String(value || '#22d3ee');
+  if (before === after) return;
+  state.setState({ cableHighlightColor: after });
+  state.markDirty();
+  undoManager.push(
+    'Set cable highlight color',
+    () => { state.setState({ cableHighlightColor: before }); state.markDirty(); },
+    () => { state.setState({ cableHighlightColor: after  }); state.markDirty(); },
+  );
 }
 
 /**
@@ -1645,6 +1832,70 @@ export function applyCableSocketReanchor(hit) {
   return true;
 }
 
+// ─── Cable branching (Phase F) ────────────────────────────────────────────
+
+/**
+ * Create a new cable that branches off an existing point. The new
+ * cable's first node is `anchorType: 'branch'` referring back to the
+ * parent point (resolveNodeWorldPosition handles the recursion). The
+ * parent point's branchCableIds array gains this cable's id, blocking
+ * accidental delete in future cascade-protect work.
+ *
+ * Auto-enters placement mode so the user can click meshes to extend
+ * the branch immediately, same as creating a fresh cable from the tab.
+ *
+ * Undo: snapshot the whole cables array before/after — branching
+ * touches three places (parent.branchCableIds, the new cable record,
+ * and the branch-start node) and a brute snapshot is the cheapest
+ * round-trip. State is small enough that JSON-clone cost is fine.
+ */
+export function createBranchFromCablePoint(parentCableId, parentNodeId) {
+  const parentNode = _findCableNode(parentCableId, parentNodeId);
+  if (!parentNode) return null;
+
+  const beforeCables = JSON.parse(JSON.stringify(state.get('cables') || []));
+
+  const branchCable = cables.addCable({
+    name: `Branch ${cables.listCables().length}`,
+    branchSource: { cableId: parentCableId, nodeId: parentNodeId },
+  });
+  cables.addCablePoint(branchCable.id, {
+    type:           'branch-start',
+    anchorType:     'branch',
+    sourceCableId:  parentCableId,
+    sourceNodeId:   parentNodeId,
+  });
+
+  // Update parent's outgoing-branch list. Direct mutation followed by
+  // setState since cables.* mutators always take cable-level paths.
+  const parentRef = _findCableNode(parentCableId, parentNodeId);
+  if (parentRef) {
+    parentRef.branchCableIds = [...(parentRef.branchCableIds || []), branchCable.id];
+  }
+  state.setState({ cables: [...(state.get('cables') || [])] });
+  state.markDirty();
+
+  const afterCables = JSON.parse(JSON.stringify(state.get('cables') || []));
+
+  undoManager.push(
+    'Create branch',
+    () => {
+      state.setState({ cables: JSON.parse(JSON.stringify(beforeCables)) });
+      state.markDirty();
+    },
+    () => {
+      state.setState({ cables: JSON.parse(JSON.stringify(afterCables)) });
+      state.markDirty();
+    },
+  );
+
+  // Auto-enter placement so the user can immediately drop more
+  // points along the branch. ESC / Stop Placement exits.
+  startCablePlacement(branchCable.id);
+
+  return branchCable;
+}
+
 // ─── Cable point delete / insert (Phase D) ────────────────────────────────
 
 /**
@@ -1706,6 +1957,72 @@ export function cancelCableInsertPicking() {
   if (state.get('cableInsertPickingTarget')) {
     state.setState({ cableInsertPickingTarget: null });
   }
+}
+
+/**
+ * Phase D revision: immediate insert at the right-clicked world
+ * position, inheriting the anchor mesh + face normal from the
+ * preceding point (segment.fromNodeId). The user can re-anchor /
+ * move it later — this is just a faster create that doesn't need
+ * a separate pick gesture.
+ *
+ * `fromNodeId` is the segment's left endpoint (the existing
+ * "Insert point here" UX called startCableInsertPicking with
+ * position='after' on this id).
+ */
+export function insertCablePointAtSegmentHit(cableId, fromNodeId, hitPoint) {
+  const cable = (state.get('cables') || []).find(c => c.id === cableId);
+  if (!cable) return false;
+  const anchorIdx = (cable.nodes || []).findIndex(n => n.id === fromNodeId);
+  if (anchorIdx < 0) return false;
+  const fromNode = cable.nodes[anchorIdx];
+  // Need a mesh anchor on the predecessor — the new point inherits
+  // both the host mesh and its surface normal so re-anchor isn't
+  // required to make the point movable.
+  if (fromNode.anchorType !== 'mesh' || !fromNode.nodeId) return false;
+  const sceneNode = state.get('nodeById')?.get?.(fromNode.nodeId);
+  const obj = sceneNode?.object3d;
+  if (!obj) return false;
+  const T = window.THREE;
+  if (!T) return false;
+  obj.updateMatrixWorld?.(true);
+  const localPos = obj.worldToLocal(hitPoint.clone());
+
+  const newNode = cables.createCableNode({
+    type:           'point',
+    anchorType:     'mesh',
+    nodeId:         fromNode.nodeId,
+    anchorLocal:    [localPos.x, localPos.y, localPos.z],
+    normalLocal:    Array.isArray(fromNode.normalLocal) ? fromNode.normalLocal.slice() : null,
+    cachedWorldPos: [hitPoint.x, hitPoint.y, hitPoint.z],
+  });
+
+  const insertIdx = anchorIdx + 1;
+  const list = (state.get('cables') || []).map(c => {
+    if (c.id !== cableId) return c;
+    const nodes = (c.nodes || []).slice();
+    nodes.splice(insertIdx, 0, newNode);
+    return { ...c, nodes };
+  });
+  state.setState({ cables: list });
+  state.markDirty();
+
+  undoManager.push(
+    'Insert cable point',
+    () => cables.removeCablePoint(cableId, newNode.id),
+    () => {
+      const cur = state.get('cables') || [];
+      const list2 = cur.map(c => {
+        if (c.id !== cableId) return c;
+        const nodes = (c.nodes || []).slice();
+        nodes.splice(Math.min(insertIdx, nodes.length), 0, newNode);
+        return { ...c, nodes };
+      });
+      state.setState({ cables: list2 });
+      state.markDirty();
+    },
+  );
+  return true;
 }
 
 /**

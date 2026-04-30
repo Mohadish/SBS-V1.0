@@ -748,10 +748,16 @@ canvas.addEventListener('contextmenu', e => {
   const cableHit = _pickCablePoint(e.clientX, e.clientY);
   if (cableHit) {
     actions.selectCablePoint(cableHit.cableId, cableHit.nodeId);
-    // Look up the host node so the menu can reflect socket state.
+    // Look up the host node so the menu can reflect socket + position state.
     const cable = (state.get('cables') || []).find(c => c.id === cableHit.cableId);
     const node  = cable?.nodes?.find(n => n.id === cableHit.nodeId);
     const hasSocket = !!node?.socket;
+    const nodeCount = cable?.nodes?.length ?? 0;
+    const isLast    = nodeCount > 0 && cable.nodes[nodeCount - 1].id === cableHit.nodeId;
+    // Prepending only valid for non-branch cables — branch cables
+    // require their branch-start node to stay at index 0.
+    const isFirst   = nodeCount > 0 && cable.nodes[0].id === cableHit.nodeId;
+    const canPrepend = isFirst && !cable.branchSource;
     const items = [
       {
         label: '↺ Re-anchor…',
@@ -767,6 +773,18 @@ canvas.addEventListener('contextmenu', e => {
             label: '＋ Add socket',
             action: () => actions.addCableSocket(cableHit.cableId, cableHit.nodeId),
           },
+      {
+        label: '⌥ Branch from here…',
+        action: () => actions.createBranchFromCablePoint(cableHit.cableId, cableHit.nodeId),
+      },
+      ...(isLast ? [{
+        label: '→ Continue routing (end)',
+        action: () => actions.startCablePlacement(cableHit.cableId),
+      }] : []),
+      ...(canPrepend ? [{
+        label: '← Continue routing (start)',
+        action: () => actions.startCablePlacement(cableHit.cableId, { atStart: true }),
+      }] : []),
       { label: '─', disabled: true },
       {
         label: '✕ Delete this point',
@@ -787,11 +805,24 @@ canvas.addEventListener('contextmenu', e => {
   const socketHit = _pickCableSocket(e.clientX, e.clientY);
   if (socketHit) {
     actions.selectCableSocket(socketHit.cableId, socketHit.nodeId);
+    const sockCable = (state.get('cables') || []).find(c => c.id === socketHit.cableId);
+    const sockNodeCount = sockCable?.nodes?.length ?? 0;
+    const sockIsLast    = sockNodeCount > 0 && sockCable.nodes[sockNodeCount - 1].id === socketHit.nodeId;
+    const sockIsFirst   = sockNodeCount > 0 && sockCable.nodes[0].id === socketHit.nodeId;
+    const sockCanPrepend = sockIsFirst && !sockCable?.branchSource;
     const items = [
       {
         label: '↺ Re-anchor socket…',
         action: () => actions.startCableSocketReanchor(socketHit.cableId, socketHit.nodeId),
       },
+      ...(sockIsLast ? [{
+        label: '→ Continue routing (end)',
+        action: () => actions.startCablePlacement(socketHit.cableId),
+      }] : []),
+      ...(sockCanPrepend ? [{
+        label: '← Continue routing (start)',
+        action: () => actions.startCablePlacement(socketHit.cableId, { atStart: true }),
+      }] : []),
       { label: '─', disabled: true },
       {
         label: '✕ Remove socket',
@@ -807,15 +838,33 @@ canvas.addEventListener('contextmenu', e => {
     return;
   }
 
-  // C5-D: right-click on a cable segment cylinder → "Insert point here".
-  // Action enters pick-anchor mode; the next mesh click sets the new
-  // point's anchor and splices it between the segment's two endpoints.
+  // C5-D revision: right-click on a cable segment immediately inserts
+  // a point AT THE CLICK position, inheriting the predecessor point's
+  // host mesh + normal (re-anchor / move available afterwards).
+  // Need the world hit on the segment cylinder — re-raycast against
+  // the segment meshes here so the menu action has the world point.
   const segHit = _pickCableSegment(e.clientX, e.clientY);
   if (segHit) {
+    // Recover the world hit point — _pickCableSegment doesn't return
+    // it. Run a quick raycast against the segment meshes only.
+    const T = window.THREE;
+    const meshes = getCableSegmentMeshes();
+    const rect = canvas.getBoundingClientRect();
+    const ndc = new T.Vector2(
+      ((e.clientX - rect.left) / rect.width)  * 2 - 1,
+      -((e.clientY - rect.top)  / rect.height) * 2 + 1,
+    );
+    const ray = new T.Raycaster();
+    ray.setFromCamera(ndc, sceneCore.camera);
+    const hits = ray.intersectObjects(meshes, false).filter(h => h.object.visible);
+    const hitPoint = hits[0]?.point;
     const items = [
       {
-        label: '＋ Insert point here…',
-        action: () => actions.startCableInsertPicking(segHit.cableId, segHit.fromNodeId, 'after'),
+        label: '＋ Insert point here',
+        action: () => {
+          if (!hitPoint) return;
+          actions.insertCablePointAtSegmentHit(segHit.cableId, segHit.fromNodeId, hitPoint);
+        },
       },
     ];
     showContextMenu(items, e.clientX, e.clientY);

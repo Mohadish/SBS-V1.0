@@ -92,6 +92,12 @@ app.on('second-instance', () => {
 const IS_DEV   = process.argv.includes('--dev');
 const APP_ROOT = path.join(__dirname, '..');
 
+// Bump V8 heap for the RENDERER process (where the app actually runs).
+// NODE_OPTIONS only affects the main process. Heavy 3D models (multi-
+// hundred-MB OBJs after string→Float32 conversion) overflow the default
+// ~2 GB renderer heap and crash with "invalid array length".
+app.commandLine.appendSwitch('js-flags', '--max-old-space-size=8192');
+
 // ─── Vendor bootstrap ─────────────────────────────────────────────────────
 // On first run (or after a clean checkout) the app's vendor/ directory may be
 // empty.  We look for a sibling step_browser_runtime/vendor/ and copy files
@@ -363,9 +369,20 @@ ipcMain.handle('dialog:chooseFolder', async (_, opts = {}) => {
   return result.canceled ? null : result.filePaths[0];
 });
 
-// Read a file (returns base64 for binary, utf-8 string for text)
+// Read a file. Encodings:
+//   'utf-8' / 'utf8'  → returns text string (small text files)
+//   'base64'          → returns base64 string (legacy path; renderer
+//                       must atob+charCodeAt-loop, OOMs above ~150 MB)
+//   'buffer' (or any  → returns the raw Node Buffer; Electron's IPC
+//   non-string)         marshals it as a Uint8Array on the renderer
+//                       side, no character-by-character decoding.
+//                       Use this for large binary assets.
 ipcMain.handle('fs:readFile', async (_, filePath, encoding = 'base64') => {
   try {
+    if (encoding === 'buffer' || encoding == null) {
+      const buf = fs.readFileSync(filePath);
+      return { ok: true, data: buf };   // marshals as Uint8Array
+    }
     return { ok: true, data: fs.readFileSync(filePath, encoding) };
   } catch (err) {
     return { ok: false, error: err.message };

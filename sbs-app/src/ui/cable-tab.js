@@ -22,6 +22,7 @@ import * as actions   from '../systems/actions.js';
 import { listCables } from '../systems/cables.js';
 
 let _activeCableId = null;       // which cable's editor is expanded
+let _socketLockRatio = false;    // sticky lock-ratio toggle in socket editor
 
 export function renderCableTab(container) {
   if (!container) return;
@@ -46,6 +47,21 @@ export function renderCableTab(container) {
         </button>
       </div>
 
+      <div class="card" style="margin-top:8px;padding:8px 10px;">
+        <label class="colorlab" style="display:flex;align-items:center;gap:8px;">
+          <span class="small" style="flex:0 0 100px;">Global Radius</span>
+          <input type="number" id="cbl-global-radius" min="0.05" max="50" step="0.1"
+                 value="${state.get('cableGlobalRadius') ?? 1}"
+                 style="flex:1;" />
+        </label>
+        <label class="colorlab" style="display:flex;align-items:center;gap:8px;margin-top:6px;">
+          <span class="small" style="flex:0 0 100px;">Highlight Color</span>
+          <input type="color" id="cbl-highlight-color"
+                 value="${_esc(state.get('cableHighlightColor') ?? '#22d3ee')}"
+                 style="flex:1;height:24px;" />
+        </label>
+      </div>
+
       ${placingId ? `
         <div class="card" style="margin-top:8px;padding:10px;background:rgba(220,38,38,0.08);border-color:#dc2626;">
           <div class="small" style="color:#fca5a5;font-weight:600;">
@@ -61,7 +77,7 @@ export function renderCableTab(container) {
         <div id="cbl-list">
           ${cables.length === 0
             ? `<div class="small muted" style="padding:10px;">No cables yet — pick + New Cable.</div>`
-            : cables.map(c => _renderCableRow(c, placingId)).join('')}
+            : _renderCablesTreeHtml(cables, placingId)}
         </div>
       </div>
 
@@ -71,6 +87,13 @@ export function renderCableTab(container) {
 
   container.querySelector('#cbl-new')?.addEventListener('click', _onCreate);
   container.querySelector('#cbl-stop')?.addEventListener('click', () => actions.stopCablePlacement());
+  // Phase G: project-level cable global radius commits on change.
+  container.querySelector('#cbl-global-radius')?.addEventListener('change', e => {
+    actions.setCableGlobalRadius(Number(e.target.value));
+  });
+  container.querySelector('#cbl-highlight-color')?.addEventListener('change', e => {
+    actions.setCableHighlightColor(e.target.value);
+  });
 
   // Per-row delegation
   container.querySelector('#cbl-list')?.addEventListener('click', e => {
@@ -101,7 +124,41 @@ export function renderCableTab(container) {
   }
 }
 
-function _renderCableRow(cable, placingId) {
+/**
+ * Phase F: render cables as a tree — roots first, branches indented
+ * under their source cable, recursive. A "branch" is any cable whose
+ * branchSource.cableId points to another cable in the list. Detects
+ * a missing parent and falls back to flat rendering for orphans.
+ */
+function _renderCablesTreeHtml(cables, placingId) {
+  const byId = new Map(cables.map(c => [c.id, c]));
+  // Build parent → [child cable ids]
+  const childrenOf = new Map();
+  const orphans = [];
+  for (const c of cables) {
+    const pid = c.branchSource?.cableId;
+    if (pid && byId.has(pid)) {
+      if (!childrenOf.has(pid)) childrenOf.set(pid, []);
+      childrenOf.get(pid).push(c.id);
+    } else if (pid) {
+      orphans.push(c);   // parent missing — render at root
+    }
+  }
+  const roots = cables.filter(c => !c.branchSource?.cableId || !byId.has(c.branchSource.cableId));
+  const out = [];
+  function walk(cable, depth) {
+    out.push(_renderCableRow(cable, placingId, depth));
+    const children = childrenOf.get(cable.id) || [];
+    for (const childId of children) {
+      const child = byId.get(childId);
+      if (child) walk(child, depth + 1);
+    }
+  }
+  for (const r of roots) walk(r, 0);
+  return out.join('');
+}
+
+function _renderCableRow(cable, placingId, depth = 0) {
   const eye = cable.visible ? '👁' : '·';
   const isPlacing = placingId === cable.id;
   const placeColor = isPlacing ? '#dc2626' : '#22d3ee';
@@ -109,9 +166,14 @@ function _renderCableRow(cable, placingId) {
   const placeTitle = isPlacing ? 'Placing… click viewport to add points' : 'Place points on this cable';
   const highlight  = cable.highlight ? '★' : '☆';
   const pointCount = cable.nodes?.length ?? 0;
+  // Phase F: indent branches under their source cable. 14px / level
+  // (matches the scene-tree convention) plus a thin guide marker.
+  const indent = depth * 14;
+  const branchIndicator = depth > 0 ? '<span class="small muted" style="margin-right:4px;">└</span>' : '';
   return `
     <div class="row" data-cbl-id="${_esc(cable.id)}"
-         style="display:flex;align-items:center;gap:6px;padding:8px 10px;border-bottom:1px solid var(--line);cursor:pointer;${_activeCableId === cable.id ? 'background:rgba(34,211,238,0.08);' : ''}">
+         style="display:flex;align-items:center;gap:6px;padding:8px 10px 8px ${10 + indent}px;border-bottom:1px solid var(--line);cursor:pointer;${_activeCableId === cable.id ? 'background:rgba(34,211,238,0.08);' : ''}">
+      ${branchIndicator}
       <span style="display:inline-block;width:10px;height:10px;border-radius:50%;background:${_esc(cable.style?.color || '#ffb24a')};flex-shrink:0;"></span>
       <button class="btn icon" data-cbl-act="hide" title="Show / hide" style="width:24px;height:24px;padding:0;opacity:${cable.visible ? 1 : 0.4};">${eye}</button>
       <div style="flex:1;min-width:0;">
@@ -158,8 +220,9 @@ function _renderEditor(container) {
         <label class="colorlab">Color
           <input type="color" id="cbl-color" value="${_esc(cable.style?.color || '#ffb24a')}" />
         </label>
-        <label class="colorlab">Radius
-          <input type="number" id="cbl-radius" min="0.5" max="20" step="0.5" value="${cable.style?.radius ?? 3}" />
+        <label class="colorlab">Size %
+          <input type="number" id="cbl-size" min="5" max="1000" step="5"
+                 value="${cable.style?.size ?? (typeof cable.style?.radius === 'number' ? Math.round(cable.style.radius * 100 / (state.get('cableGlobalRadius') ?? 1)) : 100)}" />
         </label>
       </div>
 
@@ -187,8 +250,8 @@ function _renderEditor(container) {
   // Style fields — change-event commits.
   host.querySelector('#cbl-color')?.addEventListener('change',
     e => actions.setCableStyle(cable.id, { color: e.target.value }));
-  host.querySelector('#cbl-radius')?.addEventListener('change',
-    e => actions.setCableStyle(cable.id, { radius: Math.max(0.5, Number(e.target.value) || 3) }));
+  host.querySelector('#cbl-size')?.addEventListener('change',
+    e => actions.setCableStyle(cable.id, { size: Math.max(5, Number(e.target.value) || 100) }));
 
   // Per-point + socket row delegation (select / delete / select socket).
   host.querySelector('#cbl-points')?.addEventListener('click', e => {
@@ -230,6 +293,9 @@ function _renderEditor(container) {
     const hInput    = host.querySelector('#sock-h');
     const dInput    = host.querySelector('#sock-d');
     const lockInput = host.querySelector('#sock-lock');
+    lockInput?.addEventListener('change', () => {
+      _socketLockRatio = !!lockInput.checked;   // sticky across re-renders
+    });
     const inputs = { w: wInput, h: hInput, d: dInput };
     Object.entries(inputs).forEach(([key, input]) => {
       if (!input) return;
@@ -314,7 +380,7 @@ function _renderSocketEditor(cableId, node) {
           <input type="color" id="sock-color" value="${_esc(sock.color || '#ff9d57')}" />
         </label>
         <label class="colorlab" style="display:flex;align-items:center;gap:6px;">
-          <input type="checkbox" id="sock-lock" />
+          <input type="checkbox" id="sock-lock" ${_socketLockRatio ? 'checked' : ''} />
           <span class="small">Lock ratio</span>
         </label>
       </div>

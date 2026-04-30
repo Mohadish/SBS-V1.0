@@ -32,7 +32,7 @@
 import state    from '../core/state.js';
 import sceneCore from '../core/scene.js';
 import { resolveNodeWorldPosition, listCables } from './cables.js';
-import { socketActualSize } from './actions.js';
+import { socketActualSize, cableEffectiveRadius } from './actions.js';
 
 // ─── Module state ────────────────────────────────────────────────────────
 
@@ -74,6 +74,7 @@ export function initCableRender() {
   // Rebuild on data changes — covers create / delete / property edits.
   state.on('change:cables',              _refreshAll);
   state.on('change:cableGlobalScale',    _refreshAll);
+  state.on('change:cableGlobalRadius',   _refreshAll);
   state.on('change:cableHighlightColor', _refreshAll);
 
   // Phase A: re-apply per-point selection highlight on selection change.
@@ -129,6 +130,128 @@ export function getCableSocketMeshes() {
   return out;
 }
 
+// ─── Cable phase animation (H1) ──────────────────────────────────────────
+//
+// Per-step transitions for cable visibility (opacity fade) and colour
+// (lerp). Driven by steps.js' phase runner — at the start of the
+// 'cable' phase it calls beginCableTransitions(toSnap, durationMs,
+// easeFn, onDone). The runner awaits onDone to know when to move on.
+//
+// During the transition we override material opacity + colour
+// directly. _refreshAll on completion (or via state.cables update)
+// resyncs to the cable's final state.
+
+let _cableTransitions = new Map();    // cableId → transition record
+let _cableTransitionDoneCb = null;
+
+export function beginCableTransitions(toCablesSnap, durationMs, easeFn, onDone) {
+  // Resolve any in-flight transition so a prior phase await unblocks.
+  if (_cableTransitionDoneCb) {
+    const prev = _cableTransitionDoneCb;
+    _cableTransitionDoneCb = null;
+    prev();
+  }
+  _cableTransitions.clear();
+
+  const startMs = performance.now();
+  const cables  = listCables();
+  const highlightColor = state.get('cableHighlightColor') ?? '#22d3ee';
+
+  for (const cable of cables) {
+    const fromVisible   = cable.visible !== false;
+    const toEntry       = toCablesSnap?.[cable.id];
+    const toVisible     = toEntry?.visible   !== undefined ? !!toEntry.visible   : fromVisible;
+    const fromHighlight = !!cable.highlight;
+    const toHighlight   = toEntry?.highlight !== undefined ? !!toEntry.highlight : fromHighlight;
+    const baseColor     = cable.style?.color ?? '#ffb24a';
+    const fromColorHex  = fromHighlight ? highlightColor : baseColor;
+    const toColorHex    = toHighlight   ? highlightColor : baseColor;
+
+    if (fromVisible === toVisible && fromColorHex === toColorHex) continue;
+
+    _cableTransitions.set(cable.id, {
+      fromOpacity: fromVisible ? 1 : 0,
+      toOpacity:   toVisible   ? 1 : 0,
+      fromColor:   new THREE.Color(fromColorHex),
+      toColor:     new THREE.Color(toColorHex),
+      startMs, durationMs, easeFn,
+    });
+  }
+
+  // Seed initial material state so frame 0 of the lerp is correct.
+  // Materials are born transparent in _rebuildCable so we just nudge
+  // opacity / colour here.
+  for (const [cableId, t] of _cableTransitions) {
+    const entry = _cableSubgroups.get(cableId);
+    if (!entry) continue;
+    entry.group.visible = true;   // force on for the fade window
+    for (const m of entry.points)   { m.material.opacity = t.fromOpacity; m.material.color.copy(t.fromColor); }
+    for (const m of entry.segments) { m.material.opacity = t.fromOpacity; m.material.color.copy(t.fromColor); }
+    for (const m of (entry.sockets || [])) { m.material.opacity = t.fromOpacity; }
+  }
+
+  if (_cableTransitions.size === 0) {
+    if (onDone) onDone();
+    return;
+  }
+  _cableTransitionDoneCb = onDone || null;
+}
+
+/**
+ * H1 snap: for snapCurrentToFinal — fast-forward all in-flight cable
+ * transitions to their target state and resolve the done callback.
+ */
+export function snapCableTransitionsToFinal() {
+  if (!_cableTransitions.size) {
+    if (_cableTransitionDoneCb) {
+      const cb = _cableTransitionDoneCb;
+      _cableTransitionDoneCb = null;
+      cb();
+    }
+    return;
+  }
+  for (const [cableId, t] of _cableTransitions) {
+    const entry = _cableSubgroups.get(cableId);
+    if (!entry) continue;
+    for (const m of entry.points)   { m.material.opacity = t.toOpacity; m.material.color.copy(t.toColor); }
+    for (const m of entry.segments) { m.material.opacity = t.toOpacity; m.material.color.copy(t.toColor); }
+    for (const m of (entry.sockets || [])) { m.material.opacity = t.toOpacity; }
+  }
+  _cableTransitions.clear();
+  if (_cableTransitionDoneCb) {
+    const cb = _cableTransitionDoneCb;
+    _cableTransitionDoneCb = null;
+    cb();
+  }
+}
+
+function _advanceCableTransitions(nowMs) {
+  if (!_cableTransitions.size) return;
+  let allDone = true;
+  for (const [cableId, t] of _cableTransitions) {
+    const elapsed = nowMs - t.startMs;
+    const raw     = Math.min(1, Math.max(0, elapsed / t.durationMs));
+    const u       = t.easeFn ? t.easeFn(raw) : raw;
+    const opacity = t.fromOpacity + (t.toOpacity - t.fromOpacity) * u;
+    const color   = t.fromColor.clone().lerp(t.toColor, u);
+    const entry   = _cableSubgroups.get(cableId);
+    if (entry) {
+      for (const m of entry.points)   { m.material.opacity = opacity; m.material.color.copy(color); }
+      for (const m of entry.segments) { m.material.opacity = opacity; m.material.color.copy(color); }
+      for (const m of (entry.sockets || [])) { m.material.opacity = opacity; }
+    }
+    if (raw < 1) allDone = false;
+  }
+  if (allDone) {
+    _cableTransitions.clear();
+    if (_cableTransitionDoneCb) {
+      const cb = _cableTransitionDoneCb;
+      _cableTransitionDoneCb = null;
+      cb();
+    }
+  }
+}
+
 // ─── Insert-point ghost preview (Phase D follow-up) ──────────────────────
 //
 // During cable insert-pick mode, main.js calls setInsertHoverPosition
@@ -177,6 +300,10 @@ export function setInsertHoverPosition(worldPos) {
 
 function _refreshAll() {
   if (!_cableRoot) return;
+  // H1 guard: while a cable phase animation is in flight, defer the
+  // full rebuild — _refreshAll tears down + recreates materials,
+  // which would reset transparent/opacity in the middle of a fade.
+  if (_cableTransitions.size > 0) return;
   const cables = listCables();
   const liveIds = new Set(cables.map(c => c.id));
 
@@ -219,7 +346,8 @@ function _rebuildCable(cable, entry) {
 
   const ctx = { makeVec3: (x, y, z) => new THREE.Vector3(x, y, z) };
   const globalScale = state.get('cableGlobalScale') ?? 1.0;
-  const radius      = (cable.style?.radius ?? 3) * globalScale;
+  // Phase G: effective radius = cableGlobalRadius × per-cable size %.
+  const radius      = cableEffectiveRadius(cable) * globalScale;
   const colorHex    = cable.highlight
     ? (state.get('cableHighlightColor') ?? '#22d3ee')
     : (cable.style?.color ?? '#ffb24a');
@@ -240,7 +368,13 @@ function _rebuildCable(cable, entry) {
     if (!p) continue;
     const sphere = new THREE.Mesh(
       _UNIT_SPHERE,
-      new THREE.MeshStandardMaterial({ color: color.clone(), metalness: 0.2, roughness: 0.6 }),
+      new THREE.MeshStandardMaterial({
+        color: color.clone(), metalness: 0.2, roughness: 0.6,
+        // H1: born transparent so opacity tweens during the cable phase
+        // engage the alpha pipeline immediately (flipping `transparent`
+        // at runtime didn't take consistently in MeshStandardMaterial).
+        transparent: true, opacity: 1,
+      }),
     );
     sphere.position.copy(p);
     sphere.userData.cableId = cable.id;
@@ -259,7 +393,10 @@ function _rebuildCable(cable, entry) {
     if (!a || !b) continue;
     const seg = new THREE.Mesh(
       _UNIT_CYLINDER,
-      new THREE.MeshStandardMaterial({ color: color.clone(), metalness: 0.2, roughness: 0.6 }),
+      new THREE.MeshStandardMaterial({
+        color: color.clone(), metalness: 0.2, roughness: 0.6,
+        transparent: true, opacity: 1,
+      }),
     );
     _poseCylinder(seg, a, b, radius);
     seg.userData.cableId    = cable.id;
@@ -290,7 +427,10 @@ function _rebuildCable(cable, entry) {
     const sockColor = new THREE.Color(node.socket.color || '#ff9d57');
     const box = new THREE.Mesh(
       _UNIT_BOX,
-      new THREE.MeshStandardMaterial({ color: sockColor, metalness: 0.3, roughness: 0.5 }),
+      new THREE.MeshStandardMaterial({
+        color: sockColor, metalness: 0.3, roughness: 0.5,
+        transparent: true, opacity: 1,
+      }),
     );
     box.scale.set(w, h, d);
     box.quaternion.copy(wq);
@@ -456,6 +596,11 @@ function _disposeSubgroup(entry) {
  * Today it's cheap enough not to matter at typical cable counts.
  */
 function _tickAnchorRefresh() {
+  // H1: drive any in-flight cable phase animations first so they advance
+  // even when no cables exist yet (e.g. brand-new project) wouldn't
+  // matter, but the size check below would skip — keep it ahead.
+  _advanceCableTransitions(performance.now());
+
   if (!_cableRoot || _cableSubgroups.size === 0) return;
   const cables = listCables();
   if (!cables.length) return;
@@ -467,7 +612,7 @@ function _tickAnchorRefresh() {
     if (!entry) continue;
     if (!entry.group.visible) continue;   // skip hidden cables
 
-    const radius = (cable.style?.radius ?? 3) * globalScale;
+    const radius = cableEffectiveRadius(cable) * globalScale;
     const positions = (cable.nodes || []).map(n => {
       const r = resolveNodeWorldPosition(n, ctx);
       return r.pos ? new THREE.Vector3(r.pos[0], r.pos[1], r.pos[2]) : null;

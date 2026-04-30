@@ -26,6 +26,8 @@ import state                        from '../core/state.js';
 import sceneCore                    from '../core/scene.js';
 import { rasterizeOverlay }         from './overlay.js';
 import * as cablesSystem            from './cables.js';   // C1: per-step cable snapshot capture/apply
+import * as cablesRender            from './cables-render.js';   // H1: cable phase animations
+import * as overlaySystem           from './overlay.js';   // H2: overlay phase fade-in / fade-out
 import { createStep, createEmptySnapshot } from '../core/schema.js';
 import { parseAnimation, resolveAnimationString } from './animation.js';
 import {
@@ -420,6 +422,19 @@ class StepManager {
     const { hidingMeshIds, showingMeshIds } = this._prepareVisibility(
       nodeById, toSnapshot.visibility,
     );
+    // Pre-snap showing meshes to opacity 0 BEFORE any phase runs.
+    // _prepareVisibility flips obj.visible=true on the showing set
+    // immediately — without this snap, any phase that runs ahead of
+    // 'visibility' (e.g. camera, color, obj) renders those meshes at
+    // full opacity, producing a "threshold appear at first slot, then
+    // invisible during visibility, then fade in" jitter when the
+    // user puts color (or anything) before visibility in the string.
+    // Clear the pending set first so a previous activate's leftovers
+    // don't suppress visibility unrelated to the current transition.
+    this._materials?._pendingShowingHidden?.clear?.();
+    if (showingMeshIds.length && this._materials?.snapShowingToZero) {
+      this._materials.snapShowingToZero(showingMeshIds);
+    }
 
     // ── Place objects at FROM world positions (v0.266 approach) ─────────────
     // Objects stay in their TARGET hierarchy (no detach). We use world→local
@@ -596,10 +611,24 @@ class StepManager {
     let objHandled    = false;
     let colorHandled  = false;
     let visHandled    = false;
+    let cableHandled  = false;
+    let overlayHandled    = false;
 
     for (const phase of phases) {
       const { types, durationMs } = phase;
       const phasePromises = [];
+
+      // H2: overlay phase — proper crossfade. Old content moves to a
+      // ghost layer + fades out while the new step's content loads
+      // into the main layer + fades in, both over the slot duration.
+      // Without a 'overlay' slot, the post-anim step:applied flow
+      // snaps content (no fade), preserving legacy behaviour.
+      if (types.includes('overlay') && !overlayHandled) {
+        overlayHandled = true;
+        phasePromises.push(new Promise(resolve => {
+          overlaySystem.beginOverlayCrossfade(durationMs, easeFn, resolve);
+        }));
+      }
 
       // Camera
       if (types.includes('camera') && !cameraHandled && toSnapshot.camera) {
@@ -648,6 +677,18 @@ class StepManager {
         if (!visHandled && showingMeshIds.length) {
           this._materials.snapShowingToZero(showingMeshIds);
         }
+      }
+
+      // H1: cable transitions — opacity (visibility flip) + colour lerp.
+      // Drives cables-render's _cableTransitions map; per-tick advance
+      // is folded into the cables tick hook.
+      if (types.includes('cable') && !cableHandled) {
+        cableHandled = true;
+        phasePromises.push(new Promise(resolve => {
+          cablesRender.beginCableTransitions(
+            toSnapshot.cables, durationMs, easeFn, resolve,
+          );
+        }));
       }
 
       // Wait for this phase's duration (and any sub-promises that finish sooner)
@@ -733,11 +774,19 @@ class StepManager {
     const step  = steps.find(s => s.id === stepId);
     if (!step) return;
 
+    // Flush any pending dirty-sync into the LEAVING step BEFORE we
+    // change the active step. Otherwise quick toggle-then-navigate
+    // (under the 500ms scheduleSync timer) loses the change. Cable
+    // visibility is the most visible victim — material + visibility
+    // toggles all rely on this same race.
+    this.flushSync();
+
     // If another animation is in progress (direct step card click mid-anim),
     // snap it to final so the scene is clean before starting a new transition.
     // snapCurrentToFinal does NOT rebuild the tree — it only snaps object positions
     // and materials since the tree/node data is already at the target state.
     this.snapCurrentToFinal();
+
 
     // Capture the OUTGOING step's final viewport state before we switch away.
     // Force bypasses the 5-fps throttle so nothing is lost on quick step changes.
@@ -820,6 +869,10 @@ class StepManager {
       this._onObjectTransitionsDone = null;
     }
     this._objectTransitions = [];
+    // H1: snap any in-flight cable phase to final + resolve its await
+    cablesRender.snapCableTransitionsToFinal();
+    // H2: same for the overlay fade.
+    overlaySystem.snapOverlayFadeToFinal();
 
     // Snap ALL animatable nodes (model, folder, AND mesh) to their target world positions.
     // We must use _setWorldTransformOnObject here — NOT applyAllTransformsToScene —

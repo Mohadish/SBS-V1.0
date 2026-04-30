@@ -15,7 +15,8 @@
  * Phase 2b will add: compositing overlay canvas over 3D during video export.
  */
 
-import { state } from '../core/state.js';
+import { state }     from '../core/state.js';
+import { sceneCore } from '../core/scene.js';   // H2: tick hook for overlay fade
 import { showContextMenu } from '../ui/context-menu.js';
 import { mountTextToolbar, unmountTextToolbar, execCommandApplier, setToolbarValues, wasColorPickedRecently, setStyleDropdown, setStyleLocked } from '../ui/text-toolbar.js';
 import { getTextToolbarSlot }  from '../ui/overlay-toolbar.js';
@@ -27,6 +28,7 @@ import { undoManager } from './undo.js';            // P7-B: mass-mode + structu
 
 let _stage       = null;   // Konva.Stage
 let _layer       = null;   // Konva.Layer — holds all user content
+let _ghostLayer  = null;   // H2: holds outgoing content during a step crossfade
 let _uiLayer     = null;   // Konva.Layer — transformer, editing aids
 let _transformer = null;
 let _container   = null;
@@ -35,6 +37,13 @@ let _resizeObs   = null;
 let _saveTimer   = null;
 let _activeStepUnwatch = null;
 let _loadToken   = 0;     // bumped on every step-change load; older loads abort if outdated
+let _suppressNextStepAppliedLoad = false;   // H2: skip redundant load when fade pre-loaded
+
+// H2 — overlay phase animation. The fade-in/out lifecycle mirrors the
+// cable phase: steps.js calls begin*, the per-frame advance lerps the
+// content layer's opacity, and onDone fires when the slot's duration
+// elapses. Headers live on a separate Konva layer and are unaffected.
+let _activeFade = null;   // { fromOpacity, toOpacity, startMs, durationMs, easeFn, onDone }
 
 // ─── Init ──────────────────────────────────────────────────────────────────
 
@@ -55,8 +64,10 @@ export function initOverlay() {
   // pick the right layer back out of step.overlay JSON (which serialises
   // ALL layers — content + UI + header — and a naive "first layer with
   // children" search can mistakenly pick the UI or header layer).
-  _layer   = new Konva.Layer({ name: 'sbs-overlay-content' });
-  _uiLayer = new Konva.Layer({ name: 'sbs-overlay-ui' });
+  _layer      = new Konva.Layer({ name: 'sbs-overlay-content' });
+  _ghostLayer = new Konva.Layer({ name: 'sbs-overlay-ghost', listening: false, opacity: 0 });
+  _uiLayer    = new Konva.Layer({ name: 'sbs-overlay-ui' });
+  _stage.add(_ghostLayer);   // below _layer so new content draws on top
   _stage.add(_layer);
   _stage.add(_uiLayer);
 
@@ -94,6 +105,9 @@ export function initOverlay() {
   // Keyboard: Delete removes the selected node (only when editing).
   window.addEventListener('keydown', _onKeyDown);
 
+  // H2: per-frame advance for overlay fade transitions.
+  sceneCore.addTickHook(_advanceOverlayFade);
+
   // Resize stage to match viewport surface.
   _syncSize();
   _resizeObs = new ResizeObserver(_syncSize);
@@ -108,7 +122,12 @@ export function initOverlay() {
   // this flush can target the correct (outgoing) step regardless of
   // when it actually fires.
   state.on('change:activeStepId', _flushPendingSave);
-  state.on('change:activeStepId', _scheduleLoad);
+  // H2: change:activeStepId previously triggered an early _scheduleLoad
+  // — but that ran BEFORE the animation phases, so by the time the
+  // overlay-slot crossfade fired, the new content was already in the
+  // layer and the animation just faded the same content over itself.
+  // step:applied (fired AFTER animation completes) is the canonical
+  // load trigger now; the crossfade flag suppresses it when needed.
   state.on('step:applied', _onStepApplied);
 
   // Live style-template propagation. When a template changes, every
@@ -1677,11 +1696,107 @@ function _scheduleLoad() {
 }
 
 function _onStepApplied() {
+  // H2: when the overlay phase pre-loaded this step's content for
+  // fade-in, skip the post-anim reload — it would tear down + rebuild
+  // the just-faded-in nodes, flashing the layer.
+  if (_suppressNextStepAppliedLoad) {
+    _suppressNextStepAppliedLoad = false;
+    return;
+  }
   // Wrap with a tracked promise so external callers can await this
   // path too. _loadFromActiveStep already async + token-guarded, so
   // overlapping calls are safe.
-  _currentLoadPromise = (async () => { await _loadFromActiveStep(); })();
+  // After load: if no fade-in was queued (animation string has no
+  // 'overlay' slot), the layer's opacity was driven to 0 by the
+  // pre-roll fade-out — restore it to 1 so the new content shows.
+  // If a fade-in DID run, _activeFade is non-null and will manage
+  // opacity itself; don't override.
+  _currentLoadPromise = (async () => {
+    await _loadFromActiveStep();
+    if (!_activeFade) {
+      _layer?.opacity(1);
+      _layer?.batchDraw();
+    }
+  })();
 }
+
+// ─── H2: overlay phase fade-out / fade-in ────────────────────────────────
+
+/**
+ * Crossfade the overlay between the outgoing and incoming step's
+ * content. Old children move to the ghost layer (still on screen at
+ * full opacity), new step's content loads into _layer at opacity 0,
+ * then both lerp in opposite directions over `durationMs` so the
+ * user sees a smooth swap. Called by steps.js on the 'overlay' slot;
+ * if the animation string has no overlay slot the swap snaps via the
+ * post-anim _onStepApplied path instead.
+ */
+export function beginOverlayCrossfade(durationMs, easeFn, onDone) {
+  if (!_layer || !_ghostLayer) { if (onDone) onDone(); return; }
+  // Cancel any in-flight crossfade so the new one isn't fighting it.
+  if (_activeFade?.onDone) {
+    const prev = _activeFade.onDone;
+    _activeFade = null;
+    prev();
+  }
+  // Park the transformer — its target nodes are about to migrate to
+  // the ghost layer and it would otherwise paint stale handles.
+  if (_transformer) _transformer.nodes([]);
+  // Move outgoing children to the ghost layer at full opacity.
+  _ghostLayer.destroyChildren();
+  for (const c of [..._layer.getChildren()]) c.moveTo(_ghostLayer);
+  _ghostLayer.opacity(1);
+  _ghostLayer.batchDraw();
+  // Reset _layer + load new step's content into it at opacity 0.
+  _layer.opacity(0);
+  _layer.batchDraw();
+  _suppressNextStepAppliedLoad = true;
+  _currentLoadPromise = (async () => { await _loadFromActiveStep(); })();
+  _activeFade = {
+    startMs: performance.now(),
+    durationMs, easeFn, onDone,
+    crossfade: true,
+  };
+}
+
+/**
+ * Snap any in-flight overlay crossfade to its target state and fire
+ * its onDone. Called from steps.snapCurrentToFinal so an interrupted
+ * step transition leaves the layer at a clean state.
+ */
+export function snapOverlayFadeToFinal() {
+  if (!_activeFade) return;
+  const { onDone } = _activeFade;
+  _layer?.opacity(1);
+  _layer?.batchDraw();
+  _ghostLayer?.opacity(0);
+  _ghostLayer?.destroyChildren();
+  _ghostLayer?.batchDraw();
+  _activeFade = null;
+  if (onDone) onDone();
+}
+
+function _advanceOverlayFade(nowMs) {
+  if (!_activeFade || !_layer || !_ghostLayer) return;
+  const { startMs, durationMs, easeFn, onDone } = _activeFade;
+  const raw = Math.min(1, Math.max(0, (nowMs - startMs) / durationMs));
+  const u   = easeFn ? easeFn(raw) : raw;
+  _layer.opacity(u);
+  _ghostLayer.opacity(1 - u);
+  _layer.batchDraw();
+  _ghostLayer.batchDraw();
+  if (raw >= 1) {
+    _ghostLayer.destroyChildren();
+    _ghostLayer.batchDraw();
+    _activeFade = null;
+    if (onDone) onDone();
+  }
+}
+
+// Drive the fade from sceneCore's tick so the lerp runs in-step with
+// the rest of the per-frame work (cable transitions, gizmo, etc.).
+// (sceneCore import is at the top of the file; addTickHook is wired
+// up inside initOverlay below alongside the existing init-side hooks.)
 
 /**
  * Resolves once the overlay layer has finished applying the latest
@@ -1695,12 +1810,12 @@ export function waitForOverlayStable() {
 
 async function _loadFromActiveStep() {
   if (!_stage) return;
+  const activeId = state.get('activeStepId');
   // Tag this load so a later step-change invalidates a still-running one.
   // Without this, two rapid step switches can interleave: load #1's awaits
   // resolve AFTER load #2 has already populated the layer, dumping load #1's
   // (now-stale) nodes into the wrong step's layer.
   const myToken = ++_loadToken;
-  const activeId = state.get('activeStepId');
   const steps = state.get('steps') || [];
   const step  = steps.find(s => s.id === activeId);
 
