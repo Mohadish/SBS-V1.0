@@ -362,19 +362,34 @@ export function applyQuaternionToVector(q, v) {
  * World-space position of a node's pivot point. Returns a fresh
  * THREE.Vector3 — caller can copy into the gizmo group.
  *
- * pivotLocalOffset is in OBJECT-LOCAL space; world pivot is the result
- * of running it through obj3d.localToWorld().
+ * pivotLocalOffset is in OBJECT-LOCAL space. The world pivot is the
+ * object's world position PLUS the pivot offset rotated into the
+ * object's frame — but with the source-base rotation STRIPPED, same
+ * reason as getPivotWorldQuaternion: rotating the source mustn't
+ * orbit the gizmo around the model. Pre-feature where base = identity,
+ * inv(base) = identity → matches the old localToWorld behaviour.
  */
 export function getPivotWorldPosition(node, object3d) {
   ensureTransformDefaults(node);
   const T = window.THREE;
   const local = getAppliedPivotOffset(node);   // zeroes out when pivotEnabled=false
-  const v = new T.Vector3(local[0], local[1], local[2]);
-  if (object3d?.localToWorld) {
-    object3d.updateMatrixWorld?.(true);
-    object3d.localToWorld(v);
+  if (!object3d?.getWorldPosition) {
+    return new T.Vector3(local[0], local[1], local[2]);
   }
-  return v;
+  object3d.updateMatrixWorld?.(true);
+
+  const objPos = new T.Vector3();
+  object3d.getWorldPosition(objPos);
+
+  // Build the source-stripped object orientation: parent × delta.
+  const objQuat = new T.Quaternion();
+  object3d.getWorldQuaternion(objQuat);
+  const baseInv = invertQuaternion(node.baseLocalQuaternion);
+  objQuat.multiply(new T.Quaternion(baseInv[0], baseInv[1], baseInv[2], baseInv[3]));
+
+  const offset = new T.Vector3(local[0], local[1], local[2]);
+  offset.applyQuaternion(objQuat);
+  return objPos.add(offset);
 }
 
 /**

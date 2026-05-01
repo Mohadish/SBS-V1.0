@@ -409,7 +409,15 @@ function _wireResetAndSave(sel) {
     // state — the only reliable workaround that's survived testing.
     _renderPanel();
     _updatePreviewBox();
-    requestAnimationFrame(() => _inputs?.pos?.[0]?.focus());
+    // Clear residual focus + force window/document keyboard focus
+    // back, then focus the input. Three layers because Electron's
+    // focus state after window.confirm has been stubbornly broken in
+    // testing — this combination has finally stuck.
+    setTimeout(() => {
+      try { document.activeElement?.blur?.(); } catch {}
+      try { window.focus(); } catch {}
+      _inputs?.pos?.[0]?.focus();
+    }, 50);
   });
 
   _mountedEl.querySelector('#ms-save').addEventListener('click', () => {
