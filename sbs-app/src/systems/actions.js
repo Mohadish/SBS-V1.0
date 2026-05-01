@@ -2929,6 +2929,71 @@ export function updateStepCameraFromCurrent(stepId) {
 }
 
 /**
+ * "Update camera as template" — bundle action.
+ *
+ * Resolves the template `templateId` from the active step's binding
+ * (or accepts an explicit one), updates that template to the CURRENT
+ * view, and binds every step in `stepIds` to it. Single undo entry
+ * covers the template state delta AND every binding change.
+ *
+ * If no template can be resolved (active step is free and no explicit
+ * id was passed), this is a no-op — the right-click menu should keep
+ * the entry disabled in that state.
+ */
+export function updateStepCameraAsTemplate(stepIds, templateId = null) {
+  if (!stepIds?.length) return;
+
+  // Resolve the target template — explicit arg, then active-step binding.
+  let resolvedId = templateId;
+  if (!resolvedId) {
+    const allSteps = state.get('steps') || [];
+    const activeId = state.get('activeStepId');
+    const active   = activeId ? allSteps.find(s => s.id === activeId) : null;
+    if (active?.cameraBinding?.mode === 'template' && active.cameraBinding.templateId) {
+      resolvedId = active.cameraBinding.templateId;
+    }
+  }
+  if (!resolvedId) return;
+
+  const beforeViews = state.get('cameraViews') || [];
+  const i = beforeViews.findIndex(v => v.id === resolvedId);
+  if (i < 0) return;
+
+  const beforeSteps = state.get('steps') || [];
+  const idSet       = new Set(stepIds);
+  const cam         = _captureCameraState();
+
+  const afterViews = beforeViews.map((v, idx) => idx === i ? { ...v, ...cam } : v);
+  const afterSteps = beforeSteps.map(s => idSet.has(s.id)
+    ? { ...s, cameraBinding: { mode: 'template', templateId: resolvedId } }
+    : s,
+  );
+  if (afterViews.every((v, j) => v === beforeViews[j]) &&
+      afterSteps.every((s, j) => s === beforeSteps[j])) return;
+
+  state.setState({ cameraViews: afterViews, steps: afterSteps });
+  state.markDirty();
+  if (idSet.has(state.get('activeStepId'))) {
+    steps.activateStep(state.get('activeStepId'), false);
+  }
+
+  const tplName = beforeViews[i].name;
+  undoManager.push(
+    `Update camera "${tplName}" on ${stepIds.length} step(s)`,
+    () => {
+      state.setState({ cameraViews: beforeViews, steps: beforeSteps });
+      state.markDirty();
+      if (idSet.has(state.get('activeStepId'))) steps.activateStep(state.get('activeStepId'), false);
+    },
+    () => {
+      state.setState({ cameraViews: afterViews, steps: afterSteps });
+      state.markDirty();
+      if (idSet.has(state.get('activeStepId'))) steps.activateStep(state.get('activeStepId'), false);
+    },
+  );
+}
+
+/**
  * Multi-step "Update camera" — applies the current view as a free-camera
  * snapshot to every selected step. One undo entry.
  */

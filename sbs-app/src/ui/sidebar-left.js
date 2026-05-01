@@ -1463,10 +1463,19 @@ function _renderCamerasTab() {
 
   el.querySelector('#btn-cam-new').addEventListener('click', () => {
     const proposed = `Camera ${views.length + 1}`;
-    const name = prompt('Camera template name:', proposed);
-    if (name === null) return;   // user cancelled
-    actions.createCameraTemplate(name);
-    setStatus(`Saved camera template.`);
+    // Electron renderer disables window.prompt(); use a custom modal
+    // instead. Same scaffold as the delete-template dialog below.
+    _showSimplePromptDialog({
+      title:  'New camera template',
+      label:  'Name',
+      value:  proposed,
+      okText: 'Save',
+      onSave: (name) => {
+        const v = (name || '').trim() || proposed;
+        actions.createCameraTemplate(v);
+        setStatus(`Saved camera template "${v}".`);
+      },
+    });
   });
 
   const bindSel = el.querySelector('#active-step-cam-binding');
@@ -1564,6 +1573,59 @@ function _enterCamRename(span, view) {
  * last state, or get re-bound to the chosen replacement. Single undo
  * entry covers the whole operation.
  */
+/**
+ * Generic single-input prompt dialog. Electron's renderer disables
+ * window.prompt(), so we render our own modal with a text field and
+ * OK/Cancel buttons. Used by "+ New template" — could be reused
+ * elsewhere any time we need a quick name from the user.
+ */
+function _showSimplePromptDialog({ title, label, value = '', okText = 'OK', onSave }) {
+  const overlay = document.createElement('div');
+  overlay.style.cssText = [
+    'position:fixed', 'inset:0', 'background:rgba(0,0,0,0.55)',
+    'display:flex', 'align-items:center', 'justify-content:center',
+    'z-index:9999',
+  ].join(';');
+
+  const card = document.createElement('div');
+  card.className = 'card';
+  card.style.cssText = [
+    'min-width:340px', 'max-width:440px', 'padding:16px',
+    'background:var(--panel, #0f172a)', 'border:1px solid var(--line, #334155)',
+    'border-radius:10px', 'display:flex', 'flex-direction:column', 'gap:10px',
+  ].join(';');
+
+  card.innerHTML = `
+    <div class="title" style="font-size:14px;">${_esc(title)}</div>
+    <label class="colorlab">${_esc(label)}
+      <input type="text" id="prompt-input" value="${_esc(value)}" style="margin-top:6px;width:100%;" />
+    </label>
+    <div class="grid2" style="margin-top:6px;">
+      <button class="btn" id="prompt-cancel">Cancel</button>
+      <button class="btn primary" id="prompt-ok">${_esc(okText)}</button>
+    </div>
+  `;
+
+  const input    = card.querySelector('#prompt-input');
+  const okBtn    = card.querySelector('#prompt-ok');
+  const cancelBtn = card.querySelector('#prompt-cancel');
+
+  const close = () => overlay.remove();
+  const commit = () => { onSave?.(input.value); close(); };
+
+  cancelBtn.addEventListener('click', close);
+  okBtn.addEventListener('click', commit);
+  input.addEventListener('keydown', e => {
+    if (e.key === 'Enter')  { e.preventDefault(); commit(); }
+    if (e.key === 'Escape') { e.preventDefault(); close();  }
+  });
+  overlay.addEventListener('click', e => { if (e.target === overlay) close(); });
+
+  overlay.appendChild(card);
+  document.body.appendChild(overlay);
+  setTimeout(() => { input.focus(); input.select(); }, 0);
+}
+
 function _showDeleteCameraTemplateDialog(view, useCount) {
   const views = (state.get('cameraViews') || []).filter(v => v.id !== view.id);
 

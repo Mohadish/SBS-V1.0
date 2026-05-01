@@ -913,8 +913,20 @@ canvas.addEventListener('contextmenu', e => {
     });
     items.push({ label: '─', disabled: true });
   }
+  // Two flavours of "Update camera" — free saves to this step's snapshot
+  // (always-free, drops any prior template binding); template updates
+  // the template the active step is bound to (propagating to every other
+  // bound step). Disabled when there's no template binding to target.
+  const _viewportActiveStepTplName = (() => {
+    const aid = state.get('activeStepId');
+    if (!aid) return null;
+    const active = (state.get('steps') || []).find(s => s.id === aid);
+    if (active?.cameraBinding?.mode !== 'template') return null;
+    const tpl = (state.get('cameraViews') || []).find(v => v.id === active.cameraBinding.templateId);
+    return tpl?.name || null;
+  })();
   items.push({
-    label: '◉ Update camera (this step)',
+    label: '◉ Update camera (free)',
     action: () => {
       const activeId = state.get('activeStepId');
       if (activeId) {
@@ -923,6 +935,18 @@ canvas.addEventListener('contextmenu', e => {
       } else {
         setStatus('No active step.', 'warn');
       }
+    },
+  });
+  items.push({
+    label: _viewportActiveStepTplName
+      ? `◎ Update camera (as template "${_viewportActiveStepTplName}")`
+      : '◎ Update camera (as template — none active)',
+    disabled: !_viewportActiveStepTplName,
+    action: () => {
+      const activeId = state.get('activeStepId');
+      if (!activeId) return;
+      actions.updateStepCameraAsTemplate([activeId]);
+      setStatus(`Updated template "${_viewportActiveStepTplName}".`);
     },
   });
   items.push({

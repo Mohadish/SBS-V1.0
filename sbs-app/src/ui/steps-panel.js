@@ -760,14 +760,44 @@ function _showStepContextMenu(step, x, y) {
   if (_clipboard?.kind === 'steps') {
     items.push({ label: `Paste under (${_clipboard.data.length})`, action: () => _pasteStepsUnder(step.id) });
   }
+  // "Update camera as template" is only meaningful when the active step
+  // is bound to a template — that's the template the action targets.
+  // When the active step is free, the option still shows but disabled,
+  // so the menu doesn't lie about what's possible.
+  const activeTplLabel = _activeStepTemplateName();
   items.push(
     { label: step.hidden ? 'Show in playback' : 'Hide from playback',
       action: () => steps.setStepHidden(step.id, !step.hidden) },
-    { label: 'Update camera', action: () => { actions.updateStepCameraFromCurrent(step.id); setStatus('Camera saved for step.'); } },
+    { label: 'Update camera (free)',
+      action: () => { actions.updateStepCameraFromCurrent(step.id); setStatus('Camera saved for step.'); } },
+    { label: activeTplLabel
+        ? `Update camera (as template "${activeTplLabel}")`
+        : 'Update camera (as template — none active)',
+      disabled: !activeTplLabel,
+      action: () => {
+        actions.updateStepCameraAsTemplate([step.id]);
+        setStatus(`Updated template "${activeTplLabel}" + bound step.`);
+      } },
     { separator: true },
     { label: 'Delete',    action: () => _deleteStep(step.id) },
   );
   showContextMenu(items, x, y);
+}
+
+/**
+ * Returns the name of the template the active step is bound to, or null
+ * if it's a free-camera step (or no active step). Used to label the
+ * "Update camera (as template)" menu items so the user can see at a
+ * glance which template would be edited.
+ */
+function _activeStepTemplateName() {
+  const stepsArr = state.get('steps') || [];
+  const activeId = state.get('activeStepId');
+  if (!activeId) return null;
+  const active = stepsArr.find(s => s.id === activeId);
+  if (active?.cameraBinding?.mode !== 'template') return null;
+  const tpl = (state.get('cameraViews') || []).find(v => v.id === active.cameraBinding.templateId);
+  return tpl?.name || null;
 }
 
 /**
@@ -779,13 +809,22 @@ function _showMultiStepContextMenu(stepIds, x, y) {
   const selSteps   = stepIds.map(id => stepsArr.find(s => s.id === id)).filter(Boolean);
   const anyVisible = selSteps.some(s => !s.hidden);
 
+  const activeTplLabel = _activeStepTemplateName();
   showContextMenu([
     { label: `Copy (${selSteps.length})`,
       action: () => _copyStepsToClipboard(stepIds) },
     { label: anyVisible ? 'Hide from playback' : 'Show in playback',
       action: () => selSteps.forEach(s => steps.setStepHidden(s.id, anyVisible)) },
-    { label: 'Update camera',
+    { label: 'Update camera (free)',
       action: () => { actions.updateStepCameraFromCurrentMulti(selSteps.map(s => s.id)); setStatus(`Camera saved for ${selSteps.length} steps.`); } },
+    { label: activeTplLabel
+        ? `Update camera (as template "${activeTplLabel}")`
+        : 'Update camera (as template — none active)',
+      disabled: !activeTplLabel,
+      action: () => {
+        actions.updateStepCameraAsTemplate(selSteps.map(s => s.id));
+        setStatus(`Updated template "${activeTplLabel}" + bound ${selSteps.length} step(s).`);
+      } },
     { separator: true },
     { label: `Delete (${selSteps.length})`,
       action: async () => {
@@ -1099,6 +1138,18 @@ function _buildTransitionRow(step) {
       <span class="small muted">Fade visibility changes</span>
     </label>
   `;
+
+  // The step card has draggable=true — clicking a <select> normally
+  // starts a drag (mousedown bubbles up to the card) before the dropdown
+  // opens, so the user's pick never registers. Stop pointer events on
+  // every form control inside the transition row from reaching the
+  // draggable card. Fixes: animation preset, camera binding, easing,
+  // and visibility-fade checkbox all becoming nonresponsive.
+  for (const ctrl of wrap.querySelectorAll('select, input, label')) {
+    ctrl.addEventListener('mousedown',  e => e.stopPropagation());
+    ctrl.addEventListener('pointerdown', e => e.stopPropagation());
+    ctrl.draggable = false;
+  }
 
   wrap.querySelector('.tran-cam-binding').addEventListener('change', e => {
     actions.setStepCameraBinding(stepId, e.target.value || null);
