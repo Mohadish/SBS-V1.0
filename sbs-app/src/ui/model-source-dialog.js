@@ -401,14 +401,15 @@ function _wireResetAndSave(sel) {
     _currentNode.baseLocalQuaternion = [...(_currentNode.originalBaseLocalQuaternion || [0,0,0,1])];
     _currentNode.baseLocalScale      = [...(_currentNode.originalBaseLocalScale      || [1,1,1])];
     _applyToScene();
-    _loadNodeIntoInputs();
+    // Re-render the WHOLE panel rather than just reloading input values.
+    // After window.confirm there's a stubborn focus / keyboard-event
+    // race on Electron/Chromium where the existing inputs accept
+    // spinner clicks but silently swallow typed digits. Replacing the
+    // DOM forces fresh inputs with fresh listeners and clean focus
+    // state — the only reliable workaround that's survived testing.
+    _renderPanel();
     _updatePreviewBox();
-    // window.confirm returns focus to the document body; without an
-    // explicit focus call, the next click on a number input doesn't
-    // always re-bind keyboard events on Electron/Chromium and the
-    // inputs go silent (only spinner arrows work). Punt focus back to
-    // the first position field so typing resumes.
-    setTimeout(() => _inputs?.pos?.[0]?.focus(), 0);
+    requestAnimationFrame(() => _inputs?.pos?.[0]?.focus());
   });
 
   _mountedEl.querySelector('#ms-save').addEventListener('click', () => {
