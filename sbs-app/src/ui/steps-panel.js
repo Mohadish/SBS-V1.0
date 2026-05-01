@@ -104,9 +104,10 @@ export function initStepsPanel() {
     const ctx = document.getElementById('context-menu');
     if (ctx && ctx.contains(e.target)) return;
     // Clicks inside the model-source-transform panel must NOT trigger
-    // a steps-panel re-render — race destroys input focus.
+    // a steps-panel re-render — race destroys input focus. The panel
+    // lives at #tab-panel-modelSource (a hidden tab).
     if (state.get('modelSourceMode')) {
-      const ms = document.getElementById('model-source-panel');
+      const ms = document.getElementById('tab-panel-modelSource');
       if (ms && ms.contains(e.target)) return;
     }
     let dirty = false;

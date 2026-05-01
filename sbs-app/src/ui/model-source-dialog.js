@@ -79,8 +79,15 @@ export function exitModelSourceMode(force = false) {
 }
 
 export function mountModelSourcePanel(container) {
-  if (_mountedEl) return;
-  _mountedEl = container;
+  // Re-snapshot every time the panel is opened — the user may have
+  // committed source edits in a previous session and we want the new
+  // session's _beforeSnaps to match the current state, not stale data
+  // from last time.
+  _mountedEl     = container;
+  _models        = [];
+  _beforeSnaps   = new Map();
+  _currentNode   = null;
+  _inputs        = null;
 
   const root = state.get('treeData');
   _models = (root?.children || []).filter(n => n?.type === 'model');
