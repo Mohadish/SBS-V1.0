@@ -2682,114 +2682,80 @@ export function cascadeModelSourceTransform(nodeId, dPos, dQuat, dScaleMul) {
   const node = state.get('nodeById')?.get(nodeId);
   if (!node || node.type !== 'model') return;
 
-  const stepsArr = state.get('steps') || [];
-
-  // Capture before-state for undo. Every step's transform entry +
-  // node-level pivot + scale.
-  const beforeSteps = stepsArr.map(s => ({
-    id: s.id,
-    transform: s.snapshot?.transforms?.[nodeId]
-      ? {
-          localOffset:     [...(s.snapshot.transforms[nodeId].localOffset     || [0,0,0])],
-          localQuaternion: [...(s.snapshot.transforms[nodeId].localQuaternion || [0,0,0,1])],
-        }
-      : null,
-  }));
-  const beforeNode = {
-    pivotLocalQuaternion: [...(node.pivotLocalQuaternion || [0,0,0,1])],
+  // Snapshot for undo — base layer fields only. Per-step snapshots are
+  // NEVER touched by source transform; the cascade happens implicitly
+  // through the existing render math:
+  //
+  //   final_position   = baseLocalPosition + localOffset
+  //   final_quaternion = baseLocalQuaternion × localQuaternion
+  //   final_scale      = baseLocalScale
+  //
+  // Modifying baseLocal* shifts every step's rendered transform
+  // uniformly. Per-step animation deltas (the gap between steps) are
+  // preserved by construction — they're stored as deltas off the base.
+  const before = {
+    baseLocalPosition:    [...(node.baseLocalPosition    || [0,0,0])],
+    baseLocalQuaternion:  [...(node.baseLocalQuaternion  || [0,0,0,1])],
     baseLocalScale:       [...(node.baseLocalScale       || [1,1,1])],
   };
 
-  const _apply = (dPos_, dQuat_, dScaleMul_) => {
-    const steps2 = state.get('steps') || [];
-    for (const step of steps2) {
-      const t = step.snapshot?.transforms?.[nodeId];
-      if (!t) continue;
-      // Position cascade: in PARENT-LOCAL coords, just add. (The user
-      // entered the delta in the model's local frame, but for top-level
-      // models parent = scene root = identity, so parent-local = world.
-      // For models nested in folders the delta is in the folder's
-      // frame — the user's expectation per the spec.)
-      if (Array.isArray(t.localOffset)) {
-        t.localOffset = [
-          (t.localOffset[0] || 0) + dPos_[0],
-          (t.localOffset[1] || 0) + dPos_[1],
-          (t.localOffset[2] || 0) + dPos_[2],
-        ];
-      }
-      // Rotation cascade: post-multiply so source rotation is applied
-      // in the model's LOCAL frame BEFORE the per-step rotation.
-      //   final_after = parent × (per_step × Δq) × mesh
-      //              = parent × per_step × Δq × mesh  (Δq runs first on mesh)
-      // For a clock with localQuaternion = Q_wallA and Δq = Q_zRot,
-      // the clock spins 90° around its own Z, then rotates onto wallA.
-      if (Array.isArray(t.localQuaternion)) {
-        t.localQuaternion = normalizeQuaternion(
-          multiplyQuaternions(t.localQuaternion, dQuat_),
-        );
-      }
-    }
+  // ── Position: user enters Δp in MODEL-LOCAL frame ──────────────────
+  // baseLocalPosition lives in PARENT-local coords. Convert: rotate the
+  // input delta through baseLocalQuaternion so a Y delta on a wall-
+  // mounted clock translates along the clock's normal, not world Y.
+  const dPos_parent_local = applyQuaternionToVector(
+    node.baseLocalQuaternion || [0,0,0,1],
+    dPos,
+  );
+  node.baseLocalPosition = [
+    (node.baseLocalPosition[0] || 0) + dPos_parent_local[0],
+    (node.baseLocalPosition[1] || 0) + dPos_parent_local[1],
+    (node.baseLocalPosition[2] || 0) + dPos_parent_local[2],
+  ];
 
-    // Pivot orientation compensation — keep world pivot orientation invariant.
-    const pivotQ = node.pivotLocalQuaternion || [0,0,0,1];
-    node.pivotLocalQuaternion = normalizeQuaternion(
-      multiplyQuaternions(invertQuaternion(dQuat_), pivotQ),
-    );
+  // ── Rotation: post-multiply so Δq is in MODEL-LOCAL frame ─────────
+  // Existing math is final_quat = baseQuat × stepQuat. Setting
+  // baseQuat ← baseQuat × Δq makes final = baseQuat × Δq × stepQuat
+  // — Δq applies to the mesh BEFORE the per-step rotation, in the
+  // model's own frame. A 90° Z source rotation makes "12 → 9" on a
+  // flat clock; that orientation then carries through whatever per-
+  // step pose puts the clock on a wall.
+  node.baseLocalQuaternion = normalizeQuaternion(
+    multiplyQuaternions(node.baseLocalQuaternion, dQuat),
+  );
 
-    // Scale: uniform multiplier (or vector). Multiply directly.
-    if (Array.isArray(node.baseLocalScale)) {
-      node.baseLocalScale = [
-        node.baseLocalScale[0] * dScaleMul_[0],
-        node.baseLocalScale[1] * dScaleMul_[1],
-        node.baseLocalScale[2] * dScaleMul_[2],
-      ];
-    }
+  // ── Scale: project-level multiplier ────────────────────────────────
+  node.baseLocalScale = (node.baseLocalScale || [1,1,1]).map((s, i) =>
+    s * (dScaleMul[i] || 1),
+  );
 
-    state.setState({ steps: [...steps2] });
-    state.markDirty();
-    // Re-apply current step so the live view reflects the cascade.
-    const activeId = state.get('activeStepId');
-    if (activeId) steps.activateStep(activeId, false);
-  };
+  state.setState({ treeData: state.get('treeData') });   // re-emit
+  state.markDirty();
 
-  _apply(dPos, dQuat, dScaleMul);
+  // Re-apply current step so the live view reflects the new base.
+  const activeId = state.get('activeStepId');
+  if (activeId) steps.activateStep(activeId, false);
 
-  const _restore = (snapshot) => {
-    const steps2 = state.get('steps') || [];
-    for (const step of steps2) {
-      const before = snapshot.steps.find(s => s.id === step.id);
-      if (!before?.transform) continue;
-      const t = step.snapshot?.transforms?.[nodeId];
-      if (!t) continue;
-      t.localOffset     = [...before.transform.localOffset];
-      t.localQuaternion = [...before.transform.localQuaternion];
-    }
-    node.pivotLocalQuaternion = [...snapshot.node.pivotLocalQuaternion];
-    node.baseLocalScale       = [...snapshot.node.baseLocalScale];
-    state.setState({ steps: [...steps2] });
-    state.markDirty();
-    const activeId = state.get('activeStepId');
-    if (activeId) steps.activateStep(activeId, false);
-  };
-
-  const afterSteps = (state.get('steps') || []).map(s => ({
-    id: s.id,
-    transform: s.snapshot?.transforms?.[nodeId]
-      ? {
-          localOffset:     [...s.snapshot.transforms[nodeId].localOffset],
-          localQuaternion: [...s.snapshot.transforms[nodeId].localQuaternion],
-        }
-      : null,
-  }));
-  const afterNode = {
-    pivotLocalQuaternion: [...node.pivotLocalQuaternion],
+  const after = {
+    baseLocalPosition:    [...node.baseLocalPosition],
+    baseLocalQuaternion:  [...node.baseLocalQuaternion],
     baseLocalScale:       [...node.baseLocalScale],
+  };
+
+  const restore = (snap) => {
+    node.baseLocalPosition   = [...snap.baseLocalPosition];
+    node.baseLocalQuaternion = [...snap.baseLocalQuaternion];
+    node.baseLocalScale      = [...snap.baseLocalScale];
+    state.setState({ treeData: state.get('treeData') });
+    state.markDirty();
+    const aid = state.get('activeStepId');
+    if (aid) steps.activateStep(aid, false);
   };
 
   undoManager.push(
     `Model source transform "${node.name || 'model'}"`,
-    () => _restore({ steps: beforeSteps, node: beforeNode }),
-    () => _restore({ steps: afterSteps,  node: afterNode }),
+    () => restore(before),
+    () => restore(after),
   );
 }
 
