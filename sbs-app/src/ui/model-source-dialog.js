@@ -304,19 +304,35 @@ function _wireInputs() {
   });
 
   // Commit on `change` (Enter / Tab / blur) instead of `input` (per-
-  // keystroke). After Reset all + window.confirm, the per-keystroke
-  // event was racing with focus restoration on Electron/Chromium —
-  // the input would visibly accept characters but its focus state
-  // got dropped between keystrokes, leaving the field looking
-  // unresponsive. Spinner-arrow clicks fire `change` too, so the
-  // visual feel for those is unchanged.
-  for (const list of [_inputs.pos, _inputs.rot, _inputs.scl]) {
-    for (const inp of list) {
-      inp.addEventListener('change', () => {
-        _applyInputsToNode();
-        _updatePreviewBox();
-      });
-    }
+  // keystroke) — see history above for the focus-race reasoning.
+  //
+  // Per-group handlers (NOT a single read-everything-write-everything
+  // pass) — committing a position change must NOT re-write the
+  // quaternion via Euler round-trip, which loses precision and drifts
+  // rotation. The drift was invisible on top-level models but got
+  // amplified for out-of-tree models (the parent folder's quaternion
+  // multiplies the drift), producing the "translation strangely
+  // rotates the model in some steps" symptom.
+  for (const inp of _inputs.pos) {
+    inp.addEventListener('change', () => {
+      _writePositionFromInputs();
+      _applyToScene();
+      _updatePreviewBox();
+    });
+  }
+  for (const inp of _inputs.rot) {
+    inp.addEventListener('change', () => {
+      _writeRotationFromInputs();
+      _applyToScene();
+      _updatePreviewBox();
+    });
+  }
+  for (const inp of _inputs.scl) {
+    inp.addEventListener('change', () => {
+      _writeScaleFromInputs();
+      _applyToScene();
+      _updatePreviewBox();
+    });
   }
 
   // Per-axis reset buttons.
@@ -676,26 +692,34 @@ function _loadNodeIntoInputs() {
   _inputs.rot[2].value = _fmt(eul.z);
 }
 
-function _applyInputsToNode() {
+function _num(el) { return Number.isFinite(Number(el?.value)) ? Number(el.value) : 0; }
+
+function _writePositionFromInputs() {
   if (!_currentNode || !_inputs) return;
-  const num = (el) => Number.isFinite(Number(el.value)) ? Number(el.value) : 0;
-  _currentNode.baseLocalPosition   = _inputs.pos.map(num);
+  _currentNode.baseLocalPosition = _inputs.pos.map(_num);
+}
+
+function _writeRotationFromInputs() {
+  if (!_currentNode || !_inputs) return;
   _currentNode.baseLocalQuaternion = normalizeQuaternion(eulerDegToQuaternion({
-    x: num(_inputs.rot[0]),
-    y: num(_inputs.rot[1]),
-    z: num(_inputs.rot[2]),
+    x: _num(_inputs.rot[0]),
+    y: _num(_inputs.rot[1]),
+    z: _num(_inputs.rot[2]),
   }));
+}
+
+function _writeScaleFromInputs() {
+  if (!_currentNode || !_inputs) return;
   if (_unifyScale) {
-    const v = num(_inputs.scl[0]);
+    const v = _num(_inputs.scl[0]);
     const safe = Math.abs(v) < 1e-3 ? (v < 0 ? -1e-3 : 1e-3) : v;
     _currentNode.baseLocalScale = [safe, safe, safe];
   } else {
     _currentNode.baseLocalScale = _inputs.scl.map(el => {
-      const v = num(el);
+      const v = _num(el);
       return Math.abs(v) < 1e-3 ? (v < 0 ? -1e-3 : 1e-3) : v;
     });
   }
-  _applyToScene();
 }
 
 function _applyToScene() {
