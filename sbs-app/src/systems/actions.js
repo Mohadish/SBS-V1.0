@@ -15,7 +15,8 @@ import { undoManager }          from './undo.js';
 import { selectionActs }        from './select-act.js';
 import { materials }            from '../systems/materials.js';
 import steps                    from '../systems/steps.js';
-import { createAnimationPreset } from '../core/schema.js';
+import sceneCore                from '../core/scene.js';
+import { createAnimationPreset, createCameraView } from '../core/schema.js';
 import * as editSession         from './edit-session.js';   // P7-A: gate Ctrl-Z while in overlay edit
 import * as cables              from './cables.js';          // C3: cable mutators (data layer)
 import {
@@ -2650,4 +2651,308 @@ function _syncVis() {
 function _isInputFocused() {
   const t = document.activeElement?.tagName;
   return t === 'INPUT' || t === 'TEXTAREA' || document.activeElement?.isContentEditable;
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+//  CAMERA TEMPLATES
+// ═══════════════════════════════════════════════════════════════════════════
+// Templates live in state.cameraViews. Steps reference them by id via
+// step.cameraBinding = { mode: 'template', templateId }. Editing a template
+// implicitly moves every bound step (steps.activateStep resolves cameras
+// through the binding at activation time).
+
+const CAMERA_FIELDS = ['position', 'quaternion', 'pivot', 'up', 'fov'];
+
+function _captureCameraState() {
+  // Snapshot just the fields a CameraView holds. Avoids leaking unrelated
+  // state from sceneCore.getCameraState() into the saved template.
+  const cs = sceneCore.getCameraState();
+  const out = {};
+  for (const k of CAMERA_FIELDS) out[k] = cs[k];
+  return out;
+}
+
+/**
+ * Create a new camera template from the CURRENT viewport state.
+ * Does NOT auto-bind any step — the user opts steps in via the per-step
+ * camera dropdown, or via updateCameraTemplate (which auto-binds the
+ * active step).
+ */
+export function createCameraTemplate(name) {
+  const cleanName = (name || '').trim() || `Camera ${(state.get('cameraViews')?.length ?? 0) + 1}`;
+  const view = createCameraView({ name: cleanName, ..._captureCameraState() });
+  const before = state.get('cameraViews') || [];
+  state.setState({ cameraViews: [...before, view] });
+  state.markDirty();
+
+  undoManager.push(
+    `Add camera "${cleanName}"`,
+    () => { state.setState({ cameraViews: before }); state.markDirty(); },
+    () => { state.setState({ cameraViews: [...before, view] }); state.markDirty(); },
+  );
+  return view.id;
+}
+
+/**
+ * Rename a template. Step bindings reference id only, so no propagation.
+ */
+export function renameCameraTemplate(templateId, name) {
+  const views = state.get('cameraViews') || [];
+  const i = views.findIndex(v => v.id === templateId);
+  if (i < 0) return;
+  const oldName = views[i].name;
+  const newName = (name || '').trim();
+  if (!newName || newName === oldName) return;
+  const next = views.map((v, idx) => idx === i ? { ...v, name: newName } : v);
+  state.setState({ cameraViews: next });
+  state.markDirty();
+  undoManager.push(
+    `Rename camera "${oldName}" → "${newName}"`,
+    () => { state.setState({ cameraViews: views });        state.markDirty(); },
+    () => { state.setState({ cameraViews: next });          state.markDirty(); },
+  );
+}
+
+/**
+ * Update a template's camera state to the CURRENT viewport.
+ * Side-effect: auto-binds the active step to this template if it
+ * isn't already bound somewhere — so pressing Update on a card both
+ * captures the view AND adopts the active step into that camera.
+ *
+ * Every other step already bound to this template follows automatically
+ * because they look the template up at activate time — no rewrite of
+ * their snapshots needed (template-delta semantics).
+ */
+export function updateCameraTemplate(templateId) {
+  const views = state.get('cameraViews') || [];
+  const i = views.findIndex(v => v.id === templateId);
+  if (i < 0) return;
+
+  const beforeView = views[i];
+  const afterView  = { ...beforeView, ..._captureCameraState() };
+  const nextViews  = views.map((v, idx) => idx === i ? afterView : v);
+
+  // Auto-bind the active step if free (or bound to a different template).
+  const activeId = state.get('activeStepId');
+  const allSteps = state.get('steps') || [];
+  const stepIdx  = activeId ? allSteps.findIndex(s => s.id === activeId) : -1;
+
+  let prevBinding = null;
+  let nextStepsArr = allSteps;
+  if (stepIdx >= 0) {
+    const step = allSteps[stepIdx];
+    prevBinding = step.cameraBinding ? { ...step.cameraBinding } : { mode: 'free', templateId: null };
+    if (prevBinding.mode !== 'template' || prevBinding.templateId !== templateId) {
+      const newBinding = { mode: 'template', templateId };
+      nextStepsArr = allSteps.map((s, idx) => idx === stepIdx
+        ? { ...s, cameraBinding: newBinding }
+        : s,
+      );
+    }
+  }
+
+  state.setState({ cameraViews: nextViews, steps: nextStepsArr });
+  state.markDirty();
+
+  undoManager.push(
+    `Update camera "${beforeView.name}"`,
+    () => {
+      state.setState({ cameraViews: views, steps: allSteps });
+      state.markDirty();
+    },
+    () => {
+      state.setState({ cameraViews: nextViews, steps: nextStepsArr });
+      state.markDirty();
+    },
+  );
+}
+
+/**
+ * Delete a template. Steps bound to it are migrated according to
+ * `replacement`:
+ *   replacement = null     → become free, snapshot.camera seeded from
+ *                            the deleted template's last state (no view
+ *                            jump on next activation)
+ *   replacement = '<id>'   → re-bind to that template
+ *
+ * The migration is part of the same undo entry — undo restores the
+ * template AND every affected step's prior binding.
+ */
+export function deleteCameraTemplate(templateId, replacement = null) {
+  const views    = state.get('cameraViews') || [];
+  const tpl      = views.find(v => v.id === templateId);
+  if (!tpl) return;
+  const allSteps = state.get('steps') || [];
+
+  // Resolve replacement validity. A bad id just falls back to free.
+  const repl = replacement && views.some(v => v.id === replacement && v.id !== templateId)
+    ? replacement
+    : null;
+
+  const tplCamSnapshot = {
+    position:   tpl.position,
+    quaternion: tpl.quaternion,
+    pivot:      tpl.pivot,
+    up:         tpl.up,
+    fov:        tpl.fov,
+  };
+
+  const nextViews = views.filter(v => v.id !== templateId);
+  const nextSteps = allSteps.map(s => {
+    const b = s.cameraBinding;
+    if (b?.mode !== 'template' || b.templateId !== templateId) return s;
+    if (repl) {
+      return { ...s, cameraBinding: { mode: 'template', templateId: repl } };
+    }
+    // Convert to free, seed snapshot.camera with the template's last state
+    // so the visible framing stays put on the next activation.
+    return {
+      ...s,
+      cameraBinding: { mode: 'free', templateId: null },
+      snapshot: { ...(s.snapshot || {}), camera: { ...tplCamSnapshot } },
+    };
+  });
+
+  state.setState({ cameraViews: nextViews, steps: nextSteps });
+  state.markDirty();
+
+  undoManager.push(
+    `Delete camera "${tpl.name}"`,
+    () => { state.setState({ cameraViews: views,    steps: allSteps }); state.markDirty(); },
+    () => { state.setState({ cameraViews: nextViews, steps: nextSteps }); state.markDirty(); },
+  );
+}
+
+/**
+ * Bind a step's camera to a template, OR set it to free.
+ * `templateId = null` (or 'free') → free camera mode.
+ *
+ * Free-mode binding does NOT modify step.snapshot.camera — the existing
+ * snapshot keeps driving until the user explicitly updates it. This
+ * means: switching template→free shows the snapshot's camera (which may
+ * or may not match what the template was showing). To "freeze" the
+ * template's current view as the new free snapshot, see saveStepCameraFromCurrent.
+ */
+export function setStepCameraBinding(stepId, templateId) {
+  const allSteps = state.get('steps') || [];
+  const idx      = allSteps.findIndex(s => s.id === stepId);
+  if (idx < 0) return;
+  const step       = allSteps[idx];
+  const prev       = step.cameraBinding ? { ...step.cameraBinding } : { mode: 'free', templateId: null };
+  const newBinding = templateId
+    ? { mode: 'template', templateId }
+    : { mode: 'free', templateId: null };
+
+  if (prev.mode === newBinding.mode && prev.templateId === newBinding.templateId) return;
+
+  const nextSteps = allSteps.map((s, i) => i === idx ? { ...s, cameraBinding: newBinding } : s);
+  state.setState({ steps: nextSteps });
+  state.markDirty();
+
+  // Re-apply the active step so the new binding takes effect immediately.
+  if (state.get('activeStepId') === stepId) {
+    steps.activateStep(stepId, false);
+  }
+
+  const prevSteps = allSteps;
+  undoManager.push(
+    'Change step camera binding',
+    () => { state.setState({ steps: prevSteps });  state.markDirty(); if (state.get('activeStepId') === stepId) steps.activateStep(stepId, false); },
+    () => { state.setState({ steps: nextSteps }); state.markDirty(); if (state.get('activeStepId') === stepId) steps.activateStep(stepId, false); },
+  );
+}
+
+/**
+ * Bind a set of steps to the same camera (template id, or null for free).
+ * Single undo entry covers them all. Used by multi-select dropdowns.
+ */
+export function setStepCameraBindingMulti(stepIds, templateId) {
+  if (!stepIds?.length) return;
+  const allSteps   = state.get('steps') || [];
+  const idSet      = new Set(stepIds);
+  const newBinding = templateId
+    ? { mode: 'template', templateId }
+    : { mode: 'free', templateId: null };
+  const nextSteps  = allSteps.map(s => idSet.has(s.id) ? { ...s, cameraBinding: { ...newBinding } } : s);
+  // Skip if nothing actually changed.
+  if (nextSteps.every((s, i) => s === allSteps[i])) return;
+
+  state.setState({ steps: nextSteps });
+  state.markDirty();
+  if (idSet.has(state.get('activeStepId'))) {
+    steps.activateStep(state.get('activeStepId'), false);
+  }
+
+  undoManager.push(
+    `Change camera on ${stepIds.length} step(s)`,
+    () => {
+      state.setState({ steps: allSteps }); state.markDirty();
+      if (idSet.has(state.get('activeStepId'))) steps.activateStep(state.get('activeStepId'), false);
+    },
+    () => {
+      state.setState({ steps: nextSteps }); state.markDirty();
+      if (idSet.has(state.get('activeStepId'))) steps.activateStep(state.get('activeStepId'), false);
+    },
+  );
+}
+
+/**
+ * Step-level "Update camera" — undoable wrapper around steps.saveStepCamera.
+ * Always converts the step to free-camera with the current view, regardless
+ * of any prior template binding.
+ */
+export function updateStepCameraFromCurrent(stepId) {
+  const id = stepId ?? state.get('activeStepId');
+  if (!id) return;
+  const allSteps = state.get('steps') || [];
+  const idx      = allSteps.findIndex(s => s.id === id);
+  if (idx < 0) return;
+  const prev     = allSteps[idx];
+
+  // Build the next step with new camera + free binding.
+  const next = {
+    ...prev,
+    snapshot:      { ...(prev.snapshot || {}), camera: _captureCameraState() },
+    cameraBinding: { mode: 'free', templateId: null },
+  };
+  const nextSteps = allSteps.map((s, i) => i === idx ? next : s);
+
+  state.setState({ steps: nextSteps });
+  state.markDirty();
+  state.emit('step:synced', next);
+
+  undoManager.push(
+    `Update camera on "${prev.name}"`,
+    () => { state.setState({ steps: allSteps });  state.markDirty(); state.emit('step:synced', prev); },
+    () => { state.setState({ steps: nextSteps }); state.markDirty(); state.emit('step:synced', next); },
+  );
+}
+
+/**
+ * Multi-step "Update camera" — applies the current view as a free-camera
+ * snapshot to every selected step. One undo entry.
+ */
+export function updateStepCameraFromCurrentMulti(stepIds) {
+  if (!stepIds?.length) return;
+  const allSteps = state.get('steps') || [];
+  const idSet    = new Set(stepIds);
+  const cam      = _captureCameraState();
+  const nextSteps = allSteps.map(s => idSet.has(s.id)
+    ? {
+        ...s,
+        snapshot:      { ...(s.snapshot || {}), camera: { ...cam } },
+        cameraBinding: { mode: 'free', templateId: null },
+      }
+    : s,
+  );
+  if (nextSteps.every((s, i) => s === allSteps[i])) return;
+
+  state.setState({ steps: nextSteps });
+  state.markDirty();
+
+  undoManager.push(
+    `Update camera on ${stepIds.length} step(s)`,
+    () => { state.setState({ steps: allSteps });  state.markDirty(); },
+    () => { state.setState({ steps: nextSteps }); state.markDirty(); },
+  );
 }

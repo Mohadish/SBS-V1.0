@@ -25,6 +25,7 @@ import {
   APP_VERSION,
   migrateSection,
   generateId,
+  createCameraBinding,
 }                                     from '../core/schema.js';
 import { materials }                  from '../systems/materials.js';
 import { steps   }                  from '../systems/steps.js';
@@ -528,6 +529,12 @@ export function applyProjectToState(project) {
   // default automatically.
   _migrateLegacyDefaultStamps();
 
+  // Camera-binding migration: legacy steps had no cameraBinding field —
+  // default each missing one to free-camera so step.snapshot.camera keeps
+  // driving the view (today's behaviour). Templates land in cameraViews
+  // already; users opt steps into them via the per-step camera dropdown.
+  _migrateStepCameraBindings();
+
   // Drop stale narration.dataFile pointers — pre voice-subfolder format
   // (top-level "<40hex>.wav") and any fast OS voice that earlier versions
   // mistakenly disk-cached. Without this, ensurePlayable hits ENOENT on
@@ -543,6 +550,30 @@ export function applyProjectToState(project) {
   state.emit('project:loaded');
 
   state.markClean();
+}
+
+function _migrateStepCameraBindings() {
+  const stepsArr = state.get('steps') || [];
+  let migrated = 0;
+  for (const step of stepsArr) {
+    if (!step.cameraBinding || typeof step.cameraBinding !== 'object') {
+      step.cameraBinding = createCameraBinding();
+      migrated++;
+    } else {
+      // Sanity: if mode is missing/unknown, force 'free' (snapshot-driven).
+      if (step.cameraBinding.mode !== 'template' && step.cameraBinding.mode !== 'free') {
+        step.cameraBinding.mode = 'free';
+        migrated++;
+      }
+      if (step.cameraBinding.templateId === undefined) {
+        step.cameraBinding.templateId = null;
+      }
+    }
+  }
+  if (migrated) {
+    console.log(`[migrate] Defaulted cameraBinding on ${migrated} legacy step(s) to free-camera.`);
+    state.setState({ steps: [...stepsArr] });
+  }
 }
 
 function _migrateLegacyDefaultStamps() {

@@ -252,9 +252,28 @@ export function createStep(overrides = {}) {
       animPresetId:     null,       // null = use project default (or simultaneous fallback)
     },
 
+    // Camera binding — controls whether this step uses its own snapshot
+    // camera ('free') or pulls from a named template in cameraViews ('template').
+    // 'free' is the default for new steps; user opts in to templates per step
+    // via the camera dropdown in the steps panel.
+    cameraBinding: createCameraBinding(),
+
     // ── THE SNAPSHOT: complete scene state ────────────────────────────────
     snapshot: createEmptySnapshot(),
 
+    ...overrides,
+  };
+}
+
+/**
+ * Camera binding for a step.
+ * mode='free'     → camera comes from step.snapshot.camera (today's behaviour)
+ * mode='template' → camera comes from cameraViews[templateId] at activation time
+ */
+export function createCameraBinding(overrides = {}) {
+  return {
+    mode:       'free',
+    templateId: null,
     ...overrides,
   };
 }

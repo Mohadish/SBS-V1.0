@@ -809,10 +809,15 @@ class StepManager {
     // Prevents a stale async from resetting the flag mid-animation of a newer step.
     const myToken = ++this._activationToken;
 
+    // Resolve camera through cameraBinding before any apply path sees
+    // the snapshot — template-bound steps pull from cameraViews, free
+    // steps use their own snapshot.camera.
+    const resolvedSnap = this._resolveStepSnapshot(step);
+
     if (shouldAnimate) {
       this._animRunning       = true;
-      this._currentTargetSnap = step.snapshot;
-      await this.applySnapshotAnimated(step.snapshot, tr);
+      this._currentTargetSnap = resolvedSnap;
+      await this.applySnapshotAnimated(resolvedSnap, tr);
       // Only clear flags if we're still the active animation (no newer step started)
       if (myToken === this._activationToken) {
         this._animRunning                  = false;
@@ -822,7 +827,7 @@ class StepManager {
     } else {
       this._animRunning       = false;
       this._currentTargetSnap = null;
-      this.applySnapshotInstant(step.snapshot);
+      this.applySnapshotInstant(resolvedSnap);
     }
 
     state.emit('step:applied', step);
@@ -1017,7 +1022,10 @@ class StepManager {
 
   /**
    * Explicitly save the current viewport camera position into a step.
-   * This is the ONLY way to update a step's camera after it was created.
+   * Step-level "Update camera" is ALWAYS free-camera: snapshot the
+   * current view AND set cameraBinding to free, breaking any prior
+   * template link. Updating a *template* (which propagates to every
+   * bound step) goes through the Camera tab, not this entry point.
    *
    * @param {string} stepId  target step (defaults to active step)
    */
@@ -1030,9 +1038,62 @@ class StepManager {
 
     step.snapshot = step.snapshot ?? {};
     step.snapshot.camera = sceneCore.getCameraState();
+    if (!step.cameraBinding) step.cameraBinding = { mode: 'free', templateId: null };
+    step.cameraBinding.mode       = 'free';
+    step.cameraBinding.templateId = null;
     state.setState({ steps: [...allSteps] });
     state.markDirty();
     state.emit('step:synced', step);
+  }
+
+  /**
+   * Resolve the effective camera state for a step, honouring its
+   * cameraBinding. Templates are stored in state.cameraViews — when a
+   * step's binding points there, we copy out the camera fields so the
+   * activate path can apply/animate to that state.
+   *
+   * Returns null if the step has no usable camera (no snapshot camera
+   * AND no template, OR the template id no longer exists with no
+   * snapshot fallback). Callers should treat null as "skip camera".
+   *
+   * @param {Step} step
+   * @returns {CameraState|null}
+   */
+  _resolveStepCamera(step) {
+    if (!step) return null;
+    const binding = step.cameraBinding;
+    if (binding?.mode === 'template' && binding.templateId) {
+      const views = state.get('cameraViews') || [];
+      const tpl   = views.find(v => v.id === binding.templateId);
+      if (tpl) {
+        return {
+          position:   tpl.position,
+          quaternion: tpl.quaternion,
+          pivot:      tpl.pivot,
+          up:         tpl.up,
+          fov:        tpl.fov,
+        };
+      }
+      // Template was deleted out from under this step. Fall back to the
+      // step's last-snapshotted camera so the view doesn't blank.
+    }
+    return step.snapshot?.camera ?? null;
+  }
+
+  /**
+   * Returns the step's snapshot with camera resolved through its
+   * cameraBinding — what the activate paths actually want to apply.
+   * Returns the original snapshot if nothing changes (no template
+   * binding, no camera at all).
+   *
+   * @param {Step} step
+   * @returns {Snapshot}
+   */
+  _resolveStepSnapshot(step) {
+    if (!step?.snapshot) return step?.snapshot;
+    const resolvedCam = this._resolveStepCamera(step);
+    if (resolvedCam === step.snapshot.camera) return step.snapshot;
+    return { ...step.snapshot, camera: resolvedCam };
   }
 
 
