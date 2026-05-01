@@ -21,7 +21,6 @@ import * as editSession         from './edit-session.js';   // P7-A: gate Ctrl-Z
 import * as cables              from './cables.js';          // C3: cable mutators (data layer)
 import {
   applyAllVisibility,
-  applyAllTransforms,
   captureTransformSnapshot,
   applyTransformSnapshot,
   applyNodeTransformToObject3D,
@@ -2647,44 +2646,6 @@ function _syncVis() {
   applyAllVisibility(state.get('treeData'), steps.object3dById);
   state.emit('change:treeData', state.get('treeData'));
   steps.scheduleSync();
-}
-
-// ═══════════════════════════════════════════════════════════════════════════
-//  MODEL SOURCE TRANSFORM (Edit → Model source transform…)
-// ═══════════════════════════════════════════════════════════════════════════
-//
-// Mutates a top-level node's baseLocalPosition / baseLocalQuaternion /
-// baseLocalScale. Per-step transforms are stored as DELTAS off these
-// base values (see core/transforms.js: position = base + localOffset),
-// so editing the base shifts every step's effective world position
-// uniformly — fixes "imported off-centre / wrong rotation" mistakes
-// without touching any step's stored snapshot.
-//
-// Dialog calls this once on Save with the final values. Live preview
-// while editing is the dialog's job (it pokes node.baseLocal* directly
-// and re-applies transforms); on Save the dialog passes BOTH the
-// before and after snapshots so the undo entry can flip cleanly.
-
-export function setModelSourceTransform(nodeId, before, after) {
-  const node = state.get('nodeById')?.get(nodeId);
-  if (!node) return;
-
-  const apply = (snap) => {
-    if (Array.isArray(snap.baseLocalPosition))   node.baseLocalPosition   = [...snap.baseLocalPosition];
-    if (Array.isArray(snap.baseLocalQuaternion)) node.baseLocalQuaternion = [...snap.baseLocalQuaternion];
-    if (Array.isArray(snap.baseLocalScale))      node.baseLocalScale      = [...snap.baseLocalScale];
-    applyAllTransforms(state.get('treeData'), steps.object3dById);
-    state.emit('change:treeData', state.get('treeData'));
-    state.markDirty();
-  };
-
-  apply(after);
-
-  undoManager.push(
-    `Model source transform "${node.name || 'node'}"`,
-    () => apply(before),
-    () => apply(after),
-  );
 }
 
 function _isInputFocused() {

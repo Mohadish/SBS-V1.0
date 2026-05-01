@@ -199,16 +199,6 @@ export function ensureTransformDefaults(node) {
   if (!Array.isArray(node.baseLocalScale))
     node.baseLocalScale = [1, 1, 1];
 
-  // Original-base backup. Seeded from current baseLocal* if missing —
-  // keeps "Reset to original" working even on legacy projects that
-  // pre-date Model-Source-Transform. Never overwritten once set.
-  if (!Array.isArray(node.originalBaseLocalPosition))
-    node.originalBaseLocalPosition = [...node.baseLocalPosition];
-  if (!Array.isArray(node.originalBaseLocalQuaternion) || node.originalBaseLocalQuaternion.length < 4)
-    node.originalBaseLocalQuaternion = [...node.baseLocalQuaternion];
-  if (!Array.isArray(node.originalBaseLocalScale))
-    node.originalBaseLocalScale = [...node.baseLocalScale];
-
   if (!Array.isArray(node.pivotLocalOffset))
     node.pivotLocalOffset = [0, 0, 0];
 
@@ -249,29 +239,14 @@ export function setStoredQuaternion(node, arr) {
 }
 
 /**
- * The TOTAL local quaternion = delta * base (if rotateEnabled).
- *
- * Composition order: BASE applied first (in the model's own local
- * frame), DELTA applied on top. So a "model source" rotation acts as
- * a rest-pose orientation — rotating a flat-imported clock 90° around
- * its Z axis genuinely makes "12" point to "9" inside every step's
- * stored per-step rotation. base × delta would have applied the
- * source AFTER the per-step in world space, which reads as a global
- * pivot translation rather than an intrinsic re-orientation.
- *
- * Backward-compatible: pre-Model-Source-Transform projects all have
- * baseLocalQuaternion = identity (set by storeBaseTransformFromObject3D
- * at import for top-level nodes that have no inherent rotation), so
- * delta × identity == identity × delta == delta. Existing animations
- * are untouched.
- *
+ * The TOTAL local quaternion = base * delta (if rotateEnabled).
  * Returns array [x,y,z,w].
  */
 export function getTotalLocalQuaternion(node) {
   ensureTransformDefaults(node);
   const base  = node.baseLocalQuaternion;
   const delta = node.rotateEnabled === false ? [0, 0, 0, 1] : node.localQuaternion;
-  return normalizeQuaternion(multiplyQuaternions(delta, base));
+  return normalizeQuaternion(multiplyQuaternions(base, delta));
 }
 
 /**
@@ -362,52 +337,25 @@ export function applyQuaternionToVector(q, v) {
  * World-space position of a node's pivot point. Returns a fresh
  * THREE.Vector3 — caller can copy into the gizmo group.
  *
- * pivotLocalOffset is in OBJECT-LOCAL space. The world pivot is the
- * object's world position PLUS the pivot offset rotated into the
- * object's frame — but with the source-base rotation STRIPPED, same
- * reason as getPivotWorldQuaternion: rotating the source mustn't
- * orbit the gizmo around the model. Pre-feature where base = identity,
- * inv(base) = identity → matches the old localToWorld behaviour.
+ * pivotLocalOffset is in OBJECT-LOCAL space; world pivot is the result
+ * of running it through obj3d.localToWorld().
  */
 export function getPivotWorldPosition(node, object3d) {
   ensureTransformDefaults(node);
   const T = window.THREE;
   const local = getAppliedPivotOffset(node);   // zeroes out when pivotEnabled=false
-  if (!object3d?.getWorldPosition) {
-    return new T.Vector3(local[0], local[1], local[2]);
+  const v = new T.Vector3(local[0], local[1], local[2]);
+  if (object3d?.localToWorld) {
+    object3d.updateMatrixWorld?.(true);
+    object3d.localToWorld(v);
   }
-  object3d.updateMatrixWorld?.(true);
-
-  const objPos = new T.Vector3();
-  object3d.getWorldPosition(objPos);
-
-  // Build the source-stripped object orientation: parent × delta.
-  const objQuat = new T.Quaternion();
-  object3d.getWorldQuaternion(objQuat);
-  const baseInv = invertQuaternion(node.baseLocalQuaternion);
-  objQuat.multiply(new T.Quaternion(baseInv[0], baseInv[1], baseInv[2], baseInv[3]));
-
-  const offset = new T.Vector3(local[0], local[1], local[2]);
-  offset.applyQuaternion(objQuat);
-  return objPos.add(offset);
+  return v;
 }
 
 /**
- * World-space orientation of the pivot frame.
- *
- *   pivot_world_q = parent_world_q × localQuaternion × pivotLocalQuaternion
- *
- * Note that baseLocalQuaternion (the model-source rotation) is
- * intentionally STRIPPED from this calculation. The pivot frame is
- * the user's "local translate / local rotate" frame — if the source
- * transform pulled the pivot with it, applying a source rotation
- * would silently re-orient the gizmo axes and "local translate X"
- * would no longer point where the user expects. Stripping base keeps
- * the pivot anchored to the per-step rotation only.
- *
- * Math: object's world = parent × (delta × base). World × inv(base) =
- * parent × delta. Then × pivotLocalQuaternion. Pre-feature where
- * base = identity, inv(base) = identity → behaviour unchanged.
+ * World-space orientation of the pivot frame = object's world quaternion *
+ * pivotLocalQuaternion. Used so the gizmo's axes align with the pivot
+ * frame, not the object frame, when in pivot mode.
  */
 export function getPivotWorldQuaternion(node, object3d) {
   ensureTransformDefaults(node);
@@ -416,10 +364,6 @@ export function getPivotWorldQuaternion(node, object3d) {
   if (object3d?.getWorldQuaternion) {
     object3d.updateMatrixWorld?.(true);
     object3d.getWorldQuaternion(out);
-    // Strip the source-base contribution so source edits don't
-    // re-orient the gizmo / pivot frame.
-    const baseInv = invertQuaternion(node.baseLocalQuaternion);
-    out.multiply(new T.Quaternion(baseInv[0], baseInv[1], baseInv[2], baseInv[3]));
   }
   const pivotQ = getAppliedPivotQuaternion(node);   // identity when disabled
   out.multiply(new T.Quaternion(pivotQ[0], pivotQ[1], pivotQ[2], pivotQ[3]));
@@ -460,11 +404,9 @@ export function setNodeLocalRotationPreservePivot(node, newDeltaQ) {
     localPos[2] + pivotPreRot[2],
   ];
 
-  // Apply the new orientation, then back-solve localOffset. Same
-  // delta × base order as getTotalLocalQuaternion — see the long
-  // comment there for why.
+  // Apply the new orientation, then back-solve localOffset.
   const newDelta    = normalizeQuaternion(newDeltaQ);
-  const newTotalQ   = normalizeQuaternion(multiplyQuaternions(newDelta, node.baseLocalQuaternion));
+  const newTotalQ   = normalizeQuaternion(multiplyQuaternions(node.baseLocalQuaternion, newDelta));
   const pivotPostRot = applyQuaternionToVector(newTotalQ, pivot);
   const newLocalPos = [
     pivotInParent[0] - pivotPostRot[0],
@@ -531,14 +473,6 @@ export function storeBaseTransformFromObject3D(node, object3d) {
   node.baseLocalPosition  = [sanitizeScalar(p.x), sanitizeScalar(p.y), sanitizeScalar(p.z)];
   node.baseLocalQuaternion = normalizeQuaternion([q.x, q.y, q.z, q.w]);
   node.baseLocalScale     = [s.x, s.y, s.z];
-
-  // Original-base backup — captured ONCE at import. Subsequent
-  // user edits via Model Source Transform overwrite baseLocal*
-  // but never touch originalBaseLocal*, so "Reset to original"
-  // returns to the import-time pose.
-  node.originalBaseLocalPosition   = [...node.baseLocalPosition];
-  node.originalBaseLocalQuaternion = [...node.baseLocalQuaternion];
-  node.originalBaseLocalScale      = [...node.baseLocalScale];
 
   // Reset user deltas
   node.localOffset     = [0, 0, 0];

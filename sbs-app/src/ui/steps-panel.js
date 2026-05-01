@@ -83,11 +83,6 @@ export function initStepsPanel() {
   // Camera template list affects the per-step camera dropdown built in
   // _buildTransitionRow — re-render so add/rename/delete propagates.
   state.on('change:cameraViews',          _syncAndRender);
-  // Model-source-transform mode flips the panel into navigation-only:
-  // creation / reordering / context menus are gated, but click-to-
-  // activate stays live so the user can scrub steps and verify the
-  // model edit lands consistently.
-  state.on('change:modelSourceMode',      _syncAndRender);
   state.on('change:chapters',             _syncAndRender);
   state.on('change:activeStepId',         _onActiveStepChanged);
   state.on('step:applied',                _playStepNarration);
@@ -106,14 +101,6 @@ export function initStepsPanel() {
     // Context menu (rendered outside the timeline) shouldn't count as "outside".
     const ctx = document.getElementById('context-menu');
     if (ctx && ctx.contains(e.target)) return;
-    // While in Model-Source-Transform mode the left sidebar hosts the
-    // takeover panel — clicks on its inputs / buttons must NOT trigger
-    // a steps-panel re-render (which was destroying inputs mid-keystroke
-    // and breaking focus on the panel's number fields).
-    if (state.get('modelSourceMode')) {
-      const ms = document.getElementById('model-source-panel');
-      if (ms && ms.contains(e.target)) return;
-    }
     let dirty = false;
     if (_expandedId !== null) { _expandedId = null; dirty = true; }
     if (_selectedIds.size)   { _selectedIds.clear(); dirty = true; }
@@ -209,14 +196,6 @@ export function renderStepsPanel() {
   const allSteps    = (state.get('steps') || []).filter(s => !s.isBaseStep);
   const allChapters = state.get('chapters') || [];
   const activeId    = state.get('activeStepId');
-
-  // Model-Source-Transform mode: the panel becomes navigation-only.
-  // Add a banner at the top, dim the create-step / create-chapter
-  // buttons, and gate destructive operations (right-click menu items,
-  // dragstart) at their handlers. Click-to-activate / mid-click jump
-  // / eye-toggle stay live — users navigate to verify the model edit
-  // across steps.
-  _applyModelSourceModeChrome();
 
   if (allSteps.length === 0) {
     list.innerHTML = '<div class="small muted" style="padding:12px;">No steps yet.<br>Press <b>+ Step</b> to capture the current scene.</div>';
@@ -352,7 +331,6 @@ function _buildChapterHeader(chapter, number) {
   wrap.addEventListener('contextmenu', e => {
     e.preventDefault();
     e.stopPropagation();
-    if (state.get('modelSourceMode')) return;   // navigation-only mode
     _showChapterContextMenu(chapter, e.clientX, e.clientY);
   });
 
@@ -363,8 +341,6 @@ function _buildChapterHeader(chapter, number) {
       e.preventDefault();
       return;
     }
-    // Gated in modelSourceMode — panel is navigation-only there.
-    if (state.get('modelSourceMode')) { e.preventDefault(); return; }
     _dragChapterId = chapter.id;
     _dragId        = null;
     e.dataTransfer.effectAllowed = 'move';
@@ -632,7 +608,6 @@ function _buildStepCard(step, idx, isActive, isExpanded, total) {
   card.addEventListener('contextmenu', e => {
     e.preventDefault();
     e.stopPropagation();
-    if (state.get('modelSourceMode')) return;   // navigation-only mode
     if (_selectedIds.size > 1 && _selectedIds.has(step.id)) {
       _showMultiStepContextMenu(Array.from(_selectedIds), e.clientX, e.clientY);
     } else {
@@ -706,8 +681,6 @@ function _buildStepCard(step, idx, isActive, isExpanded, total) {
       e.preventDefault();
       return;
     }
-    // Gated in modelSourceMode — panel is navigation-only there.
-    if (state.get('modelSourceMode')) { e.preventDefault(); return; }
     _dragChapterId = null;
     // If the dragged step is part of a multi-selection, drag the whole set.
     if (_selectedIds.has(step.id) && _selectedIds.size > 1) {
@@ -851,47 +824,6 @@ function _buildStepTopCollapsed(step, idx, showThumb = true) {
  * (using the right-click multi semantics: any-visible → hide all,
  * all-hidden → show all).
  */
-/**
- * Visual side-effects of modelSourceMode on the panel chrome:
- *   - banner at the top of #steps-list
- *   - blue outline around the panel container
- *   - + Step / + Chapter buttons disabled
- *   - export-video button disabled (export from a half-edited base is
- *     usually a mistake; user can finish editing first)
- */
-function _applyModelSourceModeChrome() {
-  const on = !!state.get('modelSourceMode');
-  if (!_container) return;
-
-  _container.style.outline       = on ? '2px solid #3b82f6' : '';
-  _container.style.outlineOffset = on ? '-2px' : '';
-
-  for (const id of ['btn-add-step', 'btn-add-chapter', 'btn-export-video']) {
-    const el = _container.querySelector('#' + id);
-    if (!el) continue;
-    el.disabled = on;
-    el.style.opacity = on ? '0.4' : '';
-  }
-
-  // Banner inside the list (rendered above all step cards).
-  const list = _container.querySelector('#steps-list');
-  if (!list) return;
-  let banner = list.querySelector('#ms-mode-banner');
-  if (on && !banner) {
-    banner = document.createElement('div');
-    banner.id = 'ms-mode-banner';
-    banner.style.cssText = [
-      'padding:8px 10px','margin:0 0 8px 0',
-      'background:rgba(59,130,246,0.18)','border:1px solid rgba(59,130,246,0.5)',
-      'border-radius:6px','color:#dbeafe','font-size:12px','line-height:1.4',
-    ].join(';');
-    banner.innerHTML = `<b>Navigation only</b><br><span class="small muted" style="color:#bfdbfe;">Model-source edit in progress. Click steps to verify the change across the timeline.</span>`;
-    list.prepend(banner);
-  } else if (!on && banner) {
-    banner.remove();
-  }
-}
-
 function _toggleStepHidden(step) {
   const inMulti = _selectedIds.size > 1 && _selectedIds.has(step.id);
   if (inMulti) {

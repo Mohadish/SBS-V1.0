@@ -68,14 +68,6 @@ function createInitialState() {
     chapters:       [],               // ordered array of chapter objects
     activeStepId:   null,             // currently active step id
 
-    // ── Model Source Transform mode (Edit → Model source transform…)
-    // Transient flag (NOT persisted). When true, the left sidebar shows
-    // the Model-Source-Transform panel instead of its tabs, and the
-    // steps panel disables creation / reordering / context menus while
-    // keeping click-to-navigate live so the user can scrub through the
-    // timeline and verify the edit lands consistently across steps.
-    modelSourceMode: false,
-
     // ── Camera views
     cameraViews:    [],               // saved camera presets
 

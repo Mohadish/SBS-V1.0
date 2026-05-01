@@ -197,14 +197,6 @@ export function createNode(type, overrides = {}) {
     baseLocalPosition:  [0, 0, 0],
     baseLocalQuaternion:[0, 0, 0, 1],
     baseLocalScale:     [1, 1, 1],
-    // Original-base backup — captured at import time, persisted to disk,
-    // never overwritten by user edits. Powers Model-Source-Transform's
-    // per-axis reset (↺) and full-reset buttons. Always-fall-back: if a
-    // legacy project loads without these, the loader copies the current
-    // baseLocal* into them so reset still has a safe target.
-    originalBaseLocalPosition:   [0, 0, 0],
-    originalBaseLocalQuaternion: [0, 0, 0, 1],
-    originalBaseLocalScale:      [1, 1, 1],
     pivotLocalOffset:   [0, 0, 0],
     pivotLocalQuaternion:[0, 0, 0, 1],
     pivotEnabled:       true,
