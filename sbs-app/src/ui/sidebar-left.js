@@ -139,7 +139,43 @@ function _switchTab(tab) {
     b.classList.toggle('active', b.dataset.tab === tab));
   _container.querySelectorAll('.tabPanel').forEach(p =>
     p.classList.toggle('active', p.dataset.tab === tab));
+  // Model Source Transform mode takes over the entire left sidebar:
+  // tabs + panels hide, a single ModelSource panel mounts in their
+  // place. The mode flag is transient state.modelSourceMode.
+  state.on('change:modelSourceMode', _syncModelSourceMode);
+  _syncModelSourceMode();
+
   _renderActiveTab();
+}
+
+function _syncModelSourceMode() {
+  if (!_container) return;
+  const on    = !!state.get('modelSourceMode');
+  const tabs  = _container.querySelector('#left-tab-bar');
+  const pan   = _container.querySelector('#left-panels');
+  let mount   = _container.querySelector('#model-source-panel');
+
+  if (on) {
+    if (tabs) tabs.style.display = 'none';
+    if (pan)  pan.style.display  = 'none';
+    if (!mount) {
+      mount = document.createElement('div');
+      mount.id = 'model-source-panel';
+      mount.style.cssText = 'flex:1;overflow:auto;padding:8px;display:flex;flex-direction:column;gap:10px;';
+      _container.appendChild(mount);
+      // Lazy import to avoid circular dependency at module load —
+      // model-source-dialog imports from sidebar-left in some helpers.
+      import('./model-source-dialog.js').then(mod => mod.mountModelSourcePanel(mount));
+    }
+  } else {
+    if (tabs) tabs.style.display = '';
+    if (pan)  pan.style.display  = '';
+    if (mount) {
+      // Give the dialog a chance to clean up live previews / undo state.
+      import('./model-source-dialog.js').then(mod => mod.unmountModelSourcePanel?.());
+      mount.remove();
+    }
+  }
 }
 
 function _panel(tab) { return document.getElementById(`tab-panel-${tab}`); }

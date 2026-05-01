@@ -125,9 +125,11 @@ initUserSettings().catch(err => console.warn('[settings] init failed:', err));
 
 // File → Settings… menu hook. Channel allowlist lives in preload.js.
 window.sbsNative?.onMenu?.('menu:openSettings', () => openSettingsModal());
-// Edit → Model source transform… — global re-orientation of imported
-// models via the base-pose transform. Per-step animations stay intact;
-// every step shifts uniformly with the new base.
+// Edit → Model source transform… — flips state.modelSourceMode on,
+// which sidebar-left observes to swap its tabs out for the
+// Model-Source-Transform panel. The panel handles its own UX, undo,
+// preview bbox and exit. Re-clicking the menu while already in mode
+// is a no-op (the panel is already mounted).
 window.sbsNative?.onMenu?.('menu:modelSourceTransform', () => openModelSourceDialog());
 
 // Background narration pre-cache:

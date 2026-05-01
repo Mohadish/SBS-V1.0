@@ -199,6 +199,16 @@ export function ensureTransformDefaults(node) {
   if (!Array.isArray(node.baseLocalScale))
     node.baseLocalScale = [1, 1, 1];
 
+  // Original-base backup. Seeded from current baseLocal* if missing —
+  // keeps "Reset to original" working even on legacy projects that
+  // pre-date Model-Source-Transform. Never overwritten once set.
+  if (!Array.isArray(node.originalBaseLocalPosition))
+    node.originalBaseLocalPosition = [...node.baseLocalPosition];
+  if (!Array.isArray(node.originalBaseLocalQuaternion) || node.originalBaseLocalQuaternion.length < 4)
+    node.originalBaseLocalQuaternion = [...node.baseLocalQuaternion];
+  if (!Array.isArray(node.originalBaseLocalScale))
+    node.originalBaseLocalScale = [...node.baseLocalScale];
+
   if (!Array.isArray(node.pivotLocalOffset))
     node.pivotLocalOffset = [0, 0, 0];
 
@@ -473,6 +483,14 @@ export function storeBaseTransformFromObject3D(node, object3d) {
   node.baseLocalPosition  = [sanitizeScalar(p.x), sanitizeScalar(p.y), sanitizeScalar(p.z)];
   node.baseLocalQuaternion = normalizeQuaternion([q.x, q.y, q.z, q.w]);
   node.baseLocalScale     = [s.x, s.y, s.z];
+
+  // Original-base backup — captured ONCE at import. Subsequent
+  // user edits via Model Source Transform overwrite baseLocal*
+  // but never touch originalBaseLocal*, so "Reset to original"
+  // returns to the import-time pose.
+  node.originalBaseLocalPosition   = [...node.baseLocalPosition];
+  node.originalBaseLocalQuaternion = [...node.baseLocalQuaternion];
+  node.originalBaseLocalScale      = [...node.baseLocalScale];
 
   // Reset user deltas
   node.localOffset     = [0, 0, 0];
