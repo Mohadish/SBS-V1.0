@@ -1505,7 +1505,17 @@ function _renderExportTab() {
           <option value="hdtv_1080"   ${exp.formatPreset==='hdtv_1080'   ?'selected':''}>HDTV 1080p (1920 × 1080)</option>
           <option value="hdtv_720"    ${exp.formatPreset==='hdtv_720'    ?'selected':''}>HDTV 720p (1280 × 720)</option>
           <option value="square_1080" ${exp.formatPreset==='square_1080' ?'selected':''}>Square 1080 × 1080</option>
+          <option value="custom"      ${exp.formatPreset==='custom'      ?'selected':''}>Custom…</option>
         </select>
+
+        <div class="grid2" style="margin-top:8px;">
+          <label class="colorlab">Width (px)
+            <input type="number" id="exp-width"  value="${exp.width  ?? 1920}" min="64" max="7680" step="2" style="margin-top:6px;" />
+          </label>
+          <label class="colorlab">Height (px)
+            <input type="number" id="exp-height" value="${exp.height ?? 1080}" min="64" max="4320" step="2" style="margin-top:6px;" />
+          </label>
+        </div>
 
         <div class="grid2" style="margin-top:10px;">
           <label class="colorlab">Frame rate (fps)
@@ -1515,6 +1525,21 @@ function _renderExportTab() {
             <input type="number" id="exp-hold" value="${exp.stepHoldMs??800}" min="0" max="10000" step="100" style="margin-top:6px;" />
           </label>
         </div>
+
+        <label style="display:flex;align-items:center;gap:6px;margin-top:10px;cursor:pointer;">
+          <input type="checkbox" id="exp-show-safe-frame" ${exp.showSafeFrame !== false ? 'checked' : ''} />
+          <span class="small muted">Show safe frame in viewport</span>
+        </label>
+
+        <label style="display:flex;align-items:flex-start;gap:6px;margin-top:8px;cursor:pointer;">
+          <input type="checkbox" id="exp-offline-render" ${exp.offlineRender ? 'checked' : ''} style="margin-top:3px;" />
+          <span class="small muted">
+            Offline render (deterministic)
+            <div class="small muted" style="font-size:11px;opacity:0.75;margin-top:2px;">
+              Decouples animation from real time. Slower but immune to window-throttling — same project renders the same duration regardless of window size or focus.
+            </div>
+          </span>
+        </label>
       </div>
 
       <div class="card" style="margin-top:8px;">
@@ -1581,11 +1606,35 @@ function _renderExportTab() {
   el.querySelector('#exp-format').addEventListener('change', e =>
     state.setExportOption('outputFormat', e.target.value));
   el.querySelector('#exp-preset').addEventListener('change', e => {
-    const r = PRESETS[e.target.value] || PRESETS.hdtv_1080;
     state.setExportOption('formatPreset', e.target.value);
-    state.setExportOption('width', r.width);
-    state.setExportOption('height', r.height);
+    if (e.target.value !== 'custom') {
+      const r = PRESETS[e.target.value] || PRESETS.hdtv_1080;
+      state.setExportOption('width',  r.width);
+      state.setExportOption('height', r.height);
+      // Sync the W/H inputs immediately — same render-pass, no re-render needed.
+      const wInput = el.querySelector('#exp-width');
+      const hInput = el.querySelector('#exp-height');
+      if (wInput) wInput.value = String(r.width);
+      if (hInput) hInput.value = String(r.height);
+    }
   });
+  // Custom width / height — selecting either flips the preset to "custom"
+  // so future exports honour the typed numbers. Min clamp matches the UI.
+  const _onSizeChange = (key) => (e) => {
+    const val = Math.max(64, Number(e.target.value) || 0);
+    state.setExportOption(key, val);
+    if (state.get('export')?.formatPreset !== 'custom') {
+      state.setExportOption('formatPreset', 'custom');
+      const presetSel = el.querySelector('#exp-preset');
+      if (presetSel) presetSel.value = 'custom';
+    }
+  };
+  el.querySelector('#exp-width') ?.addEventListener('change', _onSizeChange('width'));
+  el.querySelector('#exp-height')?.addEventListener('change', _onSizeChange('height'));
+  el.querySelector('#exp-show-safe-frame')?.addEventListener('change', e =>
+    state.setExportOption('showSafeFrame', !!e.target.checked));
+  el.querySelector('#exp-offline-render')?.addEventListener('change', e =>
+    state.setExportOption('offlineRender', !!e.target.checked));
   el.querySelector('#exp-fps').addEventListener('change', e =>
     state.setExportOption('fps', Number(e.target.value)));
   el.querySelector('#exp-hold').addEventListener('change', e =>
@@ -1873,6 +1922,7 @@ async function _onExportTabStart() {
       fps:              Number(exp.fps) || 30,
       stepHoldMs:       Number(exp.stepHoldMs) || 800,
       includeNarration: exp.narrationEnabled !== false,
+      offline:          !!exp.offlineRender,
       signal:           _exportTabCtrl.signal,
       onProgress: ({ current, total, stepName }) => {
         set(`Step ${current}/${total}: ${stepName}`);

@@ -19,10 +19,12 @@
  */
 
 import { state }     from '../core/state.js';
-import { steps }     from './steps.js';
+import { steps, setSleepImpl } from './steps.js';
+import * as clock    from '../core/clock.js';
 import { sceneCore } from '../core/scene.js';
 import { rasterizeOverlay, waitForOverlayStable }     from './overlay.js';
 import { rasterizeHeaderLayer, waitForHeaderStable }  from './header.js';
+import { computeSafeFrameRect }                       from '../core/safe-frame.js';
 import { decodeToAudioBuffer, resampleToMonoFloat32, mixTrackToFloat32 } from './audio-bridge.js';
 import { synthesize as ttsSynthesize } from './tts.js';
 import * as narrationCache from './narration-cache.js';
@@ -74,6 +76,7 @@ export function downloadBlob(blob, filename) {
 async function _exportMp4({ fps = DEFAULT_FPS, bitrate = DEFAULT_BITRATE,
                             stepHoldMs = POST_STEP_HOLD_MS,
                             includeNarration = true,
+                            offline = false,
                             onProgress, signal } = {}) {
   const canvas = sceneCore.renderer?.domElement;
   if (!canvas) throw new Error('No 3D canvas available to export.');
@@ -81,8 +84,70 @@ async function _exportMp4({ fps = DEFAULT_FPS, bitrate = DEFAULT_BITRATE,
   const stepsToPlay = (state.get('steps') || []).filter(s => !s.hidden && !s.isBaseStep);
   if (!stepsToPlay.length) throw new Error('No steps to export — add at least one step first.');
 
-  const width  = canvas.width;
-  const height = canvas.height;
+  // Output dimensions come from the project's canonical export config
+  // (state.export.width × state.export.height), NOT the viewport canvas.
+  // The viewport canvas is whatever size the user's window happens to
+  // be — using it produced different resolutions on different machines
+  // and ignored the W/H fields in the Export tab. Composite onto an
+  // OffscreenCanvas at the canonical size; drawImage scales the live
+  // canvas into the target rect. Stage 4 will render natively at the
+  // canonical size for sharper output.
+  const _exp   = state.get('export') || {};
+  const width  = (Number.isFinite(_exp.width)  && _exp.width  > 0) ? _exp.width  : canvas.width;
+  const height = (Number.isFinite(_exp.height) && _exp.height > 0) ? _exp.height : canvas.height;
+
+  // Stage 4: temporarily render the 3D scene AT CANONICAL RESOLUTION so
+  // the export captures sharp pixels instead of upscaling the viewport
+  // canvas (which is whatever-size the user's window happens to be).
+  //
+  // We must also FORCE pixelRatio = 1 for the duration of the export.
+  // Three.js setSize multiplies the requested size by the renderer's
+  // pixel ratio when sizing the canvas backing buffer:
+  //   canvas.width  = floor(width  * pixelRatio)
+  //   canvas.height = floor(height * pixelRatio)
+  // On Electron/Chromium this PR follows window.devicePixelRatio, which
+  // is fractional under OS display-scaling AND under any browser zoom
+  // (Ctrl+/-). A user running e.g. PR=0.76 ends up with a 1460×821
+  // backing buffer instead of 1920×1080 — the 3D layer is then upscaled
+  // to canonical via drawImage (blurry), AND any non-canonical aspect
+  // drift from floor() shows up as a sub-pixel crop in computeSafeFrame
+  // (sf.x=0.2, sf.width=1459.6) which can soft-stretch the 3D layer.
+  // Forcing PR=1 makes canvas.width/height EXACTLY width/height and
+  // pins drawImage to pixel-perfect 1:1 source→dest. The live viewport
+  // visibly resizes during export — that's acceptable while exporting
+  // (user isn't editing). Restored via sceneCore.resize() in finally so
+  // the viewer auto-fits its container regardless of saved PR.
+  const savedRendererSize = { w: canvas.width, h: canvas.height };
+  const savedCameraAspect = sceneCore.camera.aspect;
+  const savedPixelRatio   = sceneCore.renderer.getPixelRatio();
+  const savedCanvasCssW   = canvas.style.width;
+  const savedCanvasCssH   = canvas.style.height;
+  sceneCore.renderer.setPixelRatio(1);
+  sceneCore.renderer.setSize(width, height, false);   // false = don't touch CSS size
+  sceneCore.camera.aspect = width / height;
+  sceneCore.camera.updateProjectionMatrix();
+
+  // Live-preview cosmetic: with updateStyle=false above, the canvas CSS
+  // box stays at the viewer container's aspect while its internal buffer
+  // is now canonical aspect. The browser then stretches non-uniformly
+  // and the user sees the 3D layer squashed during export. (Output is
+  // unaffected — drawImage reads from the buffer.) Letterbox the canvas
+  // CSS into its parent at the canonical aspect so the live preview
+  // matches what's being encoded.
+  try {
+    const parent = canvas.parentElement;
+    if (parent) {
+      const pw = parent.clientWidth;
+      const ph = parent.clientHeight;
+      const ca = width / height;
+      const pa = pw / ph;
+      let cssW, cssH;
+      if (pa >= ca) { cssH = ph; cssW = ph * ca; }
+      else          { cssW = pw; cssH = pw / ca; }
+      canvas.style.width  = `${cssW}px`;
+      canvas.style.height = `${cssH}px`;
+    }
+  } catch {}
 
   // ── Build the step timeline.
   // Per-step hold is always added AFTER the step's narration (or after the
@@ -216,9 +281,19 @@ async function _exportMp4({ fps = DEFAULT_FPS, bitrate = DEFAULT_BITRATE,
       .catch(err => { console.warn('[export] audio pump aborted:', err?.message); });
   }
 
-  // Frame pump — captures the canvas on every render tick and encodes as many
-  // fixed-interval frame slots as have elapsed in wall-clock time. Timestamps
-  // are regular so playback is smooth even if rAF hiccups.
+  // Frame pump — captures the canvas and encodes frames at fixed timestamps.
+  //
+  // Two strategies:
+  //   • realtime (default): rAF tick hook captures however many frame slots
+  //     have elapsed in wall-clock time. Smooth, but throttled when the
+  //     window is backgrounded / floating small (Chromium throttles rAF +
+  //     setTimeout in those cases — exports take 5× longer there).
+  //   • offline: stops the rAF loop, overrides steps._sleep so each phase
+  //     advances a synthetic clock by exactly 1/fps per encoded frame. The
+  //     animation timeline drives the encoder directly — wall-clock time
+  //     and window throttling are completely decoupled from the output.
+  //     Slower than realtime when realtime isn't throttled, but produces
+  //     identical-duration output regardless of host conditions.
   //
   // Composite: we draw the 3D canvas and the Konva overlay into an offscreen
   // 2D canvas, then build the VideoFrame from that. This bakes the overlay
@@ -227,42 +302,138 @@ async function _exportMp4({ fps = DEFAULT_FPS, bitrate = DEFAULT_BITRATE,
   const compositeCtx = composite.getContext('2d');
 
   const frameIntervalUs = 1_000_000 / fps;
+  const frameIntervalMs = 1000 / fps;
   let nextFrameUs = 0;
-  const startMs = performance.now();
-
-  const unsubTick = sceneCore.addTickHook((nowMs) => {
-    const elapsedUs = (nowMs - startMs) * 1000;
-    while (nextFrameUs <= elapsedUs) {
-      // 1. Lay down the 3D frame at native size.
-      compositeCtx.clearRect(0, 0, width, height);
+  const _captureAndEncode = () => {
+    // 1. Lay down the 3D frame at native size.
+    // Stage 4: extract just the SAFE-FRAME rect from the live viewport
+    // canvas (it has the canonical aspect by construction), then
+    // drawImage it into the canonical W × H output. Without this crop,
+    // drawImage stretched the full viewport canvas (whatever aspect
+    // that was) into the canonical output, which squished everything
+    // when viewport aspect ≠ canonical aspect.
+    compositeCtx.clearRect(0, 0, width, height);
+    const sf = computeSafeFrameRect({ width: canvas.width, height: canvas.height });
+    if (sf.width > 0 && sf.height > 0) {
+      compositeCtx.drawImage(canvas, sf.x, sf.y, sf.width, sf.height, 0, 0, width, height);
+    } else {
       compositeCtx.drawImage(canvas, 0, 0, width, height);
-      // 2. Bake the per-step overlay on top.
-      const ov = rasterizeOverlay({ width, height });
-      if (ov) compositeCtx.drawImage(ov, 0, 0, width, height);
-      // 3. Bake the project-level header layer above the overlay so
-      //    headers always sit on top — dynamic kinds (stepName /
-      //    stepNumber / chapter*) resolve their text against whichever
-      //    step is active at this exact tick, automatically.
-      const hd = rasterizeHeaderLayer({ width, height });
-      if (hd) compositeCtx.drawImage(hd, 0, 0, width, height);
-      // 4. Encode.
-      const frame = new VideoFrame(composite, { timestamp: nextFrameUs });
-      const keyFrame = Math.round(nextFrameUs / frameIntervalUs) % fps === 0;
-      try { encoder.encode(frame, { keyFrame }); } catch (e) { frame.close(); throw e; }
-      frame.close();
-      nextFrameUs += frameIntervalUs;
     }
-  });
+    // 2. Bake the per-step overlay on top.
+    const ov = rasterizeOverlay({ width, height });
+    if (ov) compositeCtx.drawImage(ov, 0, 0, width, height);
+    // 3. Bake the project-level header layer above the overlay so
+    //    headers always sit on top — dynamic kinds (stepName /
+    //    stepNumber / chapter*) resolve their text against whichever
+    //    step is active at this exact tick, automatically.
+    const hd = rasterizeHeaderLayer({ width, height });
+    if (hd) compositeCtx.drawImage(hd, 0, 0, width, height);
+    // 4. Encode.
+    const frame = new VideoFrame(composite, { timestamp: nextFrameUs });
+    const keyFrame = Math.round(nextFrameUs / frameIntervalUs) % fps === 0;
+    try { encoder.encode(frame, { keyFrame }); } catch (e) { frame.close(); throw e; }
+    frame.close();
+    nextFrameUs += frameIntervalUs;
+  };
+
+  let unsubTick = () => {};
+  let synthMs = 0;
+  let offlineActive = false;
+
+  // Synthetic sleep — advances synthMs frame-by-frame, fires ticks,
+  // renders, captures & encodes one frame per slot. Shared by the
+  // setSleepImpl (steps animation phases) and _setWaitImpl (inter-step
+  // holds) overrides so both produce matching encoded duration.
+  const _syntheticSleep = async (ms) => {
+    if (signal?.aborted) throw new DOMException('aborted', 'AbortError');
+    const target = synthMs + Math.max(0, ms);
+    while (synthMs + frameIntervalMs <= target) {
+      synthMs += frameIntervalMs;
+      sceneCore.fireSyntheticTick(synthMs, frameIntervalMs);
+      sceneCore.renderFrame();
+      _captureAndEncode();
+      // Backpressure — let the encoder drain so we don't OOM with
+      // a multi-thousand-frame queue on long timelines.
+      while (encoder.encodeQueueSize > 16) {
+        await new Promise(resolve => setTimeout(resolve, 5));
+      }
+      // Yield to the event loop so progress callbacks fire, the UI
+      // stays responsive, and any audio-pump microtasks get a turn.
+      await new Promise(resolve => setTimeout(resolve, 0));
+      if (signal?.aborted) throw new DOMException('aborted', 'AbortError');
+    }
+    // Sub-frame remainder — advance synth without emitting an extra frame.
+    if (target > synthMs) {
+      const rem = target - synthMs;
+      synthMs = target;
+      sceneCore.fireSyntheticTick(synthMs, rem);
+    }
+  };
+
+  if (!offline) {
+    // Realtime path — rAF tick hook fires after each natural _render.
+    // No need to call renderFrame() here: the current canvas already
+    // reflects this rAF's render. Multiple catch-up frames just repeat
+    // the same canvas state at fixed timestamps.
+    const startMs = performance.now();
+    unsubTick = sceneCore.addTickHook((nowMs) => {
+      const elapsedUs = (nowMs - startMs) * 1000;
+      while (nextFrameUs <= elapsedUs) {
+        _captureAndEncode();
+      }
+    });
+  }
 
   // Suppress live narration playback while the timeline runs for capture.
   state.setState({ _exporting: true });
   try {
+    // _hardResetToFirstStep runs in REAL time even in offline mode —
+    // its instant apply + rAF settle don't drive any animation phase,
+    // and we don't want the warm-up to emit encoded frames (would
+    // desync video against the audio master, which starts at t=0 from
+    // step 1's narration). Switch to synthetic clock AFTER the reset.
     await _hardResetToFirstStep(stepsToPlay);
-    console.log('[export] timeline playback…');
+    if (offline) {
+      // Animation systems (cables-render, materials, overlay, steps)
+      // cache start timestamps via clock.now() — swap to synthetic
+      // clock so `elapsed = clock.now() - startMs` matches the synth
+      // ticks fired below. Stop the rAF loop so real-time ticks don't
+      // fight the synthetic clock.
+      sceneCore.stopLoop();
+      clock.setClockImpl(() => synthMs);
+      setSleepImpl(_syntheticSleep);
+      _setWaitImpl(_syntheticSleep);
+      offlineActive = true;
+    }
+    console.log('[export] timeline playback…' + (offline ? ' (offline mode)' : ''));
     await _playTimeline(stepsToPlay, perStepHold, onProgress, signal);
   } finally {
     unsubTick();
+    if (offlineActive) {
+      // Restore real-time clock + sleep + wait + rAF render loop before returning.
+      clock.setClockImpl(null);
+      setSleepImpl(null);
+      _setWaitImpl(null);
+      sceneCore.startLoop();
+    }
     state.setState({ _exporting: false });
+    // Stage 4 cleanup: restore PR + camera + canvas CSS, then let
+    // sceneCore.resize() re-fit the viewer to its container. Using
+    // sceneCore.resize() instead of replaying savedRendererSize avoids
+    // a double-PR-multiply bug: savedRendererSize.{w,h} were already
+    // PR-scaled when captured, so passing them back through setSize
+    // would shrink the canvas.
+    try {
+      canvas.style.width  = savedCanvasCssW;
+      canvas.style.height = savedCanvasCssH;
+      sceneCore.renderer.setPixelRatio(savedPixelRatio);
+      sceneCore.camera.aspect = savedCameraAspect;
+      sceneCore.camera.updateProjectionMatrix();
+      sceneCore.resize();
+    } catch {}
+    // Suppress the unused-var lint on savedRendererSize — kept around
+    // for diagnostics if a future export bug needs the pre-export size.
+    void savedRendererSize;
   }
 
   console.log('[export] flush video encoder…');
@@ -513,8 +684,13 @@ async function _encodeAudioMaster(pcm, sampleRate, encoder) {
   }
 }
 
-function _wait(ms) {
-  return new Promise(r => setTimeout(r, ms));
+// Inter-step hold delay. Defaults to wall-clock setTimeout, but the
+// offline export path swaps in a synthetic-clock implementation so the
+// configured Step Hold also produces matching encoded duration.
+let _waitImpl = (ms) => new Promise(r => setTimeout(r, ms));
+function _wait(ms) { return _waitImpl(ms); }
+function _setWaitImpl(fn) {
+  _waitImpl = fn || ((ms) => new Promise(r => setTimeout(r, ms)));
 }
 
 /**

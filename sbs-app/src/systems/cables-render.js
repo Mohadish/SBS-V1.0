@@ -31,6 +31,7 @@
 
 import state    from '../core/state.js';
 import sceneCore from '../core/scene.js';
+import * as clock from '../core/clock.js';
 import { resolveNodeWorldPosition, listCables } from './cables.js';
 import { socketActualSize, cableEffectiveRadius } from './actions.js';
 
@@ -153,7 +154,7 @@ export function beginCableTransitions(toCablesSnap, durationMs, easeFn, onDone) 
   }
   _cableTransitions.clear();
 
-  const startMs = performance.now();
+  const startMs = clock.now();
   const cables  = listCables();
   const highlightColor = state.get('cableHighlightColor') ?? '#22d3ee';
 
@@ -599,7 +600,7 @@ function _tickAnchorRefresh() {
   // H1: drive any in-flight cable phase animations first so they advance
   // even when no cables exist yet (e.g. brand-new project) wouldn't
   // matter, but the size check below would skip — keep it ahead.
-  _advanceCableTransitions(performance.now());
+  _advanceCableTransitions(clock.now());
 
   if (!_cableRoot || _cableSubgroups.size === 0) return;
   const cables = listCables();

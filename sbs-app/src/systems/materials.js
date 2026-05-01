@@ -23,6 +23,7 @@
 import state from '../core/state.js';
 import { createColorPreset } from '../core/schema.js';
 import { sceneCore } from '../core/scene.js';
+import * as clock from '../core/clock.js';
 
 
 // ── GLSL snippets ─────────────────────────────────────────────────────────
@@ -812,7 +813,7 @@ gl_FragColor.a = 1.0;
     // and applyGeometryOutlines() reset outline opacities — both need correction
     // for meshes that are currently mid-fade.
     if (this._visTransitions?.size) {
-      const now             = performance.now();
+      const now             = clock.now();
       const outlineSettings = state.get('geometryOutline');
       for (const [nodeId, tr] of this._visTransitions) {
         const raw   = Math.min((now - tr.startMs) / tr.durationMs, 1);
@@ -1045,7 +1046,7 @@ gl_FragColor.a = 1.0;
 
     this._colorTransition = {
       fromValues, toValues,
-      startMs:    performance.now(),
+      startMs:    clock.now(),
       durationMs: Math.max(durationMs, 1),
       easeFn,
     };
@@ -1218,7 +1219,7 @@ gl_FragColor.a = 1.0;
    * @param {function}   easeFn
    */
   beginVisibilityTransitions(hidingIds, showingIds, durationMs, easeFn) {
-    const now             = performance.now();
+    const now             = clock.now();
     const outlineSettings = state.get('geometryOutline');
 
     for (const nodeId of hidingIds) {

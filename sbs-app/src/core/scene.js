@@ -290,6 +290,22 @@ export class SceneCore extends Emitter {
     return () => this._tickHooks.delete(fn);
   }
 
+  /**
+   * Manually fire all registered tick hooks with synthetic timestamps.
+   * Used by offline render mode — the export loop drives time, not rAF.
+   * Does NOT render or advance the camera transition; caller controls that.
+   */
+  fireSyntheticTick(now, delta) {
+    this._advanceTransition(now);
+    this._syncFillLight();
+    this._tickHooks.forEach(fn => { try { fn(now, delta); } catch(e) { console.error(e); } });
+  }
+
+  /** Public render-once entry point used by offline export per-frame capture. */
+  renderFrame() {
+    this._render();
+  }
+
   // ═══════════════════════════════════════════════════════════════════════
   //  RESIZE
   // ═══════════════════════════════════════════════════════════════════════

@@ -232,6 +232,7 @@ function createInitialState() {
       stepHoldMs:         800,
       startFromActive:    true,
       showSafeFrame:      true,
+      offlineRender:      false,
       narrationEnabled:   true,
       narrationVoice:     '',          // empty → user must pick in Export tab
       narrationSpeed:     1.0,

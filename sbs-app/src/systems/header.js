@@ -261,6 +261,67 @@ let _transformer = null;   // multi-select transformer for header items
 let _stage       = null;   // borrowed from overlay.js
 let _selection   = new Set();   // selected node ids (multi-select)
 let _imageCache  = new Map();   // dataUrl → HTMLImageElement (so re-renders are cheap)
+let _prevHdrCanonical    = null;   // last seen { width, height } for the rescale ratio
+let _suppressRefreshOnce = false;  // set when rescale modifies live nodes directly
+
+function _getHdrCanonical() {
+  const exp = state.get('export') || {};
+  const width  = (Number.isFinite(exp.width)  && exp.width  > 0) ? exp.width  : 1920;
+  const height = (Number.isFinite(exp.height) && exp.height > 0) ? exp.height : 1080;
+  return { width, height };
+}
+
+function _rescaleHeadersOnCanonicalChange() {
+  const c = _getHdrCanonical();
+  if (!_prevHdrCanonical) { _prevHdrCanonical = c; return; }
+  const xR = c.width  / _prevHdrCanonical.width;
+  const yR = c.height / _prevHdrCanonical.height;
+  if (xR !== 1 || yR !== 1) {
+    const aspectChanged = Math.abs(xR - yR) > 1e-4;
+    const items = (state.get('headerItems') || []).map(it => {
+      const isImage = it.kind === 'image';
+      const wR = xR;
+      const hR = isImage ? xR : yR;
+      return {
+        ...it,
+        x: typeof it.x === 'number' ? it.x * xR : it.x,
+        y: typeof it.y === 'number' ? it.y * yR : it.y,
+        w: typeof it.w === 'number' ? it.w * wR : it.w,
+        h: typeof it.h === 'number' ? it.h * hR : it.h,
+      };
+    });
+    if (aspectChanged) {
+      // Aspect change → let refreshHeaderLayer rebuild so text rasters
+      // reflow into the new aspect.
+      state.setState({ headerItems: items });
+    } else {
+      // Same-aspect resolution change → modify the live Konva nodes
+      // directly and SUPPRESS the destroy-rebuild handler. Without
+      // this, every header text gets re-rasterised on every same-
+      // aspect resolution change, and auto-fit drift accumulates
+      // each step. By skipping the rebuild, the source canvas stays
+      // intact and Konva downsamples it through the inverse stage-
+      // scale change — visual stays IDENTICAL, matching textboxes.
+      _suppressRefreshOnce = true;
+      state.setState({ headerItems: items });
+      if (_layer) {
+        for (const node of _layer.getChildren()) {
+          if (node === _transformer) continue;
+          const id = node.getAttr?.('headerId');
+          if (!id) continue;
+          const it = items.find(x => x.id === id);
+          if (!it) continue;
+          if (typeof node.x      === 'function') node.x(it.x);
+          if (typeof node.y      === 'function') node.y(it.y);
+          if (typeof node.width  === 'function') node.width(it.w);
+          if (typeof node.height === 'function') node.height(it.h);
+        }
+        _layer.batchDraw();
+      }
+    }
+  }
+  _prevHdrCanonical = c;
+}
 
 /**
  * Attach a Konva.Layer to the overlay stage and start mirroring
@@ -275,6 +336,25 @@ export function initHeaderLayer(stage) {
   _stage = stage;
   _layer = new Konva.Layer({ name: 'sbs-header' });
   stage.add(_layer);
+
+  // Stage 3a: rescale every header item's x / y / w / h whenever the
+  // canonical export size changes. Width changes drive the x + w
+  // factor, height changes drive y + h, so aspect-ratio changes
+  // stretch correctly per axis. Mirrors overlay.js' rescale.
+  //
+  // Coalesce via rAF — setExportOption emits change:export per key
+  // and a preset switch fires three events back-to-back; without
+  // batching, the middle event has width-changed-but-height-stale
+  // and rescales as if it were an aspect change.
+  _prevHdrCanonical = _getHdrCanonical();
+  let _hdrRaf = 0;
+  state.on('change:export', () => {
+    if (_hdrRaf) return;
+    _hdrRaf = requestAnimationFrame(() => {
+      _hdrRaf = 0;
+      _rescaleHeadersOnCanonicalChange();
+    });
+  });
 
   _transformer = new Konva.Transformer({
     rotateEnabled:    true,
@@ -303,7 +383,12 @@ export function initHeaderLayer(stage) {
   // a refresh. Cheap re-render: we destroy and recreate nodes each time.
   // Header lists are small (typically < 10 items); no need for diff-based
   // reconciliation.
-  state.on('change:headerItems',    refreshHeaderLayer);
+  state.on('change:headerItems',    () => {
+    // Same-aspect rescale already updated live Konva nodes — skip
+    // the destroy-rebuild path once so the source rasters survive.
+    if (_suppressRefreshOnce) { _suppressRefreshOnce = false; return; }
+    refreshHeaderLayer();
+  });
   state.on('change:headersHidden',  refreshHeaderLayer);
   state.on('change:headersLocked',  refreshHeaderLayer);
   state.on('change:headerDefault',  refreshHeaderLayer);   // P4a: items in default mode pick up new styling
@@ -1071,13 +1156,33 @@ export function rasterizeHeaderLayer(opts = {}) {
   const wasVisible = _transformer.visible();
   _transformer.visible(false);
 
-  const sw = _stage.width();
-  const sh = _stage.height();
-  if (!sw || !sh) { _transformer.visible(wasVisible); return null; }
-  const ratio = opts.width  ? opts.width  / sw
-              : opts.height ? opts.height / sh
-              : 1;
-  const canvas = _layer.toCanvas({ pixelRatio: ratio });
+  // Render at canonical size (matches the overlay rasteriser). Header
+  // items live in canonical coordinates. Same as overlay: zero the
+  // stage transform during raster so the live stage.scale doesn't
+  // shrink items into the safe-frame sub-rect of the output.
+  const exp = state.get('export') || {};
+  const cw = (Number.isFinite(exp.width)  && exp.width  > 0) ? exp.width  : 1920;
+  const ch = (Number.isFinite(exp.height) && exp.height > 0) ? exp.height : 1080;
+  const targetW = opts.width  || cw;
+  const targetH = opts.height || ch;
+  const pixelRatio = targetW / cw;
+
+  const savedScale = _stage.scale();
+  const savedPos   = _stage.position();
+  _stage.scale({ x: 1, y: 1 });
+  _stage.position({ x: 0, y: 0 });
+  let canvas;
+  try {
+    canvas = _layer.toCanvas({
+      x: 0, y: 0,
+      width: cw,
+      height: ch,
+      pixelRatio,
+    });
+  } finally {
+    _stage.scale(savedScale);
+    _stage.position(savedPos);
+  }
 
   _transformer.visible(wasVisible);
   return canvas;

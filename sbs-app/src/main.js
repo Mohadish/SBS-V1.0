@@ -47,6 +47,7 @@ import { initStepsPanel }         from './ui/steps-panel.js';
 import { initSidebarLeft }        from './ui/sidebar-left.js';
 import { initContextMenu, hideContextMenu, showContextMenu } from './ui/context-menu.js';
 import { showMoveToFolderDialog } from './ui/tree.js';
+import { positionSafeFrameEl }    from './core/safe-frame.js';
 import { initOverlay, getStage as getOverlayStage } from './systems/overlay.js';
 import { initOverlayToolbar }  from './ui/overlay-toolbar.js';
 import { initHeaderLayer }     from './systems/header.js';
@@ -969,7 +970,33 @@ window.addEventListener('resize', () => {
   sceneCore.renderer.setSize(w, h);
   sceneCore.camera.aspect = w / h;
   sceneCore.camera.updateProjectionMatrix();
+  _refreshSafeFrame();
 });
+
+// ── Safe frame (canonical export rect) ────────────────────────────────────────
+// Stage 1: render the safe-frame overlay element at the position
+// computed from state.export.width/height. Stages 2+ will route
+// overlay coordinates through this rect.
+const _safeFrameEl   = document.getElementById('export-safe-frame');
+const _viewportSurfaceEl = document.getElementById('viewport-surface');
+function _refreshSafeFrame() {
+  if (!_safeFrameEl) return;
+  const showFrame = state.get('export')?.showSafeFrame !== false;
+  // Toggle visibility via the .show class (CSS sets display:block when present).
+  // Also strip the legacy `hidden` attribute on first run.
+  _safeFrameEl.removeAttribute('hidden');
+  _safeFrameEl.classList.toggle('show', !!showFrame);
+  if (!showFrame) return;
+  positionSafeFrameEl(_safeFrameEl, _viewportSurfaceEl || viewer);
+}
+_refreshSafeFrame();
+state.on('change:export', _refreshSafeFrame);
+// Track viewport-surface size — the renderer's resize handler already
+// fires _refreshSafeFrame, but the surface can resize independently
+// (sidebar collapse, etc.) so a ResizeObserver catches those too.
+if (typeof ResizeObserver !== 'undefined' && _viewportSurfaceEl) {
+  new ResizeObserver(_refreshSafeFrame).observe(_viewportSurfaceEl);
+}
 
 // ══════════════════════════════════════════════════════════════════════════════
 //  7. KEYBOARD SHORTCUTS

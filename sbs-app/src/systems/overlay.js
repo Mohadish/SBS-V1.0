@@ -17,6 +17,8 @@
 
 import { state }     from '../core/state.js';
 import { sceneCore } from '../core/scene.js';   // H2: tick hook for overlay fade
+import * as clock    from '../core/clock.js';
+import { getCanonicalSize, computeSafeFrameRect } from '../core/safe-frame.js';
 import { showContextMenu } from '../ui/context-menu.js';
 import { mountTextToolbar, unmountTextToolbar, execCommandApplier, setToolbarValues, wasColorPickedRecently, setStyleDropdown, setStyleLocked } from '../ui/text-toolbar.js';
 import { getTextToolbarSlot }  from '../ui/overlay-toolbar.js';
@@ -112,6 +114,29 @@ export function initOverlay() {
   _syncSize();
   _resizeObs = new ResizeObserver(_syncSize);
   _resizeObs.observe(_container);
+  // Stage 2/3a: re-sync when the canonical export size changes — the
+  // Konva stage's internal width/height + visual scale must follow
+  // state.export.width × state.export.height. Also rescale every
+  // node's x/y/w/h by the axis ratios so items keep their relative
+  // position + size when the user changes resolution or aspect.
+  //
+  // Coalesce via rAF: setExportOption fires change:export per key,
+  // so a preset switch (formatPreset, width, height) emits THREE
+  // events back-to-back. Without coalescing, my rescale would run
+  // mid-burst with width-changed-but-height-stale, mistaking the
+  // intermediate state as an aspect change and re-rastering text
+  // each step. By the time the burst ends, _prevCanonical has been
+  // mutated for the (wrong) intermediate canonicals and reversal
+  // never lines up. rAF deferral runs once with the final values.
+  _prevCanonical = getCanonicalSize();
+  let _pendingRescaleRaf = 0;
+  state.on('change:export', () => {
+    if (_pendingRescaleRaf) return;
+    _pendingRescaleRaf = requestAnimationFrame(() => {
+      _pendingRescaleRaf = 0;
+      _rescaleOnCanonicalChange();
+    });
+  });
 
   // Restore the currently-active step's overlay on load / step change.
   // CRITICAL ORDER: flush any pending save against the OUTGOING step
@@ -163,13 +188,92 @@ function _onStyleTemplateUpdated(payload) {
   }
 }
 
+/**
+ * Stage 2 — canonical-coords overlay.
+ *
+ * Node positions are stored in canonical pixels (state.export.width
+ * × state.export.height) so a project renders identically on any
+ * machine. The Konva stage's CANVAS stays sized to the viewport
+ * container (Konva sets the canvas DOM width to stage.width — using
+ * the canonical 1920 here would overflow a smaller viewport and
+ * clip content), but the stage's scale + position transform draws
+ * canonical (0..W, 0..H) into the safe-frame rect inside the
+ * viewport. Pointer coords come back through that inverse transform,
+ * so drag handlers receive canonical pixels with no extra work.
+ */
 function _syncSize() {
   if (!_stage || !_container) return;
   const r = _container.getBoundingClientRect();
-  if (r.width && r.height) {
-    _stage.width(r.width);
-    _stage.height(r.height);
+  if (!r.width || !r.height) return;
+  const sf = computeSafeFrameRect({ width: r.width, height: r.height });
+  if (sf.scale <= 0) return;
+  // Canvas size = viewport (no overflow / clipping).
+  _stage.width(r.width);
+  _stage.height(r.height);
+  // Scale + position map canonical coords into the safe-frame rect.
+  _stage.scale({ x: sf.scale, y: sf.scale });
+  _stage.position({ x: sf.x, y: sf.y });
+  _stage.batchDraw();
+}
+
+// Stage 3a: rescale all overlay nodes when the canonical export size
+// changes so items keep their RELATIVE position + size. Width changes
+// scale x + width by the width ratio; height changes scale y + height
+// by the height ratio. Independent per axis so aspect-ratio changes
+// stretch correctly. Font size / padding stay (typography rarely
+// scales with canvas).
+let _prevCanonical = null;   // remembered to compute the next ratio
+function _rescaleOnCanonicalChange() {
+  const c = getCanonicalSize();
+  if (!_prevCanonical || !_layer) {
+    _prevCanonical = c;
+    _syncSize();
+    return;
   }
+  const xR = c.width  / _prevCanonical.width;
+  const yR = c.height / _prevCanonical.height;
+  // Rescale on EVERY canonical change (resolution or aspect).
+  //
+  //   Same-aspect resolution change (xR == yR): every node attr
+  //     scales by the same factor; stage.scale changes inversely
+  //     in _syncSize below, so visual = canonical_PX × scale stays
+  //     IDENTICAL — nothing visibly changes.
+  //
+  //   Aspect change (xR ≠ yR): per-axis scale for text boxes
+  //     (so the box reflows into the new aspect); uniform xR for
+  //     image nodes (locked aspect — image just shrinks/grows
+  //     proportionally instead of stretching).
+  //
+  //   Reversal: every forward scale is matched by its inverse on
+  //     the way back, so the canonical PX returns exactly. Text
+  //     re-raster on each step keeps glyphs crisp at the new
+  //     effective scale.
+  // Same-aspect resolution change (xR == yR): rescale node attrs but
+  // DON'T re-rasterise text. Konva down/up-samples the existing
+  // source canvas through the stage's inverse scale change, exactly
+  // like a window resize — visual stays constant, layout reverts on
+  // resolution flip-flop.
+  //
+  // Aspect change (xR ≠ yR): rescale per-axis (text) or uniform xR
+  // (image), AND re-rasterise text so the SVG-foreignObject reflows
+  // into the new aspect's wrap.
+  const aspectChanged = Math.abs(xR - yR) > 1e-4;
+  if (xR !== 1 || yR !== 1) {
+    for (const node of _layer.getChildren()) {
+      const isText = !!node.getAttr?.('textHtml');
+      if (typeof node.x === 'function') node.x(node.x() * xR);
+      if (typeof node.y === 'function') node.y(node.y() * yR);
+      const wR = xR;                           // both kinds: width by xR
+      const hR = isText ? yR : xR;             // text: per-axis; image: locked
+      if (typeof node.width  === 'function' && typeof node.width()  === 'number') node.width(node.width()   * wR);
+      if (typeof node.height === 'function' && typeof node.height() === 'number') node.height(node.height() * hR);
+      if (isText && aspectChanged) _reflowTextBox(node).catch(() => {});
+    }
+    _layer.batchDraw();
+    _scheduleSave();
+  }
+  _prevCanonical = c;
+  _syncSize();
 }
 
 // ─── Editing mode ──────────────────────────────────────────────────────────
@@ -1753,7 +1857,7 @@ export function beginOverlayCrossfade(durationMs, easeFn, onDone) {
   _suppressNextStepAppliedLoad = true;
   _currentLoadPromise = (async () => { await _loadFromActiveStep(); })();
   _activeFade = {
-    startMs: performance.now(),
+    startMs: clock.now(),
     durationMs, easeFn, onDone,
     crossfade: true,
   };
@@ -1908,13 +2012,36 @@ async function _recreateNode(spec) {
  */
 export function rasterizeOverlay(opts = {}) {
   if (!_stage || _layer.getChildren().length === 0) return null;
-  const sw = _stage.width();
-  const sh = _stage.height();
-  if (!sw || !sh) return null;
-  const ratio = opts.width  ? opts.width  / sw
-              : opts.height ? opts.height / sh
-              : 1;
-  return _layer.toCanvas({ pixelRatio: ratio });
+  // Render at the project's CANONICAL size (state.export.width × height).
+  // Nodes are stored in canonical pixels.
+  //
+  // Konva's layer.toCanvas inherits the parent stage's transform, so
+  // the live stage.scale (safeFrame / canonical) would scale node
+  // positions during the raster — items would land at the safe-frame
+  // sub-rect of the output canvas instead of filling it. We zero the
+  // stage transform for the raster, then restore the previous values.
+  const c = getCanonicalSize();
+  const targetW = opts.width  || c.width;
+  const targetH = opts.height || c.height;
+  const pixelRatio = targetW / c.width;
+
+  const savedScale = _stage.scale();
+  const savedPos   = _stage.position();
+  _stage.scale({ x: 1, y: 1 });
+  _stage.position({ x: 0, y: 0 });
+  let canvas;
+  try {
+    canvas = _layer.toCanvas({
+      x: 0, y: 0,
+      width:  c.width,
+      height: c.height,
+      pixelRatio,
+    });
+  } finally {
+    _stage.scale(savedScale);
+    _stage.position(savedPos);
+  }
+  return canvas;
 }
 
 // ─── Internals ─────────────────────────────────────────────────────────────

@@ -24,6 +24,7 @@
 
 import state                        from '../core/state.js';
 import sceneCore                    from '../core/scene.js';
+import * as clock                   from '../core/clock.js';
 import { rasterizeOverlay }         from './overlay.js';
 import * as cablesSystem            from './cables.js';   // C1: per-step cable snapshot capture/apply
 import * as cablesRender            from './cables-render.js';   // H1: cable phase animations
@@ -488,7 +489,7 @@ class StepManager {
 
       // Object transforms — world-space lerp (v0.266: objects stay in target hierarchy)
       this._objectTransitions = [];
-      const startMs = performance.now();
+      const startMs = clock.now();
       for (const nodeId of changedNodeIds) {
         const worldFrom = fromWorldTransforms[nodeId];
         const worldTo   = toWorldTransforms[nodeId];
@@ -640,7 +641,7 @@ class StepManager {
       if (types.includes('obj') && !objHandled && changedNodeIds.length) {
         objHandled = true;
         this._objectTransitions = [];
-        const startMs = performance.now();
+        const startMs = clock.now();
         for (const nodeId of changedNodeIds) {
           const worldFrom = fromWorldTransforms[nodeId];
           const worldTo   = toWorldTransforms[nodeId];
@@ -1965,8 +1966,13 @@ function diffWorldTransforms(fromWT, toWT) {
 
 // ── Helpers ────────────────────────────────────────────────────────────────
 
-function _sleep(ms) {
-  return new Promise(resolve => setTimeout(resolve, Math.max(0, ms)));
+// Real-time sleep — what live playback uses. Offline export swaps this
+// out via setSleepImpl so animation phases advance on a synthetic
+// clock instead of being throttled by setTimeout / rAF behaviour.
+let _sleepImpl = (ms) => new Promise(resolve => setTimeout(resolve, Math.max(0, ms)));
+function _sleep(ms) { return _sleepImpl(ms); }
+export function setSleepImpl(fn) {
+  _sleepImpl = fn || ((ms) => new Promise(resolve => setTimeout(resolve, Math.max(0, ms))));
 }
 
 
