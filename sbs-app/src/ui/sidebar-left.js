@@ -31,13 +31,7 @@ import { listVoices as ttsListVoices } from '../systems/tts.js';
 import * as userSettings    from '../core/user-settings.js';
 import * as narrationCache  from '../systems/narration-cache.js';
 
-// Visible tabs (rendered in the tab bar). 'modelSource' is intentionally
-// NOT here — it's an off-tab panel triggered only from Edit → Model
-// source transform…. Treating it as a regular tab broke nothing visible
-// but invited the takeover-style focus jam, so we slot it into the
-// panels list separately and reach it only via _switchTabHidden.
 const TABS = ['files', 'tree', 'colors', 'select', 'cameras', 'animation', 'header', 'style', 'cables', 'export'];
-const HIDDEN_TABS = ['modelSource'];
 let _activeTab   = 'files';
 let _container   = null;
 let _treeInited  = false;
@@ -67,7 +61,7 @@ export function initSidebarLeft() {
   `;
 
   const panelsEl = _container.querySelector('#left-panels');
-  for (const tab of [...TABS, ...HIDDEN_TABS]) {
+  for (const tab of TABS) {
     const div        = document.createElement('div');
     div.className    = `tabPanel${tab === _activeTab ? ' active' : ''}`;
     div.id           = `tab-panel-${tab}`;
@@ -128,15 +122,6 @@ export function initSidebarLeft() {
 
   _renderActiveTab();
 
-  // Model Source Transform is a HIDDEN tab — has a panel slot but no
-  // button in the bar. Activated only via Edit → Model source transform.
-  // state.modelSourceMode flipping on switches to it; flipping off
-  // returns to the user's last visible tab. Hidden-tab is structurally
-  // identical to a regular tab (just no chrome), so the existing focus
-  // / event plumbing handles it cleanly — no takeover side-effects.
-  state.on('change:modelSourceMode', _syncModelSourceTab);
-  _syncModelSourceTab();
-
   // ── Electron native menu → renderer ──────────────────────────────────────
   if (window.sbsNative?.onMenu) {
     window.sbsNative.onMenu('menu:newProject',    _onNewProject);
@@ -147,29 +132,8 @@ export function initSidebarLeft() {
   }
 }
 
-// Last visible tab the user was on before entering modelSource — we
-// return here when modelSource exits.
-let _previousVisibleTab = null;
-
-function _syncModelSourceTab() {
-  if (!_container) return;
-  const on = !!state.get('modelSourceMode');
-  if (on) {
-    if (_activeTab !== 'modelSource') {
-      _previousVisibleTab = TABS.includes(_activeTab) ? _activeTab : 'files';
-      _switchTab('modelSource');
-    }
-  } else {
-    if (_activeTab === 'modelSource') {
-      _switchTab(_previousVisibleTab || 'files');
-    }
-  }
-}
-
 function _switchTab(tab) {
-  // Allow visible AND hidden tabs through; only block unknown names.
-  if (!TABS.includes(tab) && !HIDDEN_TABS.includes(tab)) return;
-  if (tab === _activeTab) return;
+  if (!TABS.includes(tab) || tab === _activeTab) return;
   _activeTab = tab;
   _container.querySelectorAll('.tabBtn').forEach(b =>
     b.classList.toggle('active', b.dataset.tab === tab));
@@ -182,27 +146,17 @@ function _panel(tab) { return document.getElementById(`tab-panel-${tab}`); }
 
 function _renderActiveTab() {
   switch (_activeTab) {
-    case 'files':       _renderFilesTab();   break;
-    case 'tree':        _renderTreeTab();    break;
-    case 'colors':      _renderColorsTab();  break;
-    case 'select':      _renderSelectTab();  break;
-    case 'cameras':     _renderCamerasTab(); break;
-    case 'animation':   _renderAnimTab();    break;
-    case 'header':      _renderHeaderTabPanel(); break;
-    case 'style':       _renderStyleTabPanel();  break;
-    case 'cables':      _renderCableTabPanel();  break;
-    case 'export':      _renderExportTab();  break;
-    case 'modelSource': _renderModelSourceTab(); break;
+    case 'files':     _renderFilesTab();   break;
+    case 'tree':      _renderTreeTab();    break;
+    case 'colors':    _renderColorsTab();  break;
+    case 'select':    _renderSelectTab();  break;
+    case 'cameras':   _renderCamerasTab(); break;
+    case 'animation': _renderAnimTab();    break;
+    case 'header':    _renderHeaderTabPanel(); break;
+    case 'style':     _renderStyleTabPanel();  break;
+    case 'cables':    _renderCableTabPanel();  break;
+    case 'export':    _renderExportTab();  break;
   }
-}
-
-function _renderModelSourceTab() {
-  const el = _panel('modelSource');
-  if (!el) return;
-  el.style.cssText = 'padding:8px;display:flex;flex-direction:column;gap:10px;';
-  // Lazy-import the dialog so it isn't loaded until the user actually
-  // opens it. Module is small but keeps the cold-path clean.
-  import('./model-source-dialog.js').then(mod => mod.mountModelSourcePanel(el));
 }
 
 function _renderAnimTab() {
