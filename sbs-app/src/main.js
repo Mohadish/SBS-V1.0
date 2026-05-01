@@ -55,6 +55,7 @@ import { initCables, resolveNodeWorldPosition } from './systems/cables.js';     
 import { initCableRender, getCablePointMeshes, getCableSegmentMeshes, getCableSocketMeshes, setInsertHoverPosition } from './systems/cables-render.js';  // C2: cables 3D render; C5-A: point raycast; C5-D: segment raycast + insert ghost; C5-E2: socket raycast
 import { initUserSettings }    from './core/user-settings.js';
 import { openSettingsModal }   from './ui/settings-modal.js';
+import { openModelSourceDialog } from './ui/model-source-dialog.js';
 import { schedulePrecache, cancel as cancelPrecache } from './systems/narration-precache.js';
 
 // ══════════════════════════════════════════════════════════════════════════════
@@ -124,6 +125,10 @@ initUserSettings().catch(err => console.warn('[settings] init failed:', err));
 
 // File → Settings… menu hook. Channel allowlist lives in preload.js.
 window.sbsNative?.onMenu?.('menu:openSettings', () => openSettingsModal());
+// Edit → Model source transform… — global re-orientation of imported
+// models via the base-pose transform. Per-step animations stay intact;
+// every step shifts uniformly with the new base.
+window.sbsNative?.onMenu?.('menu:modelSourceTransform', () => openModelSourceDialog());
 
 // Background narration pre-cache:
 //   • on project load — synthesize every step's saved text once, in the

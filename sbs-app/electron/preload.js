@@ -43,6 +43,7 @@ contextBridge.exposeInMainWorld('sbsNative', {
       'menu:loadModel',  'menu:browseAssets',
       'menu:fitAll',     'menu:showAll',
       'menu:openSettings',
+      'menu:modelSourceTransform',
     ];
     if (!allowed.includes(channel)) return;
     ipcRenderer.on(channel, (_e, ...args) => cb(...args));
