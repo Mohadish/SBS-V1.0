@@ -122,6 +122,12 @@ export function initSidebarLeft() {
 
   _renderActiveTab();
 
+  // Model Source Transform mode takes over the entire left sidebar:
+  // tab strip + tab panels hide, a single ModelSource panel mounts in
+  // their place. The mode flag is transient state.modelSourceMode.
+  state.on('change:modelSourceMode', _syncModelSourceMode);
+  _syncModelSourceMode();
+
   // ── Electron native menu → renderer ──────────────────────────────────────
   if (window.sbsNative?.onMenu) {
     window.sbsNative.onMenu('menu:newProject',    _onNewProject);
@@ -129,6 +135,33 @@ export function initSidebarLeft() {
     window.sbsNative.onMenu('menu:saveProject',   () => _onSaveProject(false));
     window.sbsNative.onMenu('menu:saveProjectAs', () => _onSaveProject(true));
     window.sbsNative.onMenu('menu:browseAssets',  _onBrowseAssets);
+  }
+}
+
+function _syncModelSourceMode() {
+  if (!_container) return;
+  const on    = !!state.get('modelSourceMode');
+  const tabs  = _container.querySelector('#left-tab-bar');
+  const pan   = _container.querySelector('#left-panels');
+  let mount   = _container.querySelector('#model-source-panel');
+
+  if (on) {
+    if (tabs) tabs.style.display = 'none';
+    if (pan)  pan.style.display  = 'none';
+    if (!mount) {
+      mount = document.createElement('div');
+      mount.id = 'model-source-panel';
+      mount.style.cssText = 'flex:1;overflow:auto;padding:8px;display:flex;flex-direction:column;gap:10px;';
+      _container.appendChild(mount);
+      import('./model-source-dialog.js').then(mod => mod.mountModelSourcePanel(mount));
+    }
+  } else {
+    if (tabs) tabs.style.display = '';
+    if (pan)  pan.style.display  = '';
+    if (mount) {
+      import('./model-source-dialog.js').then(mod => mod.unmountModelSourcePanel?.());
+      mount.remove();
+    }
   }
 }
 

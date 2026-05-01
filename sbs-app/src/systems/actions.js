@@ -24,6 +24,7 @@ import {
   captureTransformSnapshot,
   applyTransformSnapshot,
   applyNodeTransformToObject3D,
+  applyNodeSourceTransformToObject3D,
 }                               from '../core/transforms.js';
 import {
   moveNode    as _nodes_moveNode,
@@ -2651,6 +2652,42 @@ function _syncVis() {
 function _isInputFocused() {
   const t = document.activeElement?.tagName;
   return t === 'INPUT' || t === 'TEXTAREA' || document.activeElement?.isContentEditable;
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+//  MODEL SOURCE TRANSFORM (Edit → Model source transform…)
+// ═══════════════════════════════════════════════════════════════════════════
+//
+// Mutates a MODEL node's sourceLocal* fields. These drive an inner
+// THREE.Group inserted between the model's outer group (which owns the
+// pivot + per-step transforms) and its mesh children. The source
+// transform re-orients the model's geometry inside its pivot frame —
+// pivot world position + orientation are untouched, and the change
+// cascades through every step automatically because the inner group
+// is part of the model node's hierarchy.
+//
+// Dialog calls this once on Save with before / after snapshots.
+
+export function setModelSourceTransform(nodeId, before, after) {
+  const node = state.get('nodeById')?.get(nodeId);
+  if (!node || node.type !== 'model') return;
+
+  const apply = (snap) => {
+    if (Array.isArray(snap.sourceLocalPosition))   node.sourceLocalPosition   = [...snap.sourceLocalPosition];
+    if (Array.isArray(snap.sourceLocalQuaternion)) node.sourceLocalQuaternion = [...snap.sourceLocalQuaternion];
+    if (Array.isArray(snap.sourceLocalScale))      node.sourceLocalScale      = [...snap.sourceLocalScale];
+    const obj = steps.object3dById?.get(nodeId);
+    if (obj) applyNodeSourceTransformToObject3D(node, obj);
+    state.markDirty();
+  };
+
+  apply(after);
+
+  undoManager.push(
+    `Model source transform "${node.name || 'model'}"`,
+    () => apply(before),
+    () => apply(after),
+  );
 }
 
 // ═══════════════════════════════════════════════════════════════════════════

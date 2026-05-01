@@ -26,7 +26,7 @@ import materials  from '../systems/materials.js';
 import steps      from '../systems/steps.js';
 import { createNode, generateId } from '../core/schema.js';
 import { buildNodeMap } from '../core/nodes.js';
-import { storeBaseTransformFromObject3D } from '../core/transforms.js';
+import { storeBaseTransformFromObject3D, ensureSourceGroup } from '../core/transforms.js';
 
 // Three.js add-on loaders — imported as ES modules from the local vendor bundles.
 // These bundles import from three.module.proxy.mjs which wraps window.THREE,
@@ -513,6 +513,12 @@ function finalizeModelImport(group3d, innerRoot, name, assetInfo, obj3dMap, extr
   modelNode.assetId  = assetId;
   obj3dMap.set(modelId, group3d);
   storeBaseTransformFromObject3D(modelNode, group3d);
+
+  // Wrap the model's geometry in a source-transform group so the
+  // Edit → Model source transform feature can re-orient the geometry
+  // inside the pivot frame without touching the pivot itself.
+  // ensureSourceGroup is idempotent — also handles legacy load paths.
+  ensureSourceGroup(group3d);
 
   // Add Three.js group to scene
   sceneCore.rootGroup.add(group3d);

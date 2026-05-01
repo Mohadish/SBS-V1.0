@@ -203,6 +203,24 @@ export function createNode(type, overrides = {}) {
     moveEnabled:        true,
     rotateEnabled:      true,
 
+    // Model SOURCE transform (model nodes only — meaningless on folders).
+    // Lives on a Three.js group inserted between the model's outer group
+    // (which carries pivot + per-step transforms) and its mesh children.
+    // Effect: re-orients / re-positions the model's geometry inside its
+    // pivot frame. Cascades through every step automatically because
+    // it's part of the model node's hierarchy. Pivot world position +
+    // orientation are unaffected — the source group sits inside, not
+    // around, the pivoted outer group.
+    sourceLocalPosition:   [0, 0, 0],
+    sourceLocalQuaternion: [0, 0, 0, 1],
+    sourceLocalScale:      [1, 1, 1],
+    // Original-source backup — captured at import (always identity for
+    // fresh imports), persisted, never overwritten by user edits. Powers
+    // the per-axis ↺ reset and full Reset-all buttons in the dialog.
+    originalSourceLocalPosition:   [0, 0, 0],
+    originalSourceLocalQuaternion: [0, 0, 0, 1],
+    originalSourceLocalScale:      [1, 1, 1],
+
     // Mesh-specific
     meshIndex:    null,             // index in the model's mesh list
     colorPresetId:null,             // applied color preset (null = original)
