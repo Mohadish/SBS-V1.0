@@ -82,6 +82,12 @@ export function initSidebarLeft() {
   state.on('change:selectedId',            () => { if (_activeTab === 'colors')  _renderColorsTab(); });
   state.on('change:multiSelectedIds',      () => { if (_activeTab === 'colors')  _renderColorsTab(); });
   state.on('change:cameraViews',           () => { if (_activeTab === 'cameras')   _renderCamerasTab(); });
+  // Step bindings live on step.cameraBinding — when the active step
+  // changes, or when any step's binding updates, the Cameras tab needs
+  // to re-render so the "used by N steps" + "active-bound" indicators
+  // stay accurate.
+  state.on('change:activeStepId',          () => { if (_activeTab === 'cameras')   _renderCamerasTab(); });
+  state.on('change:steps',                 () => { if (_activeTab === 'cameras')   _renderCamerasTab(); });
   state.on('change:projectDirty',          () => { if (_activeTab === 'files')    _renderFilesTab(); });
   state.on('change:selectionOutlineColor', () => { if (_activeTab === 'select')   _renderSelectTab(); });
   state.on('change:animationPresets',      () => { if (_activeTab === 'animation') _renderAnimTab(); });
@@ -1409,45 +1415,94 @@ function _renderCamerasTab() {
   const views = state.get('cameraViews') || [];
   if (!el) return;
 
+  // Active step's current binding — used to flag which template (if any)
+  // the active step is bound to, AND to surface the per-step camera
+  // dropdown right inside the tab so the user can rebind without
+  // round-tripping through the steps panel.
+  const stepsArr  = state.get('steps') || [];
+  const activeId  = state.get('activeStepId');
+  const activeStep = activeId ? stepsArr.find(s => s.id === activeId) : null;
+  const activeBindingTplId = activeStep?.cameraBinding?.mode === 'template'
+    ? activeStep.cameraBinding.templateId
+    : null;
+
+  // Per-template usage count (how many steps reference each one).
+  const usage = new Map();
+  for (const s of stepsArr) {
+    const b = s.cameraBinding;
+    if (b?.mode === 'template' && b.templateId) {
+      usage.set(b.templateId, (usage.get(b.templateId) || 0) + 1);
+    }
+  }
+
   el.innerHTML = `
     <div class="section">
-      <div class="title">Camera Setup</div>
-      <div class="grid2" style="margin-top:8px;">
-        <input type="text" id="cam-name-input" placeholder="View name" />
-        <button class="btn" id="btn-save-cam">Save Current</button>
+      <div class="title">Cameras</div>
+      <div class="small muted" style="margin-top:6px;line-height:1.5;">
+        Templates are reusable named camera views. Steps either use a
+        template (edit-once-affects-many) or hold their own free camera
+        snapshot. Right-click a step → Update camera = always free.
       </div>
-      <div id="cam-list" class="small muted" style="margin-top:8px;">No saved views.</div>
+      <div style="margin-top:10px;">
+        <button class="btn" id="btn-cam-new">+ Save current view as template</button>
+      </div>
+      ${activeStep ? `
+        <div class="card" style="margin-top:10px;font-size:12px;">
+          <div class="small muted" style="margin-bottom:4px;">Active step camera</div>
+          <select id="active-step-cam-binding" style="width:100%;">
+            <option value="" ${!activeBindingTplId ? 'selected' : ''}>[Free camera]</option>
+            ${views.map(v =>
+              `<option value="${_esc(v.id)}" ${activeBindingTplId === v.id ? 'selected' : ''}>${_esc(v.name)}</option>`
+            ).join('')}
+          </select>
+        </div>
+      ` : ''}
+      <div id="cam-list" style="margin-top:10px;"></div>
     </div>
   `;
 
-  el.querySelector('#btn-save-cam').addEventListener('click', () => {
-    const nameEl = el.querySelector('#cam-name-input');
-    const name = (nameEl?.value.trim()) || `View ${views.length + 1}`;
-    const cs = sceneCore.getCameraState();
-    const view = createCameraView({ name, ...cs });
-    state.setState({ cameraViews: [...views, view] });
-    state.markDirty();
-    setStatus(`Saved view "${view.name}".`);
-    if (nameEl) nameEl.value = '';
-    _renderCamerasTab();
+  el.querySelector('#btn-cam-new').addEventListener('click', () => {
+    const proposed = `Camera ${views.length + 1}`;
+    const name = prompt('Camera template name:', proposed);
+    if (name === null) return;   // user cancelled
+    actions.createCameraTemplate(name);
+    setStatus(`Saved camera template.`);
+  });
+
+  const bindSel = el.querySelector('#active-step-cam-binding');
+  bindSel?.addEventListener('change', e => {
+    actions.setStepCameraBinding(activeId, e.target.value || null);
+    setStatus(e.target.value
+      ? `Bound step to camera "${views.find(v => v.id === e.target.value)?.name}".`
+      : 'Step set to free camera.');
   });
 
   const list = el.querySelector('#cam-list');
-  if (views.length === 0) return;
+  if (views.length === 0) {
+    list.innerHTML = '<div class="small muted">No camera templates yet.</div>';
+    return;
+  }
   list.innerHTML = '';
 
   for (const view of views) {
+    const isActiveBound = view.id === activeBindingTplId;
+    const useCount      = usage.get(view.id) || 0;
+
     const item = document.createElement('div');
     item.className = 'cameraItem';
+    if (isActiveBound) item.style.outline = '1px solid var(--accent, #f59e0b)';
     item.innerHTML = `
-      <div class="cameraRow">
-        <span style="flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${_esc(view.name)}</span>
+      <div class="cameraRow" style="align-items:center;gap:6px;">
+        <span class="cam-name-text" style="flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;cursor:text;" title="Double-click to rename">${_esc(view.name)}</span>
+        <span class="small muted" style="font-size:11px;flex-shrink:0;">${useCount} step${useCount === 1 ? '' : 's'}</span>
       </div>
       <div class="cameraActions">
-        <button class="btn" data-goto="${_esc(view.id)}">▶ Go To</button>
-        <button class="btn" data-del="${_esc(view.id)}">🗑 Delete</button>
+        <button class="btn" data-goto="${_esc(view.id)}" title="Move the live camera to this template's view (does not change any step's binding)">▶ Go To</button>
+        <button class="btn" data-update="${_esc(view.id)}" title="Set this template to the current view AND bind the active step to it. All other bound steps follow automatically.">🔄 Update</button>
+        <button class="btn" data-del="${_esc(view.id)}" title="Delete this template">🗑 Delete</button>
       </div>
     `;
+
     item.querySelector('[data-goto]').addEventListener('click', e => {
       e.stopPropagation();
       sceneCore.animateCameraTo({
@@ -1455,15 +1510,121 @@ function _renderCamerasTab() {
         pivot: view.pivot, up: view.up, fov: view.fov,
       }, 800, 'smooth');
     });
+
+    item.querySelector('[data-update]').addEventListener('click', e => {
+      e.stopPropagation();
+      actions.updateCameraTemplate(view.id);
+      setStatus(`Updated camera "${view.name}"${activeStep ? ` (bound to "${activeStep.name}")` : ''}.`);
+    });
+
     item.querySelector('[data-del]').addEventListener('click', e => {
       e.stopPropagation();
-      if (!confirm(`Delete view "${view.name}"?`)) return;
-      state.setState({ cameraViews: views.filter(v => v.id !== view.id) });
-      state.markDirty();
-      _renderCamerasTab();
+      _showDeleteCameraTemplateDialog(view, useCount);
     });
+
+    // Inline rename — dblclick the name to edit, Enter / blur to commit.
+    const nameSpan = item.querySelector('.cam-name-text');
+    nameSpan.addEventListener('dblclick', () => _enterCamRename(nameSpan, view));
+
     list.appendChild(item);
   }
+}
+
+function _enterCamRename(span, view) {
+  const input = document.createElement('input');
+  input.type = 'text';
+  input.value = view.name;
+  input.style.cssText = 'flex:1;min-width:0;font-size:inherit;';
+  span.replaceWith(input);
+  input.focus();
+  input.select();
+  let done = false;
+  const commit = () => {
+    if (done) return;
+    done = true;
+    const v = input.value.trim();
+    if (v && v !== view.name) actions.renameCameraTemplate(view.id, v);
+    _renderCamerasTab();
+  };
+  input.addEventListener('blur', commit);
+  input.addEventListener('keydown', e => {
+    if (e.key === 'Enter') { e.preventDefault(); input.blur(); }
+    else if (e.key === 'Escape') { done = true; _renderCamerasTab(); }
+  });
+}
+
+/**
+ * Delete-template dialog — modeled on the New-Folder dialog UX.
+ *
+ *   Dropdown: [Convert to free camera] (default) | template1 | template2 | ...
+ *   Buttons:  Cancel | <dynamic label that flips between
+ *                       "Convert to free" and "Change to template">
+ *
+ * Bound steps either get a free-camera snapshot of the deleted template's
+ * last state, or get re-bound to the chosen replacement. Single undo
+ * entry covers the whole operation.
+ */
+function _showDeleteCameraTemplateDialog(view, useCount) {
+  const views = (state.get('cameraViews') || []).filter(v => v.id !== view.id);
+
+  // Modal scaffolding — match the rest of the app's dialog look (dark
+  // overlay, centred card). Plain DOM, no framework.
+  const overlay = document.createElement('div');
+  overlay.style.cssText = [
+    'position:fixed', 'inset:0', 'background:rgba(0,0,0,0.55)',
+    'display:flex', 'align-items:center', 'justify-content:center',
+    'z-index:9999',
+  ].join(';');
+
+  const card = document.createElement('div');
+  card.className = 'card';
+  card.style.cssText = [
+    'min-width:340px', 'max-width:440px', 'padding:16px',
+    'background:var(--panel, #0f172a)', 'border:1px solid var(--line, #334155)',
+    'border-radius:10px', 'display:flex', 'flex-direction:column', 'gap:10px',
+  ].join(';');
+
+  card.innerHTML = `
+    <div class="title" style="font-size:14px;">Delete camera "${_esc(view.name)}"</div>
+    <div class="small muted" style="line-height:1.5;">
+      ${useCount === 0
+        ? 'No steps are bound to this camera.'
+        : `${useCount} step${useCount === 1 ? '' : 's'} use this camera. Choose where they should land:`}
+    </div>
+    <select id="cam-del-replacement" style="width:100%;">
+      <option value="">[Convert to free camera]</option>
+      ${views.map(v => `<option value="${_esc(v.id)}">${_esc(v.name)}</option>`).join('')}
+    </select>
+    <div class="grid2" style="margin-top:6px;">
+      <button class="btn" id="cam-del-cancel">Cancel</button>
+      <button class="btn primary" id="cam-del-go">Convert to free</button>
+    </div>
+  `;
+
+  const sel        = card.querySelector('#cam-del-replacement');
+  const goBtn      = card.querySelector('#cam-del-go');
+  const cancelBtn  = card.querySelector('#cam-del-cancel');
+
+  sel.addEventListener('change', () => {
+    goBtn.textContent = sel.value ? 'Change to template' : 'Convert to free';
+  });
+
+  const close = () => overlay.remove();
+  cancelBtn.addEventListener('click', close);
+  overlay.addEventListener('click', e => { if (e.target === overlay) close(); });
+
+  goBtn.addEventListener('click', () => {
+    const replacement = sel.value || null;
+    actions.deleteCameraTemplate(view.id, replacement);
+    setStatus(replacement
+      ? `Deleted "${view.name}"; ${useCount} step(s) rebound.`
+      : `Deleted "${view.name}"; ${useCount} step(s) converted to free camera.`);
+    close();
+  });
+
+  overlay.appendChild(card);
+  document.body.appendChild(overlay);
+  setTimeout(() => sel.focus(), 0);
 }
 
 

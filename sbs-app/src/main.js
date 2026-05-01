@@ -918,7 +918,7 @@ canvas.addEventListener('contextmenu', e => {
     action: () => {
       const activeId = state.get('activeStepId');
       if (activeId) {
-        steps.saveStepCamera(activeId);
+        actions.updateStepCameraFromCurrent(activeId);
         setStatus('Camera saved for step.');
       } else {
         setStatus('No active step.', 'warn');

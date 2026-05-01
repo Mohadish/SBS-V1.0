@@ -80,6 +80,9 @@ export function initStepsPanel() {
   });
 
   state.on('change:steps',                _syncAndRender);
+  // Camera template list affects the per-step camera dropdown built in
+  // _buildTransitionRow — re-render so add/rename/delete propagates.
+  state.on('change:cameraViews',          _syncAndRender);
   state.on('change:chapters',             _syncAndRender);
   state.on('change:activeStepId',         _onActiveStepChanged);
   state.on('step:applied',                _playStepNarration);
@@ -667,7 +670,7 @@ function _buildStepActionRow(step) {
   const btnDup    = _mkBtn('⧉',  'Duplicate step');
   const btnDel    = _mkBtn('🗑', 'Delete step');
 
-  btnCam.addEventListener('click',    e => { e.stopPropagation(); steps.saveStepCamera(step.id); setStatus('Camera saved for step.'); });
+  btnCam.addEventListener('click',    e => { e.stopPropagation(); actions.updateStepCameraFromCurrent(step.id); setStatus('Camera saved for step.'); });
   btnHide.addEventListener('click',   e => { e.stopPropagation(); steps.setStepHidden(step.id, !step.hidden); });
   btnRename.addEventListener('click', e => { e.stopPropagation(); _renameStep(step.id); });
   btnDup.addEventListener('click',    e => { e.stopPropagation(); _duplicateStep(step.id); });
@@ -760,7 +763,7 @@ function _showStepContextMenu(step, x, y) {
   items.push(
     { label: step.hidden ? 'Show in playback' : 'Hide from playback',
       action: () => steps.setStepHidden(step.id, !step.hidden) },
-    { label: 'Update camera', action: () => { steps.saveStepCamera(step.id); setStatus('Camera saved for step.'); } },
+    { label: 'Update camera', action: () => { actions.updateStepCameraFromCurrent(step.id); setStatus('Camera saved for step.'); } },
     { separator: true },
     { label: 'Delete',    action: () => _deleteStep(step.id) },
   );
@@ -782,7 +785,7 @@ function _showMultiStepContextMenu(stepIds, x, y) {
     { label: anyVisible ? 'Hide from playback' : 'Show in playback',
       action: () => selSteps.forEach(s => steps.setStepHidden(s.id, anyVisible)) },
     { label: 'Update camera',
-      action: () => { selSteps.forEach(s => steps.saveStepCamera(s.id)); setStatus(`Camera saved for ${selSteps.length} steps.`); } },
+      action: () => { actions.updateStepCameraFromCurrentMulti(selSteps.map(s => s.id)); setStatus(`Camera saved for ${selSteps.length} steps.`); } },
     { separator: true },
     { label: `Delete (${selSteps.length})`,
       action: async () => {
@@ -1044,8 +1047,15 @@ function _buildTransitionRow(step) {
   const t           = step.transition || {};
   const stepId      = step.id;
   const animPresets = state.get('animationPresets') || [];
+  const cameraTpls  = state.get('cameraViews') || [];
   const stepPresetId   = t.animPresetId ?? null;
   const defaultPreset  = animPresets.find(p => p.isDefault);
+
+  // cameraBinding may be missing on legacy in-memory steps that pre-date
+  // the migration (project.js seeds it for loaded steps; new steps default
+  // it via createStep). Defensive default keeps the dropdown sane.
+  const cb            = step.cameraBinding || { mode: 'free', templateId: null };
+  const boundTplId    = cb.mode === 'template' ? cb.templateId : null;
 
   const wrap = document.createElement('div');
   wrap.className = 'card';
@@ -1059,12 +1069,26 @@ function _buildTransitionRow(step) {
     ),
   ].join('');
 
+  // Camera-binding dropdown — first option is always [Free camera],
+  // followed by every named template. "Free" means the step uses its
+  // own snapshot.camera (today's behaviour, unchanged for legacy steps).
+  // Picking a template makes this step pull its camera from the template
+  // at activation time — so editing the template in the Camera tab moves
+  // every bound step in lock-step.
+  const cameraOptions = [
+    `<option value="" ${!boundTplId ? 'selected' : ''}>[Free camera]</option>`,
+    ...cameraTpls.map(v =>
+      `<option value="${_escStep(v.id)}" ${boundTplId === v.id ? 'selected' : ''}>${_escStep(v.name)}</option>`
+    ),
+  ].join('');
+
   // Easing dropdowns (no titles)
   const easingOptions = cur => ['smooth','linear','instant']
     .map(v => `<option value="${v}" ${(cur ?? 'smooth') === v ? 'selected' : ''}>${v[0].toUpperCase()+v.slice(1)}</option>`)
     .join('');
 
   wrap.innerHTML = `
+    <select class="tran-cam-binding" title="Step camera. Free = uses this step's own snapshot. Template = follows a named camera that propagates updates to every step bound to it.">${cameraOptions}</select>
     ${animPresets.length > 0 ? `<select class="tran-anim-preset">${presetOptions}</select>` : ''}
     <div class="grid2">
       <select class="tran-cam-ease">${easingOptions(t.cameraEasing)}</select>
@@ -1076,6 +1100,9 @@ function _buildTransitionRow(step) {
     </label>
   `;
 
+  wrap.querySelector('.tran-cam-binding').addEventListener('change', e => {
+    actions.setStepCameraBinding(stepId, e.target.value || null);
+  });
   wrap.querySelector('.tran-anim-preset')?.addEventListener('change', e => {
     actions.updateTransition(stepId, { animPresetId: e.target.value || null });
   });
