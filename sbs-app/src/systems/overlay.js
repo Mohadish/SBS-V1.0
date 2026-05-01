@@ -439,13 +439,24 @@ function _enterTextEdit(node, ctxOverride) {
   // overflow stays visible during edit so the caret never gets clipped
   // mid-line; the rasteriser still uses overflow:hidden internally
   // (no-op when there's no fixed height anyway).
+  // Editor needs to display at the SAME on-screen size as the rastered
+  // image. The Konva node lives in canonical pixel space; the canvas
+  // displays scaled by sf.scale (always-canonical-camera letterboxes the
+  // canvas inside the viewer). So we lay the editor out in CANONICAL
+  // pixels (width = node.width(), font 16px, padding 8px — same as
+  // _htmlToCanvas) and apply transform: scale(sfScale) with origin 0,0
+  // to render it down to viewport pixels. Without this the editor was
+  // visibly bigger than the raster — the user typed in one size and the
+  // box snapped smaller on click-out.
+  const _sf = computeSafeFrameRect({ width: containerRect.width, height: containerRect.height });
+  const _editorScale = _sf.scale > 0 ? _sf.scale : 1;
   div.style.cssText = [
     'position:fixed',
     `left:${Math.round(containerRect.left + pos.x)}px`,
     `top:${Math.round(containerRect.top + pos.y)}px`,
     `width:${Math.round(node.width())}px`,
     'min-height:0',
-    'padding:8px',                     // matches _htmlToCanvas default
+    'padding:8px',                     // matches _htmlToCanvas default (canonical)
     'margin:0',
     'border:0',
     'outline:2px dashed #f59e0b',
@@ -453,7 +464,7 @@ function _enterTextEdit(node, ctxOverride) {
     'background:rgba(15,23,42,0.55)',
     'color:#ffffff',                   // matches _htmlToCanvas default
     'font-family:Arial',               // matches _htmlToCanvas default
-    'font-size:16px',                  // matches _htmlToCanvas default
+    'font-size:16px',                  // matches _htmlToCanvas default (canonical)
     'line-height:1.2',                 // matches _htmlToCanvas default
     'white-space:pre-wrap',
     'word-wrap:break-word',
@@ -461,6 +472,8 @@ function _enterTextEdit(node, ctxOverride) {
     'z-index:10000',
     'cursor:text',
     'user-select:text',
+    `transform:scale(${_editorScale})`,
+    'transform-origin:0 0',
   ].join(';');
   document.body.appendChild(div);
 
@@ -923,10 +936,18 @@ function _attachNode(node) {
     // editable's natural height grows / shrinks as the wrap reflows.
     // We deliberately don't set a min-height here so the user sees real
     // height feedback while dragging.
+    //
+    // Editor lives in canonical-pixel space and is rendered down via
+    // transform: scale(sfScale). node.width() * node.scaleX() during a
+    // resize gesture gives the effective canonical width (Konva sets
+    // scaleX != 1 mid-drag, flattens to width on transformend).
     const w = node.width() * node.scaleX();
     div.style.width = `${Math.max(20, Math.round(w))}px`;
     div.style.minHeight = '0px';
     // Editor follows the node's anchored corner during left-side drags.
+    // getAbsolutePosition is already in viewport coords (stage scale +
+    // position applied), so it pairs cleanly with the editor's
+    // transform-origin: 0 0.
     const containerRect = _container.getBoundingClientRect();
     const pos = node.getAbsolutePosition();
     div.style.left = `${Math.round(containerRect.left + pos.x)}px`;
@@ -1982,6 +2003,18 @@ async function _recreateNode(spec) {
     if (textHtml) {
       node.setAttr('textHtml',  textHtml);
       node.setAttr('textWidth', textWidth);
+      // textWidth is the user-dragged width persisted as a CUSTOM attr —
+      // Konva's toJSON treats custom attrs as load-bearing and preserves
+      // them, while the built-in `width` is sometimes dropped on
+      // serialization (default-attr elision). Reading it back into
+      // node.width() before _reflowTextBox runs guarantees the raster
+      // re-wraps at the right width on step revisit; otherwise the
+      // 400px fallback inside _reflowTextBox kicks in and the box
+      // visibly snaps back to default width every time the user
+      // navigates away and back.
+      if (Number.isFinite(textWidth) && textWidth > 0) {
+        node.width(textWidth);
+      }
       // AWAIT the raster — see _loadFromActiveStep comment. _reflowTextBox
       // sets node.image(canvas) once the SVG-foreignObject paints. If we
       // don't await, the layer can render the node before the image lands.

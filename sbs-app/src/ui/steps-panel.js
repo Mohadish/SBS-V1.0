@@ -319,6 +319,11 @@ function _buildChapterHeader(chapter, number) {
 
   // ── Drag the whole chapter (and its steps) ────────────────────────────────
   wrap.addEventListener('dragstart', e => {
+    // Same form-control guard as step cards — see _buildStepCard.
+    if (e.target.closest('select, input, button, textarea, option, label, [contenteditable="true"]')) {
+      e.preventDefault();
+      return;
+    }
     _dragChapterId = chapter.id;
     _dragId        = null;
     e.dataTransfer.effectAllowed = 'move';
@@ -629,6 +634,15 @@ function _buildStepCard(step, idx, isActive, isExpanded, total) {
 
   // Drag-and-drop
   card.addEventListener('dragstart', e => {
+    // Native drag is initiated by Chromium when mousedown lands on a
+    // [draggable=true] element — even when the original target is a
+    // <select>, <input>, etc. inside it. That kills the dropdown
+    // (mousedown opens drag, dropdown never opens). Cancel the drag
+    // when it originated from a form control so dropdowns work.
+    if (e.target.closest('select, input, button, textarea, option, label, [contenteditable="true"]')) {
+      e.preventDefault();
+      return;
+    }
     _dragChapterId = null;
     // If the dragged step is part of a multi-selection, drag the whole set.
     if (_selectedIds.has(step.id) && _selectedIds.size > 1) {

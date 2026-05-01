@@ -268,6 +268,20 @@ function _applyToRange(root, range, action, value) {
   }
   if (block && block.querySelectorAll) normalize(block);
 
+  // Decoration override fix: text-decoration on an ancestor PAINTS
+  // through descendants regardless of what the descendants set —
+  // CSS doesn't let an inner element "subtract" a parent's underline.
+  // So after toggling underline OFF on a partial selection, the
+  // ancestor's underline still shows over the modified region as a
+  // thin line ("underline artifact"). Resolve by splitting any
+  // text-decoration ancestor into [before / modified / after]
+  // siblings, so the modified region becomes a peer of the decorated
+  // run instead of a child of it. Only runs for decoration actions —
+  // bold / italic / color cascade differently and don't need this.
+  if (action === 'underline' && firstInserted?.isConnected && lastInserted?.isConnected) {
+    _splitOutOfDecoratedAncestors(firstInserted, lastInserted, 'underline');
+  }
+
   // Restore selection over the re-inserted content (after normalisation
   // — first/last may have moved/merged, but DOM-position references
   // survive flattening).
@@ -278,6 +292,70 @@ function _applyToRange(root, range, action, value) {
     sel.removeAllRanges();
     sel.addRange(newRange);
   }
+}
+
+/**
+ * Walk up from `first`'s ancestor chain. For every <span> ancestor that
+ * carries `decoration` in its text-decoration list, split that span
+ * around [first..last] so the range becomes a sibling of the decorated
+ * span instead of a child of it. Stops at the first non-span ancestor
+ * (text-decoration only inherits across spans in our content model).
+ */
+function _splitOutOfDecoratedAncestors(first, last, decoration) {
+  let p = first.parentElement;
+  while (p && p.tagName === 'SPAN') {
+    const td = String(p.style?.textDecoration || '');
+    const hasDeco = td.split(/\s+/).filter(Boolean).includes(decoration);
+    if (hasDeco && first.parentElement === p && last.parentElement === p) {
+      _splitSpanAround(p, first, last);
+      // Continue walking from the moved range's NEW parent — the next
+      // outer ancestor might also be decorated.
+      p = first.parentElement;
+    } else {
+      break;
+    }
+  }
+}
+
+/**
+ * Split a span around a contiguous middle range [first..last].
+ *   before:  <span style="X">  pre  [first ... last]  post  </span>
+ *   after:   <span style="X">pre</span>  first ... last  <span style="X">post</span>
+ * `first` and `last` end up as direct children of the original span's
+ * parent. Empty halves are dropped.
+ */
+function _splitSpanAround(span, first, last) {
+  const parent = span.parentElement;
+  if (!parent) return;
+  if (first.parentElement !== span || last.parentElement !== span) return;
+
+  // Build the "before" clone with everything before `first`.
+  const beforeClone = span.cloneNode(false);
+  while (span.firstChild && span.firstChild !== first) {
+    beforeClone.appendChild(span.firstChild);
+  }
+
+  // Pull the middle (first..last) out of `span`.
+  const middle = [];
+  let cur = first;
+  while (cur) {
+    const next = cur.nextSibling;
+    middle.push(cur);
+    if (cur === last) break;
+    cur = next;
+  }
+  for (const n of middle) span.removeChild(n);
+
+  // What remains in `span` is the "after" portion.
+  const afterClone = span;
+
+  // Insert as siblings: [before, middle..., after-still-in-place].
+  if (beforeClone.firstChild) parent.insertBefore(beforeClone, afterClone);
+  for (const n of middle) parent.insertBefore(n, afterClone);
+
+  // Drop empty halves.
+  if (!beforeClone.firstChild) beforeClone.remove();
+  if (!afterClone.firstChild) afterClone.remove();
 }
 
 function _applyAtCaret(root, range, action, value) {
