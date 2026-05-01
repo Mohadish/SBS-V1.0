@@ -297,20 +297,32 @@ function _applyToRange(root, range, action, value) {
 /**
  * Walk up from `first`'s ancestor chain. For every <span> ancestor that
  * carries `decoration` in its text-decoration list, split that span
- * around [first..last] so the range becomes a sibling of the decorated
- * span instead of a child of it. Stops at the first non-span ancestor
- * (text-decoration only inherits across spans in our content model).
+ * around [first..last] so the range becomes a peer of the decorated
+ * span instead of a child of it. The middle is wrapped in a clone of
+ * the parent with the offending decoration stripped, so all OTHER
+ * inherited styles (color, font-family, font-size, font-weight,
+ * font-style) survive the split — without the wrap the middle would
+ * be moved to bare-text-node children of the grandparent and visibly
+ * reset to default styling.
  */
 function _splitOutOfDecoratedAncestors(first, last, decoration) {
-  let p = first.parentElement;
+  let curFirst = first, curLast = last;
+  let p = curFirst.parentElement;
   while (p && p.tagName === 'SPAN') {
     const td = String(p.style?.textDecoration || '');
     const hasDeco = td.split(/\s+/).filter(Boolean).includes(decoration);
-    if (hasDeco && first.parentElement === p && last.parentElement === p) {
-      _splitSpanAround(p, first, last);
-      // Continue walking from the moved range's NEW parent — the next
-      // outer ancestor might also be decorated.
-      p = first.parentElement;
+    if (hasDeco && curFirst.parentElement === p && curLast.parentElement === p) {
+      const wrap = _splitSpanAround(p, curFirst, curLast, decoration);
+      // After the split the middle now lives inside `wrap`; that wrap
+      // becomes the new "first/last" for the next outward iteration so
+      // the outer-most decorated ancestor (if any) gets handled too.
+      if (wrap) {
+        curFirst = wrap;
+        curLast  = wrap;
+        p = wrap.parentElement;
+      } else {
+        break;
+      }
     } else {
       break;
     }
@@ -320,42 +332,57 @@ function _splitOutOfDecoratedAncestors(first, last, decoration) {
 /**
  * Split a span around a contiguous middle range [first..last].
  *   before:  <span style="X">  pre  [first ... last]  post  </span>
- *   after:   <span style="X">pre</span>  first ... last  <span style="X">post</span>
- * `first` and `last` end up as direct children of the original span's
- * parent. Empty halves are dropped.
+ *   after:   <span style="X">pre</span>
+ *            <span style="X minus stripDecoration">[first..last]</span>
+ *            <span style="X">post</span>
+ *
+ * Returns the middle wrap span (containing first..last), or null if
+ * nothing changed.
  */
-function _splitSpanAround(span, first, last) {
+function _splitSpanAround(span, first, last, stripDecoration) {
   const parent = span.parentElement;
-  if (!parent) return;
-  if (first.parentElement !== span || last.parentElement !== span) return;
+  if (!parent) return null;
+  if (first.parentElement !== span || last.parentElement !== span) return null;
 
-  // Build the "before" clone with everything before `first`.
+  // Middle wrap clones the parent's styling, then drops the decoration
+  // we're trying to escape. All other styles propagate, so the middle
+  // doesn't visibly snap to default colour / font / size when we move
+  // it out of the decorated ancestor.
+  const middleWrap = span.cloneNode(false);
+  if (stripDecoration) {
+    const td = String(middleWrap.style.textDecoration || '');
+    const next = td.split(/\s+/).filter(d => d && d !== stripDecoration).join(' ');
+    if (next) middleWrap.style.textDecoration = next;
+    else      middleWrap.style.removeProperty('text-decoration');
+  }
+
+  // "Before" clone keeps the original decoration — siblings before
+  // `first` are still meant to be decorated.
   const beforeClone = span.cloneNode(false);
   while (span.firstChild && span.firstChild !== first) {
     beforeClone.appendChild(span.firstChild);
   }
 
-  // Pull the middle (first..last) out of `span`.
-  const middle = [];
+  // Move middle into middleWrap.
   let cur = first;
   while (cur) {
     const next = cur.nextSibling;
-    middle.push(cur);
+    middleWrap.appendChild(cur);
     if (cur === last) break;
     cur = next;
   }
-  for (const n of middle) span.removeChild(n);
 
-  // What remains in `span` is the "after" portion.
+  // What remains in span is the "after" portion — reuse span as-is.
   const afterClone = span;
 
-  // Insert as siblings: [before, middle..., after-still-in-place].
+  // Insert as siblings: [before, middleWrap, after-still-in-place].
   if (beforeClone.firstChild) parent.insertBefore(beforeClone, afterClone);
-  for (const n of middle) parent.insertBefore(n, afterClone);
+  parent.insertBefore(middleWrap, afterClone);
 
-  // Drop empty halves.
+  if (!afterClone.firstChild)  afterClone.remove();
   if (!beforeClone.firstChild) beforeClone.remove();
-  if (!afterClone.firstChild) afterClone.remove();
+  if (!middleWrap.firstChild)  { middleWrap.remove(); return null; }
+  return middleWrap;
 }
 
 function _applyAtCaret(root, range, action, value) {

@@ -567,7 +567,13 @@ function _buildStepCard(step, idx, isActive, isExpanded, total) {
     isSelected  ? 'selected'   : '',
     step.hidden ? 'hiddenStep' : '',
   ].filter(Boolean).join(' ');
-  card.draggable      = true;
+  // draggable lives on the top-row only (set inside _buildStepTopCollapsed),
+  // not on the whole card. With the whole card draggable, Chromium starts
+  // an OS-level drag on mousedown of any inner <select> — dropdowns then
+  // open and close as the user fights the drag. Restricting draggable to
+  // the always-visible header (which doesn't host form controls) lets the
+  // transition-row dropdowns work normally and still preserves drag-to-
+  // reorder by grabbing the step's title row.
   card.dataset.stepId = step.id;
   card.style.marginBottom = '8px';
 
@@ -698,7 +704,11 @@ function _buildStepActionRow(step) {
 function _buildStepTopCollapsed(step, idx, showThumb = true) {
   const top = document.createElement('div');
   top.className = 'stepTop';
-  top.style.cssText = 'display:flex;align-items:center;gap:8px;';
+  // The top row IS the drag handle — see the long comment in _buildStepCard
+  // for why draggable lives here instead of on the whole card. dragstart
+  // bubbles up to the card's listener regardless.
+  top.draggable = true;
+  top.style.cssText = 'display:flex;align-items:center;gap:8px;cursor:grab;';
 
   // Thumbnail — live preview of the viewport when this step is active.
   // Hidden while the card is expanded (full controls take precedence).
