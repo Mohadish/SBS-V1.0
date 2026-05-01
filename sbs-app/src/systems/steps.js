@@ -1346,13 +1346,12 @@ class StepManager {
     if (!chap) return;
     const next = !!hidden;
     chap.hidden = next;
-    // Hiding implicitly LOCKS the chapter (always-expanded → always-
-    // collapsed semantics in the new state). Auto-lock keeps the panel
-    // tidy: the hidden chapter's steps don't dominate the timeline UI
-    // while still being visible should the user want to inspect them.
-    // The user can manually unlock if they want the chapter expanded
-    // while hidden — the auto-lock is one-shot, not enforced.
-    if (next) chap.locked = true;
+    // Hiding auto-UNLOCKS the chapter so it collapses by default —
+    // hidden steps shouldn't dominate the panel. The user can manually
+    // re-lock via the lock button if they want the chapter expanded
+    // while hidden (e.g. for last-glance reference). Auto-unlock is a
+    // one-shot side-effect of hide; un-hiding doesn't touch the lock.
+    if (next) chap.locked = false;
     state.setState({ chapters: [...chapters] });
     state.markDirty();
   }
