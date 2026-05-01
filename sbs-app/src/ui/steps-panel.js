@@ -655,6 +655,21 @@ function _buildStepCard(step, idx, isActive, isExpanded, total) {
     renderStepsPanel();
   });
 
+  // Middle-mouse → same as double-click (instant jump to final state).
+  // Quicker than dbl-click for users who already use mid-click as a
+  // generic "skip ahead" gesture. Listen via mousedown because middle
+  // button doesn't fire a regular click in some browsers; preventDefault
+  // suppresses the default scroll-anchor cursor on Chromium.
+  card.addEventListener('mousedown', e => {
+    if (e.button !== 1) return;
+    e.preventDefault();
+    e.stopPropagation();
+    _selectedIds = new Set([step.id]);
+    _expandedId  = step.id;
+    steps.activateStep(step.id, false);
+    renderStepsPanel();
+  });
+
   // Drag-and-drop
   card.addEventListener('dragstart', e => {
     // Native drag is initiated by Chromium when mousedown lands on a
