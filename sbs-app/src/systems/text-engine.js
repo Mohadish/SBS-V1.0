@@ -222,8 +222,8 @@ function _applyToRange(root, range, action, value) {
   // changes don't fight with the live document while we work.
   //
   // Subtle: extractContents() can LOSE ancestor styles. For a partial
-  // range inside a single styled span (e.g. selecting "world" inside
-  //   <span style="text-decoration:underline">Hello world</span>)
+  // range fully INSIDE a single styled span (e.g. selecting "world"
+  // inside <span style="text-decoration:underline">Hello world</span>)
   // the fragment ends up as a bare text node "world" — the underline
   // lived on the parent span which stays in the live doc. The toggle
   // engine then sees a text run with NO underline ancestor, thinks
@@ -231,11 +231,24 @@ function _applyToRange(root, range, action, value) {
   //
   // Fix: capture inherited styles at the range boundary BEFORE
   // extraction and wrap the extracted fragment with a span carrying
-  // them. The engine now sees the full styling and toggles correctly.
-  // Normalize's _stripRedundantAncestorProps cleans up any redundant
-  // wrappers afterward.
+  // them. Normalize's _stripRedundantAncestorProps cleans up any
+  // redundant wrappers afterward.
+  //
+  // BUT: only do this when extract actually loses styling — i.e. when
+  // both endpoints are inside the SAME text node. For ranges that
+  // span multiple text nodes / styled regions, extractContents already
+  // preserves per-region ancestry by splitting elements at the range
+  // boundaries. Wrapping the fragment in start-position styles in that
+  // case OVER-applies them: e.g. selecting "ABCDEF" where "ABC" is
+  // underlined and "DEF" isn't, then pressing italic, would pull the
+  // underline from A's ancestor and apply it to the whole DEF region
+  // too — the "thin underline shows up after italic on mixed text"
+  // bug. Per-text-node check is sufficient because every place where
+  // extract drops styling reduces to a within-one-text-node range.
   const sel = window.getSelection();
-  const inherited = _captureInheritedStyles(root, range);
+  const isInternal = range.startContainer === range.endContainer
+                     && range.startContainer?.nodeType === 3;
+  const inherited = isInternal ? _captureInheritedStyles(root, range) : {};
   const fragment = range.extractContents();
   const tmp = document.createElement('div');
   tmp.appendChild(fragment);
