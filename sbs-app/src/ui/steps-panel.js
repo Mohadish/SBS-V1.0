@@ -1163,14 +1163,20 @@ function _buildTransitionRow(step) {
     </label>
   `;
 
-  // The step card has draggable=true — clicking a <select> normally
-  // starts a drag (mousedown bubbles up to the card) before the dropdown
-  // opens, so the user's pick never registers. Stop pointer events on
-  // every form control inside the transition row from reaching the
-  // draggable card. Fixes: animation preset, camera binding, easing,
-  // and visibility-fade checkbox all becoming nonresponsive.
+  // Form controls are inside a step card whose root <div> has its own
+  // click handler that activates+expands the step and re-renders the
+  // entire panel. A click on a <select> or <input> normally bubbles up
+  // and triggers that re-render mid-pick — destroying the dropdown's
+  // DOM and making it look "nonresponsive". Stop click + pointer
+  // events at every control so the card's handlers never fire from
+  // form interactions. (The earlier draggable=true issue is also
+  // covered: even though the lower rows are no longer descendants of
+  // a draggable element, future-proof the guard for any new control
+  // anywhere in the card.)
   for (const ctrl of wrap.querySelectorAll('select, input, label')) {
-    ctrl.addEventListener('mousedown',  e => e.stopPropagation());
+    ctrl.addEventListener('click',       e => e.stopPropagation());
+    ctrl.addEventListener('dblclick',    e => e.stopPropagation());
+    ctrl.addEventListener('mousedown',   e => e.stopPropagation());
     ctrl.addEventListener('pointerdown', e => e.stopPropagation());
     ctrl.draggable = false;
   }

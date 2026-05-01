@@ -268,19 +268,12 @@ function _applyToRange(root, range, action, value) {
   }
   if (block && block.querySelectorAll) normalize(block);
 
-  // Decoration override fix: text-decoration on an ancestor PAINTS
-  // through descendants regardless of what the descendants set —
-  // CSS doesn't let an inner element "subtract" a parent's underline.
-  // So after toggling underline OFF on a partial selection, the
-  // ancestor's underline still shows over the modified region as a
-  // thin line ("underline artifact"). Resolve by splitting any
-  // text-decoration ancestor into [before / modified / after]
-  // siblings, so the modified region becomes a peer of the decorated
-  // run instead of a child of it. Only runs for decoration actions —
-  // bold / italic / color cascade differently and don't need this.
-  if (action === 'underline' && firstInserted?.isConnected && lastInserted?.isConnected) {
-    _splitOutOfDecoratedAncestors(firstInserted, lastInserted, 'underline');
-  }
+  // (Earlier attempt to "split out of decorated ancestor" so the
+  // modified region escapes a parent underline lived here. It made the
+  // line's other styling (color / font / size) get wiped on toggle in
+  // some structures — worse than the thin-underline artifact it tried
+  // to fix. Reverted; underline-removal-through-ancestor is a known
+  // CSS limitation revisited later with a pre-extract-split approach.)
 
   // Restore selection over the re-inserted content (after normalisation
   // — first/last may have moved/merged, but DOM-position references
@@ -294,96 +287,6 @@ function _applyToRange(root, range, action, value) {
   }
 }
 
-/**
- * Walk up from `first`'s ancestor chain. For every <span> ancestor that
- * carries `decoration` in its text-decoration list, split that span
- * around [first..last] so the range becomes a peer of the decorated
- * span instead of a child of it. The middle is wrapped in a clone of
- * the parent with the offending decoration stripped, so all OTHER
- * inherited styles (color, font-family, font-size, font-weight,
- * font-style) survive the split — without the wrap the middle would
- * be moved to bare-text-node children of the grandparent and visibly
- * reset to default styling.
- */
-function _splitOutOfDecoratedAncestors(first, last, decoration) {
-  let curFirst = first, curLast = last;
-  let p = curFirst.parentElement;
-  while (p && p.tagName === 'SPAN') {
-    const td = String(p.style?.textDecoration || '');
-    const hasDeco = td.split(/\s+/).filter(Boolean).includes(decoration);
-    if (hasDeco && curFirst.parentElement === p && curLast.parentElement === p) {
-      const wrap = _splitSpanAround(p, curFirst, curLast, decoration);
-      // After the split the middle now lives inside `wrap`; that wrap
-      // becomes the new "first/last" for the next outward iteration so
-      // the outer-most decorated ancestor (if any) gets handled too.
-      if (wrap) {
-        curFirst = wrap;
-        curLast  = wrap;
-        p = wrap.parentElement;
-      } else {
-        break;
-      }
-    } else {
-      break;
-    }
-  }
-}
-
-/**
- * Split a span around a contiguous middle range [first..last].
- *   before:  <span style="X">  pre  [first ... last]  post  </span>
- *   after:   <span style="X">pre</span>
- *            <span style="X minus stripDecoration">[first..last]</span>
- *            <span style="X">post</span>
- *
- * Returns the middle wrap span (containing first..last), or null if
- * nothing changed.
- */
-function _splitSpanAround(span, first, last, stripDecoration) {
-  const parent = span.parentElement;
-  if (!parent) return null;
-  if (first.parentElement !== span || last.parentElement !== span) return null;
-
-  // Middle wrap clones the parent's styling, then drops the decoration
-  // we're trying to escape. All other styles propagate, so the middle
-  // doesn't visibly snap to default colour / font / size when we move
-  // it out of the decorated ancestor.
-  const middleWrap = span.cloneNode(false);
-  if (stripDecoration) {
-    const td = String(middleWrap.style.textDecoration || '');
-    const next = td.split(/\s+/).filter(d => d && d !== stripDecoration).join(' ');
-    if (next) middleWrap.style.textDecoration = next;
-    else      middleWrap.style.removeProperty('text-decoration');
-  }
-
-  // "Before" clone keeps the original decoration — siblings before
-  // `first` are still meant to be decorated.
-  const beforeClone = span.cloneNode(false);
-  while (span.firstChild && span.firstChild !== first) {
-    beforeClone.appendChild(span.firstChild);
-  }
-
-  // Move middle into middleWrap.
-  let cur = first;
-  while (cur) {
-    const next = cur.nextSibling;
-    middleWrap.appendChild(cur);
-    if (cur === last) break;
-    cur = next;
-  }
-
-  // What remains in span is the "after" portion — reuse span as-is.
-  const afterClone = span;
-
-  // Insert as siblings: [before, middleWrap, after-still-in-place].
-  if (beforeClone.firstChild) parent.insertBefore(beforeClone, afterClone);
-  parent.insertBefore(middleWrap, afterClone);
-
-  if (!afterClone.firstChild)  afterClone.remove();
-  if (!beforeClone.firstChild) beforeClone.remove();
-  if (!middleWrap.firstChild)  { middleWrap.remove(); return null; }
-  return middleWrap;
-}
 
 function _applyAtCaret(root, range, action, value) {
   // Block-level actions just operate on the line, not the caret.
