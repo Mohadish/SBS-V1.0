@@ -208,6 +208,8 @@ function buildMenu() {
         { role: 'copy' },
         { role: 'paste' },
         { role: 'selectAll' },
+        { type: 'separator' },
+        { label: 'Model source transform…', click: () => mainWindow?.webContents.send('menu:modelSourceTransform') },
       ],
     },
     // View

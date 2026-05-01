@@ -24,6 +24,10 @@ import {
   captureTransformSnapshot,
   applyTransformSnapshot,
   applyNodeTransformToObject3D,
+  multiplyQuaternions,
+  invertQuaternion,
+  normalizeQuaternion,
+  applyQuaternionToVector,
 }                               from '../core/transforms.js';
 import {
   moveNode    as _nodes_moveNode,
@@ -2651,6 +2655,142 @@ function _syncVis() {
 function _isInputFocused() {
   const t = document.activeElement?.tagName;
   return t === 'INPUT' || t === 'TEXTAREA' || document.activeElement?.isContentEditable;
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+//  MODEL SOURCE TRANSFORM (Edit → Model source transform…)
+// ═══════════════════════════════════════════════════════════════════════════
+//
+// Cascade-through-snapshots design (per user spec):
+//   1. The user enters a delta (position, rotation, uniform scale) at
+//      the model's "step 0" / origin location.
+//   2. We mutate EVERY step's snapshot.transforms[modelId] so the same
+//      delta appears in every step. Per-step animation deltas
+//      (the gap from one step to the next) are preserved.
+//   3. Pivot's WORLD orientation must stay invariant — otherwise the
+//      gizmo's local-translate axes would rotate with the source.
+//      Compensate node.pivotLocalQuaternion with inv(Δq) so:
+//          pivot_world_after  = (...×Δq) × inv(Δq)×pivotQ_old = pivot_world_before
+//   4. Scale is project-level (node.baseLocalScale) — multiply directly.
+//
+// This function is rare (user opens it occasionally); the cascade walks
+// every step. That cost is fine for the simplicity it buys downstream
+// — no extra Three.js groups, no per-frame composition, the per-step
+// stored transforms ARE the world transforms.
+
+export function cascadeModelSourceTransform(nodeId, dPos, dQuat, dScaleMul) {
+  const node = state.get('nodeById')?.get(nodeId);
+  if (!node || node.type !== 'model') return;
+
+  const stepsArr = state.get('steps') || [];
+
+  // Capture before-state for undo. Every step's transform entry +
+  // node-level pivot + scale.
+  const beforeSteps = stepsArr.map(s => ({
+    id: s.id,
+    transform: s.snapshot?.transforms?.[nodeId]
+      ? {
+          localOffset:     [...(s.snapshot.transforms[nodeId].localOffset     || [0,0,0])],
+          localQuaternion: [...(s.snapshot.transforms[nodeId].localQuaternion || [0,0,0,1])],
+        }
+      : null,
+  }));
+  const beforeNode = {
+    pivotLocalQuaternion: [...(node.pivotLocalQuaternion || [0,0,0,1])],
+    baseLocalScale:       [...(node.baseLocalScale       || [1,1,1])],
+  };
+
+  const _apply = (dPos_, dQuat_, dScaleMul_) => {
+    const steps2 = state.get('steps') || [];
+    for (const step of steps2) {
+      const t = step.snapshot?.transforms?.[nodeId];
+      if (!t) continue;
+      // Position cascade: in PARENT-LOCAL coords, just add. (The user
+      // entered the delta in the model's local frame, but for top-level
+      // models parent = scene root = identity, so parent-local = world.
+      // For models nested in folders the delta is in the folder's
+      // frame — the user's expectation per the spec.)
+      if (Array.isArray(t.localOffset)) {
+        t.localOffset = [
+          (t.localOffset[0] || 0) + dPos_[0],
+          (t.localOffset[1] || 0) + dPos_[1],
+          (t.localOffset[2] || 0) + dPos_[2],
+        ];
+      }
+      // Rotation cascade: post-multiply so source rotation is applied
+      // in the model's LOCAL frame BEFORE the per-step rotation.
+      //   final_after = parent × (per_step × Δq) × mesh
+      //              = parent × per_step × Δq × mesh  (Δq runs first on mesh)
+      // For a clock with localQuaternion = Q_wallA and Δq = Q_zRot,
+      // the clock spins 90° around its own Z, then rotates onto wallA.
+      if (Array.isArray(t.localQuaternion)) {
+        t.localQuaternion = normalizeQuaternion(
+          multiplyQuaternions(t.localQuaternion, dQuat_),
+        );
+      }
+    }
+
+    // Pivot orientation compensation — keep world pivot orientation invariant.
+    const pivotQ = node.pivotLocalQuaternion || [0,0,0,1];
+    node.pivotLocalQuaternion = normalizeQuaternion(
+      multiplyQuaternions(invertQuaternion(dQuat_), pivotQ),
+    );
+
+    // Scale: uniform multiplier (or vector). Multiply directly.
+    if (Array.isArray(node.baseLocalScale)) {
+      node.baseLocalScale = [
+        node.baseLocalScale[0] * dScaleMul_[0],
+        node.baseLocalScale[1] * dScaleMul_[1],
+        node.baseLocalScale[2] * dScaleMul_[2],
+      ];
+    }
+
+    state.setState({ steps: [...steps2] });
+    state.markDirty();
+    // Re-apply current step so the live view reflects the cascade.
+    const activeId = state.get('activeStepId');
+    if (activeId) steps.activateStep(activeId, false);
+  };
+
+  _apply(dPos, dQuat, dScaleMul);
+
+  const _restore = (snapshot) => {
+    const steps2 = state.get('steps') || [];
+    for (const step of steps2) {
+      const before = snapshot.steps.find(s => s.id === step.id);
+      if (!before?.transform) continue;
+      const t = step.snapshot?.transforms?.[nodeId];
+      if (!t) continue;
+      t.localOffset     = [...before.transform.localOffset];
+      t.localQuaternion = [...before.transform.localQuaternion];
+    }
+    node.pivotLocalQuaternion = [...snapshot.node.pivotLocalQuaternion];
+    node.baseLocalScale       = [...snapshot.node.baseLocalScale];
+    state.setState({ steps: [...steps2] });
+    state.markDirty();
+    const activeId = state.get('activeStepId');
+    if (activeId) steps.activateStep(activeId, false);
+  };
+
+  const afterSteps = (state.get('steps') || []).map(s => ({
+    id: s.id,
+    transform: s.snapshot?.transforms?.[nodeId]
+      ? {
+          localOffset:     [...s.snapshot.transforms[nodeId].localOffset],
+          localQuaternion: [...s.snapshot.transforms[nodeId].localQuaternion],
+        }
+      : null,
+  }));
+  const afterNode = {
+    pivotLocalQuaternion: [...node.pivotLocalQuaternion],
+    baseLocalScale:       [...node.baseLocalScale],
+  };
+
+  undoManager.push(
+    `Model source transform "${node.name || 'model'}"`,
+    () => _restore({ steps: beforeSteps, node: beforeNode }),
+    () => _restore({ steps: afterSteps,  node: afterNode }),
+  );
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
