@@ -396,6 +396,12 @@ function _wireResetAndSave(sel) {
     _applyToScene();
     _loadNodeIntoInputs();
     _updatePreviewBox();
+    // window.confirm returns focus to the document body; without an
+    // explicit focus call, the next click on a number input doesn't
+    // always re-bind keyboard events on Electron/Chromium and the
+    // inputs go silent (only spinner arrows work). Punt focus back to
+    // the first position field so typing resumes.
+    setTimeout(() => _inputs?.pos?.[0]?.focus(), 0);
   });
 
   _mountedEl.querySelector('#ms-save').addEventListener('click', () => {
@@ -492,6 +498,10 @@ function _applyUnitConversion(factor) {
   _loadNodeIntoInputs();
   _updatePreviewBox();
   setStatus(`Scale × ${factor} applied. Press Save changes to commit, or close to revert.`);
+  // Refocus a number input so the user can keep typing right after the
+  // conversion accept (window.confirm + custom modal both leave focus
+  // on the dialog button, which doesn't take keyboard input).
+  setTimeout(() => _inputs?.scl?.[0]?.focus(), 0);
 }
 
 // ─── Preview bounding box (red current / green new) ──────────────────────
@@ -673,8 +683,16 @@ function _applyInputsToNode() {
 }
 
 function _applyToScene() {
+  // Update Three.js objects in-place. Intentionally NOT emitting
+  // change:treeData here — listeners (tree.js renderTree, hud.js
+  // renderHud, main.js _syncGizmoToSelection) would fire on every
+  // keystroke and one of them was racing with the number-input's
+  // focus / value-commit, leaving the input in a state where only
+  // the spinner arrows worked. The render loop redraws from the
+  // updated Three.js state on its next tick — no event needed for
+  // visual update; tree/hud/gizmo are stale by an inch but the panel
+  // is the live surface anyway.
   applyAllTransforms(state.get('treeData'), steps.object3dById);
-  state.emit('change:treeData', state.get('treeData'));
 }
 
 function _fmt(v) {
