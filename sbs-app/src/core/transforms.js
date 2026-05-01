@@ -378,9 +378,21 @@ export function getPivotWorldPosition(node, object3d) {
 }
 
 /**
- * World-space orientation of the pivot frame = object's world quaternion *
- * pivotLocalQuaternion. Used so the gizmo's axes align with the pivot
- * frame, not the object frame, when in pivot mode.
+ * World-space orientation of the pivot frame.
+ *
+ *   pivot_world_q = parent_world_q × localQuaternion × pivotLocalQuaternion
+ *
+ * Note that baseLocalQuaternion (the model-source rotation) is
+ * intentionally STRIPPED from this calculation. The pivot frame is
+ * the user's "local translate / local rotate" frame — if the source
+ * transform pulled the pivot with it, applying a source rotation
+ * would silently re-orient the gizmo axes and "local translate X"
+ * would no longer point where the user expects. Stripping base keeps
+ * the pivot anchored to the per-step rotation only.
+ *
+ * Math: object's world = parent × (delta × base). World × inv(base) =
+ * parent × delta. Then × pivotLocalQuaternion. Pre-feature where
+ * base = identity, inv(base) = identity → behaviour unchanged.
  */
 export function getPivotWorldQuaternion(node, object3d) {
   ensureTransformDefaults(node);
@@ -389,6 +401,10 @@ export function getPivotWorldQuaternion(node, object3d) {
   if (object3d?.getWorldQuaternion) {
     object3d.updateMatrixWorld?.(true);
     object3d.getWorldQuaternion(out);
+    // Strip the source-base contribution so source edits don't
+    // re-orient the gizmo / pivot frame.
+    const baseInv = invertQuaternion(node.baseLocalQuaternion);
+    out.multiply(new T.Quaternion(baseInv[0], baseInv[1], baseInv[2], baseInv[3]));
   }
   const pivotQ = getAppliedPivotQuaternion(node);   // identity when disabled
   out.multiply(new T.Quaternion(pivotQ[0], pivotQ[1], pivotQ[2], pivotQ[3]));
