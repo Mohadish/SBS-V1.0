@@ -208,6 +208,69 @@ export function ensureTransformDefaults(node) {
   if (typeof node.moveEnabled   !== 'boolean') node.moveEnabled   = true;
   if (typeof node.rotateEnabled !== 'boolean') node.rotateEnabled = true;
   if (typeof node.pivotEnabled  !== 'boolean') node.pivotEnabled  = true;
+
+  // Source-transform fields (model nodes only — harmless on others).
+  if (!Array.isArray(node.sourceLocalPosition))
+    node.sourceLocalPosition = [0, 0, 0];
+  if (!Array.isArray(node.sourceLocalQuaternion) || node.sourceLocalQuaternion.length < 4)
+    node.sourceLocalQuaternion = [0, 0, 0, 1];
+  if (!Array.isArray(node.sourceLocalScale))
+    node.sourceLocalScale = [1, 1, 1];
+}
+
+/**
+ * Source-transform group accessor + lazy creator.
+ *
+ * Every MODEL node's outer THREE.Group contains exactly one inner
+ * THREE.Group (`userData.sbsSourceGroup === true`) wrapping its mesh
+ * children. The inner group's local transform IS the source transform
+ * — like reloading a pre-edited model file. Pivot system + per-step
+ * transforms operate on the OUTER group and never touch the inner.
+ *
+ * On legacy projects (loaded before this feature) the outer group has
+ * children directly. ensureSourceGroup creates the inner group on
+ * first call and migrates existing children into it. Idempotent.
+ *
+ * @param {THREE.Group} outer  the model node's outer group
+ * @returns {THREE.Group}      the inner source group (creates if absent)
+ */
+export function ensureSourceGroup(outer) {
+  if (!outer || !window.THREE) return null;
+  for (const child of outer.children) {
+    if (child?.userData?.sbsSourceGroup) return child;
+  }
+  const inner = new window.THREE.Group();
+  inner.name = 'sbs:source-transform';
+  inner.userData.sbsSourceGroup = true;
+  // Move existing children into the new inner group, preserving order.
+  const existing = [...outer.children];
+  for (const child of existing) inner.add(child);
+  outer.add(inner);
+  return inner;
+}
+
+/**
+ * Write the node's source transform onto its inner group. PLAIN —
+ * no pivot math, no compensation. inner.position/quaternion/scale =
+ * source values directly. The geometry rotates / translates / scales
+ * around the model's local origin (where the inner group sits).
+ *
+ * Equivalent to "what would a pre-rotated model file look like" —
+ * the geometry inside ends up wherever this transform places it; the
+ * outer node, pivot, and per-step transforms see the same
+ * pre-transformed mesh data on every step.
+ */
+export function applyNodeSourceTransformToObject3D(node, outerObj3d) {
+  if (!node || !outerObj3d || node.type !== 'model' || !window.THREE) return;
+  ensureTransformDefaults(node);
+  const inner = ensureSourceGroup(outerObj3d);
+  if (!inner) return;
+  const p = node.sourceLocalPosition   || [0, 0, 0];
+  const q = node.sourceLocalQuaternion || [0, 0, 0, 1];
+  const s = node.sourceLocalScale      || [1, 1, 1];
+  inner.position.set(p[0], p[1], p[2]);
+  inner.quaternion.set(q[0], q[1], q[2], q[3]);
+  inner.scale.set(s[0], s[1], s[2]);
 }
 
 /**
@@ -436,7 +499,12 @@ export function applyAllTransforms(root, object3dById) {
   if (!root) return;
   if (isTransformNode(root)) {
     const obj = object3dById.get(root.id);
-    if (obj) applyNodeTransformToObject3D(root, obj);
+    if (obj) {
+      applyNodeTransformToObject3D(root, obj);
+      // Model nodes also have a source transform on their inner group.
+      // Independent of the outer transform — pivot system never sees it.
+      if (root.type === 'model') applyNodeSourceTransformToObject3D(root, obj);
+    }
   }
   root.children.forEach(child => applyAllTransforms(child, object3dById));
 }

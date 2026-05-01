@@ -24,10 +24,7 @@ import {
   captureTransformSnapshot,
   applyTransformSnapshot,
   applyNodeTransformToObject3D,
-  multiplyQuaternions,
-  invertQuaternion,
-  normalizeQuaternion,
-  applyQuaternionToVector,
+  applyNodeSourceTransformToObject3D,
 }                               from '../core/transforms.js';
 import {
   moveNode    as _nodes_moveNode,
@@ -2678,84 +2675,54 @@ function _isInputFocused() {
 // — no extra Three.js groups, no per-frame composition, the per-step
 // stored transforms ARE the world transforms.
 
-export function cascadeModelSourceTransform(nodeId, dPos, dQuat, dScaleMul) {
+/**
+ * Set the model's source transform. Writes to node.sourceLocal*
+ * (an INNER Three.js group between the model's outer group and its
+ * mesh children). Equivalent to opening the model file in another
+ * DCC, applying the transform there, and reloading.
+ *
+ * - Per-step transforms (localOffset / localQuaternion) are NEVER
+ *   touched. They keep their existing semantics — animations preserved.
+ * - The pivot system reads the OUTER group; source lives on the INNER.
+ *   Pivot world position + orientation are unaffected by source.
+ * - Out-of-tree models work because the inner group is part of the
+ *   model's own hierarchy — wherever the outer is parented, the inner
+ *   goes with it.
+ *
+ * Inputs are ABSOLUTE (the source state), not deltas. Save → write
+ * those values; the existing per-step pipeline cascades.
+ */
+export function setModelSourceTransform(nodeId, sourceLocalPosition, sourceLocalQuaternion, sourceLocalScale) {
   const node = state.get('nodeById')?.get(nodeId);
   if (!node || node.type !== 'model') return;
 
-  // Snapshot for undo — base layer fields only. Per-step snapshots are
-  // NEVER touched by source transform; the cascade happens implicitly
-  // through the existing render math:
-  //
-  //   final_position   = baseLocalPosition + localOffset
-  //   final_quaternion = baseLocalQuaternion × localQuaternion
-  //   final_scale      = baseLocalScale
-  //
-  // Modifying baseLocal* shifts every step's rendered transform
-  // uniformly. Per-step animation deltas (the gap between steps) are
-  // preserved by construction — they're stored as deltas off the base.
   const before = {
-    baseLocalPosition:    [...(node.baseLocalPosition    || [0,0,0])],
-    baseLocalQuaternion:  [...(node.baseLocalQuaternion  || [0,0,0,1])],
-    baseLocalScale:       [...(node.baseLocalScale       || [1,1,1])],
+    sourceLocalPosition:   [...(node.sourceLocalPosition   || [0,0,0])],
+    sourceLocalQuaternion: [...(node.sourceLocalQuaternion || [0,0,0,1])],
+    sourceLocalScale:      [...(node.sourceLocalScale      || [1,1,1])],
   };
 
-  // ── Position: user enters Δp in MODEL-LOCAL frame ──────────────────
-  // baseLocalPosition lives in PARENT-local coords. Convert: rotate the
-  // input delta through baseLocalQuaternion so a Y delta on a wall-
-  // mounted clock translates along the clock's normal, not world Y.
-  const dPos_parent_local = applyQuaternionToVector(
-    node.baseLocalQuaternion || [0,0,0,1],
-    dPos,
-  );
-  node.baseLocalPosition = [
-    (node.baseLocalPosition[0] || 0) + dPos_parent_local[0],
-    (node.baseLocalPosition[1] || 0) + dPos_parent_local[1],
-    (node.baseLocalPosition[2] || 0) + dPos_parent_local[2],
-  ];
-
-  // ── Rotation: post-multiply so Δq is in MODEL-LOCAL frame ─────────
-  // Existing math is final_quat = baseQuat × stepQuat. Setting
-  // baseQuat ← baseQuat × Δq makes final = baseQuat × Δq × stepQuat
-  // — Δq applies to the mesh BEFORE the per-step rotation, in the
-  // model's own frame. A 90° Z source rotation makes "12 → 9" on a
-  // flat clock; that orientation then carries through whatever per-
-  // step pose puts the clock on a wall.
-  node.baseLocalQuaternion = normalizeQuaternion(
-    multiplyQuaternions(node.baseLocalQuaternion, dQuat),
-  );
-
-  // ── Scale: project-level multiplier ────────────────────────────────
-  node.baseLocalScale = (node.baseLocalScale || [1,1,1]).map((s, i) =>
-    s * (dScaleMul[i] || 1),
-  );
-
-  state.setState({ treeData: state.get('treeData') });   // re-emit
-  state.markDirty();
-
-  // Re-apply current step so the live view reflects the new base.
-  const activeId = state.get('activeStepId');
-  if (activeId) steps.activateStep(activeId, false);
+  const apply = (vals) => {
+    node.sourceLocalPosition   = [...vals.sourceLocalPosition];
+    node.sourceLocalQuaternion = [...vals.sourceLocalQuaternion];
+    node.sourceLocalScale      = [...vals.sourceLocalScale];
+    const obj = steps.object3dById?.get(nodeId);
+    if (obj) applyNodeSourceTransformToObject3D(node, obj);
+    state.markDirty();
+  };
 
   const after = {
-    baseLocalPosition:    [...node.baseLocalPosition],
-    baseLocalQuaternion:  [...node.baseLocalQuaternion],
-    baseLocalScale:       [...node.baseLocalScale],
+    sourceLocalPosition:   [...sourceLocalPosition],
+    sourceLocalQuaternion: [...sourceLocalQuaternion],
+    sourceLocalScale:      [...sourceLocalScale],
   };
 
-  const restore = (snap) => {
-    node.baseLocalPosition   = [...snap.baseLocalPosition];
-    node.baseLocalQuaternion = [...snap.baseLocalQuaternion];
-    node.baseLocalScale      = [...snap.baseLocalScale];
-    state.setState({ treeData: state.get('treeData') });
-    state.markDirty();
-    const aid = state.get('activeStepId');
-    if (aid) steps.activateStep(aid, false);
-  };
+  apply(after);
 
   undoManager.push(
     `Model source transform "${node.name || 'model'}"`,
-    () => restore(before),
-    () => restore(after),
+    () => apply(before),
+    () => apply(after),
   );
 }
 

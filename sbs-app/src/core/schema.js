@@ -203,6 +203,20 @@ export function createNode(type, overrides = {}) {
     moveEnabled:        true,
     rotateEnabled:      true,
 
+    // Model SOURCE transform — model nodes only. Lives on an INNER
+    // Three.js group inserted between the model's outer group and its
+    // mesh children. Equivalent to opening the model in another DCC,
+    // applying the transform there, and reloading the file: the
+    // geometry is "baked" with this transform from the perspective of
+    // the rest of the SBS pipeline. Per-step localOffset/Quaternion
+    // and the pivot system act on the OUTER group and never see the
+    // source — pivot stays put, per-step animations are untouched,
+    // every step inherits the source through the inner group's
+    // place in the hierarchy.
+    sourceLocalPosition:   [0, 0, 0],
+    sourceLocalQuaternion: [0, 0, 0, 1],
+    sourceLocalScale:      [1, 1, 1],
+
     // Mesh-specific
     meshIndex:    null,             // index in the model's mesh list
     colorPresetId:null,             // applied color preset (null = original)
