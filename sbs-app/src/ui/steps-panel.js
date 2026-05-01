@@ -106,6 +106,14 @@ export function initStepsPanel() {
     // Context menu (rendered outside the timeline) shouldn't count as "outside".
     const ctx = document.getElementById('context-menu');
     if (ctx && ctx.contains(e.target)) return;
+    // While in Model-Source-Transform mode the left sidebar hosts the
+    // takeover panel — clicks on its inputs / buttons must NOT trigger
+    // a steps-panel re-render (which was destroying inputs mid-keystroke
+    // and breaking focus on the panel's number fields).
+    if (state.get('modelSourceMode')) {
+      const ms = document.getElementById('model-source-panel');
+      if (ms && ms.contains(e.target)) return;
+    }
     let dirty = false;
     if (_expandedId !== null) { _expandedId = null; dirty = true; }
     if (_selectedIds.size)   { _selectedIds.clear(); dirty = true; }

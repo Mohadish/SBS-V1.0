@@ -119,11 +119,31 @@ export function openModelSourceDialog() {
   state.setState({ modelSourceMode: true });
 }
 
-export function exitModelSourceMode() {
+/**
+ * Exit the mode. If `force=false` (default) and there are uncommitted
+ * edits on any model, prompt the user to confirm discard. Returns
+ * true if the mode actually closed, false if the user cancelled.
+ */
+export function exitModelSourceMode(force = false) {
+  if (!force && _hasUncommittedChanges()) {
+    const ok = window.confirm(
+      'You have unsaved model-source edits. Closing will discard them. Continue?'
+    );
+    if (!ok) return false;
+  }
   // Revert any uncommitted edits before exit. saveProject is the only
   // commit path — anything not saved through actions is rolled back.
   _revertAllUncommitted();
   state.setState({ modelSourceMode: false });
+  return true;
+}
+
+function _hasUncommittedChanges() {
+  for (const n of _topLevelNodes) {
+    const before = _beforeSnaps.get(n.id);
+    if (!_snapEqual(before, _snap(n))) return true;
+  }
+  return false;
 }
 
 // ─── Panel render ─────────────────────────────────────────────────────────
