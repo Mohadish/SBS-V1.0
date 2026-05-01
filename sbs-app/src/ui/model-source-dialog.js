@@ -363,16 +363,23 @@ function _wireBottomButtons() {
   _mountedEl.querySelector('#ms-close').addEventListener('click', () => exitModelSourceMode());
   _mountedEl.querySelector('#ms-reset-all').addEventListener('click', () => {
     if (!_currentNode) return;
-    const ok = window.confirm(
-      `Reset all of "${_currentNode.name}" to its original imported pose? ` +
-      `(Discards your unsaved source-transform edits.)`
-    );
-    if (!ok) return;
-    _currentNode.sourceLocalPosition   = [...(_currentNode.originalSourceLocalPosition   || [0,0,0])];
-    _currentNode.sourceLocalQuaternion = [...(_currentNode.originalSourceLocalQuaternion || [0,0,0,1])];
-    _currentNode.sourceLocalScale      = [...(_currentNode.originalSourceLocalScale      || [1,1,1])];
-    _applySourceToScene();
-    _loadNodeIntoInputs();
+    // window.confirm consistently jams Electron's renderer keyboard
+    // focus state — after dismiss, number inputs accept clicks but
+    // silently swallow typed digits (no amount of blur / focus
+    // reordering reliably restores it). Render an inline confirm in
+    // the panel instead. No native dialog, no focus race.
+    _showInlineConfirm({
+      title:   `Reset "${_currentNode.name || 'model'}" to original?`,
+      message: 'Discards your unsaved source-transform edits to position, rotation, and scale.',
+      confirmLabel: 'Reset',
+      onConfirm: () => {
+        _currentNode.sourceLocalPosition   = [...(_currentNode.originalSourceLocalPosition   || [0,0,0])];
+        _currentNode.sourceLocalQuaternion = [...(_currentNode.originalSourceLocalQuaternion || [0,0,0,1])];
+        _currentNode.sourceLocalScale      = [...(_currentNode.originalSourceLocalScale      || [1,1,1])];
+        _applySourceToScene();
+        _loadNodeIntoInputs();
+      },
+    });
   });
   _mountedEl.querySelector('#ms-save').addEventListener('click', () => {
     let changed = 0;
@@ -581,4 +588,49 @@ function _applySourceToScene() {
 function _fmt(v) {
   if (!Number.isFinite(v)) return '0';
   return Number(v.toFixed(3)).toString();
+}
+
+/**
+ * Inline confirmation dialog rendered INSIDE the panel — no native
+ * window.confirm. Built to dodge the Electron focus-jam where
+ * window.confirm leaves number inputs in a "spinner-only" state.
+ * Returns nothing; calls onConfirm() if user picks Confirm.
+ */
+function _showInlineConfirm({ title, message, confirmLabel = 'Confirm', onConfirm }) {
+  if (!_mountedEl) return;
+  const overlay = document.createElement('div');
+  overlay.style.cssText = 'position:absolute;inset:0;background:rgba(15,23,42,0.85);display:flex;align-items:center;justify-content:center;z-index:50;padding:20px;';
+  const card = document.createElement('div');
+  card.className = 'card';
+  card.style.cssText = 'max-width:340px;padding:14px;display:flex;flex-direction:column;gap:8px;background:var(--panel,#0f172a);border:1px solid var(--line,#334155);border-radius:10px;';
+  card.innerHTML = `
+    <div class="title" style="font-size:13px;">${_escHtml(title)}</div>
+    <div class="small muted" style="line-height:1.45;">${_escHtml(message)}</div>
+    <div class="grid2" style="display:grid;grid-template-columns:1fr 1fr;gap:6px;margin-top:6px;">
+      <button class="btn" type="button" data-act="cancel">Cancel</button>
+      <button class="btn primary" type="button" data-act="confirm">${_escHtml(confirmLabel)}</button>
+    </div>
+  `;
+  overlay.appendChild(card);
+
+  // Position relative to the panel: make _mountedEl positioning-aware
+  // so the absolute overlay lands on top of just the panel.
+  const prevPos = _mountedEl.style.position;
+  if (!prevPos || prevPos === 'static') _mountedEl.style.position = 'relative';
+  _mountedEl.appendChild(overlay);
+
+  const close = () => {
+    overlay.remove();
+    if (!prevPos) _mountedEl.style.position = '';
+  };
+  card.querySelector('[data-act=cancel]').addEventListener('click', close);
+  card.querySelector('[data-act=confirm]').addEventListener('click', () => {
+    close();
+    try { onConfirm?.(); } catch (e) { console.warn('[model-source] confirm action failed:', e); }
+  });
+}
+
+function _escHtml(s) {
+  return String(s ?? '').replace(/[&<>"']/g,
+    c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[c]);
 }

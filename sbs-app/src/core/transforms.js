@@ -262,18 +262,39 @@ export function ensureSourceGroup(outer) {
 
 /**
  * Apply a node's source transform to its inner source group. Reads
- * sourceLocal* fields from the node and writes to the group. Called
- * from applyAllTransforms after the outer transform has been applied.
+ * sourceLocal* fields from the node and writes to the group.
+ *
+ * Source rotation orbits around the PIVOT, not the model's local
+ * origin. Three.js groups rotate around their own local origin, so we
+ * pre-translate the inner group such that the pivot point stays put
+ * during rotation. Math:
+ *
+ *   want: mesh_world = T(pivot) × R(source) × T(-pivot) × mesh
+ *   so:   inner.position = pivot − R(source) × pivot + source.position
+ *         inner.quaternion = R(source)
+ *         inner.scale = source.scale
+ *
+ * When pivot = 0, this reduces to position = source.position. When
+ * the user has placed the pivot at e.g. the clock's centre, source
+ * rotation rotates the clock face around that centre — the clock
+ * doesn't swing through the wall it's mounted on.
  */
 export function applyNodeSourceTransformToObject3D(node, outerObj3d) {
   if (!node || !outerObj3d || node.type !== 'model' || !window.THREE) return;
   ensureTransformDefaults(node);
   const inner = ensureSourceGroup(outerObj3d);
   if (!inner) return;
-  const p = node.sourceLocalPosition   || [0, 0, 0];
-  const q = node.sourceLocalQuaternion || [0, 0, 0, 1];
-  const s = node.sourceLocalScale      || [1, 1, 1];
-  inner.position.set(p[0], p[1], p[2]);
+  const p     = node.sourceLocalPosition   || [0, 0, 0];
+  const q     = node.sourceLocalQuaternion || [0, 0, 0, 1];
+  const s     = node.sourceLocalScale      || [1, 1, 1];
+  const pivot = node.pivotEnabled === false ? [0, 0, 0] : (node.pivotLocalOffset || [0, 0, 0]);
+
+  const rotatedPivot = applyQuaternionToVector(q, pivot);
+  const posX = pivot[0] - rotatedPivot[0] + p[0];
+  const posY = pivot[1] - rotatedPivot[1] + p[1];
+  const posZ = pivot[2] - rotatedPivot[2] + p[2];
+
+  inner.position.set(posX, posY, posZ);
   inner.quaternion.set(q[0], q[1], q[2], q[3]);
   inner.scale.set(s[0], s[1], s[2]);
 }
