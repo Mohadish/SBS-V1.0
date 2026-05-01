@@ -96,58 +96,10 @@ async function _exportMp4({ fps = DEFAULT_FPS, bitrate = DEFAULT_BITRATE,
   const width  = (Number.isFinite(_exp.width)  && _exp.width  > 0) ? _exp.width  : canvas.width;
   const height = (Number.isFinite(_exp.height) && _exp.height > 0) ? _exp.height : canvas.height;
 
-  // Stage 4: temporarily render the 3D scene AT CANONICAL RESOLUTION so
-  // the export captures sharp pixels instead of upscaling the viewport
-  // canvas (which is whatever-size the user's window happens to be).
-  //
-  // We must also FORCE pixelRatio = 1 for the duration of the export.
-  // Three.js setSize multiplies the requested size by the renderer's
-  // pixel ratio when sizing the canvas backing buffer:
-  //   canvas.width  = floor(width  * pixelRatio)
-  //   canvas.height = floor(height * pixelRatio)
-  // On Electron/Chromium this PR follows window.devicePixelRatio, which
-  // is fractional under OS display-scaling AND under any browser zoom
-  // (Ctrl+/-). A user running e.g. PR=0.76 ends up with a 1460×821
-  // backing buffer instead of 1920×1080 — the 3D layer is then upscaled
-  // to canonical via drawImage (blurry), AND any non-canonical aspect
-  // drift from floor() shows up as a sub-pixel crop in computeSafeFrame
-  // (sf.x=0.2, sf.width=1459.6) which can soft-stretch the 3D layer.
-  // Forcing PR=1 makes canvas.width/height EXACTLY width/height and
-  // pins drawImage to pixel-perfect 1:1 source→dest. The live viewport
-  // visibly resizes during export — that's acceptable while exporting
-  // (user isn't editing). Restored via sceneCore.resize() in finally so
-  // the viewer auto-fits its container regardless of saved PR.
-  const savedRendererSize = { w: canvas.width, h: canvas.height };
-  const savedCameraAspect = sceneCore.camera.aspect;
-  const savedPixelRatio   = sceneCore.renderer.getPixelRatio();
-  const savedCanvasCssW   = canvas.style.width;
-  const savedCanvasCssH   = canvas.style.height;
-  sceneCore.renderer.setPixelRatio(1);
-  sceneCore.renderer.setSize(width, height, false);   // false = don't touch CSS size
-  sceneCore.camera.aspect = width / height;
-  sceneCore.camera.updateProjectionMatrix();
-
-  // Live-preview cosmetic: with updateStyle=false above, the canvas CSS
-  // box stays at the viewer container's aspect while its internal buffer
-  // is now canonical aspect. The browser then stretches non-uniformly
-  // and the user sees the 3D layer squashed during export. (Output is
-  // unaffected — drawImage reads from the buffer.) Letterbox the canvas
-  // CSS into its parent at the canonical aspect so the live preview
-  // matches what's being encoded.
-  try {
-    const parent = canvas.parentElement;
-    if (parent) {
-      const pw = parent.clientWidth;
-      const ph = parent.clientHeight;
-      const ca = width / height;
-      const pa = pw / ph;
-      let cssW, cssH;
-      if (pa >= ca) { cssH = ph; cssW = ph * ca; }
-      else          { cssW = pw; cssH = pw / ca; }
-      canvas.style.width  = `${cssW}px`;
-      canvas.style.height = `${cssH}px`;
-    }
-  } catch {}
+  // The canvas is ALWAYS at canonical buffer + canonical-aspect camera
+  // (sceneCore.fitToCanonical, called from init / resize / change:export),
+  // so export needs no per-run renderer surgery. Live preview already
+  // looks identical to what's being encoded.
 
   // ── Build the step timeline.
   // Per-step hold is always added AFTER the step's narration (or after the
@@ -417,23 +369,6 @@ async function _exportMp4({ fps = DEFAULT_FPS, bitrate = DEFAULT_BITRATE,
       sceneCore.startLoop();
     }
     state.setState({ _exporting: false });
-    // Stage 4 cleanup: restore PR + camera + canvas CSS, then let
-    // sceneCore.resize() re-fit the viewer to its container. Using
-    // sceneCore.resize() instead of replaying savedRendererSize avoids
-    // a double-PR-multiply bug: savedRendererSize.{w,h} were already
-    // PR-scaled when captured, so passing them back through setSize
-    // would shrink the canvas.
-    try {
-      canvas.style.width  = savedCanvasCssW;
-      canvas.style.height = savedCanvasCssH;
-      sceneCore.renderer.setPixelRatio(savedPixelRatio);
-      sceneCore.camera.aspect = savedCameraAspect;
-      sceneCore.camera.updateProjectionMatrix();
-      sceneCore.resize();
-    } catch {}
-    // Suppress the unused-var lint on savedRendererSize — kept around
-    // for diagnostics if a future export bug needs the pre-export size.
-    void savedRendererSize;
   }
 
   console.log('[export] flush video encoder…');

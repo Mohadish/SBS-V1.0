@@ -965,12 +965,20 @@ function _fitToSelection(ids) {
 
 window.addEventListener('resize', () => {
   if (!viewer) return;
-  const w = viewer.clientWidth;
-  const h = viewer.clientHeight;
-  sceneCore.renderer.setSize(w, h);
-  sceneCore.camera.aspect = w / h;
-  sceneCore.camera.updateProjectionMatrix();
+  // sceneCore.fitToCanonical() resizes the canvas backing buffer to
+  // canonical W×H, sets camera aspect to canonical, and letterboxes
+  // the canvas CSS to the safe-frame rect inside its container —
+  // everything we used to do manually here is now centralised there.
+  sceneCore.fitToCanonical();
   _refreshSafeFrame();
+});
+
+// Canonical size changes (user edits W/H in the Export tab) need to
+// re-fit the canvas + camera + safe-frame outline. setExportOption
+// fires change:export per key, so this can run multiple times on a
+// preset switch — fit is idempotent so that's fine.
+state.on('change:export', () => {
+  sceneCore.fitToCanonical();
 });
 
 // ── Safe frame (canonical export rect) ────────────────────────────────────────

@@ -14,7 +14,21 @@
  *
  * The camera fill-light follows the camera position so it always
  * illuminates front-facing surfaces regardless of view angle.
+ *
+ * Canonical-camera framing
+ * ------------------------
+ * The canvas backing buffer is ALWAYS sized to the project's canonical
+ * export resolution (state.export.width × height) at pixelRatio=1, and
+ * the camera always projects at canonical aspect — never the viewer's
+ * aspect. The canvas's CSS box is letterboxed to canonical aspect inside
+ * the container so live viewport == safe-frame == export output, byte
+ * for byte, regardless of window size, OS scaling, browser/Electron
+ * zoom, or which machine the project is opened on. Black bars in the
+ * live preview when window aspect ≠ canonical aspect are intentional
+ * — same as any DCC tool with a render-frame.
  */
+
+import { getCanonicalSize, computeSafeFrameRect } from './safe-frame.js';
 
 // ── Mini event emitter (no dependency on state.js) ────────────────────────
 class Emitter {
@@ -100,12 +114,16 @@ export class SceneCore extends Emitter {
     this._container = container;
 
     // ── Renderer ────────────────────────────────────────────────────────
+    // pixelRatio is forced to 1 so the canvas backing buffer matches
+    // canonical W×H exactly. With native devicePixelRatio (often
+    // fractional under OS scaling / browser zoom / Electron zoom), the
+    // buffer would be floor(W × PR) — a different size on every machine,
+    // breaking cross-machine portability of the export.
     this.renderer = new THREE.WebGLRenderer({
       antialias:             true,
       preserveDrawingBuffer: true,   // required for export / thumbnails
     });
-    this.renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
-    this.renderer.setSize(container.clientWidth, container.clientHeight);
+    this.renderer.setPixelRatio(1);
     container.appendChild(this.renderer.domElement);
 
     // ── Scenes ──────────────────────────────────────────────────────────
@@ -115,12 +133,9 @@ export class SceneCore extends Emitter {
     this.overlayScene = new THREE.Scene();  // drawn on top, depth-cleared
 
     // ── Camera ──────────────────────────────────────────────────────────
-    this.camera = new THREE.PerspectiveCamera(
-      fov,
-      container.clientWidth / container.clientHeight,
-      0.1,
-      1_000_000,
-    );
+    // Aspect is set inside fitToCanonical() once everything is wired —
+    // we only need a placeholder here so the constructor doesn't fail.
+    this.camera = new THREE.PerspectiveCamera(fov, 1, 0.1, 1_000_000);
     this.camera.position.set(220, 180, 260);
     this.camera.lookAt(0, 0, 0);
 
@@ -156,8 +171,11 @@ export class SceneCore extends Emitter {
     // ── Custom CAD orbit controls ────────────────────────────────────────
     this._initControls();
 
+    // Initial fit — sizes the buffer + camera + canvas CSS letterbox.
+    this.fitToCanonical();
+
     // ── Resize observer ─────────────────────────────────────────────────
-    this._resizeObs = new ResizeObserver(() => this.resize());
+    this._resizeObs = new ResizeObserver(() => this.fitToCanonical());
     this._resizeObs.observe(container);
 
     this.emit('init');
@@ -307,19 +325,44 @@ export class SceneCore extends Emitter {
   }
 
   // ═══════════════════════════════════════════════════════════════════════
-  //  RESIZE
+  //  FIT — canonical buffer + canonical-aspect camera + letterboxed CSS
   // ═══════════════════════════════════════════════════════════════════════
-  resize() {
+  /**
+   * Size the renderer buffer to canonical W × H, set camera aspect to
+   * canonical, and position the canvas's CSS box as the safe-frame rect
+   * inside the container (letterbox / pillarbox depending on container
+   * shape). Idempotent — safe to call on every resize event.
+   */
+  fitToCanonical() {
     if (!this.renderer || !this._container) return;
-    const w = this._container.clientWidth;
-    const h = this._container.clientHeight;
-    if (w === 0 || h === 0) return;
+    const c = getCanonicalSize();
+    const pw = this._container.clientWidth;
+    const ph = this._container.clientHeight;
+    if (pw === 0 || ph === 0 || c.width === 0 || c.height === 0) return;
 
-    this.renderer.setSize(w, h);
-    this.camera.aspect = w / h;
+    // 1. Backing buffer at exact canonical px (PR was forced to 1 in init).
+    this.renderer.setSize(c.width, c.height, false);   // false = don't touch CSS, we set it next
+
+    // 2. Camera at canonical aspect — every render projects the same
+    //    frustum on every machine. Output is reproducible.
+    this.camera.aspect = c.aspect;
     this.camera.updateProjectionMatrix();
-    this.emit('resize', { width: w, height: h });
+
+    // 3. CSS box = safe-frame rect inside container. computeSafeFrameRect
+    //    returns the largest canonical-aspect rectangle that fits, centred.
+    const sf = computeSafeFrameRect({ width: pw, height: ph });
+    const dom = this.renderer.domElement;
+    dom.style.position = 'absolute';
+    dom.style.left   = `${sf.x}px`;
+    dom.style.top    = `${sf.y}px`;
+    dom.style.width  = `${sf.width}px`;
+    dom.style.height = `${sf.height}px`;
+
+    this.emit('resize', { width: c.width, height: c.height });
   }
+
+  /** @deprecated — use fitToCanonical(). Kept as an alias for callers. */
+  resize() { this.fitToCanonical(); }
 
   // ═══════════════════════════════════════════════════════════════════════
   //  BACKGROUND / GRID / HELPERS
