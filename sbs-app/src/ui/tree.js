@@ -57,6 +57,12 @@ export function initTree(containerEl) {
   state.on('change:treeData', () => { _syncExpanded(); renderTree(); });
   state.on('selection:change', () => { _syncExpanded(); renderTree(); });
   state.on('change:activeStepId', () => renderTree());
+  // step:applied fires AFTER applyVisibilitySnapshot has mutated each
+  // node.localVisible. change:activeStepId above fires too early — at
+  // that point the per-node localVisible flags are still from the
+  // previous step, so the eye icons would show stale visibility for the
+  // duration of the animation (or forever, on instant apply).
+  state.on('step:applied', () => renderTree());
   // P-P1: pivot button color reflects active edit. Re-render when the
   // edit session opens / closes so the button repaints in real time.
   state.on('change:pivotEditNodeId', () => renderTree());
