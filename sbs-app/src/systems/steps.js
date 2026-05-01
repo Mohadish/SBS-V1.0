@@ -834,7 +834,7 @@ class StepManager {
 
     // Silently pre-warm the NEXT step's transition so its matrices are
     // ready before the user clicks. Discreet — deferred, no render output.
-    const allSteps  = state.get('steps').filter(s => !s.hidden && !s.isBaseStep);
+    const allSteps  = state.get('steps').filter(s => this._isPlayable(s));
     const curIdx    = allSteps.findIndex(s => s.id === stepId);
     const nextStep  = allSteps[curIdx + 1];
     if (nextStep) this._prewarm(nextStep.id);
@@ -844,7 +844,7 @@ class StepManager {
    * Activate a step by index (0-based).
    */
   activateStepByIndex(index, animate = true) {
-    const steps = state.get('steps').filter(s => !s.hidden && !s.isBaseStep);
+    const steps = state.get('steps').filter(s => this._isPlayable(s));
     const step  = steps[index];
     if (step) return this.activateStep(step.id, animate);
   }
@@ -922,7 +922,7 @@ class StepManager {
     // If animating: snap to final only. Don't chain into a new step.
     if (this.snapCurrentToFinal()) return;
 
-    const steps = state.get('steps').filter(s => !s.hidden && !s.isBaseStep);
+    const steps = state.get('steps').filter(s => this._isPlayable(s));
     const activeId  = state.get('activeStepId');
     const currentIdx = steps.findIndex(s => s.id === activeId);
     const nextIdx    = Math.max(0, Math.min(steps.length - 1, currentIdx + delta));
@@ -1332,6 +1332,41 @@ class StepManager {
     state.markDirty();
   }
 
+  /**
+   * Toggle (or set) a chapter's hidden flag. When a chapter is hidden,
+   * every step inside it is skipped from playback / export — useful
+   * for project variation management where alternate chapters can be
+   * staged side-by-side and toggled in/out without deleting steps.
+   * The per-step hidden flag is independent: a chapter can be
+   * "showing" and individual steps inside still hidden.
+   */
+  setChapterHidden(chapterId, hidden) {
+    const chapters = state.get('chapters') || [];
+    const chap     = chapters.find(c => c.id === chapterId);
+    if (!chap) return;
+    chap.hidden = !!hidden;
+    state.setState({ chapters: [...chapters] });
+    state.markDirty();
+  }
+
+  /**
+   * Returns true when the step would be encoded by export / advanced by
+   * playback navigation — i.e. it's not the hidden base step, not
+   * marked hidden itself, and its chapter (if any) is not hidden.
+   * Centralised so every playback / export call site reads the same
+   * rules. Build a chapter map up front in tight loops.
+   */
+  _isPlayable(step, chaptersById = null) {
+    if (!step || step.hidden || step.isBaseStep) return false;
+    if (step.chapterId) {
+      const ch = chaptersById
+        ? chaptersById.get(step.chapterId)
+        : (state.get('chapters') || []).find(c => c.id === step.chapterId);
+      if (ch?.hidden) return false;
+    }
+    return true;
+  }
+
 
   // ═══════════════════════════════════════════════════════════════════════
   //  CHAPTER MANAGEMENT
@@ -1531,7 +1566,7 @@ class StepManager {
   }
 
   getVisibleSteps() {
-    return state.get('steps').filter(s => !s.hidden && !s.isBaseStep);
+    return state.get('steps').filter(s => this._isPlayable(s));
   }
 
   getStepIndex(stepId) {

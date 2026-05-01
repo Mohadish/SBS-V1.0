@@ -264,7 +264,7 @@ function _isChapterVisuallyCollapsed(chapter, activeId) {
 
 function _buildChapterHeader(chapter, number) {
   const wrap = document.createElement('div');
-  wrap.className         = 'chapterHeader';
+  wrap.className         = 'chapterHeader' + (chapter.hidden ? ' is-hidden' : '');
   wrap.dataset.chapterId = chapter.id;
   wrap.draggable         = true;
   wrap.style.cssText = [
@@ -303,12 +303,29 @@ function _buildChapterHeader(chapter, number) {
     actions.setChapterLocked(chapter.id, !chapter.locked);
   });
 
+  // Eye toggle — hides every step in the chapter from playback / export
+  // without deleting them. Useful for project variations: stage two
+  // alternate chapters, hide one when exporting variant A, swap when
+  // exporting variant B. Per-step hidden flag is independent.
+  const btnEye = document.createElement('button');
+  btnEye.type = 'button';
+  btnEye.className = 'chapterEyeToggle';
+  btnEye.textContent = chapter.hidden ? '🚫' : '👁';
+  btnEye.title = chapter.hidden ? 'Show chapter in playback' : 'Hide chapter from playback';
+  btnEye.addEventListener('click', e => {
+    e.stopPropagation();
+    steps.setChapterHidden(chapter.id, !chapter.hidden);
+    setStatus(chapter.hidden
+      ? `Chapter "${chapter.name}" shown in playback.`
+      : `Chapter "${chapter.name}" hidden from playback.`);
+  });
+
   const btnRename = _mkBtn('✎',  'Rename chapter');
   const btnDel    = _mkBtn('🗑', 'Delete chapter');
   btnRename.addEventListener('click', e => { e.stopPropagation(); _renameChapter(chapter.id); });
   btnDel.addEventListener('click',    e => { e.stopPropagation(); _deleteChapter(chapter.id); });
 
-  wrap.append(badge, name, btnLock, btnRename, btnDel);
+  wrap.append(badge, name, btnEye, btnLock, btnRename, btnDel);
 
   // Right-click → chapter context menu (rename, copy, paste, lock, delete).
   wrap.addEventListener('contextmenu', e => {
@@ -713,41 +730,62 @@ function _buildStepTopCollapsed(step, idx, showThumb = true) {
   // Thumbnail — live preview of the viewport when this step is active.
   // Hidden while the card is expanded (full controls take precedence).
   // Falls back to an em-dash placeholder if no frame has been captured yet.
-  let thumb = null;
-  if (!showThumb) {
-    // skip — no thumbnail in expanded mode
-  } else if (step.thumbnail) {
-    thumb = document.createElement('img');
-    thumb.src = step.thumbnail;
-    thumb.className = 'stepThumb';
-    thumb.style.cssText = [
-      'flex:0 0 auto',
-      'width:72px',
-      'height:48px',
-      'object-fit:cover',
-      'background:#000',
-      'border:1px solid rgba(255,255,255,0.12)',
-      'border-radius:4px',
-    ].join(';');
-  } else {
-    thumb = document.createElement('div');
-    thumb.className = 'stepThumb';
-    thumb.style.cssText = [
-      'flex:0 0 auto',
-      'width:72px',
-      'height:48px',
-      'background:rgba(255,255,255,0.06)',
-      'border:1px solid rgba(255,255,255,0.08)',
-      'border-radius:4px',
-      'display:flex',
-      'align-items:center',
-      'justify-content:center',
-      'font-size:10px',
-      'color:rgba(255,255,255,0.3)',
-    ].join(';');
-    thumb.textContent = '—';
+  // The thumbnail is wrapped so an eye-toggle button can overlay it
+  // (revealed on hover, or always for hidden steps).
+  let thumbWrap = null;
+  if (showThumb) {
+    thumbWrap = document.createElement('div');
+    thumbWrap.className = 'stepThumbWrap';
+    if (step.hidden) thumbWrap.classList.add('is-hidden');
+
+    let thumb;
+    if (step.thumbnail) {
+      thumb = document.createElement('img');
+      thumb.src = step.thumbnail;
+      thumb.className = 'stepThumb';
+      thumb.style.cssText = [
+        'display:block',
+        'width:72px',
+        'height:48px',
+        'object-fit:cover',
+        'background:#000',
+        'border:1px solid rgba(255,255,255,0.12)',
+        'border-radius:4px',
+      ].join(';');
+    } else {
+      thumb = document.createElement('div');
+      thumb.className = 'stepThumb';
+      thumb.style.cssText = [
+        'width:72px',
+        'height:48px',
+        'background:rgba(255,255,255,0.06)',
+        'border:1px solid rgba(255,255,255,0.08)',
+        'border-radius:4px',
+        'display:flex',
+        'align-items:center',
+        'justify-content:center',
+        'font-size:10px',
+        'color:rgba(255,255,255,0.3)',
+      ].join(';');
+      thumb.textContent = '—';
+    }
+    thumb.dataset.thumbStep = step.id;
+    thumbWrap.appendChild(thumb);
+
+    const eye = document.createElement('button');
+    eye.type = 'button';
+    eye.className = 'eyeToggle';
+    eye.textContent = step.hidden ? '🚫' : '👁';
+    eye.title = step.hidden ? 'Show in playback' : 'Hide from playback';
+    // Stop click bubbling — the card's click handler activates+expands
+    // and re-renders, which would race with our toggle action.
+    eye.addEventListener('mousedown', e => e.stopPropagation());
+    eye.addEventListener('click', e => {
+      e.stopPropagation();
+      _toggleStepHidden(step);
+    });
+    thumbWrap.appendChild(eye);
   }
-  if (thumb) thumb.dataset.thumbStep = step.id;
 
   const badge = document.createElement('span');
   badge.className   = 'pill';
@@ -759,18 +797,30 @@ function _buildStepTopCollapsed(step, idx, showThumb = true) {
   nameLbl.style.flex  = '1';
   nameLbl.textContent = step.name || 'Unnamed Step';
 
-  if (thumb) top.appendChild(thumb);
+  if (thumbWrap) top.appendChild(thumbWrap);
   top.append(badge, nameLbl);
 
-  // If hidden in playback, show a small indicator on the far right.
-  if (step.hidden) {
-    const hideInd = document.createElement('span');
-    hideInd.textContent = '🚫';
-    hideInd.title = 'Hidden in playback';
-    hideInd.style.cssText = 'flex-shrink:0;opacity:0.5;font-size:11px;';
-    top.appendChild(hideInd);
-  }
   return top;
+}
+
+/**
+ * Toggle hidden state on a single step. If the step is part of a
+ * multi-selection, applies the same toggle to every selected step
+ * (using the right-click multi semantics: any-visible → hide all,
+ * all-hidden → show all).
+ */
+function _toggleStepHidden(step) {
+  const inMulti = _selectedIds.size > 1 && _selectedIds.has(step.id);
+  if (inMulti) {
+    const stepsArr = state.get('steps') || [];
+    const sel      = stepsArr.filter(s => _selectedIds.has(s.id));
+    const anyVisible = sel.some(s => !s.hidden);
+    sel.forEach(s => steps.setStepHidden(s.id, anyVisible));
+    setStatus(`${anyVisible ? 'Hid' : 'Showed'} ${sel.length} step(s).`);
+  } else {
+    steps.setStepHidden(step.id, !step.hidden);
+    setStatus(step.hidden ? 'Step shown.' : 'Step hidden.');
+  }
 }
 
 // ── Step context menu (right-click on collapsed card) ───────────────────────

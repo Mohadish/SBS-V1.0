@@ -68,6 +68,19 @@ label.colorlab{display:block;font-size:12px;color:var(--muted);margin-top:4px}
 .stepItem.selected.active{background:#1d334b}
 .stepItem.hiddenStep{opacity:.65}
 .stepTop{display:flex;align-items:center;gap:6px}
+/* Thumbnail wrapper hosts the eye-toggle overlay. The eye is opacity:0
+   by default; hover OR a hidden step (where we always want the eye
+   discoverable) reveals it. Anchors absolute over the thumb. */
+.stepThumbWrap{position:relative;display:inline-block;flex:0 0 auto}
+.stepThumbWrap .eyeToggle{position:absolute;inset:0;display:flex;align-items:center;justify-content:center;background:rgba(0,0,0,0.55);border:0;color:#fff;font-size:18px;line-height:1;border-radius:4px;opacity:0;cursor:pointer;transition:opacity 80ms;padding:0}
+.stepThumbWrap:hover .eyeToggle,.stepThumbWrap.is-hidden .eyeToggle{opacity:1}
+.stepThumbWrap.is-hidden .eyeToggle{background:rgba(0,0,0,0.75)}
+/* Chapter header eye-toggle — always visible (no hover gate) since
+   chapter headers don't have a thumbnail to peek under. */
+.chapterEyeToggle{flex:0 0 auto;background:transparent;border:0;color:inherit;font-size:14px;cursor:pointer;padding:0 4px;opacity:0.55;line-height:1}
+.chapterEyeToggle:hover{opacity:1}
+.chapterHeader.is-hidden .chapterEyeToggle{opacity:1}
+.chapterHeader.is-hidden{opacity:0.55}
 .stepTopSpacer{min-width:0;flex:1}
 .stepName{flex:1;font-size:13px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 .stepMeta{font-size:11px;color:var(--muted);margin-top:4px}

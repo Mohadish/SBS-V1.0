@@ -81,7 +81,7 @@ async function _exportMp4({ fps = DEFAULT_FPS, bitrate = DEFAULT_BITRATE,
   const canvas = sceneCore.renderer?.domElement;
   if (!canvas) throw new Error('No 3D canvas available to export.');
 
-  const stepsToPlay = (state.get('steps') || []).filter(s => !s.hidden && !s.isBaseStep);
+  const stepsToPlay = (state.get('steps') || []).filter(s => steps._isPlayable(s));
   if (!stepsToPlay.length) throw new Error('No steps to export — add at least one step first.');
 
   // Output dimensions come from the project's canonical export config
@@ -407,7 +407,7 @@ async function _exportWebM({ format = 'webm_vp9', fps = DEFAULT_FPS,
   const canvas = sceneCore.renderer?.domElement;
   if (!canvas) throw new Error('No 3D canvas available to export.');
 
-  const stepsToPlay = (state.get('steps') || []).filter(s => !s.hidden && !s.isBaseStep);
+  const stepsToPlay = (state.get('steps') || []).filter(s => steps._isPlayable(s));
   if (!stepsToPlay.length) throw new Error('No steps to export — add at least one step first.');
 
   const prefer = format === 'webm_vp8'
