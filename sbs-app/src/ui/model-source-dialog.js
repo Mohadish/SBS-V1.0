@@ -303,10 +303,16 @@ function _wireInputs() {
     _updatePreviewBox();
   });
 
-  // Live-preview each input change.
+  // Commit on `change` (Enter / Tab / blur) instead of `input` (per-
+  // keystroke). After Reset all + window.confirm, the per-keystroke
+  // event was racing with focus restoration on Electron/Chromium —
+  // the input would visibly accept characters but its focus state
+  // got dropped between keystrokes, leaving the field looking
+  // unresponsive. Spinner-arrow clicks fire `change` too, so the
+  // visual feel for those is unchanged.
   for (const list of [_inputs.pos, _inputs.rot, _inputs.scl]) {
     for (const inp of list) {
-      inp.addEventListener('input', () => {
+      inp.addEventListener('change', () => {
         _applyInputsToNode();
         _updatePreviewBox();
       });
@@ -339,8 +345,9 @@ function _wireInputs() {
     _updatePreviewBox();
   });
 
-  // X-scale drives Y/Z when unified.
-  _inputs.scl[0].addEventListener('input', () => {
+  // X-scale mirrors to Y/Z when unified. Mirror on `change` (the same
+  // commit event the apply listener uses) so behaviour is consistent.
+  _inputs.scl[0].addEventListener('change', () => {
     if (!_unifyScale) return;
     _inputs.scl[1].value = _inputs.scl[0].value;
     _inputs.scl[2].value = _inputs.scl[0].value;

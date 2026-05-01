@@ -249,14 +249,29 @@ export function setStoredQuaternion(node, arr) {
 }
 
 /**
- * The TOTAL local quaternion = base * delta (if rotateEnabled).
+ * The TOTAL local quaternion = delta * base (if rotateEnabled).
+ *
+ * Composition order: BASE applied first (in the model's own local
+ * frame), DELTA applied on top. So a "model source" rotation acts as
+ * a rest-pose orientation — rotating a flat-imported clock 90° around
+ * its Z axis genuinely makes "12" point to "9" inside every step's
+ * stored per-step rotation. base × delta would have applied the
+ * source AFTER the per-step in world space, which reads as a global
+ * pivot translation rather than an intrinsic re-orientation.
+ *
+ * Backward-compatible: pre-Model-Source-Transform projects all have
+ * baseLocalQuaternion = identity (set by storeBaseTransformFromObject3D
+ * at import for top-level nodes that have no inherent rotation), so
+ * delta × identity == identity × delta == delta. Existing animations
+ * are untouched.
+ *
  * Returns array [x,y,z,w].
  */
 export function getTotalLocalQuaternion(node) {
   ensureTransformDefaults(node);
   const base  = node.baseLocalQuaternion;
   const delta = node.rotateEnabled === false ? [0, 0, 0, 1] : node.localQuaternion;
-  return normalizeQuaternion(multiplyQuaternions(base, delta));
+  return normalizeQuaternion(multiplyQuaternions(delta, base));
 }
 
 /**
@@ -414,9 +429,11 @@ export function setNodeLocalRotationPreservePivot(node, newDeltaQ) {
     localPos[2] + pivotPreRot[2],
   ];
 
-  // Apply the new orientation, then back-solve localOffset.
+  // Apply the new orientation, then back-solve localOffset. Same
+  // delta × base order as getTotalLocalQuaternion — see the long
+  // comment there for why.
   const newDelta    = normalizeQuaternion(newDeltaQ);
-  const newTotalQ   = normalizeQuaternion(multiplyQuaternions(node.baseLocalQuaternion, newDelta));
+  const newTotalQ   = normalizeQuaternion(multiplyQuaternions(newDelta, node.baseLocalQuaternion));
   const pivotPostRot = applyQuaternionToVector(newTotalQ, pivot);
   const newLocalPos = [
     pivotInParent[0] - pivotPostRot[0],
