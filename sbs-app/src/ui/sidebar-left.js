@@ -122,6 +122,15 @@ export function initSidebarLeft() {
 
   _renderActiveTab();
 
+  // Model Source Transform mode takes over the entire left sidebar:
+  // tabs + panels hide, a single ModelSource panel mounts in their
+  // place. The mode flag is transient state.modelSourceMode. This
+  // subscription belongs to initSidebarLeft (one-time setup) — adding
+  // it inside _switchTab leaks listeners and never fires on first
+  // menu click.
+  state.on('change:modelSourceMode', _syncModelSourceMode);
+  _syncModelSourceMode();
+
   // ── Electron native menu → renderer ──────────────────────────────────────
   if (window.sbsNative?.onMenu) {
     window.sbsNative.onMenu('menu:newProject',    _onNewProject);
@@ -139,12 +148,6 @@ function _switchTab(tab) {
     b.classList.toggle('active', b.dataset.tab === tab));
   _container.querySelectorAll('.tabPanel').forEach(p =>
     p.classList.toggle('active', p.dataset.tab === tab));
-  // Model Source Transform mode takes over the entire left sidebar:
-  // tabs + panels hide, a single ModelSource panel mounts in their
-  // place. The mode flag is transient state.modelSourceMode.
-  state.on('change:modelSourceMode', _syncModelSourceMode);
-  _syncModelSourceMode();
-
   _renderActiveTab();
 }
 
