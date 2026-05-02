@@ -283,6 +283,14 @@ function createInitialState() {
     selectionGroups:      [],
     selectionOutlineColor: '#00ffff',
 
+    // Set<stepId> — steps currently multi-selected in the timeline panel.
+    // When size ≥ 2, every step-snapshot mutation routed through actions
+    // (visibility, color, …) applies to ALL members of this set rather
+    // than the active step alone. Populated via Ctrl/Cmd-click and
+    // Shift-click in the steps panel; cleared by plain step click,
+    // outside-click, Esc, or explicit "Clear step selection" action.
+    selectedStepIds:      new Set(),
+
     // ── Internal: not persisted
     _occt:          null,             // OCCT importer instance
     _exportSession: null,             // active export session

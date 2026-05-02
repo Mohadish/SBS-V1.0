@@ -1203,6 +1203,12 @@ window.addEventListener('keydown', async e => {
     state.clearSelection();
     materials.applySelectionHighlight([]);
     gizmo.hide();
+    // Multi-step selection is its own concept — clear it on Esc too so
+    // a single Esc returns the timeline to "edit active step only" mode.
+    const stepSel = state.get('selectedStepIds');
+    if (stepSel instanceof Set && stepSel.size) {
+      state.setState({ selectedStepIds: new Set() });
+    }
     return;
   }
 

@@ -21,8 +21,25 @@ let _container    = null;
 let _dragId       = null;          // id of step being dragged (single-drag fallback)
 let _dragIds      = [];            // ids of all steps being dragged (set when multi-drag)
 let _dragChapterId = null;         // id of chapter being dragged (header drag)
-let _selectedIds  = new Set();     // set of step ids currently multi-selected
 let _dragExpandId = null;          // single chapter currently force-expanded during a drag (hover override)
+
+// Multi-step selection lives in global state (state.selectedStepIds) so
+// that actions in src/systems/actions.js can read it and route bulk
+// step-snapshot mutations across N steps in one shot. The helpers below
+// keep the panel's read/write call sites compact and ensure every
+// mutation fires `change:selectedStepIds` for any other UI that listens
+// (HUD banner, color buttons, etc.).
+function _getSel() {
+  const s = state.get('selectedStepIds');
+  return s instanceof Set ? s : new Set();
+}
+function _setSel(next) {
+  // Always write a fresh Set so subscribers see a real change.
+  state.setState({ selectedStepIds: new Set(next) });
+}
+function _selHas(id)  { return _getSel().has(id); }
+function _selSize()   { return _getSel().size; }
+function _selClear()  { if (_selSize()) _setSel(new Set()); }
 let _expandTimer  = null;          // setTimeout id for hover-to-expand
 let _expandTargetId = null;        // chapter id the timer is counting down for (to debounce hover transitions)
 let _expandAnchorTop = 0;          // viewport Y of the hovered chapter header at timer start (for scroll anchor)
@@ -89,6 +106,9 @@ export function initStepsPanel() {
   state.on('change:cameraAnimDurationMs', _syncDurationInputs);
   state.on('change:objectAnimDurationMs', _syncDurationInputs);
   state.on('change:animationPresets',     renderStepsPanel);
+  // Re-render when the multi-step selection changes — covers Ctrl/Shift
+  // click, outside-click clear, Esc, and the cross-step apply banner.
+  state.on('change:selectedStepIds',      renderStepsPanel);
   // Surgical per-step thumbnail update — avoid re-rendering the whole list.
   state.on('step:thumb', _onStepThumb);
 
@@ -103,7 +123,7 @@ export function initStepsPanel() {
     if (ctx && ctx.contains(e.target)) return;
     let dirty = false;
     if (_expandedId !== null) { _expandedId = null; dirty = true; }
-    if (_selectedIds.size)   { _selectedIds.clear(); dirty = true; }
+    if (_selSize())           { _selClear(); /* render fires via change:selectedStepIds */ }
     if (dirty) renderStepsPanel();
   }, true);
 
@@ -204,6 +224,37 @@ export function renderStepsPanel() {
 
   const scrollTop = list.scrollTop;
   list.innerHTML  = '';
+
+  // ── Multi-step apply banner ────────────────────────────────────────
+  // When ≥ 2 steps are multi-selected, show a sticky warning at the top
+  // of the list. Tells the user that subsequent visibility / color
+  // edits will fan out across all selected steps, not just the active
+  // one. "Clear" button (and Esc, handled in main.js) drops the set.
+  const selCount = _selSize();
+  if (selCount >= 2) {
+    const banner = document.createElement('div');
+    banner.style.cssText = `
+      position:sticky;top:0;z-index:5;
+      margin:-2px -2px 8px -2px;padding:6px 8px;
+      background:rgba(234,179,8,0.18);
+      border:1px solid rgba(234,179,8,0.55);
+      border-radius:6px;
+      font-size:11px;line-height:1.35;color:#fde68a;
+      display:flex;align-items:center;gap:8px;
+    `;
+    banner.innerHTML = `
+      <span style="flex:1;">
+        Editing <b>${selCount}</b> steps · visibility &amp; color changes
+        apply to all of them.
+      </span>
+      <button class="btn" type="button" id="multistep-clear"
+              style="padding:2px 8px;font-size:10px;flex:none;">
+        Clear (Esc)
+      </button>
+    `;
+    banner.querySelector('#multistep-clear').addEventListener('click', () => _selClear());
+    list.appendChild(banner);
+  }
 
   // Index each step by its position in the flat array so step cards still
   // receive the correct global index (used for the index badge).
@@ -576,7 +627,7 @@ function _chapterTopInsertIndex(chapterId) {
 // ── Step card ────────────────────────────────────────────────────────────────
 
 function _buildStepCard(step, idx, isActive, isExpanded, total) {
-  const isSelected = _selectedIds.has(step.id);
+  const isSelected = _selHas(step.id);
   const card = document.createElement('div');
   card.className = [
     'stepItem',
@@ -608,11 +659,10 @@ function _buildStepCard(step, idx, isActive, isExpanded, total) {
   card.addEventListener('contextmenu', e => {
     e.preventDefault();
     e.stopPropagation();
-    if (_selectedIds.size > 1 && _selectedIds.has(step.id)) {
-      _showMultiStepContextMenu(Array.from(_selectedIds), e.clientX, e.clientY);
+    if (_selSize() > 1 && _selHas(step.id)) {
+      _showMultiStepContextMenu(Array.from(_getSel()), e.clientX, e.clientY);
     } else {
-      _selectedIds = new Set([step.id]);
-      renderStepsPanel();
+      _setSel([step.id]);
       _showStepContextMenu(step, e.clientX, e.clientY);
     }
   });
@@ -623,24 +673,26 @@ function _buildStepCard(step, idx, isActive, isExpanded, total) {
   //   plain click    → replace selection, activate + expand
   card.addEventListener('click', e => {
     if (e.ctrlKey || e.metaKey) {
-      if (_selectedIds.has(step.id)) _selectedIds.delete(step.id);
-      else                            _selectedIds.add(step.id);
-      renderStepsPanel();
+      const next = new Set(_getSel());
+      if (next.has(step.id)) next.delete(step.id);
+      else                   next.add(step.id);
+      _setSel(next);
       return;
     }
-    if (e.shiftKey && _selectedIds.size) {
+    if (e.shiftKey && _selSize()) {
       const all = (state.get('steps') || []).filter(s => !s.isBaseStep);
-      const anchor = [..._selectedIds].pop();
+      const anchor = [..._getSel()].pop();
       const a = all.findIndex(s => s.id === anchor);
       const b = all.findIndex(s => s.id === step.id);
       if (a >= 0 && b >= 0) {
         const [lo, hi] = a < b ? [a, b] : [b, a];
-        for (let i = lo; i <= hi; i++) _selectedIds.add(all[i].id);
+        const next = new Set(_getSel());
+        for (let i = lo; i <= hi; i++) next.add(all[i].id);
+        _setSel(next);
       }
-      renderStepsPanel();
       return;
     }
-    _selectedIds = new Set([step.id]);
+    _setSel([step.id]);
     _expandedId  = step.id;
     steps.activateStep(step.id, true);
     renderStepsPanel();
@@ -649,7 +701,7 @@ function _buildStepCard(step, idx, isActive, isExpanded, total) {
   // Double click → instant jump to final state (skips animation)
   card.addEventListener('dblclick', e => {
     e.stopPropagation();
-    _selectedIds = new Set([step.id]);
+    _setSel([step.id]);
     _expandedId  = step.id;
     steps.activateStep(step.id, false);
     renderStepsPanel();
@@ -664,7 +716,7 @@ function _buildStepCard(step, idx, isActive, isExpanded, total) {
     if (e.button !== 1) return;
     e.preventDefault();
     e.stopPropagation();
-    _selectedIds = new Set([step.id]);
+    _setSel([step.id]);
     _expandedId  = step.id;
     steps.activateStep(step.id, false);
     renderStepsPanel();
@@ -683,8 +735,8 @@ function _buildStepCard(step, idx, isActive, isExpanded, total) {
     }
     _dragChapterId = null;
     // If the dragged step is part of a multi-selection, drag the whole set.
-    if (_selectedIds.has(step.id) && _selectedIds.size > 1) {
-      _dragIds = Array.from(_selectedIds);
+    if (_selHas(step.id) && _selSize() > 1) {
+      _dragIds = Array.from(_getSel());
     } else {
       _dragIds = [step.id];            // single-step drag, leave selection untouched
     }
@@ -825,10 +877,10 @@ function _buildStepTopCollapsed(step, idx, showThumb = true) {
  * all-hidden → show all).
  */
 function _toggleStepHidden(step) {
-  const inMulti = _selectedIds.size > 1 && _selectedIds.has(step.id);
+  const inMulti = _selSize() > 1 && _selHas(step.id);
   if (inMulti) {
     const stepsArr = state.get('steps') || [];
-    const sel      = stepsArr.filter(s => _selectedIds.has(s.id));
+    const sel      = stepsArr.filter(s => _selHas(s.id));
     const anyVisible = sel.some(s => !s.hidden);
     sel.forEach(s => steps.setStepHidden(s.id, anyVisible));
     setStatus(`${anyVisible ? 'Hid' : 'Showed'} ${sel.length} step(s).`);
@@ -920,8 +972,7 @@ function _showMultiStepContextMenu(stepIds, x, y) {
         const ok = await _confirmDialog(`Delete ${selSteps.length} steps?`);
         if (!ok) return;
         for (const s of selSteps) actions.deleteStep(s.id);
-        _selectedIds.clear();
-        renderStepsPanel();
+        _selClear();
       } },
   ], x, y);
 }
