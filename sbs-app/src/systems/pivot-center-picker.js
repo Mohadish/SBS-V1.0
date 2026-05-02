@@ -111,7 +111,12 @@ export function cancel() {
 export function updateHover(clientX, clientY) {
   if (!_state) return;
   const target = findSnapTarget(clientX, clientY);
-  _setHover(target?.point ?? null, target?.type ?? null);
+  _setHover(
+    target?.point ?? null,
+    target?.type  ?? null,
+    target?.edgeA ?? null,
+    target?.edgeB ?? null,
+  );
 }
 
 /**
@@ -257,13 +262,19 @@ function _buildDot(worldPoint, color) {
   return m;
 }
 
-function _setHover(worldPoint, type) {
+function _setHover(worldPoint, type, edgeA, edgeB) {
   if (!_state) return;
   _disposeGroup(_state.hoverGroup, /* keep */ true);
   if (!worldPoint) return;
   const colour = type === 'vertex' ? 0xffffff
               : type === 'edge'   ? 0xffff66
               :                     0xaaaaaa;
+  // For edge snaps, draw a highlight along the WHOLE edge so the user
+  // sees exactly which segment will be used — and a brighter cross at
+  // the snap point along it.
+  if (type === 'edge' && edgeA && edgeB) {
+    _state.hoverGroup.add(_buildSegmentCylinder(edgeA, edgeB, 0xffee44, 0.35));
+  }
   _state.hoverGroup.add(_buildCross(worldPoint, colour));
 }
 
@@ -287,35 +298,125 @@ function _refreshPreviewPivot() {
   const [a, b, c] = _state.points.map(p => p.world);
   const result = circumcenterAndNormal(a, b, c);
   if (!result) return;
-  const { center, normal } = result;
+  const { center, normal, radius } = result;
 
-  // Orange dot at center.
-  _state.previewGroup.add(_buildDot(center, PREVIEW_DOT));
-
-  // Tiny RGB axes oriented to the plane: Z = normal, X = (a-center) tangent, Y = Z × X.
+  // Plane basis: Z = normal, X = (a - center) projected into the plane,
+  // Y = Z × X. Same convention as actions.applyPivotCenter so the
+  // preview matches the committed pose exactly.
   const z = normal.clone().normalize();
   let x = new T.Vector3().subVectors(a, center);
-  x.sub(z.clone().multiplyScalar(x.dot(z)));   // remove any z component
+  x.sub(z.clone().multiplyScalar(x.dot(z)));
   if (x.lengthSq() < 1e-10) x.set(1, 0, 0);
   x.normalize();
   const y = new T.Vector3().crossVectors(z, x).normalize();
 
-  const s = _markerSize() * 1.6;
+  // Crosshair axes — three thick cylinders extending in BOTH directions
+  // through the center. Rendered behind the centre dot so the dot is
+  // never occluded.
+  const armLen   = _markerSize() * 2.4;
+  const armRadius = _pixelToWorld(center, 1.5);  // 3-px-thick crosshair (radius = 1.5 px)
   for (const [name, dir] of [['x', x], ['y', y], ['z', z]]) {
-    const verts = new Float32Array([
-      center.x, center.y, center.z,
-      center.x + dir.x * s, center.y + dir.y * s, center.z + dir.z * s,
-    ]);
-    const geom = new T.BufferGeometry();
-    geom.setAttribute('position', new T.BufferAttribute(verts, 3));
-    const mat = new T.LineBasicMaterial({
-      color: AXIS_COLORS[name], depthTest: false, depthWrite: false,
-      transparent: true, opacity: 0.95, linewidth: 2,
-    });
-    const line = new T.LineSegments(geom, mat);
-    line.renderOrder = 1000;
-    _state.previewGroup.add(line);
+    _state.previewGroup.add(_buildAxisCylinder(center, dir, armLen, armRadius, AXIS_COLORS[name]));
   }
+
+  // Circle through the 3 points. LineLoop in the plane — no thickness,
+  // colour-matched to the dot for a clean preview ring.
+  _state.previewGroup.add(_buildPlaneCircle(center, x, y, radius, PREVIEW_DOT));
+
+  // Orange dot LAST so it renders on top of the crosshair intersection.
+  _state.previewGroup.add(_buildDot(center, PREVIEW_DOT));
+}
+
+/**
+ * Build a cylinder centered at `origin`, oriented along `axisDir`
+ * (extending equally in both directions, total length = `length`).
+ * Used for the crosshair axes — depth-test off, renders behind the
+ * centre dot.
+ */
+function _buildAxisCylinder(origin, axisDir, length, radius, color) {
+  const T = window.THREE;
+  const geom = new T.CylinderGeometry(radius, radius, length, 16, 1, false);
+  const mat = new T.MeshBasicMaterial({
+    color, depthTest: false, depthWrite: false,
+    transparent: true, opacity: 0.95,
+  });
+  const mesh = new T.Mesh(geom, mat);
+  mesh.position.copy(origin);
+  // Default cylinder axis is +Y. Rotate +Y onto axisDir.
+  const up = new T.Vector3(0, 1, 0);
+  mesh.quaternion.setFromUnitVectors(up, axisDir.clone().normalize());
+  mesh.renderOrder = 999;
+  return mesh;
+}
+
+/**
+ * Build a thin cylinder spanning two world endpoints — used for edge
+ * highlight. `thicknessFactor` scales relative to the marker size so
+ * the highlight is visibly thicker than a 1-px line but thinner than
+ * the crosshair.
+ */
+function _buildSegmentCylinder(p1, p2, color, thicknessFactor = 0.3) {
+  const T = window.THREE;
+  const dir = new T.Vector3().subVectors(p2, p1);
+  const length = dir.length();
+  if (length < 1e-9) return new T.Group();
+  const radius = _pixelToWorld(p1, 1.0) * 1.5 * thicknessFactor + 1e-6;
+  const geom = new T.CylinderGeometry(radius, radius, length, 12, 1, false);
+  const mat = new T.MeshBasicMaterial({
+    color, depthTest: false, depthWrite: false,
+    transparent: true, opacity: 0.6,
+  });
+  const mesh = new T.Mesh(geom, mat);
+  mesh.position.addVectors(p1, p2).multiplyScalar(0.5);
+  const up = new T.Vector3(0, 1, 0);
+  mesh.quaternion.setFromUnitVectors(up, dir.clone().normalize());
+  mesh.renderOrder = 998;
+  return mesh;
+}
+
+/**
+ * Build a closed circle (LineLoop) in the plane spanned by basis
+ * vectors `u` and `v`, centered at `center`, of given `radius`.
+ */
+function _buildPlaneCircle(center, u, v, radius, color, segments = 96) {
+  const T = window.THREE;
+  const arr = new Float32Array(segments * 3);
+  for (let i = 0; i < segments; i++) {
+    const t = (i / segments) * Math.PI * 2;
+    const cs = Math.cos(t) * radius;
+    const sn = Math.sin(t) * radius;
+    arr[i * 3]     = center.x + u.x * cs + v.x * sn;
+    arr[i * 3 + 1] = center.y + u.y * cs + v.y * sn;
+    arr[i * 3 + 2] = center.z + u.z * cs + v.z * sn;
+  }
+  const geom = new T.BufferGeometry();
+  geom.setAttribute('position', new T.BufferAttribute(arr, 3));
+  const mat = new T.LineBasicMaterial({
+    color, depthTest: false, depthWrite: false,
+    transparent: true, opacity: 0.85,
+  });
+  const loop = new T.LineLoop(geom, mat);
+  loop.renderOrder = 998;
+  return loop;
+}
+
+/**
+ * World units per `px` CSS pixels at the depth of `worldPoint`.
+ * Used to size cylinder radii so they look ~constant on screen
+ * regardless of camera distance.
+ */
+function _pixelToWorld(worldPoint, px) {
+  const cam = sceneCore.camera;
+  const rect = sceneCore.renderer.domElement.getBoundingClientRect();
+  if (cam.isPerspectiveCamera) {
+    const dist = cam.position.distanceTo(worldPoint);
+    const fovRad = (cam.fov ?? 50) * Math.PI / 180;
+    const worldHeight = 2 * dist * Math.tan(fovRad / 2);
+    return (px / rect.height) * worldHeight;
+  }
+  // Orthographic.
+  const h = Math.abs((cam.top ?? 1) - (cam.bottom ?? -1));
+  return (px / rect.height) * h;
 }
 
 function _disposeGroup(group, keep = false) {
@@ -349,30 +450,57 @@ function _emit() {
 // ─── Math: 3-point circumcenter + plane normal ────────────────────────────
 
 /**
- * Given three non-collinear world points A, B, C, return
+ * Given three non-collinear world points P1, P2, P3, return
  *   { center: Vector3, normal: Vector3, radius: number }
- * where center is the circumcenter of triangle ABC and normal is the
- * triangle's plane normal (right-hand rule from click order A→B→C).
+ * where center is the circumcenter of triangle P1·P2·P3 and normal is
+ * the triangle's plane normal (right-hand rule from click order
+ * P1 → P2 → P3).
+ *
+ * Uses the BARYCENTRIC circumcenter formula:
+ *
+ *     C = (α·P1 + β·P2 + γ·P3) / (α + β + γ)
+ *
+ *     a = |P3 − P2|     (length opposite P1)
+ *     b = |P3 − P1|     (length opposite P2)
+ *     c = |P2 − P1|     (length opposite P3)
+ *
+ *     α = a²·(b² + c² − a²)
+ *     β = b²·(a² + c² − b²)
+ *     γ = c²·(a² + b² − c²)
+ *
+ * The denominator collapses to zero when the points are collinear —
+ * we bail in that case. This formula is numerically stable and harder
+ * to flub than cross-product-based offsets.
  *
  * Returns null if the points are collinear or coincident.
  */
-export function circumcenterAndNormal(A, B, C) {
+export function circumcenterAndNormal(P1, P2, P3) {
   if (!window.THREE) return null;
   const T = window.THREE;
-  const ab = new T.Vector3().subVectors(B, A);
-  const ac = new T.Vector3().subVectors(C, A);
-  const n  = new T.Vector3().crossVectors(ab, ac);
-  const nlen2 = n.lengthSq();
-  if (nlen2 < 1e-12) return null;        // collinear
-  // Standard circumcenter formula in 3D (Cramer-style).
-  // c = A + ( |ac|² · (ab × n) + |ab|² · (n × ac) ) / (2 · |n|²)
-  const ab2 = ab.lengthSq();
-  const ac2 = ac.lengthSq();
-  const term1 = new T.Vector3().crossVectors(ab, n).multiplyScalar(ac2);
-  const term2 = new T.Vector3().crossVectors(n, ac).multiplyScalar(ab2);
-  const offset = term1.add(term2).divideScalar(2 * nlen2);
-  const center = new T.Vector3().addVectors(A, offset);
-  const normal = n.clone().normalize();
-  const radius = Math.sqrt(offset.lengthSq());
+
+  const a2 = new T.Vector3().subVectors(P3, P2).lengthSq();   // |P3-P2|²
+  const b2 = new T.Vector3().subVectors(P3, P1).lengthSq();   // |P3-P1|²
+  const c2 = new T.Vector3().subVectors(P2, P1).lengthSq();   // |P2-P1|²
+  if (a2 < 1e-18 || b2 < 1e-18 || c2 < 1e-18) return null;    // coincident
+
+  const alpha = a2 * (b2 + c2 - a2);
+  const beta  = b2 * (a2 + c2 - b2);
+  const gamma = c2 * (a2 + b2 - c2);
+  const denom = alpha + beta + gamma;
+  if (Math.abs(denom) < 1e-18) return null;                   // collinear
+
+  const center = new T.Vector3()
+    .addScaledVector(P1, alpha / denom)
+    .addScaledVector(P2, beta  / denom)
+    .addScaledVector(P3, gamma / denom);
+
+  // Plane normal — right-hand rule from click order P1 → P2 → P3.
+  const ab = new T.Vector3().subVectors(P2, P1);
+  const ac = new T.Vector3().subVectors(P3, P1);
+  const normal = new T.Vector3().crossVectors(ab, ac);
+  if (normal.lengthSq() < 1e-18) return null;
+  normal.normalize();
+
+  const radius = center.distanceTo(P1);
   return { center, normal, radius };
 }

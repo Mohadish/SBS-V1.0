@@ -163,8 +163,12 @@ export function findSnapTarget(clientX, clientY) {
       ay + (by - ay) * t,
       az + (bz - az) * t,
     );
+    // Edge endpoints in world space — exported alongside the snap
+    // point so the caller can draw a highlight along the whole edge.
+    const edgeA = new T.Vector3(ax, ay, az).applyMatrix4(matrixWorld);
+    const edgeB = new T.Vector3(bx, by, bz).applyMatrix4(matrixWorld);
     const world = local.applyMatrix4(matrixWorld);
-    return { type: 'edge', point: world, mesh };
+    return { type: 'edge', point: world, mesh, edgeA, edgeB };
   }
 
   // ── Fallback: face hit point ────────────────────────────────────────────

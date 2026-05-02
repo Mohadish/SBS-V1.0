@@ -1093,10 +1093,14 @@ export function cancelPivotCenterPicking() {
  * the first point in the plane, Y = Z × X), and immediately enter pivot
  * edit mode so the user can fine-tune via the gizmo.
  *
+ * Math: barycentric circumcenter — same helper as the picker preview,
+ * so what the user sees in the preview is what gets committed. See
+ * pivot-center-picker.js circumcenterAndNormal for the formula.
+ *
  * Undoable as one "Pivot from 3 points" entry. Falls back silently if
  * the three points are collinear or coincident.
  */
-export function applyPivotCenter(nodeId, p1, p2, p3) {
+export async function applyPivotCenter(nodeId, p1, p2, p3) {
   if (!nodeId || !p1 || !p2 || !p3) return false;
   const node = state.get('nodeById')?.get(nodeId);
   if (!node) return false;
@@ -1106,21 +1110,12 @@ export function applyPivotCenter(nodeId, p1, p2, p3) {
 
   const T = window.THREE;
 
-  // Plane normal (right-hand rule from click order p1 → p2 → p3) and
-  // 3D circumcenter. Bail on degenerate input.
-  const ab = new T.Vector3().subVectors(p2, p1);
-  const ac = new T.Vector3().subVectors(p3, p1);
-  const n  = new T.Vector3().crossVectors(ab, ac);
-  const nlen2 = n.lengthSq();
-  if (nlen2 < 1e-12) return false;
-
-  const ab2 = ab.lengthSq();
-  const ac2 = ac.lengthSq();
-  const term1 = new T.Vector3().crossVectors(ab, n).multiplyScalar(ac2);
-  const term2 = new T.Vector3().crossVectors(n, ac).multiplyScalar(ab2);
-  const offset = term1.add(term2).divideScalar(2 * nlen2);
-  const worldCenter = new T.Vector3().addVectors(p1, offset);
-  const worldNormal = n.clone().normalize();
+  // Lazy import keeps the actions ↔ picker dep loop loose.
+  const picker = await import('./pivot-center-picker.js');
+  const result = picker.circumcenterAndNormal(p1, p2, p3);
+  if (!result) return false;
+  const worldCenter = result.center;
+  const worldNormal = result.normal;
 
   // Build a world-space orthonormal basis: Z = normal, X = (p1 - center)
   // projected onto the plane (so axes align with the user's first pick),
