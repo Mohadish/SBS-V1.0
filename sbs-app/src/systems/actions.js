@@ -40,9 +40,19 @@ import {
 
 /**
  * Assign a color preset to one or more meshes.
+ *
+ * Routes through selectedStepIds the same way toggleVisibility does:
+ * size ≥ 2 → bulk-mutate every step's snapshot.materials in one
+ * undoable transaction. Otherwise the existing single-step flow.
  */
 export function assignPreset(meshIds, presetId) {
-  const ids  = [...meshIds];
+  const ids = [...meshIds];
+  const stepSel = state.get('selectedStepIds');
+  const isMulti = stepSel instanceof Set && stepSel.size >= 2;
+  if (isMulti) {
+    _bulkAssignColorMulti(ids, presetId, stepSel, 'Assign color');
+    return;
+  }
   const prev = Object.fromEntries(
     ids.map(id => [id, materials.meshColorAssignments[id] ?? null])
   );
@@ -56,10 +66,18 @@ export function assignPreset(meshIds, presetId) {
 }
 
 /**
- * Remove color preset from one or more meshes.
+ * Remove color preset from one or more meshes. Same multi-step routing
+ * as assignPreset (presetId = null is the "remove" payload in the bulk
+ * path; the result is identical to deleting the entry from the map).
  */
 export function removePreset(meshIds) {
-  const ids  = [...meshIds];
+  const ids = [...meshIds];
+  const stepSel = state.get('selectedStepIds');
+  const isMulti = stepSel instanceof Set && stepSel.size >= 2;
+  if (isMulti) {
+    _bulkAssignColorMulti(ids, null, stepSel, 'Remove color');
+    return;
+  }
   const prev = Object.fromEntries(
     ids.map(id => [id, materials.meshColorAssignments[id] ?? null])
   );
@@ -69,6 +87,63 @@ export function removePreset(meshIds) {
     'Remove color',
     () => { _restoreAssignments(ids, prev); materials.applyAll(); steps.scheduleSync(); },
     () => { materials.removePreset(ids); steps.scheduleSync(); },
+  );
+}
+
+/**
+ * Apply a color preset assignment (or removal, when presetId === null)
+ * to the given mesh ids across every step in stepIdSet. ONE undo entry
+ * per call. If the active step is in the set, live materials state is
+ * also mutated so the viewport reflects the change immediately.
+ *
+ * Snapshot shape — step.snapshot.materials = { [meshId]: presetId }.
+ * presetId === null OR equal to the mesh's project default: omit/delete
+ * the entry so the mesh inherits the default. This matches what
+ * materials.captureSnapshot does (it filters defaults out).
+ */
+function _bulkAssignColorMulti(meshIds, presetId, stepIdSet, label) {
+  const allSteps = state.get('steps') || [];
+  const activeId = state.get('activeStepId');
+  const liveActive = stepIdSet.has(activeId);
+  const defaults = materials.meshDefaultColors || {};
+
+  const nextSteps = allSteps.map(s => {
+    if (!stepIdSet.has(s.id)) return s;
+    const snap   = s.snapshot || {};
+    const oldMat = snap.materials || {};
+    const newMat = { ...oldMat };
+    let dirty = false;
+    for (const id of meshIds) {
+      const target = (presetId == null || presetId === defaults[id]) ? undefined : presetId;
+      if (target === undefined) {
+        if (oldMat[id] !== undefined) { delete newMat[id]; dirty = true; }
+      } else {
+        if (oldMat[id] !== target)    { newMat[id] = target; dirty = true; }
+      }
+    }
+    if (!dirty) return s;
+    return { ...s, snapshot: { ...snap, materials: newMat } };
+  });
+  const touched = nextSteps.filter((s, i) => s !== allSteps[i]);
+  if (touched.length === 0) return;
+
+  state.setState({ steps: nextSteps });
+  state.markDirty();
+
+  // Mirror to live state if active step ∈ set, so viewport updates.
+  const replayLive = (stepsArr) => {
+    if (!liveActive) return;
+    const activeStep = stepsArr.find(x => x.id === activeId);
+    if (activeStep?.snapshot?.materials !== undefined) {
+      materials.applySnapshot(activeStep.snapshot.materials);
+    }
+  };
+  replayLive(nextSteps);
+
+  undoManager.push(
+    `${label} on ${touched.length} step(s)`,
+    () => { state.setState({ steps: allSteps  }); state.markDirty(); replayLive(allSteps); },
+    () => { state.setState({ steps: nextSteps }); state.markDirty(); replayLive(nextSteps); },
   );
 }
 
