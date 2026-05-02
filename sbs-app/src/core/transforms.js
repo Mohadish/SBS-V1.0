@@ -380,19 +380,38 @@ export function applyNodeSourceTransformToObject3D(node, outerObj3d, object3dByI
     const posAttr = geom.attributes?.position;
     if (!posAttr) continue;
 
+    // ── Snapshot invariant ──────────────────────────────────────────────
+    // mesh.userData.sbsOriginalPosition is set on the FIRST non-identity
+    // bake — and only then. Before any bake, posAttr.array IS the
+    // fresh-from-disk geometry (importers.js never mutates vertices), so
+    // taking the snapshot at that moment captures pristine reference data.
+    // Reset to identity rewinds to that snapshot, exactly retracing the
+    // import-time geometry. The snapshot is never overwritten thereafter.
+    //
+    // Defensive: if a different geometry buffer has been swapped in (asset
+    // relink, fingerprint change, etc.), the stored snapshot length won't
+    // match the current attribute. Drop the stale snapshot so the next
+    // capture grabs the fresh array.
+    if (mesh.userData.sbsOriginalPosition &&
+        mesh.userData.sbsOriginalPosition.length !== posAttr.array.length) {
+      delete mesh.userData.sbsOriginalPosition;
+      delete mesh.userData.sbsOriginalNormal;
+    }
+
     // Fast-path: identity source AND no prior bake — geometry is already
-    // in its original state. Nothing to snapshot or rewind.
+    // pristine. Nothing to snapshot or rewind.
     if (isIdentity && !mesh.userData.sbsOriginalPosition) continue;
 
-    // Snapshot original vertex data on first touch — this is the canonical
-    // pre-bake state we rewind to before re-applying.
+    // Capture the canonical pre-bake state on first touch.
     if (!mesh.userData.sbsOriginalPosition) {
       mesh.userData.sbsOriginalPosition = posAttr.array.slice();
       const normAttr = geom.attributes?.normal;
       if (normAttr) mesh.userData.sbsOriginalNormal = normAttr.array.slice();
     }
 
-    // Always rewind to the original before applying the new bake.
+    // Always rewind to the original before applying the new bake. Identity
+    // source short-circuits the applyMatrix4 step below, so reset truly
+    // restores the captured fresh-from-disk vertex data.
     posAttr.array.set(mesh.userData.sbsOriginalPosition);
     posAttr.needsUpdate = true;
     const normAttr = geom.attributes?.normal;
