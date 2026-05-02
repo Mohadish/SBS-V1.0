@@ -2676,21 +2676,25 @@ function _isInputFocused() {
 // stored transforms ARE the world transforms.
 
 /**
- * Set the model's source transform. Writes to node.sourceLocal*
- * (an INNER Three.js group between the model's outer group and its
- * mesh children). Equivalent to opening the model file in another
- * DCC, applying the transform there, and reloading.
+ * Set the model's source transform. Writes to node.sourceLocal* and
+ * BAKES the transform into every belonging mesh's geometry vertices —
+ * equivalent to opening the model file in another DCC, applying the
+ * transform there, and reloading. The bake rides INSIDE the geometry,
+ * so it cascades through every step regardless of where each mesh has
+ * been moved in any given step.
  *
  * - Per-step transforms (localOffset / localQuaternion) are NEVER
  *   touched. They keep their existing semantics — animations preserved.
- * - The pivot system reads the OUTER group; source lives on the INNER.
- *   Pivot world position + orientation are unaffected by source.
- * - Out-of-tree models work because the inner group is part of the
- *   model's own hierarchy — wherever the outer is parented, the inner
- *   goes with it.
+ * - The pivot system operates on the model's outer group; source is
+ *   embedded in the geometry. Pivot world position + orientation are
+ *   unaffected.
+ * - Displaced meshes (moved into other folders in some steps) still
+ *   pick up the source — the bake follows the geometry data, not the
+ *   tree position.
  *
- * Inputs are ABSOLUTE (the source state), not deltas. Save → write
- * those values; the existing per-step pipeline cascades.
+ * Inputs are ABSOLUTE (the source state), not deltas. Apply replaces,
+ * never stacks: each apply rewinds to the import-time original geometry
+ * before re-baking with the current source matrix.
  */
 export function setModelSourceTransform(nodeId, sourceLocalPosition, sourceLocalQuaternion, sourceLocalScale) {
   const node = state.get('nodeById')?.get(nodeId);
@@ -2707,7 +2711,7 @@ export function setModelSourceTransform(nodeId, sourceLocalPosition, sourceLocal
     node.sourceLocalQuaternion = [...vals.sourceLocalQuaternion];
     node.sourceLocalScale      = [...vals.sourceLocalScale];
     const obj = steps.object3dById?.get(nodeId);
-    if (obj) applyNodeSourceTransformToObject3D(node, obj);
+    applyNodeSourceTransformToObject3D(node, obj, steps.object3dById);
     state.markDirty();
   };
 

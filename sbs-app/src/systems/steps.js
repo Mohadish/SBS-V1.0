@@ -51,7 +51,6 @@ import {
   isTransformNode,
   lerpVec3,
   slerpQuaternion,
-  ensureSourceGroup,
 } from '../core/transforms.js';
 
 // ── Easing helpers (mirror scene.js — no circular dependency) ─────────────
@@ -1840,17 +1839,12 @@ function rebuildFromTreeSpec(spec, nodeById, object3dById, parentObject3d) {
   }
 
   // Determine which Three.js object children should attach to.
-  // folder/scene own a group; mesh nodes don't; MODEL nodes have an
-  // outer group with an INNER source-transform group inside —
-  // children of a model must land in the inner group, not the outer,
-  // so the source transform actually wraps the geometry. ensureSourceGroup
-  // is idempotent and creates the inner lazily for legacy projects.
+  // folder/scene own a group; mesh nodes don't; model children attach
+  // directly to the model's outer group. (Source transform is baked
+  // into the mesh geometry vertices themselves — no inner group.)
   let childParent;
   if (specType === 'mesh') {
     childParent = parentObject3d;
-  } else if (specType === 'model') {
-    const outer = object3dById.get(spec.id) ?? node?.object3d ?? parentObject3d;
-    childParent = ensureSourceGroup(outer) ?? outer;
   } else {
     childParent = object3dById.get(spec.id) ?? node?.object3d ?? parentObject3d;
   }
@@ -1949,13 +1943,8 @@ function syncThreeJsHierarchy(parentMap, nodeById, object3dById) {
   for (const [nodeId, targetParentId] of Object.entries(parentMap)) {
     const obj       = object3dById.get(nodeId)         ?? nodeById.get(nodeId)?.object3d;
     const parentNode = nodeById.get(targetParentId);
-    let parentObj   = object3dById.get(targetParentId) ?? parentNode?.object3d;
+    const parentObj = object3dById.get(targetParentId) ?? parentNode?.object3d;
     if (!obj || !parentObj) continue;
-    // Children of MODEL nodes attach to the inner sbs-source group, not
-    // the outer group — see rebuildFromTreeSpec for the same redirection.
-    if (parentNode?.type === 'model') {
-      parentObj = ensureSourceGroup(parentObj) ?? parentObj;
-    }
     if (obj.parent === parentObj) continue;
     if (obj.parent) obj.parent.remove(obj);
     parentObj.add(obj);

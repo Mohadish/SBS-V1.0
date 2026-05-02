@@ -21,6 +21,7 @@ import { initTree, renderTree, expandPathToNode, collapseAll } from './tree.js';
 import { setStatus }       from './status.js';
 import { createCameraView, generateId, APP_VERSION, APP_RELEASED } from '../core/schema.js';
 import { buildNodeMap }    from '../core/nodes.js';
+import { applyNodeSourceTransformToObject3D } from '../core/transforms.js';
 import { showContextMenu } from './context-menu.js';
 import { renderAnimationTab } from './animation-tab.js';
 import { renderHeaderTab }    from './header-tab.js';
@@ -427,6 +428,14 @@ async function _onOpenProject() {
           const nodeById = buildNodeMap(root);
           state.setState({ nodeById });
           applySpecFieldsToNodes(specNode, nodeById);
+          // Re-bake the saved source transform onto the freshly-imported
+          // (unbaked) geometry. applySpecFieldsToNodes wrote the saved
+          // sourceLocal* values onto the live model node — now apply them.
+          const liveModel = nodeById.get(modelNode.id);
+          if (liveModel?.type === 'model') {
+            const outer = steps.object3dById.get(liveModel.id) ?? liveModel.object3d;
+            applyNodeSourceTransformToObject3D(liveModel, outer, steps.object3dById);
+          }
         }
       } else if (specNode) {
         // ❌ Missing asset — insert phantom tree nodes from saved spec so steps still work

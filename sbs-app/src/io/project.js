@@ -797,6 +797,12 @@ export function applySpecFieldsToNodes(specNode, nodeById) {
     if (specNode.moveEnabled   !== undefined)          live.moveEnabled           = !!specNode.moveEnabled;
     if (specNode.rotateEnabled !== undefined)          live.rotateEnabled         = !!specNode.rotateEnabled;
     if (specNode.pivotEnabled  !== undefined)          live.pivotEnabled          = !!specNode.pivotEnabled;
+    // Source transform — restored verbatim. The geometry bake re-runs after
+    // load (see sidebar-left's post-load source re-bake) so freshly-imported
+    // unbaked geometry picks up the saved source matrix.
+    if (Array.isArray(specNode.sourceLocalPosition))   live.sourceLocalPosition   = specNode.sourceLocalPosition;
+    if (Array.isArray(specNode.sourceLocalQuaternion)) live.sourceLocalQuaternion = specNode.sourceLocalQuaternion;
+    if (Array.isArray(specNode.sourceLocalScale))      live.sourceLocalScale      = specNode.sourceLocalScale;
     live.colorPresetId = specNode.colorPresetId || null;
   }
   (specNode.children || []).forEach(sc => applySpecFieldsToNodes(sc, nodeById));

@@ -26,7 +26,7 @@ import materials  from '../systems/materials.js';
 import steps      from '../systems/steps.js';
 import { createNode, generateId } from '../core/schema.js';
 import { buildNodeMap } from '../core/nodes.js';
-import { storeBaseTransformFromObject3D, ensureSourceGroup } from '../core/transforms.js';
+import { storeBaseTransformFromObject3D, captureMeshModelLocalMatrices } from '../core/transforms.js';
 
 // Three.js add-on loaders — imported as ES modules from the local vendor bundles.
 // These bundles import from three.module.proxy.mjs which wraps window.THREE,
@@ -514,11 +514,13 @@ function finalizeModelImport(group3d, innerRoot, name, assetInfo, obj3dMap, extr
   obj3dMap.set(modelId, group3d);
   storeBaseTransformFromObject3D(modelNode, group3d);
 
-  // Wrap mesh children in an inner source-transform group. The Edit →
-  // Model source transform feature writes to this group's local
-  // transform — equivalent to reloading a pre-edited model file.
-  // ensureSourceGroup is idempotent.
-  ensureSourceGroup(group3d);
+  // Capture each mesh's import-time pose in model-local space (and tag
+  // it with the model's assetId). The Edit → Model source transform
+  // feature uses these matrices to bake the source transform into the
+  // mesh geometry vertices themselves — equivalent to reloading a
+  // pre-edited model file. Must run BEFORE the group is added to the
+  // scene root, so matrixWorld reflects only the import-time hierarchy.
+  captureMeshModelLocalMatrices(group3d, assetId);
 
   // Add Three.js group to scene
   sceneCore.rootGroup.add(group3d);
