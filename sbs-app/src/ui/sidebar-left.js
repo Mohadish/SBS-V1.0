@@ -81,7 +81,11 @@ export function initSidebarLeft() {
   state.on('change:colorPresets',          () => { if (_activeTab === 'colors')  _renderColorsTab(); });
   state.on('materials:defaultColorsChanged',() => { if (_activeTab === 'colors')  _renderColorsTab(); });
   state.on('change:selectedId',            () => { if (_activeTab === 'colors')  _renderColorsTab(); });
-  state.on('change:multiSelectedIds',      () => { if (_activeTab === 'colors')  _renderColorsTab(); });
+  state.on('change:multiSelectedIds',      () => {
+    if (_activeTab === 'colors') _renderColorsTab();
+    if (_activeTab === 'select') _renderSelectTab();   // refresh "+ Save (N)" button + counters
+  });
+  state.on('change:selectionGroups',       () => { if (_activeTab === 'select')   _renderSelectTab(); });
   state.on('change:cameraViews',           () => { if (_activeTab === 'cameras')   _renderCamerasTab(); });
   // Step bindings live on step.cameraBinding — when the active step
   // changes, or when any step's binding updates, the Cameras tab needs
@@ -1371,6 +1375,8 @@ function _renderSelectTab() {
   if (!el) return;
 
   const outlineColor = state.get('selectionOutlineColor') ?? '#00ffff';
+  const groups       = state.get('selectionGroups') || [];
+  const selSize      = (state.get('multiSelectedIds') || new Set()).size;
 
   el.innerHTML = `
     <div class="section">
@@ -1382,8 +1388,7 @@ function _renderSelectTab() {
                style="width:44px;height:28px;padding:2px;border-radius:4px;cursor:pointer" />
       </div>
       <div class="small muted" style="margin-top:4px;line-height:1.4">
-        Color used for the selection overlay and edge outline.<br>
-        White = fully neutral tint. Cyan is the default.
+        Color used for the selection overlay and edge outline.
       </div>
     </div>
 
@@ -1393,6 +1398,16 @@ function _renderSelectTab() {
         <button class="btn" id="btn-sel-all-meshes">Select All Meshes</button>
         <button class="btn" id="btn-sel-clear">Deselect All</button>
       </div>
+    </div>
+
+    <div class="section" style="margin-top:12px">
+      <div class="title">Selection Groups</div>
+      <button class="btn primary" id="btn-selgrp-save"
+              style="margin-top:8px;width:100%;"
+              ${selSize === 0 ? 'disabled title="Select something first"' : ''}>
+        + Save current selection as group${selSize ? ` (${selSize})` : ''}
+      </button>
+      <div id="selgrp-list" style="display:flex;flex-direction:column;gap:4px;margin-top:10px;"></div>
     </div>
   `;
 
@@ -1411,6 +1426,109 @@ function _renderSelectTab() {
   el.querySelector('#btn-sel-clear').addEventListener('click', () => {
     state.clearSelection();
     setStatus('Selection cleared.');
+  });
+
+  el.querySelector('#btn-selgrp-save').addEventListener('click', () => {
+    const id = actions.createSelectionGroup({});
+    if (!id) {
+      setStatus('Nothing to save — select objects first.', 'warn');
+      return;
+    }
+    setStatus('Selection group saved.');
+    _renderSelectTab();
+  });
+
+  _renderSelectionGroupList(el.querySelector('#selgrp-list'), groups);
+}
+
+function _renderSelectionGroupList(container, groups) {
+  if (!container) return;
+  if (groups.length === 0) {
+    container.innerHTML = `
+      <div class="small muted" style="font-size:11px;padding:8px 0;line-height:1.45;">
+        No groups yet. Multi-select objects in the tree (or viewport),
+        then click <b>+ Save current selection as group</b>.
+      </div>
+    `;
+    return;
+  }
+  container.innerHTML = '';
+  for (const g of groups) {
+    const row = document.createElement('div');
+    row.style.cssText = `
+      display:flex;align-items:center;gap:6px;
+      padding:5px 6px;
+      background:rgba(255,255,255,0.025);
+      border:1px solid var(--line,#334155);
+      border-radius:6px;
+    `;
+    row.innerHTML = `
+      <input type="color" data-act="recolor" value="${_esc(g.color)}"
+             title="Group color"
+             style="width:18px;height:18px;padding:0;border:none;background:transparent;cursor:pointer;flex:none;" />
+      <span class="selgrp-name" data-id="${_esc(g.id)}"
+            title="Double-click to rename"
+            style="flex:1;min-width:0;font-size:12px;font-weight:600;
+                   overflow:hidden;text-overflow:ellipsis;white-space:nowrap;cursor:text;">${_esc(g.name)}</span>
+      <span class="small muted" style="font-size:10px;flex:none;">${g.ids.length}</span>
+      <button class="btn" data-act="load"   title="Load — replace current selection"
+              style="padding:1px 6px;font-size:10px;flex:none;">Load</button>
+      <button class="btn" data-act="update" title="Update — overwrite from current selection"
+              style="padding:1px 6px;font-size:10px;flex:none;">↻</button>
+      <button class="btn" data-act="delete" title="Delete group"
+              style="padding:1px 6px;font-size:10px;flex:none;">✕</button>
+    `;
+
+    const nameSpan = row.querySelector('.selgrp-name');
+    nameSpan.addEventListener('dblclick', () => _enterSelGroupRename(nameSpan, g));
+
+    row.querySelector('[data-act="recolor"]').addEventListener('input', e => {
+      actions.recolorSelectionGroup(g.id, e.target.value);
+    });
+    row.querySelector('[data-act="load"]').addEventListener('click', () => {
+      const ok = actions.loadSelectionGroup(g.id);
+      setStatus(ok ? `Loaded "${g.name}".` : `Group "${g.name}" has no live members.`,
+                ok ? 'info' : 'warn');
+    });
+    row.querySelector('[data-act="update"]').addEventListener('click', () => {
+      const sz = (state.get('multiSelectedIds') || new Set()).size;
+      if (sz === 0) {
+        setStatus('Select something first to update the group.', 'warn');
+        return;
+      }
+      const changed = actions.updateSelectionGroup(g.id);
+      setStatus(changed ? `Updated "${g.name}" (${sz}).` : 'No change.');
+      _renderSelectTab();
+    });
+    row.querySelector('[data-act="delete"]').addEventListener('click', () => {
+      actions.deleteSelectionGroup(g.id);
+      _renderSelectTab();
+    });
+
+    container.appendChild(row);
+  }
+}
+
+function _enterSelGroupRename(span, group) {
+  const input = document.createElement('input');
+  input.type = 'text';
+  input.value = group.name;
+  input.style.cssText = 'flex:1;min-width:0;font-size:12px;';
+  span.replaceWith(input);
+  input.focus();
+  input.select();
+  let done = false;
+  const commit = () => {
+    if (done) return;
+    done = true;
+    const v = input.value.trim();
+    if (v && v !== group.name) actions.renameSelectionGroup(group.id, v);
+    _renderSelectTab();
+  };
+  input.addEventListener('blur', commit);
+  input.addEventListener('keydown', e => {
+    if (e.key === 'Enter')      { e.preventDefault(); input.blur(); }
+    else if (e.key === 'Escape') { done = true; _renderSelectTab(); }
   });
 }
 

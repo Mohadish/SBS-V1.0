@@ -47,6 +47,26 @@ function _migrateAnimationPresets(items) {
   });
 }
 
+/**
+ * Selection-group migration: legacy projects (and the original v0.266
+ * format) stored groups as `{name, ids[]}`. We add a stable `id` and a
+ * `color` swatch so groups can be referenced by id in undo entries and
+ * cross-step ops, and so the UI has a per-group accent. Idempotent.
+ */
+const SEL_GROUP_PALETTE = [
+  '#ef4444', '#22c55e', '#3b82f6', '#eab308',
+  '#a855f7', '#14b8a6', '#f97316', '#ec4899',
+];
+function _migrateSelectionGroups(items) {
+  if (!Array.isArray(items)) return [];
+  return items.map((g, i) => ({
+    id:    g?.id    || `selgrp_${Date.now().toString(36)}_${i}_${Math.random().toString(36).slice(2, 6)}`,
+    name:  g?.name  || `Group ${i + 1}`,
+    ids:   Array.isArray(g?.ids) ? g.ids.filter(s => typeof s === 'string') : [],
+    color: typeof g?.color === 'string' ? g.color : SEL_GROUP_PALETTE[i % SEL_GROUP_PALETTE.length],
+  }));
+}
+
 
 // ═══════════════════════════════════════════════════════════════════════════
 //  SERIALISE (state → JSON)
@@ -495,7 +515,7 @@ export function applyProjectToState(project) {
     animationPresets:     _migrateAnimationPresets(project.animationPresets?.items || []),
     noteTemplates:        project.notes?.templates          || [],
     notePresets:          project.notes?.presets            || state.get('notePresets'),
-    selectionGroups:      project.selections?.groups        || [],
+    selectionGroups:      _migrateSelectionGroups(project.selections?.groups || []),
     selectionOutlineColor:project.selections?.outlineColor  || '#00ffff',
     assets:               project.assets?.items             || [],
     headerItems:          project.headers?.items            || [],

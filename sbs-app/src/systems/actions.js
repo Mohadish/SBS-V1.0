@@ -16,7 +16,7 @@ import { selectionActs }        from './select-act.js';
 import { materials }            from '../systems/materials.js';
 import steps                    from '../systems/steps.js';
 import sceneCore                from '../core/scene.js';
-import { createAnimationPreset, createCameraView } from '../core/schema.js';
+import { createAnimationPreset, createCameraView, generateId } from '../core/schema.js';
 import * as editSession         from './edit-session.js';   // P7-A: gate Ctrl-Z while in overlay edit
 import * as cables              from './cables.js';          // C3: cable mutators (data layer)
 import {
@@ -3220,4 +3220,163 @@ export function updateStepCameraFromCurrentMulti(stepIds) {
     () => { state.setState({ steps: allSteps });  state.markDirty(); },
     () => { state.setState({ steps: nextSteps }); state.markDirty(); },
   );
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+//  SELECTION GROUPS
+// ═══════════════════════════════════════════════════════════════════════════
+//
+// A selection group is a NAMED, COLOR-TAGGED list of node IDs (any type:
+// mesh / folder / model). Saved with the project under
+// project.selections.groups. CRUD actions all push undo entries so the
+// group list stays in lockstep with global history. Loading a group
+// (writing the saved IDs into multiSelectedIds) is intentionally NOT
+// undoable — selection is UI state, not data.
+//
+// Phase B will add cross-step ops (mass show/hide/etc.) that take a
+// group id + a step-id set and dispatch on op.kind. This file holds
+// the data layer; the Select tab UI lives in sidebar-left.js.
+
+const SEL_GROUP_PALETTE = [
+  '#ef4444', '#22c55e', '#3b82f6', '#eab308',
+  '#a855f7', '#14b8a6', '#f97316', '#ec4899',
+];
+
+function _getSelectionGroups() {
+  return state.get('selectionGroups') || [];
+}
+
+function _setSelectionGroups(next) {
+  state.setState({ selectionGroups: next });
+  state.markDirty();
+}
+
+function _captureGroupsSnapshot() {
+  // Deep-clone via JSON for the undo before/after — selection groups are
+  // tiny plain-data so this is cheap and avoids accidental aliasing.
+  return JSON.parse(JSON.stringify(_getSelectionGroups()));
+}
+
+/**
+ * Create a new selection group from the current multi-selection (or an
+ * explicit ids list). Returns the new group's id, or null if there's
+ * nothing to save.
+ */
+export function createSelectionGroup({ name, ids, color } = {}) {
+  const sourceIds = Array.isArray(ids) ? ids.slice() : [...(state.get('multiSelectedIds') || [])];
+  if (sourceIds.length === 0) return null;
+  const before = _captureGroupsSnapshot();
+  const next   = before.slice();
+  const group  = {
+    id:    generateId('selgrp'),
+    name:  (name && name.trim()) || `Group ${next.length + 1}`,
+    ids:   sourceIds.filter(id => typeof id === 'string'),
+    color: color || SEL_GROUP_PALETTE[next.length % SEL_GROUP_PALETTE.length],
+  };
+  next.push(group);
+  _setSelectionGroups(next);
+  undoManager.push(
+    `Save selection group "${group.name}"`,
+    () => _setSelectionGroups(before),
+    () => _setSelectionGroups(next),
+  );
+  return group.id;
+}
+
+/**
+ * Overwrite an existing group's ids from the current multi-selection
+ * (or an explicit list). Skips if the group doesn't exist or the new
+ * id list matches.
+ */
+export function updateSelectionGroup(groupId, { ids } = {}) {
+  const before = _captureGroupsSnapshot();
+  const idx = before.findIndex(g => g.id === groupId);
+  if (idx < 0) return false;
+  const newIds = Array.isArray(ids) ? ids.slice() : [...(state.get('multiSelectedIds') || [])];
+  const filtered = newIds.filter(id => typeof id === 'string');
+  if (JSON.stringify(filtered) === JSON.stringify(before[idx].ids)) return false;
+  const next = before.slice();
+  next[idx] = { ...next[idx], ids: filtered };
+  _setSelectionGroups(next);
+  undoManager.push(
+    `Update selection group "${next[idx].name}"`,
+    () => _setSelectionGroups(before),
+    () => _setSelectionGroups(next),
+  );
+  return true;
+}
+
+/**
+ * Rename a group. Trims the input; no-op if the name is empty or
+ * unchanged.
+ */
+export function renameSelectionGroup(groupId, newName) {
+  const trimmed = (newName ?? '').trim();
+  if (!trimmed) return false;
+  const before = _captureGroupsSnapshot();
+  const idx = before.findIndex(g => g.id === groupId);
+  if (idx < 0) return false;
+  if (before[idx].name === trimmed) return false;
+  const next = before.slice();
+  next[idx] = { ...next[idx], name: trimmed };
+  _setSelectionGroups(next);
+  undoManager.push(
+    `Rename selection group → "${trimmed}"`,
+    () => _setSelectionGroups(before),
+    () => _setSelectionGroups(next),
+  );
+  return true;
+}
+
+/**
+ * Update the color swatch on a group. Color is a hex string ("#rrggbb").
+ */
+export function recolorSelectionGroup(groupId, newColor) {
+  if (typeof newColor !== 'string') return false;
+  const before = _captureGroupsSnapshot();
+  const idx = before.findIndex(g => g.id === groupId);
+  if (idx < 0) return false;
+  if (before[idx].color === newColor) return false;
+  const next = before.slice();
+  next[idx] = { ...next[idx], color: newColor };
+  _setSelectionGroups(next);
+  undoManager.push(
+    `Recolor selection group "${next[idx].name}"`,
+    () => _setSelectionGroups(before),
+    () => _setSelectionGroups(next),
+  );
+  return true;
+}
+
+export function deleteSelectionGroup(groupId) {
+  const before = _captureGroupsSnapshot();
+  const idx = before.findIndex(g => g.id === groupId);
+  if (idx < 0) return false;
+  const next = before.slice();
+  const removed = next.splice(idx, 1)[0];
+  _setSelectionGroups(next);
+  undoManager.push(
+    `Delete selection group "${removed.name}"`,
+    () => _setSelectionGroups(before),
+    () => _setSelectionGroups(next),
+  );
+  return true;
+}
+
+/**
+ * Push a group's saved ids into the live multi-selection. Filters out
+ * stale ids (nodes that no longer exist). NOT undoable — selection is
+ * UI state, not project data.
+ */
+export function loadSelectionGroup(groupId) {
+  const group = _getSelectionGroups().find(g => g.id === groupId);
+  if (!group) return false;
+  const nodeById = state.get('nodeById');
+  const live = (group.ids || []).filter(id => nodeById?.has(id));
+  if (live.length === 0) {
+    state.clearSelection();
+    return false;
+  }
+  state.setSelection(live[0], new Set(live));
+  return true;
 }
