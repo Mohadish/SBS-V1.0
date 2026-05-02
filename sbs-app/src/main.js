@@ -52,6 +52,7 @@ import { initOverlay, getStage as getOverlayStage } from './systems/overlay.js';
 import { initOverlayToolbar }  from './ui/overlay-toolbar.js';
 import { initHeaderLayer }     from './systems/header.js';
 import { initCables, resolveNodeWorldPosition } from './systems/cables.js';        // C1: cables wire step:applied → applyStepSnapshot; C5-B: pos resolver for gizmo target
+import * as pivotCenterPicker     from './systems/pivot-center-picker.js';   // 3-point center pivot tool — snap-based picker for cylinder-axis pivot placement
 import { initCableRender, getCablePointMeshes, getCableSegmentMeshes, getCableSocketMeshes, setInsertHoverPosition } from './systems/cables-render.js';  // C2: cables 3D render; C5-A: point raycast; C5-D: segment raycast + insert ghost; C5-E2: socket raycast
 import { initUserSettings }    from './core/user-settings.js';
 import { openSettingsModal }   from './ui/settings-modal.js';
@@ -410,6 +411,16 @@ function _pickInRect(x1, y1, x2, y2) {
 canvas.addEventListener('pointerdown', e => {
   if (e.button !== 0) return;
 
+  // 3-point center pivot: clicks while in this mode are routed to the
+  // picker (snap to vertex/edge, place a cross, remove cross, or commit).
+  // Runs BEFORE the gizmo so picks land regardless of handle overlap.
+  if (state.get('pivotCenterPickingNodeId')) {
+    e.preventDefault();
+    e.stopPropagation();
+    pivotCenterPicker.onPointerDown(e.clientX, e.clientY);
+    return;
+  }
+
   // P-P1+: snap-to-surface pick mode consumes the click — raycast
   // against the scene, snap pivot if there's a hit, otherwise cancel.
   // Runs BEFORE the gizmo so the user can target a face that happens
@@ -507,6 +518,12 @@ canvas.addEventListener('pointerdown', e => {
 
 canvas.addEventListener('pointermove', e => {
   if (!(e.buttons & 1)) {
+    // 3-point pivot center mode — refresh the snap hover marker.
+    if (state.get('pivotCenterPickingNodeId')) {
+      pivotCenterPicker.updateHover(e.clientX, e.clientY);
+      return;
+    }
+
     // C5-D: insert-point pick mode — update the ghost-preview sphere
     // to track the cursor's mesh hit so the user sees where the new
     // point would land. Cleared on a hit-miss frame so it disappears
@@ -532,6 +549,20 @@ canvas.addEventListener('pointermove', e => {
 // / Esc / external cancel). One subscription, idempotent.
 state.on('change:cableInsertPickingTarget', target => {
   if (!target) setInsertHoverPosition(null);
+});
+
+// 3-point center pivot — clear hover marker when cursor leaves the
+// viewport (no pointermove fires off-canvas, so the last marker would
+// linger otherwise).
+canvas.addEventListener('pointerleave', () => {
+  if (state.get('pivotCenterPickingNodeId')) pivotCenterPicker.updateHover(-9999, -9999);
+});
+
+// Status feedback as the user picks points, so the HUD reflects the
+// "1/3 picked" / "ready — click empty or Enter" state.
+state.on('change:pivotCenterPickingNodeId', id => {
+  if (!id) return;
+  setStatus('Pick 3 points (snap to vertex/edge). Enter to apply, Esc to cancel.', 'info', 0);
 });
 
 window.addEventListener('pointermove', e => {
@@ -748,6 +779,36 @@ canvas.addEventListener('dblclick', e => {
 canvas.addEventListener('contextmenu', e => {
   e.preventDefault();
   hideContextMenu();
+
+  // 3-point center pivot — show a tool-specific menu in this mode and
+  // suppress the regular viewport context menu.
+  if (state.get('pivotCenterPickingNodeId')) {
+    const canApply = pivotCenterPicker.canApply();
+    const havePts  = pivotCenterPicker.getPoints().length > 0;
+    showContextMenu([
+      {
+        label: '✓ Apply (Enter)',
+        disabled: !canApply,
+        action: () => pivotCenterPicker.apply(),
+      },
+      {
+        label: '⌫ Remove last point  [Backspace]',
+        disabled: !havePts,
+        action: () => pivotCenterPicker.removeLast(),
+      },
+      {
+        label: '🗙 Clear all points',
+        disabled: !havePts,
+        action: () => pivotCenterPicker.clearAll(),
+      },
+      { label: '─', disabled: true },
+      {
+        label: '✕ Cancel  [Esc]',
+        action: () => actions.cancelPivotCenterPicking(),
+      },
+    ], e.clientX, e.clientY);
+    return;
+  }
 
   // C5-C/D: right-click on a cable point sphere → point menu (re-anchor,
   // delete). Wins over the gizmo's transform-panel popup because the
@@ -1082,9 +1143,31 @@ window.addEventListener('keydown', async e => {
     return;
   }
 
+  // 3-point center pivot tool keyboard:
+  //   Enter     → apply (when 3 picked)
+  //   Backspace → remove last placed cross (local undo, doesn't touch
+  //               the global undoManager)
+  if (state.get('pivotCenterPickingNodeId')) {
+    if (key === 'Enter' && pivotCenterPicker.canApply()) {
+      e.preventDefault();
+      pivotCenterPicker.apply();
+      return;
+    }
+    if (key === 'Backspace') {
+      e.preventDefault();
+      pivotCenterPicker.removeLast();
+      return;
+    }
+  }
+
   // ── Selection ────────────────────────────────────────────────────────────
   if (key === 'Escape') {
     if (gizmo.isDragging) { gizmo.onPointerUp(); return; }
+    // 3-point center pivot — Esc cancels the whole picking session.
+    if (state.get('pivotCenterPickingNodeId')) {
+      actions.cancelPivotCenterPicking();
+      return;
+    }
     // Snap-to-surface mode is its own little modal — cancel that
     // before tearing down the selection.
     if (state.get('pivotSnapPickingNodeId')) {

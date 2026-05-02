@@ -1066,6 +1066,115 @@ export function snapPivotToHit(nodeId, hit) {
   return true;
 }
 
+// ─── 3-Point Center Pivot ─────────────────────────────────────────────────
+//
+// User picks 3 points on geometry; the unique circle through them gives
+// a center (pivot position) and plane normal (pivot Z axis). Useful for
+// dropping a pivot perfectly on a cylinder axis by clicking 3 rim
+// vertices. Tool state + visuals live in pivot-center-picker.js — these
+// actions are just the start / cancel / commit wrappers.
+
+export function startPivotCenterPicking(nodeId) {
+  if (!nodeId) return;
+  if (state.get('pivotEditNodeId')) commitPivotEdit();
+  // Avoid two pick modes overlapping.
+  if (state.get('pivotSnapPickingNodeId')) cancelPivotSnapPicking();
+  // Lazy import to avoid actions ↔ picker circular load.
+  import('./pivot-center-picker.js').then(picker => picker.start(nodeId));
+}
+
+export function cancelPivotCenterPicking() {
+  import('./pivot-center-picker.js').then(picker => picker.cancel());
+}
+
+/**
+ * Compute the circle through three world points; write the result onto
+ * the node's pivot fields (Z axis = plane normal, X = direction toward
+ * the first point in the plane, Y = Z × X), and immediately enter pivot
+ * edit mode so the user can fine-tune via the gizmo.
+ *
+ * Undoable as one "Pivot from 3 points" entry. Falls back silently if
+ * the three points are collinear or coincident.
+ */
+export function applyPivotCenter(nodeId, p1, p2, p3) {
+  if (!nodeId || !p1 || !p2 || !p3) return false;
+  const node = state.get('nodeById')?.get(nodeId);
+  if (!node) return false;
+  const obj3d = steps.object3dById?.get(nodeId);
+  if (!obj3d) return false;
+  if (!window.THREE) return false;
+
+  const T = window.THREE;
+
+  // Plane normal (right-hand rule from click order p1 → p2 → p3) and
+  // 3D circumcenter. Bail on degenerate input.
+  const ab = new T.Vector3().subVectors(p2, p1);
+  const ac = new T.Vector3().subVectors(p3, p1);
+  const n  = new T.Vector3().crossVectors(ab, ac);
+  const nlen2 = n.lengthSq();
+  if (nlen2 < 1e-12) return false;
+
+  const ab2 = ab.lengthSq();
+  const ac2 = ac.lengthSq();
+  const term1 = new T.Vector3().crossVectors(ab, n).multiplyScalar(ac2);
+  const term2 = new T.Vector3().crossVectors(n, ac).multiplyScalar(ab2);
+  const offset = term1.add(term2).divideScalar(2 * nlen2);
+  const worldCenter = new T.Vector3().addVectors(p1, offset);
+  const worldNormal = n.clone().normalize();
+
+  // Build a world-space orthonormal basis: Z = normal, X = (p1 - center)
+  // projected onto the plane (so axes align with the user's first pick),
+  // Y = Z × X.
+  const z = worldNormal;
+  let x = new T.Vector3().subVectors(p1, worldCenter);
+  x.sub(z.clone().multiplyScalar(x.dot(z)));
+  if (x.lengthSq() < 1e-10) {
+    // p1 effectively at center — pick any tangent.
+    const fallback = Math.abs(z.y) > 0.99 ? new T.Vector3(1, 0, 0)
+                                          : new T.Vector3(0, 1, 0);
+    x.copy(fallback).sub(z.clone().multiplyScalar(z.dot(fallback)));
+  }
+  x.normalize();
+  const y = new T.Vector3().crossVectors(z, x).normalize();
+  const m = new T.Matrix4().makeBasis(x, y, z);
+  const worldQ = new T.Quaternion().setFromRotationMatrix(m);
+
+  // Convert world-space pose into the node's local frame.
+  obj3d.updateMatrixWorld(true);
+  const localCenter = obj3d.worldToLocal(worldCenter.clone());
+  const objWorldQ = new T.Quaternion();
+  obj3d.getWorldQuaternion(objWorldQ);
+  const pivotLocalQ = objWorldQ.clone().invert().multiply(worldQ);
+
+  const from = captureTransformSnapshot(node);
+  node.pivotLocalOffset     = [localCenter.x, localCenter.y, localCenter.z];
+  node.pivotLocalQuaternion = [pivotLocalQ.x, pivotLocalQ.y, pivotLocalQ.z, pivotLocalQ.w];
+  node.pivotEnabled         = true;
+  applyNodeTransformToObject3D(node, obj3d);
+  steps.scheduleTransformSync();
+  const to = captureTransformSnapshot(node);
+
+  undoManager.push('Pivot from 3 points',
+    () => {
+      const n = state.get('nodeById')?.get(nodeId); if (!n) return;
+      applyTransformSnapshot(n, from);
+      const o = steps.object3dById?.get(nodeId); if (o) applyNodeTransformToObject3D(n, o);
+      steps.scheduleTransformSync();
+    },
+    () => {
+      const n = state.get('nodeById')?.get(nodeId); if (!n) return;
+      applyTransformSnapshot(n, to);
+      const o = steps.object3dById?.get(nodeId); if (o) applyNodeTransformToObject3D(n, o);
+      steps.scheduleTransformSync();
+    },
+  );
+
+  // Enter pivot edit mode so the user can fine-tune via the gizmo.
+  // Per the user's spec: "once placed pivot stays red — user can edit."
+  enterPivotEdit(nodeId);
+  return true;
+}
+
 
 // ═══════════════════════════════════════════════════════════════════════════
 //  CABLE ACTIONS  (C3)

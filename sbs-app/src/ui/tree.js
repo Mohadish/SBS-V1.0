@@ -537,6 +537,10 @@ function _buildContextMenuItems(node) {
       label: 'Snap Pivot to Surface…',
       action: () => actions.startPivotSnapPicking(node.id),
     });
+    items.push({
+      label: 'Pivot Center via 3 Points…',
+      action: () => actions.startPivotCenterPicking(node.id),
+    });
   }
 
   items.push({ separator: true });

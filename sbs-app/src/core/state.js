@@ -211,6 +211,16 @@ function createInitialState() {
     // tree row "Snap Pivot to Surface" menu entry or the panel button.
     pivotSnapPickingNodeId: null,
 
+    // Node id awaiting a "pivot center via 3 points" placement. When
+    // set, the next viewport clicks place / remove crosses (snapping
+    // to vertex or edge) until 3 are down. A click on empty space (or
+    // Enter) commits — the unique circle through the 3 points gives
+    // the pivot center + plane normal, and the tool then enters pivot
+    // edit mode (RED) for fine-tuning. Cleared on commit / Esc /
+    // right-click → Cancel. Triggered from the tree row
+    // "Pivot Center via 3 Points…" menu entry.
+    pivotCenterPickingNodeId: null,
+
     // ── Export settings
     // Suppress auto-play of step narration when navigating live in the app.
     // The Preview ▶ button still works regardless. Persisted per project.
