@@ -251,6 +251,54 @@ export function captureMeshModelLocalMatrices(outer, assetId) {
   });
 }
 
+/**
+ * Collect every mesh belonging to a model + its current axis-aligned
+ * bounding box in MODEL-LOCAL frame.
+ *
+ * Returns: Array<{ mesh: THREE.Mesh, min: number[3], max: number[3] }>
+ *
+ * Used by the source-transform dialog to draw per-mesh "current" (red)
+ * and "preview" (green) bounding boxes when the user is editing scale.
+ * Model-local frame means: axes anchored to the model's outer group at
+ * identity — independent of any per-step transform on the outer group,
+ * so the boxes never wobble as steps animate.
+ *
+ *   bbox_model = M_in_model × bbox_geom
+ *
+ * where M_in_model is each mesh's import-time pose (captured by
+ * captureMeshModelLocalMatrices) and bbox_geom is the mesh's CURRENT
+ * post-bake geometry bbox.
+ *
+ * @param {TreeNode}                       node           model node
+ * @param {Map<string, THREE.Object3D>}   object3dById   node id → Object3D
+ */
+export function collectModelMeshBoxes(node, object3dById) {
+  if (!node || node.type !== 'model' || !window.THREE || !object3dById) return [];
+  const T = window.THREE;
+  const assetId = node.assetId;
+  if (!assetId) return [];
+  const out = [];
+  for (const obj of object3dById.values()) {
+    if (!obj?.isMesh) continue;
+    if (obj.userData?.sbsModelAssetId !== assetId) continue;
+    const geom = obj.geometry;
+    if (!geom) continue;
+    if (!geom.boundingBox) geom.computeBoundingBox();
+    const bb = geom.boundingBox;
+    if (!bb) continue;
+    const M = obj.userData?.sbsModelLocalMatrix
+      ? new T.Matrix4().fromArray(obj.userData.sbsModelLocalMatrix)
+      : new T.Matrix4();
+    const transformed = bb.clone().applyMatrix4(M);
+    out.push({
+      mesh: obj,
+      min: [transformed.min.x, transformed.min.y, transformed.min.z],
+      max: [transformed.max.x, transformed.max.y, transformed.max.z],
+    });
+  }
+  return out;
+}
+
 function _composeSourceMatrix(node) {
   const T = window.THREE;
   const p = node.sourceLocalPosition   || [0, 0, 0];

@@ -2730,6 +2730,25 @@ export function setModelSourceTransform(nodeId, sourceLocalPosition, sourceLocal
   );
 }
 
+/**
+ * Preview-only variant of setModelSourceTransform — writes node fields and
+ * bakes geometry, but does NOT push an undo entry. Used by the model source
+ * dialog while the user types: every keystroke applies a live preview, and
+ * the user clicks Apply (which calls setModelSourceTransform) to commit a
+ * single undo entry covering the whole edit session. See
+ * model-source-dialog.js for the full preview/commit/cancel lifecycle.
+ */
+export function previewModelSourceTransform(nodeId, sourceLocalPosition, sourceLocalQuaternion, sourceLocalScale) {
+  const node = state.get('nodeById')?.get(nodeId);
+  if (!node || node.type !== 'model') return;
+  node.sourceLocalPosition   = [...sourceLocalPosition];
+  node.sourceLocalQuaternion = [...sourceLocalQuaternion];
+  node.sourceLocalScale      = [...sourceLocalScale];
+  const obj = steps.object3dById?.get(nodeId);
+  applyNodeSourceTransformToObject3D(node, obj, steps.object3dById);
+  state.markDirty();
+}
+
 // ═══════════════════════════════════════════════════════════════════════════
 //  CAMERA TEMPLATES
 // ═══════════════════════════════════════════════════════════════════════════
