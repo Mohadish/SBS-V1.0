@@ -29,6 +29,8 @@ import {
 import {
   moveNode    as _nodes_moveNode,
   buildNodeMap as _nodes_buildNodeMap,
+  captureParentMap,
+  findNode,
 }                               from '../core/nodes.js';
 
 
@@ -526,28 +528,204 @@ function _findNodeParent(node, targetId) {
   return null;
 }
 
+/**
+ * Toggle visibility of one or more nodes.
+ *
+ * Routing:
+ *   • If selectedStepIds.size ≥ 2: the change is applied to EVERY step
+ *     in the set in one shot — one undo entry covering all of them.
+ *     The user sees the multi-step banner in the timeline and knows
+ *     this is happening. If the active step is part of the set, live
+ *     state is also mutated so the viewport reflects the change.
+ *   • Otherwise: the change is applied to the active step alone via
+ *     the existing live-state + scheduleSync flow.
+ *
+ * Cascade-inversion on SHOW: if a node we're showing has any HIDDEN
+ * ancestor in the affected step's tree, that ancestor is flipped to
+ * visible AND its non-path-non-target children are explicitly hidden.
+ * This means clicking 👁 on a buried mesh exposes JUST that mesh, not
+ * the whole sibling tree of its ancestors. HIDE has no cascade —
+ * setting a node hidden hides it and any descendant that inherits.
+ */
 export function toggleVisibility(nodeIds) {
-  const nodeById   = state.get('nodeById');
-  const ids        = [...nodeIds];
-  const wasVisible = ids.map(id => nodeById.get(id)?.localVisible ?? true);
-  const newVis     = !nodeById.get(ids[0])?.localVisible;
+  const nodeById = state.get('nodeById');
+  const treeData = state.get('treeData');
+  const ids      = [...nodeIds].filter(id => nodeById?.has(id));
+  if (!ids.length) return;
+  const newVis = !nodeById.get(ids[0]).localVisible;
 
-  ids.forEach(id => { const n = nodeById.get(id); if (n) n.localVisible = newVis; });
-  _syncVis();
+  const stepSel = state.get('selectedStepIds');
+  const isMulti = stepSel instanceof Set && stepSel.size >= 2;
+
+  if (isMulti) {
+    _toggleVisibilityMulti(ids, newVis, stepSel, treeData);
+    return;
+  }
+
+  // Single-step path: mutate live state then captureSync.
+  const wasVisible = ids.map(id => nodeById.get(id).localVisible !== false);
+  // Build a current vis map from live state, apply cascade-aware change,
+  // then write the result back to live nodes (for SHOW). HIDE remains
+  // a simple per-id flip — no cascade needed.
+  const liveMap = {};
+  for (const [id, n] of nodeById) liveMap[id] = n.localVisible !== false;
+  const changes = newVis
+    ? _computeShowCascadeChanges(liveMap, ids, treeData)
+    : Object.fromEntries(ids.map(id => [id, false]));
+  // Capture full BEFORE map of any node we're about to flip — covers
+  // the cascaded siblings too, so undo restores them exactly.
+  const before = {};
+  for (const id of Object.keys(changes)) {
+    if (liveMap[id] !== changes[id]) before[id] = liveMap[id];
+  }
+  if (Object.keys(before).length === 0) return;   // nothing to do
+
+  const apply = (map) => {
+    const nb = state.get('nodeById');
+    for (const [id, vis] of Object.entries(map)) {
+      const n = nb.get(id);
+      if (n) n.localVisible = !!vis;
+    }
+    _syncVis();
+  };
+  apply(changes);
 
   undoManager.push(
     newVis ? 'Show' : 'Hide',
-    () => {
+    () => apply(before),
+    () => apply(changes),
+  );
+  // Avoid the wasVisible variable lint flag.
+  void wasVisible;
+}
+
+function _toggleVisibilityMulti(ids, newVis, stepIdSet, treeData) {
+  const allSteps = state.get('steps') || [];
+  const activeId = state.get('activeStepId');
+  const liveActive = stepIdSet.has(activeId);
+
+  // For each step in the set, compute its NEW visibility map. Capture
+  // the OLD steps array (deep-cloned per step where modified) for undo.
+  const nextSteps = allSteps.map(s => {
+    if (!stepIdSet.has(s.id)) return s;
+    const snap = s.snapshot || {};
+    const oldVis = snap.visibility || {};
+    const changes = newVis
+      ? _computeShowCascadeChanges(oldVis, ids, treeData)
+      : Object.fromEntries(ids.map(id => [id, false]));
+    if (Object.keys(changes).length === 0) return s;
+    const newViz = { ...oldVis, ...changes };
+    return { ...s, snapshot: { ...snap, visibility: newViz } };
+  });
+  const touched = nextSteps.filter((s, i) => s !== allSteps[i]);
+  if (touched.length === 0) return;
+
+  state.setState({ steps: nextSteps });
+  state.markDirty();
+
+  // If the active step was in the affected set, the live nodeById is
+  // out of date — re-stage the active step's snapshot. Otherwise no
+  // viewport-visible change happens until the user activates a touched
+  // step (which is the natural read path).
+  if (liveActive) {
+    const activeStep = nextSteps.find(x => x.id === activeId);
+    if (activeStep?.snapshot?.visibility) {
       const nb = state.get('nodeById');
-      ids.forEach((id, i) => { const n = nb.get(id); if (n) n.localVisible = wasVisible[i]; });
-      _syncVis();
+      for (const [id, vis] of Object.entries(activeStep.snapshot.visibility)) {
+        const n = nb.get(id);
+        if (n) n.localVisible = !!vis;
+      }
+      applyAllVisibility(treeData, steps.object3dById);
+      state.emit('change:treeData', treeData);
+    }
+  }
+
+  undoManager.push(
+    `${newVis ? 'Show' : 'Hide'} ${ids.length} node(s) on ${touched.length} step(s)`,
+    () => {
+      state.setState({ steps: allSteps });
+      state.markDirty();
+      if (liveActive) {
+        const activeStep = allSteps.find(x => x.id === activeId);
+        if (activeStep?.snapshot?.visibility) {
+          const nb = state.get('nodeById');
+          for (const [id, vis] of Object.entries(activeStep.snapshot.visibility)) {
+            const n = nb.get(id);
+            if (n) n.localVisible = !!vis;
+          }
+          applyAllVisibility(treeData, steps.object3dById);
+          state.emit('change:treeData', treeData);
+        }
+      }
     },
     () => {
-      const nb = state.get('nodeById');
-      ids.forEach(id => { const n = nb.get(id); if (n) n.localVisible = newVis; });
-      _syncVis();
+      state.setState({ steps: nextSteps });
+      state.markDirty();
+      if (liveActive) {
+        const activeStep = nextSteps.find(x => x.id === activeId);
+        if (activeStep?.snapshot?.visibility) {
+          const nb = state.get('nodeById');
+          for (const [id, vis] of Object.entries(activeStep.snapshot.visibility)) {
+            const n = nb.get(id);
+            if (n) n.localVisible = !!vis;
+          }
+          applyAllVisibility(treeData, steps.object3dById);
+          state.emit('change:treeData', treeData);
+        }
+      }
     },
   );
+}
+
+/**
+ * Given a current visibility map and a set of ids being SHOWN, return
+ * the minimal {id: bool} delta that:
+ *   1. Sets each target id visible.
+ *   2. For every ANCESTOR of any target that was hidden, flips it
+ *      visible AND hides its non-path-non-target children.
+ *
+ * Already-visible ancestors are untouched (their siblings stay as-is).
+ * The tree shape used for ancestor walks is the LIVE treeData; in
+ * 99% of projects every step shares the same shape so this works as
+ * expected. If a step has been reparented differently, cascade may
+ * miss in that step — refine to per-step tree if it ever bites.
+ */
+function _computeShowCascadeChanges(visMap, ids, treeData) {
+  const changes = {};
+  if (!treeData) {
+    for (const id of ids) if (visMap[id] !== true) changes[id] = true;
+    return changes;
+  }
+  const parentOf = captureParentMap(treeData);
+  // Build the preserve set: ids ∪ all ancestors of any id, up to root.
+  const preserve = new Set(ids);
+  for (const id of ids) {
+    let cur = parentOf[id];
+    while (cur) {
+      if (preserve.has(cur)) break;
+      preserve.add(cur);
+      cur = parentOf[cur];
+    }
+  }
+  // For each preserve ancestor that was hidden, flip it visible AND
+  // hide every non-preserve direct child. Skip the targets — they're
+  // handled at the end so their flip wins.
+  for (const id of preserve) {
+    if (ids.includes(id)) continue;
+    if (visMap[id] === false) {
+      changes[id] = true;
+      const node = findNode(treeData, id);
+      for (const child of (node?.children || [])) {
+        if (!preserve.has(child.id)) {
+          if (visMap[child.id] !== false) changes[child.id] = false;
+        }
+      }
+    }
+  }
+  for (const id of ids) {
+    if (visMap[id] !== true) changes[id] = true;
+  }
+  return changes;
 }
 
 
