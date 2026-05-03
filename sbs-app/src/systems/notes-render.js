@@ -25,9 +25,10 @@
  * Three.js is window.THREE.
  */
 
-import { state }     from '../core/state.js';
-import { sceneCore } from '../core/scene.js';
-import { steps }     from '../systems/steps.js';
+import { state }            from '../core/state.js';
+import { sceneCore }        from '../core/scene.js';
+import { steps }            from '../systems/steps.js';
+import { showContextMenu }  from '../ui/context-menu.js';
 
 let _labelsEl   = null;
 let _svgEl      = null;
@@ -85,22 +86,57 @@ function _renderTick() {
   const notes    = _collectNotes(treeData);
   const presets  = state.get('notePresets') || { small: 18, medium: 36, large: 48 };
 
-  // Sync SVG viewBox to the live canvas pixel size.
-  const rect = sceneCore.renderer.domElement.getBoundingClientRect();
-  _svgEl.setAttribute('viewBox', `0 0 ${rect.width} ${rect.height}`);
-  _svgEl.style.width  = rect.width  + 'px';
-  _svgEl.style.height = rect.height + 'px';
+  // ── Align overlay containers EXACTLY to the canvas's page rect ────
+  // The SVG (tails) and labels container (balloons) are positioned
+  // absolute inside #notes-overlay (inset:0 of #viewport-surface). The
+  // canvas (renderer.domElement) lives inside #viewer (also inset:0)
+  // — but Three.js can size the canvas independently of its parent
+  // div, leaving empty bars top/bottom (or sides) when the renderer's
+  // internal viewport doesn't fill the wrapper exactly. Without
+  // accounting for that, our projected pixels (which are CANVAS-
+  // relative) get rendered at the wrong place inside the OVERLAY
+  // (which is wrapper-relative) and the tail floats above / below
+  // the actual face.
+  //
+  // Shift the SVG and labels boxes onto the canvas's exact rect each
+  // frame so internal coords (0..canvas.width × 0..canvas.height)
+  // line up 1:1 with what the renderer drew.
+  const canvasRect  = sceneCore.renderer.domElement.getBoundingClientRect();
+  const overlayHost = _labelsEl.parentElement;            // #notes-overlay
+  const overlayRect = overlayHost.getBoundingClientRect();
+  const offX = canvasRect.left - overlayRect.left;
+  const offY = canvasRect.top  - overlayRect.top;
+  for (const el of [_svgEl, _labelsEl]) {
+    el.style.left   = `${offX}px`;
+    el.style.top    = `${offY}px`;
+    el.style.width  = `${canvasRect.width}px`;
+    el.style.height = `${canvasRect.height}px`;
+    el.style.right  = 'auto';
+    el.style.bottom = 'auto';
+  }
+  _svgEl.setAttribute('viewBox', `0 0 ${canvasRect.width} ${canvasRect.height}`);
 
-  // Camera matrices fresh — Three.js's Vector3.project() reads
-  // camera.matrixWorldInverse, which the renderer refreshes inside its
-  // own render() call. Our tick hook runs BEFORE that, so without an
-  // explicit refresh here we'd project through the PREVIOUS frame's
-  // camera pose. That produces visible lag every frame the camera
-  // moves (orbit, pan, step transition) — the balloon trails the
-  // mesh by one frame, with 30–40 px diagonal jitter on rapid moves.
-  // Also leaves the tail anchor on the previous frame's face.
+  const rect = canvasRect;   // legacy alias for the rest of the function
+
+  // ── Camera matrices fresh ─────────────────────────────────────────
+  // Three.js's Vector3.project() reads camera.matrixWorldInverse.
+  // The renderer refreshes it inside renderer.render() — but our hook
+  // runs BEFORE that, so without an explicit refresh we project
+  // through the PREVIOUS frame's camera pose. That manifests as
+  // lag / jitter while the camera moves and the tail anchor landing
+  // on last-frame's face position.
   sceneCore.camera.updateMatrixWorld(true);
   sceneCore.camera.matrixWorldInverse.copy(sceneCore.camera.matrixWorld).invert();
+
+  // Force the WHOLE scene's matrixWorld fresh — not just the camera.
+  // Otherwise the per-mesh matrixWorld used by _resolveAnchorWorld can
+  // be stale right at the END of a step transition: the animation
+  // system writes the final transform onto the node, but the world
+  // matrices propagate down on the NEXT updateMatrixWorld pass. With
+  // this line the tick always reads the freshest hierarchy state, so
+  // notes don't flicker back to "home pose" for one frame after an
+  // animation completes.
+  sceneCore.scene.updateMatrixWorld(true);
 
   // Track which entries we've used this frame.
   const seen = new Set();
@@ -264,12 +300,20 @@ function _createEntry(note) {
   path.dataset.noteId = note.id;
   _svgEl.appendChild(path);
 
-  // Drag balloon → live update panelOffset.
+  // Drag balloon → live update panelOffset. Also: a left-click on a
+  // balloon SELECTS the note (mirrors clicking it in the tree) and
+  // expands the tree path so the user can find it among the children.
   div.addEventListener('pointerdown', e => {
     if (e.target.closest('[contenteditable="true"]')) return;
     if (e.button !== 0) return;
     const liveNode = _findNote(note.id);
     if (!liveNode) return;
+    // Select the note in the global selection — same as a tree row click.
+    state.setSelection(note.id, new Set([note.id]));
+    // Reveal in the tree panel by expanding the ancestor chain.
+    import('../ui/tree.js').then(({ expandPathToNode }) => {
+      try { expandPathToNode?.(note.id); } catch (_) { /* tree may not be active */ }
+    });
     _drag = {
       noteId: note.id,
       startClientX: e.clientX,
@@ -280,6 +324,34 @@ function _createEntry(note) {
     div.setPointerCapture?.(e.pointerId);
     e.stopPropagation();
     e.preventDefault();
+  });
+
+  // Right-click → contextmenu with the same items as the tree's note
+  // row: Edit Text / Delete / Size: Small | Medium | Large.
+  div.addEventListener('contextmenu', e => {
+    e.preventDefault();
+    e.stopPropagation();
+    const liveNode = _findNote(note.id);
+    if (!liveNode) return;
+    state.setSelection(note.id, new Set([note.id]));
+    import('./actions.js').then(actions => {
+      showContextMenu([
+        { label: 'Edit Text…',
+          action: () => _enterEdit(note.id, div) },
+        { label: 'Delete Note',
+          action: () => actions.deleteNote(note.id) },
+        { separator: true },
+        { label: '— Size: Small',
+          action: () => actions.setNoteSizePreset(note.id, 'small'),
+          disabled: liveNode.sizePresetId === 'small'  && liveNode.customFontSize === null },
+        { label: '— Size: Medium',
+          action: () => actions.setNoteSizePreset(note.id, 'medium'),
+          disabled: liveNode.sizePresetId === 'medium' && liveNode.customFontSize === null },
+        { label: '— Size: Large',
+          action: () => actions.setNoteSizePreset(note.id, 'large'),
+          disabled: liveNode.sizePresetId === 'large'  && liveNode.customFontSize === null },
+      ], e.clientX, e.clientY);
+    });
   });
   div.addEventListener('pointermove', e => {
     if (!_drag || _drag.noteId !== note.id) return;
