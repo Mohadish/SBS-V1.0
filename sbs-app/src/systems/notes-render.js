@@ -25,10 +25,11 @@
  * Three.js is window.THREE.
  */
 
-import { state }            from '../core/state.js';
-import { sceneCore }        from '../core/scene.js';
-import { steps }            from '../systems/steps.js';
-import { showContextMenu }  from '../ui/context-menu.js';
+import { state }                    from '../core/state.js';
+import { sceneCore }                from '../core/scene.js';
+import { steps }                    from '../systems/steps.js';
+import { computeEffectiveVisibility } from '../core/nodes.js';
+import { showContextMenu }          from '../ui/context-menu.js';
 
 let _labelsEl   = null;
 let _svgEl      = null;
@@ -149,12 +150,18 @@ function _renderTick() {
 
   const nowMs = (typeof performance !== 'undefined' ? performance.now() : Date.now());
 
+  // Inherited visibility: a note is visible only if IT and every
+  // ancestor up to root are visible. Hiding the anchor mesh hides the
+  // note alongside it; the note's own localVisible is preserved so
+  // showing the mesh again restores whatever the note was set to.
+  const effVisMap = computeEffectiveVisibility(treeData);
+
   for (const note of notes) {
     // ── Effective panelOffset + visibility (with in-flight transition lerp).
     // note._anim is set by steps.js when a step transition starts; we lerp
     // panelOffset + opacity here, then clear _anim once alpha hits 1.
     let effOffset  = note.panelOffset || { x: 90, y: -70 };
-    let effOpacity = note.localVisible ? 1 : 0;
+    let effOpacity = effVisMap.get(note.id) ? 1 : 0;
     if (note._anim) {
       const a = note._anim;
       const raw = (nowMs - a.startMs) / Math.max(1, a.durationMs);

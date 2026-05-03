@@ -337,6 +337,40 @@ export function captureVisibilitySnapshot(root) {
   return vis;
 }
 
+/**
+ * Compute effective (inherited) visibility for every node in the tree.
+ *
+ * A node is effectively visible only if IT and every ancestor up to
+ * the root are visible. Mirrors what applyAllVisibility does to
+ * Three.js Object3Ds, but returns a plain Map so non-Three consumers
+ * (e.g. the notes-render DOM overlay) can use it.
+ *
+ * If `visOverride` is provided, each lookup uses
+ *   visOverride[nodeId] !== undefined ? visOverride[nodeId] : node.localVisible
+ * so callers can simulate "what would visibility look like under this
+ * snapshot.visibility map" without mutating the live tree. This is
+ * what step transitions use to compute the TO-side effective state.
+ *
+ * @param {TreeNode}            root
+ * @param {Object<string,bool>} [visOverride]
+ * @returns {Map<string, boolean>}
+ */
+export function computeEffectiveVisibility(root, visOverride) {
+  const out = new Map();
+  if (!root) return out;
+  function walk(node, inheritedVisible) {
+    const ownLookup = visOverride && Object.prototype.hasOwnProperty.call(visOverride, node.id)
+      ? visOverride[node.id]
+      : node.localVisible;
+    const own = ownLookup !== false;
+    const eff = inheritedVisible && own;
+    out.set(node.id, eff);
+    for (const c of (node.children || [])) walk(c, eff);
+  }
+  walk(root, true);
+  return out;
+}
+
 
 /**
  * Apply a visibility snapshot to the tree (mutation).

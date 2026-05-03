@@ -40,6 +40,7 @@ import {
   buildNodeMap,
   flatten,
   serializeModelTree,
+  computeEffectiveVisibility,
 } from '../core/nodes.js';
 import {
   captureAllTransforms,
@@ -2176,21 +2177,23 @@ function _clearNoteAnims(nodeById) {
 }
 
 /**
- * Snapshot every live note's CURRENT panelOffset + visibility BEFORE
- * applySnapshotAnimated mutates the live tree (rebuildFromTreeSpec /
- * _prepareVisibility). Without this, by the time _scheduleNoteAnims
- * runs, note.localVisible has already been flipped to its target —
- * fromVisible would equal toVisible and the fade would never start.
+ * Snapshot every live note's CURRENT panelOffset + EFFECTIVE visibility
+ * BEFORE applySnapshotAnimated mutates the live tree (rebuildFromTreeSpec
+ * / _prepareVisibility). Effective vis = note's own AND every ancestor's
+ * — so when the anchor mesh is hidden, the note's effective vis is
+ * false even if note.localVisible is true. That way step transitions
+ * that toggle the anchor's visibility correctly fade the note in/out.
  *
  * Returns: { [noteId]: { panelOffset:{x,y}, visible:bool } }
  */
 function _captureFromNoteState(root) {
   const out = {};
   if (!root) return out;
+  const effMap = computeEffectiveVisibility(root);
   _walkNotes(root, n => {
     out[n.id] = {
       panelOffset: { x: n.panelOffset?.x ?? 0, y: n.panelOffset?.y ?? 0 },
-      visible:     n.localVisible !== false,
+      visible:     !!effMap.get(n.id),
     };
   });
   return out;
@@ -2211,6 +2214,11 @@ function _scheduleNoteAnims(treeData, fromState, toSnapshot, startMs, durationMs
   if (!treeData) return;
   const toOffsets = toSnapshot?.notePanelOffsets || {};
   const toVis     = toSnapshot?.visibility || {};
+  // TO-side effective visibility: simulates the visibility map that
+  // _prepareVisibility is about to apply, then walks ancestors. So a
+  // note whose anchor mesh is hidden in the TO step gets toVisible=false
+  // and fades out — even if the note's own localVisible is true.
+  const toEffMap  = computeEffectiveVisibility(treeData, toVis);
   _walkNotes(treeData, note => {
     const from = fromState?.[note.id] || {
       panelOffset: { x: note.panelOffset?.x ?? 0, y: note.panelOffset?.y ?? 0 },
@@ -2219,7 +2227,7 @@ function _scheduleNoteAnims(treeData, fromState, toSnapshot, startMs, durationMs
     const fromOffset  = from.panelOffset;
     const toOffset    = toOffsets[note.id] || fromOffset;
     const fromVisible = from.visible;
-    const toVisible   = toVis[note.id] !== false;
+    const toVisible   = !!toEffMap.get(note.id);
     const noOffsetChange = Math.abs(fromOffset.x - toOffset.x) < 0.5
                         && Math.abs(fromOffset.y - toOffset.y) < 0.5;
     const noVisChange    = fromVisible === toVisible;
