@@ -3884,15 +3884,28 @@ export function _commitNotePanelOffset(noteId, before, after) {
   if (!note) return;
   note.panelOffset = { x: after.x, y: after.y };
   state.markDirty();
+  // Capture into the active step's snapshot.notePanelOffsets so the
+  // new offset persists per-step. Without this, dragging a balloon
+  // would only affect the live state and the next step nav would
+  // overwrite it with the destination step's saved offset.
+  steps.scheduleSync();
   undoManager.push(
     'Move note',
     () => {
       const n = state.get('nodeById')?.get(noteId);
-      if (n) { n.panelOffset = { x: before.x, y: before.y }; state.emit('change:treeData', state.get('treeData')); state.markDirty(); }
+      if (n) {
+        n.panelOffset = { x: before.x, y: before.y };
+        state.markDirty();
+        steps.scheduleSync();
+      }
     },
     () => {
       const n = state.get('nodeById')?.get(noteId);
-      if (n) { n.panelOffset = { x: after.x,  y: after.y  }; state.emit('change:treeData', state.get('treeData')); state.markDirty(); }
+      if (n) {
+        n.panelOffset = { x: after.x,  y: after.y  };
+        state.markDirty();
+        steps.scheduleSync();
+      }
     },
   );
 }

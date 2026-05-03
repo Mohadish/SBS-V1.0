@@ -311,7 +311,15 @@ export function createEmptySnapshot() {
     camera: null,                   // CameraState | null
 
     // Scene notes (annotations anchored to 3D positions)
-    notes: [],                      // SceneNote[]
+    notes: [],                      // SceneNote[]   — legacy flat-list
+
+    // Per-step panel offsets for 3D-anchored balloon notes (Phase 2).
+    // Sparse map: { [noteId]: {x, y} }. The note's panelOffset is
+    // GLOBAL (set at creation) — this map overrides it per-step so a
+    // single note can sit in a different screen-relative position on
+    // each step and lerp smoothly between them across step transitions.
+    // Visibility is per-step via the standard snapshot.visibility map.
+    notePanelOffsets: {},
 
     // Screen overlay items (text boxes, images over the 2D viewport)
     screenItems: [],                // ScreenItem[]

@@ -58,10 +58,16 @@ export function initNotesRender() {
   _svgEl.setAttribute('preserveAspectRatio', 'none');
   _initialized = true;
   sceneCore.addTickHook(_renderTick);
-  // Re-render synchronously on data changes for instant feedback.
-  state.on('change:treeData',          _renderTick);
-  state.on('change:notePresets',       _renderTick);
-  state.on('change:selectionOutlineColor', _renderTick);
+  // No state-change subscriptions on purpose. We used to re-render on
+  // change:treeData for snappy feedback when notes were added / edited,
+  // but that subscription fired DURING applySnapshotInstant — right
+  // after rebuildFromTreeSpec (which creates fresh folder Groups with
+  // identity matrices) but BEFORE applyAllTransformsToScene wrote the
+  // step's transforms back onto those Groups. For one frame the mesh
+  // inherited an identity-matrix parent and the note projected to its
+  // "home" position, then snapped back on the next rAF tick — exactly
+  // the flicker the user reported. The rAF tick (≤ 16 ms) is plenty
+  // fast for "instant feedback" on note CRUD too.
 }
 
 // ─── Tree walk ────────────────────────────────────────────────────────────
@@ -141,8 +147,43 @@ function _renderTick() {
   // Track which entries we've used this frame.
   const seen = new Set();
 
+  const nowMs = (typeof performance !== 'undefined' ? performance.now() : Date.now());
+
   for (const note of notes) {
-    if (!note.localVisible) continue;
+    // ── Effective panelOffset + visibility (with in-flight transition lerp).
+    // note._anim is set by steps.js when a step transition starts; we lerp
+    // panelOffset + opacity here, then clear _anim once alpha hits 1.
+    let effOffset  = note.panelOffset || { x: 90, y: -70 };
+    let effOpacity = note.localVisible ? 1 : 0;
+    if (note._anim) {
+      const a = note._anim;
+      const raw = (nowMs - a.startMs) / Math.max(1, a.durationMs);
+      const t   = raw >= 1 ? 1 : (raw <= 0 ? 0 : a.easeFn(raw));
+      effOffset = {
+        x: a.fromOffset.x + (a.toOffset.x - a.fromOffset.x) * t,
+        y: a.fromOffset.y + (a.toOffset.y - a.fromOffset.y) * t,
+      };
+      const fromOpacity = a.fromVisible ? 1 : 0;
+      const toOpacity   = a.toVisible   ? 1 : 0;
+      effOpacity = fromOpacity + (toOpacity - fromOpacity) * t;
+      if (raw >= 1) {
+        // Snap final state into the note + clear the transition.
+        note.panelOffset = { x: a.toOffset.x, y: a.toOffset.y };
+        delete note._anim;
+      }
+    }
+
+    // Skip render if fully transparent — but keep the DOM around so
+    // a fade-in next transition can re-use it without flicker.
+    if (effOpacity <= 0.001) {
+      const old = _pool.get(note.id);
+      if (old) {
+        old.div.style.opacity  = '0';
+        old.path.style.opacity = '0';
+        seen.add(note.id);
+      }
+      continue;
+    }
     const meshId = note.anchorMeshId;
     if (!meshId) continue;
 
@@ -161,7 +202,7 @@ function _renderTick() {
                      presets[note.sizePresetId] ??
                      presets.medium ?? 16;
 
-    const offset = note.panelOffset || { x: 90, y: -70 };
+    const offset = effOffset;
     const px = ax + (offset.x ?? 0);
     const py = ay + (offset.y ?? 0);
 
@@ -182,6 +223,8 @@ function _renderTick() {
       }
     }
     div.style.fontSize = `${fontSize}px`;
+    div.style.opacity  = String(effOpacity);
+    path.style.opacity = String(effOpacity);
     // Position balloon by its TOP-LEFT corner. CSS will translate(-50%, -100%)
     // so the bottom-center sits at (px, py)? Simpler: just use absolute
     // top-left with no translate — panelOffset is from the anchor.

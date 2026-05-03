@@ -221,6 +221,13 @@ class StepManager {
           : []
       )),
 
+      // Per-step balloon-note panel offsets — { [noteId]: {x, y} }.
+      // Captured every snapshot; on apply, the active step's overrides
+      // are written back to the live tree before render. Step
+      // transitions lerp from FROM-step's offsets to TO-step's offsets
+      // for smooth note repositioning instead of vanish-and-reappear.
+      notePanelOffsets: treeData ? _captureNotePanelOffsets(treeData) : {},
+
       // Screen items (deep-copy)
       screenItems: JSON.parse(JSON.stringify(
         state.get('activeStepId')
@@ -303,6 +310,14 @@ class StepManager {
       this._materials.applySnapshot(snapshot.materials);
     }
 
+    // Per-step balloon-note panel offsets. Sparse map; only notes
+    // present in the override get their panelOffset rewritten. Notes
+    // not in the map keep whatever offset they had (which is fine —
+    // their global default will show).
+    if (snapshot.notePanelOffsets) {
+      _applyNotePanelOffsets(nodeById, snapshot.notePanelOffsets);
+    }
+
     // Camera
     if (snapshot.camera && !opts.suppressCamera) {
       sceneCore.applyCameraState(snapshot.camera);
@@ -313,7 +328,10 @@ class StepManager {
     this._updatePlaceholderColors(nodeById);
 
     // Notes / screenItems / cables are applied by their own systems
-    // (they listen to 'step:activate' on state)
+    // (they listen to 'step:activate' on state). Clear any in-flight
+    // note transition state — applySnapshotInstant means "snap, no
+    // animation", so any pending lerp must be discarded.
+    _clearNoteAnims(nodeById);
   }
 
   /**
@@ -505,6 +523,12 @@ class StepManager {
           hidingMeshIds, showingMeshIds, objDur, easeFn,
         );
       }
+
+      // Note transitions — per-step panelOffset lerp + opacity fade.
+      // Build _anim on each note that's about to change panelOffset
+      // OR visibility between FROM and TO states. notes-render reads
+      // _anim each frame and lerps; clears it when alpha hits 1.
+      _scheduleNoteAnims(state.get('treeData'), toSnapshot, startMs, objDur, easeFn);
 
       // Color/material transition
       if (toSnapshot.materials && this._materials) {
@@ -2093,6 +2117,82 @@ function diffWorldTransforms(fromWT, toWT) {
 
 
 // ── Helpers ────────────────────────────────────────────────────────────────
+
+// ─── Balloon-note per-step state helpers ──────────────────────────────────
+//
+// Notes are TREE NODES under their anchor mesh (see schema.createNoteNode).
+// Their text + size + anchor are GLOBAL — same on every step. Their
+// panelOffset (where the balloon sits relative to the projected anchor
+// point) is PER-STEP — saved into snapshot.notePanelOffsets and
+// rewritten onto the live note when a step is applied. Visibility is
+// already per-step via the standard snapshot.visibility map.
+
+function _walkNotes(node, fn) {
+  if (!node) return;
+  if (node.type === 'note') fn(node);
+  for (const c of (node.children || [])) _walkNotes(c, fn);
+}
+
+function _captureNotePanelOffsets(root) {
+  const out = {};
+  _walkNotes(root, n => {
+    const o = n.panelOffset || { x: 0, y: 0 };
+    out[n.id] = { x: o.x ?? 0, y: o.y ?? 0 };
+  });
+  return out;
+}
+
+function _applyNotePanelOffsets(nodeById, map) {
+  for (const [id, off] of Object.entries(map || {})) {
+    const note = nodeById?.get(id);
+    if (note?.type === 'note') {
+      note.panelOffset = { x: off.x ?? 0, y: off.y ?? 0 };
+    }
+  }
+}
+
+function _clearNoteAnims(nodeById) {
+  if (!nodeById) return;
+  for (const node of nodeById.values()) {
+    if (node?.type === 'note' && node._anim) delete node._anim;
+  }
+}
+
+/**
+ * Schedule per-note panel-offset + opacity fade interpolations for a
+ * step transition. notes-render reads each note's _anim every tick and
+ * lerps panelOffset + opacity, clearing _anim when alpha hits 1. We
+ * only schedule for notes whose target state actually differs from
+ * their current state — no busy-work for notes that don't move.
+ */
+function _scheduleNoteAnims(treeData, toSnapshot, startMs, durationMs, easeFn) {
+  if (!treeData) return;
+  const toOffsets = toSnapshot?.notePanelOffsets || {};
+  const toVis     = toSnapshot?.visibility || {};
+  _walkNotes(treeData, note => {
+    const fromOffset = note.panelOffset || { x: 0, y: 0 };
+    const toOffset   = toOffsets[note.id] || fromOffset;
+    const fromVisible = note.localVisible !== false;
+    const toVisible   = toVis[note.id]    !== false;
+    const noOffsetChange = Math.abs(fromOffset.x - toOffset.x) < 0.5
+                        && Math.abs(fromOffset.y - toOffset.y) < 0.5;
+    const noVisChange    = fromVisible === toVisible;
+    if (noOffsetChange && noVisChange) {
+      delete note._anim;
+      return;
+    }
+    note._anim = {
+      fromOffset:  { x: fromOffset.x, y: fromOffset.y },
+      toOffset:    { x: toOffset.x,   y: toOffset.y   },
+      fromVisible,
+      toVisible,
+      startMs,
+      durationMs,
+      easeFn,
+    };
+  });
+}
+
 
 // Real-time sleep — what live playback uses. Offline export swaps this
 // out via setSleepImpl so animation phases advance on a synthetic
