@@ -1710,11 +1710,17 @@ gl_FragColor.a = 1.0;
       return;
     }
 
-    // ── Create overlay (front-face, 70% opacity) ──────────────────────────
+    // ── Create overlay (front-face, low-opacity surface tint) ─────────────
+    // 0.20 — matches the project's Solidness falloff translucency level
+    // so users can still SEE the underlying mesh colour and discern
+    // hidden / faded states through the highlight. The crisp edge
+    // outline below carries the "this is selected" information; the
+    // surface tint just disambiguates membership when many meshes are
+    // selected at once.
     const overlayMat = new THREE.MeshBasicMaterial({
       color,
       transparent:  true,
-      opacity:      0.70,
+      opacity:      0.20,
       depthTest:    false,
       depthWrite:   false,
       side:         THREE.FrontSide,

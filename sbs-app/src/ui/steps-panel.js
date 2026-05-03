@@ -111,6 +111,13 @@ export function initStepsPanel() {
   // Re-render when the multi-step selection changes — covers Ctrl/Shift
   // click, outside-click clear, Esc, and the cross-step apply banner.
   state.on('change:selectedStepIds',      renderStepsPanel);
+  // Bulk-apply blink: actions.js fires this after _toggleVisibilityMulti
+  // / _bulkAssignColorMulti commit a setState. We add .justEdited to the
+  // matching step cards (and parent chapter headers) so the user sees
+  // EXACTLY which steps the bulk action just touched. CSS handles the
+  // 400 ms yellow flash; we strip the class after a beat so the next
+  // bulk-apply restarts cleanly.
+  state.on('steps:bulkApplied', _onBulkApplied);
   // Surgical per-step thumbnail update — avoid re-rendering the whole list.
   state.on('step:thumb', _onStepThumb);
 
@@ -156,9 +163,46 @@ export function initStepsPanel() {
   });
 }
 
+/**
+ * Flash the cards (and parent chapter headers) of every step that was
+ * just hit by a bulk multi-step action. CSS @keyframes sbsBlinkYellow
+ * does the actual 400 ms flash; this just toggles the class on the
+ * matching DOM nodes and clears it after the animation so a back-to-
+ * back bulk-apply re-runs the animation cleanly.
+ */
+function _onBulkApplied({ stepIds } = {}) {
+  if (!_container || !Array.isArray(stepIds) || stepIds.length === 0) return;
+  const flash = (el) => {
+    if (!el) return;
+    el.classList.remove('justEdited');
+    // Force a reflow so the animation restarts when re-added back-to-back.
+    void el.offsetWidth;
+    el.classList.add('justEdited');
+    setTimeout(() => el.classList.remove('justEdited'), 420);
+  };
+  for (const id of stepIds) {
+    flash(_container.querySelector(`.stepItem[data-step-id="${id}"]`));
+  }
+  // Also flash parent chapter headers — gives a chapter-level "this
+  // chapter just got edited" cue when the user is zoomed out.
+  const stepArr = state.get('steps') || [];
+  const chapterIds = new Set();
+  for (const id of stepIds) {
+    const s = stepArr.find(x => x.id === id);
+    if (s?.chapterId) chapterIds.add(s.chapterId);
+  }
+  for (const chId of chapterIds) {
+    flash(_container.querySelector(`.chapterHeader[data-chapter-id="${chId}"]`));
+  }
+}
+
 function _onActiveStepChanged() {
-  // When active step changes via keyboard or any other path, sync expansion.
-  _expandedId = state.get('activeStepId');
+  // Active step changed (click, keyboard, programmatic). Tab expansion
+  // is now a SEPARATE user gesture — second click on the active step.
+  // So if a tab is open and the active step is moving away from it,
+  // close it. Don't auto-open the new step's tab.
+  const newActive = state.get('activeStepId');
+  if (_expandedId && _expandedId !== newActive) _expandedId = null;
   renderStepsPanel();
 }
 

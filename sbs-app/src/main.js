@@ -565,6 +565,18 @@ state.on('change:pivotCenterPickingNodeId', id => {
   setStatus('Pick 3 points (snap to vertex/edge). Enter to apply, Esc to cancel.', 'info', 0);
 });
 
+// Multi-step "danger zone" — toggle the yellow viewport ring whenever
+// the multi-step selection's size crosses the 2-step threshold. The
+// CSS rule (#viewport-surface.multi-step-active::after) draws the ring;
+// JS only owns the class. Hidden/revealed by Esc, banner Clear, plain
+// step click, and outside-click — all of which mutate selectedStepIds.
+state.on('change:selectedStepIds', () => {
+  const sel    = state.get('selectedStepIds');
+  const active = sel instanceof Set && sel.size >= 2;
+  const surf   = document.getElementById('viewport-surface');
+  if (surf) surf.classList.toggle('multi-step-active', active);
+});
+
 window.addEventListener('pointermove', e => {
   if (!(e.buttons & 1)) return;            // left button must be held
   if (!_dragOnCanvas) return;              // only when drag started on viewport

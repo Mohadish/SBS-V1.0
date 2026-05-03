@@ -78,12 +78,24 @@ export function initSidebarLeft() {
   // State subscriptions
   state.on('change:assets',                () => { if (_activeTab === 'files')   _renderFilesTab(); });
   state.on('change:treeData',              () => { if (_activeTab === 'tree')    renderTree(); });
-  state.on('change:colorPresets',          () => { if (_activeTab === 'colors')  _renderColorsTab(); });
-  state.on('materials:defaultColorsChanged',() => { if (_activeTab === 'colors')  _renderColorsTab(); });
-  state.on('change:selectedId',            () => { if (_activeTab === 'colors')  _renderColorsTab(); });
+  state.on('change:colorPresets',          _queueColorsRender);
+  state.on('materials:defaultColorsChanged', _queueColorsRender);
+  state.on('change:selectedId',            _queueColorsRender);
   state.on('change:multiSelectedIds',      () => {
-    if (_activeTab === 'colors') _renderColorsTab();
+    if (_activeTab === 'colors') _queueColorsRender();
     if (_activeTab === 'select') _renderSelectTab();   // refresh "+ Save (N)" button + counters
+  });
+  // Flush any deferred Colors-tab render once focus leaves an interactive
+  // element inside the tab — keeps the user's open <input type=color>
+  // popup alive while they drag, and re-renders cleanly once they're done.
+  document.addEventListener('focusout', () => {
+    if (_activeTab !== 'colors') return;
+    requestAnimationFrame(() => {
+      if (_colorsRenderQueued && !_shouldDeferColorsRender()) {
+        _colorsRenderQueued = false;
+        _renderColorsTab();
+      }
+    });
   });
   state.on('change:selectionGroups',       () => { if (_activeTab === 'select')   _renderSelectTab(); });
   state.on('change:cameraViews',           () => { if (_activeTab === 'cameras')   _renderCamerasTab(); });
@@ -904,6 +916,30 @@ function _showFolderNameDialog(defaultVal, onConfirm) {
 // Which preset is currently expanded for editing
 let _expandedPresetId = null;
 
+// Re-render guard: while the user has focus on any input inside the
+// Colors tab (text, color picker, slider, dropdown, …), re-rendering
+// the tab destroys the focused element and yanks any open
+// <input type=color> popup off-screen. So we DEFER renders triggered
+// by state changes during interaction and flush them on focusout.
+let _colorsRenderQueued = false;
+function _shouldDeferColorsRender() {
+  const el = _panel('colors');
+  if (!el) return false;
+  const a  = document.activeElement;
+  if (!a) return false;
+  if (!el.contains(a)) return false;
+  return ['INPUT', 'SELECT', 'TEXTAREA'].includes(a.tagName);
+}
+function _queueColorsRender() {
+  if (_activeTab !== 'colors') return;
+  if (_shouldDeferColorsRender()) {
+    _colorsRenderQueued = true;
+    return;
+  }
+  _colorsRenderQueued = false;
+  _renderColorsTab();
+}
+
 function _renderColorsTab() {
   const el = _panel('colors');
   if (!el) return;
@@ -1041,6 +1077,20 @@ function _renderColorsTab() {
     row.addEventListener('click', () => {
       _expandedPresetId = expanded ? null : preset.id;
       _renderColorsTab();
+    });
+
+    // Click directly on the swatch → expand AND fire the native color
+    // picker. Lets the user go from a collapsed preset row to "I'm
+    // editing a colour right now" in one click.
+    row.querySelector('.colorSwatch')?.addEventListener('click', e => {
+      e.stopPropagation();          // suppress the row's toggle handler
+      const wasOpen = _expandedPresetId === preset.id;
+      _expandedPresetId = preset.id;
+      if (!wasOpen) _renderColorsTab();
+      // Same task tick as the user gesture — required for the browser
+      // to honour the synthetic click on <input type=color>.
+      const tabEl = _panel('colors');
+      tabEl?.querySelector('.cp-color')?.click();
     });
 
     row.addEventListener('contextmenu', e => {

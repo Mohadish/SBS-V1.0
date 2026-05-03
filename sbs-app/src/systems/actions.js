@@ -140,6 +140,7 @@ function _bulkAssignColorMulti(meshIds, presetId, stepIdSet, label) {
   });
   const touched = nextSteps.filter((s, i) => s !== allSteps[i]);
   if (touched.length === 0) return;
+  const touchedIds = touched.map(s => s.id);
 
   const apply = (stepsArr) => {
     state.setState({ steps: stepsArr });
@@ -147,6 +148,7 @@ function _bulkAssignColorMulti(meshIds, presetId, stepIdSet, label) {
     // Always re-stage the CURRENT active step. The user may have
     // switched active steps between apply and undo/redo.
     _restageActiveMaterials(stepsArr);
+    state.emit('steps:bulkApplied', { stepIds: touchedIds });
   };
   apply(nextSteps);
 
@@ -790,6 +792,7 @@ function _toggleVisibilityMulti(ids, newVis, stepIdSet, treeData) {
   });
   const touched = nextSteps.filter((s, i) => s !== allSteps[i]);
   if (touched.length === 0) return;
+  const touchedIds = touched.map(s => s.id);
 
   const apply = (stepsArr) => {
     state.setState({ steps: stepsArr });
@@ -799,6 +802,8 @@ function _toggleVisibilityMulti(ids, newVis, stepIdSet, treeData) {
     // steps; we always want the viewport to reflect WHATEVER step is
     // currently active under the new state.steps array.
     _restageActiveVisibility(stepsArr);
+    // Tell the UI which step cards just changed so they can flash.
+    state.emit('steps:bulkApplied', { stepIds: touchedIds });
   };
   apply(nextSteps);
 
