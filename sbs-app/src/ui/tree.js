@@ -450,19 +450,24 @@ function _buildContextMenuItems(node) {
     action: () => actions.toggleVisibility(targetIds),
   });
 
-  // ── Per-note Show/Hide submenu for any node with note descendants ──────────
+  // ── Per-note Show / Hide list ────────────────────────────────────────────
   // Lists every note attached to this subtree with a discrete toggle.
-  // Useful on a model right-click ("toggle this one note out of 12") without
-  // having to drill the tree open.
+  // Useful on a model row ("flip ONE note out of 12") without drilling the
+  // tree open. Section is labeled with a disabled header so the user can
+  // spot it among the rest of the menu items.
   const subtreeNotes = _collectSubtreeNotes(node);
   if (subtreeNotes.length) {
     items.push({ separator: true });
+    items.push({
+      label: `📋 Notes in this ${node.type} (${subtreeNotes.length})`,
+      disabled: true,
+    });
     for (const n of subtreeNotes) {
       const visEff = (nodeById?.get(n.id)?.localVisible !== false);
       const txt    = (n.text || '').replace(/\s+/g, ' ').trim();
       const short  = txt ? (txt.length > 30 ? txt.slice(0, 30) + '…' : txt) : '(empty note)';
       items.push({
-        label:  `${visEff ? '👁' : '🚫'} Note: ${short}`,
+        label:  `   ${visEff ? '👁' : '🚫'}  ${short}`,
         action: () => actions.toggleVisibility([n.id]),
       });
     }

@@ -1034,6 +1034,49 @@ canvas.addEventListener('contextmenu', e => {
     });
     items.push({ label: '─', disabled: true });
   }
+
+  // ── Per-note Show / Hide list for the right-clicked mesh's owning model.
+  // Mirrors the tree's per-note section: any time the user right-clicks a
+  // model-owned mesh, ALL notes belonging to that whole model surface as
+  // discrete toggles in the menu. The user doesn't have to open the tree
+  // to flip one specific note. Walk up from the hit mesh to its top-level
+  // model, then collect every note descendant of that model.
+  if (noteMeshId && nodeById) {
+    const treeData = state.get('treeData');
+    let cur = noteMeshId;
+    let modelNode = null;
+    while (cur) {
+      const n = nodeById.get(cur);
+      if (!n) break;
+      if (n.type === 'model') { modelNode = n; break; }
+      const parent = treeData ? findParent(treeData, cur) : null;
+      cur = parent?.id ?? null;
+    }
+    if (modelNode) {
+      const modelNotes = [];
+      (function walk(n) {
+        if (n.type === 'note') modelNotes.push(n);
+        for (const c of (n.children || [])) walk(c);
+      })(modelNode);
+      if (modelNotes.length) {
+        items.push({
+          label: `📋 Notes in "${(modelNode.name || 'model').slice(0, 24)}" (${modelNotes.length})`,
+          disabled: true,
+        });
+        for (const nt of modelNotes) {
+          const visEff = (nodeById.get(nt.id)?.localVisible !== false);
+          const txt    = (nt.text || '').replace(/\s+/g, ' ').trim();
+          const short  = txt ? (txt.length > 30 ? txt.slice(0, 30) + '…' : txt) : '(empty note)';
+          items.push({
+            label:  `   ${visEff ? '👁' : '🚫'}  ${short}`,
+            action: () => actions.toggleVisibility([nt.id]),
+          });
+        }
+        items.push({ label: '─', disabled: true });
+      }
+    }
+  }
+
   if (isTransformable) {
     items.push({ label: '↺ Reset transform', action: () => resetTransform(selId) });
     items.push({ label: '─', disabled: true });
