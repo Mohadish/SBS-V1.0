@@ -381,11 +381,35 @@ function _buildChapterHeader(chapter, number) {
 
   wrap.append(badge, name, btnEye, btnLock, btnRename, btnDel);
 
-  // Right-click → chapter context menu (rename, copy, paste, lock, delete).
+  // Right-click → chapter context menu (rename, copy, paste, lock, delete,
+  // and the multi-step selection helpers — see _showChapterContextMenu).
   wrap.addEventListener('contextmenu', e => {
     e.preventDefault();
     e.stopPropagation();
     _showChapterContextMenu(chapter, e.clientX, e.clientY);
+  });
+
+  // Ctrl/Cmd-click on the chapter header bulk-toggles every step in
+  // this chapter in/out of the multi-step selection. Shift-click range-
+  // extends from the existing anchor through this chapter's last step.
+  // Plain click is left as a no-op so the eye / lock / rename / delete
+  // buttons (which sit inside the header) don't have a passive
+  // selection hijack stealing their event.
+  wrap.addEventListener('click', e => {
+    // Don't hijack clicks on the header's own buttons or form controls.
+    if (e.target.closest('button, input, select, textarea, [contenteditable="true"]')) return;
+    if (e.ctrlKey || e.metaKey) {
+      e.preventDefault();
+      e.stopPropagation();
+      _toggleChapterInSelection(chapter.id);
+      return;
+    }
+    if (e.shiftKey) {
+      e.preventDefault();
+      e.stopPropagation();
+      _extendSelectionThroughChapter(chapter.id);
+      return;
+    }
   });
 
   // ── Drag the whole chapter (and its steps) ────────────────────────────────
@@ -879,6 +903,87 @@ function _buildStepTopCollapsed(step, idx, showThumb = true) {
  * (using the right-click multi semantics: any-visible → hide all,
  * all-hidden → show all).
  */
+// ── Chapter-level multi-step selection helpers ────────────────────────────
+//
+// These all just feed selectedStepIds (in global state). The eyeball /
+// color / etc. actions don't care WHO populated the set — they just see
+// "≥ 2 steps multi-selected, fan out the next edit across all of them".
+// So adding chapter-aware selection here costs nothing on the action
+// side.
+
+function _chapterStepIds(chapterId) {
+  return (state.get('steps') || [])
+    .filter(s => !s.isBaseStep && s.chapterId === chapterId)
+    .map(s => s.id);
+}
+
+/** REPLACE the multi-selection with every step of the chapter. */
+function _selectChapterSteps(chapterId) {
+  const ids = _chapterStepIds(chapterId);
+  _setSel(ids);
+  setStatus(`Selected ${ids.length} step(s) from chapter.`);
+}
+
+/** ADD every step of the chapter to the existing multi-selection. */
+function _addChapterToSelection(chapterId) {
+  const ids = _chapterStepIds(chapterId);
+  const next = new Set(_getSel());
+  ids.forEach(id => next.add(id));
+  _setSel(next);
+  setStatus(`Added ${ids.length} chapter step(s) to selection (${next.size} total).`);
+}
+
+/** REMOVE every step of the chapter from the existing multi-selection. */
+function _removeChapterFromSelection(chapterId) {
+  const ids = new Set(_chapterStepIds(chapterId));
+  const next = new Set();
+  for (const id of _getSel()) if (!ids.has(id)) next.add(id);
+  _setSel(next);
+  setStatus(`Removed chapter from selection (${next.size} step(s) remain).`);
+}
+
+/**
+ * Ctrl/Cmd-click on a chapter header — toggles the WHOLE chapter in or
+ * out of the multi-selection. If any of the chapter's steps are absent
+ * from the current set, ADD them all; otherwise REMOVE them all.
+ * Mirrors the per-step Ctrl-click semantic, scaled up to a chapter.
+ */
+function _toggleChapterInSelection(chapterId) {
+  const ids = _chapterStepIds(chapterId);
+  if (!ids.length) return;
+  const cur = _getSel();
+  const allIn = ids.every(id => cur.has(id));
+  if (allIn) _removeChapterFromSelection(chapterId);
+  else       _addChapterToSelection(chapterId);
+}
+
+/**
+ * Shift-click on a chapter header — range-extend from the existing
+ * anchor (last entry in the multi-selection) through this chapter's
+ * last step. If no anchor exists, falls back to selecting the whole
+ * chapter so the click still produces a meaningful change.
+ */
+function _extendSelectionThroughChapter(chapterId) {
+  const all     = (state.get('steps') || []).filter(s => !s.isBaseStep);
+  const idsHere = _chapterStepIds(chapterId);
+  if (!idsHere.length) return;
+  const anchor = [..._getSel()].pop();
+  if (!anchor) {
+    _selectChapterSteps(chapterId);
+    return;
+  }
+  const a    = all.findIndex(s => s.id === anchor);
+  const last = all.findIndex(s => s.id === idsHere[idsHere.length - 1]);
+  if (a < 0 || last < 0) {
+    _addChapterToSelection(chapterId);
+    return;
+  }
+  const [lo, hi] = a < last ? [a, last] : [last, a];
+  const next = new Set(_getSel());
+  for (let i = lo; i <= hi; i++) next.add(all[i].id);
+  _setSel(next);
+}
+
 function _toggleStepHidden(step) {
   const inMulti = _selSize() > 1 && _selHas(step.id);
   if (inMulti) {
@@ -982,7 +1087,21 @@ function _showMultiStepContextMenu(stepIds, x, y) {
 
 /** Right-click on a chapter header — copy / paste operate on the whole chapter block. */
 function _showChapterContextMenu(chapter, x, y) {
+  const chapterIds = _chapterStepIds(chapter.id);
+  const cur        = _getSel();
+  const overlap    = chapterIds.filter(id => cur.has(id)).length;
+
   const items = [
+    { label: `Select all steps in chapter (${chapterIds.length})`,
+      disabled: chapterIds.length === 0,
+      action:   () => _selectChapterSteps(chapter.id) },
+    { label: `Add chapter to step selection (+${chapterIds.length})`,
+      disabled: chapterIds.length === 0,
+      action:   () => _addChapterToSelection(chapter.id) },
+    { label: `Remove chapter from step selection (−${overlap})`,
+      disabled: overlap === 0,
+      action:   () => _removeChapterFromSelection(chapter.id) },
+    { separator: true },
     { label: 'Rename…', action: () => _renameChapter(chapter.id) },
     { label: 'Copy',    action: () => _copyChapterToClipboard(chapter.id) },
   ];
