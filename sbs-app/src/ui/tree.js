@@ -451,18 +451,19 @@ function _buildContextMenuItems(node) {
   });
 
   // ── Per-note Show / Hide list ────────────────────────────────────────────
-  // Lists every note attached to this subtree with a discrete toggle.
-  // Useful on a model row ("flip ONE note out of 12") without drilling the
-  // tree open. Section is labeled with a disabled header so the user can
-  // spot it among the rest of the menu items.
-  const subtreeNotes = _collectSubtreeNotes(node);
-  if (subtreeNotes.length) {
+  // Lists notes that are DIRECT children of THIS specific node — only the
+  // ones positioned on him, not anything deeper in the subtree. Practical
+  // outcome: right-click a mesh that has notes → see those notes; right-
+  // click a model / folder / mesh that doesn't have any notes attached
+  // directly → no notes section appears at all.
+  const directNotes = (node.children || []).filter(c => c?.type === 'note');
+  if (directNotes.length) {
     items.push({ separator: true });
     items.push({
-      label: `📋 Notes in this ${node.type} (${subtreeNotes.length})`,
+      label: `📋 Notes on this ${node.type} (${directNotes.length})`,
       disabled: true,
     });
-    for (const n of subtreeNotes) {
+    for (const n of directNotes) {
       const visEff = (nodeById?.get(n.id)?.localVisible !== false);
       const txt    = (n.text || '').replace(/\s+/g, ' ').trim();
       const short  = txt ? (txt.length > 30 ? txt.slice(0, 30) + '…' : txt) : '(empty note)';
@@ -1117,17 +1118,6 @@ function _buildNoteContextMenuItems(node) {
       disabled: node.sizePresetId === 'large'  && node.customFontSize === null,
     },
   ];
-}
-
-/**
- * Walk a subtree, return every 'note' descendant. Used for the
- * per-note Show/Hide group in container right-click menus.
- */
-function _collectSubtreeNotes(node, out = []) {
-  if (!node) return out;
-  if (node.type === 'note') out.push(node);
-  for (const c of (node.children || [])) _collectSubtreeNotes(c, out);
-  return out;
 }
 
 // ── Tree helpers ──────────────────────────────────────────────────────────────
