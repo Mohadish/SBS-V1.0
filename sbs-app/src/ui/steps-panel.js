@@ -112,19 +112,22 @@ export function initStepsPanel() {
   // Surgical per-step thumbnail update — avoid re-rendering the whole list.
   state.on('step:thumb', _onStepThumb);
 
-  // Click outside the timeline panel collapses the expanded step AND clears
-  // the multi-selection. The scene's active step is unchanged. Capture phase
-  // so we see clicks before their own handlers cancel propagation.
+  // Click outside the timeline panel collapses the expanded step. The
+  // multi-step selection (selectedStepIds) is INTENTIONALLY NOT cleared
+  // here: it's a deliberate edit-mode that the user enters via Ctrl/Shift
+  // click and exits explicitly via Esc, the banner's Clear button, a
+  // plain step click, or step delete. Auto-clearing on outside-click was
+  // the cause of "eyeball / color edits only hit the active step": the
+  // capture-phase clear ran BEFORE the click reached its target handler.
   document.addEventListener('click', e => {
     if (!_container) return;
     if (_container.contains(e.target)) return;
-    // Context menu (rendered outside the timeline) shouldn't count as "outside".
     const ctx = document.getElementById('context-menu');
     if (ctx && ctx.contains(e.target)) return;
-    let dirty = false;
-    if (_expandedId !== null) { _expandedId = null; dirty = true; }
-    if (_selSize())           { _selClear(); /* render fires via change:selectedStepIds */ }
-    if (dirty) renderStepsPanel();
+    if (_expandedId !== null) {
+      _expandedId = null;
+      renderStepsPanel();
+    }
   }, true);
 
   _syncDurationInputs();

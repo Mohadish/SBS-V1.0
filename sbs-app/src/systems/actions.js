@@ -176,9 +176,19 @@ export function assignDefaultColor(meshIds, presetId) {
 
 /**
  * Revert mesh color assignments back to their defaults (undoable).
+ *
+ * Routes through selectedStepIds the same way assignPreset / removePreset
+ * do: when ≥ 2 steps are multi-selected, the per-step override entry is
+ * removed across every step (semantically equivalent to assigning null).
  */
 export function revertToDefault(meshIds) {
   const ids = [...meshIds];
+  const stepSel = state.get('selectedStepIds');
+  const isMulti = stepSel instanceof Set && stepSel.size >= 2;
+  if (isMulti) {
+    _bulkAssignColorMulti(ids, null, stepSel, 'Revert to default color');
+    return;
+  }
   const prevAssign = Object.fromEntries(ids.map(id => [id, materials.meshColorAssignments[id] ?? null]));
 
   materials.revertToDefault(ids);
