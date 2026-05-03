@@ -64,8 +64,17 @@ label.colorlab{display:block;font-size:12px;color:var(--muted);margin-top:4px}
 .animStepBtn.red{background:#7f1d1d;color:#fee2e2;border-color:#ef4444}
 .stepItem{border:1px solid var(--line);background:#101827;border-radius:12px;padding:8px;margin-bottom:8px;cursor:pointer}
 .stepItem.active{border-color:#f59e0b;outline:2px solid #f59e0b;outline-offset:1px;box-shadow:0 0 0 1px rgba(245,158,11,.35) inset}
-.stepItem.selected{background:#17314a}
-.stepItem.selected.active{background:#1d334b}
+/* Multi-step selection highlight (Ctrl/Shift click in timeline). The
+   colour rgb(74,144,217) === #4A90D9 is the project-wide "multi-edit
+   in progress" tint — used on both selected step cards and any chapter
+   header whose steps are part of the current selection. */
+.stepItem.selected{background:rgba(74,144,217,0.22);border-color:#4A90D9;box-shadow:0 0 0 1px rgba(74,144,217,.35) inset}
+.stepItem.selected.active{background:rgba(74,144,217,0.32)}
+/* Chapter header inline style sets a default blue tint, so we need
+   !important to win over it when the chapter's steps are part of the
+   multi-step selection. */
+.chapterHeader.selected{background:rgba(74,144,217,0.32) !important;border-color:#4A90D9 !important;outline:1px solid rgba(74,144,217,0.7);outline-offset:1px}
+.chapterHeader.selected.partial{background:rgba(74,144,217,0.18) !important;outline-style:dashed}
 .stepItem.hiddenStep{opacity:.65}
 .stepTop{display:flex;align-items:center;gap:6px}
 /* Thumbnail wrapper hosts the eye-toggle overlay. The eye is opacity:0

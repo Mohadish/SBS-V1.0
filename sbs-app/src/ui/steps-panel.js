@@ -34,8 +34,10 @@ function _getSel() {
   return s instanceof Set ? s : new Set();
 }
 function _setSel(next) {
-  // Always write a fresh Set so subscribers see a real change.
-  state.setState({ selectedStepIds: new Set(next) });
+  // Routed through actions.setSelectedSteps so every change pushes a
+  // (coalesced) undo entry. Ctrl-click bursts collapse into one entry
+  // within an 800 ms window — see undo.js push() coalesceKey logic.
+  actions.setSelectedSteps([...next]);
 }
 function _selHas(id)  { return _getSel().has(id); }
 function _selSize()   { return _getSel().size; }
@@ -318,7 +320,16 @@ function _isChapterVisuallyCollapsed(chapter, activeId) {
 
 function _buildChapterHeader(chapter, number) {
   const wrap = document.createElement('div');
-  wrap.className         = 'chapterHeader' + (chapter.hidden ? ' is-hidden' : '');
+  // .selected when ANY of this chapter's steps is in the multi-step
+  // selection; .selected.partial when only SOME (vs all) are. Lets the
+  // user see at a glance which chapters they're about to mass-edit.
+  const chapterIds = _chapterStepIds(chapter.id);
+  const sel        = _getSel();
+  const overlap    = chapterIds.filter(id => sel.has(id)).length;
+  const selClass   = overlap === 0
+    ? ''
+    : overlap === chapterIds.length ? ' selected' : ' selected partial';
+  wrap.className         = 'chapterHeader' + (chapter.hidden ? ' is-hidden' : '') + selClass;
   wrap.dataset.chapterId = chapter.id;
   wrap.draggable         = true;
   wrap.style.cssText = [
@@ -697,7 +708,12 @@ function _buildStepCard(step, idx, isActive, isExpanded, total) {
   // Click semantics:
   //   Ctrl/Cmd-click → toggle in multi-selection (doesn't activate/expand)
   //   Shift-click    → extend selection to a range (visual order)
-  //   plain click    → replace selection, activate + expand
+  //   plain click    → activate WITH animation; do NOT expand on first hit.
+  //                    A second plain click on the SAME (already-active)
+  //                    step expands it. Activating a different step
+  //                    automatically collapses any previously expanded
+  //                    card — only one tab can be open at a time and it
+  //                    stays open until another step is single-clicked.
   card.addEventListener('click', e => {
     if (e.ctrlKey || e.metaKey) {
       const next = new Set(_getSel());
@@ -719,34 +735,39 @@ function _buildStepCard(step, idx, isActive, isExpanded, total) {
       }
       return;
     }
+
+    const wasActive = state.get('activeStepId') === step.id;
+    if (wasActive && _expandedId !== step.id) {
+      // Second click on the active step → expand it. Don't replay the
+      // animation; the user already sees the final state.
+      _expandedId = step.id;
+      _setSel([step.id]);
+      renderStepsPanel();
+      return;
+    }
+    // New active step (or first click after a clear). Animate to it,
+    // collapse whichever step was expanded — only one open tab at a
+    // time. The expanded tab doesn't reopen until a SECOND click.
     _setSel([step.id]);
-    _expandedId  = step.id;
+    _expandedId = null;
     steps.activateStep(step.id, true);
     renderStepsPanel();
   });
 
-  // Double click → instant jump to final state (skips animation)
-  card.addEventListener('dblclick', e => {
-    e.stopPropagation();
-    _setSel([step.id]);
-    _expandedId  = step.id;
-    steps.activateStep(step.id, false);
-    renderStepsPanel();
-  });
-
-  // Middle-mouse → same as double-click (instant jump to final state).
-  // Quicker than dbl-click for users who already use mid-click as a
-  // generic "skip ahead" gesture. Listen via mousedown because middle
-  // button doesn't fire a regular click in some browsers; preventDefault
+  // Middle-mouse → instant jump to the step's final state (no animation),
+  // PRESERVES the multi-step selection. Useful when the user has set up
+  // a selection across N steps and just wants to peek at one of them
+  // without losing the set. Listen via mousedown because middle button
+  // doesn't fire a regular click in some browsers; preventDefault
   // suppresses the default scroll-anchor cursor on Chromium.
   card.addEventListener('mousedown', e => {
     if (e.button !== 1) return;
     e.preventDefault();
     e.stopPropagation();
-    _setSel([step.id]);
-    _expandedId  = step.id;
     steps.activateStep(step.id, false);
-    renderStepsPanel();
+    // Intentionally do NOT touch _setSel or _expandedId — the user's
+    // multi-step selection survives the peek, and any expanded tab
+    // stays as it was.
   });
 
   // Drag-and-drop

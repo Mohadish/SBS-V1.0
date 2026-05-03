@@ -101,10 +101,24 @@ export function removePreset(meshIds) {
  * the entry so the mesh inherits the default. This matches what
  * materials.captureSnapshot does (it filters defaults out).
  */
+/**
+ * Re-stage the CURRENT active step's materials snapshot to live state.
+ * Called after any setState that mutated step.snapshot.materials so the
+ * viewport reflects whatever step the user is on right now — not the
+ * step that was active at apply time. Safe to call when no snapshot
+ * materials exist.
+ */
+function _restageActiveMaterials(stepsArr) {
+  const activeId = state.get('activeStepId');
+  if (!activeId) return;
+  const activeStep = stepsArr.find(x => x.id === activeId);
+  if (activeStep?.snapshot?.materials !== undefined) {
+    materials.applySnapshot(activeStep.snapshot.materials);
+  }
+}
+
 function _bulkAssignColorMulti(meshIds, presetId, stepIdSet, label) {
   const allSteps = state.get('steps') || [];
-  const activeId = state.get('activeStepId');
-  const liveActive = stepIdSet.has(activeId);
   const defaults = materials.meshDefaultColors || {};
 
   const nextSteps = allSteps.map(s => {
@@ -127,23 +141,19 @@ function _bulkAssignColorMulti(meshIds, presetId, stepIdSet, label) {
   const touched = nextSteps.filter((s, i) => s !== allSteps[i]);
   if (touched.length === 0) return;
 
-  state.setState({ steps: nextSteps });
-  state.markDirty();
-
-  // Mirror to live state if active step ∈ set, so viewport updates.
-  const replayLive = (stepsArr) => {
-    if (!liveActive) return;
-    const activeStep = stepsArr.find(x => x.id === activeId);
-    if (activeStep?.snapshot?.materials !== undefined) {
-      materials.applySnapshot(activeStep.snapshot.materials);
-    }
+  const apply = (stepsArr) => {
+    state.setState({ steps: stepsArr });
+    state.markDirty();
+    // Always re-stage the CURRENT active step. The user may have
+    // switched active steps between apply and undo/redo.
+    _restageActiveMaterials(stepsArr);
   };
-  replayLive(nextSteps);
+  apply(nextSteps);
 
   undoManager.push(
     `${label} on ${touched.length} step(s)`,
-    () => { state.setState({ steps: allSteps  }); state.markDirty(); replayLive(allSteps); },
-    () => { state.setState({ steps: nextSteps }); state.markDirty(); replayLive(nextSteps); },
+    () => apply(allSteps),
+    () => apply(nextSteps),
   );
 }
 
@@ -556,6 +566,57 @@ export function unisolate() {
 
 export function hasIsolateSnapshot() { return !!_isolateSnapshot; }
 
+// ─── Step / chapter multi-selection (state.selectedStepIds) ──────────────
+//
+// Routed through actions.js so every change goes through the undo log.
+// Rapid bursts of changes (Ctrl-click streams, chapter shift-extends)
+// coalesce into a single entry within an 800 ms window so the log
+// doesn't fill with one entry per click. Each finalised entry restores
+// the EXACT set that existed before the burst started.
+
+let _silentStepSel = false;
+
+/**
+ * Read state.selectedStepIds as a Set (defensive — if somehow missing,
+ * returns an empty Set).
+ */
+function _getSelectedStepIds() {
+  const s = state.get('selectedStepIds');
+  return s instanceof Set ? s : new Set();
+}
+
+/**
+ * Replace the multi-step selection. Pushes a coalesced undo entry
+ * unless `opts.silent` is true (used by the undo/redo lambdas
+ * themselves so they don't recurse).
+ */
+export function setSelectedSteps(ids, opts = {}) {
+  const before = new Set(_getSelectedStepIds());
+  const after  = new Set(ids || []);
+  // No-op: don't push an undo entry for a change that isn't one.
+  if (before.size === after.size && [...before].every(x => after.has(x))) return;
+  state.setState({ selectedStepIds: new Set(after) });
+  if (_silentStepSel || opts.silent) return;
+  undoManager.push(
+    after.size === 0 ? 'Clear step selection' : `Step selection (${after.size})`,
+    () => {
+      _silentStepSel = true;
+      state.setState({ selectedStepIds: new Set(before) });
+      _silentStepSel = false;
+    },
+    () => {
+      _silentStepSel = true;
+      state.setState({ selectedStepIds: new Set(after) });
+      _silentStepSel = false;
+    },
+    { coalesceKey: 'setSelectedSteps' },
+  );
+}
+
+export function clearSelectedSteps() {
+  setSelectedSteps([]);
+}
+
 /**
  * Move every id under the destination folder. One undo entry restores
  * each node's original parent. Skips moves that would put a node into
@@ -684,13 +745,38 @@ export function toggleVisibility(nodeIds) {
   void wasVisible;
 }
 
+/**
+ * Re-stage the CURRENT active step's visibility snapshot to live nodes
+ * + scene. Called after any setState that mutated step snapshots so the
+ * viewport reflects the new state of whatever step the user is on RIGHT
+ * NOW (which may differ from the active step at apply time, after a
+ * series of undos / redos / step switches). Safe to call when no
+ * snapshot exists — bails silently.
+ */
+function _restageActiveVisibility(stepsArr) {
+  const activeId = state.get('activeStepId');
+  if (!activeId) return;
+  const activeStep = stepsArr.find(x => x.id === activeId);
+  const vis = activeStep?.snapshot?.visibility;
+  if (!vis) return;
+  const nb = state.get('nodeById');
+  for (const [id, v] of Object.entries(vis)) {
+    const n = nb.get(id);
+    if (n) n.localVisible = !!v;
+  }
+  const treeData = state.get('treeData');
+  if (treeData) {
+    applyAllVisibility(treeData, steps.object3dById);
+    state.emit('change:treeData', treeData);
+  }
+}
+
 function _toggleVisibilityMulti(ids, newVis, stepIdSet, treeData) {
   const allSteps = state.get('steps') || [];
-  const activeId = state.get('activeStepId');
-  const liveActive = stepIdSet.has(activeId);
 
-  // For each step in the set, compute its NEW visibility map. Capture
-  // the OLD steps array (deep-cloned per step where modified) for undo.
+  // For each step in the set, compute its NEW visibility map. Skip
+  // unchanged ones so the no-op steps stay === old (refcount equality
+  // makes the touched-count check below cheap).
   const nextSteps = allSteps.map(s => {
     if (!stepIdSet.has(s.id)) return s;
     const snap = s.snapshot || {};
@@ -705,60 +791,21 @@ function _toggleVisibilityMulti(ids, newVis, stepIdSet, treeData) {
   const touched = nextSteps.filter((s, i) => s !== allSteps[i]);
   if (touched.length === 0) return;
 
-  state.setState({ steps: nextSteps });
-  state.markDirty();
-
-  // If the active step was in the affected set, the live nodeById is
-  // out of date — re-stage the active step's snapshot. Otherwise no
-  // viewport-visible change happens until the user activates a touched
-  // step (which is the natural read path).
-  if (liveActive) {
-    const activeStep = nextSteps.find(x => x.id === activeId);
-    if (activeStep?.snapshot?.visibility) {
-      const nb = state.get('nodeById');
-      for (const [id, vis] of Object.entries(activeStep.snapshot.visibility)) {
-        const n = nb.get(id);
-        if (n) n.localVisible = !!vis;
-      }
-      applyAllVisibility(treeData, steps.object3dById);
-      state.emit('change:treeData', treeData);
-    }
-  }
+  const apply = (stepsArr) => {
+    state.setState({ steps: stepsArr });
+    state.markDirty();
+    // Re-evaluate active step at run time, NOT at apply time. Between
+    // apply and an eventual undo/redo the user may have switched
+    // steps; we always want the viewport to reflect WHATEVER step is
+    // currently active under the new state.steps array.
+    _restageActiveVisibility(stepsArr);
+  };
+  apply(nextSteps);
 
   undoManager.push(
     `${newVis ? 'Show' : 'Hide'} ${ids.length} node(s) on ${touched.length} step(s)`,
-    () => {
-      state.setState({ steps: allSteps });
-      state.markDirty();
-      if (liveActive) {
-        const activeStep = allSteps.find(x => x.id === activeId);
-        if (activeStep?.snapshot?.visibility) {
-          const nb = state.get('nodeById');
-          for (const [id, vis] of Object.entries(activeStep.snapshot.visibility)) {
-            const n = nb.get(id);
-            if (n) n.localVisible = !!vis;
-          }
-          applyAllVisibility(treeData, steps.object3dById);
-          state.emit('change:treeData', treeData);
-        }
-      }
-    },
-    () => {
-      state.setState({ steps: nextSteps });
-      state.markDirty();
-      if (liveActive) {
-        const activeStep = nextSteps.find(x => x.id === activeId);
-        if (activeStep?.snapshot?.visibility) {
-          const nb = state.get('nodeById');
-          for (const [id, vis] of Object.entries(activeStep.snapshot.visibility)) {
-            const n = nb.get(id);
-            if (n) n.localVisible = !!vis;
-          }
-          applyAllVisibility(treeData, steps.object3dById);
-          state.emit('change:treeData', treeData);
-        }
-      }
-    },
+    () => apply(allSteps),
+    () => apply(nextSteps),
   );
 }
 
