@@ -1082,15 +1082,30 @@ function _renderColorsTab() {
     // Click directly on the swatch → expand AND fire the native color
     // picker. Lets the user go from a collapsed preset row to "I'm
     // editing a colour right now" in one click.
+    //
+    // Mechanics: when the row is collapsed we re-render the tab, which
+    // rebuilds the DOM and would normally swallow the user gesture
+    // before we could open the picker. Use HTMLInputElement.showPicker()
+    // — the standard programmatic-open path that survives the rebuild
+    // (Chrome 99+ / Electron). Fall back to .click() on older browsers.
+    // We also focus() the input first so that subsequent state changes
+    // are caught by _shouldDeferColorsRender and don't yank the popup
+    // off-screen.
     row.querySelector('.colorSwatch')?.addEventListener('click', e => {
       e.stopPropagation();          // suppress the row's toggle handler
+      e.preventDefault();
       const wasOpen = _expandedPresetId === preset.id;
       _expandedPresetId = preset.id;
       if (!wasOpen) _renderColorsTab();
-      // Same task tick as the user gesture — required for the browser
-      // to honour the synthetic click on <input type=color>.
-      const tabEl = _panel('colors');
-      tabEl?.querySelector('.cp-color')?.click();
+      const cp = _panel('colors')?.querySelector('.cp-color');
+      if (!cp) return;
+      cp.focus();
+      try {
+        if (typeof cp.showPicker === 'function') cp.showPicker();
+        else cp.click();
+      } catch (_) {
+        cp.click();
+      }
     });
 
     row.addEventListener('contextmenu', e => {
