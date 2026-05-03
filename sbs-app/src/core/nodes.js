@@ -450,6 +450,12 @@ export function applyParentMap(root, parentMap) {
  */
 export function serializeModelTree(node) {
   if (!node) return null;
+  // Notes are GLOBAL — they're tree children of meshes for tree-display
+  // purposes, but they don't belong in per-step snapshots. The live
+  // tree owns them; rebuildFromTreeSpec re-attaches them after each
+  // rebuild (see _reattachLiveNoteChildren in steps.js). Filter them
+  // out of the serialised spec so step rebuilds don't whisk them away.
+  if (node.type === 'note') return null;
   const spec = {
     id:           node.id,
     name:         node.name || '',

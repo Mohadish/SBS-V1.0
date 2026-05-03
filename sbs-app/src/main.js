@@ -989,7 +989,27 @@ canvas.addEventListener('contextmenu', e => {
   const isTransformable = node && node.type !== 'mesh' && node.type !== 'scene';
   const hasSel = !!selId && multiIds.size > 0;
 
+  // Note-add hit: a fresh raycast at the right-click position so the
+  // menu item creates a note at the FACE the user actually right-clicked,
+  // not the current selection. Only valid when the click landed on a
+  // real (non-placeholder) mesh.
+  const noteHit  = sceneCore.pick(e.clientX, e.clientY);
+  const noteMesh = noteHit?.object;
+  const noteMeshId = noteMesh?.userData?.meshNodeId;
+  const canAddNoteHere = !!(
+    noteMeshId &&
+    nodeById?.get(noteMeshId)?.type === 'mesh' &&
+    !noteMesh?.userData?.isPlaceholder
+  );
+
   const items = [];
+  if (canAddNoteHere) {
+    items.push({
+      label: '💬 Add Note here',
+      action: () => actions.createNoteAtHit(noteMeshId, noteHit),
+    });
+    items.push({ label: '─', disabled: true });
+  }
   if (isTransformable) {
     items.push({ label: '↺ Reset transform', action: () => resetTransform(selId) });
     items.push({ label: '─', disabled: true });

@@ -3741,6 +3741,11 @@ export function createNoteAtHit(meshId, hit) {
   const obj = steps.object3dById?.get(meshId);
   if (!obj) return null;
 
+  // Force the world matrix fresh — Three.js's worldToLocal uses
+  // matrixWorld AS-IS without refreshing it, and after a step change
+  // the cached matrix may be stale. Without this, the note's
+  // anchorLocal lands at the wrong point on the mesh.
+  obj.updateMatrixWorld(true);
   // Hit point in MESH-LOCAL.
   const local = obj.worldToLocal(hit.point.clone());
   // bbox-relative — falls back to (0.5, 0.5, 0.5) if no bbox saved.

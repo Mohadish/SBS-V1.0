@@ -1796,6 +1796,15 @@ function rebuildFromTreeSpec(spec, nodeById, object3dById, parentObject3d) {
     // even while its asset file is absent.
     node = nodeById.get(spec.id);
     if (!node) return null;
+    // ── Preserve note children across step rebuilds ────────────────────
+    // Notes are GLOBAL — they live on the live tree, not in step
+    // snapshots (serializeModelTree filters them out). The mesh branch
+    // here is the only place note nodes ever sit, so we save them
+    // before wiping children and re-append them at the bottom of this
+    // function. Without this, every step transition would discard the
+    // user's notes.
+    const preservedNotes = (node.children || []).filter(c => c?.type === 'note');
+    node._preservedNotesForRebuild = preservedNotes;
     node.name         = spec.name || node.name;
     node.localVisible = spec.localVisible !== false;
     // Inherit bbox from spec if node doesn't have it yet (e.g. phantom clone
@@ -1852,6 +1861,15 @@ function rebuildFromTreeSpec(spec, nodeById, object3dById, parentObject3d) {
   for (const childSpec of (spec.children || [])) {
     const childNode = rebuildFromTreeSpec(childSpec, nodeById, object3dById, childParent);
     if (childNode) node.children.push(childNode);
+  }
+
+  // Re-attach any note children that were preserved at the start of this
+  // mesh's rebuild (see the mesh branch above). Notes are global —
+  // they survive step transitions because they're never IN the step
+  // spec to begin with.
+  if (specType === 'mesh' && node._preservedNotesForRebuild?.length) {
+    for (const n of node._preservedNotesForRebuild) node.children.push(n);
+    delete node._preservedNotesForRebuild;
   }
 
   return node;
