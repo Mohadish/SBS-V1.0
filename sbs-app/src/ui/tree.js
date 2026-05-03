@@ -203,10 +203,16 @@ function _buildRow(node, depth) {
   icon.className   = 'icon';
   icon.textContent = _typeIcon(node.type);
 
-  // Label
+  // Label — notes show their (truncated) text instead of name
   const label = document.createElement('span');
   label.className   = 'label';
-  label.textContent = node.name || '(unnamed)';
+  if (node.type === 'note') {
+    const t = (node.text || '').replace(/\s+/g, ' ').trim();
+    label.textContent = t ? (t.length > 40 ? t.slice(0, 40) + '…' : t) : '(empty note)';
+    label.style.fontStyle = 'italic';
+  } else {
+    label.textContent = node.name || '(unnamed)';
+  }
 
   // Transform buttons (model / folder only)
   const transformGroup = document.createElement('span');
@@ -250,6 +256,7 @@ function _typeIcon(type) {
     case 'model':  return '🧩';
     case 'folder': return '🗂';
     case 'mesh':   return '◼';
+    case 'note':   return '💬';
     default:       return '📄';
   }
 }
@@ -545,8 +552,48 @@ function _buildContextMenuItems(node) {
 
   items.push({ separator: true });
 
+  // ── Notes (mesh-only) ────────────────────────────────────────────────────────
+  if (node.type === 'mesh' && !node.missing) {
+    items.push({
+      label: 'Add Note…',
+      action: () => actions.startNotePicking(node.id),
+    });
+    items.push({ separator: true });
+  }
+
+  // ── Note-row specific actions ────────────────────────────────────────────────
+  if (node.type === 'note') {
+    items.push({
+      label: 'Edit Text…',
+      action: () => _showInputDialog('Edit note text', node.text || '', text => {
+        actions.editNoteText(node.id, text);
+      }),
+    });
+    items.push({
+      label: 'Delete Note',
+      action: () => actions.deleteNote(node.id),
+    });
+    items.push({ separator: true });
+    items.push({
+      label: '— Size: Small',
+      action: () => actions.setNoteSizePreset(node.id, 'small'),
+      disabled: node.sizePresetId === 'small' && node.customFontSize === null,
+    });
+    items.push({
+      label: '— Size: Medium',
+      action: () => actions.setNoteSizePreset(node.id, 'medium'),
+      disabled: node.sizePresetId === 'medium' && node.customFontSize === null,
+    });
+    items.push({
+      label: '— Size: Large',
+      action: () => actions.setNoteSizePreset(node.id, 'large'),
+      disabled: node.sizePresetId === 'large' && node.customFontSize === null,
+    });
+    items.push({ separator: true });
+  }
+
   // ── General ──────────────────────────────────────────────────────────────────
-  if (node.type !== 'scene') {
+  if (node.type !== 'scene' && node.type !== 'note') {
     items.push({
       label: `Rename "${(node.name || '').slice(0, 24)}"`,
       action: () => _showInputDialog('Rename', node.name || '', name => {

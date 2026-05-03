@@ -16,7 +16,7 @@ import { selectionActs }        from './select-act.js';
 import { materials }            from '../systems/materials.js';
 import steps                    from '../systems/steps.js';
 import sceneCore                from '../core/scene.js';
-import { createAnimationPreset, createCameraView, generateId } from '../core/schema.js';
+import { createAnimationPreset, createCameraView, createNoteNode, generateId } from '../core/schema.js';
 import * as editSession         from './edit-session.js';   // P7-A: gate Ctrl-Z while in overlay edit
 import * as cables              from './cables.js';          // C3: cable mutators (data layer)
 import {
@@ -3694,4 +3694,250 @@ export function loadSelectionGroup(groupId) {
   }
   state.setSelection(live[0], new Set(live));
   return true;
+}
+
+
+// ═══════════════════════════════════════════════════════════════════════════
+//  NOTES (3D-anchored balloon notes — tree children of their anchor mesh)
+// ═══════════════════════════════════════════════════════════════════════════
+//
+// Lifecycle:
+//   1. startNotePicking(meshId)   — enters face-pick mode for that mesh.
+//      The next viewport pointerdown raycasts; on a hit on THIS mesh,
+//      a new note is created at the hit point and the user enters
+//      inline-text-edit mode for it.
+//   2. cancelNotePicking()        — leaves picking mode silently.
+//   3. createNoteAtHit(meshId, hit) — direct creation, used by the
+//      pick-mode pointerdown handler (lives in main.js, mirroring the
+//      pivot snap-to-surface flow).
+//   4. editNoteText(noteId, text) — undoable rename.
+//   5. setNotePanelOffset(noteId, offset) — one-shot undoable write
+//      (pair via _commitNotePanelOffset for drag-style commits).
+//   6. setNoteSizePreset / setNoteCustomFontSize — undoable.
+//   7. deleteNote(noteId)         — undoable; removes note from tree.
+
+export function startNotePicking(meshId) {
+  if (!meshId) return;
+  state.setState({ notePickingMeshId: meshId });
+}
+
+export function cancelNotePicking() {
+  if (state.get('notePickingMeshId')) {
+    state.setState({ notePickingMeshId: null });
+  }
+}
+
+/**
+ * Create a note at a raycast hit. Called from main.js's pointerdown
+ * intercept while state.notePickingMeshId is set. Anchors at the hit
+ * point in MESH-LOCAL space and ALSO records a bbox-relative position
+ * so the note survives the asset going missing later.
+ */
+export function createNoteAtHit(meshId, hit) {
+  if (!hit?.point || !hit?.object || !meshId) return null;
+  const T = window.THREE;
+  const meshNode = state.get('nodeById')?.get(meshId);
+  if (!meshNode || meshNode.type !== 'mesh') return null;
+  const obj = steps.object3dById?.get(meshId);
+  if (!obj) return null;
+
+  // Hit point in MESH-LOCAL.
+  const local = obj.worldToLocal(hit.point.clone());
+  // bbox-relative — falls back to (0.5, 0.5, 0.5) if no bbox saved.
+  let rel = [0.5, 0.5, 0.5];
+  const bb = meshNode.bbox;
+  if (bb && Array.isArray(bb.min) && Array.isArray(bb.max)) {
+    const wx = Math.max(bb.max[0] - bb.min[0], 1e-6);
+    const wy = Math.max(bb.max[1] - bb.min[1], 1e-6);
+    const wz = Math.max(bb.max[2] - bb.min[2], 1e-6);
+    rel = [
+      (local.x - bb.min[0]) / wx,
+      (local.y - bb.min[1]) / wy,
+      (local.z - bb.min[2]) / wz,
+    ];
+  }
+
+  const note = createNoteNode({
+    anchorMeshId:       meshId,
+    anchorLocal:        [local.x, local.y, local.z],
+    anchorBboxRelative: rel,
+    text:               'Note',
+  });
+  // Append as child of the mesh in the tree.
+  meshNode.children = [...(meshNode.children || []), note];
+  state.setState({
+    nodeById:           _nodes_buildNodeMap(state.get('treeData')),
+    notePickingMeshId:  null,
+  });
+  state.emit('change:treeData', state.get('treeData'));
+  state.markDirty();
+
+  undoManager.push(
+    'Add note',
+    () => {
+      const nb = state.get('nodeById');
+      const m  = nb?.get(meshId);
+      if (m) m.children = (m.children || []).filter(c => c.id !== note.id);
+      state.setState({ nodeById: _nodes_buildNodeMap(state.get('treeData')) });
+      state.emit('change:treeData', state.get('treeData'));
+      state.markDirty();
+    },
+    () => {
+      const nb = state.get('nodeById');
+      const m  = nb?.get(meshId);
+      if (!m) return;
+      if (!(m.children || []).some(c => c.id === note.id)) {
+        m.children = [...(m.children || []), note];
+      }
+      state.setState({ nodeById: _nodes_buildNodeMap(state.get('treeData')) });
+      state.emit('change:treeData', state.get('treeData'));
+      state.markDirty();
+    },
+  );
+  return note.id;
+}
+
+export function editNoteText(noteId, newText) {
+  const nb = state.get('nodeById');
+  const note = nb?.get(noteId);
+  if (!note || note.type !== 'note') return;
+  const before = note.text || '';
+  const after  = (newText ?? '').toString();
+  if (before === after) return;
+  note.text = after;
+  state.emit('change:treeData', state.get('treeData'));
+  state.markDirty();
+  undoManager.push(
+    'Edit note text',
+    () => {
+      const n = state.get('nodeById')?.get(noteId);
+      if (n) { n.text = before; state.emit('change:treeData', state.get('treeData')); state.markDirty(); }
+    },
+    () => {
+      const n = state.get('nodeById')?.get(noteId);
+      if (n) { n.text = after;  state.emit('change:treeData', state.get('treeData')); state.markDirty(); }
+    },
+  );
+}
+
+export function setNoteSizePreset(noteId, presetId) {
+  const note = state.get('nodeById')?.get(noteId);
+  if (!note || note.type !== 'note') return;
+  const before = { sizePresetId: note.sizePresetId, customFontSize: note.customFontSize };
+  if (note.sizePresetId === presetId && note.customFontSize === null) return;
+  note.sizePresetId   = presetId;
+  note.customFontSize = null;
+  state.emit('change:treeData', state.get('treeData'));
+  state.markDirty();
+  undoManager.push(
+    'Note size preset',
+    () => {
+      const n = state.get('nodeById')?.get(noteId); if (!n) return;
+      n.sizePresetId = before.sizePresetId; n.customFontSize = before.customFontSize;
+      state.emit('change:treeData', state.get('treeData')); state.markDirty();
+    },
+    () => {
+      const n = state.get('nodeById')?.get(noteId); if (!n) return;
+      n.sizePresetId = presetId; n.customFontSize = null;
+      state.emit('change:treeData', state.get('treeData')); state.markDirty();
+    },
+  );
+}
+
+export function setNoteCustomFontSize(noteId, px) {
+  const note = state.get('nodeById')?.get(noteId);
+  if (!note || note.type !== 'note') return;
+  const size = Math.max(5, Math.min(150, Number(px) || 16));
+  const before = { sizePresetId: note.sizePresetId, customFontSize: note.customFontSize };
+  if (before.customFontSize === size) return;
+  note.customFontSize = size;
+  state.emit('change:treeData', state.get('treeData'));
+  state.markDirty();
+  undoManager.push(
+    'Note custom size',
+    () => {
+      const n = state.get('nodeById')?.get(noteId); if (!n) return;
+      n.sizePresetId = before.sizePresetId; n.customFontSize = before.customFontSize;
+      state.emit('change:treeData', state.get('treeData')); state.markDirty();
+    },
+    () => {
+      const n = state.get('nodeById')?.get(noteId); if (!n) return;
+      n.customFontSize = size;
+      state.emit('change:treeData', state.get('treeData')); state.markDirty();
+    },
+  );
+}
+
+/**
+ * Internal — used by notes-render's drag handler at pointerup, after
+ * it has already mutated note.panelOffset live during the drag. We
+ * just push a single undo entry covering the whole gesture.
+ */
+export function _commitNotePanelOffset(noteId, before, after) {
+  if (!noteId || !before || !after) return;
+  const note = state.get('nodeById')?.get(noteId);
+  if (!note) return;
+  note.panelOffset = { x: after.x, y: after.y };
+  state.markDirty();
+  undoManager.push(
+    'Move note',
+    () => {
+      const n = state.get('nodeById')?.get(noteId);
+      if (n) { n.panelOffset = { x: before.x, y: before.y }; state.emit('change:treeData', state.get('treeData')); state.markDirty(); }
+    },
+    () => {
+      const n = state.get('nodeById')?.get(noteId);
+      if (n) { n.panelOffset = { x: after.x,  y: after.y  }; state.emit('change:treeData', state.get('treeData')); state.markDirty(); }
+    },
+  );
+}
+
+export function deleteNote(noteId) {
+  const root = state.get('treeData');
+  const nb   = state.get('nodeById');
+  const note = nb?.get(noteId);
+  if (!note || note.type !== 'note') return;
+  // Find parent. Since notes always live as direct children of a mesh,
+  // we can use the anchorMeshId as a hint, but fall back to a tree walk.
+  const parent = _findNodeParent(root, noteId);
+  if (!parent) return;
+  const idx = (parent.children || []).findIndex(c => c.id === noteId);
+  if (idx < 0) return;
+  parent.children.splice(idx, 1);
+  state.setState({ nodeById: _nodes_buildNodeMap(root) });
+  state.emit('change:treeData', root);
+  state.markDirty();
+  undoManager.push(
+    'Delete note',
+    () => {
+      const r = state.get('treeData');
+      const p = _findNodeRecursive(r, parent.id);
+      if (!p) return;
+      const i = Math.min(idx, (p.children || []).length);
+      p.children = [...(p.children || [])];
+      p.children.splice(i, 0, note);
+      state.setState({ nodeById: _nodes_buildNodeMap(r) });
+      state.emit('change:treeData', r);
+      state.markDirty();
+    },
+    () => {
+      const r = state.get('treeData');
+      const p = _findNodeRecursive(r, parent.id);
+      if (!p) return;
+      p.children = (p.children || []).filter(c => c.id !== noteId);
+      state.setState({ nodeById: _nodes_buildNodeMap(r) });
+      state.emit('change:treeData', r);
+      state.markDirty();
+    },
+  );
+}
+
+function _findNodeRecursive(node, id) {
+  if (!node) return null;
+  if (node.id === id) return node;
+  for (const c of (node.children || [])) {
+    const r = _findNodeRecursive(c, id);
+    if (r) return r;
+  }
+  return null;
 }

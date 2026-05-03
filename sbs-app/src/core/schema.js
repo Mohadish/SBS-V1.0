@@ -341,7 +341,9 @@ export function createCameraState(overrides = {}) {
 
 
 // ═══════════════════════════════════════════════════════════════════════════
-//  SCENE NOTE
+//  SCENE NOTE  (legacy flat-list shape — kept for back-compat with the
+//   never-used scaffold. New notes go through createNoteNode below and
+//   live as TREE CHILDREN of their anchor mesh.)
 // ═══════════════════════════════════════════════════════════════════════════
 export function createSceneNote(overrides = {}) {
   return {
@@ -355,6 +357,44 @@ export function createSceneNote(overrides = {}) {
     // 3D anchor (optional — if set, note follows a point in 3D space)
     anchorWorld:  null,             // [x, y, z] in world space
     visible:      true,
+    ...overrides,
+  };
+}
+
+/**
+ * 3D-anchored balloon note — lives as a TREE CHILD of its anchor mesh.
+ *
+ * Anchor strategy: on creation we record both the hit point in MESH-LOCAL
+ * space (anchorLocal) and the same point as a fraction of the mesh's
+ * bbox (anchorBboxRelative). Renderer uses anchorLocal when the mesh
+ * geometry is loaded; falls back to bbox-relative when the asset is
+ * missing and the mesh is a phantom placeholder, so the note keeps its
+ * meaningful position even across a missing-asset reload.
+ *
+ * Style: sizePresetId references one of state.notePresets's keys
+ * ('small' / 'medium' / 'large'). Setting customFontSize to a number
+ * overrides the preset for that single note.
+ *
+ * Per-step state (visibility + panelOffset) is captured in
+ * step.snapshot.noteStates[noteId] as a sparse override map (Phase 2).
+ * Phase 1 just renders the global state.
+ */
+export function createNoteNode(overrides = {}) {
+  return {
+    id:                 generateId('note'),
+    type:               'note',
+    name:               '',
+    localVisible:       true,
+    children:           [],
+
+    anchorMeshId:       null,                // owning mesh node id
+    anchorLocal:        [0, 0, 0],           // hit point in MESH-LOCAL frame
+    anchorBboxRelative: [0.5, 0.5, 0.5],     // 0–1 within mesh.bbox (resilience)
+    text:               '',
+    sizePresetId:       'medium',            // refs state.notePresets[sizePresetId]
+    customFontSize:     null,                // px override; null = use preset
+    panelOffset:        { x: 90, y: -70 },   // pixels, relative to anchor screen pt
+
     ...overrides,
   };
 }

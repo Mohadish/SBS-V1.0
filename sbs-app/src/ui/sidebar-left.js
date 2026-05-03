@@ -32,7 +32,7 @@ import { listVoices as ttsListVoices } from '../systems/tts.js';
 import * as userSettings    from '../core/user-settings.js';
 import * as narrationCache  from '../systems/narration-cache.js';
 
-const TABS = ['files', 'tree', 'colors', 'select', 'cameras', 'animation', 'header', 'style', 'cables', 'export'];
+const TABS = ['files', 'tree', 'colors', 'select', 'cameras', 'animation', 'header', 'style', 'cables', 'notes', 'export'];
 let _activeTab   = 'files';
 let _container   = null;
 let _treeInited  = false;
@@ -56,6 +56,7 @@ export function initSidebarLeft() {
       <button class="tabBtn"        data-tab="header">Header</button>
       <button class="tabBtn"        data-tab="style">Style</button>
       <button class="tabBtn"        data-tab="cables">🔌</button>
+      <button class="tabBtn"        data-tab="notes">💬</button>
       <button class="tabBtn"        data-tab="export">Export</button>
     </div>
     <div class="sidebar-panels" id="left-panels"></div>
@@ -98,6 +99,8 @@ export function initSidebarLeft() {
     });
   });
   state.on('change:selectionGroups',       () => { if (_activeTab === 'select')   _renderSelectTab(); });
+  state.on('change:notePresets',           () => { if (_activeTab === 'notes')    _renderNotesTab();  });
+  state.on('change:treeData',              () => { if (_activeTab === 'notes')    _renderNotesTab();  });
   state.on('change:cameraViews',           () => { if (_activeTab === 'cameras')   _renderCamerasTab(); });
   // Step bindings live on step.cameraBinding — when the active step
   // changes, or when any step's binding updates, the Cameras tab needs
@@ -172,6 +175,7 @@ function _renderActiveTab() {
     case 'header':    _renderHeaderTabPanel(); break;
     case 'style':     _renderStyleTabPanel();  break;
     case 'cables':    _renderCableTabPanel();  break;
+    case 'notes':     _renderNotesTab();   break;
     case 'export':    _renderExportTab();  break;
   }
 }
@@ -1889,6 +1893,72 @@ function _showDeleteCameraTemplateDialog(view, useCount) {
 function _onUserSettingsChanged() {
   // Live-rebuild the Export tab so the voice list reflects the new filter.
   if (_panel('export')) _renderExportTab();
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+//  NOTES TAB — three font-size presets (small / medium / large)
+// ═══════════════════════════════════════════════════════════════════════════
+//
+// Notes are 3D-anchored balloons attached to mesh faces. Their rendering
+// lives in systems/notes-render.js; their lifecycle (create / edit / move
+// / delete) lives in actions.js. This tab is just the global STYLE
+// editor — the three font-size presets that every note can fall back to,
+// so the project gets a consistent visual rhythm.
+//
+// Phase 1 ships the size editor only. Future iterations can layer a
+// template library (canned text snippets) on top.
+
+function _renderNotesTab() {
+  const el = _panel('notes');
+  if (!el) return;
+
+  const presets = state.get('notePresets') || { small: 18, medium: 36, large: 48 };
+  const noteCount = _countNotes(state.get('treeData'));
+
+  el.innerHTML = `
+    <div class="section">
+      <div class="title">Note size presets</div>
+      <div class="small muted" style="margin-top:6px;line-height:1.45">
+        Each note picks one of these three sizes (or a per-note custom).
+        Editing here updates every note that references the preset.
+      </div>
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:6px;margin-top:10px;align-items:center">
+        <label class="small" for="note-sz-small">Small (px)</label>
+        <input id="note-sz-small"  type="number" min="5" max="150" step="1" value="${presets.small  ?? 18}" />
+        <label class="small" for="note-sz-medium">Medium (px)</label>
+        <input id="note-sz-medium" type="number" min="5" max="150" step="1" value="${presets.medium ?? 36}" />
+        <label class="small" for="note-sz-large">Large (px)</label>
+        <input id="note-sz-large"  type="number" min="5" max="150" step="1" value="${presets.large  ?? 48}" />
+      </div>
+    </div>
+
+    <div class="section" style="margin-top:12px">
+      <div class="title">Notes in scene</div>
+      <div class="small muted" style="margin-top:4px">
+        ${noteCount} note${noteCount === 1 ? '' : 's'} attached to mesh faces.
+        Right-click a mesh in the tree → <b>Add Note…</b> to create one.
+      </div>
+    </div>
+  `;
+
+  const wireSize = (id, key) => {
+    el.querySelector(id).addEventListener('change', e => {
+      const px = Math.max(5, Math.min(150, Number(e.target.value) || presets[key]));
+      const next = { ...(state.get('notePresets') || {}), [key]: px };
+      state.setState({ notePresets: next });
+      state.markDirty();
+    });
+  };
+  wireSize('#note-sz-small',  'small');
+  wireSize('#note-sz-medium', 'medium');
+  wireSize('#note-sz-large',  'large');
+}
+
+function _countNotes(node, n = { c: 0 }) {
+  if (!node) return 0;
+  if (node.type === 'note') n.c++;
+  for (const c of (node.children || [])) _countNotes(c, n);
+  return n.c;
 }
 
 function _renderExportTab() {

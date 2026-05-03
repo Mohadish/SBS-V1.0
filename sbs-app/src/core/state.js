@@ -221,6 +221,13 @@ function createInitialState() {
     // "Pivot Center via 3 Points…" menu entry.
     pivotCenterPickingNodeId: null,
 
+    // Mesh node id awaiting a "note pick" raycast. When set, the next
+    // viewport pointerdown raycasts; on a hit landing on the same mesh,
+    // a balloon note is created at the hit point. Cleared on hit, on
+    // Esc, or on selection change. Triggered from the tree row's
+    // "Add Note…" menu entry.
+    notePickingMeshId: null,
+
     // ── Export settings
     // Suppress auto-play of step narration when navigating live in the app.
     // The Preview ▶ button still works regardless. Persisted per project.

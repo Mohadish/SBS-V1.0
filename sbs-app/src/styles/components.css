@@ -96,6 +96,29 @@ label.colorlab{display:block;font-size:12px;color:var(--muted);margin-top:4px}
   100% {box-shadow:none;border-color:inherit}
 }
 .stepItem.justEdited,.chapterHeader.justEdited{animation:sbsBlinkYellow 400ms ease-out}
+
+/* ── 3D-anchored balloon notes ─────────────────────────────────────────────
+   The balloon body is a DOM div absolutely positioned inside
+   #notes-overlay-labels; the tail is an SVG <path> in #notes-overlay-svg.
+   Both share their colour palette with the rest of the UI. The balloon
+   text is centred and contenteditable on demand (dbl-click). */
+#notes-overlay{position:absolute;inset:0;pointer-events:none;z-index:30}
+#notes-overlay-svg{position:absolute;inset:0;width:100%;height:100%;pointer-events:none;overflow:visible}
+#notes-overlay-labels{position:absolute;inset:0;pointer-events:none}
+.sbsNoteBalloon{
+  pointer-events:auto;cursor:move;
+  background:#fffbeb;color:#1f2937;
+  border:1px solid #facc15;border-radius:10px;
+  padding:6px 10px;min-width:48px;max-width:340px;
+  font-family:Arial,Helvetica,sans-serif;font-size:14px;line-height:1.35;
+  box-shadow:0 2px 8px rgba(0,0,0,0.32);
+  white-space:pre-wrap;word-wrap:break-word;
+  user-select:none;
+}
+.sbsNoteBalloon[contenteditable="true"]{
+  user-select:text;cursor:text;outline:2px solid #3b82f6;outline-offset:1px;
+}
+.sbsNoteTail{fill:none;stroke:#facc15;stroke-width:2;stroke-linecap:round;opacity:0.9}
 .stepItem.hiddenStep{opacity:.65}
 .stepTop{display:flex;align-items:center;gap:6px}
 /* Thumbnail wrapper hosts the eye-toggle overlay. The eye is opacity:0

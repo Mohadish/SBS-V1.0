@@ -1,0 +1,357 @@
+/**
+ * SBS Step Browser — Notes Render
+ * ==================================
+ * 3D-anchored balloon notes. Each note is a TREE NODE child of its
+ * anchor mesh; this module finds every such node, projects its
+ * anchor point to screen pixels, and draws a comic-style balloon
+ * (HTML div for text, SVG path for the tail).
+ *
+ * Per-frame work
+ * --------------
+ * For each note:
+ *   1. Resolve anchor mesh in object3dById.
+ *   2. World point = mesh.localToWorld(anchorLocal).
+ *      Fallback if mesh missing / phantom: use anchorBboxRelative
+ *      against the saved mesh bbox so the note keeps a meaningful
+ *      position even when the asset is unavailable.
+ *   3. Project to canvas pixels via camera.
+ *   4. Position balloon DIV at anchorScreen + panelOffset.
+ *   5. Draw SVG path from anchorScreen to the balloon edge.
+ *   6. Pool DOM nodes — keep one DIV / PATH per note id, reuse them
+ *      across frames so we don't thrash the DOM on every frame.
+ *
+ * The CSS for .sbsNoteBalloon / .sbsNoteTail lives in components.css.
+ *
+ * Three.js is window.THREE.
+ */
+
+import { state }     from '../core/state.js';
+import { sceneCore } from '../core/scene.js';
+import { steps }     from '../systems/steps.js';
+
+let _labelsEl   = null;
+let _svgEl      = null;
+let _initialized = false;
+
+// Pools, keyed by note id. Each entry is { div, path }.
+const _pool = new Map();
+
+// Drag state — set by the balloon's pointerdown listener, cleared on up.
+let _drag = null;
+//   { noteId, startClientX, startClientY, startOffset:{x,y},
+//     beforeOffset:{x,y} } — used for undo entry on commit.
+
+// Edit-text state — when set, rendering keeps the contenteditable alive.
+let _editingNoteId = null;
+
+// ─── Init ─────────────────────────────────────────────────────────────────
+
+export function initNotesRender() {
+  if (_initialized) return;
+  _labelsEl = document.getElementById('notes-overlay-labels');
+  _svgEl    = document.getElementById('notes-overlay-svg');
+  if (!_labelsEl || !_svgEl) return;
+  // Fill the SVG to viewport size — sizing is handled via CSS, but we
+  // also need a viewBox that matches pixel coordinates so paths use
+  // pixel-space x/y.
+  _svgEl.setAttribute('preserveAspectRatio', 'none');
+  _initialized = true;
+  sceneCore.addTickHook(_renderTick);
+  // Re-render synchronously on data changes for instant feedback.
+  state.on('change:treeData',          _renderTick);
+  state.on('change:notePresets',       _renderTick);
+  state.on('change:selectionOutlineColor', _renderTick);
+}
+
+// ─── Tree walk ────────────────────────────────────────────────────────────
+
+function _collectNotes(node, out = []) {
+  if (!node) return out;
+  if (node.type === 'note') out.push(node);
+  for (const c of (node.children || [])) _collectNotes(c, out);
+  return out;
+}
+
+// ─── Per-frame render ─────────────────────────────────────────────────────
+
+function _renderTick() {
+  if (!_initialized || !_labelsEl || !_svgEl) return;
+  if (!sceneCore?.camera || !sceneCore.renderer) return;
+
+  const T = window.THREE;
+  if (!T) return;
+
+  const treeData = state.get('treeData');
+  const notes    = _collectNotes(treeData);
+  const presets  = state.get('notePresets') || { small: 18, medium: 36, large: 48 };
+
+  // Sync SVG viewBox to the live canvas pixel size.
+  const rect = sceneCore.renderer.domElement.getBoundingClientRect();
+  _svgEl.setAttribute('viewBox', `0 0 ${rect.width} ${rect.height}`);
+  _svgEl.style.width  = rect.width  + 'px';
+  _svgEl.style.height = rect.height + 'px';
+
+  // Track which entries we've used this frame.
+  const seen = new Set();
+
+  for (const note of notes) {
+    if (!note.localVisible) continue;
+    const meshId = note.anchorMeshId;
+    if (!meshId) continue;
+
+    // Anchor world position — prefer live mesh transform, fall back to
+    // saved bbox info on the phantom node when the asset is missing.
+    const anchorWorld = _resolveAnchorWorld(meshId, note);
+    if (!anchorWorld) continue;
+
+    // Project to canvas pixels.
+    const ndc = anchorWorld.clone().project(sceneCore.camera);
+    if (ndc.z > 1 || ndc.z < -1) continue;
+    const ax = ( ndc.x + 1) * rect.width  * 0.5;
+    const ay = (-ndc.y + 1) * rect.height * 0.5;
+
+    const fontSize = note.customFontSize ??
+                     presets[note.sizePresetId] ??
+                     presets.medium ?? 16;
+
+    const offset = note.panelOffset || { x: 90, y: -70 };
+    const px = ax + (offset.x ?? 0);
+    const py = ay + (offset.y ?? 0);
+
+    // ── DOM div (balloon) ─────────────────────────────────────────────
+    let entry = _pool.get(note.id);
+    if (!entry) {
+      entry = _createEntry(note);
+      _pool.set(note.id, entry);
+    }
+    const { div, path } = entry;
+
+    // Sync content + style.
+    if (_editingNoteId !== note.id) {
+      const text = note.text || '(empty note)';
+      if (div.dataset.lastText !== text) {
+        div.textContent = text;
+        div.dataset.lastText = text;
+      }
+    }
+    div.style.fontSize = `${fontSize}px`;
+    // Position balloon by its TOP-LEFT corner. CSS will translate(-50%, -100%)
+    // so the bottom-center sits at (px, py)? Simpler: just use absolute
+    // top-left with no translate — panelOffset is from the anchor.
+    div.style.left = `${Math.round(px)}px`;
+    div.style.top  = `${Math.round(py)}px`;
+
+    // ── SVG tail ──────────────────────────────────────────────────────
+    // The balloon's pixel rect:
+    const bw = div.offsetWidth  || 80;
+    const bh = div.offsetHeight || 24;
+    // Pick the tail-end point on the BALLOON's nearest edge to the anchor.
+    const tail = _balloonTailPoint(px, py, bw, bh, ax, ay);
+    // Bezier from anchor → tail with a gentle curve (mid-point pulled
+    // perpendicular to the line by ~20% of the segment length).
+    const dx = tail.x - ax, dy = tail.y - ay;
+    const len = Math.hypot(dx, dy) || 1;
+    const nx  = -dy / len, ny = dx / len;     // perpendicular
+    const cx  = (ax + tail.x) / 2 + nx * len * 0.15;
+    const cy  = (ay + tail.y) / 2 + ny * len * 0.15;
+    path.setAttribute('d',
+      `M ${ax.toFixed(1)} ${ay.toFixed(1)} ` +
+      `Q ${cx.toFixed(1)} ${cy.toFixed(1)} ${tail.x.toFixed(1)} ${tail.y.toFixed(1)}`,
+    );
+
+    seen.add(note.id);
+  }
+
+  // Garbage-collect entries whose notes no longer exist or are hidden.
+  for (const [id, entry] of _pool) {
+    if (seen.has(id)) continue;
+    entry.div.remove();
+    entry.path.remove();
+    _pool.delete(id);
+  }
+}
+
+// ─── Anchor resolution ────────────────────────────────────────────────────
+
+function _resolveAnchorWorld(meshId, note) {
+  const T = window.THREE;
+  const obj = steps.object3dById?.get(meshId);
+  if (obj?.matrixWorld && obj.parent !== null) {
+    obj.updateMatrixWorld();
+    const local = note.anchorLocal || [0, 0, 0];
+    const v = new T.Vector3(local[0], local[1], local[2]);
+    return v.applyMatrix4(obj.matrixWorld);
+  }
+  // Fallback — phantom / missing mesh. Reconstruct an approximate world
+  // position from the saved bbox + the bbox-relative anchor.
+  const nodeById = state.get('nodeById');
+  const meshNode = nodeById?.get(meshId);
+  const bbox = meshNode?.bbox;
+  if (!bbox) return null;
+  const u = note.anchorBboxRelative || [0.5, 0.5, 0.5];
+  const lx = bbox.min[0] + (bbox.max[0] - bbox.min[0]) * u[0];
+  const ly = bbox.min[1] + (bbox.max[1] - bbox.min[1]) * u[1];
+  const lz = bbox.min[2] + (bbox.max[2] - bbox.min[2]) * u[2];
+  // Phantom Object3D might exist — if so, transform through it.
+  const ph = meshNode?.object3d;
+  const v = new T.Vector3(lx, ly, lz);
+  if (ph?.matrixWorld) {
+    ph.updateMatrixWorld();
+    return v.applyMatrix4(ph.matrixWorld);
+  }
+  return v;
+}
+
+// ─── Tail geometry ────────────────────────────────────────────────────────
+
+/**
+ * Given a balloon rect (top-left at panelX/panelY, size w/h) and an
+ * anchor point (ax, ay) somewhere outside (or near) the rect, return
+ * the point on the balloon's nearest edge that the tail should connect
+ * to. Clamp to a small inset from the corner so the tail never sits
+ * exactly on a corner pixel.
+ */
+function _balloonTailPoint(panelX, panelY, w, h, ax, ay) {
+  const cx = panelX + w * 0.5, cy = panelY + h * 0.5;
+  const dx = cx - ax, dy = cy - ay;
+  // Normalise into half-rect frame.
+  const halfW = Math.max(w * 0.5, 1);
+  const halfH = Math.max(h * 0.5, 1);
+  const sx = dx / halfW, sy = dy / halfH;
+  // Decide which edge the line from the anchor hits first.
+  let tx, ty;
+  if (Math.abs(sx) > Math.abs(sy)) {
+    // Hits left or right edge.
+    tx = panelX + (sx < 0 ? 0 : w);
+    const k = (tx - ax) / (cx - ax || 1);
+    ty = ay + (cy - ay) * k;
+  } else {
+    // Hits top or bottom edge.
+    ty = panelY + (sy < 0 ? 0 : h);
+    const k = (ty - ay) / (cy - ay || 1);
+    tx = ax + (cx - ax) * k;
+  }
+  // Clamp away from corners so tail roots near edge midpoint.
+  const inset = 12;
+  tx = Math.max(panelX + inset, Math.min(panelX + w - inset, tx));
+  ty = Math.max(panelY + inset, Math.min(panelY + h - inset, ty));
+  return { x: tx, y: ty };
+}
+
+// ─── Per-balloon DOM creation ────────────────────────────────────────────
+
+function _createEntry(note) {
+  const div = document.createElement('div');
+  div.className = 'sbsNoteBalloon';
+  div.dataset.noteId = note.id;
+  div.style.position = 'absolute';
+  _labelsEl.appendChild(div);
+
+  // SVG path (tail)
+  const path = document.createElementNS('http://www.w3.org/2000/svg', 'path');
+  path.setAttribute('class', 'sbsNoteTail');
+  path.dataset.noteId = note.id;
+  _svgEl.appendChild(path);
+
+  // Drag balloon → live update panelOffset.
+  div.addEventListener('pointerdown', e => {
+    if (e.target.closest('[contenteditable="true"]')) return;
+    if (e.button !== 0) return;
+    const liveNode = _findNote(note.id);
+    if (!liveNode) return;
+    _drag = {
+      noteId: note.id,
+      startClientX: e.clientX,
+      startClientY: e.clientY,
+      startOffset:  { ...liveNode.panelOffset },
+      beforeOffset: { ...liveNode.panelOffset },
+    };
+    div.setPointerCapture?.(e.pointerId);
+    e.stopPropagation();
+    e.preventDefault();
+  });
+  div.addEventListener('pointermove', e => {
+    if (!_drag || _drag.noteId !== note.id) return;
+    const liveNode = _findNote(note.id);
+    if (!liveNode) return;
+    liveNode.panelOffset = {
+      x: _drag.startOffset.x + (e.clientX - _drag.startClientX),
+      y: _drag.startOffset.y + (e.clientY - _drag.startClientY),
+    };
+    _renderTick();
+  });
+  const finishDrag = (e) => {
+    if (!_drag || _drag.noteId !== note.id) return;
+    div.releasePointerCapture?.(e.pointerId);
+    const before = _drag.beforeOffset;
+    const after  = _findNote(note.id)?.panelOffset;
+    _drag = null;
+    if (after && (before.x !== after.x || before.y !== after.y)) {
+      // Lazy import to avoid circular dep at module load.
+      import('./actions.js').then(actions => {
+        actions._commitNotePanelOffset?.(note.id, before, after);
+      });
+    }
+  };
+  div.addEventListener('pointerup',     finishDrag);
+  div.addEventListener('pointercancel', finishDrag);
+
+  // Double-click → inline edit mode.
+  div.addEventListener('dblclick', e => {
+    e.stopPropagation();
+    _enterEdit(note.id, div);
+  });
+
+  return { div, path };
+}
+
+function _findNote(id) {
+  const nodeById = state.get('nodeById');
+  return nodeById?.get(id) ?? null;
+}
+
+function _enterEdit(noteId, div) {
+  _editingNoteId = noteId;
+  const liveNode = _findNote(noteId);
+  if (!liveNode) return;
+  const before = liveNode.text || '';
+  div.contentEditable = 'true';
+  div.textContent = before;
+  div.focus();
+  // Place caret at end.
+  const sel = window.getSelection?.();
+  if (sel) {
+    const r = document.createRange();
+    r.selectNodeContents(div);
+    r.collapse(false);
+    sel.removeAllRanges();
+    sel.addRange(r);
+  }
+  const finish = (commit) => {
+    if (_editingNoteId !== noteId) return;
+    _editingNoteId = null;
+    div.contentEditable = 'false';
+    const after = (div.textContent || '').trim();
+    div.dataset.lastText = '';
+    if (commit && after !== before) {
+      import('./actions.js').then(actions => {
+        actions.editNoteText?.(noteId, after);
+      });
+    } else {
+      // Roll back DOM text to live model so render syncs cleanly.
+      div.textContent = liveNode.text || '';
+    }
+  };
+  div.addEventListener('blur',    () => finish(true),  { once: true });
+  div.addEventListener('keydown', e => {
+    if (e.key === 'Escape') { e.preventDefault(); finish(false); div.blur(); }
+    if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) {
+      e.preventDefault(); div.blur();
+    }
+  });
+}
+
+// ─── Public helpers ──────────────────────────────────────────────────────
+
+/** Force a render — call after any data mutation that affects notes. */
+export function refreshNotes() { _renderTick(); }

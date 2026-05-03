@@ -53,6 +53,7 @@ import { initOverlayToolbar }  from './ui/overlay-toolbar.js';
 import { initHeaderLayer }     from './systems/header.js';
 import { initCables, resolveNodeWorldPosition } from './systems/cables.js';        // C1: cables wire step:applied → applyStepSnapshot; C5-B: pos resolver for gizmo target
 import * as pivotCenterPicker     from './systems/pivot-center-picker.js';   // 3-point center pivot tool — snap-based picker for cylinder-axis pivot placement
+import { initNotesRender }        from './systems/notes-render.js';
 import { initCableRender, getCablePointMeshes, getCableSegmentMeshes, getCableSocketMeshes, setInsertHoverPosition } from './systems/cables-render.js';  // C2: cables 3D render; C5-A: point raycast; C5-D: segment raycast + insert ghost; C5-E2: socket raycast
 import { initUserSettings }    from './core/user-settings.js';
 import { openSettingsModal }   from './ui/settings-modal.js';
@@ -110,6 +111,10 @@ initStepsPanel();
 initHud();
 initOverlay();
 initOverlayToolbar();
+// 3D-anchored balloon notes — registers a render-loop tick hook that
+// projects each note's mesh-local anchor to canvas pixels and updates
+// its DOM div + SVG tail.
+initNotesRender();
 // Header layer rides on top of the overlay stage; must init AFTER initOverlay.
 initHeaderLayer(getOverlayStage());
 // C1: cables system — subscribes to step:applied to merge per-step
@@ -411,6 +416,23 @@ function _pickInRect(x1, y1, x2, y2) {
 canvas.addEventListener('pointerdown', e => {
   if (e.button !== 0) return;
 
+  // Note picking — clicks while in this mode raycast the scene; on a
+  // hit landing on the same mesh, a balloon note is created at the hit
+  // point. On any other hit (or no hit), pick mode is cancelled. Runs
+  // before the gizmo so face hits are honoured even under handles.
+  const notePickMeshId = state.get('notePickingMeshId');
+  if (notePickMeshId) {
+    e.preventDefault();
+    e.stopPropagation();
+    const hit = sceneCore.pick(e.clientX, e.clientY);
+    if (hit?.object?.userData?.meshNodeId === notePickMeshId) {
+      actions.createNoteAtHit(notePickMeshId, hit);
+    } else {
+      actions.cancelNotePicking();
+    }
+    return;
+  }
+
   // 3-point center pivot: clicks while in this mode are routed to the
   // picker (snap to vertex/edge, place a cross, remove cross, or commit).
   // Runs BEFORE the gizmo so picks land regardless of handle overlap.
@@ -563,6 +585,12 @@ canvas.addEventListener('pointerleave', () => {
 state.on('change:pivotCenterPickingNodeId', id => {
   if (!id) return;
   setStatus('Pick 3 points (snap to vertex/edge). Enter to apply, Esc to cancel.', 'info', 0);
+});
+
+// Status feedback while waiting for the user to click a face for a new note.
+state.on('change:notePickingMeshId', id => {
+  if (!id) return;
+  setStatus('Click a face on the mesh to anchor the note. Esc to cancel.', 'info', 0);
 });
 
 // Multi-step "danger zone" — toggle the yellow viewport ring whenever
@@ -1178,6 +1206,11 @@ window.addEventListener('keydown', async e => {
     // 3-point center pivot — Esc cancels the whole picking session.
     if (state.get('pivotCenterPickingNodeId')) {
       actions.cancelPivotCenterPicking();
+      return;
+    }
+    // Note picking — Esc cancels.
+    if (state.get('notePickingMeshId')) {
+      actions.cancelNotePicking();
       return;
     }
     // Snap-to-surface mode is its own little modal — cancel that
