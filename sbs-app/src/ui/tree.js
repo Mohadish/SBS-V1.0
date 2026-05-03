@@ -33,7 +33,7 @@ import {
 }                               from '../core/transforms.js';
 import { generateId }           from '../core/schema.js';
 import { setStatus }            from './status.js';
-import { showContextMenu, hideContextMenu } from './context-menu.js';
+import { showContextMenu, hideContextMenu, showConfirmDialog } from './context-menu.js';
 
 // ── State ────────────────────────────────────────────────────────────────────
 
@@ -420,7 +420,6 @@ function _onRowContextMenu(e, node) {
 }
 
 function _buildContextMenuItems(node) {
-  const items    = [];
   const root     = state.get('treeData');
   const nodeById = state.get('nodeById');
   const multiIds = state.get('multiSelectedIds') || new Set();
@@ -428,6 +427,15 @@ function _buildContextMenuItems(node) {
   const targetIds = multiIds.has(node.id) && multiIds.size > 1
     ? Array.from(multiIds)
     : [node.id];
+
+  // ── Note rows: a TIGHT, dedicated menu (no visibility/isolate clutter).
+  // Show/Hide • Edit Text… • ↺ Reposition • Delete (with confirm) •
+  // Size: Small / Medium / Large.
+  if (node.type === 'note') {
+    return _buildNoteContextMenuItems(node);
+  }
+
+  const items    = [];
   const count    = targetIds.length;
   const label    = count > 1 ? `${count} items` : `"${(node.name || '').slice(0, 24)}"`;
 
@@ -441,6 +449,25 @@ function _buildContextMenuItems(node) {
     label: allVisible ? `Hide ${label}` : `Show ${label}`,
     action: () => actions.toggleVisibility(targetIds),
   });
+
+  // ── Per-note Show/Hide submenu for any node with note descendants ──────────
+  // Lists every note attached to this subtree with a discrete toggle.
+  // Useful on a model right-click ("toggle this one note out of 12") without
+  // having to drill the tree open.
+  const subtreeNotes = _collectSubtreeNotes(node);
+  if (subtreeNotes.length) {
+    items.push({ separator: true });
+    for (const n of subtreeNotes) {
+      const visEff = (nodeById?.get(n.id)?.localVisible !== false);
+      const txt    = (n.text || '').replace(/\s+/g, ' ').trim();
+      const short  = txt ? (txt.length > 30 ? txt.slice(0, 30) + '…' : txt) : '(empty note)';
+      items.push({
+        label:  `${visEff ? '👁' : '🚫'} Note: ${short}`,
+        action: () => actions.toggleVisibility([n.id]),
+      });
+    }
+    items.push({ separator: true });
+  }
 
   // ── Add Note (mesh-only, anchored to a face) ────────────────────────────────
   // Promoted to the top of the menu so it's where the user looks first.
@@ -562,41 +589,6 @@ function _buildContextMenuItems(node) {
   }
 
   items.push({ separator: true });
-
-  // ── Note-row specific actions ────────────────────────────────────────────────
-  if (node.type === 'note') {
-    items.push({
-      label: 'Edit Text…',
-      action: () => _showInputDialog('Edit note text', node.text || '', text => {
-        actions.editNoteText(node.id, text);
-      }),
-    });
-    items.push({
-      label: '↺ Reposition Note…',
-      action: () => actions.startNoteRepositioning(node.id),
-    });
-    items.push({
-      label: 'Delete Note',
-      action: () => actions.deleteNote(node.id),
-    });
-    items.push({ separator: true });
-    items.push({
-      label: '— Size: Small',
-      action: () => actions.setNoteSizePreset(node.id, 'small'),
-      disabled: node.sizePresetId === 'small' && node.customFontSize === null,
-    });
-    items.push({
-      label: '— Size: Medium',
-      action: () => actions.setNoteSizePreset(node.id, 'medium'),
-      disabled: node.sizePresetId === 'medium' && node.customFontSize === null,
-    });
-    items.push({
-      label: '— Size: Large',
-      action: () => actions.setNoteSizePreset(node.id, 'large'),
-      disabled: node.sizePresetId === 'large' && node.customFontSize === null,
-    });
-    items.push({ separator: true });
-  }
 
   // ── General ──────────────────────────────────────────────────────────────────
   if (node.type !== 'scene' && node.type !== 'note') {
@@ -1060,6 +1052,78 @@ function _showInputDialog(title, defaultVal, onConfirm) {
   requestAnimationFrame(() => { input.select(); });
 }
 
+
+/**
+ * Tight, dedicated context menu for a NOTE row.
+ *
+ *   👁 Show / 🚫 Hide
+ *   Edit Text…
+ *   ↺ Reposition Note…
+ *   Delete Note  (asks for confirmation)
+ *   ─
+ *   ● Size: Small / Medium / Large  (current choice greyed-out)
+ *
+ * Same payload is reused in notes-render.js for the balloon's
+ * right-click menu so the two surfaces stay in lockstep.
+ */
+function _buildNoteContextMenuItems(node) {
+  const isVisible = node.localVisible !== false;
+  return [
+    {
+      label:  isVisible ? `🚫 Hide note` : `👁 Show note`,
+      action: () => actions.toggleVisibility([node.id]),
+    },
+    {
+      label:  'Edit Text…',
+      action: () => _showInputDialog('Edit note text', node.text || '', text => {
+        actions.editNoteText(node.id, text);
+      }),
+    },
+    {
+      label:  '↺ Reposition Note…',
+      action: () => actions.startNoteRepositioning(node.id),
+    },
+    {
+      label:  'Delete Note',
+      action: () => {
+        const txt   = (node.text || '').replace(/\s+/g, ' ').trim();
+        const short = txt ? (txt.length > 40 ? txt.slice(0, 40) + '…' : txt) : '(empty note)';
+        showConfirmDialog(
+          'Delete note?',
+          `This will remove the note "${short}". You can undo with Ctrl+Z.`,
+          () => actions.deleteNote(node.id),
+        );
+      },
+    },
+    { separator: true },
+    {
+      label:    '● Size: Small',
+      action:   () => actions.setNoteSizePreset(node.id, 'small'),
+      disabled: node.sizePresetId === 'small'  && node.customFontSize === null,
+    },
+    {
+      label:    '● Size: Medium',
+      action:   () => actions.setNoteSizePreset(node.id, 'medium'),
+      disabled: node.sizePresetId === 'medium' && node.customFontSize === null,
+    },
+    {
+      label:    '● Size: Large',
+      action:   () => actions.setNoteSizePreset(node.id, 'large'),
+      disabled: node.sizePresetId === 'large'  && node.customFontSize === null,
+    },
+  ];
+}
+
+/**
+ * Walk a subtree, return every 'note' descendant. Used for the
+ * per-note Show/Hide group in container right-click menus.
+ */
+function _collectSubtreeNotes(node, out = []) {
+  if (!node) return out;
+  if (node.type === 'note') out.push(node);
+  for (const c of (node.children || [])) _collectSubtreeNotes(c, out);
+  return out;
+}
 
 // ── Tree helpers ──────────────────────────────────────────────────────────────
 

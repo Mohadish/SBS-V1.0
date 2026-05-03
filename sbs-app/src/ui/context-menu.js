@@ -63,3 +63,31 @@ export function showContextMenu(items, x, y) {
 export function hideContextMenu() {
   if (_el) _el.style.display = 'none';
 }
+
+/**
+ * Yes / No confirm dialog. Calls onYes if the user confirms.
+ * Lives next to showContextMenu so any module that uses the context
+ * menu also has a guard for destructive ops without a separate import.
+ */
+export function showConfirmDialog(title, body, onYes) {
+  const dlg = document.createElement('dialog');
+  dlg.className = 'sbs-dialog';
+  const esc = s => String(s ?? '').replace(/[&<>"']/g,
+    c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[c]);
+  dlg.innerHTML = `
+    <div class="sbs-dialog__body">
+      <div class="sbs-dialog__title">${esc(title)}</div>
+      <div class="small" style="margin-top:8px;line-height:1.45;">${esc(body)}</div>
+      <div style="display:flex;gap:8px;justify-content:flex-end;margin-top:14px">
+        <button class="btn" id="_scd-no">No</button>
+        <button class="btn primary" id="_scd-yes">Yes</button>
+      </div>
+    </div>
+  `;
+  document.body.appendChild(dlg);
+  dlg.querySelector('#_scd-no').addEventListener('click',  () => { dlg.close(); dlg.remove(); });
+  dlg.querySelector('#_scd-yes').addEventListener('click', () => { dlg.close(); dlg.remove(); onYes?.(); });
+  dlg.addEventListener('cancel', () => { dlg.remove(); });
+  dlg.showModal();
+  requestAnimationFrame(() => dlg.querySelector('#_scd-yes').focus());
+}

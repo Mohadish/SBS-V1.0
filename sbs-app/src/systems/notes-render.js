@@ -29,7 +29,7 @@ import { state }                    from '../core/state.js';
 import { sceneCore }                from '../core/scene.js';
 import { steps }                    from '../systems/steps.js';
 import { computeEffectiveVisibility } from '../core/nodes.js';
-import { showContextMenu }          from '../ui/context-menu.js';
+import { showContextMenu, showConfirmDialog } from '../ui/context-menu.js';
 
 let _labelsEl   = null;
 let _svgEl      = null;
@@ -376,8 +376,9 @@ function _createEntry(note) {
     e.preventDefault();
   });
 
-  // Right-click → contextmenu with the same items as the tree's note
-  // row: Edit Text / Delete / Size: Small | Medium | Large.
+  // Right-click → contextmenu mirroring the tree's note-row menu:
+  //   Show/Hide • Edit Text • Reposition • Delete (with confirm) •
+  //   Size: Small/Medium/Large.
   div.addEventListener('contextmenu', e => {
     e.preventDefault();
     e.stopPropagation();
@@ -385,22 +386,33 @@ function _createEntry(note) {
     if (!liveNode) return;
     state.setSelection(note.id, new Set([note.id]));
     import('./actions.js').then(actions => {
+      const isVisible = liveNode.localVisible !== false;
       showContextMenu([
-        { label: 'Edit Text…',
+        { label:  isVisible ? '🚫 Hide note' : '👁 Show note',
+          action: () => actions.toggleVisibility([note.id]) },
+        { label:  'Edit Text…',
           action: () => _enterEdit(note.id, div) },
-        { label: '↺ Reposition Note…',
+        { label:  '↺ Reposition Note…',
           action: () => actions.startNoteRepositioning(note.id) },
-        { label: 'Delete Note',
-          action: () => actions.deleteNote(note.id) },
+        { label:  'Delete Note',
+          action: () => {
+            const txt   = (liveNode.text || '').replace(/\s+/g, ' ').trim();
+            const short = txt ? (txt.length > 40 ? txt.slice(0, 40) + '…' : txt) : '(empty note)';
+            showConfirmDialog(
+              'Delete note?',
+              `This will remove the note "${short}". You can undo with Ctrl+Z.`,
+              () => actions.deleteNote(note.id),
+            );
+          } },
         { separator: true },
-        { label: '— Size: Small',
-          action: () => actions.setNoteSizePreset(note.id, 'small'),
+        { label:    '● Size: Small',
+          action:   () => actions.setNoteSizePreset(note.id, 'small'),
           disabled: liveNode.sizePresetId === 'small'  && liveNode.customFontSize === null },
-        { label: '— Size: Medium',
-          action: () => actions.setNoteSizePreset(note.id, 'medium'),
+        { label:    '● Size: Medium',
+          action:   () => actions.setNoteSizePreset(note.id, 'medium'),
           disabled: liveNode.sizePresetId === 'medium' && liveNode.customFontSize === null },
-        { label: '— Size: Large',
-          action: () => actions.setNoteSizePreset(note.id, 'large'),
+        { label:    '● Size: Large',
+          action:   () => actions.setNoteSizePreset(note.id, 'large'),
           disabled: liveNode.sizePresetId === 'large'  && liveNode.customFontSize === null },
       ], e.clientX, e.clientY);
     });
