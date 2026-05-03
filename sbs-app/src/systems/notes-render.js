@@ -91,6 +91,17 @@ function _renderTick() {
   _svgEl.style.width  = rect.width  + 'px';
   _svgEl.style.height = rect.height + 'px';
 
+  // Camera matrices fresh — Three.js's Vector3.project() reads
+  // camera.matrixWorldInverse, which the renderer refreshes inside its
+  // own render() call. Our tick hook runs BEFORE that, so without an
+  // explicit refresh here we'd project through the PREVIOUS frame's
+  // camera pose. That produces visible lag every frame the camera
+  // moves (orbit, pan, step transition) — the balloon trails the
+  // mesh by one frame, with 30–40 px diagonal jitter on rapid moves.
+  // Also leaves the tail anchor on the previous frame's face.
+  sceneCore.camera.updateMatrixWorld(true);
+  sceneCore.camera.matrixWorldInverse.copy(sceneCore.camera.matrixWorld).invert();
+
   // Track which entries we've used this frame.
   const seen = new Set();
 
@@ -278,7 +289,11 @@ function _createEntry(note) {
       x: _drag.startOffset.x + (e.clientX - _drag.startClientX),
       y: _drag.startOffset.y + (e.clientY - _drag.startClientY),
     };
-    _renderTick();
+    // Don't render here — the next sceneCore tick will pick up the
+    // mutation and project through the same camera state the renderer
+    // is about to use. Calling _renderTick() inline pulls the balloon
+    // forward by ~one frame relative to the canvas paint, producing
+    // visible jitter while dragging.
   });
   const finishDrag = (e) => {
     if (!_drag || _drag.noteId !== note.id) return;

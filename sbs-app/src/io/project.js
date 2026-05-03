@@ -802,8 +802,35 @@ export function buildDisplacedMeshIdRemap(liveModelNode, allSavedMeshSpecs, asse
  * @param {object}               specNode  saved node (with saved IDs)
  * @param {Map<string,TreeNode>} nodeById  live map (already has remapped IDs)
  */
-export function applySpecFieldsToNodes(specNode, nodeById) {
+export function applySpecFieldsToNodes(specNode, nodeById, parentSpec = null) {
   if (!specNode) return;
+
+  // ── Notes — restore as live tree children of the anchor mesh ─────
+  // Fresh imports never create note nodes (they live in the saved
+  // tree only), so a saved note's id won't resolve in nodeById. The
+  // recursion below skips it, but then the note is lost on every
+  // load. Detect note specs here and re-attach to the live anchor
+  // mesh, preserving every note field verbatim.
+  if (specNode.type === 'note') {
+    const meshId = specNode.anchorMeshId
+                || (parentSpec?.type === 'mesh' ? parentSpec.id : null);
+    const meshLive = meshId ? nodeById.get(meshId) : null;
+    if (meshLive && meshLive.type === 'mesh') {
+      const exists = (meshLive.children || []).some(c => c.id === specNode.id);
+      if (!exists) {
+        const noteLive = {
+          ...specNode,
+          missing:  false,
+          object3d: null,
+          children: [],
+        };
+        meshLive.children = [...(meshLive.children || []), noteLive];
+        nodeById.set(noteLive.id, noteLive);
+      }
+    }
+    return;
+  }
+
   const live = nodeById.get(specNode.id);
   if (live) {
     live.name         = specNode.name        || live.name;
@@ -825,7 +852,7 @@ export function applySpecFieldsToNodes(specNode, nodeById) {
     if (Array.isArray(specNode.sourceLocalScale))      live.sourceLocalScale      = specNode.sourceLocalScale;
     live.colorPresetId = specNode.colorPresetId || null;
   }
-  (specNode.children || []).forEach(sc => applySpecFieldsToNodes(sc, nodeById));
+  (specNode.children || []).forEach(sc => applySpecFieldsToNodes(sc, nodeById, specNode));
 }
 
 

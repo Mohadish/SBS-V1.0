@@ -546,6 +546,19 @@ async function _loadModelFile(file, assetEntry = null, skipColorExtraction = fal
 // ── Phantom nodes for missing assets ─────────────────────────────────────────
 
 function _cloneSpecAsPhantom(specNode) {
+  // Notes are GLOBAL data layers, not per-asset placeholders. They
+  // never need a "missing" flag — even when the host mesh is a phantom,
+  // the note carries the user's words and should restore verbatim.
+  // Spread-clone preserves all note fields (text, anchorLocal,
+  // anchorBboxRelative, panelOffset, sizePresetId, customFontSize, …).
+  if (specNode.type === 'note') {
+    return {
+      ...specNode,
+      missing:  false,
+      object3d: null,
+      children: [],
+    };
+  }
   const node = {
     id:                specNode.id,
     name:              specNode.name || 'Unknown',
