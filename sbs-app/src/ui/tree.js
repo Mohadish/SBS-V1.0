@@ -442,6 +442,17 @@ function _buildContextMenuItems(node) {
     action: () => actions.toggleVisibility(targetIds),
   });
 
+  // ── Add Note (mesh-only, anchored to a face) ────────────────────────────────
+  // Promoted to the top of the menu so it's where the user looks first.
+  // Click flow: this item arms face-pick mode (state.notePickingMeshId);
+  // the next viewport click on the same mesh creates the balloon.
+  if (node.type === 'mesh' && !node.missing) {
+    items.push({
+      label: '💬 Add Note…',
+      action: () => actions.startNotePicking(node.id),
+    });
+  }
+
   // ── Isolate ─────────────────────────────────────────────────────────────────
   items.push({
     label: 'Isolate',
@@ -551,15 +562,6 @@ function _buildContextMenuItems(node) {
   }
 
   items.push({ separator: true });
-
-  // ── Notes (mesh-only) ────────────────────────────────────────────────────────
-  if (node.type === 'mesh' && !node.missing) {
-    items.push({
-      label: 'Add Note…',
-      action: () => actions.startNotePicking(node.id),
-    });
-    items.push({ separator: true });
-  }
 
   // ── Note-row specific actions ────────────────────────────────────────────────
   if (node.type === 'note') {
