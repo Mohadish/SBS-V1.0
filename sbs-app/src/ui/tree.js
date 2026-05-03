@@ -572,6 +572,10 @@ function _buildContextMenuItems(node) {
       }),
     });
     items.push({
+      label: '↺ Reposition Note…',
+      action: () => actions.startNoteRepositioning(node.id),
+    });
+    items.push({
       label: 'Delete Note',
       action: () => actions.deleteNote(node.id),
     });

@@ -228,6 +228,14 @@ function createInitialState() {
     // "Add Note…" menu entry.
     notePickingMeshId: null,
 
+    // Note id awaiting a "reposition note" face pick. When set, the
+    // next viewport pointerdown raycasts; on a hit the note's anchor
+    // (mesh id, anchorLocal, anchorBboxRelative) is rewritten and
+    // the note is re-parented to the new mesh in the live tree.
+    // Cleared on hit, on Esc, or on selection change. Triggered from
+    // the tree row OR the balloon's right-click menu.
+    noteRepositioningId: null,
+
     // ── Export settings
     // Suppress auto-play of step narration when navigating live in the app.
     // The Preview ▶ button still works regardless. Persisted per project.

@@ -433,6 +433,23 @@ canvas.addEventListener('pointerdown', e => {
     return;
   }
 
+  // Note REPOSITION — clicks raycast for ANY mesh (different from
+  // create, which restricts to the same mesh). On a hit, the note's
+  // anchor moves to the new face and the note re-parents in the tree.
+  // Click on empty space cancels.
+  const noteReposId = state.get('noteRepositioningId');
+  if (noteReposId) {
+    e.preventDefault();
+    e.stopPropagation();
+    const hit = sceneCore.pick(e.clientX, e.clientY);
+    if (hit?.object?.userData?.meshNodeId) {
+      actions.repositionNoteAtHit(noteReposId, hit);
+    } else {
+      actions.cancelNoteRepositioning();
+    }
+    return;
+  }
+
   // 3-point center pivot: clicks while in this mode are routed to the
   // picker (snap to vertex/edge, place a cross, remove cross, or commit).
   // Runs BEFORE the gizmo so picks land regardless of handle overlap.
@@ -591,6 +608,13 @@ state.on('change:pivotCenterPickingNodeId', id => {
 state.on('change:notePickingMeshId', id => {
   if (!id) return;
   setStatus('Click a face on the mesh to anchor the note. Esc to cancel.', 'info', 0);
+});
+
+// Status feedback while waiting for the user to click a face to relocate
+// an existing note's anchor.
+state.on('change:noteRepositioningId', id => {
+  if (!id) return;
+  setStatus('Click a face on any mesh to move the note there. Esc to cancel.', 'info', 0);
 });
 
 // Multi-step "danger zone" — toggle the yellow viewport ring whenever
@@ -1231,6 +1255,11 @@ window.addEventListener('keydown', async e => {
     // Note picking — Esc cancels.
     if (state.get('notePickingMeshId')) {
       actions.cancelNotePicking();
+      return;
+    }
+    // Note repositioning — Esc cancels.
+    if (state.get('noteRepositioningId')) {
+      actions.cancelNoteRepositioning();
       return;
     }
     // Snap-to-surface mode is its own little modal — cancel that

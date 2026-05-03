@@ -381,6 +381,8 @@ function _createEntry(note) {
       showContextMenu([
         { label: 'Edit Text…',
           action: () => _enterEdit(note.id, div) },
+        { label: '↺ Reposition Note…',
+          action: () => actions.startNoteRepositioning(note.id) },
         { label: 'Delete Note',
           action: () => actions.deleteNote(note.id) },
         { separator: true },

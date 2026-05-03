@@ -3718,6 +3718,8 @@ export function loadSelectionGroup(groupId) {
 
 export function startNotePicking(meshId) {
   if (!meshId) return;
+  // Don't co-exist with a reposition pick.
+  if (state.get('noteRepositioningId')) cancelNoteRepositioning();
   state.setState({ notePickingMeshId: meshId });
 }
 
@@ -3725,6 +3727,137 @@ export function cancelNotePicking() {
   if (state.get('notePickingMeshId')) {
     state.setState({ notePickingMeshId: null });
   }
+}
+
+/**
+ * Enter "reposition this note" face-pick mode. The next viewport click
+ * on any mesh face moves the note's anchor there and re-parents it in
+ * the tree. Click on empty space cancels.
+ */
+export function startNoteRepositioning(noteId) {
+  if (!noteId) return;
+  if (state.get('notePickingMeshId')) cancelNotePicking();
+  state.setState({ noteRepositioningId: noteId });
+}
+
+export function cancelNoteRepositioning() {
+  if (state.get('noteRepositioningId')) {
+    state.setState({ noteRepositioningId: null });
+  }
+}
+
+/**
+ * Move an existing note's anchor to a fresh raycast hit. Called from
+ * main.js's pointerdown intercept while state.noteRepositioningId is
+ * set. Updates anchorMeshId / anchorLocal / anchorBboxRelative AND
+ * re-parents the note in the tree (note nodes always live as direct
+ * children of their anchor mesh). Single undo entry covers the whole
+ * gesture, including the tree reparent.
+ */
+export function repositionNoteAtHit(noteId, hit) {
+  if (!noteId || !hit?.point || !hit?.object) return false;
+  const T = window.THREE;
+  const newMeshId = hit.object.userData?.meshNodeId;
+  if (!newMeshId) return false;
+
+  const root      = state.get('treeData');
+  const nb        = state.get('nodeById');
+  const note      = nb?.get(noteId);
+  const newMesh   = nb?.get(newMeshId);
+  if (!note || note.type !== 'note') return false;
+  if (!newMesh || newMesh.type !== 'mesh') return false;
+
+  // Refresh world matrix on the target mesh so worldToLocal returns
+  // the correct point in mesh-local frame regardless of step state.
+  const newObj = steps.object3dById?.get(newMeshId);
+  if (!newObj) return false;
+  newObj.updateMatrixWorld(true);
+  const local = newObj.worldToLocal(hit.point.clone());
+
+  // bbox-relative fallback for missing-asset resilience.
+  let rel = [0.5, 0.5, 0.5];
+  const bb = newMesh.bbox;
+  if (bb && Array.isArray(bb.min) && Array.isArray(bb.max)) {
+    const wx = Math.max(bb.max[0] - bb.min[0], 1e-6);
+    const wy = Math.max(bb.max[1] - bb.min[1], 1e-6);
+    const wz = Math.max(bb.max[2] - bb.min[2], 1e-6);
+    rel = [
+      (local.x - bb.min[0]) / wx,
+      (local.y - bb.min[1]) / wy,
+      (local.z - bb.min[2]) / wz,
+    ];
+  }
+
+  // Capture full BEFORE state for undo.
+  const oldMeshId = note.anchorMeshId;
+  const oldMesh   = nb?.get(oldMeshId);
+  const before = {
+    anchorMeshId:       note.anchorMeshId,
+    anchorLocal:        [...(note.anchorLocal || [0, 0, 0])],
+    anchorBboxRelative: [...(note.anchorBboxRelative || [0.5, 0.5, 0.5])],
+    parentId:           oldMeshId,
+  };
+  const after = {
+    anchorMeshId:       newMeshId,
+    anchorLocal:        [local.x, local.y, local.z],
+    anchorBboxRelative: rel,
+    parentId:           newMeshId,
+  };
+
+  const apply = (vals) => {
+    const noteN = state.get('nodeById')?.get(noteId);
+    if (!noteN) return;
+    // Clear reposition mode at the same time as the apply so a redo
+    // doesn't leave the user trapped in pick mode.
+    state.setState({ noteRepositioningId: null });
+    noteN.anchorMeshId       = vals.anchorMeshId;
+    noteN.anchorLocal        = [...vals.anchorLocal];
+    noteN.anchorBboxRelative = [...vals.anchorBboxRelative];
+    // Re-parent in the live tree if anchor mesh changed.
+    if (vals.parentId && vals.parentId !== _findNodeParent(state.get('treeData'), noteId)?.id) {
+      _reparentNote(state.get('treeData'), noteId, vals.parentId);
+      state.setState({ nodeById: _nodes_buildNodeMap(state.get('treeData')) });
+    }
+    state.emit('change:treeData', state.get('treeData'));
+    state.markDirty();
+  };
+  apply(after);
+
+  undoManager.push(
+    'Reposition note',
+    () => apply(before),
+    () => apply(after),
+  );
+  void oldMesh;
+  return true;
+}
+
+function _reparentNote(root, noteId, newParentId) {
+  if (!root) return;
+  // Find current parent + remove from its children.
+  const oldParent = _findNodeParent(root, noteId);
+  if (!oldParent) return;
+  const idx = (oldParent.children || []).findIndex(c => c.id === noteId);
+  if (idx < 0) return;
+  const [note] = oldParent.children.splice(idx, 1);
+  // Append to new parent.
+  const newParent = _findNodeRecursiveLocal(root, newParentId);
+  if (newParent && newParent.type === 'mesh') {
+    newParent.children = [...(newParent.children || []), note];
+  } else {
+    // Fallback — restore to original spot if the new parent is gone.
+    oldParent.children.splice(idx, 0, note);
+  }
+}
+
+function _findNodeRecursiveLocal(node, id) {
+  if (!node) return null;
+  if (node.id === id) return node;
+  for (const c of (node.children || [])) {
+    const r = _findNodeRecursiveLocal(c, id);
+    if (r) return r;
+  }
+  return null;
 }
 
 /**
