@@ -1142,32 +1142,61 @@ export function enterPivotEdit(nodeId) {
  */
 export function commitPivotEdit() {
   if (!_pivotBatch) return;
-  const { nodeId, from } = _pivotBatch;
+  // Per-drag undo entries are pushed by commitPivotDrag (called from
+  // gizmo.onPointerUp), so by the time we reach here every change the
+  // user made is already in the undo log. This call only exits the
+  // RED edit mode; it doesn't push its own entry. (Pushing one here
+  // too would double-count: undo would walk back through the per-drag
+  // entries one by one, then through this combined entry — confusing.)
   _pivotBatch = null;
   state.setState({ pivotEditNodeId: null });
+  steps.scheduleTransformSync();
+}
 
+/**
+ * Per-DRAG commit while in pivot edit mode. Called from gizmo
+ * onPointerUp at the end of every translate / plane / rotate drag
+ * inside RED edit mode. Pushes a single undo entry covering THIS
+ * drag's pivot offset + quaternion change. Does NOT exit edit mode —
+ * the user can keep dragging the gizmo and each drag becomes its own
+ * undoable step.
+ *
+ * `before` is the snapshot the gizmo captured at pointerdown
+ *   { offset: number[3], quat: number[4] }.
+ */
+export function commitPivotDrag(nodeId, before) {
+  if (!nodeId || !before) return;
   const node = state.get('nodeById')?.get(nodeId);
   if (!node) return;
-  const to = captureTransformSnapshot(node);
-  if (JSON.stringify(from) === JSON.stringify(to)) return;
+  const after = {
+    offset: [...(node.pivotLocalOffset      || [0, 0, 0])],
+    quat:   [...(node.pivotLocalQuaternion  || [0, 0, 0, 1])],
+  };
+  // Skip no-op drags.
+  const same = (a, b, eps = 1e-7) => a.length === b.length
+    && a.every((v, i) => Math.abs(v - b[i]) < eps);
+  if (same(before.offset, after.offset) && same(before.quat, after.quat)) return;
 
   undoManager.push('Edit pivot',
     () => {
       const n = state.get('nodeById')?.get(nodeId); if (!n) return;
-      applyTransformSnapshot(n, from);
+      n.pivotLocalOffset     = [...before.offset];
+      n.pivotLocalQuaternion = [...before.quat];
+      n.pivotEnabled = true;
       const o = steps.object3dById?.get(nodeId);
       if (o) applyNodeTransformToObject3D(n, o);
       steps.scheduleTransformSync();
     },
     () => {
       const n = state.get('nodeById')?.get(nodeId); if (!n) return;
-      applyTransformSnapshot(n, to);
+      n.pivotLocalOffset     = [...after.offset];
+      n.pivotLocalQuaternion = [...after.quat];
+      n.pivotEnabled = true;
       const o = steps.object3dById?.get(nodeId);
       if (o) applyNodeTransformToObject3D(n, o);
       steps.scheduleTransformSync();
     },
   );
-  steps.scheduleTransformSync();
 }
 
 /**
@@ -1479,9 +1508,10 @@ export async function applyPivotCenter(nodeId, p1, p2, p3) {
     },
   );
 
-  // Enter pivot edit mode so the user can fine-tune via the gizmo.
-  // Per the user's spec: "once placed pivot stays red — user can edit."
-  enterPivotEdit(nodeId);
+  // Pivot is committed and BLUE (pivotEnabled + non-zero data). The
+  // user can re-enter RED edit mode explicitly via the pivot icon if
+  // they want to fine-tune via the gizmo — auto-entering edit mode
+  // here would defeat the "show me the pivot is on the object" cue.
   return true;
 }
 

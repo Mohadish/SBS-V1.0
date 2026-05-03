@@ -419,11 +419,21 @@ class GizmoController {
     const usePivotPose   = pivotEnabled || isPivotEditing;
 
     // During a rotate drag, lock the gizmo's pose to the snapshot taken
-    // at pointerdown. This stops the "rings spin under the cursor"
-    // artefact when the pivot itself is rotating (RED) or when the
-    // object is rotating around the pivot (BLUE). Translate drags
-    // re-track live so the gizmo follows the moving anchor.
-    const lockPose = this._dragging && this._dragEl?.type === 'rotate' && this._startGizmoPos;
+    // at pointerdown WHEN THE OBJECT IS ROTATING (BLUE mode). That
+    // stops the "rings spin under the cursor" artefact while the
+    // object orbits its pivot.
+    //
+    // EXCEPTION: in RED pivot edit mode the OBJECT doesn't move — only
+    // the pivot's local frame changes. Locking the pose during rotation
+    // means the user sees no live feedback and has to release to see
+    // the new orientation. Let the gizmo track the pivot's current
+    // pose live instead — the X/Y/Z handles spin to reflect where the
+    // pivot frame is going, which is exactly the "live preview" the
+    // user expects.
+    const lockPose = this._dragging
+                     && this._dragEl?.type === 'rotate'
+                     && this._startGizmoPos
+                     && !isPivotEditing;
 
     const pos = new T.Vector3();
     if (lockPose) {
@@ -569,10 +579,21 @@ class GizmoController {
         this._cableTarget.commitMove();
       }
     }
-    // P-P1: skip commitTransformEdit while in pivot edit — the
-    // pivot session covers undo for the whole RED→BLUE gesture.
+    // P-P1: in pivot edit mode (RED), commit ONE undo entry per drag
+    // via commitPivotDrag — captures the pivot pose changed by this
+    // gesture only. Does NOT exit edit mode, so the user can keep
+    // adjusting and each adjustment is independently undoable.
+    // Outside pivot edit mode, the regular commitTransformEdit handles
+    // the object-pose undo entry.
     const inPivotEdit = !!this._node && state.get('pivotEditNodeId') === this._node.id;
-    if (this._node && !inPivotEdit) actions.commitTransformEdit(this._node.id);
+    if (this._node && inPivotEdit) {
+      actions.commitPivotDrag(this._node.id, {
+        offset: this._startPivotOffset,
+        quat:   this._startPivotQuat,
+      });
+    } else if (this._node) {
+      actions.commitTransformEdit(this._node.id);
+    }
     if (this._dragEl) {
       this._setElColor(this._dragEl, this._dragEl.baseColor);
       this._dragEl = null;

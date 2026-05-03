@@ -424,6 +424,7 @@ canvas.addEventListener('pointerdown', e => {
   if (notePickMeshId) {
     e.preventDefault();
     e.stopPropagation();
+    _gizmoConsumed = true;
     const hit = sceneCore.pick(e.clientX, e.clientY);
     if (hit?.object?.userData?.meshNodeId === notePickMeshId) {
       actions.createNoteAtHit(notePickMeshId, hit);
@@ -441,6 +442,7 @@ canvas.addEventListener('pointerdown', e => {
   if (noteReposId) {
     e.preventDefault();
     e.stopPropagation();
+    _gizmoConsumed = true;
     const hit = sceneCore.pick(e.clientX, e.clientY);
     if (hit?.object?.userData?.meshNodeId) {
       actions.repositionNoteAtHit(noteReposId, hit);
@@ -453,9 +455,11 @@ canvas.addEventListener('pointerdown', e => {
   // 3-point center pivot: clicks while in this mode are routed to the
   // picker (snap to vertex/edge, place a cross, remove cross, or commit).
   // Runs BEFORE the gizmo so picks land regardless of handle overlap.
+  // _gizmoConsumed suppresses the follow-up click event from re-selecting.
   if (state.get('pivotCenterPickingNodeId')) {
     e.preventDefault();
     e.stopPropagation();
+    _gizmoConsumed = true;
     pivotCenterPicker.onPointerDown(e.clientX, e.clientY);
     return;
   }
@@ -464,10 +468,16 @@ canvas.addEventListener('pointerdown', e => {
   // against the scene, snap pivot if there's a hit, otherwise cancel.
   // Runs BEFORE the gizmo so the user can target a face that happens
   // to be behind / under a gizmo handle.
+  // _gizmoConsumed flag is reused (the click handler at line 758 reads
+  // it to skip mesh selection) so snap-pick clicks DON'T re-select the
+  // object — without it the user's pivot would land, then the click
+  // event would fire after pointerup and re-select the mesh, hiding
+  // the gizmo+pivot the snap had just placed.
   const snapPickNodeId = state.get('pivotSnapPickingNodeId');
   if (snapPickNodeId) {
     e.preventDefault();
     e.stopPropagation();
+    _gizmoConsumed = true;
     const hit = sceneCore.pick(e.clientX, e.clientY);
     if (hit) actions.snapPivotToHit(snapPickNodeId, hit);
     else     actions.cancelPivotSnapPicking();
