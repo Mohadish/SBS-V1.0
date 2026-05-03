@@ -434,6 +434,13 @@ class StepManager {
     const depthMap = {};
     flatten(state.get('treeData')).forEach((node, i) => { depthMap[node.id] = i; });
 
+    // ── Capture FROM note state BEFORE _prepareVisibility flips visibility.
+    // _scheduleNoteAnims (called later, after the simultaneous/phased
+    // branch decides on durations) reads this snapshot to know what to
+    // lerp FROM. If we waited until then, note.localVisible would
+    // already be at the TO value and the fade would never run.
+    const fromNoteState = _captureFromNoteState(state.get('treeData'));
+
     // Apply target visibility now and compute which meshes are hiding/showing.
     // Hiding meshes are kept obj.visible=true for dither-fade.
     // Showing meshes will be snapped to opacity=0 so they're invisible before
@@ -488,6 +495,14 @@ class StepManager {
         this._materials?.snapShowingToZero(showingMeshIds);
       }
 
+      // Schedule note panel-offset lerp + opacity fade across the entire
+      // phased animation. Notes don't have their own phase slot, so we
+      // lerp them over the full object-duration window using the same
+      // easing as the object-pose lerp. fromNoteState was captured
+      // before _prepareVisibility ran.
+      const phasedStartMs = clock.now();
+      _scheduleNoteAnims(state.get('treeData'), fromNoteState, toSnapshot, phasedStartMs, globalObj, easeFn);
+
       cameraHandled = await this._runPhasedAnimation(toSnapshot, phases, {
         changedNodeIds, fromWorldTransforms, toWorldTransforms, depthMap,
         hidingMeshIds, showingMeshIds,
@@ -525,10 +540,12 @@ class StepManager {
       }
 
       // Note transitions — per-step panelOffset lerp + opacity fade.
-      // Build _anim on each note that's about to change panelOffset
-      // OR visibility between FROM and TO states. notes-render reads
-      // _anim each frame and lerps; clears it when alpha hits 1.
-      _scheduleNoteAnims(state.get('treeData'), toSnapshot, startMs, objDur, easeFn);
+      // fromNoteState was captured BEFORE _prepareVisibility flipped
+      // note.localVisible to its target, so we know the actual FROM
+      // visibility for each note. _scheduleNoteAnims sets _anim on
+      // every note that needs to change; notes-render lerps each
+      // frame and clears _anim when alpha hits 1.
+      _scheduleNoteAnims(state.get('treeData'), fromNoteState, toSnapshot, startMs, objDur, easeFn);
 
       // Color/material transition
       if (toSnapshot.materials && this._materials) {
@@ -2159,21 +2176,50 @@ function _clearNoteAnims(nodeById) {
 }
 
 /**
+ * Snapshot every live note's CURRENT panelOffset + visibility BEFORE
+ * applySnapshotAnimated mutates the live tree (rebuildFromTreeSpec /
+ * _prepareVisibility). Without this, by the time _scheduleNoteAnims
+ * runs, note.localVisible has already been flipped to its target —
+ * fromVisible would equal toVisible and the fade would never start.
+ *
+ * Returns: { [noteId]: { panelOffset:{x,y}, visible:bool } }
+ */
+function _captureFromNoteState(root) {
+  const out = {};
+  if (!root) return out;
+  _walkNotes(root, n => {
+    out[n.id] = {
+      panelOffset: { x: n.panelOffset?.x ?? 0, y: n.panelOffset?.y ?? 0 },
+      visible:     n.localVisible !== false,
+    };
+  });
+  return out;
+}
+
+/**
  * Schedule per-note panel-offset + opacity fade interpolations for a
  * step transition. notes-render reads each note's _anim every tick and
  * lerps panelOffset + opacity, clearing _anim when alpha hits 1. We
  * only schedule for notes whose target state actually differs from
  * their current state — no busy-work for notes that don't move.
+ *
+ * fromState is captured BEFORE the live tree gets mutated (see
+ * _captureFromNoteState) so we know each note's REAL pre-transition
+ * state, not the post-mutation state.
  */
-function _scheduleNoteAnims(treeData, toSnapshot, startMs, durationMs, easeFn) {
+function _scheduleNoteAnims(treeData, fromState, toSnapshot, startMs, durationMs, easeFn) {
   if (!treeData) return;
   const toOffsets = toSnapshot?.notePanelOffsets || {};
   const toVis     = toSnapshot?.visibility || {};
   _walkNotes(treeData, note => {
-    const fromOffset = note.panelOffset || { x: 0, y: 0 };
-    const toOffset   = toOffsets[note.id] || fromOffset;
-    const fromVisible = note.localVisible !== false;
-    const toVisible   = toVis[note.id]    !== false;
+    const from = fromState?.[note.id] || {
+      panelOffset: { x: note.panelOffset?.x ?? 0, y: note.panelOffset?.y ?? 0 },
+      visible:     note.localVisible !== false,
+    };
+    const fromOffset  = from.panelOffset;
+    const toOffset    = toOffsets[note.id] || fromOffset;
+    const fromVisible = from.visible;
+    const toVisible   = toVis[note.id] !== false;
     const noOffsetChange = Math.abs(fromOffset.x - toOffset.x) < 0.5
                         && Math.abs(fromOffset.y - toOffset.y) < 0.5;
     const noVisChange    = fromVisible === toVisible;
