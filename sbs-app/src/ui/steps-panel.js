@@ -282,13 +282,15 @@ export function renderStepsPanel() {
   const selCount = _selSize();
   if (selCount >= 2) {
     const banner = document.createElement('div');
+    // Background is a soft yellow tint; text needs to be DARK so it
+    // reads cleanly on either theme. #78350f = amber-900.
     banner.style.cssText = `
       position:sticky;top:0;z-index:5;
       margin:-2px -2px 8px -2px;padding:6px 8px;
       background:rgba(234,179,8,0.18);
       border:1px solid rgba(234,179,8,0.55);
       border-radius:6px;
-      font-size:11px;line-height:1.35;color:#fde68a;
+      font-size:11px;line-height:1.35;color:#78350f;
       display:flex;align-items:center;gap:8px;
     `;
     banner.innerHTML = `
@@ -404,7 +406,7 @@ function _buildChapterHeader(chapter, number) {
   const name = document.createElement('span');
   name.className   = 'title';
   name.style.flex  = '1';
-  name.style.color = '#dbeafe';
+  name.style.color = 'var(--text)';
   name.textContent = chapter.name || 'Chapter';
 
   // Lock: on (blue) = always expanded; off (grey) = collapsable. Lock is

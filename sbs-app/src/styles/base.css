@@ -49,9 +49,11 @@ html[data-theme="light"] textarea{
    colour; .btn-danger uses a softer red on light bg. */
 html[data-theme="light"] .btn,
 html[data-theme="light"] .filelabel,
-html[data-theme="light"] .tabBtn{
+html[data-theme="light"] .tabBtn,
+html[data-theme="light"] .miniToggle{
   background:#e2e8f0;color:var(--text);border-color:var(--line);
 }
+html[data-theme="light"] .pill{color:var(--text);}
 html[data-theme="light"] .btn:hover,
 html[data-theme="light"] .filelabel:hover,
 html[data-theme="light"] .tabBtn:hover,
@@ -98,13 +100,9 @@ html[data-theme="light"] .animStepBtn.off{
   background:#e2e8f0;color:var(--muted);border-color:var(--line);
 }
 
-/* Step list cards — hardcoded #101827. Use white panels. */
-html[data-theme="light"] .stepItem{background:#ffffff;}
-html[data-theme="light"] .stepItem.active{
-  /* Active orange ring works fine on light, just soften the background
-     so it reads as a card rather than a wash. */
-  background:#fff7ed;
-}
+/* Step list cards now use var(--panel2) inline so they adapt to the
+   theme automatically. .stepItem.selected (warm yellow) wins on
+   both themes; .stepItem.active stays outline-only with no fill. */
 html[data-theme="light"] .colorRow{background:#ffffff;}
 html[data-theme="light"] .cameraItem{background:#ffffff;}
 html[data-theme="light"] .assetRow{background:#ffffff;}

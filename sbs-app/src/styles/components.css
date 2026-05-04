@@ -62,7 +62,7 @@ label.colorlab{display:block;font-size:12px;color:var(--muted);margin-top:4px}
 .animStepBtn.green{background:#14532d;color:#dcfce7;border-color:#22c55e}
 .animStepBtn.orange{background:#7c2d12;color:#ffedd5;border-color:#f97316}
 .animStepBtn.red{background:#7f1d1d;color:#fee2e2;border-color:#ef4444}
-.stepItem{border:1px solid var(--line);background:#101827;border-radius:12px;padding:8px;margin-bottom:8px;cursor:pointer}
+.stepItem{border:1px solid var(--line);background:var(--panel2);border-radius:12px;padding:8px;margin-bottom:8px;cursor:pointer}
 /* Active step — yellow outline ONLY. No fill change, no inner shadow.
    The outline alone tells the user which step is active; combined
    with the .selected fill below it stays clearly readable when the
