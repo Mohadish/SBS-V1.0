@@ -68,31 +68,28 @@ label.colorlab{display:block;font-size:12px;color:var(--muted);margin-top:4px}
    with the .selected fill below it stays clearly readable when the
    active step is also part of the multi-selection. */
 .stepItem.active{border-color:#facc15;outline:2px solid #facc15;outline-offset:1px}
-/* Multi-step selection highlight (Ctrl/Shift click in timeline) —
-   solid pale-yellow fill rgb(213,209,190). Same fill regardless of
-   whether the step is ALSO the active step; the active yellow
-   outline rides on top of the fill so both signals coexist
-   unambiguously. Text colour forced to dark slate so it's readable
-   against the warm fill on either theme. */
+/* Multi-step selection highlight (Ctrl/Shift click in timeline).
+   Default = the original BLUE used in dark theme. Light-theme
+   override (in base.css) swaps to a warm yellow fill that reads
+   better against the near-white surfaces. Active step's yellow
+   outline rides on top of the fill in both themes. */
 .stepItem.selected,
 .stepItem.selected.active{
-  background:rgb(213,209,190);
-  border-color:rgb(189,184,160);
-  color:#1e293b;
+  background:rgba(74,144,217,0.22);
+  border-color:#4A90D9;
+  box-shadow:0 0 0 1px rgba(74,144,217,.35) inset;
 }
+.stepItem.selected.active{background:rgba(74,144,217,0.32)}
 /* Chapter header — inline style sets a default blue tint, so the
    selection rule needs !important to win over it. Selected chapter
-   uses the same warm fill as selected steps so the visual language
-   stays consistent. partial = some-but-not-all of the chapter's
-   steps are in the multi-selection (dashed outline cue). */
+   matches the step palette: blue in dark, warm yellow in light. */
 .chapterHeader.selected{
-  background:rgb(213,209,190) !important;
-  border-color:rgb(189,184,160) !important;
-  outline:1px solid rgb(180,174,150);outline-offset:1px;
-  color:#1e293b !important;
+  background:rgba(74,144,217,0.32) !important;
+  border-color:#4A90D9 !important;
+  outline:1px solid rgba(74,144,217,0.7);outline-offset:1px;
 }
 .chapterHeader.selected.partial{
-  background:rgba(213,209,190,0.55) !important;
+  background:rgba(74,144,217,0.18) !important;
   outline-style:dashed;
 }
 
