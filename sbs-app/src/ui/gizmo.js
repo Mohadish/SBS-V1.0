@@ -1144,7 +1144,7 @@ class GizmoController {
       ` : ''}
 
       <div style="margin-top:10px;display:flex;justify-content:flex-end;">
-        <button data-action="reset" style="font-size:11px;padding:3px 8px;background:#0f172a;border:1px solid #334155;border-radius:4px;color:#94a3b8;cursor:pointer;">↺ Reset</button>
+        <button data-action="reset" style="font-size:11px;padding:3px 8px;background:var(--panel2);border:1px solid var(--line);border-radius:4px;color:var(--muted);cursor:pointer;">↺ Reset</button>
       </div>
     `;
   }
@@ -1157,9 +1157,9 @@ class GizmoController {
       'cursor:pointer',
       'font-weight:700',
       'letter-spacing:0.5px',
-      `background:${active ? activeBg : '#0f172a'}`,
-      `border:1px solid ${active ? activeBorder : '#334155'}`,
-      `color:${active ? '#eff6ff' : '#64748b'}`,
+      `background:${active ? activeBg : 'var(--panel2)'}`,
+      `border:1px solid ${active ? activeBorder : 'var(--line)'}`,
+      `color:${active ? '#eff6ff' : 'var(--muted)'}`,
     ].join(';');
   }
 
@@ -1168,8 +1168,8 @@ class GizmoController {
       <div style="display:flex;align-items:center;gap:8px;margin-bottom:4px;">
         <span style="color:${color};font-weight:700;width:12px;flex-shrink:0;">${label}</span>
         <input data-field="${id}" type="number" value="${value}" step="0.01"
-          style="flex:1;background:#0f172a;border:1px solid #334155;border-radius:4px;
-                 color:#e2e8f0;padding:3px 6px;font-size:12px;outline:none;width:0;" />
+          style="flex:1;background:var(--panel);border:1px solid var(--line);border-radius:4px;
+                 color:var(--text);padding:3px 6px;font-size:12px;outline:none;width:0;" />
       </div>`;
   }
 

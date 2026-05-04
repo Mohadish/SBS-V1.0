@@ -16,11 +16,16 @@
   --sidebar-right-width: 320px;
 }
 
-/* Light theme — switched in by setTheme('light') flipping the
-   data-theme attribute on <html>. We override the CSS variables only;
-   every component that uses var(--bg) / var(--panel) / etc. picks up
-   the new palette automatically without per-rule edits. Inputs +
-   buttons get explicit overrides for their hardcoded colors. */
+/* ============================================================
+   Light theme — flipped in by setTheme('light') setting
+   data-theme="light" on <html>. Many of the project's dark
+   colour values are hardcoded inline in components.css rather
+   than referencing CSS variables, so we have to override each
+   one explicitly. Anything that uses var(--bg) / var(--panel)
+   / etc. picks up the palette swap automatically; the rules
+   below just patch the leftover hardcoded values.
+   ============================================================ */
+
 html[data-theme="light"]{
   --bg:#f8fafc;
   --panel:#ffffff;
@@ -30,15 +35,27 @@ html[data-theme="light"]{
   --muted:#64748b;
   --accent:#0284c7;
 }
+
+/* Form widgets (inputs / selects / textareas live with hardcoded
+   #111827 in components.css line 27). */
 html[data-theme="light"] input,
 html[data-theme="light"] select,
 html[data-theme="light"] textarea{
-  background:#ffffff;color:var(--text);border:1px solid var(--line);
+  background:#ffffff !important;color:var(--text);border-color:var(--line);
 }
-html[data-theme="light"] .btn{
-  background:#e2e8f0;color:var(--text);border:1px solid var(--line);
+
+/* Buttons — .btn / .filelabel / .tabBtn share the same dark base style.
+   Light surface gets a soft slate/blue. .primary remains the accent
+   colour; .btn-danger uses a softer red on light bg. */
+html[data-theme="light"] .btn,
+html[data-theme="light"] .filelabel,
+html[data-theme="light"] .tabBtn{
+  background:#e2e8f0;color:var(--text);border-color:var(--line);
 }
-html[data-theme="light"] .btn:hover{
+html[data-theme="light"] .btn:hover,
+html[data-theme="light"] .filelabel:hover,
+html[data-theme="light"] .tabBtn:hover,
+html[data-theme="light"] .miniBtn:hover{
   background:#cbd5e1;
 }
 html[data-theme="light"] .btn.primary{
@@ -47,6 +64,120 @@ html[data-theme="light"] .btn.primary{
 html[data-theme="light"] .btn.primary:hover{
   background:#0369a1;
 }
+html[data-theme="light"] .btn-danger{
+  background:#fee2e2;border-color:#ef4444;color:#7f1d1d;
+}
+html[data-theme="light"] .btn-danger:hover{
+  background:#fecaca;
+}
+
+/* Tabs */
+html[data-theme="light"] .tabBar{background:#e2e8f0;}
+html[data-theme="light"] .tabBtn.active{
+  background:#dbeafe;color:var(--text);border-color:#93c5fd;
+}
+html[data-theme="light"] .topbar{background:#e2e8f0;}
+
+/* Tree rows (selection states use hardcoded dark blues). */
+html[data-theme="light"] .tree-row.selected{
+  background:#dbeafe;border-color:#93c5fd;
+}
+html[data-theme="light"] .tree-row.multi{
+  background:#bfdbfe;border-color:#60a5fa;
+}
+html[data-theme="light"] .eye:hover,
+html[data-theme="light"] .moveBtn:hover{
+  background:#cbd5e1;color:var(--text);
+}
+
+/* Animation step buttons */
+html[data-theme="light"] .animStepBtn{
+  background:#ffffff;color:var(--text);border-color:var(--line);
+}
+html[data-theme="light"] .animStepBtn.off{
+  background:#e2e8f0;color:var(--muted);border-color:var(--line);
+}
+
+/* Step list cards — hardcoded #101827. Use white panels. */
+html[data-theme="light"] .stepItem{background:#ffffff;}
+html[data-theme="light"] .stepItem.active{
+  /* Active orange ring works fine on light, just soften the background
+     so it reads as a card rather than a wash. */
+  background:#fff7ed;
+}
+html[data-theme="light"] .colorRow{background:#ffffff;}
+html[data-theme="light"] .cameraItem{background:#ffffff;}
+html[data-theme="light"] .assetRow{background:#ffffff;}
+html[data-theme="light"] .helpPop{background:#f1f5f9;}
+html[data-theme="light"] .stepEditor{
+  background:#f8fafc;color:var(--text);
+}
+
+/* Modal / dialog / context-menu surfaces — hardcoded #0f172a. */
+html[data-theme="light"] .modal,
+html[data-theme="light"] .context-menu,
+html[data-theme="light"] .contextMenu,
+html[data-theme="light"] .sbs-dialog{
+  background:#ffffff;color:var(--text);
+  box-shadow:0 12px 24px rgba(15,23,42,0.18);
+}
+
+/* Context menu items — make their hover state readable on light. */
+html[data-theme="light"] .context-menu__item{
+  color:var(--text);
+}
+html[data-theme="light"] .context-menu__item:not(:disabled):hover{
+  background:#dbeafe;
+}
+
+/* Scrollbars */
+html[data-theme="light"] *{scrollbar-color:#94a3b8 #e2e8f0;}
+html[data-theme="light"] ::-webkit-scrollbar-track{background:#e2e8f0;}
+html[data-theme="light"] ::-webkit-scrollbar-thumb{background:#94a3b8;}
+
+/* Steps panel header / topbar / step-nav / HUD / status surfaces —
+   all rgba-on-dark in components.css. Light versions use a faint
+   slate-blue tint with the same alpha behaviour so there's still
+   visual hierarchy against the white panels. */
+html[data-theme="light"] .stepsHeader{background:#e2e8f0;}
+html[data-theme="light"] .meshitem{background:#f8fafc;}
+html[data-theme="light"] .tree-row.dropTarget{background:#dbeafe;}
+html[data-theme="light"] #hud{background:rgba(255,255,255,0.92);color:var(--text);}
+html[data-theme="light"] #status-bar{background:rgba(255,255,255,0.92);color:var(--text);}
+html[data-theme="light"] #transform-editor-panel,
+html[data-theme="light"] .transformEditorPanel{
+  background:rgba(255,255,255,0.96);color:var(--text);
+}
+html[data-theme="light"] #step-nav-bar,
+html[data-theme="light"] #stepNavBar{background:rgba(255,255,255,0.92);color:var(--text);}
+html[data-theme="light"] #screen-text-toolbar,
+html[data-theme="light"] #screenTextToolbar{
+  background:rgba(255,255,255,0.96);color:var(--text);
+}
+html[data-theme="light"] .sceneNote{
+  background:rgba(255,255,255,0.96);color:var(--text);border-color:#cbd5e1;
+}
+html[data-theme="light"] #export-safe-frame-label{
+  background:rgba(255,255,255,0.95);color:var(--text);border-color:#cbd5e1;
+}
+
+/* Chapter header text — dark theme uses pale blue (#bfdbfe) for
+   accent contrast; on light bg that's invisible. Override to a
+   darker blue so the text reads. The header itself sits inside
+   inline-style background, so we win with a class selector. */
+html[data-theme="light"] .chapterHeader{color:#1e40af !important;}
+
+/* HUD badges + step navigation pills — dark theme uses
+   color:#dbeafe / #93c5fd and similar pale blues that wash out on
+   light. Re-tint to a darker indigo. */
+html[data-theme="light"] #step-nav-bar *,
+html[data-theme="light"] #stepNavBar *,
+html[data-theme="light"] #hud *,
+html[data-theme="light"] #status-bar *{color:var(--text);}
+
+/* Default text colour everywhere that hardcodes #cbd5e1 / #e5e7eb
+   and friends — let .small.muted / .muted resolve through --muted
+   so the contrast remains readable. */
 html[data-theme="light"] .small.muted,
 html[data-theme="light"] .muted{color:var(--muted)}
 

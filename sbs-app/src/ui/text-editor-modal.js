@@ -28,10 +28,10 @@ export function openTextEditor(html = DEFAULT_HTML) {
 
     const dlg = document.createElement('div');
     dlg.style.cssText = [
-      'background:#0e1420','border:1px solid #334155','border-radius:10px',
+      'background:var(--panel)','border:1px solid var(--line)','border-radius:10px',
       'width:min(720px,90vw)','max-height:80vh',
       'display:flex','flex-direction:column','gap:8px','padding:12px',
-      'color:#e5e7eb','font-size:13px',
+      'color:var(--text)','font-size:13px',
     ].join(';');
 
     const toolbar = document.createElement('div');
@@ -41,9 +41,9 @@ export function openTextEditor(html = DEFAULT_HTML) {
     ed.contentEditable = 'true';
     ed.style.cssText = [
       'flex:1','min-height:180px','max-height:60vh','overflow:auto',
-      'padding:12px','border:1px solid #334155','border-radius:8px',
-      'background:#0a101a','outline:none',
-      'font-family:Arial','font-size:16px','color:#fff',
+      'padding:12px','border:1px solid var(--line)','border-radius:8px',
+      'background:var(--panel2)','outline:none',
+      'font-family:Arial','font-size:16px','color:var(--text)',
       'white-space:pre-wrap',
     ].join(';');
     ed.innerHTML = html;

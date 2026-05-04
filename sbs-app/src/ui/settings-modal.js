@@ -20,7 +20,7 @@ export async function openSettingsModal(initialTab = 'language') {
 
   _dlg = document.createElement('dialog');
   _dlg.className = 'sbs-dialog';
-  _dlg.style.cssText = 'width:min(640px,90vw);max-height:80vh;background:#0e1420;border:1px solid #334155;border-radius:10px;padding:0;color:#e5e7eb;';
+  _dlg.style.cssText = 'width:min(640px,90vw);max-height:80vh;background:var(--panel);border:1px solid var(--line);border-radius:10px;padding:0;color:var(--text);';
 
   _dlg.innerHTML = `
     <div style="display:flex;flex-direction:column;height:100%;min-height:380px;">
@@ -46,9 +46,10 @@ export async function openSettingsModal(initialTab = 'language') {
   if (!document.getElementById(styleId)) {
     const s = document.createElement('style'); s.id = styleId;
     s.textContent = `
-      .settings-tab{background:transparent;color:#cbd5e1;border:none;text-align:left;padding:6px 14px;cursor:pointer;font-size:13px;border-left:3px solid transparent;}
-      .settings-tab:hover{background:rgba(255,255,255,0.04);}
-      .settings-tab.active{background:rgba(245,158,11,0.10);color:#fbbf24;border-left-color:#f59e0b;}
+      .settings-tab{background:transparent;color:var(--text);border:none;text-align:left;padding:6px 14px;cursor:pointer;font-size:13px;border-left:3px solid transparent;}
+      .settings-tab:hover{background:rgba(127,127,127,0.10);}
+      .settings-tab.active{background:rgba(245,158,11,0.12);color:#d97706;border-left-color:#f59e0b;}
+      html[data-theme="light"] .settings-tab.active{color:#b45309;}
     `;
     document.head.appendChild(s);
   }
@@ -142,7 +143,7 @@ async function _renderLanguageTab(body) {
       voices for the language you want, then restart this app.
     </p>
 
-    <div id="settings-lang-list" style="display:flex;flex-direction:column;gap:4px;max-height:240px;overflow:auto;border:1px solid #334155;border-radius:6px;padding:8px;background:#0a101a;">
+    <div id="settings-lang-list" style="display:flex;flex-direction:column;gap:4px;max-height:240px;overflow:auto;border:1px solid var(--line);border-radius:6px;padding:8px;background:var(--panel2);">
       ${items.length === 0
         ? '<div class="small muted">No installed languages detected. Try: Windows Settings → Time &amp; language → Language &amp; region.</div>'
         : items.map(it => {
