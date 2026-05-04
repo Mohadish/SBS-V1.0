@@ -27,17 +27,30 @@
    ============================================================ */
 
 html[data-theme="light"]{
-  /* Near-white neutral palette — target ~RGB(250,250,250) for the
-     dominant surface tone. Previous slate-blue values (#f1f5f9 etc.)
-     read as medium-grey on most monitors. Pure neutrals avoid that
-     and keep the contrast crisp without a colour cast. */
-  --bg:#fafafa;            /* RGB(250,250,250) — viewport, body bg */
-  --panel:#ffffff;         /* RGB(255,255,255) — sidebars / cards */
-  --panel2:#f5f5f5;        /* RGB(245,245,245) — recessed surfaces */
-  --line:#d4d4d4;          /* RGB(212,212,212) — neutral border */
+  /* Pure white-dominant palette. Every previous "neutral grey" value
+     was still reading too dark in practice; flipping to pure
+     #ffffff for the BIG visible surfaces and using subtle off-whites
+     only for separation forces the dominant tone to be 255, not 240. */
+  --bg:#ffffff;
+  --panel:#ffffff;
+  --panel2:#fafafa;        /* RGB(250) — barely-off-white for slight depth */
+  --line:#e5e5e5;          /* RGB(229) — subtle neutral border */
   --text:#1e293b;
-  --muted:#737373;         /* RGB(115,115,115) — neutral muted */
+  --muted:#737373;
   --accent:#0284c7;
+}
+
+/* Force every body / sidebar / panel to pure white at the
+   structural level so no inherited rule pulls them grey. */
+html[data-theme="light"] body,
+html[data-theme="light"] #app,
+html[data-theme="light"] #sidebar-left,
+html[data-theme="light"] #sidebar-right,
+html[data-theme="light"] #sidebar-left-content,
+html[data-theme="light"] #steps-panel,
+html[data-theme="light"] .tabPanel,
+html[data-theme="light"] .sidebar-panels{
+  background:#ffffff !important;
 }
 
 /* Form widgets (inputs / selects / textareas live with hardcoded
@@ -48,21 +61,20 @@ html[data-theme="light"] textarea{
   background:#ffffff !important;color:var(--text);border-color:var(--line);
 }
 
-/* Buttons — .btn / .filelabel / .tabBtn share the same dark base style.
-   Light surface gets a soft slate/blue. .primary remains the accent
-   colour; .btn-danger uses a softer red on light bg. */
+/* Buttons — keep them barely-off-white so the boundary reads, no
+   slate-blue tint, no medium grey. Hover bumps to #f0f0f0. */
 html[data-theme="light"] .btn,
 html[data-theme="light"] .filelabel,
 html[data-theme="light"] .tabBtn,
 html[data-theme="light"] .miniToggle{
-  background:#f5f5f5;color:var(--text);border-color:var(--line);
+  background:#fafafa;color:var(--text);border-color:var(--line);
 }
 html[data-theme="light"] .pill{color:var(--text);}
 html[data-theme="light"] .btn:hover,
 html[data-theme="light"] .filelabel:hover,
 html[data-theme="light"] .tabBtn:hover,
 html[data-theme="light"] .miniBtn:hover{
-  background:#e5e5e5;
+  background:#f0f0f0;
 }
 html[data-theme="light"] .btn.primary{
   background:#0284c7;color:#ffffff;border-color:#0284c7;
@@ -77,14 +89,18 @@ html[data-theme="light"] .btn-danger:hover{
   background:#fecaca;
 }
 
-/* Tabs */
-html[data-theme="light"] .tabBar{background:#f0f0f0;}
+/* Tabs — barely-off-white bar with white tabs. Active tab gets a soft
+   blue tint to stand out without breaking the white-dominant feel. */
+html[data-theme="light"] .tabBar{background:#fafafa;border-bottom:1px solid var(--line);}
 html[data-theme="light"] .tabBtn.active{
   background:#dbeafe;color:var(--text);border-color:#93c5fd;
 }
-html[data-theme="light"] .topbar{background:#f0f0f0;}
+html[data-theme="light"] .topbar{background:#fafafa;}
 
-/* Tree rows (selection states use hardcoded dark blues). */
+/* Tree rows (selection + hover states all hardcoded for dark theme). */
+html[data-theme="light"] .tree-row:hover{
+  background:#f0f0f0;
+}
 html[data-theme="light"] .tree-row.selected{
   background:#dbeafe;border-color:#93c5fd;
 }
@@ -93,7 +109,7 @@ html[data-theme="light"] .tree-row.multi{
 }
 html[data-theme="light"] .eye:hover,
 html[data-theme="light"] .moveBtn:hover{
-  background:#e5e5e5;color:var(--text);
+  background:#f0f0f0;color:var(--text);
 }
 
 /* Animation step buttons */
@@ -101,7 +117,7 @@ html[data-theme="light"] .animStepBtn{
   background:#ffffff;color:var(--text);border-color:var(--line);
 }
 html[data-theme="light"] .animStepBtn.off{
-  background:#f5f5f5;color:var(--muted);border-color:var(--line);
+  background:#fafafa;color:var(--muted);border-color:var(--line);
 }
 
 /* Step / chapter selection — dark theme keeps the original blue
@@ -128,9 +144,9 @@ html[data-theme="light"] .chapterHeader.selected.partial{
 html[data-theme="light"] .colorRow{background:#ffffff;}
 html[data-theme="light"] .cameraItem{background:#ffffff;}
 html[data-theme="light"] .assetRow{background:#ffffff;}
-html[data-theme="light"] .helpPop{background:#f5f5f5;}
+html[data-theme="light"] .helpPop{background:#fafafa;}
 html[data-theme="light"] .stepEditor{
-  background:#fafafa;color:var(--text);
+  background:#ffffff;color:var(--text);
 }
 
 /* Modal / dialog / context-menu surfaces — hardcoded #0f172a. */
@@ -150,17 +166,17 @@ html[data-theme="light"] .context-menu__item:not(:disabled):hover{
   background:#dbeafe;
 }
 
-/* Scrollbars — neutral grey palette to match the rest of light theme. */
-html[data-theme="light"] *{scrollbar-color:#c4c4c4 #f5f5f5;}
-html[data-theme="light"] ::-webkit-scrollbar-track{background:#f5f5f5;}
-html[data-theme="light"] ::-webkit-scrollbar-thumb{background:#c4c4c4;}
+/* Scrollbars — barely-there neutrals so they don't add visual noise. */
+html[data-theme="light"] *{scrollbar-color:#d4d4d4 #fafafa;}
+html[data-theme="light"] ::-webkit-scrollbar-track{background:#fafafa;}
+html[data-theme="light"] ::-webkit-scrollbar-thumb{background:#d4d4d4;}
 
 /* Steps panel header / topbar / step-nav / HUD / status surfaces —
    all rgba-on-dark in components.css. Light versions use a faint
    slate-blue tint with the same alpha behaviour so there's still
    visual hierarchy against the white panels. */
-html[data-theme="light"] .stepsHeader{background:#f0f0f0;}
-html[data-theme="light"] .meshitem{background:#fafafa;}
+html[data-theme="light"] .stepsHeader{background:#fafafa;}
+html[data-theme="light"] .meshitem{background:#ffffff;}
 html[data-theme="light"] .tree-row.dropTarget{background:#dbeafe;}
 html[data-theme="light"] #hud{background:rgba(255,255,255,0.92);color:var(--text);}
 html[data-theme="light"] #status-bar{background:rgba(255,255,255,0.92);color:var(--text);}
