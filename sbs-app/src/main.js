@@ -135,6 +135,11 @@ state.on('change:backgroundGradient', _syncBackground);
 state.on('change:gridVisible', vis => {
   sceneCore.setGridVisible(vis);
 });
+// Sync grid visibility to the live state at boot — sceneCore.init's
+// default is grid-on, but state's default is now grid-off. Without
+// this line the grid would briefly show on a fresh app launch
+// (until the user / a project load toggles it).
+sceneCore.setGridVisible(!!state.get('gridVisible'));
 
 // ══════════════════════════════════════════════════════════════════════════════
 //  3. MATERIALS

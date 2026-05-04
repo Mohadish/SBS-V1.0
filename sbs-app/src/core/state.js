@@ -190,7 +190,7 @@ function createInitialState() {
 
     // ── UI state
     activeSidebarTab:   'files',      // which left sidebar tab is open
-    gridVisible:        true,
+    gridVisible:        false,
     showExportSafeFrame: false,
 
     // ── Gizmo / transform

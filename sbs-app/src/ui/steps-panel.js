@@ -376,6 +376,11 @@ function _buildChapterHeader(chapter, number) {
   wrap.className         = 'chapterHeader' + (chapter.hidden ? ' is-hidden' : '') + selClass;
   wrap.dataset.chapterId = chapter.id;
   wrap.draggable         = true;
+  // Inline base style (overridden by .chapterHeader.selected when the
+  // chapter is in the multi-step selection — see components.css). Text
+  // colour pulls from the theme variable so it reads on both palettes;
+  // the .selected rule forces dark slate to stay readable against the
+  // warm fill.
   wrap.style.cssText = [
     'padding:8px 8px',
     'margin-top:10px',
@@ -385,7 +390,7 @@ function _buildChapterHeader(chapter, number) {
     'background:rgba(59,130,246,0.12)',
     'border:1px solid rgba(59,130,246,0.45)',
     'border-radius:6px',
-    'color:#bfdbfe',
+    'color:var(--text)',
     'cursor:grab',
     'user-select:none',
   ].join(';');

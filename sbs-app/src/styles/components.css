@@ -63,18 +63,38 @@ label.colorlab{display:block;font-size:12px;color:var(--muted);margin-top:4px}
 .animStepBtn.orange{background:#7c2d12;color:#ffedd5;border-color:#f97316}
 .animStepBtn.red{background:#7f1d1d;color:#fee2e2;border-color:#ef4444}
 .stepItem{border:1px solid var(--line);background:#101827;border-radius:12px;padding:8px;margin-bottom:8px;cursor:pointer}
-.stepItem.active{border-color:#f59e0b;outline:2px solid #f59e0b;outline-offset:1px;box-shadow:0 0 0 1px rgba(245,158,11,.35) inset}
-/* Multi-step selection highlight (Ctrl/Shift click in timeline). The
-   colour rgb(74,144,217) === #4A90D9 is the project-wide "multi-edit
-   in progress" tint — used on both selected step cards and any chapter
-   header whose steps are part of the current selection. */
-.stepItem.selected{background:rgba(74,144,217,0.22);border-color:#4A90D9;box-shadow:0 0 0 1px rgba(74,144,217,.35) inset}
-.stepItem.selected.active{background:rgba(74,144,217,0.32)}
-/* Chapter header inline style sets a default blue tint, so we need
-   !important to win over it when the chapter's steps are part of the
-   multi-step selection. */
-.chapterHeader.selected{background:rgba(74,144,217,0.32) !important;border-color:#4A90D9 !important;outline:1px solid rgba(74,144,217,0.7);outline-offset:1px}
-.chapterHeader.selected.partial{background:rgba(74,144,217,0.18) !important;outline-style:dashed}
+/* Active step — yellow outline ONLY. No fill change, no inner shadow.
+   The outline alone tells the user which step is active; combined
+   with the .selected fill below it stays clearly readable when the
+   active step is also part of the multi-selection. */
+.stepItem.active{border-color:#facc15;outline:2px solid #facc15;outline-offset:1px}
+/* Multi-step selection highlight (Ctrl/Shift click in timeline) —
+   solid pale-yellow fill rgb(213,209,190). Same fill regardless of
+   whether the step is ALSO the active step; the active yellow
+   outline rides on top of the fill so both signals coexist
+   unambiguously. Text colour forced to dark slate so it's readable
+   against the warm fill on either theme. */
+.stepItem.selected,
+.stepItem.selected.active{
+  background:rgb(213,209,190);
+  border-color:rgb(189,184,160);
+  color:#1e293b;
+}
+/* Chapter header — inline style sets a default blue tint, so the
+   selection rule needs !important to win over it. Selected chapter
+   uses the same warm fill as selected steps so the visual language
+   stays consistent. partial = some-but-not-all of the chapter's
+   steps are in the multi-selection (dashed outline cue). */
+.chapterHeader.selected{
+  background:rgb(213,209,190) !important;
+  border-color:rgb(189,184,160) !important;
+  outline:1px solid rgb(180,174,150);outline-offset:1px;
+  color:#1e293b !important;
+}
+.chapterHeader.selected.partial{
+  background:rgba(213,209,190,0.55) !important;
+  outline-style:dashed;
+}
 
 /* ── Multi-step "danger zone" indicators ─────────────────────────────────
    When ≥ 2 steps are multi-selected, every visibility / color edit fans

@@ -129,7 +129,7 @@ export function createEmptyProject() {
       schema_version: 1,
       backgroundColor:        '#0f172a',
       solidOverride:          false,
-      gridVisible:            true,
+      gridVisible:            false,
       cameraAnimDurationMs:   1500,
       objectAnimDurationMs:   1500,
       cameraFillLight: {

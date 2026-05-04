@@ -161,11 +161,9 @@ html[data-theme="light"] #export-safe-frame-label{
   background:rgba(255,255,255,0.95);color:var(--text);border-color:#cbd5e1;
 }
 
-/* Chapter header text — dark theme uses pale blue (#bfdbfe) for
-   accent contrast; on light bg that's invisible. Override to a
-   darker blue so the text reads. The header itself sits inside
-   inline-style background, so we win with a class selector. */
-html[data-theme="light"] .chapterHeader{color:#1e40af !important;}
+/* Chapter header inline style sets color:var(--text) now, so it
+   already adapts. .chapterHeader.selected (in components.css) forces
+   dark slate text against the warm fill — works on both themes. */
 
 /* HUD badges + step navigation pills — dark theme uses
    color:#dbeafe / #93c5fd and similar pale blues that wash out on

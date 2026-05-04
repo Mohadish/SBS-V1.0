@@ -171,7 +171,7 @@ export function serialize() {
     state.get('backgroundGradient') ?? { enabled: false, color1: '#0f172a', color2: '#1e293b', angleDeg: 180 }
   ));
   cfg.solidOverride        = state.get('solidOverride')        ?? false;
-  cfg.gridVisible          = state.get('gridVisible')          ?? true;
+  cfg.gridVisible          = state.get('gridVisible')          ?? false;
   cfg.cameraAnimDurationMs = state.get('cameraAnimDurationMs') ?? 1500;
   cfg.objectAnimDurationMs = state.get('objectAnimDurationMs') ?? 1500;
   cfg.cameraFillLight      = { ...(state.get('cameraFillLight') || {}) };
@@ -500,7 +500,7 @@ export function applyProjectToState(project) {
       angleDeg: Number.isFinite(s.backgroundGradient?.angleDeg) ? s.backgroundGradient.angleDeg : 180,
     },
     solidOverride:        s.solidOverride           ?? false,
-    gridVisible:          s.gridVisible             ?? true,
+    gridVisible:          s.gridVisible             ?? false,
     cameraAnimDurationMs: s.cameraAnimDurationMs    ?? 1500,
     objectAnimDurationMs: s.objectAnimDurationMs    ?? 1500,
     cameraFillLight:      s.cameraFillLight
