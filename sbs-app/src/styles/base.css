@@ -55,14 +55,14 @@ html[data-theme="light"] .btn,
 html[data-theme="light"] .filelabel,
 html[data-theme="light"] .tabBtn,
 html[data-theme="light"] .miniToggle{
-  background:#ededed;color:var(--text);border-color:var(--line);
+  background:#f5f5f5;color:var(--text);border-color:var(--line);
 }
 html[data-theme="light"] .pill{color:var(--text);}
 html[data-theme="light"] .btn:hover,
 html[data-theme="light"] .filelabel:hover,
 html[data-theme="light"] .tabBtn:hover,
 html[data-theme="light"] .miniBtn:hover{
-  background:#dcdcdc;
+  background:#e5e5e5;
 }
 html[data-theme="light"] .btn.primary{
   background:#0284c7;color:#ffffff;border-color:#0284c7;
@@ -78,11 +78,11 @@ html[data-theme="light"] .btn-danger:hover{
 }
 
 /* Tabs */
-html[data-theme="light"] .tabBar{background:#ededed;}
+html[data-theme="light"] .tabBar{background:#f0f0f0;}
 html[data-theme="light"] .tabBtn.active{
   background:#dbeafe;color:var(--text);border-color:#93c5fd;
 }
-html[data-theme="light"] .topbar{background:#ededed;}
+html[data-theme="light"] .topbar{background:#f0f0f0;}
 
 /* Tree rows (selection states use hardcoded dark blues). */
 html[data-theme="light"] .tree-row.selected{
@@ -93,7 +93,7 @@ html[data-theme="light"] .tree-row.multi{
 }
 html[data-theme="light"] .eye:hover,
 html[data-theme="light"] .moveBtn:hover{
-  background:#dcdcdc;color:var(--text);
+  background:#e5e5e5;color:var(--text);
 }
 
 /* Animation step buttons */
@@ -101,7 +101,7 @@ html[data-theme="light"] .animStepBtn{
   background:#ffffff;color:var(--text);border-color:var(--line);
 }
 html[data-theme="light"] .animStepBtn.off{
-  background:#ededed;color:var(--muted);border-color:var(--line);
+  background:#f5f5f5;color:var(--muted);border-color:var(--line);
 }
 
 /* Step / chapter selection — dark theme keeps the original blue
@@ -151,15 +151,15 @@ html[data-theme="light"] .context-menu__item:not(:disabled):hover{
 }
 
 /* Scrollbars — neutral grey palette to match the rest of light theme. */
-html[data-theme="light"] *{scrollbar-color:#b8b8b8 #ededed;}
-html[data-theme="light"] ::-webkit-scrollbar-track{background:#ededed;}
-html[data-theme="light"] ::-webkit-scrollbar-thumb{background:#b8b8b8;}
+html[data-theme="light"] *{scrollbar-color:#c4c4c4 #f5f5f5;}
+html[data-theme="light"] ::-webkit-scrollbar-track{background:#f5f5f5;}
+html[data-theme="light"] ::-webkit-scrollbar-thumb{background:#c4c4c4;}
 
 /* Steps panel header / topbar / step-nav / HUD / status surfaces —
    all rgba-on-dark in components.css. Light versions use a faint
    slate-blue tint with the same alpha behaviour so there's still
    visual hierarchy against the white panels. */
-html[data-theme="light"] .stepsHeader{background:#ededed;}
+html[data-theme="light"] .stepsHeader{background:#f0f0f0;}
 html[data-theme="light"] .meshitem{background:#fafafa;}
 html[data-theme="light"] .tree-row.dropTarget{background:#dbeafe;}
 html[data-theme="light"] #hud{background:rgba(255,255,255,0.92);color:var(--text);}

@@ -63,11 +63,13 @@ label.colorlab{display:block;font-size:12px;color:var(--muted);margin-top:4px}
 .animStepBtn.orange{background:#7c2d12;color:#ffedd5;border-color:#f97316}
 .animStepBtn.red{background:#7f1d1d;color:#fee2e2;border-color:#ef4444}
 .stepItem{border:1px solid var(--line);background:var(--panel2);border-radius:12px;padding:8px;margin-bottom:8px;cursor:pointer}
-/* Active step — yellow outline ONLY. No fill change, no inner shadow.
-   The outline alone tells the user which step is active; combined
-   with the .selected fill below it stays clearly readable when the
-   active step is also part of the multi-selection. */
-.stepItem.active{border-color:#facc15;outline:2px solid #facc15;outline-offset:1px}
+/* Active step — thick yellow outline ONLY. No fill change, no inner
+   shadow. The outline alone tells the user which step is active;
+   combined with the .selected fill below it stays clearly readable
+   when the active step is also part of the multi-selection. 3 px
+   keeps the cue visible against light backgrounds where a 2 px
+   outline got lost. */
+.stepItem.active{border-color:#facc15;outline:3px solid #facc15;outline-offset:1px}
 /* Multi-step selection highlight (Ctrl/Shift click in timeline).
    Default = the original BLUE used in dark theme. Light-theme
    override (in base.css) swaps to a warm yellow fill that reads
