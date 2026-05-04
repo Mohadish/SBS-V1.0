@@ -16,6 +16,40 @@
   --sidebar-right-width: 320px;
 }
 
+/* Light theme — switched in by setTheme('light') flipping the
+   data-theme attribute on <html>. We override the CSS variables only;
+   every component that uses var(--bg) / var(--panel) / etc. picks up
+   the new palette automatically without per-rule edits. Inputs +
+   buttons get explicit overrides for their hardcoded colors. */
+html[data-theme="light"]{
+  --bg:#f8fafc;
+  --panel:#ffffff;
+  --panel2:#f1f5f9;
+  --line:#cbd5e1;
+  --text:#1e293b;
+  --muted:#64748b;
+  --accent:#0284c7;
+}
+html[data-theme="light"] input,
+html[data-theme="light"] select,
+html[data-theme="light"] textarea{
+  background:#ffffff;color:var(--text);border:1px solid var(--line);
+}
+html[data-theme="light"] .btn{
+  background:#e2e8f0;color:var(--text);border:1px solid var(--line);
+}
+html[data-theme="light"] .btn:hover{
+  background:#cbd5e1;
+}
+html[data-theme="light"] .btn.primary{
+  background:#0284c7;color:#ffffff;border-color:#0284c7;
+}
+html[data-theme="light"] .btn.primary:hover{
+  background:#0369a1;
+}
+html[data-theme="light"] .small.muted,
+html[data-theme="light"] .muted{color:var(--muted)}
+
 *{box-sizing:border-box}
 html,body{margin:0;height:100%;background:var(--bg);color:var(--text);font-family:Arial,Helvetica,sans-serif;overflow:hidden}
 

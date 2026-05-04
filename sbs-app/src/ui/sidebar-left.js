@@ -109,6 +109,18 @@ export function initSidebarLeft() {
   state.on('change:activeStepId',          () => { if (_activeTab === 'cameras')   _renderCamerasTab(); });
   state.on('change:steps',                 () => { if (_activeTab === 'cameras')   _renderCamerasTab(); });
   state.on('change:projectDirty',          () => { if (_activeTab === 'files')    _renderFilesTab(); });
+  state.on('change:theme',                 () => { if (_activeTab === 'files')    _renderFilesTab(); });
+  state.on('change:backgroundColor',       () => { if (_activeTab === 'files')    _renderFilesTab(); });
+  state.on('change:backgroundGradient',    () => {
+    // Refresh only when the toggle's enabled state changes (input/range
+    // events otherwise re-render on every drag tick which destroys the
+    // active <input type=color> popup mid-edit).
+    if (_activeTab !== 'files') return;
+    const el = _panel('files');
+    const liveEnabled = !!state.get('backgroundGradient')?.enabled;
+    const checkbox = el?.querySelector('#bg-grad-toggle');
+    if (checkbox && checkbox.checked !== liveEnabled) _renderFilesTab();
+  });
   state.on('change:selectionOutlineColor', () => { if (_activeTab === 'select')   _renderSelectTab(); });
   state.on('change:animationPresets',      () => { if (_activeTab === 'animation') _renderAnimTab(); });
   state.on('change:headerItems',           () => {
@@ -256,7 +268,46 @@ function _renderFilesTab() {
       <div class="grid3" style="margin-top:8px">
         <button class="btn" id="btn-fit-all">Fit All</button>
         <button class="btn" id="btn-toggle-grid">Grid</button>
-        <button class="btn" id="btn-toggle-theme">Theme</button>
+        <button class="btn" id="btn-toggle-theme">Theme: ${state.get('theme') === 'light' ? 'Light' : 'Dark'}</button>
+      </div>
+    </div>
+
+    <div class="section" id="bg-settings-section">
+      <div class="title">Background</div>
+      <div class="field-row" style="margin-top:8px;">
+        <label class="small" style="flex:1;">Solid color</label>
+        <input type="color" id="bg-color"
+               value="${_esc(state.get('backgroundColor') || '#0f172a')}"
+               style="width:44px;height:28px;padding:2px;border-radius:4px;cursor:pointer;" />
+      </div>
+      <label class="small" style="display:flex;align-items:center;gap:6px;margin-top:8px;cursor:pointer;">
+        <input type="checkbox" id="bg-grad-toggle"
+               ${state.get('backgroundGradient')?.enabled ? 'checked' : ''} />
+        Use 2-color gradient
+      </label>
+      <div id="bg-grad-controls"
+           style="display:${state.get('backgroundGradient')?.enabled ? 'block' : 'none'};margin-top:8px;">
+        <div class="field-row">
+          <label class="small" style="flex:1;">From</label>
+          <input type="color" id="bg-grad-c1"
+                 value="${_esc(state.get('backgroundGradient')?.color1 || '#0f172a')}"
+                 style="width:44px;height:28px;padding:2px;border-radius:4px;cursor:pointer;" />
+        </div>
+        <div class="field-row" style="margin-top:6px;">
+          <label class="small" style="flex:1;">To</label>
+          <input type="color" id="bg-grad-c2"
+                 value="${_esc(state.get('backgroundGradient')?.color2 || '#1e293b')}"
+                 style="width:44px;height:28px;padding:2px;border-radius:4px;cursor:pointer;" />
+        </div>
+        <label class="small" style="display:block;margin-top:8px;">
+          Direction <span id="bg-grad-angle-val" class="muted" style="float:right;">${state.get('backgroundGradient')?.angleDeg ?? 180}°</span>
+          <input type="range" id="bg-grad-angle" min="0" max="360" step="1"
+                 value="${state.get('backgroundGradient')?.angleDeg ?? 180}"
+                 style="width:100%;margin-top:4px;" />
+        </label>
+        <div class="small muted" style="margin-top:4px;line-height:1.4;font-size:10px;">
+          0° top→bottom · 90° left→right · 180° bottom→top · 270° right→left
+        </div>
       </div>
     </div>
 
@@ -275,6 +326,31 @@ function _renderFilesTab() {
   el.querySelector('#btn-fit-all')?.addEventListener('click',      _onFitAll);
   el.querySelector('#btn-toggle-grid')?.addEventListener('click',  _onToggleGrid);
   el.querySelector('#btn-toggle-theme')?.addEventListener('click', _onToggleTheme);
+
+  // ── Background controls ────────────────────────────────────────────────
+  el.querySelector('#bg-color')?.addEventListener('input', e => {
+    state.setState({ backgroundColor: e.target.value });
+    state.markDirty();
+  });
+  const _setGradient = (patch) => {
+    const cur = state.get('backgroundGradient') || {};
+    state.setState({ backgroundGradient: { ...cur, ...patch } });
+    state.markDirty();
+  };
+  const gradControls = el.querySelector('#bg-grad-controls');
+  el.querySelector('#bg-grad-toggle')?.addEventListener('change', e => {
+    _setGradient({ enabled: !!e.target.checked });
+    if (gradControls) gradControls.style.display = e.target.checked ? 'block' : 'none';
+  });
+  el.querySelector('#bg-grad-c1')?.addEventListener('input', e => _setGradient({ color1: e.target.value }));
+  el.querySelector('#bg-grad-c2')?.addEventListener('input', e => _setGradient({ color2: e.target.value }));
+  const angleInput = el.querySelector('#bg-grad-angle');
+  const angleVal   = el.querySelector('#bg-grad-angle-val');
+  angleInput?.addEventListener('input', e => {
+    const a = Number(e.target.value);
+    if (angleVal) angleVal.textContent = `${a}°`;
+    _setGradient({ angleDeg: a });
+  });
 
   el.querySelector('#model-file-input')?.addEventListener('change', e => {
     const files = Array.from(e.target.files || []);

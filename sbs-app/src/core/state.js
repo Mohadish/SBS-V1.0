@@ -288,6 +288,17 @@ function createInitialState() {
 
     // ── Viewport background
     backgroundColor: '#0f172a',
+
+    // Optional 2-color linear gradient backdrop. When enabled, replaces
+    // the solid backgroundColor with a CanvasTexture-baked gradient
+    // applied as scene.background. angleDeg is CSS-style: 0° = top-to-
+    // bottom (color1 on top), 90° = left-to-right, etc.
+    backgroundGradient: {
+      enabled:  false,
+      color1:   '#0f172a',
+      color2:   '#1e293b',
+      angleDeg: 180,
+    },
     solidOverride:   false,
 
     // ── Animation durations

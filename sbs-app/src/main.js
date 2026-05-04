@@ -75,12 +75,62 @@ const viewer = document.getElementById('viewer');
 sceneCore.init(viewer, { antialias: true, preserveDrawingBuffer: true });
 gizmo.init();
 
+/**
+ * Sync the Three.js scene background from project state. Two modes:
+ *   • Solid colour (default) — scene.background = new THREE.Color.
+ *   • Linear gradient (state.backgroundGradient.enabled) — bake a small
+ *     canvas with a CSS-style linear-gradient at the requested angle,
+ *     wrap as a CanvasTexture, set as scene.background. THREE.js will
+ *     stretch it to fill the viewport.
+ *
+ * The texture is rebuilt every time state changes so colour / angle
+ * tweaks are immediate. Cheap — 2x256 px canvas, runs once per change.
+ */
+let _bgTexture = null;
+function _buildGradientTexture(c1, c2, angleDeg) {
+  const W = 2, H = 256;       // 256-pixel resolution along the gradient axis is plenty
+  const cv = document.createElement('canvas');
+  cv.width = W; cv.height = H;
+  const ctx = cv.getContext('2d');
+  // CSS angle convention (0° = bottom→top in CSS terms but we use
+  // 0° = top→bottom here so the user-visible direction picker is
+  // intuitive for a backdrop). Convert to canvas vector.
+  const rad = (angleDeg * Math.PI) / 180;
+  const cx = W / 2, cy = H / 2;
+  const r  = Math.max(W, H);
+  const x1 = cx - Math.sin(rad) * r * 0.5;
+  const y1 = cy - Math.cos(rad) * r * 0.5;
+  const x2 = cx + Math.sin(rad) * r * 0.5;
+  const y2 = cy + Math.cos(rad) * r * 0.5;
+  const grad = ctx.createLinearGradient(x1, y1, x2, y2);
+  grad.addColorStop(0, c1);
+  grad.addColorStop(1, c2);
+  ctx.fillStyle = grad;
+  ctx.fillRect(0, 0, W, H);
+  const tex = new window.THREE.CanvasTexture(cv);
+  if ('SRGBColorSpace' in window.THREE) tex.colorSpace = window.THREE.SRGBColorSpace;
+  return tex;
+}
+
 function _syncBackground() {
   if (!window.THREE) return;
-  sceneCore.scene.background = new THREE.Color(state.get('backgroundColor') || '#0f172a');
+  const grad = state.get('backgroundGradient');
+  if (grad?.enabled) {
+    if (_bgTexture) _bgTexture.dispose?.();
+    _bgTexture = _buildGradientTexture(
+      grad.color1 ?? '#0f172a',
+      grad.color2 ?? '#1e293b',
+      Number.isFinite(grad.angleDeg) ? grad.angleDeg : 180,
+    );
+    sceneCore.scene.background = _bgTexture;
+  } else {
+    if (_bgTexture) { _bgTexture.dispose?.(); _bgTexture = null; }
+    sceneCore.scene.background = new THREE.Color(state.get('backgroundColor') || '#0f172a');
+  }
 }
 _syncBackground();
-state.on('change:backgroundColor', _syncBackground);
+state.on('change:backgroundColor',    _syncBackground);
+state.on('change:backgroundGradient', _syncBackground);
 
 state.on('change:gridVisible', vis => {
   sceneCore.setGridVisible(vis);

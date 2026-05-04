@@ -544,7 +544,10 @@ export function createAnimationPreset(overrides = {}) {
   return {
     id:        generateId('anim'),
     name:      'New Animation',
-    animation: 'camera(500), color(500), visibility(500), obj(500)',
+    // Cover every channel the engine knows about so a freshly-created
+    // preset transitions everything by default. Users can prune slots
+    // they don't want via the Anim tab editor.
+    animation: 'camera(500), visibility(500), obj(500), overlay(500), color(500), cable(500)',
     isDefault: false,
     ...overrides,
   };
