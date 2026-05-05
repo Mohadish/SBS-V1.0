@@ -36,7 +36,10 @@ import {
   getPivotWorldPosition,
   getPivotWorldQuaternion,
   setNodeLocalRotationPreservePivot,
+  captureTransformSnapshot,
+  applyTransformSnapshot,
 } from '../core/transforms.js';
+import { parseExpression } from './gizmo-numeric.js';
 
 // ── Constants ────────────────────────────────────────────────────────────────
 const AX  = { x: 0xe05555, y: 0x55cc55, z: 0x5588e0 };
@@ -82,6 +85,147 @@ class GizmoController {
 
     // Transform panel DOM element
     this._panel = null;
+
+    // Numeric-input integration (driven by ui/gizmo-numeric.js).
+    // _numericLock = true → _doDrag bails out, mouse drag is suspended
+    // and only typed values apply via applyNumericAmount().
+    // _onDragEvent = optional listener fired on start / move / end with
+    // a payload describing the active axis + current amount(s) for the
+    // status-bar live readout.
+    this._numericLock = false;
+    this._onDragEvent = null;   // (kind, payload) => void
+    this._lastAmount  = null;   // last computed amount(s) for readout
+    this._dragMoved   = false;  // true once cursor moved during drag
+  }
+
+  // ── Numeric-input bridge ──────────────────────────────────────────────────
+
+  /**
+   * Subscribe to gizmo drag events. kind is 'start' | 'move' | 'end'.
+   * payload = { type, axis, value: number | { a, b }, node }.
+   * Used by gizmo-numeric.js for live status readout + numeric mode.
+   */
+  setDragListener(fn) { this._onDragEvent = fn || null; }
+
+  /**
+   * Snapshot of the active drag for external code.
+   * Returns null when no drag is active.
+   */
+  getActiveDrag() {
+    if (!this._dragging || !this._dragEl) return null;
+    return {
+      type: this._dragEl.type,
+      axis: this._dragEl.axis,
+      node: this._node,
+      locked: !!this._numericLock,
+    };
+  }
+
+  /**
+   * Set whether _doDrag is suspended (true while the user is typing
+   * a numeric value during a drag). When unlocked, mouse drag resumes.
+   */
+  setNumericLock(locked) { this._numericLock = !!locked; }
+
+  /**
+   * Apply an absolute axis value from the pre-drag origin.
+   *   translate axis (mm) → offset = startOffset + axisVec*value
+   *   rotate    axis (deg) → quat   = startQuat ∘ axis-angle(value)
+   * Plane handles + cable mode are not supported (return false).
+   * Returns true if the value was applied.
+   */
+  applyNumericAmount(value) {
+    if (!this._dragging || !this._dragEl || !this._obj3d) return false;
+    if (!Number.isFinite(value)) return false;
+    if (this._cableTarget) return false;
+    const el = this._dragEl;
+    const no = this._node;
+    if (!no || el.type === 'plane') return false;
+
+    const T = window.THREE;
+    const inPivotEdit  = state.get('pivotEditNodeId') === no.id;
+    const pivotEnabled = no.pivotEnabled === true;
+
+    if (el.type === 'translate') {
+      const axVec  = this._axisVec(el.axis);
+      const worldD = axVec.clone().multiplyScalar(value);
+      if (inPivotEdit) {
+        const localD = this._worldToObjectLocalDelta(worldD);
+        no.pivotLocalOffset = [
+          this._startPivotOffset[0] + localD.x,
+          this._startPivotOffset[1] + localD.y,
+          this._startPivotOffset[2] + localD.z,
+        ];
+        no.pivotEnabled = true;
+      } else {
+        const localD = this._worldToLocalDelta(worldD);
+        no.localOffset = [
+          this._startOffset[0] + localD.x,
+          this._startOffset[1] + localD.y,
+          this._startOffset[2] + localD.z,
+        ];
+        no.moveEnabled = true;
+      }
+    } else if (el.type === 'rotate') {
+      // Match _doDrag's negation convention so typed values produce
+      // the same visual rotation direction as mouse drag (and the
+      // readout). For X / Y rings, internal angle = -typed; for Z,
+      // internal = typed. Without this, typing '90' rotated the
+      // mesh OPPOSITE to where the mouse had been moving.
+      const signed = (el.axis === 'x' || el.axis === 'y') ? -value : value;
+      const angle  = signed * Math.PI / 180;
+      const baseQ  = new T.Quaternion(
+        this._startQuat[0], this._startQuat[1], this._startQuat[2], this._startQuat[3]
+      );
+      if (inPivotEdit) {
+        const localAxis = el.axis === 'x' ? new T.Vector3(1, 0, 0)
+                       : el.axis === 'y' ? new T.Vector3(0, 1, 0)
+                                         : new T.Vector3(0, 0, 1);
+        const deltaQ = new T.Quaternion().setFromAxisAngle(localAxis, angle);
+        const startQ = new T.Quaternion(
+          this._startPivotQuat[0], this._startPivotQuat[1], this._startPivotQuat[2], this._startPivotQuat[3]
+        );
+        const newQ = startQ.clone().multiply(deltaQ);
+        no.pivotLocalQuaternion = [newQ.x, newQ.y, newQ.z, newQ.w];
+        no.pivotEnabled = true;
+      } else {
+        const rotAxis = this._rotAxisLocal(el.axis);
+        const deltaQ  = new T.Quaternion().setFromAxisAngle(rotAxis, angle);
+        const newQ    = deltaQ.multiply(baseQ);
+        if (pivotEnabled) {
+          setNodeLocalRotationPreservePivot(no, [newQ.x, newQ.y, newQ.z, newQ.w]);
+        } else {
+          no.localQuaternion = [newQ.x, newQ.y, newQ.z, newQ.w];
+          no.rotateEnabled   = true;
+        }
+      }
+    }
+
+    applyNodeTransformToObject3D(no, this._obj3d, true);
+    steps.scheduleSync();
+    this._tick();
+    this._lastAmount = value;
+    if (this._onDragEvent) this._onDragEvent('move', { type: el.type, axis: el.axis, value, node: no, source: 'numeric' });
+    return true;
+  }
+
+  /**
+   * Restore the pre-drag transform. Used by Esc in numeric input mode.
+   */
+  revertToDragStart() {
+    if (!this._dragging || !this._obj3d || !this._node) return;
+    if (this._dragEl?.type === 'plane') {
+      // Plane: applyNumericAmount(0) is a no-op for planes; we restore
+      // the snapshot manually here.
+      const no = this._node;
+      no.localOffset = [...this._startOffset];
+      no.localQuaternion = [...this._startQuat];
+      applyNodeTransformToObject3D(no, this._obj3d, true);
+      steps.scheduleSync();
+      this._tick();
+      return;
+    }
+    this.applyNumericAmount(0);
   }
 
   // ── Init ──────────────────────────────────────────────────────────────────
@@ -488,11 +632,24 @@ class GizmoController {
 
   onPointerDown(clientX, clientY) {
     if (!this._visible) return false;
+    // If a prior drag was deferred (click-armed or numeric-locked),
+    // commit it before processing this new click. Without this, a user
+    // who clicks one handle, types nothing, then clicks another handle
+    // would leave the first drag unbalanced (no commitTransformEdit).
+    if (this._dragging) {
+      this._numericLock = false;
+      // Force pointerup path to commit by faking dragMoved so the
+      // guard inside onPointerUp doesn't re-defer. After commit
+      // _dragging is false, then we proceed with the new click.
+      this._dragMoved = true;
+      this.onPointerUp();
+    }
     const el = this._raycastElements(clientX, clientY);
     if (!el) return false;
 
     this._setHovered(null);
     this._dragging = true;
+    this._dragMoved = false;        // reset — set true on first move
     this._dragEl   = el;
     this._setElColor(el, ACTIVE_COL);
 
@@ -557,18 +714,34 @@ class GizmoController {
       this._startAngle = this._atan2ForAxisInSpace(rel, el.axis);
     }
 
+    this._lastAmount = null;
+    if (this._onDragEvent) this._onDragEvent('start', { type: el.type, axis: el.axis, node: no });
+
     return true;
   }
 
   onPointerMove(clientX, clientY) {
     if (!this._dragging || !this._dragEl) return false;
+    this._dragMoved = true;
     this._doDrag(clientX, clientY);
     return true;
   }
 
   onPointerUp() {
     if (!this._dragging) return;
+    // Defer commit if either:
+    //   (a) user is currently typing a numeric value (numericLock), or
+    //   (b) the click was a pure click — no mouse movement during the
+    //       drag — so the user might still want to type a number into
+    //       this engaged handle. Commit happens later on Enter, on a
+    //       click outside the handle, or via Esc revert.
+    if (this._numericLock || !this._dragMoved) return;
+    const _endEl = this._dragEl;
     this._dragging = false;
+    this._numericLock = false;
+    if (this._onDragEvent && _endEl) {
+      this._onDragEvent('end', { type: _endEl.type, axis: _endEl.axis, node: this._node });
+    }
     // C5-B / E2: close the active cable batch — rotate or move.
     // Done before the tree-node path because cable mode never has
     // _node set.
@@ -621,6 +794,10 @@ class GizmoController {
     const el  = this._dragEl;
     const no  = this._node;
     if (!el || !this._obj3d) return;
+
+    // Numeric input has hijacked the drag — typed values apply via
+    // applyNumericAmount(); ignore mouse motion until lock is released.
+    if (this._numericLock) return;
 
     const plane = this._getDragPlane(el);
     const curr  = this._worldPoint(clientX, clientY, plane);
@@ -731,6 +908,8 @@ class GizmoController {
 
     // ── Non-pivot-edit paths (default + BLUE rotate) ──────────────────────
 
+    let _emitValue = null;   // for the drag-event readout (single num or {a,b})
+
     if (el.type === 'translate') {
       const delta   = curr.clone().sub(this._startWorld);
       const axVec   = this._axisVec(el.axis);
@@ -743,14 +922,16 @@ class GizmoController {
         this._startOffset[2] + localD.z,
       ];
       no.moveEnabled = true;
+      _emitValue = amount;
 
     } else if (el.type === 'plane') {
       const delta   = curr.clone().sub(this._startWorld);
       const [a, b]  = el.axis.split('');
       const axA     = this._axisVec(a);
       const axB     = this._axisVec(b);
-      const worldD  = axA.clone().multiplyScalar(delta.dot(axA))
-                        .add(axB.clone().multiplyScalar(delta.dot(axB)));
+      const aAmt    = delta.dot(axA);
+      const bAmt    = delta.dot(axB);
+      const worldD  = axA.clone().multiplyScalar(aAmt).add(axB.clone().multiplyScalar(bAmt));
       const localD  = this._worldToLocalDelta(worldD);
       no.localOffset = [
         this._startOffset[0] + localD.x,
@@ -758,6 +939,7 @@ class GizmoController {
         this._startOffset[2] + localD.z,
       ];
       no.moveEnabled = true;
+      _emitValue = { a: aAmt, b: bAmt, axisA: a, axisB: b };
 
     } else if (el.type === 'rotate') {
       // Rotation centre: pivot in BLUE mode, object origin otherwise.
@@ -782,11 +964,17 @@ class GizmoController {
         no.localQuaternion = [newQ.x, newQ.y, newQ.z, newQ.w];
         no.rotateEnabled   = true;
       }
+      _emitValue = delta * 180 / Math.PI;   // degrees, signed from start
     }
 
     applyNodeTransformToObject3D(no, this._obj3d, true);
     steps.scheduleSync();
     this._tick();
+
+    this._lastAmount = _emitValue;
+    if (this._onDragEvent && _emitValue !== null) {
+      this._onDragEvent('move', { type: el.type, axis: el.axis, value: _emitValue, node: no, source: 'mouse' });
+    }
   }
 
   /**
@@ -1053,6 +1241,11 @@ class GizmoController {
     panel.innerHTML = this._panelHTML();
     document.body.appendChild(panel);
 
+    // Snapshot the node's transform at the moment the panel opens, so
+    // Esc can revert any live edits made through the panel inputs.
+    panel._preOpenSnapshot = captureTransformSnapshot(no);
+    panel._panelNodeId     = no.id;
+
     this._wirePanel(panel, no, obj);
 
     // Nudge panel into viewport
@@ -1063,21 +1256,46 @@ class GizmoController {
       if (r.bottom > vh - 8) panel.style.top  = `${vh - r.height - 8}px`;
     });
 
-    // Close on outside click or Escape
+    // Close on outside click or Escape (Esc reverts any live edits).
     const onDown = (e) => {
       if (!panel.contains(e.target)) this._closePanel();
     };
     const onKey = (e) => {
-      if (e.key === 'Escape') this._closePanel();
+      if (e.key === 'Escape') {
+        e.preventDefault();
+        this._revertPanel();
+        this._closePanel();
+      }
     };
     setTimeout(() => {
       document.addEventListener('pointerdown', onDown, { capture: true, once: false });
-      document.addEventListener('keydown', onKey, { once: true });
+      document.addEventListener('keydown', onKey, { capture: true });
       panel._cleanup = () => {
         document.removeEventListener('pointerdown', onDown, { capture: true });
-        document.removeEventListener('keydown', onKey);
+        document.removeEventListener('keydown', onKey, { capture: true });
       };
     }, 0);
+  }
+
+  /**
+   * Revert the panel's target node back to the snapshot captured at
+   * panel open time. Used by Esc — undoes every live edit made through
+   * the panel inputs without pushing an undo entry.
+   */
+  _revertPanel() {
+    const panel = this._panel;
+    if (!panel || !panel._preOpenSnapshot || !panel._panelNodeId) return;
+    const nb = state.get('nodeById');
+    const no = nb?.get(panel._panelNodeId);
+    if (!no) return;
+    applyTransformSnapshot(no, panel._preOpenSnapshot);
+    const obj = steps.object3dById?.get(no.id);
+    if (obj) applyNodeTransformToObject3D(no, obj, true);
+    steps.scheduleSync();
+    this._tick();
+    // Cancel the in-flight transform-edit batch so commitTransformEdit
+    // doesn't push a no-op (or the would-have-been edit).
+    actions.beginTransformEdit(no.id);   // resets _transformBatch.from to current (= reverted)
   }
 
   _panelHTML() {
@@ -1164,12 +1382,14 @@ class GizmoController {
   }
 
   _axisRow(id, label, value, color) {
+    // type=text (not number) so the user can type math expressions —
+    // `sin(pi/4)*100`, `180/2`, `2+3*4` — evaluated live by parseExpression.
     return `
       <div style="display:flex;align-items:center;gap:8px;margin-bottom:4px;">
         <span style="color:${color};font-weight:700;width:12px;flex-shrink:0;">${label}</span>
-        <input data-field="${id}" type="number" value="${value}" step="0.01"
+        <input data-field="${id}" type="text" value="${value}" autocomplete="off" spellcheck="false"
           style="flex:1;background:var(--panel);border:1px solid var(--line);border-radius:4px;
-                 color:var(--text);padding:3px 6px;font-size:12px;outline:none;width:0;" />
+                 color:var(--text);padding:3px 6px;font-size:12px;outline:none;width:0;font-family:monospace;" />
       </div>`;
   }
 
@@ -1243,13 +1463,17 @@ class GizmoController {
       this._refreshPanel();
     });
 
-    // Numeric inputs — live update on change and arrow-key increment
+    // Numeric inputs — live update on every keystroke. Each cell accepts
+    // math expressions (parseExpression handles plain numbers AND
+    // expressions: `sin(pi/4)*100`, `180/2`, `2+3*4`). Invalid /
+    // incomplete input is silently ignored — the scene stays at its
+    // last valid value while the user edits.
     panel.querySelectorAll('[data-field]').forEach(inp => {
       const field = inp.dataset.field;
 
       const apply = () => {
-        const val = parseFloat(inp.value);
-        if (isNaN(val)) return;
+        const val = parseExpression(inp.value);
+        if (!Number.isFinite(val)) return;
         this._applyPanelValue(field, val, no, obj);
         steps.scheduleTransformSync();
         this._tick();
@@ -1259,8 +1483,11 @@ class GizmoController {
       inp.addEventListener('blur',  () => { apply(); actions.commitTransformEdit(no.id); });
       inp.addEventListener('input', apply);
 
-      // Stop propagation so arrow keys don't navigate steps while editing
+      // Stop propagation so arrow keys don't navigate steps while editing.
+      // Don't intercept Esc — let the panel-level Esc handler (revert+close)
+      // run via capture phase.
       inp.addEventListener('keydown', e => {
+        if (e.key === 'Escape') return;   // panel-level handler takes over
         e.stopPropagation();
         if (e.key === 'Enter') { inp.blur(); }
       });

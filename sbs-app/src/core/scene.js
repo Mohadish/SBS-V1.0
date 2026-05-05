@@ -126,6 +126,25 @@ export class SceneCore extends Emitter {
     this.renderer.setPixelRatio(1);
     container.appendChild(this.renderer.domElement);
 
+    // Pin the WebGL canvas's drawingBufferColorSpace to plain sRGB.
+    // Without this, Chromium auto-detects the display's wider colour
+    // capability (P3 / Rec2020 / HDR-aware) and tags the compositor
+    // swap chain accordingly — which then maps SDR-tagged DOM siblings
+    // (sidebar / panels) to ~75% of peak luminance (RGB 255 → 190 cap).
+    // Voice-over / context-menus / modals escape that cap because
+    // backdrop-filter / stacking-context promotes them off the
+    // affected compositor layer. Pinning to srgb makes the canvas's
+    // colour space match the rest of the page, so Chromium keeps the
+    // compositor in plain sRGB and DOM whites render at full 255.
+    // Diagnosed by the user via canvas-removal test:
+    //   document.querySelectorAll('canvas').forEach(c=>c.remove())
+    //   → sidebar instantly snapped from RGB 190 to RGB 255.
+    try {
+      const gl = this.renderer.getContext();
+      if (gl && 'drawingBufferColorSpace' in gl) gl.drawingBufferColorSpace = 'srgb';
+    } catch {}
+    if ('SRGBColorSpace' in THREE) this.renderer.outputColorSpace = THREE.SRGBColorSpace;
+
     // ── Scenes ──────────────────────────────────────────────────────────
     this.scene = new THREE.Scene();
     this.scene.background = new THREE.Color(backgroundColor);
@@ -752,6 +771,10 @@ export class SceneCore extends Emitter {
     };
 
     // ── Wheel: adaptive zoom ─────────────────────────────────────────────
+    // Modifiers (per user request):
+    //   Ctrl + wheel  → 0.1× step (10× slower / finer control)
+    //   Shift + wheel → 10×  step (10× faster / coarser, big-distance zoom)
+    //   Bare wheel    → 1×   step (default)
     dom.addEventListener('wheel', (e) => {
       if (this._locked) return;
       e.preventDefault();
@@ -764,7 +787,8 @@ export class SceneCore extends Emitter {
       const sceneSize = box.isEmpty()
         ? 100
         : box.getSize(new THREE.Vector3()).length();
-      const step = Math.max(sceneSize * 0.015, 0.5) * ctrl.zoomSpeed;
+      const mult = e.ctrlKey ? 0.1 : (e.shiftKey ? 10 : 1);
+      const step = Math.max(sceneSize * 0.015, 0.5) * ctrl.zoomSpeed * mult;
 
       this.camera.position.addScaledVector(forward, delta > 0 ? -step : step);
       ctrl.syncSpherical();
