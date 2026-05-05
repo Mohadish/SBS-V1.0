@@ -236,6 +236,13 @@ function createInitialState() {
     // the tree row OR the balloon's right-click menu.
     noteRepositioningId: null,
 
+    // Note template id awaiting a "place template" face pick. When set,
+    // the next viewport pointerdown raycasts ANY mesh; the hit creates
+    // a fresh note instance under that mesh, with templateId pointing
+    // at this template. Triggered from the Notes tab's "Assign to
+    // object" right-click action.
+    noteTemplateInstantiationId: null,
+
     // ── Export settings
     // Suppress auto-play of step narration when navigating live in the app.
     // The Preview ▶ button still works regardless. Persisted per project.

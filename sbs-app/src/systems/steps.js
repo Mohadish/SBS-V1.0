@@ -666,10 +666,17 @@ class StepManager {
       // into the main layer + fades in, both over the slot duration.
       // Without a 'overlay' slot, the post-anim step:applied flow
       // snaps content (no fade), preserving legacy behaviour.
-      if (types.includes('overlay') && !overlayHandled) {
+      //
+      // `overlays` (sustained) is the same machinery but a two-phase
+      // ramp that keeps shared items at 100% visible alpha — no
+      // flicker on shapes/text/images present in both steps. If both
+      // appear in the same phase, sustained wins.
+      if ((types.includes('overlay') || types.includes('overlays')) && !overlayHandled) {
         overlayHandled = true;
+        const sustained = types.includes('overlays');
         phasePromises.push(new Promise(resolve => {
-          overlaySystem.beginOverlayCrossfade(durationMs, easeFn, resolve);
+          if (sustained) overlaySystem.beginOverlaySustainedFade(durationMs, easeFn, resolve);
+          else           overlaySystem.beginOverlayCrossfade   (durationMs, easeFn, resolve);
         }));
       }
 
@@ -1263,6 +1270,11 @@ class StepManager {
       voiceEnabled: source.voiceEnabled,
       transition:   { ...source.transition },
       snapshot:     JSON.parse(JSON.stringify(source.snapshot)),
+      // step.overlay is a Konva.Stage JSON string (text boxes, images,
+      // shapes) — duplicate by copying the string verbatim so the new
+      // step starts with an identical overlay. Without this the dup
+      // arrived with an empty stage.
+      overlay:      source.overlay || null,
     });
 
     const sourceIdx = steps.indexOf(source);
@@ -2155,7 +2167,15 @@ function _captureNotePanelOffsets(root) {
   const out = {};
   _walkNotes(root, n => {
     const o = n.panelOffset || { x: 0, y: 0 };
-    out[n.id] = { x: o.x ?? 0, y: o.y ?? 0 };
+    const entry = { x: o.x ?? 0, y: o.y ?? 0 };
+    // New frame-relative position model. Stored alongside legacy
+    // panelOffset under a non-conflicting key. Apply path reads both
+    // and prefers frame when present.
+    if (n.framePosition && Number.isFinite(n.framePosition.x) && Number.isFinite(n.framePosition.y)) {
+      entry.fx = n.framePosition.x;
+      entry.fy = n.framePosition.y;
+    }
+    out[n.id] = entry;
   });
   return out;
 }
@@ -2165,6 +2185,13 @@ function _applyNotePanelOffsets(nodeById, map) {
     const note = nodeById?.get(id);
     if (note?.type === 'note') {
       note.panelOffset = { x: off.x ?? 0, y: off.y ?? 0 };
+      if (Number.isFinite(off.fx) && Number.isFinite(off.fy)) {
+        note.framePosition = { x: off.fx, y: off.fy };
+      } else {
+        // Step had no framePosition saved — clear any leftover so the
+        // legacy panelOffset path takes over (and re-migrates lazily).
+        delete note.framePosition;
+      }
     }
   }
 }
@@ -2191,10 +2218,14 @@ function _captureFromNoteState(root) {
   if (!root) return out;
   const effMap = computeEffectiveVisibility(root);
   _walkNotes(root, n => {
-    out[n.id] = {
+    const entry = {
       panelOffset: { x: n.panelOffset?.x ?? 0, y: n.panelOffset?.y ?? 0 },
       visible:     !!effMap.get(n.id),
     };
+    if (n.framePosition && Number.isFinite(n.framePosition.x) && Number.isFinite(n.framePosition.y)) {
+      entry.framePosition = { x: n.framePosition.x, y: n.framePosition.y };
+    }
+    out[n.id] = entry;
   });
   return out;
 }
@@ -2228,16 +2259,35 @@ function _scheduleNoteAnims(treeData, fromState, toSnapshot, startMs, durationMs
     const toOffset    = toOffsets[note.id] || fromOffset;
     const fromVisible = from.visible;
     const toVisible   = !!toEffMap.get(note.id);
+
+    // FramePosition lerp (new model). Read from / to off the captured
+    // state and the destination snapshot. If either side has it, build
+    // a frame-% interpolation; the render layer prefers framePosition
+    // when present and lerps between fromFP and toFP.
+    const fromFP = from.framePosition
+                || (note.framePosition && Number.isFinite(note.framePosition.x)
+                    ? { x: note.framePosition.x, y: note.framePosition.y }
+                    : null);
+    const tEntry = toOffsets[note.id];
+    const toFP   = (tEntry && Number.isFinite(tEntry.fx) && Number.isFinite(tEntry.fy))
+                   ? { x: tEntry.fx, y: tEntry.fy }
+                   : fromFP;   // missing → snap to current
+
     const noOffsetChange = Math.abs(fromOffset.x - toOffset.x) < 0.5
                         && Math.abs(fromOffset.y - toOffset.y) < 0.5;
+    const noFPChange = !fromFP || !toFP
+                       || (Math.abs(fromFP.x - toFP.x) < 0.0005
+                        && Math.abs(fromFP.y - toFP.y) < 0.0005);
     const noVisChange    = fromVisible === toVisible;
-    if (noOffsetChange && noVisChange) {
+    if (noOffsetChange && noFPChange && noVisChange) {
       delete note._anim;
       return;
     }
     note._anim = {
       fromOffset:  { x: fromOffset.x, y: fromOffset.y },
       toOffset:    { x: toOffset.x,   y: toOffset.y   },
+      fromFP:      fromFP ? { x: fromFP.x, y: fromFP.y } : null,
+      toFP:        toFP   ? { x: toFP.x,   y: toFP.y   } : null,
       fromVisible,
       toVisible,
       startMs,

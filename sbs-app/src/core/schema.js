@@ -402,7 +402,24 @@ export function createNoteNode(overrides = {}) {
     sizePresetId:       'medium',            // refs state.notePresets[sizePresetId]
     customFontSize:     null,                // px override; null = use preset
     panelOffset:        { x: 90, y: -70 },   // pixels, relative to anchor screen pt
+    templateId:         null,                // null = standalone note (no library link)
 
+    ...overrides,
+  };
+}
+
+/**
+ * Note template — entry in state.noteTemplates. Owns the SHARED content
+ * (text + size). Instances reference it by id. Position + visibility
+ * are still per-instance (on the createNoteNode that holds templateId).
+ */
+export function createNoteTemplate(overrides = {}) {
+  return {
+    id:             generateId('ntpl'),
+    name:           '',                      // auto-named "Template N" when blank
+    text:           '',
+    sizePresetId:   'medium',
+    customFontSize: null,
     ...overrides,
   };
 }

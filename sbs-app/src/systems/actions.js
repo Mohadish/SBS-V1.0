@@ -16,7 +16,7 @@ import { selectionActs }        from './select-act.js';
 import { materials }            from '../systems/materials.js';
 import steps                    from '../systems/steps.js';
 import sceneCore                from '../core/scene.js';
-import { createAnimationPreset, createCameraView, createNoteNode, generateId } from '../core/schema.js';
+import { createAnimationPreset, createCameraView, createNoteNode, createNoteTemplate, generateId } from '../core/schema.js';
 import * as editSession         from './edit-session.js';   // P7-A: gate Ctrl-Z while in overlay edit
 import * as cables              from './cables.js';          // C3: cable mutators (data layer)
 import {
@@ -4071,6 +4071,672 @@ export function _commitNotePanelOffset(noteId, before, after) {
       }
     },
   );
+}
+
+/**
+ * Commit a note framePosition change (drag commit).
+ * framePosition = { x, y } as fractions (0..1) of the safe-frame rect.
+ * Mirrors _commitNotePanelOffset but for the new frame-relative model.
+ */
+export function _commitNoteFramePosition(noteId, before, after) {
+  if (!noteId || !before || !after) return;
+  const note = state.get('nodeById')?.get(noteId);
+  if (!note) return;
+  note.framePosition = { x: after.x, y: after.y };
+  state.markDirty();
+  steps.scheduleSync();
+  undoManager.push(
+    'Move note',
+    () => {
+      const n = state.get('nodeById')?.get(noteId);
+      if (n) {
+        n.framePosition = { x: before.x, y: before.y };
+        state.markDirty();
+        steps.scheduleSync();
+      }
+    },
+    () => {
+      const n = state.get('nodeById')?.get(noteId);
+      if (n) {
+        n.framePosition = { x: after.x,  y: after.y  };
+        state.markDirty();
+        steps.scheduleSync();
+      }
+    },
+  );
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+//  NOTE TEMPLATES (Library)
+// ═══════════════════════════════════════════════════════════════════════════
+//
+// Templates own SHARED content (text + size). Note instances reference a
+// template via note.templateId; render reads text/size from the template
+// when set, falling back to the instance's own text/size otherwise.
+// Position (framePosition / panelOffset) and visibility remain per-instance.
+
+function _autoTemplateName(templates) {
+  let n = templates.length + 1;
+  const taken = new Set(templates.map(t => t.name));
+  while (taken.has(`Template ${n}`)) n++;
+  return `Template ${n}`;
+}
+
+export function createNewNoteTemplate(initial = {}) {
+  const list = (state.get('noteTemplates') || []).slice();
+  const tpl = createNoteTemplate({
+    name: initial.name || _autoTemplateName(list),
+    text: initial.text || '',
+    sizePresetId:   initial.sizePresetId   || 'medium',
+    customFontSize: initial.customFontSize ?? null,
+  });
+  list.push(tpl);
+  state.setState({ noteTemplates: list });
+  state.markDirty();
+  undoManager.push(
+    'New note template',
+    () => {
+      state.setState({ noteTemplates: (state.get('noteTemplates') || []).filter(t => t.id !== tpl.id) });
+      state.markDirty();
+    },
+    () => {
+      const cur = state.get('noteTemplates') || [];
+      if (!cur.some(t => t.id === tpl.id)) {
+        state.setState({ noteTemplates: [...cur, tpl] });
+        state.markDirty();
+      }
+    },
+  );
+  return tpl.id;
+}
+
+function _patchTemplate(id, patch, label) {
+  const list = state.get('noteTemplates') || [];
+  const before = list.find(t => t.id === id);
+  if (!before) return;
+  const after = { ...before, ...patch };
+  if (JSON.stringify(before) === JSON.stringify(after)) return;
+  state.setState({
+    noteTemplates: list.map(t => t.id === id ? after : t),
+  });
+  state.markDirty();
+  state.emit('change:treeData', state.get('treeData'));   // re-render notes
+  undoManager.push(
+    label,
+    () => {
+      const cur = state.get('noteTemplates') || [];
+      state.setState({ noteTemplates: cur.map(t => t.id === id ? before : t) });
+      state.markDirty();
+      state.emit('change:treeData', state.get('treeData'));
+    },
+    () => {
+      const cur = state.get('noteTemplates') || [];
+      state.setState({ noteTemplates: cur.map(t => t.id === id ? after : t) });
+      state.markDirty();
+      state.emit('change:treeData', state.get('treeData'));
+    },
+  );
+}
+
+export function updateNoteTemplateText(id, newText) {
+  _patchTemplate(id, { text: (newText ?? '').toString() }, 'Edit template text');
+}
+
+export function setNoteTemplateSize(id, sizePresetId, customFontSize = null) {
+  _patchTemplate(id, { sizePresetId, customFontSize }, 'Edit template size');
+}
+
+export function renameNoteTemplate(id, newName) {
+  _patchTemplate(id, { name: (newName ?? '').toString() }, 'Rename template');
+}
+
+/**
+ * Duplicate a template. Auto-names the copy as "<base> (copy)" or
+ * "<base> (copy 2)" / etc. so it doesn't collide with existing names.
+ * Returns the new template's id.
+ */
+export function duplicateNoteTemplate(id) {
+  const list = state.get('noteTemplates') || [];
+  const src  = list.find(t => t.id === id);
+  if (!src) return null;
+  const base = (src.name || 'Template') + ' (copy)';
+  const taken = new Set(list.map(t => t.name));
+  let name = base;
+  let n = 2;
+  while (taken.has(name)) name = `${base} ${n++}`;
+  const tpl = createNoteTemplate({
+    name,
+    text:           src.text,
+    sizePresetId:   src.sizePresetId,
+    customFontSize: src.customFontSize,
+  });
+  const next = [...list, tpl];
+  state.setState({ noteTemplates: next });
+  state.markDirty();
+  state.emit('change:treeData', state.get('treeData'));
+  undoManager.push(
+    'Duplicate template',
+    () => {
+      state.setState({ noteTemplates: (state.get('noteTemplates') || []).filter(t => t.id !== tpl.id) });
+      state.markDirty();
+      state.emit('change:treeData', state.get('treeData'));
+    },
+    () => {
+      const cur = state.get('noteTemplates') || [];
+      if (!cur.some(t => t.id === tpl.id)) {
+        state.setState({ noteTemplates: [...cur, tpl] });
+        state.markDirty();
+        state.emit('change:treeData', state.get('treeData'));
+      }
+    },
+  );
+  return tpl.id;
+}
+
+/**
+ * Re-link every note instance currently bound to fromId so it points at
+ * toId instead. The "from" template stays in the library (just becomes
+ * orphaned). Single undo entry covers all reassignments.
+ */
+export function swapTemplateForAllInstances(fromId, toId) {
+  if (!fromId || !toId || fromId === toId) return 0;
+  const list = state.get('noteTemplates') || [];
+  if (!list.some(t => t.id === fromId) || !list.some(t => t.id === toId)) return 0;
+  const nb = state.get('nodeById');
+  if (!nb) return 0;
+  const linked = [];
+  for (const n of nb.values()) {
+    if (n?.type === 'note' && n.templateId === fromId) linked.push(n);
+  }
+  if (!linked.length) return 0;
+  const before = linked.map(n => ({ id: n.id, templateId: n.templateId }));
+  for (const n of linked) n.templateId = toId;
+  state.markDirty();
+  state.emit('change:treeData', state.get('treeData'));
+  undoManager.push(
+    'Swap template for all instances',
+    () => {
+      const nb2 = state.get('nodeById');
+      for (const b of before) {
+        const n = nb2?.get(b.id);
+        if (n) n.templateId = b.templateId;
+      }
+      state.markDirty();
+      state.emit('change:treeData', state.get('treeData'));
+    },
+    () => {
+      const nb2 = state.get('nodeById');
+      for (const b of before) {
+        const n = nb2?.get(b.id);
+        if (n) n.templateId = toId;
+      }
+      state.markDirty();
+      state.emit('change:treeData', state.get('treeData'));
+    },
+  );
+  return linked.length;
+}
+
+/**
+ * Auto-rename based on the template's text content. Uses the first 3
+ * words (or shorter, if text is shorter). Empty text → no rename.
+ */
+export function renameNoteTemplateFromContent(id) {
+  const list = state.get('noteTemplates') || [];
+  const t = list.find(x => x.id === id);
+  if (!t) return;
+  const words = (t.text || '').trim().split(/\s+/).filter(Boolean).slice(0, 3);
+  if (!words.length) return;
+  renameNoteTemplate(id, words.join(' '));
+}
+
+/**
+ * Delete a template. mode controls what happens to instances:
+ *   'detach'   — convert each instance to a standalone note (copy current
+ *                template text/size into the instance, clear templateId).
+ *   'remove'   — delete each linked instance from the tree.
+ * Default: 'detach' (no data loss).
+ */
+export function deleteNoteTemplate(id, mode = 'detach') {
+  const list   = state.get('noteTemplates') || [];
+  const tpl    = list.find(t => t.id === id);
+  if (!tpl) return;
+  const root   = state.get('treeData');
+  const nb     = state.get('nodeById');
+  const linked = [];
+  if (nb) {
+    for (const n of nb.values()) {
+      if (n?.type === 'note' && n.templateId === id) linked.push(n);
+    }
+  }
+
+  // Snapshot per-instance "before" data for undo.
+  const beforeInstances = linked.map(n => ({
+    id: n.id,
+    text: n.text,
+    sizePresetId: n.sizePresetId,
+    customFontSize: n.customFontSize,
+    templateId: n.templateId,
+    parentId: _findNodeParent(root, n.id)?.id || null,
+    indexInParent: (() => {
+      const p = _findNodeParent(root, n.id);
+      return p ? (p.children || []).findIndex(c => c.id === n.id) : -1;
+    })(),
+    nodeSnap: JSON.parse(JSON.stringify(n)),
+  }));
+
+  // Apply.
+  if (mode === 'remove') {
+    for (const inst of linked) {
+      const parent = _findNodeParent(root, inst.id);
+      if (parent) parent.children = (parent.children || []).filter(c => c.id !== inst.id);
+    }
+    state.setState({ nodeById: _nodes_buildNodeMap(root) });
+  } else {
+    // detach: copy template content into each instance, clear templateId.
+    for (const inst of linked) {
+      inst.text           = tpl.text;
+      inst.sizePresetId   = tpl.sizePresetId;
+      inst.customFontSize = tpl.customFontSize;
+      inst.templateId     = null;
+    }
+  }
+  state.setState({ noteTemplates: list.filter(t => t.id !== id) });
+  state.emit('change:treeData', state.get('treeData'));
+  state.markDirty();
+
+  undoManager.push(
+    'Delete template',
+    () => {
+      // Restore template + restore instance contents.
+      const cur = state.get('noteTemplates') || [];
+      state.setState({ noteTemplates: [...cur, tpl] });
+      const r  = state.get('treeData');
+      const nb2 = state.get('nodeById');
+      if (mode === 'remove') {
+        for (const b of beforeInstances) {
+          const p = nb2?.get(b.parentId);
+          if (p) {
+            const kids = p.children || [];
+            const exists = kids.some(c => c.id === b.id);
+            if (!exists) {
+              const insertAt = Math.min(b.indexInParent >= 0 ? b.indexInParent : kids.length, kids.length);
+              p.children = [...kids.slice(0, insertAt), b.nodeSnap, ...kids.slice(insertAt)];
+            }
+          }
+        }
+        state.setState({ nodeById: _nodes_buildNodeMap(r) });
+      } else {
+        for (const b of beforeInstances) {
+          const n = state.get('nodeById')?.get(b.id);
+          if (n) {
+            n.text           = b.text;
+            n.sizePresetId   = b.sizePresetId;
+            n.customFontSize = b.customFontSize;
+            n.templateId     = b.templateId;
+          }
+        }
+      }
+      state.emit('change:treeData', state.get('treeData'));
+      state.markDirty();
+    },
+    () => {
+      // Re-apply delete.
+      const cur = state.get('noteTemplates') || [];
+      state.setState({ noteTemplates: cur.filter(t => t.id !== id) });
+      const r = state.get('treeData');
+      if (mode === 'remove') {
+        for (const b of beforeInstances) {
+          const p = _findNodeParent(r, b.id);
+          if (p) p.children = (p.children || []).filter(c => c.id !== b.id);
+        }
+        state.setState({ nodeById: _nodes_buildNodeMap(r) });
+      } else {
+        for (const b of beforeInstances) {
+          const n = state.get('nodeById')?.get(b.id);
+          if (n) {
+            n.text           = tpl.text;
+            n.sizePresetId   = tpl.sizePresetId;
+            n.customFontSize = tpl.customFontSize;
+            n.templateId     = null;
+          }
+        }
+      }
+      state.emit('change:treeData', state.get('treeData'));
+      state.markDirty();
+    },
+  );
+}
+
+/**
+ * Enter "place template" face-pick mode. Cancels any other pick mode.
+ * Cleared on Esc / selection change / on hit (placeNoteTemplateAtHit).
+ */
+export function startNoteTemplateInstantiation(templateId) {
+  if (!templateId) return;
+  cancelNotePicking();
+  cancelNoteRepositioning();
+  state.setState({ noteTemplateInstantiationId: templateId });
+}
+
+export function cancelNoteTemplateInstantiation() {
+  if (state.get('noteTemplateInstantiationId')) {
+    state.setState({ noteTemplateInstantiationId: null });
+  }
+}
+
+/**
+ * On a viewport pointerdown that hit a mesh while
+ * noteTemplateInstantiationId is set: create a fresh note instance under
+ * that mesh, with templateId set to the active template. Mirrors
+ * createNoteAtHit but for template instantiation.
+ */
+export function placeNoteTemplateAtHit(templateId, hit) {
+  if (!templateId || !hit?.point || !hit?.object) return false;
+  const meshId = hit.object.userData?.meshNodeId;
+  if (!meshId) return false;
+  const root     = state.get('treeData');
+  const nb       = state.get('nodeById');
+  const meshNode = nb?.get(meshId);
+  if (!meshNode || meshNode.type !== 'mesh') return false;
+
+  const obj = steps.object3dById?.get(meshId);
+  if (!obj) return false;
+  obj.updateMatrixWorld(true);
+  const local = obj.worldToLocal(hit.point.clone());
+
+  // bbox-relative resilience.
+  let rel = [0.5, 0.5, 0.5];
+  const bb = meshNode.bbox;
+  if (bb && Array.isArray(bb.min) && Array.isArray(bb.max)) {
+    const wx = Math.max(bb.max[0] - bb.min[0], 1e-6);
+    const wy = Math.max(bb.max[1] - bb.min[1], 1e-6);
+    const wz = Math.max(bb.max[2] - bb.min[2], 1e-6);
+    rel = [
+      (local.x - bb.min[0]) / wx,
+      (local.y - bb.min[1]) / wy,
+      (local.z - bb.min[2]) / wz,
+    ];
+  }
+
+  const note = createNoteNode({
+    anchorMeshId:       meshId,
+    anchorLocal:        [local.x, local.y, local.z],
+    anchorBboxRelative: rel,
+    text:               '',                      // empty — template's text wins
+    templateId,
+  });
+  meshNode.children = [...(meshNode.children || []), note];
+  state.setState({
+    nodeById:                    _nodes_buildNodeMap(state.get('treeData')),
+    noteTemplateInstantiationId: null,
+  });
+  state.emit('change:treeData', state.get('treeData'));
+  state.markDirty();
+
+  undoManager.push(
+    'Place template',
+    () => {
+      const m = state.get('nodeById')?.get(meshId);
+      if (m) m.children = (m.children || []).filter(c => c.id !== note.id);
+      state.setState({ nodeById: _nodes_buildNodeMap(state.get('treeData')) });
+      state.emit('change:treeData', state.get('treeData'));
+      state.markDirty();
+    },
+    () => {
+      const m = state.get('nodeById')?.get(meshId);
+      if (!m) return;
+      if (!(m.children || []).some(c => c.id === note.id)) {
+        m.children = [...(m.children || []), note];
+      }
+      state.setState({ nodeById: _nodes_buildNodeMap(state.get('treeData')) });
+      state.emit('change:treeData', state.get('treeData'));
+      state.markDirty();
+    },
+  );
+  return note.id;
+}
+
+/**
+ * Detach a single note instance from its template. Copies the template's
+ * current text/size into the instance, clears templateId.
+ */
+export function detachNoteFromTemplate(noteId) {
+  const note = state.get('nodeById')?.get(noteId);
+  if (!note || note.type !== 'note' || !note.templateId) return;
+  const list = state.get('noteTemplates') || [];
+  const tpl  = list.find(t => t.id === note.templateId);
+  if (!tpl) return;
+  const before = {
+    text: note.text, sizePresetId: note.sizePresetId,
+    customFontSize: note.customFontSize, templateId: note.templateId,
+  };
+  note.text           = tpl.text;
+  note.sizePresetId   = tpl.sizePresetId;
+  note.customFontSize = tpl.customFontSize;
+  note.templateId     = null;
+  state.emit('change:treeData', state.get('treeData'));
+  state.markDirty();
+  undoManager.push(
+    'Detach template',
+    () => {
+      const n = state.get('nodeById')?.get(noteId);
+      if (n) Object.assign(n, before);
+      state.emit('change:treeData', state.get('treeData'));
+      state.markDirty();
+    },
+    () => {
+      const n = state.get('nodeById')?.get(noteId);
+      if (n) Object.assign(n, { ...before, ...{ text: tpl.text, sizePresetId: tpl.sizePresetId, customFontSize: tpl.customFontSize, templateId: null } });
+      state.emit('change:treeData', state.get('treeData'));
+      state.markDirty();
+    },
+  );
+}
+
+/**
+ * Swap a note's content source — link to a (different) template, copying
+ * the template's text/size into the instance's snapshot fields for safety
+ * but using templateId as the source of truth at render time.
+ */
+export function linkNoteToTemplate(noteId, templateId) {
+  const note = state.get('nodeById')?.get(noteId);
+  if (!note || note.type !== 'note') return;
+  const list = state.get('noteTemplates') || [];
+  if (!list.some(t => t.id === templateId)) return;
+  const before = { templateId: note.templateId };
+  if (before.templateId === templateId) return;
+  note.templateId = templateId;
+  state.emit('change:treeData', state.get('treeData'));
+  state.markDirty();
+  undoManager.push(
+    'Link to template',
+    () => {
+      const n = state.get('nodeById')?.get(noteId);
+      if (n) n.templateId = before.templateId;
+      state.emit('change:treeData', state.get('treeData'));
+      state.markDirty();
+    },
+    () => {
+      const n = state.get('nodeById')?.get(noteId);
+      if (n) n.templateId = templateId;
+      state.emit('change:treeData', state.get('treeData'));
+      state.markDirty();
+    },
+  );
+}
+
+// ── Note template library — bulk import with conflict resolution ──────────
+//
+// Imports a list of templates into the live state. Each incoming template
+// is matched against existing ones BY NAME. The caller passes a per-name
+// resolution map so the import is non-interactive at this layer (the UI
+// builds the dialog and feeds the decisions). Resolutions:
+//   'add'     → insert as-is (no conflict, or user picked rename-only)
+//   'replace' → overwrite existing entry with the same name (keep ID so
+//               linked instances continue to point at the right template)
+//   'skip'    → drop this incoming template
+//   'rename'  → insert with auto-suffixed name "Foo (2)", "Foo (3)" …
+//
+// Returns counts: { added, replaced, skipped, renamed }.
+// Pushes a single undo entry covering the whole import.
+
+function _uniqueRenameAvailable(baseName, takenNames) {
+  if (!takenNames.has(baseName)) return baseName;
+  let n = 2;
+  while (takenNames.has(`${baseName} (${n})`)) n++;
+  return `${baseName} (${n})`;
+}
+
+export function importNoteTemplateLibrary(incoming, resolutions /* Map<name, mode> */) {
+  if (!Array.isArray(incoming) || !incoming.length) {
+    return { added: 0, replaced: 0, skipped: 0, renamed: 0 };
+  }
+  const before = JSON.parse(JSON.stringify(state.get('noteTemplates') || []));
+  const next   = before.slice();
+  const byName = new Map(next.map(t => [t.name, t]));
+  let added = 0, replaced = 0, skipped = 0, renamed = 0;
+
+  for (const tpl of incoming) {
+    if (!tpl || typeof tpl !== 'object') continue;
+    const name = String(tpl.name || '').trim();
+    const mode = resolutions instanceof Map
+                 ? (resolutions.get(name) || 'rename')
+                 : 'rename';
+    if (mode === 'skip')   { skipped++; continue; }
+    if (mode === 'replace' && byName.has(name)) {
+      const existing = byName.get(name);
+      const updated  = {
+        ...existing,
+        text:           tpl.text ?? '',
+        sizePresetId:   tpl.sizePresetId   || existing.sizePresetId || 'medium',
+        customFontSize: Number.isFinite(tpl.customFontSize) ? tpl.customFontSize : null,
+      };
+      const idx = next.findIndex(t => t.id === existing.id);
+      if (idx >= 0) next[idx] = updated;
+      byName.set(name, updated);
+      replaced++;
+      continue;
+    }
+    // 'add' → use given name. 'rename' → auto-rename to avoid collision.
+    let finalName = name;
+    if (mode !== 'add') {
+      finalName = _uniqueRenameAvailable(name || 'Template', new Set(byName.keys()));
+      if (finalName !== name) renamed++;
+    }
+    const fresh = createNoteTemplate({
+      name:           finalName,
+      text:           tpl.text ?? '',
+      sizePresetId:   tpl.sizePresetId   || 'medium',
+      customFontSize: Number.isFinite(tpl.customFontSize) ? tpl.customFontSize : null,
+    });
+    next.push(fresh);
+    byName.set(finalName, fresh);
+    added++;
+  }
+
+  state.setState({ noteTemplates: next });
+  state.markDirty();
+  state.emit('change:treeData', state.get('treeData'));
+
+  const after = JSON.parse(JSON.stringify(next));
+  undoManager.push(
+    'Import note library',
+    () => {
+      state.setState({ noteTemplates: JSON.parse(JSON.stringify(before)) });
+      state.markDirty();
+      state.emit('change:treeData', state.get('treeData'));
+    },
+    () => {
+      state.setState({ noteTemplates: JSON.parse(JSON.stringify(after)) });
+      state.markDirty();
+      state.emit('change:treeData', state.get('treeData'));
+    },
+  );
+  return { added, replaced, skipped, renamed };
+}
+
+// ── Note position clipboard ────────────────────────────────────────────────
+//
+// Copy a note's framePosition once; paste it into every selected step's
+// snapshot for that same note. The active step also gets the live mutation
+// applied immediately so the user sees the change without re-navigating.
+//
+// noteId is captured at copy time so the paste targets the SAME note —
+// pasting onto a different note's right-click menu is currently disabled
+// in the UI; if relaxed later, the action can accept a target noteId.
+
+let _notePosClip = null;
+
+export function copyNotePosition(noteId) {
+  const n = state.get('nodeById')?.get(noteId);
+  if (!n || n.type !== 'note') return;
+  const fp = n.framePosition;
+  if (!fp || !Number.isFinite(fp.x) || !Number.isFinite(fp.y)) return;
+  _notePosClip = { noteId, x: fp.x, y: fp.y };
+}
+
+export function getNotePositionClipboard() { return _notePosClip; }
+
+export function pasteNotePositionToSelectedSteps() {
+  if (!_notePosClip) return 0;
+  const sel = state.get('selectedStepIds');
+  if (!(sel instanceof Set) || sel.size === 0) return 0;
+  const stepsArr = state.get('steps') || [];
+  const targets  = stepsArr.filter(s => sel.has(s.id));
+  if (!targets.length) return 0;
+
+  // Snapshot before for undo (one entry covers the whole paste).
+  const beforeMap = new Map();   // stepId → prior snapshot.notePanelOffsets[noteId]
+  for (const step of targets) {
+    if (!step.snapshot) continue;
+    const prior = step.snapshot.notePanelOffsets?.[_notePosClip.noteId];
+    beforeMap.set(step.id, prior ? { ...prior } : null);
+  }
+
+  const apply = (clip) => {
+    const arr = state.get('steps') || [];
+    for (const step of arr) {
+      if (!sel.has(step.id) || !step.snapshot) continue;
+      if (!step.snapshot.notePanelOffsets) step.snapshot.notePanelOffsets = {};
+      const existing = step.snapshot.notePanelOffsets[clip.noteId] || {};
+      step.snapshot.notePanelOffsets[clip.noteId] = {
+        ...existing,
+        fx: clip.x,
+        fy: clip.y,
+      };
+    }
+    // If active step is in the selection, mirror onto the live note so
+    // the user sees the new position immediately.
+    const activeId = state.get('activeStepId');
+    if (sel.has(activeId)) {
+      const note = state.get('nodeById')?.get(clip.noteId);
+      if (note?.type === 'note') note.framePosition = { x: clip.x, y: clip.y };
+    }
+    state.markDirty();
+    state.emit('change:treeData', state.get('treeData'));
+  };
+
+  apply(_notePosClip);
+  const snap = { ..._notePosClip };
+  const beforeSnap = beforeMap;
+  undoManager.push(
+    'Paste note position',
+    () => {
+      const arr = state.get('steps') || [];
+      for (const step of arr) {
+        if (!beforeSnap.has(step.id) || !step.snapshot) continue;
+        const prior = beforeSnap.get(step.id);
+        if (!step.snapshot.notePanelOffsets) step.snapshot.notePanelOffsets = {};
+        if (prior) step.snapshot.notePanelOffsets[snap.noteId] = prior;
+        else delete step.snapshot.notePanelOffsets[snap.noteId];
+      }
+      state.markDirty();
+      state.emit('change:treeData', state.get('treeData'));
+    },
+    () => apply(snap),
+  );
+  return targets.length;
 }
 
 export function deleteNote(noteId) {

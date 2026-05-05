@@ -98,6 +98,13 @@ const APP_ROOT = path.join(__dirname, '..');
 // ~2 GB renderer heap and crash with "invalid array length".
 app.commandLine.appendSwitch('js-flags', '--max-old-space-size=8192');
 
+// (Removed: force-color-profile=srgb, disable-color-correct-rendering,
+// disableHardwareAcceleration. None of them moved the painted pixel —
+// the dim turned out to be Windows 11 Automatic Color Management
+// intercepting Chromium output at the OS compositor level, where no
+// Chromium-side switch can reach. Fix lives in Windows display
+// settings, not the app.)
+
 // ─── Vendor bootstrap ─────────────────────────────────────────────────────
 // On first run (or after a clean checkout) the app's vendor/ directory may be
 // empty.  We look for a sibling step_browser_runtime/vendor/ and copy files
@@ -347,6 +354,24 @@ ipcMain.handle('dialog:openHeader', async () => {
   const result = await dialog.showOpenDialog(mainWindow, {
     title: 'Open Header Setup',
     filters: [{ name: 'SBS Header Setup', extensions: ['sbsheader','json'] }],
+    properties: ['openFile'],
+  });
+  return result.canceled ? null : result.filePaths[0];
+});
+
+// Save / open .sbsnotelib files — note template library, portable across projects.
+ipcMain.handle('dialog:saveNoteLib', async (_, defaultName) => {
+  const result = await dialog.showSaveDialog(mainWindow, {
+    title: 'Save Note Library',
+    defaultPath: defaultName || 'note_library.sbsnotelib',
+    filters: [{ name: 'SBS Note Library', extensions: ['sbsnotelib','json'] }],
+  });
+  return result.canceled ? null : result.filePath;
+});
+ipcMain.handle('dialog:openNoteLib', async () => {
+  const result = await dialog.showOpenDialog(mainWindow, {
+    title: 'Open Note Library',
+    filters: [{ name: 'SBS Note Library', extensions: ['sbsnotelib','json'] }],
     properties: ['openFile'],
   });
   return result.canceled ? null : result.filePaths[0];

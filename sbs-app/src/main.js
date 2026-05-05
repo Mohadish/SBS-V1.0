@@ -23,6 +23,7 @@ import { materials }      from './systems/materials.js';
 import * as actions from './systems/actions.js';
 const { setupUndoKeyboard, setSelection: actionSetSelection, clearSelection: actionClearSelection, resetTransform } = actions;
 import { gizmo }           from './ui/gizmo.js';
+import { initGizmoNumeric } from './ui/gizmo-numeric.js';
 import { undoManager }    from './systems/undo.js';
 import { selectionActs }  from './systems/select-act.js';
 
@@ -74,6 +75,13 @@ state.setState({ isElectron: !!window.sbsNative?.isElectron });
 const viewer = document.getElementById('viewer');
 sceneCore.init(viewer, { antialias: true, preserveDrawingBuffer: true });
 gizmo.init();
+initGizmoNumeric(gizmo);   // live drag readout + numeric input mode
+
+// Debug surface — exposes core handles on window.__sbs for live console
+// inspection during development. Not used by app code.
+if (typeof window !== 'undefined') {
+  window.__sbs = Object.assign(window.__sbs || {}, { gizmo, sceneCore });
+}
 
 /**
  * Sync the Three.js scene background from project state. Two modes:
@@ -503,6 +511,24 @@ canvas.addEventListener('pointerdown', e => {
       actions.repositionNoteAtHit(noteReposId, hit);
     } else {
       actions.cancelNoteRepositioning();
+    }
+    return;
+  }
+
+  // Template INSTANTIATION — click any mesh face to drop a fresh note
+  // instance there, linked to the active template. Click on empty space
+  // cancels. Mirrors note REPOSITION but creates a new note instead of
+  // moving an existing one.
+  const tplInstId = state.get('noteTemplateInstantiationId');
+  if (tplInstId) {
+    e.preventDefault();
+    e.stopPropagation();
+    _gizmoConsumed = true;
+    const hit = sceneCore.pick(e.clientX, e.clientY);
+    if (hit?.object?.userData?.meshNodeId) {
+      actions.placeNoteTemplateAtHit(tplInstId, hit);
+    } else {
+      actions.cancelNoteTemplateInstantiation();
     }
     return;
   }
@@ -1112,10 +1138,19 @@ canvas.addEventListener('contextmenu', e => {
         label: `📋 Notes on "${(meshNode.name || 'mesh').slice(0, 24)}" (${directNotes.length})`,
         disabled: true,
       });
+      // Resolve template-linked notes' display name from the template's
+      // user-facing name, not the empty instance text.
+      const tplList = state.get('noteTemplates') || [];
       for (const nt of directNotes) {
         const visEff = (nodeById.get(nt.id)?.localVisible !== false);
-        const txt    = (nt.text || '').replace(/\s+/g, ' ').trim();
-        const short  = txt ? (txt.length > 30 ? txt.slice(0, 30) + '…' : txt) : '(empty note)';
+        let short;
+        if (nt.templateId) {
+          const tpl = tplList.find(t => t.id === nt.templateId);
+          short = tpl?.name || '(linked template)';
+        } else {
+          const txt = (nt.text || '').replace(/\s+/g, ' ').trim();
+          short = txt ? (txt.length > 30 ? txt.slice(0, 30) + '…' : txt) : '(empty note)';
+        }
         items.push({
           label:  `   ${visEff ? '👁' : '🚫'}  ${short}`,
           action: () => actions.toggleVisibility([nt.id]),
@@ -1351,6 +1386,11 @@ window.addEventListener('keydown', async e => {
     // Note repositioning — Esc cancels.
     if (state.get('noteRepositioningId')) {
       actions.cancelNoteRepositioning();
+      return;
+    }
+    // Template instantiation — Esc cancels.
+    if (state.get('noteTemplateInstantiationId')) {
+      actions.cancelNoteTemplateInstantiation();
       return;
     }
     // Snap-to-surface mode is its own little modal — cancel that

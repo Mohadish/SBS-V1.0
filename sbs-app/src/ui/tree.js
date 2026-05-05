@@ -55,6 +55,10 @@ export function initTree(containerEl) {
   if (!_container) return;
 
   state.on('change:treeData', () => { _syncExpanded(); renderTree(); });
+  // Templates own the visible label of any template-linked note in the
+  // tree — re-render on template rename / create / delete so labels
+  // update without a project reload.
+  state.on('change:noteTemplates', () => renderTree());
   state.on('selection:change', () => { _syncExpanded(); renderTree(); });
   state.on('change:activeStepId', () => renderTree());
   // step:applied fires AFTER applyVisibilitySnapshot has mutated each
@@ -203,12 +207,21 @@ function _buildRow(node, depth) {
   icon.className   = 'icon';
   icon.textContent = _typeIcon(node.type);
 
-  // Label — notes show their (truncated) text instead of name
+  // Label — notes show their (truncated) text, or the template's NAME
+  // when template-linked (so the tree mirrors the user-facing label
+  // chosen in the Notes tab instead of the empty instance text).
   const label = document.createElement('span');
   label.className   = 'label';
   if (node.type === 'note') {
-    const t = (node.text || '').replace(/\s+/g, ' ').trim();
-    label.textContent = t ? (t.length > 40 ? t.slice(0, 40) + '…' : t) : '(empty note)';
+    let labelTxt = '';
+    if (node.templateId) {
+      const tpl = (state.get('noteTemplates') || []).find(t => t.id === node.templateId);
+      labelTxt = tpl?.name || '(linked template)';
+    } else {
+      const t = (node.text || '').replace(/\s+/g, ' ').trim();
+      labelTxt = t ? (t.length > 40 ? t.slice(0, 40) + '…' : t) : '(empty note)';
+    }
+    label.textContent = labelTxt;
     label.style.fontStyle = 'italic';
   } else {
     label.textContent = node.name || '(unnamed)';
@@ -463,10 +476,17 @@ function _buildContextMenuItems(node) {
       label: `📋 Notes on this ${node.type} (${directNotes.length})`,
       disabled: true,
     });
+    const tplList = state.get('noteTemplates') || [];
     for (const n of directNotes) {
       const visEff = (nodeById?.get(n.id)?.localVisible !== false);
-      const txt    = (n.text || '').replace(/\s+/g, ' ').trim();
-      const short  = txt ? (txt.length > 30 ? txt.slice(0, 30) + '…' : txt) : '(empty note)';
+      let short;
+      if (n.templateId) {
+        const tpl = tplList.find(t => t.id === n.templateId);
+        short = tpl?.name || '(linked template)';
+      } else {
+        const txt = (n.text || '').replace(/\s+/g, ' ').trim();
+        short = txt ? (txt.length > 30 ? txt.slice(0, 30) + '…' : txt) : '(empty note)';
+      }
       items.push({
         label:  `   ${visEff ? '👁' : '🚫'}  ${short}`,
         action: () => actions.toggleVisibility([n.id]),
@@ -1074,16 +1094,29 @@ function _showInputDialog(title, defaultVal, onConfirm) {
  */
 function _buildNoteContextMenuItems(node) {
   const isVisible = node.localVisible !== false;
+  // Resolve content source for label display + edit redirection.
+  // Linked → template owns text + name; standalone → instance's own.
+  const tplList = state.get('noteTemplates') || [];
+  const tpl     = node.templateId ? tplList.find(t => t.id === node.templateId) : null;
+  const editing = tpl
+    ? { srcText: tpl.text, label: tpl.name || '(linked template)' }
+    : { srcText: node.text, label: (node.text || '').replace(/\s+/g, ' ').trim() };
+  const sizeDisabled = !!tpl;
   return [
     {
       label:  isVisible ? `🚫 Hide note` : `👁 Show note`,
       action: () => actions.toggleVisibility([node.id]),
     },
     {
-      label:  'Edit Text…',
-      action: () => _showInputDialog('Edit note text', node.text || '', text => {
-        actions.editNoteText(node.id, text);
-      }),
+      label:  tpl ? `Edit Template Text… (${tpl.name || 'template'})` : 'Edit Text…',
+      action: () => _showInputDialog(
+        tpl ? `Edit template "${tpl.name || ''}"` : 'Edit note text',
+        editing.srcText || '',
+        text => {
+          if (tpl) actions.updateNoteTemplateText?.(tpl.id, text);
+          else     actions.editNoteText(node.id, text);
+        },
+      ),
     },
     {
       label:  '↺ Reposition Note…',
@@ -1092,8 +1125,9 @@ function _buildNoteContextMenuItems(node) {
     {
       label:  'Delete Note',
       action: () => {
-        const txt   = (node.text || '').replace(/\s+/g, ' ').trim();
-        const short = txt ? (txt.length > 40 ? txt.slice(0, 40) + '…' : txt) : '(empty note)';
+        const short = editing.label
+          ? (editing.label.length > 40 ? editing.label.slice(0, 40) + '…' : editing.label)
+          : '(empty note)';
         showConfirmDialog(
           'Delete note?',
           `This will remove the note "${short}". You can undo with Ctrl+Z.`,
@@ -1105,17 +1139,17 @@ function _buildNoteContextMenuItems(node) {
     {
       label:    '● Size: Small',
       action:   () => actions.setNoteSizePreset(node.id, 'small'),
-      disabled: node.sizePresetId === 'small'  && node.customFontSize === null,
+      disabled: sizeDisabled || (node.sizePresetId === 'small'  && node.customFontSize === null),
     },
     {
       label:    '● Size: Medium',
       action:   () => actions.setNoteSizePreset(node.id, 'medium'),
-      disabled: node.sizePresetId === 'medium' && node.customFontSize === null,
+      disabled: sizeDisabled || (node.sizePresetId === 'medium' && node.customFontSize === null),
     },
     {
       label:    '● Size: Large',
       action:   () => actions.setNoteSizePreset(node.id, 'large'),
-      disabled: node.sizePresetId === 'large'  && node.customFontSize === null,
+      disabled: sizeDisabled || (node.sizePresetId === 'large'  && node.customFontSize === null),
     },
   ];
 }

@@ -1056,6 +1056,21 @@ function _extendSelectionThroughChapter(chapterId) {
   _setSel(next);
 }
 
+/** Select every step (across all chapters). */
+function _selectAllSteps() {
+  const all = state.get('steps') || [];
+  _setSel(new Set(all.map(s => s.id)));
+}
+
+/** Set selection to (all steps) ∖ (current selection). */
+function _invertSelectedSteps() {
+  const all = state.get('steps') || [];
+  const cur = _getSel();
+  const next = new Set();
+  for (const s of all) if (!cur.has(s.id)) next.add(s.id);
+  _setSel(next);
+}
+
 function _toggleStepHidden(step) {
   const inMulti = _selSize() > 1 && _selHas(step.id);
   if (inMulti) {
@@ -1073,7 +1088,22 @@ function _toggleStepHidden(step) {
 // ── Step context menu (right-click on collapsed card) ───────────────────────
 
 function _showStepContextMenu(step, x, y) {
+  const allSteps = state.get('steps') || [];
+  const inChapterIds = step.chapterId
+    ? allSteps.filter(s => s.chapterId === step.chapterId).map(s => s.id)
+    : [];
+  const curSelSize = _selSize();
   const items = [
+    { label: `Select all steps & chapters (${allSteps.length})`,
+      disabled: allSteps.length === 0,
+      action:   () => _selectAllSteps() },
+    { label: `Select all steps in chapter (${inChapterIds.length})`,
+      disabled: inChapterIds.length === 0,
+      action:   () => _selectChapterSteps(step.chapterId) },
+    { label: `Invert selected (${curSelSize} → ${Math.max(0, allSteps.length - curSelSize)})`,
+      disabled: allSteps.length === 0,
+      action:   () => _invertSelectedSteps() },
+    { separator: true },
     { label: 'Rename…',   action: () => _renameStep(step.id) },
     { label: 'Duplicate', action: () => _duplicateStep(step.id) },
     { label: 'Copy',      action: () => _copyStepsToClipboard([step.id]) },
@@ -1132,6 +1162,13 @@ function _showMultiStepContextMenu(stepIds, x, y) {
 
   const activeTplLabel = _activeStepTemplateName();
   showContextMenu([
+    { label: `Select all steps & chapters (${stepsArr.length})`,
+      disabled: stepsArr.length === 0,
+      action:   () => _selectAllSteps() },
+    { label: `Invert selected (${stepIds.length} → ${Math.max(0, stepsArr.length - stepIds.length)})`,
+      disabled: stepsArr.length === 0,
+      action:   () => _invertSelectedSteps() },
+    { separator: true },
     { label: `Copy (${selSteps.length})`,
       action: () => _copyStepsToClipboard(stepIds) },
     { label: anyVisible ? 'Hide from playback' : 'Show in playback',

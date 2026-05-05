@@ -99,8 +99,10 @@ export function initSidebarLeft() {
     });
   });
   state.on('change:selectionGroups',       () => { if (_activeTab === 'select')   _renderSelectTab(); });
-  state.on('change:notePresets',           () => { if (_activeTab === 'notes')    _renderNotesTab();  });
-  state.on('change:treeData',              () => { if (_activeTab === 'notes')    _renderNotesTab();  });
+  state.on('change:notePresets',                  () => { if (_activeTab === 'notes')    _renderNotesTab();  });
+  state.on('change:treeData',                     () => { if (_activeTab === 'notes')    _renderNotesTab();  });
+  state.on('change:noteTemplates',                () => { if (_activeTab === 'notes')    _renderNotesTab();  });
+  state.on('change:noteTemplateInstantiationId',  () => { if (_activeTab === 'notes')    _renderNotesTab();  });
   state.on('change:cameraViews',           () => { if (_activeTab === 'cameras')   _renderCamerasTab(); });
   // Step bindings live on step.cameraBinding — when the active step
   // changes, or when any step's binding updates, the Cameras tab needs
@@ -2001,15 +2003,64 @@ function _renderNotesTab() {
   const el = _panel('notes');
   if (!el) return;
 
-  const presets = state.get('notePresets') || { small: 18, medium: 36, large: 48 };
-  const noteCount = _countNotes(state.get('treeData'));
+  const presets   = state.get('notePresets')   || { small: 18, medium: 36, large: 48 };
+  const templates = state.get('noteTemplates') || [];
+  const placingId = state.get('noteTemplateInstantiationId');
+
+  // Per-template instance count (how many notes in scene reference each).
+  const instanceCount = new Map();
+  const root = state.get('treeData');
+  (function walk(n) {
+    if (!n) return;
+    if (n.type === 'note' && n.templateId) {
+      instanceCount.set(n.templateId, (instanceCount.get(n.templateId) || 0) + 1);
+    }
+    for (const c of (n.children || [])) walk(c);
+  })(root);
+
+  const _esc = (s) => String(s ?? '').replace(/[<>&"']/g, ch => ({
+    '<':'&lt;','>':'&gt;','&':'&amp;','"':'&quot;',"'":'&#39;'
+  }[ch]));
+
+  const tplRowsHtml = templates.length === 0
+    ? `<div class="small muted" style="padding:8px 2px">No templates yet. Click <b>+ New template</b> to create one.</div>`
+    : templates.map((t, i) => {
+        const preview = (t.text || '').replace(/\s+/g, ' ').trim().slice(0, 60) || '(empty)';
+        const count = instanceCount.get(t.id) || 0;
+        return `
+          <div class="tplRow" data-tplid="${t.id}"
+               style="display:flex;align-items:center;gap:8px;padding:6px 8px;border:1px solid var(--line);border-radius:8px;margin-top:6px;cursor:pointer">
+            <div style="flex:1;min-width:0">
+              <div style="font-weight:600;font-size:13px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${_esc(t.name || `Template ${i+1}`)}</div>
+              <div class="small muted" style="margin-top:2px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${_esc(preview)}</div>
+            </div>
+            <span class="small muted" title="Instances in scene" style="flex-shrink:0">×${count}</span>
+            <button class="btn tplAssign" data-act="assign" data-tplid="${t.id}" title="Click here, then click any mesh face to place"
+                    style="height:24px;padding:0 8px;font-size:12px;flex-shrink:0">Assign</button>
+          </div>`;
+      }).join('');
 
   el.innerHTML = `
     <div class="section">
+      <div class="title">Note templates</div>
+      <div class="small muted" style="margin-top:4px;line-height:1.4">
+        Templates own shared text + size. Each instance has its own position + visibility.
+      </div>
+      <div style="display:flex;gap:6px;margin-top:8px;flex-wrap:wrap">
+        <button class="btn primary" id="tpl-new"  style="flex:1 1 100%">+ New template</button>
+        <button class="btn"         id="tpl-save" style="flex:1">💾 Save library…</button>
+        <button class="btn"         id="tpl-load" style="flex:1">📂 Load library…</button>
+      </div>
+      ${placingId ? `<div class="small" style="margin-top:8px;padding:8px;border-radius:8px;background:rgba(245,158,11,0.15);border:1px solid #f59e0b;color:#fbbf24">
+        🎯 Click a mesh face to place this template — Esc to cancel.
+      </div>` : ''}
+      <div id="tpl-list" style="margin-top:8px">${tplRowsHtml}</div>
+    </div>
+
+    <div class="section" style="margin-top:12px">
       <div class="title">Note size presets</div>
       <div class="small muted" style="margin-top:6px;line-height:1.45">
-        Each note picks one of these three sizes (or a per-note custom).
-        Editing here updates every note that references the preset.
+        Three canonical sizes (in canonical pixels — they scale with the safe frame at render time).
       </div>
       <div style="display:grid;grid-template-columns:1fr 1fr;gap:6px;margin-top:10px;align-items:center">
         <label class="small" for="note-sz-small">Small (px)</label>
@@ -2020,16 +2071,9 @@ function _renderNotesTab() {
         <input id="note-sz-large"  type="number" min="5" max="150" step="1" value="${presets.large  ?? 48}" />
       </div>
     </div>
-
-    <div class="section" style="margin-top:12px">
-      <div class="title">Notes in scene</div>
-      <div class="small muted" style="margin-top:4px">
-        ${noteCount} note${noteCount === 1 ? '' : 's'} attached to mesh faces.
-        Right-click a mesh in the tree → <b>Add Note…</b> to create one.
-      </div>
-    </div>
   `;
 
+  // ── Wire size presets (existing behaviour) ──────────────────────────────
   const wireSize = (id, key) => {
     el.querySelector(id).addEventListener('change', e => {
       const px = Math.max(5, Math.min(150, Number(e.target.value) || presets[key]));
@@ -2041,6 +2085,346 @@ function _renderNotesTab() {
   wireSize('#note-sz-small',  'small');
   wireSize('#note-sz-medium', 'medium');
   wireSize('#note-sz-large',  'large');
+
+  // ── New template button ─────────────────────────────────────────────────
+  el.querySelector('#tpl-new').addEventListener('click', () => {
+    import('../systems/actions.js').then(actions => {
+      actions.createNewNoteTemplate({});
+    });
+  });
+
+  // ── Save / Load library ─────────────────────────────────────────────────
+  el.querySelector('#tpl-save').addEventListener('click', _onSaveNoteLibrary);
+  el.querySelector('#tpl-load').addEventListener('click', _onLoadNoteLibrary);
+
+  // ── Per-row interactions ────────────────────────────────────────────────
+  el.querySelectorAll('.tplRow').forEach(row => {
+    const tplId = row.dataset.tplid;
+    // Left-click row (not on Assign button) → opens edit dialog.
+    row.addEventListener('click', e => {
+      if (e.target.closest('[data-act="assign"]')) return;
+      _openTemplateEditDialog(tplId);
+    });
+    // Right-click row → context menu.
+    row.addEventListener('contextmenu', e => {
+      e.preventDefault();
+      _openTemplateContextMenu(tplId, e.clientX, e.clientY);
+    });
+  });
+
+  // ── Assign buttons ──────────────────────────────────────────────────────
+  el.querySelectorAll('[data-act="assign"]').forEach(btn => {
+    btn.addEventListener('click', e => {
+      e.stopPropagation();
+      const tplId = btn.dataset.tplid;
+      import('../systems/actions.js').then(actions => {
+        actions.startNoteTemplateInstantiation(tplId);
+      });
+    });
+  });
+}
+
+function _openTemplateEditDialog(tplId) {
+  const list = state.get('noteTemplates') || [];
+  const tpl  = list.find(t => t.id === tplId);
+  if (!tpl) return;
+  // Plain prompt-style dialog — replace with a richer editor later.
+  const dlg = document.createElement('dialog');
+  dlg.className = 'sbs-dialog';
+  dlg.style.cssText = 'width:min(500px,90vw);background:var(--panel);border:1px solid var(--line);border-radius:10px;padding:16px;color:var(--text)';
+  const sizes  = ['small', 'medium', 'large'];
+  // Quick-insert glyph palette — clicking a glyph inserts it at the
+  // textarea's caret position. Specifically the warning / safety set
+  // requested by the user.
+  const glyphs = ['✔️','❌','☠️','⚡','⚠️','☢️','❗','🛑','💥','🔥','🛠️'];
+  const glyphsHtml = glyphs.map(g =>
+    `<button type="button" class="tpl-glyph" data-g="${g}"
+       style="font-size:20px;width:34px;height:34px;padding:0;border:1px solid var(--line);background:var(--panel2);border-radius:6px;cursor:pointer">${g}</button>`
+  ).join('');
+  dlg.innerHTML = `
+    <div style="font-weight:700;margin-bottom:8px">Edit template</div>
+    <label class="small muted">Name</label>
+    <input id="tpl-name" type="text" value="${(tpl.name||'').replace(/"/g,'&quot;')}" style="width:100%;margin-top:4px" />
+    <label class="small muted" style="margin-top:10px;display:block">Text</label>
+    <div id="tpl-glyphs" style="display:flex;flex-wrap:wrap;gap:4px;margin-top:4px">${glyphsHtml}</div>
+    <textarea id="tpl-text" rows="4" style="width:100%;margin-top:6px;font-family:Arial">${(tpl.text||'').replace(/</g,'&lt;')}</textarea>
+    <label class="small muted" style="margin-top:10px;display:block">Size</label>
+    <select id="tpl-size" style="width:100%;margin-top:4px">
+      ${sizes.map(s => `<option value="${s}" ${s===tpl.sizePresetId?'selected':''}>${s}</option>`).join('')}
+    </select>
+    <div style="display:flex;gap:8px;justify-content:flex-end;margin-top:14px">
+      <button class="btn"          id="tpl-cancel">Cancel</button>
+      <button class="btn primary"  id="tpl-save">Save</button>
+    </div>
+  `;
+  document.body.appendChild(dlg);
+
+  // Insert a glyph at the textarea's current caret position. Falls back
+  // to appending at the end if the field doesn't have a selection range
+  // (e.g. before user has focused it).
+  const ta = dlg.querySelector('#tpl-text');
+  const insertGlyph = (g) => {
+    ta.focus();
+    const start = ta.selectionStart ?? ta.value.length;
+    const end   = ta.selectionEnd   ?? ta.value.length;
+    const before = ta.value.slice(0, start);
+    const after  = ta.value.slice(end);
+    ta.value = before + g + after;
+    const pos = start + g.length;
+    ta.setSelectionRange(pos, pos);
+  };
+  dlg.querySelectorAll('.tpl-glyph').forEach(btn => {
+    // pointerdown — happens BEFORE the textarea blurs, so caret position
+    // is preserved. Avoids click handler that would fire after blur.
+    btn.addEventListener('pointerdown', e => {
+      e.preventDefault();
+      insertGlyph(btn.dataset.g);
+    });
+  });
+
+  dlg.addEventListener('keydown', e => { if (e.key === 'Escape') { dlg.close(); dlg.remove(); } });
+  dlg.querySelector('#tpl-cancel').addEventListener('click', () => { dlg.close(); dlg.remove(); });
+  dlg.querySelector('#tpl-save').addEventListener('click', () => {
+    const name = dlg.querySelector('#tpl-name').value;
+    const text = dlg.querySelector('#tpl-text').value;
+    const size = dlg.querySelector('#tpl-size').value;
+    import('../systems/actions.js').then(actions => {
+      actions.renameNoteTemplate(tplId, name);
+      actions.updateNoteTemplateText(tplId, text);
+      actions.setNoteTemplateSize(tplId, size, null);
+    });
+    dlg.close();
+    dlg.remove();
+  });
+  dlg.showModal();
+  ta.focus();
+}
+
+function _showTemplatePickerForSwap(fromTplId, clientX, clientY, candidates) {
+  import('./context-menu.js').then(({ showContextMenu }) => {
+    import('../systems/actions.js').then(actions => {
+      showContextMenu(
+        candidates.map(t => ({
+          label:  `📝 ${t.name || '(unnamed)'}`,
+          action: () => {
+            const n = actions.swapTemplateForAllInstances(fromTplId, t.id);
+            setStatus(`Re-linked ${n} instance${n === 1 ? '' : 's'} to "${t.name || '(unnamed)'}".`);
+          },
+        })),
+        clientX,
+        clientY,
+      );
+    });
+  });
+}
+
+// ─── Note library — save / load ──────────────────────────────────────────
+
+async function _onSaveNoteLibrary() {
+  const tpls = state.get('noteTemplates') || [];
+  if (!tpls.length) {
+    setStatus('No templates to save.', 'warning');
+    return;
+  }
+  const payload = {
+    kind:     'sbs.notelib',
+    version:  1,
+    exportedAt: new Date().toISOString(),
+    templates: tpls.map(t => ({
+      name:           t.name || '',
+      text:           t.text || '',
+      sizePresetId:   t.sizePresetId || 'medium',
+      customFontSize: Number.isFinite(t.customFontSize) ? t.customFontSize : null,
+    })),
+  };
+  const json = JSON.stringify(payload, null, 2);
+
+  if (window.sbsNative?.saveNoteLib && window.sbsNative?.writeFile) {
+    const path = await window.sbsNative.saveNoteLib('note_library.sbsnotelib');
+    if (!path) return;
+    const res = await window.sbsNative.writeFile(path, json, 'utf-8');
+    if (res?.ok) setStatus(`Library saved → ${path.split(/[\\/]/).pop()}`);
+    else         setStatus(`Save failed: ${res?.error || 'unknown'}`, 'danger');
+    return;
+  }
+  // Browser fallback — anchor download.
+  const blob = new Blob([json], { type: 'application/json' });
+  const a    = document.createElement('a');
+  a.href     = URL.createObjectURL(blob);
+  a.download = 'note_library.sbsnotelib';
+  a.click();
+  setTimeout(() => URL.revokeObjectURL(a.href), 1000);
+  setStatus('Library saved (downloaded).');
+}
+
+async function _onLoadNoteLibrary() {
+  let json = null;
+  if (window.sbsNative?.openNoteLib && window.sbsNative?.readFile) {
+    const path = await window.sbsNative.openNoteLib();
+    if (!path) return;
+    const res = await window.sbsNative.readFile(path, 'utf-8');
+    if (!res?.ok) { setStatus(`Load failed: ${res?.error || 'unknown'}`, 'danger'); return; }
+    json = res.data;
+  } else {
+    json = await new Promise(resolve => {
+      const input = document.createElement('input');
+      input.type   = 'file';
+      input.accept = '.sbsnotelib,.json,application/json';
+      input.onchange = () => {
+        const f = input.files?.[0];
+        if (!f) return resolve(null);
+        const r = new FileReader();
+        r.onload  = () => resolve(String(r.result || ''));
+        r.onerror = () => resolve(null);
+        r.readAsText(f);
+      };
+      input.click();
+    });
+    if (!json) return;
+  }
+
+  let payload;
+  try { payload = JSON.parse(json); }
+  catch { setStatus('Invalid library file (not JSON).', 'danger'); return; }
+
+  const incoming = Array.isArray(payload?.templates) ? payload.templates : null;
+  if (!incoming || !incoming.length) {
+    setStatus('No templates found in the file.', 'warning');
+    return;
+  }
+
+  // Detect name conflicts to know whether we need the resolution dialog.
+  const existing = state.get('noteTemplates') || [];
+  const existingNames = new Set(existing.map(t => t.name));
+  const conflicts = [...new Set(incoming.map(t => t.name).filter(n => existingNames.has(n)))];
+
+  if (!conflicts.length) {
+    // No conflicts — straight import.
+    const { added } = (await import('../systems/actions.js')).importNoteTemplateLibrary(
+      incoming, new Map(),
+    );
+    setStatus(`Imported ${added} template${added === 1 ? '' : 's'}.`);
+    return;
+  }
+
+  // Show resolution dialog. Default per-row: rename. User picks per row OR
+  // applies one mode to all conflicts.
+  const decisions = await _showLibraryConflictDialog(conflicts);
+  if (!decisions) return;   // user cancelled
+  const resolutions = new Map();
+  for (const c of conflicts) resolutions.set(c, decisions[c] || 'rename');
+  // Non-conflicting incoming templates: insert as-is (their names aren't
+  // in resolutions, so importNoteTemplateLibrary's default 'rename' triggers,
+  // but auto-rename only fires on collision — so 'add' would also work.
+  // We pin them to 'add' explicitly.
+  for (const t of incoming) {
+    if (!resolutions.has(t.name)) resolutions.set(t.name, 'add');
+  }
+  const { added, replaced, skipped, renamed } = (await import('../systems/actions.js'))
+    .importNoteTemplateLibrary(incoming, resolutions);
+  setStatus(`Imported: +${added}, replaced ${replaced}, renamed ${renamed}, skipped ${skipped}.`);
+}
+
+/**
+ * Modal dialog for resolving name conflicts during note-library import.
+ * Returns a map { [conflictName]: 'rename' | 'replace' | 'skip' } on OK,
+ * or null on Cancel.
+ */
+function _showLibraryConflictDialog(conflictNames) {
+  return new Promise(resolve => {
+    const dlg = document.createElement('dialog');
+    dlg.className = 'sbs-dialog';
+    dlg.style.cssText = 'width:min(580px,95vw);max-height:80vh;overflow:auto;background:var(--panel);color:var(--text);border:1px solid var(--line);border-radius:10px;padding:18px';
+    const rowsHtml = conflictNames.map(name => `
+      <div style="display:flex;align-items:center;gap:10px;padding:6px 0;border-top:1px solid var(--line)">
+        <div style="flex:1;min-width:0;font-size:13px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis"
+             title="${name.replace(/"/g,'&quot;')}">${(name || '(unnamed)').replace(/[<>&]/g, c => ({'<':'&lt;','>':'&gt;','&':'&amp;'}[c]))}</div>
+        <select class="cf-row" data-name="${name.replace(/"/g,'&quot;')}" style="flex:0 0 auto">
+          <option value="rename"  selected>Rename and add</option>
+          <option value="replace">Replace existing</option>
+          <option value="skip">Skip</option>
+        </select>
+      </div>`).join('');
+    dlg.innerHTML = `
+      <div style="font-weight:700;font-size:15px;margin-bottom:6px">Library import — name conflicts</div>
+      <div class="small muted" style="margin-bottom:10px">${conflictNames.length} template${conflictNames.length === 1 ? '' : 's'} match an existing name. Pick an action per row, or use the bulk control below.</div>
+      <div style="display:flex;align-items:center;gap:8px;padding:6px 0;border-bottom:1px solid var(--line);margin-bottom:6px">
+        <span class="small muted">Apply to all:</span>
+        <select id="cf-bulk" style="flex:1">
+          <option value="">— per-row —</option>
+          <option value="rename">Rename and add (all)</option>
+          <option value="replace">Replace existing (all)</option>
+          <option value="skip">Skip (all)</option>
+        </select>
+      </div>
+      ${rowsHtml}
+      <div style="display:flex;gap:8px;justify-content:flex-end;margin-top:14px">
+        <button class="btn"          id="cf-cancel">Cancel</button>
+        <button class="btn primary"  id="cf-ok">Import</button>
+      </div>
+    `;
+    document.body.appendChild(dlg);
+    const close = (val) => { dlg.close(); dlg.remove(); resolve(val); };
+    dlg.querySelector('#cf-cancel').addEventListener('click', () => close(null));
+    dlg.querySelector('#cf-ok').addEventListener('click', () => {
+      const out = {};
+      dlg.querySelectorAll('.cf-row').forEach(sel => {
+        out[sel.dataset.name] = sel.value;
+      });
+      close(out);
+    });
+    dlg.querySelector('#cf-bulk').addEventListener('change', e => {
+      const v = e.target.value;
+      if (!v) return;
+      dlg.querySelectorAll('.cf-row').forEach(sel => sel.value = v);
+    });
+    dlg.addEventListener('keydown', e => { if (e.key === 'Escape') close(null); });
+    dlg.showModal();
+  });
+}
+
+function _openTemplateContextMenu(tplId, clientX, clientY) {
+  import('./context-menu.js').then(({ showContextMenu, showConfirmDialog }) => {
+    import('../systems/actions.js').then(actions => {
+      const list = state.get('noteTemplates') || [];
+      const tpl  = list.find(t => t.id === tplId);
+      if (!tpl) return;
+      // Count linked instances for the delete prompt.
+      let instanceCount = 0;
+      for (const n of (state.get('nodeById')?.values?.() || [])) {
+        if (n?.type === 'note' && n.templateId === tplId) instanceCount++;
+      }
+      const otherTemplates = (state.get('noteTemplates') || []).filter(t => t.id !== tplId);
+      showContextMenu([
+        { label: '✏ Edit text/size…', action: () => _openTemplateEditDialog(tplId) },
+        { label: 'Rename using content', action: () => actions.renameNoteTemplateFromContent(tplId) },
+        { label: 'Rename…', action: () => {
+            const next = window.prompt('Template name:', tpl.name || '');
+            if (next != null) actions.renameNoteTemplate(tplId, next);
+          } },
+        { label: 'Duplicate', action: () => actions.duplicateNoteTemplate(tplId) },
+        { separator: true },
+        { label: '🎯 Assign to object (click a face)', action: () => actions.startNoteTemplateInstantiation(tplId) },
+        { label: `🔁 Swap with template… (re-link ${instanceCount} instance${instanceCount===1?'':'s'})`,
+          disabled: instanceCount === 0 || otherTemplates.length === 0,
+          action: () => _showTemplatePickerForSwap(tplId, clientX, clientY, otherTemplates) },
+        { separator: true },
+        { label: `Delete — convert ${instanceCount} instance${instanceCount===1?'':'s'} to standalone`,
+          action: () => showConfirmDialog(
+            'Delete template?',
+            `Convert ${instanceCount} linked note${instanceCount===1?'':'s'} to standalone? Their current text/size is preserved.`,
+            () => actions.deleteNoteTemplate(tplId, 'detach'),
+          ) },
+        { label: `Delete — REMOVE ${instanceCount} instance${instanceCount===1?'':'s'} from scene`,
+          action: () => showConfirmDialog(
+            'Delete template + instances?',
+            `This removes ${instanceCount} note${instanceCount===1?'':'s'} from the scene. Undoable with Ctrl+Z.`,
+            () => actions.deleteNoteTemplate(tplId, 'remove'),
+          ),
+          disabled: instanceCount === 0 },
+      ], clientX, clientY);
+    });
+  });
 }
 
 function _countNotes(node, n = { c: 0 }) {

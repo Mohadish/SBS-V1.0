@@ -21,6 +21,8 @@ contextBridge.exposeInMainWorld('sbsNative', {
   saveProject:        (name)      => ipcRenderer.invoke('dialog:saveProject', name),
   saveHeader:         (name)      => ipcRenderer.invoke('dialog:saveHeader', name),
   openHeader:         ()          => ipcRenderer.invoke('dialog:openHeader'),
+  saveNoteLib:        (name)      => ipcRenderer.invoke('dialog:saveNoteLib', name),
+  openNoteLib:        ()          => ipcRenderer.invoke('dialog:openNoteLib'),
   chooseExportFolder: ()          => ipcRenderer.invoke('dialog:chooseExportFolder'),
   chooseFolder:       (opts={})   => ipcRenderer.invoke('dialog:chooseFolder', opts),
 

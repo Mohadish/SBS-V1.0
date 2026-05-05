@@ -30,6 +30,7 @@ import { sceneCore }                from '../core/scene.js';
 import { steps }                    from '../systems/steps.js';
 import { computeEffectiveVisibility } from '../core/nodes.js';
 import { showContextMenu, showConfirmDialog } from '../ui/context-menu.js';
+import { computeSafeFrameRect, getCanonicalSize } from '../core/safe-frame.js';
 
 let _labelsEl   = null;
 let _svgEl      = null;
@@ -156,11 +157,24 @@ function _renderTick() {
   // showing the mesh again restores whatever the note was set to.
   const effVisMap = computeEffectiveVisibility(treeData);
 
+  // Safe frame inside the canvas — used to convert note.framePosition
+  // (frame-relative %) into canvas-relative pixels and to scale font.
+  const sfRect = computeSafeFrameRect({
+    width:  canvasRect.width,
+    height: canvasRect.height,
+  });
+  const canonical = getCanonicalSize();   // for legacy panelOffset migration
+
   for (const note of notes) {
     // ── Effective panelOffset + visibility (with in-flight transition lerp).
     // note._anim is set by steps.js when a step transition starts; we lerp
     // panelOffset + opacity here, then clear _anim once alpha hits 1.
+    // panelOffset = LEGACY field (viewport-px from anchor). framePosition
+    // is the new canonical model (0..1 of the safe frame).
     let effOffset  = note.panelOffset || { x: 90, y: -70 };
+    let effFP      = (note.framePosition && Number.isFinite(note.framePosition.x))
+                     ? { x: note.framePosition.x, y: note.framePosition.y }
+                     : null;
     let effOpacity = effVisMap.get(note.id) ? 1 : 0;
     if (note._anim) {
       const a = note._anim;
@@ -170,12 +184,21 @@ function _renderTick() {
         x: a.fromOffset.x + (a.toOffset.x - a.fromOffset.x) * t,
         y: a.fromOffset.y + (a.toOffset.y - a.fromOffset.y) * t,
       };
+      // Frame-position lerp — only when both endpoints exist on the
+      // _anim. Render below prefers effFP over effOffset when set.
+      if (a.fromFP && a.toFP) {
+        effFP = {
+          x: a.fromFP.x + (a.toFP.x - a.fromFP.x) * t,
+          y: a.fromFP.y + (a.toFP.y - a.fromFP.y) * t,
+        };
+      }
       const fromOpacity = a.fromVisible ? 1 : 0;
       const toOpacity   = a.toVisible   ? 1 : 0;
       effOpacity = fromOpacity + (toOpacity - fromOpacity) * t;
       if (raw >= 1) {
         // Snap final state into the note + clear the transition.
         note.panelOffset = { x: a.toOffset.x, y: a.toOffset.y };
+        if (a.toFP) note.framePosition = { x: a.toFP.x, y: a.toFP.y };
         delete note._anim;
       }
     }
@@ -205,13 +228,54 @@ function _renderTick() {
     const ax = ( ndc.x + 1) * rect.width  * 0.5;
     const ay = (-ndc.y + 1) * rect.height * 0.5;
 
-    const fontSize = note.customFontSize ??
-                     presets[note.sizePresetId] ??
-                     presets.medium ?? 16;
+    // Resolve content source. If note.templateId references an existing
+    // template, the template owns text + size (shared across all instances).
+    // Otherwise the instance's own text + size apply (legacy / standalone).
+    let srcText = note.text || '';
+    let srcSizePresetId   = note.sizePresetId;
+    let srcCustomFontSize = note.customFontSize;
+    if (note.templateId) {
+      const tpls = state.get('noteTemplates') || [];
+      const tpl  = tpls.find(t => t.id === note.templateId);
+      if (tpl) {
+        srcText           = tpl.text || '';
+        srcSizePresetId   = tpl.sizePresetId;
+        srcCustomFontSize = tpl.customFontSize;
+      }
+    }
 
-    const offset = effOffset;
-    const px = ax + (offset.x ?? 0);
-    const py = ay + (offset.y ?? 0);
+    // Font size in canonical pixels (relative to canonical export size).
+    // Multiply by sf.scale to get viewport pixels — so the text grows with
+    // the safe frame.
+    const fontCanonical = srcCustomFontSize ??
+                          presets[srcSizePresetId] ??
+                          presets.medium ?? 16;
+    const fontSize = fontCanonical * (sfRect.scale || 1);
+
+    // Balloon position. New model: framePosition.{x,y} is 0..1 of the
+    // safe-frame rect (its top-left). effFP is the LERPED value during
+    // step transitions (or just note.framePosition when no _anim).
+    // Legacy: panelOffset is a viewport-pixel offset from the projected
+    // anchor — used as fallback and migrated to framePosition lazily on
+    // first render.
+    let px, py;
+    if (effFP) {
+      px = sfRect.x + effFP.x * sfRect.width;
+      py = sfRect.y + effFP.y * sfRect.height;
+    } else {
+      // Legacy migration. Compute viewport position from anchor + old
+      // panelOffset, then back-solve to framePosition. Persist on the
+      // node so subsequent renders use the new model directly.
+      const offset = effOffset;
+      px = ax + (offset.x ?? 0);
+      py = ay + (offset.y ?? 0);
+      if (sfRect.width > 0 && sfRect.height > 0) {
+        note.framePosition = {
+          x: (px - sfRect.x) / sfRect.width,
+          y: (py - sfRect.y) / sfRect.height,
+        };
+      }
+    }
 
     // ── DOM div (balloon) ─────────────────────────────────────────────
     let entry = _pool.get(note.id);
@@ -223,7 +287,7 @@ function _renderTick() {
 
     // Sync content + style.
     if (_editingNoteId !== note.id) {
-      const text = note.text || '(empty note)';
+      const text = srcText || '(empty note)';
       if (div.dataset.lastText !== text) {
         div.textContent = text;
         div.dataset.lastText = text;
@@ -335,6 +399,23 @@ function _balloonTailPoint(panelX, panelY, w, h, ax, ay) {
   return { x: tx, y: ty };
 }
 
+// ─── Template picker (mini submenu) ──────────────────────────────────────
+
+function _showTemplatePicker(noteId, clientX, clientY) {
+  const tplList = state.get('noteTemplates') || [];
+  if (!tplList.length) return;
+  import('./actions.js').then(actions => {
+    showContextMenu(
+      tplList.map(t => ({
+        label: `📝 ${t.name || '(unnamed)'}`,
+        action: () => actions.linkNoteToTemplate(noteId, t.id),
+      })),
+      clientX,
+      clientY,
+    );
+  });
+}
+
 // ─── Per-balloon DOM creation ────────────────────────────────────────────
 
 function _createEntry(note) {
@@ -364,12 +445,19 @@ function _createEntry(note) {
     import('../ui/tree.js').then(({ expandPathToNode }) => {
       try { expandPathToNode?.(note.id); } catch (_) { /* tree may not be active */ }
     });
+    // Snapshot the framePosition at drag start. If the note hasn't been
+    // migrated yet (no framePosition), the next _renderTick will set
+    // it lazily — but for the duration of this drag we operate on the
+    // current value or fall back to a centred default.
+    const startFP = (liveNode.framePosition && Number.isFinite(liveNode.framePosition.x))
+      ? { x: liveNode.framePosition.x, y: liveNode.framePosition.y }
+      : { x: 0.5, y: 0.5 };
     _drag = {
       noteId: note.id,
       startClientX: e.clientX,
       startClientY: e.clientY,
-      startOffset:  { ...liveNode.panelOffset },
-      beforeOffset: { ...liveNode.panelOffset },
+      startFP,
+      beforeFP: { ...startFP },
     };
     div.setPointerCapture?.(e.pointerId);
     e.stopPropagation();
@@ -386,18 +474,51 @@ function _createEntry(note) {
     if (!liveNode) return;
     state.setSelection(note.id, new Set([note.id]));
     import('./actions.js').then(actions => {
-      const isVisible = liveNode.localVisible !== false;
-      showContextMenu([
+      const isVisible  = liveNode.localVisible !== false;
+      const tplLinked  = !!liveNode.templateId;
+      const tplList    = state.get('noteTemplates') || [];
+      const linkedTpl  = tplLinked ? tplList.find(t => t.id === liveNode.templateId) : null;
+      const tplLabel   = linkedTpl ? (linkedTpl.name || 'template') : 'template';
+      const sizeDisabled = tplLinked;   // size is owned by template when linked
+
+      // Selected steps (for "paste position") — used to show count in label.
+      const selSteps = state.get('selectedStepIds');
+      const selCount = (selSteps instanceof Set) ? selSteps.size : 0;
+      const clip     = actions.getNotePositionClipboard?.();
+      const pasteOk  = !!clip && selCount > 0;
+
+      const items = [
         { label:  isVisible ? '🚫 Hide note' : '👁 Show note',
           action: () => actions.toggleVisibility([note.id]) },
         { label:  'Edit Text…',
           action: () => _enterEdit(note.id, div) },
         { label:  '↺ Reposition Note…',
           action: () => actions.startNoteRepositioning(note.id) },
+        { separator: true },
+        { label:  '📋 Copy position',
+          action: () => {
+            actions.copyNotePosition(note.id);
+            // Re-import status to keep this lazy
+            import('../ui/status.js').then(({ setStatus }) => setStatus('Note position copied — paste into selected steps.'));
+          },
+          disabled: !liveNode.framePosition },
+        { label:  pasteOk
+                    ? `📌 Paste position to ${selCount} selected step${selCount === 1 ? '' : 's'}`
+                    : '📌 Paste position (select steps first)',
+          disabled: !pasteOk,
+          action: () => {
+            const n = actions.pasteNotePositionToSelectedSteps();
+            import('../ui/status.js').then(({ setStatus }) => setStatus(`Pasted position to ${n} step${n === 1 ? '' : 's'}.`));
+          } },
+        { separator: true },
         { label:  'Delete Note',
           action: () => {
-            const txt   = (liveNode.text || '').replace(/\s+/g, ' ').trim();
-            const short = txt ? (txt.length > 40 ? txt.slice(0, 40) + '…' : txt) : '(empty note)';
+            // Display name = template name when linked, else trimmed text.
+            const linkedTplDel = linkedTpl;
+            const raw   = linkedTplDel
+              ? (linkedTplDel.name || '(linked template)')
+              : (liveNode.text || '').replace(/\s+/g, ' ').trim();
+            const short = raw ? (raw.length > 40 ? raw.slice(0, 40) + '…' : raw) : '(empty note)';
             showConfirmDialog(
               'Delete note?',
               `This will remove the note "${short}". You can undo with Ctrl+Z.`,
@@ -405,25 +526,58 @@ function _createEntry(note) {
             );
           } },
         { separator: true },
+      ];
+
+      // Template link ops. Always offer "Swap with template…" when there's
+      // any template in the library (works for both linked and standalone
+      // notes — picks a new template and updates templateId). Linked notes
+      // additionally get a Detach entry to convert to standalone.
+      if (tplList.length > 0) {
+        items.push({
+          label: tplLinked
+            ? `🔗 Swap with template… (currently "${tplLabel}")`
+            : '🔗 Swap with template…',
+          action: () => _showTemplatePicker(note.id, e.clientX, e.clientY),
+        });
+      }
+      if (tplLinked) {
+        items.push({
+          label: `🔓 Detach from "${tplLabel}"`,
+          action: () => actions.detachNoteFromTemplate(note.id),
+        });
+      }
+
+      items.push(
+        { separator: true },
         { label:    '● Size: Small',
           action:   () => actions.setNoteSizePreset(note.id, 'small'),
-          disabled: liveNode.sizePresetId === 'small'  && liveNode.customFontSize === null },
+          disabled: sizeDisabled || (liveNode.sizePresetId === 'small'  && liveNode.customFontSize === null) },
         { label:    '● Size: Medium',
           action:   () => actions.setNoteSizePreset(note.id, 'medium'),
-          disabled: liveNode.sizePresetId === 'medium' && liveNode.customFontSize === null },
+          disabled: sizeDisabled || (liveNode.sizePresetId === 'medium' && liveNode.customFontSize === null) },
         { label:    '● Size: Large',
           action:   () => actions.setNoteSizePreset(note.id, 'large'),
-          disabled: liveNode.sizePresetId === 'large'  && liveNode.customFontSize === null },
-      ], e.clientX, e.clientY);
+          disabled: sizeDisabled || (liveNode.sizePresetId === 'large'  && liveNode.customFontSize === null) },
+      );
+
+      showContextMenu(items, e.clientX, e.clientY);
     });
   });
   div.addEventListener('pointermove', e => {
     if (!_drag || _drag.noteId !== note.id) return;
     const liveNode = _findNote(note.id);
     if (!liveNode) return;
-    liveNode.panelOffset = {
-      x: _drag.startOffset.x + (e.clientX - _drag.startClientX),
-      y: _drag.startOffset.y + (e.clientY - _drag.startClientY),
+    // Convert client-pixel delta to frame-% delta. We need the current
+    // safe-frame size — read it from the canvas at this moment.
+    const cv = sceneCore?.renderer?.domElement?.getBoundingClientRect();
+    if (!cv || cv.width <= 0 || cv.height <= 0) return;
+    const sf = computeSafeFrameRect({ width: cv.width, height: cv.height });
+    if (sf.width <= 0 || sf.height <= 0) return;
+    const dxFrame = (e.clientX - _drag.startClientX) / sf.width;
+    const dyFrame = (e.clientY - _drag.startClientY) / sf.height;
+    liveNode.framePosition = {
+      x: _drag.startFP.x + dxFrame,
+      y: _drag.startFP.y + dyFrame,
     };
     // Don't render here — the next sceneCore tick will pick up the
     // mutation and project through the same camera state the renderer
@@ -434,13 +588,13 @@ function _createEntry(note) {
   const finishDrag = (e) => {
     if (!_drag || _drag.noteId !== note.id) return;
     div.releasePointerCapture?.(e.pointerId);
-    const before = _drag.beforeOffset;
-    const after  = _findNote(note.id)?.panelOffset;
+    const before = _drag.beforeFP;
+    const after  = _findNote(note.id)?.framePosition;
     _drag = null;
     if (after && (before.x !== after.x || before.y !== after.y)) {
       // Lazy import to avoid circular dep at module load.
       import('./actions.js').then(actions => {
-        actions._commitNotePanelOffset?.(note.id, before, after);
+        actions._commitNoteFramePosition?.(note.id, before, after);
       });
     }
   };
@@ -465,7 +619,13 @@ function _enterEdit(noteId, div) {
   _editingNoteId = noteId;
   const liveNode = _findNote(noteId);
   if (!liveNode) return;
-  const before = liveNode.text || '';
+  // If the note is template-linked, the edit operates on the TEMPLATE
+  // (so all instances update). Otherwise the instance's own text is
+  // edited.
+  const tplList   = state.get('noteTemplates') || [];
+  const tpl       = liveNode.templateId ? tplList.find(t => t.id === liveNode.templateId) : null;
+  const editTpl   = !!tpl;
+  const before    = (editTpl ? tpl.text : liveNode.text) || '';
   div.contentEditable = 'true';
   div.textContent = before;
   div.focus();
@@ -486,11 +646,15 @@ function _enterEdit(noteId, div) {
     div.dataset.lastText = '';
     if (commit && after !== before) {
       import('./actions.js').then(actions => {
-        actions.editNoteText?.(noteId, after);
+        if (editTpl) {
+          actions.updateNoteTemplateText?.(tpl.id, after);
+        } else {
+          actions.editNoteText?.(noteId, after);
+        }
       });
     } else {
       // Roll back DOM text to live model so render syncs cleanly.
-      div.textContent = liveNode.text || '';
+      div.textContent = (editTpl ? tpl.text : liveNode.text) || '';
     }
   };
   div.addEventListener('blur',    () => finish(true),  { once: true });
