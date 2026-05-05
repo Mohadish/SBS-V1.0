@@ -4,6 +4,7 @@
    ============================================================ */
 
 :root{
+  color-scheme: dark;
   --bg:#0f172a;
   --panel:#111827;
   --panel2:#0b1220;
@@ -11,6 +12,7 @@
   --text:#e5e7eb;
   --muted:#9ca3af;
   --accent:#38bdf8;
+  --hover:#1f2937;
 
   --sidebar-left-width:  420px;
   --sidebar-right-width: 320px;
@@ -27,30 +29,59 @@
    ============================================================ */
 
 html[data-theme="light"]{
-  /* Pure white-dominant palette. Every previous "neutral grey" value
-     was still reading too dark in practice; flipping to pure
-     #ffffff for the BIG visible surfaces and using subtle off-whites
-     only for separation forces the dominant tone to be 255, not 240. */
+  /* color-scheme:light is CRITICAL on Windows + system dark mode.
+     Without it Chromium applies dark UA defaults to native widgets
+     (form controls, scrollbars) and tints unstyled surfaces — that's
+     why even background:#ffffff was reading as ~#e5e5e5. With this
+     line, Chromium uses the light UA stylesheet so #ffffff = real white. */
+  color-scheme: light;
   --bg:#ffffff;
   --panel:#ffffff;
-  --panel2:#fafafa;        /* RGB(250) — barely-off-white for slight depth */
-  --line:#e5e5e5;          /* RGB(229) — subtle neutral border */
+  --panel2:#ffffff;        /* pure white — bump to #fafafa for slight depth */
+  --line:#e5e5e5;
   --text:#1e293b;
   --muted:#737373;
   --accent:#0284c7;
+  --hover:#f0f0f0;
 }
 
-/* Force every body / sidebar / panel to pure white at the
-   structural level so no inherited rule pulls them grey. */
-html[data-theme="light"] body,
-html[data-theme="light"] #app,
-html[data-theme="light"] #sidebar-left,
-html[data-theme="light"] #sidebar-right,
-html[data-theme="light"] #sidebar-left-content,
-html[data-theme="light"] #steps-panel,
-html[data-theme="light"] .tabPanel,
-html[data-theme="light"] .sidebar-panels{
-  background:#ffffff !important;
+/* CHROMIUM CANVAS-COMPOSITOR ISOLATION — the actual fix.
+   The 3D viewport (#viewport-surface) hosts the Three.js WebGL canvas
+   AND the Konva 2D canvases (#overlay-stage). Chromium auto-tags the
+   page's swap chain as wide-gamut whenever ANY canvas is present and
+   the display reports wide-gamut capability — which then maps SDR DOM
+   siblings (sidebars, panels) to ~75% of peak luminance, painting
+   #ffffff as ~RGB 190 instead of 255. Voice-over bar / transform
+   editor / context-menus escaped because backdrop-filter promoted
+   them to their own compositor layer.
+   Fix: contain the canvas-bearing region to its own compositor layer
+   so the wide-gamut tagging stays inside it. The rest of the page
+   (sidebars, panels, modals) keeps the unaffected sRGB path and
+   #ffffff renders as 255 — without any rgba/backdrop-filter hacks
+   on every panel. Diagnosed by user via canvas-removal bisect:
+   removing all canvases instantly snapped sidebars from RGB 190 to
+   255; removing only Three.js or only Konva did NOT — confirming the
+   trigger is canvas presence, not declared canvas colour space (both
+   were already 'srgb'). */
+#viewport-surface{
+  /* Compositor isolation for the canvas-bearing region. Without this,
+     Three.js + Konva canvases auto-tag the page's swap chain as wide
+     gamut, which crushes SDR DOM siblings (sidebars/panels) to ~75%
+     of peak (#ffffff → RGB 190).
+       contain:paint            — clips paint to the box, bounds the
+                                  wide-gamut compositor effect
+       isolation:isolate        — fresh stacking context so the
+                                  contained region has its own root
+       transform:translate3d(0,0,0)  — promotes to a real GPU layer
+                                       (zero z, no 3D hit-test breakage)
+     Earlier attempt used `contain:layout style paint` + non-zero z in
+     translate3d — both broke pointer events on the 3D viewport. The
+     pared-down combo above keeps mouse interaction (OrbitControls,
+     mesh pick, gizmo drag) AND fixes the dim. Diagnosed via canvas
+     removal bisect; verified by user. */
+  contain:paint;
+  isolation:isolate;
+  transform:translate3d(0,0,0);
 }
 
 /* Form widgets (inputs / selects / textareas live with hardcoded
@@ -58,26 +89,25 @@ html[data-theme="light"] .sidebar-panels{
 html[data-theme="light"] input,
 html[data-theme="light"] select,
 html[data-theme="light"] textarea{
-  background:#ffffff !important;color:var(--text);border-color:var(--line);
+  background:var(--panel) !important;color:var(--text);border-color:var(--line);
 }
 
-/* Buttons — keep them barely-off-white so the boundary reads, no
-   slate-blue tint, no medium grey. Hover bumps to #f0f0f0. */
+/* Buttons — go through --panel2 so a single var change retints them. */
 html[data-theme="light"] .btn,
 html[data-theme="light"] .filelabel,
 html[data-theme="light"] .tabBtn,
 html[data-theme="light"] .miniToggle{
-  background:#fafafa;color:var(--text);border-color:var(--line);
+  background:var(--panel2);color:var(--text);border-color:var(--line);
 }
 html[data-theme="light"] .pill{color:var(--text);}
 html[data-theme="light"] .btn:hover,
 html[data-theme="light"] .filelabel:hover,
 html[data-theme="light"] .tabBtn:hover,
 html[data-theme="light"] .miniBtn:hover{
-  background:#f0f0f0;
+  background:var(--hover);
 }
 html[data-theme="light"] .btn.primary{
-  background:#0284c7;color:#ffffff;border-color:#0284c7;
+  background:var(--accent);color:#ffffff;border-color:var(--accent);
 }
 html[data-theme="light"] .btn.primary:hover{
   background:#0369a1;
@@ -89,17 +119,16 @@ html[data-theme="light"] .btn-danger:hover{
   background:#fecaca;
 }
 
-/* Tabs — barely-off-white bar with white tabs. Active tab gets a soft
-   blue tint to stand out without breaking the white-dominant feel. */
-html[data-theme="light"] .tabBar{background:#fafafa;border-bottom:1px solid var(--line);}
+/* Tabs — bar uses --panel2; active tab keeps the soft blue tint. */
+html[data-theme="light"] .tabBar{background:var(--panel2);border-bottom:1px solid var(--line);}
 html[data-theme="light"] .tabBtn.active{
   background:#dbeafe;color:var(--text);border-color:#93c5fd;
 }
-html[data-theme="light"] .topbar{background:#fafafa;}
+html[data-theme="light"] .topbar{background:var(--panel2);}
 
 /* Tree rows (selection + hover states all hardcoded for dark theme). */
 html[data-theme="light"] .tree-row:hover{
-  background:#f0f0f0;
+  background:var(--hover);
 }
 html[data-theme="light"] .tree-row.selected{
   background:#dbeafe;border-color:#93c5fd;
@@ -109,15 +138,15 @@ html[data-theme="light"] .tree-row.multi{
 }
 html[data-theme="light"] .eye:hover,
 html[data-theme="light"] .moveBtn:hover{
-  background:#f0f0f0;color:var(--text);
+  background:var(--hover);color:var(--text);
 }
 
 /* Animation step buttons */
 html[data-theme="light"] .animStepBtn{
-  background:#ffffff;color:var(--text);border-color:var(--line);
+  background:var(--panel);color:var(--text);border-color:var(--line);
 }
 html[data-theme="light"] .animStepBtn.off{
-  background:#fafafa;color:var(--muted);border-color:var(--line);
+  background:var(--panel2);color:var(--muted);border-color:var(--line);
 }
 
 /* Step / chapter selection — dark theme keeps the original blue
@@ -141,12 +170,12 @@ html[data-theme="light"] .chapterHeader.selected.partial{
   background:rgba(213,209,190,0.55) !important;
 }
 
-html[data-theme="light"] .colorRow{background:#ffffff;}
-html[data-theme="light"] .cameraItem{background:#ffffff;}
-html[data-theme="light"] .assetRow{background:#ffffff;}
-html[data-theme="light"] .helpPop{background:#fafafa;}
+html[data-theme="light"] .colorRow{background:var(--panel);}
+html[data-theme="light"] .cameraItem{background:var(--panel);}
+html[data-theme="light"] .assetRow{background:var(--panel);}
+html[data-theme="light"] .helpPop{background:var(--panel2);}
 html[data-theme="light"] .stepEditor{
-  background:#ffffff;color:var(--text);
+  background:var(--panel);color:var(--text);
 }
 
 /* Modal / dialog / context-menu surfaces — hardcoded #0f172a. */
@@ -154,7 +183,7 @@ html[data-theme="light"] .modal,
 html[data-theme="light"] .context-menu,
 html[data-theme="light"] .contextMenu,
 html[data-theme="light"] .sbs-dialog{
-  background:#ffffff;color:var(--text);
+  background:var(--panel);color:var(--text);
   box-shadow:0 12px 24px rgba(15,23,42,0.18);
 }
 
@@ -166,17 +195,40 @@ html[data-theme="light"] .context-menu__item:not(:disabled):hover{
   background:#dbeafe;
 }
 
+/* Overlay toolbar (floats over the 3D viewport) — keeps its dark
+   look in both themes because it sits on top of the scene, not the
+   sidebars. The toolbar's hardcoded inline styles already handle the
+   dark backdrop; the buttons inside inherit the global .btn rule
+   which the light-theme override turns white — that mismatches the
+   dark toolbar. Re-pin the buttons inside to the dark-theme .btn
+   palette so the toolbar reads the same as it does in dark mode. */
+html[data-theme="light"] #overlay-toolbar .btn,
+html[data-theme="light"] #overlay-toolbar .filelabel,
+html[data-theme="light"] #overlay-toolbar .miniBtn{
+  background:#182233;color:#e5e7eb;border-color:#334155;
+}
+html[data-theme="light"] #overlay-toolbar .btn:hover,
+html[data-theme="light"] #overlay-toolbar .filelabel:hover,
+html[data-theme="light"] #overlay-toolbar .miniBtn:hover{
+  background:#213149;
+}
+html[data-theme="light"] #overlay-toolbar input,
+html[data-theme="light"] #overlay-toolbar select,
+html[data-theme="light"] #overlay-toolbar textarea{
+  background:#111827 !important;color:#e5e7eb;border-color:#334155;
+}
+
 /* Scrollbars — barely-there neutrals so they don't add visual noise. */
-html[data-theme="light"] *{scrollbar-color:#d4d4d4 #fafafa;}
-html[data-theme="light"] ::-webkit-scrollbar-track{background:#fafafa;}
+html[data-theme="light"] *{scrollbar-color:#d4d4d4 var(--panel2);}
+html[data-theme="light"] ::-webkit-scrollbar-track{background:var(--panel2);}
 html[data-theme="light"] ::-webkit-scrollbar-thumb{background:#d4d4d4;}
 
 /* Steps panel header / topbar / step-nav / HUD / status surfaces —
    all rgba-on-dark in components.css. Light versions use a faint
    slate-blue tint with the same alpha behaviour so there's still
    visual hierarchy against the white panels. */
-html[data-theme="light"] .stepsHeader{background:#fafafa;}
-html[data-theme="light"] .meshitem{background:#ffffff;}
+html[data-theme="light"] .stepsHeader{background:var(--panel2);}
+html[data-theme="light"] .meshitem{background:var(--panel);}
 html[data-theme="light"] .tree-row.dropTarget{background:#dbeafe;}
 html[data-theme="light"] #hud{background:rgba(255,255,255,0.92);color:var(--text);}
 html[data-theme="light"] #status-bar{background:rgba(255,255,255,0.92);color:var(--text);}
