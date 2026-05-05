@@ -1,0 +1,33 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>White Test + WebGL</title>
+<style>
+  html, body { margin:0; padding:0; height:100%; background:#ffffff; font-family:Arial; }
+  body { display:flex; }
+  .panel { flex:1; background:#ffffff; border:1px solid #ccc; display:flex; align-items:center; justify-content:center; font-size:14px; color:#333; }
+  .gl { flex:1; }
+</style>
+</head>
+<body>
+  <div class="panel">PANEL — solid #ffffff (eyedrop me)</div>
+  <canvas class="gl" id="gl"></canvas>
+<script>
+  // Allocate a WebGL context. Many Chromium versions switch the
+  // compositor pipeline when ANY page has WebGL — this test verifies
+  // whether that switch dims sibling DOM panels.
+  const canvas = document.getElementById('gl');
+  const gl = canvas.getContext('webgl');
+  function resize(){ canvas.width = canvas.clientWidth; canvas.height = canvas.clientHeight; gl.viewport(0,0,canvas.width,canvas.height); }
+  resize();
+  window.addEventListener('resize', resize);
+  function frame(){
+    gl.clearColor(0.05, 0.09, 0.16, 1.0);
+    gl.clear(gl.COLOR_BUFFER_BIT);
+    requestAnimationFrame(frame);
+  }
+  frame();
+</script>
+</body>
+</html>
