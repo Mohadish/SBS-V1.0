@@ -59,9 +59,15 @@ export function initOverlayToolbar() {
   // Order in DOM = visual left-to-right: Add T, Add Img, Delete.
   _tools = document.createElement('div');
   _tools.style.cssText = 'display:none;gap:4px;align-items:center;flex-wrap:nowrap;';
-  const btnText = _btn('+ T',  'Add text box (opens editor)');
-  const btnImg  = _btn('+ 🖼', 'Add image');
-  const btnDel  = _btn('🗑',   'Delete selected');
+  const btnText  = _btn('+ T',  'Add text box (opens editor)');
+  const btnImg   = _btn('+ 🖼', 'Add image');
+  const btnRect  = _btn('▭',   'Add rectangle');
+  const btnCirc  = _btn('●',   'Add circle');
+  const btnEll   = _btn('⬭',   'Add ellipse');
+  const btnTri   = _btn('▲',   'Add triangle');
+  const btnLine  = _btn('—',   'Add line');
+  const btnArrow = _btn('→',   'Add arrow');
+  const btnDel   = _btn('🗑',   'Delete selected');
   btnText.addEventListener('click', async () => {
     const node = await overlay.addTextBox();
     if (node) setStatus('Text box added — double-click to edit.');
@@ -72,8 +78,14 @@ export function initOverlayToolbar() {
     try { await overlay.addImage(file); }
     catch (e) { setStatus(`Image load failed: ${e.message}`, 'danger'); }
   });
-  btnDel.addEventListener('click', () => overlay.deleteSelected());
-  _tools.append(btnText, btnImg, btnDel);
+  btnRect .addEventListener('click', () => { if (overlay.addRect())     setStatus('Rectangle added.'); });
+  btnCirc .addEventListener('click', () => { if (overlay.addCircle())   setStatus('Circle added.'); });
+  btnEll  .addEventListener('click', () => { if (overlay.addEllipse())  setStatus('Ellipse added.'); });
+  btnTri  .addEventListener('click', () => { if (overlay.addTriangle()) setStatus('Triangle added.'); });
+  btnLine .addEventListener('click', () => { if (overlay.addLine())     setStatus('Line added.'); });
+  btnArrow.addEventListener('click', () => { if (overlay.addArrow())    setStatus('Arrow added.'); });
+  btnDel  .addEventListener('click', () => overlay.deleteSelected());
+  _tools.append(btnText, btnImg, btnRect, btnCirc, btnEll, btnTri, btnLine, btnArrow, btnDel);
 
   // The editing toggle is rightmost — always visible, single source of
   // truth for entering/leaving overlay editing. The old "Done" button

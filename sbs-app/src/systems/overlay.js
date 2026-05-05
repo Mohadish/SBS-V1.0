@@ -21,6 +21,7 @@ import * as clock    from '../core/clock.js';
 import { getCanonicalSize, computeSafeFrameRect } from '../core/safe-frame.js';
 import { showContextMenu } from '../ui/context-menu.js';
 import { mountTextToolbar, unmountTextToolbar, execCommandApplier, setToolbarValues, wasColorPickedRecently, setStyleDropdown, setStyleLocked } from '../ui/text-toolbar.js';
+import { mountShapeToolbar, unmountShapeToolbar } from '../ui/shape-toolbar.js';
 import { getTextToolbarSlot }  from '../ui/overlay-toolbar.js';
 import * as textEngine from './text-engine.js';
 import { getStyleTemplate, listStyleTemplates } from './style-templates.js';
@@ -834,6 +835,364 @@ export async function addImage(src) {
   return node;
 }
 
+// ── Layer ordering helpers ────────────────────────────────────────────────
+
+/**
+ * Reorder the multi-selection without disturbing relative order. The naive
+ * approach — calling `node.moveUp()` on each selected node in selection
+ * order — collapses the selection to a single contiguous block at top/bottom
+ * (each moveUp swaps with the next sibling, so all selected nodes pile up).
+ *
+ * Right approach: sort by current zIndex, then walk OUTSIDE-IN. For
+ * "moveUp" / "moveToTop" we walk top-down (highest first). For "moveDown" /
+ * "moveToBottom" we walk bottom-up (lowest first). That preserves the
+ * relative spacing between selected nodes when they're not contiguous.
+ *
+ * Returns true on any successful move (caller redraws + saves).
+ */
+function _reorderSelection(key, sel) {
+  if (!sel?.length) return false;
+  // Snapshot current zIndices for undo. zIndex is dense (0..N-1) and
+  // assigned by Konva based on the children array order in the layer.
+  const allNodes = _layer.children?.slice() || [];
+  const beforeIds = allNodes.map(n => n._id);
+
+  // sorted = ascending zIndex (bottom-most first, top-most last).
+  const sorted = [...sel].sort((a, b) => a.zIndex() - b.zIndex());
+  let changed = false;
+  if (key === 'Home') {
+    // Walk LOWEST-z first. moveToTop puts the current node above all
+    // others — so processing low → high makes the originally-highest
+    // node land highest at the end (relative order preserved).
+    for (const n of sorted) { n.moveToTop(); changed = true; }
+  } else if (key === 'End') {
+    // Walk HIGHEST-z first. moveToBottom drops below all others — so
+    // processing high → low keeps the originally-lowest at the bottom.
+    for (let i = sorted.length - 1; i >= 0; i--) { sorted[i].moveToBottom(); changed = true; }
+  } else if (key === 'PageUp') {
+    // Walk HIGHEST-z first so a moveUp swap doesn't shove an unmoved peer.
+    for (let i = sorted.length - 1; i >= 0; i--) {
+      const n = sorted[i];
+      if (n.zIndex() < allNodes.length - 1) { n.moveUp(); changed = true; }
+    }
+  } else if (key === 'PageDown') {
+    // Walk LOWEST-z first.
+    for (const n of sorted) {
+      if (n.zIndex() > 0) { n.moveDown(); changed = true; }
+    }
+  }
+
+  if (!changed) return false;
+
+  // Push a single undo entry covering the full reorder.
+  const afterIds = (_layer.children?.slice() || []).map(n => n._id);
+  if (JSON.stringify(beforeIds) === JSON.stringify(afterIds)) return false;
+  undoManager.push(
+    'Reorder layers',
+    () => { _restoreLayerOrder(beforeIds); _layer.batchDraw(); _scheduleSave(); },
+    () => { _restoreLayerOrder(afterIds);  _layer.batchDraw(); _scheduleSave(); },
+  );
+  return true;
+}
+
+/** Apply a saved id-sequence as the layer's child order. */
+function _restoreLayerOrder(ids) {
+  if (!ids || !_layer) return;
+  const byId = new Map(_layer.children.map(n => [n._id, n]));
+  for (const id of ids) {
+    const n = byId.get(id);
+    if (n) n.moveToTop();
+  }
+}
+
+// ── Shape primitives ──────────────────────────────────────────────────────
+//
+// Lightweight Konva shapes (Rect for now; Circle/Ellipse/Line/Arrow/etc.
+// next). Each shape carries `name: 'userShape'` + `kind: <type>` so the
+// selection toolbar can detect it and surface fill/stroke/opacity controls.
+//
+// All visual attributes round-trip via Konva.toJSON, so per-step persistence
+// works without extra serialisation hooks.
+
+const SHAPE_DEFAULTS = {
+  fill:         'rgba(74,144,217,0.45)',  // alpha 0.45 = "Fill α" slider value
+  stroke:       '#4A90D9',                // solid — alpha lives in fill only
+  strokeWidth:  3,
+  opacity:      1,                         // node-level opacity stays 1 always
+  cornerRadius: 0,
+};
+
+/**
+ * Wire transformend handler for a freshly-added shape. Bakes the
+ * transformer's scale into the shape's geometry attrs so the stroke
+ * stays at the user-set thickness across resize and the serialised
+ * spec matches the rendered size. Different shape types need different
+ * geometry rebakes; the kind tag picks the right path.
+ */
+function _wireShapeTransformend(node, kind) {
+  node.on('transformend', () => {
+    const sx = node.scaleX(), sy = node.scaleY();
+    if (kind === 'rect') {
+      node.width(node.width() * sx);
+      node.height(node.height() * sy);
+    } else if (kind === 'circle') {
+      // Circle uses radius; pick the larger axis.
+      node.radius(node.radius() * Math.max(Math.abs(sx), Math.abs(sy)));
+    } else if (kind === 'ellipse') {
+      node.radiusX(node.radiusX() * Math.abs(sx));
+      node.radiusY(node.radiusY() * Math.abs(sy));
+    } else if (kind === 'triangle') {
+      node.radius(node.radius() * Math.max(Math.abs(sx), Math.abs(sy)));
+    } else if (kind === 'line' || kind === 'arrow') {
+      // Bake scale into points + position resets so future drags are
+      // local to the new pose.
+      const pts = node.points();
+      const baked = pts.map((v, i) => v * (i % 2 === 0 ? sx : sy));
+      node.points(baked);
+    }
+    node.scaleX(1);
+    node.scaleY(1);
+    _scheduleSave();
+  });
+}
+
+/**
+ * Add a Rectangle to the active overlay step. Centred on the stage,
+ * default size 30% × 18% of the stage. Selectable, draggable, resizable
+ * through the same transformer + drag pipeline as text / image nodes.
+ */
+export function addRect() {
+  if (!_stage) return null;
+  const sw = _stage.width(), sh = _stage.height();
+  const w = Math.max(60, sw * 0.30);
+  const h = Math.max(40, sh * 0.18);
+  const node = new Konva.Rect({
+    x: (sw - w) / 2,
+    y: (sh - h) / 2,
+    width:        w,
+    height:       h,
+    fill:         SHAPE_DEFAULTS.fill,
+    stroke:       SHAPE_DEFAULTS.stroke,
+    strokeWidth:  SHAPE_DEFAULTS.strokeWidth,
+    opacity:      SHAPE_DEFAULTS.opacity,
+    cornerRadius: SHAPE_DEFAULTS.cornerRadius,
+    draggable:    true,
+    name:         'userShape',
+  });
+  node.setAttr('kind', 'rect');
+  _wireShapeTransformend(node, 'rect');
+  _layer.add(node);
+  _attachNode(node);
+  _setSelection(node);
+  _pushAddNodeUndo(node, 'Add rectangle');
+  _scheduleSave();
+  return node;
+}
+
+/** Add a Circle. */
+export function addCircle() {
+  if (!_stage) return null;
+  const sw = _stage.width(), sh = _stage.height();
+  const r  = Math.max(40, Math.min(sw, sh) * 0.10);
+  const node = new Konva.Circle({
+    x: sw / 2, y: sh / 2, radius: r,
+    fill:        SHAPE_DEFAULTS.fill,
+    stroke:      SHAPE_DEFAULTS.stroke,
+    strokeWidth: SHAPE_DEFAULTS.strokeWidth,
+    opacity:     SHAPE_DEFAULTS.opacity,
+    draggable:   true,
+    name:        'userShape',
+  });
+  node.setAttr('kind', 'circle');
+  _wireShapeTransformend(node, 'circle');
+  _layer.add(node); _attachNode(node); _setSelection(node);
+  _pushAddNodeUndo(node, 'Add circle'); _scheduleSave();
+  return node;
+}
+
+/** Add an Ellipse. */
+export function addEllipse() {
+  if (!_stage) return null;
+  const sw = _stage.width(), sh = _stage.height();
+  const rx = Math.max(60, sw * 0.15), ry = Math.max(40, sh * 0.10);
+  const node = new Konva.Ellipse({
+    x: sw / 2, y: sh / 2, radiusX: rx, radiusY: ry,
+    fill:        SHAPE_DEFAULTS.fill,
+    stroke:      SHAPE_DEFAULTS.stroke,
+    strokeWidth: SHAPE_DEFAULTS.strokeWidth,
+    opacity:     SHAPE_DEFAULTS.opacity,
+    draggable:   true,
+    name:        'userShape',
+  });
+  node.setAttr('kind', 'ellipse');
+  _wireShapeTransformend(node, 'ellipse');
+  _layer.add(node); _attachNode(node); _setSelection(node);
+  _pushAddNodeUndo(node, 'Add ellipse'); _scheduleSave();
+  return node;
+}
+
+/** Add a Triangle (RegularPolygon, sides=3). */
+export function addTriangle() {
+  if (!_stage) return null;
+  const sw = _stage.width(), sh = _stage.height();
+  const r  = Math.max(50, Math.min(sw, sh) * 0.10);
+  const node = new Konva.RegularPolygon({
+    x: sw / 2, y: sh / 2, sides: 3, radius: r,
+    fill:        SHAPE_DEFAULTS.fill,
+    stroke:      SHAPE_DEFAULTS.stroke,
+    strokeWidth: SHAPE_DEFAULTS.strokeWidth,
+    opacity:     SHAPE_DEFAULTS.opacity,
+    draggable:   true,
+    name:        'userShape',
+  });
+  node.setAttr('kind', 'triangle');
+  _wireShapeTransformend(node, 'triangle');
+  _layer.add(node); _attachNode(node); _setSelection(node);
+  _pushAddNodeUndo(node, 'Add triangle'); _scheduleSave();
+  return node;
+}
+
+/** Add a Line. Two endpoints baked into `points`. */
+export function addLine() {
+  if (!_stage) return null;
+  const sw = _stage.width(), sh = _stage.height();
+  const dx = Math.max(80, sw * 0.20);
+  const node = new Konva.Line({
+    x: sw / 2, y: sh / 2,
+    points:      [-dx / 2, 0, dx / 2, 0],
+    stroke:      SHAPE_DEFAULTS.stroke,
+    strokeWidth: SHAPE_DEFAULTS.strokeWidth,
+    opacity:     SHAPE_DEFAULTS.opacity,
+    draggable:   true,
+    name:        'userShape',
+  });
+  node.setAttr('kind', 'line');
+  _wireShapeTransformend(node, 'line');
+  _layer.add(node); _attachNode(node); _setSelection(node);
+  _pushAddNodeUndo(node, 'Add line'); _scheduleSave();
+  return node;
+}
+
+/** Add an Arrow. Head sized off stroke width. */
+export function addArrow() {
+  if (!_stage) return null;
+  const sw = _stage.width(), sh = _stage.height();
+  const dx = Math.max(80, sw * 0.20);
+  const node = new Konva.Arrow({
+    x: sw / 2, y: sh / 2,
+    points:        [-dx / 2, 0, dx / 2, 0],
+    pointerLength: 14,
+    pointerWidth:  14,
+    fill:          SHAPE_DEFAULTS.stroke,    // arrow head reads stroke colour
+    stroke:        SHAPE_DEFAULTS.stroke,
+    strokeWidth:   SHAPE_DEFAULTS.strokeWidth,
+    opacity:       SHAPE_DEFAULTS.opacity,
+    draggable:     true,
+    name:          'userShape',
+  });
+  node.setAttr('kind', 'arrow');
+  _wireShapeTransformend(node, 'arrow');
+  _layer.add(node); _attachNode(node); _setSelection(node);
+  _pushAddNodeUndo(node, 'Add arrow'); _scheduleSave();
+  return node;
+}
+
+/**
+ * Patch attributes on every currently-selected shape. Fed by the
+ * shape-toolbar's onChange callbacks (fill/stroke/strokeWidth/opacity/
+ * cornerRadius). Pushes a coalesced undo entry: rapid slider drags fold
+ * into a single Ctrl-Z step (one entry per ~burst) but the BEFORE state
+ * snapshotted at the start of the burst is preserved.
+ *
+ * Burst lifecycle:
+ *   • First apply with no live snapshot → capture each selected node's
+ *     pre-edit attrs into _shapeEditBefore.
+ *   • Each subsequent apply within 600 ms reuses that snapshot — its
+ *     coalesced push to undoManager replaces the redo (latest after)
+ *     while keeping the original undo (still pointing at first BEFORE).
+ *   • 600 ms idle → _shapeEditBefore is cleared so the NEXT apply starts
+ *     a fresh burst. The 600 ms window sits below undoManager's 800 ms
+ *     coalesce window so a new burst is guaranteed to push a brand-new
+ *     entry rather than coalesce into the previous one.
+ */
+const _SNAP_KEYS = ['fill', 'stroke', 'strokeWidth', 'opacity', 'cornerRadius'];
+
+let _shapeEditBefore = null;   // Map<KonvaNode, attrs>
+let _shapeEditTimer  = null;
+
+function _snapshotShapeAttrs(node) {
+  const out = {};
+  for (const k of _SNAP_KEYS) {
+    if (typeof node[k] === 'function') out[k] = node[k]();
+    else                                out[k] = node.getAttr?.(k);
+  }
+  return out;
+}
+
+function _restoreShapeAttrsMap(map) {
+  if (!map) return;
+  for (const [n, attrs] of map) {
+    if (!n || typeof n.getStage !== 'function' || !n.getStage()) continue;   // node was destroyed
+    n.setAttrs(attrs);
+  }
+  _layer?.batchDraw();
+  _scheduleSave();
+}
+
+export function applyShapeAttrs(patch) {
+  if (!_transformer) return;
+  const sel = _transformer.nodes().filter(n => n.name() === 'userShape');
+  if (!sel.length) return;
+
+  // Capture BEFORE-state once per burst.
+  if (!_shapeEditBefore) {
+    _shapeEditBefore = new Map();
+    for (const n of sel) _shapeEditBefore.set(n, _snapshotShapeAttrs(n));
+  }
+
+  // Apply the patch. Konva treats null fill / stroke as "no paint" —
+  // the toolbar checkbox uses that semantic.
+  for (const n of sel) {
+    for (const [k, v] of Object.entries(patch)) n.setAttr(k, v);
+  }
+  _layer.batchDraw();
+
+  // Capture AFTER-state for the redo closure.
+  const after = new Map();
+  for (const n of sel) after.set(n, _snapshotShapeAttrs(n));
+
+  // Coalesced push. The key includes node identities so editing a
+  // DIFFERENT shape selection within the window starts a fresh entry.
+  const beforeMap   = _shapeEditBefore;
+  const ids         = [...beforeMap.keys()].map(n => n._id ?? '').sort().join(',');
+  const coalesceKey = 'overlay-shape-attrs-' + ids;
+  undoManager.push(
+    'Edit shape',
+    () => _restoreShapeAttrsMap(beforeMap),
+    () => _restoreShapeAttrsMap(after),
+    { coalesceKey },
+  );
+
+  // Restart the burst timer. 600 ms < undoManager's 800 ms window.
+  clearTimeout(_shapeEditTimer);
+  _shapeEditTimer = setTimeout(() => { _shapeEditBefore = null; }, 600);
+
+  _scheduleSave();
+}
+
+/** Returns a representative attr snapshot across selected shapes. */
+function _summariseShapeAttrs(nodes) {
+  if (!nodes?.length) return {};
+  const first = nodes[0];
+  return {
+    fill:         first.fill?.(),
+    stroke:       first.stroke?.(),
+    strokeWidth:  first.strokeWidth?.(),
+    opacity:      first.opacity?.(),
+    cornerRadius: first.cornerRadius?.(),
+  };
+}
+
 function _attachNode(node) {
   // Single click selects (or toggles when held with Shift/Ctrl/Meta for
   // multi-select).
@@ -1061,7 +1420,13 @@ function _serializeNode(node) {
     },
   };
   // Inline payload — only the fields _recreateNode looks at.
-  for (const k of ['src', 'textHtml', 'textWidth', 'naturalW', 'naturalH', 'fillColor', 'styleId']) {
+  for (const k of [
+    'src', 'textHtml', 'textWidth', 'naturalW', 'naturalH', 'fillColor', 'styleId',
+    // Shape primitives — Konva.Rect / Circle / Ellipse / Path / etc.
+    'name', 'kind',
+    'fill', 'stroke', 'strokeWidth', 'opacity', 'cornerRadius',
+    'radius', 'radiusX', 'radiusY', 'sides', 'data',
+  ]) {
     if (a[k] != null) out.attrs[k] = a[k];
   }
   return out;
@@ -1203,21 +1568,45 @@ function _pushAddNodesUndo(nodes, specs, label) {
   );
 }
 
-function _pushDeleteNodesUndo(specs, label) {
-  if (!specs?.length) return;
+/**
+ * Push an undo entry for a destructive delete. Each entry carries
+ *   { spec, zIndex }
+ * so the undo (re-add) restores the layer order the user had at the
+ * moment of deletion. zIndex is clamped against the layer's current
+ * size in case other nodes were added/removed between delete and undo.
+ */
+function _pushDeleteNodesUndo(entries, label) {
+  if (!entries?.length) return;
   let nodeRefs = [];
   undoManager.push(label,
     async () => {
-      // Undo the delete = re-create the nodes from spec.
+      // Undo the delete = re-create the nodes from spec, then restore
+      // each one's z-index so the relative layer order returns to what
+      // the user had at delete time.
       const fresh = [];
-      for (const spec of specs) {
-        const n = await _recreateNode(spec);
+      // Re-add all first — setting zIndex during the loop can collide
+      // because Konva renumbers the parent's children when a child's
+      // zIndex changes.
+      for (const e of entries) {
+        const n = await _recreateNode(e.spec);
         if (!n) continue;
         _layer.add(n);
         _attachNode(n);
-        fresh.push(n);
+        fresh.push({ node: n, zIndex: e.zIndex });
       }
-      nodeRefs = fresh;
+      // Restore z-indices in ascending order so each node lands at the
+      // intended slot without disturbing the rest. Clamp against the
+      // current layer size — the original index may be out of range
+      // (other nodes added/removed in the meantime).
+      fresh.sort((a, b) => (a.zIndex ?? 0) - (b.zIndex ?? 0));
+      const total = _layer.getChildren().length;
+      for (const f of fresh) {
+        if (Number.isFinite(f.zIndex)) {
+          const clamped = Math.max(0, Math.min(total - 1, f.zIndex));
+          f.node.zIndex(clamped);
+        }
+      }
+      nodeRefs = fresh.map(f => f.node);
       _layer.batchDraw();
       _scheduleSave();
     },
@@ -1240,7 +1629,11 @@ function _pushDeleteNodesUndo(specs, label) {
 function _copyToOverlayClipboard() {
   const sel = _transformer?.nodes() || [];
   if (!sel.length) return false;
-  _overlayClipboard = sel.map(n => ({
+  // Sort by zIndex (ascending — bottom first) so paste re-creates in the
+  // SAME relative order. Otherwise a multi-select clipboard captures in
+  // selection order (newest-clicked last), and paste shuffles z-order.
+  const sorted = [...sel].sort((a, b) => (a.zIndex?.() ?? 0) - (b.zIndex?.() ?? 0));
+  _overlayClipboard = sorted.map(n => ({
     spec:        _serializeNode(n),
     capturedAt:  { x: n.x() ?? 0, y: n.y() ?? 0 },
   })).filter(e => e.spec);
@@ -1381,6 +1774,18 @@ function _refreshMultiToolbar() {
   if (!host) return;
   const sel = _transformer?.nodes() || [];
   const textBoxes = sel.filter(n => n.getAttr?.('textHtml'));
+  const shapes    = sel.filter(n => n.name?.() === 'userShape');
+
+  // Shape-toolbar wins when ANY shape is selected and no text box is in
+  // the selection. Mixed selections fall back to text toolbar (text-edit
+  // is the more specific UX). When neither: unmount both.
+  if (textBoxes.length === 0 && shapes.length >= 1) {
+    unmountTextToolbar();
+    mountShapeToolbar(host, () => _summariseShapeAttrs(shapes), (patch) => applyShapeAttrs(patch));
+    return;
+  }
+  unmountShapeToolbar();
+
   if (textBoxes.length >= 1) {
     mountTextToolbar(host, _multiTextApplier);
     setToolbarValues(_summariseStyleAcrossBoxes(textBoxes));
@@ -1694,6 +2099,19 @@ function _configTransformerForNodes(nodes) {
     _transformer.enabledAnchors(['middle-left', 'middle-right']);
     return;
   }
+  // Shapes: free aspect resize, all 8 anchors, rotate enabled. Mirrors
+  // typical 2D-editor behaviour for primitive shapes (Figma / Illustrator).
+  const allShapes = nodes.every(n => n.name?.() === 'userShape');
+  if (allShapes) {
+    _transformer.keepRatio(false);
+    _transformer.rotateEnabled(true);
+    _transformer.enabledAnchors([
+      'top-left', 'top-center', 'top-right',
+      'middle-left', 'middle-right',
+      'bottom-left', 'bottom-center', 'bottom-right',
+    ]);
+    return;
+  }
   // Anything with an image (or mixed) — lock aspect, corners only.
   _transformer.keepRatio(true);
   _transformer.rotateEnabled(true);
@@ -1712,12 +2130,18 @@ export function deleteSelected() {
   if (!nodes.length) return false;
   // P7-C-1: snapshot specs BEFORE destroying so undo can re-create the
   // nodes from a stable serialised form (Konva nodes can't be revived
-  // after destroy(); the spec is what survives).
-  const specs = nodes.map(n => _serializeNode(n)).filter(Boolean);
+  // after destroy(); the spec is what survives). Also capture each
+  // node's zIndex so undo can restore the layer order — without this,
+  // _layer.add(n) appends to the top of the stack and a deleted "back
+  // layer" rect comes back as the topmost element after Ctrl-Z.
+  const entries = nodes.map(n => ({
+    spec:   _serializeNode(n),
+    zIndex: n.zIndex?.() ?? 0,
+  })).filter(e => e.spec);
   for (const n of nodes) n.destroy();
   _setSelection(null);
   _layer.batchDraw();
-  _pushDeleteNodesUndo(specs, `Delete ${specs.length} item${specs.length > 1 ? 's' : ''}`);
+  _pushDeleteNodesUndo(entries, `Delete ${entries.length} item${entries.length > 1 ? 's' : ''}`);
   _scheduleSave();
   return true;
 }
@@ -1857,6 +2281,25 @@ function _onStepApplied() {
  * post-anim _onStepApplied path instead.
  */
 export function beginOverlayCrossfade(durationMs, easeFn, onDone) {
+  _beginOverlayFade(durationMs, easeFn, onDone, 'crossfade');
+}
+
+/**
+ * Sustained-overlap variant. The new step's content fades up FIRST
+ * while the outgoing layer holds at full opacity, then the outgoing
+ * fades down once incoming is fully visible. Items present in BOTH
+ * steps stay at 100% visible alpha through the entire transition —
+ * no flicker on shared shapes/text/images.
+ *
+ * Mathematically: visible alpha = B + (1−B)·A. With phase 1 holding
+ * A=1 while B ramps 0→1, then phase 2 holding B=1 while A ramps 1→0,
+ * visible alpha is always 1.
+ */
+export function beginOverlaySustainedFade(durationMs, easeFn, onDone) {
+  _beginOverlayFade(durationMs, easeFn, onDone, 'sustained');
+}
+
+function _beginOverlayFade(durationMs, easeFn, onDone, mode) {
   if (!_layer || !_ghostLayer) { if (onDone) onDone(); return; }
   // Cancel any in-flight crossfade so the new one isn't fighting it.
   if (_activeFade?.onDone) {
@@ -1880,7 +2323,8 @@ export function beginOverlayCrossfade(durationMs, easeFn, onDone) {
   _activeFade = {
     startMs: clock.now(),
     durationMs, easeFn, onDone,
-    crossfade: true,
+    crossfade: mode === 'crossfade',
+    sustained: mode === 'sustained',
   };
 }
 
@@ -1905,9 +2349,26 @@ function _advanceOverlayFade(nowMs) {
   if (!_activeFade || !_layer || !_ghostLayer) return;
   const { startMs, durationMs, easeFn, onDone } = _activeFade;
   const raw = Math.min(1, Math.max(0, (nowMs - startMs) / durationMs));
-  const u   = easeFn ? easeFn(raw) : raw;
-  _layer.opacity(u);
-  _ghostLayer.opacity(1 - u);
+  // Overlap crossfade — both `overlay(N)` and `overlayS(N)` use this.
+  // Each ramp spans X = 70% of the transition with a 40% overlap window
+  // in the middle:
+  //   incoming  fades 0→1 over [0,    0.7T]
+  //   outgoing  fades 1→0 over [0.3T, T   ]
+  // Layer-opacity sum A + B = 1 at endpoints and ~1.43 at the midpoint
+  // (always ≥ 1). Visible alpha bottoms ~0.92 — flicker-light without
+  // the hard handoff of a two-phase split.
+  const X = 0.70;
+  let layerA, ghostA;
+  if (raw <= X) layerA = easeFn ? easeFn(raw / X) : (raw / X);
+  else          layerA = 1;
+  if (raw >= 1 - X) {
+    const u = (raw - (1 - X)) / X;
+    ghostA = 1 - (easeFn ? easeFn(u) : u);
+  } else {
+    ghostA = 1;
+  }
+  _layer.opacity(layerA);
+  _ghostLayer.opacity(ghostA);
   _layer.batchDraw();
   _ghostLayer.batchDraw();
   if (raw >= 1) {
@@ -1987,6 +2448,18 @@ async function _loadFromActiveStep() {
 async function _recreateNode(spec) {
   if (!spec) return null;
   if (spec.className === 'Text')  return new Konva.Text({ ...spec.attrs, draggable: true });
+
+  // Primitive shapes — reconstruct with the same draggable + transformend
+  // hook the add* factories install, so dragging + resizing behave
+  // identically to a fresh add after step re-entry.
+  const SHAPE_CLASSES = { Rect: 'rect', Circle: 'circle', Ellipse: 'ellipse', RegularPolygon: 'triangle', Line: 'line', Arrow: 'arrow' };
+  if (SHAPE_CLASSES[spec.className]) {
+    const Cls = Konva[spec.className];
+    const node = new Cls({ ...spec.attrs, draggable: true });
+    _wireShapeTransformend(node, SHAPE_CLASSES[spec.className]);
+    return node;
+  }
+
   if (spec.className === 'Image') {
     // `image` is stripped defensively. Konva 9 toObject filters non-plain
     // objects out of attrs (so HTMLCanvasElement / HTMLImageElement do not
@@ -2089,6 +2562,24 @@ function _onKeyDown(e) {
 
   if (e.key === 'Delete' || e.key === 'Backspace') {
     if (deleteSelected()) e.preventDefault();
+    return;
+  }
+
+  // Layer ordering — only when an overlay node is selected. Headers
+  // live on a separate Konva.Layer so they're always above content;
+  // these shortcuts shuffle within the content layer only.
+  //   PageUp   → up one
+  //   PageDown → down one
+  //   Home     → to front (within content layer)
+  //   End      → to back  (within content layer)
+  if (['PageUp','PageDown','Home','End'].includes(e.key)) {
+    const sel = _transformer?.nodes() || [];
+    if (!sel.length) return;
+    e.preventDefault();
+    if (_reorderSelection(e.key, sel)) {
+      _layer.batchDraw();
+      _scheduleSave();
+    }
     return;
   }
 
