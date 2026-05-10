@@ -1,0 +1,22 @@
+{
+  "format": "sbsasm",
+  "version": 1,
+  "title": "Sample Assembly — Line 1",
+  "description": "Replace the URLs below with paths to real .sbsproc files on your server. Relative paths are resolved against this .sbsasm's location.",
+  "processes": [
+    {
+      "title": "Process A — Frame mounting",
+      "url": "./test.sbsproc",
+      "description": "Step-by-step frame assembly with safety checks."
+    },
+    {
+      "title": "Process B — Cable routing",
+      "url": "./cable-routing.sbsproc",
+      "description": "Lay the main cable harness."
+    },
+    {
+      "title": "Process C — Final inspection",
+      "url": "./final-inspection.sbsproc"
+    }
+  ]
+}

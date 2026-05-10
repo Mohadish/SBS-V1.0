@@ -1,0 +1,172 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>SBS Viewer</title>
+  <link rel="stylesheet" href="styles.css" />
+</head>
+<body>
+  <!-- ── Landing ─────────────────────────────────────────────────────
+       Shown when no .sbsproc has been loaded. A file picker + drag-
+       drop zone covers the local-machine case; the ?proc=<url> query
+       param (handled in viewer.js) covers the server-hosted case. -->
+  <section id="landing" class="screen">
+    <div class="landing-card">
+      <h1>SBS Viewer</h1>
+      <p class="muted">
+        Open a <code>.sbsproc</code> (single process) or <code>.sbsasm</code> (assembly).
+      </p>
+      <label class="btn-primary">
+        Choose file
+        <input type="file" id="file-picker" accept=".sbsproc,.sbsasm,application/octet-stream,application/json" hidden />
+      </label>
+      <div id="drop-zone" class="drop-zone">
+        or drop the file here
+      </div>
+      <p id="landing-error" class="error" hidden></p>
+      <div id="loading" class="loading" hidden>
+        <div class="spinner" aria-hidden="true"></div>
+        <span id="loading-msg">Reading .sbsproc…</span>
+      </div>
+      <!-- Manager-only entry — opens the builder for creating .sbsasm
+           assemblies. Workers ignore this; managers click here to
+           drag in their .sbsproc files and save the assembly. -->
+      <div class="landing-divider"><span>or</span></div>
+      <button class="btn-secondary" id="btn-create-assembly" type="button">
+        ✨ Create new assembly
+      </button>
+    </div>
+  </section>
+
+  <!-- ── Assembly Builder (admin mode, ?mode=build) ─────────────────
+       Manager-only form for creating + editing .sbsasm files. Pick
+       (or drop) one or more .sbsproc files; each becomes a row in
+       the assembly with title = filename. Manager can rename the
+       title and reorder rows. "Save assembly" downloads the .sbsasm.
+       The .sbsasm + all .sbsproc files are then uploaded together to
+       the closed server (relative URLs assume same-folder layout). -->
+  <section id="builder" class="screen" hidden>
+    <header class="builder-header">
+      <div class="header-title">Assembly Builder</div>
+      <div style="display:flex;gap:8px;align-items:center;">
+        <label class="btn-ghost" style="cursor:pointer;">
+          📂 Load existing
+          <input type="file" id="builder-load" accept=".sbsasm,application/json" hidden />
+        </label>
+        <button class="btn-primary" id="builder-download" style="margin:0;padding:6px 14px;font-size:12px;">💾 Save .sbsasm</button>
+        <button class="btn-ghost" id="builder-exit" title="Close builder (back to landing)">✕ Exit</button>
+      </div>
+    </header>
+    <div class="builder-body">
+      <div class="builder-meta">
+        <label class="field">
+          <span class="field-label">Assembly title</span>
+          <input type="text" id="builder-title" placeholder="e.g. Plant Line 1 — Daily build" />
+        </label>
+        <label class="field">
+          <span class="field-label">Description (optional)</span>
+          <textarea id="builder-description" rows="2" placeholder="Optional intro shown above the process grid…"></textarea>
+        </label>
+      </div>
+
+      <div class="builder-section-header">
+        <span>Processes</span>
+        <span class="muted" style="font-weight:400;text-transform:none;letter-spacing:0;font-size:12px;">drag to reorder</span>
+      </div>
+
+      <!-- Drop zone — accepts multi-file drop OR click-to-pick. Each
+           .sbsproc dropped becomes a row with title=filename, URL=
+           ./filename. The .sbsasm + .sbsproc files MUST be uploaded
+           to the same server folder for the relative URLs to resolve. -->
+      <label id="builder-drop" class="builder-drop">
+        <input type="file" id="builder-add-process-input"
+               accept=".sbsproc,application/octet-stream"
+               multiple hidden />
+        <span class="drop-icon">📁</span>
+        <span class="drop-label">Click or drop <code>.sbsproc</code> files here</span>
+        <span class="drop-hint muted">Each file becomes a process in the assembly</span>
+      </label>
+
+      <div id="builder-rows" class="builder-rows"></div>
+
+      <p id="builder-status" class="muted" style="margin-top:14px;font-size:11px;"></p>
+    </div>
+  </section>
+
+  <!-- ── Assembly landing ────────────────────────────────────────────
+       Shown when the viewer was opened with `?asm=<url>`. The
+       assembly JSON lists every .sbsproc the worker can run; clicking
+       a card loads the corresponding .sbsproc into the player. X
+       (close) on the player returns here, NOT to the file-picker. -->
+  <section id="assembly" class="screen" hidden>
+    <header class="assembly-header">
+      <div style="flex:1;">
+        <div class="header-title" id="assembly-title">Assembly</div>
+        <div id="assembly-meta" class="muted"></div>
+      </div>
+      <button class="btn-ghost" id="assembly-exit" title="Close assembly (back to landing)">✕ Exit</button>
+    </header>
+    <div class="assembly-body">
+      <p id="assembly-description" class="muted asm-desc" hidden></p>
+      <div id="assembly-grid" class="assembly-grid"></div>
+      <p id="assembly-error" class="error" hidden></p>
+    </div>
+  </section>
+
+  <!-- ── Player ──────────────────────────────────────────────────────
+       Shown after a .sbsproc loads. Header shows the project title
+       and the current viewer-step number. Main area: video on the
+       left, step list on the right. Footer: transport controls. -->
+  <section id="player" class="screen" hidden>
+    <header class="player-header">
+      <div class="header-title" id="project-title">—</div>
+      <div class="header-step" id="step-counter">– / –</div>
+      <button class="btn-ghost" id="btn-close" title="Close this process">✕</button>
+    </header>
+
+    <div class="player-body">
+      <div class="video-wrap" id="video-wrap">
+        <video id="video"
+               playsinline
+               preload="auto"
+               disablepictureinpicture
+               controlslist="nodownload noremoteplayback noplaybackrate"></video>
+        <!-- Step-progress strip: thin bar painted at the bottom of the
+             video, fills left→right as the playhead moves through the
+             CURRENT viewer-step (group window for a sub-step). Resets
+             at every step boundary. Helps the user feel pacing without
+             a full scrubber. -->
+        <div class="step-progress" id="step-progress" aria-hidden="true">
+          <div class="step-progress-fill" id="step-progress-fill"></div>
+        </div>
+      </div>
+
+      <aside class="step-list" id="step-list" aria-label="Steps">
+        <!-- step rows injected by viewer.js -->
+      </aside>
+    </div>
+
+    <footer class="player-footer">
+      <button class="btn-step" id="btn-prev" title="Previous step (←)">◀ Prev</button>
+      <button class="btn-step btn-play" id="btn-play" title="Play / pause (Space)">▶ Play</button>
+      <button class="btn-step" id="btn-next" title="Next step (→)">Next ▶</button>
+
+      <!-- Volume cluster: mute toggle + slider. Slider value is 0–100;
+           the mute button stores the pre-mute level so unmuting
+           restores it. Both wire into video.volume / video.muted. -->
+      <div class="vol-cluster">
+        <button class="btn-icon" id="btn-mute" title="Mute / unmute (M)">🔊</button>
+        <input class="vol-slider" id="vol-slider" type="range" min="0" max="100" value="100"
+               title="Volume" aria-label="Volume" />
+      </div>
+
+      <span class="time" id="time-readout">0:00 / 0:00</span>
+
+      <button class="btn-icon" id="btn-fullscreen" title="Fullscreen (F)">⛶</button>
+    </footer>
+  </section>
+
+  <script src="viewer.js"></script>
+</body>
+</html>
