@@ -70,6 +70,9 @@ export function initTree(containerEl) {
   // P-P1: pivot button color reflects active edit. Re-render when the
   // edit session opens / closes so the button repaints in real time.
   state.on('change:pivotEditNodeId', () => renderTree());
+  // Re-render so the "Global Transform" menu label flips between active /
+  // inactive when the mode toggles externally (e.g. click-outside commit).
+  state.on('change:globalEditNodeId', () => renderTree());
 
   renderTree();
 }
@@ -265,12 +268,13 @@ function _buildRow(node, depth) {
 
 function _typeIcon(type) {
   switch (type) {
-    case 'scene':  return '🌐';
-    case 'model':  return '🧩';
-    case 'folder': return '🗂';
-    case 'mesh':   return '◼';
-    case 'note':   return '💬';
-    default:       return '📄';
+    case 'scene':     return '🌐';
+    case 'model':     return '🧩';
+    case 'folder':    return '🗂';
+    case 'mesh':      return '◼';
+    case 'note':      return '💬';
+    case 'flatShape': return '▰';   // M1: 2D shape in 3D
+    default:          return '📄';
   }
 }
 
@@ -564,6 +568,53 @@ function _buildContextMenuItems(node) {
     items.push({
       label: 'Collapse',
       action: () => _collapseSubtree(node),
+    });
+  }
+
+  // ── Flat-shape per-row actions (Phase 2 / 2.1 / 2.3) ─────────────────────
+  if (node.type === 'flatShape') {
+    items.push({ separator: true });
+
+    // Edit polygon — opens the viewport editor seeded at this instance's
+    // current world pose. Commit replaces the template's polygon and
+    // ripples to every other instance.
+    items.push({
+      label: 'Edit polygon…',
+      action: () => actions.startShapeEdit(node.templateId),
+    });
+
+    // Global Transform mode — drag handles write base* fields, change
+    // ripples to every step. Red cube indicator at the gizmo hub.
+    const inMode = state.get('globalEditNodeId') === node.id;
+    items.push({
+      label: inMode ? '✓ Global Transform (active)' : 'Global Transform',
+      action: () => inMode
+        ? actions.commitGlobalEdit()
+        : actions.enterGlobalEdit(node.id),
+    });
+
+    // ── Step-pose clipboard (Phase 2 #3) ─────────────────────────────────
+    // Copy captures the ACTIVE step's per-step transform + visibility for
+    // this instance; Paste applies it to either every step in
+    // state.selectedStepIds (when ≥ 2) or just the active step. Cross-
+    // instance paste IS allowed — pose is id-agnostic.
+    items.push({
+      label: 'Copy step pose',
+      action: () => actions.copyInstanceStepPose(node.id),
+    });
+    items.push({
+      label: state.get('selectedStepIds')?.size >= 2
+        ? `Paste step pose to ${state.get('selectedStepIds').size} steps`
+        : 'Paste step pose',
+      disabled: !actions.hasInstancePoseClipboard(),
+      action: () => actions.pasteInstanceStepPose(node.id),
+    });
+
+    // Delete this instance (template stays in the library).
+    items.push({ separator: true });
+    items.push({
+      label: '🗑 Delete shape',
+      action: () => actions.deleteFlatShapeInstance(node.id),
     });
   }
 
@@ -1000,7 +1051,10 @@ function _onDragEnd() {
 }
 
 function _onDragOver(e, node) {
-  if (!_isDragging || (node.type === 'mesh' && !node.missing)) return;
+  // Block drops on leaf nodes (real meshes + flat shapes + notes) — they
+  // have no .children to receive moved items.
+  if (!_isDragging || (node.type === 'mesh' && !node.missing) ||
+      node.type === 'flatShape' || node.type === 'note') return;
   e.preventDefault();
   e.dataTransfer.dropEffect = 'move';
   if (_dropTarget !== node.id) {
@@ -1023,7 +1077,10 @@ function _onDrop(e, targetNode) {
   e.preventDefault();
   _dropTarget = null;
 
-  if (targetNode.type === 'mesh' && !targetNode.missing) { renderTree(); return; }
+  if ((targetNode.type === 'mesh' && !targetNode.missing) ||
+      targetNode.type === 'flatShape' || targetNode.type === 'note') {
+    renderTree(); return;
+  }
 
   const ids = _dragIds.filter(id => id !== targetNode.id);
   if (!ids.length) { setStatus('Cannot drop here.'); renderTree(); return; }

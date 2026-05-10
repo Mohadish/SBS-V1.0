@@ -32,7 +32,7 @@ import { listVoices as ttsListVoices } from '../systems/tts.js';
 import * as userSettings    from '../core/user-settings.js';
 import * as narrationCache  from '../systems/narration-cache.js';
 
-const TABS = ['files', 'tree', 'colors', 'select', 'cameras', 'animation', 'header', 'style', 'cables', 'notes', 'export'];
+const TABS = ['files', 'tree', 'colors', 'select', 'cameras', 'animation', 'header', 'style', 'cables', 'notes', 'shapes', 'export'];
 let _activeTab   = 'files';
 let _container   = null;
 let _treeInited  = false;
@@ -57,6 +57,7 @@ export function initSidebarLeft() {
       <button class="tabBtn"        data-tab="style">Style</button>
       <button class="tabBtn"        data-tab="cables">🔌</button>
       <button class="tabBtn"        data-tab="notes">💬</button>
+      <button class="tabBtn"        data-tab="shapes">▰</button>
       <button class="tabBtn"        data-tab="export">Export</button>
     </div>
     <div class="sidebar-panels" id="left-panels"></div>
@@ -135,6 +136,18 @@ export function initSidebarLeft() {
   state.on('change:headerStepNumberPerChapter', () => { if (_activeTab === 'header') _renderHeaderTabPanel(); });
   // C3/D: cable tab refreshes on cables list change, placement, and on
   // cable-point selection (so the editor's per-point list highlights).
+  // Shapes tab — refresh on template list changes, draw-mode toggles,
+  // and tree changes (so per-template instance counts stay live).
+  state.on('change:shapeTemplates',      () => { if (_activeTab === 'shapes') _renderShapesTab(); });
+  state.on('change:shapeDrawing',        () => { if (_activeTab === 'shapes') _renderShapesTab(); });
+  state.on('change:treeData',            () => { if (_activeTab === 'shapes') _renderShapesTab(); });
+  state.on('change:shapePlacementForId', () => { if (_activeTab === 'shapes') _renderShapesTab(); });
+  // Selection changes trigger a Shapes-tab re-render only when that tab
+  // is active, so the highlight on the currently-selected flatShape's
+  // template row stays in sync. (Other tabs already re-render on their
+  // own selection-driven hooks.)
+  state.on('selection:change',           () => { if (_activeTab === 'shapes') _renderShapesTab(); });
+
   state.on('change:cables',              () => { if (_activeTab === 'cables') _renderCableTabPanel(); });
   state.on('change:cablePlacingId',      () => { if (_activeTab === 'cables') _renderCableTabPanel(); });
   state.on('change:selectedCablePoint',  () => { if (_activeTab === 'cables') _renderCableTabPanel(); });
@@ -190,6 +203,7 @@ function _renderActiveTab() {
     case 'style':     _renderStyleTabPanel();  break;
     case 'cables':    _renderCableTabPanel();  break;
     case 'notes':     _renderNotesTab();   break;
+    case 'shapes':    _renderShapesTab();  break;
     case 'export':    _renderExportTab();  break;
   }
 }
@@ -637,6 +651,18 @@ function _cloneSpecAsPhantom(specNode) {
       children: [],
     };
   }
+  // Flat shapes (M1 — 2D shapes in 3D) carry their own geometry data
+  // (shapePath + fill + transforms). Preserve every field verbatim so
+  // systems/flat-shapes.js can rebuild the THREE.Mesh on first
+  // rebuildFromTreeSpec pass; not "missing" in the asset sense.
+  if (specNode.type === 'flatShape') {
+    return {
+      ...specNode,
+      missing:  false,
+      object3d: null,
+      children: (specNode.children || []).map(_cloneSpecAsPhantom),
+    };
+  }
   const node = {
     id:                specNode.id,
     name:              specNode.name || 'Unknown',
@@ -656,6 +682,19 @@ function _cloneSpecAsPhantom(specNode) {
     baseLocalScale:    specNode.baseLocalScale    ?? [1, 1, 1],
     children:          (specNode.children || []).map(_cloneSpecAsPhantom),
   };
+  // Preserve folder transform fields so an SVG-import folder loaded from
+  // a saved project keeps any user-applied move / rotate / pivot.
+  if (specNode.type === 'folder') {
+    if (Array.isArray(specNode.localOffset))         node.localOffset         = specNode.localOffset;
+    if (Array.isArray(specNode.localQuaternion))     node.localQuaternion     = specNode.localQuaternion;
+    if (Array.isArray(specNode.orientationSteps))    node.orientationSteps    = specNode.orientationSteps;
+    if (Array.isArray(specNode.baseLocalQuaternion)) node.baseLocalQuaternion = specNode.baseLocalQuaternion;
+    if (Array.isArray(specNode.pivotLocalOffset))    node.pivotLocalOffset    = specNode.pivotLocalOffset;
+    if (Array.isArray(specNode.pivotLocalQuaternion))node.pivotLocalQuaternion= specNode.pivotLocalQuaternion;
+    if (typeof specNode.moveEnabled   === 'boolean') node.moveEnabled   = specNode.moveEnabled;
+    if (typeof specNode.rotateEnabled === 'boolean') node.rotateEnabled = specNode.rotateEnabled;
+    if (typeof specNode.pivotEnabled  === 'boolean') node.pivotEnabled  = specNode.pivotEnabled;
+  }
   return node;
 }
 
@@ -697,8 +736,22 @@ function _insertPhantomNodes(specNode, assetId) {
  */
 function _insertPhantomCustomFolders(savedSceneRoot) {
   if (!savedSceneRoot) return;
-  const root = state.get('treeData');
-  if (!root) return;
+  let root = state.get('treeData');
+  // Bootstrap a scene root when the project has no model assets — e.g. an
+  // SVG-only project (M1: 2D shapes in 3D).  Otherwise saved custom folders
+  // would silently drop on reopen.
+  if (!root) {
+    root = {
+      id:           'scene_root',
+      name:         'Scene',
+      type:         'scene',
+      children:     [],
+      object3d:     sceneCore.rootGroup,
+      localVisible: true,
+    };
+    steps.object3dById.set('scene_root', sceneCore.rootGroup);
+    state.setState({ treeData: root, nodeById: buildNodeMap(root) });
+  }
 
   const nodeById = state.get('nodeById') || new Map();
   let changed = false;
@@ -2433,6 +2486,178 @@ function _countNotes(node, n = { c: 0 }) {
   for (const c of (node.children || [])) _countNotes(c, n);
   return n.c;
 }
+
+
+// ═══════════════════════════════════════════════════════════════════════════
+//  SHAPES TAB  (Phase 1 — "2D shapes in 3D")
+// ═══════════════════════════════════════════════════════════════════════════
+//
+// Library list of shape templates + a "+ New Shape" button that arms the
+// viewport editor. Each row carries the template's fill swatch, name,
+// instance count, and a context menu with "Place" / "Delete".
+//
+// Phase 2 will add an "Edit polygon" entry that re-opens the viewport
+// editor with the existing template's points seeded.
+
+function _renderShapesTab() {
+  const el = _panel('shapes');
+  if (!el) return;
+
+  const tpls    = state.get('shapeTemplates') || [];
+  const drawing = state.get('shapeDrawing');
+  const drawingPhase = drawing?.phase ?? null;
+  const placeArmedFor = state.get('shapePlacementForId') || null;
+  // Highlight the row of the currently-selected flatShape's template —
+  // gives the user a visual link between scene selection and library row.
+  const selId = state.get('selectedId');
+  const selNode = selId ? state.get('nodeById')?.get(selId) : null;
+  const selectedTplId = (selNode && selNode.type === 'flatShape') ? selNode.templateId : null;
+
+  // Count instances per template across the live tree
+  const counts = new Map();
+  const root = state.get('treeData');
+  if (root) {
+    const stack = [root];
+    while (stack.length) {
+      const n = stack.pop();
+      if (n.type === 'flatShape' && n.templateId) {
+        counts.set(n.templateId, (counts.get(n.templateId) || 0) + 1);
+      }
+      if (n.children) for (const c of n.children) stack.push(c);
+    }
+  }
+
+  el.innerHTML = `
+    <div class="section">
+      <div class="title">Shapes</div>
+      <p class="small muted" style="margin:6px 0 10px">
+        Library of 2D polygon templates. Each template can be placed
+        many times in the scene. Drawing happens in the viewport.
+      </p>
+      <div style="display:flex;gap:8px;align-items:center">
+        <button class="btn" id="btn-new-shape" ${drawing ? 'disabled' : ''}
+          style="flex:1">${drawing ? 'Drawing…' : '+ New Shape'}</button>
+        ${drawing
+          ? `<button class="btn" id="btn-cancel-shape" style="background:#7f1d1d">Cancel</button>`
+          : ''}
+      </div>
+      ${drawing
+        ? `<p class="small" style="margin-top:8px;color:#fdba74">
+             ${drawingPhase === 'pickPlane'
+               ? 'Click a face or empty space to set the drawing plane.'
+               : 'Click to add vertices • Click first vertex (or right-click) to close • Esc to cancel.'}
+           </p>` : ''}
+    </div>
+
+    <div class="section">
+      <div style="display:flex;align-items:center;justify-content:space-between">
+        <div class="title">Templates (${tpls.length})</div>
+      </div>
+      <div id="shape-list" style="margin-top:8px">${
+        tpls.length === 0
+          ? '<span class="small muted">No shapes yet. Click "+ New Shape" to draw one.</span>'
+          : tpls.map(t => {
+              const ct = counts.get(t.id) || 0;
+              const isSel    = selectedTplId === t.id;
+              const isArmed  = placeArmedFor === t.id;
+              const rowStyle = `margin-top:6px;padding:8px;display:flex;align-items:center;gap:8px`
+                + (isSel ? `;outline:2px solid #38bdf8;background:rgba(56,189,248,0.08)` : ``);
+              const placeLabel = isArmed ? 'Click viewport…' : 'Place';
+              const placeStyle = `font-size:11px;padding:3px 8px;flex-shrink:0`
+                + (isArmed ? `;background:#0369a1;color:#f1f5f9` : ``);
+              return `
+              <div class="card" data-shape-id="${_esc(t.id)}"
+                   style="${rowStyle}">
+                <span class="shape-swatch" data-tpl-id="${_esc(t.id)}"
+                      style="width:18px;height:18px;border:1px solid var(--line);border-radius:3px;
+                             background:${_esc(t.fill || '#cccccc')};cursor:pointer;flex-shrink:0"
+                      title="Edit colour"></span>
+                <input type="text" class="shape-name" data-tpl-id="${_esc(t.id)}"
+                       value="${_esc(t.name || '')}"
+                       style="flex:1;background:transparent;border:1px dashed transparent;
+                              color:inherit;font-size:13px;padding:2px 4px" />
+                <span class="small muted" style="flex-shrink:0">${ct}×</span>
+                <button class="btn" data-edit-id="${_esc(t.id)}"
+                        style="font-size:11px;padding:3px 8px;flex-shrink:0"
+                        title="Edit polygon — opens the viewport editor seeded at an existing instance.">Edit</button>
+                <button class="btn" data-place-id="${_esc(t.id)}"
+                        style="${placeStyle}"
+                        title="${isArmed ? 'Click a face in the viewport to drop the shape. Esc / right-click cancels.' : 'Click then click a face in the viewport to place tangent.'}">${placeLabel}</button>
+                <button class="btn" data-delete-id="${_esc(t.id)}"
+                        style="font-size:11px;padding:3px 8px;flex-shrink:0;background:#7f1d1d">×</button>
+              </div>`;
+            }).join('')
+      }</div>
+    </div>
+  `;
+
+  // Event wiring
+  el.querySelector('#btn-new-shape')?.addEventListener('click', () => {
+    actions.startShapeDraw();
+  });
+  el.querySelector('#btn-cancel-shape')?.addEventListener('click', () => {
+    actions.cancelShapeDraw();
+  });
+
+  el.querySelectorAll('[data-edit-id]').forEach(btn => {
+    btn.addEventListener('click', e => {
+      e.stopPropagation();
+      actions.startShapeEdit(btn.dataset.editId);
+    });
+  });
+
+  el.querySelectorAll('[data-delete-id]').forEach(btn => {
+    btn.addEventListener('click', e => {
+      e.stopPropagation();
+      actions.deleteShapeTemplate(btn.dataset.deleteId);
+    });
+  });
+
+  el.querySelectorAll('[data-place-id]').forEach(btn => {
+    btn.addEventListener('click', e => {
+      e.stopPropagation();
+      // Arm the placement picker — main.js's viewport pointerdown
+      // handler consumes the next click and spawns the instance
+      // tangent to the hit face (parented under the hit object's data-
+      // tree parent). Empty-space click falls back to camera-facing.
+      actions.startShapePlacement(btn.dataset.placeId);
+    });
+  });
+
+  el.querySelectorAll('.shape-swatch').forEach(sw => {
+    sw.addEventListener('click', e => {
+      e.stopPropagation();
+      const tplId = sw.dataset.tplId;
+      const tpl   = (state.get('shapeTemplates') || []).find(t => t.id === tplId);
+      if (!tpl) return;
+      const input = document.createElement('input');
+      input.type = 'color';
+      input.value = tpl.fill || '#cccccc';
+      input.style.position = 'fixed';
+      input.style.opacity  = '0';
+      document.body.appendChild(input);
+      input.addEventListener('change', () => {
+        actions.setShapeTemplateFill(tplId, input.value);
+        input.remove();
+      });
+      input.click();
+    });
+  });
+
+  el.querySelectorAll('.shape-name').forEach(inp => {
+    inp.addEventListener('change', () => {
+      actions.setShapeTemplateName(inp.dataset.tplId, inp.value.trim() || 'Shape');
+    });
+    inp.addEventListener('keydown', e => {
+      if (e.key === 'Enter') inp.blur();
+    });
+    // CSP-safe focus/blur styling — inline `onfocus`/`onblur` attrs
+    // would violate `script-src` policy, so we wire the listeners here.
+    inp.addEventListener('focus', () => { inp.style.borderColor = 'var(--line)'; });
+    inp.addEventListener('blur',  () => { inp.style.borderColor = 'transparent'; });
+  });
+}
+
 
 function _renderExportTab() {
   const el  = _panel('export');

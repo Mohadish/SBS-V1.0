@@ -29,6 +29,7 @@
  */
 
 import { getCanonicalSize, computeSafeFrameRect } from './safe-frame.js';
+import * as clock from './clock.js';
 
 // ── Mini event emitter (no dependency on state.js) ────────────────────────
 class Emitter {
@@ -505,8 +506,16 @@ export class SceneCore extends Emitter {
       // Cancel any previous transition
       if (this._transition?.reject) this._transition.reject('cancelled');
 
+      // Pin startMs to the CURRENT clock value (synthMs in offline export,
+      // performance.now in realtime). Previously this was null and got
+      // initialised on the first tick — but in offline mode the synthetic
+      // sleep schedule is computed against the OBJECT-transition startMs
+      // (which uses clock.now() up front). Setting camera startMs lazily
+      // pushed camera completion ~1 frame past the sleep's target, so
+      // Promise.all([cameraP, objectP, _sleep(maxDur)]) hung forever
+      // waiting on a camera transition that never got another tick.
       this._transition = {
-        startMs:  null,
+        startMs:  clock.now(),
         durationMs,
         easeFn:   ease[easing] ?? ease.smooth,
         fromPos, fromQ, fromPivot, fromFov,
@@ -525,8 +534,12 @@ export class SceneCore extends Emitter {
     const t = this._transition;
     if (!t) return;
 
-    if (t.startMs === null) t.startMs = nowMs;
-
+    // startMs is set at animateCameraTo() time (clock.now() — synthMs in
+    // offline, performance.now in realtime). The previous lazy-init on
+    // first tick mismatched the offline synthetic sleep schedule, which
+    // is computed against object-transition startMs taken at phase
+    // setup. The mismatch shifted camera completion past the sleep
+    // target, hanging Promise.all forever in offline export.
     const elapsed = nowMs - t.startMs;
     const raw     = Math.min(elapsed / t.durationMs, 1);
     const alpha   = t.easeFn(raw);

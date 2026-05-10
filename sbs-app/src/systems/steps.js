@@ -29,6 +29,7 @@ import { rasterizeOverlay }         from './overlay.js';
 import * as cablesSystem            from './cables.js';   // C1: per-step cable snapshot capture/apply
 import * as cablesRender            from './cables-render.js';   // H1: cable phase animations
 import * as overlaySystem           from './overlay.js';   // H2: overlay phase fade-in / fade-out
+import { ensureFlatShapeObject3D }   from './flat-shapes.js'; // M1: 2D shapes in 3D — build mesh on demand
 import { createStep, createEmptySnapshot } from '../core/schema.js';
 import { parseAnimation, resolveAnimationString } from './animation.js';
 import {
@@ -558,7 +559,17 @@ class StepManager {
         this._onObjectTransitionsDone = resolve;
       });
 
-      await Promise.all([cameraP, objectP]);
+      // OFFLINE-EXPORT FIX: in simultaneous mode (no animation preset),
+      // cameraP and objectP both advance via tick hooks. In offline
+      // mode, ticks only fire from inside _syntheticSleep — so without
+      // a _sleep here, no ticks fire and the await hangs forever.
+      // Phased mode escapes this because each phase already calls
+      // _sleep(durationMs) explicitly. Padding the await with a sleep
+      // for the longest phase ensures synthetic ticks drive the
+      // transitions to completion in offline mode, and is a no-op in
+      // realtime mode (rAF still drives ticks; sleep just waits).
+      const maxDur = Math.max(cameraDur, objDur);
+      await Promise.all([cameraP, objectP, _sleep(maxDur)]);
     }
 
     // ── Guard: if a newer animation started while we awaited, bail out ──
@@ -819,7 +830,7 @@ class StepManager {
    * @param {string}  stepId
    * @param {boolean} [animate]  override transition animation (default: use step settings)
    */
-  async activateStep(stepId, animate = true) {
+  async activateStep(stepId, animate = true, opts = {}) {
     const steps = state.get('steps');
     const step  = steps.find(s => s.id === stepId);
     if (!step) return;
@@ -887,6 +898,32 @@ class StepManager {
     const curIdx    = allSteps.findIndex(s => s.id === stepId);
     const nextStep  = allSteps[curIdx + 1];
     if (nextStep) this._prewarm(nextStep.id);
+
+    // ── Step-group auto-chain (Phase C) ─────────────────────────────────
+    // When activation came from arrow / step-nav navigation (opts.fromArrow
+    // true), and the current step is part of a group, immediately chain
+    // into the next sub-step — no pause, no user input. The chain ends
+    // when the next step isn't a sub-step of the same group.
+    //
+    // Click and middle-click activations don't pass fromArrow, so they
+    // stop at the end of the clicked step (per spec — click = "edit this
+    // specific step", arrow = "play the assembly forward"). The token
+    // gate ensures interruption (a click during chain) breaks the chain
+    // cleanly: the interrupting call increments _activationToken, the
+    // outer chain's await resolves via snapCurrentToFinal, and the stale
+    // token mismatch makes this branch a no-op.
+    if (opts.fromArrow && myToken === this._activationToken) {
+      const currentGroupId = step.groupHead ? step.id : (step.groupId || null);
+      if (currentGroupId) {
+        const next = nextStep;
+        if (next && next.groupId === currentGroupId) {
+          // Don't await — keep the chain shallow on the call stack and
+          // let token coordination handle interrupts. Animation override
+          // here matches the entry call: arrows always animate.
+          this.activateStep(next.id, true, { fromArrow: true });
+        }
+      }
+    }
   }
 
   /**
@@ -974,8 +1011,42 @@ class StepManager {
     const steps = state.get('steps').filter(s => this._isPlayable(s));
     const activeId  = state.get('activeStepId');
     const currentIdx = steps.findIndex(s => s.id === activeId);
-    const nextIdx    = Math.max(0, Math.min(steps.length - 1, currentIdx + delta));
-    return this.activateStep(steps[nextIdx]?.id, animate);
+
+    // Step-groups (Phase C/D): arrow navigation has group-aware semantics.
+    //   RIGHT (+1): step forward by one in the flat array. If the
+    //               current step is in a group, the next step may also
+    //               be a sub-step of the same group — that's fine,
+    //               activateStep's auto-chain handles continuing through
+    //               the rest of the group. So a single +1 hop here is
+    //               correct in both cases.
+    //   LEFT  (-1): jump back to the PREVIOUS TOP-LEVEL step (skipping
+    //               over any sub-steps that happen to precede the
+    //               current position in the flat array). If that target
+    //               is a group head, activateStep's auto-chain plays it
+    //               from head through every sub-step.
+    if (delta < 0) {
+      // From a SUB-STEP, left arrow jumps to the top-level step BEFORE
+      // the current group (so the user steps out of the group entirely,
+      // not back to its head). From a HEAD or normal step, it's the
+      // previous top-level step in flat-array order. In both cases, if
+      // the landing step is itself a group head, auto-chain plays its
+      // body from the head onward.
+      const current = steps[currentIdx];
+      let searchFrom = currentIdx - 1;
+      if (current?.groupId) {
+        const headIdx = steps.findIndex(s => s.id === current.groupId);
+        searchFrom = headIdx - 1;
+      }
+      let prevTopLevelIdx = -1;
+      for (let i = searchFrom; i >= 0; i--) {
+        if (!steps[i].groupId) { prevTopLevelIdx = i; break; }
+      }
+      if (prevTopLevelIdx < 0) return;   // no previous top-level step
+      return this.activateStep(steps[prevTopLevelIdx].id, animate, { fromArrow: true });
+    }
+
+    const nextIdx = Math.max(0, Math.min(steps.length - 1, currentIdx + delta));
+    return this.activateStep(steps[nextIdx]?.id, animate, { fromArrow: true });
   }
 
 
@@ -1381,7 +1452,19 @@ class StepManager {
     const steps = state.get('steps');
     const step  = steps.find(s => s.id === stepId);
     if (!step) return;
-    step.hidden = !!hidden;
+    const want = !!hidden;
+    step.hidden = want;
+    // Step-groups: toggling a HEAD cascades the same hidden state to
+    // every sub-step under it. Without this, the head disappears from
+    // playback but the sub-steps still play, breaking the "group reads
+    // as one step" invariant. Show on the head also un-hides every
+    // sub-step (regardless of their previous individual state) so the
+    // group toggle is symmetric and predictable.
+    if (step.groupHead) {
+      for (const s of steps) {
+        if (s.groupId === stepId) s.hidden = want;
+      }
+    }
     state.setState({ steps: [...steps] });
     state.markDirty();
   }
@@ -1894,6 +1977,33 @@ function rebuildFromTreeSpec(spec, nodeById, object3dById, parentObject3d) {
       obj.userData.nodeId     = node.id;
     }
 
+  } else if (specType === 'flatShape') {
+    // Flat 2D shape (M1 — "2D shapes in 3D"). Reuse the live node so its
+    // shapePath + fill survive every rebuild. Build the THREE.Mesh on
+    // first encounter (e.g. just after project load) and reparent on
+    // subsequent rebuilds — the data tree is the source of truth, the
+    // saved spec only carries id/type/name/visibility.
+    node = nodeById.get(spec.id);
+    if (!node) return null;
+    node.name         = spec.name || node.name;
+    node.localVisible = spec.localVisible !== false;
+    node.children     = [];
+
+    let obj = object3dById.get(spec.id) ?? node.object3d ?? ensureFlatShapeObject3D(node);
+    if (obj) {
+      node.object3d = obj;
+      object3dById.set(spec.id, obj);
+      if (parentObject3d && obj.parent !== parentObject3d) {
+        if (obj.parent) obj.parent.remove(obj);
+        parentObject3d.add(obj);
+      }
+      if (obj.userData) {
+        obj.userData.flatShapeNodeId = node.id;
+        obj.userData.meshNodeId      = node.id;
+        obj.userData.nodeId          = node.id;
+      }
+    }
+
   } else {
     // scene root or unknown — pass through; use node.object3d as parent for children
     node = nodeById.get(spec.id);
@@ -1902,11 +2012,17 @@ function rebuildFromTreeSpec(spec, nodeById, object3dById, parentObject3d) {
   }
 
   // Determine which Three.js object children should attach to.
-  // folder/scene own a group; mesh nodes don't; model children attach
-  // directly to the model's outer group. (Source transform is baked
-  // into the mesh geometry vertices themselves — no inner group.)
+  //   - folder / scene own a group; their data-children parent under it.
+  //   - model children attach to the model's outer group. (Source
+  //     transform is baked into mesh vertices, no inner group needed.)
+  //   - mesh nodes carry a Mesh; flatShape children of a mesh need to
+  //     parent UNDER that Mesh in Three.js so they inherit its world
+  //     transform (cable mesh-anchor style). Notes on a mesh have no
+  //     object3d so the parent doesn't matter for them.
+  //   - flatShape itself has no children in v1, so its branch never
+  //     recurses; childParent there is irrelevant but kept consistent.
   let childParent;
-  if (specType === 'mesh') {
+  if (specType === 'flatShape') {
     childParent = parentObject3d;
   } else {
     childParent = object3dById.get(spec.id) ?? node?.object3d ?? parentObject3d;

@@ -70,6 +70,13 @@ label.colorlab{display:block;font-size:12px;color:var(--muted);margin-top:4px}
    keeps the cue visible against light backgrounds where a 2 px
    outline got lost. */
 .stepItem.active{border-color:#facc15;outline:3px solid #facc15;outline-offset:1px}
+/* Step-group tint — amber wash on heads and sub-steps so they read as
+   one unit. Both rules use a single class beyond .stepItem, so the
+   .selected / .active rules below (also two-class) override them on
+   the cascade and keep the selection / active highlight identical to a
+   normal step. */
+.stepItem.groupHead{background:rgba(234,179,8,0.10);border-left:3px solid rgba(234,179,8,0.55)}
+.stepItem.subStep  {background:rgba(234,179,8,0.05);border-left:3px solid rgba(234,179,8,0.30)}
 /* Multi-step selection highlight (Ctrl/Shift click in timeline).
    Default = the original BLUE used in dark theme. Light-theme
    override (in base.css) swaps to a warm yellow fill that reads
@@ -82,16 +89,16 @@ label.colorlab{display:block;font-size:12px;color:var(--muted);margin-top:4px}
   box-shadow:0 0 0 1px rgba(74,144,217,.35) inset;
 }
 .stepItem.selected.active{background:rgba(74,144,217,0.32)}
-/* Chapter header — inline style sets a default blue tint, so the
+/* Chapter header — inline style sets a default green tint, so the
    selection rule needs !important to win over it. Selected chapter
-   matches the step palette: blue in dark, warm yellow in light. */
+   uses a deeper green so the selection state stays unambiguous. */
 .chapterHeader.selected{
-  background:rgba(74,144,217,0.32) !important;
-  border-color:#4A90D9 !important;
-  outline:1px solid rgba(74,144,217,0.7);outline-offset:1px;
+  background:rgba(34,197,94,0.32) !important;
+  border-color:#22c55e !important;
+  outline:1px solid rgba(34,197,94,0.7);outline-offset:1px;
 }
 .chapterHeader.selected.partial{
-  background:rgba(74,144,217,0.18) !important;
+  background:rgba(34,197,94,0.18) !important;
   outline-style:dashed;
 }
 

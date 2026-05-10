@@ -12,7 +12,7 @@ import * as actions from '../systems/actions.js';
 import { createChapter, generateId } from '../core/schema.js';
 import { setStatus } from './status.js';
 import { showContextMenu } from './context-menu.js';
-import { exportTimelineVideo, downloadBlob } from '../systems/video-export.js';
+import { exportTimelineVideo, exportTimelineSbsProc, downloadBlob } from '../systems/video-export.js';
 import { listVoices as ttsListVoices, synthesize as ttsSynthesize } from '../systems/tts.js';
 import * as userSettings    from '../core/user-settings.js';
 import * as narrationCache  from '../systems/narration-cache.js';
@@ -22,6 +22,9 @@ let _dragId       = null;          // id of step being dragged (single-drag fall
 let _dragIds      = [];            // ids of all steps being dragged (set when multi-drag)
 let _dragChapterId = null;         // id of chapter being dragged (header drag)
 let _dragExpandId = null;          // single chapter currently force-expanded during a drag (hover override)
+let _dragGroupExpandId   = null;   // single step-group head currently force-expanded during a drag
+let _groupExpandTimer    = null;   // setTimeout id for hover-to-expand (groups)
+let _groupExpandTargetId = null;   // group-head id the group timer is counting down for
 
 // Multi-step selection lives in global state (state.selectedStepIds) so
 // that actions in src/systems/actions.js can read it and route bulk
@@ -48,8 +51,10 @@ let _expandAnchorTop = 0;          // viewport Y of the hovered chapter header a
 let _expandedId   = null;          // id of step currently shown in expanded layout (null = all collapsed)
 let _clipboard    = null;          // { kind: 'steps'|'chapter', data: ... } — survives renders, cleared on new copy
 let _dropSlot     = null;          // DOM node for the dashed insertion slot (step drag only)
-const HOVER_EXPAND_MS = 500;
-const DROP_COLOR  = '#3b82f6';     // blue insertion line
+const HOVER_EXPAND_MS       = 500;
+const HOVER_GROUP_EXPAND_MS = 300;  // step-groups expand faster than chapters
+const DROP_COLOR        = '#3b82f6'; // blue insertion line (top-level drop)
+const DROP_COLOR_GROUP  = '#eab308'; // amber insertion line (drop INTO a group)
 
 // ── Init ────────────────────────────────────────────────────────────────────
 
@@ -70,6 +75,7 @@ export function initStepsPanel() {
         <button class="btn" id="btn-add-chapter">+ Chapter</button>
       </div>
       <button class="btn" id="btn-export-video" style="margin-top:6px;width:100%;">🎬 Export video</button>
+      <button class="btn" id="btn-export-sbsproc" style="margin-top:6px;width:100%;" title="Export a single self-contained .sbsproc file (MP4 + step manifest) for the SBS viewer.">📦 Export .sbsproc</button>
       <div class="card" style="margin-top:8px;">
         <div class="grid2">
           <label class="colorlab">Camera (ms)
@@ -90,6 +96,8 @@ export function initStepsPanel() {
     .addEventListener('click', _onAddChapter);
   _container.querySelector('#btn-export-video')
     .addEventListener('click', _onExportVideo);
+  _container.querySelector('#btn-export-sbsproc')
+    ?.addEventListener('click', _onExportSbsProc);
 
   _container.querySelector('#global-cam-dur').addEventListener('change', e => {
     _setGlobalDuration('cameraAnimDurationMs', Number(e.target.value));
@@ -149,17 +157,22 @@ export function initStepsPanel() {
     if (!_dragIds.length && !_dragChapterId) return;
     e.preventDefault();
     _positionDropSlot(list, e.clientY);
+    // Step-group hover-expand: 300ms over a collapsed group head
+    // pops it open so the user can drop INTO the group.
+    if (_dragIds.length) _maybeStartGroupExpand(list, e.clientY);
   });
   list.addEventListener('dragleave', e => {
     // Only remove the slot when the pointer leaves the LIST entirely, not when
     // it transitions between children.
     if (list.contains(e.relatedTarget)) return;
     _removeDropSlot();
+    _clearGroupExpandTimer();
   });
   list.addEventListener('drop', e => {
     if (!_dragIds.length && !_dragChapterId) return;
     e.preventDefault();
     _commitDropSlot(list);
+    _clearGroupExpandTimer();
   });
 }
 
@@ -307,10 +320,20 @@ export function renderStepsPanel() {
     list.appendChild(banner);
   }
 
-  // Index each step by its position in the flat array so step cards still
-  // receive the correct global index (used for the index badge).
-  const flatIndex = new Map();
-  allSteps.forEach((s, i) => flatIndex.set(s.id, i));
+  // ── Top-level numbering ──────────────────────────────────────────────
+  // Sub-steps display the SAME number as their group head (per step-group
+  // spec — the head is "Step 4" and every sub-step under it also shows
+  // "Step 4"). The count we walk increments only on top-level entries
+  // (heads + non-grouped); sub-steps inherit the most recent count.
+  // `topLevelTotal` is the count of non-sub-step entries — used wherever
+  // a "Step X / N" denominator is shown.
+  const displayNumberOf = new Map();   // stepId -> number to show on badge
+  let topLevelCounter = 0;
+  for (const s of allSteps) {
+    if (!s.groupId) topLevelCounter++;
+    displayNumberOf.set(s.id, topLevelCounter);
+  }
+  const topLevelTotal = topLevelCounter;
 
   // Group steps by chapter, preserving each chapter's existing internal order.
   const byChapter = new Map();                 // chapterId -> Step[]
@@ -325,19 +348,51 @@ export function renderStepsPanel() {
     }
   }
 
-  // Render: ungrouped steps at top → chapters at bottom (in chapter-list order).
-  // A newly-created empty chapter naturally appears at the end of the timeline.
-  const emitStep = (step) => {
-    const idx      = flatIndex.get(step.id);
+  // Group-aware emission:
+  //   - Top-level steps (groupId === null) always emit.
+  //   - Group heads emit themselves + (when visually expanded) every
+  //     immediate sub-step that follows. Sub-steps are recognised by
+  //     `s.groupId === head.id` and are guaranteed by the array
+  //     invariant to appear contiguously after the head.
+  //   - Sub-steps NEVER emit on their own — they're emitted by their
+  //     head when the group is expanded.
+  const emitStep = (step, opts = {}) => {
+    const displayNum = displayNumberOf.get(step.id) ?? 0;
     const isActive   = step.id === activeId;
     const isExpanded = step.id === _expandedId;
-    list.appendChild(_buildStepCard(step, idx, isActive, isExpanded, allSteps.length));
+    list.appendChild(_buildStepCard(
+      step, displayNum, isActive, isExpanded, topLevelTotal,
+      {
+        isSubStep:        !!opts.isSubStep,
+        isGroupHead:      !!step.groupHead,
+        isGroupCollapsed: !!opts.isGroupCollapsed,
+      },
+    ));
   };
-  ungrouped.forEach(emitStep);
+  const emitBucket = (bucket) => {
+    for (const s of bucket) {
+      if (s.groupId) continue;            // sub-steps go via their head
+      if (s.groupHead) {
+        const collapsed = _isGroupVisuallyCollapsed(s, activeId);
+        emitStep(s, { isGroupCollapsed: collapsed });
+        if (!collapsed) {
+          for (const sub of bucket) {
+            if (sub.groupId === s.id) emitStep(sub, { isSubStep: true });
+          }
+        }
+      } else {
+        emitStep(s);
+      }
+    }
+  };
+
+  // Render: ungrouped steps at top → chapters at bottom (in chapter-list order).
+  // A newly-created empty chapter naturally appears at the end of the timeline.
+  emitBucket(ungrouped);
   allChapters.forEach((chapter, chIdx) => {
     list.appendChild(_buildChapterHeader(chapter, chIdx + 1));
     if (_isChapterVisuallyCollapsed(chapter, activeId)) return;
-    (byChapter.get(chapter.id) || []).forEach(emitStep);
+    emitBucket(byChapter.get(chapter.id) || []);
   });
 
   list.scrollTop = scrollTop;
@@ -362,6 +417,63 @@ function _isChapterVisuallyCollapsed(chapter, activeId) {
     if (active?.chapterId === chapter.id) return false;
   }
   return true;
+}
+
+/**
+ * Step-group equivalent of `_isChapterVisuallyCollapsed`. A group head's
+ * sub-steps are visible iff:
+ *   - the head is locked (groupLocked === true), OR
+ *   - the head itself is the active step, OR
+ *   - one of the head's sub-steps is the active step.
+ * Otherwise the group is collapsed and its sub-steps are hidden.
+ *
+ * (Drag-to-expand override comes in Phase E and will hook in here.)
+ */
+function _isGroupVisuallyCollapsed(headStep, activeId) {
+  if (!headStep || !headStep.groupHead) return false;
+  if (headStep.groupLocked) return false;
+  if (_dragGroupExpandId === headStep.id) return false;   // drag-hover override
+  // Hide cascade: a hidden head always renders EXPANDED so the user
+  // sees that all its sub-steps are also hidden (cascade applied in
+  // steps.setStepHidden). Unhiding the head closes the group again
+  // unless one of the other expand conditions still applies.
+  if (headStep.hidden) return false;
+  if (activeId === headStep.id) return false;
+  if (activeId) {
+    const active = (state.get('steps') || []).find(s => s.id === activeId);
+    if (active?.groupId === headStep.id) return false;
+  }
+  // Phase F: a group containing ANY currently multi-selected step (head
+  // or any sub-step) auto-expands so the user can see what they've got
+  // selected. Mirrors the chapter behaviour where a partially-selected
+  // chapter header glows partial.
+  const sel = _getSel();
+  if (sel.size) {
+    if (sel.has(headStep.id)) return false;
+    const stepsArr = state.get('steps') || [];
+    for (const s of stepsArr) {
+      if (s.groupId === headStep.id && sel.has(s.id)) return false;
+    }
+  }
+  return true;
+}
+
+function _clearGroupExpandTimer() {
+  if (_groupExpandTimer) { clearTimeout(_groupExpandTimer); _groupExpandTimer = null; }
+  _groupExpandTargetId = null;
+}
+
+function _performDragGroupExpand(headId) {
+  _groupExpandTimer    = null;
+  _groupExpandTargetId = null;
+  if (_dragGroupExpandId === headId) return;
+  _dragGroupExpandId = headId;
+  renderStepsPanel();
+}
+
+function _endDragGroupExpand() {
+  _groupExpandTargetId = null;
+  if (_dragGroupExpandId !== null) { _dragGroupExpandId = null; renderStepsPanel(); }
 }
 
 function _buildChapterHeader(chapter, number) {
@@ -389,8 +501,11 @@ function _buildChapterHeader(chapter, number) {
     'display:flex',
     'align-items:center',
     'gap:6px',
-    'background:rgba(59,130,246,0.12)',
-    'border:1px solid rgba(59,130,246,0.45)',
+    // Chapter tint — green hue (was blue). Distinct from the amber
+    // step-group tint so chapters and groups don't read as the same
+    // construct at a glance.
+    'background:rgba(34,197,94,0.12)',
+    'border:1px solid rgba(34,197,94,0.45)',
     'border-radius:6px',
     'color:var(--text)',
     'cursor:grab',
@@ -568,11 +683,12 @@ function _buildDropSlot() {
   // header for chapter drags — set via _positionDropSlot each time.
   slot.style.cssText = [
     'margin:4px 0',
-    'border:2px dashed ' + DROP_COLOR,
+    `border:2px dashed ${DROP_COLOR}`,
     'border-radius:10px',
     'background:rgba(59,130,246,0.08)',
     'box-sizing:border-box',
     'pointer-events:none',              // don't interfere with dragover of neighbours
+    'transition:border-color 80ms linear,background 80ms linear',
   ].join(';');
   return slot;
 }
@@ -623,6 +739,89 @@ function _positionDropSlot(list, mouseY) {
   if (_dropSlot.parentNode === list && _dropSlot.nextSibling === insertBefore) return;
   if (insertBefore) list.insertBefore(_dropSlot, insertBefore);
   else              list.appendChild(_dropSlot);
+
+  // Step-group: amber slot when the drop position would join an existing
+  // group, else default blue. Heads (and their carried sub-steps) can't
+  // be dropped INTO another group — keep them blue.
+  if (_dragIds.length) _updateDropSlotColor();
+}
+
+/**
+ * Recolour the drop slot based on whether the current position would
+ * make the dragged step a sub-step of an existing group.
+ */
+function _updateDropSlotColor() {
+  if (!_dropSlot) return;
+  const targetGroupId = _resolveTargetGroupForSlot();
+  // Heads can't go into groups (rule: no nested groups). Force blue.
+  const draggingHead = _dragIds.some(id => {
+    const s = (state.get('steps') || []).find(x => x.id === id);
+    return s?.groupHead;
+  });
+  const useGroup = !!targetGroupId && !draggingHead;
+  const c = useGroup ? DROP_COLOR_GROUP : DROP_COLOR;
+  _dropSlot.style.borderColor = c;
+  _dropSlot.style.background  = useGroup
+    ? 'rgba(234,179,8,0.12)'
+    : 'rgba(59,130,246,0.08)';
+}
+
+/**
+ * Walk neighbours of the current drop slot to determine which group
+ * (if any) the dragged step(s) would belong to after landing. Returns
+ * a group head's stepId, or null for top-level.
+ *
+ * Rule:
+ *   - If next sibling is a sub-step  → join its group.
+ *   - Else if prev sibling is a HEAD → join that head's group (first
+ *     sub-step position).
+ *   - Else if prev sibling is a sub-step AND next is NOT a sub-step
+ *     of the same group → drop position is at end-of-group → top-level.
+ *   - Else → top-level.
+ */
+function _resolveTargetGroupForSlot() {
+  if (!_dropSlot) return null;
+  const stepsArr = state.get('steps') || [];
+  const nextEl = _dropSlot.nextElementSibling;
+  const prevEl = _dropSlot.previousElementSibling;
+  const stepOf = (el) => el && el.classList?.contains('stepItem')
+    ? stepsArr.find(s => s.id === el.dataset.stepId) : null;
+  const nextStep = stepOf(nextEl);
+  const prevStep = stepOf(prevEl);
+  if (nextStep?.groupId)  return nextStep.groupId;
+  if (prevStep?.groupHead) return prevStep.id;
+  // prev is a sub-step but next isn't part of same group → out
+  return null;
+}
+
+/**
+ * On dragover, if the cursor sits over a collapsed group head's row,
+ * start (or sustain) the 300ms auto-expand timer. Cursor leaving the
+ * row clears the timer; the timer firing flips _dragGroupExpandId.
+ */
+function _maybeStartGroupExpand(list, mouseY) {
+  // Find the group-head row directly under the cursor.
+  const cards = Array.from(list.querySelectorAll('.stepItem.groupHead'));
+  let target = null;
+  for (const c of cards) {
+    const rect = c.getBoundingClientRect();
+    if (mouseY >= rect.top && mouseY <= rect.bottom) { target = c; break; }
+  }
+  const headId = target?.dataset.stepId || null;
+  // No target — cancel any pending expansion.
+  if (!headId) {
+    if (_groupExpandTargetId) _clearGroupExpandTimer();
+    return;
+  }
+  // Already expanded for this head — nothing to do.
+  if (_dragGroupExpandId === headId) return;
+  // Already counting down for this head — let it tick.
+  if (_groupExpandTargetId === headId) return;
+  // Don't expand a head we're dragging (its sub-steps come along anyway).
+  if (_dragIds.includes(headId)) return;
+  _clearGroupExpandTimer();
+  _groupExpandTargetId = headId;
+  _groupExpandTimer    = setTimeout(() => _performDragGroupExpand(headId), HOVER_GROUP_EXPAND_MS);
 }
 
 /**
@@ -681,11 +880,49 @@ function _commitDropSlot(list) {
     }
   }
 
+  // Step-group target resolution: which group should the dropped step
+  // belong to after landing? Computed BEFORE the slot is removed
+  // because _resolveTargetGroupForSlot reads the slot's siblings.
+  // Heads (and their carried sub-steps) can't be dropped into a group —
+  // force null in that case (no nested groups).
+  let targetGroupId = _resolveTargetGroupForSlot();
+  const draggingHead = _dragIds.some(id => {
+    const s = all.find(x => x.id === id);
+    return s?.groupHead;
+  });
+  if (draggingHead) targetGroupId = null;
+  // Don't let a sub-step land inside the SAME group it's already in
+  // (no-op vs the existing groupId) — but if it's a different group or
+  // null, we apply the change. The chosen target also has to NOT be
+  // any of the steps we're carrying (can't make a step a sub-step of
+  // itself; can't move a sub-step under a head that's coming with us).
+  if (targetGroupId && _dragIds.includes(targetGroupId)) targetGroupId = null;
+
+  // Build the assignment map: every dragged step that ISN'T a head we
+  // brought along gets its groupId reassigned. Sub-steps inside a
+  // dragged-head bundle keep their groupId pointing at THAT head.
+  const headIdsInDrag = new Set(_dragIds.filter(id => {
+    const s = all.find(x => x.id === id);
+    return s?.groupHead;
+  }));
+  const groupAssignment = {};
+  for (const id of _dragIds) {
+    const s = all.find(x => x.id === id);
+    if (!s) continue;
+    // Sub-step coming with its own head → keep its existing groupId.
+    if (s.groupId && headIdsInDrag.has(s.groupId)) continue;
+    // Heads always land at top-level (groupId stays null).
+    if (s.groupHead) {
+      groupAssignment[id] = null;
+      continue;
+    }
+    groupAssignment[id] = targetGroupId;
+  }
+
   _removeDropSlot();
 
   if (_dragIds.length && !_dragIds.some(id => id === null)) {
-    if (_dragIds.length > 1) actions.moveStepsToChapter(_dragIds, targetChapterId, toIdx);
-    else                      actions.moveStepToChapter(_dragIds[0], targetChapterId, toIdx);
+    actions.moveStepsToChapterAndRegroup(_dragIds, targetChapterId, toIdx, groupAssignment);
   }
 }
 
@@ -715,15 +952,28 @@ function _chapterTopInsertIndex(chapterId) {
 
 // ── Step card ────────────────────────────────────────────────────────────────
 
-function _buildStepCard(step, idx, isActive, isExpanded, total) {
+function _buildStepCard(step, displayNumber, isActive, isExpanded, total, groupOpts = {}) {
   const isSelected = _selHas(step.id);
+  const { isSubStep = false, isGroupHead = false, isGroupCollapsed = false } = groupOpts;
   const card = document.createElement('div');
   card.className = [
     'stepItem',
     isActive    ? 'active'     : '',
     isSelected  ? 'selected'   : '',
     step.hidden ? 'hiddenStep' : '',
+    isSubStep   ? 'subStep'    : '',
+    isGroupHead ? 'groupHead'  : '',
   ].filter(Boolean).join(' ');
+  // Sub-steps are visually nested under their head — left-margin gives
+  // the indent; the badge keeps showing the head's number per the
+  // step-group spec ("all sub steps will use Step 4").
+  if (isSubStep) {
+    card.style.marginLeft = '16px';
+  }
+  // The amber group tint is applied via the .groupHead / .subStep CSS
+  // rules in components.css (NOT inline) so that .selected / .active
+  // can win on the cascade and the multi-select highlight reads the
+  // same on a group member as on any other step.
   // draggable lives on the top-row only (set inside _buildStepTopCollapsed),
   // not on the whole card. With the whole card draggable, Chromium starts
   // an OS-level drag on mousedown of any inner <select> — dropdowns then
@@ -736,7 +986,9 @@ function _buildStepCard(step, idx, isActive, isExpanded, total) {
 
   // Top row identical in both states — except the thumbnail is hidden when
   // the card is expanded (per the original step-layout spec).
-  card.appendChild(_buildStepTopCollapsed(step, idx, !isExpanded));
+  card.appendChild(_buildStepTopCollapsed(step, displayNumber, !isExpanded, {
+    isSubStep, isGroupHead, isGroupCollapsed,
+  }));
 
   if (isExpanded) {
     card.appendChild(_buildStepActionRow(step));
@@ -839,6 +1091,23 @@ function _buildStepCard(step, idx, isActive, isExpanded, total) {
     } else {
       _dragIds = [step.id];            // single-step drag, leave selection untouched
     }
+    // Step-groups: dragging a head pulls its sub-steps with it as one
+    // unit. Per spec ("whole group as a unit, can't be dropped between
+    // sub-steps"). The bundle is built in array order so the group
+    // arrives at its destination intact. Sub-steps already in _dragIds
+    // (e.g. via multi-select) aren't double-added.
+    const stepsArr = state.get('steps') || [];
+    const dragSet  = new Set(_dragIds);
+    for (const id of [..._dragIds]) {
+      const s = stepsArr.find(x => x.id === id);
+      if (!s?.groupHead) continue;
+      for (const sub of stepsArr) {
+        if (sub.groupId === s.id && !dragSet.has(sub.id)) {
+          dragSet.add(sub.id);
+          _dragIds.push(sub.id);
+        }
+      }
+    }
     _dragId = step.id;
     e.dataTransfer.effectAllowed = 'move';
     card.style.opacity = '0.5';
@@ -847,8 +1116,10 @@ function _buildStepCard(step, idx, isActive, isExpanded, total) {
     _dragId  = null;
     _dragIds = [];
     _clearExpandTimer();
+    _clearGroupExpandTimer();
     _removeDropSlot();
     _endDragExpand();
+    _endDragGroupExpand();
     card.style.opacity = '';
   });
 
@@ -884,7 +1155,8 @@ function _buildStepActionRow(step) {
 }
 
 /** Step top row: (optional) thumbnail + badge + name. No buttons. */
-function _buildStepTopCollapsed(step, idx, showThumb = true) {
+function _buildStepTopCollapsed(step, displayNumber, showThumb = true, groupOpts = {}) {
+  const { isSubStep = false, isGroupHead = false, isGroupCollapsed = false } = groupOpts;
   const top = document.createElement('div');
   top.className = 'stepTop';
   // The top row IS the drag handle — see the long comment in _buildStepCard
@@ -956,7 +1228,14 @@ function _buildStepTopCollapsed(step, idx, showThumb = true) {
   const badge = document.createElement('span');
   badge.className   = 'pill';
   badge.style.cssText = 'flex-shrink:0;font-weight:700;';
-  badge.textContent = String(idx + 1).padStart(2, '0');
+  // displayNumber is 1-based already (top-level position; head's number
+  // for sub-steps). Sub-steps render the same number as their head per
+  // the step-group spec.
+  badge.textContent = String(displayNumber).padStart(2, '0');
+  // Sub-steps get a faded badge — they share their head's number, but
+  // the visual de-emphasis tells the user "this isn't a top-level step
+  // on its own". Same number, lighter ink.
+  if (isSubStep) badge.style.opacity = '0.55';
 
   const nameLbl = document.createElement('span');
   nameLbl.className   = 'stepName';
@@ -965,6 +1244,43 @@ function _buildStepTopCollapsed(step, idx, showThumb = true) {
 
   if (thumbWrap) top.appendChild(thumbWrap);
   top.append(badge, nameLbl);
+
+  // Lock icon on group heads — same UX as chapter lock: 🔒 = always
+  // expanded, 🔓 = collapses unless head/sub is active. Click toggles
+  // groupLocked. Stop propagation so the row click (activate/expand)
+  // doesn't fire.
+  if (isGroupHead) {
+    const btnLock = document.createElement('button');
+    btnLock.type = 'button';
+    btnLock.className = 'groupLockToggle';
+    btnLock.textContent = step.groupLocked ? '🔒' : '🔓';
+    btnLock.title = step.groupLocked
+      ? 'Unlock (allow group to collapse)'
+      : 'Lock group open';
+    btnLock.style.cssText = [
+      'flex-shrink:0',
+      'background:transparent',
+      'border:none',
+      'padding:2px 4px',
+      'font-size:14px',
+      'cursor:pointer',
+      `color:${step.groupLocked ? '#3b82f6' : '#94a3b8'}`,
+      `opacity:${step.groupLocked ? '1' : '0.75'}`,
+    ].join(';');
+    btnLock.addEventListener('mousedown', e => e.stopPropagation());
+    btnLock.addEventListener('click', e => {
+      e.stopPropagation();
+      actions.setGroupLocked(step.id, !step.groupLocked);
+    });
+    top.appendChild(btnLock);
+    // Visual hint that this row owns sub-steps below: faint border line
+    // along the bottom of the head row when expanded — keeps the eye
+    // from treating the head + sub-steps as separate islands.
+    if (!isGroupCollapsed) {
+      top.style.borderBottom = '1px dashed rgba(148,163,184,0.35)';
+      top.style.paddingBottom = '4px';
+    }
+  }
 
   return top;
 }
@@ -1129,6 +1445,25 @@ function _showStepContextMenu(step, x, y) {
         actions.updateStepCameraAsTemplate([step.id]);
         setStatus(`Updated template "${activeTplLabel}" + bound step.`);
       } },
+    { separator: true },
+  );
+  // Step-group entries (Phase B/G of "step groups"). The action labels
+  // mirror what the user sees: a normal step can be CONVERTED to a
+  // group; a head can be UNGROUPED (releasing any sub-steps it carries
+  // back to top-level). Sub-steps don't get either entry — they have to
+  // be promoted via drag-out, so the menu doesn't offer ambiguous paths.
+  if (step.groupHead) {
+    items.push({
+      label: 'Ungroup step',
+      action: () => actions.ungroupStep(step.id),
+    });
+  } else if (!step.groupId) {
+    items.push({
+      label: 'Convert to step group',
+      action: () => actions.convertStepToGroup(step.id),
+    });
+  }
+  items.push(
     { separator: true },
     { label: 'Delete',    action: () => _deleteStep(step.id) },
   );
@@ -1648,6 +1983,58 @@ async function _onExportVideo() {
   } finally {
     _exportingCtrl = null;
     btn.textContent = origText;
+  }
+}
+
+/**
+ * Export the timeline as a .sbsproc — a single self-contained binary
+ * (12-byte header + manifest JSON + MP4 bytes) that the SBS viewer
+ * reads. Step-groups collapse to one viewer-step in the manifest;
+ * sub-steps land in `sub_steps` so the viewer can show them as a
+ * timeline within the group if it wants.
+ */
+async function _onExportSbsProc() {
+  const btn = document.getElementById('btn-export-sbsproc');
+  if (_exportingCtrl) {
+    _exportingCtrl.abort();
+    return;
+  }
+  _exportingCtrl = new AbortController();
+  const origText = btn ? btn.textContent : '';
+  if (btn) btn.textContent = '■ Cancel export';
+
+  const exp         = state.get('export') || {};
+  const projectName = exp.fileName || state.get('projectName') || 'process';
+  const stamp       = new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19);
+
+  try {
+    await steps.flushSync();
+    const { blob, extension, manifest, totalDurationMs } = await exportTimelineSbsProc({
+      fps:        Number(exp.fps) || 30,
+      stepHoldMs: Number(exp.stepHoldMs) || 400,
+      // Offline render is the deterministic path — every animation phase
+      // advances on a synthetic clock so audio/video alignment is exact
+      // regardless of host throttling. Mirror the regular video-export
+      // setting so the .sbsproc button respects the same Export-tab
+      // checkbox the user already configured.
+      offline:    !!exp.offlineRender,
+      signal:     _exportingCtrl.signal,
+      onProgress: ({ current, total, stepName }) => {
+        setStatus(`Exporting ${current}/${total}: ${stepName}…`, 'info', 0);
+      },
+    });
+    downloadBlob(blob, `${projectName}-${stamp}.${extension}`);
+    const stepCount = manifest?.steps?.length ?? 0;
+    setStatus(`Exported ${(blob.size / 1e6).toFixed(1)} MB .sbsproc · ${stepCount} viewer-step(s) · ${(totalDurationMs / 1000).toFixed(1)}s.`);
+  } catch (err) {
+    if (err?.name === 'AbortError') setStatus('Export cancelled.', 'warning');
+    else {
+      console.error('.sbsproc export failed:', err);
+      setStatus(`.sbsproc export failed: ${err.message}`, 'danger');
+    }
+  } finally {
+    _exportingCtrl = null;
+    if (btn) btn.textContent = origText;
   }
 }
 

@@ -119,11 +119,43 @@ export function renderStepNav() {
     return;
   }
 
-  const displayIdx = activeIdx >= 0 ? activeIdx + 1 : '–';
-  const active     = activeIdx >= 0 ? visible[activeIdx] : null;
-  label.textContent = `${displayIdx} / ${visible.length}${active ? ' — ' + active.name : ''}`;
+  // ── Top-level numbering (step-groups) ─────────────────────────────
+  // The header always shows the group's number for sub-steps — both
+  // head and every sub-step under it display "Step 4 / 12". The 12 is
+  // the count of TOP-LEVEL entries (heads + non-grouped). Sub-steps
+  // inherit the most recent top-level counter while we walk.
+  let topLevelTotal = 0;
+  let activeTopLevelIdx = -1;
+  for (let i = 0; i < visible.length; i++) {
+    const s = visible[i];
+    if (!s.groupId) topLevelTotal++;
+    if (i === activeIdx) activeTopLevelIdx = topLevelTotal;
+  }
 
-  prev.disabled = activeIdx <= 0;
+  const displayIdx = activeIdx >= 0 ? activeTopLevelIdx : '–';
+  const active     = activeIdx >= 0 ? visible[activeIdx] : null;
+  // Show the GROUP head's name for sub-steps (per spec — header treats
+  // a group as one step). Falls back to active.name when not in a group.
+  let displayName = active?.name || '';
+  if (active?.groupId) {
+    const head = visible.find(s => s.id === active.groupId);
+    if (head) displayName = head.name || '';
+  }
+  label.textContent = `${displayIdx} / ${topLevelTotal}${active ? ' — ' + displayName : ''}`;
+
+  // Step-groups: left arrow / prev jumps to the top-level step BEFORE
+  // the current group (when on a sub-step) or the previous top-level
+  // (when on a head/normal). Disable iff no such target exists.
+  let searchFrom = activeIdx - 1;
+  if (active?.groupId) {
+    const headIdx = visible.findIndex(s => s.id === active.groupId);
+    if (headIdx >= 0) searchFrom = headIdx - 1;
+  }
+  let hasPrevTopLevel = false;
+  for (let i = searchFrom; i >= 0; i--) {
+    if (!visible[i].groupId) { hasPrevTopLevel = true; break; }
+  }
+  prev.disabled = activeIdx < 0 || !hasPrevTopLevel;
   next.disabled = activeIdx < 0 || activeIdx >= visible.length - 1;
 
   // Keep the narration input in sync with the active step. Avoid stomping

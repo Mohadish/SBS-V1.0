@@ -12,13 +12,20 @@
 
 import state                    from '../core/state.js';
 import { undoManager }          from './undo.js';
+import { setStatus }            from '../ui/status.js';
 import { selectionActs }        from './select-act.js';
 import { materials }            from '../systems/materials.js';
 import steps                    from '../systems/steps.js';
 import sceneCore                from '../core/scene.js';
-import { createAnimationPreset, createCameraView, createNoteNode, createNoteTemplate, generateId } from '../core/schema.js';
+import { createAnimationPreset, createCameraView, createNoteNode, createNoteTemplate, createShapeTemplate, createFlatShapeNode, generateId } from '../core/schema.js';
 import * as editSession         from './edit-session.js';   // P7-A: gate Ctrl-Z while in overlay edit
 import * as cables              from './cables.js';          // C3: cable mutators (data layer)
+import {
+  ensureFlatShapeObject3D,
+  disposeFlatShape,
+  rebuildInstancesOfTemplate as _rebuildInstancesOfTemplate,
+} from './flat-shapes.js';   // M1 P1: 2D shapes (template-backed instances)
+import * as shapeEditor        from './shape-editor.js';
 import {
   applyAllVisibility,
   captureTransformSnapshot,
@@ -31,6 +38,8 @@ import {
   buildNodeMap as _nodes_buildNodeMap,
   captureParentMap,
   findNode,
+  findParent,
+  serializeModelTree,
 }                               from '../core/nodes.js';
 
 
@@ -396,6 +405,42 @@ export function moveStepsToChapter(stepIds, chapterId, newIndex) {
 }
 
 /**
+ * Move steps to a (chapter, index) AND reassign their group membership
+ * in one atomic action. Drag-into-group / drag-out-of-group flows route
+ * through this so the reorder + groupId change land in a single undo
+ * entry.
+ *
+ * `groupAssignment` is `{ [stepId]: <headStepId> | null }`. Any id not
+ * in the map keeps its current `groupId`. A step assigned a non-null
+ * groupId is forced to `groupHead=false` (can't be a head AND a sub-
+ * step at once).
+ */
+export function moveStepsToChapterAndRegroup(stepIds, chapterId, newIndex, groupAssignment = null) {
+  if (!stepIds?.length) return;
+  const prevSteps = JSON.parse(JSON.stringify(state.get('steps') || []));
+  steps.moveStepsToChapter(stepIds, chapterId, newIndex);
+  if (groupAssignment && Object.keys(groupAssignment).length) {
+    const cur = state.get('steps') || [];
+    const next = cur.map(s => {
+      if (!(s.id in groupAssignment)) return s;
+      const newGroupId = groupAssignment[s.id];
+      const patch = { groupId: newGroupId };
+      if (newGroupId) patch.groupHead = false;
+      return { ...s, ...patch };
+    });
+    state.setState({ steps: next });
+  }
+  const nextSteps = JSON.parse(JSON.stringify(state.get('steps') || []));
+  undoManager.push(
+    'Move steps',
+    () => { state.setState({ steps: prevSteps }); state.markDirty(); state.emit('steps:reordered'); },
+    () => { state.setState({ steps: nextSteps }); state.markDirty(); state.emit('steps:reordered'); },
+  );
+  state.markDirty();
+  state.emit('steps:reordered');
+}
+
+/**
  * Toggle a chapter's locked flag (locked => always expanded in timeline).
  */
 export function setChapterLocked(chapterId, locked) {
@@ -425,6 +470,129 @@ export function reorderChapter(chapterId, newChapterIdx) {
     'Reorder chapter',
     () => { state.setState({ steps: prevSteps, chapters: prevChapters }); state.markDirty(); },
     () => { steps.reorderChapter(chapterId, newChapterIdx); },
+  );
+}
+
+/**
+ * Convert a normal step into a group head. The step itself stays put;
+ * `groupHead=true` adds a lock icon + collapse control in the steps
+ * panel. The newly-marked head starts EMPTY (no sub-steps under it) —
+ * sub-steps are added later by dragging existing steps onto the head.
+ *
+ * Idempotent: calling on an already-head step is a no-op.
+ * Refused on sub-steps (groupId !== null) — promote them out first.
+ */
+export function convertStepToGroup(stepId) {
+  const stepsArr = state.get('steps') || [];
+  const idx = stepsArr.findIndex(s => s.id === stepId);
+  if (idx < 0) return false;
+  const step = stepsArr[idx];
+  if (step.groupHead || step.groupId) return false;
+  const next = stepsArr.map(s => s.id === stepId
+    ? { ...s, groupHead: true, groupLocked: false }
+    : s);
+  state.setState({ steps: next });
+  state.markDirty();
+  undoManager.push(
+    'Convert to step group',
+    () => {
+      const cur = state.get('steps') || [];
+      state.setState({
+        steps: cur.map(s => s.id === stepId ? { ...s, groupHead: false, groupLocked: false } : s),
+      });
+      state.markDirty();
+    },
+    () => {
+      const cur = state.get('steps') || [];
+      state.setState({
+        steps: cur.map(s => s.id === stepId ? { ...s, groupHead: true } : s),
+      });
+      state.markDirty();
+    },
+  );
+  return true;
+}
+
+/**
+ * Ungroup a step-group head. Allowed on any head: empty heads simply
+ * lose the lock icon; non-empty heads release every sub-step into the
+ * top-level list (sub-steps stay where they are in the array; their
+ * `groupId` is cleared so they become normal top-level steps).
+ *
+ * Refused if the step isn't a head.
+ */
+export function ungroupStep(stepId) {
+  const stepsArr = state.get('steps') || [];
+  const idx = stepsArr.findIndex(s => s.id === stepId);
+  if (idx < 0) return false;
+  const step = stepsArr[idx];
+  if (!step.groupHead) return false;
+  // Snapshot which sub-steps were under this head, for undo.
+  const subIds = stepsArr
+    .filter(s => s.groupId === stepId)
+    .map(s => s.id);
+  const next = stepsArr.map(s => {
+    if (s.id === stepId)        return { ...s, groupHead: false, groupLocked: false };
+    if (s.groupId === stepId)   return { ...s, groupId: null };
+    return s;
+  });
+  state.setState({ steps: next });
+  state.markDirty();
+  undoManager.push(
+    'Ungroup step',
+    () => {
+      const cur = state.get('steps') || [];
+      const restored = cur.map(s => {
+        if (s.id === stepId)         return { ...s, groupHead: true };
+        if (subIds.includes(s.id))   return { ...s, groupId: stepId };
+        return s;
+      });
+      state.setState({ steps: restored });
+      state.markDirty();
+    },
+    () => {
+      const cur = state.get('steps') || [];
+      state.setState({
+        steps: cur.map(s => {
+          if (s.id === stepId)        return { ...s, groupHead: false, groupLocked: false };
+          if (s.groupId === stepId)   return { ...s, groupId: null };
+          return s;
+        }),
+      });
+      state.markDirty();
+    },
+  );
+  return true;
+}
+
+/**
+ * Toggle a group head's lock state. Locked = always expanded; unlocked
+ * = collapses unless it contains the active step (mirrors chapter lock
+ * semantics).
+ */
+export function setGroupLocked(stepId, locked) {
+  const stepsArr = state.get('steps') || [];
+  const step = stepsArr.find(s => s.id === stepId);
+  if (!step || !step.groupHead) return;
+  const prev = !!step.groupLocked;
+  const want = !!locked;
+  if (prev === want) return;
+  state.setState({
+    steps: stepsArr.map(s => s.id === stepId ? { ...s, groupLocked: want } : s),
+  });
+  state.markDirty();
+  undoManager.push(
+    'Lock step group',
+    () => {
+      const cur = state.get('steps') || [];
+      state.setState({ steps: cur.map(s => s.id === stepId ? { ...s, groupLocked: prev } : s) });
+      state.markDirty();
+    },
+    () => {
+      const cur = state.get('steps') || [];
+      state.setState({ steps: cur.map(s => s.id === stepId ? { ...s, groupLocked: want } : s) });
+      state.markDirty();
+    },
   );
 }
 
@@ -1254,6 +1422,138 @@ export function setPivotEnabled(nodeId, on) {
 
 /** Whether a pivot edit session is currently open. */
 export function isPivotEditing() { return _pivotBatch !== null; }
+
+
+// ═══════════════════════════════════════════════════════════════════════════
+//  GLOBAL-TRANSFORM EDIT  (Phase 2 / 2.1 — flat shapes only)
+// ═══════════════════════════════════════════════════════════════════════════
+//
+// State machine — same shape as pivot-edit (enter / per-drag commit /
+// cancel / exit on viewport pointerdown):
+//
+//   OFF → enterGlobalEdit                      → RED  (state.globalEditNodeId)
+//   RED → translate / plane gizmo drag         → writes baseLocalPosition
+//   RED → rotate ring drag                     → writes baseLocalQuaternion
+//   RED → scale handle drag                    → writes baseLocalScale
+//   RED → drag end                             → commitGlobal{T|R|S}Drag
+//                                                 pushes ONE undo entry
+//   RED → click outside gizmo                  → commitGlobalEdit (exit)
+//   RED → Esc                                  → cancelGlobalEdit
+//
+// Per-drag undo entries target base* fields, which are project-global
+// (not in step.snapshot.transforms). So the changes ripple to every
+// step uniformly — that's the whole point of the mode.
+
+let _globalBatch = null;
+
+/**
+ * Enter global-transform mode for the given flatShape node. Idempotent.
+ * If a different node was being edited, commits that one first so we
+ * never have two open sessions.
+ */
+export function enterGlobalEdit(nodeId) {
+  if (!nodeId) return;
+  if (state.get('globalEditNodeId') === nodeId) return;
+  if (state.get('globalEditNodeId')) commitGlobalEdit();
+  // A pivot edit and a global edit can't both own the gizmo;
+  // committing pivot first leaves the user with the cleaner state.
+  if (state.get('pivotEditNodeId')) commitPivotEdit();
+
+  const node = state.get('nodeById')?.get(nodeId);
+  if (!node || node.type !== 'flatShape') return;
+
+  _globalBatch = {
+    nodeId,
+    fromPos:   [...(node.baseLocalPosition   || [0, 0, 0])],
+    fromQuat:  [...(node.baseLocalQuaternion || [0, 0, 0, 1])],
+    fromScale: [...(node.baseLocalScale      || [1, 1, 1])],
+  };
+  state.setState({ globalEditNodeId: nodeId });
+}
+
+/** Per-drag undo for translate/plane. `before` = [x,y,z] baseLocalPosition snapshot. */
+export function commitGlobalTranslateDrag(nodeId, before) {
+  _commitGlobalBaseDrag(nodeId, 'baseLocalPosition', before, [0, 0, 0], 'Translate global');
+}
+
+/** Per-drag undo for rotate. `before` = [x,y,z,w] baseLocalQuaternion snapshot. */
+export function commitGlobalRotateDrag(nodeId, before) {
+  _commitGlobalBaseDrag(nodeId, 'baseLocalQuaternion', before, [0, 0, 0, 1], 'Rotate global');
+}
+
+/** Per-drag undo for scale. `before` = [x,y,z] baseLocalScale snapshot. */
+export function commitGlobalScaleDrag(nodeId, before) {
+  _commitGlobalBaseDrag(nodeId, 'baseLocalScale', before, [1, 1, 1], 'Scale global');
+}
+
+/**
+ * Exit global mode. Per-drag entries are already in the undo log; this
+ * call only clears the flag (no extra undo entry). Called from main.js
+ * on viewport pointerdown outside gizmo handles.
+ */
+export function commitGlobalEdit() {
+  if (!_globalBatch) return;
+  _globalBatch = null;
+  state.setState({ globalEditNodeId: null });
+}
+
+/**
+ * Esc handler. Rolls back ALL THREE base fields to the snapshots taken
+ * at enter and clears the flag. Per-drag entries already pushed stay
+ * in the undo log (user can Ctrl-Z them individually).
+ */
+export function cancelGlobalEdit() {
+  if (!_globalBatch) return;
+  const { nodeId, fromPos, fromQuat, fromScale } = _globalBatch;
+  _globalBatch = null;
+  state.setState({ globalEditNodeId: null });
+
+  const node = state.get('nodeById')?.get(nodeId);
+  if (!node) return;
+  node.baseLocalPosition   = [...fromPos];
+  node.baseLocalQuaternion = [...fromQuat];
+  node.baseLocalScale      = [...fromScale];
+  const obj3d = steps.object3dById?.get(nodeId);
+  if (obj3d) applyNodeTransformToObject3D(node, obj3d);
+  state.emit('change:treeData', state.get('treeData'));
+}
+
+/** Whether a global-edit session is currently open. */
+export function isGlobalEditing() { return _globalBatch !== null; }
+
+// Generic per-drag commit helper — same shape for translate / rotate / scale.
+function _commitGlobalBaseDrag(nodeId, field, before, identity, label) {
+  if (!nodeId || !before) return;
+  const node = state.get('nodeById')?.get(nodeId);
+  if (!node) return;
+  const after = [...(node[field] || identity)];
+  const same = (a, b, eps = 1e-7) => a.length === b.length
+    && a.every((v, i) => Math.abs(v - b[i]) < eps);
+  if (same(before, after)) return;
+
+  undoManager.push(label,
+    () => {
+      const n = state.get('nodeById')?.get(nodeId); if (!n) return;
+      n[field] = [...before];
+      const o = steps.object3dById?.get(nodeId);
+      if (o) applyNodeTransformToObject3D(n, o);
+      state.emit('change:treeData', state.get('treeData'));
+    },
+    () => {
+      const n = state.get('nodeById')?.get(nodeId); if (!n) return;
+      n[field] = [...after];
+      const o = steps.object3dById?.get(nodeId);
+      if (o) applyNodeTransformToObject3D(n, o);
+      state.emit('change:treeData', state.get('treeData'));
+    },
+  );
+  state.markDirty();
+}
+
+// Per-step scale uses the regular begin/commitTransformEdit pair —
+// captureTransformSnapshot now includes localScale (Phase 2.1), so
+// scale handle drags fall through the normal undo path.
+
 
 // ─── Pivot clipboard (copy / paste — only the "blue" / committed pivot) ───
 
@@ -4788,3 +5088,885 @@ function _findNodeRecursive(node, id) {
   }
   return null;
 }
+
+
+// ═══════════════════════════════════════════════════════════════════════════
+//  SHAPE TEMPLATE / INSTANCE ACTIONS  (Phase 1 — "2D shapes in 3D")
+// ═══════════════════════════════════════════════════════════════════════════
+//
+// Library + instance flow, mirrors notes:
+//   1. startShapeDraw()         → enters viewport editor (pickPlane → addVertices).
+//   2. shape-editor.js fires
+//      'shapeEditor:commit'     → onShapeEditorCommit() creates a fresh template
+//                                 + auto-places one instance at the drawn plane.
+//   3. placeShapeInstance()     → drops another instance of an existing template.
+//   4. deleteShapeTemplate()    → cascade: delete every instance + the template.
+//
+// Per-step propagation: when an instance is created we walk every step
+// (or only state.selectedStepIds when multi-selection is active) and
+// patch its snapshot.tree + .visibility[id] + .transforms[id]. This is
+// the fix for the M1 bug where a node added mid-project disappeared when
+// the user navigated to a step captured before the node existed.
+
+/** Begin drawing a NEW template. Editor takes over the viewport. */
+export function startShapeDraw() {
+  shapeEditor.startDrawing(null);
+}
+
+/**
+ * Begin EDITING an existing template. Resolves the target instance:
+ *   - 0 visible instances on this step → status hint, no-op.
+ *   - 1 visible instance              → enter editor seeded with that
+ *                                       instance's plane + the template's
+ *                                       existing polygon points.
+ *   - 2+ visible instances            → enter "click an instance" mode
+ *                                       (state.shapeEditPickInstanceForId).
+ *                                       main.js routes the next viewport
+ *                                       click to _enterShapeEditAtInstance.
+ */
+export function startShapeEdit(templateId) {
+  const tpl = (state.get('shapeTemplates') || []).find(t => t.id === templateId);
+  if (!tpl) return;
+
+  const root      = state.get('treeData');
+  const instances = [];
+  if (root) {
+    const stack = [root];
+    while (stack.length) {
+      const n = stack.pop();
+      if (n.type === 'flatShape' && n.templateId === templateId) instances.push(n);
+      if (n.children) for (const c of n.children) stack.push(c);
+    }
+  }
+  // Prefer instances visible per the tree (ancestors all visible).
+  const nodeById = state.get('nodeById');
+  const visibleInstances = instances.filter(n => _isEffectivelyVisible(nodeById, n.id));
+  const candidates = visibleInstances.length ? visibleInstances : instances;
+
+  if (candidates.length === 0) {
+    setStatus('No instance of this shape exists yet — place one first.', 'warn');
+    return;
+  }
+  if (candidates.length === 1) {
+    _enterShapeEditAtInstance(candidates[0].id, templateId);
+    return;
+  }
+  setStatus('Click an instance to edit.', 'info');
+  // Multi-instance: arm pick mode. main.js intercepts the next click.
+  state.setState({ shapeEditPickInstanceForId: templateId });
+}
+
+/** Cancel pending edit-instance pick (Esc / click outside). */
+export function cancelShapeEditPick() {
+  if (state.get('shapeEditPickInstanceForId')) {
+    state.setState({ shapeEditPickInstanceForId: null });
+  }
+}
+
+/**
+ * Called by main.js when the user clicks a flatShape during edit-pick
+ * mode. Validates the click landed on an instance of the right template
+ * (else cancels), then enters the editor seeded at that instance.
+ */
+export function pickInstanceForEdit(instanceId) {
+  const targetTplId = state.get('shapeEditPickInstanceForId');
+  state.setState({ shapeEditPickInstanceForId: null });
+  if (!targetTplId) return;
+  const node = state.get('nodeById')?.get(instanceId);
+  if (!node || node.type !== 'flatShape' || node.templateId !== targetTplId) {
+    setStatus('Click an instance of the shape to edit.', 'warn');
+    return;
+  }
+  _enterShapeEditAtInstance(instanceId, targetTplId);
+}
+
+/**
+ * Open the editor seeded at a specific instance — its CURRENT world
+ * pose becomes the drawing plane (so what the user sees on screen is
+ * what they edit), and the template's existing polygon points are
+ * pre-loaded so the user can extend / replace them.
+ */
+function _enterShapeEditAtInstance(instanceId, templateId) {
+  const T = window.THREE;
+  if (!T) return;
+  const node  = state.get('nodeById')?.get(instanceId);
+  const obj3d = steps.object3dById?.get(instanceId);
+  const tpl   = (state.get('shapeTemplates') || []).find(t => t.id === templateId);
+  if (!node || !obj3d || !tpl) return;
+
+  // q_total = parent_world × localQ × planeLocalQuaternion. This is the
+  // FULL world rotation of the polygon's plane-local +X / +Y / normal,
+  // i.e. the basis the template's 2D points were stored in when last
+  // saved. Using it as the editor's plane means seeded vertices land
+  // exactly on the polygon visible on screen.
+  obj3d.updateMatrixWorld(true);
+  const parentWorldQ = new T.Quaternion();
+  if (obj3d.parent) obj3d.parent.getWorldQuaternion(parentWorldQ);
+  const localQ = new T.Quaternion(...(node.localQuaternion ?? [0, 0, 0, 1]));
+  const planeQ = new T.Quaternion(...(node.planeLocalQuaternion ?? [0, 0, 0, 1]));
+  const qTotal = parentWorldQ.clone().multiply(localQ).multiply(planeQ);
+
+  const origin = new T.Vector3();
+  obj3d.getWorldPosition(origin);
+  const qx = new T.Vector3(1, 0, 0).applyQuaternion(qTotal);
+  const qy = new T.Vector3(0, 1, 0).applyQuaternion(qTotal);
+  const N  = new T.Vector3(0, 0, 1).applyQuaternion(qTotal);
+
+  const seedPlane = {
+    origin:          [origin.x, origin.y, origin.z],
+    normal:          [N.x, N.y, N.z],
+    qx:              [qx.x, qx.y, qx.z],
+    qy:              [qy.x, qy.y, qy.z],
+    worldQuaternion: [qTotal.x, qTotal.y, qTotal.z, qTotal.w],
+    anchorNodeId:    null,   // not used in edit flow; commit writes template
+  };
+
+  // Seed every input polygon the template carries (XOR composition preserved).
+  // Falls back to legacy single-polygon templates that haven't been migrated yet.
+  const tplPolys = (Array.isArray(tpl.polygons) && tpl.polygons.length)
+    ? tpl.polygons
+    : (tpl.polygon ? [tpl.polygon] : []);
+  shapeEditor.startDrawing(templateId, {
+    seedPlane,
+    seedPolygons: tplPolys.map(p => ({
+      outer: (p.outer || []).map(pt => [pt[0], pt[1]]),
+      holes: (p.holes || []).map(h => h.map(pt => [pt[0], pt[1]])),
+    })),
+    mode: 'edit',
+  });
+}
+
+// Live vertex-edit listener: every move / delete / add-on-edge / add-
+// polygon in the editor's 'edit' phase emits this. We write the polygons
+// list to the template, ripple instance meshes, and push ONE undo entry
+// per operation. `reason` becomes the undo label.
+state.on('shapeEditor:vertexEdit', ({ templateId, polygons, reason }) => {
+  if (!templateId) return;
+  const list = state.get('shapeTemplates') || [];
+  const tpl  = list.find(t => t.id === templateId);
+  if (!tpl) return;
+  const prevPolygons = JSON.parse(JSON.stringify(
+    tpl.polygons || (tpl.polygon ? [tpl.polygon] : []),
+  ));
+  const nextPolygons = JSON.parse(JSON.stringify(polygons || []));
+
+  const apply = (next) => {
+    state.setState({
+      shapeTemplates: (state.get('shapeTemplates') || []).map(t =>
+        t.id === templateId ? { ...t, polygons: next, polygon: undefined } : t,
+      ),
+    });
+    const root = state.get('treeData');
+    if (root) _rebuildInstancesOfTemplate(root, steps.object3dById, templateId);
+    state.emit('change:treeData', root);
+    state.markDirty();
+  };
+  apply(nextPolygons);
+
+  const label = reason === 'delete'           ? 'Delete vertex'
+              : reason === 'addOnEdge'        ? 'Add vertex'
+              : reason === 'addPolygon'       ? 'Add polygon'
+              : reason === 'deletePolygon'    ? 'Delete polygon'
+              : reason === 'transformPolygon' ? 'Transform polygon'
+              :                                 'Move vertex';
+  undoManager.push(label,
+    () => apply(prevPolygons),
+    () => apply(nextPolygons),
+  );
+});
+
+/** Cancel any in-progress draw. */
+export function cancelShapeDraw() {
+  shapeEditor.cancel();
+}
+
+// Walk parents of `nodeId`; node is "effectively visible" iff it AND
+// all ancestors have localVisible !== false.
+function _isEffectivelyVisible(nodeById, nodeId) {
+  let cur = nodeById?.get(nodeId);
+  while (cur) {
+    if (cur.localVisible === false) return false;
+    // No back-pointer; walk via tree. Cheap O(N) sweep is acceptable.
+    cur = _findParentNode(nodeById, cur.id);
+  }
+  return true;
+}
+function _findParentNode(nodeById, childId) {
+  if (!nodeById) return null;
+  for (const [, n] of nodeById) {
+    if (n.children?.some(c => c.id === childId)) return n;
+  }
+  return null;
+}
+
+/**
+ * Wire the editor's commit event into the action layer. Fires once at
+ * module load — actions.js is imported eagerly from main.js so this lands
+ * before the user can possibly start drawing.
+ */
+state.on('shapeEditor:commit', (payload) => onShapeEditorCommit(payload));
+
+/**
+ * Handle a successful editor commit. Creates a new template (or updates
+ * the editing one — Phase 2) and auto-places one instance at the plane
+ * pose.
+ *
+ * @param {{plane:object, points:number[][], editingTemplateId:string|null}} payload
+ */
+function onShapeEditorCommit({ plane, polygons, points, editingTemplateId }) {
+  // Tolerate legacy `points` payload from older callers — wrap into polygons[].
+  const polys = (Array.isArray(polygons) && polygons.length)
+    ? polygons.map(p => ({
+        outer: p.outer.map(pt => [pt[0], pt[1]]),
+        holes: (p.holes || []).map(h => h.map(pt => [pt[0], pt[1]])),
+      }))
+    : [{ outer: points.map(p => [p[0], p[1]]), holes: [] }];
+
+  // ── Edit path: replace template polygons, ripple to all instances ────
+  if (editingTemplateId) {
+    const list = state.get('shapeTemplates') || [];
+    const tpl  = list.find(t => t.id === editingTemplateId);
+    if (!tpl) return;
+    const prevPolygons = JSON.parse(JSON.stringify(tpl.polygons || (tpl.polygon ? [tpl.polygon] : [])));
+    const nextPolygons = JSON.parse(JSON.stringify(polys));
+
+    const apply = (next) => {
+      state.setState({
+        shapeTemplates: (state.get('shapeTemplates') || []).map(t =>
+          t.id === editingTemplateId ? { ...t, polygons: next, polygon: undefined } : t,
+        ),
+      });
+      const root = state.get('treeData');
+      if (root) _rebuildInstancesOfTemplate(root, steps.object3dById, editingTemplateId);
+      state.emit('change:treeData', root);
+      state.markDirty();
+    };
+    apply(nextPolygons);
+
+    undoManager.push(`Edit shape "${tpl.name || ''}"`,
+      () => apply(prevPolygons),
+      () => apply(nextPolygons),
+    );
+    return;
+  }
+
+  // ── Create path: new library entry + auto-placed instance ────────────
+  const prevTemplates = state.get('shapeTemplates') || [];
+  const tpl = createShapeTemplate({
+    name:     `Shape ${prevTemplates.length + 1}`,
+    fill:     '#88c0f0',
+    polygons: polys,
+  });
+
+  state.setState({ shapeTemplates: [...prevTemplates, tpl] });
+
+  // Auto-place one instance at the plane pose.
+  const instanceId = placeShapeInstance(tpl.id, { plane, undoLabel: null });
+
+  const prevSteps = JSON.parse(JSON.stringify(state.get('steps') || []));
+  const nextSteps = JSON.parse(JSON.stringify(state.get('steps') || []));
+
+  undoManager.push(`Create shape "${tpl.name}"`,
+    () => _undoCreateTemplate(tpl.id, instanceId, prevTemplates, prevSteps),
+    () => _redoCreateTemplate(tpl, instanceId, nextSteps),
+  );
+}
+
+/**
+ * Place a fresh instance of a template into the scene tree.
+ * Returns the new instance node id.
+ *
+ * Parent resolution (in priority order):
+ *   1. `options.parentId` (or `plane.anchorNodeId` for face-pick anchoring)
+ *   2. currently selected folder / model
+ *   3. scene root
+ *
+ * The plane pose is converted from WORLD coords to PARENT-LOCAL coords and
+ * stored on `baseLocalPosition` / `baseLocalQuaternion` (the home anchor
+ * fields). User-deltas (`localOffset` / `localQuaternion`) stay zero, so
+ * "Reset transform" returns to the creation pose — not world origin.
+ *
+ * `options.plane`     — required. Defines world pose + optional anchorNodeId.
+ * `options.parentId`  — optional override (else uses plane.anchorNodeId / selection).
+ * `options.undoLabel` — when truthy, pushes its own undo entry. null = caller bundles.
+ */
+export function placeShapeInstance(templateId, options = {}) {
+  const T = window.THREE;
+  if (!T) return null;
+  const { plane, parentId, undoLabel = `Place shape` } = options;
+  if (!plane) return null;
+
+  const root = state.get('treeData');
+  if (!root) return null;
+
+  // ── Resolve parent ────────────────────────────────────────────────────
+  // 1) explicit parentId (or plane.anchorNodeId from face-pick)
+  // 2) selected container (folder / model)
+  // 3) scene root
+  const requestedId = parentId ?? plane.anchorNodeId ?? null;
+  let parent = requestedId
+    ? (state.get('nodeById')?.get(requestedId) ?? findNode(root, requestedId))
+    : null;
+  if (!parent) {
+    const selId = state.get('selectedId');
+    const sel   = selId ? state.get('nodeById')?.get(selId) : null;
+    if (sel && (sel.type === 'folder' || sel.type === 'model' || sel.type === 'scene')) {
+      parent = sel;
+    } else {
+      parent = root;
+    }
+  }
+
+  const tpl = (state.get('shapeTemplates') || []).find(t => t.id === templateId);
+  if (!tpl) return null;
+
+  // ── Convert plane pose (world) → parent-local ─────────────────────────
+  // Position goes to baseLocalPosition (home anchor); orientation goes to
+  // a SEPARATE field, planeLocalQuaternion, which the geometry builder
+  // bakes into the polygon's vertex positions. baseLocalQuaternion stays
+  // identity so the gizmo's rotation math behaves identically to a folder.
+  const parentObj = parent.object3d ?? steps.object3dById?.get(parent.id) ?? null;
+  let baseLocalPosition, planeLocalQuaternion;
+  if (parentObj && parent.id !== 'scene_root') {
+    parentObj.updateMatrixWorld(true);
+    const localPt = parentObj.worldToLocal(new T.Vector3(...plane.origin));
+    const parentWorldQ = new T.Quaternion();
+    parentObj.getWorldQuaternion(parentWorldQ);
+    const targetWorldQ = new T.Quaternion(...plane.worldQuaternion);
+    const localQ = parentWorldQ.invert().multiply(targetWorldQ);
+    baseLocalPosition    = [localPt.x, localPt.y, localPt.z];
+    planeLocalQuaternion = [localQ.x, localQ.y, localQ.z, localQ.w];
+  } else {
+    baseLocalPosition    = [...plane.origin];
+    planeLocalQuaternion = [...plane.worldQuaternion];
+  }
+
+  // ── Create instance ───────────────────────────────────────────────────
+  // Creation position lives on baseLocalPosition (the "home" anchor) so
+  // reset translate returns here. Plane orientation is baked into the
+  // mesh geometry via planeLocalQuaternion. baseLocalQuaternion is left
+  // at identity so the gizmo math matches every other transform node.
+  const instance = createFlatShapeNode({
+    name:                tpl.name || 'Shape',
+    templateId,
+    baseLocalPosition,
+    planeLocalQuaternion,
+  });
+
+  // Build mesh + register
+  const mesh = ensureFlatShapeObject3D(instance);
+  if (!mesh) return null;
+  if (parentObj) parentObj.add(mesh);
+  applyNodeTransformToObject3D(instance, mesh);
+  steps.object3dById.set(instance.id, mesh);
+
+  // Insert into tree
+  parent.children = parent.children || [];
+  parent.children.push(instance);
+  state.setState({ nodeById: _nodes_buildNodeMap(root) });
+
+  // Propagate to step snapshots so navigating between steps preserves it.
+  _propagateNewNodeToSteps(instance, parent.id);
+
+  state.emit('change:treeData', root);
+  steps.scheduleTransformSync();
+  state.markDirty();
+
+  if (undoLabel) {
+    undoManager.push(undoLabel,
+      () => _removeShapeInstance(instance.id),
+      () => {
+        placeShapeInstance(templateId, { plane, parentId: requestedId, undoLabel: null });
+      },
+    );
+  }
+
+  return instance.id;
+}
+
+/**
+ * Arm the "Place" picker for a template. The next viewport click on a
+ * face (or empty space) spawns a fresh instance tangent to the hit
+ * surface; clicking empty space falls back to a camera-facing plane.
+ * Single-shot — clears state.shapePlacementForId after one place.
+ *
+ * Cancels other picker / draw modes so the user can't be in two
+ * conflicting states at once.
+ */
+export function startShapePlacement(templateId) {
+  if (!templateId) return;
+  if (state.get('shapeDrawing'))                  cancelShapeDraw();
+  if (state.get('shapeEditPickInstanceForId'))    state.setState({ shapeEditPickInstanceForId: null });
+  state.setState({ shapePlacementForId: templateId });
+}
+
+export function cancelShapePlacement() {
+  if (!state.get('shapePlacementForId')) return;
+  state.setState({ shapePlacementForId: null });
+}
+
+/**
+ * Resolve a viewport click into a place-target: build a plane from the
+ * hit (face → tangent; empty space → camera-facing) and stamp the hit
+ * object's nodeId onto plane.anchorNodeId. placeShapeInstance reads
+ * anchorNodeId as its primary parent — same path the New Shape flow
+ * uses, so a placed instance ends up parented EXACTLY where a fresh-
+ * drawn one would (under the clicked mesh / folder / shape, not under
+ * its container). That parenting is what makes the instance travel
+ * with its host through tree-moves and step propagation.
+ *
+ * Always disarms after one shot.
+ */
+export function placeShapeAtClick(templateId, clientX, clientY) {
+  const T = window.THREE;
+  if (!T) return null;
+  const hit = sceneCore.pick(clientX, clientY);
+  let plane;
+  if (hit && hit.face) {
+    const origin = [hit.point.x, hit.point.y, hit.point.z];
+    const n = hit.face.normal.clone()
+      .transformDirection(hit.object.matrixWorld)
+      .normalize();
+    const N = new T.Vector3(n.x, n.y, n.z);
+    let up = new T.Vector3(0, 1, 0);
+    if (Math.abs(up.dot(N)) > 0.99) up = new T.Vector3(1, 0, 0);
+    const X = new T.Vector3().crossVectors(up, N).normalize();
+    const Y = new T.Vector3().crossVectors(N, X).normalize();
+    const m = new T.Matrix4().makeBasis(X, Y, N);
+    const q = new T.Quaternion().setFromRotationMatrix(m);
+    const anchorNodeId = hit.object?.userData?.meshNodeId
+                      ?? hit.object?.userData?.flatShapeNodeId
+                      ?? hit.object?.userData?.nodeId
+                      ?? null;
+    plane = {
+      origin,
+      normal:          [N.x, N.y, N.z],
+      qx:              [X.x, X.y, X.z],
+      qy:              [Y.x, Y.y, Y.z],
+      worldQuaternion: [q.x, q.y, q.z, q.w],
+      anchorNodeId,
+    };
+  } else {
+    // Empty space — camera-facing plane, parent falls back to scene root.
+    const cam = sceneCore.camera;
+    const fwd = new T.Vector3();
+    cam.getWorldDirection(fwd);
+    const target = cam.position.clone().add(fwd.clone().multiplyScalar(200));
+    const N = fwd.clone().negate().normalize();
+    let up = new T.Vector3(0, 1, 0);
+    if (Math.abs(up.dot(N)) > 0.99) up = new T.Vector3(1, 0, 0);
+    const X = new T.Vector3().crossVectors(up, N).normalize();
+    const Y = new T.Vector3().crossVectors(N, X).normalize();
+    const m = new T.Matrix4().makeBasis(X, Y, N);
+    const q = new T.Quaternion().setFromRotationMatrix(m);
+    plane = {
+      origin:          [target.x, target.y, target.z],
+      normal:          [N.x, N.y, N.z],
+      qx:              [X.x, X.y, X.z],
+      qy:              [Y.x, Y.y, Y.z],
+      worldQuaternion: [q.x, q.y, q.z, q.w],
+      anchorNodeId:    null,
+    };
+  }
+  const id = placeShapeInstance(templateId, { plane });
+  state.setState({ shapePlacementForId: null });
+  return id;
+}
+
+function _findDataParent(root, childId) {
+  const stack = [{ node: root, parent: null }];
+  while (stack.length) {
+    const { node, parent } = stack.pop();
+    if (node.id === childId) return parent;
+    for (const c of (node.children || [])) stack.push({ node: c, parent: node });
+  }
+  return null;
+}
+
+/**
+ * Delete a single flatShape instance node (template stays). Used by
+ * the tree + viewport "Delete shape" menu items. One undo entry.
+ */
+export function deleteFlatShapeInstance(nodeId) {
+  if (!nodeId) return false;
+  const root = state.get('treeData');
+  if (!root) return false;
+  const node = state.get('nodeById')?.get(nodeId) ?? findNode(root, nodeId);
+  if (!node || node.type !== 'flatShape') return false;
+  const parent = _findDataParent(root, nodeId);
+  if (!parent) return false;
+  // Snapshot for undo
+  const childIdx = parent.children.indexOf(node);
+  if (childIdx < 0) return false;
+  const snapshot = JSON.parse(JSON.stringify(node));
+
+  undoManager.push('Delete shape',
+    () => _removeShapeInstance(nodeId),
+    () => {
+      // Re-insert into same parent at same index, rebuild mesh, propagate.
+      const p = state.get('nodeById')?.get(parent.id) ?? findNode(state.get('treeData'), parent.id);
+      if (!p) return;
+      const restored = JSON.parse(JSON.stringify(snapshot));
+      p.children = p.children || [];
+      p.children.splice(Math.min(childIdx, p.children.length), 0, restored);
+      const mesh = ensureFlatShapeObject3D(restored);
+      const parentObj = p.object3d ?? steps.object3dById?.get(p.id) ?? null;
+      if (parentObj && mesh) parentObj.add(mesh);
+      if (mesh) {
+        applyNodeTransformToObject3D(restored, mesh);
+        steps.object3dById.set(restored.id, mesh);
+      }
+      state.setState({ nodeById: _nodes_buildNodeMap(state.get('treeData')) });
+      _propagateNewNodeToSteps(restored, p.id);
+      state.emit('change:treeData', state.get('treeData'));
+      steps.scheduleTransformSync();
+      state.markDirty();
+    },
+  );
+  // Eager apply
+  _removeShapeInstance(nodeId);
+  return true;
+}
+
+/**
+ * Delete a template and every instance referencing it (cascade).
+ * Asks for confirmation when there are live instances.
+ */
+export function deleteShapeTemplate(templateId, { skipConfirm = false } = {}) {
+  const tpl = (state.get('shapeTemplates') || []).find(t => t.id === templateId);
+  if (!tpl) return false;
+
+  const root = state.get('treeData');
+  const instanceIds = [];
+  if (root) {
+    const stack = [root];
+    while (stack.length) {
+      const n = stack.pop();
+      if (n.type === 'flatShape' && n.templateId === templateId) instanceIds.push(n.id);
+      if (n.children) for (const c of n.children) stack.push(c);
+    }
+  }
+
+  if (!skipConfirm && instanceIds.length > 0) {
+    const ok = confirm(
+      `Delete "${tpl.name || 'shape'}"? ${instanceIds.length} placed instance(s) will be removed too.`,
+    );
+    if (!ok) return false;
+  }
+
+  // Snapshot for undo
+  const prevTpl   = JSON.parse(JSON.stringify(tpl));
+  const prevSteps = JSON.parse(JSON.stringify(state.get('steps') || []));
+
+  // Remove instances
+  for (const id of instanceIds) _removeShapeInstance(id);
+
+  // Remove template
+  state.setState({
+    shapeTemplates: (state.get('shapeTemplates') || []).filter(t => t.id !== templateId),
+  });
+  state.markDirty();
+
+  const nextTplList = state.get('shapeTemplates');
+  const nextSteps   = JSON.parse(JSON.stringify(state.get('steps') || []));
+
+  undoManager.push(`Delete shape "${tpl.name || ''}"`,
+    () => {
+      // Restore template + every step snapshot to its pre-delete state.
+      // Instances re-mount on the next step activation via rebuildFromTreeSpec.
+      state.setState({
+        shapeTemplates: [...nextTplList, prevTpl],
+        steps:          prevSteps,
+      });
+      state.markDirty();
+      state.emit('change:treeData', state.get('treeData'));
+    },
+    () => {
+      state.setState({ shapeTemplates: nextTplList, steps: nextSteps });
+      state.markDirty();
+    },
+  );
+  return true;
+}
+
+/** Rename a template. Undoable. */
+export function setShapeTemplateName(templateId, name) {
+  const list = state.get('shapeTemplates') || [];
+  const tpl  = list.find(t => t.id === templateId);
+  if (!tpl) return;
+  const prev = tpl.name;
+  if (prev === name) return;
+  state.setState({
+    shapeTemplates: list.map(t => t.id === templateId ? { ...t, name } : t),
+  });
+  state.markDirty();
+  undoManager.push('Rename shape',
+    () => {
+      const cur = state.get('shapeTemplates') || [];
+      state.setState({ shapeTemplates: cur.map(t => t.id === templateId ? { ...t, name: prev } : t) });
+      state.markDirty();
+    },
+    () => {
+      const cur = state.get('shapeTemplates') || [];
+      state.setState({ shapeTemplates: cur.map(t => t.id === templateId ? { ...t, name } : t) });
+      state.markDirty();
+    },
+  );
+}
+
+/** Recolour a template. Rebuilds every instance's mesh on undo/redo too. */
+export function setShapeTemplateFill(templateId, fill) {
+  const list = state.get('shapeTemplates') || [];
+  const tpl  = list.find(t => t.id === templateId);
+  if (!tpl) return;
+  const prev = tpl.fill;
+  if (prev === fill) return;
+
+  const apply = (nextFill) => {
+    state.setState({
+      shapeTemplates: (state.get('shapeTemplates') || []).map(t =>
+        t.id === templateId ? { ...t, fill: nextFill } : t,
+      ),
+    });
+    const root = state.get('treeData');
+    if (root) _rebuildInstancesOfTemplate(root, steps.object3dById, templateId);
+    state.emit('change:treeData', root);
+    state.markDirty();
+  };
+  apply(fill);
+
+  undoManager.push('Recolour shape',
+    () => apply(prev),
+    () => apply(fill),
+  );
+}
+
+// ── Private shape helpers ────────────────────────────────────────────────
+
+function _removeShapeInstance(instanceId) {
+  const root = state.get('treeData');
+  if (!root) return;
+  const node = state.get('nodeById')?.get(instanceId);
+  if (!node) return;
+
+  // Detach mesh + dispose
+  disposeFlatShape(node);
+  steps.object3dById.delete(instanceId);
+
+  // Splice from parent
+  const stack = [{ parent: null, node: root }];
+  while (stack.length) {
+    const { parent, node: n } = stack.pop();
+    if (n.id === instanceId && parent) {
+      const idx = parent.children.findIndex(c => c.id === instanceId);
+      if (idx >= 0) parent.children.splice(idx, 1);
+      break;
+    }
+    if (n.children) for (const c of n.children) stack.push({ parent: n, node: c });
+  }
+
+  // Remove from every step's snapshot too — keeps snapshots in sync so a
+  // future redo / load doesn't accidentally resurrect the node.
+  const allSteps = state.get('steps') || [];
+  const nextSteps = allSteps.map(s => {
+    const snap = s.snapshot || {};
+    const newTree = _removeFromTreeSpec(snap.tree, instanceId);
+    if (newTree === snap.tree && !snap.visibility?.[instanceId] && !snap.transforms?.[instanceId]) {
+      return s;
+    }
+    const vis = { ...(snap.visibility || {}) };
+    delete vis[instanceId];
+    const tr = { ...(snap.transforms || {}) };
+    delete tr[instanceId];
+    return { ...s, snapshot: { ...snap, tree: newTree, visibility: vis, transforms: tr } };
+  });
+  state.setState({ steps: nextSteps, nodeById: _nodes_buildNodeMap(root) });
+  state.emit('change:treeData', root);
+}
+
+function _propagateNewNodeToSteps(node, parentId) {
+  const allSteps = state.get('steps') || [];
+  const stepSel  = state.get('selectedStepIds');
+  const restrict = (stepSel instanceof Set && stepSel.size >= 2) ? stepSel : null;
+
+  const nodeSpec = serializeModelTree(node);
+  const transformSnap = captureTransformSnapshot(node);
+
+  const next = allSteps.map(s => {
+    if (restrict && !restrict.has(s.id)) return s;
+    const snap = s.snapshot || {};
+    const newTree = _addToTreeSpec(snap.tree, parentId, nodeSpec);
+    if (newTree === snap.tree && snap.visibility?.[node.id] !== undefined) return s;
+    return {
+      ...s,
+      snapshot: {
+        ...snap,
+        tree:        newTree ?? snap.tree,
+        visibility:  { ...(snap.visibility  || {}), [node.id]: true },
+        transforms:  { ...(snap.transforms  || {}), [node.id]: transformSnap },
+      },
+    };
+  });
+  state.setState({ steps: next });
+}
+
+/** Returns a new spec with `child` appended to `parentId`'s children, or original if parent not found. */
+function _addToTreeSpec(spec, parentId, child) {
+  if (!spec) return spec;
+  if (spec.id === parentId) {
+    return { ...spec, children: [...(spec.children || []), child] };
+  }
+  if (!spec.children?.length) return spec;
+  let changed = false;
+  const newKids = spec.children.map(c => {
+    const r = _addToTreeSpec(c, parentId, child);
+    if (r !== c) changed = true;
+    return r;
+  });
+  return changed ? { ...spec, children: newKids } : spec;
+}
+
+/** Returns a new spec with the node `id` (and any descendants) stripped out. */
+function _removeFromTreeSpec(spec, id) {
+  if (!spec) return spec;
+  if (spec.id === id) return null;
+  if (!spec.children?.length) return spec;
+  let changed = false;
+  const newKids = [];
+  for (const c of spec.children) {
+    const r = _removeFromTreeSpec(c, id);
+    if (r === c) { newKids.push(c); continue; }
+    changed = true;
+    if (r) newKids.push(r);
+  }
+  return changed ? { ...spec, children: newKids } : spec;
+}
+
+function _undoCreateTemplate(templateId, instanceId, prevTemplates, prevSteps) {
+  // Remove instance from live tree + scene
+  _removeShapeInstance(instanceId);
+  // Restore previous templates + steps
+  state.setState({ shapeTemplates: prevTemplates, steps: prevSteps });
+  state.markDirty();
+  state.emit('change:treeData', state.get('treeData'));
+}
+
+function _redoCreateTemplate(tpl, instanceId, nextSteps) {
+  // Reinsert template + steps; the instance's mesh is rebuilt on next
+  // step activation via rebuildFromTreeSpec — simplest atomic path.
+  state.setState({
+    shapeTemplates: [...(state.get('shapeTemplates') || []).filter(t => t.id !== tpl.id), tpl],
+    steps:          nextSteps,
+  });
+  state.markDirty();
+}
+
+
+// ═══════════════════════════════════════════════════════════════════════════
+//  INSTANCE STEP-POSE CLIPBOARD  (copy / paste per-step pose across steps)
+// ═══════════════════════════════════════════════════════════════════════════
+//
+// "Pose" = the per-step transform snapshot + visibility flag for one
+// instance, captured from a SOURCE step and applied to one or more
+// TARGET steps. Mirrors the pivot copy/paste pattern.
+//
+// Stored fields:
+//   - transforms[id]   from snapshot.transforms (localOffset, localQuaternion, etc.)
+//   - visibility[id]   from snapshot.visibility
+//
+// Paste targets:
+//   - With selectedStepIds.size ≥ 2 → all selected steps.
+//   - Otherwise → just the active step.
+//
+// Cross-instance paste IS allowed (paste poseA onto instanceB) — the
+// transform values are id-agnostic, so this is by design.
+
+let _instancePoseClipboard = null;
+
+/** Whether the clipboard currently holds a copied pose. */
+export function hasInstancePoseClipboard() { return _instancePoseClipboard !== null; }
+
+/**
+ * Capture the active step's pose for `instanceId`. Returns true on success.
+ * Falls back gracefully if the active step doesn't carry a snapshot for it
+ * (uses the current live transform).
+ */
+export function copyInstanceStepPose(instanceId) {
+  const node = state.get('nodeById')?.get(instanceId);
+  if (!node) return false;
+
+  const stepId = state.get('activeStepId');
+  const step   = (state.get('steps') || []).find(s => s.id === stepId);
+  const snap   = step?.snapshot;
+
+  const transformSnap = snap?.transforms?.[instanceId]
+                     ?? captureTransformSnapshot(node);
+  const vis = snap?.visibility?.[instanceId];
+  _instancePoseClipboard = {
+    transform:  JSON.parse(JSON.stringify(transformSnap)),
+    visibility: typeof vis === 'boolean' ? vis : (node.localVisible !== false),
+  };
+  return true;
+}
+
+/**
+ * Apply the clipboard pose to `instanceId` in either:
+ *   - every step in state.selectedStepIds (when ≥ 2 are selected), or
+ *   - just the active step.
+ *
+ * Pushes ONE undo entry covering all touched steps + a final
+ * step:applied so the active step's scene re-mounts immediately.
+ */
+export function pasteInstanceStepPose(instanceId) {
+  if (!_instancePoseClipboard) return false;
+  const { transform, visibility } = _instancePoseClipboard;
+
+  const allSteps = state.get('steps') || [];
+  const stepSel  = state.get('selectedStepIds');
+  const targetIds = (stepSel instanceof Set && stepSel.size >= 2)
+    ? new Set(stepSel)
+    : new Set([state.get('activeStepId')].filter(Boolean));
+  if (targetIds.size === 0) return false;
+
+  const prevSteps = allSteps.map(s => {
+    if (!targetIds.has(s.id)) return s;
+    return JSON.parse(JSON.stringify(s));
+  });
+
+  const nextSteps = allSteps.map(s => {
+    if (!targetIds.has(s.id)) return s;
+    const snap = s.snapshot || {};
+    return {
+      ...s,
+      snapshot: {
+        ...snap,
+        transforms: { ...(snap.transforms || {}), [instanceId]: JSON.parse(JSON.stringify(transform)) },
+        visibility: { ...(snap.visibility || {}), [instanceId]: !!visibility },
+      },
+    };
+  });
+
+  const apply = (stepsArr) => {
+    state.setState({ steps: stepsArr });
+    state.markDirty();
+    // Re-apply the active step's snapshot so the live scene reflects the
+    // pasted pose immediately (otherwise the user'd have to navigate away
+    // and back to see the change).
+    const active = stepsArr.find(s => s.id === state.get('activeStepId'));
+    if (active && targetIds.has(active.id)) {
+      steps.applySnapshotInstant(active.snapshot);
+    }
+    state.emit('steps:bulkApplied', { stepIds: [...targetIds] });
+  };
+  apply(nextSteps);
+
+  const label = targetIds.size > 1
+    ? `Paste pose on ${targetIds.size} steps`
+    : 'Paste pose';
+  undoManager.push(label,
+    () => apply(prevSteps),
+    () => apply(nextSteps),
+  );
+  return true;
+}
+

@@ -47,6 +47,25 @@ const HOVER_COL  = 0xffee22;
 const ACTIVE_COL = 0xffffff;
 const SCREEN_SIZE = 0.16;   // gizmo = 16% of view height, constant on screen
 
+// Scale-handle drag tuning. Screen-space drag in pixels: every
+// SCALE_PIXELS_PER_DOUBLING up = ×2 scale; same magnitude down = ÷2.
+// Clamped so a hard drag can't push scale to zero or runaway.
+const SCALE_PIXELS_PER_DOUBLING = 200;
+const SCALE_FACTOR_MIN = 0.05;
+const SCALE_FACTOR_MAX = 20;
+
+/**
+ * Map a screen-space drag (start clientY → current clientY) onto a
+ * positive multiplicative scale factor. UP = grow, DOWN = shrink.
+ * Symmetric in log space (drag up by N px and back down by N px = ×1).
+ */
+function _factorFromScreenDy(startY, currY) {
+  const dy = currY - startY;             // positive = drag DOWN (browser y-axis)
+  const stops = -dy / SCALE_PIXELS_PER_DOUBLING;
+  const factor = Math.pow(2, stops);
+  return Math.max(SCALE_FACTOR_MIN, Math.min(SCALE_FACTOR_MAX, factor));
+}
+
 // ── GizmoController ──────────────────────────────────────────────────────────
 
 class GizmoController {
@@ -140,10 +159,13 @@ class GizmoController {
     if (this._cableTarget) return false;
     const el = this._dragEl;
     const no = this._node;
-    if (!no || el.type === 'plane') return false;
+    // 'plane' has two-axis input that needs a different field; 'scale'
+    // currently only accepts mouse-drag input. Both bail out of numeric.
+    if (!no || el.type === 'plane' || el.type === 'scale') return false;
 
     const T = window.THREE;
-    const inPivotEdit  = state.get('pivotEditNodeId') === no.id;
+    const inPivotEdit       = state.get('pivotEditNodeId')      === no.id;
+    const inGlobalEdit = state.get('globalEditNodeId') === no.id;
     const pivotEnabled = no.pivotEnabled === true;
 
     if (el.type === 'translate') {
@@ -157,6 +179,13 @@ class GizmoController {
           this._startPivotOffset[2] + localD.z,
         ];
         no.pivotEnabled = true;
+      } else if (inGlobalEdit) {
+        const localD = this._worldToLocalDelta(worldD);
+        no.baseLocalPosition = [
+          this._startBasePosition[0] + localD.x,
+          this._startBasePosition[1] + localD.y,
+          this._startBasePosition[2] + localD.z,
+        ];
       } else {
         const localD = this._worldToLocalDelta(worldD);
         no.localOffset = [
@@ -365,6 +394,36 @@ class GizmoController {
     dot.visible  = false;
     this._group.add(dot);
     this._pivotDot = dot;
+
+    // ── Phase 2 / 2.1 global-edit indicator AND scale handle ─────────────
+    // A red CUBE at the gizmo hub. Visible only while the active node is
+    // a flatShape AND state.globalEditNodeId === that node — so it both
+    // signals "global mode active" (replaces the prior red sphere) AND
+    // serves as the uniform-scale handle (drag UP grows, DOWN shrinks,
+    // writing to baseLocalScale). Outside global mode there is no scale
+    // gesture at all per Phase 2.1 spec.
+    const GLOBAL_BOX_COLOUR = 0xef4444;
+    const visGeo = new T.BoxGeometry(0.14, 0.14, 0.14);
+    const visMat = new T.MeshBasicMaterial({ color: GLOBAL_BOX_COLOUR, depthTest: false });
+    const vis    = new T.Mesh(visGeo, visMat);
+    vis.visible  = false;
+    this._group.add(vis);
+
+    const hitGeo = new T.BoxGeometry(0.22, 0.22, 0.22);
+    const hitMat = new T.MeshBasicMaterial({ visible: false, depthTest: false });
+    const hit    = new T.Mesh(hitGeo, hitMat);
+    hit.visible  = false;
+    this._group.add(hit);
+
+    const el = {
+      hitMesh: hit, visuals: [vis], mats: [visMat],
+      axis: 'uniform', type: 'scale', baseColor: GLOBAL_BOX_COLOUR,
+    };
+    hit.userData._gEl = el;
+    this._elements.push(el);
+    // Keep references so visibility can be toggled directly from _tick().
+    this._globalDot = vis;
+    this._globalHit = hit;
   }
 
   _orientAxis(obj, axis) {
@@ -391,6 +450,7 @@ class GizmoController {
     this._tick();
     if (this._spaceLabelEl) this._spaceLabelEl.style.display = '';
     this._updateSpaceLabel();
+    if (this._panel) this._rebindPanel();
   }
 
   /**
@@ -433,6 +493,7 @@ class GizmoController {
     this._tick();
     if (this._spaceLabelEl) this._spaceLabelEl.style.display = '';
     this._updateSpaceLabel();
+    if (this._panel) this._rebindPanel();
   }
 
   /** Translate-only — for cable points. */
@@ -459,7 +520,11 @@ class GizmoController {
     this._dragging     = false;
     this._dragEl       = null;
     if (this._spaceLabelEl) this._spaceLabelEl.style.display = 'none';
-    this._closePanel();
+    // Keep the transform panel open if it was already showing — it
+    // re-renders into the greyed "no target" state. The user closes the
+    // panel explicitly via X or Esc; gizmo hide alone shouldn't dismiss
+    // it, since the next selection may bring a new transform target.
+    if (this._panel) this._rebindPanel();
   }
 
   get isDragging() { return this._dragging; }
@@ -504,11 +569,23 @@ class GizmoController {
   }
 
   _applyMode() {
+    // The scale element is the global-mode red cube — visible ONLY when:
+    //   - the active node is a flatShape, AND
+    //   - state.globalEditNodeId === that node.
+    // Outside global mode there's no scale gesture (per Phase 2.1 spec).
+    const isFlatShape = this._node?.type === 'flatShape';
+    const inGlobal    = isFlatShape && state.get('globalEditNodeId') === this._node.id;
     for (const el of this._elements) {
-      const show = this._mode === 'all'
-        || (this._mode === 'translate' && (el.type === 'translate' || el.type === 'plane'))
-        || (this._mode === 'rotate'    && el.type === 'rotate');
+      let show;
+      if (el.type === 'scale') {
+        show = inGlobal;
+      } else {
+        show = this._mode === 'all'
+          || (this._mode === 'translate' && (el.type === 'translate' || el.type === 'plane'))
+          || (this._mode === 'rotate'    && el.type === 'rotate');
+      }
       for (const v of el.visuals) v.visible = show;
+      if (el.hitMesh) el.hitMesh.visible = show;
     }
   }
 
@@ -549,7 +626,8 @@ class GizmoController {
       const fovRad = (cam.fov * Math.PI) / 180;
       const viewH  = 2 * dist * Math.tan(fovRad / 2);
       this._group.scale.setScalar(viewH * SCREEN_SIZE);
-      if (this._pivotDot) this._pivotDot.visible = false;
+      if (this._pivotDot)  this._pivotDot.visible  = false;
+      if (this._globalDot) this._globalDot.visible = false;
       return;
     }
 
@@ -601,8 +679,12 @@ class GizmoController {
       if (usePivotPose) {
         this._group.quaternion.copy(getPivotWorldQuaternion(node, this._obj3d));
       } else {
-        const pq = this._parentWorldQuat();
-        if (pq) this._group.quaternion.copy(pq);
+        // Use the SAME reference frame as _axisVec / drag-start ref so
+        // the idle visual matches the live drag visual. For flatShape
+        // this is parent × localQ × planeLocalQuat (polygon's natural
+        // frame); for everything else it falls back to parentWorldQuat.
+        const rq = this._gizmoReferenceQuat();
+        if (rq) this._group.quaternion.copy(rq);
         else    this._group.quaternion.identity();
       }
     } else {
@@ -611,6 +693,11 @@ class GizmoController {
 
     // Orange dot at gizmo hub — only while editing the pivot.
     if (this._pivotDot) this._pivotDot.visible = isPivotEditing;
+    // Red cube at gizmo hub — visible only when this flatShape is in
+    // global-edit mode. It also doubles as the uniform-scale handle.
+    const inGlobalEdit = node?.type === 'flatShape' && state.get('globalEditNodeId') === node.id;
+    if (this._globalDot) this._globalDot.visible = !!inGlobalEdit;
+    if (this._globalHit) this._globalHit.visible = !!inGlobalEdit;
 
     // Constant screen-space size
     const cam    = sceneCore.camera;
@@ -669,16 +756,22 @@ class GizmoController {
     // P-P1: in pivot edit mode (RED) the parent enterPivotEdit/commitPivotEdit
     // pair already brackets the undo session — skip beginTransformEdit so we
     // don't push a redundant "Transform" entry during the gesture.
-    const inPivotEdit = !!this._node && state.get('pivotEditNodeId') === this._node.id;
-    if (this._node && !inPivotEdit) actions.beginTransformEdit(this._node.id);
+    // Same logic for translate-global mode: enter/commit pair brackets it.
+    const inPivotEdit       = !!this._node && state.get('pivotEditNodeId')      === this._node.id;
+    const inGlobalEdit = !!this._node && state.get('globalEditNodeId') === this._node.id;
+    if (this._node && !inPivotEdit && !inGlobalEdit) actions.beginTransformEdit(this._node.id);
 
     const T = window.THREE;
     const no = this._node;
-    this._startOffset      = no?.localOffset           ? [...no.localOffset]           : [0, 0, 0];
-    this._startQuat        = no?.localQuaternion       ? [...no.localQuaternion]       : [0, 0, 0, 1];
+    this._startOffset       = no?.localOffset           ? [...no.localOffset]           : [0, 0, 0];
+    this._startQuat         = no?.localQuaternion       ? [...no.localQuaternion]       : [0, 0, 0, 1];
     // Pivot start values for RED-mode drags (writes to pivot fields).
-    this._startPivotOffset = no?.pivotLocalOffset      ? [...no.pivotLocalOffset]      : [0, 0, 0];
-    this._startPivotQuat   = no?.pivotLocalQuaternion  ? [...no.pivotLocalQuaternion]  : [0, 0, 0, 1];
+    this._startPivotOffset  = no?.pivotLocalOffset      ? [...no.pivotLocalOffset]      : [0, 0, 0];
+    this._startPivotQuat    = no?.pivotLocalQuaternion  ? [...no.pivotLocalQuaternion]  : [0, 0, 0, 1];
+    // Global-edit start values (write base* fields when red-cube active).
+    this._startBasePosition   = no?.baseLocalPosition   ? [...no.baseLocalPosition]   : [0, 0, 0];
+    this._startBaseQuaternion = no?.baseLocalQuaternion ? [...no.baseLocalQuaternion] : [0, 0, 0, 1];
+    this._startBaseScale      = no?.baseLocalScale      ? [...no.baseLocalScale]      : [1, 1, 1];
 
     // P-P1 fix: snapshot the gizmo's reference frame at pointerdown so
     // axis vectors + angle projection stay stable through the whole
@@ -702,6 +795,12 @@ class GizmoController {
 
     const plane = this._getDragPlane(el);
     this._startWorld = this._worldPoint(clientX, clientY, plane);
+
+    // Phase 2.1 scale handle uses screen-space dy for the factor — keep
+    // the start screen coords so the math is independent of any view /
+    // distance changes during the drag.
+    this._startClientX = clientX;
+    this._startClientY = clientY;
 
     if (el.type === 'rotate' && this._startWorld) {
       // Rotation centre depends on mode:
@@ -756,14 +855,34 @@ class GizmoController {
     // via commitPivotDrag — captures the pivot pose changed by this
     // gesture only. Does NOT exit edit mode, so the user can keep
     // adjusting and each adjustment is independently undoable.
-    // Outside pivot edit mode, the regular commitTransformEdit handles
-    // the object-pose undo entry.
-    const inPivotEdit = !!this._node && state.get('pivotEditNodeId') === this._node.id;
+    //
+    // Global-transform mode (Phase 2 / 2.1) follows the same per-drag
+    // pattern, dispatched by handle type:
+    //   translate / plane  → commitGlobalTranslateDrag (baseLocalPosition)
+    //   rotate             → commitGlobalRotateDrag    (baseLocalQuaternion)
+    //   scale              → commitGlobalScaleDrag     (baseLocalScale)
+    // The scale element only exists / is visible while in global mode —
+    // there's no per-step scale path.
+    //
+    // Outside global mode, commitTransformEdit handles the per-step
+    // object-pose undo for translate + rotate.
+    const inPivotEdit  = !!this._node && state.get('pivotEditNodeId')  === this._node.id;
+    const inGlobalEdit = !!this._node && state.get('globalEditNodeId') === this._node.id;
+    const endType      = _endEl?.type;
+
     if (this._node && inPivotEdit) {
       actions.commitPivotDrag(this._node.id, {
         offset: this._startPivotOffset,
         quat:   this._startPivotQuat,
       });
+    } else if (this._node && inGlobalEdit) {
+      if (endType === 'translate' || endType === 'plane') {
+        actions.commitGlobalTranslateDrag(this._node.id, this._startBasePosition);
+      } else if (endType === 'rotate') {
+        actions.commitGlobalRotateDrag(this._node.id, this._startBaseQuaternion);
+      } else if (endType === 'scale') {
+        actions.commitGlobalScaleDrag(this._node.id, this._startBaseScale);
+      }
     } else if (this._node) {
       actions.commitTransformEdit(this._node.id);
     }
@@ -798,6 +917,25 @@ class GizmoController {
     // Numeric input has hijacked the drag — typed values apply via
     // applyNumericAmount(); ignore mouse motion until lock is released.
     if (this._numericLock) return;
+
+    // ── Scale handle (Phase 2.1, GLOBAL ONLY) ─────────────────────────────
+    // Uses pure screen-space dy — no plane projection needed. Drag UP →
+    // grow, DOWN → shrink. The handle is only ever shown / pickable when
+    // state.globalEditNodeId === flatShape, so writes always target
+    // baseLocalScale (HOME pose, ripples to every step).
+    if (el.type === 'scale' && no) {
+      const factor = _factorFromScreenDy(this._startClientY, clientY);
+      no.baseLocalScale = [
+        this._startBaseScale[0] * factor,
+        this._startBaseScale[1] * factor,
+        this._startBaseScale[2] * factor,
+      ];
+      applyNodeTransformToObject3D(no, this._obj3d);
+      this._tick();
+      this._lastAmount = factor;
+      if (this._onDragEvent) this._onDragEvent('move', { type: 'scale', axis: 'uniform', value: factor, node: no, source: 'mouse' });
+      return;
+    }
 
     const plane = this._getDragPlane(el);
     const curr  = this._worldPoint(clientX, clientY, plane);
@@ -906,6 +1044,66 @@ class GizmoController {
       return;
     }
 
+    // ── Global-transform mode (Phase 2 / 2.1) ─────────────────────────────
+    //   Translate / plane → baseLocalPosition  (instead of localOffset)
+    //   Rotate            → baseLocalQuaternion (instead of localQuaternion)
+    //   Scale             → baseLocalScale     (instead of localScale)
+    //   Math is identical to per-step branches; only the output field
+    //   changes. Result: change ripples to every step uniformly.
+    const inGlobalEdit = state.get('globalEditNodeId') === no.id;
+    if (inGlobalEdit) {
+      if (el.type === 'translate' || el.type === 'plane') {
+        const delta = curr.clone().sub(this._startWorld);
+        let worldD;
+        if (el.type === 'translate') {
+          const axVec = this._axisVec(el.axis);
+          worldD = axVec.clone().multiplyScalar(delta.dot(axVec));
+        } else {
+          const [a, b] = el.axis.split('');
+          const axA = this._axisVec(a);
+          const axB = this._axisVec(b);
+          worldD = axA.clone().multiplyScalar(delta.dot(axA))
+                    .add(axB.clone().multiplyScalar(delta.dot(axB)));
+        }
+        const localD = this._worldToLocalDelta(worldD);
+        no.baseLocalPosition = [
+          this._startBasePosition[0] + localD.x,
+          this._startBasePosition[1] + localD.y,
+          this._startBasePosition[2] + localD.z,
+        ];
+        applyNodeTransformToObject3D(no, this._obj3d);
+        this._tick();
+        if (this._onDragEvent) this._onDragEvent('move', { type: el.type, axis: el.axis, value: el.type === 'translate' ? delta.dot(this._axisVec(el.axis)) : null, node: no });
+        return;
+      }
+
+      if (el.type === 'rotate') {
+        // Same axis math as the default per-step rotate path — only the
+        // output field changes (writes baseLocalQuaternion instead of
+        // localQuaternion).
+        const center    = new T.Vector3().copy(this._obj3d.getWorldPosition(new T.Vector3()));
+        const rel       = curr.clone().sub(center);
+        const currAngle = this._atan2ForAxisInSpace(rel, el.axis);
+        const rawDelta  = currAngle - this._startAngle;
+        const angle     = (el.axis === 'x' || el.axis === 'y') ? -rawDelta : rawDelta;
+        const rotAxis   = this._rotAxisLocal(el.axis);
+        const deltaQ    = new T.Quaternion().setFromAxisAngle(rotAxis, angle);
+        const baseQ     = new T.Quaternion(
+          this._startBaseQuaternion[0], this._startBaseQuaternion[1],
+          this._startBaseQuaternion[2], this._startBaseQuaternion[3],
+        );
+        const newQ = deltaQ.multiply(baseQ);
+        no.baseLocalQuaternion = [newQ.x, newQ.y, newQ.z, newQ.w];
+        applyNodeTransformToObject3D(no, this._obj3d);
+        this._tick();
+        if (this._onDragEvent) this._onDragEvent('move', { type: el.type, axis: el.axis, value: angle * 180 / Math.PI, node: no });
+        return;
+      }
+
+      // (scale is handled by the early return above _getDragPlane —
+      // it doesn't need plane projection.)
+    }
+
     // ── Non-pivot-edit paths (default + BLUE rotate) ──────────────────────
 
     let _emitValue = null;   // for the drag-event readout (single num or {a,b})
@@ -966,6 +1164,7 @@ class GizmoController {
       }
       _emitValue = delta * 180 / Math.PI;   // degrees, signed from start
     }
+    // (scale is handled by the early return above _getDragPlane.)
 
     applyNodeTransformToObject3D(no, this._obj3d, true);
     steps.scheduleSync();
@@ -1054,6 +1253,23 @@ class GizmoController {
     const inPivotMode = this._node.pivotEnabled === true
       || state.get('pivotEditNodeId') === this._node.id;
     if (inPivotMode) return getPivotWorldQuaternion(this._node, this._obj3d);
+
+    // Flat shapes carry their drawing-plane orientation on planeLocal-
+    // Quaternion (baked into the geometry). The polygon's NATURAL frame
+    // — the axes the user perceives as the shape's X / Y / normal — is
+    // therefore parent × localQ × planeLocalQuat. Aligning the gizmo's
+    // LOCAL mode to this frame puts the rings exactly on the polygon's
+    // own edges, and _rotAxisLocal (which strips the parent) leaves the
+    // correct rotation axis (localQ × planeLocalQuat × axis) so dragging
+    // green rotates around the polygon's local Y, etc.
+    if (this._node.type === 'flatShape') {
+      const T = window.THREE;
+      const parentQ = this._parentWorldQuat() || new T.Quaternion();
+      const localQ  = new T.Quaternion(...(this._node.localQuaternion       ?? [0, 0, 0, 1]));
+      const planeQ  = new T.Quaternion(...(this._node.planeLocalQuaternion ?? [0, 0, 0, 1]));
+      return parentQ.clone().multiply(localQ).multiply(planeQ);
+    }
+
     return this._parentWorldQuat();
   }
 
@@ -1173,11 +1389,14 @@ class GizmoController {
     rc.setFromCamera(ptr, sceneCore.camera);
     this._group.updateMatrixWorld(true);
 
-    const active = this._elements.filter(e =>
-      this._mode === 'all'
-      || (this._mode === 'translate' && (e.type === 'translate' || e.type === 'plane'))
-      || (this._mode === 'rotate'    &&  e.type === 'rotate')
-    );
+    const isFlatShape = this._node?.type === 'flatShape';
+    const inGlobal    = isFlatShape && state.get('globalEditNodeId') === this._node.id;
+    const active = this._elements.filter(e => {
+      if (e.type === 'scale') return inGlobal;
+      return this._mode === 'all'
+        || (this._mode === 'translate' && (e.type === 'translate' || e.type === 'plane'))
+        || (this._mode === 'rotate'    &&  e.type === 'rotate');
+    });
     const hits = rc.intersectObjects(active.map(e => e.hitMesh), false);
     return hits[0]?.object?.userData?._gEl ?? null;
   }
@@ -1209,16 +1428,17 @@ class GizmoController {
   // ── Transform Panel ───────────────────────────────────────────────────────
 
   /**
-   * Show a floating transform input panel near the right-click position.
+   * Open the floating transform panel near the right-click position.
+   * If a panel is already open, this just rebinds it to the current
+   * selection and lets the existing panel keep its position — the panel
+   * is persistent across selection changes (closes only via X / Esc).
    */
   _showTransformPanel(clientX, clientY) {
-    this._closePanel();
-
-    const T  = window.THREE;
-    const no = this._node;
-    const obj = this._obj3d;
-    if (!no || !obj) return;
-
+    if (this._panel) {
+      // Already open — rebind to current selection but leave position.
+      this._rebindPanel();
+      return;
+    }
     const panel = document.createElement('div');
     this._panel = panel;
 
@@ -1238,17 +1458,11 @@ class GizmoController {
       'user-select:none',
     ].join(';');
 
-    panel.innerHTML = this._panelHTML();
     document.body.appendChild(panel);
 
-    // Snapshot the node's transform at the moment the panel opens, so
-    // Esc can revert any live edits made through the panel inputs.
-    panel._preOpenSnapshot = captureTransformSnapshot(no);
-    panel._panelNodeId     = no.id;
+    this._rebindPanel();   // populates HTML + snapshot + wires events
 
-    this._wirePanel(panel, no, obj);
-
-    // Nudge panel into viewport
+    // Nudge panel into viewport (only on first open, before any rebinds).
     requestAnimationFrame(() => {
       const r = panel.getBoundingClientRect();
       const vw = window.innerWidth, vh = window.innerHeight;
@@ -1256,25 +1470,103 @@ class GizmoController {
       if (r.bottom > vh - 8) panel.style.top  = `${vh - r.height - 8}px`;
     });
 
-    // Close on outside click or Escape (Esc reverts any live edits).
-    const onDown = (e) => {
-      if (!panel.contains(e.target)) this._closePanel();
-    };
+    // Esc reverts the active node's edits and closes the panel. NO outside-
+    // click auto-close — the panel persists across selections; user closes
+    // it explicitly via X button or Esc.
     const onKey = (e) => {
-      if (e.key === 'Escape') {
+      if (e.key === 'Escape' && this._panel) {
         e.preventDefault();
         this._revertPanel();
         this._closePanel();
       }
     };
     setTimeout(() => {
-      document.addEventListener('pointerdown', onDown, { capture: true, once: false });
       document.addEventListener('keydown', onKey, { capture: true });
       panel._cleanup = () => {
-        document.removeEventListener('pointerdown', onDown, { capture: true });
         document.removeEventListener('keydown', onKey, { capture: true });
       };
     }, 0);
+  }
+
+  /**
+   * Re-render the open panel against the current selection (`this._node`,
+   * `this._obj3d`). Called on selection change so the panel always
+   * reflects whatever transform target the gizmo is bound to. If no
+   * transform target is available (cable point/socket, mesh, or empty
+   * selection), renders a greyed body with a hint.
+   *
+   * Rebind also: (a) commits any in-flight pivot edit on the previous
+   * node before switching, (b) snapshots the new node's transform for
+   * Esc-revert, (c) re-enters pivot edit on the new node if the panel
+   * is in PIVOT space mode and the new node is transformable.
+   */
+  _rebindPanel() {
+    const panel = this._panel;
+    if (!panel) return;
+
+    const newNode = (this._node && !this._cableTarget) ? this._node : null;
+    const newObj  = newNode ? this._obj3d : null;
+    const prevId  = panel._panelNodeId || null;
+
+    // Switching nodes — commit any open pivot edit on the previous node.
+    if (prevId && prevId !== (newNode?.id ?? null) && state.get('pivotEditNodeId') === prevId) {
+      actions.commitPivotEdit();
+    }
+
+    panel.innerHTML = this._panelHTML(newNode);
+    panel._panelNodeId    = newNode?.id ?? null;
+    panel._preOpenSnapshot = newNode ? captureTransformSnapshot(newNode) : null;
+
+    if (newNode && newObj) {
+      this._wirePanel(panel, newNode, newObj);
+      // If the panel is in PIVOT space mode, the user expects orange-dot
+      // pivot-edit to follow selection. Enter it for the new node.
+      if (this._spaceMode === 'pivot' && state.get('pivotEditNodeId') !== newNode.id) {
+        actions.enterPivotEdit(newNode.id);
+      }
+    } else {
+      // Greyed state — only the close (X) button stays live.
+      this._wirePanelChromeOnly(panel);
+    }
+  }
+
+  /** Wire only the chrome (X / drag) when the panel has no transform target. */
+  _wirePanelChromeOnly(panel) {
+    panel.querySelector('[data-action="close"]')?.addEventListener('click', () => this._closePanel());
+    this._wirePanelDragHandle(panel);
+  }
+
+  /** Re-usable drag-by-header behaviour, factored out of _wirePanel. */
+  _wirePanelDragHandle(panel) {
+    const dragHandle = panel.querySelector('[data-panel-drag]');
+    if (!dragHandle) return;
+    let dragging = false;
+    let offsetX  = 0;
+    let offsetY  = 0;
+    let pointerId = null;
+    dragHandle.addEventListener('pointerdown', e => {
+      if (e.target.closest('button')) return;
+      dragging = true;
+      pointerId = e.pointerId;
+      const rect = panel.getBoundingClientRect();
+      offsetX = e.clientX - rect.left;
+      offsetY = e.clientY - rect.top;
+      try { dragHandle.setPointerCapture(e.pointerId); } catch {}
+      e.preventDefault();
+    });
+    dragHandle.addEventListener('pointermove', e => {
+      if (!dragging) return;
+      panel.style.left = `${Math.round(e.clientX - offsetX)}px`;
+      panel.style.top  = `${Math.round(e.clientY - offsetY)}px`;
+    });
+    const endDrag = () => {
+      if (!dragging) return;
+      dragging = false;
+      try { dragHandle.releasePointerCapture(pointerId); } catch {}
+      pointerId = null;
+    };
+    dragHandle.addEventListener('pointerup',     endDrag);
+    dragHandle.addEventListener('pointercancel', endDrag);
   }
 
   /**
@@ -1298,9 +1590,32 @@ class GizmoController {
     actions.beginTransformEdit(no.id);   // resets _transformBatch.from to current (= reverted)
   }
 
-  _panelHTML() {
-    const no = this._node;
-    if (!no) return '';
+  _panelHTML(targetNode = undefined) {
+    // Header is identical in active vs greyed-out forms — just the title
+    // text + close (X) button. Active form follows with full body; grey
+    // form shows a single hint line.
+    const no = (targetNode === undefined) ? this._node : targetNode;
+    const closeBtn = `<button data-action="close" title="Close panel" style="font-size:13px;line-height:1;padding:2px 7px;background:transparent;border:1px solid var(--line,#334155);border-radius:4px;color:var(--muted,#94a3b8);cursor:pointer;font-weight:700;">×</button>`;
+    const headerTitle = no ? this._escHTML(no.name || 'Untitled') : 'Transform';
+    const headerHTML = `
+      <div data-panel-drag="1" style="display:flex;align-items:center;justify-content:space-between;gap:8px;margin-bottom:10px;cursor:move;user-select:none;padding:2px 0;border-bottom:1px solid #1e293b;">
+        <span style="font-weight:700;font-size:13px;color:#f1f5f9;letter-spacing:0.3px;flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">${headerTitle}</span>
+        ${closeBtn}
+      </div>`;
+
+    if (!no) {
+      return `${headerHTML}
+        <div style="opacity:0.55;pointer-events:none;">
+          <div style="display:flex;gap:4px;margin-bottom:10px;">
+            <button disabled style="${this._spaceBtn(false)}">LOCAL</button>
+            <button disabled style="${this._spaceBtn(false)}">WORLD</button>
+            <button disabled style="${this._spaceBtn(false, '#fb923c', '#9a3412')}">PIVOT</button>
+          </div>
+          <div style="font-size:11px;color:#64748b;line-height:1.5;padding:4px 0;">
+            Select a folder, model, or shape in the scene to edit its transform.
+          </div>
+        </div>`;
+    }
 
     const isPivotMode = this._spaceMode === 'pivot';
 
@@ -1326,13 +1641,11 @@ class GizmoController {
     const spacePivot = isPivotMode;
 
     return `
-      <div data-panel-drag="1" style="display:flex;align-items:center;justify-content:space-between;margin-bottom:10px;cursor:move;user-select:none;padding:2px 0;border-bottom:1px solid #1e293b;">
-        <span style="font-weight:700;font-size:13px;color:#f1f5f9;letter-spacing:0.3px;">Transform</span>
-        <div style="display:flex;gap:4px;">
-          <button data-space="local" style="${this._spaceBtn(spaceLocal)}">LOCAL</button>
-          <button data-space="world" style="${this._spaceBtn(spaceWorld)}">WORLD</button>
-          <button data-space="pivot" style="${this._spaceBtn(spacePivot, '#fb923c', '#9a3412')}">PIVOT</button>
-        </div>
+      ${headerHTML}
+      <div style="display:flex;gap:4px;margin-bottom:10px;">
+        <button data-space="local" style="${this._spaceBtn(spaceLocal)}">LOCAL</button>
+        <button data-space="world" style="${this._spaceBtn(spaceWorld)}">WORLD</button>
+        <button data-space="pivot" style="${this._spaceBtn(spacePivot, '#fb923c', '#9a3412')}">PIVOT</button>
       </div>
 
       <div style="margin-bottom:8px;">
@@ -1361,10 +1674,20 @@ class GizmoController {
       </div>
       ` : ''}
 
-      <div style="margin-top:10px;display:flex;justify-content:flex-end;">
+      <div style="margin-top:10px;display:flex;justify-content:flex-end;gap:6px;">
         <button data-action="reset" style="font-size:11px;padding:3px 8px;background:var(--panel2);border:1px solid var(--line);border-radius:4px;color:var(--muted);cursor:pointer;">↺ Reset</button>
       </div>
     `;
+  }
+
+  /** Tiny HTML escaper — used for the panel header title only. */
+  _escHTML(s) {
+    return String(s)
+      .replace(/&/g, '&amp;')
+      .replace(/</g, '&lt;')
+      .replace(/>/g, '&gt;')
+      .replace(/"/g, '&quot;')
+      .replace(/'/g, '&#39;');
   }
 
   _spaceBtn(active, activeBg = '#1d4ed8', activeBorder = '#3b82f6') {
@@ -1394,54 +1717,31 @@ class GizmoController {
   }
 
   _wirePanel(panel, no, obj) {
-    // Space toggle buttons
+    // Close (X) — kills the panel. No revert; user explicitly chose to dismiss.
+    panel.querySelector('[data-action="close"]')?.addEventListener('click', () => {
+      this._closePanel();
+    });
+
+    // Space toggle buttons. PIVOT additionally enters orange-dot pivot
+    // edit mode (state.pivotEditNodeId === no.id) so dragging the gizmo
+    // changes only the pivot pose. Switching back to LOCAL/WORLD commits
+    // any open pivot edit so the per-drag undo entries stay coherent.
     panel.querySelectorAll('[data-space]').forEach(btn => {
       btn.addEventListener('click', () => {
-        this.setSpace(btn.dataset.space);
-        // Re-render panel in place
-        const pos = { left: panel.style.left, top: panel.style.top };
-        this._closePanel();
-        this._showTransformPanel(
-          parseInt(pos.left) - 12,
-          parseInt(pos.top)  + 8
-        );
+        const target = btn.dataset.space;
+        if (target === 'pivot') {
+          this.setSpace('pivot');
+          if (state.get('pivotEditNodeId') !== no.id) actions.enterPivotEdit(no.id);
+        } else {
+          if (state.get('pivotEditNodeId') === no.id) actions.commitPivotEdit();
+          this.setSpace(target);
+        }
+        // Re-render panel in place (keep position).
+        this._rebindPanel();
       });
     });
 
-    // Drag the panel by its header (anything with data-panel-drag).
-    // Mouse-style window drag — captures pointer to keep tracking
-    // even when the cursor leaves the panel during a drag.
-    const dragHandle = panel.querySelector('[data-panel-drag]');
-    if (dragHandle) {
-      let dragging = false;
-      let offsetX  = 0;
-      let offsetY  = 0;
-      let pointerId = null;
-      dragHandle.addEventListener('pointerdown', e => {
-        // Don't start a drag from a clicked button inside the header.
-        if (e.target.closest('button')) return;
-        dragging = true;
-        pointerId = e.pointerId;
-        const rect = panel.getBoundingClientRect();
-        offsetX = e.clientX - rect.left;
-        offsetY = e.clientY - rect.top;
-        try { dragHandle.setPointerCapture(e.pointerId); } catch {}
-        e.preventDefault();
-      });
-      dragHandle.addEventListener('pointermove', e => {
-        if (!dragging) return;
-        panel.style.left = `${Math.round(e.clientX - offsetX)}px`;
-        panel.style.top  = `${Math.round(e.clientY - offsetY)}px`;
-      });
-      const endDrag = () => {
-        if (!dragging) return;
-        dragging = false;
-        try { dragHandle.releasePointerCapture(pointerId); } catch {}
-        pointerId = null;
-      };
-      dragHandle.addEventListener('pointerup',     endDrag);
-      dragHandle.addEventListener('pointercancel', endDrag);
-    }
+    this._wirePanelDragHandle(panel);
 
     // Snap-to-surface button (PIVOT space mode only — see _panelHTML).
     // Triggers the same pick-mode the tree's "Snap Pivot to Surface…"

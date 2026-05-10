@@ -31,6 +31,7 @@ import { steps }                    from '../systems/steps.js';
 import { computeEffectiveVisibility } from '../core/nodes.js';
 import { showContextMenu, showConfirmDialog } from '../ui/context-menu.js';
 import { computeSafeFrameRect, getCanonicalSize } from '../core/safe-frame.js';
+import * as clock                   from '../core/clock.js';
 
 let _labelsEl   = null;
 let _svgEl      = null;
@@ -149,7 +150,13 @@ function _renderTick() {
   // Track which entries we've used this frame.
   const seen = new Set();
 
-  const nowMs = (typeof performance !== 'undefined' ? performance.now() : Date.now());
+  // Use the project clock — `performance.now()` previously, but that
+  // diverges from synthMs in offline export. Note._anim.startMs is set
+  // via clock.now() in steps.js, so reading from clock.now() here keeps
+  // the lerp coherent across both modes. Fixes notes "threshold-jumping"
+  // in offline export (large elapsed → instant snap → _anim cleared
+  // before rasterizeNotesLayer can read it).
+  const nowMs = clock.now();
 
   // Inherited visibility: a note is visible only if IT and every
   // ancestor up to root are visible. Hiding the anchor mesh hides the
@@ -670,3 +677,281 @@ function _enterEdit(noteId, div) {
 
 /** Force a render — call after any data mutation that affects notes. */
 export function refreshNotes() { _renderTick(); }
+
+
+// ═══════════════════════════════════════════════════════════════════════════
+//  EXPORT-TIME RASTERIZER
+// ═══════════════════════════════════════════════════════════════════════════
+//
+// The live note overlay is HTML/SVG (a div per balloon, an SVG path per
+// tail). Canvas-based exports (video-export.js, single-frame thumbnail)
+// composite the 3D canvas + Konva overlay + header layer — none of
+// which capture DOM/SVG. Result: notes were missing from every exported
+// MP4 / .sbsproc.
+//
+// `rasterizeNotesLayer({width,height})` returns a 2D canvas with every
+// currently-visible note painted on it: tail (quadratic curve, amber)
+// + balloon (rounded rect, light yellow + amber border) + text. The
+// math mirrors the DOM tick — anchor world → NDC → output pixels —
+// but parameterised on the OUTPUT dimensions (canonical export size,
+// not viewport rect) so notes land in the correct screen position even
+// when the viewport's aspect ratio differs from the canonical W×H.
+// Returns null when there are no visible notes (caller can skip the
+// composite step entirely).
+
+const NOTE_BALLOON_FILL    = '#fffbeb';   // matches .sbsNoteBalloon background
+const NOTE_BALLOON_STROKE  = '#facc15';   // amber border
+const NOTE_TEXT_COLOR      = '#1f2937';
+const NOTE_TAIL_COLOR      = '#facc15';
+const NOTE_BALLOON_RADIUS  = 10;
+const NOTE_PADDING_X       = 10;
+const NOTE_PADDING_Y       = 6;
+const NOTE_LINE_HEIGHT     = 1.35;
+const NOTE_MAX_WIDTH_PX    = 340;
+const NOTE_MIN_WIDTH_PX    = 48;
+const NOTE_FONT            = 'Arial, Helvetica, sans-serif';
+
+export function rasterizeNotesLayer({ width, height }) {
+  if (!Number.isFinite(width) || !Number.isFinite(height) || width < 1 || height < 1) {
+    return null;
+  }
+  const T = window.THREE;
+  if (!T || !sceneCore?.camera) return null;
+
+  const treeData = state.get('treeData');
+  const notes    = _collectNotes(treeData);
+  if (!notes.length) return null;
+
+  const presets  = state.get('notePresets') || { small: 18, medium: 36, large: 48 };
+  const effVis   = computeEffectiveVisibility(treeData);
+  // Drop notes that are fully hidden upstream; they wouldn't draw anyway,
+  // and skipping early avoids matrix math for nothing.
+  const visible  = notes.filter(n => effVis.get(n.id));
+  if (!visible.length) return null;
+
+  // Refresh world matrices the same way _renderTick does — projection
+  // reads camera.matrixWorldInverse, which the renderer normally
+  // maintains during render(). Export composites BEFORE the next
+  // render(), so we update once here.
+  sceneCore.camera.updateMatrixWorld(true);
+  sceneCore.camera.matrixWorldInverse.copy(sceneCore.camera.matrixWorld).invert();
+  sceneCore.scene.updateMatrixWorld(true);
+
+  // Output canvas. OffscreenCanvas has the same 2D API as a regular
+  // canvas; falls back to a regular <canvas> when OffscreenCanvas is
+  // unavailable (older browsers). The 2D context is requested with
+  // alpha:true so the composite step can drawImage without pulling
+  // a black background.
+  const out = (typeof OffscreenCanvas !== 'undefined')
+    ? new OffscreenCanvas(width, height)
+    : Object.assign(document.createElement('canvas'), { width, height });
+  const ctx = out.getContext('2d', { alpha: true });
+  if (!ctx) return null;
+
+  // Output pixels for the safe-frame rect — note framePosition is
+  // expressed as 0..1 of the safe-frame top-left, so the safe-frame
+  // computation must use the OUTPUT size (not the viewport rect).
+  const sfRect = computeSafeFrameRect({ width, height });
+
+  // Time source for in-flight transition lerp. Uses clock.now() so
+  // offline export (synthetic clock) and realtime (performance.now)
+  // both produce correct elapsed values. The _anim record on a note
+  // is set by steps.applyAllNotesTransition with startMs in the same
+  // clock — see steps.js. Without this, a transition mid-export sees
+  // the START position the whole time and the note "threshold-jumps"
+  // to the END position only after t≥1.
+  const nowMs = clock.now();
+
+  for (const note of visible) {
+    if (!note.anchorMeshId) continue;
+    const anchorWorld = _resolveAnchorWorld(note.anchorMeshId, note);
+    if (!anchorWorld) continue;
+
+    // Project to NDC, then to output pixels.
+    const ndc = anchorWorld.clone().project(sceneCore.camera);
+    if (ndc.z > 1 || ndc.z < -1) continue;
+    const ax = ( ndc.x + 1) * width  * 0.5;
+    const ay = (-ndc.y + 1) * height * 0.5;
+
+    // Resolve text + size — template overrides instance fields when linked.
+    let srcText = note.text || '';
+    let srcSizePresetId   = note.sizePresetId;
+    let srcCustomFontSize = note.customFontSize;
+    if (note.templateId) {
+      const tpl = (state.get('noteTemplates') || []).find(t => t.id === note.templateId);
+      if (tpl) {
+        srcText           = tpl.text || '';
+        srcSizePresetId   = tpl.sizePresetId;
+        srcCustomFontSize = tpl.customFontSize;
+      }
+    }
+    const fontCanonical = srcCustomFontSize ?? presets[srcSizePresetId] ?? presets.medium ?? 16;
+    const fontSize = fontCanonical * (sfRect.scale || 1);
+
+    const text = (srcText && srcText.length) ? srcText : '(empty note)';
+
+    // Wrap text to NOTE_MAX_WIDTH_PX (in output pixels). The text wrapper
+    // returns an array of lines; balloon dimensions follow.
+    ctx.font = `${fontSize}px ${NOTE_FONT}`;
+    const lines      = _wrapText(ctx, text, NOTE_MAX_WIDTH_PX - NOTE_PADDING_X * 2);
+    const textWidth  = Math.max(NOTE_MIN_WIDTH_PX,
+                                ...lines.map(l => Math.ceil(ctx.measureText(l).width)));
+    const balloonW   = Math.min(NOTE_MAX_WIDTH_PX, textWidth + NOTE_PADDING_X * 2);
+    const lineHeight = Math.round(fontSize * NOTE_LINE_HEIGHT);
+    const balloonH   = lineHeight * lines.length + NOTE_PADDING_Y * 2;
+
+    // ── Resolve effective framePosition + offset + opacity (lerped).
+    // If the note is mid-transition, note._anim carries from / to /
+    // startMs / durationMs / easeFn. Same lerp formula as the live
+    // tick — keep them identical so editor preview and exported video
+    // match frame-for-frame. Without this, offline export rendered the
+    // START position throughout the transition and snapped at the end
+    // ("threshold-move").
+    let effOffset  = note.panelOffset || { x: 90, y: -70 };
+    let effFP      = (note.framePosition && Number.isFinite(note.framePosition.x))
+                     ? { x: note.framePosition.x, y: note.framePosition.y }
+                     : null;
+    let effOpacity = 1;
+    if (note._anim) {
+      const a = note._anim;
+      const raw = (nowMs - a.startMs) / Math.max(1, a.durationMs);
+      const t   = raw >= 1 ? 1 : (raw <= 0 ? 0 : (a.easeFn ? a.easeFn(raw) : raw));
+      if (a.fromOffset && a.toOffset) {
+        effOffset = {
+          x: a.fromOffset.x + (a.toOffset.x - a.fromOffset.x) * t,
+          y: a.fromOffset.y + (a.toOffset.y - a.fromOffset.y) * t,
+        };
+      }
+      if (a.fromFP && a.toFP) {
+        effFP = {
+          x: a.fromFP.x + (a.toFP.x - a.fromFP.x) * t,
+          y: a.fromFP.y + (a.toFP.y - a.fromFP.y) * t,
+        };
+      }
+      const fromOpacity = a.fromVisible ? 1 : 0;
+      const toOpacity   = a.toVisible   ? 1 : 0;
+      effOpacity = fromOpacity + (toOpacity - fromOpacity) * t;
+    }
+    if (effOpacity <= 0.001) continue;   // fully faded — skip draw entirely
+
+    // Balloon top-left in output pixels. Prefer framePosition (0..1 of
+    // safe-frame) over the legacy panelOffset (viewport-px from anchor).
+    let px, py;
+    if (effFP) {
+      px = sfRect.x + effFP.x * sfRect.width;
+      py = sfRect.y + effFP.y * sfRect.height;
+    } else {
+      px = ax + (effOffset.x ?? 0);
+      py = ay + (effOffset.y ?? 0);
+    }
+
+    // Tail end-point on the nearest balloon edge (same math as live).
+    const tail = _balloonTailPoint(px, py, balloonW, balloonH, ax, ay);
+
+    // Draw tail (quadratic Bezier) — anchor → tail with a perpendicular
+    // mid-point pulled by ~15% of segment length. Same formula as the
+    // SVG path in the DOM tick.
+    const dx = tail.x - ax, dy = tail.y - ay;
+    const segLen = Math.hypot(dx, dy) || 1;
+    const nx = -dy / segLen, ny = dx / segLen;
+    const cx = (ax + tail.x) / 2 + nx * segLen * 0.15;
+    const cy = (ay + tail.y) / 2 + ny * segLen * 0.15;
+    ctx.save();
+    ctx.globalAlpha   = 0.9 * effOpacity;
+    ctx.strokeStyle   = NOTE_TAIL_COLOR;
+    ctx.lineWidth     = 2;
+    ctx.lineCap       = 'round';
+    ctx.beginPath();
+    ctx.moveTo(ax, ay);
+    ctx.quadraticCurveTo(cx, cy, tail.x, tail.y);
+    ctx.stroke();
+    ctx.restore();
+
+    // Draw balloon — drop shadow + rounded rect + border.
+    ctx.save();
+    ctx.globalAlpha   = effOpacity;
+    ctx.shadowColor   = 'rgba(0,0,0,0.32)';
+    ctx.shadowBlur    = 8;
+    ctx.shadowOffsetY = 2;
+    ctx.fillStyle     = NOTE_BALLOON_FILL;
+    _roundRectPath(ctx, px, py, balloonW, balloonH, NOTE_BALLOON_RADIUS);
+    ctx.fill();
+    ctx.restore();
+
+    ctx.save();
+    ctx.globalAlpha = effOpacity;
+    ctx.strokeStyle = NOTE_BALLOON_STROKE;
+    ctx.lineWidth   = 1;
+    _roundRectPath(ctx, px + 0.5, py + 0.5, balloonW - 1, balloonH - 1, NOTE_BALLOON_RADIUS);
+    ctx.stroke();
+    ctx.restore();
+
+    // Draw text — left-aligned, vertically packed by line height.
+    ctx.save();
+    ctx.globalAlpha  = effOpacity;
+    ctx.fillStyle    = NOTE_TEXT_COLOR;
+    ctx.font         = `${fontSize}px ${NOTE_FONT}`;
+    ctx.textBaseline = 'top';
+    const textX = px + NOTE_PADDING_X;
+    let   textY = py + NOTE_PADDING_Y;
+    for (const line of lines) {
+      ctx.fillText(line, textX, textY);
+      textY += lineHeight;
+    }
+    ctx.restore();
+  }
+
+  return out;
+}
+
+/** Word-wrap `text` so each line fits in `maxWidth` pixels (ctx.font set by caller). */
+function _wrapText(ctx, text, maxWidth) {
+  const out = [];
+  // Preserve explicit newlines — split first on \n, then word-wrap each.
+  for (const para of String(text).split(/\r?\n/)) {
+    if (!para.length) { out.push(''); continue; }
+    const words = para.split(/(\s+)/);   // keep separators so spacing survives
+    let cur = '';
+    for (const w of words) {
+      const trial = cur + w;
+      if (ctx.measureText(trial).width <= maxWidth) {
+        cur = trial;
+      } else {
+        if (cur.length) out.push(cur);
+        // Token wider than maxWidth on its own — break it character-wise so it doesn't render off-balloon.
+        if (ctx.measureText(w).width > maxWidth) {
+          let frag = '';
+          for (const ch of w) {
+            if (ctx.measureText(frag + ch).width > maxWidth) {
+              if (frag.length) out.push(frag);
+              frag = ch;
+            } else {
+              frag += ch;
+            }
+          }
+          cur = frag;
+        } else {
+          cur = w.trimStart();
+        }
+      }
+    }
+    if (cur.length) out.push(cur);
+  }
+  return out.length ? out : [''];
+}
+
+/** Build a rounded-rectangle path on `ctx` (no draw — caller fills/strokes). */
+function _roundRectPath(ctx, x, y, w, h, r) {
+  const rr = Math.max(0, Math.min(r, w / 2, h / 2));
+  ctx.beginPath();
+  ctx.moveTo(x + rr, y);
+  ctx.lineTo(x + w - rr, y);
+  ctx.arcTo (x + w,      y,        x + w,     y + rr,    rr);
+  ctx.lineTo(x + w, y + h - rr);
+  ctx.arcTo (x + w,      y + h,    x + w - rr, y + h,    rr);
+  ctx.lineTo(x + rr, y + h);
+  ctx.arcTo (x,          y + h,    x,           y + h - rr, rr);
+  ctx.lineTo(x, y + rr);
+  ctx.arcTo (x,          y,        x + rr,      y,         rr);
+  ctx.closePath();
+}

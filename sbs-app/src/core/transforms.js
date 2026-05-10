@@ -437,10 +437,11 @@ export function applyNodeSourceTransformToObject3D(node, outerObj3d, object3dByI
 
 /**
  * True if this node type supports user transforms.
- * Only 'model' and 'folder' nodes have transforms (not 'mesh' or 'scene').
+ * 'model', 'folder', and 'flatShape' carry their own transforms;
+ * 'mesh', 'note', and 'scene' do not.
  */
 export function isTransformNode(node) {
-  return node?.type === 'model' || node?.type === 'folder';
+  return node?.type === 'model' || node?.type === 'folder' || node?.type === 'flatShape';
 }
 
 

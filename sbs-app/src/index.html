@@ -23,6 +23,10 @@
   <script src="../vendor/quill.js"></script>
   <!-- Konva: 2D overlay editor (text boxes, images, shapes). Sets window.Konva. -->
   <script src="../vendor/konva.min.js"></script>
+  <!-- polygon-clipping: 2D boolean ops (XOR / union / intersection / difference)
+       used by systems/flat-shapes.js to compose multiple input polygons into
+       the displayed geometry. UMD build sets window.polygonClipping. -->
+  <script src="../vendor/polygon-clipping.umd.js"></script>
   <!-- OBJ / STL / GLTF loaders are ES modules imported by importers.js -->
 </head>
 <body>

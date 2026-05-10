@@ -124,6 +124,14 @@ export function createEmptyProject() {
       items: [],          // StyleTemplate[]
     },
 
+    // Flat-shape templates — project-level polygon library. Instances live
+    // in the scene tree (type='flatShape') and reference these by id.
+    // See systems/flat-shapes.js + ui/shape-tab.js.
+    shapes: {
+      schema_version: 1,
+      items: [],          // ShapeTemplate[]
+    },
+
     // App-level settings saved with the project
     settings: {
       schema_version: 1,
@@ -227,6 +235,92 @@ export function createNode(type, overrides = {}) {
 
 
 // ═══════════════════════════════════════════════════════════════════════════
+//  FLAT SHAPE  ("2D shapes in 3D" — Phase 1)
+// ═══════════════════════════════════════════════════════════════════════════
+//
+// Library-and-instance model, mirrors notes:
+//   - createShapeTemplate(): SHARED polygon + fill, lives at project level
+//                            (state.shapeTemplates), can be re-placed many times.
+//   - createFlatShapeNode(): per-PLACEMENT instance, lives in the scene tree
+//                            with its own transform; references a template by id.
+//
+// The mesh geometry is built from the template's polygon and the instance's
+// transform (localOffset / localQuaternion = the plane's pose at draw time).
+// Geometry is rebuilt on demand by systems/flat-shapes.js whenever the node
+// has no live object3d — save/load only needs the fields below.
+
+/**
+ * Library entry. ONE polygon per template in v1.
+ *
+ *   polygon.outer   [[x,y], …]               main contour (plane-local 2D)
+ *   polygon.holes   [[[x,y], …], …]          optional holes — empty in v1
+ *
+ * Identity (id) is stable; instances reference it. Edit the template ⇒
+ * every instance updates on next mesh rebuild.
+ */
+export function createShapeTemplate(overrides = {}) {
+  return {
+    id:       generateId('shapeTpl'),
+    name:     '',
+    fill:     '#cccccc',
+    // List of input polygons. The displayed geometry is the XOR of all
+    // entries — every additional polygon flips the parity, so two
+    // overlapping rectangles produce a "+" with a clear centre, three
+    // produce a solid centre again, and a fully-contained polygon
+    // becomes a hole (donut). Each entry: { outer:[[x,y]…], holes:[…] }.
+    polygons: [{ outer: [], holes: [] }],
+    ...overrides,
+  };
+}
+
+/**
+ * A placed instance of a shape template. Behaves like a transform-capable
+ * node (model/folder family) for the gizmo + step snapshots — see
+ * isTransformNode() in core/transforms.js.
+ *
+ * `templateId` is REQUIRED: a flatShape with no template renders nothing.
+ * `localScale` is a per-instance uniform scale delta on top of
+ * baseLocalScale (Phase 2 will surface a gizmo handle for it).
+ */
+export function createFlatShapeNode(overrides = {}) {
+  return {
+    id:           generateId('flatShape'),
+    name:         '',
+    type:         'flatShape',
+    localVisible: true,
+    children:     [],
+
+    // Pointer to a state.shapeTemplates entry — owns polygon + fill.
+    templateId:   null,
+
+    // ── Drawing-plane orientation (parent-local quaternion). ───────────
+    // Captured at placement time (the world rotation that aligns the
+    // template's 2D plane with the picked face / camera-facing plane,
+    // expressed in the instance's parent frame). We BAKE this rotation
+    // into the geometry vertices when building the mesh — that way
+    // baseLocalQuaternion stays at identity and the gizmo math behaves
+    // exactly like a folder (no axis-swap bug).
+    planeLocalQuaternion: [0, 0, 0, 1],
+
+    // Transforms — same shape as model/folder so the gizmo works.
+    localOffset:        [0, 0, 0],
+    localQuaternion:    [0, 0, 0, 1],
+    orientationSteps:   [0, 0, 0],
+    baseLocalPosition:  [0, 0, 0],
+    baseLocalQuaternion:[0, 0, 0, 1],   // identity for shapes — plane goes into geometry
+    baseLocalScale:     [1, 1, 1],      // global-only — written by Phase 2.1 scale handle
+    pivotLocalOffset:   [0, 0, 0],
+    pivotLocalQuaternion:[0, 0, 0, 1],
+    pivotEnabled:       false,
+    moveEnabled:        true,
+    rotateEnabled:      true,
+
+    ...overrides,
+  };
+}
+
+
+// ═══════════════════════════════════════════════════════════════════════════
 //  STEP  ← The most important data structure in the app
 // ═══════════════════════════════════════════════════════════════════════════
 /**
@@ -252,6 +346,31 @@ export function createStep(overrides = {}) {
     name:      'New Step',
     chapterId: null,                // optional chapter grouping
     hidden:    false,               // hidden steps are skipped in playback
+
+    // ── Step grouping (Phase A of step-groups) ────────────────────────────
+    // A "step group" is just a normal step with a lock icon and zero or
+    // more sub-steps following it in the steps array. The first step IS
+    // the group head — there's no separate container. Sub-steps point at
+    // their head via groupId; their position in the array defines play
+    // order within the group. Header always shows the head's number for
+    // every sub-step. The viewer plays head + sub-steps as ONE segment.
+    //
+    //   groupHead = true   → this step has the lock icon. May be empty
+    //                        (no sub-steps yet) or carry sub-steps after
+    //                        it in the array. groupId stays null on heads.
+    //   groupId   = <id>   → this step is a sub-step pointing at the
+    //                        groupHead step with that id. groupHead=false.
+    //   both default       → ordinary top-level step, unrelated to groups.
+    //
+    // Invariant (enforced by drag-and-drop): all steps with groupId === X
+    // appear contiguously immediately after step X in the steps array.
+    //
+    //   groupLocked = true   → head stays expanded regardless of activity.
+    //                          Mirrors chapter.locked semantics. Field is
+    //                          only meaningful on heads (groupHead=true).
+    groupHead:   false,
+    groupId:     null,
+    groupLocked: false,
 
     // Voice-over / narration text
     voiceText:      '',

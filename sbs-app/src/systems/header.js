@@ -130,21 +130,47 @@ export function buildRenderContext() {
   const visible  = allSteps.filter(s => !s.hidden && !s.isBaseStep);
   const chapters = state.get('chapters') || [];
   const activeId = state.get('activeStepId');
-  const globalStepIndex = visible.findIndex(s => s.id === activeId);
-  const step     = globalStepIndex >= 0 ? visible[globalStepIndex] : null;
+  const activeStep = visible.find(s => s.id === activeId) || null;
+
+  // Step-groups: the header treats a group as ONE step. When a sub-
+  // step is active, every dynamic header (stepName / stepNumber /
+  // chapterName / chapterNumber) resolves against the head, not the
+  // sub-step. So if Step 5 is a group with 4 sub-steps, the header
+  // reads "Step 5 — first group" the entire time the group plays
+  // (head + every sub-step), and the very next step shows "Step 6"
+  // (NOT "Step 10" as the flat-array index would give).
+  const effectiveStep = activeStep?.groupId
+    ? (visible.find(s => s.id === activeStep.groupId) || activeStep)
+    : activeStep;
+
+  // TOP-LEVEL step index — sub-steps don't count toward stepNumber.
+  // Walk visible[] once, increment only on non-sub-steps, snapshot the
+  // counter when we reach the effective step.
+  let topLevelIdx = -1;
+  let topLevelCounter = 0;
+  for (const s of visible) {
+    if (!s.groupId) topLevelCounter++;
+    if (effectiveStep && s.id === effectiveStep.id) {
+      topLevelIdx = topLevelCounter - 1;
+      break;
+    }
+  }
+
   // Per-chapter step index (Step Number restarts at 1 each chapter)
   // when the user has opted in via state.headerStepNumberPerChapter.
-  // Default false → global numbering (current behaviour).
-  let stepIndex = globalStepIndex;
-  if (state.get('headerStepNumberPerChapter') && step?.chapterId) {
-    const chapterSteps = visible.filter(s => s.chapterId === step.chapterId);
-    stepIndex = chapterSteps.findIndex(s => s.id === activeId);
+  // Default false → global top-level numbering.
+  let stepIndex = topLevelIdx;
+  if (state.get('headerStepNumberPerChapter') && effectiveStep?.chapterId) {
+    const chapterTopLevel = visible.filter(
+      s => !s.groupId && s.chapterId === effectiveStep.chapterId,
+    );
+    stepIndex = chapterTopLevel.findIndex(s => s.id === effectiveStep.id);
   }
-  const chapterIndex = step?.chapterId
-    ? chapters.findIndex(c => c.id === step.chapterId)
+  const chapterIndex = effectiveStep?.chapterId
+    ? chapters.findIndex(c => c.id === effectiveStep.chapterId)
     : -1;
   const chapter  = chapterIndex >= 0 ? chapters[chapterIndex] : null;
-  return { step, stepIndex, chapter, chapterIndex };
+  return { step: effectiveStep, stepIndex, chapter, chapterIndex };
 }
 
 // ─── State mutations (centralised so undo/redo and events stay in sync) ─────

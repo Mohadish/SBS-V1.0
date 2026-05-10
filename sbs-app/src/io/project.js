@@ -154,6 +154,12 @@ export function serialize() {
   project.styles = project.styles || { schema_version: 1, items: [] };
   project.styles.items = JSON.parse(JSON.stringify(state.get('styleTemplates') || []));
 
+  // Flat-shape templates — project-level polygon library. Instances live
+  // as regular tree nodes (type='flatShape', templateId pointer) and
+  // round-trip via stripNode like every other tree node.
+  project.shapes = project.shapes || { schema_version: 1, items: [] };
+  project.shapes.items = JSON.parse(JSON.stringify(state.get('shapeTemplates') || []));
+
   // Cables — 3D wires routed between mesh anchors and free points.
   // The cable list is project-global (topology-hoisted); per-step
   // variable overrides ride inside step.snapshot.cables, captured by
@@ -535,6 +541,7 @@ export function applyProjectToState(project) {
     headerDefault:        project.headers?.default           || state.get('headerDefault'),
     headerStepNumberPerChapter: !!project.headers?.stepNumberPerChapter,
     styleTemplates:       project.styles?.items              || [],
+    shapeTemplates:       project.shapes?.items              || [],
     // Cables — older .sbsproj files don't have this section; default
     // to empty + factory globals so the load is clean. The 3-tier
     // anchor resolver gracefully handles missing meshes via cached
@@ -563,6 +570,13 @@ export function applyProjectToState(project) {
   // driving the view (today's behaviour). Templates land in cameraViews
   // already; users opt steps into them via the per-step camera dropdown.
   _migrateStepCameraBindings();
+
+  // Step-group fields migration (Phase A of "step groups"): legacy steps
+  // had no groupHead / groupId fields — default groupHead=false and
+  // groupId=null so every loaded step is treated as a normal top-level
+  // step. Files written before this migration was added round-trip
+  // identically; new files written after it carry the fields.
+  _migrateStepGroupFields();
 
   // Drop stale narration.dataFile pointers — pre voice-subfolder format
   // (top-level "<40hex>.wav") and any fast OS voice that earlier versions
@@ -601,6 +615,33 @@ function _migrateStepCameraBindings() {
   }
   if (migrated) {
     console.log(`[migrate] Defaulted cameraBinding on ${migrated} legacy step(s) to free-camera.`);
+    state.setState({ steps: [...stepsArr] });
+  }
+}
+
+function _migrateStepGroupFields() {
+  const stepsArr = state.get('steps') || [];
+  let migrated = 0;
+  const validIds = new Set(stepsArr.map(s => s?.id));
+  for (const step of stepsArr) {
+    if (typeof step.groupHead !== 'boolean')   { step.groupHead   = false; migrated++; }
+    if (step.groupId === undefined)            { step.groupId     = null;  migrated++; }
+    if (typeof step.groupLocked !== 'boolean') { step.groupLocked = false; migrated++; }
+    // Sanity: if groupId points at a non-existent step, drop the link
+    // (defensive — shouldn't happen in well-formed files but cheap to
+    // check). Same for the rare case of a step claiming to be both head
+    // and sub-step at once: head wins, link is cleared.
+    if (step.groupId && !validIds.has(step.groupId)) {
+      step.groupId = null;
+      migrated++;
+    }
+    if (step.groupHead === true && step.groupId !== null) {
+      step.groupId = null;
+      migrated++;
+    }
+  }
+  if (migrated) {
+    console.log(`[migrate] Defaulted/repaired step-group fields on ${migrated} legacy step record(s).`);
     state.setState({ steps: [...stepsArr] });
   }
 }
@@ -835,6 +876,30 @@ export function applySpecFieldsToNodes(specNode, nodeById, parentSpec = null) {
         };
         meshLive.children = [...(meshLive.children || []), noteLive];
         nodeById.set(noteLive.id, noteLive);
+      }
+    }
+    return;
+  }
+
+  // ── Flat shapes — same story: parented under a mesh / folder / model
+  // and never produced by the fresh-asset import path. Re-attach under
+  // the parent recorded in the saved spec so save/load round-trips keep
+  // the instance in the tree (and thus on screen).
+  // The mount lifecycle in steps.js's rebuildFromTreeSpec rebuilds the
+  // THREE.Mesh from the templated polygon on the next step activation.
+  if (specNode.type === 'flatShape') {
+    const parentId  = parentSpec?.id ?? null;
+    const parentLive = parentId ? nodeById.get(parentId) : null;
+    if (parentLive) {
+      const exists = (parentLive.children || []).some(c => c.id === specNode.id);
+      if (!exists) {
+        const shapeLive = {
+          ...specNode,
+          object3d: null,                  // rebuilt by ensureFlatShapeObject3D
+          children: [],
+        };
+        parentLive.children = [...(parentLive.children || []), shapeLive];
+        nodeById.set(shapeLive.id, shapeLive);
       }
     }
     return;

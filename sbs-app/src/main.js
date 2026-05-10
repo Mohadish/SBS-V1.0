@@ -24,6 +24,7 @@ import * as actions from './systems/actions.js';
 const { setupUndoKeyboard, setSelection: actionSetSelection, clearSelection: actionClearSelection, resetTransform } = actions;
 import { gizmo }           from './ui/gizmo.js';
 import { initGizmoNumeric } from './ui/gizmo-numeric.js';
+import * as shapeEditor   from './systems/shape-editor.js';   // Phase 1: 2D shapes in 3D
 import { undoManager }    from './systems/undo.js';
 import { selectionActs }  from './systems/select-act.js';
 
@@ -214,6 +215,11 @@ state.on('change:projectPath', () => { undoManager.clear(); selectionActs.clear(
 
 // ── Gizmo: follow selection ───────────────────────────────────────────────────
 function _syncGizmoToSelection() {
+  // While the polygon editor is active the 3D gizmo would just float on
+  // top of the in-place 2D handles, confusing the user. Hide it for the
+  // duration of the edit session — it'll come back when the editor exits
+  // (the editor emits `change:shapeDrawing` on tear-down, see below).
+  if (state.get('shapeDrawing')) { gizmo.hide(); return; }
   // E2: socket selection takes the highest precedence — the actions
   // make the three selection states mutually exclusive, but order
   // here defensively in case a future caller sets two at once.
@@ -381,6 +387,7 @@ state.on('selection:change',            _syncGizmoToSelection);
 state.on('change:treeData',             _syncGizmoToSelection);
 state.on('change:selectedCablePoint',   _syncGizmoToSelection);
 state.on('change:selectedCableSocket',  _syncGizmoToSelection);
+state.on('change:shapeDrawing',         _syncGizmoToSelection);
 
 // ══════════════════════════════════════════════════════════════════════════════
 //  6. VIEWPORT EVENT HANDLERS
@@ -408,6 +415,18 @@ state.on('change:cableInsertPickingTarget', target => {
 // C5-E2: same crosshair signal for socket re-anchor pick mode.
 state.on('change:cableSocketReanchorPickingId', target => {
   canvas.style.cursor = target ? 'crosshair' : '';
+});
+// Shape editor — same crosshair signal during draw mode (pickPlane or addVertices).
+state.on('change:shapeDrawing', dr => {
+  canvas.style.cursor = dr ? 'crosshair' : '';
+});
+// Shape edit-pick mode — same crosshair while waiting for instance click.
+state.on('change:shapeEditPickInstanceForId', id => {
+  canvas.style.cursor = id ? 'crosshair' : '';
+});
+// Shape placement-pick mode — same crosshair while waiting for click.
+state.on('change:shapePlacementForId', id => {
+  canvas.style.cursor = id ? 'crosshair' : '';
 });
 
 // ── Marquee (box-select) overlay ─────────────────────────────────────────────
@@ -477,6 +496,60 @@ function _pickInRect(x1, y1, x2, y2) {
 // ── Pointer down on canvas: start potential drag-select ──────────────────────
 
 canvas.addEventListener('pointerdown', e => {
+  // Shape editor — Phase 1 of "2D shapes in 3D". When active, the editor
+  // owns viewport clicks: left = pick plane / add vertex / close, right
+  // = commit. Other modes (gizmo, picking, etc.) are bypassed entirely.
+  if (shapeEditor.isDrawing() && (e.button === 0 || e.button === 2)) {
+    // Right-click in edit mode shouldn't be consumed by the editor's
+    // pointerdown — let the contextmenu handler take over to show the
+    // edit-mode menu (Add point / New shape / Exit).
+    const phase = state.get('shapeDrawing')?.phase;
+    if (e.button === 2 && phase === 'edit') return;
+    e.preventDefault();
+    e.stopPropagation();
+    _gizmoConsumed = true;
+    shapeEditor.onPointerDown(e.clientX, e.clientY, e.button);
+    return;
+  }
+
+  // Place-shape picker — the next left click drops one instance
+  // tangent to the hit face (or camera-facing on empty space) and
+  // disarms. Right-click / Esc cancels (handled in the keydown +
+  // contextmenu blocks).
+  const placeTplId = state.get('shapePlacementForId');
+  if (placeTplId && e.button === 0) {
+    e.preventDefault();
+    e.stopPropagation();
+    _gizmoConsumed = true;
+    actions.placeShapeAtClick(placeTplId, e.clientX, e.clientY);
+    return;
+  }
+  if (placeTplId && e.button === 2) {
+    e.preventDefault();
+    e.stopPropagation();
+    _gizmoConsumed = true;
+    actions.cancelShapePlacement();
+    return;
+  }
+
+  // Edit-shape multi-instance pick mode — the next left-click picks
+  // which flatShape instance to edit. Clicks elsewhere cancel.
+  const editPickTplId = state.get('shapeEditPickInstanceForId');
+  if (editPickTplId && e.button === 0) {
+    e.preventDefault();
+    e.stopPropagation();
+    _gizmoConsumed = true;
+    const hit = sceneCore.pick(e.clientX, e.clientY);
+    const meshNodeId = hit?.object?.userData?.flatShapeNodeId
+                    ?? hit?.object?.userData?.meshNodeId;
+    if (meshNodeId) {
+      actions.pickInstanceForEdit(meshNodeId);
+    } else {
+      actions.cancelShapeEditPick();
+    }
+    return;
+  }
+
   if (e.button !== 0) return;
 
   // Note picking — clicks while in this mode raycast the scene; on a
@@ -637,6 +710,10 @@ canvas.addEventListener('pointerdown', e => {
   if (state.get('pivotEditNodeId')) {
     actions.commitPivotEdit();
   }
+  // Same pattern for translate-global mode (Phase 2).
+  if (state.get('globalEditNodeId')) {
+    actions.commitGlobalEdit();
+  }
 
   _dragStartX   = e.clientX;
   _dragStartY   = e.clientY;
@@ -647,6 +724,13 @@ canvas.addEventListener('pointerdown', e => {
 // ── Pointer move: gizmo drag or grow marquee ─────────────────────────────────
 
 canvas.addEventListener('pointermove', e => {
+  // Shape editor — keep the rubber-band line + snap-close hover live as
+  // the cursor moves, with or without a button held.
+  if (shapeEditor.isDrawing()) {
+    shapeEditor.onPointerMove(e.clientX, e.clientY);
+    return;
+  }
+
   if (!(e.buttons & 1)) {
     // 3-point pivot center mode — refresh the snap hover marker.
     if (state.get('pivotCenterPickingNodeId')) {
@@ -739,6 +823,14 @@ window.addEventListener('pointermove', e => {
 // ── Pointer up: finalise gizmo or selection ───────────────────────────────────
 
 window.addEventListener('pointerup', e => {
+  // Shape editor: end an in-progress vertex drag (edit mode). Bail before
+  // any selection-clearing logic so a click-drag-release on a vertex
+  // doesn't deselect.
+  if (shapeEditor.isDrawing()) {
+    shapeEditor.onPointerUp();
+    if (state.get('shapeDrawing')?.phase === 'edit') return;
+  }
+
   if (gizmo.isDragging) {
     gizmo.onPointerUp();
     return;
@@ -903,6 +995,18 @@ canvas.addEventListener('click', e => {
 // ── Double-click: select all children of container ───────────────────────────
 
 canvas.addEventListener('dblclick', e => {
+  // Shape editor: in 'edit' mode a double-click on a vertex selects the
+  // entire polygon — Delete / Backspace then removes the whole polygon
+  // instead of one vertex. Lets the editor consume the event before the
+  // generic mesh-container double-click logic runs.
+  if (shapeEditor.isDrawing()
+      && state.get('shapeDrawing')?.phase === 'edit'
+      && shapeEditor.onDoubleClick(e.clientX, e.clientY)) {
+    e.preventDefault();
+    e.stopPropagation();
+    return;
+  }
+
   const root = state.get('treeData');
   const nbm  = state.get('nodeById');
   if (!root || !nbm) return;
@@ -934,6 +1038,51 @@ canvas.addEventListener('dblclick', e => {
 canvas.addEventListener('contextmenu', e => {
   e.preventDefault();
   hideContextMenu();
+
+  // Shape editor right-click semantics depend on phase:
+  //   - addVertices: pointerdown(button=2) committed the polygon → just
+  //     suppress the menu (no further handling).
+  //   - edit:        show a small menu — "Add point" if the click was on
+  //     an edge segment, "New shape" if it landed on the empty grid.
+  //     Esc / outside-click closes the menu without doing anything.
+  if (shapeEditor.isDrawing()) {
+    const phase = state.get('shapeDrawing')?.phase;
+    if (phase !== 'edit') return;
+    // R-click ON the polygon gizmo → floating transform panel
+    // (Move X/Y, Rotate, Scale). Wins over the edge / empty menu.
+    if (shapeEditor.pickPolyGizmoForMenu(e.clientX, e.clientY)) {
+      _showPolyTransformPanel(e.clientX, e.clientY);
+      return;
+    }
+    const edgeHit = shapeEditor.pickEdgeForMenu(e.clientX, e.clientY);
+    const items = [];
+    if (edgeHit) {
+      items.push({
+        label: '＋ Add point here',
+        action: () => shapeEditor.addPointOnEdge(e.clientX, e.clientY),
+      });
+      // Right-click on an edge identifies which polygon it belongs to —
+      // offer a one-click "Delete polygon" path for the user who wants
+      // to remove a whole shape without first selecting all its vertices.
+      items.push({
+        label: '🗑 Delete this polygon',
+        action: () => shapeEditor.deleteSelectedPolygon(edgeHit.polyIdx),
+      });
+    } else {
+      // Empty grid right-click — append a NEW polygon to this template.
+      // Each additional polygon is XOR-ed with the existing geometry, so
+      // overlapping rectangles produce a "+" with a clear centre, donuts,
+      // etc. Snap-close the new polygon to commit it back to edit mode.
+      items.push({
+        label: '＋ Add polygon (XOR with existing)',
+        action: () => shapeEditor.newShape(),
+      });
+    }
+    items.push({ label: '─', disabled: true });
+    items.push({ label: 'Exit edit  [Esc]', action: () => actions.cancelShapeDraw() });
+    showContextMenu(items, e.clientX, e.clientY);
+    return;
+  }
 
   // 3-point center pivot — show a tool-specific menu in this mode and
   // suppress the regular viewport context menu.
@@ -1160,6 +1309,41 @@ canvas.addEventListener('contextmenu', e => {
     }
   }
 
+  // Flat-shape entries (Phase 2 / 2.1 / 2.3) — shown ABOVE the generic
+  // transform actions so they're easy to find. Mirrors the equivalent
+  // tree-row right-click menu so users get the same options whether
+  // they right-click in the viewport or in the tree.
+  if (node?.type === 'flatShape') {
+    const inGlobal = state.get('globalEditNodeId') === node.id;
+    items.push({
+      label: 'Edit polygon…',
+      action: () => actions.startShapeEdit(node.templateId),
+    });
+    items.push({
+      label: inGlobal ? '✓ Global Transform (active)' : 'Global Transform',
+      action: () => inGlobal
+        ? actions.commitGlobalEdit()
+        : actions.enterGlobalEdit(node.id),
+    });
+    items.push({
+      label: 'Copy step pose',
+      action: () => actions.copyInstanceStepPose(node.id),
+    });
+    const stepSel = state.get('selectedStepIds');
+    items.push({
+      label: stepSel instanceof Set && stepSel.size >= 2
+        ? `Paste step pose to ${stepSel.size} steps`
+        : 'Paste step pose',
+      disabled: !actions.hasInstancePoseClipboard(),
+      action: () => actions.pasteInstanceStepPose(node.id),
+    });
+    items.push({
+      label: '🗑 Delete shape',
+      action: () => actions.deleteFlatShapeInstance(node.id),
+    });
+    items.push({ label: '─', disabled: true });
+  }
+
   if (isTransformable) {
     items.push({ label: '↺ Reset transform', action: () => resetTransform(selId) });
     items.push({ label: '─', disabled: true });
@@ -1239,6 +1423,108 @@ canvas.addEventListener('contextmenu', e => {
 
   if (items.length) showContextMenu(items, e.clientX, e.clientY);
 });
+
+/**
+ * Floating transform panel for the polygon gizmo. Shown on R-click of
+ * the gizmo while in shape edit mode. Type-and-Enter applies a delta:
+ *   Move X / Move Y → translate by N plane-units
+ *   Rotate          → rotate by N degrees around centroid
+ *   Scale           → multiply distance-from-centroid by N
+ * Each apply is a single undo entry. Esc / outside click closes.
+ */
+let _polyTransformPanel = null;
+function _showPolyTransformPanel(clientX, clientY) {
+  _hidePolyTransformPanel();
+  const panel = document.createElement('div');
+  panel.style.cssText = [
+    'position:fixed',
+    `left:${clientX + 12}px`,
+    `top:${clientY - 8}px`,
+    'z-index:9999',
+    'background:#1e293b',
+    'border:1px solid #334155',
+    'border-radius:8px',
+    'padding:12px 14px',
+    'min-width:200px',
+    'box-shadow:0 8px 32px rgba(0,0,0,0.5)',
+    'font-size:12px',
+    'color:#e2e8f0',
+    'user-select:none',
+  ].join(';');
+  const fieldStyle = 'flex:1;background:var(--panel,#0f172a);border:1px solid var(--line,#334155);border-radius:4px;color:var(--text,#e2e8f0);padding:3px 6px;font-size:12px;outline:none;width:0;font-family:monospace;';
+  const row = (id, label, color, value) => `
+    <div style="display:flex;align-items:center;gap:8px;margin-bottom:4px;">
+      <span style="color:${color};font-weight:700;width:46px;flex-shrink:0;">${label}</span>
+      <input data-field="${id}" type="text" value="${value}" autocomplete="off" spellcheck="false" style="${fieldStyle}" />
+    </div>`;
+  panel.innerHTML = `
+    <div style="font-weight:700;font-size:13px;color:#f1f5f9;margin-bottom:10px;letter-spacing:0.3px;border-bottom:1px solid #1e293b;padding-bottom:6px;">Polygon Transform</div>
+    <div style="margin-bottom:8px;">
+      <div style="font-size:10px;color:#64748b;margin-bottom:4px;letter-spacing:0.5px;">TRANSLATE (delta, plane-local)</div>
+      ${row('tx', 'X',     '#e05555', '0')}
+      ${row('ty', 'Y',     '#55cc55', '0')}
+    </div>
+    <div style="margin-bottom:8px;">
+      <div style="font-size:10px;color:#64748b;margin-bottom:4px;letter-spacing:0.5px;">ROTATE (° around centroid)</div>
+      ${row('rz', 'Z',     '#5588e0', '0')}
+    </div>
+    <div>
+      <div style="font-size:10px;color:#64748b;margin-bottom:4px;letter-spacing:0.5px;">SCALE (factor, 1 = no change)</div>
+      ${row('sc', 'Scale', '#c0c8d6', '1')}
+    </div>
+    <div style="margin-top:8px;font-size:10px;color:#64748b;">Type a value, press Enter to apply.</div>
+  `;
+  document.body.appendChild(panel);
+  _polyTransformPanel = panel;
+
+  // Nudge into viewport.
+  requestAnimationFrame(() => {
+    const r = panel.getBoundingClientRect();
+    const vw = window.innerWidth, vh = window.innerHeight;
+    if (r.right  > vw - 8) panel.style.left = `${vw - r.width  - 8}px`;
+    if (r.bottom > vh - 8) panel.style.top  = `${vh - r.height - 8}px`;
+  });
+
+  const apply = (id, raw) => {
+    const v = parseFloat(raw);
+    if (!Number.isFinite(v)) return;
+    if (id === 'tx') shapeEditor.applyPolyTranslate(v, 0);
+    if (id === 'ty') shapeEditor.applyPolyTranslate(0, v);
+    if (id === 'rz') shapeEditor.applyPolyRotate(v);
+    if (id === 'sc') shapeEditor.applyPolyScale(v);
+  };
+
+  panel.querySelectorAll('input[data-field]').forEach(inp => {
+    inp.addEventListener('keydown', ev => {
+      if (ev.key !== 'Enter') return;
+      ev.preventDefault();
+      apply(inp.dataset.field, inp.value);
+      // Reset to neutral default so a follow-up Enter doesn't re-apply.
+      inp.value = (inp.dataset.field === 'sc') ? '1' : '0';
+      inp.select();
+    });
+  });
+  // First field gets focus.
+  setTimeout(() => panel.querySelector('input[data-field="tx"]')?.focus(), 0);
+
+  const onDown = (ev) => { if (!panel.contains(ev.target)) _hidePolyTransformPanel(); };
+  const onKey  = (ev) => { if (ev.key === 'Escape') { ev.preventDefault(); _hidePolyTransformPanel(); } };
+  setTimeout(() => {
+    document.addEventListener('pointerdown', onDown, { capture: true });
+    document.addEventListener('keydown', onKey, { capture: true });
+    panel._cleanup = () => {
+      document.removeEventListener('pointerdown', onDown, { capture: true });
+      document.removeEventListener('keydown', onKey, { capture: true });
+    };
+  }, 0);
+}
+
+function _hidePolyTransformPanel() {
+  if (!_polyTransformPanel) return;
+  _polyTransformPanel._cleanup?.();
+  _polyTransformPanel.remove();
+  _polyTransformPanel = null;
+}
 
 /**
  * Compute a Box3 over the union of all selected nodes' object3ds and
@@ -1373,6 +1659,28 @@ window.addEventListener('keydown', async e => {
   // ── Selection ────────────────────────────────────────────────────────────
   if (key === 'Escape') {
     if (gizmo.isDragging) { gizmo.onPointerUp(); return; }
+    // Shape editor — Esc abandons in-progress polygon (no undo entry,
+    // nothing was committed). Highest priority among picking modes.
+    if (shapeEditor.isDrawing()) {
+      actions.cancelShapeDraw();
+      return;
+    }
+    // Edit-pick mode (waiting for the user to click an instance to edit).
+    if (state.get('shapeEditPickInstanceForId')) {
+      actions.cancelShapeEditPick();
+      return;
+    }
+    // Place-shape picker — Esc disarms.
+    if (state.get('shapePlacementForId')) {
+      actions.cancelShapePlacement();
+      return;
+    }
+    // Translate-global — Esc rolls back the open session and exits mode.
+    // Per-drag undo entries already pushed stay in the log.
+    if (state.get('globalEditNodeId')) {
+      actions.cancelGlobalEdit();
+      return;
+    }
     // 3-point center pivot — Esc cancels the whole picking session.
     if (state.get('pivotCenterPickingNodeId')) {
       actions.cancelPivotCenterPicking();
@@ -1435,6 +1743,17 @@ window.addEventListener('keydown', async e => {
     if (stepSel instanceof Set && stepSel.size) {
       actions.clearSelectedSteps();
     }
+    return;
+  }
+
+  // ── Shape editor: Delete removes the selection (edit mode) ──────────
+  // Selection can be a single vertex (single click) or a whole polygon
+  // (double-click on any vertex of that polygon). deleteSelected
+  // dispatches to the right path.
+  if ((key === 'Delete' || key === 'Backspace')
+      && state.get('shapeDrawing')?.phase === 'edit') {
+    e.preventDefault();
+    shapeEditor.deleteSelected();
     return;
   }
 

@@ -122,6 +122,34 @@ function createInitialState() {
     // box is free-form. See systems/style-templates.js.
     styleTemplates: [],               // StyleTemplate[]
 
+    // ── Flat-shape templates — project-level polygon library. Each entry
+    // owns a polygon + fill; placed instances live in the scene tree
+    // (type='flatShape', templateId points back here). Re-using a template
+    // reuses its geometry; editing it ripples to every instance.
+    // See systems/flat-shapes.js + ui/shape-tab.js.
+    shapeTemplates: [],               // ShapeTemplate[]
+
+    // Editor mode for "create shape" / "edit shape" — populated by
+    // actions.startShapeDraw / startShapeEdit; cleared on commit /
+    // cancel. main.js reads this to route viewport pointerdown.
+    //   { phase: 'pickPlane' | 'addVertices', templateId|null,
+    //     plane: { origin:[x,y,z], normal:[x,y,z], qx:[x,y,z], qy:[x,y,z] } | null,
+    //     points: [[x,y], …]   plane-local 2D vertices captured so far }
+    shapeDrawing: null,
+
+    // Edit-shape multi-instance pick mode. When set, the next viewport
+    // click on a flatShape mesh of THIS templateId opens the editor at
+    // that instance's plane. Other clicks (or Esc) cancel.
+    shapeEditPickInstanceForId: null,
+
+    // Place-shape picker mode. When set, the next viewport click on a
+    // face spawns a fresh instance of THIS template tangent to the hit
+    // surface, parented under the hit object's data-tree parent (or
+    // the hit object itself if it's a folder/model). Clicking empty
+    // space falls back to a camera-facing plane, parented to scene root.
+    // Esc cancels. Single-shot — auto-disarms after one place.
+    shapePlacementForId: null,
+
     // ── Cables — 3D wires/conduits routed between mesh anchors and
     // free points. The LIVE state of cables (current step's view).
     // step.snapshot.cables holds per-step variable overrides
@@ -202,6 +230,18 @@ function createInitialState() {
     // moving the geometry. Cleared on viewport pointerdown anywhere
     // outside the gizmo handles (RED → BLUE commit).
     pivotEditNodeId: null,
+
+    // Node currently in GLOBAL-TRANSFORM mode (Phase 2 / 2.1 — flat shapes
+    // only). When set, the gizmo shows a RED dot at its hub and ALL gizmo
+    // drags write to base fields instead of per-step deltas:
+    //   translate / plane → baseLocalPosition  (was: localOffset)
+    //   rotate            → baseLocalQuaternion (was: localQuaternion)
+    //   scale             → baseLocalScale     (was: localScale)
+    // Result: the change ripples to every step uniformly rather than
+    // mutating just the active step's snapshot.transforms[id].
+    // Cleared on viewport pointerdown outside gizmo handles (mirror of
+    // pivot-edit commit). Esc rolls back the open session.
+    globalEditNodeId: null,
 
     // Node id awaiting a "snap pivot to surface" raycast. When set,
     // the next viewport pointerdown is intercepted: it raycasts
