@@ -1,0 +1,54 @@
+{
+  "name": "sbs-viewer",
+  "version": "1.0.0",
+  "description": "SBS Viewer — standalone player for .sbsproc / .sbsasm files",
+  "main": "main.js",
+  "scripts": {
+    "start": "electron .",
+    "build": "electron-builder",
+    "build:win":   "electron-builder --win",
+    "build:mac":   "electron-builder --mac",
+    "build:linux": "electron-builder --linux"
+  },
+  "build": {
+    "appId": "com.sbs.viewer",
+    "productName": "SBS Viewer",
+    "directories": {
+      "output": "dist"
+    },
+    "files": [
+      "main.js",
+      "viewer.html",
+      "viewer.js",
+      "styles.css",
+      "sample.sbsasm",
+      "package.json"
+    ],
+    "win": {
+      "target": [
+        "portable",
+        "nsis"
+      ]
+    },
+    "portable": {
+      "artifactName": "SBS-Viewer-${version}-portable.exe"
+    },
+    "mac": {
+      "target": "dmg"
+    },
+    "linux": {
+      "target": "AppImage"
+    },
+    "nsis": {
+      "oneClick": false,
+      "perMachine": false,
+      "allowToChangeInstallationDirectory": true,
+      "createDesktopShortcut": true,
+      "createStartMenuShortcut": true
+    }
+  },
+  "devDependencies": {
+    "electron": "^28.3.3",
+    "electron-builder": "^24.13.3"
+  }
+}
