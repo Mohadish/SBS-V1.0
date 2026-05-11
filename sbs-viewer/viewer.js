@@ -468,10 +468,20 @@ function _bldAddFiles(fileList) {
   for (const f of accepted) {
     const baseName  = f.name.replace(/\.sbsproc$/i, '');
     const niceTitle = baseName.replace(/[-_]+/g, ' ').replace(/\s+/g, ' ').trim();
-    _bldAddRow({
+    const row = _bldAddRow({
       title: niceTitle || baseName,
       url:   `./${f.name}`,
       _file: f.name,
+    });
+    // Async — extract a poster frame and stamp it on the row. The
+    // manager keeps editing while thumbs land. Failure is silent;
+    // the row just stays without a thumb (worker grid falls back to
+    // the index badge).
+    _extractThumbFromSbsproc(f).then(dataUrl => {
+      if (!dataUrl) return;
+      row.dataset.thumb = dataUrl;
+      const slot = row.querySelector('.row-thumb');
+      if (slot) slot.innerHTML = `<img src="${dataUrl}" alt="" />`;
     });
   }
   if (accepted.length) {
@@ -479,6 +489,66 @@ function _bldAddFiles(fileList) {
   } else if (skipped) {
     _bldStatus('Only .sbsproc files are accepted.', true);
   }
+}
+
+/**
+ * Extract a single poster frame from a .sbsproc as a small JPEG data
+ * URL. Used by the builder to populate `entry.thumb` in the resulting
+ * .sbsasm so the worker assembly grid has visuals. Hidden <video>
+ * element + canvas — no editor / extension dependencies. Bails after
+ * 8 s in case the source MP4 seek hangs.
+ */
+async function _extractThumbFromSbsproc(file) {
+  const buf = await file.arrayBuffer();
+  let videoBlob;
+  try {
+    const parsed = _parseSbsProc(buf);
+    videoBlob = parsed.videoBlob;
+  } catch {
+    return null;             // not a valid .sbsproc — nothing to grab
+  }
+  return new Promise((resolve) => {
+    const url   = URL.createObjectURL(videoBlob);
+    const video = document.createElement('video');
+    video.muted       = true;
+    video.playsInline = true;
+    video.preload     = 'auto';
+    video.src         = url;
+
+    let done = false;
+    const finish = (out) => {
+      if (done) return;
+      done = true;
+      URL.revokeObjectURL(url);
+      resolve(out);
+    };
+    video.addEventListener('loadeddata', () => {
+      // Seek a hair into the timeline so we don't grab a black warmup
+      // frame. 1 s, or 25 % into a short clip — whichever is smaller.
+      const seekTo = Math.min(1.0, (video.duration || 4) * 0.25);
+      video.currentTime = Math.max(0, seekTo);
+    });
+    video.addEventListener('seeked', () => {
+      try {
+        const srcW = video.videoWidth  || 320;
+        const srcH = video.videoHeight || 180;
+        const W = 240;                  // small enough to keep .sbsasm lean
+        const H = Math.max(1, Math.round(W * srcH / srcW));
+        const canvas = document.createElement('canvas');
+        canvas.width  = W;
+        canvas.height = H;
+        const ctx = canvas.getContext('2d');
+        ctx.drawImage(video, 0, 0, W, H);
+        // 0.5 quality → ~6–12 KB per thumb in base64 → ~200 KB for a
+        // 20-process assembly. Acceptable JSON overhead.
+        finish(canvas.toDataURL('image/jpeg', 0.5));
+      } catch {
+        finish(null);
+      }
+    });
+    video.addEventListener('error', () => finish(null));
+    setTimeout(() => finish(null), 8000);
+  });
 }
 
 /**
@@ -501,9 +571,17 @@ function _bldAddRow(seed = null) {
   row.dataset.url         = seed?.url         || '';
   row.dataset.description = seed?.description || '';
   row.dataset.thumb       = seed?.thumb       || '';
+  // Thumb slot — populated either from the seed (when loading an
+  // existing .sbsasm) or asynchronously from the dropped .sbsproc's
+  // first frame (see _extractThumbFromSbsproc). Falls back to a
+  // page-icon glyph until/unless an image is available.
+  const thumbInner = seed?.thumb
+    ? `<img src="${_escAttr(seed.thumb)}" alt="" />`
+    : '📄';
   row.innerHTML = `
     <span class="drag-handle" title="Drag to reorder">⋮⋮</span>
     <span class="row-num"></span>
+    <span class="row-thumb">${thumbInner}</span>
     <input class="row-title" type="text" value="${_escAttr(seed?.title || '')}" placeholder="Process title" />
     <span class="row-file" title="${_escAttr(fileLabel)}">${_escapeHtml(fileLabel)}</span>
     <button class="row-delete" type="button" title="Remove process">✕</button>
@@ -545,6 +623,7 @@ function _bldAddRow(seed = null) {
 
   els.bldRows.appendChild(row);
   _bldRenumber();
+  return row;
 }
 let _bldDragging = null;
 
