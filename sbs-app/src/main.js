@@ -200,6 +200,9 @@ initUserSettings()
     if (typeof sc.cameraZoomScale === 'number') {
       sceneCore.setUserZoomScale(sc.cameraZoomScale);
     }
+    if (typeof sc.shapeFaceAngleThreshold === 'number') {
+      state.setState({ shapeFaceAngleThreshold: sc.shapeFaceAngleThreshold });
+    }
     // Default background only applies to brand-new projects (when the
     // current viewport still holds the schema default). Projects that
     // load from disk overwrite these via their own backgroundColor /

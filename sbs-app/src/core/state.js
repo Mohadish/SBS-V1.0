@@ -151,11 +151,17 @@ function createInitialState() {
     shapePlacementForId: null,
 
     // Create-shape-from-face picker mode. When true, the next viewport
-    // click on a mesh face slices the clicked face's connected component
-    // (element) with the face's plane and lands the cross-section
-    // polyline as a new shape template + instance. Right-click / Esc
-    // cancels. Single-shot — auto-disarms after one create.
+    // click on a mesh face floods adjacent triangles whose normal is
+    // within shapeFaceAngleThreshold of the picked triangle's normal,
+    // then traces the boundary edges and lands the result as a shape
+    // template + instance. Right-click / Esc cancels. Single-shot.
     shapeFromFacePicking: false,
+
+    // Angle threshold (degrees) for the create-from-face flood fill.
+    // Anchor-compare: triangles whose normal differs from the picked
+    // triangle's normal by more than this are excluded from the face
+    // set. Persisted to user-settings.scene.shapeFaceAngleThreshold.
+    shapeFaceAngleThreshold: 5,
 
     // ── Cables — 3D wires/conduits routed between mesh anchors and
     // free points. The LIVE state of cables (current step's view).
