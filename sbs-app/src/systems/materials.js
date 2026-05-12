@@ -1426,11 +1426,22 @@ gl_FragColor.a = 1.0;
 
   _setMaterialFade(material, value) {
     if (!material) return;
+    let handled = false;
     if (material.userData?.transitionFadeState) {
       material.userData.transitionFadeState.value = value;
+      handled = true;
     }
     if (material.isShaderMaterial && material.uniforms?.transitionOpacity) {
       material.uniforms.transitionOpacity.value = value;
+      handled = true;
+    }
+    // Fallback for plain transparent materials (flatShape MeshBasicMaterial
+    // doesn't carry the dither-fade shader chunk regular meshes get).
+    // Direct alpha works fine since the material was built with
+    // transparent=true. Skip if the material isn't already marked
+    // transparent — flipping it dynamically requires needsUpdate.
+    if (!handled && material.transparent === true && 'opacity' in material) {
+      material.opacity = value;
     }
   }
 
