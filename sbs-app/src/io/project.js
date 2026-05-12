@@ -25,10 +25,47 @@ import {
   APP_VERSION,
   migrateSection,
   generateId,
+  createCameraBinding,
 }                                     from '../core/schema.js';
 import { materials }                  from '../systems/materials.js';
 import { steps   }                  from '../systems/steps.js';
 import * as narrationCache           from '../systems/narration-cache.js';
+
+/**
+ * H1 migration: append `cable(500)` / `overlay(500)` slots to legacy
+ * animation preset strings so projects saved before these phases
+ * existed pick them up automatically. Idempotent — re-running on a
+ * preset that already mentions a slot leaves it untouched.
+ */
+function _migrateAnimationPresets(items) {
+  return items.map(p => {
+    if (!p?.animation || typeof p.animation !== 'string') return p;
+    let str = p.animation;
+    if (!/\bcable\b/.test(str))   str = `${str.trim().replace(/,?\s*$/, '')}, cable(500)`;
+    if (!/\boverlay\b/.test(str)) str = `${str.trim().replace(/,?\s*$/, '')}, overlay(500)`;
+    return str === p.animation ? p : { ...p, animation: str };
+  });
+}
+
+/**
+ * Selection-group migration: legacy projects (and the original v0.266
+ * format) stored groups as `{name, ids[]}`. We add a stable `id` and a
+ * `color` swatch so groups can be referenced by id in undo entries and
+ * cross-step ops, and so the UI has a per-group accent. Idempotent.
+ */
+const SEL_GROUP_PALETTE = [
+  '#ef4444', '#22c55e', '#3b82f6', '#eab308',
+  '#a855f7', '#14b8a6', '#f97316', '#ec4899',
+];
+function _migrateSelectionGroups(items) {
+  if (!Array.isArray(items)) return [];
+  return items.map((g, i) => ({
+    id:    g?.id    || `selgrp_${Date.now().toString(36)}_${i}_${Math.random().toString(36).slice(2, 6)}`,
+    name:  g?.name  || `Group ${i + 1}`,
+    ids:   Array.isArray(g?.ids) ? g.ids.filter(s => typeof s === 'string') : [],
+    color: typeof g?.color === 'string' ? g.color : SEL_GROUP_PALETTE[i % SEL_GROUP_PALETTE.length],
+  }));
+}
 
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -117,6 +154,12 @@ export function serialize() {
   project.styles = project.styles || { schema_version: 1, items: [] };
   project.styles.items = JSON.parse(JSON.stringify(state.get('styleTemplates') || []));
 
+  // Flat-shape templates — project-level polygon library. Instances live
+  // as regular tree nodes (type='flatShape', templateId pointer) and
+  // round-trip via stripNode like every other tree node.
+  project.shapes = project.shapes || { schema_version: 1, items: [] };
+  project.shapes.items = JSON.parse(JSON.stringify(state.get('shapeTemplates') || []));
+
   // Cables — 3D wires routed between mesh anchors and free points.
   // The cable list is project-global (topology-hoisted); per-step
   // variable overrides ride inside step.snapshot.cables, captured by
@@ -130,8 +173,11 @@ export function serialize() {
   // ── Settings ──────────────────────────────────────────────────────────────
   const cfg = project.settings;
   cfg.backgroundColor      = state.get('backgroundColor')      ?? '#0f172a';
+  cfg.backgroundGradient   = JSON.parse(JSON.stringify(
+    state.get('backgroundGradient') ?? { enabled: false, color1: '#0f172a', color2: '#1e293b', angleDeg: 180 }
+  ));
   cfg.solidOverride        = state.get('solidOverride')        ?? false;
-  cfg.gridVisible          = state.get('gridVisible')          ?? true;
+  cfg.gridVisible          = state.get('gridVisible')          ?? false;
   cfg.cameraAnimDurationMs = state.get('cameraAnimDurationMs') ?? 1500;
   cfg.objectAnimDurationMs = state.get('objectAnimDurationMs') ?? 1500;
   cfg.cameraFillLight      = { ...(state.get('cameraFillLight') || {}) };
@@ -453,8 +499,14 @@ export function applyProjectToState(project) {
   // ── Settings ──────────────────────────────────────────────────────────────
   state.setState({
     backgroundColor:      s.backgroundColor        ?? '#0f172a',
+    backgroundGradient:   {
+      enabled:  !!s.backgroundGradient?.enabled,
+      color1:   s.backgroundGradient?.color1   ?? '#0f172a',
+      color2:   s.backgroundGradient?.color2   ?? '#1e293b',
+      angleDeg: Number.isFinite(s.backgroundGradient?.angleDeg) ? s.backgroundGradient.angleDeg : 180,
+    },
     solidOverride:        s.solidOverride           ?? false,
-    gridVisible:          s.gridVisible             ?? true,
+    gridVisible:          s.gridVisible             ?? false,
     cameraAnimDurationMs: s.cameraAnimDurationMs    ?? 1500,
     objectAnimDurationMs: s.objectAnimDurationMs    ?? 1500,
     cameraFillLight:      s.cameraFillLight
@@ -475,10 +527,10 @@ export function applyProjectToState(project) {
     chapters:             project.chapters?.items           || [],
     cameraViews:          project.cameras?.items            || [],
     colorPresets:         project.colors?.items             || [],
-    animationPresets:     project.animationPresets?.items   || [],
+    animationPresets:     _migrateAnimationPresets(project.animationPresets?.items || []),
     noteTemplates:        project.notes?.templates          || [],
     notePresets:          project.notes?.presets            || state.get('notePresets'),
-    selectionGroups:      project.selections?.groups        || [],
+    selectionGroups:      _migrateSelectionGroups(project.selections?.groups || []),
     selectionOutlineColor:project.selections?.outlineColor  || '#00ffff',
     assets:               project.assets?.items             || [],
     headerItems:          project.headers?.items            || [],
@@ -489,6 +541,7 @@ export function applyProjectToState(project) {
     headerDefault:        project.headers?.default           || state.get('headerDefault'),
     headerStepNumberPerChapter: !!project.headers?.stepNumberPerChapter,
     styleTemplates:       project.styles?.items              || [],
+    shapeTemplates:       project.shapes?.items              || [],
     // Cables — older .sbsproj files don't have this section; default
     // to empty + factory globals so the load is clean. The 3-tier
     // anchor resolver gracefully handles missing meshes via cached
@@ -512,6 +565,19 @@ export function applyProjectToState(project) {
   // default automatically.
   _migrateLegacyDefaultStamps();
 
+  // Camera-binding migration: legacy steps had no cameraBinding field —
+  // default each missing one to free-camera so step.snapshot.camera keeps
+  // driving the view (today's behaviour). Templates land in cameraViews
+  // already; users opt steps into them via the per-step camera dropdown.
+  _migrateStepCameraBindings();
+
+  // Step-group fields migration (Phase A of "step groups"): legacy steps
+  // had no groupHead / groupId fields — default groupHead=false and
+  // groupId=null so every loaded step is treated as a normal top-level
+  // step. Files written before this migration was added round-trip
+  // identically; new files written after it carry the fields.
+  _migrateStepGroupFields();
+
   // Drop stale narration.dataFile pointers — pre voice-subfolder format
   // (top-level "<40hex>.wav") and any fast OS voice that earlier versions
   // mistakenly disk-cached. Without this, ensurePlayable hits ENOENT on
@@ -527,6 +593,57 @@ export function applyProjectToState(project) {
   state.emit('project:loaded');
 
   state.markClean();
+}
+
+function _migrateStepCameraBindings() {
+  const stepsArr = state.get('steps') || [];
+  let migrated = 0;
+  for (const step of stepsArr) {
+    if (!step.cameraBinding || typeof step.cameraBinding !== 'object') {
+      step.cameraBinding = createCameraBinding();
+      migrated++;
+    } else {
+      // Sanity: if mode is missing/unknown, force 'free' (snapshot-driven).
+      if (step.cameraBinding.mode !== 'template' && step.cameraBinding.mode !== 'free') {
+        step.cameraBinding.mode = 'free';
+        migrated++;
+      }
+      if (step.cameraBinding.templateId === undefined) {
+        step.cameraBinding.templateId = null;
+      }
+    }
+  }
+  if (migrated) {
+    console.log(`[migrate] Defaulted cameraBinding on ${migrated} legacy step(s) to free-camera.`);
+    state.setState({ steps: [...stepsArr] });
+  }
+}
+
+function _migrateStepGroupFields() {
+  const stepsArr = state.get('steps') || [];
+  let migrated = 0;
+  const validIds = new Set(stepsArr.map(s => s?.id));
+  for (const step of stepsArr) {
+    if (typeof step.groupHead !== 'boolean')   { step.groupHead   = false; migrated++; }
+    if (step.groupId === undefined)            { step.groupId     = null;  migrated++; }
+    if (typeof step.groupLocked !== 'boolean') { step.groupLocked = false; migrated++; }
+    // Sanity: if groupId points at a non-existent step, drop the link
+    // (defensive — shouldn't happen in well-formed files but cheap to
+    // check). Same for the rare case of a step claiming to be both head
+    // and sub-step at once: head wins, link is cleared.
+    if (step.groupId && !validIds.has(step.groupId)) {
+      step.groupId = null;
+      migrated++;
+    }
+    if (step.groupHead === true && step.groupId !== null) {
+      step.groupId = null;
+      migrated++;
+    }
+  }
+  if (migrated) {
+    console.log(`[migrate] Defaulted/repaired step-group fields on ${migrated} legacy step record(s).`);
+    state.setState({ steps: [...stepsArr] });
+  }
 }
 
 function _migrateLegacyDefaultStamps() {
@@ -578,7 +695,16 @@ export function buildIdRemapFromSpec(liveNode, specNode, idMap = new Map()) {
   //   1. fingerprint + bbox centre   (robust against re-export, disambiguates duplicates)
   //   2. meshIndex                   (stable within a single file export)
   //   3. positional                  (last resort)
-  const specMeshes = specChildren.filter(c => c.type === 'mesh');
+  //
+  // EXCLUDE live displaced meshes from the spec side. A phantom subtree
+  // (relink path) may contain children that were moved into it by step-
+  // snapshot reparenting from OTHER models — those are LIVE (`missing` is
+  // explicit `false`) and have nothing to do with the asset being relinked.
+  // Without this filter, an FBX relink could fingerprint-match one of its
+  // fresh meshes onto a displaced live OBJ mesh and steal its id, breaking
+  // the tree's access to that mesh. Saved specs from disk have no missing
+  // flag at all (undefined) and pass through unchanged.
+  const specMeshes = specChildren.filter(c => c.type === 'mesh' && c.missing !== false);
   const liveMeshes = liveChildren.filter(c => c.type === 'mesh');
   const takenLive  = new Set();
 
@@ -735,8 +861,59 @@ export function buildDisplacedMeshIdRemap(liveModelNode, allSavedMeshSpecs, asse
  * @param {object}               specNode  saved node (with saved IDs)
  * @param {Map<string,TreeNode>} nodeById  live map (already has remapped IDs)
  */
-export function applySpecFieldsToNodes(specNode, nodeById) {
+export function applySpecFieldsToNodes(specNode, nodeById, parentSpec = null) {
   if (!specNode) return;
+
+  // ── Notes — restore as live tree children of the anchor mesh ─────
+  // Fresh imports never create note nodes (they live in the saved
+  // tree only), so a saved note's id won't resolve in nodeById. The
+  // recursion below skips it, but then the note is lost on every
+  // load. Detect note specs here and re-attach to the live anchor
+  // mesh, preserving every note field verbatim.
+  if (specNode.type === 'note') {
+    const meshId = specNode.anchorMeshId
+                || (parentSpec?.type === 'mesh' ? parentSpec.id : null);
+    const meshLive = meshId ? nodeById.get(meshId) : null;
+    if (meshLive && meshLive.type === 'mesh') {
+      const exists = (meshLive.children || []).some(c => c.id === specNode.id);
+      if (!exists) {
+        const noteLive = {
+          ...specNode,
+          missing:  false,
+          object3d: null,
+          children: [],
+        };
+        meshLive.children = [...(meshLive.children || []), noteLive];
+        nodeById.set(noteLive.id, noteLive);
+      }
+    }
+    return;
+  }
+
+  // ── Flat shapes — same story: parented under a mesh / folder / model
+  // and never produced by the fresh-asset import path. Re-attach under
+  // the parent recorded in the saved spec so save/load round-trips keep
+  // the instance in the tree (and thus on screen).
+  // The mount lifecycle in steps.js's rebuildFromTreeSpec rebuilds the
+  // THREE.Mesh from the templated polygon on the next step activation.
+  if (specNode.type === 'flatShape') {
+    const parentId  = parentSpec?.id ?? null;
+    const parentLive = parentId ? nodeById.get(parentId) : null;
+    if (parentLive) {
+      const exists = (parentLive.children || []).some(c => c.id === specNode.id);
+      if (!exists) {
+        const shapeLive = {
+          ...specNode,
+          object3d: null,                  // rebuilt by ensureFlatShapeObject3D
+          children: [],
+        };
+        parentLive.children = [...(parentLive.children || []), shapeLive];
+        nodeById.set(shapeLive.id, shapeLive);
+      }
+    }
+    return;
+  }
+
   const live = nodeById.get(specNode.id);
   if (live) {
     live.name         = specNode.name        || live.name;
@@ -750,9 +927,15 @@ export function applySpecFieldsToNodes(specNode, nodeById) {
     if (specNode.moveEnabled   !== undefined)          live.moveEnabled           = !!specNode.moveEnabled;
     if (specNode.rotateEnabled !== undefined)          live.rotateEnabled         = !!specNode.rotateEnabled;
     if (specNode.pivotEnabled  !== undefined)          live.pivotEnabled          = !!specNode.pivotEnabled;
+    // Source transform — restored verbatim. The geometry bake re-runs after
+    // load (see sidebar-left's post-load source re-bake) so freshly-imported
+    // unbaked geometry picks up the saved source matrix.
+    if (Array.isArray(specNode.sourceLocalPosition))   live.sourceLocalPosition   = specNode.sourceLocalPosition;
+    if (Array.isArray(specNode.sourceLocalQuaternion)) live.sourceLocalQuaternion = specNode.sourceLocalQuaternion;
+    if (Array.isArray(specNode.sourceLocalScale))      live.sourceLocalScale      = specNode.sourceLocalScale;
     live.colorPresetId = specNode.colorPresetId || null;
   }
-  (specNode.children || []).forEach(sc => applySpecFieldsToNodes(sc, nodeById));
+  (specNode.children || []).forEach(sc => applySpecFieldsToNodes(sc, nodeById, specNode));
 }
 
 
@@ -879,7 +1062,7 @@ export function getSuggestedFilename() {
   const assets = state.get('assets') || [];
   if (assets.length > 0) {
     const base = (assets[0].name || 'project')
-      .replace(/\.(step|stp|iges|igs|brep|obj|stl|gltf|glb)$/i, '');
+      .replace(/\.(step|stp|iges|igs|brep|obj|stl|gltf|glb|fbx)$/i, '');
     return `${base}.sbsproj`;
   }
   return 'project.sbsproj';

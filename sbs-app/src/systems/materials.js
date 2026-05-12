@@ -23,6 +23,7 @@
 import state from '../core/state.js';
 import { createColorPreset } from '../core/schema.js';
 import { sceneCore } from '../core/scene.js';
+import * as clock from '../core/clock.js';
 
 
 // ── GLSL snippets ─────────────────────────────────────────────────────────
@@ -266,6 +267,10 @@ class MaterialsSystem {
 
     // Active visibility fade transitions: nodeId → { from, to, startMs, durationMs, easeFn, hide }
     this._visTransitions       = new Map();
+    // Showing meshes that have been snap-zero'd ahead of their fade phase.
+    // applyAll's reapply block honours this set so a color transition's
+    // final applyAll doesn't pop them to opacity 1 between phases.
+    this._pendingShowingHidden = new Set();
   }
 
   // ─── Setup ───────────────────────────────────────────────────────────────
@@ -808,7 +813,7 @@ gl_FragColor.a = 1.0;
     // and applyGeometryOutlines() reset outline opacities — both need correction
     // for meshes that are currently mid-fade.
     if (this._visTransitions?.size) {
-      const now             = performance.now();
+      const now             = clock.now();
       const outlineSettings = state.get('geometryOutline');
       for (const [nodeId, tr] of this._visTransitions) {
         const raw   = Math.min((now - tr.startMs) / tr.durationMs, 1);
@@ -819,6 +824,17 @@ gl_FragColor.a = 1.0;
         // showing: 0 → toBackOp     (alpha 0→1)
         const backOp = tr.fromBackOp + (tr.toBackOp - tr.fromBackOp) * alpha;
         this._setNodeTransitionOpacity(nodeId, t, outlineSettings, backOp);
+      }
+    }
+    // Pending showing-hidden meshes: snapped-to-zero ahead of their
+    // visibility phase. Without this, a color transition's final
+    // applyAll would pop them visible for one frame before the
+    // visibility phase fades them in.
+    if (this._pendingShowingHidden?.size) {
+      const outlineSettings = state.get('geometryOutline');
+      for (const nodeId of this._pendingShowingHidden) {
+        if (this._visTransitions.has(nodeId)) continue;   // active fade owns it
+        this._setNodeTransitionOpacity(nodeId, 0.0, outlineSettings, 0);
       }
     }
   }
@@ -1030,7 +1046,7 @@ gl_FragColor.a = 1.0;
 
     this._colorTransition = {
       fromValues, toValues,
-      startMs:    performance.now(),
+      startMs:    clock.now(),
       durationMs: Math.max(durationMs, 1),
       easeFn,
     };
@@ -1203,7 +1219,7 @@ gl_FragColor.a = 1.0;
    * @param {function}   easeFn
    */
   beginVisibilityTransitions(hidingIds, showingIds, durationMs, easeFn) {
-    const now             = performance.now();
+    const now             = clock.now();
     const outlineSettings = state.get('geometryOutline');
 
     for (const nodeId of hidingIds) {
@@ -1233,6 +1249,9 @@ gl_FragColor.a = 1.0;
         startMs: now, durationMs: Math.max(durationMs, 1),
         easeFn, hide: false,
       });
+      // Hand off ownership: vis transition now drives this node's
+      // opacity, so applyAll's pending-showing snap should ignore it.
+      this._pendingShowingHidden.delete(nodeId);
     }
   }
 
@@ -1291,6 +1310,7 @@ gl_FragColor.a = 1.0;
     const outlineSettings = state.get('geometryOutline');
     for (const nodeId of showingIds) {
       this._setNodeTransitionOpacity(nodeId, 0.0, outlineSettings, 0);
+      this._pendingShowingHidden.add(nodeId);
     }
   }
 
@@ -1690,11 +1710,17 @@ gl_FragColor.a = 1.0;
       return;
     }
 
-    // ── Create overlay (front-face, 70% opacity) ──────────────────────────
+    // ── Create overlay (front-face, low-opacity surface tint) ─────────────
+    // 0.20 — matches the project's Solidness falloff translucency level
+    // so users can still SEE the underlying mesh colour and discern
+    // hidden / faded states through the highlight. The crisp edge
+    // outline below carries the "this is selected" information; the
+    // surface tint just disambiguates membership when many meshes are
+    // selected at once.
     const overlayMat = new THREE.MeshBasicMaterial({
       color,
       transparent:  true,
-      opacity:      0.70,
+      opacity:      0.20,
       depthTest:    false,
       depthWrite:   false,
       side:         THREE.FrontSide,

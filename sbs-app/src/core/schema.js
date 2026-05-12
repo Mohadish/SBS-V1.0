@@ -124,12 +124,20 @@ export function createEmptyProject() {
       items: [],          // StyleTemplate[]
     },
 
+    // Flat-shape templates — project-level polygon library. Instances live
+    // in the scene tree (type='flatShape') and reference these by id.
+    // See systems/flat-shapes.js + ui/shape-tab.js.
+    shapes: {
+      schema_version: 1,
+      items: [],          // ShapeTemplate[]
+    },
+
     // App-level settings saved with the project
     settings: {
       schema_version: 1,
       backgroundColor:        '#0f172a',
       solidOverride:          false,
-      gridVisible:            true,
+      gridVisible:            false,
       cameraAnimDurationMs:   1500,
       objectAnimDurationMs:   1500,
       cameraFillLight: {
@@ -203,9 +211,109 @@ export function createNode(type, overrides = {}) {
     moveEnabled:        true,
     rotateEnabled:      true,
 
+    // Model SOURCE transform — model nodes only. Lives on an INNER
+    // Three.js group inserted between the model's outer group and its
+    // mesh children. Equivalent to opening the model in another DCC,
+    // applying the transform there, and reloading the file: the
+    // geometry is "baked" with this transform from the perspective of
+    // the rest of the SBS pipeline. Per-step localOffset/Quaternion
+    // and the pivot system act on the OUTER group and never see the
+    // source — pivot stays put, per-step animations are untouched,
+    // every step inherits the source through the inner group's
+    // place in the hierarchy.
+    sourceLocalPosition:   [0, 0, 0],
+    sourceLocalQuaternion: [0, 0, 0, 1],
+    sourceLocalScale:      [1, 1, 1],
+
     // Mesh-specific
     meshIndex:    null,             // index in the model's mesh list
     colorPresetId:null,             // applied color preset (null = original)
+
+    ...overrides,
+  };
+}
+
+
+// ═══════════════════════════════════════════════════════════════════════════
+//  FLAT SHAPE  ("2D shapes in 3D" — Phase 1)
+// ═══════════════════════════════════════════════════════════════════════════
+//
+// Library-and-instance model, mirrors notes:
+//   - createShapeTemplate(): SHARED polygon + fill, lives at project level
+//                            (state.shapeTemplates), can be re-placed many times.
+//   - createFlatShapeNode(): per-PLACEMENT instance, lives in the scene tree
+//                            with its own transform; references a template by id.
+//
+// The mesh geometry is built from the template's polygon and the instance's
+// transform (localOffset / localQuaternion = the plane's pose at draw time).
+// Geometry is rebuilt on demand by systems/flat-shapes.js whenever the node
+// has no live object3d — save/load only needs the fields below.
+
+/**
+ * Library entry. ONE polygon per template in v1.
+ *
+ *   polygon.outer   [[x,y], …]               main contour (plane-local 2D)
+ *   polygon.holes   [[[x,y], …], …]          optional holes — empty in v1
+ *
+ * Identity (id) is stable; instances reference it. Edit the template ⇒
+ * every instance updates on next mesh rebuild.
+ */
+export function createShapeTemplate(overrides = {}) {
+  return {
+    id:       generateId('shapeTpl'),
+    name:     '',
+    fill:     '#cccccc',
+    // List of input polygons. The displayed geometry is the XOR of all
+    // entries — every additional polygon flips the parity, so two
+    // overlapping rectangles produce a "+" with a clear centre, three
+    // produce a solid centre again, and a fully-contained polygon
+    // becomes a hole (donut). Each entry: { outer:[[x,y]…], holes:[…] }.
+    polygons: [{ outer: [], holes: [] }],
+    ...overrides,
+  };
+}
+
+/**
+ * A placed instance of a shape template. Behaves like a transform-capable
+ * node (model/folder family) for the gizmo + step snapshots — see
+ * isTransformNode() in core/transforms.js.
+ *
+ * `templateId` is REQUIRED: a flatShape with no template renders nothing.
+ * `localScale` is a per-instance uniform scale delta on top of
+ * baseLocalScale (Phase 2 will surface a gizmo handle for it).
+ */
+export function createFlatShapeNode(overrides = {}) {
+  return {
+    id:           generateId('flatShape'),
+    name:         '',
+    type:         'flatShape',
+    localVisible: true,
+    children:     [],
+
+    // Pointer to a state.shapeTemplates entry — owns polygon + fill.
+    templateId:   null,
+
+    // ── Drawing-plane orientation (parent-local quaternion). ───────────
+    // Captured at placement time (the world rotation that aligns the
+    // template's 2D plane with the picked face / camera-facing plane,
+    // expressed in the instance's parent frame). We BAKE this rotation
+    // into the geometry vertices when building the mesh — that way
+    // baseLocalQuaternion stays at identity and the gizmo math behaves
+    // exactly like a folder (no axis-swap bug).
+    planeLocalQuaternion: [0, 0, 0, 1],
+
+    // Transforms — same shape as model/folder so the gizmo works.
+    localOffset:        [0, 0, 0],
+    localQuaternion:    [0, 0, 0, 1],
+    orientationSteps:   [0, 0, 0],
+    baseLocalPosition:  [0, 0, 0],
+    baseLocalQuaternion:[0, 0, 0, 1],   // identity for shapes — plane goes into geometry
+    baseLocalScale:     [1, 1, 1],      // global-only — written by Phase 2.1 scale handle
+    pivotLocalOffset:   [0, 0, 0],
+    pivotLocalQuaternion:[0, 0, 0, 1],
+    pivotEnabled:       false,
+    moveEnabled:        true,
+    rotateEnabled:      true,
 
     ...overrides,
   };
@@ -239,6 +347,31 @@ export function createStep(overrides = {}) {
     chapterId: null,                // optional chapter grouping
     hidden:    false,               // hidden steps are skipped in playback
 
+    // ── Step grouping (Phase A of step-groups) ────────────────────────────
+    // A "step group" is just a normal step with a lock icon and zero or
+    // more sub-steps following it in the steps array. The first step IS
+    // the group head — there's no separate container. Sub-steps point at
+    // their head via groupId; their position in the array defines play
+    // order within the group. Header always shows the head's number for
+    // every sub-step. The viewer plays head + sub-steps as ONE segment.
+    //
+    //   groupHead = true   → this step has the lock icon. May be empty
+    //                        (no sub-steps yet) or carry sub-steps after
+    //                        it in the array. groupId stays null on heads.
+    //   groupId   = <id>   → this step is a sub-step pointing at the
+    //                        groupHead step with that id. groupHead=false.
+    //   both default       → ordinary top-level step, unrelated to groups.
+    //
+    // Invariant (enforced by drag-and-drop): all steps with groupId === X
+    // appear contiguously immediately after step X in the steps array.
+    //
+    //   groupLocked = true   → head stays expanded regardless of activity.
+    //                          Mirrors chapter.locked semantics. Field is
+    //                          only meaningful on heads (groupHead=true).
+    groupHead:   false,
+    groupId:     null,
+    groupLocked: false,
+
     // Voice-over / narration text
     voiceText:      '',
     voiceEnabled:   true,
@@ -252,9 +385,28 @@ export function createStep(overrides = {}) {
       animPresetId:     null,       // null = use project default (or simultaneous fallback)
     },
 
+    // Camera binding — controls whether this step uses its own snapshot
+    // camera ('free') or pulls from a named template in cameraViews ('template').
+    // 'free' is the default for new steps; user opts in to templates per step
+    // via the camera dropdown in the steps panel.
+    cameraBinding: createCameraBinding(),
+
     // ── THE SNAPSHOT: complete scene state ────────────────────────────────
     snapshot: createEmptySnapshot(),
 
+    ...overrides,
+  };
+}
+
+/**
+ * Camera binding for a step.
+ * mode='free'     → camera comes from step.snapshot.camera (today's behaviour)
+ * mode='template' → camera comes from cameraViews[templateId] at activation time
+ */
+export function createCameraBinding(overrides = {}) {
+  return {
+    mode:       'free',
+    templateId: null,
     ...overrides,
   };
 }
@@ -278,7 +430,15 @@ export function createEmptySnapshot() {
     camera: null,                   // CameraState | null
 
     // Scene notes (annotations anchored to 3D positions)
-    notes: [],                      // SceneNote[]
+    notes: [],                      // SceneNote[]   — legacy flat-list
+
+    // Per-step panel offsets for 3D-anchored balloon notes (Phase 2).
+    // Sparse map: { [noteId]: {x, y} }. The note's panelOffset is
+    // GLOBAL (set at creation) — this map overrides it per-step so a
+    // single note can sit in a different screen-relative position on
+    // each step and lerp smoothly between them across step transitions.
+    // Visibility is per-step via the standard snapshot.visibility map.
+    notePanelOffsets: {},
 
     // Screen overlay items (text boxes, images over the 2D viewport)
     screenItems: [],                // ScreenItem[]
@@ -308,7 +468,9 @@ export function createCameraState(overrides = {}) {
 
 
 // ═══════════════════════════════════════════════════════════════════════════
-//  SCENE NOTE
+//  SCENE NOTE  (legacy flat-list shape — kept for back-compat with the
+//   never-used scaffold. New notes go through createNoteNode below and
+//   live as TREE CHILDREN of their anchor mesh.)
 // ═══════════════════════════════════════════════════════════════════════════
 export function createSceneNote(overrides = {}) {
   return {
@@ -322,6 +484,61 @@ export function createSceneNote(overrides = {}) {
     // 3D anchor (optional — if set, note follows a point in 3D space)
     anchorWorld:  null,             // [x, y, z] in world space
     visible:      true,
+    ...overrides,
+  };
+}
+
+/**
+ * 3D-anchored balloon note — lives as a TREE CHILD of its anchor mesh.
+ *
+ * Anchor strategy: on creation we record both the hit point in MESH-LOCAL
+ * space (anchorLocal) and the same point as a fraction of the mesh's
+ * bbox (anchorBboxRelative). Renderer uses anchorLocal when the mesh
+ * geometry is loaded; falls back to bbox-relative when the asset is
+ * missing and the mesh is a phantom placeholder, so the note keeps its
+ * meaningful position even across a missing-asset reload.
+ *
+ * Style: sizePresetId references one of state.notePresets's keys
+ * ('small' / 'medium' / 'large'). Setting customFontSize to a number
+ * overrides the preset for that single note.
+ *
+ * Per-step state (visibility + panelOffset) is captured in
+ * step.snapshot.noteStates[noteId] as a sparse override map (Phase 2).
+ * Phase 1 just renders the global state.
+ */
+export function createNoteNode(overrides = {}) {
+  return {
+    id:                 generateId('note'),
+    type:               'note',
+    name:               '',
+    localVisible:       true,
+    children:           [],
+
+    anchorMeshId:       null,                // owning mesh node id
+    anchorLocal:        [0, 0, 0],           // hit point in MESH-LOCAL frame
+    anchorBboxRelative: [0.5, 0.5, 0.5],     // 0–1 within mesh.bbox (resilience)
+    text:               '',
+    sizePresetId:       'medium',            // refs state.notePresets[sizePresetId]
+    customFontSize:     null,                // px override; null = use preset
+    panelOffset:        { x: 90, y: -70 },   // pixels, relative to anchor screen pt
+    templateId:         null,                // null = standalone note (no library link)
+
+    ...overrides,
+  };
+}
+
+/**
+ * Note template — entry in state.noteTemplates. Owns the SHARED content
+ * (text + size). Instances reference it by id. Position + visibility
+ * are still per-instance (on the createNoteNode that holds templateId).
+ */
+export function createNoteTemplate(overrides = {}) {
+  return {
+    id:             generateId('ntpl'),
+    name:           '',                      // auto-named "Template N" when blank
+    text:           '',
+    sizePresetId:   'medium',
+    customFontSize: null,
     ...overrides,
   };
 }
@@ -463,7 +680,10 @@ export function createAnimationPreset(overrides = {}) {
   return {
     id:        generateId('anim'),
     name:      'New Animation',
-    animation: 'camera(500), color(500), visibility(500), obj(500)',
+    // Cover every channel the engine knows about so a freshly-created
+    // preset transitions everything by default. Users can prune slots
+    // they don't want via the Anim tab editor.
+    animation: 'camera(500), visibility(500), obj(500), overlay(500), color(500), cable(500)',
     isDefault: false,
     ...overrides,
   };
@@ -547,7 +767,11 @@ export function createCable(overrides = {}) {
     highlight:    false,
     style: {
       color:     '#ffb24a',
-      radius:    3,                       // cylinder radius in world units
+      // Phase G: per-cable size % multiplier on cableGlobalRadius
+      // (default 100). Effective radius = globalRadius × (size/100).
+      // Legacy `radius` field is still read by cableEffectiveRadius()
+      // when `size` is missing, so old projects keep their look.
+      size:      100,
       type:      'straight',              // 'straight' | 'catenary' | 'bezier' (only 'straight' rendered today)
     },
     ...overrides,

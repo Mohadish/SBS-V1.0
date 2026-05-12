@@ -24,8 +24,12 @@
 
 import state                        from '../core/state.js';
 import sceneCore                    from '../core/scene.js';
+import * as clock                   from '../core/clock.js';
 import { rasterizeOverlay }         from './overlay.js';
 import * as cablesSystem            from './cables.js';   // C1: per-step cable snapshot capture/apply
+import * as cablesRender            from './cables-render.js';   // H1: cable phase animations
+import * as overlaySystem           from './overlay.js';   // H2: overlay phase fade-in / fade-out
+import { ensureFlatShapeObject3D }   from './flat-shapes.js'; // M1: 2D shapes in 3D — build mesh on demand
 import { createStep, createEmptySnapshot } from '../core/schema.js';
 import { parseAnimation, resolveAnimationString } from './animation.js';
 import {
@@ -37,6 +41,7 @@ import {
   buildNodeMap,
   flatten,
   serializeModelTree,
+  computeEffectiveVisibility,
 } from '../core/nodes.js';
 import {
   captureAllTransforms,
@@ -218,6 +223,13 @@ class StepManager {
           : []
       )),
 
+      // Per-step balloon-note panel offsets — { [noteId]: {x, y} }.
+      // Captured every snapshot; on apply, the active step's overrides
+      // are written back to the live tree before render. Step
+      // transitions lerp from FROM-step's offsets to TO-step's offsets
+      // for smooth note repositioning instead of vanish-and-reappear.
+      notePanelOffsets: treeData ? _captureNotePanelOffsets(treeData) : {},
+
       // Screen items (deep-copy)
       screenItems: JSON.parse(JSON.stringify(
         state.get('activeStepId')
@@ -300,6 +312,14 @@ class StepManager {
       this._materials.applySnapshot(snapshot.materials);
     }
 
+    // Per-step balloon-note panel offsets. Sparse map; only notes
+    // present in the override get their panelOffset rewritten. Notes
+    // not in the map keep whatever offset they had (which is fine —
+    // their global default will show).
+    if (snapshot.notePanelOffsets) {
+      _applyNotePanelOffsets(nodeById, snapshot.notePanelOffsets);
+    }
+
     // Camera
     if (snapshot.camera && !opts.suppressCamera) {
       sceneCore.applyCameraState(snapshot.camera);
@@ -310,7 +330,10 @@ class StepManager {
     this._updatePlaceholderColors(nodeById);
 
     // Notes / screenItems / cables are applied by their own systems
-    // (they listen to 'step:activate' on state)
+    // (they listen to 'step:activate' on state). Clear any in-flight
+    // note transition state — applySnapshotInstant means "snap, no
+    // animation", so any pending lerp must be discarded.
+    _clearNoteAnims(nodeById);
   }
 
   /**
@@ -413,6 +436,13 @@ class StepManager {
     const depthMap = {};
     flatten(state.get('treeData')).forEach((node, i) => { depthMap[node.id] = i; });
 
+    // ── Capture FROM note state BEFORE _prepareVisibility flips visibility.
+    // _scheduleNoteAnims (called later, after the simultaneous/phased
+    // branch decides on durations) reads this snapshot to know what to
+    // lerp FROM. If we waited until then, note.localVisible would
+    // already be at the TO value and the fade would never run.
+    const fromNoteState = _captureFromNoteState(state.get('treeData'));
+
     // Apply target visibility now and compute which meshes are hiding/showing.
     // Hiding meshes are kept obj.visible=true for dither-fade.
     // Showing meshes will be snapped to opacity=0 so they're invisible before
@@ -420,6 +450,19 @@ class StepManager {
     const { hidingMeshIds, showingMeshIds } = this._prepareVisibility(
       nodeById, toSnapshot.visibility,
     );
+    // Pre-snap showing meshes to opacity 0 BEFORE any phase runs.
+    // _prepareVisibility flips obj.visible=true on the showing set
+    // immediately — without this snap, any phase that runs ahead of
+    // 'visibility' (e.g. camera, color, obj) renders those meshes at
+    // full opacity, producing a "threshold appear at first slot, then
+    // invisible during visibility, then fade in" jitter when the
+    // user puts color (or anything) before visibility in the string.
+    // Clear the pending set first so a previous activate's leftovers
+    // don't suppress visibility unrelated to the current transition.
+    this._materials?._pendingShowingHidden?.clear?.();
+    if (showingMeshIds.length && this._materials?.snapShowingToZero) {
+      this._materials.snapShowingToZero(showingMeshIds);
+    }
 
     // ── Place objects at FROM world positions (v0.266 approach) ─────────────
     // Objects stay in their TARGET hierarchy (no detach). We use world→local
@@ -454,6 +497,14 @@ class StepManager {
         this._materials?.snapShowingToZero(showingMeshIds);
       }
 
+      // Schedule note panel-offset lerp + opacity fade across the entire
+      // phased animation. Notes don't have their own phase slot, so we
+      // lerp them over the full object-duration window using the same
+      // easing as the object-pose lerp. fromNoteState was captured
+      // before _prepareVisibility ran.
+      const phasedStartMs = clock.now();
+      _scheduleNoteAnims(state.get('treeData'), fromNoteState, toSnapshot, phasedStartMs, globalObj, easeFn);
+
       cameraHandled = await this._runPhasedAnimation(toSnapshot, phases, {
         changedNodeIds, fromWorldTransforms, toWorldTransforms, depthMap,
         hidingMeshIds, showingMeshIds,
@@ -473,7 +524,7 @@ class StepManager {
 
       // Object transforms — world-space lerp (v0.266: objects stay in target hierarchy)
       this._objectTransitions = [];
-      const startMs = performance.now();
+      const startMs = clock.now();
       for (const nodeId of changedNodeIds) {
         const worldFrom = fromWorldTransforms[nodeId];
         const worldTo   = toWorldTransforms[nodeId];
@@ -490,6 +541,14 @@ class StepManager {
         );
       }
 
+      // Note transitions — per-step panelOffset lerp + opacity fade.
+      // fromNoteState was captured BEFORE _prepareVisibility flipped
+      // note.localVisible to its target, so we know the actual FROM
+      // visibility for each note. _scheduleNoteAnims sets _anim on
+      // every note that needs to change; notes-render lerps each
+      // frame and clears _anim when alpha hits 1.
+      _scheduleNoteAnims(state.get('treeData'), fromNoteState, toSnapshot, startMs, objDur, easeFn);
+
       // Color/material transition
       if (toSnapshot.materials && this._materials) {
         this._materials.beginColorTransition(toSnapshot.materials, objDur, easeFn);
@@ -500,7 +559,17 @@ class StepManager {
         this._onObjectTransitionsDone = resolve;
       });
 
-      await Promise.all([cameraP, objectP]);
+      // OFFLINE-EXPORT FIX: in simultaneous mode (no animation preset),
+      // cameraP and objectP both advance via tick hooks. In offline
+      // mode, ticks only fire from inside _syntheticSleep — so without
+      // a _sleep here, no ticks fire and the await hangs forever.
+      // Phased mode escapes this because each phase already calls
+      // _sleep(durationMs) explicitly. Padding the await with a sleep
+      // for the longest phase ensures synthetic ticks drive the
+      // transitions to completion in offline mode, and is a no-op in
+      // realtime mode (rAF still drives ticks; sleep just waits).
+      const maxDur = Math.max(cameraDur, objDur);
+      await Promise.all([cameraP, objectP, _sleep(maxDur)]);
     }
 
     // ── Guard: if a newer animation started while we awaited, bail out ──
@@ -596,10 +665,31 @@ class StepManager {
     let objHandled    = false;
     let colorHandled  = false;
     let visHandled    = false;
+    let cableHandled  = false;
+    let overlayHandled    = false;
 
     for (const phase of phases) {
       const { types, durationMs } = phase;
       const phasePromises = [];
+
+      // H2: overlay phase — proper crossfade. Old content moves to a
+      // ghost layer + fades out while the new step's content loads
+      // into the main layer + fades in, both over the slot duration.
+      // Without a 'overlay' slot, the post-anim step:applied flow
+      // snaps content (no fade), preserving legacy behaviour.
+      //
+      // `overlays` (sustained) is the same machinery but a two-phase
+      // ramp that keeps shared items at 100% visible alpha — no
+      // flicker on shapes/text/images present in both steps. If both
+      // appear in the same phase, sustained wins.
+      if ((types.includes('overlay') || types.includes('overlays')) && !overlayHandled) {
+        overlayHandled = true;
+        const sustained = types.includes('overlays');
+        phasePromises.push(new Promise(resolve => {
+          if (sustained) overlaySystem.beginOverlaySustainedFade(durationMs, easeFn, resolve);
+          else           overlaySystem.beginOverlayCrossfade   (durationMs, easeFn, resolve);
+        }));
+      }
 
       // Camera
       if (types.includes('camera') && !cameraHandled && toSnapshot.camera) {
@@ -611,7 +701,7 @@ class StepManager {
       if (types.includes('obj') && !objHandled && changedNodeIds.length) {
         objHandled = true;
         this._objectTransitions = [];
-        const startMs = performance.now();
+        const startMs = clock.now();
         for (const nodeId of changedNodeIds) {
           const worldFrom = fromWorldTransforms[nodeId];
           const worldTo   = toWorldTransforms[nodeId];
@@ -648,6 +738,18 @@ class StepManager {
         if (!visHandled && showingMeshIds.length) {
           this._materials.snapShowingToZero(showingMeshIds);
         }
+      }
+
+      // H1: cable transitions — opacity (visibility flip) + colour lerp.
+      // Drives cables-render's _cableTransitions map; per-tick advance
+      // is folded into the cables tick hook.
+      if (types.includes('cable') && !cableHandled) {
+        cableHandled = true;
+        phasePromises.push(new Promise(resolve => {
+          cablesRender.beginCableTransitions(
+            toSnapshot.cables, durationMs, easeFn, resolve,
+          );
+        }));
       }
 
       // Wait for this phase's duration (and any sub-promises that finish sooner)
@@ -728,16 +830,24 @@ class StepManager {
    * @param {string}  stepId
    * @param {boolean} [animate]  override transition animation (default: use step settings)
    */
-  async activateStep(stepId, animate = true) {
+  async activateStep(stepId, animate = true, opts = {}) {
     const steps = state.get('steps');
     const step  = steps.find(s => s.id === stepId);
     if (!step) return;
+
+    // Flush any pending dirty-sync into the LEAVING step BEFORE we
+    // change the active step. Otherwise quick toggle-then-navigate
+    // (under the 500ms scheduleSync timer) loses the change. Cable
+    // visibility is the most visible victim — material + visibility
+    // toggles all rely on this same race.
+    this.flushSync();
 
     // If another animation is in progress (direct step card click mid-anim),
     // snap it to final so the scene is clean before starting a new transition.
     // snapCurrentToFinal does NOT rebuild the tree — it only snaps object positions
     // and materials since the tree/node data is already at the target state.
     this.snapCurrentToFinal();
+
 
     // Capture the OUTGOING step's final viewport state before we switch away.
     // Force bypasses the 5-fps throttle so nothing is lost on quick step changes.
@@ -759,10 +869,15 @@ class StepManager {
     // Prevents a stale async from resetting the flag mid-animation of a newer step.
     const myToken = ++this._activationToken;
 
+    // Resolve camera through cameraBinding before any apply path sees
+    // the snapshot — template-bound steps pull from cameraViews, free
+    // steps use their own snapshot.camera.
+    const resolvedSnap = this._resolveStepSnapshot(step);
+
     if (shouldAnimate) {
       this._animRunning       = true;
-      this._currentTargetSnap = step.snapshot;
-      await this.applySnapshotAnimated(step.snapshot, tr);
+      this._currentTargetSnap = resolvedSnap;
+      await this.applySnapshotAnimated(resolvedSnap, tr);
       // Only clear flags if we're still the active animation (no newer step started)
       if (myToken === this._activationToken) {
         this._animRunning                  = false;
@@ -772,24 +887,50 @@ class StepManager {
     } else {
       this._animRunning       = false;
       this._currentTargetSnap = null;
-      this.applySnapshotInstant(step.snapshot);
+      this.applySnapshotInstant(resolvedSnap);
     }
 
     state.emit('step:applied', step);
 
     // Silently pre-warm the NEXT step's transition so its matrices are
     // ready before the user clicks. Discreet — deferred, no render output.
-    const allSteps  = state.get('steps').filter(s => !s.hidden && !s.isBaseStep);
+    const allSteps  = state.get('steps').filter(s => this._isPlayable(s));
     const curIdx    = allSteps.findIndex(s => s.id === stepId);
     const nextStep  = allSteps[curIdx + 1];
     if (nextStep) this._prewarm(nextStep.id);
+
+    // ── Step-group auto-chain (Phase C) ─────────────────────────────────
+    // When activation came from arrow / step-nav navigation (opts.fromArrow
+    // true), and the current step is part of a group, immediately chain
+    // into the next sub-step — no pause, no user input. The chain ends
+    // when the next step isn't a sub-step of the same group.
+    //
+    // Click and middle-click activations don't pass fromArrow, so they
+    // stop at the end of the clicked step (per spec — click = "edit this
+    // specific step", arrow = "play the assembly forward"). The token
+    // gate ensures interruption (a click during chain) breaks the chain
+    // cleanly: the interrupting call increments _activationToken, the
+    // outer chain's await resolves via snapCurrentToFinal, and the stale
+    // token mismatch makes this branch a no-op.
+    if (opts.fromArrow && myToken === this._activationToken) {
+      const currentGroupId = step.groupHead ? step.id : (step.groupId || null);
+      if (currentGroupId) {
+        const next = nextStep;
+        if (next && next.groupId === currentGroupId) {
+          // Don't await — keep the chain shallow on the call stack and
+          // let token coordination handle interrupts. Animation override
+          // here matches the entry call: arrows always animate.
+          this.activateStep(next.id, true, { fromArrow: true });
+        }
+      }
+    }
   }
 
   /**
    * Activate a step by index (0-based).
    */
   activateStepByIndex(index, animate = true) {
-    const steps = state.get('steps').filter(s => !s.hidden && !s.isBaseStep);
+    const steps = state.get('steps').filter(s => this._isPlayable(s));
     const step  = steps[index];
     if (step) return this.activateStep(step.id, animate);
   }
@@ -820,6 +961,10 @@ class StepManager {
       this._onObjectTransitionsDone = null;
     }
     this._objectTransitions = [];
+    // H1: snap any in-flight cable phase to final + resolve its await
+    cablesRender.snapCableTransitionsToFinal();
+    // H2: same for the overlay fade.
+    overlaySystem.snapOverlayFadeToFinal();
 
     // Snap ALL animatable nodes (model, folder, AND mesh) to their target world positions.
     // We must use _setWorldTransformOnObject here — NOT applyAllTransformsToScene —
@@ -863,11 +1008,45 @@ class StepManager {
     // If animating: snap to final only. Don't chain into a new step.
     if (this.snapCurrentToFinal()) return;
 
-    const steps = state.get('steps').filter(s => !s.hidden && !s.isBaseStep);
+    const steps = state.get('steps').filter(s => this._isPlayable(s));
     const activeId  = state.get('activeStepId');
     const currentIdx = steps.findIndex(s => s.id === activeId);
-    const nextIdx    = Math.max(0, Math.min(steps.length - 1, currentIdx + delta));
-    return this.activateStep(steps[nextIdx]?.id, animate);
+
+    // Step-groups (Phase C/D): arrow navigation has group-aware semantics.
+    //   RIGHT (+1): step forward by one in the flat array. If the
+    //               current step is in a group, the next step may also
+    //               be a sub-step of the same group — that's fine,
+    //               activateStep's auto-chain handles continuing through
+    //               the rest of the group. So a single +1 hop here is
+    //               correct in both cases.
+    //   LEFT  (-1): jump back to the PREVIOUS TOP-LEVEL step (skipping
+    //               over any sub-steps that happen to precede the
+    //               current position in the flat array). If that target
+    //               is a group head, activateStep's auto-chain plays it
+    //               from head through every sub-step.
+    if (delta < 0) {
+      // From a SUB-STEP, left arrow jumps to the top-level step BEFORE
+      // the current group (so the user steps out of the group entirely,
+      // not back to its head). From a HEAD or normal step, it's the
+      // previous top-level step in flat-array order. In both cases, if
+      // the landing step is itself a group head, auto-chain plays its
+      // body from the head onward.
+      const current = steps[currentIdx];
+      let searchFrom = currentIdx - 1;
+      if (current?.groupId) {
+        const headIdx = steps.findIndex(s => s.id === current.groupId);
+        searchFrom = headIdx - 1;
+      }
+      let prevTopLevelIdx = -1;
+      for (let i = searchFrom; i >= 0; i--) {
+        if (!steps[i].groupId) { prevTopLevelIdx = i; break; }
+      }
+      if (prevTopLevelIdx < 0) return;   // no previous top-level step
+      return this.activateStep(steps[prevTopLevelIdx].id, animate, { fromArrow: true });
+    }
+
+    const nextIdx = Math.max(0, Math.min(steps.length - 1, currentIdx + delta));
+    return this.activateStep(steps[nextIdx]?.id, animate, { fromArrow: true });
   }
 
 
@@ -963,7 +1142,10 @@ class StepManager {
 
   /**
    * Explicitly save the current viewport camera position into a step.
-   * This is the ONLY way to update a step's camera after it was created.
+   * Step-level "Update camera" is ALWAYS free-camera: snapshot the
+   * current view AND set cameraBinding to free, breaking any prior
+   * template link. Updating a *template* (which propagates to every
+   * bound step) goes through the Camera tab, not this entry point.
    *
    * @param {string} stepId  target step (defaults to active step)
    */
@@ -976,9 +1158,62 @@ class StepManager {
 
     step.snapshot = step.snapshot ?? {};
     step.snapshot.camera = sceneCore.getCameraState();
+    if (!step.cameraBinding) step.cameraBinding = { mode: 'free', templateId: null };
+    step.cameraBinding.mode       = 'free';
+    step.cameraBinding.templateId = null;
     state.setState({ steps: [...allSteps] });
     state.markDirty();
     state.emit('step:synced', step);
+  }
+
+  /**
+   * Resolve the effective camera state for a step, honouring its
+   * cameraBinding. Templates are stored in state.cameraViews — when a
+   * step's binding points there, we copy out the camera fields so the
+   * activate path can apply/animate to that state.
+   *
+   * Returns null if the step has no usable camera (no snapshot camera
+   * AND no template, OR the template id no longer exists with no
+   * snapshot fallback). Callers should treat null as "skip camera".
+   *
+   * @param {Step} step
+   * @returns {CameraState|null}
+   */
+  _resolveStepCamera(step) {
+    if (!step) return null;
+    const binding = step.cameraBinding;
+    if (binding?.mode === 'template' && binding.templateId) {
+      const views = state.get('cameraViews') || [];
+      const tpl   = views.find(v => v.id === binding.templateId);
+      if (tpl) {
+        return {
+          position:   tpl.position,
+          quaternion: tpl.quaternion,
+          pivot:      tpl.pivot,
+          up:         tpl.up,
+          fov:        tpl.fov,
+        };
+      }
+      // Template was deleted out from under this step. Fall back to the
+      // step's last-snapshotted camera so the view doesn't blank.
+    }
+    return step.snapshot?.camera ?? null;
+  }
+
+  /**
+   * Returns the step's snapshot with camera resolved through its
+   * cameraBinding — what the activate paths actually want to apply.
+   * Returns the original snapshot if nothing changes (no template
+   * binding, no camera at all).
+   *
+   * @param {Step} step
+   * @returns {Snapshot}
+   */
+  _resolveStepSnapshot(step) {
+    if (!step?.snapshot) return step?.snapshot;
+    const resolvedCam = this._resolveStepCamera(step);
+    if (resolvedCam === step.snapshot.camera) return step.snapshot;
+    return { ...step.snapshot, camera: resolvedCam };
   }
 
 
@@ -1106,6 +1341,11 @@ class StepManager {
       voiceEnabled: source.voiceEnabled,
       transition:   { ...source.transition },
       snapshot:     JSON.parse(JSON.stringify(source.snapshot)),
+      // step.overlay is a Konva.Stage JSON string (text boxes, images,
+      // shapes) — duplicate by copying the string verbatim so the new
+      // step starts with an identical overlay. Without this the dup
+      // arrived with an empty stage.
+      overlay:      source.overlay || null,
     });
 
     const sourceIdx = steps.indexOf(source);
@@ -1212,9 +1452,63 @@ class StepManager {
     const steps = state.get('steps');
     const step  = steps.find(s => s.id === stepId);
     if (!step) return;
-    step.hidden = !!hidden;
+    const want = !!hidden;
+    step.hidden = want;
+    // Step-groups: toggling a HEAD cascades the same hidden state to
+    // every sub-step under it. Without this, the head disappears from
+    // playback but the sub-steps still play, breaking the "group reads
+    // as one step" invariant. Show on the head also un-hides every
+    // sub-step (regardless of their previous individual state) so the
+    // group toggle is symmetric and predictable.
+    if (step.groupHead) {
+      for (const s of steps) {
+        if (s.groupId === stepId) s.hidden = want;
+      }
+    }
     state.setState({ steps: [...steps] });
     state.markDirty();
+  }
+
+  /**
+   * Toggle (or set) a chapter's hidden flag. When a chapter is hidden,
+   * every step inside it is skipped from playback / export — useful
+   * for project variation management where alternate chapters can be
+   * staged side-by-side and toggled in/out without deleting steps.
+   * The per-step hidden flag is independent: a chapter can be
+   * "showing" and individual steps inside still hidden.
+   */
+  setChapterHidden(chapterId, hidden) {
+    const chapters = state.get('chapters') || [];
+    const chap     = chapters.find(c => c.id === chapterId);
+    if (!chap) return;
+    const next = !!hidden;
+    chap.hidden = next;
+    // Hiding auto-UNLOCKS the chapter so it collapses by default —
+    // hidden steps shouldn't dominate the panel. The user can manually
+    // re-lock via the lock button if they want the chapter expanded
+    // while hidden (e.g. for last-glance reference). Auto-unlock is a
+    // one-shot side-effect of hide; un-hiding doesn't touch the lock.
+    if (next) chap.locked = false;
+    state.setState({ chapters: [...chapters] });
+    state.markDirty();
+  }
+
+  /**
+   * Returns true when the step would be encoded by export / advanced by
+   * playback navigation — i.e. it's not the hidden base step, not
+   * marked hidden itself, and its chapter (if any) is not hidden.
+   * Centralised so every playback / export call site reads the same
+   * rules. Build a chapter map up front in tight loops.
+   */
+  _isPlayable(step, chaptersById = null) {
+    if (!step || step.hidden || step.isBaseStep) return false;
+    if (step.chapterId) {
+      const ch = chaptersById
+        ? chaptersById.get(step.chapterId)
+        : (state.get('chapters') || []).find(c => c.id === step.chapterId);
+      if (ch?.hidden) return false;
+    }
+    return true;
   }
 
 
@@ -1416,7 +1710,7 @@ class StepManager {
   }
 
   getVisibleSteps() {
-    return state.get('steps').filter(s => !s.hidden && !s.isBaseStep);
+    return state.get('steps').filter(s => this._isPlayable(s));
   }
 
   getStepIndex(stepId) {
@@ -1481,7 +1775,37 @@ class StepManager {
   reintegrateFromStep0(activeStepId) {
     this.activateBaseStep();
     if (activeStepId) this.activateStep(activeStepId, false);
-    this.removePlaceholders();
+    this.removeOrphanedPlaceholders();
+  }
+
+  /**
+   * Sweep the scene for placeholder LineSegments (the wireframe Bbox
+   * boxes the rebuild creates for missing-mesh nodes) whose data node
+   * is no longer flagged `missing` — i.e. asset re-integration just
+   * provided the real geometry. Without this, after a relink the
+   * placeholder stays parented next to the real mesh and renders as
+   * a stray wireframe ghost.
+   */
+  removeOrphanedPlaceholders() {
+    const nodeById = state.get('nodeById');
+    if (!nodeById || !sceneCore.rootGroup) return;
+    const toRemove = [];
+    sceneCore.rootGroup.traverse(obj => {
+      if (!obj?.userData?.isPlaceholder) return;
+      const id = obj.userData.meshNodeId;
+      const node = id ? nodeById.get(id) : null;
+      if (!node || node.missing === false) toRemove.push(obj);
+    });
+    for (const obj of toRemove) {
+      if (obj.parent) obj.parent.remove(obj);
+      try { obj.geometry?.dispose?.(); } catch {}
+      try { obj.material?.dispose?.(); } catch {}
+      // If this placeholder was registered under the node's id, clear
+      // the registry entry so a stale ref doesn't shadow the real mesh.
+      if (obj.userData?.meshNodeId && this.object3dById.get(obj.userData.meshNodeId) === obj) {
+        this.object3dById.delete(obj.userData.meshNodeId);
+      }
+    }
   }
 
 
@@ -1639,11 +1963,26 @@ function rebuildFromTreeSpec(spec, nodeById, object3dById, parentObject3d) {
     // even while its asset file is absent.
     node = nodeById.get(spec.id);
     if (!node) return null;
+    // ── Preserve note children across step rebuilds ────────────────────
+    // Notes are GLOBAL — they live on the live tree, not in step
+    // snapshots (serializeModelTree filters them out). The mesh branch
+    // here is the only place note nodes ever sit, so we save them
+    // before wiping children and re-append them at the bottom of this
+    // function. Without this, every step transition would discard the
+    // user's notes.
+    const preservedNotes = (node.children || []).filter(c => c?.type === 'note');
+    node._preservedNotesForRebuild = preservedNotes;
     node.name         = spec.name || node.name;
     node.localVisible = spec.localVisible !== false;
     // Inherit bbox from spec if node doesn't have it yet (e.g. phantom clone
     // created before bbox serialisation was added — forward-compat fallback).
     if (!node.bbox && spec.bbox) node.bbox = spec.bbox;
+    // placeholderTransform — re-hydrate on load so saved phantoms render
+    // at their original local rotation/scale (FBX models need this; OBJ
+    // typically has identity per-mesh transforms and the field is absent).
+    if (!node.placeholderTransform && spec.placeholderTransform) {
+      node.placeholderTransform = spec.placeholderTransform;
+    }
     node.children     = [];
 
     let obj = object3dById.get(spec.id) ?? node.object3d;
@@ -1674,6 +2013,33 @@ function rebuildFromTreeSpec(spec, nodeById, object3dById, parentObject3d) {
       obj.userData.nodeId     = node.id;
     }
 
+  } else if (specType === 'flatShape') {
+    // Flat 2D shape (M1 — "2D shapes in 3D"). Reuse the live node so its
+    // shapePath + fill survive every rebuild. Build the THREE.Mesh on
+    // first encounter (e.g. just after project load) and reparent on
+    // subsequent rebuilds — the data tree is the source of truth, the
+    // saved spec only carries id/type/name/visibility.
+    node = nodeById.get(spec.id);
+    if (!node) return null;
+    node.name         = spec.name || node.name;
+    node.localVisible = spec.localVisible !== false;
+    node.children     = [];
+
+    let obj = object3dById.get(spec.id) ?? node.object3d ?? ensureFlatShapeObject3D(node);
+    if (obj) {
+      node.object3d = obj;
+      object3dById.set(spec.id, obj);
+      if (parentObject3d && obj.parent !== parentObject3d) {
+        if (obj.parent) obj.parent.remove(obj);
+        parentObject3d.add(obj);
+      }
+      if (obj.userData) {
+        obj.userData.flatShapeNodeId = node.id;
+        obj.userData.meshNodeId      = node.id;
+        obj.userData.nodeId          = node.id;
+      }
+    }
+
   } else {
     // scene root or unknown — pass through; use node.object3d as parent for children
     node = nodeById.get(spec.id);
@@ -1682,14 +2048,34 @@ function rebuildFromTreeSpec(spec, nodeById, object3dById, parentObject3d) {
   }
 
   // Determine which Three.js object children should attach to.
-  // folder/model/scene all own a group; mesh nodes don't.
-  const childParent = (specType === 'mesh')
-    ? parentObject3d
-    : (object3dById.get(spec.id) ?? node?.object3d ?? parentObject3d);
+  //   - folder / scene own a group; their data-children parent under it.
+  //   - model children attach to the model's outer group. (Source
+  //     transform is baked into mesh vertices, no inner group needed.)
+  //   - mesh nodes carry a Mesh; flatShape children of a mesh need to
+  //     parent UNDER that Mesh in Three.js so they inherit its world
+  //     transform (cable mesh-anchor style). Notes on a mesh have no
+  //     object3d so the parent doesn't matter for them.
+  //   - flatShape itself has no children in v1, so its branch never
+  //     recurses; childParent there is irrelevant but kept consistent.
+  let childParent;
+  if (specType === 'flatShape') {
+    childParent = parentObject3d;
+  } else {
+    childParent = object3dById.get(spec.id) ?? node?.object3d ?? parentObject3d;
+  }
 
   for (const childSpec of (spec.children || [])) {
     const childNode = rebuildFromTreeSpec(childSpec, nodeById, object3dById, childParent);
     if (childNode) node.children.push(childNode);
+  }
+
+  // Re-attach any note children that were preserved at the start of this
+  // mesh's rebuild (see the mesh branch above). Notes are global —
+  // they survive step transitions because they're never IN the step
+  // spec to begin with.
+  if (specType === 'mesh' && node._preservedNotesForRebuild?.length) {
+    for (const n of node._preservedNotesForRebuild) node.children.push(n);
+    delete node._preservedNotesForRebuild;
   }
 
   return node;
@@ -1757,11 +2143,28 @@ function _createMeshPlaceholder(node) {
   lines.userData.meshNodeId    = node.id;
   lines.userData.isPlaceholder = true;
 
-  // Position directly at bbox centre within the parent folder group.
-  // We set lines.position explicitly here rather than relying on the transform
-  // system (applyAllTransformsToScene) because mesh nodes are not transform
-  // nodes — keeping it simple and robust.
-  lines.position.set(cx, cy, cz);
+  // Position the placeholder. Two paths:
+  //   - placeholderTransform present (set by deleteTopLevelAssembly,
+  //     captures the original mesh's local position/rotation/scale):
+  //     apply it to the LineSegments + translate the BoxGeometry by
+  //     the bbox centre, so the wireframe lands at the same world
+  //     orientation the original mesh occupied. Required for FBX
+  //     models whose loader puts non-identity transforms on each mesh.
+  //   - otherwise (legacy / load-time missing-asset path): position
+  //     the LineSegments at the bbox centre in folder-local space and
+  //     leave rotation/scale at identity. Matches pre-existing
+  //     behaviour for OBJ-imported missing-asset projects.
+  const pt = node.placeholderTransform;
+  if (pt && Array.isArray(pt.position) && Array.isArray(pt.quaternion)) {
+    edgesGeom.translate(cx, cy, cz);
+    lines.position.set(pt.position[0], pt.position[1], pt.position[2]);
+    lines.quaternion.set(pt.quaternion[0], pt.quaternion[1], pt.quaternion[2], pt.quaternion[3]);
+    if (Array.isArray(pt.scale)) {
+      lines.scale.set(pt.scale[0], pt.scale[1], pt.scale[2]);
+    }
+  } else {
+    lines.position.set(cx, cy, cz);
+  }
 
   return lines;
 }
@@ -1780,8 +2183,10 @@ function syncThreeJsHierarchy(parentMap, nodeById, object3dById) {
   if (!parentMap) return;
   for (const [nodeId, targetParentId] of Object.entries(parentMap)) {
     const obj       = object3dById.get(nodeId)         ?? nodeById.get(nodeId)?.object3d;
-    const parentObj = object3dById.get(targetParentId) ?? nodeById.get(targetParentId)?.object3d;
-    if (!obj || !parentObj || obj.parent === parentObj) continue;
+    const parentNode = nodeById.get(targetParentId);
+    const parentObj = object3dById.get(targetParentId) ?? parentNode?.object3d;
+    if (!obj || !parentObj) continue;
+    if (obj.parent === parentObj) continue;
     if (obj.parent) obj.parent.remove(obj);
     parentObj.add(obj);
   }
@@ -1912,8 +2317,163 @@ function diffWorldTransforms(fromWT, toWT) {
 
 // ── Helpers ────────────────────────────────────────────────────────────────
 
-function _sleep(ms) {
-  return new Promise(resolve => setTimeout(resolve, Math.max(0, ms)));
+// ─── Balloon-note per-step state helpers ──────────────────────────────────
+//
+// Notes are TREE NODES under their anchor mesh (see schema.createNoteNode).
+// Their text + size + anchor are GLOBAL — same on every step. Their
+// panelOffset (where the balloon sits relative to the projected anchor
+// point) is PER-STEP — saved into snapshot.notePanelOffsets and
+// rewritten onto the live note when a step is applied. Visibility is
+// already per-step via the standard snapshot.visibility map.
+
+function _walkNotes(node, fn) {
+  if (!node) return;
+  if (node.type === 'note') fn(node);
+  for (const c of (node.children || [])) _walkNotes(c, fn);
+}
+
+function _captureNotePanelOffsets(root) {
+  const out = {};
+  _walkNotes(root, n => {
+    const o = n.panelOffset || { x: 0, y: 0 };
+    const entry = { x: o.x ?? 0, y: o.y ?? 0 };
+    // New frame-relative position model. Stored alongside legacy
+    // panelOffset under a non-conflicting key. Apply path reads both
+    // and prefers frame when present.
+    if (n.framePosition && Number.isFinite(n.framePosition.x) && Number.isFinite(n.framePosition.y)) {
+      entry.fx = n.framePosition.x;
+      entry.fy = n.framePosition.y;
+    }
+    out[n.id] = entry;
+  });
+  return out;
+}
+
+function _applyNotePanelOffsets(nodeById, map) {
+  for (const [id, off] of Object.entries(map || {})) {
+    const note = nodeById?.get(id);
+    if (note?.type === 'note') {
+      note.panelOffset = { x: off.x ?? 0, y: off.y ?? 0 };
+      if (Number.isFinite(off.fx) && Number.isFinite(off.fy)) {
+        note.framePosition = { x: off.fx, y: off.fy };
+      } else {
+        // Step had no framePosition saved — clear any leftover so the
+        // legacy panelOffset path takes over (and re-migrates lazily).
+        delete note.framePosition;
+      }
+    }
+  }
+}
+
+function _clearNoteAnims(nodeById) {
+  if (!nodeById) return;
+  for (const node of nodeById.values()) {
+    if (node?.type === 'note' && node._anim) delete node._anim;
+  }
+}
+
+/**
+ * Snapshot every live note's CURRENT panelOffset + EFFECTIVE visibility
+ * BEFORE applySnapshotAnimated mutates the live tree (rebuildFromTreeSpec
+ * / _prepareVisibility). Effective vis = note's own AND every ancestor's
+ * — so when the anchor mesh is hidden, the note's effective vis is
+ * false even if note.localVisible is true. That way step transitions
+ * that toggle the anchor's visibility correctly fade the note in/out.
+ *
+ * Returns: { [noteId]: { panelOffset:{x,y}, visible:bool } }
+ */
+function _captureFromNoteState(root) {
+  const out = {};
+  if (!root) return out;
+  const effMap = computeEffectiveVisibility(root);
+  _walkNotes(root, n => {
+    const entry = {
+      panelOffset: { x: n.panelOffset?.x ?? 0, y: n.panelOffset?.y ?? 0 },
+      visible:     !!effMap.get(n.id),
+    };
+    if (n.framePosition && Number.isFinite(n.framePosition.x) && Number.isFinite(n.framePosition.y)) {
+      entry.framePosition = { x: n.framePosition.x, y: n.framePosition.y };
+    }
+    out[n.id] = entry;
+  });
+  return out;
+}
+
+/**
+ * Schedule per-note panel-offset + opacity fade interpolations for a
+ * step transition. notes-render reads each note's _anim every tick and
+ * lerps panelOffset + opacity, clearing _anim when alpha hits 1. We
+ * only schedule for notes whose target state actually differs from
+ * their current state — no busy-work for notes that don't move.
+ *
+ * fromState is captured BEFORE the live tree gets mutated (see
+ * _captureFromNoteState) so we know each note's REAL pre-transition
+ * state, not the post-mutation state.
+ */
+function _scheduleNoteAnims(treeData, fromState, toSnapshot, startMs, durationMs, easeFn) {
+  if (!treeData) return;
+  const toOffsets = toSnapshot?.notePanelOffsets || {};
+  const toVis     = toSnapshot?.visibility || {};
+  // TO-side effective visibility: simulates the visibility map that
+  // _prepareVisibility is about to apply, then walks ancestors. So a
+  // note whose anchor mesh is hidden in the TO step gets toVisible=false
+  // and fades out — even if the note's own localVisible is true.
+  const toEffMap  = computeEffectiveVisibility(treeData, toVis);
+  _walkNotes(treeData, note => {
+    const from = fromState?.[note.id] || {
+      panelOffset: { x: note.panelOffset?.x ?? 0, y: note.panelOffset?.y ?? 0 },
+      visible:     note.localVisible !== false,
+    };
+    const fromOffset  = from.panelOffset;
+    const toOffset    = toOffsets[note.id] || fromOffset;
+    const fromVisible = from.visible;
+    const toVisible   = !!toEffMap.get(note.id);
+
+    // FramePosition lerp (new model). Read from / to off the captured
+    // state and the destination snapshot. If either side has it, build
+    // a frame-% interpolation; the render layer prefers framePosition
+    // when present and lerps between fromFP and toFP.
+    const fromFP = from.framePosition
+                || (note.framePosition && Number.isFinite(note.framePosition.x)
+                    ? { x: note.framePosition.x, y: note.framePosition.y }
+                    : null);
+    const tEntry = toOffsets[note.id];
+    const toFP   = (tEntry && Number.isFinite(tEntry.fx) && Number.isFinite(tEntry.fy))
+                   ? { x: tEntry.fx, y: tEntry.fy }
+                   : fromFP;   // missing → snap to current
+
+    const noOffsetChange = Math.abs(fromOffset.x - toOffset.x) < 0.5
+                        && Math.abs(fromOffset.y - toOffset.y) < 0.5;
+    const noFPChange = !fromFP || !toFP
+                       || (Math.abs(fromFP.x - toFP.x) < 0.0005
+                        && Math.abs(fromFP.y - toFP.y) < 0.0005);
+    const noVisChange    = fromVisible === toVisible;
+    if (noOffsetChange && noFPChange && noVisChange) {
+      delete note._anim;
+      return;
+    }
+    note._anim = {
+      fromOffset:  { x: fromOffset.x, y: fromOffset.y },
+      toOffset:    { x: toOffset.x,   y: toOffset.y   },
+      fromFP:      fromFP ? { x: fromFP.x, y: fromFP.y } : null,
+      toFP:        toFP   ? { x: toFP.x,   y: toFP.y   } : null,
+      fromVisible,
+      toVisible,
+      startMs,
+      durationMs,
+      easeFn,
+    };
+  });
+}
+
+
+// Real-time sleep — what live playback uses. Offline export swaps this
+// out via setSleepImpl so animation phases advance on a synthetic
+// clock instead of being throttled by setTimeout / rAF behaviour.
+let _sleepImpl = (ms) => new Promise(resolve => setTimeout(resolve, Math.max(0, ms)));
+function _sleep(ms) { return _sleepImpl(ms); }
+export function setSleepImpl(fn) {
+  _sleepImpl = fn || ((ms) => new Promise(resolve => setTimeout(resolve, Math.max(0, ms))));
 }
 
 

@@ -62,12 +62,104 @@ label.colorlab{display:block;font-size:12px;color:var(--muted);margin-top:4px}
 .animStepBtn.green{background:#14532d;color:#dcfce7;border-color:#22c55e}
 .animStepBtn.orange{background:#7c2d12;color:#ffedd5;border-color:#f97316}
 .animStepBtn.red{background:#7f1d1d;color:#fee2e2;border-color:#ef4444}
-.stepItem{border:1px solid var(--line);background:#101827;border-radius:12px;padding:8px;margin-bottom:8px;cursor:pointer}
-.stepItem.active{border-color:#f59e0b;outline:2px solid #f59e0b;outline-offset:1px;box-shadow:0 0 0 1px rgba(245,158,11,.35) inset}
-.stepItem.selected{background:#17314a}
-.stepItem.selected.active{background:#1d334b}
+.stepItem{border:1px solid var(--line);background:var(--panel2);border-radius:12px;padding:8px;margin-bottom:8px;cursor:pointer}
+/* Active step — thick yellow outline ONLY. No fill change, no inner
+   shadow. The outline alone tells the user which step is active;
+   combined with the .selected fill below it stays clearly readable
+   when the active step is also part of the multi-selection. 3 px
+   keeps the cue visible against light backgrounds where a 2 px
+   outline got lost. */
+.stepItem.active{border-color:#facc15;outline:3px solid #facc15;outline-offset:1px}
+/* Step-group tint — amber wash on heads and sub-steps so they read as
+   one unit. Both rules use a single class beyond .stepItem, so the
+   .selected / .active rules below (also two-class) override them on
+   the cascade and keep the selection / active highlight identical to a
+   normal step. */
+.stepItem.groupHead{background:rgba(234,179,8,0.10);border-left:3px solid rgba(234,179,8,0.55)}
+.stepItem.subStep  {background:rgba(234,179,8,0.05);border-left:3px solid rgba(234,179,8,0.30)}
+/* Multi-step selection highlight (Ctrl/Shift click in timeline).
+   Default = the original BLUE used in dark theme. Light-theme
+   override (in base.css) swaps to a warm yellow fill that reads
+   better against the near-white surfaces. Active step's yellow
+   outline rides on top of the fill in both themes. */
+.stepItem.selected,
+.stepItem.selected.active{
+  background:rgba(74,144,217,0.22);
+  border-color:#4A90D9;
+  box-shadow:0 0 0 1px rgba(74,144,217,.35) inset;
+}
+.stepItem.selected.active{background:rgba(74,144,217,0.32)}
+/* Chapter header — inline style sets a default green tint, so the
+   selection rule needs !important to win over it. Selected chapter
+   uses a deeper green so the selection state stays unambiguous. */
+.chapterHeader.selected{
+  background:rgba(34,197,94,0.32) !important;
+  border-color:#22c55e !important;
+  outline:1px solid rgba(34,197,94,0.7);outline-offset:1px;
+}
+.chapterHeader.selected.partial{
+  background:rgba(34,197,94,0.18) !important;
+  outline-style:dashed;
+}
+
+/* ── Multi-step "danger zone" indicators ─────────────────────────────────
+   When ≥ 2 steps are multi-selected, every visibility / color edit fans
+   out across all of them. These rules give the user two unmissable
+   warnings:
+     1. A bold yellow ring inside the viewport surface — visible the
+        whole time the multi-step selection is live.
+     2. A 400 ms yellow flash on every step card (and its chapter
+        header) that was just hit by a bulk action. Triggered by
+        steps-panel.js applying a .justEdited class on the
+        steps:bulkApplied event. */
+#viewport-surface.multi-step-active::after{
+  content:'';position:absolute;inset:0;pointer-events:none;z-index:50;
+  box-shadow:inset 0 0 0 4px rgba(250,204,21,0.92);border-radius:4px;
+}
+@keyframes sbsBlinkYellow{
+  0%   {box-shadow:0 0 0 3px rgba(250,204,21,0.95) inset,0 0 16px 4px rgba(250,204,21,0.7);border-color:#facc15}
+  60%  {box-shadow:0 0 0 3px rgba(250,204,21,0.55) inset,0 0 8px  2px rgba(250,204,21,0.35);border-color:rgba(250,204,21,0.75)}
+  100% {box-shadow:none;border-color:inherit}
+}
+.stepItem.justEdited,.chapterHeader.justEdited{animation:sbsBlinkYellow 400ms ease-out}
+
+/* ── 3D-anchored balloon notes ─────────────────────────────────────────────
+   The balloon body is a DOM div absolutely positioned inside
+   #notes-overlay-labels; the tail is an SVG <path> in #notes-overlay-svg.
+   Both share their colour palette with the rest of the UI. The balloon
+   text is centred and contenteditable on demand (dbl-click). */
+#notes-overlay{position:absolute;inset:0;pointer-events:none;z-index:30}
+#notes-overlay-svg{position:absolute;inset:0;width:100%;height:100%;pointer-events:none;overflow:visible}
+#notes-overlay-labels{position:absolute;inset:0;pointer-events:none}
+.sbsNoteBalloon{
+  pointer-events:auto;cursor:move;
+  background:#fffbeb;color:#1f2937;
+  border:1px solid #facc15;border-radius:10px;
+  padding:6px 10px;min-width:48px;max-width:340px;
+  font-family:Arial,Helvetica,sans-serif;font-size:14px;line-height:1.35;
+  box-shadow:0 2px 8px rgba(0,0,0,0.32);
+  white-space:pre-wrap;word-wrap:break-word;
+  user-select:none;
+}
+.sbsNoteBalloon[contenteditable="true"]{
+  user-select:text;cursor:text;outline:2px solid #3b82f6;outline-offset:1px;
+}
+.sbsNoteTail{fill:none;stroke:#facc15;stroke-width:2;stroke-linecap:round;opacity:0.9}
 .stepItem.hiddenStep{opacity:.65}
 .stepTop{display:flex;align-items:center;gap:6px}
+/* Thumbnail wrapper hosts the eye-toggle overlay. The eye is opacity:0
+   by default; hover OR a hidden step (where we always want the eye
+   discoverable) reveals it. Anchors absolute over the thumb. */
+.stepThumbWrap{position:relative;display:inline-block;flex:0 0 auto}
+.stepThumbWrap .eyeToggle{position:absolute;inset:0;display:flex;align-items:center;justify-content:center;background:rgba(0,0,0,0.55);border:0;color:#fff;font-size:18px;line-height:1;border-radius:4px;opacity:0;cursor:pointer;transition:opacity 80ms;padding:0}
+.stepThumbWrap:hover .eyeToggle,.stepThumbWrap.is-hidden .eyeToggle{opacity:1}
+.stepThumbWrap.is-hidden .eyeToggle{background:rgba(0,0,0,0.75)}
+/* Chapter header eye-toggle — always visible (no hover gate) since
+   chapter headers don't have a thumbnail to peek under. */
+.chapterEyeToggle{flex:0 0 auto;background:transparent;border:0;color:inherit;font-size:14px;cursor:pointer;padding:0 4px;opacity:0.55;line-height:1}
+.chapterEyeToggle:hover{opacity:1}
+.chapterHeader.is-hidden .chapterEyeToggle{opacity:1}
+.chapterHeader.is-hidden{opacity:0.55}
 .stepTopSpacer{min-width:0;flex:1}
 .stepName{flex:1;font-size:13px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 .stepMeta{font-size:11px;color:var(--muted);margin-top:4px}
@@ -77,7 +169,7 @@ label.colorlab{display:block;font-size:12px;color:var(--muted);margin-top:4px}
 /* ── HUD / Status ────────────────────────────────────────────── */
 #hud{position:absolute;right:10px;top:10px;width:340px;border:1px solid var(--line);background:rgba(15,23,42,.88);backdrop-filter:blur(6px);border-radius:14px;padding:12px;box-shadow:0 10px 24px rgba(0,0,0,.35);max-height:calc(100% - 20px);overflow:auto;pointer-events:none}
 #hud-content{pointer-events:auto}
-#status-bar{position:absolute;left:10px;bottom:10px;border:1px solid var(--line);background:rgba(15,23,42,.88);border-radius:10px;padding:8px 10px;max-width:760px;font-size:13px}
+#status-bar{position:absolute;left:10px;bottom:10px;border:1px solid var(--line);background:rgba(15,23,42,.88);border-radius:14px;padding:12px 15px;max-width:1100px;font-size:19px;line-height:1.2}
 .swatch{width:12px;height:12px;border-radius:999px;border:1px solid rgba(255,255,255,.2);display:inline-block;vertical-align:middle}
 .kv{font-size:13px;margin:4px 0}
 

@@ -113,7 +113,7 @@ function _buildEditPane(preset, presets, container) {
 
     <label class="colorlab" style="margin-top:8px">Animation string
       <textarea class="ap-anim" rows="2" wrap="soft"
-                style="margin-top:6px;width:100%;box-sizing:border-box;padding:8px 10px;font-family:monospace;font-size:14px;line-height:1.4;color:var(--text);background:#111827;border:1px solid var(--line);border-radius:8px;caret-color:#f59e0b;resize:vertical;min-height:44px"
+                style="margin-top:6px;width:100%;box-sizing:border-box;padding:8px 10px;font-family:monospace;font-size:14px;line-height:1.4;color:var(--text);background:var(--panel);border:1px solid var(--line);border-radius:8px;caret-color:#f59e0b;resize:vertical;min-height:44px"
                 placeholder="camera(500), color(500), visibility(500), obj(500)">${_esc(preset.animation)}</textarea>
     </label>
 
@@ -135,9 +135,12 @@ function _buildEditPane(preset, presets, container) {
   // Show initial validation
   _updateValidation(pane.querySelector('.ap-validation'), preset.animation);
 
+  // Commit on blur (change event); the state subscription will pick up
+  // the new value and re-render the list (no explicit renderAnimationTab
+  // call here — that destroyed + recreated the textarea every commit,
+  // which broke focus and made keystrokes intermittently land on body).
   pane.querySelector('.ap-name').addEventListener('change', e => {
     actions.updateAnimPreset(preset.id, { name: e.target.value.trim() || preset.name });
-    renderAnimationTab(container.closest('[id^="tab-panel"]') || container);
   });
 
   const animInput = pane.querySelector('.ap-anim');
@@ -147,7 +150,6 @@ function _buildEditPane(preset, presets, container) {
   animInput.addEventListener('change', e => {
     const val = e.target.value.trim();
     if (val) actions.updateAnimPreset(preset.id, { animation: val });
-    renderAnimationTab(container.closest('[id^="tab-panel"]') || container);
   });
 
   pane.querySelector('.ap-default').addEventListener('change', e => {
@@ -156,7 +158,6 @@ function _buildEditPane(preset, presets, container) {
     } else {
       actions.updateAnimPreset(preset.id, { isDefault: false });
     }
-    renderAnimationTab(container.closest('[id^="tab-panel"]') || container);
   });
 
   pane.querySelector('.ap-del').addEventListener('click', () => {

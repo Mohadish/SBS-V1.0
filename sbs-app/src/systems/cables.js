@@ -67,18 +67,15 @@ export function getCable(id) {
   return listCables().find(c => c.id === id) || null;
 }
 
-// ─── Step snapshot — capture/apply variable fields per cable ──────────────
+// ─── Step snapshot — visibility-only model ────────────────────────────────
 //
-// What's TOPOLOGY (project-global, never per-step):
-//   - cable.id, branchSource
-//   - node.id, type, anchorType, nodeId (mesh ref), anchorLocal,
-//     normalLocal, sourceCableId, sourceNodeId, branchCableIds
-//   - socket existence (yes / no), socket.id, socket.size
-// What's VARIABLE (captured per step):
-//   - cable.visible, cable.highlight, cable.style.{color,radius,type}
-//   - free-node `position`
-//   - socket.color, socket.name, socket.localQuaternion / quaternion
-//   - cachedWorldPos / cachedWorldQuat (refreshed at apply too)
+// Per design (Phase B): cable identity AND geometry are project-global.
+// Only cable-level on/off + highlight vary per step. Everything else
+// (style, anchors, socket pose, free-node positions if they exist for
+// legacy data) is global — moving a cable point or recolouring a cable
+// affects every step. This avoids the "step 5 has yellow, step 6 has
+// blue" surprise and matches user mental model: cables are wired into
+// the assembly once, then animation rides on the host meshes.
 
 /**
  * Extract the per-step variable state from every cable in
@@ -92,37 +89,7 @@ export function captureStepSnapshot() {
     out[cable.id] = {
       visible:   !!cable.visible,
       highlight: !!cable.highlight,
-      style:     cable.style ? {
-        color:  cable.style.color,
-        radius: cable.style.radius,
-        type:   cable.style.type,
-      } : null,
-      nodes: {},
     };
-    for (const node of cable.nodes || []) {
-      const nodeOut = {};
-      // Free nodes carry world `position`; mesh-anchored nodes derive
-      // from their host mesh, so capturing `position` here is just for
-      // free-node per-step variation.
-      if (node.anchorType === 'free' && Array.isArray(node.position)) {
-        nodeOut.position = node.position.slice();
-      }
-      // Cache fields ride along — on apply they re-seed the live cache
-      // so step-jumps into a step where the mesh is dead still place
-      // the node where it was at capture time.
-      if (Array.isArray(node.cachedWorldPos))  nodeOut.cachedWorldPos  = node.cachedWorldPos.slice();
-      if (Array.isArray(node.cachedWorldQuat)) nodeOut.cachedWorldQuat = node.cachedWorldQuat.slice();
-      // Socket fields — only the variable bits.
-      if (node.socket) {
-        nodeOut.socket = {
-          color: node.socket.color,
-          name:  node.socket.name,
-        };
-        if (Array.isArray(node.socket.localQuaternion)) nodeOut.socket.localQuaternion = node.socket.localQuaternion.slice();
-        if (Array.isArray(node.socket.quaternion))      nodeOut.socket.quaternion      = node.socket.quaternion.slice();
-      }
-      if (Object.keys(nodeOut).length) out[cable.id].nodes[node.id] = nodeOut;
-    }
   }
   return out;
 }
@@ -144,25 +111,6 @@ export function applyStepSnapshot(snap) {
     const next = { ...cable };
     if (override.visible   !== undefined) next.visible   = !!override.visible;
     if (override.highlight !== undefined) next.highlight = !!override.highlight;
-    if (override.style) next.style = { ...(cable.style || {}), ...override.style };
-    if (override.nodes) {
-      next.nodes = (cable.nodes || []).map(node => {
-        const nOver = override.nodes[node.id];
-        if (!nOver) return node;
-        const nnext = { ...node };
-        if (nOver.position)        nnext.position        = nOver.position.slice();
-        if (nOver.cachedWorldPos)  nnext.cachedWorldPos  = nOver.cachedWorldPos.slice();
-        if (nOver.cachedWorldQuat) nnext.cachedWorldQuat = nOver.cachedWorldQuat.slice();
-        if (nOver.socket && node.socket) {
-          nnext.socket = { ...node.socket };
-          if (nOver.socket.color !== undefined)        nnext.socket.color           = nOver.socket.color;
-          if (nOver.socket.name  !== undefined)        nnext.socket.name            = nOver.socket.name;
-          if (nOver.socket.localQuaternion)            nnext.socket.localQuaternion = nOver.socket.localQuaternion.slice();
-          if (nOver.socket.quaternion)                 nnext.socket.quaternion      = nOver.socket.quaternion.slice();
-        }
-        return nnext;
-      });
-    }
     return next;
   });
   state.setState({ cables });
@@ -271,6 +219,54 @@ export function updateCable(id, patch) {
   const cables = listCables().map(c => c.id === id ? { ...c, ...patch } : c);
   state.setState({ cables });
   state.markDirty();
+}
+
+/** Patch the cable's `style` sub-object (color / radius / type). */
+export function updateCableStyle(id, stylePatch) {
+  if (!id || !stylePatch) return;
+  const cables = listCables().map(c =>
+    c.id === id ? { ...c, style: { ...(c.style || {}), ...stylePatch } } : c,
+  );
+  state.setState({ cables });
+  state.markDirty();
+}
+
+/**
+ * Append a node to a cable's nodes list (or prepend when
+ * opts.atStart is true). Returns the new node. Caller is responsible
+ * for picking the right `anchorType` + accompanying fields:
+ *   - 'mesh': nodeId + anchorLocal + normalLocal + cachedWorldPos
+ *   - 'free': position + cachedWorldPos
+ *   - 'branch': sourceCableId + sourceNodeId + branchCableIds[]
+ */
+export function addCablePoint(cableId, nodePartial = {}, opts = {}) {
+  const cable = getCable(cableId);
+  if (!cable) return null;
+  const node = createCableNode(nodePartial);
+  const atStart = !!opts.atStart;
+  const cables = listCables().map(c => {
+    if (c.id !== cableId) return c;
+    const nodes = atStart
+      ? [node, ...(c.nodes || [])]
+      : [...(c.nodes || []), node];
+    return { ...c, nodes };
+  });
+  state.setState({ cables });
+  state.markDirty();
+  return node;
+}
+
+/** Remove a node from a cable by node id. Returns true if it was found. */
+export function removeCablePoint(cableId, nodeId) {
+  const cable = getCable(cableId);
+  if (!cable) return false;
+  const before = cable.nodes?.length ?? 0;
+  const nodes  = (cable.nodes || []).filter(n => n.id !== nodeId);
+  if (nodes.length === before) return false;
+  const cables = listCables().map(c => c.id === cableId ? { ...c, nodes } : c);
+  state.setState({ cables });
+  state.markDirty();
+  return true;
 }
 
 /** Remove a cable + cascade-clean its branch references. */

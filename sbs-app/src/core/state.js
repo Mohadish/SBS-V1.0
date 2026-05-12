@@ -122,6 +122,34 @@ function createInitialState() {
     // box is free-form. See systems/style-templates.js.
     styleTemplates: [],               // StyleTemplate[]
 
+    // ── Flat-shape templates — project-level polygon library. Each entry
+    // owns a polygon + fill; placed instances live in the scene tree
+    // (type='flatShape', templateId points back here). Re-using a template
+    // reuses its geometry; editing it ripples to every instance.
+    // See systems/flat-shapes.js + ui/shape-tab.js.
+    shapeTemplates: [],               // ShapeTemplate[]
+
+    // Editor mode for "create shape" / "edit shape" — populated by
+    // actions.startShapeDraw / startShapeEdit; cleared on commit /
+    // cancel. main.js reads this to route viewport pointerdown.
+    //   { phase: 'pickPlane' | 'addVertices', templateId|null,
+    //     plane: { origin:[x,y,z], normal:[x,y,z], qx:[x,y,z], qy:[x,y,z] } | null,
+    //     points: [[x,y], …]   plane-local 2D vertices captured so far }
+    shapeDrawing: null,
+
+    // Edit-shape multi-instance pick mode. When set, the next viewport
+    // click on a flatShape mesh of THIS templateId opens the editor at
+    // that instance's plane. Other clicks (or Esc) cancel.
+    shapeEditPickInstanceForId: null,
+
+    // Place-shape picker mode. When set, the next viewport click on a
+    // face spawns a fresh instance of THIS template tangent to the hit
+    // surface, parented under the hit object's data-tree parent (or
+    // the hit object itself if it's a folder/model). Clicking empty
+    // space falls back to a camera-facing plane, parented to scene root.
+    // Esc cancels. Single-shot — auto-disarms after one place.
+    shapePlacementForId: null,
+
     // ── Cables — 3D wires/conduits routed between mesh anchors and
     // free points. The LIVE state of cables (current step's view).
     // step.snapshot.cables holds per-step variable overrides
@@ -132,17 +160,128 @@ function createInitialState() {
     // anchor resolver (live mesh → phantom → cached fallback).
     cables: [],                       // Cable[]
     // Project-level cable visuals (apply to every cable unless overridden).
-    cableGlobalScale:    1.0,         // 0.05–2.0 multiplier for radius / point + socket size
+    cableGlobalScale:    1.0,         // legacy 0.05–2.0 multiplier — superseded by cableGlobalRadius
+    // Phase G: project-level absolute radius. Each cable's effective
+    // radius = cableGlobalRadius * (cable.style.size / 100). With the
+    // default 1.0 here and per-cable size = 100%, a fresh cable
+    // renders at thickness = 1.0 — much thinner than the old default
+    // of 3 and with finer slider granularity (size step = 5%).
+    cableGlobalRadius:   1.0,
     cableHighlightColor: '#22d3ee',   // colour when cable.highlight=true
+
+    // C3: id of the cable currently in placement mode. While set, the
+    // viewport pointerdown handler intercepts left-clicks: hits on a
+    // mesh add an anchored point, hits elsewhere add a free point.
+    // Cleared on Esc, on the sidebar's Stop Placement button, or
+    // automatically on selection / step changes.
+    cablePlacingId: null,
+
+    // Phase G follow-up: when true, points placed during cablePlacingId
+    // mode are PREPENDED to nodes[] (extends from the cable's start)
+    // instead of appended. Driven by "Continue routing" right-clicked
+    // on the FIRST node of a non-branch cable. Cleared with placement.
+    cablePlacingAtStart: false,
+
+    // C5 (Phase A): currently selected cable point (sphere visual in the
+    // viewport). { cableId, nodeId } or null. Drives the cable-point
+    // highlight ring in cables-render and gates Phase B (gizmo follow)
+    // and later Phase C (re-anchor) work. Independent of selectedId
+    // (mesh selection) — clicking a cable point clears mesh selection
+    // and vice versa so the gizmo can only follow one target at a time.
+    selectedCablePoint: null,
+
+    // C5 (Phase E2): currently selected cable SOCKET. { cableId, nodeId }
+    // | null. Mutually exclusive with selectedCablePoint and the mesh
+    // selection — selecting any of the three clears the others. Drives
+    // the socket-edit panel in cable-tab and the full translate+rotate
+    // gizmo on the socket.
+    selectedCableSocket: null,
+
+    // C5 (Phase C): a cable point is awaiting a re-anchor pick. While
+    // set, the next viewport click on a mesh moves the point's anchor
+    // to that mesh + face position. Cleared on Esc, on a successful
+    // pick, or when selection changes.
+    cableReanchorPickingId: null,     // { cableId, nodeId } | null
+
+    // C5 (Phase D): an insertion is staged — the next click on a mesh
+    // adds a new point to the cable at the indicated index relative to
+    // the anchor node. Shape: { cableId, anchorNodeId, position }
+    // where position is 'before' | 'after'. Cleared on Esc, on a
+    // successful pick, or when selection changes.
+    cableInsertPickingTarget: null,
+
+    // C5 (Phase E2 follow-up): a SOCKET is awaiting a re-anchor pick.
+    // Same modal-pick pattern as cableReanchorPickingId but the click
+    // re-anchors the socket (back face on new surface, cable point
+    // follows along the new normal). Cleared on Esc / successful pick.
+    cableSocketReanchorPickingId: null,    // { cableId, nodeId } | null
 
     // ── UI state
     activeSidebarTab:   'files',      // which left sidebar tab is open
-    gridVisible:        true,
+    gridVisible:        false,
     showExportSafeFrame: false,
 
     // ── Gizmo / transform
     activeMoveFolderId: null,
-    activeTransformMode: null,        // 'object' | 'pivot' | null
+    // Node currently in PIVOT EDIT mode (the RED state on the tree's
+    // pivot button). When set, the gizmo for that node sits at the
+    // pivot world pose with an orange dot at its hub, and gizmo drags
+    // write to pivotLocalOffset / pivotLocalQuaternion instead of
+    // moving the geometry. Cleared on viewport pointerdown anywhere
+    // outside the gizmo handles (RED → BLUE commit).
+    pivotEditNodeId: null,
+
+    // Node currently in GLOBAL-TRANSFORM mode (Phase 2 / 2.1 — flat shapes
+    // only). When set, the gizmo shows a RED dot at its hub and ALL gizmo
+    // drags write to base fields instead of per-step deltas:
+    //   translate / plane → baseLocalPosition  (was: localOffset)
+    //   rotate            → baseLocalQuaternion (was: localQuaternion)
+    //   scale             → baseLocalScale     (was: localScale)
+    // Result: the change ripples to every step uniformly rather than
+    // mutating just the active step's snapshot.transforms[id].
+    // Cleared on viewport pointerdown outside gizmo handles (mirror of
+    // pivot-edit commit). Esc rolls back the open session.
+    globalEditNodeId: null,
+
+    // Node id awaiting a "snap pivot to surface" raycast. When set,
+    // the next viewport pointerdown is intercepted: it raycasts
+    // against the scene, and on a hit positions+orients the pivot
+    // along the face normal (Z=normal, tangent plane = X/Y). Cleared
+    // on hit, on Esc, or on selection change. Triggered from the
+    // tree row "Snap Pivot to Surface" menu entry or the panel button.
+    pivotSnapPickingNodeId: null,
+
+    // Node id awaiting a "pivot center via 3 points" placement. When
+    // set, the next viewport clicks place / remove crosses (snapping
+    // to vertex or edge) until 3 are down. A click on empty space (or
+    // Enter) commits — the unique circle through the 3 points gives
+    // the pivot center + plane normal, and the tool then enters pivot
+    // edit mode (RED) for fine-tuning. Cleared on commit / Esc /
+    // right-click → Cancel. Triggered from the tree row
+    // "Pivot Center via 3 Points…" menu entry.
+    pivotCenterPickingNodeId: null,
+
+    // Mesh node id awaiting a "note pick" raycast. When set, the next
+    // viewport pointerdown raycasts; on a hit landing on the same mesh,
+    // a balloon note is created at the hit point. Cleared on hit, on
+    // Esc, or on selection change. Triggered from the tree row's
+    // "Add Note…" menu entry.
+    notePickingMeshId: null,
+
+    // Note id awaiting a "reposition note" face pick. When set, the
+    // next viewport pointerdown raycasts; on a hit the note's anchor
+    // (mesh id, anchorLocal, anchorBboxRelative) is rewritten and
+    // the note is re-parented to the new mesh in the live tree.
+    // Cleared on hit, on Esc, or on selection change. Triggered from
+    // the tree row OR the balloon's right-click menu.
+    noteRepositioningId: null,
+
+    // Note template id awaiting a "place template" face pick. When set,
+    // the next viewport pointerdown raycasts ANY mesh; the hit creates
+    // a fresh note instance under that mesh, with templateId pointing
+    // at this template. Triggered from the Notes tab's "Assign to
+    // object" right-click action.
+    noteTemplateInstantiationId: null,
 
     // ── Export settings
     // Suppress auto-play of step narration when navigating live in the app.
@@ -165,6 +304,7 @@ function createInitialState() {
       stepHoldMs:         800,
       startFromActive:    true,
       showSafeFrame:      true,
+      offlineRender:      false,
       narrationEnabled:   true,
       narrationVoice:     '',          // empty → user must pick in Export tab
       narrationSpeed:     1.0,
@@ -195,6 +335,17 @@ function createInitialState() {
 
     // ── Viewport background
     backgroundColor: '#0f172a',
+
+    // Optional 2-color linear gradient backdrop. When enabled, replaces
+    // the solid backgroundColor with a CanvasTexture-baked gradient
+    // applied as scene.background. angleDeg is CSS-style: 0° = top-to-
+    // bottom (color1 on top), 90° = left-to-right, etc.
+    backgroundGradient: {
+      enabled:  false,
+      color1:   '#0f172a',
+      color2:   '#1e293b',
+      angleDeg: 180,
+    },
     solidOverride:   false,
 
     // ── Animation durations
@@ -204,6 +355,14 @@ function createInitialState() {
     // ── Selection groups
     selectionGroups:      [],
     selectionOutlineColor: '#00ffff',
+
+    // Set<stepId> — steps currently multi-selected in the timeline panel.
+    // When size ≥ 2, every step-snapshot mutation routed through actions
+    // (visibility, color, …) applies to ALL members of this set rather
+    // than the active step alone. Populated via Ctrl/Cmd-click and
+    // Shift-click in the steps panel; cleared by plain step click,
+    // outside-click, Esc, or explicit "Clear step selection" action.
+    selectedStepIds:      new Set(),
 
     // ── Internal: not persisted
     _occt:          null,             // OCCT importer instance

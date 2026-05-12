@@ -1,0 +1,14 @@
+# Test artifacts dropped here during local development. The real
+# deploy hosts .sbsproc / .sbsasm files on the closed server, not
+# in the repo.
+*.sbsproc
+*.sbsproj
+
+# Local-builder downloads (e.g. "untitled-assembly.sbsasm"). The
+# committed `sample.sbsasm` is intentionally kept as a reference.
+untitled-*.sbsasm
+
+# Electron wrap output / dependencies.
+node_modules/
+dist/
+package-lock.json

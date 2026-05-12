@@ -17,9 +17,13 @@
  *   'camera+color+obj+visibility(800)'                     → 1 phase (all at once)
  */
 
-export const DEFAULT_ANIMATION_STR = 'camera(500), color(500), visibility(500), obj(500)';
+export const DEFAULT_ANIMATION_STR =
+  'camera(500), overlay(500), visibility(500), color(500), cable(500), obj(500)';
 
-const VALID_TYPES = new Set(['camera', 'color', 'obj', 'visibility']);
+// `overlays` (lowercased from 'overlayS') = sustained-overlap variant of
+// `overlay`. Two-phase fade keeps shared items at 100% visible alpha
+// across the whole transition; see beginOverlaySustainedFade in overlay.js.
+const VALID_TYPES = new Set(['camera', 'color', 'obj', 'visibility', 'cable', 'overlay', 'overlays']);
 
 // Matches: 'camera(500)' or 'obj+visibility(300)'
 const TOKEN_RE = /([a-zA-Z+]+)\(\s*(\d+)\s*\)/g;

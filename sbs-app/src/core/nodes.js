@@ -337,6 +337,40 @@ export function captureVisibilitySnapshot(root) {
   return vis;
 }
 
+/**
+ * Compute effective (inherited) visibility for every node in the tree.
+ *
+ * A node is effectively visible only if IT and every ancestor up to
+ * the root are visible. Mirrors what applyAllVisibility does to
+ * Three.js Object3Ds, but returns a plain Map so non-Three consumers
+ * (e.g. the notes-render DOM overlay) can use it.
+ *
+ * If `visOverride` is provided, each lookup uses
+ *   visOverride[nodeId] !== undefined ? visOverride[nodeId] : node.localVisible
+ * so callers can simulate "what would visibility look like under this
+ * snapshot.visibility map" without mutating the live tree. This is
+ * what step transitions use to compute the TO-side effective state.
+ *
+ * @param {TreeNode}            root
+ * @param {Object<string,bool>} [visOverride]
+ * @returns {Map<string, boolean>}
+ */
+export function computeEffectiveVisibility(root, visOverride) {
+  const out = new Map();
+  if (!root) return out;
+  function walk(node, inheritedVisible) {
+    const ownLookup = visOverride && Object.prototype.hasOwnProperty.call(visOverride, node.id)
+      ? visOverride[node.id]
+      : node.localVisible;
+    const own = ownLookup !== false;
+    const eff = inheritedVisible && own;
+    out.set(node.id, eff);
+    for (const c of (node.children || [])) walk(c, eff);
+  }
+  walk(root, true);
+  return out;
+}
+
 
 /**
  * Apply a visibility snapshot to the tree (mutation).
@@ -450,6 +484,12 @@ export function applyParentMap(root, parentMap) {
  */
 export function serializeModelTree(node) {
   if (!node) return null;
+  // Notes are GLOBAL — they're tree children of meshes for tree-display
+  // purposes, but they don't belong in per-step snapshots. The live
+  // tree owns them; rebuildFromTreeSpec re-attaches them after each
+  // rebuild (see _reattachLiveNoteChildren in steps.js). Filter them
+  // out of the serialised spec so step rebuilds don't whisk them away.
+  if (node.type === 'note') return null;
   const spec = {
     id:           node.id,
     name:         node.name || '',
@@ -464,8 +504,41 @@ export function serializeModelTree(node) {
   if (node.type === 'mesh') {
     if (node.bbox)        spec.bbox        = node.bbox;
     if (node.fingerprint) spec.fingerprint = node.fingerprint;
+    // placeholderTransform — needed so a phantom (Bbox-only) mesh
+    // renders at the same local rotation / scale the live mesh had.
+    //
+    // Two sources:
+    //   1. Explicit, set by deleteTopLevelAssembly (delete-to-phantom).
+    //   2. Inferred from node.object3d at save time — handles the case
+    //      where a live FBX project is saved and later reopened with
+    //      the source file missing. Without this, FBX meshes (whose
+    //      loader puts per-mesh rotations on each object) rendered
+    //      90° off as placeholders even though they bind correctly
+    //      when the file is re-located.
+    //
+    // Identity transforms (typical of OBJ models) are skipped to keep
+    // the saved spec lean.
+    if (node.placeholderTransform) {
+      spec.placeholderTransform = node.placeholderTransform;
+    } else if (node.object3d && !_isIdentityTransform(node.object3d)) {
+      const o = node.object3d;
+      spec.placeholderTransform = {
+        position:   [o.position.x,   o.position.y,   o.position.z],
+        quaternion: [o.quaternion.x, o.quaternion.y, o.quaternion.z, o.quaternion.w],
+        scale:      [o.scale.x,      o.scale.y,      o.scale.z],
+      };
+    }
   }
   return spec;
+}
+
+/** True iff position/quaternion/scale on an Object3D are all identity. */
+function _isIdentityTransform(o) {
+  const e = 1e-6;
+  return Math.abs(o.position.x) < e && Math.abs(o.position.y) < e && Math.abs(o.position.z) < e
+      && Math.abs(o.quaternion.x) < e && Math.abs(o.quaternion.y) < e && Math.abs(o.quaternion.z) < e
+      && Math.abs(o.quaternion.w - 1) < e
+      && Math.abs(o.scale.x - 1) < e && Math.abs(o.scale.y - 1) < e && Math.abs(o.scale.z - 1) < e;
 }
 
 

@@ -21,16 +21,18 @@ import { initTree, renderTree, expandPathToNode, collapseAll } from './tree.js';
 import { setStatus }       from './status.js';
 import { createCameraView, generateId, APP_VERSION, APP_RELEASED } from '../core/schema.js';
 import { buildNodeMap }    from '../core/nodes.js';
+import { applyNodeSourceTransformToObject3D } from '../core/transforms.js';
 import { showContextMenu } from './context-menu.js';
 import { renderAnimationTab } from './animation-tab.js';
 import { renderHeaderTab }    from './header-tab.js';
 import { renderStyleTab }     from './style-tab.js';
+import { renderCableTab }     from './cable-tab.js';
 import { exportTimelineVideo, downloadBlob } from '../systems/video-export.js';
 import { listVoices as ttsListVoices } from '../systems/tts.js';
 import * as userSettings    from '../core/user-settings.js';
 import * as narrationCache  from '../systems/narration-cache.js';
 
-const TABS = ['files', 'tree', 'colors', 'select', 'cameras', 'animation', 'header', 'style', 'export'];
+const TABS = ['files', 'tree', 'colors', 'select', 'cameras', 'animation', 'header', 'style', 'cables', 'notes', 'shapes', 'export'];
 let _activeTab   = 'files';
 let _container   = null;
 let _treeInited  = false;
@@ -53,6 +55,9 @@ export function initSidebarLeft() {
       <button class="tabBtn"        data-tab="animation">Anim</button>
       <button class="tabBtn"        data-tab="header">Header</button>
       <button class="tabBtn"        data-tab="style">Style</button>
+      <button class="tabBtn"        data-tab="cables">🔌</button>
+      <button class="tabBtn"        data-tab="notes">💬</button>
+      <button class="tabBtn"        data-tab="shapes">▰</button>
       <button class="tabBtn"        data-tab="export">Export</button>
     </div>
     <div class="sidebar-panels" id="left-panels"></div>
@@ -75,12 +80,50 @@ export function initSidebarLeft() {
   // State subscriptions
   state.on('change:assets',                () => { if (_activeTab === 'files')   _renderFilesTab(); });
   state.on('change:treeData',              () => { if (_activeTab === 'tree')    renderTree(); });
-  state.on('change:colorPresets',          () => { if (_activeTab === 'colors')  _renderColorsTab(); });
-  state.on('materials:defaultColorsChanged',() => { if (_activeTab === 'colors')  _renderColorsTab(); });
-  state.on('change:selectedId',            () => { if (_activeTab === 'colors')  _renderColorsTab(); });
-  state.on('change:multiSelectedIds',      () => { if (_activeTab === 'colors')  _renderColorsTab(); });
+  state.on('change:colorPresets',          _queueColorsRender);
+  state.on('materials:defaultColorsChanged', _queueColorsRender);
+  state.on('change:selectedId',            _queueColorsRender);
+  state.on('change:multiSelectedIds',      () => {
+    if (_activeTab === 'colors') _queueColorsRender();
+    if (_activeTab === 'select') _renderSelectTab();   // refresh "+ Save (N)" button + counters
+  });
+  // Flush any deferred Colors-tab render once focus leaves an interactive
+  // element inside the tab — keeps the user's open <input type=color>
+  // popup alive while they drag, and re-renders cleanly once they're done.
+  document.addEventListener('focusout', () => {
+    if (_activeTab !== 'colors') return;
+    requestAnimationFrame(() => {
+      if (_colorsRenderQueued && !_shouldDeferColorsRender()) {
+        _colorsRenderQueued = false;
+        _renderColorsTab();
+      }
+    });
+  });
+  state.on('change:selectionGroups',       () => { if (_activeTab === 'select')   _renderSelectTab(); });
+  state.on('change:notePresets',                  () => { if (_activeTab === 'notes')    _renderNotesTab();  });
+  state.on('change:treeData',                     () => { if (_activeTab === 'notes')    _renderNotesTab();  });
+  state.on('change:noteTemplates',                () => { if (_activeTab === 'notes')    _renderNotesTab();  });
+  state.on('change:noteTemplateInstantiationId',  () => { if (_activeTab === 'notes')    _renderNotesTab();  });
   state.on('change:cameraViews',           () => { if (_activeTab === 'cameras')   _renderCamerasTab(); });
+  // Step bindings live on step.cameraBinding — when the active step
+  // changes, or when any step's binding updates, the Cameras tab needs
+  // to re-render so the "used by N steps" + "active-bound" indicators
+  // stay accurate.
+  state.on('change:activeStepId',          () => { if (_activeTab === 'cameras')   _renderCamerasTab(); });
+  state.on('change:steps',                 () => { if (_activeTab === 'cameras')   _renderCamerasTab(); });
   state.on('change:projectDirty',          () => { if (_activeTab === 'files')    _renderFilesTab(); });
+  state.on('change:theme',                 () => { if (_activeTab === 'files')    _renderFilesTab(); });
+  state.on('change:backgroundColor',       () => { if (_activeTab === 'files')    _renderFilesTab(); });
+  state.on('change:backgroundGradient',    () => {
+    // Refresh only when the toggle's enabled state changes (input/range
+    // events otherwise re-render on every drag tick which destroys the
+    // active <input type=color> popup mid-edit).
+    if (_activeTab !== 'files') return;
+    const el = _panel('files');
+    const liveEnabled = !!state.get('backgroundGradient')?.enabled;
+    const checkbox = el?.querySelector('#bg-grad-toggle');
+    if (checkbox && checkbox.checked !== liveEnabled) _renderFilesTab();
+  });
   state.on('change:selectionOutlineColor', () => { if (_activeTab === 'select')   _renderSelectTab(); });
   state.on('change:animationPresets',      () => { if (_activeTab === 'animation') _renderAnimTab(); });
   state.on('change:headerItems',           () => {
@@ -91,6 +134,26 @@ export function initSidebarLeft() {
   state.on('change:headersLocked',         () => { if (_activeTab === 'header')    _renderHeaderTabPanel(); });
   state.on('change:headerDefault',         () => { if (_activeTab === 'header')    _renderHeaderTabPanel(); });
   state.on('change:headerStepNumberPerChapter', () => { if (_activeTab === 'header') _renderHeaderTabPanel(); });
+  // C3/D: cable tab refreshes on cables list change, placement, and on
+  // cable-point selection (so the editor's per-point list highlights).
+  // Shapes tab — refresh on template list changes, draw-mode toggles,
+  // and tree changes (so per-template instance counts stay live).
+  state.on('change:shapeTemplates',      () => { if (_activeTab === 'shapes') _renderShapesTab(); });
+  state.on('change:shapeDrawing',        () => { if (_activeTab === 'shapes') _renderShapesTab(); });
+  state.on('change:treeData',            () => { if (_activeTab === 'shapes') _renderShapesTab(); });
+  state.on('change:shapePlacementForId', () => { if (_activeTab === 'shapes') _renderShapesTab(); });
+  // Selection changes trigger a Shapes-tab re-render only when that tab
+  // is active, so the highlight on the currently-selected flatShape's
+  // template row stays in sync. (Other tabs already re-render on their
+  // own selection-driven hooks.)
+  state.on('selection:change',           () => { if (_activeTab === 'shapes') _renderShapesTab(); });
+
+  state.on('change:cables',              () => { if (_activeTab === 'cables') _renderCableTabPanel(); });
+  state.on('change:cablePlacingId',      () => { if (_activeTab === 'cables') _renderCableTabPanel(); });
+  state.on('change:selectedCablePoint',  () => { if (_activeTab === 'cables') _renderCableTabPanel(); });
+  state.on('change:selectedCableSocket', () => { if (_activeTab === 'cables') _renderCableTabPanel(); });
+  state.on('change:cableGlobalRadius',   () => { if (_activeTab === 'cables') _renderCableTabPanel(); });
+  state.on('change:cableHighlightColor', () => { if (_activeTab === 'cables') _renderCableTabPanel(); });
   state.on('change:styleTemplates',        () => {
     if (_activeTab === 'style')  _renderStyleTabPanel();
     if (_activeTab === 'header') _renderHeaderTabPanel();   // P4b: row dropdowns refresh + Save button enable
@@ -138,6 +201,9 @@ function _renderActiveTab() {
     case 'animation': _renderAnimTab();    break;
     case 'header':    _renderHeaderTabPanel(); break;
     case 'style':     _renderStyleTabPanel();  break;
+    case 'cables':    _renderCableTabPanel();  break;
+    case 'notes':     _renderNotesTab();   break;
+    case 'shapes':    _renderShapesTab();  break;
     case 'export':    _renderExportTab();  break;
   }
 }
@@ -152,6 +218,10 @@ function _renderHeaderTabPanel() {
 
 function _renderStyleTabPanel() {
   renderStyleTab(_panel('style'));
+}
+
+function _renderCableTabPanel() {
+  renderCableTab(_panel('cables'));
 }
 
 
@@ -214,7 +284,46 @@ function _renderFilesTab() {
       <div class="grid3" style="margin-top:8px">
         <button class="btn" id="btn-fit-all">Fit All</button>
         <button class="btn" id="btn-toggle-grid">Grid</button>
-        <button class="btn" id="btn-toggle-theme">Theme</button>
+        <button class="btn" id="btn-toggle-theme">Theme: ${state.get('theme') === 'light' ? 'Light' : 'Dark'}</button>
+      </div>
+    </div>
+
+    <div class="section" id="bg-settings-section">
+      <div class="title">Background</div>
+      <div class="field-row" style="margin-top:8px;">
+        <label class="small" style="flex:1;">Solid color</label>
+        <input type="color" id="bg-color"
+               value="${_esc(state.get('backgroundColor') || '#0f172a')}"
+               style="width:44px;height:28px;padding:2px;border-radius:4px;cursor:pointer;" />
+      </div>
+      <label class="small" style="display:flex;align-items:center;gap:6px;margin-top:8px;cursor:pointer;">
+        <input type="checkbox" id="bg-grad-toggle"
+               ${state.get('backgroundGradient')?.enabled ? 'checked' : ''} />
+        Use 2-color gradient
+      </label>
+      <div id="bg-grad-controls"
+           style="display:${state.get('backgroundGradient')?.enabled ? 'block' : 'none'};margin-top:8px;">
+        <div class="field-row">
+          <label class="small" style="flex:1;">From</label>
+          <input type="color" id="bg-grad-c1"
+                 value="${_esc(state.get('backgroundGradient')?.color1 || '#0f172a')}"
+                 style="width:44px;height:28px;padding:2px;border-radius:4px;cursor:pointer;" />
+        </div>
+        <div class="field-row" style="margin-top:6px;">
+          <label class="small" style="flex:1;">To</label>
+          <input type="color" id="bg-grad-c2"
+                 value="${_esc(state.get('backgroundGradient')?.color2 || '#1e293b')}"
+                 style="width:44px;height:28px;padding:2px;border-radius:4px;cursor:pointer;" />
+        </div>
+        <label class="small" style="display:block;margin-top:8px;">
+          Direction <span id="bg-grad-angle-val" class="muted" style="float:right;">${state.get('backgroundGradient')?.angleDeg ?? 180}°</span>
+          <input type="range" id="bg-grad-angle" min="0" max="360" step="1"
+                 value="${state.get('backgroundGradient')?.angleDeg ?? 180}"
+                 style="width:100%;margin-top:4px;" />
+        </label>
+        <div class="small muted" style="margin-top:4px;line-height:1.4;font-size:10px;">
+          0° top→bottom · 90° left→right · 180° bottom→top · 270° right→left
+        </div>
       </div>
     </div>
 
@@ -233,6 +342,31 @@ function _renderFilesTab() {
   el.querySelector('#btn-fit-all')?.addEventListener('click',      _onFitAll);
   el.querySelector('#btn-toggle-grid')?.addEventListener('click',  _onToggleGrid);
   el.querySelector('#btn-toggle-theme')?.addEventListener('click', _onToggleTheme);
+
+  // ── Background controls ────────────────────────────────────────────────
+  el.querySelector('#bg-color')?.addEventListener('input', e => {
+    state.setState({ backgroundColor: e.target.value });
+    state.markDirty();
+  });
+  const _setGradient = (patch) => {
+    const cur = state.get('backgroundGradient') || {};
+    state.setState({ backgroundGradient: { ...cur, ...patch } });
+    state.markDirty();
+  };
+  const gradControls = el.querySelector('#bg-grad-controls');
+  el.querySelector('#bg-grad-toggle')?.addEventListener('change', e => {
+    _setGradient({ enabled: !!e.target.checked });
+    if (gradControls) gradControls.style.display = e.target.checked ? 'block' : 'none';
+  });
+  el.querySelector('#bg-grad-c1')?.addEventListener('input', e => _setGradient({ color1: e.target.value }));
+  el.querySelector('#bg-grad-c2')?.addEventListener('input', e => _setGradient({ color2: e.target.value }));
+  const angleInput = el.querySelector('#bg-grad-angle');
+  const angleVal   = el.querySelector('#bg-grad-angle-val');
+  angleInput?.addEventListener('input', e => {
+    const a = Number(e.target.value);
+    if (angleVal) angleVal.textContent = `${a}°`;
+    _setGradient({ angleDeg: a });
+  });
 
   el.querySelector('#model-file-input')?.addEventListener('change', e => {
     const files = Array.from(e.target.files || []);
@@ -262,12 +396,22 @@ function _onNewProject() {
   }
   steps.object3dById.clear();
   steps.meshById.clear();
+
+  // Pull user-default background from prefs so new projects inherit it.
+  const us = userSettings.get();
+  const bgColor = us.scene?.defaultBackgroundColor || '#0f172a';
+  const bgGrad  = us.scene?.defaultBackgroundGradient
+    ? { ...us.scene.defaultBackgroundGradient }
+    : { enabled:false, color1:'#0f172a', color2:'#1e293b', angleDeg:180 };
+
   state.setState({
     projectPath: null, projectName: 'Untitled', projectDirty: false,
     assets: [], treeData: null, nodeById: new Map(),
     steps: [], chapters: [], activeStepId: null,
     cameraViews: [], colorPresets: [], selectedId: null,
     multiSelectedIds: new Set(),
+    backgroundColor:    bgColor,
+    backgroundGradient: bgGrad,
   });
   setStatus('New project.');
 }
@@ -363,11 +507,15 @@ async function _onOpenProject() {
         // User-provided via dialog (web re-link or Electron re-link)
         modelNode = await _loadModelFile(userFile, assetEntry, true);
       } else if (isElectron && resolvedPath && window.sbsNative?.readFile) {
-        // Electron auto-load from saved path
-        const result = await window.sbsNative.readFile(resolvedPath, 'base64');
+        // Electron auto-load from saved path. Use the 'buffer' encoding
+        // so IPC marshals raw bytes as a Uint8Array — for large OBJs
+        // (200+ MB) the legacy base64 + atob + charCodeAt loop blew
+        // the renderer heap (string × 4/3 + decoded copy + per-char
+        // mapper allocations cascaded into "invalid array length").
+        const result = await window.sbsNative.readFile(resolvedPath, 'buffer');
         if (result?.ok) {
-          const bytes = Uint8Array.from(atob(result.data), c => c.charCodeAt(0));
-          modelNode = await _loadModelFile(new File([bytes], assetEntry.name), assetEntry, true);
+          // result.data is already a Uint8Array (Buffer over IPC).
+          modelNode = await _loadModelFile(new File([result.data], assetEntry.name), assetEntry, true);
         }
       }
 
@@ -402,6 +550,14 @@ async function _onOpenProject() {
           const nodeById = buildNodeMap(root);
           state.setState({ nodeById });
           applySpecFieldsToNodes(specNode, nodeById);
+          // Re-bake the saved source transform onto the freshly-imported
+          // (unbaked) geometry. applySpecFieldsToNodes wrote the saved
+          // sourceLocal* values onto the live model node — now apply them.
+          const liveModel = nodeById.get(modelNode.id);
+          if (liveModel?.type === 'model') {
+            const outer = steps.object3dById.get(liveModel.id) ?? liveModel.object3d;
+            applyNodeSourceTransformToObject3D(liveModel, outer, steps.object3dById);
+          }
         }
       } else if (specNode) {
         // ❌ Missing asset — insert phantom tree nodes from saved spec so steps still work
@@ -492,6 +648,31 @@ async function _loadModelFile(file, assetEntry = null, skipColorExtraction = fal
 // ── Phantom nodes for missing assets ─────────────────────────────────────────
 
 function _cloneSpecAsPhantom(specNode) {
+  // Notes are GLOBAL data layers, not per-asset placeholders. They
+  // never need a "missing" flag — even when the host mesh is a phantom,
+  // the note carries the user's words and should restore verbatim.
+  // Spread-clone preserves all note fields (text, anchorLocal,
+  // anchorBboxRelative, panelOffset, sizePresetId, customFontSize, …).
+  if (specNode.type === 'note') {
+    return {
+      ...specNode,
+      missing:  false,
+      object3d: null,
+      children: [],
+    };
+  }
+  // Flat shapes (M1 — 2D shapes in 3D) carry their own geometry data
+  // (shapePath + fill + transforms). Preserve every field verbatim so
+  // systems/flat-shapes.js can rebuild the THREE.Mesh on first
+  // rebuildFromTreeSpec pass; not "missing" in the asset sense.
+  if (specNode.type === 'flatShape') {
+    return {
+      ...specNode,
+      missing:  false,
+      object3d: null,
+      children: (specNode.children || []).map(_cloneSpecAsPhantom),
+    };
+  }
   const node = {
     id:                specNode.id,
     name:              specNode.name || 'Unknown',
@@ -511,6 +692,19 @@ function _cloneSpecAsPhantom(specNode) {
     baseLocalScale:    specNode.baseLocalScale    ?? [1, 1, 1],
     children:          (specNode.children || []).map(_cloneSpecAsPhantom),
   };
+  // Preserve folder transform fields so an SVG-import folder loaded from
+  // a saved project keeps any user-applied move / rotate / pivot.
+  if (specNode.type === 'folder') {
+    if (Array.isArray(specNode.localOffset))         node.localOffset         = specNode.localOffset;
+    if (Array.isArray(specNode.localQuaternion))     node.localQuaternion     = specNode.localQuaternion;
+    if (Array.isArray(specNode.orientationSteps))    node.orientationSteps    = specNode.orientationSteps;
+    if (Array.isArray(specNode.baseLocalQuaternion)) node.baseLocalQuaternion = specNode.baseLocalQuaternion;
+    if (Array.isArray(specNode.pivotLocalOffset))    node.pivotLocalOffset    = specNode.pivotLocalOffset;
+    if (Array.isArray(specNode.pivotLocalQuaternion))node.pivotLocalQuaternion= specNode.pivotLocalQuaternion;
+    if (typeof specNode.moveEnabled   === 'boolean') node.moveEnabled   = specNode.moveEnabled;
+    if (typeof specNode.rotateEnabled === 'boolean') node.rotateEnabled = specNode.rotateEnabled;
+    if (typeof specNode.pivotEnabled  === 'boolean') node.pivotEnabled  = specNode.pivotEnabled;
+  }
   return node;
 }
 
@@ -552,8 +746,22 @@ function _insertPhantomNodes(specNode, assetId) {
  */
 function _insertPhantomCustomFolders(savedSceneRoot) {
   if (!savedSceneRoot) return;
-  const root = state.get('treeData');
-  if (!root) return;
+  let root = state.get('treeData');
+  // Bootstrap a scene root when the project has no model assets — e.g. an
+  // SVG-only project (M1: 2D shapes in 3D).  Otherwise saved custom folders
+  // would silently drop on reopen.
+  if (!root) {
+    root = {
+      id:           'scene_root',
+      name:         'Scene',
+      type:         'scene',
+      children:     [],
+      object3d:     sceneCore.rootGroup,
+      localVisible: true,
+    };
+    steps.object3dById.set('scene_root', sceneCore.rootGroup);
+    state.setState({ treeData: root, nodeById: buildNodeMap(root) });
+  }
 
   const nodeById = state.get('nodeById') || new Map();
   let changed = false;
@@ -866,6 +1074,30 @@ function _showFolderNameDialog(defaultVal, onConfirm) {
 // Which preset is currently expanded for editing
 let _expandedPresetId = null;
 
+// Re-render guard: while the user has focus on any input inside the
+// Colors tab (text, color picker, slider, dropdown, …), re-rendering
+// the tab destroys the focused element and yanks any open
+// <input type=color> popup off-screen. So we DEFER renders triggered
+// by state changes during interaction and flush them on focusout.
+let _colorsRenderQueued = false;
+function _shouldDeferColorsRender() {
+  const el = _panel('colors');
+  if (!el) return false;
+  const a  = document.activeElement;
+  if (!a) return false;
+  if (!el.contains(a)) return false;
+  return ['INPUT', 'SELECT', 'TEXTAREA'].includes(a.tagName);
+}
+function _queueColorsRender() {
+  if (_activeTab !== 'colors') return;
+  if (_shouldDeferColorsRender()) {
+    _colorsRenderQueued = true;
+    return;
+  }
+  _colorsRenderQueued = false;
+  _renderColorsTab();
+}
+
 function _renderColorsTab() {
   const el = _panel('colors');
   if (!el) return;
@@ -1003,6 +1235,35 @@ function _renderColorsTab() {
     row.addEventListener('click', () => {
       _expandedPresetId = expanded ? null : preset.id;
       _renderColorsTab();
+    });
+
+    // Click directly on the swatch → expand AND fire the native color
+    // picker. Lets the user go from a collapsed preset row to "I'm
+    // editing a colour right now" in one click.
+    //
+    // Mechanics: when the row is collapsed we re-render the tab, which
+    // rebuilds the DOM and would normally swallow the user gesture
+    // before we could open the picker. Use HTMLInputElement.showPicker()
+    // — the standard programmatic-open path that survives the rebuild
+    // (Chrome 99+ / Electron). Fall back to .click() on older browsers.
+    // We also focus() the input first so that subsequent state changes
+    // are caught by _shouldDeferColorsRender and don't yank the popup
+    // off-screen.
+    row.querySelector('.colorSwatch')?.addEventListener('click', e => {
+      e.stopPropagation();          // suppress the row's toggle handler
+      e.preventDefault();
+      const wasOpen = _expandedPresetId === preset.id;
+      _expandedPresetId = preset.id;
+      if (!wasOpen) _renderColorsTab();
+      const cp = _panel('colors')?.querySelector('.cp-color');
+      if (!cp) return;
+      cp.focus();
+      try {
+        if (typeof cp.showPicker === 'function') cp.showPicker();
+        else cp.click();
+      } catch (_) {
+        cp.click();
+      }
     });
 
     row.addEventListener('contextmenu', e => {
@@ -1337,6 +1598,8 @@ function _renderSelectTab() {
   if (!el) return;
 
   const outlineColor = state.get('selectionOutlineColor') ?? '#00ffff';
+  const groups       = state.get('selectionGroups') || [];
+  const selSize      = (state.get('multiSelectedIds') || new Set()).size;
 
   el.innerHTML = `
     <div class="section">
@@ -1348,8 +1611,7 @@ function _renderSelectTab() {
                style="width:44px;height:28px;padding:2px;border-radius:4px;cursor:pointer" />
       </div>
       <div class="small muted" style="margin-top:4px;line-height:1.4">
-        Color used for the selection overlay and edge outline.<br>
-        White = fully neutral tint. Cyan is the default.
+        Color used for the selection overlay and edge outline.
       </div>
     </div>
 
@@ -1359,6 +1621,16 @@ function _renderSelectTab() {
         <button class="btn" id="btn-sel-all-meshes">Select All Meshes</button>
         <button class="btn" id="btn-sel-clear">Deselect All</button>
       </div>
+    </div>
+
+    <div class="section" style="margin-top:12px">
+      <div class="title">Selection Groups</div>
+      <button class="btn primary" id="btn-selgrp-save"
+              style="margin-top:8px;width:100%;"
+              ${selSize === 0 ? 'disabled title="Select something first"' : ''}>
+        + Save current selection as group${selSize ? ` (${selSize})` : ''}
+      </button>
+      <div id="selgrp-list" style="display:flex;flex-direction:column;gap:4px;margin-top:10px;"></div>
     </div>
   `;
 
@@ -1378,6 +1650,109 @@ function _renderSelectTab() {
     state.clearSelection();
     setStatus('Selection cleared.');
   });
+
+  el.querySelector('#btn-selgrp-save').addEventListener('click', () => {
+    const id = actions.createSelectionGroup({});
+    if (!id) {
+      setStatus('Nothing to save — select objects first.', 'warn');
+      return;
+    }
+    setStatus('Selection group saved.');
+    _renderSelectTab();
+  });
+
+  _renderSelectionGroupList(el.querySelector('#selgrp-list'), groups);
+}
+
+function _renderSelectionGroupList(container, groups) {
+  if (!container) return;
+  if (groups.length === 0) {
+    container.innerHTML = `
+      <div class="small muted" style="font-size:11px;padding:8px 0;line-height:1.45;">
+        No groups yet. Multi-select objects in the tree (or viewport),
+        then click <b>+ Save current selection as group</b>.
+      </div>
+    `;
+    return;
+  }
+  container.innerHTML = '';
+  for (const g of groups) {
+    const row = document.createElement('div');
+    row.style.cssText = `
+      display:flex;align-items:center;gap:6px;
+      padding:5px 6px;
+      background:rgba(255,255,255,0.025);
+      border:1px solid var(--line,#334155);
+      border-radius:6px;
+    `;
+    row.innerHTML = `
+      <input type="color" data-act="recolor" value="${_esc(g.color)}"
+             title="Group color"
+             style="width:18px;height:18px;padding:0;border:none;background:transparent;cursor:pointer;flex:none;" />
+      <span class="selgrp-name" data-id="${_esc(g.id)}"
+            title="Double-click to rename"
+            style="flex:1;min-width:0;font-size:12px;font-weight:600;
+                   overflow:hidden;text-overflow:ellipsis;white-space:nowrap;cursor:text;">${_esc(g.name)}</span>
+      <span class="small muted" style="font-size:10px;flex:none;">${g.ids.length}</span>
+      <button class="btn" data-act="load"   title="Load — replace current selection"
+              style="padding:1px 6px;font-size:10px;flex:none;">Load</button>
+      <button class="btn" data-act="update" title="Update — overwrite from current selection"
+              style="padding:1px 6px;font-size:10px;flex:none;">↻</button>
+      <button class="btn" data-act="delete" title="Delete group"
+              style="padding:1px 6px;font-size:10px;flex:none;">✕</button>
+    `;
+
+    const nameSpan = row.querySelector('.selgrp-name');
+    nameSpan.addEventListener('dblclick', () => _enterSelGroupRename(nameSpan, g));
+
+    row.querySelector('[data-act="recolor"]').addEventListener('input', e => {
+      actions.recolorSelectionGroup(g.id, e.target.value);
+    });
+    row.querySelector('[data-act="load"]').addEventListener('click', () => {
+      const ok = actions.loadSelectionGroup(g.id);
+      setStatus(ok ? `Loaded "${g.name}".` : `Group "${g.name}" has no live members.`,
+                ok ? 'info' : 'warn');
+    });
+    row.querySelector('[data-act="update"]').addEventListener('click', () => {
+      const sz = (state.get('multiSelectedIds') || new Set()).size;
+      if (sz === 0) {
+        setStatus('Select something first to update the group.', 'warn');
+        return;
+      }
+      const changed = actions.updateSelectionGroup(g.id);
+      setStatus(changed ? `Updated "${g.name}" (${sz}).` : 'No change.');
+      _renderSelectTab();
+    });
+    row.querySelector('[data-act="delete"]').addEventListener('click', () => {
+      actions.deleteSelectionGroup(g.id);
+      _renderSelectTab();
+    });
+
+    container.appendChild(row);
+  }
+}
+
+function _enterSelGroupRename(span, group) {
+  const input = document.createElement('input');
+  input.type = 'text';
+  input.value = group.name;
+  input.style.cssText = 'flex:1;min-width:0;font-size:12px;';
+  span.replaceWith(input);
+  input.focus();
+  input.select();
+  let done = false;
+  const commit = () => {
+    if (done) return;
+    done = true;
+    const v = input.value.trim();
+    if (v && v !== group.name) actions.renameSelectionGroup(group.id, v);
+    _renderSelectTab();
+  };
+  input.addEventListener('blur', commit);
+  input.addEventListener('keydown', e => {
+    if (e.key === 'Enter')      { e.preventDefault(); input.blur(); }
+    else if (e.key === 'Escape') { done = true; _renderSelectTab(); }
+  });
 }
 
 
@@ -1390,45 +1765,111 @@ function _renderCamerasTab() {
   const views = state.get('cameraViews') || [];
   if (!el) return;
 
+  // Active step's current binding — used to flag which template (if any)
+  // the active step is bound to, AND to surface the per-step camera
+  // dropdown right inside the tab so the user can rebind without
+  // round-tripping through the steps panel.
+  const stepsArr  = state.get('steps') || [];
+  const activeId  = state.get('activeStepId');
+  const activeStep = activeId ? stepsArr.find(s => s.id === activeId) : null;
+  const activeBindingTplId = activeStep?.cameraBinding?.mode === 'template'
+    ? activeStep.cameraBinding.templateId
+    : null;
+
+  // Per-template usage count (how many steps reference each one).
+  const usage = new Map();
+  for (const s of stepsArr) {
+    const b = s.cameraBinding;
+    if (b?.mode === 'template' && b.templateId) {
+      usage.set(b.templateId, (usage.get(b.templateId) || 0) + 1);
+    }
+  }
+
   el.innerHTML = `
     <div class="section">
-      <div class="title">Camera Setup</div>
-      <div class="grid2" style="margin-top:8px;">
-        <input type="text" id="cam-name-input" placeholder="View name" />
-        <button class="btn" id="btn-save-cam">Save Current</button>
+      <div class="title">Cameras</div>
+      <div class="small muted" style="margin-top:6px;line-height:1.5;">
+        Templates are reusable named camera views. Steps either use a
+        template (edit-once-affects-many) or hold their own free camera
+        snapshot. Right-click a step → Update camera = always free.
       </div>
-      <div id="cam-list" class="small muted" style="margin-top:8px;">No saved views.</div>
+      <div style="margin-top:10px;">
+        <button class="btn" id="btn-cam-new">+ Save current view as template</button>
+      </div>
+      <div style="margin-top:6px;">
+        <button class="btn" id="btn-cam-refit" title="Recompute camera distance and pivot to frame the whole scene. Useful after rescaling a model.">🎯 Refit camera</button>
+      </div>
+      ${activeStep ? `
+        <div class="card" style="margin-top:10px;font-size:12px;">
+          <div class="small muted" style="margin-bottom:4px;">Active step camera</div>
+          <select id="active-step-cam-binding" style="width:100%;">
+            <option value="" ${!activeBindingTplId ? 'selected' : ''}>[Free camera]</option>
+            ${views.map(v =>
+              `<option value="${_esc(v.id)}" ${activeBindingTplId === v.id ? 'selected' : ''}>${_esc(v.name)}</option>`
+            ).join('')}
+          </select>
+        </div>
+      ` : ''}
+      <div id="cam-list" style="margin-top:10px;"></div>
     </div>
   `;
 
-  el.querySelector('#btn-save-cam').addEventListener('click', () => {
-    const nameEl = el.querySelector('#cam-name-input');
-    const name = (nameEl?.value.trim()) || `View ${views.length + 1}`;
-    const cs = sceneCore.getCameraState();
-    const view = createCameraView({ name, ...cs });
-    state.setState({ cameraViews: [...views, view] });
-    state.markDirty();
-    setStatus(`Saved view "${view.name}".`);
-    if (nameEl) nameEl.value = '';
-    _renderCamerasTab();
+  el.querySelector('#btn-cam-refit')?.addEventListener('click', () => {
+    _onFitAll();
+    setStatus('Camera refit to scene.');
+  });
+
+  el.querySelector('#btn-cam-new').addEventListener('click', () => {
+    const proposed = `Camera ${views.length + 1}`;
+    // Electron renderer disables window.prompt(); use a custom modal
+    // instead. Same scaffold as the delete-template dialog below.
+    _showSimplePromptDialog({
+      title:  'New camera template',
+      label:  'Name',
+      value:  proposed,
+      okText: 'Save',
+      onSave: (name) => {
+        const v = (name || '').trim() || proposed;
+        actions.createCameraTemplate(v);
+        setStatus(`Saved camera template "${v}".`);
+      },
+    });
+  });
+
+  const bindSel = el.querySelector('#active-step-cam-binding');
+  bindSel?.addEventListener('change', e => {
+    actions.setStepCameraBinding(activeId, e.target.value || null);
+    setStatus(e.target.value
+      ? `Bound step to camera "${views.find(v => v.id === e.target.value)?.name}".`
+      : 'Step set to free camera.');
   });
 
   const list = el.querySelector('#cam-list');
-  if (views.length === 0) return;
+  if (views.length === 0) {
+    list.innerHTML = '<div class="small muted">No camera templates yet.</div>';
+    return;
+  }
   list.innerHTML = '';
 
   for (const view of views) {
+    const isActiveBound = view.id === activeBindingTplId;
+    const useCount      = usage.get(view.id) || 0;
+
     const item = document.createElement('div');
     item.className = 'cameraItem';
+    if (isActiveBound) item.style.outline = '1px solid var(--accent, #f59e0b)';
     item.innerHTML = `
-      <div class="cameraRow">
-        <span style="flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${_esc(view.name)}</span>
+      <div class="cameraRow" style="align-items:center;gap:6px;">
+        <span class="cam-name-text" style="flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;cursor:text;" title="Double-click to rename">${_esc(view.name)}</span>
+        <span class="small muted" style="font-size:11px;flex-shrink:0;">${useCount} step${useCount === 1 ? '' : 's'}</span>
       </div>
       <div class="cameraActions">
-        <button class="btn" data-goto="${_esc(view.id)}">▶ Go To</button>
-        <button class="btn" data-del="${_esc(view.id)}">🗑 Delete</button>
+        <button class="btn" data-goto="${_esc(view.id)}" title="Move the live camera to this template's view (does not change any step's binding)">▶ Go To</button>
+        <button class="btn" data-update="${_esc(view.id)}" title="Set this template to the current view AND bind the active step to it. All other bound steps follow automatically.">🔄 Update</button>
+        <button class="btn" data-del="${_esc(view.id)}" title="Delete this template">🗑 Delete</button>
       </div>
     `;
+
     item.querySelector('[data-goto]').addEventListener('click', e => {
       e.stopPropagation();
       sceneCore.animateCameraTo({
@@ -1436,15 +1877,174 @@ function _renderCamerasTab() {
         pivot: view.pivot, up: view.up, fov: view.fov,
       }, 800, 'smooth');
     });
+
+    item.querySelector('[data-update]').addEventListener('click', e => {
+      e.stopPropagation();
+      actions.updateCameraTemplate(view.id);
+      setStatus(`Updated camera "${view.name}"${activeStep ? ` (bound to "${activeStep.name}")` : ''}.`);
+    });
+
     item.querySelector('[data-del]').addEventListener('click', e => {
       e.stopPropagation();
-      if (!confirm(`Delete view "${view.name}"?`)) return;
-      state.setState({ cameraViews: views.filter(v => v.id !== view.id) });
-      state.markDirty();
-      _renderCamerasTab();
+      _showDeleteCameraTemplateDialog(view, useCount);
     });
+
+    // Inline rename — dblclick the name to edit, Enter / blur to commit.
+    const nameSpan = item.querySelector('.cam-name-text');
+    nameSpan.addEventListener('dblclick', () => _enterCamRename(nameSpan, view));
+
     list.appendChild(item);
   }
+}
+
+function _enterCamRename(span, view) {
+  const input = document.createElement('input');
+  input.type = 'text';
+  input.value = view.name;
+  input.style.cssText = 'flex:1;min-width:0;font-size:inherit;';
+  span.replaceWith(input);
+  input.focus();
+  input.select();
+  let done = false;
+  const commit = () => {
+    if (done) return;
+    done = true;
+    const v = input.value.trim();
+    if (v && v !== view.name) actions.renameCameraTemplate(view.id, v);
+    _renderCamerasTab();
+  };
+  input.addEventListener('blur', commit);
+  input.addEventListener('keydown', e => {
+    if (e.key === 'Enter') { e.preventDefault(); input.blur(); }
+    else if (e.key === 'Escape') { done = true; _renderCamerasTab(); }
+  });
+}
+
+/**
+ * Delete-template dialog — modeled on the New-Folder dialog UX.
+ *
+ *   Dropdown: [Convert to free camera] (default) | template1 | template2 | ...
+ *   Buttons:  Cancel | <dynamic label that flips between
+ *                       "Convert to free" and "Change to template">
+ *
+ * Bound steps either get a free-camera snapshot of the deleted template's
+ * last state, or get re-bound to the chosen replacement. Single undo
+ * entry covers the whole operation.
+ */
+/**
+ * Generic single-input prompt dialog. Electron's renderer disables
+ * window.prompt(), so we render our own modal with a text field and
+ * OK/Cancel buttons. Used by "+ New template" — could be reused
+ * elsewhere any time we need a quick name from the user.
+ */
+function _showSimplePromptDialog({ title, label, value = '', okText = 'OK', onSave }) {
+  const overlay = document.createElement('div');
+  overlay.style.cssText = [
+    'position:fixed', 'inset:0', 'background:rgba(0,0,0,0.55)',
+    'display:flex', 'align-items:center', 'justify-content:center',
+    'z-index:9999',
+  ].join(';');
+
+  const card = document.createElement('div');
+  card.className = 'card';
+  card.style.cssText = [
+    'min-width:340px', 'max-width:440px', 'padding:16px',
+    'background:var(--panel, #0f172a)', 'border:1px solid var(--line, #334155)',
+    'border-radius:10px', 'display:flex', 'flex-direction:column', 'gap:10px',
+  ].join(';');
+
+  card.innerHTML = `
+    <div class="title" style="font-size:14px;">${_esc(title)}</div>
+    <label class="colorlab">${_esc(label)}
+      <input type="text" id="prompt-input" value="${_esc(value)}" style="margin-top:6px;width:100%;" />
+    </label>
+    <div class="grid2" style="margin-top:6px;">
+      <button class="btn" id="prompt-cancel">Cancel</button>
+      <button class="btn primary" id="prompt-ok">${_esc(okText)}</button>
+    </div>
+  `;
+
+  const input    = card.querySelector('#prompt-input');
+  const okBtn    = card.querySelector('#prompt-ok');
+  const cancelBtn = card.querySelector('#prompt-cancel');
+
+  const close = () => overlay.remove();
+  const commit = () => { onSave?.(input.value); close(); };
+
+  cancelBtn.addEventListener('click', close);
+  okBtn.addEventListener('click', commit);
+  input.addEventListener('keydown', e => {
+    if (e.key === 'Enter')  { e.preventDefault(); commit(); }
+    if (e.key === 'Escape') { e.preventDefault(); close();  }
+  });
+  overlay.addEventListener('click', e => { if (e.target === overlay) close(); });
+
+  overlay.appendChild(card);
+  document.body.appendChild(overlay);
+  setTimeout(() => { input.focus(); input.select(); }, 0);
+}
+
+function _showDeleteCameraTemplateDialog(view, useCount) {
+  const views = (state.get('cameraViews') || []).filter(v => v.id !== view.id);
+
+  // Modal scaffolding — match the rest of the app's dialog look (dark
+  // overlay, centred card). Plain DOM, no framework.
+  const overlay = document.createElement('div');
+  overlay.style.cssText = [
+    'position:fixed', 'inset:0', 'background:rgba(0,0,0,0.55)',
+    'display:flex', 'align-items:center', 'justify-content:center',
+    'z-index:9999',
+  ].join(';');
+
+  const card = document.createElement('div');
+  card.className = 'card';
+  card.style.cssText = [
+    'min-width:340px', 'max-width:440px', 'padding:16px',
+    'background:var(--panel, #0f172a)', 'border:1px solid var(--line, #334155)',
+    'border-radius:10px', 'display:flex', 'flex-direction:column', 'gap:10px',
+  ].join(';');
+
+  card.innerHTML = `
+    <div class="title" style="font-size:14px;">Delete camera "${_esc(view.name)}"</div>
+    <div class="small muted" style="line-height:1.5;">
+      ${useCount === 0
+        ? 'No steps are bound to this camera.'
+        : `${useCount} step${useCount === 1 ? '' : 's'} use this camera. Choose where they should land:`}
+    </div>
+    <select id="cam-del-replacement" style="width:100%;">
+      <option value="">[Convert to free camera]</option>
+      ${views.map(v => `<option value="${_esc(v.id)}">${_esc(v.name)}</option>`).join('')}
+    </select>
+    <div class="grid2" style="margin-top:6px;">
+      <button class="btn" id="cam-del-cancel">Cancel</button>
+      <button class="btn primary" id="cam-del-go">Convert to free</button>
+    </div>
+  `;
+
+  const sel        = card.querySelector('#cam-del-replacement');
+  const goBtn      = card.querySelector('#cam-del-go');
+  const cancelBtn  = card.querySelector('#cam-del-cancel');
+
+  sel.addEventListener('change', () => {
+    goBtn.textContent = sel.value ? 'Change to template' : 'Convert to free';
+  });
+
+  const close = () => overlay.remove();
+  cancelBtn.addEventListener('click', close);
+  overlay.addEventListener('click', e => { if (e.target === overlay) close(); });
+
+  goBtn.addEventListener('click', () => {
+    const replacement = sel.value || null;
+    actions.deleteCameraTemplate(view.id, replacement);
+    setStatus(replacement
+      ? `Deleted "${view.name}"; ${useCount} step(s) rebound.`
+      : `Deleted "${view.name}"; ${useCount} step(s) converted to free camera.`);
+    close();
+  });
+
+  overlay.appendChild(card);
+  document.body.appendChild(overlay);
+  setTimeout(() => sel.focus(), 0);
 }
 
 
@@ -1456,6 +2056,626 @@ function _onUserSettingsChanged() {
   // Live-rebuild the Export tab so the voice list reflects the new filter.
   if (_panel('export')) _renderExportTab();
 }
+
+// ═══════════════════════════════════════════════════════════════════════════
+//  NOTES TAB — three font-size presets (small / medium / large)
+// ═══════════════════════════════════════════════════════════════════════════
+//
+// Notes are 3D-anchored balloons attached to mesh faces. Their rendering
+// lives in systems/notes-render.js; their lifecycle (create / edit / move
+// / delete) lives in actions.js. This tab is just the global STYLE
+// editor — the three font-size presets that every note can fall back to,
+// so the project gets a consistent visual rhythm.
+//
+// Phase 1 ships the size editor only. Future iterations can layer a
+// template library (canned text snippets) on top.
+
+function _renderNotesTab() {
+  const el = _panel('notes');
+  if (!el) return;
+
+  const presets   = state.get('notePresets')   || { small: 18, medium: 36, large: 48 };
+  const templates = state.get('noteTemplates') || [];
+  const placingId = state.get('noteTemplateInstantiationId');
+
+  // Per-template instance count (how many notes in scene reference each).
+  const instanceCount = new Map();
+  const root = state.get('treeData');
+  (function walk(n) {
+    if (!n) return;
+    if (n.type === 'note' && n.templateId) {
+      instanceCount.set(n.templateId, (instanceCount.get(n.templateId) || 0) + 1);
+    }
+    for (const c of (n.children || [])) walk(c);
+  })(root);
+
+  const _esc = (s) => String(s ?? '').replace(/[<>&"']/g, ch => ({
+    '<':'&lt;','>':'&gt;','&':'&amp;','"':'&quot;',"'":'&#39;'
+  }[ch]));
+
+  const tplRowsHtml = templates.length === 0
+    ? `<div class="small muted" style="padding:8px 2px">No templates yet. Click <b>+ New template</b> to create one.</div>`
+    : templates.map((t, i) => {
+        const preview = (t.text || '').replace(/\s+/g, ' ').trim().slice(0, 60) || '(empty)';
+        const count = instanceCount.get(t.id) || 0;
+        return `
+          <div class="tplRow" data-tplid="${t.id}"
+               style="display:flex;align-items:center;gap:8px;padding:6px 8px;border:1px solid var(--line);border-radius:8px;margin-top:6px;cursor:pointer">
+            <div style="flex:1;min-width:0">
+              <div style="font-weight:600;font-size:13px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${_esc(t.name || `Template ${i+1}`)}</div>
+              <div class="small muted" style="margin-top:2px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${_esc(preview)}</div>
+            </div>
+            <span class="small muted" title="Instances in scene" style="flex-shrink:0">×${count}</span>
+            <button class="btn tplAssign" data-act="assign" data-tplid="${t.id}" title="Click here, then click any mesh face to place"
+                    style="height:24px;padding:0 8px;font-size:12px;flex-shrink:0">Assign</button>
+          </div>`;
+      }).join('');
+
+  el.innerHTML = `
+    <div class="section">
+      <div class="title">Note templates</div>
+      <div class="small muted" style="margin-top:4px;line-height:1.4">
+        Templates own shared text + size. Each instance has its own position + visibility.
+      </div>
+      <div style="display:flex;gap:6px;margin-top:8px;flex-wrap:wrap">
+        <button class="btn primary" id="tpl-new"  style="flex:1 1 100%">+ New template</button>
+        <button class="btn"         id="tpl-save" style="flex:1">💾 Save library…</button>
+        <button class="btn"         id="tpl-load" style="flex:1">📂 Load library…</button>
+      </div>
+      ${placingId ? `<div class="small" style="margin-top:8px;padding:8px;border-radius:8px;background:rgba(245,158,11,0.15);border:1px solid #f59e0b;color:#fbbf24">
+        🎯 Click a mesh face to place this template — Esc to cancel.
+      </div>` : ''}
+      <div id="tpl-list" style="margin-top:8px">${tplRowsHtml}</div>
+    </div>
+
+    <div class="section" style="margin-top:12px">
+      <div class="title">Note size presets</div>
+      <div class="small muted" style="margin-top:6px;line-height:1.45">
+        Three canonical sizes (in canonical pixels — they scale with the safe frame at render time).
+      </div>
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:6px;margin-top:10px;align-items:center">
+        <label class="small" for="note-sz-small">Small (px)</label>
+        <input id="note-sz-small"  type="number" min="5" max="150" step="1" value="${presets.small  ?? 18}" />
+        <label class="small" for="note-sz-medium">Medium (px)</label>
+        <input id="note-sz-medium" type="number" min="5" max="150" step="1" value="${presets.medium ?? 36}" />
+        <label class="small" for="note-sz-large">Large (px)</label>
+        <input id="note-sz-large"  type="number" min="5" max="150" step="1" value="${presets.large  ?? 48}" />
+      </div>
+    </div>
+  `;
+
+  // ── Wire size presets (existing behaviour) ──────────────────────────────
+  const wireSize = (id, key) => {
+    el.querySelector(id).addEventListener('change', e => {
+      const px = Math.max(5, Math.min(150, Number(e.target.value) || presets[key]));
+      const next = { ...(state.get('notePresets') || {}), [key]: px };
+      state.setState({ notePresets: next });
+      state.markDirty();
+    });
+  };
+  wireSize('#note-sz-small',  'small');
+  wireSize('#note-sz-medium', 'medium');
+  wireSize('#note-sz-large',  'large');
+
+  // ── New template button ─────────────────────────────────────────────────
+  el.querySelector('#tpl-new').addEventListener('click', () => {
+    import('../systems/actions.js').then(actions => {
+      actions.createNewNoteTemplate({});
+    });
+  });
+
+  // ── Save / Load library ─────────────────────────────────────────────────
+  el.querySelector('#tpl-save').addEventListener('click', _onSaveNoteLibrary);
+  el.querySelector('#tpl-load').addEventListener('click', _onLoadNoteLibrary);
+
+  // ── Per-row interactions ────────────────────────────────────────────────
+  el.querySelectorAll('.tplRow').forEach(row => {
+    const tplId = row.dataset.tplid;
+    // Left-click row (not on Assign button) → opens edit dialog.
+    row.addEventListener('click', e => {
+      if (e.target.closest('[data-act="assign"]')) return;
+      _openTemplateEditDialog(tplId);
+    });
+    // Right-click row → context menu.
+    row.addEventListener('contextmenu', e => {
+      e.preventDefault();
+      _openTemplateContextMenu(tplId, e.clientX, e.clientY);
+    });
+  });
+
+  // ── Assign buttons ──────────────────────────────────────────────────────
+  el.querySelectorAll('[data-act="assign"]').forEach(btn => {
+    btn.addEventListener('click', e => {
+      e.stopPropagation();
+      const tplId = btn.dataset.tplid;
+      import('../systems/actions.js').then(actions => {
+        actions.startNoteTemplateInstantiation(tplId);
+      });
+    });
+  });
+}
+
+function _openTemplateEditDialog(tplId) {
+  const list = state.get('noteTemplates') || [];
+  const tpl  = list.find(t => t.id === tplId);
+  if (!tpl) return;
+  // Plain prompt-style dialog — replace with a richer editor later.
+  const dlg = document.createElement('dialog');
+  dlg.className = 'sbs-dialog';
+  dlg.style.cssText = 'width:min(500px,90vw);background:var(--panel);border:1px solid var(--line);border-radius:10px;padding:16px;color:var(--text)';
+  const sizes  = ['small', 'medium', 'large'];
+  // Quick-insert glyph palette — clicking a glyph inserts it at the
+  // textarea's caret position. Specifically the warning / safety set
+  // requested by the user.
+  const glyphs = ['✔️','❌','☠️','⚡','⚠️','☢️','❗','🛑','💥','🔥','🛠️'];
+  const glyphsHtml = glyphs.map(g =>
+    `<button type="button" class="tpl-glyph" data-g="${g}"
+       style="font-size:20px;width:34px;height:34px;padding:0;border:1px solid var(--line);background:var(--panel2);border-radius:6px;cursor:pointer">${g}</button>`
+  ).join('');
+  dlg.innerHTML = `
+    <div style="font-weight:700;margin-bottom:8px">Edit template</div>
+    <label class="small muted">Name</label>
+    <input id="tpl-name" type="text" value="${(tpl.name||'').replace(/"/g,'&quot;')}" style="width:100%;margin-top:4px" />
+    <label class="small muted" style="margin-top:10px;display:block">Text</label>
+    <div id="tpl-glyphs" style="display:flex;flex-wrap:wrap;gap:4px;margin-top:4px">${glyphsHtml}</div>
+    <textarea id="tpl-text" rows="4" style="width:100%;margin-top:6px;font-family:Arial">${(tpl.text||'').replace(/</g,'&lt;')}</textarea>
+    <label class="small muted" style="margin-top:10px;display:block">Size</label>
+    <select id="tpl-size" style="width:100%;margin-top:4px">
+      ${sizes.map(s => `<option value="${s}" ${s===tpl.sizePresetId?'selected':''}>${s}</option>`).join('')}
+    </select>
+    <div style="display:flex;gap:8px;justify-content:flex-end;margin-top:14px">
+      <button class="btn"          id="tpl-cancel">Cancel</button>
+      <button class="btn primary"  id="tpl-save">Save</button>
+    </div>
+  `;
+  document.body.appendChild(dlg);
+
+  // Insert a glyph at the textarea's current caret position. Falls back
+  // to appending at the end if the field doesn't have a selection range
+  // (e.g. before user has focused it).
+  const ta = dlg.querySelector('#tpl-text');
+  const insertGlyph = (g) => {
+    ta.focus();
+    const start = ta.selectionStart ?? ta.value.length;
+    const end   = ta.selectionEnd   ?? ta.value.length;
+    const before = ta.value.slice(0, start);
+    const after  = ta.value.slice(end);
+    ta.value = before + g + after;
+    const pos = start + g.length;
+    ta.setSelectionRange(pos, pos);
+  };
+  dlg.querySelectorAll('.tpl-glyph').forEach(btn => {
+    // pointerdown — happens BEFORE the textarea blurs, so caret position
+    // is preserved. Avoids click handler that would fire after blur.
+    btn.addEventListener('pointerdown', e => {
+      e.preventDefault();
+      insertGlyph(btn.dataset.g);
+    });
+  });
+
+  dlg.addEventListener('keydown', e => { if (e.key === 'Escape') { dlg.close(); dlg.remove(); } });
+  dlg.querySelector('#tpl-cancel').addEventListener('click', () => { dlg.close(); dlg.remove(); });
+  dlg.querySelector('#tpl-save').addEventListener('click', () => {
+    const name = dlg.querySelector('#tpl-name').value;
+    const text = dlg.querySelector('#tpl-text').value;
+    const size = dlg.querySelector('#tpl-size').value;
+    import('../systems/actions.js').then(actions => {
+      actions.renameNoteTemplate(tplId, name);
+      actions.updateNoteTemplateText(tplId, text);
+      actions.setNoteTemplateSize(tplId, size, null);
+    });
+    dlg.close();
+    dlg.remove();
+  });
+  dlg.showModal();
+  ta.focus();
+}
+
+function _showTemplatePickerForSwap(fromTplId, clientX, clientY, candidates) {
+  import('./context-menu.js').then(({ showContextMenu }) => {
+    import('../systems/actions.js').then(actions => {
+      showContextMenu(
+        candidates.map(t => ({
+          label:  `📝 ${t.name || '(unnamed)'}`,
+          action: () => {
+            const n = actions.swapTemplateForAllInstances(fromTplId, t.id);
+            setStatus(`Re-linked ${n} instance${n === 1 ? '' : 's'} to "${t.name || '(unnamed)'}".`);
+          },
+        })),
+        clientX,
+        clientY,
+      );
+    });
+  });
+}
+
+// ─── Note library — save / load ──────────────────────────────────────────
+
+async function _onSaveNoteLibrary() {
+  const tpls = state.get('noteTemplates') || [];
+  if (!tpls.length) {
+    setStatus('No templates to save.', 'warning');
+    return;
+  }
+  const payload = {
+    kind:     'sbs.notelib',
+    version:  1,
+    exportedAt: new Date().toISOString(),
+    templates: tpls.map(t => ({
+      name:           t.name || '',
+      text:           t.text || '',
+      sizePresetId:   t.sizePresetId || 'medium',
+      customFontSize: Number.isFinite(t.customFontSize) ? t.customFontSize : null,
+    })),
+  };
+  const json = JSON.stringify(payload, null, 2);
+
+  if (window.sbsNative?.saveNoteLib && window.sbsNative?.writeFile) {
+    const path = await window.sbsNative.saveNoteLib('note_library.sbsnotelib');
+    if (!path) return;
+    const res = await window.sbsNative.writeFile(path, json, 'utf-8');
+    if (res?.ok) setStatus(`Library saved → ${path.split(/[\\/]/).pop()}`);
+    else         setStatus(`Save failed: ${res?.error || 'unknown'}`, 'danger');
+    return;
+  }
+  // Browser fallback — anchor download.
+  const blob = new Blob([json], { type: 'application/json' });
+  const a    = document.createElement('a');
+  a.href     = URL.createObjectURL(blob);
+  a.download = 'note_library.sbsnotelib';
+  a.click();
+  setTimeout(() => URL.revokeObjectURL(a.href), 1000);
+  setStatus('Library saved (downloaded).');
+}
+
+async function _onLoadNoteLibrary() {
+  let json = null;
+  if (window.sbsNative?.openNoteLib && window.sbsNative?.readFile) {
+    const path = await window.sbsNative.openNoteLib();
+    if (!path) return;
+    const res = await window.sbsNative.readFile(path, 'utf-8');
+    if (!res?.ok) { setStatus(`Load failed: ${res?.error || 'unknown'}`, 'danger'); return; }
+    json = res.data;
+  } else {
+    json = await new Promise(resolve => {
+      const input = document.createElement('input');
+      input.type   = 'file';
+      input.accept = '.sbsnotelib,.json,application/json';
+      input.onchange = () => {
+        const f = input.files?.[0];
+        if (!f) return resolve(null);
+        const r = new FileReader();
+        r.onload  = () => resolve(String(r.result || ''));
+        r.onerror = () => resolve(null);
+        r.readAsText(f);
+      };
+      input.click();
+    });
+    if (!json) return;
+  }
+
+  let payload;
+  try { payload = JSON.parse(json); }
+  catch { setStatus('Invalid library file (not JSON).', 'danger'); return; }
+
+  const incoming = Array.isArray(payload?.templates) ? payload.templates : null;
+  if (!incoming || !incoming.length) {
+    setStatus('No templates found in the file.', 'warning');
+    return;
+  }
+
+  // Detect name conflicts to know whether we need the resolution dialog.
+  const existing = state.get('noteTemplates') || [];
+  const existingNames = new Set(existing.map(t => t.name));
+  const conflicts = [...new Set(incoming.map(t => t.name).filter(n => existingNames.has(n)))];
+
+  if (!conflicts.length) {
+    // No conflicts — straight import.
+    const { added } = (await import('../systems/actions.js')).importNoteTemplateLibrary(
+      incoming, new Map(),
+    );
+    setStatus(`Imported ${added} template${added === 1 ? '' : 's'}.`);
+    return;
+  }
+
+  // Show resolution dialog. Default per-row: rename. User picks per row OR
+  // applies one mode to all conflicts.
+  const decisions = await _showLibraryConflictDialog(conflicts);
+  if (!decisions) return;   // user cancelled
+  const resolutions = new Map();
+  for (const c of conflicts) resolutions.set(c, decisions[c] || 'rename');
+  // Non-conflicting incoming templates: insert as-is (their names aren't
+  // in resolutions, so importNoteTemplateLibrary's default 'rename' triggers,
+  // but auto-rename only fires on collision — so 'add' would also work.
+  // We pin them to 'add' explicitly.
+  for (const t of incoming) {
+    if (!resolutions.has(t.name)) resolutions.set(t.name, 'add');
+  }
+  const { added, replaced, skipped, renamed } = (await import('../systems/actions.js'))
+    .importNoteTemplateLibrary(incoming, resolutions);
+  setStatus(`Imported: +${added}, replaced ${replaced}, renamed ${renamed}, skipped ${skipped}.`);
+}
+
+/**
+ * Modal dialog for resolving name conflicts during note-library import.
+ * Returns a map { [conflictName]: 'rename' | 'replace' | 'skip' } on OK,
+ * or null on Cancel.
+ */
+function _showLibraryConflictDialog(conflictNames) {
+  return new Promise(resolve => {
+    const dlg = document.createElement('dialog');
+    dlg.className = 'sbs-dialog';
+    dlg.style.cssText = 'width:min(580px,95vw);max-height:80vh;overflow:auto;background:var(--panel);color:var(--text);border:1px solid var(--line);border-radius:10px;padding:18px';
+    const rowsHtml = conflictNames.map(name => `
+      <div style="display:flex;align-items:center;gap:10px;padding:6px 0;border-top:1px solid var(--line)">
+        <div style="flex:1;min-width:0;font-size:13px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis"
+             title="${name.replace(/"/g,'&quot;')}">${(name || '(unnamed)').replace(/[<>&]/g, c => ({'<':'&lt;','>':'&gt;','&':'&amp;'}[c]))}</div>
+        <select class="cf-row" data-name="${name.replace(/"/g,'&quot;')}" style="flex:0 0 auto">
+          <option value="rename"  selected>Rename and add</option>
+          <option value="replace">Replace existing</option>
+          <option value="skip">Skip</option>
+        </select>
+      </div>`).join('');
+    dlg.innerHTML = `
+      <div style="font-weight:700;font-size:15px;margin-bottom:6px">Library import — name conflicts</div>
+      <div class="small muted" style="margin-bottom:10px">${conflictNames.length} template${conflictNames.length === 1 ? '' : 's'} match an existing name. Pick an action per row, or use the bulk control below.</div>
+      <div style="display:flex;align-items:center;gap:8px;padding:6px 0;border-bottom:1px solid var(--line);margin-bottom:6px">
+        <span class="small muted">Apply to all:</span>
+        <select id="cf-bulk" style="flex:1">
+          <option value="">— per-row —</option>
+          <option value="rename">Rename and add (all)</option>
+          <option value="replace">Replace existing (all)</option>
+          <option value="skip">Skip (all)</option>
+        </select>
+      </div>
+      ${rowsHtml}
+      <div style="display:flex;gap:8px;justify-content:flex-end;margin-top:14px">
+        <button class="btn"          id="cf-cancel">Cancel</button>
+        <button class="btn primary"  id="cf-ok">Import</button>
+      </div>
+    `;
+    document.body.appendChild(dlg);
+    const close = (val) => { dlg.close(); dlg.remove(); resolve(val); };
+    dlg.querySelector('#cf-cancel').addEventListener('click', () => close(null));
+    dlg.querySelector('#cf-ok').addEventListener('click', () => {
+      const out = {};
+      dlg.querySelectorAll('.cf-row').forEach(sel => {
+        out[sel.dataset.name] = sel.value;
+      });
+      close(out);
+    });
+    dlg.querySelector('#cf-bulk').addEventListener('change', e => {
+      const v = e.target.value;
+      if (!v) return;
+      dlg.querySelectorAll('.cf-row').forEach(sel => sel.value = v);
+    });
+    dlg.addEventListener('keydown', e => { if (e.key === 'Escape') close(null); });
+    dlg.showModal();
+  });
+}
+
+function _openTemplateContextMenu(tplId, clientX, clientY) {
+  import('./context-menu.js').then(({ showContextMenu, showConfirmDialog }) => {
+    import('../systems/actions.js').then(actions => {
+      const list = state.get('noteTemplates') || [];
+      const tpl  = list.find(t => t.id === tplId);
+      if (!tpl) return;
+      // Count linked instances for the delete prompt.
+      let instanceCount = 0;
+      for (const n of (state.get('nodeById')?.values?.() || [])) {
+        if (n?.type === 'note' && n.templateId === tplId) instanceCount++;
+      }
+      const otherTemplates = (state.get('noteTemplates') || []).filter(t => t.id !== tplId);
+      showContextMenu([
+        { label: '✏ Edit text/size…', action: () => _openTemplateEditDialog(tplId) },
+        { label: 'Rename using content', action: () => actions.renameNoteTemplateFromContent(tplId) },
+        { label: 'Rename…', action: () => {
+            const next = window.prompt('Template name:', tpl.name || '');
+            if (next != null) actions.renameNoteTemplate(tplId, next);
+          } },
+        { label: 'Duplicate', action: () => actions.duplicateNoteTemplate(tplId) },
+        { separator: true },
+        { label: '🎯 Assign to object (click a face)', action: () => actions.startNoteTemplateInstantiation(tplId) },
+        { label: `🔁 Swap with template… (re-link ${instanceCount} instance${instanceCount===1?'':'s'})`,
+          disabled: instanceCount === 0 || otherTemplates.length === 0,
+          action: () => _showTemplatePickerForSwap(tplId, clientX, clientY, otherTemplates) },
+        { separator: true },
+        { label: `Delete — convert ${instanceCount} instance${instanceCount===1?'':'s'} to standalone`,
+          action: () => showConfirmDialog(
+            'Delete template?',
+            `Convert ${instanceCount} linked note${instanceCount===1?'':'s'} to standalone? Their current text/size is preserved.`,
+            () => actions.deleteNoteTemplate(tplId, 'detach'),
+          ) },
+        { label: `Delete — REMOVE ${instanceCount} instance${instanceCount===1?'':'s'} from scene`,
+          action: () => showConfirmDialog(
+            'Delete template + instances?',
+            `This removes ${instanceCount} note${instanceCount===1?'':'s'} from the scene. Undoable with Ctrl+Z.`,
+            () => actions.deleteNoteTemplate(tplId, 'remove'),
+          ),
+          disabled: instanceCount === 0 },
+      ], clientX, clientY);
+    });
+  });
+}
+
+function _countNotes(node, n = { c: 0 }) {
+  if (!node) return 0;
+  if (node.type === 'note') n.c++;
+  for (const c of (node.children || [])) _countNotes(c, n);
+  return n.c;
+}
+
+
+// ═══════════════════════════════════════════════════════════════════════════
+//  SHAPES TAB  (Phase 1 — "2D shapes in 3D")
+// ═══════════════════════════════════════════════════════════════════════════
+//
+// Library list of shape templates + a "+ New Shape" button that arms the
+// viewport editor. Each row carries the template's fill swatch, name,
+// instance count, and a context menu with "Place" / "Delete".
+//
+// Phase 2 will add an "Edit polygon" entry that re-opens the viewport
+// editor with the existing template's points seeded.
+
+function _renderShapesTab() {
+  const el = _panel('shapes');
+  if (!el) return;
+
+  const tpls    = state.get('shapeTemplates') || [];
+  const drawing = state.get('shapeDrawing');
+  const drawingPhase = drawing?.phase ?? null;
+  const placeArmedFor = state.get('shapePlacementForId') || null;
+  // Highlight the row of the currently-selected flatShape's template —
+  // gives the user a visual link between scene selection and library row.
+  const selId = state.get('selectedId');
+  const selNode = selId ? state.get('nodeById')?.get(selId) : null;
+  const selectedTplId = (selNode && selNode.type === 'flatShape') ? selNode.templateId : null;
+
+  // Count instances per template across the live tree
+  const counts = new Map();
+  const root = state.get('treeData');
+  if (root) {
+    const stack = [root];
+    while (stack.length) {
+      const n = stack.pop();
+      if (n.type === 'flatShape' && n.templateId) {
+        counts.set(n.templateId, (counts.get(n.templateId) || 0) + 1);
+      }
+      if (n.children) for (const c of n.children) stack.push(c);
+    }
+  }
+
+  el.innerHTML = `
+    <div class="section">
+      <div class="title">Shapes</div>
+      <p class="small muted" style="margin:6px 0 10px">
+        Library of 2D polygon templates. Each template can be placed
+        many times in the scene. Drawing happens in the viewport.
+      </p>
+      <div style="display:flex;gap:8px;align-items:center">
+        <button class="btn" id="btn-new-shape" ${drawing ? 'disabled' : ''}
+          style="flex:1">${drawing ? 'Drawing…' : '+ New Shape'}</button>
+        ${drawing
+          ? `<button class="btn" id="btn-cancel-shape" style="background:#7f1d1d">Cancel</button>`
+          : ''}
+      </div>
+      ${drawing
+        ? `<p class="small" style="margin-top:8px;color:#fdba74">
+             ${drawingPhase === 'pickPlane'
+               ? 'Click a face or empty space to set the drawing plane.'
+               : 'Click to add vertices • Click first vertex (or right-click) to close • Esc to cancel.'}
+           </p>` : ''}
+    </div>
+
+    <div class="section">
+      <div style="display:flex;align-items:center;justify-content:space-between">
+        <div class="title">Templates (${tpls.length})</div>
+      </div>
+      <div id="shape-list" style="margin-top:8px">${
+        tpls.length === 0
+          ? '<span class="small muted">No shapes yet. Click "+ New Shape" to draw one.</span>'
+          : tpls.map(t => {
+              const ct = counts.get(t.id) || 0;
+              const isSel    = selectedTplId === t.id;
+              const isArmed  = placeArmedFor === t.id;
+              const rowStyle = `margin-top:6px;padding:8px;display:flex;align-items:center;gap:8px`
+                + (isSel ? `;outline:2px solid #38bdf8;background:rgba(56,189,248,0.08)` : ``);
+              const placeLabel = isArmed ? 'Click viewport…' : 'Place';
+              const placeStyle = `font-size:11px;padding:3px 8px;flex-shrink:0`
+                + (isArmed ? `;background:#0369a1;color:#f1f5f9` : ``);
+              return `
+              <div class="card" data-shape-id="${_esc(t.id)}"
+                   style="${rowStyle}">
+                <span class="shape-swatch" data-tpl-id="${_esc(t.id)}"
+                      style="width:18px;height:18px;border:1px solid var(--line);border-radius:3px;
+                             background:${_esc(t.fill || '#cccccc')};cursor:pointer;flex-shrink:0"
+                      title="Edit colour"></span>
+                <input type="text" class="shape-name" data-tpl-id="${_esc(t.id)}"
+                       value="${_esc(t.name || '')}"
+                       style="flex:1;background:transparent;border:1px dashed transparent;
+                              color:inherit;font-size:13px;padding:2px 4px" />
+                <span class="small muted" style="flex-shrink:0">${ct}×</span>
+                <button class="btn" data-edit-id="${_esc(t.id)}"
+                        style="font-size:11px;padding:3px 8px;flex-shrink:0"
+                        title="Edit polygon — opens the viewport editor seeded at an existing instance.">Edit</button>
+                <button class="btn" data-place-id="${_esc(t.id)}"
+                        style="${placeStyle}"
+                        title="${isArmed ? 'Click a face in the viewport to drop the shape. Esc / right-click cancels.' : 'Click then click a face in the viewport to place tangent.'}">${placeLabel}</button>
+                <button class="btn" data-delete-id="${_esc(t.id)}"
+                        style="font-size:11px;padding:3px 8px;flex-shrink:0;background:#7f1d1d">×</button>
+              </div>`;
+            }).join('')
+      }</div>
+    </div>
+  `;
+
+  // Event wiring
+  el.querySelector('#btn-new-shape')?.addEventListener('click', () => {
+    actions.startShapeDraw();
+  });
+  el.querySelector('#btn-cancel-shape')?.addEventListener('click', () => {
+    actions.cancelShapeDraw();
+  });
+
+  el.querySelectorAll('[data-edit-id]').forEach(btn => {
+    btn.addEventListener('click', e => {
+      e.stopPropagation();
+      actions.startShapeEdit(btn.dataset.editId);
+    });
+  });
+
+  el.querySelectorAll('[data-delete-id]').forEach(btn => {
+    btn.addEventListener('click', e => {
+      e.stopPropagation();
+      actions.deleteShapeTemplate(btn.dataset.deleteId);
+    });
+  });
+
+  el.querySelectorAll('[data-place-id]').forEach(btn => {
+    btn.addEventListener('click', e => {
+      e.stopPropagation();
+      // Arm the placement picker — main.js's viewport pointerdown
+      // handler consumes the next click and spawns the instance
+      // tangent to the hit face (parented under the hit object's data-
+      // tree parent). Empty-space click falls back to camera-facing.
+      actions.startShapePlacement(btn.dataset.placeId);
+    });
+  });
+
+  el.querySelectorAll('.shape-swatch').forEach(sw => {
+    sw.addEventListener('click', e => {
+      e.stopPropagation();
+      const tplId = sw.dataset.tplId;
+      const tpl   = (state.get('shapeTemplates') || []).find(t => t.id === tplId);
+      if (!tpl) return;
+      const input = document.createElement('input');
+      input.type = 'color';
+      input.value = tpl.fill || '#cccccc';
+      input.style.position = 'fixed';
+      input.style.opacity  = '0';
+      document.body.appendChild(input);
+      input.addEventListener('change', () => {
+        actions.setShapeTemplateFill(tplId, input.value);
+        input.remove();
+      });
+      input.click();
+    });
+  });
+
+  el.querySelectorAll('.shape-name').forEach(inp => {
+    inp.addEventListener('change', () => {
+      actions.setShapeTemplateName(inp.dataset.tplId, inp.value.trim() || 'Shape');
+    });
+    inp.addEventListener('keydown', e => {
+      if (e.key === 'Enter') inp.blur();
+    });
+    // CSP-safe focus/blur styling — inline `onfocus`/`onblur` attrs
+    // would violate `script-src` policy, so we wire the listeners here.
+    inp.addEventListener('focus', () => { inp.style.borderColor = 'var(--line)'; });
+    inp.addEventListener('blur',  () => { inp.style.borderColor = 'transparent'; });
+  });
+}
+
 
 function _renderExportTab() {
   const el  = _panel('export');
@@ -1486,7 +2706,17 @@ function _renderExportTab() {
           <option value="hdtv_1080"   ${exp.formatPreset==='hdtv_1080'   ?'selected':''}>HDTV 1080p (1920 × 1080)</option>
           <option value="hdtv_720"    ${exp.formatPreset==='hdtv_720'    ?'selected':''}>HDTV 720p (1280 × 720)</option>
           <option value="square_1080" ${exp.formatPreset==='square_1080' ?'selected':''}>Square 1080 × 1080</option>
+          <option value="custom"      ${exp.formatPreset==='custom'      ?'selected':''}>Custom…</option>
         </select>
+
+        <div class="grid2" style="margin-top:8px;">
+          <label class="colorlab">Width (px)
+            <input type="number" id="exp-width"  value="${exp.width  ?? 1920}" min="64" max="7680" step="2" style="margin-top:6px;" />
+          </label>
+          <label class="colorlab">Height (px)
+            <input type="number" id="exp-height" value="${exp.height ?? 1080}" min="64" max="4320" step="2" style="margin-top:6px;" />
+          </label>
+        </div>
 
         <div class="grid2" style="margin-top:10px;">
           <label class="colorlab">Frame rate (fps)
@@ -1496,6 +2726,21 @@ function _renderExportTab() {
             <input type="number" id="exp-hold" value="${exp.stepHoldMs??800}" min="0" max="10000" step="100" style="margin-top:6px;" />
           </label>
         </div>
+
+        <label style="display:flex;align-items:center;gap:6px;margin-top:10px;cursor:pointer;">
+          <input type="checkbox" id="exp-show-safe-frame" ${exp.showSafeFrame !== false ? 'checked' : ''} />
+          <span class="small muted">Show safe frame in viewport</span>
+        </label>
+
+        <label style="display:flex;align-items:flex-start;gap:6px;margin-top:8px;cursor:pointer;">
+          <input type="checkbox" id="exp-offline-render" ${exp.offlineRender ? 'checked' : ''} style="margin-top:3px;" />
+          <span class="small muted">
+            Offline render (deterministic)
+            <div class="small muted" style="font-size:11px;opacity:0.75;margin-top:2px;">
+              Decouples animation from real time. Slower but immune to window-throttling — same project renders the same duration regardless of window size or focus.
+            </div>
+          </span>
+        </label>
       </div>
 
       <div class="card" style="margin-top:8px;">
@@ -1562,11 +2807,35 @@ function _renderExportTab() {
   el.querySelector('#exp-format').addEventListener('change', e =>
     state.setExportOption('outputFormat', e.target.value));
   el.querySelector('#exp-preset').addEventListener('change', e => {
-    const r = PRESETS[e.target.value] || PRESETS.hdtv_1080;
     state.setExportOption('formatPreset', e.target.value);
-    state.setExportOption('width', r.width);
-    state.setExportOption('height', r.height);
+    if (e.target.value !== 'custom') {
+      const r = PRESETS[e.target.value] || PRESETS.hdtv_1080;
+      state.setExportOption('width',  r.width);
+      state.setExportOption('height', r.height);
+      // Sync the W/H inputs immediately — same render-pass, no re-render needed.
+      const wInput = el.querySelector('#exp-width');
+      const hInput = el.querySelector('#exp-height');
+      if (wInput) wInput.value = String(r.width);
+      if (hInput) hInput.value = String(r.height);
+    }
   });
+  // Custom width / height — selecting either flips the preset to "custom"
+  // so future exports honour the typed numbers. Min clamp matches the UI.
+  const _onSizeChange = (key) => (e) => {
+    const val = Math.max(64, Number(e.target.value) || 0);
+    state.setExportOption(key, val);
+    if (state.get('export')?.formatPreset !== 'custom') {
+      state.setExportOption('formatPreset', 'custom');
+      const presetSel = el.querySelector('#exp-preset');
+      if (presetSel) presetSel.value = 'custom';
+    }
+  };
+  el.querySelector('#exp-width') ?.addEventListener('change', _onSizeChange('width'));
+  el.querySelector('#exp-height')?.addEventListener('change', _onSizeChange('height'));
+  el.querySelector('#exp-show-safe-frame')?.addEventListener('change', e =>
+    state.setExportOption('showSafeFrame', !!e.target.checked));
+  el.querySelector('#exp-offline-render')?.addEventListener('change', e =>
+    state.setExportOption('offlineRender', !!e.target.checked));
   el.querySelector('#exp-fps').addEventListener('change', e =>
     state.setExportOption('fps', Number(e.target.value)));
   el.querySelector('#exp-hold').addEventListener('change', e =>
@@ -1854,6 +3123,7 @@ async function _onExportTabStart() {
       fps:              Number(exp.fps) || 30,
       stepHoldMs:       Number(exp.stepHoldMs) || 800,
       includeNarration: exp.narrationEnabled !== false,
+      offline:          !!exp.offlineRender,
       signal:           _exportTabCtrl.signal,
       onProgress: ({ current, total, stepName }) => {
         set(`Step ${current}/${total}: ${stepName}`);

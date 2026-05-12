@@ -14,7 +14,22 @@
  *
  * The camera fill-light follows the camera position so it always
  * illuminates front-facing surfaces regardless of view angle.
+ *
+ * Canonical-camera framing
+ * ------------------------
+ * The canvas backing buffer is ALWAYS sized to the project's canonical
+ * export resolution (state.export.width × height) at pixelRatio=1, and
+ * the camera always projects at canonical aspect — never the viewer's
+ * aspect. The canvas's CSS box is letterboxed to canonical aspect inside
+ * the container so live viewport == safe-frame == export output, byte
+ * for byte, regardless of window size, OS scaling, browser/Electron
+ * zoom, or which machine the project is opened on. Black bars in the
+ * live preview when window aspect ≠ canonical aspect are intentional
+ * — same as any DCC tool with a render-frame.
  */
+
+import { getCanonicalSize, computeSafeFrameRect } from './safe-frame.js';
+import * as clock from './clock.js';
 
 // ── Mini event emitter (no dependency on state.js) ────────────────────────
 class Emitter {
@@ -100,13 +115,36 @@ export class SceneCore extends Emitter {
     this._container = container;
 
     // ── Renderer ────────────────────────────────────────────────────────
+    // pixelRatio is forced to 1 so the canvas backing buffer matches
+    // canonical W×H exactly. With native devicePixelRatio (often
+    // fractional under OS scaling / browser zoom / Electron zoom), the
+    // buffer would be floor(W × PR) — a different size on every machine,
+    // breaking cross-machine portability of the export.
     this.renderer = new THREE.WebGLRenderer({
       antialias:             true,
       preserveDrawingBuffer: true,   // required for export / thumbnails
     });
-    this.renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
-    this.renderer.setSize(container.clientWidth, container.clientHeight);
+    this.renderer.setPixelRatio(1);
     container.appendChild(this.renderer.domElement);
+
+    // Pin the WebGL canvas's drawingBufferColorSpace to plain sRGB.
+    // Without this, Chromium auto-detects the display's wider colour
+    // capability (P3 / Rec2020 / HDR-aware) and tags the compositor
+    // swap chain accordingly — which then maps SDR-tagged DOM siblings
+    // (sidebar / panels) to ~75% of peak luminance (RGB 255 → 190 cap).
+    // Voice-over / context-menus / modals escape that cap because
+    // backdrop-filter / stacking-context promotes them off the
+    // affected compositor layer. Pinning to srgb makes the canvas's
+    // colour space match the rest of the page, so Chromium keeps the
+    // compositor in plain sRGB and DOM whites render at full 255.
+    // Diagnosed by the user via canvas-removal test:
+    //   document.querySelectorAll('canvas').forEach(c=>c.remove())
+    //   → sidebar instantly snapped from RGB 190 to RGB 255.
+    try {
+      const gl = this.renderer.getContext();
+      if (gl && 'drawingBufferColorSpace' in gl) gl.drawingBufferColorSpace = 'srgb';
+    } catch {}
+    if ('SRGBColorSpace' in THREE) this.renderer.outputColorSpace = THREE.SRGBColorSpace;
 
     // ── Scenes ──────────────────────────────────────────────────────────
     this.scene = new THREE.Scene();
@@ -115,12 +153,9 @@ export class SceneCore extends Emitter {
     this.overlayScene = new THREE.Scene();  // drawn on top, depth-cleared
 
     // ── Camera ──────────────────────────────────────────────────────────
-    this.camera = new THREE.PerspectiveCamera(
-      fov,
-      container.clientWidth / container.clientHeight,
-      0.1,
-      1_000_000,
-    );
+    // Aspect is set inside fitToCanonical() once everything is wired —
+    // we only need a placeholder here so the constructor doesn't fail.
+    this.camera = new THREE.PerspectiveCamera(fov, 1, 0.1, 1_000_000);
     this.camera.position.set(220, 180, 260);
     this.camera.lookAt(0, 0, 0);
 
@@ -156,8 +191,11 @@ export class SceneCore extends Emitter {
     // ── Custom CAD orbit controls ────────────────────────────────────────
     this._initControls();
 
+    // Initial fit — sizes the buffer + camera + canvas CSS letterbox.
+    this.fitToCanonical();
+
     // ── Resize observer ─────────────────────────────────────────────────
-    this._resizeObs = new ResizeObserver(() => this.resize());
+    this._resizeObs = new ResizeObserver(() => this.fitToCanonical());
     this._resizeObs.observe(container);
 
     this.emit('init');
@@ -290,20 +328,61 @@ export class SceneCore extends Emitter {
     return () => this._tickHooks.delete(fn);
   }
 
-  // ═══════════════════════════════════════════════════════════════════════
-  //  RESIZE
-  // ═══════════════════════════════════════════════════════════════════════
-  resize() {
-    if (!this.renderer || !this._container) return;
-    const w = this._container.clientWidth;
-    const h = this._container.clientHeight;
-    if (w === 0 || h === 0) return;
-
-    this.renderer.setSize(w, h);
-    this.camera.aspect = w / h;
-    this.camera.updateProjectionMatrix();
-    this.emit('resize', { width: w, height: h });
+  /**
+   * Manually fire all registered tick hooks with synthetic timestamps.
+   * Used by offline render mode — the export loop drives time, not rAF.
+   * Does NOT render or advance the camera transition; caller controls that.
+   */
+  fireSyntheticTick(now, delta) {
+    this._advanceTransition(now);
+    this._syncFillLight();
+    this._tickHooks.forEach(fn => { try { fn(now, delta); } catch(e) { console.error(e); } });
   }
+
+  /** Public render-once entry point used by offline export per-frame capture. */
+  renderFrame() {
+    this._render();
+  }
+
+  // ═══════════════════════════════════════════════════════════════════════
+  //  FIT — canonical buffer + canonical-aspect camera + letterboxed CSS
+  // ═══════════════════════════════════════════════════════════════════════
+  /**
+   * Size the renderer buffer to canonical W × H, set camera aspect to
+   * canonical, and position the canvas's CSS box as the safe-frame rect
+   * inside the container (letterbox / pillarbox depending on container
+   * shape). Idempotent — safe to call on every resize event.
+   */
+  fitToCanonical() {
+    if (!this.renderer || !this._container) return;
+    const c = getCanonicalSize();
+    const pw = this._container.clientWidth;
+    const ph = this._container.clientHeight;
+    if (pw === 0 || ph === 0 || c.width === 0 || c.height === 0) return;
+
+    // 1. Backing buffer at exact canonical px (PR was forced to 1 in init).
+    this.renderer.setSize(c.width, c.height, false);   // false = don't touch CSS, we set it next
+
+    // 2. Camera at canonical aspect — every render projects the same
+    //    frustum on every machine. Output is reproducible.
+    this.camera.aspect = c.aspect;
+    this.camera.updateProjectionMatrix();
+
+    // 3. CSS box = safe-frame rect inside container. computeSafeFrameRect
+    //    returns the largest canonical-aspect rectangle that fits, centred.
+    const sf = computeSafeFrameRect({ width: pw, height: ph });
+    const dom = this.renderer.domElement;
+    dom.style.position = 'absolute';
+    dom.style.left   = `${sf.x}px`;
+    dom.style.top    = `${sf.y}px`;
+    dom.style.width  = `${sf.width}px`;
+    dom.style.height = `${sf.height}px`;
+
+    this.emit('resize', { width: c.width, height: c.height });
+  }
+
+  /** @deprecated — use fitToCanonical(). Kept as an alias for callers. */
+  resize() { this.fitToCanonical(); }
 
   // ═══════════════════════════════════════════════════════════════════════
   //  BACKGROUND / GRID / HELPERS
@@ -316,6 +395,18 @@ export class SceneCore extends Emitter {
     if (this.gridHelper)  this.gridHelper.visible  = visible;
     if (this.axesHelper)  this.axesHelper.visible  = visible;
   }
+
+  /**
+   * Set the user-preference zoom-step multiplier. Default 1.0; lower
+   * values mean a finer-step wheel, higher means coarser. Persisted in
+   * user-settings.json under scene.cameraZoomScale and applied at boot
+   * + on every Scene-tab change.
+   */
+  setUserZoomScale(v) {
+    const n = Number(v);
+    this._userZoomScale = (Number.isFinite(n) && n > 0) ? n : 1.0;
+  }
+  getUserZoomScale() { return this._userZoomScale ?? 1.0; }
 
   // ═══════════════════════════════════════════════════════════════════════
   //  FILL LIGHT
@@ -427,8 +518,16 @@ export class SceneCore extends Emitter {
       // Cancel any previous transition
       if (this._transition?.reject) this._transition.reject('cancelled');
 
+      // Pin startMs to the CURRENT clock value (synthMs in offline export,
+      // performance.now in realtime). Previously this was null and got
+      // initialised on the first tick — but in offline mode the synthetic
+      // sleep schedule is computed against the OBJECT-transition startMs
+      // (which uses clock.now() up front). Setting camera startMs lazily
+      // pushed camera completion ~1 frame past the sleep's target, so
+      // Promise.all([cameraP, objectP, _sleep(maxDur)]) hung forever
+      // waiting on a camera transition that never got another tick.
       this._transition = {
-        startMs:  null,
+        startMs:  clock.now(),
         durationMs,
         easeFn:   ease[easing] ?? ease.smooth,
         fromPos, fromQ, fromPivot, fromFov,
@@ -447,8 +546,12 @@ export class SceneCore extends Emitter {
     const t = this._transition;
     if (!t) return;
 
-    if (t.startMs === null) t.startMs = nowMs;
-
+    // startMs is set at animateCameraTo() time (clock.now() — synthMs in
+    // offline, performance.now in realtime). The previous lazy-init on
+    // first tick mismatched the offline synthetic sleep schedule, which
+    // is computed against object-transition startMs taken at phase
+    // setup. The mismatch shifted camera completion past the sleep
+    // target, hanging Promise.all forever in offline export.
     const elapsed = nowMs - t.startMs;
     const raw     = Math.min(elapsed / t.durationMs, 1);
     const alpha   = t.easeFn(raw);
@@ -615,6 +718,16 @@ export class SceneCore extends Emitter {
     this.controls = ctrl;
 
     // ── Internal helpers ─────────────────────────────────────────────────
+    //
+    // Pivot policy on orbit-start:
+    //   1. Raycast hit a face → pivot lands on that hit point.
+    //   2. Miss (clicked empty background) → KEEP the current pivot.
+    //      This is the CAD-standard behaviour (Solidworks / Fusion /
+    //      Onshape). It's also scale-immune: after a model rescale the
+    //      old pivot may be at any world-coordinate but the camera-to-
+    //      pivot distance stays sane, so orbit radius stays sane.
+    //   3. Miss AND pivot has never been set (e.g. brand-new scene) →
+    //      fall back to scene center as a one-time initialiser.
     const _updatePivotFromHit = (clientX, clientY) => {
       const hit = this.pick(clientX, clientY);
       if (hit) {
@@ -622,7 +735,19 @@ export class SceneCore extends Emitter {
         ctrl.syncSpherical();
         return;
       }
-      // Fall back to scene center
+      // Miss: keep current pivot if it's been initialised. We treat
+      // "initialised" as any non-zero pivot OR a finite spherical radius
+      // from a prior successful pick / fit-to-view call.
+      const pivotInit = ctrl.pivot.lengthSq() > 1e-12
+        || (Number.isFinite(ctrl.spherical.radius) && ctrl.spherical.radius > 0);
+      if (pivotInit) {
+        // Re-sync just in case the camera moved since the last orbit
+        // (pan keeps pivot+camera locked, but defensive).
+        ctrl.syncSpherical();
+        return;
+      }
+      // One-time fallback for the very first orbit before any pivot
+      // has been set.
       const box = new THREE.Box3().setFromObject(this.rootGroup);
       if (!box.isEmpty()) {
         ctrl.pivot.copy(box.getCenter(new THREE.Vector3()));
@@ -692,7 +817,15 @@ export class SceneCore extends Emitter {
       this.emit('controls:change');
     };
 
-    // ── Wheel: adaptive zoom ─────────────────────────────────────────────
+    // ── Wheel: distance-based zoom (scale-immune) ────────────────────────
+    // Step = (distance from camera to pivot) × baseFactor × user-prefs scale.
+    // No dependency on scene-size — works at any world-unit scale, never
+    // needs recalibration after a model rescale.
+    //
+    // Modifiers:
+    //   Ctrl + wheel  → 0.1× step (10× slower / finer control)
+    //   Shift + wheel → 10×  step (10× faster / coarser)
+    //   Bare wheel    → 1×   step (default)
     dom.addEventListener('wheel', (e) => {
       if (this._locked) return;
       e.preventDefault();
@@ -701,11 +834,15 @@ export class SceneCore extends Emitter {
       const forward = new THREE.Vector3();
       this.camera.getWorldDirection(forward);
 
-      const box       = new THREE.Box3().setFromObject(this.rootGroup);
-      const sceneSize = box.isEmpty()
-        ? 100
-        : box.getSize(new THREE.Vector3()).length();
-      const step = Math.max(sceneSize * 0.015, 0.5) * ctrl.zoomSpeed;
+      // Distance to pivot drives the step size — close-up moves are tiny,
+      // far-away moves are large. Floor prevents getting "stuck" at 0.
+      const dist = Math.max(this.camera.position.distanceTo(ctrl.pivot), 1e-4);
+      const mult = e.ctrlKey ? 0.1 : (e.shiftKey ? 10 : 1);
+      // _userZoomScale is user-pref multiplier (default 1.0); set via
+      // setUserZoomScale() from the Scene settings tab.
+      const userScale = (typeof this._userZoomScale === 'number')
+        ? this._userZoomScale : 1.0;
+      const step = dist * 0.08 * ctrl.zoomSpeed * mult * userScale;
 
       this.camera.position.addScaledVector(forward, delta > 0 ? -step : step);
       ctrl.syncSpherical();

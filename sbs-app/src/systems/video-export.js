@@ -19,10 +19,13 @@
  */
 
 import { state }     from '../core/state.js';
-import { steps }     from './steps.js';
+import { steps, setSleepImpl } from './steps.js';
+import * as clock    from '../core/clock.js';
 import { sceneCore } from '../core/scene.js';
 import { rasterizeOverlay, waitForOverlayStable }     from './overlay.js';
 import { rasterizeHeaderLayer, waitForHeaderStable }  from './header.js';
+import { rasterizeNotesLayer }                        from './notes-render.js';
+import { computeSafeFrameRect }                       from '../core/safe-frame.js';
 import { decodeToAudioBuffer, resampleToMonoFloat32, mixTrackToFloat32 } from './audio-bridge.js';
 import { synthesize as ttsSynthesize } from './tts.js';
 import * as narrationCache from './narration-cache.js';
@@ -54,6 +57,137 @@ export async function exportTimelineVideo(opts = {}) {
 }
 
 /**
+ * Export the timeline as a .sbsproc — the proprietary single-file
+ * container the SBS viewer reads. Layout:
+ *
+ *     [8 bytes]  ASCII magic     "SBSPROC1"
+ *     [4 bytes]  uint32 LE       manifest_len  (UTF-8 byte length)
+ *     [N bytes]  UTF-8 JSON      manifest      (see _buildSbsProcManifest)
+ *     [rest]     raw bytes       MP4 container
+ *
+ * Self-contained, NOT a zip. The viewer fetches the file, reads the
+ * 12-byte header, slices the manifest JSON, then exposes the trailing
+ * MP4 bytes as a Blob URL for an HTML5 video element.
+ *
+ * Always uses the MP4 encoder (the viewer pipeline assumes a valid
+ * MP4 stream as the trailing payload).
+ */
+export async function exportTimelineSbsProc(opts = {}) {
+  const result = await _exportMp4(opts);
+  const manifest = _buildSbsProcManifest(result);
+  const blob = _packSbsProcBlob(manifest, result.mp4Buffer);
+  return {
+    blob,
+    extension: 'sbsproc',
+    codec:     result.codec,
+    manifest,
+    totalDurationMs: result.totalDurationMs,
+  };
+}
+
+/**
+ * Build the manifest JSON for a .sbsproc. Step-groups collapse to ONE
+ * viewer-step per spec: the head's marker becomes the viewer-step's
+ * `time_in_ms`, and the entry that immediately follows the LAST sub-
+ * step (or the video end) becomes its `time_out_ms`. Sub-step markers
+ * are included as `sub_steps` on the viewer-step entry so a future
+ * viewer can show internal progress without breaking the "groups read
+ * as one step" rule.
+ */
+function _buildSbsProcManifest(result) {
+  const stepsArr = state.get('steps') || [];
+  // Map stepId → marker for fast lookup.
+  const markerOf = new Map();
+  for (const m of result.stepMarkers || []) markerOf.set(m.stepId, m.timeInMs);
+  // Filter to playable steps in encoded order — same set _exportMp4 used.
+  const playable = stepsArr.filter(s => steps._isPlayable(s));
+  const totalMs  = result.totalDurationMs;
+
+  // Walk in order. For each TOP-LEVEL entry, record one viewer-step.
+  // A group head's window runs from its marker through the marker of
+  // the next top-level entry (or totalMs at the end). Sub-steps go
+  // inside `sub_steps` on the head's viewer-step.
+  const viewerSteps = [];
+  for (let i = 0; i < playable.length; i++) {
+    const s = playable[i];
+    if (s.groupId) continue;   // sub-steps emitted via head below
+    const timeInMs = markerOf.get(s.id) ?? 0;
+    // Find next top-level marker (or video end).
+    let timeOutMs = totalMs;
+    for (let j = i + 1; j < playable.length; j++) {
+      if (!playable[j].groupId) {
+        timeOutMs = markerOf.get(playable[j].id) ?? totalMs;
+        break;
+      }
+    }
+    const entry = {
+      id:               s.id,
+      title:            s.name || 'Untitled',
+      time_in_ms:       timeInMs,
+      time_out_ms:      timeOutMs,
+      narration_text:   _extractNarrationText(s),
+      notes_text:       '',
+    };
+    if (s.groupHead) {
+      const subs = [];
+      for (let j = i + 1; j < playable.length && playable[j].groupId === s.id; j++) {
+        const sub  = playable[j];
+        const subInMs  = markerOf.get(sub.id) ?? timeInMs;
+        // Sub-step's own window ends at the next sub-step (same group)
+        // or the group's outer timeOutMs.
+        let subOutMs = timeOutMs;
+        for (let k = j + 1; k < playable.length; k++) {
+          const m = markerOf.get(playable[k].id);
+          if (m !== undefined) { subOutMs = m; break; }
+        }
+        subs.push({
+          id:             sub.id,
+          title:          sub.name || 'Untitled',
+          time_in_ms:     subInMs,
+          time_out_ms:    subOutMs,
+          narration_text: _extractNarrationText(sub),
+        });
+      }
+      if (subs.length) entry.sub_steps = subs;
+    }
+    viewerSteps.push(entry);
+  }
+
+  return {
+    format:            'sbsproc',
+    version:           1,
+    title:             state.get('projectName') || 'Untitled Process',
+    total_duration_ms: totalMs,
+    fps:               null,                     // muxer wrote whatever fps was used; viewer uses time_in/_out only
+    codec:             result.codec || null,
+    steps:             viewerSteps,
+  };
+}
+
+function _extractNarrationText(step) {
+  // Step text lives across two fields; prefer the explicit narration
+  // record (richer), fall back to voiceText (legacy / TTS-only steps).
+  return (step?.narration?.text || step?.voiceText || '').trim();
+}
+
+/**
+ * Concatenate the .sbsproc binary: magic + uint32 LE manifest length +
+ * UTF-8 manifest JSON + MP4 bytes. Returns a single Blob.
+ */
+function _packSbsProcBlob(manifest, mp4Buffer) {
+  const enc = new TextEncoder();
+  const manifestBytes = enc.encode(JSON.stringify(manifest));
+  // 12-byte fixed header: 8 magic + 4 length.
+  const header = new Uint8Array(12);
+  header.set(enc.encode('SBSPROC1'), 0);
+  new DataView(header.buffer).setUint32(8, manifestBytes.length, true);
+  return new Blob(
+    [header, manifestBytes, mp4Buffer],
+    { type: 'application/octet-stream' },
+  );
+}
+
+/**
  * Trigger a browser download of the given Blob.
  */
 export function downloadBlob(blob, filename) {
@@ -74,15 +208,30 @@ export function downloadBlob(blob, filename) {
 async function _exportMp4({ fps = DEFAULT_FPS, bitrate = DEFAULT_BITRATE,
                             stepHoldMs = POST_STEP_HOLD_MS,
                             includeNarration = true,
+                            offline = false,
                             onProgress, signal } = {}) {
   const canvas = sceneCore.renderer?.domElement;
   if (!canvas) throw new Error('No 3D canvas available to export.');
 
-  const stepsToPlay = (state.get('steps') || []).filter(s => !s.hidden && !s.isBaseStep);
+  const stepsToPlay = (state.get('steps') || []).filter(s => steps._isPlayable(s));
   if (!stepsToPlay.length) throw new Error('No steps to export — add at least one step first.');
 
-  const width  = canvas.width;
-  const height = canvas.height;
+  // Output dimensions come from the project's canonical export config
+  // (state.export.width × state.export.height), NOT the viewport canvas.
+  // The viewport canvas is whatever size the user's window happens to
+  // be — using it produced different resolutions on different machines
+  // and ignored the W/H fields in the Export tab. Composite onto an
+  // OffscreenCanvas at the canonical size; drawImage scales the live
+  // canvas into the target rect. Stage 4 will render natively at the
+  // canonical size for sharper output.
+  const _exp   = state.get('export') || {};
+  const width  = (Number.isFinite(_exp.width)  && _exp.width  > 0) ? _exp.width  : canvas.width;
+  const height = (Number.isFinite(_exp.height) && _exp.height > 0) ? _exp.height : canvas.height;
+
+  // The canvas is ALWAYS at canonical buffer + canonical-aspect camera
+  // (sceneCore.fitToCanonical, called from init / resize / change:export),
+  // so export needs no per-run renderer surgery. Live preview already
+  // looks identical to what's being encoded.
 
   // ── Build the step timeline.
   // Per-step hold is always added AFTER the step's narration (or after the
@@ -129,6 +278,12 @@ async function _exportMp4({ fps = DEFAULT_FPS, bitrate = DEFAULT_BITRATE,
   let audioEncoder  = null;
   let audioTrackEnabled = false;
 
+  // Decoded segments (per-step samples). Mixed AFTER _playTimeline using
+  // captured step markers so the audio offsets match the actual encoded
+  // video timeline — `step.transition.durationMs` estimates can drift
+  // from real animation length, especially under realtime throttling,
+  // which makes step N+1's narration creep into step N's hold.
+  let audioSegments = null;
   if (includeNarration) {
     try {
       // Pre-synth: any step with narration text but no fresh cached clip
@@ -144,10 +299,10 @@ async function _exportMp4({ fps = DEFAULT_FPS, bitrate = DEFAULT_BITRATE,
         perStepHold[i] = narrMs + stepHoldMs;
       }
 
-      console.log('[export] building audio track…');
-      audioMaster = await _buildNarrationTrack(stepsToPlay, perStepHold, AUDIO_RATE);
-      audioTrackEnabled = audioMaster.hasAudio;
-      console.log(`[export] audio track ready: ${audioTrackEnabled ? `${(audioMaster.totalMs/1000).toFixed(1)}s` : 'no clips'}`);
+      console.log('[export] decoding audio segments…');
+      audioSegments = await _decodeNarrationSegments(stepsToPlay, AUDIO_RATE);
+      audioTrackEnabled = audioSegments.hasAudio;
+      console.log(`[export] audio decoded: ${audioTrackEnabled ? `${audioSegments.segments.length} clip(s)` : 'no clips'}`);
     } catch (err) {
       console.warn('[export] audio bridge failed — exporting video only:', err);
       audioTrackEnabled = false;
@@ -200,10 +355,14 @@ async function _exportMp4({ fps = DEFAULT_FPS, bitrate = DEFAULT_BITRATE,
   });
   encoder.configure({ codec: chosen.webCodec, width, height, bitrate, framerate: fps });
 
-  // Audio encoder + chunked encode — runs CONCURRENTLY with the video frame
-  // pump. We capture the promise so we can await its completion before
-  // calling encoder.flush() at the end.
-  let audioEncodePromise = Promise.resolve();
+  // Audio encoder is configured here but NOT pumped yet — the master
+  // PCM is mixed AFTER _playTimeline using captured step markers, so
+  // the encode runs serially after video. Slight serial cost vs the
+  // legacy concurrent path, but the only way to align audio to the
+  // ACTUAL synth/realtime clock the encoder used. Without this, slow
+  // animations (realtime throttling, multi-phase transitions) push
+  // step N's transition past its `durationMs` estimate and step N+1's
+  // narration creeps backward into step N's hold ("voice creep").
   if (audioTrackEnabled) {
     audioEncoder = new AudioEncoder({
       output: (chunk, meta) => muxer.addAudioChunk(chunk, meta),
@@ -212,13 +371,21 @@ async function _exportMp4({ fps = DEFAULT_FPS, bitrate = DEFAULT_BITRATE,
     audioEncoder.configure({
       codec: audioCodec, sampleRate: AUDIO_RATE, numberOfChannels: AUDIO_CHANNELS, bitrate: AUDIO_BITRATE,
     });
-    audioEncodePromise = _encodeAudioMaster(audioMaster.pcm, AUDIO_RATE, audioEncoder)
-      .catch(err => { console.warn('[export] audio pump aborted:', err?.message); });
   }
 
-  // Frame pump — captures the canvas on every render tick and encodes as many
-  // fixed-interval frame slots as have elapsed in wall-clock time. Timestamps
-  // are regular so playback is smooth even if rAF hiccups.
+  // Frame pump — captures the canvas and encodes frames at fixed timestamps.
+  //
+  // Two strategies:
+  //   • realtime (default): rAF tick hook captures however many frame slots
+  //     have elapsed in wall-clock time. Smooth, but throttled when the
+  //     window is backgrounded / floating small (Chromium throttles rAF +
+  //     setTimeout in those cases — exports take 5× longer there).
+  //   • offline: stops the rAF loop, overrides steps._sleep so each phase
+  //     advances a synthetic clock by exactly 1/fps per encoded frame. The
+  //     animation timeline drives the encoder directly — wall-clock time
+  //     and window throttling are completely decoupled from the output.
+  //     Slower than realtime when realtime isn't throttled, but produces
+  //     identical-duration output regardless of host conditions.
   //
   // Composite: we draw the 3D canvas and the Konva overlay into an offscreen
   // 2D canvas, then build the VideoFrame from that. This bakes the overlay
@@ -227,50 +394,176 @@ async function _exportMp4({ fps = DEFAULT_FPS, bitrate = DEFAULT_BITRATE,
   const compositeCtx = composite.getContext('2d');
 
   const frameIntervalUs = 1_000_000 / fps;
+  const frameIntervalMs = 1000 / fps;
   let nextFrameUs = 0;
-  const startMs = performance.now();
-
-  const unsubTick = sceneCore.addTickHook((nowMs) => {
-    const elapsedUs = (nowMs - startMs) * 1000;
-    while (nextFrameUs <= elapsedUs) {
-      // 1. Lay down the 3D frame at native size.
-      compositeCtx.clearRect(0, 0, width, height);
+  const _captureAndEncode = () => {
+    // 1. Lay down the 3D frame at native size.
+    // Stage 4: extract just the SAFE-FRAME rect from the live viewport
+    // canvas (it has the canonical aspect by construction), then
+    // drawImage it into the canonical W × H output. Without this crop,
+    // drawImage stretched the full viewport canvas (whatever aspect
+    // that was) into the canonical output, which squished everything
+    // when viewport aspect ≠ canonical aspect.
+    compositeCtx.clearRect(0, 0, width, height);
+    const sf = computeSafeFrameRect({ width: canvas.width, height: canvas.height });
+    if (sf.width > 0 && sf.height > 0) {
+      compositeCtx.drawImage(canvas, sf.x, sf.y, sf.width, sf.height, 0, 0, width, height);
+    } else {
       compositeCtx.drawImage(canvas, 0, 0, width, height);
-      // 2. Bake the per-step overlay on top.
-      const ov = rasterizeOverlay({ width, height });
-      if (ov) compositeCtx.drawImage(ov, 0, 0, width, height);
-      // 3. Bake the project-level header layer above the overlay so
-      //    headers always sit on top — dynamic kinds (stepName /
-      //    stepNumber / chapter*) resolve their text against whichever
-      //    step is active at this exact tick, automatically.
-      const hd = rasterizeHeaderLayer({ width, height });
-      if (hd) compositeCtx.drawImage(hd, 0, 0, width, height);
-      // 4. Encode.
-      const frame = new VideoFrame(composite, { timestamp: nextFrameUs });
-      const keyFrame = Math.round(nextFrameUs / frameIntervalUs) % fps === 0;
-      try { encoder.encode(frame, { keyFrame }); } catch (e) { frame.close(); throw e; }
-      frame.close();
-      nextFrameUs += frameIntervalUs;
     }
-  });
+    // 2. Bake the per-step overlay on top.
+    const ov = rasterizeOverlay({ width, height });
+    if (ov) compositeCtx.drawImage(ov, 0, 0, width, height);
+    // 2b. Bake 3D-anchored balloon notes. The live tick paints these
+    //     as DOM divs + SVG paths, which canvas-only export pipelines
+    //     can't capture — without this composite step they would
+    //     simply not appear in the encoded MP4 / .sbsproc. Layered
+    //     above the Konva overlay so notes draw on top of any 2D
+    //     screen items the user added.
+    const nl = rasterizeNotesLayer({ width, height });
+    if (nl) compositeCtx.drawImage(nl, 0, 0, width, height);
+    // 3. Bake the project-level header layer above the overlay so
+    //    headers always sit on top — dynamic kinds (stepName /
+    //    stepNumber / chapter*) resolve their text against whichever
+    //    step is active at this exact tick, automatically.
+    const hd = rasterizeHeaderLayer({ width, height });
+    if (hd) compositeCtx.drawImage(hd, 0, 0, width, height);
+    // 4. Encode.
+    const frame = new VideoFrame(composite, { timestamp: nextFrameUs });
+    const keyFrame = Math.round(nextFrameUs / frameIntervalUs) % fps === 0;
+    try { encoder.encode(frame, { keyFrame }); } catch (e) { frame.close(); throw e; }
+    frame.close();
+    nextFrameUs += frameIntervalUs;
+  };
+
+  let unsubTick = () => {};
+  let synthMs = 0;
+  let offlineActive = false;
+
+  // Synthetic sleep — advances synthMs frame-by-frame, fires ticks,
+  // renders, captures & encodes one frame per slot. Shared by the
+  // setSleepImpl (steps animation phases) and _setWaitImpl (inter-step
+  // holds) overrides so both produce matching encoded duration.
+  const _syntheticSleep = async (ms) => {
+    if (signal?.aborted) throw new DOMException('aborted', 'AbortError');
+    const target = synthMs + Math.max(0, ms);
+    while (synthMs + frameIntervalMs <= target) {
+      synthMs += frameIntervalMs;
+      sceneCore.fireSyntheticTick(synthMs, frameIntervalMs);
+      sceneCore.renderFrame();
+      _captureAndEncode();
+      // Backpressure — let the encoder drain so we don't OOM with
+      // a multi-thousand-frame queue on long timelines.
+      while (encoder.encodeQueueSize > 16) {
+        await new Promise(resolve => setTimeout(resolve, 5));
+      }
+      // Yield to the event loop so progress callbacks fire, the UI
+      // stays responsive, and any audio-pump microtasks get a turn.
+      await new Promise(resolve => setTimeout(resolve, 0));
+      if (signal?.aborted) throw new DOMException('aborted', 'AbortError');
+    }
+    // Sub-frame remainder — advance synth without emitting an extra frame.
+    if (target > synthMs) {
+      const rem = target - synthMs;
+      synthMs = target;
+      sceneCore.fireSyntheticTick(synthMs, rem);
+    }
+  };
+
+  // Wall-clock anchor for the realtime path. Set inside the realtime
+  // branch and read by the step-marker callback below — synthMs covers
+  // the offline path, performance.now()-startMs covers realtime.
+  let realtimeStartMs = 0;
+  if (!offline) {
+    // Realtime path — rAF tick hook fires after each natural _render.
+    // No need to call renderFrame() here: the current canvas already
+    // reflects this rAF's render. Multiple catch-up frames just repeat
+    // the same canvas state at fixed timestamps.
+    realtimeStartMs = performance.now();
+    unsubTick = sceneCore.addTickHook((nowMs) => {
+      const elapsedUs = (nowMs - realtimeStartMs) * 1000;
+      while (nextFrameUs <= elapsedUs) {
+        _captureAndEncode();
+      }
+    });
+  }
+
+  // Step markers — captured at each step's activation point. Used by
+  // BOTH the .sbsproc manifest AND the audio mix.
+  //
+  // We use `nextFrameUs / 1000` (encoded video time) rather than synthMs
+  // or wall-clock. The encoded video timestamps are determined by the
+  // count of _captureAndEncode calls, which lags synthMs by ~1 frame
+  // (the synthetic-sleep loop's last sub-frame remainder fires no
+  // capture). In realtime mode, rAF jitter can also make wall-clock
+  // diverge from encoder time. Using nextFrameUs is exact: the marker
+  // points at the boundary between this step's last encoded frame and
+  // the next step's first encoded frame, so the viewer's auto-pause
+  // snap-back actually lands on this step's last frame (not the next
+  // step's first frame, which was the bug).
+  const stepMarkers = [];
+  const onStepStart = (i, step) => {
+    const t = nextFrameUs / 1000;
+    stepMarkers.push({ stepId: step.id, timeInMs: Math.max(0, Math.round(t)) });
+  };
 
   // Suppress live narration playback while the timeline runs for capture.
   state.setState({ _exporting: true });
   try {
+    // _hardResetToFirstStep runs in REAL time even in offline mode —
+    // its instant apply + rAF settle don't drive any animation phase,
+    // and we don't want the warm-up to emit encoded frames (would
+    // desync video against the audio master, which starts at t=0 from
+    // step 1's narration). Switch to synthetic clock AFTER the reset.
     await _hardResetToFirstStep(stepsToPlay);
-    console.log('[export] timeline playback…');
-    await _playTimeline(stepsToPlay, perStepHold, onProgress, signal);
+    if (offline) {
+      // Animation systems (cables-render, materials, overlay, steps)
+      // cache start timestamps via clock.now() — swap to synthetic
+      // clock so `elapsed = clock.now() - startMs` matches the synth
+      // ticks fired below. Stop the rAF loop so real-time ticks don't
+      // fight the synthetic clock.
+      sceneCore.stopLoop();
+      clock.setClockImpl(() => synthMs);
+      setSleepImpl(_syntheticSleep);
+      _setWaitImpl(_syntheticSleep);
+      offlineActive = true;
+    }
+    console.log('[export] timeline playback…' + (offline ? ' (offline mode)' : ''));
+    await _playTimeline(stepsToPlay, perStepHold, onProgress, signal, onStepStart);
   } finally {
     unsubTick();
+    if (offlineActive) {
+      // Restore real-time clock + sleep + wait + rAF render loop before returning.
+      clock.setClockImpl(null);
+      setSleepImpl(null);
+      _setWaitImpl(null);
+      sceneCore.startLoop();
+    }
     state.setState({ _exporting: false });
   }
 
   console.log('[export] flush video encoder…');
   await encoder.flush();
   encoder.close();
-  if (audioEncoder) {
-    console.log('[export] await audio pump…');
-    await audioEncodePromise;
+
+  const totalEncodedMs = Math.max(0, Math.round(nextFrameUs / 1000));
+
+  // Audio mix + encode happens HERE — after video so we can use the
+  // ACTUAL step markers (synthMs in offline, performance.now() in
+  // realtime). Each step's audio is placed at the marker, eliminating
+  // the legacy creep where animation took longer than its estimate.
+  if (audioEncoder && audioSegments) {
+    console.log(`[export] mix audio (${stepMarkers.length} markers, total=${totalEncodedMs}ms)…`);
+    const markersByStepId = new Map(stepMarkers.map(m => [m.stepId, m.timeInMs]));
+    const pcm = _mixPcmFromMarkers(audioSegments, markersByStepId, totalEncodedMs, AUDIO_RATE);
+    if (pcm) {
+      console.log('[export] encode audio…');
+      try {
+        await _encodeAudioMaster(pcm, AUDIO_RATE, audioEncoder);
+      } catch (err) {
+        console.warn('[export] audio pump aborted:', err?.message);
+      }
+    }
     console.log('[export] flush audio encoder…');
     // Hard timeout so a hung encoder can't freeze the renderer indefinitely.
     await Promise.race([
@@ -287,6 +580,9 @@ async function _exportMp4({ fps = DEFAULT_FPS, bitrate = DEFAULT_BITRATE,
   return {
     blob, extension: 'mp4',
     codec: chosen.muxerCodec + (audioTrackEnabled ? '+' + audioCodec : ''),
+    mp4Buffer: muxer.target.buffer,
+    totalDurationMs: totalEncodedMs,
+    stepMarkers,
   };
 }
 
@@ -301,7 +597,7 @@ async function _exportWebM({ format = 'webm_vp9', fps = DEFAULT_FPS,
   const canvas = sceneCore.renderer?.domElement;
   if (!canvas) throw new Error('No 3D canvas available to export.');
 
-  const stepsToPlay = (state.get('steps') || []).filter(s => !s.hidden && !s.isBaseStep);
+  const stepsToPlay = (state.get('steps') || []).filter(s => steps._isPlayable(s));
   if (!stepsToPlay.length) throw new Error('No steps to export — add at least one step first.');
 
   const prefer = format === 'webm_vp8'
@@ -334,7 +630,7 @@ async function _exportWebM({ format = 'webm_vp9', fps = DEFAULT_FPS,
 //  Shared — timeline playback loop
 // ═══════════════════════════════════════════════════════════════════════════
 
-async function _playTimeline(stepsToPlay, holdsMsArg, onProgress, signal) {
+async function _playTimeline(stepsToPlay, holdsMsArg, onProgress, signal, onStepStart) {
   // holdsMsArg can be a single number (legacy) or one entry per step.
   const holds = Array.isArray(holdsMsArg)
     ? holdsMsArg
@@ -347,6 +643,11 @@ async function _playTimeline(stepsToPlay, holdsMsArg, onProgress, signal) {
     if (signal?.aborted) throw new DOMException('Export cancelled', 'AbortError');
     const step = stepsToPlay[i];
     onProgress?.({ current: i + 1, total: stepsToPlay.length, stepName: step.name });
+    // .sbsproc step-marker hook — fires BEFORE the transition begins so
+    // the marker timestamp matches the moment the encoded video starts
+    // moving toward this step's final state. The viewer uses these to
+    // seek between steps. (Optional callback; no-op for plain exports.)
+    onStepStart?.(i, step);
     if (i > 0) await steps.activateStep(step.id, true);   // first step already there
     // Drain any pending overlay / header async raster before holding —
     // without this, the first frames of the hold can capture a partial
@@ -422,55 +723,52 @@ async function _synthesizeMissingClips(stepsToPlay, onProgress, signal) {
  * Decode every step's narration clip and place its samples at the right
  * offset within the master audio timeline. Returns { pcm, totalMs, hasAudio }.
  */
-async function _buildNarrationTrack(stepsToPlay, perStepHold, sampleRate) {
-  // Compute step start time (cumulative animation + hold).
-  // The first export step is pre-activated by _hardResetToFirstStep, so its
-  // animation does NOT play in the video — treat its anim duration as 0
-  // when computing audio offsets, otherwise step-2's narration would
-  // start at (anim1 + hold1) instead of just hold1.
-  const segments = [];
-  let cursor = 0;
-  for (let i = 0; i < stepsToPlay.length; i++) {
-    const step  = stepsToPlay[i];
-    const anim  = i === 0 ? 0 : (step.transition?.durationMs ?? 1500);
-    segments.push({ step, startMs: cursor });
-    cursor += anim + perStepHold[i];
-  }
-  const totalMs = cursor;
-
-  // Decode each clip. WAV (the SAPI output format) is parsed manually
-  // in audio-bridge.js — no AudioContext touched. We only construct a
-  // fallback context lazily IF a non-WAV codec shows up. Avoiding the
-  // AudioContext entirely for the SAPI path side-steps a renderer hang
-  // we hit on Windows during decodeAudioData of step 1.
+/**
+ * Decode every narration clip into mono Float32 samples at the target
+ * sample-rate. Mixing happens later (after _playTimeline) using the
+ * actual step markers — see _mixPcmFromMarkers. The decode-side timeout
+ * (`_withTimeout` 10s) guards against pathological audio bridge hangs.
+ */
+async function _decodeNarrationSegments(stepsToPlay, sampleRate) {
   let ctx = null;
   const Ctx = window.AudioContext || window.webkitAudioContext;
   const lazyCtx = () => ctx ?? (ctx = new Ctx());
-  const decoded = [];
+  const segments = [];
   let hasAudio = false;
-  for (let i = 0; i < segments.length; i++) {
-    const seg = segments[i];
-    // Resolve the playable url — inline dataUrl OR lazy-loaded from disk
-    // cache. Returns null if neither is available (no clip for this step).
-    const url = await narrationCache.ensurePlayable(seg.step);
+  for (let i = 0; i < stepsToPlay.length; i++) {
+    const step = stepsToPlay[i];
+    const url = await narrationCache.ensurePlayable(step);
     if (!url) continue;
     try {
-      console.log(`[export] decode step ${i + 1}/${segments.length}: ${seg.step.name}`);
+      console.log(`[export] decode step ${i + 1}/${stepsToPlay.length}: ${step.name}`);
       const audioBuf = await _withTimeout(decodeToAudioBuffer(url, lazyCtx), 10_000, 'decodeAudioData');
-      console.log(`[export]   decoded — ${audioBuf.numberOfChannels}ch @ ${audioBuf.sampleRate}Hz, ${(audioBuf.duration).toFixed(2)}s`);
-      const samples  = await _withTimeout(resampleToMonoFloat32(audioBuf, sampleRate), 10_000, 'resample');
+      console.log(`[export]   decoded — ${audioBuf.numberOfChannels}ch @ ${audioBuf.sampleRate}Hz, ${audioBuf.duration.toFixed(2)}s`);
+      const samples = await _withTimeout(resampleToMonoFloat32(audioBuf, sampleRate), 10_000, 'resample');
       console.log(`[export]   resampled — ${samples.length} frames`);
-      decoded.push({ startMs: seg.startMs, samples });
+      segments.push({ stepId: step.id, samples });
       hasAudio = true;
     } catch (err) {
-      console.warn('[export] decode failed for step', seg.step.name, err?.message);
+      console.warn('[export] decode failed for step', step.name, err?.message);
     }
   }
-  try { ctx.close(); } catch {}
+  try { ctx?.close(); } catch {}
+  return { segments, hasAudio };
+}
 
-  if (!hasAudio) return { pcm: null, totalMs, hasAudio: false };
-  const pcm = mixTrackToFloat32(decoded, totalMs, sampleRate);
-  return { pcm, totalMs, hasAudio: true };
+/**
+ * Mix decoded segments into a single Float32 PCM aligned to step
+ * markers (timeInMs is the actual encoded video time at each step's
+ * activation). totalMs = encoded video duration; PCM is sized to
+ * exactly that length so audio extends through the final hold but
+ * never beyond. Returns null when no audio has been decoded.
+ */
+function _mixPcmFromMarkers(audioSegments, markersByStepId, totalMs, sampleRate) {
+  if (!audioSegments?.hasAudio) return null;
+  const tracks = audioSegments.segments.map(s => ({
+    startMs: markersByStepId.get(s.stepId) ?? 0,
+    samples: s.samples,
+  }));
+  return mixTrackToFloat32(tracks, totalMs, sampleRate);
 }
 
 /**
@@ -513,8 +811,13 @@ async function _encodeAudioMaster(pcm, sampleRate, encoder) {
   }
 }
 
-function _wait(ms) {
-  return new Promise(r => setTimeout(r, ms));
+// Inter-step hold delay. Defaults to wall-clock setTimeout, but the
+// offline export path swaps in a synthetic-clock implementation so the
+// configured Step Hold also produces matching encoded duration.
+let _waitImpl = (ms) => new Promise(r => setTimeout(r, ms));
+function _wait(ms) { return _waitImpl(ms); }
+function _setWaitImpl(fn) {
+  _waitImpl = fn || ((ms) => new Promise(r => setTimeout(r, ms)));
 }
 
 /**

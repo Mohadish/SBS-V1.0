@@ -208,14 +208,240 @@ export function ensureTransformDefaults(node) {
   if (typeof node.moveEnabled   !== 'boolean') node.moveEnabled   = true;
   if (typeof node.rotateEnabled !== 'boolean') node.rotateEnabled = true;
   if (typeof node.pivotEnabled  !== 'boolean') node.pivotEnabled  = true;
+
+  // Source-transform fields (model nodes only — harmless on others).
+  if (!Array.isArray(node.sourceLocalPosition))
+    node.sourceLocalPosition = [0, 0, 0];
+  if (!Array.isArray(node.sourceLocalQuaternion) || node.sourceLocalQuaternion.length < 4)
+    node.sourceLocalQuaternion = [0, 0, 0, 1];
+  if (!Array.isArray(node.sourceLocalScale))
+    node.sourceLocalScale = [1, 1, 1];
+}
+
+/**
+ * Capture each mesh's matrix in the model's LOCAL frame, freezing the
+ * import-time pose so the source-transform bake can compensate for it.
+ *
+ * Stored on:
+ *   mesh.userData.sbsModelLocalMatrix  — Float64Array (16) — outer-relative pose
+ *   mesh.userData.sbsModelAssetId      — string             — owning model assetId
+ *
+ * Idempotent — if sbsModelLocalMatrix is already present it is preserved
+ * (the import-time pose, before any user reparents, is the canonical one).
+ *
+ * Must be called once per model right after import, while the outer
+ * group's matrixWorld still reflects the as-loaded hierarchy and before
+ * any per-step deltas have been applied.
+ *
+ * @param {THREE.Group} outer    the model node's outer Three.js group
+ * @param {string}      assetId  the owning model's assetId
+ */
+export function captureMeshModelLocalMatrices(outer, assetId) {
+  if (!outer || !window.THREE) return;
+  const T = window.THREE;
+  outer.updateMatrixWorld(true);
+  const outerInv = new T.Matrix4().copy(outer.matrixWorld).invert();
+  outer.traverse(obj => {
+    if (!obj.isMesh) return;
+    if (obj.userData?.isPlaceholder) return;
+    if (assetId) obj.userData.sbsModelAssetId = assetId;
+    if (obj.userData.sbsModelLocalMatrix) return;
+    const m = new T.Matrix4().multiplyMatrices(outerInv, obj.matrixWorld);
+    obj.userData.sbsModelLocalMatrix = m.toArray();
+  });
+}
+
+/**
+ * Collect every mesh belonging to a model + its current axis-aligned
+ * bounding box in MODEL-LOCAL frame.
+ *
+ * Returns: Array<{ mesh: THREE.Mesh, min: number[3], max: number[3] }>
+ *
+ * Used by the source-transform dialog to draw per-mesh "current" (red)
+ * and "preview" (green) bounding boxes when the user is editing scale.
+ * Model-local frame means: axes anchored to the model's outer group at
+ * identity — independent of any per-step transform on the outer group,
+ * so the boxes never wobble as steps animate.
+ *
+ *   bbox_model = M_in_model × bbox_geom
+ *
+ * where M_in_model is each mesh's import-time pose (captured by
+ * captureMeshModelLocalMatrices) and bbox_geom is the mesh's CURRENT
+ * post-bake geometry bbox.
+ *
+ * @param {TreeNode}                       node           model node
+ * @param {Map<string, THREE.Object3D>}   object3dById   node id → Object3D
+ */
+export function collectModelMeshBoxes(node, object3dById) {
+  if (!node || node.type !== 'model' || !window.THREE || !object3dById) return [];
+  const T = window.THREE;
+  const assetId = node.assetId;
+  if (!assetId) return [];
+  const out = [];
+  for (const obj of object3dById.values()) {
+    if (!obj?.isMesh) continue;
+    if (obj.userData?.sbsModelAssetId !== assetId) continue;
+    const geom = obj.geometry;
+    if (!geom) continue;
+    if (!geom.boundingBox) geom.computeBoundingBox();
+    const bb = geom.boundingBox;
+    if (!bb) continue;
+    const M = obj.userData?.sbsModelLocalMatrix
+      ? new T.Matrix4().fromArray(obj.userData.sbsModelLocalMatrix)
+      : new T.Matrix4();
+    const transformed = bb.clone().applyMatrix4(M);
+    out.push({
+      mesh: obj,
+      min: [transformed.min.x, transformed.min.y, transformed.min.z],
+      max: [transformed.max.x, transformed.max.y, transformed.max.z],
+    });
+  }
+  return out;
+}
+
+function _composeSourceMatrix(node) {
+  const T = window.THREE;
+  const p = node.sourceLocalPosition   || [0, 0, 0];
+  const q = node.sourceLocalQuaternion || [0, 0, 0, 1];
+  const s = node.sourceLocalScale      || [1, 1, 1];
+  return new T.Matrix4().compose(
+    new T.Vector3(p[0], p[1], p[2]),
+    new T.Quaternion(q[0], q[1], q[2], q[3]),
+    new T.Vector3(s[0], s[1], s[2]),
+  );
+}
+
+function _isIdentitySource(node) {
+  const p = node.sourceLocalPosition   || [0, 0, 0];
+  const q = node.sourceLocalQuaternion || [0, 0, 0, 1];
+  const s = node.sourceLocalScale      || [1, 1, 1];
+  return (
+    Math.abs(p[0]) < 1e-9 && Math.abs(p[1]) < 1e-9 && Math.abs(p[2]) < 1e-9 &&
+    Math.abs(q[0]) < 1e-9 && Math.abs(q[1]) < 1e-9 && Math.abs(q[2]) < 1e-9 &&
+    Math.abs((q[3] ?? 1) - 1) < 1e-9 &&
+    Math.abs(s[0] - 1) < 1e-9 && Math.abs(s[1] - 1) < 1e-9 && Math.abs(s[2] - 1) < 1e-9
+  );
+}
+
+/**
+ * Bake the model's source transform into every belonging mesh's geometry
+ * vertices. Equivalent to opening the file in another DCC, applying the
+ * transform there, and reloading — the source rides INSIDE the geometry,
+ * not on a transform group, so it cascades through every step regardless
+ * of where each mesh has been moved in any given step.
+ *
+ * Idempotent. Original (unbaked) vertex/normal data is captured into
+ * mesh.userData on first apply; every subsequent apply resets from that
+ * snapshot before re-baking, so successive applies REPLACE rather than
+ * stack.
+ *
+ *   geom_baked = inv(M_in_model) × source_matrix × M_in_model × geom_orig
+ *
+ * where M_in_model is the mesh's import-time pose in model-local space
+ * (captured by captureMeshModelLocalMatrices). This rotates/translates
+ * the geometry around the model origin even when the mesh node itself
+ * stays at its original local position, matching the "reloaded a
+ * pre-edited file" semantics.
+ *
+ * @param {TreeNode}                       node           model node
+ * @param {THREE.Object3D}                 outerObj3d     unused now (kept for signature compat)
+ * @param {Map<string, THREE.Object3D>}   [object3dById] node id → Object3D registry
+ */
+export function applyNodeSourceTransformToObject3D(node, outerObj3d, object3dById = null) {
+  if (!node || node.type !== 'model' || !window.THREE) return;
+  ensureTransformDefaults(node);
+  const T = window.THREE;
+  const assetId = node.assetId;
+  if (!assetId) return;
+
+  // Find every Three.js mesh tagged with this model's assetId.
+  // Iterating object3dById covers meshes that have been moved out of
+  // the model's tree to other folders in some step — the THREE.Mesh
+  // itself persists in the registry regardless of its current parent.
+  const meshes = [];
+  if (object3dById) {
+    for (const obj of object3dById.values()) {
+      if (obj?.isMesh && obj.userData?.sbsModelAssetId === assetId) meshes.push(obj);
+    }
+  } else if (outerObj3d) {
+    // Fallback: walk descendants of the outer group (won't catch displaced meshes).
+    outerObj3d.traverse(obj => {
+      if (obj?.isMesh && obj.userData?.sbsModelAssetId === assetId) meshes.push(obj);
+    });
+  }
+  if (meshes.length === 0) return;
+
+  const sourceMatrix = _composeSourceMatrix(node);
+  const isIdentity = _isIdentitySource(node);
+
+  for (const mesh of meshes) {
+    const geom = mesh.geometry;
+    if (!geom) continue;
+    const posAttr = geom.attributes?.position;
+    if (!posAttr) continue;
+
+    // ── Snapshot invariant ──────────────────────────────────────────────
+    // mesh.userData.sbsOriginalPosition is set on the FIRST non-identity
+    // bake — and only then. Before any bake, posAttr.array IS the
+    // fresh-from-disk geometry (importers.js never mutates vertices), so
+    // taking the snapshot at that moment captures pristine reference data.
+    // Reset to identity rewinds to that snapshot, exactly retracing the
+    // import-time geometry. The snapshot is never overwritten thereafter.
+    //
+    // Defensive: if a different geometry buffer has been swapped in (asset
+    // relink, fingerprint change, etc.), the stored snapshot length won't
+    // match the current attribute. Drop the stale snapshot so the next
+    // capture grabs the fresh array.
+    if (mesh.userData.sbsOriginalPosition &&
+        mesh.userData.sbsOriginalPosition.length !== posAttr.array.length) {
+      delete mesh.userData.sbsOriginalPosition;
+      delete mesh.userData.sbsOriginalNormal;
+    }
+
+    // Fast-path: identity source AND no prior bake — geometry is already
+    // pristine. Nothing to snapshot or rewind.
+    if (isIdentity && !mesh.userData.sbsOriginalPosition) continue;
+
+    // Capture the canonical pre-bake state on first touch.
+    if (!mesh.userData.sbsOriginalPosition) {
+      mesh.userData.sbsOriginalPosition = posAttr.array.slice();
+      const normAttr = geom.attributes?.normal;
+      if (normAttr) mesh.userData.sbsOriginalNormal = normAttr.array.slice();
+    }
+
+    // Always rewind to the original before applying the new bake. Identity
+    // source short-circuits the applyMatrix4 step below, so reset truly
+    // restores the captured fresh-from-disk vertex data.
+    posAttr.array.set(mesh.userData.sbsOriginalPosition);
+    posAttr.needsUpdate = true;
+    const normAttr = geom.attributes?.normal;
+    if (normAttr && mesh.userData.sbsOriginalNormal) {
+      normAttr.array.set(mesh.userData.sbsOriginalNormal);
+      normAttr.needsUpdate = true;
+    }
+
+    if (!isIdentity) {
+      const M = mesh.userData.sbsModelLocalMatrix
+        ? new T.Matrix4().fromArray(mesh.userData.sbsModelLocalMatrix)
+        : new T.Matrix4();           // identity fallback for legacy meshes
+      const Minv = new T.Matrix4().copy(M).invert();
+      const bake = new T.Matrix4().multiplyMatrices(sourceMatrix, M);
+      bake.premultiply(Minv);          // bake = Minv × source × M
+      geom.applyMatrix4(bake);
+    }
+
+    geom.computeBoundingBox();
+    geom.computeBoundingSphere();
+  }
 }
 
 /**
  * True if this node type supports user transforms.
- * Only 'model' and 'folder' nodes have transforms (not 'mesh' or 'scene').
+ * 'model', 'folder', and 'flatShape' carry their own transforms;
+ * 'mesh', 'note', and 'scene' do not.
  */
 export function isTransformNode(node) {
-  return node?.type === 'model' || node?.type === 'folder';
+  return node?.type === 'model' || node?.type === 'folder' || node?.type === 'flatShape';
 }
 
 
@@ -307,6 +533,124 @@ export function applyNodeTransformToObject3D(node, object3d, updateWorld = true)
   if (updateWorld) object3d.updateMatrixWorld(true);
 }
 
+// ═══════════════════════════════════════════════════════════════════════════
+//  PIVOT — virtual gizmo placement + rotation-around-pivot solver
+// ═══════════════════════════════════════════════════════════════════════════
+//
+// The pivot is purely virtual — `object3d.position` / `quaternion` NEVER
+// reflect it. We only use it to:
+//   1. position the gizmo (so the user sees a "rotate around here" anchor),
+//   2. back-solve `localOffset` when rotating, so the pivot's WORLD point
+//      stays fixed during the gesture (a door rotates around its hinge,
+//      not its origin).
+//
+// Cable code, raycasting, exports — all see the un-pivoted pose. Confirmed
+// in v0.266; intentional and preserved here.
+
+/**
+ * Rotate a vector [x,y,z] by a quaternion [x,y,z,w]. Returns a new array.
+ * Uses Three.js for the heavy lifting so we don't reimplement the formula
+ * (which we'd inevitably get wrong on edge cases).
+ */
+export function applyQuaternionToVector(q, v) {
+  const Q = new THREE.Quaternion(...normalizeQuaternion(q));
+  const V = new THREE.Vector3(...(v ?? [0, 0, 0]));
+  V.applyQuaternion(Q);
+  return [V.x, V.y, V.z];
+}
+
+/**
+ * World-space position of a node's pivot point. Returns a fresh
+ * THREE.Vector3 — caller can copy into the gizmo group.
+ *
+ * pivotLocalOffset is in OBJECT-LOCAL space; world pivot is the result
+ * of running it through obj3d.localToWorld().
+ */
+export function getPivotWorldPosition(node, object3d) {
+  ensureTransformDefaults(node);
+  const T = window.THREE;
+  const local = getAppliedPivotOffset(node);   // zeroes out when pivotEnabled=false
+  const v = new T.Vector3(local[0], local[1], local[2]);
+  if (object3d?.localToWorld) {
+    object3d.updateMatrixWorld?.(true);
+    object3d.localToWorld(v);
+  }
+  return v;
+}
+
+/**
+ * World-space orientation of the pivot frame = object's world quaternion *
+ * pivotLocalQuaternion. Used so the gizmo's axes align with the pivot
+ * frame, not the object frame, when in pivot mode.
+ */
+export function getPivotWorldQuaternion(node, object3d) {
+  ensureTransformDefaults(node);
+  const T = window.THREE;
+  const out = new T.Quaternion();
+  if (object3d?.getWorldQuaternion) {
+    object3d.updateMatrixWorld?.(true);
+    object3d.getWorldQuaternion(out);
+  }
+  const pivotQ = getAppliedPivotQuaternion(node);   // identity when disabled
+  out.multiply(new T.Quaternion(pivotQ[0], pivotQ[1], pivotQ[2], pivotQ[3]));
+  return out;
+}
+
+/**
+ * Set a node's stored delta quaternion AND back-solve localOffset so
+ * the pivot's WORLD point stays where it was BEFORE the rotation.
+ *
+ * Math (matches POC v0.266):
+ *   pivotInParent_pre = localPos + (pivot ⊗ totalQ_old)
+ *   newTotalQ        = baseQ * newDeltaQ
+ *   newLocalPos      = pivotInParent_pre - (pivot ⊗ newTotalQ)
+ *   localOffset      = newLocalPos - basePos
+ *
+ * Caller is still responsible for applyNodeTransformToObject3D() after.
+ *
+ * No-op when pivot is disabled or zero — falls through to plain
+ * setStoredQuaternion.
+ */
+export function setNodeLocalRotationPreservePivot(node, newDeltaQ) {
+  ensureTransformDefaults(node);
+  const pivot = getAppliedPivotOffset(node);
+  if (isNearZero(pivot)) {
+    // No effective pivot — plain rotation, position untouched.
+    setStoredQuaternion(node, newDeltaQ);
+    return;
+  }
+
+  // Capture pre-rotation pivot position in parent-local space.
+  const localPos      = getComputedLocalPosition(node);
+  const oldTotalQ     = getTotalLocalQuaternion(node);
+  const pivotPreRot   = applyQuaternionToVector(oldTotalQ, pivot);
+  const pivotInParent = [
+    localPos[0] + pivotPreRot[0],
+    localPos[1] + pivotPreRot[1],
+    localPos[2] + pivotPreRot[2],
+  ];
+
+  // Apply the new orientation, then back-solve localOffset.
+  const newDelta    = normalizeQuaternion(newDeltaQ);
+  const newTotalQ   = normalizeQuaternion(multiplyQuaternions(node.baseLocalQuaternion, newDelta));
+  const pivotPostRot = applyQuaternionToVector(newTotalQ, pivot);
+  const newLocalPos = [
+    pivotInParent[0] - pivotPostRot[0],
+    pivotInParent[1] - pivotPostRot[1],
+    pivotInParent[2] - pivotPostRot[2],
+  ];
+  const baseLocal = node.baseLocalPosition;
+  node.localOffset = [
+    newLocalPos[0] - baseLocal[0],
+    newLocalPos[1] - baseLocal[1],
+    newLocalPos[2] - baseLocal[2],
+  ];
+  setStoredQuaternion(node, newDelta);
+  node.moveEnabled   = true;
+  node.rotateEnabled = true;
+}
+
+
 /**
  * Apply transforms to all transform-capable nodes in the tree.
  * Pass a Map<nodeId, Object3D> that maps data nodes to their Three.js objects.
@@ -318,7 +662,13 @@ export function applyAllTransforms(root, object3dById) {
   if (!root) return;
   if (isTransformNode(root)) {
     const obj = object3dById.get(root.id);
-    if (obj) applyNodeTransformToObject3D(root, obj);
+    if (obj) {
+      applyNodeTransformToObject3D(root, obj);
+      // Source transform is baked into mesh geometry vertices, not held
+      // on a runtime group — re-baking on every transform pass would be
+      // wasteful. Source bakes happen at import + on explicit user apply
+      // + on project load (after applySpecFieldsToNodes restores values).
+    }
   }
   root.children.forEach(child => applyAllTransforms(child, object3dById));
 }

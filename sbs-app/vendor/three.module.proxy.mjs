@@ -81,3 +81,4 @@ export const PlaneGeometry = THREE_NS.PlaneGeometry;
 export const Raycaster = THREE_NS.Raycaster;
 export const SphereGeometry = THREE_NS.SphereGeometry;
 export const TorusGeometry = THREE_NS.TorusGeometry;
+export const LinearSRGBColorSpace = THREE_NS.LinearSRGBColorSpace;

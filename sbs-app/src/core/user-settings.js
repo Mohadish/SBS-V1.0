@@ -37,6 +37,20 @@ const DEFAULTS = {
   narration: {
     lastUsedVoice: '',
   },
+  scene: {
+    // Wheel-zoom step multiplier. Step = distance × baseFactor × cameraZoomScale.
+    // 1.0 = default; lower = finer/slower zoom, higher = coarser/faster.
+    cameraZoomScale: 1.0,
+    // Default viewport background applied to NEW projects (and to loads
+    // of legacy projects that don't store their own override).
+    defaultBackgroundColor: '#0f172a',
+    defaultBackgroundGradient: {
+      enabled:  false,
+      color1:   '#0f172a',
+      color2:   '#1e293b',
+      angleDeg: 180,
+    },
+  },
 };
 
 let _cache = null;
