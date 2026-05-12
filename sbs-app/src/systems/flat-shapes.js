@@ -222,7 +222,13 @@ export function ensureFlatShapeObject3D(node) {
 
   const sig = _buildKey(tpl, polygons, node.planeLocalQuaternion);
   const existing = node.object3d;
-  if (existing && existing.userData?.shapeBuildKey === sig) return existing;
+  if (existing && existing.userData?.shapeBuildKey === sig) {
+    // Cache hit — also re-assert registration, in case the mesh was built
+    // before the registration fix shipped (existing project loaded under
+    // older code, then opened on newer code without a project reload).
+    materials?.registerMesh?.(node.id, existing);
+    return existing;
+  }
 
   // Stale or missing — rebuild.
   if (existing) {
