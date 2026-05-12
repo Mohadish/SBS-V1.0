@@ -101,6 +101,8 @@ export function closeModelSourceDialog() {
   _revertToBaseline();           // silent revert of any uncommitted preview
   _hideBboxes();
   _disposeBboxes();
+  // Drop any lingering outside-click listener from the model dropdown.
+  document.removeEventListener('pointerdown', _onOutsideClickClose, true);
   _windowEl.remove();
   _windowEl = null;
   _currentNodeId = null;
@@ -141,8 +143,20 @@ function _build() {
         and is baked only on Apply.
       </div>
 
-      <label class="colorlab">Model
-        <select id="ms-model" style="margin-top:4px;width:100%;"></select>
+      <label class="colorlab" style="position:relative;">Model
+        <button type="button" id="ms-model-btn"
+                style="margin-top:4px;width:100%;text-align:left;padding:6px 10px;
+                       background:var(--panel2,#1e293b);border:1px solid var(--line,#334155);
+                       border-radius:4px;color:var(--text,#e2e8f0);cursor:pointer;
+                       display:flex;align-items:center;gap:6px;">
+          <span id="ms-model-label" style="flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">(no models loaded)</span>
+          <span style="opacity:0.5;font-size:10px;">▼</span>
+        </button>
+        <div id="ms-model-popup" style="display:none;position:absolute;left:0;right:0;top:100%;
+                                         margin-top:2px;max-height:300px;overflow-y:auto;
+                                         background:var(--panel,#0f172a);border:1px solid var(--line,#334155);
+                                         border-radius:4px;box-shadow:0 6px 18px rgba(0,0,0,0.4);
+                                         z-index:10000;"></div>
       </label>
 
       ${_axisGroupHTML('Position', 'pos', '0', '0.01')}
@@ -251,44 +265,126 @@ function _scaleGroupHTML() {
 
 // ─── Model list ────────────────────────────────────────────────────────────
 
+/**
+ * Collect every model node anywhere in the tree, not just direct children
+ * of scene_root. Legacy projects (and projects edited by the
+ * delete-assembly / phantom path) sometimes have model nodes nested under
+ * folders or other groupings — walking the whole tree makes the picker
+ * stable no matter where the model lives.
+ */
+function _collectAllModelNodes() {
+  const out  = [];
+  const root = state.get('treeData');
+  if (!root) return out;
+  const stack = [root];
+  while (stack.length) {
+    const n = stack.pop();
+    if (!n) continue;
+    if (n.type === 'model') out.push(n);
+    if (Array.isArray(n.children)) {
+      // Push in reverse so the traversal order matches the on-screen tree.
+      for (let i = n.children.length - 1; i >= 0; i--) stack.push(n.children[i]);
+    }
+  }
+  return out;
+}
+
 function _refreshModelList() {
   if (!_windowEl) return;
-  const sel = _windowEl.querySelector('#ms-model');
-  const models = ((state.get('treeData')?.children) || []).filter(n => n?.type === 'model');
-  sel.innerHTML = '';
+  const btn   = _windowEl.querySelector('#ms-model-btn');
+  const label = _windowEl.querySelector('#ms-model-label');
+  const popup = _windowEl.querySelector('#ms-model-popup');
+  const models = _collectAllModelNodes();
+
+  popup.innerHTML = '';
+
   if (models.length === 0) {
-    const opt = document.createElement('option');
-    opt.value = '';
-    opt.textContent = '(no models loaded)';
-    sel.appendChild(opt);
-    sel.disabled = true;
+    label.textContent = '(no models loaded)';
+    btn.disabled = true;
+    btn.style.opacity = '0.5';
+    btn.style.cursor = 'not-allowed';
     return;
   }
-  sel.disabled = false;
+  btn.disabled = false;
+  btn.style.opacity = '1';
+  btn.style.cursor = 'pointer';
+
+  // Build option rows.
   for (const n of models) {
-    const opt = document.createElement('option');
-    opt.value = n.id;
-    opt.textContent = n.name || '(unnamed)';
-    sel.appendChild(opt);
+    const row = document.createElement('div');
+    row.dataset.modelId = n.id;
+    row.textContent = n.name || '(unnamed)';
+    row.style.cssText = [
+      'padding:6px 10px', 'cursor:pointer', 'font-size:13px',
+      'border-bottom:1px solid rgba(127,127,127,0.08)',
+      'overflow:hidden', 'text-overflow:ellipsis', 'white-space:nowrap',
+    ].join(';');
+    row.addEventListener('mouseenter', () => { row.style.background = 'rgba(59,130,246,0.18)'; });
+    row.addEventListener('mouseleave', () => { row.style.background = ''; });
+    row.addEventListener('click', () => _selectModel(n.id));
+    popup.appendChild(row);
   }
-  if (_currentNodeId && models.some(n => n.id === _currentNodeId)) {
-    sel.value = _currentNodeId;
-  } else {
-    _currentNodeId = sel.value;
+
+  // Pick a sensible "current" model.
+  if (!_currentNodeId || !models.some(n => n.id === _currentNodeId)) {
+    _currentNodeId = models[0].id;
   }
+  _updateModelButtonLabel();
   _captureBaseline();
   _loadCurrentNodeIntoInputs();
 }
 
+function _selectModel(modelId) {
+  _revertToBaseline();         // silent revert of any uncommitted preview on previous model
+  _hideBboxes();
+  _disposeBboxes();
+  _currentNodeId = modelId;
+  _closeModelPopup();
+  _updateModelButtonLabel();
+  _captureBaseline();
+  _loadCurrentNodeIntoInputs();
+}
+
+function _updateModelButtonLabel() {
+  if (!_windowEl) return;
+  const label = _windowEl.querySelector('#ms-model-label');
+  if (!label) return;
+  const models = _collectAllModelNodes();
+  const cur = models.find(n => n.id === _currentNodeId);
+  label.textContent = cur ? (cur.name || '(unnamed)') : '(no models loaded)';
+}
+
+function _openModelPopup() {
+  const popup = _windowEl?.querySelector('#ms-model-popup');
+  if (!popup) return;
+  popup.style.display = 'block';
+  // Outside-click closes — bind once per open.
+  setTimeout(() => {
+    document.addEventListener('pointerdown', _onOutsideClickClose, true);
+  }, 0);
+}
+
+function _closeModelPopup() {
+  const popup = _windowEl?.querySelector('#ms-model-popup');
+  if (!popup) return;
+  popup.style.display = 'none';
+  document.removeEventListener('pointerdown', _onOutsideClickClose, true);
+}
+
+function _onOutsideClickClose(e) {
+  const popup = _windowEl?.querySelector('#ms-model-popup');
+  const btn   = _windowEl?.querySelector('#ms-model-btn');
+  if (!popup || !btn) return;
+  if (popup.contains(e.target) || btn.contains(e.target)) return;
+  _closeModelPopup();
+}
+
 function _wireModelPicker() {
-  const sel = _windowEl.querySelector('#ms-model');
-  sel.addEventListener('change', () => {
-    _revertToBaseline();         // silent revert of any uncommitted preview on previous model
-    _hideBboxes();
-    _disposeBboxes();
-    _currentNodeId = sel.value;
-    _captureBaseline();
-    _loadCurrentNodeIntoInputs();
+  const btn = _windowEl.querySelector('#ms-model-btn');
+  btn.addEventListener('click', () => {
+    const popup = _windowEl.querySelector('#ms-model-popup');
+    if (popup.style.display === 'block') _closeModelPopup();
+    else                                 _openModelPopup();
   });
 }
 
