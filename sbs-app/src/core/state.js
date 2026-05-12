@@ -324,6 +324,10 @@ function createInitialState() {
       narrationHelperUrl: 'http://127.0.0.1:8765',
       deterministicHelperUrl: 'http://127.0.0.1:8766',
       exportFolderPath:   null,
+      // When true, missing-asset bounding-box placeholders (the orange wireframes
+      // standing in for phantom / deleted meshes) appear in the exported video.
+      // Default false — they're authoring aids, not finished output.
+      exportBoundaryBoxes: false,
     },
 
     // ── Lighting

@@ -1198,6 +1198,22 @@ class StepManager {
   }
 
   /**
+   * Toggle visibility of all missing-asset Bbox placeholders + phantom
+   * folder wrappers. Used by the video exporter to hide authoring-aid
+   * outlines from the encoded frames unless the user explicitly opted
+   * in via Export tab → "Export boundary boxes".
+   *
+   * Visibility-only flip (no material/structure changes) — pair it
+   * before and after the export with the same call, opposite values.
+   */
+  setPlaceholderBboxesVisible(visible) {
+    for (const [, obj] of this.object3dById) {
+      if (obj?.userData?.isPlaceholder)       obj.visible = visible;
+      if (obj?.userData?.isPlaceholderFolder) obj.visible = visible;
+    }
+  }
+
+  /**
    * Like scheduleSync(), but also allows the next sync to overwrite the step's
    * transform and tree data.  Call this ONLY from explicit user transform
    * actions: gizmo drag commit, reset, hierarchy rearrangement.

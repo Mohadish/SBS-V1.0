@@ -2790,6 +2790,16 @@ function _renderExportTab() {
             </div>
           </span>
         </label>
+
+        <label style="display:flex;align-items:flex-start;gap:6px;margin-top:8px;cursor:pointer;">
+          <input type="checkbox" id="exp-bboxes" ${exp.exportBoundaryBoxes ? 'checked' : ''} style="margin-top:3px;" />
+          <span class="small muted">
+            Export boundary boxes
+            <div class="small muted" style="font-size:11px;opacity:0.75;margin-top:2px;">
+              Include missing-asset / deleted-mesh Bbox placeholders (orange wireframes) in the encoded video. Off by default — they're authoring aids, not finished output.
+            </div>
+          </span>
+        </label>
       </div>
 
       <div class="card" style="margin-top:8px;">
@@ -2885,6 +2895,8 @@ function _renderExportTab() {
     state.setExportOption('showSafeFrame', !!e.target.checked));
   el.querySelector('#exp-offline-render')?.addEventListener('change', e =>
     state.setExportOption('offlineRender', !!e.target.checked));
+  el.querySelector('#exp-bboxes')?.addEventListener('change', e =>
+    state.setExportOption('exportBoundaryBoxes', !!e.target.checked));
   el.querySelector('#exp-fps').addEventListener('change', e =>
     state.setExportOption('fps', Number(e.target.value)));
   el.querySelector('#exp-hold').addEventListener('change', e =>
