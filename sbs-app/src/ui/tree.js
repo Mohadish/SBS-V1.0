@@ -47,6 +47,16 @@ let _dragIds    = [];
 let _dropTarget = null;
 let _isDragging = false;
 
+// Copy/paste tree clipboard — session-scoped. Cleared only by a new copy
+// or page reload. Stores the full snapshot needed to recreate added
+// folders with their transforms/visibility/pivot intact:
+//   { tree, transforms, visibility, folderBases, sourceStepName }
+// folderBases captures baseLocal* fields (project-global, not in
+// snapshot.transforms) per folder, so global-edit pivots / orientations
+// survive paste even when the live folder node was wiped by step nav.
+let _copiedSnapshot     = null;
+let _copiedFromStepName = '';
+
 
 // ── Init ─────────────────────────────────────────────────────────────────────
 
@@ -703,7 +713,446 @@ function _buildContextMenuItems(node) {
     }
   }
 
+  // ── Delete assembly (top-level model only) ───────────────────────
+  // Opens the delete-assembly dialog. If no dependencies, the dialog
+  // short-circuits to silent ghost-replace. If dependencies exist, it
+  // shows the 4-option modal (break / ghost / cancel / save-as).
+  if (node.type === 'model' && !node.missing) {
+    items.push({ separator: true });
+    items.push({
+      label: '🗑 Delete assembly…',
+      action: () => _onDeleteAssemblyMenu(node),
+    });
+  }
+
+  // ── Copy / Paste tree (scene root only) ──────────────────────────
+  // Captures the current step's tree spec into a session-scoped buffer
+  // and replays it onto another step's tree. Per-step action — base
+  // step is intentionally read-only (step 0 sacred).
+  if (node.type === 'scene') {
+    items.push({ separator: true });
+    items.push({
+      label: '📋 Copy tree',
+      disabled: !state.get('activeStepId'),
+      action: () => _onCopyTree(),
+    });
+    const activeId  = state.get('activeStepId');
+    const activeStep = activeId
+      ? (state.get('steps') || []).find(s => s.id === activeId)
+      : null;
+    const canPaste = !!_copiedSnapshot && activeStep && !activeStep.isBaseStep;
+    items.push({
+      label: activeStep?.isBaseStep
+        ? '📥 Paste tree (disabled — base step is read-only)'
+        : (_copiedSnapshot
+            ? `📥 Paste tree (from "${_copiedFromStepName || 'step'}")`
+            : '📥 Paste tree (no copy yet)'),
+      disabled: !canPaste,
+      action: () => _onPasteTree(),
+    });
+  }
+
   return items;
+}
+
+// ─── Delete-assembly orchestrator + dialog ────────────────────────────────
+
+/**
+ * Entry point from the tree menu. Scans dependencies; if there are
+ * none, silently demotes the model to ghosts. If dependencies exist,
+ * opens the 4-option modal and routes through the chosen action.
+ * Save-as loops back to the dialog so the user can checkpoint and
+ * still see the same options.
+ */
+async function _onDeleteAssemblyMenu(modelNode) {
+  const deps = actions.collectAssemblyDependents(modelNode.id);
+  const noDeps = deps.cables.length === 0 && deps.notes.length === 0 && deps.shapes.length === 0;
+
+  // Helper — Save As round-trip used by both the no-deps confirm and the
+  // 4-option dialog. Returns once save resolves (or fails) so the caller
+  // can re-show the dialog.
+  const _doSaveAs = async () => {
+    try {
+      const { saveProject } = await import('../io/project.js');
+      await saveProject({ mode: 'saveAs' });
+    } catch (err) {
+      console.warn('[deleteAssembly] save-as failed:', err);
+    }
+  };
+
+  if (noDeps) {
+    // Last-opportunity confirm — even when there are no cable/note/shape
+    // dependencies, give the user a chance to back up before deleting.
+    // The dialog also surfaces whether any foreign-object guests exist
+    // (they'll be preserved via phantom folders).
+    const guestCount = _countForeignGuestsUnderModel(modelNode);
+    let choice;
+    while (true) {
+      choice = await _showSilentDeleteConfirmDialog(modelNode, guestCount);
+      if (choice !== 'saveAs') break;
+      await _doSaveAs();
+    }
+    if (choice === 'delete') {
+      const name = modelNode.name || 'assembly';
+      const ok = actions.deleteTopLevelAssembly(modelNode.id);
+      if (ok) {
+        setStatus(guestCount
+          ? `Deleted "${name}". ${guestCount} object${guestCount === 1 ? '' : 's'} from other models kept.`
+          : `Deleted "${name}".`);
+      }
+    }
+    // choice === 'cancel': no-op.
+    return;
+  }
+
+  let choice;
+  while (true) {
+    choice = await _showDeleteAssemblyDialog(modelNode, deps);
+    if (choice !== 'saveAs') break;
+    // Save-as round-trip — re-show the same dialog when done so the
+    // user can pick a different option after checkpointing.
+    await _doSaveAs();
+  }
+  if (choice === 'break')        actions.deleteTopLevelAssemblyAndBreak(modelNode.id);
+  else if (choice === 'phantom') actions.deleteTopLevelAssembly(modelNode.id);
+  // choice === 'cancel': no-op.
+}
+
+/**
+ * Count foreign-object descendants under a model node. A "foreign" node
+ * is anything in the model's subtree that doesn't belong to this model
+ * (e.g., a mesh dragged in from another loaded model). Notes don't count
+ * (they're a separate global layer that anchors by mesh id). Used by the
+ * silent-delete confirm dialog to tell the user how many guests will be
+ * preserved on delete.
+ */
+function _countForeignGuestsUnderModel(modelNode) {
+  if (!modelNode) return 0;
+  // Identify this model's asset id from the first native mesh.
+  let modelAssetId = null;
+  (function findAsset(n) {
+    if (modelAssetId) return;
+    if (n.type === 'mesh' && n.sourceAssetId) { modelAssetId = n.sourceAssetId; return; }
+    if (n.children) for (const c of n.children) findAsset(c);
+  })(modelNode);
+  if (!modelAssetId) return 0;
+  let count = 0;
+  (function walk(n) {
+    if (n === modelNode) {
+      if (n.children) for (const c of n.children) walk(c);
+      return;
+    }
+    if (n.type === 'mesh' && n.sourceAssetId && n.sourceAssetId !== modelAssetId) {
+      count++;
+    }
+    if (n.children) for (const c of n.children) walk(c);
+  })(modelNode);
+  return count;
+}
+
+/**
+ * Pre-confirm modal for the no-dependency delete path. Three buttons:
+ *   'delete' | 'saveAs' | 'cancel'
+ * Save As loops back via the caller. Default focus is on Cancel so
+ * pressing Enter on a stray middle-click is a no-op, not a delete.
+ */
+function _showSilentDeleteConfirmDialog(modelNode, guestCount) {
+  return new Promise(resolve => {
+    const dlg = document.createElement('dialog');
+    dlg.className = 'sbs-dialog';
+    const esc = (s) => String(s ?? '').replace(/[&<>"']/g,
+      c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[c]);
+    const name = esc(modelNode.name || 'assembly');
+    const guestLine = guestCount > 0
+      ? `<div class="small" style="margin-top:8px;color:#86efac;">
+           ${guestCount} object${guestCount === 1 ? '' : 's'} from other models will be preserved in phantom folders.
+         </div>`
+      : '';
+    dlg.innerHTML = `
+      <div class="sbs-dialog__body" style="max-width:480px;">
+        <div class="sbs-dialog__title">Delete "${name}"?</div>
+        <div class="small" style="margin-top:8px;line-height:1.55;">
+          All native meshes and folders will be removed from every step.
+          No cables, notes, or shapes depend on this model.
+        </div>
+        ${guestLine}
+        <div style="display:flex;gap:8px;margin-top:14px;justify-content:flex-end;">
+          <button class="btn" id="_sdc-saveas">💾 Save As…</button>
+          <button class="btn" id="_sdc-cancel">✖ Cancel</button>
+          <button class="btn" id="_sdc-delete" style="background:#dc2626;color:#fff;">🗑 Delete</button>
+        </div>
+      </div>
+    `;
+    document.body.appendChild(dlg);
+    const done = (v) => { dlg.close(); dlg.remove(); resolve(v); };
+    dlg.querySelector('#_sdc-delete').addEventListener('click', () => done('delete'));
+    dlg.querySelector('#_sdc-saveas').addEventListener('click', () => done('saveAs'));
+    dlg.querySelector('#_sdc-cancel').addEventListener('click', () => done('cancel'));
+    dlg.addEventListener('cancel', () => done('cancel'));
+    dlg.showModal();
+    // Default focus on Cancel — Enter on a stray click is a no-op.
+    requestAnimationFrame(() => dlg.querySelector('#_sdc-cancel')?.focus());
+  });
+}
+
+// ─── Copy / Paste tree orchestrator + dialog ─────────────────────────────
+
+function _onCopyTree() {
+  const activeId = state.get('activeStepId');
+  if (!activeId) { setStatus('No active step to copy tree from.', 'warning'); return; }
+  const step = (state.get('steps') || []).find(s => s.id === activeId);
+  if (!step?.snapshot?.tree) { setStatus('Active step has no tree to copy.', 'warning'); return; }
+
+  // Capture per-folder baseLocal* fields from the LIVE tree. snapshot.transforms
+  // already carries per-step localOffset / pivot, but baseLocal* (project-
+  // global, written by Global Transform mode) live only on the live node —
+  // they'd be lost if we copied just the spec. folderBases lets the paste
+  // path restore them on the destination's live folder node.
+  const folderBases = {};
+  const nodeById = state.get('nodeById');
+  if (nodeById) {
+    for (const [id, n] of nodeById) {
+      if (n?.type !== 'folder') continue;
+      folderBases[id] = {
+        baseLocalPosition:   [...(n.baseLocalPosition   || [0, 0, 0])],
+        baseLocalQuaternion: [...(n.baseLocalQuaternion || [0, 0, 0, 1])],
+        baseLocalScale:      [...(n.baseLocalScale      || [1, 1, 1])],
+      };
+    }
+  }
+
+  _copiedSnapshot = {
+    tree:        JSON.parse(JSON.stringify(step.snapshot.tree)),
+    transforms:  JSON.parse(JSON.stringify(step.snapshot.transforms || {})),
+    visibility:  JSON.parse(JSON.stringify(step.snapshot.visibility || {})),
+    folderBases,
+  };
+  _copiedFromStepName = step.name || 'step';
+  setStatus(`Copied tree from "${_copiedFromStepName}".`);
+}
+
+async function _onPasteTree() {
+  if (!_copiedSnapshot) { setStatus('Nothing copied yet.', 'warning'); return; }
+  const activeId = state.get('activeStepId');
+  if (!activeId) { setStatus('No active step to paste into.', 'warning'); return; }
+  const step = (state.get('steps') || []).find(s => s.id === activeId);
+  if (!step?.snapshot?.tree) { setStatus('Active step has no tree.', 'warning'); return; }
+  if (step.isBaseStep) { setStatus('The base step is read-only for paste.', 'warning'); return; }
+
+  const diff = actions.diffTreeSpec(_copiedSnapshot.tree, step.snapshot.tree);
+
+  // Nothing to do?
+  if (diff.addedFolders.length === 0
+   && diff.movedObjects.length === 0
+   && diff.removedFolders.length === 0) {
+    setStatus('Trees already match — nothing to paste.');
+    return;
+  }
+
+  const _doSaveAs = async () => {
+    try {
+      const { saveProject } = await import('../io/project.js');
+      await saveProject({ mode: 'saveAs' });
+    } catch (err) { console.warn('[pasteTree] save-as failed:', err); }
+  };
+
+  let choice;
+  while (true) {
+    choice = await _showPasteTreeDialog(diff, _copiedFromStepName, step.name || '');
+    if (choice !== 'saveAs') break;
+    await _doSaveAs();
+  }
+  if (choice === 'cancel' || !choice) return;
+
+  const ok = actions.pasteTreeApply(activeId, _copiedSnapshot, choice);
+  if (ok) {
+    setStatus(`Pasted tree from "${_copiedFromStepName}" onto "${step.name || 'step'}".`);
+  } else {
+    setStatus('Paste failed.', 'danger');
+  }
+}
+
+/**
+ * Main paste-tree dialog. Buttons are filtered by what the diff actually
+ * supports — never shows a no-op option.
+ *
+ * Resolves with one of: 'addOnly' | 'addAndMove' | 'moveOnly' | 'saveAs' | 'cancel'.
+ */
+function _showPasteTreeDialog(diff, fromStepName, toStepName) {
+  return new Promise(resolve => {
+    const dlg = document.createElement('dialog');
+    dlg.className = 'sbs-dialog';
+    const esc = (s) => String(s ?? '').replace(/[&<>"']/g,
+      c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[c]);
+
+    const adds    = diff.addedFolders.length;
+    const moves   = diff.movedObjects.length;
+    const removes = diff.removedFolders.length;
+
+    const buttons = [];
+
+    // ── Removal cases (B.3 / B.4) ────────────────────────────────────
+    // When source's tree is missing folders target has, the remove path
+    // drops those (if empty after the move) and reshuffles objects.
+    // Adds + moves always tag along when present in the diff.
+    if (removes > 0) {
+      const addPart    = adds > 0 ? `Add ${adds} folder${adds === 1 ? '' : 's'}, ` : '';
+      const removePart = `prune ${removes} empty folder${removes === 1 ? '' : 's'} that source doesn't have`;
+      const movePart   = moves > 0 ? `, move ${moves} object${moves === 1 ? '' : 's'} to source-side parents` : '';
+      buttons.push({
+        id: '_pt-addRemoveCascade',
+        value: 'addRemoveMoveCascade',
+        title: 'Remove + move (cascade)',
+        desc:  `${addPart}${removePart}${movePart}. Local transforms unchanged — world positions shift. Folders with orphan children (not in source) stay safe.`,
+        recommended: true,
+      });
+      buttons.push({
+        id: '_pt-addRemovePreserve',
+        value: 'addRemoveMovePreserve',
+        title: 'Remove + move (preserve world)',
+        desc:  `${addPart}${removePart}${movePart}. Wraps each moved item in a "↻ preserved" folder so world positions stay put.`,
+      });
+    } else if (adds > 0 && moves > 0) {
+      // ── Add + move (no removals) ─────────────────────────────────
+      buttons.push({
+        id: '_pt-addOnly',
+        value: 'addOnly',
+        title: 'Add folders only',
+        desc:  `Add ${adds} folder${adds === 1 ? '' : 's'}. Objects stay where they are now.`,
+      });
+      buttons.push({
+        id: '_pt-addMoveCascade',
+        value: 'addAndMoveCascade',
+        title: 'Add folders + move objects (cascade)',
+        desc:  `Add ${adds} folder${adds === 1 ? '' : 's'} and move ${moves} object${moves === 1 ? '' : 's'} to match the source. Local transforms unchanged — world positions shift with the new parent.`,
+        recommended: true,
+      });
+      buttons.push({
+        id: '_pt-addMovePreserve',
+        value: 'addAndMovePreserve',
+        title: 'Add folders + move objects (preserve world)',
+        desc:  `Add ${adds} folder${adds === 1 ? '' : 's'} and move ${moves} object${moves === 1 ? '' : 's'}. Wraps each moved item in a "↻ preserved" folder so world positions stay put.`,
+      });
+    } else if (adds > 0) {
+      buttons.push({
+        id: '_pt-addOnly',
+        value: 'addOnly',
+        title: 'Add folders',
+        desc:  `Add ${adds} folder${adds === 1 ? '' : 's'}. (No objects need moving — they're already in their source-side positions.)`,
+        recommended: true,
+      });
+    } else if (moves > 0) {
+      buttons.push({
+        id: '_pt-moveCascade',
+        value: 'moveCascade',
+        title: 'Move objects (cascade)',
+        desc:  `Trees structurally match — re-parent ${moves} object${moves === 1 ? '' : 's'} to their source-side parents. Local transforms unchanged; world positions shift with the new parent.`,
+        recommended: true,
+      });
+      buttons.push({
+        id: '_pt-movePreserve',
+        value: 'movePreserve',
+        title: 'Move objects (preserve world)',
+        desc:  `Re-parent ${moves} object${moves === 1 ? '' : 's'}. Wraps each moved item in a "↻ preserved" folder so world positions stay put.`,
+      });
+    }
+
+    const optButtons = buttons.map(b => `
+      <button class="btn" id="${b.id}" style="text-align:left;padding:10px 12px;">
+        <b>${esc(b.title)}</b>${b.recommended ? ' <span class="small muted">— recommended</span>' : ''}<br>
+        <span class="small muted">${esc(b.desc)}</span>
+      </button>
+    `).join('');
+
+    dlg.innerHTML = `
+      <div class="sbs-dialog__body" style="max-width:560px;">
+        <div class="sbs-dialog__title">Paste tree</div>
+        <div class="small" style="margin-top:8px;line-height:1.55;">
+          From: <b>${esc(fromStepName)}</b> → To: <b>${esc(toStepName)}</b>
+        </div>
+        <div style="display:flex;flex-direction:column;gap:6px;margin-top:14px;">
+          ${optButtons}
+        </div>
+        <div style="display:flex;gap:8px;margin-top:14px;justify-content:flex-end;">
+          <button class="btn" id="_pt-saveas">💾 Save As…</button>
+          <button class="btn" id="_pt-cancel">✖ Cancel</button>
+        </div>
+      </div>
+    `;
+    document.body.appendChild(dlg);
+    const done = (v) => { dlg.close(); dlg.remove(); resolve(v); };
+    for (const b of buttons) {
+      dlg.querySelector('#' + b.id)?.addEventListener('click', () => done(b.value));
+    }
+    dlg.querySelector('#_pt-saveas').addEventListener('click', () => done('saveAs'));
+    dlg.querySelector('#_pt-cancel').addEventListener('click', () => done('cancel'));
+    dlg.addEventListener('cancel', () => done('cancel'));
+    dlg.showModal();
+    // Focus the recommended option (or cancel if no recommendation).
+    requestAnimationFrame(() => {
+      const rec = buttons.find(b => b.recommended);
+      dlg.querySelector(rec ? '#' + rec.id : '#_pt-cancel')?.focus();
+    });
+  });
+}
+
+/**
+ * The 4-option modal. Resolves with one of:
+ *   'break' | 'phantom' | 'cancel' | 'saveAs'.
+ * Caller handles save-as → re-show flow.
+ */
+function _showDeleteAssemblyDialog(modelNode, deps) {
+  return new Promise(resolve => {
+    const dlg = document.createElement('dialog');
+    dlg.className = 'sbs-dialog';
+    const esc = (s) => String(s ?? '').replace(/[&<>"']/g,
+      c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[c]);
+    const cables = deps.cables.length;
+    const notes  = deps.notes.length;
+    const shapes = deps.shapes.length;
+    const lines  = [];
+    if (cables) lines.push(`<b>${cables}</b> cable${cables === 1 ? '' : 's'} anchored to its meshes`);
+    if (notes)  lines.push(`<b>${notes}</b> note${notes === 1 ? '' : 's'} anchored to its meshes`);
+    if (shapes) lines.push(`<b>${shapes}</b> shape${shapes === 1 ? '' : 's'} parented under it (any step)`);
+    dlg.innerHTML = `
+      <div class="sbs-dialog__body" style="max-width:540px;">
+        <div class="sbs-dialog__title">Delete "${esc(modelNode.name || 'assembly')}"?</div>
+        <div class="small" style="margin-top:8px;line-height:1.55;">
+          This assembly is referenced by:
+          <ul style="margin:6px 0 0 18px;padding:0;">
+            ${lines.map(l => `<li>${l}</li>`).join('')}
+          </ul>
+        </div>
+        <div style="display:flex;flex-direction:column;gap:6px;margin-top:14px;">
+          <button class="btn" id="_dad-phantom" style="text-align:left;padding:10px 12px;">
+            <b>👻 Replace native dependencies with Bbox</b> <span class="small muted">— recommended</span><br>
+            <span class="small muted">Only the meshes anchoring a cable / note / shape become bounding-box phantoms. Folders that hold objects from other models in any step are kept as invisible empty containers. Every other native mesh and folder is fully removed.</span>
+          </button>
+          <button class="btn" id="_dad-break"   style="text-align:left;padding:10px 12px;">
+            <b>✂ Remove &amp; break dependencies</b><br>
+            <span class="small muted">Purge the entire model — no Bboxes, no phantom folders. Cables anchored to native meshes detach to a row at world 0; shapes re-parent to scene root in a row;${notes ? ` ${notes} note${notes === 1 ? '' : 's'} are DELETED;` : ''} foreign objects living inside native folders re-parent to scene root. Single undo.</span>
+          </button>
+          <button class="btn" id="_dad-saveAs"  style="text-align:left;padding:10px 12px;">
+            <b>💾 Save as… (then return here)</b><br>
+            <span class="small muted">Checkpoint the project to a new file before making a destructive choice. This dialog re-opens after save.</span>
+          </button>
+          <button class="btn" id="_dad-cancel"  style="text-align:left;padding:10px 12px;">
+            <b>✖ Cancel</b>
+          </button>
+        </div>
+      </div>
+    `;
+    document.body.appendChild(dlg);
+    const done = (v) => { dlg.close(); dlg.remove(); resolve(v); };
+    dlg.querySelector('#_dad-break')  .addEventListener('click', () => done('break'));
+    dlg.querySelector('#_dad-phantom').addEventListener('click', () => done('phantom'));
+    dlg.querySelector('#_dad-saveAs') .addEventListener('click', () => done('saveAs'));
+    dlg.querySelector('#_dad-cancel') .addEventListener('click', () => done('cancel'));
+    dlg.addEventListener('cancel', () => done('cancel'));
+    dlg.showModal();
+    // Focus the recommended option so Enter performs the safe choice.
+    requestAnimationFrame(() => dlg.querySelector('#_dad-phantom')?.focus());
+  });
 }
 
 

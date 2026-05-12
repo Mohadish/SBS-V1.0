@@ -5629,6 +5629,1272 @@ export function deleteFlatShapeInstance(nodeId) {
 }
 
 /**
+ * Delete a top-level assembly (model node) and replace it with phantom
+ * bounding-box placeholders — Phase 1A of the "delete assembly" rework.
+ *
+ * Behaviour:
+ *   - Walks the model's subtree.
+ *   - Every mesh → object3d detached + disposed-not, `missing=true`,
+ *     `object3d` cleared. The next rebuild creates a Bbox placeholder
+ *     (the existing missing-asset path in steps.rebuildFromTreeSpec).
+ *   - Every folder → `missing=true`; its Three.js Group stays as a
+ *     phantom-folder wrapper so live-mesh-displaced-into-folder
+ *     dependencies survive.
+ *   - The model node itself → `missing=true`, object3d detached.
+ *   - The matching `state.assets` entry is removed so save+reload
+ *     doesn't try to resurrect the geometry from the source file.
+ *
+ * Dependencies (cables, notes, flat-shapes anchored to or parented
+ * under the model's meshes) keep their anchor IDs and continue to
+ * resolve through the phantom Bbox — no relocation in this phase.
+ * Phase 1B will add the 4-option dialog with "Break dependencies"
+ * (relocate to row at origin) as an alternative.
+ *
+ * Single undo entry; the closures retain the original object3d refs
+ * so Ctrl-Z re-attaches the same geometry without re-loading the file.
+ */
+export function deleteTopLevelAssembly(modelId) {
+  if (!modelId) return false;
+  const root = state.get('treeData');
+  if (!root) return false;
+  const model = state.get('nodeById')?.get(modelId) ?? findNode(root, modelId);
+  if (!model || model.type !== 'model') return false;
+  if (model.missing) return false;        // already a phantom — nothing to demote
+
+  // Smart-delete sets — drives which natives stay as Bbox / phantom-folder
+  // vs are fully removed. Scans live tree + every step snapshot so shapes
+  // that move folder-to-folder per step still pin their host folder.
+  const keep = _computeSmartDeleteKeepSets(model);
+
+  // Heavy snapshot: full tree (sans object3d) + retained refs. This is
+  // required because the smart path PHYSICALLY removes nodes that nothing
+  // depends on, not just flips a "missing" flag — undo must rebuild them.
+  const before = _captureFullSnapshotForBreak();
+  _applySmartDelete(model, keep);
+  _refreshSceneForActiveStep();
+  state.emit('change:treeData', state.get('treeData'));
+  state.markDirty();
+
+  const after = _captureFullSnapshotForBreak();
+  undoManager.push('Delete assembly',
+    () => { _restoreFullSnapshotForBreak(before); _refreshSceneForActiveStep(); state.markDirty(); },
+    () => { _restoreFullSnapshotForBreak(after);  _refreshSceneForActiveStep(); state.markDirty(); },
+  );
+  return true;
+}
+
+/**
+ * Scan live tree + every step snapshot to figure out which native nodes
+ * inside a model's subtree MUST be preserved (as Bbox or phantom folder)
+ * because something outside the model depends on them.
+ *
+ * Preservation rules:
+ *   • A native MESH is preserved (as Bbox) if it has any of:
+ *       - cable anchor pointing to it (static, project-global)
+ *       - note anchor pointing to it (live tree)
+ *       - flatShape parented under it in ANY step
+ *   • A native FOLDER is preserved (as transparent phantom group, no Bbox)
+ *     if in ANY step it contains a foreign object (anything not in the
+ *     model's native id set, except notes which anchor by meshId).
+ *   • Ancestor native folders along the path to the model are also
+ *     preserved so the tree stays intact.
+ *   • The model node itself is always kept as a phantom wrapper.
+ *
+ * @returns {{
+ *   nativeMeshIds: Set<string>,
+ *   nativeFolderIds: Set<string>,
+ *   meshesToBbox: Set<string>,
+ *   foldersToPhantom: Set<string>
+ * }}
+ */
+function _computeSmartDeleteKeepSets(modelNode) {
+  // The model's own asset id — taken from the first native mesh we can
+  // find inside its subtree. Used to tell native meshes (sourceAssetId
+  // matches) from foreign guests (a different model's mesh dragged into
+  // one of this model's folders).
+  let modelAssetId = null;
+  (function findAsset(n) {
+    if (modelAssetId) return;
+    if (n.type === 'mesh' && n.sourceAssetId) { modelAssetId = n.sourceAssetId; return; }
+    if (n.children) for (const c of n.children) findAsset(c);
+  })(modelNode);
+
+  const nativeMeshIds   = new Set();
+  const nativeFolderIds = new Set();
+  const allNativeIds    = new Set([modelNode.id]);
+  // Native folder/model definition: descendant of modelNode in the live
+  // tree. We treat all folders inside the model's subtree as native
+  // even if the user dragged foreign meshes into them — those foreign
+  // meshes are guests, the folder itself still belongs to this model.
+  //
+  // Native mesh definition: descendant of modelNode AND its sourceAssetId
+  // matches the model's. A foreign mesh dragged in keeps its original
+  // sourceAssetId, so it fails this test and is correctly skipped.
+  (function walk(n) {
+    if (n.type === 'mesh') {
+      // Strict match. Legacy meshes lacking sourceAssetId (very old saves)
+      // fall back to "any mesh in subtree" — this matches the old behaviour
+      // and is safer than dropping them silently.
+      const isNative = modelAssetId
+        ? n.sourceAssetId === modelAssetId || !n.sourceAssetId
+        : true;
+      if (isNative) { nativeMeshIds.add(n.id); allNativeIds.add(n.id); }
+    } else if (n.type === 'folder') {
+      nativeFolderIds.add(n.id);
+      allNativeIds.add(n.id);
+    } else if (n.type === 'model') {
+      allNativeIds.add(n.id);
+    }
+    if (n.children) for (const c of n.children) walk(c);
+  })(modelNode);
+
+  const meshesToBbox     = new Set();
+  const foldersToPhantom = new Set();
+
+  // Cables — static, project-global. Anchored cable nodes pin the mesh.
+  for (const cable of state.get('cables') || []) {
+    for (const cn of cable.nodes || []) {
+      if (cn.anchorType === 'mesh' && nativeMeshIds.has(cn.nodeId)) {
+        meshesToBbox.add(cn.nodeId);
+      }
+    }
+  }
+
+  // Notes — anchored by meshId field on the note node (live tree).
+  const liveRoot = state.get('treeData');
+  if (liveRoot) {
+    (function walkNotes(n) {
+      if (n.type === 'note' && nativeMeshIds.has(n.anchorMeshId)) {
+        meshesToBbox.add(n.anchorMeshId);
+      }
+      if (n.children) for (const c of n.children) walkNotes(c);
+    })(liveRoot);
+  }
+
+  // Tree-spec scan: walk the live tree AND every step snapshot's tree to
+  // detect (a) flatShape parented to a native node, (b) foreign-object
+  // descendants of a native folder. ancestorNativeIds tracks the path of
+  // native ancestor ids encountered so far so we can pin the closest one
+  // when we spot a foreign / shape child.
+  const scanSpec = (spec, ancestorNativeIds) => {
+    if (!spec || !Array.isArray(spec.children)) return;
+    for (const c of spec.children) {
+      const isNative = allNativeIds.has(c.id);
+      // Foreign-object detection: a child that is NOT native AND is not
+      // a note (notes anchor by meshId, handled above). FlatShapes also
+      // count as a dependency on the closest native ancestor — but they
+      // do NOT count as a foreign-folder marker on their own; a folder
+      // holding only shapes is still a "shape support" case which we
+      // handle as the mesh/folder closest to the shape's parent.
+      if (ancestorNativeIds.length && !isNative && c.type !== 'note') {
+        const closest = ancestorNativeIds[ancestorNativeIds.length - 1];
+        if (c.type === 'flatShape') {
+          if (nativeMeshIds.has(closest))   meshesToBbox.add(closest);
+          if (nativeFolderIds.has(closest)) foldersToPhantom.add(closest);
+        } else {
+          // Any other foreign object (mesh / folder / model from another
+          // import) — closest native ancestor that's a folder must stay
+          // to host it. If closest is a mesh (rare; foreign nested under
+          // a native mesh) treat it the same as a shape-support: Bbox it.
+          if (nativeFolderIds.has(closest)) foldersToPhantom.add(closest);
+          if (nativeMeshIds.has(closest))   meshesToBbox.add(closest);
+        }
+      }
+      const nextAncestors = isNative ? [...ancestorNativeIds, c.id] : ancestorNativeIds;
+      scanSpec(c, nextAncestors);
+    }
+  };
+  if (liveRoot) scanSpec(liveRoot, []);
+  for (const step of state.get('steps') || []) {
+    if (step?.snapshot?.tree) scanSpec(step.snapshot.tree, []);
+  }
+
+  // Pin ancestor native folders along the path from each kept folder up
+  // to the model. Otherwise we'd remove an outer wrapper and orphan a
+  // kept inner folder.
+  const pinAncestorFolders = (id) => {
+    const parent = findParent(liveRoot, id);
+    if (!parent) return;
+    if (nativeFolderIds.has(parent.id) && !foldersToPhantom.has(parent.id)) {
+      foldersToPhantom.add(parent.id);
+      pinAncestorFolders(parent.id);
+    }
+  };
+  for (const fid of [...foldersToPhantom]) pinAncestorFolders(fid);
+  for (const mid of meshesToBbox)          pinAncestorFolders(mid);
+
+  return { nativeMeshIds, nativeFolderIds, meshesToBbox, foldersToPhantom };
+}
+
+/**
+ * Apply the smart-delete plan to the live tree + scene.
+ *   - Meshes in meshesToBbox: become Bbox phantoms (n.missing=true, geometry detached).
+ *   - Meshes NOT in meshesToBbox: fully removed (node spliced, object3d detached, id maps cleared).
+ *   - Folders in foldersToPhantom: kept as missing phantom groups (empty wrappers; foreign children stay attached).
+ *   - Folders NOT in foldersToPhantom: fully removed.
+ *   - Model node: always kept as a missing phantom wrapper.
+ *   - Asset entry for the model is stripped.
+ */
+function _applySmartDelete(modelNode, keep) {
+  const liveRoot = state.get('treeData');
+  if (!liveRoot) return;
+  let firstMeshAssetId = null;
+
+  // Collect NATIVE nodes only — foreign children of native folders must
+  // be left untouched (this is the whole point of the smart-delete). We
+  // walk the full subtree of the model so deeply-nested natives are
+  // found, but only act on ids that belong to this model's native set.
+  // Track which ids are fully removed so we can strip them from step
+  // snapshots and stop rebuildFromTreeSpec from resurrecting them.
+  const meshes  = [];
+  const folders = [];
+  const removedIds = new Set();
+  (function walk(n) {
+    if (n.type === 'mesh'   && keep.nativeMeshIds.has(n.id))   meshes.push(n);
+    if (n.type === 'folder' && keep.nativeFolderIds.has(n.id)) folders.push(n);
+    if (n.children) for (const c of n.children) walk(c);
+  })(modelNode);
+  for (const m of meshes) if (!firstMeshAssetId && m.sourceAssetId) firstMeshAssetId = m.sourceAssetId;
+
+  // ── Meshes ──────────────────────────────────────────────────────────
+  for (const n of meshes) {
+    const obj = steps.object3dById?.get(n.id) ?? n.object3d ?? null;
+    if (keep.meshesToBbox.has(n.id)) {
+      // Bbox phantom — same as the old "replace with ghost" path.
+      if (obj) {
+        obj.updateMatrix();
+        // Recompute bounding box from LIVE (post-source-bake) geometry —
+        // node.bbox was captured at import and is stale after a source
+        // transform that scales vertices. Without this, the placeholder
+        // would render at the pre-bake size.
+        if (obj.geometry) {
+          obj.geometry.computeBoundingBox();
+          const bb = obj.geometry.boundingBox;
+          if (bb && isFinite(bb.min.x) && isFinite(bb.max.x)) {
+            n.bbox = {
+              min: [bb.min.x, bb.min.y, bb.min.z],
+              max: [bb.max.x, bb.max.y, bb.max.z],
+            };
+          }
+        }
+        n.placeholderTransform = {
+          position:   [obj.position.x,   obj.position.y,   obj.position.z],
+          quaternion: [obj.quaternion.x, obj.quaternion.y, obj.quaternion.z, obj.quaternion.w],
+          scale:      [obj.scale.x,      obj.scale.y,      obj.scale.z],
+        };
+      }
+      if (obj?.parent) obj.parent.remove(obj);
+      n.object3d = null;
+      n.missing  = true;
+      steps.object3dById?.delete(n.id);
+    } else {
+      // Full purge — detach from tree + scene + id map.
+      if (obj?.parent) obj.parent.remove(obj);
+      steps.object3dById?.delete(n.id);
+      const parent = _findNodeParent(liveRoot, n.id);
+      if (parent?.children) parent.children = parent.children.filter(c => c.id !== n.id);
+      removedIds.add(n.id);
+    }
+  }
+
+  // ── Folders ─────────────────────────────────────────────────────────
+  // Process deepest-first so children are gone before parents are removed.
+  folders.sort((a, b) => _depthFromRoot(liveRoot, b.id) - _depthFromRoot(liveRoot, a.id));
+  for (const n of folders) {
+    if (keep.foldersToPhantom.has(n.id)) {
+      // Kept folder — keep missing=true so cleanupFolderGroups PRESERVES
+      // its Three.js Group across step activations (foreign children
+      // don't churn parents on every step nav). Strip model-link fields
+      // so the saved spec is a clean folder entry, not asset-tied.
+      n.missing = true;
+      delete n.sourceAssetId;
+    } else {
+      // Folder is empty of natives by now; foreign children (if any)
+      // would have pinned it via foldersToPhantom, so this branch only
+      // fires when the folder is truly empty / fully-native.
+      const obj = steps.object3dById?.get(n.id) ?? n.object3d ?? null;
+      if (obj) {
+        // Move any unexpected surviving children up to the folder's
+        // parent before removing the Group (defensive — should be
+        // empty in practice).
+        const parObj = obj.parent;
+        while (obj.children.length && parObj) parObj.add(obj.children[0]);
+        if (parObj) parObj.remove(obj);
+      }
+      steps.object3dById?.delete(n.id);
+      const parent = _findNodeParent(liveRoot, n.id);
+      if (parent?.children) parent.children = parent.children.filter(c => c.id !== n.id);
+      removedIds.add(n.id);
+    }
+  }
+
+
+  // ── Model wrapper ───────────────────────────────────────────────────
+  // Decide whether to keep the model node as a regular folder (when
+  // anything inside it matters — kept Bbox phantoms, kept folders, or
+  // foreign-object guests) or fully remove it (when there's nothing to
+  // preserve).
+  //
+  // The "keep as folder" path is what makes the structure persist
+  // across save/load: a regular folder is round-tripped natively by
+  // _insertPhantomCustomFolders; a missing-flagged model node is not.
+  const hasNativeKeeps  = keep.foldersToPhantom.size > 0 || keep.meshesToBbox.size > 0;
+  const hasForeignGuest = (modelNode.children || []).some(c =>
+    !keep.nativeMeshIds.has(c.id) && !keep.nativeFolderIds.has(c.id) && c.id !== modelNode.id
+  ) || (function hasGuestInSubtree(n) {
+    for (const c of (n.children || [])) {
+      const isNative = keep.nativeMeshIds.has(c.id) || keep.nativeFolderIds.has(c.id);
+      if (!isNative && c.type !== 'note') return true;
+      if (hasGuestInSubtree(c)) return true;
+    }
+    return false;
+  })(modelNode);
+
+  if (hasNativeKeeps || hasForeignGuest) {
+    // Convert to folder so _insertPhantomCustomFolders on load can
+    // round-trip the wrapper (it skips type==='model'). Keep
+    // missing=true so cleanupFolderGroups doesn't rip its Three.js
+    // Group on step nav — that Group still holds the loader-applied
+    // baseLocal* transform (Y-up→Z-up flip etc.) which keeps every
+    // kept descendant in their original world position. Strip the
+    // model-specific fields so the saved spec is asset-free.
+    modelNode.type    = 'folder';
+    modelNode.missing = true;
+    delete modelNode.assetId;
+    delete modelNode.sourceAssetId;
+    delete modelNode.sourceLocalPosition;
+    delete modelNode.sourceLocalQuaternion;
+    delete modelNode.sourceLocalScale;
+  } else {
+    // Nothing to keep — fully splice the model node out of tree + scene.
+    const obj = steps.object3dById?.get(modelNode.id) ?? modelNode.object3d ?? null;
+    if (obj?.parent) obj.parent.remove(obj);
+    steps.object3dById?.delete(modelNode.id);
+    const parent = _findNodeParent(liveRoot, modelNode.id);
+    if (parent?.children) parent.children = parent.children.filter(c => c.id !== modelNode.id);
+    removedIds.add(modelNode.id);
+  }
+
+  // ── Asset strip ─────────────────────────────────────────────────────
+  if (firstMeshAssetId) {
+    const assets = state.get('assets') || [];
+    const next = assets.filter(a => a.id !== firstMeshAssetId);
+    if (next.length !== assets.length) state.setState({ assets: next });
+  }
+
+  // ── Step snapshot strip + type-patch ────────────────────────────────
+  // Step snapshots cache the serialised tree (id-keyed children specs).
+  // Two passes here, run AFTER the model-wrapper conversion above so we
+  // can see the final modelNode.type:
+  //   1. Strip removed-node ids — else rebuildFromTreeSpec resurrects
+  //      them as fresh empty Groups on next step nav.
+  //   2. Patch the converted model node's spec entry from type='model'
+  //      to type='folder' so rebuildFromTreeSpec treats it consistently
+  //      with the live data (and doesn't clear missing on the model
+  //      branch's `if (modelObj && node.missing) node.missing = false;`).
+  const modelConverted = modelNode.type === 'folder';
+  const patchSpec = (spec) => {
+    if (!spec || !Array.isArray(spec.children)) return;
+    spec.children = spec.children.filter(c => !removedIds.has(c.id));
+    for (const c of spec.children) {
+      if (modelConverted && c.id === modelNode.id && c.type === 'model') c.type = 'folder';
+      patchSpec(c);
+    }
+  };
+  for (const step of state.get('steps') || []) {
+    if (step?.snapshot?.tree) patchSpec(step.snapshot.tree);
+  }
+
+  // Rebuild nodeById since we spliced nodes out.
+  state.setState({ nodeById: _nodes_buildNodeMap(liveRoot) });
+}
+
+/** Depth of a node from the root (root depth = 0). Used for deepest-first folder removal. */
+function _depthFromRoot(root, id) {
+  let d = 0;
+  let cur = findParent(root, id);
+  while (cur) { d++; cur = findParent(root, cur.id); }
+  return d;
+}
+
+// ─────────────────────────────────────────────────────────────────────
+//  "Break dependencies" — purge model subtree and relocate deps
+// ─────────────────────────────────────────────────────────────────────
+
+/**
+ * Scan a model's subtree for cables / notes / shapes that depend on
+ * any node inside it. Used by the delete-assembly dialog to show
+ * dependency counts upfront and to drive the "break dependencies"
+ * relocation path.
+ */
+export function collectAssemblyDependents(modelId) {
+  const empty = { cables: [], notes: [], shapes: [], meshIds: new Set(), folderIds: new Set(), subtreeIds: new Set() };
+  const root = state.get('treeData');
+  if (!root) return empty;
+  const model = state.get('nodeById')?.get(modelId) ?? findNode(root, modelId);
+  if (!model || model.type !== 'model') return empty;
+
+  // Identify native meshes via sourceAssetId — foreign meshes dragged
+  // into this model's folders keep their original assetId and must be
+  // excluded so cable/note/shape counts only reflect THIS model's deps.
+  let modelAssetId = null;
+  const meshIds = new Set();
+  const folderIds = new Set();
+  const stack = [model];
+  while (stack.length) {
+    const n = stack.pop();
+    if (n.type === 'mesh') {
+      if (!modelAssetId && n.sourceAssetId) modelAssetId = n.sourceAssetId;
+    } else if (n.type === 'folder') {
+      folderIds.add(n.id);
+    }
+    if (n.children) for (const c of n.children) stack.push(c);
+  }
+  // Second pass with the resolved asset id — gather native meshes only.
+  const stack2 = [model];
+  while (stack2.length) {
+    const n = stack2.pop();
+    if (n.type === 'mesh') {
+      const isNative = modelAssetId
+        ? n.sourceAssetId === modelAssetId || !n.sourceAssetId
+        : true;
+      if (isNative) meshIds.add(n.id);
+    }
+    if (n.children) for (const c of n.children) stack2.push(c);
+  }
+  const subtreeIds = new Set([...meshIds, ...folderIds, modelId]);
+
+  // Cables — every cable that has at least one mesh-anchored node
+  // pointing into the subtree. We keep the cable record + the list
+  // of affected nodes so the executor only touches those.
+  const cableDeps = [];
+  for (const cable of (state.get('cables') || [])) {
+    const affected = (cable.nodes || []).filter(n =>
+      n.anchorType === 'mesh' && meshIds.has(n.nodeId)
+    );
+    if (affected.length) cableDeps.push({ cable, affectedNodes: affected });
+  }
+
+  // Notes — anchored to a mesh in the subtree.
+  const noteDeps = [];
+  const walkN = (n) => {
+    if (n.type === 'note' && meshIds.has(n.anchorMeshId)) noteDeps.push(n);
+    if (n.children) for (const c of n.children) walkN(c);
+  };
+  walkN(root);
+
+  // Flat-shapes — parented under a node in the subtree, in the LIVE
+  // tree or in ANY step snapshot. Shapes can move folder-to-folder per
+  // step, so a shape that's anchored to a native folder only in step 3
+  // still counts as a dependency. Dedupe by shape id so the count
+  // matches the user's mental model ("how many shapes are tied to this
+  // model").
+  const shapeDepIds = new Set();
+  const shapeDeps   = [];
+  const walkS = (n, parent) => {
+    if (n.type === 'flatShape' && parent && subtreeIds.has(parent.id)) {
+      if (!shapeDepIds.has(n.id)) { shapeDepIds.add(n.id); shapeDeps.push(n); }
+    }
+    if (n.children) for (const c of n.children) walkS(c, n);
+  };
+  walkS(root, null);
+  // Step snapshots only carry tree specs (id + type + children), not the
+  // live node objects. Walk each spec and resolve hits back to live nodes
+  // via nodeById so the dialog displays a coherent shape list.
+  const nodeById = state.get('nodeById');
+  const walkSpec = (spec, parentSpec) => {
+    if (!spec) return;
+    if (spec.type === 'flatShape' && parentSpec && subtreeIds.has(parentSpec.id)) {
+      if (!shapeDepIds.has(spec.id)) {
+        const live = nodeById?.get(spec.id);
+        if (live) { shapeDepIds.add(spec.id); shapeDeps.push(live); }
+      }
+    }
+    if (spec.children) for (const c of spec.children) walkSpec(c, spec);
+  };
+  for (const step of state.get('steps') || []) {
+    if (step?.snapshot?.tree) walkSpec(step.snapshot.tree, null);
+  }
+
+  return { cables: cableDeps, notes: noteDeps, shapes: shapeDeps, meshIds, folderIds, subtreeIds };
+}
+
+/**
+ * Option A executor: PURGE the model subtree entirely AND relocate
+ * each dependency. Per-system policy (v1):
+ *
+ *   - Cables: each affected mesh-anchored node converts to a free
+ *     anchor at its row slot (X = cumulative bbox*1.1 from origin,
+ *     1×1×1 default bbox for cable/note items). The cable's other
+ *     nodes stay where they are.
+ *   - Notes: anchored to a deleted mesh are DELETED. They can't
+ *     survive without an anchor in the current schema; the dialog
+ *     surfaces the count upfront.
+ *   - Shapes: re-parented to scene root with baseLocalPosition set
+ *     to the row slot. baseLocalQuaternion reset to identity so the
+ *     shape lies flat on world XY.
+ *
+ * Single undo entry. Snapshot is heavy (whole tree clone + cables +
+ * assets + retained object3d refs) — per spec the user prefers
+ * save-as for very large deletions, exposed as option D in the dialog.
+ */
+export function deleteTopLevelAssemblyAndBreak(modelId) {
+  const root = state.get('treeData');
+  if (!root) return false;
+  const model = state.get('nodeById')?.get(modelId) ?? findNode(root, modelId);
+  if (!model || model.type !== 'model') return false;
+
+  const deps   = collectAssemblyDependents(modelId);
+  const before = _captureFullSnapshotForBreak();
+
+  // ── Row layout ──────────────────────────────────────────────────
+  // Each affected cable-node + each affected shape gets a slot along
+  // +X starting from origin. Notes are deleted so they take no slot.
+  const SLOT = 1.1;
+  const slots = [];
+  let cursor = 0;
+  for (const cd of deps.cables) {
+    for (const node of cd.affectedNodes) {
+      slots.push({ kind: 'cableNode', cableId: cd.cable.id, nodeId: node.id, x: cursor + 0.5 });
+      cursor += SLOT;
+    }
+  }
+  for (const shape of deps.shapes) {
+    slots.push({ kind: 'shape', shapeId: shape.id, x: cursor + 0.5 });
+    cursor += SLOT;
+  }
+
+  // ── Cables: detach affected nodes to free anchors at row spots ──
+  const cables = state.get('cables') || [];
+  for (const slot of slots) {
+    if (slot.kind !== 'cableNode') continue;
+    const cable = cables.find(c => c.id === slot.cableId);
+    if (!cable) continue;
+    const cnode = cable.nodes?.find(n => n.id === slot.nodeId);
+    if (!cnode) continue;
+    cnode.anchorType = 'free';
+    cnode.position   = [slot.x, 0, 0];
+    delete cnode.nodeId;
+    delete cnode.anchorLocal;
+    delete cnode.anchorBboxRelative;
+    cnode.cachedWorldPos = [slot.x, 0, 0];
+  }
+
+  // ── Notes: splice out of the tree ───────────────────────────────
+  for (const note of deps.notes) {
+    const np = _findNodeParent(root, note.id);
+    if (np?.children) np.children = np.children.filter(c => c.id !== note.id);
+  }
+
+  // ── Shapes: reparent to scene root at row spot ──────────────────
+  for (const slot of slots) {
+    if (slot.kind !== 'shape') continue;
+    const shape = findNode(root, slot.shapeId);
+    if (!shape) continue;
+    const sp = _findNodeParent(root, slot.shapeId);
+    if (sp?.children) sp.children = sp.children.filter(c => c.id !== slot.shapeId);
+    root.children = root.children || [];
+    root.children.push(shape);
+    shape.baseLocalPosition    = [slot.x, 0, 0];
+    shape.baseLocalQuaternion  = [0, 0, 0, 1];
+    const shapeObj = shape.object3d ?? steps.object3dById?.get(slot.shapeId);
+    if (shapeObj && sceneCore.rootGroup) {
+      if (shapeObj.parent) shapeObj.parent.remove(shapeObj);
+      sceneCore.rootGroup.add(shapeObj);
+      shapeObj.position.set(slot.x, 0, 0);
+      shapeObj.quaternion.identity();
+      shapeObj.updateMatrixWorld(true);
+    }
+  }
+
+  // ── Purge the model subtree from the tree + scene ───────────────
+  const modelParent = _findNodeParent(root, modelId);
+  if (modelParent?.children) {
+    modelParent.children = modelParent.children.filter(c => c.id !== modelId);
+  }
+  const objStack = [model];
+  while (objStack.length) {
+    const n = objStack.pop();
+    const obj = steps.object3dById?.get(n.id) ?? n.object3d ?? null;
+    if (obj?.parent) obj.parent.remove(obj);
+    steps.object3dById?.delete(n.id);
+    if (n.children) for (const c of n.children) objStack.push(c);
+  }
+
+  // ── Strip asset entry ───────────────────────────────────────────
+  const firstMesh = _findFirstMeshInSubtree(model);
+  if (firstMesh?.sourceAssetId) {
+    const assets = state.get('assets') || [];
+    const next = assets.filter(a => a.id !== firstMesh.sourceAssetId);
+    if (next.length !== assets.length) state.setState({ assets: next });
+  }
+
+  // ── Refresh ─────────────────────────────────────────────────────
+  state.setState({ cables: [...cables], nodeById: _nodes_buildNodeMap(root) });
+  state.emit('change:cables', cables);
+  state.emit('change:treeData', root);
+  _refreshSceneForActiveStep();
+  state.markDirty();
+
+  // ── Undo / redo ─────────────────────────────────────────────────
+  const after = _captureFullSnapshotForBreak();
+  undoManager.push('Delete assembly (break dependencies)',
+    () => { _restoreFullSnapshotForBreak(before); _refreshSceneForActiveStep(); state.markDirty(); },
+    () => { _restoreFullSnapshotForBreak(after);  _refreshSceneForActiveStep(); state.markDirty(); },
+  );
+  return true;
+}
+
+/** Find the first mesh node anywhere in a subtree (for asset id lookup). */
+function _findFirstMeshInSubtree(rootNode) {
+  if (!rootNode) return null;
+  const stack = [rootNode];
+  while (stack.length) {
+    const n = stack.pop();
+    if (n.type === 'mesh') return n;
+    if (n.children) for (const c of n.children) stack.push(c);
+  }
+  return null;
+}
+
+/**
+ * Snapshot the whole project state we touch in option A: tree (sans
+ * object3d), cables, assets, and a map of mesh-id → object3d so we
+ * can re-attach geometry on undo without re-loading the source file.
+ */
+function _captureFullSnapshotForBreak() {
+  const root = state.get('treeData');
+  const obj3dMap = new Map();
+  const obj3dParentMap = new Map();
+  const obj3dTransformMap = new Map();
+  const walk = (n) => {
+    const obj = steps.object3dById?.get(n.id) ?? n.object3d ?? null;
+    if (obj) {
+      obj3dMap.set(n.id, obj);
+      if (obj.parent) obj3dParentMap.set(n.id, obj.parent);
+      obj3dTransformMap.set(n.id, {
+        position:   [obj.position.x, obj.position.y, obj.position.z],
+        quaternion: [obj.quaternion.x, obj.quaternion.y, obj.quaternion.z, obj.quaternion.w],
+        scale:      [obj.scale.x, obj.scale.y, obj.scale.z],
+      });
+    }
+    if (n.children) for (const c of n.children) walk(c);
+  };
+  if (root) walk(root);
+  // Step snapshots — capture only their .snapshot (the part we mutate
+  // when stripping removed ids from snapshot.tree). Other step fields
+  // (id, name, thumbnail, transitions, …) stay live and don't need to
+  // round-trip through the undo log.
+  const stepSnapshots = (state.get('steps') || []).map(s =>
+    s?.snapshot ? { id: s.id, snapshot: JSON.parse(JSON.stringify(s.snapshot)) } : { id: s.id, snapshot: null }
+  );
+  return {
+    treeJSON:  root ? _cloneTreeWithoutObject3d(root) : null,
+    cables:    JSON.parse(JSON.stringify(state.get('cables') || [])),
+    assets:    JSON.parse(JSON.stringify(state.get('assets') || [])),
+    stepSnapshots,
+    obj3dMap,
+    obj3dParentMap,
+    obj3dTransformMap,
+  };
+}
+
+/** Deep-clone a tree node, dropping object3d (not JSON-serializable). */
+function _cloneTreeWithoutObject3d(node) {
+  if (!node) return null;
+  const out = {};
+  for (const k in node) {
+    if (k === 'object3d') continue;
+    if (k === '_anim') continue;     // transient animation cache, never serialised
+    const v = node[k];
+    if (v == null) out[k] = v;
+    else if (Array.isArray(v))            out[k] = JSON.parse(JSON.stringify(v));
+    else if (k === 'children')            out[k] = v.map(_cloneTreeWithoutObject3d);
+    else if (typeof v === 'object')        out[k] = JSON.parse(JSON.stringify(v));
+    else                                   out[k] = v;
+  }
+  return out;
+}
+
+/** Restore tree + cables + assets from a snapshot, re-attach object3ds. */
+function _restoreFullSnapshotForBreak(snap) {
+  if (!snap) return;
+  // Tree first — replace treeData with the clone (now without object3d).
+  if (snap.treeJSON) {
+    state.setState({ treeData: snap.treeJSON });
+    // Re-attach object3d refs onto the freshly-restored nodes.
+    const newRoot = state.get('treeData');
+    const walk = (n) => {
+      const obj = snap.obj3dMap.get(n.id);
+      if (obj) {
+        n.object3d = obj;
+        steps.object3dById?.set(n.id, obj);
+        // Re-attach to its original parent + restore local transform.
+        const par = snap.obj3dParentMap.get(n.id);
+        if (par && obj.parent !== par) {
+          if (obj.parent) obj.parent.remove(obj);
+          par.add(obj);
+        }
+        const tr = snap.obj3dTransformMap.get(n.id);
+        if (tr) {
+          obj.position.set(tr.position[0], tr.position[1], tr.position[2]);
+          obj.quaternion.set(tr.quaternion[0], tr.quaternion[1], tr.quaternion[2], tr.quaternion[3]);
+          obj.scale.set(tr.scale[0], tr.scale[1], tr.scale[2]);
+          obj.updateMatrixWorld(true);
+        }
+      }
+      if (n.children) for (const c of n.children) walk(c);
+    };
+    if (newRoot) walk(newRoot);
+    state.setState({ nodeById: _nodes_buildNodeMap(newRoot) });
+    state.emit('change:treeData', newRoot);
+  }
+  state.setState({ cables: snap.cables.map(c => JSON.parse(JSON.stringify(c))) });
+  state.emit('change:cables', state.get('cables'));
+  state.setState({ assets: snap.assets.map(a => JSON.parse(JSON.stringify(a))) });
+  // Restore step snapshots — smart-delete mutates snapshot.tree to strip
+  // removed ids; without this restore, undo would put the live tree back
+  // but step navigation would still see the stripped specs.
+  if (Array.isArray(snap.stepSnapshots)) {
+    const live = state.get('steps') || [];
+    const byId = new Map(live.map(s => [s.id, s]));
+    for (const entry of snap.stepSnapshots) {
+      const s = byId.get(entry.id);
+      if (s) s.snapshot = entry.snapshot ? JSON.parse(JSON.stringify(entry.snapshot)) : null;
+    }
+  }
+}
+
+/** Re-apply the active step's snapshot so phantoms get their Bbox placeholders built. */
+function _refreshSceneForActiveStep() {
+  const id = state.get('activeStepId');
+  if (id) steps.activateStep(id, false).catch(() => {});
+  else    steps.scheduleTransformSync();
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+//  PASTE TREE (R-click scene root → Copy tree / Paste tree)
+// ═══════════════════════════════════════════════════════════════════════════
+//
+// v1 scope (B.1, B.2, C.1 per design):
+//   addOnly    — add source's missing folders into target; objects stay put
+//   addAndMove — add missing folders AND move every shared id to source's parent
+//   moveOnly   — trees structurally match; just re-parent shared ids per source
+//
+// Folder REMOVALS (target has folders source doesn't) are out of v1 scope —
+// the caller blocks that case before invoking pasteTreeApply.
+//
+// Scope rules:
+//   - target = exactly one step (active step). Base step is rejected.
+//   - per-step mutation only. snapshot.tree replaced; rebuildFromTreeSpec
+//     handles the live tree.
+//   - one undo entry covers the whole paste.
+//   - transforms = cascade only. Live nodes keep their existing baseLocal*;
+//     world positions shift to follow their new parent chain.
+//   - cables follow mesh ids automatically (anchor-by-id).
+//   - shapes' tree position changes follow source-side parent (so a shape
+//     parented to a mesh in source ends up on that mesh in target; in-folder
+//     in source ends up in that folder in target).
+
+/**
+ * Compute the structural diff between two snapshot.tree specs.
+ * @returns {{ addedFolders: string[], removedFolders: string[], movedObjects: Array<{id,type}> }}
+ */
+export function diffTreeSpec(source, target) {
+  const sourceMap = new Map();   // id → { type, parentId }
+  const targetMap = new Map();
+  const walk = (spec, parentId, out) => {
+    if (!spec) return;
+    out.set(spec.id, { type: spec.type, parentId });
+    for (const c of (spec.children || [])) walk(c, spec.id, out);
+  };
+  walk(source, null, sourceMap);
+  walk(target, null, targetMap);
+
+  const addedFolders   = [];
+  const removedFolders = [];
+  const movedObjects   = [];
+
+  for (const [id, info] of sourceMap) {
+    if (info.type === 'folder' && !targetMap.has(id)) addedFolders.push(id);
+  }
+  for (const [id, info] of targetMap) {
+    if (info.type === 'folder' && !sourceMap.has(id)) removedFolders.push(id);
+    if (info.type !== 'folder' && info.type !== 'scene' && sourceMap.has(id)) {
+      const s = sourceMap.get(id);
+      if (s.parentId !== info.parentId) movedObjects.push({ id, type: info.type });
+    }
+  }
+  return { addedFolders, removedFolders, movedObjects };
+}
+
+/**
+ * Apply a copied source snapshot to a target step's snapshot per the
+ * chosen option. Top-down build avoids cycle hazards from in-place moves.
+ *
+ * Options:
+ *   - addOnly                 — add source's missing folders; objects stay put
+ *   - addAndMoveCascade       — add folders + move objects to source-side parents;
+ *                               local transforms unchanged → world shifts
+ *   - addAndMovePreserve      — add folders + move objects; world matrices preserved
+ *                               via wrapper compensation folders
+ *   - moveCascade             — trees match structurally; move objects (cascade)
+ *   - movePreserve            — trees match structurally; move objects (preserve)
+ *   - addRemoveMoveCascade    — add missing folders + remove empty source-missing
+ *                               folders + move (cascade)
+ *   - addRemoveMovePreserve   — same as above + preserve-world wrappers
+ *
+ * Carries source's transforms/visibility/folderBases for ADDED folders;
+ * SHARED ids keep target's existing transforms (cascade) UNLESS preserve-world
+ * is enabled. When remove is on, target folders absent from source are
+ * pruned IF empty after the move pass (orphan-protected — folders with
+ * non-source-known children stay, no orphans).
+ *
+ * @param {string}  stepId          target step id (must NOT be the base step)
+ * @param {object}  sourceSnapshot  { tree, transforms, visibility, folderBases }
+ * @param {string}  option          one of the option codes above
+ * @returns {boolean} true on success
+ */
+export function pasteTreeApply(stepId, sourceSnapshot, option) {
+  if (!stepId || !sourceSnapshot?.tree) return false;
+  const stepsArr = state.get('steps') || [];
+  const step = stepsArr.find(s => s.id === stepId);
+  if (!step?.snapshot?.tree) return false;
+  if (step.isBaseStep) return false;
+
+  const flags     = _pasteOptionFlags(option);
+  const move      = flags.move;
+  const preserve  = flags.preserve;
+  const removeOn  = flags.remove;
+
+  const diff = diffTreeSpec(sourceSnapshot.tree, step.snapshot.tree);
+  // Only reject when removals exist AND the user picked a non-remove option.
+  if (diff.removedFolders.length > 0 && !removeOn) return false;
+
+  // ── Capture pre-mutation parent world matrices for preserve-world ───
+  // We use the wrapper-folder approach: each moving id gets a fresh
+  // compensation folder inserted between its source-side parent and itself.
+  // The wrapper's local matrix = inv(new_parent.world) × old_parent.world,
+  // which makes the moved object's world matrix invariant without touching
+  // the object's own transform. (Mesh nodes don't carry transforms — only
+  // folder/model/flatShape do — so the math has to live on a folder.)
+  let movingIds = null;
+  let oldParentWorlds = null;
+  if (preserve && move) {
+    movingIds = _computeMovingIdsForPaste(sourceSnapshot.tree, step.snapshot.tree);
+    oldParentWorlds = _captureMovingParentWorlds(movingIds);
+  }
+
+  // Capture full before-state for undo (tree + per-step transforms + visibility
+  // + each touched folder's live baseLocal* fields + per-object preserve-world
+  // wrapper data).
+  const beforeTree        = JSON.parse(JSON.stringify(step.snapshot.tree));
+  const beforeTransforms  = JSON.parse(JSON.stringify(step.snapshot.transforms || {}));
+  const beforeVisibility  = JSON.parse(JSON.stringify(step.snapshot.visibility || {}));
+  const beforeFolderBases = _captureFolderBases(diff.addedFolders);
+
+  // ── Tree spec ───────────────────────────────────────────────────────
+  let newTree = _buildPastedTreeSpec(sourceSnapshot.tree, step.snapshot.tree, option);
+
+  // For preserve-world: wrap each moving id with a fresh compensation
+  // folder spec INSIDE newTree before we hand the tree off. The wrapper
+  // sits between source-side parent and the moved object — its identity
+  // local at this point gets overwritten with the actual compensation
+  // after applySnapshotInstant has computed new world matrices.
+  let compMap = null;
+  if (preserve && move && movingIds && movingIds.size > 0) {
+    compMap = _wrapWithCompensationFolders(newTree, movingIds);
+  }
+
+  step.snapshot.tree = newTree;
+
+  // ── Added-folder state replay ───────────────────────────────────────
+  // Per-step transforms + visibility ride along in step.snapshot.*; the
+  // project-global baseLocal* fields go directly onto each live folder
+  // node so they take effect on the next applyAllTransformsToScene pass.
+  step.snapshot.transforms = step.snapshot.transforms || {};
+  step.snapshot.visibility = step.snapshot.visibility || {};
+  for (const id of diff.addedFolders) {
+    if (sourceSnapshot.transforms?.[id]) {
+      step.snapshot.transforms[id] = JSON.parse(JSON.stringify(sourceSnapshot.transforms[id]));
+    }
+    if (sourceSnapshot.visibility && Object.prototype.hasOwnProperty.call(sourceSnapshot.visibility, id)) {
+      step.snapshot.visibility[id] = sourceSnapshot.visibility[id];
+    }
+  }
+
+  // Apply spec → live first so the folder nodes exist in nodeById, then
+  // stamp baseLocal* on those live nodes and re-push transforms to Three.js
+  // so the world poses reflect the full picture.
+  const isActive = state.get('activeStepId') === stepId;
+  if (isActive) {
+    steps.applySnapshotInstant(step.snapshot);
+    _applyFolderBases(diff.addedFolders, sourceSnapshot.folderBases || {});
+    // Preserve-world: write compensation transforms onto each newly-created
+    // wrapper folder so the moved object's world matrix matches the
+    // pre-paste pose. Persists via step.snapshot.transforms.
+    if (preserve && compMap && oldParentWorlds) {
+      _applyCompensationFolders(compMap, oldParentWorlds, step);
+    }
+    state.emit('change:treeData', state.get('treeData'));
+  }
+  state.markDirty();
+
+  // Captures for redo (AFTER preserve-world back-solve so it's part of state).
+  const afterTree       = JSON.parse(JSON.stringify(newTree));
+  const afterTransforms = JSON.parse(JSON.stringify(step.snapshot.transforms || {}));
+  const afterVisibility = JSON.parse(JSON.stringify(step.snapshot.visibility || {}));
+  const afterFolderBases = _captureFolderBases(diff.addedFolders);
+
+  undoManager.push('Paste tree',
+    () => {
+      const s = (state.get('steps') || []).find(x => x.id === stepId);
+      if (!s) return;
+      s.snapshot.tree        = JSON.parse(JSON.stringify(beforeTree));
+      s.snapshot.transforms  = JSON.parse(JSON.stringify(beforeTransforms));
+      s.snapshot.visibility  = JSON.parse(JSON.stringify(beforeVisibility));
+      if (state.get('activeStepId') === stepId) {
+        steps.applySnapshotInstant(s.snapshot);
+        _applyFolderBases(diff.addedFolders, beforeFolderBases);
+        state.emit('change:treeData', state.get('treeData'));
+      }
+      state.markDirty();
+    },
+    () => {
+      const s = (state.get('steps') || []).find(x => x.id === stepId);
+      if (!s) return;
+      s.snapshot.tree        = JSON.parse(JSON.stringify(afterTree));
+      s.snapshot.transforms  = JSON.parse(JSON.stringify(afterTransforms));
+      s.snapshot.visibility  = JSON.parse(JSON.stringify(afterVisibility));
+      if (state.get('activeStepId') === stepId) {
+        steps.applySnapshotInstant(s.snapshot);
+        _applyFolderBases(diff.addedFolders, afterFolderBases);
+        state.emit('change:treeData', state.get('treeData'));
+      }
+      state.markDirty();
+    },
+  );
+  return true;
+}
+
+/**
+ * Collect every id that is in BOTH source and target spec but has a different
+ * parent — these are the ids whose tree position changes when we paste.
+ * Includes folders, meshes, flatShapes, anything except the scene root.
+ */
+function _computeMovingIdsForPaste(sourceTree, targetTree) {
+  const sourceParent = new Map();
+  const targetParent = new Map();
+  const walk = (spec, parentId, out) => {
+    if (!spec) return;
+    out.set(spec.id, parentId);
+    for (const c of (spec.children || [])) walk(c, spec.id, out);
+  };
+  walk(sourceTree, null, sourceParent);
+  walk(targetTree, null, targetParent);
+
+  const moving = new Set();
+  for (const [id, sourceP] of sourceParent) {
+    if (!targetParent.has(id)) continue;
+    if (sourceP === null)      continue;
+    if (targetParent.get(id) !== sourceP) moving.add(id);
+  }
+  return moving;
+}
+
+/** Snapshot each moving id's PARENT matrixWorld pre-mutation. */
+function _captureMovingParentWorlds(ids) {
+  const THREE = window.THREE;
+  const out = new Map();
+  if (!THREE) return out;
+  for (const id of ids) {
+    const obj = steps.object3dById?.get(id);
+    if (!obj?.parent) continue;
+    obj.parent.updateMatrixWorld(true);
+    out.set(id, obj.parent.matrixWorld.clone());
+  }
+  return out;
+}
+
+/**
+ * Walk newTree and replace each moving id's spec position with a fresh
+ * compensation folder spec. Mutates newTree in place. Returns a Map of
+ * movingId → compFolderId so _applyCompensationFolders can find its
+ * partner after the rebuild.
+ */
+function _wrapWithCompensationFolders(newTree, movingIds) {
+  const compMap = new Map();
+  const walk = (parentSpec) => {
+    if (!parentSpec || !Array.isArray(parentSpec.children)) return;
+    // Walk in-place. Replace any moving child with a wrapper folder spec
+    // that contains the original moving child.
+    for (let i = 0; i < parentSpec.children.length; i++) {
+      const child = parentSpec.children[i];
+      if (movingIds.has(child.id)) {
+        const compId = generateId('folder');
+        const compSpec = {
+          id:           compId,
+          name:         '↻ preserved',
+          type:         'folder',
+          localVisible: true,
+          children:     [child],
+        };
+        parentSpec.children[i] = compSpec;
+        compMap.set(child.id, compId);
+        // Don't recurse into the wrapper's child — the wrap is the leaf
+        // of this branch as far as further moves are concerned.
+      } else {
+        walk(child);
+      }
+    }
+  };
+  walk(newTree);
+  return compMap;
+}
+
+/**
+ * After applySnapshotInstant has rebuilt the live tree (including the
+ * fresh compensation-folder Groups, all at identity), compute and apply
+ * each wrapper's compensation transform so the wrapped object's world
+ * matrix matches its pre-paste pose.
+ *
+ *   compFolder.local = inv(newParent.world) × oldParent.world
+ *
+ * Writes to the compensation folder's per-step localOffset/localQuaternion
+ * and persists into step.snapshot.transforms[compId] so step navigation
+ * away and back to this step preserves the world position.
+ *
+ * Scale limitation: only position + rotation are persisted via
+ * snapshot.transforms; non-uniform scale on the source-side parent (rare
+ * in SBS) would shift world scale after step navigation. Position +
+ * rotation are by far the common case.
+ */
+function _applyCompensationFolders(compMap, oldParentWorlds, step) {
+  const THREE = window.THREE;
+  if (!THREE) return;
+  const nodeById = state.get('nodeById');
+  if (!nodeById) return;
+
+  const tmp       = new THREE.Matrix4();
+  const invParent = new THREE.Matrix4();
+  const pos       = new THREE.Vector3();
+  const quat      = new THREE.Quaternion();
+  const scale     = new THREE.Vector3();
+
+  for (const [movingId, compId] of compMap) {
+    const oldParWorld = oldParentWorlds.get(movingId);
+    if (!oldParWorld) continue;
+
+    const compObj  = steps.object3dById?.get(compId);
+    const compNode = nodeById.get(compId);
+    if (!compObj || !compNode) continue;
+
+    const newParent = compObj.parent;
+    if (!newParent) continue;
+    newParent.updateMatrixWorld(true);
+
+    invParent.copy(newParent.matrixWorld).invert();
+    tmp.copy(invParent).multiply(oldParWorld);
+    tmp.decompose(pos, quat, scale);
+
+    // Wrapper is fresh — baseLocal* defaults are identity (ensureTransformDefaults
+    // sets them when applyNodeTransformToObject3D runs). Stash everything in
+    // localOffset/localQuaternion so it round-trips via snapshot.transforms.
+    compNode.localOffset     = [pos.x, pos.y, pos.z];
+    compNode.localQuaternion = [quat.x, quat.y, quat.z, quat.w];
+
+    applyNodeTransformToObject3D(compNode, compObj);
+
+    step.snapshot.transforms = step.snapshot.transforms || {};
+    step.snapshot.transforms[compId] = {
+      localOffset:          [pos.x, pos.y, pos.z],
+      localQuaternion:      [quat.x, quat.y, quat.z, quat.w],
+      orientationSteps:     [0, 0, 0],
+      pivotLocalOffset:     [0, 0, 0],
+      pivotLocalQuaternion: [0, 0, 0, 1],
+      moveEnabled:          true,
+      rotateEnabled:        true,
+      pivotEnabled:         false,
+    };
+  }
+}
+
+/** Capture current baseLocal* on the live folder nodes named in `ids`. */
+function _captureFolderBases(ids) {
+  const out = {};
+  const nodeById = state.get('nodeById');
+  if (!nodeById) return out;
+  for (const id of ids) {
+    const n = nodeById.get(id);
+    if (n?.type !== 'folder') continue;
+    out[id] = {
+      baseLocalPosition:   [...(n.baseLocalPosition   || [0, 0, 0])],
+      baseLocalQuaternion: [...(n.baseLocalQuaternion || [0, 0, 0, 1])],
+      baseLocalScale:      [...(n.baseLocalScale      || [1, 1, 1])],
+    };
+  }
+  return out;
+}
+
+/**
+ * Write baseLocal* fields onto live folder nodes from the captured map,
+ * then push the new local transform to Three.js. Called after
+ * applySnapshotInstant has rebuilt the fresh folder Group at identity.
+ */
+function _applyFolderBases(ids, bases) {
+  if (!bases) return;
+  const nodeById = state.get('nodeById');
+  if (!nodeById) return;
+  for (const id of ids) {
+    const n = nodeById.get(id);
+    if (n?.type !== 'folder') continue;
+    const b = bases[id];
+    if (!b) continue;
+    n.baseLocalPosition   = [...b.baseLocalPosition];
+    n.baseLocalQuaternion = [...b.baseLocalQuaternion];
+    n.baseLocalScale      = [...b.baseLocalScale];
+    const obj = steps.object3dById?.get(id) ?? n.object3d;
+    if (obj) applyNodeTransformToObject3D(n, obj);
+  }
+}
+
+/**
+ * Build a new snapshot.tree spec by taking target as the base and applying
+ * the chosen merge option. Top-down construction — each id's parent is
+ * looked up (not mutated), so cycles can't form even if source and target
+ * disagree about ancestry on the same id.
+ */
+/**
+ * Capability flags for each paste-tree option string. Single source of
+ * truth — every function that branches on the option string reads from here.
+ */
+const _PASTE_OPTION_FLAGS = {
+  addOnly:                 { add: true,  move: false, preserve: false, remove: false },
+  addAndMoveCascade:       { add: true,  move: true,  preserve: false, remove: false },
+  addAndMovePreserve:      { add: true,  move: true,  preserve: true,  remove: false },
+  moveCascade:             { add: false, move: true,  preserve: false, remove: false },
+  movePreserve:            { add: false, move: true,  preserve: true,  remove: false },
+  addRemoveMoveCascade:    { add: true,  move: true,  preserve: false, remove: true  },
+  addRemoveMovePreserve:   { add: true,  move: true,  preserve: true,  remove: true  },
+};
+function _pasteOptionFlags(option) {
+  return _PASTE_OPTION_FLAGS[option] || _PASTE_OPTION_FLAGS.addOnly;
+}
+
+function _buildPastedTreeSpec(source, target, option) {
+  const flags    = _pasteOptionFlags(option);
+  const move     = flags.move;
+  const add      = flags.add;
+  const removeOn = flags.remove;
+
+  const sourceById   = new Map();
+  const sourceParent = new Map();
+  (function walk(spec, parentId) {
+    if (!spec) return;
+    sourceById.set(spec.id, spec);
+    sourceParent.set(spec.id, parentId);
+    for (const c of (spec.children || [])) walk(c, spec.id);
+  })(source, null);
+
+  const targetById   = new Map();
+  const targetParent = new Map();
+  (function walk(spec, parentId) {
+    if (!spec) return;
+    targetById.set(spec.id, spec);
+    targetParent.set(spec.id, parentId);
+    for (const c of (spec.children || [])) walk(c, spec.id);
+  })(target, null);
+
+  // ── Build the new spec map ──────────────────────────────────────────
+  // Clone target's scene root first (children filled in by attach pass below).
+  const newRoot = _cloneSpecEntry(target);
+  const newSpecById = new Map([[newRoot.id, newRoot]]);
+
+  for (const [id, t] of targetById) {
+    if (id === newRoot.id) continue;
+    newSpecById.set(id, _cloneSpecEntry(t));
+  }
+
+  if (add) {
+    // Insert source-only folders. Their data is minimal (id/name/type/visible)
+    // — full transforms live on the live folder node in nodeById and survive
+    // the rebuildFromTreeSpec pass triggered by applySnapshotInstant.
+    for (const [id, s] of sourceById) {
+      if (s.type !== 'folder') continue;
+      if (newSpecById.has(id)) continue;
+      newSpecById.set(id, {
+        id:           s.id,
+        name:         s.name || 'Folder',
+        type:         'folder',
+        localVisible: s.localVisible !== false,
+        children:     [],
+      });
+    }
+  }
+
+  // ── Attach pass ─────────────────────────────────────────────────────
+  // For each non-root spec, decide its parent:
+  //   - move enabled + id in source → use source's parent
+  //   - added folder (source-only)  → use source's parent
+  //   - otherwise                   → keep target's parent
+  // Children arrays already initialised in clone helper.
+  for (const [id, spec] of newSpecById) {
+    if (id === newRoot.id) continue;
+
+    let parentId;
+    if (move && sourceById.has(id)) {
+      parentId = sourceParent.get(id);
+    } else if (add && sourceById.has(id) && !targetById.has(id)) {
+      parentId = sourceParent.get(id);
+    } else {
+      parentId = targetParent.get(id) ?? newRoot.id;
+    }
+
+    const parent = newSpecById.get(parentId) ?? newRoot;
+    parent.children.push(spec);
+  }
+
+  // ── Empty-folder prune (B.3/B.4 remove path) ────────────────────────
+  // Target folders that source doesn't have are candidates for removal.
+  // We only drop them when they're empty AFTER the attach pass — that way
+  // any orphan child (something target has but source doesn't reference)
+  // keeps its parent, no dangling. Bottom-up so a folder whose only kids
+  // are also being pruned gets pruned this same call.
+  if (removeOn) {
+    const pruneEmpty = (spec) => {
+      if (!Array.isArray(spec.children)) return;
+      for (const c of spec.children) pruneEmpty(c);
+      spec.children = spec.children.filter(c => {
+        if (c.type !== 'folder')   return true;
+        if (sourceById.has(c.id))  return true;
+        return (c.children || []).length > 0;
+      });
+    };
+    pruneEmpty(newRoot);
+  }
+
+  return newRoot;
+}
+
+/** Clone the structural fields of a snapshot.tree spec entry (no children). */
+function _cloneSpecEntry(spec) {
+  const out = {
+    id:           spec.id,
+    name:         spec.name || '',
+    type:         spec.type,
+    localVisible: spec.localVisible !== false,
+    children:     [],
+  };
+  if (spec.bbox)                 out.bbox                 = spec.bbox;
+  if (spec.fingerprint)          out.fingerprint          = spec.fingerprint;
+  if (spec.placeholderTransform) out.placeholderTransform = spec.placeholderTransform;
+  if (spec.missing != null)      out.missing              = spec.missing;
+  if (spec.sourceAssetId)        out.sourceAssetId        = spec.sourceAssetId;
+  if (spec.meshIndex != null)    out.meshIndex            = spec.meshIndex;
+  return out;
+}
+
+/**
  * Delete a template and every instance referencing it (cascade).
  * Asks for confirmation when there are live instances.
  */
