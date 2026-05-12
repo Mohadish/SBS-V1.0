@@ -60,6 +60,13 @@ const easeSmooth = t => t * t * (3 - 2 * t);
 const easeLinear = t => t;
 const EASING = { smooth: easeSmooth, linear: easeLinear, instant: () => 1 };
 
+// Sticky export-time flag: when true, every Bbox placeholder built by
+// _createMeshPlaceholder spawns with visible=false. Set + cleared by
+// StepManager.setPlaceholderBboxesVisible (called by video-export
+// before/after the encode). Module-scoped because rebuildFromTreeSpec
+// + _createMeshPlaceholder are top-level helpers, not class methods.
+let _placeholdersHidden = false;
+
 
 // ═══════════════════════════════════════════════════════════════════════════
 //  STEP MANAGER
@@ -1198,18 +1205,23 @@ class StepManager {
   }
 
   /**
-   * Toggle visibility of all missing-asset Bbox placeholders + phantom
-   * folder wrappers. Used by the video exporter to hide authoring-aid
-   * outlines from the encoded frames unless the user explicitly opted
-   * in via Export tab → "Export boundary boxes".
+   * Toggle visibility of all missing-asset Bbox placeholder LineSegments.
+   * Used by the video exporter to keep authoring-aid outlines out of
+   * encoded frames unless the user explicitly opted in via Export tab →
+   * "Export boundary boxes".
    *
-   * Visibility-only flip (no material/structure changes) — pair it
-   * before and after the export with the same call, opposite values.
+   * Sets a sticky module flag so every placeholder rebuilt during
+   * subsequent step transitions inherits the hidden state — without
+   * this, the Bbox would reappear on the next step nav.
+   *
+   * Phantom-folder Groups (isPlaceholderFolder) are intentionally NOT
+   * toggled: they wrap foreign-object guests too, and hiding the Group
+   * would hide those guests with it.
    */
   setPlaceholderBboxesVisible(visible) {
+    _placeholdersHidden = !visible;
     for (const [, obj] of this.object3dById) {
-      if (obj?.userData?.isPlaceholder)       obj.visible = visible;
-      if (obj?.userData?.isPlaceholderFolder) obj.visible = visible;
+      if (obj?.userData?.isPlaceholder) obj.visible = visible;
     }
   }
 
@@ -1991,7 +2003,15 @@ function applyAllVisibilityToScene(nodeById, object3dById) {
   function walk(node, inherited) {
     const effective = inherited && node.localVisible;
     const obj = object3dById.get(node.id);
-    if (obj) obj.visible = effective;
+    if (obj) {
+      // Bbox placeholders honor the sticky export-hide flag so they stay
+      // out of the encoded video even after each step transition re-runs
+      // this pass. Real geometry + phantom-folder Groups follow normal
+      // visibility rules.
+      obj.visible = (_placeholdersHidden && obj.userData?.isPlaceholder)
+        ? false
+        : effective;
+    }
     node.children.forEach(c => walk(c, effective));
   }
 
@@ -2295,6 +2315,10 @@ function _createMeshPlaceholder(node) {
 
   lines.userData.meshNodeId    = node.id;
   lines.userData.isPlaceholder = true;
+  // Sticky export-time hide: when set, the newly built placeholder
+  // spawns invisible so the encoder never sees it. Cleared when export
+  // unwinds via setPlaceholderBboxesVisible(true).
+  if (_placeholdersHidden) lines.visible = false;
 
   // Position the placeholder. Two paths:
   //   - placeholderTransform present (set by deleteTopLevelAssembly,
