@@ -695,7 +695,16 @@ export function buildIdRemapFromSpec(liveNode, specNode, idMap = new Map()) {
   //   1. fingerprint + bbox centre   (robust against re-export, disambiguates duplicates)
   //   2. meshIndex                   (stable within a single file export)
   //   3. positional                  (last resort)
-  const specMeshes = specChildren.filter(c => c.type === 'mesh');
+  //
+  // EXCLUDE live displaced meshes from the spec side. A phantom subtree
+  // (relink path) may contain children that were moved into it by step-
+  // snapshot reparenting from OTHER models — those are LIVE (`missing` is
+  // explicit `false`) and have nothing to do with the asset being relinked.
+  // Without this filter, an FBX relink could fingerprint-match one of its
+  // fresh meshes onto a displaced live OBJ mesh and steal its id, breaking
+  // the tree's access to that mesh. Saved specs from disk have no missing
+  // flag at all (undefined) and pass through unchanged.
+  const specMeshes = specChildren.filter(c => c.type === 'mesh' && c.missing !== false);
   const liveMeshes = liveChildren.filter(c => c.type === 'mesh');
   const takenLive  = new Set();
 
@@ -1053,7 +1062,7 @@ export function getSuggestedFilename() {
   const assets = state.get('assets') || [];
   if (assets.length > 0) {
     const base = (assets[0].name || 'project')
-      .replace(/\.(step|stp|iges|igs|brep|obj|stl|gltf|glb)$/i, '');
+      .replace(/\.(step|stp|iges|igs|brep|obj|stl|gltf|glb|fbx)$/i, '');
     return `${base}.sbsproj`;
   }
   return 'project.sbsproj';

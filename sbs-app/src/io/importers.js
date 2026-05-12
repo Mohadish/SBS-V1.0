@@ -31,10 +31,32 @@ import { storeBaseTransformFromObject3D, captureMeshModelLocalMatrices } from '.
 // Three.js add-on loaders — imported as ES modules from the local vendor bundles.
 // These bundles import from three.module.proxy.mjs which wraps window.THREE,
 // so three.min.js must have been loaded as a script tag before this module runs.
-import { OBJLoader }  from '../../vendor/OBJLoader.bundle.mjs';
-import { STLLoader }  from '../../vendor/STLLoader.bundle.mjs';
-import { GLTFLoader } from '../../vendor/GLTFLoader.bundle.mjs';
-import { FBXLoader }  from '../../vendor/FBXLoader.bundle.mjs';
+import { OBJLoader }   from '../../vendor/OBJLoader.bundle.mjs';
+import { STLLoader }   from '../../vendor/STLLoader.bundle.mjs';
+import { GLTFLoader }  from '../../vendor/GLTFLoader.bundle.mjs';
+import { FBXLoader }   from '../../vendor/FBXLoader.bundle.mjs';
+import { DRACOLoader } from '../../vendor/DRACOLoader.module.mjs';
+
+// ── DRACO singleton ────────────────────────────────────────────────────────
+// glTF files with DRACO mesh compression require a DRACOLoader instance
+// wired into the GLTFLoader. The decoder itself is a small WASM blob
+// (vendor/draco/draco_decoder.wasm + draco_wasm_wrapper.js + draco_decoder.js).
+// We construct a single DRACOLoader for the renderer and reuse it across
+// every GLTF load; the worker spins up lazily on first compressed-mesh
+// encounter. setDecoderPath resolves against the document's base URL —
+// `index.html` lives in `src/`, so `../vendor/draco/` lands in the right
+// place under Electron's file:// renderer context.
+let _dracoLoader = null;
+function _getDracoLoader() {
+  if (_dracoLoader) return _dracoLoader;
+  _dracoLoader = new DRACOLoader();
+  _dracoLoader.setDecoderPath('../vendor/draco/');
+  // Prefer the WASM build (smaller + faster than the JS-only fallback).
+  // setDecoderConfig({type:'js'}) would force the pure-JS decoder if
+  // wasm-unsafe-eval ever gets removed from our CSP.
+  _dracoLoader.setDecoderConfig({ type: 'wasm' });
+  return _dracoLoader;
+}
 
 // ═══════════════════════════════════════════════════════════════════════════
 //  STABLE-ID HELPERS
@@ -733,6 +755,10 @@ async function loadGltfFile(file, assetEntry = null) {
 
   return new Promise(async (resolve, reject) => {
     const loader = new GLTFLoader();
+    // Required for any .gltf / .glb that uses KHR_draco_mesh_compression —
+    // without it the parser throws "No DRACOLoader instance provided".
+    // The singleton lazily-loads the WASM decoder on first compressed mesh.
+    loader.setDRACOLoader(_getDracoLoader());
     const data   = ext === 'glb' ? await file.arrayBuffer() : await file.text();
 
     loader.parse(data, '', (gltf) => {

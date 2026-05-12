@@ -1775,7 +1775,37 @@ class StepManager {
   reintegrateFromStep0(activeStepId) {
     this.activateBaseStep();
     if (activeStepId) this.activateStep(activeStepId, false);
-    this.removePlaceholders();
+    this.removeOrphanedPlaceholders();
+  }
+
+  /**
+   * Sweep the scene for placeholder LineSegments (the wireframe Bbox
+   * boxes the rebuild creates for missing-mesh nodes) whose data node
+   * is no longer flagged `missing` — i.e. asset re-integration just
+   * provided the real geometry. Without this, after a relink the
+   * placeholder stays parented next to the real mesh and renders as
+   * a stray wireframe ghost.
+   */
+  removeOrphanedPlaceholders() {
+    const nodeById = state.get('nodeById');
+    if (!nodeById || !sceneCore.rootGroup) return;
+    const toRemove = [];
+    sceneCore.rootGroup.traverse(obj => {
+      if (!obj?.userData?.isPlaceholder) return;
+      const id = obj.userData.meshNodeId;
+      const node = id ? nodeById.get(id) : null;
+      if (!node || node.missing === false) toRemove.push(obj);
+    });
+    for (const obj of toRemove) {
+      if (obj.parent) obj.parent.remove(obj);
+      try { obj.geometry?.dispose?.(); } catch {}
+      try { obj.material?.dispose?.(); } catch {}
+      // If this placeholder was registered under the node's id, clear
+      // the registry entry so a stale ref doesn't shadow the real mesh.
+      if (obj.userData?.meshNodeId && this.object3dById.get(obj.userData.meshNodeId) === obj) {
+        this.object3dById.delete(obj.userData.meshNodeId);
+      }
+    }
   }
 
 
@@ -1947,6 +1977,12 @@ function rebuildFromTreeSpec(spec, nodeById, object3dById, parentObject3d) {
     // Inherit bbox from spec if node doesn't have it yet (e.g. phantom clone
     // created before bbox serialisation was added — forward-compat fallback).
     if (!node.bbox && spec.bbox) node.bbox = spec.bbox;
+    // placeholderTransform — re-hydrate on load so saved phantoms render
+    // at their original local rotation/scale (FBX models need this; OBJ
+    // typically has identity per-mesh transforms and the field is absent).
+    if (!node.placeholderTransform && spec.placeholderTransform) {
+      node.placeholderTransform = spec.placeholderTransform;
+    }
     node.children     = [];
 
     let obj = object3dById.get(spec.id) ?? node.object3d;
@@ -2107,11 +2143,28 @@ function _createMeshPlaceholder(node) {
   lines.userData.meshNodeId    = node.id;
   lines.userData.isPlaceholder = true;
 
-  // Position directly at bbox centre within the parent folder group.
-  // We set lines.position explicitly here rather than relying on the transform
-  // system (applyAllTransformsToScene) because mesh nodes are not transform
-  // nodes — keeping it simple and robust.
-  lines.position.set(cx, cy, cz);
+  // Position the placeholder. Two paths:
+  //   - placeholderTransform present (set by deleteTopLevelAssembly,
+  //     captures the original mesh's local position/rotation/scale):
+  //     apply it to the LineSegments + translate the BoxGeometry by
+  //     the bbox centre, so the wireframe lands at the same world
+  //     orientation the original mesh occupied. Required for FBX
+  //     models whose loader puts non-identity transforms on each mesh.
+  //   - otherwise (legacy / load-time missing-asset path): position
+  //     the LineSegments at the bbox centre in folder-local space and
+  //     leave rotation/scale at identity. Matches pre-existing
+  //     behaviour for OBJ-imported missing-asset projects.
+  const pt = node.placeholderTransform;
+  if (pt && Array.isArray(pt.position) && Array.isArray(pt.quaternion)) {
+    edgesGeom.translate(cx, cy, cz);
+    lines.position.set(pt.position[0], pt.position[1], pt.position[2]);
+    lines.quaternion.set(pt.quaternion[0], pt.quaternion[1], pt.quaternion[2], pt.quaternion[3]);
+    if (Array.isArray(pt.scale)) {
+      lines.scale.set(pt.scale[0], pt.scale[1], pt.scale[2]);
+    }
+  } else {
+    lines.position.set(cx, cy, cz);
+  }
 
   return lines;
 }

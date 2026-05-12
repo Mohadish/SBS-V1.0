@@ -504,8 +504,41 @@ export function serializeModelTree(node) {
   if (node.type === 'mesh') {
     if (node.bbox)        spec.bbox        = node.bbox;
     if (node.fingerprint) spec.fingerprint = node.fingerprint;
+    // placeholderTransform — needed so a phantom (Bbox-only) mesh
+    // renders at the same local rotation / scale the live mesh had.
+    //
+    // Two sources:
+    //   1. Explicit, set by deleteTopLevelAssembly (delete-to-phantom).
+    //   2. Inferred from node.object3d at save time — handles the case
+    //      where a live FBX project is saved and later reopened with
+    //      the source file missing. Without this, FBX meshes (whose
+    //      loader puts per-mesh rotations on each object) rendered
+    //      90° off as placeholders even though they bind correctly
+    //      when the file is re-located.
+    //
+    // Identity transforms (typical of OBJ models) are skipped to keep
+    // the saved spec lean.
+    if (node.placeholderTransform) {
+      spec.placeholderTransform = node.placeholderTransform;
+    } else if (node.object3d && !_isIdentityTransform(node.object3d)) {
+      const o = node.object3d;
+      spec.placeholderTransform = {
+        position:   [o.position.x,   o.position.y,   o.position.z],
+        quaternion: [o.quaternion.x, o.quaternion.y, o.quaternion.z, o.quaternion.w],
+        scale:      [o.scale.x,      o.scale.y,      o.scale.z],
+      };
+    }
   }
   return spec;
+}
+
+/** True iff position/quaternion/scale on an Object3D are all identity. */
+function _isIdentityTransform(o) {
+  const e = 1e-6;
+  return Math.abs(o.position.x) < e && Math.abs(o.position.y) < e && Math.abs(o.position.z) < e
+      && Math.abs(o.quaternion.x) < e && Math.abs(o.quaternion.y) < e && Math.abs(o.quaternion.z) < e
+      && Math.abs(o.quaternion.w - 1) < e
+      && Math.abs(o.scale.x - 1) < e && Math.abs(o.scale.y - 1) < e && Math.abs(o.scale.z - 1) < e;
 }
 
 
