@@ -5573,6 +5573,356 @@ export function placeShapeAtClick(templateId, clientX, clientY) {
   return id;
 }
 
+// ─────────────────────────────────────────────────────────────────────
+//  CREATE SHAPE FROM GEOMETRY FACE (v1)
+// ─────────────────────────────────────────────────────────────────────
+//
+// User clicks a face → we compute the plane of that face → walk the
+// CONNECTED COMPONENT (element) of the clicked triangle in the mesh's
+// geometry → intersect every triangle in that component with the plane
+// → stitch the resulting line segments into one closed polyline →
+// project to 2D plane-local coords → create a shape template + place
+// one instance at the plane pose. Single undo entry.
+//
+// v1 scope: handles indexed AND non-indexed geometries (the latter
+// gets vertex-position deduplication so connectivity is detectable).
+// Returns the LARGEST closed loop only — multi-disjoint output deferred
+// to v2.
+
+/** Arm the create-from-face picker. Cancels other modes for safety. */
+export function startCreateShapeFromFace() {
+  if (state.get('shapeDrawing'))               cancelShapeDraw();
+  if (state.get('shapePlacementForId'))        state.setState({ shapePlacementForId: null });
+  if (state.get('shapeEditPickInstanceForId')) state.setState({ shapeEditPickInstanceForId: null });
+  state.setState({ shapeFromFacePicking: true });
+  setStatus('Click a face on a model — its cross-section becomes a new shape.');
+}
+
+export function cancelCreateShapeFromFace() {
+  if (!state.get('shapeFromFacePicking')) return;
+  state.setState({ shapeFromFacePicking: false });
+}
+
+/**
+ * Resolve a viewport click into a connected-component cross-section
+ * polygon and land it as a shape. Auto-disarms after one shot.
+ */
+export function createShapeFromFaceAtClick(clientX, clientY) {
+  const T = window.THREE;
+  if (!T) { state.setState({ shapeFromFacePicking: false }); return null; }
+  const hit = sceneCore.pick(clientX, clientY);
+  if (!hit || !hit.face || !hit.object?.isMesh) {
+    state.setState({ shapeFromFacePicking: false });
+    setStatus('No face hit — cancelled.', 'warning');
+    return null;
+  }
+
+  // ── Plane: same orientation convention as placeShapeAtClick ────────
+  const origin = [hit.point.x, hit.point.y, hit.point.z];
+  const n = hit.face.normal.clone()
+    .transformDirection(hit.object.matrixWorld)
+    .normalize();
+  const N = new T.Vector3(n.x, n.y, n.z);
+  let up = new T.Vector3(0, 1, 0);
+  if (Math.abs(up.dot(N)) > 0.99) up = new T.Vector3(1, 0, 0);
+  const X = new T.Vector3().crossVectors(up, N).normalize();
+  const Y = new T.Vector3().crossVectors(N, X).normalize();
+  const m = new T.Matrix4().makeBasis(X, Y, N);
+  const q = new T.Quaternion().setFromRotationMatrix(m);
+  const anchorNodeId = hit.object?.userData?.meshNodeId
+                    ?? hit.object?.userData?.flatShapeNodeId
+                    ?? hit.object?.userData?.nodeId
+                    ?? null;
+  const plane = {
+    origin,
+    normal:          [N.x, N.y, N.z],
+    qx:              [X.x, X.y, X.z],
+    qy:              [Y.x, Y.y, Y.z],
+    worldQuaternion: [q.x, q.y, q.z, q.w],
+    anchorNodeId,
+  };
+
+  // ── Compute cross-section polygon ──────────────────────────────────
+  let polygon2D;
+  try {
+    polygon2D = _computeFaceCrossSection(hit, plane);
+  } catch (err) {
+    console.warn('[createShapeFromFace] computation failed:', err);
+    state.setState({ shapeFromFacePicking: false });
+    setStatus('Cross-section computation failed.', 'danger');
+    return null;
+  }
+  if (!polygon2D || polygon2D.length < 3) {
+    state.setState({ shapeFromFacePicking: false });
+    setStatus('Could not extract a polygon from this face — try another spot.', 'warning');
+    return null;
+  }
+
+  // ── Land as template + instance (single undo) ──────────────────────
+  const prevTemplates = state.get('shapeTemplates') || [];
+  const tpl = createShapeTemplate({
+    name:     `Shape ${prevTemplates.length + 1}`,
+    fill:     '#88c0f0',
+    polygons: [{ outer: polygon2D, holes: [] }],
+  });
+  state.setState({ shapeTemplates: [...prevTemplates, tpl] });
+
+  const prevSteps = JSON.parse(JSON.stringify(state.get('steps') || []));
+  const instanceId = placeShapeInstance(tpl.id, { plane, undoLabel: null });
+  const nextSteps  = JSON.parse(JSON.stringify(state.get('steps') || []));
+
+  undoManager.push(`Create shape "${tpl.name}" (from face)`,
+    () => _undoCreateTemplate(tpl.id, instanceId, prevTemplates, prevSteps),
+    () => _redoCreateTemplate(tpl, instanceId, nextSteps),
+  );
+
+  state.setState({ shapeFromFacePicking: false });
+  setStatus(`Created "${tpl.name}" — ${polygon2D.length} points.`);
+  return instanceId;
+}
+
+/**
+ * Top-level orchestration: find the element containing the clicked
+ * triangle, slice it with the plane, stitch segments → return the
+ * largest closed loop as plane-local 2D points.
+ */
+function _computeFaceCrossSection(hit, plane) {
+  const T = window.THREE;
+  const mesh = hit.object;
+  const geom = mesh.geometry;
+  if (!geom?.attributes?.position) return null;
+
+  // ── Build the element (connected triangle component) ───────────────
+  const elementTris = _findConnectedTriangles(geom, hit.faceIndex);
+  if (!elementTris || elementTris.length === 0) return null;
+
+  // ── Pre-transform plane into MESH-LOCAL frame ──────────────────────
+  // Working in mesh-local lets us read raw vertex attributes without
+  // transforming each vertex by matrixWorld — orders of magnitude faster
+  // on dense meshes. After we get the local-space polygon back, we'll
+  // hop to plane-local 2D directly via the inverse plane quaternion.
+  mesh.updateMatrixWorld(true);
+  const invMeshWorld = new T.Matrix4().copy(mesh.matrixWorld).invert();
+  const planeOriginLocal = new T.Vector3(...plane.origin).applyMatrix4(invMeshWorld);
+  const planeNormalLocal = new T.Vector3(...plane.normal)
+    .transformDirection(invMeshWorld)
+    .normalize();
+
+  // ── Read triangle vertices ─────────────────────────────────────────
+  const posAttr = geom.attributes.position;
+  const index   = geom.index;
+  const getTri  = index
+    ? (t) => [index.array[t*3], index.array[t*3+1], index.array[t*3+2]]
+    : (t) => [t*3, t*3+1, t*3+2];
+
+  const va = new T.Vector3(), vb = new T.Vector3(), vc = new T.Vector3();
+  const segments = [];
+  for (const t of elementTris) {
+    const [ia, ib, ic] = getTri(t);
+    va.fromBufferAttribute(posAttr, ia);
+    vb.fromBufferAttribute(posAttr, ib);
+    vc.fromBufferAttribute(posAttr, ic);
+    const seg = _intersectTriangleWithPlane(va, vb, vc, planeOriginLocal, planeNormalLocal);
+    if (seg) segments.push(seg);
+  }
+  if (segments.length === 0) return null;
+
+  // ── Stitch segments → closed loops ─────────────────────────────────
+  const loops = _stitchSegmentsToLoops(segments);
+  if (loops.length === 0) return null;
+  // v1: pick the largest loop by point count. v2 will return all.
+  loops.sort((a, b) => b.length - a.length);
+  const loop3DLocal = loops[0];
+
+  // ── Project to plane-local 2D ──────────────────────────────────────
+  // Plane orientation in MESH-local frame (we already inverted): the
+  // plane-local 2D coords sit in the X/Y of the plane basis (qx, qy).
+  // Build the mesh-local X/Y axes by inverse-transforming the world
+  // qx/qy through the mesh world quaternion.
+  const meshWorldQ = new T.Quaternion();
+  mesh.getWorldQuaternion(meshWorldQ);
+  const invMeshWorldQ = meshWorldQ.clone().invert();
+  const Xlocal = new T.Vector3(...plane.qx).applyQuaternion(invMeshWorldQ);
+  const Ylocal = new T.Vector3(...plane.qy).applyQuaternion(invMeshWorldQ);
+
+  const poly2D = loop3DLocal.map(p => {
+    const dx = p.x - planeOriginLocal.x;
+    const dy = p.y - planeOriginLocal.y;
+    const dz = p.z - planeOriginLocal.z;
+    return [
+      dx * Xlocal.x + dy * Xlocal.y + dz * Xlocal.z,
+      dx * Ylocal.x + dy * Ylocal.y + dz * Ylocal.z,
+    ];
+  });
+  return poly2D;
+}
+
+/**
+ * BFS the triangle-adjacency graph of `geom` starting from `startTri`.
+ * Two triangles are adjacent when they share an edge (= two vertex
+ * positions). Returns the array of triangle indices in the connected
+ * component. Handles indexed AND non-indexed geometries — for the
+ * latter we deduplicate vertex positions to a canonical index so edge-
+ * sharing across triangles can actually be detected.
+ */
+function _findConnectedTriangles(geom, startTri) {
+  const posAttr = geom.attributes.position;
+  const index   = geom.index;
+  const triCount = index ? (index.count / 3) : (posAttr.count / 3);
+  if (startTri < 0 || startTri >= triCount) return [];
+
+  // Canonical vertex index per buffer index (positions deduped by value)
+  const eps = 1e-5;
+  const posKey = (i) => {
+    const x = Math.round(posAttr.getX(i) / eps) * eps;
+    const y = Math.round(posAttr.getY(i) / eps) * eps;
+    const z = Math.round(posAttr.getZ(i) / eps) * eps;
+    return `${x},${y},${z}`;
+  };
+  const canonByKey = new Map();
+  const canon = new Int32Array(posAttr.count);
+  let nextCanon = 0;
+  for (let i = 0; i < posAttr.count; i++) {
+    const k = posKey(i);
+    let c = canonByKey.get(k);
+    if (c === undefined) { c = nextCanon++; canonByKey.set(k, c); }
+    canon[i] = c;
+  }
+
+  // Per-triangle canonical vertex triple
+  const triVerts = (t) => {
+    const a = index ? index.array[t*3]     : t*3;
+    const b = index ? index.array[t*3 + 1] : t*3 + 1;
+    const c = index ? index.array[t*3 + 2] : t*3 + 2;
+    return [canon[a], canon[b], canon[c]];
+  };
+
+  // Edge → triangles map
+  const edgeKey = (a, b) => a < b ? (a + '-' + b) : (b + '-' + a);
+  const edgeMap = new Map();
+  for (let t = 0; t < triCount; t++) {
+    const [a, b, c] = triVerts(t);
+    for (const [u, v] of [[a, b], [b, c], [c, a]]) {
+      const k = edgeKey(u, v);
+      let list = edgeMap.get(k);
+      if (!list) { list = []; edgeMap.set(k, list); }
+      list.push(t);
+    }
+  }
+
+  // BFS
+  const seen = new Uint8Array(triCount);
+  const component = [];
+  const queue = [startTri];
+  seen[startTri] = 1;
+  while (queue.length) {
+    const t = queue.shift();
+    component.push(t);
+    const [a, b, c] = triVerts(t);
+    for (const [u, v] of [[a, b], [b, c], [c, a]]) {
+      const neighbors = edgeMap.get(edgeKey(u, v));
+      if (!neighbors) continue;
+      for (const n of neighbors) {
+        if (!seen[n]) { seen[n] = 1; queue.push(n); }
+      }
+    }
+  }
+  return component;
+}
+
+/**
+ * Intersect one triangle with the plane. Returns an array of two
+ * THREE.Vector3 (the segment endpoints on the plane) when the triangle
+ * properly straddles, or null otherwise. Skips degenerate cases (vertex
+ * exactly on plane, triangle coplanar) to keep v1 robust.
+ */
+function _intersectTriangleWithPlane(v0, v1, v2, planePt, planeN) {
+  const eps = 1e-6;
+  const d0 = (v0.x - planePt.x) * planeN.x + (v0.y - planePt.y) * planeN.y + (v0.z - planePt.z) * planeN.z;
+  const d1 = (v1.x - planePt.x) * planeN.x + (v1.y - planePt.y) * planeN.y + (v1.z - planePt.z) * planeN.z;
+  const d2 = (v2.x - planePt.x) * planeN.x + (v2.y - planePt.y) * planeN.y + (v2.z - planePt.z) * planeN.z;
+
+  // All same side → no crossing.
+  if (d0 >  eps && d1 >  eps && d2 >  eps) return null;
+  if (d0 < -eps && d1 < -eps && d2 < -eps) return null;
+  // All within eps → coplanar, skip in v1.
+  if (Math.abs(d0) < eps && Math.abs(d1) < eps && Math.abs(d2) < eps) return null;
+
+  const T = window.THREE;
+  const pts = [];
+  const edges = [[v0, d0, v1, d1], [v1, d1, v2, d2], [v2, d2, v0, d0]];
+  for (const [a, da, b, db] of edges) {
+    // Edge crosses plane iff signed distances have opposite signs (treating
+    // |d| < eps as 0). Skip zero-zero edges (coplanar — handled above)
+    // and zero-X edges where the vertex sits on the plane: that's the
+    // degenerate corner-touch case which v1 ignores.
+    const sa = Math.abs(da) < eps ? 0 : Math.sign(da);
+    const sb = Math.abs(db) < eps ? 0 : Math.sign(db);
+    if (sa === sb || sa === 0 || sb === 0) continue;
+    const t = da / (da - db);
+    pts.push(new T.Vector3(
+      a.x + t * (b.x - a.x),
+      a.y + t * (b.y - a.y),
+      a.z + t * (b.z - a.z),
+    ));
+    if (pts.length === 2) break;
+  }
+  return pts.length === 2 ? pts : null;
+}
+
+/**
+ * Stitch unordered line segments into closed loops. Endpoints are
+ * matched by spatial hash (small epsilon round). Each segment is used
+ * at most once. Returns array of loops; each loop is an array of
+ * THREE.Vector3 in connection order (no duplicate closing vertex).
+ */
+function _stitchSegmentsToLoops(segments) {
+  const eps = 1e-4;
+  const key = (p) => `${Math.round(p.x / eps)},${Math.round(p.y / eps)},${Math.round(p.z / eps)}`;
+
+  // Endpoint → [{ segIdx, end }]
+  const endpoints = new Map();
+  segments.forEach((seg, i) => {
+    for (let end = 0; end < 2; end++) {
+      const k = key(seg[end]);
+      let list = endpoints.get(k);
+      if (!list) { list = []; endpoints.set(k, list); }
+      list.push({ segIdx: i, end });
+    }
+  });
+
+  const used = new Uint8Array(segments.length);
+  const loops = [];
+  for (let start = 0; start < segments.length; start++) {
+    if (used[start]) continue;
+    used[start] = 1;
+    const loop = [segments[start][0], segments[start][1]];
+    let safety = segments.length + 4;
+    while (safety-- > 0) {
+      const tip = loop[loop.length - 1];
+      const k   = key(tip);
+      const candidates = endpoints.get(k) || [];
+      let next = null;
+      for (const c of candidates) {
+        if (used[c.segIdx]) continue;
+        next = c;
+        break;
+      }
+      if (!next) break;
+      used[next.segIdx] = 1;
+      const seg = segments[next.segIdx];
+      loop.push(seg[1 - next.end]);
+      // Closed loop check — back at start within eps.
+      if (key(loop[loop.length - 1]) === key(loop[0])) {
+        loop.pop();
+        break;
+      }
+    }
+    if (loop.length >= 3) loops.push(loop);
+  }
+  return loops;
+}
+
 function _findDataParent(root, childId) {
   const stack = [{ node: root, parent: null }];
   while (stack.length) {

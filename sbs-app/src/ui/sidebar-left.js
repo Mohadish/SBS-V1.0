@@ -142,6 +142,7 @@ export function initSidebarLeft() {
   state.on('change:shapeDrawing',        () => { if (_activeTab === 'shapes') _renderShapesTab(); });
   state.on('change:treeData',            () => { if (_activeTab === 'shapes') _renderShapesTab(); });
   state.on('change:shapePlacementForId', () => { if (_activeTab === 'shapes') _renderShapesTab(); });
+  state.on('change:shapeFromFacePicking',() => { if (_activeTab === 'shapes') _renderShapesTab(); });
   // Selection changes trigger a Shapes-tab re-render only when that tab
   // is active, so the highlight on the currently-selected flatShape's
   // template row stays in sync. (Other tabs already re-render on their
@@ -2525,6 +2526,7 @@ function _renderShapesTab() {
   const drawing = state.get('shapeDrawing');
   const drawingPhase = drawing?.phase ?? null;
   const placeArmedFor = state.get('shapePlacementForId') || null;
+  const facePicking   = !!state.get('shapeFromFacePicking');
   // Highlight the row of the currently-selected flatShape's template —
   // gives the user a visual link between scene selection and library row.
   const selId = state.get('selectedId');
@@ -2553,10 +2555,21 @@ function _renderShapesTab() {
         many times in the scene. Drawing happens in the viewport.
       </p>
       <div style="display:flex;gap:8px;align-items:center">
-        <button class="btn" id="btn-new-shape" ${drawing ? 'disabled' : ''}
+        <button class="btn" id="btn-new-shape" ${drawing || facePicking ? 'disabled' : ''}
           style="flex:1">${drawing ? 'Drawing…' : '+ New Shape'}</button>
         ${drawing
           ? `<button class="btn" id="btn-cancel-shape" style="background:#7f1d1d">Cancel</button>`
+          : ''}
+      </div>
+      <div style="display:flex;gap:8px;align-items:center;margin-top:6px">
+        <button class="btn" id="btn-shape-from-face"
+                ${drawing ? 'disabled' : ''}
+                style="flex:1${facePicking ? ';background:#0369a1;color:#f1f5f9' : ''}"
+                title="Click a face on a model — its cross-section through the connected element becomes a new shape.">
+          ${facePicking ? 'Click a face…' : '✂ Create shape from face'}
+        </button>
+        ${facePicking
+          ? `<button class="btn" id="btn-cancel-face-shape" style="background:#7f1d1d">Cancel</button>`
           : ''}
       </div>
       ${drawing
@@ -2564,6 +2577,10 @@ function _renderShapesTab() {
              ${drawingPhase === 'pickPlane'
                ? 'Click a face or empty space to set the drawing plane.'
                : 'Click to add vertices • Click first vertex (or right-click) to close • Esc to cancel.'}
+           </p>` : ''}
+      ${facePicking
+        ? `<p class="small" style="margin-top:8px;color:#fdba74">
+             Click a mesh face — the connected element gets sliced by that face's plane. Right-click or Esc cancels.
            </p>` : ''}
     </div>
 
@@ -2615,6 +2632,13 @@ function _renderShapesTab() {
   });
   el.querySelector('#btn-cancel-shape')?.addEventListener('click', () => {
     actions.cancelShapeDraw();
+  });
+  el.querySelector('#btn-shape-from-face')?.addEventListener('click', () => {
+    if (state.get('shapeFromFacePicking')) actions.cancelCreateShapeFromFace();
+    else                                    actions.startCreateShapeFromFace();
+  });
+  el.querySelector('#btn-cancel-face-shape')?.addEventListener('click', () => {
+    actions.cancelCreateShapeFromFace();
   });
 
   el.querySelectorAll('[data-edit-id]').forEach(btn => {

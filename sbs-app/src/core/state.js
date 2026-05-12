@@ -150,6 +150,13 @@ function createInitialState() {
     // Esc cancels. Single-shot — auto-disarms after one place.
     shapePlacementForId: null,
 
+    // Create-shape-from-face picker mode. When true, the next viewport
+    // click on a mesh face slices the clicked face's connected component
+    // (element) with the face's plane and lands the cross-section
+    // polyline as a new shape template + instance. Right-click / Esc
+    // cancels. Single-shot — auto-disarms after one create.
+    shapeFromFacePicking: false,
+
     // ── Cables — 3D wires/conduits routed between mesh anchors and
     // free points. The LIVE state of cables (current step's view).
     // step.snapshot.cables holds per-step variable overrides

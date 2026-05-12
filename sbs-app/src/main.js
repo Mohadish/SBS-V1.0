@@ -554,6 +554,24 @@ canvas.addEventListener('pointerdown', e => {
     return;
   }
 
+  // Create-shape-from-face picker — left click slices the clicked face's
+  // connected component with the face's plane and lands the cross-section
+  // as a new shape. Right-click / Esc cancels.
+  if (state.get('shapeFromFacePicking') && e.button === 0) {
+    e.preventDefault();
+    e.stopPropagation();
+    _gizmoConsumed = true;
+    actions.createShapeFromFaceAtClick(e.clientX, e.clientY);
+    return;
+  }
+  if (state.get('shapeFromFacePicking') && e.button === 2) {
+    e.preventDefault();
+    e.stopPropagation();
+    _gizmoConsumed = true;
+    actions.cancelCreateShapeFromFace();
+    return;
+  }
+
   // Edit-shape multi-instance pick mode — the next left-click picks
   // which flatShape instance to edit. Clicks elsewhere cancel.
   const editPickTplId = state.get('shapeEditPickInstanceForId');
@@ -1695,6 +1713,11 @@ window.addEventListener('keydown', async e => {
     // Place-shape picker — Esc disarms.
     if (state.get('shapePlacementForId')) {
       actions.cancelShapePlacement();
+      return;
+    }
+    // Create-shape-from-face picker — Esc disarms.
+    if (state.get('shapeFromFacePicking')) {
+      actions.cancelCreateShapeFromFace();
       return;
     }
     // Translate-global — Esc rolls back the open session and exits mode.
