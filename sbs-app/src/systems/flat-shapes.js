@@ -20,6 +20,7 @@
 import state                          from '../core/state.js';
 import { generateId }                  from '../core/schema.js';
 import { applyNodeTransformToObject3D } from '../core/transforms.js';
+import { materials }                   from './materials.js';
 
 // ─────────────────────────────────────────────────────────────────────────
 //  GEOMETRY BUILDER
@@ -239,6 +240,12 @@ export function ensureFlatShapeObject3D(node) {
   mesh.userData.nodeId          = node.id;
   mesh.userData.shapeBuildKey   = sig;
   node.object3d = mesh;
+  // Register with the materials map so step transitions can detect
+  // visibility changes on this node (materials.meshById is what
+  // _prepareVisibility iterates). Without this, flatShapes silently
+  // skip every hide/show transition. Re-registers idempotently after
+  // rebuilds — the latest Mesh wins.
+  materials?.registerMesh?.(node.id, mesh);
   return mesh;
 }
 
@@ -313,6 +320,7 @@ export function disposeFlatShape(node) {
   mesh.geometry?.dispose?.();
   mesh.material?.dispose?.();
   node.object3d = null;
+  materials?.unregisterMesh?.(node.id);
 }
 
 
