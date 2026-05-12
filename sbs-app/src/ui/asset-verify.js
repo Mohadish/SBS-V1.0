@@ -9,7 +9,7 @@
  *   → rejects if user cancels
  */
 
-const ACCEPT = '.step,.stp,.iges,.igs,.brep,.brp,.obj,.stl,.gltf,.glb';
+const ACCEPT = '.step,.stp,.iges,.igs,.brep,.brp,.obj,.stl,.gltf,.glb,.fbx';
 
 /**
  * @param {Array<{assetEntry, resolvedPath}>} assets
