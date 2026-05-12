@@ -447,9 +447,7 @@ class StepManager {
     // Hiding meshes are kept obj.visible=true for dither-fade.
     // Showing meshes will be snapped to opacity=0 so they're invisible before
     // their visibility phase.
-    const { hidingMeshIds, showingMeshIds } = this._prepareVisibility(
-      nodeById, toSnapshot.visibility,
-    );
+    const vis = this._prepareVisibility(nodeById, toSnapshot.visibility);
     // Pre-snap showing meshes to opacity 0 BEFORE any phase runs.
     // _prepareVisibility flips obj.visible=true on the showing set
     // immediately — without this snap, any phase that runs ahead of
@@ -460,6 +458,39 @@ class StepManager {
     // Clear the pending set first so a previous activate's leftovers
     // don't suppress visibility unrelated to the current transition.
     this._materials?._pendingShowingHidden?.clear?.();
+
+    // ── Resolve animation preset (need it now to route shapes) ───────
+    const animStr = resolveAnimationString(
+      transition, state.get('animationPresets') || [],
+    );
+    const phases = animStr ? parseAnimation(animStr) : null;
+
+    // 'shape' channel: threshold-snap visibility for flatShape nodes,
+    // independent of mesh fade. When that channel exists in the
+    // schedule, shapes go through it; otherwise they fold into the
+    // regular visibility/mesh arrays so they fade like everything else.
+    const hasShapePhase = !!phases && phases.some(p => p.types.includes('shape'));
+
+    let hidingMeshIds, showingMeshIds, hidingShapeIds, showingShapeIds;
+    if (hasShapePhase) {
+      hidingMeshIds   = vis.hidingMeshIds;
+      showingMeshIds  = vis.showingMeshIds;
+      hidingShapeIds  = vis.hidingShapeIds;
+      showingShapeIds = vis.showingShapeIds;
+      // Hide showing shapes pre-emptively. _prepareVisibility flipped
+      // obj.visible=true on them after applyAllVisibilityToScene; we
+      // override to false until the shape phase ends snaps them on.
+      for (const id of showingShapeIds) {
+        const obj = this.object3dById.get(id);
+        if (obj) obj.visible = false;
+      }
+    } else {
+      hidingMeshIds   = [...vis.hidingMeshIds,  ...vis.hidingShapeIds];
+      showingMeshIds  = [...vis.showingMeshIds, ...vis.showingShapeIds];
+      hidingShapeIds  = [];
+      showingShapeIds = [];
+    }
+
     if (showingMeshIds.length && this._materials?.snapShowingToZero) {
       this._materials.snapShowingToZero(showingMeshIds);
     }
@@ -482,11 +513,7 @@ class StepManager {
       obj.visible = wasVisible;
     });
 
-    // ── Resolve animation preset ─────────────────────────────────────────
-    const animStr = resolveAnimationString(
-      transition, state.get('animationPresets') || [],
-    );
-    const phases = animStr ? parseAnimation(animStr) : null;
+    // animStr/phases already resolved above (needed for shape-phase routing).
 
     let cameraHandled = false;
 
@@ -508,6 +535,7 @@ class StepManager {
       cameraHandled = await this._runPhasedAnimation(toSnapshot, phases, {
         changedNodeIds, fromWorldTransforms, toWorldTransforms, depthMap,
         hidingMeshIds, showingMeshIds,
+        hidingShapeIds, showingShapeIds,
         easing, easeFn, myGen,
       });
     } else {
@@ -618,10 +646,12 @@ class StepManager {
    * @private
    */
   _prepareVisibility(nodeById, visibilitySnapshot) {
-    const hidingMeshIds  = [];
-    const showingMeshIds = [];
+    const hidingMeshIds   = [];
+    const showingMeshIds  = [];
+    const hidingShapeIds  = [];
+    const showingShapeIds = [];
     if (!visibilitySnapshot || !this._materials) {
-      return { hidingMeshIds, showingMeshIds };
+      return { hidingMeshIds, showingMeshIds, hidingShapeIds, showingShapeIds };
     }
 
     // Record current Three.js visibility
@@ -635,20 +665,28 @@ class StepManager {
     applyVisibilitySnapshot(nodeById, visibilitySnapshot);
     applyAllVisibilityToScene(nodeById, this.object3dById);
 
-    // Compute which meshes changed effective visibility
+    // Compute which meshes changed effective visibility. flatShape nodes
+    // get partitioned out so the caller can route them to the dedicated
+    // 'shape' threshold-snap channel if the animation string opted into
+    // it. When there's no 'shape' slot the caller folds them back into
+    // the regular hiding/showing mesh arrays — legacy fade behaviour.
     for (const [nodeId] of this._materials.meshById) {
       const prevVis = prevMeshVis.get(nodeId) ?? false;
       const obj     = this.object3dById.get(nodeId);
       const newVis  = obj ? obj.visible : false;
+      const node    = nodeById?.get(nodeId);
+      const isShape = node?.type === 'flatShape';
       if (prevVis && !newVis) {
-        hidingMeshIds.push(nodeId);
-        if (obj) obj.visible = true;   // keep visible — fade will hide it
+        if (isShape) hidingShapeIds.push(nodeId);
+        else         hidingMeshIds.push(nodeId);
+        if (obj) obj.visible = true;   // keep visible — fade/snap will hide it
       } else if (!prevVis && newVis) {
-        showingMeshIds.push(nodeId);
+        if (isShape) showingShapeIds.push(nodeId);
+        else         showingMeshIds.push(nodeId);
       }
     }
 
-    return { hidingMeshIds, showingMeshIds };
+    return { hidingMeshIds, showingMeshIds, hidingShapeIds, showingShapeIds };
   }
 
   /**
@@ -659,14 +697,20 @@ class StepManager {
    * @private
    */
   async _runPhasedAnimation(toSnapshot, phases, opts) {
-    const { changedNodeIds, fromWorldTransforms, toWorldTransforms, depthMap, hidingMeshIds, showingMeshIds, easing, easeFn, myGen } = opts;
+    const {
+      changedNodeIds, fromWorldTransforms, toWorldTransforms, depthMap,
+      hidingMeshIds, showingMeshIds,
+      hidingShapeIds = [], showingShapeIds = [],
+      easing, easeFn, myGen,
+    } = opts;
 
     let cameraHandled = false;
     let objHandled    = false;
     let colorHandled  = false;
     let visHandled    = false;
     let cableHandled  = false;
-    let overlayHandled    = false;
+    let overlayHandled = false;
+    let shapeHandled   = false;
 
     for (const phase of phases) {
       const { types, durationMs } = phase;
@@ -737,6 +781,31 @@ class StepManager {
         // so they stay invisible until their phase starts.
         if (!visHandled && showingMeshIds.length) {
           this._materials.snapShowingToZero(showingMeshIds);
+        }
+      }
+
+      // 'shape' channel — threshold-snap visibility for flatShape nodes.
+      // Shapes stay at their FROM-state visibility for `durationMs`,
+      // then snap to TO-state at the end of the slot. No fade. Lets the
+      // author hold meshes' transition open before 2D annotations pop in.
+      if (types.includes('shape') && !shapeHandled) {
+        shapeHandled = true;
+        const snap = () => {
+          for (const id of hidingShapeIds) {
+            const obj = this.object3dById.get(id);
+            if (obj) obj.visible = false;
+          }
+          for (const id of showingShapeIds) {
+            const obj = this.object3dById.get(id);
+            if (obj) obj.visible = true;
+          }
+        };
+        if (durationMs > 0 && (hidingShapeIds.length || showingShapeIds.length)) {
+          phasePromises.push(new Promise(resolve => {
+            setTimeout(() => { snap(); resolve(); }, durationMs);
+          }));
+        } else {
+          snap();
         }
       }
 

@@ -23,7 +23,15 @@ export const DEFAULT_ANIMATION_STR =
 // `overlays` (lowercased from 'overlayS') = sustained-overlap variant of
 // `overlay`. Two-phase fade keeps shared items at 100% visible alpha
 // across the whole transition; see beginOverlaySustainedFade in overlay.js.
-const VALID_TYPES = new Set(['camera', 'color', 'obj', 'visibility', 'cable', 'overlay', 'overlays']);
+//
+// `shape` channel is threshold-snap (NOT fade) for flatShape nodes:
+// shapes stay at their FROM-state visibility for the phase's duration,
+// then snap to TO-state at the end of the slot. Lets the author time
+// 2D annotations to appear AFTER the mesh transition completes
+// (callouts pop in clean, no half-transparent ghost). When the string
+// has no 'shape' slot, flatShape visibility folds into the regular
+// `visibility` channel (legacy fade behaviour).
+const VALID_TYPES = new Set(['camera', 'color', 'obj', 'visibility', 'cable', 'overlay', 'overlays', 'shape']);
 
 // Matches: 'camera(500)' or 'obj+visibility(300)'
 const TOKEN_RE = /([a-zA-Z+]+)\(\s*(\d+)\s*\)/g;
