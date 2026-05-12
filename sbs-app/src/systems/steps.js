@@ -828,56 +828,76 @@ class StepManager {
       if (myGen !== undefined && this._animGeneration !== myGen) return false;
     }
 
-    // ── Finalize missing channels — guarantee TO state ─────────────────
-    // Any channel not scheduled in the preset must still end up at its
-    // target value. Without this, a preset missing 'visibility' would
-    // leave hidings stuck obj.visible=true (kept open for a fade that
-    // never fired) and showings stuck at opacity=0 (snapped pre-vis,
-    // never restored). Same hazard applies per-channel; snap each here
-    // so the rule is "any channel absent from the preset → snap to TO".
+    // ── Finalize missing channels — run DEFAULT animation, not snap ────
+    // User rule: "all animation strings must fall on default if missing
+    // from string." A preset like 'shape(500)' should make shapes snap
+    // (their slot is in the string) but camera / obj / visibility still
+    // animate over the global default duration — not threshold-pop.
     //
-    // Camera, obj, visibility, shape — these I trust to snap cleanly.
+    // Each missing channel kicks off its standard animation pipeline
+    // with the global default duration (state.cameraAnimDurationMs /
+    // state.objectAnimDurationMs). They run in parallel here so the
+    // longest one caps the total time.
+    //
     // Color and cable have their own application pipelines (applyAll +
-    // step:activate listeners) so I leave them to handle missing-slot
-    // semantics themselves; reaching in would risk double-application.
+    // step:activate listeners) and tracking them in here would risk
+    // double-application — leave them for now.
+    const fallbackCam = state.get('cameraAnimDurationMs') ?? 1500;
+    const fallbackObj = state.get('objectAnimDurationMs') ?? 1500;
+    const fallbackPromises = [];
+
     if (!cameraHandled && toSnapshot.camera) {
-      sceneCore.applyCameraState(toSnapshot.camera);
       cameraHandled = true;
+      fallbackPromises.push(
+        sceneCore.animateCameraTo(toSnapshot.camera, fallbackCam, opts.easing),
+      );
     }
     if (!objHandled && changedNodeIds.length) {
+      objHandled = true;
+      const startMs = clock.now();
+      this._objectTransitions = [];
       for (const nodeId of changedNodeIds) {
-        const obj = this.object3dById.get(nodeId);
-        const wt  = toWorldTransforms[nodeId];
-        if (obj && wt) _setWorldTransformOnObject(obj, wt.position, wt.quaternion);
+        const worldFrom = fromWorldTransforms[nodeId];
+        const worldTo   = toWorldTransforms[nodeId];
+        if (!worldFrom || !worldTo) continue;
+        this._objectTransitions.push({
+          nodeId, worldFrom, worldTo, startMs,
+          durationMs: fallbackObj, easeFn, isWorld: true,
+          depth: depthMap[nodeId] ?? 0,
+        });
+      }
+      this._objectTransitions.sort((a, b) => a.depth - b.depth);
+      if (this._objectTransitions.length) {
+        fallbackPromises.push(new Promise(resolve => {
+          this._onObjectTransitionsDone = resolve;
+        }));
       }
     }
-    if (!visHandled)   this._snapVisibilityToTarget(hidingMeshIds, showingMeshIds);
-    if (!shapeHandled) this._snapVisibilityToTarget(hidingShapeIds, showingShapeIds);
+    // visibility + shape: both use the same fade machinery. When
+    // EITHER is missing from the string, the missing group falls back
+    // to a default fade. Shapes that were folded into mesh arrays
+    // (no shape slot in string) ride along automatically.
+    if (!visHandled && (hidingMeshIds.length || showingMeshIds.length)) {
+      visHandled = true;
+      this._materials?.beginVisibilityTransitions(
+        hidingMeshIds, showingMeshIds, fallbackObj, easeFn,
+      );
+      fallbackPromises.push(_sleep(fallbackObj));
+    }
+    if (!shapeHandled && (hidingShapeIds.length || showingShapeIds.length)) {
+      shapeHandled = true;
+      this._materials?.beginVisibilityTransitions(
+        hidingShapeIds, showingShapeIds, fallbackObj, easeFn,
+      );
+      fallbackPromises.push(_sleep(fallbackObj));
+    }
+
+    if (fallbackPromises.length) {
+      await Promise.all(fallbackPromises);
+      if (myGen !== undefined && this._animGeneration !== myGen) return false;
+    }
 
     return cameraHandled;
-  }
-
-  /**
-   * Force-snap a hide/show split to its TO state. Used by the finalize
-   * pass when a channel was missing from the animation preset — sets
-   * obj.visible to the target and resets per-material transition opacity
-   * to 1.0 so a previously-snapped showing mesh (opacity=0) becomes
-   * fully visible. Defensive: safe if the meshes aren't in meshById.
-   */
-  _snapVisibilityToTarget(hidingIds, showingIds) {
-    for (const id of hidingIds || []) {
-      const obj = this.object3dById.get(id);
-      if (obj) obj.visible = false;
-      const mesh = this._materials?.meshById?.get(id);
-      if (mesh) this._materials?._setMaterialFade?.(mesh.material, 1.0);
-    }
-    for (const id of showingIds || []) {
-      const obj = this.object3dById.get(id);
-      if (obj) obj.visible = true;
-      const mesh = this._materials?.meshById?.get(id);
-      if (mesh) this._materials?._setMaterialFade?.(mesh.material, 1.0);
-    }
-    this._materials?._pendingShowingHidden?.clear?.();
   }
 
   // ─── Object transition tick ────────────────────────────────────────────
