@@ -473,17 +473,13 @@ class StepManager {
 
     let hidingMeshIds, showingMeshIds, hidingShapeIds, showingShapeIds;
     if (hasShapePhase) {
+      // shape(N) is in the string — shapes get their own fade slot,
+      // independent of the mesh visibility channel. Both pre-snap to
+      // opacity=0 so the fade-in starts from invisible.
       hidingMeshIds   = vis.hidingMeshIds;
       showingMeshIds  = vis.showingMeshIds;
       hidingShapeIds  = vis.hidingShapeIds;
       showingShapeIds = vis.showingShapeIds;
-      // Hide showing shapes pre-emptively. _prepareVisibility flipped
-      // obj.visible=true on them after applyAllVisibilityToScene; we
-      // override to false until the shape phase ends snaps them on.
-      for (const id of showingShapeIds) {
-        const obj = this.object3dById.get(id);
-        if (obj) obj.visible = false;
-      }
     } else {
       hidingMeshIds   = [...vis.hidingMeshIds,  ...vis.hidingShapeIds];
       showingMeshIds  = [...vis.showingMeshIds, ...vis.showingShapeIds];
@@ -491,8 +487,12 @@ class StepManager {
       showingShapeIds = [];
     }
 
-    if (showingMeshIds.length && this._materials?.snapShowingToZero) {
-      this._materials.snapShowingToZero(showingMeshIds);
+    // All showing items (meshes + shapes) pre-snap to opacity=0 so the
+    // fade-in actually starts from invisible. Without this, anything
+    // appearing this step would flash at full alpha for a frame.
+    const allShowingPreSnap = [...showingMeshIds, ...showingShapeIds];
+    if (allShowingPreSnap.length && this._materials?.snapShowingToZero) {
+      this._materials.snapShowingToZero(allShowingPreSnap);
     }
 
     // ── Place objects at FROM world positions (v0.266 approach) ─────────────
@@ -519,9 +519,11 @@ class StepManager {
 
     if (phases) {
       // ── PHASED MODE ───────────────────────────────────────────────────
-      // Showing meshes must be invisible during pre-vis phases.
-      if (showingMeshIds.length) {
-        this._materials?.snapShowingToZero(showingMeshIds);
+      // Showing items (meshes + shapes) re-snap to opacity=0 so any
+      // phase that runs ahead of visibility / shape doesn't reveal
+      // them at full alpha.
+      if (allShowingPreSnap.length) {
+        this._materials?.snapShowingToZero(allShowingPreSnap);
       }
 
       // Schedule note panel-offset lerp + opacity fade across the entire
@@ -784,28 +786,20 @@ class StepManager {
         }
       }
 
-      // 'shape' channel — threshold-snap visibility for flatShape nodes.
-      // Shapes stay at their FROM-state visibility for `durationMs`,
-      // then snap to TO-state at the end of the slot. No fade. Lets the
-      // author hold meshes' transition open before 2D annotations pop in.
+      // 'shape' channel — DEDICATED FADE slot for flatShape nodes.
+      // Same opacity-tween machinery as the regular 'visibility' channel,
+      // just filtered to shape ids. Lets the author give shapes an
+      // independent fade duration from the rest of the scene — e.g.
+      // `camera(500), visibility(500), obj(500), shape(300)` fades
+      // shapes faster (or with their own offset) than the meshes.
+      //
+      // For snap/threshold behaviour, use a tiny duration like shape(0).
       if (types.includes('shape') && !shapeHandled) {
         shapeHandled = true;
-        const snap = () => {
-          for (const id of hidingShapeIds) {
-            const obj = this.object3dById.get(id);
-            if (obj) obj.visible = false;
-          }
-          for (const id of showingShapeIds) {
-            const obj = this.object3dById.get(id);
-            if (obj) obj.visible = true;
-          }
-        };
-        if (durationMs > 0 && (hidingShapeIds.length || showingShapeIds.length)) {
-          phasePromises.push(new Promise(resolve => {
-            setTimeout(() => { snap(); resolve(); }, durationMs);
-          }));
-        } else {
-          snap();
+        if (hidingShapeIds.length || showingShapeIds.length) {
+          this._materials?.beginVisibilityTransitions(
+            hidingShapeIds, showingShapeIds, durationMs, easeFn,
+          );
         }
       }
 
