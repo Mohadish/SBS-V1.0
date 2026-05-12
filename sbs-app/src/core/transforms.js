@@ -239,6 +239,14 @@ export function ensureTransformDefaults(node) {
 export function captureMeshModelLocalMatrices(outer, assetId) {
   if (!outer || !window.THREE) return;
   const T = window.THREE;
+  // GLTF/GLB loaders share a single BufferGeometry across mesh nodes that
+  // reference the same primitive (memory optimisation). Source-transform
+  // bakes the geometry in place — if multiple meshes share one buffer the
+  // bake compounds per-mesh and the rewind snapshot captures already-baked
+  // vertices. Symptom: pins (or any duplicated submesh) drift from the rest
+  // of the model. Clone the geometry for duplicate-sharing meshes so each
+  // mesh owns its buffer.
+  _unshareSharedGeometries(outer);
   outer.updateMatrixWorld(true);
   const outerInv = new T.Matrix4().copy(outer.matrixWorld).invert();
   outer.traverse(obj => {
@@ -249,6 +257,30 @@ export function captureMeshModelLocalMatrices(outer, assetId) {
     const m = new T.Matrix4().multiplyMatrices(outerInv, obj.matrixWorld);
     obj.userData.sbsModelLocalMatrix = m.toArray();
   });
+}
+
+/**
+ * Walk the outer group; clone any BufferGeometry that's referenced by more
+ * than one Mesh so each Mesh owns a unique buffer. Keeps the first mesh
+ * pointing at the original geometry, clones for the rest. Idempotent — a
+ * model already loaded with unique geometries is a no-op.
+ */
+function _unshareSharedGeometries(outer) {
+  if (!outer) return;
+  const byGeom = new Map();
+  outer.traverse(obj => {
+    if (!obj.isMesh || !obj.geometry) return;
+    const g = obj.geometry;
+    let list = byGeom.get(g);
+    if (!list) { list = []; byGeom.set(g, list); }
+    list.push(obj);
+  });
+  for (const [geom, meshes] of byGeom) {
+    if (meshes.length <= 1) continue;
+    for (let i = 1; i < meshes.length; i++) {
+      meshes[i].geometry = geom.clone();
+    }
+  }
 }
 
 /**
