@@ -828,7 +828,56 @@ class StepManager {
       if (myGen !== undefined && this._animGeneration !== myGen) return false;
     }
 
+    // ── Finalize missing channels — guarantee TO state ─────────────────
+    // Any channel not scheduled in the preset must still end up at its
+    // target value. Without this, a preset missing 'visibility' would
+    // leave hidings stuck obj.visible=true (kept open for a fade that
+    // never fired) and showings stuck at opacity=0 (snapped pre-vis,
+    // never restored). Same hazard applies per-channel; snap each here
+    // so the rule is "any channel absent from the preset → snap to TO".
+    //
+    // Camera, obj, visibility, shape — these I trust to snap cleanly.
+    // Color and cable have their own application pipelines (applyAll +
+    // step:activate listeners) so I leave them to handle missing-slot
+    // semantics themselves; reaching in would risk double-application.
+    if (!cameraHandled && toSnapshot.camera) {
+      sceneCore.applyCameraState(toSnapshot.camera);
+      cameraHandled = true;
+    }
+    if (!objHandled && changedNodeIds.length) {
+      for (const nodeId of changedNodeIds) {
+        const obj = this.object3dById.get(nodeId);
+        const wt  = toWorldTransforms[nodeId];
+        if (obj && wt) _setWorldTransformOnObject(obj, wt.position, wt.quaternion);
+      }
+    }
+    if (!visHandled)   this._snapVisibilityToTarget(hidingMeshIds, showingMeshIds);
+    if (!shapeHandled) this._snapVisibilityToTarget(hidingShapeIds, showingShapeIds);
+
     return cameraHandled;
+  }
+
+  /**
+   * Force-snap a hide/show split to its TO state. Used by the finalize
+   * pass when a channel was missing from the animation preset — sets
+   * obj.visible to the target and resets per-material transition opacity
+   * to 1.0 so a previously-snapped showing mesh (opacity=0) becomes
+   * fully visible. Defensive: safe if the meshes aren't in meshById.
+   */
+  _snapVisibilityToTarget(hidingIds, showingIds) {
+    for (const id of hidingIds || []) {
+      const obj = this.object3dById.get(id);
+      if (obj) obj.visible = false;
+      const mesh = this._materials?.meshById?.get(id);
+      if (mesh) this._materials?._setMaterialFade?.(mesh.material, 1.0);
+    }
+    for (const id of showingIds || []) {
+      const obj = this.object3dById.get(id);
+      if (obj) obj.visible = true;
+      const mesh = this._materials?.meshById?.get(id);
+      if (mesh) this._materials?._setMaterialFade?.(mesh.material, 1.0);
+    }
+    this._materials?._pendingShowingHidden?.clear?.();
   }
 
   // ─── Object transition tick ────────────────────────────────────────────
@@ -2094,7 +2143,12 @@ function rebuildFromTreeSpec(spec, nodeById, object3dById, parentObject3d) {
     node.localVisible = spec.localVisible !== false;
     node.children     = [];
 
-    let obj = object3dById.get(spec.id) ?? node.object3d ?? ensureFlatShapeObject3D(node);
+    // Always run ensureFlatShapeObject3D — it has its own cache-hit fast
+    // path (matching shapeBuildKey returns the existing mesh) AND that
+    // path also re-asserts materials.meshById registration. Skipping the
+    // call when object3dById already has the mesh would bypass the
+    // registration and break visibility-transition fades.
+    let obj = ensureFlatShapeObject3D(node);
     if (obj) {
       node.object3d = obj;
       object3dById.set(spec.id, obj);
