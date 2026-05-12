@@ -57,7 +57,7 @@ import { initCables, resolveNodeWorldPosition } from './systems/cables.js';     
 import * as pivotCenterPicker     from './systems/pivot-center-picker.js';   // 3-point center pivot tool — snap-based picker for cylinder-axis pivot placement
 import { initNotesRender }        from './systems/notes-render.js';
 import { initCableRender, getCablePointMeshes, getCableSegmentMeshes, getCableSocketMeshes, setInsertHoverPosition } from './systems/cables-render.js';  // C2: cables 3D render; C5-A: point raycast; C5-D: segment raycast + insert ghost; C5-E2: socket raycast
-import { initUserSettings }    from './core/user-settings.js';
+import { initUserSettings, get as getUserSettings } from './core/user-settings.js';
 import { openSettingsModal }   from './ui/settings-modal.js';
 import { openModelSourceDialog } from './ui/model-source-dialog.js';
 import { schedulePrecache, cancel as cancelPrecache } from './systems/narration-precache.js';
@@ -191,7 +191,29 @@ initCableRender();
 setupUndoKeyboard();
 
 // Eager-load user-level prefs so subsequent UI can read them synchronously.
-initUserSettings().catch(err => console.warn('[settings] init failed:', err));
+initUserSettings()
+  .then(() => {
+    // Apply scene-level user prefs to the live sceneCore as soon as
+    // they're known (zoom-step multiplier, default background).
+    const cur = getUserSettings();
+    const sc  = cur.scene || {};
+    if (typeof sc.cameraZoomScale === 'number') {
+      sceneCore.setUserZoomScale(sc.cameraZoomScale);
+    }
+    // Default background only applies to brand-new projects (when the
+    // current viewport still holds the schema default). Projects that
+    // load from disk overwrite these via their own backgroundColor /
+    // backgroundGradient fields.
+    if (!state.get('_projectLoaded')) {
+      if (sc.defaultBackgroundColor) {
+        state.setState({ backgroundColor: sc.defaultBackgroundColor });
+      }
+      if (sc.defaultBackgroundGradient) {
+        state.setState({ backgroundGradient: { ...sc.defaultBackgroundGradient } });
+      }
+    }
+  })
+  .catch(err => console.warn('[settings] init failed:', err));
 
 // File → Settings… menu hook. Channel allowlist lives in preload.js.
 window.sbsNative?.onMenu?.('menu:openSettings', () => openSettingsModal());

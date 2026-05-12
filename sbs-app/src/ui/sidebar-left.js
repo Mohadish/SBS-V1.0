@@ -396,12 +396,22 @@ function _onNewProject() {
   }
   steps.object3dById.clear();
   steps.meshById.clear();
+
+  // Pull user-default background from prefs so new projects inherit it.
+  const us = userSettings.get();
+  const bgColor = us.scene?.defaultBackgroundColor || '#0f172a';
+  const bgGrad  = us.scene?.defaultBackgroundGradient
+    ? { ...us.scene.defaultBackgroundGradient }
+    : { enabled:false, color1:'#0f172a', color2:'#1e293b', angleDeg:180 };
+
   state.setState({
     projectPath: null, projectName: 'Untitled', projectDirty: false,
     assets: [], treeData: null, nodeById: new Map(),
     steps: [], chapters: [], activeStepId: null,
     cameraViews: [], colorPresets: [], selectedId: null,
     multiSelectedIds: new Set(),
+    backgroundColor:    bgColor,
+    backgroundGradient: bgGrad,
   });
   setStatus('New project.');
 }
@@ -1786,6 +1796,9 @@ function _renderCamerasTab() {
       <div style="margin-top:10px;">
         <button class="btn" id="btn-cam-new">+ Save current view as template</button>
       </div>
+      <div style="margin-top:6px;">
+        <button class="btn" id="btn-cam-refit" title="Recompute camera distance and pivot to frame the whole scene. Useful after rescaling a model.">🎯 Refit camera</button>
+      </div>
       ${activeStep ? `
         <div class="card" style="margin-top:10px;font-size:12px;">
           <div class="small muted" style="margin-bottom:4px;">Active step camera</div>
@@ -1800,6 +1813,11 @@ function _renderCamerasTab() {
       <div id="cam-list" style="margin-top:10px;"></div>
     </div>
   `;
+
+  el.querySelector('#btn-cam-refit')?.addEventListener('click', () => {
+    _onFitAll();
+    setStatus('Camera refit to scene.');
+  });
 
   el.querySelector('#btn-cam-new').addEventListener('click', () => {
     const proposed = `Camera ${views.length + 1}`;

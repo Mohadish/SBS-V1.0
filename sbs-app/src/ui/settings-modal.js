@@ -11,6 +11,8 @@
 
 import * as userSettings from '../core/user-settings.js';
 import { listVoices }    from '../systems/tts.js';
+import sceneCore         from '../core/scene.js';
+import state             from '../core/state.js';
 
 let _dlg = null;
 
@@ -33,6 +35,7 @@ export async function openSettingsModal(initialTab = 'language') {
       <div style="display:flex;flex:1;min-height:0;">
         <nav id="settings-tabs" style="width:140px;border-right:1px solid #334155;padding:8px 0;display:flex;flex-direction:column;gap:2px;">
           <button class="settings-tab" data-tab="language">Language</button>
+          <button class="settings-tab" data-tab="scene">Scene</button>
           <button class="settings-tab" data-tab="export">Export</button>
         </nav>
         <section id="settings-body" style="flex:1;padding:14px 16px;overflow:auto;font-size:13px;">
@@ -91,6 +94,7 @@ function _showTab(name) {
   const body = _dlg.querySelector('#settings-body');
   body.innerHTML = '';
   if (name === 'language') _renderLanguageTab(body);
+  if (name === 'scene')    _renderSceneTab(body);
   if (name === 'export')   _renderExportTab(body);
 }
 
@@ -186,6 +190,124 @@ async function _renderLanguageTab(body) {
 function _normalizeLangName(raw) {
   if (!raw) return '';
   return String(raw).split(/[(\u00ad/-]/)[0].trim();
+}
+
+function _renderSceneTab(body) {
+  const cur = userSettings.get();
+  const sc  = cur.scene || {};
+  const grad = sc.defaultBackgroundGradient || { enabled:false, color1:'#0f172a', color2:'#1e293b', angleDeg:180 };
+  const zoom = (typeof sc.cameraZoomScale === 'number') ? sc.cameraZoomScale : 1.0;
+
+  body.innerHTML = `
+    <h3 style="margin:0 0 6px 0;font-size:14px;">Camera</h3>
+    <p class="small muted" style="margin:0 0 10px 0;">
+      Adjusts how much each wheel-tick zooms. The step scales with the
+      camera's distance to the orbit pivot, so it works at any model
+      size — this slider just biases the default sensitivity.
+    </p>
+
+    <label class="colorlab" style="display:block;">
+      Scene → Camera zoom scale
+      <span id="scene-zoom-val" class="muted" style="float:right;">${zoom.toFixed(2)}×</span>
+      <input type="range" id="scene-zoom" min="0.1" max="5" step="0.05" value="${zoom}"
+             style="width:100%;margin-top:6px;" />
+    </label>
+    <div class="small muted" style="margin-top:4px;font-size:11px;">
+      0.1× = very fine · 1.0× = default · 5.0× = very coarse
+    </div>
+
+    <hr style="border:none;border-top:1px solid var(--line);margin:16px 0;" />
+
+    <h3 style="margin:0 0 6px 0;font-size:14px;">Default background</h3>
+    <p class="small muted" style="margin:0 0 10px 0;">
+      Applied to new projects (and live to the current viewport). Saved
+      projects can still override per-file.
+    </p>
+
+    <div class="field-row">
+      <label class="small" style="flex:1;">Solid color</label>
+      <input type="color" id="scene-bg-color" value="${_esc(sc.defaultBackgroundColor || '#0f172a')}"
+             style="width:44px;height:28px;padding:2px;border-radius:4px;cursor:pointer;" />
+    </div>
+
+    <label class="small" style="display:flex;align-items:center;gap:6px;margin-top:10px;cursor:pointer;">
+      <input type="checkbox" id="scene-bg-grad-toggle" ${grad.enabled ? 'checked' : ''} />
+      Use 2-color gradient
+    </label>
+
+    <div id="scene-bg-grad-controls" style="display:${grad.enabled ? 'block' : 'none'};margin-top:8px;">
+      <div class="field-row">
+        <label class="small" style="flex:1;">From</label>
+        <input type="color" id="scene-bg-grad-c1" value="${_esc(grad.color1 || '#0f172a')}"
+               style="width:44px;height:28px;padding:2px;border-radius:4px;cursor:pointer;" />
+      </div>
+      <div class="field-row" style="margin-top:6px;">
+        <label class="small" style="flex:1;">To</label>
+        <input type="color" id="scene-bg-grad-c2" value="${_esc(grad.color2 || '#1e293b')}"
+               style="width:44px;height:28px;padding:2px;border-radius:4px;cursor:pointer;" />
+      </div>
+      <label class="small" style="display:block;margin-top:8px;">
+        Direction <span id="scene-bg-grad-angle-val" class="muted" style="float:right;">${grad.angleDeg ?? 180}°</span>
+        <input type="range" id="scene-bg-grad-angle" min="0" max="360" step="1" value="${grad.angleDeg ?? 180}"
+               style="width:100%;margin-top:4px;" />
+      </label>
+      <div class="small muted" style="margin-top:4px;line-height:1.4;font-size:10px;">
+        0° top→bottom · 90° left→right · 180° bottom→top · 270° right→left
+      </div>
+    </div>
+  `;
+
+  // ── Zoom slider ─────────────────────────────────────────────────────────
+  const zoomEl    = body.querySelector('#scene-zoom');
+  const zoomLabel = body.querySelector('#scene-zoom-val');
+  zoomEl.addEventListener('input', () => {
+    const v = Number(zoomEl.value) || 1.0;
+    zoomLabel.textContent = `${v.toFixed(2)}×`;
+    sceneCore.setUserZoomScale(v);   // live apply
+  });
+  zoomEl.addEventListener('change', () => {
+    const v = Number(zoomEl.value) || 1.0;
+    userSettings.patch({ scene: { cameraZoomScale: v } });
+  });
+
+  // ── Background — solid color ────────────────────────────────────────────
+  body.querySelector('#scene-bg-color').addEventListener('input', e => {
+    const v = e.target.value;
+    state.setState({ backgroundColor: v });   // live apply to viewport
+    state.markDirty();
+    userSettings.patch({ scene: { defaultBackgroundColor: v } });
+  });
+
+  // ── Background — gradient ───────────────────────────────────────────────
+  const _patchGrad = (partial) => {
+    const cur2  = userSettings.get();
+    const merged = { ...(cur2.scene?.defaultBackgroundGradient || {}), ...partial };
+    userSettings.patch({ scene: { defaultBackgroundGradient: merged } });
+    // Live-apply to current project state so user sees it.
+    state.setState({ backgroundGradient: { ...(state.get('backgroundGradient') || {}), ...partial } });
+    state.markDirty();
+  };
+
+  const gradToggle = body.querySelector('#scene-bg-grad-toggle');
+  const gradWrap   = body.querySelector('#scene-bg-grad-controls');
+  gradToggle.addEventListener('change', () => {
+    const on = gradToggle.checked;
+    gradWrap.style.display = on ? 'block' : 'none';
+    _patchGrad({ enabled: on });
+  });
+
+  body.querySelector('#scene-bg-grad-c1').addEventListener('input', e =>
+    _patchGrad({ color1: e.target.value }));
+  body.querySelector('#scene-bg-grad-c2').addEventListener('input', e =>
+    _patchGrad({ color2: e.target.value }));
+
+  const angleEl    = body.querySelector('#scene-bg-grad-angle');
+  const angleLabel = body.querySelector('#scene-bg-grad-angle-val');
+  angleEl.addEventListener('input', () => {
+    const deg = Number(angleEl.value) || 0;
+    angleLabel.textContent = `${deg}°`;
+    _patchGrad({ angleDeg: deg });
+  });
 }
 
 function _renderExportTab(body) {

@@ -396,6 +396,18 @@ export class SceneCore extends Emitter {
     if (this.axesHelper)  this.axesHelper.visible  = visible;
   }
 
+  /**
+   * Set the user-preference zoom-step multiplier. Default 1.0; lower
+   * values mean a finer-step wheel, higher means coarser. Persisted in
+   * user-settings.json under scene.cameraZoomScale and applied at boot
+   * + on every Scene-tab change.
+   */
+  setUserZoomScale(v) {
+    const n = Number(v);
+    this._userZoomScale = (Number.isFinite(n) && n > 0) ? n : 1.0;
+  }
+  getUserZoomScale() { return this._userZoomScale ?? 1.0; }
+
   // ═══════════════════════════════════════════════════════════════════════
   //  FILL LIGHT
   // ═══════════════════════════════════════════════════════════════════════
@@ -706,6 +718,16 @@ export class SceneCore extends Emitter {
     this.controls = ctrl;
 
     // ── Internal helpers ─────────────────────────────────────────────────
+    //
+    // Pivot policy on orbit-start:
+    //   1. Raycast hit a face → pivot lands on that hit point.
+    //   2. Miss (clicked empty background) → KEEP the current pivot.
+    //      This is the CAD-standard behaviour (Solidworks / Fusion /
+    //      Onshape). It's also scale-immune: after a model rescale the
+    //      old pivot may be at any world-coordinate but the camera-to-
+    //      pivot distance stays sane, so orbit radius stays sane.
+    //   3. Miss AND pivot has never been set (e.g. brand-new scene) →
+    //      fall back to scene center as a one-time initialiser.
     const _updatePivotFromHit = (clientX, clientY) => {
       const hit = this.pick(clientX, clientY);
       if (hit) {
@@ -713,7 +735,19 @@ export class SceneCore extends Emitter {
         ctrl.syncSpherical();
         return;
       }
-      // Fall back to scene center
+      // Miss: keep current pivot if it's been initialised. We treat
+      // "initialised" as any non-zero pivot OR a finite spherical radius
+      // from a prior successful pick / fit-to-view call.
+      const pivotInit = ctrl.pivot.lengthSq() > 1e-12
+        || (Number.isFinite(ctrl.spherical.radius) && ctrl.spherical.radius > 0);
+      if (pivotInit) {
+        // Re-sync just in case the camera moved since the last orbit
+        // (pan keeps pivot+camera locked, but defensive).
+        ctrl.syncSpherical();
+        return;
+      }
+      // One-time fallback for the very first orbit before any pivot
+      // has been set.
       const box = new THREE.Box3().setFromObject(this.rootGroup);
       if (!box.isEmpty()) {
         ctrl.pivot.copy(box.getCenter(new THREE.Vector3()));
@@ -783,10 +817,14 @@ export class SceneCore extends Emitter {
       this.emit('controls:change');
     };
 
-    // ── Wheel: adaptive zoom ─────────────────────────────────────────────
-    // Modifiers (per user request):
+    // ── Wheel: distance-based zoom (scale-immune) ────────────────────────
+    // Step = (distance from camera to pivot) × baseFactor × user-prefs scale.
+    // No dependency on scene-size — works at any world-unit scale, never
+    // needs recalibration after a model rescale.
+    //
+    // Modifiers:
     //   Ctrl + wheel  → 0.1× step (10× slower / finer control)
-    //   Shift + wheel → 10×  step (10× faster / coarser, big-distance zoom)
+    //   Shift + wheel → 10×  step (10× faster / coarser)
     //   Bare wheel    → 1×   step (default)
     dom.addEventListener('wheel', (e) => {
       if (this._locked) return;
@@ -796,12 +834,15 @@ export class SceneCore extends Emitter {
       const forward = new THREE.Vector3();
       this.camera.getWorldDirection(forward);
 
-      const box       = new THREE.Box3().setFromObject(this.rootGroup);
-      const sceneSize = box.isEmpty()
-        ? 100
-        : box.getSize(new THREE.Vector3()).length();
+      // Distance to pivot drives the step size — close-up moves are tiny,
+      // far-away moves are large. Floor prevents getting "stuck" at 0.
+      const dist = Math.max(this.camera.position.distanceTo(ctrl.pivot), 1e-4);
       const mult = e.ctrlKey ? 0.1 : (e.shiftKey ? 10 : 1);
-      const step = Math.max(sceneSize * 0.015, 0.5) * ctrl.zoomSpeed * mult;
+      // _userZoomScale is user-pref multiplier (default 1.0); set via
+      // setUserZoomScale() from the Scene settings tab.
+      const userScale = (typeof this._userZoomScale === 'number')
+        ? this._userZoomScale : 1.0;
+      const step = dist * 0.08 * ctrl.zoomSpeed * mult * userScale;
 
       this.camera.position.addScaledVector(forward, delta > 0 ? -step : step);
       ctrl.syncSpherical();
