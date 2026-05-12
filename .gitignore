@@ -35,3 +35,12 @@ Thumbs.db
 # 110 MB binary blob, would balloon git history. electron-builder picks
 # it up via build.extraResources at packaging time.
 sbs-app/kokoro-bundle/
+
+# User-project saves — large binary CAD files (FBX, GLB, STEP) + per-user
+# .sbsproj scratch files. Should never have been tracked. Files stay on
+# disk locally; new ones won't enter git.
+saves/
+
+# Viewer test artifacts dropped by hand into the viewer folder.
+sbs-viewer/*.sbsasm
+sbs-viewer/*.sbsproc
