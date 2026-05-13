@@ -1703,8 +1703,8 @@ async function _duplicateSelected() {
 function _showEmptyViewportContextMenu(x, y) {
   const hasClipboard = !!_overlayClipboard?.length;
   showContextMenu([
-    { label: 'Paste',          disabled: !hasClipboard, action: () => _pasteFromOverlayClipboard({ inPlace: false }) },
-    { label: 'Paste in place', disabled: !hasClipboard, action: () => _pasteFromOverlayClipboard({ inPlace: true })  },
+    { label: '📥 Paste',           disabled: !hasClipboard, action: () => _pasteFromOverlayClipboard({ inPlace: false }) },
+    { label: '📥 Paste in place',  disabled: !hasClipboard, action: () => _pasteFromOverlayClipboard({ inPlace: true })  },
   ], x, y);
 }
 
@@ -1712,12 +1712,12 @@ function _showOverlayContextMenu(node, x, y) {
   const sel = _transformer?.nodes() || [node];
   const hasClipboard = !!_overlayClipboard?.length;
   showContextMenu([
-    { label: 'Duplicate',       action: _duplicateSelected },
-    { label: 'Copy',            action: _copyToOverlayClipboard },
-    { label: 'Paste',           disabled: !hasClipboard, action: () => _pasteFromOverlayClipboard({ inPlace: false }) },
-    { label: 'Paste in place',  disabled: !hasClipboard, action: () => _pasteFromOverlayClipboard({ inPlace: true })  },
+    { label: '⎘ Duplicate',        action: _duplicateSelected },
+    { label: '📋 Copy',            action: _copyToOverlayClipboard },
+    { label: '📥 Paste',           disabled: !hasClipboard, action: () => _pasteFromOverlayClipboard({ inPlace: false }) },
+    { label: '📥 Paste in place',  disabled: !hasClipboard, action: () => _pasteFromOverlayClipboard({ inPlace: true })  },
     { separator: true },
-    { label:  'Delete',
+    { label:  '🗑 Delete',
       action: () => {
         for (const n of sel) n.destroy();
         _setSelection(null);

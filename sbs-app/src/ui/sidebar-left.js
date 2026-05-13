@@ -1418,7 +1418,7 @@ function _showColorContextMenu(preset, x, y, selectedMeshIds) {
 
   showContextMenu([
     {
-      label:    `Select by active color (${activeMatches.length})`,
+      label:    `🎨 Select by active color (${activeMatches.length})`,
       disabled: activeMatches.length === 0,
       action:   () => {
         state.setSelection(activeMatches[0], new Set(activeMatches));
@@ -1426,7 +1426,7 @@ function _showColorContextMenu(preset, x, y, selectedMeshIds) {
       },
     },
     {
-      label:    `Select by default color (${defaultMatches.length})`,
+      label:    `🎨⭐ Select by default color (${defaultMatches.length})`,
       disabled: defaultMatches.length === 0,
       action:   () => {
         state.setSelection(defaultMatches[0], new Set(defaultMatches));
