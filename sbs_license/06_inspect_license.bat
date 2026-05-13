@@ -1,12 +1,16 @@
 @echo off
-title SBS License Tools — Inspect License
+title SBS License Tools - Verify License Tuple
 echo.
 echo ============================================================
-echo   SBS License Tools — Inspect a License File
+echo   SBS License Tools - Verify a (email, password, key, mid) tuple
+echo   Same logic the SBS app runs at boot.
 echo ============================================================
 echo.
-set /p LIC_FILE="Path to the .lic file (drag and drop it here): "
+set /p EMAIL="Client email: "
+set /p PASSWORD="Password (8 chars, hyphenated): "
+set /p KEY_VAL="Key (long base64 string): "
+set /p MACHINE_ID="Client machine ID: "
 echo.
-python "%~dp0keygen.py" --inspect "%LIC_FILE%"
+python "%~dp0keygen.py" --verify --email "%EMAIL%" --password "%PASSWORD%" --key "%KEY_VAL%" --machine-id "%MACHINE_ID%"
 echo.
 pause
