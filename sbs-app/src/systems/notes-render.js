@@ -497,12 +497,12 @@ function _createEntry(note) {
       const items = [
         { label:  isVisible ? '🚫 Hide note' : '👁 Show note',
           action: () => actions.toggleVisibility([note.id]) },
-        { label:  'Edit Text…',
+        { label:  '✏ Edit Text…',
           action: () => _enterEdit(note.id, div) },
         { label:  '↺ Reposition Note…',
           action: () => actions.startNoteRepositioning(note.id) },
         { separator: true },
-        { label:  '📋 Copy position',
+        { label:  '📌 Copy position',
           action: () => {
             actions.copyNotePosition(note.id);
             // Re-import status to keep this lazy
@@ -518,7 +518,7 @@ function _createEntry(note) {
             import('../ui/status.js').then(({ setStatus }) => setStatus(`Pasted position to ${n} step${n === 1 ? '' : 's'}.`));
           } },
         { separator: true },
-        { label:  'Delete Note',
+        { label:  '🗑 Delete Note',
           action: () => {
             // Display name = template name when linked, else trimmed text.
             const linkedTplDel = linkedTpl;

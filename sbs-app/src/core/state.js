@@ -150,6 +150,19 @@ function createInitialState() {
     // Esc cancels. Single-shot — auto-disarms after one place.
     shapePlacementForId: null,
 
+    // Create-shape-from-face picker mode. When true, the next viewport
+    // click on a mesh face floods adjacent triangles whose normal is
+    // within shapeFaceAngleThreshold of the picked triangle's normal,
+    // then traces the boundary edges and lands the result as a shape
+    // template + instance. Right-click / Esc cancels. Single-shot.
+    shapeFromFacePicking: false,
+
+    // Angle threshold (degrees) for the create-from-face flood fill.
+    // Anchor-compare: triangles whose normal differs from the picked
+    // triangle's normal by more than this are excluded from the face
+    // set. Persisted to user-settings.scene.shapeFaceAngleThreshold.
+    shapeFaceAngleThreshold: 5,
+
     // ── Cables — 3D wires/conduits routed between mesh anchors and
     // free points. The LIVE state of cables (current step's view).
     // step.snapshot.cables holds per-step variable overrides
@@ -311,6 +324,10 @@ function createInitialState() {
       narrationHelperUrl: 'http://127.0.0.1:8765',
       deterministicHelperUrl: 'http://127.0.0.1:8766',
       exportFolderPath:   null,
+      // When true, missing-asset bounding-box placeholders (the orange wireframes
+      // standing in for phantom / deleted meshes) appear in the exported video.
+      // Default false — they're authoring aids, not finished output.
+      exportBoundaryBoxes: false,
     },
 
     // ── Lighting

@@ -473,7 +473,7 @@ function _buildContextMenuItems(node) {
   // ── Visibility ──────────────────────────────────────────────────────────────
   const allVisible = targetIds.every(id => nodeById?.get(id)?.localVisible !== false);
   items.push({
-    label: allVisible ? `Hide ${label}` : `Show ${label}`,
+    label: allVisible ? `🚫 Hide ${label}` : `👁 Show ${label}`,
     action: () => actions.toggleVisibility(targetIds),
   });
 
@@ -487,7 +487,7 @@ function _buildContextMenuItems(node) {
   if (directNotes.length) {
     items.push({ separator: true });
     items.push({
-      label: `📋 Notes on this ${node.type} (${directNotes.length})`,
+      label: `🗒 Notes on this ${node.type} (${directNotes.length})`,
       disabled: true,
     });
     const tplList = state.get('noteTemplates') || [];
@@ -522,13 +522,13 @@ function _buildContextMenuItems(node) {
 
   // ── Isolate ─────────────────────────────────────────────────────────────────
   items.push({
-    label: 'Isolate',
+    label: '🔍 Isolate',
     action: () => _isolateNodes(new Set(targetIds)),
   });
 
   // ── Fit To ──────────────────────────────────────────────────────────────────
   items.push({
-    label: 'Fit To',
+    label: '🎯 Fit To',
     action: () => _fitToNodes(new Set(targetIds)),
   });
 
@@ -537,13 +537,13 @@ function _buildContextMenuItems(node) {
   // ── Navigate ────────────────────────────────────────────────────────────────
   const parent = root ? findParent(root, node.id) : null;
   items.push({
-    label: 'Select Parent',
+    label: '⬆ Select Parent',
     disabled: !parent || parent.type === 'scene',
     action: () => parent && state.setSelection(parent.id, new Set([parent.id])),
   });
 
   items.push({
-    label: 'Select Children',
+    label: '⬇ Select Children',
     disabled: !(node.children?.length),
     action: () => {
       const ids = new Set();
@@ -559,7 +559,7 @@ function _buildContextMenuItems(node) {
 
   if (isContainer) {
     items.push({
-      label: 'New Folder Inside',
+      label: '📁＋ New Folder Inside',
       action: () => _createFolderInside(node),
     });
   }
@@ -568,7 +568,7 @@ function _buildContextMenuItems(node) {
     const otherSelected = targetIds.filter(id => id !== node.id);
     if (otherSelected.length > 0 || (multiIds.size > 0 && !multiIds.has(node.id))) {
       items.push({
-        label: `Move Selected Here`,
+        label: `⤵ Move Selected Here`,
         action: () => _moveIdsIntoNode(Array.from(multiIds).filter(id => id !== node.id), node),
       });
     }
@@ -576,7 +576,7 @@ function _buildContextMenuItems(node) {
 
   if (isContainer && (node.children?.length ?? 0) > 0) {
     items.push({
-      label: 'Collapse',
+      label: '⊟ Collapse',
       action: () => _collapseSubtree(node),
     });
   }
@@ -589,7 +589,7 @@ function _buildContextMenuItems(node) {
     // current world pose. Commit replaces the template's polygon and
     // ripples to every other instance.
     items.push({
-      label: 'Edit polygon…',
+      label: '✏ Edit polygon…',
       action: () => actions.startShapeEdit(node.templateId),
     });
 
@@ -597,7 +597,7 @@ function _buildContextMenuItems(node) {
     // ripples to every step. Red cube indicator at the gizmo hub.
     const inMode = state.get('globalEditNodeId') === node.id;
     items.push({
-      label: inMode ? '✓ Global Transform (active)' : 'Global Transform',
+      label: inMode ? '✓ Global Transform (active)' : '🌐 Global Transform',
       action: () => inMode
         ? actions.commitGlobalEdit()
         : actions.enterGlobalEdit(node.id),
@@ -609,13 +609,13 @@ function _buildContextMenuItems(node) {
     // state.selectedStepIds (when ≥ 2) or just the active step. Cross-
     // instance paste IS allowed — pose is id-agnostic.
     items.push({
-      label: 'Copy step pose',
+      label: '📋 Copy step pose',
       action: () => actions.copyInstanceStepPose(node.id),
     });
     items.push({
       label: state.get('selectedStepIds')?.size >= 2
-        ? `Paste step pose to ${state.get('selectedStepIds').size} steps`
-        : 'Paste step pose',
+        ? `📥 Paste step pose to ${state.get('selectedStepIds').size} steps`
+        : '📥 Paste step pose',
       disabled: !actions.hasInstancePoseClipboard(),
       action: () => actions.pasteInstanceStepPose(node.id),
     });
@@ -632,15 +632,15 @@ function _buildContextMenuItems(node) {
   if (isTransformNode(node)) {
     items.push({ separator: true });
     items.push({
-      label: 'Reset Move',
+      label: '↺ Reset Move',
       action: () => targetIds.filter(id => isTransformNode(nodeById?.get(id))).forEach(id => actions.resetTransformField(id, 'move')),
     });
     items.push({
-      label: 'Reset Rotation',
+      label: '↺ Reset Rotation',
       action: () => targetIds.filter(id => isTransformNode(nodeById?.get(id))).forEach(id => actions.resetTransformField(id, 'rotate')),
     });
     items.push({
-      label: 'Reset All Transforms',
+      label: '↺ Reset All Transforms',
       action: () => targetIds.filter(id => isTransformNode(nodeById?.get(id))).forEach(id => actions.resetTransformField(id, 'all')),
     });
   }
@@ -656,21 +656,21 @@ function _buildContextMenuItems(node) {
     );
     items.push({ separator: true });
     items.push({
-      label: 'Copy Pivot',
+      label: '⊕ Copy Pivot',
       disabled: !hasBluePivot,
       action: () => actions.copyPivot(node.id),
     });
     items.push({
-      label: 'Paste Pivot',
+      label: '⊕ Paste Pivot',
       disabled: !actions.hasPivotClipboard(),
       action: () => actions.pastePivot(node.id),
     });
     items.push({
-      label: 'Snap Pivot to Surface…',
+      label: '🧲 Snap Pivot to Surface…',
       action: () => actions.startPivotSnapPicking(node.id),
     });
     items.push({
-      label: 'Pivot Center via 3 Points…',
+      label: '⊕ Pivot Center via 3 Points…',
       action: () => actions.startPivotCenterPicking(node.id),
     });
   }
@@ -680,7 +680,7 @@ function _buildContextMenuItems(node) {
   // ── General ──────────────────────────────────────────────────────────────────
   if (node.type !== 'scene' && node.type !== 'note') {
     items.push({
-      label: `Rename "${(node.name || '').slice(0, 24)}"`,
+      label: `✏ Rename "${(node.name || '').slice(0, 24)}"`,
       action: () => _showInputDialog('Rename', node.name || '', name => {
         node.name = name;
         if (node.object3d) node.object3d.name = name;
@@ -692,7 +692,7 @@ function _buildContextMenuItems(node) {
 
   if (node.type !== 'scene') {
     items.push({
-      label: count > 1 ? `Move ${count} items to Folder…` : 'Move to Folder…',
+      label: count > 1 ? `📁→ Move ${count} items to Folder…` : '📁→ Move to Folder…',
       action: () => showMoveToFolderDialog(targetIds),
     });
   }
@@ -702,12 +702,12 @@ function _buildContextMenuItems(node) {
     const childCount = (node.children || []).length;
     if (childCount === 0) {
       items.push({
-        label: 'Delete Empty Folder',
+        label: '🗑 Delete Empty Folder',
         action: () => _deleteEmptyFolder(node),
       });
     } else {
       items.push({
-        label: `Delete Folder (contains ${childCount} item${childCount > 1 ? 's' : ''} — empty first)`,
+        label: `🗑 Delete Folder (contains ${childCount} item${childCount > 1 ? 's' : ''} — empty first)`,
         disabled: true,
       });
     }
@@ -1614,7 +1614,7 @@ function _buildNoteContextMenuItems(node) {
       action: () => actions.toggleVisibility([node.id]),
     },
     {
-      label:  tpl ? `Edit Template Text… (${tpl.name || 'template'})` : 'Edit Text…',
+      label:  tpl ? `✏ Edit Template Text… (${tpl.name || 'template'})` : '✏ Edit Text…',
       action: () => _showInputDialog(
         tpl ? `Edit template "${tpl.name || ''}"` : 'Edit note text',
         editing.srcText || '',
@@ -1629,7 +1629,7 @@ function _buildNoteContextMenuItems(node) {
       action: () => actions.startNoteRepositioning(node.id),
     },
     {
-      label:  'Delete Note',
+      label:  '🗑 Delete Note',
       action: () => {
         const short = editing.label
           ? (editing.label.length > 40 ? editing.label.slice(0, 40) + '…' : editing.label)

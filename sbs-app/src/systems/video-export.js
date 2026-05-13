@@ -509,6 +509,12 @@ async function _exportMp4({ fps = DEFAULT_FPS, bitrate = DEFAULT_BITRATE,
 
   // Suppress live narration playback while the timeline runs for capture.
   state.setState({ _exporting: true });
+  // Authoring-aid Bbox placeholders are hidden from the encoded frames
+  // unless the user opts in via Export tab → "Export boundary boxes".
+  // Pair the hide BEFORE _hardResetToFirstStep with the restore in
+  // finally so a crash mid-export doesn't leave the scene mutated.
+  const exportBboxes = !!(state.get('export') || {}).exportBoundaryBoxes;
+  if (!exportBboxes) steps.setPlaceholderBboxesVisible(false);
   try {
     // _hardResetToFirstStep runs in REAL time even in offline mode —
     // its instant apply + rAF settle don't drive any animation phase,
@@ -540,6 +546,7 @@ async function _exportMp4({ fps = DEFAULT_FPS, bitrate = DEFAULT_BITRATE,
       sceneCore.startLoop();
     }
     state.setState({ _exporting: false });
+    if (!exportBboxes) steps.setPlaceholderBboxesVisible(true);
   }
 
   console.log('[export] flush video encoder…');
@@ -613,6 +620,8 @@ async function _exportWebM({ format = 'webm_vp9', fps = DEFAULT_FPS,
   const stopped = new Promise(r => recorder.addEventListener('stop', r, { once: true }));
   recorder.start(250);
 
+  const exportBboxes = !!(state.get('export') || {}).exportBoundaryBoxes;
+  if (!exportBboxes) steps.setPlaceholderBboxesVisible(false);
   try {
     await _hardResetToFirstStep(stepsToPlay);
     await _playTimeline(stepsToPlay, stepHoldMs, onProgress, signal);
@@ -620,6 +629,7 @@ async function _exportWebM({ format = 'webm_vp9', fps = DEFAULT_FPS,
     try { recorder.stop(); } catch {}
     try { stream.getTracks().forEach(t => t.stop()); } catch {}
     await stopped;
+    if (!exportBboxes) steps.setPlaceholderBboxesVisible(true);
   }
 
   const blob = new Blob(chunks, { type: mime });

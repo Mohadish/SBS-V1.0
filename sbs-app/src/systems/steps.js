@@ -60,6 +60,13 @@ const easeSmooth = t => t * t * (3 - 2 * t);
 const easeLinear = t => t;
 const EASING = { smooth: easeSmooth, linear: easeLinear, instant: () => 1 };
 
+// Sticky export-time flag: when true, every Bbox placeholder built by
+// _createMeshPlaceholder spawns with visible=false. Set + cleared by
+// StepManager.setPlaceholderBboxesVisible (called by video-export
+// before/after the encode). Module-scoped because rebuildFromTreeSpec
+// + _createMeshPlaceholder are top-level helpers, not class methods.
+let _placeholdersHidden = false;
+
 
 // ═══════════════════════════════════════════════════════════════════════════
 //  STEP MANAGER
@@ -447,9 +454,7 @@ class StepManager {
     // Hiding meshes are kept obj.visible=true for dither-fade.
     // Showing meshes will be snapped to opacity=0 so they're invisible before
     // their visibility phase.
-    const { hidingMeshIds, showingMeshIds } = this._prepareVisibility(
-      nodeById, toSnapshot.visibility,
-    );
+    const vis = this._prepareVisibility(nodeById, toSnapshot.visibility);
     // Pre-snap showing meshes to opacity 0 BEFORE any phase runs.
     // _prepareVisibility flips obj.visible=true on the showing set
     // immediately — without this snap, any phase that runs ahead of
@@ -460,8 +465,41 @@ class StepManager {
     // Clear the pending set first so a previous activate's leftovers
     // don't suppress visibility unrelated to the current transition.
     this._materials?._pendingShowingHidden?.clear?.();
-    if (showingMeshIds.length && this._materials?.snapShowingToZero) {
-      this._materials.snapShowingToZero(showingMeshIds);
+
+    // ── Resolve animation preset (need it now to route shapes) ───────
+    const animStr = resolveAnimationString(
+      transition, state.get('animationPresets') || [],
+    );
+    const phases = animStr ? parseAnimation(animStr) : null;
+
+    // 'shape' channel: threshold-snap visibility for flatShape nodes,
+    // independent of mesh fade. When that channel exists in the
+    // schedule, shapes go through it; otherwise they fold into the
+    // regular visibility/mesh arrays so they fade like everything else.
+    const hasShapePhase = !!phases && phases.some(p => p.types.includes('shape'));
+
+    let hidingMeshIds, showingMeshIds, hidingShapeIds, showingShapeIds;
+    if (hasShapePhase) {
+      // shape(N) is in the string — shapes get their own fade slot,
+      // independent of the mesh visibility channel. Both pre-snap to
+      // opacity=0 so the fade-in starts from invisible.
+      hidingMeshIds   = vis.hidingMeshIds;
+      showingMeshIds  = vis.showingMeshIds;
+      hidingShapeIds  = vis.hidingShapeIds;
+      showingShapeIds = vis.showingShapeIds;
+    } else {
+      hidingMeshIds   = [...vis.hidingMeshIds,  ...vis.hidingShapeIds];
+      showingMeshIds  = [...vis.showingMeshIds, ...vis.showingShapeIds];
+      hidingShapeIds  = [];
+      showingShapeIds = [];
+    }
+
+    // All showing items (meshes + shapes) pre-snap to opacity=0 so the
+    // fade-in actually starts from invisible. Without this, anything
+    // appearing this step would flash at full alpha for a frame.
+    const allShowingPreSnap = [...showingMeshIds, ...showingShapeIds];
+    if (allShowingPreSnap.length && this._materials?.snapShowingToZero) {
+      this._materials.snapShowingToZero(allShowingPreSnap);
     }
 
     // ── Place objects at FROM world positions (v0.266 approach) ─────────────
@@ -482,19 +520,17 @@ class StepManager {
       obj.visible = wasVisible;
     });
 
-    // ── Resolve animation preset ─────────────────────────────────────────
-    const animStr = resolveAnimationString(
-      transition, state.get('animationPresets') || [],
-    );
-    const phases = animStr ? parseAnimation(animStr) : null;
+    // animStr/phases already resolved above (needed for shape-phase routing).
 
     let cameraHandled = false;
 
     if (phases) {
       // ── PHASED MODE ───────────────────────────────────────────────────
-      // Showing meshes must be invisible during pre-vis phases.
-      if (showingMeshIds.length) {
-        this._materials?.snapShowingToZero(showingMeshIds);
+      // Showing items (meshes + shapes) re-snap to opacity=0 so any
+      // phase that runs ahead of visibility / shape doesn't reveal
+      // them at full alpha.
+      if (allShowingPreSnap.length) {
+        this._materials?.snapShowingToZero(allShowingPreSnap);
       }
 
       // Schedule note panel-offset lerp + opacity fade across the entire
@@ -508,6 +544,7 @@ class StepManager {
       cameraHandled = await this._runPhasedAnimation(toSnapshot, phases, {
         changedNodeIds, fromWorldTransforms, toWorldTransforms, depthMap,
         hidingMeshIds, showingMeshIds,
+        hidingShapeIds, showingShapeIds,
         easing, easeFn, myGen,
       });
     } else {
@@ -618,10 +655,12 @@ class StepManager {
    * @private
    */
   _prepareVisibility(nodeById, visibilitySnapshot) {
-    const hidingMeshIds  = [];
-    const showingMeshIds = [];
+    const hidingMeshIds   = [];
+    const showingMeshIds  = [];
+    const hidingShapeIds  = [];
+    const showingShapeIds = [];
     if (!visibilitySnapshot || !this._materials) {
-      return { hidingMeshIds, showingMeshIds };
+      return { hidingMeshIds, showingMeshIds, hidingShapeIds, showingShapeIds };
     }
 
     // Record current Three.js visibility
@@ -635,20 +674,28 @@ class StepManager {
     applyVisibilitySnapshot(nodeById, visibilitySnapshot);
     applyAllVisibilityToScene(nodeById, this.object3dById);
 
-    // Compute which meshes changed effective visibility
+    // Compute which meshes changed effective visibility. flatShape nodes
+    // get partitioned out so the caller can route them to the dedicated
+    // 'shape' threshold-snap channel if the animation string opted into
+    // it. When there's no 'shape' slot the caller folds them back into
+    // the regular hiding/showing mesh arrays — legacy fade behaviour.
     for (const [nodeId] of this._materials.meshById) {
       const prevVis = prevMeshVis.get(nodeId) ?? false;
       const obj     = this.object3dById.get(nodeId);
       const newVis  = obj ? obj.visible : false;
+      const node    = nodeById?.get(nodeId);
+      const isShape = node?.type === 'flatShape';
       if (prevVis && !newVis) {
-        hidingMeshIds.push(nodeId);
-        if (obj) obj.visible = true;   // keep visible — fade will hide it
+        if (isShape) hidingShapeIds.push(nodeId);
+        else         hidingMeshIds.push(nodeId);
+        if (obj) obj.visible = true;   // keep visible — fade/snap will hide it
       } else if (!prevVis && newVis) {
-        showingMeshIds.push(nodeId);
+        if (isShape) showingShapeIds.push(nodeId);
+        else         showingMeshIds.push(nodeId);
       }
     }
 
-    return { hidingMeshIds, showingMeshIds };
+    return { hidingMeshIds, showingMeshIds, hidingShapeIds, showingShapeIds };
   }
 
   /**
@@ -659,14 +706,20 @@ class StepManager {
    * @private
    */
   async _runPhasedAnimation(toSnapshot, phases, opts) {
-    const { changedNodeIds, fromWorldTransforms, toWorldTransforms, depthMap, hidingMeshIds, showingMeshIds, easing, easeFn, myGen } = opts;
+    const {
+      changedNodeIds, fromWorldTransforms, toWorldTransforms, depthMap,
+      hidingMeshIds, showingMeshIds,
+      hidingShapeIds = [], showingShapeIds = [],
+      easing, easeFn, myGen,
+    } = opts;
 
     let cameraHandled = false;
     let objHandled    = false;
     let colorHandled  = false;
     let visHandled    = false;
     let cableHandled  = false;
-    let overlayHandled    = false;
+    let overlayHandled = false;
+    let shapeHandled   = false;
 
     for (const phase of phases) {
       const { types, durationMs } = phase;
@@ -740,6 +793,23 @@ class StepManager {
         }
       }
 
+      // 'shape' channel — DEDICATED FADE slot for flatShape nodes.
+      // Same opacity-tween machinery as the regular 'visibility' channel,
+      // just filtered to shape ids. Lets the author give shapes an
+      // independent fade duration from the rest of the scene — e.g.
+      // `camera(500), visibility(500), obj(500), shape(300)` fades
+      // shapes faster (or with their own offset) than the meshes.
+      //
+      // For snap/threshold behaviour, use a tiny duration like shape(0).
+      if (types.includes('shape') && !shapeHandled) {
+        shapeHandled = true;
+        if (hidingShapeIds.length || showingShapeIds.length) {
+          this._materials?.beginVisibilityTransitions(
+            hidingShapeIds, showingShapeIds, durationMs, easeFn,
+          );
+        }
+      }
+
       // H1: cable transitions — opacity (visibility flip) + colour lerp.
       // Drives cables-render's _cableTransitions map; per-tick advance
       // is folded into the cables tick hook.
@@ -756,6 +826,75 @@ class StepManager {
       await Promise.all([_sleep(durationMs), ...phasePromises]);
 
       // Bail if a newer animation was started while we slept
+      if (myGen !== undefined && this._animGeneration !== myGen) return false;
+    }
+
+    // ── Finalize missing channels — run DEFAULT animation, not snap ────
+    // User rule: "all animation strings must fall on default if missing
+    // from string." A preset like 'shape(500)' should make shapes snap
+    // (their slot is in the string) but camera / obj / visibility still
+    // animate over the global default duration — not threshold-pop.
+    //
+    // Each missing channel kicks off its standard animation pipeline
+    // with the global default duration (state.cameraAnimDurationMs /
+    // state.objectAnimDurationMs). They run in parallel here so the
+    // longest one caps the total time.
+    //
+    // Color and cable have their own application pipelines (applyAll +
+    // step:activate listeners) and tracking them in here would risk
+    // double-application — leave them for now.
+    const fallbackCam = state.get('cameraAnimDurationMs') ?? 1500;
+    const fallbackObj = state.get('objectAnimDurationMs') ?? 1500;
+    const fallbackPromises = [];
+
+    if (!cameraHandled && toSnapshot.camera) {
+      cameraHandled = true;
+      fallbackPromises.push(
+        sceneCore.animateCameraTo(toSnapshot.camera, fallbackCam, opts.easing),
+      );
+    }
+    if (!objHandled && changedNodeIds.length) {
+      objHandled = true;
+      const startMs = clock.now();
+      this._objectTransitions = [];
+      for (const nodeId of changedNodeIds) {
+        const worldFrom = fromWorldTransforms[nodeId];
+        const worldTo   = toWorldTransforms[nodeId];
+        if (!worldFrom || !worldTo) continue;
+        this._objectTransitions.push({
+          nodeId, worldFrom, worldTo, startMs,
+          durationMs: fallbackObj, easeFn, isWorld: true,
+          depth: depthMap[nodeId] ?? 0,
+        });
+      }
+      this._objectTransitions.sort((a, b) => a.depth - b.depth);
+      if (this._objectTransitions.length) {
+        fallbackPromises.push(new Promise(resolve => {
+          this._onObjectTransitionsDone = resolve;
+        }));
+      }
+    }
+    // visibility + shape: both use the same fade machinery. When
+    // EITHER is missing from the string, the missing group falls back
+    // to a default fade. Shapes that were folded into mesh arrays
+    // (no shape slot in string) ride along automatically.
+    if (!visHandled && (hidingMeshIds.length || showingMeshIds.length)) {
+      visHandled = true;
+      this._materials?.beginVisibilityTransitions(
+        hidingMeshIds, showingMeshIds, fallbackObj, easeFn,
+      );
+      fallbackPromises.push(_sleep(fallbackObj));
+    }
+    if (!shapeHandled && (hidingShapeIds.length || showingShapeIds.length)) {
+      shapeHandled = true;
+      this._materials?.beginVisibilityTransitions(
+        hidingShapeIds, showingShapeIds, fallbackObj, easeFn,
+      );
+      fallbackPromises.push(_sleep(fallbackObj));
+    }
+
+    if (fallbackPromises.length) {
+      await Promise.all(fallbackPromises);
       if (myGen !== undefined && this._animGeneration !== myGen) return false;
     }
 
@@ -1063,6 +1202,27 @@ class StepManager {
   scheduleSync() {
     this._dirty = true;
     state.setState({ _stepDirty: true });
+  }
+
+  /**
+   * Toggle visibility of all missing-asset Bbox placeholder LineSegments.
+   * Used by the video exporter to keep authoring-aid outlines out of
+   * encoded frames unless the user explicitly opted in via Export tab →
+   * "Export boundary boxes".
+   *
+   * Sets a sticky module flag so every placeholder rebuilt during
+   * subsequent step transitions inherits the hidden state — without
+   * this, the Bbox would reappear on the next step nav.
+   *
+   * Phantom-folder Groups (isPlaceholderFolder) are intentionally NOT
+   * toggled: they wrap foreign-object guests too, and hiding the Group
+   * would hide those guests with it.
+   */
+  setPlaceholderBboxesVisible(visible) {
+    _placeholdersHidden = !visible;
+    for (const [, obj] of this.object3dById) {
+      if (obj?.userData?.isPlaceholder) obj.visible = visible;
+    }
   }
 
   /**
@@ -1843,7 +2003,15 @@ function applyAllVisibilityToScene(nodeById, object3dById) {
   function walk(node, inherited) {
     const effective = inherited && node.localVisible;
     const obj = object3dById.get(node.id);
-    if (obj) obj.visible = effective;
+    if (obj) {
+      // Bbox placeholders honor the sticky export-hide flag so they stay
+      // out of the encoded video even after each step transition re-runs
+      // this pass. Real geometry + phantom-folder Groups follow normal
+      // visibility rules.
+      obj.visible = (_placeholdersHidden && obj.userData?.isPlaceholder)
+        ? false
+        : effective;
+    }
     node.children.forEach(c => walk(c, effective));
   }
 
@@ -2025,7 +2193,12 @@ function rebuildFromTreeSpec(spec, nodeById, object3dById, parentObject3d) {
     node.localVisible = spec.localVisible !== false;
     node.children     = [];
 
-    let obj = object3dById.get(spec.id) ?? node.object3d ?? ensureFlatShapeObject3D(node);
+    // Always run ensureFlatShapeObject3D — it has its own cache-hit fast
+    // path (matching shapeBuildKey returns the existing mesh) AND that
+    // path also re-asserts materials.meshById registration. Skipping the
+    // call when object3dById already has the mesh would bypass the
+    // registration and break visibility-transition fades.
+    let obj = ensureFlatShapeObject3D(node);
     if (obj) {
       node.object3d = obj;
       object3dById.set(spec.id, obj);
@@ -2142,6 +2315,10 @@ function _createMeshPlaceholder(node) {
 
   lines.userData.meshNodeId    = node.id;
   lines.userData.isPlaceholder = true;
+  // Sticky export-time hide: when set, the newly built placeholder
+  // spawns invisible so the encoder never sees it. Cleared when export
+  // unwinds via setPlaceholderBboxesVisible(true).
+  if (_placeholdersHidden) lines.visible = false;
 
   // Position the placeholder. Two paths:
   //   - placeholderTransform present (set by deleteTopLevelAssembly,

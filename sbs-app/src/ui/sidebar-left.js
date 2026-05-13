@@ -142,6 +142,7 @@ export function initSidebarLeft() {
   state.on('change:shapeDrawing',        () => { if (_activeTab === 'shapes') _renderShapesTab(); });
   state.on('change:treeData',            () => { if (_activeTab === 'shapes') _renderShapesTab(); });
   state.on('change:shapePlacementForId', () => { if (_activeTab === 'shapes') _renderShapesTab(); });
+  state.on('change:shapeFromFacePicking',() => { if (_activeTab === 'shapes') _renderShapesTab(); });
   // Selection changes trigger a Shapes-tab re-render only when that tab
   // is active, so the highlight on the currently-selected flatShape's
   // template row stays in sync. (Other tabs already re-render on their
@@ -1417,7 +1418,7 @@ function _showColorContextMenu(preset, x, y, selectedMeshIds) {
 
   showContextMenu([
     {
-      label:    `Select by active color (${activeMatches.length})`,
+      label:    `🎨 Select by active color (${activeMatches.length})`,
       disabled: activeMatches.length === 0,
       action:   () => {
         state.setSelection(activeMatches[0], new Set(activeMatches));
@@ -1425,7 +1426,7 @@ function _showColorContextMenu(preset, x, y, selectedMeshIds) {
       },
     },
     {
-      label:    `Select by default color (${defaultMatches.length})`,
+      label:    `🎨⭐ Select by default color (${defaultMatches.length})`,
       disabled: defaultMatches.length === 0,
       action:   () => {
         state.setSelection(defaultMatches[0], new Set(defaultMatches));
@@ -2525,6 +2526,7 @@ function _renderShapesTab() {
   const drawing = state.get('shapeDrawing');
   const drawingPhase = drawing?.phase ?? null;
   const placeArmedFor = state.get('shapePlacementForId') || null;
+  const facePicking   = !!state.get('shapeFromFacePicking');
   // Highlight the row of the currently-selected flatShape's template —
   // gives the user a visual link between scene selection and library row.
   const selId = state.get('selectedId');
@@ -2553,17 +2555,41 @@ function _renderShapesTab() {
         many times in the scene. Drawing happens in the viewport.
       </p>
       <div style="display:flex;gap:8px;align-items:center">
-        <button class="btn" id="btn-new-shape" ${drawing ? 'disabled' : ''}
+        <button class="btn" id="btn-new-shape" ${drawing || facePicking ? 'disabled' : ''}
           style="flex:1">${drawing ? 'Drawing…' : '+ New Shape'}</button>
         ${drawing
           ? `<button class="btn" id="btn-cancel-shape" style="background:#7f1d1d">Cancel</button>`
           : ''}
       </div>
+      <div style="display:flex;gap:8px;align-items:center;margin-top:6px">
+        <button class="btn" id="btn-shape-from-face"
+                ${drawing ? 'disabled' : ''}
+                style="flex:1${facePicking ? ';background:#0369a1;color:#f1f5f9' : ''}"
+                title="Click a face on a model — adjacent triangles within the angle threshold get included; their outline becomes a shape.">
+          ${facePicking ? 'Click a face…' : '✂ Create shape from face'}
+        </button>
+        ${facePicking
+          ? `<button class="btn" id="btn-cancel-face-shape" style="background:#7f1d1d">Cancel</button>`
+          : ''}
+      </div>
+      <label class="small muted" style="display:block;margin-top:6px;line-height:1.4">
+        Angle threshold
+        <span id="shape-face-angle-val" style="float:right;color:var(--text)">${(state.get('shapeFaceAngleThreshold') ?? 5)}°</span>
+        <input type="range" id="shape-face-angle"
+               min="0" max="45" step="0.5"
+               value="${state.get('shapeFaceAngleThreshold') ?? 5}"
+               style="width:100%;margin-top:2px"
+               title="Adjacent triangles within this many degrees of the picked triangle's normal join the face set. Tighter = only flat regions; wider = catches gently-curved surfaces." />
+      </label>
       ${drawing
         ? `<p class="small" style="margin-top:8px;color:#fdba74">
              ${drawingPhase === 'pickPlane'
                ? 'Click a face or empty space to set the drawing plane.'
                : 'Click to add vertices • Click first vertex (or right-click) to close • Esc to cancel.'}
+           </p>` : ''}
+      ${facePicking
+        ? `<p class="small" style="margin-top:8px;color:#fdba74">
+             Click a mesh face — the connected element gets sliced by that face's plane. Right-click or Esc cancels.
            </p>` : ''}
     </div>
 
@@ -2616,6 +2642,29 @@ function _renderShapesTab() {
   el.querySelector('#btn-cancel-shape')?.addEventListener('click', () => {
     actions.cancelShapeDraw();
   });
+  el.querySelector('#btn-shape-from-face')?.addEventListener('click', () => {
+    if (state.get('shapeFromFacePicking')) actions.cancelCreateShapeFromFace();
+    else                                    actions.startCreateShapeFromFace();
+  });
+  el.querySelector('#btn-cancel-face-shape')?.addEventListener('click', () => {
+    actions.cancelCreateShapeFromFace();
+  });
+
+  // Angle-threshold slider — live updates the label, persists to user-
+  // settings on change (sticky across sessions).
+  const angleEl  = el.querySelector('#shape-face-angle');
+  const angleLab = el.querySelector('#shape-face-angle-val');
+  if (angleEl) {
+    angleEl.addEventListener('input', () => {
+      const v = Number(angleEl.value) || 0;
+      if (angleLab) angleLab.textContent = `${v}°`;
+      state.setState({ shapeFaceAngleThreshold: v });
+    });
+    angleEl.addEventListener('change', () => {
+      const v = Number(angleEl.value) || 0;
+      userSettings.patch({ scene: { shapeFaceAngleThreshold: v } });
+    });
+  }
 
   el.querySelectorAll('[data-edit-id]').forEach(btn => {
     btn.addEventListener('click', e => {
@@ -2741,6 +2790,16 @@ function _renderExportTab() {
             </div>
           </span>
         </label>
+
+        <label style="display:flex;align-items:flex-start;gap:6px;margin-top:8px;cursor:pointer;">
+          <input type="checkbox" id="exp-bboxes" ${exp.exportBoundaryBoxes ? 'checked' : ''} style="margin-top:3px;" />
+          <span class="small muted">
+            Export boundary boxes
+            <div class="small muted" style="font-size:11px;opacity:0.75;margin-top:2px;">
+              Include missing-asset / deleted-mesh Bbox placeholders (orange wireframes) in the encoded video. Off by default — they're authoring aids, not finished output.
+            </div>
+          </span>
+        </label>
       </div>
 
       <div class="card" style="margin-top:8px;">
@@ -2836,6 +2895,8 @@ function _renderExportTab() {
     state.setExportOption('showSafeFrame', !!e.target.checked));
   el.querySelector('#exp-offline-render')?.addEventListener('change', e =>
     state.setExportOption('offlineRender', !!e.target.checked));
+  el.querySelector('#exp-bboxes')?.addEventListener('change', e =>
+    state.setExportOption('exportBoundaryBoxes', !!e.target.checked));
   el.querySelector('#exp-fps').addEventListener('change', e =>
     state.setExportOption('fps', Number(e.target.value)));
   el.querySelector('#exp-hold').addEventListener('change', e =>

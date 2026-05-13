@@ -1410,22 +1410,22 @@ function _showStepContextMenu(step, x, y) {
     : [];
   const curSelSize = _selSize();
   const items = [
-    { label: `Select all steps & chapters (${allSteps.length})`,
+    { label: `☑ Select all steps & chapters (${allSteps.length})`,
       disabled: allSteps.length === 0,
       action:   () => _selectAllSteps() },
-    { label: `Select all steps in chapter (${inChapterIds.length})`,
+    { label: `☑ Select all steps in chapter (${inChapterIds.length})`,
       disabled: inChapterIds.length === 0,
       action:   () => _selectChapterSteps(step.chapterId) },
-    { label: `Invert selected (${curSelSize} → ${Math.max(0, allSteps.length - curSelSize)})`,
+    { label: `⇄ Invert selected (${curSelSize} → ${Math.max(0, allSteps.length - curSelSize)})`,
       disabled: allSteps.length === 0,
       action:   () => _invertSelectedSteps() },
     { separator: true },
-    { label: 'Rename…',   action: () => _renameStep(step.id) },
-    { label: 'Duplicate', action: () => _duplicateStep(step.id) },
-    { label: 'Copy',      action: () => _copyStepsToClipboard([step.id]) },
+    { label: '✏ Rename…',   action: () => _renameStep(step.id) },
+    { label: '⎘ Duplicate', action: () => _duplicateStep(step.id) },
+    { label: '📋 Copy',     action: () => _copyStepsToClipboard([step.id]) },
   ];
   if (_clipboard?.kind === 'steps') {
-    items.push({ label: `Paste under (${_clipboard.data.length})`, action: () => _pasteStepsUnder(step.id) });
+    items.push({ label: `📥 Paste under (${_clipboard.data.length})`, action: () => _pasteStepsUnder(step.id) });
   }
   // "Update camera as template" is only meaningful when the active step
   // is bound to a template — that's the template the action targets.
@@ -1433,13 +1433,13 @@ function _showStepContextMenu(step, x, y) {
   // so the menu doesn't lie about what's possible.
   const activeTplLabel = _activeStepTemplateName();
   items.push(
-    { label: step.hidden ? 'Show in playback' : 'Hide from playback',
+    { label: step.hidden ? '👁 Show in playback' : '🚫 Hide from playback',
       action: () => steps.setStepHidden(step.id, !step.hidden) },
-    { label: 'Update camera (free)',
+    { label: '📷 Update step camera',
       action: () => { actions.updateStepCameraFromCurrent(step.id); setStatus('Camera saved for step.'); } },
     { label: activeTplLabel
-        ? `Update camera (as template "${activeTplLabel}")`
-        : 'Update camera (as template — none active)',
+        ? `📷🔗 Update template "${activeTplLabel}"`
+        : '📷🔗 Update template (none bound to step)',
       disabled: !activeTplLabel,
       action: () => {
         actions.updateStepCameraAsTemplate([step.id]);
@@ -1454,18 +1454,18 @@ function _showStepContextMenu(step, x, y) {
   // be promoted via drag-out, so the menu doesn't offer ambiguous paths.
   if (step.groupHead) {
     items.push({
-      label: 'Ungroup step',
+      label: '⊟ Ungroup step',
       action: () => actions.ungroupStep(step.id),
     });
   } else if (!step.groupId) {
     items.push({
-      label: 'Convert to step group',
+      label: '⊞ Convert to step group',
       action: () => actions.convertStepToGroup(step.id),
     });
   }
   items.push(
     { separator: true },
-    { label: 'Delete',    action: () => _deleteStep(step.id) },
+    { label: '🗑 Delete',    action: () => _deleteStep(step.id) },
   );
   showContextMenu(items, x, y);
 }
@@ -1497,29 +1497,29 @@ function _showMultiStepContextMenu(stepIds, x, y) {
 
   const activeTplLabel = _activeStepTemplateName();
   showContextMenu([
-    { label: `Select all steps & chapters (${stepsArr.length})`,
+    { label: `☑ Select all steps & chapters (${stepsArr.length})`,
       disabled: stepsArr.length === 0,
       action:   () => _selectAllSteps() },
-    { label: `Invert selected (${stepIds.length} → ${Math.max(0, stepsArr.length - stepIds.length)})`,
+    { label: `⇄ Invert selected (${stepIds.length} → ${Math.max(0, stepsArr.length - stepIds.length)})`,
       disabled: stepsArr.length === 0,
       action:   () => _invertSelectedSteps() },
     { separator: true },
-    { label: `Copy (${selSteps.length})`,
+    { label: `📋 Copy (${selSteps.length})`,
       action: () => _copyStepsToClipboard(stepIds) },
-    { label: anyVisible ? 'Hide from playback' : 'Show in playback',
+    { label: anyVisible ? '🚫 Hide from playback' : '👁 Show in playback',
       action: () => selSteps.forEach(s => steps.setStepHidden(s.id, anyVisible)) },
-    { label: 'Update camera (free)',
+    { label: '📷 Update step camera',
       action: () => { actions.updateStepCameraFromCurrentMulti(selSteps.map(s => s.id)); setStatus(`Camera saved for ${selSteps.length} steps.`); } },
     { label: activeTplLabel
-        ? `Update camera (as template "${activeTplLabel}")`
-        : 'Update camera (as template — none active)',
+        ? `📷🔗 Update template "${activeTplLabel}"`
+        : '📷🔗 Update template (none bound to step)',
       disabled: !activeTplLabel,
       action: () => {
         actions.updateStepCameraAsTemplate(selSteps.map(s => s.id));
         setStatus(`Updated template "${activeTplLabel}" + bound ${selSteps.length} step(s).`);
       } },
     { separator: true },
-    { label: `Delete (${selSteps.length})`,
+    { label: `🗑 Delete (${selSteps.length})`,
       action: async () => {
         const ok = await _confirmDialog(`Delete ${selSteps.length} steps?`);
         if (!ok) return;
@@ -1536,31 +1536,31 @@ function _showChapterContextMenu(chapter, x, y) {
   const overlap    = chapterIds.filter(id => cur.has(id)).length;
 
   const items = [
-    { label: `Select all steps in chapter (${chapterIds.length})`,
+    { label: `☑ Select all steps in chapter (${chapterIds.length})`,
       disabled: chapterIds.length === 0,
       action:   () => _selectChapterSteps(chapter.id) },
-    { label: `Add chapter to step selection (+${chapterIds.length})`,
+    { label: `＋ Add chapter to step selection (+${chapterIds.length})`,
       disabled: chapterIds.length === 0,
       action:   () => _addChapterToSelection(chapter.id) },
-    { label: `Remove chapter from step selection (−${overlap})`,
+    { label: `✕ Remove chapter from step selection (−${overlap})`,
       disabled: overlap === 0,
       action:   () => _removeChapterFromSelection(chapter.id) },
     { separator: true },
-    { label: 'Rename…', action: () => _renameChapter(chapter.id) },
-    { label: 'Copy',    action: () => _copyChapterToClipboard(chapter.id) },
+    { label: '✏ Rename…', action: () => _renameChapter(chapter.id) },
+    { label: '📋 Copy',   action: () => _copyChapterToClipboard(chapter.id) },
   ];
   if (_clipboard?.kind === 'chapter') {
-    items.push({ label: 'Paste under', action: () => _pasteChapterUnder(chapter.id) });
+    items.push({ label: '📥 Paste under', action: () => _pasteChapterUnder(chapter.id) });
   }
   if (_clipboard?.kind === 'steps') {
-    items.push({ label: `Paste steps into chapter (${_clipboard.data.length})`,
+    items.push({ label: `📥 Paste steps into chapter (${_clipboard.data.length})`,
                  action: () => _pasteStepsIntoChapter(chapter.id) });
   }
   items.push(
     { separator: true },
-    { label: chapter.locked ? 'Unlock' : 'Lock open',
+    { label: chapter.locked ? '🔓 Unlock' : '🔒 Lock open',
       action: () => actions.setChapterLocked(chapter.id, !chapter.locked) },
-    { label: 'Delete', action: () => _deleteChapter(chapter.id) },
+    { label: '🗑 Delete', action: () => _deleteChapter(chapter.id) },
   );
   showContextMenu(items, x, y);
 }

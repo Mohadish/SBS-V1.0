@@ -168,6 +168,31 @@ steps.init();
 // ══════════════════════════════════════════════════════════════════════════════
 
 initStatus();
+
+// ── Global error / unhandled-rejection handlers ────────────────────────────
+// Production runs without DevTools open, so silent async failures (failed
+// project saves, narration synth errors, missing-asset retries, etc.) are
+// otherwise invisible to the user. Surface them as a status toast AND keep
+// the console.error so a developer attaching DevTools can still see the
+// stack. event.preventDefault() stops Chromium from showing the default
+// "Uncaught (in promise)" banner — we already have a friendlier toast.
+window.addEventListener('unhandledrejection', (event) => {
+  const reason = event.reason;
+  const msg    = (reason && (reason.message || reason.toString())) || 'Unhandled error';
+  // eslint-disable-next-line no-console
+  console.error('[unhandledrejection]', reason);
+  try { setStatus(`Error: ${msg.slice(0, 200)}`, 'danger', 4000); } catch {}
+  event.preventDefault();
+});
+
+window.addEventListener('error', (event) => {
+  const msg = event.message || (event.error && event.error.message) || 'Script error';
+  // eslint-disable-next-line no-console
+  console.error('[error]', event.error || event);
+  try { setStatus(`Error: ${msg.slice(0, 200)}`, 'danger', 4000); } catch {}
+  // Don't preventDefault — let Chromium also log to its console.
+});
+
 initContextMenu();
 initSidebarLeft();
 initStepNav();
@@ -199,6 +224,9 @@ initUserSettings()
     const sc  = cur.scene || {};
     if (typeof sc.cameraZoomScale === 'number') {
       sceneCore.setUserZoomScale(sc.cameraZoomScale);
+    }
+    if (typeof sc.shapeFaceAngleThreshold === 'number') {
+      state.setState({ shapeFaceAngleThreshold: sc.shapeFaceAngleThreshold });
     }
     // Default background only applies to brand-new projects (when the
     // current viewport still holds the schema default). Projects that
@@ -551,6 +579,24 @@ canvas.addEventListener('pointerdown', e => {
     e.stopPropagation();
     _gizmoConsumed = true;
     actions.cancelShapePlacement();
+    return;
+  }
+
+  // Create-shape-from-face picker — left click slices the clicked face's
+  // connected component with the face's plane and lands the cross-section
+  // as a new shape. Right-click / Esc cancels.
+  if (state.get('shapeFromFacePicking') && e.button === 0) {
+    e.preventDefault();
+    e.stopPropagation();
+    _gizmoConsumed = true;
+    actions.createShapeFromFaceAtClick(e.clientX, e.clientY);
+    return;
+  }
+  if (state.get('shapeFromFacePicking') && e.button === 2) {
+    e.preventDefault();
+    e.stopPropagation();
+    _gizmoConsumed = true;
+    actions.cancelCreateShapeFromFace();
     return;
   }
 
@@ -1096,12 +1142,12 @@ canvas.addEventListener('contextmenu', e => {
       // overlapping rectangles produce a "+" with a clear centre, donuts,
       // etc. Snap-close the new polygon to commit it back to edit mode.
       items.push({
-        label: '＋ Add polygon (XOR with existing)',
+        label: '⊕ Add polygon (XOR with existing)',
         action: () => shapeEditor.newShape(),
       });
     }
     items.push({ label: '─', disabled: true });
-    items.push({ label: 'Exit edit  [Esc]', action: () => actions.cancelShapeDraw() });
+    items.push({ label: '✖ Exit edit  [Esc]', action: () => actions.cancelShapeDraw() });
     showContextMenu(items, e.clientX, e.clientY);
     return;
   }
@@ -1123,13 +1169,13 @@ canvas.addEventListener('contextmenu', e => {
         action: () => pivotCenterPicker.removeLast(),
       },
       {
-        label: '🗙 Clear all points',
+        label: '🗑 Clear all points',
         disabled: !havePts,
         action: () => pivotCenterPicker.clearAll(),
       },
       { label: '─', disabled: true },
       {
-        label: '✕ Cancel  [Esc]',
+        label: '✖ Cancel  [Esc]',
         action: () => actions.cancelPivotCenterPicking(),
       },
     ], e.clientX, e.clientY);
@@ -1160,7 +1206,7 @@ canvas.addEventListener('contextmenu', e => {
       { label: '─', disabled: true },
       hasSocket
         ? {
-            label: '✕ Remove socket',
+            label: '🗑 Remove socket',
             action: () => actions.removeCableSocket(cableHit.cableId, cableHit.nodeId),
           }
         : {
@@ -1168,7 +1214,7 @@ canvas.addEventListener('contextmenu', e => {
             action: () => actions.addCableSocket(cableHit.cableId, cableHit.nodeId),
           },
       {
-        label: '⌥ Branch from here…',
+        label: '🌿 Branch from here…',
         action: () => actions.createBranchFromCablePoint(cableHit.cableId, cableHit.nodeId),
       },
       ...(isLast ? [{
@@ -1181,12 +1227,12 @@ canvas.addEventListener('contextmenu', e => {
       }] : []),
       { label: '─', disabled: true },
       {
-        label: '✕ Delete this point',
+        label: '🗑 Delete this point',
         action: () => actions.deleteCablePoint(cableHit.cableId, cableHit.nodeId),
       },
       { label: '─', disabled: true },
       {
-        label: 'Deselect  [Esc]',
+        label: '✖ Deselect  [Esc]',
         action: () => actions.clearCablePointSelection(),
       },
     ];
@@ -1219,12 +1265,12 @@ canvas.addEventListener('contextmenu', e => {
       }] : []),
       { label: '─', disabled: true },
       {
-        label: '✕ Remove socket',
+        label: '🗑 Remove socket',
         action: () => actions.removeCableSocket(socketHit.cableId, socketHit.nodeId),
       },
       { label: '─', disabled: true },
       {
-        label: 'Deselect  [Esc]',
+        label: '✖ Deselect  [Esc]',
         action: () => actions.clearCableSocketSelection(),
       },
     ];
@@ -1306,7 +1352,7 @@ canvas.addEventListener('contextmenu', e => {
     const directNotes = (meshNode?.children || []).filter(c => c?.type === 'note');
     if (directNotes.length) {
       items.push({
-        label: `📋 Notes on "${(meshNode.name || 'mesh').slice(0, 24)}" (${directNotes.length})`,
+        label: `🗒 Notes on "${(meshNode.name || 'mesh').slice(0, 24)}" (${directNotes.length})`,
         disabled: true,
       });
       // Resolve template-linked notes' display name from the template's
@@ -1338,24 +1384,24 @@ canvas.addEventListener('contextmenu', e => {
   if (node?.type === 'flatShape') {
     const inGlobal = state.get('globalEditNodeId') === node.id;
     items.push({
-      label: 'Edit polygon…',
+      label: '✏ Edit polygon…',
       action: () => actions.startShapeEdit(node.templateId),
     });
     items.push({
-      label: inGlobal ? '✓ Global Transform (active)' : 'Global Transform',
+      label: inGlobal ? '✓ Global Transform (active)' : '🌐 Global Transform',
       action: () => inGlobal
         ? actions.commitGlobalEdit()
         : actions.enterGlobalEdit(node.id),
     });
     items.push({
-      label: 'Copy step pose',
+      label: '📋 Copy step pose',
       action: () => actions.copyInstanceStepPose(node.id),
     });
     const stepSel = state.get('selectedStepIds');
     items.push({
       label: stepSel instanceof Set && stepSel.size >= 2
-        ? `Paste step pose to ${stepSel.size} steps`
-        : 'Paste step pose',
+        ? `📥 Paste step pose to ${stepSel.size} steps`
+        : '📥 Paste step pose',
       disabled: !actions.hasInstancePoseClipboard(),
       action: () => actions.pasteInstanceStepPose(node.id),
     });
@@ -1376,21 +1422,21 @@ canvas.addEventListener('contextmenu', e => {
       action: () => actions.toggleVisibility(multiIds),
     });
     items.push({
-      label: '◎ Isolate',
+      label: '🔍 Isolate',
       action: () => actions.isolateSelection(),
     });
     if (actions.hasIsolateSnapshot()) {
       items.push({
-        label: '◌ Un-isolate',
+        label: '🌐 Un-isolate',
         action: () => actions.unisolate(),
       });
     }
     items.push({
-      label: '⊕ Move to folder…',
+      label: '📁→ Move to folder…',
       action: () => showMoveToFolderDialog([...multiIds]),
     });
     items.push({
-      label: '⊡ Fit to selection',
+      label: '🎯 Fit to selection',
       action: () => _fitToSelection(multiIds),
     });
     items.push({ label: '─', disabled: true });
@@ -1408,7 +1454,7 @@ canvas.addEventListener('contextmenu', e => {
     return tpl?.name || null;
   })();
   items.push({
-    label: '◉ Update camera (free)',
+    label: '📷 Update step camera',
     action: () => {
       const activeId = state.get('activeStepId');
       if (activeId) {
@@ -1421,8 +1467,8 @@ canvas.addEventListener('contextmenu', e => {
   });
   items.push({
     label: _viewportActiveStepTplName
-      ? `◎ Update camera (as template "${_viewportActiveStepTplName}")`
-      : '◎ Update camera (as template — none active)',
+      ? `📷🔗 Update template "${_viewportActiveStepTplName}"`
+      : '📷🔗 Update template (none bound to step)',
     disabled: !_viewportActiveStepTplName,
     action: () => {
       const activeId = state.get('activeStepId');
@@ -1432,7 +1478,7 @@ canvas.addEventListener('contextmenu', e => {
     },
   });
   items.push({
-    label: 'Fit view  [F]',
+    label: '🎯 Fit view  [F]',
     action: () => {
       if (!sceneCore.rootGroup || !window.THREE) return;
       const box = new THREE.Box3().setFromObject(sceneCore.rootGroup);
@@ -1440,7 +1486,7 @@ canvas.addEventListener('contextmenu', e => {
     },
   });
   if (selId) {
-    items.push({ label: 'Deselect  [Esc]', action: () => { actionClearSelection(); gizmo.hide(); } });
+    items.push({ label: '✖ Deselect  [Esc]', action: () => { actionClearSelection(); gizmo.hide(); } });
   }
 
   if (items.length) showContextMenu(items, e.clientX, e.clientY);
@@ -1695,6 +1741,11 @@ window.addEventListener('keydown', async e => {
     // Place-shape picker — Esc disarms.
     if (state.get('shapePlacementForId')) {
       actions.cancelShapePlacement();
+      return;
+    }
+    // Create-shape-from-face picker — Esc disarms.
+    if (state.get('shapeFromFacePicking')) {
+      actions.cancelCreateShapeFromFace();
       return;
     }
     // Translate-global — Esc rolls back the open session and exits mode.

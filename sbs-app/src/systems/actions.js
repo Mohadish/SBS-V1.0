@@ -5573,6 +5573,389 @@ export function placeShapeAtClick(templateId, clientX, clientY) {
   return id;
 }
 
+// ─────────────────────────────────────────────────────────────────────
+//  CREATE SHAPE FROM GEOMETRY FACE (v1)
+// ─────────────────────────────────────────────────────────────────────
+//
+// User clicks a face → we compute the plane of that face → walk the
+// CONNECTED COMPONENT (element) of the clicked triangle in the mesh's
+// geometry → intersect every triangle in that component with the plane
+// → stitch the resulting line segments into one closed polyline →
+// project to 2D plane-local coords → create a shape template + place
+// one instance at the plane pose. Single undo entry.
+//
+// v1 scope: handles indexed AND non-indexed geometries (the latter
+// gets vertex-position deduplication so connectivity is detectable).
+// Returns the LARGEST closed loop only — multi-disjoint output deferred
+// to v2.
+
+/** Arm the create-from-face picker. Cancels other modes for safety. */
+export function startCreateShapeFromFace() {
+  if (state.get('shapeDrawing'))               cancelShapeDraw();
+  if (state.get('shapePlacementForId'))        state.setState({ shapePlacementForId: null });
+  if (state.get('shapeEditPickInstanceForId')) state.setState({ shapeEditPickInstanceForId: null });
+  state.setState({ shapeFromFacePicking: true });
+  setStatus('Click a face on a model — its cross-section becomes a new shape.');
+}
+
+export function cancelCreateShapeFromFace() {
+  if (!state.get('shapeFromFacePicking')) return;
+  state.setState({ shapeFromFacePicking: false });
+}
+
+/**
+ * Resolve a viewport click into a connected-component cross-section
+ * polygon and land it as a shape. Auto-disarms after one shot.
+ */
+export function createShapeFromFaceAtClick(clientX, clientY) {
+  const T = window.THREE;
+  if (!T) { state.setState({ shapeFromFacePicking: false }); return null; }
+  const hit = sceneCore.pick(clientX, clientY);
+  if (!hit || !hit.face || !hit.object?.isMesh) {
+    state.setState({ shapeFromFacePicking: false });
+    setStatus('No face hit — cancelled.', 'warning');
+    return null;
+  }
+
+  // ── Plane: same orientation convention as placeShapeAtClick ────────
+  const origin = [hit.point.x, hit.point.y, hit.point.z];
+  const n = hit.face.normal.clone()
+    .transformDirection(hit.object.matrixWorld)
+    .normalize();
+  const N = new T.Vector3(n.x, n.y, n.z);
+  let up = new T.Vector3(0, 1, 0);
+  if (Math.abs(up.dot(N)) > 0.99) up = new T.Vector3(1, 0, 0);
+  const X = new T.Vector3().crossVectors(up, N).normalize();
+  const Y = new T.Vector3().crossVectors(N, X).normalize();
+  const m = new T.Matrix4().makeBasis(X, Y, N);
+  const q = new T.Quaternion().setFromRotationMatrix(m);
+  const anchorNodeId = hit.object?.userData?.meshNodeId
+                    ?? hit.object?.userData?.flatShapeNodeId
+                    ?? hit.object?.userData?.nodeId
+                    ?? null;
+  const plane = {
+    origin,
+    normal:          [N.x, N.y, N.z],
+    qx:              [X.x, X.y, X.z],
+    qy:              [Y.x, Y.y, Y.z],
+    worldQuaternion: [q.x, q.y, q.z, q.w],
+    anchorNodeId,
+  };
+
+  // ── Compute face-set polygon(s) ────────────────────────────────────
+  // Returns an array of 2D loops. Largest = outer; the rest are holes.
+  let loops2D;
+  try {
+    loops2D = _computeFaceCrossSection(hit, plane);
+  } catch (err) {
+    console.warn('[createShapeFromFace] computation failed:', err);
+    state.setState({ shapeFromFacePicking: false });
+    setStatus('Cross-section computation failed.', 'danger');
+    return null;
+  }
+  if (!loops2D || loops2D.length === 0 || loops2D[0].length < 3) {
+    state.setState({ shapeFromFacePicking: false });
+    setStatus('Could not extract a polygon from this face — try another spot or widen the angle threshold.', 'warning');
+    return null;
+  }
+
+  const outer = loops2D[0];
+  const holes = loops2D.slice(1).filter(l => l.length >= 3);
+
+  // ── Land as template + instance (single undo) ──────────────────────
+  const prevTemplates = state.get('shapeTemplates') || [];
+  const tpl = createShapeTemplate({
+    name:     `Shape ${prevTemplates.length + 1}`,
+    fill:     '#88c0f0',
+    polygons: [{ outer, holes }],
+  });
+  state.setState({ shapeTemplates: [...prevTemplates, tpl] });
+
+  const prevSteps = JSON.parse(JSON.stringify(state.get('steps') || []));
+  const instanceId = placeShapeInstance(tpl.id, { plane, undoLabel: null });
+  const nextSteps  = JSON.parse(JSON.stringify(state.get('steps') || []));
+
+  undoManager.push(`Create shape "${tpl.name}" (from face)`,
+    () => _undoCreateTemplate(tpl.id, instanceId, prevTemplates, prevSteps),
+    () => _redoCreateTemplate(tpl, instanceId, nextSteps),
+  );
+
+  state.setState({ shapeFromFacePicking: false });
+  const holeStr = holes.length ? ` + ${holes.length} hole${holes.length === 1 ? '' : 's'}` : '';
+  setStatus(`Created "${tpl.name}" — ${outer.length} pts${holeStr}.`);
+  return instanceId;
+}
+
+/**
+ * Top-level orchestration (v2 algorithm — flood-fill by normal angle).
+ * Returns an array of 2D polygon loops in plane-local coords. The first
+ * loop is the OUTER polygon (largest area); subsequent loops are holes.
+ *
+ * Steps:
+ *   1. Flood-fill triangles whose normal is within shapeFaceAngleThreshold
+ *      of the clicked triangle's normal (anchor-compare semantics).
+ *   2. Boundary edges = edges referenced by exactly ONE triangle in the
+ *      face set.
+ *   3. Stitch boundary edges into closed loops.
+ *   4. Project each loop to plane-local 2D.
+ *   5. Sort by polygon area — largest = outer; rest = holes.
+ */
+function _computeFaceCrossSection(hit, plane) {
+  const T = window.THREE;
+  const mesh = hit.object;
+  const geom = mesh.geometry;
+  if (!geom?.attributes?.position) return null;
+
+  const thresholdDeg = Number(state.get('shapeFaceAngleThreshold') ?? 5);
+  const thresholdRad = Math.max(0, thresholdDeg) * Math.PI / 180;
+  // cos is monotone-decreasing on [0,π], so "dot ≥ cos(threshold)" ⇔
+  // "angle ≤ threshold". Both normals are unit-length, so dot = cos(angle).
+  const cosThreshold = Math.cos(thresholdRad);
+
+  // ── Flood-fill the face set by normal-angle deviation ──────────────
+  const ff = _floodFillFacesByAngle(geom, hit.faceIndex, cosThreshold);
+  if (!ff || ff.faceSet.size === 0) return null;
+
+  // ── Extract boundary edges of the face set ─────────────────────────
+  const segments = _extractBoundaryEdges(ff);
+  if (segments.length === 0) return null;
+
+  // ── Stitch into closed loops (mesh-local 3D) ───────────────────────
+  const loops3D = _stitchSegmentsToLoops(segments);
+  if (loops3D.length === 0) return null;
+
+  // ── Project each loop to plane-local 2D ────────────────────────────
+  mesh.updateMatrixWorld(true);
+  const invMeshWorld = new T.Matrix4().copy(mesh.matrixWorld).invert();
+  const planeOriginLocal = new T.Vector3(...plane.origin).applyMatrix4(invMeshWorld);
+  const meshWorldQ = new T.Quaternion();
+  mesh.getWorldQuaternion(meshWorldQ);
+  const invMeshWorldQ = meshWorldQ.clone().invert();
+  const Xlocal = new T.Vector3(...plane.qx).applyQuaternion(invMeshWorldQ);
+  const Ylocal = new T.Vector3(...plane.qy).applyQuaternion(invMeshWorldQ);
+  const project = (p) => {
+    const dx = p.x - planeOriginLocal.x;
+    const dy = p.y - planeOriginLocal.y;
+    const dz = p.z - planeOriginLocal.z;
+    return [
+      dx * Xlocal.x + dy * Xlocal.y + dz * Xlocal.z,
+      dx * Ylocal.x + dy * Ylocal.y + dz * Ylocal.z,
+    ];
+  };
+  const loops2D = loops3D.map(loop => loop.map(project)).filter(l => l.length >= 3);
+  if (loops2D.length === 0) return null;
+
+  // Sort by absolute polygon area — largest is the outer ring.
+  loops2D.sort((a, b) => _polyArea2D(b) - _polyArea2D(a));
+  return loops2D;
+}
+
+/**
+ * Walks the triangle adjacency graph of `geom` and returns the set of
+ * triangle indices whose normal is within `cosThreshold` of `startTri`'s
+ * normal (anchor-compare — prevents cumulative drift across many small-
+ * angle steps along a curved surface).
+ *
+ * Handles indexed AND non-indexed geometries — for the latter we
+ * deduplicate vertex positions by quantised key so edge-sharing across
+ * triangles is actually detectable. The returned object also exposes
+ * the canonical-vertex helpers so the boundary-edge pass can reuse them.
+ *
+ * @returns {{
+ *   faceSet:     Set<number>,
+ *   getTriCanon: (t:number) => [number,number,number],
+ *   canonPos:    Float64Array | number[],
+ *   edgeKey:     (a:number, b:number) => string
+ * }}
+ */
+function _floodFillFacesByAngle(geom, startTri, cosThreshold) {
+  const posAttr = geom.attributes.position;
+  const index   = geom.index;
+  const triCount = index ? (index.count / 3) : (posAttr.count / 3);
+  if (startTri < 0 || startTri >= triCount) return null;
+
+  // ── Canonical vertex map (positions deduped by value) ───────────────
+  const eps = 1e-5;
+  const posKey = (i) => {
+    const x = Math.round(posAttr.getX(i) / eps) * eps;
+    const y = Math.round(posAttr.getY(i) / eps) * eps;
+    const z = Math.round(posAttr.getZ(i) / eps) * eps;
+    return x + ',' + y + ',' + z;
+  };
+  const canonByKey = new Map();
+  const canon      = new Int32Array(posAttr.count);
+  const canonPos   = []; // flat [x,y,z, x,y,z, …]
+  let nextCanon = 0;
+  for (let i = 0; i < posAttr.count; i++) {
+    const k = posKey(i);
+    let c = canonByKey.get(k);
+    if (c === undefined) {
+      c = nextCanon++;
+      canonByKey.set(k, c);
+      canonPos.push(posAttr.getX(i), posAttr.getY(i), posAttr.getZ(i));
+    }
+    canon[i] = c;
+  }
+
+  const getTriCanon = (t) => {
+    const a = index ? index.array[t*3]     : t*3;
+    const b = index ? index.array[t*3 + 1] : t*3 + 1;
+    const c = index ? index.array[t*3 + 2] : t*3 + 2;
+    return [canon[a], canon[b], canon[c]];
+  };
+
+  // ── Edge → triangles adjacency ─────────────────────────────────────
+  const edgeKey = (a, b) => a < b ? (a + '-' + b) : (b + '-' + a);
+  const edgeMap = new Map();
+  for (let t = 0; t < triCount; t++) {
+    const [a, b, c] = getTriCanon(t);
+    for (const [u, v] of [[a, b], [b, c], [c, a]]) {
+      const k = edgeKey(u, v);
+      let list = edgeMap.get(k);
+      if (!list) { list = []; edgeMap.set(k, list); }
+      list.push(t);
+    }
+  }
+
+  // ── Per-triangle normal computed from canonical positions ──────────
+  const triNormal = (t) => {
+    const [ca, cb, cc] = getTriCanon(t);
+    const ax = canonPos[ca*3],   ay = canonPos[ca*3+1], az = canonPos[ca*3+2];
+    const bx = canonPos[cb*3],   by = canonPos[cb*3+1], bz = canonPos[cb*3+2];
+    const cx = canonPos[cc*3],   cy = canonPos[cc*3+1], cz = canonPos[cc*3+2];
+    const ux = bx - ax, uy = by - ay, uz = bz - az;
+    const vx = cx - ax, vy = cy - ay, vz = cz - az;
+    const nx = uy * vz - uz * vy;
+    const ny = uz * vx - ux * vz;
+    const nz = ux * vy - uy * vx;
+    const len = Math.hypot(nx, ny, nz);
+    if (len < 1e-12) return null;
+    return { x: nx / len, y: ny / len, z: nz / len };
+  };
+
+  const anchorNormal = triNormal(startTri);
+  if (!anchorNormal) return null;
+
+  // ── BFS flood fill (anchor-compare) ────────────────────────────────
+  const faceSet = new Set([startTri]);
+  const queue   = [startTri];
+  while (queue.length) {
+    const t = queue.shift();
+    const [a, b, c] = getTriCanon(t);
+    for (const [u, v] of [[a, b], [b, c], [c, a]]) {
+      const k = edgeKey(u, v);
+      const list = edgeMap.get(k);
+      if (!list) continue;
+      for (const nt of list) {
+        if (faceSet.has(nt)) continue;
+        const nN = triNormal(nt);
+        if (!nN) continue;
+        const dot = anchorNormal.x * nN.x + anchorNormal.y * nN.y + anchorNormal.z * nN.z;
+        if (dot >= cosThreshold) {
+          faceSet.add(nt);
+          queue.push(nt);
+        }
+      }
+    }
+  }
+
+  return { faceSet, getTriCanon, canonPos, edgeKey };
+}
+
+/**
+ * Collect boundary edges of a face set: edges shared by exactly ONE
+ * triangle inside the set. Each returned segment is [Vector3, Vector3]
+ * in mesh-local coords, ready for _stitchSegmentsToLoops.
+ */
+function _extractBoundaryEdges({ faceSet, getTriCanon, canonPos, edgeKey }) {
+  const edgeCount = new Map();
+  const edgeEnds  = new Map(); // edgeKey → [canonU, canonV]
+  for (const t of faceSet) {
+    const [a, b, c] = getTriCanon(t);
+    for (const [u, v] of [[a, b], [b, c], [c, a]]) {
+      const k = edgeKey(u, v);
+      edgeCount.set(k, (edgeCount.get(k) || 0) + 1);
+      if (!edgeEnds.has(k)) edgeEnds.set(k, [u, v]);
+    }
+  }
+  const T = window.THREE;
+  const segments = [];
+  for (const [k, count] of edgeCount) {
+    if (count !== 1) continue;
+    const [u, v] = edgeEnds.get(k);
+    segments.push([
+      new T.Vector3(canonPos[u*3], canonPos[u*3+1], canonPos[u*3+2]),
+      new T.Vector3(canonPos[v*3], canonPos[v*3+1], canonPos[v*3+2]),
+    ]);
+  }
+  return segments;
+}
+
+/** Absolute polygon area in 2D (shoelace formula). */
+function _polyArea2D(loop) {
+  if (loop.length < 3) return 0;
+  let s = 0;
+  for (let i = 0; i < loop.length; i++) {
+    const [x1, y1] = loop[i];
+    const [x2, y2] = loop[(i + 1) % loop.length];
+    s += x1 * y2 - x2 * y1;
+  }
+  return Math.abs(s) * 0.5;
+}
+
+/**
+ * Stitch unordered line segments into closed loops. Endpoints are
+ * matched by spatial hash (small epsilon round). Each segment is used
+ * at most once. Returns array of loops; each loop is an array of
+ * THREE.Vector3 in connection order (no duplicate closing vertex).
+ */
+function _stitchSegmentsToLoops(segments) {
+  const eps = 1e-4;
+  const key = (p) => `${Math.round(p.x / eps)},${Math.round(p.y / eps)},${Math.round(p.z / eps)}`;
+
+  // Endpoint → [{ segIdx, end }]
+  const endpoints = new Map();
+  segments.forEach((seg, i) => {
+    for (let end = 0; end < 2; end++) {
+      const k = key(seg[end]);
+      let list = endpoints.get(k);
+      if (!list) { list = []; endpoints.set(k, list); }
+      list.push({ segIdx: i, end });
+    }
+  });
+
+  const used = new Uint8Array(segments.length);
+  const loops = [];
+  for (let start = 0; start < segments.length; start++) {
+    if (used[start]) continue;
+    used[start] = 1;
+    const loop = [segments[start][0], segments[start][1]];
+    let safety = segments.length + 4;
+    while (safety-- > 0) {
+      const tip = loop[loop.length - 1];
+      const k   = key(tip);
+      const candidates = endpoints.get(k) || [];
+      let next = null;
+      for (const c of candidates) {
+        if (used[c.segIdx]) continue;
+        next = c;
+        break;
+      }
+      if (!next) break;
+      used[next.segIdx] = 1;
+      const seg = segments[next.segIdx];
+      loop.push(seg[1 - next.end]);
+      // Closed loop check — back at start within eps.
+      if (key(loop[loop.length - 1]) === key(loop[0])) {
+        loop.pop();
+        break;
+      }
+    }
+    if (loop.length >= 3) loops.push(loop);
+  }
+  return loops;
+}
+
 function _findDataParent(root, childId) {
   const stack = [{ node: root, parent: null }];
   while (stack.length) {

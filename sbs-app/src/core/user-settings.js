@@ -50,6 +50,11 @@ const DEFAULTS = {
       color2:   '#1e293b',
       angleDeg: 180,
     },
+    // Create-shape-from-face: angle deviation (degrees) for the flood fill.
+    // Triangles within this many degrees of the picked triangle's normal
+    // get included in the face set. Tighter → only flat regions; wider →
+    // catches gently-curved surfaces too.
+    shapeFaceAngleThreshold: 5,
   },
 };
 
