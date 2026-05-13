@@ -66,6 +66,18 @@ contextBridge.exposeInMainWorld('sbsNative', {
     synthesize: (text, voice, speed = 1, opts = {})    => ipcRenderer.invoke('tts:synthesize', text, voice, speed, opts),
   },
 
+  // ── License (3-factor commercial licensing, see electron/license/) ──────
+  // The renderer NEVER touches private validation logic — it can only
+  // ask "what's my status" and "validate / activate this tuple".
+  // Verification + storage live entirely in the main process.
+  license: {
+    getMachineId: ()                                  => ipcRenderer.invoke('license:getMachineId'),
+    status:       ()                                  => ipcRenderer.invoke('license:status'),
+    validate:     ({ email, password, key })          => ipcRenderer.invoke('license:validate',   { email, password, key }),
+    activate:     ({ email, password, key })          => ipcRenderer.invoke('license:activate',   { email, password, key }),
+    deactivate:   ()                                  => ipcRenderer.invoke('license:deactivate'),
+  },
+
   // ── Environment ──────────────────────────────────────────────────────────
   isElectron: true,
   platform: process.platform,   // 'win32' | 'darwin' | 'linux'

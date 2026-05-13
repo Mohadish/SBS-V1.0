@@ -280,9 +280,14 @@ function buildMenu() {
   return Menu.buildFromTemplate(template);
 }
 
+// ─── License IPC bridge (must register BEFORE renderer mounts so the
+// preload's invoke() calls during boot have handlers waiting)
+const { registerLicenseIpc } = require('./license/index.js');
+
 // ─── App lifecycle ─────────────────────────────────────────────────────────
 app.whenReady().then(() => {
   ensureVendorFiles();
+  registerLicenseIpc();
   Menu.setApplicationMenu(buildMenu());
   createWindow();
 
