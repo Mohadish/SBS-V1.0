@@ -768,9 +768,22 @@ gl_FragColor.a = 1.0;
       const original = this.originalMaterials.get(nodeId);
       this._removeFalloffBackPass(mesh);
 
+      // Dispose any GENERATED material we previously installed before
+      // overwriting mesh.material. The original (stored in
+      // originalMaterials) is the canonical material we revert to —
+      // never dispose it. Without this, every applyAll call leaks one
+      // material per mesh; after a long QA session that's measurable.
+      const _disposeGenerated = (mat) => {
+        if (!mat || mat === original) return;
+        try { mat.dispose?.(); } catch {}
+      };
+
       if (!overrideMode) {
         // Restore original import material
-        if (original) mesh.material = original;
+        if (original && mesh.material !== original) {
+          _disposeGenerated(mesh.material);
+          mesh.material = original;
+        }
         continue;
       }
 
@@ -787,6 +800,7 @@ gl_FragColor.a = 1.0;
 
       if (preset) {
         this.ensurePresetDefaults(preset);
+        _disposeGenerated(mesh.material);
         mesh.material = this.makeMaterial(preset, original);
 
         // Back-face pass — only when preset explicitly enables it
@@ -801,7 +815,10 @@ gl_FragColor.a = 1.0;
         }
       } else {
         // No preset assigned — use original import material
-        if (original) mesh.material = original;
+        if (original && mesh.material !== original) {
+          _disposeGenerated(mesh.material);
+          mesh.material = original;
+        }
       }
     }
 

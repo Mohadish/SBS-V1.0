@@ -168,6 +168,31 @@ steps.init();
 // ══════════════════════════════════════════════════════════════════════════════
 
 initStatus();
+
+// ── Global error / unhandled-rejection handlers ────────────────────────────
+// Production runs without DevTools open, so silent async failures (failed
+// project saves, narration synth errors, missing-asset retries, etc.) are
+// otherwise invisible to the user. Surface them as a status toast AND keep
+// the console.error so a developer attaching DevTools can still see the
+// stack. event.preventDefault() stops Chromium from showing the default
+// "Uncaught (in promise)" banner — we already have a friendlier toast.
+window.addEventListener('unhandledrejection', (event) => {
+  const reason = event.reason;
+  const msg    = (reason && (reason.message || reason.toString())) || 'Unhandled error';
+  // eslint-disable-next-line no-console
+  console.error('[unhandledrejection]', reason);
+  try { setStatus(`Error: ${msg.slice(0, 200)}`, 'danger', 4000); } catch {}
+  event.preventDefault();
+});
+
+window.addEventListener('error', (event) => {
+  const msg = event.message || (event.error && event.error.message) || 'Script error';
+  // eslint-disable-next-line no-console
+  console.error('[error]', event.error || event);
+  try { setStatus(`Error: ${msg.slice(0, 200)}`, 'danger', 4000); } catch {}
+  // Don't preventDefault — let Chromium also log to its console.
+});
+
 initContextMenu();
 initSidebarLeft();
 initStepNav();

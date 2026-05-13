@@ -872,11 +872,17 @@ export function removeModel(modelId) {
   const modelNode  = nodeById?.get(modelId);
   if (!modelNode) return;
 
-  // Remove Three.js group
+  // Remove Three.js group + DISPOSE all geometry/material under it. Without
+  // this, repeated load → delete → load cycles inflate GPU + heap until OOM
+  // (each Mesh holds its own BufferGeometry buffers + Material textures).
   const group3d = steps.object3dById.get(modelId);
-  if (group3d?.parent) group3d.parent.remove(group3d);
+  if (group3d) {
+    _disposeSceneSubtree(group3d);
+    if (group3d.parent) group3d.parent.remove(group3d);
+  }
 
-  // Unregister all mesh nodes
+  // Unregister all mesh nodes (also disposes the stored ORIGINAL material
+  // via materials.unregisterMesh → see materials.js).
   const allNodes = [];
   const walk = (n) => { allNodes.push(n); n.children.forEach(walk); };
   walk(modelNode);
@@ -889,15 +895,46 @@ export function removeModel(modelId) {
     steps.object3dById.delete(n.id);
   });
 
-  // Remove model from scene tree
-  const treeData = state.get('treeData');
+  // Remove model from scene tree — produce a NEW children array so
+  // setState's identity-aware diffs see the change. Mutating the array
+  // in place was visible to subscribers but bypassed setState's contract.
+  let treeData = state.get('treeData');
   if (treeData) {
-    treeData.children = treeData.children.filter(c => c.id !== modelId);
+    treeData = { ...treeData, children: treeData.children.filter(c => c.id !== modelId) };
   }
 
   state.setState({ treeData, nodeById });
   state.markDirty();
   state.emit('model:removed', modelId);
+}
+
+/**
+ * Recursively dispose every Three.js geometry + material under `root`.
+ * Safe to call on any Object3D — non-Mesh nodes are walked but skip the
+ * dispose calls (they have nothing to free). Materials are deduped via
+ * a Set so a shared material isn't disposed twice (would throw).
+ */
+function _disposeSceneSubtree(root) {
+  if (!root) return;
+  const seenMaterials = new Set();
+  root.traverse(obj => {
+    if (!obj) return;
+    if (obj.geometry?.dispose) { try { obj.geometry.dispose(); } catch {} }
+    const mat = obj.material;
+    if (mat) {
+      const list = Array.isArray(mat) ? mat : [mat];
+      for (const m of list) {
+        if (!m || seenMaterials.has(m)) continue;
+        seenMaterials.add(m);
+        // Dispose any textures held on the material — they own GPU memory.
+        for (const key of Object.keys(m)) {
+          const v = m[key];
+          if (v?.isTexture && v.dispose) { try { v.dispose(); } catch {} }
+        }
+        try { m.dispose?.(); } catch {}
+      }
+    }
+  });
 }
 
 export default { loadModelFile, removeModel, getFileExt };
