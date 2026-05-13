@@ -1,102 +1,121 @@
 SBS LICENSE SYSTEM
 ==================
-Version 1.0  |  For SBS Step Browser
+Version 2.0  |  For SBS Step Browser
 
+The v2 model replaces the old .lic file with a (PASSWORD, KEY) pair.
+The client never gets a file — they receive two strings (one short
+"password", one long "key") and type/paste them into the SBS
+activation dialog on first launch.
 
-HOW IT WORKS
-------------
-Every client installation needs a license file (.lic) to run.
-You (Nadav) are the only person who can create valid license files.
-Even if someone copies the app, it won't run without a license for their machine.
+3-factor binding: machine_id + email + password → unlocks the key →
+extracts the embedded expiry date. All four must match the keygen
+output, or validation fails.
 
 
 FILES IN THIS FOLDER
 --------------------
-  license_core.py       Core logic — used by the app and keygen. Don't edit.
-  keygen.py             YOUR private tool to create licenses. Keep this private.
-  get_machine_id.py     Clients run this to find out their machine ID.
+  license_core.py       Core crypto + validation. JS port lives in
+                        sbs-app/electron/license/verify.js — keep them in sync.
+  keygen.py             YOUR private tool. Issues passwords + keys.
+                        NEVER ship this or the keys/ folder.
+  get_machine_id.py     Stand-alone helper to print THIS machine's ID.
 
-  01_setup.bat          Run this FIRST — installs required Python package.
-  02_init_keys.bat      Run this ONCE — generates your signing keys.
-  03_issue_license.bat  Issue a standard client license.
-  04_issue_master_license.bat  Issue a master license for your team.
-  05_get_my_machine_id.bat  Get the machine ID of the current computer.
-  06_inspect_license.bat   Inspect or verify any .lic file.
+  01_setup.bat                  Install the 'cryptography' Python package.
+  02_init_keys.bat              Generate your Ed25519 signing keys (run once).
+  03_issue_license.bat          Issue a new (password, key) for a client.
+  05_get_my_machine_id.bat      Print this machine's ID (for testing).
+  06_inspect_license.bat        Verify a (email, password, key, mid) tuple
+                                — same logic the SBS app runs at boot.
 
-  keys/                 YOUR PRIVATE KEYS — keep this backed up and secret!
-  issued_licenses/      All licenses you've generated — for your records.
+  keys/                 YOUR PRIVATE KEYS — keep backed up + secret.
+  issued_licenses/      Audit log of every license issued. Plain JSON;
+                        the password + key are recorded here so you can
+                        re-send to a client who lost them.
 
 
 FIRST-TIME SETUP (DO ONCE)
 --------------------------
 1. Double-click  01_setup.bat
-   - This installs the 'cryptography' package.
+   - Installs the 'cryptography' Python package.
 
 2. Double-click  02_init_keys.bat
-   - This generates your private/public key pair.
-   - Copy the PUBLIC_KEY_B64 line it prints.
-   - Paste it into license_core.py  (replace the REPLACE_WITH_YOUR_PUBLIC_KEY line).
+   - Generates your private/public key pair into keys/.
+   - It prints a PUBLIC_KEY_B64 line.
+   - Paste that line into TWO files:
+       sbs_license/license_core.py
+       sbs-app/electron/license/verify.js
+     Replace the placeholder string in both. They MUST match.
 
-3. Back up the  keys/  folder somewhere safe (USB, secure cloud, etc.)
-   If you lose the private key, you cannot issue new licenses that work
-   with existing app installations.
+3. Back up the keys/ folder somewhere safe. If you lose
+   sbs_private.key, you cannot issue new licenses that work with
+   existing installs.
 
 
-HOW TO ISSUE A LICENSE TO A CLIENT
------------------------------------
-Step 1: Send the client  05_get_my_machine_id.bat  (or get_machine_id.py)
-        They run it, and it prints/saves a 32-character ID like:
-            A1B2C3D4E5F6A1B2C3D4E5F6A1B2C3D4
+ISSUING A LICENSE TO A CLIENT
+-----------------------------
+Step 1: Client runs the SBS installer + launches the app once.
+        On first launch, the activation dialog shows:
+            "Your machine ID: ABC123..."
+        Client emails you their EMAIL + this machine ID.
 
 Step 2: You run  03_issue_license.bat
-        Enter the client name and their machine ID.
-        A .lic file is created in the  issued_licenses/  folder.
+        Enter: client email, machine ID, license duration (days).
+        Output:
+            PASSWORD :  XYZ4-A2BC   (short — user types)
+            KEY      :  <long base64 string>   (long — user pastes)
 
-Step 3: Send the .lic file to the client.
-        They drop it in the root of their SBS installation folder
-        (same folder as the SBS launcher).
+Step 3: Email BOTH the password AND the key to the client.
 
-That's it — the app will find and validate it automatically.
-
-
-HOW TO ISSUE A MASTER LICENSE (FOR YOUR TEAM)
-----------------------------------------------
-Run  04_issue_master_license.bat
-Enter a name like "SBS Internal".
-The resulting .lic file works on ANY machine with NO expiry.
-Keep it somewhere safe — treat it like a password.
+Step 4: Client returns to the SBS activation dialog, types email +
+        password + pastes the key.  App validates and unlocks for
+        the duration you set.
 
 
-LICENSE FILE FORMAT
--------------------
-A .lic file is a simple JSON file, cryptographically signed.
-It contains: client name, machine ID, issue date, expiry date, license type.
-The signature means any change to the file (even one character) makes it invalid.
-Clients cannot forge or extend a license — only you can, with your private key.
+GRACE PERIOD
+------------
+Within 3 days of expiry, the app shows a warning toast at boot but
+still runs. After expiry, the app hard-locks (refuses to launch
+until a new license is entered).
+
+
+LICENSE FORMAT (FYI)
+--------------------
+The "key" is base64-encoded:
+    payload + b"|" + signature
+where payload = { v: 2, email, mid, exp } (compact JSON) and
+signature = Ed25519 over "{email}|{mid}|{exp}|{password}".
+
+The password is NOT in the payload — it's input to the signature
+function. The verifier re-computes the signed string from
+(email, mid, exp_from_key, password) and checks the signature in
+the key. If any input is wrong, signature fails.
 
 
 SECURITY NOTES
 --------------
-- The private key (keys/sbs_private.key) NEVER leaves your machine.
-- The public key is embedded in the app and is safe to distribute.
-- License files are signed with Ed25519 — the same algorithm used by SSH.
-- Even if someone reverse-engineers the app, they cannot create valid licenses.
-- You can revoke a client by simply not renewing their license when it expires.
+- Private key NEVER leaves your machine.
+- Public key is embedded in the app — safe to distribute.
+- Ed25519 signatures: cryptographically infeasible to forge without
+  the private key.
+- 3-factor binding means a leaked key alone is useless — attacker
+  also needs the matching email + password + a machine that matches
+  the embedded machine ID.
+- Time-limited keys auto-expire — no revocation server needed.
 
 
 TROUBLESHOOTING
 ---------------
-"License file not found"
-  → Client hasn't placed the .lic file in the right folder.
-  → It should be in the same folder as the SBS launcher .exe / .bat
+"Invalid signature"
+  → One of: wrong password / wrong key / wrong email / wrong machine ID.
+    Make sure the client is typing the exact strings you sent.
 
-"License is locked to a different machine"
-  → The .lic was issued for a different computer.
-  → If the client got a new PC, they need to run get_machine_id again
-    and you need to issue a new license for the new machine ID.
+"Machine mismatch"
+  → Client's hardware ID does not match the key's embedded ID.
+    Did they reinstall on a different machine? Issue a new key.
 
-"This license expired"
-  → Issue a new license with a new expiry date.
+"Expired"
+  → Issue a new license with a longer duration.
 
-"Piper import error" / "cryptography not installed"
-  → Run 01_setup.bat on that machine.
+"Malformed key"
+  → The base64 key string was probably truncated in email — wrap it
+    in <pre> tags or send as an attachment to preserve every character.
