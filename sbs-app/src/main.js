@@ -43,6 +43,7 @@ import { saveProject, getSuggestedFilename } from './io/project.js';
 
 // ── UI ────────────────────────────────────────────────────────────────────────
 import { initStatus, setStatus }  from './ui/status.js';
+import { showActivationDialog, showHardLockDialog, showGraceWarning } from './ui/license-dialog.js';
 import { initHud }                from './ui/hud.js';
 import { initStepNav }            from './ui/step-nav.js';
 import { initStepsPanel }         from './ui/steps-panel.js';
@@ -168,6 +169,14 @@ steps.init();
 // ══════════════════════════════════════════════════════════════════════════════
 
 initStatus();
+
+// ── License gate ───────────────────────────────────────────────────────────
+// Run BEFORE any heavy system init so a locked install never wastes time
+// loading Three.js / Konva / Kokoro. The gate is async; we kick it off
+// and let the rest of init continue underneath. The first user-facing
+// UI (sidebar tabs) won't render until the gate resolves because the
+// dialog covers the viewport.
+_initLicenseGate();
 
 // ── Global error / unhandled-rejection handlers ────────────────────────────
 // Production runs without DevTools open, so silent async failures (failed
@@ -1855,6 +1864,53 @@ function _isInputFocused() {
   if (!el) return false;
   const tag = el.tagName.toLowerCase();
   return tag === 'input' || tag === 'textarea' || tag === 'select' || el.isContentEditable;
+}
+
+// ─── License gate (runs at boot) ────────────────────────────────────────────
+// Reads the saved license, validates against this machine's hardware.
+// Three terminal outcomes:
+//   valid    → app proceeds normally (no UI)
+//   grace    → app proceeds with a one-shot warning toast
+//   expired  → hard-lock screen, user can re-activate or quit
+//   unactivated → activation dialog, user enters credentials or quits
+async function _initLicenseGate() {
+  if (!window.sbsNative?.license?.status) {
+    // Non-Electron (e.g. dev web preview) — skip licensing for now.
+    return;
+  }
+  try {
+    let status = await window.sbsNative.license.status();
+    while (true) {
+      if (status.state === 'valid') return;
+      if (status.state === 'grace') { showGraceWarning(status); return; }
+
+      if (status.state === 'expired') {
+        const choice = await showHardLockDialog(status);
+        if (choice === 'quit') { window.close(); return; }
+        // 'reactivate' → fall through to activation dialog
+      }
+
+      // unactivated OR re-activate requested
+      try {
+        const result = await showActivationDialog({
+          initialEmail: status.email || '',
+          reason:       status.reason || null,
+        });
+        if (result?.valid) {
+          setStatus(`SBS activated — ${result.daysRemaining} days remaining.`);
+          return;
+        }
+      } catch (err) {
+        if (err?.message === 'cancelled') { window.close(); return; }
+        throw err;
+      }
+      // Refresh status if activation didn't succeed for some weird reason
+      status = await window.sbsNative.license.status();
+    }
+  } catch (err) {
+    console.error('[license-gate] failed:', err);
+    setStatus(`License check failed: ${err?.message || err}`, 'danger', 8000);
+  }
 }
 
 // ══════════════════════════════════════════════════════════════════════════════
