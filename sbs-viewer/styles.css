@@ -749,3 +749,11 @@ code {
   color: var(--muted);
   cursor: not-allowed;
 }
+
+
+/* Force `hidden` attribute to win over class-level display rules.
+   Without this, .btn-secondary { display: inline-block; } overrides
+   the user-agent's [hidden]{display:none}, leaving the activation /
+   "Create new assembly" button visible even when station mode hides
+   it via `el.hidden = true`. */
+[hidden] { display: none !important; }
