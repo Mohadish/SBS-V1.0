@@ -19,9 +19,11 @@
  */
 
 const { ipcMain } = require('electron');
-const { validateLicense } = require('./verify.js');
-const { getMachineIdCached } = require('./machine-id.js');
-const { loadLicense, saveLicense, clearLicense } = require('./store.js');
+// Extensions OMITTED so the resolver picks .js in dev, .jsc in production.
+// See scripts/build-bytenode.js for the build-time compilation flow.
+const { validateLicense }      = require('./verify');
+const { getMachineIdCached }   = require('./machine-id');
+const { loadLicense, saveLicense, clearLicense } = require('./store');
 
 /**
  * Translate a verifier result + on-disk presence into the higher-level
