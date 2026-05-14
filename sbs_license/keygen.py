@@ -35,16 +35,23 @@ from __future__ import annotations
 import argparse
 import base64
 import json
+import os
 import secrets
 import string
 import sys
 from datetime import date, timedelta
 from pathlib import Path
 
-KEYS_DIR = Path(__file__).resolve().parent / "keys"
+# Keys live OUTSIDE the repo so worktree cleanup / repo moves don't destroy
+# them. Override with the SBS_LICENSE_KEYS_DIR env var if you want them
+# somewhere else (e.g. an encrypted volume).
+_DEFAULT_KEYS_DIR = Path.home() / ".sbs_license" / "keys"
+KEYS_DIR = Path(os.environ.get("SBS_LICENSE_KEYS_DIR", _DEFAULT_KEYS_DIR))
 PRIVATE_KEY_PATH = KEYS_DIR / "sbs_private.key"
 PUBLIC_KEY_PATH  = KEYS_DIR / "sbs_public.key"
-LOG_DIR = Path(__file__).resolve().parent / "issued_licenses"
+# Audit log stays next to the script — it's per-license, fine to live in the repo
+# if you commit it, or you can move it out the same way as the keys.
+LOG_DIR = Path(os.environ.get("SBS_LICENSE_LOG_DIR", Path(__file__).resolve().parent / "issued_licenses"))
 
 # Match license_core.py — keep in sync.
 PAYLOAD_VERSION = 2
