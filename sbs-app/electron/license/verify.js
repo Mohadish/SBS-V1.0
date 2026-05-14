@@ -28,7 +28,7 @@ const crypto = require('node:crypto');
 // ── Public key embedded in the app ───────────────────────────────────────
 // Paste the same string as sbs_license/license_core.py here after
 // running keygen.py --init-keys. Both files MUST hold identical values.
-const PUBLIC_KEY_B64 = 'REPLACE_WITH_YOUR_PUBLIC_KEY';
+const PUBLIC_KEY_B64 = 'MCowBQYDK2VwAyEAaY0FkCBVq4fpJuRvVoz2kLP6hU5obvFlvZ+t6/D/9Bc=';
 
 const PAYLOAD_VERSION = 2;
 
@@ -53,13 +53,18 @@ function _decodeKeyBlob(key) {
   // urlsafe base64 — may be missing trailing '=' padding (keygen strips it).
   const padded = key + '='.repeat((4 - (key.length % 4)) % 4);
   const raw = Buffer.from(padded, 'base64url');
-  // Split on the LAST '|' so any '|' inside the payload JSON survives
-  // (json.dumps with sort_keys + compact separators never emits '|',
-  // so the rpartition is unambiguous for the v2 payload format).
-  const sepIdx = raw.lastIndexOf(0x7c /* '|' */);
-  if (sepIdx < 0) throw new Error('Malformed key: missing signature separator');
-  const payloadJson = raw.subarray(0, sepIdx).toString('utf8');
-  const signature   = raw.subarray(sepIdx + 1);
+  // The v2 payload is a flat JSON object with no nesting and no string
+  // values containing '}' (email/date/hex/int only), so the FIRST '}' is
+  // unambiguously the end of the JSON. We can't split on '|' because the
+  // raw 64-byte Ed25519 signature that follows can contain '|' bytes (0x7c)
+  // anywhere — using lastIndexOf would land inside the signature.
+  const jsonEnd = raw.indexOf(0x7d /* '}' */);
+  if (jsonEnd < 0) throw new Error('Malformed key: no JSON terminator');
+  if (raw[jsonEnd + 1] !== 0x7c /* '|' */) {
+    throw new Error('Malformed key: missing separator after JSON');
+  }
+  const payloadJson = raw.subarray(0, jsonEnd + 1).toString('utf8');
+  const signature   = raw.subarray(jsonEnd + 2);
   const payload     = JSON.parse(payloadJson);
   return { payload, signature };
 }
@@ -108,9 +113,11 @@ function validateLicense({ email, password, key, machineId }) {
   }
 
   // Normalise inputs the same way the Python keygen normalises.
+  // For the key, strip ALL whitespace (terminals can wrap long lines on
+  // copy, embedding stray spaces/newlines that break base64 decode).
   const e = (email    || '').trim().toLowerCase();
   const p = (password || '').trim();
-  const k = (key      || '').trim();
+  const k = (key      || '').replace(/\s+/g, '');
   const m = (machineId|| '').trim().toUpperCase();
 
   if (!e || !p || !k || !m) {

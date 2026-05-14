@@ -44,3 +44,17 @@ saves/
 # Viewer test artifacts dropped by hand into the viewer folder.
 sbs-viewer/*.sbsasm
 sbs-viewer/*.sbsproc
+
+# License signing artifacts — keys MUST NEVER be committed. Real keys
+# live in ~/.sbs_license/keys/ (see sbs_license/keygen.py). This entry
+# is belt-and-suspenders in case someone runs --init-keys with a
+# SBS_LICENSE_KEYS_DIR override that points back into the repo.
+sbs_license/keys/
+sbs_license/issued_licenses/
+sbs_license/*.zip
+__pycache__/
+
+# Bytenode build artifacts — compiled .jsc files for the license module
+# are produced fresh by `npm run bytenode` (which `npm run build` calls
+# automatically). Never committed; ephemeral per build.
+sbs-app/electron/license/*.jsc

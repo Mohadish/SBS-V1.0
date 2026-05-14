@@ -32,7 +32,7 @@ from pathlib import Path
 # This is safe to distribute.  The private key (in keygen.py) NEVER leaves Nadav.
 # After running keygen.py --init-keys for the first time, paste the printed
 # PUBLIC_KEY_B64 value here AND into electron/license/verify.js (same string).
-PUBLIC_KEY_B64: str = "REPLACE_WITH_YOUR_PUBLIC_KEY"   # filled in after first keygen run
+PUBLIC_KEY_B64: str = "MCowBQYDK2VwAyEAaY0FkCBVq4fpJuRvVoz2kLP6hU5obvFlvZ+t6/D/9Bc="   # filled in after first keygen run
 
 PAYLOAD_VERSION = 2
 
@@ -143,13 +143,23 @@ def decode_key_blob(key: str) -> tuple[dict, bytes]:
     """
     Inverse of encode_key_blob. Returns (payload_dict, signature_bytes).
     Raises ValueError on malformed input.
+
+    The v2 payload is a flat JSON object whose string values never contain
+    '}' (email/date/hex/int only), so the FIRST '}' is unambiguously the
+    end of the JSON. We can't split on '|' because the raw 64-byte Ed25519
+    signature that follows can contain '|' bytes (0x7c) — using rpartition
+    would land inside the signature.
     """
     # Re-pad — urlsafe base64 may have stripped trailing '=' characters.
     pad = "=" * (-len(key) % 4)
     raw = base64.urlsafe_b64decode(key + pad)
-    payload_json, sep, signature = raw.rpartition(b"|")
-    if not sep:
-        raise ValueError("Malformed key: missing signature separator")
+    json_end = raw.find(b"}")
+    if json_end < 0:
+        raise ValueError("Malformed key: no JSON terminator")
+    if raw[json_end + 1:json_end + 2] != b"|":
+        raise ValueError("Malformed key: missing separator after JSON")
+    payload_json = raw[:json_end + 1]
+    signature    = raw[json_end + 2:]
     payload = json.loads(payload_json.decode("utf-8"))
     return payload, signature
 
@@ -197,6 +207,9 @@ def validate_license(*, email: str, password: str, key: str, machine_id: str) ->
         )
 
     # ── Decode key ────────────────────────────────────────────────────────
+    # Strip all whitespace — terminals may wrap long keys on copy, embedding
+    # stray spaces/newlines that break base64 decode.
+    key = "".join(key.split()) if key else ""
     try:
         payload, signature = decode_key_blob(key)
     except Exception as e:
