@@ -286,7 +286,15 @@ async function _loadFromFile(file) {
     const name = file.name.toLowerCase();
     if (name.endsWith('.sbsasm')) {
       const text = await file.text();
-      _bootAssemblyFromJson(text, name);
+      // If we have an absolute path (Electron), pass it through so the
+      // base URL for relative `proc.url` entries becomes the .sbsasm's
+      // own folder — not viewer.html's location (inside app.asar in
+      // production builds, which 404s). Web browsers don't expose path;
+      // they fall back to window.location.href as before.
+      const sourceUrl = (typeof file.path === 'string' && file.path)
+        ? _localPathToFileUrl(file.path)
+        : null;
+      _bootAssemblyFromJson(text, name, sourceUrl);
       return;
     }
     if (name.endsWith('.sbsproc')) {
@@ -323,7 +331,7 @@ async function _loadFromFile(file) {
  * the typical "drop .sbsasm next to .sbsproc files in one folder"
  * deploy that's exactly what we want.
  */
-function _bootAssemblyFromJson(text, displayName = '') {
+function _bootAssemblyFromJson(text, displayName = '', sourceUrl = null) {
   const json = JSON.parse(text);
   if (json?.format !== 'sbsasm') {
     throw new Error(`Manifest format mismatch: ${json?.format ?? '<missing>'}`);
@@ -331,13 +339,15 @@ function _bootAssemblyFromJson(text, displayName = '') {
   if (!Array.isArray(json.processes)) {
     throw new Error('Manifest missing `processes` array.');
   }
-  app.assembly    = json;
-  // No source URL — relative URLs in the manifest resolve against
-  // window.location (i.e. wherever viewer.html itself was served from).
-  // _launchProcess uses `app.assemblyUrl` as the base for new URL();
-  // setting it to window.location.href makes "./foo.sbsproc" resolve to
-  // "<server>/<viewer-folder>/foo.sbsproc".
-  app.assemblyUrl = window.location.href;
+  app.assembly = json;
+  // sourceUrl: the .sbsasm's own absolute URL (file:// for local /
+  // network drops; window.location.href as a last-resort fallback for
+  // web mode where no file path is available). New builder outputs use
+  // absolute file:// URLs per-entry, so the base URL only matters for
+  // legacy `.sbsasm` files written with `./name.sbsproc` style relative
+  // URLs — those now resolve against the .sbsasm's own folder rather
+  // than against the viewer's asar path.
+  app.assemblyUrl = sourceUrl || window.location.href;
   _showScreen('assembly');
   _renderAssembly();
 }
@@ -570,9 +580,25 @@ function _bldAddFiles(fileList) {
   for (const f of accepted) {
     const baseName  = f.name.replace(/\.sbsproc$/i, '');
     const niceTitle = baseName.replace(/[-_]+/g, ' ').replace(/\s+/g, ' ').trim();
+    // Record where the file actually lives on disk so playback (later,
+    // possibly from a different machine) can fetch it from the exact
+    // path it was picked from. Electron exposes `file.path` (the
+    // absolute filesystem path) on File objects from <input> + drag-
+    // drop; web browsers don't, so we fall back to a same-folder
+    // relative URL there.
+    //
+    // Network paths work too:
+    //   C:\folder\foo.sbsproc            → file:///C:/folder/foo.sbsproc
+    //   \\fileserver\share\foo.sbsproc   → file:////fileserver/share/foo.sbsproc
+    // Customers can stick the .sbsasm + .sbsproc files on a network
+    // share, and every machine that opens the .sbsasm will load them
+    // straight from the same UNC path.
+    const absUrl = (typeof f.path === 'string' && f.path)
+      ? _localPathToFileUrl(f.path)
+      : `./${f.name}`;
     const row = _bldAddRow({
       title: niceTitle || baseName,
-      url:   `./${f.name}`,
+      url:   absUrl,
       _file: f.name,
     });
     // Async — extract a poster frame and stamp it on the row. The
@@ -1283,4 +1309,36 @@ function _escapeHtml(s) {
     .replace(/>/g, '&gt;')
     .replace(/"/g, '&quot;')
     .replace(/'/g, '&#39;');
+}
+
+/**
+ * Convert a Windows / POSIX local OR UNC path to a file:// URL that the
+ * renderer's `fetch()` can handle. Encodes path segments so spaces +
+ * unicode round-trip. Pass-through for anything already URL-shaped
+ * (http://, https://, file://, ./..., ../...).
+ *
+ *   C:\folder\foo.sbsproc            → file:///C:/folder/foo.sbsproc
+ *   /mnt/share/foo.sbsproc           → file:///mnt/share/foo.sbsproc
+ *   \\fileserver\share\foo.sbsproc   → file:////fileserver/share/foo.sbsproc
+ *   ./step2.sbsproc                  → ./step2.sbsproc          (unchanged)
+ *   https://server/foo.sbsproc       → https://server/foo.sbsproc (unchanged)
+ */
+function _localPathToFileUrl(p) {
+  if (!p) return p;
+  // Already a URL? Pass through.
+  if (/^[a-z]+:\/\//i.test(p) || p.startsWith('./') || p.startsWith('../')) {
+    return p;
+  }
+  // Normalise backslashes; preserve a leading "\\" → "//" for UNC.
+  const isUnc = /^\\\\/.test(p);
+  let posix = p.replace(/\\/g, '/');
+  // Encode each segment so spaces / unicode round-trip cleanly.
+  const encoded = posix.split('/').map(seg => encodeURIComponent(seg)).join('/');
+  if (isUnc) {
+    // UNC: //server/share/path → file:////server/share/path
+    return 'file://' + encoded;
+  }
+  // Local drive letter (Windows) or absolute POSIX path.
+  // Both get three slashes: file:///C:/... or file:///mnt/...
+  return 'file:///' + (encoded.startsWith('/') ? encoded.slice(1) : encoded);
 }
