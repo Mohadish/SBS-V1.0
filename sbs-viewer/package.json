@@ -25,6 +25,7 @@
       "preload.js",
       "company.js",
       "license/**/*",
+      "license-gate.js",
       "viewer.html",
       "viewer.js",
       "styles.css",

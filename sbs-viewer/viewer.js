@@ -146,7 +146,16 @@ document.addEventListener('DOMContentLoaded', async () => {
     }
   }
   if (!allowBuilder && els.btnCreateAssembly) {
+    // Belt + suspenders: the `hidden` attribute is overridden by
+    // .btn-secondary { display: inline-block } unless the global
+    // `[hidden]{display:none !important}` rule lands first (styles.css).
+    // Set display directly so this works even if the CSS is stale or
+    // cached, and also remove the surrounding "or" divider so the
+    // landing card doesn't trail a dangling separator.
     els.btnCreateAssembly.hidden = true;
+    els.btnCreateAssembly.style.display = 'none';
+    const divider = document.querySelector('.landing-divider');
+    if (divider) divider.style.display = 'none';
   }
 
   // Settings UI is Electron-only (relies on window.sbsViewer.license.*).
