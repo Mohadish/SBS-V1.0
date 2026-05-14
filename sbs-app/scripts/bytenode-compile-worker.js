@@ -41,6 +41,7 @@ const TARGETS = [
   'machine-id.js',
   'store.js',
   'index.js',
+  'time-monitor.js',
 ];
 
 let failed = 0;

@@ -24,6 +24,8 @@
  */
 
 const crypto = require('node:crypto');
+// Extension OMITTED so .js in dev, .jsc in bytenode'd production.
+const { safeToday } = require('./time-monitor');
 
 // ── Public key embedded in the app ───────────────────────────────────────
 // Paste the same string as sbs_license/license_core.py here after
@@ -74,10 +76,13 @@ function _decodeKeyBlob(key) {
  * negative = past). Uses UTC midnight to avoid timezone-edge weirdness.
  */
 function _daysUntil(yyyy_mm_dd) {
-  const [y, m, d] = yyyy_mm_dd.split('-').map(Number);
-  const expiryMs = Date.UTC(y, m - 1, d);
-  const now = new Date();
-  const todayMs = Date.UTC(now.getFullYear(), now.getMonth(), now.getDate());
+  // Uses safeToday() (max of system date + last-seen high-water mark) so a
+  // system-clock rollback can't extend an expired license. See
+  // electron/license/time-monitor.js for the rationale.
+  const [ey, em, ed] = yyyy_mm_dd.split('-').map(Number);
+  const expiryMs = Date.UTC(ey, em - 1, ed);
+  const [ty, tm, td] = safeToday().split('-').map(Number);
+  const todayMs  = Date.UTC(ty, tm - 1, td);
   return Math.round((expiryMs - todayMs) / 86_400_000);
 }
 
