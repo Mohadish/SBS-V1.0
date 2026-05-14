@@ -47,7 +47,7 @@ const { spawnSync } = require('child_process');
 
 const PROJECT_ROOT = path.resolve(__dirname, '..');
 const LICENSE_DIR  = path.join(PROJECT_ROOT, 'electron', 'license');
-const TARGETS      = ['verify.js', 'machine-id.js', 'store.js', 'index.js'];
+const TARGETS      = ['verify.js', 'machine-id.js', 'store.js', 'index.js', 'time-monitor.js'];
 
 // ─── Sub-commands ────────────────────────────────────────────────────────────
 

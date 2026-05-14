@@ -291,11 +291,15 @@ function buildMenu() {
 // Note: extension OMITTED so Node's resolver picks index.js in dev and
 // index.jsc in production builds (where the .js source is excluded).
 const { registerLicenseIpc } = require('./license/index');
+// Time-tampering high-water mark — see electron/license/time-monitor.js.
+// Extension omitted for the same .js-vs-.jsc reason as the others.
+const { recordLaunch: _recordTimeLaunch } = require('./license/time-monitor');
 
 // ─── App lifecycle ─────────────────────────────────────────────────────────
 app.whenReady().then(() => {
   ensureVendorFiles();
   registerLicenseIpc();
+  _recordTimeLaunch();   // advance last-seen.json once userData is resolvable
   Menu.setApplicationMenu(buildMenu());
   createWindow();
 
