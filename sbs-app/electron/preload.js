@@ -17,6 +17,7 @@ contextBridge.exposeInMainWorld('sbsNative', {
 
   // ── Dialogs ──────────────────────────────────────────────────────────────
   openModel:          ()          => ipcRenderer.invoke('dialog:openModel'),
+  openImage:          ()          => ipcRenderer.invoke('dialog:openImage'),
   openProject:        ()          => ipcRenderer.invoke('dialog:openProject'),
   saveProject:        (name)      => ipcRenderer.invoke('dialog:saveProject', name),
   saveHeader:         (name)      => ipcRenderer.invoke('dialog:saveHeader', name),

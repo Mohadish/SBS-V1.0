@@ -5113,6 +5113,236 @@ export function startShapeDraw() {
   shapeEditor.startDrawing(null);
 }
 
+
+// ─────────────────────────────────────────────────────────────────────
+//  IMAGE-SHAPE  (file-pick → click-to-place)
+// ─────────────────────────────────────────────────────────────────────
+//
+// "Image shapes" are flatShape templates that carry an `image` field with
+// a base64 dataUrl + natural dimensions. The mesh builder swaps the
+// material to one with the texture mapped over the polygon's bbox.
+//
+// Flow:
+//   1. User clicks "+ Image" → addImageShape() opens an OS file picker.
+//   2. Image is read (base64), dimensions probed via an Image element.
+//   3. Pending data stashed on state.imageShapePending; placement is
+//      armed with the marker id IMAGE_PENDING_ID.
+//   4. Next viewport click hits placeShapeAtClick(IMAGE_PENDING_ID) → we
+//      branch into _placePendingImageAtClick() which:
+//        - resolves the plane (same logic as polygon shape placement)
+//        - creates the template AND the first instance
+//        - bundles both mutations into ONE undo entry
+//        - clears the pending state
+//
+// Cancel paths: Esc / right-click → cancelShapePlacement() also clears
+// the pending image data.
+
+const IMAGE_PENDING_ID = '__image_pending__';
+
+/**
+ * Open the image picker, read the file, arm placement.
+ *
+ * Pending state lives on state.imageShapePending until the user either
+ * clicks (→ template + instance created) or cancels (→ wiped).
+ */
+export async function addImageShape() {
+  // Cancel any other picker / draw mode that might be active.
+  if (state.get('shapeDrawing'))                  cancelShapeDraw();
+  if (state.get('shapePlacementForId'))           cancelShapePlacement();
+  if (state.get('shapeEditPickInstanceForId'))    state.setState({ shapeEditPickInstanceForId: null });
+  if (state.get('shapeFromFacePicking'))          state.setState({ shapeFromFacePicking: false });
+
+  const nat = window.sbsNative;
+  if (!nat?.openImage || !nat?.readFile) {
+    setStatus('Image picker unavailable (not running in Electron).', 'warn');
+    return;
+  }
+  const path = await nat.openImage();
+  if (!path) return;   // user cancelled
+
+  const ext  = (path.match(/\.(\w+)$/)?.[1] ?? 'png').toLowerCase();
+  const mime = ({
+    png: 'image/png', jpg: 'image/jpeg', jpeg: 'image/jpeg',
+    gif: 'image/gif', bmp: 'image/bmp',
+  })[ext] ?? 'image/png';
+  // PNG/GIF *may* carry alpha — treat as transparent for safe defaults.
+  // (Opaque PNGs still render correctly — alphaTest=0.5 doesn't clip
+  // anything when every pixel has alpha=1.)
+  const hasAlpha = (ext === 'png' || ext === 'gif');
+
+  // fs:readFile returns an envelope: { ok, data } | { ok:false, error }
+  let result;
+  try {
+    result = await nat.readFile(path, 'base64');
+  } catch (err) {
+    setStatus(`Could not read image: ${err?.message || err}`, 'danger');
+    return;
+  }
+  if (!result?.ok) {
+    setStatus(`Could not read image: ${result?.error || 'unknown error'}`, 'danger');
+    return;
+  }
+  const b64 = result.data;
+  if (!b64 || typeof b64 !== 'string') {
+    setStatus('Image file appears to be empty.', 'warn');
+    return;
+  }
+  const dataUrl = `data:${mime};base64,${b64}`;
+
+  // Probe natural dimensions via an off-DOM Image element. Only async
+  // step after the file read — everything downstream is synchronous.
+  let dims;
+  try {
+    dims = await new Promise((resolve, reject) => {
+      const img = new Image();
+      img.onload  = () => resolve({ w: img.naturalWidth, h: img.naturalHeight });
+      img.onerror = () => reject(new Error('Could not decode image (corrupt or unsupported format).'));
+      img.src = dataUrl;
+    });
+  } catch (err) {
+    setStatus(`Image decode failed: ${err?.message || err}`, 'danger');
+    return;
+  }
+  if (!dims.w || !dims.h) {
+    setStatus('Image has zero size.', 'warn');
+    return;
+  }
+
+  const fname = path.split(/[\\/]/).pop() || 'Image';
+  const name  = fname.replace(/\.[^.]+$/, '');
+
+  state.setState({
+    imageShapePending: {
+      dataUrl,
+      width:    dims.w,
+      height:   dims.h,
+      format:   ext,
+      hasAlpha,
+      name,
+    },
+    shapePlacementForId: IMAGE_PENDING_ID,
+  });
+
+  setStatus(`Click a model face (or empty space) to place "${name}". Esc cancels.`, 'info', 6000);
+}
+
+/**
+ * Internal — called by placeShapeAtClick when the pending marker is set.
+ * Resolves the click into a world plane, then creates the template AND
+ * the first instance, bundled into ONE undo entry.
+ */
+function _placePendingImageAtClick(clientX, clientY) {
+  const T = window.THREE;
+  const pending = state.get('imageShapePending');
+  if (!T || !pending) {
+    state.setState({ shapePlacementForId: null, imageShapePending: null });
+    return null;
+  }
+
+  // ── Plane resolution — IDENTICAL to placeShapeAtClick. ──────────────
+  // Face hit → tangent plane (qx, qy on the face); empty → camera-facing.
+  const hit = sceneCore.pick(clientX, clientY);
+  let plane;
+  if (hit && hit.face) {
+    const origin = [hit.point.x, hit.point.y, hit.point.z];
+    const n = hit.face.normal.clone()
+      .transformDirection(hit.object.matrixWorld)
+      .normalize();
+    const N = new T.Vector3(n.x, n.y, n.z);
+    let up = new T.Vector3(0, 1, 0);
+    if (Math.abs(up.dot(N)) > 0.99) up = new T.Vector3(1, 0, 0);
+    const X = new T.Vector3().crossVectors(up, N).normalize();
+    const Y = new T.Vector3().crossVectors(N, X).normalize();
+    const m = new T.Matrix4().makeBasis(X, Y, N);
+    const q = new T.Quaternion().setFromRotationMatrix(m);
+    const anchorNodeId = hit.object?.userData?.meshNodeId
+                      ?? hit.object?.userData?.flatShapeNodeId
+                      ?? hit.object?.userData?.nodeId
+                      ?? null;
+    plane = {
+      origin,
+      normal:          [N.x, N.y, N.z],
+      qx:              [X.x, X.y, X.z],
+      qy:              [Y.x, Y.y, Y.z],
+      worldQuaternion: [q.x, q.y, q.z, q.w],
+      anchorNodeId,
+    };
+  } else {
+    const cam = sceneCore.camera;
+    const fwd = new T.Vector3();
+    cam.getWorldDirection(fwd);
+    const target = cam.position.clone().add(fwd.clone().multiplyScalar(200));
+    const N = fwd.clone().negate().normalize();
+    let up = new T.Vector3(0, 1, 0);
+    if (Math.abs(up.dot(N)) > 0.99) up = new T.Vector3(1, 0, 0);
+    const X = new T.Vector3().crossVectors(up, N).normalize();
+    const Y = new T.Vector3().crossVectors(N, X).normalize();
+    const m = new T.Matrix4().makeBasis(X, Y, N);
+    const q = new T.Quaternion().setFromRotationMatrix(m);
+    plane = {
+      origin:          [target.x, target.y, target.z],
+      normal:          [N.x, N.y, N.z],
+      qx:              [X.x, X.y, X.z],
+      qy:              [Y.x, Y.y, Y.z],
+      worldQuaternion: [q.x, q.y, q.z, q.w],
+      anchorNodeId:    null,
+    };
+  }
+
+  // ── Build rectangle polygon in the image's aspect ratio ─────────────
+  // Default world-units width = 100 (mm, consistent with the rest of the
+  // app). User can scale freely after placement.
+  const WIDTH  = 100;
+  const aspect = pending.width / pending.height;
+  const height = WIDTH / aspect;
+  const halfW  = WIDTH  / 2;
+  const halfH  = height / 2;
+  const rect = {
+    outer: [
+      [-halfW, -halfH],
+      [ halfW, -halfH],
+      [ halfW,  halfH],
+      [-halfW,  halfH],
+    ],
+    holes: [],
+  };
+
+  // Snapshot for undo BEFORE we mutate anything that goes into steps.
+  const prevTemplates = state.get('shapeTemplates') || [];
+  const prevSteps     = JSON.parse(JSON.stringify(state.get('steps') || []));
+
+  // ── Create template ─────────────────────────────────────────────────
+  const tpl = createShapeTemplate({
+    name:     pending.name || 'Image',
+    fill:     '#ffffff',     // ignored by image-shape material, set for save/load shape
+    polygons: [rect],
+    image: {
+      dataUrl:  pending.dataUrl,
+      width:    pending.width,
+      height:   pending.height,
+      format:   pending.format,
+      hasAlpha: pending.hasAlpha,
+    },
+  });
+  state.setState({
+    shapeTemplates:      [...prevTemplates, tpl],
+    imageShapePending:   null,
+    shapePlacementForId: null,
+  });
+
+  // ── Place first instance (no undo push — we bundle below) ───────────
+  const instanceId = placeShapeInstance(tpl.id, { plane, undoLabel: null });
+
+  const nextSteps = JSON.parse(JSON.stringify(state.get('steps') || []));
+
+  undoManager.push(`Create image "${tpl.name}"`,
+    () => _undoCreateTemplate(tpl.id, instanceId, prevTemplates, prevSteps),
+    () => _redoCreateTemplate(tpl,    instanceId, nextSteps),
+  );
+
+  return instanceId;
+}
+
 /**
  * Begin EDITING an existing template. Resolves the target instance:
  *   - 0 visible instances on this step → status hint, no-op.
@@ -5502,7 +5732,8 @@ export function startShapePlacement(templateId) {
 
 export function cancelShapePlacement() {
   if (!state.get('shapePlacementForId')) return;
-  state.setState({ shapePlacementForId: null });
+  // Also wipe any pending image data — same Esc / right-click reset.
+  state.setState({ shapePlacementForId: null, imageShapePending: null });
 }
 
 /**
@@ -5518,6 +5749,11 @@ export function cancelShapePlacement() {
  * Always disarms after one shot.
  */
 export function placeShapeAtClick(templateId, clientX, clientY) {
+  // Image-shape: template doesn't exist yet — the click MATERIALISES it.
+  if (templateId === IMAGE_PENDING_ID) {
+    return _placePendingImageAtClick(clientX, clientY);
+  }
+
   const T = window.THREE;
   if (!T) return null;
   const hit = sceneCore.pick(clientX, clientY);

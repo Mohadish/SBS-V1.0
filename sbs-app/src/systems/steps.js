@@ -162,6 +162,13 @@ class StepManager {
    */
   captureActiveThumbnail(force = false) {
     const now = performance.now();
+    // Skip mid-transition captures — the 5fps throttle would otherwise
+    // grab a frame in the middle of camera / object / color / opacity
+    // tweens, leaving the saved thumbnail in a half-state (object midway
+    // through a fly-in, color mid-lerp, etc.). The `force` path is taken
+    // when the active step CHANGES (line ~993, after snapCurrentToFinal),
+    // so it bypasses both this guard and the throttle.
+    if (!force && this._animRunning) return;
     if (!force && now - this._lastThumbMs < this._thumbIntervalMs) return;
     const activeId = state.get('activeStepId');
     if (!activeId) return;
@@ -439,6 +446,15 @@ class StepManager {
 
     const changedNodeIds = diffWorldTransforms(fromWorldTransforms, toWorldTransforms);
 
+    // Parent-id map keyed on the TARGET hierarchy (built post-rebuild).
+    // Combined with the changedSet, this lets us detect each transition's
+    // "parent is also animating?" status — the trigger for the local-
+    // relative lerp branch that fixes the dip-through-surface bug
+    // (children of rotating parents take the chord, not the arc, under
+    // pure world-space lerp).
+    const parentMap  = captureParentMap(state.get('treeData'));
+    const changedSet = new Set(changedNodeIds);
+
     // Depth map (DFS order = parents before children — kept for transition sorting)
     const depthMap = {};
     flatten(state.get('treeData')).forEach((node, i) => { depthMap[node.id] = i; });
@@ -543,6 +559,7 @@ class StepManager {
 
       cameraHandled = await this._runPhasedAnimation(toSnapshot, phases, {
         changedNodeIds, fromWorldTransforms, toWorldTransforms, depthMap,
+        parentMap, changedSet,
         hidingMeshIds, showingMeshIds,
         hidingShapeIds, showingShapeIds,
         easing, easeFn, myGen,
@@ -559,14 +576,26 @@ class StepManager {
         ? sceneCore.animateCameraTo(toSnapshot.camera, cameraDur, easing)
         : Promise.resolve();
 
-      // Object transforms — world-space lerp (v0.266: objects stay in target hierarchy)
+      // Object transforms — world-space lerp (v0.266: objects stay in target hierarchy).
+      // Children of an animating parent get an `inheritParentId + localFrom + localTo`
+      // bundle so their per-frame lerp runs in PARENT-LOCAL space (arc-following);
+      // children of static parents stay on the world-space path (chord == arc).
       this._objectTransitions = [];
       const startMs = clock.now();
       for (const nodeId of changedNodeIds) {
         const worldFrom = fromWorldTransforms[nodeId];
         const worldTo   = toWorldTransforms[nodeId];
         if (!worldFrom || !worldTo) continue;
-        this._objectTransitions.push({ nodeId, worldFrom, worldTo, startMs, durationMs: objDur, easeFn, isWorld: true, depth: depthMap[nodeId] ?? 0 });
+        const extras = _buildInheritExtras(
+          nodeId, worldFrom, worldTo,
+          parentMap, changedSet, fromWorldTransforms, toWorldTransforms,
+        );
+        this._objectTransitions.push({
+          nodeId, worldFrom, worldTo, startMs,
+          durationMs: objDur, easeFn, isWorld: true,
+          depth: depthMap[nodeId] ?? 0,
+          ...extras,
+        });
       }
       // Sort parents before children so world→local math uses correct parent matrices
       this._objectTransitions.sort((a, b) => a.depth - b.depth);
@@ -708,6 +737,7 @@ class StepManager {
   async _runPhasedAnimation(toSnapshot, phases, opts) {
     const {
       changedNodeIds, fromWorldTransforms, toWorldTransforms, depthMap,
+      parentMap = {}, changedSet = new Set(),
       hidingMeshIds, showingMeshIds,
       hidingShapeIds = [], showingShapeIds = [],
       easing, easeFn, myGen,
@@ -750,7 +780,9 @@ class StepManager {
         phasePromises.push(sceneCore.animateCameraTo(toSnapshot.camera, durationMs, easing));
       }
 
-      // Object transforms — world-space lerp (v0.266: objects stay in target hierarchy)
+      // Object transforms — world-space lerp (v0.266: objects stay in target hierarchy).
+      // See `_buildInheritExtras` — children of animating parents lerp in
+      // parent-local space (arc-following) to fix the dip-through-surface bug.
       if (types.includes('obj') && !objHandled && changedNodeIds.length) {
         objHandled = true;
         this._objectTransitions = [];
@@ -759,7 +791,16 @@ class StepManager {
           const worldFrom = fromWorldTransforms[nodeId];
           const worldTo   = toWorldTransforms[nodeId];
           if (!worldFrom || !worldTo) continue;
-          this._objectTransitions.push({ nodeId, worldFrom, worldTo, startMs, durationMs, easeFn, isWorld: true, depth: depthMap[nodeId] ?? 0 });
+          const extras = _buildInheritExtras(
+            nodeId, worldFrom, worldTo,
+            parentMap, changedSet, fromWorldTransforms, toWorldTransforms,
+          );
+          this._objectTransitions.push({
+            nodeId, worldFrom, worldTo, startMs,
+            durationMs, easeFn, isWorld: true,
+            depth: depthMap[nodeId] ?? 0,
+            ...extras,
+          });
         }
         // Sort parents before children so world→local conversion uses correct parent matrices
         this._objectTransitions.sort((a, b) => a.depth - b.depth);
@@ -832,17 +873,17 @@ class StepManager {
     // ── Finalize missing channels — run DEFAULT animation, not snap ────
     // User rule: "all animation strings must fall on default if missing
     // from string." A preset like 'shape(500)' should make shapes snap
-    // (their slot is in the string) but camera / obj / visibility still
-    // animate over the global default duration — not threshold-pop.
+    // (their slot is in the string) but camera / obj / visibility / color
+    // still animate over the global default duration — not threshold-pop.
     //
     // Each missing channel kicks off its standard animation pipeline
     // with the global default duration (state.cameraAnimDurationMs /
     // state.objectAnimDurationMs). They run in parallel here so the
     // longest one caps the total time.
     //
-    // Color and cable have their own application pipelines (applyAll +
-    // step:activate listeners) and tracking them in here would risk
-    // double-application — leave them for now.
+    // Cable still has its own application pipeline (step:activate
+    // listeners) and tracking it here would risk double-application —
+    // leave it for now.
     const fallbackCam = state.get('cameraAnimDurationMs') ?? 1500;
     const fallbackObj = state.get('objectAnimDurationMs') ?? 1500;
     const fallbackPromises = [];
@@ -861,10 +902,15 @@ class StepManager {
         const worldFrom = fromWorldTransforms[nodeId];
         const worldTo   = toWorldTransforms[nodeId];
         if (!worldFrom || !worldTo) continue;
+        const extras = _buildInheritExtras(
+          nodeId, worldFrom, worldTo,
+          parentMap, changedSet, fromWorldTransforms, toWorldTransforms,
+        );
         this._objectTransitions.push({
           nodeId, worldFrom, worldTo, startMs,
           durationMs: fallbackObj, easeFn, isWorld: true,
           depth: depthMap[nodeId] ?? 0,
+          ...extras,
         });
       }
       this._objectTransitions.sort((a, b) => a.depth - b.depth);
@@ -890,6 +936,23 @@ class StepManager {
       this._materials?.beginVisibilityTransitions(
         hidingShapeIds, showingShapeIds, fallbackObj, easeFn,
       );
+      fallbackPromises.push(_sleep(fallbackObj));
+    }
+    // Color: when the string omits 'color', tween materials over the
+    // global object duration instead of threshold-snapping. Same machinery
+    // as the explicit color phase — beginColorTransition is idempotent
+    // w.r.t. applyAll, and the trailing applySnapshotInstant (line ~616
+    // in applySnapshotAnimated) will snap to exact target values once
+    // the tween completes.
+    if (!colorHandled && toSnapshot.materials && this._materials) {
+      colorHandled = true;
+      this._materials.beginColorTransition(toSnapshot.materials, fallbackObj, easeFn);
+      // applyAll inside beginColorTransition resets transitionOpacity=1.0
+      // on every mesh — re-zero anything that hasn't fired its visibility
+      // phase yet, identical to the explicit-color-phase guard above.
+      if (!visHandled && showingMeshIds.length) {
+        this._materials.snapShowingToZero(showingMeshIds);
+      }
       fallbackPromises.push(_sleep(fallbackObj));
     }
 
@@ -924,14 +987,37 @@ class StepManager {
 
       if (node && obj && isAnimatableNode(node)) {
         if (tr.isWorld) {
-          // World-space lerp. Objects stay in their target hierarchy; we use
-          // world→local conversion (v0.266 approach) so the correct local
-          // position is set regardless of which folder the node is in.
-          // Parents are processed before children (depth sort) so parent
-          // matrices are current when children compute their local positions.
-          const lerpedPos  = lerpVec3(tr.worldFrom.position,  tr.worldTo.position,  alpha);
-          const lerpedQuat = slerpQuaternion(tr.worldFrom.quaternion, tr.worldTo.quaternion, alpha);
-          _setWorldTransformOnObject(obj, lerpedPos, lerpedQuat);
+          if (tr.inheritParentId && tr.localFrom && tr.localTo) {
+            // PARENT-LOCAL lerp branch. The tree-data parent is also
+            // animating this frame (it was processed earlier in the loop
+            // via the depth sort, so its matrixWorld is already at its
+            // own lerped state). We feed Three.js the LOCAL pose relative
+            // to that parent and let the scene-graph multiplication
+            // produce the world position — child rides the parent's
+            // rotation ARC instead of taking the world-space chord.
+            //
+            // Without this branch, a flatShape parented under a rotating
+            // model visibly dips through the model's surface mid-tween.
+            const lerpedPos  = lerpVec3(tr.localFrom.position,  tr.localTo.position,  alpha);
+            const lerpedQuat = slerpQuaternion(tr.localFrom.quaternion, tr.localTo.quaternion, alpha);
+            obj.position.set(lerpedPos[0], lerpedPos[1], lerpedPos[2]);
+            obj.quaternion.set(lerpedQuat[0], lerpedQuat[1], lerpedQuat[2], lerpedQuat[3]);
+            obj.updateMatrix();
+            // updateMatrixWorld(false) — don't cascade to children here;
+            // any animating descendant will run later in this same loop
+            // and recompute its own matrixWorld via its parent's just-
+            // updated matrix.
+            obj.updateMatrixWorld(false);
+          } else {
+            // World-space lerp. Objects stay in their target hierarchy; we use
+            // world→local conversion (v0.266 approach) so the correct local
+            // position is set regardless of which folder the node is in.
+            // Parents are processed before children (depth sort) so parent
+            // matrices are current when children compute their local positions.
+            const lerpedPos  = lerpVec3(tr.worldFrom.position,  tr.worldTo.position,  alpha);
+            const lerpedQuat = slerpQuaternion(tr.worldFrom.quaternion, tr.worldTo.quaternion, alpha);
+            _setWorldTransformOnObject(obj, lerpedPos, lerpedQuat);
+          }
         } else {
           // Legacy: localOffset lerp (fallback for old snapshots without worldTransforms)
           const interp = interpolateTransformSnapshot(tr.from, tr.to, alpha);
@@ -2400,6 +2486,66 @@ function applyAllTransformsToScene(nodeById, object3dById) {
  * @param {number[]}       worldPos   [x,y,z]
  * @param {number[]}       worldQuat  [x,y,z,w]
  */
+/**
+ * Decompose `child_world × inv(parent_world)` into a local pose. Used at
+ * transition-setup time so children of an ANIMATING transform-node can
+ * lerp in PARENT-LOCAL space — that's what makes a flatShape ride its
+ * parent's rotation arc instead of taking the chord between its world
+ * FROM and TO positions.
+ *
+ * Without this, a shape on a rotating part takes a straight line in world
+ * space while the part it's stuck to traces an arc — the shape visibly
+ * "dips in and out" of the surface. With local-space lerp, child sticks
+ * to parent for free via Three.js's scene-graph matrix propagation.
+ *
+ * Scale is ignored (we only animate position + quaternion).
+ *
+ * @param {{position:number[], quaternion:number[]}} parentWorld
+ * @param {{position:number[], quaternion:number[]}} childWorld
+ * @returns {{position:number[], quaternion:number[]}}
+ */
+function _composeLocalFromWorlds(parentWorld, childWorld) {
+  const THREE = window.THREE;
+  const ONE   = new THREE.Vector3(1, 1, 1);
+  const pMat = new THREE.Matrix4().compose(
+    new THREE.Vector3(...parentWorld.position),
+    new THREE.Quaternion(...parentWorld.quaternion),
+    ONE,
+  );
+  const cMat = new THREE.Matrix4().compose(
+    new THREE.Vector3(...childWorld.position),
+    new THREE.Quaternion(...childWorld.quaternion),
+    ONE,
+  );
+  const localMat = new THREE.Matrix4().copy(pMat).invert().multiply(cMat);
+  const pos = new THREE.Vector3();
+  const quat = new THREE.Quaternion();
+  const scl = new THREE.Vector3();
+  localMat.decompose(pos, quat, scl);
+  return {
+    position:   [pos.x, pos.y, pos.z],
+    quaternion: [quat.x, quat.y, quat.z, quat.w],
+  };
+}
+
+/**
+ * Build the extras object pushed alongside a transition entry when the
+ * node's tree-parent is ALSO animating. Returns `{}` when no inheritance
+ * is needed (parent static → world-space lerp is correct).
+ */
+function _buildInheritExtras(nodeId, worldFrom, worldTo, parentMap, changedSet, fromWT, toWT) {
+  const parentId = parentMap[nodeId];
+  if (!parentId || !changedSet.has(parentId)) return {};
+  const parentFrom = fromWT[parentId];
+  const parentTo   = toWT[parentId];
+  if (!parentFrom || !parentTo) return {};
+  return {
+    inheritParentId: parentId,
+    localFrom:       _composeLocalFromWorlds(parentFrom, worldFrom),
+    localTo:         _composeLocalFromWorlds(parentTo,   worldTo),
+  };
+}
+
 function _setWorldTransformOnObject(obj, worldPos, worldQuat) {
   const THREE = window.THREE;
   if (!THREE || !obj) return;

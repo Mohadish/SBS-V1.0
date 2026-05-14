@@ -764,6 +764,13 @@ gl_FragColor.a = 1.0;
     const presets      = state.get('colorPresets');
     const presetById   = new Map(presets.map(p => [p.id, p]));
 
+    // FlatShape templates indexed by id for fast template-fill lookup.
+    // Built once per applyAll() pass — cheaper than calling state.get
+    // inside the per-mesh loop.
+    const shapeTpls = state.get('shapeTemplates') || [];
+    const tplById   = new Map(shapeTpls.map(t => [t.id, t]));
+    const nodeById  = state.get('nodeById');
+
     for (const [nodeId, mesh] of this.meshById) {
       const original = this.originalMaterials.get(nodeId);
       this._removeFalloffBackPass(mesh);
@@ -777,6 +784,41 @@ gl_FragColor.a = 1.0;
         if (!mat || mat === original) return;
         try { mat.dispose?.(); } catch {}
       };
+
+      // ── flatShape branch ──────────────────────────────────────────
+      // flatShape meshes (polygon shapes + image-shapes) get a lighter
+      // touch: we MUTATE `mesh.material.color` in place rather than
+      // swapping the material type. This preserves:
+      //   - transparent:true → fade animation via _setMaterialFade
+      //   - the texture map on image-shapes (we skip them outright)
+      //   - the shape's flat aesthetic (no falloff shader effect)
+      //
+      // Color resolution chain matches regular meshes:
+      //   per-step preset → project default → template fill.
+      // overrideMode=false short-circuits to template fill.
+      if (mesh.userData?.flatShapeNodeId) {
+        // Image-shape — texture dominates. v1: silently skip preset
+        // application (assignment is still stored, just doesn't paint).
+        if (mesh.material?.map) {
+          continue;
+        }
+        const shapeNode = nodeById?.get(nodeId);
+        const tpl       = shapeNode?.templateId ? tplById.get(shapeNode.templateId) : null;
+        const templateFill = tpl?.fill || '#cccccc';
+
+        let targetColor;
+        if (overrideMode) {
+          const sid = this.meshColorAssignments[nodeId]
+                   ?? this.meshDefaultColors[nodeId]
+                   ?? null;
+          const pst = sid ? presetById.get(sid) : null;
+          targetColor = pst?.color || templateFill;
+        } else {
+          targetColor = templateFill;
+        }
+        if (mesh.material?.color?.set) mesh.material.color.set(targetColor);
+        continue;
+      }
 
       if (!overrideMode) {
         // Restore original import material

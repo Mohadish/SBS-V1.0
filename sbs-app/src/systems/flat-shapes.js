@@ -82,12 +82,18 @@ export function xorPolygonList(polygons) {
  * picked face's plane in world without needing the mesh's own
  * quaternion to do any work.
  *
+ * When `image` is supplied the rectangle's bounding box drives a 0..1
+ * UV map and the material gets a `map:` texture loaded from the data
+ * URL. PNG/GIF alpha is honoured via alphaTest (cutout rendering — no
+ * z-sort surprises, clean edges).
+ *
  * @param {Array<{outer:number[][], holes:number[][][]}>} polygons
  * @param {string}   fill                                 hex colour
  * @param {number[]} [planeQuat=[0,0,0,1]]                parent-local plane orientation
+ * @param {object|null} [image=null]                      { dataUrl, hasAlpha, width, height, format }
  * @returns {THREE.Mesh|null}
  */
-export function buildFlatShapeMesh(polygons, fill, planeQuat = [0, 0, 0, 1]) {
+export function buildFlatShapeMesh(polygons, fill, planeQuat = [0, 0, 0, 1], image = null) {
   const T = window.THREE;
   if (!T) return null;
   const list = Array.isArray(polygons) ? polygons : [];
@@ -121,6 +127,31 @@ export function buildFlatShapeMesh(polygons, fill, planeQuat = [0, 0, 0, 1]) {
 
   const geom = new T.ShapeGeometry(shapes);
 
+  // ── Image-shape: rewrite UVs to map the rectangle's bbox to 0..1 ────
+  // ShapeGeometry's default UVs follow vertex (x,y) in 2D space, which
+  // for a rectangle centered at the origin produces negative UVs that
+  // tile the texture instead of stretching it across the shape. Override
+  // to a clean 0..1 map based on the geometry's bbox in 2D (BEFORE we
+  // rotate the geometry into 3D below).
+  if (image) {
+    geom.computeBoundingBox();
+    const bb = geom.boundingBox;
+    if (bb) {
+      const minX = bb.min.x, minY = bb.min.y;
+      const dx = (bb.max.x - bb.min.x) || 1;
+      const dy = (bb.max.y - bb.min.y) || 1;
+      const pos = geom.attributes.position;
+      const uvs = new Float32Array(pos.count * 2);
+      for (let i = 0; i < pos.count; i++) {
+        const x = pos.getX(i);
+        const y = pos.getY(i);
+        uvs[i * 2    ] = (x - minX) / dx;
+        uvs[i * 2 + 1] = (y - minY) / dy;
+      }
+      geom.setAttribute('uv', new T.BufferAttribute(uvs, 2));
+    }
+  }
+
   // Bake the plane rotation into the vertex positions.
   const [qx, qy, qz, qw] = planeQuat;
   if (Math.abs(qx) + Math.abs(qy) + Math.abs(qz) > 1e-7) {
@@ -131,13 +162,42 @@ export function buildFlatShapeMesh(polygons, fill, planeQuat = [0, 0, 0, 1]) {
     geom.computeVertexNormals?.();
   }
 
-  const mat = new T.MeshBasicMaterial({
-    color:       new T.Color(fill || '#cccccc'),
-    side:        T.DoubleSide,
-    transparent: true,
-    opacity:     1.0,
-    depthWrite:  true,
-  });
+  let mat;
+  if (image && image.dataUrl) {
+    // ── Image-shape material ──────────────────────────────────────────
+    // Use MeshBasicMaterial so we don't need scene lighting to "see" the
+    // image. ALWAYS `transparent: true` (matches polygon flat-shapes) —
+    // the materials system's `_setMaterialFade` fallback only animates
+    // opacity on materials marked transparent, so without this the step-
+    // transition `shape(N)` fade would just snap on/off for image-shapes.
+    //
+    // `alphaTest: 0.01` clips fully-transparent PNG pixels (clean edges)
+    // while still letting `material.opacity` tween smoothly during step
+    // transitions. depthWrite stays on so opaque parts of the image
+    // occlude geometry behind them correctly.
+    const loader = new T.TextureLoader();
+    const tex = loader.load(image.dataUrl);
+    tex.colorSpace = T.SRGBColorSpace ?? tex.colorSpace;
+    tex.anisotropy = 4;
+    tex.needsUpdate = true;
+    mat = new T.MeshBasicMaterial({
+      map:         tex,
+      color:       0xffffff,
+      side:        T.DoubleSide,
+      transparent: true,
+      alphaTest:   image.hasAlpha ? 0.01 : 0,
+      opacity:     1.0,
+      depthWrite:  true,
+    });
+  } else {
+    mat = new T.MeshBasicMaterial({
+      color:       new T.Color(fill || '#cccccc'),
+      side:        T.DoubleSide,
+      transparent: true,
+      opacity:     1.0,
+      depthWrite:  true,
+    });
+  }
   return new T.Mesh(geom, mat);
 }
 
@@ -234,11 +294,13 @@ export function ensureFlatShapeObject3D(node) {
   if (existing) {
     if (existing.parent) existing.parent.remove(existing);
     existing.geometry?.dispose?.();
+    // Texture maps need explicit dispose — Material.dispose doesn't cascade.
+    existing.material?.map?.dispose?.();
     existing.material?.dispose?.();
     node.object3d = null;
   }
 
-  const mesh = buildFlatShapeMesh(polygons, tpl.fill, node.planeLocalQuaternion);
+  const mesh = buildFlatShapeMesh(polygons, tpl.fill, node.planeLocalQuaternion, tpl.image || null);
   if (!mesh) return null;
   mesh.name = node.name || tpl.name || 'Shape';
   mesh.userData.flatShapeNodeId = node.id;
@@ -297,6 +359,7 @@ export function rebuildInstancesOfTemplate(root, object3dById, templateId) {
       if (oldMesh) {
         if (oldMesh.parent) oldMesh.parent.remove(oldMesh);
         oldMesh.geometry?.dispose?.();
+        oldMesh.material?.map?.dispose?.();
         oldMesh.material?.dispose?.();
         n.object3d = null;
       }
@@ -324,6 +387,7 @@ export function disposeFlatShape(node) {
   if (!mesh) return;
   if (mesh.parent) mesh.parent.remove(mesh);
   mesh.geometry?.dispose?.();
+  mesh.material?.map?.dispose?.();
   mesh.material?.dispose?.();
   node.object3d = null;
   materials?.unregisterMesh?.(node.id);
@@ -354,5 +418,13 @@ function _buildKey(tpl, polygons, planeQuat = [0, 0, 0, 1]) {
   }
   const pq = planeQuat.map(v => Math.round((v ?? 0) * 1e6) / 1e6).join(',');
   parts.push(pq);
+  // Image identity — using dataUrl length + first/last 12 chars is enough
+  // to distinguish "image replaced" without paying to hash multi-MB base64.
+  if (tpl.image && tpl.image.dataUrl) {
+    const d = tpl.image.dataUrl;
+    parts.push(`img:${d.length}:${d.slice(0, 12)}:${d.slice(-12)}:${tpl.image.hasAlpha ? 1 : 0}`);
+  } else {
+    parts.push('img:none');
+  }
   return parts.join('|');
 }

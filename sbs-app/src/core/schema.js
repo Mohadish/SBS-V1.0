@@ -269,6 +269,23 @@ export function createShapeTemplate(overrides = {}) {
     // produce a solid centre again, and a fully-contained polygon
     // becomes a hole (donut). Each entry: { outer:[[x,y]…], holes:[…] }.
     polygons: [{ outer: [], holes: [] }],
+    // ── Optional: image-shape data ────────────────────────────────────
+    // When set, the template renders as a TEXTURED rectangle (image is
+    // mapped to the polygon's bounding box via UVs). `polygons` is still
+    // used — for image-shapes we pre-populate it with a rectangle in the
+    // image's aspect ratio. Treating image-shapes as "flatShape with a
+    // texture map" means save/load, step snapshots, picking, transforms
+    // and undo all keep working unchanged.
+    //
+    //   dataUrl   "data:image/png;base64,..."   the image payload
+    //   format    'png' | 'jpg' | 'gif' | 'bmp'
+    //   width     number (px) — image natural width
+    //   height    number (px) — image natural height
+    //   hasAlpha  boolean — true for PNG/GIF (renders with alphaTest)
+    //
+    // Migration: legacy templates default to image=null (renders with
+    // fill colour as before). Project save/load passes the field through.
+    image:    null,
     ...overrides,
   };
 }

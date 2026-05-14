@@ -1111,9 +1111,15 @@ function _renderColorsTab() {
   const solidness0 = outline.opacity ?? 0.9;
   const crease0    = outline.creaseAngle ?? 35;
 
-  // Resolve selected mesh nodeIds only (folders/models can't receive presets directly)
+  // Resolve selected nodes that can receive color presets: model meshes
+  // AND flatShapes (polygon shapes — image-shapes are filtered out by
+  // applyAll's flatShape branch since their texture dominates).
+  // Folders/models/scene-root can't receive presets directly.
   const allSelIds = multiIds.size ? Array.from(multiIds) : (selId ? [selId] : []);
-  const meshIds   = allSelIds.filter(id => nodeById.get(id)?.type === 'mesh');
+  const meshIds   = allSelIds.filter(id => {
+    const t = nodeById.get(id)?.type;
+    return t === 'mesh' || t === 'flatShape';
+  });
 
   el.innerHTML = `
     <div class="section">
@@ -2527,6 +2533,10 @@ function _renderShapesTab() {
   const drawingPhase = drawing?.phase ?? null;
   const placeArmedFor = state.get('shapePlacementForId') || null;
   const facePicking   = !!state.get('shapeFromFacePicking');
+  // Image-shape: pending mode means the user picked an image and is now
+  // waiting to click a model face to drop it. Disables the other create
+  // buttons; the row swaps to "Click a face…" + a red Cancel.
+  const imagePending  = !!state.get('imageShapePending');
   // Highlight the row of the currently-selected flatShape's template —
   // gives the user a visual link between scene selection and library row.
   const selId = state.get('selectedId');
@@ -2555,7 +2565,7 @@ function _renderShapesTab() {
         many times in the scene. Drawing happens in the viewport.
       </p>
       <div style="display:flex;gap:8px;align-items:center">
-        <button class="btn" id="btn-new-shape" ${drawing || facePicking ? 'disabled' : ''}
+        <button class="btn" id="btn-new-shape" ${drawing || facePicking || imagePending ? 'disabled' : ''}
           style="flex:1">${drawing ? 'Drawing…' : '+ New Shape'}</button>
         ${drawing
           ? `<button class="btn" id="btn-cancel-shape" style="background:#7f1d1d">Cancel</button>`
@@ -2563,13 +2573,24 @@ function _renderShapesTab() {
       </div>
       <div style="display:flex;gap:8px;align-items:center;margin-top:6px">
         <button class="btn" id="btn-shape-from-face"
-                ${drawing ? 'disabled' : ''}
+                ${drawing || imagePending ? 'disabled' : ''}
                 style="flex:1${facePicking ? ';background:#0369a1;color:#f1f5f9' : ''}"
                 title="Click a face on a model — adjacent triangles within the angle threshold get included; their outline becomes a shape.">
           ${facePicking ? 'Click a face…' : '✂ Create shape from face'}
         </button>
         ${facePicking
           ? `<button class="btn" id="btn-cancel-face-shape" style="background:#7f1d1d">Cancel</button>`
+          : ''}
+      </div>
+      <div style="display:flex;gap:8px;align-items:center;margin-top:6px">
+        <button class="btn" id="btn-add-image"
+                ${drawing || facePicking ? 'disabled' : ''}
+                style="flex:1${imagePending ? ';background:#0369a1;color:#f1f5f9' : ''}"
+                title="Pick an image file, then click a model face (or empty space) to drop a textured 2D plane sized to the image's aspect ratio.">
+          ${imagePending ? 'Click a face…' : '🖼 + Image'}
+        </button>
+        ${imagePending
+          ? `<button class="btn" id="btn-cancel-image" style="background:#7f1d1d">Cancel</button>`
           : ''}
       </div>
       <label class="small muted" style="display:block;margin-top:6px;line-height:1.4">
@@ -2648,6 +2669,13 @@ function _renderShapesTab() {
   });
   el.querySelector('#btn-cancel-face-shape')?.addEventListener('click', () => {
     actions.cancelCreateShapeFromFace();
+  });
+  el.querySelector('#btn-add-image')?.addEventListener('click', () => {
+    // Async — opens OS file picker, then arms placement on success.
+    actions.addImageShape();
+  });
+  el.querySelector('#btn-cancel-image')?.addEventListener('click', () => {
+    actions.cancelShapePlacement();   // clears both shapePlacementForId + imageShapePending
   });
 
   // Angle-threshold slider — live updates the label, persists to user-
