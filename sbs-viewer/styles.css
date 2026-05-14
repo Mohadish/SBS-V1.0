@@ -720,3 +720,32 @@ code {
 /* Pushed to the right edge: time readout + fullscreen button cluster. */
 .player-footer .time         { margin-left: auto; }
 .player-footer #btn-fullscreen { margin-left: 4px; }
+
+
+/* ── Settings popover ──────────────────────────────────────────────────
+   Modal overlay opened by the gear button on the landing card. Holds the
+   station/manager mode toggle. Centred via flex. Hidden by default; JS
+   toggles the `hidden` attribute. */
+.settings-popover {
+  position: fixed;
+  inset: 0;
+  background: rgba(15, 23, 42, 0.85);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 9000;
+}
+.settings-popover[hidden] { display: none; }
+.settings-card {
+  background: var(--bg-2);
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  padding: 20px;
+  width: 360px;
+  max-width: 90vw;
+  box-shadow: 0 12px 40px rgba(0,0,0,0.5);
+}
+.settings-card input[type="radio"]:disabled + span {
+  color: var(--muted);
+  cursor: not-allowed;
+}

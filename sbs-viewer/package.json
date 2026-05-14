@@ -4,11 +4,15 @@
   "description": "SBS Viewer — standalone player for .sbsproc / .sbsasm files",
   "main": "main.js",
   "scripts": {
-    "start": "electron .",
-    "build": "electron-builder",
-    "build:win":   "electron-builder --win",
-    "build:mac":   "electron-builder --mac",
-    "build:linux": "electron-builder --linux"
+    "start":          "electron .",
+    "bytenode":       "node scripts/build-bytenode.js",
+    "bytenode:clean": "node scripts/build-bytenode.js --clean",
+    "build":          "npm run bytenode && electron-builder",
+    "build:nobytenode": "electron-builder",
+    "build:win":      "npm run bytenode && electron-builder --win",
+    "build:mac":      "npm run bytenode && electron-builder --mac",
+    "build:linux":    "npm run bytenode && electron-builder --linux",
+    "build:customer": "node scripts/build-installer.js"
   },
   "build": {
     "appId": "com.sbs.viewer",
@@ -18,11 +22,19 @@
     },
     "files": [
       "main.js",
+      "preload.js",
+      "company.js",
+      "license/**/*",
       "viewer.html",
       "viewer.js",
       "styles.css",
       "sample.sbsasm",
-      "package.json"
+      "package.json",
+      "!license/verify.js",
+      "!license/machine-id.js",
+      "!license/store.js",
+      "!license/index.js",
+      "!license/time-monitor.js"
     ],
     "win": {
       "target": [
@@ -44,8 +56,12 @@
       "perMachine": false,
       "allowToChangeInstallationDirectory": true,
       "createDesktopShortcut": true,
-      "createStartMenuShortcut": true
+      "createStartMenuShortcut": true,
+      "deleteAppDataOnUninstall": false
     }
+  },
+  "dependencies": {
+    "bytenode": "^1.5.7"
   },
   "devDependencies": {
     "electron": "^28.3.3",
