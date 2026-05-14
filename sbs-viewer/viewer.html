@@ -31,11 +31,45 @@
       </div>
       <!-- Manager-only entry — opens the builder for creating .sbsasm
            assemblies. Workers ignore this; managers click here to
-           drag in their .sbsproc files and save the assembly. -->
+           drag in their .sbsproc files and save the assembly.
+           Hidden at boot in station-mode installs (viewer.js). -->
       <div class="landing-divider"><span>or</span></div>
       <button class="btn-secondary" id="btn-create-assembly" type="button">
         ✨ Create new assembly
       </button>
+
+      <!-- Settings — gear icon, opens the mode toggle popover. The
+           settings popover is hidden in web mode (no IPC); viewer.js
+           shows the button only when window.sbsViewer is present. -->
+      <button class="btn-ghost" id="btn-settings" type="button" hidden
+              title="Settings — switch between Station and Manager mode"
+              style="margin-top:14px;font-size:11px;padding:4px 10px;">
+        ⚙ Settings
+      </button>
+    </div>
+
+    <!-- Settings popover. Hidden by default; viewer.js toggles. -->
+    <div id="settings-popover" class="settings-popover" hidden>
+      <div class="settings-card">
+        <h3 style="margin:0 0 10px;font-size:15px;color:#f1f5f9;">Settings</h3>
+        <div id="settings-mode-section">
+          <label style="display:block;font-size:12px;color:#94a3b8;margin-bottom:8px;">Install mode</label>
+          <div style="display:flex;gap:8px;align-items:center;margin-bottom:10px;">
+            <label style="display:flex;align-items:center;gap:6px;cursor:pointer;color:#cbd5e1;font-size:13px;">
+              <input type="radio" name="install-mode" value="station" id="mode-station" />
+              <span>Station</span>
+            </label>
+            <label style="display:flex;align-items:center;gap:6px;cursor:pointer;color:#cbd5e1;font-size:13px;">
+              <input type="radio" name="install-mode" value="manager" id="mode-manager" />
+              <span>Manager</span>
+            </label>
+          </div>
+          <p id="settings-mode-note" class="muted" style="margin:0 0 12px;font-size:11px;line-height:1.5;"></p>
+        </div>
+        <div style="display:flex;gap:8px;justify-content:flex-end;">
+          <button class="btn-ghost" id="settings-close" type="button" style="font-size:12px;padding:6px 14px;">Close</button>
+        </div>
+      </div>
     </div>
   </section>
 
@@ -167,6 +201,10 @@
     </footer>
   </section>
 
+  <!-- License gate runs FIRST so it can block the rest of the UI when
+       the app is unactivated or expired. In web mode (no Electron),
+       license-gate.js is a no-op — viewer.js proceeds normally. -->
+  <script src="license-gate.js"></script>
   <script src="viewer.js"></script>
 </body>
 </html>

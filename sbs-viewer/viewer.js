@@ -70,7 +70,7 @@ const els = {
 // (full volume) so the very first unmute lands on max.
 let _preMuteVolume = 1.0;
 
-document.addEventListener('DOMContentLoaded', () => {
+document.addEventListener('DOMContentLoaded', async () => {
   els.landing          = $('landing');
   els.assembly         = $('assembly');
   els.player           = $('player');
@@ -96,6 +96,13 @@ document.addEventListener('DOMContentLoaded', () => {
   els.btnCreateAssembly = $('btn-create-assembly');
   els.asmExit          = $('assembly-exit');
   els.bldExit          = $('builder-exit');
+  // Settings popover (Electron-only feature — see _wireSettings)
+  els.btnSettings      = $('btn-settings');
+  els.settingsPopover  = $('settings-popover');
+  els.settingsClose    = $('settings-close');
+  els.modeStation      = $('mode-station');
+  els.modeManager      = $('mode-manager');
+  els.settingsModeNote = $('settings-mode-note');
   els.projectTitle     = $('project-title');
   els.stepCounter      = $('step-counter');
   els.btnClose         = $('btn-close');
@@ -119,8 +126,40 @@ document.addEventListener('DOMContentLoaded', () => {
   _wireFullscreen();
   _wireBuilder();
 
+  // ── Station / Manager mode gate ──────────────────────────────────────
+  // Resolve effective mode BEFORE wiring URL routes so we can block
+  // builder-only entry points in station installs. License-gate.js has
+  // already enforced the activation state by the time we get here.
+  // Web mode (no Electron IPC) → assume manager (no restriction); the
+  // file server is the gate there.
+  let allowBuilder = true;
+  if (window.sbsViewer?.license?.status) {
+    try {
+      const status = await window.sbsViewer.license.status();
+      // Manager features require BOTH: the install opted into manager mode
+      // AND the active license authorises it. License-gate ensures
+      // `state === 'valid' || 'grace'` by the time this runs.
+      allowBuilder = (status?.effectiveMode === 'manager');
+    } catch (err) {
+      console.warn('[viewer] could not resolve install mode:', err);
+      allowBuilder = false;   // fail safe to station
+    }
+  }
+  if (!allowBuilder && els.btnCreateAssembly) {
+    els.btnCreateAssembly.hidden = true;
+  }
+
+  // Settings UI is Electron-only (relies on window.sbsViewer.license.*).
+  // In web mode the button stays hidden, and mode is always 'manager' since
+  // no IPC means no install-mode persistence.
+  if (window.sbsViewer?.license?.installMode) {
+    els.btnSettings.hidden = false;
+    _wireSettings();
+  }
+
   // URL routing — four entry points:
   //   ?mode=build → admin builder: form to create / edit .sbsasm files.
+  //                 BLOCKED for station installs — falls through to landing.
   //   ?asm=<url>  → assembly mode: fetch JSON, show landing grid, click
   //                 a card to load that .sbsproc, X returns to grid.
   //   ?proc=<url> → direct process: fetch + play one .sbsproc.
@@ -129,9 +168,9 @@ document.addEventListener('DOMContentLoaded', () => {
   const mode    = params.get('mode');
   const asmUrl  = params.get('asm');
   const procUrl = params.get('proc');
-  if      (mode === 'build') _showBuilder();
-  else if (asmUrl)           _loadAssemblyFromUrl(asmUrl);
-  else if (procUrl)          _loadFromUrl(procUrl);
+  if      (mode === 'build' && allowBuilder) _showBuilder();
+  else if (asmUrl)                           _loadAssemblyFromUrl(asmUrl);
+  else if (procUrl)                          _loadFromUrl(procUrl);
 });
 
 // ── Landing wiring ──────────────────────────────────────────────────
@@ -429,6 +468,60 @@ function _showAssemblyError(msg) {
 function _showBuilder() {
   _showScreen('builder');
   _bldRenumber();
+}
+
+// ── Settings popover (Electron only) ──────────────────────────────────
+// Lets the user switch between Station and Manager install modes. Mode
+// changes need a reload to take effect because the gate decision (hide
+// "Create new assembly", block ?mode=build) runs at init time. The
+// Manager radio is DISABLED when the active license is station-only —
+// `verify.js` returns licenseMode='station' in that case, so we can't
+// honour a manager request and there's no point letting them try.
+function _wireSettings() {
+  const open = async () => {
+    let licenseMode = 'station';
+    let installMode = 'station';
+    try {
+      const status = await window.sbsViewer.license.status();
+      licenseMode = status?.licenseMode || 'station';
+      installMode = status?.installMode || 'station';
+    } catch {}
+
+    // Radios reflect CURRENT install-mode setting; license authority
+    // gates whether Manager is selectable.
+    els.modeStation.checked  = (installMode === 'station');
+    els.modeManager.checked  = (installMode === 'manager');
+    els.modeManager.disabled = (licenseMode !== 'manager');
+
+    els.settingsModeNote.textContent = (licenseMode === 'manager')
+      ? 'Manager mode unlocks "Create new assembly". Switching mode reloads the viewer.'
+      : 'Your license only authorises Station mode. Contact your distributor for a Manager license.';
+
+    els.settingsPopover.hidden = false;
+  };
+  const close = () => { els.settingsPopover.hidden = true; };
+
+  els.btnSettings.addEventListener('click', open);
+  els.settingsClose.addEventListener('click', close);
+  // Click outside the card → close.
+  els.settingsPopover.addEventListener('click', e => {
+    if (e.target === els.settingsPopover) close();
+  });
+
+  // Radio changes save immediately + reload (the gate runs at init).
+  const onModeChange = async (e) => {
+    if (!e.target.checked) return;
+    const mode = e.target.value;
+    try {
+      await window.sbsViewer.license.setInstallMode(mode);
+      // Tiny delay so the user sees the toggle land before the reload.
+      setTimeout(() => location.reload(), 120);
+    } catch (err) {
+      console.error('[settings] could not save mode:', err);
+    }
+  };
+  els.modeStation.addEventListener('change', onModeChange);
+  els.modeManager.addEventListener('change', onModeChange);
 }
 
 function _wireBuilder() {
