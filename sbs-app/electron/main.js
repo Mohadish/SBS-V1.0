@@ -1,5 +1,11 @@
 'use strict';
 
+// Register the `.jsc` extension handler BEFORE any other require. The
+// license module is bytenode-compiled in production builds — without
+// this, `require('./license/index')` would fail to resolve the .jsc
+// sibling. In dev no .jsc files exist; bytenode is loaded but inert.
+require('bytenode');
+
 const { app, BrowserWindow, Menu, ipcMain, dialog, shell } = require('electron');
 const path  = require('path');
 const fs    = require('fs');
@@ -282,7 +288,9 @@ function buildMenu() {
 
 // ─── License IPC bridge (must register BEFORE renderer mounts so the
 // preload's invoke() calls during boot have handlers waiting)
-const { registerLicenseIpc } = require('./license/index.js');
+// Note: extension OMITTED so Node's resolver picks index.js in dev and
+// index.jsc in production builds (where the .js source is excluded).
+const { registerLicenseIpc } = require('./license/index');
 
 // ─── App lifecycle ─────────────────────────────────────────────────────────
 app.whenReady().then(() => {
@@ -324,6 +332,21 @@ ipcMain.handle('dialog:openModel', async () => {
     properties: ['openFile', 'multiSelections'],
   });
   return result.canceled ? null : result.filePaths;
+});
+
+// Open an image file (for image-shape feature). Returns a single path or null.
+// Read happens through the existing fs:readFile IPC, so this handler does no
+// I/O itself — just exposes the OS file picker filtered to image formats.
+ipcMain.handle('dialog:openImage', async () => {
+  const result = await dialog.showOpenDialog(mainWindow, {
+    title: 'Choose Image',
+    filters: [
+      { name: 'Images', extensions: ['png','jpg','jpeg','bmp','gif'] },
+      { name: 'All Files', extensions: ['*'] },
+    ],
+    properties: ['openFile'],
+  });
+  return result.canceled ? null : result.filePaths[0];
 });
 
 // Open a project file

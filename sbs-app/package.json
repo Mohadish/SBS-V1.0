@@ -4,9 +4,12 @@
   "description": "SBS Step Browser — CAD Presentation Tool",
   "main": "electron/main.js",
   "scripts": {
-    "start":        "electron .",
-    "dev":          "electron . --dev",
-    "build":        "electron-builder",
+    "start": "electron .",
+    "dev": "electron . --dev",
+    "bytenode": "node scripts/build-bytenode.js",
+    "bytenode:clean": "node scripts/build-bytenode.js --clean",
+    "build": "npm run bytenode && electron-builder",
+    "build:nobytenode": "electron-builder",
     "fetch-models": "node scripts/fetch-kokoro.js"
   },
   "build": {
@@ -18,6 +21,14 @@
     "win": {
       "target": "nsis",
       "icon": "assets/icons/icon.ico"
+    },
+    "nsis": {
+      "oneClick": false,
+      "allowToChangeInstallationDirectory": true,
+      "perMachine": false,
+      "createDesktopShortcut": true,
+      "createStartMenuShortcut": true,
+      "deleteAppDataOnUninstall": false
     },
     "mac": {
       "target": "dmg",
@@ -35,6 +46,14 @@
       "sbs_license/**/*",
       "!sbs_license/keys/**",
       "!sbs_license/issued_licenses/**",
+      "!sbs_license/__pycache__/**",
+      "!sbs_license/SBS-keys.zip",
+      "!scripts/build-bytenode.js",
+      "!scripts/bytenode-compile-worker.js",
+      "!electron/license/verify.js",
+      "!electron/license/machine-id.js",
+      "!electron/license/store.js",
+      "!electron/license/index.js",
       "!**/node_modules/*/{CHANGELOG.md,README.md,README,readme.md,readme}",
       "!**/*.{iml,o,hprof,orig,pyc,pyo,rbc,swp,csproj,sln,xproj}",
       "!.editorconfig",
@@ -48,18 +67,21 @@
     ],
     "extraResources": [
       {
-        "from":   "kokoro-bundle",
-        "to":     "kokoro-bundle",
-        "filter": ["**/*"]
+        "from": "kokoro-bundle",
+        "to": "kokoro-bundle",
+        "filter": [
+          "**/*"
+        ]
       }
     ]
   },
   "dependencies": {
-    "electron": "^28.3.3",
+    "bytenode": "^1.5.7",
     "kokoro-js": "^1.2.1",
     "say": "^0.16.0"
   },
   "devDependencies": {
+    "electron": "^28.3.3",
     "electron-builder": "^24.13.3"
   }
 }
