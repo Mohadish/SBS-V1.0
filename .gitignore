@@ -28,8 +28,9 @@ Thumbs.db
 .parcel-cache/
 .vite/
 
-# Claude per-user settings (paths are local)
-.claude/settings.local.json
+# Claude Code per-machine state (worktrees, session metadata, settings).
+# Entire directory is local-only — never useful to other collaborators.
+.claude/
 
 # Kokoro model bundle — fetched on demand via `npm run fetch-models`.
 # 110 MB binary blob, would balloon git history. electron-builder picks
