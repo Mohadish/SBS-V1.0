@@ -34,6 +34,7 @@ import {
 import { generateId }           from '../core/schema.js';
 import { setStatus }            from './status.js';
 import { showContextMenu, hideContextMenu, showConfirmDialog } from './context-menu.js';
+import { showColorForNode }     from './sidebar-left.js';
 
 // ── State ────────────────────────────────────────────────────────────────────
 
@@ -532,6 +533,17 @@ function _buildContextMenuItems(node) {
     action: () => _fitToNodes(new Set(targetIds)),
   });
 
+  // ── Show color (single mesh / flatShape only) ──────────────────────────
+  // Switches to the Colors tab and expands the preset currently assigned
+  // to this node at the active step. Hidden on multi-selection because
+  // "which color?" is ambiguous when multiple meshes are selected.
+  if (count === 1 && (node.type === 'mesh' || node.type === 'flatShape')) {
+    items.push({
+      label: '🎨 Show color',
+      action: () => showColorForNode(node.id),
+    });
+  }
+
   items.push({ separator: true });
 
   // ── Navigate ────────────────────────────────────────────────────────────────
@@ -903,20 +915,41 @@ function _onCopyTree() {
   const step = (state.get('steps') || []).find(s => s.id === activeId);
   if (!step?.snapshot?.tree) { setStatus('Active step has no tree to copy.', 'warning'); return; }
 
-  // Capture per-folder baseLocal* fields from the LIVE tree. snapshot.transforms
-  // already carries per-step localOffset / pivot, but baseLocal* (project-
-  // global, written by Global Transform mode) live only on the live node —
-  // they'd be lost if we copied just the spec. folderBases lets the paste
-  // path restore them on the destination's live folder node.
+  // Capture per-folder baseLocal* fields from the LIVE tree.
+  // snapshot.transforms already carries per-step localOffset / pivot, but
+  // baseLocal* (project-global, written by Global Transform mode) live
+  // only on the live node — they'd be lost if we copied just the spec.
+  //
+  // SAFETY FILTER (added after the "object stuck out of home" bug):
+  // copying baseLocal* from a node that was in active global-edit mode,
+  // or whose values look garbage (NaN / Inf / wildly out-of-range), can
+  // poison the destination on paste. Reset transform only zeros the
+  // delta, leaving the corrupted home in place — the only escape was
+  // save+reload (which silently normalised baseLocal* to identity since
+  // they aren't persisted). We now skip suspicious values at capture so
+  // the destination folder lands at identity (safe default) rather than
+  // inheriting drift.
+  const _isSafeVec = (v, n) =>
+    Array.isArray(v) && v.length === n &&
+    v.every(x => Number.isFinite(x) && Math.abs(x) < 1e6);
+  const inActiveGlobalEdit = state.get('globalEditNodeId') || null;
+
   const folderBases = {};
   const nodeById = state.get('nodeById');
   if (nodeById) {
     for (const [id, n] of nodeById) {
       if (n?.type !== 'folder') continue;
+      // Skip if the source folder is currently in an unfinalised global
+      // edit — its baseLocal* could be half-written.
+      if (inActiveGlobalEdit && inActiveGlobalEdit === id) continue;
+      const p = n.baseLocalPosition;
+      const q = n.baseLocalQuaternion;
+      const s = n.baseLocalScale;
+      if (!_isSafeVec(p, 3) || !_isSafeVec(q, 4) || !_isSafeVec(s, 3)) continue;
       folderBases[id] = {
-        baseLocalPosition:   [...(n.baseLocalPosition   || [0, 0, 0])],
-        baseLocalQuaternion: [...(n.baseLocalQuaternion || [0, 0, 0, 1])],
-        baseLocalScale:      [...(n.baseLocalScale      || [1, 1, 1])],
+        baseLocalPosition:   [...p],
+        baseLocalQuaternion: [...q],
+        baseLocalScale:      [...s],
       };
     }
   }

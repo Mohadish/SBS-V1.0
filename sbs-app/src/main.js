@@ -47,7 +47,7 @@ import { showActivationDialog, showHardLockDialog, showGraceWarning } from './ui
 import { initHud }                from './ui/hud.js';
 import { initStepNav }            from './ui/step-nav.js';
 import { initStepsPanel }         from './ui/steps-panel.js';
-import { initSidebarLeft }        from './ui/sidebar-left.js';
+import { initSidebarLeft, showColorForNode } from './ui/sidebar-left.js';
 import { initContextMenu, hideContextMenu, showContextMenu } from './ui/context-menu.js';
 import { showMoveToFolderDialog } from './ui/tree.js';
 import { positionSafeFrameEl }    from './core/safe-frame.js';
@@ -178,6 +178,46 @@ initStatus();
 // dialog covers the viewport.
 _initLicenseGate();
 
+// ── Dialog hygiene (universal close → remove) ──────────────────────────────
+// 20+ <dialog> elements across the codebase are created with showModal()
+// and torn down by hand. About half the callsites only remove the dialog
+// on specific button click paths — Esc, programmatic .close(), and
+// backdrop clicks leak a closed-but-still-attached <dialog> in the DOM.
+// Closed dialogs are "inert" per spec but their presence can still
+// interfere with focus restoration in Electron, which surfaces as the
+// "voice-over / name inputs go unresponsive" bug.
+//
+// Rather than touch every callsite, patch HTMLDialogElement.prototype
+// once: every dialog's first showModal() / show() call also registers
+// a 'close' listener that auto-removes it from the DOM. Idempotent — a
+// flag on the instance prevents double-registration.
+//
+// The 5-second janitor in actions.js is still wired as a belt-and-
+// braces defense, but with this patch it should rarely have anything
+// to clean up.
+(function _installDialogHygiene() {
+  if (typeof HTMLDialogElement === 'undefined') return;
+  const _origShowModal = HTMLDialogElement.prototype.showModal;
+  const _origShow      = HTMLDialogElement.prototype.show;
+  const _ensureCleanup = (dlg) => {
+    if (dlg.__sbsHygiene) return;
+    dlg.__sbsHygiene = true;
+    dlg.addEventListener('close', () => {
+      // try is defensive — if some other path already removed the node,
+      // .remove() throws DOMException; we don't care.
+      try { if (dlg.isConnected) dlg.remove(); } catch {}
+    });
+  };
+  HTMLDialogElement.prototype.showModal = function (...args) {
+    _ensureCleanup(this);
+    return _origShowModal.apply(this, args);
+  };
+  HTMLDialogElement.prototype.show = function (...args) {
+    _ensureCleanup(this);
+    return _origShow.apply(this, args);
+  };
+})();
+
 // ── Global error / unhandled-rejection handlers ────────────────────────────
 // Production runs without DevTools open, so silent async failures (failed
 // project saves, narration synth errors, missing-asset retries, etc.) are
@@ -258,6 +298,18 @@ window.sbsNative?.onMenu?.('menu:openSettings', () => openSettingsModal());
 // No takeover, no tab — just a window. Cascade-through-snapshots
 // architecture (see ui/model-source-dialog.js + actions.js).
 window.sbsNative?.onMenu?.('menu:modelSourceTransform', () => openModelSourceDialog());
+
+// Edit → "Recover stuck inputs" — same effect as Ctrl+Alt+U. Wraps the
+// console diagnostic so non-technical users don't need DevTools when
+// text fields go unresponsive. Status message confirms the action.
+window.sbsNative?.onMenu?.('menu:recoverStuckInputs', () => {
+  try {
+    window.sbsDiag?.unstuckInputs?.();
+    setStatus('Recovered stuck inputs — try typing again.', 'info', 4000);
+  } catch (err) {
+    console.error('[recover] failed:', err);
+  }
+});
 
 // Background narration pre-cache:
 //   • on project load — synthesize every step's saved text once, in the
@@ -1448,6 +1500,15 @@ canvas.addEventListener('contextmenu', e => {
       label: '🎯 Fit to selection',
       action: () => _fitToSelection(multiIds),
     });
+    // Show color — single mesh/flatShape selection only. Ambiguous which
+    // color to show when multiple objects are selected, so the option
+    // only appears when exactly one bindable node is selected.
+    if (multiIds.size === 1 && (node?.type === 'mesh' || node?.type === 'flatShape')) {
+      items.push({
+        label: '🎨 Show color',
+        action: () => showColorForNode(node.id),
+      });
+    }
     items.push({ label: '─', disabled: true });
   }
   // Two flavours of "Update camera" — free saves to this step's snapshot
@@ -1673,6 +1734,23 @@ if (typeof ResizeObserver !== 'undefined' && _viewportSurfaceEl) {
 //  7. KEYBOARD SHORTCUTS
 // ══════════════════════════════════════════════════════════════════════════════
 
+// ── EMERGENCY UNSTICK ─────────────────────────────────────────────────────
+// Ctrl+Alt+U from anywhere (including with focus stuck inside a hidden
+// dialog) clears stale <dialog> elements, blurs detached focus, and
+// resets stuck drag/pointer-event state. Capture phase so it runs even
+// if another listener tries to swallow events. See unstuckInputs() in
+// systems/actions.js for what it actually does.
+window.addEventListener('keydown', (e) => {
+  if (e.ctrlKey && e.altKey && (e.key === 'u' || e.key === 'U')) {
+    e.preventDefault();
+    e.stopPropagation();
+    try {
+      window.sbsDiag?.unstuckInputs?.();
+      setStatus('Unstuck inputs — try typing again.', 'info', 4000);
+    } catch {}
+  }
+}, { capture: true });
+
 window.addEventListener('keydown', async e => {
   if (_isInputFocused()) return;
 
@@ -1862,6 +1940,11 @@ window.addEventListener('keydown', async e => {
 function _isInputFocused() {
   const el = document.activeElement;
   if (!el) return false;
+  // Reject elements detached from the live document (rare but happens
+  // when a dialog closes and the user-agent restores focus to a stale
+  // node). Treating these as "input focused" would mask legitimate
+  // keyboard shortcuts.
+  if (!document.body.contains(el)) return false;
   const tag = el.tagName.toLowerCase();
   return tag === 'input' || tag === 'textarea' || tag === 'select' || el.isContentEditable;
 }

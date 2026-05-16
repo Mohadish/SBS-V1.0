@@ -47,6 +47,7 @@ contextBridge.exposeInMainWorld('sbsNative', {
       'menu:fitAll',     'menu:showAll',
       'menu:openSettings',
       'menu:modelSourceTransform',
+      'menu:recoverStuckInputs',
     ];
     if (!allowed.includes(channel)) return;
     ipcRenderer.on(channel, (_e, ...args) => cb(...args));

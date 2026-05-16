@@ -1140,6 +1140,359 @@ export function commitTransformEdit(nodeId) {
 }
 
 /**
+ * Walk the tree and report any folder/model nodes whose baseLocal* fields
+ * are non-identity. flatShape is INTENTIONALLY skipped — its baseLocal*
+ * stores the placement world-pose (set at insertion time), so non-identity
+ * is expected there.
+ *
+ * Non-identity baseLocal* on a folder/model usually means one of:
+ *   - Global Transform mode was used intentionally (legitimate)
+ *   - A stale paste poisoned the home anchor (bug — the "object stuck out
+ *     of home" failure mode the user hit before this verifier shipped)
+ *
+ * The verifier doesn't auto-repair — auto-clearing would destroy legitimate
+ * Global Transform work. It just logs + returns a list. Call from console
+ * via `window.sbsDiag?.verifyHome()` for an ad-hoc audit. Also runs
+ * automatically after project load and after paste (results only logged
+ * to console, no toast — keeps the UI quiet unless the user investigates).
+ *
+ * Returns: `[{ id, name, type, baseLocalPosition, baseLocalQuaternion }, …]`
+ */
+export function verifyHomePositions() {
+  const root = state.get('treeData');
+  if (!root) return [];
+
+  const _isIdentity3 = v =>
+    !Array.isArray(v) || (Math.abs(v[0] ?? 0) + Math.abs(v[1] ?? 0) + Math.abs(v[2] ?? 0) < 1e-6);
+  const _isIdentityQ = v =>
+    !Array.isArray(v) || (
+      Math.abs(v[0] ?? 0) + Math.abs(v[1] ?? 0) + Math.abs(v[2] ?? 0) < 1e-6
+      && Math.abs((v[3] ?? 1) - 1) < 1e-6
+    );
+
+  const drift = [];
+  const stack = [root];
+  while (stack.length) {
+    const n = stack.pop();
+    if (n.type === 'folder' || n.type === 'model') {
+      const p = n.baseLocalPosition;
+      const q = n.baseLocalQuaternion;
+      if (!_isIdentity3(p) || !_isIdentityQ(q)) {
+        drift.push({
+          id: n.id,
+          name: n.name || '(unnamed)',
+          type: n.type,
+          baseLocalPosition:   [...(p || [0,0,0])],
+          baseLocalQuaternion: [...(q || [0,0,0,1])],
+        });
+      }
+    }
+    if (n.children) for (const c of n.children) stack.push(c);
+  }
+
+  if (drift.length === 0) {
+    console.log('[home-verifier] OK — every folder/model has an identity home anchor.');
+  } else {
+    console.warn(`[home-verifier] ${drift.length} folder/model node(s) with non-identity baseLocal*. ` +
+                 'If you used Global Transform mode this is expected. If not — paste/copy may have ' +
+                 'drifted home anchors. Recovery: select the node + run actions.resetTransformDeep(<id>) ' +
+                 'or use the tree right-click "Deep reset transform" menu (when added). Details:', drift);
+  }
+  return drift;
+}
+
+/**
+ * Cable-binding health audit. Walks every cable's anchored nodes and
+ * reports any that can't reach a live mesh via either the data-tree
+ * `nodeById` (looking at `node.object3d`) OR `steps.object3dById`.
+ * Those are the cables stuck on `cachedWorldPos` — the "anchored
+ * visually but won't follow the object" bug.
+ *
+ * Also reports orphan entries in `object3dById` (nodeIds that aren't in
+ * nodeById) — the data-tree alteration scenario where the two maps
+ * desync.
+ *
+ * Usage: `window.sbsDiag.cablesAudit()` — returns a report object,
+ * logs a summary to console.
+ */
+export function cablesAudit() {
+  const nodeById     = state.get('nodeById') || new Map();
+  const object3dById = steps.object3dById || new Map();
+  const cables       = state.get('cables') || [];
+
+  const orphanCableAnchors = [];
+  for (const c of cables) {
+    for (const n of (c.nodes || [])) {
+      if (n.anchorType !== 'mesh' || !n.nodeId) continue;
+      const sceneNode = nodeById.get(n.nodeId);
+      const viaNodeBy   = !!sceneNode?.object3d;
+      const viaObjBy    = !!object3dById.get?.(n.nodeId);
+      if (!viaNodeBy && !viaObjBy) {
+        orphanCableAnchors.push({
+          cableId:   c.id,
+          cableName: c.name || '(unnamed)',
+          nodeId:    n.id,
+          anchorNodeId: n.nodeId,
+          cachedWorldPos: n.cachedWorldPos,
+        });
+      }
+    }
+  }
+
+  // Map-desync: object3d on nodeById's node doesn't match object3dById's entry
+  const desyncedNodes = [];
+  for (const [id, node] of nodeById) {
+    if (!node?.object3d) continue;
+    const o = object3dById.get?.(id);
+    if (o && o !== node.object3d) {
+      desyncedNodes.push({ id, name: node.name || '(unnamed)', type: node.type });
+    }
+  }
+
+  // Orphan entries in object3dById that don't exist in nodeById
+  const orphanObj3dEntries = [];
+  for (const [id] of object3dById) {
+    if (id === 'scene_root') continue;
+    if (!nodeById.has(id)) {
+      orphanObj3dEntries.push(id);
+    }
+  }
+
+  const report = {
+    orphanCableAnchors,
+    desyncedNodes,
+    orphanObj3dEntries,
+    summary: {
+      orphanCables: orphanCableAnchors.length,
+      desyncedNodes: desyncedNodes.length,
+      orphanObj3dEntries: orphanObj3dEntries.length,
+    },
+  };
+
+  if (orphanCableAnchors.length === 0 && desyncedNodes.length === 0 && orphanObj3dEntries.length === 0) {
+    console.log('[cables-audit] OK — every cable anchor resolves cleanly.');
+  } else {
+    console.warn('[cables-audit] Issues detected:', report);
+  }
+  return report;
+}
+
+/**
+ * Visibility-state audit + repair.
+ *
+ * Symptom this catches: a mesh has `obj.visible === true` AND its
+ * effective tree visibility says "should be visible", but its
+ * material.opacity is pinned at 0 — usually because
+ * `_pendingShowingHidden` retains a stale entry from a cancelled /
+ * never-completed visibility phase. The user sees the object vanish
+ * from the viewport while its outline still renders.
+ *
+ * Returns the list of stuck nodeIds. If you pass `{ repair: true }`
+ * the function also resets material.opacity (and back-pass) to 1.0
+ * and drains the pending set for those nodes.
+ *
+ * Usage:
+ *   window.sbsDiag.visibilityAudit()              // report-only
+ *   window.sbsDiag.visibilityAudit({ repair:true })// fix in place
+ */
+export function visibilityAudit(opts = {}) {
+  const repair = !!opts.repair;
+  if (!materials) return { stuck: [] };
+  const pending = materials._pendingShowingHidden;
+  const stuck = [];
+  if (pending && pending.size) {
+    const outlineSettings = state.get('geometryOutline');
+    for (const nodeId of [...pending]) {
+      const obj = steps.object3dById?.get(nodeId);
+      if (obj && obj.visible !== false) {
+        stuck.push({ nodeId, name: state.get('nodeById')?.get(nodeId)?.name || '(unknown)' });
+        if (repair) {
+          try { materials._setNodeTransitionOpacity(nodeId, 1.0, outlineSettings, 0); } catch {}
+          pending.delete(nodeId);
+        }
+      }
+    }
+  }
+
+  if (stuck.length === 0) {
+    console.log('[visibility-audit] OK — no stuck-hidden meshes detected.');
+  } else if (repair) {
+    console.log(`[visibility-audit] Repaired ${stuck.length} stuck mesh(es):`, stuck);
+  } else {
+    console.warn(`[visibility-audit] ${stuck.length} stuck mesh(es). Run window.sbsDiag.visibilityAudit({ repair: true }) to fix:`, stuck);
+  }
+  return { stuck, repaired: repair ? stuck.length : 0 };
+}
+
+/**
+ * Unstick the renderer's text-input pathway.
+ *
+ * The "voice-over / name inputs go unresponsive" symptom usually comes
+ * from one of these:
+ *   • A <dialog> was closed but not removed from the DOM. document
+ *     .activeElement may still point inside it.
+ *   • A capture-phase keydown listener leaked from a panel that was
+ *     hidden without its _cleanup running.
+ *   • A drag operation didn't fire dragend (e.g. dropped outside the
+ *     viewport) and the dragged element retains opacity:0.4.
+ *   • body / html got pointer-events:none from a half-finished animation
+ *     and never had it cleared.
+ *
+ * This function clears all of those defensively. Safe to call any time;
+ * idempotent. Logs every action it took for diagnostic feedback.
+ *
+ * Usage: `window.sbsDiag.unstuckInputs()` — manual recovery.
+ * Also runs automatically every few seconds as a janitor.
+ */
+export function unstuckInputs() {
+  const actions = [];
+
+  // 1. Remove every <dialog> that's NOT currently open. A closed-but-
+  // still-attached dialog is "inert" per the HTML spec, but its presence
+  // can interfere with focus restoration and lingering event listeners
+  // that were registered on `dlg` directly.
+  document.querySelectorAll('dialog').forEach(d => {
+    if (!d.open) {
+      try { d.remove(); actions.push(`removed-stale-dialog: ${d.className || d.tagName}`); }
+      catch {}
+    }
+  });
+
+  // 2. If the active element is inside an off-screen / display:none
+  // subtree, blur it so the next click on a real input lands cleanly.
+  const ae = document.activeElement;
+  if (ae && ae !== document.body && ae !== document.documentElement) {
+    // offsetParent === null means the element (or an ancestor) has
+    // display:none. Exceptions: <body> and fixed-positioned elements.
+    if (ae.offsetParent === null && getComputedStyle(ae).position !== 'fixed') {
+      try { ae.blur(); actions.push(`blurred-hidden-focus: ${ae.tagName}`); } catch {}
+    }
+  }
+
+  // 3. Reset pointer-events:none on body / html if something forgot to.
+  for (const root of [document.body, document.documentElement]) {
+    if (root.style.pointerEvents === 'none') {
+      root.style.pointerEvents = '';
+      actions.push(`cleared-pointer-events: ${root.tagName}`);
+    }
+  }
+
+  // 4. Reset opacity:0.4 on draggable elements (our drag-source style)
+  // — if the user dragged a chip and dropped outside any drop zone,
+  // dragend should have fired but Electron's drag implementation
+  // sometimes misses it on the renderer side.
+  document.querySelectorAll('[draggable="true"]').forEach(el => {
+    if (el.style.opacity === '0.4' || el.style.opacity === '0.5') {
+      el.style.opacity = '';
+      actions.push(`reset-drag-opacity: ${el.className || el.tagName}`);
+    }
+  });
+
+  if (actions.length === 0) {
+    console.log('[unstuck-inputs] OK — nothing obviously blocking.');
+  } else {
+    console.log('[unstuck-inputs] Cleared:', actions);
+  }
+  return actions;
+}
+
+/**
+ * Quiet background janitor. Removes closed-but-still-attached <dialog>
+ * elements every few seconds. Pure DOM hygiene — never logs, never
+ * touches anything that's actually in use (only acts on dialogs whose
+ * .open property is false, i.e. already programmatically closed).
+ *
+ * Called once at module load from the IIFE below.
+ */
+function _startInputUnstickJanitor() {
+  if (typeof window === 'undefined') return;
+  if (window.__sbsInputJanitor) return;        // idempotent
+  window.__sbsInputJanitor = setInterval(() => {
+    document.querySelectorAll('dialog').forEach(d => {
+      if (!d.open) {
+        try { d.remove(); } catch {}
+      }
+    });
+  }, 5000);
+}
+
+// Expose for ad-hoc console use during QA.
+try {
+  if (typeof window !== 'undefined') {
+    window.sbsDiag = window.sbsDiag || {};
+    window.sbsDiag.verifyHome       = verifyHomePositions;
+    window.sbsDiag.resetDeep        = (id) => resetTransformDeep(id);
+    window.sbsDiag.cablesAudit      = cablesAudit;
+    window.sbsDiag.visibilityAudit  = visibilityAudit;
+    window.sbsDiag.visibilityRepair = () => visibilityAudit({ repair: true });
+    window.sbsDiag.unstuckInputs    = unstuckInputs;
+    _startInputUnstickJanitor();
+  }
+} catch {}
+
+/**
+ * Deep reset — zeros BOTH the per-step delta (localOffset / localQuaternion)
+ * AND the project-global home anchor (baseLocalPosition / baseLocalQuaternion /
+ * baseLocalScale). Use this as a recovery hatch when a node is "stuck out of
+ * home" and a regular Reset doesn't help — meaning the home anchor itself
+ * has drifted (typically via Global Transform mode or a stale paste).
+ *
+ * Side effects:
+ *   - For folders / models: returns to true identity. Usually what you want
+ *     when home is corrupted.
+ *   - For flatShape: baseLocalPosition IS the placement (the world spot the
+ *     plane was dropped onto). This will move the shape to world origin. The
+ *     caller is responsible for confirming with the user before invoking on
+ *     a flatShape.
+ *
+ * Undoable.
+ */
+export function resetTransformDeep(nodeId) {
+  const nodeById = state.get('nodeById');
+  const node = nodeById?.get(nodeId);
+  if (!node) return;
+
+  const fromDelta = captureTransformSnapshot(node);
+  const fromBase  = {
+    baseLocalPosition:   [...(node.baseLocalPosition   || [0, 0, 0])],
+    baseLocalQuaternion: [...(node.baseLocalQuaternion || [0, 0, 0, 1])],
+    baseLocalScale:      [...(node.baseLocalScale      || [1, 1, 1])],
+  };
+
+  const apply = () => {
+    const n = state.get('nodeById')?.get(nodeId);
+    if (!n) return;
+    applyTransformSnapshot(n, {
+      localOffset: [0, 0, 0], localQuaternion: [0, 0, 0, 1],
+      moveEnabled: true, rotateEnabled: true,
+    });
+    n.baseLocalPosition   = [0, 0, 0];
+    n.baseLocalQuaternion = [0, 0, 0, 1];
+    n.baseLocalScale      = [1, 1, 1];
+    const o = steps.object3dById?.get(nodeId);
+    if (o) applyNodeTransformToObject3D(n, o);
+    steps.scheduleTransformSync();
+  };
+  apply();
+
+  undoManager.push(
+    'Deep reset transform',
+    () => {
+      const n = state.get('nodeById')?.get(nodeId);
+      if (!n) return;
+      applyTransformSnapshot(n, fromDelta);
+      n.baseLocalPosition   = [...fromBase.baseLocalPosition];
+      n.baseLocalQuaternion = [...fromBase.baseLocalQuaternion];
+      n.baseLocalScale      = [...fromBase.baseLocalScale];
+      const o = steps.object3dById?.get(nodeId);
+      if (o) applyNodeTransformToObject3D(n, o);
+      steps.scheduleTransformSync();
+    },
+    apply,
+  );
+}
+
+/**
  * Reset a node's transform to identity (undoable).
  */
 export function resetTransform(nodeId) {
@@ -2083,18 +2436,30 @@ export function addCableAnchoredPoint(cableId, hit) {
   return node.id;
 }
 
-/** Helper: walk up the THREE object's parents looking for a tagged tree id. */
+/** Helper: walk up the THREE object's parents looking for a tagged tree id.
+ *
+ * Authoritative source: state.nodeById (the data tree). A nodeId returned
+ * here is GUARANTEED to resolve via nodeById in subsequent lookups
+ * (resolveNodeWorldPosition, cable updates, etc.).
+ *
+ * Previous version walked steps.object3dById which can drift out of sync
+ * with nodeById after tree alterations (relink, move, model-source-bake,
+ * delete-and-re-add). When it did, this function would return a nodeId
+ * that nodeById couldn't find, and the cable resolver would fall through
+ * to its `cachedWorldPos` cache forever — the "cable point won't follow
+ * the object even on a brand-new cable" bug the user hit.
+ *
+ * Walks the THREE parent chain so a mesh inside a model group resolves
+ * to the model's nodeId (registered) rather than the mesh's (typically
+ * not registered).
+ */
 function _findTreeNodeIdForObject(obj) {
-  // The tree's object3dById map is the inverse of what we need; the
-  // simplest path is to read state.nodeById and walk obj.parent looking
-  // for a name match against a tree node's stored object3d.
-  const o3dMap = steps.object3dById;
-  if (!o3dMap) return null;
-  // Build a quick reverse map: object3d → nodeId.
+  const nodeById = state.get('nodeById');
+  if (!nodeById) return null;
   let cur = obj;
   while (cur) {
-    for (const [nodeId, mapped] of o3dMap.entries()) {
-      if (mapped === cur) return nodeId;
+    for (const [nodeId, node] of nodeById) {
+      if (node?.object3d === cur) return nodeId;
     }
     cur = cur.parent;
   }
@@ -7193,6 +7558,12 @@ export function pasteTreeApply(stepId, sourceSnapshot, option) {
       state.markDirty();
     },
   );
+
+  // Audit the result — paste is the main vector for home-anchor drift,
+  // and the safety filter at copy time is best-effort. The verifier
+  // logs to console; it doesn't toast unless drift is actually found.
+  try { verifyHomePositions(); } catch (err) { console.warn('[home-verifier] post-paste check failed:', err); }
+
   return true;
 }
 

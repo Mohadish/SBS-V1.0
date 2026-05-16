@@ -26,6 +26,8 @@ import {
   migrateSection,
   generateId,
   createCameraBinding,
+  createAnimationPreset,
+  DEFAULT_ANIMATION_PRESET_STRING,
 }                                     from '../core/schema.js';
 import { materials }                  from '../systems/materials.js';
 import { steps   }                  from '../systems/steps.js';
@@ -37,13 +39,62 @@ import * as narrationCache           from '../systems/narration-cache.js';
  * existed pick them up automatically. Idempotent — re-running on a
  * preset that already mentions a slot leaves it untouched.
  */
+// Visual editor invariant (see ui/animation-tab.js): every preset must
+// expose ALL action capsules — the user can only REDISTRIBUTE them
+// across phases, never add/remove. When the engine grows a new channel,
+// this migration back-fills it into the FIRST phase of every existing
+// preset so the visual editor never has to invent capsules out of thin
+// air. Additive only — original phasing is preserved.
+//
+// `overlay` / `overlays` are treated as ONE conceptual channel for the
+// purpose of "is this capsule present" — either string token counts.
+// The visual editor exposes a per-capsule mode toggle.
+const _CHANNELS_REQUIRED = [
+  'camera', 'visibility', 'obj', 'color',
+  'cable', 'narration', 'notes', 'shape',
+];
 function _migrateAnimationPresets(items) {
+  // Bootstrap: new project (or loaded project with empty presets array)
+  // gets a "Default" preset auto-created, set as the project default.
+  // Mirrors the way every project has at least one chapter / one step.
+  if (!Array.isArray(items) || items.length === 0) {
+    return [createAnimationPreset({
+      name:      'Default',
+      animation: DEFAULT_ANIMATION_PRESET_STRING,
+      isDefault: true,
+    })];
+  }
   return items.map(p => {
     if (!p?.animation || typeof p.animation !== 'string') return p;
-    let str = p.animation;
-    if (!/\bcable\b/.test(str))   str = `${str.trim().replace(/,?\s*$/, '')}, cable(500)`;
-    if (!/\boverlay\b/.test(str)) str = `${str.trim().replace(/,?\s*$/, '')}, overlay(500)`;
-    return str === p.animation ? p : { ...p, animation: str };
+    let str = p.animation.trim();
+    const hasOverlayCapsule = /\boverlay(s)?\b/.test(str);
+
+    // Find missing required channels.
+    const missing = _CHANNELS_REQUIRED.filter(ch => {
+      const re = new RegExp(`\\b${ch}\\b`);
+      return !re.test(str);
+    });
+    if (!hasOverlayCapsule) missing.push('overlays');   // default to sustained variant
+
+    if (missing.length === 0) return p;
+
+    // Inject the missing channels into the FIRST phase. Find the first
+    // type-group in the string (everything up to the first `(durMs)`)
+    // and append the missing tokens to it. The duration is preserved.
+    // e.g. "camera(AL1), obj(500)" + missing [color, visibility] →
+    //      "camera+color+visibility(AL1), obj(500)"
+    const m = str.match(/^([a-zA-Z+]+)\(/);
+    if (m) {
+      const firstTypes = m[1];
+      const newTypes   = firstTypes + '+' + missing.join('+');
+      str = str.replace(/^[a-zA-Z+]+\(/, newTypes + '(');
+    } else {
+      // No parseable phase — fall back to wholesale replacement with the
+      // canonical default. Caller's data was broken; this restores it.
+      // (Rare: would only hit if someone hand-edited the file to garbage.)
+      str = 'camera+visibility+obj+color+overlays+cable+narration+notes+shape(AL1)';
+    }
+    return { ...p, animation: str };
   });
 }
 
@@ -443,7 +494,7 @@ function _migrateLegacyPoc(raw) {
     width:           cs.exportWidth           ?? 1920,
     height:          cs.exportHeight          ?? 1080,
     fps:             cs.exportFps             ?? 30,
-    stepHoldMs:      cs.exportStepHoldDuration ?? 800,
+    stepHoldMs:      cs.exportStepHoldDuration ?? 100,
     // Drop legacy voice ids that don't belong to a current backend (os:/kokoro:).
     narrationVoice:  (/^(os|kokoro):/.test(cs.exportNarrationVoice || '') ? cs.exportNarrationVoice : ''),
     narrationSpeed:  cs.exportNarrationSpeed  ?? 1.0,

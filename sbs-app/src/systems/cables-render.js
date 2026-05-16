@@ -34,6 +34,7 @@ import sceneCore from '../core/scene.js';
 import * as clock from '../core/clock.js';
 import { resolveNodeWorldPosition, listCables } from './cables.js';
 import { socketActualSize, cableEffectiveRadius } from './actions.js';
+import steps from './steps.js';   // for object3dById fallback in anchor resolution
 
 // ─── Module state ────────────────────────────────────────────────────────
 
@@ -345,7 +346,14 @@ function _rebuildCable(cable, entry) {
   entry.segments = [];
   entry.sockets  = [];
 
-  const ctx = { makeVec3: (x, y, z) => new THREE.Vector3(x, y, z) };
+  // ctx.object3dById = fallback lookup map for the cable resolver.
+  // When node.object3d on a data-tree node is stale (e.g. after a relink
+  // or model-source-bake desync), the resolver falls back to this map
+  // before giving up to the cached worldPos.
+  const ctx = {
+    makeVec3:     (x, y, z) => new THREE.Vector3(x, y, z),
+    object3dById: steps.object3dById,
+  };
   const globalScale = state.get('cableGlobalScale') ?? 1.0;
   // Phase G: effective radius = cableGlobalRadius × per-cable size %.
   const radius      = cableEffectiveRadius(cable) * globalScale;
@@ -605,7 +613,12 @@ function _tickAnchorRefresh() {
   if (!_cableRoot || _cableSubgroups.size === 0) return;
   const cables = listCables();
   if (!cables.length) return;
-  const ctx = { makeVec3: (x, y, z) => new THREE.Vector3(x, y, z) };
+  // ctx.object3dById = fallback for anchor resolution when node.object3d
+  // is stale; see cables.js resolveNodeWorldPosition for the failover.
+  const ctx = {
+    makeVec3:     (x, y, z) => new THREE.Vector3(x, y, z),
+    object3dById: steps.object3dById,
+  };
   const globalScale = state.get('cableGlobalScale') ?? 1.0;
 
   for (const cable of cables) {

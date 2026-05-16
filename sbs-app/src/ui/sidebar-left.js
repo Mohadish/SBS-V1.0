@@ -19,7 +19,10 @@ import {
 }                          from '../io/project.js';
 import { initTree, renderTree, expandPathToNode, collapseAll } from './tree.js';
 import { setStatus }       from './status.js';
-import { createCameraView, generateId, APP_VERSION, APP_RELEASED } from '../core/schema.js';
+import {
+  createCameraView, generateId, APP_VERSION, APP_RELEASED,
+  createAnimationPreset, DEFAULT_ANIMATION_PRESET_STRING,
+} from '../core/schema.js';
 import { buildNodeMap }    from '../core/nodes.js';
 import { applyNodeSourceTransformToObject3D } from '../core/transforms.js';
 import { showContextMenu } from './context-menu.js';
@@ -188,6 +191,32 @@ function _switchTab(tab) {
   _container.querySelectorAll('.tabPanel').forEach(p =>
     p.classList.toggle('active', p.dataset.tab === tab));
   _renderActiveTab();
+}
+
+/**
+ * Switch to the Colors tab and expand the preset currently assigned to
+ * a given mesh / flatShape node at the active step. Called from the
+ * tree's right-click menu ("Show color").
+ *
+ * Resolution chain (matches materials.applyAll):
+ *   meshColorAssignments[id]  →  meshDefaultColors[id]  →  null
+ *
+ * If a preset is found, it gets expanded in the colors list so the
+ * user lands directly on the relevant color card. If nothing is
+ * assigned (e.g. a freshly-imported model with no presets yet), the
+ * tab still switches and the user can browse presets manually.
+ */
+export function showColorForNode(nodeId) {
+  if (!nodeId) return;
+  const activeId = materials.meshColorAssignments?.[nodeId]
+                ?? materials.meshDefaultColors?.[nodeId]
+                ?? null;
+  if (activeId) _expandedPresetId = activeId;
+  if (_activeTab === 'colors') {
+    _queueColorsRender();   // tab already open — force re-render to apply expand
+  } else {
+    _switchTab('colors');
+  }
 }
 
 function _panel(tab) { return document.getElementById(`tab-panel-${tab}`); }
@@ -405,12 +434,23 @@ function _onNewProject() {
     ? { ...us.scene.defaultBackgroundGradient }
     : { enabled:false, color1:'#0f172a', color2:'#1e293b', angleDeg:180 };
 
+  // Bootstrap a "Default" animation preset for every new project — the
+  // visual capsule editor in the Animation tab expects every project to
+  // have at least one preset with all action channels present. See
+  // _migrateAnimationPresets in io/project.js for the load-path twin.
+  const defaultAnim = createAnimationPreset({
+    name:      'Default',
+    animation: DEFAULT_ANIMATION_PRESET_STRING,
+    isDefault: true,
+  });
+
   state.setState({
     projectPath: null, projectName: 'Untitled', projectDirty: false,
     assets: [], treeData: null, nodeById: new Map(),
     steps: [], chapters: [], activeStepId: null,
     cameraViews: [], colorPresets: [], selectedId: null,
     multiSelectedIds: new Set(),
+    animationPresets: [defaultAnim],
     backgroundColor:    bgColor,
     backgroundGradient: bgGrad,
   });
@@ -932,6 +972,14 @@ async function _relinkAsset(file, assetEntry) {
 
   // Single reintegration contract: step 0 → active step → placeholder sweep.
   steps.reintegrateFromStep0(activeStep);
+
+  // Audit folder/model home anchors once the tree is fully rebuilt.
+  // Logs to console only — silent if everything is identity (the common
+  // case). Loud (orange) if Global Transform mode left non-identity
+  // values behind, so the user knows where to look if "Reset transform"
+  // doesn't bring something home. See actions.verifyHomePositions().
+  try { actions.verifyHomePositions?.(); }
+  catch (err) { console.warn('[home-verifier] post-load check failed:', err); }
 }
 
 function _onFitAll() {
@@ -2799,8 +2847,8 @@ function _renderExportTab() {
           <label class="colorlab">Frame rate (fps)
             <input type="number" id="exp-fps" value="${exp.fps??30}" min="1" max="120" step="1" style="margin-top:6px;" />
           </label>
-          <label class="colorlab">Step hold (ms)
-            <input type="number" id="exp-hold" value="${exp.stepHoldMs??800}" min="0" max="10000" step="100" style="margin-top:6px;" />
+          <label class="colorlab" title="Extra dwell appended to each step in the exported video (ms). Pause WITHIN a transition is authored inside animation presets via the pause channel.">Step hold (ms)
+            <input type="number" id="exp-hold" value="${exp.stepHoldMs??100}" min="0" max="10000" step="100" style="margin-top:6px;" />
           </label>
         </div>
 

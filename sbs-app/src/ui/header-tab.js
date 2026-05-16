@@ -379,12 +379,21 @@ async function _createImage() {
   const dataUrl = await _pickImage();
   if (!dataUrl) return;
   const dims = await _imageDims(dataUrl);
+  // Preserve the image's natural aspect ratio. Previously height was
+  // clamped at 64px independent of width, which squashed any image
+  // whose natural aspect ratio implied a taller box. Now we cap WIDTH
+  // at MAX_W and let height follow from the natural ratio.
+  const MAX_W = 480;
+  const w     = Math.max(1, Math.min(dims.width || MAX_W, MAX_W));
+  const ratio = (dims.width > 0 && dims.height > 0)
+    ? dims.height / dims.width
+    : 1;
+  const h = Math.max(1, Math.round(w * ratio));
   const item = addHeaderItem('image', {
     dataUrl,
     naturalW: dims.width,
     naturalH: dims.height,
-    w: Math.min(dims.width, 480),
-    h: Math.min(dims.height, 64),
+    w, h,
   });
   _activeItemId = item.id;
   selectHeader(item.id);

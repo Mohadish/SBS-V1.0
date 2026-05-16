@@ -314,7 +314,7 @@ function createInitialState() {
       width:              1920,
       height:             1080,
       fps:                30,
-      stepHoldMs:         800,
+      stepHoldMs:         100,
       startFromActive:    true,
       showSafeFrame:      true,
       offlineRender:      false,

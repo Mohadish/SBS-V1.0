@@ -199,11 +199,23 @@ function _renderTick() {
           y: a.fromFP.y + (a.toFP.y - a.fromFP.y) * t,
         };
       }
+      // Fade uses its own clock when the `notes(N)` animation slot is
+      // active. See _scheduleNoteFades in steps.js for who sets fade*.
+      const fadeStart = a.fadeStartMs    ?? a.startMs;
+      const fadeDur   = a.fadeDurationMs ?? a.durationMs;
+      const fadeEase  = a.fadeEaseFn     ?? a.easeFn;
+      const fadeRaw   = (nowMs - fadeStart) / Math.max(1, fadeDur);
+      const fadeT     = fadeRaw >= 1 ? 1 : (fadeRaw <= 0 ? 0 : (fadeEase ? fadeEase(fadeRaw) : fadeRaw));
       const fromOpacity = a.fromVisible ? 1 : 0;
       const toOpacity   = a.toVisible   ? 1 : 0;
-      effOpacity = fromOpacity + (toOpacity - fromOpacity) * t;
-      if (raw >= 1) {
-        // Snap final state into the note + clear the transition.
+      effOpacity = fromOpacity + (toOpacity - fromOpacity) * fadeT;
+      // Clear the transition only when BOTH move and fade have completed.
+      // Otherwise a fast move + slow fade would snap mid-fade and pop.
+      // Number.isFinite guards the deferred-fade sentinel (fadeStartMs=
+      // Infinity) — fade hasn't been scheduled yet, so keep _anim alive
+      // until _scheduleNoteFades stamps real values from the notes-phase
+      // handler in steps.js.
+      if (raw >= 1 && fadeRaw >= 1 && Number.isFinite(fadeRaw)) {
         note.panelOffset = { x: a.toOffset.x, y: a.toOffset.y };
         if (a.toFP) note.framePosition = { x: a.toFP.x, y: a.toFP.y };
         delete note._anim;
@@ -828,9 +840,20 @@ export function rasterizeNotesLayer({ width, height }) {
           y: a.fromFP.y + (a.toFP.y - a.fromFP.y) * t,
         };
       }
+      // Fade uses its own clock when the animation string carries a
+      // `notes(N)` slot — _scheduleNoteFades stamps fadeStartMs /
+      // fadeDurationMs / fadeEaseFn onto the same _anim record. When
+      // absent (no notes slot in the string), fade falls back to the
+      // move timing — legacy behaviour where fade and move share a
+      // window.
+      const fadeStart = a.fadeStartMs    ?? a.startMs;
+      const fadeDur   = a.fadeDurationMs ?? a.durationMs;
+      const fadeEase  = a.fadeEaseFn     ?? a.easeFn;
+      const fadeRaw   = (nowMs - fadeStart) / Math.max(1, fadeDur);
+      const fadeT     = fadeRaw >= 1 ? 1 : (fadeRaw <= 0 ? 0 : (fadeEase ? fadeEase(fadeRaw) : fadeRaw));
       const fromOpacity = a.fromVisible ? 1 : 0;
       const toOpacity   = a.toVisible   ? 1 : 0;
-      effOpacity = fromOpacity + (toOpacity - fromOpacity) * t;
+      effOpacity = fromOpacity + (toOpacity - fromOpacity) * fadeT;
     }
     if (effOpacity <= 0.001) continue;   // fully faded — skip draw entirely
 

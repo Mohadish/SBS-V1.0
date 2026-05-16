@@ -16,6 +16,7 @@ import { exportTimelineVideo, exportTimelineSbsProc, downloadBlob } from '../sys
 import { listVoices as ttsListVoices, synthesize as ttsSynthesize } from '../systems/tts.js';
 import * as userSettings    from '../core/user-settings.js';
 import * as narrationCache  from '../systems/narration-cache.js';
+import { parseAnimation, resolveAnimationString } from '../systems/animation.js';
 
 let _container    = null;
 let _dragId       = null;          // id of step being dragged (single-drag fallback)
@@ -78,10 +79,10 @@ export function initStepsPanel() {
       <button class="btn" id="btn-export-sbsproc" style="margin-top:6px;width:100%;" title="Export a single self-contained .sbsproc file (MP4 + step manifest) for the SBS viewer.">📦 Export .sbsproc</button>
       <div class="card" style="margin-top:8px;">
         <div class="grid2">
-          <label class="colorlab">Camera (ms)
+          <label class="colorlab" title="Animation-length variable 1 (ms). Animation presets that reference AL1 resolve to this value at transition time. Default home for the camera channel.">AL1 (ms)
             <input type="number" id="global-cam-dur" min="0" max="30000" step="100" value="1500" style="margin-top:6px;" />
           </label>
-          <label class="colorlab">Objects (ms)
+          <label class="colorlab" title="Animation-length variable 2 (ms). Presets that reference AL2 resolve to this value at transition time. Default home for the object/visibility/color channels.">AL2 (ms)
             <input type="number" id="global-obj-dur" min="0" max="30000" step="100" value="1500" style="margin-top:6px;" />
           </label>
         </div>
@@ -220,24 +221,47 @@ function _onActiveStepChanged() {
 }
 
 let _narrationAudio = null;
-function _playStepNarration(step) {
-  // Auto-play any saved TTS / mic clip when a step is applied.
-  // Suppressed during video export — the encoder pulls audio from cached
-  // PCM directly; live playback would just leak through the speakers.
-  // Also suppressed when the user has muted live narration via the
-  // step-nav speaker toggle.
+function _playStepNarrationNow(step) {
+  // Common audio-launch path used by both the legacy step:applied trigger
+  // and the new `narration` animation channel. Stops any in-flight clip
+  // first so a quick step nav doesn't overlap audio.
   if (_narrationAudio) { try { _narrationAudio.pause(); } catch {} _narrationAudio = null; }
-  if (state.get('_exporting'))   return;
+  if (state.get('_exporting'))     return;
   if (state.get('narrationMuted')) return;
   if (!step || step.isBaseStep)    return;
-  // Resolves inline dataUrl OR lazy-loads from the audio cache folder.
-  // Returns null if neither path has a clip — silent fallthrough.
   narrationCache.ensurePlayable(step).then(clip => {
     if (!clip) return;
     _narrationAudio = new Audio(clip);
     _narrationAudio.play().catch(err => console.warn('[narration] play:', err.message));
   });
 }
+
+function _playStepNarration(step) {
+  // Auto-play any saved TTS / mic clip when a step is applied — UNLESS
+  // the step's animation preset includes a `narration` channel. In that
+  // case, the phased animator (steps.js) already emitted a
+  // `narration:trigger` event at the slot start; double-playing would
+  // overlap audio with itself.
+  try {
+    const animStr = resolveAnimationString(step?.transition || {}, state.get('animationPresets') || []);
+    const phases  = animStr ? parseAnimation(animStr) : null;
+    if (phases && phases.some(p => p.types.includes('narration'))) {
+      // Phased animation owns playback for this step — bail.
+      return;
+    }
+  } catch { /* fall through to legacy auto-play on any parse error */ }
+  _playStepNarrationNow(step);
+}
+
+// Hook the phased-animation trigger. Fires when `narration(N)` slot
+// begins inside _runPhasedAnimation. Listener payload is the target
+// snapshot, but we re-derive the active step from state for safety
+// (the snapshot could be missing fields).
+state.on('narration:trigger', () => {
+  const stepId = state.get('activeStepId');
+  const step   = (state.get('steps') || []).find(s => s.id === stepId);
+  if (step) _playStepNarrationNow(step);
+});
 
 /**
  * Update a single step's thumbnail <img> in place. If the slot was the

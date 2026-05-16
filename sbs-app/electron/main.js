@@ -222,6 +222,12 @@ function buildMenu() {
         { role: 'paste' },
         { role: 'selectAll' },
         { type: 'separator' },
+        {
+          label: 'Recover stuck inputs',
+          accelerator: 'Ctrl+Alt+U',
+          click: () => mainWindow?.webContents.send('menu:recoverStuckInputs'),
+        },
+        { type: 'separator' },
         { label: 'Model source transform…', click: () => mainWindow?.webContents.send('menu:modelSourceTransform') },
       ],
     },

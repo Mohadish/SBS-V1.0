@@ -139,9 +139,22 @@ export function resolveNodeWorldPosition(node, ctx = {}) {
 
   // Tier 1 (mesh-anchored): live mesh in nodeById → derive from
   // mesh.matrixWorld * anchorLocal. Refresh cache as a side effect.
+  //
+  // Robustness: we look up the Three.js object via BOTH `nodeById` (data
+  // tree, authoritative) AND `object3dById` (steps.object3dById) and use
+  // whichever is present + live. After certain tree alterations (relink,
+  // model-source-bake, move) the two maps can drift apart for a node —
+  // taking either path keeps the cable bound. Without the fallback the
+  // resolver silently fell through to the cached worldPos forever, and
+  // the cable point appeared "stuck" while its host moved.
   if (node.anchorType === 'mesh' && node.nodeId && Array.isArray(node.anchorLocal)) {
     const sceneNode = (ctx.nodeById || state.get('nodeById'))?.get?.(node.nodeId);
-    const obj = sceneNode?.object3d;
+    let obj = sceneNode?.object3d;
+    // Fallback: steps.object3dById often holds the live object even when
+    // the data-tree node's `.object3d` field is stale (or vice-versa).
+    if (!obj && ctx.object3dById?.get) {
+      obj = ctx.object3dById.get(node.nodeId);
+    }
     if (obj && typeof obj.localToWorld === 'function') {
       // Three.js path — caller should pass a Three.Vector3 factory
       // or use this only from C2 onwards where Three is loaded.

@@ -27,8 +27,10 @@ export const SCHEMA_VERSIONS = {
   screen:     1,
 };
 
-export const APP_VERSION  = 'V.0.0.3';
-export const APP_RELEASED = '2026-04-20';
+export const APP_VERSION  = 'V0.1.52';
+// Format: YYYY-MM-DD. Bump along with APP_VERSION on every build worth
+// labelling so the File tab shows you're running the expected slice.
+export const APP_RELEASED = '2026-05-16';
 
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -150,7 +152,7 @@ export function createEmptyProject() {
       export: {
         fileName: 'sbs_export', outputFormat: 'webm_vp8',
         formatPreset: 'hdtv_1080', width: 1920, height: 1080,
-        fps: 30, stepHoldMs: 800, narrationVoice: 'en_US-lessac-high',
+        fps: 30, stepHoldMs: 100, narrationVoice: 'en_US-lessac-high',
         narrationSpeed: 1.0,
         narrationHelperUrl: 'http://127.0.0.1:8765',
         deterministicHelperUrl: 'http://127.0.0.1:8766',
@@ -693,14 +695,27 @@ export function createCameraView(overrides = {}) {
  * Syntax: 'camera(500), color(300), obj+visibility(400)'
  * Phases run sequentially; types within a phase run simultaneously.
  */
+// One phase, every real action channel parallel at AL1 (the global
+// camera-duration slider value). This is the "idiot-proof default" —
+// the visual editor doesn't let the user ADD channels, only redistribute
+// them across phases, so every channel must be present from the start.
+// Notes:
+//   - `overlays` (sustained no-flicker) is the default crossfade flavour.
+//     `overlay` (classic crossfade) is available via a per-capsule mode
+//     toggle in the visual editor; both never coexist in the same string.
+//   - `pause` is NOT in the default — it's added by the user via
+//     "+ Pause" when they want a dwell between phases.
+export const DEFAULT_ANIMATION_PRESET_STRING =
+  'camera+visibility+obj+color+overlays+cable+narration+notes+shape(AL1)';
+
 export function createAnimationPreset(overrides = {}) {
   return {
     id:        generateId('anim'),
     name:      'New Animation',
     // Cover every channel the engine knows about so a freshly-created
-    // preset transitions everything by default. Users can prune slots
-    // they don't want via the Anim tab editor.
-    animation: 'camera(500), visibility(500), obj(500), overlay(500), color(500), cable(500)',
+    // preset transitions everything by default. The visual editor in
+    // animation-tab.js lets the user split capsules across phases.
+    animation: DEFAULT_ANIMATION_PRESET_STRING,
     isDefault: false,
     ...overrides,
   };

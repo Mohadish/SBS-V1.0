@@ -348,6 +348,28 @@ class StepManager {
     // note transition state — applySnapshotInstant means "snap, no
     // animation", so any pending lerp must be discarded.
     _clearNoteAnims(nodeById);
+
+    // ── Self-heal stuck visibility state ────────────────────────────
+    // _pendingShowingHidden holds meshes pre-snapped to opacity 0 so
+    // they stay invisible while earlier phases run. After the phase
+    // loop completes (or for an instant snap that didn't run a phase
+    // loop), the set should be empty — but rare flow combinations
+    // (multi-step edit cancelled mid-fade, applySnapshotInstant called
+    // out-of-sequence) could leave stragglers. Those stragglers cause
+    // the "ghost-hidden mesh" bug: obj.visible=true yet material.opacity
+    // pinned at 0 every applyAll. We force-reset each lingering entry
+    // whose mesh is meant to be visible per the just-applied snapshot.
+    if (this._materials?._pendingShowingHidden?.size) {
+      const outlineSettings = state.get('geometryOutline');
+      const stuck = [...this._materials._pendingShowingHidden];
+      for (const nodeId of stuck) {
+        const obj = this.object3dById.get(nodeId);
+        if (obj && obj.visible !== false) {
+          this._materials._setNodeTransitionOpacity(nodeId, 1.0, outlineSettings, 0);
+          this._materials._pendingShowingHidden.delete(nodeId);
+        }
+      }
+    }
   }
 
   /**
@@ -483,10 +505,19 @@ class StepManager {
     this._materials?._pendingShowingHidden?.clear?.();
 
     // ── Resolve animation preset (need it now to route shapes) ───────
+    // AL1 / AL2 in the string resolve to the current values of the
+    // global duration sliders. This means changing those sliders live-
+    // updates every preset that uses the named-variable form, without
+    // requiring the user to re-edit the strings.
     const animStr = resolveAnimationString(
       transition, state.get('animationPresets') || [],
     );
-    const phases = animStr ? parseAnimation(animStr) : null;
+    const _resolveALToken = (tk) => {
+      if (tk === 'AL1') return state.get('cameraAnimDurationMs') ?? 1500;
+      if (tk === 'AL2') return state.get('objectAnimDurationMs')  ?? 1500;
+      return 0;
+    };
+    const phases = animStr ? parseAnimation(animStr, _resolveALToken) : null;
 
     // 'shape' channel: threshold-snap visibility for flatShape nodes,
     // independent of mesh fade. When that channel exists in the
@@ -550,12 +581,20 @@ class StepManager {
       }
 
       // Schedule note panel-offset lerp + opacity fade across the entire
-      // phased animation. Notes don't have their own phase slot, so we
-      // lerp them over the full object-duration window using the same
-      // easing as the object-pose lerp. fromNoteState was captured
-      // before _prepareVisibility ran.
+      // phased animation. Move/offset always rides the object-duration
+      // window. FADE timing depends on whether the preset has a `notes`
+      // slot: when present, defer fade — the notes phase handler stamps
+      // real fadeStartMs/Dur when its slot fires. Without this defer,
+      // the obj-duration fade would complete (and clear _anim) BEFORE
+      // the notes phase fires later in the sequence, leaving the
+      // override as a no-op (the actual bug we saw).
       const phasedStartMs = clock.now();
-      _scheduleNoteAnims(state.get('treeData'), fromNoteState, toSnapshot, phasedStartMs, globalObj, easeFn);
+      const hasNotesPhase = phases.some(p => p.types.includes('notes'));
+      _scheduleNoteAnims(
+        state.get('treeData'), fromNoteState, toSnapshot,
+        phasedStartMs, globalObj, easeFn,
+        { deferFade: hasNotesPhase },
+      );
 
       cameraHandled = await this._runPhasedAnimation(toSnapshot, phases, {
         changedNodeIds, fromWorldTransforms, toWorldTransforms, depthMap,
@@ -579,22 +618,30 @@ class StepManager {
       // Object transforms — world-space lerp (v0.266: objects stay in target hierarchy).
       // Children of an animating parent get an `inheritParentId + localFrom + localTo`
       // bundle so their per-frame lerp runs in PARENT-LOCAL space (arc-following);
-      // children of static parents stay on the world-space path (chord == arc).
+      // children of static parents with an offset pivot get a `pivotData` bundle
+      // so they arc around their pivot (not chord-cut through it).
       this._objectTransitions = [];
       const startMs = clock.now();
       for (const nodeId of changedNodeIds) {
         const worldFrom = fromWorldTransforms[nodeId];
         const worldTo   = toWorldTransforms[nodeId];
         if (!worldFrom || !worldTo) continue;
-        const extras = _buildInheritExtras(
+        const inheritExtras = _buildInheritExtras(
           nodeId, worldFrom, worldTo,
           parentMap, changedSet, fromWorldTransforms, toWorldTransforms,
         );
+        // Pivot data only when NOT inheriting from parent — the combined
+        // case (animating parent + pivoted child) is a known limitation
+        // for now (todo: pivot-aware lerp in parent-local frame).
+        const pivotExtras = inheritExtras.inheritParentId
+          ? {}
+          : _buildPivotExtras(worldFrom, worldTo);
         this._objectTransitions.push({
           nodeId, worldFrom, worldTo, startMs,
           durationMs: objDur, easeFn, isWorld: true,
           depth: depthMap[nodeId] ?? 0,
-          ...extras,
+          ...inheritExtras,
+          ...pivotExtras,
         });
       }
       // Sort parents before children so world→local math uses correct parent matrices
@@ -620,6 +667,21 @@ class StepManager {
         this._materials.beginColorTransition(toSnapshot.materials, objDur, easeFn);
       }
 
+      // Cable transitions — opacity + colour lerp. Without this kick-off
+      // cables threshold-pop in simultaneous mode (the regression the
+      // user hit when no animation preset was set). Result is awaited
+      // alongside cameraP / objectP below so the phase completes when
+      // all channels finish.
+      const cableSimP = new Promise(resolve => {
+        cablesRender.beginCableTransitions(toSnapshot.cables, objDur, easeFn, resolve);
+      });
+
+      // Overlay crossfade — default to the sustained variant (no flicker
+      // on items shared between steps). Same rationale as cables above.
+      const overlaySimP = new Promise(resolve => {
+        overlaySystem.beginOverlaySustainedFade(objDur, easeFn, resolve);
+      });
+
       const objectP = new Promise(resolve => {
         if (!this._objectTransitions.length) { resolve(); return; }
         this._onObjectTransitionsDone = resolve;
@@ -635,11 +697,25 @@ class StepManager {
       // transitions to completion in offline mode, and is a no-op in
       // realtime mode (rAF still drives ticks; sleep just waits).
       const maxDur = Math.max(cameraDur, objDur);
-      await Promise.all([cameraP, objectP, _sleep(maxDur)]);
+      await Promise.all([cameraP, objectP, cableSimP, overlaySimP, _sleep(maxDur)]);
     }
 
     // ── Guard: if a newer animation started while we awaited, bail out ──
     if (this._animGeneration !== myGen) return;
+
+    // Safety-net: any note with a still-deferred fade (fadeStartMs===Infinity)
+    // means the `notes` slot never fired during the phase loop (e.g. the
+    // string included `notes` but the loop ended without reaching it for
+    // some unusual reason). Drop those records so applySnapshotInstant's
+    // final visibility snap is what the renderer reads.
+    const _root = state.get('treeData');
+    if (_root) {
+      _walkNotes(_root, note => {
+        if (note._anim && note._anim.fadeStartMs === Infinity) {
+          delete note._anim;
+        }
+      });
+    }
 
     // ── Final: snap to exact target state ─────────────────────────────
     this.applySnapshotInstant(toSnapshot, { suppressCamera: cameraHandled });
@@ -743,13 +819,19 @@ class StepManager {
       easing, easeFn, myGen,
     } = opts;
 
-    let cameraHandled = false;
-    let objHandled    = false;
-    let colorHandled  = false;
-    let visHandled    = false;
-    let cableHandled  = false;
-    let overlayHandled = false;
-    let shapeHandled   = false;
+    let cameraHandled    = false;
+    let objHandled       = false;
+    let colorHandled     = false;
+    let visHandled       = false;
+    let cableHandled     = false;
+    let overlayHandled   = false;
+    let shapeHandled     = false;
+    let narrationHandled = false;
+    let notesHandled     = false;
+    // `pause` slots don't need a handled flag — they're idempotent dwells
+    // (the await Promise.all([_sleep(durationMs), ...]) at the end of the
+    // phase loop already enforces the time).
+    // `notesHandled` gates the FADE channel; note movement still rides obj.
 
     for (const phase of phases) {
       const { types, durationMs } = phase;
@@ -782,7 +864,8 @@ class StepManager {
 
       // Object transforms — world-space lerp (v0.266: objects stay in target hierarchy).
       // See `_buildInheritExtras` — children of animating parents lerp in
-      // parent-local space (arc-following) to fix the dip-through-surface bug.
+      // parent-local space (arc-following). `_buildPivotExtras` adds the
+      // pivot-aware variant so an offset pivot stays put during rotation.
       if (types.includes('obj') && !objHandled && changedNodeIds.length) {
         objHandled = true;
         this._objectTransitions = [];
@@ -791,15 +874,19 @@ class StepManager {
           const worldFrom = fromWorldTransforms[nodeId];
           const worldTo   = toWorldTransforms[nodeId];
           if (!worldFrom || !worldTo) continue;
-          const extras = _buildInheritExtras(
+          const inheritExtras = _buildInheritExtras(
             nodeId, worldFrom, worldTo,
             parentMap, changedSet, fromWorldTransforms, toWorldTransforms,
           );
+          const pivotExtras = inheritExtras.inheritParentId
+            ? {}
+            : _buildPivotExtras(worldFrom, worldTo);
           this._objectTransitions.push({
             nodeId, worldFrom, worldTo, startMs,
             durationMs, easeFn, isWorld: true,
             depth: depthMap[nodeId] ?? 0,
-            ...extras,
+            ...inheritExtras,
+            ...pivotExtras,
           });
         }
         // Sort parents before children so world→local conversion uses correct parent matrices
@@ -863,6 +950,40 @@ class StepManager {
         }));
       }
 
+      // `narration` — TRIGGER slot. Fires the step:applied narration
+      // playback path RIGHT NOW (at this phase's start). The audio plays
+      // its own natural length asynchronously; the slot's durationMs
+      // controls when narration STARTS relative to the rest of the
+      // animation, not how long the audio runs. When `narration` is in
+      // the string, the legacy step:applied auto-play (see
+      // _playStepNarration in ui/steps-panel.js) suppresses itself so
+      // we don't double-trigger.
+      if (types.includes('narration') && !narrationHandled) {
+        narrationHandled = true;
+        try { state.emit('narration:trigger', toSnapshot); }
+        catch (err) { console.warn('[steps] narration trigger failed:', err); }
+      }
+
+      // `notes` — show/hide FADE slot for notes. Move / panelOffset
+      // transform stays on the obj phase (intentional: notes can fade
+      // independently while their position still rides the camera/obj
+      // window). Calling _scheduleNoteFades schedules a fade-only window
+      // on each note's _anim record so the renderer lerps opacity over
+      // THIS slot, while offset/framePosition keep using the wider obj
+      // timing already set by the obj phase (or the obj fallback).
+      if (types.includes('notes') && !notesHandled) {
+        notesHandled = true;
+        const root = state.get('treeData');
+        if (root) {
+          _scheduleNoteFades(root, toSnapshot, clock.now(), durationMs, easeFn);
+        }
+      }
+
+      // `pause` — dwell. No-op handler; the await Promise.all below
+      // already enforces durationMs. Listing this branch explicitly so
+      // grep + future readers find it next to the rest.
+      // if (types.includes('pause')) { /* dwell handled by await below */ }
+
       // Wait for this phase's duration (and any sub-promises that finish sooner)
       await Promise.all([_sleep(durationMs), ...phasePromises]);
 
@@ -873,17 +994,19 @@ class StepManager {
     // ── Finalize missing channels — run DEFAULT animation, not snap ────
     // User rule: "all animation strings must fall on default if missing
     // from string." A preset like 'shape(500)' should make shapes snap
-    // (their slot is in the string) but camera / obj / visibility / color
-    // still animate over the global default duration — not threshold-pop.
+    // (their slot is in the string) but every other channel still
+    // animates over the global default duration — not threshold-pop.
     //
-    // Each missing channel kicks off its standard animation pipeline
-    // with the global default duration (state.cameraAnimDurationMs /
-    // state.objectAnimDurationMs). They run in parallel here so the
-    // longest one caps the total time.
+    // EVERY engine channel must have a fallback here. When you add a new
+    // channel to VALID_TYPES in animation.js:
+    //   1. Add its phase handler ABOVE in the per-phase dispatch loop
+    //   2. Add a fallback below (mirrors the handler with default duration)
+    //   3. Update DEFAULT_ANIMATION_PRESET_STRING in schema.js
+    //   4. Update _CHANNELS_REQUIRED in io/project.js for back-fill migration
     //
-    // Cable still has its own application pipeline (step:activate
-    // listeners) and tracking it here would risk double-application —
-    // leave it for now.
+    // Without all four, the channel will threshold-pop when the preset
+    // omits it — exactly the regression the user hit for cable + overlay
+    // before this fallback block grew.
     const fallbackCam = state.get('cameraAnimDurationMs') ?? 1500;
     const fallbackObj = state.get('objectAnimDurationMs') ?? 1500;
     const fallbackPromises = [];
@@ -902,15 +1025,19 @@ class StepManager {
         const worldFrom = fromWorldTransforms[nodeId];
         const worldTo   = toWorldTransforms[nodeId];
         if (!worldFrom || !worldTo) continue;
-        const extras = _buildInheritExtras(
+        const inheritExtras = _buildInheritExtras(
           nodeId, worldFrom, worldTo,
           parentMap, changedSet, fromWorldTransforms, toWorldTransforms,
         );
+        const pivotExtras = inheritExtras.inheritParentId
+          ? {}
+          : _buildPivotExtras(worldFrom, worldTo);
         this._objectTransitions.push({
           nodeId, worldFrom, worldTo, startMs,
           durationMs: fallbackObj, easeFn, isWorld: true,
           depth: depthMap[nodeId] ?? 0,
-          ...extras,
+          ...inheritExtras,
+          ...pivotExtras,
         });
       }
       this._objectTransitions.sort((a, b) => a.depth - b.depth);
@@ -955,6 +1082,28 @@ class StepManager {
       }
       fallbackPromises.push(_sleep(fallbackObj));
     }
+    // Cable fallback — when the string omits 'cable', tween cables over
+    // the global object duration. Without this, adding/removing cables
+    // between steps threshold-pops.
+    if (!cableHandled) {
+      cableHandled = true;
+      fallbackPromises.push(new Promise(resolve => {
+        cablesRender.beginCableTransitions(toSnapshot.cables, fallbackObj, easeFn, resolve);
+      }));
+    }
+    // Overlay fallback — default to the sustained variant (no flicker on
+    // items shared between steps). Without this, overlay items added /
+    // removed between steps threshold-pop.
+    if (!overlayHandled) {
+      overlayHandled = true;
+      fallbackPromises.push(new Promise(resolve => {
+        overlaySystem.beginOverlaySustainedFade(fallbackObj, easeFn, resolve);
+      }));
+    }
+    // narration / notes / pause have no fallback — narration's legacy
+    // step:applied auto-play covers it, notes ride obj phase when no
+    // notes slot is in the string (handled inside _scheduleNoteAnims),
+    // and pause is a user-authored delay (no semantics when absent).
 
     if (fallbackPromises.length) {
       await Promise.all(fallbackPromises);
@@ -987,7 +1136,34 @@ class StepManager {
 
       if (node && obj && isAnimatableNode(node)) {
         if (tr.isWorld) {
-          if (tr.inheritParentId && tr.localFrom && tr.localTo) {
+          if (tr.pivotData) {
+            // PIVOT-AWARE branch. The object's rotation slerps directly,
+            // but its position is derived from the (lerped) pivot world
+            // position minus the rotated pivot offset. When the user's
+            // pivot is consistent across both steps (the common case —
+            // pivot was set once, both steps share it), pivotWorldFrom
+            // ≈ pivotWorldTo and the pivot is a constant point in
+            // world space. The object cleanly arcs around it.
+            //
+            // Without this branch, the world-pos lerp connects the
+            // back-solved endpoints with a straight chord, producing
+            // the visible "wobble through the pivot" the user reported.
+            const THREE = window.THREE;
+            const lerpedQuat = slerpQuaternion(tr.worldFrom.quaternion, tr.worldTo.quaternion, alpha);
+            const lerpedPivotLocal = lerpVec3(tr.pivotData.localFrom, tr.pivotData.localTo, alpha);
+            const lerpedPivotWorld = lerpVec3(tr.pivotData.worldFrom, tr.pivotData.worldTo, alpha);
+            const offsetWorld = new THREE.Vector3(
+              lerpedPivotLocal[0], lerpedPivotLocal[1], lerpedPivotLocal[2],
+            ).applyQuaternion(
+              new THREE.Quaternion(lerpedQuat[0], lerpedQuat[1], lerpedQuat[2], lerpedQuat[3]),
+            );
+            const lerpedPos = [
+              lerpedPivotWorld[0] - offsetWorld.x,
+              lerpedPivotWorld[1] - offsetWorld.y,
+              lerpedPivotWorld[2] - offsetWorld.z,
+            ];
+            _setWorldTransformOnObject(obj, lerpedPos, lerpedQuat);
+          } else if (tr.inheritParentId && tr.localFrom && tr.localTo) {
             // PARENT-LOCAL lerp branch. The tree-data parent is also
             // animating this frame (it was processed earlier in the loop
             // via the depth sort, so its matrixWorld is already at its
@@ -2533,6 +2709,55 @@ function _composeLocalFromWorlds(parentWorld, childWorld) {
  * node's tree-parent is ALSO animating. Returns `{}` when no inheritance
  * is needed (parent static → world-space lerp is correct).
  */
+/**
+ * If the node has a non-zero pivot enabled on BOTH FROM and TO sides,
+ * compute the world-space pivot pose at both endpoints + the lerp data
+ * the runtime tick needs to spin the object around that pivot. When
+ * absent (no pivot / disabled / zero offset), returns `{}` — the runtime
+ * falls through to the plain world-pos+quat lerp it always used.
+ *
+ * Math:
+ *   pivot_world = obj_pos + applyQuat(obj_quat, pivot_local)
+ * If the user's "blue pivot is consistent across both steps" condition
+ * holds (which is the entire point of the back-solve at edit time),
+ * pivot_world_from == pivot_world_to → during lerp the pivot point is
+ * a constant and the object arcs cleanly around it.
+ *
+ * NOT used when the node also inherits from an animating parent
+ * (parent-arc branch wins for now — the combined case isn't on the
+ * user's critical path; logged as a follow-up).
+ */
+function _buildPivotExtras(worldFrom, worldTo) {
+  const THREE = window.THREE;
+  if (!THREE || !worldFrom || !worldTo) return {};
+  // Both sides must have an active non-zero pivot. Disabled-on-one-side
+  // or zero-pivot → standard lerp is identical, no extras needed.
+  if (!worldFrom.pivotEnabled || !worldTo.pivotEnabled) return {};
+  const pivLocalFrom = worldFrom.pivotLocalOffset || [0, 0, 0];
+  const pivLocalTo   = worldTo.pivotLocalOffset   || [0, 0, 0];
+  const _isZero = v => Math.abs(v[0]) + Math.abs(v[1]) + Math.abs(v[2]) < 1e-7;
+  if (_isZero(pivLocalFrom) && _isZero(pivLocalTo)) return {};
+
+  // pivotWorld_X = worldPos_X + rotate(worldQuat_X, pivotLocal_X)
+  const computePivotWorld = (wt, pivLocal) => {
+    const offW = new THREE.Vector3(pivLocal[0], pivLocal[1], pivLocal[2])
+      .applyQuaternion(new THREE.Quaternion(...wt.quaternion));
+    return [
+      wt.position[0] + offW.x,
+      wt.position[1] + offW.y,
+      wt.position[2] + offW.z,
+    ];
+  };
+  return {
+    pivotData: {
+      worldFrom: computePivotWorld(worldFrom, pivLocalFrom),
+      worldTo:   computePivotWorld(worldTo,   pivLocalTo),
+      localFrom: [...pivLocalFrom],
+      localTo:   [...pivLocalTo],
+    },
+  };
+}
+
 function _buildInheritExtras(nodeId, worldFrom, worldTo, parentMap, changedSet, fromWT, toWT) {
   const parentId = parentMap[nodeId];
   if (!parentId || !changedSet.has(parentId)) return {};
@@ -2606,12 +2831,22 @@ function captureWorldTransforms(root, object3dById) {
     if (!obj) return;
     obj.getWorldPosition(_wp);
     obj.getWorldQuaternion(_wq);
+    // Pivot fields are captured alongside world pose so the lerp can
+    // run a pivot-aware path (see _buildPivotExtras + _advanceObjectTransitions
+    // pivot branch). Without these, a rotation around an offset pivot
+    // lerps the cylinder's ORIGIN on a chord while the rotation arcs
+    // around the pivot — visible wobble where the user expects a clean
+    // spin. captureTransformSnapshot already serialises these into each
+    // step's persisted snapshot — we re-capture from the live node here
+    // because the snapshot map isn't indexed alongside world transforms.
     out[node.id] = {
       position:     [_wp.x, _wp.y, _wp.z],
       quaternion:   [_wq.x, _wq.y, _wq.z, _wq.w],
       moveEnabled:   node.moveEnabled   !== false,
       rotateEnabled: node.rotateEnabled !== false,
       pivotEnabled:  node.pivotEnabled  !== false,
+      pivotLocalOffset:     [...(node.pivotLocalOffset     || [0,0,0])],
+      pivotLocalQuaternion: [...(node.pivotLocalQuaternion || [0,0,0,1])],
     };
   });
   return out;
@@ -2733,7 +2968,8 @@ function _captureFromNoteState(root) {
  * _captureFromNoteState) so we know each note's REAL pre-transition
  * state, not the post-mutation state.
  */
-function _scheduleNoteAnims(treeData, fromState, toSnapshot, startMs, durationMs, easeFn) {
+function _scheduleNoteAnims(treeData, fromState, toSnapshot, startMs, durationMs, easeFn, opts = {}) {
+  const deferFade = !!opts.deferFade;
   if (!treeData) return;
   const toOffsets = toSnapshot?.notePanelOffsets || {};
   const toVis     = toSnapshot?.visibility || {};
@@ -2785,7 +3021,37 @@ function _scheduleNoteAnims(treeData, fromState, toSnapshot, startMs, durationMs
       startMs,
       durationMs,
       easeFn,
+      // Fade timing. When deferFade is true (notes channel is in the
+      // animation string), set fadeStartMs to Infinity — that pegs
+      // fadeT at 0 in notes-render so opacity stays at FROM until the
+      // notes phase fires and _scheduleNoteFades stamps real values.
+      // Otherwise leave undefined: notes-render falls back to the main
+      // (move) timing — legacy behaviour where fade rides obj phase.
+      fadeStartMs:    deferFade ? Infinity : undefined,
+      fadeDurationMs: undefined,
+      fadeEaseFn:     undefined,
     };
+  });
+}
+
+/**
+ * Override the FADE-only timing on each note's _anim record so notes
+ * show/hide on a separate clock from their movement. Called by the
+ * phased animator when the animation string includes a `notes(N)` slot.
+ *
+ * Side-effect-only: mutates note._anim in place. Assumes _scheduleNoteAnims
+ * has already established the move-timing record. Notes whose visibility
+ * doesn't change are left alone (no opacity tween to schedule).
+ */
+function _scheduleNoteFades(treeData, toSnapshot, startMs, durationMs, easeFn) {
+  if (!treeData) return;
+  _walkNotes(treeData, note => {
+    const a = note._anim;
+    if (!a) return;                              // nothing to fade
+    if (a.fromVisible === a.toVisible) return;   // no visibility change
+    a.fadeStartMs    = startMs;
+    a.fadeDurationMs = Math.max(1, durationMs);
+    a.fadeEaseFn     = easeFn;
   });
 }
 

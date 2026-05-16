@@ -56,6 +56,14 @@ const DEFAULTS = {
     // catches gently-curved surfaces too.
     shapeFaceAngleThreshold: 5,
   },
+  // User-level animation preset collection. Entries are { name, animation }.
+  // Cross-project, machine-scope — the user's personal library of preset
+  // strings they want to reuse across projects. The actual project still
+  // gets a COPY pasted in when imported via "+ From collection"; this is
+  // a TEMPLATE store, not a live link.
+  animation: {
+    collection: [],   // Array<{ name: string, animation: string }>
+  },
 };
 
 let _cache = null;
