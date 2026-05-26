@@ -64,6 +64,14 @@ const DEFAULTS = {
   animation: {
     collection: [],   // Array<{ name: string, animation: string }>
   },
+  undo: {
+    // V0.2.16: maximum entries kept in the undo stack. Older ones drop off
+    // FIFO once the cap is reached. Tunable in the Undo tab. Each entry's
+    // memory cost varies — color-sel entries are tiny, step-paste/unify
+    // entries can hold a full deep-cloned steps array (hundreds of KB on
+    // large projects), so don't push this absurdly high.
+    maxSize: 200,
+  },
 };
 
 let _cache = null;

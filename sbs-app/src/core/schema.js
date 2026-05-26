@@ -27,10 +27,10 @@ export const SCHEMA_VERSIONS = {
   screen:     1,
 };
 
-export const APP_VERSION  = 'V0.1.52';
+export const APP_VERSION  = 'V0.2.21';
 // Format: YYYY-MM-DD. Bump along with APP_VERSION on every build worth
 // labelling so the File tab shows you're running the expected slice.
-export const APP_RELEASED = '2026-05-16';
+export const APP_RELEASED = '2026-05-21';
 
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -199,6 +199,19 @@ export function createNode(type, overrides = {}) {
     type,                           // 'scene' | 'model' | 'folder' | 'mesh'
     assetId:      null,             // for type='model': links to AssetEntry
     localVisible: true,
+    // archived: locked-hidden state. True ⇒ node is treated as if removed
+    // from the scene (fully invisible, no captures, no audits, no
+    // interaction) but kept in the tree with all its per-step history
+    // intact. Toggle via tree/viewport r-click "Archive" / "Unarchive".
+    // Used for Replace Object (old node archives) and as a general-purpose
+    // "preserve, don't show" toggle.
+    archived:     false,
+    // locked: folder-only (V0.1.92, replaces the old isGroup/groupLocked
+    // "Group" concept). When true, a folder is treated as a single unit:
+    // a viewport click on any descendant promotes the selection up to this
+    // folder, and the tree row auto-collapses. Default false (plain folder).
+    // Legacy `isGroup` folders migrate to locked on load (io/project.js).
+    locked:       false,
     children:     [],
 
     // Transform (folder and model nodes only)
@@ -293,6 +306,32 @@ export function createShapeTemplate(overrides = {}) {
 }
 
 /**
+ * Tab-only grouping of shape templates. Lives in state.shapeTemplateGroups
+ * (NOT in the scene tree). Affects only:
+ *   - Shape tab rendering (collapsible row containing member templates)
+ *   - Viewport selection promotion when `locked` is true (any flatShape
+ *     instance whose template belongs to a locked group expands the
+ *     selection to ALL instances of ALL member templates)
+ *   - Bulk hide/show via the group's eye toggle
+ * Templates can belong to at most one group; ungrouped templates render
+ * at the top of the tab as before.
+ *
+ *   templateIds   [tplId, …]   members, in display order
+ *   locked        boolean      true → viewport selection promotion
+ *   collapsed     boolean      tab UI state — not undoable
+ */
+export function createShapeTemplateGroup(overrides = {}) {
+  return {
+    id:          generateId('shapeGrp'),
+    name:        'Shape Group',
+    locked:      true,
+    collapsed:   false,
+    templateIds: [],
+    ...overrides,
+  };
+}
+
+/**
  * A placed instance of a shape template. Behaves like a transform-capable
  * node (model/folder family) for the gizmo + step snapshots — see
  * isTransformNode() in core/transforms.js.
@@ -307,6 +346,9 @@ export function createFlatShapeNode(overrides = {}) {
     name:         '',
     type:         'flatShape',
     localVisible: true,
+    // archived: see createNode for semantics — flat-shape instances honour
+    // the same archive contract as model/folder/mesh nodes.
+    archived:     false,
     children:     [],
 
     // Pointer to a state.shapeTemplates entry — owns polygon + fill.

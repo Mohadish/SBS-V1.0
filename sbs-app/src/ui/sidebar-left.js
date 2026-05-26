@@ -26,6 +26,69 @@ import {
 import { buildNodeMap }    from '../core/nodes.js';
 import { applyNodeSourceTransformToObject3D } from '../core/transforms.js';
 import { showContextMenu } from './context-menu.js';
+import { undoManager }    from '../systems/undo.js';
+
+/**
+ * V0.2.10: scene-selection change wrapped as an undo entry. Used by the
+ * Colors-tab right-click "Select by..." actions (active color / default
+ * color / all selected colors), which previously mutated scene selection
+ * directly with no undo trail. One entry per call, no coalescing.
+ */
+function _setSceneSelectionUndoable(target, multi, label) {
+  const prevId    = state.get('selectedId');
+  const prevMulti = new Set(state.get('multiSelectedIds') || []);
+  const nextMulti = multi instanceof Set ? multi : new Set(multi || []);
+  state.setSelection(target, nextMulti);
+  undoManager.push(label,
+    () => state.setSelection(prevId, new Set(prevMulti)),
+    () => state.setSelection(target, new Set(nextMulti)),
+  );
+}
+
+/**
+ * V0.2.13: shared verb for the "Select by..." live labels. Tri-state
+ * driven by modifier keys (Alt wins over Ctrl):
+ *   Alt held       → "Remove from selected by"
+ *   Ctrl/⌘ held    → "Add to selected by"
+ *   neither        → "Select by"
+ */
+function _selectVerb(m) {
+  if (m && m.alt)                  return 'Remove from selected by';
+  if (m && (m.ctrl || m.meta))     return 'Add to selected by';
+  return 'Select by';
+}
+
+/**
+ * V0.2.13: apply a "Select by …" menu action against a precomputed mesh
+ * id array, branching on the click-time modifier state (alt → remove from
+ * scene selection; ctrl/⌘ → add; none → replace). Pushes one undo entry
+ * with a label that matches the action variant; clears scene selection
+ * when the resulting multi-set is empty.
+ */
+function _runSelectByMatches(matches, m, contextLabel) {
+  const alt = !!(m && m.alt);
+  const add = !alt && !!(m && (m.ctrl || m.meta));
+  const cur = new Set(state.get('multiSelectedIds') || []);
+  let next, verb;
+  if (alt) {
+    next = cur;
+    for (const id of matches) next.delete(id);
+    verb = 'Remove';
+  } else if (add) {
+    next = new Set([...cur, ...matches]);
+    verb = 'Add';
+  } else {
+    next = new Set(matches);
+    verb = 'Select';
+  }
+  const prevId   = state.get('selectedId');
+  const inNext   = (id) => id && next.has(id);
+  const primary  = next.size === 0 ? null
+                 : inNext(prevId)  ? prevId
+                 : (matches[0] || [...next][0]);
+  _setSceneSelectionUndoable(primary, next, `${verb} by ${contextLabel}`);
+  setStatus(`${verb === 'Remove' ? 'Removed' : verb === 'Add' ? 'Added' : 'Selected'} ${matches.length} mesh(es) (${contextLabel}).`);
+}
 import { renderAnimationTab } from './animation-tab.js';
 import { renderHeaderTab }    from './header-tab.js';
 import { renderStyleTab }     from './style-tab.js';
@@ -35,7 +98,7 @@ import { listVoices as ttsListVoices } from '../systems/tts.js';
 import * as userSettings    from '../core/user-settings.js';
 import * as narrationCache  from '../systems/narration-cache.js';
 
-const TABS = ['files', 'tree', 'colors', 'select', 'cameras', 'animation', 'header', 'style', 'cables', 'notes', 'shapes', 'export'];
+const TABS = ['files', 'tree', 'colors', 'select', 'cameras', 'animation', 'header', 'style', 'cables', 'notes', 'shapes', 'undo', 'export'];
 let _activeTab   = 'files';
 let _container   = null;
 let _treeInited  = false;
@@ -61,6 +124,7 @@ export function initSidebarLeft() {
       <button class="tabBtn"        data-tab="cables">🔌</button>
       <button class="tabBtn"        data-tab="notes">💬</button>
       <button class="tabBtn"        data-tab="shapes">▰</button>
+      <button class="tabBtn"        data-tab="undo">↶</button>
       <button class="tabBtn"        data-tab="export">Export</button>
     </div>
     <div class="sidebar-panels" id="left-panels"></div>
@@ -80,6 +144,11 @@ export function initSidebarLeft() {
     if (btn) _switchTab(btn.dataset.tab);
   });
 
+  // V0.2.8: Ctrl+L-drag marquee in the Colors list (Shift+click was hard to
+  // use; the marquee makes range selection visual). Each intersected row is
+  // toggled in/out of the tab selection (per-bar add/remove).
+  _setupColorMarquee();
+
   // State subscriptions
   state.on('change:assets',                () => { if (_activeTab === 'files')   _renderFilesTab(); });
   state.on('change:treeData',              () => { if (_activeTab === 'tree')    renderTree(); });
@@ -90,6 +159,26 @@ export function initSidebarLeft() {
     if (_activeTab === 'colors') _queueColorsRender();
     if (_activeTab === 'select') _renderSelectTab();   // refresh "+ Save (N)" button + counters
   });
+  // Colors-tab filter + the "used-by-visible / used-by-selection" cues depend
+  // on live mesh visibility, which changes on visibility toggles (treeData)
+  // and step navigation (step:applied).
+  state.on('change:colorTabFilterVisibleOnly',    _queueColorsRender);
+  state.on('change:colorTabFilterSelectedFirst',  _queueColorsRender);
+  // V0.2.6: re-render when the tab selection itself changes (e.g. r-click
+  // "Invert color selection" — previously needed an extra click to redraw).
+  state.on('change:selectedColorPresetIds',       _queueColorsRender);
+  // V0.2.16: keep the Undo tab's stack lists live.
+  state.on('undo:change',                         () => { if (_activeTab === 'undo') _renderUndoTab(); });
+  // Expanded-color viewport highlight stays live across selection / step /
+  // visibility changes even when the user has switched away from the tab.
+  state.on('change:selectedId',          _syncExpandedColorHighlight);
+  state.on('change:multiSelectedIds',    _syncExpandedColorHighlight);
+  state.on('step:applied',               _syncExpandedColorHighlight);
+  state.on('change:treeData',            _syncExpandedColorHighlight);
+  state.on('materials:defaultColorsChanged', _syncExpandedColorHighlight);
+  state.on('change:colorPresets',        _syncExpandedColorHighlight);
+  state.on('step:applied',                 () => { if (_activeTab === 'colors') _queueColorsRender(); });
+  state.on('change:treeData',              () => { if (_activeTab === 'colors') _queueColorsRender(); });
   // Flush any deferred Colors-tab render once focus leaves an interactive
   // element inside the tab — keeps the user's open <input type=color>
   // popup alive while they drag, and re-renders cleanly once they're done.
@@ -146,10 +235,17 @@ export function initSidebarLeft() {
   state.on('change:treeData',            () => { if (_activeTab === 'shapes') _renderShapesTab(); });
   state.on('change:shapePlacementForId', () => { if (_activeTab === 'shapes') _renderShapesTab(); });
   state.on('change:shapeFromFacePicking',() => { if (_activeTab === 'shapes') _renderShapesTab(); });
+  // V0.1.85 — shape tab additions: groups, tab selection, filter toggle,
+  // and visibility-driven filter rendering refresh.
+  state.on('change:shapeTemplateGroups',           () => { if (_activeTab === 'shapes') _renderShapesTab(); });
+  state.on('change:selectedShapeTemplateIds',      () => { if (_activeTab === 'shapes') _renderShapesTab(); });
+  state.on('change:selectedShapeTemplateGroupIds', () => { if (_activeTab === 'shapes') _renderShapesTab(); });
+  state.on('change:shapeTabFilterVisibleOnly',     () => { if (_activeTab === 'shapes') _renderShapesTab(); });
   // Selection changes trigger a Shapes-tab re-render only when that tab
   // is active, so the highlight on the currently-selected flatShape's
-  // template row stays in sync. (Other tabs already re-render on their
-  // own selection-driven hooks.)
+  // template row stays in sync. Also covers the V0.1.85 visibility filter
+  // (rows refresh when per-instance localVisible flips via select-driven
+  // toggleVisibility paths).
   state.on('selection:change',           () => { if (_activeTab === 'shapes') _renderShapesTab(); });
 
   state.on('change:cables',              () => { if (_activeTab === 'cables') _renderCableTabPanel(); });
@@ -211,7 +307,10 @@ export function showColorForNode(nodeId) {
   const activeId = materials.meshColorAssignments?.[nodeId]
                 ?? materials.meshDefaultColors?.[nodeId]
                 ?? null;
-  if (activeId) _expandedPresetId = activeId;
+  if (activeId) {
+    _colorAnchorId = activeId;
+    state.setState({ selectedColorPresetIds: new Set([activeId]) });
+  }
   if (_activeTab === 'colors') {
     _queueColorsRender();   // tab already open — force re-render to apply expand
   } else {
@@ -234,6 +333,7 @@ function _renderActiveTab() {
     case 'cables':    _renderCableTabPanel();  break;
     case 'notes':     _renderNotesTab();   break;
     case 'shapes':    _renderShapesTab();  break;
+    case 'undo':      _renderUndoTab();    break;
     case 'export':    _renderExportTab();  break;
   }
 }
@@ -373,15 +473,20 @@ function _renderFilesTab() {
   el.querySelector('#btn-toggle-grid')?.addEventListener('click',  _onToggleGrid);
   el.querySelector('#btn-toggle-theme')?.addEventListener('click', _onToggleTheme);
 
-  // ── Background controls ────────────────────────────────────────────────
+  // ── Background controls (undoable; change:* listener repaints on restore) ─
   el.querySelector('#bg-color')?.addEventListener('input', e => {
-    state.setState({ backgroundColor: e.target.value });
-    state.markDirty();
+    const val = e.target.value;
+    actions.commitStateChange('Background color', ['backgroundColor'], () => {
+      state.setState({ backgroundColor: val });
+      state.markDirty();
+    }, { coalesceKey: 'bgColor' });
   });
   const _setGradient = (patch) => {
-    const cur = state.get('backgroundGradient') || {};
-    state.setState({ backgroundGradient: { ...cur, ...patch } });
-    state.markDirty();
+    actions.commitStateChange('Background gradient', ['backgroundGradient'], () => {
+      const cur = state.get('backgroundGradient') || {};
+      state.setState({ backgroundGradient: { ...cur, ...patch } });
+      state.markDirty();
+    }, { coalesceKey: 'bgGradient' });
   };
   const gradControls = el.querySelector('#bg-grad-controls');
   el.querySelector('#bg-grad-toggle')?.addEventListener('change', e => {
@@ -497,9 +602,13 @@ async function _onOpenProject() {
 
     // If project was saved before asset-tracking: assets list is empty but tree has models.
     // Synthesize asset entries from tree model nodes so the dialog can fire.
+    // RM-converted models (type='replaceModel' + originalType='model') still
+    // need their GLB loaded — include them via the originalType check.
+    const _isModelOrRMModel = (n) => n?.type === 'model'
+      || (n?.type === 'replaceModel' && n?.originalType === 'model');
     if (resolvedAssets.length === 0 && savedSceneRoot?.children?.length) {
       savedSceneRoot.children
-        .filter(n => n.type === 'model')
+        .filter(_isModelOrRMModel)
         .forEach(n => {
           resolvedAssets.push({
             assetEntry: {
@@ -531,10 +640,14 @@ async function _onOpenProject() {
     // Displaced meshes are those moved into custom folders outside their native model subtree.
     const allSavedMeshSpecs = collectAllMeshSpecs(savedSceneRoot);
 
-    // Model-type spec nodes only — skip custom user-created folders at scene root.
-    // Previously the code used a positional index over ALL children which broke if
-    // any custom folder lived at scene root level before the model nodes.
-    const savedModelSpecs = (savedSceneRoot?.children || []).filter(c => c.type === 'model');
+    // Model-type spec nodes — includes RM-converted models (B.2-NEW) so
+    // their geometry actually gets imported on reload. Without the
+    // originalType check, an RM-model's GLB would re-load but no spec
+    // would attach to the freshly-imported meshes → fresh IDs orphaned
+    // → entire model renders as bbox placeholders. Skip custom user-
+    // created folders at scene root either way.
+    const savedModelSpecs = (savedSceneRoot?.children || [])
+      .filter(_isModelOrRMModel);
 
     let modelSpecIndex = 0;
 
@@ -621,8 +734,41 @@ async function _onOpenProject() {
     materials.meshColorAssignments = { ...savedAssignments };
     materials.applyAll();
 
+    // Defensive: re-apply archived flags from the saved tree spec.
+    // applySpecFieldsToNodes already did this in-loop, but other
+    // load-time flows can disturb node state, and the initial tree
+    // render fires BEFORE archive flags settle — leaving origin nodes
+    // that the user archived (e.g., via "Archive and replace") visually
+    // un-archived on reload. Forcing a walk + emit closes the gap.
+    if (savedSceneRoot) {
+      const nbm = state.get('nodeById');
+      (function applyArch(spec) {
+        if (!spec) return;
+        const live = nbm?.get(spec.id);
+        if (live) live.archived = spec.archived === true;
+        for (const c of (spec.children || [])) applyArch(c);
+      })(savedSceneRoot);
+      state.emit('change:treeData', state.get('treeData'));
+    }
+
     // Stage scene from Step 0 (exact saved scene state), then activate first user step
     steps.activateBaseStep();
+
+    // Replace-Model post-load rebuild (B.2-NEW.2.5). Wraps each RM's
+    // original mesh in a Group + re-clones every child's source object3d
+    // into the wrap-group.
+    //
+    // Order matters: this runs AFTER activateBaseStep because the
+    // flatShape-origin RMs need their underlying Mesh built first (via
+    // ensureFlatShapeObject3D inside rebuildFromTreeSpec). Before that,
+    // steps.object3dById has no entry for the RM and the wrap can't
+    // happen. mesh-origin RMs work the same way — their mesh is built
+    // during model import, which finishes before this line.
+    //
+    // Subsequent step navigations preserve the wrap-group via
+    // rebuildFromTreeSpec's "skip rebuild when already wrapped" check.
+    try { actions.rebuildReplaceModelChildren?.(); }
+    catch (err) { console.warn('[replaceModel] post-load rebuild failed:', err); }
 
     const userSteps = (state.get('steps') || []).filter(s => !s.isBaseStep && !s.hidden);
     if (userSteps.length) {
@@ -990,9 +1136,11 @@ function _onFitAll() {
 }
 
 function _onToggleGrid() {
-  const vis = !state.get('gridVisible');
-  state.setState({ gridVisible: vis });
-  sceneCore.setGridVisible(vis);
+  const before = !!state.get('gridVisible');
+  const vis    = !before;
+  const apply  = (v) => { state.setState({ gridVisible: v }); sceneCore.setGridVisible(v); };
+  apply(vis);
+  actions.pushSetterUndo(vis ? 'Show grid' : 'Hide grid', apply, before, vis);
 }
 
 function _onToggleTheme() {
@@ -1120,8 +1268,143 @@ function _showFolderNameDialog(defaultVal, onConfirm) {
 //  COLORS TAB
 // ═══════════════════════════════════════════════════════════════════════════
 
-// Which preset is currently expanded for editing
+// Which preset is currently expanded for editing (derived: the sole
+// selected preset). Mirrors selectedColorPresetIds when its size === 1.
 let _expandedPresetId = null;
+// Shift-range anchor for file-manager color-preset selection.
+let _colorAnchorId = null;
+// V0.2.4: outline-card collapse state. Auto-collapses when the outline is
+// turned OFF; user can manually toggle via the ▼ arrow on the header.
+let _outlineCollapsed = false;
+
+// ── Ctrl+L-drag marquee in the Colors list (V0.2.8) ─────────────────────
+// Replaces the broken Shift+click-range. A Ctrl/⌘ + left-mouse drag inside
+// #color-list draws a translucent box; on release, every color row whose
+// row rect intersects the box is TOGGLED in/out of the tab selection.
+// `_colorMarqueeJustDragged` blocks the click event that fires on the same
+// element after release, so the drag's selection isn't clobbered.
+let _colorMarqueeJustDragged = false;
+
+function _setupColorMarquee() {
+  const panel = _panel('colors');
+  if (!panel) return;
+  let down = null;       // { x, y } on Ctrl+pointerdown
+  let box  = null;       // the visual marquee div (created on first move)
+
+  panel.addEventListener('pointerdown', (e) => {
+    if (e.button !== 0) return;
+    if (!(e.ctrlKey || e.metaKey)) return;
+    const list = panel.querySelector('#color-list');
+    if (!list || !list.contains(e.target)) return;
+    down = { x: e.clientX, y: e.clientY };
+    e.preventDefault();
+  });
+  document.addEventListener('pointermove', (e) => {
+    if (!down) return;
+    const dx = e.clientX - down.x, dy = e.clientY - down.y;
+    if (!box && (dx * dx + dy * dy) < 25) return;   // < 5px threshold = treat as a click
+    if (!box) {
+      box = document.createElement('div');
+      box.style.cssText = 'position:fixed;pointer-events:none;z-index:9999;'
+        + 'background:rgba(74,144,217,0.15);border:1px dashed #4A90D9;border-radius:2px';
+      document.body.appendChild(box);
+    }
+    const x1 = Math.min(down.x, e.clientX), y1 = Math.min(down.y, e.clientY);
+    const x2 = Math.max(down.x, e.clientX), y2 = Math.max(down.y, e.clientY);
+    box.style.left = x1 + 'px'; box.style.top = y1 + 'px';
+    box.style.width = (x2 - x1) + 'px'; box.style.height = (y2 - y1) + 'px';
+  });
+  document.addEventListener('pointerup', () => {
+    if (!down) return;
+    if (box) {
+      const r = box.getBoundingClientRect();
+      box.remove(); box = null;
+      _colorMarqueeJustDragged = true;
+      setTimeout(() => { _colorMarqueeJustDragged = false; }, 60);
+      const list = panel.querySelector('#color-list');
+      const sel  = new Set(state.get('selectedColorPresetIds') || []);
+      let changed = false;
+      list?.querySelectorAll('.colorRow[data-preset-id]').forEach(row => {
+        const rect = row.getBoundingClientRect();
+        if (rect.right < r.left || rect.left > r.right
+         || rect.bottom < r.top  || rect.top > r.bottom) return;
+        const pid = row.dataset.presetId;
+        if (sel.has(pid)) sel.delete(pid); else sel.add(pid);
+        changed = true;
+      });
+      if (changed) {
+        actions.setColorSelection(sel);
+        _renderColorsTab();
+      }
+    }
+    down = null;
+  });
+}
+
+/**
+ * V0.2.6: viewport highlight bound to the EXPANDED color row. Meshes that
+ * use the expanded preset AND are currently scene-selected get a YELLOW
+ * hull (visible meshes) or MAGENTA ghost (hidden meshes). Cleared when no
+ * color is expanded. Re-runs on selection / step / visibility changes.
+ */
+function _syncExpandedColorHighlight() {
+  if (!_expandedPresetId) { materials.clearExpandedColorHighlight(); return; }
+  const sceneSel = new Set();
+  const sId = state.get('selectedId');
+  if (sId) sceneSel.add(sId);
+  const m = state.get('multiSelectedIds');
+  if (m instanceof Set) for (const id of m) sceneSel.add(id);
+  if (sceneSel.size === 0) { materials.clearExpandedColorHighlight(); return; }
+  const ids = new Set();
+  for (const [mid, pid] of Object.entries(materials.meshColorAssignments)) {
+    if (pid === _expandedPresetId && sceneSel.has(mid)) ids.add(mid);
+  }
+  for (const [mid, pid] of Object.entries(materials.meshDefaultColors)) {
+    if (pid === _expandedPresetId && sceneSel.has(mid)) ids.add(mid);
+  }
+  materials.applyExpandedColorHighlight([...ids]);
+}
+
+/**
+ * File-manager click selection for color-preset rows.
+ *   plain → replace, Ctrl/⌘ → toggle, Shift → range from the anchor.
+ * Selecting exactly one preset opens its edit card (handled in render).
+ */
+function _onColorRowClick(e, presetId, presets) {
+  // Suppress click after a Ctrl+drag marquee just finished — the drag set
+  // the selection; the trailing click would clobber it.
+  if (_colorMarqueeJustDragged) return;
+  // V0.2.8 click rules:
+  //   Ctrl/⌘+L-click  → toggle the row in/out of the selection.
+  //   Plain L-click on a SELECTED row → only toggle the editor expand;
+  //                                     selection untouched.
+  //   Plain L-click on an UNSELECTED row → REPLACE selection with just
+  //                                        this row (and expand it).
+  //   Shift+L-click   → no special handling (range removed; use Ctrl+drag
+  //                     marquee instead — see _colorMarquee below).
+  let sel = new Set(state.get('selectedColorPresetIds') || []);
+  let selChanged = false;
+  if (e.ctrlKey || e.metaKey) {
+    if (sel.has(presetId)) sel.delete(presetId); else sel.add(presetId);
+    _colorAnchorId = presetId;
+    selChanged = true;
+  } else {
+    if (sel.has(presetId)) {
+      // Already selected → just toggle expand.
+      if (_expandedPresetId === presetId) _expandedPresetId = null;
+      else                                _expandedPresetId = presetId;
+    } else {
+      // Not selected → replace selection with this one (drop everything
+      // else, so the rest lose the blue border + leave the ✦ filter).
+      sel = new Set([presetId]);
+      _expandedPresetId = presetId;
+      selChanged = true;
+    }
+    _colorAnchorId = presetId;
+  }
+  if (selChanged) actions.setColorSelection(sel);
+  _renderColorsTab();
+}
 
 // Re-render guard: while the user has focus on any input inside the
 // Colors tab (text, color picker, slider, dropdown, …), re-rendering
@@ -1152,6 +1435,14 @@ function _renderColorsTab() {
   if (!el) return;
 
   const presets    = state.get('colorPresets') || [];
+  // Tab multi-select (file-manager). The edit card shows only when exactly
+  // one preset is selected; `_expandedPresetId` mirrors that sole id so the
+  // Assign / Set-default buttons keep a single target.
+  const selPresetIds = new Set([...(state.get('selectedColorPresetIds') || [])].filter(id => presets.some(p => p.id === id)));
+  // V0.2.4: plain-click in the tab OWNS _expandedPresetId — selection is
+  // independent (driven by scene auto-sync + Ctrl/Shift). We just validate
+  // the expanded id still references an existing preset.
+  if (_expandedPresetId && !presets.some(p => p.id === _expandedPresetId)) _expandedPresetId = null;
   const outline    = state.get('geometryOutline') || {};
   const multiIds   = state.get('multiSelectedIds') || new Set();
   const selId      = state.get('selectedId');
@@ -1159,43 +1450,112 @@ function _renderColorsTab() {
   const solidness0 = outline.opacity ?? 0.9;
   const crease0    = outline.creaseAngle ?? 35;
 
-  // Resolve selected nodes that can receive color presets: model meshes
-  // AND flatShapes (polygon shapes — image-shapes are filtered out by
-  // applyAll's flatShape branch since their texture dominates).
-  // Folders/models/scene-root can't receive presets directly.
+  // Resolve selected nodes that can receive color presets: model meshes,
+  // flatShapes (polygon shapes), AND replaceModel containers. RM passes
+  // its id through to actions.assignPreset where _expandRMSelection
+  // cascades the color to every child copy inside the RM (B.2-NEW.2).
+  // Folders / models / scene-root can't receive presets directly.
   const allSelIds = multiIds.size ? Array.from(multiIds) : (selId ? [selId] : []);
   const meshIds   = allSelIds.filter(id => {
     const t = nodeById.get(id)?.type;
-    return t === 'mesh' || t === 'flatShape';
+    return t === 'mesh' || t === 'flatShape' || t === 'replaceModel';
   });
+
+  // V0.1.99/V0.2.2: presets used by visible meshes (drives the 👁 filter).
+  // The "used-by-scene-selection" highlight is gone — that set IS the tab
+  // selection now (projectSceneSelectionToColorsTab keeps it synced), so
+  // the standard .selected styling already shows the user which colors
+  // their scene selection uses, AND r-click → Unify acts on them directly.
+  const filterVisible       = !!state.get('colorTabFilterVisibleOnly');
+  const filterSelectedFirst = !!state.get('colorTabFilterSelectedFirst');
+  const usedByVisible       = new Set();
+  // V0.2.4: build the per-preset visibility info AND a "meshes-using-preset"
+  // index, so we can score each selected preset into one of 4 states.
+  const meshesUsingPreset = new Map();   // pid → Set<meshId>
+  const _addUse = (mid, pid) => {
+    if (!pid) return;
+    if (!meshesUsingPreset.has(pid)) meshesUsingPreset.set(pid, new Set());
+    meshesUsingPreset.get(pid).add(mid);
+  };
+  for (const [mid, pid] of Object.entries(materials.meshColorAssignments)) _addUse(mid, pid);
+  for (const [mid, pid] of Object.entries(materials.meshDefaultColors))    _addUse(mid, pid);
+  for (const [mid, mesh] of materials.meshById) {
+    let vis = true;
+    for (let o = mesh; o; o = o.parent) { if (o.visible === false) { vis = false; break; } }
+    if (!vis) continue;
+    const pid = materials.meshColorAssignments[mid] ?? materials.meshDefaultColors[mid];
+    if (pid) usedByVisible.add(pid);
+  }
+  // Scene-selected mesh ids (for state 1 / 2 detection).
+  const sceneSelMeshIds = new Set();
+  if (selId) sceneSelMeshIds.add(selId);
+  if (multiIds instanceof Set) for (const id of multiIds) sceneSelMeshIds.add(id);
+
+  /**
+   * Scene-only state for a preset's background fill (V0.2.9). Independent
+   * of tab selection — the background indicates the color's PRESENCE in the
+   * viewport, not whether the row is in the tab selection. Returns:
+   *   'all'  — every mesh that uses this preset is scene-selected
+   *   'some' — ≥1 (but not all) scene-selected
+   *   'none' — no scene-selected meshes (or no meshes at all)
+   */
+  const sceneStateFor = (presetId) => {
+    const assoc = meshesUsingPreset.get(presetId);
+    if (!assoc || assoc.size === 0) return 'none';
+    let inScene = 0;
+    for (const id of assoc) if (sceneSelMeshIds.has(id)) inScene++;
+    if (inScene === 0) return 'none';
+    return inScene === assoc.size ? 'all' : 'some';
+  };
 
   el.innerHTML = `
     <div class="section">
-      <div class="title">Colors</div>
-      <div class="grid2">
-        <button class="btn" id="btn-add-preset">+ Add Color</button>
-        <button class="btn" id="btn-assign-preset">Assign to Selected</button>
-        <button class="btn" id="btn-assign-default" title="Set as permanent default for selected meshes">★ Set as Default</button>
-        <button class="btn" id="btn-revert-default" title="Restore each selected mesh to its default color">↩ Revert to Default</button>
-      </div>
+      <div style="position:sticky;top:0;z-index:3;background:var(--bg);padding-bottom:8px">
+        <div style="display:flex;align-items:center;justify-content:space-between;gap:8px;flex-wrap:wrap">
+          <div class="title">Colors</div>
+          <div style="display:flex;align-items:center;gap:10px">
+            <label class="small muted" style="display:flex;align-items:center;gap:4px;cursor:pointer;user-select:none"
+                   title="Float colors used by currently-visible objects to the top; grey out the rest (still clickable).">
+              <input type="checkbox" id="color-filter-visible" ${state.get('colorTabFilterVisibleOnly') ? 'checked' : ''}/>
+              <span>👁 filter</span>
+            </label>
+            <label class="small muted" style="display:flex;align-items:center;gap:4px;cursor:pointer;user-select:none"
+                   title="Auto-elevate currently-selected colors to the very top of the list.">
+              <input type="checkbox" id="color-filter-selected" ${state.get('colorTabFilterSelectedFirst') ? 'checked' : ''}/>
+              <span>✦ selected</span>
+            </label>
+          </div>
+        </div>
+        <div class="grid2">
+          <button class="btn" id="btn-add-preset">+ Add Color</button>
+          <button class="btn" id="btn-assign-preset">Assign to Selected</button>
+          <button class="btn" id="btn-assign-default" title="Set as permanent default for selected meshes">★ Set as Default</button>
+          <button class="btn" id="btn-revert-default" title="Restore each selected mesh to its default color">↩ Revert to Default</button>
+        </div>
 
-      <div class="card" style="margin-top:8px">
-        <div class="row" style="margin-top:0">
-          <div class="small">Global geometry outline</div>
-          <button class="toggle${outline.enabled ? ' on' : ''}" id="outline-toggle"><span class="knob"></span></button>
+        <div class="card" style="margin-top:8px">
+          <div class="row" id="outline-header" style="margin-top:0;cursor:pointer">
+            <span id="outline-collapse-arrow" style="font-size:10px;opacity:0.7;margin-right:4px;width:10px;display:inline-block;text-align:center">${(!outline.enabled || _outlineCollapsed) ? '▶' : '▼'}</span>
+            <div class="small" style="flex:1">Global geometry outline</div>
+            <button class="toggle${outline.enabled ? ' on' : ''}" id="outline-toggle"><span class="knob"></span></button>
+          </div>
+          ${(outline.enabled && !_outlineCollapsed) ? `
+          <div class="grid2" style="margin-top:8px">
+            <label class="colorlab">Outline color
+              <input id="outline-color" type="color" value="${outline.color || '#000000'}" style="margin-top:6px" />
+            </label>
+            <label class="colorlab">Opacity
+              <input id="outline-opacity" type="number" min="0" max="1" step="0.05" value="${solidness0}" style="margin-top:6px" />
+            </label>
+          </div>
+          <div style="margin-top:8px">
+            <label class="colorlab">Crease angle (degrees)
+              <input id="outline-crease" type="number" min="1" max="180" step="1" value="${crease0}" style="margin-top:6px" />
+            </label>
+          </div>` : ''}
         </div>
-        <div class="grid2" style="margin-top:8px">
-          <label class="colorlab">Outline color
-            <input id="outline-color" type="color" value="${outline.color || '#000000'}" style="margin-top:6px" />
-          </label>
-          <label class="colorlab">Opacity
-            <input id="outline-opacity" type="number" min="0" max="1" step="0.05" value="${solidness0}" style="margin-top:6px" />
-          </label>
-        </div>
-        <div style="margin-top:8px">
-          <label class="colorlab">Crease angle (degrees)
-            <input id="outline-crease" type="number" min="1" max="180" step="1" value="${crease0}" style="margin-top:6px" />
-          </label>
+        <div class="small muted" style="margin-top:6px">
+          Click to expand • Ctrl-click toggles selection • Shift range • R-click for unify / delete / invert
         </div>
       </div>
 
@@ -1205,23 +1565,60 @@ function _renderColorsTab() {
     </div>
   `;
 
-  // ── Outline controls ──────────────────────────────────────────────────────
-  el.querySelector('#outline-toggle').addEventListener('click', function() {
+  // ── Outline controls (undoable; setter re-applies the scene side-effect) ──
+  const _applyOutline = (v) => materials.setGeometryOutline(v);
+  const _outlinePatch = (patch, label) => {
+    const before = { ...(state.get('geometryOutline') || {}) };
+    materials.setGeometryOutline(patch);
+    const after  = { ...(state.get('geometryOutline') || {}) };
+    actions.pushSetterUndo(label, _applyOutline, before, after, 'geomOutline');
+  };
+  el.querySelector('#outline-toggle').addEventListener('click', function(e) {
+    e.stopPropagation();   // don't let the outline-header collapse toggle fire
     this.classList.toggle('on');
-    materials.setGeometryOutline({ enabled: this.classList.contains('on') });
+    const enabled = this.classList.contains('on');
+    _outlinePatch({ enabled }, 'Toggle geometry outline');
+    // Turning OFF → auto-collapse the controls; ON → auto-expand.
+    _outlineCollapsed = !enabled;
+    _renderColorsTab();
   });
-  el.querySelector('#outline-color').addEventListener('input', e =>
-    materials.setGeometryOutline({ color: e.target.value }));
-  el.querySelector('#outline-opacity').addEventListener('input', e =>
-    materials.setGeometryOutline({ opacity: Number(e.target.value) }));
-  el.querySelector('#outline-crease').addEventListener('input', e =>
-    materials.setGeometryOutline({ creaseAngle: Number(e.target.value) }));
+  // ▼ / ▶ arrow on the outline header — manually toggle the controls.
+  el.querySelector('#outline-header')?.addEventListener('click', (e) => {
+    if (e.target.closest('#outline-toggle')) return;   // toggle handles itself
+    _outlineCollapsed = !_outlineCollapsed;
+    _renderColorsTab();
+  });
+  // Only present when expanded — guard with optional chaining.
+  el.querySelector('#outline-color')?.addEventListener('input', e =>
+    _outlinePatch({ color: e.target.value }, 'Outline color'));
+  el.querySelector('#outline-opacity')?.addEventListener('input', e =>
+    _outlinePatch({ opacity: Number(e.target.value) }, 'Outline opacity'));
+  el.querySelector('#outline-crease')?.addEventListener('input', e =>
+    _outlinePatch({ creaseAngle: Number(e.target.value) }, 'Outline crease angle'));
 
   // ── Add preset ────────────────────────────────────────────────────────────
   el.querySelector('#btn-add-preset').addEventListener('click', () => {
-    const p = materials.createPreset({ name: `Color ${presets.length + 1}` });
-    _expandedPresetId = p.id;
+    const p = actions.addColorPreset({ name: `Color ${presets.length + 1}` });
+    if (p) {
+      _colorAnchorId = p.id;
+      state.setState({ selectedColorPresetIds: new Set([p.id]) });
+    }
     _renderColorsTab();
+  });
+
+  // 👁 filter — float colors used by visible objects to the top. blur()
+  // after change so focus leaves the checkbox and the deferred render flushes
+  // immediately (without it, _shouldDeferColorsRender held the redraw until
+  // the next interaction — the filter looked "frozen" until you clicked
+  // something else).
+  el.querySelector('#color-filter-visible')?.addEventListener('change', e => {
+    state.setState({ colorTabFilterVisibleOnly: e.target.checked });
+    e.target.blur();
+  });
+  // ✦ selected — float currently-selected colors to the very top.
+  el.querySelector('#color-filter-selected')?.addEventListener('change', e => {
+    state.setState({ colorTabFilterSelectedFirst: e.target.checked });
+    e.target.blur();
   });
 
   // ── Assign to selected (step override) ───────────────────────────────────
@@ -1264,7 +1661,45 @@ function _renderColorsTab() {
 
   const HATCH = 'repeating-linear-gradient(135deg,rgba(120,120,120,0.18) 0px,rgba(120,120,120,0.18) 4px,transparent 4px,transparent 11px)';
 
-  for (const preset of presets) {
+  // V0.2.9 ordering. When ✦ filter is on, tab-selected presets fan out by
+  // the scene-state hierarchy (all → some → tabonly); non-selected follow.
+  //   scores: 0 = selected + state-all
+  //           1 = selected + state-some
+  //           2 = selected + state-tabonly (no scene-selected meshes)
+  //           4 = non-selected, used-by-visible (when 👁 filter on)
+  //           5 = everything else (dimmed if 👁 filter on)
+  const scoreOf = (p) => {
+    if (filterSelectedFirst && selPresetIds.has(p.id)) {
+      const ss = sceneStateFor(p.id);
+      return ss === 'all' ? 0 : ss === 'some' ? 1 : 2;
+    }
+    if (filterVisible && usedByVisible.has(p.id)) return 4;
+    return 5;
+  };
+  const annotated = presets.map((p, i) => ({ p, i, score: scoreOf(p) }));
+  annotated.sort((a, b) => a.score - b.score || a.i - b.i);
+  const order = annotated.map(x => x.p);
+  const labelForBoundary = (toScore) =>
+    toScore === 4 ? 'all colors'
+    : toScore === 5 ? (filterVisible ? 'not in view' : 'all colors')
+    : null;
+
+  let _prevScore = -1;
+  let _oi = -1;
+  for (const preset of order) {
+    _oi++;
+    const score = scoreOf(preset);
+    if (_oi > 0 && score !== _prevScore) {
+      const label = labelForBoundary(score);
+      if (label) {
+        const sep = document.createElement('div');
+        sep.style.cssText = 'display:flex;align-items:center;gap:8px;margin:12px 0 4px;opacity:0.7;font-size:11px;color:var(--text)';
+        sep.innerHTML = `<span style="flex:1;height:1px;background:var(--line)"></span><span>${label}</span><span style="flex:1;height:1px;background:var(--line)"></span>`;
+        list.appendChild(sep);
+      }
+    }
+    _prevScore = score;
+    const dim           = filterVisible && score === 5;
     const expanded      = _expandedPresetId === preset.id;
     const solidness     = preset.solidness ?? 1.0;
     const isDefault     = defaultIds.has(preset.id);
@@ -1273,65 +1708,125 @@ function _renderColorsTab() {
                         : solidness <= 0.001 ? 'X-ray'
                         : `${Math.round(solidness * 100)}% Solid`;
 
+    const selected = selPresetIds.has(preset.id);
+    // V0.2.9: background fills are INDEPENDENT of tab selection.
+    //   state-all  / state-some → driven purely by scene selection (apply
+    //                              whether the row is in the tab sel or not).
+    //   state-tabonly           → the ONLY tab-driven background — grey,
+    //                              shown when a row is in the tab sel but
+    //                              has no scene-selected meshes.
+    //   .selected               → adds only the blue outline.
+    const ss = sceneStateFor(preset.id);
+    let fillClass = '';
+    if      (ss === 'all')  fillClass = ' state-all';
+    else if (ss === 'some') fillClass = ' state-some';
+    else if (selected)      fillClass = ' state-tabonly';
     const row = document.createElement('div');
-    row.className = 'colorRow' + (expanded ? ' selected' : '');
+    row.className = 'colorRow' + (selected ? ' selected' : '') + fillClass;
+    row.dataset.presetId = preset.id;   // V0.2.8: lets the Ctrl+drag marquee identify rows
     row.style.cursor = 'pointer';
     if (usedByMissing) row.style.backgroundImage = HATCH;
+    if (dim) { row.style.opacity = '0.5'; row.style.filter = 'grayscale(0.6)'; }
 
+    // V0.2.5: name is always TEXT on the bar so clicking ~90% of the bar
+    // toggles expand/collapse. Renaming is only possible when expanded, via
+    // the ✎ icon to the LEFT of the name (clicking ✎ swaps the span for an
+    // input). The swatch + ✎ stop propagation so they don't toggle the row.
+    const renameIcon = expanded
+      ? `<span class="cp-rename-icon" title="Rename color"
+              style="cursor:pointer;font-size:13px;opacity:0.7;padding:0 3px;flex:0 0 auto;color:var(--text)">✎</span>`
+      : '';
     row.innerHTML = `
-      <span class="colorSwatch" style="background:${preset.color || '#4a90d9'}"></span>
-      <span class="small" style="flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">
+      <input type="color" class="cp-color" value="${preset.color || '#4a90d9'}" title="Edit color"
+             style="width:36px;height:20px;padding:0;border:1px solid rgba(255,255,255,.25);border-radius:6px;cursor:pointer;
+                    flex:0 0 auto;-webkit-appearance:none;appearance:none;background:transparent" />
+      ${renameIcon}
+      <span class="cp-row-name small" style="flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">
         ${isDefault ? '<span class="defaultStar" title="Used as a default color">★</span>' : ''}${_esc(preset.name)}
       </span>
       <span class="colorMeta">${modeLabel}</span>
     `;
 
-    // Click anywhere on bar → toggle expand
-    row.addEventListener('click', () => {
-      _expandedPresetId = expanded ? null : preset.id;
-      _renderColorsTab();
-    });
+    // Click → file-manager selection (plain = replace/collapse, Ctrl =
+    // toggle, Shift = range). Selecting exactly one opens its edit card.
+    row.addEventListener('click', (e) => _onColorRowClick(e, preset.id, presets));
 
-    // Click directly on the swatch → expand AND fire the native color
-    // picker. Lets the user go from a collapsed preset row to "I'm
-    // editing a colour right now" in one click.
-    //
-    // Mechanics: when the row is collapsed we re-render the tab, which
-    // rebuilds the DOM and would normally swallow the user gesture
-    // before we could open the picker. Use HTMLInputElement.showPicker()
-    // — the standard programmatic-open path that survives the rebuild
-    // (Chrome 99+ / Electron). Fall back to .click() on older browsers.
-    // We also focus() the input first so that subsequent state changes
-    // are caught by _shouldDeferColorsRender and don't yank the popup
-    // off-screen.
-    row.querySelector('.colorSwatch')?.addEventListener('click', e => {
-      e.stopPropagation();          // suppress the row's toggle handler
-      e.preventDefault();
-      const wasOpen = _expandedPresetId === preset.id;
-      _expandedPresetId = preset.id;
-      if (!wasOpen) _renderColorsTab();
-      const cp = _panel('colors')?.querySelector('.cp-color');
-      if (!cp) return;
-      cp.focus();
-      try {
-        if (typeof cp.showPicker === 'function') cp.showPicker();
-        else cp.click();
-      } catch (_) {
-        cp.click();
-      }
-    });
+    // Swatch IS a native color input — opens the picker in BOTH collapsed
+    // and expanded states. begin/commit bracket the undo entry.
+    const sw = row.querySelector('.cp-color');
+    sw.addEventListener('click',  e => e.stopPropagation());   // don't toggle the row
+    sw.addEventListener('focus',  () => actions.beginPresetEdit(preset.id));
+    sw.addEventListener('input',  e => { materials.updatePreset(preset.id, { color: e.target.value }); });
+    sw.addEventListener('change', () => actions.commitPresetEdit(preset.id));
+
+    // Rename via the ✎ icon (expanded only). Click ✎ → swap the name span
+    // for an editable input + focus it. Enter / blur commits; Esc cancels.
+    const renIcon = row.querySelector('.cp-rename-icon');
+    if (renIcon) {
+      renIcon.addEventListener('click', e => {
+        e.stopPropagation();
+        const span = row.querySelector('.cp-row-name');
+        if (!span) return;
+        const input = document.createElement('input');
+        input.type  = 'text';
+        input.value = preset.name;
+        input.className = 'cp-row-name small';
+        input.style.cssText = 'flex:1;min-width:0;background:var(--panel2,var(--bg));'
+          + 'border:1px solid var(--line);border-radius:4px;color:var(--text);'
+          + 'font-size:12px;padding:2px 6px';
+        input.addEventListener('click',   ev => ev.stopPropagation());
+        input.addEventListener('keydown', ev => {
+          if (ev.key === 'Enter')      input.blur();
+          else if (ev.key === 'Escape'){ input.value = preset.name; input.blur(); }
+        });
+        let done = false;
+        input.addEventListener('blur', () => {
+          if (done) return; done = true;
+          const v = input.value.trim() || preset.name;
+          if (v !== preset.name) actions.updatePreset(preset.id, { name: v });
+          _renderColorsTab();
+        });
+        span.replaceWith(input);
+        input.focus(); input.select();
+      });
+    }
 
     row.addEventListener('contextmenu', e => {
       e.preventDefault();
-      _showColorContextMenu(preset, e.clientX, e.clientY, meshIds);
+      // If the r-clicked preset isn't part of the current multi-select,
+      // collapse selection to just it (mirrors tree / shape-tab behaviour).
+      let sel = new Set(state.get('selectedColorPresetIds') || []);
+      if (!sel.has(preset.id)) {
+        sel = new Set([preset.id]);
+        _colorAnchorId = preset.id;
+        state.setState({ selectedColorPresetIds: sel });
+        _renderColorsTab();
+      }
+      // Pass the source event so the menu can read the initial modifier
+      // state (Ctrl-held-at-show updates live labels immediately).
+      _showColorContextMenu(preset, e.clientX, e.clientY, meshIds, sel, e);
     });
 
-    list.appendChild(row);
+    // When expanded, wrap row + edit pane in .colorExpandWrap so the YELLOW
+    // outline (active-step style) extends around both together.
+    let wrap = null;
+    if (expanded) {
+      wrap = document.createElement('div');
+      wrap.className = 'colorExpandWrap';
+      wrap.appendChild(row);
+      list.appendChild(wrap);
+    } else {
+      list.appendChild(row);
+    }
 
     // ── Expanded edit card ────────────────────────────────────────────
     if (expanded) {
       const pane = document.createElement('div');
       pane.className = 'card';
+      // Distinct shade so the editor reads as boxed-in under its row. The
+      // yellow outline now lives on the wrapping .colorExpandWrap, not here.
+      pane.style.cssText = 'background:var(--panel2,rgba(127,127,127,0.06));'
+        + 'border:1px solid var(--line);margin-top:0';
 
       const missingWarningHtml = usedByMissing ? `
         <div style="display:flex;align-items:flex-start;gap:6px;padding:7px 10px;margin-bottom:10px;border-radius:8px;background:rgba(245,158,11,0.12);border:1px solid rgba(245,158,11,0.35)">
@@ -1341,13 +1836,7 @@ function _renderColorsTab() {
 
       pane.innerHTML = `
         ${missingWarningHtml}
-        <label class="colorlab">Name
-          <input type="text" class="cp-name" value="${_esc(preset.name)}" style="margin-top:6px" />
-        </label>
-        <label class="colorlab" style="margin-top:8px">Color
-          <input type="color" class="cp-color" value="${preset.color || '#4a90d9'}" style="margin-top:6px" />
-        </label>
-        <label class="colorlab" style="margin-top:8px">Solidness
+        <label class="colorlab">Solidness
           <div style="display:flex;align-items:center;gap:8px;margin-top:6px">
             <input type="range" class="cp-solidness" min="0" max="1" step="0.01" value="${solidness}" style="flex:1" />
             <span class="cp-sol-val small muted">${solidness.toFixed(2)}</span>
@@ -1387,21 +1876,10 @@ function _renderColorsTab() {
         </div>
       `;
 
-      // live update (no undo entry) — undo entry created on commit
+      // live update (no undo entry) — undo entry created on commit.
+      // Name + Color now live on the bar (cp-row-name + cp-color swatch).
       const _live = (key, val) => materials.updatePreset(preset.id, { [key]: val });
       const _upd  = (key, val) => actions.updatePreset(preset.id, { [key]: val });
-
-      pane.querySelector('.cp-name').addEventListener('change', e => {
-        _upd('name', e.target.value.trim() || preset.name); _renderColorsTab();
-      });
-
-      const colorPicker = pane.querySelector('.cp-color');
-      colorPicker.addEventListener('focus',  () => actions.beginPresetEdit(preset.id));
-      colorPicker.addEventListener('input',  e => {
-        _live('color', e.target.value);
-        row.querySelector('.colorSwatch').style.background = e.target.value;
-      });
-      colorPicker.addEventListener('change', () => actions.commitPresetEdit(preset.id));
 
       const _wireSliderUndo = (slider, valEl, key, fmt = v => Number(v).toFixed(2)) => {
         slider.addEventListener('pointerdown', () => actions.beginPresetEdit(preset.id));
@@ -1427,9 +1905,14 @@ function _renderColorsTab() {
       pane.querySelector('.cp-del').addEventListener('click', () =>
         _deletePresetWithProtection(preset, presets, missingMeshIds));
 
-      list.appendChild(pane);
+      wrap.appendChild(pane);
     }
   }
+
+  // V0.2.6: refresh the yellow/magenta viewport highlight tied to the
+  // currently-expanded color (plain-click expand changes _expandedPresetId
+  // without a state event, so the listeners alone wouldn't catch it).
+  _syncExpandedColorHighlight();
 }
 
 // ── Missing-asset helpers for color tab ───────────────────────────────────────
@@ -1464,30 +1947,112 @@ function _getMissingAssetPresets(missingMeshIds) {
 }
 
 // ── Color right-click context menu ────────────────────────────────────────────
-function _showColorContextMenu(preset, x, y, selectedMeshIds) {
+function _showColorContextMenu(preset, x, y, selectedMeshIds, selIds, srcEvent) {
   const activeMatches  = Object.entries(materials.meshColorAssignments)
     .filter(([, pid]) => pid === preset.id).map(([id]) => id);
   const defaultMatches = Object.entries(materials.meshDefaultColors)
     .filter(([, pid]) => pid === preset.id).map(([id]) => id);
 
+  // Multi-select header (V0.1.97): when 2+ presets are selected, offer
+  // Unify (merge all into the right-clicked survivor) and bulk Delete.
+  const sel = selIds instanceof Set ? selIds : new Set([preset.id]);
+  const multiItems = [];
+  if (sel.size >= 2) {
+    const n = sel.size;
+    multiItems.push({
+      label: `🔗 Unify ${n} colors → "${preset.name}"`,
+      action: () => {
+        if (actions.unifyPresets(preset.id, [...sel])) {
+          state.setState({ selectedColorPresetIds: new Set([preset.id]) });
+          _colorAnchorId = preset.id;
+          setStatus(`Unified ${n} colors into "${preset.name}".`);
+          _renderColorsTab();
+        }
+      },
+    });
+    multiItems.push({
+      label: `🗑 Delete ${n} colors`,
+      action: () => {
+        const r = actions.deletePresets([...sel]);
+        state.setState({ selectedColorPresetIds: new Set() });
+        if (r.skipped > 0) {
+          setStatus(`Deleted ${r.deleted}; skipped ${r.skipped} still used as a default — unify or reassign those first.`, 'warning');
+        } else {
+          setStatus(`Deleted ${r.deleted} color${r.deleted === 1 ? '' : 's'}.`);
+        }
+        _renderColorsTab();
+      },
+    });
+    // "Select by all selected colors" — every mesh that uses ANY of the
+    // currently-selected presets (active assignment OR project default).
+    const allColorMatches = new Set();
+    for (const pid of sel) {
+      for (const [mid, p] of Object.entries(materials.meshColorAssignments)) {
+        if (p === pid) allColorMatches.add(mid);
+      }
+      for (const [mid, p] of Object.entries(materials.meshDefaultColors)) {
+        if (p === pid) allColorMatches.add(mid);
+      }
+    }
+    multiItems.push({
+      // Live label tri-state — held Alt → "Remove from", Ctrl → "Add to",
+      // none → "Select by". The action branches at click time on the same
+      // modifier state so the menu and behavior stay in sync.
+      label: `🎨☑ Select by all selected colors (${allColorMatches.size})`,
+      liveLabel: (m) => `🎨☑ ${_selectVerb(m)} all selected colors (${allColorMatches.size})`,
+      disabled: allColorMatches.size === 0,
+      action: (m) => _runSelectByMatches([...allColorMatches], m, `${sel.size} colors`),
+    });
+    multiItems.push({ separator: true });
+  }
+
   showContextMenu([
+    ...multiItems,
     {
       label:    `🎨 Select by active color (${activeMatches.length})`,
+      liveLabel:(m) => `🎨 ${_selectVerb(m)} active color (${activeMatches.length})`,
       disabled: activeMatches.length === 0,
-      action:   () => {
-        state.setSelection(activeMatches[0], new Set(activeMatches));
-        setStatus(`Selected ${activeMatches.length} mesh(es) using "${preset.name}".`);
-      },
+      action:   (m) => _runSelectByMatches(activeMatches, m, `active color "${preset.name}"`),
     },
     {
       label:    `🎨⭐ Select by default color (${defaultMatches.length})`,
+      liveLabel:(m) => `🎨⭐ ${_selectVerb(m)} default color (${defaultMatches.length})`,
       disabled: defaultMatches.length === 0,
+      action:   (m) => _runSelectByMatches(defaultMatches, m, `default color "${preset.name}"`),
+    },
+    { separator: true },
+    {
+      // V0.2.4: invert the TAB selection — works for single or multi.
+      label:    `🔄 Invert color selection (${(state.get('colorPresets') || []).length - sel.size})`,
+      disabled: (state.get('colorPresets') || []).length === 0,
       action:   () => {
-        state.setSelection(defaultMatches[0], new Set(defaultMatches));
-        setStatus(`Selected ${defaultMatches.length} mesh(es) with default "${preset.name}".`);
+        const all = state.get('colorPresets') || [];
+        const inv = new Set();
+        for (const p of all) if (!sel.has(p.id)) inv.add(p.id);
+        actions.setColorSelection(inv);
+        setStatus(`Inverted color selection (${inv.size}).`);
+      },
+    },
+    {
+      // V0.2.13: drop the entire tab color selection.
+      label:    `✦ Deselect all colors (${sel.size})`,
+      disabled: sel.size === 0,
+      action:   () => {
+        actions.setColorSelection(new Set());
+        setStatus('Color selection cleared.');
       },
     },
     { separator: true },
+    {
+      // Always applies the RIGHT-CLICKED color to the current scene
+      // selection, regardless of how many tab colors are multi-selected.
+      label:    `🎨 Assign "${preset.name}" to selected (${selectedMeshIds.length})`,
+      disabled: selectedMeshIds.length === 0,
+      action:   () => {
+        actions.assignPreset(selectedMeshIds, preset.id);
+        setStatus(`Applied "${preset.name}" to ${selectedMeshIds.length} mesh(es).`);
+      },
+    },
     {
       label:    `★ Set as default for selected (${selectedMeshIds.length})`,
       disabled: selectedMeshIds.length === 0,
@@ -1513,7 +2078,7 @@ function _showColorContextMenu(preset, x, y, selectedMeshIds) {
         setStatus(`Reverted ${selectedMeshIds.length} mesh(es) to default color.`);
       },
     },
-  ], x, y);
+  ], x, y, srcEvent ? { initialMods: srcEvent } : undefined);
 }
 
 // ── Delete with default-color + missing-asset protection ─────────────────────
@@ -1690,7 +2255,11 @@ function _renderSelectTab() {
   `;
 
   el.querySelector('#sel-outline-color').addEventListener('input', e => {
-    materials.setSelectionOutlineColor(e.target.value);
+    const before = state.get('selectionOutlineColor');
+    const after  = e.target.value;
+    materials.setSelectionOutlineColor(after);
+    actions.pushSetterUndo('Selection outline color',
+      v => materials.setSelectionOutlineColor(v), before, after, 'selOutline');
   });
 
   el.querySelector('#btn-sel-all-meshes').addEventListener('click', () => {
@@ -2616,7 +3185,7 @@ function _renderShapesTab() {
         <button class="btn" id="btn-new-shape" ${drawing || facePicking || imagePending ? 'disabled' : ''}
           style="flex:1">${drawing ? 'Drawing…' : '+ New Shape'}</button>
         ${drawing
-          ? `<button class="btn" id="btn-cancel-shape" style="background:#7f1d1d">Cancel</button>`
+          ? `<button class="btn" id="btn-cancel-shape" style="background:#7f1d1d;color:#fff">Cancel</button>`
           : ''}
       </div>
       <div style="display:flex;gap:8px;align-items:center;margin-top:6px">
@@ -2627,7 +3196,7 @@ function _renderShapesTab() {
           ${facePicking ? 'Click a face…' : '✂ Create shape from face'}
         </button>
         ${facePicking
-          ? `<button class="btn" id="btn-cancel-face-shape" style="background:#7f1d1d">Cancel</button>`
+          ? `<button class="btn" id="btn-cancel-face-shape" style="background:#7f1d1d;color:#fff">Cancel</button>`
           : ''}
       </div>
       <div style="display:flex;gap:8px;align-items:center;margin-top:6px">
@@ -2638,7 +3207,7 @@ function _renderShapesTab() {
           ${imagePending ? 'Click a face…' : '🖼 + Image'}
         </button>
         ${imagePending
-          ? `<button class="btn" id="btn-cancel-image" style="background:#7f1d1d">Cancel</button>`
+          ? `<button class="btn" id="btn-cancel-image" style="background:#7f1d1d;color:#fff">Cancel</button>`
           : ''}
       </div>
       <label class="small muted" style="display:block;margin-top:6px;line-height:1.4">
@@ -2663,44 +3232,20 @@ function _renderShapesTab() {
     </div>
 
     <div class="section">
-      <div style="display:flex;align-items:center;justify-content:space-between">
+      <div style="display:flex;align-items:center;justify-content:space-between;gap:8px">
         <div class="title">Templates (${tpls.length})</div>
+        <label class="small muted" style="display:flex;align-items:center;gap:4px;cursor:pointer;user-select:none"
+               title="Reorder: rows with currently-visible instances move to the top; rows with none drop below a separator and render greyed out (still clickable).">
+          <input type="checkbox" id="shape-filter-visible" ${state.get('shapeTabFilterVisibleOnly') ? 'checked' : ''}/>
+          <span>👁 filter</span>
+        </label>
       </div>
-      <div id="shape-list" style="margin-top:8px">${
-        tpls.length === 0
-          ? '<span class="small muted">No shapes yet. Click "+ New Shape" to draw one.</span>'
-          : tpls.map(t => {
-              const ct = counts.get(t.id) || 0;
-              const isSel    = selectedTplId === t.id;
-              const isArmed  = placeArmedFor === t.id;
-              const rowStyle = `margin-top:6px;padding:8px;display:flex;align-items:center;gap:8px`
-                + (isSel ? `;outline:2px solid #38bdf8;background:rgba(56,189,248,0.08)` : ``);
-              const placeLabel = isArmed ? 'Click viewport…' : 'Place';
-              const placeStyle = `font-size:11px;padding:3px 8px;flex-shrink:0`
-                + (isArmed ? `;background:#0369a1;color:#f1f5f9` : ``);
-              return `
-              <div class="card" data-shape-id="${_esc(t.id)}"
-                   style="${rowStyle}">
-                <span class="shape-swatch" data-tpl-id="${_esc(t.id)}"
-                      style="width:18px;height:18px;border:1px solid var(--line);border-radius:3px;
-                             background:${_esc(t.fill || '#cccccc')};cursor:pointer;flex-shrink:0"
-                      title="Edit colour"></span>
-                <input type="text" class="shape-name" data-tpl-id="${_esc(t.id)}"
-                       value="${_esc(t.name || '')}"
-                       style="flex:1;background:transparent;border:1px dashed transparent;
-                              color:inherit;font-size:13px;padding:2px 4px" />
-                <span class="small muted" style="flex-shrink:0">${ct}×</span>
-                <button class="btn" data-edit-id="${_esc(t.id)}"
-                        style="font-size:11px;padding:3px 8px;flex-shrink:0"
-                        title="Edit polygon — opens the viewport editor seeded at an existing instance.">Edit</button>
-                <button class="btn" data-place-id="${_esc(t.id)}"
-                        style="${placeStyle}"
-                        title="${isArmed ? 'Click a face in the viewport to drop the shape. Esc / right-click cancels.' : 'Click then click a face in the viewport to place tangent.'}">${placeLabel}</button>
-                <button class="btn" data-delete-id="${_esc(t.id)}"
-                        style="font-size:11px;padding:3px 8px;flex-shrink:0;background:#7f1d1d">×</button>
-              </div>`;
-            }).join('')
-      }</div>
+      <div class="small muted" style="margin-top:4px">
+        Ctrl-click rows to multi-select • Right-click to group / ungroup • Double-click name to rename
+      </div>
+      <div id="shape-list" style="margin-top:8px">${_renderShapeTabRows({
+        tpls, counts, selectedTplId, placeArmedFor,
+      })}</div>
     </div>
   `;
 
@@ -2742,31 +3287,254 @@ function _renderShapesTab() {
     });
   }
 
+  _wireShapeTabRows(el);
+}
+
+
+// ─── Shape tab — row renderer + event wiring (V0.1.85) ──────────────────
+//
+// Renders shape-template-groups (collapsible) above ungrouped templates.
+// Selection (Set<tplId> + Set<groupId>) is shown via cyan outline. A row
+// is "name-editable" only via dblclick on the name span — single-click
+// selects/multi-selects the row (no auto-rename). Group rows carry a
+// lock toggle (locked = viewport-pick promotion) and an eye toggle
+// (visible / hidden / mixed). The visibility filter hides every row
+// whose template/group has zero currently-visible instances.
+
+function _renderShapeTabRows({ tpls, counts, selectedTplId, placeArmedFor }) {
+  const groups   = state.get('shapeTemplateGroups')           || [];
+  const selT     = state.get('selectedShapeTemplateIds')      || new Set();
+  const selG     = state.get('selectedShapeTemplateGroupIds') || new Set();
+  const filterOn = !!state.get('shapeTabFilterVisibleOnly');
+
+  if (tpls.length === 0) {
+    return '<span class="small muted">No shapes yet. Click "+ New Shape" to draw one.</span>';
+  }
+
+  const tplById = new Map(tpls.map(t => [t.id, t]));
+  const grouped = new Set();
+  const groupOfTpl = new Map();   // tplId → owning group id
+  for (const g of groups) for (const id of g.templateIds) { grouped.add(id); groupOfTpl.set(id, g.id); }
+  const ungrouped = tpls.filter(t => !grouped.has(t.id));
+
+  // `dim` — when the filter is on and the row's roll-up vis state is
+  // 'hidden' or 'none', the row lives in the BELOW-separator section and
+  // renders greyed-out (still clickable, still hosts its buttons + r-click
+  // menu). Group members inherit their parent group's dim flag so a
+  // visible group never has a half-greyed member strip.
+  const renderTplRow = (t, indent = 0, dim = false) => {
+    const ct       = counts.get(t.id) || 0;
+    // A row counts as selected when it's directly in the tab selection,
+    // when it's the active flatShape's template, OR when its owning group
+    // is selected (group selection highlights the bar AND its members).
+    const ownGroupSel = groupOfTpl.has(t.id) && selG.has(groupOfTpl.get(t.id));
+    const isSel    = selT.has(t.id) || selectedTplId === t.id || ownGroupSel;
+    const isArmed  = placeArmedFor === t.id;
+    const visState = actions.getShapeTemplateVisibilityState(t.id);
+    const eyeIcon  = visState === 'hidden' ? '🚫'
+                   : visState === 'mixed'  ? '◐'
+                   : visState === 'none'   ? '·'
+                   :                         '👁';
+    const eyeOpacity = visState === 'visible' ? '1.0' : '0.6';
+    const rowStyle = `margin-top:6px;padding:8px;display:flex;align-items:center;gap:8px;cursor:pointer`
+      + (indent ? `;margin-left:${indent}px` : ``)
+      + (dim    ? `;opacity:0.45;filter:grayscale(0.6)` : ``)
+      + (isSel ? `;outline:2px solid #38bdf8;background:rgba(56,189,248,0.08)` : ``);
+    const placeLabel = isArmed ? 'Click viewport…' : 'Place';
+    const placeStyle = `font-size:11px;padding:3px 8px;flex-shrink:0`
+      + (isArmed ? `;background:#0369a1;color:#f1f5f9` : ``);
+    return `
+      <div class="card shape-row" data-shape-id="${_esc(t.id)}" style="${rowStyle}">
+        <span class="shape-swatch" data-tpl-id="${_esc(t.id)}"
+              style="width:18px;height:18px;border:1px solid var(--line);border-radius:3px;
+                     background:${_esc(t.fill || '#cccccc')};cursor:pointer;flex-shrink:0"
+              title="Edit colour"></span>
+        <span class="shape-eye" data-tpl-id="${_esc(t.id)}"
+              style="flex-shrink:0;cursor:pointer;font-size:14px;opacity:${eyeOpacity}"
+              title="Toggle visibility of all instances of this shape">${eyeIcon}</span>
+        <span class="shape-name" data-tpl-id="${_esc(t.id)}"
+              style="flex:1;font-size:13px;padding:2px 4px;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap"
+              title="Double-click to rename">${_esc(t.name || 'Shape')}</span>
+        <span class="small muted" style="flex-shrink:0">${ct}×</span>
+        <button class="btn" data-edit-id="${_esc(t.id)}"
+                style="font-size:11px;padding:3px 8px;flex-shrink:0"
+                title="Edit polygon — opens the viewport editor seeded at an existing instance.">Edit</button>
+        <button class="btn" data-place-id="${_esc(t.id)}"
+                style="${placeStyle}"
+                title="${isArmed ? 'Click a face in the viewport to drop the shape. Esc / right-click cancels.' : 'Click then click a face in the viewport to place tangent.'}">${placeLabel}</button>
+        <button class="btn" data-delete-id="${_esc(t.id)}"
+                style="font-size:11px;padding:3px 8px;flex-shrink:0;background:#7f1d1d;color:#fff">×</button>
+      </div>`;
+  };
+
+  const renderGroupRow = (g, dim = false) => {
+    const visState = actions.getShapeGroupVisibilityState(g.id);
+    const isSel    = selG.has(g.id);
+    const eyeIcon  = visState === 'hidden' ? '🚫'
+                   : visState === 'mixed'  ? '◐'
+                   : visState === 'none'   ? '·'
+                   :                         '👁';
+    const eyeOpacity = visState === 'visible' ? '1.0' : '0.6';
+    const lockIcon = g.locked ? '🔒︎' : 'ꗃ';
+    const twisty   = g.collapsed ? '▶' : '▼';
+    const headStyle = `margin-top:8px;padding:6px 8px;display:flex;align-items:center;gap:8px;cursor:pointer;background:rgba(56,189,248,0.04)`
+      + (dim   ? `;opacity:0.45;filter:grayscale(0.6)` : ``)
+      + (isSel ? `;outline:2px solid #38bdf8;background:rgba(56,189,248,0.12)` : ``);
+    const memberRows = g.collapsed ? '' : g.templateIds.map(tid => {
+      const t = tplById.get(tid);
+      return t ? renderTplRow(t, 18, dim) : '';
+    }).join('');
+    return `
+      <div class="card shape-group-row" data-group-id="${_esc(g.id)}" style="${headStyle}">
+        <span class="shape-group-twisty" data-group-id="${_esc(g.id)}"
+              style="flex-shrink:0;cursor:pointer;width:12px;text-align:center">${twisty}</span>
+        <span style="flex-shrink:0">📦</span>
+        <span class="shape-group-lock" data-group-id="${_esc(g.id)}"
+              style="flex-shrink:0;cursor:pointer;color:var(--text);opacity:0.9"
+              title="${g.locked ? 'Locked — viewport click on any member instance selects the whole group. Click to unlock.' : 'Unlocked — instances pick individually. Click to lock.'}">${lockIcon}</span>
+        <span class="shape-group-eye" data-group-id="${_esc(g.id)}"
+              style="flex-shrink:0;cursor:pointer;font-size:14px;opacity:${eyeOpacity}"
+              title="Toggle visibility of every instance of every shape in this group">${eyeIcon}</span>
+        <span class="shape-group-name" data-group-id="${_esc(g.id)}"
+              style="flex:1;font-size:13px;padding:2px 4px;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap"
+              title="Double-click to rename">${_esc(g.name || 'Shape Group')}</span>
+        <span class="small muted" style="flex-shrink:0">${g.templateIds.length}</span>
+      </div>
+      ${memberRows}`;
+  };
+
+  // Partition by current visibility roll-up. With the filter OFF the
+  // "hidden" bucket stays empty and everything renders in original order.
+  const isTplVisible   = t => {
+    const s = actions.getShapeTemplateVisibilityState(t.id);
+    return s === 'visible' || s === 'mixed';
+  };
+  const isGroupVisible = g => {
+    const s = actions.getShapeGroupVisibilityState(g.id);
+    return s === 'visible' || s === 'mixed';
+  };
+
+  const topItems    = [];
+  const bottomItems = [];
+  for (const g of groups) {
+    const html = renderGroupRow(g, false);
+    if (!filterOn || isGroupVisible(g)) topItems.push(html);
+    else                                bottomItems.push(renderGroupRow(g, true));
+  }
+  for (const t of ungrouped) {
+    const html = renderTplRow(t, 0, false);
+    if (!filterOn || isTplVisible(t)) topItems.push(html);
+    else                              bottomItems.push(renderTplRow(t, 0, true));
+  }
+
+  const separator = (filterOn && bottomItems.length > 0)
+    ? `<div class="small muted" style="display:flex;align-items:center;gap:8px;margin:14px 0 4px;opacity:0.7">
+         <span style="flex:1;height:1px;background:var(--line)"></span>
+         <span>hidden (${bottomItems.length})</span>
+         <span style="flex:1;height:1px;background:var(--line)"></span>
+       </div>`
+    : '';
+
+  return topItems.join('') + separator + bottomItems.join('');
+}
+
+function _wireShapeTabRows(el) {
+  // Filter toggle
+  el.querySelector('#shape-filter-visible')?.addEventListener('change', e => {
+    actions.setShapeTabFilterVisibleOnly(e.target.checked);
+  });
+
+  // ── Row-level interactions (selection, rename, swatch, buttons) ──────
+  el.querySelectorAll('.shape-row').forEach(row => {
+    const tplId = row.dataset.shapeId;
+    row.addEventListener('click', e => {
+      // Inner controls (buttons, swatch, eye) keep their own handlers.
+      // The NAME does NOT short-circuit — clicking the bar (which the name
+      // mostly fills) selects the row; rename is dblclick-only.
+      if (e.target.closest('button, .shape-swatch, .shape-eye')) return;
+      const mode = (e.ctrlKey || e.metaKey) ? 'toggle' : 'replace';
+      actions.selectShapeTemplate(tplId, mode);
+    });
+    row.addEventListener('contextmenu', e => {
+      e.preventDefault();
+      e.stopPropagation();
+      _showShapeTabContextMenu(e.clientX, e.clientY, { kind: 'template', id: tplId });
+    });
+  });
+
+  // Group header
+  el.querySelectorAll('.shape-group-row').forEach(row => {
+    const groupId = row.dataset.groupId;
+    row.addEventListener('click', e => {
+      // Twisty / lock / eye keep their own handlers. The group NAME does
+      // NOT short-circuit — clicking the bar selects the group (rename is
+      // dblclick-only).
+      if (e.target.closest('.shape-group-twisty, .shape-group-lock, .shape-group-eye')) return;
+      const mode = (e.ctrlKey || e.metaKey) ? 'toggle' : 'replace';
+      actions.selectShapeTemplateGroup(groupId, mode);
+    });
+    row.addEventListener('contextmenu', e => {
+      e.preventDefault();
+      e.stopPropagation();
+      _showShapeTabContextMenu(e.clientX, e.clientY, { kind: 'group', id: groupId });
+    });
+  });
+
+  el.querySelectorAll('.shape-group-twisty').forEach(t => {
+    t.addEventListener('click', e => {
+      e.stopPropagation();
+      const groupId = t.dataset.groupId;
+      const g = (state.get('shapeTemplateGroups') || []).find(x => x.id === groupId);
+      if (!g) return;
+      actions.setShapeTemplateGroupCollapsed(groupId, !g.collapsed);
+    });
+  });
+
+  el.querySelectorAll('.shape-group-lock').forEach(lk => {
+    lk.addEventListener('click', e => {
+      e.stopPropagation();
+      const groupId = lk.dataset.groupId;
+      const g = (state.get('shapeTemplateGroups') || []).find(x => x.id === groupId);
+      if (!g) return;
+      actions.setShapeTemplateGroupLocked(groupId, !g.locked);
+    });
+  });
+
+  el.querySelectorAll('.shape-group-eye').forEach(ey => {
+    ey.addEventListener('click', e => {
+      e.stopPropagation();
+      actions.toggleShapeGroupVisibility(ey.dataset.groupId);
+    });
+  });
+
+  el.querySelectorAll('.shape-eye').forEach(ey => {
+    ey.addEventListener('click', e => {
+      e.stopPropagation();
+      actions.toggleShapeTemplateVisibility(ey.dataset.tplId);
+    });
+  });
+
+  // Per-template Edit / Place / Delete buttons
   el.querySelectorAll('[data-edit-id]').forEach(btn => {
     btn.addEventListener('click', e => {
       e.stopPropagation();
       actions.startShapeEdit(btn.dataset.editId);
     });
   });
-
   el.querySelectorAll('[data-delete-id]').forEach(btn => {
     btn.addEventListener('click', e => {
       e.stopPropagation();
       actions.deleteShapeTemplate(btn.dataset.deleteId);
     });
   });
-
   el.querySelectorAll('[data-place-id]').forEach(btn => {
     btn.addEventListener('click', e => {
       e.stopPropagation();
-      // Arm the placement picker — main.js's viewport pointerdown
-      // handler consumes the next click and spawns the instance
-      // tangent to the hit face (parented under the hit object's data-
-      // tree parent). Empty-space click falls back to camera-facing.
       actions.startShapePlacement(btn.dataset.placeId);
     });
   });
 
+  // Swatch — color picker
   el.querySelectorAll('.shape-swatch').forEach(sw => {
     sw.addEventListener('click', e => {
       e.stopPropagation();
@@ -2787,17 +3555,225 @@ function _renderShapesTab() {
     });
   });
 
-  el.querySelectorAll('.shape-name').forEach(inp => {
-    inp.addEventListener('change', () => {
-      actions.setShapeTemplateName(inp.dataset.tplId, inp.value.trim() || 'Shape');
+  // Name spans — dblclick to start an in-place rename. Single click bubbles
+  // to the row so it doesn't auto-rename anymore.
+  el.querySelectorAll('.shape-name').forEach(span => {
+    span.addEventListener('dblclick', e => {
+      e.stopPropagation();
+      _startInlineRename(span, (newName) => {
+        actions.setShapeTemplateName(span.dataset.tplId, newName.trim() || 'Shape');
+      });
     });
-    inp.addEventListener('keydown', e => {
-      if (e.key === 'Enter') inp.blur();
+  });
+  el.querySelectorAll('.shape-group-name').forEach(span => {
+    span.addEventListener('dblclick', e => {
+      e.stopPropagation();
+      _startInlineRename(span, (newName) => {
+        actions.setShapeTemplateGroupName(span.dataset.groupId, newName.trim() || 'Shape Group');
+      });
     });
-    // CSP-safe focus/blur styling — inline `onfocus`/`onblur` attrs
-    // would violate `script-src` policy, so we wire the listeners here.
-    inp.addEventListener('focus', () => { inp.style.borderColor = 'var(--line)'; });
-    inp.addEventListener('blur',  () => { inp.style.borderColor = 'transparent'; });
+  });
+}
+
+/**
+ * Convert a non-editable name span into a temporary <input>, focus +
+ * select it, commit on Enter / blur, cancel on Esc. The input takes
+ * the span's slot in the flex row so the layout doesn't jump.
+ */
+function _startInlineRename(span, commit) {
+  const original = span.textContent;
+  const input = document.createElement('input');
+  input.type = 'text';
+  input.value = original;
+  input.style.cssText = span.style.cssText
+    + ';background:transparent;border:1px dashed var(--line);color:inherit;outline:none';
+  span.replaceWith(input);
+  input.focus();
+  input.select();
+  let done = false;
+  const finish = (save) => {
+    if (done) return;
+    done = true;
+    if (save && input.value !== original) commit(input.value);
+    // Tab re-renders on the state change; if not (e.g. same value), restore span.
+    if (input.isConnected) input.replaceWith(span);
+  };
+  input.addEventListener('keydown', e => {
+    if (e.key === 'Enter') { e.preventDefault(); input.blur(); }
+    else if (e.key === 'Escape') { e.preventDefault(); finish(false); }
+  });
+  input.addEventListener('blur', () => finish(true));
+}
+
+function _showShapeTabContextMenu(x, y, target) {
+  const selT = state.get('selectedShapeTemplateIds')      || new Set();
+  const selG = state.get('selectedShapeTemplateGroupIds') || new Set();
+  const groups = state.get('shapeTemplateGroups') || [];
+
+  // Click target falls into selection if it's already part of it; otherwise
+  // treat the click as a single-target action (don't blow away the user's
+  // multi-select silently — but also don't ignore a right-click on an
+  // un-selected row).
+  let tplIds = new Set();
+  let groupIds = new Set();
+  if (target.kind === 'template') {
+    if (selT.has(target.id)) tplIds = new Set(selT);
+    else                     tplIds = new Set([target.id]);
+  } else {
+    if (selG.has(target.id)) groupIds = new Set(selG);
+    else                     groupIds = new Set([target.id]);
+  }
+
+  const items = [];
+
+  if (target.kind === 'template') {
+    const inSomeGroup = [...tplIds].some(id => groups.some(g => g.templateIds.includes(id)));
+    const canGroup = tplIds.size >= 1;
+    items.push({
+      label: `📦 Group ${tplIds.size} shape${tplIds.size === 1 ? '' : 's'}`,
+      disabled: !canGroup,
+      action: () => actions.createShapeTemplateGroupFromTemplates([...tplIds]),
+    });
+    if (inSomeGroup) {
+      items.push({
+        label: '⤴ Remove from group',
+        action: () => actions.removeTemplatesFromShapeGroup([...tplIds]),
+      });
+    }
+    // "Add to existing group" — appears when other groups exist.
+    const otherGroups = groups.filter(g => ![...tplIds].every(id => g.templateIds.includes(id)));
+    if (otherGroups.length > 0) {
+      items.push({ label: '─', disabled: true });
+      for (const g of otherGroups) {
+        items.push({
+          label: `→ Add to "${g.name}"`,
+          action: () => actions.addTemplatesToShapeGroup(g.id, [...tplIds]),
+        });
+      }
+    }
+    items.push({ label: '─', disabled: true });
+    items.push({
+      label: '👁 Toggle visibility (all instances)',
+      action: () => { for (const id of tplIds) actions.toggleShapeTemplateVisibility(id); },
+    });
+  } else {
+    items.push({
+      label: '⤴ Ungroup',
+      action: () => { for (const id of groupIds) actions.unGroupShapeTemplateGroup(id); },
+    });
+    items.push({
+      label: '✎ Rename',
+      disabled: groupIds.size !== 1,
+      action: () => {
+        const span = document.querySelector(`.shape-group-name[data-group-id="${[...groupIds][0]}"]`);
+        if (span) _startInlineRename(span, (newName) => {
+          actions.setShapeTemplateGroupName([...groupIds][0], newName.trim() || 'Shape Group');
+        });
+      },
+    });
+    items.push({ label: '─', disabled: true });
+    items.push({
+      label: '🔒 Toggle lock',
+      action: () => {
+        for (const id of groupIds) {
+          const g = groups.find(x => x.id === id);
+          if (g) actions.setShapeTemplateGroupLocked(id, !g.locked);
+        }
+      },
+    });
+    items.push({
+      label: '👁 Toggle visibility (all members)',
+      action: () => { for (const id of groupIds) actions.toggleShapeGroupVisibility(id); },
+    });
+  }
+
+  showContextMenu(items, x, y);
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+//  Undo tab (V0.2.16)
+// ═══════════════════════════════════════════════════════════════════════════
+// Lets the user tune the undo-stack cap and see live what's on the stack
+// (recent action labels). Top of each list = most recent. The cap persists
+// to userSettings.undo.maxSize so it follows the user across projects.
+
+function _renderUndoTab() {
+  const el = _panel('undo');
+  if (!el) return;
+
+  const max  = undoManager.getMaxSize();
+  const undo = undoManager.listUndo();   // oldest → newest
+  const redo = undoManager.listRedo();
+
+  // Render most-recent FIRST in the lists for at-a-glance scanning.
+  const undoTop = [...undo].reverse();
+  const redoTop = [...redo].reverse();
+
+  const _renderList = (items, emptyMsg, accentColor) => items.length === 0
+    ? `<div class="small muted" style="padding:6px 8px;font-style:italic">${emptyMsg}</div>`
+    : items.map((label, i) => `
+        <div class="small" style="display:flex;align-items:center;gap:8px;padding:5px 8px;
+                                   border-radius:4px;background:rgba(127,127,127,0.06);
+                                   margin-top:4px${i === 0 ? `;border-left:3px solid ${accentColor}` : ''}">
+          <span style="opacity:0.5;width:24px;text-align:right;font-variant-numeric:tabular-nums">${i + 1}</span>
+          <span style="flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${_esc(label || '(unlabeled)')}</span>
+          ${i === 0 ? `<span class="small muted" style="font-size:10px;text-transform:uppercase;letter-spacing:.4px">top</span>` : ''}
+        </div>
+      `).join('');
+
+  el.innerHTML = `
+    <div class="section">
+      <div class="title">Undo</div>
+      <div class="card" style="margin-top:8px">
+        <label class="colorlab" style="display:block">
+          Max history entries
+          <input type="number" id="undo-max" min="10" max="2000" step="10" value="${max}"
+                 style="margin-top:6px;width:120px" />
+        </label>
+        <div class="small muted" style="margin-top:6px;line-height:1.45">
+          Old entries drop off (oldest first) once the cap is reached.
+          Higher caps eat more memory — big mutations like step paste or
+          color unify carry deep-cloned snapshots. 200 is a comfortable
+          default; 500+ on heavy projects only if you really need it.
+        </div>
+        <div style="display:flex;gap:6px;align-items:center;margin-top:10px">
+          <button class="btn" id="undo-clear" title="Empty both stacks">🗑 Clear history</button>
+          <span class="small muted" id="undo-stats" style="margin-left:auto">
+            ${undo.length} undo · ${redo.length} redo
+          </span>
+        </div>
+      </div>
+
+      <div class="card" style="margin-top:8px">
+        <div class="title" style="font-size:13px">Undo stack (${undo.length})</div>
+        <div class="small muted" style="margin-top:2px">Top entry is what Ctrl+Z would undo.</div>
+        <div style="margin-top:6px;max-height:34vh;overflow:auto">
+          ${_renderList(undoTop, 'Nothing to undo yet.', '#4A90D9')}
+        </div>
+      </div>
+
+      <div class="card" style="margin-top:8px">
+        <div class="title" style="font-size:13px">Redo stack (${redo.length})</div>
+        <div class="small muted" style="margin-top:2px">Top entry is what Ctrl+Y / Ctrl+Shift+Z would redo.</div>
+        <div style="margin-top:6px;max-height:25vh;overflow:auto">
+          ${_renderList(redoTop, 'Nothing to redo.', '#facc15')}
+        </div>
+      </div>
+    </div>
+  `;
+
+  const maxInput = el.querySelector('#undo-max');
+  maxInput?.addEventListener('change', () => {
+    const v = Math.max(10, Math.min(2000, Math.floor(Number(maxInput.value) || 200)));
+    maxInput.value = v;
+    undoManager.setMaxSize(v);
+    userSettings.patch({ undo: { maxSize: v } });
+    _renderUndoTab();
+  });
+  el.querySelector('#undo-clear')?.addEventListener('click', () => {
+    if (!confirm('Clear the undo and redo history? This cannot be undone.')) return;
+    undoManager.clear();
+    setStatus('Undo history cleared.');
   });
 }
 

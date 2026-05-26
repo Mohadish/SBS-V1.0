@@ -9,6 +9,43 @@
  */
 
 let _el = null;
+// V0.2.11 live-label support: track current modifier state while a menu is
+// open so items with `liveLabel(ctx)` can rewrite themselves on Ctrl/Shift/
+// Alt up + down. `_liveBtns` holds [{btn, item}] for items that opted in;
+// `_liveKeyHandler` is the doc-level handler we attach on show + detach on
+// hide so multiple menus over a session don't leak listeners.
+let _modState        = { ctrl: false, meta: false, shift: false, alt: false };
+let _liveBtns        = [];
+let _liveKeyHandler  = null;
+
+function _ctxFromEvent(e) {
+  return { ctrl: !!e.ctrlKey, meta: !!e.metaKey, shift: !!e.shiftKey, alt: !!e.altKey };
+}
+function _refreshLiveLabels() {
+  for (const { btn, item } of _liveBtns) {
+    try { btn.textContent = item.liveLabel(_modState); } catch (_) {}
+  }
+}
+function _attachLiveModListeners() {
+  _detachLiveModListeners();
+  _liveKeyHandler = (e) => {
+    _modState = _ctxFromEvent(e);
+    _refreshLiveLabels();
+  };
+  document.addEventListener('keydown', _liveKeyHandler, true);
+  document.addEventListener('keyup',   _liveKeyHandler, true);
+}
+function _detachLiveModListeners() {
+  if (_liveKeyHandler) {
+    document.removeEventListener('keydown', _liveKeyHandler, true);
+    document.removeEventListener('keyup',   _liveKeyHandler, true);
+    _liveKeyHandler = null;
+  }
+  // NOTE: do NOT clear _liveBtns here. _attachLiveModListeners() calls this
+  // to re-arm cleanly, but at that moment showContextMenu has just
+  // populated _liveBtns — wiping it leaves the handler with an empty list
+  // and live updates silently no-op. The list is reset in showContextMenu.
+}
 
 export function initContextMenu() {
   _el = document.getElementById('context-menu');
@@ -20,14 +57,28 @@ export function initContextMenu() {
 }
 
 /**
- * @param {Array<{label:string, action?:()=>void, disabled?:boolean, separator?:boolean}>} items
+ * @param {Array<{label:string, action?:(ctx?:object)=>void, disabled?:boolean, separator?:boolean,
+ *                liveLabel?:(ctx:{ctrl,meta,shift,alt})=>string }>} items
+ *        `liveLabel(ctx)` (optional): returns the row's current label based
+ *        on the live modifier state — updated on every keydown/keyup while
+ *        the menu is open. `action(ctx)` receives the modifier state at
+ *        click time so add/replace branches can be chosen on click.
  * @param {number} x  clientX
  * @param {number} y  clientY
+ * @param {object} [opts]
+ * @param {{ctrl,meta,shift,alt}|MouseEvent} [opts.initialMods]
+ *        Mod state at show time — pass the original r-click MouseEvent so
+ *        a menu opened while Ctrl is already held starts in the right state.
  */
-export function showContextMenu(items, x, y) {
+export function showContextMenu(items, x, y, opts = {}) {
   if (!_el) return;
 
   _el.innerHTML = '';
+  // Seed mod state from the show event (else neutral).
+  _modState = opts.initialMods
+    ? _ctxFromEvent(opts.initialMods)
+    : { ctrl: false, meta: false, shift: false, alt: false };
+  _liveBtns = [];
 
   for (const item of items) {
     if (item.separator) {
@@ -39,15 +90,22 @@ export function showContextMenu(items, x, y) {
 
     const btn = document.createElement('button');
     btn.className   = 'context-menu__item';
-    btn.textContent = item.label;
+    btn.textContent = typeof item.liveLabel === 'function'
+      ? item.liveLabel(_modState)
+      : item.label;
     btn.disabled    = !!item.disabled;
     btn.addEventListener('click', e => {
       e.stopPropagation();
+      _modState = _ctxFromEvent(e);
       hideContextMenu();
-      item.action?.();
+      item.action?.(_modState);
     });
     _el.appendChild(btn);
+    if (typeof item.liveLabel === 'function') _liveBtns.push({ btn, item });
   }
+
+  // Attach live-label listeners only if at least one item opted in.
+  if (_liveBtns.length) _attachLiveModListeners();
 
   // Position — keep inside viewport
   _el.style.display = 'block';
@@ -62,6 +120,8 @@ export function showContextMenu(items, x, y) {
 
 export function hideContextMenu() {
   if (_el) _el.style.display = 'none';
+  _detachLiveModListeners();
+  _liveBtns = [];
 }
 
 /**

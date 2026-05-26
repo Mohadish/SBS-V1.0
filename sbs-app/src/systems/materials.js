@@ -25,6 +25,55 @@ import { createColorPreset } from '../core/schema.js';
 import { sceneCore } from '../core/scene.js';
 import * as clock from '../core/clock.js';
 
+// ── Selection-highlight edges cache (Fix B, V0.1.70) ──────────────────────
+// EdgesGeometry has `.parameters.geometry` back-pointing to its source,
+// so stashing it on the source's userData closed a JSON cycle that
+// broke project save / delete-assembly snapshots. A module-scoped
+// WeakMap keyed by source BufferGeometry sidesteps the cycle AND
+// auto-evicts when the source geometry is disposed/GC'd (no manual
+// cleanup needed).
+const _sbsEdgesGeoCache = new WeakMap();
+
+// V0.2.7: shift a #rrggbb hex by `deg` degrees in HSL space. Used to derive
+// the expanded-color YELLOW + MAGENTA hulls from the current selection
+// color, so changing the selection palette retunes them automatically
+// (cyan #00ffff +240° → yellow, +120° → magenta).
+function _hueShiftHex(hex, deg) {
+  const m = /^#?([0-9a-f]{6})$/i.exec(hex || '');
+  if (!m) return '#ffd23f';
+  const n = parseInt(m[1], 16);
+  let r = ((n >> 16) & 255) / 255, g = ((n >> 8) & 255) / 255, b = (n & 255) / 255;
+  const max = Math.max(r, g, b), min = Math.min(r, g, b);
+  let h, s, l = (max + min) / 2;
+  if (max === min) { h = 0; s = 0; }
+  else {
+    const d = max - min;
+    s = l > 0.5 ? d / (2 - max - min) : d / (max + min);
+    h = max === r ? (g - b) / d + (g < b ? 6 : 0)
+      : max === g ? (b - r) / d + 2
+      :             (r - g) / d + 4;
+    h /= 6;
+  }
+  h = (h + deg / 360) % 1; if (h < 0) h += 1;
+  if (s < 0.25) s = 0.6;
+  const hue2rgb = (p, q, t) => {
+    if (t < 0) t += 1; if (t > 1) t -= 1;
+    if (t < 1 / 6) return p + (q - p) * 6 * t;
+    if (t < 1 / 2) return q;
+    if (t < 2 / 3) return p + (q - p) * (2 / 3 - t) * 6;
+    return p;
+  };
+  let R, G, B;
+  if (s === 0) { R = G = B = l; }
+  else {
+    const q = l < 0.5 ? l * (1 + s) : l + s - l * s;
+    const p = 2 * l - q;
+    R = hue2rgb(p, q, h + 1 / 3); G = hue2rgb(p, q, h); B = hue2rgb(p, q, h - 1 / 3);
+  }
+  const hx = v => ('0' + Math.round(v * 255).toString(16)).slice(-2);
+  return '#' + hx(R) + hx(G) + hx(B);
+}
+
 
 // ── GLSL snippets ─────────────────────────────────────────────────────────
 
@@ -261,6 +310,11 @@ class MaterialsSystem {
 
     // Selected nodeIds (mesh level) — set externally
     this._selectedMeshIds      = new Set();
+    this._previewMeshIds       = new Set();   // ray-select candidate preview channel (V0.1.90)
+    this._shapeTabHighlightIds = new Set();   // V0.2.1: shape-tab driven highlight
+    this._shapeGhostById       = new Map();   // V0.2.1: id → ghost LineSegments (for hidden flatShape instances)
+    this._expColorHighlightIds = new Set();   // V0.2.6: expanded-color → selected-mesh highlight
+    this._expColorGhostById    = new Map();   // V0.2.6: id → magenta ghost (for hidden meshes that use the expanded color)
 
     // Active colour transition (set by beginColorTransition, cleared when done)
     this._colorTransition      = null;
@@ -1322,7 +1376,7 @@ gl_FragColor.a = 1.0;
    * @param {Map}     object3dById   steps.object3dById
    */
   advanceVisibilityTransitions(nowMs, object3dById) {
-    if (!this._visTransitions.size) return;
+    if (!this._visTransitions.size) return false;
 
     const outlineSettings = state.get('geometryOutline');
     const done            = [];
@@ -1356,6 +1410,11 @@ gl_FragColor.a = 1.0;
       }
       // showing: already at t=1.0, outline opacity already at target — nothing more to do
     }
+    // V0.1.74: return true on the frame where the LAST transition just
+    // completed so the caller (steps._advanceObjectTransitions) can
+    // re-cascade folder-ancestor visibility that was temporarily kept
+    // visible to let the fade render.
+    return done.length > 0 && this._visTransitions.size === 0;
   }
 
   /**
@@ -1734,9 +1793,303 @@ gl_FragColor.a = 1.0;
 
     const color = state.get('selectionOutlineColor') ?? '#00ffff';
 
-    for (const [nodeId, mesh] of this.meshById) {
-      this._applySelectionHull(mesh, selected.has(nodeId), color);
+    // ── Fix A (V0.1.66): diff-based update ─────────────────────────────
+    // Previously this iterated EVERY registered mesh in the scene on
+    // every selection change — O(total meshes) per click. With bake-and
+    // -flatten producing flat models (hundreds of mesh siblings under
+    // one model), that's ~500 _applySelectionHull calls just to expand
+    // a selection by one item.
+    //
+    // Track the last-applied selection set and only touch meshes whose
+    // selected-state actually CHANGED since last call. Net work:
+    //   O(symmetricDifference(prev, current)) — typically 1 or 2 meshes
+    //   per click, regardless of scene size.
+    //
+    // First-time path: prev is empty, work is bounded by `selected`.
+    // Color-only changes (no id changes): zero work — the diff is
+    // empty. setSelectionOutlineColor still works because it nukes
+    // _lastHighlightedIds first (see below) to force a full re-pass.
+    // V0.2.18: when the PRIMARY selection is a locked folder, render the
+    // descendant meshes with the OUTLINE only — no surface tint. A locked
+    // folder selection often includes hundreds of meshes, and the cyan
+    // overlay on every face buries the scene colors (impossible to align
+    // / move things). Outline alone keeps the silhouette readable while
+    // the faces show their real material.
+    const _selPrimary = (() => {
+      const id = state.get('selectedId');
+      const nb = state.get('nodeById');
+      return id && nb ? nb.get(id) : null;
+    })();
+    const outlineOnly = !!(_selPrimary && _selPrimary.type === 'folder' && _selPrimary.locked === true);
+    // V0.2.20 bug-fix: previously, when outlineOnly toggled we cleared
+    // `_lastHighlightedIds` to force a re-pass — but that also wiped the
+    // STRIP loop's view of what was previously highlighted, so old hulls
+    // never got removed (sticky cyan after deselecting a locked folder).
+    // Keep two views:
+    //   prevAll   — full previous selection, used for the STRIP pass so
+    //               we always remove hulls from meshes that left the set.
+    //   prevApply — empty when we want to force every selected mesh to
+    //               re-run through _applySelectionHull (color-update
+    //               branch will flip overlay.visible to the new outlineOnly).
+    const prevAll    = this._lastHighlightedIds || new Set();
+    const forceRepass = (this._lastOutlineOnly !== outlineOnly);
+    if (forceRepass) this._lastOutlineOnly = outlineOnly;
+    const prevApply = forceRepass ? new Set() : prevAll;
+
+    // Newly selected — apply hull (or re-run all on outlineOnly toggle).
+    for (const id of selected) {
+      if (prevApply.has(id)) continue;
+      const mesh = this.meshById.get(id);
+      if (mesh) this._applySelectionHull(mesh, true, color, null, { outlineOnly });
     }
+    // Newly deselected — strip hull. Use prevAll so stale hulls left from
+    // a locked-folder selection are ALWAYS cleaned up.
+    for (const id of prevAll) {
+      if (selected.has(id)) continue;
+      const mesh = this.meshById.get(id);
+      if (mesh) this._applySelectionHull(mesh, false, color);
+    }
+    this._lastHighlightedIds = new Set(selected);
+    // V0.2.7: any mesh currently in the expanded-color highlight set must
+    // keep its cyan hull SUPPRESSED so the yellow on top doesn't mix with
+    // it (selection changes may have just (re-)created the cyan hull).
+    if (this._expColorHighlightIds && this._expColorHighlightIds.size > 0) {
+      for (const id of this._expColorHighlightIds) {
+        const m = this.meshById.get(id);
+        if (m && selected.has(id)) this._setSelectionHullVisible(m, false);
+      }
+    }
+  }
+
+  // ── Ray-select candidate preview (V0.1.90) ────────────────────────────
+  // A SEPARATE highlight channel (own userData keys) that coexists with the
+  // selection highlight, so the persistent cyan selection stays visible
+  // while the user cycles candidates in a different hue. Diff-based like the
+  // selection path. clearPreviewHighlight() strips it (on confirm/cancel).
+  applyPreviewHighlight(meshIds, color) {
+    const want = meshIds instanceof Set ? meshIds : new Set(meshIds || []);
+    const prev = this._previewMeshIds || new Set();
+    const keys = { overlay: 'sbsPreviewOverlay', outline: 'sbsPreviewOutline', opacity: 0.30 };
+    for (const id of want) {
+      const m = this.meshById.get(id);
+      if (m) this._applySelectionHull(m, true, color, keys);
+    }
+    for (const id of prev) {
+      if (want.has(id)) continue;
+      const m = this.meshById.get(id);
+      if (m) this._applySelectionHull(m, false, color, keys);
+    }
+    this._previewMeshIds = new Set(want);
+  }
+
+  clearPreviewHighlight() {
+    const keys = { overlay: 'sbsPreviewOverlay', outline: 'sbsPreviewOutline', opacity: 0.30 };
+    for (const id of (this._previewMeshIds || new Set())) {
+      const m = this.meshById.get(id);
+      if (m) this._applySelectionHull(m, false, '#000000', keys);
+    }
+    this._previewMeshIds = new Set();
+  }
+
+  // ── Shape-tab highlight (V0.2.1) ───────────────────────────────────────
+  // Dedicated channel driven by shape-tab selection. For VISIBLE instances:
+  // paints a hull (overlay + edge outline) using its own userData keys so it
+  // coexists with the normal selection / preview channels — skipped on
+  // meshes already in the scene selection to avoid a double overlay. For
+  // HIDDEN instances: renders a "ghost" LineSegments parented to the SCENE
+  // root (not the mesh) so it stays visible regardless of any ancestor's
+  // visibility cascade. The ghost mirrors the mesh's world transform.
+  applyShapeTabHighlight(meshIds) {
+    const want  = meshIds instanceof Set ? meshIds : new Set(meshIds || []);
+    const prev  = this._shapeTabHighlightIds || new Set();
+    const color = state.get('selectionOutlineColor') ?? '#00ffff';
+    const keys  = { overlay: 'sbsShapeTabOverlay', outline: 'sbsShapeTabOutline', opacity: 0.20 };
+
+    // Drop meshes no longer in the set (strip hull + ghost).
+    for (const id of prev) {
+      if (want.has(id)) continue;
+      const m = this.meshById.get(id);
+      if (m) this._applySelectionHull(m, false, color, keys);
+      this._removeShapeGhost(id);
+    }
+    // Add / refresh meshes in the set.
+    for (const id of want) {
+      const m = this.meshById.get(id);
+      if (!m) { this._removeShapeGhost(id); continue; }
+      let visible = true;
+      for (let o = m; o; o = o.parent) { if (o.visible === false) { visible = false; break; } }
+      if (visible) {
+        // Drop any stale ghost; skip hull when the mesh is already in scene
+        // selection (the cyan selection hull is already drawn there).
+        this._removeShapeGhost(id);
+        if (this._selectedMeshIds?.has(id)) {
+          // strip our channel if it had been applied earlier
+          this._applySelectionHull(m, false, color, keys);
+        } else {
+          this._applySelectionHull(m, true, color, keys);
+        }
+      } else {
+        // Hidden — no normal hull (parent invisible). Render a ghost at the scene root.
+        this._applySelectionHull(m, false, color, keys);
+        this._addShapeGhost(id, m, color);
+      }
+    }
+    this._shapeTabHighlightIds = new Set(want);
+  }
+
+  clearShapeTabHighlight() {
+    const color = state.get('selectionOutlineColor') ?? '#00ffff';
+    const keys  = { overlay: 'sbsShapeTabOverlay', outline: 'sbsShapeTabOutline', opacity: 0.20 };
+    for (const id of (this._shapeTabHighlightIds || new Set())) {
+      const m = this.meshById.get(id);
+      if (m) this._applySelectionHull(m, false, color, keys);
+      this._removeShapeGhost(id);
+    }
+    this._shapeTabHighlightIds = new Set();
+  }
+
+  _addShapeGhost(meshNodeId, mesh, color) {
+    this._removeShapeGhost(meshNodeId);
+    if (!mesh.geometry) return;
+    let edgesGeo = _sbsEdgesGeoCache.get(mesh.geometry);
+    if (!edgesGeo) {
+      edgesGeo = new THREE.EdgesGeometry(mesh.geometry, 15);
+      _sbsEdgesGeoCache.set(mesh.geometry, edgesGeo);
+    }
+    const mat = new THREE.LineBasicMaterial({
+      color, depthTest: false, depthWrite: false, transparent: true, opacity: 0.85,
+    });
+    const ghost = new THREE.LineSegments(edgesGeo, mat);
+    mesh.updateMatrixWorld(true);
+    ghost.matrix.copy(mesh.matrixWorld);
+    ghost.matrixAutoUpdate = false;
+    ghost.renderOrder       = 999;
+    ghost.frustumCulled     = false;
+    ghost.userData.noSelect = true;
+    ghost.raycast           = () => {};
+    // Attach to the very top of the parent chain (the Three.js Scene) so the
+    // ghost survives any hidden ancestor in the mesh's visibility cascade.
+    let sceneRoot = mesh;
+    while (sceneRoot.parent) sceneRoot = sceneRoot.parent;
+    sceneRoot.add(ghost);
+    this._shapeGhostById.set(meshNodeId, ghost);
+  }
+
+  _removeShapeGhost(meshNodeId) {
+    const g = this._shapeGhostById?.get(meshNodeId);
+    if (!g) return;
+    if (g.parent) g.parent.remove(g);
+    g.material?.dispose();
+    // geometry is shared from the WeakMap cache — do NOT dispose.
+    this._shapeGhostById.delete(meshNodeId);
+  }
+
+  // ── Expanded-color highlight (V0.2.6) ──────────────────────────────────
+  // When a color is expanded in the Colors tab, the meshes that USE that
+  // color AND are scene-selected light up. Visible meshes get a YELLOW hull
+  // (same hue as the expanded row's outline); HIDDEN meshes get a MAGENTA
+  // ghost outline parented to the scene root so the user can see *where*
+  // the hidden geometry sits even though its material is invisible.
+  applyExpandedColorHighlight(meshIds) {
+    const want    = meshIds instanceof Set ? meshIds : new Set(meshIds || []);
+    const prev    = this._expColorHighlightIds || new Set();
+    // V0.2.7: yellow/magenta are HUE-SHIFTS from the current selection color
+    // (defaults: cyan #00ffff → yellow +240°, magenta +120°). Changing the
+    // selection color retunes them automatically — see setSelectionOutlineColor.
+    const base    = state.get('selectionOutlineColor') ?? '#00ffff';
+    const yellow  = _hueShiftHex(base, 240);
+    const magenta = _hueShiftHex(base, 120);
+    const keys    = { overlay: 'sbsExpColorOverlay', outline: 'sbsExpColorOutline', opacity: 0.45 };
+
+    for (const id of prev) {
+      if (want.has(id)) continue;
+      const m = this.meshById.get(id);
+      if (m) {
+        this._applySelectionHull(m, false, yellow, keys);
+        this._setSelectionHullVisible(m, true);   // restore cyan if mesh still in scene selection
+      }
+      this._removeExpandedColorGhost(id);
+    }
+    for (const id of want) {
+      const m = this.meshById.get(id);
+      if (!m) { this._removeExpandedColorGhost(id); continue; }
+      let visible = true;
+      for (let o = m; o; o = o.parent) { if (o.visible === false) { visible = false; break; } }
+      if (visible) {
+        this._removeExpandedColorGhost(id);
+        this._applySelectionHull(m, true, yellow, keys);
+        // Hide the cyan selection hull so the yellow doesn't tint-mix with it.
+        this._setSelectionHullVisible(m, false);
+      } else {
+        this._applySelectionHull(m, false, yellow, keys);
+        this._setSelectionHullVisible(m, true);   // hidden mesh: cyan also hidden via parent, harmless
+        this._addExpandedColorGhost(id, m, magenta);
+      }
+    }
+    this._expColorHighlightIds = new Set(want);
+  }
+
+  clearExpandedColorHighlight() {
+    const base    = state.get('selectionOutlineColor') ?? '#00ffff';
+    const yellow  = _hueShiftHex(base, 240);
+    const keys    = { overlay: 'sbsExpColorOverlay', outline: 'sbsExpColorOutline', opacity: 0.45 };
+    for (const id of (this._expColorHighlightIds || new Set())) {
+      const m = this.meshById.get(id);
+      if (m) {
+        this._applySelectionHull(m, false, yellow, keys);
+        this._setSelectionHullVisible(m, true);
+      }
+      this._removeExpandedColorGhost(id);
+    }
+    this._expColorHighlightIds = new Set();
+  }
+
+  // V0.2.7: show/hide the cyan selection overlay+outline children on a
+  // single mesh (without removing them). Used to suppress the cyan hull
+  // while the expanded-color YELLOW hull is on top, so the two don't
+  // tint-mix into a muddy color.
+  _setSelectionHullVisible(mesh, visible) {
+    const ov = mesh.userData?.sbsSelectionOverlay;
+    // V0.2.20: when the primary selection is a locked folder we keep the
+    // SURFACE overlay hidden (outline-only). Honour that on "restore"
+    // calls so collapsing an expanded-color row doesn't pop the cyan
+    // surface tint back on top of locked-folder meshes.
+    if (ov) ov.visible = visible && !this._lastOutlineOnly;
+    const ou = mesh.userData?.sbsSelectionOutline;
+    if (ou) ou.visible = visible;
+  }
+
+  _addExpandedColorGhost(meshNodeId, mesh, color) {
+    this._removeExpandedColorGhost(meshNodeId);
+    if (!mesh.geometry) return;
+    let edgesGeo = _sbsEdgesGeoCache.get(mesh.geometry);
+    if (!edgesGeo) {
+      edgesGeo = new THREE.EdgesGeometry(mesh.geometry, 15);
+      _sbsEdgesGeoCache.set(mesh.geometry, edgesGeo);
+    }
+    const mat = new THREE.LineBasicMaterial({
+      color, depthTest: false, depthWrite: false, transparent: true, opacity: 0.95,
+    });
+    const ghost = new THREE.LineSegments(edgesGeo, mat);
+    mesh.updateMatrixWorld(true);
+    ghost.matrix.copy(mesh.matrixWorld);
+    ghost.matrixAutoUpdate = false;
+    ghost.renderOrder       = 999;
+    ghost.frustumCulled     = false;
+    ghost.userData.noSelect = true;
+    ghost.raycast           = () => {};
+    let sceneRoot = mesh;
+    while (sceneRoot.parent) sceneRoot = sceneRoot.parent;
+    sceneRoot.add(ghost);
+    this._expColorGhostById.set(meshNodeId, ghost);
+  }
+
+  _removeExpandedColorGhost(meshNodeId) {
+    const g = this._expColorGhostById?.get(meshNodeId);
+    if (!g) return;
+    if (g.parent) g.parent.remove(g);
+    g.material?.dispose();
+    this._expColorGhostById.delete(meshNodeId);
   }
 
   /**
@@ -1751,9 +2104,14 @@ gl_FragColor.a = 1.0;
    *   • sbsSelectionOutline — EdgesGeometry LineSegments at 100% opacity,
    *     depthTest:false so edges always draw over geometry, no z-fighting.
    */
-  _applySelectionHull(mesh, isSelected, color) {
-    const OVERLAY_KEY = 'sbsSelectionOverlay';
-    const OUTLINE_KEY = 'sbsSelectionOutline';
+  _applySelectionHull(mesh, isSelected, color, keys = null, opts = null) {
+    const OVERLAY_KEY = keys?.overlay ?? 'sbsSelectionOverlay';
+    const OUTLINE_KEY = keys?.outline ?? 'sbsSelectionOutline';
+    const OVERLAY_OPACITY = keys?.opacity ?? 0.20;
+    // V0.2.18: outlineOnly hides the surface tint (keeps the outline). Used
+    // for locked-folder selections so the underlying scene colors stay
+    // legible across a large descendant set.
+    const outlineOnly = !!opts?.outlineOnly;
 
     // ── Remove ────────────────────────────────────────────────────────────
     if (!isSelected) {
@@ -1767,7 +2125,10 @@ gl_FragColor.a = 1.0;
       if (outline) {
         mesh.remove(outline);
         outline.material.dispose();
-        outline.geometry.dispose();
+        // Fix B (V0.1.66): do NOT dispose outline.geometry — it's the
+        // cached sbsEdgesGeo stashed on mesh.geometry.userData. Disposing
+        // here would force a re-compute on every re-select of this mesh.
+        // We trade a small persistent memory cost for repeat-select speed.
         delete mesh.userData[OUTLINE_KEY];
       }
       return;
@@ -1777,6 +2138,7 @@ gl_FragColor.a = 1.0;
     if (mesh.userData[OVERLAY_KEY] && mesh.userData[OUTLINE_KEY]) {
       mesh.userData[OVERLAY_KEY].material.color.set(color);
       mesh.userData[OUTLINE_KEY].material.color.set(color);
+      mesh.userData[OVERLAY_KEY].visible = !outlineOnly;
       return;
     }
 
@@ -1790,7 +2152,7 @@ gl_FragColor.a = 1.0;
     const overlayMat = new THREE.MeshBasicMaterial({
       color,
       transparent:  true,
-      opacity:      0.20,
+      opacity:      OVERLAY_OPACITY,
       depthTest:    false,
       depthWrite:   false,
       side:         THREE.FrontSide,
@@ -1800,11 +2162,25 @@ gl_FragColor.a = 1.0;
     overlay.frustumCulled    = mesh.frustumCulled;
     overlay.matrixAutoUpdate = true;
     overlay.userData.noSelect = true;
+    overlay.visible          = !outlineOnly;
     mesh.add(overlay);
     mesh.userData[OVERLAY_KEY] = overlay;
 
     // ── Create edge outline (LineSegments, 100% opacity) ──────────────────
-    const edgesGeo = new THREE.EdgesGeometry(mesh.geometry, 15); // 15° crease threshold
+    // Fix B (V0.1.66 → V0.1.70): EdgesGeometry is the expensive bit
+    // (CPU edge-extraction over every triangle). Cache it via a module-
+    // level WeakMap keyed by the source BufferGeometry. WeakMap was
+    // chosen over `geometry.userData` because EdgesGeometry holds a
+    // back-reference to its source via `.parameters.geometry` — stashing
+    // it on userData closed a JSON cycle that blew up
+    // _cloneTreeWithoutObject3d during delete-assembly (V0.1.69 bug).
+    // The WeakMap auto-evicts when the source geometry is disposed and
+    // GC'd; no manual cleanup needed.
+    let edgesGeo = _sbsEdgesGeoCache.get(mesh.geometry);
+    if (!edgesGeo) {
+      edgesGeo = new THREE.EdgesGeometry(mesh.geometry, 15); // 15° crease threshold
+      _sbsEdgesGeoCache.set(mesh.geometry, edgesGeo);
+    }
     const edgesMat = new THREE.LineBasicMaterial({
       color,
       depthTest:  false,
@@ -1822,7 +2198,17 @@ gl_FragColor.a = 1.0;
   setSelectionOutlineColor(hex) {
     this._selectionColor = hex;
     state.setState({ selectionOutlineColor: hex });
+    // Fix A's diff cache would short-circuit this call (selection set
+    // unchanged) — but we want every existing overlay's colour to
+    // refresh. Wipe the cache to force a full re-pass through
+    // _applySelectionHull's color-update branch.
+    this._lastHighlightedIds = null;
     this.applySelectionHighlight();
+    // V0.2.7: yellow/magenta hulls are hue-shifts of the selection color —
+    // re-apply them so they retune to the new palette.
+    if (this._expColorHighlightIds && this._expColorHighlightIds.size > 0) {
+      this.applyExpandedColorHighlight([...this._expColorHighlightIds]);
+    }
   }
 
   /**

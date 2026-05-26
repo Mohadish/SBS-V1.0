@@ -49,7 +49,7 @@ import { initStepNav }            from './ui/step-nav.js';
 import { initStepsPanel }         from './ui/steps-panel.js';
 import { initSidebarLeft, showColorForNode } from './ui/sidebar-left.js';
 import { initContextMenu, hideContextMenu, showContextMenu } from './ui/context-menu.js';
-import { showMoveToFolderDialog } from './ui/tree.js';
+import { showMoveToFolderDialog, showAddToReplaceDialog, showReplaceModeDialog } from './ui/tree.js';
 import { positionSafeFrameEl }    from './core/safe-frame.js';
 import { initOverlay, getStage as getOverlayStage } from './systems/overlay.js';
 import { initOverlayToolbar }  from './ui/overlay-toolbar.js';
@@ -277,6 +277,10 @@ initUserSettings()
     if (typeof sc.shapeFaceAngleThreshold === 'number') {
       state.setState({ shapeFaceAngleThreshold: sc.shapeFaceAngleThreshold });
     }
+    // V0.2.16: undo stack cap is a per-user pref (Undo tab in the sidebar).
+    if (cur.undo && Number.isFinite(cur.undo.maxSize)) {
+      undoManager.setMaxSize(cur.undo.maxSize);
+    }
     // Default background only applies to brand-new projects (when the
     // current viewport still holds the schema default). Projects that
     // load from disk overwrite these via their own backgroundColor /
@@ -355,7 +359,15 @@ function _syncGizmoToSelection() {
   const nodeById = state.get('nodeById');
   if (!selId || !nodeById) { gizmo.hide(); return; }
   const node = nodeById.get(selId);
-  if (!node || node.type === 'mesh' || node.type === 'scene') { gizmo.hide(); return; }
+  // Hide gizmo for types that don't carry their own transforms: mesh,
+  // scene, note, and replaceModel (RM is a container — its children
+  // inherit via Three.js parenting; the RM itself never gets a gizmo
+  // per the B.2-NEW.2 spec).
+  if (!node
+      || node.type === 'mesh'
+      || node.type === 'scene'
+      || node.type === 'note'
+      || node.type === 'replaceModel') { gizmo.hide(); return; }
   const obj3d = steps.object3dById?.get(selId);
   if (!obj3d) { gizmo.hide(); return; }
   gizmo.show(node, obj3d);
@@ -506,6 +518,14 @@ state.on('change:shapeDrawing',         _syncGizmoToSelection);
 
 const canvas = sceneCore.renderer.domElement;
 
+// V0.1.82's SVG bbox overlay was REMOVED in V0.1.83. AABB-style bbox
+// didn't capture the user's "trace outline of the block of models"
+// — that needs a true silhouette pass (OutlinePass-equivalent), which
+// requires post-processing infrastructure we don't currently have.
+// For now, locked-group selection falls back to per-mesh edge outlines
+// (each child gets its own EdgesGeometry highlight, same as RM). The
+// proper silhouette trace is deferred until we wire OutlinePass.
+
 // P-P1+: crosshair cursor while pivot-snap pick mode is active so the
 // user knows the next click is a target-pick. Cleared on snap or Esc.
 state.on('change:pivotSnapPickingNodeId', id => {
@@ -557,6 +577,56 @@ document.body.appendChild(_marquee);
 
 let _dragStartX = 0, _dragStartY = 0;
 let _isDragging = false;
+
+// V0.2.14/15: live cursor glyph during box-select.
+//   Mode glyph (left):  ⿻ intersect / clipping  (default)
+//                       ⿴ fully enclosed         (Ctrl/⌘ held)
+//   Op badge   (right): + green   (Shift held → ADD)
+//                       − red     (Alt held   → REMOVE; wins over Shift)
+//                       none      (plain → REPLACE)
+// Updates LIVE as any modifier is pressed/released mid-drag.
+function _marqueeCursor(glyph, op) {
+  const main = `<text x="11" y="20" font-size="18" text-anchor="middle"`
+    + ` fill="white" stroke="black" stroke-width="0.6"`
+    + ` font-family="sans-serif" paint-order="stroke">${glyph}</text>`;
+  const opEl = op
+    ? `<text x="25" y="13" font-size="14" text-anchor="middle"`
+      + ` fill="${op === '+' ? '#4ade80' : '#f87171'}" stroke="black" stroke-width="0.8"`
+      + ` font-family="sans-serif" font-weight="bold" paint-order="stroke">${op}</text>`
+    : '';
+  const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="32" height="26">${main}${opEl}</svg>`;
+  return `url("data:image/svg+xml;utf8,${encodeURIComponent(svg)}") 11 13, crosshair`;
+}
+let _savedCanvasCursor = '';
+let _marqueeKeyHandler = null;
+
+function _setMarqueeCursor(ctrl, shift, alt) {
+  if (!canvas) return;
+  const glyph = ctrl ? '⿴' : '⿻';
+  const op    = alt ? '−' : (shift ? '+' : null);   // Alt wins over Shift (matches box-select)
+  canvas.style.cursor = _marqueeCursor(glyph, op);
+}
+function _beginMarqueeCursor(e) {
+  if (!canvas) return;
+  _savedCanvasCursor = canvas.style.cursor || '';
+  _setMarqueeCursor(!!(e.ctrlKey || e.metaKey), !!e.shiftKey, !!e.altKey);
+  // Track Ctrl/⌘/Shift/Alt press + release WHILE dragging so the glyph
+  // swaps even without mouse motion.
+  _marqueeKeyHandler = (ev) => _setMarqueeCursor(
+    !!(ev.ctrlKey || ev.metaKey), !!ev.shiftKey, !!ev.altKey,
+  );
+  document.addEventListener('keydown', _marqueeKeyHandler, true);
+  document.addEventListener('keyup',   _marqueeKeyHandler, true);
+}
+function _endMarqueeCursor() {
+  if (canvas) canvas.style.cursor = _savedCanvasCursor;
+  _savedCanvasCursor = '';
+  if (_marqueeKeyHandler) {
+    document.removeEventListener('keydown', _marqueeKeyHandler, true);
+    document.removeEventListener('keyup',   _marqueeKeyHandler, true);
+    _marqueeKeyHandler = null;
+  }
+}
 let _justDragged = false;   // skip click event that fires right after a drag
 let _dragOnCanvas = false;  // drag only counts when it started on the canvas
 let _gizmoConsumed = false; // gizmo took the pointerdown — suppress next click
@@ -576,37 +646,127 @@ function _hideMarquee() {
 }
 
 /**
- * Pick all visible mesh nodeIds that project inside screen rect [x1,y1,x2,y2].
- * Uses raycasting across a grid of sample points for a lightweight approximation.
+ * Pick all visible mesh nodeIds whose geometry projects inside the screen
+ * rect [x1,y1,x2,y2] (client coords). V0.1.93 — projection-based, replacing
+ * the old 9×9 raycast grid that structurally missed small/thin objects
+ * (fell between sample rays) and inverted-normal models (back-faces don't
+ * register a raycast hit). No rays here: every visible mesh is projected to
+ * the screen and tested against the rect, so orientation is irrelevant and
+ * tiny parts can't slip through gaps.
+ *
+ * Per mesh:
+ *   1. Project the 8 world bounding-box corners → screen AABB.
+ *      • No overlap with the rect → skip (fast reject).
+ *      • Fully inside the rect → select.
+ *   2. Partial overlap → either the object's screen footprint is no bigger
+ *      than the marquee (a small/thin object the user is dragging over →
+ *      include), or a downsampled geometry vertex projects inside the rect.
+ *      This catches thin/crossing parts without over-selecting a big mesh
+ *      whose bbox merely grazes the marquee.
+ *
+ * `windowMode` (Ctrl held): select ONLY objects fully enclosed by the box —
+ * the projected bbox must lie entirely inside the marquee. Partial/crossing
+ * objects are ignored.
  */
-function _pickInRect(x1, y1, x2, y2) {
-  if (!window.THREE) return new Set();
-  const root = state.get('treeData');
-  if (!root) return new Set();
-
+function _pickInRect(x1, y1, x2, y2, windowMode = false) {
   const found = new Set();
-  const rect  = sceneCore.renderer.domElement.getBoundingClientRect();
-  const SAMPLES = 8;   // grid density per axis (9×9 = 81 sample points)
+  const T = window.THREE;
+  if (!T || !sceneCore.rootGroup || !sceneCore.camera) return found;
 
-  for (let si = 0; si <= SAMPLES; si++) {
-    const cx = x1 + (x2 - x1) * (si / SAMPLES);
-    for (let sj = 0; sj <= SAMPLES; sj++) {
-      const cy = y1 + (y2 - y1) * (sj / SAMPLES);
-      if (cx < rect.left || cx > rect.right || cy < rect.top || cy > rect.bottom) continue;
+  const cam  = sceneCore.camera;
+  const rect = sceneCore.renderer.domElement.getBoundingClientRect();
+  cam.updateMatrixWorld();
 
-      const hits = sceneCore.pickAll(cx, cy);
-      for (const h of hits) {
-        const meshNodeId = h.object.userData?.meshNodeId;
-        if (meshNodeId) found.add(meshNodeId);  // collect mesh IDs directly
-      }
+  const minX = Math.min(x1, x2), maxX = Math.max(x1, x2);
+  const minY = Math.min(y1, y2), maxY = Math.max(y1, y2);
+  const boxW = maxX - minX, boxH = maxY - minY;
+
+  // World point → screen px, or null if behind the camera (the perspective
+  // divide flips sign behind the eye, so guard on view-space z first).
+  const _vv = new T.Vector3();
+  const project = (wx, wy, wz) => {
+    _vv.set(wx, wy, wz).applyMatrix4(cam.matrixWorldInverse);   // view space
+    if (_vv.z > -1e-4) return null;                             // at/behind camera
+    _vv.applyMatrix4(cam.projectionMatrix);                     // NDC (divide done)
+    return {
+      x: rect.left + (_vv.x * 0.5 + 0.5) * rect.width,
+      y: rect.top  + (-_vv.y * 0.5 + 0.5) * rect.height,
+    };
+  };
+  const inRect = (p) => p && p.x >= minX && p.x <= maxX && p.y >= minY && p.y <= maxY;
+
+  const corner = new T.Vector3();
+  sceneCore.rootGroup.traverse(obj => {
+    if (!obj.isMesh || !obj.geometry) return;
+    const meshNodeId = obj.userData?.meshNodeId;
+    if (!meshNodeId || obj.userData?.noSelect) return;
+    // Effective visibility — skip if this object or any ancestor is hidden.
+    for (let o = obj; o; o = o.parent) { if (o.visible === false) return; }
+
+    obj.updateWorldMatrix(true, false);
+    const geo = obj.geometry;
+    if (!geo.boundingBox) geo.computeBoundingBox();
+    const bb = geo.boundingBox;
+    if (!bb) return;
+
+    // 8 bbox corners → screen AABB.
+    let sMinX = Infinity, sMinY = Infinity, sMaxX = -Infinity, sMaxY = -Infinity;
+    let anyFront = false, allInside = true;
+    for (let i = 0; i < 8; i++) {
+      corner.set(i & 1 ? bb.max.x : bb.min.x,
+                 i & 2 ? bb.max.y : bb.min.y,
+                 i & 4 ? bb.max.z : bb.min.z).applyMatrix4(obj.matrixWorld);
+      const p = project(corner.x, corner.y, corner.z);
+      if (!p) { allInside = false; continue; }
+      anyFront = true;
+      if (p.x < sMinX) sMinX = p.x; if (p.x > sMaxX) sMaxX = p.x;
+      if (p.y < sMinY) sMinY = p.y; if (p.y > sMaxY) sMaxY = p.y;
+      if (!inRect(p)) allInside = false;
     }
-  }
+    if (!anyFront) return;
+    // Fast reject: screen AABB doesn't touch the marquee.
+    if (sMaxX < minX || sMinX > maxX || sMaxY < minY || sMinY > maxY) return;
+    // Window mode (Ctrl): only objects whose whole bbox is inside the box.
+    if (windowMode) { if (allInside) found.add(meshNodeId); return; }
+    // Fully inside → definitely selected.
+    if (allInside) { found.add(meshNodeId); return; }
+    // Small object overlapping the marquee → include (catches thin/crossing
+    // parts the user dragged a box over).
+    if ((sMaxX - sMinX) <= boxW && (sMaxY - sMinY) <= boxH) { found.add(meshNodeId); return; }
+    // Big object grazing the marquee → require a real vertex inside.
+    const pos = geo.attributes?.position;
+    if (!pos) { found.add(meshNodeId); return; }   // no verts to test → include
+    const n = pos.count;
+    const step = Math.max(1, Math.floor(n / 300));  // ≤ ~300 samples
+    for (let vi = 0; vi < n; vi += step) {
+      corner.set(pos.getX(vi), pos.getY(vi), pos.getZ(vi)).applyMatrix4(obj.matrixWorld);
+      if (inRect(project(corner.x, corner.y, corner.z))) { found.add(meshNodeId); return; }
+    }
+  });
   return found;
 }
 
 // ── Pointer down on canvas: start potential drag-select ──────────────────────
 
 canvas.addEventListener('pointerdown', e => {
+  // In-editor "Add polygon from face" picker — checked BEFORE the shape
+  // editor's general click intercept because the editor is in 'edit'
+  // phase while the picker is armed, and would otherwise eat the click.
+  if (state.get('addPolygonFromFacePicking') && e.button === 0) {
+    e.preventDefault();
+    e.stopPropagation();
+    _gizmoConsumed = true;
+    actions.addPolygonFromFaceAtClick(e.clientX, e.clientY);
+    return;
+  }
+  if (state.get('addPolygonFromFacePicking') && e.button === 2) {
+    e.preventDefault();
+    e.stopPropagation();
+    _gizmoConsumed = true;
+    actions.cancelAddPolygonFromFacePick();
+    return;
+  }
+
   // Shape editor — Phase 1 of "2D shapes in 3D". When active, the editor
   // owns viewport clicks: left = pick plane / add vertex / close, right
   // = commit. Other modes (gizmo, picking, etc.) are bypassed entirely.
@@ -943,9 +1103,11 @@ window.addEventListener('pointermove', e => {
   const dy = e.clientY - _dragStartY;
   if (!_isDragging && Math.sqrt(dx * dx + dy * dy) > 6) {
     _isDragging = true;
+    _beginMarqueeCursor(e);
   }
   if (_isDragging) {
     _showMarquee(_dragStartX, _dragStartY, e.clientX, e.clientY);
+    _setMarqueeCursor(!!(e.ctrlKey || e.metaKey), !!e.shiftKey, !!e.altKey);
   }
 }, { passive: true });
 
@@ -970,19 +1132,36 @@ window.addEventListener('pointerup', e => {
   if (!_isDragging) return;
   _hideMarquee();
   _isDragging  = false;
+  _endMarqueeCursor();
   _justDragged = true;   // suppress the click event that fires next
 
-  const found = _pickInRect(_dragStartX, _dragStartY, e.clientX, e.clientY);
-  if (found.size === 0) {
-    if (!e.ctrlKey && !e.metaKey) actionClearSelection();
-    return;
+  // V0.1.94 box-select modifiers:
+  //   Ctrl (or ⌘) → "window" mode: only objects FULLY enclosed by the box.
+  //                 Without it: "clipping" mode = anything the box touches.
+  //   Shift       → ADD the boxed objects to the current selection.
+  //   Alt         → REMOVE the boxed objects from the current selection.
+  //   (neither)   → REPLACE the selection with the boxed objects.
+  const windowMode = e.ctrlKey || e.metaKey;
+  const doAdd      = e.shiftKey;
+  const doRemove   = e.altKey;
+  const found = _pickInRect(_dragStartX, _dragStartY, e.clientX, e.clientY, windowMode);
+
+  const current = new Set(state.get('multiSelectedIds') || []);
+  let multi;
+  if (doRemove) {
+    multi = current;
+    for (const id of found) multi.delete(id);
+  } else if (doAdd) {
+    multi = current;
+    for (const id of found) multi.add(id);
+  } else {
+    multi = found;   // replace
   }
 
-  const multi = e.ctrlKey || e.metaKey
-    ? new Set([...(state.get('multiSelectedIds') || []), ...found])
-    : found;
-
-  const primary = [...multi][0];
+  if (multi.size === 0) { actionClearSelection(); return; }
+  // Keep the existing primary if it survived; else pick any member.
+  const prevPrimary = state.get('selectedId');
+  const primary = multi.has(prevPrimary) ? prevPrimary : [...multi][0];
   actionSetSelection(primary, multi);
 });
 
@@ -1071,6 +1250,36 @@ canvas.addEventListener('click', e => {
   if (_justDragged)   { _justDragged   = false; return; }
   hideContextMenu();
 
+  // ── Replace-Model viewport picker (B.2-NEW.2) ────────────────────────
+  // When the user clicked "🎯 Pick from viewport…" in the add-to-replace
+  // dialog, state.replaceModelPickingForId holds the RM id waiting for a
+  // source. The next viewport click resolves to that mesh/flatShape and
+  // re-opens the mode dialog. Esc cancels (handled at keydown).
+  const rmPickFor = state.get('replaceModelPickingForId');
+  if (rmPickFor) {
+    const hit = sceneCore.pick(e.clientX, e.clientY);
+    const hitMeshId = hit?.object?.userData?.meshNodeId;
+    if (!hitMeshId) {
+      setStatus('No object under cursor — try again or press Esc to cancel.', 'warning');
+      return;
+    }
+    const nbm = state.get('nodeById');
+    const hitNode = nbm?.get(hitMeshId);
+    // Reject: archived, the RM itself, descendant of RM, RM children, wrong type.
+    const isInRM = !!hit.object.userData?.replaceModelId;
+    if (!hitNode ||
+        hitNode.archived ||
+        hitMeshId === rmPickFor ||
+        isInRM ||
+        (hitNode.type !== 'mesh' && hitNode.type !== 'flatShape')) {
+      setStatus('Not a valid replacement source. Pick a mesh or flat-shape outside the RM. (Esc to cancel.)', 'warning');
+      return;
+    }
+    state.setState({ replaceModelPickingForId: null });
+    showReplaceModeDialog(rmPickFor, hitMeshId, hitNode.name || 'object');
+    return;
+  }
+
   // Phase A: cable points have priority over mesh selection AND don't
   // require a loaded tree (cables can exist without a model). Run this
   // BEFORE the tree/nbm guard or cables-only sessions never select.
@@ -1085,6 +1294,20 @@ canvas.addEventListener('click', e => {
   const socketHit = _pickCableSocket(e.clientX, e.clientY);
   if (socketHit) {
     actions.selectCableSocket(socketHit.cableId, socketHit.nodeId);
+    return;
+  }
+
+  // V0.1.89/96 ray-select: while the candidate list is open, a plain L-click
+  // on geometry advances the highlight to the next overlapping entity; an
+  // L-click on blank background CANCELS (same as Esc). R-click confirms
+  // (contextmenu handler); Esc cancels (keydown). Middle-drag still orbits.
+  if (_raySelect && e.button === 0) {
+    e.preventDefault();
+    e.stopPropagation();
+    _gizmoConsumed = true;
+    const hit = sceneCore.pick(e.clientX, e.clientY);
+    if (hit && hit.object?.userData?.meshNodeId) _raySelectCycle(1);
+    else _raySelectCancel();
     return;
   }
 
@@ -1110,14 +1333,109 @@ canvas.addEventListener('click', e => {
   actions.clearCablePointSelection();
   actions.clearCableSocketSelection();
 
-  const target = meshNodeId;
-  const multi  = new Set(state.get('multiSelectedIds') || []);
-  if (e.ctrlKey || e.metaKey) {
-    if (multi.has(target)) multi.delete(target);
-    else                   multi.add(target);
-    actionSetSelection(target, multi);
-  } else {
-    actionSetSelection(target, new Set([target]));
+  // ── Selection promotion (B.2-NEW.2 RM + V0.1.92 locked folders) ──────
+  // Two promotion paths, in priority order:
+  //   1. RM: hit's userData.replaceModelId → the RM that owns it.
+  //   2. Locked folder: hit lives inside a folder with locked=true →
+  //      that folder is the selection target (treat as one unit).
+  // Both paths include all descendants in the click-set so per-mesh
+  // edge outlines render across each child.
+  const promotedRmId       = hit.object.userData?.replaceModelId;
+  const promotedRmNode     = promotedRmId ? nbm.get(promotedRmId) : null;
+  const lockedGroupNode    = !promotedRmNode
+    ? actions.findLockedFolderAncestor?.(root, meshNodeId)
+    : null;
+  const promotedContainer  = promotedRmNode || lockedGroupNode || null;
+
+  // V0.1.85: locked shape-tab group — flatShape instances whose template
+  // belongs to a locked shape group expand the click to every instance of
+  // every member template. Runs only when no tree-side promotion fired
+  // (RM / locked tree-group take priority). Result is a flat node-id set
+  // (no container hierarchy), so the selection target is the clicked mesh
+  // and the set carries the siblings.
+  const shapeGroupSet = !promotedContainer
+    ? actions.selectionPromoteForLockedShapeGroup?.(meshNodeId)
+    : null;
+  const target = promotedContainer ? promotedContainer.id : meshNodeId;
+
+  // Build the "selection-set" for the click. Both promotion paths
+  // include every descendant so the per-mesh outlines fire.
+  const buildContainerSet = (containerId) => {
+    const out = new Set([containerId]);
+    const containerNode = nbm.get(containerId);
+    if (containerNode?.children) {
+      (function walk(n) {
+        for (const c of (n.children || [])) { out.add(c.id); walk(c); }
+      })(containerNode);
+    }
+    return out;
+  };
+
+  const clickSet = promotedContainer
+    ? buildContainerSet(target)
+    : (shapeGroupSet && shapeGroupSet.size > 0 ? shapeGroupSet : new Set([target]));
+
+  // V0.2.7: four distinct click modes (each with the matching ray-select
+  // menu when 2+ entities are under the cursor):
+  //   (no mod) REPLACE — all entities are candidates, no tags.
+  //   Shift    ADD     — only NOT-selected entities, "ADD" tags.
+  //   Alt      REMOVE  — only currently-SELECTED entities, "REMOVE" tags.
+  //   Ctrl/⌘   TOGGLE  — ALL entities; each row tagged ADD or REMOVE
+  //                       depending on its current selection state.
+  const mode = e.altKey  ? 'remove'
+             : (e.ctrlKey || e.metaKey) ? 'toggle'
+             : e.shiftKey ? 'add'
+             : 'replace';
+  const allEntities = actions.resolveRaySelectEntities(e.clientX, e.clientY);
+  const multi = new Set(state.get('multiSelectedIds') || []);
+
+  // Helper: toggle an entity's selection state (add if absent, remove if
+  // present) — shared by 'toggle' single-entity path and confirm.
+  const _commitToggle = (ent) => {
+    const present = multi.has(ent.targetId);
+    for (const id of ent.meshIds) { if (present) multi.delete(id); else multi.add(id); }
+    if (multi.size === 0) { actionClearSelection(); return; }
+    const prevPrim = state.get('selectedId');
+    actionSetSelection(multi.has(prevPrim) ? prevPrim : [...multi][0], multi);
+  };
+
+  if (mode === 'replace') {
+    if (allEntities.length >= 2) {
+      _openRaySelect(allEntities, e.clientX, e.clientY, 'replace');
+    } else {
+      actionSetSelection(target, clickSet);
+    }
+  } else if (mode === 'add') {
+    const cands = allEntities.filter(ent => !multi.has(ent.targetId));
+    if (cands.length === 0) {
+      setStatus('Nothing to add — everything under the cursor is already selected.');
+    } else if (cands.length === 1) {
+      const ent = cands[0];
+      for (const id of ent.meshIds) multi.add(id);
+      actionSetSelection(ent.targetId, multi);
+    } else {
+      _openRaySelect(cands, e.clientX, e.clientY, 'add');
+    }
+  } else if (mode === 'remove') {
+    const cands = allEntities.filter(ent => multi.has(ent.targetId));
+    if (cands.length === 0) {
+      setStatus('Nothing to remove — nothing selected under the cursor.');
+    } else if (cands.length === 1) {
+      const ent = cands[0];
+      for (const id of ent.meshIds) multi.delete(id);
+      multi.delete(ent.targetId);
+      if (multi.size === 0) { actionClearSelection(); }
+      else {
+        const prevPrimary = state.get('selectedId');
+        actionSetSelection(multi.has(prevPrimary) ? prevPrimary : [...multi][0], multi);
+      }
+    } else {
+      _openRaySelect(cands, e.clientX, e.clientY, 'remove');
+    }
+  } else { // toggle
+    if (allEntities.length === 0) return;
+    if (allEntities.length === 1) _commitToggle(allEntities[0]);
+    else _openRaySelect(allEntities, e.clientX, e.clientY, 'toggle');
   }
 });
 
@@ -1162,11 +1480,209 @@ canvas.addEventListener('dblclick', e => {
   materials.applySelectionHighlight(meshIds);
 });
 
+// ══════════════════════════════════════════════════════════════════════════
+//  RAY-SELECT — disambiguate overlapping picks (V0.1.89)
+// ══════════════════════════════════════════════════════════════════════════
+//
+// Auto-opens a cursor-anchored cycle list when a plain click pierces 2+
+// distinct entities (actions.resolveRaySelectEntities). The active candidate
+// is previewed in a HUE-SHIFTED variant of the selection color. L-click
+// (viewport) cycles, hovering a list row previews it, R-click or a row
+// mousedown confirms, Esc cancels.
+let _raySelect = null;   // { entities, index, el, color }
+
+// Shift the hue of a #rrggbb hex by `deg` degrees (HSL space). Used to make
+// the candidate-preview color clearly distinct from the cyan selection while
+// staying related to the user's chosen palette.
+function _hueShiftHex(hex, deg) {
+  const m = /^#?([0-9a-f]{6})$/i.exec(hex || '');
+  if (!m) return '#ffd23f';
+  const n = parseInt(m[1], 16);
+  let r = ((n >> 16) & 255) / 255, g = ((n >> 8) & 255) / 255, b = (n & 255) / 255;
+  const max = Math.max(r, g, b), min = Math.min(r, g, b);
+  let h, s, l = (max + min) / 2;
+  if (max === min) { h = 0; s = 0; }
+  else {
+    const d = max - min;
+    s = l > 0.5 ? d / (2 - max - min) : d / (max + min);
+    h = max === r ? (g - b) / d + (g < b ? 6 : 0)
+      : max === g ? (b - r) / d + 2
+      :             (r - g) / d + 4;
+    h /= 6;
+  }
+  h = (h + deg / 360) % 1; if (h < 0) h += 1;
+  if (s < 0.25) s = 0.6;   // bump so near-grays still read as a distinct hue
+  const hue2rgb = (p, q, t) => {
+    if (t < 0) t += 1; if (t > 1) t -= 1;
+    if (t < 1 / 6) return p + (q - p) * 6 * t;
+    if (t < 1 / 2) return q;
+    if (t < 2 / 3) return p + (q - p) * (2 / 3 - t) * 6;
+    return p;
+  };
+  let R, G, B;
+  if (s === 0) { R = G = B = l; }
+  else {
+    const q = l < 0.5 ? l * (1 + s) : l + s - l * s;
+    const p = 2 * l - q;
+    R = hue2rgb(p, q, h + 1 / 3); G = hue2rgb(p, q, h); B = hue2rgb(p, q, h - 1 / 3);
+  }
+  const hx = v => ('0' + Math.round(v * 255).toString(16)).slice(-2);
+  return '#' + hx(R) + hx(G) + hx(B);
+}
+
+function _openRaySelect(entities, x, y, mode = 'replace') {
+  _closeRaySelectUI();
+  const color = _hueShiftHex(state.get('selectionOutlineColor') ?? '#00ffff', 45);
+  _raySelect = { entities, index: 0, el: null, color, mode };
+  _buildRaySelectList(x, y);
+  _raySelectPreview();
+  const verb = mode === 'add'    ? 'add'
+             : mode === 'remove' ? 'remove'
+             : mode === 'toggle' ? 'toggle'
+             :                     'confirm';
+  setStatus(`${entities.length} objects under cursor — L-click to cycle, R-click to ${verb}, Esc to cancel.`);
+}
+
+function _raySelectPreview() {
+  if (!_raySelect) return;
+  const ent = _raySelect.entities[_raySelect.index];
+  // Separate preview channel — the existing selection stays highlighted
+  // (cyan) underneath; the candidate shows in the hue-shifted color on top.
+  materials.applyPreviewHighlight(new Set(ent.meshIds), _raySelect.color);
+  if (_raySelect.el) {
+    _raySelect.el.querySelectorAll('[data-ray-idx]').forEach(row => {
+      const on = Number(row.dataset.rayIdx) === _raySelect.index;
+      row.style.background = on ? 'rgba(255,210,63,0.18)' : 'transparent';
+      row.style.fontWeight = on ? '600' : '400';
+    });
+  }
+}
+
+function _raySelectCycle(delta) {
+  if (!_raySelect) return;
+  const n = _raySelect.entities.length;
+  _raySelect.index = (((_raySelect.index + delta) % n) + n) % n;
+  _raySelectPreview();
+}
+
+function _raySelectConfirm() {
+  if (!_raySelect) return;
+  const ent  = _raySelect.entities[_raySelect.index];
+  const mode = _raySelect.mode;
+  _closeRaySelectUI();
+  _raySelect = null;
+  materials.clearPreviewHighlight();
+  // Setting the real selection fires selection:change → the highlight
+  // repaints in the normal selection color (clearing the preview hue).
+  if (mode === 'add' || mode === 'toggle') {
+    // Shift (add) → candidate set was pre-filtered to non-selected, so the
+    // present check always falls into the "add" branch. Ctrl (toggle) →
+    // unfiltered candidates; the present check toggles per-item.
+    const multi    = new Set(state.get('multiSelectedIds') || []);
+    const present  = multi.has(ent.targetId);
+    for (const id of ent.meshIds) { if (present) multi.delete(id); else multi.add(id); }
+    if (multi.size === 0) actionClearSelection();
+    else {
+      const prevPrim = state.get('selectedId');
+      actionSetSelection(multi.has(prevPrim) ? prevPrim : [...multi][0], multi);
+    }
+    setStatus(`${present ? 'Removed' : 'Added'} "${ent.name}".`);
+  } else if (mode === 'remove') {
+    // Alt: drop the chosen entity from the selection.
+    const multi = new Set(state.get('multiSelectedIds') || []);
+    for (const id of ent.meshIds) multi.delete(id);
+    multi.delete(ent.targetId);
+    if (multi.size === 0) { actionClearSelection(); }
+    else {
+      const prevPrimary = state.get('selectedId');
+      actionSetSelection(multi.has(prevPrimary) ? prevPrimary : [...multi][0], multi);
+    }
+    setStatus(`Removed "${ent.name}".`);
+  } else {
+    actionSetSelection(ent.targetId, new Set(ent.meshIds));
+    setStatus(`Selected "${ent.name}".`);
+  }
+}
+
+function _raySelectCancel() {
+  if (!_raySelect) return;
+  _closeRaySelectUI();
+  _raySelect = null;
+  // Selection highlight was never disturbed — just drop the preview channel.
+  materials.clearPreviewHighlight();
+  setStatus('Selection cancelled.');
+}
+
+function _closeRaySelectUI() {
+  if (_raySelect?.el) { _raySelect.el.remove(); _raySelect.el = null; }
+}
+
+function _buildRaySelectList(x, y) {
+  const el = document.createElement('div');
+  el.className = 'ray-select-list';
+  el.style.cssText = `position:fixed;left:${x + 14}px;top:${y + 14}px;z-index:10000;`
+    + `background:var(--panel,#1e293b);border:1px solid var(--line,#334155);border-radius:6px;`
+    + `box-shadow:0 6px 24px rgba(0,0,0,0.5);padding:4px;min-width:160px;max-height:50vh;`
+    + `overflow:auto;font-size:12px;user-select:none;color:var(--text,#cbd5e1);`;
+  const header = document.createElement('div');
+  header.textContent = `Pick (${_raySelect.entities.length})`;
+  header.style.cssText = 'padding:4px 8px;opacity:0.55;font-size:11px;';
+  el.appendChild(header);
+  // V0.2.6/V0.2.7: per-row "ADD" or "REMOVE" tag showing what confirming
+  // would do. Uniform in pure add (Shift) / remove (Alt) modes; per-entity
+  // in TOGGLE mode (Ctrl/⌘), where each candidate is tagged ADD if not in
+  // selection, REMOVE if it is. No tag in plain REPLACE mode.
+  const sceneMulti = new Set(state.get('multiSelectedIds') || []);
+  const tagFor = (ent) => {
+    if (_raySelect.mode === 'add')    return { word: 'add',    color: '#4ade80' };
+    if (_raySelect.mode === 'remove') return { word: 'remove', color: '#f87171' };
+    if (_raySelect.mode === 'toggle') {
+      return sceneMulti.has(ent.targetId)
+        ? { word: 'remove', color: '#f87171' }
+        : { word: 'add',    color: '#4ade80' };
+    }
+    return null;
+  };
+  _raySelect.entities.forEach((ent, i) => {
+    const row = document.createElement('div');
+    row.dataset.rayIdx = String(i);
+    row.style.cssText  = 'padding:5px 10px;border-radius:4px;cursor:pointer;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;display:flex;align-items:center;gap:6px';
+    const tag = tagFor(ent);
+    if (tag) {
+      const tagEl = document.createElement('span');
+      tagEl.textContent = tag.word;
+      tagEl.style.cssText = `color:${tag.color};font-weight:600;font-size:10px;text-transform:uppercase;letter-spacing:0.4px;flex-shrink:0;min-width:42px`;
+      row.appendChild(tagEl);
+    }
+    const nameSpan = document.createElement('span');
+    nameSpan.textContent = ent.name;
+    nameSpan.style.cssText = 'overflow:hidden;text-overflow:ellipsis;white-space:nowrap';
+    row.appendChild(nameSpan);
+    row.addEventListener('mouseenter', () => { if (_raySelect) { _raySelect.index = i; _raySelectPreview(); } });
+    row.addEventListener('mousedown', ev => { ev.preventDefault(); ev.stopPropagation(); if (_raySelect) { _raySelect.index = i; _raySelectConfirm(); } });
+    el.appendChild(row);
+  });
+  document.body.appendChild(el);
+  _raySelect.el = el;
+  // Clamp on-screen.
+  const r = el.getBoundingClientRect();
+  if (r.right  > window.innerWidth)  el.style.left = Math.max(8, x - r.width  - 14) + 'px';
+  if (r.bottom > window.innerHeight) el.style.top  = Math.max(8, window.innerHeight - r.height - 8) + 'px';
+}
+
 // ── Context menu on viewport ──────────────────────────────────────────────────
 
 canvas.addEventListener('contextmenu', e => {
   e.preventDefault();
   hideContextMenu();
+
+  // V0.1.89 ray-select: R-click solidifies the currently-highlighted
+  // candidate and suppresses the normal context menu.
+  if (_raySelect) {
+    e.stopPropagation();
+    _raySelectConfirm();
+    return;
+  }
 
   // Shape editor right-click semantics depend on phase:
   //   - addVertices: pointerdown(button=2) committed the polygon → just
@@ -1194,7 +1710,7 @@ canvas.addEventListener('contextmenu', e => {
       // offer a one-click "Delete polygon" path for the user who wants
       // to remove a whole shape without first selecting all its vertices.
       items.push({
-        label: '🗑 Delete this polygon',
+        label: '🗑 Delete this shape',
         action: () => shapeEditor.deleteSelectedPolygon(edgeHit.polyIdx),
       });
     } else {
@@ -1203,8 +1719,12 @@ canvas.addEventListener('contextmenu', e => {
       // overlapping rectangles produce a "+" with a clear centre, donuts,
       // etc. Snap-close the new polygon to commit it back to edit mode.
       items.push({
-        label: '⊕ Add polygon (XOR with existing)',
+        label: '⊕ Add shape (XOR with existing)',
         action: () => shapeEditor.newShape(),
+      });
+      items.push({
+        label: '⊕ Add shape from face',
+        action: () => actions.startAddPolygonFromFacePick(),
       });
     }
     items.push({ label: '─', disabled: true });
@@ -1396,6 +1916,22 @@ canvas.addEventListener('contextmenu', e => {
   );
 
   const items = [];
+
+  // ── Archived-selection short-circuit ─────────────────────────────────
+  // If every selected node is archived, the viewport menu collapses to
+  // a single Unarchive item — same contract as the tree r-click menu.
+  // Every other action is a no-op on archived nodes anyway; showing
+  // the full menu would advertise commands that silently do nothing.
+  if (hasSel && [...multiIds].every(id => nodeById?.get(id)?.archived === true)) {
+    const ids = [...multiIds];
+    items.push({
+      label: ids.length > 1 ? `📤 Unarchive ${ids.length} items` : '📤 Unarchive',
+      action: () => actions.unarchiveNodes(ids),
+    });
+    showContextMenu(items, e.clientX, e.clientY);
+    return;
+  }
+
   if (canAddNoteHere) {
     items.push({
       label: '💬 Add Note here',
@@ -1445,7 +1981,7 @@ canvas.addEventListener('contextmenu', e => {
   if (node?.type === 'flatShape') {
     const inGlobal = state.get('globalEditNodeId') === node.id;
     items.push({
-      label: '✏ Edit polygon…',
+      label: '✏ Edit shape…',
       action: () => actions.startShapeEdit(node.templateId),
     });
     items.push({
@@ -1508,6 +2044,47 @@ canvas.addEventListener('contextmenu', e => {
         label: '🎨 Show color',
         action: () => showColorForNode(node.id),
       });
+    }
+    // ── Convert to Replace-Model (B.2-NEW.1) ─────────────────────────────
+    // Mirrors the tree r-click entry. Single non-archived node only —
+    // mesh / flatShape / model (NOT folder). Just flips node.type; no
+    // immediate visual change beyond the 🔄 icon in the tree.
+    if (multiIds.size === 1 && node && !node.archived &&
+        (node.type === 'mesh' || node.type === 'flatShape' || node.type === 'model')) {
+      items.push({
+        label: '🔄 Convert to Replace-Model',
+        action: () => actions.convertToReplaceModel(node.id),
+      });
+    }
+    // ── RM-only: Add to replace (B.2-NEW.2) ──────────────────────────────
+    if (multiIds.size === 1 && node?.type === 'replaceModel' && !node.archived) {
+      items.push({
+        label: '＋ Add to replace…',
+        action: () => showAddToReplaceDialog(node.id),
+      });
+    }
+    // ── Archive / Unarchive ─────────────────────────────────────────────
+    // Mirrors the tree r-click menu. Toggle is here so the user can lock
+    // a node out of the scene without ever opening the tree. Scene root
+    // can't be archived (no entry for it). The action is idempotent on
+    // the actions.js side so showing one item for a mixed-selection just
+    // archives the ones that aren't yet.
+    {
+      const ids = [...multiIds];
+      const anyNotArchived = ids.some(id => nodeById?.get(id)?.archived !== true);
+      const anyArchived    = ids.some(id => nodeById?.get(id)?.archived === true);
+      if (anyNotArchived) {
+        items.push({
+          label: ids.length > 1 ? `🗃️ Archive ${ids.length} items` : '🗃️ Archive',
+          action: () => actions.archiveNodes(ids),
+        });
+      }
+      if (anyArchived) {
+        items.push({
+          label: ids.length > 1 ? `📤 Unarchive ${ids.length} items` : '📤 Unarchive',
+          action: () => actions.unarchiveNodes(ids),
+        });
+      }
     }
     items.push({ label: '─', disabled: true });
   }
@@ -1596,7 +2173,7 @@ function _showPolyTransformPanel(clientX, clientY) {
       <input data-field="${id}" type="text" value="${value}" autocomplete="off" spellcheck="false" style="${fieldStyle}" />
     </div>`;
   panel.innerHTML = `
-    <div style="font-weight:700;font-size:13px;color:#f1f5f9;margin-bottom:10px;letter-spacing:0.3px;border-bottom:1px solid #1e293b;padding-bottom:6px;">Polygon Transform</div>
+    <div style="font-weight:700;font-size:13px;color:#f1f5f9;margin-bottom:10px;letter-spacing:0.3px;border-bottom:1px solid #1e293b;padding-bottom:6px;">Shape Transform</div>
     <div style="margin-bottom:8px;">
       <div style="font-size:10px;color:#64748b;margin-bottom:4px;letter-spacing:0.5px;">TRANSLATE (delta, plane-local)</div>
       ${row('tx', 'X',     '#e05555', '0')}
@@ -1772,9 +2349,13 @@ window.addEventListener('keydown', async e => {
   }
 
   // ── Step navigation ──────────────────────────────────────────────────────
-  if (key === 'ArrowLeft')  { e.preventDefault(); steps.activateRelativeStep(-1); return; }
-  if (key === 'ArrowRight') { e.preventDefault(); steps.activateRelativeStep(+1); return; }
-  if (key === ' ')          { e.preventDefault(); steps.activateRelativeStep(+1); return; }
+  // After moving the active step, keep the selection united with it UNLESS
+  // we're in multi-select (selection ≥ 2 steps) — see
+  // uniteStepSelectionWithActive. activateRelativeStep sets activeStepId
+  // synchronously, so reading it inside the unite call is safe.
+  if (key === 'ArrowLeft')  { e.preventDefault(); steps.activateRelativeStep(-1); actions.uniteStepSelectionWithActive(); return; }
+  if (key === 'ArrowRight') { e.preventDefault(); steps.activateRelativeStep(+1); actions.uniteStepSelectionWithActive(); return; }
+  if (key === ' ')          { e.preventDefault(); steps.activateRelativeStep(+1); actions.uniteStepSelectionWithActive(); return; }
 
   // ── Gizmo space toggle (Local ↔ World) ──────────────────────────────────
   if (key === 'l' || key === 'L') {
@@ -1814,6 +2395,15 @@ window.addEventListener('keydown', async e => {
   // ── Selection ────────────────────────────────────────────────────────────
   if (key === 'Escape') {
     if (gizmo.isDragging) { gizmo.onPointerUp(); return; }
+    // Replace-Model viewport pick — Esc cancels the one-shot pick mode
+    // armed from the add-to-replace dialog's "🎯 Pick from viewport…"
+    // button. Runs BEFORE shape editor / placement / etc. so the user
+    // can bail at any time.
+    if (state.get('replaceModelPickingForId')) {
+      state.setState({ replaceModelPickingForId: null });
+      setStatus('Replace-Model pick cancelled.');
+      return;
+    }
     // Shape editor — Esc abandons in-progress polygon (no undo entry,
     // nothing was committed). Highest priority among picking modes.
     if (shapeEditor.isDrawing()) {
@@ -1830,9 +2420,19 @@ window.addEventListener('keydown', async e => {
       actions.cancelShapePlacement();
       return;
     }
+    // Ray-select cycle list — Esc cancels (no selection change).
+    if (_raySelect) {
+      _raySelectCancel();
+      return;
+    }
     // Create-shape-from-face picker — Esc disarms.
     if (state.get('shapeFromFacePicking')) {
       actions.cancelCreateShapeFromFace();
+      return;
+    }
+    // Add-polygon-from-face picker (in-editor) — Esc disarms.
+    if (state.get('addPolygonFromFacePicking')) {
+      actions.cancelAddPolygonFromFacePick();
       return;
     }
     // Translate-global — Esc rolls back the open session and exits mode.

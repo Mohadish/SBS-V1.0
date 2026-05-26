@@ -73,6 +73,16 @@ function createInitialState() {
 
     // ── Color presets
     colorPresets:   [],               // [{id, name, type:'solid'|'falloff', ...}]
+    // Multi-select in the Colors tab (Set<presetId>). Session-local —
+    // file-manager style click / ctrl-click / shift-click. Drives bulk
+    // delete + unify, and the edit card (shown when exactly one selected).
+    selectedColorPresetIds: new Set(),
+    // Colors-tab filter (session-local). When true, presets used by a
+    // currently-VISIBLE object float to the top; the rest drop below a
+    // separator and render greyed (mirrors the Shapes-tab filter).
+    colorTabFilterVisibleOnly: false,
+    // Auto-elevate currently-selected colors to the very top of the list.
+    colorTabFilterSelectedFirst: false,
 
     // ── Notes library
     noteTemplates:  [],               // [{id, text, fontSize, ...}]
@@ -128,6 +138,27 @@ function createInitialState() {
     // reuses its geometry; editing it ripples to every instance.
     // See systems/flat-shapes.js + ui/shape-tab.js.
     shapeTemplates: [],               // ShapeTemplate[]
+
+    // ── Shape-tab groupings (V0.1.85). Tab-only — does NOT affect tree
+    // hierarchy. Each entry: { id, name, locked, collapsed, templateIds[] }.
+    // See createShapeTemplateGroup in core/schema.js for semantics.
+    shapeTemplateGroups: [],
+
+    // Multi-select in the shape tab. Set<templateId>. Independent of
+    // tree selection (a flatShape NODE selection is selectedId /
+    // multiSelectedIds; this Set is the TEMPLATE-LEVEL tab selection).
+    // Populated by Ctrl/Shift-click on tab rows + projected from
+    // viewport flatShape selection on tree-selection change.
+    selectedShapeTemplateIds: new Set(),
+
+    // Selected shape template GROUPS (Set<groupId>). Same multi-select
+    // semantics as selectedShapeTemplateIds but for group rows. Clicking
+    // a group row selects the group itself; ctrl-click toggles.
+    selectedShapeTemplateGroupIds: new Set(),
+
+    // Shape-tab filter — when true, only templates/groups with ≥ 1
+    // currently-visible instance render. Session-local (not persisted).
+    shapeTabFilterVisibleOnly: false,
 
     // Editor mode for "create shape" / "edit shape" — populated by
     // actions.startShapeDraw / startShapeEdit; cleared on commit /

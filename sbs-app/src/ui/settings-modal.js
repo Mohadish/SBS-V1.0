@@ -13,6 +13,7 @@ import * as userSettings from '../core/user-settings.js';
 import { listVoices }    from '../systems/tts.js';
 import sceneCore         from '../core/scene.js';
 import state             from '../core/state.js';
+import * as actions       from '../systems/actions.js';
 
 let _dlg = null;
 
@@ -273,19 +274,24 @@ function _renderSceneTab(body) {
   // ── Background — solid color ────────────────────────────────────────────
   body.querySelector('#scene-bg-color').addEventListener('input', e => {
     const v = e.target.value;
-    state.setState({ backgroundColor: v });   // live apply to viewport
-    state.markDirty();
-    userSettings.patch({ scene: { defaultBackgroundColor: v } });
+    userSettings.patch({ scene: { defaultBackgroundColor: v } });   // pref (not undoable)
+    // Live apply to project state — undoable (change:backgroundColor repaints).
+    actions.commitStateChange('Background color', ['backgroundColor'], () => {
+      state.setState({ backgroundColor: v });
+      state.markDirty();
+    }, { coalesceKey: 'bgColor' });
   });
 
   // ── Background — gradient ───────────────────────────────────────────────
   const _patchGrad = (partial) => {
     const cur2  = userSettings.get();
     const merged = { ...(cur2.scene?.defaultBackgroundGradient || {}), ...partial };
-    userSettings.patch({ scene: { defaultBackgroundGradient: merged } });
-    // Live-apply to current project state so user sees it.
-    state.setState({ backgroundGradient: { ...(state.get('backgroundGradient') || {}), ...partial } });
-    state.markDirty();
+    userSettings.patch({ scene: { defaultBackgroundGradient: merged } });   // pref
+    // Live-apply to current project state — undoable.
+    actions.commitStateChange('Background gradient', ['backgroundGradient'], () => {
+      state.setState({ backgroundGradient: { ...(state.get('backgroundGradient') || {}), ...partial } });
+      state.markDirty();
+    }, { coalesceKey: 'bgGradient' });
   };
 
   const gradToggle = body.querySelector('#scene-bg-grad-toggle');

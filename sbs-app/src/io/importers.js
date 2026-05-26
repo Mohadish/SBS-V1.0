@@ -461,6 +461,172 @@ function buildNodeFromThreeObject(obj, obj3dMap) {
 
 
 // ═══════════════════════════════════════════════════════════════════════════
+//  BAKE & FLATTEN  (V0.1.65 — see project notes "GLB envelope" discussion)
+// ═══════════════════════════════════════════════════════════════════════════
+//
+// Why this exists:
+//   GLB / FBX exporters from CAD tools (Inventor, Solidworks, Blender CAD
+//   add-ons) emit deeply nested scene graphs — 5+ levels of Group nodes
+//   that each carry their own position / rotation / scale. The most common
+//   killer is a 0.001 scale on the root group (mm→m bandaid). When the
+//   user yanks a leaf mesh out of one of these groups, it loses the
+//   group's contribution to its world matrix and "goes all over the
+//   place" — wrong scale, wrong rotation, wrong position.
+//
+// What this fixes:
+//   At IMPORT time, before the model lands in the scene:
+//     1. Walk every mesh in the loaded Three.js scene.
+//     2. Compute each mesh's matrix RELATIVE to the model root (this
+//        accumulates the entire nested transform chain into one matrix).
+//     3. Bake that matrix into the mesh's vertex positions (geometry.
+//        applyMatrix4). Reset mesh.position/quaternion/scale to identity.
+//     4. Reparent the mesh as a direct child of the model root, so the
+//        nested groups are gone from the Three.js scene-graph.
+//     5. Prune the now-empty intermediate Group nodes.
+//     6. Flatten the SBS data tree to mirror: every mesh node becomes a
+//        direct child of the model node; intermediate folder nodes go
+//        away.
+//
+//   Result: a "clean" model with single-level hierarchy. Every leaf is
+//   independent — moving one to another folder doesn't disturb the
+//   others. Source transforms on the model node now apply uniformly to
+//   all leaves with no nested transform-stack to fight.
+//
+// What this preserves:
+//   - Mesh count + names + materials (Three.js .clone() on the geometry
+//     only; materials shared by reference, as before).
+//   - World pose of every mesh visually identical to the un-baked import.
+//   - Per-mesh bounding boxes (recomputed from baked geometry).
+//   - The model root's own pose stays as-imported — source-transform
+//     edits compose on top.
+//
+// What this loses:
+//   - The semantic "this group represents Engine_Subassembly" grouping.
+//     v1 collapses everything into one level. A future v2 could preserve
+//     named subassemblies via a heuristic ("group has a meaningful name
+//     and >1 child"), but for now it's flat-everything.
+//
+// Limitations:
+//   - Skinned meshes / morph-target meshes baked naively will look wrong.
+//     CAD GLBs almost never use these so we accept the trade-off.
+//   - Shared geometries are cloned per-mesh so each can be transformed
+//     independently — slight memory cost.
+
+/**
+ * Bake transforms into vertex positions + flatten model hierarchy.
+ *
+ * @param {TreeNode} innerRoot  the data-tree root for this model
+ *                              (its object3d is the Three.js group we work on)
+ * @param {Map<string,Object3D>} obj3dMap  nodeId → object3d map (kept in
+ *                              sync with the SBS data tree)
+ */
+function bakeAndFlattenImport(innerRoot, obj3dMap) {
+  const T = window.THREE;
+  if (!T || !innerRoot?.object3d) return;
+  const root = innerRoot.object3d;
+
+  // Single-Mesh GLBs are already "flat" — nothing to bake. STL is the
+  // common case here.
+  if (root.isMesh) return;
+
+  // Fresh world matrices for the read pass.
+  root.updateMatrixWorld(true);
+  const rootWorldInverse = new T.Matrix4().copy(root.matrixWorld).invert();
+
+  // Phase 1 — collect every descendant Mesh with its root-local matrix.
+  // (Cameras + lights are filtered out same as buildNodeFromThreeObject.)
+  const meshesToBake = [];
+  (function collect(obj) {
+    if (!obj || obj.isCamera || obj.isLight) return;
+    if (obj.isMesh && obj.geometry) {
+      const localToRoot = new T.Matrix4()
+        .multiplyMatrices(rootWorldInverse, obj.matrixWorld);
+      meshesToBake.push({ mesh: obj, localToRoot });
+    }
+    if (obj.children) for (const c of obj.children) collect(c);
+  })(root);
+
+  if (!meshesToBake.length) return;
+
+  // Phase 2 — bake matrix into geometry, reset local, reparent to root.
+  // Shared geometries get cloned-per-mesh so baking one doesn't poison
+  // siblings that referenced the same source geometry.
+  const seenGeoms = new WeakSet();
+  for (const { mesh, localToRoot } of meshesToBake) {
+    if (seenGeoms.has(mesh.geometry)) {
+      mesh.geometry = mesh.geometry.clone();
+    }
+    seenGeoms.add(mesh.geometry);
+    mesh.geometry.applyMatrix4(localToRoot);
+    mesh.geometry.computeBoundingBox?.();
+    mesh.geometry.computeBoundingSphere?.();
+
+    if (mesh.parent !== root) {
+      if (mesh.parent) mesh.parent.remove(mesh);
+      root.add(mesh);
+    }
+    mesh.position.set(0, 0, 0);
+    mesh.quaternion.identity();
+    mesh.scale.set(1, 1, 1);
+    mesh.updateMatrix();
+  }
+
+  // Phase 3 — prune empty intermediate groups (now-detached after the
+  // mesh reparenting). Walk depth-first; remove any non-mesh node with
+  // no remaining children.
+  (function prune(obj) {
+    if (obj === root) {
+      for (const c of [...obj.children]) prune(c);
+      return;
+    }
+    if (obj.children) for (const c of [...obj.children]) prune(c);
+    if (!obj.isMesh && (!obj.children || obj.children.length === 0)) {
+      if (obj.parent) obj.parent.remove(obj);
+    }
+  })(root);
+
+  // Phase 4 — flatten the SBS data tree. Collect every mesh-type node,
+  // re-stamp the bbox from the baked geometry (vertices changed), and
+  // make them direct children of innerRoot. Intermediate folder nodes
+  // are dropped from innerRoot.children — they served no further purpose.
+  // We also collect the SET OF DROPPED node ids so the obj3dMap can be
+  // pruned (Phase 5) — otherwise every imported model leaks one
+  // object3dById entry per intermediate group it had, forever.
+  const meshNodes = [];
+  const droppedNodeIds = new Set();
+  (function collectMeshNodes(node) {
+    if (!node) return;
+    if (node.type === 'mesh') {
+      const bb = node.object3d?.geometry?.boundingBox;
+      if (bb && isFinite(bb.min.x) && isFinite(bb.max.x)) {
+        node.bbox = {
+          min: [bb.min.x, bb.min.y, bb.min.z],
+          max: [bb.max.x, bb.max.y, bb.max.z],
+        };
+      }
+      meshNodes.push(node);
+    } else if (node !== innerRoot) {
+      // Non-mesh, non-root → an intermediate group node that will be
+      // dropped from the data tree. Mark its id for obj3dMap cleanup.
+      droppedNodeIds.add(node.id);
+    }
+    for (const c of (node.children || [])) collectMeshNodes(c);
+  })(innerRoot);
+
+  innerRoot.children = meshNodes;
+
+  // Phase 5 — prune obj3dMap of dropped intermediate-group ids. The
+  // map gets passed to finalizeModelImport which copies into
+  // steps.object3dById; without this prune, every flattened-away
+  // folder lingers in the global registry forever (sbsDiag.rmHealth
+  // flagged 63 such orphans after a single GLB import).
+  if (obj3dMap && droppedNodeIds.size) {
+    for (const id of droppedNodeIds) obj3dMap.delete(id);
+  }
+}
+
+
+// ═══════════════════════════════════════════════════════════════════════════
 //  FINALIZE (shared by all loaders)
 // ═══════════════════════════════════════════════════════════════════════════
 /**
@@ -773,6 +939,13 @@ async function loadGltfFile(file, assetEntry = null) {
         const obj3dMap = new Map();
         const innerRoot = buildNodeFromThreeObject(root, obj3dMap);
 
+        // Bake & flatten — fold every intermediate group's transforms
+        // into vertex coordinates, then collapse the hierarchy so every
+        // mesh sits as a direct child of the model root. Stabilises the
+        // model against the "yank a leaf, everything explodes" failure
+        // mode that nested GLBs trigger today. See helper comment.
+        bakeAndFlattenImport(innerRoot, obj3dMap);
+
         // globalDedup:false — GLTF/GLB presets deduplicate only within this
         // model load, not globally.  Two unrelated GLBs that both happen to
         // have white (#ffffff) meshes won't share the same preset, so tinting
@@ -811,6 +984,11 @@ async function loadFbxFile(file, assetEntry = null) {
   group3d.add(group);
   const obj3dMap = new Map();
   const innerRoot = buildNodeFromThreeObject(group, obj3dMap);
+
+  // Bake & flatten — same rationale as the GLB path. FBXLoader emits
+  // similarly deep node trees with per-bone matrices on intermediate
+  // groups.
+  bakeAndFlattenImport(innerRoot, obj3dMap);
 
   // globalDedup: false — FBX presets are per-model, same as GLTF.
   return finalizeModelImport(group3d, innerRoot, file.name, {

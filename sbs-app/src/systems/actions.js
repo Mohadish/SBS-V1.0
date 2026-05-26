@@ -17,7 +17,7 @@ import { selectionActs }        from './select-act.js';
 import { materials }            from '../systems/materials.js';
 import steps                    from '../systems/steps.js';
 import sceneCore                from '../core/scene.js';
-import { createAnimationPreset, createCameraView, createNoteNode, createNoteTemplate, createShapeTemplate, createFlatShapeNode, generateId } from '../core/schema.js';
+import { createAnimationPreset, createCameraView, createNode, createNoteNode, createNoteTemplate, createShapeTemplate, createShapeTemplateGroup, createFlatShapeNode, generateId } from '../core/schema.js';
 import * as editSession         from './edit-session.js';   // P7-A: gate Ctrl-Z while in overlay edit
 import * as cables              from './cables.js';          // C3: cable mutators (data layer)
 import {
@@ -39,6 +39,7 @@ import {
   captureParentMap,
   findNode,
   findParent,
+  isDescendantOf,
   serializeModelTree,
 }                               from '../core/nodes.js';
 
@@ -55,7 +56,17 @@ import {
  * undoable transaction. Otherwise the existing single-step flow.
  */
 export function assignPreset(meshIds, presetId) {
-  const ids = [...meshIds];
+  // _expandRMSelection: if the user selected a Replace-Model, cascade
+  // the color to every child copy inside it (the RM itself has no
+  // rendered mesh — the assignment on RM.id is purely a marker for the
+  // add-time inheritance path in addToReplaceModel). Children IDs in
+  // the expanded list are what actually paint geometry. Cascading is
+  // STEP-SENSITIVE: behaves exactly like any other color action — the
+  // current step gets the change (or every selected step in multi-step
+  // mode). Stepping back/forward shows the per-step state, not a
+  // forced global.
+  const ids = _expandRMSelection(_stripArchived(meshIds));
+  if (!ids.length) return;
   const stepSel = state.get('selectedStepIds');
   const isMulti = stepSel instanceof Set && stepSel.size >= 2;
   if (isMulti) {
@@ -80,7 +91,8 @@ export function assignPreset(meshIds, presetId) {
  * path; the result is identical to deleting the entry from the map).
  */
 export function removePreset(meshIds) {
-  const ids = [...meshIds];
+  const ids = _expandRMSelection(_stripArchived(meshIds));
+  if (!ids.length) return;
   const stepSel = state.get('selectedStepIds');
   const isMulti = stepSel instanceof Set && stepSel.size >= 2;
   if (isMulti) {
@@ -172,7 +184,8 @@ function _bulkAssignColorMulti(meshIds, presetId, stepIdSet, label) {
  * Set a preset as the permanent default color for meshes (undoable).
  */
 export function assignDefaultColor(meshIds, presetId) {
-  const ids = [...meshIds];
+  const ids = _expandRMSelection(_stripArchived(meshIds));
+  if (!ids.length) return;
   const prevAssign  = Object.fromEntries(ids.map(id => [id, materials.meshColorAssignments[id] ?? null]));
   const prevDefault = Object.fromEntries(ids.map(id => [id, materials.meshDefaultColors[id] ?? null]));
 
@@ -203,7 +216,8 @@ export function assignDefaultColor(meshIds, presetId) {
  * removed across every step (semantically equivalent to assigning null).
  */
 export function revertToDefault(meshIds) {
-  const ids = [...meshIds];
+  const ids = _expandRMSelection(_stripArchived(meshIds));
+  if (!ids.length) return;
   const stepSel = state.get('selectedStepIds');
   const isMulti = stepSel instanceof Set && stepSel.size >= 2;
   if (isMulti) {
@@ -255,6 +269,119 @@ export function deletePreset(presetId) {
     },
     () => { materials.deletePreset(presetId); },
   );
+}
+
+/**
+ * Bulk-delete color presets (V0.1.97). Presets still used as a DEFAULT color
+ * are protected (would orphan meshes) — they're skipped and reported; use
+ * unifyPresets to merge those. Deletable presets are removed in one undo
+ * entry that restores presets + the per-step + live assignments they touched.
+ */
+export function deletePresets(ids) {
+  const all = state.get('colorPresets') || [];
+  const wanted = new Set((ids || []).filter(id => all.some(p => p.id === id)));
+  if (wanted.size === 0) return { deleted: 0, skipped: 0 };
+
+  const deletable = [...wanted].filter(id => !materials.isDefaultPreset(id));
+  const skipped   = wanted.size - deletable.length;
+  if (deletable.length === 0) return { deleted: 0, skipped };
+
+  const del = new Set(deletable);
+  const beforePresets = JSON.parse(JSON.stringify(all));
+  const beforeAssign  = { ...materials.meshColorAssignments };
+  const beforeSteps   = JSON.parse(JSON.stringify(state.get('steps') || []));
+
+  const apply = () => {
+    // Drop the presets.
+    state.setState({ colorPresets: (state.get('colorPresets') || []).filter(p => !del.has(p.id)) });
+    // Strip live + per-step assignments that pointed at them.
+    for (const k of Object.keys(materials.meshColorAssignments)) {
+      if (del.has(materials.meshColorAssignments[k])) delete materials.meshColorAssignments[k];
+    }
+    const steps2 = (state.get('steps') || []).map(s => {
+      const mat = s.snapshot?.materials;
+      if (!mat) return s;
+      let changed = false; const nm = {};
+      for (const [mid, pid] of Object.entries(mat)) {
+        if (del.has(pid)) { changed = true; continue; }   // drop
+        nm[mid] = pid;
+      }
+      return changed ? { ...s, snapshot: { ...s.snapshot, materials: nm } } : s;
+    });
+    state.setState({ steps: steps2 });
+    materials.applyAll();
+    state.markDirty();
+  };
+  apply();
+  undoManager.push(
+    `Delete ${deletable.length} color${deletable.length === 1 ? '' : 's'}`,
+    () => {
+      materials.meshColorAssignments = { ...beforeAssign };
+      state.setState({ colorPresets: beforePresets, steps: beforeSteps });
+      materials.applyAll();
+      state.markDirty();
+    },
+    () => apply(),
+  );
+  return { deleted: deletable.length, skipped };
+}
+
+/**
+ * Unify a set of color presets into one survivor (V0.1.97). Every reference
+ * to a merged preset — project-level DEFAULTS (meshDefaultColors), live
+ * step-override assignments (meshColorAssignments), and EVERY step
+ * snapshot's materials map — is remapped to `survivorId`; the merged presets
+ * are then removed. So all objects that used the merged colors (including as
+ * their default) adopt the survivor. One undo entry restores everything.
+ */
+export function unifyPresets(survivorId, mergedIds) {
+  const all = state.get('colorPresets') || [];
+  if (!all.some(p => p.id === survivorId)) return false;
+  const merged = new Set((mergedIds || []).filter(id => id !== survivorId && all.some(p => p.id === id)));
+  if (merged.size === 0) return false;
+
+  const beforePresets  = JSON.parse(JSON.stringify(all));
+  const beforeDefaults = { ...materials.meshDefaultColors };
+  const beforeAssign   = { ...materials.meshColorAssignments };
+  const beforeSteps    = JSON.parse(JSON.stringify(state.get('steps') || []));
+
+  const apply = () => {
+    for (const k of Object.keys(materials.meshDefaultColors)) {
+      if (merged.has(materials.meshDefaultColors[k])) materials.meshDefaultColors[k] = survivorId;
+    }
+    for (const k of Object.keys(materials.meshColorAssignments)) {
+      if (merged.has(materials.meshColorAssignments[k])) materials.meshColorAssignments[k] = survivorId;
+    }
+    const steps2 = (state.get('steps') || []).map(s => {
+      const mat = s.snapshot?.materials;
+      if (!mat) return s;
+      let changed = false; const nm = {};
+      for (const [mid, pid] of Object.entries(mat)) {
+        const r = merged.has(pid) ? survivorId : pid;
+        nm[mid] = r; if (r !== pid) changed = true;
+      }
+      return changed ? { ...s, snapshot: { ...s.snapshot, materials: nm } } : s;
+    });
+    state.setState({
+      steps:        steps2,
+      colorPresets: (state.get('colorPresets') || []).filter(p => !merged.has(p.id)),
+    });
+    materials.applyAll();
+    state.markDirty();
+  };
+  apply();
+  undoManager.push(
+    `Unify ${merged.size + 1} colors`,
+    () => {
+      materials.meshDefaultColors    = { ...beforeDefaults };
+      materials.meshColorAssignments = { ...beforeAssign };
+      state.setState({ colorPresets: beforePresets, steps: beforeSteps });
+      materials.applyAll();
+      state.markDirty();
+    },
+    () => apply(),
+  );
+  return true;
 }
 
 // Slider batch state
@@ -788,6 +915,265 @@ export function clearSelectedSteps() {
 }
 
 /**
+ * Keep the step selection UNITED with the active step — used after step
+ * navigation (arrow keys). When NOT in multi-select (selection size ≤ 1)
+ * the sole selected step follows the active step. In multi-select (≥ 2)
+ * the selection is left intact so the active step can sit outside it
+ * (that's the whole point of multi-select). Silent: navigation isn't an
+ * undoable action, so this must not push undo entries.
+ */
+export function uniteStepSelectionWithActive() {
+  const sel  = state.get('selectedStepIds');
+  const size = sel instanceof Set ? sel.size : 0;
+  if (size >= 2) return;                  // multi-select: leave it alone
+  const activeId = state.get('activeStepId');
+  if (!activeId) return;
+  if (size === 1 && sel.has(activeId)) return;   // already united
+  setSelectedSteps([activeId], { silent: true });
+}
+
+/**
+ * Force the step selection to exactly [stepId], collapsing even out of
+ * multi-select. Used by middle-mouse: make a step active AND the sole
+ * selection regardless of the current mode. Silent (navigation gesture).
+ */
+export function forceUniteStepSelection(stepId) {
+  if (!stepId) return;
+  setSelectedSteps([stepId], { silent: true });
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+//  GENERIC UNDO WRAPPER (V0.1.88) — plain-data state keys
+// ═══════════════════════════════════════════════════════════════════════════
+//
+// Many structural / settings mutations historically ran from the UI with
+// no undo entry (chapters, paste, header items, project settings, color
+// presets). commitStateChange() snapshots the named state KEYS (deep JSON
+// clone) before + after a mutator callback and pushes ONE swap-based undo
+// entry. Only safe for JSON-serialisable keys — NEVER pass keys that hold
+// Sets/Maps/Three.js refs (selectedStepIds, nodeById, treeData, object3d).
+// Tree/object3d mutations use bespoke actions (live scene-graph reparenting
+// can't survive a JSON round-trip).
+//
+// `opts.coalesceKey` merges rapid repeats (slider drags, text typing) into
+// a single undo entry — same mechanism as setSelectedSteps.
+export function commitStateChange(label, keys, mutator, opts = {}) {
+  const snap = () => {
+    const o = {};
+    for (const k of keys) o[k] = JSON.parse(JSON.stringify(state.get(k) ?? null));
+    return o;
+  };
+  const before = snap();
+  mutator();
+  const after = snap();
+  if (JSON.stringify(before) === JSON.stringify(after)) return false;   // no-op
+  const apply = (s) => {
+    const patch = {};
+    for (const k of keys) patch[k] = JSON.parse(JSON.stringify(s[k]));
+    state.setState(patch);
+    state.markDirty();
+    // If 'steps' is among the restored keys and the active step vanished
+    // (undo/redo of a delete), fall back to the first real step so the
+    // viewport isn't stranded on a non-existent step.
+    if (keys.includes('steps')) {
+      const arr = state.get('steps') || [];
+      const act = state.get('activeStepId');
+      if (act && !arr.some(x => x.id === act)) {
+        const first = arr.find(x => !x.isBaseStep);
+        if (first) steps.activateStep(first.id, false);
+      }
+    }
+  };
+  undoManager.push(label,
+    () => apply(before),
+    () => apply(after),
+    opts.coalesceKey ? { coalesceKey: opts.coalesceKey } : undefined,
+  );
+  return true;
+}
+
+// ─── Tree folders — undoable create / delete (V0.1.88) ──────────────────────
+//
+// Folder nodes carry a live Three.js Group (object3d), so undo can't use
+// the JSON-snapshot path. Undo/redo splice the node + add/remove the live
+// Three.js Group from the scene graph directly.
+
+export function createFolderInNode(parentId, name = 'Group') {
+  const T = window.THREE;
+  const root = state.get('treeData');
+  if (!T || !root) return null;
+  const parent = state.get('nodeById')?.get(parentId) || findNode(root, parentId);
+  if (!parent) return null;
+
+  const group = new T.Group();
+  group.name = name;
+  group.userData.isCustomFolder = true;
+  const folderNode = createNode('folder', { name });
+  folderNode.object3d = group;
+
+  const doInsert = () => {
+    const p = state.get('nodeById')?.get(parentId) || findNode(state.get('treeData'), parentId);
+    if (!p) return;
+    p.children = p.children || [];
+    if (!p.children.some(c => c.id === folderNode.id)) p.children.push(folderNode);
+    if (p.object3d && group.parent !== p.object3d) p.object3d.add(group);
+    steps.object3dById.set(folderNode.id, group);
+    const r = state.get('treeData');
+    state.setState({ nodeById: _nodes_buildNodeMap(r) });
+    state.emit('change:treeData', r);
+    steps.scheduleTransformSync();
+    state.markDirty();
+  };
+  const doRemove = () => {
+    const r = state.get('treeData');
+    const p = state.get('nodeById')?.get(parentId) || findNode(r, parentId);
+    if (p?.children) p.children = p.children.filter(c => c.id !== folderNode.id);
+    if (group.parent) group.parent.remove(group);
+    steps.object3dById.delete(folderNode.id);
+    state.setState({ nodeById: _nodes_buildNodeMap(r) });
+    state.emit('change:treeData', r);
+    steps.scheduleTransformSync();
+    state.markDirty();
+  };
+
+  doInsert();
+  state.setSelection(folderNode.id, new Set([folderNode.id]));
+  undoManager.push(`Create folder "${name}"`, doRemove, doInsert);
+  return folderNode.id;
+}
+
+export function deleteFolderNode(folderId) {
+  const root = state.get('treeData');
+  if (!root) return false;
+  const parent = _findNodeParent(root, folderId);
+  if (!parent) return false;
+  const idx = (parent.children || []).findIndex(c => c.id === folderId);
+  if (idx < 0) return false;
+  const node = parent.children[idx];
+  const parentId = parent.id;
+  const obj = node.object3d || steps.object3dById?.get(folderId) || null;
+
+  const doRemove = () => {
+    const r = state.get('treeData');
+    const p = state.get('nodeById')?.get(parentId) || _findNodeParent(r, folderId);
+    if (p?.children) {
+      const i = p.children.findIndex(c => c.id === folderId);
+      if (i >= 0) p.children.splice(i, 1);
+    }
+    if (obj && obj.parent) obj.parent.remove(obj);
+    steps.object3dById.delete(folderId);
+    state.setState({ nodeById: _nodes_buildNodeMap(r) });
+    state.emit('change:treeData', r);
+    steps.scheduleTransformSync();
+    state.markDirty();
+  };
+  const doRestore = () => {
+    const r = state.get('treeData');
+    const p = state.get('nodeById')?.get(parentId) || findNode(r, parentId);
+    if (p) {
+      p.children = p.children || [];
+      if (!p.children.some(c => c.id === folderId)) {
+        const at = Math.min(idx, p.children.length);
+        p.children.splice(at, 0, node);
+      }
+      if (obj && p.object3d && obj.parent !== p.object3d) p.object3d.add(obj);
+      if (obj) steps.object3dById.set(folderId, obj);
+    }
+    state.setState({ nodeById: _nodes_buildNodeMap(r) });
+    state.emit('change:treeData', r);
+    steps.scheduleTransformSync();
+    state.markDirty();
+  };
+
+  doRemove();
+  undoManager.push(`Delete folder "${node.name}"`, doRestore, doRemove);
+  return true;
+}
+
+// ─── Color preset — undoable create (V0.1.88) ───────────────────────────────
+//
+// materials.createPreset() mutates state.colorPresets with no undo. Wrap it.
+export function addColorPreset(overrides = {}) {
+  let created = null;
+  commitStateChange('Add color preset', ['colorPresets'], () => {
+    created = materials.createPreset(overrides);
+  });
+  return created;
+}
+
+/**
+ * Undo wrapper for settings whose SETTER applies a scene side-effect that
+ * a plain setState-restore wouldn't re-trigger (e.g. geometry outline,
+ * selection-outline color — no change:* listener repaints them). The
+ * caller applies the change normally, then passes the setter fn + the
+ * full before/after values; undo/redo re-invoke the setter so the side-
+ * effect re-runs. `coalesceKey` merges slider-drag bursts into one entry.
+ */
+export function pushSetterUndo(label, applyFn, beforeVal, afterVal, coalesceKey) {
+  if (JSON.stringify(beforeVal) === JSON.stringify(afterVal)) return false;
+  undoManager.push(label,
+    () => applyFn(beforeVal),
+    () => applyFn(afterVal),
+    coalesceKey ? { coalesceKey } : undefined,
+  );
+  return true;
+}
+
+/**
+ * Toggle the `hidden` (skip-from-playback) flag on one or more steps as a
+ * SINGLE undoable action. Replaces the old steps.setStepHidden() call
+ * sites, which mutated state with NO undo entry (so multi-step hide could
+ * not be undone — V0.1.85 item 4.4 fix).
+ *
+ * Direction: if ANY target step is currently visible, hide them all;
+ * otherwise show them all. Group-head selection cascades to its sub-steps
+ * (mirrors the old setStepHidden cascade) so a group reads as one step.
+ */
+export function toggleStepsHidden(stepIds) {
+  const allSteps = state.get('steps') || [];
+  const seed = new Set((stepIds || []).filter(id => allSteps.some(s => s.id === id)));
+  if (seed.size === 0) return;
+
+  // Expand group heads → their sub-steps.
+  const idSet = new Set(seed);
+  for (const s of allSteps) {
+    if (s.groupHead && seed.has(s.id)) {
+      for (const sub of allSteps) if (sub.groupId === s.id) idSet.add(sub.id);
+    }
+  }
+
+  const targets = allSteps.filter(s => idSet.has(s.id));
+  const anyVisible = targets.some(s => !s.hidden);
+  const want = anyVisible;   // hide if any visible, else show all
+
+  // Capture exact before-state (per id) so undo restores mixed states.
+  const before = new Map();
+  for (const s of targets) before.set(s.id, !!s.hidden);
+  const after = new Map();
+  for (const id of idSet) after.set(id, want);
+
+  // No-op guard: every target already at `want`.
+  let changed = false;
+  for (const [id, v] of after) if (before.get(id) !== v) { changed = true; break; }
+  if (!changed) return;
+
+  const apply = (hiddenMap) => {
+    const arr = state.get('steps') || [];
+    const nextArr = arr.map(s => hiddenMap.has(s.id) ? { ...s, hidden: hiddenMap.get(s.id) } : s);
+    state.setState({ steps: nextArr });
+    state.markDirty();
+  };
+  apply(after);
+
+  const n = idSet.size;
+  undoManager.push(
+    `${want ? 'Hide' : 'Show'} ${n} step${n === 1 ? '' : 's'}`,
+    () => apply(before),
+    () => apply(after),
+  );
+}
+
+/**
  * Move every id under the destination folder. One undo entry restores
  * each node's original parent. Skips moves that would put a node into
  * itself or its own descendant. Triggers a tree rebuild + nodeById
@@ -796,6 +1182,12 @@ export function clearSelectedSteps() {
 export function moveNodesToFolder(ids, destFolderId) {
   const root = state.get('treeData');
   if (!root || !ids?.length || !destFolderId) return;
+  // Archived nodes are READ-ONLY — they cannot be directly moved. They
+  // still follow their container if the container itself is moved (Three
+  // .js scene-graph parenting handles that), but a direct "move to
+  // folder" gesture on an archived node is silently dropped.
+  ids = _stripArchived(ids);
+  if (!ids.length) return;
   // Snapshot original parents so undo can splice each node back.
   const before = [];
   for (const id of ids) {
@@ -866,7 +1258,11 @@ function _findNodeParent(node, targetId) {
 export function toggleVisibility(nodeIds) {
   const nodeById = state.get('nodeById');
   const treeData = state.get('treeData');
-  const ids      = [...nodeIds].filter(id => nodeById?.has(id));
+  // Strip archived ids — archived nodes are READ-ONLY and must not respond
+  // to hide/show. The eye button in the tree row, the viewport r-click,
+  // and the keyboard 'H' shortcut all route through here, so this single
+  // filter covers every user path.
+  const ids      = _stripArchived([...nodeIds].filter(id => nodeById?.has(id)));
   if (!ids.length) return;
   const newVis = !nodeById.get(ids[0]).localVisible;
 
@@ -914,6 +1310,1191 @@ export function toggleVisibility(nodeIds) {
   // Avoid the wasVisible variable lint flag.
   void wasVisible;
 }
+
+
+// ─── Archive / Unarchive ──────────────────────────────────────────────────
+//
+// Archive marks a node as "locked-hidden": it stays in the tree (with all
+// per-step history intact) but is forced invisible in the viewport,
+// regardless of any per-step snapshot.visibility. Toggle survives save
+// /reload via the tree section (see core/nodes.js serializeModelTree +
+// io/project.js applySpecFieldsToNodes).
+//
+// Why a separate flag from localVisible:
+//   - localVisible is per-step (each snapshot.visibility records it).
+//   - archived is a PERMANENT node property — not captured per-step,
+//     not changed by step transitions.
+//   - The visibility-resolution path (core/nodes.js computeVisibleSet +
+//     systems/steps.js applyAllVisibilityToScene) AND-s both, so archive
+//     wins over any per-step visibility the snapshot wants to apply.
+//
+// Used by Replace Object (the replaced node is archived to preserve its
+// history) and as a general-purpose toggle for nodes the user wants out
+// of the scene but doesn't want to delete.
+
+/**
+ * Mark one or more nodes as archived. Idempotent — ids already archived
+ * are skipped. Single undoable transaction restores exact prior state.
+ *
+ * @param {Iterable<string>} nodeIds
+ */
+export function archiveNodes(nodeIds) {
+  const nodeById = state.get('nodeById');
+  if (!nodeById) return;
+  const ids = [...nodeIds].filter(id => nodeById.has(id));
+  if (!ids.length) return;
+
+  // Capture BEFORE state for undo (only ids that will actually change).
+  const flipped = [];
+  for (const id of ids) {
+    const n = nodeById.get(id);
+    if (n && n.archived !== true) flipped.push(id);
+  }
+  if (!flipped.length) return;
+
+  const apply = (archived) => {
+    const nb = state.get('nodeById');
+    for (const id of flipped) {
+      const n = nb.get(id);
+      if (n) n.archived = !!archived;
+    }
+    _syncVis();
+  };
+  apply(true);
+
+  undoManager.push(
+    flipped.length === 1 ? 'Archive' : `Archive ${flipped.length} nodes`,
+    () => apply(false),
+    () => apply(true),
+  );
+}
+
+/**
+ * Unmark one or more nodes as archived. Idempotent — ids not currently
+ * archived are skipped.
+ *
+ * @param {Iterable<string>} nodeIds
+ */
+export function unarchiveNodes(nodeIds) {
+  const nodeById = state.get('nodeById');
+  if (!nodeById) return;
+  const ids = [...nodeIds].filter(id => nodeById.has(id));
+  if (!ids.length) return;
+
+  const flipped = [];
+  for (const id of ids) {
+    const n = nodeById.get(id);
+    if (n && n.archived === true) flipped.push(id);
+  }
+  if (!flipped.length) return;
+
+  const apply = (archived) => {
+    const nb = state.get('nodeById');
+    for (const id of flipped) {
+      const n = nb.get(id);
+      if (n) n.archived = !!archived;
+    }
+    _syncVis();
+  };
+  apply(false);
+
+  undoManager.push(
+    flipped.length === 1 ? 'Unarchive' : `Unarchive ${flipped.length} nodes`,
+    () => apply(true),
+    () => apply(false),
+  );
+}
+
+
+// ═══════════════════════════════════════════════════════════════════════════
+//  REPLACE-MODEL (B.2-NEW) — container that takes over for a replaced object
+// ═══════════════════════════════════════════════════════════════════════════
+//
+// Replace-Model (RM) is a container node TYPE (`type='replaceModel'`) that
+// the user converts an existing object INTO. The conversion is just a type
+// flip — the node's id, transforms, per-step state, cables, color
+// assignments all stay anchored to the SAME node, so nothing breaks. The
+// 🔄 icon advertises the new state in the tree.
+//
+// Once a node is an RM, the user can "add to replace" — picking another
+// object and dropping a COPY of it as a child of the RM. The original
+// geometry of the RM (the mesh/flatShape this node was before conversion)
+// can be hidden (originalGeometryHidden flag) so only the added copies
+// render. Multiple objects can be added; they all live as children of the
+// RM and inherit its per-step state through Three.js scene parenting.
+//
+// All editing of an RM's children is restricted to two actions — remove
+// from RM, or global transform — enforced at the action layer. Selection
+// of any child promotes to the RM in both viewport and tree.
+//
+// This phase (B.2-NEW.1) ships only the TYPE conversion + visual icon +
+// save/load round-trip. Add-to-replace, restricted r-click, selection
+// promotion, global transform, and un-replace ship in B.2-NEW.2 - .4.
+
+// V0.1.72: `_findEnclosingReplaceModel` removed — duplicated the exported
+// `findReplaceModelAncestor` (defined later in this file, used by both
+// tree.js and actions.js). Callers now use that single helper; this comment
+// stub is here for grep/blame so the next reader sees the consolidation.
+
+/**
+ * Convert a mesh / flatShape / model node INTO a replace-model container.
+ * The node's id, transforms, per-step state, cables, color assignments all
+ * stay anchored to the same node — only its `type` changes (and a few
+ * tracking fields are added). The visible scene state is unchanged until
+ * the user runs "add to replace" on the resulting RM.
+ *
+ * @param {string} nodeId
+ * @returns {boolean}  true on success
+ */
+export function convertToReplaceModel(nodeId) {
+  const nb       = state.get('nodeById');
+  const treeData = state.get('treeData');
+  if (!nb || !treeData) return false;
+  const node = nb.get(nodeId);
+  if (!node) return false;
+  // Whitelist: mesh / flatShape / model only. Folders / scene / notes /
+  // already-RM / archived nodes are blocked. Conversion inside another
+  // RM is blocked too — the selection-promotion contract assumes RM
+  // children stay leaf-ish.
+  if (node.type !== 'mesh' && node.type !== 'flatShape' && node.type !== 'model') return false;
+  if (node.archived) return false;
+  if (findReplaceModelAncestor(treeData, nodeId)) return false;
+
+  const fromType = node.type;
+  node.type                   = 'replaceModel';
+  node.originalType           = fromType;
+  node.originalGeometryHidden = false;   // user can flip later via RM menu
+
+  state.emit('change:treeData', treeData);
+  state.markDirty();
+
+  undoManager.push(
+    `Convert "${(node.name || 'object').slice(0, 20)}" to Replace-Model`,
+    () => {
+      const n = state.get('nodeById')?.get(nodeId);
+      if (!n) return;
+      n.type = fromType;
+      delete n.originalType;
+      delete n.originalGeometryHidden;
+      state.emit('change:treeData', state.get('treeData'));
+    },
+    () => {
+      const n = state.get('nodeById')?.get(nodeId);
+      if (!n) return;
+      n.type = 'replaceModel';
+      n.originalType = fromType;
+      n.originalGeometryHidden = false;
+      state.emit('change:treeData', state.get('treeData'));
+    },
+  );
+  return true;
+}
+
+
+// ─── Folder Lock (V0.1.92) ────────────────────────────────────────────────
+//
+// Every folder carries a `locked` boolean (default false). A LOCKED folder:
+//   • promotes viewport selection — clicking any descendant selects the
+//     whole folder (treat the sub-assembly as one unit), and
+//   • auto-collapses in the tree (reads as one unit).
+// This replaces the old "Group" concept (isGroup/groupLocked): a locked
+// folder IS the group. Legacy `isGroup` folders migrate to `locked` on load
+// (see io/project.js). Loose objects are organised via New folder / Move to
+// folder + drag, then locked — there's no "group loose objects" shortcut.
+
+/** Toggle (or set) a folder's lock state. Single undo entry. */
+export function setFolderLocked(folderId, locked) {
+  const nb = state.get('nodeById');
+  const node = nb?.get(folderId);
+  if (!node || node.type !== 'folder') return false;
+  const prev = node.locked === true;
+  const next = locked === undefined ? !prev : !!locked;
+  if (prev === next) return false;
+  node.locked = next;
+  state.emit('change:treeData', state.get('treeData'));
+  state.markDirty();
+  undoManager.push(
+    next ? 'Lock folder' : 'Unlock folder',
+    () => { const n = state.get('nodeById')?.get(folderId); if (n) n.locked = prev; state.emit('change:treeData', state.get('treeData')); state.markDirty(); },
+    () => { const n = state.get('nodeById')?.get(folderId); if (n) n.locked = next; state.emit('change:treeData', state.get('treeData')); state.markDirty(); },
+  );
+  return true;
+}
+
+/**
+ * Walk up the tree to find the nearest LOCKED folder ancestor. Used by the
+ * viewport selection promotion (mirrors findReplaceModelAncestor). Returns
+ * the folder node or null.
+ */
+export function findLockedFolderAncestor(root, nodeId) {
+  if (!root || !nodeId) return null;
+  let found = null;
+  (function walk(node, ancestors) {
+    if (found) return;
+    if (node.id === nodeId) {
+      for (let i = ancestors.length - 1; i >= 0; i--) {
+        const a = ancestors[i];
+        if (a.type === 'folder' && a.locked === true) {
+          found = a;
+          return;
+        }
+      }
+      return;
+    }
+    for (const c of (node.children || [])) walk(c, [...ancestors, node]);
+  })(root, []);
+  return found;
+}
+
+
+// ─── Global rename ─────────────────────────────────────────────────────────
+//
+// Plain renameNode (core/nodes.js) only touches the live tree — past and
+// future step snapshots still carry the OLD name inside their snapshot
+// .tree spec, so navigating between steps reverts the rename. For node
+// types whose identity is "global across the timeline" (mesh, flatShape,
+// replaceModel — not folders, which are step-local containers), the
+// rename must cascade into every step's snapshot.tree.
+
+/**
+ * Internal — produce a new snapshot.tree spec with the name of `id`
+ * replaced. Returns the SAME spec object when there's no match (cheap
+ * skip in the steps.map below).
+ */
+function _renameInTreeSpec(spec, id, newName) {
+  if (!spec) return spec;
+  if (spec.id === id) {
+    if (spec.name === newName) return spec;
+    return { ...spec, name: newName };
+  }
+  if (!spec.children?.length) return spec;
+  let changed = false;
+  const newKids = spec.children.map(c => {
+    const r = _renameInTreeSpec(c, id, newName);
+    if (r !== c) changed = true;
+    return r;
+  });
+  return changed ? { ...spec, children: newKids } : spec;
+}
+
+/**
+ * Rename a node globally — updates live name + every step's snapshot.tree
+ * spec for that id. Undoable; restores the prior name across all steps.
+ *
+ * Use this for node types where the name is a global identifier (mesh,
+ * flatShape, replaceModel). Folders use the legacy per-step rename
+ * (their name is allowed to vary across steps).
+ *
+ * @param {string} nodeId
+ * @param {string} newName
+ * @returns {boolean}
+ */
+export function renameNodeGlobal(nodeId, newName) {
+  const nb   = state.get('nodeById');
+  const node = nb?.get(nodeId);
+  if (!node) return false;
+  newName = String(newName || '').trim();
+  const oldName = node.name || '';
+  if (!newName || newName === oldName) return false;
+
+  const applyName = (name) => {
+    const n = state.get('nodeById')?.get(nodeId);
+    if (!n) return;
+    n.name = name;
+    if (n.object3d) n.object3d.name = name;
+    const allSteps = state.get('steps') || [];
+    const next = allSteps.map(s => {
+      if (!s.snapshot) return s;
+      const newTree = _renameInTreeSpec(s.snapshot.tree, nodeId, name);
+      if (newTree === s.snapshot.tree) return s;
+      return { ...s, snapshot: { ...s.snapshot, tree: newTree } };
+    });
+    state.setState({ steps: next });
+    state.emit('change:treeData', state.get('treeData'));
+    steps.scheduleTransformSync();
+  };
+
+  applyName(newName);
+  state.markDirty();
+
+  undoManager.push(
+    `Rename "${oldName.slice(0, 16)}" → "${newName.slice(0, 16)}"`,
+    () => applyName(oldName),
+    () => applyName(newName),
+  );
+  return true;
+}
+
+
+/**
+ * Add a clone of `sourceBId` as a child of `rmId` (a replace-model).
+ *
+ * Captures B's WORLD pose relative to RM at the current step and bakes
+ * it into the clone's local transform — the clone sits at a fixed local
+ * pose inside RM's wrap-group, so RM's per-step animations cascade to
+ * it via Three.js scene parenting (no math required, unlike V0.1.55).
+ *
+ * On first add, the RM's original geometry gets wrapped in a Three.js
+ * Group so the mesh's `visible=false` (originalGeometryHidden) doesn't
+ * cascade to the copies (Three.js renderer skips descendants of a
+ * hidden parent, so the wrap-group acts as a "render trampoline").
+ *
+ * Modes:
+ *   - 'archiveAndReplace'  archive origin B after copying
+ *   - 'copyAndReplace'     leave origin B alone
+ *
+ * v1 limitations:
+ *   - sourceB must be type='mesh' or 'flatShape' (model deferred)
+ *   - cloned material is shared with the source — change to source's
+ *     material affects all clones. Intentional for v1.
+ *   - undo restores the data + scene to pre-add state; redo just re-
+ *     archives origin (full re-add comes in B.2-NEW.4).
+ *
+ * @param {string} rmId
+ * @param {string} sourceBId
+ * @param {'archiveAndReplace'|'copyAndReplace'} mode
+ * @returns {boolean}
+ */
+export function addToReplaceModel(rmId, sourceBId, mode) {
+  const T = window.THREE;
+  if (!T) return false;
+  const nb       = state.get('nodeById');
+  const treeData = state.get('treeData');
+  if (!nb || !treeData) return false;
+
+  const rmNode  = nb.get(rmId);
+  const srcNode = nb.get(sourceBId);
+  if (!rmNode || !srcNode) return false;
+  if (rmNode.type !== 'replaceModel') return false;
+  if (rmId === sourceBId) return false;
+  if (srcNode.type !== 'mesh' && srcNode.type !== 'flatShape') return false;
+  if (srcNode.archived) return false;
+  if (isDescendantOf(treeData, rmId, sourceBId)) return false;
+  if (mode !== 'archiveAndReplace' && mode !== 'copyAndReplace') return false;
+
+  const rmObj  = steps.object3dById?.get(rmId);
+  const srcObj = steps.object3dById?.get(sourceBId);
+  if (!rmObj || !srcObj) return false;
+
+  // ── 1. Capture B's pose RELATIVE to RM at the current step ────────────
+  rmObj.updateMatrixWorld(true);
+  srcObj.updateMatrixWorld(true);
+  const M_rm_world = rmObj.matrixWorld.clone();
+  const M_b_world  = srcObj.matrixWorld.clone();
+  const M_local    = new T.Matrix4().copy(M_rm_world).invert().multiply(M_b_world);
+  const pos   = new T.Vector3();
+  const quat  = new T.Quaternion();
+  const scale = new T.Vector3();
+  M_local.decompose(pos, quat, scale);
+
+  // ── 2. Clone B's Three.js object3d (recursive deep clone) ─────────────
+  const cloneObj = srcObj.clone(true);
+
+  // ── 3. Wrap RM's mesh in a Group on first add ─────────────────────────
+  // First add only — the RM's mesh becomes a child of a new wrap-group
+  // (which inherits the mesh's pose). Subsequent adds reuse the same
+  // wrap-group. Detected via userData.isReplaceModelGroup.
+  let prevRmObjPos, prevRmObjQuat, prevRmObjScale, prevRmObjVisible, prevRmObjParent, originalMeshRef;
+  const needsWrap = !rmObj.userData?.isReplaceModelGroup;
+  let wrapGroup;
+  if (needsWrap) {
+    wrapGroup = new T.Group();
+    wrapGroup.userData.isReplaceModelGroup = true;
+    wrapGroup.userData.nodeId              = rmId;
+    wrapGroup.name = (rmObj.name || 'RM') + '_RM';
+    // Capture pose for undo
+    prevRmObjPos     = rmObj.position.clone();
+    prevRmObjQuat    = rmObj.quaternion.clone();
+    prevRmObjScale   = rmObj.scale.clone();
+    prevRmObjVisible = rmObj.visible;
+    prevRmObjParent  = rmObj.parent;
+    originalMeshRef  = rmObj;
+    // Inherit pose
+    wrapGroup.position.copy(rmObj.position);
+    wrapGroup.quaternion.copy(rmObj.quaternion);
+    wrapGroup.scale.copy(rmObj.scale);
+    // Attach wrap-group to scene at rmObj's parent
+    if (prevRmObjParent) prevRmObjParent.add(wrapGroup);
+    // Reset rmObj local + reparent under wrap-group
+    rmObj.position.set(0, 0, 0);
+    rmObj.quaternion.identity();
+    rmObj.scale.set(1, 1, 1);
+    rmObj.userData.isReplaceModelOriginal = true;
+    rmObj.userData.replaceModelId         = rmId;
+    wrapGroup.add(rmObj);              // detaches from previous parent
+    rmObj.visible = false;             // hide original geometry
+    rmNode.object3d                   = wrapGroup;
+    rmNode.originalGeometryHidden     = true;
+    steps.object3dById.set(rmId, wrapGroup);
+  } else {
+    wrapGroup = rmObj;
+  }
+
+  // ── 4. Position + parent the clone ────────────────────────────────────
+  cloneObj.position.copy(pos);
+  cloneObj.quaternion.copy(quat);
+  cloneObj.scale.copy(scale);
+  wrapGroup.add(cloneObj);
+  cloneObj.updateMatrixWorld(true);
+
+  // ── 5. Create the data node for the clone ─────────────────────────────
+  const copyId = generateId('rmChild');
+  const copyType = srcNode.type;
+  const copyNode = createNode(copyType, {
+    id:                   copyId,
+    name:                 (srcNode.name || 'Object') + ' (replacement)',
+    archived:             false,
+    localOffset:          [pos.x, pos.y, pos.z],
+    localQuaternion:      [quat.x, quat.y, quat.z, quat.w],
+    baseLocalPosition:    [0, 0, 0],
+    baseLocalQuaternion:  [0, 0, 0, 1],
+    baseLocalScale:       [scale.x, scale.y, scale.z],
+    pivotEnabled:         false,
+    pivotLocalOffset:     [0, 0, 0],
+    pivotLocalQuaternion: [0, 0, 0, 1],
+  });
+  if (copyType === 'flatShape') {
+    copyNode.templateId           = srcNode.templateId;
+    copyNode.planeLocalQuaternion = [...(srcNode.planeLocalQuaternion || [0, 0, 0, 1])];
+  } else if (copyType === 'mesh') {
+    // bbox can be either an array [minX,minY,minZ,maxX,maxY,maxZ] OR an
+    // object { min:[...], max:[...] } depending on how the mesh was
+    // imported. Spreading an object throws "not iterable" — deep-clone
+    // via JSON so either shape round-trips safely.
+    copyNode.bbox        = srcNode.bbox ? JSON.parse(JSON.stringify(srcNode.bbox)) : null;
+    copyNode.fingerprint = srcNode.fingerprint || null;
+  }
+  // sourceNodeId — pointer to the ORIGIN node B was cloned from. Save/
+  // load uses this to re-clone the geometry on project reload: the
+  // copy itself has no saved mesh data, so we walk back to the origin
+  // and clone its live object3d again. See rebuildReplaceModelChildren.
+  copyNode.sourceNodeId = sourceBId;
+  copyNode.object3d            = cloneObj;
+  cloneObj.userData.nodeId             = copyId;
+  cloneObj.userData.meshNodeId         = copyId;
+  cloneObj.userData.isReplaceModelChild= true;
+  cloneObj.userData.replaceModelId     = rmId;
+  // Stamp the same RM marker on every sub-mesh inside the clone so
+  // raycast hits can promote to the RM (selection-promotion in
+  // B.2-NEW.3 will walk userData.replaceModelId).
+  cloneObj.traverse((o) => {
+    if (o === cloneObj) return;
+    o.userData = o.userData || {};
+    o.userData.replaceModelId      = rmId;
+    o.userData.replaceModelChildId = copyId;
+  });
+
+  // ── 6. Add to data tree ───────────────────────────────────────────────
+  rmNode.children = rmNode.children || [];
+  rmNode.children.push(copyNode);
+  steps.object3dById.set(copyId, cloneObj);
+  state.setState({ nodeById: _nodes_buildNodeMap(treeData) });
+
+  // ── 6b. Register clone with the materials registry so color presets
+  //        can apply to it. registerMesh stashes the original material
+  //        so 'Revert to default' works too. Walks sub-meshes inside a
+  //        Group clone (flatShape's object3d is often a Group of meshes).
+  if (cloneObj.isMesh) {
+    materials.registerMesh?.(copyId, cloneObj);
+  } else {
+    cloneObj.traverse((o) => {
+      if (o.isMesh) materials.registerMesh?.(copyId, o);
+    });
+  }
+
+  // ── 6c-bis. Flat-shape children of B come through the recursive clone
+  //          as Three.js sub-objects, but without data-tree entries —
+  //          which means the user can't see or interact with them in
+  //          the tree. Walk the source's tree children in parallel with
+  //          the clone's Three.js children and register each flatShape
+  //          as a sub-copy node under the RM child. Recurses for nested
+  //          shapes. Save preserves sourceNodeId on each sub-copy so
+  //          rebuildReplaceModelChildren can re-attach them on reload.
+  _processRMChildShapesRecursively(srcNode, copyNode, srcObj, cloneObj, rmId);
+
+  // ── 6c. Per-step color inheritance from RM → copy. ────────────────────
+  // For every step where the RM has a color assigned, propagate that
+  // SAME color to the new copy in that step's snapshot. Steps where
+  // the RM has no color leave the copy without a color too (so the
+  // child mirrors whatever the RM does step-by-step). This is the
+  // step-sensitive "RM cascade" — applying a new RM color afterwards
+  // touches the current step only, and the change still cascades to
+  // children via _expandRMSelection.
+  //
+  // snapshot.materials is a DIRECT { [meshId]: presetId } map (see
+  // _bulkAssignColorMulti / materials.applySnapshot — there's NO
+  // `.assignments` sub-prop). Write to that map directly.
+  const rmPresetLive       = materials.meshColorAssignments?.[rmId];
+  const rmDefaultColorLive = materials.meshDefaultColors?.[rmId];
+  if (rmPresetLive != null)       materials.meshColorAssignments[copyId] = rmPresetLive;
+  if (rmDefaultColorLive != null) materials.meshDefaultColors[copyId]    = rmDefaultColorLive;
+  {
+    const allSteps2 = state.get('steps') || [];
+    const next2 = allSteps2.map(s => {
+      const mat = s.snapshot?.materials;
+      if (!mat) return s;
+      const rmColorInStep = mat[rmId];
+      if (rmColorInStep == null) return s;
+      const newMat = { ...mat, [copyId]: rmColorInStep };
+      return { ...s, snapshot: { ...s.snapshot, materials: newMat } };
+    });
+    state.setState({ steps: next2 });
+  }
+
+  // ── 7. Propagate the new copy node into every step's snapshot.tree ───
+  _propagateNewNodeToSteps(copyNode, rmId);
+
+  // ── 8. Archive origin B if requested ──────────────────────────────────
+  const originPrevArchived = srcNode.archived === true;
+  if (mode === 'archiveAndReplace') {
+    const sn = state.get('nodeById')?.get(sourceBId);
+    if (sn) sn.archived = true;
+  }
+
+  // ── 9. Visual sync ────────────────────────────────────────────────────
+  // _syncVis() is the canonical "apply data → scene" call: runs
+  // applyAllVisibility (archive trumps visibility), emits change:treeData
+  // (tree row re-render), then scheduleSync (transforms + materials).
+  // Plain applyAllVisibility on its own didn't refresh the tree icon
+  // / opacity for the archived origin — _syncVis closes the loop.
+  _syncVis();
+  materials.applyAll();
+  steps.scheduleTransformSync();
+  state.markDirty();
+
+  // ── 10. Undo / Redo ───────────────────────────────────────────────────
+  undoManager.push(
+    `Add "${(srcNode.name || 'object').slice(0, 16)}" to Replace-Model`,
+    () => {
+      // ── UNDO ─────────────────────────────────────────────────────────
+      // 1. Restore origin B's archive state
+      const sn = state.get('nodeById')?.get(sourceBId);
+      if (sn) sn.archived = originPrevArchived;
+
+      // 2. Remove the copy from RM's children + all step snapshots
+      const rmN = state.get('nodeById')?.get(rmId);
+      if (rmN?.children) {
+        rmN.children = rmN.children.filter(c => c.id !== copyId);
+      }
+      const td  = state.get('treeData');
+      const stp = state.get('steps') || [];
+      const next = stp.map(s => {
+        if (!s.snapshot) return s;
+        const tr   = { ...(s.snapshot.transforms || {}) }; delete tr[copyId];
+        const vi   = { ...(s.snapshot.visibility || {}) }; delete vi[copyId];
+        const tree = _removeFromTreeSpec(s.snapshot.tree, copyId);
+        // Strip the per-step material assignment we wrote at add-time.
+        // snap.materials is a DIRECT map keyed by mesh id (no
+        // `.assignments` sub-prop) — same shape _bulkAssignColorMulti uses.
+        let mat = s.snapshot.materials;
+        if (mat && copyId in mat) {
+          mat = { ...mat };
+          delete mat[copyId];
+        }
+        return { ...s, snapshot: { ...s.snapshot, tree, transforms: tr, visibility: vi, materials: mat } };
+      });
+      state.setState({ steps: next });
+      // Drop the global material entries too — they belonged solely to
+      // the copy we're removing.
+      delete materials.meshColorAssignments[copyId];
+      delete materials.meshDefaultColors[copyId];
+
+      // 3. Detach + dispose the clone in Three.js + unregister materials.
+      // Walk copyNode's data-tree children to clean up sub-shape copy
+      // registrations too (their Three.js objects leave the scene with
+      // cloneObj.parent.remove, but the ID maps + global material
+      // assignments would linger otherwise — the audit found this
+      // leaked across undo/redo cycles on RM children that had
+      // flatShape sub-nodes).
+      (function cleanupSubs(n) {
+        for (const c of (n.children || [])) {
+          steps.object3dById.delete(c.id);
+          materials.unregisterMesh?.(c.id);
+          delete materials.meshColorAssignments[c.id];
+          delete materials.meshDefaultColors[c.id];
+          cleanupSubs(c);
+        }
+      })(copyNode);
+      if (cloneObj.parent) cloneObj.parent.remove(cloneObj);
+      steps.object3dById.delete(copyId);
+      materials.unregisterMesh?.(copyId);
+
+      // 4. Unwrap RM if this was the first add
+      if (needsWrap && originalMeshRef && wrapGroup) {
+        if (originalMeshRef.parent === wrapGroup) wrapGroup.remove(originalMeshRef);
+        originalMeshRef.position.copy(prevRmObjPos);
+        originalMeshRef.quaternion.copy(prevRmObjQuat);
+        originalMeshRef.scale.copy(prevRmObjScale);
+        originalMeshRef.visible = prevRmObjVisible;
+        delete originalMeshRef.userData.isReplaceModelOriginal;
+        delete originalMeshRef.userData.replaceModelId;
+        if (prevRmObjParent) prevRmObjParent.add(originalMeshRef);
+        if (wrapGroup.parent) wrapGroup.parent.remove(wrapGroup);
+        const rmN2 = state.get('nodeById')?.get(rmId);
+        if (rmN2) {
+          rmN2.object3d              = originalMeshRef;
+          rmN2.originalGeometryHidden = false;
+        }
+        steps.object3dById.set(rmId, originalMeshRef);
+      }
+
+      state.setState({ nodeById: _nodes_buildNodeMap(td) });
+      _syncVis();
+      materials.applyAll();
+      steps.scheduleTransformSync();
+    },
+    () => {
+      // ── REDO ─────────────────────────────────────────────────────────
+      // v1 redo is intentionally minimal — re-running addToReplaceModel
+      // properly requires re-cloning + re-wrapping which has too many
+      // side-effects to replay safely. The user can just run the menu
+      // entry again.
+      // (Full redo support lands in B.2-NEW.4.)
+    },
+  );
+
+  return true;
+}
+
+// `_removeFromTreeSpec` is already defined later in this file (used by
+// other actions that surgically prune step snapshots). The B.2-NEW.2
+// undo path reuses it — no separate copy needed here.
+
+
+// ─── Shared helper: register flat-shape descendants of an RM child ────────
+//
+// When B is cloned (in addToReplaceModel) or re-cloned (on load via
+// rebuildReplaceModelChildren), its flatShape children come through as
+// Three.js sub-objects of the clone but have NO data-tree entries —
+// they're invisible in the tree and uninteractive. This helper walks
+// the source's data-tree children in parallel with the clone's
+// Three.js children and:
+//
+//   - For ADD path: CREATES a sub-copy data node under the RM child
+//     with sourceNodeId pointing to the original shape.
+//   - For LOAD path: REUSES the sub-copy data node (already loaded
+//     from the saved spec via the sourceNodeId match).
+//
+// Either way, the helper stamps userData + registers the Three.js
+// sub-object with materials so the shape paints and selects. Recurses
+// for nested shape children, capped at depth 8 for safety.
+function _processRMChildShapesRecursively(srcDataNode, copyDataNode, srcObj, cloneObj, rmId, depth = 0) {
+  if (depth > 8) return;
+  if (!srcDataNode || !copyDataNode || !srcObj || !cloneObj) return;
+  if (!Array.isArray(srcObj.children) || !Array.isArray(cloneObj.children)) return;
+
+  for (const srcChild of (srcDataNode.children || [])) {
+    if (srcChild.type !== 'flatShape') continue;
+    const origSubObj = srcChild.object3d;
+    if (!origSubObj) continue;
+
+    // clone(true) preserves children order; match by index in source's
+    // Three.js children list (NOT data-tree index — these can differ).
+    const idx = srcObj.children.indexOf(origSubObj);
+    if (idx < 0) continue;
+    const cloneSubObj = cloneObj.children[idx];
+    if (!cloneSubObj) continue;
+
+    // Find existing sub-copy (LOAD path) or create new (ADD path).
+    let subCopy = (copyDataNode.children || []).find(c => c.sourceNodeId === srcChild.id);
+    if (!subCopy) {
+      const subId = generateId('rmShape');
+      subCopy = createNode('flatShape', {
+        id:                   subId,
+        name:                 srcChild.name || 'Shape',
+        templateId:           srcChild.templateId,
+        planeLocalQuaternion: [...(srcChild.planeLocalQuaternion || [0, 0, 0, 1])],
+        localOffset:          [...(srcChild.localOffset          || [0, 0, 0])],
+        localQuaternion:      [...(srcChild.localQuaternion      || [0, 0, 0, 1])],
+        baseLocalPosition:    [...(srcChild.baseLocalPosition    || [0, 0, 0])],
+        baseLocalQuaternion:  [...(srcChild.baseLocalQuaternion  || [0, 0, 0, 1])],
+        baseLocalScale:       [...(srcChild.baseLocalScale       || [1, 1, 1])],
+        pivotEnabled:         false,
+        pivotLocalOffset:     [0, 0, 0],
+        pivotLocalQuaternion: [0, 0, 0, 1],
+      });
+      subCopy.sourceNodeId = srcChild.id;
+      copyDataNode.children = copyDataNode.children || [];
+      copyDataNode.children.push(subCopy);
+    }
+
+    subCopy.object3d = cloneSubObj;
+    cloneSubObj.userData.nodeId              = subCopy.id;
+    cloneSubObj.userData.flatShapeNodeId     = subCopy.id;
+    cloneSubObj.userData.meshNodeId          = subCopy.id;
+    cloneSubObj.userData.isReplaceModelChild = true;
+    cloneSubObj.userData.replaceModelId      = rmId;
+    cloneSubObj.userData.replaceModelChildId = subCopy.id;
+    steps.object3dById.set(subCopy.id, cloneSubObj);
+
+    if (cloneSubObj.isMesh) {
+      materials.registerMesh?.(subCopy.id, cloneSubObj);
+    } else {
+      cloneSubObj.traverse((o) => {
+        if (o.isMesh) materials.registerMesh?.(subCopy.id, o);
+      });
+    }
+
+    // Recurse for nested shapes under this one.
+    _processRMChildShapesRecursively(srcChild, subCopy, origSubObj, cloneSubObj, rmId, depth + 1);
+  }
+}
+
+
+// ═══════════════════════════════════════════════════════════════════════════
+//  REPLACE-MODEL POST-LOAD REBUILD (B.2-NEW.2.5)
+// ═══════════════════════════════════════════════════════════════════════════
+//
+// At save time, RM children carry only their data (id / name / transform /
+// sourceNodeId). Their Three.js geometry was a runtime .clone() that
+// nothing on disk captures. On project load this function walks every RM,
+// wraps its original mesh in a Group, and re-clones each child's origin
+// object3d back into the wrap-group, restoring the in-memory scene to
+// what the user had at save time.
+//
+// Must run AFTER all assets are loaded (so source object3ds are wired)
+// and BEFORE the first step is activated (so rebuildFromTreeSpec sees
+// the wrap-group + child clones already in place).
+
+// ─── Replace-Model child operations (B.2-NEW.3) ───────────────────────────
+//
+// RM children only support two operations per the user spec:
+//   1. Remove from RM (delete the copy + cleanup).
+//   2. Global transform (translate / rotate / scale relative to the
+//      RM, baked into the child's pose — no per-step animation).
+
+/**
+ * Remove an RM child copy from its replaceModel.
+ *
+ * The copy node is removed from the data tree, the cloned object3d is
+ * detached from the wrap-group, all materials / object3dById entries
+ * are cleaned up, and the copy is stripped from every step's snapshot
+ * (.tree, .transforms, .visibility, .materials).
+ *
+ * @param {string} childId
+ * @param {object} [options]
+ * @param {boolean} [options.unarchiveOrigin=false]  If the source origin
+ *           is archived, also flip it back to un-archived after removal.
+ * @returns {boolean} true on success
+ */
+export function removeFromReplaceModel(childId, options = {}) {
+  const nb       = state.get('nodeById');
+  const treeData = state.get('treeData');
+  if (!nb || !treeData) return false;
+
+  const child = nb.get(childId);
+  if (!child) return false;
+  // Find the RM ancestor in the data tree.
+  const rmNode = findReplaceModelAncestor(treeData, childId);
+  if (!rmNode) return false;
+
+  // Find the immediate parent (the copy might be nested under a sub-shape).
+  const parent = findParent(treeData, childId);
+  if (!parent) return false;
+  const idxInParent = (parent.children || []).indexOf(child);
+  if (idxInParent < 0) return false;
+
+  // Capture for undo.
+  const childSpec    = serializeModelTree(child);   // includes nested sub-shapes
+  const originId     = child.sourceNodeId || null;
+  const originLive   = originId ? nb.get(originId) : null;
+  const originWasArchived = originLive?.archived === true;
+  const cloneObjRef  = child.object3d || steps.object3dById?.get(childId) || null;
+  const parentId     = parent.id;
+  // Material assignments for the copy + any sub-copies.
+  const collectIds = (n, out = []) => {
+    out.push(n.id);
+    for (const c of (n.children || [])) collectIds(c, out);
+    return out;
+  };
+  const allIds = collectIds(child);
+  const prevColors = {};
+  const prevDefaults = {};
+  for (const id of allIds) {
+    if (id in (materials.meshColorAssignments || {})) prevColors[id]   = materials.meshColorAssignments[id];
+    if (id in (materials.meshDefaultColors    || {})) prevDefaults[id] = materials.meshDefaultColors[id];
+  }
+  // Per-step snapshot entries for the copy + sub-copies — capture before
+  // we strip so undo can restore exactly.
+  const prevSnapshotEntries = (state.get('steps') || []).map(s => {
+    const out = { stepId: s.id };
+    if (!s.snapshot) return out;
+    out.tree = s.snapshot.tree;   // keep ref for undo restore via re-add
+    out.transforms = {};
+    out.visibility = {};
+    out.materials  = {};
+    for (const id of allIds) {
+      if (s.snapshot.transforms && id in s.snapshot.transforms) {
+        out.transforms[id] = s.snapshot.transforms[id];
+      }
+      if (s.snapshot.visibility && id in s.snapshot.visibility) {
+        out.visibility[id] = s.snapshot.visibility[id];
+      }
+      if (s.snapshot.materials && id in s.snapshot.materials) {
+        out.materials[id] = s.snapshot.materials[id];
+      }
+    }
+    return out;
+  });
+
+  const removeNow = () => {
+    const nb2 = state.get('nodeById');
+    const td2 = state.get('treeData');
+    if (!nb2 || !td2) return;
+
+    // 1. Detach cloneObj from Three.js scene + dispose ID maps
+    if (cloneObjRef?.parent) cloneObjRef.parent.remove(cloneObjRef);
+    for (const id of allIds) {
+      steps.object3dById?.delete(id);
+      materials.unregisterMesh?.(id);
+      delete materials.meshColorAssignments[id];
+      delete materials.meshDefaultColors[id];
+    }
+
+    // 2. Remove from parent's children in data tree
+    const liveParent = nb2.get(parentId);
+    if (liveParent?.children) {
+      liveParent.children = liveParent.children.filter(c => c.id !== childId);
+    }
+    // 3. Strip from every step snapshot — tree, transforms, visibility,
+    //    materials (each by every id in `allIds`).
+    const stp = state.get('steps') || [];
+    const next = stp.map(s => {
+      if (!s.snapshot) return s;
+      let tree = s.snapshot.tree;
+      for (const id of allIds) tree = _removeFromTreeSpec(tree, id);
+      const tr = { ...(s.snapshot.transforms || {}) };
+      const vi = { ...(s.snapshot.visibility || {}) };
+      const mat = { ...(s.snapshot.materials  || {}) };
+      for (const id of allIds) { delete tr[id]; delete vi[id]; delete mat[id]; }
+      return { ...s, snapshot: { ...s.snapshot, tree, transforms: tr, visibility: vi, materials: mat } };
+    });
+    state.setState({ steps: next, nodeById: _nodes_buildNodeMap(td2) });
+
+    // 4. Optionally un-archive the origin source node.
+    if (options.unarchiveOrigin && originLive) {
+      const ol = state.get('nodeById')?.get(originId);
+      if (ol) ol.archived = false;
+    }
+
+    state.emit('change:treeData', td2);
+    materials.applyAll();
+    steps.scheduleTransformSync();
+    state.markDirty();
+  };
+  removeNow();
+
+  // ── Undo / Redo ─────────────────────────────────────────────────────
+  // Undo restores the data node + every step entry + (optionally) the
+  // origin's archive state. Redo re-runs removeNow.
+  // The clone's Three.js geometry is RE-CLONED from the source on undo
+  // (same as rebuildReplaceModelChildren) — we can't re-attach the
+  // disposed cloneObj reliably, so we recompute.
+  undoManager.push(
+    `Remove "${(child.name || 'copy').slice(0, 20)}" from Replace-Model`,
+    () => {
+      // Undo — re-insert the child + its sub-shapes by replaying the
+      // logic in rebuildReplaceModelChildren for this RM.
+      const nb3 = state.get('nodeById');
+      const td3 = state.get('treeData');
+      if (!nb3 || !td3) return;
+      const rmLive   = nb3.get(rmNode.id);
+      const parLive  = nb3.get(parentId);
+      if (!rmLive || !parLive) return;
+      // Re-create the data node from spec (deep clone via JSON to drop
+      // any object3d residue) and re-attach at the saved index.
+      const restored = JSON.parse(JSON.stringify(childSpec));
+      (function clearObj3d(n) {
+        n.object3d = null;
+        for (const c of (n.children || [])) clearObj3d(c);
+      })(restored);
+      parLive.children = parLive.children || [];
+      parLive.children.splice(idxInParent, 0, restored);
+      // Restore snapshot entries.
+      const stp = state.get('steps') || [];
+      const next = stp.map(s => {
+        if (!s.snapshot) return s;
+        const restoredEntry = prevSnapshotEntries.find(e => e.stepId === s.id);
+        if (!restoredEntry) return s;
+        // Re-insert into snapshot.tree at the RM's children.
+        const newTree = _addToTreeSpec(s.snapshot.tree, parentId, serializeModelTree(restored));
+        const tr = { ...(s.snapshot.transforms || {}), ...restoredEntry.transforms };
+        const vi = { ...(s.snapshot.visibility || {}), ...restoredEntry.visibility };
+        const mat = { ...(s.snapshot.materials  || {}), ...restoredEntry.materials };
+        return { ...s, snapshot: { ...s.snapshot, tree: newTree || s.snapshot.tree, transforms: tr, visibility: vi, materials: mat } };
+      });
+      state.setState({ steps: next, nodeById: _nodes_buildNodeMap(td3) });
+      // Restore material entries (global).
+      for (const [id, preset] of Object.entries(prevColors))   materials.meshColorAssignments[id] = preset;
+      for (const [id, preset] of Object.entries(prevDefaults)) materials.meshDefaultColors[id]    = preset;
+      // Restore origin archive state.
+      if (options.unarchiveOrigin && originLive) {
+        const ol = state.get('nodeById')?.get(originId);
+        if (ol) ol.archived = originWasArchived;
+      }
+      // Re-clone the source geometry into the wrap-group via the
+      // existing rebuild path (idempotent).
+      rebuildReplaceModelChildren();
+      state.emit('change:treeData', state.get('treeData'));
+      materials.applyAll();
+      steps.scheduleTransformSync();
+    },
+    () => { removeNow(); },
+  );
+
+  return true;
+}
+
+/**
+ * Apply a global transform (translate Δ + rotate Δ Euler degrees +
+ * uniform scale ×) to an RM child copy. Bakes into baseLocal* fields
+ * and pushes per-Three.js obj3d updates manually (mesh-type nodes are
+ * not transform nodes so applyNodeTransformToObject3D bails on them).
+ *
+ * @param {string} childId
+ * @param {object} params { dx, dy, dz, rx, ry, rz, sx, sy, sz }
+ */
+export function applyRMChildGlobalTransform(childId, params) {
+  const T = window.THREE;
+  if (!T) return false;
+  const nb   = state.get('nodeById');
+  const node = nb?.get(childId);
+  if (!node) return false;
+  const treeData = state.get('treeData');
+  if (!treeData) return false;
+  const rm = findReplaceModelAncestor(treeData, childId);
+  if (!rm) return false;
+
+  const dx = +(params?.dx ?? 0), dy = +(params?.dy ?? 0), dz = +(params?.dz ?? 0);
+  const rx = +(params?.rx ?? 0) * Math.PI / 180;
+  const ry = +(params?.ry ?? 0) * Math.PI / 180;
+  const rz = +(params?.rz ?? 0) * Math.PI / 180;
+  const sx = +(params?.sx ?? 1), sy = +(params?.sy ?? 1), sz = +(params?.sz ?? 1);
+  if (dx === 0 && dy === 0 && dz === 0 && rx === 0 && ry === 0 && rz === 0 && sx === 1 && sy === 1 && sz === 1) {
+    return false;
+  }
+
+  // Capture before for undo.
+  const before = {
+    baseLocalPosition:   [...(node.baseLocalPosition   || [0, 0, 0])],
+    baseLocalQuaternion: [...(node.baseLocalQuaternion || [0, 0, 0, 1])],
+    baseLocalScale:      [...(node.baseLocalScale      || [1, 1, 1])],
+  };
+
+  const apply = (which) => {
+    const n = state.get('nodeById')?.get(childId);
+    if (!n) return;
+    if (which === 'undo') {
+      n.baseLocalPosition   = [...before.baseLocalPosition];
+      n.baseLocalQuaternion = [...before.baseLocalQuaternion];
+      n.baseLocalScale      = [...before.baseLocalScale];
+    } else {
+      // Translate Δ — add directly.
+      n.baseLocalPosition = [
+        (n.baseLocalPosition?.[0] || 0) + dx,
+        (n.baseLocalPosition?.[1] || 0) + dy,
+        (n.baseLocalPosition?.[2] || 0) + dz,
+      ];
+      // Rotate Δ Euler — compose: base × delta.
+      const qBase   = new T.Quaternion(
+        n.baseLocalQuaternion?.[0] || 0,
+        n.baseLocalQuaternion?.[1] || 0,
+        n.baseLocalQuaternion?.[2] || 0,
+        n.baseLocalQuaternion?.[3] ?? 1,
+      );
+      const qDelta = new T.Quaternion().setFromEuler(new T.Euler(rx, ry, rz, 'XYZ'));
+      const qTotal = qBase.multiply(qDelta);
+      n.baseLocalQuaternion = [qTotal.x, qTotal.y, qTotal.z, qTotal.w];
+      // Scale × — multiply each axis.
+      n.baseLocalScale = [
+        (n.baseLocalScale?.[0] ?? 1) * sx,
+        (n.baseLocalScale?.[1] ?? 1) * sy,
+        (n.baseLocalScale?.[2] ?? 1) * sz,
+      ];
+    }
+    // Apply to obj3d directly — mesh-type RM children aren't transform
+    // nodes (isTransformNode=false), so applyNodeTransformToObject3D
+    // would bail. Compose the same way getComputedLocalPosition +
+    // getTotalLocalQuaternion do, but write to obj3d.position/quat/scale.
+    const obj = steps.object3dById?.get(childId);
+    if (obj) {
+      const bp = n.baseLocalPosition   || [0, 0, 0];
+      const lp = n.localOffset         || [0, 0, 0];
+      const bq = n.baseLocalQuaternion || [0, 0, 0, 1];
+      const lq = n.localQuaternion     || [0, 0, 0, 1];
+      const bs = n.baseLocalScale      || [1, 1, 1];
+      obj.position.set(bp[0] + lp[0], bp[1] + lp[1], bp[2] + lp[2]);
+      const qb = new T.Quaternion(bq[0], bq[1], bq[2], bq[3]);
+      const ql = new T.Quaternion(lq[0], lq[1], lq[2], lq[3]);
+      obj.quaternion.copy(qb).multiply(ql);
+      obj.scale.set(bs[0], bs[1], bs[2]);
+      obj.updateMatrix();
+    }
+    state.emit('change:treeData', state.get('treeData'));
+    steps.scheduleTransformSync();
+    state.markDirty();
+  };
+
+  apply('do');
+
+  undoManager.push(
+    `Global transform "${(node.name || 'copy').slice(0, 20)}"`,
+    () => apply('undo'),
+    () => apply('do'),
+  );
+  return true;
+}
+
+/**
+ * Walk up the tree to find a replaceModel ancestor of `nodeId`.
+ * Public helper (used by both actions.js + tree.js) — returns the RM
+ * TreeNode or null.
+ */
+export function findReplaceModelAncestor(root, nodeId) {
+  if (!root || !nodeId) return null;
+  let found = null;
+  (function walk(node, ancestors) {
+    if (found) return;
+    if (node.id === nodeId) {
+      for (let i = ancestors.length - 1; i >= 0; i--) {
+        if (ancestors[i].type === 'replaceModel') { found = ancestors[i]; return; }
+      }
+      return;
+    }
+    for (const c of (node.children || [])) walk(c, [...ancestors, node]);
+  })(root, []);
+  return found;
+}
+
+
+/**
+ * Post-load rebuild for every replaceModel in the live tree. Idempotent
+ * — re-running on an already-wrapped RM is a no-op.
+ */
+export function rebuildReplaceModelChildren() {
+  const T = window.THREE;
+  if (!T) return;
+  const treeData = state.get('treeData');
+  if (!treeData) return;
+
+  const rms = [];
+  (function walk(node) {
+    if (node?.type === 'replaceModel' && (node.children?.length || 0) > 0) {
+      rms.push(node);
+    }
+    for (const c of (node?.children || [])) walk(c);
+  })(treeData);
+
+  for (const rm of rms) _rebuildOneReplaceModel(rm, T);
+}
+
+function _rebuildOneReplaceModel(rm, T) {
+  const rmObj = steps.object3dById?.get(rm.id);
+  if (!rmObj) {
+    // Missing source for A — RM is orphaned. Skip; the data tree still
+    // lists children but they won't render without their parent geometry.
+    console.warn('[replaceModel] post-load: RM has no object3d:', rm.id);
+    return;
+  }
+
+  // Already wrapped (re-run safety) — just ensure children are attached.
+  if (rmObj.userData?.isReplaceModelGroup) {
+    for (const child of (rm.children || [])) {
+      if (!steps.object3dById.has(child.id)) _rebuildOneRMChild(child, rm, rmObj, T);
+    }
+    return;
+  }
+
+  const sceneParent = rmObj.parent;
+  if (!sceneParent) {
+    console.warn('[replaceModel] post-load: RM mesh has no scene parent:', rm.id);
+    return;
+  }
+
+  // ── Wrap A's mesh in a Group (same mechanics as addToReplaceModel) ─
+  const wrapGroup = new T.Group();
+  wrapGroup.userData.isReplaceModelGroup = true;
+  wrapGroup.userData.nodeId              = rm.id;
+  wrapGroup.name = (rmObj.name || 'RM') + '_RM';
+  wrapGroup.position.copy(rmObj.position);
+  wrapGroup.quaternion.copy(rmObj.quaternion);
+  wrapGroup.scale.copy(rmObj.scale);
+  sceneParent.add(wrapGroup);
+
+  rmObj.position.set(0, 0, 0);
+  rmObj.quaternion.identity();
+  rmObj.scale.set(1, 1, 1);
+  rmObj.userData.isReplaceModelOriginal = true;
+  rmObj.userData.replaceModelId         = rm.id;
+  wrapGroup.add(rmObj);
+  if (rm.originalGeometryHidden === true) rmObj.visible = false;
+
+  rm.object3d = wrapGroup;
+  steps.object3dById.set(rm.id, wrapGroup);
+
+  // ── Build each child's object3d via clone of its source ────────────
+  for (const child of (rm.children || [])) {
+    _rebuildOneRMChild(child, rm, wrapGroup, T);
+  }
+}
+
+function _rebuildOneRMChild(child, rm, wrapGroup, T) {
+  const sourceId = child.sourceNodeId;
+  if (!sourceId) return;
+  const sourceObj = steps.object3dById?.get(sourceId);
+  if (!sourceObj) {
+    // Source missing — could render a bbox placeholder here. For v1
+    // just warn; the child node exists in the tree but has no geometry.
+    console.warn('[replaceModel] post-load: source missing for RM child:', child.id, 'src:', sourceId);
+    return;
+  }
+
+  const cloneObj = sourceObj.clone(true);
+
+  // Restore the saved local pose.
+  const lp = child.localOffset     || [0, 0, 0];
+  const lq = child.localQuaternion || [0, 0, 0, 1];
+  const ls = child.baseLocalScale  || [1, 1, 1];
+  cloneObj.position.set(lp[0], lp[1], lp[2]);
+  cloneObj.quaternion.set(lq[0], lq[1], lq[2], lq[3]);
+  cloneObj.scale.set(ls[0], ls[1], ls[2]);
+
+  wrapGroup.add(cloneObj);
+
+  // Stamp userData for picking + selection promotion.
+  cloneObj.userData.nodeId              = child.id;
+  cloneObj.userData.meshNodeId          = child.id;
+  cloneObj.userData.isReplaceModelChild = true;
+  cloneObj.userData.replaceModelId      = rm.id;
+  cloneObj.traverse((o) => {
+    if (o === cloneObj) return;
+    o.userData = o.userData || {};
+    o.userData.replaceModelId      = rm.id;
+    o.userData.replaceModelChildId = child.id;
+  });
+
+  child.object3d = cloneObj;
+  steps.object3dById.set(child.id, cloneObj);
+
+  // Register with materials so color presets can paint the clone.
+  if (cloneObj.isMesh) {
+    materials.registerMesh?.(child.id, cloneObj);
+  } else {
+    cloneObj.traverse((o) => {
+      if (o.isMesh) materials.registerMesh?.(child.id, o);
+    });
+  }
+
+  // Re-attach flat-shape sub-copies (loaded from spec) to their
+  // corresponding clone sub-objects. The data tree already has the
+  // sub-copy nodes (saved via _processRMChildShapesRecursively at
+  // add-time); this just wires the Three.js side back together.
+  const srcDataNode = state.get('nodeById')?.get(sourceId);
+  if (srcDataNode) {
+    _processRMChildShapesRecursively(srcDataNode, child, sourceObj, cloneObj, rm.id);
+  }
+}
+
 
 /**
  * Re-stage the CURRENT active step's visibility snapshot to live nodes
@@ -1095,6 +2676,10 @@ let _transformBatch = null;
  */
 export function beginTransformEdit(nodeId) {
   if (_transformBatch?.nodeId === nodeId) return;
+  // Archived nodes are READ-ONLY — refuse to enter the gizmo batch.
+  // The gizmo itself is suppressed in main.js when archived, but this
+  // is the defence-in-depth path in case something else calls in.
+  if (_isArchived(nodeId)) return;
   const nodeById = state.get('nodeById');
   const node = nodeById?.get(nodeId);
   if (!node) return;
@@ -1426,9 +3011,85 @@ try {
     window.sbsDiag.visibilityAudit  = visibilityAudit;
     window.sbsDiag.visibilityRepair = () => visibilityAudit({ repair: true });
     window.sbsDiag.unstuckInputs    = unstuckInputs;
+    window.sbsDiag.rmHealth         = rmHealth;
+    // Animation trace flag. Set true in console → logs every animation
+    // entry point with timestamps. Used to diagnose the "OBJ stutter
+    // — start, rewind after 50ms, restart" report. Off by default.
+    window.sbsDiag.animTrace        = false;
     _startInputUnstickJanitor();
   }
 } catch {}
+
+/**
+ * RM health check — counts RMs / copies / orphan registrations.
+ *
+ *   sbsDiag.rmHealth()              // report only
+ *   sbsDiag.rmHealth({ clean:true}) // report + sweep orphans
+ *
+ * Orphans = ids registered in object3dById / materials.meshById /
+ * meshColorAssignments / meshDefaultColors that aren't in nodeById.
+ * These come from import paths that registered intermediate groups
+ * BEFORE bake-and-flatten dropped them from the data tree (fixed in
+ * V0.1.73's bakeAndFlattenImport Phase 5 — but pre-fix imports leave
+ * residue that survives until you sweep it).
+ */
+export function rmHealth(opts = {}) {
+  const nb        = state.get('nodeById');
+  const validIds  = new Set(nb ? nb.keys() : []);
+  const matIds    = materials.meshById ? [...materials.meshById.keys()]    : [];
+  const objIds    = steps.object3dById  ? [...steps.object3dById.keys()]   : [];
+  const colorIds  = Object.keys(materials.meshColorAssignments || {});
+  const defIds    = Object.keys(materials.meshDefaultColors    || {});
+
+  let rms = 0, copies = 0;
+  for (const node of (nb?.values() || [])) {
+    if (node.type === 'replaceModel') rms++;
+    if (node.sourceNodeId)            copies++;
+  }
+  const orphanMat   = matIds   .filter(id => !validIds.has(id));
+  const orphanObj   = objIds   .filter(id => !validIds.has(id));
+  const orphanColor = colorIds .filter(id => !validIds.has(id));
+  const orphanDef   = defIds   .filter(id => !validIds.has(id));
+
+  const report = {
+    nodes:                    validIds.size,
+    RMs:                      rms,
+    copies,
+    materialsRegistered:      matIds.length,
+    object3dRegistered:       objIds.length,
+    colorAssignments:         colorIds.length,
+    defaultColors:            defIds.length,
+    orphanMaterials:          orphanMat.length,
+    orphanObject3d:           orphanObj.length,
+    orphanColorAssignments:   orphanColor.length,
+    orphanDefaultColors:      orphanDef.length,
+  };
+  const totalOrphans = orphanMat.length + orphanObj.length + orphanColor.length + orphanDef.length;
+
+  if (opts.clean && totalOrphans) {
+    // Sweep every orphan id from every registry. Safe because they
+    // refer to data nodes that no longer exist — no live consumer
+    // would look them up.
+    for (const id of orphanMat)   materials.meshById?.delete(id);
+    for (const id of orphanObj)   steps.object3dById?.delete(id);
+    for (const id of orphanColor) delete materials.meshColorAssignments[id];
+    for (const id of orphanDef)   delete materials.meshDefaultColors[id];
+    console.log(`[RM health] cleaned ${totalOrphans} orphan entries.`);
+    return rmHealth();   // re-run to verify clean
+  }
+
+  if (totalOrphans > 0) {
+    console.warn('[RM health] orphan IDs detected:', report);
+    if (orphanMat.length)   console.warn('  orphan materials:',           orphanMat);
+    if (orphanObj.length)   console.warn('  orphan object3d:',            orphanObj);
+    if (orphanColor.length) console.warn('  orphan color assignments:',   orphanColor);
+    if (orphanDef.length)   console.warn('  orphan default colors:',      orphanDef);
+    console.warn('  → run `sbsDiag.rmHealth({ clean: true })` to sweep.');
+  } else {
+    console.log('[RM health] clean.', report);
+  }
+  return report;
+}
 
 /**
  * Deep reset — zeros BOTH the per-step delta (localOffset / localQuaternion)
@@ -1448,6 +3109,7 @@ try {
  * Undoable.
  */
 export function resetTransformDeep(nodeId) {
+  if (_isArchived(nodeId)) return;
   const nodeById = state.get('nodeById');
   const node = nodeById?.get(nodeId);
   if (!node) return;
@@ -1496,6 +3158,7 @@ export function resetTransformDeep(nodeId) {
  * Reset a node's transform to identity (undoable).
  */
 export function resetTransform(nodeId) {
+  if (_isArchived(nodeId)) return;
   const nodeById = state.get('nodeById');
   const node = nodeById?.get(nodeId);
   if (!node) return;
@@ -1535,6 +3198,7 @@ export function resetTransform(nodeId) {
  * @param {'moveEnabled'|'rotateEnabled'|'pivotEnabled'} flag
  */
 export function toggleTransformEnabled(nodeId, flag) {
+  if (_isArchived(nodeId)) return;
   const nodeById = state.get('nodeById');
   const node     = nodeById?.get(nodeId);
   if (!node) return;
@@ -1567,6 +3231,7 @@ export function toggleTransformEnabled(nodeId, flag) {
  * @param {'move'|'rotate'|'all'} field
  */
 export function resetTransformField(nodeId, field) {
+  if (_isArchived(nodeId)) return;
   const nodeById = state.get('nodeById');
   const node     = nodeById?.get(nodeId);
   if (!node) return;
@@ -1641,6 +3306,7 @@ let _pivotBatch = null;
  */
 export function enterPivotEdit(nodeId) {
   if (!nodeId) return;
+  if (_isArchived(nodeId)) return;
   if (state.get('pivotEditNodeId') === nodeId) return;
   // If a different node was being edited, commit that one first so
   // we never have two open edit sessions.
@@ -1806,6 +3472,7 @@ let _globalBatch = null;
  */
 export function enterGlobalEdit(nodeId) {
   if (!nodeId) return;
+  if (_isArchived(nodeId)) return;
   if (state.get('globalEditNodeId') === nodeId) return;
   if (state.get('globalEditNodeId')) commitGlobalEdit();
   // A pivot edit and a global edit can't both own the gizmo;
@@ -1942,6 +3609,7 @@ export function copyPivot(nodeId) {
  */
 export function pastePivot(nodeId) {
   if (!_pivotClipboard) return false;
+  if (_isArchived(nodeId)) return false;
   const node = state.get('nodeById')?.get(nodeId);
   if (!node) return false;
 
@@ -3763,6 +5431,79 @@ function _syncVis() {
   steps.scheduleSync();
 }
 
+// ─── Archive immutability guard ───────────────────────────────────────────
+//
+// Archived nodes are READ-ONLY: ignore any direct user mutation. They still
+// follow their CONTAINER (parent transforms / parent visibility / step
+// rebuilds carry them along), but a direct click on the eye / color / move
+// / etc. is silently dropped. Filtering happens at the action entry so the
+// UI doesn't need to know — clicks just no-op on archived selections.
+//
+// _stripArchived(ids):  return only the non-archived ids from `ids`.
+// _isArchived(id):      single-id helper for early-return guards.
+
+function _stripArchived(ids) {
+  const nb = state.get('nodeById');
+  if (!nb) return Array.isArray(ids) ? [...ids] : [...(ids || [])];
+  const list = Array.isArray(ids) ? ids : [...(ids || [])];
+  return list.filter(id => nb.get(id)?.archived !== true);
+}
+
+function _isArchived(id) {
+  const nb = state.get('nodeById');
+  return nb?.get(id)?.archived === true;
+}
+
+// ── Replace-Model selection expansion ─────────────────────────────────────
+//
+// When the user has an RM selected (selectedId === RM.id, possibly via
+// the viewport's selection-promotion path), color / visibility / cable
+// / similar mutations should apply to ALL the RM's children too —
+// otherwise the change writes to RM.id only (which has no rendered
+// mesh) and nothing visible happens.
+//
+// _expandRMSelection adds every descendant of any RM id in `ids` to the
+// returned set. The RM's own id stays in the list (so RM-level color
+// assignments are still recorded — they're inherited by newly-added
+// children via addToReplaceModel's 6c step).
+//
+// V0.1.83 revert: locked folder-groups intentionally DO NOT cascade
+// here. Per user spec, applying a color/etc. to a locked group does
+// nothing — the group's contents are treated as a single unit for
+// SELECTION, but mutations to the group itself don't reach children.
+// (Mutations on individually-selected children — possible only when
+// the group is unlocked — work normally.)
+function _expandRMSelection(ids) {
+  const nb = state.get('nodeById');
+  if (!nb) return Array.isArray(ids) ? [...ids] : [...(ids || [])];
+  const list = Array.isArray(ids) ? ids : [...(ids || [])];
+  const out = new Set(list);
+  for (const id of list) {
+    const node = nb.get(id);
+    if (node?.type === 'replaceModel') {
+      (function walk(n) {
+        for (const c of (n.children || [])) { out.add(c.id); walk(c); }
+      })(node);
+    }
+  }
+  return [...out];
+}
+
+/**
+ * True if the selection includes at least one replaceModel container.
+ * When true, color / visibility / etc. mutations should treat the change
+ * as RM-level — i.e., cascade across EVERY step (the RM's color is a
+ * "default for the entire timeline", not a per-step override per spec).
+ * Individual per-step overrides on a SPECIFIC child are still possible
+ * by selecting that child alone.
+ */
+function _hasRMInSelection(ids) {
+  const nb = state.get('nodeById');
+  if (!nb) return false;
+  const list = Array.isArray(ids) ? ids : [...(ids || [])];
+  return list.some(id => nb.get(id)?.type === 'replaceModel');
+}
+
 function _isInputFocused() {
   const t = document.activeElement?.tagName;
   return t === 'INPUT' || t === 'TEXTAREA' || document.activeElement?.isContentEditable;
@@ -4413,6 +6154,7 @@ export function loadSelectionGroup(groupId) {
 
 export function startNotePicking(meshId) {
   if (!meshId) return;
+  if (_isArchived(meshId)) return;
   // Don't co-exist with a reposition pick.
   if (state.get('noteRepositioningId')) cancelNoteRepositioning();
   state.setState({ notePickingMeshId: meshId });
@@ -4563,6 +6305,7 @@ function _findNodeRecursiveLocal(node, id) {
  */
 export function createNoteAtHit(meshId, hit) {
   if (!hit?.point || !hit?.object || !meshId) return null;
+  if (_isArchived(meshId)) return null;
   const T = window.THREE;
   const meshNode = state.get('nodeById')?.get(meshId);
   if (!meshNode || meshNode.type !== 'mesh') return null;
@@ -5860,9 +7603,9 @@ state.on('shapeEditor:vertexEdit', ({ templateId, polygons, reason }) => {
 
   const label = reason === 'delete'           ? 'Delete vertex'
               : reason === 'addOnEdge'        ? 'Add vertex'
-              : reason === 'addPolygon'       ? 'Add polygon'
-              : reason === 'deletePolygon'    ? 'Delete polygon'
-              : reason === 'transformPolygon' ? 'Transform polygon'
+              : reason === 'addPolygon'       ? 'Add shape'
+              : reason === 'deletePolygon'    ? 'Delete shape'
+              : reason === 'transformPolygon' ? 'Transform shape'
               :                                 'Move vertex';
   undoManager.push(label,
     () => apply(prevPolygons),
@@ -6061,7 +7804,10 @@ export function placeShapeInstance(templateId, options = {}) {
   state.setState({ nodeById: _nodes_buildNodeMap(root) });
 
   // Propagate to step snapshots so navigating between steps preserves it.
-  _propagateNewNodeToSteps(instance, parent.id);
+  // Item 3: a freshly-placed shape is visible ONLY on the step it was
+  // created on; it exists (hidden) in every other step so the user can
+  // reveal it per-step later.
+  _propagateNewNodeToSteps(instance, parent.id, { activeStepOnly: true });
 
   state.emit('change:treeData', root);
   steps.scheduleTransformSync();
@@ -6202,6 +7948,88 @@ export function startCreateShapeFromFace() {
 export function cancelCreateShapeFromFace() {
   if (!state.get('shapeFromFacePicking')) return;
   state.setState({ shapeFromFacePicking: false });
+}
+
+// ─────────────────────────────────────────────────────────────────────
+//  ADD POLYGON FROM FACE  (in-editor variant of create-shape-from-face)
+// ─────────────────────────────────────────────────────────────────────
+//
+// Same flood-fill / cross-section pipeline, but the resulting loops are
+// projected onto the CURRENT shape's plane (orthogonal projection along
+// that plane's normal) and appended as a new polygon to the template
+// being edited. Only valid while shapeDrawing.phase === 'edit'.
+
+export function startAddPolygonFromFacePick() {
+  const dr = state.get('shapeDrawing');
+  if (!dr || dr.phase !== 'edit' || !dr.plane) {
+    setStatus('Open a shape in edit mode first.', 'warning');
+    return;
+  }
+  if (state.get('shapePlacementForId'))        state.setState({ shapePlacementForId: null });
+  if (state.get('shapeEditPickInstanceForId')) state.setState({ shapeEditPickInstanceForId: null });
+  if (state.get('shapeFromFacePicking'))       state.setState({ shapeFromFacePicking: false });
+  state.setState({ addPolygonFromFacePicking: true });
+  setStatus('Click a face — its outline is projected onto the shape plane and added as a new polygon.');
+}
+
+export function cancelAddPolygonFromFacePick() {
+  if (!state.get('addPolygonFromFacePicking')) return;
+  state.setState({ addPolygonFromFacePicking: false });
+}
+
+/**
+ * Resolve a viewport click into a connected-component cross-section
+ * polygon and append it to the in-edit shape template. The polygon is
+ * projected onto the editor's plane along that plane's normal, so the
+ * outline lies flat on the shape regardless of the face's orientation.
+ * Auto-disarms after one shot.
+ */
+export function addPolygonFromFaceAtClick(clientX, clientY) {
+  const T = window.THREE;
+  if (!T) { state.setState({ addPolygonFromFacePicking: false }); return false; }
+  const dr = state.get('shapeDrawing');
+  if (!dr || dr.phase !== 'edit' || !dr.plane) {
+    state.setState({ addPolygonFromFacePicking: false });
+    setStatus('Not in shape edit mode — cancelled.', 'warning');
+    return false;
+  }
+  const hit = sceneCore.pick(clientX, clientY);
+  if (!hit || !hit.face || !hit.object?.isMesh) {
+    state.setState({ addPolygonFromFacePicking: false });
+    setStatus('No face hit — cancelled.', 'warning');
+    return false;
+  }
+
+  // Project the flood-fill loops onto the EDITOR's plane (not the face's
+  // own plane). _computeFaceCrossSection already does plane-local 2D
+  // projection of mesh-local 3D vertices, so passing the shape plane here
+  // gives orthogonal projection along the shape's normal.
+  let loops2D;
+  try {
+    loops2D = _computeFaceCrossSection(hit, dr.plane);
+  } catch (err) {
+    console.warn('[addPolygonFromFace] computation failed:', err);
+    state.setState({ addPolygonFromFacePicking: false });
+    setStatus('Cross-section computation failed.', 'danger');
+    return false;
+  }
+  if (!loops2D || loops2D.length === 0 || loops2D[0].length < 3) {
+    state.setState({ addPolygonFromFacePicking: false });
+    setStatus('Could not extract a polygon from this face.', 'warning');
+    return false;
+  }
+
+  const ok = shapeEditor.addPolygonFromFace(loops2D);
+  state.setState({ addPolygonFromFacePicking: false });
+  if (!ok) {
+    setStatus('Failed to add polygon.', 'warning');
+    return false;
+  }
+  const outer = loops2D[0];
+  const holes = loops2D.slice(1).filter(l => l.length >= 3);
+  const holeStr = holes.length ? ` + ${holes.length} hole${holes.length === 1 ? '' : 's'}` : '';
+  setStatus(`Polygon added — ${outer.length} pts${holeStr}.`);
+  return true;
 }
 
 /**
@@ -7283,19 +9111,65 @@ function _captureFullSnapshotForBreak() {
   };
 }
 
-/** Deep-clone a tree node, dropping object3d (not JSON-serializable). */
+/**
+ * Deep-clone a tree node for delete-assembly / break / similar undo
+ * snapshots. Drops object3d (Three.js refs aren't JSON-safe).
+ *
+ * V0.1.71 — bulletproofed against:
+ *   - cycles  (was: JSON.stringify on a userData-cached EdgesGeometry
+ *     closed a cycle via .parameters.geometry → broke save + delete-
+ *     assembly. V0.1.70 moved the cache to a WeakMap, but…)
+ *   - size    (then: any other node field referencing a BufferGeometry's
+ *     typed-array attributes serialised to a multi-GB string and tripped
+ *     V8's max-string-length limit).
+ *
+ * Strategy: explicit whitelist for primitive types + arrays of primitives;
+ * objects pass through _safePlainClone which detects and DROPS Three.js
+ * references (anything with .isObject3D / .isBufferGeometry / .isMaterial
+ * / .isTexture). Underscore-prefixed keys are treated as transient and
+ * dropped too — projects already use that convention for caches like
+ * _anim and _preservedNotesForRebuild.
+ */
 function _cloneTreeWithoutObject3d(node) {
   if (!node) return null;
   const out = {};
   for (const k in node) {
     if (k === 'object3d') continue;
-    if (k === '_anim') continue;     // transient animation cache, never serialised
+    if (k.startsWith('_')) continue;
     const v = node[k];
-    if (v == null) out[k] = v;
-    else if (Array.isArray(v))            out[k] = JSON.parse(JSON.stringify(v));
-    else if (k === 'children')            out[k] = v.map(_cloneTreeWithoutObject3d);
-    else if (typeof v === 'object')        out[k] = JSON.parse(JSON.stringify(v));
-    else                                   out[k] = v;
+    if (v == null) {
+      out[k] = v;
+    } else if (k === 'children') {
+      out[k] = Array.isArray(v) ? v.map(_cloneTreeWithoutObject3d) : [];
+    } else if (Array.isArray(v)) {
+      out[k] = v.map(it => _safePlainClone(it));
+    } else if (typeof v === 'object') {
+      out[k] = _safePlainClone(v);
+    } else {
+      out[k] = v;
+    }
+  }
+  return out;
+}
+
+/**
+ * Plain deep-clone that detects + drops Three.js refs. Used by
+ * _cloneTreeWithoutObject3d for any object-typed node field.
+ */
+function _safePlainClone(v, depth = 0) {
+  if (v == null) return v;
+  if (typeof v !== 'object') return v;
+  if (depth > 32) return null;          // sanity cap
+  // Drop Three.js refs of any kind.
+  if (v.isObject3D || v.isBufferGeometry || v.isMaterial ||
+      v.isTexture || v.isCamera || v.isLight || v.isScene) return null;
+  // Drop typed arrays — these would JSON-serialise as huge object maps.
+  if (ArrayBuffer.isView(v)) return Array.from(v);
+  if (Array.isArray(v)) return v.map(it => _safePlainClone(it, depth + 1));
+  const out = {};
+  for (const k in v) {
+    if (k.startsWith('_')) continue;
+    out[k] = _safePlainClone(v[k], depth + 1);
   }
   return out;
 }
@@ -8040,25 +9914,36 @@ function _removeShapeInstance(instanceId) {
   state.emit('change:treeData', root);
 }
 
-function _propagateNewNodeToSteps(node, parentId) {
+function _propagateNewNodeToSteps(node, parentId, opts = {}) {
   const allSteps = state.get('steps') || [];
   const stepSel  = state.get('selectedStepIds');
   const restrict = (stepSel instanceof Set && stepSel.size >= 2) ? stepSel : null;
+  // activeStepOnly (V0.1.85, item 3): the new node is added to EVERY step's
+  // tree spec (so it exists everywhere and can be shown later per-step),
+  // but it starts VISIBLE only on the step that was active at creation and
+  // HIDDEN on all others. Used for freshly-placed shapes so a new shape
+  // doesn't pop into every step of the timeline. Falls back to the legacy
+  // "visible everywhere" behaviour when there's no active step.
+  const activeId       = state.get('activeStepId');
+  const activeStepOnly = !!opts.activeStepOnly && !!activeId;
 
   const nodeSpec = serializeModelTree(node);
   const transformSnap = captureTransformSnapshot(node);
 
   const next = allSteps.map(s => {
-    if (restrict && !restrict.has(s.id)) return s;
+    // In activeStepOnly mode we DON'T honour the multi-step restrict — the
+    // node must exist in every step's tree so it's individually toggleable.
+    if (!activeStepOnly && restrict && !restrict.has(s.id)) return s;
     const snap = s.snapshot || {};
     const newTree = _addToTreeSpec(snap.tree, parentId, nodeSpec);
-    if (newTree === snap.tree && snap.visibility?.[node.id] !== undefined) return s;
+    const wantVis = activeStepOnly ? (s.id === activeId) : true;
+    if (newTree === snap.tree && snap.visibility?.[node.id] === wantVis) return s;
     return {
       ...s,
       snapshot: {
         ...snap,
         tree:        newTree ?? snap.tree,
-        visibility:  { ...(snap.visibility  || {}), [node.id]: true },
+        visibility:  { ...(snap.visibility  || {}), [node.id]: wantVis },
         transforms:  { ...(snap.transforms  || {}), [node.id]: transformSnap },
       },
     };
@@ -8175,6 +10060,7 @@ export function copyInstanceStepPose(instanceId) {
  */
 export function pasteInstanceStepPose(instanceId) {
   if (!_instancePoseClipboard) return false;
+  if (_isArchived(instanceId)) return false;
   const { transform, visibility } = _instancePoseClipboard;
 
   const allSteps = state.get('steps') || [];
@@ -8224,5 +10110,544 @@ export function pasteInstanceStepPose(instanceId) {
     () => apply(nextSteps),
   );
   return true;
+}
+
+
+// ═══════════════════════════════════════════════════════════════════════════
+//  SHAPE TAB — selection, groups, visibility (V0.1.85)
+// ═══════════════════════════════════════════════════════════════════════════
+//
+// Tab-only feature. Templates and groups live in state.shapeTemplates /
+// state.shapeTemplateGroups; the scene tree is untouched. Multi-select
+// in the tab (Ctrl/Shift-click) drives `selectedShapeTemplateIds` and
+// `selectedShapeTemplateGroupIds` Sets that the tab renderer reads.
+//
+// VIEWPORT ↔ TAB SYNC: when the scene selection contains flatShape nodes,
+// projectTreeSelectionToShapeTab() maps them to their templates and pushes
+// the result into selectedShapeTemplateIds. Locked-group selection
+// promotion runs at viewport pick (main.js) — see selectionPromoteForShapeGroup.
+//
+// VISIBILITY: per-template eye = toggleVisibility() on every flatShape
+// instance of that template. Per-group eye = same, summed across members.
+// Mixed-state derived live (no stored bit) from instance localVisible.
+
+function _collectFlatShapeNodeIds(predicate) {
+  const out = [];
+  const root = state.get('treeData');
+  if (!root) return out;
+  const stack = [root];
+  while (stack.length) {
+    const n = stack.pop();
+    if (n.type === 'flatShape' && !n.archived && predicate(n)) out.push(n.id);
+    if (n.children) for (const c of n.children) stack.push(c);
+  }
+  return out;
+}
+
+/** All non-archived flatShape node IDs whose templateId is in `tplIds` (Set or Array). */
+function _instanceIdsOfTemplates(tplIds) {
+  const set = tplIds instanceof Set ? tplIds : new Set(tplIds);
+  return _collectFlatShapeNodeIds(n => set.has(n.templateId));
+}
+
+/**
+ * Return 'visible' | 'hidden' | 'mixed' | 'none' for a single template id.
+ * 'none' = the template has zero instances in the live tree.
+ */
+export function getShapeTemplateVisibilityState(tplId) {
+  let anyVis = false, anyHid = false;
+  _collectFlatShapeNodeIds(n => {
+    if (n.templateId !== tplId) return false;
+    if (n.localVisible === false) anyHid = true; else anyVis = true;
+    return false; // we don't need the id list, just the flags
+  });
+  if (!anyVis && !anyHid) return 'none';
+  if (anyVis && anyHid)   return 'mixed';
+  return anyVis ? 'visible' : 'hidden';
+}
+
+/** Same as above but for a shape group (rolls up its members). */
+export function getShapeGroupVisibilityState(groupId) {
+  const groups = state.get('shapeTemplateGroups') || [];
+  const g = groups.find(x => x.id === groupId);
+  if (!g || g.templateIds.length === 0) return 'none';
+  let anyVis = false, anyHid = false;
+  const set = new Set(g.templateIds);
+  _collectFlatShapeNodeIds(n => {
+    if (!set.has(n.templateId)) return false;
+    if (n.localVisible === false) anyHid = true; else anyVis = true;
+    return false;
+  });
+  if (!anyVis && !anyHid) return 'none';
+  if (anyVis && anyHid)   return 'mixed';
+  return anyVis ? 'visible' : 'hidden';
+}
+
+/** Find which shape-template-group (if any) owns `tplId`. Returns the group object or null. */
+export function findShapeGroupForTemplate(tplId) {
+  const groups = state.get('shapeTemplateGroups') || [];
+  return groups.find(g => g.templateIds.includes(tplId)) || null;
+}
+
+// ── Tab selection ──────────────────────────────────────────────────────────
+
+/**
+ * Set / extend the shape-tab template selection. `mode`:
+ *   'replace' — clear and select just `id`
+ *   'add'     — add `id` (no toggle)
+ *   'toggle'  — toggle membership (Ctrl-click)
+ * Group selection is cleared on every change unless `keepGroupSel` is true.
+ */
+export function selectShapeTemplate(id, mode = 'replace', keepGroupSel = false) {
+  const cur = new Set(state.get('selectedShapeTemplateIds') || []);
+  if (mode === 'replace') {
+    cur.clear();
+    if (id) cur.add(id);
+  } else if (mode === 'add') {
+    if (id) cur.add(id);
+  } else if (mode === 'toggle') {
+    if (!id) return;
+    if (cur.has(id)) cur.delete(id); else cur.add(id);
+  }
+  const patch = { selectedShapeTemplateIds: cur };
+  if (!keepGroupSel) patch.selectedShapeTemplateGroupIds = new Set();
+  state.setState(patch);
+}
+
+export function selectShapeTemplateGroup(id, mode = 'replace', keepTemplateSel = false) {
+  const cur = new Set(state.get('selectedShapeTemplateGroupIds') || []);
+  if (mode === 'replace') {
+    cur.clear();
+    if (id) cur.add(id);
+  } else if (mode === 'add') {
+    if (id) cur.add(id);
+  } else if (mode === 'toggle') {
+    if (!id) return;
+    if (cur.has(id)) cur.delete(id); else cur.add(id);
+  }
+  const patch = { selectedShapeTemplateGroupIds: cur };
+  if (!keepTemplateSel) patch.selectedShapeTemplateIds = new Set();
+  state.setState(patch);
+}
+
+export function clearShapeTabSelection() {
+  state.setState({
+    selectedShapeTemplateIds:      new Set(),
+    selectedShapeTemplateGroupIds: new Set(),
+  });
+}
+
+/**
+ * Reflect the scene selection into the tab: for every selected flatShape
+ * node, add its templateId to selectedShapeTemplateIds. Group selection
+ * is cleared. Idempotent — safe to wire to every selection change.
+ */
+export function projectTreeSelectionToShapeTab() {
+  const nbm = state.get('nodeById');
+  if (!nbm) return;
+  const ids = new Set();
+  const selId = state.get('selectedId');
+  if (selId) ids.add(selId);
+  const multi = state.get('multiSelectedIds');
+  if (multi instanceof Set) for (const id of multi) ids.add(id);
+  const out = new Set();
+  for (const id of ids) {
+    const n = nbm.get(id);
+    if (n?.type === 'flatShape' && n.templateId) out.add(n.templateId);
+  }
+  state.setState({
+    selectedShapeTemplateIds:      out,
+    selectedShapeTemplateGroupIds: new Set(),
+  });
+}
+
+// Auto-sync on every scene selection change.
+state.on('change:selectedId',       () => projectTreeSelectionToShapeTab());
+state.on('change:multiSelectedIds', () => projectTreeSelectionToShapeTab());
+
+// V0.2.2: the Colors-tab selection IS the scene→color projection — selecting
+// models auto-selects the colors they use in the tab (so right-click → Unify
+// works on them directly, not just a separate amber highlight).
+let _silentColorSel = false;
+/**
+ * Set the Colors-tab selection as an UNDOABLE action. Rapid changes coalesce
+ * into one entry (slider-drag-style). Pass `{ silent: true }` to skip undo
+ * — used by the scene→color auto-sync so it doesn't pollute the stack.
+ */
+export function setColorSelection(ids, opts = {}) {
+  const before = new Set(state.get('selectedColorPresetIds') || []);
+  const after  = ids instanceof Set ? new Set(ids) : new Set(ids || []);
+  if (before.size === after.size && [...before].every(x => after.has(x))) return;
+  state.setState({ selectedColorPresetIds: after });
+  if (_silentColorSel || opts.silent) return;
+  // V0.2.14: strict per-click undo. Dropped `coalesceKey: 'colorSel'` so
+  // each tab click / marquee drag / scene-driven auto-sync that actually
+  // changes the set lands its own entry (the no-op guard above skips
+  // duplicate firings from change:selectedId + change:multiSelectedIds).
+  undoManager.push(
+    after.size === 0 ? 'Clear color selection' : `Color selection (${after.size})`,
+    () => { _silentColorSel = true; state.setState({ selectedColorPresetIds: new Set(before) }); _silentColorSel = false; },
+    () => { _silentColorSel = true; state.setState({ selectedColorPresetIds: new Set(after)  }); _silentColorSel = false; },
+  );
+}
+export function projectSceneSelectionToColorsTab() {
+  // V0.2.5: ADD scene-derived colors to the tab selection (never replace).
+  // Selecting more models grows the set; deselecting does NOT remove colors
+  // (the tab tracks "colors you've worked with"). State fills re-evaluate
+  // on the next render so the visual reflects the new scene reality. This
+  // change is undoable + coalesced so Ctrl+Z restores tab selection after
+  // scene-driven changes too (previously it was silent → undo could miss it).
+  const ids = new Set();
+  const selId = state.get('selectedId');
+  if (selId) ids.add(selId);
+  const multi = state.get('multiSelectedIds');
+  if (multi instanceof Set) for (const id of multi) ids.add(id);
+  const next = new Set(state.get('selectedColorPresetIds') || []);
+  for (const id of ids) {
+    const pid = materials.meshColorAssignments[id] ?? materials.meshDefaultColors[id];
+    if (pid) next.add(pid);
+  }
+  setColorSelection(next);   // undoable, coalesced — no-op guard inside skips identical sets
+}
+state.on('change:selectedId',       () => projectSceneSelectionToColorsTab());
+state.on('change:multiSelectedIds', () => projectSceneSelectionToColorsTab());
+
+// V0.2.1: shape-tab selection drives a viewport highlight on the instances
+// of the selected templates / locked-group members — VISIBLE ones get a
+// normal hull; HIDDEN ones get a scene-root ghost outline so the user can
+// see where the hidden shape sits. Re-runs on step + visibility changes.
+function _syncShapeTabHighlight() {
+  const sel    = state.get('selectedShapeTemplateIds')      || new Set();
+  const grpSel = state.get('selectedShapeTemplateGroupIds') || new Set();
+  if (sel.size === 0 && grpSel.size === 0) { materials.clearShapeTabHighlight(); return; }
+  const tplIds = new Set(sel);
+  const groups = state.get('shapeTemplateGroups') || [];
+  for (const gid of grpSel) {
+    const g = groups.find(x => x.id === gid);
+    if (g) for (const t of g.templateIds) tplIds.add(t);
+  }
+  if (tplIds.size === 0) { materials.clearShapeTabHighlight(); return; }
+  materials.applyShapeTabHighlight(_instanceIdsOfTemplates([...tplIds]));
+}
+state.on('change:selectedShapeTemplateIds',      _syncShapeTabHighlight);
+state.on('change:selectedShapeTemplateGroupIds', _syncShapeTabHighlight);
+state.on('step:applied',                          _syncShapeTabHighlight);
+state.on('change:treeData',                       _syncShapeTabHighlight);
+// Also re-sync when the scene selection changes — for VISIBLE instances we
+// skip the hull when the mesh is already in scene-selected (avoids double
+// overlay), so a scene-selection change can flip which ones get our hull.
+state.on('selection:change',                      _syncShapeTabHighlight);
+
+// ── Group create / ungroup / membership ────────────────────────────────────
+
+/**
+ * Bundle `templateIds` into a new shape-template-group. If any of those
+ * templates already belong to an existing group, they're removed from
+ * that group first (templates can only live in one group). Empty source
+ * groups are dropped. Single undo entry.
+ */
+export function createShapeTemplateGroupFromTemplates(templateIds, name = null) {
+  const ids = Array.from(new Set(templateIds || [])).filter(Boolean);
+  if (ids.length === 0) return null;
+  const prevGroups = JSON.parse(JSON.stringify(state.get('shapeTemplateGroups') || []));
+  const newGroup = createShapeTemplateGroup({
+    name:        name || `Shape Group ${prevGroups.length + 1}`,
+    templateIds: ids,
+  });
+  const stripped = prevGroups
+    .map(g => ({ ...g, templateIds: g.templateIds.filter(t => !ids.includes(t)) }))
+    .filter(g => g.templateIds.length > 0);
+  const nextGroups = [...stripped, newGroup];
+
+  const apply = (groups) => {
+    state.setState({ shapeTemplateGroups: groups });
+    state.markDirty();
+  };
+  apply(nextGroups);
+  undoManager.push(`Group ${ids.length} shape${ids.length === 1 ? '' : 's'}`,
+    () => apply(prevGroups),
+    () => apply(nextGroups),
+  );
+  // Move tab selection from templates to the new group.
+  state.setState({
+    selectedShapeTemplateIds:      new Set(),
+    selectedShapeTemplateGroupIds: new Set([newGroup.id]),
+  });
+  return newGroup.id;
+}
+
+/** Convenience: group whatever's selected in the tab right now. */
+export function groupSelectedShapeTemplates() {
+  const sel = state.get('selectedShapeTemplateIds');
+  if (!(sel instanceof Set) || sel.size === 0) {
+    setStatus('Select shapes in the tab first (Ctrl-click).', 'warning');
+    return null;
+  }
+  return createShapeTemplateGroupFromTemplates([...sel]);
+}
+
+export function unGroupShapeTemplateGroup(groupId) {
+  const prevGroups = JSON.parse(JSON.stringify(state.get('shapeTemplateGroups') || []));
+  if (!prevGroups.some(g => g.id === groupId)) return false;
+  const nextGroups = prevGroups.filter(g => g.id !== groupId);
+  const apply = (groups) => {
+    state.setState({ shapeTemplateGroups: groups });
+    state.markDirty();
+  };
+  apply(nextGroups);
+  undoManager.push('Ungroup shapes',
+    () => apply(prevGroups),
+    () => apply(nextGroups),
+  );
+  // Clear group selection if it referenced the dropped group.
+  const selGroups = new Set(state.get('selectedShapeTemplateGroupIds') || []);
+  if (selGroups.has(groupId)) {
+    selGroups.delete(groupId);
+    state.setState({ selectedShapeTemplateGroupIds: selGroups });
+  }
+  return true;
+}
+
+/** Remove given templates from whatever group they're in. Single undo. */
+export function removeTemplatesFromShapeGroup(templateIds) {
+  const ids = Array.from(new Set(templateIds || [])).filter(Boolean);
+  if (ids.length === 0) return false;
+  const prevGroups = JSON.parse(JSON.stringify(state.get('shapeTemplateGroups') || []));
+  const nextGroups = prevGroups
+    .map(g => ({ ...g, templateIds: g.templateIds.filter(t => !ids.includes(t)) }))
+    .filter(g => g.templateIds.length > 0);
+  if (JSON.stringify(prevGroups) === JSON.stringify(nextGroups)) return false;
+  const apply = (groups) => {
+    state.setState({ shapeTemplateGroups: groups });
+    state.markDirty();
+  };
+  apply(nextGroups);
+  undoManager.push(`Remove ${ids.length} shape${ids.length === 1 ? '' : 's'} from group`,
+    () => apply(prevGroups),
+    () => apply(nextGroups),
+  );
+  return true;
+}
+
+/** Append `templateIds` to an existing group (also removes them from any other group). */
+export function addTemplatesToShapeGroup(groupId, templateIds) {
+  const ids = Array.from(new Set(templateIds || [])).filter(Boolean);
+  if (ids.length === 0) return false;
+  const prevGroups = JSON.parse(JSON.stringify(state.get('shapeTemplateGroups') || []));
+  if (!prevGroups.some(g => g.id === groupId)) return false;
+  const nextGroups = prevGroups
+    .map(g => {
+      if (g.id === groupId) {
+        const merged = [...g.templateIds.filter(t => !ids.includes(t)), ...ids];
+        return { ...g, templateIds: merged };
+      }
+      return { ...g, templateIds: g.templateIds.filter(t => !ids.includes(t)) };
+    })
+    .filter(g => g.templateIds.length > 0);
+  const apply = (groups) => {
+    state.setState({ shapeTemplateGroups: groups });
+    state.markDirty();
+  };
+  apply(nextGroups);
+  undoManager.push(`Add ${ids.length} shape${ids.length === 1 ? '' : 's'} to group`,
+    () => apply(prevGroups),
+    () => apply(nextGroups),
+  );
+  return true;
+}
+
+export function setShapeTemplateGroupName(groupId, name) {
+  const prevGroups = JSON.parse(JSON.stringify(state.get('shapeTemplateGroups') || []));
+  const g = prevGroups.find(x => x.id === groupId);
+  if (!g || g.name === name) return false;
+  const nextGroups = prevGroups.map(x => x.id === groupId ? { ...x, name } : x);
+  const apply = (groups) => {
+    state.setState({ shapeTemplateGroups: groups });
+    state.markDirty();
+  };
+  apply(nextGroups);
+  undoManager.push('Rename shape group',
+    () => apply(prevGroups),
+    () => apply(nextGroups),
+  );
+  return true;
+}
+
+export function setShapeTemplateGroupLocked(groupId, locked) {
+  const prevGroups = JSON.parse(JSON.stringify(state.get('shapeTemplateGroups') || []));
+  const g = prevGroups.find(x => x.id === groupId);
+  if (!g || !!g.locked === !!locked) return false;
+  const nextGroups = prevGroups.map(x => x.id === groupId ? { ...x, locked: !!locked } : x);
+  const apply = (groups) => {
+    state.setState({ shapeTemplateGroups: groups });
+    state.markDirty();
+  };
+  apply(nextGroups);
+  undoManager.push(locked ? 'Lock shape group' : 'Unlock shape group',
+    () => apply(prevGroups),
+    () => apply(nextGroups),
+  );
+  return true;
+}
+
+/** Not undoable — pure UI state. */
+export function setShapeTemplateGroupCollapsed(groupId, collapsed) {
+  const groups = (state.get('shapeTemplateGroups') || []).map(g =>
+    g.id === groupId ? { ...g, collapsed: !!collapsed } : g,
+  );
+  state.setState({ shapeTemplateGroups: groups });
+}
+
+// ── Visibility — bulk-toggle all instances of a template / group ──────────
+
+/**
+ * Flip visibility on every flatShape instance of `tplId`. Direction is
+ * driven by the current state: if ANY instance is hidden we SHOW all
+ * (and any cascaded ancestors per toggleVisibility's SHOW semantics);
+ * if every instance is visible we HIDE all. Single undo entry — routed
+ * through toggleVisibility() so step snapshots + multi-step apply
+ * automatically.
+ */
+export function toggleShapeTemplateVisibility(tplId) {
+  const nodeIds = _instanceIdsOfTemplates([tplId]);
+  if (nodeIds.length === 0) {
+    setStatus('No instances of this shape in the scene.', 'warning');
+    return false;
+  }
+  // toggleVisibility flips based on the FIRST id's current state. To get
+  // unified behaviour ("show all if any hidden, hide all if all visible")
+  // we partition by current state and call once per direction.
+  const nbm = state.get('nodeById');
+  const hidden  = nodeIds.filter(id => nbm.get(id)?.localVisible === false);
+  const visible = nodeIds.filter(id => nbm.get(id)?.localVisible !== false);
+  if (hidden.length > 0) {
+    // Show all the hidden ones — toggleVisibility flips them visible.
+    toggleVisibility(hidden);
+  } else {
+    // All visible — hide all.
+    toggleVisibility(visible);
+  }
+  return true;
+}
+
+export function toggleShapeGroupVisibility(groupId) {
+  const groups = state.get('shapeTemplateGroups') || [];
+  const g = groups.find(x => x.id === groupId);
+  if (!g || g.templateIds.length === 0) return false;
+  const nodeIds = _instanceIdsOfTemplates(g.templateIds);
+  if (nodeIds.length === 0) {
+    setStatus('No instances of this group\'s shapes in the scene.', 'warning');
+    return false;
+  }
+  const nbm = state.get('nodeById');
+  const hidden  = nodeIds.filter(id => nbm.get(id)?.localVisible === false);
+  const visible = nodeIds.filter(id => nbm.get(id)?.localVisible !== false);
+  if (hidden.length > 0) {
+    toggleVisibility(hidden);
+  } else {
+    toggleVisibility(visible);
+  }
+  return true;
+}
+
+// ── Filter toggle ─────────────────────────────────────────────────────────
+
+export function setShapeTabFilterVisibleOnly(on) {
+  state.setState({ shapeTabFilterVisibleOnly: !!on });
+}
+
+// ── Viewport selection promotion for LOCKED shape groups ──────────────────
+//
+// Called from main.js viewport pick: given a hit flatShape nodeId, if its
+// template belongs to a LOCKED shape group, return a Set containing every
+// flatShape instance node id of every member template (so the click
+// selects the whole group). Returns null otherwise.
+
+export function selectionPromoteForLockedShapeGroup(meshNodeId) {
+  const nbm = state.get('nodeById');
+  const node = nbm?.get(meshNodeId);
+  if (!node || node.type !== 'flatShape' || !node.templateId) return null;
+  const g = findShapeGroupForTemplate(node.templateId);
+  if (!g || !g.locked) return null;
+  const ids = _instanceIdsOfTemplates(g.templateIds);
+  return new Set(ids);
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+//  RAY-SELECT — disambiguate overlapping picks (V0.1.89)
+// ═══════════════════════════════════════════════════════════════════════════
+//
+// Rhino-style "what did I click?" resolver. Casts a ray through ALL visible
+// geometry under the cursor and maps each hit mesh to its LOGICAL selectable
+// entity, applying the same promotion priority as a normal click:
+//   RM ancestor → locked tree-group → locked shape-group → the mesh itself.
+// Entities are de-duplicated and returned in near→far order. main.js uses
+// the list to drive a cursor-anchored cycle menu.
+//
+// Each entity:
+//   { key, targetId, name, meshIds:[…] }
+//     key      — dedupe identity (container/group/mesh id)
+//     targetId — what state.setSelection's primary id becomes on confirm
+//     name     — label shown in the cycle list
+//     meshIds  — full click-set (container descendants / group members /
+//                the single mesh); used for both preview highlight AND the
+//                final selection multi-set.
+export function resolveRaySelectEntities(clientX, clientY) {
+  const hits = sceneCore.pickAll(clientX, clientY);
+  const root = state.get('treeData');
+  const nbm  = state.get('nodeById');
+  if (!hits.length || !root || !nbm) return [];
+
+  const descendantsOf = (id) => {
+    const out = new Set([id]);
+    const n = nbm.get(id);
+    if (n?.children) (function walk(node) {
+      for (const c of (node.children || [])) { out.add(c.id); walk(c); }
+    })(n);
+    return out;
+  };
+
+  const entities = [];
+  const seen = new Set();
+  for (const hit of hits) {
+    const meshNodeId = hit.object?.userData?.meshNodeId
+                    ?? hit.object?.userData?.flatShapeNodeId
+                    ?? null;
+    if (!meshNodeId || !nbm.has(meshNodeId)) continue;
+
+    let key, targetId, name, clickSet;
+    const rmId   = hit.object?.userData?.replaceModelId;
+    const rmNode = rmId ? nbm.get(rmId) : null;
+    if (rmNode) {
+      key = rmNode.id; targetId = rmNode.id;
+      name = rmNode.name || 'Replace-Model';
+      clickSet = descendantsOf(rmNode.id);
+    } else {
+      const lg = findLockedFolderAncestor(root, meshNodeId);
+      if (lg) {
+        key = lg.id; targetId = lg.id;
+        name = lg.name || 'Folder';
+        clickSet = descendantsOf(lg.id);
+      } else {
+        const sg = selectionPromoteForLockedShapeGroup(meshNodeId);
+        if (sg && sg.size > 0) {
+          const grp = findShapeGroupForTemplate(nbm.get(meshNodeId)?.templateId);
+          key = 'sg:' + (grp?.id || meshNodeId);
+          targetId = meshNodeId;
+          name = (grp?.name || 'Shape Group') + ' (group)';
+          clickSet = sg;
+        } else {
+          const node = nbm.get(meshNodeId);
+          key = meshNodeId; targetId = meshNodeId;
+          name = node?.name || node?.type || 'Object';
+          clickSet = new Set([meshNodeId]);
+        }
+      }
+    }
+    if (seen.has(key)) continue;
+    seen.add(key);
+    entities.push({ key, targetId, name, meshIds: [...clickSet] });
+  }
+  return entities;
 }
 

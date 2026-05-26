@@ -470,10 +470,18 @@ export function applyNodeSourceTransformToObject3D(node, outerObj3d, object3dByI
 /**
  * True if this node type supports user transforms.
  * 'model', 'folder', and 'flatShape' carry their own transforms;
- * 'mesh', 'note', and 'scene' do not.
+ * 'mesh', 'note', 'scene' and 'replaceModel' do not.
+ *
+ * replaceModel (B.2-NEW) is INTENTIONALLY excluded — RM is a container
+ * that proxies its children's geometry. The user updated the spec to
+ * say RM should never carry its own gizmo. Children inside the RM
+ * inherit RM's parent-frame pose via Three.js scene parenting, no
+ * direct manipulation needed at the RM level.
  */
 export function isTransformNode(node) {
-  return node?.type === 'model' || node?.type === 'folder' || node?.type === 'flatShape';
+  if (!node) return false;
+  if (node.type === 'replaceModel') return false;
+  return node.type === 'model' || node.type === 'folder' || node.type === 'flatShape';
 }
 
 
@@ -707,7 +715,10 @@ export function applyAllTransforms(root, object3dById) {
 
 /**
  * Apply visibility of all nodes recursively.
- * A node is visible only if it AND all ancestors have localVisible=true.
+ * A node is visible only if it AND all ancestors have localVisible=true
+ * AND it isn't archived. Archive forces invisible and propagates that to
+ * descendants (mirrors core/nodes.js computeVisibleSet + systems/steps.js
+ * applyAllVisibilityToScene — three places must agree).
  *
  * @param {TreeNode}                 root
  * @param {Map<string, THREE.Object3D>} object3dById
@@ -715,7 +726,7 @@ export function applyAllTransforms(root, object3dById) {
  */
 export function applyAllVisibility(root, object3dById, inheritedVisible = true) {
   if (!root) return;
-  const effective = inheritedVisible && root.localVisible;
+  const effective = inheritedVisible && root.localVisible && !root.archived;
   const obj = object3dById.get(root.id);
   if (obj) obj.visible = effective;
   root.children.forEach(c => applyAllVisibility(c, object3dById, effective));

@@ -17,6 +17,7 @@ import { listVoices as ttsListVoices, synthesize as ttsSynthesize } from '../sys
 import * as userSettings    from '../core/user-settings.js';
 import * as narrationCache  from '../systems/narration-cache.js';
 import { parseAnimation, resolveAnimationString } from '../systems/animation.js';
+import { openPrivateAnimationEditor } from './animation-tab.js';
 
 let _container    = null;
 let _dragId       = null;          // id of step being dragged (single-drag fallback)
@@ -220,20 +221,82 @@ function _onActiveStepChanged() {
   renderStepsPanel();
 }
 
-let _narrationAudio = null;
+let _narrationAudio       = null;
+let _narrationEndResolvers = [];   // queued awaiters waiting for current clip to end
+function _resolveNarrationEnd() {
+  const list = _narrationEndResolvers;
+  _narrationEndResolvers = [];
+  for (const fn of list) { try { fn(); } catch {} }
+}
+
 function _playStepNarrationNow(step) {
-  // Common audio-launch path used by both the legacy step:applied trigger
-  // and the new `narration` animation channel. Stops any in-flight clip
-  // first so a quick step nav doesn't overlap audio.
-  if (_narrationAudio) { try { _narrationAudio.pause(); } catch {} _narrationAudio = null; }
+  // V0.1.78 — narration overflow within step groups.
+  //   • If the new step has its OWN narration → stop the previous clip
+  //     and start the new one (old "last-write-wins" behaviour).
+  //   • If the new step has NO narration → leave the previous clip
+  //     playing. This lets auto-chain through no-narration sub-steps
+  //     of a group while the head's narration continues.
+  //
+  // The chain coordination (steps.js) holds before activating any
+  // sub-step that DOES have its own narration, waiting via
+  // awaitNarrationEnd() — so two clips never overlap.
   if (state.get('_exporting'))     return;
   if (state.get('narrationMuted')) return;
   if (!step || step.isBaseStep)    return;
+
+  // Determine if this step has narration to play. We must check before
+  // stopping the previous clip — otherwise a navigate to a no-narration
+  // step silently cuts off the head's narration mid-overflow.
+  const hasNarration = !!(step.narration?.dataFile || step.narration?.dataUrl);
+  if (!hasNarration) {
+    return;   // overflow: leave _narrationAudio alone.
+  }
+
+  // Stop previous clip + resolve any pending awaiters (the chain may
+  // have been holding for it; the new clip becomes the thing to wait
+  // on next).
+  if (_narrationAudio) {
+    try { _narrationAudio.pause(); } catch {}
+    _narrationAudio = null;
+    _resolveNarrationEnd();
+  }
   narrationCache.ensurePlayable(step).then(clip => {
     if (!clip) return;
     _narrationAudio = new Audio(clip);
+    _narrationAudio.addEventListener('ended', () => {
+      // Natural end. Drop the ref + flush awaiters.
+      if (_narrationAudio?.src === clip || _narrationAudio?.currentSrc === clip) {
+        _narrationAudio = null;
+      }
+      _resolveNarrationEnd();
+    });
     _narrationAudio.play().catch(err => console.warn('[narration] play:', err.message));
   });
+}
+
+/**
+ * Public — is a narration clip currently playing?
+ * Returns true only while the <audio> element exists AND hasn't ended
+ * naturally / been paused. Used by the in-group auto-chain coordinator
+ * to decide whether to hold the next sub-step.
+ */
+export function isNarrationPlaying() {
+  const a = _narrationAudio;
+  if (!a) return false;
+  // Paused-by-user or not-yet-started clips don't count.
+  return !a.paused && !a.ended;
+}
+
+/**
+ * Public — promise that resolves when the current narration clip ends
+ * (natural end or replaced by a new clip). Resolves immediately if no
+ * clip is playing. The chain awaits this before activating any
+ * narration-bearing sub-step OR before crossing the group boundary
+ * when the last narration overflowed past the final sub-step.
+ */
+export function awaitNarrationEnd() {
+  if (!isNarrationPlaying()) return Promise.resolve();
+  return new Promise(resolve => { _narrationEndResolvers.push(resolve); });
 }
 
 function _playStepNarration(step) {
@@ -289,8 +352,11 @@ function _syncDurationInputs() {
 }
 
 function _setGlobalDuration(key, val) {
-  state.setState({ [key]: val });
-  state.markDirty();
+  const label = key === 'cameraAnimDurationMs' ? 'Animation length AL1' : 'Animation length AL2';
+  actions.commitStateChange(label, [key], () => {
+    state.setState({ [key]: val });
+    state.markDirty();
+  }, { coalesceKey: `globalDur:${key}` });
 }
 
 // ── Render ──────────────────────────────────────────────────────────────────
@@ -569,7 +635,11 @@ function _buildChapterHeader(chapter, number) {
   btnEye.title = chapter.hidden ? 'Show chapter in playback' : 'Hide chapter from playback';
   btnEye.addEventListener('click', e => {
     e.stopPropagation();
-    steps.setChapterHidden(chapter.id, !chapter.hidden);
+    actions.commitStateChange(
+      chapter.hidden ? 'Show chapter' : 'Hide chapter',
+      ['chapters'],
+      () => steps.setChapterHidden(chapter.id, !chapter.hidden),
+    );
     setStatus(chapter.hidden
       ? `Chapter "${chapter.name}" shown in playback.`
       : `Chapter "${chapter.name}" hidden from playback.`);
@@ -611,6 +681,16 @@ function _buildChapterHeader(chapter, number) {
       _extendSelectionThroughChapter(chapter.id);
       return;
     }
+    // V0.2.17: plain click on the chapter header → activate the chapter's
+    // first step. Side-effect: an unlocked, currently-collapsed chapter
+    // auto-expands as soon as its first step becomes active (see the
+    // _isChapterVisuallyCollapsed rule).
+    e.preventDefault();
+    e.stopPropagation();
+    const ids = _chapterStepIds(chapter.id);
+    if (ids.length === 0) return;
+    steps.activateStep(ids[0], true);
+    actions.uniteStepSelectionWithActive();
   });
 
   // ── Drag the whole chapter (and its steps) ────────────────────────────────
@@ -720,6 +800,7 @@ function _buildDropSlot() {
 function _removeDropSlot() {
   if (_dropSlot && _dropSlot.parentNode) _dropSlot.parentNode.removeChild(_dropSlot);
   _dropSlot = null;
+  _clearDropTargetChapter();
 }
 
 /**
@@ -739,17 +820,35 @@ function _positionDropSlot(list, mouseY) {
   let insertBefore = null;
 
   if (_dragChapterId) {
-    // Chapter drag — snap the slot to the start of the nearest chapter header.
-    _dropSlot.style.height = '40px';
+    // Chapter drag — slot ONLY snaps to chapter-header boundaries. Picks the
+    // nearest gap (between two headers, before the first, or after the last).
+    // V0.2.17: louder visual + a "↩ Insert chapter" label so the user sees
+    // the constraint (chapters land between chapters, never between steps).
+    _dropSlot.style.height = '54px';
+    _dropSlot.style.display = 'flex';
+    _dropSlot.style.alignItems = 'center';
+    _dropSlot.style.justifyContent = 'center';
+    _dropSlot.style.fontSize = '12px';
+    _dropSlot.style.fontWeight = '600';
+    _dropSlot.style.letterSpacing = '0.4px';
+    _dropSlot.style.color = DROP_COLOR;
+    _dropSlot.textContent = '↩ Insert chapter here';
     const headers = Array.from(list.querySelectorAll('.chapterHeader'));
-    for (const h of headers) {
-      const rect = h.getBoundingClientRect();
-      const mid  = rect.top + rect.height / 2;
-      if (mouseY < mid) { insertBefore = h; break; }
+    let bestDist = Infinity;
+    for (let i = 0; i <= headers.length; i++) {
+      // boundary i: just before headers[i] (or end of list when i == length).
+      const ref  = headers[i] || list.lastElementChild;
+      const rect = ref?.getBoundingClientRect();
+      if (!rect) continue;
+      const y = headers[i] ? rect.top : rect.bottom;
+      const dist = Math.abs(mouseY - y);
+      if (dist < bestDist) { bestDist = dist; insertBefore = headers[i] || null; }
     }
   } else {
     // Step drag — slot goes between any two cards/headers.
     _dropSlot.style.height = '60px';
+    _dropSlot.style.display = '';
+    _dropSlot.textContent = '';
     const children = Array.from(list.children).filter(el => el !== _dropSlot);
     for (const el of children) {
       const rect = el.getBoundingClientRect();
@@ -760,7 +859,10 @@ function _positionDropSlot(list, mouseY) {
 
   // Already in the right place? (Check parent too — renderStepsPanel can
   // orphan the slot with a stale sibling reference.)
-  if (_dropSlot.parentNode === list && _dropSlot.nextSibling === insertBefore) return;
+  if (_dropSlot.parentNode === list && _dropSlot.nextSibling === insertBefore) {
+    _updateDropTargetChapter();
+    return;
+  }
   if (insertBefore) list.insertBefore(_dropSlot, insertBefore);
   else              list.appendChild(_dropSlot);
 
@@ -768,6 +870,46 @@ function _positionDropSlot(list, mouseY) {
   // group, else default blue. Heads (and their carried sub-steps) can't
   // be dropped INTO another group — keep them blue.
   if (_dragIds.length) _updateDropSlotColor();
+  _updateDropTargetChapter();
+}
+
+// V0.2.17: while dragging, highlight the chapter the slot currently sits
+// inside (or NULL if at a top-level boundary). Makes step→chapter drops
+// readable — you can see exactly which chapter you're about to land in.
+let _dropTargetChapterId = null;
+function _updateDropTargetChapter() {
+  if (!_dropSlot || !_container) { _clearDropTargetChapter(); return; }
+  // Chapter drags don't have a "target chapter" — they always drop at
+  // chapter boundaries (handled in _positionDropSlot).
+  if (_dragChapterId) { _clearDropTargetChapter(); return; }
+  let target = null;
+  for (let n = _dropSlot.previousElementSibling; n; n = n.previousElementSibling) {
+    if (n.classList.contains('chapterHeader')) {
+      target = n.dataset.chapterId;
+      break;
+    }
+    if (n.classList.contains('stepItem')) {
+      const step = (state.get('steps') || []).find(s => s.id === n.dataset.stepId);
+      if (step?.chapterId) { target = step.chapterId; break; }
+    }
+  }
+  if (target === _dropTargetChapterId) return;
+  if (_dropTargetChapterId) {
+    _container.querySelector(`.chapterHeader[data-chapter-id="${_dropTargetChapterId}"]`)
+      ?.classList.remove('chapterDropTarget');
+  }
+  _dropTargetChapterId = target;
+  if (target) {
+    _container.querySelector(`.chapterHeader[data-chapter-id="${target}"]`)
+      ?.classList.add('chapterDropTarget');
+  }
+}
+function _clearDropTargetChapter() {
+  if (_dropTargetChapterId && _container) {
+    _container.querySelector(`.chapterHeader[data-chapter-id="${_dropTargetChapterId}"]`)
+      ?.classList.remove('chapterDropTarget');
+  }
+  _dropTargetChapterId = null;
 }
 
 /**
@@ -1081,20 +1223,17 @@ function _buildStepCard(step, displayNumber, isActive, isExpanded, total, groupO
     renderStepsPanel();
   });
 
-  // Middle-mouse → instant jump to the step's final state (no animation),
-  // PRESERVES the multi-step selection. Useful when the user has set up
-  // a selection across N steps and just wants to peek at one of them
-  // without losing the set. Listen via mousedown because middle button
-  // doesn't fire a regular click in some browsers; preventDefault
-  // suppresses the default scroll-anchor cursor on Chromium.
+  // Middle-mouse → instant jump to the step's final state (no animation)
+  // AND make it the sole selection (active + selected united), even out of
+  // multi-select. Listen via mousedown because the middle button doesn't
+  // fire a regular click in some browsers; preventDefault suppresses the
+  // default scroll-anchor cursor on Chromium.
   card.addEventListener('mousedown', e => {
     if (e.button !== 1) return;
     e.preventDefault();
     e.stopPropagation();
     steps.activateStep(step.id, false);
-    // Intentionally do NOT touch _setSel or _expandedId — the user's
-    // multi-step selection survives the peek, and any expanded tab
-    // stays as it was.
+    actions.forceUniteStepSelection(step.id);
   });
 
   // Drag-and-drop
@@ -1169,7 +1308,7 @@ function _buildStepActionRow(step) {
   const btnDel    = _mkBtn('🗑', 'Delete step');
 
   btnCam.addEventListener('click',    e => { e.stopPropagation(); actions.updateStepCameraFromCurrent(step.id); setStatus('Camera saved for step.'); });
-  btnHide.addEventListener('click',   e => { e.stopPropagation(); steps.setStepHidden(step.id, !step.hidden); });
+  btnHide.addEventListener('click',   e => { e.stopPropagation(); actions.toggleStepsHidden([step.id]); });
   btnRename.addEventListener('click', e => { e.stopPropagation(); _renameStep(step.id); });
   btnDup.addEventListener('click',    e => { e.stopPropagation(); _duplicateStep(step.id); });
   btnDel.addEventListener('click',    e => { e.stopPropagation(); _deleteStep(step.id); });
@@ -1414,13 +1553,11 @@ function _invertSelectedSteps() {
 function _toggleStepHidden(step) {
   const inMulti = _selSize() > 1 && _selHas(step.id);
   if (inMulti) {
-    const stepsArr = state.get('steps') || [];
-    const sel      = stepsArr.filter(s => _selHas(s.id));
-    const anyVisible = sel.some(s => !s.hidden);
-    sel.forEach(s => steps.setStepHidden(s.id, anyVisible));
-    setStatus(`${anyVisible ? 'Hid' : 'Showed'} ${sel.length} step(s).`);
+    const ids = Array.from(_getSel());
+    actions.toggleStepsHidden(ids);
+    setStatus(`Toggled visibility on ${ids.length} step(s).`);
   } else {
-    steps.setStepHidden(step.id, !step.hidden);
+    actions.toggleStepsHidden([step.id]);
     setStatus(step.hidden ? 'Step shown.' : 'Step hidden.');
   }
 }
@@ -1458,7 +1595,7 @@ function _showStepContextMenu(step, x, y) {
   const activeTplLabel = _activeStepTemplateName();
   items.push(
     { label: step.hidden ? '👁 Show in playback' : '🚫 Hide from playback',
-      action: () => steps.setStepHidden(step.id, !step.hidden) },
+      action: () => actions.toggleStepsHidden([step.id]) },
     { label: '📷 Update step camera',
       action: () => { actions.updateStepCameraFromCurrent(step.id); setStatus('Camera saved for step.'); } },
     { label: activeTplLabel
@@ -1531,7 +1668,7 @@ function _showMultiStepContextMenu(stepIds, x, y) {
     { label: `📋 Copy (${selSteps.length})`,
       action: () => _copyStepsToClipboard(stepIds) },
     { label: anyVisible ? '🚫 Hide from playback' : '👁 Show in playback',
-      action: () => selSteps.forEach(s => steps.setStepHidden(s.id, anyVisible)) },
+      action: () => actions.toggleStepsHidden(selSteps.map(s => s.id)) },
     { label: '📷 Update step camera',
       action: () => { actions.updateStepCameraFromCurrentMulti(selSteps.map(s => s.id)); setStatus(`Camera saved for ${selSteps.length} steps.`); } },
     { label: activeTplLabel
@@ -1620,9 +1757,11 @@ function _pasteStepsUnder(targetStepId) {
     return copy;
   });
   const newAll = [...all.slice(0, tgtIdx + 1), ...pasted, ...all.slice(tgtIdx + 1)];
-  state.setState({ steps: newAll });
-  steps.normalizeOrder();
-  state.markDirty();
+  actions.commitStateChange(`Paste ${pasted.length} step(s)`, ['steps'], () => {
+    state.setState({ steps: newAll });
+    steps.normalizeOrder();
+    state.markDirty();
+  });
   setStatus(`Pasted ${pasted.length} step(s).`);
 }
 
@@ -1635,9 +1774,11 @@ function _pasteStepsIntoChapter(chapterId) {
     return copy;
   });
   // Append at end of chapter (normalizeOrder will regroup regardless).
-  state.setState({ steps: [...all, ...pasted] });
-  steps.normalizeOrder();
-  state.markDirty();
+  actions.commitStateChange(`Paste ${pasted.length} step(s) into chapter`, ['steps'], () => {
+    state.setState({ steps: [...all, ...pasted] });
+    steps.normalizeOrder();
+    state.markDirty();
+  });
   setStatus(`Pasted ${pasted.length} step(s) into chapter.`);
 }
 
@@ -1677,9 +1818,11 @@ function _pasteChapterUnder(targetChapterId) {
   });
   const newSteps = [...(state.get('steps') || []), ...pastedSteps];
 
-  state.setState({ chapters: newChapters, steps: newSteps });
-  steps.normalizeOrder();
-  state.markDirty();
+  actions.commitStateChange(`Paste chapter "${newChapter.name}"`, ['steps', 'chapters'], () => {
+    state.setState({ chapters: newChapters, steps: newSteps });
+    steps.normalizeOrder();
+    state.markDirty();
+  });
   setStatus(`Pasted chapter "${newChapter.name}" with ${pastedSteps.length} step(s).`);
 }
 
@@ -1830,12 +1973,19 @@ function _buildTransitionRow(step) {
   wrap.className = 'card';
   wrap.style.cssText = 'margin-top:6px;font-size:12px;display:flex;flex-direction:column;gap:6px;';
 
-  // Animation preset dropdown (no title / no description)
+  // Animation preset dropdown (no title / no description). V0.1.98 adds a
+  // PRIVATE option: a per-step custom animation edited in a popup. The
+  // '__private__' sentinel in animPresetId means the step uses its own
+  // transition.privateAnimation string (kept in record even when a named
+  // preset is later picked).
+  const isPrivate  = stepPresetId === '__private__';
+  const hasPrivate = isPrivate || !!(t.privateAnimation && t.privateAnimation.trim());
   const presetOptions = [
     `<option value="" ${!stepPresetId ? 'selected' : ''}>Default${defaultPreset ? ` (${_escStep(defaultPreset.name)})` : ''}</option>`,
     ...animPresets.map(p =>
       `<option value="${_escStep(p.id)}" ${stepPresetId === p.id ? 'selected' : ''}>${_escStep(p.name)}</option>`
     ),
+    `<option value="__private__" ${isPrivate ? 'selected' : ''}>${hasPrivate ? '✎ Edit private animation' : '✎ Private animation…'}</option>`,
   ].join('');
 
   // Camera-binding dropdown — first option is always [Free camera],
@@ -1858,7 +2008,10 @@ function _buildTransitionRow(step) {
 
   wrap.innerHTML = `
     <select class="tran-cam-binding" title="Step camera. Free = uses this step's own snapshot. Template = follows a named camera that propagates updates to every step bound to it.">${cameraOptions}</select>
-    ${animPresets.length > 0 ? `<select class="tran-anim-preset">${presetOptions}</select>` : ''}
+    <div style="display:flex;gap:4px;align-items:center">
+      <select class="tran-anim-preset" style="flex:1">${presetOptions}</select>
+      ${isPrivate ? `<button class="btn tran-anim-edit" title="Edit this step's private animation" style="flex-shrink:0;padding:2px 9px">✎</button>` : ''}
+    </div>
     <div class="grid2">
       <select class="tran-cam-ease">${easingOptions(t.cameraEasing)}</select>
       <select class="tran-obj-ease">${easingOptions(t.objectEasing)}</select>
@@ -1879,7 +2032,7 @@ function _buildTransitionRow(step) {
   // covered: even though the lower rows are no longer descendants of
   // a draggable element, future-proof the guard for any new control
   // anywhere in the card.)
-  for (const ctrl of wrap.querySelectorAll('select, input, label')) {
+  for (const ctrl of wrap.querySelectorAll('select, input, label, button')) {
     ctrl.addEventListener('click',       e => e.stopPropagation());
     ctrl.addEventListener('dblclick',    e => e.stopPropagation());
     ctrl.addEventListener('mousedown',   e => e.stopPropagation());
@@ -1891,7 +2044,20 @@ function _buildTransitionRow(step) {
     actions.setStepCameraBinding(stepId, e.target.value || null);
   });
   wrap.querySelector('.tran-anim-preset')?.addEventListener('change', e => {
-    actions.updateTransition(stepId, { animPresetId: e.target.value || null });
+    const v = e.target.value;
+    if (v === '__private__') {
+      // Enter private mode + pop the editor. Re-editing later uses the ✎
+      // button (re-selecting the already-selected option fires no change).
+      openPrivateAnimationEditor(stepId);
+    } else {
+      // Switching to a named preset / Default keeps any privateAnimation
+      // string in record (we only patch animPresetId).
+      actions.updateTransition(stepId, { animPresetId: v || null });
+    }
+  });
+  wrap.querySelector('.tran-anim-edit')?.addEventListener('click', e => {
+    e.stopPropagation();
+    openPrivateAnimationEditor(stepId);
   });
   wrap.querySelector('.tran-cam-ease').addEventListener('change', e => {
     actions.updateTransition(stepId, { cameraEasing: e.target.value });
@@ -1917,9 +2083,10 @@ async function _onAddChapter() {
   const name = await _promptString('Chapter name:', 'Chapter');
   if (!name) return;
   const chapter = createChapter({ name });
-  const chapters = [...(state.get('chapters') || []), chapter];
-  state.setState({ chapters });
-  state.markDirty();
+  actions.commitStateChange(`Create chapter "${chapter.name}"`, ['chapters'], () => {
+    state.setState({ chapters: [...(state.get('chapters') || []), chapter] });
+    state.markDirty();
+  });
   setStatus(`Created chapter "${chapter.name}".`);
   state.setState({ _pendingChapterId: chapter.id });
 }
@@ -1930,9 +2097,10 @@ async function _renameChapter(chapterId) {
   if (!chapter) return;
   const name = await _promptString('Chapter name:', chapter.name || '');
   if (!name) return;
-  const updated = chapters.map(c => c.id === chapterId ? { ...c, name } : c);
-  state.setState({ chapters: updated });
-  state.markDirty();
+  actions.commitStateChange('Rename chapter', ['chapters'], () => {
+    state.setState({ chapters: (state.get('chapters') || []).map(c => c.id === chapterId ? { ...c, name } : c) });
+    state.markDirty();
+  });
 }
 
 async function _deleteChapter(chapterId) {
@@ -1948,11 +2116,15 @@ async function _deleteChapter(chapterId) {
   const ok = await _confirmDialog(msg);
   if (!ok) return;
 
-  const remainingSteps  = allSteps.filter(s => s.chapterId !== chapterId);
-  const updatedChapters = chapters.filter(c => c.id !== chapterId);
-  state.setState({ steps: remainingSteps, chapters: updatedChapters });
-  steps.normalizeOrder();
-  state.markDirty();
+  actions.commitStateChange(`Delete chapter "${chapter.name}"`, ['steps', 'chapters'], () => {
+    const all = state.get('steps') || [];
+    state.setState({
+      steps:    all.filter(s => s.chapterId !== chapterId),
+      chapters: (state.get('chapters') || []).filter(c => c.id !== chapterId),
+    });
+    steps.normalizeOrder();
+    state.markDirty();
+  });
   setStatus(stepsIn.length > 0
     ? `Deleted chapter "${chapter.name}" and ${stepsIn.length} step(s).`
     : `Deleted chapter "${chapter.name}".`);

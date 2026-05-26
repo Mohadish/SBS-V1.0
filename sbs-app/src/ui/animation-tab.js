@@ -22,10 +22,12 @@ import {
   serializePhasesForEdit,
   normalizeStringForCompare,
   similarityScore,
+  resolveAnimationString,
 } from '../systems/animation.js';
 import { showContextMenu }  from './context-menu.js';
 import * as userSettings    from '../core/user-settings.js';
 import { setStatus }        from './status.js';
+import { DEFAULT_ANIMATION_PRESET_STRING } from '../core/schema.js';
 
 let _expandedId = null;
 
@@ -264,7 +266,7 @@ function _buildEditPane(preset, presets, container) {
   if (stringExpanded) {
     _updateValidation(pane.querySelector('.ap-validation'), preset.animation);
   }
-  _renderPhasesView(pane.querySelector('.ap-phases'), preset);
+  _renderPhasesView(pane.querySelector('.ap-phases'), _presetAnimCtx(preset));
 
   // String section: click header to toggle
   pane.querySelector('.ap-string-toggle').addEventListener('click', () => {
@@ -278,9 +280,12 @@ function _buildEditPane(preset, presets, container) {
   if (animInput) {
     animInput.addEventListener('input', e => {
       _updateValidation(pane.querySelector('.ap-validation'), e.target.value);
+      // Live preview of the typed (uncommitted) string. commit still targets
+      // the preset so an in-place chip drag during typing persists.
       _renderPhasesView(pane.querySelector('.ap-phases'), {
-        ...preset,
         animation: e.target.value,
+        commit: (str) => actions.updateAnimPreset(preset.id, { animation: str }),
+        rerender() {},
       });
     });
     animInput.addEventListener('change', e => {
@@ -320,8 +325,15 @@ function _buildEditPane(preset, presets, container) {
  * the textarea and the visual editor automatically in sync (textarea
  * commits trigger renderAnimationTab → which re-parses for visual).
  */
-function _renderPhasesView(host, preset) {
+function _renderPhasesView(host, ctx) {
   if (!host) return;
+  // `ctx` = { animation, commit(str), rerender() }. Internally we alias it
+  // as `preset` so the (large) body below — which reads `preset.animation`
+  // and calls `_mutatePhases(preset, …)` / `_removePhase(preset, …)` — works
+  // unchanged. _mutatePhases/_removePhase operate on the ctx interface, so
+  // this drives BOTH the preset editor and the per-step private-animation
+  // modal (V0.1.98).
+  const preset = ctx;
   const parsed = parseAnimationForEdit(preset.animation);
 
   if (!parsed) {
@@ -468,14 +480,14 @@ function _renderPhasesView(host, preset) {
   //                      dragging a chip in if they change their mind —
   //                      the serializer drops pause when other channels
   //                      arrive (see parseAnimation / serializePhasesForEdit).
-  // Button text color #0c4a6e (sky-900) reads in both light and dark.
+  // Button text uses var(--text) so it's white in dark mode / black in light.
   const addButtonsHtml = `
     <div style="display:flex;gap:6px;margin-top:6px">
       <button class="cap-add-phase"
               style="flex:1;padding:6px 10px;font-size:12px;
                      background:rgba(56,189,248,0.22);
                      border:1px dashed rgba(56,189,248,0.65);
-                     border-radius:6px;color:#0c4a6e;cursor:pointer;
+                     border-radius:6px;color:var(--text);cursor:pointer;
                      font-weight:600"
               title="Append an empty time block. Drag channel chips into it to populate.">
         + Add time block
@@ -484,7 +496,7 @@ function _renderPhasesView(host, preset) {
               style="flex:1;padding:6px 10px;font-size:12px;
                      background:rgba(251,146,60,0.22);
                      border:1px dashed rgba(251,146,60,0.65);
-                     border-radius:6px;color:#7c2d12;cursor:pointer;
+                     border-radius:6px;color:var(--text);cursor:pointer;
                      font-weight:600"
               title="Append a pause time block — a time spacer with no channels.">
         + Add pause
@@ -784,8 +796,8 @@ function _renderPhasesView(host, preset) {
  * "every channel exactly once" invariant. Caller is responsible for
  * not calling this when phases.length === 1.
  */
-function _removePhase(preset, idx) {
-  _mutatePhases(preset, phases => {
+function _removePhase(ctx, idx) {
+  _mutatePhases(ctx, phases => {
     if (phases.length <= 1) return;
     if (idx < 0 || idx >= phases.length) return;
     const removed = phases.splice(idx, 1)[0];
@@ -806,17 +818,115 @@ function _removePhase(preset, idx) {
  * which re-renders the whole tab — keeping the textarea + visual editor
  * + step-panel preview all in sync.
  */
-function _mutatePhases(preset, mutateFn) {
-  const phases = parseAnimationForEdit(preset.animation);
+function _mutatePhases(ctx, mutateFn) {
+  const phases = parseAnimationForEdit(ctx.animation);
   if (!phases) return;
   mutateFn(phases);
-  // Clean up: drop trailing phases that are pure pause if the entire
-  // string would otherwise be empty. (Currently allow any number of
-  // pause phases — user-authored dwells are intentional.)
   const newStr = serializePhasesForEdit(phases);
-  if (newStr && newStr !== preset.animation) {
-    actions.updateAnimPreset(preset.id, { animation: newStr });
+  if (newStr && newStr !== ctx.animation) {
+    ctx.commit(newStr);     // preset path → updateAnimPreset; modal → updateTransition
+    ctx.rerender?.();       // preset path: no-op (subscription re-renders the tab)
   }
+}
+
+/**
+ * ctx for editing a PRESET's animation. Reads fresh from state (the preset
+ * object may be stale after a re-render) and commits via updateAnimPreset —
+ * whose setState fires change:animationPresets → renderAnimationTab, so the
+ * rerender hook is a no-op here.
+ */
+function _presetAnimCtx(preset) {
+  return {
+    get animation() {
+      const p = (state.get('animationPresets') || []).find(x => x.id === preset.id);
+      return (p ? p.animation : preset.animation) || '';
+    },
+    commit(str) { actions.updateAnimPreset(preset.id, { animation: str }); },
+    rerender() {},
+  };
+}
+
+/**
+ * Pop the animation editor as a MODAL bound to a step's PRIVATE animation
+ * string (V0.1.98). Reuses the same phase/string editor via a ctx that
+ * reads/writes step.transition.privateAnimation. Entering this editor sets
+ * the step's animPresetId to the '__private__' sentinel and seeds the string
+ * from the currently-resolved animation if the step has none yet.
+ */
+export function openPrivateAnimationEditor(stepId) {
+  const step = (state.get('steps') || []).find(s => s.id === stepId);
+  if (!step) return;
+
+  // Seed + enter private mode.
+  let seed = step.transition?.privateAnimation;
+  if (!seed || !seed.trim()) {
+    // Seed from the step's currently-resolved animation, falling back to the
+    // single-source-of-truth comprehensive default (all channels) so a new
+    // private animation starts covering everything the engine knows about.
+    seed = resolveAnimationString(step.transition || {}, state.get('animationPresets') || [])
+        || DEFAULT_ANIMATION_PRESET_STRING;
+  }
+  actions.updateTransition(stepId, { animPresetId: '__private__', privateAnimation: seed });
+
+  const ctx = {
+    get animation() {
+      const s = (state.get('steps') || []).find(x => x.id === stepId);
+      return s?.transition?.privateAnimation || '';
+    },
+    commit(str) { actions.updateTransition(stepId, { privateAnimation: str, animPresetId: '__private__' }); },
+    rerender() { _renderBody(); },
+  };
+
+  const overlay = document.createElement('div');
+  overlay.style.cssText = 'position:fixed;inset:0;z-index:10001;background:rgba(0,0,0,0.45);'
+    + 'display:flex;align-items:center;justify-content:center';
+  const modal = document.createElement('div');
+  modal.style.cssText = 'background:var(--panel);border:1px solid var(--line);border-radius:10px;'
+    + 'width:min(440px,92vw);max-height:88vh;overflow:auto;padding:14px;box-shadow:0 12px 40px rgba(0,0,0,0.5)';
+  overlay.appendChild(modal);
+
+  const close = () => overlay.remove();
+
+  function _renderBody() {
+    const anim = ctx.animation;
+    modal.innerHTML = `
+      <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:10px">
+        <div style="font-weight:700;font-size:14px;color:var(--text)">Private animation — ${_esc(step.name || 'Step')}</div>
+        <button class="btn pae-close" style="padding:3px 12px">Done</button>
+      </div>
+      <textarea class="pae-anim" rows="2" wrap="soft"
+        style="width:100%;box-sizing:border-box;padding:8px 10px;font-family:monospace;font-size:13px;
+               line-height:1.4;color:var(--text);background:var(--panel2,var(--bg));border:1px solid var(--line);
+               border-radius:8px;caret-color:#f59e0b;resize:vertical;min-height:44px"
+        placeholder="camera(AL1), color(500), visibility(AL2), obj(AL2)">${_esc(anim)}</textarea>
+      <div class="pae-validation" style="margin-top:5px;font-size:11px"></div>
+      <div class="pae-phases" style="margin-top:10px"></div>
+    `;
+    _updateValidation(modal.querySelector('.pae-validation'), anim);
+    _renderPhasesView(modal.querySelector('.pae-phases'), ctx);
+    modal.querySelector('.pae-close').addEventListener('click', close);
+
+    const ta = modal.querySelector('.pae-anim');
+    ta.addEventListener('input', e => {
+      _updateValidation(modal.querySelector('.pae-validation'), e.target.value);
+      _renderPhasesView(modal.querySelector('.pae-phases'), {
+        animation: e.target.value,
+        commit: ctx.commit,
+        rerender() {},
+      });
+    });
+    ta.addEventListener('change', e => {
+      const v = e.target.value.trim();
+      if (v) { ctx.commit(v); ctx.rerender(); }
+    });
+  }
+
+  _renderBody();
+  overlay.addEventListener('mousedown', e => { if (e.target === overlay) close(); });
+  document.addEventListener('keydown', function esc(ev) {
+    if (ev.key === 'Escape') { close(); document.removeEventListener('keydown', esc); }
+  });
+  document.body.appendChild(overlay);
 }
 
 function _updateValidation(el, str) {

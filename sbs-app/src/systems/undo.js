@@ -12,8 +12,28 @@ class UndoManager {
   constructor() {
     this._undo    = [];   // [ { label, undo, redo } ]
     this._redo    = [];
-    this._maxSize = 100;
+    this._maxSize = 200;  // V0.2.16: default bumped from 100; user-tunable in the Undo tab
   }
+
+  /** Current cap (queried by the Undo tab settings UI). */
+  getMaxSize() { return this._maxSize; }
+
+  /**
+   * Update the cap. If shrinking below the current undo length, oldest
+   * entries are dropped (matches push()'s FIFO eviction). Redo stack is
+   * untouched — redo only matters for the current session.
+   */
+  setMaxSize(n) {
+    const v = Math.max(1, Math.floor(Number(n) || 0));
+    if (v === this._maxSize) return;
+    this._maxSize = v;
+    while (this._undo.length > v) this._undo.shift();
+    state.emit('undo:change');
+  }
+
+  /** Snapshot of stack labels — top of stack is LAST in the array. */
+  listUndo() { return this._undo.map(c => c.label || ''); }
+  listRedo() { return this._redo.map(c => c.label || ''); }
 
   /**
    * Push a reversible command.

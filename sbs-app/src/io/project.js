@@ -209,7 +209,11 @@ export function serialize() {
   // as regular tree nodes (type='flatShape', templateId pointer) and
   // round-trip via stripNode like every other tree node.
   project.shapes = project.shapes || { schema_version: 1, items: [] };
-  project.shapes.items = JSON.parse(JSON.stringify(state.get('shapeTemplates') || []));
+  project.shapes.items  = JSON.parse(JSON.stringify(state.get('shapeTemplates')      || []));
+  // V0.1.85: shape-tab groupings. Tab-only, doesn't touch the tree, so
+  // it lives alongside templates in the shapes section. Older files
+  // without `groups` load as [] via the default below.
+  project.shapes.groups = JSON.parse(JSON.stringify(state.get('shapeTemplateGroups') || []));
 
   // Cables — 3D wires routed between mesh anchors and free points.
   // The cable list is project-global (topology-hoisted); per-step
@@ -593,6 +597,12 @@ export function applyProjectToState(project) {
     headerStepNumberPerChapter: !!project.headers?.stepNumberPerChapter,
     styleTemplates:       project.styles?.items              || [],
     shapeTemplates:       project.shapes?.items              || [],
+    // V0.1.85: shape-tab groupings. Default to [] for older files.
+    shapeTemplateGroups:  project.shapes?.groups             || [],
+    // Reset session-local tab state on load.
+    selectedShapeTemplateIds:       new Set(),
+    selectedShapeTemplateGroupIds:  new Set(),
+    selectedColorPresetIds:         new Set(),
     // Cables — older .sbsproj files don't have this section; default
     // to empty + factory globals so the load is clean. The 3-tier
     // anchor resolver gracefully handles missing meshes via cached
@@ -941,6 +951,31 @@ export function applySpecFieldsToNodes(specNode, nodeById, parentSpec = null) {
     return;
   }
 
+  // ── Replace-Model child mesh — create a fresh live node if needed.
+  //
+  // RM children (B / C / ...) are runtime clones of an origin mesh; their
+  // geometry has no asset-import path. The standard load doesn't create
+  // a live node for them. We materialise the node here (with object3d=
+  // null) so it appears in nodeById. The geometry is re-cloned post-load
+  // by actions.rebuildReplaceModelChildren via sourceNodeId.
+  if (specNode.type === 'mesh' &&
+      specNode.sourceNodeId &&
+      parentSpec?.type === 'replaceModel') {
+    const parentLive = parentSpec.id ? nodeById.get(parentSpec.id) : null;
+    if (parentLive && parentLive.type === 'replaceModel') {
+      if (!nodeById.has(specNode.id)) {
+        const childLive = {
+          ...specNode,
+          object3d: null,
+          children: [],
+        };
+        parentLive.children = [...(parentLive.children || []), childLive];
+        nodeById.set(childLive.id, childLive);
+      }
+    }
+    return;
+  }
+
   // ── Flat shapes — same story: parented under a mesh / folder / model
   // and never produced by the fresh-asset import path. Re-attach under
   // the parent recorded in the saved spec so save/load round-trips keep
@@ -969,6 +1004,29 @@ export function applySpecFieldsToNodes(specNode, nodeById, parentSpec = null) {
   if (live) {
     live.name         = specNode.name        || live.name;
     live.localVisible = specNode.localVisible !== false;
+    // Archive flag — legacy projects without this key default to false
+    // (not archived). Explicit true survives the round-trip.
+    live.archived     = specNode.archived === true;
+    // Replace-Model fields (B.2-NEW). Apply only if the spec says this
+    // node is an RM; otherwise leave the live values alone so a node
+    // that's been converted in-session doesn't get reset on reload.
+    if (specNode.type === 'replaceModel') {
+      live.type                   = 'replaceModel';
+      if (specNode.originalType) live.originalType = specNode.originalType;
+      live.originalGeometryHidden = specNode.originalGeometryHidden === true;
+    }
+    // Folder lock (V0.1.92, replaces isGroup/groupLocked). A folder is
+    // locked if the new `locked` flag is set, OR — for legacy projects —
+    // it was a group that wasn't explicitly unlocked. This migrates old
+    // "Group" folders into locked folders transparently.
+    live.locked = specNode.locked === true
+      || (specNode.isGroup === true && specNode.groupLocked !== false);
+    // RM-child marker: sourceNodeId points to the ORIGIN node the
+    // copy was cloned from. Surviving the save means we can re-build
+    // the geometry post-load via rebuildReplaceModelChildren.
+    if (specNode.sourceNodeId) {
+      live.sourceNodeId = specNode.sourceNodeId;
+    }
 
     if (Array.isArray(specNode.localOffset))          live.localOffset          = specNode.localOffset;
     if (Array.isArray(specNode.localQuaternion))       live.localQuaternion       = specNode.localQuaternion;

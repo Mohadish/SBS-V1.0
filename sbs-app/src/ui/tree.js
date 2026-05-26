@@ -17,9 +17,11 @@ import { state }                from '../core/state.js';
 import { sceneCore }            from '../core/scene.js';
 import { steps }                from '../systems/steps.js';
 import * as actions             from '../systems/actions.js';
+import { undoManager }          from '../systems/undo.js';
 import {
   findNode,
   findParent,
+  getPathToNode,
   collectDescendantIds,
   buildNodeMap,
 }                               from '../core/nodes.js';
@@ -28,6 +30,8 @@ import {
   applyAllTransforms,
   applyAllVisibility,
   applyNodeTransformToObject3D,
+  captureTransformSnapshot,
+  applyTransformSnapshot,
   isNearZero,
   isIdentityQuaternion,
 }                               from '../core/transforms.js';
@@ -58,6 +62,20 @@ let _isDragging = false;
 let _copiedSnapshot     = null;
 let _copiedFromStepName = '';
 
+// V0.2.20 — folder transform clipboard. Session-scoped (cleared on reload).
+// Captures the CURRENT-STEP localOffset / localQuaternion / orientation /
+// pivot* fields of a folder + every transform-bearing descendant, keyed by
+// the descendant's RELATIVE PATH (name path) from the folder root. Letting
+// paste target a DIFFERENT folder of the same shape, or the SAME folder in
+// a different step (the main use-case: posing a folder once + pushing the
+// same pose to other steps).
+//
+// Visibility / Show-Hide / materials are INTENTIONALLY not captured per
+// user spec — Paste Transforms only moves transforms.
+//
+// Shape: { rootName, sourceStepName, entries: [{ relPath, type, name, xf }] }
+let _folderXfClipboard = null;
+
 
 // ── Init ─────────────────────────────────────────────────────────────────────
 
@@ -85,7 +103,81 @@ export function initTree(containerEl) {
   // inactive when the mode toggles externally (e.g. click-outside commit).
   state.on('change:globalEditNodeId', () => renderTree());
 
+  // V0.2.8: Ctrl+L-drag marquee — same UX as the Colors tab. Each tree
+  // row whose rect intersects the box has its node (+ descendant meshes)
+  // toggled in/out of the scene selection.
+  _setupTreeMarquee();
+
   renderTree();
+}
+
+// ── Ctrl+L-drag marquee (V0.2.8) ────────────────────────────────────────
+let _treeMarqueeJustDragged = false;
+
+function _setupTreeMarquee() {
+  if (!_container) return;
+  let down = null, box = null;
+  _container.addEventListener('pointerdown', (e) => {
+    if (e.button !== 0) return;
+    if (!(e.ctrlKey || e.metaKey)) return;
+    // Don't start a marquee from inside an interactive control (input /
+    // button / select) so existing widgets keep working.
+    if (e.target.closest('input, button, select, textarea, label')) return;
+    down = { x: e.clientX, y: e.clientY };
+    e.preventDefault();
+  });
+  document.addEventListener('pointermove', (e) => {
+    if (!down) return;
+    const dx = e.clientX - down.x, dy = e.clientY - down.y;
+    if (!box && (dx * dx + dy * dy) < 25) return;
+    if (!box) {
+      box = document.createElement('div');
+      box.style.cssText = 'position:fixed;pointer-events:none;z-index:9999;'
+        + 'background:rgba(74,144,217,0.15);border:1px dashed #4A90D9;border-radius:2px';
+      document.body.appendChild(box);
+    }
+    const x1 = Math.min(down.x, e.clientX), y1 = Math.min(down.y, e.clientY);
+    const x2 = Math.max(down.x, e.clientX), y2 = Math.max(down.y, e.clientY);
+    box.style.left = x1 + 'px'; box.style.top = y1 + 'px';
+    box.style.width = (x2 - x1) + 'px'; box.style.height = (y2 - y1) + 'px';
+  });
+  document.addEventListener('pointerup', () => {
+    if (!down) return;
+    if (box) {
+      const r = box.getBoundingClientRect();
+      box.remove(); box = null;
+      _treeMarqueeJustDragged = true;
+      setTimeout(() => { _treeMarqueeJustDragged = false; }, 60);
+      const nodeById = state.get('nodeById') || new Map();
+      const multi    = new Set(state.get('multiSelectedIds') || []);
+      let changed   = false;
+      let firstNode = null;
+      _container.querySelectorAll('.tree-row[data-node-id]').forEach(row => {
+        const rect = row.getBoundingClientRect();
+        if (rect.right < r.left || rect.left > r.right
+         || rect.bottom < r.top  || rect.top > r.bottom) return;
+        const nodeId = row.dataset.nodeId;
+        const node   = nodeById.get(nodeId);
+        if (!node) return;
+        const setIds = new Set(); _collectAllIds(node, setIds);
+        const present = multi.has(nodeId);
+        for (const id of setIds) { if (present) multi.delete(id); else multi.add(id); }
+        changed = true;
+        if (!firstNode) firstNode = node;
+      });
+      if (changed) {
+        if (multi.size === 0) {
+          actions.clearSelection();
+        } else {
+          const prev = state.get('selectedId');
+          const primary = (prev && multi.has(prev)) ? prev
+                        : (firstNode ? firstNode.id : [...multi][0]);
+          actions.setSelection(primary, multi);
+        }
+      }
+    }
+    down = null;
+  });
 }
 
 // ── Public API ────────────────────────────────────────────────────────────────
@@ -165,7 +257,15 @@ function _buildNode(node, depth) {
   const wrap = document.createElement('div');
   wrap.appendChild(_buildRow(node, depth));
 
-  if ((node.children?.length ?? 0) > 0 && _expanded.has(node.id)) {
+  // V0.1.82 — locked groups DO NOT render their children. Tree stays
+  // collapsed at the group level so the user sees the group as a
+  // single entity (matches the viewport's selection-promotion UX).
+  // Unlocked groups + plain folders behave normally (expand/collapse
+  // via twisty + _expanded set).
+  const isLockedGroup = node.type === 'folder' && node.locked === true;
+  const hasKids = (node.children?.length ?? 0) > 0;
+  const showKids = hasKids && !isLockedGroup && _expanded.has(node.id);
+  if (showKids) {
     const childList = document.createElement('div');
     childList.className = 'children';
     for (const child of node.children) {
@@ -197,15 +297,25 @@ function _buildRow(node, depth) {
   row.dataset.nodeId = node.id;
   if (!node.localVisible) row.style.opacity = '0.45';
   if (node.missing && node.type !== 'folder') row.style.opacity = '0.5';
+  // Archive trumps the other dim states — locked-hidden nodes get the
+  // most aggressive grey-out so they read as "preserved but inert".
+  if (node.archived) row.style.opacity = '0.25';
   row.draggable = node.type !== 'scene';
 
   // Twisty
   const twisty = document.createElement('span');
   twisty.className   = 'twisty';
-  twisty.textContent = hasChildren ? (isExpanded ? '▾' : '▸') : '';
+  // V0.1.82 — locked groups show NO twisty (they're always collapsed in
+  // tree; click on group selects the whole thing, children hidden).
+  // Unlocked groups + plain folders use the standard expand/collapse.
+  const isLockedGroup = node.type === 'folder' && node.locked === true;
+  twisty.textContent = (hasChildren && !isLockedGroup)
+    ? (isExpanded ? '▾' : '▸')
+    : '';
   twisty.addEventListener('click', e => {
     e.stopPropagation();
     if (!hasChildren) return;
+    if (isLockedGroup) return;       // locked group: twisty inert
     if (isExpanded) {
       _expanded.delete(node.id);
       _intentional.delete(node.id);
@@ -216,10 +326,17 @@ function _buildRow(node, depth) {
     renderTree();
   });
 
-  // Icon
+  // Icon — archived nodes display a uniform 🗃️ marker. Everything else
+  // (incl. locked folders — V0.1.92) uses its type icon; a folder's lock
+  // state is conveyed by the row lock toggle + auto-collapse, not the icon.
   const icon = document.createElement('span');
   icon.className   = 'icon';
-  icon.textContent = _typeIcon(node.type);
+  if (node.archived) {
+    icon.textContent = '🗃️';
+    icon.title       = 'Archived (r-click → Unarchive)';
+  } else {
+    icon.textContent = _typeIcon(node.type);
+  }
 
   // Label — notes show their (truncated) text, or the template's NAME
   // when template-linked (so the tree mirrors the user-facing label
@@ -241,11 +358,13 @@ function _buildRow(node, depth) {
     label.textContent = node.name || '(unnamed)';
   }
 
-  // Transform buttons (model / folder only)
+  // Transform buttons (model / folder only). Archived nodes hide them
+  // entirely — they're inert and the buttons would mislead the user
+  // into thinking the row still responds to gizmo edits.
   const transformGroup = document.createElement('span');
-  transformGroup.style.display = isTransformNode(node) ? 'inline-flex' : 'none';
+  transformGroup.style.display = (isTransformNode(node) && !node.archived) ? 'inline-flex' : 'none';
   transformGroup.style.gap = '1px';
-  if (isTransformNode(node)) {
+  if (isTransformNode(node) && !node.archived) {
     transformGroup.append(
       _mkTransformBtn('✥', 'Move',   'moveEnabled',   node),
       // Pivot only on folders — the root model node carries the
@@ -256,14 +375,49 @@ function _buildRow(node, depth) {
     );
   }
 
-  // Eye
+  // Folder lock toggle (V0.1.92) — on EVERY folder, default unlocked.
+  // 🔒︎ (lock + VS15 text variation) = locked; ꗃ (Vai syllable, looks
+  // like an open container) = unlocked. Both are TEXT-style glyphs so
+  // `color: var(--text)` adapts to dark/light theme. Locking a folder
+  // makes a viewport click on any child select the whole folder, and
+  // collapses it in the tree (treat the sub-assembly as one unit).
+  let groupLockBtn = null;
+  if (node.type === 'folder' && !node.archived) {
+    const locked = node.locked === true;
+    groupLockBtn = document.createElement('button');
+    groupLockBtn.type      = 'button';
+    groupLockBtn.className = 'group-lock';
+    groupLockBtn.textContent = locked ? '🔒︎' : 'ꗃ';
+    groupLockBtn.title     = locked
+      ? 'Locked folder — click to unlock (children individually selectable)'
+      : 'Unlocked folder — click to lock (clicking a child selects the whole folder)';
+    groupLockBtn.style.cssText = [
+      'background:transparent',
+      'border:none',
+      'padding:0 4px',
+      'cursor:pointer',
+      'font-size:14px',
+      'color:var(--text)',
+      locked ? 'opacity:0.95' : 'opacity:0.45',
+    ].join(';');
+    groupLockBtn.addEventListener('click', e => {
+      e.stopPropagation();
+      actions.setFolderLocked(node.id, !locked);
+    });
+  }
+
+  // Eye — hidden entirely on archived rows. Archive forces invisible
+  // regardless of the eye state, so showing it would be misleading.
+  // The 🗃️ icon at the start of the row carries all the meaning.
   const eye = document.createElement('button');
   eye.className   = 'eye';
   eye.textContent = node.localVisible ? '👁' : '🚫';
   eye.title       = node.localVisible ? 'Visible' : 'Hidden';
   eye.addEventListener('click', e => { e.stopPropagation(); _toggleVisibility(node); });
+  if (node.archived) eye.style.visibility = 'hidden';
 
-  row.append(twisty, icon, label, transformGroup, eye);
+  if (groupLockBtn) row.append(twisty, icon, label, transformGroup, groupLockBtn, eye);
+  else              row.append(twisty, icon, label, transformGroup, eye);
 
   row.addEventListener('click',       e => _onRowClick(e, node));
   row.addEventListener('dblclick',    e => _onRowDblClick(e, node));
@@ -279,13 +433,14 @@ function _buildRow(node, depth) {
 
 function _typeIcon(type) {
   switch (type) {
-    case 'scene':     return '🌐';
-    case 'model':     return '🧩';
-    case 'folder':    return '🗂';
-    case 'mesh':      return '◼';
-    case 'note':      return '💬';
-    case 'flatShape': return '▰';   // M1: 2D shape in 3D
-    default:          return '📄';
+    case 'scene':        return '🌐';
+    case 'model':        return '🧩';
+    case 'folder':       return '🗂';
+    case 'mesh':         return '◼';
+    case 'note':         return '💬';
+    case 'flatShape':    return '▰';   // M1: 2D shape in 3D
+    case 'replaceModel': return '🔄';  // B.2-NEW: container that replaces an object
+    default:             return '📄';
   }
 }
 
@@ -386,16 +541,82 @@ function _mkPivotBtn(node) {
 
 // ── Selection ─────────────────────────────────────────────────────────────────
 
+// Anchor for Shift-range selection (file-explorer style).
+let _treeAnchorId = null;
+
+/**
+ * Visible row order — DFS mirroring _buildNode (descend into a node's
+ * children only when it's expanded and not a locked folder). Used for
+ * Shift-range selection.
+ */
+function _visibleNodeIds() {
+  const root = state.get('treeData');
+  const out  = [];
+  if (!root) return out;
+  (function walk(node) {
+    out.push(node.id);
+    const isLockedFolder = node.type === 'folder' && node.locked === true;
+    const hasKids = (node.children?.length ?? 0) > 0;
+    if (hasKids && !isLockedFolder && _expanded.has(node.id)) {
+      for (const c of node.children) walk(c);
+    }
+  })(root);
+  return out;
+}
+
 function _onRowClick(e, node) {
+  // Suppress the click that fires right after a Ctrl+drag marquee — the
+  // drag set the selection; the trailing click would clobber it.
+  if (_treeMarqueeJustDragged) return;
   e.stopPropagation();
   hideContextMenu();
+  const nodeById = state.get('nodeById') || new Map();
   const multiIds = new Set(state.get('multiSelectedIds') || []);
+  // Each row's "set" includes the node + its descendant meshes so containers
+  // highlight their geometry; the primary selectedId stays the clicked node
+  // so the gizmo attaches to it. Mirrors viewport-click + double-click.
+  const descIds = (n) => { const s = new Set(); _collectAllIds(n, s); return s; };
+  const setIds  = descIds(node);
+
+  // ── Shift: range-select over the visible rows from the anchor (replace) ──
+  if (e.shiftKey && _treeAnchorId && nodeById.has(_treeAnchorId)) {
+    const order = _visibleNodeIds();
+    const a = order.indexOf(_treeAnchorId), b = order.indexOf(node.id);
+    if (a >= 0 && b >= 0) {
+      const [lo, hi] = a < b ? [a, b] : [b, a];
+      const range = new Set();
+      for (let i = lo; i <= hi; i++) {
+        const n = nodeById.get(order[i]);
+        if (n) for (const id of descIds(n)) range.add(id);
+      }
+      actions.setSelection(node.id, range);
+      return;   // anchor stays put for further range extension
+    }
+  }
+
+  // ── Alt: remove the node (+ descendants) from the selection ──────────────
+  if (e.altKey) {
+    for (const id of setIds) multiIds.delete(id);
+    _treeAnchorId = node.id;
+    if (multiIds.size === 0) {
+      actions.clearSelection();
+    } else {
+      const prev = state.get('selectedId');
+      actions.setSelection(multiIds.has(prev) ? prev : [...multiIds][0], multiIds);
+    }
+    return;
+  }
+
+  // ── Ctrl/⌘: toggle the node (+ descendants) ──────────────────────────────
   if (e.ctrlKey || e.metaKey) {
-    if (multiIds.has(node.id)) multiIds.delete(node.id);
-    else                        multiIds.add(node.id);
+    if (multiIds.has(node.id)) { for (const id of setIds) multiIds.delete(id); }
+    else                       { for (const id of setIds) multiIds.add(id); }
+    _treeAnchorId = node.id;
     actions.setSelection(node.id, multiIds);
   } else {
-    actions.setSelection(node.id, new Set([node.id]));
+    // Plain click → replace.
+    _treeAnchorId = node.id;
+    actions.setSelection(node.id, setIds);
   }
   // NOTE: Do NOT call steps.scheduleSync() here.
   // Selection is not a mutation — syncing re-captures parentMap from the
@@ -463,6 +684,43 @@ function _buildContextMenuItems(node) {
     return _buildNoteContextMenuItems(node);
   }
 
+  // ── Archived rows: a TIGHT menu — only Unarchive is available, since
+  // archive enforces READ-ONLY at every other action. Showing the full
+  // menu would advertise commands that silently no-op, which is more
+  // confusing than just hiding them. If the user multi-selected a mix
+  // (archived + un-archived), we still hide all but Unarchive so the
+  // gesture stays predictable.
+  const allArchived = targetIds.every(id => nodeById?.get(id)?.archived === true);
+  if (allArchived) {
+    const label = targetIds.length > 1
+      ? `${targetIds.length} items`
+      : `"${(node.name || '').slice(0, 24)}"`;
+    return [{
+      label: `📤 Unarchive ${label}`,
+      action: () => actions.unarchiveNodes(targetIds),
+    }];
+  }
+
+  // ── RM children (copies inside a Replace-Model): a TIGHT menu —
+  // only Remove + Global Transform per the B.2-NEW.2 spec. Everything
+  // else (visibility, color, archive, rename, move…) would either
+  // conflict with the RM cascade or silently no-op on a node whose
+  // entire pose is delegated to its parent wrap-group. RM children are
+  // detected by walking up the tree to a replaceModel ancestor.
+  const isRMChild = actions.findReplaceModelAncestor(root, node.id) != null;
+  if (isRMChild && targetIds.length === 1) {
+    return [
+      {
+        label: '🚫🔄 Remove from replace-model',
+        action: () => _confirmRemoveFromReplaceModel(node),
+      },
+      {
+        label: '🌐 Global transform…',
+        action: () => showRMChildGlobalTransformDialog(node.id),
+      },
+    ];
+  }
+
   const items    = [];
   const count    = targetIds.length;
   const label    = count > 1 ? `${count} items` : `"${(node.name || '').slice(0, 24)}"`;
@@ -477,6 +735,60 @@ function _buildContextMenuItems(node) {
     label: allVisible ? `🚫 Hide ${label}` : `👁 Show ${label}`,
     action: () => actions.toggleVisibility(targetIds),
   });
+
+  // ── Folder lock (V0.1.92, replaces the old Group menu) ────────────────
+  // A locked folder promotes viewport selection to the whole folder and
+  // collapses in the tree. To group loose objects: New folder / Move to
+  // folder, then lock.
+  if (count === 1 && node.type === 'folder' && !node.archived) {
+    const locked = node.locked === true;
+    items.push({
+      label: locked ? '🔓 Unlock folder (children selectable)'
+                    : '🔒 Lock folder (select as one unit)',
+      action: () => actions.setFolderLocked(node.id, !locked),
+    });
+
+    // ── Copy / Paste Transforms (V0.2.20) ────────────────────────────────
+    // Folder-only. Captures the per-step deltas of this folder + every
+    // transform-bearing descendant; paste restores them onto a (same or
+    // different) folder of matching shape. Visibility / Show-Hide / colors
+    // are NOT captured.
+    items.push({
+      label: '📋 Copy Transforms',
+      action: () => _copyFolderTransforms(node),
+    });
+    const clip = _folderXfClipboard;
+    items.push({
+      label: clip
+        ? `📌 Paste Transforms (from "${(clip.rootName || '').slice(0, 24)}")`
+        : '📌 Paste Transforms',
+      disabled: !clip,
+      action: () => _pasteFolderTransforms(node),
+    });
+  }
+
+  // ── Archive / Unarchive ─────────────────────────────────────────────────
+  // Archive = "locked-hidden, preserved": the node stays in the tree with
+  // its full per-step history, but is forced invisible regardless of any
+  // snapshot. Toggle is r-click only (deliberately not on the eye button)
+  // because it's a semi-permanent decision, not a per-step animation.
+  // Disallowed on the scene root and on note rows (handled above).
+  if (node.type !== 'scene') {
+    const anyNotArchived = targetIds.some(id => nodeById?.get(id)?.archived !== true);
+    const anyArchived    = targetIds.some(id => nodeById?.get(id)?.archived === true);
+    if (anyNotArchived) {
+      items.push({
+        label: `🗃️ Archive ${label}`,
+        action: () => actions.archiveNodes(targetIds),
+      });
+    }
+    if (anyArchived) {
+      items.push({
+        label: `📤 Unarchive ${label}`,
+        action: () => actions.unarchiveNodes(targetIds),
+      });
+    }
+  }
 
   // ── Per-note Show / Hide list ────────────────────────────────────────────
   // Lists notes that are DIRECT children of THIS specific node — only the
@@ -601,7 +913,7 @@ function _buildContextMenuItems(node) {
     // current world pose. Commit replaces the template's polygon and
     // ripples to every other instance.
     items.push({
-      label: '✏ Edit polygon…',
+      label: '✏ Edit shape…',
       action: () => actions.startShapeEdit(node.templateId),
     });
 
@@ -690,14 +1002,26 @@ function _buildContextMenuItems(node) {
   items.push({ separator: true });
 
   // ── General ──────────────────────────────────────────────────────────────────
+  // Rename: nodes whose identity is GLOBAL across steps (mesh / flatShape /
+  // replaceModel) cascade their new name into every step's snapshot.tree
+  // via actions.renameNodeGlobal. Folders / models keep the legacy per-step
+  // rename — their name lives only on the live tree (folders are step-local
+  // containers; renaming them across steps is a separate, larger change).
   if (node.type !== 'scene' && node.type !== 'note') {
+    const useGlobalRename = node.type === 'mesh' ||
+                            node.type === 'flatShape' ||
+                            node.type === 'replaceModel';
     items.push({
       label: `✏ Rename "${(node.name || '').slice(0, 24)}"`,
       action: () => _showInputDialog('Rename', node.name || '', name => {
-        node.name = name;
-        if (node.object3d) node.object3d.name = name;
-        state.emit('change:treeData', state.get('treeData'));
-        steps.scheduleTransformSync();
+        if (useGlobalRename) {
+          actions.renameNodeGlobal(node.id, name);
+        } else {
+          node.name = name;
+          if (node.object3d) node.object3d.name = name;
+          state.emit('change:treeData', state.get('treeData'));
+          steps.scheduleTransformSync();
+        }
       }),
     });
   }
@@ -708,6 +1032,34 @@ function _buildContextMenuItems(node) {
       action: () => showMoveToFolderDialog(targetIds),
     });
   }
+
+  // ── Convert to Replace-Model (B.2-NEW.1) ─────────────────────────────
+  // Single non-archived mesh / flatShape / model only. Folders are NOT
+  // allowed. The action just flips node.type → 'replaceModel' (same id,
+  // same transforms, same per-step state).
+  if (count === 1
+      && (node.type === 'mesh' || node.type === 'flatShape' || node.type === 'model')
+      && !node.archived) {
+    items.push({
+      label: '🔄 Convert to Replace-Model',
+      action: () => actions.convertToReplaceModel(node.id),
+    });
+  }
+
+  // ── RM-only actions (B.2-NEW.2) ───────────────────────────────────────
+  // When the user r-clicks the RM itself, expose the RM management menu.
+  // "+ Add to replace…" opens the picker → 3-option mode dialog. Other
+  // RM-only entries (unarchive original, un-replace) land in .4.
+  if (count === 1 && node.type === 'replaceModel' && !node.archived) {
+    items.push({
+      label: '＋ Add to replace…',
+      action: () => showAddToReplaceDialog(node.id),
+    });
+  }
+
+  // (V0.1.79 reordered: Folder-Group entries moved above Archive — see
+  // the Group section earlier in the menu so the two appear in user-
+  // preferred order. No actions here.)
 
   // ── Delete folder ────────────────────────────────────────────────────────────
   if (node.type === 'folder') {
@@ -1221,35 +1573,11 @@ function _fitToNodes(targetIds) {
 
 function _createFolderInside(parentNode) {
   _showInputDialog('New Folder Inside', 'Group', name => {
-    const THREE = window.THREE;
-    if (!THREE) return;
-
-    const group = new THREE.Group();
-    group.name  = name;
-    group.userData.isCustomFolder = true;
-
-    const folderNode = {
-      id: generateId('folder'), name, type: 'folder',
-      localVisible: true, object3d: group, children: [],
-      localOffset: [0,0,0], localQuaternion: [0,0,0,1],
-      pivotLocalOffset: [0,0,0], pivotLocalQuaternion: [0,0,0,1],
-      baseLocalPosition: [0,0,0], baseLocalQuaternion: [0,0,0,1], baseLocalScale: [1,1,1],
-      moveEnabled: true, rotateEnabled: true, pivotEnabled: true,
-    };
-
-    parentNode.children.push(folderNode);
-    if (parentNode.object3d) parentNode.object3d.add(group);
-    steps.object3dById.set(folderNode.id, group);  // register so gizmo can attach
-
     _expanded.add(parentNode.id);
     _intentional.add(parentNode.id);
-
-    const root   = state.get('treeData');
-    const nodeById = buildNodeMap(root);
-    state.setState({ nodeById });
-    state.setSelection(folderNode.id, new Set([folderNode.id]));
-    steps.scheduleTransformSync();
-    setStatus(`Created folder "${folderNode.name}".`);
+    // Undoable — creates the folder node + Three.js Group, pushes undo.
+    const id = actions.createFolderInNode(parentNode.id, name);
+    if (id) setStatus(`Created folder "${name}".`);
   });
 }
 
@@ -1264,22 +1592,13 @@ function _collapseSubtree(node) {
 }
 
 function _deleteEmptyFolder(node) {
-  const root   = state.get('treeData');
-  const parent = root ? findParent(root, node.id) : null;
-  if (!parent) return;
-
-  const idx = parent.children.indexOf(node);
-  if (idx >= 0) parent.children.splice(idx, 1);
-  if (parent.object3d && node.object3d) parent.object3d.remove(node.object3d);
-
   _expanded.delete(node.id);
   _intentional.delete(node.id);
-
-  const nodeById = buildNodeMap(root);
-  state.setState({ nodeById });
-  renderTree();
-  steps.scheduleTransformSync();
-  setStatus(`Deleted folder "${node.name}".`);
+  // Undoable — captures the folder node + parent slot + Three.js Group so
+  // undo splices it back and re-adds it to the scene graph.
+  if (actions.deleteFolderNode(node.id)) {
+    setStatus(`Deleted folder "${node.name}".`);
+  }
 }
 
 function _moveIdsIntoNode(ids, targetNode) {
@@ -1287,13 +1606,29 @@ function _moveIdsIntoNode(ids, targetNode) {
   const root = state.get('treeData');
   if (!root) return;
 
-  const toMove = [];
+  // V0.2.18: when an ancestor is ALSO in the move set, the descendant rides
+  // along inside it — moving the descendant separately would spill it out
+  // of its parent into the destination ("folder A → dest, then folder A's
+  // child X → dest, leaving A empty"). Filter out descendants of any
+  // included ancestor up front.
+  const idSet = new Set(ids);
+  const anyAncestorIn = (nodeId) => {
+    let pp = findParent(root, nodeId);
+    while (pp) {
+      if (idSet.has(pp.id)) return true;
+      pp = findParent(root, pp.id);
+    }
+    return false;
+  };
+  ids = ids.filter(id => !anyAncestorIn(id));
+  if (!ids.length) { setStatus('Nothing to move.'); return; }
+
+  // Collect the valid moves first (cycle / self / no-op filtered), capturing
+  // each node's ORIGINAL parent + index so the undo can splice it back.
+  const moves = [];   // { nodeId, fromParentId, fromIdx }
   for (const id of ids) {
     if (id === targetNode.id) continue;                    // can't drop onto self
     // Can't drop INTO one of the moved node's own descendants (cycle).
-    // Note: we check targetNode against the moved node's subtree — NOT the other
-    // way round. Checking targetNode's descendants would wrongly block moving a
-    // node UP to any ancestor (e.g. lifting a subfolder back to model root).
     const movedNode = findNode(root, id);
     if (movedNode) {
       const movedDescendants = new Set(collectDescendantIds(movedNode) || []);
@@ -1304,36 +1639,388 @@ function _moveIdsIntoNode(ids, targetNode) {
     if (!parent) continue;
     if (parent.id === targetNode.id) continue;            // already a direct child — skip
     const idx = parent.children.findIndex(c => c.id === id);
-    if (idx >= 0) {
-      const [removed] = parent.children.splice(idx, 1);
-      toMove.push(removed);
+    if (idx < 0) continue;
+    // V0.2.19: snapshot transform fields per move so "keep absolute
+    // position" undo can restore them (it overwrites baseLocal* + clears
+    // localOffset/Quaternion to compensate for the new parent's world).
+    // (movedNode was already resolved above for the cycle check; reuse it.)
+    moves.push({
+      nodeId: id,
+      fromParentId: parent.id,
+      fromIdx: idx,
+      beforeXf: {
+        baseLocalPosition:   [...(movedNode?.baseLocalPosition   || [0, 0, 0])],
+        baseLocalQuaternion: [...(movedNode?.baseLocalQuaternion || [0, 0, 0, 1])],
+        baseLocalScale:      [...(movedNode?.baseLocalScale      || [1, 1, 1])],
+        localOffset:         [...(movedNode?.localOffset         || [0, 0, 0])],
+        localQuaternion:     [...(movedNode?.localQuaternion     || [0, 0, 0, 1])],
+      },
+    });
+  }
+  if (!moves.length) { setStatus('Nothing to move.'); return; }
+
+  // Reparent helper. Two paths:
+  //   keepPos=false  → simple remove + add. baseLocal* stays as the home
+  //                    anchor; the moved node inherits the new parent's
+  //                    world transform (world position SHIFTS).
+  //   keepPos=true   → THREE.Object3D.attach() computes a new local matrix
+  //                    that preserves the world pose under the new parent.
+  //                    The decomposed values are written back into the
+  //                    node's data fields, and localOffset/Quaternion are
+  //                    reset to identity (the new base IS the new home).
+  const reparent = (r, nodeId, destId, atIndex = null, keepPos = false) => {
+    const p = findParent(r, nodeId);
+    const node = findNode(r, nodeId);
+    const dest = findNode(r, destId);
+    if (!node || !dest) return;
+    if (p) {
+      const i = p.children.findIndex(c => c.id === nodeId);
+      if (i >= 0) p.children.splice(i, 1);
     }
+    dest.children = dest.children || [];
+    if (atIndex == null || atIndex > dest.children.length) dest.children.push(node);
+    else dest.children.splice(atIndex, 0, node);
+    if (node.object3d) {
+      if (keepPos && dest.object3d) {
+        dest.object3d.attach(node.object3d);   // Three preserves world
+        const o = node.object3d;
+        node.baseLocalPosition   = [o.position.x,   o.position.y,   o.position.z];
+        node.baseLocalQuaternion = [o.quaternion.x, o.quaternion.y, o.quaternion.z, o.quaternion.w];
+        node.baseLocalScale      = [o.scale.x,      o.scale.y,      o.scale.z];
+        node.localOffset         = [0, 0, 0];
+        node.localQuaternion     = [0, 0, 0, 1];
+      } else {
+        if (node.object3d.parent) node.object3d.parent.remove(node.object3d);
+        if (dest.object3d) dest.object3d.add(node.object3d);
+      }
+    }
+  };
+
+  // V0.2.19: ask the user whether to preserve world position. Dialog every
+  // cross-parent move. Esc / Cancel aborts; the rest goes through the
+  // standard undoable doMove/undoMove pipeline with the chosen keepPos
+  // baked into both directions.
+  _showKeepPositionDialog(moves.length, targetNode.name || 'folder').then((choice) => {
+    if (choice === 'cancel') { setStatus('Move cancelled.'); return; }
+    const keepPos = choice === 'keep';
+
+    const doMove = () => {
+      const r = state.get('treeData');
+      for (const m of moves) reparent(r, m.nodeId, targetNode.id, null, keepPos);
+      state.setState({ nodeById: buildNodeMap(r) });
+      applyAllTransforms(r, steps.object3dById);
+      state.emit('change:treeData', r);
+      steps.scheduleTransformSync();
+      state.markDirty();
+    };
+    const undoMove = () => {
+      const r = state.get('treeData');
+      // Reverse order so earlier indices restore correctly.
+      for (const m of [...moves].reverse()) {
+        reparent(r, m.nodeId, m.fromParentId, m.fromIdx, false);
+        if (keepPos) {
+          // Restore the transform fields we overwrote at do-time.
+          const n = findNode(r, m.nodeId);
+          if (n) {
+            n.baseLocalPosition   = [...m.beforeXf.baseLocalPosition];
+            n.baseLocalQuaternion = [...m.beforeXf.baseLocalQuaternion];
+            n.baseLocalScale      = [...m.beforeXf.baseLocalScale];
+            n.localOffset         = [...m.beforeXf.localOffset];
+            n.localQuaternion     = [...m.beforeXf.localQuaternion];
+          }
+        }
+      }
+      state.setState({ nodeById: buildNodeMap(r) });
+      applyAllTransforms(r, steps.object3dById);
+      state.emit('change:treeData', r);
+      steps.scheduleTransformSync();
+      state.markDirty();
+    };
+
+    doMove();
+    _expanded.add(targetNode.id);
+    _intentional.add(targetNode.id);
+    undoManager.push(
+      `Move ${moves.length} item(s) into "${targetNode.name}"${keepPos ? ' (keep position)' : ''}`,
+      undoMove, doMove,
+    );
+    setStatus(`Moved ${moves.length} item(s) into "${targetNode.name}"${keepPos ? ' (position preserved).' : '.'}`);
+  });
+}
+
+/**
+ * V0.2.19: 3-option modal asked on every cross-parent move:
+ *   Cancel             → abort the move.
+ *   Cascade position   → standard reparent; world position SHIFTS to follow
+ *                        the new parent (current behaviour, fastest).
+ *   keep position      → reparent + recompute local transform so the moved
+ *                        items stay where they are in the active step.
+ *                        (Per-step animations still ride on the new parent
+ *                        — other steps may shift.)
+ */
+function _showKeepPositionDialog(count, destName, opts = null) {
+  return new Promise(resolve => {
+    const dlg = document.createElement('dialog');
+    dlg.className = 'sbs-dialog';
+    const esc = s => String(s ?? '').replace(/[&<>"']/g,
+      c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[c]);
+    const n = count === 1 ? '1 item' : `${count} items`;
+    // V0.2.20: dialog is shared between the cross-parent MOVE flow and the
+    // Paste-Transforms flow. opts.title / opts.body override the move copy.
+    const title = opts?.title ?? `Move ${esc(n)} → "${esc(destName)}"`;
+    const body  = opts?.body  ?? (
+      `Keep the moved ${count === 1 ? 'item' : 'items'} at their current ` +
+      `world position, or follow the destination folder's transform (the ` +
+      `standard tree-rearrange behaviour)?<br><br>` +
+      `<span class="muted" style="font-size:11px">` +
+      `"keep position" preserves the pose in the <strong>active step</strong>. ` +
+      `Per-step animations still ride on the new parent — other steps may shift.` +
+      `</span>`
+    );
+    dlg.innerHTML = `
+      <div class="sbs-dialog__body">
+        <div class="sbs-dialog__title">${title}</div>
+        <div class="small" style="margin-top:8px;line-height:1.45">${body}</div>
+        <div style="display:flex;gap:8px;justify-content:flex-end;margin-top:14px;flex-wrap:wrap">
+          <button class="btn" id="_kp-cancel">Cancel</button>
+          <button class="btn" id="_kp-rearrange">Cascade position</button>
+          <button class="btn primary" id="_kp-keep">keep position</button>
+        </div>
+      </div>
+    `;
+    document.body.appendChild(dlg);
+    const done = (choice) => { dlg.close(); dlg.remove(); resolve(choice); };
+    dlg.querySelector('#_kp-cancel').addEventListener('click',    () => done('cancel'));
+    dlg.querySelector('#_kp-rearrange').addEventListener('click', () => done('rearrange'));
+    dlg.querySelector('#_kp-keep').addEventListener('click',      () => done('keep'));
+    dlg.addEventListener('cancel', (e) => { e.preventDefault(); done('cancel'); });
+    dlg.showModal();
+    requestAnimationFrame(() => dlg.querySelector('#_kp-keep').focus());
+  });
+}
+
+// ── Folder Copy / Paste Transforms (V0.2.20) ─────────────────────────────────
+
+/**
+ * Walk a folder subtree and capture transform fields (current step's deltas)
+ * for the folder itself + every transform-bearing descendant. Keyed by
+ * relative name-path from the folder root.
+ */
+function _captureFolderXfSubtree(folderNode) {
+  const entries = [];
+  (function walk(node, relPath) {
+    if (isTransformNode(node)) {
+      entries.push({
+        relPath: [...relPath],
+        type:    node.type,
+        name:    node.name || '',
+        xf: {
+          localOffset:          [...(node.localOffset          || [0, 0, 0])],
+          localQuaternion:      [...(node.localQuaternion      || [0, 0, 0, 1])],
+          orientationSteps:     [...(node.orientationSteps     || [0, 0, 0])],
+          pivotLocalOffset:     [...(node.pivotLocalOffset     || [0, 0, 0])],
+          pivotLocalQuaternion: [...(node.pivotLocalQuaternion || [0, 0, 0, 1])],
+        },
+      });
+    }
+    for (const c of (node.children || [])) {
+      walk(c, [...relPath, c.name || '']);
+    }
+  })(folderNode, []);
+  return entries;
+}
+
+function _copyFolderTransforms(folderNode) {
+  if (!folderNode || folderNode.type !== 'folder') return;
+  const entries = _captureFolderXfSubtree(folderNode);
+  const activeId = state.get('activeStepId');
+  const sourceStep = activeId ? (state.get('steps') || []).find(s => s.id === activeId) : null;
+  _folderXfClipboard = {
+    rootName:        folderNode.name || 'folder',
+    sourceStepName:  sourceStep?.name || '(active step)',
+    entries,
+  };
+  setStatus(`Copied transforms from "${folderNode.name}" — ${entries.length} node(s).`);
+}
+
+/** Locate a target node by relative name-path from a root folder. */
+function _findByRelPath(root, relPath) {
+  let cur = root;
+  for (const name of relPath) {
+    const child = (cur.children || []).find(c => (c.name || '') === name);
+    if (!child) return null;
+    cur = child;
+  }
+  return cur;
+}
+
+/**
+ * Compare the source clipboard's entries to the target folder's actual
+ * subtree. Returns:
+ *   matches — Map<relPathKey, targetNode>  (only entries that resolve to
+ *             a node of the EXPECTED type)
+ *   missing — entries that don't resolve in target (or type-mismatched)
+ *   extras  — target nodes that have no counterpart in source
+ */
+function _computeFolderXfMismatch(targetFolder, entries) {
+  const matches = new Map();
+  const missing = [];
+  for (const e of entries) {
+    if (e.relPath.length === 0) { matches.set('', targetFolder); continue; }
+    const t = _findByRelPath(targetFolder, e.relPath);
+    if (t && t.type === e.type) matches.set(e.relPath.join('/'), t);
+    else missing.push({ relPath: e.relPath, type: e.type, name: e.name });
+  }
+  const srcKeys = new Set(entries.map(e => e.relPath.join('/')));
+  const extras = [];
+  (function walk(node, relPath) {
+    if (relPath.length > 0 && isTransformNode(node)) {
+      const key = relPath.join('/');
+      if (!srcKeys.has(key)) extras.push({ relPath: [...relPath], type: node.type, name: node.name });
+    }
+    for (const c of (node.children || [])) walk(c, [...relPath, c.name || '']);
+  })(targetFolder, []);
+  return { matches, missing, extras };
+}
+
+/**
+ * V0.2.20: warn user when target subtree shape doesn't match source.
+ * Returns 'cancel' | 'saveas' | 'proceed'.
+ */
+function _showFolderXfMismatchDialog(srcName, dstName, missing, extras) {
+  return new Promise(resolve => {
+    const esc = s => String(s ?? '').replace(/[&<>"']/g,
+      c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[c]);
+    const list = (arr, kind) => arr.length === 0 ? '' : `
+      <div style="margin-top:8px">
+        <div class="small muted" style="font-size:11px">${kind} (${arr.length}):</div>
+        <ul style="margin:4px 0 0;padding-left:18px;max-height:140px;overflow:auto;font-size:11px;line-height:1.4">
+          ${arr.slice(0, 30).map(e =>
+            `<li>${esc(e.relPath.join(' / '))} <span class="muted">(${esc(e.type)})</span></li>`
+          ).join('')}
+          ${arr.length > 30 ? `<li class="muted">… ${arr.length - 30} more</li>` : ''}
+        </ul>
+      </div>
+    `;
+    const dlg = document.createElement('dialog');
+    dlg.className = 'sbs-dialog';
+    dlg.innerHTML = `
+      <div class="sbs-dialog__body">
+        <div class="sbs-dialog__title">Structure mismatch</div>
+        <div class="small" style="margin-top:8px;line-height:1.45">
+          Target folder <strong>"${esc(dstName)}"</strong> doesn't fully match
+          the copied subtree <strong>"${esc(srcName)}"</strong>.<br>
+          Proceeding will only affect nodes that exist in BOTH subtrees —
+          missing entries are skipped, extras are left untouched.<br>
+          Consider <em>Copy / Paste Tree</em> instead, or rearrange the tree
+          manually. Save As… lets you preserve the current project before
+          experimenting.
+          ${list(missing, 'Missing in target')}
+          ${list(extras, 'Extra in target (will be skipped)')}
+        </div>
+        <div style="display:flex;gap:8px;justify-content:flex-end;margin-top:14px;flex-wrap:wrap">
+          <button class="btn" id="_xf-cancel">Cancel</button>
+          <button class="btn" id="_xf-saveas">Save As…</button>
+          <button class="btn primary" id="_xf-proceed">Proceed anyway</button>
+        </div>
+      </div>
+    `;
+    document.body.appendChild(dlg);
+    const done = (c) => { dlg.close(); dlg.remove(); resolve(c); };
+    dlg.querySelector('#_xf-cancel').addEventListener('click',  () => done('cancel'));
+    dlg.querySelector('#_xf-saveas').addEventListener('click',  () => done('saveas'));
+    dlg.querySelector('#_xf-proceed').addEventListener('click', () => done('proceed'));
+    dlg.addEventListener('cancel', (e) => { e.preventDefault(); done('cancel'); });
+    dlg.showModal();
+    requestAnimationFrame(() => dlg.querySelector('#_xf-proceed').focus());
+  });
+}
+
+async function _pasteFolderTransforms(folderNode) {
+  if (!folderNode || folderNode.type !== 'folder') return;
+  if (!_folderXfClipboard) { setStatus('No transforms in clipboard.'); return; }
+  const clip = _folderXfClipboard;
+
+  // ── Structure check ─────────────────────────────────────────────────────
+  const { matches, missing, extras } = _computeFolderXfMismatch(folderNode, clip.entries);
+
+  if (missing.length > 0 || extras.length > 0) {
+    const choice = await _showFolderXfMismatchDialog(clip.rootName, folderNode.name, missing, extras);
+    if (choice === 'cancel') { setStatus('Paste cancelled.'); return; }
+    if (choice === 'saveas') {
+      try {
+        const { saveProject } = await import('../io/project.js');
+        const result = await saveProject({ mode: 'saveAs' });
+        if (!result?.saved) { setStatus('Paste cancelled (Save As cancelled).'); return; }
+        setStatus(`Saved as "${state.get('projectName')}". Continuing paste…`);
+      } catch (err) {
+        console.error('Save As failed:', err);
+        setStatus('Save As failed.', 'danger');
+        return;
+      }
+    }
+    // 'proceed' (or after-save) — fall through.
   }
 
-  if (!toMove.length) { setStatus('Nothing to move.'); return; }
+  // ── Cascade vs Keep position ────────────────────────────────────────────
+  const mode = await _showKeepPositionDialog(matches.size, folderNode.name, {
+    title: `Paste transforms onto "${folderNode.name}"`,
+    body: (
+      `Apply the captured pose to the folder + every matching descendant ` +
+      `(<strong>Cascade position</strong>), or apply only the descendant ` +
+      `deltas and leave the target folder's current pose alone ` +
+      `(<strong>keep position</strong>)?<br><br>` +
+      `<span class="muted" style="font-size:11px">` +
+      `Source: "${clip.rootName}" from step "${clip.sourceStepName}". ` +
+      `Paste writes the captured deltas into the CURRENT step only.` +
+      `</span>`
+    ),
+  });
+  if (mode === 'cancel') { setStatus('Paste cancelled.'); return; }
+  const includeRoot = (mode === 'rearrange');
 
-  for (const moved of toMove) {
-    targetNode.children.push(moved);
-
-    if (moved.object3d) {
-      // Simple remove + add — DO NOT use attach() or storeBaseTransform.
-      // baseLocalPosition is the home anchor: set once on load, never changes.
-      // The Three.js hierarchy chain handles final world position automatically:
-      //   final = baseLocalPos + localOffset + parentFolder.delta + grandparent.delta + …
-      // Reparenting just changes which folder deltas are in the chain.
-      if (moved.object3d.parent) moved.object3d.parent.remove(moved.object3d);
-      if (targetNode.object3d)   targetNode.object3d.add(moved.object3d);
-    }
+  // ── Build before/after snapshots for undo ───────────────────────────────
+  const before = [];
+  const after  = [];
+  for (const e of clip.entries) {
+    if (!includeRoot && e.relPath.length === 0) continue;
+    const key = e.relPath.join('/');
+    const target = matches.get(key);
+    if (!target) continue;
+    before.push({ id: target.id, snap: captureTransformSnapshot(target) });
+    after.push({
+      id: target.id,
+      snap: {
+        ...e.xf,
+        moveEnabled:   target.moveEnabled   !== false,
+        rotateEnabled: target.rotateEnabled !== false,
+        pivotEnabled:  target.pivotEnabled  !== false,
+      },
+    });
   }
+  if (after.length === 0) { setStatus('Nothing to paste — no matching nodes.'); return; }
 
-  _expanded.add(targetNode.id);
-  _intentional.add(targetNode.id);
+  const apply = (entries) => {
+    const nb = state.get('nodeById');
+    for (const e of entries) {
+      const n = nb?.get(e.id);
+      if (n) applyTransformSnapshot(n, e.snap);
+    }
+    const root = state.get('treeData');
+    if (root) applyAllTransforms(root, steps.object3dById);
+    steps.scheduleTransformSync();
+    state.emit('change:treeData', root);
+    state.markDirty?.();
+  };
+  const doApply   = () => apply(after);
+  const undoApply = () => apply(before);
 
-  const nodeById = buildNodeMap(root);
-  state.setState({ nodeById });
-  applyAllTransforms(root, steps.object3dById);
-  steps.scheduleTransformSync();
-  setStatus(`Moved ${toMove.length} item(s) into "${targetNode.name}".`);
+  doApply();
+  undoManager.push(
+    `Paste transforms onto "${folderNode.name}"${mode === 'keep' ? ' (folder pose kept)' : ''}`,
+    undoApply, doApply,
+  );
+  setStatus(`Pasted transforms onto "${folderNode.name}" — ${after.length} node(s)${mode === 'keep' ? ', folder pose preserved.' : '.'}`);
 }
 
 
@@ -1451,22 +2138,11 @@ export function showMoveToFolderDialog(nodeIds) {
 }
 
 function _createFolderAtRoot(name, root) {
-  const THREE = window.THREE;
-  const group = THREE ? new THREE.Group() : null;
-  if (group) { group.name = name; group.userData.isCustomFolder = true; }
-  const folderNode = {
-    id: generateId('folder'), name, type: 'folder',
-    localVisible: true, object3d: group, children: [],
-    localOffset: [0,0,0], localQuaternion: [0,0,0,1],
-    pivotLocalOffset: [0,0,0], pivotLocalQuaternion: [0,0,0,1],
-    baseLocalPosition: [0,0,0], baseLocalQuaternion: [0,0,0,1], baseLocalScale: [1,1,1],
-    moveEnabled: true, rotateEnabled: true, pivotEnabled: true,
-  };
-  root.children.push(folderNode);
-  if (root.object3d && group) root.object3d.add(group);
-  if (group) steps.object3dById.set(folderNode.id, group);
-  state.setState({ nodeById: buildNodeMap(root) });
-  return folderNode;
+  // Undoable — delegates to the shared action, then resolves the live node
+  // so the caller can move selection into it.
+  const id = actions.createFolderInNode(root.id, name);
+  if (!id) return null;
+  return state.get('nodeById')?.get(id) || findNode(root, id);
 }
 
 /**
@@ -1498,6 +2174,322 @@ function _collectFolderOptions(root, excludeIds) {
 }
 
 
+// ═══════════════════════════════════════════════════════════════════════════
+//  ADD-TO-REPLACE PICKER + MODE DIALOG  (B.2-NEW.2)
+// ═══════════════════════════════════════════════════════════════════════════
+//
+// "+ Add to replace…" flow — opens a TALL picker listing every mesh /
+// flatShape currently loaded (filtered: not archived, not the RM, not
+// inside the RM, not an RM child, not scene root). User picks origin B;
+// a second modal asks "Archive and replace / Copy and replace / Cancel".
+// Confirm runs actions.addToReplaceModel.
+
+// ═══════════════════════════════════════════════════════════════════════════
+//  RM CHILD HELPERS  (B.2-NEW.3)
+// ═══════════════════════════════════════════════════════════════════════════
+//
+// RM children (copies inside a Replace-Model) have a tight 2-option
+// context menu per the user's spec. These helpers detect them and run
+// the two actions.
+
+// Tree.js uses actions.findReplaceModelAncestor (exported from actions.js
+// alongside the remove + global-transform actions) — single source of
+// truth for the ancestor-walk logic, no duplicate helper here.
+
+/**
+ * Confirm dialog → actions.removeFromReplaceModel.
+ * If origin (sourceNodeId) is archived, offer to un-archive it after
+ * removal.
+ */
+function _confirmRemoveFromReplaceModel(node) {
+  if (!node) return;
+  const root     = state.get('treeData');
+  const nodeById = state.get('nodeById');
+  const originId = node.sourceNodeId;
+  const origin   = originId ? nodeById?.get(originId) : null;
+  const originArchived = origin?.archived === true;
+
+  const lines = [
+    `Remove "${node.name || 'copy'}" from its Replace-Model?`,
+    '',
+    'The copy will be deleted from the scene and the tree.',
+  ];
+  if (originArchived) {
+    lines.push('', 'The original object is currently archived. You will be asked whether to un-archive it after removal.');
+  }
+  const ok = window.confirm(lines.join('\n'));
+  if (!ok) return;
+
+  let unarchiveOrigin = false;
+  if (originArchived) {
+    unarchiveOrigin = window.confirm(`Un-archive the original "${origin?.name || 'object'}" now?`);
+  }
+  actions.removeFromReplaceModel(node.id, { unarchiveOrigin });
+}
+
+/**
+ * Numeric dialog for global transform on an RM child. Translate deltas
+ * (X/Y/Z), rotate deltas (Euler XYZ degrees), uniform scale multiplier.
+ * Apply → bakes into the child's baseLocal* fields (relative to its
+ * wrap-group parent) and pushes a single undo entry. Gizmo is not used
+ * here — RM children are not transform nodes globally, so a dialog
+ * keeps the surface area small.
+ */
+export function showRMChildGlobalTransformDialog(nodeId) {
+  const nodeById = state.get('nodeById');
+  const node     = nodeById?.get(nodeId);
+  if (!node) return;
+
+  const dlg = document.createElement('dialog');
+  dlg.className = 'sbs-dialog';
+  dlg.innerHTML = `
+    <div class="sbs-dialog__body">
+      <div class="sbs-dialog__title">Global transform — ${_esc(node.name || 'copy')}</div>
+      <p class="small" style="margin:6px 0 12px;color:#94a3b8">
+        Transform applies globally (all steps), relative to the
+        Replace-Model. Translate / rotate in the wrap-group's local frame.
+      </p>
+      <div style="display:grid;grid-template-columns:auto 1fr 1fr 1fr;gap:8px;align-items:center">
+        <div style="color:#94a3b8">Translate (Δ)</div>
+        <input type="number" id="rgt-tx" step="0.01" value="0" />
+        <input type="number" id="rgt-ty" step="0.01" value="0" />
+        <input type="number" id="rgt-tz" step="0.01" value="0" />
+
+        <div style="color:#94a3b8">Rotate (Δ°)</div>
+        <input type="number" id="rgt-rx" step="1" value="0" />
+        <input type="number" id="rgt-ry" step="1" value="0" />
+        <input type="number" id="rgt-rz" step="1" value="0" />
+
+        <div style="color:#94a3b8">Scale (×)</div>
+        <input type="number" id="rgt-sx" step="0.1" value="1" />
+        <input type="number" id="rgt-sy" step="0.1" value="1" />
+        <input type="number" id="rgt-sz" step="0.1" value="1" />
+      </div>
+      <div style="display:flex;gap:8px;justify-content:flex-end;margin-top:16px">
+        <button class="btn" id="rgt-cancel">Cancel</button>
+        <button class="btn" id="rgt-accept">Apply</button>
+      </div>
+    </div>
+  `;
+
+  const get = (id) => parseFloat(dlg.querySelector(id).value) || 0;
+  dlg.querySelector('#rgt-cancel').addEventListener('click', () => { dlg.close(); dlg.remove(); });
+  dlg.querySelector('#rgt-accept').addEventListener('click', () => {
+    const params = {
+      dx: get('#rgt-tx'), dy: get('#rgt-ty'), dz: get('#rgt-tz'),
+      rx: get('#rgt-rx'), ry: get('#rgt-ry'), rz: get('#rgt-rz'),
+      sx: parseFloat(dlg.querySelector('#rgt-sx').value) || 1,
+      sy: parseFloat(dlg.querySelector('#rgt-sy').value) || 1,
+      sz: parseFloat(dlg.querySelector('#rgt-sz').value) || 1,
+    };
+    dlg.close(); dlg.remove();
+    actions.applyRMChildGlobalTransform(nodeId, params);
+  });
+  dlg.addEventListener('cancel', () => { dlg.remove(); });
+  document.body.appendChild(dlg);
+  dlg.showModal();
+}
+
+
+/**
+ * Open the picker for adding a new child to a Replace-Model. `rmId`
+ * is the RM the user r-clicked. Picker is taller than the old V0.1.55
+ * dialog (size=14 rows) per the user's request.
+ */
+export function showAddToReplaceDialog(rmId) {
+  const root     = state.get('treeData');
+  const nodeById = state.get('nodeById');
+  const rmNode   = nodeById?.get(rmId);
+  if (!root || !rmNode || rmNode.type !== 'replaceModel') return;
+
+  const candidates = _collectAddToReplaceCandidates(root, rmId);
+  if (!candidates.length) {
+    setStatus('No mesh or flatShape available to use as a replacement.', 'warning');
+    return;
+  }
+
+  const dlg = document.createElement('dialog');
+  dlg.className = 'sbs-dialog';
+  dlg.innerHTML = `
+    <div class="sbs-dialog__body">
+      <div class="sbs-dialog__title">Add to Replace-Model</div>
+      <p class="small" style="margin:6px 0 12px;color:#94a3b8">
+        Pick the object to ADD as a replacement inside
+        <b>${_esc(rmNode.name || '(unnamed)')}</b>. A copy of it will be
+        parented to the RM at its current world pose. Origin can be left
+        in place or archived in the next step.
+      </p>
+      <label class="colorlab">Replacement source
+        <select id="atr-sel" size="18" style="margin-top:6px;min-width:380px;height:auto;min-height:360px;padding:6px">
+          ${candidates.map(o =>
+            `<option value="${_esc(o.id)}">${_esc(o.label)}</option>`
+          ).join('')}
+        </select>
+      </label>
+      <div style="display:flex;gap:8px;justify-content:space-between;margin-top:16px">
+        <button class="btn" id="atr-pick-viewport" title="Click an object in the viewport to use it as the replacement source">🎯 Pick from viewport…</button>
+        <div style="display:flex;gap:8px">
+          <button class="btn" id="atr-cancel">Cancel</button>
+          <button class="btn" id="atr-accept">Next…</button>
+        </div>
+      </div>
+    </div>
+  `;
+
+  const sel          = dlg.querySelector('#atr-sel');
+  const accept       = dlg.querySelector('#atr-accept');
+  const cancel       = dlg.querySelector('#atr-cancel');
+  const pickViewport = dlg.querySelector('#atr-pick-viewport');
+
+  if (sel.options.length > 0) sel.selectedIndex = 0;
+  sel.addEventListener('dblclick', () => accept.click());
+  cancel.addEventListener('click', () => { dlg.close(); dlg.remove(); });
+
+  accept.addEventListener('click', () => {
+    const sourceBId = sel.value;
+    if (!sourceBId) return;
+    const sName = nodeById.get(sourceBId)?.name || 'object';
+    dlg.close(); dlg.remove();
+    showReplaceModeDialog(rmId, sourceBId, sName);
+  });
+
+  // Physical viewport picker — closes the dialog and arms a one-shot
+  // state flag (state.replaceModelPickingForId). main.js's viewport
+  // click handler intercepts the next click and re-opens the mode
+  // dialog with the picked node. Esc cancels.
+  pickViewport.addEventListener('click', () => {
+    dlg.close(); dlg.remove();
+    state.setState({ replaceModelPickingForId: rmId });
+    setStatus('Click a mesh or flat-shape in the viewport to use as replacement source (Esc to cancel).');
+  });
+
+  dlg.addEventListener('cancel', () => { dlg.remove(); });
+  document.body.appendChild(dlg);
+  dlg.showModal();
+}
+
+/**
+ * 3-option modal after the user has picked their replacement source.
+ * Calls actions.addToReplaceModel with the chosen mode.
+ */
+export function showReplaceModeDialog(rmId, sourceBId, sourceName) {
+  const dlg = document.createElement('dialog');
+  dlg.className = 'sbs-dialog';
+  dlg.innerHTML = `
+    <div class="sbs-dialog__body">
+      <div class="sbs-dialog__title">Add "${_esc(sourceName)}" — pick mode</div>
+      <p class="small" style="margin:6px 0 14px;color:#94a3b8">
+        A fresh COPY of <b>${_esc(sourceName)}</b> (its origin geometry)
+        will be parented to the Replace-Model at its current world pose.
+        The original geometry of the RM gets hidden automatically.
+      </p>
+      <div style="display:flex;flex-direction:column;gap:8px">
+        <button class="btn" id="atr-mode-archive" style="text-align:left;padding:10px 12px">
+          <b>🗃️ Archive and replace</b><br>
+          <span class="small" style="color:#94a3b8">
+            Archive the source in the scene (locked-hidden). The RM
+            shows only the copy. Recommended when you're swapping
+            parts permanently.
+          </span>
+        </button>
+        <button class="btn" id="atr-mode-copy" style="text-align:left;padding:10px 12px">
+          <b>📋 Copy and replace</b><br>
+          <span class="small" style="color:#94a3b8">
+            Leave the source visible in the scene. The RM still gets a
+            copy. Useful when you want to reuse the same shape in
+            multiple RMs.
+          </span>
+        </button>
+      </div>
+      <div style="display:flex;gap:8px;justify-content:flex-end;margin-top:16px">
+        <button class="btn" id="atr-mode-cancel">Cancel</button>
+      </div>
+    </div>
+  `;
+
+  const btnArchive = dlg.querySelector('#atr-mode-archive');
+  const btnCopy    = dlg.querySelector('#atr-mode-copy');
+  const btnCancel  = dlg.querySelector('#atr-mode-cancel');
+
+  const run = (mode) => {
+    dlg.close(); dlg.remove();
+    const ok = actions.addToReplaceModel(rmId, sourceBId, mode);
+    if (ok) {
+      setStatus(`Added "${sourceName}" to Replace-Model (${mode === 'archiveAndReplace' ? 'archived source' : 'kept source'}).`);
+    } else {
+      setStatus('Add to Replace-Model failed.', 'warning');
+    }
+  };
+
+  btnArchive.addEventListener('click', () => run('archiveAndReplace'));
+  btnCopy   .addEventListener('click', () => run('copyAndReplace'));
+  btnCancel .addEventListener('click', () => { dlg.close(); dlg.remove(); });
+
+  dlg.addEventListener('cancel', () => { dlg.remove(); });
+  document.body.appendChild(dlg);
+  dlg.showModal();
+}
+
+/**
+ * Walk the tree and collect every node that's a valid REPLACEMENT
+ * source for an RM. Includes:
+ *   - mesh or flatShape only (B.2-NEW.2 v1 limit — model deferred)
+ *   - not archived
+ *   - not the RM itself
+ *   - not an ancestor or descendant of the RM
+ *   - not a child of any RM (already-cloned copies are skipped; the
+ *     user picks the ORIGIN of B, never a copy)
+ *   - not the scene root or a note
+ */
+function _collectAddToReplaceCandidates(root, rmId) {
+  const ancestors = new Set();
+  (function findAncestors(node, target, path) {
+    if (node.id === target) { for (const a of path) ancestors.add(a.id); return true; }
+    for (const c of (node.children || [])) {
+      if (findAncestors(c, target, [...path, node])) return true;
+    }
+    return false;
+  })(root, rmId, []);
+
+  const descendants = new Set();
+  const rmNode = findNode(root, rmId);
+  if (rmNode) {
+    (function collect(n) {
+      for (const c of (n.children || [])) { descendants.add(c.id); collect(c); }
+    })(rmNode);
+  }
+
+  const items = [];
+  function walk(node, depth, insideRM) {
+    if (!node) return;
+    const id = node.id;
+    const isRM = node.type === 'replaceModel';
+    const skip =
+         id === rmId
+      || ancestors.has(id)
+      || descendants.has(id)
+      || node.type === 'scene'
+      || node.type === 'note'
+      || node.archived === true
+      || insideRM                                   // skip RM children (copies)
+      || !(node.type === 'mesh' || node.type === 'flatShape')
+      || !steps.object3dById?.get(id);
+
+    if (!skip) {
+      const icon = node.type === 'mesh' ? '◼' : '▰';
+      items.push({
+        id,
+        label: `${'  '.repeat(depth)}${icon} ${node.name || '(unnamed)'} [${node.type}]`,
+      });
+    }
+    // Descend — children of an RM are flagged so they get skipped.
+    for (const c of (node.children || [])) walk(c, depth + 1, insideRM || isRM);
+  }
+  walk(root, 0, false);
+  return items;
+}
+
+
 // ── Drag and Drop ─────────────────────────────────────────────────────────────
 
 /**
@@ -1516,10 +2508,26 @@ function _updateDropHighlight(nodeId) {
 }
 
 function _onDragStart(e, node) {
+  // Archived nodes are READ-ONLY — refuse to start a drag from one of
+  // them. The user must unarchive first to reposition.
+  if (node.archived) {
+    e.preventDefault();
+    return;
+  }
   // IMPORTANT: Do NOT call state.setSelection here — it triggers renderTree()
   // which destroys the dragged DOM element and cancels the drag.
   const multiIds = state.get('multiSelectedIds') || new Set();
-  _dragIds    = multiIds.has(node.id) ? Array.from(multiIds) : [node.id];
+  let ids = multiIds.has(node.id) ? Array.from(multiIds) : [node.id];
+  // If the user is dragging a multi-selection that happens to include an
+  // archived node, strip it from the drag payload so the rest of the
+  // group can still move while the archived node stays put.
+  const nodeById = state.get('nodeById');
+  if (nodeById) ids = ids.filter(id => nodeById.get(id)?.archived !== true);
+  if (!ids.length) {
+    e.preventDefault();
+    return;
+  }
+  _dragIds    = ids;
   _isDragging = true;
   e.dataTransfer.effectAllowed = 'move';
   e.dataTransfer.setData('text/plain', JSON.stringify(_dragIds));
@@ -1534,9 +2542,12 @@ function _onDragEnd() {
 
 function _onDragOver(e, node) {
   // Block drops on leaf nodes (real meshes + flat shapes + notes) — they
-  // have no .children to receive moved items.
+  // have no .children to receive moved items. Archived containers are
+  // also blocked: their tree shape is frozen and can't accept new items
+  // until the user unarchives them.
   if (!_isDragging || (node.type === 'mesh' && !node.missing) ||
-      node.type === 'flatShape' || node.type === 'note') return;
+      node.type === 'flatShape' || node.type === 'note' ||
+      node.archived) return;
   e.preventDefault();
   e.dataTransfer.dropEffect = 'move';
   if (_dropTarget !== node.id) {

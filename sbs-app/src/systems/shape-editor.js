@@ -542,6 +542,37 @@ export function addPointOnEdge(clientX, clientY) {
 }
 
 /**
+ * Append the given 2D loops (in current plane-local coords) as a new
+ * polygon. Used by "Add polygon from face" — caller picks a face and
+ * projects its cross-section onto the editor's plane. Stays in edit
+ * mode; emits a vertex-edit so the template is updated and one undo
+ * entry is pushed via the usual addPolygon path.
+ */
+export function addPolygonFromFace(loops2D) {
+  const dr = state.get('shapeDrawing');
+  if (!dr || dr.phase !== 'edit' || !dr.plane) return false;
+  if (!Array.isArray(loops2D) || loops2D.length === 0) return false;
+  const outer = (loops2D[0] || []).map(p => [p[0], p[1]]);
+  if (outer.length < 3) return false;
+  const holes = loops2D.slice(1)
+    .filter(l => Array.isArray(l) && l.length >= 3)
+    .map(h => h.map(p => [p[0], p[1]]));
+  const polys = _polygons(dr);
+  const newPolygons = [...polys, { outer, holes }];
+  state.setState({
+    shapeDrawing: {
+      ...dr,
+      polygons:         newPolygons,
+      activePolygonIdx: newPolygons.length - 1,
+      selection:        null,
+    },
+  });
+  _renderAll();
+  _emitVertexEdit(state.get('shapeDrawing'), 'addPolygon');
+  return true;
+}
+
+/**
  * Append a fresh polygon to the template and drop the editor into
  * addVertices for that polygon. The user clicks to place vertices and
  * snap-close commits — at which point we return to 'edit' phase with

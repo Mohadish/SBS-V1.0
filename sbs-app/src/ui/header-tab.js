@@ -28,23 +28,44 @@
 
 import { state }      from '../core/state.js';
 import { setStatus }  from './status.js';
-import {
-  addHeaderItem,
-  updateHeaderItem,
-  removeHeaderItem,
-  reorderHeaderItem,
-  toggleHeaderItemVisible,
-  setHeadersHidden,
-  setHeadersLocked,
-  setHeaderDefault,
-  setHeaderItemStyleId,
-  setHeaderItemAlign,
-  setHeaderStepNumberPerChapter,
-  selectHeader,
-  exportHeaderSetup,
-  importHeaderSetup,
-} from '../systems/header.js';
+import * as header     from '../systems/header.js';
+import { selectHeader, exportHeaderSetup, importHeaderSetup } from '../systems/header.js';
+import * as actions    from '../systems/actions.js';
 import { listStyleTemplates } from '../systems/style-templates.js';
+
+// ── Undoable wrappers (V0.1.88) ─────────────────────────────────────────────
+// The raw header.* mutators only setState/markDirty (no undo) — that's
+// intentional so the CANVAS drag/resize path (which has its own undo) can
+// reuse them without double-pushing. Every SIDEBAR mutation routes through
+// actions.commitStateChange here so it lands one undo entry. Continuous
+// edits (text/style fields) coalesce per item id so a typing burst is one
+// entry. Names match the originals so the rest of the file is unchanged.
+const _HK = ['headerItems'];
+const addHeaderItem = (kind, opts) => {
+  let item = null;
+  actions.commitStateChange('Add header item', _HK, () => { item = header.addHeaderItem(kind, opts); });
+  return item;
+};
+const updateHeaderItem = (id, patch) =>
+  actions.commitStateChange('Edit header item', _HK, () => header.updateHeaderItem(id, patch), { coalesceKey: `hdr:update:${id}` });
+const removeHeaderItem = (id) =>
+  actions.commitStateChange('Remove header item', _HK, () => header.removeHeaderItem(id));
+const reorderHeaderItem = (id, delta) =>
+  actions.commitStateChange('Reorder header item', _HK, () => header.reorderHeaderItem(id, delta));
+const toggleHeaderItemVisible = (id) =>
+  actions.commitStateChange('Toggle header item', _HK, () => header.toggleHeaderItemVisible(id));
+const setHeadersHidden = (v) =>
+  actions.commitStateChange(v ? 'Hide header layer' : 'Show header layer', ['headersHidden'], () => header.setHeadersHidden(v));
+const setHeadersLocked = (v) =>
+  actions.commitStateChange(v ? 'Lock header layer' : 'Unlock header layer', ['headersLocked'], () => header.setHeadersLocked(v));
+const setHeaderDefault = (patch) =>
+  actions.commitStateChange('Header default style', ['headerDefault'], () => header.setHeaderDefault(patch), { coalesceKey: 'hdr:default' });
+const setHeaderItemStyleId = (id, styleId) =>
+  actions.commitStateChange('Header item style', _HK, () => header.setHeaderItemStyleId(id, styleId));
+const setHeaderItemAlign = (id, align) =>
+  actions.commitStateChange('Header item align', _HK, () => header.setHeaderItemAlign(id, align));
+const setHeaderStepNumberPerChapter = (v) =>
+  actions.commitStateChange('Header step numbering', ['headerStepNumberPerChapter'], () => header.setHeaderStepNumberPerChapter(v));
 
 const KIND_LABELS = {
   custom:        'Header Text',
@@ -498,11 +519,17 @@ async function _onLoadSetup() {
   // auto-renaming so existing bindings keep pointing at the right
   // template. The Default Style block is replaced (it's a single
   // value; merging makes no sense).
-  const { headers, styles, defaultLoaded } = importHeaderSetup(payload, {
-    itemsMode:   'add',
-    stylesMode:  'add',
-    defaultMode: 'replace',
-  });
+  let _imp = {};
+  actions.commitStateChange('Load header setup',
+    ['headerItems', 'headerDefault', 'styleTemplates'],
+    () => {
+      _imp = importHeaderSetup(payload, {
+        itemsMode:   'add',
+        stylesMode:  'add',
+        defaultMode: 'replace',
+      }) || {};
+    });
+  const { headers, styles, defaultLoaded } = _imp;
   const parts = [];
   if (headers)       parts.push(`${headers} header item(s) added`);
   if (styles)        parts.push(`${styles} style(s) added`);

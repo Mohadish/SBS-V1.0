@@ -217,7 +217,9 @@ export function computeVisibleSet(root) {
   const visible = new Set();
 
   function walk(node, parentVisible) {
-    const isVisible = parentVisible && node.localVisible;
+    // Archive trumps localVisible: an archived node is always invisible
+    // and propagates that to descendants regardless of their localVisible.
+    const isVisible = parentVisible && node.localVisible && !node.archived;
     if (isVisible) visible.add(node.id);
     node.children.forEach(c => walk(c, isVisible));
   }
@@ -363,7 +365,11 @@ export function computeEffectiveVisibility(root, visOverride) {
       ? visOverride[node.id]
       : node.localVisible;
     const own = ownLookup !== false;
-    const eff = inheritedVisible && own;
+    // Archive forces effective=false regardless of localVisible or override —
+    // matches computeVisibleSet's contract and the scene-apply path in
+    // systems/steps.js (applyAllVisibilityToScene).
+    const archived = node.archived === true;
+    const eff = inheritedVisible && own && !archived;
     out.set(node.id, eff);
     for (const c of (node.children || [])) walk(c, eff);
   }
@@ -495,8 +501,29 @@ export function serializeModelTree(node) {
     name:         node.name || '',
     type:         node.type,
     localVisible: node.localVisible !== false,
+    // Archive flag rides on the tree section so a node's "locked-hidden"
+    // state survives save/reload. Default false on legacy projects.
+    archived:     node.archived === true,
     children:     (node.children || []).map(serializeModelTree).filter(Boolean),
   };
+  // Replace-Model fields (B.2-NEW). Only emitted when the node IS an RM
+  // so non-RM specs stay byte-identical to pre-B.2-NEW projects.
+  if (node.type === 'replaceModel') {
+    spec.originalType           = node.originalType || null;
+    spec.originalGeometryHidden = node.originalGeometryHidden === true;
+  }
+  // Folder lock (V0.1.92, replaces isGroup/groupLocked). Only emitted when
+  // locked so plain folders stay byte-identical.
+  if (node.locked === true) {
+    spec.locked = true;
+  }
+  // RM-child marker: the ORIGIN node id this clone was made from.
+  // Save preserves it; rebuildReplaceModelChildren on load uses it to
+  // re-clone the geometry (since the clone has no standalone geometry
+  // — it was a runtime Three.js .clone() of the origin).
+  if (node.sourceNodeId) {
+    spec.sourceNodeId = node.sourceNodeId;
+  }
   // Persist bbox + geometry fingerprint for mesh nodes. Used for:
   //   - bbox: rendering a placeholder box when the asset is missing.
   //   - fingerprint + bbox centre: robust semantic match on reintegration so

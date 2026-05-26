@@ -258,7 +258,13 @@ export function bboxFromPolygon(polygon) {
  * @returns {THREE.Mesh|null}
  */
 export function ensureFlatShapeObject3D(node) {
-  if (!node || node.type !== 'flatShape') return null;
+  if (!node) return null;
+  // A flatShape-origin Replace-Model (B.2-NEW) keeps its data type as
+  // 'replaceModel' but is structurally a flatShape — we route it through
+  // this same builder so it gets the same THREE.Mesh on import/load.
+  const isFlatLike = node.type === 'flatShape'
+                  || (node.type === 'replaceModel' && node.originalType === 'flatShape');
+  if (!isFlatLike) return null;
   if (!node.templateId) return null;
 
   // ── Legacy migration ─────────────────────────────────────────────────

@@ -277,6 +277,13 @@ export function serializePhasesForEdit(phases) {
 export function resolveAnimationString(transition, animationPresets) {
   const presets = animationPresets || [];
 
+  // V0.1.98: per-step PRIVATE animation. The sentinel animPresetId
+  // '__private__' means "use this step's own custom string", stored on the
+  // transition (never shown as a preset). Takes priority over everything.
+  if (transition?.animPresetId === '__private__' && transition?.privateAnimation?.trim()) {
+    return transition.privateAnimation;
+  }
+
   // Step has a specific preset assigned
   const stepPresetId = transition?.animPresetId;
   if (stepPresetId) {

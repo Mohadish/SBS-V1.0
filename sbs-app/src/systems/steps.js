@@ -32,6 +32,10 @@ import * as overlaySystem           from './overlay.js';   // H2: overlay phase 
 import { ensureFlatShapeObject3D }   from './flat-shapes.js'; // M1: 2D shapes in 3D — build mesh on demand
 import { createStep, createEmptySnapshot } from '../core/schema.js';
 import { parseAnimation, resolveAnimationString } from './animation.js';
+// V0.1.78 — narration overflow coordination. UI module exports the
+// query helpers; cross-layer import is OK here (actions.js + overlay.js
+// already cross the same boundary).
+import { isNarrationPlaying, awaitNarrationEnd } from '../ui/steps-panel.js';
 import {
   captureVisibilitySnapshot,
   applyVisibilitySnapshot,
@@ -407,6 +411,10 @@ class StepManager {
    * @returns {Promise}  resolves when all animations complete
    */
   async applySnapshotAnimated(toSnapshot, transition = {}) {
+    if (typeof window !== 'undefined' && window.sbsDiag?.animTrace) {
+      // eslint-disable-next-line no-console
+      console.log(`[anim] applySnapshotAnimated start gen=${this._animGeneration + 1} t=${performance.now().toFixed(0)}`);
+    }
     if (!toSnapshot) { this.applySnapshotInstant(toSnapshot); return; }
 
     // ── Cancel any in-flight animation ───────────────────────────────────
@@ -800,6 +808,37 @@ class StepManager {
       }
     }
 
+    // ── Folder-cascade fade fix (V0.1.74) ─────────────────────────────
+    // Three.js skips the entire subtree of any object whose `.visible =
+    // false`. So when a folder goes visible→hidden in a step transition,
+    // `applyAllVisibilityToScene` set folder.obj.visible = false, the
+    // mesh-hide loop above detected its descendants as "hiding" and
+    // restored mesh.obj.visible = true (correct) — but the folder is
+    // still invisible, the renderer skips the subtree, and the fade
+    // shader uniforms animate to no effect (instant snap visually).
+    //
+    // Fix: walk each hiding mesh's Three.js ancestor chain; any ancestor
+    // that's currently invisible gets restored to visible TEMPORARILY
+    // so the fade actually renders. We track those ancestors and re-
+    // cascade visibility once all fade transitions complete (see
+    // _advanceObjectTransitions below).
+    this._fadeRestoredAncestors = this._fadeRestoredAncestors || new Set();
+    const allHiding = [...hidingMeshIds, ...hidingShapeIds];
+    if (allHiding.length) {
+      for (const meshId of allHiding) {
+        const obj = this.object3dById.get(meshId);
+        if (!obj) continue;
+        let p = obj.parent;
+        while (p && p !== sceneCore.rootGroup) {
+          if (p.visible === false) {
+            p.visible = true;
+            this._fadeRestoredAncestors.add(p);
+          }
+          p = p.parent;
+        }
+      }
+    }
+
     return { hidingMeshIds, showingMeshIds, hidingShapeIds, showingShapeIds };
   }
 
@@ -868,6 +907,10 @@ class StepManager {
       // pivot-aware variant so an offset pivot stays put during rotation.
       if (types.includes('obj') && !objHandled && changedNodeIds.length) {
         objHandled = true;
+        if (typeof window !== 'undefined' && window.sbsDiag?.animTrace) {
+          // eslint-disable-next-line no-console
+          console.log(`[anim] OBJ phase fire (phase-loop) gen=${myGen} t=${performance.now().toFixed(0)} count=${changedNodeIds.length} dur=${durationMs}`);
+        }
         this._objectTransitions = [];
         const startMs = clock.now();
         for (const nodeId of changedNodeIds) {
@@ -1019,6 +1062,10 @@ class StepManager {
     }
     if (!objHandled && changedNodeIds.length) {
       objHandled = true;
+      if (typeof window !== 'undefined' && window.sbsDiag?.animTrace) {
+        // eslint-disable-next-line no-console
+        console.log(`[anim] OBJ FALLBACK fire gen=${myGen} t=${performance.now().toFixed(0)} count=${changedNodeIds.length} dur=${fallbackObj}`);
+      }
       const startMs = clock.now();
       this._objectTransitions = [];
       for (const nodeId of changedNodeIds) {
@@ -1115,11 +1162,44 @@ class StepManager {
 
   // ─── Object transition tick ────────────────────────────────────────────
   _advanceObjectTransitions(nowMs) {
+    // V0.1.77 diag: trace the first 12 frames of OBJ animation. Shows
+    // alpha progression — if alpha rewinds, the lerp itself is the bug;
+    // if alpha is monotonic, the stutter is somewhere else (e.g. another
+    // handler resetting object positions mid-frame).
+    if (typeof window !== 'undefined' && window.sbsDiag?.animTrace
+        && this._objectTransitions.length > 0) {
+      this._objAnimDiagFrame = (this._objAnimDiagFrame ?? -1) + 1;
+      if (this._objAnimDiagFrame < 12) {
+        const first = this._objectTransitions[0];
+        if (first) {
+          const raw = Math.min((nowMs - first.startMs) / first.durationMs, 1);
+          // eslint-disable-next-line no-console
+          console.log(`[anim] OBJ frame ${this._objAnimDiagFrame}: raw=${raw.toFixed(3)} count=${this._objectTransitions.length} t=${performance.now().toFixed(0)} startMs=${first.startMs.toFixed(0)}`);
+        }
+      }
+    } else if (typeof window !== 'undefined' && window.sbsDiag?.animTrace
+               && this._objAnimDiagFrame != null
+               && this._objectTransitions.length === 0) {
+      // Reset frame counter when transitions drain — next OBJ phase fire restarts the count.
+      this._objAnimDiagFrame = null;
+    }
+
     // Advance material colour transition every frame (independent of object transforms)
     this._materials?.advanceColorTransition(nowMs);
 
-    // Advance per-mesh visibility fades (runs AFTER colour — overrides back-outline opacity)
-    this._materials?.advanceVisibilityTransitions(nowMs, this.object3dById);
+    // Advance per-mesh visibility fades (runs AFTER colour — overrides back-outline opacity).
+    // Returns true on the frame where the LAST fade just completed; we use that to
+    // re-cascade folder-ancestor visibility (V0.1.74 fix — see _prepareVisibility).
+    const fadesJustFinished = this._materials?.advanceVisibilityTransitions(nowMs, this.object3dById);
+    if (fadesJustFinished && this._fadeRestoredAncestors?.size) {
+      // Re-cascade visibility so folders we temporarily kept visible
+      // to let the fade render now reflect their real (data-tree)
+      // hidden state. applyAllVisibilityToScene walks the tree and
+      // resets obj.visible = effective on every node.
+      const { nodeById } = state.pick('nodeById');
+      if (nodeById) applyAllVisibilityToScene(nodeById, this.object3dById);
+      this._fadeRestoredAncestors.clear();
+    }
 
     if (!this._objectTransitions.length) return;
 
@@ -1232,6 +1312,17 @@ class StepManager {
    * @param {boolean} [animate]  override transition animation (default: use step settings)
    */
   async activateStep(stepId, animate = true, opts = {}) {
+    if (typeof window !== 'undefined' && window.sbsDiag?.animTrace) {
+      // eslint-disable-next-line no-console
+      console.log(`[anim] activateStep(${stepId}, animate=${animate}, fromArrow=${!!opts.fromArrow}) t=${performance.now().toFixed(0)}`);
+      // V0.1.76: dump caller stack (3 frames after this fn + the wrapper).
+      // The "mystery 721 instant activate mid-animation" needs to be
+      // attributed to a specific caller — middle-click, undo, state
+      // listener, etc.
+      const stack = (new Error()).stack?.split('\n') || [];
+      // Skip first 2 lines (Error / current fn), keep next ~5 callers.
+      console.log('[anim]   caller stack:\n' + stack.slice(2, 7).join('\n'));
+    }
     const steps = state.get('steps');
     const step  = steps.find(s => s.id === stepId);
     if (!step) return;
@@ -1318,11 +1409,37 @@ class StepManager {
       if (currentGroupId) {
         const next = nextStep;
         if (next && next.groupId === currentGroupId) {
-          // Don't await — keep the chain shallow on the call stack and
-          // let token coordination handle interrupts. Animation override
-          // here matches the entry call: arrows always animate.
-          this.activateStep(next.id, true, { fromArrow: true });
+          // ── In-group chain (V0.1.78 — narration overflow rule) ──────
+          // The previous step's narration may still be playing past this
+          // sub-step's animation (overflow). If the NEXT sub-step has
+          // its OWN narration, two narrations would overlap — so hold
+          // the chain until the current narration finishes before
+          // activating the next sub-step (which will start its own
+          // narration via the normal step:applied / narration:trigger
+          // path). Sub-steps without narration chain immediately, even
+          // if the head's narration is still playing.
+          const nextHasNarration = !!(next.narration?.dataFile || next.narration?.dataUrl);
+          if (nextHasNarration && isNarrationPlaying()) {
+            // Don't await on the call stack — fire-and-forget so the
+            // current activateStep returns. Token gate inside the
+            // async block aborts cleanly if a user interrupt fires.
+            (async () => {
+              await awaitNarrationEnd();
+              if (myToken !== this._activationToken) return;
+              this.activateStep(next.id, true, { fromArrow: true });
+            })();
+          } else {
+            this.activateStep(next.id, true, { fromArrow: true });
+          }
         }
+        // V0.1.80 reverted: end-of-group narration overflow no longer
+        // auto-crosses the group boundary. The narration audio keeps
+        // playing past the last sub-step (V0.1.78 still leaves the
+        // clip alone on no-narration step transitions), but the
+        // playback chain STOPS at the group end — user advances
+        // manually. The earlier "cross-boundary on overflow" branch
+        // was firing even after narration ended in some flows, making
+        // the group feel runaway. Holding is the safer default.
       }
     }
   }
@@ -1354,6 +1471,10 @@ class StepManager {
    */
   snapCurrentToFinal() {
     if (!this._animRunning) return false;
+    if (typeof window !== 'undefined' && window.sbsDiag?.animTrace) {
+      // eslint-disable-next-line no-console
+      console.log(`[anim] snapCurrentToFinal t=${performance.now().toFixed(0)}`);
+    }
 
     // Cancel the in-flight animation so applySnapshotAnimated bails on resume
     this._animGeneration++;
@@ -2261,9 +2382,11 @@ function applyAllVisibilityToScene(nodeById, object3dById) {
   const root = state.get('treeData');
   if (!root) return;
 
-  // Walk tree, track inherited visibility
+  // Walk tree, track inherited visibility. Archive trumps localVisible —
+  // archived nodes (and their descendants) are forced invisible regardless
+  // of any per-step snapshot. Matches computeVisibleSet in core/nodes.js.
   function walk(node, inherited) {
-    const effective = inherited && node.localVisible;
+    const effective = inherited && node.localVisible && !node.archived;
     const obj = object3dById.get(node.id);
     if (obj) {
       // Bbox placeholders honor the sticky export-hide flag so they stay
@@ -2322,7 +2445,16 @@ function cleanupFolderGroups(rootNode, object3dById) {
 function rebuildFromTreeSpec(spec, nodeById, object3dById, parentObject3d) {
   if (!spec) return null;
   const THREE = window.THREE;
-  const specType = spec.type === 'group' ? 'folder' : spec.type;
+  // 'group' → 'folder' is a legacy alias from v0.266 saves.
+  // 'replaceModel' (B.2-NEW) is a TYPE-LAYER concept; structurally it
+  // behaves exactly like its `originalType` for tree-rebuild purposes,
+  // so we route it to the same branch. The live node keeps `type=
+  // 'replaceModel'` — only the rebuild path uses the original type to
+  // pick which Three.js scaffolding to wire up.
+  let specType = spec.type === 'group' ? 'folder' : spec.type;
+  if (specType === 'replaceModel') {
+    specType = spec.originalType || 'folder';
+  }
   let node = null;
 
   if (specType === 'folder') {
@@ -2455,23 +2587,40 @@ function rebuildFromTreeSpec(spec, nodeById, object3dById, parentObject3d) {
     node.localVisible = spec.localVisible !== false;
     node.children     = [];
 
-    // Always run ensureFlatShapeObject3D — it has its own cache-hit fast
-    // path (matching shapeBuildKey returns the existing mesh) AND that
-    // path also re-asserts materials.meshById registration. Skipping the
-    // call when object3dById already has the mesh would bypass the
-    // registration and break visibility-transition fades.
-    let obj = ensureFlatShapeObject3D(node);
-    if (obj) {
-      node.object3d = obj;
-      object3dById.set(spec.id, obj);
-      if (parentObject3d && obj.parent !== parentObject3d) {
-        if (obj.parent) obj.parent.remove(obj);
-        parentObject3d.add(obj);
+    // Replace-Model with an already-built wrap-group (B.2-NEW): SKIP
+    // ensureFlatShapeObject3D — that builder would dispose the wrap-
+    // group's children and replace it with a fresh flatShape Mesh,
+    // destroying the RM's wrap structure on every step navigation. Just
+    // reparent the existing wrap-group as needed and let the children
+    // recursion below handle the RM's copy children.
+    if (node.type === 'replaceModel' &&
+        node.object3d?.userData?.isReplaceModelGroup) {
+      const wrapObj = node.object3d;
+      if (parentObject3d && wrapObj.parent !== parentObject3d) {
+        if (wrapObj.parent) wrapObj.parent.remove(wrapObj);
+        parentObject3d.add(wrapObj);
       }
-      if (obj.userData) {
-        obj.userData.flatShapeNodeId = node.id;
-        obj.userData.meshNodeId      = node.id;
-        obj.userData.nodeId          = node.id;
+      object3dById.set(spec.id, wrapObj);
+    } else {
+      // Normal flatShape (or RM with no wrap yet — first activateBaseStep
+      // on initial load runs before rebuildReplaceModelChildren wraps it).
+      //
+      // Always run ensureFlatShapeObject3D — it has its own cache-hit
+      // fast path (matching shapeBuildKey returns the existing mesh) AND
+      // that path also re-asserts materials.meshById registration.
+      let obj = ensureFlatShapeObject3D(node);
+      if (obj) {
+        node.object3d = obj;
+        object3dById.set(spec.id, obj);
+        if (parentObject3d && obj.parent !== parentObject3d) {
+          if (obj.parent) obj.parent.remove(obj);
+          parentObject3d.add(obj);
+        }
+        if (obj.userData) {
+          obj.userData.flatShapeNodeId = node.id;
+          obj.userData.meshNodeId      = node.id;
+          obj.userData.nodeId          = node.id;
+        }
       }
     }
 
