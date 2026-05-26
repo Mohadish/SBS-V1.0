@@ -24,6 +24,7 @@ import {
   getPathToNode,
   collectDescendantIds,
   buildNodeMap,
+  serializeModelTree,
 }                               from '../core/nodes.js';
 import {
   isTransformNode,
@@ -32,6 +33,7 @@ import {
   applyNodeTransformToObject3D,
   captureTransformSnapshot,
   applyTransformSnapshot,
+  setStoredQuaternion,
   isNearZero,
   isIdentityQuaternion,
 }                               from '../core/transforms.js';
@@ -1625,10 +1627,13 @@ function _moveIdsIntoNode(ids, targetNode) {
 
   // Collect the valid moves first (cycle / self / no-op filtered), capturing
   // each node's ORIGINAL parent + index so the undo can splice it back.
-  const moves = [];   // { nodeId, fromParentId, fromIdx }
+  // V0.2.22: also capture pre-move localOffset/Quaternion/orientationSteps
+  // so undo can restore them when keep-position rewrote per-step deltas.
+  // We DO NOT capture baseLocal* anymore — the new keep-position path
+  // never touches the project-global anchor (the V0.2.19 trap is gone).
+  const moves = [];   // { nodeId, fromParentId, fromIdx, beforeXf }
   for (const id of ids) {
     if (id === targetNode.id) continue;                    // can't drop onto self
-    // Can't drop INTO one of the moved node's own descendants (cycle).
     const movedNode = findNode(root, id);
     if (movedNode) {
       const movedDescendants = new Set(collectDescendantIds(movedNode) || []);
@@ -1640,97 +1645,180 @@ function _moveIdsIntoNode(ids, targetNode) {
     if (parent.id === targetNode.id) continue;            // already a direct child — skip
     const idx = parent.children.findIndex(c => c.id === id);
     if (idx < 0) continue;
-    // V0.2.19: snapshot transform fields per move so "keep absolute
-    // position" undo can restore them (it overwrites baseLocal* + clears
-    // localOffset/Quaternion to compensate for the new parent's world).
-    // (movedNode was already resolved above for the cycle check; reuse it.)
     moves.push({
       nodeId: id,
       fromParentId: parent.id,
       fromIdx: idx,
       beforeXf: {
-        baseLocalPosition:   [...(movedNode?.baseLocalPosition   || [0, 0, 0])],
-        baseLocalQuaternion: [...(movedNode?.baseLocalQuaternion || [0, 0, 0, 1])],
-        baseLocalScale:      [...(movedNode?.baseLocalScale      || [1, 1, 1])],
-        localOffset:         [...(movedNode?.localOffset         || [0, 0, 0])],
-        localQuaternion:     [...(movedNode?.localQuaternion     || [0, 0, 0, 1])],
+        localOffset:      [...(movedNode?.localOffset      || [0, 0, 0])],
+        localQuaternion:  [...(movedNode?.localQuaternion  || [0, 0, 0, 1])],
+        orientationSteps: [...(movedNode?.orientationSteps || [0, 0, 0])],
       },
     });
   }
   if (!moves.length) { setStatus('Nothing to move.'); return; }
 
-  // Reparent helper. Two paths:
-  //   keepPos=false  → simple remove + add. baseLocal* stays as the home
-  //                    anchor; the moved node inherits the new parent's
-  //                    world transform (world position SHIFTS).
-  //   keepPos=true   → THREE.Object3D.attach() computes a new local matrix
-  //                    that preserves the world pose under the new parent.
-  //                    The decomposed values are written back into the
-  //                    node's data fields, and localOffset/Quaternion are
-  //                    reset to identity (the new base IS the new home).
-  const reparent = (r, nodeId, destId, atIndex = null, keepPos = false) => {
-    const p = findParent(r, nodeId);
-    const node = findNode(r, nodeId);
-    const dest = findNode(r, destId);
-    if (!node || !dest) return;
-    if (p) {
-      const i = p.children.findIndex(c => c.id === nodeId);
-      if (i >= 0) p.children.splice(i, 1);
-    }
-    dest.children = dest.children || [];
-    if (atIndex == null || atIndex > dest.children.length) dest.children.push(node);
-    else dest.children.splice(atIndex, 0, node);
-    if (node.object3d) {
-      if (keepPos && dest.object3d) {
-        dest.object3d.attach(node.object3d);   // Three preserves world
-        const o = node.object3d;
-        node.baseLocalPosition   = [o.position.x,   o.position.y,   o.position.z];
-        node.baseLocalQuaternion = [o.quaternion.x, o.quaternion.y, o.quaternion.z, o.quaternion.w];
-        node.baseLocalScale      = [o.scale.x,      o.scale.y,      o.scale.z];
-        node.localOffset         = [0, 0, 0];
-        node.localQuaternion     = [0, 0, 0, 1];
-      } else {
-        if (node.object3d.parent) node.object3d.parent.remove(node.object3d);
-        if (dest.object3d) dest.object3d.add(node.object3d);
-      }
-    }
-  };
+  // V0.2.22 — UNIFIED REBUILD ARCHITECTURE
+  // ─────────────────────────────────────────────────────────────────────
+  // The old V0.2.19 path did `parent.remove(obj) + dest.add(obj)` directly,
+  // then called applyAllTransforms. That diverged from the load /
+  // step-activation path which uses `cleanupFolderGroups + rebuildFromTreeSpec`
+  // to recreate every folder's Three.js Group fresh from the data tree.
+  //
+  // The divergence let users author per-step deltas (via gizmo) AGAINST a
+  // wrong in-app cascade, then save+load applied the CORRECT cascade and
+  // those deltas became visible drift — the "double-compensation loop."
+  //
+  // Now: every structural change goes through `steps.applySnapshotInstant`
+  // with just the tree field, producing the byte-identical Three.js graph
+  // that load would reproduce from the same spec.
+  //
+  // keep-position likewise no longer touches baseLocal* (project-global).
+  // It captures pre-move world matrices, rebuilds, then computes per-step
+  // localOffset/localQuaternion compensation so the moved object's world
+  // pose is preserved IN THE ACTIVE STEP ONLY. Other steps keep their own
+  // deltas — exactly what the dialog text already promised.
+  //
+  // Limitation: only transform-bearing nodes (folder/model/flatShape) get
+  // keep-position compensation. Pure mesh moves fall back to cascade for
+  // that node — meshes don't carry per-node deltas in this architecture
+  // (their pose is the parent chain × baked vertex positions).
 
-  // V0.2.19: ask the user whether to preserve world position. Dialog every
-  // cross-parent move. Esc / Cancel aborts; the rest goes through the
-  // standard undoable doMove/undoMove pipeline with the chosen keepPos
-  // baked into both directions.
   _showKeepPositionDialog(moves.length, targetNode.name || 'folder').then((choice) => {
     if (choice === 'cancel') { setStatus('Move cancelled.'); return; }
     const keepPos = choice === 'keep';
 
+    // ── doMove ──────────────────────────────────────────────────────────
     const doMove = () => {
       const r = state.get('treeData');
-      for (const m of moves) reparent(r, m.nodeId, targetNode.id, null, keepPos);
-      state.setState({ nodeById: buildNodeMap(r) });
+      const THREE = window.THREE;
+
+      // 1) Snapshot pre-move world matrices for keep-position. Must happen
+      //    BEFORE we mutate the spec or call applySnapshotInstant — once
+      //    folders get torn down, the old worlds are lost.
+      const oldWorlds = new Map();
+      if (keepPos && THREE) {
+        for (const m of moves) {
+          const obj = steps.object3dById?.get(m.nodeId);
+          if (!obj) continue;
+          // updateMatrixWorld on the parent first to make sure the chain
+          // is current (gizmo edits don't always flush down).
+          if (obj.parent) obj.parent.updateMatrixWorld(true);
+          obj.updateMatrixWorld(true);
+          oldWorlds.set(m.nodeId, obj.matrixWorld.clone());
+        }
+      }
+
+      // 2) Update the DATA SPEC only — splice children arrays. NO direct
+      //    Three.js mutation here; the rebuild below handles all scene
+      //    graph changes from the new spec.
+      for (const m of moves) {
+        const p = findParent(r, m.nodeId);
+        const node = findNode(r, m.nodeId);
+        const dest = findNode(r, targetNode.id);
+        if (!node || !dest) continue;
+        if (p) {
+          const i = p.children.findIndex(c => c.id === m.nodeId);
+          if (i >= 0) p.children.splice(i, 1);
+        }
+        dest.children = dest.children || [];
+        dest.children.push(node);
+      }
+
+      // 3) Rebuild Three.js scene via the SAME path load uses.
+      //    applySnapshotInstant({ tree }):
+      //      - cleanupFolderGroups removes every folder's Three.js Group
+      //      - rebuildFromTreeSpec creates fresh Groups + reparents meshes
+      //      - state.setState({ nodeById }) + emit change:treeData
+      steps.applySnapshotInstant({ tree: serializeModelTree(r) });
+
+      // 4) Push folder/model/flatShape transforms onto their fresh Groups.
+      //    rebuildFromTreeSpec creates groups at identity; applyAllTransforms
+      //    walks the data tree and applies baseLocal+localOffset to each.
       applyAllTransforms(r, steps.object3dById);
+
+      // 5) keep-position: compute per-step delta compensation so moved
+      //    objects land at their captured pre-move worlds. Per-step only —
+      //    baseLocal* is untouched.
+      if (keepPos && THREE) {
+        const nodeMap   = state.get('nodeById');
+        const invParent = new THREE.Matrix4();
+        const localMat  = new THREE.Matrix4();
+        const tmpPos    = new THREE.Vector3();
+        const tmpQuat   = new THREE.Quaternion();
+        const tmpScale  = new THREE.Vector3();
+        const baseQuat  = new THREE.Quaternion();
+        const localQuat = new THREE.Quaternion();
+
+        for (const m of moves) {
+          const oldWorld = oldWorlds.get(m.nodeId);
+          if (!oldWorld) continue;
+          const node = nodeMap?.get(m.nodeId);
+          if (!node || !isTransformNode(node)) continue;     // meshes: fall back to cascade
+          const obj = steps.object3dById?.get(m.nodeId);
+          if (!obj?.parent) continue;
+          obj.parent.updateMatrixWorld(true);
+
+          // local-needed = inv(newParent.world) × oldWorld
+          invParent.copy(obj.parent.matrixWorld).invert();
+          localMat.multiplyMatrices(invParent, oldWorld);
+          localMat.decompose(tmpPos, tmpQuat, tmpScale);
+
+          const blp = node.baseLocalPosition   || [0, 0, 0];
+          const blq = node.baseLocalQuaternion || [0, 0, 0, 1];
+
+          // localOffset    = decomposed-position - baseLocalPosition
+          node.localOffset = [
+            tmpPos.x - blp[0],
+            tmpPos.y - blp[1],
+            tmpPos.z - blp[2],
+          ];
+          // localQuaternion = inv(baseLocalQuaternion) × decomposed-quaternion
+          baseQuat.set(blq[0], blq[1], blq[2], blq[3]).invert();
+          localQuat.copy(baseQuat).multiply(tmpQuat);
+          setStoredQuaternion(node, [localQuat.x, localQuat.y, localQuat.z, localQuat.w]);
+        }
+
+        // Re-apply to push the new deltas to Three.js.
+        applyAllTransforms(r, steps.object3dById);
+      }
+
       state.emit('change:treeData', r);
       steps.scheduleTransformSync();
       state.markDirty();
     };
+
+    // ── undoMove ────────────────────────────────────────────────────────
     const undoMove = () => {
       const r = state.get('treeData');
-      // Reverse order so earlier indices restore correctly.
+      // Revert tree spec: splice each move OUT of the destination, splice
+      // BACK INTO the original parent at the original index. Reverse-order
+      // so earlier original indices restore correctly.
       for (const m of [...moves].reverse()) {
-        reparent(r, m.nodeId, m.fromParentId, m.fromIdx, false);
+        const dest = findNode(r, targetNode.id);
+        const node = findNode(r, m.nodeId);
+        const orig = findNode(r, m.fromParentId);
+        if (!node) continue;
+        if (dest?.children) {
+          const i = dest.children.findIndex(c => c.id === m.nodeId);
+          if (i >= 0) dest.children.splice(i, 1);
+        }
+        if (!orig) continue;
+        orig.children = orig.children || [];
+        const insertAt = Math.min(m.fromIdx, orig.children.length);
+        orig.children.splice(insertAt, 0, node);
+
+        // Restore per-step deltas if keepPos rewrote them.
         if (keepPos) {
-          // Restore the transform fields we overwrote at do-time.
-          const n = findNode(r, m.nodeId);
-          if (n) {
-            n.baseLocalPosition   = [...m.beforeXf.baseLocalPosition];
-            n.baseLocalQuaternion = [...m.beforeXf.baseLocalQuaternion];
-            n.baseLocalScale      = [...m.beforeXf.baseLocalScale];
-            n.localOffset         = [...m.beforeXf.localOffset];
-            n.localQuaternion     = [...m.beforeXf.localQuaternion];
-          }
+          node.localOffset      = [...m.beforeXf.localOffset];
+          node.localQuaternion  = [...m.beforeXf.localQuaternion];
+          node.orientationSteps = [...m.beforeXf.orientationSteps];
         }
       }
-      state.setState({ nodeById: buildNodeMap(r) });
+
+      // Rebuild via the same unified path so undo lands at exactly the
+      // scene the user would see if they'd never made the move.
+      steps.applySnapshotInstant({ tree: serializeModelTree(r) });
       applyAllTransforms(r, steps.object3dById);
       state.emit('change:treeData', r);
       steps.scheduleTransformSync();
