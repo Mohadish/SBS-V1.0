@@ -329,7 +329,7 @@ function _renderExportTab(body) {
 
     <div class="grid2">
       <label class="colorlab">Default frame rate (fps)
-        <input type="number" id="settings-fps" min="1" max="120" step="1" value="${ex.defaultFps ?? 30}" style="margin-top:6px;" />
+        <input type="number" id="settings-fps" min="1" max="120" step="1" value="${ex.defaultFps ?? 50}" style="margin-top:6px;" />
       </label>
       <label class="colorlab">Default step hold (ms)
         <input type="number" id="settings-hold" min="0" max="10000" step="100" value="${ex.defaultStepHoldMs ?? 800}" style="margin-top:6px;" />

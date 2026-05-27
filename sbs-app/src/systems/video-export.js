@@ -33,7 +33,12 @@ import * as narrationCache from './narration-cache.js';
 // Vendored ES module (see sbs-app/vendor/mp4-muxer.mjs).
 import { Muxer as Mp4Muxer, ArrayBufferTarget } from '../../vendor/mp4-muxer.mjs';
 
-const DEFAULT_FPS       = 30;
+// V0.2.22.2: 50 fps default. Higher FPS produces SMALLER MP4 files for
+// slide-show content (smaller per-frame deltas compress better in P-frames)
+// AND visibly reduces the step-transition seam stutter. 25/50/100 give clean
+// integer frame intervals in ms (40/20/10), avoiding sub-frame remainder
+// drift in the offline synthetic sleep.
+const DEFAULT_FPS       = 50;
 const DEFAULT_BITRATE   = 8_000_000;   // 8 Mbps — 1080p screencast quality
 const POST_STEP_HOLD_MS = 400;
 
@@ -535,7 +540,7 @@ async function _exportMp4({ fps = DEFAULT_FPS, bitrate = DEFAULT_BITRATE,
       offlineActive = true;
     }
     console.log('[export] timeline playback…' + (offline ? ' (offline mode)' : ''));
-    await _playTimeline(stepsToPlay, perStepHold, onProgress, signal, onStepStart);
+    await _playTimeline(stepsToPlay, perStepHold, onProgress, signal, onStepStart, offline);
   } finally {
     unsubTick();
     if (offlineActive) {
@@ -640,7 +645,7 @@ async function _exportWebM({ format = 'webm_vp9', fps = DEFAULT_FPS,
 //  Shared — timeline playback loop
 // ═══════════════════════════════════════════════════════════════════════════
 
-async function _playTimeline(stepsToPlay, holdsMsArg, onProgress, signal, onStepStart) {
+async function _playTimeline(stepsToPlay, holdsMsArg, onProgress, signal, onStepStart, offline = false) {
   // holdsMsArg can be a single number (legacy) or one entry per step.
   const holds = Array.isArray(holdsMsArg)
     ? holdsMsArg
@@ -665,8 +670,22 @@ async function _playTimeline(stepsToPlay, holdsMsArg, onProgress, signal, onStep
     // kind hydrate hasn't completed). The wait-for-stable promises
     // resolve as soon as every async raster of the latest refresh
     // settles, so on a fully-cached layer they resolve immediately.
+    //
+    // V0.2.22.2: in REALTIME mode the drain wait was bleeding into the
+    // encoded video because rAF kept firing the tick-hook capture during
+    // it — a "100ms" hold could become 500ms in the encoded output when
+    // a fresh raster took 400ms. Measure the drain (real-time only) and
+    // shave it off the requested hold so the user-set value matches the
+    // visible gap.  Offline mode advances the synthetic clock only inside
+    // _syntheticSleep; the drain runs in wall-clock without producing
+    // frames, so drainMs there is irrelevant — `subtract = 0` keeps the
+    // requested hold honest in both paths.
+    const drainStart = (!offline) ? performance.now() : 0;
     await Promise.all([waitForOverlayStable(), waitForHeaderStable()]);
-    await _wait(holds[i] ?? POST_STEP_HOLD_MS);
+    const drainMs = (!offline) ? (performance.now() - drainStart) : 0;
+    const wanted    = holds[i] ?? POST_STEP_HOLD_MS;
+    const remaining = Math.max(0, wanted - drainMs);
+    await _wait(remaining);
   }
 }
 

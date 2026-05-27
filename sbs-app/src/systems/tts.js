@@ -83,7 +83,16 @@ export async function synthesize(text, voiceId, opts = {}) {
     const res = await window.sbsNative.tts.synthesize(text, voiceName, speed, { source });
     if (!res.ok) throw new Error(res.error || 'TTS failed.');
     const dataUrl = `data:${res.mime};base64,${res.data}`;
-    const durationMs = await _measureAudioDuration(dataUrl);
+    // V0.2.22.2: parse the WAV header directly for duration. SAPI5-via-`say`
+    // (Windows default) often produces WAVs whose `<audio>` metadata fires
+    // late or returns 0ms — the audio-element measurement was unreliable
+    // there, which broke narration-overflow scheduling (a 0-duration clip
+    // looks silent to the timeline, so the next step activates immediately).
+    // Header parse is identical math for all three backends (Kokoro,
+    // OneCore, SAPI5). Falls back to the audio-element measurement if the
+    // header doesn't yield a result (e.g. non-WAV or corrupt header).
+    let durationMs = (res.mime === 'audio/wav') ? _wavDurationMsFromB64(res.data) : 0;
+    if (!durationMs) durationMs = await _measureAudioDuration(dataUrl);
     return { dataUrl, mime: res.mime, durationMs };
   }
 
@@ -115,4 +124,64 @@ function _measureAudioDuration(dataUrl) {
     a.addEventListener('error', () => resolve(0), { once: true });
     a.src = dataUrl;
   });
+}
+
+/**
+ * V0.2.22.2 — derive duration directly from a base64-encoded WAV header.
+ * Works uniformly across Kokoro / OneCore / SAPI5-via-`say` outputs and
+ * sidesteps the `<audio>` loadedmetadata race that returned 0ms for some
+ * SAPI5 WAVs (which silently killed narration overflow scheduling).
+ *
+ * Returns 0 if the buffer isn't a valid WAV or required chunks are missing.
+ *
+ * WAV structure (RIFF):
+ *   bytes 0-3   "RIFF"
+ *   bytes 4-7   chunk size (LE)
+ *   bytes 8-11  "WAVE"
+ *   then chunks: <4-byte id><4-byte size LE><size bytes><pad if size odd>
+ *   "fmt " chunk data layout we care about:
+ *     +0 audioFormat (2)   +2 numChannels (2)
+ *     +4 sampleRate  (4)   +8 byteRate    (4)
+ *     +12 blockAlign (2)   +14 bitsPerSample (2)
+ *   "data" chunk size tells us byte count of PCM payload.
+ *   duration_ms = (dataSize / byteRate) × 1000.
+ */
+function _wavDurationMsFromB64(b64) {
+  try {
+    if (typeof b64 !== 'string' || b64.length < 60) return 0;
+    // Decode JUST the header (256 bytes is plenty for any sane fmt+data
+    // offsets) to avoid base64-decoding multi-MB audio just to read 4
+    // numbers. We can't slice base64 byte-perfectly, so decode a generous
+    // chunk and walk it.
+    const headerB64 = b64.slice(0, 1024);            // ~768 bytes raw
+    const binStr = atob(headerB64);
+    const u8 = new Uint8Array(binStr.length);
+    for (let i = 0; i < binStr.length; i++) u8[i] = binStr.charCodeAt(i);
+    const dv = new DataView(u8.buffer);
+    if (u8.length < 12) return 0;
+    // "RIFF" + "WAVE" magic.
+    if (dv.getUint32(0, false) !== 0x52494646) return 0;
+    if (dv.getUint32(8, false) !== 0x57415645) return 0;
+
+    let byteRate = 0;
+    let dataSize = 0;
+    let pos = 12;
+    while (pos + 8 <= u8.length) {
+      const chunkId   = dv.getUint32(pos, false);
+      const chunkSize = dv.getUint32(pos + 4, true);
+      if (chunkId === 0x666d7420 /* "fmt " */) {
+        if (pos + 8 + 16 <= u8.length) {
+          byteRate = dv.getUint32(pos + 8 + 8, true);
+        }
+      } else if (chunkId === 0x64617461 /* "data" */) {
+        dataSize = chunkSize;
+        break;
+      }
+      pos += 8 + chunkSize + (chunkSize & 1);   // chunks word-aligned
+    }
+    if (!byteRate || !dataSize) return 0;
+    return Math.round((dataSize / byteRate) * 1000);
+  } catch {
+    return 0;
+  }
 }
