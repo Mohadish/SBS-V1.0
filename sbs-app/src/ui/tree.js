@@ -1603,6 +1603,49 @@ function _deleteEmptyFolder(node) {
   }
 }
 
+/**
+ * V0.2.22 — build a fresh "adjustment folder" tree-spec node.
+ *
+ * Used by the keep-position branch of _moveIdsIntoNode when moving
+ * NON-TRANSFORM items (meshes) across parents: we wrap each source-
+ * parent group in one of these folders inside the destination, then
+ * set the folder's localOffset/Quaternion to compensate for the
+ * source→destination frame change so the items' world poses are
+ * preserved.
+ *
+ * baseLocal* = identity. The wrapper is brand new; it has no "home"
+ * to drift from. localOffset/Quaternion alone carries the compensation.
+ */
+function _makeAdjustmentFolderSpec(id, sourceName) {
+  return {
+    id,
+    type:         'folder',
+    name:         `↪ Adj from "${(sourceName || 'folder').slice(0, 32)}"`,
+    localVisible: true,
+    archived:     false,
+    locked:       false,
+    children:     [],
+
+    // Identity home anchor — wrapper has no FBX import history.
+    baseLocalPosition:    [0, 0, 0],
+    baseLocalQuaternion:  [0, 0, 0, 1],
+    baseLocalScale:       [1, 1, 1],
+
+    // Per-step deltas — set by the compensation pass after rebuild.
+    localOffset:          [0, 0, 0],
+    localQuaternion:      [0, 0, 0, 1],
+    orientationSteps:     [0, 0, 0],
+
+    // Pivot at origin (no custom pivot for a fresh wrapper).
+    pivotLocalOffset:     [0, 0, 0],
+    pivotLocalQuaternion: [0, 0, 0, 1],
+
+    moveEnabled:   true,
+    rotateEnabled: true,
+    pivotEnabled:  true,
+  };
+}
+
 function _moveIdsIntoNode(ids, targetNode) {
   if (!ids.length) return;
   const root = state.get('treeData');
@@ -1658,7 +1701,7 @@ function _moveIdsIntoNode(ids, targetNode) {
   }
   if (!moves.length) { setStatus('Nothing to move.'); return; }
 
-  // V0.2.22 — UNIFIED REBUILD ARCHITECTURE
+  // V0.2.22 — UNIFIED REBUILD ARCHITECTURE + ADJUSTMENT FOLDERS
   // ─────────────────────────────────────────────────────────────────────
   // The old V0.2.19 path did `parent.remove(obj) + dest.add(obj)` directly,
   // then called applyAllTransforms. That diverged from the load /
@@ -1673,16 +1716,56 @@ function _moveIdsIntoNode(ids, targetNode) {
   // with just the tree field, producing the byte-identical Three.js graph
   // that load would reproduce from the same spec.
   //
-  // keep-position likewise no longer touches baseLocal* (project-global).
-  // It captures pre-move world matrices, rebuilds, then computes per-step
-  // localOffset/localQuaternion compensation so the moved object's world
-  // pose is preserved IN THE ACTIVE STEP ONLY. Other steps keep their own
-  // deltas — exactly what the dialog text already promised.
+  // keep-position no longer touches baseLocal* (project-global). Two paths:
   //
-  // Limitation: only transform-bearing nodes (folder/model/flatShape) get
-  // keep-position compensation. Pure mesh moves fall back to cascade for
-  // that node — meshes don't carry per-node deltas in this architecture
-  // (their pose is the parent chain × baked vertex positions).
+  //   Rule A — transform-bearing nodes (folder / model / flatShape)
+  //     Self-compensate: write per-step localOffset / localQuaternion onto
+  //     the moved node itself so its world pose is preserved. No effect on
+  //     siblings. Active step only.
+  //
+  //   Rule B — non-transform nodes (mesh, etc.)
+  //     Meshes can't self-compensate (no per-node deltas in SBS — their
+  //     pose is the parent chain × baked vertex positions). Compensating
+  //     the destination folder would shift every UNRELATED sibling already
+  //     in it. The right solution is an "Adjustment Folder" wrapper:
+  //       - one new folder per SOURCE PARENT (so each group keeps its own
+  //         frame compensation; mixing sources in one wrapper would smear
+  //         the math)
+  //       - the moved meshes are parented INTO the wrapper
+  //       - the wrapper's localOffset/Quaternion = decompose(inv(destWorld)
+  //         × sourceWorld), so wrapper.world × mesh.bakedLocal = old world
+  //     Wrapper name: `↪ Adj from "<sourceName>"` for easy spotting.
+  //
+  // Adjustment folder IDs are minted up-front so undo / redo can address
+  // them by stable id across both directions of the action.
+
+  // Partition moves into Rule A (transform-bearing) and Rule B (mesh-like).
+  // Group Rule B moves by source parent — one adjustment folder per source.
+  const transformMoves = [];
+  const meshGroups     = new Map();   // sourceParentId → moves[]
+  for (const m of moves) {
+    const movedNode = findNode(root, m.nodeId);
+    if (movedNode && isTransformNode(movedNode)) {
+      transformMoves.push(m);
+    } else {
+      if (!meshGroups.has(m.fromParentId)) meshGroups.set(m.fromParentId, []);
+      meshGroups.get(m.fromParentId).push(m);
+    }
+  }
+
+  // Pre-mint adjustment folder ids + capture source-parent names. Empty if
+  // the user picks Cascade; built up-front so doMove/undoMove address them
+  // by stable id (redo creates the SAME folder ids the first do created).
+  const adjustments = [];   // [{ adjId, sourceParentId, sourceName, items: moves[] }]
+  for (const [sourceParentId, items] of meshGroups) {
+    const sourceParent = findNode(root, sourceParentId);
+    adjustments.push({
+      adjId:          generateId('folder'),
+      sourceParentId,
+      sourceName:     (sourceParent?.name || 'folder').slice(0, 32),
+      items,
+    });
+  }
 
   _showKeepPositionDialog(moves.length, targetNode.name || 'folder').then((choice) => {
     if (choice === 'cancel') { setStatus('Move cancelled.'); return; }
@@ -1693,26 +1776,33 @@ function _moveIdsIntoNode(ids, targetNode) {
       const r = state.get('treeData');
       const THREE = window.THREE;
 
-      // 1) Snapshot pre-move world matrices for keep-position. Must happen
-      //    BEFORE we mutate the spec or call applySnapshotInstant — once
-      //    folders get torn down, the old worlds are lost.
-      const oldWorlds = new Map();
+      // 1) Capture pre-move world matrices BEFORE we mutate anything.
+      //    For Rule A: the moved node's own world.
+      //    For Rule B: each source parent's world (the wrapper's
+      //                compensation reads this).
+      const oldNodeWorlds   = new Map();   // nodeId → Matrix4
+      const oldSourceWorlds = new Map();   // sourceParentId → Matrix4
       if (keepPos && THREE) {
-        for (const m of moves) {
+        for (const m of transformMoves) {
           const obj = steps.object3dById?.get(m.nodeId);
           if (!obj) continue;
-          // updateMatrixWorld on the parent first to make sure the chain
-          // is current (gizmo edits don't always flush down).
           if (obj.parent) obj.parent.updateMatrixWorld(true);
           obj.updateMatrixWorld(true);
-          oldWorlds.set(m.nodeId, obj.matrixWorld.clone());
+          oldNodeWorlds.set(m.nodeId, obj.matrixWorld.clone());
+        }
+        for (const a of adjustments) {
+          const srcObj = steps.object3dById?.get(a.sourceParentId);
+          if (!srcObj) continue;
+          srcObj.updateMatrixWorld(true);
+          oldSourceWorlds.set(a.sourceParentId, srcObj.matrixWorld.clone());
         }
       }
 
-      // 2) Update the DATA SPEC only — splice children arrays. NO direct
-      //    Three.js mutation here; the rebuild below handles all scene
-      //    graph changes from the new spec.
-      for (const m of moves) {
+      // 2) Update the DATA SPEC. NO direct Three.js mutation — rebuild
+      //    handles all scene graph changes from the new spec.
+
+      // 2a) Transform-bearing moves go directly into the destination.
+      for (const m of transformMoves) {
         const p = findParent(r, m.nodeId);
         const node = findNode(r, m.nodeId);
         const dest = findNode(r, targetNode.id);
@@ -1725,11 +1815,46 @@ function _moveIdsIntoNode(ids, targetNode) {
         dest.children.push(node);
       }
 
+      // 2b) Non-transform (mesh) moves: keep-position wraps each source-
+      //     parent group in a fresh Adjustment folder. Cascade just drops
+      //     them directly into the destination — no wrapper needed.
+      if (keepPos) {
+        const dest = findNode(r, targetNode.id);
+        if (dest) {
+          dest.children = dest.children || [];
+          for (const a of adjustments) {
+            const adjNode = _makeAdjustmentFolderSpec(a.adjId, a.sourceName);
+            // Splice each item out of its source parent and into the adjustment folder.
+            for (const m of a.items) {
+              const p = findParent(r, m.nodeId);
+              const node = findNode(r, m.nodeId);
+              if (!node || !p) continue;
+              const i = p.children.findIndex(c => c.id === m.nodeId);
+              if (i >= 0) p.children.splice(i, 1);
+              adjNode.children.push(node);
+            }
+            dest.children.push(adjNode);
+          }
+        }
+      } else {
+        // Cascade: flat move, no wrappers.
+        for (const a of adjustments) {
+          for (const m of a.items) {
+            const p = findParent(r, m.nodeId);
+            const node = findNode(r, m.nodeId);
+            const dest = findNode(r, targetNode.id);
+            if (!node || !dest) continue;
+            if (p) {
+              const i = p.children.findIndex(c => c.id === m.nodeId);
+              if (i >= 0) p.children.splice(i, 1);
+            }
+            dest.children = dest.children || [];
+            dest.children.push(node);
+          }
+        }
+      }
+
       // 3) Rebuild Three.js scene via the SAME path load uses.
-      //    applySnapshotInstant({ tree }):
-      //      - cleanupFolderGroups removes every folder's Three.js Group
-      //      - rebuildFromTreeSpec creates fresh Groups + reparents meshes
-      //      - state.setState({ nodeById }) + emit change:treeData
       steps.applySnapshotInstant({ tree: serializeModelTree(r) });
 
       // 4) Push folder/model/flatShape transforms onto their fresh Groups.
@@ -1737,9 +1862,7 @@ function _moveIdsIntoNode(ids, targetNode) {
       //    walks the data tree and applies baseLocal+localOffset to each.
       applyAllTransforms(r, steps.object3dById);
 
-      // 5) keep-position: compute per-step delta compensation so moved
-      //    objects land at their captured pre-move worlds. Per-step only —
-      //    baseLocal* is untouched.
+      // 5) keep-position compensation pass.
       if (keepPos && THREE) {
         const nodeMap   = state.get('nodeById');
         const invParent = new THREE.Matrix4();
@@ -1750,11 +1873,12 @@ function _moveIdsIntoNode(ids, targetNode) {
         const baseQuat  = new THREE.Quaternion();
         const localQuat = new THREE.Quaternion();
 
-        for (const m of moves) {
-          const oldWorld = oldWorlds.get(m.nodeId);
+        // 5a) Rule A — self-compensate each transform-bearing moved node.
+        for (const m of transformMoves) {
+          const oldWorld = oldNodeWorlds.get(m.nodeId);
           if (!oldWorld) continue;
           const node = nodeMap?.get(m.nodeId);
-          if (!node || !isTransformNode(node)) continue;     // meshes: fall back to cascade
+          if (!node) continue;
           const obj = steps.object3dById?.get(m.nodeId);
           if (!obj?.parent) continue;
           obj.parent.updateMatrixWorld(true);
@@ -1767,16 +1891,34 @@ function _moveIdsIntoNode(ids, targetNode) {
           const blp = node.baseLocalPosition   || [0, 0, 0];
           const blq = node.baseLocalQuaternion || [0, 0, 0, 1];
 
-          // localOffset    = decomposed-position - baseLocalPosition
           node.localOffset = [
             tmpPos.x - blp[0],
             tmpPos.y - blp[1],
             tmpPos.z - blp[2],
           ];
-          // localQuaternion = inv(baseLocalQuaternion) × decomposed-quaternion
           baseQuat.set(blq[0], blq[1], blq[2], blq[3]).invert();
           localQuat.copy(baseQuat).multiply(tmpQuat);
           setStoredQuaternion(node, [localQuat.x, localQuat.y, localQuat.z, localQuat.w]);
+        }
+
+        // 5b) Rule B — each adjustment folder's local = inv(dest.world)
+        //     × sourceParent.world. Adjustment folders are fresh, so their
+        //     baseLocal* is identity; localOffset/Quaternion alone carries
+        //     the compensation.
+        const destObj = steps.object3dById?.get(targetNode.id);
+        if (destObj) {
+          destObj.updateMatrixWorld(true);
+          const invDest = new THREE.Matrix4().copy(destObj.matrixWorld).invert();
+          for (const a of adjustments) {
+            const srcWorld = oldSourceWorlds.get(a.sourceParentId);
+            if (!srcWorld) continue;
+            const adjNode = nodeMap?.get(a.adjId);
+            if (!adjNode) continue;
+            localMat.multiplyMatrices(invDest, srcWorld);
+            localMat.decompose(tmpPos, tmpQuat, tmpScale);
+            adjNode.localOffset = [tmpPos.x, tmpPos.y, tmpPos.z];
+            setStoredQuaternion(adjNode, [tmpQuat.x, tmpQuat.y, tmpQuat.z, tmpQuat.w]);
+          }
         }
 
         // Re-apply to push the new deltas to Three.js.
@@ -1791,24 +1933,67 @@ function _moveIdsIntoNode(ids, targetNode) {
     // ── undoMove ────────────────────────────────────────────────────────
     const undoMove = () => {
       const r = state.get('treeData');
-      // Revert tree spec: splice each move OUT of the destination, splice
-      // BACK INTO the original parent at the original index. Reverse-order
-      // so earlier original indices restore correctly.
-      for (const m of [...moves].reverse()) {
-        const dest = findNode(r, targetNode.id);
+
+      // 1) Restore non-transform moves to their original parents and remove
+      //    the adjustment folders. We do this BEFORE the transform-move
+      //    restore so dest.children indices for transform moves stay stable.
+      const dest = findNode(r, targetNode.id);
+      if (dest?.children) {
+        for (const a of adjustments) {
+          // Find the adjustment folder; lift its children back to original
+          // parents at their original indices, then remove the folder.
+          const idx = dest.children.findIndex(c => c.id === a.adjId);
+          if (idx >= 0) {
+            const adjFolder = dest.children[idx];
+            // For each item: pull from adj.children, splice into original parent.
+            for (const m of [...a.items].reverse()) {
+              const itemIdx = adjFolder.children.findIndex(c => c.id === m.nodeId);
+              if (itemIdx < 0) continue;
+              const [itemNode] = adjFolder.children.splice(itemIdx, 1);
+              const orig = findNode(r, m.fromParentId);
+              if (orig) {
+                orig.children = orig.children || [];
+                const insertAt = Math.min(m.fromIdx, orig.children.length);
+                orig.children.splice(insertAt, 0, itemNode);
+              }
+            }
+            // Remove the now-empty adjustment folder.
+            dest.children.splice(idx, 1);
+          } else {
+            // Cascade path (no wrapper was created). Items are direct
+            // children of dest — restore them straight to original parents.
+            for (const m of [...a.items].reverse()) {
+              const itemIdx = dest.children.findIndex(c => c.id === m.nodeId);
+              if (itemIdx < 0) continue;
+              const [itemNode] = dest.children.splice(itemIdx, 1);
+              const orig = findNode(r, m.fromParentId);
+              if (orig) {
+                orig.children = orig.children || [];
+                const insertAt = Math.min(m.fromIdx, orig.children.length);
+                orig.children.splice(insertAt, 0, itemNode);
+              }
+            }
+          }
+        }
+      }
+
+      // 2) Restore transform-bearing moves to their original parents AND
+      //    restore their pre-move per-step deltas (only meaningful when
+      //    keepPos rewrote them).
+      for (const m of [...transformMoves].reverse()) {
+        const d = findNode(r, targetNode.id);
         const node = findNode(r, m.nodeId);
         const orig = findNode(r, m.fromParentId);
         if (!node) continue;
-        if (dest?.children) {
-          const i = dest.children.findIndex(c => c.id === m.nodeId);
-          if (i >= 0) dest.children.splice(i, 1);
+        if (d?.children) {
+          const i = d.children.findIndex(c => c.id === m.nodeId);
+          if (i >= 0) d.children.splice(i, 1);
         }
         if (!orig) continue;
         orig.children = orig.children || [];
         const insertAt = Math.min(m.fromIdx, orig.children.length);
         orig.children.splice(insertAt, 0, node);
 
-        // Restore per-step deltas if keepPos rewrote them.
         if (keepPos) {
           node.localOffset      = [...m.beforeXf.localOffset];
           node.localQuaternion  = [...m.beforeXf.localQuaternion];
