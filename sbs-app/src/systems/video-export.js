@@ -293,20 +293,47 @@ async function _exportMp4({ fps = DEFAULT_FPS, bitrate = DEFAULT_BITRATE,
       // export entry point (timeline button, Export tab Start, etc.).
       await _synthesizeMissingClips(stepsToPlay, onProgress, signal);
 
-      // Recompute per-step holds AFTER pre-synth so the timeline accounts
-      // for newly-synthesized clip durations. Each step's duration is its
-      // animation + its narration (so audio finishes before the next step
-      // starts) + the user's stepHoldMs breath.
+      // V0.2.22.6 — sub-step narration overflow (within parent group only).
       //
-      // V0.2.22.5: reverted V0.2.22.4's last-step-only logic. That made
-      // every non-last step always-overflow which broke the user's
-      // primary case (step should hold until voiceover ends) and allowed
-      // long narrations to spill over and collide with following step
-      // narrations in the audio mix. Per-step "allow overflow" UI control
-      // would be the proper way to expose overflow as an option — TODO.
+      // stepsToPlay is a FLAT array containing both top-level steps AND
+      // sub-steps. The OLD blanket rule `narrMs + stepHoldMs` for every
+      // step held each sub-step's static frame for its full narration
+      // duration before chaining — which the user reported as
+      // "sub-step waits for narration." The audio mix already places
+      // each sub-step's audio at its own marker, so it can naturally
+      // overflow into following sub-steps if the VIDEO advances on
+      // animation timing.
+      //
+      // New rule, mapping the user's requested semantics:
+      //   • Top-level step:    perStepHold = narration + stepHoldMs.
+      //                        Step waits for own narration so the next
+      //                        top-level transition starts clean.
+      //   • Sub-step (mid-group): perStepHold = stepHoldMs only.
+      //                        Sub-step advances on animation timing;
+      //                        narration overflows into following
+      //                        sub-steps via the additive audio mix.
+      //   • Sub-step (last in group): perStepHold = narration + stepHoldMs.
+      //                        Final sub-step still waits for own
+      //                        narration so it doesn't leak into the
+      //                        next top-level step.
+      //
+      // A step is a sub-step iff it has groupId AND is NOT the group head
+      // (groupHead=true marks the top-level step that owns the group).
+      // The last sub-step in a group is whichever sub-step's `next`
+      // belongs to a different group (or there is no next).
       for (let i = 0; i < stepsToPlay.length; i++) {
-        const narrMs = stepsToPlay[i].narration?.durationMs || 0;
-        perStepHold[i] = narrMs + stepHoldMs;
+        const step = stepsToPlay[i];
+        const narrMs = step.narration?.durationMs || 0;
+        const isSubStep = !!step.groupId && step.groupHead !== true;
+        const nextStep = stepsToPlay[i + 1];
+        const isLastInGroup = isSubStep && (!nextStep || nextStep.groupId !== step.groupId);
+        if (isSubStep && !isLastInGroup) {
+          // mid-group sub-step → overflow allowed
+          perStepHold[i] = stepHoldMs;
+        } else {
+          // top-level OR last sub-step in group → wait for own narration
+          perStepHold[i] = narrMs + stepHoldMs;
+        }
       }
 
       console.log('[export] decoding audio segments…');
