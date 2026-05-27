@@ -293,47 +293,59 @@ async function _exportMp4({ fps = DEFAULT_FPS, bitrate = DEFAULT_BITRATE,
       // export entry point (timeline button, Export tab Start, etc.).
       await _synthesizeMissingClips(stepsToPlay, onProgress, signal);
 
-      // V0.2.22.6 — sub-step narration overflow (within parent group only).
+      // V0.2.22.7 — surgical pause computation (user's correct proposal).
       //
-      // stepsToPlay is a FLAT array containing both top-level steps AND
-      // sub-steps. The OLD blanket rule `narrMs + stepHoldMs` for every
-      // step held each sub-step's static frame for its full narration
-      // duration before chaining — which the user reported as
-      // "sub-step waits for narration." The audio mix already places
-      // each sub-step's audio at its own marker, so it can naturally
-      // overflow into following sub-steps if the VIDEO advances on
-      // animation timing.
+      // For each step, compute its ANIMATION duration and its NARRATION
+      // duration. The only thing we must avoid is voice-vs-voice collisions
+      // (overlapping clips compete for the listener's attention even when
+      // the mixer sums them cleanly). So the rule is:
       //
-      // New rule, mapping the user's requested semantics:
-      //   • Top-level step:    perStepHold = narration + stepHoldMs.
-      //                        Step waits for own narration so the next
-      //                        top-level transition starts clean.
-      //   • Sub-step (mid-group): perStepHold = stepHoldMs only.
-      //                        Sub-step advances on animation timing;
-      //                        narration overflows into following
-      //                        sub-steps via the additive audio mix.
-      //   • Sub-step (last in group): perStepHold = narration + stepHoldMs.
-      //                        Final sub-step still waits for own
-      //                        narration so it doesn't leak into the
-      //                        next top-level step.
+      //   • If next step has audio (or this IS the last step):
+      //       perStepHold[i] = max(0, narration - animation) + stepHoldMs
+      //       Add a pause ONLY if narration exceeds animation. Pause is
+      //       exactly the audio excess — no more, no over-padding.
       //
-      // A step is a sub-step iff it has groupId AND is NOT the group head
-      // (groupHead=true marks the top-level step that owns the group).
-      // The last sub-step in a group is whichever sub-step's `next`
-      // belongs to a different group (or there is no next).
+      //   • If next step has NO audio:
+      //       perStepHold[i] = stepHoldMs
+      //       Animation moves on. Trailing audio overflows naturally into
+      //       the next step's frames (no collision risk because next has
+      //       no narration of its own). Audio is mixed at this step's
+      //       start marker and plays out from there.
+      //
+      // Animation duration per step matches the actual phase math from
+      // applySnapshotAnimated's simultaneous branch:
+      //   transition.durationOverride ? transition.objectDurationMs
+      //                               : state.objectAnimDurationMs
+      //   (fallback: 1500ms)
+      //
+      // This treats sub-steps and top-level steps uniformly — what matters
+      // is whether the NEXT step has audio, not the group boundary. Cross-
+      // group overflow can still happen if the next top-level has no
+      // narration; if the user doesn't want that, they author narration
+      // on the next top-level (which gates the previous step's audio).
+      //
+      // Known limitation: estimated animation duration may drift from
+      // run-time actual (e.g. under realtime browser throttling). If
+      // actual > estimated and next step has audio, this step's audio
+      // could still be playing when the next starts → collision.
+      // Reasonable in practice; refine to run-time measurement if drift
+      // becomes a problem.
+      const globalObjDur = state.get('objectAnimDurationMs') ?? 1500;
+      const _estimateAnimDur = (s) => {
+        const t = s.transition || {};
+        return t.durationOverride === true
+          ? (t.objectDurationMs ?? globalObjDur)
+          : globalObjDur;
+      };
       for (let i = 0; i < stepsToPlay.length; i++) {
-        const step = stepsToPlay[i];
-        const narrMs = step.narration?.durationMs || 0;
-        const isSubStep = !!step.groupId && step.groupHead !== true;
+        const step     = stepsToPlay[i];
+        const narrMs   = step.narration?.durationMs || 0;
+        const animDur  = _estimateAnimDur(step);
         const nextStep = stepsToPlay[i + 1];
-        const isLastInGroup = isSubStep && (!nextStep || nextStep.groupId !== step.groupId);
-        if (isSubStep && !isLastInGroup) {
-          // mid-group sub-step → overflow allowed
-          perStepHold[i] = stepHoldMs;
-        } else {
-          // top-level OR last sub-step in group → wait for own narration
-          perStepHold[i] = narrMs + stepHoldMs;
-        }
+        const isLast   = !nextStep;
+        const nextHasAudio = isLast || ((nextStep.narration?.durationMs || 0) > 0);
+        const audioExcess  = nextHasAudio ? Math.max(0, narrMs - animDur) : 0;
+        perStepHold[i] = audioExcess + stepHoldMs;
       }
 
       console.log('[export] decoding audio segments…');
