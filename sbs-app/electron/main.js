@@ -77,6 +77,18 @@ app.on('before-quit', () => {
   if (_kokoroWorker) { try { _kokoroWorker.terminate(); } catch {} _kokoroWorker = null; }
 });
 
+// V0.2.22+ side-by-side identity — when this build is launched with
+// SBS_PARALLEL=1 (the V0.2.22+ launcher sets it), rename the app so it
+// gets a separate userData dir AND a separate single-instance lock key.
+// Lets V0.2.21 stable and V0.2.22+ refactor run at the same time without
+// cache wars, settings collisions, or single-instance kicks.
+//
+// MUST happen before requestSingleInstanceLock — the lock key is derived
+// from the resolved app name.
+if (process.env.SBS_PARALLEL === '1') {
+  app.setName('SBS Step Browser V0.2.22+');
+}
+
 // Single-instance lock — prevents a second `npm start` (or a stuck
 // Electron process from a previous launch) from cache-warring over the
 // userData directory. Without this, a hung renderer leaves the main
