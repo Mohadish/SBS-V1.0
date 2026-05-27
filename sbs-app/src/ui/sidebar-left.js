@@ -3838,8 +3838,7 @@ function _renderExportTab() {
           <span class="small muted">
             Offline render (recommended)
             <div class="small muted" style="font-size:11px;opacity:0.75;margin-top:2px;">
-              Decouples animation from real time. Same project renders the same duration regardless of window size or focus.
-              <strong style="color:#fbbf24;">If unchecked, the window MUST stay visible during the entire export — covering it with another window pauses rendering and produces frozen / duplicated frames in the output.</strong>
+              Deterministic synthetic-clock rendering. Same project produces the same encoded duration regardless of window size, focus, or system load. Slightly slower than realtime in wall-clock but produces a byte-identical result every time.
             </div>
           </span>
         </label>
