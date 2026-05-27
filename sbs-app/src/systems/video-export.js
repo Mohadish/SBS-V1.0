@@ -293,26 +293,20 @@ async function _exportMp4({ fps = DEFAULT_FPS, bitrate = DEFAULT_BITRATE,
       // export entry point (timeline button, Export tab Start, etc.).
       await _synthesizeMissingClips(stepsToPlay, onProgress, signal);
 
-      // V0.2.22.4 — narration OVERFLOW. Previously this recompute used
-      // `narrMs + stepHoldMs` for EVERY step, forcing the exporter to
-      // sit on each step until its voice clip finished. That broke the
-      // live-app behavior the user expects (narration plays async, next
-      // step advances on its own animation clock).
+      // Recompute per-step holds AFTER pre-synth so the timeline accounts
+      // for newly-synthesized clip durations. Each step's duration is its
+      // animation + its narration (so audio finishes before the next step
+      // starts) + the user's stepHoldMs breath.
       //
-      // New rule: non-last steps use just stepHoldMs (their narration
-      // overflows naturally into following steps in the audio mix —
-      // see mixTrackToFloat32, now additive). The LAST step still adds
-      // its own narration duration so the audio mixer's tail clip isn't
-      // truncated when the encoder stops.
-      //
-      // Limitation: a middle step's narration longer than the sum of all
-      // following step animations could still tail past the encoder's
-      // end → audio clipped. Pad the last step's hold manually if this
-      // happens.
-      const lastIdx = stepsToPlay.length - 1;
+      // V0.2.22.5: reverted V0.2.22.4's last-step-only logic. That made
+      // every non-last step always-overflow which broke the user's
+      // primary case (step should hold until voiceover ends) and allowed
+      // long narrations to spill over and collide with following step
+      // narrations in the audio mix. Per-step "allow overflow" UI control
+      // would be the proper way to expose overflow as an option — TODO.
       for (let i = 0; i < stepsToPlay.length; i++) {
         const narrMs = stepsToPlay[i].narration?.durationMs || 0;
-        perStepHold[i] = (i === lastIdx) ? (narrMs + stepHoldMs) : stepHoldMs;
+        perStepHold[i] = narrMs + stepHoldMs;
       }
 
       console.log('[export] decoding audio segments…');
