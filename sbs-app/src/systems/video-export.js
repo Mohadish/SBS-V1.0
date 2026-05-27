@@ -29,6 +29,10 @@ import { computeSafeFrameRect }                       from '../core/safe-frame.j
 import { decodeToAudioBuffer, resampleToMonoFloat32, mixTrackToFloat32 } from './audio-bridge.js';
 import { synthesize as ttsSynthesize } from './tts.js';
 import * as narrationCache from './narration-cache.js';
+// V0.2.22.11 — animation phase string parser, used to compute the
+// per-step narration start offset (live app fires narration when its
+// phase is reached; export must place audio at marker+offset to match).
+import { parseAnimation, resolveAnimationString } from './animation.js';
 
 // Vendored ES module (see sbs-app/vendor/mp4-muxer.mjs).
 import { Muxer as Mp4Muxer, ArrayBufferTarget } from '../../vendor/mp4-muxer.mjs';
@@ -370,11 +374,17 @@ async function _exportMp4({ fps = DEFAULT_FPS, bitrate = DEFAULT_BITRATE,
       const groupKeys  = stepsToPlay.map(groupKeyOf);
       const narrDurs   = stepsToPlay.map(s => s.narration?.durationMs || 0);
       const animDurs   = stepsToPlay.map(_estimateAnimDur);
+      // V0.2.22.11 — per-step narration start offset (animation string).
+      // Audio for step i begins at markers[i] + narrOffsets[i], not at
+      // markers[i]. Without this, collision-avoidance underestimates the
+      // audio end time and overflow into next-step frames starts at the
+      // wrong moment.
+      const narrOffsets = stepsToPlay.map(_narrationStartOffsetMs);
       const markers    = new Array(stepsToPlay.length);   // estimated step starts
       markers[0] = 0;
 
-      console.log('[export] perStepHold table (V0.2.22.10 group-aware):');
-      console.log('  [#] groupKey  | name           | anim | narr | mkr  | hold | reason');
+      console.log('[export] perStepHold table (V0.2.22.11 group + string offset):');
+      console.log('  [#] groupKey  | name           | anim | narr | nOff | mkr  | hold | reason');
 
       for (let i = 0; i < stepsToPlay.length; i++) {
         const step    = stepsToPlay[i];
@@ -392,13 +402,15 @@ async function _exportMp4({ fps = DEFAULT_FPS, bitrate = DEFAULT_BITRATE,
           reason = 'OVERFLOW (same group, next no audio)';
         } else {
           // Wait for ALL in-group audio tails to finish, not just own.
+          // Audio for step k starts at markers[k] + narrOffsets[k] and
+          // ends narrDurs[k] later (V0.2.22.11 offset-aware).
           let groupAudioEnd = stepAnimEnd;                          // floor
-          groupAudioEnd = Math.max(groupAudioEnd, markers[i] + narrDurs[i]);
+          groupAudioEnd = Math.max(groupAudioEnd, markers[i] + narrOffsets[i] + narrDurs[i]);
           if (myKey !== null) {
             // walk backwards through prior in-group steps; their audio
             // started earlier but may extend past stepAnimEnd
             for (let j = i - 1; j >= 0 && groupKeys[j] === myKey; j--) {
-              groupAudioEnd = Math.max(groupAudioEnd, markers[j] + narrDurs[j]);
+              groupAudioEnd = Math.max(groupAudioEnd, markers[j] + narrOffsets[j] + narrDurs[j]);
             }
           }
           hold   = Math.max(0, groupAudioEnd - stepAnimEnd) + stepHoldMs;
@@ -411,7 +423,7 @@ async function _exportMp4({ fps = DEFAULT_FPS, bitrate = DEFAULT_BITRATE,
 
         const keyShort = (myKey || '—').slice(0, 8).padEnd(8);
         const nm = (step.name || '').slice(0, 14).padEnd(14);
-        console.log(`  [${String(i).padStart(2)}] ${keyShort} | ${nm} | anim=${String(animDurs[i]).padStart(5)} | narr=${String(narrDurs[i]).padStart(5)} | mkr=${String(markers[i]).padStart(5)} | hold=${String(hold).padStart(5)} | ${reason}`);
+        console.log(`  [${String(i).padStart(2)}] ${keyShort} | ${nm} | anim=${String(animDurs[i]).padStart(5)} | narr=${String(narrDurs[i]).padStart(5)} | nOff=${String(narrOffsets[i]).padStart(4)} | mkr=${String(markers[i]).padStart(5)} | hold=${String(hold).padStart(5)} | ${reason}`);
       }
 
       console.log('[export] decoding audio segments…');
@@ -868,8 +880,9 @@ async function _decodeNarrationSegments(stepsToPlay, sampleRate) {
       const audioBuf = await _withTimeout(decodeToAudioBuffer(url, lazyCtx), 10_000, 'decodeAudioData');
       console.log(`[export]   decoded — ${audioBuf.numberOfChannels}ch @ ${audioBuf.sampleRate}Hz, ${audioBuf.duration.toFixed(2)}s`);
       const samples = await _withTimeout(resampleToMonoFloat32(audioBuf, sampleRate), 10_000, 'resample');
-      console.log(`[export]   resampled — ${samples.length} frames`);
-      segments.push({ stepId: step.id, samples });
+      const offsetMs = _narrationStartOffsetMs(step);
+      console.log(`[export]   resampled — ${samples.length} frames, narration offset=${offsetMs}ms`);
+      segments.push({ stepId: step.id, samples, offsetMs });
       hasAudio = true;
     } catch (err) {
       console.warn('[export] decode failed for step', step.name, err?.message);
@@ -880,16 +893,59 @@ async function _decodeNarrationSegments(stepsToPlay, sampleRate) {
 }
 
 /**
+ * V0.2.22.11 — compute when a step's narration should START playing,
+ * RELATIVE TO the step's activation marker. Matches live-app behavior:
+ * the phased animator fires `narration:trigger` when the `narration`
+ * phase of the resolved animation string is reached. Offset = sum of
+ * durationMs of all phases BEFORE the narration phase.
+ *
+ * Returns 0 when:
+ *   - The step has no animation preset (simultaneous mode — narration
+ *     plays at step start)
+ *   - The animation string has no `narration` phase (legacy strings)
+ *   - The narration phase is the FIRST phase (offset is 0)
+ */
+function _narrationStartOffsetMs(step) {
+  const transition = step.transition || {};
+  const presets = state.get('animationPresets') || [];
+  const animStr = resolveAnimationString(transition, presets);
+  if (!animStr) return 0;
+  const resolveAL = (tk) => {
+    if (tk === 'AL1') return state.get('cameraAnimDurationMs') ?? 1500;
+    if (tk === 'AL2') return state.get('objectAnimDurationMs')  ?? 1500;
+    return 0;
+  };
+  const phases = parseAnimation(animStr, resolveAL);
+  if (!phases) return 0;
+  let offset = 0;
+  for (const phase of phases) {
+    if (phase.types.includes('narration')) return offset;
+    offset += phase.durationMs;
+  }
+  // No narration phase in this preset — legacy behavior: play at start.
+  return 0;
+}
+
+/**
  * Mix decoded segments into a single Float32 PCM aligned to step
  * markers (timeInMs is the actual encoded video time at each step's
- * activation). totalMs = encoded video duration; PCM is sized to
- * exactly that length so audio extends through the final hold but
- * never beyond. Returns null when no audio has been decoded.
+ * activation) PLUS each segment's narration phase offset.
+ *
+ * V0.2.22.11 — added the offsetMs term so audio fires at the same
+ * point relative to step start that the live app fires `narration:
+ * trigger`. Previously every clip started at marker time (= step
+ * activation = animation start), which doesn't match the phased
+ * animator's behavior when narration is configured to fire AFTER
+ * earlier phases (camera, obj, etc).
+ *
+ * totalMs = encoded video duration; PCM is sized to exactly that
+ * length so audio extends through the final hold but never beyond.
+ * Returns null when no audio has been decoded.
  */
 function _mixPcmFromMarkers(audioSegments, markersByStepId, totalMs, sampleRate) {
   if (!audioSegments?.hasAudio) return null;
   const tracks = audioSegments.segments.map(s => ({
-    startMs: markersByStepId.get(s.stepId) ?? 0,
+    startMs: (markersByStepId.get(s.stepId) ?? 0) + (s.offsetMs || 0),
     samples: s.samples,
   }));
   return mixTrackToFloat32(tracks, totalMs, sampleRate);
