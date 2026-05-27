@@ -383,9 +383,16 @@ async function _exportMp4({ fps = DEFAULT_FPS, bitrate = DEFAULT_BITRATE,
       const markers    = new Array(stepsToPlay.length);   // estimated step starts
       markers[0] = 0;
 
-      console.log('[export] perStepHold table (V0.2.22.11 group + string offset):');
-      console.log('  [#] groupKey  | name           | anim | narr | nOff | mkr  | hold | reason');
-
+      // V0.2.22.14 — diagnostic table trimmed. To re-enable the per-step
+      // breakdown (audited during the narration-timing work), set
+      //   window.sbsDiag = { ...window.sbsDiag, exportTiming: true };
+      // in DevTools before starting an export.
+      const _diagTiming = !!(typeof window !== 'undefined' && window.sbsDiag?.exportTiming);
+      if (_diagTiming) {
+        console.log('[export] perStepHold table:');
+        console.log('  [#] groupKey  | name           | anim | narr | nOff | mkr  | hold | reason');
+      }
+      let _overflowCount = 0;
       for (let i = 0; i < stepsToPlay.length; i++) {
         const step    = stepsToPlay[i];
         const nextI   = i + 1;
@@ -400,6 +407,7 @@ async function _exportMp4({ fps = DEFAULT_FPS, bitrate = DEFAULT_BITRATE,
           // Overflow allowed — audio plays into next-step frames.
           hold   = stepHoldMs;
           reason = 'OVERFLOW (same group, next no audio)';
+          _overflowCount++;
         } else {
           // Wait for ALL in-group audio tails to finish, not just own.
           // Audio for step k starts at markers[k] + narrOffsets[k] and
@@ -421,10 +429,14 @@ async function _exportMp4({ fps = DEFAULT_FPS, bitrate = DEFAULT_BITRATE,
         perStepHold[i] = hold;
         if (nextI < stepsToPlay.length) markers[nextI] = stepAnimEnd + hold;
 
-        const keyShort = (myKey || '—').slice(0, 8).padEnd(8);
-        const nm = (step.name || '').slice(0, 14).padEnd(14);
-        console.log(`  [${String(i).padStart(2)}] ${keyShort} | ${nm} | anim=${String(animDurs[i]).padStart(5)} | narr=${String(narrDurs[i]).padStart(5)} | nOff=${String(narrOffsets[i]).padStart(4)} | mkr=${String(markers[i]).padStart(5)} | hold=${String(hold).padStart(5)} | ${reason}`);
+        if (_diagTiming) {
+          const keyShort = (myKey || '—').slice(0, 8).padEnd(8);
+          const nm = (step.name || '').slice(0, 14).padEnd(14);
+          console.log(`  [${String(i).padStart(2)}] ${keyShort} | ${nm} | anim=${String(animDurs[i]).padStart(5)} | narr=${String(narrDurs[i]).padStart(5)} | nOff=${String(narrOffsets[i]).padStart(4)} | mkr=${String(markers[i]).padStart(5)} | hold=${String(hold).padStart(5)} | ${reason}`);
+        }
       }
+      const _totalEstMs = (markers[stepsToPlay.length - 1] || 0) + animDurs[animDurs.length - 1] + perStepHold[perStepHold.length - 1];
+      console.log(`[export] timing: ${stepsToPlay.length} step(s), ${_overflowCount} overflow(s), est total ${Math.round(_totalEstMs)}ms`);
 
       console.log('[export] decoding audio segments…');
       audioSegments = await _decodeNarrationSegments(stepsToPlay, AUDIO_RATE);
@@ -776,22 +788,24 @@ async function _playTimeline(stepsToPlay, holdsMsArg, onProgress, signal, onStep
   // Hard reset already landed the scene exactly on the first export step
   // (instant apply, like a double-click). We hold its final state for the
   // configured duration, then transition into step 2 and onwards.
+  // V0.2.22.14 — per-step diagnostic gated behind window.sbsDiag.exportTiming.
+  const _diagTiming = !!(typeof window !== 'undefined' && window.sbsDiag?.exportTiming);
   for (let i = 0; i < stepsToPlay.length; i++) {
     if (signal?.aborted) throw new DOMException('Export cancelled', 'AbortError');
     const step = stepsToPlay[i];
     onProgress?.({ current: i + 1, total: stepsToPlay.length, stepName: step.name });
     onStepStart?.(i, step);
-    // V0.2.22.9 diagnostic — measure actual animation duration so we
-    // can see if it diverges from the estimate used to build perStepHold.
-    const tBefore = performance.now();
+    const tBefore = _diagTiming ? performance.now() : 0;
     if (i > 0) await steps.activateStep(step.id, true);
-    const animMsActual = performance.now() - tBefore;
     const drainStart = (!offline) ? performance.now() : 0;
     await Promise.all([waitForOverlayStable(), waitForHeaderStable()]);
     const drainMs = (!offline) ? (performance.now() - drainStart) : 0;
     const wanted    = holds[i] ?? POST_STEP_HOLD_MS;
     const remaining = Math.max(0, wanted - drainMs);
-    console.log(`[export] step ${i} "${(step.name||'').slice(0,24)}" — animActual=${Math.round(animMsActual)}ms drain=${Math.round(drainMs)}ms wantedHold=${wanted}ms actualWait=${Math.round(remaining)}ms`);
+    if (_diagTiming) {
+      const animMsActual = performance.now() - tBefore - drainMs;
+      console.log(`[export] step ${i} "${(step.name||'').slice(0,24)}" — animActual=${Math.round(animMsActual)}ms drain=${Math.round(drainMs)}ms wantedHold=${wanted}ms actualWait=${Math.round(remaining)}ms`);
+    }
     await _wait(remaining);
   }
 }
@@ -876,12 +890,10 @@ async function _decodeNarrationSegments(stepsToPlay, sampleRate) {
     const url = await narrationCache.ensurePlayable(step);
     if (!url) continue;
     try {
-      console.log(`[export] decode step ${i + 1}/${stepsToPlay.length}: ${step.name}`);
       const audioBuf = await _withTimeout(decodeToAudioBuffer(url, lazyCtx), 10_000, 'decodeAudioData');
-      console.log(`[export]   decoded — ${audioBuf.numberOfChannels}ch @ ${audioBuf.sampleRate}Hz, ${audioBuf.duration.toFixed(2)}s`);
       const samples = await _withTimeout(resampleToMonoFloat32(audioBuf, sampleRate), 10_000, 'resample');
       const offsetMs = _narrationStartOffsetMs(step);
-      console.log(`[export]   resampled — ${samples.length} frames, narration offset=${offsetMs}ms`);
+      console.log(`[export] decode ${i + 1}/${stepsToPlay.length}: "${step.name}" — ${audioBuf.duration.toFixed(2)}s @ ${audioBuf.sampleRate}Hz, offset=${offsetMs}ms`);
       segments.push({ stepId: step.id, samples, offsetMs });
       hasAudio = true;
     } catch (err) {
