@@ -33,27 +33,52 @@ export function initStepNav() {
   const narrInput  = _el.querySelector('.step-nav__narration');
   const btnPreview = _el.querySelector('.step-nav__preview');
 
-  // Save narration text live (every keystroke). The previous 'change'-event
-  // approach lost edits when the user arrow-navigated away without blurring
-  // — the input never fires 'change' if focus stays in the document, and
-  // re-render then overwrites the un-saved value.
-  // Direct mutation + markDirty doesn't trigger a panel re-render, so the
-  // input keeps focus while typing.
+  // V0.2.22.12 — narration text now tracks the step it BELONGS TO at the
+  // moment of typing, not whichever step is active when the debounced
+  // save fires. Without this, a fast user could type into Step A, then
+  // arrow-navigate to Step B; the 200ms-deferred save would write Step
+  // A's text into Step B (the "really annoying paste" bug).
+  //
+  // Also: a focused input survives navigation by design (the renderStep-
+  // Nav function skips value updates while focused, to avoid stomping
+  // ongoing typing). That left the input visually showing Step A's text
+  // while Step B was active, compounding the confusion.
   let _saveTimer = null;
-  const saveText = () => {
-    const step = _getActiveStep();
+  let _editingStepId = null;       // step that owns the in-flight value
+  let _editingValue  = '';
+  const flushSave = () => {
+    clearTimeout(_saveTimer);
+    _saveTimer = null;
+    if (!_editingStepId) return;
+    const allSteps = state.get('steps') || [];
+    const step = allSteps.find(s => s.id === _editingStepId);
+    _editingStepId = null;
     if (!step) return;
-    if ((step.narration?.text || '') === narrInput.value) return;
+    if ((step.narration?.text || '') === _editingValue) return;
     // Drop any cached audio when text changes — user must re-preview / re-export.
-    step.narration = { text: narrInput.value };
+    step.narration = { text: _editingValue };
     state.markDirty();
   };
   narrInput.addEventListener('input', () => {
+    _editingStepId = state.get('activeStepId');
+    _editingValue  = narrInput.value;
     clearTimeout(_saveTimer);
-    _saveTimer = setTimeout(saveText, 200);
+    _saveTimer = setTimeout(flushSave, 200);
   });
-  narrInput.addEventListener('blur', saveText);
+  narrInput.addEventListener('blur', flushSave);
   narrInput.addEventListener('keydown', e => { if (e.key === 'Enter') narrInput.blur(); });
+
+  // V0.2.22.12 — blur the narration input as soon as the user clicks
+  // anything outside it. Pair with the editing-step-id tracking above so
+  // step navigation always commits text to the step that owned it.
+  // Capture phase so we run BEFORE the click reaches any other handler
+  // that might call activateStep / setSelection.
+  document.addEventListener('mousedown', (e) => {
+    if (document.activeElement === narrInput && !narrInput.contains(e.target)) {
+      flushSave();
+      narrInput.blur();
+    }
+  }, true);
 
   btnPreview.addEventListener('click', async () => {
     const step = _getActiveStep();
@@ -71,7 +96,14 @@ export function initStepNav() {
   });
   state.on('change:narrationMuted', _renderMute);
 
-  state.on('change:activeStepId', () => renderStepNav());
+  state.on('change:activeStepId', () => {
+    // V0.2.22.12 — commit pending typing to the OLD step and blur the
+    // input so renderStepNav's "don't stomp focused input" guard
+    // allows the new step's text to populate.
+    flushSave();
+    if (document.activeElement === narrInput) narrInput.blur();
+    renderStepNav();
+  });
   state.on('change:steps',        () => renderStepNav());
 
   renderStepNav();
