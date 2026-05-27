@@ -339,42 +339,79 @@ async function _exportMp4({ fps = DEFAULT_FPS, bitrate = DEFAULT_BITRATE,
           ? (t.objectDurationMs ?? globalObjDur)
           : globalObjDur;
       };
-      console.log('[export] perStepHold table (V0.2.22.9 diagnostic):');
-      console.log('  [#] kind                | anim | narr | nextNarr | hold | reason');
-      for (let i = 0; i < stepsToPlay.length; i++) {
-        const step     = stepsToPlay[i];
-        const narrMs   = step.narration?.durationMs || 0;
-        const animDur  = _estimateAnimDur(step);
-        const isSubStep    = !!step.groupId && step.groupHead !== true;
-        const nextStep     = stepsToPlay[i + 1];
-        const isLastInGrp  = isSubStep && (!nextStep || nextStep.groupId !== step.groupId);
-        const nextNarrMs   = nextStep ? (nextStep.narration?.durationMs || 0) : 0;
+      // V0.2.22.10 — group-aware audio-tail-aware perStepHold.
+      //
+      // Diagnosis from V0.2.22.9: my classifier treated group HEADS as
+      // top-level, forcing them to wait for their own narration. But a
+      // group head's narration must be able to overflow into its
+      // sub-steps (the user's "Step 1 (copy)" → "New Step" case).
+      //
+      // New model: GROUP MEMBERSHIP (not head/sub role).
+      //   groupKey(s) = s.groupHead ? s.id : (s.groupId || null)
+      //   step i and i+1 are "in same group" iff groupKey[i] === groupKey[i+1]
+      //   AND groupKey[i] !== null (non-grouped steps don't pair up).
+      //
+      // Overflow rule for step i:
+      //   Allowed iff: next step is in same group AND next has no audio.
+      //   If allowed: perStepHold[i] = stepHoldMs (breath only). The
+      //     animation moves on; this step's audio plays into the next
+      //     step's frames.
+      //   Else: wait for THE GROUP'S total audio tail to finish before
+      //     advancing — surgical. The wait covers not just THIS step's
+      //     own narration but any prior in-group narration that's still
+      //     playing (from overflows earlier in the group). Computed
+      //     against estimated markers built up forward.
+      //
+      // This puts group heads and mid-group sub-steps on equal footing.
+      // The last step in a group does the heavy lifting of waiting for
+      // the group's audio tail so nothing leaks into the next group /
+      // top-level step.
+      const groupKeyOf = (s) => s.groupHead ? s.id : (s.groupId || null);
+      const groupKeys  = stepsToPlay.map(groupKeyOf);
+      const narrDurs   = stepsToPlay.map(s => s.narration?.durationMs || 0);
+      const animDurs   = stepsToPlay.map(_estimateAnimDur);
+      const markers    = new Array(stepsToPlay.length);   // estimated step starts
+      markers[0] = 0;
 
-        let reason;
-        if (!isSubStep || isLastInGrp) {
-          // Top-level step OR last sub-step in group → always wait for own
-          // narration (no cross-group overflow). Surgical pause: only the
-          // EXCESS past animation, not the full narration on top.
-          const excess = Math.max(0, narrMs - animDur);
-          perStepHold[i] = excess + stepHoldMs;
-          reason = isSubStep ? 'last-sub-step (wait surgical)' : 'top-level (wait surgical)';
+      console.log('[export] perStepHold table (V0.2.22.10 group-aware):');
+      console.log('  [#] groupKey  | name           | anim | narr | mkr  | hold | reason');
+
+      for (let i = 0; i < stepsToPlay.length; i++) {
+        const step    = stepsToPlay[i];
+        const nextI   = i + 1;
+        const myKey   = groupKeys[i];
+        const nextKey = nextI < stepsToPlay.length ? groupKeys[nextI] : null;
+        const inSameGroupAsNext = myKey !== null && myKey === nextKey;
+        const nextHasAudio = nextI < stepsToPlay.length && narrDurs[nextI] > 0;
+        const stepAnimEnd  = markers[i] + animDurs[i];
+
+        let hold, reason;
+        if (inSameGroupAsNext && !nextHasAudio) {
+          // Overflow allowed — audio plays into next-step frames.
+          hold   = stepHoldMs;
+          reason = 'OVERFLOW (same group, next no audio)';
         } else {
-          // Mid-group sub-step → overflow allowed iff next sub-step has no
-          // audio. If next has audio, wait so voices don't collide.
-          const nextHasAudio = nextNarrMs > 0;
-          if (nextHasAudio) {
-            const excess = Math.max(0, narrMs - animDur);
-            perStepHold[i] = excess + stepHoldMs;
-            reason = 'mid-sub (wait, next has audio)';
-          } else {
-            perStepHold[i] = stepHoldMs;
-            reason = 'mid-sub (OVERFLOW, next no audio)';
+          // Wait for ALL in-group audio tails to finish, not just own.
+          let groupAudioEnd = stepAnimEnd;                          // floor
+          groupAudioEnd = Math.max(groupAudioEnd, markers[i] + narrDurs[i]);
+          if (myKey !== null) {
+            // walk backwards through prior in-group steps; their audio
+            // started earlier but may extend past stepAnimEnd
+            for (let j = i - 1; j >= 0 && groupKeys[j] === myKey; j--) {
+              groupAudioEnd = Math.max(groupAudioEnd, markers[j] + narrDurs[j]);
+            }
           }
+          hold   = Math.max(0, groupAudioEnd - stepAnimEnd) + stepHoldMs;
+          reason = inSameGroupAsNext
+            ? 'wait (next in-group has audio, collision avoid)'
+            : (myKey !== null ? 'wait (end of group)' : 'wait (top-level)');
         }
-        const kind = isSubStep ? (isLastInGrp ? 'last-sub-step  ' : 'mid-sub-step   ')
-                               : 'top-level      ';
-        const nm = (step.name || '').slice(0, 18).padEnd(18);
-        console.log(`  [${String(i).padStart(2)}] ${kind} ${nm} | anim=${String(animDur).padStart(5)} | narr=${String(narrMs).padStart(5)} | nextNarr=${String(nextNarrMs).padStart(5)} | hold=${String(perStepHold[i]).padStart(5)} | ${reason}`);
+        perStepHold[i] = hold;
+        if (nextI < stepsToPlay.length) markers[nextI] = stepAnimEnd + hold;
+
+        const keyShort = (myKey || '—').slice(0, 8).padEnd(8);
+        const nm = (step.name || '').slice(0, 14).padEnd(14);
+        console.log(`  [${String(i).padStart(2)}] ${keyShort} | ${nm} | anim=${String(animDurs[i]).padStart(5)} | narr=${String(narrDurs[i]).padStart(5)} | mkr=${String(markers[i]).padStart(5)} | hold=${String(hold).padStart(5)} | ${reason}`);
       }
 
       console.log('[export] decoding audio segments…');
