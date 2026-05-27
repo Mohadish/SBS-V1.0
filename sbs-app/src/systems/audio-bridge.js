@@ -299,7 +299,18 @@ export function mixTrackToFloat32(track, totalMs, targetRate) {
     const startFrame = Math.round((seg.startMs / 1000) * targetRate);
     const len = Math.min(seg.samples.length, totalFrames - startFrame);
     if (len <= 0) continue;
-    out.set(seg.samples.subarray(0, len), startFrame);
+    // V0.2.22.4 — ADDITIVE mix (was: out.set() which OVERWRITES). With
+    // overwrite, overlapping narration clips truncated each other: step
+    // N's audio got chopped the instant step N+1's clip began. That made
+    // narration overflow impossible even after the video-side perStepHold
+    // fix let frames advance. Now overlapping clips sum into the output,
+    // hard-clamped to [-1, 1] to prevent digital clipping. Voice-over-voice
+    // is rare in practice; clamping keeps it safe when it happens.
+    const src = seg.samples;
+    for (let i = 0; i < len; i++) {
+      const v = out[startFrame + i] + src[i];
+      out[startFrame + i] = v > 1 ? 1 : (v < -1 ? -1 : v);
+    }
   }
   return out;
 }

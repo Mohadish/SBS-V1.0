@@ -238,29 +238,10 @@ async function _exportMp4({ fps = DEFAULT_FPS, bitrate = DEFAULT_BITRATE,
   // so export needs no per-run renderer surgery. Live preview already
   // looks identical to what's being encoded.
 
-  // ── Build the step timeline.
-  // V0.2.22.3 — narration OVERFLOW. Previously the per-step hold was
-  // `narration.durationMs + stepHoldMs` for EVERY step, which forced the
-  // exporter to sit on each step until its voice clip finished. That broke
-  // the live-app behavior where narration plays asynchronously and the
-  // next step (or sub-step) starts on its own animation clock — the user
-  // wants the voice to ride OVER the following step(s), not gate them.
-  //
-  // New rule: per-step hold is just `stepHoldMs` for all steps EXCEPT the
-  // last. The last step still adds its own narration duration so the
-  // audio mixer's clip isn't truncated when the encoder stops. Middle-
-  // step narrations that extend past their own step naturally overlap
-  // the next step's animation in the final mix (audio is placed at the
-  // step's start marker and plays out from there; the master timeline
-  // accepts overlapping clips).
-  //
-  // Edge case: a middle step's narration longer than ALL following step
-  // animations combined could still tail past the encoder's end → audio
-  // clipped. Rare in practice (narration is usually paced to the visual);
-  // user can pad the last step's hold manually if needed.
-  const perStepHold = stepsToPlay.map((step, i) => {
-    const isLast = (i === stepsToPlay.length - 1);
-    const narrMs = (isLast && includeNarration) ? (step.narration?.durationMs || 0) : 0;
+  // ── Build the step timeline (initial estimate — actual values come from
+  // the recompute after _synthesizeMissingClips below).
+  const perStepHold = stepsToPlay.map(step => {
+    const narrMs = includeNarration ? (step.narration?.durationMs || 0) : 0;
     return narrMs + stepHoldMs;
   });
 
@@ -312,12 +293,26 @@ async function _exportMp4({ fps = DEFAULT_FPS, bitrate = DEFAULT_BITRATE,
       // export entry point (timeline button, Export tab Start, etc.).
       await _synthesizeMissingClips(stepsToPlay, onProgress, signal);
 
-      // Recompute per-step holds AFTER pre-synth so the timeline accounts
-      // for newly-synthesized clip durations. Same formula as initial setup
-      // (narration + global hold).
+      // V0.2.22.4 — narration OVERFLOW. Previously this recompute used
+      // `narrMs + stepHoldMs` for EVERY step, forcing the exporter to
+      // sit on each step until its voice clip finished. That broke the
+      // live-app behavior the user expects (narration plays async, next
+      // step advances on its own animation clock).
+      //
+      // New rule: non-last steps use just stepHoldMs (their narration
+      // overflows naturally into following steps in the audio mix —
+      // see mixTrackToFloat32, now additive). The LAST step still adds
+      // its own narration duration so the audio mixer's tail clip isn't
+      // truncated when the encoder stops.
+      //
+      // Limitation: a middle step's narration longer than the sum of all
+      // following step animations could still tail past the encoder's
+      // end → audio clipped. Pad the last step's hold manually if this
+      // happens.
+      const lastIdx = stepsToPlay.length - 1;
       for (let i = 0; i < stepsToPlay.length; i++) {
         const narrMs = stepsToPlay[i].narration?.durationMs || 0;
-        perStepHold[i] = narrMs + stepHoldMs;
+        perStepHold[i] = (i === lastIdx) ? (narrMs + stepHoldMs) : stepHoldMs;
       }
 
       console.log('[export] decoding audio segments…');
