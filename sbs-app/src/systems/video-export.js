@@ -339,6 +339,8 @@ async function _exportMp4({ fps = DEFAULT_FPS, bitrate = DEFAULT_BITRATE,
           ? (t.objectDurationMs ?? globalObjDur)
           : globalObjDur;
       };
+      console.log('[export] perStepHold table (V0.2.22.9 diagnostic):');
+      console.log('  [#] kind                | anim | narr | nextNarr | hold | reason');
       for (let i = 0; i < stepsToPlay.length; i++) {
         const step     = stepsToPlay[i];
         const narrMs   = step.narration?.durationMs || 0;
@@ -346,24 +348,33 @@ async function _exportMp4({ fps = DEFAULT_FPS, bitrate = DEFAULT_BITRATE,
         const isSubStep    = !!step.groupId && step.groupHead !== true;
         const nextStep     = stepsToPlay[i + 1];
         const isLastInGrp  = isSubStep && (!nextStep || nextStep.groupId !== step.groupId);
+        const nextNarrMs   = nextStep ? (nextStep.narration?.durationMs || 0) : 0;
 
+        let reason;
         if (!isSubStep || isLastInGrp) {
           // Top-level step OR last sub-step in group → always wait for own
           // narration (no cross-group overflow). Surgical pause: only the
           // EXCESS past animation, not the full narration on top.
           const excess = Math.max(0, narrMs - animDur);
           perStepHold[i] = excess + stepHoldMs;
+          reason = isSubStep ? 'last-sub-step (wait surgical)' : 'top-level (wait surgical)';
         } else {
           // Mid-group sub-step → overflow allowed iff next sub-step has no
           // audio. If next has audio, wait so voices don't collide.
-          const nextHasAudio = (nextStep.narration?.durationMs || 0) > 0;
+          const nextHasAudio = nextNarrMs > 0;
           if (nextHasAudio) {
             const excess = Math.max(0, narrMs - animDur);
             perStepHold[i] = excess + stepHoldMs;
+            reason = 'mid-sub (wait, next has audio)';
           } else {
             perStepHold[i] = stepHoldMs;
+            reason = 'mid-sub (OVERFLOW, next no audio)';
           }
         }
+        const kind = isSubStep ? (isLastInGrp ? 'last-sub-step  ' : 'mid-sub-step   ')
+                               : 'top-level      ';
+        const nm = (step.name || '').slice(0, 18).padEnd(18);
+        console.log(`  [${String(i).padStart(2)}] ${kind} ${nm} | anim=${String(animDur).padStart(5)} | narr=${String(narrMs).padStart(5)} | nextNarr=${String(nextNarrMs).padStart(5)} | hold=${String(perStepHold[i]).padStart(5)} | ${reason}`);
       }
 
       console.log('[export] decoding audio segments…');
@@ -720,33 +731,18 @@ async function _playTimeline(stepsToPlay, holdsMsArg, onProgress, signal, onStep
     if (signal?.aborted) throw new DOMException('Export cancelled', 'AbortError');
     const step = stepsToPlay[i];
     onProgress?.({ current: i + 1, total: stepsToPlay.length, stepName: step.name });
-    // .sbsproc step-marker hook — fires BEFORE the transition begins so
-    // the marker timestamp matches the moment the encoded video starts
-    // moving toward this step's final state. The viewer uses these to
-    // seek between steps. (Optional callback; no-op for plain exports.)
     onStepStart?.(i, step);
-    if (i > 0) await steps.activateStep(step.id, true);   // first step already there
-    // Drain any pending overlay / header async raster before holding —
-    // without this, the first frames of the hold can capture a partial
-    // overlay (textbox raster is still pending) or stale header (dynamic-
-    // kind hydrate hasn't completed). The wait-for-stable promises
-    // resolve as soon as every async raster of the latest refresh
-    // settles, so on a fully-cached layer they resolve immediately.
-    //
-    // V0.2.22.2: in REALTIME mode the drain wait was bleeding into the
-    // encoded video because rAF kept firing the tick-hook capture during
-    // it — a "100ms" hold could become 500ms in the encoded output when
-    // a fresh raster took 400ms. Measure the drain (real-time only) and
-    // shave it off the requested hold so the user-set value matches the
-    // visible gap.  Offline mode advances the synthetic clock only inside
-    // _syntheticSleep; the drain runs in wall-clock without producing
-    // frames, so drainMs there is irrelevant — `subtract = 0` keeps the
-    // requested hold honest in both paths.
+    // V0.2.22.9 diagnostic — measure actual animation duration so we
+    // can see if it diverges from the estimate used to build perStepHold.
+    const tBefore = performance.now();
+    if (i > 0) await steps.activateStep(step.id, true);
+    const animMsActual = performance.now() - tBefore;
     const drainStart = (!offline) ? performance.now() : 0;
     await Promise.all([waitForOverlayStable(), waitForHeaderStable()]);
     const drainMs = (!offline) ? (performance.now() - drainStart) : 0;
     const wanted    = holds[i] ?? POST_STEP_HOLD_MS;
     const remaining = Math.max(0, wanted - drainMs);
+    console.log(`[export] step ${i} "${(step.name||'').slice(0,24)}" — animActual=${Math.round(animMsActual)}ms drain=${Math.round(drainMs)}ms wantedHold=${wanted}ms actualWait=${Math.round(remaining)}ms`);
     await _wait(remaining);
   }
 }
