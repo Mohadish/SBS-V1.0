@@ -116,6 +116,27 @@ const APP_ROOT = path.join(__dirname, '..');
 // ~2 GB renderer heap and crash with "invalid array length".
 app.commandLine.appendSwitch('js-flags', '--max-old-space-size=8192');
 
+// V0.2.22.13 — keep the renderer running at FULL speed when the window
+// is hidden, minimised, or occluded by another window. Without these,
+// Chromium throttles setTimeout to ~1s and lowers the renderer process
+// priority when the window loses visibility — which is fine for a normal
+// web app but BAD for a multi-minute video export. A 15-min export
+// becomes 90+ min if the user takes a WhatsApp call mid-render and a
+// notification window covers the SBS window.
+//
+// These flags affect ALL windows of the app (set before any
+// BrowserWindow is created). The BrowserWindow.webPreferences also
+// gets `backgroundThrottling: false` (per-window override, belt+
+// suspenders) — both together guarantee no throttling regardless of
+// window state.
+//
+// Trade-off: slightly higher CPU when the app sits idle in the
+// background. Acceptable for an authoring tool the user runs
+// intentionally.
+app.commandLine.appendSwitch('disable-background-timer-throttling');
+app.commandLine.appendSwitch('disable-renderer-backgrounding');
+app.commandLine.appendSwitch('disable-backgrounding-occluded-windows');
+
 // (Removed: force-color-profile=srgb, disable-color-correct-rendering,
 // disableHardwareAcceleration. None of them moved the painted pixel —
 // the dim turned out to be Windows 11 Automatic Color Management
@@ -185,6 +206,10 @@ function createWindow() {
       contextIsolation: true,
       nodeIntegration:  false,      // NEVER enable — security requirement
       sandbox: false,
+      // V0.2.22.13 — Electron-level guarantee that this window's renderer
+      // doesn't get throttled when hidden/occluded. Pair with the
+      // chromium command-line flags above.
+      backgroundThrottling: false,
     },
     show: false,   // show only once ready to avoid blank-window flash
   });
