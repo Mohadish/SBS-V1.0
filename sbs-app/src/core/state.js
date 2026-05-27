@@ -344,11 +344,15 @@ function createInitialState() {
       formatPreset:       'hdtv_1080',
       width:              1920,
       height:             1080,
-      fps:                30,
+      // V0.2.22.3: defaults updated for export reliability.
+      //  - fps:50 → smaller files for slide-show content + smoother
+      //  - offlineRender:true → immune to window occlusion / rAF throttling.
+      //    Realtime mode breaks if the user covers the window mid-export.
+      fps:                50,
       stepHoldMs:         100,
       startFromActive:    true,
       showSafeFrame:      true,
-      offlineRender:      false,
+      offlineRender:      true,
       narrationEnabled:   true,
       narrationVoice:     '',          // empty → user must pick in Export tab
       narrationSpeed:     1.0,

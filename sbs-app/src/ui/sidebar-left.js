@@ -3836,9 +3836,10 @@ function _renderExportTab() {
         <label style="display:flex;align-items:flex-start;gap:6px;margin-top:8px;cursor:pointer;">
           <input type="checkbox" id="exp-offline-render" ${exp.offlineRender ? 'checked' : ''} style="margin-top:3px;" />
           <span class="small muted">
-            Offline render (deterministic)
+            Offline render (recommended)
             <div class="small muted" style="font-size:11px;opacity:0.75;margin-top:2px;">
-              Decouples animation from real time. Slower but immune to window-throttling — same project renders the same duration regardless of window size or focus.
+              Decouples animation from real time. Same project renders the same duration regardless of window size or focus.
+              <strong style="color:#fbbf24;">If unchecked, the window MUST stay visible during the entire export — covering it with another window pauses rendering and produces frozen / duplicated frames in the output.</strong>
             </div>
           </span>
         </label>
@@ -4233,8 +4234,12 @@ async function _onExportTabStart() {
 
     const { blob, extension, codec } = await exportTimelineVideo({
       format:           exp.outputFormat || 'mp4',
-      fps:              Number(exp.fps) || 30,
-      stepHoldMs:       Number(exp.stepHoldMs) || 800,
+      // V0.2.22.3 — use ?? not ||. The previous `Number(x) || N` coerced
+      // a user-typed 0 to the fallback N (because 0 is falsy). User
+      // setting step-hold to 0 silently became 800ms. Same trap fixed
+      // for fps even though 0 fps is nonsensical — consistency matters.
+      fps:              Number.isFinite(Number(exp.fps))        ? Number(exp.fps)        : 50,
+      stepHoldMs:       Number.isFinite(Number(exp.stepHoldMs)) ? Number(exp.stepHoldMs) : 800,
       includeNarration: exp.narrationEnabled !== false,
       offline:          !!exp.offlineRender,
       signal:           _exportTabCtrl.signal,

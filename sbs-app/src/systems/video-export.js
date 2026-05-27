@@ -239,12 +239,28 @@ async function _exportMp4({ fps = DEFAULT_FPS, bitrate = DEFAULT_BITRATE,
   // looks identical to what's being encoded.
 
   // ── Build the step timeline.
-  // Per-step hold is always added AFTER the step's narration (or after the
-  // animation if there's no narration). That way "Step hold (ms)" in the
-  // Export tab is a true global breath between steps, not a minimum that
-  // long narration silently overrides.
-  const perStepHold = stepsToPlay.map(step => {
-    const narrMs = includeNarration ? (step.narration?.durationMs || 0) : 0;
+  // V0.2.22.3 — narration OVERFLOW. Previously the per-step hold was
+  // `narration.durationMs + stepHoldMs` for EVERY step, which forced the
+  // exporter to sit on each step until its voice clip finished. That broke
+  // the live-app behavior where narration plays asynchronously and the
+  // next step (or sub-step) starts on its own animation clock — the user
+  // wants the voice to ride OVER the following step(s), not gate them.
+  //
+  // New rule: per-step hold is just `stepHoldMs` for all steps EXCEPT the
+  // last. The last step still adds its own narration duration so the
+  // audio mixer's clip isn't truncated when the encoder stops. Middle-
+  // step narrations that extend past their own step naturally overlap
+  // the next step's animation in the final mix (audio is placed at the
+  // step's start marker and plays out from there; the master timeline
+  // accepts overlapping clips).
+  //
+  // Edge case: a middle step's narration longer than ALL following step
+  // animations combined could still tail past the encoder's end → audio
+  // clipped. Rare in practice (narration is usually paced to the visual);
+  // user can pad the last step's hold manually if needed.
+  const perStepHold = stepsToPlay.map((step, i) => {
+    const isLast = (i === stepsToPlay.length - 1);
+    const narrMs = (isLast && includeNarration) ? (step.narration?.durationMs || 0) : 0;
     return narrMs + stepHoldMs;
   });
 
