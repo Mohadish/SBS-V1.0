@@ -293,43 +293,45 @@ async function _exportMp4({ fps = DEFAULT_FPS, bitrate = DEFAULT_BITRATE,
       // export entry point (timeline button, Export tab Start, etc.).
       await _synthesizeMissingClips(stepsToPlay, onProgress, signal);
 
-      // V0.2.22.7 — surgical pause computation (user's correct proposal).
+      // V0.2.22.8 — group-aware surgical pause computation.
       //
-      // For each step, compute its ANIMATION duration and its NARRATION
-      // duration. The only thing we must avoid is voice-vs-voice collisions
-      // (overlapping clips compete for the listener's attention even when
-      // the mixer sums them cleanly). So the rule is:
+      // V0.2.22.7's mistake: used uniform "next-has-audio" logic for ALL
+      // steps. That let top-level steps overflow into the next top-level
+      // when the next had no narration — violating the user's explicit
+      // earlier preference ("Within sub-steps of same parent only").
       //
-      //   • If next step has audio (or this IS the last step):
-      //       perStepHold[i] = max(0, narration - animation) + stepHoldMs
-      //       Add a pause ONLY if narration exceeds animation. Pause is
-      //       exactly the audio excess — no more, no over-padding.
+      // Correct rule = V0.2.22.6 grouping + V0.2.22.7 surgical math:
       //
-      //   • If next step has NO audio:
-      //       perStepHold[i] = stepHoldMs
-      //       Animation moves on. Trailing audio overflows naturally into
-      //       the next step's frames (no collision risk because next has
-      //       no narration of its own). Audio is mixed at this step's
-      //       start marker and plays out from there.
+      //   • Top-level step (no group, or step.groupHead === true):
+      //       Always wait for own narration. Pause = max(0, narrMs - animDur)
+      //       + stepHoldMs.
       //
-      // Animation duration per step matches the actual phase math from
-      // applySnapshotAnimated's simultaneous branch:
+      //   • Last sub-step in a group:
+      //       Always wait. Same surgical pause as top-level. Prevents
+      //       this group's narration from leaking into the next top-level.
+      //
+      //   • Mid-group sub-step:
+      //       Check if NEXT sub-step has audio.
+      //       - If yes: wait (surgical pause) so the two voices don't
+      //         collide.
+      //       - If no: pause = stepHoldMs only. Trailing audio overflows
+      //         naturally into next sub-step's frames (additive mix
+      //         in audio-bridge.js).
+      //
+      // Animation duration per step matches applySnapshotAnimated's
+      // simultaneous-mode math:
       //   transition.durationOverride ? transition.objectDurationMs
       //                               : state.objectAnimDurationMs
       //   (fallback: 1500ms)
       //
-      // This treats sub-steps and top-level steps uniformly — what matters
-      // is whether the NEXT step has audio, not the group boundary. Cross-
-      // group overflow can still happen if the next top-level has no
-      // narration; if the user doesn't want that, they author narration
-      // on the next top-level (which gates the previous step's audio).
+      // Classifier:
+      //   isSubStep      = !!step.groupId && step.groupHead !== true
+      //   isLastInGroup  = isSubStep && (no next OR next.groupId differs)
       //
       // Known limitation: estimated animation duration may drift from
-      // run-time actual (e.g. under realtime browser throttling). If
-      // actual > estimated and next step has audio, this step's audio
-      // could still be playing when the next starts → collision.
-      // Reasonable in practice; refine to run-time measurement if drift
-      // becomes a problem.
+      // run-time actual under realtime browser throttling. Default
+      // offline mode (V0.2.22.3) makes the synthetic clock deterministic
+      // and drift-free.
       const globalObjDur = state.get('objectAnimDurationMs') ?? 1500;
       const _estimateAnimDur = (s) => {
         const t = s.transition || {};
@@ -341,11 +343,27 @@ async function _exportMp4({ fps = DEFAULT_FPS, bitrate = DEFAULT_BITRATE,
         const step     = stepsToPlay[i];
         const narrMs   = step.narration?.durationMs || 0;
         const animDur  = _estimateAnimDur(step);
-        const nextStep = stepsToPlay[i + 1];
-        const isLast   = !nextStep;
-        const nextHasAudio = isLast || ((nextStep.narration?.durationMs || 0) > 0);
-        const audioExcess  = nextHasAudio ? Math.max(0, narrMs - animDur) : 0;
-        perStepHold[i] = audioExcess + stepHoldMs;
+        const isSubStep    = !!step.groupId && step.groupHead !== true;
+        const nextStep     = stepsToPlay[i + 1];
+        const isLastInGrp  = isSubStep && (!nextStep || nextStep.groupId !== step.groupId);
+
+        if (!isSubStep || isLastInGrp) {
+          // Top-level step OR last sub-step in group → always wait for own
+          // narration (no cross-group overflow). Surgical pause: only the
+          // EXCESS past animation, not the full narration on top.
+          const excess = Math.max(0, narrMs - animDur);
+          perStepHold[i] = excess + stepHoldMs;
+        } else {
+          // Mid-group sub-step → overflow allowed iff next sub-step has no
+          // audio. If next has audio, wait so voices don't collide.
+          const nextHasAudio = (nextStep.narration?.durationMs || 0) > 0;
+          if (nextHasAudio) {
+            const excess = Math.max(0, narrMs - animDur);
+            perStepHold[i] = excess + stepHoldMs;
+          } else {
+            perStepHold[i] = stepHoldMs;
+          }
+        }
       }
 
       console.log('[export] decoding audio segments…');
