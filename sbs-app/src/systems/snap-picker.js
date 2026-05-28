@@ -205,11 +205,22 @@ export function findSnapTarget(clientX, clientY) {
 // differ by MORE than this contribute their shared edge as a "feature"
 // (silhouette / crease / boundary). Triangles whose normals are within
 // the threshold are considered coplanar — their shared edge is interior
-// tessellation noise and gets dropped. 30° is a good general default
-// for mechanical CAD (sharp cube corners ≈ 90°, gentle curves on a
-// tessellated cylinder ≈ 5-15°). Boundary edges (only one adjacent
+// tessellation noise and gets dropped. Boundary edges (only one adjacent
 // triangle, e.g. mesh hole edges) are always kept.
-const FEATURE_EDGE_DEG = 30;
+//
+// V0.2.22.26 — default raised 30 → 45. The 30 value still pulled in
+// tessellation seams on coarse cylinders / shallow chamfers. 45 catches
+// only HARD features (90° machined corners, drilled-hole rims, sharp
+// cutoffs) which the user identified as the snap targets they care
+// about. Tunable at runtime via DevTools:
+//   window.sbsDiag = { ...window.sbsDiag, snapEdgeDeg: 60 };
+// Lower (15-30) = catch softer features incl. tessellation seams.
+// Higher (60-90) = only the SHARPEST features.
+const FEATURE_EDGE_DEG_DEFAULT = 45;
+function _featureEdgeThreshold() {
+  const t = typeof window !== 'undefined' ? window.sbsDiag?.snapEdgeDeg : null;
+  return Number.isFinite(t) ? t : FEATURE_EDGE_DEG_DEFAULT;
+}
 
 /**
  * Build (and cache) the FEATURE-edge index list for a BufferGeometry.
@@ -233,14 +244,16 @@ const FEATURE_EDGE_DEG = 30;
  * Indexed and non-indexed geometries are both supported.
  */
 function _getEdgeIndices(geom) {
-  const cached = _edgeCache.get(geom.uuid);
+  const thresholdDeg = _featureEdgeThreshold();
+  const cacheKey = `${geom.uuid}@${thresholdDeg}`;
+  const cached = _edgeCache.get(cacheKey);
   if (cached) return cached;
 
   const idx = geom.index?.array;
   const pos = geom.attributes.position;
   if (!pos) {
     const empty = new Int32Array(0);
-    _edgeCache.set(geom.uuid, empty);
+    _edgeCache.set(cacheKey, empty);
     return empty;
   }
   const posArr = pos.array;
@@ -250,7 +263,7 @@ function _getEdgeIndices(geom) {
 
   // Edge map: "i<j" → { i, j, normals: [Vec3, Vec3?] }
   const edgeMap = new Map();
-  const cosThreshold = Math.cos(FEATURE_EDGE_DEG * Math.PI / 180);
+  const cosThreshold = Math.cos(thresholdDeg * Math.PI / 180);
 
   // Reusable vectors for normal computation.
   const ax = (i) => posArr[i * 3];
@@ -300,7 +313,7 @@ function _getEdgeIndices(geom) {
   }
 
   const arr = new Int32Array(out);
-  _edgeCache.set(geom.uuid, arr);
+  _edgeCache.set(cacheKey, arr);
   return arr;
 }
 
@@ -310,7 +323,13 @@ function _getEdgeIndices(geom) {
  * mutations alone do not invalidate this cache.
  */
 export function invalidateSnapCache(geom) {
-  if (geom?.uuid) _edgeCache.delete(geom.uuid);
+  if (!geom?.uuid) return;
+  // V0.2.22.26 — cache key now includes the threshold; drop every entry
+  // whose key starts with this geometry's uuid.
+  const prefix = geom.uuid + '@';
+  for (const key of _edgeCache.keys()) {
+    if (key.startsWith(prefix)) _edgeCache.delete(key);
+  }
 }
 
 /**
