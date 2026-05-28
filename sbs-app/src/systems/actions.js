@@ -10635,7 +10635,16 @@ export function resolveRaySelectEntities(clientX, clientY) {
       if (lg) {
         key = lg.id; targetId = lg.id;
         name = lg.name || 'Folder';
-        clickSet = descendantsOf(lg.id);
+        // V0.2.22.21.3 — locked folder is a UNIT in the selection model.
+        // Previously this used descendantsOf(lg.id) which inflated the
+        // entity's meshIds with every child; ray-select-confirm then
+        // committed all those ids to multiSelectedIds, defeating the
+        // V0.2.22.21.1/2 cleanup that removed children from direct-
+        // click locked-folder selections. Now matches both other entry
+        // points (main.js viewport-click promotion, tree.js single-
+        // click): multi carries just the folder id; the silhouette
+        // outline pass wraps the descendant mesh mass automatically.
+        clickSet = new Set([lg.id]);
       } else {
         const sg = selectionPromoteForLockedShapeGroup(meshNodeId);
         if (sg && sg.size > 0) {
