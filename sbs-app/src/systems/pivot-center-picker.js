@@ -272,11 +272,14 @@ function _setHover(worldPoint, type, edgeA, edgeB) {
   // For edge snaps, draw a highlight along the WHOLE edge so the user
   // sees exactly which segment will be used — and a brighter cross at
   // the snap point along it.
-  // V0.2.22.24: bumped thickness 0.35 → 2.0 (cylinder was sub-pixel
-  // wide — invisible against geometry). Pure yellow + higher opacity
-  // for max contrast.
+  // V0.2.22.25: reverted V0.2.22.24's thickness/brightness boost.
+  // The user reported it just made the misleading interior-edge picks
+  // more pronounced — the real fix was feature-edge filtering in
+  // snap-picker.js (V0.2.22.25). With that in place the highlight
+  // only shows on real geometric features, so the original subtle
+  // look is appropriate.
   if (type === 'edge' && edgeA && edgeB) {
-    _state.hoverGroup.add(_buildSegmentCylinder(edgeA, edgeB, 0xffff00, 2.0));
+    _state.hoverGroup.add(_buildSegmentCylinder(edgeA, edgeB, 0xffee44, 0.35));
   }
   _state.hoverGroup.add(_buildCross(worldPoint, colour));
 }
@@ -367,7 +370,7 @@ function _buildSegmentCylinder(p1, p2, color, thicknessFactor = 0.3) {
   const geom = new T.CylinderGeometry(radius, radius, length, 12, 1, false);
   const mat = new T.MeshBasicMaterial({
     color, depthTest: false, depthWrite: false,
-    transparent: true, opacity: 0.85,   // V0.2.22.24: 0.6 → 0.85
+    transparent: true, opacity: 0.6,
   });
   const mesh = new T.Mesh(geom, mat);
   mesh.position.addVectors(p1, p2).multiplyScalar(0.5);

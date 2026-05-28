@@ -201,36 +201,104 @@ export function findSnapTarget(clientX, clientY) {
   return { type: 'face', point: hit.point.clone(), mesh };
 }
 
+// Feature-edge threshold in degrees. Adjacent triangles whose normals
+// differ by MORE than this contribute their shared edge as a "feature"
+// (silhouette / crease / boundary). Triangles whose normals are within
+// the threshold are considered coplanar — their shared edge is interior
+// tessellation noise and gets dropped. 30° is a good general default
+// for mechanical CAD (sharp cube corners ≈ 90°, gentle curves on a
+// tessellated cylinder ≈ 5-15°). Boundary edges (only one adjacent
+// triangle, e.g. mesh hole edges) are always kept.
+const FEATURE_EDGE_DEG = 30;
+
 /**
- * Build (and cache) the unique-edge index list for a BufferGeometry.
+ * Build (and cache) the FEATURE-edge index list for a BufferGeometry.
  * Returns a flat Int32Array of [a0, b0, a1, b1, …] where each pair is
- * the indices of one undirected edge.
+ * the indices of one undirected feature edge.
  *
- * Indexed and non-indexed geometries are both supported. Each triangle
- * contributes its 3 edges; duplicates (shared between adjacent
- * triangles) are filtered via a sorted-pair key.
+ * V0.2.22.25 — was: every triangle edge (every diagonal of every
+ * tessellated quad). For curved/tessellated surfaces this gave the snap
+ * picker thousands of meaningless interior edges to choose from, and it
+ * almost always picked one of those instead of the visible feature edge
+ * the user was actually aiming for. User reported: "Yellow lines that
+ * are popping up. It is not very helpful — on the contrary, it's the
+ * worst one. Rarely is it ever doing something useful."
+ *
+ * Now: an edge is kept iff
+ *   • it has only one adjacent triangle (mesh boundary), OR
+ *   • its two adjacent triangles' normals differ by > FEATURE_EDGE_DEG.
+ * Interior edges between coplanar (or near-coplanar) triangles are
+ * dropped. Matches THREE.EdgesGeometry's filter logic.
+ *
+ * Indexed and non-indexed geometries are both supported.
  */
 function _getEdgeIndices(geom) {
   const cached = _edgeCache.get(geom.uuid);
   if (cached) return cached;
 
-  const seen = new Set();
-  const out = [];
   const idx = geom.index?.array;
-  const triCount = idx ? Math.floor(idx.length / 3) : Math.floor((geom.attributes.position?.count ?? 0) / 3);
+  const pos = geom.attributes.position;
+  if (!pos) {
+    const empty = new Int32Array(0);
+    _edgeCache.set(geom.uuid, empty);
+    return empty;
+  }
+  const posArr = pos.array;
+  const triCount = idx
+    ? Math.floor(idx.length / 3)
+    : Math.floor(pos.count / 3);
+
+  // Edge map: "i<j" → { i, j, normals: [Vec3, Vec3?] }
+  const edgeMap = new Map();
+  const cosThreshold = Math.cos(FEATURE_EDGE_DEG * Math.PI / 180);
+
+  // Reusable vectors for normal computation.
+  const ax = (i) => posArr[i * 3];
+  const ay = (i) => posArr[i * 3 + 1];
+  const az = (i) => posArr[i * 3 + 2];
+
+  function addEdge(i, j, nx, ny, nz) {
+    const a = i < j ? i : j;
+    const b = i < j ? j : i;
+    const key = `${a},${b}`;
+    let rec = edgeMap.get(key);
+    if (!rec) { rec = { i: a, j: b, n: [] }; edgeMap.set(key, rec); }
+    rec.n.push(nx, ny, nz);
+  }
+
   for (let t = 0; t < triCount; t++) {
     const i0 = idx ? idx[t * 3]     : t * 3;
     const i1 = idx ? idx[t * 3 + 1] : t * 3 + 1;
     const i2 = idx ? idx[t * 3 + 2] : t * 3 + 2;
-    const pairs = [
-      i0 < i1 ? `${i0},${i1}` : `${i1},${i0}`,
-      i1 < i2 ? `${i1},${i2}` : `${i2},${i1}`,
-      i2 < i0 ? `${i2},${i0}` : `${i0},${i2}`,
-    ];
-    if (!seen.has(pairs[0])) { seen.add(pairs[0]); out.push(i0, i1); }
-    if (!seen.has(pairs[1])) { seen.add(pairs[1]); out.push(i1, i2); }
-    if (!seen.has(pairs[2])) { seen.add(pairs[2]); out.push(i2, i0); }
+    // Compute triangle normal via cross product (unnormalised).
+    const e1x = ax(i1) - ax(i0), e1y = ay(i1) - ay(i0), e1z = az(i1) - az(i0);
+    const e2x = ax(i2) - ax(i0), e2y = ay(i2) - ay(i0), e2z = az(i2) - az(i0);
+    let nx = e1y * e2z - e1z * e2y;
+    let ny = e1z * e2x - e1x * e2z;
+    let nz = e1x * e2y - e1y * e2x;
+    const nLen = Math.hypot(nx, ny, nz);
+    if (nLen < 1e-12) continue;  // degenerate triangle — skip
+    nx /= nLen; ny /= nLen; nz /= nLen;
+    addEdge(i0, i1, nx, ny, nz);
+    addEdge(i1, i2, nx, ny, nz);
+    addEdge(i2, i0, nx, ny, nz);
   }
+
+  const out = [];
+  for (const rec of edgeMap.values()) {
+    if (rec.n.length === 3) {
+      // Boundary edge — exactly one adjacent triangle. Always keep.
+      out.push(rec.i, rec.j);
+    } else if (rec.n.length >= 6) {
+      // Two (or more — non-manifold) adjacent triangles. Keep iff the
+      // normals diverge MORE than the feature threshold. We compare just
+      // the first two — that's the standard case; non-manifold edges
+      // are vanishingly rare in CAD meshes.
+      const dot = rec.n[0] * rec.n[3] + rec.n[1] * rec.n[4] + rec.n[2] * rec.n[5];
+      if (dot < cosThreshold) out.push(rec.i, rec.j);
+    }
+  }
+
   const arr = new Int32Array(out);
   _edgeCache.set(geom.uuid, arr);
   return arr;
