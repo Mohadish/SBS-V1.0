@@ -1358,8 +1358,16 @@ canvas.addEventListener('click', e => {
     : null;
   const target = promotedContainer ? promotedContainer.id : meshNodeId;
 
-  // Build the "selection-set" for the click. Both promotion paths
-  // include every descendant so the per-mesh outlines fire.
+  // Build the "selection-set" for the click.
+  // V0.2.22.21.1 — semantics diverge by promotion type:
+  //   RM: still include every descendant (B.2-NEW.2 contract — selection
+  //       IS the whole RM unit's children).
+  //   Locked folder: JUST the folder id. Per V0.2.22.21 the silhouette
+  //       outline pass automatically wraps the folder's descendant mesh
+  //       mass on its own. Inflating multi with descendants used to be
+  //       needed for V0.2.18's per-mesh outlineOnly hulls; the new
+  //       silhouette replaces that visual, so the multi can stay clean.
+  //       Matches tree single-click on a folder.
   const buildContainerSet = (containerId) => {
     const out = new Set([containerId]);
     const containerNode = nbm.get(containerId);
@@ -1372,7 +1380,9 @@ canvas.addEventListener('click', e => {
   };
 
   const clickSet = promotedContainer
-    ? buildContainerSet(target)
+    ? (lockedGroupNode === promotedContainer
+        ? new Set([target])                  // locked folder: clean unit
+        : buildContainerSet(target))         // RM: full descendant set
     : (shapeGroupSet && shapeGroupSet.size > 0 ? shapeGroupSet : new Set([target]));
 
   // V0.2.7: four distinct click modes (each with the matching ray-select

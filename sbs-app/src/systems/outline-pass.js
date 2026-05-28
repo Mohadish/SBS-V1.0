@@ -204,11 +204,26 @@ function _refreshFromSelection() {
     _outlinedMeshes = new Set();
     return;
   }
+  // V0.2.22.21.1 — walk DESCENDANTS of every selected node, not just
+  // the selected ids themselves. Reason: a folder click puts only the
+  // folder id in multiSelectedIds (the user's new progressive-click
+  // semantics from V0.2.22.20, and also the locked-folder promotion
+  // fix below). Folders aren't in meshById, so without walking we'd
+  // get an empty outlined set for any container selection.
   const ids = state.get('multiSelectedIds') || new Set();
+  const nodeById = state.get('nodeById') || new Map();
   const out = new Set();
+  const collectMeshes = (node) => {
+    if (!node) return;
+    if (node.type === 'mesh') {
+      const m = materials.meshById.get(node.id);
+      if (m) out.add(m);
+    }
+    for (const child of (node.children || [])) collectMeshes(child);
+  };
   for (const id of ids) {
-    const m = materials.meshById.get(id);
-    if (m) out.add(m);
+    const node = nodeById.get(id);
+    if (node) collectMeshes(node);
   }
   _outlinedMeshes = out;
 }
