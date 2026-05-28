@@ -20,6 +20,7 @@ import { state }          from './core/state.js';
 import { sceneCore }      from './core/scene.js';
 import { steps }          from './systems/steps.js';
 import { materials }      from './systems/materials.js';
+import { setOutlinePreview, clearOutlinePreview } from './systems/outline-pass.js';
 import * as actions from './systems/actions.js';
 const { setupUndoKeyboard, setSelection: actionSetSelection, clearSelection: actionClearSelection, resetTransform } = actions;
 import { gizmo }           from './ui/gizmo.js';
@@ -1559,6 +1560,13 @@ function _raySelectPreview() {
   // Separate preview channel — the existing selection stays highlighted
   // (cyan) underneath; the candidate shows in the hue-shifted color on top.
   materials.applyPreviewHighlight(new Set(ent.meshIds), _raySelect.color);
+  // V0.2.22.21.4 — also drive the silhouette outline-pass preview channel
+  // so locked-folder entities (whose meshIds is just the folder id, not
+  // descendants) still show a visible silhouette during the cycle. For
+  // non-locked entities this duplicates the per-mesh hull preview with a
+  // silhouette outline — harmless and visually consistent with selection
+  // (which is also silhouette + per-mesh hull).
+  setOutlinePreview(ent.targetId, _raySelect.color);
   if (_raySelect.el) {
     _raySelect.el.querySelectorAll('[data-ray-idx]').forEach(row => {
       const on = Number(row.dataset.rayIdx) === _raySelect.index;
@@ -1582,6 +1590,7 @@ function _raySelectConfirm() {
   _closeRaySelectUI();
   _raySelect = null;
   materials.clearPreviewHighlight();
+  clearOutlinePreview();   // V0.2.22.21.4
   // Setting the real selection fires selection:change → the highlight
   // repaints in the normal selection color (clearing the preview hue).
   if (mode === 'add' || mode === 'toggle') {
@@ -1618,8 +1627,9 @@ function _raySelectCancel() {
   if (!_raySelect) return;
   _closeRaySelectUI();
   _raySelect = null;
-  // Selection highlight was never disturbed — just drop the preview channel.
+  // Selection highlight was never disturbed — just drop the preview channels.
   materials.clearPreviewHighlight();
+  clearOutlinePreview();   // V0.2.22.21.4
   setStatus('Selection cancelled.');
 }
 

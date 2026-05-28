@@ -43,7 +43,9 @@ let _fsScene         = null;
 let _fsCamera        = null;
 let _fsQuad          = null;
 let _edgeMat         = null;
-let _outlinedMeshes  = new Set();   // Three.js Object3D references
+let _outlinedMeshes  = new Set();   // Three.js Object3D references (selection)
+let _previewMeshes   = new Set();   // ray-select cycle preview (V0.2.22.21.4)
+let _previewColor    = '#ff8c00';
 let _initialized     = false;
 
 const _EDGE_VERTEX = `
@@ -147,29 +149,51 @@ export function resizeOutlinePass(width, height) {
 /**
  * Render the outline pass. Call AFTER the main scene render. Composites
  * onto the canvas in additive mode (won't clear what's already drawn).
- * No-op when nothing is selected.
+ * No-op when nothing is selected AND no preview is active.
+ *
+ * Two channels:
+ *   1. Selection outline — selection color, set of meshes from current
+ *      multiSelectedIds (via _refreshFromSelection).
+ *   2. Preview outline (V0.2.22.21.4) — preview color, set of meshes
+ *      from the active ray-select cycle entity. Lets locked folders
+ *      (which carry just the folder id in their entity meshIds) show
+ *      a silhouette during the cycle in the hue-shifted preview color.
  */
 export function renderOutlinePass(scene, camera) {
-  if (!_initialized || !_renderer)        return;
-  if (!_outlinedMeshes || _outlinedMeshes.size === 0) return;
+  if (!_initialized || !_renderer) return;
+  const hasSelection = _outlinedMeshes && _outlinedMeshes.size > 0;
+  const hasPreview   = _previewMeshes  && _previewMeshes.size  > 0;
+  if (!hasSelection && !hasPreview) return;
 
+  if (hasSelection) {
+    _runOutlinePass(scene, camera, _outlinedMeshes,
+      state.get('selectionOutlineColor') ?? '#00ffff');
+  }
+  if (hasPreview) {
+    _runOutlinePass(scene, camera, _previewMeshes, _previewColor);
+  }
+}
+
+/**
+ * Internal — one mask-and-composite cycle for a given mesh set + color.
+ */
+function _runOutlinePass(scene, camera, meshSet, hexColor) {
   const THREE = window.THREE;
 
-  // ── Pass 1 — render selection mask ─────────────────────────────────
-  // Temporarily hide non-selected meshes (preserving original hidden
-  // state). Override material flattens everything to flat white.
+  // Temporarily hide non-set meshes (preserving original hidden state).
+  // Override material flattens everything to flat white in the mask.
   const visBackup = [];
   scene.traverse(obj => {
     if (obj.isMesh) {
       visBackup.push([obj, obj.visible]);
-      obj.visible = obj.visible && _outlinedMeshes.has(obj);
+      obj.visible = obj.visible && meshSet.has(obj);
     }
   });
   const prevOverride = scene.overrideMaterial;
   scene.overrideMaterial = _maskOverrideMat;
 
-  const prevTarget   = _renderer.getRenderTarget();
-  const prevClearCol = _renderer.getClearColor(new THREE.Color());
+  const prevTarget     = _renderer.getRenderTarget();
+  const prevClearCol   = _renderer.getClearColor(new THREE.Color());
   const prevClearAlpha = _renderer.getClearAlpha();
 
   _renderer.setRenderTarget(_maskTarget);
@@ -183,11 +207,44 @@ export function renderOutlinePass(scene, camera) {
   scene.overrideMaterial = prevOverride;
   for (const [obj, v] of visBackup) obj.visible = v;
 
-  // ── Pass 2 — composite outline onto canvas ─────────────────────────
+  // Composite outline onto canvas with this pass's color.
+  _edgeMat.uniforms.uColor.value = new THREE.Color(hexColor);
   const prevAutoClear = _renderer.autoClear;
   _renderer.autoClear = false;
   _renderer.render(_fsScene, _fsCamera);
   _renderer.autoClear = prevAutoClear;
+}
+
+/**
+ * V0.2.22.21.4 — set the PREVIEW silhouette to wrap the descendant
+ * meshes of `nodeId` in `hexColor`. Used by the ray-select cycle so
+ * locked folder entities (which carry only the folder id in their
+ * meshIds) still get visible feedback when highlighted in the picker.
+ * Pair with clearOutlinePreview() on confirm / cancel / close.
+ */
+export function setOutlinePreview(nodeId, hexColor) {
+  if (!_initialized) return;
+  if (!materials?.meshById || !nodeId) {
+    _previewMeshes = new Set();
+    return;
+  }
+  const nodeById = state.get('nodeById') || new Map();
+  const out = new Set();
+  const collectMeshes = (n) => {
+    if (!n) return;
+    if (n.type === 'mesh') {
+      const m = materials.meshById.get(n.id);
+      if (m) out.add(m);
+    }
+    for (const c of (n.children || [])) collectMeshes(c);
+  };
+  collectMeshes(nodeById.get(nodeId));
+  _previewMeshes = out;
+  _previewColor  = hexColor || '#ff8c00';
+}
+
+export function clearOutlinePreview() {
+  _previewMeshes = new Set();
 }
 
 /**
