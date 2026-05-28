@@ -41,6 +41,7 @@ import { generateId }           from '../core/schema.js';
 import { setStatus }            from './status.js';
 import { showContextMenu, hideContextMenu, showConfirmDialog } from './context-menu.js';
 import { showColorForNode }     from './sidebar-left.js';
+import * as folderAlignPicker   from '../systems/folder-align-picker.js';
 
 // ── State ────────────────────────────────────────────────────────────────────
 
@@ -852,6 +853,16 @@ function _buildContextMenuItems(node) {
         : '📌 Paste Transforms',
       disabled: !clip,
       action: () => _pasteFolderTransforms(node),
+    });
+
+    // V0.2.22.32 — 1-point folder align. Pick a source surface on a
+    // descendant mesh, then a target surface anywhere else; the folder's
+    // per-step localOffset/Quaternion are computed so the source point
+    // mates flush against the target. Live preview after the second pick;
+    // Enter commits, Esc reverts. Per-step only — baseLocal* untouched.
+    items.push({
+      label: '🎯 Align folder to surface…',
+      action: () => folderAlignPicker.start(node.id),
     });
   }
 

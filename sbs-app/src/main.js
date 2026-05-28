@@ -57,6 +57,7 @@ import { initOverlayToolbar }  from './ui/overlay-toolbar.js';
 import { initHeaderLayer }     from './systems/header.js';
 import { initCables, resolveNodeWorldPosition } from './systems/cables.js';        // C1: cables wire step:applied → applyStepSnapshot; C5-B: pos resolver for gizmo target
 import * as pivotCenterPicker     from './systems/pivot-center-picker.js';   // 3-point center pivot tool — snap-based picker for cylinder-axis pivot placement
+import * as folderAlignPicker     from './systems/folder-align-picker.js';   // V0.2.22.32 — 1-point folder-to-surface align
 
 // ── V0.2.22.23 — pivot hover throttle ─────────────────────────────────────
 // sceneCore.pick is O(scene) and runs ~75ms on a CAD project. Pointer-move
@@ -928,6 +929,19 @@ canvas.addEventListener('pointerdown', e => {
     return;
   }
 
+  // V0.2.22.32 — 1-point folder align tool consumes the click. Source
+  // phase captures a face on a folder descendant; target phase captures a
+  // face elsewhere and immediately previews the alignment (Enter/Esc to
+  // commit/revert). In preview phase the picker returns false so the
+  // click falls through to nothing (no mesh re-select).
+  if (state.get('alignFolderId')) {
+    e.preventDefault();
+    e.stopPropagation();
+    _gizmoConsumed = true;
+    folderAlignPicker.onPointerDown(e.clientX, e.clientY);
+    return;
+  }
+
   // P-P1+: snap-to-surface pick mode consumes the click — raycast
   // against the scene, snap pivot if there's a hit, otherwise cancel.
   // Runs BEFORE the gizmo so the user can target a face that happens
@@ -1055,6 +1069,15 @@ canvas.addEventListener('pointermove', e => {
       return;
     }
 
+    // V0.2.22.32 — folder-align hover. Refreshes the cross+arrow marker
+    // on whichever surface matches the current phase. pickAll is O(scene)
+    // like pivot's, but this tool is used briefly (two clicks) so we don't
+    // bother rAF-coalescing yet — revisit if it lags on huge scenes.
+    if (state.get('alignFolderId')) {
+      folderAlignPicker.updateHover(e.clientX, e.clientY);
+      return;
+    }
+
     // C5-D: insert-point pick mode — update the ghost-preview sphere
     // to track the cursor's mesh hit so the user sees where the new
     // point would land. Cleared on a hit-miss frame so it disappears
@@ -1094,6 +1117,19 @@ canvas.addEventListener('pointerleave', () => {
 state.on('change:pivotCenterPickingNodeId', id => {
   if (!id) return;
   setStatus('Pick 3 points (snap to vertex/edge). Enter to apply, Esc to cancel.', 'info', 0);
+});
+
+// V0.2.22.32 — folder align: prompt for each phase. The picker drives
+// the phase transitions via state.alignFolderPhase; we echo the active
+// phase in the status bar so the user knows what's expected next.
+state.on('change:alignFolderPhase', phase => {
+  if (phase === 'source') {
+    setStatus('Align folder: click a face INSIDE the folder (source). Esc to cancel.', 'info', 0);
+  } else if (phase === 'target') {
+    setStatus('Align folder: click the target surface (anywhere else). Esc to cancel.', 'info', 0);
+  } else if (phase === 'preview') {
+    setStatus('Align folder: Enter to commit, Esc to revert.', 'info', 0);
+  }
 });
 
 // Status feedback while waiting for the user to click a face for a new note.
@@ -2435,6 +2471,15 @@ window.addEventListener('keydown', async e => {
     if (key === 'Backspace') {
       e.preventDefault();
       pivotCenterPicker.removeLast();
+      return;
+    }
+  }
+
+  // V0.2.22.32 — folder align tool keyboard. Picker owns the decision
+  // (Enter only after the 2nd pick previews; Esc anywhere in the flow).
+  if (state.get('alignFolderId')) {
+    if (folderAlignPicker.onKeyDown(key)) {
+      e.preventDefault();
       return;
     }
   }
