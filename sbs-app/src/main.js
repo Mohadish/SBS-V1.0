@@ -58,6 +58,7 @@ import { initHeaderLayer }     from './systems/header.js';
 import { initCables, resolveNodeWorldPosition } from './systems/cables.js';        // C1: cables wire step:applied → applyStepSnapshot; C5-B: pos resolver for gizmo target
 import * as pivotCenterPicker     from './systems/pivot-center-picker.js';   // 3-point center pivot tool — snap-based picker for cylinder-axis pivot placement
 import * as folderAlignPicker     from './systems/folder-align-picker.js';   // V0.2.22.32 — 1-point folder-to-surface align
+import * as folderAlign3ptPicker  from './systems/folder-align-3pt-picker.js'; // V0.2.22.33 — 3-point concentric folder align
 
 // ── V0.2.22.23 — pivot hover throttle ─────────────────────────────────────
 // sceneCore.pick is O(scene) and runs ~75ms on a CAD project. Pointer-move
@@ -942,6 +943,19 @@ canvas.addEventListener('pointerdown', e => {
     return;
   }
 
+  // V0.2.22.33 — 3-point concentric folder align consumes the click.
+  // Source phase: snap-pick 3 pts on a folder-descendant circular face.
+  // Target phase: snap-pick 3 pts on a circular feature elsewhere. The
+  // picker auto-advances at 3 picks per side; Backspace removes the
+  // last pick, Enter commits, Esc reverts.
+  if (state.get('align3FolderId')) {
+    e.preventDefault();
+    e.stopPropagation();
+    _gizmoConsumed = true;
+    folderAlign3ptPicker.onPointerDown(e.clientX, e.clientY);
+    return;
+  }
+
   // P-P1+: snap-to-surface pick mode consumes the click — raycast
   // against the scene, snap pivot if there's a hit, otherwise cancel.
   // Runs BEFORE the gizmo so the user can target a face that happens
@@ -1078,6 +1092,16 @@ canvas.addEventListener('pointermove', e => {
       return;
     }
 
+    // V0.2.22.33 — 3-point align hover. Snap-picker uses findSnapTarget
+    // (same as 3-pt pivot tool) which is already rAF-throttled internally
+    // for its own caller; we call it directly here because the cross
+    // marker reflects vertex/edge/face snap mid-aim and the user expects
+    // tight follow.
+    if (state.get('align3FolderId')) {
+      folderAlign3ptPicker.updateHover(e.clientX, e.clientY);
+      return;
+    }
+
     // C5-D: insert-point pick mode — update the ghost-preview sphere
     // to track the cursor's mesh hit so the user sees where the new
     // point would land. Cleared on a hit-miss frame so it disappears
@@ -1129,6 +1153,18 @@ state.on('change:alignFolderPhase', phase => {
     setStatus('Align folder: click the target surface (anywhere else). Esc to cancel.', 'info', 0);
   } else if (phase === 'preview') {
     setStatus('Align folder: Enter to commit, Esc to revert.', 'info', 0);
+  }
+});
+
+// V0.2.22.33 — 3-point concentric align: same per-phase status pattern,
+// plus a Backspace hint while points are being collected.
+state.on('change:align3FolderPhase', phase => {
+  if (phase === 'source') {
+    setStatus('Align by 3 pts: pick 3 snap points on a circle INSIDE the folder. Backspace undo, Esc cancel.', 'info', 0);
+  } else if (phase === 'target') {
+    setStatus('Align by 3 pts: pick 3 snap points on the TARGET circle. Backspace undo, Esc cancel.', 'info', 0);
+  } else if (phase === 'preview') {
+    setStatus('Align by 3 pts: Enter to commit, Esc to revert.', 'info', 0);
   }
 });
 
@@ -2498,6 +2534,15 @@ window.addEventListener('keydown', async e => {
   // (Enter only after the 2nd pick previews; Esc anywhere in the flow).
   if (state.get('alignFolderId')) {
     if (folderAlignPicker.onKeyDown(key)) {
+      e.preventDefault();
+      return;
+    }
+  }
+
+  // V0.2.22.33 — 3-point folder align keyboard. Backspace removes the
+  // last picked point in the current phase; Enter commits when previewing.
+  if (state.get('align3FolderId')) {
+    if (folderAlign3ptPicker.onKeyDown(key)) {
       e.preventDefault();
       return;
     }

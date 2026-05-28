@@ -247,58 +247,64 @@ function _collectDescendantMeshIds(folderNode) {
 
 // ─── Alignment math ───────────────────────────────────────────────────────
 
+function _applyAlignmentPreview() {
+  if (!_state?.source || !_state?.target) return;
+  alignFolderBySurfaceMatch(
+    _state.folder,
+    _state.source.point, _state.source.normal,
+    _state.target.point, _state.target.normal,
+  );
+}
+
 /**
- * Apply the source→target alignment as a delta on the folder's world
- * matrix, then back-solve and write per-step localOffset / localQuaternion.
- * Doesn't touch baseLocal*. Doesn't push undo (commit() does that).
+ * Apply a surface→surface alignment to a folder's per-step pose.
+ *
+ * Writes node.localOffset / localQuaternion only — baseLocal* untouched.
+ * Doesn't push undo (callers handle that on commit).
  *
  * Math (all in world space):
- *   - Rotation R: source.normal → -target.normal (face-to-face contact)
- *   - Pivoted around source.point so the rotated source point stays put
- *   - Translation T: source.point → target.point
+ *   - Rotation R: srcNormal → -tgtNormal (face-to-face contact)
+ *   - Pivoted around srcPoint so the rotated source point stays put
+ *   - Translation T: srcPoint → tgtPoint
  *   Combined delta M:
- *     M = Translate(target.point - source.point)
- *       × Translate(source.point) × R × Translate(-source.point)
+ *     M = Translate(tgtPoint - srcPoint)
+ *       × Translate(srcPoint) × R × Translate(-srcPoint)
  *
  *   F.matrixWorld_new = M × F.matrixWorld_old
  *   F.matrixLocal_new = parent.matrixWorld⁻¹ × F.matrixWorld_new
  *   Decompose, write back to localOffset / localQuaternion.
+ *
+ * Used by the 1-point picker (this file) and the 3-point picker
+ * (folder-align-3pt-picker.js — derives src/tgt center+normal from 3
+ * snapped points each, then calls this).
  */
-function _applyAlignmentPreview() {
+export function alignFolderBySurfaceMatch(folder, srcPoint, srcNormal, tgtPoint, tgtNormal) {
   const T = window.THREE;
-  if (!T) return;
-  const folder = _state.folder;
-  const src = _state.source;
-  const tgt = _state.target;
+  if (!T) return false;
   const obj = _folderObject3d(folder.id);
-  if (!obj || !src || !tgt) {
-    console.warn('[folder-align] no Object3D for folder', folder.id, { obj, src, tgt });
-    return;
+  if (!obj) {
+    console.warn('[folder-align] no Object3D for folder', folder.id);
+    return false;
   }
 
-  // Rotation from source.normal to -target.normal.
-  const sN = src.normal.clone().normalize();
-  const tN = tgt.normal.clone().normalize().negate();
+  const sN = srcNormal.clone().normalize();
+  const tN = tgtNormal.clone().normalize().negate();
   const R = new T.Quaternion().setFromUnitVectors(sN, tN);
 
-  // Build the delta M (world space).
-  const M  = new T.Matrix4();
-  const Tneg = new T.Matrix4().makeTranslation(-src.point.x, -src.point.y, -src.point.z);
+  const Tneg = new T.Matrix4().makeTranslation(-srcPoint.x, -srcPoint.y, -srcPoint.z);
   const Rm   = new T.Matrix4().makeRotationFromQuaternion(R);
-  const Tpos = new T.Matrix4().makeTranslation( src.point.x,  src.point.y,  src.point.z);
+  const Tpos = new T.Matrix4().makeTranslation( srcPoint.x,  srcPoint.y,  srcPoint.z);
   const Tshift = new T.Matrix4().makeTranslation(
-    tgt.point.x - src.point.x,
-    tgt.point.y - src.point.y,
-    tgt.point.z - src.point.z,
+    tgtPoint.x - srcPoint.x,
+    tgtPoint.y - srcPoint.y,
+    tgtPoint.z - srcPoint.z,
   );
   // M = Tshift * Tpos * R * Tneg
-  M.copy(Tshift).multiply(Tpos).multiply(Rm).multiply(Tneg);
+  const M = new T.Matrix4().copy(Tshift).multiply(Tpos).multiply(Rm).multiply(Tneg);
 
-  // Apply delta to folder's world matrix.
   obj.updateMatrixWorld(true);
   const newWorld = new T.Matrix4().multiplyMatrices(M, obj.matrixWorld);
 
-  // Back-solve to local (per folder's parent).
   const parent = obj.parent;
   if (parent) parent.updateMatrixWorld(true);
   const invParent = parent
@@ -311,7 +317,6 @@ function _applyAlignmentPreview() {
   const newScale = new T.Vector3();
   newLocal.decompose(newPos, newQuat, newScale);
 
-  // Write back to node — per V0.2.22 keep-position convention.
   const blp = folder.baseLocalPosition   || [0, 0, 0];
   const blq = folder.baseLocalQuaternion || [0, 0, 0, 1];
   folder.localOffset = [
@@ -323,13 +328,23 @@ function _applyAlignmentPreview() {
   const localQ = baseQ.multiply(newQuat);
   setStoredQuaternion(folder, [localQ.x, localQ.y, localQ.z, localQ.w]);
 
-  // Push to Three.js + sync step snapshot.
   obj.position.set(newPos.x, newPos.y, newPos.z);
   obj.quaternion.copy(newQuat);
   obj.updateMatrixWorld(true);
   steps.scheduleTransformSync();
   state.markDirty?.();
   state.emit('change:treeData', state.get('treeData'));
+  return true;
+}
+
+/**
+ * Look up the Three.js Group for a folder node. Exported because the
+ * 3-point picker uses it for the same fallback-push reason this picker
+ * does. Folders DON'T carry userData.nodeId (only meshes do — see
+ * steps.js:2607), so the steps map is the authoritative source.
+ */
+export function getFolderObject3D(folderId) {
+  return _folderObject3d(folderId);
 }
 
 function _restoreBeforeXf() {

@@ -42,6 +42,7 @@ import { setStatus }            from './status.js';
 import { showContextMenu, hideContextMenu, showConfirmDialog } from './context-menu.js';
 import { showColorForNode }     from './sidebar-left.js';
 import * as folderAlignPicker   from '../systems/folder-align-picker.js';
+import * as folderAlign3ptPicker from '../systems/folder-align-3pt-picker.js';
 
 // ── State ────────────────────────────────────────────────────────────────────
 
@@ -863,6 +864,15 @@ function _buildContextMenuItems(node) {
     items.push({
       label: '🎯 Align folder to surface…',
       action: () => folderAlignPicker.start(node.id),
+    });
+    // V0.2.22.33 — 3-point concentric folder align. Snap 3 points on a
+    // circular feature inside the folder (defines source circle center +
+    // axis), then 3 points on a circular feature elsewhere (target).
+    // Folder snaps so the two circles share a center + axis. Backspace
+    // removes the last point in the current phase.
+    items.push({
+      label: '🎯 Align folder by 3 points (concentric)…',
+      action: () => folderAlign3ptPicker.start(node.id),
     });
   }
 
