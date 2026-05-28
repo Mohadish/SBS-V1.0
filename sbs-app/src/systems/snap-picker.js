@@ -138,14 +138,47 @@ export function findSnapTarget(clientX, clientY) {
     ];
   }
 
+  // V0.2.22.30 — visibility test. Casts a ray from the camera through a
+  // world point and checks whether the hit mesh occludes it. Catches
+  // intra-mesh occlusion (e.g. an edge on the back side of a complex
+  // shape hidden by the same shape's front). Inter-mesh occlusion (other
+  // meshes blocking the view) NOT covered — would need scene-wide
+  // raycast per candidate (10× cost). The hit mesh handles the most
+  // common case the user actually cares about.
+  //
+  // Returns true if the world point is "visible" — no surface of the
+  // hit mesh sits between the camera and it (within tolerance).
+  const _vizRaycaster = new T.Raycaster();
+  const _vizDir       = new T.Vector3();
+  const _camPos       = camera.position;
+  const VIZ_TOL_WORLD = 0.0001;   // small to avoid self-occlusion at the same surface
+  function isVisibleWorldPoint(worldP) {
+    _vizDir.subVectors(worldP, _camPos);
+    const distToP = _vizDir.length();
+    if (distToP < 1e-9) return true;
+    _vizDir.normalize();
+    _vizRaycaster.set(_camPos, _vizDir);
+    // intersect against ONLY the hit mesh — saves the scene-wide cost.
+    const hits = _vizRaycaster.intersectObject(mesh, false);
+    if (!hits.length) return true;
+    // Any nearer hit means a surface of THIS mesh occludes the point.
+    return hits[0].distance >= distToP - VIZ_TOL_WORLD;
+  }
+
   // ── Vertex pass ─────────────────────────────────────────────────────────
+  // V0.2.22.30 — collect-and-filter pattern. Gather every vert within
+  // SNAP_RADIUS_PX (already depth-culled), sort by screen distance,
+  // visibility-test each in order, return first visible. Drops the
+  // best-only short-circuit so that an "almost-closest" but VISIBLE
+  // vert can win over a "marginally-closer" but OCCLUDED one (e.g.
+  // a back-side vert that projected lucky).
   const _tVertStart = _diag ? performance.now() : 0;
-  let bestVertIdx   = -1;
-  let bestVertDist2 = Infinity;
-  let _vertCulled   = 0;   // V0.2.22.29 diag — depth-culled vert count
-  let _vertBestDepth = 0;
+  const _MAX_VERT_CANDIDATES = 8;
+  const vertCandidates = [];   // {idx, dist2, depth}
+  let _vertCulled   = 0;
   const arr = posAttr.array;
   const count = posAttr.count;
+  const snapR2 = SNAP_RADIUS_PX * SNAP_RADIUS_PX;
   const buf = [0, 0, 0];
   for (let i = 0; i < count; i++) {
     buf[0] = arr[i * 3];
@@ -153,41 +186,40 @@ export function findSnapTarget(clientX, clientY) {
     buf[2] = arr[i * 3 + 2];
     const px = projectToPixels(buf);
     if (!px) continue;
-    // V0.2.22.28 — depth cull: skip verts BEHIND the hit point
-    // (occluded by the surface the cursor is over).
     if (px[2] > hitDepthZ + DEPTH_TOL) { if (_diag) _vertCulled++; continue; }
     const dx = px[0] - cursorX;
     const dy = px[1] - cursorY;
     const d2 = dx * dx + dy * dy;
-    if (d2 < bestVertDist2) {
-      bestVertDist2 = d2;
-      bestVertIdx   = i;
-      _vertBestDepth = px[2];
-    }
+    if (d2 > snapR2) continue;
+    vertCandidates.push({ idx: i, dist2: d2, depth: px[2] });
   }
+  vertCandidates.sort((a, b) => a.dist2 - b.dist2);
   const _tVert = _diag ? performance.now() - _tVertStart : 0;
 
-  if (bestVertIdx >= 0 && Math.sqrt(bestVertDist2) <= SNAP_RADIUS_PX) {
+  // Visibility-test candidates in screen-distance order; first visible wins.
+  let _vertVizFailed = 0;
+  let _vertChosenDepth = 0;
+  for (let k = 0; k < Math.min(vertCandidates.length, _MAX_VERT_CANDIDATES); k++) {
+    const c = vertCandidates[k];
     const v = new T.Vector3(
-      arr[bestVertIdx * 3],
-      arr[bestVertIdx * 3 + 1],
-      arr[bestVertIdx * 3 + 2],
+      arr[c.idx * 3],
+      arr[c.idx * 3 + 1],
+      arr[c.idx * 3 + 2],
     ).applyMatrix4(matrixWorld);
-    if (_diag) console.log(`[snap] mesh=${mesh.name||'?'} V=${count} culled=${_vertCulled} hitZ=${hitDepthZ.toFixed(4)} pickZ=${_vertBestDepth.toFixed(4)} pick=${_tPick.toFixed(2)} vert=${_tVert.toFixed(2)} total=${(performance.now()-_t0).toFixed(2)}ms → vertex`);
+    if (!isVisibleWorldPoint(v)) { _vertVizFailed++; continue; }
+    _vertChosenDepth = c.depth;
+    if (_diag) console.log(`[snap] mesh=${mesh.name||'?'} V=${count} culled=${_vertCulled} cand=${vertCandidates.length} vizFail=${_vertVizFailed} hitZ=${hitDepthZ.toFixed(4)} pickZ=${_vertChosenDepth.toFixed(4)} pick=${_tPick.toFixed(2)} vert=${_tVert.toFixed(2)} total=${(performance.now()-_t0).toFixed(2)}ms → vertex`);
     return { type: 'vertex', point: v, mesh };
   }
 
   // ── Edge pass ───────────────────────────────────────────────────────────
-  // V0.2.22.27 — iterates EdgesGeometry's flat position buffer (pairs of
-  // verts per segment) instead of indices back into the source geom.
+  // V0.2.22.30 — collect + visibility-filter, same pattern as the vert pass.
   const _tEdgeStart = _diag ? performance.now() : 0;
   const edgePos = _getEdgePositions(geom);
-  const edgeSegCount = edgePos.length / 6;   // 6 floats per segment (2 verts × 3)
-  let bestEdgeIdx   = -1;
-  let bestEdgeT     = 0;
-  let bestEdgeDist2 = Infinity;
-  let _edgeCulled   = 0;          // V0.2.22.29 diag
-  let _edgeBestDepth = 0;
+  const edgeSegCount = edgePos.length / 6;
+  const _MAX_EDGE_CANDIDATES = 8;
+  const edgeCandidates = [];   // {idx, t, dist2, depth}
+  let _edgeCulled = 0;
   const a = [0, 0, 0], b = [0, 0, 0];
   for (let e = 0; e < edgeSegCount; e++) {
     const off = e * 6;
@@ -197,16 +229,10 @@ export function findSnapTarget(clientX, clientY) {
     if (!pa) continue;
     const pb = projectToPixels(b);
     if (!pb) continue;
-    // V0.2.22.28 — depth cull: skip edges whose BOTH endpoints are
-    // behind the hit point (entire segment occluded). An edge with
-    // one endpoint in front and one behind (e.g. a silhouette edge
-    // angling away) is kept — it might be the rim the user is
-    // pointing at.
     if (pa[2] > hitDepthZ + DEPTH_TOL && pb[2] > hitDepthZ + DEPTH_TOL) {
       if (_diag) _edgeCulled++;
       continue;
     }
-    // Closest point on line segment pa-pb to cursor in screen space.
     const sx = pb[0] - pa[0], sy = pb[1] - pa[1];
     const seg2 = sx * sx + sy * sy;
     let t = 0.5;
@@ -218,36 +244,38 @@ export function findSnapTarget(clientX, clientY) {
     const cy = pa[1] + sy * t;
     const dx = cx - cursorX, dy = cy - cursorY;
     const d2 = dx * dx + dy * dy;
-    if (d2 < bestEdgeDist2) {
-      bestEdgeDist2 = d2;
-      bestEdgeT     = t;
-      bestEdgeIdx   = e;
-      _edgeBestDepth = pa[2] * (1 - t) + pb[2] * t;
-    }
+    if (d2 > snapR2) continue;
+    edgeCandidates.push({
+      idx: e, t, dist2: d2,
+      depth: pa[2] * (1 - t) + pb[2] * t,
+    });
   }
+  edgeCandidates.sort((a, b) => a.dist2 - b.dist2);
   const _tEdge = _diag ? performance.now() - _tEdgeStart : 0;
 
-  if (bestEdgeIdx >= 0 && Math.sqrt(bestEdgeDist2) <= SNAP_RADIUS_PX) {
-    const off = bestEdgeIdx * 6;
+  // Visibility-test candidates in screen-distance order; first visible wins.
+  let _edgeVizFailed = 0;
+  for (let k = 0; k < Math.min(edgeCandidates.length, _MAX_EDGE_CANDIDATES); k++) {
+    const c = edgeCandidates[k];
+    const off = c.idx * 6;
     const ax = edgePos[off],     ay = edgePos[off + 1], az = edgePos[off + 2];
     const bx = edgePos[off + 3], by = edgePos[off + 4], bz = edgePos[off + 5];
-    const t = bestEdgeT;
+    const t = c.t;
     const local = new T.Vector3(
       ax + (bx - ax) * t,
       ay + (by - ay) * t,
       az + (bz - az) * t,
     );
-    // Edge endpoints in world space — exported alongside the snap
-    // point so the caller can draw a highlight along the whole edge.
+    const world = local.clone().applyMatrix4(matrixWorld);
+    if (!isVisibleWorldPoint(world)) { _edgeVizFailed++; continue; }
     const edgeA = new T.Vector3(ax, ay, az).applyMatrix4(matrixWorld);
     const edgeB = new T.Vector3(bx, by, bz).applyMatrix4(matrixWorld);
-    const world = local.applyMatrix4(matrixWorld);
-    if (_diag) console.log(`[snap] mesh=${mesh.name||'?'} V=${count} E=${edgeSegCount} eCulled=${_edgeCulled} hitZ=${hitDepthZ.toFixed(4)} pickZ=${_edgeBestDepth.toFixed(4)} pick=${_tPick.toFixed(2)} vert=${_tVert.toFixed(2)} edge=${_tEdge.toFixed(2)} total=${(performance.now()-_t0).toFixed(2)}ms → edge`);
+    if (_diag) console.log(`[snap] mesh=${mesh.name||'?'} V=${count} E=${edgeSegCount} eCulled=${_edgeCulled} eCand=${edgeCandidates.length} eVizFail=${_edgeVizFailed} hitZ=${hitDepthZ.toFixed(4)} pickZ=${c.depth.toFixed(4)} pick=${_tPick.toFixed(2)} vert=${_tVert.toFixed(2)} edge=${_tEdge.toFixed(2)} total=${(performance.now()-_t0).toFixed(2)}ms → edge`);
     return { type: 'edge', point: world, mesh, edgeA, edgeB };
   }
 
   // ── Fallback: face hit point ────────────────────────────────────────────
-  if (_diag) console.log(`[snap] mesh=${mesh.name||'?'} V=${count} E=${edgeSegCount} eCulled=${_edgeCulled} hitZ=${hitDepthZ.toFixed(4)} pick=${_tPick.toFixed(2)} vert=${_tVert.toFixed(2)} edge=${_tEdge.toFixed(2)} total=${(performance.now()-_t0).toFixed(2)}ms → face`);
+  if (_diag) console.log(`[snap] mesh=${mesh.name||'?'} V=${count} E=${edgeSegCount} eCulled=${_edgeCulled} eCand=${edgeCandidates.length} eVizFail=${_edgeVizFailed} hitZ=${hitDepthZ.toFixed(4)} pick=${_tPick.toFixed(2)} vert=${_tVert.toFixed(2)} edge=${_tEdge.toFixed(2)} total=${(performance.now()-_t0).toFixed(2)}ms → face`);
   return { type: 'face', point: hit.point.clone(), mesh };
 }
 
