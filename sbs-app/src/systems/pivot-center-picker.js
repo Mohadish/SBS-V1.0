@@ -272,8 +272,11 @@ function _setHover(worldPoint, type, edgeA, edgeB) {
   // For edge snaps, draw a highlight along the WHOLE edge so the user
   // sees exactly which segment will be used — and a brighter cross at
   // the snap point along it.
+  // V0.2.22.24: bumped thickness 0.35 → 2.0 (cylinder was sub-pixel
+  // wide — invisible against geometry). Pure yellow + higher opacity
+  // for max contrast.
   if (type === 'edge' && edgeA && edgeB) {
-    _state.hoverGroup.add(_buildSegmentCylinder(edgeA, edgeB, 0xffee44, 0.35));
+    _state.hoverGroup.add(_buildSegmentCylinder(edgeA, edgeB, 0xffff00, 2.0));
   }
   _state.hoverGroup.add(_buildCross(worldPoint, colour));
 }
@@ -364,7 +367,7 @@ function _buildSegmentCylinder(p1, p2, color, thicknessFactor = 0.3) {
   const geom = new T.CylinderGeometry(radius, radius, length, 12, 1, false);
   const mat = new T.MeshBasicMaterial({
     color, depthTest: false, depthWrite: false,
-    transparent: true, opacity: 0.6,
+    transparent: true, opacity: 0.85,   // V0.2.22.24: 0.6 → 0.85
   });
   const mesh = new T.Mesh(geom, mat);
   mesh.position.addVectors(p1, p2).multiplyScalar(0.5);
