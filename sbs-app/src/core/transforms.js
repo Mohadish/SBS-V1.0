@@ -104,12 +104,10 @@ export function multiplyQuaternions(a, b) {
   ];
 }
 
-/**
- * Invert a unit quaternion array (conjugate for unit quaternions).
- */
-export function invertQuaternion([x, y, z, w]) {
-  return [-x, -y, -z, w];
-}
+// V0.2.22.19 — removed unused export `invertQuaternion`. Callers that
+// need to invert a quaternion either compose with the THREE.Quaternion
+// API (.invert()) or use multiplyQuaternions with the conjugate inline.
+// No remaining callers in src/.
 
 /**
  * Convert a quaternion array to Euler degrees {x, y, z} (XYZ order).

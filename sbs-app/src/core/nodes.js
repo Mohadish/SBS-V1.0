@@ -11,6 +11,28 @@
  *
  * All mutation functions return new/modified nodes so callers can
  * rebuild their Maps after each operation.
+ *
+ * ─────────────────────────────────────────────────────────────────────────
+ * NODE LOOKUP — TWO APIs, BOTH CORRECT, USE THE RIGHT ONE
+ * ─────────────────────────────────────────────────────────────────────────
+ * V0.2.22.19 — both lookup paths exist by design. Pick based on what
+ * the caller actually needs:
+ *
+ *   findNode(root, id)               — recursive tree walk, O(N)
+ *     Use when you ALSO need tree-shaped operations: walking siblings,
+ *     finding the parent (findParent), inspecting subtree shape.
+ *     Slow for huge trees if called in a hot loop.
+ *
+ *   state.get('nodeById')?.get(id)   — Map lookup, O(1)
+ *     Use for point lookups by id. Always prefer in:
+ *       - per-frame animation hot paths
+ *       - large-batch operations (per-mesh-id iteration)
+ *       - any callsite that doesn't need sibling/parent context
+ *     The map is rebuilt on every change:treeData so values are fresh.
+ *
+ * Rule of thumb: if you'd reach for tree.walk(), use findNode. If you
+ * just have an id, use nodeById. Both return the SAME node reference
+ * (the map is built from the tree by buildNodeMap()).
  */
 
 
@@ -170,20 +192,11 @@ export function getNodesByType(root, type) {
   return flatten(root).filter(n => n.type === type);
 }
 
-/** All folder and model nodes (valid drop targets / selection parents) */
-export function getFolderNodes(root) {
-  return flatten(root).filter(n => n.type !== 'mesh');
-}
-
-/** All mesh nodes (leaves) */
-export function getMeshNodes(root) {
-  return flatten(root).filter(n => n.type === 'mesh');
-}
-
-/** All model nodes */
-export function getModelNodes(root) {
-  return flatten(root).filter(n => n.type === 'model');
-}
+// V0.2.22.19 — removed three unused exports: getFolderNodes / getMeshNodes
+// / getModelNodes. All three were thin filter wrappers over flatten()
+// that no callers used. Use getNodesByType(root, type) if you need
+// type-filtered enumeration; otherwise flatten(root).filter(predicate)
+// directly is just as clear.
 
 /** Count mesh nodes in a subtree */
 export function countMeshNodes(node) {
@@ -599,18 +612,5 @@ export function collectMeshIds(node) {
   return flatten(node).filter(n => n.type === 'mesh').map(n => n.id);
 }
 
-/**
- * Given a set of selected node ids, expand to include all mesh
- * descendants (for highlight rendering — meshes are what Three.js renders).
- * @param {Map<string,TreeNode>} nodeById
- * @param {Set<string>}          selectedIds
- * @returns {Set<string>}  expanded set (includes original ids + all mesh descendants)
- */
-export function expandSelectionToMeshes(nodeById, selectedIds) {
-  const result = new Set(selectedIds);
-  for (const id of selectedIds) {
-    const node = nodeById.get(id);
-    if (node) collectMeshIds(node).forEach(mid => result.add(mid));
-  }
-  return result;
-}
+// V0.2.22.19 — removed unused export `expandSelectionToMeshes`. Selection
+// expansion is done inline at call sites using collectMeshIds().
