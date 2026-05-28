@@ -231,21 +231,27 @@ function _anyPlaced() {
 function _buildCross(worldPoint, color) {
   const T = window.THREE;
   const s = _markerSize();
-  const verts = new Float32Array([
-    -s, 0, 0,  s, 0, 0,
-     0,-s, 0,  0, s, 0,
-     0, 0,-s,  0, 0, s,
-  ]);
-  const geom = new T.BufferGeometry();
-  geom.setAttribute('position', new T.BufferAttribute(verts, 3));
-  const mat = new T.LineBasicMaterial({
-    color, depthTest: false, depthWrite: false,
-    transparent: true, opacity: 0.95,
-  });
-  const lines = new T.LineSegments(geom, mat);
-  lines.position.copy(worldPoint);
-  lines.renderOrder = 999;
-  return lines;
+  // V0.2.22.31 — was LineSegments + LineBasicMaterial. WebGL ignores
+  // .linewidth on most GPUs (always 1px), so "make the cross thicker"
+  // doesn't work with lines. Three thin cylinders along the axes
+  // produce true 3D thickness. Each arm: (centre - axis·s) → (centre + axis·s).
+  // thicknessFactor 1.0 here is close to the edge highlight's 1.2 so
+  // they read as the same family visually.
+  const group = new T.Group();
+  const p1 = new T.Vector3();
+  const p2 = new T.Vector3();
+  const axes = [
+    [ s, 0, 0],
+    [ 0, s, 0],
+    [ 0, 0, s],
+  ];
+  for (const [dx, dy, dz] of axes) {
+    p1.set(worldPoint.x - dx, worldPoint.y - dy, worldPoint.z - dz);
+    p2.set(worldPoint.x + dx, worldPoint.y + dy, worldPoint.z + dz);
+    group.add(_buildSegmentCylinder(p1, p2, color, 1.0));
+  }
+  group.renderOrder = 999;
+  return group;
 }
 
 function _buildDot(worldPoint, color) {
@@ -272,10 +278,11 @@ function _setHover(worldPoint, type, edgeA, edgeB) {
   // For edge snaps, draw a highlight along the WHOLE edge so the user
   // sees exactly which segment will be used — and a brighter cross at
   // the snap point along it.
-  // V0.2.22.29: thicknessFactor 0.35 → 0.7 → diameter ~2px (was ~1px).
-  // Cylinder formula: diameter = pixelSize × 3 × thicknessFactor.
+  // V0.2.22.31: edge highlight bumped 0.7 → 1.2 → diameter ~3.6px.
+  // Cross (below) also switched from LineSegments to cylinders since
+  // WebGL ignores LineBasicMaterial.linewidth on most GPUs.
   if (type === 'edge' && edgeA && edgeB) {
-    _state.hoverGroup.add(_buildSegmentCylinder(edgeA, edgeB, 0xffee44, 0.7));
+    _state.hoverGroup.add(_buildSegmentCylinder(edgeA, edgeB, 0xffee44, 1.2));
   }
   _state.hoverGroup.add(_buildCross(worldPoint, colour));
 }

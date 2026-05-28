@@ -286,15 +286,14 @@ export function findSnapTarget(clientX, clientY) {
 // tessellation noise and gets dropped. Boundary edges (only one adjacent
 // triangle, e.g. mesh hole edges) are always kept.
 //
-// V0.2.22.26 — default raised 30 → 45. The 30 value still pulled in
-// tessellation seams on coarse cylinders / shallow chamfers. 45 catches
-// only HARD features (90° machined corners, drilled-hole rims, sharp
-// cutoffs) which the user identified as the snap targets they care
-// about. Tunable at runtime via DevTools:
-//   window.sbsDiag = { ...window.sbsDiag, snapEdgeDeg: 60 };
-// Lower (15-30) = catch softer features incl. tessellation seams.
-// Higher (60-90) = only the SHARPEST features.
-const FEATURE_EDGE_DEG_DEFAULT = 45;
+// V0.2.22.31 — default 15° (was 45). User explicitly wants creases
+// counted from 15° upward: "anything more than 15 should count as a
+// crease I want picking." 15° matches THREE.EdgesGeometry's outline-
+// rendering convention too — same threshold materials.js uses for the
+// selection outline shader. Still runtime-tunable via DevTools:
+//   window.sbsDiag = { ...window.sbsDiag, snapEdgeDeg: 30 };
+// Higher = stricter / fewer edges. Lower = more permissive.
+const FEATURE_EDGE_DEG_DEFAULT = 15;
 function _featureEdgeThreshold() {
   const t = typeof window !== 'undefined' ? window.sbsDiag?.snapEdgeDeg : null;
   return Number.isFinite(t) ? t : FEATURE_EDGE_DEG_DEFAULT;
