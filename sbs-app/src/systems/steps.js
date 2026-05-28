@@ -57,6 +57,7 @@ import {
   isTransformNode,
   lerpVec3,
   slerpQuaternion,
+  quarterTurnsFromQuaternion,
 } from '../core/transforms.js';
 
 // ── Easing helpers (mirror scene.js — no circular dependency) ─────────────
@@ -726,6 +727,36 @@ class StepManager {
     }
 
     // ── Final: snap to exact target state ─────────────────────────────
+    // V0.2.22.17 Stage 2 — instrument the snap. With Stage 1's per-frame
+    // data writes, the snap SHOULD be a visual no-op for object transforms
+    // because animation's last tick at alpha=1 already wrote the exact
+    // target into node.localOffset / localQuaternion. Compare pre-snap
+    // node values to snapshot.transforms — log any node whose stored
+    // delta differs by more than 1e-4. Gated behind
+    // window.sbsDiag.seamCheck so it's quiet by default.
+    if (typeof window !== 'undefined' && window.sbsDiag?.seamCheck
+        && toSnapshot.transforms) {
+      const nb = state.get('nodeById');
+      const drifts = [];
+      for (const [id, target] of Object.entries(toSnapshot.transforms)) {
+        const live = nb?.get(id);
+        if (!live || !isTransformNode(live)) continue;
+        const lo = live.localOffset      || [0, 0, 0];
+        const lq = live.localQuaternion  || [0, 0, 0, 1];
+        const to = target.localOffset    || [0, 0, 0];
+        const tq = target.localQuaternion || [0, 0, 0, 1];
+        const dPos = Math.max(Math.abs(lo[0]-to[0]), Math.abs(lo[1]-to[1]), Math.abs(lo[2]-to[2]));
+        const dQuat = Math.max(Math.abs(lq[0]-tq[0]), Math.abs(lq[1]-tq[1]), Math.abs(lq[2]-tq[2]), Math.abs(lq[3]-tq[3]));
+        if (dPos > 1e-4 || dQuat > 1e-4) {
+          drifts.push({ id, name: live.name, dPos: dPos.toFixed(5), dQuat: dQuat.toFixed(5) });
+        }
+      }
+      if (drifts.length) {
+        console.warn(`[seam] drift on ${drifts.length} node(s) at end of animation:`, drifts);
+      } else {
+        console.log('[seam] clean — no drift detected this transition.');
+      }
+    }
     this.applySnapshotInstant(toSnapshot, { suppressCamera: cameraHandled });
   }
 
@@ -1243,6 +1274,7 @@ class StepManager {
               lerpedPivotWorld[2] - offsetWorld.z,
             ];
             _setWorldTransformOnObject(obj, lerpedPos, lerpedQuat);
+            _writeDataStateFromObject3D(node, obj);  // V0.2.22.17 Stage 1
           } else if (tr.inheritParentId && tr.localFrom && tr.localTo) {
             // PARENT-LOCAL lerp branch. The tree-data parent is also
             // animating this frame (it was processed earlier in the loop
@@ -1264,6 +1296,7 @@ class StepManager {
             // and recompute its own matrixWorld via its parent's just-
             // updated matrix.
             obj.updateMatrixWorld(false);
+            _writeDataStateFromObject3D(node, obj);  // V0.2.22.17 Stage 1
           } else {
             // World-space lerp. Objects stay in their target hierarchy; we use
             // world→local conversion (v0.266 approach) so the correct local
@@ -1273,6 +1306,7 @@ class StepManager {
             const lerpedPos  = lerpVec3(tr.worldFrom.position,  tr.worldTo.position,  alpha);
             const lerpedQuat = slerpQuaternion(tr.worldFrom.quaternion, tr.worldTo.quaternion, alpha);
             _setWorldTransformOnObject(obj, lerpedPos, lerpedQuat);
+            _writeDataStateFromObject3D(node, obj);  // V0.2.22.17 Stage 1
           }
         } else {
           // Legacy: localOffset lerp (fallback for old snapshots without worldTransforms)
@@ -2918,6 +2952,54 @@ function _buildInheritExtras(nodeId, worldFrom, worldTo, parentMap, changedSet, 
     localFrom:       _composeLocalFromWorlds(parentFrom, worldFrom),
     localTo:         _composeLocalFromWorlds(parentTo,   worldTo),
   };
+}
+
+/**
+ * V0.2.22.17 Stage 1 — write data-state back from a Three.js Object3D
+ * whose local matrix (obj.position / obj.quaternion) was just set by an
+ * animation tick. Without this, the animation engine only updates the
+ * scene graph; node.localOffset and node.localQuaternion stay at their
+ * pre-animation values. The end-of-transition applySnapshotInstant snap
+ * then "writes the answer in" — but at any moment AFTER the last animation
+ * tick and BEFORE the snap, the data state lags. That mismatch is the
+ * source of the visible seam stutter (the encoder captures a frame
+ * sampled at lerp(t<1), the snap then jumps the Object3D to the exact
+ * snapshot.transforms value, the next captured frame shows that jump).
+ *
+ * With per-frame data writes:
+ *   - On the last animation tick, alpha clamps to 1.0 →
+ *     lerped local pose = exact target → node.localOffset / Quaternion
+ *     also match exact target.
+ *   - The subsequent applySnapshotInstant snap reads the same target
+ *     values from snapshot.transforms and writes the same values to
+ *     node.localOffset / Quaternion. No-op. No visible jump.
+ *
+ * Stage 1 keeps the snap in place as a safety net + verifier. Stage 2
+ * (later commit) will instrument & confirm zero drift. Stage 3 removes
+ * the snap entirely once verified clean.
+ *
+ * Only applies to TRANSFORM-bearing nodes (folder/model/flatShape).
+ * Mesh nodes don't carry per-node deltas — their pose is the parent
+ * chain × baked vertex positions, so no data state to write back.
+ */
+function _writeDataStateFromObject3D(node, obj) {
+  if (!node || !obj || !isTransformNode(node)) return;
+  const blp = node.baseLocalPosition  || [0, 0, 0];
+  const blq = node.baseLocalQuaternion || [0, 0, 0, 1];
+  // localOffset = obj.position (local-relative-to-parent) − baseLocalPosition.
+  node.localOffset = [
+    obj.position.x - blp[0],
+    obj.position.y - blp[1],
+    obj.position.z - blp[2],
+  ];
+  // localQuaternion = inv(baseLocalQuaternion) × obj.quaternion.
+  const THREE = window.THREE;
+  if (THREE) {
+    const baseQ  = new THREE.Quaternion(blq[0], blq[1], blq[2], blq[3]).invert();
+    const localQ = baseQ.multiply(obj.quaternion);
+    node.localQuaternion  = [localQ.x, localQ.y, localQ.z, localQ.w];
+    node.orientationSteps = quarterTurnsFromQuaternion(node.localQuaternion);
+  }
 }
 
 function _setWorldTransformOnObject(obj, worldPos, worldQuat) {
