@@ -56,15 +56,34 @@ const _edgeCache = new Map();
  * @param {number} clientY
  */
 export function findSnapTarget(clientX, clientY) {
+  // V0.2.22.23 — diagnostic profiling. Enable in DevTools with:
+  //   window.sbsDiag = { ...window.sbsDiag, snapPerf: true };
+  // Then run the 3-point pivot tool over the laggy scenario. Each
+  // pointer-move logs one line: raycast time + vertex-pass time +
+  // edge-pass time + mesh vert count + total. Use to determine
+  // whether the bottleneck is sceneCore.pick (O(scene)) or the
+  // per-mesh vertex/edge passes (O(V)).
+  const _diag = typeof window !== 'undefined' && window.sbsDiag?.snapPerf;
+  const _t0   = _diag ? performance.now() : 0;
+
   if (!window.THREE) return null;
   const T = window.THREE;
 
+  const _tPickStart = _diag ? performance.now() : 0;
   const hit = sceneCore.pick(clientX, clientY);
-  if (!hit?.object?.isMesh) return null;
+  const _tPick = _diag ? performance.now() - _tPickStart : 0;
+
+  if (!hit?.object?.isMesh) {
+    if (_diag) console.log(`[snap] pick=${_tPick.toFixed(2)}ms hit=none`);
+    return null;
+  }
   const mesh = hit.object;
   const geom = mesh.geometry;
   const posAttr = geom?.attributes?.position;
-  if (!posAttr) return { type: 'face', point: hit.point.clone(), mesh };
+  if (!posAttr) {
+    if (_diag) console.log(`[snap] pick=${_tPick.toFixed(2)}ms mesh=${mesh.name||'?'} no-geom → face`);
+    return { type: 'face', point: hit.point.clone(), mesh };
+  }
 
   // Cursor in screen pixels relative to the renderer canvas.
   const rect = sceneCore.renderer.domElement.getBoundingClientRect();
@@ -91,6 +110,7 @@ export function findSnapTarget(clientX, clientY) {
   }
 
   // ── Vertex pass ─────────────────────────────────────────────────────────
+  const _tVertStart = _diag ? performance.now() : 0;
   let bestVertIdx   = -1;
   let bestVertDist2 = Infinity;
   const arr = posAttr.array;
@@ -110,6 +130,7 @@ export function findSnapTarget(clientX, clientY) {
       bestVertIdx   = i;
     }
   }
+  const _tVert = _diag ? performance.now() - _tVertStart : 0;
 
   if (bestVertIdx >= 0 && Math.sqrt(bestVertDist2) <= SNAP_RADIUS_PX) {
     const v = new T.Vector3(
@@ -117,10 +138,12 @@ export function findSnapTarget(clientX, clientY) {
       arr[bestVertIdx * 3 + 1],
       arr[bestVertIdx * 3 + 2],
     ).applyMatrix4(matrixWorld);
+    if (_diag) console.log(`[snap] mesh=${mesh.name||'?'} V=${count} pick=${_tPick.toFixed(2)} vert=${_tVert.toFixed(2)} total=${(performance.now()-_t0).toFixed(2)}ms → vertex`);
     return { type: 'vertex', point: v, mesh };
   }
 
   // ── Edge pass ───────────────────────────────────────────────────────────
+  const _tEdgeStart = _diag ? performance.now() : 0;
   const edges = _getEdgeIndices(geom);
   let bestEdgeKey = -1;
   let bestEdgeT   = 0;
@@ -152,6 +175,7 @@ export function findSnapTarget(clientX, clientY) {
       bestEdgeKey   = e;
     }
   }
+  const _tEdge = _diag ? performance.now() - _tEdgeStart : 0;
 
   if (bestEdgeKey >= 0 && Math.sqrt(bestEdgeDist2) <= SNAP_RADIUS_PX) {
     const ia = edges[bestEdgeKey], ib = edges[bestEdgeKey + 1];
@@ -168,10 +192,12 @@ export function findSnapTarget(clientX, clientY) {
     const edgeA = new T.Vector3(ax, ay, az).applyMatrix4(matrixWorld);
     const edgeB = new T.Vector3(bx, by, bz).applyMatrix4(matrixWorld);
     const world = local.applyMatrix4(matrixWorld);
+    if (_diag) console.log(`[snap] mesh=${mesh.name||'?'} V=${count} E=${edges.length/2} pick=${_tPick.toFixed(2)} vert=${_tVert.toFixed(2)} edge=${_tEdge.toFixed(2)} total=${(performance.now()-_t0).toFixed(2)}ms → edge`);
     return { type: 'edge', point: world, mesh, edgeA, edgeB };
   }
 
   // ── Fallback: face hit point ────────────────────────────────────────────
+  if (_diag) console.log(`[snap] mesh=${mesh.name||'?'} V=${count} E=${edges.length/2} pick=${_tPick.toFixed(2)} vert=${_tVert.toFixed(2)} edge=${_tEdge.toFixed(2)} total=${(performance.now()-_t0).toFixed(2)}ms → face`);
   return { type: 'face', point: hit.point.clone(), mesh };
 }
 
