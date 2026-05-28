@@ -6427,7 +6427,11 @@ export function setNoteSizePreset(noteId, presetId) {
 export function setNoteCustomFontSize(noteId, px) {
   const note = state.get('nodeById')?.get(noteId);
   if (!note || note.type !== 'note') return;
-  const size = Math.max(5, Math.min(150, Number(px) || 16));
+  // V0.2.22.18 — Number.isFinite + explicit fallback. `|| 16` coerced
+  // a user-typed 0 to 16; the Math.max/min clamp handles the legitimate
+  // range — we just need a real number going in.
+  const _v = Number(px);
+  const size = Math.max(5, Math.min(150, Number.isFinite(_v) ? _v : 16));
   const before = { sizePresetId: note.sizePresetId, customFontSize: note.customFontSize };
   if (before.customFontSize === size) return;
   note.customFontSize = size;

@@ -250,8 +250,15 @@ function _renderEditor(container) {
   // Style fields — change-event commits.
   host.querySelector('#cbl-color')?.addEventListener('change',
     e => actions.setCableStyle(cable.id, { color: e.target.value }));
-  host.querySelector('#cbl-size')?.addEventListener('change',
-    e => actions.setCableStyle(cable.id, { size: Math.max(5, Number(e.target.value) || 100) }));
+  host.querySelector('#cbl-size')?.addEventListener('change', e => {
+    // V0.2.22.18 — Number.isFinite + explicit fallback. `|| 100` coerced
+    // a user-typed 0 to 100; naive `?? 100` wouldn't catch NaN
+    // (Number('abc') = NaN, and NaN ?? 100 = NaN). The Math.max(5, …)
+    // floor handles "too small" — we just need a real number going in.
+    const v = Number(e.target.value);
+    const size = Math.max(5, Number.isFinite(v) ? v : 100);
+    actions.setCableStyle(cable.id, { size });
+  });
 
   // Per-point + socket row delegation (select / delete / select socket).
   host.querySelector('#cbl-points')?.addEventListener('click', e => {

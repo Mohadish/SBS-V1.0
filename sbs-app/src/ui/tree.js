@@ -938,9 +938,14 @@ function _buildContextMenuItems(node) {
       label: '📋 Copy step pose',
       action: () => actions.copyInstanceStepPose(node.id),
     });
+    // V0.2.22.18 — cache selectedStepIds once. The original two reads of
+    // state.get('selectedStepIds') would crash on .size in the template
+    // literal if state mutated to null between the guarded check and the
+    // second read.
+    const _selStepCount = state.get('selectedStepIds')?.size ?? 0;
     items.push({
-      label: state.get('selectedStepIds')?.size >= 2
-        ? `📥 Paste step pose to ${state.get('selectedStepIds').size} steps`
+      label: _selStepCount >= 2
+        ? `📥 Paste step pose to ${_selStepCount} steps`
         : '📥 Paste step pose',
       disabled: !actions.hasInstancePoseClipboard(),
       action: () => actions.pasteInstanceStepPose(node.id),
