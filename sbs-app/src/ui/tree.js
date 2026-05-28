@@ -95,37 +95,54 @@ let _folderXfClipboard = null;
 
 // ── Init ─────────────────────────────────────────────────────────────────────
 
+// V0.2.22.22 — state listeners are now registered at module load (below the
+// initTree function), not inside it. Reason: before this fix, initTree only
+// ran when the Tree tab was opened for the first time. If the user started
+// in another tab (Colors / Files / etc.) and selected viewport objects,
+// the listeners never fired, _expanded never tracked the selection, and
+// switching to Tree later showed a collapsed view with the selected node
+// hidden. Listeners now run on every selection regardless of which tab is
+// active; _syncExpanded updates the expand set in the background, and
+// renderTree is a no-op until initTree binds a container.
 export function initTree(containerEl) {
   _container = containerEl;
   if (!_container) return;
 
-  state.on('change:treeData', () => { _syncExpanded(); renderTree(); });
-  // Templates own the visible label of any template-linked note in the
-  // tree — re-render on template rename / create / delete so labels
-  // update without a project reload.
-  state.on('change:noteTemplates', () => renderTree());
-  state.on('selection:change', () => { _syncExpanded(); renderTree(); });
-  state.on('change:activeStepId', () => renderTree());
-  // step:applied fires AFTER applyVisibilitySnapshot has mutated each
-  // node.localVisible. change:activeStepId above fires too early — at
-  // that point the per-node localVisible flags are still from the
-  // previous step, so the eye icons would show stale visibility for the
-  // duration of the animation (or forever, on instant apply).
-  state.on('step:applied', () => renderTree());
-  // P-P1: pivot button color reflects active edit. Re-render when the
-  // edit session opens / closes so the button repaints in real time.
-  state.on('change:pivotEditNodeId', () => renderTree());
-  // Re-render so the "Global Transform" menu label flips between active /
-  // inactive when the mode toggles externally (e.g. click-outside commit).
-  state.on('change:globalEditNodeId', () => renderTree());
-
   // V0.2.8: Ctrl+L-drag marquee — same UX as the Colors tab. Each tree
   // row whose rect intersects the box has its node (+ descendant meshes)
-  // toggled in/out of the scene selection.
+  // toggled in/out of the scene selection. Needs the container, so it
+  // stays in initTree (not at module level).
   _setupTreeMarquee();
 
   renderTree();
 }
+
+// ── Eager state listeners (V0.2.22.22) ──────────────────────────────────────
+// These fire whether or not the Tree tab has been opened. renderTree() and
+// the marquee guards both check `_container` and no-op when null, so it's
+// safe to register before initTree runs. The key win is _syncExpanded() —
+// it mutates the module-level `_expanded` set so that when the Tree tab
+// IS eventually opened, the auto-expanded ancestors of the current
+// selection are already correct.
+state.on('change:treeData',         () => { _syncExpanded(); renderTree(); });
+// Templates own the visible label of any template-linked note in the
+// tree — re-render on template rename / create / delete so labels
+// update without a project reload.
+state.on('change:noteTemplates',    () => renderTree());
+state.on('selection:change',        () => { _syncExpanded(); renderTree(); });
+state.on('change:activeStepId',     () => renderTree());
+// step:applied fires AFTER applyVisibilitySnapshot has mutated each
+// node.localVisible. change:activeStepId above fires too early — at
+// that point the per-node localVisible flags are still from the
+// previous step, so the eye icons would show stale visibility for the
+// duration of the animation (or forever, on instant apply).
+state.on('step:applied',            () => renderTree());
+// P-P1: pivot button color reflects active edit. Re-render when the
+// edit session opens / closes so the button repaints in real time.
+state.on('change:pivotEditNodeId',  () => renderTree());
+// Re-render so the "Global Transform" menu label flips between active /
+// inactive when the mode toggles externally (e.g. click-outside commit).
+state.on('change:globalEditNodeId', () => renderTree());
 
 // ── Ctrl+L-drag marquee (V0.2.8) ────────────────────────────────────────
 let _treeMarqueeJustDragged = false;
