@@ -595,32 +595,43 @@ function _onRowClick(e, node) {
   const setIds  = descIds(node);
   const hasMod  = e.shiftKey || e.altKey || e.ctrlKey || e.metaKey;
 
-  // ── V0.2.22.20 — progressive click on a plain folder click ────────────
-  // 1st click  → folder only
-  // 2nd click  → folder + DIRECT non-folder children (recursive into them)
-  // 3rd+ click → folder + entire subtree (legacy expand)
-  // Locked folders are NOT progressive — they're a unit. Modifier keys
-  // and clicks on other rows reset the counter.
-  if (!hasMod && node.type === 'folder' && node.locked !== true) {
-    const now = Date.now();
-    if (_lastFolderClickId !== node.id
-        || (now - _lastFolderClickAt) > _FOLDER_CLICK_WINDOW_MS) {
-      _folderClickCount = 0;
-    }
-    _folderClickCount++;
-    _lastFolderClickId = node.id;
-    _lastFolderClickAt = now;
-
+  // ── V0.2.22.20 / .21.2 — folder plain-click selection rules ──────────
+  // Non-locked folder: PROGRESSIVE click
+  //    1st click  → folder only
+  //    2nd click  → folder + DIRECT non-folder children
+  //    3rd+ click → folder + entire subtree
+  // Locked folder: always JUST the folder id (the unit). Silhouette
+  //    outline-pass (V0.2.22.21) automatically wraps the descendant
+  //    mesh mass — including descendants in multi was the V0.2.18
+  //    mechanism for per-mesh outlineOnly hulls, no longer needed.
+  // Modifier keys and clicks on a different row reset the counter.
+  if (!hasMod && node.type === 'folder') {
     let ids;
-    if (_folderClickCount === 1) {
+    if (node.locked === true) {
+      // Locked folder is a unit — single-id selection, no progression.
       ids = new Set([node.id]);
-    } else if (_folderClickCount === 2) {
-      ids = new Set([node.id]);
-      for (const c of (node.children || [])) {
-        if (c.type !== 'folder') _collectAllIds(c, ids);
-      }
+      _folderClickCount = 0;
+      _lastFolderClickId = node.id;
     } else {
-      ids = descIds(node);   // 3+ → full subtree
+      const now = Date.now();
+      if (_lastFolderClickId !== node.id
+          || (now - _lastFolderClickAt) > _FOLDER_CLICK_WINDOW_MS) {
+        _folderClickCount = 0;
+      }
+      _folderClickCount++;
+      _lastFolderClickId = node.id;
+      _lastFolderClickAt = now;
+
+      if (_folderClickCount === 1) {
+        ids = new Set([node.id]);
+      } else if (_folderClickCount === 2) {
+        ids = new Set([node.id]);
+        for (const c of (node.children || [])) {
+          if (c.type !== 'folder') _collectAllIds(c, ids);
+        }
+      } else {
+        ids = descIds(node);   // 3+ → full subtree
+      }
     }
     _treeAnchorId = node.id;
     actions.setSelection(node.id, ids);
