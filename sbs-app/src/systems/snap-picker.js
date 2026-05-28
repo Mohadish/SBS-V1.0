@@ -143,16 +143,19 @@ export function findSnapTarget(clientX, clientY) {
   }
 
   // ── Edge pass ───────────────────────────────────────────────────────────
+  // V0.2.22.27 — iterates EdgesGeometry's flat position buffer (pairs of
+  // verts per segment) instead of indices back into the source geom.
   const _tEdgeStart = _diag ? performance.now() : 0;
-  const edges = _getEdgeIndices(geom);
-  let bestEdgeKey = -1;
-  let bestEdgeT   = 0;
+  const edgePos = _getEdgePositions(geom);
+  const edgeSegCount = edgePos.length / 6;   // 6 floats per segment (2 verts × 3)
+  let bestEdgeIdx   = -1;
+  let bestEdgeT     = 0;
   let bestEdgeDist2 = Infinity;
   const a = [0, 0, 0], b = [0, 0, 0];
-  for (let e = 0; e < edges.length; e += 2) {
-    const ia = edges[e], ib = edges[e + 1];
-    a[0] = arr[ia * 3]; a[1] = arr[ia * 3 + 1]; a[2] = arr[ia * 3 + 2];
-    b[0] = arr[ib * 3]; b[1] = arr[ib * 3 + 1]; b[2] = arr[ib * 3 + 2];
+  for (let e = 0; e < edgeSegCount; e++) {
+    const off = e * 6;
+    a[0] = edgePos[off];     a[1] = edgePos[off + 1]; a[2] = edgePos[off + 2];
+    b[0] = edgePos[off + 3]; b[1] = edgePos[off + 4]; b[2] = edgePos[off + 5];
     const pa = projectToPixels(a);
     if (!pa) continue;
     const pb = projectToPixels(b);
@@ -172,15 +175,15 @@ export function findSnapTarget(clientX, clientY) {
     if (d2 < bestEdgeDist2) {
       bestEdgeDist2 = d2;
       bestEdgeT     = t;
-      bestEdgeKey   = e;
+      bestEdgeIdx   = e;
     }
   }
   const _tEdge = _diag ? performance.now() - _tEdgeStart : 0;
 
-  if (bestEdgeKey >= 0 && Math.sqrt(bestEdgeDist2) <= SNAP_RADIUS_PX) {
-    const ia = edges[bestEdgeKey], ib = edges[bestEdgeKey + 1];
-    const ax = arr[ia * 3], ay = arr[ia * 3 + 1], az = arr[ia * 3 + 2];
-    const bx = arr[ib * 3], by = arr[ib * 3 + 1], bz = arr[ib * 3 + 2];
+  if (bestEdgeIdx >= 0 && Math.sqrt(bestEdgeDist2) <= SNAP_RADIUS_PX) {
+    const off = bestEdgeIdx * 6;
+    const ax = edgePos[off],     ay = edgePos[off + 1], az = edgePos[off + 2];
+    const bx = edgePos[off + 3], by = edgePos[off + 4], bz = edgePos[off + 5];
     const t = bestEdgeT;
     const local = new T.Vector3(
       ax + (bx - ax) * t,
@@ -192,12 +195,12 @@ export function findSnapTarget(clientX, clientY) {
     const edgeA = new T.Vector3(ax, ay, az).applyMatrix4(matrixWorld);
     const edgeB = new T.Vector3(bx, by, bz).applyMatrix4(matrixWorld);
     const world = local.applyMatrix4(matrixWorld);
-    if (_diag) console.log(`[snap] mesh=${mesh.name||'?'} V=${count} E=${edges.length/2} pick=${_tPick.toFixed(2)} vert=${_tVert.toFixed(2)} edge=${_tEdge.toFixed(2)} total=${(performance.now()-_t0).toFixed(2)}ms → edge`);
+    if (_diag) console.log(`[snap] mesh=${mesh.name||'?'} V=${count} E=${edgeSegCount} pick=${_tPick.toFixed(2)} vert=${_tVert.toFixed(2)} edge=${_tEdge.toFixed(2)} total=${(performance.now()-_t0).toFixed(2)}ms → edge`);
     return { type: 'edge', point: world, mesh, edgeA, edgeB };
   }
 
   // ── Fallback: face hit point ────────────────────────────────────────────
-  if (_diag) console.log(`[snap] mesh=${mesh.name||'?'} V=${count} E=${edges.length/2} pick=${_tPick.toFixed(2)} vert=${_tVert.toFixed(2)} edge=${_tEdge.toFixed(2)} total=${(performance.now()-_t0).toFixed(2)}ms → face`);
+  if (_diag) console.log(`[snap] mesh=${mesh.name||'?'} V=${count} E=${edgeSegCount} pick=${_tPick.toFixed(2)} vert=${_tVert.toFixed(2)} edge=${_tEdge.toFixed(2)} total=${(performance.now()-_t0).toFixed(2)}ms → face`);
   return { type: 'face', point: hit.point.clone(), mesh };
 }
 
@@ -243,78 +246,43 @@ function _featureEdgeThreshold() {
  *
  * Indexed and non-indexed geometries are both supported.
  */
-function _getEdgeIndices(geom) {
+function _getEdgePositions(geom) {
   const thresholdDeg = _featureEdgeThreshold();
   const cacheKey = `${geom.uuid}@${thresholdDeg}`;
   const cached = _edgeCache.get(cacheKey);
   if (cached) return cached;
 
-  const idx = geom.index?.array;
-  const pos = geom.attributes.position;
-  if (!pos) {
-    const empty = new Int32Array(0);
+  const T = window.THREE;
+  if (!T?.EdgesGeometry || !geom?.attributes?.position) {
+    const empty = new Float32Array(0);
     _edgeCache.set(cacheKey, empty);
     return empty;
   }
-  const posArr = pos.array;
-  const triCount = idx
-    ? Math.floor(idx.length / 3)
-    : Math.floor(pos.count / 3);
 
-  // Edge map: "i<j" → { i, j, normals: [Vec3, Vec3?] }
-  const edgeMap = new Map();
-  const cosThreshold = Math.cos(thresholdDeg * Math.PI / 180);
-
-  // Reusable vectors for normal computation.
-  const ax = (i) => posArr[i * 3];
-  const ay = (i) => posArr[i * 3 + 1];
-  const az = (i) => posArr[i * 3 + 2];
-
-  function addEdge(i, j, nx, ny, nz) {
-    const a = i < j ? i : j;
-    const b = i < j ? j : i;
-    const key = `${a},${b}`;
-    let rec = edgeMap.get(key);
-    if (!rec) { rec = { i: a, j: b, n: [] }; edgeMap.set(key, rec); }
-    rec.n.push(nx, ny, nz);
-  }
-
-  for (let t = 0; t < triCount; t++) {
-    const i0 = idx ? idx[t * 3]     : t * 3;
-    const i1 = idx ? idx[t * 3 + 1] : t * 3 + 1;
-    const i2 = idx ? idx[t * 3 + 2] : t * 3 + 2;
-    // Compute triangle normal via cross product (unnormalised).
-    const e1x = ax(i1) - ax(i0), e1y = ay(i1) - ay(i0), e1z = az(i1) - az(i0);
-    const e2x = ax(i2) - ax(i0), e2y = ay(i2) - ay(i0), e2z = az(i2) - az(i0);
-    let nx = e1y * e2z - e1z * e2y;
-    let ny = e1z * e2x - e1x * e2z;
-    let nz = e1x * e2y - e1y * e2x;
-    const nLen = Math.hypot(nx, ny, nz);
-    if (nLen < 1e-12) continue;  // degenerate triangle — skip
-    nx /= nLen; ny /= nLen; nz /= nLen;
-    addEdge(i0, i1, nx, ny, nz);
-    addEdge(i1, i2, nx, ny, nz);
-    addEdge(i2, i0, nx, ny, nz);
-  }
-
-  const out = [];
-  for (const rec of edgeMap.values()) {
-    if (rec.n.length === 3) {
-      // Boundary edge — exactly one adjacent triangle. Always keep.
-      out.push(rec.i, rec.j);
-    } else if (rec.n.length >= 6) {
-      // Two (or more — non-manifold) adjacent triangles. Keep iff the
-      // normals diverge MORE than the feature threshold. We compare just
-      // the first two — that's the standard case; non-manifold edges
-      // are vanishingly rare in CAD meshes.
-      const dot = rec.n[0] * rec.n[3] + rec.n[1] * rec.n[4] + rec.n[2] * rec.n[5];
-      if (dot < cosThreshold) out.push(rec.i, rec.j);
-    }
-  }
-
-  const arr = new Int32Array(out);
-  _edgeCache.set(cacheKey, arr);
-  return arr;
+  // V0.2.22.27 — switched from in-house index-keyed filter to Three.js's
+  // EdgesGeometry. Reason: SBS's baked / flattened meshes (after FBX/OBJ
+  // import + bake pass) often have UN-SHARED vertices — every triangle
+  // owns its own copies of its 3 corners, even when two triangles touch.
+  // The previous filter keyed edges by vertex INDEX, so it never found
+  // any shared edges → every edge was classified as a "boundary edge"
+  // (one adjacent triangle) → kept regardless of threshold. Result:
+  // every triangle hypotenuse showed as a snap target. Matches user
+  // report: "lots of hits on interior edges of flat faces."
+  //
+  // Three.js EdgesGeometry merges vertices by POSITION (with epsilon)
+  // before building adjacency, then keeps only edges whose adjacent
+  // triangle normals diverge by > thresholdDeg. The output is a flat
+  // Float32 position buffer: [ax,ay,az, bx,by,bz, …] — one pair per
+  // feature edge segment, no index lookup needed.
+  const edgesGeo = new T.EdgesGeometry(geom, thresholdDeg);
+  const positions = edgesGeo.attributes.position?.array
+    ?? new Float32Array(0);
+  // Free the wrapping geometry — we keep only the position buffer.
+  // (Buffer is a Float32Array view; detaching the geometry's index/attrs
+  // for GC is just hygiene.)
+  edgesGeo.dispose?.();
+  _edgeCache.set(cacheKey, positions);
+  return positions;
 }
 
 /**
