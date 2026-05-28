@@ -30,6 +30,10 @@
 
 import { getCanonicalSize, computeSafeFrameRect } from './safe-frame.js';
 import * as clock from './clock.js';
+// V0.2.22.21 — combined silhouette outline pass. Runs after the main
+// scene render to composite a single outline around the union of
+// selected meshes.
+import { initOutlinePass, resizeOutlinePass, renderOutlinePass } from '../systems/outline-pass.js';
 
 // ── Mini event emitter (no dependency on state.js) ────────────────────────
 class Emitter {
@@ -198,6 +202,11 @@ export class SceneCore extends Emitter {
     this._resizeObs = new ResizeObserver(() => this.fitToCanonical());
     this._resizeObs.observe(container);
 
+    // ── V0.2.22.21 — initialise the outline pass ────────────────────────
+    // Runs AFTER fitToCanonical so the canonical buffer size is known.
+    const _c = getCanonicalSize();
+    initOutlinePass(this.renderer, _c.width, _c.height);
+
     this.emit('init');
   }
 
@@ -309,6 +318,10 @@ export class SceneCore extends Emitter {
     this.renderer.autoClear = true;
     this.renderer.render(this.scene, this.camera);
 
+    // V0.2.22.21 — combined silhouette outline (additive composite over
+    // the just-drawn scene). Early-exits when nothing is selected.
+    renderOutlinePass(this.scene, this.camera);
+
     // Overlay scene (gizmos / transform handles) — depth-cleared so they
     // always appear on top
     if (this.overlayScene.children.length > 0) {
@@ -362,6 +375,8 @@ export class SceneCore extends Emitter {
 
     // 1. Backing buffer at exact canonical px (PR was forced to 1 in init).
     this.renderer.setSize(c.width, c.height, false);   // false = don't touch CSS, we set it next
+    // V0.2.22.21 — keep the outline pass's offscreen target in sync.
+    resizeOutlinePass(c.width, c.height);
 
     // 2. Camera at canonical aspect — every render projects the same
     //    frustum on every machine. Output is reproducible.
