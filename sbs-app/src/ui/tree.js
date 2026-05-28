@@ -54,6 +54,20 @@ let _dragIds    = [];
 let _dropTarget = null;
 let _isDragging = false;
 
+// V0.2.22.20 — progressive folder click counter. Plain (no-modifier) clicks
+// on a non-locked folder row escalate the selection:
+//   1st click  → just the folder
+//   2nd click  → folder + DIRECT non-folder children (recursive into models /
+//                meshes / shapes, but NOT into sub-folders)
+//   3rd+ click → folder + entire subtree (the legacy behaviour)
+// The counter resets if the user clicks a different node, waits past the
+// window, or uses any selection modifier. Locked folders bypass the
+// counter — they're always a unit (full subtree, single click).
+let _lastFolderClickId = null;
+let _lastFolderClickAt = 0;
+let _folderClickCount  = 0;
+const _FOLDER_CLICK_WINDOW_MS = 500;
+
 // Copy/paste tree clipboard — session-scoped. Cleared only by a new copy
 // or page reload. Stores the full snapshot needed to recreate added
 // folders with their transforms/visibility/pivot intact:
@@ -579,6 +593,43 @@ function _onRowClick(e, node) {
   // so the gizmo attaches to it. Mirrors viewport-click + double-click.
   const descIds = (n) => { const s = new Set(); _collectAllIds(n, s); return s; };
   const setIds  = descIds(node);
+  const hasMod  = e.shiftKey || e.altKey || e.ctrlKey || e.metaKey;
+
+  // ── V0.2.22.20 — progressive click on a plain folder click ────────────
+  // 1st click  → folder only
+  // 2nd click  → folder + DIRECT non-folder children (recursive into them)
+  // 3rd+ click → folder + entire subtree (legacy expand)
+  // Locked folders are NOT progressive — they're a unit. Modifier keys
+  // and clicks on other rows reset the counter.
+  if (!hasMod && node.type === 'folder' && node.locked !== true) {
+    const now = Date.now();
+    if (_lastFolderClickId !== node.id
+        || (now - _lastFolderClickAt) > _FOLDER_CLICK_WINDOW_MS) {
+      _folderClickCount = 0;
+    }
+    _folderClickCount++;
+    _lastFolderClickId = node.id;
+    _lastFolderClickAt = now;
+
+    let ids;
+    if (_folderClickCount === 1) {
+      ids = new Set([node.id]);
+    } else if (_folderClickCount === 2) {
+      ids = new Set([node.id]);
+      for (const c of (node.children || [])) {
+        if (c.type !== 'folder') _collectAllIds(c, ids);
+      }
+    } else {
+      ids = descIds(node);   // 3+ → full subtree
+    }
+    _treeAnchorId = node.id;
+    actions.setSelection(node.id, ids);
+    return;
+  }
+  // Any other path (modifier or non-folder) resets the progressive counter
+  // so the next plain folder click starts at step 1.
+  _lastFolderClickId = null;
+  _folderClickCount  = 0;
 
   // ── Shift: range-select over the visible rows from the anchor (replace) ──
   if (e.shiftKey && _treeAnchorId && nodeById.has(_treeAnchorId)) {
@@ -630,6 +681,13 @@ function _onRowDblClick(e, node) {
   e.preventDefault();
   e.stopPropagation();
   if (node.type === 'mesh' || node.type === 'scene') return;
+  // V0.2.22.20 — folder rows now use progressive click semantics in
+  // _onRowClick. The browser's dblclick fires AFTER the two click
+  // events, so consuming it here would override step-2 selection with
+  // a full-subtree expand. Leave folders to the click counter.
+  // Non-folder containers (model, flatShape) keep the legacy
+  // expand-on-double-click affordance.
+  if (node.type === 'folder') return;
   const ids = new Set();
   _collectAllIds(node, ids);
   state.setSelection(node.id, ids);
