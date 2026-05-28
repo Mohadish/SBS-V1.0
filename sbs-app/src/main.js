@@ -57,6 +57,26 @@ import { initOverlayToolbar }  from './ui/overlay-toolbar.js';
 import { initHeaderLayer }     from './systems/header.js';
 import { initCables, resolveNodeWorldPosition } from './systems/cables.js';        // C1: cables wire step:applied → applyStepSnapshot; C5-B: pos resolver for gizmo target
 import * as pivotCenterPicker     from './systems/pivot-center-picker.js';   // 3-point center pivot tool — snap-based picker for cylinder-axis pivot placement
+
+// ── V0.2.22.23 — pivot hover throttle ─────────────────────────────────────
+// sceneCore.pick is O(scene) and runs ~75ms on a CAD project. Pointer-move
+// fires at 100-1000Hz, so naively dispatching every event queues up picks
+// and the snap marker lags behind the cursor. rAF-coalesce: store the
+// LATEST cursor pos every event, fire one pick per animation frame max.
+// The cursor->snap latency stays bounded (1 pick worth, ~75ms) regardless
+// of how fast the user mouses.
+let _pivotHoverPending = null;
+let _pivotHoverRafId   = 0;
+function _schedulePivotHover(x, y) {
+  _pivotHoverPending = { x, y };
+  if (_pivotHoverRafId) return;
+  _pivotHoverRafId = requestAnimationFrame(() => {
+    _pivotHoverRafId = 0;
+    const p = _pivotHoverPending;
+    _pivotHoverPending = null;
+    if (p) pivotCenterPicker.updateHover(p.x, p.y);
+  });
+}
 import { initNotesRender }        from './systems/notes-render.js';
 import { initCableRender, getCablePointMeshes, getCableSegmentMeshes, getCableSocketMeshes, setInsertHoverPosition } from './systems/cables-render.js';  // C2: cables 3D render; C5-A: point raycast; C5-D: segment raycast + insert ghost; C5-E2: socket raycast
 import { initUserSettings, get as getUserSettings } from './core/user-settings.js';
@@ -1023,8 +1043,15 @@ canvas.addEventListener('pointermove', e => {
 
   if (!(e.buttons & 1)) {
     // 3-point pivot center mode — refresh the snap hover marker.
+    // V0.2.22.23 — rAF-coalesce. sceneCore.pick is the bottleneck (~75ms
+    // on CAD scenes per pointer event, confirmed by snapPerf diagnostic).
+    // Pointer-move fires faster than pick can complete, so events queue
+    // up and the snap marker lags noticeably behind the cursor.
+    // Coalesce: record the LATEST pos every event, only fire one pick
+    // per animation frame. The pick itself is still 75ms but the queue
+    // never grows past one pending position.
     if (state.get('pivotCenterPickingNodeId')) {
-      pivotCenterPicker.updateHover(e.clientX, e.clientY);
+      _schedulePivotHover(e.clientX, e.clientY);
       return;
     }
 
