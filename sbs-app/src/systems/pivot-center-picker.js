@@ -272,14 +272,10 @@ function _setHover(worldPoint, type, edgeA, edgeB) {
   // For edge snaps, draw a highlight along the WHOLE edge so the user
   // sees exactly which segment will be used — and a brighter cross at
   // the snap point along it.
-  // V0.2.22.25: reverted V0.2.22.24's thickness/brightness boost.
-  // The user reported it just made the misleading interior-edge picks
-  // more pronounced — the real fix was feature-edge filtering in
-  // snap-picker.js (V0.2.22.25). With that in place the highlight
-  // only shows on real geometric features, so the original subtle
-  // look is appropriate.
+  // V0.2.22.29: thicknessFactor 0.35 → 0.7 → diameter ~2px (was ~1px).
+  // Cylinder formula: diameter = pixelSize × 3 × thicknessFactor.
   if (type === 'edge' && edgeA && edgeB) {
-    _state.hoverGroup.add(_buildSegmentCylinder(edgeA, edgeB, 0xffee44, 0.35));
+    _state.hoverGroup.add(_buildSegmentCylinder(edgeA, edgeB, 0xffee44, 0.7));
   }
   _state.hoverGroup.add(_buildCross(worldPoint, colour));
 }
