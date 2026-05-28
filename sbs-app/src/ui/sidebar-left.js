@@ -3821,11 +3821,23 @@ function _renderExportTab() {
 
         <div class="grid2" style="margin-top:10px;">
           <label class="colorlab">Frame rate (fps)
-            <input type="number" id="exp-fps" value="${exp.fps??30}" min="1" max="120" step="1" style="margin-top:6px;" />
+            <input type="number" id="exp-fps" value="${exp.fps??50}" min="1" max="120" step="1" style="margin-top:6px;" />
           </label>
           <label class="colorlab" title="Extra dwell appended to each step in the exported video (ms). Pause WITHIN a transition is authored inside animation presets via the pause channel.">Step hold (ms)
             <input type="number" id="exp-hold" value="${exp.stepHoldMs??100}" min="0" max="10000" step="100" style="margin-top:6px;" />
           </label>
+        </div>
+
+        <div class="grid2" style="margin-top:10px;">
+          <label class="colorlab" title="Encoder bitrate cap. Variable bitrate — encoder uses less when content is static (typical for SBS). Higher = better quality, larger files.">Quality
+            <select id="exp-bitrate" style="margin-top:6px;">
+              <option value="2000000"  ${exp.videoBitrate === 2_000_000 ? 'selected' : ''}>Low — 2 Mbps</option>
+              <option value="4000000"  ${(exp.videoBitrate ?? 4_000_000) === 4_000_000 ? 'selected' : ''}>Medium — 4 Mbps (recommended)</option>
+              <option value="8000000"  ${exp.videoBitrate === 8_000_000 ? 'selected' : ''}>High — 8 Mbps</option>
+              <option value="16000000" ${exp.videoBitrate === 16_000_000 ? 'selected' : ''}>Very High — 16 Mbps</option>
+            </select>
+          </label>
+          <div></div>
         </div>
 
         <label style="display:flex;align-items:center;gap:6px;margin-top:10px;cursor:pointer;">
@@ -3953,6 +3965,8 @@ function _renderExportTab() {
     state.setExportOption('fps', Number(e.target.value)));
   el.querySelector('#exp-hold').addEventListener('change', e =>
     state.setExportOption('stepHoldMs', Number(e.target.value)));
+  el.querySelector('#exp-bitrate')?.addEventListener('change', e =>
+    state.setExportOption('videoBitrate', Number(e.target.value)));
   el.querySelector('#btn-export').addEventListener('click', _onExportTabStart);
   el.querySelector('#btn-export-cancel').addEventListener('click', _onExportTabCancel);
 
@@ -4239,6 +4253,11 @@ async function _onExportTabStart() {
       // for fps even though 0 fps is nonsensical — consistency matters.
       fps:              Number.isFinite(Number(exp.fps))        ? Number(exp.fps)        : 50,
       stepHoldMs:       Number.isFinite(Number(exp.stepHoldMs)) ? Number(exp.stepHoldMs) : 800,
+      // V0.2.22.16 — quality preset. Default 4 Mbps is plenty for SBS
+      // slide-show content (mostly static + brief transitions). Variable
+      // bitrate means the encoder uses less when content is static, so
+      // file size is typically well under the cap.
+      bitrate:          Number.isFinite(Number(exp.videoBitrate)) ? Number(exp.videoBitrate) : 4_000_000,
       includeNarration: exp.narrationEnabled !== false,
       offline:          !!exp.offlineRender,
       signal:           _exportTabCtrl.signal,

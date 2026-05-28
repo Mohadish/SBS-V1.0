@@ -998,28 +998,33 @@ export function commitStateChange(label, keys, mutator, opts = {}) {
 // the JSON-snapshot path. Undo/redo splice the node + add/remove the live
 // Three.js Group from the scene graph directly.
 
+// V0.2.22.16 — folder create/delete now go through the unified rebuild path,
+// matching the in-app structural-move refactor from V0.2.22. Both functions
+// previously did `p.object3d.add(group)` / `obj.parent.remove(obj)` directly,
+// which produced an in-session Three.js graph that could subtly diverge
+// from what load reproduces from the saved spec. The folder-create case
+// was low-risk in practice (the folder is brand new at identity) but
+// uniform architecture beats one-off shortcuts — fewer special cases to
+// reason about, no surprise drift if the unified rebuild evolves later.
 export function createFolderInNode(parentId, name = 'Group') {
-  const T = window.THREE;
   const root = state.get('treeData');
-  if (!T || !root) return null;
+  if (!root) return null;
   const parent = state.get('nodeById')?.get(parentId) || findNode(root, parentId);
   if (!parent) return null;
 
-  const group = new T.Group();
-  group.name = name;
-  group.userData.isCustomFolder = true;
   const folderNode = createNode('folder', { name });
-  folderNode.object3d = group;
+  // baseLocal* / localOffset etc. come from createNode defaults (identity).
 
   const doInsert = () => {
-    const p = state.get('nodeById')?.get(parentId) || findNode(state.get('treeData'), parentId);
+    const r = state.get('treeData');
+    const p = state.get('nodeById')?.get(parentId) || findNode(r, parentId);
     if (!p) return;
     p.children = p.children || [];
     if (!p.children.some(c => c.id === folderNode.id)) p.children.push(folderNode);
-    if (p.object3d && group.parent !== p.object3d) p.object3d.add(group);
-    steps.object3dById.set(folderNode.id, group);
-    const r = state.get('treeData');
     state.setState({ nodeById: _nodes_buildNodeMap(r) });
+    // Rebuild Three.js via the same path load uses — creates the folder's
+    // fresh Group at identity, parented correctly per spec.
+    steps.applySnapshotInstant({ tree: serializeModelTree(r) });
     state.emit('change:treeData', r);
     steps.scheduleTransformSync();
     state.markDirty();
@@ -1028,9 +1033,8 @@ export function createFolderInNode(parentId, name = 'Group') {
     const r = state.get('treeData');
     const p = state.get('nodeById')?.get(parentId) || findNode(r, parentId);
     if (p?.children) p.children = p.children.filter(c => c.id !== folderNode.id);
-    if (group.parent) group.parent.remove(group);
-    steps.object3dById.delete(folderNode.id);
     state.setState({ nodeById: _nodes_buildNodeMap(r) });
+    steps.applySnapshotInstant({ tree: serializeModelTree(r) });
     state.emit('change:treeData', r);
     steps.scheduleTransformSync();
     state.markDirty();
@@ -1051,7 +1055,6 @@ export function deleteFolderNode(folderId) {
   if (idx < 0) return false;
   const node = parent.children[idx];
   const parentId = parent.id;
-  const obj = node.object3d || steps.object3dById?.get(folderId) || null;
 
   const doRemove = () => {
     const r = state.get('treeData');
@@ -1060,9 +1063,11 @@ export function deleteFolderNode(folderId) {
       const i = p.children.findIndex(c => c.id === folderId);
       if (i >= 0) p.children.splice(i, 1);
     }
-    if (obj && obj.parent) obj.parent.remove(obj);
-    steps.object3dById.delete(folderId);
     state.setState({ nodeById: _nodes_buildNodeMap(r) });
+    // Rebuild Three.js via the same path load uses — cleanupFolderGroups
+    // tears down the removed folder's Group; rebuildFromTreeSpec recreates
+    // everything else from the updated spec.
+    steps.applySnapshotInstant({ tree: serializeModelTree(r) });
     state.emit('change:treeData', r);
     steps.scheduleTransformSync();
     state.markDirty();
@@ -1076,10 +1081,9 @@ export function deleteFolderNode(folderId) {
         const at = Math.min(idx, p.children.length);
         p.children.splice(at, 0, node);
       }
-      if (obj && p.object3d && obj.parent !== p.object3d) p.object3d.add(obj);
-      if (obj) steps.object3dById.set(folderId, obj);
     }
     state.setState({ nodeById: _nodes_buildNodeMap(r) });
+    steps.applySnapshotInstant({ tree: serializeModelTree(r) });
     state.emit('change:treeData', r);
     steps.scheduleTransformSync();
     state.markDirty();

@@ -347,9 +347,13 @@ function createInitialState() {
       // V0.2.22.3: defaults updated for export reliability.
       //  - fps:50 → smaller files for slide-show content + smoother
       //  - offlineRender:true → immune to window occlusion / rAF throttling.
-      //    Realtime mode breaks if the user covers the window mid-export.
+      // V0.2.22.16: videoBitrate default = 4 Mbps. SBS content (long
+      // static holds + brief transitions) compresses well at variable
+      // bitrate — 4 Mbps is plenty for crisp 1080p at 50fps and
+      // typically produces 5-15 MB per minute. Selectable in Export tab.
       fps:                50,
       stepHoldMs:         100,
+      videoBitrate:       4_000_000,
       startFromActive:    true,
       showSafeFrame:      true,
       offlineRender:      true,
