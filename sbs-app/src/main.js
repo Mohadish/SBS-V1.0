@@ -2411,6 +2411,25 @@ window.addEventListener('keydown', (e) => {
   }
 }, { capture: true });
 
+// ── V0.2.22.32.2 — suppress lone-Alt menu-bar activation ─────────────────
+// Windows convention: a press-then-release of Alt with no other key in
+// between activates the native menu bar (File gets keyboard focus, next
+// Enter opens it). The app uses Alt+middle-drag for orbit, so EVERY
+// orbit-then-keypress sequence trips this — pressing Enter to commit
+// a folder-align preview pops the File menu instead of committing.
+//
+// Fix: capture-phase keydown/keyup on the Alt key with preventDefault.
+// Chromium uses the default action of Alt to drive menu activation, so
+// preventDefault is enough to disarm it. Alt+OtherKey combos and the
+// Alt+middle-button orbit still work — those rely on the modifier flag
+// on other events, not on Alt's own default action.
+window.addEventListener('keydown', (e) => {
+  if (e.key === 'Alt') e.preventDefault();
+}, { capture: true });
+window.addEventListener('keyup', (e) => {
+  if (e.key === 'Alt') e.preventDefault();
+}, { capture: true });
+
 window.addEventListener('keydown', async e => {
   if (_isInputFocused()) return;
 
