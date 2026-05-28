@@ -31,6 +31,7 @@
 import { state } from '../core/state.js';
 import { sceneCore } from '../core/scene.js';
 import { setStoredQuaternion } from '../core/transforms.js';
+import { steps } from './steps.js';
 
 const HOVER_COLOR_SRC = 0x55ddff;   // cyan-ish for source phase
 const HOVER_COLOR_TGT = 0xff8c1a;   // orange for target phase
@@ -119,11 +120,7 @@ export function commit() {
 
 // Fallback if actions doesn't expose the helper yet — push directly.
 function _fallbackPush(folderId, name, beforeXf, afterXf) {
-  Promise.all([
-    import('./undo.js'),
-    import('./steps.js'),
-    import('./actions.js'),
-  ]).then(([{ undoManager }, { steps }, _actions]) => {
+  import('./undo.js').then(({ undoManager }) => {
     const apply = (xf) => {
       const nb = state.get('nodeById');
       const n = nb?.get(folderId);
@@ -273,8 +270,11 @@ function _applyAlignmentPreview() {
   const folder = _state.folder;
   const src = _state.source;
   const tgt = _state.target;
-  const obj = sceneCore && _folderObject3d(folder.id);
-  if (!obj || !src || !tgt) return;
+  const obj = _folderObject3d(folder.id);
+  if (!obj || !src || !tgt) {
+    console.warn('[folder-align] no Object3D for folder', folder.id, { obj, src, tgt });
+    return;
+  }
 
   // Rotation from source.normal to -target.normal.
   const sN = src.normal.clone().normalize();
@@ -327,9 +327,7 @@ function _applyAlignmentPreview() {
   obj.position.set(newPos.x, newPos.y, newPos.z);
   obj.quaternion.copy(newQuat);
   obj.updateMatrixWorld(true);
-  import('./steps.js').then(({ steps }) => {
-    steps.scheduleTransformSync();
-  });
+  steps.scheduleTransformSync();
   state.markDirty?.();
   state.emit('change:treeData', state.get('treeData'));
 }
@@ -354,26 +352,15 @@ function _restoreBeforeXf() {
     obj.quaternion.copy(bq).multiply(lq);
     obj.updateMatrixWorld(true);
   }
-  import('./steps.js').then(({ steps }) => {
-    steps.scheduleTransformSync();
-  });
+  steps.scheduleTransformSync();
   state.emit('change:treeData', state.get('treeData'));
 }
 
 function _folderObject3d(folderId) {
-  // Lazy-import steps to avoid circular.
-  // For now, walk the scene to find the Object3D — slow but simple.
-  // TODO: use a direct map lookup once we expose one.
-  let result = null;
-  if (typeof window !== 'undefined' && window.__sbsStepsRef) {
-    return window.__sbsStepsRef.object3dById?.get(folderId) ?? null;
-  }
-  // Fallback: search the scene tree.
-  if (!sceneCore?.scene) return null;
-  sceneCore.scene.traverse(o => {
-    if (!result && o.userData?.nodeId === folderId) result = o;
-  });
-  return result;
+  // Folder groups are tracked in steps.object3dById (steps.js line 2521,
+  // 2530). They DON'T have userData.nodeId set — only meshes do — so
+  // scene-traversal fallbacks won't find them; the map is authoritative.
+  return steps.object3dById?.get(folderId) ?? null;
 }
 
 // ─── Visual overlays ──────────────────────────────────────────────────────
