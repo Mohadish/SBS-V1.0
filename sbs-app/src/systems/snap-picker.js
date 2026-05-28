@@ -96,8 +96,22 @@ export function findSnapTarget(clientX, clientY) {
   const matrixWorld = mesh.matrixWorld;
   const camera = sceneCore.camera;
 
-  // Project a 3D world point to canvas pixels. Returns null if behind
-  // the camera (NDC z > 1).
+  // V0.2.22.28 — compute the hit point's NDC depth. Use this to discard
+  // candidate verts/edges that sit BEHIND the hit point (e.g. the back
+  // rim of a cylinder when the cursor is over the front face). Without
+  // this depth cull, the back-facing rim of a cylinder projects to
+  // nearly the same screen-Y as the front silhouette and routinely
+  // wins the screen-distance contest, causing the snap point to land
+  // on the FAR side of the geometry — the "furthest intersection"
+  // behaviour the user reported.
+  const _hitV = new T.Vector3(hit.point.x, hit.point.y, hit.point.z).project(camera);
+  const hitDepthZ = _hitV.z;
+  // Small tolerance so a vert that's coplanar with the hit face still
+  // qualifies (e.g. a corner vertex on the very face that was hit).
+  const DEPTH_TOL = 0.002;
+
+  // Project a 3D world point to canvas pixels. Returns [x, y, z(ndc)]
+  // or null if behind the camera (NDC z > 1).
   const tmpV = new T.Vector3();
   function projectToPixels(local) {
     tmpV.set(local[0], local[1], local[2]).applyMatrix4(matrixWorld);
@@ -106,6 +120,7 @@ export function findSnapTarget(clientX, clientY) {
     return [
       ( ndc.x + 1) * halfW,
       (-ndc.y + 1) * halfH,
+      ndc.z,
     ];
   }
 
@@ -122,6 +137,9 @@ export function findSnapTarget(clientX, clientY) {
     buf[2] = arr[i * 3 + 2];
     const px = projectToPixels(buf);
     if (!px) continue;
+    // V0.2.22.28 — depth cull: skip verts BEHIND the hit point
+    // (occluded by the surface the cursor is over).
+    if (px[2] > hitDepthZ + DEPTH_TOL) continue;
     const dx = px[0] - cursorX;
     const dy = px[1] - cursorY;
     const d2 = dx * dx + dy * dy;
@@ -160,6 +178,12 @@ export function findSnapTarget(clientX, clientY) {
     if (!pa) continue;
     const pb = projectToPixels(b);
     if (!pb) continue;
+    // V0.2.22.28 — depth cull: skip edges whose BOTH endpoints are
+    // behind the hit point (entire segment occluded). An edge with
+    // one endpoint in front and one behind (e.g. a silhouette edge
+    // angling away) is kept — it might be the rim the user is
+    // pointing at.
+    if (pa[2] > hitDepthZ + DEPTH_TOL && pb[2] > hitDepthZ + DEPTH_TOL) continue;
     // Closest point on line segment pa-pb to cursor in screen space.
     const sx = pb[0] - pa[0], sy = pb[1] - pa[1];
     const seg2 = sx * sx + sy * sy;
