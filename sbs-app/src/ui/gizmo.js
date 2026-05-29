@@ -1153,6 +1153,28 @@ class GizmoController {
       const baseQ     = new T.Quaternion(this._startQuat[0], this._startQuat[1], this._startQuat[2], this._startQuat[3]);
       const newQ      = deltaQ.multiply(baseQ);
 
+      // V0.2.22.33.1 — diagnostic. Enable with
+      //   window.sbsDiag.gizmoRotateLog = true
+      // Each frame logs the rotation drag math so we can see whether
+      // delta is collapsing to 0 / ±π (the "180° intervals" symptom)
+      // and which input drove it that way. Disabled by default.
+      if (window.sbsDiag?.gizmoRotateLog) {
+        console.log('[gizmo-rotate]', {
+          axis: el.axis,
+          rel: { x: +rel.x.toFixed(3), y: +rel.y.toFixed(3), z: +rel.z.toFixed(3) },
+          startAngleDeg: +(this._startAngle * 180 / Math.PI).toFixed(2),
+          currAngleDeg:  +(currAngle * 180 / Math.PI).toFixed(2),
+          deltaDeg:      +(delta * 180 / Math.PI).toFixed(2),
+          rotAxis: { x: +rotAxis.x.toFixed(3), y: +rotAxis.y.toFixed(3), z: +rotAxis.z.toFixed(3) },
+          rotAxisLen: +rotAxis.length().toFixed(4),
+          baseQ:  this._startQuat.map(v => +v.toFixed(3)),
+          newQ:   [+newQ.x.toFixed(3), +newQ.y.toFixed(3), +newQ.z.toFixed(3), +newQ.w.toFixed(3)],
+          pivotEnabled,
+          spaceMode: this._spaceMode,
+          rotateEnabled: no.rotateEnabled,
+        });
+      }
+
       if (pivotEnabled) {
         // BLUE rotate — back-solve localOffset so pivot world stays fixed.
         // setNodeLocalRotationPreservePivot writes BOTH localQuaternion and

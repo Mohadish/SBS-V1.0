@@ -328,6 +328,14 @@ export function alignFolderBySurfaceMatch(folder, srcPoint, srcNormal, tgtPoint,
   const localQ = baseQ.multiply(newQuat);
   setStoredQuaternion(folder, [localQ.x, localQ.y, localQ.z, localQ.w]);
 
+  // V0.2.22.33.1 — defensive: ensure the per-step rotation/translation
+  // toggles are ON so getTotalLocalQuaternion / getComputedLocalPosition
+  // actually fold our newly-written deltas into the visible pose. If
+  // either was previously set to false, our write would still land in
+  // node.localQuaternion / localOffset but be IGNORED at render time.
+  folder.rotateEnabled = true;
+  folder.moveEnabled   = true;
+
   obj.position.set(newPos.x, newPos.y, newPos.z);
   obj.quaternion.copy(newQuat);
   obj.updateMatrixWorld(true);
