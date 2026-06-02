@@ -118,17 +118,21 @@ async function _load() {
 
 parentPort.on('message', async (msg) => {
   if (msg?.kind !== 'synth') return;
-  const { id, text, voice } = msg;
+  const { id, text, voice, speed } = msg;
   try {
     const tts = await _load();
     const t0  = Date.now();
-    const audio = await tts.generate(text, { voice });
+    // kokoro-js generate() accepts { voice, speed }; speed defaults to 1
+    // when undefined, so older messages without the field stay backwards-
+    // compatible. Range guidance from the library: positive number, 1 = nominal.
+    const rate = Number.isFinite(Number(speed)) && Number(speed) > 0 ? Number(speed) : 1.0;
+    const audio = await tts.generate(text, { voice, speed: rate });
     const synthMs = Date.now() - t0;
     const wav = audio.toWav();
     const buf = Buffer.from(wav);
     parentPort.postMessage({
       kind: 'log',
-      msg:  `[kokoro-worker] synth ${synthMs}ms (backend=${_activeBackend}, voice=${voice}, chars=${(text || '').length})`,
+      msg:  `[kokoro-worker] synth ${synthMs}ms (backend=${_activeBackend}, voice=${voice}, speed=${rate}, chars=${(text || '').length})`,
     });
     parentPort.postMessage({ id, ok: true, wav: buf });
   } catch (e) {

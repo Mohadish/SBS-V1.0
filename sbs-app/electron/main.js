@@ -64,11 +64,11 @@ function _ensureKokoroWorker() {
   return _kokoroWorker;
 }
 
-function _kokoroSynth(text, voice) {
+function _kokoroSynth(text, voice, speed) {
   return new Promise((resolve, reject) => {
     const id = ++_kokoroSeq;
     _kokoroPending.set(id, { resolve, reject });
-    _ensureKokoroWorker().postMessage({ kind: 'synth', id, text, voice });
+    _ensureKokoroWorker().postMessage({ kind: 'synth', id, text, voice, speed });
   });
 }
 
@@ -834,6 +834,12 @@ $synth = New-Object Windows.Media.SpeechSynthesis.SpeechSynthesizer;
 $voice = [Windows.Media.SpeechSynthesis.SpeechSynthesizer]::AllVoices | Where-Object { $_.DisplayName -eq $voiceName } | Select-Object -First 1;
 if (-not $voice) { throw "OneCore voice not found: $voiceName"; }
 $synth.Voice = $voice;
+# V0.2.22.34 — wire narration-speed slider into OneCore. The API accepts
+# 0.5..6.0; the UI slider clamps at 0.5..2.0 (sidebar-left.js exp-voice-speed)
+# so $rate is always inside the valid window. Without this, OneCore voices
+# (e.g. Hebrew "Microsoft Asaf") ignored the slider entirely while SAPI5
+# voices honoured it via say.export — the user could tell only by listening.
+$synth.Options.SpeakingRate = [double]$rate;
 $stream = Await ($synth.SynthesizeTextToStreamAsync($textToSpeak)) ([Windows.Media.SpeechSynthesis.SpeechSynthesisStream]);
 $reader = New-Object Windows.Storage.Streams.DataReader($stream.GetInputStreamAt(0));
 [void](Await ($reader.LoadAsync([uint32]$stream.Size)) ([uint32]));
@@ -848,11 +854,16 @@ function _psQuote(s) {
 }
 
 /** Build a PS command string with our values inlined as variable assignments. */
-function _buildOneCoreSynthCommand(voiceName, text, outFile) {
+function _buildOneCoreSynthCommand(voiceName, text, outFile, speed) {
+  const rate = Number.isFinite(Number(speed)) ? Number(speed) : 1.0;
+  // Clamp to the OneCore-supported range so an out-of-bounds slider value
+  // (e.g. a stale project file) doesn't make the PS script throw.
+  const clamped = Math.max(0.5, Math.min(6.0, rate));
   return [
     `$voiceName = ${_psQuote(voiceName)};`,
     `$textToSpeak = ${_psQuote(text)};`,
     `$outFile = ${_psQuote(outFile)};`,
+    `$rate = ${clamped};`,
     PS_SYNTH_ONECORE_BODY,
   ].join('\n');
 }
@@ -865,7 +876,7 @@ ipcMain.handle('tts:synthesize', async (_, text, voice, speed, opts) => {
   if (source === 'kokoro') {
     try {
       console.log(`[kokoro] generating "${text.slice(0, 40)}…" with voice ${voice}`);
-      const wavBuf = await _kokoroSynth(text, voice);
+      const wavBuf = await _kokoroSynth(text, voice, speed);
       // wavBuf is a Buffer transferred from the worker.
       const b64 = (Buffer.isBuffer(wavBuf) ? wavBuf : Buffer.from(wavBuf)).toString('base64');
       return { ok: true, data: b64, mime: 'audio/wav' };
@@ -883,7 +894,7 @@ ipcMain.handle('tts:synthesize', async (_, text, voice, speed, opts) => {
     // that would corrupt Hebrew / Arabic / Japanese text on the command line.
     return new Promise(resolve => {
       try {
-        const cmd     = _buildOneCoreSynthCommand(voice, text, filename);
+        const cmd     = _buildOneCoreSynthCommand(voice, text, filename, speed);
         const encoded = Buffer.from(cmd, 'utf16le').toString('base64');
         const child = spawn('powershell', [
           '-NoProfile', '-NonInteractive', '-EncodedCommand', encoded,
