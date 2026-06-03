@@ -1,18 +1,45 @@
 /**
  * SBS — Text-to-speech router.
  *
- * Phase 3a: a single backend (OS voices via `say` npm). Voice IDs are
- * namespaced so additional backends (Kokoro, Piper, etc.) can slot in
- * alongside without changing callers.
+ * Voice IDs are namespaced so backends slot in alongside without
+ * changing callers.
  *
- *   id = 'os:<voice-name>'        → Windows SAPI / macOS say / Linux festival
- *   id = 'kokoro:<speaker>'       → (future) Kokoro-82M ONNX
+ *   id = 'os:<source>|<name>'     → Windows SAPI / OneCore / macOS / Linux
+ *   id = 'kokoro:<speaker>'       → Kokoro-82M ONNX (English only)
+ *   id = 'gcp:<voice-name>'       → Google Cloud TTS (V0.2.22.35; opt-in
+ *                                    via Settings → Cloud TTS, requires
+ *                                    API key + internet)
  *
  * synthesize() always returns { dataUrl, mime, durationMs } so the caller
  * can cache it on the step without caring which backend produced it.
  */
 
+import * as userSettings from '../core/user-settings.js';
+
 let _voiceCache = null;
+
+// V0.2.22.35 — hardcoded Hebrew Google Cloud TTS voices. Listing the
+// full Google voice catalogue at runtime (voices.list) would inflate
+// the dropdown with 400+ voices the user doesn't care about. For
+// personal Hebrew authoring, six is enough. Add more here when needed
+// — or wire voices.list later if/when this ships beyond personal use.
+const _GCP_HE_VOICES = [
+  { name: 'he-IL-Wavenet-A',  gender: 'Female', tier: 'WaveNet'  },
+  { name: 'he-IL-Wavenet-B',  gender: 'Male',   tier: 'WaveNet'  },
+  { name: 'he-IL-Wavenet-C',  gender: 'Male',   tier: 'WaveNet'  },
+  { name: 'he-IL-Wavenet-D',  gender: 'Female', tier: 'WaveNet'  },
+  { name: 'he-IL-Standard-A', gender: 'Female', tier: 'Standard' },
+  { name: 'he-IL-Standard-B', gender: 'Male',   tier: 'Standard' },
+];
+
+/**
+ * Drop the cached voice list. Call this after the user toggles cloud
+ * TTS on/off or pastes/clears an API key — otherwise the dropdown shows
+ * the previous gating decision until app restart.
+ */
+export function invalidateVoiceCache() {
+  _voiceCache = null;
+}
 
 /**
  * List every available voice across every backend.
@@ -51,6 +78,31 @@ export async function listVoices() {
     }
   }
 
+  // V0.2.22.35 — Google Cloud TTS Hebrew voices. Only listed when the
+  // user has opted in AND configured an API key (Settings → Cloud TTS).
+  // Off by default — keeps the dropdown clean for users who don't use
+  // cloud voices. Cache is invalidated by invalidateVoiceCache() when
+  // those settings toggle.
+  try {
+    const us = userSettings.get();
+    if (us?.cloud?.enabled && (us?.cloud?.googleApiKey || '').trim()) {
+      for (const v of _GCP_HE_VOICES) {
+        voices.push({
+          id:      `gcp:${v.name}`,
+          name:    `${v.name}  (${v.gender}, ${v.tier})`,
+          backend: 'gcp',
+          lang:    'Hebrew (Israel)',
+          culture: 'he-IL',
+          gender:  v.gender,
+          source:  'gcp',
+          raw:     v,
+        });
+      }
+    }
+  } catch (e) {
+    console.warn('[tts] Cloud-TTS gating check failed:', e?.message);
+  }
+
   _voiceCache = voices;
   return voices;
 }
@@ -69,8 +121,36 @@ export async function synthesize(text, voiceId, opts = {}) {
 
   // Reject legacy / unprefixed voice ids left over from older project files
   // or older defaults (Piper etc.). User must re-pick a current voice.
-  if (!/^(os|kokoro):/.test(voiceId)) {
+  if (!/^(os|kokoro|gcp):/.test(voiceId)) {
     throw new Error(`Legacy voice "${voiceId}" — please pick a current voice in the Export tab.`);
+  }
+
+  // V0.2.22.35 — Google Cloud TTS branch. Pulls the API key from user
+  // settings at call time (not cached) so a key change takes effect on
+  // the very next synth without restart. Off-net errors and HTTP errors
+  // propagate as throws so the caller can surface them to the user
+  // (Export tab status, narration-precache log, etc).
+  if (voiceId.startsWith('gcp:')) {
+    if (!window.sbsNative?.tts?.gcpSynthesize) {
+      throw new Error('Cloud TTS unavailable (not running in Electron).');
+    }
+    const us = userSettings.get();
+    if (!us?.cloud?.enabled) {
+      throw new Error('Cloud TTS is disabled — open Settings → Cloud TTS to enable.');
+    }
+    const apiKey = (us?.cloud?.googleApiKey || '').trim();
+    if (!apiKey) {
+      throw new Error('No Google Cloud TTS API key — open Settings → Cloud TTS.');
+    }
+    const voiceName = voiceId.slice(4);   // strip 'gcp:'
+    const res = await window.sbsNative.tts.gcpSynthesize(text, voiceName, speed, apiKey);
+    if (!res?.ok) throw new Error(res?.error || 'Google Cloud TTS failed.');
+    const dataUrl = `data:${res.mime};base64,${res.data}`;
+    // Same WAV-header path as the OS branch — main process wraps PCM in
+    // a 44-byte WAV header before returning, so this is reliable.
+    let durationMs = (res.mime === 'audio/wav') ? _wavDurationMsFromB64(res.data) : 0;
+    if (!durationMs) durationMs = await _measureAudioDuration(dataUrl);
+    return { dataUrl, mime: res.mime, durationMs };
   }
 
   if (voiceId.startsWith('os:')) {

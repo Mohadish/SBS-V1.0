@@ -66,6 +66,11 @@ contextBridge.exposeInMainWorld('sbsNative', {
   tts: {
     listVoices: ()                                     => ipcRenderer.invoke('tts:listVoices'),
     synthesize: (text, voice, speed = 1, opts = {})    => ipcRenderer.invoke('tts:synthesize', text, voice, speed, opts),
+    // V0.2.22.35 — Google Cloud TTS (gated behind userSettings.cloud.enabled
+    // + googleApiKey in the renderer). Key passed per-call so it never
+    // lives in the preload or gets embedded in the binary.
+    gcpSynthesize: (text, voice, speed = 1, apiKey = '') =>
+      ipcRenderer.invoke('tts:gcp-synthesize', text, voice, speed, apiKey),
   },
 
   // ── License (3-factor commercial licensing, see electron/license/) ──────

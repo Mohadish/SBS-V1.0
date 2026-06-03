@@ -72,6 +72,17 @@ const DEFAULTS = {
     // large projects), so don't push this absurdly high.
     maxSize: 200,
   },
+  // V0.2.22.35 — Cloud TTS. Off by default; opt-in only. When enabled +
+  // googleApiKey set, additional Google Cloud he-IL voices appear in the
+  // Export tab's voice dropdown alongside the OS / Kokoro voices. Stored
+  // here (machine-scope) so the API key never leaks into project files.
+  // This is single-user / personal-authoring scope today — not shipped to
+  // end-users of exported projects. Their playback uses cached WAVs that
+  // were synthesized at authoring time.
+  cloud: {
+    enabled:      false,
+    googleApiKey: '',
+  },
 };
 
 let _cache = null;

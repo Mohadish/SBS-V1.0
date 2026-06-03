@@ -10,7 +10,7 @@
  */
 
 import * as userSettings from '../core/user-settings.js';
-import { listVoices }    from '../systems/tts.js';
+import { listVoices, invalidateVoiceCache } from '../systems/tts.js';
 import sceneCore         from '../core/scene.js';
 import state             from '../core/state.js';
 import * as actions       from '../systems/actions.js';
@@ -38,6 +38,7 @@ export async function openSettingsModal(initialTab = 'language') {
           <button class="settings-tab" data-tab="language">Language</button>
           <button class="settings-tab" data-tab="scene">Scene</button>
           <button class="settings-tab" data-tab="export">Export</button>
+          <button class="settings-tab" data-tab="cloud">Cloud TTS</button>
         </nav>
         <section id="settings-body" style="flex:1;padding:14px 16px;overflow:auto;font-size:13px;">
         </section>
@@ -97,6 +98,116 @@ function _showTab(name) {
   if (name === 'language') _renderLanguageTab(body);
   if (name === 'scene')    _renderSceneTab(body);
   if (name === 'export')   _renderExportTab(body);
+  if (name === 'cloud')    _renderCloudTab(body);
+}
+
+/**
+ * V0.2.22.35 — Cloud TTS tab. Personal-authoring scope: when enabled +
+ * an API key is set, the Export tab's voice dropdown lists Google Cloud
+ * Hebrew voices alongside the OS ones. Off by default; opt-in only.
+ *
+ * The key is stored plaintext in user-settings.json (under userData) —
+ * standard for personal-machine config and consistent with how other
+ * personal-scope settings are stored. Note in the UI explains this.
+ */
+function _renderCloudTab(body) {
+  const cur   = userSettings.get();
+  const cloud = cur.cloud || { enabled: false, googleApiKey: '' };
+
+  body.innerHTML = `
+    <h3 style="margin:0 0 6px 0;font-size:14px;">Cloud Text-to-Speech (experimental)</h3>
+    <p class="small muted" style="margin:0 0 10px 0;">
+      Opt-in: enables Google Cloud TTS Hebrew voices in the Export tab's
+      voice picker. Better Hebrew quality than the default OS voice (Asaf).
+      Requires internet + a Google Cloud API key. Personal-use scope —
+      not shipped to end-users of your exported projects.
+    </p>
+
+    <p class="small" style="margin:0 0 10px 0;padding:8px;background:rgba(245,158,11,0.10);border:1px solid rgba(245,158,11,0.35);border-radius:6px;color:#fbbf24;">
+      <strong>How to get a key:</strong> sign in to
+      <a href="https://console.cloud.google.com/apis/credentials" target="_blank" style="color:#fbbf24;text-decoration:underline;">console.cloud.google.com</a>
+      → enable the <em>Text-to-Speech API</em> → create an API key →
+      paste it below. Google's free tier covers ~1 M characters/month of
+      WaveNet voices — typical personal authoring stays free.
+    </p>
+
+    <label style="display:flex;align-items:center;gap:8px;margin:14px 0 6px 0;cursor:pointer;">
+      <input type="checkbox" id="cloud-enabled" ${cloud.enabled ? 'checked' : ''}/>
+      <strong>Enable Google Cloud TTS</strong>
+    </label>
+
+    <div id="cloud-key-row" style="display:${cloud.enabled ? 'block' : 'none'};margin-top:8px;">
+      <label class="small muted" style="display:block;margin-bottom:4px;">Google Cloud TTS API key</label>
+      <input type="password" id="cloud-key" value="${_esc(cloud.googleApiKey)}"
+             placeholder="AIza..." autocomplete="off" spellcheck="false"
+             style="width:100%;padding:6px 8px;border:1px solid var(--line);border-radius:4px;background:var(--panel2);color:var(--text);font-family:monospace;font-size:12px;" />
+      <p class="small muted" style="margin:6px 0 0 0;font-size:11px;">
+        Stored as plain text in <code>user-settings.json</code> (machine-scope).
+        Never written to project files. Cleared when you delete it here or
+        uncheck the toggle above. After saving, re-open the Export tab to
+        refresh the voice dropdown.
+      </p>
+    </div>
+
+    <div id="cloud-test-row" style="display:${cloud.enabled ? 'block' : 'none'};margin-top:12px;">
+      <button class="btn" id="cloud-test-btn">Test connection</button>
+      <span id="cloud-test-status" class="small muted" style="margin-left:8px;"></span>
+    </div>
+  `;
+
+  const enabledCb = body.querySelector('#cloud-enabled');
+  const keyInp    = body.querySelector('#cloud-key');
+  const keyRow    = body.querySelector('#cloud-key-row');
+  const testRow   = body.querySelector('#cloud-test-row');
+  const testBtn   = body.querySelector('#cloud-test-btn');
+  const testStat  = body.querySelector('#cloud-test-status');
+
+  const _refreshVisibility = () => {
+    const on = !!enabledCb.checked;
+    keyRow.style.display  = on ? 'block' : 'none';
+    testRow.style.display = on ? 'block' : 'none';
+  };
+
+  enabledCb.addEventListener('change', async () => {
+    await userSettings.patch({ cloud: { enabled: !!enabledCb.checked } });
+    invalidateVoiceCache();
+    window.dispatchEvent(new CustomEvent('sbs:user-settings-changed', { detail: { section: 'cloud' } }));
+    _refreshVisibility();
+  });
+
+  // Save on blur, not every keystroke — API keys are long and we don't
+  // want partial keys hitting disk on every character.
+  keyInp.addEventListener('change', async () => {
+    await userSettings.patch({ cloud: { googleApiKey: keyInp.value.trim() } });
+    invalidateVoiceCache();
+    window.dispatchEvent(new CustomEvent('sbs:user-settings-changed', { detail: { section: 'cloud' } }));
+  });
+  keyInp.addEventListener('blur', async () => {
+    await userSettings.patch({ cloud: { googleApiKey: keyInp.value.trim() } });
+    invalidateVoiceCache();
+    window.dispatchEvent(new CustomEvent('sbs:user-settings-changed', { detail: { section: 'cloud' } }));
+  });
+
+  // One-shot test: synth "שלום" with the first Hebrew WaveNet voice and
+  // surface the result. Validates key + network + Hebrew billing on
+  // the project all in one click.
+  testBtn.addEventListener('click', async () => {
+    const apiKey = keyInp.value.trim();
+    if (!apiKey) { testStat.textContent = 'Paste an API key first.'; testStat.style.color = '#f87171'; return; }
+    testStat.textContent = 'Testing…'; testStat.style.color = '';
+    try {
+      // Save the key first so the test reads the same one synth would.
+      await userSettings.patch({ cloud: { googleApiKey: apiKey, enabled: true } });
+      invalidateVoiceCache();
+      const { synthesize } = await import('../systems/tts.js');
+      const out = await synthesize('שלום עולם.', 'gcp:he-IL-Wavenet-B', { speed: 1.0 });
+      const audio = new Audio(out.dataUrl);
+      audio.play().catch(() => {});
+      testStat.innerHTML = `<span style="color:#86efac;">✓ ${Math.round(out.durationMs)} ms — playing…</span>`;
+    } catch (e) {
+      testStat.innerHTML = `<span style="color:#f87171;">✗ ${_esc(e?.message || 'failed')}</span>`;
+    }
+  });
 }
 
 async function _renderLanguageTab(body) {

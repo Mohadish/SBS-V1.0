@@ -9,6 +9,7 @@ require('bytenode');
 const { app, BrowserWindow, Menu, ipcMain, dialog, shell } = require('electron');
 const path  = require('path');
 const fs    = require('fs');
+const https = require('https');
 const { spawn, execSync } = require('child_process');
 const os = require('os');
 const say = require('say');
@@ -941,4 +942,115 @@ ipcMain.handle('tts:synthesize', async (_, text, voice, speed, opts) => {
       resolve({ ok: false, error: e.message });
     }
   });
+});
+
+// ─── V0.2.22.35 — Google Cloud TTS ─────────────────────────────────────────
+// Single-user / personal-authoring scope. The API key is stored in user
+// settings (machine-scope, not project-scope) and passed in per-call so
+// the key never lives in this file or gets baked into the binary.
+//
+// Wire: renderer (tts.js) reads key from user-settings → passes to
+// preload → here. We POST to Google's REST endpoint, get back LINEAR16
+// PCM as base64, wrap with a 44-byte WAV header (so the renderer's
+// existing _wavDurationMsFromB64 path keeps working — same as Kokoro
+// / OneCore / SAPI5 returns), return WAV b64.
+//
+// LINEAR16 chosen over MP3 because the WAV header-parse path is
+// rock-solid; MP3 falls back to audio-element duration measurement
+// which the V0.2.22.2 fix called out as race-prone for some clips.
+function _pcmToWavBase64(pcmB64, sampleRate, channels = 1, bitsPerSample = 16) {
+  const pcm = Buffer.from(pcmB64, 'base64');
+  const byteRate   = sampleRate * channels * (bitsPerSample / 8);
+  const blockAlign = channels * (bitsPerSample / 8);
+  const dataSize   = pcm.length;
+  const header     = Buffer.alloc(44);
+  header.write('RIFF', 0);
+  header.writeUInt32LE(36 + dataSize, 4);
+  header.write('WAVE', 8);
+  header.write('fmt ', 12);
+  header.writeUInt32LE(16, 16);            // fmt chunk size (PCM)
+  header.writeUInt16LE(1, 20);             // audioFormat = PCM
+  header.writeUInt16LE(channels, 22);
+  header.writeUInt32LE(sampleRate, 24);
+  header.writeUInt32LE(byteRate, 28);
+  header.writeUInt16LE(blockAlign, 32);
+  header.writeUInt16LE(bitsPerSample, 34);
+  header.write('data', 36);
+  header.writeUInt32LE(dataSize, 40);
+  return Buffer.concat([header, pcm]).toString('base64');
+}
+
+function _gcpHttpsRequest(apiKey, payload) {
+  return new Promise((resolve, reject) => {
+    const body = Buffer.from(payload, 'utf8');
+    const req = https.request({
+      method: 'POST',
+      hostname: 'texttospeech.googleapis.com',
+      path: `/v1/text:synthesize?key=${encodeURIComponent(apiKey)}`,
+      headers: {
+        'Content-Type': 'application/json; charset=utf-8',
+        'Content-Length': body.length,
+      },
+      timeout: 30000,
+    }, (res) => {
+      const chunks = [];
+      res.on('data', c => chunks.push(c));
+      res.on('end',  () => {
+        const text = Buffer.concat(chunks).toString('utf8');
+        if (res.statusCode >= 200 && res.statusCode < 300) {
+          try { resolve(JSON.parse(text)); }
+          catch (e) { reject(new Error('Bad JSON from Google TTS: ' + e.message)); }
+        } else {
+          // Google returns { error: { code, message, status } }
+          let msg = `Google TTS HTTP ${res.statusCode}`;
+          try { msg = JSON.parse(text)?.error?.message || msg; } catch {}
+          reject(new Error(msg));
+        }
+      });
+    });
+    req.on('error',   reject);
+    req.on('timeout', () => { req.destroy(new Error('Google TTS request timed out (30s).')); });
+    req.write(body);
+    req.end();
+  });
+}
+
+ipcMain.handle('tts:gcp-synthesize', async (_, text, voice, speed, apiKey) => {
+  if (!text || !text.trim()) return { ok: false, error: 'Empty text.' };
+  if (!voice)                return { ok: false, error: 'No GCP voice specified.' };
+  if (!apiKey)               return { ok: false, error: 'No Google Cloud TTS API key configured (Settings → Cloud).' };
+
+  // Derive languageCode from voice name. Google voices follow the
+  // 'xx-XX-Brand-N' convention — first two segments are the BCP-47 tag.
+  const m = /^([a-z]{2}-[A-Z]{2})/.exec(voice);
+  const languageCode = m ? m[1] : 'he-IL';
+
+  // Speaking-rate clamp matches Google's API (0.25..4.0). Slider is
+  // 0.5..2.0 so this is defensive only.
+  const rate = Math.max(0.25, Math.min(4.0, Number(speed) || 1.0));
+
+  // 24 kHz matches WaveNet's native rate and gives us a known sample
+  // rate for the WAV-header wrap. Standard / Neural2 also emit fine at
+  // 24 kHz; Chirp 3 HD upsamples internally if requested differently.
+  const sampleRateHertz = 24000;
+
+  const payload = JSON.stringify({
+    input:       { text },
+    voice:       { languageCode, name: voice },
+    audioConfig: {
+      audioEncoding: 'LINEAR16',
+      sampleRateHertz,
+      speakingRate: rate,
+    },
+  });
+
+  try {
+    const json = await _gcpHttpsRequest(apiKey, payload);
+    const audioB64 = json?.audioContent;
+    if (!audioB64) return { ok: false, error: 'Google TTS returned no audioContent.' };
+    const wavB64 = _pcmToWavBase64(audioB64, sampleRateHertz, 1, 16);
+    return { ok: true, data: wavB64, mime: 'audio/wav' };
+  } catch (e) {
+    return { ok: false, error: e?.message || 'Google TTS failed.' };
+  }
 });
