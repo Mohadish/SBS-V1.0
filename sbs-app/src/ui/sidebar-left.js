@@ -640,16 +640,38 @@ async function _onOpenProject() {
     // Displaced meshes are those moved into custom folders outside their native model subtree.
     const allSavedMeshSpecs = collectAllMeshSpecs(savedSceneRoot);
 
-    // Model-type spec nodes — includes RM-converted models (B.2-NEW) so
-    // their geometry actually gets imported on reload. Without the
-    // originalType check, an RM-model's GLB would re-load but no spec
-    // would attach to the freshly-imported meshes → fresh IDs orphaned
-    // → entire model renders as bbox placeholders. Skip custom user-
-    // created folders at scene root either way.
-    const savedModelSpecs = (savedSceneRoot?.children || [])
-      .filter(_isModelOrRMModel);
+    // V0.2.22.36 — deep-walk to find every model spec ANYWHERE in the
+    // saved tree, not just direct children of scene root. The old
+    // shallow filter missed models the user moved into custom folders
+    // before save: those specs live at scene_root → customFolder →
+    // model, invisible to scene_root.children.filter(...).
+    //
+    // Symptom of the old bug: a moved-into-folder model came back as a
+    // fresh import with no spec attached, no ID remap, and its meshes'
+    // saved IDs orphaned → flatShapes that pointed at those IDs lost
+    // their parent → shapes disappeared from the tree. Worse, by-index
+    // matching meant EVERY model after the missing one got the wrong
+    // spec, cascading the damage. Walking deep + matching by assetId
+    // closes both holes.
+    const allModelSpecs = [];
+    (function _walkModelSpecs(n) {
+      if (!n) return;
+      if (_isModelOrRMModel(n)) allModelSpecs.push(n);
+      for (const c of (n.children || [])) _walkModelSpecs(c);
+    })(savedSceneRoot);
 
-    let modelSpecIndex = 0;
+    // Primary lookup: spec.assetId → spec (set by importers.js when a
+    // model is first imported, preserved through stripNode on save).
+    const specByAssetId = new Map();
+    for (const s of allModelSpecs) {
+      if (s.assetId) specByAssetId.set(s.assetId, s);
+    }
+
+    // Legacy fallback: unkeyed specs are paired by source-order position
+    // for old project files that pre-date assetId tagging. Modern files
+    // never hit this path because every model carries assetId.
+    const unkeyedModelSpecs = allModelSpecs.filter(s => !s.assetId);
+    let unkeyedSpecIndex = 0;
 
     for (const { assetEntry, resolvedPath } of resolvedAssets) {
       setStatus(`Loading ${assetEntry.name}…`, 'info', 0);
@@ -676,11 +698,19 @@ async function _onOpenProject() {
       // Track asset status
       _assetStatus.set(assetEntry.id, modelNode ? 'ok' : 'missing');
 
-      // Find the saved spec node for this model (only among model-type children,
-      // not custom folders).  Fall back to legacy per-asset tree spec.
-      const specNode = savedModelSpecs[modelSpecIndex]
-                    ?? assetEntry._legacyTreeSpec
-                    ?? null;
+      // Find the saved spec node for this model.
+      // Priority: (1) assetId match → robust against moved models and
+      // any load-order skew. (2) Legacy per-asset spec stashed by the
+      // pre-asset-tracking migration. (3) Unkeyed positional fallback
+      // for legacy spec files that have no assetId on any model.
+      let specNode = specByAssetId.get(assetEntry.id) || null;
+      if (!specNode) specNode = assetEntry._legacyTreeSpec || null;
+      if (!specNode && unkeyedSpecIndex < unkeyedModelSpecs.length) {
+        specNode = unkeyedModelSpecs[unkeyedSpecIndex++];
+      }
+      if (!specNode && allModelSpecs.length) {
+        console.warn(`[project-load] no saved spec matched asset "${assetEntry.name}" (${assetEntry.id}) — loaded fresh; positions/colors may not match saved state.`);
+      }
 
       if (modelNode) {
         // Remap freshly-generated IDs → saved IDs from project spec.
@@ -717,8 +747,6 @@ async function _onOpenProject() {
         // ❌ Missing asset — insert phantom tree nodes from saved spec so steps still work
         _insertPhantomNodes(specNode, assetEntry.id);
       }
-
-      modelSpecIndex++;
     }
 
     // Insert phantom nodes for any scene-root custom folders from the saved tree
