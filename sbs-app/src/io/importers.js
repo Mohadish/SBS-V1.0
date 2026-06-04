@@ -399,9 +399,11 @@ function buildNodeFromOcct(occtNode, meshes, parent3d, prefix, obj3dMap) {
 
 /**
  * Build a data tree node from an existing Three.js object tree.
- * Used for OBJ / STL / GLTF / FBX.
+ * Used for OBJ / STL / GLTF / FBX — and the hardware generator
+ * (V0.2.22.37) which produces a single procedural Mesh that we wrap
+ * the same way an STL import does.
  */
-function buildNodeFromThreeObject(obj, obj3dMap) {
+export function buildNodeFromThreeObject(obj, obj3dMap) {
   const isMesh = !!obj.isMesh;
   const name   = obj.name || (isMesh ? 'Mesh' : 'Node');
 
@@ -643,7 +645,7 @@ function bakeAndFlattenImport(innerRoot, obj3dMap) {
  *                                     { globalDedup: false } → don't share presets across
  *                                     model loads (use for GLTF/GLB/FBX).
  */
-function finalizeModelImport(group3d, innerRoot, name, assetInfo, obj3dMap, extractColors = true, colorOpts = {}) {
+export function finalizeModelImport(group3d, innerRoot, name, assetInfo, obj3dMap, extractColors = true, colorOpts = {}) {
   // ── assetId first — it seeds all stable node IDs ─────────────────────────
   const assetId = assetInfo?.id || generateId('asset');
 

@@ -48,6 +48,13 @@ export async function showAssetVerifyDialog(assets, isElectron, { forceShow = fa
   // Build row state with async metadata check for Electron paths
   const rows = await Promise.all(assets.map(async ({ assetEntry, resolvedPath }) => {
     let status = 'missing';
+    // V0.2.22.37 — hardware assets are procedural; they have no file to
+    // verify. Mark OK so the dialog doesn't prompt the user to "locate"
+    // a file that doesn't exist. Regeneration happens later in the load
+    // path via regenerateHardwareAsset().
+    if (assetEntry?.type === 'hardware' && assetEntry?.hardware) {
+      return { assetEntry, resolvedPath: null, file: null, status: 'ok' };
+    }
     if (isElectron && resolvedPath) {
       try {
         const stat = window.sbsNative?.statFile

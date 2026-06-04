@@ -93,12 +93,14 @@ import { renderAnimationTab } from './animation-tab.js';
 import { renderHeaderTab }    from './header-tab.js';
 import { renderStyleTab }     from './style-tab.js';
 import { renderCableTab }     from './cable-tab.js';
+import { renderHardwareTab }  from './hardware-tab.js';
+import { regenerateHardwareAsset } from '../systems/hardware-actions.js';
 import { exportTimelineVideo, downloadBlob } from '../systems/video-export.js';
 import { listVoices as ttsListVoices } from '../systems/tts.js';
 import * as userSettings    from '../core/user-settings.js';
 import * as narrationCache  from '../systems/narration-cache.js';
 
-const TABS = ['files', 'tree', 'colors', 'select', 'cameras', 'animation', 'header', 'style', 'cables', 'notes', 'shapes', 'undo', 'export'];
+const TABS = ['files', 'tree', 'colors', 'select', 'cameras', 'animation', 'header', 'style', 'cables', 'notes', 'shapes', 'hardware', 'undo', 'export'];
 let _activeTab   = 'files';
 let _container   = null;
 let _treeInited  = false;
@@ -124,6 +126,7 @@ export function initSidebarLeft() {
       <button class="tabBtn"        data-tab="cables">🔌</button>
       <button class="tabBtn"        data-tab="notes">💬</button>
       <button class="tabBtn"        data-tab="shapes">▰</button>
+      <button class="tabBtn"        data-tab="hardware">🔩</button>
       <button class="tabBtn"        data-tab="undo">↶</button>
       <button class="tabBtn"        data-tab="export">Export</button>
     </div>
@@ -333,6 +336,7 @@ function _renderActiveTab() {
     case 'cables':    _renderCableTabPanel();  break;
     case 'notes':     _renderNotesTab();   break;
     case 'shapes':    _renderShapesTab();  break;
+    case 'hardware':  _renderHardwareTabPanel(); break;
     case 'undo':      _renderUndoTab();    break;
     case 'export':    _renderExportTab();  break;
   }
@@ -352,6 +356,10 @@ function _renderStyleTabPanel() {
 
 function _renderCableTabPanel() {
   renderCableTab(_panel('cables'));
+}
+
+function _renderHardwareTabPanel() {
+  renderHardwareTab(_panel('hardware'));
 }
 
 
@@ -679,7 +687,14 @@ async function _onOpenProject() {
 
       const userFile = userFiles.get(assetEntry.id);
 
-      if (userFile) {
+      // V0.2.22.37 — procedural hardware assets carry no file on disk.
+      // Regenerate from the saved hardware spec before the file-load
+      // branches so we never try to read a nonexistent path. The
+      // regenerator builds the same mesh shape + reuses the saved
+      // assetEntry.id so step snapshots and ID-remap keep matching.
+      if (assetEntry?.type === 'hardware' && assetEntry?.hardware) {
+        modelNode = regenerateHardwareAsset(assetEntry);
+      } else if (userFile) {
         // User-provided via dialog (web re-link or Electron re-link)
         modelNode = await _loadModelFile(userFile, assetEntry, true);
       } else if (isElectron && resolvedPath && window.sbsNative?.readFile) {
