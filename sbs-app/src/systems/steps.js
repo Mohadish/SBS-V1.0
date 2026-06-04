@@ -30,6 +30,7 @@ import * as cablesSystem            from './cables.js';   // C1: per-step cable 
 import * as cablesRender            from './cables-render.js';   // H1: cable phase animations
 import * as overlaySystem           from './overlay.js';   // H2: overlay phase fade-in / fade-out
 import { ensureFlatShapeObject3D }   from './flat-shapes.js'; // M1: 2D shapes in 3D — build mesh on demand
+import { ensureHardwareInstanceObject3D } from './hardware-templates.js'; // V0.2.22.38: procedural hardware — build mesh on demand
 import { createStep, createEmptySnapshot } from '../core/schema.js';
 import { parseAnimation, resolveAnimationString } from './animation.js';
 // V0.1.78 — narration overflow coordination. UI module exports the
@@ -2658,6 +2659,31 @@ function rebuildFromTreeSpec(spec, nodeById, object3dById, parentObject3d) {
       }
     }
 
+  } else if (specType === 'hardwareInstance') {
+    // V0.2.22.38 — procedural hardware. Same lazy-build pattern as
+    // flatShape: ensureHardwareInstanceObject3D returns the cached Mesh
+    // when the template signature matches, rebuilds when the template
+    // was edited, returns null when the template is missing (orphan).
+    node = nodeById.get(spec.id);
+    if (!node) return null;
+    node.name         = spec.name || node.name;
+    node.localVisible = spec.localVisible !== false;
+    node.templateId   = spec.templateId || node.templateId || null;
+    node.children     = [];
+    const obj = ensureHardwareInstanceObject3D(node);
+    if (obj) {
+      node.object3d = obj;
+      object3dById.set(spec.id, obj);
+      if (parentObject3d && obj.parent !== parentObject3d) {
+        if (obj.parent) obj.parent.remove(obj);
+        parentObject3d.add(obj);
+      }
+      if (obj.userData) {
+        obj.userData.hardwareInstanceId = node.id;
+        obj.userData.meshNodeId         = node.id;
+        obj.userData.nodeId             = node.id;
+      }
+    }
   } else {
     // scene root or unknown — pass through; use node.object3d as parent for children
     node = nodeById.get(spec.id);
@@ -2675,8 +2701,9 @@ function rebuildFromTreeSpec(spec, nodeById, object3dById, parentObject3d) {
   //     object3d so the parent doesn't matter for them.
   //   - flatShape itself has no children in v1, so its branch never
   //     recurses; childParent there is irrelevant but kept consistent.
+  //   - hardwareInstance is leaf-only (V0.2.22.38), same as flatShape.
   let childParent;
-  if (specType === 'flatShape') {
+  if (specType === 'flatShape' || specType === 'hardwareInstance') {
     childParent = parentObject3d;
   } else {
     childParent = object3dById.get(spec.id) ?? node?.object3d ?? parentObject3d;

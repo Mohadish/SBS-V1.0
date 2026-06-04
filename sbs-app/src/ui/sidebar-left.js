@@ -93,7 +93,7 @@ import { renderAnimationTab } from './animation-tab.js';
 import { renderHeaderTab }    from './header-tab.js';
 import { renderStyleTab }     from './style-tab.js';
 import { renderCableTab }     from './cable-tab.js';
-import { renderHardwareTab }  from './hardware-tab.js';
+import { renderHardwareTab, startEditTemplate as _hwStartEditTemplate } from './hardware-tab.js';
 import { regenerateHardwareAsset } from '../systems/hardware-actions.js';
 import { exportTimelineVideo, downloadBlob } from '../systems/video-export.js';
 import { listVoices as ttsListVoices } from '../systems/tts.js';
@@ -305,6 +305,17 @@ function _switchTab(tab) {
  * assigned (e.g. a freshly-imported model with no presets yet), the
  * tab still switches and the user can browse presets manually.
  */
+/**
+ * Switch to the Hardware tab and load the given template into the form
+ * in editing mode. Called from the tree's right-click menu on hardware
+ * instances. Idempotent — calling while already on the tab just
+ * refreshes the form state.
+ */
+export function editHardwareTemplate(templateId) {
+  if (_activeTab !== 'hardware') _switchTab('hardware');
+  _hwStartEditTemplate(templateId);
+}
+
 export function showColorForNode(nodeId) {
   if (!nodeId) return;
   const activeId = materials.meshColorAssignments?.[nodeId]
@@ -896,6 +907,17 @@ function _cloneSpecAsPhantom(specNode) {
   // systems/flat-shapes.js can rebuild the THREE.Mesh on first
   // rebuildFromTreeSpec pass; not "missing" in the asset sense.
   if (specNode.type === 'flatShape') {
+    return {
+      ...specNode,
+      missing:  false,
+      object3d: null,
+      children: (specNode.children || []).map(_cloneSpecAsPhantom),
+    };
+  }
+  // V0.2.22.38 — hardware instances: same shape as flatShape. Spec
+  // carries templateId + transforms; ensureHardwareInstanceObject3D
+  // rebuilds the mesh on first rebuildFromTreeSpec pass after load.
+  if (specNode.type === 'hardwareInstance') {
     return {
       ...specNode,
       missing:  false,

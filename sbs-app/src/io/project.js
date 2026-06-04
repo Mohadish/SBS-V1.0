@@ -215,6 +215,15 @@ export function serialize() {
   // without `groups` load as [] via the default below.
   project.shapes.groups = JSON.parse(JSON.stringify(state.get('shapeTemplateGroups') || []));
 
+  // V0.2.22.38 — Hardware templates. Procedural fastener library; each
+  // template carries kind ('screw' for now) + params. Instances live as
+  // tree nodes (type='hardwareInstance', templateId pointer) and round-
+  // trip via stripNode like every other tree node. Older files lacking
+  // this section load with hardwareTemplates=[] which is correct: there
+  // are no instances to orphan.
+  project.hardware = project.hardware || { schema_version: 1, templates: [] };
+  project.hardware.templates = JSON.parse(JSON.stringify(state.get('hardwareTemplates') || []));
+
   // Cables — 3D wires routed between mesh anchors and free points.
   // The cable list is project-global (topology-hoisted); per-step
   // variable overrides ride inside step.snapshot.cables, captured by
@@ -597,6 +606,11 @@ export function applyProjectToState(project) {
     headerStepNumberPerChapter: !!project.headers?.stepNumberPerChapter,
     styleTemplates:       project.styles?.items              || [],
     shapeTemplates:       project.shapes?.items              || [],
+    // V0.2.22.38 — hardware template library, see core/schema.js
+    // createHardwareTemplate. Missing on legacy files → empty list, no
+    // breakage; the only way to get instances is via the Hardware tab
+    // creating templates first.
+    hardwareTemplates:    project.hardware?.templates         || [],
     // V0.1.85: shape-tab groupings. Default to [] for older files.
     shapeTemplateGroups:  project.shapes?.groups             || [],
     // Reset session-local tab state on load.
@@ -995,6 +1009,28 @@ export function applySpecFieldsToNodes(specNode, nodeById, parentSpec = null) {
         };
         parentLive.children = [...(parentLive.children || []), shapeLive];
         nodeById.set(shapeLive.id, shapeLive);
+      }
+    }
+    return;
+  }
+
+  // V0.2.22.38 — hardware instances: same story as flat shapes. The
+  // saved spec lives in the project's scene tree (under whatever folder
+  // the user organised them into); ensureHardwareInstanceObject3D builds
+  // the THREE.Mesh on the next step activation from the matching template.
+  if (specNode.type === 'hardwareInstance') {
+    const parentId  = parentSpec?.id ?? null;
+    const parentLive = parentId ? nodeById.get(parentId) : null;
+    if (parentLive) {
+      const exists = (parentLive.children || []).some(c => c.id === specNode.id);
+      if (!exists) {
+        const live = {
+          ...specNode,
+          object3d: null,                  // rebuilt lazily
+          children: [],
+        };
+        parentLive.children = [...(parentLive.children || []), live];
+        nodeById.set(live.id, live);
       }
     }
     return;

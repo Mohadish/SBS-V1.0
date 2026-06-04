@@ -479,7 +479,10 @@ export function applyNodeSourceTransformToObject3D(node, outerObj3d, object3dByI
 export function isTransformNode(node) {
   if (!node) return false;
   if (node.type === 'replaceModel') return false;
-  return node.type === 'model' || node.type === 'folder' || node.type === 'flatShape';
+  return node.type === 'model'
+      || node.type === 'folder'
+      || node.type === 'flatShape'
+      || node.type === 'hardwareInstance';   // V0.2.22.38 — procedural fasteners
 }
 
 

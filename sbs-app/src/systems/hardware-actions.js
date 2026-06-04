@@ -1,111 +1,355 @@
 /**
- * SBS — Hardware actions (V0.2.22.37).
+ * SBS — Hardware actions (V0.2.22.38).
  *
- * Bridges the procedural geometry generator (systems/hardware-generator.js)
- * to the scene-tree import machinery (io/importers.js). The user picks
- * parameters in the Hardware tab → this module generates a mesh →
- * finalizeModelImport wraps it in a model node and inserts into the tree.
+ * Mutations for the template + instance system. Mirrors the shape-tab
+ * action shape so the UI feels consistent:
  *
- * Persistence: the asset entry carries `hardware: {kind, ...params}`
- * which survives save round-trip via the generic object spread in
- * io/project.js. On reload the project loader sees `assetEntry.type ===
- * 'hardware'` and calls regenerateHardwareAsset() instead of trying to
- * read a file from disk — see sidebar-left.js _onOpenProject.
+ *   createHardwareTemplate({kind, params, name?})
+ *     → push to state.hardwareTemplates, return new template
  *
- * Naming: each generated hardware asset gets a stable id derived from
- * its parameters. Generating the same screw twice produces two distinct
- * assets (each with its own id), because the user expects two separate
- * tree entries they can position independently.
+ *   placeHardwareInstance(templateId, parentId?)
+ *     → create a hardwareInstance node in the scene tree, return node
+ *
+ *   duplicateHardwareInstance(nodeId)
+ *     → create a sibling instance pointing at the same template,
+ *       offset slightly so it's visible.
+ *
+ *   editHardwareTemplate(templateId, patch)
+ *     → mutate the template params, rebuild every instance's mesh.
+ *
+ *   deleteHardwareTemplate(templateId, { deleteInstances })
+ *     → remove from state; optionally cascade-delete every instance
+ *       (otherwise instances become orphans rendering nothing).
+ *
+ * Auto-folder: the first instance created in a project auto-creates
+ * a "Hardware" folder at scene root and parents the instance there.
+ * Subsequent instances drop into the same folder when no explicit
+ * parent is passed. Users can move instances out of it freely.
  */
 
-import { generateScrewMesh, describeScrew } from './hardware-generator.js';
+import { state }                       from '../core/state.js';
 import {
-  buildNodeFromThreeObject,
-  finalizeModelImport,
-} from '../io/importers.js';
-import { generateId } from '../core/schema.js';
+  createHardwareTemplate,
+  createHardwareInstanceNode,
+  createNode,
+  generateId,
+}                                       from '../core/schema.js';
+import { steps }                        from './steps.js';
+import { sceneCore }                    from '../core/scene.js';
+import { buildNodeMap }                 from '../core/nodes.js';
+import {
+  ensureHardwareInstanceObject3D,
+  rebuildHardwareInstancesOfTemplate,
+  disposeHardwareInstance,
+}                                       from './hardware-templates.js';
+import { applyNodeTransformToObject3D } from '../core/transforms.js';
+import { undoManager }                  from './undo.js';
+
+const HARDWARE_FOLDER_NAME = 'Hardware';
+
+// ─── Templates ──────────────────────────────────────────────────────────────
 
 /**
- * Build + insert a screw into the scene. Returns the new model node.
- *
- * @param {object} params {diameter, length, headType, driveStyle}
- * @returns {TreeNode}
+ * Create a hardware template, push to state. Returns the new template
+ * (already in the array).
  */
-export function addScrew(params) {
-  return _insertHardwareMesh({
-    kind:    'screw',
-    label:   describeScrew(params),
-    mesh:    generateScrewMesh(params),
-    params,
+export function createTemplate({ kind = 'screw', params = {}, name = '' } = {}) {
+  const tpl = createHardwareTemplate({
+    kind,
+    params: { ...params },
+    name:   name || _autoName({ kind, params }),
   });
+  const list = state.get('hardwareTemplates') || [];
+  state.setState({ hardwareTemplates: [...list, tpl] });
+  state.markDirty?.();
+  return tpl;
 }
 
 /**
- * Project-load path. Called for asset entries whose type='hardware' —
- * regenerates the mesh from the saved params and inserts via the same
- * pipeline as the live "add" path, but pinned to the saved assetEntry.id
- * so step snapshots and ID-remap match.
- *
- * @param {object} assetEntry  saved asset, must have .hardware {kind, params}
- * @returns {TreeNode|null}
+ * Replace a template's params (and optionally name), then rebuild every
+ * live instance. Returns the updated template, or null if it doesn't exist.
  */
-export function regenerateHardwareAsset(assetEntry) {
-  if (!assetEntry?.hardware) return null;
-  const { kind, params } = assetEntry.hardware;
-  let mesh, label;
-  if (kind === 'screw') {
-    mesh  = generateScrewMesh(params);
-    label = describeScrew(params);
-  } else {
-    console.warn(`[hardware] unknown kind "${kind}" on assetEntry ${assetEntry.id} — skipping regen`);
+export function editTemplate(templateId, patch) {
+  const list = state.get('hardwareTemplates') || [];
+  const idx  = list.findIndex(t => t.id === templateId);
+  if (idx < 0) return null;
+  const prev = list[idx];
+  const next = {
+    ...prev,
+    ...patch,
+    params: { ...prev.params, ...(patch?.params || {}) },
+  };
+  // Auto-update name when it tracked the params (i.e. user never
+  // hand-named it). Heuristic: name matches the auto-name format from
+  // the prior params. Saves the user from manually editing names every
+  // time they tweak a screw's diameter.
+  if (!patch?.name && prev.name === _autoName(prev)) {
+    next.name = _autoName(next);
+  }
+  const updated = [...list];
+  updated[idx]  = next;
+  state.setState({ hardwareTemplates: updated });
+
+  // Cascade: rebuild every instance using this template.
+  const root = state.get('treeData');
+  rebuildHardwareInstancesOfTemplate(root, steps.object3dById, templateId);
+  state.markDirty?.();
+  state.emit('change:treeData', root);
+  return next;
+}
+
+/**
+ * Delete a template and (optionally) every instance using it. If
+ * deleteInstances is false, orphan instances stay in the tree but
+ * render nothing — the user can re-target them via the right-click
+ * menu or delete them manually.
+ */
+export function deleteTemplate(templateId, { deleteInstances = true } = {}) {
+  const list = state.get('hardwareTemplates') || [];
+  const next = list.filter(t => t.id !== templateId);
+  if (next.length === list.length) return false;
+
+  if (deleteInstances) {
+    const root = state.get('treeData');
+    _deleteInstancesByTemplateId(root, templateId);
+    state.setState({ nodeById: buildNodeMap(root) });
+  }
+  state.setState({ hardwareTemplates: next });
+  state.markDirty?.();
+  state.emit('change:treeData', state.get('treeData'));
+  return true;
+}
+
+// ─── Instances ──────────────────────────────────────────────────────────────
+
+/**
+ * Drop a fresh instance of a template into the tree. Returns the new node.
+ *
+ * @param {string}  templateId
+ * @param {string?} parentId   defaults to (or auto-creates) the "Hardware"
+ *                             folder at scene root.
+ */
+export function placeInstance(templateId, parentId = null) {
+  const tpls = state.get('hardwareTemplates') || [];
+  const tpl  = tpls.find(t => t.id === templateId);
+  if (!tpl) {
+    console.warn(`[hardware] placeInstance: template ${templateId} not found`);
     return null;
   }
-  return _insertHardwareMesh({
-    kind, label, mesh, params,
-    presetAssetId: assetEntry.id,
+
+  const root = state.get('treeData') || _ensureSceneRoot();
+
+  // Decide parent: explicit > Hardware folder > scene root (auto-make).
+  let parentNode = null;
+  if (parentId) {
+    const nodeById = state.get('nodeById') || buildNodeMap(root);
+    parentNode = nodeById.get(parentId) || null;
+  }
+  if (!parentNode) parentNode = _ensureHardwareFolder(root);
+  if (!parentNode) parentNode = root;
+
+  // Build the instance node + mesh.
+  const inst = createHardwareInstanceNode({
+    templateId: tpl.id,
+    name:       tpl.name || _autoName(tpl),
   });
+
+  // Attach + register in tree first so ensureHardwareInstanceObject3D
+  // can look up the template and the materials system can find the
+  // node id during registration.
+  parentNode.children = [...(parentNode.children || []), inst];
+  const nodeById = buildNodeMap(root);
+  state.setState({ nodeById, treeData: root });
+
+  const mesh = ensureHardwareInstanceObject3D(inst);
+  if (mesh) {
+    // Parent the mesh under the parent's Object3D. Folders own a Group,
+    // scene root owns sceneCore.rootGroup. Either way, steps.object3dById
+    // has the entry.
+    const parentObj = steps.object3dById?.get(parentNode.id) ?? sceneCore.rootGroup;
+    parentObj.add(mesh);
+    steps.object3dById.set(inst.id, mesh);
+    applyNodeTransformToObject3D(inst, mesh, true);
+  }
+
+  state.markDirty?.();
+  state.emit('change:treeData', root);
+
+  // Push undo: insertion is reversed by deletion of this single node.
+  _pushPlaceInstanceUndo(inst.id, parentNode.id, inst);
+  return inst;
 }
 
-// ─── Internal ──────────────────────────────────────────────────────────────
+/**
+ * Duplicate an existing hardware instance — produces a sibling pointing
+ * at the same template, offset by 1.5× the screw's nominal diameter so
+ * the copy doesn't z-fight with the original.
+ */
+export function duplicateInstance(nodeId) {
+  const root = state.get('treeData');
+  const nodeById = state.get('nodeById') || buildNodeMap(root);
+  const src = nodeById.get(nodeId);
+  if (!src || src.type !== 'hardwareInstance') return null;
 
-function _insertHardwareMesh({ kind, label, mesh, params, presetAssetId = null }) {
+  // Find parent — walk the tree for the node containing src.
+  const parent = _findParent(root, nodeId);
+  if (!parent) return null;
+
+  const tpls = state.get('hardwareTemplates') || [];
+  const tpl  = tpls.find(t => t.id === src.templateId);
+  const offset = tpl ? (tpl.params?.diameter || 4) * 1.5 : 6;
+
+  const copy = createHardwareInstanceNode({
+    templateId: src.templateId,
+    name:       src.name || tpl?.name || '',
+    localOffset: [
+      (src.localOffset?.[0] || 0) + offset,
+      (src.localOffset?.[1] || 0),
+      (src.localOffset?.[2] || 0),
+    ],
+  });
+
+  parent.children = [...(parent.children || []), copy];
+  const nbm = buildNodeMap(root);
+  state.setState({ nodeById: nbm, treeData: root });
+
+  const mesh = ensureHardwareInstanceObject3D(copy);
+  if (mesh) {
+    const parentObj = steps.object3dById?.get(parent.id) ?? sceneCore.rootGroup;
+    parentObj.add(mesh);
+    steps.object3dById.set(copy.id, mesh);
+    applyNodeTransformToObject3D(copy, mesh, true);
+  }
+
+  state.markDirty?.();
+  state.emit('change:treeData', root);
+  _pushPlaceInstanceUndo(copy.id, parent.id, copy, `Duplicate ${src.name || 'hardware'}`);
+  return copy;
+}
+
+// ─── Helpers ────────────────────────────────────────────────────────────────
+
+function _autoName(tpl) {
+  if (tpl.kind === 'screw') {
+    const p = tpl.params || {};
+    return `M${p.diameter}×${p.length} ${p.headType}, ${p.driveStyle}`;
+  }
+  return tpl.kind || 'hardware';
+}
+
+function _ensureSceneRoot() {
+  let root = state.get('treeData');
+  if (root && root.type === 'scene') return root;
   const T = window.THREE;
-  if (!T) throw new Error('THREE not loaded');
-  if (!mesh) throw new Error('hardware: generator returned no mesh');
+  root = createNode('scene', { id: 'scene_root', name: 'Scene' });
+  root.object3d = sceneCore.rootGroup;
+  root.children = [];
+  steps.object3dById.set('scene_root', sceneCore.rootGroup);
+  state.setState({ treeData: root, nodeById: buildNodeMap(root) });
+  return root;
+}
 
-  mesh.name = label;
+function _ensureHardwareFolder(root) {
+  // Reuse any existing folder named "Hardware" at scene root.
+  const existing = (root.children || []).find(c =>
+    c.type === 'folder' && c.name === HARDWARE_FOLDER_NAME);
+  if (existing) return existing;
 
-  // Wrap in an outer Group so finalizeModelImport's "model = outer group
-  // around inner content" expectation holds. The inner is buildNode-
-  // FromThreeObject(mesh, ...), same shape as the STL import path uses.
-  const group3d = new T.Group();
-  group3d.name  = label;
-  group3d.add(mesh);
+  // Create one. Folder Group lives in sceneCore.rootGroup so child meshes
+  // get added in the right Three.js hierarchy.
+  const T = window.THREE;
+  const group = new T.Group();
+  group.name = HARDWARE_FOLDER_NAME;
+  sceneCore.rootGroup.add(group);
 
-  const obj3dMap  = new Map();
-  const innerRoot = buildNodeFromThreeObject(mesh, obj3dMap);
+  const folder = createNode('folder', {
+    id:   generateId('folder'),
+    name: HARDWARE_FOLDER_NAME,
+  });
+  folder.object3d = group;
+  steps.object3dById.set(folder.id, group);
+  root.children = [...(root.children || []), folder];
+  return folder;
+}
 
-  // Reuse the standard model-import pipeline. extractColors=false because
-  // the hardware mesh ships with a deliberately-chosen brushed-metal
-  // material; we don't want the auto-color-preset extractor to override
-  // it with a "grey" preset on first insert.
-  return finalizeModelImport(
-    group3d,
-    innerRoot,
+function _findParent(root, nodeId) {
+  if (!root) return null;
+  const stack = [root];
+  while (stack.length) {
+    const n = stack.pop();
+    for (const c of (n.children || [])) {
+      if (c.id === nodeId) return n;
+      stack.push(c);
+    }
+  }
+  return null;
+}
+
+function _deleteInstancesByTemplateId(root, templateId) {
+  if (!root) return;
+  (function walk(node) {
+    if (!node) return;
+    node.children = (node.children || []).filter(c => {
+      if (c.type === 'hardwareInstance' && c.templateId === templateId) {
+        disposeHardwareInstance(c);
+        return false;
+      }
+      walk(c);
+      return true;
+    });
+  })(root);
+}
+
+function _pushPlaceInstanceUndo(nodeId, parentId, snapshotNode, label = 'Add hardware') {
+  // Capture the snapshot now so an undo replay re-creates the exact node.
+  const snap = JSON.parse(JSON.stringify({
+    ...snapshotNode,
+    object3d: null,   // not serialisable; re-built on apply
+    children: [],
+  }));
+  undoManager.push(
     label,
-    {
-      id:           presetAssetId || generateId('asset'),
-      type:         'hardware',
-      originalPath: '',
-      relativePath: '',
-      fileSize:     null,
-      lastModified: null,
-      // V0.2.22.37 — hardware-specific tag. Preserved through save by the
-      // generic spread in io/project.js serialize() and consumed by the
-      // load path to regenerate the mesh on reload.
-      hardware:     { kind, params: { ...params } },
+    () => {
+      // UNDO: remove the node from its parent + scene.
+      const root = state.get('treeData');
+      const parent = _findParent(root, nodeId) || (state.get('nodeById')?.get(parentId));
+      if (parent) {
+        parent.children = (parent.children || []).filter(c => {
+          if (c.id === nodeId) {
+            disposeHardwareInstance(c);
+            return false;
+          }
+          return true;
+        });
+      }
+      state.setState({ nodeById: buildNodeMap(root), treeData: root });
+      state.emit('change:treeData', root);
     },
-    obj3dMap,
-    /* extractColors */ false,
+    () => {
+      // REDO: re-create from the snapshot.
+      const root = state.get('treeData');
+      const parent = (state.get('nodeById') || buildNodeMap(root)).get(parentId);
+      if (!parent) return;
+      const fresh = { ...snap, children: [], object3d: null };
+      parent.children = [...(parent.children || []), fresh];
+      const nbm = buildNodeMap(root);
+      state.setState({ nodeById: nbm, treeData: root });
+      const mesh = ensureHardwareInstanceObject3D(fresh);
+      if (mesh) {
+        const parentObj = steps.object3dById?.get(parent.id) ?? sceneCore.rootGroup;
+        parentObj.add(mesh);
+        steps.object3dById.set(fresh.id, mesh);
+        applyNodeTransformToObject3D(fresh, mesh, true);
+      }
+      state.emit('change:treeData', root);
+    },
   );
 }
+
+// ─── Legacy V0.2.22.37 compat ──────────────────────────────────────────────
+// Old hardware assets (one-asset-per-screw, no template) still load from
+// any test projects shipped during the V0.2.22.37 window. The load path
+// calls regenerateHardwareAsset for any assetEntry with type='hardware'
+// and a hardware field — kept here so those projects still open.
+
+export { regenerateHardwareAsset } from './hardware-actions-legacy.js';

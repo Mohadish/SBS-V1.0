@@ -139,6 +139,14 @@ function createInitialState() {
     // See systems/flat-shapes.js + ui/shape-tab.js.
     shapeTemplates: [],               // ShapeTemplate[]
 
+    // V0.2.22.38 — Hardware templates. Same library-and-instance pattern as
+    // shapes. Each entry: {id, name, kind, params}. Instances live in the
+    // scene tree as type='hardwareInstance' and reference a template by id.
+    // Editing a template rebuilds every instance's mesh; deleting a template
+    // orphans any remaining instances (they render as a placeholder until
+    // the user picks a new template or deletes them).
+    hardwareTemplates: [],            // HardwareTemplate[]
+
     // ── Shape-tab groupings (V0.1.85). Tab-only — does NOT affect tree
     // hierarchy. Each entry: { id, name, locked, collapsed, templateIds[] }.
     // See createShapeTemplateGroup in core/schema.js for semantics.

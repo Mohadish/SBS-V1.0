@@ -27,7 +27,7 @@ export const SCHEMA_VERSIONS = {
   screen:     1,
 };
 
-export const APP_VERSION  = 'V0.2.22.37';
+export const APP_VERSION  = 'V0.2.22.38';
 // Format: YYYY-MM-DD. Bump along with APP_VERSION on every build worth
 // labelling so the File tab shows you're running the expected slice.
 export const APP_RELEASED = '2026-05-29';
@@ -375,6 +375,84 @@ export function createFlatShapeNode(overrides = {}) {
     pivotEnabled:       false,
     moveEnabled:        true,
     rotateEnabled:      true,
+
+    ...overrides,
+  };
+}
+
+
+// ═══════════════════════════════════════════════════════════════════════════
+//  HARDWARE  (V0.2.22.38) — procedural fasteners as template + instances
+// ═══════════════════════════════════════════════════════════════════════════
+//
+// Mirrors the flatShape architecture:
+//   - createHardwareTemplate()    → SHARED spec (kind + params), lives at
+//                                   project level in state.hardwareTemplates.
+//                                   Edit ⇒ every instance regens its mesh.
+//   - createHardwareInstanceNode()→ per-PLACEMENT node, lives in the scene
+//                                   tree with its own transform; references
+//                                   a template by id. Duplicate / delete
+//                                   independently.
+//
+// The geometry is built on demand by systems/hardware-templates.js whenever
+// the node has no live object3d. Templates carry kind ('screw', later
+// 'washer', 'nut') and a kind-specific params bag.
+//
+// Persistence: hardwareTemplates live in project.hardware.templates;
+// hardwareInstance nodes live in the scene tree like any other node and
+// round-trip through stripNode/applySpecFieldsToNodes unchanged.
+
+export function createHardwareTemplate(overrides = {}) {
+  return {
+    id:     generateId('hwTpl'),
+    name:   '',
+    kind:   'screw',                  // 'screw' | (future) 'washer' | 'nut'
+    // Kind-specific parameters. For 'screw': {diameter, length, headType, driveStyle}.
+    params: {
+      diameter:   4,
+      length:     20,
+      headType:   'pan',
+      driveStyle: 'phillips',
+    },
+    ...overrides,
+  };
+}
+
+/**
+ * A placed instance of a hardware template. Behaves like a transform-
+ * capable node so the gizmo, step snapshots, archive, and visibility
+ * toggles all work. `templateId` is REQUIRED: an instance with no
+ * template renders nothing.
+ */
+export function createHardwareInstanceNode(overrides = {}) {
+  return {
+    id:           generateId('hwInst'),
+    name:         '',
+    type:         'hardwareInstance',
+    localVisible: true,
+    archived:     false,
+    children:     [],
+
+    // Pointer to a state.hardwareTemplates entry.
+    templateId:   null,
+
+    // Transforms — same shape as model/folder/flatShape so the gizmo works.
+    localOffset:        [0, 0, 0],
+    localQuaternion:    [0, 0, 0, 1],
+    orientationSteps:   [0, 0, 0],
+    baseLocalPosition:  [0, 0, 0],
+    baseLocalQuaternion:[0, 0, 0, 1],
+    baseLocalScale:     [1, 1, 1],
+    pivotLocalOffset:   [0, 0, 0],
+    pivotLocalQuaternion:[0, 0, 0, 1],
+    pivotEnabled:       false,
+    moveEnabled:        true,
+    rotateEnabled:      true,
+
+    // Color preset — same as mesh nodes. null = original material from the
+    // generator (brushed metal grey). Setting this applies a color preset
+    // override the same way mesh color presets work.
+    colorPresetId: null,
 
     ...overrides,
   };

@@ -40,7 +40,7 @@ import {
 import { generateId }           from '../core/schema.js';
 import { setStatus }            from './status.js';
 import { showContextMenu, hideContextMenu, showConfirmDialog } from './context-menu.js';
-import { showColorForNode }     from './sidebar-left.js';
+import { showColorForNode, editHardwareTemplate } from './sidebar-left.js';
 import * as folderAlignPicker   from '../systems/folder-align-picker.js';
 import * as folderAlign3ptPicker from '../systems/folder-align-3pt-picker.js';
 
@@ -475,6 +475,7 @@ function _typeIcon(type) {
     case 'note':         return '💬';
     case 'flatShape':    return '▰';   // M1: 2D shape in 3D
     case 'replaceModel': return '🔄';  // B.2-NEW: container that replaces an object
+    case 'hardwareInstance': return '🔩';  // V0.2.22.38: procedural fastener
     default:             return '📄';
   }
 }
@@ -940,6 +941,22 @@ function _buildContextMenuItems(node) {
       label: '💬 Add Note…',
       action: () => actions.startNotePicking(node.id),
     });
+  }
+
+  // ── Hardware instance — duplicate + jump-to-template (V0.2.22.38) ─────
+  if (count === 1 && node.type === 'hardwareInstance') {
+    items.push({
+      label: '🔩 Duplicate (same template)',
+      action: () => {
+        import('../systems/hardware-actions.js').then(hw =>
+          hw.duplicateInstance(node.id));
+      },
+    });
+    items.push({
+      label: '🔩 Edit template (affects all instances)…',
+      action: () => editHardwareTemplate(node.templateId),
+    });
+    items.push({ separator: true });
   }
 
   // ── Isolate ─────────────────────────────────────────────────────────────────
