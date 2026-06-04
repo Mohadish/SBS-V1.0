@@ -108,123 +108,108 @@ function _buildHead(headType, D, driveStyle) {
     return meshes;
   }
 
-  // V0.2.22.40 — COMPOUND construction.
+  // V0.2.22.41 — LEGO-STYLE compound construction.
   //
-  // The head carries a CYLINDRICAL cavity (same size, same position for
-  // every head type and every drive style). A driver insert — a smaller
-  // cylinder with the drive shape cut into its top — sits in that cavity.
+  //   HEAD     a head shape with a CYLINDRICAL POCKET subtracted from
+  //            the top. Pocket dimensions are constant across every
+  //            head type for any given screw size (cavityR × cavityH).
+  //            Head exposes just a clean cylindrical hole — no drive
+  //            geometry at all.
   //
-  // The cylindrical cavity is constant on purpose: from the outside, all
-  // socket-driven screws read alike (round counterbore at the top); the
-  // drive type is identified by the smaller socket inside the insert.
-  // Matches how real Allen / Torx caps are commonly drawn in CAD libraries.
-  const cavityR     = D * 0.5;                          // constant, fits every drive
-  const cavityDepth = Math.min(p.height * 0.55, p.height - D * 0.1);
-  meshes.push(..._buildHeadCavity(p, cavityR, cavityDepth));
+  //   INSERT   a SOLID cylinder of EXACTLY cavityR × cavityH with the
+  //            driver shape subtracted from its top. Same dimensions as
+  //            the pocket so it slots in flush — no gap, no shrinkage.
+  //
+  // The two pieces are independent modules: swap the head, the insert
+  // stays the same; swap the driver style, the head stays the same.
+  // Visually merged into one mesh + one material; the geometric
+  // compositionality is in the code, not the rendering.
+  const cavityR     = D * 0.45;                         // constant, fits every drive
+  const cavityDepth = Math.min(p.height * 0.65, p.height - D * 0.1);
+  meshes.push(_buildHeadTopWithCircleHole(p, cavityR));
 
-  // Insert: ~8% smaller in diameter than the cavity (visible step), sits
-  // at the cavity floor, top slightly recessed below head top so the
-  // user sees the cavity wall step before the insert top.
-  const insertR     = cavityR * 0.92;
-  const insertGapY  = cavityDepth * 0.10;               // insert top below head top
-  const insertTopY  = p.height - insertGapY;
-  const insertBotY  = p.height - cavityDepth + 0.005;   // tiny epsilon vs cavity floor
-  const insertH     = insertTopY - insertBotY;
-  const driveDepth  = insertH * 0.75;
-  meshes.push(..._buildDriverInsert(driveStyle, D, insertR, insertTopY, insertH, driveDepth));
+  // Driver insert — fills the pocket flush. Top at y=p.height, bottom
+  // at y=p.height-cavityDepth. Drive socket cut from insert top down to
+  // ~70% of insert height, so the insert has a small solid base under
+  // the drive socket (mass for the visual to read as a real driver).
+  meshes.push(..._buildDriverInsert(driveStyle, D, cavityR, p.height, cavityDepth));
 
   return meshes;
 }
 
-// ─── Head WITH a cylindrical cavity ────────────────────────────────────────
-
 /**
- * Builds the parts of the head specific to the "has cavity" case:
- *   - Top annulus: head outer minus cavity hole at y=p.height
- *   - Cavity walls: open cylinder from y=p.height down to floor, inward-facing
- *   - Cavity floor: flat disk at the bottom of the cavity, normal +Y
- *
- * Outer wall and bottom cap are handled by the universal builders in
- * _buildHead — they don't change between drive vs no-drive cases.
+ * Head top with a circular cavity opening cut out. The cavity walls + floor
+ * are intentionally NOT built here — the driver insert provides those
+ * surfaces (its outer cylinder + bottom disk). LEGO-style: head has the
+ * hole, insert has the body that fills the hole.
  */
-function _buildHeadCavity(p, cavityR, cavityDepth) {
+function _buildHeadTopWithCircleHole(p, cavityR) {
   const T = window.THREE;
-  const meshes = [];
-
-  // Top annulus (head top with cavity hole).
   const outer = (p.kind === 'hex')
     ? _hexagonPath2D(p.topR)
     : _circlePath2D(p.topR, 32);
-  const topShape = new T.Shape(outer);
-  topShape.holes = [new T.Path(_circlePath2D(cavityR, 32))];
-  const topGeom  = new T.ShapeGeometry(topShape);
-  topGeom.rotateX(-Math.PI / 2);
-  topGeom.translate(0, p.height, 0);
-  meshes.push(new T.Mesh(topGeom));
-
-  // Cavity walls — open cylinder of radius cavityR, INWARD-facing normals.
-  // Cleanest way: build a normal CylinderGeometry then flip normals + winding
-  // (same trick as the drive socket).
-  const wallH = cavityDepth;
-  const wallGeom = new T.CylinderGeometry(cavityR, cavityR, wallH, 32, 1, /* open */ true);
-  _flipNormalsAndWinding(wallGeom);
-  const wallMesh = new T.Mesh(wallGeom);
-  wallMesh.position.y = p.height - wallH / 2;
-  meshes.push(wallMesh);
-
-  // Cavity floor — visible only if the insert doesn't fully cover it (it
-  // doesn't, because insertR < cavityR). Normal +Y so you see it from above.
-  const floorGeom = new T.ShapeGeometry(new T.Shape(_circlePath2D(cavityR, 32)));
-  floorGeom.rotateX(-Math.PI / 2);
-  floorGeom.translate(0, p.height - cavityDepth, 0);
-  meshes.push(new T.Mesh(floorGeom));
-
-  return meshes;
+  const shape = new T.Shape(outer);
+  shape.holes = [new T.Path(_circlePath2D(cavityR, 32))];
+  const geom = new T.ShapeGeometry(shape);
+  geom.rotateX(-Math.PI / 2);
+  geom.translate(0, p.height, 0);
+  return new T.Mesh(geom);
 }
 
-// ─── Driver insert (the swappable drive-style piece) ───────────────────────
+// ─── Driver insert (the swappable LEGO piece) ──────────────────────────────
 
 /**
- * The driver insert. A small cylinder that sits in the head's cavity,
- * with the drive socket (cross / slot / hex / star) carved into its top.
+ * The driver insert: a SOLID cylinder of cavityR × cavityH with the
+ * drive socket (cross / slot / hex / star) subtracted from its top.
  *
- *   Outer wall   open cylinder of radius insertR for the insert's full
- *                height (insertTopY-insertH .. insertTopY).
- *   Top annulus  disk of radius insertR with the drive shape cut out.
- *   Drive socket inverted extrusion (walls + floor in one mesh).
- *   Bottom       disk of radius insertR (visible from below; mostly
- *                hidden by the cavity floor but rendered for correctness).
+ * Same dimensions as the head's cylindrical pocket — slots in flush.
  *
- * Same material as the rest of the screw — visually distinguishable by
- * the geometric step into the cavity, not by colour.
+ *   Outer wall   open cylinder of radius insertR (==cavityR) and full
+ *                insert height. INWARD-facing normals so it reads as
+ *                the inner wall of the pocket the user sees looking
+ *                down into the cavity.
+ *   Top annulus  disk of radius insertR with the drive shape cut out
+ *                (sits at y=p.height, flush with the head top).
+ *   Drive socket inverted ExtrudeGeometry — walls + floor in one mesh,
+ *                ~70% of insert height deep (rest is solid insert mass
+ *                below the floor, gives the visual weight).
+ *   Bottom       solid disk of radius insertR closing the insert from
+ *                below. Hidden from view inside the head, kept for the
+ *                module to be self-contained.
  */
-function _buildDriverInsert(driveStyle, D, insertR, insertTopY, insertH, driveDepth) {
+function _buildDriverInsert(driveStyle, D, insertR, insertTopY, insertH) {
   const T = window.THREE;
   const insertBotY = insertTopY - insertH;
+  const driveDepth = insertH * 0.7;
   const meshes = [];
 
-  // Outer wall of the insert — open cylinder, normals OUTWARD (default).
-  const wall = new T.Mesh(new T.CylinderGeometry(insertR, insertR, insertH, 32, 1, true));
+  // Outer wall — same radial position as the head's pocket opening. We
+  // flip normals so it reads as a CAVITY wall (visible from inside the
+  // pocket looking out, not visible from outside the head looking in —
+  // and the head's outer wall covers it from that side anyway).
+  const wallGeom = new T.CylinderGeometry(insertR, insertR, insertH, 32, 1, /* open */ true);
+  _flipNormalsAndWinding(wallGeom);
+  const wall = new T.Mesh(wallGeom);
   wall.position.y = insertTopY - insertH / 2;
   meshes.push(wall);
 
-  // Top annulus: insert outer with drive shape cut out.
-  const drivePath = _drivePath2D(driveStyle, D);
+  // Top annulus — insert outer with drive shape cut out, flush at y=insertTopY.
+  const drivePath  = _drivePath2D(driveStyle, D);
   const insertOuter = _circlePath2D(insertR, 32);
-  const topShape = new T.Shape(insertOuter);
-  topShape.holes = [new T.Path(drivePath)];
-  const topGeom = new T.ShapeGeometry(topShape);
+  const topShape   = new T.Shape(insertOuter);
+  topShape.holes   = [new T.Path(drivePath)];
+  const topGeom    = new T.ShapeGeometry(topShape);
   topGeom.rotateX(-Math.PI / 2);
   topGeom.translate(0, insertTopY, 0);
   meshes.push(new T.Mesh(topGeom));
 
-  // Drive socket — walls + floor in one inverted ExtrudeGeometry. Sits
-  // from insertTopY (top of socket opening) down driveDepth.
+  // Drive socket — inverted extrusion (walls + floor in one mesh).
   meshes.push(..._buildRecess(driveStyle, D, insertTopY, driveDepth));
 
-  // Bottom face of the insert — full disk, normal -Y (faces down).
+  // Insert bottom — full disk facing -Y. Self-containment; visually
+  // hidden once the screw is assembled.
   const botGeom = new T.ShapeGeometry(new T.Shape(_circlePath2D(insertR, 32)));
-  botGeom.rotateX(Math.PI / 2);    // flip so normal faces -Y
+  botGeom.rotateX(Math.PI / 2);
   botGeom.translate(0, insertBotY, 0);
   meshes.push(new T.Mesh(botGeom));
 
