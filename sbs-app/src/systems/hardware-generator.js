@@ -1,50 +1,44 @@
 /**
- * SBS — Procedural hardware geometry generator (V0.2.22.38).
+ * SBS — Procedural hardware geometry generator (V0.2.22.39).
  *
- * Pure-function geometry. Returns a single THREE.Mesh (head + shank
- * merged into one BufferGeometry, one material) suitable for wrapping
- * in a hardware-instance node and inserting into the scene tree.
+ * Returns a single THREE.Mesh per screw — head + shank merged into one
+ * BufferGeometry, one material — ready for insertion into the scene tree.
  *
- * Drive recess (V0.2.22.38): proper subtractive geometry. The head's
- * top face is an annulus shaped like the drive profile cut out
- * (cross / slot / hex / star). The recess walls drop straight down,
- * capped by a flat floor in the drive shape. No CSG library — built
- * by stacking two ExtrudeGeometry passes:
+ * V0.2.22.39 rewrite (relative to .38):
+ *   1. ALL head types now get the drive recess (button + flat + hex too).
+ *      Previously only pan / socket cap / low head had real geometry; the
+ *      others rendered as plain shells.
+ *   2. New "none" drive style — smooth flat top with no recess at all.
+ *      Useful when the user wants a generic fastener cylinder without
+ *      committing to a drive interface (rivet-like).
+ *   3. Outer wall is built as ONE continuous mesh per head, not stacked
+ *      extrusions. Fixes the visible shading seam at the recess depth
+ *      that V0.2.22.38 had (two ExtrudeGeometry pieces meeting at
+ *      y = baseHeight produced disjoint vertex sets even though their
+ *      positions matched — vertex-normal smoothing across the gap
+ *      couldn't merge them, so a hard shading line appeared).
  *
- *   TOP PIECE     ExtrudeGeometry(outerShape WITH driveHole, depth=recess)
- *                   → outer side wall + top annulus + inner recess walls
- *                     + matching annulus on the bottom (the rim sealing
- *                     the recess to the bottom piece).
- *   BOTTOM PIECE  ExtrudeGeometry(outerShape NO hole,        depth=H-recess)
- *                   → solid puck for the bottom of the head; its TOP face
- *                     becomes the visible floor of the recess (visible
- *                     only inside the drive-shaped hole — the rest is
- *                     covered by the top piece's bottom annulus).
+ * Build pattern per head (with recess):
  *
- * Internal seam between TOP and BOTTOM is hidden inside the solid (both
- * faces are co-planar at y = H-recess). The visible result reads as a
- * proper machined screw socket from any angle.
+ *    1. OUTER WALL    one open-ended cylinder / cone / hex prism / dome.
+ *                     Full headHeight in one continuous mesh — no seam.
+ *    2. TOP CAP       flat polygon at y=headHeight, outer outline with
+ *                     the drive profile cut out (Shape + hole + ShapeGeometry).
+ *    3. RECESS WALLS  hollow extrusion of just the drive profile, walls
+ *                     only, from y=headHeight down to y=headHeight-recess.
+ *    4. RECESS FLOOR  flat polygon (drive profile) at y=headHeight-recess.
+ *    5. BOTTOM CAP    flat disk at y=0 closing the head from below.
  *
- * Units: 1 scene unit = 1 mm.
- * Orientation: shank axis = +Y. Head sits at +Y, shank goes from Y=0
- * down to Y = -length. Origin = head-shank interface.
+ * For drive="none": only steps 1, 2(full disk no hole), and 5 run.
+ *
+ * Units: 1 scene unit = 1 mm. Shank axis = +Y. Origin = head-shank interface.
  */
 
 // ─── Public API ─────────────────────────────────────────────────────────────
 
 export const HEAD_TYPES   = ['pan', 'button', 'flat', 'socket', 'lowhead', 'hex'];
-export const DRIVE_STYLES = ['phillips', 'slotted', 'hex', 'torx'];
+export const DRIVE_STYLES = ['none', 'phillips', 'slotted', 'hex', 'torx'];
 
-/**
- * Generate the screw mesh.
- *
- * @param {object} params
- * @param {number} params.diameter      shank Ø in mm
- * @param {number} params.length        shank length in mm
- * @param {string} params.headType
- * @param {string} params.driveStyle
- * @returns {THREE.Mesh}
- */
 export function generateScrewMesh({ diameter, length, headType, driveStyle }) {
   const T = window.THREE;
   if (!T) throw new Error('THREE not loaded');
@@ -52,140 +46,190 @@ export function generateScrewMesh({ diameter, length, headType, driveStyle }) {
   const D = Math.max(0.5, Number(diameter) || 4);
   const L = Math.max(D * 0.5, Number(length) || 20);
   const head  = String(headType   || 'pan');
-  const drive = String(driveStyle || 'phillips');
+  const drive = String(driveStyle || 'none');
 
   const parts = [];
-
-  // ── SHANK ─────────────────────────────────────────────────────────────
   parts.push(_shank(D, L));
-
-  // ── HEAD ──────────────────────────────────────────────────────────────
-  // Build the head with a real recess for the drive style.  Hex heads and
-  // button heads skip the recess: hex is externally-driven (wrench grips
-  // the outside), and button heads have a dome where a flat recess would
-  // look wrong. Drive style stays in the spec for both — just not visible.
   parts.push(..._buildHead(head, D, drive));
 
-  // Merge everything into one BufferGeometry with one material.
   const geom = _mergeMeshes(parts);
   const material = new T.MeshStandardMaterial({
-    color:      0xc0c4cc,
-    metalness:  0.65,
-    roughness:  0.35,
+    color:     0xc0c4cc,
+    metalness: 0.65,
+    roughness: 0.35,
   });
   return new T.Mesh(geom, material);
 }
 
-/** Human-readable label for a screw spec — mirrors ISO shorthand. */
 export function describeScrew({ diameter, length, headType, driveStyle }) {
-  return `M${diameter}×${length} ${headType}, ${driveStyle}`;
+  const dr = driveStyle && driveStyle !== 'none' ? `, ${driveStyle}` : '';
+  return `M${diameter}×${length} ${headType}${dr}`;
 }
 
-// ─── Head builders ──────────────────────────────────────────────────────────
+// ─── Head proportions ──────────────────────────────────────────────────────
 
 function _headParams(headType, D) {
-  // Standard-ish ISO proportions. Visual match, not certifiable spec.
+  // kind = 'cyl' | 'cone' | 'hex'
+  //   cyl  — straight cylinder outer wall (pan, socket cap, low head)
+  //   cone — tapered cylinder (flat / countersunk; topR > botR)
+  //   hex  — 6-sided prism outer wall
+  //
+  // Note V0.2.22.39: button head currently renders as a slightly taller
+  // pan (kind='cyl') so the recess geometry works without the round-dome
+  // / drive-hole intersection problem. A proper rounded-top button head
+  // with a recessed drive socket is queued.
   switch (headType) {
-    case 'pan':     return { topR: 0.875 * D, botR: 0.875 * D, height: 0.6 * D, kind: 'cyl' };
-    case 'button':  return { topR: 0.875 * D, botR: 0.875 * D, height: 0.55 * D, kind: 'button' };
-    case 'flat':    return { topR: 1.0   * D, botR: 0.5   * D, height: 0.6 * D, kind: 'cone' };
-    case 'socket':  return { topR: 0.75  * D, botR: 0.75  * D, height: 1.0 * D, kind: 'cyl' };
-    case 'lowhead': return { topR: 0.75  * D, botR: 0.75  * D, height: 0.6 * D, kind: 'cyl' };
-    case 'hex':     return { topR: 0.866 * D, botR: 0.866 * D, height: 0.6 * D, kind: 'hex' };
-    default:        return { topR: 0.875 * D, botR: 0.875 * D, height: 0.6 * D, kind: 'cyl' };
+    case 'pan':     return { topR: 0.875 * D, botR: 0.875 * D, height: 0.6  * D, kind: 'cyl' };
+    case 'button':  return { topR: 0.875 * D, botR: 0.875 * D, height: 0.7  * D, kind: 'cyl' };
+    case 'flat':    return { topR: 1.0   * D, botR: 0.5   * D, height: 0.6  * D, kind: 'cone' };
+    case 'socket':  return { topR: 0.75  * D, botR: 0.75  * D, height: 1.0  * D, kind: 'cyl' };
+    case 'lowhead': return { topR: 0.75  * D, botR: 0.75  * D, height: 0.6  * D, kind: 'cyl' };
+    case 'hex':     return { topR: 0.866 * D, botR: 0.866 * D, height: 0.6  * D, kind: 'hex' };
+    default:        return { topR: 0.875 * D, botR: 0.875 * D, height: 0.6  * D, kind: 'cyl' };
   }
 }
 
-/**
- * Returns an array of THREE.Mesh parts. Hex + button skip the recess;
- * everyone else gets a real subtractive recess.
- */
+// ─── Head builder — universal pattern ──────────────────────────────────────
+
 function _buildHead(headType, D, driveStyle) {
-  const T = window.THREE;
   const p = _headParams(headType, D);
+  const hasRecess = driveStyle !== 'none';
+  const recessDepth = hasRecess
+    ? Math.min(p.height * 0.55, p.height - D * 0.1)
+    : 0;
 
-  // Hex head: external drive — no recess. Single 6-sided prism.
-  if (p.kind === 'hex') {
-    const m = _cyl(p.topR, p.topR, p.height, 6);
-    m.position.y = p.height / 2;
-    return [m];
+  const meshes = [];
+
+  // 1. Outer wall — single continuous mesh per head, no internal seams.
+  meshes.push(..._buildOuterWall(p));
+
+  // 2. Top cap — flat polygon at y=p.height with the drive shape cut
+  //    out as a hole (or full disk when drive='none').
+  meshes.push(_buildTopCap(p, D, driveStyle));
+
+  // 3+4. Recess walls + floor (only when there's a drive recess).
+  if (hasRecess) {
+    meshes.push(..._buildRecess(driveStyle, D, p.height, recessDepth));
   }
 
-  // Button head: cylindrical base + dome on top. No recess (dome covers
-  // where it would go in a real button screw with a recessed drive; for
-  // SBS visual purposes the dome is the dominant feature).
-  if (p.kind === 'button') {
-    const baseH = p.height * 0.45;
-    const domeH = p.height - baseH;
-    const base = _cyl(p.topR, p.botR, baseH, 24);
-    base.position.y = baseH / 2;
-    const dome = new T.Mesh(new T.SphereGeometry(p.topR, 24, 12, 0, Math.PI * 2, 0, Math.PI / 2));
-    dome.position.y = baseH;
-    dome.scale.y = domeH / p.topR;
-    return [base, dome];
-  }
+  // 5. Bottom cap — closes the head from below.
+  meshes.push(_buildBottomCap(p));
 
-  // Flat head: cone outer (smaller at bottom). No internal recess for the
-  // first version — a Phillips/slot/hex/Torx recess in a tapered countersunk
-  // head is geometrically fiddly (the recess intersects the cone walls).
-  // Render the head as just the cone for now; drive style stays in the spec.
-  if (p.kind === 'cone') {
-    const m = _cyl(p.topR, p.botR, p.height, 24);
-    m.position.y = p.height / 2;
-    return [m];
-  }
-
-  // Cylindrical heads (pan, socket cap, low head) — real subtractive recess.
-  return _buildHeadWithRecess(p, D, driveStyle);
+  return meshes;
 }
 
+// ─── Outer wall ────────────────────────────────────────────────────────────
+
 /**
- * Build a cylindrical head with a true drive-shaped recess via two
- * stacked ExtrudeGeometry passes. See file header for the geometry plan.
+ * Open-ended outer wall mesh — one continuous primitive per head.
+ *
+ *   cyl  — straight cylinder (pan / socket cap / low head / button-v1)
+ *   cone — tapered cylinder (flat / countersunk)
+ *   hex  — 6-sided prism
+ *
+ * Open ends (no caps): _buildTopCap and _buildBottomCap own the caps so
+ * the top cap can be shaped with the drive hole. Single continuous mesh
+ * means no shading seam at any height — the issue V0.2.22.38 had at the
+ * recess-depth seam is gone for good.
  */
-function _buildHeadWithRecess(p, D, driveStyle) {
+function _buildOuterWall(p) {
   const T = window.THREE;
-  const recessDepth = Math.min(p.height * 0.55, p.height - D * 0.1);
-  const baseHeight  = p.height - recessDepth;
+  const segments = (p.kind === 'hex') ? 6 : 24;
+  const wall = new T.Mesh(
+    new T.CylinderGeometry(p.topR, p.botR, p.height, segments, 1, /* open */ true)
+  );
+  wall.position.y = p.height / 2;
+  return [wall];
+}
 
-  // ── Drive profile (2D path) ──────────────────────────────────────────
+// ─── Top cap with drive hole ───────────────────────────────────────────────
+
+function _buildTopCap(p, D, driveStyle) {
+  const T = window.THREE;
+  // Outer outline of the cap: depends on head shape (hex vs round).
+  const outer = (p.kind === 'hex')
+    ? _hexagonPath2D(p.topR)
+    : _circlePath2D(p.topR, 32);
+  const shape = new T.Shape(outer);
+
+  if (driveStyle && driveStyle !== 'none') {
+    const drivePath = _drivePath2D(driveStyle, D);
+    shape.holes = [new T.Path(drivePath)];
+  }
+
+  // Flat polygon (no extrusion) — sits at y=p.height.
+  const geom = new T.ShapeGeometry(shape);
+  geom.rotateX(-Math.PI / 2);       // XY plane → XZ plane (Y is up)
+  geom.translate(0, p.height, 0);
+  return new T.Mesh(geom);
+}
+
+// ─── Bottom cap (full disk / hex) ──────────────────────────────────────────
+
+function _buildBottomCap(p) {
+  const T = window.THREE;
+  const outer = (p.kind === 'hex')
+    ? _hexagonPath2D(p.botR)
+    : _circlePath2D(p.botR, 32);
+  const shape = new T.Shape(outer);
+  const geom = new T.ShapeGeometry(shape);
+  // Flip so the bottom-cap normals face downward (-Y).
+  geom.rotateX(Math.PI / 2);
+  // Already at y=0; no translate needed.
+  return new T.Mesh(geom);
+}
+
+// ─── Recess walls + floor ──────────────────────────────────────────────────
+
+/**
+ * Drive-shaped recess. ONE ExtrudeGeometry handles walls + floor in a
+ * single mesh — the extrusion's auto-generated caps double as the
+ * floor (visible) and the unused top cap (culled).
+ *
+ * Normals + winding are inverted so the recess reads as a CAVITY:
+ *   - side walls face INWARD (toward the centroid) — visible from inside
+ *     the recess looking out, hidden from outside looking in.
+ *   - top cap (at y=headHeight) faces DOWN → back-face culled when the
+ *     camera looks down at the screw; recess opening stays clear.
+ *   - bottom cap (at y=headHeight-depth) faces UP → visible from above;
+ *     serves as the recess floor with the correct drive shape.
+ *
+ * Net: one mesh, drive-shaped socket from any viewing angle. No
+ * z-fighting (single floor face), no covered opening.
+ */
+function _buildRecess(driveStyle, D, headHeight, recessDepth) {
+  const T = window.THREE;
   const drivePath = _drivePath2D(driveStyle, D);
-  // Outer head outline (circle as polygon).
-  const outerPath = _circlePath2D(p.topR, 32);
 
-  // TOP PIECE: outer shape with drive cut as hole. Extruded "depth" puts
-  // the shape's polygon at z=0 and the back face at z=depth. We extrude
-  // along Z then rotate to Y axis (extrude is +Z by default; we want +Y).
-  const topShape = new T.Shape(outerPath);
-  topShape.holes = [new T.Path(drivePath)];
-  const topGeom = new T.ExtrudeGeometry(topShape, {
+  const shape = new T.Shape(drivePath);
+  const geom  = new T.ExtrudeGeometry(shape, {
     depth:        recessDepth,
     bevelEnabled: false,
     steps:        1,
   });
-  // ExtrudeGeometry sits in the XY plane extruded along +Z.  Rotate so
-  // the extrusion axis becomes +Y (the screw's axis), and translate so
-  // the recess top sits at y = p.height (the head's top surface).
-  topGeom.rotateX(-Math.PI / 2);
-  topGeom.translate(0, p.height, 0);
-  const topMesh = new T.Mesh(topGeom);
+  // Extrude is in +Z; rotate to +Y, translate to head top.
+  geom.rotateX(-Math.PI / 2);
+  geom.translate(0, headHeight, 0);
 
-  // BOTTOM PIECE: solid puck, outer shape only, no hole. Forms the
-  // structural body of the head below the recess and seals its floor.
-  const bottomShape = new T.Shape(outerPath);
-  const bottomGeom = new T.ExtrudeGeometry(bottomShape, {
-    depth:        baseHeight,
-    bevelEnabled: false,
-    steps:        1,
-  });
-  bottomGeom.rotateX(-Math.PI / 2);
-  bottomGeom.translate(0, baseHeight, 0);
-  const bottomMesh = new T.Mesh(bottomGeom);
+  // Flip normals + winding so the extrusion reads as a hole. Done in
+  // place; no copy.
+  const norm = geom.attributes.normal;
+  if (norm) {
+    for (let i = 0; i < norm.array.length; i++) norm.array[i] *= -1;
+    norm.needsUpdate = true;
+  }
+  if (geom.index) {
+    const idx = geom.index.array;
+    for (let i = 0; i < idx.length; i += 3) {
+      const tmp = idx[i + 1]; idx[i + 1] = idx[i + 2]; idx[i + 2] = tmp;
+    }
+    geom.index.needsUpdate = true;
+  }
 
-  return [topMesh, bottomMesh];
+  return [new T.Mesh(geom)];
 }
 
-// ─── Shank ──────────────────────────────────────────────────────────────────
+// ─── Shank ─────────────────────────────────────────────────────────────────
 
 function _shank(D, L) {
   const m = _cyl(D / 2, D / 2, L, 24);
@@ -193,9 +237,8 @@ function _shank(D, L) {
   return m;
 }
 
-// ─── 2D path helpers ────────────────────────────────────────────────────────
+// ─── 2D path helpers ───────────────────────────────────────────────────────
 
-/** Closed-loop array of Vector2 forming a circle of given radius. */
 function _circlePath2D(radius, segments) {
   const T = window.THREE;
   const pts = [];
@@ -206,27 +249,25 @@ function _circlePath2D(radius, segments) {
   return pts;
 }
 
-/**
- * 2D path for the drive socket profile (the cut-out shape in the head top).
- *
- * Returned as a closed loop of Vector2.  Caller wraps in THREE.Path and
- * adds as a hole on a Shape.  Hole winding must be OPPOSITE the shape
- * winding — outer is CCW (default for our circle), so holes need CW.
- * Three.js's Shape.holes accept either winding and reorient internally.
- */
+function _hexagonPath2D(circumscribedR) {
+  const T = window.THREE;
+  const pts = [];
+  for (let i = 0; i < 6; i++) {
+    const a = (i / 6) * Math.PI * 2 + Math.PI / 6;   // flat top orientation
+    pts.push(new T.Vector2(circumscribedR * Math.cos(a), circumscribedR * Math.sin(a)));
+  }
+  return pts;
+}
+
 function _drivePath2D(driveStyle, D) {
   const T = window.THREE;
   switch (driveStyle) {
     case 'phillips': {
-      // Cross — two perpendicular rectangles unioned. Build as a single
-      // closed polygon by tracing the outline of the union (12 vertices).
-      // Slot arm length = 0.75 D, arm width = 0.18 D.
-      const armL = D * 0.375;     // half-length
-      const armW = D * 0.09;      // half-width
+      const armL = D * 0.375;
+      const armW = D * 0.09;
       return _crossOutline(armL, armW);
     }
     case 'slotted': {
-      // Single rectangle.
       const halfL = D * 0.4;
       const halfW = D * 0.075;
       return [
@@ -237,17 +278,15 @@ function _drivePath2D(driveStyle, D) {
       ];
     }
     case 'hex': {
-      // Regular hexagon, across-flats ≈ 0.55 D (typical Allen socket).
-      const r = D * 0.32;     // circumscribed radius
+      const r = D * 0.32;
       const pts = [];
       for (let i = 0; i < 6; i++) {
-        const a = (i / 6) * Math.PI * 2 + Math.PI / 6;  // flat top
+        const a = (i / 6) * Math.PI * 2 + Math.PI / 6;
         pts.push(new T.Vector2(r * Math.cos(a), r * Math.sin(a)));
       }
       return pts;
     }
     case 'torx': {
-      // 6-lobe star — alternating outer/inner radii.
       const outerR = D * 0.32;
       const innerR = outerR * 0.62;
       const lobes  = 6;
@@ -259,63 +298,36 @@ function _drivePath2D(driveStyle, D) {
       }
       return pts;
     }
-    default: {
-      // Fallback — small circle (looks like a centre drill).
+    default:
       return _circlePath2D(D * 0.15, 16);
-    }
   }
 }
 
-/**
- * Trace the outline of two perpendicular rectangles (a cross), starting
- * at the top-right outer corner of the horizontal arm, walking CCW.
- * 12 vertices total — the outer perimeter of the cross with no internal
- * edges, so it works as a single closed Path.
- *
- * Layout (each "arm" extends from origin outward; armL is half-length,
- * armW is half-width):
- *
- *           +y
- *           ┌─┐
- *           │ │
- *      ┌────┘ └────┐
- *  -x  │           │  +x
- *      └────┐ ┌────┘
- *           │ │
- *           └─┘
- *           -y
- */
 function _crossOutline(armL, armW) {
   const T = window.THREE;
   return [
-    new T.Vector2( armL, -armW),  // bottom-right of horizontal arm
-    new T.Vector2( armL,  armW),  // top-right of horizontal arm
-    new T.Vector2( armW,  armW),  // inner corner (right side of vertical arm)
-    new T.Vector2( armW,  armL),  // top-right of vertical arm
-    new T.Vector2(-armW,  armL),  // top-left of vertical arm
-    new T.Vector2(-armW,  armW),  // inner corner (left side of vertical arm)
-    new T.Vector2(-armL,  armW),  // top-left of horizontal arm
-    new T.Vector2(-armL, -armW),  // bottom-left of horizontal arm
-    new T.Vector2(-armW, -armW),  // inner corner (left side, bottom of vert arm)
-    new T.Vector2(-armW, -armL),  // bottom-left of vertical arm
-    new T.Vector2( armW, -armL),  // bottom-right of vertical arm
-    new T.Vector2( armW, -armW),  // inner corner (right side, bottom of vert arm)
+    new T.Vector2( armL, -armW),
+    new T.Vector2( armL,  armW),
+    new T.Vector2( armW,  armW),
+    new T.Vector2( armW,  armL),
+    new T.Vector2(-armW,  armL),
+    new T.Vector2(-armW,  armW),
+    new T.Vector2(-armL,  armW),
+    new T.Vector2(-armL, -armW),
+    new T.Vector2(-armW, -armW),
+    new T.Vector2(-armW, -armL),
+    new T.Vector2( armW, -armL),
+    new T.Vector2( armW, -armW),
   ];
 }
 
-// ─── Primitive helpers ──────────────────────────────────────────────────────
+// ─── Primitive helpers ─────────────────────────────────────────────────────
 
 function _cyl(topR, botR, height, segments) {
   const T = window.THREE;
   return new T.Mesh(new T.CylinderGeometry(topR, botR, height, segments));
 }
 
-/**
- * Merge a flat list of Mesh objects into a single BufferGeometry,
- * baking each mesh's local transform into its vertices.  Single
- * geometry, single material, no groups.  Returns BufferGeometry only
- * (caller wraps in Mesh with chosen material).
- */
 function _mergeMeshes(meshes) {
   const T = window.THREE;
   const positions = [];

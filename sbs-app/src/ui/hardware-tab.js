@@ -27,6 +27,7 @@ import {
 }                       from '../systems/hardware-actions.js';
 import { setStatus }   from './status.js';
 import { showConfirmDialog } from './context-menu.js';
+import * as preview    from './hardware-preview.js';
 
 const HEAD_OPTIONS = [
   { value: 'pan',     label: 'Pan'                  },
@@ -38,6 +39,7 @@ const HEAD_OPTIONS = [
 ];
 
 const DRIVE_OPTIONS = [
+  { value: 'none',     label: 'None (smooth top)'   },
   { value: 'phillips', label: 'Phillips'            },
   { value: 'slotted',  label: 'Slotted'             },
   { value: 'hex',      label: 'Hex / Allen'         },
@@ -121,6 +123,14 @@ function _render() {
         ${editing
           ? `Editing: <span style="color:#fbbf24;">${_esc(editing.name)}</span>`
           : '+ New screw template'}
+      </div>
+
+      <!-- V0.2.22.39 — live preview canvas. Re-renders on every form
+           change. Independent Three.js scene (see hardware-preview.js)
+           so editing doesn't trigger main-scene work. -->
+      <div style="margin-top:8px;display:flex;justify-content:center;">
+        <canvas id="hw-preview-canvas" width="220" height="160"
+                style="width:220px;height:160px;background:#0a0f1a;border:1px solid var(--line);border-radius:6px;"></canvas>
       </div>
 
       <div class="grid2" style="margin-top:8px;gap:6px;">
@@ -232,12 +242,25 @@ function _wire(panelEl) {
     diameter:   Math.max(0.5, Number(dInp.value)  || 4),
     length:     Math.max(1,   Number(lInp.value)  || 20),
     headType:   String(headSel.value  || 'pan'),
-    driveStyle: String(driveSel.value || 'phillips'),
+    driveStyle: String(driveSel.value || 'none'),
   });
+
+  // V0.2.22.39 — wire the live-preview canvas. Renders once now (so the
+  // form opens already showing something) and on every form change.
+  const previewCanvas = panelEl.querySelector('#hw-preview-canvas');
+  if (previewCanvas) {
+    preview.attach(previewCanvas);
+    preview.update(_readForm());
+  }
 
   const _trackForm = () => {
     if (!_editingId) _formSpec = _readForm();
+    if (previewCanvas) preview.update(_readForm());
   };
+  // 'input' fires on every keystroke / slider drag — instant feedback.
+  // 'change' is the canonical "commit" event but lags one blur for typing.
+  dInp?.addEventListener('input',      _trackForm);
+  lInp?.addEventListener('input',      _trackForm);
   dInp?.addEventListener('change',     _trackForm);
   lInp?.addEventListener('change',     _trackForm);
   headSel?.addEventListener('change',  _trackForm);
