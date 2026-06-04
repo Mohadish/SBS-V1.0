@@ -212,18 +212,27 @@ function _buildDriverInsert(driveStyle, D, cavityR, insertTopY, insertH) {
   const shape = new T.Shape(_circlePath2D(cavityR, 32));
   shape.holes = [new T.Path(_drivePath2D(driveStyle, D))];
 
-  // Extrude vertically. ExtrudeGeometry extrudes along +Z — rotateX
-  // takes that to +Y. After rotateX(-PI/2):
-  //   original z=0 plane (the 2D shape) → y=0
-  //   original z=depth plane (extrusion end) → y=-depth
-  // Translate by insertTopY: shape sits at y=insertTopY, extrusion end
-  // at y=insertTopY-depth (= cavity floor level). ✓
+  // Extrude vertically. ExtrudeGeometry extrudes along +Z. We need the
+  // extrusion to go DOWN (from head top into the cavity), so we apply
+  // rotateX(+PI/2) — that maps +Z onto -Y.
+  //
+  // After rotateX(+PI/2):
+  //   original z=0 plane (the 2D shape) → y=0, normal +Y (faces up)
+  //   original z=depth plane (extrusion end) → y=-depth, normal -Y
+  // Translate by insertTopY: shape sits at y=insertTopY (flush with
+  // head top, facing up), extrusion end at y=insertTopY-depth (cavity
+  // floor level, facing down). ✓
+  //
+  // V0.2.22.42 had rotateX(-PI/2) — extrusion went UP, putting the
+  // entire insert ABOVE the head. That's what made the screw look like
+  // a head + a stub on top with the drive in the stub. This direction
+  // tucks the insert into the head where it belongs.
   const geom = new T.ExtrudeGeometry(shape, {
     depth:        insertH,
     bevelEnabled: false,
     steps:        1,
   });
-  geom.rotateX(-Math.PI / 2);
+  geom.rotateX(Math.PI / 2);
   geom.translate(0, insertTopY, 0);
 
   return new T.Mesh(geom);
