@@ -127,10 +127,12 @@ function _render() {
 
       <!-- V0.2.22.39 — live preview canvas. Re-renders on every form
            change. Independent Three.js scene (see hardware-preview.js)
-           so editing doesn't trigger main-scene work. -->
-      <div style="margin-top:8px;display:flex;justify-content:center;">
+           so editing doesn't trigger main-scene work. V0.2.22.40 —
+           drag to orbit, wheel to zoom. -->
+      <div style="margin-top:8px;display:flex;flex-direction:column;align-items:center;">
         <canvas id="hw-preview-canvas" width="220" height="160"
                 style="width:220px;height:160px;background:#0a0f1a;border:1px solid var(--line);border-radius:6px;"></canvas>
+        <div class="small muted" style="font-size:10px;margin-top:2px;opacity:0.6;">drag to orbit · wheel to zoom</div>
       </div>
 
       <div class="grid2" style="margin-top:8px;gap:6px;">

@@ -26,6 +26,32 @@ let _camera   = null;
 let _mesh     = null;
 let _canvas   = null;
 
+// Orbit camera state (V0.2.22.40). Spherical coordinates around _target.
+//   _radius   — distance from target
+//   _theta    — yaw (around world Y)
+//   _phi      — pitch (from +Y down; clamped to avoid gimbal flip at poles)
+let _target = null;          // THREE.Vector3 (set in attach)
+let _radius = 1;
+let _theta  = Math.PI / 4;
+let _phi    = Math.PI / 3;   // about 60° from +Y → looks slightly down
+const _PHI_MIN = 0.1;
+const _PHI_MAX = Math.PI - 0.1;
+const _RADIUS_MIN = 0.1;
+const _RADIUS_MAX = 2000;
+// Auto-fit baseline radius — used when the user hasn't manually zoomed.
+// Re-derived every time the geometry changes; we keep the existing radius
+// after that so the user's zoom level persists across param edits.
+let _autoFitDone = false;
+
+// Pointer interaction state.
+let _dragActive = false;
+let _dragLastX  = 0;
+let _dragLastY  = 0;
+let _wheelHandler  = null;
+let _downHandler   = null;
+let _moveHandler   = null;
+let _upHandler     = null;
+
 export function attach(canvas) {
   const T = window.THREE;
   if (!T) return;
@@ -40,16 +66,13 @@ export function attach(canvas) {
 
   _scene = new T.Scene();
 
-  // Camera angled to show the head from slightly above so the drive
-  // recess is clearly visible. Adjust position based on the screw's
-  // bounding box at render time.
+  // Camera. Position is recomputed each render from spherical orbit state.
   _camera = new T.PerspectiveCamera(35, canvas.clientWidth / canvas.clientHeight, 0.1, 500);
-  _camera.position.set(35, 28, 35);
-  _camera.lookAt(0, -8, 0);
+  _target = new T.Vector3(0, 0, 0);
+  _autoFitDone = false;       // recompute fit on next update()
 
-  // Light rig: one key directional + one fill from the opposite side +
-  // a tiny ambient so the recess isn't pitch black. Standard product-shot
-  // lighting — fast to compute (no shadows), reads as "metal".
+  // Light rig: key + fill + ambient. Reads as "metal" with no shadow
+  // computation cost.
   const key = new T.DirectionalLight(0xffffff, 1.4);
   key.position.set(20, 30, 20);
   _scene.add(key);
@@ -57,9 +80,12 @@ export function attach(canvas) {
   fill.position.set(-20, 10, -10);
   _scene.add(fill);
   _scene.add(new T.AmbientLight(0xffffff, 0.35));
+
+  _bindPointerInteraction(canvas);
 }
 
 export function detach() {
+  if (_canvas) _unbindPointerInteraction(_canvas);
   if (_mesh) {
     _mesh.geometry?.dispose?.();
     _mesh.material?.dispose?.();
@@ -71,6 +97,8 @@ export function detach() {
   _scene    = null;
   _camera   = null;
   _canvas   = null;
+  _target   = null;
+  _autoFitDone = false;
 }
 
 /**
@@ -91,11 +119,15 @@ export function update(params) {
     _mesh = mesh;
     _scene.add(_mesh);
 
-    // Frame the camera on the bounding box so a tiny M2×4 and a beefy
-    // M10×60 both fill the preview equally well.
-    _frameMesh(_mesh);
-
-    _renderer.render(_scene, _camera);
+    // Auto-fit ONCE per attach so the first frame frames the screw
+    // nicely. After that, preserve the user's manual zoom across param
+    // edits — only the geometry changes, the camera stays where they
+    // left it.
+    if (!_autoFitDone) {
+      _autoFit(_mesh);
+      _autoFitDone = true;
+    }
+    _renderFrame();
   } catch (e) {
     console.warn('[hw-preview] update failed:', e?.message || e);
   }
@@ -110,21 +142,101 @@ export function resize(width, height) {
   _renderer.setSize(width, height, false);
   _camera.aspect = width / height;
   _camera.updateProjectionMatrix();
-  if (_mesh) _renderer.render(_scene, _camera);
+  if (_mesh) _renderFrame();
 }
 
-function _frameMesh(mesh) {
+// ─── Camera / orbit math ────────────────────────────────────────────────────
+
+/**
+ * One-shot framing: aim _target at the mesh bbox centre and pick a
+ * baseline _radius such that the bbox fills the canvas with a small
+ * margin. Spherical angles (_theta, _phi) keep their current values
+ * so the user's orientation persists after auto-fits.
+ */
+function _autoFit(mesh) {
   const T = window.THREE;
   const box = new T.Box3().setFromObject(mesh);
-  const size = box.getSize(new T.Vector3());
+  if (box.isEmpty()) return;
+  const size   = box.getSize(new T.Vector3());
   const centre = box.getCenter(new T.Vector3());
-  // Pick a distance such that the bbox's max extent fits comfortably.
   const maxDim = Math.max(size.x, size.y, size.z) || 1;
   const fovRad = (_camera.fov * Math.PI) / 180;
-  const dist   = (maxDim / 2) / Math.tan(fovRad / 2) * 2.0;   // 2× margin
-  // Position the camera along a diagonal looking at the bbox centre,
-  // angled so the head's top is visible.
-  _camera.position.set(centre.x + dist * 0.7, centre.y + dist * 0.55, centre.z + dist * 0.7);
-  _camera.lookAt(centre);
+  _radius = (maxDim / 2) / Math.tan(fovRad / 2) * 2.0;
+  _target.copy(centre);
+}
+
+/**
+ * Recompute the camera pose from (_target, _radius, _theta, _phi) and
+ * render one frame. Called by every interactive event + after update().
+ */
+function _renderFrame() {
+  if (!_renderer || !_camera || !_scene || !_target) return;
+  const sinPhi = Math.sin(_phi);
+  const x = _target.x + _radius * sinPhi * Math.cos(_theta);
+  const y = _target.y + _radius * Math.cos(_phi);
+  const z = _target.z + _radius * sinPhi * Math.sin(_theta);
+  _camera.position.set(x, y, z);
+  _camera.lookAt(_target);
   _camera.updateMatrixWorld(true);
+  _renderer.render(_scene, _camera);
+}
+
+// ─── Pointer interaction ────────────────────────────────────────────────────
+
+function _bindPointerInteraction(canvas) {
+  // Wheel: zoom (adjust _radius). preventDefault stops the parent panel
+  // from scrolling when the user is over the preview.
+  _wheelHandler = (e) => {
+    e.preventDefault();
+    const scale = Math.exp(e.deltaY * 0.0015);   // ~1.5% per wheel tick
+    _radius = Math.max(_RADIUS_MIN, Math.min(_RADIUS_MAX, _radius * scale));
+    _renderFrame();
+  };
+  canvas.addEventListener('wheel', _wheelHandler, { passive: false });
+
+  // Pointer drag: rotate (adjust _theta, _phi).
+  _downHandler = (e) => {
+    if (e.button !== 0 && e.button !== 1) return;  // only left / middle
+    _dragActive = true;
+    _dragLastX  = e.clientX;
+    _dragLastY  = e.clientY;
+    canvas.setPointerCapture(e.pointerId);
+    e.preventDefault();
+  };
+  _moveHandler = (e) => {
+    if (!_dragActive) return;
+    const dx = e.clientX - _dragLastX;
+    const dy = e.clientY - _dragLastY;
+    _dragLastX = e.clientX;
+    _dragLastY = e.clientY;
+    // Pixel-to-radian sensitivity. 1/300 → a full canvas drag rotates
+    // about 90°, comfortable for a 220px preview.
+    _theta -= dx * 0.005;
+    _phi    = Math.max(_PHI_MIN, Math.min(_PHI_MAX, _phi - dy * 0.005));
+    _renderFrame();
+  };
+  _upHandler = (e) => {
+    if (!_dragActive) return;
+    _dragActive = false;
+    try { canvas.releasePointerCapture(e.pointerId); } catch {}
+  };
+  canvas.addEventListener('pointerdown', _downHandler);
+  canvas.addEventListener('pointermove', _moveHandler);
+  canvas.addEventListener('pointerup',     _upHandler);
+  canvas.addEventListener('pointercancel', _upHandler);
+  canvas.addEventListener('pointerleave',  _upHandler);
+
+  canvas.style.cursor = 'grab';
+}
+
+function _unbindPointerInteraction(canvas) {
+  if (_wheelHandler) canvas.removeEventListener('wheel', _wheelHandler);
+  if (_downHandler)  canvas.removeEventListener('pointerdown', _downHandler);
+  if (_moveHandler)  canvas.removeEventListener('pointermove', _moveHandler);
+  if (_upHandler) {
+    canvas.removeEventListener('pointerup',     _upHandler);
+    canvas.removeEventListener('pointercancel', _upHandler);
+    canvas.removeEventListener('pointerleave',  _upHandler);
+  }
+  _wheelHandler = _downHandler = _moveHandler = _upHandler = null;
 }
