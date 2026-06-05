@@ -35,8 +35,8 @@ import { createStep, createEmptySnapshot } from '../core/schema.js';
 import { parseAnimation, resolveAnimationString } from './animation.js';
 import {
   stageInsertActors, runInsertFade, runInsertReposition, runInsertAssemble,
-  finalizeInsertActors, findActorsForStep,
-} from './hardware-insert-anim.js'; // V0.2.22.54 — screw stage/fade/reposition/assemble
+  finalizeInsertActors, cancelInsertAnimations, findActorsForStep,
+} from './hardware-insert-anim.js'; // V0.2.22.55 — screw stage/fade/reposition/assemble
 // V0.1.78 — narration overflow coordination. UI module exports the
 // query helpers; cross-layer import is OK here (actions.js + overlay.js
 // already cross the same boundary).
@@ -564,7 +564,12 @@ class StepManager {
     // prevents both the appear-at-final-then-jump AND the threshold pop.
     const _insertActors = findActorsForStep(state.get('activeStepId'));
     const _stagedActorIds = _insertActors.length
-      ? stageInsertActors(_insertActors, new Set(showingMeshIds), fromWorldTransforms)
+      ? stageInsertActors(_insertActors, {
+          showingIdSet:  new Set(showingMeshIds),
+          fromWorld:     fromWorldTransforms,
+          toWorld:       toWorldTransforms,
+          stepMaterials: toSnapshot.materials || {},
+        })
       : new Set();
     if (_stagedActorIds.size) {
       showingMeshIds = showingMeshIds.filter(id => !_stagedActorIds.has(id));
@@ -1440,6 +1445,16 @@ class StepManager {
     const steps = state.get('steps');
     const step  = steps.find(s => s.id === stepId);
     if (!step) return;
+
+    // V0.2.22.55 — UNCONDITIONALLY tear down any lingering insertion
+    // staging before this activation does anything. Fixes the orphan-
+    // clone bug: a normal completion finalizes its own staging, but an
+    // INTERRUPTED transition (newer step started mid-animation) bailed
+    // before finalize, and if the next step had no insert actors,
+    // stageInsertActors never ran to clean up — leaving the transient
+    // pieces frozen in the scene as an un-removable clone. Cleaning here
+    // every time guarantees no leftovers regardless of path.
+    cancelInsertAnimations();
 
     // Flush any pending dirty-sync into the LEAVING step BEFORE we
     // change the active step. Otherwise quick toggle-then-navigate

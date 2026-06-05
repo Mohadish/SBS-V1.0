@@ -35,6 +35,25 @@ import { state }       from '../core/state.js';
 import { sceneCore }   from '../core/scene.js';
 import * as clock      from '../core/clock.js';
 import { generateScrewParts } from './hardware-generator.js';
+import { materials }   from './materials.js';
+
+/**
+ * Resolve the colour a screw should be at THIS step:
+ *   step snapshot assignment → project default → live material → grey.
+ * Returns a THREE.Color. Mirrors materials' resolution chain so the
+ * transient pieces match the assigned preset, not the raw grey.
+ */
+function _resolveColor(node, merged, stepMaterials) {
+  const T = window.THREE;
+  const stepPid = stepMaterials?.[node.id];
+  const pid = stepPid != null ? stepPid : (materials.meshDefaultColors?.[node.id] ?? null);
+  if (pid) {
+    const preset = (state.get('colorPresets') || []).find(p => p.id === pid);
+    if (preset?.color) { try { return new T.Color(preset.color); } catch {} }
+  }
+  const src = Array.isArray(merged.material) ? merged.material[0] : merged.material;
+  return src?.color ? src.color.clone() : new T.Color(0xc0c4cc);
+}
 
 // Staged actors, keyed by node id:
 //   { group, mergedMesh, meshes, offsets, fadeMat, appearing,
@@ -68,87 +87,74 @@ export function findActorsForStep(stepId) {
 }
 
 /**
- * STAGE — build the transient exploded pieces at each actor's TARGET
- * local pose, hide the merged mesh. Pieces start at the exploded offset.
- * Opacity starts at 0 for actors that are APPEARING this step (so the
- * visibility phase fades them in) or 1 for actors already visible.
+ * STAGE — build the transient exploded pieces in WORLD space (added to
+ * rootGroup, which is identity), hide the merged mesh.
+ *
+ * World-space staging (V0.2.22.55) fixes the folder-offset bug: poses
+ * come straight from the captured world transforms, so a parent folder
+ * that moves between steps doesn't skew the prev↔target conversion.
  *
  * @param {TreeNode[]} actors
- * @param {Set<string>} showingIdSet  node ids that are becoming visible
- *                                    this step (from the visibility prep)
- * @returns {Set<string>} ids actually staged (caller excludes these from
- *                        the obj + visibility channels)
+ * @param {object} opts
+ *   showingIdSet  Set<id> nodes becoming visible this step
+ *   fromWorld     {id:{position,quaternion}} previous-step world poses
+ *   toWorld       {id:{position,quaternion}} this-step world poses
+ *   stepMaterials {id: presetId} this step's colour assignments (snapshot)
+ * @returns {Set<string>} ids actually staged
  */
-export function stageInsertActors(actors, showingIdSet, fromWorldTransforms = {}) {
+export function stageInsertActors(actors, opts = {}) {
   _disposeAll(/* restore */ true);   // clear any prior staging first
 
   const T = window.THREE;
+  const { showingIdSet, fromWorld = {}, toWorld = {}, stepMaterials = {} } = opts;
   const tpls = state.get('hardwareTemplates') || [];
+  const root = sceneCore.rootGroup;
   const staged = new Set();
+  if (!root) return staged;
 
   for (const node of (actors || [])) {
     const merged = node.object3d;
     if (!merged || !merged.parent) continue;
     const tpl = tpls.find(t => t.id === node.templateId);
     if (!tpl) continue;
+    const target = toWorld[node.id];
+    if (!target) continue;   // need a target world pose to stage against
 
     let parts;
     try { parts = generateScrewParts(tpl.params || {}, node.washers || null); }
     catch (e) { console.warn('[insert-anim] parts build failed:', e?.message); continue; }
 
-    // TARGET local pose — at staging time (after applyAllTransformsToScene)
-    // the merged mesh is already at THIS step's final pose.
-    const targetPos  = merged.position.clone();
-    const targetQuat = merged.quaternion.clone();
-
-    // PREVIOUS-step pose — fromWorldTransforms holds it in WORLD space;
-    // convert to the merged mesh's parent-local frame so the group (added
-    // under that parent) can interpolate prev → target.
     const appearing = !!showingIdSet?.has(node.id);
-    let prevPos = null, prevQuat = null, needsReposition = false;
-    const fw = fromWorldTransforms[node.id];
-    if (!appearing && fw) {
-      merged.parent.updateMatrixWorld(true);
-      const invParent = merged.parent.matrixWorld.clone().invert();
-      const worldM = new T.Matrix4().compose(
-        new T.Vector3(fw.position[0], fw.position[1], fw.position[2]),
-        new T.Quaternion(fw.quaternion[0], fw.quaternion[1], fw.quaternion[2], fw.quaternion[3]),
-        new T.Vector3(1, 1, 1),
-      );
-      const localM = invParent.multiply(worldM);
-      prevPos  = new T.Vector3();
-      prevQuat = new T.Quaternion();
-      localM.decompose(prevPos, prevQuat, new T.Vector3());
-      // Reposition only if the screw was actually somewhere ELSE before
-      // (a meaningful translation). Same-spot → skip (still explodes via
-      // the reposition window so it doesn't pop assembled→exploded).
-      needsReposition = true;
-    }
+    const prev = fromWorld[node.id];
+    const needsReposition = !appearing && !!prev;
+
+    const targetPos  = new T.Vector3(target.position[0], target.position[1], target.position[2]);
+    const targetQuat = new T.Quaternion(target.quaternion[0], target.quaternion[1], target.quaternion[2], target.quaternion[3]);
+    const prevPos    = prev ? new T.Vector3(prev.position[0], prev.position[1], prev.position[2]) : null;
+    const prevQuat   = prev ? new T.Quaternion(prev.quaternion[0], prev.quaternion[1], prev.quaternion[2], prev.quaternion[3]) : null;
+
+    // Target world scale (a scaled parent folder scales the screw too).
+    const targetScale = new T.Vector3();
+    merged.getWorldScale(targetScale);
 
     const group = new T.Group();
     group.name = 'sbs:insert-anim';
-    const bs = node.baseLocalScale || [1, 1, 1];
-    group.scale.set(bs[0], bs[1], bs[2]);
-    // needsReposition → start at PREV pose (assembled). Else → TARGET pose.
-    if (needsReposition) {
-      group.position.copy(prevPos);
-      group.quaternion.copy(prevQuat);
-    } else {
-      group.position.copy(targetPos);
-      group.quaternion.copy(targetQuat);
-    }
-    merged.parent.add(group);
+    group.scale.copy(targetScale);
+    if (needsReposition) { group.position.copy(prevPos); group.quaternion.copy(prevQuat); }
+    else                 { group.position.copy(targetPos); group.quaternion.copy(targetQuat); }
+    root.add(group);
 
-    // FRESH transparent material (plain MeshStandardMaterial) — the live
-    // material is screen-door dither-fade patched (opacity driven by a
-    // shader uniform, plain .opacity ignored), so a clone would pop.
-    const src = Array.isArray(merged.material) ? merged.material[0] : merged.material;
+    // FRESH transparent material. Colour = the screw's RESOLVED preset
+    // colour for THIS step (snapshot assignment → project default →
+    // template grey), NOT the live material's colour — at staging the
+    // live material can still be the previous step's / the raw grey,
+    // which is what made the animation render grey (V0.2.22.55 fix).
     const fadeMat = new T.MeshStandardMaterial({
-      color:     src?.color ? src.color.clone() : new T.Color(0xc0c4cc),
-      metalness: src?.metalness ?? 0.65,
-      roughness: src?.roughness ?? 0.35,
+      color:       _resolveColor(node, merged, stepMaterials),
+      metalness:   0.65,
+      roughness:   0.35,
       transparent: true,
-      opacity:   appearing ? 0 : 1,   // fade in only if hidden before
+      opacity:     appearing ? 0 : 1,   // fade in only if hidden before
     });
 
     const elems = [parts.screw, ...parts.washers.map(w => w.mesh)];
