@@ -52,6 +52,9 @@ import * as narrationCache           from '../systems/narration-cache.js';
 const _CHANNELS_REQUIRED = [
   'camera', 'visibility', 'obj', 'color',
   'cable', 'narration', 'notes', 'shape',
+  'insert',   // V0.2.22.52.1 — hardware explode→assemble; back-filled so
+              // the 🔩 chip is always present + movable in the Anim editor.
+              // Inert (no dwell, no effect) on steps with no flagged actor.
 ];
 function _migrateAnimationPresets(items) {
   // Bootstrap: new project (or loaded project with empty presets array)

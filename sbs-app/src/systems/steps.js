@@ -698,6 +698,17 @@ class StepManager {
         this._onObjectTransitionsDone = resolve;
       });
 
+      // V0.2.22.52.1 — insertion animation in SIMULTANEOUS (non-phased)
+      // mode. The phased path handles `insert` in its loop + fallback,
+      // but a step with no animation string runs here instead — so the
+      // effect would never fire by default. Trigger it for any flagged
+      // actor over the object duration.
+      const insertSimP = new Promise(resolve => {
+        const actors = findActorsForStep(state.get('activeStepId'));
+        if (actors.length) beginInsertAnimations(actors, objDur, easeFn, resolve);
+        else resolve();
+      });
+
       // OFFLINE-EXPORT FIX: in simultaneous mode (no animation preset),
       // cameraP and objectP both advance via tick hooks. In offline
       // mode, ticks only fire from inside _syntheticSleep — so without
@@ -708,7 +719,7 @@ class StepManager {
       // transitions to completion in offline mode, and is a no-op in
       // realtime mode (rAF still drives ticks; sleep just waits).
       const maxDur = Math.max(cameraDur, objDur);
-      await Promise.all([cameraP, objectP, cableSimP, overlaySimP, _sleep(maxDur)]);
+      await Promise.all([cameraP, objectP, cableSimP, overlaySimP, insertSimP, _sleep(maxDur)]);
     }
 
     // ── Guard: if a newer animation started while we awaited, bail out ──
