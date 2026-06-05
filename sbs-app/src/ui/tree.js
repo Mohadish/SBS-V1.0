@@ -958,6 +958,40 @@ function _buildContextMenuItems(node) {
     });
     items.push({ separator: true });
   }
+  // Washer options — multi-aware, applies to all selected hardware
+  // instances. V0.2.22.47.
+  if (allHardware) {
+    // Helper to set washers on the whole selection at once.
+    const _setW = (config) => {
+      import('../systems/hardware-actions.js').then(hw =>
+        hw.setInstanceWashers(targetIds, config));
+    };
+    const sample = nodeById?.get(targetIds[0]);
+    const curr   = sample?.washers || { count: 0, spring: false };
+    const _checkmark = (cfg) =>
+      (curr.count === cfg.count && !!curr.spring === !!cfg.spring) ? ' ✓' : '';
+    items.push({
+      label: `⊕ No washers${_checkmark({ count: 0, spring: false })}`,
+      action: () => _setW({ count: 0, spring: false }),
+    });
+    items.push({
+      label: `⊕ One washer${_checkmark({ count: 1, spring: false })}`,
+      action: () => _setW({ count: 1, spring: false }),
+    });
+    items.push({
+      label: `⊕ Two washers${_checkmark({ count: 2, spring: false })}`,
+      action: () => _setW({ count: 2, spring: false }),
+    });
+    items.push({
+      label: `⊕ Spring washer only${_checkmark({ count: 1, spring: true })}`,
+      action: () => _setW({ count: 1, spring: true }),
+    });
+    items.push({
+      label: `⊕ Spring + flat washer${_checkmark({ count: 2, spring: true })}`,
+      action: () => _setW({ count: 2, spring: true }),
+    });
+    items.push({ separator: true });
+  }
   // Delete — single OR multi-select hardware. Absolute removal (no
   // archive). Multi-aware: works on the whole selection when several
   // screws are selected.

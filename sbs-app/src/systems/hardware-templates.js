@@ -31,21 +31,23 @@ function _lookupTemplate(templateId) {
 /**
  * Cache key for a hardware mesh. Rebuilds happen only when the key
  * changes between the cached one (stored on object3d.userData) and the
- * key derived from the live template.
+ * key derived from the live template + per-instance washers (V0.2.22.47).
  */
-function _buildKey(tpl) {
+function _buildKey(tpl, washers) {
   if (!tpl) return '';
   const p = tpl.params || {};
-  return `${tpl.kind}|${p.diameter}|${p.length}|${p.headType}|${p.driveStyle}`;
+  const w = washers || {};
+  return `${tpl.kind}|${p.diameter}|${p.length}|${p.headType}|${p.driveStyle}`
+       + `|w:${w.count || 0}|s:${w.spring ? 1 : 0}`;
 }
 
 // ─── Geometry build per kind ────────────────────────────────────────────────
 
-function _generateForTemplate(tpl) {
+function _generateForTemplate(tpl, washers) {
   if (!tpl) return null;
   switch (tpl.kind) {
     case 'screw':
-      return generateScrewMesh(tpl.params || {});
+      return generateScrewMesh(tpl.params || {}, washers);
     // Future kinds (washer / nut) land here; same shape — return a Mesh.
     default:
       console.warn(`[hardware] unknown template kind: ${tpl.kind}`);
@@ -76,7 +78,10 @@ export function ensureHardwareInstanceObject3D(node) {
     return null;
   }
 
-  const sig = _buildKey(tpl);
+  // Default empty washer config so legacy instances (saved before
+  // V0.2.22.47) load without the washers field defined.
+  const washers = node.washers || { count: 0, spring: false };
+  const sig = _buildKey(tpl, washers);
   const existing = node.object3d;
   if (existing && existing.userData?.hwBuildKey === sig) {
     materials?.registerMesh?.(node.id, existing);
@@ -91,7 +96,7 @@ export function ensureHardwareInstanceObject3D(node) {
     node.object3d = null;
   }
 
-  const mesh = _generateForTemplate(tpl);
+  const mesh = _generateForTemplate(tpl, washers);
   if (!mesh) return null;
   mesh.name = node.name || tpl.name || 'Hardware';
   // The mesh is the registration point for selection / picking / materials.

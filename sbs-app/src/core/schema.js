@@ -27,7 +27,7 @@ export const SCHEMA_VERSIONS = {
   screen:     1,
 };
 
-export const APP_VERSION  = 'V0.2.22.46';
+export const APP_VERSION  = 'V0.2.22.47';
 // Format: YYYY-MM-DD. Bump along with APP_VERSION on every build worth
 // labelling so the File tab shows you're running the expected slice.
 export const APP_RELEASED = '2026-05-29';
@@ -453,6 +453,21 @@ export function createHardwareInstanceNode(overrides = {}) {
     // generator (brushed metal grey). Setting this applies a color preset
     // override the same way mesh color presets work.
     colorPresetId: null,
+
+    // V0.2.22.47 — per-instance washers, configured via right-click.
+    //   count   0 | 1 | 2     — number of FLAT washers (excluding spring)
+    //   spring  boolean       — adds a split-ring spring washer
+    //
+    // Combos cover every case the user asked for:
+    //   {count:0, spring:false}  → bare screw
+    //   {count:1, spring:false}  → one flat washer
+    //   {count:2, spring:false}  → two flat washers
+    //   {count:1, spring:true}   → spring washer alone (no flat)
+    //   {count:2, spring:true}   → spring + flat stacked
+    //
+    // Washer config is per INSTANCE (not template). The screw template
+    // stays shared; washers are an instance-level decoration.
+    washers: { count: 0, spring: false },
 
     ...overrides,
   };

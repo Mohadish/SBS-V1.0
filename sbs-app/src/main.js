@@ -2162,6 +2162,37 @@ canvas.addEventListener('contextmenu', e => {
       },
     });
     items.push({ label: '─', disabled: true });
+    // Washer options (V0.2.22.47) — multi-aware. Same handler as the
+    // tree right-click; applies to whole selection if it's all screws.
+    const washerIds = allMultiHw ? [...multiSet] : [node.id];
+    const curr = node?.washers || { count: 0, spring: false };
+    const _check = (cfg) =>
+      (curr.count === cfg.count && !!curr.spring === !!cfg.spring) ? ' ✓' : '';
+    const _setW = (cfg) => {
+      import('./systems/hardware-actions.js').then(hw =>
+        hw.setInstanceWashers(washerIds, cfg));
+    };
+    items.push({
+      label: `⊕ No washers${_check({ count: 0, spring: false })}`,
+      action: () => _setW({ count: 0, spring: false }),
+    });
+    items.push({
+      label: `⊕ One washer${_check({ count: 1, spring: false })}`,
+      action: () => _setW({ count: 1, spring: false }),
+    });
+    items.push({
+      label: `⊕ Two washers${_check({ count: 2, spring: false })}`,
+      action: () => _setW({ count: 2, spring: false }),
+    });
+    items.push({
+      label: `⊕ Spring washer only${_check({ count: 1, spring: true })}`,
+      action: () => _setW({ count: 1, spring: true }),
+    });
+    items.push({
+      label: `⊕ Spring + flat washer${_check({ count: 2, spring: true })}`,
+      action: () => _setW({ count: 2, spring: true }),
+    });
+    items.push({ label: '─', disabled: true });
   }
 
   if (isTransformable) {

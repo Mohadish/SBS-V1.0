@@ -39,7 +39,7 @@
 export const HEAD_TYPES   = ['button', 'flat', 'socket', 'lowhead', 'hex', 'flange'];
 export const DRIVE_STYLES = ['none', 'phillips', 'slotted', 'hex', 'torx'];
 
-export function generateScrewMesh({ diameter, length, headType, driveStyle }) {
+export function generateScrewMesh({ diameter, length, headType, driveStyle }, washers = null) {
   const T = window.THREE;
   if (!T) throw new Error('THREE not loaded');
 
@@ -50,7 +50,16 @@ export function generateScrewMesh({ diameter, length, headType, driveStyle }) {
 
   const parts = [];
   parts.push(_shank(D, L));
+  const headParams = _headParams(head, D);
   parts.push(..._buildHead(head, D, drive));
+
+  // V0.2.22.47 — per-instance washers, wedged against the head's
+  // underside (y=0, the head/shank interface). _buildWashers picks
+  // sizes based on the head's widest radius and the user's
+  // washer-stack config (count + spring).
+  if (washers && (washers.count || washers.spring)) {
+    parts.push(..._buildWashers(washers, D, headParams));
+  }
 
   const geom = _mergeMeshes(parts);
   const material = new T.MeshStandardMaterial({
@@ -405,6 +414,176 @@ function _buildDriverInsert(driveStyle, D, cavityR, insertTopY, insertH) {
   geom.rotateX(Math.PI / 2);
   geom.translate(0, insertTopY, 0);
 
+  return new T.Mesh(geom);
+}
+
+// ─── Washers (V0.2.22.47) ──────────────────────────────────────────────────
+//
+// Each washer is wedged against the head's underside (y=0). Multiple
+// washers stack downward along the shank. Sizing rules (from user spec):
+//
+//   - Inner Ø  = shankD × 1.1  (standard clearance hole)
+//   - Outer Ø  = headOuterD × 1.2  (single washer / second of stack)
+//   - For 2-washer stacks: the first (head-contact) washer is HEAD × 1.1
+//     and the second is HEAD × 1.2. Same rule when the first is a
+//     spring washer (in a spring+flat combo).
+//   - Thickness = D × 0.15 standard, spring's total height = 1.2× that
+//
+// Stacking order top-down: head → spring (if any) → flat washer(s) → shank.
+
+function _buildWashers(washers, D, headParams) {
+  const count  = Math.max(0, Math.min(2, Number(washers?.count) || 0));
+  const spring = !!washers?.spring;
+  if (!count && !spring) return [];
+
+  // Head outer diameter — widest point of the head, varies by head type.
+  // For flange it's the flange disc; for flat it's the wide top; for
+  // hex it's the circumscribed radius; etc.
+  const headOuterD = Math.max(headParams.topR, headParams.botR) * 2;
+
+  const innerR = D * 0.55;                                  // = D × 1.1 / 2
+  const outerR_small = (headOuterD * 1.1) / 2;              // first-in-stack
+  const outerR_big   = (headOuterD * 1.2) / 2;              // single / second
+  const thickness = D * 0.15;
+
+  // Build the stack from head DOWN. Each entry: { kind, outerR }.
+  // Spring goes first (closest to head) when present in any combo.
+  const stack = [];
+  if (spring) stack.push({ kind: 'spring', outerR: 0 /* set later */ });
+  for (let i = 0; i < count; i++) stack.push({ kind: 'flat', outerR: 0 });
+
+  // Apply the sizing rule: first-in-stack (against head) is HEAD × 1.1
+  // when there are 2+ items, otherwise HEAD × 1.2. Subsequent items
+  // are HEAD × 1.2.
+  if (stack.length === 1) {
+    stack[0].outerR = outerR_big;
+  } else {
+    stack[0].outerR = outerR_small;
+    for (let i = 1; i < stack.length; i++) stack[i].outerR = outerR_big;
+  }
+
+  // Lay them out vertically downward from y=0. yTop is the TOP of the
+  // current washer (the face that touches whatever's above).
+  let yTop = 0;
+  const meshes = [];
+  for (const w of stack) {
+    if (w.kind === 'flat') {
+      meshes.push(_flatWasher(innerR, w.outerR, thickness, yTop));
+      yTop -= thickness;
+    } else {
+      // Spring — total height = thickness × 1.2 (pre-compressed).
+      const totalH = thickness * 1.2;
+      meshes.push(_springWasher(innerR, w.outerR, thickness, totalH, yTop));
+      yTop -= totalH;
+    }
+  }
+  return meshes;
+}
+
+/**
+ * Flat washer — annular disc. Built via ExtrudeGeometry of (outer
+ * circle with inner-circle hole), extruded downward by `thickness` so
+ * the top sits at y=yTop (touching whatever's above).
+ */
+function _flatWasher(innerR, outerR, thickness, yTop) {
+  const T = window.THREE;
+  const shape = new T.Shape(_circlePath2D(outerR, 32));
+  shape.holes = [new T.Path(_circlePath2D(innerR, 32))];
+  const geom = new T.ExtrudeGeometry(shape, {
+    depth:        thickness,
+    bevelEnabled: false,
+    steps:        1,
+  });
+  // rotateX(+PI/2) sends the extrusion downward (+Z → -Y), matching
+  // the driver-insert pattern: top face at y=0 in local, after translate
+  // at y=yTop; bottom face at y=yTop-thickness. Top normal +Y, bottom -Y.
+  geom.rotateX(Math.PI / 2);
+  geom.translate(0, yTop, 0);
+  return new T.Mesh(geom);
+}
+
+/**
+ * Spring washer — annular ring with a helical cut. "Pre-compressed":
+ * the helix climb over one revolution is small, so the washer reads as
+ * a flat ring with a visible step at the cut rather than a tall spring.
+ *
+ *   thickness  — radial cross-section's height (material gauge)
+ *   totalH     — y-distance from highest point to lowest, including the
+ *                helical climb. = thickness × 1.2 per spec.
+ *   yTop       — y position of the HIGHEST face (top edge of the cut
+ *                at the start of the helix).
+ *
+ * Geometry:
+ *   - Sample N angles around the circumference.
+ *   - At each angle θ, the cross-section's BOTTOM y is
+ *       yBot(θ) = yTop - thickness - (1 - θ/(2π)) × pitch
+ *     where pitch = totalH - thickness. Highest cross-section is at θ=0
+ *     (top at yTop), lowest at θ=2π (top at yTop - pitch).
+ *   - For each cross-section build 4 vertices (inner-bot, outer-bot,
+ *     outer-top, inner-top). 4 surfaces × N segments worth of quads
+ *     between consecutive cross-sections, plus 2 cap rectangles at the
+ *     helix start/end (the visible split-ring gap).
+ */
+function _springWasher(innerR, outerR, thickness, totalH, yTop) {
+  const T = window.THREE;
+  const segments = 32;
+  const pitch    = totalH - thickness;    // helical climb over one revolution
+
+  const positions = [];
+  const indices   = [];
+
+  // Generate 4 vertices per cross-section (N+1 cross-sections total —
+  // the last one is at θ=2π which is NOT shared with θ=0; the gap
+  // between them is the split-ring cut).
+  for (let i = 0; i <= segments; i++) {
+    const theta = (i / segments) * Math.PI * 2;
+    const c = Math.cos(theta);
+    const s = Math.sin(theta);
+    // Highest cross-section at θ=0, descending to θ=2π.
+    const yT = yTop - (theta / (Math.PI * 2)) * pitch;
+    const yB = yT - thickness;
+    positions.push(
+      innerR * c, yB, innerR * s,    // 0 inner-bot
+      outerR * c, yB, outerR * s,    // 1 outer-bot
+      outerR * c, yT, outerR * s,    // 2 outer-top
+      innerR * c, yT, innerR * s,    // 3 inner-top
+    );
+  }
+
+  // Helical ribbon — quad strips connecting consecutive cross-sections.
+  for (let i = 0; i < segments; i++) {
+    const a = i * 4;          // first vertex of segment i
+    const b = (i + 1) * 4;    // first vertex of segment i+1
+    // Outer side (outward-facing). Winding chosen for outward normal.
+    indices.push(a + 1, b + 1, b + 2);
+    indices.push(a + 1, b + 2, a + 2);
+    // Inner side (inward-facing).
+    indices.push(a + 0, a + 3, b + 3);
+    indices.push(a + 0, b + 3, b + 0);
+    // Top side (upward).
+    indices.push(a + 3, a + 2, b + 2);
+    indices.push(a + 3, b + 2, b + 3);
+    // Bottom side (downward).
+    indices.push(a + 0, b + 0, b + 1);
+    indices.push(a + 0, b + 1, a + 1);
+  }
+
+  // Cap faces at the split-ring gap. Start cap at θ=0 (highest end),
+  // end cap at θ=2π (lowest end). Both face out of the gap.
+  // Start cap (vertices 0..3): face direction is roughly -tangent at θ=0,
+  // i.e. (0, 0, -1) in local. Triangle winding CW from -Z viewpoint =
+  // CCW from +Z viewpoint, so reverse.
+  indices.push(0, 2, 3);
+  indices.push(0, 1, 2);
+  // End cap (vertices N..N+3 where N = segments*4):
+  const N = segments * 4;
+  indices.push(N, N + 3, N + 2);
+  indices.push(N, N + 2, N + 1);
+
+  const geom = new T.BufferGeometry();
+  geom.setAttribute('position', new T.Float32BufferAttribute(positions, 3));
+  geom.setIndex(indices);
+  geom.computeVertexNormals();
   return new T.Mesh(geom);
 }
 

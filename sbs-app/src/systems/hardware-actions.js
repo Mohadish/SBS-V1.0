@@ -332,6 +332,87 @@ export function deleteInstances(ids) {
 }
 
 /**
+ * V0.2.22.47 — set per-instance washer config and rebuild the mesh.
+ * Multi-aware: pass an array of nodeIds to apply the same config to
+ * each in one undo entry.
+ *
+ *   washers = { count: 0|1|2, spring: bool }
+ *
+ * Triggers a mesh rebuild via the same path a template edit uses:
+ * the build key includes washer config, so ensureHardwareInstanceObject3D
+ * sees the signature change and regenerates.
+ */
+export function setInstanceWashers(nodeIds, washers) {
+  if (!Array.isArray(nodeIds)) nodeIds = [nodeIds];
+  if (!nodeIds.length) return;
+
+  const root = state.get('treeData');
+  const nodeById = state.get('nodeById') || buildNodeMap(root);
+
+  // Snapshot before-state for undo
+  const before = [];
+  for (const id of nodeIds) {
+    const n = nodeById.get(id);
+    if (!n || n.type !== 'hardwareInstance') continue;
+    before.push({
+      id,
+      washers: { ...(n.washers || { count: 0, spring: false }) },
+    });
+  }
+  if (!before.length) return;
+
+  const after = { count: Math.max(0, Math.min(2, Number(washers?.count) || 0)),
+                  spring: !!washers?.spring };
+
+  const _apply = (config) => {
+    for (const id of nodeIds) {
+      const n = (state.get('nodeById') || buildNodeMap(root)).get(id);
+      if (!n || n.type !== 'hardwareInstance') continue;
+      n.washers = { ...config };
+      // Force a rebuild: clear the cached object3d (the sig has changed
+      // but ensureHardwareInstanceObject3D's cache check would still
+      // catch it — clearing is belt-and-suspenders).
+      const mesh = ensureHardwareInstanceObject3D(n);
+      if (mesh) {
+        const parent = mesh.parent ?? steps.object3dById?.get(_findParent(root, id)?.id);
+        if (parent && mesh.parent !== parent) parent.add(mesh);
+        steps.object3dById.set(id, mesh);
+        applyNodeTransformToObject3D(n, mesh, true);
+      }
+    }
+    state.markDirty?.();
+    state.emit('change:treeData', state.get('treeData'));
+  };
+
+  _apply(after);
+
+  // Undo: each instance gets its own per-id before-state restored.
+  const label = nodeIds.length > 1
+    ? `Set washers on ${nodeIds.length} instances`
+    : `Set washers`;
+  undoManager.push(
+    label,
+    () => {
+      for (const entry of before) {
+        const n = (state.get('nodeById') || buildNodeMap(root)).get(entry.id);
+        if (!n) continue;
+        n.washers = { ...entry.washers };
+        const mesh = ensureHardwareInstanceObject3D(n);
+        if (mesh) {
+          const parent = mesh.parent ?? steps.object3dById?.get(_findParent(root, entry.id)?.id);
+          if (parent && mesh.parent !== parent) parent.add(mesh);
+          steps.object3dById.set(entry.id, mesh);
+          applyNodeTransformToObject3D(n, mesh, true);
+        }
+      }
+      state.markDirty?.();
+      state.emit('change:treeData', state.get('treeData'));
+    },
+    () => _apply(after),
+  );
+}
+
+/**
  * Duplicate an existing hardware instance — produces a sibling pointing
  * at the same template, offset by 1.5× the screw's nominal diameter so
  * the copy doesn't z-fight with the original.
