@@ -28,6 +28,7 @@
  */
 
 import { state }                       from '../core/state.js';
+import { materials }                    from './materials.js';
 import {
   createHardwareTemplate,
   createHardwareInstanceNode,
@@ -46,6 +47,52 @@ import { applyNodeTransformToObject3D } from '../core/transforms.js';
 import { undoManager }                  from './undo.js';
 
 const HARDWARE_FOLDER_NAME = 'Hardware';
+
+// V0.2.22.45 — every new hardware instance gets this colour preset
+// auto-assigned as its DEFAULT. Two reasons:
+//   1. Users were finding the colour-tab assign flow unclear ("Select
+//      mesh objects first" when a screw was already selected). With a
+//      default already in place, the user only ever needs to RIGHT-
+//      CLICK a different preset → Assign — never the empty-state path.
+//   2. Gives the user a one-click way to retint every hardware item at
+//      once (edit the "Hardware" preset → ripples to every default-
+//      assigned screw, just like a regular preset.)
+//
+// The preset is created lazily on the first instance. If the user later
+// renames or deletes it, no harm — instances fall back to their original
+// material until a new default is assigned.
+const HARDWARE_PRESET_NAME  = 'Hardware';
+const HARDWARE_PRESET_COLOR = '#c0c4cc';   // matches the generator's brushed metal
+
+function _ensureHardwarePreset() {
+  const presets = state.get('colorPresets') || [];
+  const existing = presets.find(p => p.name === HARDWARE_PRESET_NAME);
+  if (existing) return existing;
+  const preset = {
+    id:    generateId('preset'),
+    name:  HARDWARE_PRESET_NAME,
+    type:  'solid',
+    color: HARDWARE_PRESET_COLOR,
+  };
+  state.setState({ colorPresets: [...presets, preset] });
+  // Enable solidOverride so the preset actually shows on the mesh —
+  // without it, the underlying MeshStandardMaterial colour wins and
+  // the user-applied preset has no visible effect.
+  if (state.get('solidOverride') !== true) {
+    state.setState({ solidOverride: true });
+  }
+  return preset;
+}
+
+function _assignHardwareDefault(instanceId) {
+  const preset = _ensureHardwarePreset();
+  if (!preset) return;
+  // Assign as the DEFAULT colour (meshDefaultColors map), not a
+  // per-step override. Default colours follow the mesh across every
+  // step until the user explicitly overrides per-step.
+  materials.assignDefaultColor([instanceId], preset.id);
+  materials.applyAll?.();
+}
 
 // ─── Templates ──────────────────────────────────────────────────────────────
 
@@ -171,6 +218,10 @@ export function placeInstance(templateId, parentId = null) {
     steps.object3dById.set(inst.id, mesh);
     applyNodeTransformToObject3D(inst, mesh, true);
   }
+
+  // V0.2.22.45 — auto-assign the "Hardware" default colour preset.
+  // The user can right-click any other preset to switch.
+  _assignHardwareDefault(inst.id);
 
   state.markDirty?.();
   state.emit('change:treeData', root);
@@ -319,6 +370,17 @@ export function duplicateInstance(nodeId) {
     parentObj.add(mesh);
     steps.object3dById.set(copy.id, mesh);
     applyNodeTransformToObject3D(copy, mesh, true);
+  }
+
+  // Mirror the source's default colour onto the duplicate so it tints
+  // the same way out of the gate. Falls back to the "Hardware" preset
+  // if the source had none.
+  const srcDefault = materials.meshDefaultColors?.[nodeId];
+  if (srcDefault) {
+    materials.assignDefaultColor([copy.id], srcDefault);
+    materials.applyAll?.();
+  } else {
+    _assignHardwareDefault(copy.id);
   }
 
   state.markDirty?.();

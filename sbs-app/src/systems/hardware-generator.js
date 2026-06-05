@@ -83,13 +83,20 @@ function _headParams(headType, D) {
     case 'hex':     return { topR: 0.866 * D, botR: 0.866 * D, height: 0.6  * D, kind: 'hex' };
     case 'button':  return { topR: 0.95  * D, botR: 0.95  * D, height: 0.4  * D, kind: 'dome' };
     case 'flange':  return {
-      topR:      0.7  * D,            // head body radius (top of head)
-      botR:      1.2  * D,            // flange radius (used for bottom cap)
-      height:    0.6  * D,            // total head height (flange + head body)
+      // V0.2.22.45 — flange head is a HEX nut with a circular rim
+      // (flange) at the bottom. Upper portion: 6-sided prism (like
+      // any hex bolt). Lower portion: round flange disc, wider than
+      // the hex's circumscribed radius. Two separate primitives
+      // composed: open hex prism on top of a cylindrical flange.
+      // 'kind' stays 'flange' but the builder now produces hex+rim
+      // geometry instead of the smooth-stepped LatheGeometry.
+      topR:      0.866 * D,           // hex circumscribed radius (top)
+      botR:      1.4   * D,           // flange disc outer radius (= botR for bottom cap)
+      height:    0.7   * D,           // total head height (flange + hex body)
       kind:      'flange',
-      flangeR:   1.2  * D,            // flange outer radius (= botR)
-      headBodyR: 0.7  * D,            // head body radius (= topR)
-      flangeH:   0.2  * D,            // flange thickness (lower portion)
+      hexR:      0.866 * D,           // hex circumscribed radius (across corners)
+      flangeR:   1.4   * D,           // flange disc outer radius
+      flangeH:   0.18  * D,           // flange disc thickness
     };
     default:        return { topR: 0.75  * D, botR: 0.75  * D, height: 0.6  * D, kind: 'cyl' };
   }
@@ -112,14 +119,23 @@ function _buildHead(headType, D, driveStyle) {
   // Bottom cap (closes the head from below) is shared by every head type.
   meshes.push(_buildBottomCap(p));
 
-  // ── Lathe-based heads (dome, flange) ──────────────────────────────────
-  //   The lathe profile IS the outer surface + top transition + cavity
-  //   opening edge in one continuous mesh. No separate flat top cap.
-  if (p.kind === 'dome' || p.kind === 'flange') {
-    const profile = (p.kind === 'dome')
-      ? _domeProfile(p.topR, p.height, hasDrive ? cavityR : null, 12)
-      : _flangeProfile(p, hasDrive ? cavityR : null);
+  if (p.kind === 'dome') {
+    // ── Button head — single elliptical dome via LatheGeometry. ─────────
+    //   Outer surface + cavity opening rim are one continuous mesh.
+    const profile = _domeProfile(p.topR, p.height, hasDrive ? cavityR : null, 12);
     meshes.push(_buildLathe(profile));
+  } else if (p.kind === 'flange') {
+    // ── Flange head — hex prism on top of a circular rim disc. ───────────
+    //   Multi-part: open hex prism (flat-shaded), annular ring on top of
+    //   the flange, open cylinder for the flange's outer wall, plus the
+    //   standard top cap with cavity hole. Bottom cap (the flange disc's
+    //   underside) is added by _buildBottomCap above.
+    meshes.push(..._buildFlangeOuter(p, hasDrive ? cavityR : null));
+    if (hasDrive) {
+      meshes.push(_buildHeadTopHexWithCircleHole(p.hexR, p.height, cavityR));
+    } else {
+      meshes.push(_buildFlatTopCapHex(p.hexR, p.height));
+    }
   } else {
     // ── Cylindrical / conical / hex heads ───────────────────────────────
     //   Outer wall = open primitive; top cap = separate flat polygon
@@ -139,6 +155,90 @@ function _buildHead(headType, D, driveStyle) {
   }
 
   return meshes;
+}
+
+// ─── Flange head builder — hex prism + circular rim ────────────────────────
+
+/**
+ * Build the outer body of a flange head: open hex prism for the upper
+ * portion + open cylinder for the lower flange + annular ring connecting
+ * the two at the flange-top transition.
+ *
+ * The hex prism gets flat shading (toNonIndexed + computeVertexNormals)
+ * so each of the 6 faces reads as a distinct flat surface. Without that,
+ * vertex-normal averaging across segments makes the hex look round.
+ *
+ * V0.2.22.45 — replaces the previous LatheGeometry flange. The old
+ * lathe made the whole head smooth-shaded (one continuous curve), so
+ * the hex faces blurred together and the flange-to-body transition had
+ * no visible step.
+ */
+function _buildFlangeOuter(p, cavityR) {
+  const T = window.THREE;
+  const meshes = [];
+  const hexBodyH = p.height - p.flangeH;     // upper hex portion height
+
+  // 1. Flange outer wall — short cylinder, open ends.
+  const flangeWall = new T.Mesh(
+    new T.CylinderGeometry(p.flangeR, p.flangeR, p.flangeH, 32, 1, /* open */ true),
+  );
+  flangeWall.position.y = p.flangeH / 2;
+  meshes.push(flangeWall);
+
+  // 2. Annular ring on top of the flange (between hex outer and flange
+  //    outer) — this is the visible "step" between flange and hex body.
+  const ringShape = new T.Shape(_circlePath2D(p.flangeR, 32));
+  ringShape.holes = [new T.Path(_circlePath2D(p.hexR, 6))];   // hex hole
+  const ringGeom  = new T.ShapeGeometry(ringShape);
+  ringGeom.rotateX(-Math.PI / 2);
+  ringGeom.translate(0, p.flangeH, 0);
+  meshes.push(new T.Mesh(ringGeom));
+
+  // 3. Hex prism (upper head body) — open hex cylinder, flat-shaded so
+  //    each of the 6 faces reads as a distinct flat surface.
+  const hexWall = new T.Mesh(
+    _flatShade(new T.CylinderGeometry(p.hexR, p.hexR, hexBodyH, 6, 1, true)),
+  );
+  hexWall.position.y = p.flangeH + hexBodyH / 2;
+  meshes.push(hexWall);
+
+  return meshes;
+}
+
+/**
+ * Convert geometry to non-indexed and recompute vertex normals so each
+ * face has its own face normal (flat shading). Returns a new geometry
+ * — caller assigns it to the Mesh.
+ *
+ * Use for the hex prism in flange heads and (V0.2.22.45+) the hex head
+ * outer wall — without flat shading, vertex-normal averaging blurs the
+ * six faces into a smooth cylinder.
+ */
+function _flatShade(geom) {
+  const nonIdx = geom.toNonIndexed();
+  nonIdx.computeVertexNormals();
+  geom.dispose();
+  return nonIdx;
+}
+
+/** Hex top cap with a circular cavity hole — flange head, drive case. */
+function _buildHeadTopHexWithCircleHole(hexR, headHeight, cavityR) {
+  const T = window.THREE;
+  const shape = new T.Shape(_hexagonPath2D(hexR));
+  shape.holes = [new T.Path(_circlePath2D(cavityR, 32))];
+  const geom  = new T.ShapeGeometry(shape);
+  geom.rotateX(-Math.PI / 2);
+  geom.translate(0, headHeight, 0);
+  return new T.Mesh(geom);
+}
+
+/** Hex top cap, no hole — flange head, drive='none' case. */
+function _buildFlatTopCapHex(hexR, headHeight) {
+  const T = window.THREE;
+  const geom = new T.ShapeGeometry(new T.Shape(_hexagonPath2D(hexR)));
+  geom.rotateX(-Math.PI / 2);
+  geom.translate(0, headHeight, 0);
+  return new T.Mesh(geom);
 }
 
 // ─── Lathe-based head profiles ─────────────────────────────────────────────
@@ -202,39 +302,6 @@ function _domeProfile(headOuterR, headTop, cavityR, segments) {
     // accumulation can leave it off by ~1e-9, which produces a tiny
     // gap with the cavity floor/insert geometry below.
     points[points.length - 1] = new T.Vector2(cavityR, headTop);
-  }
-  return points;
-}
-
-/**
- * Flange-head profile — stepped: wide thin flange at the bottom,
- * narrower cylindrical head body on top, optional cavity hole at the
- * apex. Each segment is a straight line in the profile, lathed into
- * a real 3D step:
- *
- *   .─────.            (cavityR, height)        ← cavity opening edge
- *   │     │            (headBodyR, height)
- *   │     │            head body wall
- *   │     │__________  (flangeR, flangeH)       ← top of flange step
- *   │                │ flange wall
- *   │                │ (flangeR, 0)             ← bottom outer
- *   └─ axis          ┘
- *
- * For drive='none' the profile closes at the axis (0, height) instead
- * of stopping at the cavity edge.
- */
-function _flangeProfile(p, cavityR) {
-  const T = window.THREE;
-  const points = [
-    new T.Vector2(p.flangeR,   0),
-    new T.Vector2(p.flangeR,   p.flangeH),
-    new T.Vector2(p.headBodyR, p.flangeH),
-    new T.Vector2(p.headBodyR, p.height),
-  ];
-  if (cavityR == null) {
-    points.push(new T.Vector2(0, p.height));         // tapers to axis
-  } else {
-    points.push(new T.Vector2(cavityR, p.height));   // stops at cavity edge
   }
   return points;
 }
@@ -370,9 +437,12 @@ function _buildFlatTopCap(p) {
 function _buildOuterWall(p) {
   const T = window.THREE;
   const segments = (p.kind === 'hex') ? 6 : 24;
-  const wall = new T.Mesh(
-    new T.CylinderGeometry(p.topR, p.botR, p.height, segments, 1, /* open */ true)
-  );
+  let geom = new T.CylinderGeometry(p.topR, p.botR, p.height, segments, 1, /* open */ true);
+  // V0.2.22.45 — flat-shade the hex head's outer prism so each face is
+  // distinct. Without this, vertex normals average across segments and
+  // the hex looks like a smooth cylinder.
+  if (p.kind === 'hex') geom = _flatShade(geom);
+  const wall = new T.Mesh(geom);
   wall.position.y = p.height / 2;
   return [wall];
 }

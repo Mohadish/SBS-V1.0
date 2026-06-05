@@ -148,20 +148,39 @@ export function resize(width, height) {
 // ─── Camera / orbit math ────────────────────────────────────────────────────
 
 /**
- * One-shot framing: aim _target at the mesh bbox centre and pick a
- * baseline _radius such that the bbox fills the canvas with a small
- * margin. Spherical angles (_theta, _phi) keep their current values
- * so the user's orientation persists after auto-fits.
+ * One-shot framing: aim _target at the HEAD region (not the whole-screw
+ * bbox centre), pick a baseline _radius such that the head fills the
+ * canvas with a small margin. Spherical angles (_theta, _phi) keep
+ * their current values so the user's orientation persists after
+ * auto-fits.
+ *
+ * V0.2.22.45 — target the head only. Previously the camera orbited
+ * the bbox centre of the entire mesh, which sat about halfway down
+ * the shank — pulling the head off-screen at most rotation angles
+ * and putting the orbit pivot at the wrong end of the interesting
+ * geometry. The hardware generator parks the head above y=0 and the
+ * shank below; the head region's y range is roughly [0, max(y)].
  */
 function _autoFit(mesh) {
   const T = window.THREE;
-  const box = new T.Box3().setFromObject(mesh);
-  if (box.isEmpty()) return;
-  const size   = box.getSize(new T.Vector3());
-  const centre = box.getCenter(new T.Vector3());
+  const fullBox = new T.Box3().setFromObject(mesh);
+  if (fullBox.isEmpty()) return;
+
+  // Head bbox = the slice of the mesh above y=0. The hardware generator
+  // places the head between y=0 (head/shank interface) and y=max. Clamp
+  // the box to just that vertical slice; X/Z keep the full extent (the
+  // head's footprint is what matters for camera distance).
+  const headBox = fullBox.clone();
+  headBox.min.y = Math.max(0, fullBox.min.y);
+  // If somehow the mesh has no head portion (defensive), fall back to
+  // the full bbox.
+  const useBox = (headBox.min.y < headBox.max.y) ? headBox : fullBox;
+
+  const size   = useBox.getSize(new T.Vector3());
+  const centre = useBox.getCenter(new T.Vector3());
   const maxDim = Math.max(size.x, size.y, size.z) || 1;
   const fovRad = (_camera.fov * Math.PI) / 180;
-  _radius = (maxDim / 2) / Math.tan(fovRad / 2) * 2.0;
+  _radius = (maxDim / 2) / Math.tan(fovRad / 2) * 2.2;     // small margin
   _target.copy(centre);
 }
 

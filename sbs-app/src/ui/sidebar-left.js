@@ -1523,7 +1523,12 @@ function _renderColorsTab() {
   const allSelIds = multiIds.size ? Array.from(multiIds) : (selId ? [selId] : []);
   const meshIds   = allSelIds.filter(id => {
     const t = nodeById.get(id)?.type;
-    return t === 'mesh' || t === 'flatShape' || t === 'replaceModel';
+    // V0.2.22.45 — hardwareInstance recognised as colour-target. Same
+    // registration path as flatShape (materials.registerMesh in
+    // ensureHardwareInstanceObject3D), so once it shows up here every
+    // existing preset path works.
+    return t === 'mesh' || t === 'flatShape' || t === 'replaceModel'
+        || t === 'hardwareInstance';
   });
 
   // V0.1.99/V0.2.2: presets used by visible meshes (drives the 👁 filter).
