@@ -83,19 +83,18 @@ function _headParams(headType, D) {
     case 'hex':     return { topR: 0.866 * D, botR: 0.866 * D, height: 0.6  * D, kind: 'hex' };
     case 'button':  return { topR: 0.95  * D, botR: 0.95  * D, height: 0.4  * D, kind: 'dome' };
     case 'flange':  return {
-      // V0.2.22.45 — flange head is a HEX nut with a circular rim
-      // (flange) at the bottom. Upper portion: 6-sided prism (like
-      // any hex bolt). Lower portion: round flange disc, wider than
-      // the hex's circumscribed radius. Two separate primitives
-      // composed: open hex prism on top of a cylindrical flange.
-      // 'kind' stays 'flange' but the builder now produces hex+rim
-      // geometry instead of the smooth-stepped LatheGeometry.
+      // V0.2.22.46 — flange head is a HEX nut on top of a SOLID
+      // circular flange disc. Flange diameter is 5% larger than
+      // the hex's point-to-point diameter (corner-to-corner), so
+      // the rim sticks out just past the hex corners — a thin
+      // lip, like a real flanged hex bolt. Previously the flange
+      // was 1.62× the hex; the user wanted ~1.05×.
       topR:      0.866 * D,           // hex circumscribed radius (top)
-      botR:      1.4   * D,           // flange disc outer radius (= botR for bottom cap)
+      botR:      0.866 * 1.05 * D,    // flange disc outer radius (= botR for bottom cap)
       height:    0.7   * D,           // total head height (flange + hex body)
       kind:      'flange',
       hexR:      0.866 * D,           // hex circumscribed radius (across corners)
-      flangeR:   1.4   * D,           // flange disc outer radius
+      flangeR:   0.866 * 1.05 * D,    // flange disc outer radius = hexR × 1.05
       flangeH:   0.18  * D,           // flange disc thickness
     };
     default:        return { topR: 0.75  * D, botR: 0.75  * D, height: 0.6  * D, kind: 'cyl' };
@@ -185,11 +184,13 @@ function _buildFlangeOuter(p, cavityR) {
   flangeWall.position.y = p.flangeH / 2;
   meshes.push(flangeWall);
 
-  // 2. Annular ring on top of the flange (between hex outer and flange
-  //    outer) — this is the visible "step" between flange and hex body.
-  const ringShape = new T.Shape(_circlePath2D(p.flangeR, 32));
-  ringShape.holes = [new T.Path(_circlePath2D(p.hexR, 6))];   // hex hole
-  const ringGeom  = new T.ShapeGeometry(ringShape);
+  // 2. SOLID disc on top of the flange — full circle at y=flangeH, no
+  //    cutout. The hex prism (built next) sits ON TOP of this disc;
+  //    the disc's interior region is covered by the hex prism's
+  //    bottom from above. Z-fight under the hex shares the same
+  //    material so it's invisible. V0.2.22.46 — previously this was
+  //    an annulus with a hex hole; user asked for a solid disc.
+  const ringGeom = new T.ShapeGeometry(new T.Shape(_circlePath2D(p.flangeR, 32)));
   ringGeom.rotateX(-Math.PI / 2);
   ringGeom.translate(0, p.flangeH, 0);
   meshes.push(new T.Mesh(ringGeom));
