@@ -968,17 +968,24 @@ function _buildContextMenuItems(node) {
       },
     });
     if (isActor) {
-      const curX = Number(node.insertAnim?.distance) || 20;
+      const curX  = Number(node.insertAnim?.distance) || 20;
+      const curMs = Number.isFinite(Number(node.insertAnim?.repositionMs))
+        ? Number(node.insertAnim.repositionMs) : 300;
       items.push({
-        label: `📏 Adjust insertion spacing (X = ${curX}mm)…`,
+        label: `📏 Adjust insertion animation…`,
         action: () => {
-          _showInputDialog('Insertion spacing X (mm)', String(curX), (v) => {
-            const n = Number(v);
-            if (Number.isFinite(n) && n > 0) {
+          showTwoFieldDialog(
+            'Insertion animation',
+            'Spacing X (mm)', curX,
+            'Reposition pre-step (ms)', curMs,
+            ({ a, b }) => {
+              const params = {};
+              if (Number.isFinite(a) && a > 0)  params.distance = a;
+              if (Number.isFinite(b) && b >= 0) params.repositionMs = b;
               import('../systems/hardware-actions.js').then(hw =>
-                hw.setInsertDistance([node.id], n));
-            }
-          });
+                hw.setInsertAnimParams([node.id], params));
+            },
+          );
         },
       });
     }
@@ -3071,6 +3078,48 @@ function _onDrop(e, targetNode) {
  */
 export function showInputDialog(title, defaultVal, onConfirm) {
   return _showInputDialog(title, defaultVal, onConfirm);
+}
+
+/**
+ * Two-field numeric dialog (V0.2.22.54) — used by "Adjust insertion
+ * animation". onConfirm receives { a, b } as numbers (NaN if blank).
+ */
+export function showTwoFieldDialog(title, fieldA, valA, fieldB, valB, onConfirm) {
+  const dlg = document.createElement('dialog');
+  dlg.className = 'sbs-dialog';
+  dlg.innerHTML = `
+    <div class="sbs-dialog__body">
+      <div class="sbs-dialog__title">${_esc(title)}</div>
+      <label class="small muted" style="display:block;margin-top:10px;">${_esc(fieldA)}
+        <input type="number" id="_tfd-a" value="${_esc(String(valA))}" step="1" min="0"
+          style="margin-top:3px;width:100%;box-sizing:border-box" />
+      </label>
+      <label class="small muted" style="display:block;margin-top:10px;">${_esc(fieldB)}
+        <input type="number" id="_tfd-b" value="${_esc(String(valB))}" step="10" min="0"
+          style="margin-top:3px;width:100%;box-sizing:border-box" />
+      </label>
+      <div style="display:flex;gap:8px;justify-content:flex-end;margin-top:14px">
+        <button class="btn" id="_tfd-cancel">Cancel</button>
+        <button class="btn primary" id="_tfd-ok">OK</button>
+      </div>
+    </div>
+  `;
+  document.body.appendChild(dlg);
+  const inA = dlg.querySelector('#_tfd-a');
+  const inB = dlg.querySelector('#_tfd-b');
+  const done = () => {
+    const a = Number(inA.value), b = Number(inB.value);
+    dlg.close(); dlg.remove();
+    onConfirm({ a, b });
+  };
+  dlg.querySelector('#_tfd-cancel').addEventListener('click', () => { dlg.close(); dlg.remove(); });
+  dlg.querySelector('#_tfd-ok').addEventListener('click', done);
+  dlg.addEventListener('keydown', e => {
+    if (e.key === 'Enter') done();
+    if (e.key === 'Escape') { dlg.close(); dlg.remove(); }
+  });
+  dlg.showModal();
+  requestAnimationFrame(() => inA.select());
 }
 
 function _showInputDialog(title, defaultVal, onConfirm) {

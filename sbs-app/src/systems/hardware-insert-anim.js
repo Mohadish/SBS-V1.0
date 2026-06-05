@@ -35,14 +35,15 @@ import { state }       from '../core/state.js';
 import { sceneCore }   from '../core/scene.js';
 import * as clock      from '../core/clock.js';
 import { generateScrewParts } from './hardware-generator.js';
-import { getComputedLocalPosition, getTotalLocalQuaternion } from '../core/transforms.js';
 
 // Staged actors, keyed by node id:
-//   { group, mergedMesh, meshes:[], offsets:[], fadeMat, appearing }
+//   { group, mergedMesh, meshes, offsets, fadeMat, appearing,
+//     needsReposition, targetPos, targetQuat, prevPos, prevQuat, repositionMs }
 const _staged = new Map();
-let _fade     = null;   // { startMs, durationMs, easeFn, resolve }
-let _assemble = null;   // { startMs, durationMs, easeFn, resolve }
-let _tickUnsub = null;
+let _fade       = null;  // { startMs, durationMs, easeFn, resolve }
+let _reposition = null;  // { startMs, durationMs, easeFn, resolve }
+let _assemble   = null;  // { startMs, durationMs, easeFn, resolve }
+let _tickUnsub  = null;
 
 
 export function isInsertAnimating() { return _staged.size > 0; }
@@ -78,7 +79,7 @@ export function findActorsForStep(stepId) {
  * @returns {Set<string>} ids actually staged (caller excludes these from
  *                        the obj + visibility channels)
  */
-export function stageInsertActors(actors, showingIdSet) {
+export function stageInsertActors(actors, showingIdSet, fromWorldTransforms = {}) {
   _disposeAll(/* restore */ true);   // clear any prior staging first
 
   const T = window.THREE;
@@ -95,39 +96,59 @@ export function stageInsertActors(actors, showingIdSet) {
     try { parts = generateScrewParts(tpl.params || {}, node.washers || null); }
     catch (e) { console.warn('[insert-anim] parts build failed:', e?.message); continue; }
 
-    // Transient group at the node's TARGET local pose (data transform is
-    // already at target by transition time → explode is relative to THIS
-    // step's final placement, not the step we came from).
+    // TARGET local pose — at staging time (after applyAllTransformsToScene)
+    // the merged mesh is already at THIS step's final pose.
+    const targetPos  = merged.position.clone();
+    const targetQuat = merged.quaternion.clone();
+
+    // PREVIOUS-step pose — fromWorldTransforms holds it in WORLD space;
+    // convert to the merged mesh's parent-local frame so the group (added
+    // under that parent) can interpolate prev → target.
+    const appearing = !!showingIdSet?.has(node.id);
+    let prevPos = null, prevQuat = null, needsReposition = false;
+    const fw = fromWorldTransforms[node.id];
+    if (!appearing && fw) {
+      merged.parent.updateMatrixWorld(true);
+      const invParent = merged.parent.matrixWorld.clone().invert();
+      const worldM = new T.Matrix4().compose(
+        new T.Vector3(fw.position[0], fw.position[1], fw.position[2]),
+        new T.Quaternion(fw.quaternion[0], fw.quaternion[1], fw.quaternion[2], fw.quaternion[3]),
+        new T.Vector3(1, 1, 1),
+      );
+      const localM = invParent.multiply(worldM);
+      prevPos  = new T.Vector3();
+      prevQuat = new T.Quaternion();
+      localM.decompose(prevPos, prevQuat, new T.Vector3());
+      // Reposition only if the screw was actually somewhere ELSE before
+      // (a meaningful translation). Same-spot → skip (still explodes via
+      // the reposition window so it doesn't pop assembled→exploded).
+      needsReposition = true;
+    }
+
     const group = new T.Group();
     group.name = 'sbs:insert-anim';
-    const tp = getComputedLocalPosition(node);
-    const tq = getTotalLocalQuaternion(node);
-    group.position.set(tp[0], tp[1], tp[2]);
-    group.quaternion.set(tq[0], tq[1], tq[2], tq[3]);
     const bs = node.baseLocalScale || [1, 1, 1];
     group.scale.set(bs[0], bs[1], bs[2]);
+    // needsReposition → start at PREV pose (assembled). Else → TARGET pose.
+    if (needsReposition) {
+      group.position.copy(prevPos);
+      group.quaternion.copy(prevQuat);
+    } else {
+      group.position.copy(targetPos);
+      group.quaternion.copy(targetQuat);
+    }
     merged.parent.add(group);
 
-    // FRESH transparent material — NOT a clone of the live material.
-    // The live material is screen-door "dither fade" patched: its
-    // opacity is driven by a `transitionOpacity` shader uniform, and
-    // plain `.opacity` is ignored — so cloning it and animating .opacity
-    // produced a hard pop. A plain MeshStandardMaterial with
-    // transparent+opacity alpha-blends normally, so the fade actually
-    // renders. Colour/metalness/roughness copied so the pieces match.
-    //
-    // V0.2.22.53.4 — opacity start depends on the PREVIOUS step: the
-    // screw fades in ONLY if it was hidden before (appearing = it's in
-    // the visibility "showing" set this step). If it was already visible,
-    // it stays visible (opacity 1) — no spurious re-fade.
+    // FRESH transparent material (plain MeshStandardMaterial) — the live
+    // material is screen-door dither-fade patched (opacity driven by a
+    // shader uniform, plain .opacity ignored), so a clone would pop.
     const src = Array.isArray(merged.material) ? merged.material[0] : merged.material;
-    const appearing = !!showingIdSet?.has(node.id);
     const fadeMat = new T.MeshStandardMaterial({
       color:     src?.color ? src.color.clone() : new T.Color(0xc0c4cc),
       metalness: src?.metalness ?? 0.65,
       roughness: src?.roughness ?? 0.35,
       transparent: true,
-      opacity:   appearing ? 0 : 1,
+      opacity:   appearing ? 0 : 1,   // fade in only if hidden before
     });
 
     const elems = [parts.screw, ...parts.washers.map(w => w.mesh)];
@@ -146,10 +167,19 @@ export function stageInsertActors(actors, showingIdSet) {
       return rankFromBottom * X;
     });
 
+    // Initial piece positions:
+    //   needsReposition → assembled (offset 0); the reposition phase
+    //     translates the group prev→target AND explodes 0→offset.
+    //   else → already exploded (offset); assemble brings them to 0.
     merged.visible = false;
-    elems.forEach((m, i) => { m.position.y = offsets[i]; });
+    elems.forEach((m, i) => { m.position.y = needsReposition ? 0 : offsets[i]; });
 
-    _staged.set(node.id, { group, mergedMesh: merged, meshes: elems, offsets, fadeMat, appearing });
+    const repMs = Number(node.insertAnim?.repositionMs);
+    _staged.set(node.id, {
+      group, mergedMesh: merged, meshes: elems, offsets, fadeMat, appearing,
+      needsReposition, targetPos, targetQuat, prevPos, prevQuat,
+      repositionMs: Number.isFinite(repMs) && repMs >= 0 ? repMs : 300,
+    });
     staged.add(node.id);
   }
 
@@ -157,6 +187,21 @@ export function stageInsertActors(actors, showingIdSet) {
     _tickUnsub = sceneCore.addTickHook(() => _advance(clock.now()));
   }
   return staged;
+}
+
+/**
+ * REPOSITION — for actors that were visible at a different pose last
+ * step, translate the group prev → target AND explode the pieces
+ * 0 → offset, over the (per-instance) reposition time. Resolves after
+ * the longest reposition. No-op if no actor needs it.
+ */
+export function runInsertReposition(easeFn) {
+  const need = [..._staged.values()].filter(s => s.needsReposition);
+  if (!need.length) return Promise.resolve();
+  const durationMs = Math.max(1, ...need.map(s => s.repositionMs || 300));
+  return new Promise(resolve => {
+    _reposition = { startMs: clock.now(), durationMs, easeFn, resolve };
+  });
 }
 
 /**
@@ -214,6 +259,23 @@ function _advance(now) {
     if (raw >= 1) { const r = _fade.resolve; _fade = null; r?.(); }
   }
 
+  if (_reposition) {
+    const T = window.THREE;
+    const raw = Math.min(1, Math.max(0, (now - _reposition.startMs) / _reposition.durationMs));
+    const u   = _reposition.easeFn ? _reposition.easeFn(raw) : raw;
+    for (const s of _staged.values()) {
+      if (!s.needsReposition) continue;
+      // Group translates/rotates prev → target …
+      s.group.position.lerpVectors(s.prevPos, s.targetPos, u);
+      s.group.quaternion.copy(s.prevQuat).slerp(s.targetQuat, u);
+      // … while the pieces explode 0 → full offset.
+      for (let i = 0; i < s.meshes.length; i++) {
+        s.meshes[i].position.y = s.offsets[i] * u;
+      }
+    }
+    if (raw >= 1) { const r = _reposition.resolve; _reposition = null; r?.(); }
+  }
+
   if (_assemble) {
     const raw = Math.min(1, Math.max(0, (now - _assemble.startMs) / _assemble.durationMs));
     const u   = _assemble.easeFn ? _assemble.easeFn(raw) : raw;
@@ -240,5 +302,6 @@ function _disposeAll(restore) {
   }
   _staged.clear();
   _fade = null;
+  _reposition = null;
   _assemble = null;
 }

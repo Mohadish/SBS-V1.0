@@ -50,7 +50,7 @@ import { initStepNav }            from './ui/step-nav.js';
 import { initStepsPanel }         from './ui/steps-panel.js';
 import { initSidebarLeft, showColorForNode } from './ui/sidebar-left.js';
 import { initContextMenu, hideContextMenu, showContextMenu } from './ui/context-menu.js';
-import { showMoveToFolderDialog, showAddToReplaceDialog, showReplaceModeDialog, showInputDialog } from './ui/tree.js';
+import { showMoveToFolderDialog, showAddToReplaceDialog, showReplaceModeDialog, showInputDialog, showTwoFieldDialog } from './ui/tree.js';
 import { positionSafeFrameEl }    from './core/safe-frame.js';
 import { initOverlay, getStage as getOverlayStage } from './systems/overlay.js';
 import { initOverlayToolbar }  from './ui/overlay-toolbar.js';
@@ -2161,17 +2161,24 @@ canvas.addEventListener('contextmenu', e => {
       },
     });
     if (isActor) {
-      const curX = Number(node?.insertAnim?.distance) || 20;
+      const curX  = Number(node?.insertAnim?.distance) || 20;
+      const curMs = Number.isFinite(Number(node?.insertAnim?.repositionMs))
+        ? Number(node.insertAnim.repositionMs) : 300;
       items.push({
-        label: `📏 Adjust insertion spacing (X = ${curX}mm)…`,
+        label: `📏 Adjust insertion animation…`,
         action: () => {
-          showInputDialog('Insertion spacing X (mm)', String(curX), (v) => {
-            const nx = Number(v);
-            if (Number.isFinite(nx) && nx > 0) {
+          showTwoFieldDialog(
+            'Insertion animation',
+            'Spacing X (mm)', curX,
+            'Reposition pre-step (ms)', curMs,
+            ({ a, b }) => {
+              const params = {};
+              if (Number.isFinite(a) && a > 0)  params.distance = a;
+              if (Number.isFinite(b) && b >= 0) params.repositionMs = b;
               import('./systems/hardware-actions.js').then(hw =>
-                hw.setInsertDistance([node.id], nx));
-            }
-          });
+                hw.setInsertAnimParams([node.id], params));
+            },
+          );
         },
       });
     }

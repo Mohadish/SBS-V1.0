@@ -470,14 +470,21 @@ export function setInsertActor(nodeIds, enable = true) {
 }
 
 /**
- * V0.2.22.52.2 — set the insertion explode spacing X (mm) on one or more
- * instances. Washers explode to L + j·X, screw to L + (W+1)·X. Undoable,
+ * V0.2.22.54 — set insertion-animation params on one or more instances:
+ *   distance     X explode spacing (mm)
+ *   repositionMs pre-insertion reposition time (ms)
+ * Pass either or both; omitted keys are left unchanged. Undoable,
  * multi-aware.
  */
-export function setInsertDistance(nodeIds, xMm) {
+export function setInsertAnimParams(nodeIds, { distance, repositionMs } = {}) {
   if (!Array.isArray(nodeIds)) nodeIds = [nodeIds];
-  const x = Math.max(0, Number(xMm) || 0);
-  if (!nodeIds.length || !(x > 0)) return;
+  if (!nodeIds.length) return;
+  const x   = (distance     != null) ? Math.max(0, Number(distance))     : undefined;
+  const rep = (repositionMs != null) ? Math.max(0, Number(repositionMs)) : undefined;
+  const hasX   = Number.isFinite(x)   && x > 0;
+  const hasRep = Number.isFinite(rep);
+  if (!hasX && !hasRep) return;
+
   const root = state.get('treeData');
   const nodeById = state.get('nodeById') || buildNodeMap(root);
 
@@ -485,28 +492,31 @@ export function setInsertDistance(nodeIds, xMm) {
   for (const id of nodeIds) {
     const n = nodeById.get(id);
     if (!n || n.type !== 'hardwareInstance') continue;
-    before.push({ id, prev: Number(n.insertAnim?.distance) });
+    before.push({ id, prev: { ...(n.insertAnim || {}) } });
   }
   if (!before.length) return;
 
-  const _set = (val, perId = null) => {
+  const _apply = (perId = null) => {
     const nb = state.get('nodeById') || buildNodeMap(root);
     for (const id of nodeIds) {
       const n = nb.get(id);
       if (!n || n.type !== 'hardwareInstance') continue;
-      const v = perId ? perId.get(id) : val;
-      n.insertAnim = { ...(n.insertAnim || {}), distance: v };
+      if (perId) { n.insertAnim = { ...perId.get(id) }; continue; }
+      const cur = { ...(n.insertAnim || {}) };
+      if (hasX)   cur.distance     = x;
+      if (hasRep) cur.repositionMs = rep;
+      n.insertAnim = cur;
     }
     state.markDirty?.();
     state.emit('change:treeData', state.get('treeData'));
   };
 
-  _set(x);
+  _apply();
   const prevMap = new Map(before.map(e => [e.id, e.prev]));
   undoManager.push(
-    `Insertion spacing ${x}mm`,
-    () => _set(null, prevMap),
-    () => _set(x),
+    'Insertion animation params',
+    () => _apply(prevMap),
+    () => _apply(),
   );
 }
 

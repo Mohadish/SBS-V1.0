@@ -36,6 +36,7 @@ const HEAD_OPTIONS = [
   { value: 'lowhead', label: 'Low head'               },
   { value: 'hex',     label: 'Hex head'               },
   { value: 'flange',  label: 'Flange head'            },
+  { value: 'none',    label: 'None (pin / grub)'      },
 ];
 
 const DRIVE_OPTIONS = [

@@ -38,7 +38,7 @@ import { toCreasedNormals } from '../../vendor/BufferGeometryUtils.bundle.mjs';
 
 // ─── Public API ─────────────────────────────────────────────────────────────
 
-export const HEAD_TYPES   = ['button', 'flat', 'socket', 'lowhead', 'hex', 'flange'];
+export const HEAD_TYPES   = ['button', 'flat', 'socket', 'lowhead', 'hex', 'flange', 'none'];
 export const DRIVE_STYLES = ['none', 'phillips', 'slotted', 'hex', 'torx'];
 
 export function generateScrewMesh({ diameter, length, headType, driveStyle }, washers = null) {
@@ -85,7 +85,13 @@ export function generateScrewParts({ diameter, length, headType, driveStyle }, w
   const drive = String(driveStyle || 'none');
 
   // Screw body — shank + head fused into one mesh.
-  const bodyParts = [_shank(D, L), ..._buildHead(head, D, drive)];
+  // Headless pin WITH a drive needs an OPEN-TOP shank so the drive
+  // socket carved into the shank top isn't blocked by the shank's cap.
+  const pinDrive = head === 'none' && drive !== 'none';
+  const bodyParts = [
+    ...(pinDrive ? _shankPartsOpenTop(D, L) : [_shank(D, L)]),
+    ..._buildHead(head, D, drive, L),
+  ];
   const screw = new T.Mesh(_mergeMeshes(bodyParts));
   screw.name = 'screw';
 
@@ -114,7 +120,8 @@ function _defaultHardwareMaterial() {
 
 export function describeScrew({ diameter, length, headType, driveStyle }) {
   const dr = driveStyle && driveStyle !== 'none' ? `, ${driveStyle}` : '';
-  return `M${diameter}×${length} ${headType}${dr}`;
+  const head = headType === 'none' ? 'pin' : headType;
+  return `M${diameter}×${length} ${head}${dr}`;
 }
 
 // ─── Head proportions ──────────────────────────────────────────────────────
@@ -148,16 +155,34 @@ function _headParams(headType, D) {
       flangeR:   0.866 * 1.05 * D,    // flange disc outer radius = hexR × 1.05
       flangeH:   0.18  * D,           // flange disc thickness
     };
+    // V0.2.22.54 — headless PIN (grub / set screw, or an alignment dowel
+    // with a drive socket). No head body; the drive socket (if any) is
+    // carved into the TOP of the shank. height 0 = the "head plane" is
+    // the shank top (y=0).
+    case 'none':    return { topR: 0.5   * D, botR: 0.5   * D, height: 0,      kind: 'none' };
     default:        return { topR: 0.75  * D, botR: 0.75  * D, height: 0.6  * D, kind: 'cyl' };
   }
 }
 
 // ─── Head builder — universal pattern ──────────────────────────────────────
 
-function _buildHead(headType, D, driveStyle) {
+function _buildHead(headType, D, driveStyle, L = 20) {
   const p = _headParams(headType, D);
   const hasDrive = driveStyle !== 'none';
   const cavityR  = D * 0.45;                          // constant, fits every drive
+
+  // ── Headless PIN (V0.2.22.54) — no head body. Plain pin when there's
+  // no drive; otherwise carve the drive socket into the shank top (y=0).
+  if (p.kind === 'none') {
+    if (!hasDrive) return [];                          // plain pin — shank caps itself
+    const cd = Math.min(D * 0.6, L * 0.4);            // socket depth into the shank
+    return [
+      _buildHeadTopWithCircleHole(p, cavityR),        // shank-top disk (r=D/2) with hole at y=0
+      _buildCavityFloor(p, cavityR, cd),              // socket floor at -cd
+      _buildDriverInsert(driveStyle, D, cavityR, p.height /* 0 */, cd),
+    ];
+  }
+
   // Cavity depth — for dome (button) heads, clamp tighter so the cavity
   // doesn't poke through the dome's underside.
   const cavityDepth = Math.min(
@@ -719,6 +744,25 @@ function _shank(D, L) {
   const m = _cyl(D / 2, D / 2, L, 24);
   m.position.y = -L / 2;
   return m;
+}
+
+/**
+ * V0.2.22.54 — shank with an OPEN top (no top cap), used for headless
+ * pins that carve a drive socket into the shank top. Returns [side
+ * wall, bottom cap]; the head builder supplies the holed top disk.
+ */
+function _shankPartsOpenTop(D, L) {
+  const T = window.THREE;
+  const out = [];
+  const wall = new T.Mesh(new T.CylinderGeometry(D / 2, D / 2, L, 24, 1, /* open */ true));
+  wall.position.y = -L / 2;
+  out.push(wall);
+  // Bottom cap (the pin tip) — flat disk facing -Y.
+  const bot = new T.Mesh(new T.ShapeGeometry(new T.Shape(_circlePath2D(D / 2, 24))));
+  bot.geometry.rotateX(Math.PI / 2);
+  bot.geometry.translate(0, -L, 0);
+  out.push(bot);
+  return out;
 }
 
 // ─── 2D path helpers ───────────────────────────────────────────────────────

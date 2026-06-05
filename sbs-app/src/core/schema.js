@@ -27,7 +27,7 @@ export const SCHEMA_VERSIONS = {
   screen:     1,
 };
 
-export const APP_VERSION  = 'V0.2.22.53.4';
+export const APP_VERSION  = 'V0.2.22.54';
 // Format: YYYY-MM-DD. Bump along with APP_VERSION on every build worth
 // labelling so the File tab shows you're running the expected slice.
 export const APP_RELEASED = '2026-05-29';
@@ -475,12 +475,17 @@ export function createHardwareInstanceNode(overrides = {}) {
     // axis (staggered), then glide into the final placed position.
     //   enabled   boolean   — is this instance an insertion actor
     //   stepId    string    — which step triggers the effect (null = any)
-    //   distance  number    — X: per-element explode spacing in mm
-    //                         (washer j explodes to L + j·X, screw to
-    //                         L + (W+1)·X). Default 20; adjustable via
-    //                         the right-click "Adjust insertion spacing".
-    //   dottedLine boolean  — draw the projected insertion path (Stage 4)
-    insertAnim: { enabled: false, stepId: null, distance: 20, dottedLine: false },
+    //   distance    number  — X: per-element explode spacing in mm
+    //                         (washer j explodes to j·X, screw to
+    //                         L + (W+1)·X). Default 20.
+    //   repositionMs number — pre-insertion reposition time: how long the
+    //                         screw takes to travel from its PREVIOUS-step
+    //                         pose to the exploded staging pose before the
+    //                         insert assembles. Default 300. Avoids a
+    //                         threshold jump when the screw was visible
+    //                         elsewhere on the prior step.
+    //   dottedLine  boolean — draw the projected insertion path (Stage 4)
+    insertAnim: { enabled: false, stepId: null, distance: 20, repositionMs: 300, dottedLine: false },
 
     ...overrides,
   };

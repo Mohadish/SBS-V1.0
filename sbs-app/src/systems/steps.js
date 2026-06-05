@@ -34,9 +34,9 @@ import { ensureHardwareInstanceObject3D } from './hardware-templates.js'; // V0.
 import { createStep, createEmptySnapshot } from '../core/schema.js';
 import { parseAnimation, resolveAnimationString } from './animation.js';
 import {
-  stageInsertActors, runInsertFade, runInsertAssemble,
+  stageInsertActors, runInsertFade, runInsertReposition, runInsertAssemble,
   finalizeInsertActors, findActorsForStep,
-} from './hardware-insert-anim.js'; // V0.2.22.53 — screw stage/fade/assemble
+} from './hardware-insert-anim.js'; // V0.2.22.54 — screw stage/fade/reposition/assemble
 // V0.1.78 — narration overflow coordination. UI module exports the
 // query helpers; cross-layer import is OK here (actions.js + overlay.js
 // already cross the same boundary).
@@ -564,7 +564,7 @@ class StepManager {
     // prevents both the appear-at-final-then-jump AND the threshold pop.
     const _insertActors = findActorsForStep(state.get('activeStepId'));
     const _stagedActorIds = _insertActors.length
-      ? stageInsertActors(_insertActors, new Set(showingMeshIds))
+      ? stageInsertActors(_insertActors, new Set(showingMeshIds), fromWorldTransforms)
       : new Set();
     if (_stagedActorIds.size) {
       showingMeshIds = showingMeshIds.filter(id => !_stagedActorIds.has(id));
@@ -719,14 +719,13 @@ class StepManager {
         this._onObjectTransitionsDone = resolve;
       });
 
-      // V0.2.22.53 — insertion in SIMULTANEOUS (non-phased) mode. Pieces
-      // were already staged exploded before this branch. Here we fade +
-      // assemble together over the object duration (no phase ordering to
-      // honour in simultaneous mode).
+      // V0.2.22.54 — insertion in SIMULTANEOUS (non-phased) mode. Pieces
+      // were staged before this branch. Fade runs in parallel; reposition
+      // (prev→staging) runs first, then assemble (staging→final).
       const insertSimP = _stagedActorIds.size
         ? Promise.all([
             runInsertFade(objDur, easeFn),
-            runInsertAssemble(objDur, easeFn),
+            runInsertReposition(easeFn).then(() => runInsertAssemble(objDur, easeFn)),
           ])
         : Promise.resolve();
 
@@ -1108,7 +1107,12 @@ class StepManager {
       if (types.includes('insert') && !insertHandled) {
         insertHandled = true;
         if (stagedActorIds.size) {
-          phasePromises.push(runInsertAssemble(durationMs, easeFn));
+          // Reposition (prev→staging, for screws that moved) THEN
+          // assemble (staging→final). Sequential so the screw travels
+          // into position before it screws in.
+          phasePromises.push(
+            runInsertReposition(easeFn).then(() => runInsertAssemble(durationMs, easeFn)),
+          );
         }
       }
 
@@ -1254,7 +1258,9 @@ class StepManager {
     // instance is enough; insert(N) in the string is just for timing.
     if (!insertHandled && stagedActorIds.size) {
       insertHandled = true;
-      fallbackPromises.push(runInsertAssemble(fallbackObj, easeFn));
+      fallbackPromises.push(
+        runInsertReposition(easeFn).then(() => runInsertAssemble(fallbackObj, easeFn)),
+      );
     }
 
     if (fallbackPromises.length) {
