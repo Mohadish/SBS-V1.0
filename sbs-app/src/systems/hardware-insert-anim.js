@@ -109,15 +109,25 @@ export function stageInsertActors(actors, showingIdSet) {
     group.scale.set(bs[0], bs[1], bs[2]);
     merged.parent.add(group);
 
-    // Transparent clone of the live material so the pieces can fade
-    // independently. Disposed on finalize.
-    const baseMat = Array.isArray(merged.material) ? merged.material[0] : merged.material;
-    const fadeMat = baseMat ? baseMat.clone() : null;
-    const appearing = !!showingIdSet?.has(node.id);
-    if (fadeMat) { fadeMat.transparent = true; fadeMat.opacity = appearing ? 0 : 1; }
+    // FRESH transparent material — NOT a clone of the live material.
+    // The live material is screen-door "dither fade" patched: its
+    // opacity is driven by a `transitionOpacity` shader uniform, and
+    // plain `.opacity` is ignored — so cloning it and animating .opacity
+    // produced a hard pop (the V0.2.22.52.4 bug). A plain
+    // MeshStandardMaterial with transparent+opacity alpha-blends
+    // normally, so the fade actually renders. Colour/metalness/roughness
+    // are copied from the live material so the pieces still match.
+    const src = Array.isArray(merged.material) ? merged.material[0] : merged.material;
+    const fadeMat = new T.MeshStandardMaterial({
+      color:     src?.color ? src.color.clone() : new T.Color(0xc0c4cc),
+      metalness: src?.metalness ?? 0.65,
+      roughness: src?.roughness ?? 0.35,
+      transparent: true,
+      opacity:   0,                  // always fade in — pieces are brand-new
+    });
 
     const elems = [parts.screw, ...parts.washers.map(w => w.mesh)];
-    for (const m of elems) { if (fadeMat) m.material = fadeMat; group.add(m); }
+    for (const m of elems) { m.material = fadeMat; group.add(m); }
 
     // Explode offsets along local +Y (V0.2.22.52.4 layout):
     //   bottom washer → L+X … against-head washer → L+W·X (no swap)
@@ -135,7 +145,7 @@ export function stageInsertActors(actors, showingIdSet) {
     merged.visible = false;
     elems.forEach((m, i) => { m.position.y = offsets[i]; });
 
-    _staged.set(node.id, { group, mergedMesh: merged, meshes: elems, offsets, fadeMat, appearing });
+    _staged.set(node.id, { group, mergedMesh: merged, meshes: elems, offsets, fadeMat });
     staged.add(node.id);
   }
 
@@ -151,8 +161,7 @@ export function stageInsertActors(actors, showingIdSet) {
  * if nothing is appearing). Non-appearing actors are already opaque.
  */
 export function runInsertFade(durationMs, easeFn) {
-  const anyAppearing = [..._staged.values()].some(s => s.appearing);
-  if (!_staged.size || !anyAppearing) return Promise.resolve();
+  if (!_staged.size) return Promise.resolve();
   return new Promise(resolve => {
     _fade = { startMs: clock.now(), durationMs: Math.max(1, durationMs), easeFn, resolve };
   });
@@ -192,7 +201,7 @@ function _advance(now) {
     const raw = Math.min(1, Math.max(0, (now - _fade.startMs) / _fade.durationMs));
     const u   = _fade.easeFn ? _fade.easeFn(raw) : raw;
     for (const s of _staged.values()) {
-      if (s.appearing && s.fadeMat) s.fadeMat.opacity = u;
+      if (s.fadeMat) s.fadeMat.opacity = u;
     }
     if (raw >= 1) { const r = _fade.resolve; _fade = null; r?.(); }
   }
