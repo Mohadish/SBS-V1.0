@@ -446,7 +446,9 @@ function _buildWashers(washers, D, headParams) {
   const innerR = D * 0.55;                                  // = D × 1.1 / 2
   const outerR_small = (headOuterD * 1.1) / 2;              // first-in-stack
   const outerR_big   = (headOuterD * 1.2) / 2;              // single / second
-  const thickness = D * 0.15;
+  // V0.2.22.50 — fixed 1.2 mm thickness for ALL washers (was D × 0.15,
+  // which scaled with screw size). 1 scene unit = 1 mm, so 1.2 here.
+  const thickness = 1.2;
 
   // Build the stack from head DOWN. Each entry: { kind, outerR }.
   //
@@ -485,8 +487,9 @@ function _buildWashers(washers, D, headParams) {
       meshes.push(_flatWasher(innerR, w.outerR, thickness, yTop));
       yTop -= thickness;
     } else {
-      // Spring — total height = thickness × 1.2 (pre-compressed).
-      const totalH = thickness * 1.2;
+      // Spring — total height = thickness × 1.4 (pre-compressed look,
+      // V0.2.22.50; was 1.2×).
+      const totalH = thickness * 1.4;
       meshes.push(_springWasher(innerR, w.outerR, thickness, totalH, yTop));
       yTop -= totalH;
     }
