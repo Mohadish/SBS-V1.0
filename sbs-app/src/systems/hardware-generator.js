@@ -551,34 +551,37 @@ function _springWasher(innerR, outerR, thickness, totalH, yTop) {
   }
 
   // Helical ribbon — quad strips connecting consecutive cross-sections.
+  // V0.2.22.48 — winding reversed vs .47: every triangle had its normal
+  // pointing the wrong way (computeVertexNormals derives the normal from
+  // winding, and the whole ribbon was wound clockwise-as-seen-from-
+  // outside, which gives inward normals). Swapping the 2nd/3rd index of
+  // each triangle flips all of them outward.
   for (let i = 0; i < segments; i++) {
     const a = i * 4;          // first vertex of segment i
     const b = (i + 1) * 4;    // first vertex of segment i+1
-    // Outer side (outward-facing). Winding chosen for outward normal.
-    indices.push(a + 1, b + 1, b + 2);
-    indices.push(a + 1, b + 2, a + 2);
+    // Outer side (outward-facing).
+    indices.push(a + 1, b + 2, b + 1);
+    indices.push(a + 1, a + 2, b + 2);
     // Inner side (inward-facing).
-    indices.push(a + 0, a + 3, b + 3);
-    indices.push(a + 0, b + 3, b + 0);
+    indices.push(a + 0, b + 3, a + 3);
+    indices.push(a + 0, b + 0, b + 3);
     // Top side (upward).
-    indices.push(a + 3, a + 2, b + 2);
-    indices.push(a + 3, b + 2, b + 3);
+    indices.push(a + 3, b + 2, a + 2);
+    indices.push(a + 3, b + 3, b + 2);
     // Bottom side (downward).
-    indices.push(a + 0, b + 0, b + 1);
-    indices.push(a + 0, b + 1, a + 1);
+    indices.push(a + 0, b + 1, b + 0);
+    indices.push(a + 0, a + 1, b + 1);
   }
 
   // Cap faces at the split-ring gap. Start cap at θ=0 (highest end),
-  // end cap at θ=2π (lowest end). Both face out of the gap.
-  // Start cap (vertices 0..3): face direction is roughly -tangent at θ=0,
-  // i.e. (0, 0, -1) in local. Triangle winding CW from -Z viewpoint =
-  // CCW from +Z viewpoint, so reverse.
-  indices.push(0, 2, 3);
-  indices.push(0, 1, 2);
+  // end cap at θ=2π (lowest end). Both face out of the gap. Winding
+  // flipped to match the ribbon (V0.2.22.48).
+  indices.push(0, 3, 2);
+  indices.push(0, 2, 1);
   // End cap (vertices N..N+3 where N = segments*4):
   const N = segments * 4;
-  indices.push(N, N + 3, N + 2);
-  indices.push(N, N + 2, N + 1);
+  indices.push(N, N + 2, N + 3);
+  indices.push(N, N + 1, N + 2);
 
   const geom = new T.BufferGeometry();
   geom.setAttribute('position', new T.Float32BufferAttribute(positions, 3));
