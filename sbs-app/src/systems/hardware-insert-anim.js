@@ -44,7 +44,6 @@ let _fade     = null;   // { startMs, durationMs, easeFn, resolve }
 let _assemble = null;   // { startMs, durationMs, easeFn, resolve }
 let _tickUnsub = null;
 
-const _FADE_FALLBACK_FRAC = 0.4;   // assemble also ramps opacity (safety)
 
 export function isInsertAnimating() { return _staged.size > 0; }
 
@@ -113,17 +112,22 @@ export function stageInsertActors(actors, showingIdSet) {
     // The live material is screen-door "dither fade" patched: its
     // opacity is driven by a `transitionOpacity` shader uniform, and
     // plain `.opacity` is ignored — so cloning it and animating .opacity
-    // produced a hard pop (the V0.2.22.52.4 bug). A plain
-    // MeshStandardMaterial with transparent+opacity alpha-blends
-    // normally, so the fade actually renders. Colour/metalness/roughness
-    // are copied from the live material so the pieces still match.
+    // produced a hard pop. A plain MeshStandardMaterial with
+    // transparent+opacity alpha-blends normally, so the fade actually
+    // renders. Colour/metalness/roughness copied so the pieces match.
+    //
+    // V0.2.22.53.4 — opacity start depends on the PREVIOUS step: the
+    // screw fades in ONLY if it was hidden before (appearing = it's in
+    // the visibility "showing" set this step). If it was already visible,
+    // it stays visible (opacity 1) — no spurious re-fade.
     const src = Array.isArray(merged.material) ? merged.material[0] : merged.material;
+    const appearing = !!showingIdSet?.has(node.id);
     const fadeMat = new T.MeshStandardMaterial({
       color:     src?.color ? src.color.clone() : new T.Color(0xc0c4cc),
       metalness: src?.metalness ?? 0.65,
       roughness: src?.roughness ?? 0.35,
       transparent: true,
-      opacity:   0,                  // always fade in — pieces are brand-new
+      opacity:   appearing ? 0 : 1,
     });
 
     const elems = [parts.screw, ...parts.washers.map(w => w.mesh)];
@@ -145,7 +149,7 @@ export function stageInsertActors(actors, showingIdSet) {
     merged.visible = false;
     elems.forEach((m, i) => { m.position.y = offsets[i]; });
 
-    _staged.set(node.id, { group, mergedMesh: merged, meshes: elems, offsets, fadeMat });
+    _staged.set(node.id, { group, mergedMesh: merged, meshes: elems, offsets, fadeMat, appearing });
     staged.add(node.id);
   }
 
@@ -161,7 +165,11 @@ export function stageInsertActors(actors, showingIdSet) {
  * if nothing is appearing). Non-appearing actors are already opaque.
  */
 export function runInsertFade(durationMs, easeFn) {
-  if (!_staged.size) return Promise.resolve();
+  // Only run when at least one staged actor is APPEARING this step
+  // (was hidden in the previous step). Otherwise there's nothing to
+  // fade — the pieces are already opaque.
+  const anyAppearing = [..._staged.values()].some(s => s.appearing);
+  if (!_staged.size || !anyAppearing) return Promise.resolve();
   return new Promise(resolve => {
     _fade = { startMs: clock.now(), durationMs: Math.max(1, durationMs), easeFn, resolve };
   });
@@ -201,7 +209,7 @@ function _advance(now) {
     const raw = Math.min(1, Math.max(0, (now - _fade.startMs) / _fade.durationMs));
     const u   = _fade.easeFn ? _fade.easeFn(raw) : raw;
     for (const s of _staged.values()) {
-      if (s.fadeMat) s.fadeMat.opacity = u;
+      if (s.appearing && s.fadeMat) s.fadeMat.opacity = u;
     }
     if (raw >= 1) { const r = _fade.resolve; _fade = null; r?.(); }
   }
@@ -210,13 +218,13 @@ function _advance(now) {
     const raw = Math.min(1, Math.max(0, (now - _assemble.startMs) / _assemble.durationMs));
     const u   = _assemble.easeFn ? _assemble.easeFn(raw) : raw;
     for (const s of _staged.values()) {
+      // Position only — opacity is owned entirely by the visibility
+      // channel (V0.2.22.53.4). If visibility sits AFTER insert in the
+      // string, an appearing screw assembles while still invisible
+      // (opacity 0) and then fades in at the visibility block — "appears
+      // after the insert animation", which is the intended behaviour.
       for (let i = 0; i < s.meshes.length; i++) {
         s.meshes[i].position.y = s.offsets[i] * (1 - u);
-      }
-      // Safety ramp: if no visibility phase faded the pieces, bring them
-      // opaque over the assemble so the screw isn't invisible at the end.
-      if (s.fadeMat && s.fadeMat.opacity < 1) {
-        s.fadeMat.opacity = Math.max(s.fadeMat.opacity, Math.min(1, raw / _FADE_FALLBACK_FRAC));
       }
     }
     if (raw >= 1) { const r = _assemble.resolve; _assemble = null; r?.(); }
