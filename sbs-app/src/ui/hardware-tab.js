@@ -30,12 +30,12 @@ import { showConfirmDialog } from './context-menu.js';
 import * as preview    from './hardware-preview.js';
 
 const HEAD_OPTIONS = [
-  { value: 'pan',     label: 'Pan'                  },
-  { value: 'button',  label: 'Button'               },
-  { value: 'flat',    label: 'Flat / Countersunk'   },
-  { value: 'socket',  label: 'Socket cap'           },
-  { value: 'lowhead', label: 'Low head'             },
-  { value: 'hex',     label: 'Hex head'             },
+  { value: 'socket',  label: 'Socket cap'             },
+  { value: 'button',  label: 'Button (shallow dome)'  },
+  { value: 'flat',    label: 'Flat / Countersunk'     },
+  { value: 'lowhead', label: 'Low head'               },
+  { value: 'hex',     label: 'Hex head'               },
+  { value: 'flange',  label: 'Flange head'            },
 ];
 
 const DRIVE_OPTIONS = [
@@ -51,7 +51,7 @@ const DRIVE_OPTIONS = [
 let _formSpec = {
   diameter:   4,
   length:     20,
-  headType:   'pan',
+  headType:   'socket',
   driveStyle: 'phillips',
 };
 
@@ -243,7 +243,7 @@ function _wire(panelEl) {
   const _readForm = () => ({
     diameter:   Math.max(0.5, Number(dInp.value)  || 4),
     length:     Math.max(1,   Number(lInp.value)  || 20),
-    headType:   String(headSel.value  || 'pan'),
+    headType:   String(headSel.value  || 'socket'),
     driveStyle: String(driveSel.value || 'none'),
   });
 

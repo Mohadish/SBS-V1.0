@@ -36,7 +36,7 @@
 
 // ─── Public API ─────────────────────────────────────────────────────────────
 
-export const HEAD_TYPES   = ['pan', 'button', 'flat', 'socket', 'lowhead', 'hex'];
+export const HEAD_TYPES   = ['button', 'flat', 'socket', 'lowhead', 'hex', 'flange'];
 export const DRIVE_STYLES = ['none', 'phillips', 'slotted', 'hex', 'torx'];
 
 export function generateScrewMesh({ diameter, length, headType, driveStyle }) {
@@ -45,7 +45,7 @@ export function generateScrewMesh({ diameter, length, headType, driveStyle }) {
 
   const D = Math.max(0.5, Number(diameter) || 4);
   const L = Math.max(D * 0.5, Number(length) || 20);
-  const head  = String(headType   || 'pan');
+  const head  = String(headType   || 'socket');
   const drive = String(driveStyle || 'none');
 
   const parts = [];
@@ -69,23 +69,29 @@ export function describeScrew({ diameter, length, headType, driveStyle }) {
 // ─── Head proportions ──────────────────────────────────────────────────────
 
 function _headParams(headType, D) {
-  // kind = 'cyl' | 'cone' | 'hex'
-  //   cyl  — straight cylinder outer wall (pan, socket cap, low head)
-  //   cone — tapered cylinder (flat / countersunk; topR > botR)
-  //   hex  — 6-sided prism outer wall
-  //
-  // Note V0.2.22.39: button head currently renders as a slightly taller
-  // pan (kind='cyl') so the recess geometry works without the round-dome
-  // / drive-hole intersection problem. A proper rounded-top button head
-  // with a recessed drive socket is queued.
+  // kind = 'cyl' | 'cone' | 'hex' | 'dome' | 'flange'
+  //   cyl    — straight cylinder outer wall (socket cap, low head)
+  //   cone   — tapered cylinder (flat / countersunk; topR > botR)
+  //   hex    — 6-sided prism outer wall
+  //   dome   — shallow elliptical dome (button) — LatheGeometry profile
+  //   flange — stepped profile: head body on top of a wider flange —
+  //            LatheGeometry profile
   switch (headType) {
-    case 'pan':     return { topR: 0.875 * D, botR: 0.875 * D, height: 0.6  * D, kind: 'cyl' };
-    case 'button':  return { topR: 0.875 * D, botR: 0.875 * D, height: 0.7  * D, kind: 'cyl' };
     case 'flat':    return { topR: 1.0   * D, botR: 0.5   * D, height: 0.6  * D, kind: 'cone' };
     case 'socket':  return { topR: 0.75  * D, botR: 0.75  * D, height: 1.0  * D, kind: 'cyl' };
     case 'lowhead': return { topR: 0.75  * D, botR: 0.75  * D, height: 0.6  * D, kind: 'cyl' };
     case 'hex':     return { topR: 0.866 * D, botR: 0.866 * D, height: 0.6  * D, kind: 'hex' };
-    default:        return { topR: 0.875 * D, botR: 0.875 * D, height: 0.6  * D, kind: 'cyl' };
+    case 'button':  return { topR: 0.95  * D, botR: 0.95  * D, height: 0.4  * D, kind: 'dome' };
+    case 'flange':  return {
+      topR:      0.7  * D,            // head body radius (top of head)
+      botR:      1.2  * D,            // flange radius (used for bottom cap)
+      height:    0.6  * D,            // total head height (flange + head body)
+      kind:      'flange',
+      flangeR:   1.2  * D,            // flange outer radius (= botR)
+      headBodyR: 0.7  * D,            // head body radius (= topR)
+      flangeH:   0.2  * D,            // flange thickness (lower portion)
+    };
+    default:        return { topR: 0.75  * D, botR: 0.75  * D, height: 0.6  * D, kind: 'cyl' };
   }
 }
 
@@ -94,47 +100,143 @@ function _headParams(headType, D) {
 function _buildHead(headType, D, driveStyle) {
   const p = _headParams(headType, D);
   const hasDrive = driveStyle !== 'none';
+  const cavityR  = D * 0.45;                          // constant, fits every drive
+  // Cavity depth — for dome (button) heads, clamp tighter so the cavity
+  // doesn't poke through the dome's underside.
+  const cavityDepth = Math.min(
+    p.height * (p.kind === 'dome' ? 0.55 : 0.65),
+    p.height - D * 0.1,
+  );
+
   const meshes = [];
-
-  // 1. Outer wall — single continuous mesh, no internal seams.
-  meshes.push(..._buildOuterWall(p));
-
-  // 5. Bottom cap — closes the head from below.
+  // Bottom cap (closes the head from below) is shared by every head type.
   meshes.push(_buildBottomCap(p));
 
-  if (!hasDrive) {
-    // No drive socket. Smooth flat top.
-    meshes.push(_buildFlatTopCap(p));
-    return meshes;
+  // ── Lathe-based heads (dome, flange) ──────────────────────────────────
+  //   The lathe profile IS the outer surface + top transition + cavity
+  //   opening edge in one continuous mesh. No separate flat top cap.
+  if (p.kind === 'dome' || p.kind === 'flange') {
+    const profile = (p.kind === 'dome')
+      ? _domeProfile(p.topR, p.height, hasDrive ? cavityR : null, 12)
+      : _flangeProfile(p, hasDrive ? cavityR : null);
+    meshes.push(_buildLathe(profile));
+  } else {
+    // ── Cylindrical / conical / hex heads ───────────────────────────────
+    //   Outer wall = open primitive; top cap = separate flat polygon
+    //   (with or without cavity hole depending on driveStyle).
+    meshes.push(..._buildOuterWall(p));
+    if (hasDrive) {
+      meshes.push(_buildHeadTopWithCircleHole(p, cavityR));
+    } else {
+      meshes.push(_buildFlatTopCap(p));
+    }
   }
 
-  // V0.2.22.42 — TRUE Lego compound. Each piece authored exactly as
-  // the user described (subtractive Boolean in CAD terms):
-  //
-  //   HEAD     head shape with a cylindrical pocket subtracted from
-  //            the top. Pocket = cavityR × cavityDepth. The cavity
-  //            floor is part of the head — it shows through the
-  //            insert's drive hole as the socket floor.
-  //
-  //   INSERT   ONE extrusion of a 2D shape: outer = cavityR circle,
-  //            HOLE = drive shape (cross / slot / hex / star). The
-  //            shape is extruded vertically by cavityDepth so its
-  //            top sits flush with the head top. The result is a
-  //            cylinder with a drive-shaped through-hole — exactly
-  //            what "subtract the driver from the cylinder" produces.
-  //
-  // Composition: the head's cavity floor + the insert's through-hole
-  // walls together form the visible drive socket. Swap heads → same
-  // cavity, same insert fits. Swap drivers → same cavity, different
-  // insert shape. True Lego.
-  const cavityR     = D * 0.45;                         // constant, fits every drive
-  const cavityDepth = Math.min(p.height * 0.65, p.height - D * 0.1);
-
-  meshes.push(_buildHeadTopWithCircleHole(p, cavityR));
-  meshes.push(_buildCavityFloor(p, cavityR, cavityDepth));
-  meshes.push(_buildDriverInsert(driveStyle, D, cavityR, p.height, cavityDepth));
+  // ── Cavity floor + driver insert (only when there's a drive) ──────────
+  if (hasDrive) {
+    meshes.push(_buildCavityFloor(p, cavityR, cavityDepth));
+    meshes.push(_buildDriverInsert(driveStyle, D, cavityR, p.height, cavityDepth));
+  }
 
   return meshes;
+}
+
+// ─── Lathe-based head profiles ─────────────────────────────────────────────
+
+/**
+ * Wrap a 2D profile (array of Vector2, x=radial, y=vertical) into a
+ * LatheGeometry revolved 32 segments around the +Y axis.
+ *
+ * The profile must NOT start or end mid-radius if you want a sealed
+ * solid — for our heads, the bottom cap (separate disk at y=0) closes
+ * the open end at (outerR, 0), and the top either tapers to the axis
+ * (drive=none case) or stops at the cavity opening (drive case, the
+ * cavity wall/floor/insert provide the closure).
+ */
+function _buildLathe(profile) {
+  const T = window.THREE;
+  return new T.Mesh(new T.LatheGeometry(profile, 32));
+}
+
+/**
+ * Dome profile for the button head — quarter-ellipse from the bottom
+ * outer corner up to either (a) the axis apex when drive='none', or
+ * (b) the cavity opening edge at (cavityR, p.height) when there's a
+ * drive. The ellipse's vertical semi-axis is sized so the cavity edge
+ * sits exactly at y=p.height — that way the cavity opening is flush
+ * with the head's nominal top, even though the dome's "virtual apex"
+ * (where it would peak if not truncated) is higher.
+ */
+function _domeProfile(headOuterR, headTop, cavityR, segments) {
+  const T = window.THREE;
+  const points = [];
+  if (cavityR == null) {
+    // Full dome to apex. Simple quarter-ellipse with semi-axes
+    // (headOuterR, headTop).
+    for (let i = 0; i <= segments; i++) {
+      const theta = (i / segments) * (Math.PI / 2);
+      points.push(new T.Vector2(
+        headOuterR * Math.cos(theta),
+        headTop    * Math.sin(theta),
+      ));
+    }
+  } else {
+    // Truncated dome — cavity opens at (cavityR, headTop). Solve for
+    // the ellipse vertical semi-axis b such that the curve passes
+    // through both (headOuterR, 0) and (cavityR, headTop):
+    //   x²/a² + y²/b² = 1, with a = headOuterR.
+    //   At (cavityR, headTop):  (cavityR/a)² + (headTop/b)² = 1
+    //   → b = headTop / sqrt(1 - (cavityR/a)²)
+    const a = headOuterR;
+    const ratio = cavityR / a;
+    const b = headTop / Math.sqrt(Math.max(1e-6, 1 - ratio * ratio));
+    const thetaEnd = Math.acos(ratio);
+    for (let i = 0; i <= segments; i++) {
+      const theta = (i / segments) * thetaEnd;
+      points.push(new T.Vector2(
+        a * Math.cos(theta),
+        b * Math.sin(theta),
+      ));
+    }
+    // Snap last point exactly to (cavityR, headTop) — floating-point
+    // accumulation can leave it off by ~1e-9, which produces a tiny
+    // gap with the cavity floor/insert geometry below.
+    points[points.length - 1] = new T.Vector2(cavityR, headTop);
+  }
+  return points;
+}
+
+/**
+ * Flange-head profile — stepped: wide thin flange at the bottom,
+ * narrower cylindrical head body on top, optional cavity hole at the
+ * apex. Each segment is a straight line in the profile, lathed into
+ * a real 3D step:
+ *
+ *   .─────.            (cavityR, height)        ← cavity opening edge
+ *   │     │            (headBodyR, height)
+ *   │     │            head body wall
+ *   │     │__________  (flangeR, flangeH)       ← top of flange step
+ *   │                │ flange wall
+ *   │                │ (flangeR, 0)             ← bottom outer
+ *   └─ axis          ┘
+ *
+ * For drive='none' the profile closes at the axis (0, height) instead
+ * of stopping at the cavity edge.
+ */
+function _flangeProfile(p, cavityR) {
+  const T = window.THREE;
+  const points = [
+    new T.Vector2(p.flangeR,   0),
+    new T.Vector2(p.flangeR,   p.flangeH),
+    new T.Vector2(p.headBodyR, p.flangeH),
+    new T.Vector2(p.headBodyR, p.height),
+  ];
+  if (cavityR == null) {
+    points.push(new T.Vector2(0, p.height));         // tapers to axis
+  } else {
+    points.push(new T.Vector2(cavityR, p.height));   // stops at cavity edge
+  }
+  return points;
 }
 
 /**

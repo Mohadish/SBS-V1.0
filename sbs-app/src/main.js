@@ -2128,6 +2128,42 @@ canvas.addEventListener('contextmenu', e => {
     items.push({ label: '─', disabled: true });
   }
 
+  // V0.2.22.44 — hardware instance(s) in the viewport. Same menu shape
+  // as the tree's right-click. Multi-aware on delete: if several
+  // screws are selected and the right-clicked one is among them,
+  // delete acts on the whole selection.
+  const multiSet = (multiIds instanceof Set) ? multiIds : new Set();
+  const allMultiHw = multiSet.size > 1
+    && [...multiSet].every(id => nodeById?.get(id)?.type === 'hardwareInstance');
+  if (node?.type === 'hardwareInstance') {
+    items.push({
+      label: '🔩 Duplicate (same template)',
+      action: () => {
+        import('./systems/hardware-actions.js').then(hw =>
+          hw.duplicateInstance(node.id));
+      },
+    });
+    items.push({
+      label: '🔩 Edit template (affects all instances)…',
+      action: () => {
+        import('./ui/sidebar-left.js').then(sb =>
+          sb.editHardwareTemplate(node.templateId));
+      },
+    });
+    const delLabel = allMultiHw
+      ? `🗑 Delete ${multiSet.size} screws`
+      : '🗑 Delete screw';
+    const delIds = allMultiHw ? [...multiSet] : [node.id];
+    items.push({
+      label: delLabel,
+      action: () => {
+        import('./systems/hardware-actions.js').then(hw =>
+          hw.deleteInstances(delIds));
+      },
+    });
+    items.push({ label: '─', disabled: true });
+  }
+
   if (isTransformable) {
     items.push({ label: '↺ Reset transform', action: () => resetTransform(selId) });
     items.push({ label: '─', disabled: true });
@@ -2158,7 +2194,7 @@ canvas.addEventListener('contextmenu', e => {
     // Show color — single mesh/flatShape selection only. Ambiguous which
     // color to show when multiple objects are selected, so the option
     // only appears when exactly one bindable node is selected.
-    if (multiIds.size === 1 && (node?.type === 'mesh' || node?.type === 'flatShape')) {
+    if (multiIds.size === 1 && (node?.type === 'mesh' || node?.type === 'flatShape' || node?.type === 'hardwareInstance')) {
       items.push({
         label: '🎨 Show color',
         action: () => showColorForNode(node.id),

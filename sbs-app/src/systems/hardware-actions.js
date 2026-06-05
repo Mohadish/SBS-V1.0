@@ -181,6 +181,106 @@ export function placeInstance(templateId, parentId = null) {
 }
 
 /**
+ * Delete one or more hardware instances. Absolute removal — no archive,
+ * no soft-delete, no recovery via re-link. Once gone, gone.
+ *
+ * Filters non-hardwareInstance ids so callers can safely pass a mixed
+ * selection set. Returns the number of instances actually removed.
+ *
+ * V0.2.22.44 — wired to the tree + viewport right-click "Delete screw"
+ * action. Multi-select aware: passing N ids deletes N screws in one
+ * undo entry.
+ */
+export function deleteInstances(ids) {
+  if (!ids || !ids.length) return 0;
+  const root = state.get('treeData');
+  const nodeById = state.get('nodeById') || buildNodeMap(root);
+
+  // Capture full snapshots BEFORE removal so undo can recreate them.
+  // Each entry: { snapshot, parentId } — enough for the redo path to
+  // re-attach in the right place.
+  const targets = [];
+  for (const id of ids) {
+    const n = nodeById.get(id);
+    if (!n || n.type !== 'hardwareInstance') continue;
+    const parent = _findParent(root, id);
+    if (!parent) continue;
+    targets.push({
+      parentId: parent.id,
+      snapshot: JSON.parse(JSON.stringify({
+        ...n,
+        object3d: null,
+        children: [],
+      })),
+    });
+  }
+  if (!targets.length) return 0;
+
+  // Remove them now.
+  const _removeOne = (id) => {
+    const p = _findParent(root, id);
+    if (!p) return;
+    p.children = (p.children || []).filter(c => {
+      if (c.id === id) {
+        disposeHardwareInstance(c);
+        return false;
+      }
+      return true;
+    });
+  };
+  for (const t of targets) _removeOne(t.snapshot.id);
+
+  state.setState({ nodeById: buildNodeMap(root), treeData: root });
+  state.markDirty?.();
+  state.emit('change:treeData', root);
+
+  // Undo: re-create each snapshot under its original parent.
+  const label = targets.length === 1
+    ? `Delete hardware "${targets[0].snapshot.name || 'screw'}"`
+    : `Delete ${targets.length} hardware instances`;
+  undoManager.push(
+    label,
+    () => {
+      const root2 = state.get('treeData');
+      for (const t of targets) {
+        const parent = (state.get('nodeById') || buildNodeMap(root2)).get(t.parentId);
+        if (!parent) continue;
+        const fresh = { ...JSON.parse(JSON.stringify(t.snapshot)), children: [], object3d: null };
+        parent.children = [...(parent.children || []), fresh];
+        const nbm = buildNodeMap(root2);
+        state.setState({ nodeById: nbm, treeData: root2 });
+        const mesh = ensureHardwareInstanceObject3D(fresh);
+        if (mesh) {
+          const parentObj = steps.object3dById?.get(parent.id) ?? sceneCore.rootGroup;
+          parentObj.add(mesh);
+          steps.object3dById.set(fresh.id, mesh);
+          applyNodeTransformToObject3D(fresh, mesh, true);
+        }
+      }
+      state.emit('change:treeData', state.get('treeData'));
+    },
+    () => {
+      // Re-run the same removal logic
+      const root2 = state.get('treeData');
+      for (const t of targets) {
+        const p = _findParent(root2, t.snapshot.id);
+        if (!p) continue;
+        p.children = (p.children || []).filter(c => {
+          if (c.id === t.snapshot.id) {
+            disposeHardwareInstance(c);
+            return false;
+          }
+          return true;
+        });
+      }
+      state.setState({ nodeById: buildNodeMap(root2), treeData: root2 });
+      state.emit('change:treeData', root2);
+    },
+  );
+  return targets.length;
+}
+
+/**
  * Duplicate an existing hardware instance — produces a sibling pointing
  * at the same template, offset by 1.5× the screw's nominal diameter so
  * the copy doesn't z-fight with the original.

@@ -943,7 +943,7 @@ function _buildContextMenuItems(node) {
     });
   }
 
-  // ── Hardware instance — duplicate + jump-to-template (V0.2.22.38) ─────
+  // ── Hardware instance — duplicate, edit template, delete (V0.2.22.38+44)
   if (count === 1 && node.type === 'hardwareInstance') {
     items.push({
       label: '🔩 Duplicate (same template)',
@@ -955,6 +955,23 @@ function _buildContextMenuItems(node) {
     items.push({
       label: '🔩 Edit template (affects all instances)…',
       action: () => editHardwareTemplate(node.templateId),
+    });
+    items.push({ separator: true });
+  }
+  // Delete — single OR multi-select hardware. Absolute removal (no
+  // archive). Multi-aware: works on the whole selection when several
+  // screws are selected.
+  const allHardware = count >= 1 &&
+    targetIds.every(id => nodeById?.get(id)?.type === 'hardwareInstance');
+  if (allHardware) {
+    items.push({
+      label: count > 1
+        ? `🗑 Delete ${count} screws`
+        : '🗑 Delete screw',
+      action: () => {
+        import('../systems/hardware-actions.js').then(hw =>
+          hw.deleteInstances(targetIds));
+      },
     });
     items.push({ separator: true });
   }
@@ -975,7 +992,7 @@ function _buildContextMenuItems(node) {
   // Switches to the Colors tab and expands the preset currently assigned
   // to this node at the active step. Hidden on multi-selection because
   // "which color?" is ambiguous when multiple meshes are selected.
-  if (count === 1 && (node.type === 'mesh' || node.type === 'flatShape')) {
+  if (count === 1 && (node.type === 'mesh' || node.type === 'flatShape' || node.type === 'hardwareInstance')) {
     items.push({
       label: '🎨 Show color',
       action: () => showColorForNode(node.id),

@@ -27,7 +27,7 @@ export const SCHEMA_VERSIONS = {
   screen:     1,
 };
 
-export const APP_VERSION  = 'V0.2.22.43';
+export const APP_VERSION  = 'V0.2.22.44';
 // Format: YYYY-MM-DD. Bump along with APP_VERSION on every build worth
 // labelling so the File tab shows you're running the expected slice.
 export const APP_RELEASED = '2026-05-29';
@@ -411,7 +411,7 @@ export function createHardwareTemplate(overrides = {}) {
     params: {
       diameter:   4,
       length:     20,
-      headType:   'pan',
+      headType:   'socket',
       driveStyle: 'phillips',
     },
     ...overrides,
