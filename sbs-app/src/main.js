@@ -50,7 +50,7 @@ import { initStepNav }            from './ui/step-nav.js';
 import { initStepsPanel }         from './ui/steps-panel.js';
 import { initSidebarLeft, showColorForNode } from './ui/sidebar-left.js';
 import { initContextMenu, hideContextMenu, showContextMenu } from './ui/context-menu.js';
-import { showMoveToFolderDialog, showAddToReplaceDialog, showReplaceModeDialog } from './ui/tree.js';
+import { showMoveToFolderDialog, showAddToReplaceDialog, showReplaceModeDialog, showInputDialog } from './ui/tree.js';
 import { positionSafeFrameEl }    from './core/safe-frame.js';
 import { initOverlay, getStage as getOverlayStage } from './systems/overlay.js';
 import { initOverlayToolbar }  from './ui/overlay-toolbar.js';
@@ -2165,13 +2165,13 @@ canvas.addEventListener('contextmenu', e => {
       items.push({
         label: `📏 Adjust insertion spacing (X = ${curX}mm)…`,
         action: () => {
-          const v = window.prompt('Insertion spacing X (mm):', String(curX));
-          if (v == null) return;
-          const nx = Number(v);
-          if (Number.isFinite(nx) && nx > 0) {
-            import('./systems/hardware-actions.js').then(hw =>
-              hw.setInsertDistance([node.id], nx));
-          }
+          showInputDialog('Insertion spacing X (mm)', String(curX), (v) => {
+            const nx = Number(v);
+            if (Number.isFinite(nx) && nx > 0) {
+              import('./systems/hardware-actions.js').then(hw =>
+                hw.setInsertDistance([node.id], nx));
+            }
+          });
         },
       });
     }

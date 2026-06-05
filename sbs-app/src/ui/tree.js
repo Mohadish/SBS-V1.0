@@ -972,13 +972,13 @@ function _buildContextMenuItems(node) {
       items.push({
         label: `📏 Adjust insertion spacing (X = ${curX}mm)…`,
         action: () => {
-          const v = window.prompt('Insertion spacing X (mm):', String(curX));
-          if (v == null) return;
-          const n = Number(v);
-          if (Number.isFinite(n) && n > 0) {
-            import('../systems/hardware-actions.js').then(hw =>
-              hw.setInsertDistance([node.id], n));
-          }
+          _showInputDialog('Insertion spacing X (mm)', String(curX), (v) => {
+            const n = Number(v);
+            if (Number.isFinite(n) && n > 0) {
+              import('../systems/hardware-actions.js').then(hw =>
+                hw.setInsertDistance([node.id], n));
+            }
+          });
         },
       });
     }
@@ -3069,6 +3069,10 @@ function _onDrop(e, targetNode) {
  * @param {string}   defaultVal - Pre-filled value
  * @param {Function} onConfirm  - Called with trimmed string on confirm (skipped if empty)
  */
+export function showInputDialog(title, defaultVal, onConfirm) {
+  return _showInputDialog(title, defaultVal, onConfirm);
+}
+
 function _showInputDialog(title, defaultVal, onConfirm) {
   const dlg = document.createElement('dialog');
   dlg.className = 'sbs-dialog';
