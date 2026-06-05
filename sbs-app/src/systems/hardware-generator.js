@@ -34,6 +34,8 @@
  * Units: 1 scene unit = 1 mm. Shank axis = +Y. Origin = head-shank interface.
  */
 
+import { toCreasedNormals } from '../../vendor/BufferGeometryUtils.bundle.mjs';
+
 // ─── Public API ─────────────────────────────────────────────────────────────
 
 export const HEAD_TYPES   = ['button', 'flat', 'socket', 'lowhead', 'hex', 'flange'];
@@ -447,17 +449,29 @@ function _buildWashers(washers, D, headParams) {
   const thickness = D * 0.15;
 
   // Build the stack from head DOWN. Each entry: { kind, outerR }.
-  // Spring goes first (closest to head) when present in any combo.
+  //
+  // V0.2.22.49 — `count` is the TOTAL washer count; `spring` means ONE
+  // of them is a spring washer placed LAST (farthest from head, against
+  // the work surface). This matches the menu labels exactly:
+  //   {count:1, spring:false} → 1 flat
+  //   {count:2, spring:false} → 2 flat
+  //   {count:1, spring:true}  → 1 spring (no flat)
+  //   {count:2, spring:true}  → 1 flat + 1 spring (spring AFTER the flat)
+  //
+  // Previously the spring was pushed FIRST (against the head) and the
+  // flats were added ON TOP of the count, producing one extra washer.
+  // Both bugs fixed here.
+  const numFlat = spring ? Math.max(0, count - 1) : count;
   const stack = [];
-  if (spring) stack.push({ kind: 'spring', outerR: 0 /* set later */ });
-  for (let i = 0; i < count; i++) stack.push({ kind: 'flat', outerR: 0 });
+  for (let i = 0; i < numFlat; i++) stack.push({ kind: 'flat', outerR: 0 });
+  if (spring) stack.push({ kind: 'spring', outerR: 0 });
 
   // Apply the sizing rule: first-in-stack (against head) is HEAD × 1.1
   // when there are 2+ items, otherwise HEAD × 1.2. Subsequent items
   // are HEAD × 1.2.
   if (stack.length === 1) {
     stack[0].outerR = outerR_big;
-  } else {
+  } else if (stack.length > 1) {
     stack[0].outerR = outerR_small;
     for (let i = 1; i < stack.length; i++) stack[i].outerR = outerR_big;
   }
@@ -586,8 +600,15 @@ function _springWasher(innerR, outerR, thickness, totalH, yTop) {
   const geom = new T.BufferGeometry();
   geom.setAttribute('position', new T.Float32BufferAttribute(positions, 3));
   geom.setIndex(indices);
-  geom.computeVertexNormals();
-  return new T.Mesh(geom);
+  // V0.2.22.49 — crease normals at 45°. Without this the whole washer is
+  // one smooth group: the 90° corners between inner/outer/top/bottom
+  // surfaces round off (computeVertexNormals averages across them),
+  // making the ring look like a soft torus. A 45° crease angle keeps
+  // the gentle helical sweep (consecutive segments differ by only
+  // 360/32 ≈ 11°, well under 45°, so they stay smooth) but hardens the
+  // surface-to-surface corners (90° > 45° → split normals).
+  const creased = toCreasedNormals(geom, Math.PI / 4);   // 45°
+  return new T.Mesh(creased);
 }
 
 // ─── Flat (no-drive) top cap ────────────────────────────────────────────────
