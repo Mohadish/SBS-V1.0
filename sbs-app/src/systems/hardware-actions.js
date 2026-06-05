@@ -470,6 +470,47 @@ export function setInsertActor(nodeIds, enable = true) {
 }
 
 /**
+ * V0.2.22.52.2 — set the insertion explode spacing X (mm) on one or more
+ * instances. Washers explode to L + j·X, screw to L + (W+1)·X. Undoable,
+ * multi-aware.
+ */
+export function setInsertDistance(nodeIds, xMm) {
+  if (!Array.isArray(nodeIds)) nodeIds = [nodeIds];
+  const x = Math.max(0, Number(xMm) || 0);
+  if (!nodeIds.length || !(x > 0)) return;
+  const root = state.get('treeData');
+  const nodeById = state.get('nodeById') || buildNodeMap(root);
+
+  const before = [];
+  for (const id of nodeIds) {
+    const n = nodeById.get(id);
+    if (!n || n.type !== 'hardwareInstance') continue;
+    before.push({ id, prev: Number(n.insertAnim?.distance) });
+  }
+  if (!before.length) return;
+
+  const _set = (val, perId = null) => {
+    const nb = state.get('nodeById') || buildNodeMap(root);
+    for (const id of nodeIds) {
+      const n = nb.get(id);
+      if (!n || n.type !== 'hardwareInstance') continue;
+      const v = perId ? perId.get(id) : val;
+      n.insertAnim = { ...(n.insertAnim || {}), distance: v };
+    }
+    state.markDirty?.();
+    state.emit('change:treeData', state.get('treeData'));
+  };
+
+  _set(x);
+  const prevMap = new Map(before.map(e => [e.id, e.prev]));
+  undoManager.push(
+    `Insertion spacing ${x}mm`,
+    () => _set(null, prevMap),
+    () => _set(x),
+  );
+}
+
+/**
  * Duplicate an existing hardware instance — produces a sibling pointing
  * at the same template, offset by 1.5× the screw's nominal diameter so
  * the copy doesn't z-fight with the original.

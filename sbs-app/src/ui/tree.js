@@ -967,6 +967,21 @@ function _buildContextMenuItems(node) {
           hw.setInsertActor([node.id], !isActor));
       },
     });
+    if (isActor) {
+      const curX = Number(node.insertAnim?.distance) || 20;
+      items.push({
+        label: `📏 Adjust insertion spacing (X = ${curX}mm)…`,
+        action: () => {
+          const v = window.prompt('Insertion spacing X (mm):', String(curX));
+          if (v == null) return;
+          const n = Number(v);
+          if (Number.isFinite(n) && n > 0) {
+            import('../systems/hardware-actions.js').then(hw =>
+              hw.setInsertDistance([node.id], n));
+          }
+        },
+      });
+    }
     items.push({ separator: true });
   }
   // Washer options — multi-aware, applies to all selected hardware

@@ -114,21 +114,20 @@ export function beginInsertAnimations(actors, durationMs, easeFn, onDone) {
       group.add(m);
     }
 
-    // Explode offsets along local +Y. Screw (index 0) goes furthest out;
-    // each subsequent washer is one unit closer to final. They all
-    // converge to offset 0 (assembled) at progress=1.
-    //   unit = explode spacing, scaled to the screw so big bolts get a
-    //   bigger spread. User override via node.insertAnim.distance sets
-    //   the screw's MAX offset directly.
-    const D = Math.max(0.5, Number(tpl.params?.diameter) || 4);
-    const L = Math.max(D, Number(tpl.params?.length) || 20);
-    const n = elems.length;
-    const autoUnit = Math.max(L * 0.5, D * 3);
-    const override = Number(node.insertAnim?.distance);
-    const unit = Number.isFinite(override) && override > 0
-      ? override / Math.max(1, n)     // spread the override across elements
-      : autoUnit;
-    const offsets = elems.map((_, i) => (n - i) * unit);
+    // Explode offsets along local +Y (V0.2.22.52.2 — exact spec).
+    //   screw body  → L + (W+1)·X   → tip lands at (W+1)·X, leads the stack
+    //   washer j    → L + j·X       (j = 1 first/against-head … W last)
+    // The +L term lifts EVERY washer clear off the shaft (so the screw
+    // slides through them during assembly). X = per-element spacing,
+    // default 20 mm, adjustable per-instance via the right-click menu
+    // (node.insertAnim.distance). All converge to 0 (assembled) at u=1.
+    const L = Math.max(0.5, Number(tpl.params?.length) || 20);
+    const W = elems.length - 1;                       // washer count (elems[0]=screw)
+    const ov = Number(node.insertAnim?.distance);
+    const X = Number.isFinite(ov) && ov > 0 ? ov : 20;
+    const offsets = elems.map((_, j) =>
+      j === 0 ? L + (W + 1) * X : L + j * X
+    );
 
     // Hide the merged mesh; show the transient group exploded (hard
     // appear — no fade, per the plan).

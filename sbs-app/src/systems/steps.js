@@ -552,6 +552,26 @@ class StepManager {
       showingShapeIds = [];
     }
 
+    // V0.2.22.52.2 — insertion actors must NOT be revealed by the normal
+    // visibility channel: the insert effect owns their appearance
+    // (exploded → assembled). Without this, a step whose insert slot is
+    // in a LATER time block than visibility flashes the screw at its
+    // FINAL position during the visibility phase, then jumps to the
+    // exploded start when insert runs. Drop actors from the showing set
+    // + hide their merged meshes now; beginInsertAnimations reveals the
+    // exploded transient pieces when its phase fires, and restores the
+    // merged mesh visible on completion.
+    const _insertActorIds = new Set(
+      findActorsForStep(state.get('activeStepId')).map(a => a.id),
+    );
+    if (_insertActorIds.size) {
+      showingMeshIds = showingMeshIds.filter(id => !_insertActorIds.has(id));
+      for (const id of _insertActorIds) {
+        const obj = this.object3dById.get(id);
+        if (obj) obj.visible = false;
+      }
+    }
+
     // All showing items (meshes + shapes) pre-snap to opacity=0 so the
     // fade-in actually starts from invisible. Without this, anything
     // appearing this step would flash at full alpha for a frame.

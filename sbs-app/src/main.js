@@ -2160,6 +2160,21 @@ canvas.addEventListener('contextmenu', e => {
           hw.setInsertActor([node.id], !isActor));
       },
     });
+    if (isActor) {
+      const curX = Number(node?.insertAnim?.distance) || 20;
+      items.push({
+        label: `📏 Adjust insertion spacing (X = ${curX}mm)…`,
+        action: () => {
+          const v = window.prompt('Insertion spacing X (mm):', String(curX));
+          if (v == null) return;
+          const nx = Number(v);
+          if (Number.isFinite(nx) && nx > 0) {
+            import('./systems/hardware-actions.js').then(hw =>
+              hw.setInsertDistance([node.id], nx));
+          }
+        },
+      });
+    }
     const delLabel = allMultiHw
       ? `🗑 Delete ${multiSet.size} screws`
       : '🗑 Delete screw';
