@@ -103,39 +103,50 @@ export function beginInsertAnimations(actors, durationMs, easeFn, onDone) {
     group.scale.copy(merged.scale);
     merged.parent.add(group);
 
-    // Shared material = the instance's current material (so the
-    // transient pieces match whatever colour the user applied).
-    const mat = Array.isArray(merged.material) ? merged.material[0] : merged.material;
+    // Material — a TRANSPARENT CLONE of the instance's current material
+    // so the transient pieces match its colour but can FADE IN
+    // independently (V0.2.22.52.4) without mutating the live material's
+    // opacity. Disposed on teardown.
+    const baseMat = Array.isArray(merged.material) ? merged.material[0] : merged.material;
+    const fadeMat = baseMat ? baseMat.clone() : null;
+    if (fadeMat) { fadeMat.transparent = true; fadeMat.opacity = 0; }
 
     // Element list in stack order: screw first, then washers top→down.
     const elems = [parts.screw, ...parts.washers.map(w => w.mesh)];
     for (const m of elems) {
-      m.material = mat;
+      if (fadeMat) m.material = fadeMat;
       group.add(m);
     }
 
-    // Explode offsets along local +Y (V0.2.22.52.2 — exact spec).
-    //   screw body  → L + (W+1)·X   → tip lands at (W+1)·X, leads the stack
-    //   washer j    → L + j·X       (j = 1 first/against-head … W last)
-    // The +L term lifts EVERY washer clear off the shaft (so the screw
-    // slides through them during assembly). X = per-element spacing,
-    // default 20 mm, adjustable per-instance via the right-click menu
-    // (node.insertAnim.distance). All converge to 0 (assembled) at u=1.
+    // Explode offsets along local +Y (V0.2.22.52.4).
+    //   bottom washer   → L + X          (1 rank above the shaft tip)
+    //   …                 L + 2·X …
+    //   against-head w   → L + W·X        (highest washer — preserves the
+    //                                      stack's top→down order, no swap)
+    //   screw           → 2L + (W+1)·X    → TIP at L + (W+1)·X
+    //                                      = "screw length + spacing", so
+    //                                      the shank fully withdraws and
+    //                                      clears every washer before
+    //                                      assembly regardless of L vs X.
+    // The +L on washers lifts them clear OFF the shaft. X = per-element
+    // spacing (default 20 mm; right-click "Adjust insertion spacing").
     const L = Math.max(0.5, Number(tpl.params?.length) || 20);
     const W = elems.length - 1;                       // washer count (elems[0]=screw)
     const ov = Number(node.insertAnim?.distance);
     const X = Number.isFinite(ov) && ov > 0 ? ov : 20;
-    const offsets = elems.map((_, j) =>
-      j === 0 ? L + (W + 1) * X : L + j * X
-    );
+    const offsets = elems.map((_, j) => {
+      if (j === 0) return 2 * L + (W + 1) * X;        // screw — tip clears length
+      const rankFromBottom = W - (j - 1);             // j=1 (against head) → W
+      return L + rankFromBottom * X;
+    });
 
-    // Hide the merged mesh; show the transient group exploded (hard
-    // appear — no fade, per the plan).
+    // Hide the merged mesh; place pieces exploded + invisible (opacity 0
+    // via fadeMat). They fade in over the first part of the assemble.
     merged.visible = false;
     elems.forEach((m, i) => { m.position.y = offsets[i]; });
 
     _active.set(node.id, {
-      group, mergedMesh: merged, meshes: elems, offsets,
+      group, mergedMesh: merged, meshes: elems, offsets, fadeMat,
       startMs, durationMs: Math.max(1, durationMs), easeFn,
     });
   }
@@ -168,11 +179,20 @@ export function advanceInsertAnimations(nowMs) {
     for (let i = 0; i < eff.meshes.length; i++) {
       eff.meshes[i].position.y = eff.offsets[i] * (1 - u);
     }
+    // V0.2.22.52.4 — fade the pieces in over the first FADE_FRAC of the
+    // assemble (raw, not eased, so the fade timing is linear + readable).
+    // The screw materialises while it slides in, instead of hard-popping.
+    if (eff.fadeMat) {
+      eff.fadeMat.opacity = Math.min(1, raw / _FADE_FRAC);
+    }
     if (raw < 1) allDone = false;
   }
 
   if (allDone) _finish();
 }
+
+// Fraction of the assemble over which the pieces fade in (0→1 opacity).
+const _FADE_FRAC = 0.4;
 
 function _finish() {
   _teardown(/* restore */ true);
@@ -200,8 +220,9 @@ function _teardown(restore) {
     if (eff.group?.parent) eff.group.parent.remove(eff.group);
     for (const m of (eff.meshes || [])) {
       m.geometry?.dispose?.();
-      // material is shared with the live mesh — do NOT dispose it.
+      // mesh material is the fadeMat clone — disposed below, once.
     }
+    eff.fadeMat?.dispose?.();   // clone, safe to dispose (not the live mat)
     if (restore && eff.mergedMesh) {
       eff.mergedMesh.visible = true;
     }
