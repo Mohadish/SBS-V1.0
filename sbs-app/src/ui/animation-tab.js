@@ -60,6 +60,7 @@ const CHANNEL_META = {
   narration: { icon: '👄', label: 'narration' },
   notes:     { icon: '📝', label: 'notes'     },
   shape:     { icon: '⬜', label: 'shape'     },
+  insert:    { icon: '🔩', label: 'insert'    },   // V0.2.22.51 — hardware explode→assemble
 };
 const CHANNEL_ORDER = Object.keys(CHANNEL_META);
 

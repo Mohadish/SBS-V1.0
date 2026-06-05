@@ -54,10 +54,18 @@ export const DEFAULT_ANIMATION_STR =
 // `pause` channel = dwell slot. Equivalent to an empty time-capsule in
 // the visual editor — just waits durationMs before advancing. Useful for
 // inserting a deliberate beat between phases.
+// `insert` channel (V0.2.22.51) = hardware-insertion animation slot.
+// When a step's animation string contains `insert(N)` AND the step has
+// one or more hardware instances flagged as insertion actors, reaching
+// this phase plays the explode→assemble effect: the screw + its washers
+// appear pulled out along the insertion axis (staggered), then glide
+// back into the final placed position over N ms. No actors flagged →
+// the slot is an inert dwell (like pause). See systems/hardware-insert-
+// anim.js for the effect implementation.
 const VALID_TYPES = new Set([
   'camera', 'color', 'obj', 'visibility', 'cable',
   'overlay', 'overlays', 'shape',
-  'narration', 'notes', 'pause',
+  'narration', 'notes', 'pause', 'insert',
 ]);
 
 // Matches: 'camera(500)' or 'obj+visibility(AL1)' or 'pause(AL2)'.

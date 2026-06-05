@@ -45,31 +45,71 @@ export function generateScrewMesh({ diameter, length, headType, driveStyle }, wa
   const T = window.THREE;
   if (!T) throw new Error('THREE not loaded');
 
+  // Single merged mesh = head + shank + washers fused. This is the
+  // canonical live representation (one mesh per instance — colour,
+  // picking, transform, save/load all treat it as one object).
+  const parts = generateScrewParts({ diameter, length, headType, driveStyle }, washers);
+  const all   = [parts.screw, ...parts.washers.map(w => w.mesh)];
+  const geom  = _mergeMeshes(all);
+  return new T.Mesh(geom, _defaultHardwareMaterial());
+}
+
+/**
+ * V0.2.22.51 — geometry parts WITHOUT merging. The insertion-animation
+ * system uses this to build transient, independently-movable sub-meshes
+ * (screw body + each washer) for the explode→assemble effect, then
+ * discards them and restores the merged mesh.
+ *
+ * Returns:
+ *   {
+ *     screw:   THREE.Mesh,                 // head + shank fused, no material
+ *     washers: [ { mesh, kind, yTop, height } ],  // top-down stack order
+ *   }
+ *
+ * Each washer entry carries its baked y-position (yTop) and height so
+ * the animator can stagger the explosion along the insertion axis
+ * without re-deriving the stack layout.
+ *
+ * Meshes have NO material assigned — caller sets a shared material
+ * (the merged-mesh path copies _defaultHardwareMaterial; the animator
+ * copies the live instance's current material so the transient pieces
+ * match whatever colour the user applied).
+ */
+export function generateScrewParts({ diameter, length, headType, driveStyle }, washers = null) {
+  const T = window.THREE;
+  if (!T) throw new Error('THREE not loaded');
+
   const D = Math.max(0.5, Number(diameter) || 4);
   const L = Math.max(D * 0.5, Number(length) || 20);
   const head  = String(headType   || 'socket');
   const drive = String(driveStyle || 'none');
 
-  const parts = [];
-  parts.push(_shank(D, L));
-  const headParams = _headParams(head, D);
-  parts.push(..._buildHead(head, D, drive));
+  // Screw body — shank + head fused into one mesh.
+  const bodyParts = [_shank(D, L), ..._buildHead(head, D, drive)];
+  const screw = new T.Mesh(_mergeMeshes(bodyParts));
+  screw.name = 'screw';
 
-  // V0.2.22.47 — per-instance washers, wedged against the head's
-  // underside (y=0, the head/shank interface). _buildWashers picks
-  // sizes based on the head's widest radius and the user's
-  // washer-stack config (count + spring).
+  // Washers — each its own mesh, with layout metadata.
+  const washerEntries = [];
   if (washers && (washers.count || washers.spring)) {
-    parts.push(..._buildWashers(washers, D, headParams));
+    const headParams = _headParams(head, D);
+    const built = _buildWashers(washers, D, headParams);   // [{ mesh, kind, yTop, height }]
+    for (let i = 0; i < built.length; i++) {
+      built[i].mesh.name = `washer${i}`;
+      washerEntries.push(built[i]);
+    }
   }
 
-  const geom = _mergeMeshes(parts);
-  const material = new T.MeshStandardMaterial({
+  return { screw, washers: washerEntries };
+}
+
+function _defaultHardwareMaterial() {
+  const T = window.THREE;
+  return new T.MeshStandardMaterial({
     color:     0xc0c4cc,
     metalness: 0.65,
     roughness: 0.35,
   });
-  return new T.Mesh(geom, material);
 }
 
 export function describeScrew({ diameter, length, headType, driveStyle }) {
@@ -480,21 +520,25 @@ function _buildWashers(washers, D, headParams) {
 
   // Lay them out vertically downward from y=0. yTop is the TOP of the
   // current washer (the face that touches whatever's above).
+  //
+  // V0.2.22.51 — returns { mesh, kind, yTop, height } per washer so the
+  // insertion animator can stagger the explosion without re-deriving
+  // the stack layout. The merged-mesh path just reads `.mesh`.
   let yTop = 0;
-  const meshes = [];
+  const out = [];
   for (const w of stack) {
     if (w.kind === 'flat') {
-      meshes.push(_flatWasher(innerR, w.outerR, thickness, yTop));
+      out.push({ mesh: _flatWasher(innerR, w.outerR, thickness, yTop), kind: 'flat', yTop, height: thickness });
       yTop -= thickness;
     } else {
       // Spring — total height = thickness × 1.4 (pre-compressed look,
       // V0.2.22.50; was 1.2×).
       const totalH = thickness * 1.4;
-      meshes.push(_springWasher(innerR, w.outerR, thickness, totalH, yTop));
+      out.push({ mesh: _springWasher(innerR, w.outerR, thickness, totalH, yTop), kind: 'spring', yTop, height: totalH });
       yTop -= totalH;
     }
   }
-  return meshes;
+  return out;
 }
 
 /**
