@@ -129,9 +129,9 @@ export function stageInsertActors(actors, showingIdSet) {
     const elems = [parts.screw, ...parts.washers.map(w => w.mesh)];
     for (const m of elems) { m.material = fadeMat; group.add(m); }
 
-    // Explode offsets along local +Y (V0.2.22.53.2 layout):
-    //   bottom washer → L+X … against-head washer → L+W·X (no swap)
-    //   screw → L+(W+1)·X   → TIP at (W+1)·X (= 3X for two washers)
+    // Explode offsets along local +Y (V0.2.22.53.3 layout):
+    //   bottom washer → 1·X … against-head washer → W·X (no swap)
+    //   screw → L + (W+1)·X   → TIP at (W+1)·X (= 3X for two washers)
     const L = Math.max(0.5, Number(tpl.params?.length) || 20);
     const W = elems.length - 1;
     const ov = Number(node.insertAnim?.distance);
@@ -139,7 +139,7 @@ export function stageInsertActors(actors, showingIdSet) {
     const offsets = elems.map((_, j) => {
       if (j === 0) return L + (W + 1) * X;
       const rankFromBottom = W - (j - 1);
-      return L + rankFromBottom * X;
+      return rankFromBottom * X;
     });
 
     merged.visible = false;
