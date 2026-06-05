@@ -413,6 +413,63 @@ export function setInstanceWashers(nodeIds, washers) {
 }
 
 /**
+ * V0.2.22.52 — flag/unflag hardware instances as insertion-animation
+ * actors for the ACTIVE step. When flagged, that step plays the
+ * explode→assemble effect (see systems/hardware-insert-anim.js).
+ *
+ * Multi-aware: pass an array to flag several at once. `enable=false`
+ * clears the flag. Bound to whatever step is active at call time.
+ */
+export function setInsertActor(nodeIds, enable = true) {
+  if (!Array.isArray(nodeIds)) nodeIds = [nodeIds];
+  if (!nodeIds.length) return;
+  const root = state.get('treeData');
+  const nodeById = state.get('nodeById') || buildNodeMap(root);
+  const stepId = state.get('activeStepId') || null;
+
+  const before = [];
+  for (const id of nodeIds) {
+    const n = nodeById.get(id);
+    if (!n || n.type !== 'hardwareInstance') continue;
+    before.push({ id, prev: { ...(n.insertAnim || { enabled: false, stepId: null, distance: null, dottedLine: false }) } });
+  }
+  if (!before.length) return;
+
+  const _apply = (mapFn) => {
+    const nb = state.get('nodeById') || buildNodeMap(root);
+    for (const id of nodeIds) {
+      const n = nb.get(id);
+      if (!n || n.type !== 'hardwareInstance') continue;
+      n.insertAnim = mapFn(n);
+    }
+    state.markDirty?.();
+    state.emit('change:treeData', state.get('treeData'));
+  };
+
+  _apply((n) => enable
+    ? { ...(n.insertAnim || {}), enabled: true, stepId }
+    : { ...(n.insertAnim || {}), enabled: false });
+
+  undoManager.push(
+    enable
+      ? (nodeIds.length > 1 ? `Animate ${nodeIds.length} insertions` : 'Animate insertion')
+      : 'Stop insertion animation',
+    () => {
+      const nb = state.get('nodeById') || buildNodeMap(root);
+      for (const e of before) {
+        const n = nb.get(e.id);
+        if (n) n.insertAnim = { ...e.prev };
+      }
+      state.markDirty?.();
+      state.emit('change:treeData', state.get('treeData'));
+    },
+    () => _apply((n) => enable
+      ? { ...(n.insertAnim || {}), enabled: true, stepId }
+      : { ...(n.insertAnim || {}), enabled: false }),
+  );
+}
+
+/**
  * Duplicate an existing hardware instance — produces a sibling pointing
  * at the same template, offset by 1.5× the screw's nominal diameter so
  * the copy doesn't z-fight with the original.

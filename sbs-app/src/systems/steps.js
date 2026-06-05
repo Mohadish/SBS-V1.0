@@ -33,6 +33,7 @@ import { ensureFlatShapeObject3D }   from './flat-shapes.js'; // M1: 2D shapes i
 import { ensureHardwareInstanceObject3D } from './hardware-templates.js'; // V0.2.22.38: procedural hardware — build mesh on demand
 import { createStep, createEmptySnapshot } from '../core/schema.js';
 import { parseAnimation, resolveAnimationString } from './animation.js';
+import { beginInsertAnimations, findActorsForStep } from './hardware-insert-anim.js'; // V0.2.22.52 — screw explode→assemble
 // V0.1.78 — narration overflow coordination. UI module exports the
 // query helpers; cross-layer import is OK here (actions.js + overlay.js
 // already cross the same boundary).
@@ -899,6 +900,7 @@ class StepManager {
     let shapeHandled     = false;
     let narrationHandled = false;
     let notesHandled     = false;
+    let insertHandled    = false;   // V0.2.22.52 — hardware explode→assemble
     // `pause` slots don't need a handled flag — they're idempotent dwells
     // (the await Promise.all([_sleep(durationMs), ...]) at the end of the
     // phase loop already enforces the time).
@@ -1054,6 +1056,21 @@ class StepManager {
         }
       }
 
+      // `insert` — hardware explode→assemble (V0.2.22.52). When this
+      // phase fires AND the active step has insertion actors, play the
+      // effect over the slot duration. The phase await waits for the
+      // tween to finish (or the slot duration, whichever the
+      // Promise.all resolves on). Inert dwell when no actors.
+      if (types.includes('insert') && !insertHandled) {
+        insertHandled = true;
+        const actors = findActorsForStep(state.get('activeStepId'));
+        if (actors.length) {
+          phasePromises.push(new Promise(resolve => {
+            beginInsertAnimations(actors, durationMs, easeFn, resolve);
+          }));
+        }
+      }
+
       // `pause` — dwell. No-op handler; the await Promise.all below
       // already enforces durationMs. Listing this branch explicitly so
       // grep + future readers find it next to the rest.
@@ -1183,6 +1200,20 @@ class StepManager {
     // step:applied auto-play covers it, notes ride obj phase when no
     // notes slot is in the string (handled inside _scheduleNoteAnims),
     // and pause is a user-authored delay (no semantics when absent).
+
+    // `insert` fallback (V0.2.22.52) — if the string omits the insert
+    // slot but the step has actors, still play the effect over the
+    // object duration. Means the user only needs to flag the instance;
+    // adding insert(N) to the string is purely for custom timing.
+    if (!insertHandled) {
+      insertHandled = true;
+      const actors = findActorsForStep(state.get('activeStepId'));
+      if (actors.length) {
+        fallbackPromises.push(new Promise(resolve => {
+          beginInsertAnimations(actors, fallbackObj, easeFn, resolve);
+        }));
+      }
+    }
 
     if (fallbackPromises.length) {
       await Promise.all(fallbackPromises);

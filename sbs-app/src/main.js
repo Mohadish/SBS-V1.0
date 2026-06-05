@@ -2150,6 +2150,16 @@ canvas.addEventListener('contextmenu', e => {
           sb.editHardwareTemplate(node.templateId));
       },
     });
+    const isActor = node?.insertAnim?.enabled === true;
+    items.push({
+      label: isActor
+        ? '🎬 Stop insertion animation'
+        : '🎬 Animate insertion on this step',
+      action: () => {
+        import('./systems/hardware-actions.js').then(hw =>
+          hw.setInsertActor([node.id], !isActor));
+      },
+    });
     const delLabel = allMultiHw
       ? `🗑 Delete ${multiSet.size} screws`
       : '🗑 Delete screw';

@@ -27,7 +27,7 @@ export const SCHEMA_VERSIONS = {
   screen:     1,
 };
 
-export const APP_VERSION  = 'V0.2.22.51';
+export const APP_VERSION  = 'V0.2.22.52';
 // Format: YYYY-MM-DD. Bump along with APP_VERSION on every build worth
 // labelling so the File tab shows you're running the expected slice.
 export const APP_RELEASED = '2026-05-29';
@@ -468,6 +468,16 @@ export function createHardwareInstanceNode(overrides = {}) {
     // Washer config is per INSTANCE (not template). The screw template
     // stays shared; washers are an instance-level decoration.
     washers: { count: 0, spring: false },
+
+    // V0.2.22.52 — insertion animation marker. When enabled and bound
+    // to a step, that step plays the explode→assemble effect for this
+    // instance: screw + washers appear pulled out along the insertion
+    // axis (staggered), then glide into the final placed position.
+    //   enabled   boolean   — is this instance an insertion actor
+    //   stepId    string    — which step triggers the effect (null = any)
+    //   distance  number?   — explode pull-out distance; null = auto
+    //   dottedLine boolean  — draw the projected insertion path (Stage 4)
+    insertAnim: { enabled: false, stepId: null, distance: null, dottedLine: false },
 
     ...overrides,
   };

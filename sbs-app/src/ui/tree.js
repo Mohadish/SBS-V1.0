@@ -956,6 +956,17 @@ function _buildContextMenuItems(node) {
       label: '🔩 Edit template (affects all instances)…',
       action: () => editHardwareTemplate(node.templateId),
     });
+    // Insertion animation toggle — binds to the active step.
+    const isActor = node.insertAnim?.enabled === true;
+    items.push({
+      label: isActor
+        ? '🎬 Stop insertion animation'
+        : '🎬 Animate insertion on this step',
+      action: () => {
+        import('../systems/hardware-actions.js').then(hw =>
+          hw.setInsertActor([node.id], !isActor));
+      },
+    });
     items.push({ separator: true });
   }
   // Washer options — multi-aware, applies to all selected hardware
