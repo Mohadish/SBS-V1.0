@@ -1,50 +1,56 @@
 /**
- * SBS — Hardware insertion animation (V0.2.22.52).
+ * SBS — Hardware insertion animation (V0.2.22.53).
  *
- * The explode→assemble effect. When a step plays and one or more
- * hardware instances are flagged as insertion actors for that step,
- * the engine calls beginInsertAnimations(): each actor's screw +
- * washers appear pulled OUT along the insertion axis (staggered), then
- * glide back into the final placed position over the phase duration.
+ * The explode→assemble effect, restructured to the user's algorithm:
  *
- * Architecture (see hardware-generator.generateScrewParts):
- *   - The live instance is a single merged mesh. We DON'T animate it.
- *   - For the duration of the effect we build TRANSIENT sub-meshes
- *     (screw body + each washer) overlaid at the instance's exact
- *     pose, hide the merged mesh, and animate the transient pieces.
- *   - On completion we dispose the transient pieces and re-show the
- *     merged mesh at its final pose. Nothing about the persistent
- *     scene/tree/colour state changes.
+ *   1. STAGE (transition start): place the screw + washers at their
+ *      PRE-INSERTION (exploded) position, computed relative to THIS
+ *      step's FINAL placed pose — not the step we're coming from. The
+ *      live merged mesh is hidden; transient sub-meshes take over.
+ *   2. The animation string resolves phase by phase. Until the `insert`
+ *      phase, the pieces sit at the exploded offset. The `visibility`
+ *      phase (whenever it runs) FADES them in at that exploded position
+ *      — so a screw hidden on the previous step appears smoothly, not
+ *      with a threshold pop.
+ *   3. ASSEMBLE (`insert` phase): the pieces glide from exploded → final.
+ *   4. FINALIZE (transition end): transient pieces disposed, merged mesh
+ *      restored visible at the final pose.
  *
- * Time source = core/clock.js (same as every other transition), so the
- * effect is deterministic under offline export — the export loop's
- * fireSyntheticTick drives advanceInsertAnimations through the tick hook.
+ * Because the transient group is placed at the node's TARGET local pose
+ * (data transform is already at target by transition time), the explode
+ * offset is always relative to where the screw ENDS on this step. The
+ * insert actor is also excluded from the obj + visibility channels — the
+ * insert effect owns its motion and reveal completely.
  *
- * Insertion axis = the instance's local +Y (head points +Y, shank −Y;
- * the screw inserts in −Y, so it explodes outward in +Y). Because the
- * transient group inherits the instance's world orientation, offsetting
- * a child along LOCAL +Y moves it along the WORLD insertion axis — no
- * world-space math needed.
+ * Time source = core/clock.js, so the effect is deterministic under
+ * offline export (fireSyntheticTick drives the tick hook).
+ *
+ * Insertion axis = local +Y (head +Y, shank −Y; screw inserts in −Y so
+ * it explodes outward in +Y). The transient group inherits the node's
+ * target orientation, so offsetting a child along local +Y = world
+ * insertion axis.
  */
 
 import { state }       from '../core/state.js';
 import { sceneCore }   from '../core/scene.js';
 import * as clock      from '../core/clock.js';
 import { generateScrewParts } from './hardware-generator.js';
+import { getComputedLocalPosition, getTotalLocalQuaternion } from '../core/transforms.js';
 
-// Active effects, keyed by instance node id. Each entry:
-//   { group, mergedMesh, offsets:[], meshes:[], startMs, durationMs, easeFn }
-const _active = new Map();
-let _onDoneCb   = null;
-let _tickUnsub  = null;
+// Staged actors, keyed by node id:
+//   { group, mergedMesh, meshes:[], offsets:[], fadeMat, appearing }
+const _staged = new Map();
+let _fade     = null;   // { startMs, durationMs, easeFn, resolve }
+let _assemble = null;   // { startMs, durationMs, easeFn, resolve }
+let _tickUnsub = null;
 
-/** Are any insertion effects currently playing? */
-export function isInsertAnimating() { return _active.size > 0; }
+const _FADE_FALLBACK_FRAC = 0.4;   // assemble also ramps opacity (safety)
+
+export function isInsertAnimating() { return _staged.size > 0; }
 
 /**
  * Find every hardware instance flagged as an insertion actor for the
- * given step id. Walks the live tree. An actor with stepId === null
- * matches any step (rare; mostly stepId is set).
+ * given step id.
  */
 export function findActorsForStep(stepId) {
   const root = state.get('treeData');
@@ -62,170 +68,160 @@ export function findActorsForStep(stepId) {
 }
 
 /**
- * Begin the explode→assemble effect for the given actor nodes.
+ * STAGE — build the transient exploded pieces at each actor's TARGET
+ * local pose, hide the merged mesh. Pieces start at the exploded offset.
+ * Opacity starts at 0 for actors that are APPEARING this step (so the
+ * visibility phase fades them in) or 1 for actors already visible.
  *
- * @param {TreeNode[]} actors      hardwareInstance nodes (from findActorsForStep)
- * @param {number}     durationMs  total tween time
- * @param {Function}   easeFn      easing fn (raw 0..1 → eased 0..1)
- * @param {Function}   onDone      called once ALL actors finish
+ * @param {TreeNode[]} actors
+ * @param {Set<string>} showingIdSet  node ids that are becoming visible
+ *                                    this step (from the visibility prep)
+ * @returns {Set<string>} ids actually staged (caller excludes these from
+ *                        the obj + visibility channels)
  */
-export function beginInsertAnimations(actors, durationMs, easeFn, onDone) {
-  // Clean any prior effect first (a new step interrupts an in-flight one).
-  _teardown(/* restore */ true);
-
-  const valid = (actors || []).filter(Boolean);
-  if (!valid.length) { onDone?.(); return; }
+export function stageInsertActors(actors, showingIdSet) {
+  _disposeAll(/* restore */ true);   // clear any prior staging first
 
   const T = window.THREE;
   const tpls = state.get('hardwareTemplates') || [];
-  const startMs = clock.now();
+  const staged = new Set();
 
-  for (const node of valid) {
+  for (const node of (actors || [])) {
     const merged = node.object3d;
     if (!merged || !merged.parent) continue;
     const tpl = tpls.find(t => t.id === node.templateId);
     if (!tpl) continue;
 
-    // Build transient parts from the same spec + washers.
     let parts;
-    try {
-      parts = generateScrewParts(tpl.params || {}, node.washers || null);
-    } catch (e) {
-      console.warn('[insert-anim] parts build failed:', e?.message);
-      continue;
-    }
+    try { parts = generateScrewParts(tpl.params || {}, node.washers || null); }
+    catch (e) { console.warn('[insert-anim] parts build failed:', e?.message); continue; }
 
-    // Transient group overlaid on the merged mesh's exact local pose.
+    // Transient group at the node's TARGET local pose (data transform is
+    // already at target by transition time → explode is relative to THIS
+    // step's final placement, not the step we came from).
     const group = new T.Group();
     group.name = 'sbs:insert-anim';
-    group.position.copy(merged.position);
-    group.quaternion.copy(merged.quaternion);
-    group.scale.copy(merged.scale);
+    const tp = getComputedLocalPosition(node);
+    const tq = getTotalLocalQuaternion(node);
+    group.position.set(tp[0], tp[1], tp[2]);
+    group.quaternion.set(tq[0], tq[1], tq[2], tq[3]);
+    const bs = node.baseLocalScale || [1, 1, 1];
+    group.scale.set(bs[0], bs[1], bs[2]);
     merged.parent.add(group);
 
-    // Material — a TRANSPARENT CLONE of the instance's current material
-    // so the transient pieces match its colour but can FADE IN
-    // independently (V0.2.22.52.4) without mutating the live material's
-    // opacity. Disposed on teardown.
+    // Transparent clone of the live material so the pieces can fade
+    // independently. Disposed on finalize.
     const baseMat = Array.isArray(merged.material) ? merged.material[0] : merged.material;
     const fadeMat = baseMat ? baseMat.clone() : null;
-    if (fadeMat) { fadeMat.transparent = true; fadeMat.opacity = 0; }
+    const appearing = !!showingIdSet?.has(node.id);
+    if (fadeMat) { fadeMat.transparent = true; fadeMat.opacity = appearing ? 0 : 1; }
 
-    // Element list in stack order: screw first, then washers top→down.
     const elems = [parts.screw, ...parts.washers.map(w => w.mesh)];
-    for (const m of elems) {
-      if (fadeMat) m.material = fadeMat;
-      group.add(m);
-    }
+    for (const m of elems) { if (fadeMat) m.material = fadeMat; group.add(m); }
 
-    // Explode offsets along local +Y (V0.2.22.52.4).
-    //   bottom washer   → L + X          (1 rank above the shaft tip)
-    //   …                 L + 2·X …
-    //   against-head w   → L + W·X        (highest washer — preserves the
-    //                                      stack's top→down order, no swap)
-    //   screw           → 2L + (W+1)·X    → TIP at L + (W+1)·X
-    //                                      = "screw length + spacing", so
-    //                                      the shank fully withdraws and
-    //                                      clears every washer before
-    //                                      assembly regardless of L vs X.
-    // The +L on washers lifts them clear OFF the shaft. X = per-element
-    // spacing (default 20 mm; right-click "Adjust insertion spacing").
+    // Explode offsets along local +Y (V0.2.22.52.4 layout):
+    //   bottom washer → L+X … against-head washer → L+W·X (no swap)
+    //   screw → 2L+(W+1)·X  → TIP at L+(W+1)·X = screw length + spacing
     const L = Math.max(0.5, Number(tpl.params?.length) || 20);
-    const W = elems.length - 1;                       // washer count (elems[0]=screw)
+    const W = elems.length - 1;
     const ov = Number(node.insertAnim?.distance);
     const X = Number.isFinite(ov) && ov > 0 ? ov : 20;
     const offsets = elems.map((_, j) => {
-      if (j === 0) return 2 * L + (W + 1) * X;        // screw — tip clears length
-      const rankFromBottom = W - (j - 1);             // j=1 (against head) → W
+      if (j === 0) return 2 * L + (W + 1) * X;
+      const rankFromBottom = W - (j - 1);
       return L + rankFromBottom * X;
     });
 
-    // Hide the merged mesh; place pieces exploded + invisible (opacity 0
-    // via fadeMat). They fade in over the first part of the assemble.
     merged.visible = false;
     elems.forEach((m, i) => { m.position.y = offsets[i]; });
 
-    _active.set(node.id, {
-      group, mergedMesh: merged, meshes: elems, offsets, fadeMat,
-      startMs, durationMs: Math.max(1, durationMs), easeFn,
-    });
+    _staged.set(node.id, { group, mergedMesh: merged, meshes: elems, offsets, fadeMat, appearing });
+    staged.add(node.id);
   }
 
-  if (!_active.size) { onDone?.(); return; }
-
-  _onDoneCb = onDone || null;
-  // Lazily register the per-frame advance hook (idempotent — only one).
-  if (!_tickUnsub) {
-    _tickUnsub = sceneCore.addTickHook(() => advanceInsertAnimations(clock.now()));
+  if (staged.size && !_tickUnsub) {
+    _tickUnsub = sceneCore.addTickHook(() => _advance(clock.now()));
   }
-  // Drive frame 0 immediately so the exploded state shows before the
-  // first rAF tick (avoids a one-frame flash of the hidden merged mesh).
-  advanceInsertAnimations(startMs);
+  return staged;
 }
 
 /**
- * Per-tick advance. Lerps each actor's pieces from exploded → assembled.
- * Resolves the onDone callback once every actor reaches progress 1.
+ * FADE — called when the visibility phase fires. Fades the appearing
+ * actors' pieces 0→1 over durationMs. Resolves when done (or instantly
+ * if nothing is appearing). Non-appearing actors are already opaque.
  */
-export function advanceInsertAnimations(nowMs) {
-  if (!_active.size) return;
-  let allDone = true;
-
-  for (const [, eff] of _active) {
-    const elapsed = nowMs - eff.startMs;
-    const raw     = Math.min(1, Math.max(0, elapsed / eff.durationMs));
-    const u       = eff.easeFn ? eff.easeFn(raw) : raw;
-    // offset shrinks to 0 as u→1: pos = offset * (1 - u)
-    for (let i = 0; i < eff.meshes.length; i++) {
-      eff.meshes[i].position.y = eff.offsets[i] * (1 - u);
-    }
-    // V0.2.22.52.4 — fade the pieces in over the first FADE_FRAC of the
-    // assemble (raw, not eased, so the fade timing is linear + readable).
-    // The screw materialises while it slides in, instead of hard-popping.
-    if (eff.fadeMat) {
-      eff.fadeMat.opacity = Math.min(1, raw / _FADE_FRAC);
-    }
-    if (raw < 1) allDone = false;
-  }
-
-  if (allDone) _finish();
-}
-
-// Fraction of the assemble over which the pieces fade in (0→1 opacity).
-const _FADE_FRAC = 0.4;
-
-function _finish() {
-  _teardown(/* restore */ true);
-  const cb = _onDoneCb;
-  _onDoneCb = null;
-  if (cb) cb();
+export function runInsertFade(durationMs, easeFn) {
+  const anyAppearing = [..._staged.values()].some(s => s.appearing);
+  if (!_staged.size || !anyAppearing) return Promise.resolve();
+  return new Promise(resolve => {
+    _fade = { startMs: clock.now(), durationMs: Math.max(1, durationMs), easeFn, resolve };
+  });
 }
 
 /**
- * Cancel any in-flight effect WITHOUT resolving onDone. Used when a new
- * step interrupts (begin calls this) or on hard scene resets.
+ * ASSEMBLE — called when the insert phase fires. Moves the pieces from
+ * exploded → final over durationMs, and ensures opacity reaches 1 (so a
+ * step with no visibility phase still shows the screw). Resolves on done.
  */
-export function cancelInsertAnimations() {
-  _teardown(/* restore */ true);
-  _onDoneCb = null;
+export function runInsertAssemble(durationMs, easeFn) {
+  if (!_staged.size) return Promise.resolve();
+  return new Promise(resolve => {
+    _assemble = { startMs: clock.now(), durationMs: Math.max(1, durationMs), easeFn, resolve };
+  });
 }
 
 /**
- * Dispose transient groups + (optionally) restore the merged meshes to
- * visible. restore=false leaves merged meshes hidden — only used in
- * pathological teardown where the caller will re-stage the scene anyway.
+ * FINALIZE — dispose transient pieces, restore each merged mesh visible
+ * at its final pose. Call once at transition end (both phased + simul
+ * paths). Safe to call when nothing is staged.
  */
-function _teardown(restore) {
-  for (const [, eff] of _active) {
-    if (eff.group?.parent) eff.group.parent.remove(eff.group);
-    for (const m of (eff.meshes || [])) {
-      m.geometry?.dispose?.();
-      // mesh material is the fadeMat clone — disposed below, once.
+export function finalizeInsertActors() {
+  _disposeAll(/* restore */ true);
+  if (_tickUnsub) { _tickUnsub(); _tickUnsub = null; }
+}
+
+/** Hard cancel — same as finalize (no separate semantics needed). */
+export function cancelInsertAnimations() { finalizeInsertActors(); }
+
+// ─── Per-tick ───────────────────────────────────────────────────────────────
+
+function _advance(now) {
+  if (!_staged.size) return;
+
+  if (_fade) {
+    const raw = Math.min(1, Math.max(0, (now - _fade.startMs) / _fade.durationMs));
+    const u   = _fade.easeFn ? _fade.easeFn(raw) : raw;
+    for (const s of _staged.values()) {
+      if (s.appearing && s.fadeMat) s.fadeMat.opacity = u;
     }
-    eff.fadeMat?.dispose?.();   // clone, safe to dispose (not the live mat)
-    if (restore && eff.mergedMesh) {
-      eff.mergedMesh.visible = true;
-    }
+    if (raw >= 1) { const r = _fade.resolve; _fade = null; r?.(); }
   }
-  _active.clear();
+
+  if (_assemble) {
+    const raw = Math.min(1, Math.max(0, (now - _assemble.startMs) / _assemble.durationMs));
+    const u   = _assemble.easeFn ? _assemble.easeFn(raw) : raw;
+    for (const s of _staged.values()) {
+      for (let i = 0; i < s.meshes.length; i++) {
+        s.meshes[i].position.y = s.offsets[i] * (1 - u);
+      }
+      // Safety ramp: if no visibility phase faded the pieces, bring them
+      // opaque over the assemble so the screw isn't invisible at the end.
+      if (s.fadeMat && s.fadeMat.opacity < 1) {
+        s.fadeMat.opacity = Math.max(s.fadeMat.opacity, Math.min(1, raw / _FADE_FALLBACK_FRAC));
+      }
+    }
+    if (raw >= 1) { const r = _assemble.resolve; _assemble = null; r?.(); }
+  }
+}
+
+function _disposeAll(restore) {
+  for (const s of _staged.values()) {
+    if (s.group?.parent) s.group.parent.remove(s.group);
+    for (const m of (s.meshes || [])) m.geometry?.dispose?.();
+    s.fadeMat?.dispose?.();
+    if (restore && s.mergedMesh) s.mergedMesh.visible = true;
+  }
+  _staged.clear();
+  _fade = null;
+  _assemble = null;
 }

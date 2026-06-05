@@ -33,7 +33,10 @@ import { ensureFlatShapeObject3D }   from './flat-shapes.js'; // M1: 2D shapes i
 import { ensureHardwareInstanceObject3D } from './hardware-templates.js'; // V0.2.22.38: procedural hardware — build mesh on demand
 import { createStep, createEmptySnapshot } from '../core/schema.js';
 import { parseAnimation, resolveAnimationString } from './animation.js';
-import { beginInsertAnimations, findActorsForStep } from './hardware-insert-anim.js'; // V0.2.22.52 — screw explode→assemble
+import {
+  stageInsertActors, runInsertFade, runInsertAssemble,
+  finalizeInsertActors, findActorsForStep,
+} from './hardware-insert-anim.js'; // V0.2.22.53 — screw stage/fade/assemble
 // V0.1.78 — narration overflow coordination. UI module exports the
 // query helpers; cross-layer import is OK here (actions.js + overlay.js
 // already cross the same boundary).
@@ -477,7 +480,7 @@ class StepManager {
     const toWorldTransforms = captureWorldTransforms(state.get('treeData'), this.object3dById);
     this._currentTargetWorldTransforms = toWorldTransforms;
 
-    const changedNodeIds = diffWorldTransforms(fromWorldTransforms, toWorldTransforms);
+    let changedNodeIds = diffWorldTransforms(fromWorldTransforms, toWorldTransforms);
 
     // Parent-id map keyed on the TARGET hierarchy (built post-rebuild).
     // Combined with the changedSet, this lets us detect each transition's
@@ -552,24 +555,21 @@ class StepManager {
       showingShapeIds = [];
     }
 
-    // V0.2.22.52.2 — insertion actors must NOT be revealed by the normal
-    // visibility channel: the insert effect owns their appearance
-    // (exploded → assembled). Without this, a step whose insert slot is
-    // in a LATER time block than visibility flashes the screw at its
-    // FINAL position during the visibility phase, then jumps to the
-    // exploded start when insert runs. Drop actors from the showing set
-    // + hide their merged meshes now; beginInsertAnimations reveals the
-    // exploded transient pieces when its phase fires, and restores the
-    // merged mesh visible on completion.
-    const _insertActorIds = new Set(
-      findActorsForStep(state.get('activeStepId')).map(a => a.id),
-    );
-    if (_insertActorIds.size) {
-      showingMeshIds = showingMeshIds.filter(id => !_insertActorIds.has(id));
-      for (const id of _insertActorIds) {
-        const obj = this.object3dById.get(id);
-        if (obj) obj.visible = false;
-      }
+    // V0.2.22.53 — STAGE insertion actors. The insert effect fully owns
+    // each flagged screw's reveal + motion: build the exploded transient
+    // pieces at THIS step's final pose now, hide the merged mesh, and
+    // exclude the actor from the obj + visibility channels. The pieces
+    // sit exploded; the visibility phase fades them in (at the exploded
+    // position) and the insert phase assembles them. This is what
+    // prevents both the appear-at-final-then-jump AND the threshold pop.
+    const _insertActors = findActorsForStep(state.get('activeStepId'));
+    const _stagedActorIds = _insertActors.length
+      ? stageInsertActors(_insertActors, new Set(showingMeshIds))
+      : new Set();
+    if (_stagedActorIds.size) {
+      showingMeshIds = showingMeshIds.filter(id => !_stagedActorIds.has(id));
+      hidingMeshIds  = hidingMeshIds.filter(id => !_stagedActorIds.has(id));
+      changedNodeIds = changedNodeIds.filter(id => !_stagedActorIds.has(id));
     }
 
     // All showing items (meshes + shapes) pre-snap to opacity=0 so the
@@ -632,6 +632,7 @@ class StepManager {
         parentMap, changedSet,
         hidingMeshIds, showingMeshIds,
         hidingShapeIds, showingShapeIds,
+        stagedActorIds: _stagedActorIds,
         easing, easeFn, myGen,
       });
     } else {
@@ -718,16 +719,16 @@ class StepManager {
         this._onObjectTransitionsDone = resolve;
       });
 
-      // V0.2.22.52.1 — insertion animation in SIMULTANEOUS (non-phased)
-      // mode. The phased path handles `insert` in its loop + fallback,
-      // but a step with no animation string runs here instead — so the
-      // effect would never fire by default. Trigger it for any flagged
-      // actor over the object duration.
-      const insertSimP = new Promise(resolve => {
-        const actors = findActorsForStep(state.get('activeStepId'));
-        if (actors.length) beginInsertAnimations(actors, objDur, easeFn, resolve);
-        else resolve();
-      });
+      // V0.2.22.53 — insertion in SIMULTANEOUS (non-phased) mode. Pieces
+      // were already staged exploded before this branch. Here we fade +
+      // assemble together over the object duration (no phase ordering to
+      // honour in simultaneous mode).
+      const insertSimP = _stagedActorIds.size
+        ? Promise.all([
+            runInsertFade(objDur, easeFn),
+            runInsertAssemble(objDur, easeFn),
+          ])
+        : Promise.resolve();
 
       // OFFLINE-EXPORT FIX: in simultaneous mode (no animation preset),
       // cameraP and objectP both advance via tick hooks. In offline
@@ -744,6 +745,12 @@ class StepManager {
 
     // ── Guard: if a newer animation started while we awaited, bail out ──
     if (this._animGeneration !== myGen) return;
+
+    // V0.2.22.53 — tear down insertion staging: dispose transient pieces,
+    // restore each merged mesh visible at its final pose. The snap below
+    // then settles exact final transform/visibility. (On a bail above, the
+    // NEXT activation's stageInsertActors disposes the old staging.)
+    if (_stagedActorIds.size) finalizeInsertActors();
 
     // Safety-net: any note with a still-deferred fade (fadeStartMs===Infinity)
     // means the `notes` slot never fired during the phase loop (e.g. the
@@ -919,6 +926,7 @@ class StepManager {
       parentMap = {}, changedSet = new Set(),
       hidingMeshIds, showingMeshIds,
       hidingShapeIds = [], showingShapeIds = [],
+      stagedActorIds = new Set(),
       easing, easeFn, myGen,
     } = opts;
 
@@ -1008,12 +1016,19 @@ class StepManager {
 
       // Visibility fades (BEFORE color so applyAll inside beginColorTransition
       // can reapply fade values via the _visTransitions reapply block)
-      if (types.includes('visibility') && !visHandled &&
-          (hidingMeshIds.length || showingMeshIds.length)) {
+      if (types.includes('visibility') && !visHandled) {
         visHandled = true;
-        this._materials?.beginVisibilityTransitions(
-          hidingMeshIds, showingMeshIds, durationMs, easeFn,
-        );
+        if (hidingMeshIds.length || showingMeshIds.length) {
+          this._materials?.beginVisibilityTransitions(
+            hidingMeshIds, showingMeshIds, durationMs, easeFn,
+          );
+        }
+        // V0.2.22.53 — fade staged insertion actors in at their EXPLODED
+        // position during this same visibility window (no-op if nothing
+        // is appearing).
+        if (stagedActorIds.size) {
+          phasePromises.push(runInsertFade(durationMs, easeFn));
+        }
       }
 
       // Color/material transition
@@ -1087,18 +1102,13 @@ class StepManager {
         }
       }
 
-      // `insert` — hardware explode→assemble (V0.2.22.52). When this
-      // phase fires AND the active step has insertion actors, play the
-      // effect over the slot duration. The phase await waits for the
-      // tween to finish (or the slot duration, whichever the
-      // Promise.all resolves on). Inert dwell when no actors.
+      // `insert` — hardware ASSEMBLE phase (V0.2.22.53). Pieces were
+      // staged exploded at transition start; this moves them exploded →
+      // final over the slot duration. Inert dwell when no actors staged.
       if (types.includes('insert') && !insertHandled) {
         insertHandled = true;
-        const actors = findActorsForStep(state.get('activeStepId'));
-        if (actors.length) {
-          phasePromises.push(new Promise(resolve => {
-            beginInsertAnimations(actors, durationMs, easeFn, resolve);
-          }));
+        if (stagedActorIds.size) {
+          phasePromises.push(runInsertAssemble(durationMs, easeFn));
         }
       }
 
@@ -1178,11 +1188,18 @@ class StepManager {
     // EITHER is missing from the string, the missing group falls back
     // to a default fade. Shapes that were folded into mesh arrays
     // (no shape slot in string) ride along automatically.
-    if (!visHandled && (hidingMeshIds.length || showingMeshIds.length)) {
+    if (!visHandled && (hidingMeshIds.length || showingMeshIds.length || stagedActorIds.size)) {
       visHandled = true;
-      this._materials?.beginVisibilityTransitions(
-        hidingMeshIds, showingMeshIds, fallbackObj, easeFn,
-      );
+      if (hidingMeshIds.length || showingMeshIds.length) {
+        this._materials?.beginVisibilityTransitions(
+          hidingMeshIds, showingMeshIds, fallbackObj, easeFn,
+        );
+      }
+      // V0.2.22.53 — fade staged insertion actors in the visibility
+      // fallback window too (when the string omits a visibility slot).
+      if (stagedActorIds.size) {
+        fallbackPromises.push(runInsertFade(fallbackObj, easeFn));
+      }
       fallbackPromises.push(_sleep(fallbackObj));
     }
     if (!shapeHandled && (hidingShapeIds.length || showingShapeIds.length)) {
@@ -1232,18 +1249,12 @@ class StepManager {
     // notes slot is in the string (handled inside _scheduleNoteAnims),
     // and pause is a user-authored delay (no semantics when absent).
 
-    // `insert` fallback (V0.2.22.52) — if the string omits the insert
-    // slot but the step has actors, still play the effect over the
-    // object duration. Means the user only needs to flag the instance;
-    // adding insert(N) to the string is purely for custom timing.
-    if (!insertHandled) {
+    // `insert` fallback (V0.2.22.53) — assemble staged actors over the
+    // object duration when the string omits an insert slot. Flagging the
+    // instance is enough; insert(N) in the string is just for timing.
+    if (!insertHandled && stagedActorIds.size) {
       insertHandled = true;
-      const actors = findActorsForStep(state.get('activeStepId'));
-      if (actors.length) {
-        fallbackPromises.push(new Promise(resolve => {
-          beginInsertAnimations(actors, fallbackObj, easeFn, resolve);
-        }));
-      }
+      fallbackPromises.push(runInsertAssemble(fallbackObj, easeFn));
     }
 
     if (fallbackPromises.length) {
