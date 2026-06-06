@@ -287,12 +287,16 @@ initCables();
 initCableRender();
 setupUndoKeyboard();
 
-// V0.2.22.60 — static "include on previous step" hardware tags. After a
-// step settles, rebuild the spec-name labels for any insertion actor whose
-// insert step is the NEXT step. Registered once; also fires for the
-// already-active step so a freshly-loaded project shows them immediately.
+// V0.2.22.60 — static "include on previous step" hardware tags. Rebuild
+// the spec-name labels for any insertion actor whose insert step is the
+// NEXT step (group-aware). Hooked on step:activate (fires EARLY, before
+// the transition animation, and unconditionally — so the tag is present
+// throughout an incoming camera/object move AND survives same-step
+// re-activation) and on step:applied (final settle). The per-frame tick
+// owns visibility + position, so the label stays glued like a note.
 import('./systems/hardware-insert-anim.js').then(hw => {
-  state.on('step:applied', () => hw.refreshStaticTags(state.get('activeStepId')));
+  state.on('step:activate', (id) => hw.refreshStaticTags(id));
+  state.on('step:applied',  ()   => hw.refreshStaticTags(state.get('activeStepId')));
   hw.refreshStaticTags(state.get('activeStepId'));
 }).catch(() => {});
 

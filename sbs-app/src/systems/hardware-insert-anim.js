@@ -114,16 +114,43 @@ function _allActors() {
   return out;
 }
 
-/** The playable step id immediately before `stepId`, or null. Mirrors
- *  StepsManager._isPlayable: skip base/hidden steps and hidden chapters. */
-function _prevStepId(stepId) {
+/** Playable steps in order. Mirrors StepsManager._isPlayable: skip
+ *  base/hidden steps and steps in hidden chapters. */
+function _playableSteps() {
   const chapters = state.get('chapters') || [];
   const chHidden = (id) => !!(id && chapters.find(c => c.id === id)?.hidden);
-  const steps = (state.get('steps') || []).filter(
+  return (state.get('steps') || []).filter(
     s => s && !s.isBaseStep && !s.hidden && !chHidden(s.chapterId)
   );
-  const i = steps.findIndex(s => s.id === stepId);
-  return i > 0 ? steps[i - 1].id : null;
+}
+
+/**
+ * The set of step ids on which an insertion's prev-step tag should appear.
+ *
+ * Non-grouped insert step → the playable step immediately before it.
+ *
+ * GROUPED insert step → step groups chain-play as one unit: from the
+ * top-level step BEFORE the group, a single forward arrow plays the head
+ * and auto-chains through every sub-step (incl. the insertion). So the
+ * natural "step before the insertion" is that pre-group top-level step —
+ * mirroring StepsManager's own LEFT-arrow semantics. We also keep the
+ * immediate predecessor, which covers click-resting on an earlier
+ * sub-step inside an expanded group.
+ */
+function _insertPrevStepIds(insertStepId) {
+  const playable = _playableSteps();
+  const idx = playable.findIndex(s => s.id === insertStepId);
+  if (idx < 0) return [];
+  const out = new Set();
+  if (idx > 0) out.add(playable[idx - 1].id);     // immediate predecessor
+  const headId = playable[idx].groupId || null;    // sub-step → group head id
+  if (headId) {
+    const headIdx = playable.findIndex(s => s.id === headId);
+    for (let i = headIdx - 1; i >= 0; i--) {
+      if (!playable[i].groupId) { out.add(playable[i].id); break; }  // top-level
+    }
+  }
+  return [...out];
 }
 
 export function clearStaticTags() {
@@ -148,21 +175,21 @@ export function refreshStaticTags(activeStepId) {
     if (!eff.tagName || !eff.tagPrev) continue;
     const insertStep = node.insertAnim?.stepId;
     if (!insertStep) continue;
-    if (_prevStepId(insertStep) !== activeStepId) continue;   // not the prev step
+    if (!_insertPrevStepIds(insertStep).includes(activeStepId)) continue;
     const merged = node.object3d;
-    if (!merged || !merged.visible) continue;   // no orphan tag when hidden here
+    if (!merged) continue;                          // no mesh to anchor to
     const tpl = tpls.find(t => t.id === node.templateId);
     const txt = tpl?.name || node.name || 'hardware';
     const D = Math.max(0.5, Number(tpl?.params?.diameter) || 4);
     const headOuterR = _headOuterRadius(tpl?.params?.headType, D);
     const div = _makeTagDiv(txt, eff.tagSize, eff.tagColor);
-    div.style.display = 'block';
+    // Visibility + position are owned per-frame by _positionStaticTags, so
+    // the label survives camera/object moves and shows/hides with the
+    // screw — note-like, never a create/destroy flicker mid-transition.
     _staticTags.set(node.id, { div, mergedMesh: merged, headOuterR });
   }
   if (_staticTags.size && !_staticTickUnsub) {
     _staticTickUnsub = sceneCore.addTickHook(() => _positionStaticTags());
-  } else if (!_staticTags.size && _staticTickUnsub) {
-    _staticTickUnsub(); _staticTickUnsub = null;
   }
   _positionStaticTags();
 }
@@ -499,6 +526,10 @@ function _positionStaticTags() {
   cam.matrixWorld.extractBasis(camRight, new T.Vector3(), new T.Vector3());
   for (const t of _staticTags.values()) {
     if (!t.div) continue;
+    // Note-like: follow the live mesh every frame; hide while the screw
+    // isn't visible on this step (no orphan label), show when it is.
+    if (!t.mergedMesh || !t.mergedMesh.visible) { t.div.style.display = 'none'; continue; }
+    t.div.style.display = 'block';
     _anchorTag(t.div, t.mergedMesh, t.headOuterR, rect, cam, camRight);
   }
 }
