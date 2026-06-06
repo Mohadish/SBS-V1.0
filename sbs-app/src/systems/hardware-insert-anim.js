@@ -300,13 +300,20 @@ export function stageInsertActors(actors, opts = {}) {
       lineObj: null, lineShown: false,
     };
 
-    // ── Spec-name tag — 2D screen-space label, created hidden; shown at
-    // the `overlay` block, hidden when insertion completes. Right edge
-    // anchored 10px left of the head's OUTER RIM (V0.2.22.58), vertically
-    // centred, horizontal. Font px from the note size presets.
+    // ── Spec-name tag — 2D screen-space label. Right edge anchored 10px
+    // left of the head's OUTER RIM (V0.2.22.58), vertically centred,
+    // horizontal. Font px from the note size presets.
+    //
+    // Timing (V0.2.22.60): a screw that was already VISIBLE last step
+    // (needsReposition) shows its tag from the START of the transition —
+    // continuous with the prev-step tag, following the camera/object move
+    // the whole way. A screw APPEARING this step waits for the overlay
+    // block (showInsertTags) so the label doesn't float over a screw that
+    // hasn't faded in yet. Either way it hides when insertion completes.
     if (eff.tagName) {
       const txt = tpl.name || `M${tpl.params?.diameter}×${tpl.params?.length}`;
-      entry.tagEl = _makeTagDiv(txt, eff.tagSize, eff.tagColor);
+      entry.tagEl    = _makeTagDiv(txt, eff.tagSize, eff.tagColor);
+      entry.tagShown = needsReposition;   // visible-last-step → show now
     }
 
     // ── Trajectory line — THICK dotted line (V0.2.22.58): a row of dash
@@ -505,13 +512,18 @@ function _positionTags() {
   const T = window.THREE;
   const cam = sceneCore.camera;
   const dom = sceneCore.renderer?.domElement;
-  if (!cam || !dom) return;
-  let rect = null;
+  if (!cam || !dom || !_staged.size) return;
+  const rect = dom.getBoundingClientRect();
   const camRight = new T.Vector3();
   cam.matrixWorld.extractBasis(camRight, new T.Vector3(), new T.Vector3());
   for (const s of _staged.values()) {
-    if (!s.tagEl || !s.tagShown) continue;
-    if (!rect) rect = dom.getBoundingClientRect();
+    if (!s.tagEl) continue;
+    // Per-frame display: shown once tagShown is set (from stage for a
+    // repositioning screw, from the overlay block for an appearing one)
+    // AND the screw piece is visible. Following camera/object every frame
+    // means the label rides moves without disappearing — note-like.
+    if (!s.tagShown || !s.headPiece?.visible) { s.tagEl.style.display = 'none'; continue; }
+    s.tagEl.style.display = 'block';
     _anchorTag(s.tagEl, s.headPiece, s.headOuterR, rect, cam, camRight);
   }
 }
