@@ -35,31 +35,20 @@ import { state }       from '../core/state.js';
 import { sceneCore }   from '../core/scene.js';
 import * as clock      from '../core/clock.js';
 import { generateScrewParts } from './hardware-generator.js';
-import { materials }   from './materials.js';
-
-/**
- * Resolve the colour a screw should be at THIS step:
- *   step snapshot assignment → project default → live material → grey.
- * Returns a THREE.Color. Mirrors materials' resolution chain so the
- * transient pieces match the assigned preset, not the raw grey.
- */
-function _resolveColor(node, merged, stepMaterials) {
-  const T = window.THREE;
-  const stepPid = stepMaterials?.[node.id];
-  const pid = stepPid != null ? stepPid : (materials.meshDefaultColors?.[node.id] ?? null);
-  if (pid) {
-    const preset = (state.get('colorPresets') || []).find(p => p.id === pid);
-    if (preset?.color) { try { return new T.Color(preset.color); } catch {} }
-  }
-  const src = Array.isArray(merged.material) ? merged.material[0] : merged.material;
-  return src?.color ? src.color.clone() : new T.Color(0xc0c4cc);
-}
 
 // Staged actors, keyed by node id:
-//   { group, mergedMesh, meshes, offsets, fadeMat, appearing,
+//   { group, mergedMesh, meshes, offsets,
 //     needsReposition, targetPos, targetQuat, prevPos, prevQuat, repositionMs }
+//
+// V0.2.22.56 — the transient pieces SHARE the live merged mesh's
+// material (re-pointed every tick). That makes them full participants
+// in the colour + visibility channels: the colour transition animates
+// the real material (correct RGB + metalness + roughness + everything),
+// and the screen-door visibility fade drives transitionOpacity on it —
+// both respecting their time-block order in the string. The insert
+// effect only owns POSITION (reposition + assemble) and keeps the
+// merged mesh hidden (re-asserted each tick) so it never double-renders.
 const _staged = new Map();
-let _fade       = null;  // { startMs, durationMs, easeFn, resolve }
 let _reposition = null;  // { startMs, durationMs, easeFn, resolve }
 let _assemble   = null;  // { startMs, durationMs, easeFn, resolve }
 let _tickUnsub  = null;
@@ -96,17 +85,17 @@ export function findActorsForStep(stepId) {
  *
  * @param {TreeNode[]} actors
  * @param {object} opts
- *   showingIdSet  Set<id> nodes becoming visible this step
- *   fromWorld     {id:{position,quaternion}} previous-step world poses
- *   toWorld       {id:{position,quaternion}} this-step world poses
- *   stepMaterials {id: presetId} this step's colour assignments (snapshot)
+ *   appearingIdSet Set<id> nodes becoming visible this step (kept IN the
+ *                  visibility channel so they fade via the real material)
+ *   fromWorld      {id:{position,quaternion}} previous-step world poses
+ *   toWorld        {id:{position,quaternion}} this-step world poses
  * @returns {Set<string>} ids actually staged
  */
 export function stageInsertActors(actors, opts = {}) {
   _disposeAll(/* restore */ true);   // clear any prior staging first
 
   const T = window.THREE;
-  const { showingIdSet, fromWorld = {}, toWorld = {}, stepMaterials = {} } = opts;
+  const { appearingIdSet, fromWorld = {}, toWorld = {} } = opts;
   const tpls = state.get('hardwareTemplates') || [];
   const root = sceneCore.rootGroup;
   const staged = new Set();
@@ -124,7 +113,7 @@ export function stageInsertActors(actors, opts = {}) {
     try { parts = generateScrewParts(tpl.params || {}, node.washers || null); }
     catch (e) { console.warn('[insert-anim] parts build failed:', e?.message); continue; }
 
-    const appearing = !!showingIdSet?.has(node.id);
+    const appearing = !!appearingIdSet?.has(node.id);
     const prev = fromWorld[node.id];
     const needsReposition = !appearing && !!prev;
 
@@ -144,21 +133,15 @@ export function stageInsertActors(actors, opts = {}) {
     else                 { group.position.copy(targetPos); group.quaternion.copy(targetQuat); }
     root.add(group);
 
-    // FRESH transparent material. Colour = the screw's RESOLVED preset
-    // colour for THIS step (snapshot assignment → project default →
-    // template grey), NOT the live material's colour — at staging the
-    // live material can still be the previous step's / the raw grey,
-    // which is what made the animation render grey (V0.2.22.55 fix).
-    const fadeMat = new T.MeshStandardMaterial({
-      color:       _resolveColor(node, merged, stepMaterials),
-      metalness:   0.65,
-      roughness:   0.35,
-      transparent: true,
-      opacity:     appearing ? 0 : 1,   // fade in only if hidden before
-    });
-
+    // SHARE the live merged mesh's material (re-pointed each tick). This
+    // gives the transient pieces the exact material — full colour +
+    // metalness + roughness + every other setting — and lets the colour
+    // and visibility channels animate them naturally (the channels drive
+    // the merged mesh's material, the pieces follow). The merged mesh is
+    // hidden + re-asserted hidden each tick so it never double-renders.
     const elems = [parts.screw, ...parts.washers.map(w => w.mesh)];
-    for (const m of elems) { m.material = fadeMat; group.add(m); }
+    const liveMat = Array.isArray(merged.material) ? merged.material[0] : merged.material;
+    for (const m of elems) { if (liveMat) m.material = liveMat; group.add(m); }
 
     // Explode offsets along local +Y (V0.2.22.53.3 layout):
     //   bottom washer → 1·X … against-head washer → W·X (no swap)
@@ -182,7 +165,7 @@ export function stageInsertActors(actors, opts = {}) {
 
     const repMs = Number(node.insertAnim?.repositionMs);
     _staged.set(node.id, {
-      group, mergedMesh: merged, meshes: elems, offsets, fadeMat, appearing,
+      group, mergedMesh: merged, meshes: elems, offsets,
       needsReposition, targetPos, targetQuat, prevPos, prevQuat,
       repositionMs: Number.isFinite(repMs) && repMs >= 0 ? repMs : 300,
     });
@@ -211,25 +194,9 @@ export function runInsertReposition(easeFn) {
 }
 
 /**
- * FADE — called when the visibility phase fires. Fades the appearing
- * actors' pieces 0→1 over durationMs. Resolves when done (or instantly
- * if nothing is appearing). Non-appearing actors are already opaque.
- */
-export function runInsertFade(durationMs, easeFn) {
-  // Only run when at least one staged actor is APPEARING this step
-  // (was hidden in the previous step). Otherwise there's nothing to
-  // fade — the pieces are already opaque.
-  const anyAppearing = [..._staged.values()].some(s => s.appearing);
-  if (!_staged.size || !anyAppearing) return Promise.resolve();
-  return new Promise(resolve => {
-    _fade = { startMs: clock.now(), durationMs: Math.max(1, durationMs), easeFn, resolve };
-  });
-}
-
-/**
  * ASSEMBLE — called when the insert phase fires. Moves the pieces from
- * exploded → final over durationMs, and ensures opacity reaches 1 (so a
- * step with no visibility phase still shows the screw). Resolves on done.
+ * exploded → final over durationMs. Opacity is owned by the visibility
+ * channel (the pieces share the live material). Resolves on done.
  */
 export function runInsertAssemble(durationMs, easeFn) {
   if (!_staged.size) return Promise.resolve();
@@ -256,13 +223,18 @@ export function cancelInsertAnimations() { finalizeInsertActors(); }
 function _advance(now) {
   if (!_staged.size) return;
 
-  if (_fade) {
-    const raw = Math.min(1, Math.max(0, (now - _fade.startMs) / _fade.durationMs));
-    const u   = _fade.easeFn ? _fade.easeFn(raw) : raw;
-    for (const s of _staged.values()) {
-      if (s.appearing && s.fadeMat) s.fadeMat.opacity = u;
+  // Every tick: keep the merged mesh hidden (override the visibility
+  // channel, which may flip it visible), and re-point the transient
+  // pieces at the merged mesh's CURRENT material — the colour channel
+  // can REPLACE the material object mid-transition, and we want the
+  // pieces to follow the live colour + the screen-door fade uniform.
+  for (const s of _staged.values()) {
+    if (s.mergedMesh) {
+      s.mergedMesh.visible = false;
+      const liveMat = Array.isArray(s.mergedMesh.material)
+        ? s.mergedMesh.material[0] : s.mergedMesh.material;
+      if (liveMat) for (const m of s.meshes) { if (m.material !== liveMat) m.material = liveMat; }
     }
-    if (raw >= 1) { const r = _fade.resolve; _fade = null; r?.(); }
   }
 
   if (_reposition) {
@@ -302,12 +274,12 @@ function _advance(now) {
 function _disposeAll(restore) {
   for (const s of _staged.values()) {
     if (s.group?.parent) s.group.parent.remove(s.group);
+    // Dispose transient GEOMETRY only. The material is SHARED with the
+    // live merged mesh (owned by the materials system) — never dispose it.
     for (const m of (s.meshes || [])) m.geometry?.dispose?.();
-    s.fadeMat?.dispose?.();
     if (restore && s.mergedMesh) s.mergedMesh.visible = true;
   }
   _staged.clear();
-  _fade = null;
   _reposition = null;
   _assemble = null;
 }

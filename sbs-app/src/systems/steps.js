@@ -34,9 +34,9 @@ import { ensureHardwareInstanceObject3D } from './hardware-templates.js'; // V0.
 import { createStep, createEmptySnapshot } from '../core/schema.js';
 import { parseAnimation, resolveAnimationString } from './animation.js';
 import {
-  stageInsertActors, runInsertFade, runInsertReposition, runInsertAssemble,
+  stageInsertActors, runInsertReposition, runInsertAssemble,
   finalizeInsertActors, cancelInsertAnimations, findActorsForStep,
-} from './hardware-insert-anim.js'; // V0.2.22.55 — screw stage/fade/reposition/assemble
+} from './hardware-insert-anim.js'; // V0.2.22.56 — screw stage/reposition/assemble (colour+fade via channels)
 // V0.1.78 — narration overflow coordination. UI module exports the
 // query helpers; cross-layer import is OK here (actions.js + overlay.js
 // already cross the same boundary).
@@ -565,15 +565,20 @@ class StepManager {
     const _insertActors = findActorsForStep(state.get('activeStepId'));
     const _stagedActorIds = _insertActors.length
       ? stageInsertActors(_insertActors, {
-          showingIdSet:  new Set(showingMeshIds),
-          fromWorld:     fromWorldTransforms,
-          toWorld:       toWorldTransforms,
-          stepMaterials: toSnapshot.materials || {},
+          appearingIdSet: new Set(showingMeshIds),
+          fromWorld:      fromWorldTransforms,
+          toWorld:        toWorldTransforms,
         })
       : new Set();
     if (_stagedActorIds.size) {
-      showingMeshIds = showingMeshIds.filter(id => !_stagedActorIds.has(id));
-      hidingMeshIds  = hidingMeshIds.filter(id => !_stagedActorIds.has(id));
+      // V0.2.22.56 — keep insertion actors IN the colour + visibility
+      // channels: the transient pieces share the live material and
+      // follow those animations (colour transition, screen-door fade),
+      // respecting their time-block order. Only exclude from the OBJ
+      // channel — the screw's position is driven by the insert
+      // reposition/assemble, not the prev→target lerp. (The insert
+      // effect re-asserts the merged mesh hidden each tick so the
+      // visibility channel can't double-render it.)
       changedNodeIds = changedNodeIds.filter(id => !_stagedActorIds.has(id));
     }
 
@@ -724,14 +729,12 @@ class StepManager {
         this._onObjectTransitionsDone = resolve;
       });
 
-      // V0.2.22.54 — insertion in SIMULTANEOUS (non-phased) mode. Pieces
-      // were staged before this branch. Fade runs in parallel; reposition
-      // (prev→staging) runs first, then assemble (staging→final).
+      // V0.2.22.56 — insertion in SIMULTANEOUS (non-phased) mode. Pieces
+      // were staged before this branch. Reposition (prev→staging) runs
+      // first, then assemble (staging→final). Colour + fade ride the
+      // shared material via the standard channels (already running).
       const insertSimP = _stagedActorIds.size
-        ? Promise.all([
-            runInsertFade(objDur, easeFn),
-            runInsertReposition(easeFn).then(() => runInsertAssemble(objDur, easeFn)),
-          ])
+        ? runInsertReposition(easeFn).then(() => runInsertAssemble(objDur, easeFn))
         : Promise.resolve();
 
       // OFFLINE-EXPORT FIX: in simultaneous mode (no animation preset),
@@ -1020,19 +1023,15 @@ class StepManager {
 
       // Visibility fades (BEFORE color so applyAll inside beginColorTransition
       // can reapply fade values via the _visTransitions reapply block)
-      if (types.includes('visibility') && !visHandled) {
+      if (types.includes('visibility') && !visHandled &&
+          (hidingMeshIds.length || showingMeshIds.length)) {
         visHandled = true;
-        if (hidingMeshIds.length || showingMeshIds.length) {
-          this._materials?.beginVisibilityTransitions(
-            hidingMeshIds, showingMeshIds, durationMs, easeFn,
-          );
-        }
-        // V0.2.22.53 — fade staged insertion actors in at their EXPLODED
-        // position during this same visibility window (no-op if nothing
-        // is appearing).
-        if (stagedActorIds.size) {
-          phasePromises.push(runInsertFade(durationMs, easeFn));
-        }
+        this._materials?.beginVisibilityTransitions(
+          hidingMeshIds, showingMeshIds, durationMs, easeFn,
+        );
+        // V0.2.22.56 — insertion actors are kept IN showingMeshIds, so
+        // their screen-door fade rides this same call; the transient
+        // pieces share the live material and follow it. No separate fade.
       }
 
       // Color/material transition
@@ -1197,18 +1196,11 @@ class StepManager {
     // EITHER is missing from the string, the missing group falls back
     // to a default fade. Shapes that were folded into mesh arrays
     // (no shape slot in string) ride along automatically.
-    if (!visHandled && (hidingMeshIds.length || showingMeshIds.length || stagedActorIds.size)) {
+    if (!visHandled && (hidingMeshIds.length || showingMeshIds.length)) {
       visHandled = true;
-      if (hidingMeshIds.length || showingMeshIds.length) {
-        this._materials?.beginVisibilityTransitions(
-          hidingMeshIds, showingMeshIds, fallbackObj, easeFn,
-        );
-      }
-      // V0.2.22.53 — fade staged insertion actors in the visibility
-      // fallback window too (when the string omits a visibility slot).
-      if (stagedActorIds.size) {
-        fallbackPromises.push(runInsertFade(fallbackObj, easeFn));
-      }
+      this._materials?.beginVisibilityTransitions(
+        hidingMeshIds, showingMeshIds, fallbackObj, easeFn,
+      );
       fallbackPromises.push(_sleep(fallbackObj));
     }
     if (!shapeHandled && (hidingShapeIds.length || showingShapeIds.length)) {
