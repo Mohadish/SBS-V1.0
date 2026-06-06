@@ -94,10 +94,14 @@ function _makeTagDiv(text, tagSize, colorHex) {
   return div;
 }
 
-/** Human label for a washer tag, e.g. "Flat washer Ø9.6". */
-function _describeWasher(kind, outerR) {
-  const name = kind === 'spring' ? 'Spring washer' : 'Flat washer';
-  return outerR ? `${name} Ø${(outerR * 2).toFixed(1)}` : name;
+/**
+ * Washer tag text. Uses the template's custom washerNames[index] when set
+ * (V0.2.22.63), else the generic kind label. No dimensions.
+ */
+function _washerLabel(kind, index, washerNames) {
+  const custom = washerNames?.[index];
+  if (custom && String(custom).trim()) return String(custom).trim();
+  return kind === 'spring' ? 'Spring washer' : 'Flat washer';
 }
 
 // ─── Static prev-step tags (V0.2.22.60) ─────────────────────────────────────
@@ -200,13 +204,13 @@ export function refreshStaticTags(activeStepId) {
       piece: merged, localY: 0,
       outerRLocal: _headOuterRadius(tpl?.params?.headType, D),
     }];
-    for (const w of washerStackFor(tpl?.params || {}, node.washers)) {
+    washerStackFor(tpl?.params || {}, node.washers).forEach((w, i) => {
       items.push({
-        div: _makeTagDiv(_describeWasher(w.kind, w.outerR), eff.tagSize, eff.tagColor),
+        div: _makeTagDiv(_washerLabel(w.kind, i, tpl?.washerNames), eff.tagSize, eff.tagColor),
         piece: merged, localY: w.yTop - w.height / 2,
         outerRLocal: w.outerR,
       });
-    }
+    });
     _staticTags.set(node.id, { mergedMesh: merged, items });
   }
   if (_staticTags.size && !_staticTickUnsub) {
@@ -344,7 +348,7 @@ export function stageInsertActors(actors, opts = {}) {
         const piece = elems[i + 1];   // elems = [screw, ...washer meshes]
         if (!piece) return;
         items.push({
-          div: _makeTagDiv(_describeWasher(w.kind, w.outerR), eff.tagSize, eff.tagColor),
+          div: _makeTagDiv(_washerLabel(w.kind, i, tpl.washerNames), eff.tagSize, eff.tagColor),
           piece, localY: w.yTop - w.height / 2,
           outerRLocal: w.outerR,
         });
@@ -522,27 +526,31 @@ function _advance(now) {
 let _vWp = null, _vScale = null;
 
 /**
- * Anchor one tag <div> 10px to the camera-left of a WORLD POINT's rim,
- * vertically centred. `outerR` is in world units. rect/camRight reused
- * across a batch.
+ * Project a world point + rim radius to screen pixels. Returns
+ * { cx, cy, rimPx } (centre + rim pixel radius), or null if behind the
+ * camera. rect/camRight reused across a batch.
  */
-function _anchorTag(div, worldPos, outerR, rect, cam, camRight) {
-  // Project the centre.
+function _projectAnchor(worldPos, outerR, rect, cam, camRight) {
   const c = worldPos.clone().project(cam);
-  if (c.z > 1) { div.style.visibility = 'hidden'; return; }
+  if (c.z > 1) return null;
   const cx = rect.left + (c.x * 0.5 + 0.5) * rect.width;
   const cy = rect.top  + (-c.y * 0.5 + 0.5) * rect.height;
-
-  // Project a point one RADIUS to the camera-right to measure the rim's
-  // pixel radius, then anchor the tag 10px past that rim.
   const rimW = worldPos.clone().addScaledVector(camRight, outerR || 0);
   const r = rimW.project(cam);
   const rimX = rect.left + (r.x * 0.5 + 0.5) * rect.width;
-  const rimPx = Math.abs(rimX - cx);
+  return { cx, cy, rimPx: Math.abs(rimX - cx) };
+}
 
+/**
+ * Anchor one tag <div> 10px to the camera-left of a WORLD POINT's rim,
+ * vertically centred. `outerR` is in world units.
+ */
+function _anchorTag(div, worldPos, outerR, rect, cam, camRight) {
+  const a = _projectAnchor(worldPos, outerR, rect, cam, camRight);
+  if (!a) { div.style.visibility = 'hidden'; return; }
   div.style.visibility = 'visible';
-  div.style.left = `${cx - rimPx - 10}px`;  // 10px left of the rim
-  div.style.top  = `${cy}px`;               // translate(-100%,-50%) centres it
+  div.style.left = `${a.cx - a.rimPx - 10}px`;  // 10px left of the rim
+  div.style.top  = `${a.cy}px`;                 // translate(-100%,-50%) centres it
 }
 
 /**
@@ -590,14 +598,41 @@ function _positionStaticTags() {
   const rect = dom.getBoundingClientRect();
   const camRight = new T.Vector3();
   cam.matrixWorld.extractBasis(camRight, new T.Vector3(), new T.Vector3());
+  const wp = new T.Vector3();
+  const sc = new T.Vector3();
   for (const t of _staticTags.values()) {
-    const vis = !!t.mergedMesh?.visible;   // hide all items when screw hidden here
-    for (const it of (t.items || [])) {
-      if (!it.div) continue;
-      if (!vis) { it.div.style.display = 'none'; continue; }
-      it.div.style.display = 'block';
-      _anchorPieceTag(it.div, it.piece, it.localY, it.outerRLocal, rect, cam, camRight);
+    const items = t.items || [];
+    // Hide everything when the screw isn't visible on this step.
+    if (!t.mergedMesh?.visible) {
+      for (const it of items) if (it.div) it.div.style.display = 'none';
+      continue;
     }
+    // On the previous step the nut is ASSEMBLED, so the head + washer
+    // anchors land almost on top of each other. Project them, then STACK
+    // the labels vertically (one under the other), right-aligned to clear
+    // the widest part — a parts-list that never overlaps (V0.2.22.63).
+    const placed = [];
+    let maxRim = 0;
+    for (const it of items) {
+      if (!it.div) continue;
+      wp.set(0, it.localY || 0, 0);
+      it.piece.localToWorld(wp);
+      it.piece.getWorldScale(sc);
+      const a = _projectAnchor(wp, (it.outerRLocal || 0) * (sc.x || 1), rect, cam, camRight);
+      if (!a) { it.div.style.display = 'none'; continue; }
+      placed.push({ div: it.div, ...a });
+      if (a.rimPx > maxRim) maxRim = a.rimPx;
+    }
+    if (!placed.length) continue;
+    const head   = placed[0];
+    const rightX = head.cx - maxRim - 10;                              // clears widest washer
+    const lineH  = (parseFloat(head.div.style.fontSize) || 18) * 1.15;
+    placed.forEach((p, i) => {
+      p.div.style.display    = 'block';
+      p.div.style.visibility = 'visible';
+      p.div.style.left = `${rightX}px`;
+      p.div.style.top  = `${head.cy + i * lineH}px`;   // stacked downward
+    });
   }
 }
 

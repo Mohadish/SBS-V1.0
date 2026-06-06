@@ -274,6 +274,22 @@ function _renderCreateForm(editing, formSpec) {
       </select>
     </label>
 
+    <!-- V0.2.22.63 — optional custom labels for this screw's washers,
+         used as the washer insertion-tag text. -->
+    <div class="grid2" style="margin-top:8px;gap:6px;">
+      <label class="small muted">Washer 1 name
+        <input type="text" id="hw-w1" value="${_esc((editing?.washerNames || [])[0] || '')}" placeholder="Flat washer"
+               style="width:100%;margin-top:2px;padding:4px;border:1px solid var(--line);border-radius:4px;background:var(--panel2);color:var(--text);" />
+      </label>
+      <label class="small muted">Washer 2 name
+        <input type="text" id="hw-w2" value="${_esc((editing?.washerNames || [])[1] || '')}" placeholder="Flat washer"
+               style="width:100%;margin-top:2px;padding:4px;border:1px solid var(--line);border-radius:4px;background:var(--panel2);color:var(--text);" />
+      </label>
+    </div>
+    <div class="small muted" style="font-size:10px;opacity:0.6;margin-top:2px;">
+      Labels for this screw's washers (shown in the insertion tags). Blank = "Flat/Spring washer".
+    </div>
+
     <div class="grid2" style="margin-top:10px;gap:6px;">
       ${editing
         ? `
@@ -438,15 +454,20 @@ function _wire(panelEl) {
   const saveBtn    = panelEl.querySelector('#hw-save');
   const cancelBtn  = panelEl.querySelector('#hw-cancel');
 
+  const _readWasherNames = () => [
+    (panelEl.querySelector('#hw-w1')?.value || '').trim(),
+    (panelEl.querySelector('#hw-w2')?.value || '').trim(),
+  ];
+
   createBtn?.addEventListener('click', () => {
     const params = _readForm();
-    const tpl = createTemplate({ kind: 'screw', params });
+    const tpl = createTemplate({ kind: 'screw', params, washerNames: _readWasherNames() });
     setStatus(`Created template: ${tpl.name}.`, 'success', 2000);
   });
   saveBtn?.addEventListener('click', () => {
     if (!_editingId) return;
     const params = _readForm();
-    editTemplate(_editingId, { params });
+    editTemplate(_editingId, { params, washerNames: _readWasherNames() });
     const tpls = state.get('hardwareTemplates') || [];
     const tpl  = tpls.find(t => t.id === _editingId);
     setStatus(`Updated: ${tpl?.name || 'template'} — all instances refreshed.`, 'success', 2000);

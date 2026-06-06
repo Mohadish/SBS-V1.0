@@ -100,11 +100,12 @@ function _assignHardwareDefault(instanceId) {
  * Create a hardware template, push to state. Returns the new template
  * (already in the array).
  */
-export function createTemplate({ kind = 'screw', params = {}, name = '' } = {}) {
+export function createTemplate({ kind = 'screw', params = {}, name = '', washerNames } = {}) {
   const tpl = createHardwareTemplate({
     kind,
     params: { ...params },
     name:   name || _autoName({ kind, params }),
+    ...(Array.isArray(washerNames) ? { washerNames: [...washerNames] } : {}),
   });
   const list = state.get('hardwareTemplates') || [];
   state.setState({ hardwareTemplates: [...list, tpl] });

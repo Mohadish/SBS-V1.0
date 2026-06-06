@@ -27,7 +27,7 @@ export const SCHEMA_VERSIONS = {
   screen:     1,
 };
 
-export const APP_VERSION  = 'V0.2.22.62';
+export const APP_VERSION  = 'V0.2.22.63';
 // Format: YYYY-MM-DD. Bump along with APP_VERSION on every build worth
 // labelling so the File tab shows you're running the expected slice.
 export const APP_RELEASED = '2026-06-06';
@@ -414,6 +414,10 @@ export function createHardwareTemplate(overrides = {}) {
       headType:   'socket',
       driveStyle: 'phillips',
     },
+    // V0.2.22.63 — optional custom labels for this screw's washers (by
+    // stack index 0=against-head, 1=next). Used as the washer tag text;
+    // blank falls back to "Flat washer" / "Spring washer".
+    washerNames: ['', ''],
     ...overrides,
   };
 }
