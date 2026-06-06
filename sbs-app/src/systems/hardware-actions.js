@@ -43,7 +43,7 @@ import {
   rebuildHardwareInstancesOfTemplate,
   disposeHardwareInstance,
 }                                       from './hardware-templates.js';
-import { applyNodeTransformToObject3D } from '../core/transforms.js';
+import { applyNodeTransformToObject3D, setStoredQuaternion } from '../core/transforms.js';
 import { undoManager }                  from './undo.js';
 
 const HARDWARE_FOLDER_NAME = 'Hardware';
@@ -198,8 +198,12 @@ export function deleteTemplate(templateId, { deleteInstances = true } = {}) {
  * @param {string}  templateId
  * @param {string?} parentId   defaults to (or auto-creates) the "Hardware"
  *                             folder at scene root.
+ * @param {object?} opts       { worldPose: { position: Vector3, quaternion:
+ *                             Quaternion } } — place at this world pose
+ *                             instead of the parent origin (place-on-surface
+ *                             / 3-point). Captured into the undo snapshot.
  */
-export function placeInstance(templateId, parentId = null) {
+export function placeInstance(templateId, parentId = null, opts = {}) {
   const tpls = state.get('hardwareTemplates') || [];
   const tpl  = tpls.find(t => t.id === templateId);
   if (!tpl) {
@@ -240,6 +244,12 @@ export function placeInstance(templateId, parentId = null) {
     parentObj.add(mesh);
     steps.object3dById.set(inst.id, mesh);
     applyNodeTransformToObject3D(inst, mesh, true);
+    // Optional initial world pose (place-on-surface / 3-point placement).
+    // Done BEFORE _pushPlaceInstanceUndo so the undo snapshot captures the
+    // pose → redo restores it correctly.
+    if (opts.worldPose?.position) {
+      setInstanceWorldPose(inst, mesh, opts.worldPose.position, opts.worldPose.quaternion);
+    }
   }
 
   // V0.2.22.45 — auto-assign the "Hardware" default colour preset.
@@ -670,6 +680,101 @@ function _deleteInstancesByTemplateId(root, templateId) {
       return true;
     });
   })(root);
+}
+
+/**
+ * Write a world-space pose onto a hardware-instance node + its Object3D.
+ * Converts the world pose to the parent's local space, stores it as the
+ * per-step localOffset / localQuaternion delta (relative to baseLocal*),
+ * and flips moveEnabled / rotateEnabled on (else the delta is ignored at
+ * render time — see memory feedback_align_enabled_flags). No undo push;
+ * callers own that. Mirrors folder-align-picker's decompose+write.
+ */
+export function setInstanceWorldPose(node, obj, worldPos, worldQuat) {
+  const T = window.THREE;
+  if (!T || !node || !obj) return false;
+  obj.updateMatrixWorld(true);
+  // Keep the current world scale (a scaled parent folder scales the nut).
+  const curScale = new T.Vector3();
+  obj.matrixWorld.decompose(new T.Vector3(), new T.Quaternion(), curScale);
+
+  const wQuat = worldQuat ? worldQuat.clone().normalize() : new T.Quaternion();
+  const newWorld = new T.Matrix4().compose(worldPos.clone(), wQuat, curScale);
+
+  const parent = obj.parent;
+  if (parent) parent.updateMatrixWorld(true);
+  const invParent = parent
+    ? new T.Matrix4().copy(parent.matrixWorld).invert()
+    : new T.Matrix4();
+  const newLocal = new T.Matrix4().multiplyMatrices(invParent, newWorld);
+
+  const nPos = new T.Vector3(), nQuat = new T.Quaternion(), nScale = new T.Vector3();
+  newLocal.decompose(nPos, nQuat, nScale);
+
+  const blp = node.baseLocalPosition   || [0, 0, 0];
+  const blq = node.baseLocalQuaternion || [0, 0, 0, 1];
+  node.localOffset = [nPos.x - blp[0], nPos.y - blp[1], nPos.z - blp[2]];
+  const baseQ  = new T.Quaternion(blq[0], blq[1], blq[2], blq[3]).invert();
+  const localQ = baseQ.multiply(nQuat);
+  setStoredQuaternion(node, [localQ.x, localQ.y, localQ.z, localQ.w]);
+  node.rotateEnabled = true;
+  node.moveEnabled   = true;
+
+  obj.position.copy(nPos);
+  obj.quaternion.copy(nQuat);
+  obj.updateMatrixWorld(true);
+  steps.scheduleTransformSync?.();
+  state.markDirty?.();
+  return true;
+}
+
+/**
+ * Re-pose an EXISTING hardware instance to a world pose (viewport
+ * "Place on surface" / "Align by 3 points" on a placed nut). Snapshots
+ * the before/after per-step transform for undo.
+ */
+export function realignInstance(nodeId, worldPos, worldQuat) {
+  const nodeById = state.get('nodeById') || buildNodeMap(state.get('treeData'));
+  const node = nodeById?.get(nodeId);
+  const obj  = steps.object3dById?.get(nodeId);
+  if (!node || node.type !== 'hardwareInstance' || !obj) return false;
+
+  const before = _snapXf(node);
+  if (!setInstanceWorldPose(node, obj, worldPos, worldQuat)) return false;
+  const after = _snapXf(node);
+
+  state.emit('change:treeData', state.get('treeData'));
+  undoManager.push(
+    `Align hardware "${node.name || 'screw'}"`,
+    () => _applyXf(nodeId, before),
+    () => _applyXf(nodeId, after),
+  );
+  return true;
+}
+
+function _snapXf(n) {
+  return {
+    localOffset:      [...(n.localOffset      || [0, 0, 0])],
+    localQuaternion:  [...(n.localQuaternion  || [0, 0, 0, 1])],
+    orientationSteps: [...(n.orientationSteps || [0, 0, 0])],
+    rotateEnabled:    n.rotateEnabled !== false,
+    moveEnabled:      n.moveEnabled   !== false,
+  };
+}
+
+function _applyXf(nodeId, xf) {
+  const n = state.get('nodeById')?.get(nodeId);
+  if (!n) return;
+  n.localOffset      = [...xf.localOffset];
+  n.localQuaternion  = [...xf.localQuaternion];
+  n.orientationSteps = [...xf.orientationSteps];
+  n.rotateEnabled    = xf.rotateEnabled;
+  n.moveEnabled      = xf.moveEnabled;
+  const obj = steps.object3dById?.get(nodeId);
+  if (obj) applyNodeTransformToObject3D(n, obj, true);
+  steps.scheduleTransformSync?.();
+  state.markDirty?.();
+  state.emit('change:treeData', state.get('treeData'));
 }
 
 function _pushPlaceInstanceUndo(nodeId, parentId, snapshotNode, label = 'Add hardware') {

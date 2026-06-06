@@ -59,6 +59,7 @@ import { initCables, resolveNodeWorldPosition } from './systems/cables.js';     
 import * as pivotCenterPicker     from './systems/pivot-center-picker.js';   // 3-point center pivot tool — snap-based picker for cylinder-axis pivot placement
 import * as folderAlignPicker     from './systems/folder-align-picker.js';   // V0.2.22.32 — 1-point folder-to-surface align
 import * as folderAlign3ptPicker  from './systems/folder-align-3pt-picker.js'; // V0.2.22.33 — 3-point concentric folder align
+import * as hardwarePlacePicker   from './systems/hardware-place-picker.js';  // V0.2.22.61 — place/align nuts on a surface
 
 // ── V0.2.22.23 — pivot hover throttle ─────────────────────────────────────
 // sceneCore.pick is O(scene) and runs ~75ms on a CAD project. Pointer-move
@@ -969,6 +970,18 @@ canvas.addEventListener('pointerdown', e => {
     return;
   }
 
+  // V0.2.22.61 — hardware place/align picker consumes the click. One pick:
+  // surface hit → place/align there (axis = normal); empty → 50mm down the
+  // camera centre-ray. Runs before gizmo so a face under a handle is still
+  // pickable.
+  if (state.get('hwPlaceActive')) {
+    e.preventDefault();
+    e.stopPropagation();
+    _gizmoConsumed = true;
+    hardwarePlacePicker.onPointerDown(e.clientX, e.clientY);
+    return;
+  }
+
   // P-P1+: snap-to-surface pick mode consumes the click — raycast
   // against the scene, snap pivot if there's a hit, otherwise cancel.
   // Runs BEFORE the gizmo so the user can target a face that happens
@@ -1112,6 +1125,12 @@ canvas.addEventListener('pointermove', e => {
     // tight follow.
     if (state.get('align3FolderId')) {
       folderAlign3ptPicker.updateHover(e.clientX, e.clientY);
+      return;
+    }
+
+    // V0.2.22.61 — hardware place/align hover crosshair.
+    if (state.get('hwPlaceActive')) {
+      hardwarePlacePicker.updateHover(e.clientX, e.clientY);
       return;
     }
 
@@ -2644,6 +2663,14 @@ window.addEventListener('keydown', async e => {
   // last picked point in the current phase; Enter commits when previewing.
   if (state.get('align3FolderId')) {
     if (folderAlign3ptPicker.onKeyDown(key)) {
+      e.preventDefault();
+      return;
+    }
+  }
+
+  // V0.2.22.61 — hardware place/align picker keyboard (Esc cancels).
+  if (state.get('hwPlaceActive')) {
+    if (hardwarePlacePicker.onKeyDown(key)) {
       e.preventDefault();
       return;
     }
