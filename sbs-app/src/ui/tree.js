@@ -3078,7 +3078,8 @@ export async function showInsertAnimDialog(cur, onConfirm) {
   const c = cur || {};
   // Effective defaults to show when a row is set to "use default".
   let def = { distance: 20, repositionMs: 300, tagName: false, tagSize: 'medium',
-              trajectory: false, lineThickness: 0.5, lineColor: '#ffaa00' };
+              tagColor: '#ffffff', tagPrev: false,
+              trajectory: false, lineThickness: 0.5, lineGap: 2, lineColor: '#ffaa00' };
   try { def = (await import('../systems/hardware-defaults.js')).getEffectiveDefaults(); } catch {}
 
   const dlg = document.createElement('dialog');
@@ -3103,7 +3104,10 @@ export async function showInsertAnimDialog(cur, onConfirm) {
            <option value="small"  ${sz==='small' ?'selected':''}>Small</option>
            <option value="medium" ${sz==='medium'?'selected':''}>Medium</option>
            <option value="large"  ${sz==='large' ?'selected':''}>Large</option>
-         </select>`, ud('tagName'))}
+         </select>
+         <input type="color" id="_ia-tagcolor" value="${_esc(val('tagColor') || '#ffffff')}" title="text colour" style="width:34px;height:24px;margin-left:6px;padding:1px;vertical-align:middle;" />
+         <label class="small" style="display:block;margin-top:5px;"><input type="checkbox" id="_ia-tagprev" ${val('tagPrev') ? 'checked' : ''}/> include on previous step</label>`,
+        ud('tagName'))}
       <div class="small muted" style="margin:2px 0 0 26px;font-size:10px;opacity:0.7;">Sizes use your Note size settings.</div>
 
       ${_iaRow('traj', 'Trajectory line',
@@ -3140,6 +3144,8 @@ export async function showInsertAnimDialog(cur, onConfirm) {
       repositionMs: useDef('ms')  ? null : Number(dlg.querySelector('#_ia-ms').value),
       tagName:      useDef('tag') ? null : dlg.querySelector('#_ia-tag').checked,
       tagSize:      useDef('tag') ? null : dlg.querySelector('#_ia-size').value,
+      tagColor:     useDef('tag') ? null : dlg.querySelector('#_ia-tagcolor').value,
+      tagPrev:      useDef('tag') ? null : dlg.querySelector('#_ia-tagprev').checked,
       trajectory:   useDef('traj')? null : dlg.querySelector('#_ia-traj').checked,
       lineThickness:useDef('traj')? null : Number(dlg.querySelector('#_ia-thick').value),
       lineGap:      useDef('traj')? null : Number(dlg.querySelector('#_ia-gap').value),

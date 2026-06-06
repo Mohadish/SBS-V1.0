@@ -287,6 +287,15 @@ initCables();
 initCableRender();
 setupUndoKeyboard();
 
+// V0.2.22.60 — static "include on previous step" hardware tags. After a
+// step settles, rebuild the spec-name labels for any insertion actor whose
+// insert step is the NEXT step. Registered once; also fires for the
+// already-active step so a freshly-loaded project shows them immediately.
+import('./systems/hardware-insert-anim.js').then(hw => {
+  state.on('step:applied', () => hw.refreshStaticTags(state.get('activeStepId')));
+  hw.refreshStaticTags(state.get('activeStepId'));
+}).catch(() => {});
+
 // Eager-load user-level prefs so subsequent UI can read them synchronously.
 initUserSettings()
   .then(() => {

@@ -136,12 +136,22 @@ function _renderNutsTab(body) {
       <input type="checkbox" id="_nt-tag" ${n.tagName ? 'checked' : ''} />
       <span class="small">Show name tag by default</span>
     </label>
-    <label class="small muted" style="display:block;margin-top:6px;margin-left:24px;">Tag size
-      <select id="_nt-size" style="margin-left:6px;">
-        <option value="small"  ${sz === 'small'  ? 'selected' : ''}>Small</option>
-        <option value="medium" ${sz === 'medium' ? 'selected' : ''}>Medium</option>
-        <option value="large"  ${sz === 'large'  ? 'selected' : ''}>Large</option>
-      </select>
+    <div style="display:flex;align-items:flex-end;gap:14px;margin-top:6px;margin-left:24px;">
+      <label class="small muted">Tag size
+        <select id="_nt-size" style="margin-left:6px;">
+          <option value="small"  ${sz === 'small'  ? 'selected' : ''}>Small</option>
+          <option value="medium" ${sz === 'medium' ? 'selected' : ''}>Medium</option>
+          <option value="large"  ${sz === 'large'  ? 'selected' : ''}>Large</option>
+        </select>
+      </label>
+      <label class="small muted">Text colour
+        <input type="color" id="_nt-tagcolor" value="${_esc(n.tagColor || '#ffffff')}"
+          style="width:48px;height:28px;margin-top:3px;margin-left:6px;padding:2px;border-radius:4px;cursor:pointer;vertical-align:middle;" />
+      </label>
+    </div>
+    <label style="display:flex;align-items:center;gap:8px;margin-top:8px;margin-left:24px;cursor:pointer;">
+      <input type="checkbox" id="_nt-tagprev" ${n.tagPrev ? 'checked' : ''} />
+      <span class="small">Also show on the step before insertion</span>
     </label>
 
     <label style="display:flex;align-items:center;gap:8px;margin-top:14px;cursor:pointer;">
@@ -170,13 +180,15 @@ function _renderNutsTab(body) {
       repositionMs:  Math.max(0, Number(body.querySelector('#_nt-ms').value)   || 300),
       tagName:       body.querySelector('#_nt-tag').checked,
       tagSize:       body.querySelector('#_nt-size').value,
+      tagColor:      body.querySelector('#_nt-tagcolor').value,
+      tagPrev:       body.querySelector('#_nt-tagprev').checked,
       trajectory:    body.querySelector('#_nt-traj').checked,
       lineThickness: Math.max(0.05, Number(body.querySelector('#_nt-thick').value) || 0.5),
       lineGap:       Math.max(0,    Number(body.querySelector('#_nt-gap').value)   || 2),
       lineColor:     body.querySelector('#_nt-color').value,
     } });
   };
-  for (const sel of ['#_nt-x','#_nt-ms','#_nt-tag','#_nt-size','#_nt-traj','#_nt-thick','#_nt-gap','#_nt-color']) {
+  for (const sel of ['#_nt-x','#_nt-ms','#_nt-tag','#_nt-size','#_nt-tagcolor','#_nt-tagprev','#_nt-traj','#_nt-thick','#_nt-gap','#_nt-color']) {
     body.querySelector(sel)?.addEventListener('change', save);
   }
 }

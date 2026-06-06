@@ -76,6 +76,97 @@ export function findActorsForStep(stepId) {
   return out;
 }
 
+/** Build a screen-space tag <div> (hidden). Font px from note presets. */
+function _makeTagDiv(text, tagSize, colorHex) {
+  const presets = state.get('notePresets') || { small: 18, medium: 36, large: 48 };
+  const px = presets[tagSize] || presets.medium || 36;
+  const div = document.createElement('div');
+  div.className = 'sbs-insert-tag';
+  div.textContent = text;
+  div.style.cssText =
+    'position:fixed;pointer-events:none;white-space:nowrap;display:none;' +
+    'font-family:system-ui,sans-serif;font-weight:600;' +
+    'text-shadow:0 1px 3px rgba(0,0,0,0.9);z-index:50;' +
+    'transform:translate(-100%,-50%);';
+  div.style.color = colorHex || '#ffffff';
+  div.style.fontSize = `${px}px`;
+  document.body.appendChild(div);
+  return div;
+}
+
+// ─── Static prev-step tags (V0.2.22.60) ─────────────────────────────────────
+// When an insertion actor has tagName + tagPrev, its name label also shows
+// STATICALLY on the step immediately BEFORE the insertion step (not just
+// during the animation). refreshStaticTags() is called on every step
+// settle; it rebuilds the set of static tags for the active step.
+const _staticTags = new Map();   // nodeId → { div, mergedMesh, headOuterR }
+let _staticTickUnsub = null;
+
+/** All hardware instances flagged as insertion actors (any step). */
+function _allActors() {
+  const root = state.get('treeData');
+  const out = [];
+  (function walk(n) {
+    if (!n) return;
+    if (n.type === 'hardwareInstance' && n.insertAnim?.enabled) out.push(n);
+    for (const c of (n.children || [])) walk(c);
+  })(root);
+  return out;
+}
+
+/** The playable step id immediately before `stepId`, or null. Mirrors
+ *  StepsManager._isPlayable: skip base/hidden steps and hidden chapters. */
+function _prevStepId(stepId) {
+  const chapters = state.get('chapters') || [];
+  const chHidden = (id) => !!(id && chapters.find(c => c.id === id)?.hidden);
+  const steps = (state.get('steps') || []).filter(
+    s => s && !s.isBaseStep && !s.hidden && !chHidden(s.chapterId)
+  );
+  const i = steps.findIndex(s => s.id === stepId);
+  return i > 0 ? steps[i - 1].id : null;
+}
+
+export function clearStaticTags() {
+  for (const t of _staticTags.values()) {
+    if (t.div?.parentNode) t.div.parentNode.removeChild(t.div);
+  }
+  _staticTags.clear();
+  if (_staticTickUnsub) { _staticTickUnsub(); _staticTickUnsub = null; }
+}
+
+/**
+ * Rebuild the static prev-step tags for the given active step. For each
+ * actor with tagName + tagPrev whose insert step is the NEXT step, show
+ * a static label at the screw's current position.
+ */
+export function refreshStaticTags(activeStepId) {
+  clearStaticTags();
+  if (!activeStepId) return;
+  const tpls = state.get('hardwareTemplates') || [];
+  for (const node of _allActors()) {
+    const eff = resolveInsertAnim(node);
+    if (!eff.tagName || !eff.tagPrev) continue;
+    const insertStep = node.insertAnim?.stepId;
+    if (!insertStep) continue;
+    if (_prevStepId(insertStep) !== activeStepId) continue;   // not the prev step
+    const merged = node.object3d;
+    if (!merged || !merged.visible) continue;   // no orphan tag when hidden here
+    const tpl = tpls.find(t => t.id === node.templateId);
+    const txt = tpl?.name || node.name || 'hardware';
+    const D = Math.max(0.5, Number(tpl?.params?.diameter) || 4);
+    const headOuterR = _headOuterRadius(tpl?.params?.headType, D);
+    const div = _makeTagDiv(txt, eff.tagSize, eff.tagColor);
+    div.style.display = 'block';
+    _staticTags.set(node.id, { div, mergedMesh: merged, headOuterR });
+  }
+  if (_staticTags.size && !_staticTickUnsub) {
+    _staticTickUnsub = sceneCore.addTickHook(() => _positionStaticTags());
+  } else if (!_staticTags.size && _staticTickUnsub) {
+    _staticTickUnsub(); _staticTickUnsub = null;
+  }
+  _positionStaticTags();
+}
+
 /**
  * STAGE — build the transient exploded pieces in WORLD space (added to
  * rootGroup, which is identity), hide the merged mesh.
@@ -187,20 +278,8 @@ export function stageInsertActors(actors, opts = {}) {
     // anchored 10px left of the head's OUTER RIM (V0.2.22.58), vertically
     // centred, horizontal. Font px from the note size presets.
     if (eff.tagName) {
-      const presets = state.get('notePresets') || { small: 18, medium: 36, large: 48 };
-      const px = presets[eff.tagSize] || presets.medium || 36;
       const txt = tpl.name || `M${tpl.params?.diameter}×${tpl.params?.length}`;
-      const div = document.createElement('div');
-      div.className = 'sbs-insert-tag';
-      div.textContent = txt;
-      div.style.cssText =
-        'position:fixed;pointer-events:none;white-space:nowrap;display:none;' +
-        'color:#fff;font-family:system-ui,sans-serif;font-weight:600;' +
-        'text-shadow:0 1px 3px rgba(0,0,0,0.9);z-index:50;' +
-        'transform:translate(-100%,-50%);';
-      div.style.fontSize = `${px}px`;
-      document.body.appendChild(div);
-      entry.tagEl = div;
+      entry.tagEl = _makeTagDiv(txt, eff.tagSize, eff.tagColor);
     }
 
     // ── Trajectory line — THICK dotted line (V0.2.22.58): a row of dash
@@ -289,8 +368,15 @@ export function finalizeInsertActors() {
   if (_tickUnsub) { _tickUnsub(); _tickUnsub = null; }
 }
 
-/** Hard cancel — same as finalize (no separate semantics needed). */
-export function cancelInsertAnimations() { finalizeInsertActors(); }
+/**
+ * Hard cancel — finalize the live animation AND drop any static prev-step
+ * tags. Called at the top of activateStep, so the next step rebuilds its
+ * own static tags via refreshStaticTags().
+ */
+export function cancelInsertAnimations() {
+  finalizeInsertActors();
+  clearStaticTags();
+}
 
 // ─── Per-tick ───────────────────────────────────────────────────────────────
 
@@ -360,6 +446,34 @@ function _advance(now) {
   _positionTags();
 }
 
+/**
+ * Anchor one tag <div> 10px to the camera-left of a world object's head
+ * rim, vertically centred. Shared by animation tags and static prev-step
+ * tags. `rect`/`camRight` are reused across a batch for efficiency.
+ */
+function _anchorTag(div, worldObj, headOuterR, rect, cam, camRight) {
+  const T = window.THREE;
+  const wp = new T.Vector3();
+  worldObj.getWorldPosition(wp);
+
+  // Project the head centre.
+  const c = wp.clone().project(cam);
+  if (c.z > 1) { div.style.visibility = 'hidden'; return; }
+  const cx = rect.left + (c.x * 0.5 + 0.5) * rect.width;
+  const cy = rect.top  + (-c.y * 0.5 + 0.5) * rect.height;
+
+  // Project a point one head-RADIUS to the camera-right of the head, to
+  // measure the rim's pixel radius. Anchor the tag 10px past that rim.
+  const rimW = wp.clone().addScaledVector(camRight, headOuterR || 0);
+  const r = rimW.project(cam);
+  const rimX = rect.left + (r.x * 0.5 + 0.5) * rect.width;
+  const rimPx = Math.abs(rimX - cx);
+
+  div.style.visibility = 'visible';
+  div.style.left = `${cx - rimPx - 10}px`;  // 10px left of the head rim
+  div.style.top  = `${cy}px`;               // translate(-100%,-50%) centres it
+}
+
 function _positionTags() {
   const T = window.THREE;
   const cam = sceneCore.camera;
@@ -367,29 +481,25 @@ function _positionTags() {
   if (!cam || !dom) return;
   let rect = null;
   const camRight = new T.Vector3();
+  cam.matrixWorld.extractBasis(camRight, new T.Vector3(), new T.Vector3());
   for (const s of _staged.values()) {
     if (!s.tagEl || !s.tagShown) continue;
     if (!rect) rect = dom.getBoundingClientRect();
-    const wp = new T.Vector3();
-    s.headPiece.getWorldPosition(wp);
+    _anchorTag(s.tagEl, s.headPiece, s.headOuterR, rect, cam, camRight);
+  }
+}
 
-    // Project the head centre.
-    const c = wp.clone().project(cam);
-    if (c.z > 1) { s.tagEl.style.visibility = 'hidden'; continue; }
-    const cx = rect.left + (c.x * 0.5 + 0.5) * rect.width;
-    const cy = rect.top  + (-c.y * 0.5 + 0.5) * rect.height;
-
-    // Project a point one head-RADIUS to the camera-right of the head, to
-    // measure the rim's pixel radius. Anchor the tag 10px past that rim.
-    cam.matrixWorld.extractBasis(camRight, new T.Vector3(), new T.Vector3());
-    const rimW = wp.clone().addScaledVector(camRight, s.headOuterR || 0);
-    const r = rimW.project(cam);
-    const rimX = rect.left + (r.x * 0.5 + 0.5) * rect.width;
-    const rimPx = Math.abs(rimX - cx);
-
-    s.tagEl.style.visibility = 'visible';
-    s.tagEl.style.left = `${cx - rimPx - 10}px`;  // 10px left of the head rim
-    s.tagEl.style.top  = `${cy}px`;               // translate(-100%,-50%) centres it
+function _positionStaticTags() {
+  const T = window.THREE;
+  const cam = sceneCore.camera;
+  const dom = sceneCore.renderer?.domElement;
+  if (!cam || !dom || !_staticTags.size) return;
+  const rect = dom.getBoundingClientRect();
+  const camRight = new T.Vector3();
+  cam.matrixWorld.extractBasis(camRight, new T.Vector3(), new T.Vector3());
+  for (const t of _staticTags.values()) {
+    if (!t.div) continue;
+    _anchorTag(t.div, t.mergedMesh, t.headOuterR, rect, cam, camRight);
   }
 }
 

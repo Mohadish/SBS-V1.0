@@ -89,6 +89,12 @@ function _renderDefaultsEditor() {
         <option value="medium" ${sz==='medium'?'selected':''}>Medium</option>
         <option value="large"  ${sz==='large' ?'selected':''}>Large</option>
       </select>
+      <input type="color" id="hd-tagcolor" value="${_esc(d.tagColor || '#ffffff')}" title="Tag text colour"
+        style="width:32px;height:24px;margin-left:4px;padding:2px;border-radius:4px;cursor:pointer;" />
+    </label>
+    <label style="display:flex;align-items:center;gap:6px;margin-top:6px;margin-left:22px;cursor:pointer;">
+      <input type="checkbox" id="hd-tagprev" ${d.tagPrev ? 'checked' : ''}/>
+      <span class="small">Also show on the step before insertion</span>
     </label>
     <label style="display:flex;align-items:center;gap:6px;margin-top:8px;cursor:pointer;">
       <input type="checkbox" id="hd-traj" ${d.trajectory ? 'checked' : ''}/>
@@ -118,12 +124,14 @@ function _wireDefaultsEditor(panelEl) {
     repositionMs:  Math.max(0, Number(g('#hd-ms').value)    || 300),
     tagName:       g('#hd-tag').checked,
     tagSize:       g('#hd-size').value,
+    tagColor:      g('#hd-tagcolor').value,
+    tagPrev:       g('#hd-tagprev').checked,
     trajectory:    g('#hd-traj').checked,
     lineThickness: Math.max(0.05, Number(g('#hd-thick').value) || 0.5),
     lineGap:       Math.max(0,    Number(g('#hd-gap').value)   || 2),
     lineColor:     g('#hd-color').value,
   });
-  for (const id of ['#hd-x','#hd-ms','#hd-tag','#hd-size','#hd-traj','#hd-thick','#hd-gap','#hd-color']) {
+  for (const id of ['#hd-x','#hd-ms','#hd-tag','#hd-size','#hd-tagcolor','#hd-tagprev','#hd-traj','#hd-thick','#hd-gap','#hd-color']) {
     g(id)?.addEventListener('change', push);
   }
   const st = g('#hw-file-default-state');

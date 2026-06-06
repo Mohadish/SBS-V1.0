@@ -92,6 +92,8 @@ const DEFAULTS = {
     repositionMs:  300,       // pre-insertion reposition time (ms)
     tagName:       false,     // show spec-name tag
     tagSize:       'medium',  // 'small' | 'medium' | 'large'
+    tagColor:      '#ffffff', // tag text colour
+    tagPrev:       false,     // also show the tag on the step before insertion
     trajectory:    false,     // show dotted insertion-path line
     lineThickness: 0.5,       // trajectory line thickness (mm)
     lineGap:       2,         // dotted gap scaler (gap = thickness × this)

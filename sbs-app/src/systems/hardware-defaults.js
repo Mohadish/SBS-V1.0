@@ -21,6 +21,8 @@ export const HARDWARE_FALLBACK = {
   repositionMs:  300,
   tagName:       false,
   tagSize:       'medium',
+  tagColor:      '#ffffff',   // tag text colour
+  tagPrev:       false,       // also show the tag on the step BEFORE insertion
   trajectory:    false,
   lineThickness: 0.5,
   lineGap:       2,          // gap = thickness × lineGap (dash = thickness × 3)
@@ -55,6 +57,8 @@ export function resolveInsertAnim(node) {
     repositionMs:  pick('repositionMs'),
     tagName:       pick('tagName'),
     tagSize:       pick('tagSize'),
+    tagColor:      pick('tagColor'),
+    tagPrev:       pick('tagPrev'),
     trajectory:    pick('trajectory'),
     lineThickness: pick('lineThickness'),
     lineGap:       pick('lineGap'),
