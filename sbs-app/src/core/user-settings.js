@@ -94,6 +94,7 @@ const DEFAULTS = {
     tagSize:       'medium',  // 'small' | 'medium' | 'large'
     trajectory:    false,     // show dotted insertion-path line
     lineThickness: 0.5,       // trajectory line thickness (mm)
+    lineGap:       2,         // dotted gap scaler (gap = thickness × this)
     lineColor:     '#ffaa00', // trajectory line colour
   },
 };

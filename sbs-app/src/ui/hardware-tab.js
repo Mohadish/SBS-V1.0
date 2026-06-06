@@ -24,7 +24,10 @@ import {
   editTemplate,
   deleteTemplate,
   placeInstance,
+  renameTemplate,
+  restoreTemplateName,
 }                       from '../systems/hardware-actions.js';
+import { getEffectiveDefaults, setProjectDefault, clearProjectDefault } from '../systems/hardware-defaults.js';
 import { setStatus }   from './status.js';
 import { showConfirmDialog } from './context-menu.js';
 import * as preview    from './hardware-preview.js';
@@ -62,6 +65,77 @@ let _formSpec = {
 let _editingId = null;
 
 let _panelEl = null;
+
+/** Live editor for this project's insertion-animation defaults. */
+function _renderDefaultsEditor() {
+  const d = getEffectiveDefaults();
+  const sz = d.tagSize || 'medium';
+  return `
+    <div class="grid2" style="gap:8px;margin-top:8px;">
+      <label class="small muted">Spacing X (mm)
+        <input type="number" id="hd-x" value="${_esc(String(d.distance))}" min="1" step="1"
+          style="width:100%;box-sizing:border-box;margin-top:2px;" />
+      </label>
+      <label class="small muted">Reposition (ms)
+        <input type="number" id="hd-ms" value="${_esc(String(d.repositionMs))}" min="0" step="10"
+          style="width:100%;box-sizing:border-box;margin-top:2px;" />
+      </label>
+    </div>
+    <label style="display:flex;align-items:center;gap:6px;margin-top:8px;cursor:pointer;">
+      <input type="checkbox" id="hd-tag" ${d.tagName ? 'checked' : ''}/>
+      <span class="small">Name tag</span>
+      <select id="hd-size" style="margin-left:6px;">
+        <option value="small"  ${sz==='small' ?'selected':''}>Small</option>
+        <option value="medium" ${sz==='medium'?'selected':''}>Medium</option>
+        <option value="large"  ${sz==='large' ?'selected':''}>Large</option>
+      </select>
+    </label>
+    <label style="display:flex;align-items:center;gap:6px;margin-top:8px;cursor:pointer;">
+      <input type="checkbox" id="hd-traj" ${d.trajectory ? 'checked' : ''}/>
+      <span class="small">Trajectory line</span>
+    </label>
+    <div class="grid3" style="gap:8px;margin-top:4px;margin-left:22px;">
+      <label class="small muted">Thickness
+        <input type="number" id="hd-thick" value="${_esc(String(d.lineThickness))}" min="0.05" step="0.05"
+          style="width:100%;box-sizing:border-box;margin-top:2px;" />
+      </label>
+      <label class="small muted">Gap scale
+        <input type="number" id="hd-gap" value="${_esc(String(d.lineGap))}" min="0" step="0.25"
+          style="width:100%;box-sizing:border-box;margin-top:2px;" title="gap = thickness × this" />
+      </label>
+      <label class="small muted">Colour
+        <input type="color" id="hd-color" value="${_esc(d.lineColor || '#ffaa00')}"
+          style="width:44px;height:26px;margin-top:2px;padding:2px;border-radius:4px;cursor:pointer;" />
+      </label>
+    </div>
+  `;
+}
+
+function _wireDefaultsEditor(panelEl) {
+  const g = (id) => panelEl.querySelector(id);
+  const push = () => setProjectDefault({
+    distance:      Math.max(1, Number(g('#hd-x').value)     || 20),
+    repositionMs:  Math.max(0, Number(g('#hd-ms').value)    || 300),
+    tagName:       g('#hd-tag').checked,
+    tagSize:       g('#hd-size').value,
+    trajectory:    g('#hd-traj').checked,
+    lineThickness: Math.max(0.05, Number(g('#hd-thick').value) || 0.5),
+    lineGap:       Math.max(0,    Number(g('#hd-gap').value)   || 2),
+    lineColor:     g('#hd-color').value,
+  });
+  for (const id of ['#hd-x','#hd-ms','#hd-tag','#hd-size','#hd-traj','#hd-thick','#hd-gap','#hd-color']) {
+    g(id)?.addEventListener('change', push);
+  }
+  const st = g('#hw-file-default-state');
+  const refresh = () => { if (st) st.textContent = state.get('hardwareDefaults') ? '(custom for this file)' : '(matching system)'; };
+  refresh();
+  g('#hw-file-default-clear')?.addEventListener('click', (e) => {
+    e.preventDefault();
+    clearProjectDefault();
+    _render();   // re-render to show system values
+    setStatus('Reset to system defaults.', 'info', 2000);
+  });
+}
 
 export function renderHardwareTab(panelEl) {
   if (!panelEl) return;
@@ -111,7 +185,9 @@ function _render() {
         ? `<div class="small muted" style="margin-top:6px;font-style:italic;">No templates yet — create one below.</div>`
         : tpls.map(t => `
             <div class="card" style="margin-top:6px;padding:6px 8px;display:flex;align-items:center;gap:6px;">
-              <span class="small" style="flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;" title="${_esc(t.name)}">${_esc(t.name)}</span>
+              <input class="small" data-hw-rename="${t.id}" value="${_esc(t.name)}" title="Rename (Enter to save)"
+                     style="flex:1;min-width:0;background:transparent;border:1px solid transparent;color:var(--text);font-size:12px;padding:2px 4px;border-radius:4px;" />
+              <button class="btn" data-hw-restore="${t.id}" title="Restore default name (from spec)" style="font-size:11px;padding:3px 6px;">↺</button>
               <button class="btn" data-hw-drop="${t.id}" title="Drop a new instance of this template" style="font-size:11px;padding:3px 8px;">+ Drop</button>
               <button class="btn" data-hw-edit="${t.id}" title="Edit this template's parameters" style="font-size:11px;padding:3px 6px;">✎</button>
               <button class="btn" data-hw-del="${t.id}"  title="Delete this template" style="font-size:11px;padding:3px 6px;">🗑</button>
@@ -120,17 +196,17 @@ function _render() {
     </div>
 
     <div class="card" style="margin-top:8px;">
-      <div class="title" style="font-size:13px;">Insertion-animation defaults</div>
+      <div class="title" style="font-size:13px;">Insertion-animation defaults (this project)</div>
       <div class="small muted" style="margin-top:4px;font-size:11px;">
-        Screws use the system defaults (Settings → Nuts) unless this file
-        has its own. Freeze the current defaults into THIS project so it
-        recalls them on load — without changing the system settings.
+        These apply to every nut set to "use default". Editing any value
+        here makes it this project's default, overriding the system
+        default (Settings → Nuts) — without changing it.
       </div>
-      <div class="grid2" style="margin-top:8px;">
-        <button class="btn" id="hw-file-default">📌 Use as this file's default</button>
-        <button class="btn" id="hw-file-default-clear">Clear file default</button>
+      ${_renderDefaultsEditor()}
+      <div class="small muted" style="margin-top:6px;">
+        <a href="#" id="hw-file-default-clear">↺ Reset to system defaults</a>
+        <span id="hw-file-default-state" style="margin-left:8px;font-size:11px;"></span>
       </div>
-      <div id="hw-file-default-state" class="small muted" style="margin-top:6px;font-size:11px;"></div>
     </div>
 
     <div class="card" style="margin-top:8px;">
@@ -210,30 +286,8 @@ function _render() {
 }
 
 function _wire(panelEl) {
-  // ── File-default buttons (V0.2.22.58) ──────────────────────────────
-  const fdState = panelEl.querySelector('#hw-file-default-state');
-  const _refreshFdState = () => {
-    if (!fdState) return;
-    const has = !!state.get('hardwareDefaults');
-    fdState.innerHTML = has
-      ? '<span style="color:#86efac;">✓</span> This file has its own insertion defaults.'
-      : 'Using system defaults (Settings → Nuts).';
-  };
-  _refreshFdState();
-  panelEl.querySelector('#hw-file-default')?.addEventListener('click', () => {
-    import('../systems/hardware-defaults.js').then(hd => {
-      hd.snapshotProjectDefault();
-      setStatus('Saved current insertion defaults to this file.', 'success', 2500);
-      _refreshFdState();
-    });
-  });
-  panelEl.querySelector('#hw-file-default-clear')?.addEventListener('click', () => {
-    import('../systems/hardware-defaults.js').then(hd => {
-      hd.clearProjectDefault();
-      setStatus('Cleared file default — using system defaults.', 'info', 2500);
-      _refreshFdState();
-    });
-  });
+  // ── Project insertion-defaults editor (V0.2.22.59) ─────────────────
+  _wireDefaultsEditor(panelEl);
 
   // Library row buttons — drop / edit / delete per template.
   for (const btn of panelEl.querySelectorAll('[data-hw-drop]')) {
@@ -246,6 +300,20 @@ function _wire(panelEl) {
         setStatus(`Dropped: ${tpl?.name || 'hardware'}.`, 'success', 2000);
       }
     });
+  }
+  // Inline rename — commit on Enter or blur.
+  for (const inp of panelEl.querySelectorAll('[data-hw-rename]')) {
+    const commit = () => renameTemplate(inp.dataset.hwRename, inp.value);
+    inp.addEventListener('keydown', (e) => {
+      if (e.key === 'Enter') { commit(); inp.blur(); }
+      e.stopPropagation();
+    });
+    inp.addEventListener('blur', commit);
+    inp.addEventListener('click', (e) => e.stopPropagation());
+  }
+  // Restore default (spec) name.
+  for (const btn of panelEl.querySelectorAll('[data-hw-restore]')) {
+    btn.addEventListener('click', () => { restoreTemplateName(btn.dataset.hwRestore); _render(); });
   }
   for (const btn of panelEl.querySelectorAll('[data-hw-edit]')) {
     btn.addEventListener('click', () => {

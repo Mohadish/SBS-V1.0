@@ -148,12 +148,16 @@ function _renderNutsTab(body) {
       <input type="checkbox" id="_nt-traj" ${n.trajectory ? 'checked' : ''} />
       <span class="small">Show trajectory line by default</span>
     </label>
-    <div class="grid2" style="gap:10px;margin-top:6px;margin-left:24px;">
-      <label class="small muted">Line thickness (mm)
+    <div class="grid3" style="gap:10px;margin-top:6px;margin-left:24px;">
+      <label class="small muted">Thickness (mm)
         <input type="number" id="_nt-thick" value="${_esc(String(n.lineThickness ?? 0.5))}" min="0.05" step="0.05"
           style="width:100%;box-sizing:border-box;margin-top:3px;" />
       </label>
-      <label class="small muted">Line colour
+      <label class="small muted">Gap scale
+        <input type="number" id="_nt-gap" value="${_esc(String(n.lineGap ?? 2))}" min="0" step="0.25"
+          style="width:100%;box-sizing:border-box;margin-top:3px;" title="gap = thickness × this" />
+      </label>
+      <label class="small muted">Colour
         <input type="color" id="_nt-color" value="${_esc(n.lineColor || '#ffaa00')}"
           style="width:48px;height:28px;margin-top:3px;padding:2px;border-radius:4px;cursor:pointer;" />
       </label>
@@ -168,10 +172,11 @@ function _renderNutsTab(body) {
       tagSize:       body.querySelector('#_nt-size').value,
       trajectory:    body.querySelector('#_nt-traj').checked,
       lineThickness: Math.max(0.05, Number(body.querySelector('#_nt-thick').value) || 0.5),
+      lineGap:       Math.max(0,    Number(body.querySelector('#_nt-gap').value)   || 2),
       lineColor:     body.querySelector('#_nt-color').value,
     } });
   };
-  for (const sel of ['#_nt-x','#_nt-ms','#_nt-tag','#_nt-size','#_nt-traj','#_nt-thick','#_nt-color']) {
+  for (const sel of ['#_nt-x','#_nt-ms','#_nt-tag','#_nt-size','#_nt-traj','#_nt-thick','#_nt-gap','#_nt-color']) {
     body.querySelector(sel)?.addEventListener('change', save);
   }
 }

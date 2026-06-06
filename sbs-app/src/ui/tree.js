@@ -3108,7 +3108,8 @@ export async function showInsertAnimDialog(cur, onConfirm) {
 
       ${_iaRow('traj', 'Trajectory line',
         `<label class="small"><input type="checkbox" id="_ia-traj" ${val('trajectory') ? 'checked' : ''}/> show</label>
-         <input type="number" id="_ia-thick" value="${_esc(String(val('lineThickness')))}" min="0.05" step="0.05" title="thickness (mm)" style="width:60px;margin-left:8px;" />
+         <input type="number" id="_ia-thick" value="${_esc(String(val('lineThickness')))}" min="0.05" step="0.05" title="thickness (mm)" style="width:56px;margin-left:8px;" />
+         <input type="number" id="_ia-gap" value="${_esc(String(val('lineGap')))}" min="0" step="0.25" title="gap scale (gap = thickness × this)" style="width:50px;margin-left:6px;" />
          <input type="color" id="_ia-color" value="${_esc(val('lineColor') || '#ffaa00')}" style="width:34px;height:24px;margin-left:6px;padding:1px;vertical-align:middle;" />`, ud('trajectory'))}
 
       <div style="display:flex;gap:8px;justify-content:flex-end;margin-top:16px">
@@ -3141,6 +3142,7 @@ export async function showInsertAnimDialog(cur, onConfirm) {
       tagSize:      useDef('tag') ? null : dlg.querySelector('#_ia-size').value,
       trajectory:   useDef('traj')? null : dlg.querySelector('#_ia-traj').checked,
       lineThickness:useDef('traj')? null : Number(dlg.querySelector('#_ia-thick').value),
+      lineGap:      useDef('traj')? null : Number(dlg.querySelector('#_ia-gap').value),
       lineColor:    useDef('traj')? null : dlg.querySelector('#_ia-color').value,
     };
     dlg.close(); dlg.remove();

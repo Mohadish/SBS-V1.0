@@ -27,7 +27,7 @@ export const SCHEMA_VERSIONS = {
   screen:     1,
 };
 
-export const APP_VERSION  = 'V0.2.22.58';
+export const APP_VERSION  = 'V0.2.22.59';
 // Format: YYYY-MM-DD. Bump along with APP_VERSION on every build worth
 // labelling so the File tab shows you're running the expected slice.
 export const APP_RELEASED = '2026-05-29';
@@ -500,7 +500,7 @@ export function createHardwareInstanceNode(overrides = {}) {
       enabled: false, stepId: null,
       distance: null, repositionMs: null,
       tagName: null, tagSize: null,
-      trajectory: null, lineThickness: null, lineColor: null,
+      trajectory: null, lineThickness: null, lineGap: null, lineColor: null,
     },
 
     ...overrides,

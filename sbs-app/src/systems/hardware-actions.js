@@ -146,6 +146,29 @@ export function editTemplate(templateId, patch) {
 }
 
 /**
+ * V0.2.22.59 — rename a template (name only, no mesh rebuild). Empty /
+ * whitespace name falls back to the auto-name.
+ */
+export function renameTemplate(templateId, name) {
+  const list = state.get('hardwareTemplates') || [];
+  const idx  = list.findIndex(t => t.id === templateId);
+  if (idx < 0) return;
+  const clean = String(name || '').trim();
+  const next  = { ...list[idx], name: clean || _autoName(list[idx]) };
+  const updated = [...list];
+  updated[idx] = next;
+  state.setState({ hardwareTemplates: updated });
+  state.markDirty?.();
+}
+
+/** V0.2.22.59 — reset a template's name to the auto-generated spec name. */
+export function restoreTemplateName(templateId) {
+  const list = state.get('hardwareTemplates') || [];
+  const tpl  = list.find(t => t.id === templateId);
+  if (tpl) renameTemplate(templateId, _autoName(tpl));
+}
+
+/**
  * Delete a template and (optionally) every instance using it. If
  * deleteInstances is false, orphan instances stay in the tree but
  * render nothing — the user can re-target them via the right-click
@@ -482,7 +505,7 @@ export function setInsertAnimParams(nodeIds, patch = {}) {
   if (!nodeIds.length) return;
 
   const KEYS = ['distance', 'repositionMs', 'tagName', 'tagSize',
-                'trajectory', 'lineThickness', 'lineColor'];
+                'trajectory', 'lineThickness', 'lineGap', 'lineColor'];
   const set = {};
   for (const k of KEYS) if (k in patch) set[k] = patch[k];   // null allowed
   if (!Object.keys(set).length) return;

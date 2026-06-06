@@ -209,11 +209,13 @@ export function stageInsertActors(actors, opts = {}) {
     // thickness. Shown just before insertion, faded over the assemble.
     if (eff.trajectory) {
       const thick = Math.max(0.02, Number(eff.lineThickness) || 0.5);
+      const gapScale = Math.max(0, Number(eff.lineGap));
+      const gapMul = Number.isFinite(gapScale) ? gapScale : 2;
       let color = 0xffaa00;
       try { color = new T.Color(eff.lineColor || '#ffaa00').getHex(); } catch {}
       const a = targetPos.clone().add(new T.Vector3(0, -L, 0).applyQuaternion(targetQuat));
       const b = targetPos.clone().add(new T.Vector3(0,  8, 0).applyQuaternion(targetQuat));
-      const { group: lineGroup, mat: lineMat } = _buildDashedTube(a, b, thick, color);
+      const { group: lineGroup, mat: lineMat } = _buildDashedTube(a, b, thick, color, gapMul);
       lineGroup.visible = false;
       root.add(lineGroup);
       entry.lineObj = lineGroup;
@@ -413,7 +415,7 @@ function _headOuterRadius(headType, D) {
  * the dotted ratio looks consistent at any thickness. Returns the group
  * + the shared material (for opacity fade).
  */
-function _buildDashedTube(a, b, thickness, colorHex) {
+function _buildDashedTube(a, b, thickness, colorHex, gapScale = 2) {
   const T = window.THREE;
   const group = new T.Group();
   const mat = new T.MeshBasicMaterial({
@@ -424,7 +426,7 @@ function _buildDashedTube(a, b, thickness, colorHex) {
   if (total < 1e-6) return { group, mat };
   dir.normalize();
   const dash = Math.max(0.05, thickness * 3);
-  const gap  = Math.max(0.05, thickness * 2);
+  const gap  = Math.max(0.01, thickness * gapScale);
   const stride = dash + gap;
   const up = new T.Vector3(0, 1, 0);
   const quat = new T.Quaternion().setFromUnitVectors(up, dir);

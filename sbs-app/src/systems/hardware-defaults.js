@@ -23,6 +23,7 @@ export const HARDWARE_FALLBACK = {
   tagSize:       'medium',
   trajectory:    false,
   lineThickness: 0.5,
+  lineGap:       2,          // gap = thickness × lineGap (dash = thickness × 3)
   lineColor:     '#ffaa00',
 };
 
@@ -56,6 +57,7 @@ export function resolveInsertAnim(node) {
     tagSize:       pick('tagSize'),
     trajectory:    pick('trajectory'),
     lineThickness: pick('lineThickness'),
+    lineGap:       pick('lineGap'),
     lineColor:     pick('lineColor'),
   };
 }
@@ -77,4 +79,18 @@ export function snapshotProjectDefault() {
 export function clearProjectDefault() {
   state.setState({ hardwareDefaults: null });
   state.markDirty?.();
+}
+
+/**
+ * Edit the project-level default in place. Seeds from the current
+ * effective default the first time (so the unedited fields keep their
+ * resolved values), then applies `patch`. Used by the Hardware tab's
+ * live defaults editor — any change here becomes the default for every
+ * nut in this project, overriding the system default.
+ */
+export function setProjectDefault(patch = {}) {
+  const base = state.get('hardwareDefaults') || getEffectiveDefaults();
+  state.setState({ hardwareDefaults: { ...base, ...patch } });
+  state.markDirty?.();
+  return state.get('hardwareDefaults');
 }
