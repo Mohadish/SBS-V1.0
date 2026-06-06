@@ -1,51 +1,72 @@
 /**
  * SBS — Hardware placement / alignment picker (V0.2.22.61).
  *
- * Single-TARGET placement for nuts (screws). Two intents, one interaction:
+ * Single-TARGET placement for nuts (screws). Two intents × two modes,
+ * one interaction surface:
  *
- *   • PLACE  — drop a NEW instance of a template at the picked pose.
- *   • ALIGN  — re-pose an EXISTING instance (viewport right-click).
+ *   intent PLACE — drop a NEW instance of a template at the picked pose.
+ *   intent ALIGN — re-pose an EXISTING instance (viewport right-click).
  *
- * Surface mode (this phase): one click.
- *   - Click a surface → the nut lands at the hit point, its insertion axis
- *     (local +Y, head) aligned to the surface normal — head out, shank in.
- *   - Click empty space → the nut drops 50 mm along the camera's CENTRE
- *     ray (mid-screen), kept upright (world +Y).
+ *   mode SURFACE — one click. Hit a surface → land at the hit point, the
+ *     insertion axis (local +Y, head) aligned to the surface normal (head
+ *     out, shank in). Empty space → drop 50 mm along the camera CENTRE
+ *     ray (mid-screen), upright. Hover crosshair + normal arrow.
  *
- * A hover crosshair + normal arrow previews where it'll land. Esc cancels.
+ *   mode 3-POINT — snap 3 points around a circular feature → fit a circle
+ *     (centre + normal via circumcenterAndNormal) → land at the centre,
+ *     axis aligned to the circle normal (flipped toward the camera so the
+ *     head faces out). Backspace removes the last point, Esc cancels.
  *
- * Reuses the transform-write proven by folder-align: setInstanceWorldPose /
- * realignInstance convert the world pose to the parent-local per-step delta
- * and flip moveEnabled/rotateEnabled on. Three.js is window.THREE.
+ * Reuses snap-picker (findSnapTarget), the circle fit, and the transform
+ * write proven by folder-align (setInstanceWorldPose / realignInstance,
+ * world→parent-local per-step delta + moveEnabled/rotateEnabled).
+ * Three.js is window.THREE.
  */
 
 import { state }       from '../core/state.js';
 import { sceneCore }   from '../core/scene.js';
 import { steps }       from './steps.js';
 import { placeInstance, realignInstance } from './hardware-actions.js';
+import { findSnapTarget }        from './snap-picker.js';
+import { circumcenterAndNormal } from './pivot-center-picker.js';
 import { setStatus }   from '../ui/status.js';
 
-const HOVER_COLOR = 0x55ddff;   // cyan crosshair
+const HOVER_COLOR = 0x55ddff;   // surface crosshair (cyan)
+const PT_COLOR    = 0xffee44;   // placed 3-pt markers (yellow)
+const HOVER_VERT  = 0xffffff;
+const HOVER_EDGE  = 0xffff66;
+const HOVER_FACE  = 0xaaaaaa;
 const MARKER_BASE = 0.025;      // ~25px on a 1080p viewport
 
-let _state = null;   // { mode, intent, hoverGroup, excludeObj }
+let _state = null;   // { mode, intent, hoverGroup, ptGroup, points, excludeObj }
 
 // ─── Lifecycle ──────────────────────────────────────────────────────────────
 
 export function isActive() { return !!_state; }
 
-/** Arm surface placement for a NEW instance of `templateId`. */
+/** New instance, placed on a clicked surface. */
 export function startPlaceOnSurface(templateId) {
   if (!templateId) return;
   _begin({ mode: 'surface', intent: { kind: 'place', templateId } });
   setStatus('Click a surface to place the nut — or empty space to drop it in front of the camera. Esc to cancel.', 'info', 6000);
 }
-
-/** Arm surface re-alignment for an EXISTING instance (viewport menu). */
+/** New instance, placed at a 3-point circle centre. */
+export function startPlaceBy3Points(templateId) {
+  if (!templateId) return;
+  _begin({ mode: '3pt', intent: { kind: 'place', templateId } });
+  setStatus('Snap 3 points around a circle to place the nut at its centre. Backspace = undo point · Esc = cancel.', 'info', 7000);
+}
+/** Existing instance, re-aligned to a clicked surface. */
 export function startAlignOnSurface(nodeId) {
   if (!nodeId) return;
   _begin({ mode: 'surface', intent: { kind: 'align', nodeId }, exclude: nodeId });
   setStatus('Click a surface to align the nut to. Esc to cancel.', 'info', 6000);
+}
+/** Existing instance, re-aligned to a 3-point circle centre. */
+export function startAlignBy3Points(nodeId) {
+  if (!nodeId) return;
+  _begin({ mode: '3pt', intent: { kind: 'align', nodeId }, exclude: nodeId });
+  setStatus('Snap 3 points around a circle to align the nut to its centre. Backspace = undo point · Esc = cancel.', 'info', 7000);
 }
 
 function _begin({ mode, intent, exclude = null }) {
@@ -55,16 +76,21 @@ function _begin({ mode, intent, exclude = null }) {
   _state = {
     mode, intent,
     hoverGroup: new T.Group(),
+    ptGroup:    new T.Group(),
+    points:     [],
     excludeObj: exclude ? (steps.object3dById?.get(exclude) ?? null) : null,
   };
   _state.hoverGroup.name = 'sbs:hw-place-hover';
+  _state.ptGroup.name    = 'sbs:hw-place-points';
   sceneCore.overlayScene.add(_state.hoverGroup);
+  sceneCore.overlayScene.add(_state.ptGroup);
   state.setState({ hwPlaceActive: true });
 }
 
 export function cancel() {
   if (!_state) return;
   _disposeGroup(_state.hoverGroup);
+  _disposeGroup(_state.ptGroup);
   _state = null;
   state.setState({ hwPlaceActive: false });
 }
@@ -73,32 +99,67 @@ export function cancel() {
 
 export function updateHover(clientX, clientY) {
   if (!_state) return;
-  const hit = _surfaceHitAt(clientX, clientY);
-  _setHover(hit);
+  _disposeGroup(_state.hoverGroup, /* keep */ true);
+  if (_state.mode === 'surface') {
+    const hit = _surfaceHitAt(clientX, clientY);
+    if (hit) _state.hoverGroup.add(_buildPin(hit.point, hit.normal, HOVER_COLOR));
+  } else {
+    const t = findSnapTarget(clientX, clientY);
+    if (t && !_isExcludedHit(t.mesh)) {
+      const color = t.type === 'vertex' ? HOVER_VERT
+                  : t.type === 'edge'   ? HOVER_EDGE
+                  :                       HOVER_FACE;
+      _state.hoverGroup.add(_buildPin(t.point, null, color));
+    }
+  }
 }
 
 /** Returns true when the click was consumed. */
 export function onPointerDown(clientX, clientY) {
   if (!_state) return false;
-  const hit = _surfaceHitAt(clientX, clientY);
-  const { worldPos, worldQuat } = _resolveTarget(hit);
-  _commit(worldPos, worldQuat);
+
+  if (_state.mode === 'surface') {
+    const hit = _surfaceHitAt(clientX, clientY);
+    const { worldPos, worldQuat } = _resolveSurface(hit);
+    _commit(worldPos, worldQuat);
+    return true;
+  }
+
+  // 3-point mode — accumulate snapped points; fit + commit at 3.
+  const t = findSnapTarget(clientX, clientY);
+  if (!t || _isExcludedHit(t.mesh)) return true;   // mid-aim / own mesh
+  _state.points.push(t.point.clone());
+  _rebuildPoints();
+  if (_state.points.length === 3) {
+    const fit = circumcenterAndNormal(_state.points[0], _state.points[1], _state.points[2]);
+    if (!fit) {                                     // collinear → drop, retry
+      _state.points.pop();
+      _rebuildPoints();
+      setStatus('Those 3 points are collinear — pick 3 spread around the circle.', 'warn', 3500);
+      return true;
+    }
+    const { worldPos, worldQuat } = _resolve3pt(fit);
+    _commit(worldPos, worldQuat);
+  }
   return true;
 }
 
 export function onKeyDown(key) {
   if (!_state) return false;
   if (key === 'Escape') { cancel(); return true; }
+  if (_state.mode === '3pt' && key === 'Backspace') {
+    if (_state.points.length) { _state.points.pop(); _rebuildPoints(); }
+    return true;
+  }
   return false;
 }
 
-// ─── Resolve + commit ─────────────────────────────────────────────────────
+// ─── Resolve target pose ─────────────────────────────────────────────────────
 
-function _resolveTarget(hit) {
+function _resolveSurface(hit) {
   const T = window.THREE;
   if (hit) {
-    // Head out: align the screw's +Y (head / insertion axis) to the
-    // surface normal so the shank points into the surface.
+    // Head out: align +Y (head / insertion axis) to the surface normal.
     const q = new T.Quaternion().setFromUnitVectors(
       new T.Vector3(0, 1, 0), hit.normal.clone().normalize());
     return { worldPos: hit.point.clone(), worldQuat: q };
@@ -107,6 +168,17 @@ function _resolveTarget(hit) {
   const ray = _cameraCentreRay();
   const worldPos = ray.origin.clone().addScaledVector(ray.direction, 50);
   return { worldPos, worldQuat: new T.Quaternion() };
+}
+
+function _resolve3pt(fit) {
+  const T = window.THREE;
+  let n = fit.normal.clone().normalize();
+  // The circle normal's sign depends on click winding — flip it to face
+  // the camera so the head always points OUT of the circle's plane.
+  const toCam = new T.Vector3().subVectors(sceneCore.camera.position, fit.center);
+  if (n.dot(toCam) < 0) n.negate();
+  const q = new T.Quaternion().setFromUnitVectors(new T.Vector3(0, 1, 0), n);
+  return { worldPos: fit.center.clone(), worldQuat: q };
 }
 
 function _commit(worldPos, worldQuat) {
@@ -126,7 +198,7 @@ function _commit(worldPos, worldQuat) {
   cancel();
 }
 
-// ─── Raycast ────────────────────────────────────────────────────────────────
+// ─── Raycast helpers ──────────────────────────────────────────────────────────
 
 function _surfaceHitAt(clientX, clientY) {
   const all = sceneCore.pickAll?.(clientX, clientY) || [];
@@ -134,8 +206,7 @@ function _surfaceHitAt(clientX, clientY) {
   const T = window.THREE;
   for (const h of all) {
     if (!h.object?.isMesh || !h.face) continue;
-    // Skip the aligning nut's own mesh so it can't target itself.
-    if (_state.excludeObj && _isSelfOrDescendant(h.object, _state.excludeObj)) continue;
+    if (_isExcludedHit(h.object)) continue;   // skip the aligning nut itself
     const m3 = new T.Matrix3().getNormalMatrix(h.object.matrixWorld);
     const n  = h.face.normal.clone().applyMatrix3(m3).normalize();
     return { point: h.point.clone(), normal: n, object: h.object };
@@ -143,9 +214,10 @@ function _surfaceHitAt(clientX, clientY) {
   return null;
 }
 
-function _isSelfOrDescendant(obj, ancestor) {
+function _isExcludedHit(obj) {
+  if (!_state?.excludeObj || !obj) return false;
   let o = obj;
-  while (o) { if (o === ancestor) return true; o = o.parent; }
+  while (o) { if (o === _state.excludeObj) return true; o = o.parent; }
   return false;
 }
 
@@ -156,7 +228,7 @@ function _cameraCentreRay() {
   return { origin: ray.ray.origin.clone(), direction: ray.ray.direction.clone() };
 }
 
-// ─── Hover overlay (cross + normal arrow) ──────────────────────────────────
+// ─── Overlay markers ──────────────────────────────────────────────────────────
 
 function _markerSize(at) {
   const T = window.THREE;
@@ -198,11 +270,10 @@ function _buildPin(point, normal, color) {
   return group;
 }
 
-function _setHover(hit) {
+function _rebuildPoints() {
   if (!_state) return;
-  _disposeGroup(_state.hoverGroup, true);
-  if (!hit) return;
-  _state.hoverGroup.add(_buildPin(hit.point, hit.normal, HOVER_COLOR));
+  _disposeGroup(_state.ptGroup, /* keep */ true);
+  for (const p of _state.points) _state.ptGroup.add(_buildPin(p, null, PT_COLOR));
 }
 
 function _disposeGroup(g, keep = false) {

@@ -2182,6 +2182,16 @@ canvas.addEventListener('contextmenu', e => {
           sb.editHardwareTemplate(node.templateId));
       },
     });
+    // V0.2.22.61 — re-align a placed nut. Surface: click a face. 3-point:
+    // snap 3 points around a circle. Same picker as the Hardware tab.
+    items.push({
+      label: '🎯 Place on surface…',
+      action: () => hardwarePlacePicker.startAlignOnSurface(node.id),
+    });
+    items.push({
+      label: '🎯 Align by 3 points…',
+      action: () => hardwarePlacePicker.startAlignBy3Points(node.id),
+    });
     const isActor = node?.insertAnim?.enabled === true;
     items.push({
       label: isActor
