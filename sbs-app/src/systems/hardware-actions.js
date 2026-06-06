@@ -470,20 +470,28 @@ export function setInsertActor(nodeIds, enable = true) {
 }
 
 /**
- * V0.2.22.54 — set insertion-animation params on one or more instances:
+ * V0.2.22.57 — set insertion-animation params on one or more instances:
  *   distance     X explode spacing (mm)
  *   repositionMs pre-insertion reposition time (ms)
- * Pass either or both; omitted keys are left unchanged. Undoable,
- * multi-aware.
+ *   tagName      boolean — show the spec-name label
+ *   tagSize      'small' | 'medium' | 'large'
+ *   trajectory   boolean — show the dotted insertion-path line
+ * Omitted keys are left unchanged. Undoable, multi-aware.
  */
-export function setInsertAnimParams(nodeIds, { distance, repositionMs } = {}) {
+export function setInsertAnimParams(nodeIds, patch = {}) {
   if (!Array.isArray(nodeIds)) nodeIds = [nodeIds];
   if (!nodeIds.length) return;
+
+  const { distance, repositionMs, tagName, tagSize, trajectory } = patch;
   const x   = (distance     != null) ? Math.max(0, Number(distance))     : undefined;
   const rep = (repositionMs != null) ? Math.max(0, Number(repositionMs)) : undefined;
-  const hasX   = Number.isFinite(x)   && x > 0;
-  const hasRep = Number.isFinite(rep);
-  if (!hasX && !hasRep) return;
+  const set = {};
+  if (Number.isFinite(x)   && x > 0) set.distance     = x;
+  if (Number.isFinite(rep))          set.repositionMs = rep;
+  if (typeof tagName === 'boolean')  set.tagName      = tagName;
+  if (typeof tagSize === 'string')   set.tagSize      = tagSize;
+  if (typeof trajectory === 'boolean') set.trajectory = trajectory;
+  if (!Object.keys(set).length) return;
 
   const root = state.get('treeData');
   const nodeById = state.get('nodeById') || buildNodeMap(root);
@@ -501,11 +509,7 @@ export function setInsertAnimParams(nodeIds, { distance, repositionMs } = {}) {
     for (const id of nodeIds) {
       const n = nb.get(id);
       if (!n || n.type !== 'hardwareInstance') continue;
-      if (perId) { n.insertAnim = { ...perId.get(id) }; continue; }
-      const cur = { ...(n.insertAnim || {}) };
-      if (hasX)   cur.distance     = x;
-      if (hasRep) cur.repositionMs = rep;
-      n.insertAnim = cur;
+      n.insertAnim = perId ? { ...perId.get(id) } : { ...(n.insertAnim || {}), ...set };
     }
     state.markDirty?.();
     state.emit('change:treeData', state.get('treeData'));

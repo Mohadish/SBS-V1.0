@@ -35,8 +35,9 @@ import { createStep, createEmptySnapshot } from '../core/schema.js';
 import { parseAnimation, resolveAnimationString } from './animation.js';
 import {
   stageInsertActors, runInsertReposition, runInsertAssemble,
+  showInsertTags, showInsertTrajectory,
   finalizeInsertActors, cancelInsertAnimations, findActorsForStep,
-} from './hardware-insert-anim.js'; // V0.2.22.56 — screw stage/reposition/assemble (colour+fade via channels)
+} from './hardware-insert-anim.js'; // V0.2.22.57 — screw stage/reposition/assemble + tag/trajectory
 // V0.1.78 — narration overflow coordination. UI module exports the
 // query helpers; cross-layer import is OK here (actions.js + overlay.js
 // already cross the same boundary).
@@ -733,9 +734,13 @@ class StepManager {
       // were staged before this branch. Reposition (prev→staging) runs
       // first, then assemble (staging→final). Colour + fade ride the
       // shared material via the standard channels (already running).
-      const insertSimP = _stagedActorIds.size
-        ? runInsertReposition(easeFn).then(() => runInsertAssemble(objDur, easeFn))
-        : Promise.resolve();
+      // V0.2.22.57 — tag + trajectory shown up front (no phase ordering).
+      let insertSimP = Promise.resolve();
+      if (_stagedActorIds.size) {
+        showInsertTags();
+        showInsertTrajectory();
+        insertSimP = runInsertReposition(easeFn).then(() => runInsertAssemble(objDur, easeFn));
+      }
 
       // OFFLINE-EXPORT FIX: in simultaneous mode (no animation preset),
       // cameraP and objectP both advance via tick hooks. In offline
@@ -973,6 +978,8 @@ class StepManager {
           if (sustained) overlaySystem.beginOverlaySustainedFade(durationMs, easeFn, resolve);
           else           overlaySystem.beginOverlayCrossfade   (durationMs, easeFn, resolve);
         }));
+        // V0.2.22.57 — spec-name tags appear at the overlay block.
+        if (stagedActorIds.size) showInsertTags();
       }
 
       // Camera
@@ -1111,9 +1118,10 @@ class StepManager {
       if (types.includes('insert') && !insertHandled) {
         insertHandled = true;
         if (stagedActorIds.size) {
-          // Reposition (prev→staging, for screws that moved) THEN
-          // assemble (staging→final). Sequential so the screw travels
-          // into position before it screws in.
+          // Trajectory line appears just before insertion; reposition
+          // (prev→staging) THEN assemble (staging→final). The line fades
+          // over the assemble.
+          showInsertTrajectory();
           phasePromises.push(
             runInsertReposition(easeFn).then(() => runInsertAssemble(durationMs, easeFn)),
           );
@@ -1244,6 +1252,7 @@ class StepManager {
       fallbackPromises.push(new Promise(resolve => {
         overlaySystem.beginOverlaySustainedFade(fallbackObj, easeFn, resolve);
       }));
+      if (stagedActorIds.size) showInsertTags();   // V0.2.22.57 — tags at overlay fallback
     }
     // narration / notes / pause have no fallback — narration's legacy
     // step:applied auto-play covers it, notes ride obj phase when no
@@ -1255,6 +1264,7 @@ class StepManager {
     // instance is enough; insert(N) in the string is just for timing.
     if (!insertHandled && stagedActorIds.size) {
       insertHandled = true;
+      showInsertTrajectory();
       fallbackPromises.push(
         runInsertReposition(easeFn).then(() => runInsertAssemble(fallbackObj, easeFn)),
       );

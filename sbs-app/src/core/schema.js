@@ -27,7 +27,7 @@ export const SCHEMA_VERSIONS = {
   screen:     1,
 };
 
-export const APP_VERSION  = 'V0.2.22.56';
+export const APP_VERSION  = 'V0.2.22.57';
 // Format: YYYY-MM-DD. Bump along with APP_VERSION on every build worth
 // labelling so the File tab shows you're running the expected slice.
 export const APP_RELEASED = '2026-05-29';
@@ -484,8 +484,16 @@ export function createHardwareInstanceNode(overrides = {}) {
     //                         insert assembles. Default 300. Avoids a
     //                         threshold jump when the screw was visible
     //                         elsewhere on the prior step.
-    //   dottedLine  boolean — draw the projected insertion path (Stage 4)
-    insertAnim: { enabled: false, stepId: null, distance: 20, repositionMs: 300, dottedLine: false },
+    //   tagName     boolean — show the screw's spec name as a floating
+    //                         label during the animation (from `overlay`
+    //                         block start until insertion completes).
+    //   tagSize     string  — 'small' | 'medium' | 'large' (note font px).
+    //   trajectory  boolean — draw a dotted insertion-path line just
+    //                         before insertion, fading as it assembles.
+    insertAnim: {
+      enabled: false, stepId: null, distance: 20, repositionMs: 300,
+      tagName: false, tagSize: 'medium', trajectory: false,
+    },
 
     ...overrides,
   };

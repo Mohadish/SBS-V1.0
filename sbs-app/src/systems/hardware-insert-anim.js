@@ -164,11 +164,56 @@ export function stageInsertActors(actors, opts = {}) {
     elems.forEach((m, i) => { m.position.y = needsReposition ? 0 : offsets[i]; });
 
     const repMs = Number(node.insertAnim?.repositionMs);
-    _staged.set(node.id, {
+    const entry = {
       group, mergedMesh: merged, meshes: elems, offsets,
       needsReposition, targetPos, targetQuat, prevPos, prevQuat,
       repositionMs: Number.isFinite(repMs) && repMs >= 0 ? repMs : 300,
-    });
+      headPiece: elems[0],          // screw body — tag tracks its head
+      tagEl: null, tagShown: false,
+      lineObj: null, lineShown: false,
+    };
+
+    // ── Spec-name tag (V0.2.22.57) — 2D screen-space label, created
+    // hidden; shown at the `overlay` block, hidden when insertion
+    // completes. Right edge anchored 10px left of the head, vertically
+    // centred, horizontal. Font px from the note size presets.
+    if (node.insertAnim?.tagName) {
+      const presets = state.get('notePresets') || { small: 18, medium: 36, large: 48 };
+      const px = presets[node.insertAnim.tagSize] || presets.medium || 36;
+      const txt = tpl.name || `M${tpl.params?.diameter}×${tpl.params?.length}`;
+      const div = document.createElement('div');
+      div.className = 'sbs-insert-tag';
+      div.textContent = txt;
+      div.style.cssText =
+        'position:fixed;pointer-events:none;white-space:nowrap;display:none;' +
+        'color:#fff;font-family:system-ui,sans-serif;font-weight:600;' +
+        'text-shadow:0 1px 3px rgba(0,0,0,0.9);z-index:50;' +
+        'transform:translate(-100%,-50%);';
+      div.style.fontSize = `${px}px`;
+      document.body.appendChild(div);
+      entry.tagEl = div;
+    }
+
+    // ── Trajectory line (V0.2.22.57) — dotted, tip → 8mm past the head
+    // bottom, along the insertion axis at the TARGET pose. Static in
+    // world space; shown just before insertion, faded over the assemble.
+    if (node.insertAnim?.trajectory) {
+      const a = targetPos.clone().add(new T.Vector3(0, -L, 0).applyQuaternion(targetQuat));
+      const b = targetPos.clone().add(new T.Vector3(0,  8, 0).applyQuaternion(targetQuat));
+      const lgeom = new T.BufferGeometry().setFromPoints([a, b]);
+      const lmat  = new T.LineDashedMaterial({
+        color: 0xffaa00, dashSize: 1.4, gapSize: 0.9,
+        transparent: true, opacity: 1, depthTest: false,
+      });
+      const line = new T.Line(lgeom, lmat);
+      line.computeLineDistances();
+      line.renderOrder = 999;
+      line.visible = false;
+      root.add(line);
+      entry.lineObj = line;
+    }
+
+    _staged.set(node.id, entry);
     staged.add(node.id);
   }
 
@@ -191,6 +236,26 @@ export function runInsertReposition(easeFn) {
   return new Promise(resolve => {
     _reposition = { startMs: clock.now(), durationMs, easeFn, resolve };
   });
+}
+
+/**
+ * Show the spec-name tags (called at the `overlay` block). The tick
+ * positions them each frame; they hide when the assemble completes.
+ */
+export function showInsertTags() {
+  for (const s of _staged.values()) {
+    if (s.tagEl) { s.tagShown = true; s.tagEl.style.display = 'block'; }
+  }
+}
+
+/**
+ * Show the trajectory lines (called just before insertion). They fade
+ * out over the assemble.
+ */
+export function showInsertTrajectory() {
+  for (const s of _staged.values()) {
+    if (s.lineObj) { s.lineShown = true; s.lineObj.visible = true; }
+  }
 }
 
 /**
@@ -266,8 +331,44 @@ function _advance(now) {
       for (let i = 0; i < s.meshes.length; i++) {
         s.meshes[i].position.y = s.offsets[i] * (1 - u);
       }
+      // Trajectory line vanishes AS the insertion acts (opacity 1→0).
+      if (s.lineObj?.visible && s.lineObj.material) {
+        s.lineObj.material.opacity = 1 - raw;
+      }
     }
-    if (raw >= 1) { const r = _assemble.resolve; _assemble = null; r?.(); }
+    if (raw >= 1) {
+      // Insertion complete — the spec-name tags disappear now.
+      for (const s of _staged.values()) {
+        if (s.tagEl) { s.tagShown = false; s.tagEl.style.display = 'none'; }
+        if (s.lineObj) s.lineObj.visible = false;
+      }
+      const r = _assemble.resolve; _assemble = null; r?.();
+    }
+  }
+
+  // Position the visible spec-name tags: project the head's world point
+  // and right-anchor the label 10px to its left, vertically centred.
+  _positionTags();
+}
+
+function _positionTags() {
+  const T = window.THREE;
+  const cam = sceneCore.camera;
+  const dom = sceneCore.renderer?.domElement;
+  if (!cam || !dom) return;
+  let rect = null;
+  for (const s of _staged.values()) {
+    if (!s.tagEl || !s.tagShown) continue;
+    if (!rect) rect = dom.getBoundingClientRect();
+    const wp = new T.Vector3();
+    s.headPiece.getWorldPosition(wp);
+    const v = wp.project(cam);                 // NDC, z>1 ⇒ behind camera
+    if (v.z > 1) { s.tagEl.style.visibility = 'hidden'; continue; }
+    const sx = rect.left + (v.x * 0.5 + 0.5) * rect.width;
+    const sy = rect.top  + (-v.y * 0.5 + 0.5) * rect.height;
+    s.tagEl.style.visibility = 'visible';
+    s.tagEl.style.left = `${sx - 10}px`;       // right edge 10px left of head
+    s.tagEl.style.top  = `${sy}px`;            // translate(-100%,-50%) centres it
   }
 }
 
@@ -277,6 +378,13 @@ function _disposeAll(restore) {
     // Dispose transient GEOMETRY only. The material is SHARED with the
     // live merged mesh (owned by the materials system) — never dispose it.
     for (const m of (s.meshes || [])) m.geometry?.dispose?.();
+    // Spec-name tag DOM + trajectory line are owned here — clean them.
+    if (s.tagEl?.parentNode) s.tagEl.parentNode.removeChild(s.tagEl);
+    if (s.lineObj) {
+      if (s.lineObj.parent) s.lineObj.parent.remove(s.lineObj);
+      s.lineObj.geometry?.dispose?.();
+      s.lineObj.material?.dispose?.();
+    }
     if (restore && s.mergedMesh) s.mergedMesh.visible = true;
   }
   _staged.clear();

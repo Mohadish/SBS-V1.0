@@ -968,24 +968,13 @@ function _buildContextMenuItems(node) {
       },
     });
     if (isActor) {
-      const curX  = Number(node.insertAnim?.distance) || 20;
-      const curMs = Number.isFinite(Number(node.insertAnim?.repositionMs))
-        ? Number(node.insertAnim.repositionMs) : 300;
       items.push({
         label: `📏 Adjust insertion animation…`,
         action: () => {
-          showTwoFieldDialog(
-            'Insertion animation',
-            'Spacing X (mm)', curX,
-            'Reposition pre-step (ms)', curMs,
-            ({ a, b }) => {
-              const params = {};
-              if (Number.isFinite(a) && a > 0)  params.distance = a;
-              if (Number.isFinite(b) && b >= 0) params.repositionMs = b;
-              import('../systems/hardware-actions.js').then(hw =>
-                hw.setInsertAnimParams([node.id], params));
-            },
-          );
+          showInsertAnimDialog(node.insertAnim || {}, (patch) => {
+            import('../systems/hardware-actions.js').then(hw =>
+              hw.setInsertAnimParams([node.id], patch));
+          });
         },
       });
     }
@@ -3078,6 +3067,78 @@ function _onDrop(e, targetNode) {
  */
 export function showInputDialog(title, defaultVal, onConfirm) {
   return _showInputDialog(title, defaultVal, onConfirm);
+}
+
+/**
+ * Insertion-animation settings dialog (V0.2.22.57). Collects spacing,
+ * reposition time, the spec-name tag + its size, and the trajectory
+ * line. onConfirm receives the full patch object.
+ */
+export function showInsertAnimDialog(cur, onConfirm) {
+  const dlg = document.createElement('dialog');
+  dlg.className = 'sbs-dialog';
+  const c = cur || {};
+  const sz = c.tagSize || 'medium';
+  dlg.innerHTML = `
+    <div class="sbs-dialog__body">
+      <div class="sbs-dialog__title">Insertion animation</div>
+
+      <div class="grid2" style="margin-top:10px;gap:8px;">
+        <label class="small muted">Spacing X (mm)
+          <input type="number" id="_ia-x" value="${_esc(String(c.distance ?? 20))}" min="1" step="1"
+            style="width:100%;box-sizing:border-box;margin-top:3px;" />
+        </label>
+        <label class="small muted">Reposition pre-step (ms)
+          <input type="number" id="_ia-ms" value="${_esc(String(c.repositionMs ?? 300))}" min="0" step="10"
+            style="width:100%;box-sizing:border-box;margin-top:3px;" />
+        </label>
+      </div>
+
+      <label style="display:flex;align-items:center;gap:8px;margin-top:12px;cursor:pointer;">
+        <input type="checkbox" id="_ia-tag" ${c.tagName ? 'checked' : ''} />
+        <span class="small">Show name tag</span>
+      </label>
+      <label class="small muted" style="display:block;margin-top:6px;margin-left:24px;">Tag size
+        <select id="_ia-size" style="margin-left:6px;">
+          <option value="small"  ${sz === 'small'  ? 'selected' : ''}>Small</option>
+          <option value="medium" ${sz === 'medium' ? 'selected' : ''}>Medium</option>
+          <option value="large"  ${sz === 'large'  ? 'selected' : ''}>Large</option>
+        </select>
+      </label>
+      <div class="small muted" style="margin-left:24px;margin-top:3px;font-size:11px;opacity:0.75;">
+        Sizes use your Note size settings (Notes tab → size presets).
+      </div>
+
+      <label style="display:flex;align-items:center;gap:8px;margin-top:12px;cursor:pointer;">
+        <input type="checkbox" id="_ia-traj" ${c.trajectory ? 'checked' : ''} />
+        <span class="small">Show trajectory line</span>
+      </label>
+
+      <div style="display:flex;gap:8px;justify-content:flex-end;margin-top:16px">
+        <button class="btn" id="_ia-cancel">Cancel</button>
+        <button class="btn primary" id="_ia-ok">OK</button>
+      </div>
+    </div>
+  `;
+  document.body.appendChild(dlg);
+  const done = () => {
+    const patch = {
+      distance:     Number(dlg.querySelector('#_ia-x').value),
+      repositionMs: Number(dlg.querySelector('#_ia-ms').value),
+      tagName:      dlg.querySelector('#_ia-tag').checked,
+      tagSize:      dlg.querySelector('#_ia-size').value,
+      trajectory:   dlg.querySelector('#_ia-traj').checked,
+    };
+    dlg.close(); dlg.remove();
+    onConfirm(patch);
+  };
+  dlg.querySelector('#_ia-cancel').addEventListener('click', () => { dlg.close(); dlg.remove(); });
+  dlg.querySelector('#_ia-ok').addEventListener('click', done);
+  dlg.addEventListener('keydown', e => {
+    if (e.key === 'Enter') done();
+    if (e.key === 'Escape') { dlg.close(); dlg.remove(); }
+  });
+  dlg.showModal();
 }
 
 /**
