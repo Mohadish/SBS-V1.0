@@ -980,6 +980,11 @@ function _buildContextMenuItems(node) {
     }
     items.push({ separator: true });
   }
+  // True when every selected row is a hardware instance — gates the washer
+  // and delete blocks below. Declared here (above first use) to avoid a
+  // temporal-dead-zone error. V0.2.22.60.
+  const allHardware = count >= 1 &&
+    targetIds.every(id => nodeById?.get(id)?.type === 'hardwareInstance');
   // Washer options — multi-aware, applies to all selected hardware
   // instances. V0.2.22.47.
   if (allHardware) {
@@ -1017,8 +1022,6 @@ function _buildContextMenuItems(node) {
   // Delete — single OR multi-select hardware. Absolute removal (no
   // archive). Multi-aware: works on the whole selection when several
   // screws are selected.
-  const allHardware = count >= 1 &&
-    targetIds.every(id => nodeById?.get(id)?.type === 'hardwareInstance');
   if (allHardware) {
     items.push({
       label: count > 1
