@@ -34,7 +34,7 @@
 import { state }       from '../core/state.js';
 import { sceneCore }   from '../core/scene.js';
 import * as clock      from '../core/clock.js';
-import { generateScrewParts } from './hardware-generator.js';
+import { generateScrewParts, washerStackFor } from './hardware-generator.js';
 import { resolveInsertAnim }  from './hardware-defaults.js';
 
 // Staged actors, keyed by node id:
@@ -94,12 +94,20 @@ function _makeTagDiv(text, tagSize, colorHex) {
   return div;
 }
 
+/** Human label for a washer tag, e.g. "Flat washer Ø9.6". */
+function _describeWasher(kind, outerR) {
+  const name = kind === 'spring' ? 'Spring washer' : 'Flat washer';
+  return outerR ? `${name} Ø${(outerR * 2).toFixed(1)}` : name;
+}
+
 // ─── Static prev-step tags (V0.2.22.60) ─────────────────────────────────────
 // When an insertion actor has tagName + tagPrev, its name label also shows
 // STATICALLY on the step immediately BEFORE the insertion step (not just
 // during the animation). refreshStaticTags() is called on every step
 // settle; it rebuilds the set of static tags for the active step.
-const _staticTags = new Map();   // nodeId → { div, mergedMesh, headOuterR }
+// nodeId → { mergedMesh, items:[{ div, piece, localY, outerRLocal }] }
+// (item 0 = screw label, then one per washer at its own height)
+const _staticTags = new Map();
 let _staticTickUnsub = null;
 
 /** All hardware instances flagged as insertion actors (any step). */
@@ -155,7 +163,9 @@ function _insertPrevStepIds(insertStepId) {
 
 export function clearStaticTags() {
   for (const t of _staticTags.values()) {
-    if (t.div?.parentNode) t.div.parentNode.removeChild(t.div);
+    for (const it of (t.items || [])) {
+      if (it.div?.parentNode) it.div.parentNode.removeChild(it.div);
+    }
   }
   _staticTags.clear();
   if (_staticTickUnsub) { _staticTickUnsub(); _staticTickUnsub = null; }
@@ -181,12 +191,23 @@ export function refreshStaticTags(activeStepId) {
     const tpl = tpls.find(t => t.id === node.templateId);
     const txt = tpl?.name || node.name || 'hardware';
     const D = Math.max(0.5, Number(tpl?.params?.diameter) || 4);
-    const headOuterR = _headOuterRadius(tpl?.params?.headType, D);
-    const div = _makeTagDiv(txt, eff.tagSize, eff.tagColor);
-    // Visibility + position are owned per-frame by _positionStaticTags, so
-    // the label survives camera/object moves and shows/hides with the
-    // screw — note-like, never a create/destroy flicker mid-transition.
-    _staticTags.set(node.id, { div, mergedMesh: merged, headOuterR });
+    // The screw label + one label per washer. The merged mesh is the
+    // single piece; each item's localY places it along the screw axis
+    // (head at 0, washers descend). Visibility + position are owned
+    // per-frame by _positionStaticTags (note-like, no mid-move flicker).
+    const items = [{
+      div: _makeTagDiv(txt, eff.tagSize, eff.tagColor),
+      piece: merged, localY: 0,
+      outerRLocal: _headOuterRadius(tpl?.params?.headType, D),
+    }];
+    for (const w of washerStackFor(tpl?.params || {}, node.washers)) {
+      items.push({
+        div: _makeTagDiv(_describeWasher(w.kind, w.outerR), eff.tagSize, eff.tagColor),
+        piece: merged, localY: w.yTop - w.height / 2,
+        outerRLocal: w.outerR,
+      });
+    }
+    _staticTags.set(node.id, { mergedMesh: merged, items });
   }
   if (_staticTags.size && !_staticTickUnsub) {
     _staticTickUnsub = sceneCore.addTickHook(() => _positionStaticTags());
@@ -284,19 +305,15 @@ export function stageInsertActors(actors, opts = {}) {
     merged.visible = false;
     elems.forEach((m, i) => { m.position.y = needsReposition ? 0 : offsets[i]; });
 
-    // Head outer radius (world units) — for anchoring the tag 10px past
-    // the head's RIM, and a sensible line position. Widest head point.
+    // Screw diameter — drives the head-rim radius for tag anchoring.
     const D = Math.max(0.5, Number(tpl.params?.diameter) || 4);
-    const headOuterR = _headOuterRadius(tpl.params?.headType, D) * (targetScale.x || 1);
 
     const repMs = Number(eff.repositionMs);
     const entry = {
       group, mergedMesh: merged, meshes: elems, offsets,
       needsReposition, targetPos, targetQuat, prevPos, prevQuat,
       repositionMs: Number.isFinite(repMs) && repMs >= 0 ? repMs : 300,
-      headPiece: elems[0],          // screw body — tag tracks its head
-      headOuterR,
-      tagEl: null, tagShown: false,
+      tagItems: null, tagShown: false,
       lineObj: null, lineShown: false,
     };
 
@@ -311,8 +328,28 @@ export function stageInsertActors(actors, opts = {}) {
     // block (showInsertTags) so the label doesn't float over a screw that
     // hasn't faded in yet. Either way it hides when insertion completes.
     if (eff.tagName) {
-      const txt = tpl.name || `M${tpl.params?.diameter}×${tpl.params?.length}`;
-      entry.tagEl    = _makeTagDiv(txt, eff.tagSize, eff.tagColor);
+      // The screw label + one label per washer. Each item anchors to its
+      // OWN piece (the screw mesh, or that washer's mesh) at a local-Y
+      // offset, so washers label at their real height — same relative
+      // placement as the head tag. outerRLocal is the piece's rim radius
+      // (LOCAL; the per-frame tick multiplies by the live world scale).
+      const items = [];
+      const screwTxt = tpl.name || `M${tpl.params?.diameter}×${tpl.params?.length}`;
+      items.push({
+        div: _makeTagDiv(screwTxt, eff.tagSize, eff.tagColor),
+        piece: elems[0], localY: 0,
+        outerRLocal: _headOuterRadius(tpl.params?.headType, D),
+      });
+      parts.washers.forEach((w, i) => {
+        const piece = elems[i + 1];   // elems = [screw, ...washer meshes]
+        if (!piece) return;
+        items.push({
+          div: _makeTagDiv(_describeWasher(w.kind, w.outerR), eff.tagSize, eff.tagColor),
+          piece, localY: w.yTop - w.height / 2,
+          outerRLocal: w.outerR,
+        });
+      });
+      entry.tagItems = items;
       entry.tagShown = needsReposition;   // visible-last-step → show now
     }
 
@@ -366,7 +403,7 @@ export function runInsertReposition(easeFn) {
  */
 export function showInsertTags() {
   for (const s of _staged.values()) {
-    if (s.tagEl) { s.tagShown = true; s.tagEl.style.display = 'block'; }
+    if (s.tagItems?.length) s.tagShown = true;   // tick owns per-frame display
   }
 }
 
@@ -466,9 +503,10 @@ function _advance(now) {
       }
     }
     if (raw >= 1) {
-      // Insertion complete — the spec-name tags disappear now.
+      // Insertion complete — the spec-name tags disappear now (tick hides
+      // every item next frame via tagShown=false).
       for (const s of _staged.values()) {
-        if (s.tagEl) { s.tagShown = false; s.tagEl.style.display = 'none'; }
+        s.tagShown = false;
         if (s.lineObj) s.lineObj.visible = false;
       }
       const r = _assemble.resolve; _assemble = null; r?.();
@@ -480,32 +518,47 @@ function _advance(now) {
   _positionTags();
 }
 
-/**
- * Anchor one tag <div> 10px to the camera-left of a world object's head
- * rim, vertically centred. Shared by animation tags and static prev-step
- * tags. `rect`/`camRight` are reused across a batch for efficiency.
- */
-function _anchorTag(div, worldObj, headOuterR, rect, cam, camRight) {
-  const T = window.THREE;
-  const wp = new T.Vector3();
-  worldObj.getWorldPosition(wp);
+// Scratch vectors reused per frame to avoid per-tag allocation.
+let _vWp = null, _vScale = null;
 
-  // Project the head centre.
-  const c = wp.clone().project(cam);
+/**
+ * Anchor one tag <div> 10px to the camera-left of a WORLD POINT's rim,
+ * vertically centred. `outerR` is in world units. rect/camRight reused
+ * across a batch.
+ */
+function _anchorTag(div, worldPos, outerR, rect, cam, camRight) {
+  // Project the centre.
+  const c = worldPos.clone().project(cam);
   if (c.z > 1) { div.style.visibility = 'hidden'; return; }
   const cx = rect.left + (c.x * 0.5 + 0.5) * rect.width;
   const cy = rect.top  + (-c.y * 0.5 + 0.5) * rect.height;
 
-  // Project a point one head-RADIUS to the camera-right of the head, to
-  // measure the rim's pixel radius. Anchor the tag 10px past that rim.
-  const rimW = wp.clone().addScaledVector(camRight, headOuterR || 0);
+  // Project a point one RADIUS to the camera-right to measure the rim's
+  // pixel radius, then anchor the tag 10px past that rim.
+  const rimW = worldPos.clone().addScaledVector(camRight, outerR || 0);
   const r = rimW.project(cam);
   const rimX = rect.left + (r.x * 0.5 + 0.5) * rect.width;
   const rimPx = Math.abs(rimX - cx);
 
   div.style.visibility = 'visible';
-  div.style.left = `${cx - rimPx - 10}px`;  // 10px left of the head rim
+  div.style.left = `${cx - rimPx - 10}px`;  // 10px left of the rim
   div.style.top  = `${cy}px`;               // translate(-100%,-50%) centres it
+}
+
+/**
+ * Anchor a tag bound to a PIECE at a local-Y offset. World point =
+ * piece.localToWorld(0, localY, 0); rim radius = outerRLocal × world
+ * scale (so it tracks a scaled parent folder). Shared by animated +
+ * static tags — washers anchor at their own height, like the head.
+ */
+function _anchorPieceTag(div, piece, localY, outerRLocal, rect, cam, camRight) {
+  const T = window.THREE;
+  _vWp    = _vWp    || new T.Vector3();
+  _vScale = _vScale || new T.Vector3();
+  _vWp.set(0, localY || 0, 0);
+  piece.localToWorld(_vWp);
+  piece.getWorldScale(_vScale);
+  _anchorTag(div, _vWp, (outerRLocal || 0) * (_vScale.x || 1), rect, cam, camRight);
 }
 
 function _positionTags() {
@@ -517,14 +570,15 @@ function _positionTags() {
   const camRight = new T.Vector3();
   cam.matrixWorld.extractBasis(camRight, new T.Vector3(), new T.Vector3());
   for (const s of _staged.values()) {
-    if (!s.tagEl) continue;
-    // Per-frame display: shown once tagShown is set (from stage for a
-    // repositioning screw, from the overlay block for an appearing one)
-    // AND the screw piece is visible. Following camera/object every frame
-    // means the label rides moves without disappearing — note-like.
-    if (!s.tagShown || !s.headPiece?.visible) { s.tagEl.style.display = 'none'; continue; }
-    s.tagEl.style.display = 'block';
-    _anchorTag(s.tagEl, s.headPiece, s.headOuterR, rect, cam, camRight);
+    if (!s.tagItems) continue;
+    for (const it of s.tagItems) {
+      if (!it.div) continue;
+      // Shown once tagShown is set AND the item's piece is visible —
+      // follows camera/object every frame (note-like).
+      if (!s.tagShown || !it.piece?.visible) { it.div.style.display = 'none'; continue; }
+      it.div.style.display = 'block';
+      _anchorPieceTag(it.div, it.piece, it.localY, it.outerRLocal, rect, cam, camRight);
+    }
   }
 }
 
@@ -537,12 +591,13 @@ function _positionStaticTags() {
   const camRight = new T.Vector3();
   cam.matrixWorld.extractBasis(camRight, new T.Vector3(), new T.Vector3());
   for (const t of _staticTags.values()) {
-    if (!t.div) continue;
-    // Note-like: follow the live mesh every frame; hide while the screw
-    // isn't visible on this step (no orphan label), show when it is.
-    if (!t.mergedMesh || !t.mergedMesh.visible) { t.div.style.display = 'none'; continue; }
-    t.div.style.display = 'block';
-    _anchorTag(t.div, t.mergedMesh, t.headOuterR, rect, cam, camRight);
+    const vis = !!t.mergedMesh?.visible;   // hide all items when screw hidden here
+    for (const it of (t.items || [])) {
+      if (!it.div) continue;
+      if (!vis) { it.div.style.display = 'none'; continue; }
+      it.div.style.display = 'block';
+      _anchorPieceTag(it.div, it.piece, it.localY, it.outerRLocal, rect, cam, camRight);
+    }
   }
 }
 
@@ -602,8 +657,10 @@ function _disposeAll(restore) {
     // Dispose transient GEOMETRY only. The material is SHARED with the
     // live merged mesh (owned by the materials system) — never dispose it.
     for (const m of (s.meshes || [])) m.geometry?.dispose?.();
-    // Spec-name tag DOM + trajectory line are owned here — clean them.
-    if (s.tagEl?.parentNode) s.tagEl.parentNode.removeChild(s.tagEl);
+    // Spec-name + washer tag DOM + trajectory line are owned here.
+    for (const it of (s.tagItems || [])) {
+      if (it.div?.parentNode) it.div.parentNode.removeChild(it.div);
+    }
     if (s.lineObj) {
       if (s.lineObj.parent) s.lineObj.parent.remove(s.lineObj);
       for (const c of (s.lineObj.children || [])) c.geometry?.dispose?.();

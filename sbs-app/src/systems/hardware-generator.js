@@ -498,44 +498,34 @@ function _buildDriverInsert(driveStyle, D, cavityR, insertTopY, insertH) {
 //
 // Stacking order top-down: head → spring (if any) → flat washer(s) → shank.
 
-function _buildWashers(washers, D, headParams) {
+/**
+ * Compute the washer stack LAYOUT (positions + sizes) without building
+ * geometry. Returns [{ kind, yTop, height, thickness, innerR, outerR }]
+ * top-down (head → shank). Shared by _buildWashers (which builds meshes
+ * from it) and washerStackFor (the tag system reads positions + radii
+ * to place a per-washer label without touching geometry).
+ */
+export function layoutWashers(washers, D, headParams) {
   const count  = Math.max(0, Math.min(2, Number(washers?.count) || 0));
   const spring = !!washers?.spring;
   if (!count && !spring) return [];
 
   // Head outer diameter — widest point of the head, varies by head type.
-  // For flange it's the flange disc; for flat it's the wide top; for
-  // hex it's the circumscribed radius; etc.
   const headOuterD = Math.max(headParams.topR, headParams.botR) * 2;
 
   const innerR = D * 0.55;                                  // = D × 1.1 / 2
   const outerR_small = (headOuterD * 1.1) / 2;              // first-in-stack
   const outerR_big   = (headOuterD * 1.2) / 2;              // single / second
-  // V0.2.22.50 — fixed 1.2 mm thickness for ALL washers (was D × 0.15,
-  // which scaled with screw size). 1 scene unit = 1 mm, so 1.2 here.
-  const thickness = 1.2;
+  const thickness = 1.2;                                    // fixed 1.2 mm (V0.2.22.50)
 
-  // Build the stack from head DOWN. Each entry: { kind, outerR }.
-  //
-  // V0.2.22.49 — `count` is the TOTAL washer count; `spring` means ONE
-  // of them is a spring washer placed LAST (farthest from head, against
-  // the work surface). This matches the menu labels exactly:
-  //   {count:1, spring:false} → 1 flat
-  //   {count:2, spring:false} → 2 flat
-  //   {count:1, spring:true}  → 1 spring (no flat)
-  //   {count:2, spring:true}  → 1 flat + 1 spring (spring AFTER the flat)
-  //
-  // Previously the spring was pushed FIRST (against the head) and the
-  // flats were added ON TOP of the count, producing one extra washer.
-  // Both bugs fixed here.
+  // count = TOTAL washers; spring = ONE of them is a spring placed LAST.
   const numFlat = spring ? Math.max(0, count - 1) : count;
   const stack = [];
   for (let i = 0; i < numFlat; i++) stack.push({ kind: 'flat', outerR: 0 });
   if (spring) stack.push({ kind: 'spring', outerR: 0 });
 
-  // Apply the sizing rule: first-in-stack (against head) is HEAD × 1.1
-  // when there are 2+ items, otherwise HEAD × 1.2. Subsequent items
-  // are HEAD × 1.2.
+  // Sizing: first-in-stack is HEAD × 1.1 when 2+ items, else HEAD × 1.2;
+  // subsequent items HEAD × 1.2.
   if (stack.length === 1) {
     stack[0].outerR = outerR_big;
   } else if (stack.length > 1) {
@@ -543,27 +533,41 @@ function _buildWashers(washers, D, headParams) {
     for (let i = 1; i < stack.length; i++) stack[i].outerR = outerR_big;
   }
 
-  // Lay them out vertically downward from y=0. yTop is the TOP of the
-  // current washer (the face that touches whatever's above).
-  //
-  // V0.2.22.51 — returns { mesh, kind, yTop, height } per washer so the
-  // insertion animator can stagger the explosion without re-deriving
-  // the stack layout. The merged-mesh path just reads `.mesh`.
+  // Lay out downward from y=0; yTop is the top face of each washer.
   let yTop = 0;
   const out = [];
   for (const w of stack) {
-    if (w.kind === 'flat') {
-      out.push({ mesh: _flatWasher(innerR, w.outerR, thickness, yTop), kind: 'flat', yTop, height: thickness });
-      yTop -= thickness;
-    } else {
-      // Spring — total height = thickness × 1.4 (pre-compressed look,
-      // V0.2.22.50; was 1.2×).
-      const totalH = thickness * 1.4;
-      out.push({ mesh: _springWasher(innerR, w.outerR, thickness, totalH, yTop), kind: 'spring', yTop, height: totalH });
-      yTop -= totalH;
-    }
+    const height = w.kind === 'spring' ? thickness * 1.4 : thickness;
+    out.push({ kind: w.kind, yTop, height, thickness, innerR, outerR: w.outerR });
+    yTop -= height;
   }
   return out;
+}
+
+/**
+ * Washer layout for a full screw spec (resolves head params internally).
+ * Returns [{ kind, yTop, height, thickness, innerR, outerR }] or [].
+ * Used by the insertion-tag system to label each washer.
+ */
+export function washerStackFor({ diameter, headType }, washers) {
+  if (!washers || (!washers.count && !washers.spring)) return [];
+  const D = Math.max(0.5, Number(diameter) || 4);
+  const headParams = _headParams(String(headType || 'socket'), D);
+  return layoutWashers(washers, D, headParams);
+}
+
+// Build each washer mesh from the shared layout. Returns
+// [{ mesh, kind, yTop, height, outerR }] top-down (head → shank).
+function _buildWashers(washers, D, headParams) {
+  return layoutWashers(washers, D, headParams).map(w => ({
+    mesh: w.kind === 'flat'
+      ? _flatWasher(w.innerR, w.outerR, w.thickness, w.yTop)
+      : _springWasher(w.innerR, w.outerR, w.thickness, w.height, w.yTop),
+    kind:   w.kind,
+    yTop:   w.yTop,
+    height: w.height,
+    outerR: w.outerR,
+  }));
 }
 
 /**
