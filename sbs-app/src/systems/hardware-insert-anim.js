@@ -35,6 +35,7 @@ import { state }       from '../core/state.js';
 import { sceneCore }   from '../core/scene.js';
 import * as clock      from '../core/clock.js';
 import { generateScrewParts } from './hardware-generator.js';
+import { resolveInsertAnim }  from './hardware-defaults.js';
 
 // Staged actors, keyed by node id:
 //   { group, mergedMesh, meshes, offsets,
@@ -113,6 +114,9 @@ export function stageInsertActors(actors, opts = {}) {
     try { parts = generateScrewParts(tpl.params || {}, node.washers || null); }
     catch (e) { console.warn('[insert-anim] parts build failed:', e?.message); continue; }
 
+    // Resolve effective values (per-instance custom → project → system).
+    const eff = resolveInsertAnim(node);
+
     const appearing = !!appearingIdSet?.has(node.id);
     const prev = fromWorld[node.id];
     const needsReposition = !appearing && !!prev;
@@ -148,8 +152,7 @@ export function stageInsertActors(actors, opts = {}) {
     //   screw → L + (W+1)·X   → TIP at (W+1)·X (= 3X for two washers)
     const L = Math.max(0.5, Number(tpl.params?.length) || 20);
     const W = elems.length - 1;
-    const ov = Number(node.insertAnim?.distance);
-    const X = Number.isFinite(ov) && ov > 0 ? ov : 20;
+    const X = Math.max(1, Number(eff.distance) || 20);
     const offsets = elems.map((_, j) => {
       if (j === 0) return L + (W + 1) * X;
       const rankFromBottom = W - (j - 1);
@@ -163,23 +166,29 @@ export function stageInsertActors(actors, opts = {}) {
     merged.visible = false;
     elems.forEach((m, i) => { m.position.y = needsReposition ? 0 : offsets[i]; });
 
-    const repMs = Number(node.insertAnim?.repositionMs);
+    // Head outer radius (world units) — for anchoring the tag 10px past
+    // the head's RIM, and a sensible line position. Widest head point.
+    const D = Math.max(0.5, Number(tpl.params?.diameter) || 4);
+    const headOuterR = _headOuterRadius(tpl.params?.headType, D) * (targetScale.x || 1);
+
+    const repMs = Number(eff.repositionMs);
     const entry = {
       group, mergedMesh: merged, meshes: elems, offsets,
       needsReposition, targetPos, targetQuat, prevPos, prevQuat,
       repositionMs: Number.isFinite(repMs) && repMs >= 0 ? repMs : 300,
       headPiece: elems[0],          // screw body — tag tracks its head
+      headOuterR,
       tagEl: null, tagShown: false,
       lineObj: null, lineShown: false,
     };
 
-    // ── Spec-name tag (V0.2.22.57) — 2D screen-space label, created
-    // hidden; shown at the `overlay` block, hidden when insertion
-    // completes. Right edge anchored 10px left of the head, vertically
+    // ── Spec-name tag — 2D screen-space label, created hidden; shown at
+    // the `overlay` block, hidden when insertion completes. Right edge
+    // anchored 10px left of the head's OUTER RIM (V0.2.22.58), vertically
     // centred, horizontal. Font px from the note size presets.
-    if (node.insertAnim?.tagName) {
+    if (eff.tagName) {
       const presets = state.get('notePresets') || { small: 18, medium: 36, large: 48 };
-      const px = presets[node.insertAnim.tagSize] || presets.medium || 36;
+      const px = presets[eff.tagSize] || presets.medium || 36;
       const txt = tpl.name || `M${tpl.params?.diameter}×${tpl.params?.length}`;
       const div = document.createElement('div');
       div.className = 'sbs-insert-tag';
@@ -194,23 +203,21 @@ export function stageInsertActors(actors, opts = {}) {
       entry.tagEl = div;
     }
 
-    // ── Trajectory line (V0.2.22.57) — dotted, tip → 8mm past the head
-    // bottom, along the insertion axis at the TARGET pose. Static in
-    // world space; shown just before insertion, faded over the assemble.
-    if (node.insertAnim?.trajectory) {
+    // ── Trajectory line — THICK dotted line (V0.2.22.58): a row of dash
+    // cylinders (radius = thickness) along the insertion axis at the
+    // TARGET pose, tip → 8mm past the head bottom. Dash + gap scale with
+    // thickness. Shown just before insertion, faded over the assemble.
+    if (eff.trajectory) {
+      const thick = Math.max(0.02, Number(eff.lineThickness) || 0.5);
+      let color = 0xffaa00;
+      try { color = new T.Color(eff.lineColor || '#ffaa00').getHex(); } catch {}
       const a = targetPos.clone().add(new T.Vector3(0, -L, 0).applyQuaternion(targetQuat));
       const b = targetPos.clone().add(new T.Vector3(0,  8, 0).applyQuaternion(targetQuat));
-      const lgeom = new T.BufferGeometry().setFromPoints([a, b]);
-      const lmat  = new T.LineDashedMaterial({
-        color: 0xffaa00, dashSize: 1.4, gapSize: 0.9,
-        transparent: true, opacity: 1, depthTest: false,
-      });
-      const line = new T.Line(lgeom, lmat);
-      line.computeLineDistances();
-      line.renderOrder = 999;
-      line.visible = false;
-      root.add(line);
-      entry.lineObj = line;
+      const { group: lineGroup, mat: lineMat } = _buildDashedTube(a, b, thick, color);
+      lineGroup.visible = false;
+      root.add(lineGroup);
+      entry.lineObj = lineGroup;
+      entry.lineMat = lineMat;
     }
 
     _staged.set(node.id, entry);
@@ -332,8 +339,8 @@ function _advance(now) {
         s.meshes[i].position.y = s.offsets[i] * (1 - u);
       }
       // Trajectory line vanishes AS the insertion acts (opacity 1→0).
-      if (s.lineObj?.visible && s.lineObj.material) {
-        s.lineObj.material.opacity = 1 - raw;
+      if (s.lineObj?.visible && s.lineMat) {
+        s.lineMat.opacity = 1 - raw;
       }
     }
     if (raw >= 1) {
@@ -357,19 +364,81 @@ function _positionTags() {
   const dom = sceneCore.renderer?.domElement;
   if (!cam || !dom) return;
   let rect = null;
+  const camRight = new T.Vector3();
   for (const s of _staged.values()) {
     if (!s.tagEl || !s.tagShown) continue;
     if (!rect) rect = dom.getBoundingClientRect();
     const wp = new T.Vector3();
     s.headPiece.getWorldPosition(wp);
-    const v = wp.project(cam);                 // NDC, z>1 ⇒ behind camera
-    if (v.z > 1) { s.tagEl.style.visibility = 'hidden'; continue; }
-    const sx = rect.left + (v.x * 0.5 + 0.5) * rect.width;
-    const sy = rect.top  + (-v.y * 0.5 + 0.5) * rect.height;
+
+    // Project the head centre.
+    const c = wp.clone().project(cam);
+    if (c.z > 1) { s.tagEl.style.visibility = 'hidden'; continue; }
+    const cx = rect.left + (c.x * 0.5 + 0.5) * rect.width;
+    const cy = rect.top  + (-c.y * 0.5 + 0.5) * rect.height;
+
+    // Project a point one head-RADIUS to the camera-right of the head, to
+    // measure the rim's pixel radius. Anchor the tag 10px past that rim.
+    cam.matrixWorld.extractBasis(camRight, new T.Vector3(), new T.Vector3());
+    const rimW = wp.clone().addScaledVector(camRight, s.headOuterR || 0);
+    const r = rimW.project(cam);
+    const rimX = rect.left + (r.x * 0.5 + 0.5) * rect.width;
+    const rimPx = Math.abs(rimX - cx);
+
     s.tagEl.style.visibility = 'visible';
-    s.tagEl.style.left = `${sx - 10}px`;       // right edge 10px left of head
-    s.tagEl.style.top  = `${sy}px`;            // translate(-100%,-50%) centres it
+    s.tagEl.style.left = `${cx - rimPx - 10}px`;  // 10px left of the head rim
+    s.tagEl.style.top  = `${cy}px`;               // translate(-100%,-50%) centres it
   }
+}
+
+// ─── Geometry helpers ────────────────────────────────────────────────────────
+
+/** Head's widest radius (world units, scale 1) for tag-rim anchoring. */
+function _headOuterRadius(headType, D) {
+  switch (headType) {
+    case 'flat':    return 1.0   * D;
+    case 'flange':  return 0.866 * 1.05 * D;
+    case 'hex':     return 0.866 * D;
+    case 'button':  return 0.95  * D;
+    case 'socket':  return 0.75  * D;
+    case 'lowhead': return 0.75  * D;
+    case 'none':    return 0.5   * D;
+    default:        return 0.875 * D;
+  }
+}
+
+/**
+ * Build a THICK dotted line as a row of dash cylinders from a→b. Radius =
+ * thickness; dash length + gap scale with thickness (dash 3×, gap 2×), so
+ * the dotted ratio looks consistent at any thickness. Returns the group
+ * + the shared material (for opacity fade).
+ */
+function _buildDashedTube(a, b, thickness, colorHex) {
+  const T = window.THREE;
+  const group = new T.Group();
+  const mat = new T.MeshBasicMaterial({
+    color: colorHex, transparent: true, opacity: 1, depthTest: false,
+  });
+  const dir = new T.Vector3().subVectors(b, a);
+  const total = dir.length();
+  if (total < 1e-6) return { group, mat };
+  dir.normalize();
+  const dash = Math.max(0.05, thickness * 3);
+  const gap  = Math.max(0.05, thickness * 2);
+  const stride = dash + gap;
+  const up = new T.Vector3(0, 1, 0);
+  const quat = new T.Quaternion().setFromUnitVectors(up, dir);
+  let d = 0;
+  while (d < total) {
+    const len = Math.min(dash, total - d);
+    const cyl = new T.Mesh(new T.CylinderGeometry(thickness, thickness, len, 8, 1), mat);
+    cyl.quaternion.copy(quat);
+    cyl.position.copy(a).addScaledVector(dir, d + len / 2);
+    cyl.renderOrder = 999;
+    group.add(cyl);
+    d += stride;
+  }
+  return { group, mat };
 }
 
 function _disposeAll(restore) {
@@ -382,8 +451,8 @@ function _disposeAll(restore) {
     if (s.tagEl?.parentNode) s.tagEl.parentNode.removeChild(s.tagEl);
     if (s.lineObj) {
       if (s.lineObj.parent) s.lineObj.parent.remove(s.lineObj);
-      s.lineObj.geometry?.dispose?.();
-      s.lineObj.material?.dispose?.();
+      for (const c of (s.lineObj.children || [])) c.geometry?.dispose?.();
+      s.lineMat?.dispose?.();
     }
     if (restore && s.mergedMesh) s.mergedMesh.visible = true;
   }

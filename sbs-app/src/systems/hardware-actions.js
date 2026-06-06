@@ -470,27 +470,21 @@ export function setInsertActor(nodeIds, enable = true) {
 }
 
 /**
- * V0.2.22.57 — set insertion-animation params on one or more instances:
- *   distance     X explode spacing (mm)
- *   repositionMs pre-insertion reposition time (ms)
- *   tagName      boolean — show the spec-name label
- *   tagSize      'small' | 'medium' | 'large'
- *   trajectory   boolean — show the dotted insertion-path line
- * Omitted keys are left unchanged. Undoable, multi-aware.
+ * V0.2.22.58 — set insertion-animation params on one or more instances.
+ * Every key in `patch` is applied verbatim, INCLUDING null (= "use
+ * default", resolved up the chain at animation time). Recognised keys:
+ *   distance, repositionMs, tagName, tagSize, trajectory,
+ *   lineThickness, lineColor
+ * Keys not present in `patch` are left unchanged. Undoable, multi-aware.
  */
 export function setInsertAnimParams(nodeIds, patch = {}) {
   if (!Array.isArray(nodeIds)) nodeIds = [nodeIds];
   if (!nodeIds.length) return;
 
-  const { distance, repositionMs, tagName, tagSize, trajectory } = patch;
-  const x   = (distance     != null) ? Math.max(0, Number(distance))     : undefined;
-  const rep = (repositionMs != null) ? Math.max(0, Number(repositionMs)) : undefined;
+  const KEYS = ['distance', 'repositionMs', 'tagName', 'tagSize',
+                'trajectory', 'lineThickness', 'lineColor'];
   const set = {};
-  if (Number.isFinite(x)   && x > 0) set.distance     = x;
-  if (Number.isFinite(rep))          set.repositionMs = rep;
-  if (typeof tagName === 'boolean')  set.tagName      = tagName;
-  if (typeof tagSize === 'string')   set.tagSize      = tagSize;
-  if (typeof trajectory === 'boolean') set.trajectory = trajectory;
+  for (const k of KEYS) if (k in patch) set[k] = patch[k];   // null allowed
   if (!Object.keys(set).length) return;
 
   const root = state.get('treeData');

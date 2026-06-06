@@ -120,6 +120,20 @@ function _render() {
     </div>
 
     <div class="card" style="margin-top:8px;">
+      <div class="title" style="font-size:13px;">Insertion-animation defaults</div>
+      <div class="small muted" style="margin-top:4px;font-size:11px;">
+        Screws use the system defaults (Settings → Nuts) unless this file
+        has its own. Freeze the current defaults into THIS project so it
+        recalls them on load — without changing the system settings.
+      </div>
+      <div class="grid2" style="margin-top:8px;">
+        <button class="btn" id="hw-file-default">📌 Use as this file's default</button>
+        <button class="btn" id="hw-file-default-clear">Clear file default</button>
+      </div>
+      <div id="hw-file-default-state" class="small muted" style="margin-top:6px;font-size:11px;"></div>
+    </div>
+
+    <div class="card" style="margin-top:8px;">
       <div class="title" style="font-size:13px;">
         ${editing
           ? `Editing: <span style="color:#fbbf24;">${_esc(editing.name)}</span>`
@@ -196,6 +210,31 @@ function _render() {
 }
 
 function _wire(panelEl) {
+  // ── File-default buttons (V0.2.22.58) ──────────────────────────────
+  const fdState = panelEl.querySelector('#hw-file-default-state');
+  const _refreshFdState = () => {
+    if (!fdState) return;
+    const has = !!state.get('hardwareDefaults');
+    fdState.innerHTML = has
+      ? '<span style="color:#86efac;">✓</span> This file has its own insertion defaults.'
+      : 'Using system defaults (Settings → Nuts).';
+  };
+  _refreshFdState();
+  panelEl.querySelector('#hw-file-default')?.addEventListener('click', () => {
+    import('../systems/hardware-defaults.js').then(hd => {
+      hd.snapshotProjectDefault();
+      setStatus('Saved current insertion defaults to this file.', 'success', 2500);
+      _refreshFdState();
+    });
+  });
+  panelEl.querySelector('#hw-file-default-clear')?.addEventListener('click', () => {
+    import('../systems/hardware-defaults.js').then(hd => {
+      hd.clearProjectDefault();
+      setStatus('Cleared file default — using system defaults.', 'info', 2500);
+      _refreshFdState();
+    });
+  });
+
   // Library row buttons — drop / edit / delete per template.
   for (const btn of panelEl.querySelectorAll('[data-hw-drop]')) {
     btn.addEventListener('click', () => {

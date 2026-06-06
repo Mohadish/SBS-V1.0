@@ -251,6 +251,9 @@ export function serialize() {
   cfg.geometryOutline      = { ...(state.get('geometryOutline') || {}) };
   cfg.export               = { ...(state.get('export')         || {}) };
   cfg.audioCacheFolder     = state.get('audioCacheFolder')      ?? null;
+  // V0.2.22.58 — per-project hardware insertion-animation default
+  // (null = none → fall back to the system "Nuts" defaults on load).
+  cfg.hardwareDefaults     = state.get('hardwareDefaults')      ?? null;
 
   return project;
 }
@@ -586,6 +589,9 @@ export function applyProjectToState(project) {
                             ? { ...state.get('export'), ...s.export }
                             : state.get('export'),
     audioCacheFolder:     s.audioCacheFolder ?? null,
+    // V0.2.22.58 — per-project hardware-animation default (missing on
+    // legacy files → null → system defaults apply).
+    hardwareDefaults:     s.hardwareDefaults ?? null,
   });
 
   // ── Content arrays ────────────────────────────────────────────────────────

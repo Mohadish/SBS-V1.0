@@ -27,7 +27,7 @@ export const SCHEMA_VERSIONS = {
   screen:     1,
 };
 
-export const APP_VERSION  = 'V0.2.22.57';
+export const APP_VERSION  = 'V0.2.22.58';
 // Format: YYYY-MM-DD. Bump along with APP_VERSION on every build worth
 // labelling so the File tab shows you're running the expected slice.
 export const APP_RELEASED = '2026-05-29';
@@ -484,15 +484,23 @@ export function createHardwareInstanceNode(overrides = {}) {
     //                         insert assembles. Default 300. Avoids a
     //                         threshold jump when the screw was visible
     //                         elsewhere on the prior step.
-    //   tagName     boolean — show the screw's spec name as a floating
-    //                         label during the animation (from `overlay`
-    //                         block start until insertion completes).
-    //   tagSize     string  — 'small' | 'medium' | 'large' (note font px).
-    //   trajectory  boolean — draw a dotted insertion-path line just
-    //                         before insertion, fading as it assembles.
+    // V0.2.22.58 — every value below defaults to null = "use default",
+    // resolving project default (.sbsproj) → system default (Nuts
+    // settings tab) → hardcoded, via resolveInsertAnim(). A non-null
+    // value is a per-instance custom override. enabled / stepId are NOT
+    // defaultable (they bind the actor to a step).
+    //   distance      X explode spacing (mm)
+    //   repositionMs  pre-insertion reposition time (ms)
+    //   tagName       show spec-name label (bool)
+    //   tagSize       'small' | 'medium' | 'large'
+    //   trajectory    show dotted insertion-path line (bool)
+    //   lineThickness trajectory thickness (mm); dash ratio scales with it
+    //   lineColor     trajectory colour
     insertAnim: {
-      enabled: false, stepId: null, distance: 20, repositionMs: 300,
-      tagName: false, tagSize: 'medium', trajectory: false,
+      enabled: false, stepId: null,
+      distance: null, repositionMs: null,
+      tagName: null, tagSize: null,
+      trajectory: null, lineThickness: null, lineColor: null,
     },
 
     ...overrides,

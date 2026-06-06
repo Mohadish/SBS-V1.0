@@ -3074,45 +3074,42 @@ export function showInputDialog(title, defaultVal, onConfirm) {
  * reposition time, the spec-name tag + its size, and the trajectory
  * line. onConfirm receives the full patch object.
  */
-export function showInsertAnimDialog(cur, onConfirm) {
+export async function showInsertAnimDialog(cur, onConfirm) {
+  const c = cur || {};
+  // Effective defaults to show when a row is set to "use default".
+  let def = { distance: 20, repositionMs: 300, tagName: false, tagSize: 'medium',
+              trajectory: false, lineThickness: 0.5, lineColor: '#ffaa00' };
+  try { def = (await import('../systems/hardware-defaults.js')).getEffectiveDefaults(); } catch {}
+
   const dlg = document.createElement('dialog');
   dlg.className = 'sbs-dialog';
-  const c = cur || {};
-  const sz = c.tagSize || 'medium';
+  // null in `cur` = "use default" (checkbox ticked). A value = custom.
+  const ud = (k) => c[k] == null;                        // use-default?
+  const val = (k) => (c[k] == null ? def[k] : c[k]);     // shown value
+  const sz = val('tagSize') || 'medium';
   dlg.innerHTML = `
-    <div class="sbs-dialog__body">
+    <div class="sbs-dialog__body" style="min-width:320px;">
       <div class="sbs-dialog__title">Insertion animation</div>
-
-      <div class="grid2" style="margin-top:10px;gap:8px;">
-        <label class="small muted">Spacing X (mm)
-          <input type="number" id="_ia-x" value="${_esc(String(c.distance ?? 20))}" min="1" step="1"
-            style="width:100%;box-sizing:border-box;margin-top:3px;" />
-        </label>
-        <label class="small muted">Reposition pre-step (ms)
-          <input type="number" id="_ia-ms" value="${_esc(String(c.repositionMs ?? 300))}" min="0" step="10"
-            style="width:100%;box-sizing:border-box;margin-top:3px;" />
-        </label>
+      <div class="small muted" style="margin-top:4px;font-size:11px;">
+        Tick "default" to inherit the project / system value (Settings → Nuts).
       </div>
 
-      <label style="display:flex;align-items:center;gap:8px;margin-top:12px;cursor:pointer;">
-        <input type="checkbox" id="_ia-tag" ${c.tagName ? 'checked' : ''} />
-        <span class="small">Show name tag</span>
-      </label>
-      <label class="small muted" style="display:block;margin-top:6px;margin-left:24px;">Tag size
-        <select id="_ia-size" style="margin-left:6px;">
-          <option value="small"  ${sz === 'small'  ? 'selected' : ''}>Small</option>
-          <option value="medium" ${sz === 'medium' ? 'selected' : ''}>Medium</option>
-          <option value="large"  ${sz === 'large'  ? 'selected' : ''}>Large</option>
-        </select>
-      </label>
-      <div class="small muted" style="margin-left:24px;margin-top:3px;font-size:11px;opacity:0.75;">
-        Sizes use your Note size settings (Notes tab → size presets).
-      </div>
+      ${_iaRow('x',   'Spacing X (mm)',           `<input type="number" id="_ia-x"  value="${_esc(String(val('distance')))}"     min="1"    step="1"   class="_ia-in" />`, ud('distance'))}
+      ${_iaRow('ms',  'Reposition pre-step (ms)', `<input type="number" id="_ia-ms" value="${_esc(String(val('repositionMs')))}" min="0"    step="10"  class="_ia-in" />`, ud('repositionMs'))}
 
-      <label style="display:flex;align-items:center;gap:8px;margin-top:12px;cursor:pointer;">
-        <input type="checkbox" id="_ia-traj" ${c.trajectory ? 'checked' : ''} />
-        <span class="small">Show trajectory line</span>
-      </label>
+      ${_iaRow('tag', 'Name tag',
+        `<label class="small"><input type="checkbox" id="_ia-tag" ${val('tagName') ? 'checked' : ''}/> show</label>
+         <select id="_ia-size" style="margin-left:8px;">
+           <option value="small"  ${sz==='small' ?'selected':''}>Small</option>
+           <option value="medium" ${sz==='medium'?'selected':''}>Medium</option>
+           <option value="large"  ${sz==='large' ?'selected':''}>Large</option>
+         </select>`, ud('tagName'))}
+      <div class="small muted" style="margin:2px 0 0 26px;font-size:10px;opacity:0.7;">Sizes use your Note size settings.</div>
+
+      ${_iaRow('traj', 'Trajectory line',
+        `<label class="small"><input type="checkbox" id="_ia-traj" ${val('trajectory') ? 'checked' : ''}/> show</label>
+         <input type="number" id="_ia-thick" value="${_esc(String(val('lineThickness')))}" min="0.05" step="0.05" title="thickness (mm)" style="width:60px;margin-left:8px;" />
+         <input type="color" id="_ia-color" value="${_esc(val('lineColor') || '#ffaa00')}" style="width:34px;height:24px;margin-left:6px;padding:1px;vertical-align:middle;" />`, ud('trajectory'))}
 
       <div style="display:flex;gap:8px;justify-content:flex-end;margin-top:16px">
         <button class="btn" id="_ia-cancel">Cancel</button>
@@ -3121,24 +3118,50 @@ export function showInsertAnimDialog(cur, onConfirm) {
     </div>
   `;
   document.body.appendChild(dlg);
+
+  // Enable/disable each row's custom controls per its "default" checkbox.
+  const sync = () => {
+    for (const key of ['x', 'ms', 'tag', 'traj']) {
+      const dflt = dlg.querySelector(`#_ia-def-${key}`).checked;
+      dlg.querySelectorAll(`[data-ia-grp="${key}"] input, [data-ia-grp="${key}"] select`)
+        .forEach(el => { el.disabled = dflt; el.style.opacity = dflt ? 0.45 : 1; });
+    }
+  };
+  for (const key of ['x', 'ms', 'tag', 'traj']) {
+    dlg.querySelector(`#_ia-def-${key}`).addEventListener('change', sync);
+  }
+  sync();
+
   const done = () => {
+    const useDef = (k) => dlg.querySelector(`#_ia-def-${k}`).checked;
     const patch = {
-      distance:     Number(dlg.querySelector('#_ia-x').value),
-      repositionMs: Number(dlg.querySelector('#_ia-ms').value),
-      tagName:      dlg.querySelector('#_ia-tag').checked,
-      tagSize:      dlg.querySelector('#_ia-size').value,
-      trajectory:   dlg.querySelector('#_ia-traj').checked,
+      distance:     useDef('x')   ? null : Number(dlg.querySelector('#_ia-x').value),
+      repositionMs: useDef('ms')  ? null : Number(dlg.querySelector('#_ia-ms').value),
+      tagName:      useDef('tag') ? null : dlg.querySelector('#_ia-tag').checked,
+      tagSize:      useDef('tag') ? null : dlg.querySelector('#_ia-size').value,
+      trajectory:   useDef('traj')? null : dlg.querySelector('#_ia-traj').checked,
+      lineThickness:useDef('traj')? null : Number(dlg.querySelector('#_ia-thick').value),
+      lineColor:    useDef('traj')? null : dlg.querySelector('#_ia-color').value,
     };
     dlg.close(); dlg.remove();
     onConfirm(patch);
   };
   dlg.querySelector('#_ia-cancel').addEventListener('click', () => { dlg.close(); dlg.remove(); });
   dlg.querySelector('#_ia-ok').addEventListener('click', done);
-  dlg.addEventListener('keydown', e => {
-    if (e.key === 'Enter') done();
-    if (e.key === 'Escape') { dlg.close(); dlg.remove(); }
-  });
+  dlg.addEventListener('keydown', e => { if (e.key === 'Escape') { dlg.close(); dlg.remove(); } });
   dlg.showModal();
+}
+
+/** One labelled row with a "default" checkbox + custom control group. */
+function _iaRow(key, label, controlHtml, useDefault) {
+  return `
+    <div style="margin-top:10px;">
+      <div class="small" style="margin-bottom:3px;font-weight:600;">${_esc(label)}</div>
+      <label class="small muted" style="margin-right:10px;cursor:pointer;">
+        <input type="checkbox" id="_ia-def-${key}" ${useDefault ? 'checked' : ''}/> default
+      </label>
+      <span data-ia-grp="${key}">${controlHtml}</span>
+    </div>`;
 }
 
 /**

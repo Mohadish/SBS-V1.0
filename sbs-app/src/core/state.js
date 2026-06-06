@@ -147,6 +147,13 @@ function createInitialState() {
     // the user picks a new template or deletes them).
     hardwareTemplates: [],            // HardwareTemplate[]
 
+    // V0.2.22.58 — per-PROJECT insertion-animation defaults (set via the
+    // Hardware tab's "use as this file's default" button; saved in the
+    // .sbsproj under settings.hardwareDefaults). null = no project
+    // override → fall through to the system "Nuts" defaults. Same shape
+    // as user-settings.nuts.
+    hardwareDefaults: null,
+
     // ── Shape-tab groupings (V0.1.85). Tab-only — does NOT affect tree
     // hierarchy. Each entry: { id, name, locked, collapsed, templateIds[] }.
     // See createShapeTemplateGroup in core/schema.js for semantics.

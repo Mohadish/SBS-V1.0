@@ -38,6 +38,7 @@ export async function openSettingsModal(initialTab = 'language') {
           <button class="settings-tab" data-tab="language">Language</button>
           <button class="settings-tab" data-tab="scene">Scene</button>
           <button class="settings-tab" data-tab="export">Export</button>
+          <button class="settings-tab" data-tab="nuts">Nuts</button>
           <button class="settings-tab" data-tab="cloud">Cloud TTS</button>
         </nav>
         <section id="settings-body" style="flex:1;padding:14px 16px;overflow:auto;font-size:13px;">
@@ -98,7 +99,81 @@ function _showTab(name) {
   if (name === 'language') _renderLanguageTab(body);
   if (name === 'scene')    _renderSceneTab(body);
   if (name === 'export')   _renderExportTab(body);
+  if (name === 'nuts')     _renderNutsTab(body);
   if (name === 'cloud')    _renderCloudTab(body);
+}
+
+/**
+ * V0.2.22.58 — Nuts tab. System-level defaults for the hardware
+ * insertion animation, saved with user data. Per-instance values left
+ * as "use default" resolve to the project default (.sbsproj) then to
+ * these. See systems/hardware-defaults.js.
+ */
+function _renderNutsTab(body) {
+  const cur = userSettings.get();
+  const n = cur.nuts || {};
+  const sz = n.tagSize || 'medium';
+  body.innerHTML = `
+    <h3 style="margin:0 0 6px 0;font-size:14px;">Hardware insertion defaults</h3>
+    <p class="small muted" style="margin:0 0 12px 0;">
+      Default values for the screw insertion animation. A screw set to
+      "use default" for an option pulls from here (or from a project's
+      own saved default, if one is set in the Hardware tab).
+    </p>
+
+    <div class="grid2" style="gap:10px;">
+      <label class="small muted">Spacing X (mm)
+        <input type="number" id="_nt-x" value="${_esc(String(n.distance ?? 20))}" min="1" step="1"
+          style="width:100%;box-sizing:border-box;margin-top:3px;" />
+      </label>
+      <label class="small muted">Reposition pre-step (ms)
+        <input type="number" id="_nt-ms" value="${_esc(String(n.repositionMs ?? 300))}" min="0" step="10"
+          style="width:100%;box-sizing:border-box;margin-top:3px;" />
+      </label>
+    </div>
+
+    <label style="display:flex;align-items:center;gap:8px;margin-top:14px;cursor:pointer;">
+      <input type="checkbox" id="_nt-tag" ${n.tagName ? 'checked' : ''} />
+      <span class="small">Show name tag by default</span>
+    </label>
+    <label class="small muted" style="display:block;margin-top:6px;margin-left:24px;">Tag size
+      <select id="_nt-size" style="margin-left:6px;">
+        <option value="small"  ${sz === 'small'  ? 'selected' : ''}>Small</option>
+        <option value="medium" ${sz === 'medium' ? 'selected' : ''}>Medium</option>
+        <option value="large"  ${sz === 'large'  ? 'selected' : ''}>Large</option>
+      </select>
+    </label>
+
+    <label style="display:flex;align-items:center;gap:8px;margin-top:14px;cursor:pointer;">
+      <input type="checkbox" id="_nt-traj" ${n.trajectory ? 'checked' : ''} />
+      <span class="small">Show trajectory line by default</span>
+    </label>
+    <div class="grid2" style="gap:10px;margin-top:6px;margin-left:24px;">
+      <label class="small muted">Line thickness (mm)
+        <input type="number" id="_nt-thick" value="${_esc(String(n.lineThickness ?? 0.5))}" min="0.05" step="0.05"
+          style="width:100%;box-sizing:border-box;margin-top:3px;" />
+      </label>
+      <label class="small muted">Line colour
+        <input type="color" id="_nt-color" value="${_esc(n.lineColor || '#ffaa00')}"
+          style="width:48px;height:28px;margin-top:3px;padding:2px;border-radius:4px;cursor:pointer;" />
+      </label>
+    </div>
+  `;
+
+  const save = () => {
+    userSettings.patch({ nuts: {
+      distance:      Math.max(1, Number(body.querySelector('#_nt-x').value)    || 20),
+      repositionMs:  Math.max(0, Number(body.querySelector('#_nt-ms').value)   || 300),
+      tagName:       body.querySelector('#_nt-tag').checked,
+      tagSize:       body.querySelector('#_nt-size').value,
+      trajectory:    body.querySelector('#_nt-traj').checked,
+      lineThickness: Math.max(0.05, Number(body.querySelector('#_nt-thick').value) || 0.5),
+      lineColor:     body.querySelector('#_nt-color').value,
+    } });
+  };
+  for (const sel of ['#_nt-x','#_nt-ms','#_nt-tag','#_nt-size','#_nt-traj','#_nt-thick','#_nt-color']) {
+    body.querySelector(sel)?.addEventListener('change', save);
+  }
 }
 
 /**

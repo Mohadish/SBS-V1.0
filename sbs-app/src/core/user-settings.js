@@ -83,6 +83,19 @@ const DEFAULTS = {
     enabled:      false,
     googleApiKey: '',
   },
+  // V0.2.22.58 — SYSTEM-level defaults for the hardware insertion
+  // animation (the "Nuts" settings tab). Per-instance values that are
+  // left as "use default" resolve to the project default (.sbsproj),
+  // then to these, then to the hardcoded fallbacks. Saved with user data.
+  nuts: {
+    distance:      20,        // X explode spacing (mm)
+    repositionMs:  300,       // pre-insertion reposition time (ms)
+    tagName:       false,     // show spec-name tag
+    tagSize:       'medium',  // 'small' | 'medium' | 'large'
+    trajectory:    false,     // show dotted insertion-path line
+    lineThickness: 0.5,       // trajectory line thickness (mm)
+    lineColor:     '#ffaa00', // trajectory line colour
+  },
 };
 
 let _cache = null;
