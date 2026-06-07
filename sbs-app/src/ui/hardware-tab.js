@@ -327,7 +327,7 @@ function _renderLibRow(t) {
         <button class="btn" data-hw-place-surface="${t.id}"
                 title="Click a surface to place; empty space drops it 50mm in front of the camera"
                 style="font-size:11px;padding:4px 8px;flex:1;">+ place on surface</button>
-        <button class="btn" data-hw-place-3pt="${t.id}"
+        <button class="btn" data-hw-place3pt="${t.id}"
                 title="Snap 3 points around a circle to place the nut at its centre"
                 style="font-size:11px;padding:4px 8px;flex:1;">+ place by 3 points</button>
       </div>
@@ -364,7 +364,7 @@ function _wire(panelEl) {
       hardwarePlacePicker.startPlaceOnSurface(btn.dataset.hwPlaceSurface);
     });
   }
-  for (const btn of panelEl.querySelectorAll('[data-hw-place-3pt]')) {
+  for (const btn of panelEl.querySelectorAll('[data-hw-place3pt]')) {
     btn.addEventListener('click', () => {
       hardwarePlacePicker.startPlaceBy3Points(btn.dataset.hwPlace3pt);
     });

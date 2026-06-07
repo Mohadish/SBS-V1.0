@@ -1270,6 +1270,18 @@ class GizmoController {
       return parentQ.clone().multiply(localQ).multiply(planeQ);
     }
 
+    // V0.2.22.72 — hardware instances align the gizmo to the NUT'S OWN
+    // orientation (a surface-placed nut is tilted via localQuaternion). The
+    // generic parent frame would show world axes when the parent is the
+    // identity Hardware folder, so LOCAL mode "looked like world" until the
+    // user toggled to pivot. Use the object's live world quaternion.
+    if (this._node.type === 'hardwareInstance') {
+      const T = window.THREE;
+      const q = new T.Quaternion();
+      this._obj3d.getWorldQuaternion(q);
+      return q;
+    }
+
     return this._parentWorldQuat();
   }
 
@@ -1462,12 +1474,18 @@ class GizmoController {
 
     this._rebindPanel();   // populates HTML + snapshot + wires events
 
-    // Nudge panel into viewport (only on first open, before any rebinds).
+    // V0.2.22.72 — open ONE full panel-width to the RIGHT of the cursor so
+    // the panel doesn't cover the model under the click (a small model could
+    // be completely hidden otherwise). Then clamp into the viewport.
     requestAnimationFrame(() => {
       const r = panel.getBoundingClientRect();
       const vw = window.innerWidth, vh = window.innerHeight;
-      if (r.right  > vw - 8) panel.style.left = `${vw - r.width  - 8}px`;
-      if (r.bottom > vh - 8) panel.style.top  = `${vh - r.height - 8}px`;
+      let left = clientX + 12 + r.width;   // shift right by one panel width
+      let top  = clientY - 8;
+      if (left + r.width  > vw - 8) left = vw - r.width  - 8;
+      if (top  + r.height > vh - 8) top  = vh - r.height - 8;
+      panel.style.left = `${Math.max(8, left)}px`;
+      panel.style.top  = `${Math.max(8, top)}px`;
     });
 
     // Esc reverts the active node's edits and closes the panel. NO outside-

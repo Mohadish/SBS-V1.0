@@ -2192,6 +2192,20 @@ canvas.addEventListener('contextmenu', e => {
       label: '🎯 Align by 3 points…',
       action: () => hardwarePlacePicker.startAlignBy3Points(node.id),
     });
+    // Copy / paste the active step's pose (translation + rotation +
+    // visibility) — cross-instance allowed.
+    items.push({
+      label: '📋 Copy step pose',
+      action: () => actions.copyInstanceStepPose(node.id),
+    });
+    const _hwStepSel = state.get('selectedStepIds');
+    items.push({
+      label: _hwStepSel instanceof Set && _hwStepSel.size >= 2
+        ? `📥 Paste step pose to ${_hwStepSel.size} steps`
+        : '📥 Paste step pose',
+      disabled: !actions.hasInstancePoseClipboard(),
+      action: () => actions.pasteInstanceStepPose(node.id),
+    });
     const isActor = node?.insertAnim?.enabled === true;
     items.push({
       label: isActor

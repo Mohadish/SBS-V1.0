@@ -956,6 +956,18 @@ function _buildContextMenuItems(node) {
       label: '🔩 Edit template (affects all instances)…',
       action: () => editHardwareTemplate(node.templateId),
     });
+    // Copy / paste the active step's pose (translation + rotation +
+    // visibility) — cross-instance allowed. Same as flatShape/mesh.
+    items.push({
+      label: '📋 Copy step pose',
+      action: () => actions.copyInstanceStepPose(node.id),
+    });
+    const _hwSelStep = state.get('selectedStepIds')?.size ?? 0;
+    items.push({
+      label: _hwSelStep >= 2 ? `📥 Paste step pose to ${_hwSelStep} steps` : '📥 Paste step pose',
+      disabled: !actions.hasInstancePoseClipboard(),
+      action: () => actions.pasteInstanceStepPose(node.id),
+    });
     // Insertion animation toggle — binds to the active step.
     const isActor = node.insertAnim?.enabled === true;
     items.push({
