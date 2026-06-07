@@ -221,15 +221,21 @@ export function refreshPreInstall(activeStepId) {
   const root = sceneCore.rootGroup;
   if (!T || !root) return;
   const tpls = state.get('hardwareTemplates') || [];
+  const diag = (typeof window !== 'undefined' && window.sbsDiag?.preview);
+  let seen = 0, gated = 0;
 
   for (const node of _allActors()) {
+    seen++;
     const eff = resolveInsertAnim(node);
-    if (!eff.explodeBefore) continue;                 // only when "display exploded before"
     const insertStep = node.insertAnim?.stepId;
+    const before = insertStep && _isBeforeInsertStep(insertStep, activeStepId);
+    if (diag) console.log('[preview] actor', node.id,
+      { explodeBefore: eff.explodeBefore, insertStep, activeStepId, before, hasMerged: !!node.object3d });
+    if (!eff.explodeBefore) continue;                 // only when "display exploded before"
     if (!insertStep) continue;
-    if (!_isBeforeInsertStep(insertStep, activeStepId)) continue;
+    if (!before) continue;                            // only on steps BEFORE the insert step
     const merged = node.object3d;
-    if (!merged || !merged.parent) continue;
+    if (!merged) continue;
     const tpl = tpls.find(t => t.id === node.templateId);
     if (!tpl) continue;
 
@@ -254,17 +260,21 @@ export function refreshPreInstall(activeStepId) {
     const offsets = _explodeOffsets(tpl, eff, elems.length);
     elems.forEach((m, i) => {
       if (liveMat) m.material = liveMat;
+      m.visible = true;                 // show the part even if the nut is hidden here
       m.position.y = offsets[i];        // exploded (pre-install) layout
       group.add(m);
     });
+    group.updateMatrixWorld(true);
     merged.visible = false;             // the assembled mesh steps aside
 
     _preview.set(node.id, {
       group, elems, mergedMesh: merged,
       tagItems: _buildTagItems(tpl, eff, parts, elems),
     });
+    gated++;
   }
 
+  if (seen > 0) console.log(`[preview] step=${activeStepId} actors=${seen} built=${gated} (set window.sbsDiag={preview:true} for per-actor detail)`);
   if (_preview.size && !_previewTickUnsub) {
     _previewTickUnsub = sceneCore.addTickHook(() => _advancePreview());
   }
@@ -636,15 +646,19 @@ function _positionTags() {
 function _advancePreview() {
   if (!_preview.size) return;
   const T = window.THREE;
+  const root = sceneCore.rootGroup;
   const cam = sceneCore.camera;
   const dom = sceneCore.renderer?.domElement;
-  // Keep the merged meshes hidden + materials in sync regardless of camera.
+  // Keep the merged meshes hidden, materials in sync, and the preview group
+  // attached — a step rebuild can re-show the merged mesh or detach our
+  // group, so we re-assert it every frame.
   for (const p of _preview.values()) {
+    if (root && p.group && p.group.parent !== root) root.add(p.group);
     if (p.mergedMesh) {
       p.mergedMesh.visible = false;
       const liveMat = Array.isArray(p.mergedMesh.material)
         ? p.mergedMesh.material[0] : p.mergedMesh.material;
-      if (liveMat) for (const m of p.elems) { if (m.material !== liveMat) m.material = liveMat; }
+      if (liveMat) for (const m of p.elems) { m.visible = true; if (m.material !== liveMat) m.material = liveMat; }
     }
   }
   if (!cam || !dom) return;
