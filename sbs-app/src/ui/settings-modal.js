@@ -158,6 +158,16 @@ function _renderNutsTab(body) {
     </div>
 
     <label style="display:flex;align-items:center;gap:8px;margin-top:14px;cursor:pointer;">
+      <input type="checkbox" id="_nt-pause" ${n.pauseBefore ? 'checked' : ''} />
+      <span class="small">Pause before insertion</span>
+      <input type="number" id="_nt-pausems" value="${_esc(String(n.pauseBeforeMs ?? 300))}" min="0" step="50"
+        style="width:64px;margin-left:6px;" /> <span class="small muted">ms</span>
+    </label>
+    <div class="small muted" style="margin:2px 0 0 24px;font-size:10px;opacity:0.7;">
+      Holds on the exploded nut so the tags are readable, then inserts.
+    </div>
+
+    <label style="display:flex;align-items:center;gap:8px;margin-top:14px;cursor:pointer;">
       <input type="checkbox" id="_nt-traj" ${n.trajectory ? 'checked' : ''} />
       <span class="small">Show trajectory line by default</span>
     </label>
@@ -185,13 +195,15 @@ function _renderNutsTab(body) {
       tagSize:       body.querySelector('#_nt-size').value,
       tagColor:      body.querySelector('#_nt-tagcolor').value,
       explodeBefore: body.querySelector('#_nt-explode').checked,
+      pauseBefore:   body.querySelector('#_nt-pause').checked,
+      pauseBeforeMs: Math.max(0, Number(body.querySelector('#_nt-pausems').value) || 300),
       trajectory:    body.querySelector('#_nt-traj').checked,
       lineThickness: Math.max(0.05, Number(body.querySelector('#_nt-thick').value) || 0.5),
       lineGap:       Math.max(0,    Number(body.querySelector('#_nt-gap').value)   || 2),
       lineColor:     body.querySelector('#_nt-color').value,
     } });
   };
-  for (const sel of ['#_nt-x','#_nt-ms','#_nt-tag','#_nt-size','#_nt-tagcolor','#_nt-explode','#_nt-traj','#_nt-thick','#_nt-gap','#_nt-color']) {
+  for (const sel of ['#_nt-x','#_nt-ms','#_nt-tag','#_nt-size','#_nt-tagcolor','#_nt-explode','#_nt-pause','#_nt-pausems','#_nt-traj','#_nt-thick','#_nt-gap','#_nt-color']) {
     body.querySelector(sel)?.addEventListener('change', save);
   }
 }

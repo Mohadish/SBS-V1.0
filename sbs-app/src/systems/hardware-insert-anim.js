@@ -51,6 +51,7 @@ import { resolveInsertAnim }  from './hardware-defaults.js';
 // merged mesh hidden (re-asserted each tick) so it never double-renders.
 const _staged = new Map();
 let _reposition = null;  // { startMs, durationMs, easeFn, resolve }
+let _pause      = null;  // { startMs, durationMs, resolve } — hold before insert
 let _assemble   = null;  // { startMs, durationMs, easeFn, resolve }
 let _tickUnsub  = null;
 
@@ -386,11 +387,15 @@ export function stageInsertActors(actors, opts = {}) {
     merged.visible = false;
     elems.forEach((m, i) => { m.position.y = (needsReposition && !preExploded) ? 0 : offsets[i]; });
 
-    const repMs = Number(eff.repositionMs);
+    const repMs   = Number(eff.repositionMs);
+    const pauseMs = Number(eff.pauseBeforeMs);
     const entry = {
       group, mergedMesh: merged, meshes: elems, offsets,
       needsReposition, preExploded, targetPos, targetQuat, prevPos, prevQuat,
       repositionMs: Number.isFinite(repMs) && repMs >= 0 ? repMs : 300,
+      // Hold before the insertion so the viewer can read the tags.
+      pauseBefore:   !!eff.pauseBefore,
+      pauseBeforeMs: Number.isFinite(pauseMs) && pauseMs >= 0 ? pauseMs : 300,
       tagItems: null, tagShown: false,
       lineObj: null, lineShown: false,
     };
@@ -451,6 +456,21 @@ export function runInsertReposition(easeFn) {
   const durationMs = Math.max(1, ...need.map(s => s.repositionMs || 300));
   return new Promise(resolve => {
     _reposition = { startMs: clock.now(), durationMs, easeFn, resolve };
+  });
+}
+
+/**
+ * PAUSE — a deliberate hold AFTER the reposition and BEFORE the insertion,
+ * so the viewer can read the spec/washer tags before the nut drives in.
+ * The pieces sit exploded (tags visible) for the longest enabled pause.
+ * Clock-driven so it's deterministic under offline export.
+ */
+export function runInsertPause() {
+  const need = [..._staged.values()].filter(s => s.pauseBefore && s.pauseBeforeMs > 0);
+  if (!need.length) return Promise.resolve();
+  const durationMs = Math.max(1, ...need.map(s => s.pauseBeforeMs || 0));
+  return new Promise(resolve => {
+    _pause = { startMs: clock.now(), durationMs, resolve };
   });
 }
 
@@ -555,6 +575,13 @@ function _advance(now) {
       }
     }
     if (raw >= 1) { const r = _reposition.resolve; _reposition = null; r?.(); }
+  }
+
+  if (_pause) {
+    // Hold — pieces stay where they are (exploded, tags visible). Just wait.
+    if (now - _pause.startMs >= _pause.durationMs) {
+      const r = _pause.resolve; _pause = null; r?.();
+    }
   }
 
   if (_assemble) {
@@ -778,5 +805,6 @@ function _disposeAll(restore) {
   }
   _staged.clear();
   _reposition = null;
+  _pause = null;
   _assemble = null;
 }

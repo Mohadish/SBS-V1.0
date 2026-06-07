@@ -94,6 +94,8 @@ const DEFAULTS = {
     tagSize:       'medium',  // 'small' | 'medium' | 'large'
     tagColor:      '#ffffff', // tag text colour
     explodeBefore: false,     // show the nut exploded on every step before insertion
+    pauseBefore:   true,      // hold before the insertion (so tags are readable)
+    pauseBeforeMs: 300,       // pause duration (ms)
     trajectory:    false,     // show dotted insertion-path line
     lineThickness: 0.5,       // trajectory line thickness (mm)
     lineGap:       2,         // dotted gap scaler (gap = thickness × this)

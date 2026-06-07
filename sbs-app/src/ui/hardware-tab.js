@@ -104,6 +104,12 @@ function _renderDefaultsEditor() {
       <span class="small">Display exploded before insertion</span>
     </label>
     <label style="display:flex;align-items:center;gap:6px;margin-top:8px;cursor:pointer;">
+      <input type="checkbox" id="hd-pause" ${d.pauseBefore ? 'checked' : ''}/>
+      <span class="small">Pause before insertion</span>
+      <input type="number" id="hd-pausems" value="${_esc(String(d.pauseBeforeMs ?? 300))}" min="0" step="50"
+        style="width:58px;margin-left:4px;" title="pause (ms)" /> <span class="small muted">ms</span>
+    </label>
+    <label style="display:flex;align-items:center;gap:6px;margin-top:8px;cursor:pointer;">
       <input type="checkbox" id="hd-traj" ${d.trajectory ? 'checked' : ''}/>
       <span class="small">Trajectory line</span>
     </label>
@@ -133,12 +139,14 @@ function _wireDefaultsEditor(panelEl) {
     tagSize:       g('#hd-size').value,
     tagColor:      g('#hd-tagcolor').value,
     explodeBefore: g('#hd-explode').checked,
+    pauseBefore:   g('#hd-pause').checked,
+    pauseBeforeMs: Math.max(0, Number(g('#hd-pausems').value) || 300),
     trajectory:    g('#hd-traj').checked,
     lineThickness: Math.max(0.05, Number(g('#hd-thick').value) || 0.5),
     lineGap:       Math.max(0,    Number(g('#hd-gap').value)   || 2),
     lineColor:     g('#hd-color').value,
   });
-  for (const id of ['#hd-x','#hd-ms','#hd-tag','#hd-size','#hd-tagcolor','#hd-explode','#hd-traj','#hd-thick','#hd-gap','#hd-color']) {
+  for (const id of ['#hd-x','#hd-ms','#hd-tag','#hd-size','#hd-tagcolor','#hd-explode','#hd-pause','#hd-pausems','#hd-traj','#hd-thick','#hd-gap','#hd-color']) {
     g(id)?.addEventListener('change', push);
   }
   const st = g('#hw-file-default-state');

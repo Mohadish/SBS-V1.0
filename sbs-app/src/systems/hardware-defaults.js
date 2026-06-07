@@ -23,6 +23,8 @@ export const HARDWARE_FALLBACK = {
   tagSize:       'medium',
   tagColor:      '#ffffff',   // tag text colour
   explodeBefore: false,       // show the nut EXPLODED on every step before insertion
+  pauseBefore:   true,        // hold before the insertion (so the tags are readable)
+  pauseBeforeMs: 300,         // pause duration (ms)
   trajectory:    false,
   lineThickness: 0.5,
   lineGap:       2,          // gap = thickness × lineGap (dash = thickness × 3)
@@ -59,6 +61,8 @@ export function resolveInsertAnim(node) {
     tagSize:       pick('tagSize'),
     tagColor:      pick('tagColor'),
     explodeBefore: pick('explodeBefore'),
+    pauseBefore:   pick('pauseBefore'),
+    pauseBeforeMs: pick('pauseBeforeMs'),
     trajectory:    pick('trajectory'),
     lineThickness: pick('lineThickness'),
     lineGap:       pick('lineGap'),

@@ -3093,7 +3093,7 @@ export async function showInsertAnimDialog(cur, onConfirm) {
   const c = cur || {};
   // Effective defaults to show when a row is set to "use default".
   let def = { distance: 20, repositionMs: 300, tagName: false, tagSize: 'medium',
-              tagColor: '#ffffff', explodeBefore: false,
+              tagColor: '#ffffff', explodeBefore: false, pauseBefore: true, pauseBeforeMs: 300,
               trajectory: false, lineThickness: 0.5, lineGap: 2, lineColor: '#ffaa00' };
   try { def = (await import('../systems/hardware-defaults.js')).getEffectiveDefaults(); } catch {}
 
@@ -3128,6 +3128,12 @@ export async function showInsertAnimDialog(cur, onConfirm) {
         `<label class="small"><input type="checkbox" id="_ia-explode" ${val('explodeBefore') ? 'checked' : ''}/> show the nut exploded on every step before it's inserted</label>`,
         ud('explodeBefore'))}
 
+      ${_iaRow('pause', 'Pause before insertion',
+        `<label class="small"><input type="checkbox" id="_ia-pause" ${val('pauseBefore') ? 'checked' : ''}/> hold</label>
+         <input type="number" id="_ia-pausems" value="${_esc(String(val('pauseBeforeMs')))}" min="0" step="50" title="pause (ms)" style="width:64px;margin-left:8px;" /> ms`,
+        ud('pauseBefore'))}
+      <div class="small muted" style="margin:2px 0 0 26px;font-size:10px;opacity:0.7;">Holds on the exploded nut so the tags are readable, then inserts.</div>
+
       ${_iaRow('traj', 'Trajectory line',
         `<label class="small"><input type="checkbox" id="_ia-traj" ${val('trajectory') ? 'checked' : ''}/> show</label>
          <input type="number" id="_ia-thick" value="${_esc(String(val('lineThickness')))}" min="0.05" step="0.05" title="thickness (mm)" style="width:56px;margin-left:8px;" />
@@ -3144,7 +3150,7 @@ export async function showInsertAnimDialog(cur, onConfirm) {
 
   // Enable/disable each row's custom controls per its "default" checkbox.
   const sync = () => {
-    for (const key of ['x', 'ms', 'tag', 'explode', 'traj']) {
+    for (const key of ['x', 'ms', 'tag', 'explode', 'pause', 'traj']) {
       const dflt = dlg.querySelector(`#_ia-def-${key}`).checked;
       dlg.querySelectorAll(`[data-ia-grp="${key}"] input, [data-ia-grp="${key}"] select`)
         .forEach(el => { el.disabled = dflt; el.style.opacity = dflt ? 0.45 : 1; });
@@ -3164,6 +3170,8 @@ export async function showInsertAnimDialog(cur, onConfirm) {
       tagSize:      useDef('tag') ? null : dlg.querySelector('#_ia-size').value,
       tagColor:     useDef('tag')     ? null : dlg.querySelector('#_ia-tagcolor').value,
       explodeBefore:useDef('explode') ? null : dlg.querySelector('#_ia-explode').checked,
+      pauseBefore:  useDef('pause')   ? null : dlg.querySelector('#_ia-pause').checked,
+      pauseBeforeMs:useDef('pause')   ? null : Number(dlg.querySelector('#_ia-pausems').value),
       trajectory:   useDef('traj')    ? null : dlg.querySelector('#_ia-traj').checked,
       lineThickness:useDef('traj')? null : Number(dlg.querySelector('#_ia-thick').value),
       lineGap:      useDef('traj')? null : Number(dlg.querySelector('#_ia-gap').value),

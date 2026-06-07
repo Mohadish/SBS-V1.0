@@ -34,7 +34,7 @@ import { ensureHardwareInstanceObject3D } from './hardware-templates.js'; // V0.
 import { createStep, createEmptySnapshot } from '../core/schema.js';
 import { parseAnimation, resolveAnimationString } from './animation.js';
 import {
-  stageInsertActors, runInsertReposition, runInsertAssemble,
+  stageInsertActors, runInsertReposition, runInsertPause, runInsertAssemble,
   showInsertTags, showInsertTrajectory,
   finalizeInsertActors, clearPreInstall, findActorsForStep,
 } from './hardware-insert-anim.js'; // V0.2.22.57 — screw stage/reposition/assemble + tag/trajectory
@@ -739,7 +739,9 @@ class StepManager {
       if (_stagedActorIds.size) {
         showInsertTags();
         showInsertTrajectory();
-        insertSimP = runInsertReposition(easeFn).then(() => runInsertAssemble(objDur, easeFn));
+        insertSimP = runInsertReposition(easeFn)
+          .then(() => runInsertPause())
+          .then(() => runInsertAssemble(objDur, easeFn));
       }
 
       // OFFLINE-EXPORT FIX: in simultaneous mode (no animation preset),
@@ -1123,7 +1125,9 @@ class StepManager {
           // over the assemble.
           showInsertTrajectory();
           phasePromises.push(
-            runInsertReposition(easeFn).then(() => runInsertAssemble(durationMs, easeFn)),
+            runInsertReposition(easeFn)
+              .then(() => runInsertPause())
+              .then(() => runInsertAssemble(durationMs, easeFn)),
           );
         }
       }
@@ -1266,7 +1270,9 @@ class StepManager {
       insertHandled = true;
       showInsertTrajectory();
       fallbackPromises.push(
-        runInsertReposition(easeFn).then(() => runInsertAssemble(fallbackObj, easeFn)),
+        runInsertReposition(easeFn)
+          .then(() => runInsertPause())
+          .then(() => runInsertAssemble(fallbackObj, easeFn)),
       );
     }
 
