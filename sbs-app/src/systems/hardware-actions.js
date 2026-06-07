@@ -405,9 +405,10 @@ export function setInstanceWashers(nodeIds, washers) {
       id,
       washers: { ...(n.washers || { count: 0, spring: false }) },
       xf: {
-        localOffset:      [...(n.localOffset      || [0, 0, 0])],
-        localQuaternion:  [...(n.localQuaternion  || [0, 0, 0, 1])],
-        orientationSteps: [...(n.orientationSteps || [0, 0, 0])],
+        baseLocalPosition: [...(n.baseLocalPosition || [0, 0, 0])],  // the HOME we shift
+        localOffset:       [...(n.localOffset       || [0, 0, 0])],
+        localQuaternion:   [...(n.localQuaternion   || [0, 0, 0, 1])],
+        orientationSteps:  [...(n.orientationSteps  || [0, 0, 0])],
       },
     });
   }
@@ -450,10 +451,11 @@ export function setInstanceWashers(nodeIds, washers) {
       for (const entry of before) {
         const n = (state.get('nodeById') || buildNodeMap(root)).get(entry.id);
         if (!n) continue;
-        n.washers          = { ...entry.washers };
-        n.localOffset      = [...entry.xf.localOffset];
-        n.localQuaternion  = [...entry.xf.localQuaternion];
-        n.orientationSteps = [...entry.xf.orientationSteps];
+        n.washers           = { ...entry.washers };
+        n.baseLocalPosition = [...entry.xf.baseLocalPosition];   // restore the HOME
+        n.localOffset       = [...entry.xf.localOffset];
+        n.localQuaternion   = [...entry.xf.localQuaternion];
+        n.orientationSteps  = [...entry.xf.orientationSteps];
         const mesh = ensureHardwareInstanceObject3D(n);
         if (mesh) {
           const parent = mesh.parent ?? steps.object3dById?.get(_findParent(root, entry.id)?.id);
@@ -801,23 +803,33 @@ function _setInstancePoseRaw(node, obj, worldPos, worldQuat) {
 }
 
 /**
- * Slide the screw along its OWN axis by `deltaThicknessLocal` mm (local
- * units, × world scale internally) — used to keep the washer-stack bottom
- * on the surface when washers are added/removed. The surface point stays
- * put; the head translates out (add) or in (remove).
+ * Slide the screw along its OWN axis by `deltaThicknessLocal` mm to keep the
+ * washer-stack bottom on the surface when washers are added/removed.
+ *
+ * This is a HOME-POSITION (base) update, NOT a per-step move: a washer
+ * count change is structural, so it must affect EVERY step. We shift the
+ * node's baseLocalPosition (the global home, shared by all steps — per-step
+ * snapshots only store localOffset deltas), so the change cascades "from
+ * home" across all steps while each step's own animation delta is preserved.
  */
 function _compensateWasherShift(node, obj, deltaThicknessLocal) {
   const T = window.THREE;
   if (!T || !node || !obj || !deltaThicknessLocal) return;
-  obj.updateMatrixWorld(true);
+  obj.updateWorldMatrix(true, false);   // refresh obj + ancestor matrices
   const sc = new T.Vector3();
   obj.getWorldScale(sc);
-  const axis   = _screwAxisWorld(obj);
-  const newPos = new T.Vector3();
-  obj.getWorldPosition(newPos).addScaledVector(axis, deltaThicknessLocal * (sc.x || 1));
-  const q = new T.Quaternion();
-  obj.getWorldQuaternion(q);
-  _setInstancePoseRaw(node, obj, newPos, q);
+  const axis = _screwAxisWorld(obj);
+  // New world ORIGIN, then back to a parent-local point.
+  const newWorld = new T.Vector3();
+  obj.getWorldPosition(newWorld).addScaledVector(axis, deltaThicknessLocal * (sc.x || 1));
+  const parent   = obj.parent;
+  const newLocal = parent ? parent.worldToLocal(newWorld.clone()) : newWorld.clone();
+  // base = newLocalPos − per-step localOffset (the rendered pos is base +
+  // localOffset when moveEnabled), so base + delta lands the screw at the
+  // compensated spot on this step AND every other step.
+  const lo = (node.moveEnabled === false) ? [0, 0, 0] : (node.localOffset || [0, 0, 0]);
+  node.baseLocalPosition = [newLocal.x - lo[0], newLocal.y - lo[1], newLocal.z - lo[2]];
+  applyNodeTransformToObject3D(node, obj, true);
 }
 
 /**
