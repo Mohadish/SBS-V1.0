@@ -1275,7 +1275,7 @@ class GizmoController {
     // generic parent frame would show world axes when the parent is the
     // identity Hardware folder, so LOCAL mode "looked like world" until the
     // user toggled to pivot. Use the object's live world quaternion.
-    if (this._node.type === 'hardwareInstance') {
+    if (this._node.type === 'hardwareInstance' || this._node.type === 'hardwareNut') {
       const T = window.THREE;
       const q = new T.Quaternion();
       this._obj3d.getWorldQuaternion(q);

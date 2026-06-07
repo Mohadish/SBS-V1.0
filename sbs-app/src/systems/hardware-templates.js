@@ -18,7 +18,7 @@
 import { state }                        from '../core/state.js';
 import { applyNodeTransformToObject3D } from '../core/transforms.js';
 import { materials }                    from './materials.js';
-import { generateScrewMesh }            from './hardware-generator.js';
+import { generateScrewMesh, generateNutMesh } from './hardware-generator.js';
 
 // ─── Template lookup ────────────────────────────────────────────────────────
 
@@ -110,6 +110,45 @@ export function ensureHardwareInstanceObject3D(node) {
 
   // Register with materials so color presets apply and visibility
   // transitions see this node.
+  materials?.registerMesh?.(node.id, mesh);
+  return mesh;
+}
+
+/**
+ * Build or reuse the THREE.Mesh for a hardware NUT node (V0.2.22.78). The
+ * nut's geometry is derived from its bolt template's diameter, so editing
+ * the bolt re-keys and rebuilds the nut. Returns null if the bolt template
+ * is missing. Mirrors ensureHardwareInstanceObject3D.
+ */
+export function ensureHardwareNutObject3D(node) {
+  if (!node || node.type !== 'hardwareNut') return null;
+  const tpl = _lookupTemplate(node.boltTemplateId);
+  if (!tpl) return null;
+  const D   = Number(tpl.params?.diameter) || 4;
+  const sig = `nut|${D}`;
+
+  const existing = node.object3d;
+  if (existing && existing.userData?.hwBuildKey === sig) {
+    materials?.registerMesh?.(node.id, existing);
+    return existing;
+  }
+  if (existing) {
+    if (existing.parent) existing.parent.remove(existing);
+    existing.geometry?.dispose?.();
+    existing.material?.dispose?.();
+    node.object3d = null;
+  }
+
+  let mesh;
+  try { mesh = generateNutMesh({ diameter: D }); }
+  catch (e) { console.warn('[hardware] nut build failed:', e?.message); return null; }
+  if (!mesh) return null;
+  mesh.name = node.name || 'Nut';
+  mesh.userData.meshNodeId         = node.id;
+  mesh.userData.nodeId             = node.id;
+  mesh.userData.hardwareInstanceId = node.id;
+  mesh.userData.hwBuildKey         = sig;
+  node.object3d = mesh;
   materials?.registerMesh?.(node.id, mesh);
   return mesh;
 }

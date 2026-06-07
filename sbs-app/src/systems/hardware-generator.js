@@ -109,6 +109,51 @@ export function generateScrewParts({ diameter, length, headType, driveStyle }, w
   return { screw, washers: washerEntries };
 }
 
+/**
+ * Procedural HEX NUT, driven by a bolt's diameter (V0.2.22.78).
+ *
+ *   - Outer = hex prism, circumscribed radius 0.866·D (same as the bolt's
+ *     hex head — `_headParams('hex')`).
+ *   - Through-hole = clearance bore, radius D×0.55 (same as the washers),
+ *     so the bolt passes cleanly through and everything lines up.
+ *   - Height ≈ 0.8·D (standard hex-nut proportion).
+ *
+ * Centred on its own origin (y ∈ [−h/2, +h/2]) so the nut node's transform
+ * places the centre — the caller drops the home pose at the shank tip.
+ * Flat-shaded to match the rest of the hardware.
+ */
+export function generateNutMesh({ diameter }) {
+  const T = window.THREE;
+  if (!T) throw new Error('THREE not loaded');
+  const D       = Math.max(0.5, Number(diameter) || 4);
+  const outerR  = 0.866 * D;     // hex circumscribed radius (= hex head)
+  const innerR  = D * 0.55;      // clearance hole (= washers)
+  const height  = 0.8 * D;
+
+  const shape = new T.Shape(_hexPath2D(outerR));
+  shape.holes = [new T.Path(_circlePath2D(innerR, 32))];
+  const geom = new T.ExtrudeGeometry(shape, { depth: height, bevelEnabled: false, steps: 1 });
+  geom.rotateX(Math.PI / 2);          // extrude along −Y (top face at y=0)
+  geom.translate(0, height / 2, 0);   // centre at y=0
+
+  const flat = geom.toNonIndexed();
+  flat.computeVertexNormals();
+  const mesh = new T.Mesh(flat, _defaultHardwareMaterial());
+  mesh.name = 'nut';
+  return mesh;
+}
+
+/** Hexagon outline (point-up) as Vector2 path points, circumscribed R. */
+function _hexPath2D(R) {
+  const T = window.THREE;
+  const pts = [];
+  for (let i = 0; i < 6; i++) {
+    const a = (i / 6) * Math.PI * 2 + Math.PI / 6;
+    pts.push(new T.Vector2(Math.cos(a) * R, Math.sin(a) * R));
+  }
+  return pts;
+}
+
 function _defaultHardwareMaterial() {
   const T = window.THREE;
   return new T.MeshStandardMaterial({

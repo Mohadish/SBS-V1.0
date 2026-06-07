@@ -27,10 +27,10 @@ export const SCHEMA_VERSIONS = {
   screen:     1,
 };
 
-export const APP_VERSION  = 'V0.2.22.77';
+export const APP_VERSION  = 'V0.2.22.78';
 // Format: YYYY-MM-DD. Bump along with APP_VERSION on every build worth
 // labelling so the File tab shows you're running the expected slice.
-export const APP_RELEASED = '2026-06-06';
+export const APP_RELEASED = '2026-06-07';
 
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -507,6 +507,46 @@ export function createHardwareInstanceNode(overrides = {}) {
       pauseBefore: null, pauseBeforeMs: null,
       trajectory: null, lineThickness: null, lineGap: null, lineColor: null,
     },
+
+    ...overrides,
+  };
+}
+
+/**
+ * A hex NUT, a CHILD of a bolt (hardwareInstance). V0.2.22.78.
+ *
+ * The nut is driven by the bolt (renders under the bolt's mesh, so it
+ * inherits the bolt's world transform) but carries its OWN per-step
+ * transform / visibility / colour. Its geometry is derived from the bolt's
+ * diameter via `boltTemplateId` (so it updates when the bolt's template
+ * changes). It cannot be re-parented out of its bolt.
+ */
+export function createHardwareNutNode(overrides = {}) {
+  return {
+    id:           generateId('hwNut'),
+    name:         '',
+    type:         'hardwareNut',
+    localVisible: true,
+    archived:     false,
+    children:     [],
+
+    // Drives geometry (hole + hex size) from the parent bolt's template.
+    boltTemplateId: null,
+
+    // Transforms — same shape as every transform node so the gizmo works.
+    localOffset:        [0, 0, 0],
+    localQuaternion:    [0, 0, 0, 1],
+    orientationSteps:   [0, 0, 0],
+    baseLocalPosition:  [0, 0, 0],
+    baseLocalQuaternion:[0, 0, 0, 1],
+    baseLocalScale:     [1, 1, 1],
+    pivotLocalOffset:   [0, 0, 0],
+    pivotLocalQuaternion:[0, 0, 0, 1],
+    pivotEnabled:       false,
+    moveEnabled:        true,
+    rotateEnabled:      true,
+
+    colorPresetId: null,
 
     ...overrides,
   };

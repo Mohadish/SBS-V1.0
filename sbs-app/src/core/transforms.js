@@ -482,7 +482,8 @@ export function isTransformNode(node) {
   return node.type === 'model'
       || node.type === 'folder'
       || node.type === 'flatShape'
-      || node.type === 'hardwareInstance';   // V0.2.22.38 — procedural fasteners
+      || node.type === 'hardwareInstance'    // V0.2.22.38 — procedural fasteners
+      || node.type === 'hardwareNut';        // V0.2.22.78 — bolt-driven nut
 }
 
 

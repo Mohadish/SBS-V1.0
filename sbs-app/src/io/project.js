@@ -1045,6 +1045,27 @@ export function applySpecFieldsToNodes(specNode, nodeById, parentSpec = null) {
     return;
   }
 
+  // V0.2.22.78 — hardware nuts: a child of their bolt (hardwareInstance).
+  // Same re-attach story; the THREE.Mesh is rebuilt by steps.js's
+  // rebuildFromTreeSpec (ensureHardwareNutObject3D) on the next activation.
+  if (specNode.type === 'hardwareNut') {
+    const parentId  = parentSpec?.id ?? null;
+    const parentLive = parentId ? nodeById.get(parentId) : null;
+    if (parentLive) {
+      const exists = (parentLive.children || []).some(c => c.id === specNode.id);
+      if (!exists) {
+        const live = {
+          ...specNode,
+          object3d: null,                  // rebuilt lazily
+          children: [],
+        };
+        parentLive.children = [...(parentLive.children || []), live];
+        nodeById.set(live.id, live);
+      }
+    }
+    return;
+  }
+
   const live = nodeById.get(specNode.id);
   if (live) {
     live.name         = specNode.name        || live.name;

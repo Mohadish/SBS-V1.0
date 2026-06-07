@@ -2167,6 +2167,24 @@ canvas.addEventListener('contextmenu', e => {
   const multiSet = (multiIds instanceof Set) ? multiIds : new Set();
   const allMultiHw = multiSet.size > 1
     && [...multiSet].every(id => nodeById?.get(id)?.type === 'hardwareInstance');
+  if (node?.type === 'hardwareNut') {
+    items.push({
+      label: '📋 Copy step pose',
+      action: () => actions.copyInstanceStepPose(node.id),
+    });
+    items.push({
+      label: '📥 Paste step pose',
+      disabled: !actions.hasInstancePoseClipboard(),
+      action: () => actions.pasteInstanceStepPose(node.id),
+    });
+    items.push({
+      label: '🗑 Delete nut',
+      action: () => {
+        import('./systems/hardware-actions.js').then(hw => hw.deleteNut(node.id));
+      },
+    });
+    items.push({ label: '─', disabled: true });
+  }
   if (node?.type === 'hardwareInstance') {
     items.push({
       label: '🔩 Duplicate (same template)',
@@ -2180,6 +2198,12 @@ canvas.addEventListener('contextmenu', e => {
       action: () => {
         import('./ui/sidebar-left.js').then(sb =>
           sb.editHardwareTemplate(node.templateId));
+      },
+    });
+    items.push({
+      label: '🔩 Add nut',
+      action: () => {
+        import('./systems/hardware-actions.js').then(hw => hw.createNutForBolt(node.id));
       },
     });
     // V0.2.22.61 — re-align a placed nut. Surface: click a face. 3-point:

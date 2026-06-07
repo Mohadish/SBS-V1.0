@@ -32,6 +32,7 @@ import { materials }                    from './materials.js';
 import {
   createHardwareTemplate,
   createHardwareInstanceNode,
+  createHardwareNutNode,
   createNode,
   generateId,
 }                                       from '../core/schema.js';
@@ -40,6 +41,7 @@ import { sceneCore }                    from '../core/scene.js';
 import { buildNodeMap }                 from '../core/nodes.js';
 import {
   ensureHardwareInstanceObject3D,
+  ensureHardwareNutObject3D,
   rebuildHardwareInstancesOfTemplate,
   disposeHardwareInstance,
 }                                       from './hardware-templates.js';
@@ -637,6 +639,109 @@ export function duplicateInstance(nodeId) {
   state.emit('change:treeData', root);
   _pushPlaceInstanceUndo(copy.id, parent.id, copy, `Duplicate ${src.name || 'hardware'}`);
   return copy;
+}
+
+// ─── Nuts (V0.2.22.78) ────────────────────────────────────────────────────────
+// A nut is a CHILD of a bolt instance — driven by the bolt (rendered under
+// the bolt's mesh) but with its own transform / visibility / colour. Created
+// manually from the bolt's right-click; lives from step 0.
+
+/**
+ * Create a hex nut on `boltId` (a hardwareInstance). Home pose = the shank
+ * tip; geometry derives from the bolt's diameter. Exists on every step.
+ */
+export function createNutForBolt(boltId) {
+  const root = state.get('treeData');
+  if (!root) return null;
+  const nodeById = state.get('nodeById') || buildNodeMap(root);
+  const bolt = nodeById.get(boltId);
+  if (!bolt || bolt.type !== 'hardwareInstance') return null;
+
+  const tpl = (state.get('hardwareTemplates') || []).find(t => t.id === bolt.templateId);
+  const L = Math.max(1, Number(tpl?.params?.length) || 20);
+
+  const nut = createHardwareNutNode({
+    boltTemplateId: bolt.templateId,
+    name: 'Nut',
+    baseLocalPosition: [0, -L, 0],   // HOME at the shank tip (bolt origin = head)
+  });
+
+  bolt.children = [...(bolt.children || []), nut];
+  state.setState({ nodeById: buildNodeMap(root), treeData: root });
+
+  const mesh = ensureHardwareNutObject3D(nut);
+  if (mesh) {
+    const boltObj = steps.object3dById?.get(bolt.id) ?? sceneCore.rootGroup;
+    boltObj.add(mesh);                       // render UNDER the bolt → bolt-driven
+    steps.object3dById.set(nut.id, mesh);
+    applyNodeTransformToObject3D(nut, mesh, true);
+  }
+  _assignHardwareDefault(nut.id);            // tint like the rest of the hardware
+
+  // Exist from step 0 — append the nut under the bolt in every step snapshot.
+  steps.injectHardwareInstanceIntoAllSteps?.(nut, bolt);
+
+  state.markDirty?.();
+  state.emit('change:treeData', root);
+
+  const snap = JSON.parse(JSON.stringify({ ...nut, object3d: null, children: [] }));
+  undoManager.push('Add nut',
+    () => _nutRemove(nut.id),
+    () => _nutRecreate(snap, bolt.id));
+  return nut;
+}
+
+/** Delete a nut (absolute removal). Undoable. */
+export function deleteNut(nutId) {
+  const root = state.get('treeData');
+  const nodeById = state.get('nodeById') || buildNodeMap(root);
+  const nut = nodeById.get(nutId);
+  if (!nut || nut.type !== 'hardwareNut') return;
+  const parent = _findParent(root, nutId);
+  if (!parent) return;
+  const snap = JSON.parse(JSON.stringify({ ...nut, object3d: null, children: [] }));
+  _nutRemove(nutId);
+  state.markDirty?.();
+  undoManager.push('Delete nut',
+    () => _nutRecreate(snap, parent.id),
+    () => _nutRemove(nutId));
+}
+
+function _nutRemove(nutId) {
+  const root = state.get('treeData');
+  const parent = _findParent(root, nutId);
+  if (parent) {
+    parent.children = (parent.children || []).filter(c => {
+      if (c.id === nutId) {
+        const m = c.object3d;
+        if (m?.parent) m.parent.remove(m);
+        m?.geometry?.dispose?.();
+        steps.object3dById?.delete?.(nutId);
+        return false;
+      }
+      return true;
+    });
+  }
+  state.setState({ nodeById: buildNodeMap(root), treeData: root });
+  state.emit('change:treeData', root);
+}
+
+function _nutRecreate(snap, boltId) {
+  const root = state.get('treeData');
+  const bolt = (state.get('nodeById') || buildNodeMap(root)).get(boltId);
+  if (!bolt) return;
+  const fresh = { ...snap, children: [], object3d: null };
+  bolt.children = [...(bolt.children || []), fresh];
+  state.setState({ nodeById: buildNodeMap(root), treeData: root });
+  const mesh = ensureHardwareNutObject3D(fresh);
+  if (mesh) {
+    const boltObj = steps.object3dById?.get(bolt.id) ?? sceneCore.rootGroup;
+    boltObj.add(mesh);
+    steps.object3dById.set(fresh.id, mesh);
+    applyNodeTransformToObject3D(fresh, mesh, true);
+  }
+  _assignHardwareDefault(fresh.id);
+  state.emit('change:treeData', root);
 }
 
 // ─── Helpers ────────────────────────────────────────────────────────────────

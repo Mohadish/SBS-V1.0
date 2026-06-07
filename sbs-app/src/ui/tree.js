@@ -943,6 +943,28 @@ function _buildContextMenuItems(node) {
     });
   }
 
+  // ── Hardware nut (V0.2.22.78) — bolt-driven child. Transform/gizmo come
+  // from the generic transform-node menu; here we add copy-pose + delete.
+  if (count === 1 && node.type === 'hardwareNut') {
+    items.push({
+      label: '📋 Copy step pose',
+      action: () => actions.copyInstanceStepPose(node.id),
+    });
+    items.push({
+      label: '📥 Paste step pose',
+      disabled: !actions.hasInstancePoseClipboard(),
+      action: () => actions.pasteInstanceStepPose(node.id),
+    });
+    items.push({ separator: true });
+    items.push({
+      label: '🗑 Delete nut',
+      action: () => {
+        import('../systems/hardware-actions.js').then(hw => hw.deleteNut(node.id));
+      },
+    });
+    items.push({ separator: true });
+  }
+
   // ── Hardware instance — duplicate, edit template, delete (V0.2.22.38+44)
   if (count === 1 && node.type === 'hardwareInstance') {
     items.push({
@@ -955,6 +977,14 @@ function _buildContextMenuItems(node) {
     items.push({
       label: '🔩 Edit template (affects all instances)…',
       action: () => editHardwareTemplate(node.templateId),
+    });
+    // V0.2.22.78 — add a bolt-driven nut (lives from step 0, child of the
+    // bolt; position/rotate/hide it manually).
+    items.push({
+      label: '🔩 Add nut',
+      action: () => {
+        import('../systems/hardware-actions.js').then(hw => hw.createNutForBolt(node.id));
+      },
     });
     // Copy / paste the active step's pose (translation + rotation +
     // visibility) — cross-instance allowed. Same as flatShape/mesh.

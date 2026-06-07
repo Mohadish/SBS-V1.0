@@ -30,7 +30,7 @@ import * as cablesSystem            from './cables.js';   // C1: per-step cable 
 import * as cablesRender            from './cables-render.js';   // H1: cable phase animations
 import * as overlaySystem           from './overlay.js';   // H2: overlay phase fade-in / fade-out
 import { ensureFlatShapeObject3D }   from './flat-shapes.js'; // M1: 2D shapes in 3D — build mesh on demand
-import { ensureHardwareInstanceObject3D } from './hardware-templates.js'; // V0.2.22.38: procedural hardware — build mesh on demand
+import { ensureHardwareInstanceObject3D, ensureHardwareNutObject3D } from './hardware-templates.js'; // V0.2.22.38: procedural hardware — build mesh on demand
 import { createStep, createEmptySnapshot } from '../core/schema.js';
 import { parseAnimation, resolveAnimationString } from './animation.js';
 import {
@@ -2891,6 +2891,32 @@ function rebuildFromTreeSpec(spec, nodeById, object3dById, parentObject3d) {
         obj.userData.nodeId             = node.id;
       }
     }
+
+  } else if (specType === 'hardwareNut') {
+    // V0.2.22.78 — bolt-driven nut. Geometry derives from the bolt's
+    // diameter; the mesh attaches UNDER the bolt's mesh (parentObject3d is
+    // the bolt — see childParent below) so it inherits the bolt transform.
+    node = nodeById.get(spec.id);
+    if (!node) return null;
+    node.name           = spec.name || node.name;
+    node.localVisible   = spec.localVisible !== false;
+    node.boltTemplateId = spec.boltTemplateId || node.boltTemplateId || null;
+    node.children       = [];
+    const obj = ensureHardwareNutObject3D(node);
+    if (obj) {
+      node.object3d = obj;
+      object3dById.set(spec.id, obj);
+      if (parentObject3d && obj.parent !== parentObject3d) {
+        if (obj.parent) obj.parent.remove(obj);
+        parentObject3d.add(obj);
+      }
+      if (obj.userData) {
+        obj.userData.hardwareInstanceId = node.id;
+        obj.userData.meshNodeId         = node.id;
+        obj.userData.nodeId             = node.id;
+      }
+    }
+
   } else {
     // scene root or unknown — pass through; use node.object3d as parent for children
     node = nodeById.get(spec.id);
@@ -2910,8 +2936,12 @@ function rebuildFromTreeSpec(spec, nodeById, object3dById, parentObject3d) {
   //     recurses; childParent there is irrelevant but kept consistent.
   //   - hardwareInstance is leaf-only (V0.2.22.38), same as flatShape.
   let childParent;
-  if (specType === 'flatShape' || specType === 'hardwareInstance') {
-    childParent = parentObject3d;
+  if (specType === 'flatShape' || specType === 'hardwareNut') {
+    childParent = parentObject3d;   // leaf — no meaningful Three.js children
+  } else if (specType === 'hardwareInstance') {
+    // V0.2.22.78 — a bolt's nut child renders UNDER the bolt's mesh so it
+    // inherits the bolt's world transform (bolt-driven).
+    childParent = object3dById.get(spec.id) ?? node?.object3d ?? parentObject3d;
   } else {
     childParent = object3dById.get(spec.id) ?? node?.object3d ?? parentObject3d;
   }
