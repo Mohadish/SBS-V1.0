@@ -288,17 +288,16 @@ initCables();
 initCableRender();
 setupUndoKeyboard();
 
-// V0.2.22.60 — static "include on previous step" hardware tags. Rebuild
-// the spec-name labels for any insertion actor whose insert step is the
-// NEXT step (group-aware). Hooked on step:activate (fires EARLY, before
-// the transition animation, and unconditionally — so the tag is present
-// throughout an incoming camera/object move AND survives same-step
-// re-activation) and on step:applied (final settle). The per-frame tick
-// owns visibility + position, so the label stays glued like a note.
+// V0.2.22.65 — pre-install preview on the step BEFORE an insertion. For
+// every tagPrev actor whose insert step is next, the nut is shown EXPLODED
+// (pre-install config) with per-part tags. Hooked on step:activate (fires
+// EARLY + unconditionally, so it survives same-step re-activation and rides
+// an incoming camera/object move) and on step:applied (final settle). The
+// per-frame tick keeps the merged mesh hidden and the tags glued.
 import('./systems/hardware-insert-anim.js').then(hw => {
-  state.on('step:activate', (id) => hw.refreshStaticTags(id));
-  state.on('step:applied',  ()   => hw.refreshStaticTags(state.get('activeStepId')));
-  hw.refreshStaticTags(state.get('activeStepId'));
+  state.on('step:activate', (id) => hw.refreshPreInstall(id));
+  state.on('step:applied',  ()   => hw.refreshPreInstall(state.get('activeStepId')));
+  hw.refreshPreInstall(state.get('activeStepId'));
 }).catch(() => {});
 
 // Eager-load user-level prefs so subsequent UI can read them synchronously.

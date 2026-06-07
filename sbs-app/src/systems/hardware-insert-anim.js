@@ -34,7 +34,7 @@
 import { state }       from '../core/state.js';
 import { sceneCore }   from '../core/scene.js';
 import * as clock      from '../core/clock.js';
-import { generateScrewParts, washerStackFor } from './hardware-generator.js';
+import { generateScrewParts } from './hardware-generator.js';
 import { resolveInsertAnim }  from './hardware-defaults.js';
 
 // Staged actors, keyed by node id:
@@ -104,15 +104,60 @@ function _washerLabel(kind, index, washerNames) {
   return kind === 'spring' ? 'Spring washer' : 'Flat washer';
 }
 
-// ─── Static prev-step tags (V0.2.22.60) ─────────────────────────────────────
-// When an insertion actor has tagName + tagPrev, its name label also shows
-// STATICALLY on the step immediately BEFORE the insertion step (not just
-// during the animation). refreshStaticTags() is called on every step
-// settle; it rebuilds the set of static tags for the active step.
-// nodeId → { mergedMesh, items:[{ div, piece, localY, outerRLocal }] }
-// (item 0 = screw label, then one per washer at its own height)
-const _staticTags = new Map();
-let _staticTickUnsub = null;
+/**
+ * Explode offsets along local +Y for [screw, ...washers] (V0.2.22.53.3):
+ *   bottom washer → 1·X … against-head washer → W·X
+ *   screw → L + (W+1)·X  (tip clears the whole washer stack)
+ */
+function _explodeOffsets(tpl, eff, elemCount) {
+  const L = Math.max(0.5, Number(tpl.params?.length) || 20);
+  const W = elemCount - 1;
+  const X = Math.max(1, Number(eff.distance) || 20);
+  return Array.from({ length: elemCount }, (_, j) => {
+    if (j === 0) return L + (W + 1) * X;
+    const rankFromBottom = W - (j - 1);
+    return rankFromBottom * X;
+  });
+}
+
+/**
+ * Build the per-part tag items (screw + one per washer). Each anchors to
+ * its OWN piece at a local-Y offset so washers label at their real height.
+ * Shared by the live insertion staging and the prev-step pre-install
+ * preview. Returns [] when the tag is off.
+ */
+function _buildTagItems(tpl, eff, parts, elems) {
+  if (!eff.tagName) return [];
+  const D = Math.max(0.5, Number(tpl.params?.diameter) || 4);
+  const items = [{
+    div: _makeTagDiv(tpl.name || `M${tpl.params?.diameter}×${tpl.params?.length}`, eff.tagSize, eff.tagColor),
+    piece: elems[0], localY: 0,
+    outerRLocal: _headOuterRadius(tpl.params?.headType, D),
+  }];
+  parts.washers.forEach((w, i) => {
+    const piece = elems[i + 1];   // elems = [screw, ...washer meshes]
+    if (!piece) return;
+    items.push({
+      div: _makeTagDiv(_washerLabel(w.kind, i, tpl.washerNames), eff.tagSize, eff.tagColor),
+      piece, localY: w.yTop - w.height / 2,
+      outerRLocal: w.outerR,
+    });
+  });
+  return items;
+}
+
+// ─── Pre-install preview (prev step) — V0.2.22.65 ────────────────────────────
+// When an insertion actor has tagPrev ("also show on the step before
+// insertion") on, the step BEFORE its insert step shows the nut in its
+// PRE-INSTALL (exploded) configuration: the merged mesh is hidden and the
+// screw + each washer are shown as separate pieces spread along the axis,
+// at the nut's installed pose. Tags (if tagName) anchor to each separated
+// piece — so labels sit at the real washer positions, never overlapping.
+// On the insert step the live staging continues from this exploded state.
+//
+// nodeId → { group, elems:[Mesh], mergedMesh, tagItems:[{div,piece,localY,outerRLocal}] }
+const _preview = new Map();
+let _previewTickUnsub = null;
 
 /** All hardware instances flagged as insertion actors (any step). */
 function _allActors() {
@@ -165,58 +210,84 @@ function _insertPrevStepIds(insertStepId) {
   return [...out];
 }
 
-export function clearStaticTags() {
-  for (const t of _staticTags.values()) {
-    for (const it of (t.items || [])) {
+/** Tear down every pre-install preview: dispose pieces, remove tag DOM,
+ *  restore the merged mesh. (Geometry only — the material is shared.) */
+export function clearPreInstall() {
+  for (const p of _preview.values()) {
+    if (p.group?.parent) p.group.parent.remove(p.group);
+    for (const m of (p.elems || [])) m.geometry?.dispose?.();
+    for (const it of (p.tagItems || [])) {
       if (it.div?.parentNode) it.div.parentNode.removeChild(it.div);
     }
+    if (p.mergedMesh) p.mergedMesh.visible = true;   // un-hide the assembled nut
   }
-  _staticTags.clear();
-  if (_staticTickUnsub) { _staticTickUnsub(); _staticTickUnsub = null; }
+  _preview.clear();
+  if (_previewTickUnsub) { _previewTickUnsub(); _previewTickUnsub = null; }
 }
 
 /**
- * Rebuild the static prev-step tags for the given active step. For each
- * actor with tagName + tagPrev whose insert step is the NEXT step, show
- * a static label at the screw's current position.
+ * Rebuild the pre-install previews for the given active step. For each
+ * tagPrev actor whose insert step's prev-step === activeStepId, hide the
+ * merged mesh and show the exploded pieces (+ per-part tags) at the nut's
+ * installed pose. Static — the pieces don't animate here; the tick only
+ * re-asserts the hidden merged mesh, re-points the shared material, and
+ * positions the tags so they ride camera/object moves.
  */
-export function refreshStaticTags(activeStepId) {
-  clearStaticTags();
+export function refreshPreInstall(activeStepId) {
+  clearPreInstall();
   if (!activeStepId) return;
+  const T = window.THREE;
+  const root = sceneCore.rootGroup;
+  if (!T || !root) return;
   const tpls = state.get('hardwareTemplates') || [];
+
   for (const node of _allActors()) {
     const eff = resolveInsertAnim(node);
-    if (!eff.tagName || !eff.tagPrev) continue;
+    if (!eff.tagPrev) continue;                       // only when "show on prev step"
     const insertStep = node.insertAnim?.stepId;
     if (!insertStep) continue;
     if (!_insertPrevStepIds(insertStep).includes(activeStepId)) continue;
     const merged = node.object3d;
-    if (!merged) continue;                          // no mesh to anchor to
+    if (!merged || !merged.parent) continue;
     const tpl = tpls.find(t => t.id === node.templateId);
-    const txt = tpl?.name || node.name || 'hardware';
-    const D = Math.max(0.5, Number(tpl?.params?.diameter) || 4);
-    // The screw label + one label per washer. The merged mesh is the
-    // single piece; each item's localY places it along the screw axis
-    // (head at 0, washers descend). Visibility + position are owned
-    // per-frame by _positionStaticTags (note-like, no mid-move flicker).
-    const items = [{
-      div: _makeTagDiv(txt, eff.tagSize, eff.tagColor),
-      piece: merged, localY: 0,
-      outerRLocal: _headOuterRadius(tpl?.params?.headType, D),
-    }];
-    washerStackFor(tpl?.params || {}, node.washers).forEach((w, i) => {
-      items.push({
-        div: _makeTagDiv(_washerLabel(w.kind, i, tpl?.washerNames), eff.tagSize, eff.tagColor),
-        piece: merged, localY: w.yTop - w.height / 2,
-        outerRLocal: w.outerR,
-      });
+    if (!tpl) continue;
+
+    let parts;
+    try { parts = generateScrewParts(tpl.params || {}, node.washers || null); }
+    catch (e) { console.warn('[insert-anim] preview parts failed:', e?.message); continue; }
+
+    // Installed world pose of the nut (where it ends up after insertion).
+    merged.updateMatrixWorld(true);
+    const pos = new T.Vector3(), quat = new T.Quaternion(), scale = new T.Vector3();
+    merged.matrixWorld.decompose(pos, quat, scale);
+
+    const group = new T.Group();
+    group.name = 'sbs:insert-preview';
+    group.position.copy(pos);
+    group.quaternion.copy(quat);
+    group.scale.copy(scale);
+    root.add(group);
+
+    const elems = [parts.screw, ...parts.washers.map(w => w.mesh)];
+    const liveMat = Array.isArray(merged.material) ? merged.material[0] : merged.material;
+    const offsets = _explodeOffsets(tpl, eff, elems.length);
+    elems.forEach((m, i) => {
+      if (liveMat) m.material = liveMat;
+      m.position.y = offsets[i];        // exploded (pre-install) layout
+      group.add(m);
     });
-    _staticTags.set(node.id, { mergedMesh: merged, items });
+    merged.visible = false;             // the assembled mesh steps aside
+
+    _preview.set(node.id, {
+      group, elems, mergedMesh: merged,
+      tagItems: _buildTagItems(tpl, eff, parts, elems),
+    });
   }
-  if (_staticTags.size && !_staticTickUnsub) {
-    _staticTickUnsub = sceneCore.addTickHook(() => _positionStaticTags());
+
+  if (_preview.size && !_previewTickUnsub) {
+    _previewTickUnsub = sceneCore.addTickHook(() => _advancePreview());
   }
-  _positionStaticTags();
+  _advancePreview();
 }
 
 /**
@@ -262,7 +333,10 @@ export function stageInsertActors(actors, opts = {}) {
 
     const appearing = !!appearingIdSet?.has(node.id);
     const prev = fromWorld[node.id];
-    const needsReposition = !appearing && !!prev;
+    // tagPrev nuts were already shown EXPLODED at the installed pose on the
+    // previous step (the pre-install preview), so on the insert step they
+    // start exploded at the target too — no reposition, just assemble.
+    const needsReposition = !appearing && !!prev && !eff.tagPrev;
 
     const targetPos  = new T.Vector3(target.position[0], target.position[1], target.position[2]);
     const targetQuat = new T.Quaternion(target.quaternion[0], target.quaternion[1], target.quaternion[2], target.quaternion[3]);
@@ -290,17 +364,9 @@ export function stageInsertActors(actors, opts = {}) {
     const liveMat = Array.isArray(merged.material) ? merged.material[0] : merged.material;
     for (const m of elems) { if (liveMat) m.material = liveMat; group.add(m); }
 
-    // Explode offsets along local +Y (V0.2.22.53.3 layout):
-    //   bottom washer → 1·X … against-head washer → W·X (no swap)
-    //   screw → L + (W+1)·X   → TIP at (W+1)·X (= 3X for two washers)
-    const L = Math.max(0.5, Number(tpl.params?.length) || 20);
-    const W = elems.length - 1;
-    const X = Math.max(1, Number(eff.distance) || 20);
-    const offsets = elems.map((_, j) => {
-      if (j === 0) return L + (W + 1) * X;
-      const rankFromBottom = W - (j - 1);
-      return rankFromBottom * X;
-    });
+    // Explode offsets along local +Y (shared with the pre-install preview).
+    const L = Math.max(0.5, Number(tpl.params?.length) || 20);   // for the trajectory line
+    const offsets = _explodeOffsets(tpl, eff, elems.length);
 
     // Initial piece positions:
     //   needsReposition → assembled (offset 0); the reposition phase
@@ -308,9 +374,6 @@ export function stageInsertActors(actors, opts = {}) {
     //   else → already exploded (offset); assemble brings them to 0.
     merged.visible = false;
     elems.forEach((m, i) => { m.position.y = needsReposition ? 0 : offsets[i]; });
-
-    // Screw diameter — drives the head-rim radius for tag anchoring.
-    const D = Math.max(0.5, Number(tpl.params?.diameter) || 4);
 
     const repMs = Number(eff.repositionMs);
     const entry = {
@@ -321,40 +384,18 @@ export function stageInsertActors(actors, opts = {}) {
       lineObj: null, lineShown: false,
     };
 
-    // ── Spec-name tag — 2D screen-space label. Right edge anchored 10px
-    // left of the head's OUTER RIM (V0.2.22.58), vertically centred,
-    // horizontal. Font px from the note size presets.
+    // ── Spec-name + washer tags (per part). Anchored to each piece at a
+    // local-Y offset, so washers label at their real height.
     //
-    // Timing (V0.2.22.60): a screw that was already VISIBLE last step
-    // (needsReposition) shows its tag from the START of the transition —
-    // continuous with the prev-step tag, following the camera/object move
-    // the whole way. A screw APPEARING this step waits for the overlay
-    // block (showInsertTags) so the label doesn't float over a screw that
-    // hasn't faded in yet. Either way it hides when insertion completes.
+    // Timing: tagPrev nuts carry their tags in from the prev-step preview,
+    // so they show from the START of the transition and are removed at the
+    // `insert` block (hideInsertTags) — "remove the tags, THEN insert".
+    // A non-tagPrev screw that was visible last step also shows from the
+    // start; an APPEARING screw waits for the overlay block (showInsertTags)
+    // so the label doesn't float over a not-yet-faded-in screw.
     if (eff.tagName) {
-      // The screw label + one label per washer. Each item anchors to its
-      // OWN piece (the screw mesh, or that washer's mesh) at a local-Y
-      // offset, so washers label at their real height — same relative
-      // placement as the head tag. outerRLocal is the piece's rim radius
-      // (LOCAL; the per-frame tick multiplies by the live world scale).
-      const items = [];
-      const screwTxt = tpl.name || `M${tpl.params?.diameter}×${tpl.params?.length}`;
-      items.push({
-        div: _makeTagDiv(screwTxt, eff.tagSize, eff.tagColor),
-        piece: elems[0], localY: 0,
-        outerRLocal: _headOuterRadius(tpl.params?.headType, D),
-      });
-      parts.washers.forEach((w, i) => {
-        const piece = elems[i + 1];   // elems = [screw, ...washer meshes]
-        if (!piece) return;
-        items.push({
-          div: _makeTagDiv(_washerLabel(w.kind, i, tpl.washerNames), eff.tagSize, eff.tagColor),
-          piece, localY: w.yTop - w.height / 2,
-          outerRLocal: w.outerR,
-        });
-      });
-      entry.tagItems = items;
-      entry.tagShown = needsReposition;   // visible-last-step → show now
+      entry.tagItems = _buildTagItems(tpl, eff, parts, elems);
+      entry.tagShown = needsReposition || !!eff.tagPrev;
     }
 
     // ── Trajectory line — THICK dotted line (V0.2.22.58): a row of dash
@@ -412,6 +453,16 @@ export function showInsertTags() {
 }
 
 /**
+ * Hide the spec-name tags — called as the FIRST action of the `insert`
+ * block (timed by the animation string), so the tags are removed before
+ * the insertion motion runs ("remove the tags, THEN insert"). The tick
+ * hides every item next frame via tagShown=false.
+ */
+export function hideInsertTags() {
+  for (const s of _staged.values()) s.tagShown = false;
+}
+
+/**
  * Show the trajectory lines (called just before insertion). They fade
  * out over the assemble.
  */
@@ -425,9 +476,13 @@ export function showInsertTrajectory() {
  * ASSEMBLE — called when the insert phase fires. Moves the pieces from
  * exploded → final over durationMs. Opacity is owned by the visibility
  * channel (the pieces share the live material). Resolves on done.
+ *
+ * The tags are removed HERE, as the first act of the insertion (timed by
+ * the string's insert block): "remove the tags, THEN insert."
  */
 export function runInsertAssemble(durationMs, easeFn) {
   if (!_staged.size) return Promise.resolve();
+  hideInsertTags();
   return new Promise(resolve => {
     _assemble = { startMs: clock.now(), durationMs: Math.max(1, durationMs), easeFn, resolve };
   });
@@ -444,13 +499,13 @@ export function finalizeInsertActors() {
 }
 
 /**
- * Hard cancel — finalize the live animation AND drop any static prev-step
- * tags. Called at the top of activateStep, so the next step rebuilds its
- * own static tags via refreshStaticTags().
+ * Hard cancel — finalize the live animation AND tear down any prev-step
+ * pre-install preview. Called at the top of activateStep; the next step
+ * rebuilds its own preview via refreshPreInstall().
  */
 export function cancelInsertAnimations() {
   finalizeInsertActors();
-  clearStaticTags();
+  clearPreInstall();
 }
 
 // ─── Per-tick ───────────────────────────────────────────────────────────────
@@ -507,10 +562,9 @@ function _advance(now) {
       }
     }
     if (raw >= 1) {
-      // Insertion complete — the spec-name tags disappear now (tick hides
-      // every item next frame via tagShown=false).
+      // Insertion complete. Tags were already removed at the insert block
+      // (hideInsertTags); just drop the trajectory line and resolve.
       for (const s of _staged.values()) {
-        s.tagShown = false;
         if (s.lineObj) s.lineObj.visible = false;
       }
       const r = _assemble.resolve; _assemble = null; r?.();
@@ -590,49 +644,37 @@ function _positionTags() {
   }
 }
 
-function _positionStaticTags() {
+/**
+ * Per-frame upkeep for the pre-install previews: re-assert the merged mesh
+ * hidden, re-point each piece at the live (shared) material so colour
+ * changes follow, and position the per-part tags. The pieces are exploded
+ * and static, so the tags sit at the real washer heights — no stacking,
+ * no overlap.
+ */
+function _advancePreview() {
+  if (!_preview.size) return;
   const T = window.THREE;
   const cam = sceneCore.camera;
   const dom = sceneCore.renderer?.domElement;
-  if (!cam || !dom || !_staticTags.size) return;
+  // Keep the merged meshes hidden + materials in sync regardless of camera.
+  for (const p of _preview.values()) {
+    if (p.mergedMesh) {
+      p.mergedMesh.visible = false;
+      const liveMat = Array.isArray(p.mergedMesh.material)
+        ? p.mergedMesh.material[0] : p.mergedMesh.material;
+      if (liveMat) for (const m of p.elems) { if (m.material !== liveMat) m.material = liveMat; }
+    }
+  }
+  if (!cam || !dom) return;
   const rect = dom.getBoundingClientRect();
   const camRight = new T.Vector3();
   cam.matrixWorld.extractBasis(camRight, new T.Vector3(), new T.Vector3());
-  const wp = new T.Vector3();
-  const sc = new T.Vector3();
-  for (const t of _staticTags.values()) {
-    const items = t.items || [];
-    // Hide everything when the screw isn't visible on this step.
-    if (!t.mergedMesh?.visible) {
-      for (const it of items) if (it.div) it.div.style.display = 'none';
-      continue;
-    }
-    // On the previous step the nut is ASSEMBLED, so the head + washer
-    // anchors land almost on top of each other. Project them, then STACK
-    // the labels vertically (one under the other), right-aligned to clear
-    // the widest part — a parts-list that never overlaps (V0.2.22.63).
-    const placed = [];
-    let maxRim = 0;
-    for (const it of items) {
+  for (const p of _preview.values()) {
+    for (const it of (p.tagItems || [])) {
       if (!it.div) continue;
-      wp.set(0, it.localY || 0, 0);
-      it.piece.localToWorld(wp);
-      it.piece.getWorldScale(sc);
-      const a = _projectAnchor(wp, (it.outerRLocal || 0) * (sc.x || 1), rect, cam, camRight);
-      if (!a) { it.div.style.display = 'none'; continue; }
-      placed.push({ div: it.div, ...a });
-      if (a.rimPx > maxRim) maxRim = a.rimPx;
+      it.div.style.display = 'block';
+      _anchorPieceTag(it.div, it.piece, it.localY, it.outerRLocal, rect, cam, camRight);
     }
-    if (!placed.length) continue;
-    const head   = placed[0];
-    const rightX = head.cx - maxRim - 10;                              // clears widest washer
-    const lineH  = (parseFloat(head.div.style.fontSize) || 18) * 1.15;
-    placed.forEach((p, i) => {
-      p.div.style.display    = 'block';
-      p.div.style.visibility = 'visible';
-      p.div.style.left = `${rightX}px`;
-      p.div.style.top  = `${head.cy + i * lineH}px`;   // stacked downward
-    });
   }
 }
 
