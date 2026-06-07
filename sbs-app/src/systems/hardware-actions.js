@@ -521,7 +521,7 @@ export function setInsertAnimParams(nodeIds, patch = {}) {
   if (!nodeIds.length) return;
 
   const KEYS = ['distance', 'repositionMs', 'tagName', 'tagSize', 'tagColor',
-                'tagPrev', 'trajectory', 'lineThickness', 'lineGap', 'lineColor'];
+                'explodeBefore', 'trajectory', 'lineThickness', 'lineGap', 'lineColor'];
   const set = {};
   for (const k of KEYS) if (k in patch) set[k] = patch[k];   // null allowed
   if (!Object.keys(set).length) return;

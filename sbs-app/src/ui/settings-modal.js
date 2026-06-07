@@ -149,10 +149,13 @@ function _renderNutsTab(body) {
           style="width:48px;height:28px;margin-top:3px;margin-left:6px;padding:2px;border-radius:4px;cursor:pointer;vertical-align:middle;" />
       </label>
     </div>
-    <label style="display:flex;align-items:center;gap:8px;margin-top:8px;margin-left:24px;cursor:pointer;">
-      <input type="checkbox" id="_nt-tagprev" ${n.tagPrev ? 'checked' : ''} />
-      <span class="small">Also show on the step before insertion</span>
+    <label style="display:flex;align-items:center;gap:8px;margin-top:14px;cursor:pointer;">
+      <input type="checkbox" id="_nt-explode" ${n.explodeBefore ? 'checked' : ''} />
+      <span class="small">Display exploded before insertion</span>
     </label>
+    <div class="small muted" style="margin:2px 0 0 24px;font-size:10px;opacity:0.7;">
+      Shows the nut pulled apart (washers below the head) on every step before it's inserted.
+    </div>
 
     <label style="display:flex;align-items:center;gap:8px;margin-top:14px;cursor:pointer;">
       <input type="checkbox" id="_nt-traj" ${n.trajectory ? 'checked' : ''} />
@@ -181,14 +184,14 @@ function _renderNutsTab(body) {
       tagName:       body.querySelector('#_nt-tag').checked,
       tagSize:       body.querySelector('#_nt-size').value,
       tagColor:      body.querySelector('#_nt-tagcolor').value,
-      tagPrev:       body.querySelector('#_nt-tagprev').checked,
+      explodeBefore: body.querySelector('#_nt-explode').checked,
       trajectory:    body.querySelector('#_nt-traj').checked,
       lineThickness: Math.max(0.05, Number(body.querySelector('#_nt-thick').value) || 0.5),
       lineGap:       Math.max(0,    Number(body.querySelector('#_nt-gap').value)   || 2),
       lineColor:     body.querySelector('#_nt-color').value,
     } });
   };
-  for (const sel of ['#_nt-x','#_nt-ms','#_nt-tag','#_nt-size','#_nt-tagcolor','#_nt-tagprev','#_nt-traj','#_nt-thick','#_nt-gap','#_nt-color']) {
+  for (const sel of ['#_nt-x','#_nt-ms','#_nt-tag','#_nt-size','#_nt-tagcolor','#_nt-explode','#_nt-traj','#_nt-thick','#_nt-gap','#_nt-color']) {
     body.querySelector(sel)?.addEventListener('change', save);
   }
 }

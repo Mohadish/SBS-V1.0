@@ -146,9 +146,9 @@ function _buildTagItems(tpl, eff, parts, elems) {
   return items;
 }
 
-// ─── Pre-install preview (prev step) — V0.2.22.65 ────────────────────────────
-// When an insertion actor has tagPrev ("also show on the step before
-// insertion") on, the step BEFORE its insert step shows the nut in its
+// ─── Pre-install preview (V0.2.22.66) ────────────────────────────────────────
+// When an insertion actor has `explodeBefore` ("Display exploded before
+// insertion") on, EVERY step before its insert step shows the nut in its
 // PRE-INSTALL (exploded) configuration: the merged mesh is hidden and the
 // screw + each washer are shown as separate pieces spread along the axis,
 // at the nut's installed pose. Tags (if tagName) anchor to each separated
@@ -181,33 +181,13 @@ function _playableSteps() {
   );
 }
 
-/**
- * The set of step ids on which an insertion's prev-step tag should appear.
- *
- * Non-grouped insert step → the playable step immediately before it.
- *
- * GROUPED insert step → step groups chain-play as one unit: from the
- * top-level step BEFORE the group, a single forward arrow plays the head
- * and auto-chains through every sub-step (incl. the insertion). So the
- * natural "step before the insertion" is that pre-group top-level step —
- * mirroring StepsManager's own LEFT-arrow semantics. We also keep the
- * immediate predecessor, which covers click-resting on an earlier
- * sub-step inside an expanded group.
- */
-function _insertPrevStepIds(insertStepId) {
+/** True when `activeStepId` comes BEFORE `insertStepId` in playable order
+ *  (i.e. a pre-insertion step where the exploded preview should show). */
+function _isBeforeInsertStep(insertStepId, activeStepId) {
   const playable = _playableSteps();
-  const idx = playable.findIndex(s => s.id === insertStepId);
-  if (idx < 0) return [];
-  const out = new Set();
-  if (idx > 0) out.add(playable[idx - 1].id);     // immediate predecessor
-  const headId = playable[idx].groupId || null;    // sub-step → group head id
-  if (headId) {
-    const headIdx = playable.findIndex(s => s.id === headId);
-    for (let i = headIdx - 1; i >= 0; i--) {
-      if (!playable[i].groupId) { out.add(playable[i].id); break; }  // top-level
-    }
-  }
-  return [...out];
+  const insIdx = playable.findIndex(s => s.id === insertStepId);
+  const actIdx = playable.findIndex(s => s.id === activeStepId);
+  return insIdx >= 0 && actIdx >= 0 && actIdx < insIdx;
 }
 
 /** Tear down every pre-install preview: dispose pieces, remove tag DOM,
@@ -227,11 +207,12 @@ export function clearPreInstall() {
 
 /**
  * Rebuild the pre-install previews for the given active step. For each
- * tagPrev actor whose insert step's prev-step === activeStepId, hide the
- * merged mesh and show the exploded pieces (+ per-part tags) at the nut's
- * installed pose. Static — the pieces don't animate here; the tick only
- * re-asserts the hidden merged mesh, re-points the shared material, and
- * positions the tags so they ride camera/object moves.
+ * actor with `explodeBefore` on, on EVERY step before its insert step,
+ * hide the merged mesh and show the exploded pieces at the nut's installed
+ * pose. Per-part tags appear too when `tagName` is on. Static — the tick
+ * only re-asserts the hidden merged mesh, re-points the shared material,
+ * and positions the tags so they ride camera/object moves. (The nut shows
+ * only where it's visible, since the pieces share its live material.)
  */
 export function refreshPreInstall(activeStepId) {
   clearPreInstall();
@@ -243,10 +224,10 @@ export function refreshPreInstall(activeStepId) {
 
   for (const node of _allActors()) {
     const eff = resolveInsertAnim(node);
-    if (!eff.tagPrev) continue;                       // only when "show on prev step"
+    if (!eff.explodeBefore) continue;                 // only when "display exploded before"
     const insertStep = node.insertAnim?.stepId;
     if (!insertStep) continue;
-    if (!_insertPrevStepIds(insertStep).includes(activeStepId)) continue;
+    if (!_isBeforeInsertStep(insertStep, activeStepId)) continue;
     const merged = node.object3d;
     if (!merged || !merged.parent) continue;
     const tpl = tpls.find(t => t.id === node.templateId);
@@ -333,10 +314,10 @@ export function stageInsertActors(actors, opts = {}) {
 
     const appearing = !!appearingIdSet?.has(node.id);
     const prev = fromWorld[node.id];
-    // tagPrev nuts were already shown EXPLODED at the installed pose on the
-    // previous step (the pre-install preview), so on the insert step they
-    // start exploded at the target too — no reposition, just assemble.
-    const needsReposition = !appearing && !!prev && !eff.tagPrev;
+    // explodeBefore nuts were already shown EXPLODED at the installed pose
+    // on every step before this one, so on the insert step they start
+    // exploded at the target too — no reposition, just assemble.
+    const needsReposition = !appearing && !!prev && !eff.explodeBefore;
 
     const targetPos  = new T.Vector3(target.position[0], target.position[1], target.position[2]);
     const targetQuat = new T.Quaternion(target.quaternion[0], target.quaternion[1], target.quaternion[2], target.quaternion[3]);
@@ -387,15 +368,16 @@ export function stageInsertActors(actors, opts = {}) {
     // ── Spec-name + washer tags (per part). Anchored to each piece at a
     // local-Y offset, so washers label at their real height.
     //
-    // Timing: tagPrev nuts carry their tags in from the prev-step preview,
-    // so they show from the START of the transition and are removed at the
-    // `insert` block (hideInsertTags) — "remove the tags, THEN insert".
-    // A non-tagPrev screw that was visible last step also shows from the
-    // start; an APPEARING screw waits for the overlay block (showInsertTags)
-    // so the label doesn't float over a not-yet-faded-in screw.
+    // Timing: explodeBefore nuts carry their tags in from the pre-install
+    // preview, so they show from the START of the transition and are
+    // removed at the `insert` block (hideInsertTags) — "remove the tags,
+    // THEN insert". A non-explode screw that was visible last step also
+    // shows from the start; an APPEARING screw waits for the overlay block
+    // (showInsertTags) so the label doesn't float over a not-yet-faded-in
+    // screw.
     if (eff.tagName) {
       entry.tagItems = _buildTagItems(tpl, eff, parts, elems);
-      entry.tagShown = needsReposition || !!eff.tagPrev;
+      entry.tagShown = needsReposition || !!eff.explodeBefore;
     }
 
     // ── Trajectory line — THICK dotted line (V0.2.22.58): a row of dash

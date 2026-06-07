@@ -288,12 +288,13 @@ initCables();
 initCableRender();
 setupUndoKeyboard();
 
-// V0.2.22.65 — pre-install preview on the step BEFORE an insertion. For
-// every tagPrev actor whose insert step is next, the nut is shown EXPLODED
-// (pre-install config) with per-part tags. Hooked on step:activate (fires
-// EARLY + unconditionally, so it survives same-step re-activation and rides
-// an incoming camera/object move) and on step:applied (final settle). The
-// per-frame tick keeps the merged mesh hidden and the tags glued.
+// V0.2.22.66 — pre-install preview. For every actor with `explodeBefore`
+// on, EVERY step before its insert step shows the nut EXPLODED (pre-install
+// config); per-part tags appear too when tagName is on. Hooked on
+// step:activate (fires EARLY + unconditionally, so it survives same-step
+// re-activation and rides an incoming camera/object move) and on
+// step:applied (final settle). The per-frame tick keeps the merged mesh
+// hidden and the tags glued.
 import('./systems/hardware-insert-anim.js').then(hw => {
   state.on('step:activate', (id) => hw.refreshPreInstall(id));
   state.on('step:applied',  ()   => hw.refreshPreInstall(state.get('activeStepId')));
