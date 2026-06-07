@@ -257,6 +257,11 @@ export function placeInstance(templateId, parentId = null, opts = {}) {
   // The user can right-click any other preset to switch.
   _assignHardwareDefault(inst.id);
 
+  // V0.2.22.64 — make the instance survive step snapshots (otherwise a
+  // step re-apply rebuilds the tree from a snapshot that predates it and
+  // orphans it — the "2nd nut vanishes from the tree" bug).
+  steps.injectHardwareInstanceIntoAllSteps?.(inst, parentNode);
+
   state.markDirty?.();
   state.emit('change:treeData', root);
 
@@ -603,6 +608,9 @@ export function duplicateInstance(nodeId) {
   } else {
     _assignHardwareDefault(copy.id);
   }
+
+  // V0.2.22.64 — survive step snapshots (see placeInstance).
+  steps.injectHardwareInstanceIntoAllSteps?.(copy, parent);
 
   state.markDirty?.();
   state.emit('change:treeData', root);

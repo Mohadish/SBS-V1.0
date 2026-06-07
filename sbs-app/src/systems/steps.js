@@ -1999,6 +1999,98 @@ class StepManager {
   }
 
   /**
+   * V0.2.22.64 — make a runtime-placed HARDWARE INSTANCE survive step
+   * snapshots, the way injectModelIntoAllSteps does for imported models.
+   *
+   * Two differences from a model:
+   *   • the instance lives UNDER the Hardware folder, not at scene root;
+   *   • we must ADD it even to steps whose folder already exists (a model
+   *     is skipped once present, but here each NEW instance is a new child
+   *     of an existing folder — the old "skip if folder present" check
+   *     would drop every instance after the first → the multi-instance bug).
+   *
+   * For each step that doesn't already contain the instance:
+   *   • snapshot.tree       — instance spec appended under its folder spec
+   *                           (folder spec added under scene_root if absent)
+   *   • snapshot.visibility — instance (+ folder) set visible
+   *   • snapshot.transforms — instance's current transform
+   *
+   * rebuildFromTreeSpec only needs the spec present to keep the live node
+   * in the hierarchy (it looks the node up in nodeById), so this is enough.
+   */
+  injectHardwareInstanceIntoAllSteps(instNode, folderNode) {
+    if (!instNode) return;
+    const stepsArr = state.get('steps') || [];
+    if (!stepsArr.length) return;
+
+    const instSpec   = serializeModelTree(instNode);
+    const folderId   = folderNode?.id || null;
+    const folderSpec = folderNode
+      ? { ...serializeModelTree(folderNode), children: [] }
+      : null;
+
+    // Visibility + transforms for the instance (and the folder, if new).
+    const vis = {};
+    const xf  = {};
+    vis[instNode.id] = instNode.localVisible !== false;
+    if (isTransformNode(instNode)) xf[instNode.id] = captureTransformSnapshot(instNode);
+    if (folderNode) {
+      vis[folderNode.id] = folderNode.localVisible !== false;
+      if (isTransformNode(folderNode)) xf[folderNode.id] = captureTransformSnapshot(folderNode);
+    }
+
+    const containsId = (spec, id) => {
+      if (!spec) return false;
+      if (spec.id === id) return true;
+      return (spec.children || []).some(c => containsId(c, id));
+    };
+    // Immutably append `child` under the node with id===parentId. Returns
+    // a new spec tree, or null if the parent wasn't found.
+    const addUnder = (spec, parentId, child) => {
+      if (!spec) return null;
+      if (spec.id === parentId) {
+        return { ...spec, children: [...(spec.children || []), child] };
+      }
+      let changed = false;
+      const kids = (spec.children || []).map(c => {
+        const r = addUnder(c, parentId, child);
+        if (r) { changed = true; return r; }
+        return c;
+      });
+      return changed ? { ...spec, children: kids } : null;
+    };
+
+    const updated = stepsArr.map(step => {
+      const snap = step.snapshot;
+      if (!snap || !snap.tree) return step;
+      if (containsId(snap.tree, instNode.id)) return step;   // already present
+
+      let newTree = snap.tree;
+      if (folderId && containsId(newTree, folderId)) {
+        newTree = addUnder(newTree, folderId, instSpec) || newTree;
+      } else if (folderSpec) {
+        const folderWithChild = { ...folderSpec, children: [instSpec] };
+        newTree = { ...newTree, children: [...(newTree.children || []), folderWithChild] };
+      } else {
+        newTree = { ...newTree, children: [...(newTree.children || []), instSpec] };
+      }
+
+      return {
+        ...step,
+        snapshot: {
+          ...snap,
+          tree:       newTree,
+          visibility: { ...vis, ...(snap.visibility || {}) },
+          transforms: { ...xf,  ...(snap.transforms || {}) },
+        },
+      };
+    });
+
+    state.setState({ steps: updated });
+    state.markDirty();
+  }
+
+  /**
    * Duplicate any step by ID and insert a copy after it.
    * @param {string} stepId
    * @returns {Step|null}
