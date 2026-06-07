@@ -36,7 +36,6 @@ import { sceneCore }   from '../core/scene.js';
 import * as clock      from '../core/clock.js';
 import { generateScrewParts } from './hardware-generator.js';
 import { resolveInsertAnim }  from './hardware-defaults.js';
-import { computeVisibleSet }  from '../core/nodes.js';
 
 // Staged actors, keyed by node id:
 //   { group, mergedMesh, meshes, offsets,
@@ -156,9 +155,15 @@ function _buildTagItems(tpl, eff, parts, elems) {
 // piece — so labels sit at the real washer positions, never overlapping.
 // On the insert step the live staging continues from this exploded state.
 //
-// nodeId → { group, elems:[Mesh], mergedMesh, tagItems:[{div,piece,localY,outerRLocal}] }
+// nodeId → { group, elems:[Mesh], mergedMesh, prevLayerMask, tagItems:[...] }
 const _preview = new Map();
 let _previewTickUnsub = null;
+
+// The assembled mesh is hidden from RENDERING by moving it to this layer
+// (the camera + raycaster only see layer 0), NOT by setting .visible=false.
+// That keeps the visibility system's "appearing" detection honest (it reads
+// obj.visible), so a steadily-visible nut isn't faded in on every step.
+const PREVIEW_HIDE_LAYER = 1;
 
 /** All hardware instances flagged as insertion actors (any step). */
 function _allActors() {
@@ -196,12 +201,13 @@ function _isBeforeInsertStep(insertStepId, activeStepId) {
 export function clearPreInstall() {
   for (const p of _preview.values()) {
     if (p.group?.parent) p.group.parent.remove(p.group);
+    // Dispose transient GEOMETRY only — the material is SHARED with the live
+    // merged mesh (owned by the materials system); never dispose it.
     for (const m of (p.elems || [])) m.geometry?.dispose?.();
-    p.mat?.dispose?.();
     for (const it of (p.tagItems || [])) {
       if (it.div?.parentNode) it.div.parentNode.removeChild(it.div);
     }
-    if (p.mergedMesh) p.mergedMesh.visible = true;   // un-hide the assembled nut
+    if (p.mergedMesh) p.mergedMesh.layers.mask = p.prevLayerMask ?? 1;  // re-render it
   }
   _preview.clear();
   if (_previewTickUnsub) { _previewTickUnsub(); _previewTickUnsub = null; }
@@ -213,14 +219,16 @@ export function clearPreInstall() {
  * hide the merged mesh and show the exploded pieces. Per-part tags appear
  * too when `tagName` is on.
  *
- * The preview acts as a live PROXY for the nut (V0.2.22.69): the pieces
- * carry the node id (so a viewport click selects the nut), the group
- * follows the merged mesh's transform every frame (so the gizmo and the
- * obj-channel animation drive it with no threshold jump), and the group's
- * visibility mirrors the nut's effective visibility (so hidden hides it,
- * visible shows it at full opacity — no per-step fade). Pieces use an
- * opaque copy of the nut's material rather than the live one, which is
- * what caused the fade. _advancePreview owns all the per-frame upkeep.
+ * The preview acts as a live PROXY for the nut: the pieces carry the node
+ * id (so a viewport click selects the nut), the group follows the merged
+ * mesh's transform every frame (gizmo + obj-channel animation, no jump),
+ * and the group's visibility mirrors the merged mesh's HONEST visibility.
+ *
+ * The assembled mesh is hidden from RENDERING via layers (V0.2.22.70.1),
+ * NOT .visible — so the visibility system's appearing-detection (which
+ * reads obj.visible) stays honest and the nut isn't faded in on every step.
+ * The pieces SHARE the live material, so colour + the genuine fade follow.
+ * _advancePreview owns all the per-frame upkeep.
  */
 export function refreshPreInstall(activeStepId) {
   clearPreInstall();
@@ -255,21 +263,13 @@ export function refreshPreInstall(activeStepId) {
     group.name = 'sbs:insert-preview';
     root.add(group);   // pose + visibility are driven each frame in _advancePreview
 
-    // Own OPAQUE material that copies the nut's look (colour / metalness /
-    // roughness). NOT the live merged material — sharing it made the pieces
-    // inherit the screen-door visibility fade (fade-in every step). With an
-    // opaque clone, the group's boolean .visible controls show/hide cleanly.
-    const src = Array.isArray(merged.material) ? merged.material[0] : merged.material;
-    const mat = new T.MeshStandardMaterial({
-      color:     src?.color ? src.color.clone() : new T.Color(0xc0c4cc),
-      metalness: typeof src?.metalness === 'number' ? src.metalness : 0.65,
-      roughness: typeof src?.roughness === 'number' ? src.roughness : 0.35,
-    });
-
+    // SHARE the nut's live material (re-pointed each frame) so the pieces
+    // carry the exact colour + metalness + the genuine visibility fade.
+    const liveMat = Array.isArray(merged.material) ? merged.material[0] : merged.material;
     const elems = [parts.screw, ...parts.washers.map(w => w.mesh)];
     const offsets = _explodeOffsets(tpl, eff, elems.length);
     elems.forEach((m, i) => {
-      m.material = mat;
+      if (liveMat) m.material = liveMat;
       m.position.y = offsets[i];        // exploded (pre-install) layout
       // Make the pieces pick as the nut, so viewport click selects the node.
       m.userData.nodeId             = node.id;
@@ -278,8 +278,12 @@ export function refreshPreInstall(activeStepId) {
       group.add(m);
     });
 
+    // Hide the assembled mesh from rendering via LAYERS (keeps .visible honest).
+    const prevLayerMask = merged.layers.mask;
+    merged.layers.set(PREVIEW_HIDE_LAYER);
+
     _preview.set(node.id, {
-      group, elems, mat, mergedMesh: merged,
+      group, elems, mergedMesh: merged, prevLayerMask,
       tagItems: _buildTagItems(tpl, eff, parts, elems),
     });
     gated++;
@@ -335,10 +339,13 @@ export function stageInsertActors(actors, opts = {}) {
 
     const appearing = !!appearingIdSet?.has(node.id);
     const prev = fromWorld[node.id];
-    // explodeBefore nuts were already shown EXPLODED at the installed pose
-    // on every step before this one, so on the insert step they start
-    // exploded at the target too — no reposition, just assemble.
-    const needsReposition = !appearing && !!prev && !eff.explodeBefore;
+    // A screw that was visible last step REPOSITIONS: the group travels
+    // prev → target over "Reposition pre-step (ms)". explodeBefore nuts
+    // reposition too — but stay EXPLODED the whole way (they were already
+    // shown exploded on the prev step), so the travel reads as the exploded
+    // cluster gliding into the insertion position before it assembles.
+    const needsReposition = !appearing && !!prev;
+    const preExploded     = !!eff.explodeBefore;
 
     const targetPos  = new T.Vector3(target.position[0], target.position[1], target.position[2]);
     const targetQuat = new T.Quaternion(target.quaternion[0], target.quaternion[1], target.quaternion[2], target.quaternion[3]);
@@ -371,16 +378,18 @@ export function stageInsertActors(actors, opts = {}) {
     const offsets = _explodeOffsets(tpl, eff, elems.length);
 
     // Initial piece positions:
-    //   needsReposition → assembled (offset 0); the reposition phase
+    //   needsReposition & !preExploded → assembled (offset 0); reposition
     //     translates the group prev→target AND explodes 0→offset.
-    //   else → already exploded (offset); assemble brings them to 0.
+    //   preExploded → already exploded (offset); reposition just travels,
+    //     then assemble brings them to 0.
+    //   appearing / no-reposition → exploded (offset); assemble to 0.
     merged.visible = false;
-    elems.forEach((m, i) => { m.position.y = needsReposition ? 0 : offsets[i]; });
+    elems.forEach((m, i) => { m.position.y = (needsReposition && !preExploded) ? 0 : offsets[i]; });
 
     const repMs = Number(eff.repositionMs);
     const entry = {
       group, mergedMesh: merged, meshes: elems, offsets,
-      needsReposition, targetPos, targetQuat, prevPos, prevQuat,
+      needsReposition, preExploded, targetPos, targetQuat, prevPos, prevQuat,
       repositionMs: Number.isFinite(repMs) && repMs >= 0 ? repMs : 300,
       tagItems: null, tagShown: false,
       lineObj: null, lineShown: false,
@@ -398,7 +407,7 @@ export function stageInsertActors(actors, opts = {}) {
     // screw.
     if (eff.tagName) {
       entry.tagItems = _buildTagItems(tpl, eff, parts, elems);
-      entry.tagShown = needsReposition || !!eff.explodeBefore;
+      entry.tagShown = needsReposition || preExploded;
     }
 
     // ── Trajectory line — THICK dotted line (V0.2.22.58): a row of dash
@@ -539,9 +548,10 @@ function _advance(now) {
       // Group translates/rotates prev → target …
       s.group.position.lerpVectors(s.prevPos, s.targetPos, u);
       s.group.quaternion.copy(s.prevQuat).slerp(s.targetQuat, u);
-      // … while the pieces explode 0 → full offset.
+      // … while the pieces explode 0 → full offset — UNLESS preExploded,
+      // in which case they were already apart and just ride the travel.
       for (let i = 0; i < s.meshes.length; i++) {
-        s.meshes[i].position.y = s.offsets[i] * u;
+        s.meshes[i].position.y = s.preExploded ? s.offsets[i] : s.offsets[i] * u;
       }
     }
     if (raw >= 1) { const r = _reposition.resolve; _reposition = null; r?.(); }
@@ -648,11 +658,13 @@ function _positionTags() {
 }
 
 /**
- * Per-frame upkeep for the pre-install previews: re-assert the merged mesh
- * hidden, re-point each piece at the live (shared) material so colour
- * changes follow, and position the per-part tags. The pieces are exploded
- * and static, so the tags sit at the real washer heights — no stacking,
- * no overlap.
+ * Per-frame upkeep for the pre-install previews. Each frame:
+ *   • re-assert the assembled mesh on the hidden render layer + re-point the
+ *     pieces at its LIVE material (the colour channel can swap the material
+ *     object), so colour + the genuine visibility fade follow;
+ *   • follow the live node transform (gizmo, obj-channel animation, no jump);
+ *   • mirror the nut's HONEST visibility onto the group — handles steady
+ *     show, genuine fade-in/out, and hard hide, with no per-step blink.
  */
 function _advancePreview() {
   if (!_preview.size) return;
@@ -660,36 +672,33 @@ function _advancePreview() {
   const root = sceneCore.rootGroup;
   const cam = sceneCore.camera;
   const dom = sceneCore.renderer?.domElement;
-  // The nut's effective visibility for this step — drives whether the
-  // exploded pieces show. Independent of the merged mesh (which we keep
-  // hidden), so a "hidden" nut hides its preview, and a visible one shows
-  // it at full opacity with no per-step fade.
-  const visibleSet = computeVisibleSet(state.get('treeData'));
   const wp = new T.Vector3(), wq = new T.Quaternion(), ws = new T.Vector3();
 
-  for (const [nodeId, p] of _preview) {
+  for (const [, p] of _preview) {
     if (root && p.group && p.group.parent !== root) root.add(p.group);
     const merged = p.mergedMesh;
     if (merged) {
-      merged.visible = false;                 // the assembled mesh stays hidden
-      // Follow the live node transform every frame — so the gizmo moves the
-      // pieces, the obj-channel animation carries them, and there's no
-      // threshold jump.
+      if (merged.layers.mask !== (1 << PREVIEW_HIDE_LAYER)) merged.layers.set(PREVIEW_HIDE_LAYER);
+      const liveMat = Array.isArray(merged.material) ? merged.material[0] : merged.material;
+      if (liveMat) for (const m of p.elems) { if (m.material !== liveMat) m.material = liveMat; }
       merged.updateWorldMatrix(true, false);
       merged.matrixWorld.decompose(wp, wq, ws);
       p.group.position.copy(wp);
       p.group.quaternion.copy(wq);
       p.group.scale.copy(ws);
       p.group.updateMatrixWorld(true);      // so tags track this frame's pose
+      // merged.visible is the nut's honest visibility (we hid RENDERING via
+      // layers, not .visible) — so the pieces follow it, and the shared
+      // material carries the fade.
+      p.group.visible = merged.visible;
     }
-    p.group.visible = visibleSet.has(nodeId);
   }
 
   if (!cam || !dom) return;
   const rect = dom.getBoundingClientRect();
   const camRight = new T.Vector3();
   cam.matrixWorld.extractBasis(camRight, new T.Vector3(), new T.Vector3());
-  for (const [nodeId, p] of _preview) {
+  for (const [, p] of _preview) {
     const show = p.group.visible;
     for (const it of (p.tagItems || [])) {
       if (!it.div) continue;
