@@ -3138,7 +3138,7 @@ export async function showInsertAnimDialog(cur, onConfirm) {
         .forEach(el => { el.disabled = dflt; el.style.opacity = dflt ? 0.45 : 1; });
     }
   };
-  for (const key of ['x', 'ms', 'tag', 'traj']) {
+  for (const key of ['x', 'ms', 'tag', 'explode', 'traj']) {
     dlg.querySelector(`#_ia-def-${key}`).addEventListener('change', sync);
   }
   sync();

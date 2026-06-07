@@ -221,6 +221,7 @@ export function refreshPreInstall(activeStepId) {
   const root = sceneCore.rootGroup;
   if (!T || !root) return;
   const tpls = state.get('hardwareTemplates') || [];
+  const diag = (typeof window !== 'undefined' && window.sbsDiag?.preview);
   let seen = 0, gated = 0;
   const why = [];
 
@@ -229,7 +230,7 @@ export function refreshPreInstall(activeStepId) {
     const eff = resolveInsertAnim(node);
     const insertStep = node.insertAnim?.stepId;
     const before = !!(insertStep && _isBeforeInsertStep(insertStep, activeStepId));
-    why.push(`explodeBefore=${eff.explodeBefore} insertStep=${insertStep} before=${before} hasMerged=${!!node.object3d} hasTpl=${!!(state.get('hardwareTemplates')||[]).find(t=>t.id===node.templateId)}`);
+    if (diag) why.push(`explodeBefore=${eff.explodeBefore} insertStep=${insertStep} before=${before} hasMerged=${!!node.object3d} hasTpl=${!!(state.get('hardwareTemplates')||[]).find(t=>t.id===node.templateId)}`);
     if (!eff.explodeBefore) continue;                 // only when "display exploded before"
     if (!insertStep) continue;
     if (!before) continue;                            // only on steps BEFORE the insert step
@@ -273,7 +274,7 @@ export function refreshPreInstall(activeStepId) {
     gated++;
   }
 
-  if (seen > 0) console.log(`[preview] step=${activeStepId} actors=${seen} built=${gated} | ${why.join(' || ')}`);
+  if (diag && seen > 0) console.log(`[preview] step=${activeStepId} actors=${seen} built=${gated} | ${why.join(' || ')}`);
   if (_preview.size && !_previewTickUnsub) {
     _previewTickUnsub = sceneCore.addTickHook(() => _advancePreview());
   }
