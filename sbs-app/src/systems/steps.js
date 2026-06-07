@@ -36,7 +36,7 @@ import { parseAnimation, resolveAnimationString } from './animation.js';
 import {
   stageInsertActors, runInsertReposition, runInsertAssemble,
   showInsertTags, showInsertTrajectory,
-  finalizeInsertActors, cancelInsertAnimations, findActorsForStep,
+  finalizeInsertActors, clearPreInstall, findActorsForStep,
 } from './hardware-insert-anim.js'; // V0.2.22.57 — screw stage/reposition/assemble + tag/trajectory
 // V0.1.78 — narration overflow coordination. UI module exports the
 // query helpers; cross-layer import is OK here (actions.js + overlay.js
@@ -1456,7 +1456,14 @@ class StepManager {
     // stageInsertActors never ran to clean up — leaving the transient
     // pieces frozen in the scene as an un-removable clone. Cleaning here
     // every time guarantees no leftovers regardless of path.
-    cancelInsertAnimations();
+    //
+    // NOTE: only the live STAGING is torn down here. The pre-install PREVIEW
+    // teardown (clearPreInstall) is deferred until AFTER captureActiveThumb-
+    // nail below — clearPreInstall un-hides the assembled mesh, and the
+    // thumbnail does a real render to the main canvas, so tearing the
+    // preview down first would flash the assembled nut for one frame
+    // (V0.2.22.73).
+    finalizeInsertActors();
 
     // Flush any pending dirty-sync into the LEAVING step BEFORE we
     // change the active step. Otherwise quick toggle-then-navigate
@@ -1474,7 +1481,13 @@ class StepManager {
 
     // Capture the OUTGOING step's final viewport state before we switch away.
     // Force bypasses the 5-fps throttle so nothing is lost on quick step changes.
+    // The pre-install preview is still active here, so the outgoing step's
+    // thumbnail correctly shows the exploded nut.
     if (state.get('activeStepId') !== stepId) this.captureActiveThumbnail(true);
+
+    // NOW tear down the pre-install preview (un-hides the assembled mesh).
+    // Done AFTER the thumbnail render so it doesn't flash on the live canvas.
+    clearPreInstall();
 
     // Update state (fires 'step:activate' event for notes/screen overlay)
     state.setActiveStep(stepId);
