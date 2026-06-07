@@ -36,6 +36,7 @@ import { sceneCore }   from '../core/scene.js';
 import * as clock      from '../core/clock.js';
 import { generateScrewParts } from './hardware-generator.js';
 import { resolveInsertAnim }  from './hardware-defaults.js';
+import { computeVisibleSet }  from '../core/nodes.js';
 
 // Staged actors, keyed by node id:
 //   { group, mergedMesh, meshes, offsets,
@@ -196,6 +197,7 @@ export function clearPreInstall() {
   for (const p of _preview.values()) {
     if (p.group?.parent) p.group.parent.remove(p.group);
     for (const m of (p.elems || [])) m.geometry?.dispose?.();
+    p.mat?.dispose?.();
     for (const it of (p.tagItems || [])) {
       if (it.div?.parentNode) it.div.parentNode.removeChild(it.div);
     }
@@ -208,11 +210,17 @@ export function clearPreInstall() {
 /**
  * Rebuild the pre-install previews for the given active step. For each
  * actor with `explodeBefore` on, on EVERY step before its insert step,
- * hide the merged mesh and show the exploded pieces at the nut's installed
- * pose. Per-part tags appear too when `tagName` is on. Static — the tick
- * only re-asserts the hidden merged mesh, re-points the shared material,
- * and positions the tags so they ride camera/object moves. (The nut shows
- * only where it's visible, since the pieces share its live material.)
+ * hide the merged mesh and show the exploded pieces. Per-part tags appear
+ * too when `tagName` is on.
+ *
+ * The preview acts as a live PROXY for the nut (V0.2.22.69): the pieces
+ * carry the node id (so a viewport click selects the nut), the group
+ * follows the merged mesh's transform every frame (so the gizmo and the
+ * obj-channel animation drive it with no threshold jump), and the group's
+ * visibility mirrors the nut's effective visibility (so hidden hides it,
+ * visible shows it at full opacity — no per-step fade). Pieces use an
+ * opaque copy of the nut's material rather than the live one, which is
+ * what caused the fade. _advancePreview owns all the per-frame upkeep.
  */
 export function refreshPreInstall(activeStepId) {
   clearPreInstall();
@@ -243,32 +251,35 @@ export function refreshPreInstall(activeStepId) {
     try { parts = generateScrewParts(tpl.params || {}, node.washers || null); }
     catch (e) { console.warn('[insert-anim] preview parts failed:', e?.message); continue; }
 
-    // Installed world pose of the nut (where it ends up after insertion).
-    merged.updateMatrixWorld(true);
-    const pos = new T.Vector3(), quat = new T.Quaternion(), scale = new T.Vector3();
-    merged.matrixWorld.decompose(pos, quat, scale);
-
     const group = new T.Group();
     group.name = 'sbs:insert-preview';
-    group.position.copy(pos);
-    group.quaternion.copy(quat);
-    group.scale.copy(scale);
-    root.add(group);
+    root.add(group);   // pose + visibility are driven each frame in _advancePreview
+
+    // Own OPAQUE material that copies the nut's look (colour / metalness /
+    // roughness). NOT the live merged material — sharing it made the pieces
+    // inherit the screen-door visibility fade (fade-in every step). With an
+    // opaque clone, the group's boolean .visible controls show/hide cleanly.
+    const src = Array.isArray(merged.material) ? merged.material[0] : merged.material;
+    const mat = new T.MeshStandardMaterial({
+      color:     src?.color ? src.color.clone() : new T.Color(0xc0c4cc),
+      metalness: typeof src?.metalness === 'number' ? src.metalness : 0.65,
+      roughness: typeof src?.roughness === 'number' ? src.roughness : 0.35,
+    });
 
     const elems = [parts.screw, ...parts.washers.map(w => w.mesh)];
-    const liveMat = Array.isArray(merged.material) ? merged.material[0] : merged.material;
     const offsets = _explodeOffsets(tpl, eff, elems.length);
     elems.forEach((m, i) => {
-      if (liveMat) m.material = liveMat;
-      m.visible = true;                 // show the part even if the nut is hidden here
+      m.material = mat;
       m.position.y = offsets[i];        // exploded (pre-install) layout
+      // Make the pieces pick as the nut, so viewport click selects the node.
+      m.userData.nodeId             = node.id;
+      m.userData.meshNodeId         = node.id;
+      m.userData.hardwareInstanceId = node.id;
       group.add(m);
     });
-    group.updateMatrixWorld(true);
-    merged.visible = false;             // the assembled mesh steps aside
 
     _preview.set(node.id, {
-      group, elems, mergedMesh: merged,
+      group, elems, mat, mergedMesh: merged,
       tagItems: _buildTagItems(tpl, eff, parts, elems),
     });
     gated++;
@@ -649,25 +660,40 @@ function _advancePreview() {
   const root = sceneCore.rootGroup;
   const cam = sceneCore.camera;
   const dom = sceneCore.renderer?.domElement;
-  // Keep the merged meshes hidden, materials in sync, and the preview group
-  // attached — a step rebuild can re-show the merged mesh or detach our
-  // group, so we re-assert it every frame.
-  for (const p of _preview.values()) {
+  // The nut's effective visibility for this step — drives whether the
+  // exploded pieces show. Independent of the merged mesh (which we keep
+  // hidden), so a "hidden" nut hides its preview, and a visible one shows
+  // it at full opacity with no per-step fade.
+  const visibleSet = computeVisibleSet(state.get('treeData'));
+  const wp = new T.Vector3(), wq = new T.Quaternion(), ws = new T.Vector3();
+
+  for (const [nodeId, p] of _preview) {
     if (root && p.group && p.group.parent !== root) root.add(p.group);
-    if (p.mergedMesh) {
-      p.mergedMesh.visible = false;
-      const liveMat = Array.isArray(p.mergedMesh.material)
-        ? p.mergedMesh.material[0] : p.mergedMesh.material;
-      if (liveMat) for (const m of p.elems) { m.visible = true; if (m.material !== liveMat) m.material = liveMat; }
+    const merged = p.mergedMesh;
+    if (merged) {
+      merged.visible = false;                 // the assembled mesh stays hidden
+      // Follow the live node transform every frame — so the gizmo moves the
+      // pieces, the obj-channel animation carries them, and there's no
+      // threshold jump.
+      merged.updateWorldMatrix(true, false);
+      merged.matrixWorld.decompose(wp, wq, ws);
+      p.group.position.copy(wp);
+      p.group.quaternion.copy(wq);
+      p.group.scale.copy(ws);
+      p.group.updateMatrixWorld(true);      // so tags track this frame's pose
     }
+    p.group.visible = visibleSet.has(nodeId);
   }
+
   if (!cam || !dom) return;
   const rect = dom.getBoundingClientRect();
   const camRight = new T.Vector3();
   cam.matrixWorld.extractBasis(camRight, new T.Vector3(), new T.Vector3());
-  for (const p of _preview.values()) {
+  for (const [nodeId, p] of _preview) {
+    const show = p.group.visible;
     for (const it of (p.tagItems || [])) {
       if (!it.div) continue;
+      if (!show) { it.div.style.display = 'none'; continue; }
       it.div.style.display = 'block';
       _anchorPieceTag(it.div, it.piece, it.localY, it.outerRLocal, rect, cam, camRight);
     }
