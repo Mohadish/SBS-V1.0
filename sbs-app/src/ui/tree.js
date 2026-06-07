@@ -3130,7 +3130,7 @@ export async function showInsertAnimDialog(cur, onConfirm) {
 
       ${_iaRow('pause', 'Pause before insertion',
         `<label class="small"><input type="checkbox" id="_ia-pause" ${val('pauseBefore') ? 'checked' : ''}/> hold</label>
-         <input type="number" id="_ia-pausems" value="${_esc(String(val('pauseBeforeMs')))}" min="0" step="50" title="pause (ms)" style="width:64px;margin-left:8px;" /> ms`,
+         <input type="number" id="_ia-pausems" value="${_esc(String(val('pauseBeforeMs')))}" min="0" step="50" title="pause (ms)" style="width:96px;margin-left:8px;" /> ms`,
         ud('pauseBefore'))}
       <div class="small muted" style="margin:2px 0 0 26px;font-size:10px;opacity:0.7;">Holds on the exploded nut so the tags are readable, then inserts.</div>
 
@@ -3156,7 +3156,7 @@ export async function showInsertAnimDialog(cur, onConfirm) {
         .forEach(el => { el.disabled = dflt; el.style.opacity = dflt ? 0.45 : 1; });
     }
   };
-  for (const key of ['x', 'ms', 'tag', 'explode', 'traj']) {
+  for (const key of ['x', 'ms', 'tag', 'explode', 'pause', 'traj']) {
     dlg.querySelector(`#_ia-def-${key}`).addEventListener('change', sync);
   }
   sync();

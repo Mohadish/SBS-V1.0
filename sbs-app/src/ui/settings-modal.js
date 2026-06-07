@@ -161,7 +161,7 @@ function _renderNutsTab(body) {
       <input type="checkbox" id="_nt-pause" ${n.pauseBefore ? 'checked' : ''} />
       <span class="small">Pause before insertion</span>
       <input type="number" id="_nt-pausems" value="${_esc(String(n.pauseBeforeMs ?? 300))}" min="0" step="50"
-        style="width:64px;margin-left:6px;" /> <span class="small muted">ms</span>
+        style="width:96px;margin-left:6px;" /> <span class="small muted">ms</span>
     </label>
     <div class="small muted" style="margin:2px 0 0 24px;font-size:10px;opacity:0.7;">
       Holds on the exploded nut so the tags are readable, then inserts.

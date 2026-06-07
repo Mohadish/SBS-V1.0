@@ -107,7 +107,7 @@ function _renderDefaultsEditor() {
       <input type="checkbox" id="hd-pause" ${d.pauseBefore ? 'checked' : ''}/>
       <span class="small">Pause before insertion</span>
       <input type="number" id="hd-pausems" value="${_esc(String(d.pauseBeforeMs ?? 300))}" min="0" step="50"
-        style="width:58px;margin-left:4px;" title="pause (ms)" /> <span class="small muted">ms</span>
+        style="width:96px;margin-left:4px;" title="pause (ms)" /> <span class="small muted">ms</span>
     </label>
     <label style="display:flex;align-items:center;gap:6px;margin-top:8px;cursor:pointer;">
       <input type="checkbox" id="hd-traj" ${d.trajectory ? 'checked' : ''}/>
