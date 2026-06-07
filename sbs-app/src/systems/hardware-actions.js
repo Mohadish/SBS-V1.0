@@ -43,6 +43,7 @@ import {
   rebuildHardwareInstancesOfTemplate,
   disposeHardwareInstance,
 }                                       from './hardware-templates.js';
+import { washerStackThickness }         from './hardware-generator.js';
 import { applyNodeTransformToObject3D, setStoredQuaternion } from '../core/transforms.js';
 import { undoManager }                  from './undo.js';
 
@@ -388,7 +389,14 @@ export function setInstanceWashers(nodeIds, washers) {
   const root = state.get('treeData');
   const nodeById = state.get('nodeById') || buildNodeMap(root);
 
-  // Snapshot before-state for undo
+  // Washer-stack thickness (mm, scale 1) for a node + washer config.
+  const _tw = (n, w) => {
+    const tpl = (state.get('hardwareTemplates') || []).find(t => t.id === n.templateId);
+    return tpl ? washerStackThickness(tpl.params, w) : 0;
+  };
+
+  // Snapshot before-state for undo — washers AND the transform (the auto-
+  // reposition shifts the screw along its axis, so undo must restore both).
   const before = [];
   for (const id of nodeIds) {
     const n = nodeById.get(id);
@@ -396,6 +404,11 @@ export function setInstanceWashers(nodeIds, washers) {
     before.push({
       id,
       washers: { ...(n.washers || { count: 0, spring: false }) },
+      xf: {
+        localOffset:      [...(n.localOffset      || [0, 0, 0])],
+        localQuaternion:  [...(n.localQuaternion  || [0, 0, 0, 1])],
+        orientationSteps: [...(n.orientationSteps || [0, 0, 0])],
+      },
     });
   }
   if (!before.length) return;
@@ -407,16 +420,18 @@ export function setInstanceWashers(nodeIds, washers) {
     for (const id of nodeIds) {
       const n = (state.get('nodeById') || buildNodeMap(root)).get(id);
       if (!n || n.type !== 'hardwareInstance') continue;
+      const oldTw = _tw(n, n.washers);     // before the change
       n.washers = { ...config };
-      // Force a rebuild: clear the cached object3d (the sig has changed
-      // but ensureHardwareInstanceObject3D's cache check would still
-      // catch it — clearing is belt-and-suspenders).
+      const newTw = _tw(n, config);        // after the change
       const mesh = ensureHardwareInstanceObject3D(n);
       if (mesh) {
         const parent = mesh.parent ?? steps.object3dById?.get(_findParent(root, id)?.id);
         if (parent && mesh.parent !== parent) parent.add(mesh);
         steps.object3dById.set(id, mesh);
         applyNodeTransformToObject3D(n, mesh, true);
+        // Auto-reposition: slide the screw out/in so the washer stack still
+        // sits ON the surface (no gap, no embedding) after the count change.
+        _compensateWasherShift(n, mesh, newTw - oldTw);
       }
     }
     state.markDirty?.();
@@ -425,7 +440,7 @@ export function setInstanceWashers(nodeIds, washers) {
 
   _apply(after);
 
-  // Undo: each instance gets its own per-id before-state restored.
+  // Undo: each instance gets its washers AND transform restored.
   const label = nodeIds.length > 1
     ? `Set washers on ${nodeIds.length} instances`
     : `Set washers`;
@@ -435,7 +450,10 @@ export function setInstanceWashers(nodeIds, washers) {
       for (const entry of before) {
         const n = (state.get('nodeById') || buildNodeMap(root)).get(entry.id);
         if (!n) continue;
-        n.washers = { ...entry.washers };
+        n.washers          = { ...entry.washers };
+        n.localOffset      = [...entry.xf.localOffset];
+        n.localQuaternion  = [...entry.xf.localQuaternion];
+        n.orientationSteps = [...entry.xf.orientationSteps];
         const mesh = ensureHardwareInstanceObject3D(n);
         if (mesh) {
           const parent = mesh.parent ?? steps.object3dById?.get(_findParent(root, entry.id)?.id);
@@ -692,15 +710,59 @@ function _deleteInstancesByTemplateId(root, templateId) {
   })(root);
 }
 
+/** Screw +Y in world (insertion axis, head direction) for `obj`. */
+function _screwAxisWorld(obj) {
+  const T = window.THREE;
+  const q = new T.Quaternion();
+  obj.getWorldQuaternion(q);
+  return new T.Vector3(0, 1, 0).applyQuaternion(q).normalize();
+}
+
 /**
- * Write a world-space pose onto a hardware-instance node + its Object3D.
+ * The screw's washer-stack thickness in WORLD units (× world scale). 0 when
+ * the screw has no washers or its template can't be resolved.
+ */
+function _washerThicknessWorld(node, obj) {
+  const tpl = (state.get('hardwareTemplates') || []).find(t => t.id === node.templateId);
+  const tw = tpl ? washerStackThickness(tpl.params, node.washers) : 0;
+  if (!tw) return 0;
+  const T = window.THREE;
+  const sc = new T.Vector3();
+  obj.getWorldScale(sc);
+  return tw * (sc.x || 1);
+}
+
+/**
+ * Place a hardware instance on a surface, COMPENSATING for washer thickness.
+ * `worldPos` is the picked SURFACE point; the screw is lifted along its axis
+ * by the washer-stack height so the washers sit ON the surface (head pushed
+ * out), not embedded in it. No washers → no offset (head sits on the
+ * surface). Used by place-on-surface / 3-point / re-align.
+ */
+export function setInstanceWorldPose(node, obj, worldPos, worldQuat) {
+  const T = window.THREE;
+  if (!T || !node || !obj) return false;
+  obj.updateMatrixWorld(true);
+  let target = worldPos;
+  const twWorld = _washerThicknessWorld(node, obj);
+  if (twWorld > 0) {
+    const wq = worldQuat ? worldQuat.clone().normalize() : new T.Quaternion();
+    const axis = new T.Vector3(0, 1, 0).applyQuaternion(wq).normalize();
+    target = worldPos.clone().addScaledVector(axis, twWorld);
+  }
+  return _setInstancePoseRaw(node, obj, target, worldQuat);
+}
+
+/**
+ * Write a world-space pose onto a hardware-instance node + its Object3D
+ * (the screw ORIGIN lands exactly at worldPos — no washer compensation).
  * Converts the world pose to the parent's local space, stores it as the
  * per-step localOffset / localQuaternion delta (relative to baseLocal*),
  * and flips moveEnabled / rotateEnabled on (else the delta is ignored at
  * render time — see memory feedback_align_enabled_flags). No undo push;
  * callers own that. Mirrors folder-align-picker's decompose+write.
  */
-export function setInstanceWorldPose(node, obj, worldPos, worldQuat) {
+function _setInstancePoseRaw(node, obj, worldPos, worldQuat) {
   const T = window.THREE;
   if (!T || !node || !obj) return false;
   obj.updateMatrixWorld(true);
@@ -736,6 +798,26 @@ export function setInstanceWorldPose(node, obj, worldPos, worldQuat) {
   steps.scheduleTransformSync?.();
   state.markDirty?.();
   return true;
+}
+
+/**
+ * Slide the screw along its OWN axis by `deltaThicknessLocal` mm (local
+ * units, × world scale internally) — used to keep the washer-stack bottom
+ * on the surface when washers are added/removed. The surface point stays
+ * put; the head translates out (add) or in (remove).
+ */
+function _compensateWasherShift(node, obj, deltaThicknessLocal) {
+  const T = window.THREE;
+  if (!T || !node || !obj || !deltaThicknessLocal) return;
+  obj.updateMatrixWorld(true);
+  const sc = new T.Vector3();
+  obj.getWorldScale(sc);
+  const axis   = _screwAxisWorld(obj);
+  const newPos = new T.Vector3();
+  obj.getWorldPosition(newPos).addScaledVector(axis, deltaThicknessLocal * (sc.x || 1));
+  const q = new T.Quaternion();
+  obj.getWorldQuaternion(q);
+  _setInstancePoseRaw(node, obj, newPos, q);
 }
 
 /**

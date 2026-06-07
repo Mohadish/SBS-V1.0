@@ -556,6 +556,15 @@ export function washerStackFor({ diameter, headType }, washers) {
   return layoutWashers(washers, D, headParams);
 }
 
+/**
+ * Total height (mm, scale 1) of a screw's washer stack — the distance from
+ * the head underside (y=0) down to the bottom of the last washer. Used to
+ * lift a surface-placed screw so the washers sit ON the surface, not in it.
+ */
+export function washerStackThickness(params, washers) {
+  return washerStackFor(params || {}, washers).reduce((sum, w) => sum + w.height, 0);
+}
+
 // Build each washer mesh from the shared layout. Returns
 // [{ mesh, kind, yTop, height, outerR }] top-down (head → shank).
 function _buildWashers(washers, D, headParams) {
