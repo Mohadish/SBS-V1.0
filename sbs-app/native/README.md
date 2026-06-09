@@ -11,6 +11,18 @@ falls back to the in-app WASM reader exactly as before (so this is a pure add-on
 
 ---
 
+## Easiest: run `build.bat`
+1. Install **Visual Studio 2022** with the **"Desktop development with C++"** workload (free).
+2. Start menu → open **"x64 Native Tools Command Prompt for VS 2022"**.
+3. `cd /d` into this `native\` folder and run **`build.bat`**.
+
+It fetches vcpkg, builds OpenCascade (~1–2 h first time), compiles the exe, and
+drops it + the DLLs into `bin\win-x64\`. Re-runnable. If the **compile** step
+errors, copy the full error text — OCCT headers shift between versions, so a fix
+or two is expected.
+
+The manual steps below are the same thing by hand.
+
 ## What you need (build box, one-time)
 - **Windows + Visual Studio 2022** (Desktop C++ workload) — or Build Tools.
 - **CMake ≥ 3.16**.
