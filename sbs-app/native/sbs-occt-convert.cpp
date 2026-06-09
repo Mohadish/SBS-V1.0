@@ -30,7 +30,9 @@
 #include <cctype>
 #include <cmath>
 #include <cstdlib>
+#include <chrono>
 
+#include <Interface_Static.hxx>
 #include <IFSelect_ReturnStatus.hxx>
 #include <STEPCAFControl_Reader.hxx>
 #include <IGESCAFControl_Reader.hxx>
@@ -70,6 +72,18 @@ int main(int argc, char** argv) {
   const double angRad   = angDeg * M_PI / 180.0;
   const std::string e   = ext(inPath);
 
+  auto _t0   = std::chrono::steady_clock::now();
+  auto secs  = [&]() { return std::chrono::duration<double>(std::chrono::steady_clock::now() - _t0).count(); };
+
+  // ── Speed knobs ─────────────────────────────────────────────────────────
+  // STEP shape-healing is a slow, single-threaded repair pass we don't need for
+  // visualisation — turning it off is the big win on large assemblies. A coarse
+  // read precision also cuts the work. (Unknown static names are harmlessly
+  // ignored, so these are safe even if a build doesn't recognise one.)
+  Interface_Static::SetIVal("read.step.healing",       0);
+  Interface_Static::SetIVal("read.precision.mode",     1);
+  Interface_Static::SetRVal("read.precision.val",      0.1);
+
   // ── XCAF document (holds assembly tree + names + colors) ──────────────────
   Handle(TDocStd_Document) doc;
   Handle(XCAFApp_Application) app = XCAFApp_Application::GetApplication();
@@ -82,8 +96,11 @@ int main(int argc, char** argv) {
     reader.SetColorMode(true);
     reader.SetNameMode(true);
     reader.SetLayerMode(true);
+    std::cerr << "[sbs-occt] parsing STEP file . . .\n";
     rs = reader.ReadFile(inPath.c_str());
+    std::cerr << "[sbs-occt] parsed at " << secs() << "s; transferring to model . . .\n";
     if (rs == IFSelect_RetDone && !reader.Transfer(doc)) { std::cerr << "transfer failed\n"; return 3; }
+    std::cerr << "[sbs-occt] transferred at " << secs() << "s\n";
   } else if (e == "iges" || e == "igs") {
     IGESCAFControl_Reader reader;
     reader.SetColorMode(true);
@@ -119,7 +136,8 @@ int main(int argc, char** argv) {
     linDefl = (diag > 0 ? diag : 1.0) * linRatio;
   }
   std::cerr << "[sbs-occt] parts=" << freeShapes.Length()
-            << " linDefl=" << linDefl << " angDeg=" << angDeg << "\n";
+            << " linDefl=" << linDefl << " angDeg=" << angDeg
+            << " (meshing starts at " << secs() << "s)\n";
 
   // ── Tessellate every shape (parallel) ─────────────────────────────────────
   for (Standard_Integer i = 1; i <= freeShapes.Length(); ++i) {
@@ -127,7 +145,11 @@ int main(int argc, char** argv) {
     if (s.IsNull()) continue;
     BRepMesh_IncrementalMesh mesher(s, linDefl, Standard_False, angRad, Standard_True /*parallel*/);
     mesher.Perform();
+    if (i % 50 == 0 || i == freeShapes.Length())
+      std::cerr << "[sbs-occt]   meshed " << i << "/" << freeShapes.Length()
+                << " at " << secs() << "s\n";
   }
+  std::cerr << "[sbs-occt] meshing done at " << secs() << "s; writing glTF . . .\n";
 
   // ── Write a binary glTF (.glb) carrying the XDE assembly structure ────────
   TColStd_IndexedDataMapOfStringString fileInfo;
@@ -142,6 +164,6 @@ int main(int argc, char** argv) {
     return 6;
   }
 
-  std::cerr << "[sbs-occt] wrote " << outPath << "\n";
+  std::cerr << "[sbs-occt] wrote " << outPath << " at " << secs() << "s. DONE.\n";
   return 0;
 }
