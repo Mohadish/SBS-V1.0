@@ -2,6 +2,7 @@
   "name": "sbs-step-browser",
   "version": "1.0.0",
   "description": "SBS Step Browser — CAD Presentation Tool",
+  "author": "SBS Step Browser",
   "main": "electron/main.js",
   "scripts": {
     "start": "electron .",
@@ -70,6 +71,13 @@
       {
         "from": "kokoro-bundle",
         "to": "kokoro-bundle",
+        "filter": [
+          "**/*"
+        ]
+      },
+      {
+        "from": "native/bin",
+        "to": "native/bin",
         "filter": [
           "**/*"
         ]

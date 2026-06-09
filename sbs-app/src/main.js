@@ -2319,6 +2319,15 @@ canvas.addEventListener('contextmenu', e => {
       label: '📁→ Move to folder…',
       action: () => showMoveToFolderDialog([...multiIds]),
     });
+    // Make transformable — wrap a single node in a locked pivot-folder so
+    // it gets a gizmo (centred on the node, oriented to its parent folder).
+    if (multiIds.size === 1 && node && !node.archived &&
+        node.type !== 'note' && node.type !== 'scene' && node.type !== 'hardwareNut') {
+      items.push({
+        label: '🪄 Make transformable',
+        action: () => actions.makeTransformable(node.id),
+      });
+    }
     items.push({
       label: '🎯 Fit to selection',
       action: () => _fitToSelection(multiIds),

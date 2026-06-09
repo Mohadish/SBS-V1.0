@@ -1,0 +1,13 @@
+Drop the built native CAD converter here:
+
+    sbs-occt-convert.exe
+    + every OpenCascade / vcpkg runtime DLL it depends on
+      (TKernel.dll, TKMath.dll, TKDESTEP.dll, TKRWMesh.dll, … — find them with
+       `dumpbin /DEPENDENTS sbs-occt-convert.exe`, or copy the whole
+       vcpkg\installed\x64-windows\bin folder).
+
+See ../../README.md for build instructions (vcpkg + CMake).
+
+Until the exe is here, the app falls back to the in-app 32-bit WASM reader
+(so big STEP files still hit the ~2 GB limit — but nothing else breaks).
+This placeholder just keeps the folder present so electron-builder can bundle it.

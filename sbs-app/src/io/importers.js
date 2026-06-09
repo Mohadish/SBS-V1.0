@@ -27,6 +27,8 @@ import steps      from '../systems/steps.js';
 import { createNode, generateId } from '../core/schema.js';
 import { buildNodeMap } from '../core/nodes.js';
 import { storeBaseTransformFromObject3D, captureMeshModelLocalMatrices } from '../core/transforms.js';
+import * as modelCache  from './model-cache.js';            // V0.2.22.80 — CAD fast-load tail cache
+import * as userSettings from '../core/user-settings.js';   // remembered bake preference
 
 // Three.js add-on loaders — imported as ES modules from the local vendor bundles.
 // These bundles import from three.module.proxy.mjs which wraps window.THREE,
@@ -200,13 +202,34 @@ function _reregisterMeshes(node) {
   for (const child of (node.children || [])) _reregisterMeshes(child);
 }
 
-// ── OCCT tessellation parameters (match POC) ──────────────────────────────
-const OCCT_PARAMS = {
-  linearUnit:            'millimeter',
-  linearDeflectionType:  'bounding_box_ratio',
-  linearDeflection:      0.0025,
-  angularDeflection:     0.5,
+// ── OCCT tessellation quality presets ─────────────────────────────────────
+// linearDeflection (bounding_box_ratio) is the dominant triangle-count driver
+// for CAD: a bigger value = fewer triangles = faster tessellation AND faster
+// geometry build / upload / render. The old hardcoded 0.0025 ('fine') is the
+// slowest. Default is now 'normal' (≈2× looser) — measurably faster to open
+// with negligible visual loss at assembly scale. 'draft' is for huge ones.
+const OCCT_QUALITY_PRESETS = {
+  draft:  { linearDeflection: 0.02,   angularDeflection: 1.0 },
+  normal: { linearDeflection: 0.005,  angularDeflection: 0.5 },
+  fine:   { linearDeflection: 0.0025, angularDeflection: 0.5 },
 };
+let _cadQuality = 'normal';
+/** Set CAD (STEP/IGES/BREP) tessellation quality: 'draft' | 'normal' | 'fine'. */
+export function setCadImportQuality(q) { if (OCCT_QUALITY_PRESETS[q]) _cadQuality = q; }
+export function getCadImportQuality() { return _cadQuality; }
+// Dev convenience: flip quality from the DevTools console to A/B test load
+// times — e.g. `sbsCadQuality('fine')` then re-open the same STEP and compare
+// the [import] timing log.
+if (typeof window !== 'undefined') window.sbsCadQuality = setCadImportQuality;
+function _occtParams() {
+  const p = OCCT_QUALITY_PRESETS[_cadQuality] || OCCT_QUALITY_PRESETS.normal;
+  return {
+    linearUnit:           'millimeter',
+    linearDeflectionType: 'bounding_box_ratio',
+    linearDeflection:     p.linearDeflection,
+    angularDeflection:    p.angularDeflection,
+  };
+}
 
 // ── File extension helper ─────────────────────────────────────────────────
 export function getFileExt(name) {
@@ -244,10 +267,19 @@ function buildGeometry(meshData) {
   const uv   = meshData?.attributes?.uv?.array       ?? meshData?.attributes?.uv;
   const idx  = meshData?.index?.array                ?? meshData?.index;
 
-  if (pos)  geom.setAttribute('position', new THREE.Float32BufferAttribute(Array.from(pos), 3));
-  if (norm) geom.setAttribute('normal',   new THREE.Float32BufferAttribute(Array.from(norm), 3));
-  if (uv)   geom.setAttribute('uv',       new THREE.Float32BufferAttribute(Array.from(uv), 2));
-  if (idx)  geom.setIndex(Array.from(idx));
+  // Feed the OCCT arrays STRAIGHT into the BufferAttributes. The old code did
+  // Array.from(...) first, which boxed each typed array into a plain JS Array
+  // and then Three re-packed it back into a Float32Array — a needless double
+  // copy + GC churn on every vertex buffer (painful on big assemblies).
+  // Float32BufferAttribute already performs the single necessary copy.
+  if (pos)  geom.setAttribute('position', new THREE.Float32BufferAttribute(pos, 3));
+  if (norm) geom.setAttribute('normal',   new THREE.Float32BufferAttribute(norm, 3));
+  if (uv)   geom.setAttribute('uv',       new THREE.Float32BufferAttribute(uv, 2));
+  if (idx) {
+    const vertCount = pos ? (pos.length / 3) : 0;
+    const IndexAttr = vertCount > 65535 ? THREE.Uint32BufferAttribute : THREE.Uint16BufferAttribute;
+    geom.setIndex(new IndexAttr(idx, 1));
+  }
 
   if (!norm && pos) geom.computeVertexNormals();
   geom.computeBoundingBox();
@@ -819,37 +851,15 @@ export function finalizeModelImport(group3d, innerRoot, name, assetInfo, obj3dMa
 // ═══════════════════════════════════════════════════════════════════════════
 
 /**
- * Load a STEP / IGES / BREP file via occt-import-js.
+ * Build the SBS model (Three.js group + data tree) from an OCCT result and
+ * finalize it. Shared by the fresh-parse path and the cache fast-path, so a
+ * cached load produces a byte-identical model to the original parse.
  */
-async function loadOcctFile(file, format, assetEntry = null) {
-  state.emit('status', `Initializing ${format.toUpperCase()} importer…`);
-  const occt = await ensureOCCT();
-
-  const buffer = await file.arrayBuffer();
-  const bytes  = new Uint8Array(buffer);
-  state.emit('status', `Tessellating ${format.toUpperCase()} geometry…`);
-
-  let result;
-  if (format === 'step') result = occt.ReadStepFile(bytes, OCCT_PARAMS);
-  else if (format === 'iges') result = occt.ReadIgesFile(bytes, OCCT_PARAMS);
-  else if (format === 'brep') result = occt.ReadBrepFile(bytes, OCCT_PARAMS);
-
-  if (!result?.success) {
-    throw new Error(`${format.toUpperCase()} import failed.`);
-  }
-
+function _buildOcctModel(result, file, format, assetEntry) {
   const group3d  = new THREE.Group();
   group3d.name   = file.name;
   const obj3dMap = new Map();
-
-  const innerRoot = buildNodeFromOcct(
-    result.root,
-    result.meshes,
-    group3d,
-    file.name,
-    obj3dMap,
-  );
-
+  const innerRoot = buildNodeFromOcct(result.root, result.meshes, group3d, file.name, obj3dMap);
   return finalizeModelImport(group3d, innerRoot, file.name, {
     id:           assetEntry?.id,
     type:         format,
@@ -858,6 +868,255 @@ async function loadOcctFile(file, format, assetEntry = null) {
     originalPath: assetEntry?.originalPath || file.path || '',
     relativePath: assetEntry?.relativePath || '',
   }, obj3dMap);
+}
+
+/**
+ * Load a STEP / IGES / BREP file via occt-import-js — with the fast-load tail
+ * cache (V0.2.22.80). If the file carries a valid SBS cache tail we replay the
+ * stored OCCT result (~1–2s, no kernel). Otherwise we parse the kernel (slow)
+ * and, for an un-cached "original", offer to bake a fast-load copy.
+ */
+async function loadOcctFile(file, format, assetEntry = null, opts = {}) {
+  const _now = () => (typeof performance !== 'undefined' ? performance.now() : Date.now());
+  const _t0  = _now();
+
+  const buffer = await file.arrayBuffer();
+  const bytes  = new Uint8Array(buffer);
+
+  // ── FAST PATH: file has a baked SBS cache tail ──────────────────────────
+  const footer = modelCache.readFooter(bytes);
+  if (footer) {
+    let ok = false;
+    const head = bytes.subarray(0, footer.headLength);
+    try { ok = await modelCache.verifyHead(head, footer.headHashHex); } catch { ok = false; }
+    if (ok) {
+      try {
+        const payload = bytes.subarray(footer.payloadStart, footer.payloadStart + footer.payloadLength);
+        const cached  = modelCache.deserializeOcctBlob(payload);
+        const node    = _buildOcctModel(cached, file, format, assetEntry);
+        const took    = Math.round(_now() - _t0);
+        const parts   = (cached.meshes || []).length;
+        console.log(`[import] ${file.name} — FAST cache load=${took}ms (parts=${parts})`);
+        state.emit('status', `Loaded ${file.name} from cache in ${(took / 1000).toFixed(1)}s — ${parts} part(s) ⚡`);
+        return node;
+      } catch (err) {
+        console.warn('[import] cache replay failed — re-parsing from source:', err);
+        // fall through to the slow path using the clean head
+      }
+    }
+  }
+
+  // ── SLOW PATH: parse the kernel (clean head only — never the tail) ──────
+  state.emit('status', `Initializing ${format.toUpperCase()} importer…`);
+  const occt   = await ensureOCCT();
+  const head   = footer ? bytes.subarray(0, footer.headLength) : bytes;
+  const _tRead = _now();
+  const params = _occtParams();
+  state.emit('status', `Tessellating ${format.toUpperCase()} geometry (${_cadQuality})… first open of this file`);
+
+  let result;
+  if (format === 'step') result = occt.ReadStepFile(head, params);
+  else if (format === 'iges') result = occt.ReadIgesFile(head, params);
+  else if (format === 'brep') result = occt.ReadBrepFile(head, params);
+  const _tParse = _now();
+  if (!result?.success) throw new Error(`${format.toUpperCase()} import failed.`);
+
+  const node       = _buildOcctModel(result, file, format, assetEntry);
+  const _tBuild    = _now();
+  const _meshCount = (result.meshes || []).length;
+  const ms = (a, b) => Math.round(b - a);
+  console.log(
+    `[import] ${file.name} — read=${ms(_t0, _tRead)}ms  parse+tess=${ms(_tRead, _tParse)}ms  ` +
+    `build=${ms(_tParse, _tBuild)}ms  TOTAL=${ms(_t0, _tBuild)}ms  (quality=${_cadQuality}, parts=${_meshCount})`,
+  );
+  state.emit('status',
+    `Loaded ${file.name} in ${(ms(_t0, _tBuild) / 1000).toFixed(1)}s — ${_meshCount} part(s), quality=${_cadQuality}`);
+
+  // ── BAKE: first open of an un-cached original → offer a fast-load copy ──
+  // Skipped while restoring a project (no prompts) or when no path to write to.
+  if (!footer && !opts.skipBake && !_loadingFromProject) {
+    const srcPath = opts.sourcePath || file.path || assetEntry?.originalPath || assetEntry?.resolvedPath || '';
+    if (srcPath && format === 'step') {
+      _maybeBakeCache(srcPath, head, result, node?.assetId)
+        .catch(err => console.warn('[import] bake skipped:', err?.message || err));
+    }
+  }
+
+  return node;
+}
+
+// ── Fast-load cache: bake helpers ───────────────────────────────────────────
+function _basename(p) { return String(p || '').replace(/^.*[\\/]/, ''); }
+function _swapExt(p, ext) { return String(p || '').replace(/\.[^.\\/]+$/, '') + '.' + ext; }
+
+/** Resolve the bake mode: remembered preference, else prompt the user. */
+async function _resolveCacheMode(srcPath) {
+  let remembered = null;
+  try { remembered = userSettings.get()?.cad?.cacheMode || null; } catch { /* ignore */ }
+  if (remembered && remembered !== 'ask') return remembered;
+  return await _promptCacheMode(srcPath);
+}
+
+/**
+ * Bake a fast-load copy of an un-cached original. Writes:
+ *   'sbsobj'  → <name>.sbsobj   (original untouched, single combined file)
+ *   'inplace' → the source file  (tail appended in place)
+ *   'off'/'once' → nothing
+ */
+async function _maybeBakeCache(srcPath, headBytes, occtResult, assetId = null) {
+  const mode = await _resolveCacheMode(srcPath);
+  if (!mode || mode === 'off' || mode === 'once') return;
+
+  state.emit('status', 'Baking fast-load cache…');
+  const baked  = await modelCache.buildBakedFile(headBytes, occtResult);
+  const target = mode === 'sbsobj' ? _swapExt(srcPath, 'sbsobj') : srcPath;
+  const res    = await window.sbsNative?.writeFile?.(target, baked);
+  if (res?.ok) {
+    // For 'sbsobj' (a NEW file), repoint the live asset → the .sbsobj so the
+    // project saves THAT reference and every later open / project reload hits
+    // the cache. 'inplace' already keeps the same path (now cached), so no
+    // repoint needed there.
+    if (mode === 'sbsobj' && assetId) _repointAsset(assetId, target, baked.length);
+    state.emit('status', `⚡ Fast-load cache saved → ${_basename(target)} — now using it for this model.`);
+    console.log(`[import] baked cache (${mode}) → ${target}  (${(baked.length / 1e6).toFixed(1)} MB)`);
+  } else {
+    console.warn('[import] cache write failed:', res?.error);
+    state.emit('status', `Could not write fast-load cache: ${res?.error || 'unknown error'}`);
+  }
+}
+
+/**
+ * Repoint a loaded asset's source reference to the baked .sbsobj file. The
+ * assetId is unchanged (so all node IDs / step snapshots stay valid) — only
+ * the on-disk file the project will reload from is swapped. Result: saving the
+ * project records the .sbsobj, and reopening it fast-loads from the cache.
+ */
+function _repointAsset(assetId, newPath, sizeBytes) {
+  const assets = state.get('assets') || [];
+  const idx = assets.findIndex(a => a.id === assetId);
+  if (idx < 0) return;
+  const newExt = getFileExt(newPath);
+  const next = assets.slice();
+  const prev = next[idx];
+  next[idx] = {
+    ...prev,
+    name:         _basename(newPath),
+    originalPath: newPath,
+    relativePath: prev.relativePath ? _swapExt(prev.relativePath, newExt) : '',
+    fileSize:     sizeBytes ?? prev.fileSize,
+    fileHash:     null,
+    lastModified: Date.now(),
+  };
+  state.setState({ assets: next });
+  state.markDirty?.();
+  console.log(`[import] asset ${assetId} repointed → ${newPath}`);
+}
+
+// ── Native CAD converter routing (V0.2.22.81) ───────────────────────────────
+// Big STEP/IGES blow past the 32-bit WASM reader's ~2 GB heap. When the native
+// 64-bit OpenCascade sidecar is installed, route large files through it →
+// produces a .glb (no cap, faster), loaded via the existing glТF path and the
+// asset repointed so the project rides on the .glb. Returns the model node on
+// success, or null to fall back to the in-app WASM reader.
+const NATIVE_CAD_THRESHOLD = 120 * 1024 * 1024;   // 120 MB
+
+async function _tryNativeCad(file, ext, assetEntry, opts) {
+  if ((file.size || 0) <= NATIVE_CAD_THRESHOLD) return null;   // small → in-app reader + cache
+  const srcPath = opts.sourcePath || file.path || assetEntry?.originalPath || assetEntry?.resolvedPath || '';
+  if (!srcPath) return null;                                   // need a real path to convert
+
+  let available = false;
+  try { available = await window.sbsNative?.cad?.available?.(); } catch { available = false; }
+  if (!available) {
+    state.emit('status',
+      `"${file.name}" is ${((file.size / 1e6) | 0)} MB — beyond the in-app CAD reader's ~2 GB limit. ` +
+      `Install the native converter or export glTF. Trying the in-app reader anyway…`);
+    console.warn('[import] big CAD file but native converter not installed — falling back to WASM (may OOM).');
+    return null;
+  }
+
+  const preset   = OCCT_QUALITY_PRESETS[_cadQuality] || OCCT_QUALITY_PRESETS.normal;
+  const linRatio = preset.linearDeflection;
+  const angDeg   = preset.angularDeflection * 180 / Math.PI;
+  const outPath  = _swapExt(srcPath, 'glb');
+
+  state.emit('status', `Converting ${file.name} with the native 64-bit CAD engine — no size limit. This can take a few minutes…`);
+  const _now = () => (typeof performance !== 'undefined' ? performance.now() : Date.now());
+  const _t0  = _now();
+
+  let res;
+  try { res = await window.sbsNative.cad.convert(srcPath, outPath, linRatio, angDeg); }
+  catch (err) { res = { ok: false, error: err?.message || String(err) }; }
+  if (!res?.ok) {
+    state.emit('status', `Native CAD conversion failed (${res?.error || 'unknown'}) — falling back to in-app reader.`);
+    console.warn('[import] native convert failed:', res?.error);
+    return null;
+  }
+
+  const rd = await window.sbsNative.readFile(outPath, 'buffer');
+  if (!rd?.ok) { console.warn('[import] could not read converted glb:', rd?.error); return null; }
+  const bytes   = rd.data;
+  const glbFile = new File([bytes], _basename(outPath));
+  const node    = await loadGltfFile(glbFile, assetEntry);
+  if (node?.assetId) _repointAsset(node.assetId, outPath, bytes.byteLength ?? bytes.length ?? null);
+
+  const took = Math.round(_now() - _t0);
+  state.emit('status', `Loaded ${file.name} via native CAD engine in ${(took / 1000).toFixed(1)}s → ${_basename(outPath)} ⚡`);
+  console.log(`[import] native CAD convert+load ${took}ms → ${outPath}`);
+  return node;
+}
+
+/** One-time-per-original modal asking where to store the fast-load cache. */
+function _promptCacheMode(srcPath) {
+  return new Promise((resolve) => {
+    const base = _basename(srcPath);
+    const dlg  = document.createElement('dialog');
+    dlg.className = 'sbs-dialog';
+    dlg.style.cssText = 'max-width:480px;';
+    dlg.innerHTML = `
+      <div class="sbs-dialog__body">
+        <div class="sbs-dialog__title">⚡ Make this file load instantly?</div>
+        <p class="small" style="margin:8px 0 12px;color:#94a3b8;line-height:1.5">
+          <b>${base}</b> took a while to parse. SBS can stash the result so the
+          <b>next open is ~1–2s</b> instead of re-parsing. Where should it go?
+        </p>
+        <label style="display:flex;gap:8px;align-items:flex-start;margin:8px 0;cursor:pointer">
+          <input type="radio" name="cm" value="sbsobj" checked />
+          <span class="small"><b>New <code>.sbsobj</code> file</b> — original STEP untouched, one combined file. Rename to <code>.step</code> still opens in CAD. <i>(recommended)</i></span>
+        </label>
+        <label style="display:flex;gap:8px;align-items:flex-start;margin:8px 0;cursor:pointer">
+          <input type="radio" name="cm" value="inplace" />
+          <span class="small"><b>Into this <code>.step</code> in place</b> — one file, but rewrites your original.</span>
+        </label>
+        <label style="display:flex;gap:8px;align-items:flex-start;margin:8px 0;cursor:pointer">
+          <input type="radio" name="cm" value="once" />
+          <span class="small"><b>Just load it this time</b> — don't cache (you'll be asked again next time).</span>
+        </label>
+        <label style="display:flex;gap:8px;align-items:center;margin:12px 0 0;cursor:pointer">
+          <input type="checkbox" id="cm-remember" />
+          <span class="small" style="color:#cbd5e1">Do this for all files — stop asking</span>
+        </label>
+        <div style="display:flex;gap:8px;justify-content:flex-end;margin-top:16px">
+          <button class="btn" id="cm-ok" style="background:#0369a1;color:#f1f5f9">OK</button>
+        </div>
+      </div>
+    `;
+    const finish = async (val) => {
+      const remember = dlg.querySelector('#cm-remember')?.checked;
+      if (remember && val !== 'once') {
+        try { await userSettings.patch({ cad: { cacheMode: val } }); } catch { /* ignore */ }
+      }
+      try { dlg.close(); dlg.remove(); } catch { /* ignore */ }
+      resolve(val);
+    };
+    dlg.querySelector('#cm-ok').addEventListener('click', () => {
+      const val = dlg.querySelector('input[name="cm"]:checked')?.value || 'once';
+      finish(val);
+    });
+    dlg.addEventListener('cancel', (e) => { e.preventDefault(); finish('once'); });
+    document.body.appendChild(dlg);
+    dlg.showModal();
+  });
 }
 
 /**
@@ -1022,9 +1281,16 @@ export async function loadModelFile(file, opts = {}) {
 
   _loadingFromProject = !!opts.skipColorExtraction;
   try {
-    if (['step', 'stp'].includes(ext))   return await loadOcctFile(file, 'step', assetEntry);
-    if (['iges', 'igs'].includes(ext))   return await loadOcctFile(file, 'iges', assetEntry);
-    if (['brep', 'brp'].includes(ext))   return await loadOcctFile(file, 'brep', assetEntry);
+    // Large STEP/IGES → native 64-bit converter when available (skips the 2 GB
+    // WASM wall). Returns the model on success, null to fall back to WASM.
+    if (!_loadingFromProject && ['step', 'stp', 'iges', 'igs'].includes(ext)) {
+      const native = await _tryNativeCad(file, ext, assetEntry, opts);
+      if (native) return native;
+    }
+    // .sbsobj = a STEP with our fast-load cache tail (head is STEP bytes).
+    if (['step', 'stp', 'sbsobj'].includes(ext)) return await loadOcctFile(file, 'step', assetEntry, opts);
+    if (['iges', 'igs'].includes(ext))   return await loadOcctFile(file, 'iges', assetEntry, opts);
+    if (['brep', 'brp'].includes(ext))   return await loadOcctFile(file, 'brep', assetEntry, opts);
     if (ext === 'obj')                   return await loadObjFile(file, assetEntry);
     if (ext === 'stl')                   return await loadStlFile(file, assetEntry);
     if (['gltf', 'glb'].includes(ext))   return await loadGltfFile(file, assetEntry);

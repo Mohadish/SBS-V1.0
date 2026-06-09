@@ -374,7 +374,7 @@ ipcMain.handle('dialog:openModel', async () => {
   const result = await dialog.showOpenDialog(mainWindow, {
     title: 'Open Model File',
     filters: [
-      { name: 'CAD & 3D Files', extensions: ['step','stp','iges','igs','brep','brp','obj','stl','gltf','glb','fbx'] },
+      { name: 'CAD & 3D Files', extensions: ['sbsobj','step','stp','iges','igs','brep','brp','obj','stl','gltf','glb','fbx'] },
       { name: 'All Files', extensions: ['*'] },
     ],
     properties: ['openFile', 'multiSelections'],
@@ -543,6 +543,49 @@ ipcMain.handle('fs:deletePath', async (_, targetPath, opts = {}) => {
   } catch (err) {
     return { ok: false, error: err.message };
   }
+});
+
+// ── Native CAD converter (V0.2.22.81) ───────────────────────────────────────
+// Optional 64-bit OpenCascade sidecar (native/bin/<platform>/sbs-occt-convert).
+// Converts big STEP/IGES → .glb (no 2 GB WASM cap). If the exe isn't present,
+// these handlers report "unavailable" and the renderer falls back to the
+// in-app WASM reader — so the feature is a pure add-on, never a regression.
+function _nativeCadExe() {
+  const exeName = process.platform === 'win32' ? 'sbs-occt-convert.exe' : 'sbs-occt-convert';
+  const plat = process.platform === 'win32' ? 'win-x64'
+             : process.platform === 'darwin' ? 'darwin-x64'
+             : 'linux-x64';
+  const rel = path.join('native', 'bin', plat, exeName);
+  const candidates = [
+    path.join(APP_ROOT, rel),                          // dev
+    path.join(process.resourcesPath || '', rel),       // packaged (extraResources)
+  ];
+  for (const c of candidates) { try { if (fs.existsSync(c)) return c; } catch { /* ignore */ } }
+  return null;
+}
+
+ipcMain.handle('cad:available', () => !!_nativeCadExe());
+
+ipcMain.handle('cad:convert', async (_e, { inp, out, linRatio, angDeg } = {}) => {
+  const exe = _nativeCadExe();
+  if (!exe) return { ok: false, error: 'native converter not installed' };
+  if (!inp || !out) return { ok: false, error: 'missing input/output path' };
+  const { spawn } = require('child_process');
+  return await new Promise((resolve) => {
+    const args = [inp, out];
+    if (linRatio != null) args.push(String(linRatio));
+    if (angDeg   != null) args.push(String(angDeg));
+    let stderr = '';
+    let proc;
+    try { proc = spawn(exe, args, { windowsHide: true }); }
+    catch (err) { return resolve({ ok: false, error: err.message }); }
+    proc.stderr.on('data', d => { stderr += d.toString(); });
+    proc.on('error', err => resolve({ ok: false, error: err.message }));
+    proc.on('close', code => {
+      if (code === 0 && fs.existsSync(out)) resolve({ ok: true, out, log: stderr.trim() });
+      else resolve({ ok: false, error: `converter exited ${code}: ${stderr.trim().slice(-400)}` });
+    });
+  });
 });
 
 // Get app version

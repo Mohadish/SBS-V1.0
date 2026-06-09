@@ -32,6 +32,8 @@ import {
   applyTransformSnapshot,
   applyNodeTransformToObject3D,
   applyNodeSourceTransformToObject3D,
+  ensureTransformDefaults,
+  isTransformNode,
 }                               from '../core/transforms.js';
 import {
   moveNode    as _nodes_moveNode,
@@ -1092,6 +1094,213 @@ export function deleteFolderNode(folderId) {
   doRemove();
   undoManager.push(`Delete folder "${node.name}"`, doRestore, doRemove);
   return true;
+}
+
+// ─── Make transformable — wrap a node in a locked pivot-folder (V0.2.22.79) ───
+//
+// One click "give this thing a gizmo":
+//   • A fresh folder is created at the node's exact tree position, named
+//     after the node, and the node is moved inside it.
+//   • The folder is LOCKED (so viewport selection promotes to it → its
+//     gizmo) and its VIRTUAL pivot is parked on the node's bbox-centre
+//     while the gizmo axes stay aligned to the surrounding (parent) folder.
+//   • Because the wrapper folder is identity within the parent, the node's
+//     world pose is preserved automatically — no "cascade?" prompt, no
+//     visible jump (the "transform correction" is implicit).
+//   • The wrapper is injected into EVERY step snapshot (wrapping the node
+//     wherever it sits in that step) so the gizmo drives the node across
+//     the whole timeline, not just the active step.
+//
+// Pivot maths: pivotLocalOffset lives in the folder's LOCAL space and the
+// folder is identity inside its parent, so folder-local == parent frame.
+// getPivotWorldPosition → folder.localToWorld(offset) = node centre in
+// world; getPivotWorldQuaternion → folder.worldQuat × identity = parent
+// frame. That's "centred to node, oriented to parent" for free, and BLUE
+// pivot mode makes rotation orbit the node centre.
+export function makeTransformable(nodeId) {
+  const root = state.get('treeData');
+  if (!root) return null;
+  const nb0 = state.get('nodeById') || _nodes_buildNodeMap(root);
+  const target = nb0.get(nodeId);
+  if (!target) return null;
+  if (target.type === 'scene' || target.type === 'note' || target.type === 'hardwareNut') return null;
+  const parent0 = _findNodeParent(root, nodeId);
+  if (!parent0) return null;                       // scene root itself / detached
+  const beforeParentId = parent0.id;
+
+  // Fresh wrapper folder — locked, identity transform, pivot-enabled.
+  const folder = createNode('folder', { name: target.name || 'Group', locked: true });
+  ensureTransformDefaults(folder);
+  folder.pivotEnabled = true;
+  const folderId = folder.id;
+
+  const cloneSn = (s) => ({
+    id: s.id,
+    tree:       s.snapshot?.tree       ? JSON.parse(JSON.stringify(s.snapshot.tree))       : undefined,
+    transforms: s.snapshot?.transforms ? JSON.parse(JSON.stringify(s.snapshot.transforms)) : undefined,
+    visibility: s.snapshot?.visibility ? JSON.parse(JSON.stringify(s.snapshot.visibility)) : undefined,
+  });
+  const beforeSteps = (state.get('steps') || []).map(cloneSn);
+
+  // ── live restructure: wrap target under folder, at its position ──
+  const wrapLive = () => {
+    const r = state.get('treeData');
+    const p = state.get('nodeById')?.get(beforeParentId) || _findNodeParent(r, nodeId);
+    const t = state.get('nodeById')?.get(nodeId);
+    if (!p || !t) return;
+    const i = (p.children || []).findIndex(c => c.id === nodeId);
+    if (i < 0) return;
+    p.children.splice(i, 1, folder);
+    folder.children = [t];
+    state.setState({ treeData: r, nodeById: _nodes_buildNodeMap(r) });
+  };
+  const unwrapLive = () => {
+    const r = state.get('treeData');
+    const p = _findNodeParent(r, folderId);
+    const t = state.get('nodeById')?.get(nodeId) || (folder.children || [])[0];
+    if (!p || !t) return;
+    const i = (p.children || []).findIndex(c => c.id === folderId);
+    if (i < 0) return;
+    p.children.splice(i, 1, t);
+    folder.children = [];
+    state.setState({ treeData: r, nodeById: _nodes_buildNodeMap(r) });
+  };
+
+  wrapLive();
+  steps.applySnapshotInstant({ tree: serializeModelTree(state.get('treeData')) });
+
+  // ── compute the folder's pivot from the node's world bbox-centre ──
+  _centerPivotOnTarget(folderId, nodeId);
+
+  const fnode = state.get('nodeById')?.get(folderId);
+  const fSnap = captureTransformSnapshot(fnode);
+  const folderShell = { ...serializeModelTree(fnode), children: [] };
+
+  // ── inject wrapper into EVERY step snapshot ──
+  const wrapInSpec = (spec) => {
+    if (!spec) return spec;
+    const kids = spec.children || [];
+    for (let i = 0; i < kids.length; i++) {
+      const c = kids[i];
+      if (c.id === nodeId) {
+        const nk = [...kids];
+        nk[i] = { ...folderShell, children: [c] };
+        return { ...spec, children: nk };
+      }
+      const sub = wrapInSpec(c);
+      if (sub !== c) {
+        const nk = [...kids];
+        nk[i] = sub;
+        return { ...spec, children: nk };
+      }
+    }
+    return spec;
+  };
+  const injectSteps = () => {
+    const next = (state.get('steps') || []).map(s => {
+      const snap = s.snapshot;
+      if (!snap?.tree) return s;
+      if (_specHasId(snap.tree, folderId)) return s;     // idempotent
+      if (!_specHasId(snap.tree, nodeId))  return s;     // step lacks the node
+      return {
+        ...s,
+        snapshot: {
+          ...snap,
+          tree: wrapInSpec(snap.tree),
+          transforms: { [folderId]: JSON.parse(JSON.stringify(fSnap)), ...(snap.transforms || {}) },
+          visibility: { [folderId]: true, ...(snap.visibility || {}) },
+        },
+      };
+    });
+    state.setState({ steps: next });
+  };
+  injectSteps();
+
+  state.markDirty();
+  state.emit('change:treeData', state.get('treeData'));
+  state.setSelection(folderId, new Set([folderId]));
+
+  const afterSteps = (state.get('steps') || []).map(cloneSn);
+
+  undoManager.push(`Make "${target.name || 'object'}" transformable`,
+    () => {                                            // UNDO
+      unwrapLive();
+      _restoreStepStructures(beforeSteps);
+      _reapplyActiveSnapshot();
+      state.emit('change:treeData', state.get('treeData'));
+      state.markDirty();
+    },
+    () => {                                            // REDO
+      wrapLive();
+      _restoreStepStructures(afterSteps);
+      _reapplyActiveSnapshot();
+      // pivot/locked ride on the persistent `folder` node + afterSteps
+      // transforms; re-applying the active snapshot restores them.
+      state.emit('change:treeData', state.get('treeData'));
+      state.markDirty();
+    },
+  );
+  return folderId;
+}
+
+/** True iff a serialised tree spec contains a node with `id`. */
+function _specHasId(spec, id) {
+  if (!spec) return false;
+  if (spec.id === id) return true;
+  return (spec.children || []).some(c => _specHasId(c, id));
+}
+
+/**
+ * Park a wrapper folder's VIRTUAL pivot on its wrapped node's world
+ * bbox-centre. Orientation stays the folder's own (identity) frame =
+ * parent frame, since the folder is identity within its parent.
+ */
+function _centerPivotOnTarget(folderId, nodeId) {
+  const T = window.THREE;
+  if (!T) return;
+  const folderObj = steps.object3dById?.get(folderId);
+  const targetObj = steps.object3dById?.get(nodeId);
+  const fnode     = state.get('nodeById')?.get(folderId);
+  if (!folderObj || !targetObj || !fnode) return;
+  folderObj.updateMatrixWorld(true);
+  targetObj.updateMatrixWorld(true);
+  const box = new T.Box3().setFromObject(targetObj);
+  if (!box || box.isEmpty()) return;
+  const center = box.getCenter(new T.Vector3());
+  const local  = folderObj.worldToLocal(center.clone());
+  ensureTransformDefaults(fnode);
+  fnode.pivotLocalOffset     = [local.x, local.y, local.z];
+  fnode.pivotLocalQuaternion = [0, 0, 0, 1];
+  fnode.pivotEnabled         = true;
+  fnode.moveEnabled          = true;
+  fnode.rotateEnabled        = true;
+  applyNodeTransformToObject3D(fnode, folderObj, true);
+}
+
+/** Restore each step's snapshot {tree, transforms, visibility} from clones. */
+function _restoreStepStructures(clones) {
+  const byId = new Map(clones.map(c => [c.id, c]));
+  const next = (state.get('steps') || []).map(s => {
+    const c = byId.get(s.id);
+    if (!c) return s;
+    return {
+      ...s,
+      snapshot: {
+        ...s.snapshot,
+        ...(c.tree       !== undefined ? { tree:       JSON.parse(JSON.stringify(c.tree)) }       : {}),
+        ...(c.transforms !== undefined ? { transforms: JSON.parse(JSON.stringify(c.transforms)) } : {}),
+        ...(c.visibility !== undefined ? { visibility: JSON.parse(JSON.stringify(c.visibility)) } : {}),
+      },
+    };
+  });
+  state.setState({ steps: next, nodeById: _nodes_buildNodeMap(state.get('treeData')) });
+}
+
+/** Re-apply the active step's snapshot so Three.js matches the restored tree. */
+function _reapplyActiveSnapshot() {
+  const activeId = state.get('activeStepId');
+  const step = (state.get('steps') || []).find(s => s.id === activeId);
+  if (step?.snapshot) steps.applySnapshotInstant(step.snapshot);
 }
 
 // ─── Color preset — undoable create (V0.1.88) ───────────────────────────────

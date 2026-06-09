@@ -1282,6 +1282,17 @@ function _buildContextMenuItems(node) {
     });
   }
 
+  // ── Make transformable (V0.2.22.79) ───────────────────────────────────
+  // Wrap a single node in a locked pivot-folder named after it → instant
+  // gizmo, centred on the node, oriented to its parent folder.
+  if (count === 1 && !node.archived
+      && node.type !== 'scene' && node.type !== 'note' && node.type !== 'hardwareNut') {
+    items.push({
+      label: '🪄 Make transformable',
+      action: () => actions.makeTransformable(node.id),
+    });
+  }
+
   // ── Convert to Replace-Model (B.2-NEW.1) ─────────────────────────────
   // Single non-archived mesh / flatShape / model only. Folders are NOT
   // allowed. The action just flips node.type → 'replaceModel' (same id,
@@ -2568,131 +2579,156 @@ export function showMoveToFolderDialog(nodeIds) {
   if (!nodeIds || !nodeIds.length) return;
   const root = state.get('treeData');
   if (!root) return;
-  const options = _collectFolderOptions(root, nodeIds);
+
+  // ── Excluded destinations: the moved nodes + their descendants (you can't
+  // drop a node into itself or one of its own children). ──
+  const excluded = new Set(nodeIds);
+  for (const id of nodeIds) {
+    const n = findNode(root, id);
+    if (n) collectDescendantIds(n)?.forEach(d => excluded.add(d));
+  }
+
+  // ── Smart default: the common parent of everything being moved. If they
+  // all share one parent → pre-select it (so "create new folder" lands
+  // right there). Mixed parents → default to Root and let the user pick. ──
+  const parentIds = new Set();
+  for (const id of nodeIds) {
+    const p = findParent(root, id);
+    parentIds.add(p ? p.id : root.id);
+  }
+  const common = parentIds.size === 1 ? [...parentIds][0] : null;
+  let selectedId = (common && !excluded.has(common)) ? common : root.id;
+
+  // ── Container-only tree (scene root + folders + models), minus the moved
+  // set. Rendered as a real collapsible tree, not a flat dropdown. ──
+  const buildTree = (node) => {
+    if (excluded.has(node.id)) return null;
+    if (!(node.type === 'scene' || node.type === 'folder' || node.type === 'model')) return null;
+    const children = (node.children || []).map(buildTree).filter(Boolean);
+    return {
+      id: node.id, type: node.type,
+      name: node.name || (node.type === 'scene' ? 'Root' : 'Folder'),
+      children,
+    };
+  };
+  const treeData = buildTree(root);
+  if (!treeData) return;
+
+  const collapsed = new Set();   // collapsed node ids
 
   const dlg = document.createElement('dialog');
   dlg.className = 'sbs-dialog';
+  dlg.style.cssText = 'max-width:460px;';
   dlg.innerHTML = `
     <div class="sbs-dialog__body">
       <div class="sbs-dialog__title">Move to Folder</div>
-      <p class="small" style="margin:6px 0 12px;color:#94a3b8">
-        Moving ${nodeIds.length} item${nodeIds.length > 1 ? 's' : ''}
+      <p class="small" style="margin:6px 0 10px;color:#94a3b8">
+        Moving ${nodeIds.length} item${nodeIds.length > 1 ? 's' : ''} — pick a destination
+        ${common ? '' : '<br><span style="color:#fbbf24">Items come from different folders — choose where they go.</span>'}
       </p>
-      <label class="colorlab">Destination
-        <select id="mtf-sel" style="margin-top:6px">
-          ${options.map(o =>
-            `<option value="${_esc(o.id)}">${_esc(o.label)}</option>`
-          ).join('')}
-          <option value="__new__">＋ Create new folder…</option>
-        </select>
+      <div id="mtf-tree" style="max-height:300px;overflow:auto;border:1px solid #334155;border-radius:6px;padding:4px;background:#0b1220;user-select:none;"></div>
+      <label class="colorlab" style="margin-top:10px">New sub-folder name (optional)
+        <input type="text" id="mtf-new-name" placeholder="leave blank to move into the selected folder" style="margin-top:6px" />
       </label>
-      <label class="colorlab" style="margin-top:10px">New folder name
-        <input type="text" id="mtf-new-name" placeholder="Folder name" style="margin-top:6px" />
-      </label>
-      <div style="display:flex;gap:8px;justify-content:flex-end;margin-top:16px">
+      <div style="display:flex;gap:8px;justify-content:flex-end;margin-top:14px">
         <button class="btn" id="mtf-cancel">Cancel</button>
-        <button class="btn" id="mtf-accept">Move here</button>
+        <button class="btn" id="mtf-accept" style="background:#0369a1;color:#f1f5f9;">Move here</button>
       </div>
     </div>
   `;
 
-  const sel     = dlg.querySelector('#mtf-sel');
-  const input   = dlg.querySelector('#mtf-new-name');
-  const accept  = dlg.querySelector('#mtf-accept');
-  const cancel  = dlg.querySelector('#mtf-cancel');
+  const treeEl = dlg.querySelector('#mtf-tree');
+  const input  = dlg.querySelector('#mtf-new-name');
+  const accept = dlg.querySelector('#mtf-accept');
+  const cancel = dlg.querySelector('#mtf-cancel');
 
-  // Greyed-out style for input when dropdown is an existing folder.
-  const greyStyle  = () => { input.style.color = '#64748b'; input.style.opacity = '0.6'; };
-  const whiteStyle = () => { input.style.color = ''; input.style.opacity = ''; };
-  const refresh = () => {
-    if (sel.value === '__new__') {
-      whiteStyle();
-      accept.textContent = 'Create and move here';
-    } else {
-      greyStyle();
-      accept.textContent = 'Move here';
-    }
+  const ICON = { scene: '🌐', folder: '🗂', model: '🧩' };
+
+  const render = () => {
+    treeEl.innerHTML = '';
+    const walk = (node, depth) => {
+      const hasKids     = node.children.length > 0;
+      const isCollapsed = collapsed.has(node.id);
+      const sel         = node.id === selectedId;
+
+      const row = document.createElement('div');
+      row.dataset.id = node.id;
+      row.style.cssText = [
+        'display:flex', 'align-items:center', 'gap:4px',
+        `padding:3px 6px 3px ${6 + depth * 16}px`,
+        'border-radius:4px', 'cursor:pointer', 'font-size:13px', 'line-height:1.4',
+        sel ? 'background:#1d4ed8;outline:1px solid #60a5fa;color:#fff'
+            : 'background:transparent;color:#cbd5e1',
+      ].join(';');
+
+      const tog = document.createElement('span');
+      tog.style.cssText = 'width:14px;text-align:center;flex:none;color:#64748b;';
+      tog.textContent = hasKids ? (isCollapsed ? '▸' : '▾') : '·';
+      if (hasKids) tog.dataset.toggle = node.id;
+      row.appendChild(tog);
+
+      const ic = document.createElement('span');
+      ic.textContent = ICON[node.type] || '🗂';
+      ic.style.flex = 'none';
+      row.appendChild(ic);
+
+      const nm = document.createElement('span');
+      nm.textContent = node.name;
+      nm.style.cssText = 'white-space:nowrap;overflow:hidden;text-overflow:ellipsis;';
+      row.appendChild(nm);
+
+      treeEl.appendChild(row);
+      if (hasKids && !isCollapsed) for (const c of node.children) walk(c, depth + 1);
+    };
+    walk(treeData, 0);
   };
-  refresh();   // initial state
 
-  sel.addEventListener('change', refresh);
-  // Typing into the (possibly greyed) input snaps to "+ Create new".
-  input.addEventListener('input', () => {
-    if (sel.value !== '__new__' && input.value.trim()) {
-      sel.value = '__new__';
+  treeEl.addEventListener('click', (e) => {
+    const tog = e.target.closest('[data-toggle]');
+    if (tog) {
+      const id = tog.dataset.toggle;
+      if (collapsed.has(id)) collapsed.delete(id); else collapsed.add(id);
+      render();
+      return;
     }
-    refresh();
+    const row = e.target.closest('[data-id]');
+    if (row) { selectedId = row.dataset.id; render(); }
   });
-  // Clicking a greyed-out input also flips to "+ Create new".
-  input.addEventListener('focus', () => {
-    if (sel.value !== '__new__') {
-      sel.value = '__new__';
-      refresh();
-    }
-  });
+
+  const refreshBtn = () => {
+    accept.textContent = input.value.trim() ? 'Create & move here' : 'Move here';
+  };
+  input.addEventListener('input', refreshBtn);
+  refreshBtn();
+  render();
 
   cancel.addEventListener('click', () => { dlg.close(); dlg.remove(); });
+  dlg.addEventListener('cancel', () => { dlg.remove(); });   // Esc closes
 
   accept.addEventListener('click', () => {
-    if (sel.value === '__new__') {
-      const name = input.value.trim();
-      if (!name) { input.focus(); return; }
-      // Create folder at scene root, then move selection into it.
-      const folderNode = _createFolderAtRoot(name, root);
-      if (!folderNode) return;
-      dlg.close(); dlg.remove();
-      _moveIdsIntoNode(nodeIds, folderNode);
+    const destNode = state.get('nodeById')?.get(selectedId) || findNode(state.get('treeData'), selectedId);
+    if (!destNode) return;
+    const name = input.value.trim();
+    dlg.close(); dlg.remove();
+    if (name) {
+      // Create the new folder UNDER the highlighted node, then move in.
+      const newId   = actions.createFolderInNode(destNode.id, name);
+      const newNode = newId
+        ? (state.get('nodeById')?.get(newId) || findNode(state.get('treeData'), newId))
+        : null;
+      if (newNode) _moveIdsIntoNode(nodeIds, newNode);
     } else {
-      const targetNode = state.get('nodeById')?.get(sel.value) || findNode(root, sel.value);
-      if (!targetNode) return;
-      dlg.close(); dlg.remove();
-      _moveIdsIntoNode(nodeIds, targetNode);
+      _moveIdsIntoNode(nodeIds, destNode);
     }
   });
-
-  // Esc on the dialog itself closes (dialog default behaviour).
-  dlg.addEventListener('cancel', () => { dlg.remove(); });
 
   document.body.appendChild(dlg);
   dlg.showModal();
+  // Scroll the smart-default selection into view.
+  requestAnimationFrame(() => {
+    treeEl.querySelector(`[data-id="${selectedId}"]`)?.scrollIntoView({ block: 'center' });
+  });
 }
-
-function _createFolderAtRoot(name, root) {
-  // Undoable — delegates to the shared action, then resolves the live node
-  // so the caller can move selection into it.
-  const id = actions.createFolderInNode(root.id, name);
-  if (!id) return null;
-  return state.get('nodeById')?.get(id) || findNode(root, id);
-}
-
-/**
- * Build list of valid destination folders for "Move To Folder" dialog.
- * Excludes the nodes being moved and their descendants.
- */
-function _collectFolderOptions(root, excludeIds) {
-  const excluded = new Set(excludeIds);
-  // Also exclude descendants of excluded nodes
-  for (const id of excludeIds) {
-    const node = findNode(root, id);
-    if (node) collectDescendantIds(node)?.forEach(d => excluded.add(d));
-  }
-
-  const options = [];
-
-  function walk(node, depth) {
-    if (excluded.has(node.id)) return;
-    if (node.type === 'scene' || node.type === 'folder' || node.type === 'model') {
-      const prefix = depth === 0 ? '' : '  '.repeat(depth - 1) + '  ';
-      const icon   = node.type === 'scene' ? '🌐' : node.type === 'model' ? '🧩' : '🗂';
-      options.push({ id: node.id, label: `${prefix}${icon} ${node.name || 'Root'}` });
-      for (const child of (node.children || [])) walk(child, depth + 1);
-    }
-  }
-
-  walk(root, 0);
-  return options;
-}
-
 
 // ═══════════════════════════════════════════════════════════════════════════
 //  ADD-TO-REPLACE PICKER + MODE DIALOG  (B.2-NEW.2)

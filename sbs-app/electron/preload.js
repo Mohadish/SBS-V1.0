@@ -39,6 +39,12 @@ contextBridge.exposeInMainWorld('sbsNative', {
   getVersion:         ()          => ipcRenderer.invoke('app:getVersion'),
   showInFolder:       (filePath)  => ipcRenderer.invoke('shell:showItemInFolder', filePath),
 
+  // ── Native CAD converter (optional 64-bit OpenCascade sidecar) ───────────
+  cad: {
+    available: ()                              => ipcRenderer.invoke('cad:available'),
+    convert:   (inp, out, linRatio, angDeg)    => ipcRenderer.invoke('cad:convert', { inp, out, linRatio, angDeg }),
+  },
+
   // ── Menu messages (main → renderer) ─────────────────────────────────────
   onMenu: (channel, cb) => {
     const allowed = [
