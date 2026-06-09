@@ -55,14 +55,18 @@ if not exist "%VCPKG_DIR%\vcpkg.exe" (
   echo [1/4] vcpkg already present.
 )
 
-REM ── 2. OpenCascade (the long pole) ──────────────────────────────────────────
-if not exist "%VCPKG_DIR%\installed\%TRIPLET%\include\opencascade" (
-  echo [2/4] Building OpenCascade via vcpkg.  ** THIS CAN TAKE 1-2 HOURS the first time. **
-  echo       Leave it running; grab a coffee.
-  "%VCPKG_DIR%\vcpkg.exe" install opencascade:%TRIPLET%
-  if errorlevel 1 ( echo [X] OpenCascade install failed. Send the log above to Claude. & pause & exit /b 1 )
-) else (
-  echo [2/4] OpenCascade already installed.
+REM ── 2. OpenCascade WITH the glTF (rapidjson) feature ────────────────────────
+REM  RWGltf_CafWriter (our glTF output) only gets compiled when OCC is built
+REM  with RapidJSON. We always run the install so a previously feature-less OCC
+REM  gets rebuilt WITH glTF. First build (or this feature change) takes 1-2 HOURS.
+echo [2/4] Ensuring OpenCascade is built WITH glTF support (rapidjson feature).
+echo       If OCC was already built without it, this REBUILDS it — 1-2 HOURS. Leave it running.
+"%VCPKG_DIR%\vcpkg.exe" install "opencascade[rapidjson]:%TRIPLET%" --recurse
+if errorlevel 1 (
+  echo [X] OpenCascade install failed.
+  echo     If it says "unknown feature 'rapidjson'", run:  vcpkg\vcpkg.exe search opencascade
+  echo     and send Claude the feature list. Otherwise send the log above.
+  pause & exit /b 1
 )
 
 REM ── 3. configure + build our tool ───────────────────────────────────────────
