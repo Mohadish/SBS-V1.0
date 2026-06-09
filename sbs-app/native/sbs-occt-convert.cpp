@@ -158,6 +158,10 @@ int main(int argc, char** argv) {
   RWGltf_CafWriter writer(TCollection_AsciiString(outPath.c_str()), Standard_True /*isBinary → .glb*/);
   writer.SetTransformationFormat(RWGltf_WriterTrsfFormat_Compact);
   writer.SetForcedUVExport(Standard_False);
+  // CRITICAL: without this OCC writes ONE primitive per FACE → hundreds of
+  // thousands of accessors + a huge JSON chunk that chokes the glTF loader.
+  // Merging collapses each part's faces into one primitive per material.
+  writer.SetMergeFaces(Standard_True);
   Message_ProgressRange progress;
   if (!writer.Perform(doc, fileInfo, progress)) {
     std::cerr << "glTF write failed\n";
