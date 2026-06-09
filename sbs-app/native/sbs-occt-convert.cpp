@@ -1,36 +1,42 @@
 // ─────────────────────────────────────────────────────────────────────────────
-//  sbs-occt-convert  —  native 64-bit STEP/IGES → glTF(.glb) converter
+//  sbs-occt-convert  —  native 64-bit STEP/IGES → SBS mesh-blob (.sbsmesh)
 //  Part of SBS Step Browser. Built on OpenCascade (LGPL-2.1).
 //
 //  WHY THIS EXISTS
-//    The in-app CAD reader is occt-import-js — OpenCascade compiled to 32-bit
-//    WebAssembly, jailed in a ~2 GB heap. Big assemblies (≈150 MB+ STEP) blow
-//    past that wall and fail. This is the SAME kernel built NATIVE + 64-bit:
-//    it uses real RAM (no cap) and meshes in parallel, exactly like the CAD
-//    apps that open these files fine. Output is a standard .glb that the app
-//    already loads via its 64-bit GLTFLoader, with the assembly tree, part
-//    names and colors preserved (XDE / XCAF).
+//    The in-app CAD reader (occt-import-js) is OpenCascade in 32-bit WASM,
+//    capped at ~2 GB → it fails on big assemblies (≈150 MB+ STEP). This is the
+//    SAME kernel, native + 64-bit (no cap), AND it emits the EXACT same data
+//    structure the WASM reader does — a { root, meshes } tree of per-solid
+//    meshes — serialised in the app's own cache-blob format (see
+//    src/io/model-cache.js). The app loads it through buildNodeFromOcct, the
+//    identical path the WASM reader uses, so the result matches byte-for-byte
+//    in behaviour: separated parts, OCC-native orientation, per-solid colours.
+//
+//  OUTPUT (.sbsmesh) — the model-cache payload, little-endian:
+//    [u32 jsonLen][json][binary]
+//    json = { v:1, root:{name,meshes,children}, meshes:[{color,p,n,u,i}] }
+//           each slot = {o:byteOffsetInBinary, l:elementCount}
+//    binary = concatenated f32 positions, f32 normals, u32 indices
 //
 //  USAGE
-//    sbs-occt-convert <input.step|.stp|.iges|.igs> <output.glb> [linRatio] [angDeg]
-//      linRatio : linear deflection as a fraction of the model's bbox diagonal
-//                 (default 0.005 — matches the app's "normal" quality)
-//      angDeg   : angular deflection in DEGREES (default 30)
+//    sbs-occt-convert <input.step|.iges> <output.sbsmesh> [linRatio] [angDeg]
+//      linRatio : linear deflection as a fraction of the bbox diagonal (def 0.005)
+//      angDeg   : angular deflection in degrees (def 30)
 //
-//  EXIT CODES
-//    0 ok · 1 bad args · 2 read failed · 3 transfer failed · 4 no shapes
-//    5 mesh failed · 6 glTF write failed
-//
-//  Build: see native/README.md  (vcpkg + CMake).  Tested against OCCT 7.6–7.8.
+//  Build: see native/README.md (vcpkg + CMake). Tested against OCCT 7.6–8.0.
 // ─────────────────────────────────────────────────────────────────────────────
 
 #define _USE_MATH_DEFINES
 #include <iostream>
+#include <fstream>
+#include <vector>
 #include <string>
+#include <cstdint>
 #include <cctype>
 #include <cmath>
 #include <cstdlib>
 #include <chrono>
+#include <utility>
 
 #include <Interface_Static.hxx>
 #include <IFSelect_ReturnStatus.hxx>
@@ -40,100 +46,82 @@
 #include <TDocStd_Document.hxx>
 #include <XCAFDoc_DocumentTool.hxx>
 #include <XCAFDoc_ShapeTool.hxx>
+#include <XCAFDoc_ColorTool.hxx>
 #include <TDF_LabelSequence.hxx>
+#include <TopoDS.hxx>
 #include <TopoDS_Shape.hxx>
+#include <TopoDS_Face.hxx>
+#include <TopExp_Explorer.hxx>
+#include <TopAbs.hxx>
+#include <TopLoc_Location.hxx>
+#include <BRep_Tool.hxx>
+#include <BRepMesh_IncrementalMesh.hxx>
 #include <Bnd_Box.hxx>
 #include <BRepBndLib.hxx>
-#include <BRepMesh_IncrementalMesh.hxx>
-#include <RWGltf_CafWriter.hxx>
-#include <RWMesh_CoordinateSystemConverter.hxx>
-#include <RWMesh_CoordinateSystem.hxx>
-#include <TColStd_IndexedDataMapOfStringString.hxx>
-#include <Message.hxx>
-#include <Message_ProgressRange.hxx>
-#include <OSD_Path.hxx>
+#include <Poly_Triangulation.hxx>
+#include <Quantity_Color.hxx>
+#include <gp_Pnt.hxx>
+#include <gp_Dir.hxx>
+#include <gp_Trsf.hxx>
 
-static std::string lower(std::string s) {
-  for (auto& c : s) c = (char)std::tolower((unsigned char)c);
-  return s;
-}
-static std::string ext(const std::string& p) {
-  const auto dot = p.find_last_of('.');
-  return dot == std::string::npos ? "" : lower(p.substr(dot + 1));
-}
+static std::string lower(std::string s) { for (auto& c : s) c = (char)std::tolower((unsigned char)c); return s; }
+static std::string ext(const std::string& p) { const auto d = p.find_last_of('.'); return d == std::string::npos ? "" : lower(p.substr(d + 1)); }
+static std::string f2s(double v) { char b[32]; std::snprintf(b, sizeof(b), "%.6g", v); return std::string(b); }
+
+struct Mesh {
+  bool hasColor = false; double r = 0, g = 0, b = 0;
+  std::vector<float>    pos, nrm;
+  std::vector<uint32_t> idx;
+};
 
 int main(int argc, char** argv) {
   if (argc < 3) {
-    std::cerr << "usage: sbs-occt-convert <input.step|.iges> <output.glb> [linRatio] [angDeg]\n";
+    std::cerr << "usage: sbs-occt-convert <input.step|.iges> <output.sbsmesh> [linRatio] [angDeg]\n";
     return 1;
   }
   const std::string inPath  = argv[1];
   const std::string outPath = argv[2];
-  const double linRatio = argc > 3 ? std::atof(argv[3]) : 0.005;          // fraction of bbox diagonal
-  const double angDeg   = argc > 4 ? std::atof(argv[4]) : 30.0;           // degrees
+  const double linRatio = argc > 3 ? std::atof(argv[3]) : 0.005;
+  const double angDeg   = argc > 4 ? std::atof(argv[4]) : 30.0;
   const double angRad   = angDeg * M_PI / 180.0;
   const std::string e   = ext(inPath);
 
-  auto _t0   = std::chrono::steady_clock::now();
-  auto secs  = [&]() { return std::chrono::duration<double>(std::chrono::steady_clock::now() - _t0).count(); };
+  auto _t0  = std::chrono::steady_clock::now();
+  auto secs = [&]() { return std::chrono::duration<double>(std::chrono::steady_clock::now() - _t0).count(); };
 
-  // ── Speed knobs ─────────────────────────────────────────────────────────
-  // STEP shape-healing is a slow, single-threaded repair pass we don't need for
-  // visualisation — turning it off is the big win on large assemblies. A coarse
-  // read precision also cuts the work. (Unknown static names are harmlessly
-  // ignored, so these are safe even if a build doesn't recognise one.)
-  Interface_Static::SetIVal("read.step.healing",       0);
-  Interface_Static::SetIVal("read.precision.mode",     1);
-  Interface_Static::SetRVal("read.precision.val",      0.1);
+  // Speed: skip the slow single-threaded STEP healing pass (unknown statics are ignored).
+  Interface_Static::SetIVal("read.step.healing", 0);
+  Interface_Static::SetIVal("read.precision.mode", 1);
+  Interface_Static::SetRVal("read.precision.val", 0.1);
 
-  // ── XCAF document (holds assembly tree + names + colors) ──────────────────
   Handle(TDocStd_Document) doc;
   Handle(XCAFApp_Application) app = XCAFApp_Application::GetApplication();
   app->NewDocument("BinXCAF", doc);
 
-  // ── Read CAD into the document ────────────────────────────────────────────
   IFSelect_ReturnStatus rs = IFSelect_RetFail;
   if (e == "step" || e == "stp") {
     STEPCAFControl_Reader reader;
-    reader.SetColorMode(true);
-    reader.SetNameMode(true);
-    reader.SetLayerMode(true);
-    std::cerr << "[sbs-occt] parsing STEP file . . .\n";
+    reader.SetColorMode(true); reader.SetNameMode(true); reader.SetLayerMode(true);
+    std::cerr << "[sbs-occt] parsing STEP . . .\n";
     rs = reader.ReadFile(inPath.c_str());
-    std::cerr << "[sbs-occt] parsed at " << secs() << "s; transferring to model . . .\n";
+    std::cerr << "[sbs-occt] parsed at " << secs() << "s; transferring . . .\n";
     if (rs == IFSelect_RetDone && !reader.Transfer(doc)) { std::cerr << "transfer failed\n"; return 3; }
     std::cerr << "[sbs-occt] transferred at " << secs() << "s\n";
   } else if (e == "iges" || e == "igs") {
     IGESCAFControl_Reader reader;
-    reader.SetColorMode(true);
-    reader.SetNameMode(true);
+    reader.SetColorMode(true); reader.SetNameMode(true);
     rs = reader.ReadFile(inPath.c_str());
     if (rs == IFSelect_RetDone && !reader.Transfer(doc)) { std::cerr << "transfer failed\n"; return 3; }
-  } else {
-    std::cerr << "unsupported input extension: " << e << "\n";
-    return 1;
-  }
+  } else { std::cerr << "unsupported input extension: " << e << "\n"; return 1; }
   if (rs != IFSelect_RetDone) { std::cerr << "read failed (status " << rs << ")\n"; return 2; }
 
-  // ── Collect the free (top-level) shapes ───────────────────────────────────
   Handle(XCAFDoc_ShapeTool) shapeTool = XCAFDoc_DocumentTool::ShapeTool(doc->Main());
+  Handle(XCAFDoc_ColorTool) colorTool = XCAFDoc_DocumentTool::ColorTool(doc->Main());
   TDF_LabelSequence freeShapes;
   shapeTool->GetFreeShapes(freeShapes);
   if (freeShapes.Length() == 0) { std::cerr << "no shapes in document\n"; return 4; }
 
-  // Split multi-solid bodies into individually-selectable parts. Many STEPs pack
-  // every body into one product, which would export as a single fused mesh.
-  // Expand() turns each compound into an assembly of per-solid sub-labels
-  // (colours preserved) → each nut/bolt becomes its own node in the glTF.
-  for (Standard_Integer i = 1; i <= freeShapes.Length(); ++i) {
-    shapeTool->Expand(freeShapes.Value(i));
-  }
-  shapeTool->GetFreeShapes(freeShapes);   // refresh after expansion
-  std::cerr << "[sbs-occt] expanded; free roots now=" << freeShapes.Length() << " at " << secs() << "s\n";
-
-  // ── Absolute linear deflection from the model bounding box ────────────────
-  // OCCT's BRepMesh uses an ABSOLUTE deflection (model units); the app speaks
-  // bbox-ratio, so convert via the overall bbox diagonal.
+  // Linear deflection from overall bbox diagonal (BRepMesh wants absolute units).
   Bnd_Box bbox;
   for (Standard_Integer i = 1; i <= freeShapes.Length(); ++i) {
     TopoDS_Shape s = shapeTool->GetShape(freeShapes.Value(i));
@@ -141,55 +129,114 @@ int main(int argc, char** argv) {
   }
   double linDefl = 1.0;
   if (!bbox.IsVoid()) {
-    Standard_Real xmin, ymin, zmin, xmax, ymax, zmax;
-    bbox.Get(xmin, ymin, zmin, xmax, ymax, zmax);
-    const double dx = xmax - xmin, dy = ymax - ymin, dz = zmax - zmin;
+    Standard_Real x0, y0, z0, x1, y1, z1; bbox.Get(x0, y0, z0, x1, y1, z1);
+    const double dx = x1 - x0, dy = y1 - y0, dz = z1 - z0;
     const double diag = std::sqrt(dx * dx + dy * dy + dz * dz);
     linDefl = (diag > 0 ? diag : 1.0) * linRatio;
   }
-  std::cerr << "[sbs-occt] parts=" << freeShapes.Length()
-            << " linDefl=" << linDefl << " angDeg=" << angDeg
-            << " (meshing starts at " << secs() << "s)\n";
+  std::cerr << "[sbs-occt] meshing (linDefl=" << linDefl << ") at " << secs() << "s\n";
 
-  // ── Tessellate every shape (parallel) ─────────────────────────────────────
+  // Tessellate every free shape (parallel) — meshes all sub-solids within.
   for (Standard_Integer i = 1; i <= freeShapes.Length(); ++i) {
     TopoDS_Shape s = shapeTool->GetShape(freeShapes.Value(i));
     if (s.IsNull()) continue;
-    BRepMesh_IncrementalMesh mesher(s, linDefl, Standard_False, angRad, Standard_True /*parallel*/);
+    BRepMesh_IncrementalMesh mesher(s, linDefl, Standard_False, angRad, Standard_True);
     mesher.Perform();
-    if (i % 50 == 0 || i == freeShapes.Length())
-      std::cerr << "[sbs-occt]   meshed " << i << "/" << freeShapes.Length()
-                << " at " << secs() << "s\n";
   }
-  std::cerr << "[sbs-occt] meshing done at " << secs() << "s; writing glTF . . .\n";
+  std::cerr << "[sbs-occt] meshed at " << secs() << "s; extracting per-solid meshes . . .\n";
 
-  // ── Write a binary glTF (.glb) carrying the XDE assembly structure ────────
-  TColStd_IndexedDataMapOfStringString fileInfo;
-  fileInfo.Add(TCollection_AsciiString("generator"), TCollection_AsciiString("sbs-occt-convert"));
-
-  RWGltf_CafWriter writer(TCollection_AsciiString(outPath.c_str()), Standard_True /*isBinary → .glb*/);
-  writer.SetTransformationFormat(RWGltf_WriterTrsfFormat_Compact);
-  writer.SetForcedUVExport(Standard_False);
-  // CRITICAL: without this OCC writes ONE primitive per FACE → hundreds of
-  // thousands of accessors + a huge JSON chunk that chokes the glTF loader.
-  // Merging collapses each part's faces into one primitive per material.
-  writer.SetMergeFaces(Standard_True);
-
-  // Keep MILLIMETRES (the app's working unit). OCC's glTF writer otherwise
-  // rescales mm→metres, making everything 1000x too small. Equal in/out length
-  // units = no scaling; keep the standard Z-up→Y-up orientation flip.
-  RWMesh_CoordinateSystemConverter conv;
-  conv.SetInputLengthUnit(0.001);
-  conv.SetOutputLengthUnit(0.001);
-  conv.SetInputCoordinateSystem(RWMesh_CoordinateSystem_Zup);
-  conv.SetOutputCoordinateSystem(RWMesh_CoordinateSystem_Yup);
-  writer.SetCoordinateSystemConverter(conv);
-  Message_ProgressRange progress;
-  if (!writer.Perform(doc, fileInfo, progress)) {
-    std::cerr << "glTF write failed\n";
-    return 6;
+  // ── Explode into per-solid meshes (this is what gives separable parts) ──────
+  std::vector<Mesh> meshes;
+  for (Standard_Integer i = 1; i <= freeShapes.Length(); ++i) {
+    TopoDS_Shape root = shapeTool->GetShape(freeShapes.Value(i));
+    if (root.IsNull()) continue;
+    for (TopExp_Explorer se(root, TopAbs_SOLID); se.More(); se.Next()) {
+      const TopoDS_Shape& solid = se.Current();
+      Mesh m;
+      Quantity_Color col;
+      if (colorTool->GetColor(solid, XCAFDoc_ColorSurf, col) ||
+          colorTool->GetColor(solid, XCAFDoc_ColorGen,  col)) {
+        m.hasColor = true; m.r = col.Red(); m.g = col.Green(); m.b = col.Blue();
+      }
+      for (TopExp_Explorer fe(solid, TopAbs_FACE); fe.More(); fe.Next()) {
+        TopoDS_Face face = TopoDS::Face(fe.Current());
+        TopLoc_Location loc;
+        Handle(Poly_Triangulation) tri = BRep_Tool::Triangulation(face, loc);
+        if (tri.IsNull()) continue;
+        const gp_Trsf trsf = loc.Transformation();
+        const uint32_t base = (uint32_t)(m.pos.size() / 3);
+        const bool rev  = (face.Orientation() == TopAbs_REVERSED);
+        const bool hasN = tri->HasNormals();
+        for (Standard_Integer n = 1; n <= tri->NbNodes(); ++n) {
+          gp_Pnt p = tri->Node(n); p.Transform(trsf);
+          m.pos.push_back((float)p.X()); m.pos.push_back((float)p.Y()); m.pos.push_back((float)p.Z());
+          if (hasN) {
+            gp_Dir d = tri->Normal(n); d.Transform(trsf);
+            float nx = (float)d.X(), ny = (float)d.Y(), nz = (float)d.Z();
+            if (rev) { nx = -nx; ny = -ny; nz = -nz; }
+            m.nrm.push_back(nx); m.nrm.push_back(ny); m.nrm.push_back(nz);
+          }
+        }
+        for (Standard_Integer t = 1; t <= tri->NbTriangles(); ++t) {
+          Standard_Integer a, b, c; tri->Triangle(t).Get(a, b, c);
+          if (rev) std::swap(b, c);
+          m.idx.push_back(base + a - 1); m.idx.push_back(base + b - 1); m.idx.push_back(base + c - 1);
+        }
+      }
+      if (!m.pos.empty() && !m.idx.empty()) meshes.push_back(std::move(m));
+    }
   }
+  std::cerr << "[sbs-occt] extracted " << meshes.size() << " solid mesh(es) at " << secs() << "s\n";
+  if (meshes.empty()) { std::cerr << "no triangulated solids\n"; return 5; }
 
-  std::cerr << "[sbs-occt] wrote " << outPath << " at " << secs() << "s. DONE.\n";
+  // ── Serialise to the model-cache blob format ────────────────────────────────
+  std::vector<uint8_t> bin;
+  auto pushF = [&](const std::vector<float>& v, size_t& o, size_t& l) {
+    o = bin.size(); l = v.size();
+    const uint8_t* p = reinterpret_cast<const uint8_t*>(v.data());
+    bin.insert(bin.end(), p, p + v.size() * sizeof(float));
+  };
+  auto pushU = [&](const std::vector<uint32_t>& v, size_t& o, size_t& l) {
+    o = bin.size(); l = v.size();
+    const uint8_t* p = reinterpret_cast<const uint8_t*>(v.data());
+    bin.insert(bin.end(), p, p + v.size() * sizeof(uint32_t));
+  };
+
+  std::string children, meshesJson;
+  for (size_t i = 0; i < meshes.size(); ++i) {
+    Mesh& m = meshes[i];
+    size_t po, pl, no = 0, nl = 0, io, il;
+    pushF(m.pos, po, pl);
+    std::string slotN = "null";
+    if (!m.nrm.empty()) { pushF(m.nrm, no, nl); slotN = "{\"o\":" + std::to_string(no) + ",\"l\":" + std::to_string(nl) + "}"; }
+    pushU(m.idx, io, il);
+
+    if (i) children += ",";
+    children += "{\"name\":\"part_" + std::to_string(i + 1) + "\",\"meshes\":[" + std::to_string(i) + "],\"children\":[]}";
+
+    std::string color = m.hasColor ? ("[" + f2s(m.r) + "," + f2s(m.g) + "," + f2s(m.b) + "]") : "null";
+    if (i) meshesJson += ",";
+    meshesJson += "{\"color\":" + color +
+                  ",\"p\":{\"o\":" + std::to_string(po) + ",\"l\":" + std::to_string(pl) + "}" +
+                  ",\"n\":" + slotN +
+                  ",\"u\":null" +
+                  ",\"i\":{\"o\":" + std::to_string(io) + ",\"l\":" + std::to_string(il) + "}}";
+  }
+  std::string json = "{\"v\":1,\"root\":{\"name\":\"model\",\"meshes\":[],\"children\":[" + children + "]},\"meshes\":[" + meshesJson + "]}";
+
+  std::vector<uint8_t> out;
+  const uint32_t jl = (uint32_t)json.size();
+  out.push_back((uint8_t)(jl & 0xff)); out.push_back((uint8_t)((jl >> 8) & 0xff));
+  out.push_back((uint8_t)((jl >> 16) & 0xff)); out.push_back((uint8_t)((jl >> 24) & 0xff));
+  out.insert(out.end(), json.begin(), json.end());
+  out.insert(out.end(), bin.begin(), bin.end());
+
+  std::ofstream f(outPath, std::ios::binary);
+  if (!f) { std::cerr << "cannot open output " << outPath << "\n"; return 6; }
+  f.write(reinterpret_cast<const char*>(out.data()), (std::streamsize)out.size());
+  f.close();
+
+  std::cerr << "[sbs-occt] wrote " << outPath << " (" << out.size() / 1048576 << " MB, "
+            << meshes.size() << " parts) at " << secs() << "s. DONE.\n";
   return 0;
 }

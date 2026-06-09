@@ -871,6 +871,20 @@ function _buildOcctModel(result, file, format, assetEntry) {
 }
 
 /**
+ * Load a .sbsmesh — the native converter's output for a big STEP that exceeds
+ * the in-app WASM reader's ~2 GB cap. It IS the model-cache blob ({root,meshes}),
+ * replayed through buildNodeFromOcct — the SAME path the WASM reader uses — so
+ * the result matches: separated per-solid parts, OCC-native orientation, colours.
+ */
+async function loadSbsMeshFile(file, assetEntry = null) {
+  state.emit('status', `Loading ${file.name} . . .`);
+  const buffer = await file.arrayBuffer();
+  const bytes  = new Uint8Array(buffer);
+  const result = modelCache.deserializeOcctBlob(bytes);
+  return _buildOcctModel(result, file, 'step', assetEntry);
+}
+
+/**
  * Load a STEP / IGES / BREP file via occt-import-js — with the fast-load tail
  * cache (V0.2.22.80). If the file carries a valid SBS cache tail we replay the
  * stored OCCT result (~1–2s, no kernel). Otherwise we parse the kernel (slow)
@@ -1038,7 +1052,7 @@ async function _tryNativeCad(file, ext, assetEntry, opts) {
   const preset   = OCCT_QUALITY_PRESETS[_cadQuality] || OCCT_QUALITY_PRESETS.normal;
   const linRatio = preset.linearDeflection;
   const angDeg   = preset.angularDeflection * 180 / Math.PI;
-  const outPath  = _swapExt(srcPath, 'glb');
+  const outPath  = _swapExt(srcPath, 'sbsmesh');
 
   state.emit('status', `Converting ${file.name} with the native 64-bit CAD engine — no size limit. This can take a few minutes…`);
   const _now = () => (typeof performance !== 'undefined' ? performance.now() : Date.now());
@@ -1054,10 +1068,10 @@ async function _tryNativeCad(file, ext, assetEntry, opts) {
   }
 
   const rd = await window.sbsNative.readFile(outPath, 'buffer');
-  if (!rd?.ok) { console.warn('[import] could not read converted glb:', rd?.error); return null; }
-  const bytes   = rd.data;
-  const glbFile = new File([bytes], _basename(outPath));
-  const node    = await loadGltfFile(glbFile, assetEntry);
+  if (!rd?.ok) { console.warn('[import] could not read converted mesh:', rd?.error); return null; }
+  const bytes    = rd.data;
+  const meshFile = new File([bytes], _basename(outPath));
+  const node     = await loadSbsMeshFile(meshFile, assetEntry);
   if (node?.assetId) _repointAsset(node.assetId, outPath, bytes.byteLength ?? bytes.length ?? null);
 
   const took = Math.round(_now() - _t0);
@@ -1287,6 +1301,8 @@ export async function loadModelFile(file, opts = {}) {
       const native = await _tryNativeCad(file, ext, assetEntry, opts);
       if (native) return native;
     }
+    // .sbsmesh = native converter output (model-cache blob) for huge STEPs.
+    if (ext === 'sbsmesh') return await loadSbsMeshFile(file, assetEntry);
     // .sbsobj = a STEP with our fast-load cache tail (head is STEP bytes).
     if (['step', 'stp', 'sbsobj'].includes(ext)) return await loadOcctFile(file, 'step', assetEntry, opts);
     if (['iges', 'igs'].includes(ext))   return await loadOcctFile(file, 'iges', assetEntry, opts);
