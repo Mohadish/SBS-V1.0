@@ -374,7 +374,10 @@ ipcMain.handle('dialog:openModel', async () => {
   const result = await dialog.showOpenDialog(mainWindow, {
     title: 'Open Model File',
     filters: [
-      { name: 'CAD & 3D Files', extensions: ['sbsobj','sbsmesh','step','stp','iges','igs','brep','brp','obj','stl','gltf','glb','fbx'] },
+      { name: 'All supported', extensions: ['sbsobj','sbsmesh','step','stp','iges','igs','brep','brp','obj','stl','gltf','glb','fbx'] },
+      { name: 'SBS fast-load (.sbsobj, .sbsmesh)', extensions: ['sbsobj','sbsmesh'] },
+      { name: 'STEP / CAD (.step, .iges, .brep)', extensions: ['step','stp','iges','igs','brep','brp'] },
+      { name: 'Mesh (.obj, .stl, .gltf, .glb, .fbx)', extensions: ['obj','stl','gltf','glb','fbx'] },
       { name: 'All Files', extensions: ['*'] },
     ],
     properties: ['openFile', 'multiSelections'],
