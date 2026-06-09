@@ -46,6 +46,8 @@
 #include <BRepBndLib.hxx>
 #include <BRepMesh_IncrementalMesh.hxx>
 #include <RWGltf_CafWriter.hxx>
+#include <RWMesh_CoordinateSystemConverter.hxx>
+#include <RWMesh_CoordinateSystem.hxx>
 #include <TColStd_IndexedDataMapOfStringString.hxx>
 #include <Message.hxx>
 #include <Message_ProgressRange.hxx>
@@ -119,6 +121,16 @@ int main(int argc, char** argv) {
   shapeTool->GetFreeShapes(freeShapes);
   if (freeShapes.Length() == 0) { std::cerr << "no shapes in document\n"; return 4; }
 
+  // Split multi-solid bodies into individually-selectable parts. Many STEPs pack
+  // every body into one product, which would export as a single fused mesh.
+  // Expand() turns each compound into an assembly of per-solid sub-labels
+  // (colours preserved) → each nut/bolt becomes its own node in the glTF.
+  for (Standard_Integer i = 1; i <= freeShapes.Length(); ++i) {
+    shapeTool->Expand(freeShapes.Value(i));
+  }
+  shapeTool->GetFreeShapes(freeShapes);   // refresh after expansion
+  std::cerr << "[sbs-occt] expanded; free roots now=" << freeShapes.Length() << " at " << secs() << "s\n";
+
   // ── Absolute linear deflection from the model bounding box ────────────────
   // OCCT's BRepMesh uses an ABSOLUTE deflection (model units); the app speaks
   // bbox-ratio, so convert via the overall bbox diagonal.
@@ -162,6 +174,16 @@ int main(int argc, char** argv) {
   // thousands of accessors + a huge JSON chunk that chokes the glTF loader.
   // Merging collapses each part's faces into one primitive per material.
   writer.SetMergeFaces(Standard_True);
+
+  // Keep MILLIMETRES (the app's working unit). OCC's glTF writer otherwise
+  // rescales mm→metres, making everything 1000x too small. Equal in/out length
+  // units = no scaling; keep the standard Z-up→Y-up orientation flip.
+  RWMesh_CoordinateSystemConverter conv;
+  conv.SetInputLengthUnit(0.001);
+  conv.SetOutputLengthUnit(0.001);
+  conv.SetInputCoordinateSystem(RWMesh_CoordinateSystem_Zup);
+  conv.SetOutputCoordinateSystem(RWMesh_CoordinateSystem_Yup);
+  writer.SetCoordinateSystemConverter(conv);
   Message_ProgressRange progress;
   if (!writer.Perform(doc, fileInfo, progress)) {
     std::cerr << "glTF write failed\n";
