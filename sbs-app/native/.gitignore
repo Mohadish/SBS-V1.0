@@ -1,0 +1,15 @@
+# Build tooling + outputs under native/ — never committed.
+# (The exe + DLLs are rebuilt by build.bat and bundled into the installer
+#  straight from disk; vcpkg/build are local build scaffolding.)
+vcpkg/
+build/
+
+# Test / conversion outputs produced while running the converter.
+*.glb
+*.sbsmesh
+*.sbsobj
+*.step
+*.stp
+
+# Stray batch-redirect artifact guard.
+/120

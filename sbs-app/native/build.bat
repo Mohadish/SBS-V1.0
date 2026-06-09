@@ -89,7 +89,7 @@ echo  [OK] Built and deployed:
 echo       %OUTDIR%\sbs-occt-convert.exe  (+ OpenCascade DLLs)
 echo.
 echo  NEXT:
-echo   - Dev:   restart SBS-launcher.bat, then open a big STEP (>120 MB).
+echo   - Dev:   restart SBS-launcher.bat, then open a big STEP (over 120 MB).
 echo   - Ship:  run  npm run build  to bake the exe into the installer.
 echo ════════════════════════════════════════════════════════════════════════════
 pause
