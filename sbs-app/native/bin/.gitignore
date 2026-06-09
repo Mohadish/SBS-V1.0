@@ -1,0 +1,9 @@
+# Built native binaries — produced locally by build.bat and bundled into the
+# installer straight from disk (electron-builder extraResources). NOT committed:
+# they're ~150 MB, platform-specific, and any build machine regenerates them
+# with build.bat. The PLACEHOLDER.txt files stay tracked so the folders exist.
+*.exe
+*.dll
+*.lib
+*.pdb
+*.exp
