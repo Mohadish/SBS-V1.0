@@ -98,6 +98,10 @@ int main(int argc, char** argv) {
   Interface_Static::SetIVal("read.step.healing", 0);
   Interface_Static::SetIVal("read.precision.mode", 1);
   Interface_Static::SetRVal("read.precision.val", 0.1);
+  // Read tessellated geometry too (AP242 triangulated face sets). Big exports
+  // are often mesh-based, not B-rep; OCC skips them unless this is on. 1 = On.
+  Interface_Static::SetIVal("read.step.tessellated", 1);
+  Interface_Static::SetCVal("read.step.tessellated", "On");
 
   Handle(TDocStd_Document) doc;
   Handle(XCAFApp_Application) app = XCAFApp_Application::GetApplication();
@@ -137,8 +141,15 @@ int main(int argc, char** argv) {
     TopoDS_Shape s = shapeTool->GetShape(freeShapes.Value(i));
     if (!s.IsNull()) roots.push_back(s);
   }
+  auto countType = [](const std::vector<TopoDS_Shape>& rr, TopAbs_ShapeEnum t) {
+    int n = 0;
+    for (const auto& r : rr) for (TopExp_Explorer ee(r, t); ee.More(); ee.Next()) ++n;
+    return n;
+  };
   int nFaces = countFaces(roots);
-  std::cerr << "[sbs-occt] XCAF: " << roots.size() << " root(s), " << nFaces << " face(s)\n";
+  std::cerr << "[sbs-occt] XCAF: " << roots.size() << " root(s), " << nFaces << " face(s), "
+            << countType(roots, TopAbs_EDGE) << " edge(s), "
+            << countType(roots, TopAbs_VERTEX) << " vertex(es)\n";
 
   // Fallback: some STEPs transfer NO faces through the structured reader (odd
   // product structure). Retry with the plain STEPControl_Reader — more
