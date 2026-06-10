@@ -37,6 +37,7 @@ export async function openSettingsModal(initialTab = 'language') {
         <nav id="settings-tabs" style="width:140px;border-right:1px solid #334155;padding:8px 0;display:flex;flex-direction:column;gap:2px;">
           <button class="settings-tab" data-tab="language">Language</button>
           <button class="settings-tab" data-tab="scene">Scene</button>
+          <button class="settings-tab" data-tab="import">Import</button>
           <button class="settings-tab" data-tab="export">Export</button>
           <button class="settings-tab" data-tab="nuts">Nuts</button>
           <button class="settings-tab" data-tab="cloud">Cloud TTS</button>
@@ -98,6 +99,7 @@ function _showTab(name) {
   body.innerHTML = '';
   if (name === 'language') _renderLanguageTab(body);
   if (name === 'scene')    _renderSceneTab(body);
+  if (name === 'import')   _renderImportTab(body);
   if (name === 'export')   _renderExportTab(body);
   if (name === 'nuts')     _renderNutsTab(body);
   if (name === 'cloud')    _renderCloudTab(body);
@@ -532,6 +534,54 @@ function _renderSceneTab(body) {
     angleLabel.textContent = `${deg}°`;
     _patchGrad({ angleDeg: deg });
   });
+}
+
+/**
+ * V0.2.22.85 — Import tab. Controls how STEP/IGES files are brought in via
+ * the native 64-bit converter: the tree structure (assembly hierarchy with
+ * real names vs a flat part list), and whether to ask per-file at load time.
+ */
+function _renderImportTab(body) {
+  const cur  = userSettings.get();
+  const cad  = cur.cad || {};
+  const mode = cad.importMode === 'flat' ? 'flat' : 'hierarchy';
+
+  body.innerHTML = `
+    <h3 style="margin:0 0 6px 0;font-size:14px;">CAD import (STEP / IGES)</h3>
+    <p class="small muted" style="margin:0 0 12px 0;line-height:1.5;">
+      How big CAD files are organised when the native converter brings them in.
+      Affects new imports only — existing project files keep their structure.
+    </p>
+
+    <h4 style="margin:6px 0;font-size:13px;">Default tree structure</h4>
+    <label style="display:flex;gap:8px;align-items:flex-start;margin:6px 0;cursor:pointer;">
+      <input type="radio" name="imp-mode" value="hierarchy" ${mode !== 'flat' ? 'checked' : ''} />
+      <span class="small"><b>Assembly hierarchy</b> — folders + real part names that mirror the
+        CAD assembly tree (like SolidWorks). <i>(recommended)</i></span>
+    </label>
+    <label style="display:flex;gap:8px;align-items:flex-start;margin:6px 0;cursor:pointer;">
+      <input type="radio" name="imp-mode" value="flat" ${mode === 'flat' ? 'checked' : ''} />
+      <span class="small"><b>Flat list (legacy)</b> — every part at one level, generic names.
+        Lowest risk, no restructuring — the original behaviour.</span>
+    </label>
+
+    <label style="display:flex;align-items:center;gap:8px;margin-top:16px;cursor:pointer;">
+      <input type="checkbox" id="imp-ask" ${cad.askImportOnLoad ? 'checked' : ''} />
+      <span class="small">Ask me which structure to use each time I load a CAD file</span>
+    </label>
+    <div class="small muted" style="margin:2px 0 0 24px;font-size:11px;opacity:0.8;">
+      When on, the STEP load popup shows a Hierarchy / Flat choice. When off, loads
+      silently use the default above.
+    </div>
+  `;
+
+  for (const r of body.querySelectorAll('input[name="imp-mode"]')) {
+    r.addEventListener('change', () => {
+      if (r.checked) userSettings.patch({ cad: { importMode: r.value } });
+    });
+  }
+  body.querySelector('#imp-ask').addEventListener('change', e =>
+    userSettings.patch({ cad: { askImportOnLoad: !!e.target.checked } }));
 }
 
 function _renderExportTab(body) {

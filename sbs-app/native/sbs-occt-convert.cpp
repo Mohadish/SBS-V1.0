@@ -56,6 +56,9 @@
 #include <XCAFDoc_ColorTool.hxx>
 #include <TDF_Label.hxx>
 #include <TDF_LabelSequence.hxx>
+#include <TDataStd_Name.hxx>
+#include <TCollection_AsciiString.hxx>
+#include <TCollection_ExtendedString.hxx>
 #include <TopoDS.hxx>
 #include <TopoDS_Shape.hxx>
 #include <TopoDS_Face.hxx>
@@ -84,11 +87,38 @@ struct Mesh {
   std::vector<uint32_t> idx;
 };
 
+// A scene-tree node (matches the model-cache JSON: {name, meshes, children}).
+// Built directly from the XCAF assembly tree so SBS gets real folders + names.
+struct Node {
+  std::string      name;
+  std::vector<int> meshes;     // indices into the flat mesh list
+  std::vector<Node> children;
+};
+
+// Minimal JSON string escaper for node names (quotes, backslash, control chars).
+static std::string jsonEsc(const std::string& s) {
+  std::string o; o.reserve(s.size() + 2);
+  for (unsigned char c : s) {
+    switch (c) {
+      case '"':  o += "\\\""; break;
+      case '\\': o += "\\\\"; break;
+      case '\n': o += "\\n";  break;
+      case '\r': o += "\\r";  break;
+      case '\t': o += "\\t";  break;
+      default:
+        if (c < 0x20) { char b[8]; std::snprintf(b, sizeof(b), "\\u%04x", c); o += b; }
+        else o += (char)c;
+    }
+  }
+  return o;
+}
+
 int main(int argc, char** argv) {
   if (argc < 3) {
-    std::cerr << "usage: sbs-occt-convert <input.step|.iges> <output.sbsobj> [linRatio] [angDeg]\n"
+    std::cerr << "usage: sbs-occt-convert <input.step|.iges> <output.sbsobj> [linRatio] [angDeg] [flat|hier]\n"
                  "  output ext .sbsobj = STEP + mesh-blob polyglot (still a valid STEP);\n"
-                 "             .sbsmesh = bare mesh blob (lean display copy).\n";
+                 "             .sbsmesh = bare mesh blob (lean display copy).\n"
+                 "  5th arg 'flat' = legacy flat part list; default = assembly hierarchy + names.\n";
     return 1;
   }
   const std::string inPath  = argv[1];
@@ -96,6 +126,9 @@ int main(int argc, char** argv) {
   const double linRatio = argc > 3 ? std::atof(argv[3]) : 0.005;
   const double angDeg   = argc > 4 ? std::atof(argv[4]) : 30.0;
   const double angRad   = angDeg * M_PI / 180.0;
+  // Tree structure: "flat" = legacy flat part list; anything else = assembly
+  // hierarchy with real STEP names (default).
+  const bool flatMode   = argc > 5 && lower(argv[5]) == "flat";
   const std::string e   = ext(inPath);
 
   auto _t0  = std::chrono::steady_clock::now();
@@ -218,8 +251,7 @@ int main(int argc, char** argv) {
   // own override wins, else the colour resolved for this OCCURRENCE from the
   // assembly tree, else uncoloured. A multi-colour part becomes one node holding
   // several coloured sub-meshes.
-  std::vector<Mesh>            meshes;   // flat list of (colour, geometry)
-  std::vector<std::vector<int>> parts;   // each part = the mesh indices it owns
+  std::vector<Mesh> meshes;   // flat list of (colour, geometry)
 
   // Read colour as sRGB — what authoring tools / 3ds Max display. OCC 7.5+ keeps
   // colour LINEAR internally; .Red()/.Green()/.Blue() return linear → shifted /
@@ -262,8 +294,9 @@ int main(int argc, char** argv) {
   long dFace = 0, dFaceHit = 0, dBaseHit = 0, dNone = 0, dSolidTot = 0, dSolidColoured = 0;
 
   // Build ONE part (one solid/shell), grouping its faces by colour. `base` is the
-  // colour resolved for this occurrence; a face-level override beats it.
-  auto addPartGeom = [&](const TopoDS_Shape& part, bool baseHas, double br, double bg, double bb) {
+  // colour resolved for this occurrence; a face-level override beats it. Returns
+  // the indices of the colour-meshes it created (empty = no geometry).
+  auto addPartGeom = [&](const TopoDS_Shape& part, bool baseHas, double br, double bg, double bb) -> std::vector<int> {
     std::map<std::string, Mesh> groups;          // colour key → mesh
     for (TopExp_Explorer fe(part, TopAbs_FACE); fe.More(); fe.Next()) {
       TopoDS_Face face = TopoDS::Face(fe.Current());
@@ -314,7 +347,7 @@ int main(int argc, char** argv) {
       owned.push_back((int)meshes.size());
       meshes.push_back(std::move(kv.second));
     }
-    if (!owned.empty()) parts.push_back(std::move(owned));
+    return owned;
   };
 
   // A container's OWN colour (per-solid / per-shell styled_item, e.g. a STEP
@@ -327,44 +360,71 @@ int main(int argc, char** argv) {
   };
 
   // Decompose a shape into separable parts (SOLID, else SHELL, else loose faces)
-  // and emit each with its own (or inherited) base colour.
-  auto emitParts = [&](const TopoDS_Shape& shape, bool baseHas, double br, double bg, double bb) {
-    const size_t before = parts.size();
+  // and return one mesh-index list per part, each with its own/inherited colour.
+  auto emitParts = [&](const TopoDS_Shape& shape, bool baseHas, double br, double bg, double bb) -> std::vector<std::vector<int>> {
+    std::vector<std::vector<int>> out;
     for (TopExp_Explorer se(shape, TopAbs_SOLID); se.More(); se.Next()) {
       double r = br, g = bg, b = bb;
       ++dSolidTot;
       if (faceColor.count(se.Current().TShape().get())) ++dSolidColoured;
       const bool h = withOwnColour(se.Current(), baseHas, r, g, b);
-      addPartGeom(se.Current(), h, r, g, b);
+      auto mi = addPartGeom(se.Current(), h, r, g, b);
+      if (!mi.empty()) out.push_back(std::move(mi));
     }
-    if (parts.size() > before) return;
+    if (!out.empty()) return out;
     for (TopExp_Explorer sh(shape, TopAbs_SHELL); sh.More(); sh.Next()) {
       double r = br, g = bg, b = bb;
       const bool h = withOwnColour(sh.Current(), baseHas, r, g, b);
-      addPartGeom(sh.Current(), h, r, g, b);
+      auto mi = addPartGeom(sh.Current(), h, r, g, b);
+      if (!mi.empty()) out.push_back(std::move(mi));
     }
-    if (parts.size() > before) return;
-    addPartGeom(shape, baseHas, br, bg, bb);   // loose faces / sheet body
+    if (!out.empty()) return out;
+    auto mi = addPartGeom(shape, baseHas, br, bg, bb);   // loose faces / sheet body
+    if (!mi.empty()) out.push_back(std::move(mi));
+    return out;
   };
 
+  // Attach the parts of a leaf product to `node`: one solid → meshes inline;
+  // several → a child per solid (preserves per-solid separability under the name).
+  auto attachLeaf = [&](Node& node, std::vector<std::vector<int>>&& sub) {
+    if (sub.size() == 1) { node.meshes = std::move(sub[0]); }
+    else {
+      for (size_t i = 0; i < sub.size(); ++i)
+        node.children.push_back(Node{ node.name + " (" + std::to_string(i + 1) + ")", std::move(sub[i]), {} });
+    }
+  };
+
+  Node rootNode; rootNode.name = "model";
+
   if (usedFallback) {
-    // Plain-reader geometry has NO XCAF labels → no colours; just emit it.
-    for (const auto& root : roots) if (!root.IsNull()) emitParts(root, false, 0, 0, 0);
+    // Plain-reader geometry has NO XCAF labels → flat, unnamed parts.
+    for (const auto& root : roots) if (!root.IsNull())
+      for (auto& sp : emitParts(root, false, 0, 0, 0))
+        rootNode.children.push_back(Node{ "part_" + std::to_string(rootNode.children.size() + 1), std::move(sp), {} });
   } else {
-    // ── Walk the assembly TREE, resolving colour per OCCURRENCE ──────────────
-    // Priority at every node: instance(occurrence) override > part definition >
-    // inherited-from-ancestor. This is what a viewer does, and fixes (a) instance
-    // colours we never read → grey, and (b) one part instanced with different
-    // colours collapsing to a single colour (TShape is shared across instances).
+    // ── Walk the assembly TREE — build the node hierarchy + resolve colour ────
+    // Colour priority at every node: instance(occurrence) override > part
+    // definition > inherited-from-ancestor (what a CAD viewer does). The tree
+    // mirrors the STEP assembly; names come from the component/product labels.
     struct Col { bool has = false; double r = 0, g = 0, b = 0; };
     auto readCol = [&](const TDF_Label& l) -> Col {
       Col o; Quantity_Color c;
       if (labelColor(l, c)) { toRGB(c, o.r, o.g, o.b); o.has = true; }
       return o;
     };
-    std::function<void(const TDF_Label&, const TopLoc_Location&, const Col&, const Col&)>
+    auto labelName = [&](const TDF_Label& l) -> std::string {
+      Handle(TDataStd_Name) na;
+      if (!l.IsNull() && l.FindAttribute(TDataStd_Name::GetID(), na)) {
+        TCollection_AsciiString asc(na->Get());
+        return std::string(asc.ToCString());
+      }
+      return "";
+    };
+    std::function<Node(const TDF_Label&, const TopLoc_Location&, const Col&, const Col&, const std::string&)>
     walk = [&](const TDF_Label& defLabel, const TopLoc_Location& accLoc,
-               const Col& inst, const Col& anc) {
+               const Col& inst, const Col& anc, const std::string& name) -> Node {
+      Node node; node.name = !name.empty() ? name : labelName(defLabel);
+      if (node.name.empty()) node.name = "node";
       const Col def = readCol(defLabel);
       const Col eff = inst.has ? inst : (def.has ? def : anc);   // instance > def > ancestor
       if (shapeTool->IsAssembly(defLabel)) {
@@ -374,24 +434,53 @@ int main(int argc, char** argv) {
           const TDF_Label C = comps.Value(i);
           TDF_Label ref;
           if (!shapeTool->GetReferredShape(C, ref)) continue;
-          walk(ref, accLoc * shapeTool->GetLocation(C), readCol(C), eff);
+          // Prefer the PRODUCT (referred) name — the recognisable one
+          // (e.g. "MS1286901-1"). Component/instance names are often empty here
+          // and fall back to OCC's "NAUO<n>" auto-labels, which aren't useful.
+          std::string cn = labelName(ref); if (cn.empty()) cn = labelName(C);
+          Node child = walk(ref, accLoc * shapeTool->GetLocation(C), readCol(C), eff, cn);
+          if (!child.meshes.empty() || !child.children.empty()) node.children.push_back(std::move(child));
         }
       } else {
         TopoDS_Shape s = shapeTool->GetShape(defLabel);
-        if (!s.IsNull()) emitParts(s.Moved(accLoc), eff.has, eff.r, eff.g, eff.b);
+        if (!s.IsNull()) attachLeaf(node, emitParts(s.Moved(accLoc), eff.has, eff.r, eff.g, eff.b));
       }
+      return node;
     };
     const Col none;
-    for (Standard_Integer i = 1; i <= freeShapes.Length(); ++i)
-      walk(freeShapes.Value(i), TopLoc_Location(), none, none);
+    for (Standard_Integer i = 1; i <= freeShapes.Length(); ++i) {
+      Node n = walk(freeShapes.Value(i), TopLoc_Location(), none, none, labelName(freeShapes.Value(i)));
+      if (!n.meshes.empty() || !n.children.empty()) rootNode.children.push_back(std::move(n));
+    }
   }
+
+  // Legacy "flat" mode: collapse the named tree to a flat part_N list.
+  if (flatMode) {
+    std::vector<std::vector<int>> flat;
+    std::function<void(Node&)> gather = [&](Node& n) {
+      if (!n.meshes.empty()) flat.push_back(std::move(n.meshes));
+      for (auto& c : n.children) gather(c);
+    };
+    gather(rootNode);
+    rootNode.children.clear(); rootNode.meshes.clear();
+    for (size_t i = 0; i < flat.size(); ++i)
+      rootNode.children.push_back(Node{ "part_" + std::to_string(i + 1), std::move(flat[i]), {} });
+  }
+
+  // Count leaf parts (nodes that own meshes) for the log.
+  int leafParts = 0;
+  { std::function<void(const Node&)> cnt = [&](const Node& n) {
+      if (!n.meshes.empty()) ++leafParts;
+      for (const auto& c : n.children) cnt(c);
+    }; cnt(rootNode); }
 
   int coloredMeshes = 0; for (const auto& m : meshes) if (m.hasColor) ++coloredMeshes;
   std::cerr << "[sbs-occt][diag2] faces=" << dFace << " faceHit=" << dFaceHit
             << " baseHit=" << dBaseHit << " none=" << dNone
             << " | colourMap=" << faceColor.size()
-            << " solids=" << dSolidTot << " solidColoured=" << dSolidColoured << "\n";
-  std::cerr << "[sbs-occt] extracted " << parts.size() << " part(s), "
+            << " solids=" << dSolidTot << " solidColoured=" << dSolidColoured
+            << " | mode=" << (flatMode ? "flat" : "hierarchy") << "\n";
+  std::cerr << "[sbs-occt] extracted " << leafParts << " part(s), "
             << meshes.size() << " mesh(es), " << coloredMeshes << " coloured at " << secs() << "s\n";
   if (meshes.empty()) { std::cerr << "no triangulated geometry (no solids/shells/faces)\n"; return 5; }
 
@@ -425,15 +514,16 @@ int main(int argc, char** argv) {
                   ",\"u\":null" +
                   ",\"i\":{\"o\":" + std::to_string(io) + ",\"l\":" + std::to_string(il) + "}}";
   }
-  // Part tree — each part node references the colour-mesh indices it owns.
-  std::string children;
-  for (size_t p = 0; p < parts.size(); ++p) {
-    if (p) children += ",";
-    children += "{\"name\":\"part_" + std::to_string(p + 1) + "\",\"meshes\":[";
-    for (size_t k = 0; k < parts[p].size(); ++k) { if (k) children += ","; children += std::to_string(parts[p][k]); }
-    children += "],\"children\":[]}";
-  }
-  std::string json = "{\"v\":1,\"root\":{\"name\":\"model\",\"meshes\":[],\"children\":[" + children + "]},\"meshes\":[" + meshesJson + "]}";
+  // Serialise the node tree (recursive): {name, meshes:[idx...], children:[...]}.
+  std::function<std::string(const Node&)> nodeJson = [&](const Node& n) -> std::string {
+    std::string j = "{\"name\":\"" + jsonEsc(n.name) + "\",\"meshes\":[";
+    for (size_t i = 0; i < n.meshes.size(); ++i) { if (i) j += ","; j += std::to_string(n.meshes[i]); }
+    j += "],\"children\":[";
+    for (size_t i = 0; i < n.children.size(); ++i) { if (i) j += ","; j += nodeJson(n.children[i]); }
+    j += "]}";
+    return j;
+  };
+  std::string json = "{\"v\":1,\"root\":" + nodeJson(rootNode) + ",\"meshes\":[" + meshesJson + "]}";
 
   std::vector<uint8_t> out;
   const uint32_t jl = (uint32_t)json.size();
@@ -484,7 +574,7 @@ int main(int argc, char** argv) {
   }
   f.close();
 
-  std::cerr << "[sbs-occt] wrote " << outPath << " (" << parts.size()
+  std::cerr << "[sbs-occt] wrote " << outPath << " (" << leafParts
             << " parts, " << meshes.size() << " meshes) at " << secs() << "s. DONE.\n";
   return 0;
 }

@@ -1157,6 +1157,53 @@ function _cadProgressUI(fileName, sizeBytes, onCancel) {
   };
 }
 
+/**
+ * Resolve the import tree STRUCTURE for the native converter:
+ *   'hierarchy' — assembly folders + real STEP names (default)
+ *   'flat'      — legacy flat part list
+ * Uses the user's default (userSettings.cad.importMode); if they enabled
+ * "ask per file" (cad.askImportOnLoad), the load popup lets them choose.
+ */
+async function _resolveImportStructure() {
+  let s = {};
+  try { s = userSettings.get()?.cad || {}; } catch { /* ignore */ }
+  const def = s.importMode === 'flat' ? 'flat' : 'hierarchy';
+  if (!s.askImportOnLoad) return def;
+  return await _promptImportStructure(def);
+}
+
+function _promptImportStructure(def) {
+  return new Promise((resolve) => {
+    const dlg = document.createElement('dialog');
+    dlg.className = 'sbs-dialog';
+    dlg.style.cssText = 'max-width:460px;';
+    dlg.innerHTML = `
+      <div class="sbs-dialog__body">
+        <div class="sbs-dialog__title">🗂️ Import structure</div>
+        <p class="small" style="margin:8px 0 12px;color:#94a3b8;line-height:1.5">
+          How should this CAD file's tree be organised in the project?
+        </p>
+        <label style="display:flex;gap:8px;align-items:flex-start;margin:8px 0;cursor:pointer">
+          <input type="radio" name="imp" value="hierarchy" ${def !== 'flat' ? 'checked' : ''} />
+          <span class="small"><b>Assembly hierarchy</b> — folders + real part names, mirrors the CAD assembly (like SolidWorks). <i>(recommended)</i></span>
+        </label>
+        <label style="display:flex;gap:8px;align-items:flex-start;margin:8px 0;cursor:pointer">
+          <input type="radio" name="imp" value="flat" ${def === 'flat' ? 'checked' : ''} />
+          <span class="small"><b>Flat list (legacy)</b> — every part at one level. Simplest, lowest risk.</span>
+        </label>
+        <div style="display:flex;gap:8px;justify-content:flex-end;margin-top:16px">
+          <button class="btn" id="imp-ok" style="background:#0369a1;color:#f1f5f9">OK</button>
+        </div>
+      </div>`;
+    const finish = (val) => { try { dlg.close(); dlg.remove(); } catch { /* */ } resolve(val); };
+    dlg.querySelector('#imp-ok').addEventListener('click', () =>
+      finish(dlg.querySelector('input[name="imp"]:checked')?.value || def));
+    dlg.addEventListener('cancel', (e) => { e.preventDefault(); finish(def); });
+    document.body.appendChild(dlg);
+    dlg.showModal();
+  });
+}
+
 async function _tryNativeCad(file, ext, assetEntry, opts) {
   const srcPath = opts.sourcePath || file.path || assetEntry?.originalPath || assetEntry?.resolvedPath || '';
   if (!srcPath) return null;                                   // need a real path to convert
@@ -1181,6 +1228,8 @@ async function _tryNativeCad(file, ext, assetEntry, opts) {
   // By default this fires on every fresh .step open — which is what the user
   // wants — and they can tick "stop asking" to silence it.
   const mode = await _resolveCacheMode(srcPath);        // 'sbsobj' | 'inplace' | 'once'
+  // Tree structure: 'hierarchy' (assembly folders + names) or 'flat' (legacy).
+  const structure = await _resolveImportStructure();
 
   const preset   = OCCT_QUALITY_PRESETS[_cadQuality] || OCCT_QUALITY_PRESETS.normal;
   const linRatio = preset.linearDeflection;
@@ -1209,7 +1258,7 @@ async function _tryNativeCad(file, ext, assetEntry, opts) {
   try { unsub = window.sbsNative.cad.onProgress?.(({ line }) => progress.onLine(line)); } catch { /* ignore */ }
 
   let res;
-  try { res = await window.sbsNative.cad.convert(srcPath, outPath, linRatio, angDeg); }
+  try { res = await window.sbsNative.cad.convert(srcPath, outPath, linRatio, angDeg, structure); }
   catch (err) { res = { ok: false, error: err?.message || String(err) }; }
   finally { try { unsub && unsub(); } catch { /* */ } progress.finish(); }
 

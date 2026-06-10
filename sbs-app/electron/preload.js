@@ -42,7 +42,7 @@ contextBridge.exposeInMainWorld('sbsNative', {
   // ── Native CAD converter (optional 64-bit OpenCascade sidecar) ───────────
   cad: {
     available: ()                              => ipcRenderer.invoke('cad:available'),
-    convert:   (inp, out, linRatio, angDeg)    => ipcRenderer.invoke('cad:convert', { inp, out, linRatio, angDeg }),
+    convert:   (inp, out, linRatio, angDeg, structure) => ipcRenderer.invoke('cad:convert', { inp, out, linRatio, angDeg, structure }),
     cancel:    ()                              => ipcRenderer.invoke('cad:cancel'),
     // Live phase lines from the converter (main → renderer). Returns an
     // unsubscribe fn. Each call: cb({ line }).

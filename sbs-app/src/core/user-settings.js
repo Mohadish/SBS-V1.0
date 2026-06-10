@@ -64,6 +64,19 @@ const DEFAULTS = {
   animation: {
     collection: [],   // Array<{ name: string, animation: string }>
   },
+  // V0.2.22.85 — CAD (STEP/IGES) import via the native 64-bit converter.
+  cad: {
+    // Fast-load cache placement asked in the convert popup:
+    //   'ask' (prompt each load) | 'sbsobj' | 'inplace'. Remembered choice skips it.
+    cacheMode: 'ask',
+    // Imported tree STRUCTURE:
+    //   'hierarchy' — assembly folders + real STEP product/instance names (default)
+    //   'flat'      — legacy: one flat list of parts (lowest risk, no restructuring)
+    importMode: 'hierarchy',
+    // When true, the STEP load popup also lets you pick structure per-file.
+    // When false (default), loads silently use `importMode`.
+    askImportOnLoad: false,
+  },
   undo: {
     // V0.2.16: maximum entries kept in the undo stack. Older ones drop off
     // FIFO once the cap is reached. Tunable in the Undo tab. Each entry's

@@ -571,15 +571,16 @@ ipcMain.handle('cad:available', () => !!_nativeCadExe());
 
 let _activeCadProc = null;          // the running converter process, for cancel
 
-ipcMain.handle('cad:convert', async (_e, { inp, out, linRatio, angDeg } = {}) => {
+ipcMain.handle('cad:convert', async (_e, { inp, out, linRatio, angDeg, structure } = {}) => {
   const exe = _nativeCadExe();
   if (!exe) return { ok: false, error: 'native converter not installed' };
   if (!inp || !out) return { ok: false, error: 'missing input/output path' };
   const { spawn } = require('child_process');
   return await new Promise((resolve) => {
-    const args = [inp, out];
-    if (linRatio != null) args.push(String(linRatio));
-    if (angDeg   != null) args.push(String(angDeg));
+    // Positional args: in out [linRatio] [angDeg] [flat|hier]. linRatio/angDeg
+    // are defaulted so a structure flag always lands in the 5th slot.
+    const args = [inp, out, String(linRatio != null ? linRatio : 0.005), String(angDeg != null ? angDeg : 30)];
+    if (structure) args.push(String(structure));
     let stderr = '';
     let tail   = '';                 // line buffer for streaming progress
     let cancelled = false;
