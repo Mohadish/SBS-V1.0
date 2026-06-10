@@ -1037,6 +1037,126 @@ function _repointAsset(assetId, newPath, sizeBytes) {
 // fallback only when the exe is absent. Returns the node, or null → WASM.
 const NATIVE_CAD_THRESHOLD = 120 * 1024 * 1024;   // 120 MB — only used to decide when to WARN if native is missing
 
+// ── Conversion progress modal ───────────────────────────────────────────────
+// Big STEP files take minutes. The converter streams phase lines over IPC; this
+// turns them into a staged bar + a live elapsed timer + a REFINING ETA so the
+// user sees it working and roughly how long is left. The ETA starts from file
+// size, then sharpens each time a phase boundary is crossed; if a phase drags
+// past its estimate the ETA grows so the bar never stalls. Returns a controller
+// with onLine(line) (feed converter stderr), finish() (close), cancelled().
+function _cadProgressUI(fileName, sizeBytes, onCancel) {
+  const sizeMB = (sizeBytes || 0) / 1e6;
+  // Cumulative fraction of TOTAL time reached at the END of each phase (empirical
+  // — a mixed 107 MB assembly). Used only to map elapsed time → bar position/ETA.
+  const PHASES = [
+    { label: 'Parsing geometry',   end: 0.17 },
+    { label: 'Transferring shapes', end: 0.71 },
+    { label: 'Meshing surfaces',    end: 0.97 },
+    { label: 'Extracting parts',    end: 0.99 },
+    { label: 'Writing file',        end: 1.00 },
+  ];
+  let phaseIdx  = 0;
+  let done      = false;
+  let cancelled = false;
+  let estTotal  = Math.max(15, sizeMB / 1.8);   // seconds; initial guess (~1.8 MB/s)
+  const _now = () => (typeof performance !== 'undefined' ? performance.now() : Date.now());
+  const t0 = _now();
+
+  const dlg = document.createElement('dialog');
+  dlg.className = 'sbs-dialog';
+  dlg.style.cssText = 'max-width:440px;';
+  dlg.innerHTML = `
+    <div class="sbs-dialog__body">
+      <div class="sbs-dialog__title">⚙️ Converting CAD…</div>
+      <p class="small" style="margin:6px 0 4px;color:#cbd5e1;word-break:break-all"><b>${fileName}</b></p>
+      <p class="small" id="cadp-stage" style="margin:2px 0 10px;color:#7dd3fc">Starting…</p>
+      <div style="height:10px;border-radius:6px;background:#1e293b;overflow:hidden;border:1px solid #334155">
+        <div id="cadp-bar" style="height:100%;width:0%;background:linear-gradient(90deg,#0284c7,#38bdf8);transition:width .3s ease"></div>
+      </div>
+      <div style="display:flex;justify-content:space-between;margin-top:8px">
+        <span class="small" id="cadp-elapsed" style="color:#94a3b8">Elapsed 0s</span>
+        <span class="small" id="cadp-eta" style="color:#94a3b8">estimating…</span>
+      </div>
+      <p class="small" style="margin:12px 0 0;color:#64748b;line-height:1.5">
+        Large CAD files can take several minutes — this is normal. Keep this open.
+      </p>
+      <div style="display:flex;justify-content:flex-end;margin-top:14px">
+        <button class="btn" id="cadp-cancel" style="background:#7f1d1d;color:#fee2e2">Cancel</button>
+      </div>
+    </div>`;
+  document.body.appendChild(dlg);
+  try { dlg.showModal(); } catch { /* */ }
+
+  const barEl    = dlg.querySelector('#cadp-bar');
+  const stageEl  = dlg.querySelector('#cadp-stage');
+  const elEl     = dlg.querySelector('#cadp-elapsed');
+  const etaEl    = dlg.querySelector('#cadp-eta');
+  const cancelBt = dlg.querySelector('#cadp-cancel');
+
+  const fmt = (s) => {
+    s = Math.max(0, Math.round(s));
+    const m = Math.floor(s / 60);
+    return m ? `${m}m ${String(s % 60).padStart(2, '0')}s` : `${s}s`;
+  };
+
+  cancelBt.addEventListener('click', () => {
+    if (cancelled || done) return;
+    cancelled = true;
+    cancelBt.textContent = 'Cancelling…';
+    cancelBt.disabled = true;
+    try { onCancel && onCancel(); } catch { /* */ }
+  });
+  dlg.addEventListener('cancel', (e) => { e.preventDefault(); });   // ESC ignored — use the button
+
+  const tick = () => {
+    if (done) return;
+    const elapsed = (_now() - t0) / 1000;
+    const curEnd  = PHASES[phaseIdx].end;
+    // Dragging past the expected boundary → grow the estimate so nothing stalls.
+    if (elapsed > estTotal * curEnd) estTotal = (elapsed / curEnd) * 1.03;
+    const prevEnd = phaseIdx > 0 ? PHASES[phaseIdx - 1].end : 0;
+    const expPrev = estTotal * prevEnd;
+    const expCur  = estTotal * curEnd;
+    let within = expCur > expPrev ? (elapsed - expPrev) / (expCur - expPrev) : 1;
+    within = Math.max(0, Math.min(0.96, within));     // never reach next stage early
+    const f = prevEnd + (curEnd - prevEnd) * within;
+    barEl.style.width = (f * 100).toFixed(1) + '%';
+    elEl.textContent  = 'Elapsed ' + fmt(elapsed);
+    const remain = estTotal - elapsed;
+    etaEl.textContent = remain > 1 ? '~' + fmt(remain) + ' left' : 'almost done…';
+  };
+  // setInterval (not rAF) so the timer keeps ticking if the window is backgrounded.
+  let timer = setInterval(tick, 250);
+  tick();
+
+  return {
+    onLine(line) {
+      const L = String(line || '').toLowerCase();
+      let np = phaseIdx;
+      if      (L.includes('parsing'))   np = 0;
+      else if (L.includes('transferr')) np = 1;   // transferring / transferred
+      else if (L.includes('meshing'))   np = 2;
+      else if (L.includes('meshed') || L.includes('extracting')) np = 3;
+      else if (L.includes('wrote') || L.includes('serial'))      np = 4;
+      if (np >= phaseIdx) {
+        phaseIdx = np;
+        stageEl.textContent = `${PHASES[np].label}…  (step ${np + 1}/${PHASES.length})`;
+        const startFrac = np > 0 ? PHASES[np - 1].end : 0;   // fraction at the boundary just crossed
+        if (startFrac > 0.02) estTotal = ((_now() - t0) / 1000) / startFrac;
+        tick();
+      }
+    },
+    finish() {
+      if (done) return;
+      done = true;
+      clearInterval(timer);
+      try { barEl.style.width = '100%'; } catch { /* */ }
+      try { dlg.close(); dlg.remove(); } catch { /* */ }
+    },
+    cancelled: () => cancelled,
+  };
+}
+
 async function _tryNativeCad(file, ext, assetEntry, opts) {
   const srcPath = opts.sourcePath || file.path || assetEntry?.originalPath || assetEntry?.resolvedPath || '';
   if (!srcPath) return null;                                   // need a real path to convert
@@ -1077,20 +1197,31 @@ async function _tryNativeCad(file, ext, assetEntry, opts) {
                 : (mode === 'inplace') ? srcPath
                 :                        _swapExt(srcPath, 'sbsobj');
 
-  state.emit('status', `Converting ${file.name} with the native 64-bit CAD engine — no size limit. This can take a few minutes…`);
+  state.emit('status', `Converting ${file.name} with the native 64-bit CAD engine…`);
   const _now = () => (typeof performance !== 'undefined' ? performance.now() : Date.now());
   const _t0  = _now();
+
+  // Live progress modal (staged bar + elapsed timer + refining ETA + cancel).
+  const progress = _cadProgressUI(file.name, file.size || 0, () => {
+    try { window.sbsNative.cad.cancel?.(); } catch { /* ignore */ }
+  });
+  let unsub = null;
+  try { unsub = window.sbsNative.cad.onProgress?.(({ line }) => progress.onLine(line)); } catch { /* ignore */ }
 
   let res;
   try { res = await window.sbsNative.cad.convert(srcPath, outPath, linRatio, angDeg); }
   catch (err) { res = { ok: false, error: err?.message || String(err) }; }
+  finally { try { unsub && unsub(); } catch { /* */ } progress.finish(); }
+
+  if (res?.cancelled) {
+    state.emit('status', `Conversion cancelled — "${file.name}" not loaded.`);
+    return false;                 // signal loadModelFile to abort (no WASM fallback)
+  }
   if (!res?.ok) {
     state.emit('status', `Native CAD conversion failed (${res?.error || 'unknown'}) — falling back to in-app reader.`);
     console.warn('[import] native convert failed:', res?.error);
     return null;
   }
-  // Surface the converter's log (incl. the [diag] colour breakdown) so we can
-  // compare colour counts / sRGB vs linear against a CAD viewer like 3ds Max.
   if (res.log) console.log('[native-cad] converter log:\n' + res.log);
 
   const rd = await window.sbsNative.readFile(outPath, 'buffer');
@@ -1339,6 +1470,7 @@ export async function loadModelFile(file, opts = {}) {
     // WASM wall). Returns the model on success, null to fall back to WASM.
     if (!_loadingFromProject && ['step', 'stp', 'iges', 'igs'].includes(ext)) {
       const native = await _tryNativeCad(file, ext, assetEntry, opts);
+      if (native === false) return null;   // user cancelled — do NOT fall back to WASM
       if (native) return native;
     }
     // .sbsmesh = native converter output (model-cache blob) for huge STEPs.

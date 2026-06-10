@@ -33,7 +33,6 @@
 #include <vector>
 #include <string>
 #include <map>
-#include <set>
 #include <unordered_map>
 #include <functional>
 #include <cstdint>
@@ -229,11 +228,6 @@ int main(int argc, char** argv) {
     Standard_Real rr, gg, bb; c.Values(rr, gg, bb, Quantity_TOC_sRGB);
     r = rr; g = gg; b = bb;
   };
-  auto hexOf = [](double r, double g, double b) {
-    char h[8]; std::snprintf(h, sizeof(h), "#%02x%02x%02x",
-      (int)(r * 255 + 0.5), (int)(g * 255 + 0.5), (int)(b * 255 + 0.5));
-    return std::string(h);
-  };
   auto labelColor = [&](const TDF_Label& l, Quantity_Color& c) -> bool {
     return colorTool->GetColor(l, XCAFDoc_ColorSurf, c)
         || colorTool->GetColor(l, XCAFDoc_ColorGen,  c);
@@ -262,45 +256,6 @@ int main(int argc, char** argv) {
       }
     }
     std::cerr << "[sbs-occt] pre-indexed " << palette.size() << " sub-shape colour(s) at " << secs() << "s\n";
-  }
-
-  // ── DIAGNOSTIC: where do colours live? (compare to your CAD viewer) ──────────
-  // STEP stores colour at 3 levels — face (sub-shape), part (definition) and
-  // ASSEMBLY INSTANCE (the occurrence). A viewer resolves all three with
-  // inheritance. Dump the count per level + every distinct colour in BOTH sRGB
-  // and linear, so we can match exactly what Max sees and confirm the encoding.
-  {
-    int nInst = 0, nDef = 0, nAsm = 0;
-    std::set<std::string> distinct;
-    auto note = [&](const Quantity_Color& c) {
-      double r, g, b; toRGB(c, r, g, b); distinct.insert(hexOf(r, g, b));
-    };
-    TDF_LabelSequence allShapes;
-    shapeTool->GetShapes(allShapes);
-    for (Standard_Integer i = 1; i <= allShapes.Length(); ++i) {
-      const TDF_Label L = allShapes.Value(i);
-      Quantity_Color c;
-      if (labelColor(L, c)) {
-        note(c);
-        if      (shapeTool->IsComponent(L)) ++nInst;
-        else if (shapeTool->IsAssembly(L))  ++nAsm;
-        else                                ++nDef;
-      }
-    }
-    for (const auto& c : palette) note(c);    // face level
-    std::cerr << "[sbs-occt][diag] colour sources: instance=" << nInst
-              << " part=" << nDef << " assembly=" << nAsm
-              << " face=" << palette.size()
-              << "  -> distinct source colours=" << distinct.size() << "\n";
-    int shown = 0;
-    for (Standard_Integer i = 1; i <= allShapes.Length() && shown < 80; ++i) {
-      Quantity_Color c;
-      if (!labelColor(allShapes.Value(i), c)) continue;
-      double sr, sg, sb; toRGB(c, sr, sg, sb);
-      std::cerr << "[sbs-occt][diag] colour sRGB=" << hexOf(sr, sg, sb)
-                << " linear=" << hexOf(c.Red(), c.Green(), c.Blue()) << "\n";
-      ++shown;
-    }
   }
 
   // Build ONE part (one solid/shell), grouping its faces by colour. `base` is the
@@ -409,11 +364,6 @@ int main(int argc, char** argv) {
   }
 
   int coloredMeshes = 0; for (const auto& m : meshes) if (m.hasColor) ++coloredMeshes;
-  {
-    std::set<std::string> outColors;
-    for (const auto& m : meshes) if (m.hasColor) outColors.insert(hexOf(m.r, m.g, m.b));
-    std::cerr << "[sbs-occt][diag] distinct OUTPUT colours=" << outColors.size() << "\n";
-  }
   std::cerr << "[sbs-occt] extracted " << parts.size() << " part(s), "
             << meshes.size() << " mesh(es), " << coloredMeshes << " coloured at " << secs() << "s\n";
   if (meshes.empty()) { std::cerr << "no triangulated geometry (no solids/shells/faces)\n"; return 5; }

@@ -43,6 +43,14 @@ contextBridge.exposeInMainWorld('sbsNative', {
   cad: {
     available: ()                              => ipcRenderer.invoke('cad:available'),
     convert:   (inp, out, linRatio, angDeg)    => ipcRenderer.invoke('cad:convert', { inp, out, linRatio, angDeg }),
+    cancel:    ()                              => ipcRenderer.invoke('cad:cancel'),
+    // Live phase lines from the converter (main → renderer). Returns an
+    // unsubscribe fn. Each call: cb({ line }).
+    onProgress: (cb) => {
+      const h = (_e, data) => { try { cb(data); } catch (_) { /* ignore */ } };
+      ipcRenderer.on('cad:progress', h);
+      return () => { try { ipcRenderer.removeListener('cad:progress', h); } catch (_) { /* ignore */ } };
+    },
   },
 
   // ── Menu messages (main → renderer) ─────────────────────────────────────

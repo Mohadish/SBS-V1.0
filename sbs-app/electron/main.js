@@ -569,6 +569,8 @@ function _nativeCadExe() {
 
 ipcMain.handle('cad:available', () => !!_nativeCadExe());
 
+let _activeCadProc = null;          // the running converter process, for cancel
+
 ipcMain.handle('cad:convert', async (_e, { inp, out, linRatio, angDeg } = {}) => {
   const exe = _nativeCadExe();
   if (!exe) return { ok: false, error: 'native converter not installed' };
@@ -579,16 +581,38 @@ ipcMain.handle('cad:convert', async (_e, { inp, out, linRatio, angDeg } = {}) =>
     if (linRatio != null) args.push(String(linRatio));
     if (angDeg   != null) args.push(String(angDeg));
     let stderr = '';
+    let tail   = '';                 // line buffer for streaming progress
+    let cancelled = false;
     let proc;
     try { proc = spawn(exe, args, { windowsHide: true }); }
     catch (err) { return resolve({ ok: false, error: err.message }); }
-    proc.stderr.on('data', d => { stderr += d.toString(); });
-    proc.on('error', err => resolve({ ok: false, error: err.message }));
+    _activeCadProc = proc;
+    proc._cancel = () => { cancelled = true; try { proc.kill(); } catch (_) { /* */ } };
+    proc.stderr.on('data', d => {
+      const s = d.toString();
+      stderr += s;
+      // Forward each COMPLETE line to the renderer to drive the progress bar.
+      tail += s;
+      let nl;
+      while ((nl = tail.indexOf('\n')) >= 0) {
+        const line = tail.slice(0, nl).trim();
+        tail = tail.slice(nl + 1);
+        if (line) { try { _e.sender.send('cad:progress', { line }); } catch (_) { /* */ } }
+      }
+    });
+    proc.on('error', err => { _activeCadProc = null; resolve({ ok: false, error: err.message }); });
     proc.on('close', code => {
-      if (code === 0 && fs.existsSync(out)) resolve({ ok: true, out, log: stderr.trim() });
-      else resolve({ ok: false, error: `converter exited ${code}: ${stderr.trim().slice(-400)}` });
+      _activeCadProc = null;
+      if (cancelled)                              resolve({ ok: false, cancelled: true, error: 'cancelled' });
+      else if (code === 0 && fs.existsSync(out))  resolve({ ok: true, out, log: stderr.trim() });
+      else                                        resolve({ ok: false, error: `converter exited ${code}: ${stderr.trim().slice(-400)}` });
     });
   });
+});
+
+ipcMain.handle('cad:cancel', () => {
+  if (_activeCadProc && _activeCadProc._cancel) { _activeCadProc._cancel(); return { ok: true }; }
+  return { ok: false, error: 'no active conversion' };
 });
 
 // Get app version
