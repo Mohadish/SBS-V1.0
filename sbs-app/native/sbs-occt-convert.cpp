@@ -138,16 +138,29 @@ int main(int argc, char** argv) {
     const double diag = std::sqrt(dx * dx + dy * dy + dz * dz);
     linDefl = (diag > 0 ? diag : 1.0) * linRatio;
   }
-  std::cerr << "[sbs-occt] meshing (linDefl=" << linDefl << ") at " << secs() << "s\n";
+  // Junk/construction geometry (datum planes, unbounded surfaces) can blow the
+  // bbox up to ~infinity → an absurd absolute deflection that meshes nothing.
+  // When the bbox is unusable, fall back to RELATIVE meshing: each face is
+  // tessellated relative to its OWN size, immune to a polluted global bbox.
+  const bool useRelative = bbox.IsVoid() || !std::isfinite(linDefl)
+                           || linDefl <= 1e-7 || linDefl > 1e7;
+  if (useRelative)
+    std::cerr << "[sbs-occt] meshing (RELATIVE ratio=" << linRatio
+              << ", bbox unusable) at " << secs() << "s\n";
+  else
+    std::cerr << "[sbs-occt] meshing (linDefl=" << linDefl << ") at " << secs() << "s\n";
 
   // Tessellate every free shape (parallel) — meshes all sub-solids within.
   for (Standard_Integer i = 1; i <= freeShapes.Length(); ++i) {
     TopoDS_Shape s = shapeTool->GetShape(freeShapes.Value(i));
     if (s.IsNull()) continue;
-    BRepMesh_IncrementalMesh mesher(s, linDefl, Standard_False, angRad, Standard_True);
+    BRepMesh_IncrementalMesh mesher(s,
+                                    useRelative ? linRatio : linDefl,
+                                    useRelative ? Standard_True : Standard_False,
+                                    angRad, Standard_True);
     mesher.Perform();
   }
-  std::cerr << "[sbs-occt] meshed at " << secs() << "s; extracting per-solid meshes . . .\n";
+  std::cerr << "[sbs-occt] meshed at " << secs() << "s; extracting meshes . . .\n";
 
   // ── Explode into separate meshes ────────────────────────────────────────────
   // Per-SOLID gives separable parts. But many STEPs are SHEET bodies (shells /
