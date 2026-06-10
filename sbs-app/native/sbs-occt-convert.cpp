@@ -33,6 +33,7 @@
 #include <vector>
 #include <string>
 #include <map>
+#include <unordered_map>
 #include <cstdint>
 #include <cstdio>
 #include <cctype>
@@ -65,6 +66,7 @@
 #include <BRepBndLib.hxx>
 #include <Poly_Triangulation.hxx>
 #include <Quantity_Color.hxx>
+#include <TopoDS_TShape.hxx>
 #include <gp_Pnt.hxx>
 #include <gp_Dir.hxx>
 #include <gp_Trsf.hxx>
@@ -219,6 +221,35 @@ int main(int argc, char** argv) {
         || colorTool->GetColor(s, XCAFDoc_ColorGen,  c);
   };
 
+  // ── Pre-index PER-FACE colours by sub-shape LABEL ───────────────────────────
+  // OCC's shape-level GetColor(face) does NOT find sub-shape colour labels, so
+  // per-face colours were lost. Enumerate the colour-bearing sub-shape labels
+  // directly (GetSubShapes), and key by the face's TShape pointer — which is
+  // shared across assembly instances, so one lookup colours every instance.
+  // This is both the CORRECTNESS fix (face colours now read) and the SPEED fix
+  // (O(1) hash hit per face instead of an expensive failing query).
+  std::vector<Quantity_Color> palette;
+  std::unordered_map<const TopoDS_TShape*, int> faceColor;
+  {
+    TDF_LabelSequence allShapes;
+    shapeTool->GetShapes(allShapes);
+    for (Standard_Integer i = 1; i <= allShapes.Length(); ++i) {
+      TDF_LabelSequence subs;
+      if (!shapeTool->GetSubShapes(allShapes.Value(i), subs)) continue;
+      for (Standard_Integer j = 1; j <= subs.Length(); ++j) {
+        Quantity_Color c;
+        if (colorTool->GetColor(subs.Value(j), XCAFDoc_ColorSurf, c) ||
+            colorTool->GetColor(subs.Value(j), XCAFDoc_ColorGen,  c)) {
+          TopoDS_Shape sh = shapeTool->GetShape(subs.Value(j));
+          if (sh.IsNull()) continue;
+          const TopoDS_TShape* k = sh.TShape().get();
+          if (faceColor.find(k) == faceColor.end()) { faceColor[k] = (int)palette.size(); palette.push_back(c); }
+        }
+      }
+    }
+    std::cerr << "[sbs-occt] pre-indexed " << palette.size() << " sub-shape colour(s) at " << secs() << "s\n";
+  }
+
   auto addPart = [&](const TopoDS_Shape& part) {
     Quantity_Color pc; const bool partHas = getColor(part, pc);
     std::map<std::string, Mesh> groups;          // colour key → mesh
@@ -229,10 +260,15 @@ int main(int argc, char** argv) {
       Handle(Poly_Triangulation) tri = BRep_Tool::Triangulation(face, loc);
       if (tri.IsNull()) continue;
 
-      // Colour: face → part → uncoloured.
-      Quantity_Color fc; double cr = 0, cg = 0, cb = 0; bool colored = false;
-      if (getColor(face, fc))      { cr = fc.Red(); cg = fc.Green(); cb = fc.Blue(); colored = true; }
-      else if (partHas)            { cr = pc.Red(); cg = pc.Green(); cb = pc.Blue(); colored = true; }
+      // Colour: per-face (pre-indexed) → part → uncoloured.
+      double cr = 0, cg = 0, cb = 0; bool colored = false;
+      auto cit = faceColor.find(face.TShape().get());
+      if (cit != faceColor.end()) {
+        const Quantity_Color& c = palette[cit->second];
+        cr = c.Red(); cg = c.Green(); cb = c.Blue(); colored = true;
+      } else if (partHas) {
+        cr = pc.Red(); cg = pc.Green(); cb = pc.Blue(); colored = true;
+      }
       char key[40];
       if (colored) std::snprintf(key, sizeof(key), "%d,%d,%d",
                                  (int)(cr * 255 + 0.5), (int)(cg * 255 + 0.5), (int)(cb * 255 + 0.5));
