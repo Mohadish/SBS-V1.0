@@ -1029,28 +1029,32 @@ function _repointAsset(assetId, newPath, sizeBytes) {
   console.log(`[import] asset ${assetId} repointed → ${newPath}`);
 }
 
-// ── Native CAD converter routing (V0.2.22.81) ───────────────────────────────
-// Big STEP/IGES blow past the 32-bit WASM reader's ~2 GB heap. When the native
-// 64-bit OpenCascade sidecar is installed, route large files through it →
-// produces a .glb (no cap, faster), loaded via the existing glТF path and the
-// asset repointed so the project rides on the .glb. Returns the model node on
-// success, or null to fall back to the in-app WASM reader.
-const NATIVE_CAD_THRESHOLD = 120 * 1024 * 1024;   // 120 MB
+// ── Native CAD converter routing ────────────────────────────────────────────
+// When the native 64-bit OpenCascade sidecar is installed, route ALL STEP/IGES
+// through it → correct per-face colours, separated parts, no 2 GB cap, fast.
+// Output is a .sbsobj (STEP + cache tail); the asset is repointed to it so the
+// project reloads straight from the cache. The in-app WASM reader is the
+// fallback only when the exe is absent. Returns the node, or null → WASM.
+const NATIVE_CAD_THRESHOLD = 120 * 1024 * 1024;   // 120 MB — only used to decide when to WARN if native is missing
 
 async function _tryNativeCad(file, ext, assetEntry, opts) {
-  if ((file.size || 0) <= NATIVE_CAD_THRESHOLD) return null;   // small → in-app reader + cache
   const srcPath = opts.sourcePath || file.path || assetEntry?.originalPath || assetEntry?.resolvedPath || '';
   if (!srcPath) return null;                                   // need a real path to convert
 
   let available = false;
   try { available = await window.sbsNative?.cad?.available?.(); } catch { available = false; }
   if (!available) {
-    state.emit('status',
-      `"${file.name}" is ${((file.size / 1e6) | 0)} MB — beyond the in-app CAD reader's ~2 GB limit. ` +
-      `Install the native converter or export glTF. Trying the in-app reader anyway…`);
-    console.warn('[import] big CAD file but native converter not installed — falling back to WASM (may OOM).');
+    // No native converter: small files still load fine via the in-app WASM
+    // reader, so stay silent. Only warn for big ones that would blow its 2 GB cap.
+    if ((file.size || 0) > NATIVE_CAD_THRESHOLD) {
+      state.emit('status',
+        `"${file.name}" is ${((file.size / 1e6) | 0)} MB — beyond the in-app CAD reader's ~2 GB limit. ` +
+        `Install the native converter or export glTF.`);
+      console.warn('[import] big CAD file but native converter not installed — falling back to WASM (may OOM).');
+    }
     return null;
   }
+  // Native present → use it for ALL CAD sizes (correct colours, separated parts).
 
   const preset   = OCCT_QUALITY_PRESETS[_cadQuality] || OCCT_QUALITY_PRESETS.normal;
   const linRatio = preset.linearDeflection;
