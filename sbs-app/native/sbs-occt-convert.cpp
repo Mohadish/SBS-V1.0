@@ -368,10 +368,24 @@ int main(int argc, char** argv) {
   out.insert(out.end(), bin.begin(), bin.end());
 
   // `out` is the payload blob ([u32 jsonLen][json][binary]).
+  const bool bareBlob = (ext(outPath) == "sbsmesh");
+
+  // For the polyglot .sbsobj we embed the original STEP bytes as the head.
+  // Read it NOW — BEFORE opening the output stream. Critical for in-place
+  // conversion (outPath == inPath): opening the ofstream below truncates the
+  // file, so the head must be captured first or it would read back empty
+  // (corrupting the source STEP and producing a headless .sbsobj).
+  std::vector<uint8_t> head;
+  if (!bareBlob) {
+    std::ifstream hf(inPath, std::ios::binary);
+    head.assign((std::istreambuf_iterator<char>(hf)), std::istreambuf_iterator<char>());
+    hf.close();
+  }
+
   std::ofstream f(outPath, std::ios::binary);
   if (!f) { std::cerr << "cannot open output " << outPath << "\n"; return 6; }
 
-  if (ext(outPath) == "sbsmesh") {
+  if (bareBlob) {
     // Bare blob — lean display copy (no embedded STEP).
     f.write(reinterpret_cast<const char*>(out.data()), (std::streamsize)out.size());
   } else {
@@ -379,9 +393,6 @@ int main(int argc, char** argv) {
     // STAYS a valid STEP (rename → .step opens in CAD) and SBS fast-loads from
     // the tail. Footer matches src/io/model-cache.js; a zero head-hash means
     // "trusted" so the app skips re-hashing the (huge) embedded STEP head.
-    std::ifstream hf(inPath, std::ios::binary);
-    std::vector<uint8_t> head((std::istreambuf_iterator<char>(hf)), std::istreambuf_iterator<char>());
-    hf.close();
     uint8_t footer[96]; std::memset(footer, 0, sizeof(footer));
     std::memcpy(footer, "SBSCAC1\0", 8);
     footer[8]  = 1;                        // formatVersion (u32 LE)

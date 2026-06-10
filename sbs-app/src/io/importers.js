@@ -1056,10 +1056,26 @@ async function _tryNativeCad(file, ext, assetEntry, opts) {
   }
   // Native present → use it for ALL CAD sizes (correct colours, separated parts).
 
+  // Ask what to do with the conversion result. Reuses the same modal as the
+  // WASM bake path; a remembered preference ("do this for all files") skips it.
+  // By default this fires on every fresh .step open — which is what the user
+  // wants — and they can tick "stop asking" to silence it.
+  const mode = await _resolveCacheMode(srcPath);        // 'sbsobj' | 'inplace' | 'once'
+
   const preset   = OCCT_QUALITY_PRESETS[_cadQuality] || OCCT_QUALITY_PRESETS.normal;
   const linRatio = preset.linearDeflection;
   const angDeg   = preset.angularDeflection * 180 / Math.PI;
-  const outPath  = _swapExt(srcPath, 'sbsobj');
+
+  // Where the converter writes:
+  //   'sbsobj'  → <name>.sbsobj   (polyglot STEP+cache, kept; asset repointed)
+  //   'inplace' → the .step itself (polyglot in place, kept; asset repointed)
+  //   'once'    → a throwaway .sbsmesh (bare blob, no embedded STEP → small);
+  //               loaded then deleted; the asset keeps pointing at the .step,
+  //               so the next open re-converts and re-asks.
+  const once    = (mode === 'once');
+  const outPath = once                 ? (srcPath + '.sbsonce.sbsmesh')
+                : (mode === 'inplace') ? srcPath
+                :                        _swapExt(srcPath, 'sbsobj');
 
   state.emit('status', `Converting ${file.name} with the native 64-bit CAD engine — no size limit. This can take a few minutes…`);
   const _now = () => (typeof performance !== 'undefined' ? performance.now() : Date.now());
@@ -1077,13 +1093,27 @@ async function _tryNativeCad(file, ext, assetEntry, opts) {
   const rd = await window.sbsNative.readFile(outPath, 'buffer');
   if (!rd?.ok) { console.warn('[import] could not read converted file:', rd?.error); return null; }
   const bytes   = rd.data;
-  const sbsFile = new File([bytes], _basename(outPath));
-  const node    = await loadOcctFile(sbsFile, 'step', assetEntry, { skipBake: true });
-  if (node?.assetId) _repointAsset(node.assetId, outPath, bytes.byteLength ?? bytes.length ?? null);
+  const cvtFile = new File([bytes], once ? file.name : _basename(outPath));
+
+  // 'once' output is a bare blob (.sbsmesh) → loadSbsMeshFile; the kept modes
+  // produce a footer'd polyglot → loadOcctFile fast-loads from the tail.
+  const node = once
+    ? await loadSbsMeshFile(cvtFile, assetEntry)
+    : await loadOcctFile(cvtFile, 'step', assetEntry, { skipBake: true });
+
+  if (once) {
+    // Throwaway copy — drop it; the project keeps referencing the .step.
+    try { await window.sbsNative.deletePath?.(outPath); } catch { /* ignore */ }
+  } else if (node?.assetId) {
+    // Repoint the asset → the cached file so the project saves THAT reference
+    // and every later open fast-loads from the tail.
+    _repointAsset(node.assetId, outPath, bytes.byteLength ?? bytes.length ?? null);
+  }
 
   const took = Math.round(_now() - _t0);
-  state.emit('status', `Loaded ${file.name} via native CAD engine in ${(took / 1000).toFixed(1)}s → ${_basename(outPath)} ⚡`);
-  console.log(`[import] native CAD convert+load ${took}ms → ${outPath}`);
+  const dest = once ? '(not kept)' : _basename(outPath);
+  state.emit('status', `Loaded ${file.name} via native CAD engine in ${(took / 1000).toFixed(1)}s → ${dest} ⚡`);
+  console.log(`[import] native CAD convert+load ${took}ms (${mode}) → ${outPath}`);
   return node;
 }
 
@@ -1098,8 +1128,8 @@ function _promptCacheMode(srcPath) {
       <div class="sbs-dialog__body">
         <div class="sbs-dialog__title">⚡ Make this file load instantly?</div>
         <p class="small" style="margin:8px 0 12px;color:#94a3b8;line-height:1.5">
-          <b>${base}</b> took a while to parse. SBS can stash the result so the
-          <b>next open is ~1–2s</b> instead of re-parsing. Where should it go?
+          <b>${base}</b> is a CAD file — slow to open the first time. SBS can save a
+          fast-load copy so the <b>next open is ~1–2s</b>. Where should it go?
         </p>
         <label style="display:flex;gap:8px;align-items:flex-start;margin:8px 0;cursor:pointer">
           <input type="radio" name="cm" value="sbsobj" checked />
