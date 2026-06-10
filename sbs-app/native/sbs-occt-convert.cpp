@@ -32,7 +32,9 @@
 #include <iterator>
 #include <vector>
 #include <string>
+#include <map>
 #include <cstdint>
+#include <cstdio>
 #include <cctype>
 #include <cmath>
 #include <cstdlib>
@@ -203,23 +205,40 @@ int main(int argc, char** argv) {
   }
   std::cerr << "[sbs-occt] meshed at " << secs() << "s; extracting meshes . . .\n";
 
-  // ── Explode into separate meshes ────────────────────────────────────────────
-  // Per-SOLID gives separable parts. But many STEPs are SHEET bodies (shells /
-  // open surfaces) with NO solids — so fall back to per-SHELL, then to the whole
-  // shape's faces, so sheet-metal / surface models still convert.
-  auto fillColor = [&](const TopoDS_Shape& s, Mesh& m) {
-    Quantity_Color col;
-    if (colorTool->GetColor(s, XCAFDoc_ColorSurf, col) ||
-        colorTool->GetColor(s, XCAFDoc_ColorGen,  col)) {
-      m.hasColor = true; m.r = col.Red(); m.g = col.Green(); m.b = col.Blue();
-    }
+  // ── Explode into separable parts, each split into per-COLOUR sub-meshes ──────
+  // Per-SOLID gives separable parts (fall back to SHELL, then whole-shape faces
+  // for sheet bodies). WITHIN each part, faces are grouped BY COLOUR: a face's
+  // own colour wins, else the part's colour, else uncoloured. So a multi-colour
+  // part becomes one node holding several coloured sub-meshes — proper colours.
+  std::vector<Mesh>            meshes;   // flat list of (colour, geometry)
+  std::vector<std::vector<int>> parts;   // each part = the mesh indices it owns
+
+  auto getColor = [&](const TopoDS_Shape& s, Quantity_Color& c) -> bool {
+    return colorTool->GetColor(s, XCAFDoc_ColorSurf, c)
+        || colorTool->GetColor(s, XCAFDoc_ColorGen,  c);
   };
-  auto extractFaces = [&](const TopoDS_Shape& shp, Mesh& m) {
-    for (TopExp_Explorer fe(shp, TopAbs_FACE); fe.More(); fe.Next()) {
+
+  auto addPart = [&](const TopoDS_Shape& part) {
+    Quantity_Color pc; const bool partHas = getColor(part, pc);
+    std::map<std::string, Mesh> groups;          // colour key → mesh
+
+    for (TopExp_Explorer fe(part, TopAbs_FACE); fe.More(); fe.Next()) {
       TopoDS_Face face = TopoDS::Face(fe.Current());
       TopLoc_Location loc;
       Handle(Poly_Triangulation) tri = BRep_Tool::Triangulation(face, loc);
       if (tri.IsNull()) continue;
+
+      // Colour: face → part → uncoloured.
+      Quantity_Color fc; double cr = 0, cg = 0, cb = 0; bool colored = false;
+      if (getColor(face, fc))      { cr = fc.Red(); cg = fc.Green(); cb = fc.Blue(); colored = true; }
+      else if (partHas)            { cr = pc.Red(); cg = pc.Green(); cb = pc.Blue(); colored = true; }
+      char key[40];
+      if (colored) std::snprintf(key, sizeof(key), "%d,%d,%d",
+                                 (int)(cr * 255 + 0.5), (int)(cg * 255 + 0.5), (int)(cb * 255 + 0.5));
+      else         std::snprintf(key, sizeof(key), "none");
+      Mesh& m = groups[key];
+      if (colored && !m.hasColor) { m.hasColor = true; m.r = cr; m.g = cg; m.b = cb; }
+
       const gp_Trsf trsf = loc.Transformation();
       const uint32_t base = (uint32_t)(m.pos.size() / 3);
       const bool rev  = (face.Orientation() == TopAbs_REVERSED);
@@ -240,27 +259,27 @@ int main(int argc, char** argv) {
         m.idx.push_back(base + a - 1); m.idx.push_back(base + b - 1); m.idx.push_back(base + c - 1);
       }
     }
+
+    std::vector<int> owned;
+    for (auto& kv : groups) {
+      if (kv.second.pos.empty() || kv.second.idx.empty()) continue;
+      owned.push_back((int)meshes.size());
+      meshes.push_back(std::move(kv.second));
+    }
+    if (!owned.empty()) parts.push_back(std::move(owned));
   };
 
-  std::vector<Mesh> meshes;
   for (const auto& root : roots) {
     if (root.IsNull()) continue;
-
-    bool any = false;
-    for (TopExp_Explorer se(root, TopAbs_SOLID); se.More(); se.Next()) {
-      Mesh m; fillColor(se.Current(), m); extractFaces(se.Current(), m);
-      if (!m.pos.empty() && !m.idx.empty()) { meshes.push_back(std::move(m)); any = true; }
-    }
-    if (any) continue;
-    for (TopExp_Explorer sh(root, TopAbs_SHELL); sh.More(); sh.Next()) {
-      Mesh m; fillColor(sh.Current(), m); extractFaces(sh.Current(), m);
-      if (!m.pos.empty() && !m.idx.empty()) { meshes.push_back(std::move(m)); any = true; }
-    }
-    if (any) continue;
-    Mesh m; fillColor(root, m); extractFaces(root, m);   // loose faces / sheet body
-    if (!m.pos.empty() && !m.idx.empty()) meshes.push_back(std::move(m));
+    const size_t before = parts.size();
+    for (TopExp_Explorer se(root, TopAbs_SOLID); se.More(); se.Next()) addPart(se.Current());
+    if (parts.size() > before) continue;
+    for (TopExp_Explorer sh(root, TopAbs_SHELL); sh.More(); sh.Next()) addPart(sh.Current());
+    if (parts.size() > before) continue;
+    addPart(root);   // loose faces / sheet body
   }
-  std::cerr << "[sbs-occt] extracted " << meshes.size() << " mesh(es) at " << secs() << "s\n";
+  std::cerr << "[sbs-occt] extracted " << parts.size() << " part(s), "
+            << meshes.size() << " mesh(es) at " << secs() << "s\n";
   if (meshes.empty()) { std::cerr << "no triangulated geometry (no solids/shells/faces)\n"; return 5; }
 
   // ── Serialise to the model-cache blob format ────────────────────────────────
@@ -276,7 +295,8 @@ int main(int argc, char** argv) {
     bin.insert(bin.end(), p, p + v.size() * sizeof(uint32_t));
   };
 
-  std::string children, meshesJson;
+  // Serialise every mesh (binary section + JSON entry).
+  std::string meshesJson;
   for (size_t i = 0; i < meshes.size(); ++i) {
     Mesh& m = meshes[i];
     size_t po, pl, no = 0, nl = 0, io, il;
@@ -284,10 +304,6 @@ int main(int argc, char** argv) {
     std::string slotN = "null";
     if (!m.nrm.empty()) { pushF(m.nrm, no, nl); slotN = "{\"o\":" + std::to_string(no) + ",\"l\":" + std::to_string(nl) + "}"; }
     pushU(m.idx, io, il);
-
-    if (i) children += ",";
-    children += "{\"name\":\"part_" + std::to_string(i + 1) + "\",\"meshes\":[" + std::to_string(i) + "],\"children\":[]}";
-
     std::string color = m.hasColor ? ("[" + f2s(m.r) + "," + f2s(m.g) + "," + f2s(m.b) + "]") : "null";
     if (i) meshesJson += ",";
     meshesJson += "{\"color\":" + color +
@@ -295,6 +311,14 @@ int main(int argc, char** argv) {
                   ",\"n\":" + slotN +
                   ",\"u\":null" +
                   ",\"i\":{\"o\":" + std::to_string(io) + ",\"l\":" + std::to_string(il) + "}}";
+  }
+  // Part tree — each part node references the colour-mesh indices it owns.
+  std::string children;
+  for (size_t p = 0; p < parts.size(); ++p) {
+    if (p) children += ",";
+    children += "{\"name\":\"part_" + std::to_string(p + 1) + "\",\"meshes\":[";
+    for (size_t k = 0; k < parts[p].size(); ++k) { if (k) children += ","; children += std::to_string(parts[p][k]); }
+    children += "],\"children\":[]}";
   }
   std::string json = "{\"v\":1,\"root\":{\"name\":\"model\",\"meshes\":[],\"children\":[" + children + "]},\"meshes\":[" + meshesJson + "]}";
 
@@ -336,7 +360,7 @@ int main(int argc, char** argv) {
   }
   f.close();
 
-  std::cerr << "[sbs-occt] wrote " << outPath << " (" << meshes.size()
-            << " parts) at " << secs() << "s. DONE.\n";
+  std::cerr << "[sbs-occt] wrote " << outPath << " (" << parts.size()
+            << " parts, " << meshes.size() << " meshes) at " << secs() << "s. DONE.\n";
   return 0;
 }
