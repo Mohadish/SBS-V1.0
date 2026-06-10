@@ -43,6 +43,7 @@
 #include <Interface_Static.hxx>
 #include <IFSelect_ReturnStatus.hxx>
 #include <STEPCAFControl_Reader.hxx>
+#include <STEPControl_Reader.hxx>
 #include <IGESCAFControl_Reader.hxx>
 #include <XCAFApp_Application.hxx>
 #include <TDocStd_Document.hxx>
@@ -123,14 +124,44 @@ int main(int argc, char** argv) {
   Handle(XCAFDoc_ColorTool) colorTool = XCAFDoc_DocumentTool::ColorTool(doc->Main());
   TDF_LabelSequence freeShapes;
   shapeTool->GetFreeShapes(freeShapes);
-  if (freeShapes.Length() == 0) { std::cerr << "no shapes in document\n"; return 4; }
+
+  auto countFaces = [](const std::vector<TopoDS_Shape>& rr) {
+    int n = 0;
+    for (const auto& r : rr) for (TopExp_Explorer fe(r, TopAbs_FACE); fe.More(); fe.Next()) ++n;
+    return n;
+  };
+
+  // Root shapes from the structured (XCAF) reader.
+  std::vector<TopoDS_Shape> roots;
+  for (Standard_Integer i = 1; i <= freeShapes.Length(); ++i) {
+    TopoDS_Shape s = shapeTool->GetShape(freeShapes.Value(i));
+    if (!s.IsNull()) roots.push_back(s);
+  }
+  int nFaces = countFaces(roots);
+  std::cerr << "[sbs-occt] XCAF: " << roots.size() << " root(s), " << nFaces << " face(s)\n";
+
+  // Fallback: some STEPs transfer NO faces through the structured reader (odd
+  // product structure). Retry with the plain STEPControl_Reader — more
+  // permissive: it recovers the raw B-rep (loses colours/structure, but the
+  // geometry comes through). We still explode it into solids/shells/faces.
+  if (nFaces == 0 && (e == "step" || e == "stp")) {
+    std::cerr << "[sbs-occt] no faces from XCAF — retrying with plain STEPControl_Reader . . .\n";
+    STEPControl_Reader sr;
+    if (sr.ReadFile(inPath.c_str()) == IFSelect_RetDone) {
+      sr.TransferRoots();
+      TopoDS_Shape one = sr.OneShape();
+      roots.clear();
+      if (!one.IsNull()) roots.push_back(one);
+      nFaces = countFaces(roots);
+      std::cerr << "[sbs-occt] plain reader: " << roots.size() << " root(s), "
+                << nFaces << " face(s) at " << secs() << "s\n";
+    }
+  }
+  if (roots.empty() || nFaces == 0) { std::cerr << "no faces/shapes to mesh\n"; return 4; }
 
   // Linear deflection from overall bbox diagonal (BRepMesh wants absolute units).
   Bnd_Box bbox;
-  for (Standard_Integer i = 1; i <= freeShapes.Length(); ++i) {
-    TopoDS_Shape s = shapeTool->GetShape(freeShapes.Value(i));
-    if (!s.IsNull()) BRepBndLib::Add(s, bbox);
-  }
+  for (const auto& s : roots) { if (!s.IsNull()) BRepBndLib::Add(s, bbox); }
   double linDefl = 1.0;
   if (!bbox.IsVoid()) {
     Standard_Real x0, y0, z0, x1, y1, z1; bbox.Get(x0, y0, z0, x1, y1, z1);
@@ -150,9 +181,8 @@ int main(int argc, char** argv) {
   else
     std::cerr << "[sbs-occt] meshing (linDefl=" << linDefl << ") at " << secs() << "s\n";
 
-  // Tessellate every free shape (parallel) — meshes all sub-solids within.
-  for (Standard_Integer i = 1; i <= freeShapes.Length(); ++i) {
-    TopoDS_Shape s = shapeTool->GetShape(freeShapes.Value(i));
+  // Tessellate every root shape (parallel) — meshes all sub-shapes within.
+  for (const auto& s : roots) {
     if (s.IsNull()) continue;
     BRepMesh_IncrementalMesh mesher(s,
                                     useRelative ? linRatio : linDefl,
@@ -202,8 +232,7 @@ int main(int argc, char** argv) {
   };
 
   std::vector<Mesh> meshes;
-  for (Standard_Integer i = 1; i <= freeShapes.Length(); ++i) {
-    TopoDS_Shape root = shapeTool->GetShape(freeShapes.Value(i));
+  for (const auto& root : roots) {
     if (root.IsNull()) continue;
 
     bool any = false;
