@@ -149,49 +149,66 @@ int main(int argc, char** argv) {
   }
   std::cerr << "[sbs-occt] meshed at " << secs() << "s; extracting per-solid meshes . . .\n";
 
-  // ── Explode into per-solid meshes (this is what gives separable parts) ──────
+  // ── Explode into separate meshes ────────────────────────────────────────────
+  // Per-SOLID gives separable parts. But many STEPs are SHEET bodies (shells /
+  // open surfaces) with NO solids — so fall back to per-SHELL, then to the whole
+  // shape's faces, so sheet-metal / surface models still convert.
+  auto fillColor = [&](const TopoDS_Shape& s, Mesh& m) {
+    Quantity_Color col;
+    if (colorTool->GetColor(s, XCAFDoc_ColorSurf, col) ||
+        colorTool->GetColor(s, XCAFDoc_ColorGen,  col)) {
+      m.hasColor = true; m.r = col.Red(); m.g = col.Green(); m.b = col.Blue();
+    }
+  };
+  auto extractFaces = [&](const TopoDS_Shape& shp, Mesh& m) {
+    for (TopExp_Explorer fe(shp, TopAbs_FACE); fe.More(); fe.Next()) {
+      TopoDS_Face face = TopoDS::Face(fe.Current());
+      TopLoc_Location loc;
+      Handle(Poly_Triangulation) tri = BRep_Tool::Triangulation(face, loc);
+      if (tri.IsNull()) continue;
+      const gp_Trsf trsf = loc.Transformation();
+      const uint32_t base = (uint32_t)(m.pos.size() / 3);
+      const bool rev  = (face.Orientation() == TopAbs_REVERSED);
+      const bool hasN = tri->HasNormals();
+      for (Standard_Integer n = 1; n <= tri->NbNodes(); ++n) {
+        gp_Pnt p = tri->Node(n); p.Transform(trsf);
+        m.pos.push_back((float)p.X()); m.pos.push_back((float)p.Y()); m.pos.push_back((float)p.Z());
+        if (hasN) {
+          gp_Dir d = tri->Normal(n); d.Transform(trsf);
+          float nx = (float)d.X(), ny = (float)d.Y(), nz = (float)d.Z();
+          if (rev) { nx = -nx; ny = -ny; nz = -nz; }
+          m.nrm.push_back(nx); m.nrm.push_back(ny); m.nrm.push_back(nz);
+        }
+      }
+      for (Standard_Integer t = 1; t <= tri->NbTriangles(); ++t) {
+        Standard_Integer a, b, c; tri->Triangle(t).Get(a, b, c);
+        if (rev) std::swap(b, c);
+        m.idx.push_back(base + a - 1); m.idx.push_back(base + b - 1); m.idx.push_back(base + c - 1);
+      }
+    }
+  };
+
   std::vector<Mesh> meshes;
   for (Standard_Integer i = 1; i <= freeShapes.Length(); ++i) {
     TopoDS_Shape root = shapeTool->GetShape(freeShapes.Value(i));
     if (root.IsNull()) continue;
+
+    bool any = false;
     for (TopExp_Explorer se(root, TopAbs_SOLID); se.More(); se.Next()) {
-      const TopoDS_Shape& solid = se.Current();
-      Mesh m;
-      Quantity_Color col;
-      if (colorTool->GetColor(solid, XCAFDoc_ColorSurf, col) ||
-          colorTool->GetColor(solid, XCAFDoc_ColorGen,  col)) {
-        m.hasColor = true; m.r = col.Red(); m.g = col.Green(); m.b = col.Blue();
-      }
-      for (TopExp_Explorer fe(solid, TopAbs_FACE); fe.More(); fe.Next()) {
-        TopoDS_Face face = TopoDS::Face(fe.Current());
-        TopLoc_Location loc;
-        Handle(Poly_Triangulation) tri = BRep_Tool::Triangulation(face, loc);
-        if (tri.IsNull()) continue;
-        const gp_Trsf trsf = loc.Transformation();
-        const uint32_t base = (uint32_t)(m.pos.size() / 3);
-        const bool rev  = (face.Orientation() == TopAbs_REVERSED);
-        const bool hasN = tri->HasNormals();
-        for (Standard_Integer n = 1; n <= tri->NbNodes(); ++n) {
-          gp_Pnt p = tri->Node(n); p.Transform(trsf);
-          m.pos.push_back((float)p.X()); m.pos.push_back((float)p.Y()); m.pos.push_back((float)p.Z());
-          if (hasN) {
-            gp_Dir d = tri->Normal(n); d.Transform(trsf);
-            float nx = (float)d.X(), ny = (float)d.Y(), nz = (float)d.Z();
-            if (rev) { nx = -nx; ny = -ny; nz = -nz; }
-            m.nrm.push_back(nx); m.nrm.push_back(ny); m.nrm.push_back(nz);
-          }
-        }
-        for (Standard_Integer t = 1; t <= tri->NbTriangles(); ++t) {
-          Standard_Integer a, b, c; tri->Triangle(t).Get(a, b, c);
-          if (rev) std::swap(b, c);
-          m.idx.push_back(base + a - 1); m.idx.push_back(base + b - 1); m.idx.push_back(base + c - 1);
-        }
-      }
-      if (!m.pos.empty() && !m.idx.empty()) meshes.push_back(std::move(m));
+      Mesh m; fillColor(se.Current(), m); extractFaces(se.Current(), m);
+      if (!m.pos.empty() && !m.idx.empty()) { meshes.push_back(std::move(m)); any = true; }
     }
+    if (any) continue;
+    for (TopExp_Explorer sh(root, TopAbs_SHELL); sh.More(); sh.Next()) {
+      Mesh m; fillColor(sh.Current(), m); extractFaces(sh.Current(), m);
+      if (!m.pos.empty() && !m.idx.empty()) { meshes.push_back(std::move(m)); any = true; }
+    }
+    if (any) continue;
+    Mesh m; fillColor(root, m); extractFaces(root, m);   // loose faces / sheet body
+    if (!m.pos.empty() && !m.idx.empty()) meshes.push_back(std::move(m));
   }
-  std::cerr << "[sbs-occt] extracted " << meshes.size() << " solid mesh(es) at " << secs() << "s\n";
-  if (meshes.empty()) { std::cerr << "no triangulated solids\n"; return 5; }
+  std::cerr << "[sbs-occt] extracted " << meshes.size() << " mesh(es) at " << secs() << "s\n";
+  if (meshes.empty()) { std::cerr << "no triangulated geometry (no solids/shells/faces)\n"; return 5; }
 
   // ── Serialise to the model-cache blob format ────────────────────────────────
   std::vector<uint8_t> bin;
