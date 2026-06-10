@@ -1089,6 +1089,9 @@ async function _tryNativeCad(file, ext, assetEntry, opts) {
     console.warn('[import] native convert failed:', res?.error);
     return null;
   }
+  // Surface the converter's log (incl. the [diag] colour breakdown) so we can
+  // compare colour counts / sRGB vs linear against a CAD viewer like 3ds Max.
+  if (res.log) console.log('[native-cad] converter log:\n' + res.log);
 
   const rd = await window.sbsNative.readFile(outPath, 'buffer');
   if (!rd?.ok) { console.warn('[import] could not read converted file:', rd?.error); return null; }

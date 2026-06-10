@@ -33,7 +33,9 @@
 #include <vector>
 #include <string>
 #include <map>
+#include <set>
 #include <unordered_map>
+#include <functional>
 #include <cstdint>
 #include <cstdio>
 #include <cctype>
@@ -53,6 +55,7 @@
 #include <XCAFDoc_DocumentTool.hxx>
 #include <XCAFDoc_ShapeTool.hxx>
 #include <XCAFDoc_ColorTool.hxx>
+#include <TDF_Label.hxx>
 #include <TDF_LabelSequence.hxx>
 #include <TopoDS.hxx>
 #include <TopoDS_Shape.hxx>
@@ -66,6 +69,7 @@
 #include <BRepBndLib.hxx>
 #include <Poly_Triangulation.hxx>
 #include <Quantity_Color.hxx>
+#include <Quantity_TypeOfColor.hxx>
 #include <TopoDS_TShape.hxx>
 #include <gp_Pnt.hxx>
 #include <gp_Dir.hxx>
@@ -141,6 +145,7 @@ int main(int argc, char** argv) {
   };
 
   // Root shapes from the structured (XCAF) reader.
+  bool usedFallback = false;          // set if we drop to the plain (label-less) reader
   std::vector<TopoDS_Shape> roots;
   for (Standard_Integer i = 1; i <= freeShapes.Length(); ++i) {
     TopoDS_Shape s = shapeTool->GetShape(freeShapes.Value(i));
@@ -167,7 +172,7 @@ int main(int argc, char** argv) {
       sr.TransferRoots();
       TopoDS_Shape one = sr.OneShape();
       roots.clear();
-      if (!one.IsNull()) roots.push_back(one);
+      if (!one.IsNull()) { roots.push_back(one); usedFallback = true; }
       nFaces = countFaces(roots);
       std::cerr << "[sbs-occt] plain reader: " << roots.size() << " root(s), "
                 << nFaces << " face(s) at " << secs() << "s\n";
@@ -211,23 +216,33 @@ int main(int argc, char** argv) {
   // ── Explode into separable parts, each split into per-COLOUR sub-meshes ──────
   // Per-SOLID gives separable parts (fall back to SHELL, then whole-shape faces
   // for sheet bodies). WITHIN each part, faces are grouped BY COLOUR: a face's
-  // own colour wins, else the part's colour, else uncoloured. So a multi-colour
-  // part becomes one node holding several coloured sub-meshes — proper colours.
+  // own override wins, else the colour resolved for this OCCURRENCE from the
+  // assembly tree, else uncoloured. A multi-colour part becomes one node holding
+  // several coloured sub-meshes.
   std::vector<Mesh>            meshes;   // flat list of (colour, geometry)
   std::vector<std::vector<int>> parts;   // each part = the mesh indices it owns
 
-  auto getColor = [&](const TopoDS_Shape& s, Quantity_Color& c) -> bool {
-    return colorTool->GetColor(s, XCAFDoc_ColorSurf, c)
-        || colorTool->GetColor(s, XCAFDoc_ColorGen,  c);
+  // Read colour as sRGB — what authoring tools / 3ds Max display. OCC 7.5+ keeps
+  // colour LINEAR internally; .Red()/.Green()/.Blue() return linear → shifted /
+  // washed hues. Quantity_TOC_sRGB hands back the file's authored values.
+  auto toRGB = [](const Quantity_Color& c, double& r, double& g, double& b) {
+    Standard_Real rr, gg, bb; c.Values(rr, gg, bb, Quantity_TOC_sRGB);
+    r = rr; g = gg; b = bb;
+  };
+  auto hexOf = [](double r, double g, double b) {
+    char h[8]; std::snprintf(h, sizeof(h), "#%02x%02x%02x",
+      (int)(r * 255 + 0.5), (int)(g * 255 + 0.5), (int)(b * 255 + 0.5));
+    return std::string(h);
+  };
+  auto labelColor = [&](const TDF_Label& l, Quantity_Color& c) -> bool {
+    return colorTool->GetColor(l, XCAFDoc_ColorSurf, c)
+        || colorTool->GetColor(l, XCAFDoc_ColorGen,  c);
   };
 
-  // ── Pre-index PER-FACE colours by sub-shape LABEL ───────────────────────────
-  // OCC's shape-level GetColor(face) does NOT find sub-shape colour labels, so
-  // per-face colours were lost. Enumerate the colour-bearing sub-shape labels
-  // directly (GetSubShapes), and key by the face's TShape pointer — which is
-  // shared across assembly instances, so one lookup colours every instance.
-  // This is both the CORRECTNESS fix (face colours now read) and the SPEED fix
-  // (O(1) hash hit per face instead of an expensive failing query).
+  // ── Pre-index PER-FACE colours by sub-shape ─────────────────────────────────
+  // OCC's shape-level GetColor(face) misses sub-shape colour labels. Enumerate
+  // them directly (GetSubShapes), keyed by the face TShape. A face override is a
+  // property of the part DEFINITION, so sharing it across instances is correct.
   std::vector<Quantity_Color> palette;
   std::unordered_map<const TopoDS_TShape*, int> faceColor;
   {
@@ -238,8 +253,7 @@ int main(int argc, char** argv) {
       if (!shapeTool->GetSubShapes(allShapes.Value(i), subs)) continue;
       for (Standard_Integer j = 1; j <= subs.Length(); ++j) {
         Quantity_Color c;
-        if (colorTool->GetColor(subs.Value(j), XCAFDoc_ColorSurf, c) ||
-            colorTool->GetColor(subs.Value(j), XCAFDoc_ColorGen,  c)) {
+        if (labelColor(subs.Value(j), c)) {
           TopoDS_Shape sh = shapeTool->GetShape(subs.Value(j));
           if (sh.IsNull()) continue;
           const TopoDS_TShape* k = sh.TShape().get();
@@ -250,24 +264,62 @@ int main(int argc, char** argv) {
     std::cerr << "[sbs-occt] pre-indexed " << palette.size() << " sub-shape colour(s) at " << secs() << "s\n";
   }
 
-  auto addPart = [&](const TopoDS_Shape& part) {
-    Quantity_Color pc; const bool partHas = getColor(part, pc);
-    std::map<std::string, Mesh> groups;          // colour key → mesh
+  // ── DIAGNOSTIC: where do colours live? (compare to your CAD viewer) ──────────
+  // STEP stores colour at 3 levels — face (sub-shape), part (definition) and
+  // ASSEMBLY INSTANCE (the occurrence). A viewer resolves all three with
+  // inheritance. Dump the count per level + every distinct colour in BOTH sRGB
+  // and linear, so we can match exactly what Max sees and confirm the encoding.
+  {
+    int nInst = 0, nDef = 0, nAsm = 0;
+    std::set<std::string> distinct;
+    auto note = [&](const Quantity_Color& c) {
+      double r, g, b; toRGB(c, r, g, b); distinct.insert(hexOf(r, g, b));
+    };
+    TDF_LabelSequence allShapes;
+    shapeTool->GetShapes(allShapes);
+    for (Standard_Integer i = 1; i <= allShapes.Length(); ++i) {
+      const TDF_Label L = allShapes.Value(i);
+      Quantity_Color c;
+      if (labelColor(L, c)) {
+        note(c);
+        if      (shapeTool->IsComponent(L)) ++nInst;
+        else if (shapeTool->IsAssembly(L))  ++nAsm;
+        else                                ++nDef;
+      }
+    }
+    for (const auto& c : palette) note(c);    // face level
+    std::cerr << "[sbs-occt][diag] colour sources: instance=" << nInst
+              << " part=" << nDef << " assembly=" << nAsm
+              << " face=" << palette.size()
+              << "  -> distinct source colours=" << distinct.size() << "\n";
+    int shown = 0;
+    for (Standard_Integer i = 1; i <= allShapes.Length() && shown < 80; ++i) {
+      Quantity_Color c;
+      if (!labelColor(allShapes.Value(i), c)) continue;
+      double sr, sg, sb; toRGB(c, sr, sg, sb);
+      std::cerr << "[sbs-occt][diag] colour sRGB=" << hexOf(sr, sg, sb)
+                << " linear=" << hexOf(c.Red(), c.Green(), c.Blue()) << "\n";
+      ++shown;
+    }
+  }
 
+  // Build ONE part (one solid/shell), grouping its faces by colour. `base` is the
+  // colour resolved for this occurrence; a face-level override beats it.
+  auto addPartGeom = [&](const TopoDS_Shape& part, bool baseHas, double br, double bg, double bb) {
+    std::map<std::string, Mesh> groups;          // colour key → mesh
     for (TopExp_Explorer fe(part, TopAbs_FACE); fe.More(); fe.Next()) {
       TopoDS_Face face = TopoDS::Face(fe.Current());
       TopLoc_Location loc;
       Handle(Poly_Triangulation) tri = BRep_Tool::Triangulation(face, loc);
       if (tri.IsNull()) continue;
 
-      // Colour: per-face (pre-indexed) → part → uncoloured.
+      // Colour: per-face override → resolved base (instance/part/inherited) → none.
       double cr = 0, cg = 0, cb = 0; bool colored = false;
       auto cit = faceColor.find(face.TShape().get());
       if (cit != faceColor.end()) {
-        const Quantity_Color& c = palette[cit->second];
-        cr = c.Red(); cg = c.Green(); cb = c.Blue(); colored = true;
-      } else if (partHas) {
-        cr = pc.Red(); cg = pc.Green(); cb = pc.Blue(); colored = true;
+        toRGB(palette[cit->second], cr, cg, cb); colored = true;
+      } else if (baseHas) {
+        cr = br; cg = bg; cb = bb; colored = true;
       }
       char key[40];
       if (colored) std::snprintf(key, sizeof(key), "%d,%d,%d",
@@ -277,7 +329,7 @@ int main(int argc, char** argv) {
       if (colored && !m.hasColor) { m.hasColor = true; m.r = cr; m.g = cg; m.b = cb; }
 
       const gp_Trsf trsf = loc.Transformation();
-      const uint32_t base = (uint32_t)(m.pos.size() / 3);
+      const uint32_t vbase = (uint32_t)(m.pos.size() / 3);
       const bool rev  = (face.Orientation() == TopAbs_REVERSED);
       const bool hasN = tri->HasNormals();
       for (Standard_Integer n = 1; n <= tri->NbNodes(); ++n) {
@@ -293,7 +345,7 @@ int main(int argc, char** argv) {
       for (Standard_Integer t = 1; t <= tri->NbTriangles(); ++t) {
         Standard_Integer a, b, c; tri->Triangle(t).Get(a, b, c);
         if (rev) std::swap(b, c);
-        m.idx.push_back(base + a - 1); m.idx.push_back(base + b - 1); m.idx.push_back(base + c - 1);
+        m.idx.push_back(vbase + a - 1); m.idx.push_back(vbase + b - 1); m.idx.push_back(vbase + c - 1);
       }
     }
 
@@ -306,16 +358,62 @@ int main(int argc, char** argv) {
     if (!owned.empty()) parts.push_back(std::move(owned));
   };
 
-  for (const auto& root : roots) {
-    if (root.IsNull()) continue;
+  // Decompose a shape into separable parts (SOLID, else SHELL, else loose faces)
+  // and emit each with the given base colour.
+  auto emitParts = [&](const TopoDS_Shape& shape, bool baseHas, double br, double bg, double bb) {
     const size_t before = parts.size();
-    for (TopExp_Explorer se(root, TopAbs_SOLID); se.More(); se.Next()) addPart(se.Current());
-    if (parts.size() > before) continue;
-    for (TopExp_Explorer sh(root, TopAbs_SHELL); sh.More(); sh.Next()) addPart(sh.Current());
-    if (parts.size() > before) continue;
-    addPart(root);   // loose faces / sheet body
+    for (TopExp_Explorer se(shape, TopAbs_SOLID); se.More(); se.Next()) addPartGeom(se.Current(), baseHas, br, bg, bb);
+    if (parts.size() > before) return;
+    for (TopExp_Explorer sh(shape, TopAbs_SHELL); sh.More(); sh.Next()) addPartGeom(sh.Current(), baseHas, br, bg, bb);
+    if (parts.size() > before) return;
+    addPartGeom(shape, baseHas, br, bg, bb);   // loose faces / sheet body
+  };
+
+  if (usedFallback) {
+    // Plain-reader geometry has NO XCAF labels → no colours; just emit it.
+    for (const auto& root : roots) if (!root.IsNull()) emitParts(root, false, 0, 0, 0);
+  } else {
+    // ── Walk the assembly TREE, resolving colour per OCCURRENCE ──────────────
+    // Priority at every node: instance(occurrence) override > part definition >
+    // inherited-from-ancestor. This is what a viewer does, and fixes (a) instance
+    // colours we never read → grey, and (b) one part instanced with different
+    // colours collapsing to a single colour (TShape is shared across instances).
+    struct Col { bool has = false; double r = 0, g = 0, b = 0; };
+    auto readCol = [&](const TDF_Label& l) -> Col {
+      Col o; Quantity_Color c;
+      if (labelColor(l, c)) { toRGB(c, o.r, o.g, o.b); o.has = true; }
+      return o;
+    };
+    std::function<void(const TDF_Label&, const TopLoc_Location&, const Col&, const Col&)>
+    walk = [&](const TDF_Label& defLabel, const TopLoc_Location& accLoc,
+               const Col& inst, const Col& anc) {
+      const Col def = readCol(defLabel);
+      const Col eff = inst.has ? inst : (def.has ? def : anc);   // instance > def > ancestor
+      if (shapeTool->IsAssembly(defLabel)) {
+        TDF_LabelSequence comps;
+        shapeTool->GetComponents(defLabel, comps);
+        for (Standard_Integer i = 1; i <= comps.Length(); ++i) {
+          const TDF_Label C = comps.Value(i);
+          TDF_Label ref;
+          if (!shapeTool->GetReferredShape(C, ref)) continue;
+          walk(ref, accLoc * shapeTool->GetLocation(C), readCol(C), eff);
+        }
+      } else {
+        TopoDS_Shape s = shapeTool->GetShape(defLabel);
+        if (!s.IsNull()) emitParts(s.Moved(accLoc), eff.has, eff.r, eff.g, eff.b);
+      }
+    };
+    const Col none;
+    for (Standard_Integer i = 1; i <= freeShapes.Length(); ++i)
+      walk(freeShapes.Value(i), TopLoc_Location(), none, none);
   }
+
   int coloredMeshes = 0; for (const auto& m : meshes) if (m.hasColor) ++coloredMeshes;
+  {
+    std::set<std::string> outColors;
+    for (const auto& m : meshes) if (m.hasColor) outColors.insert(hexOf(m.r, m.g, m.b));
+    std::cerr << "[sbs-occt][diag] distinct OUTPUT colours=" << outColors.size() << "\n";
+  }
   std::cerr << "[sbs-occt] extracted " << parts.size() << " part(s), "
             << meshes.size() << " mesh(es), " << coloredMeshes << " coloured at " << secs() << "s\n";
   if (meshes.empty()) { std::cerr << "no triangulated geometry (no solids/shells/faces)\n"; return 5; }
