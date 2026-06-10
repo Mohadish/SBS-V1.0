@@ -29,12 +29,14 @@
 #define _USE_MATH_DEFINES
 #include <iostream>
 #include <fstream>
+#include <iterator>
 #include <vector>
 #include <string>
 #include <cstdint>
 #include <cctype>
 #include <cmath>
 #include <cstdlib>
+#include <cstring>
 #include <chrono>
 #include <utility>
 
@@ -76,7 +78,9 @@ struct Mesh {
 
 int main(int argc, char** argv) {
   if (argc < 3) {
-    std::cerr << "usage: sbs-occt-convert <input.step|.iges> <output.sbsmesh> [linRatio] [angDeg]\n";
+    std::cerr << "usage: sbs-occt-convert <input.step|.iges> <output.sbsobj> [linRatio] [angDeg]\n"
+                 "  output ext .sbsobj = STEP + mesh-blob polyglot (still a valid STEP);\n"
+                 "             .sbsmesh = bare mesh blob (lean display copy).\n";
     return 1;
   }
   const std::string inPath  = argv[1];
@@ -231,12 +235,38 @@ int main(int argc, char** argv) {
   out.insert(out.end(), json.begin(), json.end());
   out.insert(out.end(), bin.begin(), bin.end());
 
+  // `out` is the payload blob ([u32 jsonLen][json][binary]).
   std::ofstream f(outPath, std::ios::binary);
   if (!f) { std::cerr << "cannot open output " << outPath << "\n"; return 6; }
-  f.write(reinterpret_cast<const char*>(out.data()), (std::streamsize)out.size());
+
+  if (ext(outPath) == "sbsmesh") {
+    // Bare blob — lean display copy (no embedded STEP).
+    f.write(reinterpret_cast<const char*>(out.data()), (std::streamsize)out.size());
+  } else {
+    // Polyglot .sbsobj: [original STEP bytes][blob][96-byte footer]. The file
+    // STAYS a valid STEP (rename → .step opens in CAD) and SBS fast-loads from
+    // the tail. Footer matches src/io/model-cache.js; a zero head-hash means
+    // "trusted" so the app skips re-hashing the (huge) embedded STEP head.
+    std::ifstream hf(inPath, std::ios::binary);
+    std::vector<uint8_t> head((std::istreambuf_iterator<char>(hf)), std::istreambuf_iterator<char>());
+    hf.close();
+    uint8_t footer[96]; std::memset(footer, 0, sizeof(footer));
+    std::memcpy(footer, "SBSCAC1\0", 8);
+    footer[8]  = 1;                        // formatVersion (u32 LE)
+    footer[12] = 1;                        // kind
+    const uint64_t hl = head.size(), pl = out.size();
+    for (int i = 0; i < 8; ++i) {
+      footer[16 + i] = (uint8_t)((hl >> (8 * i)) & 0xff);
+      footer[24 + i] = (uint8_t)((pl >> (8 * i)) & 0xff);
+    }
+    std::memcpy(footer + 88, "SBSCAC1\0", 8);
+    f.write(reinterpret_cast<const char*>(head.data()), (std::streamsize)head.size());
+    f.write(reinterpret_cast<const char*>(out.data()),  (std::streamsize)out.size());
+    f.write(reinterpret_cast<const char*>(footer), 96);
+  }
   f.close();
 
-  std::cerr << "[sbs-occt] wrote " << outPath << " (" << out.size() / 1048576 << " MB, "
-            << meshes.size() << " parts) at " << secs() << "s. DONE.\n";
+  std::cerr << "[sbs-occt] wrote " << outPath << " (" << meshes.size()
+            << " parts) at " << secs() << "s. DONE.\n";
   return 0;
 }

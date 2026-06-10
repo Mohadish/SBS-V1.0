@@ -902,7 +902,10 @@ async function loadOcctFile(file, format, assetEntry = null, opts = {}) {
   if (footer) {
     let ok = false;
     const head = bytes.subarray(0, footer.headLength);
-    try { ok = await modelCache.verifyHead(head, footer.headHashHex); } catch { ok = false; }
+    // A zero head-hash = "trusted": the native converter writes it so the app
+    // doesn't re-hash a huge embedded STEP head on every open. Otherwise verify.
+    const trusted = /^0+$/.test(footer.headHashHex);
+    try { ok = trusted || await modelCache.verifyHead(head, footer.headHashHex); } catch { ok = false; }
     if (ok) {
       try {
         const payload = bytes.subarray(footer.payloadStart, footer.payloadStart + footer.payloadLength);
@@ -1052,7 +1055,7 @@ async function _tryNativeCad(file, ext, assetEntry, opts) {
   const preset   = OCCT_QUALITY_PRESETS[_cadQuality] || OCCT_QUALITY_PRESETS.normal;
   const linRatio = preset.linearDeflection;
   const angDeg   = preset.angularDeflection * 180 / Math.PI;
-  const outPath  = _swapExt(srcPath, 'sbsmesh');
+  const outPath  = _swapExt(srcPath, 'sbsobj');
 
   state.emit('status', `Converting ${file.name} with the native 64-bit CAD engine — no size limit. This can take a few minutes…`);
   const _now = () => (typeof performance !== 'undefined' ? performance.now() : Date.now());
@@ -1068,10 +1071,10 @@ async function _tryNativeCad(file, ext, assetEntry, opts) {
   }
 
   const rd = await window.sbsNative.readFile(outPath, 'buffer');
-  if (!rd?.ok) { console.warn('[import] could not read converted mesh:', rd?.error); return null; }
-  const bytes    = rd.data;
-  const meshFile = new File([bytes], _basename(outPath));
-  const node     = await loadSbsMeshFile(meshFile, assetEntry);
+  if (!rd?.ok) { console.warn('[import] could not read converted file:', rd?.error); return null; }
+  const bytes   = rd.data;
+  const sbsFile = new File([bytes], _basename(outPath));
+  const node    = await loadOcctFile(sbsFile, 'step', assetEntry, { skipBake: true });
   if (node?.assetId) _repointAsset(node.assetId, outPath, bytes.byteLength ?? bytes.length ?? null);
 
   const took = Math.round(_now() - _t0);
