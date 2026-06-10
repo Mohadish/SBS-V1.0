@@ -98,8 +98,9 @@ int main(int argc, char** argv) {
 
   // Speed: skip the slow single-threaded STEP healing pass (unknown statics are ignored).
   Interface_Static::SetIVal("read.step.healing", 0);
-  Interface_Static::SetIVal("read.precision.mode", 1);
-  Interface_Static::SetRVal("read.precision.val", 0.1);
+  // NOTE: do NOT force a coarse read precision — a large read.precision.val
+  // makes OCC merge adjacent faces during transfer, which destroys per-face
+  // colours (styled_items target individual ADVANCED_FACEs). Use file precision.
   // Read tessellated geometry too (AP242 triangulated face sets). Big exports
   // are often mesh-based, not B-rep; OCC skips them unless this is on. 1 = On.
   Interface_Static::SetIVal("read.step.tessellated", 1);
@@ -278,8 +279,9 @@ int main(int argc, char** argv) {
     if (parts.size() > before) continue;
     addPart(root);   // loose faces / sheet body
   }
+  int coloredMeshes = 0; for (const auto& m : meshes) if (m.hasColor) ++coloredMeshes;
   std::cerr << "[sbs-occt] extracted " << parts.size() << " part(s), "
-            << meshes.size() << " mesh(es) at " << secs() << "s\n";
+            << meshes.size() << " mesh(es), " << coloredMeshes << " coloured at " << secs() << "s\n";
   if (meshes.empty()) { std::cerr << "no triangulated geometry (no solids/shells/faces)\n"; return 5; }
 
   // ── Serialise to the model-cache blob format ────────────────────────────────
