@@ -135,14 +135,20 @@ export async function showAssetVerifyDialog(assets, isElectron, { forceShow = fa
         const item = document.createElement('div');
         item.className = 'card';
         item.style.cssText = 'display:flex;align-items:center;gap:8px;padding:8px';
+        const subLine = row.overridden
+          ? `<span style="color:#f59e0b">⚠ overridden — using file on disk</span> · ${_esc(pathLabel)}`
+          : _esc(pathLabel);
         item.innerHTML = `
           <span style="font-size:15px;flex-shrink:0">${_icon(row.status)}</span>
           <div style="flex:1;min-width:0">
             <div class="small" style="font-weight:600;overflow:hidden;text-overflow:ellipsis;white-space:nowrap"
                  title="${_esc(row.assetEntry.name)}">${_esc(row.assetEntry.name)}</div>
             <div class="small muted" style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap"
-                 title="${_esc(pathLabel)}">${_esc(pathLabel)}</div>
+                 title="${_esc(pathLabel)}">${subLine}</div>
           </div>
+          ${row.status === 'warning'
+            ? `<button class="btn" data-override="${idx}" title="Use the file on disk as-is, despite the size/date mismatch" style="color:#f59e0b">Override</button>`
+            : ''}
           <button class="btn" data-browse="${idx}">Browse…</button>
           ${row.file ? `<button class="btn" data-clear="${idx}" title="Clear">✕</button>` : ''}
         `;
@@ -155,8 +161,19 @@ export async function showAssetVerifyDialog(assets, isElectron, { forceShow = fa
       dlg.querySelectorAll('[data-clear]').forEach(btn =>
         btn.addEventListener('click', () => {
           const i = parseInt(btn.dataset.clear);
-          rows[i].file   = null;
-          rows[i].status = 'missing';
+          rows[i].file       = null;
+          rows[i].status     = 'missing';
+          rows[i].overridden = false;
+          _render();
+        }));
+      // Override: accept the file on disk as-is despite the size/date mismatch.
+      // Treated as 'ok' so it stops blocking Load; the caller then loads it from
+      // its path (or the browsed File). Flagged so the caller can prompt a re-save.
+      dlg.querySelectorAll('[data-override]').forEach(btn =>
+        btn.addEventListener('click', () => {
+          const i = parseInt(btn.dataset.override);
+          rows[i].status     = 'ok';
+          rows[i].overridden = true;
           _render();
         }));
 
@@ -171,6 +188,8 @@ export async function showAssetVerifyDialog(assets, isElectron, { forceShow = fa
       dlg.querySelector('#av-load')?.addEventListener('click', () => {
         const result = new Map();
         rows.forEach(r => { if (r.file) result.set(r.assetEntry.id, r.file); });
+        // Carry the overridden asset ids so the caller can suggest a re-save.
+        result.overridden = new Set(rows.filter(r => r.overridden).map(r => r.assetEntry.id));
         dlg.close(); dlg.remove();
         resolve(result);
       });
