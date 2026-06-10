@@ -258,6 +258,9 @@ int main(int argc, char** argv) {
     std::cerr << "[sbs-occt] pre-indexed " << palette.size() << " sub-shape colour(s) at " << secs() << "s\n";
   }
 
+  // Diagnostic tallies — where each face's colour came from.
+  long dFace = 0, dFaceHit = 0, dBaseHit = 0, dNone = 0, dSolidTot = 0, dSolidColoured = 0;
+
   // Build ONE part (one solid/shell), grouping its faces by colour. `base` is the
   // colour resolved for this occurrence; a face-level override beats it.
   auto addPartGeom = [&](const TopoDS_Shape& part, bool baseHas, double br, double bg, double bb) {
@@ -268,14 +271,15 @@ int main(int argc, char** argv) {
       Handle(Poly_Triangulation) tri = BRep_Tool::Triangulation(face, loc);
       if (tri.IsNull()) continue;
 
-      // Colour: per-face override → resolved base (instance/part/inherited) → none.
+      // Colour: per-face override → resolved base (solid/instance/part/inherited) → none.
       double cr = 0, cg = 0, cb = 0; bool colored = false;
+      ++dFace;
       auto cit = faceColor.find(face.TShape().get());
       if (cit != faceColor.end()) {
-        toRGB(palette[cit->second], cr, cg, cb); colored = true;
+        toRGB(palette[cit->second], cr, cg, cb); colored = true; ++dFaceHit;
       } else if (baseHas) {
-        cr = br; cg = bg; cb = bb; colored = true;
-      }
+        cr = br; cg = bg; cb = bb; colored = true; ++dBaseHit;
+      } else { ++dNone; }
       char key[40];
       if (colored) std::snprintf(key, sizeof(key), "%d,%d,%d",
                                  (int)(cr * 255 + 0.5), (int)(cg * 255 + 0.5), (int)(cb * 255 + 0.5));
@@ -313,13 +317,32 @@ int main(int argc, char** argv) {
     if (!owned.empty()) parts.push_back(std::move(owned));
   };
 
+  // A container's OWN colour (per-solid / per-shell styled_item, e.g. a STEP
+  // MANIFOLD_SOLID_BREP colour) overrides the inherited base for its faces — but
+  // a face that has its own override still wins inside addPartGeom.
+  auto withOwnColour = [&](const TopoDS_Shape& c, bool baseHas, double& r, double& g, double& b) -> bool {
+    auto it = faceColor.find(c.TShape().get());
+    if (it != faceColor.end()) { toRGB(palette[it->second], r, g, b); return true; }
+    return baseHas;
+  };
+
   // Decompose a shape into separable parts (SOLID, else SHELL, else loose faces)
-  // and emit each with the given base colour.
+  // and emit each with its own (or inherited) base colour.
   auto emitParts = [&](const TopoDS_Shape& shape, bool baseHas, double br, double bg, double bb) {
     const size_t before = parts.size();
-    for (TopExp_Explorer se(shape, TopAbs_SOLID); se.More(); se.Next()) addPartGeom(se.Current(), baseHas, br, bg, bb);
+    for (TopExp_Explorer se(shape, TopAbs_SOLID); se.More(); se.Next()) {
+      double r = br, g = bg, b = bb;
+      ++dSolidTot;
+      if (faceColor.count(se.Current().TShape().get())) ++dSolidColoured;
+      const bool h = withOwnColour(se.Current(), baseHas, r, g, b);
+      addPartGeom(se.Current(), h, r, g, b);
+    }
     if (parts.size() > before) return;
-    for (TopExp_Explorer sh(shape, TopAbs_SHELL); sh.More(); sh.Next()) addPartGeom(sh.Current(), baseHas, br, bg, bb);
+    for (TopExp_Explorer sh(shape, TopAbs_SHELL); sh.More(); sh.Next()) {
+      double r = br, g = bg, b = bb;
+      const bool h = withOwnColour(sh.Current(), baseHas, r, g, b);
+      addPartGeom(sh.Current(), h, r, g, b);
+    }
     if (parts.size() > before) return;
     addPartGeom(shape, baseHas, br, bg, bb);   // loose faces / sheet body
   };
@@ -364,6 +387,10 @@ int main(int argc, char** argv) {
   }
 
   int coloredMeshes = 0; for (const auto& m : meshes) if (m.hasColor) ++coloredMeshes;
+  std::cerr << "[sbs-occt][diag2] faces=" << dFace << " faceHit=" << dFaceHit
+            << " baseHit=" << dBaseHit << " none=" << dNone
+            << " | colourMap=" << faceColor.size()
+            << " solids=" << dSolidTot << " solidColoured=" << dSolidColoured << "\n";
   std::cerr << "[sbs-occt] extracted " << parts.size() << " part(s), "
             << meshes.size() << " mesh(es), " << coloredMeshes << " coloured at " << secs() << "s\n";
   if (meshes.empty()) { std::cerr << "no triangulated geometry (no solids/shells/faces)\n"; return 5; }
