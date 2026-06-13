@@ -874,6 +874,20 @@ gl_FragColor.a = 1.0;
         continue;
       }
 
+      // ── primitive branch (V0.2.22.92) ─────────────────────────────
+      // Parametric primitives keep their plain lit MeshStandardMaterial — we
+      // just set its colour to the assigned preset (or a neutral default), in
+      // place, like flat shapes. The falloff-shader path was leaving them
+      // looking uncoloured; this makes the assigned colour show on the surface
+      // immediately, independent of the solid-override toggle.
+      if (mesh.userData?.primitiveNodeId) {
+        const sid = this.meshColorAssignments[nodeId] ?? this.meshDefaultColors[nodeId] ?? null;
+        const pst = sid ? presetById.get(sid) : null;
+        const targetColor = pst?.color || '#bfcad4';
+        if (mesh.material?.color?.set) mesh.material.color.set(targetColor);
+        continue;
+      }
+
       if (!overrideMode) {
         // Restore original import material
         if (original && mesh.material !== original) {
