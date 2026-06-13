@@ -585,6 +585,7 @@ export function serializeModelTree(node) {
     spec.primKind    = node.primKind || 'box';
     spec.primParams  = node.primParams || {};
     spec.primQuality = node.primQuality ?? 3;
+    if (node.primLinkId) spec.primLinkId = node.primLinkId;
   }
   return spec;
 }

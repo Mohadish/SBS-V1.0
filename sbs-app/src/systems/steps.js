@@ -2908,6 +2908,7 @@ function rebuildFromTreeSpec(spec, nodeById, object3dById, parentObject3d) {
     if (spec.primKind)            node.primKind    = spec.primKind;
     if (spec.primParams)          node.primParams  = spec.primParams;
     if (spec.primQuality != null) node.primQuality = spec.primQuality;
+    if (spec.primLinkId)          node.primLinkId  = spec.primLinkId;
     node.children     = [];
     const obj = ensurePrimitiveObject3D(node);
     if (obj) {

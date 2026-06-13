@@ -1202,6 +1202,24 @@ function _buildContextMenuItems(node) {
     });
   }
 
+  // ── Parametric primitive — copy / paste / paste-instance / delete (V0.2.22.94) ──
+  if (node.type === 'primitive') {
+    items.push({ separator: true });
+    items.push({ label: '📋 Copy', action: () => actions.copyPrimitive(node.id) });
+    items.push({
+      label:    '📄 Paste (independent)',
+      disabled: !actions.hasPrimitiveClipboard(),
+      action:   () => actions.pastePrimitive(),
+    });
+    items.push({
+      label:    '🔗 Paste Instance (linked parameters)',
+      disabled: !actions.hasPrimitiveClipboard(),
+      action:   () => actions.pastePrimitiveInstance(),
+    });
+    items.push({ separator: true });
+    items.push({ label: '🗑 Delete', action: () => actions.deletePrimitive(node.id) });
+  }
+
   // ── Transform ────────────────────────────────────────────────────────────────
   if (isTransformNode(node)) {
     items.push({ separator: true });

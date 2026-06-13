@@ -2161,6 +2161,23 @@ canvas.addEventListener('contextmenu', e => {
     items.push({ label: '─', disabled: true });
   }
 
+  // ── Parametric primitive (V0.2.22.94) — copy / paste / paste-instance / delete ──
+  if (node?.type === 'primitive') {
+    items.push({ label: '📋 Copy', action: () => actions.copyPrimitive(node.id) });
+    items.push({
+      label:    '📄 Paste (independent)',
+      disabled: !actions.hasPrimitiveClipboard(),
+      action:   () => actions.pastePrimitive(),
+    });
+    items.push({
+      label:    '🔗 Paste Instance (linked parameters)',
+      disabled: !actions.hasPrimitiveClipboard(),
+      action:   () => actions.pastePrimitiveInstance(),
+    });
+    items.push({ label: '🗑 Delete', action: () => actions.deletePrimitive(node.id) });
+    items.push({ label: '─', disabled: true });
+  }
+
   // V0.2.22.44 — hardware instance(s) in the viewport. Same menu shape
   // as the tree's right-click. Multi-aware on delete: if several
   // screws are selected and the right-clicked one is among them,

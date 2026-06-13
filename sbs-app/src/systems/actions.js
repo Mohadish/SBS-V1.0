@@ -8114,40 +8114,40 @@ export function cancelShapePlacement() {
 /** Expose the primitive metadata (kind → label/icon/params/quality) to the UI. */
 export function getPrimitiveDefs() { return PRIMITIVE_DEFS; }
 
-/**
- * Create a primitive (box / sphere / …) as a standalone mesh node under the
- * selected folder/model (else scene root). Builds geometry from defaults,
- * registers + propagates to steps, selects it. One undo entry. Returns its id.
- */
-export function createPrimitive(kind, { undoLabel = 'Create primitive' } = {}) {
-  const def = PRIMITIVE_DEFS[kind];
-  if (!def) return null;
+// Module clipboard for primitive copy / paste / paste-instance.
+let _primClipboard = null;
+
+/** Resolve the parent for a new primitive: selected folder/model/scene → root.
+ *  Bootstraps a scene root if the project is empty (stand-in with no model). */
+function _primitiveParent() {
   let root = state.get('treeData');
   if (!root) {
-    // Empty project — bootstrap a scene root so primitives can be made with no
-    // model loaded (the whole point: a stand-in when you have no part file).
     root = { id: 'scene_root', name: 'Scene', type: 'scene', children: [], object3d: sceneCore.rootGroup, localVisible: true };
     steps.object3dById.set('scene_root', sceneCore.rootGroup);
     state.setState({ treeData: root, nodeById: _nodes_buildNodeMap(root) });
   }
-
-  let parent = null;
   const selId = state.get('selectedId');
   const sel   = selId ? state.get('nodeById')?.get(selId) : null;
-  if (sel && (sel.type === 'folder' || sel.type === 'model' || sel.type === 'scene')) parent = sel;
-  if (!parent) parent = root;
+  if (sel && (sel.type === 'folder' || sel.type === 'model' || sel.type === 'scene')) return sel;
+  return root;
+}
 
+/** Create + insert a primitive from an explicit spec; selects it; one undo. */
+function _spawnPrimitive({ kind, params, quality, primLinkId, name, undoLabel }) {
+  const def = PRIMITIVE_DEFS[kind];
+  if (!def) return null;
+  const parent = _primitiveParent();
+  if (!parent) return null;
   const node = createPrimitiveNode({
-    name:        def.label,
+    name:        name || def.label,
     primKind:    kind,
-    primParams:  defaultPrimitiveParams(kind),
-    primQuality: 3,
+    primParams:  { ...(params || defaultPrimitiveParams(kind)) },
+    primQuality: quality ?? 3,
+    primLinkId:  primLinkId || generateId('primLink'),
   });
-
   if (!ensurePrimitiveObject3D(node)) return null;
   _readdPrimitiveNode(node, parent.id);
   state.markDirty();
-
   if (undoLabel) {
     undoManager.push(undoLabel,
       () => _removePrimitiveNode(node.id),
@@ -8156,6 +8156,93 @@ export function createPrimitive(kind, { undoLabel = 'Create primitive' } = {}) {
   }
   state.setState({ selectedId: node.id, multiSelectedIds: new Set([node.id]) });
   return node.id;
+}
+
+/** Create a primitive of `kind` with default parameters (its own link group). */
+export function createPrimitive(kind) {
+  if (!PRIMITIVE_DEFS[kind]) return null;
+  return _spawnPrimitive({ kind, params: defaultPrimitiveParams(kind), quality: 3, undoLabel: 'Create primitive' });
+}
+
+/** Copy a primitive's parametric definition (+ its link group) to the clipboard. */
+export function copyPrimitive(nodeId) {
+  const n = state.get('nodeById')?.get(nodeId);
+  if (!n || n.type !== 'primitive') return false;
+  _primClipboard = {
+    kind:       n.primKind,
+    params:     { ...(n.primParams || {}) },
+    quality:    n.primQuality ?? 3,
+    primLinkId: n.primLinkId || null,
+    name:       n.name,
+  };
+  return true;
+}
+
+export function hasPrimitiveClipboard() { return !!_primClipboard; }
+
+/** Paste an INDEPENDENT copy — its own parameter group (edits don't link back). */
+export function pastePrimitive() {
+  if (!_primClipboard) return null;
+  return _spawnPrimitive({
+    kind:       _primClipboard.kind,
+    params:     _primClipboard.params,
+    quality:    _primClipboard.quality,
+    primLinkId: generateId('primLink'),     // fresh group → independent
+    name:       _primClipboard.name,
+    undoLabel:  'Paste primitive',
+  });
+}
+
+/** Paste a LINKED instance — shares the source's parameter group (ripples). */
+export function pastePrimitiveInstance() {
+  if (!_primClipboard) return null;
+  // Match the CURRENT params of the link group (the original may have changed
+  // since copy); fall back to the clipboard snapshot.
+  const members = _primClipboard.primLinkId ? _primitivesInLink(_primClipboard.primLinkId) : [];
+  const src = members[0];
+  return _spawnPrimitive({
+    kind:       _primClipboard.kind,
+    params:     src ? { ...src.primParams } : _primClipboard.params,
+    quality:    src ? src.primQuality       : _primClipboard.quality,
+    primLinkId: _primClipboard.primLinkId || generateId('primLink'),
+    name:       _primClipboard.name,
+    undoLabel:  'Paste linked primitive',
+  });
+}
+
+/** Delete a primitive (undoable). */
+export function deletePrimitive(nodeId) {
+  const node = state.get('nodeById')?.get(nodeId);
+  if (!node || node.type !== 'primitive') return;
+  const parentId = _findNodeParentId(nodeId);
+  _removePrimitiveNode(nodeId);
+  state.markDirty();
+  undoManager.push('Delete primitive',
+    () => _readdPrimitiveNode(node, parentId),
+    () => _removePrimitiveNode(nodeId),
+  );
+}
+
+/** All live primitive nodes in a parameter-link group. */
+function _primitivesInLink(linkId) {
+  const nb = state.get('nodeById');
+  if (!nb || !linkId) return [];
+  const out = [];
+  for (const [, n] of nb) if (n.type === 'primitive' && n.primLinkId === linkId) out.push(n);
+  return out;
+}
+
+/** Id of a node's parent in the live tree (null for a scene-root child). */
+function _findNodeParentId(nodeId) {
+  const root = state.get('treeData');
+  const stack = [{ parent: null, node: root }];
+  while (stack.length) {
+    const { parent, node: n } = stack.pop();
+    if (!n) continue;
+    if (n.id === nodeId) return parent ? parent.id : null;
+    if (n.children) for (const c of n.children) stack.push({ parent: n, node: c });
+  }
+  return null;
 }
 
 /** (Re)insert a primitive node + its mesh under parentId; propagate to steps. */
@@ -8229,8 +8316,9 @@ export function setPrimitiveParams(nodeId, partial, { undoLabel = null, before =
 function _setPrimParamsRaw(nodeId, params) {
   const n = state.get('nodeById')?.get(nodeId);
   if (!n) return;
-  n.primParams = { ...params };
-  rebuildPrimitive(n);
+  // Ripple to every member of the parameter-link group (shared parameters).
+  const group = n.primLinkId ? _primitivesInLink(n.primLinkId) : [];
+  for (const t of (group.length ? group : [n])) { t.primParams = { ...params }; rebuildPrimitive(t); }
   state.emit('change:treeData', state.get('treeData'));
 }
 
@@ -8252,8 +8340,9 @@ export function setPrimitiveQuality(nodeId, q, { undoLabel = null, before = null
 function _setPrimQualityRaw(nodeId, q) {
   const n = state.get('nodeById')?.get(nodeId);
   if (!n) return;
-  n.primQuality = q;
-  rebuildPrimitive(n);
+  // Ripple to every member of the parameter-link group (shared quality).
+  const group = n.primLinkId ? _primitivesInLink(n.primLinkId) : [];
+  for (const t of (group.length ? group : [n])) { t.primQuality = q; rebuildPrimitive(t); }
   state.emit('change:treeData', state.get('treeData'));
 }
 
