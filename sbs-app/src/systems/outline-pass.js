@@ -184,7 +184,11 @@ function _runOutlinePass(scene, camera, meshSet, hexColor) {
   // Override material flattens everything to flat white in the mask.
   const visBackup = [];
   scene.traverse(obj => {
-    if (obj.isMesh) {
+    // Hide EVERY renderable not in the selected set so nothing else leaks into
+    // the silhouette mask. Critical for lines: GridHelper + AxesHelper are
+    // LineSegments (isLine) — without this they render into the mask and paint
+    // the whole grid + an origin rectangle in the selection colour.
+    if (obj.isMesh || obj.isLine || obj.isPoints || obj.isSprite) {
       visBackup.push([obj, obj.visible]);
       obj.visible = obj.visible && meshSet.has(obj);
     }
