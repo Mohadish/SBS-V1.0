@@ -874,17 +874,31 @@ gl_FragColor.a = 1.0;
         continue;
       }
 
-      // ── primitive branch (V0.2.22.92) ─────────────────────────────
-      // Parametric primitives keep their plain lit MeshStandardMaterial — we
-      // just set its colour to the assigned preset (or a neutral default), in
-      // place, like flat shapes. The falloff-shader path was leaving them
-      // looking uncoloured; this makes the assigned colour show on the surface
-      // immediately, independent of the solid-override toggle.
+      // ── primitive branch (V0.2.22.93) ─────────────────────────────
+      // Parametric primitives get the FULL SBS shader for their assigned preset
+      // — metalness / roughness / reflection / solidness, same as CAD meshes —
+      // but ALWAYS (independent of the global solid-override toggle, which is
+      // what previously left them uncoloured). No preset → plain default.
       if (mesh.userData?.primitiveNodeId) {
         const sid = this.meshColorAssignments[nodeId] ?? this.meshDefaultColors[nodeId] ?? null;
         const pst = sid ? presetById.get(sid) : null;
-        const targetColor = pst?.color || '#bfcad4';
-        if (mesh.material?.color?.set) mesh.material.color.set(targetColor);
+        if (pst) {
+          this.ensurePresetDefaults(pst);
+          _disposeGenerated(mesh.material);
+          mesh.material = this.makeMaterial(pst, original);
+          if (pst.backFaceEnabled) {
+            const back = new THREE.Mesh(mesh.geometry, this.makeFalloffBackMaterial(pst));
+            back.raycast          = () => {};
+            back.frustumCulled    = mesh.frustumCulled;
+            back.matrixAutoUpdate = true;
+            back.userData.noSelect = true;
+            mesh.add(back);
+            mesh.userData.falloffBackPass = back;
+          }
+        } else if (original && mesh.material !== original) {
+          _disposeGenerated(mesh.material);
+          mesh.material = original;
+        }
         continue;
       }
 
