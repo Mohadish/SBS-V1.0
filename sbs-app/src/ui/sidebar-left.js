@@ -837,9 +837,13 @@ async function _onOpenProject() {
     setStatus(`Opened: ${state.get('projectName')}.`);
 
     // If the user overrode any mismatched files (accepted the on-disk version),
-    // strongly suggest saving so the project records the current files and future
-    // loads open clean. Fires on every override load until the project is re-saved.
-    if (userFiles?.overridden?.size) _showOverrideSavePrompt(userFiles.overridden.size);
+    // reconcile each overridden asset's saved metadata to the CURRENT file on
+    // disk, then suggest a Save As (never overwrite the untested original).
+    // After that save, the file matches what's recorded → no more warning.
+    if (userFiles?.overridden?.size) {
+      await _reconcileOverriddenAssets(userFiles.overridden, resolvedAssets);
+      _showOverrideSavePrompt(userFiles.overridden.size);
+    }
   } catch (err) {
     console.error('Open project failed:', err);
     setStatus('Failed to open project.', 'danger');
@@ -849,33 +853,68 @@ async function _onOpenProject() {
 /**
  * Post-override save suggestion. Shown after a project load where the user
  * overrode one or more mismatched assets (e.g. a STEP re-baked by a newer
- * converter). Saving records the current file size/date so the verification
- * passes clean next time.
+ * converter). Opens SAVE AS — never overwrites the original (the override is
+ * unverified). The asset metadata was already reconciled to the current files
+ * (_reconcileOverriddenAssets), so the saved copy opens clean next time.
  */
 function _showOverrideSavePrompt(count) {
   const dlg = document.createElement('dialog');
   dlg.className = 'sbs-dialog';
-  dlg.style.cssText = 'max-width:470px;';
+  dlg.style.cssText = 'max-width:480px;';
   const s = count > 1 ? 's' : '';
   dlg.innerHTML = `
     <div class="sbs-dialog__body">
-      <div class="sbs-dialog__title">⚠️ Save your project?</div>
+      <div class="sbs-dialog__title">⚠️ Save a copy of this project?</div>
       <p class="small" style="margin:8px 0 14px;color:#cbd5e1;line-height:1.55">
-        You overrode <b>${count}</b> model file${s} that didn't match what this project last
-        saved — the loaded geometry may differ. <b>Save now</b> to record the current
-        file${s} so the project opens clean next time (no warning, no override needed).
+        You overrode <b>${count}</b> model file${s} that didn't match this project — the
+        result is <b>unverified</b>. Use <b>Save As…</b> to save to a <b>new</b> file so your
+        original project stays intact until you've checked it. The new file records the
+        current model${s}, so it reopens clean (no warning).
       </p>
       <div style="display:flex;gap:8px;justify-content:flex-end">
         <button class="btn" id="ovs-later">Later</button>
-        <button class="btn" id="ovs-save" style="background:#0369a1;color:#f1f5f9">Save now</button>
+        <button class="btn" id="ovs-save" style="background:#0369a1;color:#f1f5f9">Save As…</button>
       </div>
     </div>`;
   const close = () => { try { dlg.close(); dlg.remove(); } catch { /* */ } };
   document.body.appendChild(dlg);
   dlg.showModal();
   dlg.querySelector('#ovs-later').addEventListener('click', close);
-  dlg.querySelector('#ovs-save').addEventListener('click', () => { close(); _onSaveProject(false); });
+  // Force the Save-As dialog — do NOT overwrite the original (untested) project.
+  dlg.querySelector('#ovs-save').addEventListener('click', () => { close(); _onSaveProject(true); });
   dlg.addEventListener('cancel', (e) => { e.preventDefault(); close(); });
+}
+
+/**
+ * Reconcile each overridden asset's saved metadata (fileSize / lastModified)
+ * to the CURRENT file on disk. After this, a save records what's actually
+ * there, so the next load's verification sees a match and loads clean — no
+ * warning. Electron only (needs a path to stat); browsed-file overrides on web
+ * keep their existing metadata.
+ */
+async function _reconcileOverriddenAssets(overridden, resolvedAssets) {
+  if (!overridden?.size) return;
+  const assets = (state.get('assets') || []).slice();
+  let changed = false;
+  for (const { assetEntry, resolvedPath } of resolvedAssets) {
+    if (!overridden.has(assetEntry.id) || !resolvedPath) continue;
+    const idx = assets.findIndex(a => a.id === assetEntry.id);
+    if (idx < 0) continue;
+    try {
+      const stat = await window.sbsNative?.statFile?.(resolvedPath);
+      if (stat) {
+        assets[idx] = {
+          ...assets[idx],
+          fileSize:     stat.size,
+          lastModified: stat.mtimeMs,
+          fileHash:     null,         // unknown until recomputed; metadata match is enough
+        };
+        changed = true;
+        console.log(`[project-load] reconciled "${assets[idx].name}" → size=${stat.size}, mtime=${Math.round(stat.mtimeMs)}`);
+      }
+    } catch { /* keep existing metadata */ }
+  }
+  if (changed) { state.setState({ assets }); state.markDirty?.(); }
 }
 
 async function _onSaveProject(forceDialog = false) {
