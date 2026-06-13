@@ -329,6 +329,26 @@ export class SceneCore extends Emitter {
       this.renderer.clearDepth();
       this.renderer.render(this.overlayScene, this.camera);
       this.renderer.autoClear = true;
+
+      // TEMP DIAGNOSTIC (V0.2.22.98) — one-shot scan of BOTH scenes for the
+      // stray ~2×2 rectangle, run while something is selected (overlay active).
+      if (!this._diag2x2) {
+        this._diag2x2 = true;
+        const T = window.THREE;
+        const scan = (root, label) => { if (!root) return; root.traverse(o => {
+          if (!o.isMesh || !o.geometry) return;
+          o.geometry.computeBoundingBox?.();
+          const bb = o.geometry.boundingBox; if (!bb) return;
+          const sx = bb.max.x - bb.min.x, sy = bb.max.y - bb.min.y, sz = bb.max.z - bb.min.z;
+          if (Math.abs(sx - 2) < 0.6 && Math.abs(sy - 2) < 0.6 && Math.abs(sz) < 0.6) {
+            const wp = new T.Vector3(); o.getWorldPosition(wp);
+            const chain = []; let p = o; while (p) { chain.push(p.name || p.type); p = p.parent; }
+            console.log(`[scene-diag:${label}] 2x2 "${o.name || o.uuid}" mat=${o.material?.type} vis=${o.visible} layer=${o.layers.mask} @(${wp.x.toFixed(1)},${wp.y.toFixed(1)},${wp.z.toFixed(1)}) ${chain.join(' < ')}`);
+          }
+        }); };
+        scan(this.scene, 'main');
+        scan(this.overlayScene, 'overlay');
+      }
     }
   }
 
