@@ -232,10 +232,10 @@ export function setOutlinePreview(nodeId, hexColor) {
   const out = new Set();
   const collectMeshes = (n) => {
     if (!n) return;
-    if (n.type === 'mesh') {
-      const m = materials.meshById.get(n.id);
-      if (m) out.add(m);
-    }
+    // Any node that has a registered mesh — covers mesh / flatShape / primitive
+    // / hardware. (Folders / models aren't in meshById, so they no-op.)
+    const m = materials.meshById.get(n.id);
+    if (m) out.add(m);
     for (const c of (n.children || [])) collectMeshes(c);
   };
   collectMeshes(nodeById.get(nodeId));
@@ -272,10 +272,10 @@ function _refreshFromSelection() {
   const out = new Set();
   const collectMeshes = (node) => {
     if (!node) return;
-    if (node.type === 'mesh') {
-      const m = materials.meshById.get(node.id);
-      if (m) out.add(m);
-    }
+    // Any node with a registered mesh (mesh / flatShape / primitive / hardware)
+    // — so selecting a folder outlines the objects inside, whatever their type.
+    const m = materials.meshById.get(node.id);
+    if (m) out.add(m);
     for (const child of (node.children || [])) collectMeshes(child);
   };
   for (const id of ids) {

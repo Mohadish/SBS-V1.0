@@ -1675,7 +1675,7 @@ function _renderColorsTab() {
     // ensureHardwareInstanceObject3D), so once it shows up here every
     // existing preset path works.
     return t === 'mesh' || t === 'flatShape' || t === 'replaceModel'
-        || t === 'hardwareInstance';
+        || t === 'hardwareInstance' || t === 'primitive';   // V0.2.22.91 — primitives colourable
   });
 
   // V0.1.99/V0.2.2: presets used by visible meshes (drives the 👁 filter).
