@@ -17,7 +17,7 @@ import { selectionActs }        from './select-act.js';
 import { materials }            from '../systems/materials.js';
 import steps                    from '../systems/steps.js';
 import sceneCore                from '../core/scene.js';
-import { createAnimationPreset, createCameraView, createNode, createNoteNode, createNoteTemplate, createShapeTemplate, createShapeTemplateGroup, createFlatShapeNode, generateId } from '../core/schema.js';
+import { createAnimationPreset, createCameraView, createNode, createNoteNode, createNoteTemplate, createShapeTemplate, createShapeTemplateGroup, createFlatShapeNode, createPrimitiveNode, generateId } from '../core/schema.js';
 import * as editSession         from './edit-session.js';   // P7-A: gate Ctrl-Z while in overlay edit
 import * as cables              from './cables.js';          // C3: cable mutators (data layer)
 import {
@@ -26,6 +26,12 @@ import {
   rebuildInstancesOfTemplate as _rebuildInstancesOfTemplate,
 } from './flat-shapes.js';   // M1 P1: 2D shapes (template-backed instances)
 import * as shapeEditor        from './shape-editor.js';
+import {
+  ensurePrimitiveObject3D,
+  rebuildPrimitive,
+  defaultPrimitiveParams,
+  PRIMITIVE_DEFS,
+} from './primitives.js';     // V0.2.22.90: parametric primitives
 import {
   applyAllVisibility,
   captureTransformSnapshot,
@@ -8099,6 +8105,156 @@ export function cancelShapePlacement() {
   if (!state.get('shapePlacementForId')) return;
   // Also wipe any pending image data — same Esc / right-click reset.
   state.setState({ shapePlacementForId: null, imageShapePending: null });
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+//  PARAMETRIC PRIMITIVES (V0.2.22.90) — box / sphere / cylinder / …
+// ═══════════════════════════════════════════════════════════════════════════
+
+/** Expose the primitive metadata (kind → label/icon/params/quality) to the UI. */
+export function getPrimitiveDefs() { return PRIMITIVE_DEFS; }
+
+/**
+ * Create a primitive (box / sphere / …) as a standalone mesh node under the
+ * selected folder/model (else scene root). Builds geometry from defaults,
+ * registers + propagates to steps, selects it. One undo entry. Returns its id.
+ */
+export function createPrimitive(kind, { undoLabel = 'Create primitive' } = {}) {
+  const def = PRIMITIVE_DEFS[kind];
+  if (!def) return null;
+  let root = state.get('treeData');
+  if (!root) {
+    // Empty project — bootstrap a scene root so primitives can be made with no
+    // model loaded (the whole point: a stand-in when you have no part file).
+    root = { id: 'scene_root', name: 'Scene', type: 'scene', children: [], object3d: sceneCore.rootGroup, localVisible: true };
+    steps.object3dById.set('scene_root', sceneCore.rootGroup);
+    state.setState({ treeData: root, nodeById: _nodes_buildNodeMap(root) });
+  }
+
+  let parent = null;
+  const selId = state.get('selectedId');
+  const sel   = selId ? state.get('nodeById')?.get(selId) : null;
+  if (sel && (sel.type === 'folder' || sel.type === 'model' || sel.type === 'scene')) parent = sel;
+  if (!parent) parent = root;
+
+  const node = createPrimitiveNode({
+    name:        def.label,
+    primKind:    kind,
+    primParams:  defaultPrimitiveParams(kind),
+    primQuality: 3,
+  });
+
+  if (!ensurePrimitiveObject3D(node)) return null;
+  _readdPrimitiveNode(node, parent.id);
+  state.markDirty();
+
+  if (undoLabel) {
+    undoManager.push(undoLabel,
+      () => _removePrimitiveNode(node.id),
+      () => _readdPrimitiveNode(node, parent.id),
+    );
+  }
+  state.setState({ selectedId: node.id, multiSelectedIds: new Set([node.id]) });
+  return node.id;
+}
+
+/** (Re)insert a primitive node + its mesh under parentId; propagate to steps. */
+function _readdPrimitiveNode(node, parentId) {
+  const root = state.get('treeData');
+  const parent = state.get('nodeById')?.get(parentId) || root;
+  if (!parent) return;
+  const mesh = node.object3d || ensurePrimitiveObject3D(node);
+  const parentObj = parent.object3d ?? steps.object3dById?.get(parent.id) ?? null;
+  if (mesh) {
+    if (parentObj && mesh.parent !== parentObj) { if (mesh.parent) mesh.parent.remove(mesh); parentObj.add(mesh); }
+    applyNodeTransformToObject3D(node, mesh);
+    steps.object3dById.set(node.id, mesh);
+  }
+  parent.children = parent.children || [];
+  if (!parent.children.some(c => c.id === node.id)) parent.children.push(node);
+  state.setState({ nodeById: _nodes_buildNodeMap(root) });
+  _propagateNewNodeToSteps(node, parentId, { activeStepOnly: true });
+  state.emit('change:treeData', root);
+  steps.scheduleTransformSync?.();
+}
+
+/** Remove a primitive from the tree + every step snapshot; dispose the mesh. */
+function _removePrimitiveNode(id) {
+  const root = state.get('treeData');
+  if (!root) return;
+  const obj = state.get('nodeById')?.get(id)?.object3d || steps.object3dById?.get(id);
+  if (obj) { if (obj.parent) obj.parent.remove(obj); obj.geometry?.dispose?.(); obj.material?.dispose?.(); }
+  materials?.unregisterMesh?.(id);
+  steps.object3dById.delete(id);
+
+  const stack = [{ parent: null, node: root }];
+  while (stack.length) {
+    const { parent, node: n } = stack.pop();
+    if (n.id === id && parent) { const i = parent.children.findIndex(c => c.id === id); if (i >= 0) parent.children.splice(i, 1); break; }
+    if (n.children) for (const c of n.children) stack.push({ parent: n, node: c });
+  }
+
+  const nextSteps = (state.get('steps') || []).map(s => {
+    const snap = s.snapshot || {};
+    const newTree = _removeFromTreeSpec(snap.tree, id);
+    if (newTree === snap.tree && !snap.visibility?.[id] && !snap.transforms?.[id]) return s;
+    const vis = { ...(snap.visibility || {}) }; delete vis[id];
+    const tr  = { ...(snap.transforms  || {}) }; delete tr[id];
+    return { ...s, snapshot: { ...snap, tree: newTree, visibility: vis, transforms: tr } };
+  });
+  state.setState({ steps: nextSteps, nodeById: _nodes_buildNodeMap(root) });
+  state.emit('change:treeData', root);
+}
+
+/**
+ * Live-update a primitive's parameters (partial merge) + rebuild geometry.
+ * Pass undoLabel only on COMMIT (input 'change'); for live 'input' leave it
+ * null. Pass `before` (snapshot captured at focus) so the undo spans the whole
+ * drag, not just the last tick.
+ */
+export function setPrimitiveParams(nodeId, partial, { undoLabel = null, before = null } = {}) {
+  const node = state.get('nodeById')?.get(nodeId);
+  if (!node || node.type !== 'primitive') return;
+  const beforeParams = before ? { ...before } : { ...(node.primParams || {}) };
+  const after        = { ...(node.primParams || {}), ...partial };
+  _setPrimParamsRaw(nodeId, after);
+  state.markDirty();
+  if (undoLabel) {
+    undoManager.push(undoLabel,
+      () => _setPrimParamsRaw(nodeId, beforeParams),
+      () => _setPrimParamsRaw(nodeId, after),
+    );
+  }
+}
+function _setPrimParamsRaw(nodeId, params) {
+  const n = state.get('nodeById')?.get(nodeId);
+  if (!n) return;
+  n.primParams = { ...params };
+  rebuildPrimitive(n);
+  state.emit('change:treeData', state.get('treeData'));
+}
+
+/** Live-update a primitive's tessellation quality (1-5) + rebuild geometry. */
+export function setPrimitiveQuality(nodeId, q, { undoLabel = null, before = null } = {}) {
+  const node = state.get('nodeById')?.get(nodeId);
+  if (!node || node.type !== 'primitive') return;
+  const beforeQ = before != null ? before : (node.primQuality ?? 3);
+  const after   = Math.max(1, Math.min(5, q | 0));
+  _setPrimQualityRaw(nodeId, after);
+  state.markDirty();
+  if (undoLabel && beforeQ !== after) {
+    undoManager.push(undoLabel,
+      () => _setPrimQualityRaw(nodeId, beforeQ),
+      () => _setPrimQualityRaw(nodeId, after),
+    );
+  }
+}
+function _setPrimQualityRaw(nodeId, q) {
+  const n = state.get('nodeById')?.get(nodeId);
+  if (!n) return;
+  n.primQuality = q;
+  rebuildPrimitive(n);
+  state.emit('change:treeData', state.get('treeData'));
 }
 
 /**

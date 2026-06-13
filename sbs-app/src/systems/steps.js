@@ -30,6 +30,7 @@ import * as cablesSystem            from './cables.js';   // C1: per-step cable 
 import * as cablesRender            from './cables-render.js';   // H1: cable phase animations
 import * as overlaySystem           from './overlay.js';   // H2: overlay phase fade-in / fade-out
 import { ensureFlatShapeObject3D }   from './flat-shapes.js'; // M1: 2D shapes in 3D — build mesh on demand
+import { ensurePrimitiveObject3D }   from './primitives.js';  // V0.2.22.90: parametric primitives — build mesh on demand
 import { ensureHardwareInstanceObject3D, ensureHardwareNutObject3D } from './hardware-templates.js'; // V0.2.22.38: procedural hardware — build mesh on demand
 import { createStep, createEmptySnapshot } from '../core/schema.js';
 import { parseAnimation, resolveAnimationString } from './animation.js';
@@ -2893,6 +2894,33 @@ function rebuildFromTreeSpec(spec, nodeById, object3dById, parentObject3d) {
         obj.userData.hardwareInstanceId = node.id;
         obj.userData.meshNodeId         = node.id;
         obj.userData.nodeId             = node.id;
+      }
+    }
+
+  } else if (specType === 'primitive') {
+    // V0.2.22.90 — parametric primitive. Reuse the live node and rebuild the
+    // mesh from kind + params + quality (restored from the spec if the live
+    // node somehow lost them, e.g. when restored from a snapshot alone).
+    node = nodeById.get(spec.id);
+    if (!node) return null;
+    node.name         = spec.name || node.name;
+    node.localVisible = spec.localVisible !== false;
+    if (spec.primKind)            node.primKind    = spec.primKind;
+    if (spec.primParams)          node.primParams  = spec.primParams;
+    if (spec.primQuality != null) node.primQuality = spec.primQuality;
+    node.children     = [];
+    const obj = ensurePrimitiveObject3D(node);
+    if (obj) {
+      node.object3d = obj;
+      object3dById.set(spec.id, obj);
+      if (parentObject3d && obj.parent !== parentObject3d) {
+        if (obj.parent) obj.parent.remove(obj);
+        parentObject3d.add(obj);
+      }
+      if (obj.userData) {
+        obj.userData.primitiveNodeId = node.id;
+        obj.userData.meshNodeId      = node.id;
+        obj.userData.nodeId          = node.id;
       }
     }
 

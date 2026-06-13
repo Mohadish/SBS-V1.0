@@ -94,13 +94,14 @@ import { renderHeaderTab }    from './header-tab.js';
 import { renderStyleTab }     from './style-tab.js';
 import { renderCableTab }     from './cable-tab.js';
 import { renderHardwareTab, startEditTemplate as _hwStartEditTemplate } from './hardware-tab.js';
+import { renderPrimitivesTab } from './primitives-tab.js';   // V0.2.22.90: parametric primitives
 import { regenerateHardwareAsset } from '../systems/hardware-actions.js';
 import { exportTimelineVideo, downloadBlob } from '../systems/video-export.js';
 import { listVoices as ttsListVoices } from '../systems/tts.js';
 import * as userSettings    from '../core/user-settings.js';
 import * as narrationCache  from '../systems/narration-cache.js';
 
-const TABS = ['files', 'tree', 'colors', 'select', 'cameras', 'animation', 'header', 'style', 'cables', 'notes', 'shapes', 'hardware', 'undo', 'export'];
+const TABS = ['files', 'tree', 'colors', 'select', 'cameras', 'animation', 'header', 'style', 'cables', 'notes', 'shapes', 'primitives', 'hardware', 'undo', 'export'];
 let _activeTab   = 'files';
 let _container   = null;
 let _treeInited  = false;
@@ -126,6 +127,7 @@ export function initSidebarLeft() {
       <button class="tabBtn"        data-tab="cables">🔌</button>
       <button class="tabBtn"        data-tab="notes">💬</button>
       <button class="tabBtn"        data-tab="shapes">▰</button>
+      <button class="tabBtn"        data-tab="primitives">⬡</button>
       <button class="tabBtn"        data-tab="hardware">🔩</button>
       <button class="tabBtn"        data-tab="undo">↶</button>
       <button class="tabBtn"        data-tab="export">Export</button>
@@ -238,6 +240,10 @@ export function initSidebarLeft() {
   state.on('change:treeData',            () => { if (_activeTab === 'shapes') _renderShapesTab(); });
   state.on('change:shapePlacementForId', () => { if (_activeTab === 'shapes') _renderShapesTab(); });
   state.on('change:shapeFromFacePicking',() => { if (_activeTab === 'shapes') _renderShapesTab(); });
+  // Primitives tab — re-render the parameter editor only when the SELECTION
+  // changes (not on every geometry edit, which would steal input focus).
+  state.on('change:selectedId',       () => { if (_activeTab === 'primitives') _renderPrimitivesTabPanel(); });
+  state.on('change:multiSelectedIds', () => { if (_activeTab === 'primitives') _renderPrimitivesTabPanel(); });
   // V0.1.85 — shape tab additions: groups, tab selection, filter toggle,
   // and visibility-driven filter rendering refresh.
   state.on('change:shapeTemplateGroups',           () => { if (_activeTab === 'shapes') _renderShapesTab(); });
@@ -347,6 +353,7 @@ function _renderActiveTab() {
     case 'cables':    _renderCableTabPanel();  break;
     case 'notes':     _renderNotesTab();   break;
     case 'shapes':    _renderShapesTab();  break;
+    case 'primitives': _renderPrimitivesTabPanel(); break;
     case 'hardware':  _renderHardwareTabPanel(); break;
     case 'undo':      _renderUndoTab();    break;
     case 'export':    _renderExportTab();  break;
@@ -371,6 +378,10 @@ function _renderCableTabPanel() {
 
 function _renderHardwareTabPanel() {
   renderHardwareTab(_panel('hardware'));
+}
+
+function _renderPrimitivesTabPanel() {
+  renderPrimitivesTab(_panel('primitives'));
 }
 
 
@@ -1006,6 +1017,16 @@ function _cloneSpecAsPhantom(specNode) {
       children: (specNode.children || []).map(_cloneSpecAsPhantom),
     };
   }
+  // V0.2.22.90 — parametric primitives: spec carries primKind/primParams/
+  // primQuality; ensurePrimitiveObject3D rebuilds the mesh on first pass.
+  if (specNode.type === 'primitive') {
+    return {
+      ...specNode,
+      missing:  false,
+      object3d: null,
+      children: (specNode.children || []).map(_cloneSpecAsPhantom),
+    };
+  }
   const node = {
     id:                specNode.id,
     name:              specNode.name || 'Unknown',
@@ -1134,7 +1155,7 @@ function _insertPhantomCustomFolders(savedSceneRoot) {
  */
 function _reattachProceduralNodes(savedSceneRoot) {
   if (!savedSceneRoot) return;
-  const RECONSTRUCT = new Set(['flatShape', 'hardwareInstance']);
+  const RECONSTRUCT = new Set(['flatShape', 'hardwareInstance', 'primitive']);
   const nodeById = state.get('nodeById') || new Map();
   let changed = false;
   const added = [];

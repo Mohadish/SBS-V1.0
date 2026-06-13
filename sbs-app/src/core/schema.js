@@ -27,7 +27,7 @@ export const SCHEMA_VERSIONS = {
   screen:     1,
 };
 
-export const APP_VERSION  = 'V0.2.22.89';
+export const APP_VERSION  = 'V0.2.22.90';
 // Format: YYYY-MM-DD. Bump along with APP_VERSION on every build worth
 // labelling so the File tab shows you're running the expected slice.
 export const APP_RELEASED = '2026-06-10';
@@ -370,6 +370,42 @@ export function createFlatShapeNode(overrides = {}) {
     baseLocalPosition:  [0, 0, 0],
     baseLocalQuaternion:[0, 0, 0, 1],   // identity for shapes — plane goes into geometry
     baseLocalScale:     [1, 1, 1],      // global-only — written by Phase 2.1 scale handle
+    pivotLocalOffset:   [0, 0, 0],
+    pivotLocalQuaternion:[0, 0, 0, 1],
+    pivotEnabled:       false,
+    moveEnabled:        true,
+    rotateEnabled:      true,
+
+    ...overrides,
+  };
+}
+
+/**
+ * V0.2.22.90 — Parametric primitive (box / sphere / cylinder / …). A STANDALONE
+ * mesh node carrying its OWN parameters: primKind + primParams + primQuality
+ * (1-5 tessellation). systems/primitives.js rebuilds the THREE geometry from
+ * these on create / edit / load. Same transform shape as a mesh/folder so the
+ * gizmo, steps and colouring all work unchanged.
+ */
+export function createPrimitiveNode(overrides = {}) {
+  return {
+    id:           generateId('primitive'),
+    name:         '',
+    type:         'primitive',
+    localVisible: true,
+    archived:     false,
+    children:     [],
+
+    primKind:    'box',     // box | plane | sphere | cylinder | cone | torus | capsule | tube | pyramid | geosphere
+    primParams:  {},        // per-kind { width, height, … } — see PRIMITIVE_DEFS
+    primQuality: 3,         // 1-5 surface intricacy
+
+    localOffset:        [0, 0, 0],
+    localQuaternion:    [0, 0, 0, 1],
+    orientationSteps:   [0, 0, 0],
+    baseLocalPosition:  [0, 0, 0],
+    baseLocalQuaternion:[0, 0, 0, 1],
+    baseLocalScale:     [1, 1, 1],
     pivotLocalOffset:   [0, 0, 0],
     pivotLocalQuaternion:[0, 0, 0, 1],
     pivotEnabled:       false,

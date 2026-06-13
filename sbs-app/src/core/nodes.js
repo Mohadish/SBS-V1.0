@@ -580,6 +580,12 @@ export function serializeModelTree(node) {
   if (node.type === 'hardwareInstance') {
     if (node.templateId) spec.templateId = node.templateId;
   }
+  // Parametric primitives — geometry rebuilds from kind + params + quality.
+  if (node.type === 'primitive') {
+    spec.primKind    = node.primKind || 'box';
+    spec.primParams  = node.primParams || {};
+    spec.primQuality = node.primQuality ?? 3;
+  }
   return spec;
 }
 
