@@ -65,17 +65,9 @@ const _EDGE_FRAGMENT = `
   varying vec2      vUv;
 
   void main() {
-    vec2 t = (uThickness / uResolution);
-    float c = texture2D(uMask, vUv).r;
-    float n = texture2D(uMask, vUv + vec2(0.0,  t.y)).r;
-    float s = texture2D(uMask, vUv + vec2(0.0, -t.y)).r;
-    float e = texture2D(uMask, vUv + vec2( t.x, 0.0)).r;
-    float w = texture2D(uMask, vUv + vec2(-t.x, 0.0)).r;
-    // Edge wherever the center differs from any neighbour.
-    float edge = step(0.5,
-      abs(c - n) + abs(c - s) + abs(c - e) + abs(c - w));
-    if (edge < 0.5) discard;
-    gl_FragColor = vec4(uColor, 1.0);
+    // TEMP DIAGNOSTIC (V0.2.22.100): paint the composite quad SOLID magenta
+    // (no edge logic, no discard) to reveal its true on-screen shape.
+    gl_FragColor = vec4(1.0, 0.0, 1.0, 0.45);
   }
 `;
 
