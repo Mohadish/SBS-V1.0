@@ -125,6 +125,15 @@ export function initOutlinePass(renderer, width, height) {
     depthWrite:     false,
   });
   _fsQuad = new THREE.Mesh(new THREE.PlaneGeometry(2, 2), _edgeMat);
+  // Isolate the composite quad on a dedicated layer so ONLY the ortho composite
+  // camera ever renders it. Otherwise it can surface in the main perspective
+  // view as a 2×2 plane at the world origin (the "weird rectangle at scene
+  // centre" on selection). Layer 1 is taken (hardware preview); use 2.
+  const FS_LAYER = 2;
+  _fsQuad.frustumCulled = false;
+  _fsQuad.raycast = () => {};            // never selectable
+  _fsQuad.layers.set(FS_LAYER);
+  _fsCamera.layers.set(FS_LAYER);        // composite camera sees only the quad
   _fsScene.add(_fsQuad);
 
   _initialized = true;
