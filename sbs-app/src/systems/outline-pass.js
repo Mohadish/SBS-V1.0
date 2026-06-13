@@ -65,17 +65,12 @@ const _EDGE_FRAGMENT = `
   varying vec2      vUv;
 
   void main() {
-    vec2 t = (uThickness / uResolution);
-    float c = texture2D(uMask, vUv).r;
-    float n = texture2D(uMask, vUv + vec2(0.0,  t.y)).r;
-    float s = texture2D(uMask, vUv + vec2(0.0, -t.y)).r;
-    float e = texture2D(uMask, vUv + vec2( t.x, 0.0)).r;
-    float w = texture2D(uMask, vUv + vec2(-t.x, 0.0)).r;
-    // Edge wherever the center differs from any neighbour.
-    float edge = step(0.5,
-      abs(c - n) + abs(c - s) + abs(c - e) + abs(c - w));
-    if (edge < 0.5) discard;
-    gl_FragColor = vec4(uColor, 1.0);
+    // TEMP DIAGNOSTIC (V0.2.22.102): show the RAW MASK. White (in-mask) areas
+    // paint cyan; everything else is transparent. Reveals exactly which shapes
+    // are being rendered into the silhouette mask.
+    float m = texture2D(uMask, vUv).r;
+    if (m < 0.5) discard;
+    gl_FragColor = vec4(0.0, 1.0, 1.0, 0.85);
   }
 `;
 
@@ -171,8 +166,6 @@ export function resizeOutlinePass(width, height) {
  */
 export function renderOutlinePass(scene, camera) {
   if (!_initialized || !_renderer) return;
-  return; // TEMP DIAGNOSTIC (V0.2.22.101) — outline pass FULLY disabled to test
-          // whether the stray rectangle is the outline pass or a separate object.
   const hasSelection = _outlinedMeshes && _outlinedMeshes.size > 0;
   const hasPreview   = _previewMeshes  && _previewMeshes.size  > 0;
   if (!hasSelection && !hasPreview) return;
