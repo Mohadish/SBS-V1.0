@@ -257,6 +257,16 @@ export function bboxFromPolygon(polygon) {
  * @param {TreeNode} node    flatShape data node (must have templateId)
  * @returns {THREE.Mesh|null}
  */
+// Dedupe build-failure warnings so a genuinely-broken shape doesn't flood the
+// console on every step navigation / render. Keyed by `${nodeId}:${reason}`.
+const _shapeBuildWarned = new Set();
+function _warnShapeOnce(node, reason, msg) {
+  const key = `${node?.id}:${reason}`;
+  if (_shapeBuildWarned.has(key)) return;
+  _shapeBuildWarned.add(key);
+  console.warn(`[flatShape] ${msg}`);
+}
+
 export function ensureFlatShapeObject3D(node) {
   if (!node) return null;
   // A flatShape-origin Replace-Model (B.2-NEW) keeps its data type as
@@ -265,7 +275,10 @@ export function ensureFlatShapeObject3D(node) {
   const isFlatLike = node.type === 'flatShape'
                   || (node.type === 'replaceModel' && node.originalType === 'flatShape');
   if (!isFlatLike) return null;
-  if (!node.templateId) return null;
+  if (!node.templateId) {
+    _warnShapeOnce(node, 'no-tpl', `"${node.name || node.id}" has no templateId — cannot build (orphaned/incomplete node).`);
+    return null;
+  }
 
   // ── Legacy migration ─────────────────────────────────────────────────
   // Earlier builds stored the plane orientation in baseLocalQuaternion.
@@ -283,7 +296,13 @@ export function ensureFlatShapeObject3D(node) {
   }
 
   const tpl = _lookupTemplate(node.templateId);
-  if (!tpl) return null;
+  if (!tpl) {
+    _warnShapeOnce(node, 'no-template', `"${node.name || node.id}" → template ${node.templateId} not found (deleted?) — shape is invisible.`);
+    return null;
+  }
+  // The node is buildable again — clear any stale failure warnings for it.
+  _shapeBuildWarned.delete(`${node.id}:no-tpl`);
+  _shapeBuildWarned.delete(`${node.id}:no-template`);
   const polygons = ensureTemplatePolygons(tpl);
 
   const sig = _buildKey(tpl, polygons, node.planeLocalQuaternion);
@@ -307,7 +326,10 @@ export function ensureFlatShapeObject3D(node) {
   }
 
   const mesh = buildFlatShapeMesh(polygons, tpl.fill, node.planeLocalQuaternion, tpl.image || null);
-  if (!mesh) return null;
+  if (!mesh) {
+    _warnShapeOnce(node, 'no-geom', `"${node.name || node.id}" → template ${node.templateId} produced no geometry (empty/invalid polygon).`);
+    return null;
+  }
   mesh.name = node.name || tpl.name || 'Shape';
   mesh.userData.flatShapeNodeId = node.id;
   mesh.userData.meshNodeId      = node.id;   // enables raycast → selection

@@ -2827,6 +2827,10 @@ function rebuildFromTreeSpec(spec, nodeById, object3dById, parentObject3d) {
     if (!node) return null;
     node.name         = spec.name || node.name;
     node.localVisible = spec.localVisible !== false;
+    // Restore the template pointer / baked plane from the spec if the live node
+    // somehow lost them — keeps the mesh buildable across rebuilds.
+    if (spec.templateId)           node.templateId          = spec.templateId;
+    if (spec.planeLocalQuaternion) node.planeLocalQuaternion = spec.planeLocalQuaternion;
     node.children     = [];
 
     // Replace-Model with an already-built wrap-group (B.2-NEW): SKIP

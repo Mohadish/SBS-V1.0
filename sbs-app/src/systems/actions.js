@@ -7435,6 +7435,7 @@ function _findNodeRecursive(node, id) {
 
 /** Begin drawing a NEW template. Editor takes over the viewport. */
 export function startShapeDraw() {
+  _resetShapeInteraction();   // clear any leftover placement / pick / image mode
   shapeEditor.startDrawing(null);
 }
 
@@ -7682,6 +7683,7 @@ function _placePendingImageAtClick(clientX, clientY) {
 export function startShapeEdit(templateId) {
   const tpl = (state.get('shapeTemplates') || []).find(t => t.id === templateId);
   if (!tpl) return;
+  _resetShapeInteraction();   // clear any leftover placement / pick / image mode
 
   const root      = state.get('treeData');
   const instances = [];
@@ -7748,8 +7750,8 @@ export function editShapeInstance(instanceId) {
     setStatus('Cannot edit — not a shape instance.', 'warn');
     return;
   }
-  // We're going direct: clear any half-armed pick mode so it can't leak.
-  if (state.get('shapeEditPickInstanceForId')) state.setState({ shapeEditPickInstanceForId: null });
+  // We're going direct: clear any other half-armed shape mode so it can't leak.
+  _resetShapeInteraction();
   _enterShapeEditAtInstance(instanceId, node.templateId);
 }
 
@@ -8069,10 +8071,27 @@ export function placeShapeInstance(templateId, options = {}) {
  * Cancels other picker / draw modes so the user can't be in two
  * conflicting states at once.
  */
+/**
+ * Reset ALL transient shape-interaction modes — draw, place picker, edit-pick,
+ * create-from-face, and any pending image. Entering ANY one shape mode calls
+ * this first so a half-armed picker can't hijack the next viewport click. This
+ * is the fix for the "weird / inconsistent" behaviour where a leftover mode
+ * made the same action sometimes place a shape, sometimes select, sometimes
+ * do nothing.
+ */
+function _resetShapeInteraction() {
+  if (state.get('shapeDrawing')) cancelShapeDraw();
+  const patch = {};
+  if (state.get('shapePlacementForId'))        patch.shapePlacementForId        = null;
+  if (state.get('shapeEditPickInstanceForId')) patch.shapeEditPickInstanceForId = null;
+  if (state.get('shapeFromFacePicking'))       patch.shapeFromFacePicking       = false;
+  if (state.get('imageShapePending'))          patch.imageShapePending          = null;
+  if (Object.keys(patch).length) state.setState(patch);
+}
+
 export function startShapePlacement(templateId) {
   if (!templateId) return;
-  if (state.get('shapeDrawing'))                  cancelShapeDraw();
-  if (state.get('shapeEditPickInstanceForId'))    state.setState({ shapeEditPickInstanceForId: null });
+  _resetShapeInteraction();
   state.setState({ shapePlacementForId: templateId });
 }
 
@@ -8173,9 +8192,7 @@ export function placeShapeAtClick(templateId, clientX, clientY) {
 
 /** Arm the create-from-face picker. Cancels other modes for safety. */
 export function startCreateShapeFromFace() {
-  if (state.get('shapeDrawing'))               cancelShapeDraw();
-  if (state.get('shapePlacementForId'))        state.setState({ shapePlacementForId: null });
-  if (state.get('shapeEditPickInstanceForId')) state.setState({ shapeEditPickInstanceForId: null });
+  _resetShapeInteraction();
   state.setState({ shapeFromFacePicking: true });
   setStatus('Click a face on a model — its cross-section becomes a new shape.');
 }

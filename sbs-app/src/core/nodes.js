@@ -569,6 +569,17 @@ export function serializeModelTree(node) {
       };
     }
   }
+  // Procedural nodes (flat shapes, hardware) rebuild their geometry from a
+  // template via templateId — so a step snapshot MUST carry that pointer (and,
+  // for shapes, the baked plane orientation). Without it, a node restored from
+  // a snapshot alone has no geometry and silently vanishes.
+  if (node.type === 'flatShape') {
+    if (node.templateId)           spec.templateId           = node.templateId;
+    if (node.planeLocalQuaternion) spec.planeLocalQuaternion  = node.planeLocalQuaternion;
+  }
+  if (node.type === 'hardwareInstance') {
+    if (node.templateId) spec.templateId = node.templateId;
+  }
   return spec;
 }
 

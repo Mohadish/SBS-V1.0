@@ -780,6 +780,11 @@ async function _onOpenProject() {
     // exist so rebuildFromTreeSpec can reparent the correctly-remapped live meshes
     // into them when the first step is activated).
     _insertPhantomCustomFolders(savedSceneRoot);
+    // V0.2.22.88 — rebuild procedural nodes (flat shapes, hardware) that live
+    // UNDER a present model. Models re-import from file without their procedural
+    // children, and the folder pass above skips models — so without this, a
+    // shape placed on a part vanished on reload.
+    _reattachProceduralNodes(savedSceneRoot);
 
     // Restore saved color assignments + defaults (base state before any step)
     const savedDefaults    = project.colors?.defaults    || {};
@@ -1071,6 +1076,51 @@ function _insertPhantomCustomFolders(savedSceneRoot) {
   if (changed) {
     const newNodeById = buildNodeMap(root);
     state.setState({ treeData: { ...root }, nodeById: newNodeById });
+  }
+}
+
+/**
+ * Reattach procedural nodes (flat shapes, hardware instances) that were saved
+ * UNDER a present model. A model is re-imported fresh from its file, so its
+ * procedural children (which have no file — they rebuild from a template) are
+ * not recreated by the import; and _insertPhantomCustomFolders only handles
+ * scene-root children, skipping models. Without this pass, a shape placed on a
+ * part's surface is dropped on reload (rebuildFromTreeSpec finds no live node).
+ *
+ * Deep-walks the SAVED tree; for each procedural node not already live, clones
+ * it (and its subtree) via _cloneSpecAsPhantom into its saved parent — but only
+ * when that parent is already live (typically the imported model). The data is
+ * already on disk; we're just restoring it so the base-step rebuild can build
+ * the mesh from the template.
+ */
+function _reattachProceduralNodes(savedSceneRoot) {
+  if (!savedSceneRoot) return;
+  const RECONSTRUCT = new Set(['flatShape', 'hardwareInstance']);
+  const nodeById = state.get('nodeById') || new Map();
+  let changed = false;
+  const added = [];
+
+  const walk = (specNode, savedParentId) => {
+    if (RECONSTRUCT.has(specNode.type) && !nodeById.has(specNode.id)) {
+      const liveParent = nodeById.get(savedParentId);
+      if (liveParent) {
+        liveParent.children = liveParent.children || [];
+        liveParent.children.push(_cloneSpecAsPhantom(specNode));
+        changed = true;
+        added.push(`${specNode.type} "${specNode.name || ''}" → "${liveParent.name || liveParent.type}"`);
+        return;   // subtree already cloned by _cloneSpecAsPhantom
+      }
+      // Parent not live (e.g. a deleted/missing model) — can't attach; the
+      // missing-asset phantom path already covers children of missing models.
+    }
+    for (const c of (specNode.children || [])) walk(c, specNode.id);
+  };
+  for (const c of (savedSceneRoot.children || [])) walk(c, savedSceneRoot.id);
+
+  if (changed) {
+    const root = state.get('treeData');
+    state.setState({ treeData: { ...root }, nodeById: buildNodeMap(root) });
+    console.log(`[project-load] reattached ${added.length} procedural node(s) under live parents:`, added);
   }
 }
 
