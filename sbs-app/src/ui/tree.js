@@ -1158,7 +1158,8 @@ function _buildContextMenuItems(node) {
     // ripples to every other instance.
     items.push({
       label: '✏ Edit shape…',
-      action: () => actions.startShapeEdit(node.templateId),
+      // Edit THIS instance directly — no second "click an instance" step.
+      action: () => actions.editShapeInstance(node.id),
     });
 
     // Global Transform mode — drag handles write base* fields, change

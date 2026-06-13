@@ -7736,6 +7736,24 @@ export function pickInstanceForEdit(instanceId) {
 }
 
 /**
+ * Edit a SPECIFIC flat-shape instance directly — NO "click an instance" pick.
+ * Used by the per-instance right-click menus (tree row + viewport) where we
+ * already know exactly which shape the user chose, so the editor opens straight
+ * away regardless of how many instances of the template exist. The Shapes-tab
+ * "Edit" button still uses startShapeEdit (template-level → pick when ambiguous).
+ */
+export function editShapeInstance(instanceId) {
+  const node = state.get('nodeById')?.get(instanceId);
+  if (!node || node.type !== 'flatShape' || !node.templateId) {
+    setStatus('Cannot edit — not a shape instance.', 'warn');
+    return;
+  }
+  // We're going direct: clear any half-armed pick mode so it can't leak.
+  if (state.get('shapeEditPickInstanceForId')) state.setState({ shapeEditPickInstanceForId: null });
+  _enterShapeEditAtInstance(instanceId, node.templateId);
+}
+
+/**
  * Open the editor seeded at a specific instance — its CURRENT world
  * pose becomes the drawing plane (so what the user sees on screen is
  * what they edit), and the template's existing polygon points are

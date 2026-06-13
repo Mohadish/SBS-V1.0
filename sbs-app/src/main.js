@@ -2133,7 +2133,8 @@ canvas.addEventListener('contextmenu', e => {
     const inGlobal = state.get('globalEditNodeId') === node.id;
     items.push({
       label: '✏ Edit shape…',
-      action: () => actions.startShapeEdit(node.templateId),
+      // Edit THIS instance directly — no second "click an instance" step.
+      action: () => actions.editShapeInstance(node.id),
     });
     items.push({
       label: inGlobal ? '✓ Global Transform (active)' : '🌐 Global Transform',
