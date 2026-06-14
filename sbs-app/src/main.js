@@ -2346,11 +2346,11 @@ canvas.addEventListener('contextmenu', e => {
       submenu: [
         { label: '👁 Hide / Show — this step', action: () => actions.toggleVisibility(multiIds) },
         { separator: true },
-        { label: 'Show on all following steps', action: () => actions.setNodeVisibilityAcrossSteps(multiIds, true,  'following') },
-        { label: 'Hide on all following steps', action: () => actions.setNodeVisibilityAcrossSteps(multiIds, false, 'following') },
+        { label: '◀ 👁 Show on all previous steps',  action: () => actions.setNodeVisibilityAcrossSteps(multiIds, true,  'previous') },
+        { label: '◀ 🚫 Hide on all previous steps',  action: () => actions.setNodeVisibilityAcrossSteps(multiIds, false, 'previous') },
         { separator: true },
-        { label: 'Show on all previous steps',  action: () => actions.setNodeVisibilityAcrossSteps(multiIds, true,  'previous') },
-        { label: 'Hide on all previous steps',  action: () => actions.setNodeVisibilityAcrossSteps(multiIds, false, 'previous') },
+        { label: '▶ 👁 Show on all following steps', action: () => actions.setNodeVisibilityAcrossSteps(multiIds, true,  'following') },
+        { label: '▶ 🚫 Hide on all following steps', action: () => actions.setNodeVisibilityAcrossSteps(multiIds, false, 'following') },
       ],
     });
     items.push({

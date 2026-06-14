@@ -828,11 +828,11 @@ function _buildContextMenuItems(node) {
       { label: allVisible ? `🚫 Hide ${label} — this step` : `👁 Show ${label} — this step`,
         action: () => actions.toggleVisibility(targetIds) },
       { separator: true },
-      { label: 'Show on all following steps', action: () => actions.setNodeVisibilityAcrossSteps(targetIds, true,  'following') },
-      { label: 'Hide on all following steps', action: () => actions.setNodeVisibilityAcrossSteps(targetIds, false, 'following') },
+      { label: '◀ 👁 Show on all previous steps',  action: () => actions.setNodeVisibilityAcrossSteps(targetIds, true,  'previous') },
+      { label: '◀ 🚫 Hide on all previous steps',  action: () => actions.setNodeVisibilityAcrossSteps(targetIds, false, 'previous') },
       { separator: true },
-      { label: 'Show on all previous steps',  action: () => actions.setNodeVisibilityAcrossSteps(targetIds, true,  'previous') },
-      { label: 'Hide on all previous steps',  action: () => actions.setNodeVisibilityAcrossSteps(targetIds, false, 'previous') },
+      { label: '▶ 👁 Show on all following steps', action: () => actions.setNodeVisibilityAcrossSteps(targetIds, true,  'following') },
+      { label: '▶ 🚫 Hide on all following steps', action: () => actions.setNodeVisibilityAcrossSteps(targetIds, false, 'following') },
     ],
   });
 
