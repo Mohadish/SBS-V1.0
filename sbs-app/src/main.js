@@ -404,10 +404,9 @@ function _syncGizmoToSelection() {
       || node.type === 'mesh'
       || node.type === 'scene'
       || node.type === 'note'
-      || node.type === 'replaceModel') { console.log('[gizmo-diag] type=', node?.type, '→ HIDE'); gizmo.hide(); return; }
+      || node.type === 'replaceModel') { gizmo.hide(); return; }
   const obj3d = steps.object3dById?.get(selId);
-  if (!obj3d) { console.log('[gizmo-diag] type=', node?.type, 'no obj3d → HIDE'); gizmo.hide(); return; }
-  console.log('[gizmo-diag] type=', node?.type, '→ SHOW (gizmo group made visible)');
+  if (!obj3d) { gizmo.hide(); return; }
   gizmo.show(node, obj3d);
 }
 
