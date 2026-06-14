@@ -4063,7 +4063,7 @@ function _renderExportTab() {
         </label>
 
         <label style="display:flex;align-items:flex-start;gap:6px;margin-top:8px;cursor:pointer;">
-          <input type="checkbox" id="exp-offline-render" ${exp.offlineRender ? 'checked' : ''} style="margin-top:3px;" />
+          <input type="checkbox" id="exp-offline-render" ${exp.offlineRender !== false ? 'checked' : ''} style="margin-top:3px;" />
           <span class="small muted">
             Offline render (recommended)
             <div class="small muted" style="font-size:11px;opacity:0.75;margin-top:2px;">
@@ -4476,7 +4476,7 @@ async function _onExportTabStart() {
       // file size is typically well under the cap.
       bitrate:          Number.isFinite(Number(exp.videoBitrate)) ? Number(exp.videoBitrate) : 4_000_000,
       includeNarration: exp.narrationEnabled !== false,
-      offline:          !!exp.offlineRender,
+      offline:          exp.offlineRender !== false,   // default ON — smooth output on heavy models
       signal:           _exportTabCtrl.signal,
       onProgress: ({ current, total, stepName }) => {
         set(`Step ${current}/${total}: ${stepName}`);

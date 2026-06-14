@@ -58,7 +58,18 @@ const POST_STEP_HOLD_MS = 400;
  * @returns {Promise<{blob:Blob, extension:string}>}
  */
 export async function exportTimelineVideo(opts = {}) {
-  const format = opts.format ?? 'mp4';
+  let format = opts.format ?? 'mp4';
+
+  // Offline (synthetic-clock, frame-by-frame) render ONLY exists in the MP4
+  // engine. WebM is a live MediaRecorder grab off canvas.captureStream() — it
+  // cannot decouple from wall-clock, so on a heavy model it captures whatever
+  // the GPU managed in real time (the "5 fps stretched over 15" stutter). If
+  // the user asked for offline, honour it by forcing MP4 rather than silently
+  // falling back to a realtime WebM grab.
+  if (opts.offline && format !== 'mp4') {
+    console.warn('[export] offline render requested → forcing MP4 (WebM is realtime-only)');
+    format = 'mp4';
+  }
 
   if (format === 'mp4')      return _exportMp4(opts);
   if (format.startsWith('webm')) return _exportWebM(opts);
