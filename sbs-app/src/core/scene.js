@@ -314,6 +314,36 @@ export class SceneCore extends Emitter {
 
   _render() {
     if (!this.renderer) return;
+
+    // TEMP DIAGNOSTIC (V0.2.22.117) — wrap renderer.render ONCE to log EVERY
+    // draw call (any system, any scene/camera) + any flat object near origin in
+    // that scene. Reveals the render path drawing the 2x2 card.
+    if (!this._renderHooked) {
+      this._renderHooked = true;
+      const orig = this.renderer.render.bind(this.renderer);
+      const self = this;
+      let n = 0;
+      this.renderer.render = function (sc, cam) {
+        if (n < 20 && sc && sc.traverse) {
+          n++;
+          const T = window.THREE;
+          const box = new T.Box3(), c = new T.Vector3(), s = new T.Vector3();
+          const found = [];
+          sc.traverse(o => {
+            if (!(o.isMesh || o.isLine) || !o.geometry) return;
+            box.setFromObject(o); if (box.isEmpty()) return;
+            box.getSize(s); box.getCenter(c);
+            const mn = Math.min(s.x, s.y, s.z), mx = Math.max(s.x, s.y, s.z);
+            if (mn < 1 && mx > 0.5 && mx < 60 && Math.hypot(c.x, c.y, c.z) < 4) {
+              found.push(`${o.geometry.type}[${s.x.toFixed(1)}x${s.y.toFixed(1)}x${s.z.toFixed(1)}@(${c.x.toFixed(1)},${c.y.toFixed(1)},${c.z.toFixed(1)})vis=${o.visible}]`);
+            }
+          });
+          console.log(`[render] children=${sc.children.length} cam=${cam?.type} isMain=${cam === self.camera} flatNearOrigin=[${found.join(', ')}]`);
+        }
+        return orig(sc, cam);
+      };
+    }
+
     // Main scene
     this.renderer.autoClear = true;
     this.renderer.render(this.scene, this.camera);
