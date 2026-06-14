@@ -1832,6 +1832,17 @@ gl_FragColor.a = 1.0;
         if (!m) { console.log(`  id=${id} → (no mesh in meshById)`); continue; }
         const wp = new THREE.Vector3(); m.getWorldPosition(wp);
         console.log(`  id=${id} → "${m.name||m.type}" geo=${m.geometry?.type} @(${wp.x.toFixed(1)},${wp.y.toFixed(1)},${wp.z.toFixed(1)}) ud=${JSON.stringify(Object.keys(m.userData||{}))}`);
+        // Dump hull children — overlay (surface tint) + outline (EdgesGeometry).
+        for (const key of ['sbsSelectionOverlay', 'sbsSelectionOutline']) {
+          const ch = m.userData?.[key]; if (!ch) continue;
+          ch.geometry?.computeBoundingBox?.();
+          const cb = ch.geometry?.boundingBox;
+          const cwp = new THREE.Vector3(); ch.getWorldPosition(cwp);
+          const v = ch.geometry?.attributes?.position?.count;
+          const sz = cb ? `${(cb.max.x-cb.min.x).toFixed(1)}x${(cb.max.y-cb.min.y).toFixed(1)}x${(cb.max.z-cb.min.z).toFixed(1)}` : '?';
+          const ctr = cb ? `(${((cb.max.x+cb.min.x)/2).toFixed(1)},${((cb.max.y+cb.min.y)/2).toFixed(1)},${((cb.max.z+cb.min.z)/2).toFixed(1)})` : '?';
+          console.log(`    ${key}: geo=${ch.geometry?.type} verts=${v} bbox=${sz} bboxCtr=${ctr} worldPos=(${cwp.x.toFixed(1)},${cwp.y.toFixed(1)},${cwp.z.toFixed(1)})`);
+        }
       }
     } catch (e) { console.log('[sel-diag] err', e); }
 
