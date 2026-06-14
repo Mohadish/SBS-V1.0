@@ -42,7 +42,7 @@ let _maskOverrideMat = null;
 let _fsScene         = null;
 let _fsCamera        = null;
 let _fsQuad          = null;
-let _diagDone        = false;   // V0.2.22.97 — one-shot stray-rectangle probe
+let _diagDone        = 0;       // V0.2.22.103 — mask-content probe (first 4 passes)
 let _edgeMat         = null;
 let _outlinedMeshes  = new Set();   // Three.js Object3D references (selection)
 let _previewMeshes   = new Set();   // ray-select cycle preview (V0.2.22.21.4)
@@ -186,27 +186,18 @@ function _runOutlinePass(scene, camera, meshSet, hexColor) {
   const THREE = window.THREE;
 
   // TEMP DIAGNOSTIC (V0.2.22.97) — one-shot hunt for the stray 2×2 rectangle.
-  if (!_diagDone) {
-    _diagDone = true;
+  if (_diagDone < 4) {
+    _diagDone++;
     const chain = (o) => { const a = []; let p = o; while (p) { a.push(`${p.name || p.type}${p.isMesh ? '(mesh)' : p.isLine ? '(line)' : ''}`); p = p.parent; } return a.join(' < '); };
-    console.log('[outline-diag] OUTLINED set (', meshSet.size, '):');
-    for (const m of meshSet) {
-      const wp = new THREE.Vector3(); m.getWorldPosition?.(wp);
-      m.geometry?.computeBoundingBox?.();
-      const bb = m.geometry?.boundingBox;
-      const sz = bb ? `${(bb.max.x-bb.min.x).toFixed(1)}x${(bb.max.y-bb.min.y).toFixed(1)}x${(bb.max.z-bb.min.z).toFixed(1)}` : '?';
-      console.log(`  outlined "${m.name||m.uuid}" ${sz} @(${wp.x.toFixed(1)},${wp.y.toFixed(1)},${wp.z.toFixed(1)}) ${chain(m)}`);
-    }
-    console.log('[outline-diag] ~2x2 meshes anywhere in the MAIN scene:');
+    const box = new THREE.Box3();
+    console.log(`[mask-diag] pass#${_diagDone} color=${hexColor} meshSet.size=${meshSet.size} — meshes that RENDER into this mask:`);
     scene.traverse(o => {
       if (!o.isMesh || !o.geometry) return;
-      o.geometry.computeBoundingBox?.();
-      const bb = o.geometry.boundingBox; if (!bb) return;
-      const sx = bb.max.x-bb.min.x, sy = bb.max.y-bb.min.y, sz = bb.max.z-bb.min.z;
-      if (Math.abs(sx-2) < 0.6 && Math.abs(sy-2) < 0.6 && Math.abs(sz) < 0.6) {
-        const wp = new THREE.Vector3(); o.getWorldPosition(wp);
-        console.log(`  2x2 "${o.name||o.uuid}" mat=${o.material?.type} vis=${o.visible} layer=${o.layers.mask} @(${wp.x.toFixed(1)},${wp.y.toFixed(1)},${wp.z.toFixed(1)}) ${chain(o)}`);
-      }
+      if (!(o.visible && meshSet.has(o))) return;   // exactly what paints the mask
+      box.setFromObject(o);
+      const sx = box.max.x-box.min.x, sy = box.max.y-box.min.y, sz = box.max.z-box.min.z;
+      const cx = (box.max.x+box.min.x)/2, cy = (box.max.y+box.min.y)/2, cz = (box.max.z+box.min.z)/2;
+      console.log(`  renders "${o.name||o.uuid}" world=${sx.toFixed(2)}x${sy.toFixed(2)}x${sz.toFixed(2)} c=(${cx.toFixed(1)},${cy.toFixed(1)},${cz.toFixed(1)}) ${chain(o)}`);
     });
   }
 
