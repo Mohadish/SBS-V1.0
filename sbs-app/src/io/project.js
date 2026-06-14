@@ -32,6 +32,7 @@ import {
 import { materials }                  from '../systems/materials.js';
 import { steps   }                  from '../systems/steps.js';
 import * as narrationCache           from '../systems/narration-cache.js';
+import { clearIsolate }              from '../core/isolate-state.js';
 
 /**
  * H1 migration: append `cable(500)` / `overlay(500)` slots to legacy
@@ -1143,6 +1144,7 @@ export async function loadProject(fileOrText, filePath = null) {
   const text    = typeof fileOrText === 'string' ? fileOrText : await fileOrText.text();
   const project = parseProjectFile(text);
 
+  clearIsolate();   // isolate is runtime-only — a freshly-loaded project starts un-isolated
   applyProjectToState(project);
 
   if (filePath) _setProjectMeta(filePath);

@@ -42,6 +42,10 @@ import {
   isTransformNode,
 }                               from '../core/transforms.js';
 import {
+  setIsolateKeepSet, clearIsolate, getIsolateKeepSet,
+  isIsolateActive, isIsolateEngaged,
+}                               from '../core/isolate-state.js';
+import {
   moveNode    as _nodes_moveNode,
   buildNodeMap as _nodes_buildNodeMap,
   captureParentMap,
@@ -769,14 +773,14 @@ export function updateTransition(stepId, patch) {
 // ═══════════════════════════════════════════════════════════════════════════
 
 /**
- * Isolate the given node ids — hide every node NOT in the keep set
- * (selected ids + all their descendants + all their ancestors). The
- * outgoing visibility is snapshotted so unisolate() can restore. One
- * undo entry per call. Re-running isolate replaces the snapshot
- * (subsequent undo restores to whatever was visible BEFORE this call).
+ * Isolate — a NON-DESTRUCTIVE, global visibility mask (core/isolate-state.js).
+ *
+ * Engaging isolate keeps ONLY the selected ids (+ ancestors + descendants)
+ * visible, on EVERY step, until un-isolate. It NEVER writes per-step snapshots,
+ * so un-isolate simply drops the mask and re-stages — every step's real hide
+ * state returns untouched. While isolated, hide/show is locked (the mask owns
+ * visibility); transforms / colours / camera still flow per step.
  */
-let _isolateSnapshot = null;   // Map<nodeId, boolean>
-
 function _collectKeepSet(rootIds) {
   const nodeById = state.get('nodeById');
   if (!nodeById) return new Set();
@@ -805,71 +809,53 @@ function _collectKeepSet(rootIds) {
   return keep;
 }
 
+/**
+ * Push the current mask state (on or off) to the live scene: run the
+ * isolate-aware visibility pass, then snap revealed meshes to full opacity so
+ * nothing ghosts. Shared by isolate + un-isolate (and their undo/redo).
+ */
+function _applyIsolateView() {
+  _syncVis();                  // applyAllVisibility is isolate-aware
+  steps.snapMeshesOpaque();    // kill ghost-opacity on freshly-revealed meshes
+}
+
 export function isolateSelection() {
+  if (isIsolateEngaged()) return;          // can't isolate while already isolated
   const nodeById = state.get('nodeById');
   if (!nodeById) return;
   const ids = state.get('multiSelectedIds');
   if (!ids?.size) return;
   const keep = _collectKeepSet(ids);
+  if (!keep.size) return;
 
-  // Snapshot CURRENT visibility for unisolate.
-  const snapshot = new Map();
-  for (const [id, n] of nodeById) snapshot.set(id, n.localVisible !== false);
-  _isolateSnapshot = snapshot;
-
-  // Apply isolation: anything not in keep → hidden.
-  const flipped = [];   // ids whose visibility actually changed
-  for (const [id, n] of nodeById) {
-    const want = keep.has(id);
-    if (want !== (n.localVisible !== false)) {
-      n.localVisible = want;
-      flipped.push(id);
-    }
-  }
-  if (!flipped.length) return;
-  _syncVis();
+  setIsolateKeepSet(keep);
+  _applyIsolateView();
+  state.emit('isolate:changed', { active: true });
+  setStatus('Isolated — hide/show locked until un-isolate');
 
   undoManager.push(
     'Isolate',
-    () => {
-      const nb = state.get('nodeById');
-      for (const [id, was] of snapshot) { const n = nb.get(id); if (n) n.localVisible = was; }
-      _syncVis();
-    },
-    () => {
-      const nb = state.get('nodeById');
-      for (const id of flipped) { const n = nb.get(id); if (n) n.localVisible = keep.has(id); }
-      _syncVis();
-    },
+    () => { clearIsolate();          _applyIsolateView(); state.emit('isolate:changed', { active: false }); },
+    () => { setIsolateKeepSet(keep); _applyIsolateView(); state.emit('isolate:changed', { active: true  }); },
   );
 }
 
 export function unisolate() {
-  if (!_isolateSnapshot) return;
-  const nodeById = state.get('nodeById');
-  if (!nodeById) return;
-  const before = new Map();
-  for (const [id, n] of nodeById) before.set(id, n.localVisible !== false);
-  for (const [id, was] of _isolateSnapshot) { const n = nodeById.get(id); if (n) n.localVisible = was; }
-  _syncVis();
-  const restored = _isolateSnapshot;
-  _isolateSnapshot = null;
+  if (!isIsolateEngaged()) return;
+  const keep = getIsolateKeepSet();
+  clearIsolate();
+  _applyIsolateView();
+  state.emit('isolate:changed', { active: false });
+
   undoManager.push(
     'Un-isolate',
-    () => {
-      const nb = state.get('nodeById');
-      for (const [id, b] of before) { const n = nb.get(id); if (n) n.localVisible = b; }
-      _syncVis();
-    },
-    () => {
-      const nb = state.get('nodeById');
-      for (const [id, w] of restored) { const n = nb.get(id); if (n) n.localVisible = w; }
-      _syncVis();
-    },
+    () => { setIsolateKeepSet(keep); _applyIsolateView(); state.emit('isolate:changed', { active: true  }); },
+    () => { clearIsolate();          _applyIsolateView(); state.emit('isolate:changed', { active: false }); },
   );
 }
 
-export function hasIsolateSnapshot() { return !!_isolateSnapshot; }
+/** TRUE when an isolate is engaged — UI shows Un-isolate and greys hide/show. */
+export function hasIsolateSnapshot() { return isIsolateEngaged(); }
 
 // ─── Step / chapter multi-selection (state.selectedStepIds) ──────────────
 //
@@ -1475,6 +1461,9 @@ function _findNodeParent(node, targetId) {
  * setting a node hidden hides it and any descendant that inherits.
  */
 export function toggleVisibility(nodeIds) {
+  // While isolated, the mask owns visibility — hide/show is locked. Covers the
+  // tree eye button, the viewport r-click, and the 'H' shortcut in one place.
+  if (isIsolateEngaged()) { setStatus('Un-isolate to change hide/show'); return; }
   const nodeById = state.get('nodeById');
   const treeData = state.get('treeData');
   // Strip archived ids — archived nodes are READ-ONLY and must not respond
@@ -2794,6 +2783,7 @@ function _toggleVisibilityMulti(ids, newVis, stepIdSet, treeData) {
  * flash via 'steps:bulkApplied' so the user sees what was touched.
  */
 export function setNodeVisibilityAcrossSteps(nodeIds, visible, scope) {
+  if (isIsolateEngaged()) { setStatus('Un-isolate to change hide/show'); return; }
   const nodeById = state.get('nodeById');
   const ids = [...(nodeIds || [])].filter(id => nodeById?.has(id));
   if (!ids.length || (scope !== 'following' && scope !== 'previous')) return;

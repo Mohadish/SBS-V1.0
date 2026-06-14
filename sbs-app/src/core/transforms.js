@@ -20,6 +20,8 @@
  * Three.js is a global script (window.THREE) — referenced directly.
  */
 
+import { isIsolateActive, getIsolateKeepSet } from './isolate-state.js';
+
 // ═══════════════════════════════════════════════════════════════════════════
 //  ARRAY CONSTANTS & GUARDS
 // ═══════════════════════════════════════════════════════════════════════════
@@ -729,7 +731,12 @@ export function applyAllTransforms(root, object3dById) {
  */
 export function applyAllVisibility(root, object3dById, inheritedVisible = true) {
   if (!root) return;
-  const effective = inheritedVisible && root.localVisible && !root.archived;
+  // Isolate overlay: while active, visibility is driven by the keep-set, NOT the
+  // node's per-step localVisible. The underlying localVisible is left untouched
+  // so un-isolate reveals the real per-step state. Archive still trumps both.
+  const keep      = isIsolateActive() ? getIsolateKeepSet() : null;
+  const nodeVis   = keep ? keep.has(root.id) : root.localVisible;
+  const effective = inheritedVisible && nodeVis && !root.archived;
   const obj = object3dById.get(root.id);
   if (obj) obj.visible = effective;
   root.children.forEach(c => applyAllVisibility(c, object3dById, effective));

@@ -2341,8 +2341,10 @@ canvas.addEventListener('contextmenu', e => {
     items.push({ label: '─', disabled: true });
   }
   if (hasSel) {
+    const _isolated = actions.hasIsolateSnapshot();
     items.push({
       label: '👁 Visibility',
+      disabled: _isolated,   // while isolated, the mask owns hide/show
       submenu: [
         { label: '👁 Hide / Show — this step', action: () => actions.toggleVisibility(multiIds) },
         { separator: true },
@@ -2353,14 +2355,15 @@ canvas.addEventListener('contextmenu', e => {
         { label: '▶ 🚫 Hide on all following steps', action: () => actions.setNodeVisibilityAcrossSteps(multiIds, false, 'following') },
       ],
     });
-    items.push({
-      label: '🔍 Isolate',
-      action: () => actions.isolateSelection(),
-    });
-    if (actions.hasIsolateSnapshot()) {
+    if (_isolated) {
       items.push({
         label: '🌐 Un-isolate',
         action: () => actions.unisolate(),
+      });
+    } else {
+      items.push({
+        label: '🔍 Isolate',
+        action: () => actions.isolateSelection(),
       });
     }
     items.push({

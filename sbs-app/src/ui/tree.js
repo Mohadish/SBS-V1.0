@@ -824,6 +824,7 @@ function _buildContextMenuItems(node) {
   const allVisible = targetIds.every(id => nodeById?.get(id)?.localVisible !== false);
   items.push({
     label: '👁 Visibility',
+    disabled: actions.hasIsolateSnapshot(),   // while isolated, the mask owns hide/show
     submenu: [
       { label: allVisible ? `🚫 Hide ${label} — this step` : `👁 Show ${label} — this step`,
         action: () => actions.toggleVisibility(targetIds) },

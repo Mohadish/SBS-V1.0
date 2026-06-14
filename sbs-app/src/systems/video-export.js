@@ -20,6 +20,7 @@
 
 import { state }     from '../core/state.js';
 import { steps, setSleepImpl } from './steps.js';
+import { isIsolateEngaged, suspendIsolate, resumeIsolate } from '../core/isolate-state.js';
 import * as clock    from '../core/clock.js';
 import { sceneCore } from '../core/scene.js';
 import { rasterizeOverlay, waitForOverlayStable }     from './overlay.js';
@@ -72,9 +73,32 @@ export async function exportTimelineVideo(opts = {}) {
     format = 'mp4';
   }
 
-  if (format === 'mp4')      return _exportMp4(opts);
-  if (format.startsWith('webm')) return _exportWebM(opts);
-  throw new Error(`Unsupported export format: ${format}`);
+  return _withIsolateSuspended(() => {
+    if (format === 'mp4')          return _exportMp4(opts);
+    if (format.startsWith('webm')) return _exportWebM(opts);
+    throw new Error(`Unsupported export format: ${format}`);
+  });
+}
+
+/**
+ * Run an export with the isolate mask SUSPENDED. Isolate is a viewport
+ * inspection aid, never part of a deliverable — frames must render the true
+ * per-step scene. On exit we re-engage the mask and re-stage the active step so
+ * the user's isolated view returns exactly as it was.
+ */
+async function _withIsolateSuspended(fn) {
+  const hadIsolate = isIsolateEngaged();
+  const restage = () => {
+    const active = (state.get('steps') || []).find(s => s.id === state.get('activeStepId'));
+    if (active?.snapshot) steps.applySnapshotInstant(active.snapshot);
+    steps.snapMeshesOpaque(false);   // reset ALL meshes — any export step may reveal one
+  };
+  if (hadIsolate) { suspendIsolate(); restage(); }   // reveal real steps for capture
+  try {
+    return await fn();
+  } finally {
+    if (hadIsolate) { resumeIsolate(); restage(); }  // restore the isolated view
+  }
 }
 
 /**
@@ -94,7 +118,7 @@ export async function exportTimelineVideo(opts = {}) {
  * MP4 stream as the trailing payload).
  */
 export async function exportTimelineSbsProc(opts = {}) {
-  const result = await _exportMp4(opts);
+  const result = await _withIsolateSuspended(() => _exportMp4(opts));
   const manifest = _buildSbsProcManifest(result);
   const blob = _packSbsProcBlob(manifest, result.mp4Buffer);
   return {

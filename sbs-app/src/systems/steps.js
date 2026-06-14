@@ -67,6 +67,7 @@ import {
   slerpQuaternion,
   quarterTurnsFromQuaternion,
 } from '../core/transforms.js';
+import { isIsolateActive, getIsolateKeepSet } from '../core/isolate-state.js';
 
 // ── Easing helpers (mirror scene.js — no circular dependency) ─────────────
 const easeSmooth = t => t * t * (3 - 2 * t);
@@ -383,6 +384,37 @@ class StepManager {
         }
       }
     }
+
+    // Isolate overlay: a kept mesh that is hidden on THIS step (but forced
+    // visible by the mask) is not in the self-heal set above — re-assert full
+    // opacity so it never renders as a ghost (obj.visible=true yet opacity 0)
+    // as the user steps through while isolated.
+    if (isIsolateActive()) this.snapMeshesOpaque();
+  }
+
+  /**
+   * Force mesh TRANSITION opacity to fully opaque. Used when the isolate mask
+   * flips on/off (and at the tail of an isolated instant-snap): a mesh the mask
+   * reveals may still carry opacity 0 from an earlier fade-out, which would
+   * render it invisible despite obj.visible=true.
+   *
+   * @param {boolean} [onlyVisible=true]  When true, only currently-visible
+   *   meshes are snapped. Pass FALSE when leaving isolate for an export — the
+   *   first exported step may reveal a mesh that was hidden (opacity 0) under
+   *   the mask, so every mesh is reset; hidden ones at opacity 1 are harmless
+   *   (not rendered) and any later fade-in re-snaps to 0 first.
+   * Instant op — assumes no fade is mid-flight.
+   */
+  snapMeshesOpaque(onlyVisible = true) {
+    if (!this._materials) return;
+    const outlineSettings = state.get('geometryOutline');
+    for (const [nodeId] of this._materials.meshById) {
+      const obj = this.object3dById.get(nodeId);
+      if (!obj) continue;
+      if (onlyVisible && !obj.visible) continue;
+      this._materials._setNodeTransitionOpacity(nodeId, 1.0, outlineSettings, 0);
+    }
+    if (this._materials._pendingShowingHidden) this._materials._pendingShowingHidden.clear();
   }
 
   /**
@@ -2643,11 +2675,16 @@ function applyAllVisibilityToScene(nodeById, object3dById) {
   const root = state.get('treeData');
   if (!root) return;
 
+  // Isolate overlay: while active, visibility comes from the keep-set instead of
+  // each node's per-step localVisible (which stays untouched for un-isolate).
+  const keep = isIsolateActive() ? getIsolateKeepSet() : null;
+
   // Walk tree, track inherited visibility. Archive trumps localVisible —
   // archived nodes (and their descendants) are forced invisible regardless
   // of any per-step snapshot. Matches computeVisibleSet in core/nodes.js.
   function walk(node, inherited) {
-    const effective = inherited && node.localVisible && !node.archived;
+    const nodeVis   = keep ? keep.has(node.id) : node.localVisible;
+    const effective = inherited && nodeVis && !node.archived;
     const obj = object3dById.get(node.id);
     if (obj) {
       // Bbox placeholders honor the sticky export-hide flag so they stay
