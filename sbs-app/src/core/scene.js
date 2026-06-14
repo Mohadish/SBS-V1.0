@@ -314,39 +314,6 @@ export class SceneCore extends Emitter {
 
   _render() {
     if (!this.renderer) return;
-
-    // TEMP DIAGNOSTIC (V0.2.22.118) — wrap renderer.render ONCE. No frame limit;
-    // dedup by signature. Logs each unique FLAT, low-vertex quad near origin
-    // (a 2x2 card/outline) across ANY render path — excludes gizmo cylinders/
-    // tori by vertex count and excludes off-origin plane handles by distance.
-    if (!this._renderHooked) {
-      this._renderHooked = true;
-      this._renderSeen = new Set();
-      const orig = this.renderer.render.bind(this.renderer);
-      const self = this;
-      this.renderer.render = function (sc, cam) {
-        if (sc && sc.traverse) {
-          const T = window.THREE;
-          const box = new T.Box3(), c = new T.Vector3(), s = new T.Vector3();
-          sc.traverse(o => {
-            if (!(o.isMesh || o.isLine) || !o.geometry) return;
-            const vc = o.geometry.attributes?.position?.count || 0;
-            if (vc > 30) return;                       // skip cylinders/tori/complex meshes
-            box.setFromObject(o); if (box.isEmpty()) return;
-            box.getSize(s); box.getCenter(c);
-            const mn = Math.min(s.x, s.y, s.z), mx = Math.max(s.x, s.y, s.z);
-            if (!(mn < 0.6 && mx > 0.5 && Math.hypot(c.x, c.y, c.z) < 5)) return;
-            const sig = `${o.geometry.type}|${vc}|${mx.toFixed(0)}|${c.x.toFixed(0)},${c.y.toFixed(0)},${c.z.toFixed(0)}`;
-            if (self._renderSeen.has(sig)) return;
-            self._renderSeen.add(sig);
-            const ch = []; for (let p = o; p; p = p.parent) ch.push(p.name || p.type);
-            console.log(`[render] FLAT-QUAD ${o.type} geo=${o.geometry.type} verts=${vc} size=${s.x.toFixed(1)}x${s.y.toFixed(1)}x${s.z.toFixed(1)} ctr=(${c.x.toFixed(1)},${c.y.toFixed(1)},${c.z.toFixed(1)}) vis=${o.visible} cam=${cam?.type} isMain=${cam === self.camera} chain=[${ch.join(' < ')}]`);
-          });
-        }
-        return orig(sc, cam);
-      };
-    }
-
     // Main scene
     this.renderer.autoClear = true;
     this.renderer.render(this.scene, this.camera);
