@@ -2342,8 +2342,16 @@ canvas.addEventListener('contextmenu', e => {
   }
   if (hasSel) {
     items.push({
-      label: '👁 Hide / Show',
-      action: () => actions.toggleVisibility(multiIds),
+      label: '👁 Visibility',
+      submenu: [
+        { label: '👁 Hide / Show — this step', action: () => actions.toggleVisibility(multiIds) },
+        { separator: true },
+        { label: 'Show on all following steps', action: () => actions.setNodeVisibilityAcrossSteps(multiIds, true,  'following') },
+        { label: 'Hide on all following steps', action: () => actions.setNodeVisibilityAcrossSteps(multiIds, false, 'following') },
+        { separator: true },
+        { label: 'Show on all previous steps',  action: () => actions.setNodeVisibilityAcrossSteps(multiIds, true,  'previous') },
+        { label: 'Hide on all previous steps',  action: () => actions.setNodeVisibilityAcrossSteps(multiIds, false, 'previous') },
+      ],
     });
     items.push({
       label: '🔍 Isolate',

@@ -9,6 +9,7 @@
  */
 
 let _el = null;
+let _flyoutEl = null;   // V0.2.22.129 — submenu flyout (lazily created, reused)
 // V0.2.11 live-label support: track current modifier state while a menu is
 // open so items with `liveLabel(ctx)` can rewrite themselves on Ctrl/Shift/
 // Alt up + down. `_liveBtns` holds [{btn, item}] for items that opted in;
@@ -51,9 +52,64 @@ export function initContextMenu() {
   _el = document.getElementById('context-menu');
   if (!_el) return;
 
-  // Close on any click outside
-  document.addEventListener('click',   () => hideContextMenu(), true);
+  // Close on any click OUTSIDE the menu (or its flyout). Clicks inside are
+  // handled by the item buttons themselves (which close explicitly), so a
+  // submenu parent can open its flyout on click without dismissing the menu.
+  document.addEventListener('click', (e) => {
+    if (_el && _el.contains(e.target)) return;
+    if (_flyoutEl && _flyoutEl.contains(e.target)) return;
+    hideContextMenu();
+  }, true);
   document.addEventListener('keydown', e => { if (e.key === 'Escape') hideContextMenu(); });
+}
+
+// ── Submenu flyout ───────────────────────────────────────────────────────────
+function _makeActionButton(item) {
+  const btn = document.createElement('button');
+  btn.className   = 'context-menu__item';
+  btn.textContent = typeof item.liveLabel === 'function' ? item.liveLabel(_modState) : item.label;
+  btn.disabled    = !!item.disabled;
+  btn.addEventListener('click', e => {
+    e.stopPropagation();
+    _modState = _ctxFromEvent(e);
+    hideContextMenu();
+    item.action?.(_modState);
+  });
+  return btn;
+}
+
+function _closeFlyout() {
+  if (_flyoutEl) _flyoutEl.style.display = 'none';
+}
+
+function _openFlyout(parentBtn, subItems) {
+  if (!_flyoutEl) {
+    _flyoutEl = document.createElement('div');
+    _flyoutEl.className = 'context-menu';   // reuse menu surface styling
+    _flyoutEl.style.position = 'fixed';
+    _flyoutEl.style.zIndex   = '91';        // above the parent menu (z-90)
+    document.body.appendChild(_flyoutEl);
+  }
+  _flyoutEl.innerHTML = '';
+  for (const sub of subItems) {
+    if (sub.separator) {
+      const hr = document.createElement('div');
+      hr.className = 'context-menu__separator';
+      _flyoutEl.appendChild(hr);
+    } else {
+      _flyoutEl.appendChild(_makeActionButton(sub));
+    }
+  }
+  _flyoutEl.style.display = 'block';
+  // Position to the right of the parent row; flip left if it would overflow.
+  const r  = parentBtn.getBoundingClientRect();
+  const fr = _flyoutEl.getBoundingClientRect();
+  let fx = r.right - 2;
+  if (fx + fr.width > window.innerWidth) fx = r.left - fr.width + 2;
+  let fy = r.top - 6;
+  if (fy + fr.height > window.innerHeight) fy = window.innerHeight - fr.height - 4;
+  _flyoutEl.style.left = `${Math.max(4, fx)}px`;
+  _flyoutEl.style.top  = `${Math.max(4, fy)}px`;
 }
 
 /**
@@ -88,18 +144,22 @@ export function showContextMenu(items, x, y, opts = {}) {
       continue;
     }
 
-    const btn = document.createElement('button');
-    btn.className   = 'context-menu__item';
-    btn.textContent = typeof item.liveLabel === 'function'
-      ? item.liveLabel(_modState)
-      : item.label;
-    btn.disabled    = !!item.disabled;
-    btn.addEventListener('click', e => {
-      e.stopPropagation();
-      _modState = _ctxFromEvent(e);
-      hideContextMenu();
-      item.action?.(_modState);
-    });
+    // Submenu (flyout): renders with a ▸ indicator; opens a side panel on
+    // hover or click. No own action.
+    if (Array.isArray(item.submenu)) {
+      const btn = document.createElement('button');
+      btn.className   = 'context-menu__item';
+      btn.textContent = `${item.label}  ▸`;
+      btn.disabled    = !!item.disabled;
+      const open = () => { if (!btn.disabled) _openFlyout(btn, item.submenu); };
+      btn.addEventListener('mouseenter', open);
+      btn.addEventListener('click', e => { e.stopPropagation(); open(); });
+      _el.appendChild(btn);
+      continue;
+    }
+
+    const btn = _makeActionButton(item);
+    btn.addEventListener('mouseenter', _closeFlyout);   // leaving a submenu row closes its flyout
     _el.appendChild(btn);
     if (typeof item.liveLabel === 'function') _liveBtns.push({ btn, item });
   }
@@ -120,6 +180,7 @@ export function showContextMenu(items, x, y, opts = {}) {
 
 export function hideContextMenu() {
   if (_el) _el.style.display = 'none';
+  _closeFlyout();
   _detachLiveModListeners();
   _liveBtns = [];
 }

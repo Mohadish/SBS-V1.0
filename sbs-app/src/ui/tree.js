@@ -823,8 +823,17 @@ function _buildContextMenuItems(node) {
   // ── Visibility ──────────────────────────────────────────────────────────────
   const allVisible = targetIds.every(id => nodeById?.get(id)?.localVisible !== false);
   items.push({
-    label: allVisible ? `🚫 Hide ${label}` : `👁 Show ${label}`,
-    action: () => actions.toggleVisibility(targetIds),
+    label: '👁 Visibility',
+    submenu: [
+      { label: allVisible ? `🚫 Hide ${label} — this step` : `👁 Show ${label} — this step`,
+        action: () => actions.toggleVisibility(targetIds) },
+      { separator: true },
+      { label: 'Show on all following steps', action: () => actions.setNodeVisibilityAcrossSteps(targetIds, true,  'following') },
+      { label: 'Hide on all following steps', action: () => actions.setNodeVisibilityAcrossSteps(targetIds, false, 'following') },
+      { separator: true },
+      { label: 'Show on all previous steps',  action: () => actions.setNodeVisibilityAcrossSteps(targetIds, true,  'previous') },
+      { label: 'Hide on all previous steps',  action: () => actions.setNodeVisibilityAcrossSteps(targetIds, false, 'previous') },
+    ],
   });
 
   // ── Folder lock (V0.1.92, replaces the old Group menu) ────────────────

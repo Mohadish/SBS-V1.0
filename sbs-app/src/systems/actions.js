@@ -2783,6 +2783,57 @@ function _toggleVisibilityMulti(ids, newVis, stepIdSet, treeData) {
 }
 
 /**
+ * Set one-or-more nodes' visibility across a range of steps relative to the
+ * ACTIVE step (exclusive) — as a SINGLE undo entry. scope:
+ *   'following' → every step AFTER the active one
+ *   'previous'  → every step BEFORE the active one
+ * Per the agreed scope: affects only the exact nodes (no child cascade, no
+ * show-ancestor cascade) and never the active step itself (use plain Hide/Show
+ * for that). Writes straight into each target step's self-contained snapshot
+ * visibility map. The active view doesn't change — the affected step cards
+ * flash via 'steps:bulkApplied' so the user sees what was touched.
+ */
+export function setNodeVisibilityAcrossSteps(nodeIds, visible, scope) {
+  const nodeById = state.get('nodeById');
+  const ids = [...(nodeIds || [])].filter(id => nodeById?.has(id));
+  if (!ids.length || (scope !== 'following' && scope !== 'previous')) return;
+
+  const allSteps  = state.get('steps') || [];
+  const activeIdx = allSteps.findIndex(s => s.id === state.get('activeStepId'));
+  if (activeIdx < 0) return;
+  const inRange = (idx) => scope === 'following' ? idx > activeIdx : idx < activeIdx;
+
+  const nextSteps = allSteps.map((s, idx) => {
+    if (!inRange(idx)) return s;
+    const snap   = s.snapshot || {};
+    const oldVis = snap.visibility || {};
+    // Skip steps already at the target for every id (keeps refcount equality).
+    if (ids.every(id => (oldVis[id] !== false) === visible)) return s;
+    const newViz = { ...oldVis };
+    for (const id of ids) newViz[id] = visible;
+    return { ...s, snapshot: { ...snap, visibility: newViz } };
+  });
+
+  const touched = nextSteps.filter((s, i) => s !== allSteps[i]);
+  if (!touched.length) return;
+  const touchedIds = touched.map(s => s.id);
+
+  const apply = (stepsArr) => {
+    state.setState({ steps: stepsArr });
+    state.markDirty();
+    _restageActiveVisibility(stepsArr);   // active step unaffected; keeps live state consistent across undo/redo
+    state.emit('steps:bulkApplied', { stepIds: touchedIds });
+  };
+  apply(nextSteps);
+
+  undoManager.push(
+    `${visible ? 'Show' : 'Hide'} ${ids.length} node(s) on ${touched.length} ${scope} step(s)`,
+    () => apply(allSteps),
+    () => apply(nextSteps),
+  );
+}
+
+/**
  * Given a current visibility map and a set of ids being SHOWN, return
  * the minimal {id: bool} delta that:
  *   1. Sets each target id visible.
