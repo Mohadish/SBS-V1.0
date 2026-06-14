@@ -1821,6 +1821,20 @@ gl_FragColor.a = 1.0;
 
     const color = state.get('selectionOutlineColor') ?? '#00ffff';
 
+    // TEMP DIAGNOSTIC (V0.2.22.106) — list every mesh this selection highlights,
+    // with geometry type + world position. A stray PlaneGeometry entry is the
+    // "square" overlay; its id/name/position pinpoints where it comes from.
+    try {
+      const THREE = window.THREE;
+      console.log(`[sel-diag] highlight set size=${selected.size}:`);
+      for (const id of selected) {
+        const m = this.meshById.get(id);
+        if (!m) { console.log(`  id=${id} → (no mesh in meshById)`); continue; }
+        const wp = new THREE.Vector3(); m.getWorldPosition(wp);
+        console.log(`  id=${id} → "${m.name||m.type}" geo=${m.geometry?.type} @(${wp.x.toFixed(1)},${wp.y.toFixed(1)},${wp.z.toFixed(1)}) ud=${JSON.stringify(Object.keys(m.userData||{}))}`);
+      }
+    } catch (e) { console.log('[sel-diag] err', e); }
+
     // ── Fix A (V0.1.66): diff-based update ─────────────────────────────
     // Previously this iterated EVERY registered mesh in the scene on
     // every selection change — O(total meshes) per click. With bake-and
