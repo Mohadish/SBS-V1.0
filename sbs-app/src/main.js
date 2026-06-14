@@ -615,20 +615,25 @@ document.body.appendChild(_marquee);
 let _dragStartX = 0, _dragStartY = 0;
 let _isDragging = false;
 
-// V0.2.14/15: live cursor glyph during box-select.
-//   Mode glyph (left):  ⿻ intersect / clipping  (default)
-//                       ⿴ fully enclosed         (Ctrl/⌘ held)
-//   Op badge   (right): + green   (Shift held → ADD)
-//                       − red     (Alt held   → REMOVE; wins over Shift)
-//                       none      (plain → REPLACE)
-// Updates LIVE as any modifier is pressed/released mid-drag.
-function _marqueeCursor(windowMode, op) {
-  // Box icon: dashed = "clipping" (touch) mode, solid = "window" (fully
-  // enclosed, Ctrl/⌘). Drawn with pure vector shapes — NO font glyphs — so it
-  // renders identically on every OS. (The old ⿻/⿴ ideographs failed to draw on
-  // Windows, leaving just the crosshair fallback — i.e. "the icons are gone".)
+// V0.2.22.121: live box-select mode/op badge. Implemented as a DOM element that
+// FOLLOWS the cursor — NOT the CSS `cursor` property. Browsers freeze the CSS
+// cursor while a mouse button is held, so the old approach only showed the icon
+// AFTER release. A positioned <div> updates live on every pointermove + modifier
+// keydown/keyup.
+//   Box:  dashed = clipping/touch (default) · solid = window/Ctrl (fully enclosed)
+//   Op:   green + = ADD (Shift) · red − = REMOVE (Alt; wins over Shift) · none = REPLACE
+const _marqueeIcon = document.createElement('div');
+_marqueeIcon.id = 'marquee-icon';
+_marqueeIcon.style.cssText = [
+  'position:fixed', 'pointer-events:none', 'display:none', 'z-index:1000',
+  'filter:drop-shadow(0 1px 2px rgba(0,0,0,.6))',
+].join(';');
+document.body.appendChild(_marqueeIcon);
+
+function _marqueeIconSVG(windowMode, op) {
+  // Pure vector shapes — no font glyphs — so it renders identically on every OS.
   const dash = windowMode ? '' : 'stroke-dasharray="2.5 2"';
-  const box  = `<rect x="2" y="8" width="15" height="12" rx="1.5" fill="rgba(0,190,255,0.16)" stroke="black" stroke-width="3" ${dash}/>`
+  const box  = `<rect x="2" y="8" width="15" height="12" rx="1.5" fill="rgba(0,190,255,0.18)" stroke="black" stroke-width="3" ${dash}/>`
              + `<rect x="2" y="8" width="15" height="12" rx="1.5" fill="none" stroke="white" stroke-width="1.6" ${dash}/>`;
   let badge = '';
   if (op) {
@@ -638,32 +643,42 @@ function _marqueeCursor(windowMode, op) {
           + `<line x1="${cx - 2.6}" y1="${cy}" x2="${cx + 2.6}" y2="${cy}" stroke="white" stroke-width="1.8" stroke-linecap="round"/>`;
     if (op === '+') badge += `<line x1="${cx}" y1="${cy - 2.6}" x2="${cx}" y2="${cy + 2.6}" stroke="white" stroke-width="1.8" stroke-linecap="round"/>`;
   }
-  const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="34" height="24">${box}${badge}</svg>`;
-  return `url("data:image/svg+xml;utf8,${encodeURIComponent(svg)}") 9 14, crosshair`;
+  return `<svg xmlns="http://www.w3.org/2000/svg" width="34" height="24" style="display:block">${box}${badge}</svg>`;
 }
+
 let _savedCanvasCursor = '';
 let _marqueeKeyHandler = null;
+let _marqueeLastX = 0, _marqueeLastY = 0;
+
+function _positionMarqueeIcon(x, y) {
+  _marqueeLastX = x; _marqueeLastY = y;
+  _marqueeIcon.style.left = (x + 16) + 'px';
+  _marqueeIcon.style.top  = (y + 10) + 'px';
+}
 
 function _setMarqueeCursor(ctrl, shift, alt) {
-  if (!canvas) return;
   const op = alt ? '−' : (shift ? '+' : null);   // Alt wins over Shift (matches box-select)
-  canvas.style.cursor = _marqueeCursor(ctrl, op);
+  _marqueeIcon.innerHTML = _marqueeIconSVG(ctrl, op);
+  _marqueeIcon.style.display = 'block';
 }
+
 function _beginMarqueeCursor(e) {
-  if (!canvas) return;
-  _savedCanvasCursor = canvas.style.cursor || '';
+  if (canvas) { _savedCanvasCursor = canvas.style.cursor || ''; canvas.style.cursor = 'crosshair'; }
+  _positionMarqueeIcon(e.clientX, e.clientY);
   _setMarqueeCursor(!!(e.ctrlKey || e.metaKey), !!e.shiftKey, !!e.altKey);
-  // Track Ctrl/⌘/Shift/Alt press + release WHILE dragging so the glyph
-  // swaps even without mouse motion.
-  _marqueeKeyHandler = (ev) => _setMarqueeCursor(
-    !!(ev.ctrlKey || ev.metaKey), !!ev.shiftKey, !!ev.altKey,
-  );
+  // Update the badge when modifiers change mid-drag, even without mouse motion.
+  _marqueeKeyHandler = (ev) => {
+    _setMarqueeCursor(!!(ev.ctrlKey || ev.metaKey), !!ev.shiftKey, !!ev.altKey);
+    _positionMarqueeIcon(_marqueeLastX, _marqueeLastY);
+  };
   document.addEventListener('keydown', _marqueeKeyHandler, true);
   document.addEventListener('keyup',   _marqueeKeyHandler, true);
 }
+
 function _endMarqueeCursor() {
   if (canvas) canvas.style.cursor = _savedCanvasCursor;
   _savedCanvasCursor = '';
+  _marqueeIcon.style.display = 'none';
   if (_marqueeKeyHandler) {
     document.removeEventListener('keydown', _marqueeKeyHandler, true);
     document.removeEventListener('keyup',   _marqueeKeyHandler, true);
@@ -1245,6 +1260,7 @@ window.addEventListener('pointermove', e => {
   }
   if (_isDragging) {
     _showMarquee(_dragStartX, _dragStartY, e.clientX, e.clientY);
+    _positionMarqueeIcon(e.clientX, e.clientY);
     _setMarqueeCursor(!!(e.ctrlKey || e.metaKey), !!e.shiftKey, !!e.altKey);
   }
 }, { passive: true });
