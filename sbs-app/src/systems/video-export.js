@@ -230,6 +230,7 @@ async function _exportMp4({ fps = DEFAULT_FPS, bitrate = DEFAULT_BITRATE,
                             includeNarration = true,
                             offline = false,
                             onProgress, signal } = {}) {
+  const _wallStartMs = performance.now();   // for the end-of-export summary
   const canvas = sceneCore.renderer?.domElement;
   if (!canvas) throw new Error('No 3D canvas available to export.');
 
@@ -732,6 +733,21 @@ async function _exportMp4({ fps = DEFAULT_FPS, bitrate = DEFAULT_BITRATE,
   console.log('[export] finalize muxer…');
   muxer.finalize();
   console.log('[export] done.');
+
+  // Proof-of-mode summary. If offline truly engaged, render wall-time will be
+  // FAR larger than the output duration on a heavy model (each of the
+  // fps×seconds frames was rendered serially). If render ≈ output, it ran
+  // realtime and the output is the machine's framerate stretched across the
+  // timeline (the stutter the user reported).
+  const _renderS  = (performance.now() - _wallStartMs) / 1000;
+  const _outS     = totalEncodedMs / 1000;
+  const _nFrames  = Math.round(nextFrameUs / frameIntervalUs);
+  const _ratio    = _outS > 0 ? (_renderS / _outS) : 0;
+  console.log(
+    `[export] SUMMARY · mode=${offline ? 'OFFLINE (frame-by-frame)' : 'REALTIME'} · ` +
+    `${_nFrames} frames @ ${fps}fps · output ${_outS.toFixed(1)}s · ` +
+    `render took ${_renderS.toFixed(1)}s (${_ratio.toFixed(1)}× the video length)`,
+  );
 
   const blob = new Blob([muxer.target.buffer], { type: 'video/mp4' });
   return {

@@ -2163,6 +2163,7 @@ async function _onExportVideo() {
       format:      exp.outputFormat || 'mp4',
       fps:         Number(exp.fps) || 30,
       stepHoldMs:  Number(exp.stepHoldMs) || 400,
+      offline:     exp.offlineRender !== false,   // was missing → always ran realtime
       signal:      _exportingCtrl.signal,
       onProgress:  ({ current, total, stepName }) => {
         setStatus(`Exporting ${current}/${total}: ${stepName}…`, 'info', 0);
@@ -2213,7 +2214,7 @@ async function _onExportSbsProc() {
       // regardless of host throttling. Mirror the regular video-export
       // setting so the .sbsproc button respects the same Export-tab
       // checkbox the user already configured.
-      offline:    !!exp.offlineRender,
+      offline:    exp.offlineRender !== false,   // default ON (match Export tab)
       signal:     _exportingCtrl.signal,
       onProgress: ({ current, total, stepName }) => {
         setStatus(`Exporting ${current}/${total}: ${stepName}…`, 'info', 0);
