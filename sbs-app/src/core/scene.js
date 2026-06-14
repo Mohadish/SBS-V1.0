@@ -347,8 +347,9 @@ export class SceneCore extends Emitter {
         if (mn < 1.5 && mx > 0.5 && mx < 300) {
           this._sqSeen.add(o.uuid);
           const col = o.material && o.material.color ? '#' + o.material.color.getHexString() : '?';
+          let evis = true; for (let pp = o; pp; pp = pp.parent) { if (pp.visible === false) { evis = false; break; } }
           const chain = []; let p = o; while (p) { chain.push(p.name || p.type); p = p.parent; }
-          console.log(`[sq-diag:${label}] ${o.type} geo=${o.geometry.type} verts=${o.geometry.attributes?.position?.count} size=${sz.x.toFixed(1)}x${sz.y.toFixed(1)}x${sz.z.toFixed(1)} ctr=(${ctr.x.toFixed(1)},${ctr.y.toFixed(1)},${ctr.z.toFixed(1)}) col=${col} vis=${o.visible} chain=${chain.join(' < ')}`);
+          console.log(`[sq-diag:${label}] ${o.type} geo=${o.geometry.type} verts=${o.geometry.attributes?.position?.count} size=${sz.x.toFixed(1)}x${sz.y.toFixed(1)}x${sz.z.toFixed(1)} ctr=(${ctr.x.toFixed(1)},${ctr.y.toFixed(1)},${ctr.z.toFixed(1)}) col=${col} ownVis=${o.visible} effVis=${evis} chain=${chain.join(' < ')}`);
         }
       }); };
       hunt(this.scene, 'main');
