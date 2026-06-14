@@ -36,6 +36,7 @@ import { sceneCore }   from '../core/scene.js';
 import * as clock      from '../core/clock.js';
 import { generateScrewParts } from './hardware-generator.js';
 import { resolveInsertAnim }  from './hardware-defaults.js';
+import { computeSafeFrameRect } from '../core/safe-frame.js';
 
 // Staged actors, keyed by node id:
 //   { group, mergedMesh, meshes, offsets,
@@ -701,6 +702,85 @@ function _positionTags() {
       _anchorPieceTag(it.div, it.piece, it.localY, it.outerRLocal, rect, cam, camRight);
     }
   }
+}
+
+/**
+ * Bake the currently-visible insert tags onto a {width × height} 2D canvas for
+ * video export. The live tags are screen-space DOM <div>s (not in the WebGL
+ * canvas), so the canvas-capture export misses them — same problem the balloon
+ * notes had. This re-projects each visible tag at OUTPUT resolution (world →
+ * NDC → output px, font scaled by the safe-frame scale) and right-anchors the
+ * label 10px left of the rim, vertically centred — mirroring _anchorPieceTag /
+ * the .sbs-insert-tag div styling. Returns null when nothing is showing so the
+ * compositor can skip the layer. Call AFTER renderFrame(), BEFORE encode.
+ */
+export function rasterizeTagsLayer({ width, height }) {
+  if (!Number.isFinite(width) || !Number.isFinite(height) || width < 1 || height < 1) return null;
+  const T = window.THREE;
+  const cam = sceneCore?.camera;
+  if (!T || !cam || !_staged.size) return null;
+
+  let anyVisible = false;
+  for (const s of _staged.values()) {
+    if (s.tagShown && s.tagItems?.some(it => it.div && it.piece?.visible && it.div.textContent)) {
+      anyVisible = true; break;
+    }
+  }
+  if (!anyVisible) return null;
+
+  // Refresh matrices — export composites BEFORE the next render() (same as notes).
+  cam.updateMatrixWorld(true);
+  cam.matrixWorldInverse.copy(cam.matrixWorld).invert();
+  sceneCore.scene.updateMatrixWorld(true);
+
+  const out = (typeof OffscreenCanvas !== 'undefined')
+    ? new OffscreenCanvas(width, height)
+    : Object.assign(document.createElement('canvas'), { width, height });
+  const ctx = out.getContext('2d', { alpha: true });
+  if (!ctx) return null;
+
+  const scale    = computeSafeFrameRect({ width, height }).scale || 1;
+  const camRight = new T.Vector3();
+  cam.matrixWorld.extractBasis(camRight, new T.Vector3(), new T.Vector3());
+  const wp = new T.Vector3(), wscale = new T.Vector3(), rimW = new T.Vector3(), ndc = new T.Vector3();
+
+  ctx.textAlign = 'right';
+  ctx.textBaseline = 'middle';
+  let drew = false;
+
+  for (const s of _staged.values()) {
+    if (!s.tagShown || !s.tagItems) continue;
+    for (const it of s.tagItems) {
+      const div = it.div;
+      if (!div || !it.piece?.visible) continue;
+      const text = div.textContent || '';
+      if (!text) continue;
+
+      wp.set(0, it.localY || 0, 0); it.piece.localToWorld(wp);
+      ndc.copy(wp).project(cam);
+      if (ndc.z > 1 || ndc.z < -1) continue;
+      const cx = ( ndc.x + 1) * width  * 0.5;
+      const cy = (-ndc.y + 1) * height * 0.5;
+
+      it.piece.getWorldScale(wscale);
+      rimW.copy(wp).addScaledVector(camRight, (it.outerRLocal || 0) * (wscale.x || 1));
+      const rimX  = (rimW.project(cam).x + 1) * width * 0.5;
+      const rimPx = Math.abs(rimX - cx);
+
+      const fontPx = (parseFloat(div.style.fontSize) || 36) * scale;
+      ctx.font = `600 ${fontPx}px system-ui, -apple-system, "Segoe UI", sans-serif`;
+      // Match the div's text-shadow: 0 1px 3px rgba(0,0,0,.9).
+      ctx.shadowColor   = 'rgba(0,0,0,0.9)';
+      ctx.shadowBlur    = 3 * scale;
+      ctx.shadowOffsetX = 0;
+      ctx.shadowOffsetY = 1 * scale;
+      ctx.fillStyle = div.style.color || '#ffffff';
+      ctx.fillText(text, cx - rimPx - 10 * scale, cy);   // 10px left of rim (matches live)
+      drew = true;
+    }
+  }
+  ctx.shadowColor = 'transparent';
+  return drew ? out : null;
 }
 
 /**

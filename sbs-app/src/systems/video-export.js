@@ -25,6 +25,7 @@ import { sceneCore } from '../core/scene.js';
 import { rasterizeOverlay, waitForOverlayStable }     from './overlay.js';
 import { rasterizeHeaderLayer, waitForHeaderStable }  from './header.js';
 import { rasterizeNotesLayer }                        from './notes-render.js';
+import { rasterizeTagsLayer }                         from './hardware-insert-anim.js';
 import { computeSafeFrameRect }                       from '../core/safe-frame.js';
 import { decodeToAudioBuffer, resampleToMonoFloat32, mixTrackToFloat32 } from './audio-bridge.js';
 import { synthesize as ttsSynthesize } from './tts.js';
@@ -579,6 +580,12 @@ async function _exportMp4({ fps = DEFAULT_FPS, bitrate = DEFAULT_BITRATE,
     //     screen items the user added.
     const nl = rasterizeNotesLayer({ width, height });
     if (nl) compositeCtx.drawImage(nl, 0, 0, width, height);
+    // 2c. Bake hardware insert spec/washer tags. Like the notes, these are
+    //     live screen-space DOM <div>s the canvas capture can't see, so they
+    //     were missing from the exported video. Drawn above notes (matches the
+    //     live z-50), below the header.
+    const tg = rasterizeTagsLayer({ width, height });
+    if (tg) compositeCtx.drawImage(tg, 0, 0, width, height);
     // 3. Bake the project-level header layer above the overlay so
     //    headers always sit on top — dynamic kinds (stepName /
     //    stepNumber / chapter*) resolve their text against whichever
