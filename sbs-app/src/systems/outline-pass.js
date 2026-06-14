@@ -42,7 +42,6 @@ let _maskOverrideMat = null;
 let _fsScene         = null;
 let _fsCamera        = null;
 let _fsQuad          = null;
-let _pdiag           = 0;       // V0.2.22.115 — locate-the-2x2 probe
 let _edgeMat         = null;
 let _outlinedMeshes  = new Set();   // Three.js Object3D references (selection)
 let _previewMeshes   = new Set();   // ray-select cycle preview (V0.2.22.21.4)
@@ -174,26 +173,6 @@ export function renderOutlinePass(scene, camera) {
   const hasSelection = _outlinedMeshes && _outlinedMeshes.size > 0;
   const hasPreview   = _previewMeshes  && _previewMeshes.size  > 0;
   if (!hasSelection && !hasPreview) return;
-
-  // TEMP DIAGNOSTIC (V0.2.22.115) — runs only while selected. Locate the 2x2.
-  if (_pdiag < 3) {
-    _pdiag++;
-    const THREE = window.THREE;
-    const isAnc = (root, n) => { for (let p = n; p; p = p.parent) if (p === root) return true; return false; };
-    const fchain = []; for (let p = _fsQuad; p; p = p.parent) fchain.push(p.name || p.type);
-    const fwp = new THREE.Vector3(); _fsQuad?.getWorldPosition(fwp);
-    console.log(`[pdiag] _fsQuad layer=${_fsQuad?.layers.mask} parents=[${fchain.join(' < ')}] worldPos=(${fwp.x.toFixed(1)},${fwp.y.toFixed(1)},${fwp.z.toFixed(1)}) inMainScene=${isAnc(scene, _fsQuad)}`);
-    console.log(`[pdiag] mainCam layer=${camera?.layers.mask} _fsCam layer=${_fsCamera?.layers.mask} _fsScene.children=${_fsScene?.children.length}`);
-    const box = new THREE.Box3();
-    scene.traverse(o => {
-      if (!(o.isMesh && o.geometry && o.geometry.type === 'PlaneGeometry')) return;
-      box.setFromObject(o); if (box.isEmpty()) return;
-      const s = box.getSize(new THREE.Vector3()), c = box.getCenter(new THREE.Vector3());
-      let evis = true; for (let p = o; p; p = p.parent) if (p.visible === false) { evis = false; break; }
-      const ch = []; for (let p = o; p; p = p.parent) ch.push(p.name || p.type);
-      console.log(`[pdiag:mainPlane] size=${s.x.toFixed(1)}x${s.y.toFixed(1)}x${s.z.toFixed(1)} ctr=(${c.x.toFixed(1)},${c.y.toFixed(1)},${c.z.toFixed(1)}) evis=${evis} layer=${o.layers.mask} chain=[${ch.join(' < ')}]`);
-    });
-  }
 
   if (hasSelection) {
     _runOutlinePass(scene, camera, _outlinedMeshes,
