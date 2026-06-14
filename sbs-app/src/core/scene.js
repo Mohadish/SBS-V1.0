@@ -329,29 +329,6 @@ export class SceneCore extends Emitter {
       this.renderer.clearDepth();
       this.renderer.render(this.overlayScene, this.camera);
       this.renderer.autoClear = true;
-
-      // TEMP DIAGNOSTIC (V0.2.22.99) — one-shot scan of BOTH scenes using WORLD
-      // bounding boxes (catches small-geometry meshes scaled up to ~2). Logs any
-      // flat-ish mesh near the origin while a selection is active.
-      if (!this._diag2x2) {
-        this._diag2x2 = true;
-        const T = window.THREE;
-        const box = new T.Box3();
-        console.log('[scene-diag] overlay children =', this.overlayScene.children.length);
-        const scan = (root, label) => { if (!root) return; root.traverse(o => {
-          if (!o.isMesh || !o.geometry) return;
-          box.setFromObject(o);
-          if (box.isEmpty()) return;
-          const sx = box.max.x - box.min.x, sy = box.max.y - box.min.y, sz = box.max.z - box.min.z;
-          const cx = (box.max.x + box.min.x) / 2, cy = (box.max.y + box.min.y) / 2, cz = (box.max.z + box.min.z) / 2;
-          if (sz < 1.5 && sx < 6 && sy < 6 && Math.hypot(cx, cy, cz) < 4) {
-            const chain = []; let p = o; while (p) { chain.push(p.name || p.type); p = p.parent; }
-            console.log(`[scene-diag:${label}] flat "${o.name || o.uuid}" world=${sx.toFixed(2)}x${sy.toFixed(2)}x${sz.toFixed(2)} center=(${cx.toFixed(1)},${cy.toFixed(1)},${cz.toFixed(1)}) mat=${o.material?.type} vis=${o.visible} ${chain.join(' < ')}`);
-          }
-        }); };
-        scan(this.scene, 'main');
-        scan(this.overlayScene, 'overlay');
-      }
     }
   }
 

@@ -42,7 +42,6 @@ let _maskOverrideMat = null;
 let _fsScene         = null;
 let _fsCamera        = null;
 let _fsQuad          = null;
-let _diagDone        = 0;       // V0.2.22.103 — mask-content probe (first 4 passes)
 let _edgeMat         = null;
 let _outlinedMeshes  = new Set();   // Three.js Object3D references (selection)
 let _previewMeshes   = new Set();   // ray-select cycle preview (V0.2.22.21.4)
@@ -65,12 +64,17 @@ const _EDGE_FRAGMENT = `
   varying vec2      vUv;
 
   void main() {
-    // TEMP DIAGNOSTIC (V0.2.22.102): show the RAW MASK. White (in-mask) areas
-    // paint cyan; everything else is transparent. Reveals exactly which shapes
-    // are being rendered into the silhouette mask.
-    float m = texture2D(uMask, vUv).r;
-    if (m < 0.5) discard;
-    gl_FragColor = vec4(0.0, 1.0, 1.0, 0.85);
+    vec2 t = (uThickness / uResolution);
+    float c = texture2D(uMask, vUv).r;
+    float n = texture2D(uMask, vUv + vec2(0.0,  t.y)).r;
+    float s = texture2D(uMask, vUv + vec2(0.0, -t.y)).r;
+    float e = texture2D(uMask, vUv + vec2( t.x, 0.0)).r;
+    float w = texture2D(uMask, vUv + vec2(-t.x, 0.0)).r;
+    // Edge wherever the center differs from any neighbour.
+    float edge = step(0.5,
+      abs(c - n) + abs(c - s) + abs(c - e) + abs(c - w));
+    if (edge < 0.5) discard;
+    gl_FragColor = vec4(uColor, 1.0);
   }
 `;
 
@@ -186,21 +190,6 @@ function _runOutlinePass(scene, camera, meshSet, hexColor) {
   const THREE = window.THREE;
 
   // TEMP DIAGNOSTIC (V0.2.22.97) — one-shot hunt for the stray 2×2 rectangle.
-  if (_diagDone < 4) {
-    _diagDone++;
-    const chain = (o) => { const a = []; let p = o; while (p) { a.push(`${p.name || p.type}${p.isMesh ? '(mesh)' : p.isLine ? '(line)' : ''}`); p = p.parent; } return a.join(' < '); };
-    const box = new THREE.Box3();
-    console.log(`[mask-diag] pass#${_diagDone} color=${hexColor} meshSet.size=${meshSet.size} — meshes that RENDER into this mask:`);
-    scene.traverse(o => {
-      if (!o.isMesh || !o.geometry) return;
-      if (!(o.visible && meshSet.has(o))) return;   // exactly what paints the mask
-      box.setFromObject(o);
-      const sx = box.max.x-box.min.x, sy = box.max.y-box.min.y, sz = box.max.z-box.min.z;
-      const cx = (box.max.x+box.min.x)/2, cy = (box.max.y+box.min.y)/2, cz = (box.max.z+box.min.z)/2;
-      console.log(`  renders "${o.name||o.uuid}" world=${sx.toFixed(2)}x${sy.toFixed(2)}x${sz.toFixed(2)} c=(${cx.toFixed(1)},${cy.toFixed(1)},${cz.toFixed(1)}) ${chain(o)}`);
-    });
-  }
-
   // Temporarily hide non-set meshes (preserving original hidden state).
   // Override material flattens everything to flat white in the mask.
   const visBackup = [];
