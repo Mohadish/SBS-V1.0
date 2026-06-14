@@ -620,8 +620,8 @@ let _isDragging = false;
 // cursor while a mouse button is held, so the old approach only showed the icon
 // AFTER release. A positioned <div> updates live on every pointermove + modifier
 // keydown/keyup.
-//   Box:  dashed = clipping/touch (default) · solid = window/Ctrl (fully enclosed)
-//   Op:   green + = ADD (Shift) · red − = REMOVE (Alt; wins over Shift) · none = REPLACE
+//   Mode glyph (left):  ⿻ intersect / clipping (default) · ⿴ fully enclosed (Ctrl/⌘)
+//   Op badge   (right):  + green = ADD (Shift) · − red = REMOVE (Alt; wins over Shift)
 const _marqueeIcon = document.createElement('div');
 _marqueeIcon.id = 'marquee-icon';
 _marqueeIcon.style.cssText = [
@@ -631,19 +631,19 @@ _marqueeIcon.style.cssText = [
 document.body.appendChild(_marqueeIcon);
 
 function _marqueeIconSVG(windowMode, op) {
-  // Pure vector shapes — no font glyphs — so it renders identically on every OS.
-  const dash = windowMode ? '' : 'stroke-dasharray="2.5 2"';
-  const box  = `<rect x="2" y="8" width="15" height="12" rx="1.5" fill="rgba(0,190,255,0.18)" stroke="black" stroke-width="3" ${dash}/>`
-             + `<rect x="2" y="8" width="15" height="12" rx="1.5" fill="none" stroke="white" stroke-width="1.6" ${dash}/>`;
-  let badge = '';
-  if (op) {
-    const cx = 27, cy = 8, r = 5.5;
-    const color = op === '+' ? '#22c55e' : '#ef4444';
-    badge = `<circle cx="${cx}" cy="${cy}" r="${r}" fill="${color}" stroke="white" stroke-width="1.3"/>`
-          + `<line x1="${cx - 2.6}" y1="${cy}" x2="${cx + 2.6}" y2="${cy}" stroke="white" stroke-width="1.8" stroke-linecap="round"/>`;
-    if (op === '+') badge += `<line x1="${cx}" y1="${cy - 2.6}" x2="${cx}" y2="${cy + 2.6}" stroke="white" stroke-width="1.8" stroke-linecap="round"/>`;
-  }
-  return `<svg xmlns="http://www.w3.org/2000/svg" width="34" height="24" style="display:block">${box}${badge}</svg>`;
+  // Original clearer glyphs (⿻ clipping / ⿴ fully-enclosed). These render fine in
+  // a DOM <text> element (the real bug was the CSS cursor freezing mid-drag, not
+  // glyph support — now fixed by drawing into this DOM element instead).
+  const glyph = windowMode ? '⿴' : '⿻';
+  const main  = `<text x="11" y="20" font-size="18" text-anchor="middle"`
+    + ` fill="white" stroke="black" stroke-width="0.6"`
+    + ` font-family="sans-serif" paint-order="stroke">${glyph}</text>`;
+  const opEl = op
+    ? `<text x="25" y="13" font-size="14" text-anchor="middle"`
+      + ` fill="${op === '+' ? '#4ade80' : '#f87171'}" stroke="black" stroke-width="0.8"`
+      + ` font-family="sans-serif" font-weight="bold" paint-order="stroke">${op}</text>`
+    : '';
+  return `<svg xmlns="http://www.w3.org/2000/svg" width="32" height="26" style="display:block">${main}${opEl}</svg>`;
 }
 
 let _savedCanvasCursor = '';
