@@ -1821,31 +1821,6 @@ gl_FragColor.a = 1.0;
 
     const color = state.get('selectionOutlineColor') ?? '#00ffff';
 
-    // TEMP DIAGNOSTIC (V0.2.22.106) — list every mesh this selection highlights,
-    // with geometry type + world position. A stray PlaneGeometry entry is the
-    // "square" overlay; its id/name/position pinpoints where it comes from.
-    try {
-      const THREE = window.THREE;
-      console.log(`[sel-diag] highlight set size=${selected.size}:`);
-      for (const id of selected) {
-        const m = this.meshById.get(id);
-        if (!m) { console.log(`  id=${id} → (no mesh in meshById)`); continue; }
-        const wp = new THREE.Vector3(); m.getWorldPosition(wp);
-        console.log(`  id=${id} → "${m.name||m.type}" geo=${m.geometry?.type} @(${wp.x.toFixed(1)},${wp.y.toFixed(1)},${wp.z.toFixed(1)}) ud=${JSON.stringify(Object.keys(m.userData||{}))}`);
-        // Dump hull children — overlay (surface tint) + outline (EdgesGeometry).
-        for (const key of ['sbsSelectionOverlay', 'sbsSelectionOutline']) {
-          const ch = m.userData?.[key]; if (!ch) continue;
-          ch.geometry?.computeBoundingBox?.();
-          const cb = ch.geometry?.boundingBox;
-          const cwp = new THREE.Vector3(); ch.getWorldPosition(cwp);
-          const v = ch.geometry?.attributes?.position?.count;
-          const sz = cb ? `${(cb.max.x-cb.min.x).toFixed(1)}x${(cb.max.y-cb.min.y).toFixed(1)}x${(cb.max.z-cb.min.z).toFixed(1)}` : '?';
-          const ctr = cb ? `(${((cb.max.x+cb.min.x)/2).toFixed(1)},${((cb.max.y+cb.min.y)/2).toFixed(1)},${((cb.max.z+cb.min.z)/2).toFixed(1)})` : '?';
-          console.log(`    ${key}: geo=${ch.geometry?.type} verts=${v} bbox=${sz} bboxCtr=${ctr} worldPos=(${cwp.x.toFixed(1)},${cwp.y.toFixed(1)},${cwp.z.toFixed(1)})`);
-        }
-      }
-    } catch (e) { console.log('[sel-diag] err', e); }
-
     // ── Fix A (V0.1.66): diff-based update ─────────────────────────────
     // Previously this iterated EVERY registered mesh in the scene on
     // every selection change — O(total meshes) per click. With bake-and

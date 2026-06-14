@@ -329,30 +329,6 @@ export class SceneCore extends Emitter {
       this.renderer.clearDepth();
       this.renderer.render(this.overlayScene, this.camera);
       this.renderer.autoClear = true;
-
-      // TEMP DIAGNOSTIC (V0.2.22.109) — runs EVERY frame (deduped by uuid) and
-      // hunts the stray square: a FLAT (one axis ~0), MID-SIZED object —
-      // excludes the gizmo (~0.2), the grid (400) and the round sphere (not
-      // flat). Logs each unique match once, with parent chain.
-      {
-        if (!this._sqSeen) this._sqSeen = new Set();
-        const T = window.THREE;
-        const box = new T.Box3(), ctr = new T.Vector3(), sz = new T.Vector3();
-        const hunt = (root, label) => { if (!root) return; root.traverse(o => {
-          if (!(o.isMesh || o.isLine) || !o.geometry || this._sqSeen.has(o.uuid)) return;
-          box.setFromObject(o); if (box.isEmpty()) return;
-          box.getSize(sz); box.getCenter(ctr);
-          const mn = Math.min(sz.x, sz.y, sz.z), mx = Math.max(sz.x, sz.y, sz.z);
-          if (mn < 1.0 && mx > 1.0 && mx < 100) {
-            this._sqSeen.add(o.uuid);
-            const col = o.material && o.material.color ? '#' + o.material.color.getHexString() : '?';
-            const chain = []; let p = o; while (p) { chain.push(p.name || p.type); p = p.parent; }
-            console.log(`[sq-diag:${label}] ${o.type} geo=${o.geometry.type} verts=${o.geometry.attributes?.position?.count} size=${sz.x.toFixed(1)}x${sz.y.toFixed(1)}x${sz.z.toFixed(1)} ctr=(${ctr.x.toFixed(1)},${ctr.y.toFixed(1)},${ctr.z.toFixed(1)}) col=${col} vis=${o.visible} chain=${chain.join(' < ')}`);
-          }
-        }); };
-        hunt(this.scene, 'main');
-        hunt(this.overlayScene, 'overlay');
-      }
     }
   }
 
