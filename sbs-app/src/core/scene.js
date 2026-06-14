@@ -568,7 +568,10 @@ export class SceneCore extends Emitter {
     // setup. The mismatch shifted camera completion past the sleep
     // target, hanging Promise.all forever in offline export.
     const elapsed = nowMs - t.startMs;
-    const raw     = Math.min(elapsed / t.durationMs, 1);
+    // Clamp LOW to 0: a stale first-frame timestamp (heavy step setup) can make
+    // elapsed negative, and easeFn(negative) returns a positive alpha — the
+    // camera would jump forward one frame then pop back. Pin frame 0 to start.
+    const raw     = Math.max(0, Math.min(elapsed / t.durationMs, 1));
     const alpha   = t.easeFn(raw);
 
     // Interpolate position

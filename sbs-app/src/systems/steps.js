@@ -1297,7 +1297,7 @@ class StepManager {
       if (this._objAnimDiagFrame < 12) {
         const first = this._objectTransitions[0];
         if (first) {
-          const raw = Math.min((nowMs - first.startMs) / first.durationMs, 1);
+          const raw = Math.max(0, Math.min((nowMs - first.startMs) / first.durationMs, 1));
           // eslint-disable-next-line no-console
           console.log(`[anim] OBJ frame ${this._objAnimDiagFrame}: raw=${raw.toFixed(3)} count=${this._objectTransitions.length} t=${performance.now().toFixed(0)} startMs=${first.startMs.toFixed(0)}`);
         }
@@ -1333,7 +1333,13 @@ class StepManager {
 
     for (const tr of this._objectTransitions) {
       const elapsed = nowMs - tr.startMs;
-      const raw     = Math.min(elapsed / tr.durationMs, 1);
+      // Clamp LOW to 0: on heavy models the first rAF after the (blocking)
+      // step setup can carry a stale timestamp that is BEHIND startMs, making
+      // elapsed negative. easeFn(negative) returns a POSITIVE alpha (smoothstep
+      // of -0.2 ≈ +0.14), so the object would render ~14% into the move for one
+      // frame ("jump to a future frame") then pop back. Clamping pins frame 0
+      // to the exact FROM pose regardless of model size / timestamp lag.
+      const raw     = Math.max(0, Math.min(elapsed / tr.durationMs, 1));
       const alpha   = tr.easeFn(raw);
 
       const node = nodeById.get(tr.nodeId);

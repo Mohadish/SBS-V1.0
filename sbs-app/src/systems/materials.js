@@ -957,7 +957,7 @@ gl_FragColor.a = 1.0;
       const now             = clock.now();
       const outlineSettings = state.get('geometryOutline');
       for (const [nodeId, tr] of this._visTransitions) {
-        const raw   = Math.min((now - tr.startMs) / tr.durationMs, 1);
+        const raw   = Math.max(0, Math.min((now - tr.startMs) / tr.durationMs, 1));
         const alpha = tr.easeFn(raw);
         const t      = tr.from + (tr.to - tr.from) * alpha;
         // backOp uses alpha (0→1 progress) so it fades correctly for both hide and show.
@@ -1201,7 +1201,7 @@ gl_FragColor.a = 1.0;
     const tr = this._colorTransition;
     if (!tr) return;
 
-    const raw   = Math.min((nowMs - tr.startMs) / tr.durationMs, 1);
+    const raw   = Math.max(0, Math.min((nowMs - tr.startMs) / tr.durationMs, 1));
     const alpha = tr.easeFn(raw);
 
     for (const [nodeId, from] of tr.fromValues) {
@@ -1410,7 +1410,7 @@ gl_FragColor.a = 1.0;
     const done            = [];
 
     for (const [nodeId, tr] of this._visTransitions) {
-      const raw   = Math.min((nowMs - tr.startMs) / tr.durationMs, 1);
+      const raw   = Math.max(0, Math.min((nowMs - tr.startMs) / tr.durationMs, 1));
       const alpha = tr.easeFn(raw);
       const t     = tr.from + (tr.to - tr.from) * alpha;
 
