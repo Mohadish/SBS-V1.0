@@ -42,6 +42,7 @@ let _maskOverrideMat = null;
 let _fsScene         = null;
 let _fsCamera        = null;
 let _fsQuad          = null;
+let _diagN           = 0;       // V0.2.22.105 — mask-content probe (first passes)
 let _edgeMat         = null;
 let _outlinedMeshes  = new Set();   // Three.js Object3D references (selection)
 let _previewMeshes   = new Set();   // ray-select cycle preview (V0.2.22.21.4)
@@ -189,7 +190,6 @@ export function renderOutlinePass(scene, camera) {
 function _runOutlinePass(scene, camera, meshSet, hexColor) {
   const THREE = window.THREE;
 
-  // TEMP DIAGNOSTIC (V0.2.22.97) — one-shot hunt for the stray 2×2 rectangle.
   // Temporarily hide non-set meshes (preserving original hidden state).
   // Override material flattens everything to flat white in the mask.
   const visBackup = [];
@@ -209,6 +209,25 @@ function _runOutlinePass(scene, camera, meshSet, hexColor) {
   const prevTarget     = _renderer.getRenderTarget();
   const prevClearCol   = _renderer.getClearColor(new THREE.Color());
   const prevClearAlpha = _renderer.getClearAlpha();
+
+  // TEMP DIAGNOSTIC (V0.2.22.105) — list EVERYTHING that actually paints this
+  // mask (every renderable still visible after hiding), with world bbox. With
+  // the selected object moved off-origin, any stray entry at (0,0,0) is the leak.
+  if (_diagN < 6) {
+    _diagN++;
+    const box = new THREE.Box3();
+    const chain = (o) => { const a = []; let p = o; while (p) { a.push(p.name || p.type); p = p.parent; } return a.join(' < '); };
+    console.log(`[mask-diag] pass#${_diagN} color=${hexColor} meshSet.size=${meshSet.size} — renders into mask:`);
+    scene.traverse(o => {
+      if (!(o.visible && (o.isMesh || o.isLine || o.isPoints || o.isSprite))) return;
+      if (o.isMesh && !o.geometry) return;
+      box.setFromObject(o);
+      if (box.isEmpty()) { console.log(`  ${o.type} "${o.name||o.uuid}" (no bbox) ${chain(o)}`); return; }
+      const sx = box.max.x-box.min.x, sy = box.max.y-box.min.y, sz = box.max.z-box.min.z;
+      const cx = (box.max.x+box.min.x)/2, cy = (box.max.y+box.min.y)/2, cz = (box.max.z+box.min.z)/2;
+      console.log(`  ${o.type} "${o.name||o.uuid}" world=${sx.toFixed(2)}x${sy.toFixed(2)}x${sz.toFixed(2)} c=(${cx.toFixed(1)},${cy.toFixed(1)},${cz.toFixed(1)}) inSet=${meshSet.has(o)} ${chain(o)}`);
+    });
+  }
 
   _renderer.setRenderTarget(_maskTarget);
   _renderer.setClearColor(0x000000, 1);
