@@ -500,9 +500,15 @@ async function _exportMp4({ fps = DEFAULT_FPS, bitrate = DEFAULT_BITRATE,
   }
   const muxer = new Mp4Muxer(muxerCfg);
 
+  // Async encoder errors arrive on this callback OFF the await chain — throwing
+  // here just produces an unhandled rejection and the export keeps awaiting a
+  // dead encoder forever (queue never drains → backpressure loop spins → app
+  // freezes). Capture it instead; the frame pump checks it and aborts cleanly
+  // so the `finally` restores the render loop.
+  let _encoderError = null;
   const encoder = new VideoEncoder({
     output: (chunk, meta) => muxer.addVideoChunk(chunk, meta),
-    error:  (e) => { throw e; },
+    error:  (e) => { _encoderError = _encoderError || e; console.error('[export] video encoder error:', e?.message || e); },
   });
   encoder.configure({ codec: chosen.webCodec, width, height, bitrate, framerate: fps });
 
@@ -599,13 +605,19 @@ async function _exportMp4({ fps = DEFAULT_FPS, bitrate = DEFAULT_BITRATE,
     if (signal?.aborted) throw new DOMException('aborted', 'AbortError');
     const target = synthMs + Math.max(0, ms);
     while (synthMs + frameIntervalMs <= target) {
+      if (_encoderError) throw _encoderError;   // dead encoder → abort, don't spin
       synthMs += frameIntervalMs;
       sceneCore.fireSyntheticTick(synthMs, frameIntervalMs);
       sceneCore.renderFrame();
       _captureAndEncode();
       // Backpressure — let the encoder drain so we don't OOM with
-      // a multi-thousand-frame queue on long timelines.
+      // a multi-thousand-frame queue on long timelines. Watchdog: if the queue
+      // refuses to drain for ~30s (dead/stalled encoder), bail instead of
+      // hanging the app — the finally will restore the live render loop.
+      let _bpWaits = 0;
       while (encoder.encodeQueueSize > 16) {
+        if (_encoderError) throw _encoderError;
+        if (++_bpWaits > 6000) throw new Error('Export stalled: video encoder stopped draining (queue stuck for 30s). Try a lower fps or resolution.');
         await new Promise(resolve => setTimeout(resolve, 5));
       }
       // Yield to the event loop so progress callbacks fire, the UI

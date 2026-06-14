@@ -38,6 +38,7 @@ import {
   stageInsertActors, runInsertReposition, runInsertPause, runInsertAssemble,
   showInsertTags, showInsertTrajectory,
   finalizeInsertActors, clearPreInstall, findActorsForStep,
+  getStagedInsertTotalMs,
 } from './hardware-insert-anim.js'; // V0.2.22.57 — screw stage/reposition/assemble + tag/trajectory
 // V0.1.78 — narration overflow coordination. UI module exports the
 // query helpers; cross-layer import is OK here (actions.js + overlay.js
@@ -754,7 +755,12 @@ class StepManager {
       // for the longest phase ensures synthetic ticks drive the
       // transitions to completion in offline mode, and is a no-op in
       // realtime mode (rAF still drives ticks; sleep just waits).
-      const maxDur = Math.max(cameraDur, objDur);
+      // The insert runs reposition→pause→assemble SEQUENTIALLY (see insertSimP
+      // above), so its total can far exceed objDur. Offline export only fires
+      // ticks while _sleep runs, so the sleep must span the WHOLE insert or
+      // insertSimP never resolves and the export hangs (the bug the user hit).
+      const insertTotalDur = _stagedActorIds.size ? getStagedInsertTotalMs(objDur) : 0;
+      const maxDur = Math.max(cameraDur, objDur, insertTotalDur);
       await Promise.all([cameraP, objectP, cableSimP, overlaySimP, insertSimP, _sleep(maxDur)]);
     }
 
@@ -963,6 +969,11 @@ class StepManager {
     for (const phase of phases) {
       const { types, durationMs } = phase;
       const phasePromises = [];
+      // Sleep span for this phase. The insert handler extends it to cover the
+      // full reposition+pause+assemble chain, so offline export fires synthetic
+      // ticks for the whole insert (else insertSimP hangs — same bug as the
+      // simultaneous path).
+      let _sleepMs = durationMs;
 
       // H2: overlay phase — proper crossfade. Old content moves to a
       // ghost layer + fades out while the new step's content loads
@@ -1130,6 +1141,7 @@ class StepManager {
               .then(() => runInsertPause())
               .then(() => runInsertAssemble(durationMs, easeFn)),
           );
+          _sleepMs = Math.max(_sleepMs, getStagedInsertTotalMs(durationMs));
         }
       }
 
@@ -1139,7 +1151,7 @@ class StepManager {
       // if (types.includes('pause')) { /* dwell handled by await below */ }
 
       // Wait for this phase's duration (and any sub-promises that finish sooner)
-      await Promise.all([_sleep(durationMs), ...phasePromises]);
+      await Promise.all([_sleep(_sleepMs), ...phasePromises]);
 
       // Bail if a newer animation was started while we slept
       if (myGen !== undefined && this._animGeneration !== myGen) return false;

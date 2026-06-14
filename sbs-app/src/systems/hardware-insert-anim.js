@@ -521,6 +521,25 @@ export function runInsertAssemble(durationMs, easeFn) {
 }
 
 /**
+ * Total wall-clock the SIMULTANEOUS-mode insert sequence will occupy:
+ * reposition + pause + assemble (mirrors runInsertReposition / runInsertPause /
+ * runInsertAssemble durations). steps.js needs this so the offline export's
+ * synthetic-frame _sleep runs long enough to drive the clock-ticked insert
+ * phases to completion — otherwise insertSimP never resolves in offline mode
+ * (no rAF ticks after the sleep ends) and the export hangs. 0 when nothing is
+ * staged. Pass the assemble duration the caller will use (objDur).
+ */
+export function getStagedInsertTotalMs(assembleMs) {
+  if (!_staged.size) return 0;
+  const all       = [..._staged.values()];
+  const repoNeed  = all.filter(s => s.needsReposition);
+  const repo      = repoNeed.length  ? Math.max(1, ...repoNeed.map(s => s.repositionMs || 300)) : 0;
+  const pauseNeed = all.filter(s => s.pauseBefore && s.pauseBeforeMs > 0);
+  const pause     = pauseNeed.length ? Math.max(1, ...pauseNeed.map(s => s.pauseBeforeMs || 0)) : 0;
+  return repo + pause + Math.max(1, assembleMs);
+}
+
+/**
  * FINALIZE — dispose transient pieces, restore each merged mesh visible
  * at its final pose. Call once at transition end (both phased + simul
  * paths). Safe to call when nothing is staged.
