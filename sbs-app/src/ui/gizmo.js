@@ -336,21 +336,23 @@ class GizmoController {
     }
 
     // ── Plane handles (XZ, XY, YZ) ─────────────────────────────────────────
+    // V0.2.22.114: shrunk + tucked inward + lower opacity so they read as small
+    // plane-drag handles, not a big floating "rectangle" near the object.
     const planes = [
-      { axis: 'xz', color: AX.y, pos: [0.22, 0, 0.22],    rotX: -Math.PI / 2, rotY: 0 },
-      { axis: 'xy', color: AX.z, pos: [0.22, 0.22, 0],    rotX: 0,            rotY: 0 },
-      { axis: 'yz', color: AX.x, pos: [0, 0.22, 0.22],    rotX: 0,            rotY: Math.PI / 2 },
+      { axis: 'xz', color: AX.y, pos: [0.16, 0, 0.16],    rotX: -Math.PI / 2, rotY: 0 },
+      { axis: 'xy', color: AX.z, pos: [0.16, 0.16, 0],    rotX: 0,            rotY: 0 },
+      { axis: 'yz', color: AX.x, pos: [0, 0.16, 0.16],    rotX: 0,            rotY: Math.PI / 2 },
     ];
     for (const p of planes) {
-      const vGeo  = new T.PlaneGeometry(0.20, 0.20);
-      const vMat  = new T.MeshBasicMaterial({ color: p.color, side: T.DoubleSide, transparent: true, opacity: 0.65, depthTest: false });
+      const vGeo  = new T.PlaneGeometry(0.09, 0.09);
+      const vMat  = new T.MeshBasicMaterial({ color: p.color, side: T.DoubleSide, transparent: true, opacity: 0.45, depthTest: false });
       const vis   = new T.Mesh(vGeo, vMat);
       vis.position.set(...p.pos);
       vis.rotation.x = p.rotX;
       vis.rotation.y = p.rotY;
       this._group.add(vis);
 
-      const hGeo  = new T.PlaneGeometry(0.20, 0.20);
+      const hGeo  = new T.PlaneGeometry(0.13, 0.13);
       const hMat  = new T.MeshBasicMaterial({ visible: false, side: T.DoubleSide, depthTest: false });
       const hit   = new T.Mesh(hGeo, hMat);
       hit.position.set(...p.pos);
