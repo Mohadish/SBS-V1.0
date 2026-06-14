@@ -79,7 +79,11 @@
         "from": "native/bin",
         "to": "native/bin",
         "filter": [
-          "**/*"
+          "**/*",
+          "!**/*.sbsobj",
+          "!**/*.sbsmesh",
+          "!**/*.{step,stp,STEP,STP,iges,igs,IGES,IGS}",
+          "!**/PLACEHOLDER.txt"
         ]
       }
     ]
