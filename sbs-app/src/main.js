@@ -622,26 +622,32 @@ let _isDragging = false;
 //                       − red     (Alt held   → REMOVE; wins over Shift)
 //                       none      (plain → REPLACE)
 // Updates LIVE as any modifier is pressed/released mid-drag.
-function _marqueeCursor(glyph, op) {
-  const main = `<text x="11" y="20" font-size="18" text-anchor="middle"`
-    + ` fill="white" stroke="black" stroke-width="0.6"`
-    + ` font-family="sans-serif" paint-order="stroke">${glyph}</text>`;
-  const opEl = op
-    ? `<text x="25" y="13" font-size="14" text-anchor="middle"`
-      + ` fill="${op === '+' ? '#4ade80' : '#f87171'}" stroke="black" stroke-width="0.8"`
-      + ` font-family="sans-serif" font-weight="bold" paint-order="stroke">${op}</text>`
-    : '';
-  const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="32" height="26">${main}${opEl}</svg>`;
-  return `url("data:image/svg+xml;utf8,${encodeURIComponent(svg)}") 11 13, crosshair`;
+function _marqueeCursor(windowMode, op) {
+  // Box icon: dashed = "clipping" (touch) mode, solid = "window" (fully
+  // enclosed, Ctrl/⌘). Drawn with pure vector shapes — NO font glyphs — so it
+  // renders identically on every OS. (The old ⿻/⿴ ideographs failed to draw on
+  // Windows, leaving just the crosshair fallback — i.e. "the icons are gone".)
+  const dash = windowMode ? '' : 'stroke-dasharray="2.5 2"';
+  const box  = `<rect x="2" y="8" width="15" height="12" rx="1.5" fill="rgba(0,190,255,0.16)" stroke="black" stroke-width="3" ${dash}/>`
+             + `<rect x="2" y="8" width="15" height="12" rx="1.5" fill="none" stroke="white" stroke-width="1.6" ${dash}/>`;
+  let badge = '';
+  if (op) {
+    const cx = 27, cy = 8, r = 5.5;
+    const color = op === '+' ? '#22c55e' : '#ef4444';
+    badge = `<circle cx="${cx}" cy="${cy}" r="${r}" fill="${color}" stroke="white" stroke-width="1.3"/>`
+          + `<line x1="${cx - 2.6}" y1="${cy}" x2="${cx + 2.6}" y2="${cy}" stroke="white" stroke-width="1.8" stroke-linecap="round"/>`;
+    if (op === '+') badge += `<line x1="${cx}" y1="${cy - 2.6}" x2="${cx}" y2="${cy + 2.6}" stroke="white" stroke-width="1.8" stroke-linecap="round"/>`;
+  }
+  const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="34" height="24">${box}${badge}</svg>`;
+  return `url("data:image/svg+xml;utf8,${encodeURIComponent(svg)}") 9 14, crosshair`;
 }
 let _savedCanvasCursor = '';
 let _marqueeKeyHandler = null;
 
 function _setMarqueeCursor(ctrl, shift, alt) {
   if (!canvas) return;
-  const glyph = ctrl ? '⿴' : '⿻';
-  const op    = alt ? '−' : (shift ? '+' : null);   // Alt wins over Shift (matches box-select)
-  canvas.style.cursor = _marqueeCursor(glyph, op);
+  const op = alt ? '−' : (shift ? '+' : null);   // Alt wins over Shift (matches box-select)
+  canvas.style.cursor = _marqueeCursor(ctrl, op);
 }
 function _beginMarqueeCursor(e) {
   if (!canvas) return;
