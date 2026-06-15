@@ -316,11 +316,21 @@ export async function saveProject(options = {}) {
       savePath = electronPath || await window.sbsNative.saveProject(filename);
       if (!savePath) return { saved: false, cancelled: true };
     }
-    // Prefer the gzip path; fall back to plain text write if an older preload
-    // is loaded (no writeProject) so saving never hard-fails on a version skew.
-    const writeResult = window.sbsNative.writeProject
-      ? await window.sbsNative.writeProject(savePath, content)
-      : await window.sbsNative.writeFile(savePath, content, 'utf-8');
+    // Prefer the gzip path. Fall back to a plain text write if the main-process
+    // handler is missing — covers an older preload AND the dev case where the
+    // renderer reloaded the new preload but the main process is still stale
+    // (no project:write handler) → never hard-fail a save on version skew.
+    let writeResult;
+    if (typeof window.sbsNative.writeProject === 'function') {
+      try {
+        writeResult = await window.sbsNative.writeProject(savePath, content);
+      } catch (e) {
+        console.warn('[project] writeProject unavailable — plain write fallback:', e?.message);
+        writeResult = await window.sbsNative.writeFile(savePath, content, 'utf-8');
+      }
+    } else {
+      writeResult = await window.sbsNative.writeFile(savePath, content, 'utf-8');
+    }
     if (!writeResult?.ok) throw new Error(writeResult?.error || 'Write failed');
     _setProjectMeta(savePath);
     state.markClean();
@@ -403,11 +413,21 @@ export async function pickProjectFile() {
   if (window.sbsNative?.openProject) {
     const filePath = await window.sbsNative.openProject();
     if (!filePath) return null;
-    // readProject gunzips new files + returns old plain files unchanged; fall
-    // back to a plain text read on an older preload.
-    const readResult = window.sbsNative.readProject
-      ? await window.sbsNative.readProject(filePath)
-      : await window.sbsNative.readFile(filePath, 'utf-8');
+    // readProject gunzips new files + returns old plain files unchanged. Fall
+    // back to a plain text read if the main-process handler is missing (older
+    // preload, OR a stale main process after a renderer-only reload) — old
+    // uncompressed projects still open via the plain path.
+    let readResult;
+    if (typeof window.sbsNative.readProject === 'function') {
+      try {
+        readResult = await window.sbsNative.readProject(filePath);
+      } catch (e) {
+        console.warn('[project] readProject unavailable — plain read fallback:', e?.message);
+        readResult = await window.sbsNative.readFile(filePath, 'utf-8');
+      }
+    } else {
+      readResult = await window.sbsNative.readFile(filePath, 'utf-8');
+    }
     if (!readResult?.ok) throw new Error(readResult?.error || 'Read failed');
     const file = new File([readResult.data], filePath.split(/[\\/]/).pop(), { type: 'application/json' });
     return { file, path: filePath };
