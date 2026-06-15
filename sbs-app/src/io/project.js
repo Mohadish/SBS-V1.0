@@ -296,7 +296,10 @@ export async function saveProject(options = {}) {
   steps.upsertBaseStep();  // capture scene into hidden Step 0 staging area
 
   const project  = serialize();
-  const content  = JSON.stringify(project, null, 2);
+  // Minified (no pretty-print). Whitespace was ~70% of large files; gzip on the
+  // Electron path then crushes the cross-step redundancy (~30-40x total). The
+  // file stays valid JSON, so older app builds without gzip still open it.
+  const content  = JSON.stringify(project);
   const filename = suggestedName.endsWith('.sbsproj')
     ? suggestedName
     : `${suggestedName.replace(/\.(json|sbsproj)$/i, '')}.sbsproj`;
@@ -313,7 +316,11 @@ export async function saveProject(options = {}) {
       savePath = electronPath || await window.sbsNative.saveProject(filename);
       if (!savePath) return { saved: false, cancelled: true };
     }
-    const writeResult = await window.sbsNative.writeFile(savePath, content, 'utf-8');
+    // Prefer the gzip path; fall back to plain text write if an older preload
+    // is loaded (no writeProject) so saving never hard-fails on a version skew.
+    const writeResult = window.sbsNative.writeProject
+      ? await window.sbsNative.writeProject(savePath, content)
+      : await window.sbsNative.writeFile(savePath, content, 'utf-8');
     if (!writeResult?.ok) throw new Error(writeResult?.error || 'Write failed');
     _setProjectMeta(savePath);
     state.markClean();
@@ -396,7 +403,11 @@ export async function pickProjectFile() {
   if (window.sbsNative?.openProject) {
     const filePath = await window.sbsNative.openProject();
     if (!filePath) return null;
-    const readResult = await window.sbsNative.readFile(filePath, 'utf-8');
+    // readProject gunzips new files + returns old plain files unchanged; fall
+    // back to a plain text read on an older preload.
+    const readResult = window.sbsNative.readProject
+      ? await window.sbsNative.readProject(filePath)
+      : await window.sbsNative.readFile(filePath, 'utf-8');
     if (!readResult?.ok) throw new Error(readResult?.error || 'Read failed');
     const file = new File([readResult.data], filePath.split(/[\\/]/).pop(), { type: 'application/json' });
     return { file, path: filePath };
