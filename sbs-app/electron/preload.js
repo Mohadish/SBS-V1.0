@@ -30,10 +30,6 @@ contextBridge.exposeInMainWorld('sbsNative', {
   // ── File system ──────────────────────────────────────────────────────────
   readFile:  (filePath, encoding) => ipcRenderer.invoke('fs:readFile',  filePath, encoding),
   writeFile: (filePath, data, enc)=> ipcRenderer.invoke('fs:writeFile', filePath, data, enc),
-  // Project I/O — transparently gzips on write, gunzips on read (old plain
-  // .sbsproj files still load via a magic-byte check in the main process).
-  writeProject: (filePath, jsonString) => ipcRenderer.invoke('project:write', filePath, jsonString),
-  readProject:  (filePath)             => ipcRenderer.invoke('project:read',  filePath),
   fileExists:(filePath)           => ipcRenderer.invoke('fs:exists',    filePath),
   statFile:  (filePath)           => ipcRenderer.invoke('fs:stat',      filePath),
   listDir:   (dirPath)            => ipcRenderer.invoke('fs:listDir',   dirPath),

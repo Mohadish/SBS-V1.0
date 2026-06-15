@@ -506,42 +506,6 @@ ipcMain.handle('fs:writeFile', async (_, filePath, data, encoding = 'utf-8') => 
   }
 });
 
-// ── Project read/write with transparent gzip ───────────────────────────────
-// .sbsproj is gzipped JSON. The huge cross-step redundancy in big projects
-// compresses ~30-40x (a 150 MB pretty file → ~4 MB). Compression lives here in
-// the main process (Node zlib, off the UI thread) so the renderer only ever
-// passes/receives the JSON string. Level 6 is the sweet spot (near-max ratio,
-// <0.5 s even on 40 MB; level 9 doubles the time for ~4% less size).
-ipcMain.handle('project:write', async (_, filePath, jsonString) => {
-  try {
-    const zlib = require('zlib');
-    fs.mkdirSync(path.dirname(filePath), { recursive: true });
-    const gz = await new Promise((res, rej) =>
-      zlib.gzip(Buffer.from(jsonString, 'utf-8'), { level: 6 }, (e, b) => (e ? rej(e) : res(b))));
-    fs.writeFileSync(filePath, gz);
-    return { ok: true };
-  } catch (err) {
-    return { ok: false, error: err.message };
-  }
-});
-
-// Read a project file. Detects the gzip magic (1f 8b); older UNCOMPRESSED
-// .sbsproj files (plain JSON) are returned as-is, so every legacy file still
-// opens. Always returns a UTF-8 string the renderer can JSON.parse.
-ipcMain.handle('project:read', async (_, filePath) => {
-  try {
-    const zlib = require('zlib');
-    const buf  = fs.readFileSync(filePath);
-    const isGz = buf.length > 2 && buf[0] === 0x1f && buf[1] === 0x8b;
-    const text = isGz
-      ? (await new Promise((res, rej) => zlib.gunzip(buf, (e, b) => (e ? rej(e) : res(b))))).toString('utf-8')
-      : buf.toString('utf-8');
-    return { ok: true, data: text };
-  } catch (err) {
-    return { ok: false, error: err.message };
-  }
-});
-
 // Check if a file exists
 ipcMain.handle('fs:exists', async (_, filePath) => {
   return fs.existsSync(filePath);

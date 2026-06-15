@@ -270,6 +270,58 @@ const FILE_TYPES = [
 
 
 // ═══════════════════════════════════════════════════════════════════════════
+//  PROJECT (DE)COMPRESSION  — runs in the RENDERER
+// ═══════════════════════════════════════════════════════════════════════════
+//
+// .sbsproj is gzipped minified JSON. Compression lives HERE (CompressionStream)
+// rather than in the Electron main process on purpose: the renderer hot-reloads
+// but the main process only reloads on a full app restart, so a main-process
+// handler can silently lag behind. The byte path goes through the long-standing
+// fs:writeFile / fs:readFile('buffer') handlers, present in every build.
+//
+// Backward compatible: old plain-JSON .sbsproj files are detected by the gzip
+// magic (1f 8b) on load and decoded as text. CompressionStream is feature-
+// detected; without it we save plain UTF-8 (still a valid .sbsproj).
+
+const _hasCompression =
+  typeof CompressionStream !== 'undefined' && typeof DecompressionStream !== 'undefined';
+
+function _isGzipBytes(bytes) {
+  return !!bytes && bytes.length > 2 && bytes[0] === 0x1f && bytes[1] === 0x8b;
+}
+
+async function _gzipString(str) {
+  const cs = new CompressionStream('gzip');
+  const w  = cs.writable.getWriter();
+  w.write(new TextEncoder().encode(str));
+  w.close();
+  return new Uint8Array(await new Response(cs.readable).arrayBuffer());
+}
+
+async function _gunzipToString(bytes) {
+  const ds = new DecompressionStream('gzip');
+  const w  = ds.writable.getWriter();
+  w.write(bytes);
+  w.close();
+  return new TextDecoder().decode(await new Response(ds.readable).arrayBuffer());
+}
+
+/** Project JSON string → bytes to write (gzipped if supported, else plain UTF-8). */
+async function _encodeProjectBytes(jsonString) {
+  return _hasCompression ? await _gzipString(jsonString) : new TextEncoder().encode(jsonString);
+}
+
+/** Bytes read from disk → project JSON string, auto-detecting gzip vs plain. */
+async function _decodeProjectBytes(bytes) {
+  if (_isGzipBytes(bytes)) {
+    if (!_hasCompression) throw new Error('Project is gzip-compressed but this build lacks DecompressionStream.');
+    return _gunzipToString(bytes);
+  }
+  return new TextDecoder().decode(bytes);
+}
+
+
+// ═══════════════════════════════════════════════════════════════════════════
 //  SAVE
 // ═══════════════════════════════════════════════════════════════════════════
 
@@ -300,6 +352,7 @@ export async function saveProject(options = {}) {
   // Electron path then crushes the cross-step redundancy (~30-40x total). The
   // file stays valid JSON, so older app builds without gzip still open it.
   const content  = JSON.stringify(project);
+  const bytes    = await _encodeProjectBytes(content);   // gzip in the renderer
   const filename = suggestedName.endsWith('.sbsproj')
     ? suggestedName
     : `${suggestedName.replace(/\.(json|sbsproj)$/i, '')}.sbsproj`;
@@ -316,21 +369,9 @@ export async function saveProject(options = {}) {
       savePath = electronPath || await window.sbsNative.saveProject(filename);
       if (!savePath) return { saved: false, cancelled: true };
     }
-    // Prefer the gzip path. Fall back to a plain text write if the main-process
-    // handler is missing — covers an older preload AND the dev case where the
-    // renderer reloaded the new preload but the main process is still stale
-    // (no project:write handler) → never hard-fail a save on version skew.
-    let writeResult;
-    if (typeof window.sbsNative.writeProject === 'function') {
-      try {
-        writeResult = await window.sbsNative.writeProject(savePath, content);
-      } catch (e) {
-        console.warn('[project] writeProject unavailable — plain write fallback:', e?.message);
-        writeResult = await window.sbsNative.writeFile(savePath, content, 'utf-8');
-      }
-    } else {
-      writeResult = await window.sbsNative.writeFile(savePath, content, 'utf-8');
-    }
+    // Write the gzipped bytes via the always-present binary fs:writeFile
+    // handler (no dependency on a freshly-restarted main process).
+    const writeResult = await window.sbsNative.writeFile(savePath, bytes, null);
     if (!writeResult?.ok) throw new Error(writeResult?.error || 'Write failed');
     _setProjectMeta(savePath);
     state.markClean();
@@ -347,7 +388,7 @@ export async function saveProject(options = {}) {
       const saveHandle = (mode === 'auto' && storedHandle)
         ? storedHandle
         : await window.showSaveFilePicker({ suggestedName: filename, types: FILE_TYPES });
-      await _writeToHandle(saveHandle, content);
+      await _writeToHandle(saveHandle, bytes);
       state.setState({ fsaFileHandle: saveHandle });   // persist for next auto-save
       _setProjectMeta(saveHandle.name);
       state.markClean();
@@ -359,7 +400,7 @@ export async function saveProject(options = {}) {
   }
 
   // ── Path 3: <a download> fallback ────────────────────────────────────────
-  _triggerDownload(filename, content, 'application/json');
+  _triggerDownload(filename, bytes, 'application/gzip');
   state.markClean();
   return { saved: true, downloaded: true };
 }
@@ -413,23 +454,14 @@ export async function pickProjectFile() {
   if (window.sbsNative?.openProject) {
     const filePath = await window.sbsNative.openProject();
     if (!filePath) return null;
-    // readProject gunzips new files + returns old plain files unchanged. Fall
-    // back to a plain text read if the main-process handler is missing (older
-    // preload, OR a stale main process after a renderer-only reload) — old
-    // uncompressed projects still open via the plain path.
-    let readResult;
-    if (typeof window.sbsNative.readProject === 'function') {
-      try {
-        readResult = await window.sbsNative.readProject(filePath);
-      } catch (e) {
-        console.warn('[project] readProject unavailable — plain read fallback:', e?.message);
-        readResult = await window.sbsNative.readFile(filePath, 'utf-8');
-      }
-    } else {
-      readResult = await window.sbsNative.readFile(filePath, 'utf-8');
-    }
+    // Read RAW bytes (gzipped new files OR legacy plain JSON). loadProject()
+    // detects the gzip magic and decodes. Uses the long-standing binary
+    // fs:readFile('buffer') handler, so opening never depends on a freshly
+    // restarted main process.
+    const readResult = await window.sbsNative.readFile(filePath, 'buffer');
     if (!readResult?.ok) throw new Error(readResult?.error || 'Read failed');
-    const file = new File([readResult.data], filePath.split(/[\\/]/).pop(), { type: 'application/json' });
+    const bytes = readResult.data instanceof Uint8Array ? readResult.data : new Uint8Array(readResult.data);
+    const file = new File([bytes], filePath.split(/[\\/]/).pop(), { type: 'application/octet-stream' });
     return { file, path: filePath };
   }
 
@@ -1172,7 +1204,14 @@ export function applySpecFieldsToNodes(specNode, nodeById, parentSpec = null) {
  * @returns {Promise<{project:object, assets:Array<{assetEntry:object, resolvedPath:string|null}>}>}
  */
 export async function loadProject(fileOrText, filePath = null) {
-  const text    = typeof fileOrText === 'string' ? fileOrText : await fileOrText.text();
+  // A File/Blob may be gzipped (new) or plain JSON (legacy) — read its bytes and
+  // let _decodeProjectBytes auto-detect. A raw string is already decoded text.
+  let text;
+  if (typeof fileOrText === 'string') {
+    text = fileOrText;
+  } else {
+    text = await _decodeProjectBytes(new Uint8Array(await fileOrText.arrayBuffer()));
+  }
   const project = parseProjectFile(text);
 
   clearIsolate();   // isolate is runtime-only — a freshly-loaded project starts un-isolated
