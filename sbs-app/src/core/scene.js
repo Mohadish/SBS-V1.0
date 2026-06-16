@@ -228,6 +228,15 @@ export class SceneCore extends Emitter {
         wake:   ()  => this.requestRender(0),
         thumbs: (b) => { this._thumbsOff = (b === false); console.log('[scene] thumbnail capture', b === false ? 'OFF' : 'ON'); },
       };
+      // Adaptive near/far controls. on(false) → legacy fixed 0.1/1e6 planes (A/B).
+      // set({nearFactor, farMargin, ratioCap}) — lower nearFactor pushes the near
+      // plane closer (fixes close-up AO cutout) at a little precision cost.
+      this._clipCfg = this._clipCfg || { enabled: true, nearFactor: 0.5, farMargin: 1.5, ratioCap: 50000 };
+      window.sbsClip = {
+        on:  (b) => { this._clipCfg.enabled = (b !== false); this.requestRender(300); console.log('[scene] adaptive clip', b !== false ? 'ON' : 'OFF'); },
+        set: (o) => { Object.assign(this._clipCfg, o || {}); this.requestRender(300); },
+        get: () => ({ near: this.camera && this.camera.near, far: this.camera && this.camera.far, cfg: { ...this._clipCfg } }),
+      };
     }
 
     // ── V0.2.22.21 — initialise the outline pass ────────────────────────
@@ -926,16 +935,27 @@ export class SceneCore extends Emitter {
       this._clipBoundsMs = now;
     }
 
+    // Tunable via window.sbsClip. enabled=false → legacy fixed planes (A/B test).
+    const cfg = this._clipCfg ||
+      (this._clipCfg = { enabled: true, nearFactor: 0.5, farMargin: 1.5, ratioCap: 50000 });
+
     let near, far;
-    const s = this._clipSphere;
-    if (s && isFinite(s.radius) && s.radius > 0) {
-      const dist = cam.position.distanceTo(s.center);
-      const r = s.radius;
-      far  = dist + r * 1.5;                       // beyond the far edge (+0.5r)
-      near = Math.max(far / 50000, (dist - r) * 0.5); // half-way to the near edge, ratio-capped
-      if (!(near > 0)) near = far / 50000;
+    if (!cfg.enabled) {
+      near = 0.1; far = 1000000;                   // legacy fixed planes
     } else {
-      near = 0.1; far = 100000;                    // empty scene → safe default
+      const s = this._clipSphere;
+      if (s && isFinite(s.radius) && s.radius > 0) {
+        const dist = cam.position.distanceTo(s.center);
+        const r = s.radius;
+        far  = dist + r * cfg.farMargin;            // beyond the far edge
+        // nearFactor scales how close the near plane sits to the nearest geometry.
+        // Lower = near plane pushed closer → less close-up clipping, slightly less
+        // precision (ratioCap is the floor). Higher = more precision, more clip risk.
+        near = Math.max(far / cfg.ratioCap, (dist - r) * cfg.nearFactor);
+        if (!(near > 0)) near = far / cfg.ratioCap;
+      } else {
+        near = 0.1; far = 100000;                   // empty scene → safe default
+      }
     }
 
     // Rebuild the projection only on a meaningful change (avoid per-frame churn).
