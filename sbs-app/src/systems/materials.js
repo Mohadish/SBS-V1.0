@@ -366,6 +366,7 @@ class MaterialsSystem {
     if (typeof p.roughness !== 'number')          p.roughness          = 0.45;
     if (!p.color)                                 p.color              = '#4a90d9';
     if (p.outlineEnabled === undefined)           p.outlineEnabled     = null;
+    if (p.ssrReflective === undefined)            p.ssrReflective      = false;
     if (!p.backFaceColor)                         p.backFaceColor      = '#ffffff';
     if (typeof p.backFaceOpacity !== 'number')    p.backFaceOpacity    = 0.35;
     if (typeof p.backFaceEdgeDarken !== 'number') p.backFaceEdgeDarken = 0.45;
@@ -542,9 +543,12 @@ class MaterialsSystem {
    */
   makeMaterial(preset, originalMaterial = null) {
     this.ensurePresetDefaults(preset);
-    return this._hasTextureMaps(originalMaterial, preset)
+    const mat = this._hasTextureMaps(originalMaterial, preset)
       ? this.makeSolidMaterial(preset, originalMaterial)
       : this.makeFalloffFrontMaterial(preset);
+    // Stamp the per-material SSR reflective flag so the SSR prepass can read it.
+    if (mat) { mat.userData = mat.userData || {}; mat.userData.ssrReflective = !!preset.ssrReflective; }
+    return mat;
   }
 
   /**
