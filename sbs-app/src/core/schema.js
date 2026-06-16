@@ -27,7 +27,7 @@ export const SCHEMA_VERSIONS = {
   screen:     1,
 };
 
-export const APP_VERSION  = 'V0.3.0.3';
+export const APP_VERSION  = 'V0.3.0.4';
 // Format: YYYY-MM-DD. Bump along with APP_VERSION on every build worth
 // labelling so the File tab shows you're running the expected slice.
 export const APP_RELEASED = '2026-06-10';
@@ -399,7 +399,7 @@ export function createPrimitiveNode(overrides = {}) {
     primKind:    'box',     // box | plane | sphere | cylinder | cone | torus | capsule | tube | pyramid | geosphere
     primParams:  {},        // per-kind { width, height, … } — see PRIMITIVE_DEFS
     primQuality: 3,         // 1-5 surface intricacy
-    // Parameter-link group (V0.3.0.3). Primitives sharing a primLinkId share
+    // Parameter-link group (V0.3.0.4). Primitives sharing a primLinkId share
     // their build parameters (kind/params/quality) — editing one ripples to all
     // ("Paste Instance"). Position / rotation / scale / folder / visibility stay
     // per-node. null/own-id = not linked to anything else.

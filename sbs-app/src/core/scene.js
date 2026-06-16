@@ -423,9 +423,15 @@ export class SceneCore extends Emitter {
     this._tickHooks.forEach(fn => { try { fn(now, delta); } catch(e) { console.error(e); } });
   }
 
-  /** Public render-once entry point used by offline export per-frame capture. */
+  /** Public render-once entry point used by offline export per-frame capture.
+   * Renders DIRECTLY with the AO composer BYPASSED: N8AO's per-frame cost +
+   * render-target state stalls the frame-by-frame offline export on heavy
+   * models. The live viewport keeps AO via _render(); AO-in-export is Phase 3. */
   renderFrame() {
-    this._render();
+    const prevAO = this._aoEnabled;
+    this._aoEnabled = false;
+    try { this._render(); }
+    finally { this._aoEnabled = prevAO; }
   }
 
   // ═══════════════════════════════════════════════════════════════════════
