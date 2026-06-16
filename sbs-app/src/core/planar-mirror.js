@@ -46,6 +46,7 @@ export class PlanarMirror {
     this.textureMatrix = new THREE.Matrix4();
 
     this.material = new THREE.ShaderMaterial({
+      side: THREE.DoubleSide,   // match the seg viz (which renders) — rule out back-face culling
       uniforms: {
         tReflect:      { value: this.rt.texture },
         textureMatrix: { value: this.textureMatrix },

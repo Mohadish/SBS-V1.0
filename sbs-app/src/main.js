@@ -372,6 +372,7 @@ window.sbsMirror = {
     console.log('[mirror] face mirror on largest flat region (area', region.areaLocal.toFixed(2) + '). If blank, run window.sbsMirror.debug(true) — magenta = visible.');
   },
   debug: (b) => sceneCore.setMirrorDebug(b !== false),
+  info:  () => sceneCore.mirrorInfo(),
   clear: () => { sceneCore.clearPlanarMirrors(); console.log('[mirror] cleared'); },
 };
 

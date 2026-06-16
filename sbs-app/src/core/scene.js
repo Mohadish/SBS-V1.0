@@ -1041,6 +1041,23 @@ export class SceneCore extends Emitter {
     this.requestRender(300);
     return m;
   }
+  /** Debug: log each mirror's state (in-scene? visible? material? geometry?). */
+  mirrorInfo() {
+    const list = this._mirrors || [];
+    console.log('[mirror] count:', list.length);
+    for (const m of list) {
+      const sub = m.mesh;
+      let p = sub, inScene = false;
+      while (p) { if (p === this.scene) { inScene = true; break; } p = p.parent; }
+      const g = sub && sub.geometry;
+      console.log('  sub →', {
+        inScene, visible: sub && sub.visible, parent: sub && sub.parent && (sub.parent.name || sub.parent.type),
+        material: sub && sub.material && sub.material.type, frustumCulled: sub && sub.frustumCulled,
+        posVerts: g && g.getAttribute && g.getAttribute('position') && g.getAttribute('position').count,
+        uDebug: sub && sub.material && sub.material.uniforms && sub.material.uniforms.uDebug && sub.material.uniforms.uDebug.value,
+      });
+    }
+  }
   /** Debug: paint all planar mirrors solid magenta to test visibility. */
   setMirrorDebug(on) {
     if (this._mirrors) for (const m of this._mirrors) m.setDebug?.(on);
