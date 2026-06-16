@@ -365,13 +365,40 @@ export class SceneCore extends Emitter {
     const dom = this.renderer?.domElement;
     if (!dom || !dom.width || !dom.height) return null;
 
+    let src = dom;   // default: read the live canvas as-is
     if (opts.withoutOverlayScene) {
-      // Render the same way the live viewport does (through the AO composer when
-      // on) so this capture doesn't paint a NO-AO frame onto the live canvas.
+      // Render scene-only to an OFFSCREEN target so this capture NEVER paints
+      // onto the live canvas. Rendering to the live canvas (then reading it)
+      // flashed a scene-only frame ~5×/sec during active periods — confirmed by
+      // diagnostics: the blink rate equalled the thumbnail-capture rate. Down-
+      // scaled 1/3 so the GPU→CPU readback stays cheap; matches canonical aspect.
+      const W = dom.width, H = dom.height;
+      const dw = Math.max(2, Math.round(W / 3)), dh = Math.max(2, Math.round(H / 3));
+      let rt = this._thumbRT;
+      if (!rt) {
+        rt = this._thumbRT = new THREE.WebGLRenderTarget(dw, dh);
+        // Match the live canvas's sRGB output, else readback pixels are linear → dark thumbs.
+        if ('SRGBColorSpace' in THREE) rt.texture.colorSpace = THREE.SRGBColorSpace;
+      } else if (rt.width !== dw || rt.height !== dh) rt.setSize(dw, dh);
+      const prevRT = this.renderer.getRenderTarget();
+      this.renderer.setRenderTarget(rt);
       this.renderer.autoClear = true;
-      const composer = (this._aoEnabled !== false) ? this._ensureComposer() : null;
-      if (composer) composer.render();
-      else          this.renderer.render(this.scene, this.camera);
+      this.renderer.render(this.scene, this.camera);
+      this.renderer.setRenderTarget(prevRT);
+      const buf = new Uint8Array(dw * dh * 4);
+      this.renderer.readRenderTargetPixels(rt, 0, 0, dw, dh, buf);
+      // WebGL pixels are bottom-up → flip rows into a 2D canvas we scale from.
+      const sc = (this._thumbSrcCanvas = this._thumbSrcCanvas || document.createElement('canvas'));
+      sc.width = dw; sc.height = dh;
+      const sctx = sc.getContext('2d');
+      const img = sctx.createImageData(dw, dh);
+      const row = dw * 4;
+      for (let y = 0; y < dh; y++) {
+        const sOff = (dh - 1 - y) * row;
+        img.data.set(buf.subarray(sOff, sOff + row), y * row);
+      }
+      sctx.putImageData(img, 0, 0);
+      src = sc;
     }
 
     const off = document.createElement('canvas');
@@ -380,7 +407,7 @@ export class SceneCore extends Emitter {
     const ctx = off.getContext('2d');
     if (!ctx) return null;
     try {
-      ctx.drawImage(dom, 0, 0, w, h);
+      ctx.drawImage(src, 0, 0, w, h);
       if (typeof opts.extraLayers === 'function') {
         const layers = opts.extraLayers(w, h) || [];
         for (const layer of layers) {
