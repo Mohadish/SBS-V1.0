@@ -56,6 +56,13 @@ const DEFAULTS = {
     // catches gently-curved surfaces too.
     shapeFaceAngleThreshold: 5,
   },
+  // V0.3.0.18 — viewport render settings (AO + SSR contact reflections).
+  // Machine-scope / app-global for now, applied live + on boot. Per-project
+  // override comes later. Surfaced as sliders in the Files tab + Scene settings.
+  render: {
+    ao:  { enabled: true,  intensity: 4.0, radius: 24.0, falloff: 1.0 },
+    ssr: { enabled: false, intensity: 0.6, maxDistance: 8.0, thickness: 1.0, steps: 24 },
+  },
   // User-level animation preset collection. Entries are { name, animation }.
   // Cross-project, machine-scope — the user's personal library of preset
   // strings they want to reuse across projects. The actual project still

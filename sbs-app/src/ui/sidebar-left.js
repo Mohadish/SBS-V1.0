@@ -99,6 +99,7 @@ import { regenerateHardwareAsset } from '../systems/hardware-actions.js';
 import { exportTimelineVideo, downloadBlob } from '../systems/video-export.js';
 import { listVoices as ttsListVoices } from '../systems/tts.js';
 import * as userSettings    from '../core/user-settings.js';
+import { buildRenderSettingsPanel } from './render-settings-panel.js';
 import * as narrationCache  from '../systems/narration-cache.js';
 
 const TABS = ['files', 'tree', 'colors', 'select', 'cameras', 'animation', 'header', 'style', 'cables', 'notes', 'shapes', 'primitives', 'hardware', 'undo', 'export'];
@@ -487,6 +488,8 @@ function _renderFilesTab() {
       </div>
     </div>
 
+    <div id="render-settings-mount"></div>
+
     <div class="section" style="margin-top:auto;padding-top:12px">
       <div class="small muted" style="text-align:center;line-height:1.6">
         SBS ${_esc(APP_VERSION)}<br>
@@ -502,6 +505,9 @@ function _renderFilesTab() {
   el.querySelector('#btn-fit-all')?.addEventListener('click',      _onFitAll);
   el.querySelector('#btn-toggle-grid')?.addEventListener('click',  _onToggleGrid);
   el.querySelector('#btn-toggle-theme')?.addEventListener('click', _onToggleTheme);
+
+  // AO + SSR sliders (shared panel; linked to global userSettings.render).
+  el.querySelector('#render-settings-mount')?.appendChild(buildRenderSettingsPanel());
 
   // ── Background controls (undoable; change:* listener repaints on restore) ─
   el.querySelector('#bg-color')?.addEventListener('input', e => {

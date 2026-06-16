@@ -10,6 +10,7 @@
  */
 
 import * as userSettings from '../core/user-settings.js';
+import { buildRenderSettingsPanel } from './render-settings-panel.js';
 import { listVoices, invalidateVoiceCache } from '../systems/tts.js';
 import sceneCore         from '../core/scene.js';
 import state             from '../core/state.js';
@@ -477,6 +478,9 @@ function _renderSceneTab(body) {
       </div>
     </div>
   `;
+
+  // AO + SSR sliders (shared panel; linked to global userSettings.render).
+  body.appendChild(buildRenderSettingsPanel());
 
   // ── Zoom slider ─────────────────────────────────────────────────────────
   const zoomEl    = body.querySelector('#scene-zoom');

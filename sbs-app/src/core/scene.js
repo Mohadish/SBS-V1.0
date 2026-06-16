@@ -468,7 +468,10 @@ export class SceneCore extends Emitter {
     // Main scene — through the N8AO composer when AO is enabled, else direct.
     // The composer's last pass restores the render target to screen, so the
     // outline + overlay below still composite on top exactly as before.
-    const composer = (this._aoEnabled !== false) ? this._ensureComposer() : null;
+    // Use the composer when AO OR SSR is on (SSR is a composer pass). When AO is
+    // off the N8AO pass is disabled but the composer still runs for SSR / the
+    // plain RenderPass.
+    const composer = (this._aoEnabled !== false || this._ssrEnabled) ? this._ensureComposer() : null;
     if (composer && this._n8aoPass) {
       // Freeze N8AO's noise seed while the camera is still → every re-render
       // produces IDENTICAL AO → no shimmer, even when the loop wakes on a mouse
@@ -536,16 +539,18 @@ export class SceneCore extends Emitter {
       c.accumulate        = false;  // NEVER cross-frame accumulate — ghosts under motion
       composer.addPass(n8ao);
       this._n8aoPass = n8ao;
+      n8ao.enabled = (this._aoEnabled !== false);
 
-      // SSR contact-reflection spike — OFF by default (opt-in via console).
-      // Last pass when enabled → renders to screen; the composer's
-      // isLastEnabledPass() handles the on/off swap automatically.
+      // SSR contact reflections. Last pass when enabled → renders to screen; the
+      // composer's isLastEnabledPass() handles the on/off swap automatically.
       const ssr = new SSRReflectPass(this.scene, this.camera, size.width, size.height);
-      ssr.enabled = false;
+      ssr.enabled = !!this._ssrEnabled;
       composer.addPass(ssr);
       this._ssrPass = ssr;
 
       this._composer = composer;
+      // Re-apply settings captured before the passes existed (boot ordering).
+      if (this._renderSettings) this.applyRenderSettings();
       // Console tuning hooks for the spike:
       //   window.sbsAO.set({aoRadius:32,intensity:5}) / .on(false)
       //   window.sbsSSR.on(true) / .set({intensity:0.6, maxDistance:8, thickness:1, steps:24})
@@ -556,7 +561,7 @@ export class SceneCore extends Emitter {
           pass: n8ao,
         };
         window.sbsSSR = {
-          on:   (b) => { ssr.enabled = (b !== false); this.requestRender(300); console.log('[scene] SSR', b !== false ? 'ON' : 'OFF'); },
+          on:   (b) => { this.setSSREnabled(b !== false); console.log('[scene] SSR', b !== false ? 'ON' : 'OFF'); },
           set:  (o) => { Object.assign(ssr.params, o || {}); this.requestRender(300); },
           pass: ssr,
         };
@@ -571,8 +576,19 @@ export class SceneCore extends Emitter {
     }
   }
 
-  /** Toggle ambient occlusion on/off (off → direct render). */
-  setAOEnabled(on) { this._aoEnabled = !!on; }
+  /** Toggle ambient occlusion on/off (toggles the N8AO pass; composer stays). */
+  setAOEnabled(on) {
+    this._aoEnabled = !!on;
+    if (this._n8aoPass) this._n8aoPass.enabled = !!on;
+    this.requestRender(300);
+  }
+
+  /** Toggle SSR contact reflections on/off. */
+  setSSREnabled(on) {
+    this._ssrEnabled = !!on;
+    if (this._ssrPass) this._ssrPass.enabled = !!on;
+    this.requestRender(300);
+  }
 
   /** Live-tune N8AO config, e.g. setAOConfig({ aoRadius: 32, intensity: 5 }). */
   setAOConfig(opts = {}) {
@@ -580,6 +596,37 @@ export class SceneCore extends Emitter {
     for (const [k, v] of Object.entries(opts)) {
       try { this._n8aoPass.configuration[k] = v; } catch (_) { /* ignore bad keys */ }
     }
+  }
+
+  /**
+   * Apply a render-settings object {ao:{enabled,intensity,radius,falloff},
+   * ssr:{enabled,intensity,maxDistance,thickness,steps}} — from userSettings.render.
+   * Stored so _ensureComposer can re-apply once the passes exist (boot order).
+   */
+  applyRenderSettings(rs) {
+    if (rs) this._renderSettings = rs;
+    const s = this._renderSettings;
+    if (!s) return;
+    const ao = s.ao || {};
+    this._aoEnabled  = (ao.enabled !== false);
+    this._ssrEnabled = !!(s.ssr && s.ssr.enabled);
+    if (this._n8aoPass) {
+      this._n8aoPass.enabled = this._aoEnabled;
+      const cfg = {};
+      if (ao.intensity != null) cfg.intensity       = ao.intensity;
+      if (ao.radius    != null) cfg.aoRadius         = ao.radius;
+      if (ao.falloff   != null) cfg.distanceFalloff  = ao.falloff;
+      this.setAOConfig(cfg);
+    }
+    if (this._ssrPass) {
+      this._ssrPass.enabled = this._ssrEnabled;
+      const ss = s.ssr || {}, p = this._ssrPass.params;
+      if (ss.intensity   != null) p.intensity   = ss.intensity;
+      if (ss.maxDistance != null) p.maxDistance = ss.maxDistance;
+      if (ss.thickness   != null) p.thickness   = ss.thickness;
+      if (ss.steps       != null) p.steps       = ss.steps;
+    }
+    this.requestRender(300);
   }
 
   // ═══════════════════════════════════════════════════════════════════════

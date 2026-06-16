@@ -311,6 +311,8 @@ initUserSettings()
     if (typeof sc.cameraZoomScale === 'number') {
       sceneCore.setUserZoomScale(sc.cameraZoomScale);
     }
+    // V0.3.0.18 — apply saved AO + SSR render settings to the live viewport.
+    if (cur.render) sceneCore.applyRenderSettings(cur.render);
     if (typeof sc.shapeFaceAngleThreshold === 'number') {
       state.setState({ shapeFaceAngleThreshold: sc.shapeFaceAngleThreshold });
     }
