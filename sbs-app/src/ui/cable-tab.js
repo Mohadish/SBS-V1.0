@@ -226,6 +226,11 @@ function _renderEditor(container) {
         </label>
       </div>
 
+      <label class="colorlab" style="display:flex;align-items:center;gap:8px;margin-top:8px;cursor:pointer;">
+        <input type="checkbox" id="cbl-flexible" ${cable.flexible ? 'checked' : ''} />
+        <span class="small">Flexible (curved — socketed ends follow the socket direction)</span>
+      </label>
+
       <div class="card" style="margin-top:10px;padding:0;">
         <div class="title" style="padding:8px 10px;border-bottom:1px solid var(--line);">
           Points <span class="small muted">(${(cable.nodes || []).length})</span>
@@ -258,6 +263,9 @@ function _renderEditor(container) {
     const v = Number(e.target.value);
     const size = Math.max(5, Number.isFinite(v) ? v : 100);
     actions.setCableStyle(cable.id, { size });
+  });
+  host.querySelector('#cbl-flexible')?.addEventListener('change', e => {
+    actions.setCableFlexible(cable.id, e.target.checked);
   });
 
   // Per-point + socket row delegation (select / delete / select socket).

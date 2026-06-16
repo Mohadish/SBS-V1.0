@@ -4350,6 +4350,26 @@ export function toggleCableHighlight(cableId) {
 }
 
 /**
+ * Toggle a cable between flexible (smooth spline) and straight. Structural /
+ * per-cable (not a per-step variable), so it marks dirty rather than syncing
+ * into the active step. The cable renderer's per-tick picks up the flag and
+ * rebuilds the body (spline tube vs cylinders).
+ */
+export function setCableFlexible(cableId, on) {
+  const cable = cables.getCable(cableId);
+  if (!cable) return;
+  const next = !!on;
+  const prev = !!cable.flexible;
+  if (next === prev) return;
+  cables.updateCable(cableId, { flexible: next });
+  state.markDirty();
+  undoManager.push(next ? 'Make cable flexible' : 'Make cable straight',
+    () => { cables.updateCable(cableId, { flexible: prev }); state.markDirty(); },
+    () => { cables.updateCable(cableId, { flexible: next }); state.markDirty(); },
+  );
+}
+
+/**
  * Patch a cable's name / style fields. NOT undoable per-keystroke —
  * caller is expected to debounce / commit on blur if precision is
  * needed (mirrors the style-template slider pattern). Lightweight

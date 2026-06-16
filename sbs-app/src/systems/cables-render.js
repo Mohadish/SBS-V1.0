@@ -340,7 +340,7 @@ function _rebuildCable(cable, entry) {
   // each mesh has a per-instance material to honour the cable's
   // colour / highlight; dispose materials only.
   for (const m of entry.points)   { m.material?.dispose?.(); entry.group.remove(m); }
-  for (const m of entry.segments) { m.material?.dispose?.(); entry.group.remove(m); }
+  for (const m of entry.segments) { m.material?.dispose?.(); if (m.geometry && m.geometry !== _UNIT_CYLINDER) m.geometry.dispose?.(); entry.group.remove(m); }
   for (const m of (entry.sockets || [])) { m.material?.dispose?.(); entry.group.remove(m); }
   entry.points   = [];
   entry.segments = [];
@@ -361,6 +361,7 @@ function _rebuildCable(cable, entry) {
     ? (state.get('cableHighlightColor') ?? '#22d3ee')
     : (cable.style?.color ?? '#ffb24a');
   const color = new THREE.Color(colorHex);
+  entry._color = color;   // remembered for per-tick flexible-tube rebuilds
 
   // Resolve every node's current world position once. Side effect:
   // refreshes cachedWorldPos on the data so future step-jumps + missing
@@ -393,27 +394,8 @@ function _rebuildCable(cable, entry) {
     entry.points.push(sphere);
   }
 
-  // Cylinder segments — one between each consecutive resolvable pair.
-  // We use a unit-height cylinder oriented along Y and stretch via
-  // scale.y so per-tick updates are cheap (no geometry rebuild).
-  for (let i = 0; i < positions.length - 1; i++) {
-    const a = positions[i];
-    const b = positions[i + 1];
-    if (!a || !b) continue;
-    const seg = new THREE.Mesh(
-      _UNIT_CYLINDER,
-      new THREE.MeshStandardMaterial({
-        color: color.clone(), metalness: 0.2, roughness: 0.6,
-        transparent: true, opacity: 1,
-      }),
-    );
-    _poseCylinder(seg, a, b, radius);
-    seg.userData.cableId    = cable.id;
-    seg.userData.fromNodeId = cable.nodes[i].id;
-    seg.userData.toNodeId   = cable.nodes[i + 1].id;
-    entry.group.add(seg);
-    entry.segments.push(seg);
-  }
+  // Cable body — one spline tube when flexible, else cheap cylinder segments.
+  _buildSegments(cable, entry, positions, radius, color);
 
   // C5-E1: socket boxes — one per node that carries a socket. Sized
   // by socket.size, coloured by socket.color (independent of cable
@@ -536,6 +518,97 @@ function _poseCylinder(mesh, a, b, radius) {
   mesh.scale.set(radius, len, radius);
 }
 
+// ── Flexible cables (V0.3.0.24): smooth spline tube through the nodes ────────
+
+/** Socket emergence axis (world +Z) for a node, or null if it has no socket. */
+function _socketAxis(node) {
+  if (!node?.socket) return null;
+  const wq = _socketWorldQuat(node);
+  if (!wq) return null;
+  return new THREE.Vector3(0, 0, 1).applyQuaternion(wq).normalize();
+}
+
+/**
+ * CatmullRom curve through the resolvable node positions. A socketed ENDPOINT
+ * gets a phantom control point a short way along its socket axis, so the cable
+ * emerges/arrives straight out of the socket (plugged-in) before curving.
+ */
+function _buildFlexCurve(cable, positions) {
+  const pts = [], idxs = [];
+  for (let i = 0; i < positions.length; i++) {
+    if (positions[i]) { pts.push(positions[i]); idxs.push(i); }
+  }
+  if (pts.length < 2) return null;
+  const nodes = cable.nodes || [];
+  const handleFrac = state.get('cableFlexHandle') ?? 0.4;
+  const last = pts.length - 1;
+
+  const ctrl = [pts[0]];
+  const startAxis = _socketAxis(nodes[idxs[0]]);
+  if (startAxis) ctrl.push(pts[0].clone().addScaledVector(startAxis, handleFrac * pts[0].distanceTo(pts[1])));
+  for (let k = 1; k < last; k++) ctrl.push(pts[k]);
+  const endAxis = _socketAxis(nodes[idxs[last]]);
+  if (endAxis) ctrl.push(pts[last].clone().addScaledVector(endAxis, handleFrac * pts[last].distanceTo(pts[last - 1])));
+  ctrl.push(pts[last]);
+
+  return new THREE.CatmullRomCurve3(ctrl, false, 'catmullrom', 0.5);
+}
+
+/** Tube mesh skinned along the flexible curve. */
+function _makeFlexTube(curve, radius, color, cableId) {
+  const segs = Math.min(240, Math.max(24, curve.points.length * 24));
+  const mesh = new THREE.Mesh(
+    new THREE.TubeGeometry(curve, segs, radius, 8, false),
+    new THREE.MeshStandardMaterial({
+      color: color.clone(), metalness: 0.2, roughness: 0.6, transparent: true, opacity: 1,
+    }),
+  );
+  mesh.userData.cableId = cableId;
+  mesh.userData.kind    = 'cableTube';
+  return mesh;
+}
+
+/** Cheap change-detector for the per-tick: flexible flag + quantized positions. */
+function _posHash(cable, positions) {
+  let s = cable.flexible ? 'F' : 'S';
+  for (const p of positions) s += p ? `|${p.x.toFixed(2)},${p.y.toFixed(2)},${p.z.toFixed(2)}` : '|x';
+  return s;
+}
+
+/** Build the cable BODY: one spline tube when flexible, else cylinder segments. */
+function _buildSegments(cable, entry, positions, radius, color) {
+  for (const m of entry.segments) {
+    m.material?.dispose?.();
+    if (m.geometry && m.geometry !== _UNIT_CYLINDER) m.geometry.dispose?.();
+    entry.group.remove(m);
+  }
+  entry.segments   = [];
+  entry._isFlexible = !!cable.flexible;
+  if (cable.flexible) {
+    const curve = _buildFlexCurve(cable, positions);
+    if (curve) {
+      const tube = _makeFlexTube(curve, radius, color, cable.id);
+      entry.group.add(tube);
+      entry.segments.push(tube);
+    }
+    entry._posHash = _posHash(cable, positions);
+  } else {
+    for (let i = 0; i < positions.length - 1; i++) {
+      const a = positions[i], b = positions[i + 1];
+      if (!a || !b) continue;
+      const seg = new THREE.Mesh(_UNIT_CYLINDER, new THREE.MeshStandardMaterial({
+        color: color.clone(), metalness: 0.2, roughness: 0.6, transparent: true, opacity: 1,
+      }));
+      _poseCylinder(seg, a, b, radius);
+      seg.userData.cableId    = cable.id;
+      seg.userData.fromNodeId = cable.nodes[i].id;
+      seg.userData.toNodeId   = cable.nodes[i + 1].id;
+      entry.group.add(seg);
+      entry.segments.push(seg);
+    }
+  }
+}
+
 /**
  * Phase A: walk every point mesh and apply selection highlight —
  * emissive on the selected sphere, zero on the rest. Fires on
@@ -643,13 +716,22 @@ function _tickAnchorRefresh() {
       sphere.scale.setScalar(_pointScaleFor(sphere.userData.cableId, sphere.userData.nodeId, radius));
     }
 
-    // Reposition segments. positions[i] / positions[i+1] for segment i.
-    for (let i = 0; i < entry.segments.length; i++) {
-      const a = positions[i];
-      const b = positions[i + 1];
-      const seg = entry.segments[i];
-      if (!a || !b) { seg.visible = false; continue; }
-      _poseCylinder(seg, a, b, radius);
+    // Cable body. Flexible: rebuild the spline tube when the flexible flag flips
+    // or the path moves (cheap hash gate avoids per-frame rebuilds when static).
+    // Straight: just re-pose the cheap cylinders.
+    if (cable.flexible || entry._isFlexible) {
+      const hash = _posHash(cable, positions);
+      if (cable.flexible !== entry._isFlexible || hash !== entry._posHash) {
+        _buildSegments(cable, entry, positions, radius, entry._color || new THREE.Color('#ffb24a'));
+      }
+    } else {
+      for (let i = 0; i < entry.segments.length; i++) {
+        const a = positions[i];
+        const b = positions[i + 1];
+        const seg = entry.segments[i];
+        if (!a || !b) { seg.visible = false; continue; }
+        _poseCylinder(seg, a, b, radius);
+      }
     }
 
     // C5-E1: re-pose socket boxes so they ride the host mesh as it
