@@ -1033,10 +1033,10 @@ export class SceneCore extends Emitter {
 
   // ── Planar mirrors (V0.3.0.28 spike) ────────────────────────────────────
   /** Turn a flat mesh into a true planar mirror (reflection rendered in _render). */
-  addPlanarMirror(mesh) {
+  addPlanarMirror(mesh, opts) {
     if (!mesh || !mesh.isMesh) return null;
     this._mirrors = this._mirrors || [];
-    const m = new PlanarMirror(mesh);
+    const m = new PlanarMirror(mesh, opts);
     this._mirrors.push(m);
     this.requestRender(300);
     return m;

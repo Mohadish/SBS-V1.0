@@ -30,8 +30,9 @@ function computeMeshPlaneLocal(mesh) {
 }
 
 export class PlanarMirror {
-  constructor(mesh, size = 1024) {
+  constructor(mesh, opts = {}) {
     const THREE = window.THREE;
+    const size = opts.size || 1024;
     this.mesh = mesh;
     this.originalMaterial = mesh.material;
 
@@ -50,7 +51,8 @@ export class PlanarMirror {
       uniforms: {
         tReflect:      { value: this.rt.texture },
         textureMatrix: { value: this.textureMatrix },
-        uReflectivity: { value: 0.9 },
+        uReflectivity: { value: (opts.reflectionIntensity != null ? opts.reflectionIntensity : 0.9) * (opts.solidness != null ? opts.solidness : 1.0) },
+        uRoughness:    { value: opts.roughness != null ? opts.roughness : 0.0 },
         uTint:         { value: new THREE.Color(0x0a0a0a) },
         uDebug:        { value: 0 },
       },
@@ -65,7 +67,8 @@ export class PlanarMirror {
       fragmentShader: /* glsl */`
         precision highp float;
         uniform sampler2D tReflect;
-        uniform float uReflectivity;
+        uniform float uReflectivity;   // = reflectionIntensity × solidness
+        uniform float uRoughness;      // 0 = mirror-sharp, 1 = blurred
         uniform vec3  uTint;
         uniform float uDebug;
         varying vec4 vCoord;
@@ -78,7 +81,21 @@ export class PlanarMirror {
           vec2 uv = vCoord.xy / vCoord.w;
           vec2 e  = smoothstep(0.0, 0.04, uv) * (1.0 - smoothstep(0.96, 1.0, uv));
           float vis = e.x * e.y;
-          vec3 refl = texture2D(tReflect, clamp(uv, 0.0, 1.0)).rgb;
+          // Roughness blur — sunflower disc (no mipmap dependency).
+          vec3 refl;
+          float blurR = uRoughness * 0.03;
+          if (blurR > 0.0005) {
+            vec3 acc = vec3(0.0);
+            for (int t = 0; t < 12; t++) {
+              float f   = float(t);
+              float ang = f * 2.39996323;
+              vec2  o   = vec2(cos(ang), sin(ang)) * (blurR * sqrt((f + 0.5) / 12.0));
+              acc += texture2D(tReflect, clamp(uv + o, 0.0, 1.0)).rgb;
+            }
+            refl = acc / 12.0;
+          } else {
+            refl = texture2D(tReflect, clamp(uv, 0.0, 1.0)).rgb;
+          }
           gl_FragColor = vec4(mix(uTint, refl, uReflectivity * vis), 1.0);
         }
       `,

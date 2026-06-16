@@ -338,6 +338,26 @@ initUserSettings()
 
 // Planar-mirror spike (V0.3.0.28): window.sbsMirror.fromSelected() turns the
 // selected mesh into a true planar mirror; .clear() removes all.
+// Read a source material's mirror-relevant params (custom SBS shader uniforms or
+// standard-material fallbacks) so the planar mirror honours roughness / reflection
+// intensity / solidness, like SSR does.
+function _mirrorParamsFromMaterial(mat) {
+  let roughness = 0.45, reflectionIntensity = 0.5, solidness = 1.0;
+  if (mat) {
+    const u = mat.uniforms;
+    if (u) {
+      if (u.uRoughness)           roughness           = u.uRoughness.value;
+      if (u.uReflectionIntensity) reflectionIntensity = u.uReflectionIntensity.value;
+      if (u.uSolidness)           solidness           = u.uSolidness.value;
+    } else {
+      if (typeof mat.roughness === 'number')       roughness           = mat.roughness;
+      if (typeof mat.envMapIntensity === 'number') reflectionIntensity = Math.min(1, mat.envMapIntensity * 2);
+      if (typeof mat.opacity === 'number')         solidness           = mat.opacity;
+    }
+  }
+  return { roughness, reflectionIntensity, solidness };
+}
+
 window.sbsMirror = {
   fromSelected: () => {
     const id   = state.get('selectedId');
@@ -367,7 +387,7 @@ window.sbsMirror = {
     const eps = (mesh.geometry.boundingSphere?.radius || 1) * 0.004;
     sub.position.copy(region.normalLocal).multiplyScalar(eps);
     mesh.add(sub);
-    const m = sceneCore.addPlanarMirror(sub);
+    const m = sceneCore.addPlanarMirror(sub, _mirrorParamsFromMaterial(mesh.material));
     if (m) { m.material.polygonOffset = true; m.material.polygonOffsetFactor = -2; m.material.polygonOffsetUnits = -2; }
     console.log('[mirror] face mirror on largest flat region (area', region.areaLocal.toFixed(2) + '). If blank, run window.sbsMirror.debug(true) — magenta = visible.');
   },
@@ -396,7 +416,7 @@ window.sbsMirror = {
         sub.userData.noSelect = true; sub.userData.isMirrorSubmesh = true;
         sub.position.copy(region.normalLocal).multiplyScalar(eps);
         mesh.add(sub);
-        const m = sceneCore.addPlanarMirror(sub);
+        const m = sceneCore.addPlanarMirror(sub, _mirrorParamsFromMaterial(mesh.material));
         if (m) { m.material.polygonOffset = true; m.material.polygonOffsetFactor = -2; m.material.polygonOffsetUnits = -2; }
         count++;
       }
