@@ -324,6 +324,7 @@ export class SceneCore extends Emitter {
     // The composer's last pass restores the render target to screen, so the
     // outline + overlay below still composite on top exactly as before.
     const composer = (this._aoEnabled !== false) ? this._ensureComposer() : null;
+    if (composer && this._n8aoPass) this._updateAOFreeze();
     this.renderer.autoClear = true;
     if (composer) composer.render();
     else          this.renderer.render(this.scene, this.camera);
@@ -400,6 +401,32 @@ export class SceneCore extends Emitter {
     if (!this._n8aoPass) return;
     for (const [k, v] of Object.entries(opts)) {
       try { this._n8aoPass.configuration[k] = v; } catch (_) { /* ignore bad keys */ }
+    }
+  }
+
+  /**
+   * Freeze N8AO's noise seed when the camera is STILL → kills the per-frame AO
+   * shimmer (N8AO drives its sample + denoise rotation off performance.now, so a
+   * dead-static scene flickers). While the camera moves we release it (live
+   * time) so the noise dissolves into the motion instead of sticking to screen.
+   * Cheap per-frame check; no render-loop change, no stale frames.
+   */
+  _updateAOFreeze() {
+    const cam = this.camera;
+    const still = this._lastCamPos
+      && cam.position.equals(this._lastCamPos)
+      && cam.quaternion.equals(this._lastCamQuat)
+      && cam.zoom === this._lastCamZoom
+      && cam.fov  === this._lastCamFov;
+    if (still) {
+      // Hold the seed captured when motion stopped (stable AO every frame).
+      if (this._n8aoPass.frozenTime == null) this._n8aoPass.frozenTime = performance.now() / 1000;
+    } else {
+      this._n8aoPass.frozenTime = null;   // live noise while moving
+      this._lastCamPos  = (this._lastCamPos  || new THREE.Vector3()).copy(cam.position);
+      this._lastCamQuat = (this._lastCamQuat || new THREE.Quaternion()).copy(cam.quaternion);
+      this._lastCamZoom = cam.zoom;
+      this._lastCamFov  = cam.fov;
     }
   }
 
