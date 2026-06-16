@@ -446,6 +446,10 @@ export class SceneCore extends Emitter {
 
   _render() {
     if (!this.renderer) return;
+    // Adaptive near/far first — fits depth precision to the view so the AO
+    // (which reads depth) stays clean at any distance. Must run before the AO
+    // composer, which reads camera.near / camera.far.
+    this._updateClipPlanes();
     // Main scene — through the N8AO composer when AO is enabled, else direct.
     // The composer's last pass restores the render target to screen, so the
     // outline + overlay below still composite on top exactly as before.
@@ -867,6 +871,57 @@ export class SceneCore extends Emitter {
     const box = new THREE.Box3();
     targets.forEach(o => box.expandByObject(o));
     return box;
+  }
+
+  /**
+   * Adaptive near/far clip planes (V0.3.0.14). The fixed 0.1 / 1,000,000 planes
+   * are a 10⁷:1 ratio — almost no depth precision survives at distance, so flat
+   * panels quantize into stepped depth and N8AO paints noise on the steps (worse
+   * the farther the camera). Here we fit the planes to the visible bounds + the
+   * current camera distance on every render, keeping the ratio tight so depth
+   * precision — and the AO — stay clean at any zoom. Clip-safe: planes sit
+   * beyond the geometry with margin, and never tighter than the old fixed near.
+   *
+   * The bounds traversal is the costly part, so it's cached and refreshed on a
+   * 200 ms throttle while interactive; during export (loop stopped) it refreshes
+   * every frame so a step animation can't drift outside stale planes.
+   */
+  _updateClipPlanes() {
+    const cam = this.camera;
+    if (!cam) return;
+    const now = performance.now();
+    const throttleMs = this._loopRunning ? 200 : 0;
+    if (!this._clipSphere || (now - (this._clipBoundsMs || 0)) > throttleMs) {
+      const box = this.computeBoundingBox(null);                 // rootGroup
+      if (this.gridHelper?.visible) box.expandByObject(this.gridHelper);
+      if (this.axesHelper?.visible) box.expandByObject(this.axesHelper);
+      if (box.isEmpty()) {
+        this._clipSphere = null;
+      } else {
+        this._clipSphere = this._clipSphere || new THREE.Sphere();
+        box.getBoundingSphere(this._clipSphere);
+      }
+      this._clipBoundsMs = now;
+    }
+
+    let near, far;
+    const s = this._clipSphere;
+    if (s && isFinite(s.radius) && s.radius > 0) {
+      const dist = cam.position.distanceTo(s.center);
+      const r = s.radius;
+      far  = dist + r * 1.5;                       // beyond the far edge (+0.5r)
+      near = Math.max(far / 50000, (dist - r) * 0.5); // half-way to the near edge, ratio-capped
+      if (!(near > 0)) near = far / 50000;
+    } else {
+      near = 0.1; far = 100000;                    // empty scene → safe default
+    }
+
+    // Rebuild the projection only on a meaningful change (avoid per-frame churn).
+    if (Math.abs(cam.near - near) > near * 0.02 || Math.abs(cam.far - far) > far * 0.02) {
+      cam.near = near;
+      cam.far  = far;
+      cam.updateProjectionMatrix();
+    }
   }
 
   // ═══════════════════════════════════════════════════════════════════════
