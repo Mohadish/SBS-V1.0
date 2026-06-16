@@ -58,6 +58,10 @@ export function ssrPrepassHook(renderer, scene, camera, geometry, material) {
   u.uReflInt.value = reflI;
   u.uSolid.value   = solid;
   u.uFlag.value    = reflective ? 1.0 : 0.0;
+  // REQUIRED when changing a shared material's uniforms per-mesh in
+  // onBeforeRender — else three.js uploads them once and every mesh in the
+  // prepass gets the first mesh's values (flag stuck → nothing reflects).
+  material.uniformsNeedUpdate = true;
 }
 
 class SSRReflectPass extends Pass {
