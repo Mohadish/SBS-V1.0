@@ -208,6 +208,21 @@ export class SceneCore extends Emitter {
     this._resizeObs = new ResizeObserver(() => this.fitToCanonical());
     this._resizeObs.observe(container);
 
+    // ── Render-on-demand wake triggers ──────────────────────────────────
+    // Any interaction wakes the loop for a short window; the per-frame camera
+    // check + active-animation checks keep it alive while things move. When
+    // none fire, the loop freezes the last frame (no AO shimmer, no GPU churn).
+    const _wake = () => this.requestRender(800);
+    for (const ev of ['pointerdown', 'pointermove', 'wheel', 'keydown']) {
+      document.addEventListener(ev, _wake, { capture: true, passive: true });
+    }
+    if (typeof window !== 'undefined') {
+      window.sbsRender = {
+        freeze: (b) => { this._freezeWhenIdle = (b !== false); this.requestRender(0); },
+        wake:   ()  => this.requestRender(0),
+      };
+    }
+
     // ── V0.2.22.21 — initialise the outline pass ────────────────────────
     // Runs AFTER fitToCanonical so the canonical buffer size is known.
     const _c = getCanonicalSize();
@@ -237,11 +252,18 @@ export class SceneCore extends Emitter {
       // Update camera fill light position to track camera
       this._syncFillLight();
 
+      // Render-on-demand: decide BEFORE the tick hooks so idle-aware hooks (the
+      // thumbnail capture) can skip when the viewport is frozen. Freezing the
+      // idle viewport stops the AO shimmer AND saves GPU. Kill-switch:
+      // window.sbsRender.freeze(false).
+      const shouldRender = this._shouldRender(now);
+      this._idle = !shouldRender;
+
       // External tick hooks (animations, gizmos, notes rendering, etc.)
       this._tickHooks.forEach(fn => { try { fn(now, delta); } catch(e) { console.error(e); } });
 
-      // Render
-      this._render();
+      // Render only when something changed.
+      if (shouldRender) this._render();
     };
 
     this._rafId = requestAnimationFrame(tick);
@@ -253,6 +275,37 @@ export class SceneCore extends Emitter {
       cancelAnimationFrame(this._rafId);
       this._rafId = null;
     }
+  }
+
+  // ── Render-on-demand ─────────────────────────────────────────────────────
+  // The viewport redraws only when something changed: camera moved, a camera/
+  // object animation is running, or an interaction requested it. When idle it
+  // freezes the last frame → no AO shimmer + no idle GPU churn. Kill-switch:
+  // window.sbsRender.freeze(false) forces continuous rendering.
+
+  /** Ask the loop to render for the next `ms` milliseconds (0 = just next frame). */
+  requestRender(ms = 0) {
+    this._renderReqUntil = Math.max(this._renderReqUntil || 0, performance.now() + ms);
+  }
+
+  /** True when the loop is currently frozen (idle-aware hooks check this). */
+  isIdle() { return this._idle === true; }
+
+  /** Compact key of the camera pose — equality means "camera didn't move". */
+  _camKey() {
+    const c = this.camera; if (!c) return '';
+    const p = c.position, q = c.quaternion;
+    return p.x + ',' + p.y + ',' + p.z + ',' + q.x + ',' + q.y + ',' + q.z + ',' + q.w + ',' + c.zoom + ',' + c.fov;
+  }
+
+  _shouldRender(now) {
+    if (this._freezeWhenIdle === false) return true;           // kill-switch
+    const key    = this._camKey();
+    const moved  = key !== this._lastCamKey;
+    const active = !!this._transition || now < (this._renderReqUntil || 0);
+    if (moved || active) { this._lastCamKey = key; this._settle = 4; return true; }
+    if (this._settle > 0) { this._settle--; return true; }     // settle tail after motion
+    return false;                                              // idle → freeze
   }
 
   /**
@@ -295,8 +348,12 @@ export class SceneCore extends Emitter {
     if (!dom || !dom.width || !dom.height) return null;
 
     if (opts.withoutOverlayScene) {
+      // Render the same way the live viewport does (through the AO composer when
+      // on) so this capture doesn't paint a NO-AO frame onto the live canvas.
       this.renderer.autoClear = true;
-      this.renderer.render(this.scene, this.camera);
+      const composer = (this._aoEnabled !== false) ? this._ensureComposer() : null;
+      if (composer) composer.render();
+      else          this.renderer.render(this.scene, this.camera);
     }
 
     const off = document.createElement('canvas');
@@ -452,6 +509,7 @@ export class SceneCore extends Emitter {
     resizeOutlinePass(c.width, c.height);
     // V0.3.0.1 — keep the AO composer's render targets at canonical size too.
     if (this._composer) this._composer.setSize(c.width, c.height);
+    this.requestRender(0);   // size/aspect changed → force a redraw (camera-pose key wouldn't catch it)
 
     // 2. Camera at canonical aspect — every render projects the same
     //    frustum on every machine. Output is reproducible.

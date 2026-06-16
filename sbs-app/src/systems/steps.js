@@ -144,13 +144,22 @@ class StepManager {
       if (this._dirty) this.syncActiveStepNow();
     }, 500);
 
-    // Register per-frame animation tick
+    // Register per-frame animation tick. While object/step transitions run,
+    // keep the render-on-demand loop awake — object motion doesn't move the
+    // camera, so the loop's camera check alone wouldn't notice it.
     this._tickUnsubscribe = sceneCore.addTickHook((nowMs) => {
       this._advanceObjectTransitions(nowMs);
+      if (this._animRunning || (this._objectTransitions && this._objectTransitions.length)) {
+        sceneCore.requestRender?.(150);
+      }
     });
 
     // Thumbnail capture tick — 5 fps throttle, updates active step's preview.
+    // Skip while the viewport is idle (frozen): nothing changed so the thumb is
+    // still valid, and re-rendering it onto the live canvas would reintroduce
+    // the flicker we just removed.
     this._thumbTickUnsubscribe = sceneCore.addTickHook((nowMs) => {
+      if (sceneCore.isIdle?.()) return;
       if (nowMs - this._lastThumbMs < this._thumbIntervalMs) return;
       this.captureActiveThumbnail();
     });
