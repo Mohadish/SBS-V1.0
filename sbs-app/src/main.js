@@ -84,7 +84,7 @@ import { initNotesRender }        from './systems/notes-render.js';
 import { initCableRender, getCablePointMeshes, getCableSegmentMeshes, getCableSocketMeshes, setInsertHoverPosition } from './systems/cables-render.js';  // C2: cables 3D render; C5-A: point raycast; C5-D: segment raycast + insert ghost; C5-E2: socket raycast
 import { initUserSettings, get as getUserSettings } from './core/user-settings.js';
 import { openSettingsModal }   from './ui/settings-modal.js';
-import { segmentMeshFaces, buildRegionViz } from './core/mesh-segment.js';
+import { segmentMeshFaces, buildRegionViz, regionGeometry } from './core/mesh-segment.js';
 import { openModelSourceDialog } from './ui/model-source-dialog.js';
 import { schedulePrecache, cancel as cancelPrecache } from './systems/narration-precache.js';
 
@@ -346,6 +346,25 @@ window.sbsMirror = {
     node?.object3d?.traverse(o => { if (!mesh && o.isMesh) mesh = o; });
     if (mesh) { sceneCore.addPlanarMirror(mesh); console.log('[mirror] added on', mesh.name || node?.name || '(mesh)'); }
     else console.warn('[mirror] select a mesh (or a node containing one) first');
+  },
+  // 2b: mirror the LARGEST flat region of the selected mesh (per-face, true planar).
+  faceFromSelected: () => {
+    const id   = state.get('selectedId');
+    const node = id ? state.get('nodeById')?.get?.(id) : null;
+    let mesh = null;
+    node?.object3d?.traverse(o => { if (!mesh && o.isMesh) mesh = o; });
+    if (!mesh) { console.warn('[mirror] select a mesh first'); return; }
+    const angle   = state.get('shapeFaceAngleThreshold') ?? 5;
+    const regions = segmentMeshFaces(mesh, angle);
+    const region  = regions.find(r => r.flat);   // largest flat (regions sorted by area)
+    if (!region) { console.warn('[mirror] no flat region found on this mesh'); return; }
+    const sub = new window.THREE.Mesh(regionGeometry(mesh, region));
+    sub.userData.noSelect = true;
+    sub.userData.isMirrorSubmesh = true;
+    mesh.add(sub);
+    const m = sceneCore.addPlanarMirror(sub);
+    if (m) { m.material.polygonOffset = true; m.material.polygonOffsetFactor = -1; m.material.polygonOffsetUnits = -1; }
+    console.log('[mirror] face mirror on largest flat region (area', region.areaLocal.toFixed(2) + ')');
   },
   clear: () => { sceneCore.clearPlanarMirrors(); console.log('[mirror] cleared'); },
 };

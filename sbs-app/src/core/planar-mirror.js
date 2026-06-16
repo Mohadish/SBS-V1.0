@@ -14,13 +14,11 @@
  */
 
 /** Area-agnostic plane of a mesh: world centroid + averaged world normal. */
-function computeMeshPlane(mesh) {
+function computeMeshPlaneLocal(mesh) {
   const THREE = window.THREE;
-  mesh.updateWorldMatrix(true, false);
   const geo = mesh.geometry;
   if (!geo.boundingBox) geo.computeBoundingBox();
-  const point = geo.boundingBox.getCenter(new THREE.Vector3()).applyMatrix4(mesh.matrixWorld);
-
+  const point = geo.boundingBox.getCenter(new THREE.Vector3());   // mesh-local
   const nAttr = geo.getAttribute('normal');
   const avg = new THREE.Vector3();
   if (nAttr) {
@@ -28,9 +26,7 @@ function computeMeshPlane(mesh) {
     for (let i = 0; i < nAttr.count; i++) { tmp.fromBufferAttribute(nAttr, i); avg.add(tmp); }
   }
   if (avg.lengthSq() < 1e-9) avg.set(0, 0, 1);
-  const nm = new THREE.Matrix3().getNormalMatrix(mesh.matrixWorld);
-  const normal = avg.applyMatrix3(nm).normalize();
-  return { point, normal };
+  return { point, normal: avg.normalize() };   // mesh-local — transformed to world each update
 }
 
 export class PlanarMirror {
@@ -39,9 +35,9 @@ export class PlanarMirror {
     this.mesh = mesh;
     this.originalMaterial = mesh.material;
 
-    const plane = computeMeshPlane(mesh);
-    this.point  = plane.point;
-    this.normal = plane.normal;
+    const plane = computeMeshPlaneLocal(mesh);
+    this.pointLocal  = plane.point;
+    this.normalLocal = plane.normal;
 
     this.rt = new THREE.WebGLRenderTarget(size, size, {
       minFilter: THREE.LinearFilter, magFilter: THREE.LinearFilter,
@@ -82,8 +78,11 @@ export class PlanarMirror {
   /** Render the reflected scene into the RT. Call ONCE per frame, pre-composer. */
   update(renderer, scene, camera) {
     const THREE = window.THREE;
-    const mirrorPos = this.point;
-    const normal    = this.normal;
+    // World plane from the live transform → the mirror follows the host mesh.
+    this.mesh.updateWorldMatrix(true, false);
+    const mirrorPos = this.pointLocal.clone().applyMatrix4(this.mesh.matrixWorld);
+    const normal    = this.normalLocal.clone()
+      .applyMatrix3(new THREE.Matrix3().getNormalMatrix(this.mesh.matrixWorld)).normalize();
 
     const camPos = new THREE.Vector3().setFromMatrixPosition(camera.matrixWorld);
     const view   = new THREE.Vector3().subVectors(mirrorPos, camPos);
@@ -145,7 +144,14 @@ export class PlanarMirror {
   }
 
   dispose() {
-    if (this.mesh) this.mesh.material = this.originalMaterial;
+    if (this.mesh) {
+      this.mesh.material = this.originalMaterial;
+      // Per-face mirrors own an extracted overlay sub-mesh → remove it on clear.
+      if (this.mesh.userData && this.mesh.userData.isMirrorSubmesh) {
+        this.mesh.geometry?.dispose?.();
+        this.mesh.parent?.remove(this.mesh);
+      }
+    }
     this.rt.dispose();
     this.material.dispose();
   }

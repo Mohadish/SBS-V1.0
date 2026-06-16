@@ -12,7 +12,7 @@
  * @returns Array<{ tris:number[], areaLocal, normalLocal:Vector3, centerLocal:Vector3 }>
  * sorted largest-area first. Normals/centres are in MESH-LOCAL space.
  */
-export function segmentMeshFaces(mesh, angleDeg = 5) {
+export function segmentMeshFaces(mesh, angleDeg = 5, flatTolDeg = 3) {
   const THREE = window.THREE;
   const geo = mesh.geometry;
   const pos = geo && geo.getAttribute('position');
@@ -83,7 +83,14 @@ export function segmentMeshFaces(mesh, angleDeg = 5) {
     for (const t of tris) { area += triArea[t]; avgN.addScaledVector(triN[t], triArea[t]); cen.addScaledVector(triC[t], triArea[t]); }
     if (area < 1e-9) continue;
     avgN.normalize(); cen.multiplyScalar(1 / area);
-    regions.push({ tris, areaLocal: area, normalLocal: avgN, centerLocal: cen });
+    // Planarity: a TRUE flat face has ~all its area within a tight tolerance of
+    // the region normal. A curved band (cylinder slice) spans the flood angle →
+    // fails this → stays curved (SSR), not a mirror.
+    const flatCos = Math.cos(flatTolDeg * Math.PI / 180);
+    let flatArea = 0;
+    for (const t of tris) if (triN[t].dot(avgN) >= flatCos) flatArea += triArea[t];
+    const flat = (flatArea / area) >= 0.95;
+    regions.push({ tris, areaLocal: area, normalLocal: avgN, centerLocal: cen, flat });
   }
   regions.sort((A, B) => B.areaLocal - A.areaLocal);
   return regions;
@@ -115,9 +122,11 @@ export function buildRegionViz(mesh, regions, maxRegions = 40) {
   group.name = '__segmentViz';
   let ci = 0;
   for (const r of regions.slice(0, maxRegions)) {
-    const color = new THREE.Color().setHSL((ci * 0.6180339887) % 1, 0.75, 0.55); ci++;
+    let color, opacity;
+    if (r.flat) { color = new THREE.Color().setHSL((ci * 0.6180339887) % 1, 0.78, 0.55); ci++; opacity = 0.8; }
+    else        { color = new THREE.Color(0x1a1a1a); opacity = 0.35; }   // curved → excluded from mirrors
     const m = new THREE.Mesh(regionGeometry(mesh, r), new THREE.MeshBasicMaterial({
-      color, side: THREE.DoubleSide, transparent: true, opacity: 0.75,
+      color, side: THREE.DoubleSide, transparent: true, opacity,
       polygonOffset: true, polygonOffsetFactor: -1, polygonOffsetUnits: -1,
     }));
     m.renderOrder = 999;
