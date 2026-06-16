@@ -622,6 +622,7 @@ export class SceneCore extends Emitter {
       this._ssrPass.enabled = this._ssrEnabled;
       const ss = s.ssr || {}, p = this._ssrPass.params;
       if (ss.intensity   != null) p.intensity   = ss.intensity;
+      if (ss.roughness   != null) p.roughness   = ss.roughness;
       if (ss.maxDistance != null) p.maxDistance = ss.maxDistance;
       if (ss.thickness   != null) p.thickness   = ss.thickness;
       if (ss.steps       != null) p.steps       = ss.steps;

@@ -37,6 +37,7 @@ class SSRReflectPass extends Pass {
       maxDistance: 8.0,   // WORLD units — contact range; tune to model scale
       thickness:   1.0,   // surface thickness for the hit test (world units)
       steps:       24,    // ray-march samples (clamped to 64 in-shader)
+      roughness:   0.3,   // 0 = mirror-sharp, 1 = max blur (GLOBAL for now)
     };
 
     this._normalMat = new MeshNormalMaterial();
@@ -60,6 +61,7 @@ class SSRReflectPass extends Pass {
         uMaxDist:   { value: this.params.maxDistance },
         uThickness: { value: this.params.thickness },
         uSteps:     { value: this.params.steps },
+        uRoughness: { value: this.params.roughness },
       },
       vertexShader: /* glsl */`
         varying vec2 vUv;
@@ -77,6 +79,7 @@ class SSRReflectPass extends Pass {
         uniform float uMaxDist;
         uniform float uThickness;
         uniform float uSteps;
+        uniform float uRoughness;
 
         vec3 viewPos(vec2 uv, float d) {
           vec4 clip = vec4(uv * 2.0 - 1.0, d * 2.0 - 1.0, 1.0);
@@ -120,7 +123,22 @@ class SSRReflectPass extends Pass {
               float distFade = 1.0 - clamp(dist / uMaxDist, 0.0, 1.0);  // contact falloff
               vec2  e        = smoothstep(0.0, 0.12, sUv) * (1.0 - smoothstep(0.88, 1.0, sUv));
               float edgeFade = e.x * e.y;                                // hide screen-edge cutoff
-              reflCol = texture2D(tDiffuse, sUv).rgb;
+              // Roughness blur: sunflower disc of taps around the hit. Radius
+              // grows with roughness AND reflection distance (rough surfaces
+              // scatter more the farther the bounce). 0 roughness → 1 sharp tap.
+              float blurR = uRoughness * 0.045 * (0.25 + 0.75 * clamp(dist / uMaxDist, 0.0, 1.0));
+              if (blurR > 0.0002) {
+                vec3 acc = vec3(0.0);
+                for (int t = 0; t < 12; t++) {
+                  float f   = float(t);
+                  float ang = f * 2.39996323;                               // golden angle
+                  vec2  o   = vec2(cos(ang), sin(ang)) * (blurR * sqrt((f + 0.5) / 12.0));
+                  acc += texture2D(tDiffuse, sUv + o).rgb;
+                }
+                reflCol = acc / 12.0;
+              } else {
+                reflCol = texture2D(tDiffuse, sUv).rgb;
+              }
               a = distFade * edgeFade;
               break;
             }
@@ -162,6 +180,7 @@ class SSRReflectPass extends Pass {
     u.uMaxDist.value   = this.params.maxDistance;
     u.uThickness.value = this.params.thickness;
     u.uSteps.value     = this.params.steps;
+    u.uRoughness.value = this.params.roughness;
 
     renderer.setRenderTarget(this.renderToScreen ? null : writeBuffer);
     renderer.autoClear = true;

@@ -61,7 +61,7 @@ const DEFAULTS = {
   // override comes later. Surfaced as sliders in the Files tab + Scene settings.
   render: {
     ao:  { enabled: true,  intensity: 4.0, radius: 24.0, falloff: 1.0 },
-    ssr: { enabled: false, intensity: 0.6, maxDistance: 8.0, thickness: 1.0, steps: 24 },
+    ssr: { enabled: false, intensity: 0.6, roughness: 0.3, maxDistance: 8.0, thickness: 1.0, steps: 24 },
   },
   // User-level animation preset collection. Entries are { name, animation }.
   // Cross-project, machine-scope — the user's personal library of preset
