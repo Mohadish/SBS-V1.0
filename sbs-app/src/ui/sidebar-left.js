@@ -25,7 +25,7 @@ import {
 } from '../core/schema.js';
 import { buildNodeMap }    from '../core/nodes.js';
 import { applyNodeSourceTransformToObject3D } from '../core/transforms.js';
-import { showContextMenu } from './context-menu.js';
+import { showContextMenu, showConfirmDialog } from './context-menu.js';
 import { undoManager }    from '../systems/undo.js';
 
 /**
@@ -847,6 +847,12 @@ async function _onOpenProject() {
 
     setStatus(`Opened: ${state.get('projectName')}.`);
 
+    // Post-load SUGGESTION (never auto-runs): CAD/STEP imports leave deep chains
+    // of empty + single-child folders. If this project carries a lot, offer the
+    // same undoable Clean-tree action the tree right-click exposes. Below the
+    // threshold (already-clean files) it stays silent.
+    _maybeSuggestTreeCleanup();
+
     // If the user overrode any mismatched files (accepted the on-disk version),
     // reconcile each overridden asset's saved metadata to the CURRENT file on
     // disk, then suggest a Save As (never overwrite the untested original).
@@ -859,6 +865,23 @@ async function _onOpenProject() {
     console.error('Open project failed:', err);
     setStatus('Failed to open project.', 'danger');
   }
+}
+
+// Suggest (never force) a tree cleanup when a freshly-loaded project carries a
+// lot of redundant import folders. Below the threshold, stays silent so clean
+// projects never see a prompt. The action itself is the undoable Clean-tree.
+const CLEAN_SUGGEST_THRESHOLD = 50;
+function _maybeSuggestTreeCleanup() {
+  let n = 0;
+  try { n = actions.countRedundantFolders?.() || 0; } catch (_) { n = 0; }
+  if (n < CLEAN_SUGGEST_THRESHOLD) return;
+  showConfirmDialog(
+    `Clean up ${n} imported folders?`,
+    `This project has ${n} redundant empty / single-child folders left over from CAD import. ` +
+    `Removing them declutters the tree and speeds up step playback. Nothing moves, and it's undoable (Ctrl+Z). ` +
+    `You can also do this anytime: right-click a folder → "Clean redundant folders".`,
+    () => actions.cleanTree(),
+  );
 }
 
 /**

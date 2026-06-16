@@ -1006,6 +1006,36 @@ export function cleanTree(scopeRootId = null) {
   );
 }
 
+/**
+ * Dry-run: how many folders cleanTree(scopeRootId) WOULD remove. Non-mutating —
+ * runs the same collapse on a light structural clone. Used by the post-load
+ * cleanup suggestion so it only fires when there's real bloat.
+ */
+export function countRedundantFolders(scopeRootId = null) {
+  const treeData = state.get('treeData');
+  if (!treeData) return 0;
+  const allSteps = state.get('steps') || [];
+  const src = scopeRootId ? state.get('nodeById')?.get(scopeRootId) : treeData;
+  if (!src) return 0;
+  // Clone only the fields the collapse + guards read (id/type/flags/transform).
+  const clone = (n) => ({
+    id: n.id, type: n.type, locked: n.locked, archived: n.archived,
+    meshIndex: n.meshIndex, fingerprint: n.fingerprint,
+    localOffset: n.localOffset, localQuaternion: n.localQuaternion,
+    baseLocalPosition: n.baseLocalPosition, baseLocalQuaternion: n.baseLocalQuaternion,
+    baseLocalScale: n.baseLocalScale,
+    children: (n.children || []).map(clone),
+  });
+  const root = clone(src);
+  const isCollapsible = (n) =>
+    n.type === 'folder' && n !== root &&
+    n.locked !== true && n.archived !== true &&
+    !_folderHasGeometry(n) && _folderIsIdentityEverywhere(n, allSteps);
+  const removed = new Set();
+  _collapseLiveFolders(root, isCollapsible, removed, new Map());
+  return removed.size;
+}
+
 // ─── Step / chapter multi-selection (state.selectedStepIds) ──────────────
 //
 // Routed through actions.js so every change goes through the undo log.
