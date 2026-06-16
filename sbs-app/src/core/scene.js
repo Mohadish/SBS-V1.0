@@ -41,6 +41,7 @@ import { EffectComposer } from '../../vendor/three-addons/postprocessing/EffectC
 import { RenderPass }     from '../../vendor/three-addons/postprocessing/RenderPass.js';
 import { N8AOPass }       from '../../vendor/three-addons/N8AO.js';
 import { SSRReflectPass } from '../../vendor/three-addons/SSRReflectPass.js';
+import { PlanarMirror }   from './planar-mirror.js';
 
 // ── Mini event emitter (no dependency on state.js) ────────────────────────
 class Emitter {
@@ -465,6 +466,15 @@ export class SceneCore extends Emitter {
     // (which reads depth) stays clean at any distance. Must run before the AO
     // composer, which reads camera.near / camera.far.
     this._updateClipPlanes();
+
+    // Planar mirrors: render their reflections ONCE here, before the composer,
+    // so the reflection pass can't re-fire inside the N8AO/SSR scene renders.
+    if (this._mirrors && this._mirrors.length) {
+      for (const m of this._mirrors) {
+        try { m.update(this.renderer, this.scene, this.camera); } catch (e) { console.error(e); }
+      }
+    }
+
     // Main scene — through the N8AO composer when AO is enabled, else direct.
     // The composer's last pass restores the render target to screen, so the
     // outline + overlay below still composite on top exactly as before.
@@ -1019,6 +1029,23 @@ export class SceneCore extends Emitter {
       cam.far  = far;
       cam.updateProjectionMatrix();
     }
+  }
+
+  // ── Planar mirrors (V0.3.0.28 spike) ────────────────────────────────────
+  /** Turn a flat mesh into a true planar mirror (reflection rendered in _render). */
+  addPlanarMirror(mesh) {
+    if (!mesh || !mesh.isMesh) return null;
+    this._mirrors = this._mirrors || [];
+    const m = new PlanarMirror(mesh);
+    this._mirrors.push(m);
+    this.requestRender(300);
+    return m;
+  }
+  /** Remove all planar mirrors, restoring their original materials. */
+  clearPlanarMirrors() {
+    if (this._mirrors) { for (const m of this._mirrors) { try { m.dispose(); } catch {} } }
+    this._mirrors = [];
+    this.requestRender(300);
   }
 
   // ═══════════════════════════════════════════════════════════════════════

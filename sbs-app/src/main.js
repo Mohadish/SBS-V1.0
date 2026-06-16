@@ -335,6 +335,20 @@ initUserSettings()
   })
   .catch(err => console.warn('[settings] init failed:', err));
 
+// Planar-mirror spike (V0.3.0.28): window.sbsMirror.fromSelected() turns the
+// selected mesh into a true planar mirror; .clear() removes all.
+window.sbsMirror = {
+  fromSelected: () => {
+    const id   = state.get('selectedId');
+    const node = id ? state.get('nodeById')?.get?.(id) : null;
+    let mesh = null;
+    node?.object3d?.traverse(o => { if (!mesh && o.isMesh) mesh = o; });
+    if (mesh) { sceneCore.addPlanarMirror(mesh); console.log('[mirror] added on', mesh.name || node?.name || '(mesh)'); }
+    else console.warn('[mirror] select a mesh (or a node containing one) first');
+  },
+  clear: () => { sceneCore.clearPlanarMirrors(); console.log('[mirror] cleared'); },
+};
+
 // File → Settings… menu hook. Channel allowlist lives in preload.js.
 window.sbsNative?.onMenu?.('menu:openSettings', () => openSettingsModal());
 // Edit → Model source transform… opens a floating, draggable window.
