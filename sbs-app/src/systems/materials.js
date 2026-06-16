@@ -814,6 +814,7 @@ gl_FragColor.a = 1.0;
    */
   applyAll() {
     this._colorTransition = null;   // cancel any in-progress colour animation
+    sceneCore.requestRender?.(150); // materials changed → wake the render-on-demand loop (covers undo/redo, programmatic recolors)
     const overrideMode = state.get('solidOverride');
     const presets      = state.get('colorPresets');
     const presetById   = new Map(presets.map(p => [p.id, p]));
@@ -1200,6 +1201,7 @@ gl_FragColor.a = 1.0;
   advanceColorTransition(nowMs) {
     const tr = this._colorTransition;
     if (!tr) return;
+    sceneCore.requestRender?.(120);   // colours are lerping → keep the loop awake
 
     const raw   = Math.max(0, Math.min((nowMs - tr.startMs) / tr.durationMs, 1));
     const alpha = tr.easeFn(raw);

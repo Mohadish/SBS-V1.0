@@ -212,8 +212,13 @@ export class SceneCore extends Emitter {
     // Any interaction wakes the loop for a short window; the per-frame camera
     // check + active-animation checks keep it alive while things move. When
     // none fire, the loop freezes the last frame (no AO shimmer, no GPU churn).
+    // 'input'/'change' included so editing UI controls — color picker sliders,
+    // shape & flexibility sliders, opacity, hex fields — drive the 3D viewport
+    // in real time (they change the scene without moving the camera, so the
+    // camera check alone wouldn't wake the loop). Konva overlays already render
+    // independently, so they were never affected.
     const _wake = () => this.requestRender(800);
-    for (const ev of ['pointerdown', 'pointermove', 'wheel', 'keydown']) {
+    for (const ev of ['pointerdown', 'pointermove', 'wheel', 'keydown', 'input', 'change']) {
       document.addEventListener(ev, _wake, { capture: true, passive: true });
     }
     if (typeof window !== 'undefined') {
