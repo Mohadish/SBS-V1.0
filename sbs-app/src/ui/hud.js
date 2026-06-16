@@ -11,9 +11,10 @@ import { countMeshNodes } from '../core/nodes.js';
 let _el = null;
 
 export function initHud() {
-  _el = document.getElementById('hud-content');
-  state.on('selection:change', () => renderHud());
-  state.on('change:treeData',  () => renderHud());
+  // HUD removed per user request (V0.3.0.23): hide the element and skip all
+  // subscriptions so the selection-info list never renders.
+  const hud = document.getElementById('hud');
+  if (hud) hud.style.display = 'none';
 }
 
 export function renderHud() {

@@ -16,11 +16,20 @@
 
 import * as overlay from '../systems/overlay.js';
 import { setStatus } from './status.js';
+import { state } from '../core/state.js';
+import { chooseFromButtons } from './prompt.js';
 
 let _bar = null;
 let _mainBtn = null;
 let _tools = null;
 let _textSlot = null;   // populated by text-toolbar.js while editing
+
+// Overlay-mode awareness (V0.3.0.23): viewport clicks while editing do nothing,
+// which is easy to forget. Blink the toggle on each such click; after 3, offer to
+// exit. Both reset whenever overlay editing is entered/exited.
+let _misclickCount      = 0;
+let _suppressExitPrompt = false;
+let _blinkTimer         = null;
 
 export function initOverlayToolbar() {
   const surface = document.getElementById('viewport-surface');
@@ -97,6 +106,39 @@ export function initOverlayToolbar() {
   _bar.append(_textSlot, _tools, _mainBtn);
 
   surface.appendChild(_bar);
+
+  // Blink + (after 3) prompt when the user clicks the viewport while editing.
+  state.on('overlay:misclick', _onOverlayMisclick);
+  // Entering OR leaving overlay edit resets the nudge state.
+  state.on('change:overlayEditing', () => { _misclickCount = 0; _suppressExitPrompt = false; });
+}
+
+function _blinkEditButton() {
+  if (!_mainBtn) return;
+  if (_blinkTimer) { clearTimeout(_blinkTimer); _blinkTimer = null; }
+  const base = () => (overlay.isEditing() ? 'rgba(245,158,11,0.25)' : '');
+  let n = 0;
+  const step = () => {
+    _mainBtn.style.background = (n % 2 === 0) ? 'rgba(245,158,11,0.95)' : base();
+    n++;
+    if (n <= 5) { _blinkTimer = setTimeout(step, 110); }
+    else        { _mainBtn.style.background = base(); _blinkTimer = null; }
+  };
+  step();
+}
+
+async function _onOverlayMisclick() {
+  _blinkEditButton();                       // always blink — the reminder
+  if (_suppressExitPrompt) return;
+  if (++_misclickCount < 3) return;
+  _misclickCount = 0;
+  const choice = await chooseFromButtons(
+    'Overlay edit mode is on',
+    "You're editing the overlay, so clicks in the viewport won't select 3D objects. Exit overlay edit?",
+    [{ id: 'exit', label: 'Exit overlay', primary: true }, { id: 'stay', label: 'Stay in overlay' }],
+  );
+  if (choice === 'exit') _setEditing(false);
+  else _suppressExitPrompt = true;          // declined → don't prompt again until they leave overlay
 }
 
 /**

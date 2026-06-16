@@ -579,7 +579,7 @@ function _applySelectionHighlight() {
 function _pointScaleFor(cableId, nodeId, baseRadius) {
   const sel = state.get('selectedCablePoint');
   const isSel = sel && sel.cableId === cableId && sel.nodeId === nodeId;
-  return baseRadius * (isSel ? 1.4 : 1.1);
+  return baseRadius * (isSel ? 1.4 : 1.0);  // unselected = exactly the cable radius; selected inflates
 }
 
 function _disposeSubgroup(entry) {

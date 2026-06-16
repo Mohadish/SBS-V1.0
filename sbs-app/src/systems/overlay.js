@@ -90,7 +90,12 @@ export function initOverlay() {
 
   // Click an empty area → deselect.
   _stage.on('pointerdown', (e) => {
-    if (e.target === _stage) _setSelection(null);
+    if (e.target === _stage) {
+      _setSelection(null);
+      // Empty-area click while editing = the user (likely) tried to click a 3D
+      // object but overlay edit is swallowing it. Nudge them (blink + prompt).
+      if (_editing) state.emit('overlay:misclick');
+    }
   });
 
   // Right-click on empty viewport → paste-only context menu (Paste / Paste
