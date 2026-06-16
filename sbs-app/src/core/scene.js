@@ -40,6 +40,7 @@ import { initOutlinePass, resizeOutlinePass, renderOutlinePass } from '../system
 import { EffectComposer } from '../../vendor/three-addons/postprocessing/EffectComposer.js';
 import { RenderPass }     from '../../vendor/three-addons/postprocessing/RenderPass.js';
 import { N8AOPass }       from '../../vendor/three-addons/N8AO.js';
+import { SSRReflectPass } from '../../vendor/three-addons/SSRReflectPass.js';
 
 // ── Mini event emitter (no dependency on state.js) ────────────────────────
 class Emitter {
@@ -526,13 +527,29 @@ export class SceneCore extends Emitter {
       c.accumulate        = false;  // NEVER cross-frame accumulate — ghosts under motion
       composer.addPass(n8ao);
       this._n8aoPass = n8ao;
+
+      // SSR contact-reflection spike — OFF by default (opt-in via console).
+      // Last pass when enabled → renders to screen; the composer's
+      // isLastEnabledPass() handles the on/off swap automatically.
+      const ssr = new SSRReflectPass(this.scene, this.camera, size.width, size.height);
+      ssr.enabled = false;
+      composer.addPass(ssr);
+      this._ssrPass = ssr;
+
       this._composer = composer;
-      // Console tuning hook for the spike: window.sbsAO.set({aoRadius:32,intensity:5}) / .on(false)
+      // Console tuning hooks for the spike:
+      //   window.sbsAO.set({aoRadius:32,intensity:5}) / .on(false)
+      //   window.sbsSSR.on(true) / .set({intensity:0.6, maxDistance:8, thickness:1, steps:24})
       if (typeof window !== 'undefined') {
         window.sbsAO = {
           set:  (o) => this.setAOConfig(o),
           on:   (b) => this.setAOEnabled(b),
           pass: n8ao,
+        };
+        window.sbsSSR = {
+          on:   (b) => { ssr.enabled = (b !== false); this.requestRender(300); console.log('[scene] SSR', b !== false ? 'ON' : 'OFF'); },
+          set:  (o) => { Object.assign(ssr.params, o || {}); this.requestRender(300); },
+          pass: ssr,
         };
       }
       console.log('[scene] N8AO composer ready', size.width + 'x' + size.height);

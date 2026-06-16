@@ -40,6 +40,7 @@ export const Matrix4 = THREE_NS.Matrix4;
 export const MeshBasicMaterial = THREE_NS.MeshBasicMaterial;
 export const MeshPhysicalMaterial = THREE_NS.MeshPhysicalMaterial;
 export const MeshStandardMaterial = THREE_NS.MeshStandardMaterial;
+export const MeshNormalMaterial = THREE_NS.MeshNormalMaterial;
 export const MirroredRepeatWrapping = THREE_NS.MirroredRepeatWrapping;
 export const NearestFilter = THREE_NS.NearestFilter;
 export const NearestMipmapLinearFilter = THREE_NS.NearestMipmapLinearFilter;
