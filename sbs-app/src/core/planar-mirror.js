@@ -71,7 +71,10 @@ export class PlanarMirror {
         varying vec4 vCoord;
         void main() {
           if (uDebug > 0.5) { gl_FragColor = vec4(1.0, 0.0, 1.0, 1.0); return; }  // visibility test
-          vec3 refl = texture2DProj(tReflect, vCoord).rgb;
+          // Manual perspective divide (avoids texture2DProj, which can fail to
+          // compile under WebGL2 → the whole material silently doesn't render).
+          vec2 uv = vCoord.xy / vCoord.w;
+          vec3 refl = texture2D(tReflect, uv).rgb;
           gl_FragColor = vec4(mix(uTint, refl, uReflectivity), 1.0);
         }
       `,
