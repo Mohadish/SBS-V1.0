@@ -84,6 +84,7 @@ import { initNotesRender }        from './systems/notes-render.js';
 import { initCableRender, getCablePointMeshes, getCableSegmentMeshes, getCableSocketMeshes, setInsertHoverPosition } from './systems/cables-render.js';  // C2: cables 3D render; C5-A: point raycast; C5-D: segment raycast + insert ghost; C5-E2: socket raycast
 import { initUserSettings, get as getUserSettings } from './core/user-settings.js';
 import { openSettingsModal }   from './ui/settings-modal.js';
+import { segmentMeshFaces, buildRegionViz } from './core/mesh-segment.js';
 import { openModelSourceDialog } from './ui/model-source-dialog.js';
 import { schedulePrecache, cancel as cancelPrecache } from './systems/narration-precache.js';
 
@@ -347,6 +348,28 @@ window.sbsMirror = {
     else console.warn('[mirror] select a mesh (or a node containing one) first');
   },
   clear: () => { sceneCore.clearPlanarMirrors(); console.log('[mirror] cleared'); },
+};
+
+// Flat-face segmentation viz (V0.3.0.29, Tier-2 stage 2a): window.sbsSegment.show()
+// colours each coplanar flat region on the selected mesh so we can validate
+// detection before building per-face mirrors. .clear() removes the overlay.
+let _segViz = null;
+window.sbsSegment = {
+  show: () => {
+    if (_segViz) { _segViz.parent?.remove(_segViz); _segViz = null; }
+    const id   = state.get('selectedId');
+    const node = id ? state.get('nodeById')?.get?.(id) : null;
+    let mesh = null;
+    node?.object3d?.traverse(o => { if (!mesh && o.isMesh) mesh = o; });
+    if (!mesh) { console.warn('[segment] select a mesh (or a node containing one) first'); return; }
+    const angle   = state.get('shapeFaceAngleThreshold') ?? 5;
+    const regions = segmentMeshFaces(mesh, angle);
+    _segViz = buildRegionViz(mesh, regions);
+    sceneCore.requestRender(300);
+    const big = regions.filter(r => r.tris.length >= 4).length;
+    console.log(`[segment] ${regions.length} regions @ ${angle}° (${big} sizeable). Biggest area ≈ ${regions[0]?.areaLocal?.toFixed?.(2)}. Coloured overlays added — distinct flat colour per face = good.`);
+  },
+  clear: () => { if (_segViz) { _segViz.parent?.remove(_segViz); _segViz = null; sceneCore.requestRender(300); console.log('[segment] cleared'); } },
 };
 
 // File → Settings… menu hook. Channel allowlist lives in preload.js.
