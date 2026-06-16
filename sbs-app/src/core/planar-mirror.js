@@ -51,6 +51,7 @@ export class PlanarMirror {
         textureMatrix: { value: this.textureMatrix },
         uReflectivity: { value: 0.9 },
         uTint:         { value: new THREE.Color(0x0a0a0a) },
+        uDebug:        { value: 0 },
       },
       vertexShader: /* glsl */`
         uniform mat4 textureMatrix;
@@ -65,8 +66,10 @@ export class PlanarMirror {
         uniform sampler2D tReflect;
         uniform float uReflectivity;
         uniform vec3  uTint;
+        uniform float uDebug;
         varying vec4 vCoord;
         void main() {
+          if (uDebug > 0.5) { gl_FragColor = vec4(1.0, 0.0, 1.0, 1.0); return; }  // visibility test
           vec3 refl = texture2DProj(tReflect, vCoord).rgb;
           gl_FragColor = vec4(mix(uTint, refl, uReflectivity), 1.0);
         }
@@ -86,8 +89,9 @@ export class PlanarMirror {
 
     const camPos = new THREE.Vector3().setFromMatrixPosition(camera.matrixWorld);
     const view   = new THREE.Vector3().subVectors(mirrorPos, camPos);
-    // Camera behind the mirror → nothing to reflect; leave the RT as-is.
-    if (view.dot(normal) > 0) return;
+    // Face the camera regardless of the source normal's sign — an inverted
+    // normal would otherwise reflect the back side (→ black).
+    if (view.dot(normal) > 0) normal.negate();
 
     view.reflect(normal).negate().add(mirrorPos);
     const rot    = new THREE.Matrix4().extractRotation(camera.matrixWorld);
@@ -142,6 +146,8 @@ export class PlanarMirror {
     renderer.xr.enabled = prevXr;
     renderer.setRenderTarget(prevRT);
   }
+
+  setDebug(on) { this.material.uniforms.uDebug.value = on ? 1 : 0; }
 
   dispose() {
     if (this.mesh) {

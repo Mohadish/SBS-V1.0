@@ -361,11 +361,17 @@ window.sbsMirror = {
     const sub = new window.THREE.Mesh(regionGeometry(mesh, region));
     sub.userData.noSelect = true;
     sub.userData.isMirrorSubmesh = true;
+    // Push the overlay slightly OUT along the face normal so it can't z-fight
+    // behind the original face (which would hide the mirror entirely).
+    mesh.geometry.computeBoundingSphere?.();
+    const eps = (mesh.geometry.boundingSphere?.radius || 1) * 0.004;
+    sub.position.copy(region.normalLocal).multiplyScalar(eps);
     mesh.add(sub);
     const m = sceneCore.addPlanarMirror(sub);
-    if (m) { m.material.polygonOffset = true; m.material.polygonOffsetFactor = -1; m.material.polygonOffsetUnits = -1; }
-    console.log('[mirror] face mirror on largest flat region (area', region.areaLocal.toFixed(2) + ')');
+    if (m) { m.material.polygonOffset = true; m.material.polygonOffsetFactor = -2; m.material.polygonOffsetUnits = -2; }
+    console.log('[mirror] face mirror on largest flat region (area', region.areaLocal.toFixed(2) + '). If blank, run window.sbsMirror.debug(true) — magenta = visible.');
   },
+  debug: (b) => sceneCore.setMirrorDebug(b !== false),
   clear: () => { sceneCore.clearPlanarMirrors(); console.log('[mirror] cleared'); },
 };
 

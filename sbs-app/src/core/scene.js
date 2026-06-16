@@ -1041,6 +1041,11 @@ export class SceneCore extends Emitter {
     this.requestRender(300);
     return m;
   }
+  /** Debug: paint all planar mirrors solid magenta to test visibility. */
+  setMirrorDebug(on) {
+    if (this._mirrors) for (const m of this._mirrors) m.setDebug?.(on);
+    this.requestRender(300);
+  }
   /** Remove all planar mirrors, restoring their original materials. */
   clearPlanarMirrors() {
     if (this._mirrors) { for (const m of this._mirrors) { try { m.dispose(); } catch {} } }
