@@ -91,6 +91,7 @@ export const LinearSRGBColorSpace = THREE_NS.LinearSRGBColorSpace;
 export const Clock                 = THREE_NS.Clock;
 export const WebGLRenderTarget         = THREE_NS.WebGLRenderTarget;
 export const WebGLMultipleRenderTargets = THREE_NS.WebGLMultipleRenderTargets;
+export const GLSL3                 = THREE_NS.GLSL3;
 export const ShaderChunk           = THREE_NS.ShaderChunk;
 export const ShaderMaterial        = THREE_NS.ShaderMaterial;
 export const RawShaderMaterial     = THREE_NS.RawShaderMaterial;

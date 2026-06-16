@@ -24,6 +24,7 @@ import state from '../core/state.js';
 import { createColorPreset } from '../core/schema.js';
 import { sceneCore } from '../core/scene.js';
 import * as clock from '../core/clock.js';
+import { ssrPrepassHook } from '../../vendor/three-addons/SSRReflectPass.js';
 
 // ── Selection-highlight edges cache (Fix B, V0.1.70) ──────────────────────
 // EdgesGeometry has `.parameters.geometry` back-pointing to its source,
@@ -2316,6 +2317,9 @@ gl_FragColor.a = 1.0;
    */
   registerMesh(nodeId, mesh) {
     this.meshById.set(nodeId, mesh);
+    // SSR G-buffer prepass hook (no-op outside the prepass). Feeds this mesh's
+    // material roughness / reflectionIntensity / solidness + reflective flag.
+    mesh.onBeforeRender = ssrPrepassHook;
     // Store original material (deep-clone to avoid sharing)
     if (mesh.material && !this.originalMaterials.has(nodeId)) {
       this.originalMaterials.set(nodeId, mesh.material.clone());

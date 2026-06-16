@@ -543,10 +543,17 @@ export class SceneCore extends Emitter {
 
       // SSR contact reflections. Last pass when enabled → renders to screen; the
       // composer's isLastEnabledPass() handles the on/off swap automatically.
-      const ssr = new SSRReflectPass(this.scene, this.camera, size.width, size.height);
-      ssr.enabled = !!this._ssrEnabled;
-      composer.addPass(ssr);
-      this._ssrPass = ssr;
+      // Isolated try/catch: an MRT/WebGL2 failure must not take AO down with it.
+      let ssr = null;
+      try {
+        ssr = new SSRReflectPass(this.scene, this.camera, size.width, size.height);
+        ssr.enabled = !!this._ssrEnabled;
+        composer.addPass(ssr);
+        this._ssrPass = ssr;
+      } catch (e) {
+        console.warn('[scene] SSR pass init failed — reflections disabled:', e);
+        this._ssrPass = null;
+      }
 
       this._composer = composer;
       // Re-apply settings captured before the passes existed (boot ordering).
@@ -562,7 +569,7 @@ export class SceneCore extends Emitter {
         };
         window.sbsSSR = {
           on:   (b) => { this.setSSREnabled(b !== false); console.log('[scene] SSR', b !== false ? 'ON' : 'OFF'); },
-          set:  (o) => { Object.assign(ssr.params, o || {}); this.requestRender(300); },
+          set:  (o) => { if (this._ssrPass) Object.assign(this._ssrPass.params, o || {}); this.requestRender(300); },
           pass: ssr,
         };
       }

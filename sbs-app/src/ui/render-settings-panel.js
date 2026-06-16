@@ -12,7 +12,7 @@ import * as userSettings from '../core/user-settings.js';
 
 const DEFAULTS = {
   ao:  { enabled: true,  intensity: 4.0, radius: 24.0, falloff: 1.0 },
-  ssr: { enabled: false, intensity: 0.6, roughness: 0.3, maxDistance: 8.0, thickness: 1.0, steps: 24 },
+  ssr: { enabled: false, intensity: 1.0, roughness: 0.3, maxDistance: 8.0, thickness: 1.0, steps: 24 },
 };
 
 const AO_SLIDERS = [
@@ -21,8 +21,7 @@ const AO_SLIDERS = [
   { key: 'falloff',   label: 'Distance falloff', min: 0, max: 5,   step: 0.05, digits: 2 },
 ];
 const SSR_SLIDERS = [
-  { key: 'intensity',   label: 'Intensity',    min: 0,   max: 1,    step: 0.01, digits: 2 },
-  { key: 'roughness',   label: 'Roughness (blur)', min: 0, max: 1,  step: 0.01, digits: 2 },
+  { key: 'intensity',   label: 'Intensity (master)', min: 0, max: 2, step: 0.01, digits: 2 },
   { key: 'maxDistance', label: 'Max distance', min: 0,   max: 2000, step: 10,   digits: 0 },
   { key: 'thickness',   label: 'Thickness',    min: 0.1, max: 50,   step: 0.1,  digits: 1 },
   { key: 'steps',       label: 'Steps',        min: 4,   max: 400,  step: 1,    digits: 0 },
@@ -63,6 +62,7 @@ export function buildRenderSettingsPanel() {
     </label>
     ${SSR_SLIDERS.map(s => row('ssr', s)).join('')}
     <div class="small muted" style="margin-top:6px;font-size:10px;line-height:1.4;">
+      Which surfaces reflect, + their roughness/intensity, are set <b>per color</b> (Colors tab → "Reflective (SSR)").
       Max distance is in world units — tune to your model scale.
       Keep (Max distance ÷ Steps) ≲ Thickness for clean reflections.
     </div>
