@@ -147,7 +147,15 @@ export class PlanarMirror {
     renderer.setRenderTarget(prevRT);
   }
 
-  setDebug(on) { this.material.uniforms.uDebug.value = on ? 1 : 0; }
+  setDebug(on) {
+    this.material.uniforms.uDebug.value = on ? 1 : 0;
+    // Debug draws on TOP regardless of depth → magenta means "rendered at all",
+    // independent of any z-fighting / being buried behind the host face.
+    this.material.depthTest  = !on;
+    this.material.depthWrite = !on;
+    this.material.needsUpdate = true;
+    if (this.mesh) this.mesh.renderOrder = on ? 9999 : 0;
+  }
 
   dispose() {
     if (this.mesh) {
