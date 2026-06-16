@@ -259,6 +259,23 @@ export class SceneCore extends Emitter {
       const shouldRender = this._shouldRender(now);
       this._idle = !shouldRender;
 
+      // ── TEMP AO-flicker diagnostic (once/sec) — remove after diagnosis ──
+      {
+        const key = this._camKey();
+        this._dgT0 = this._dgT0 || now;
+        if (this._dgPrev !== undefined && key !== this._dgPrev) this._dgCK = (this._dgCK || 0) + 1;
+        this._dgPrev = key;
+        if (shouldRender) this._dgR = (this._dgR || 0) + 1;
+        if (now - this._dgT0 >= 1000) {
+          console.log('[AO-diag] renders/s=' + (this._dgR || 0) +
+            '  camKeyΔ/s=' + (this._dgCK || 0) +
+            '  thumbs/s=' + (this._dgThumb || 0) +
+            '  frozenTime=' + (this._n8aoPass ? this._n8aoPass.frozenTime : 'n/a') +
+            '  idle=' + this._idle);
+          this._dgR = 0; this._dgCK = 0; this._dgThumb = 0; this._dgT0 = now;
+        }
+      }
+
       // External tick hooks (animations, gizmos, notes rendering, etc.)
       this._tickHooks.forEach(fn => { try { fn(now, delta); } catch(e) { console.error(e); } });
 
@@ -341,6 +358,7 @@ export class SceneCore extends Emitter {
    *     drawn in order, scaled to (w,h).
    */
   captureThumbnail(w = 120, h = 80, quality = 0.55, opts = {}) {
+    this._dgThumb = (this._dgThumb || 0) + 1;   // TEMP AO-diag counter
     // Backwards-compat: accept boolean as the old withoutOverlay flag.
     if (typeof opts === 'boolean') opts = { withoutOverlayScene: opts };
 
