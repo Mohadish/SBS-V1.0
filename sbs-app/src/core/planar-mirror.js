@@ -47,7 +47,9 @@ export class PlanarMirror {
     this.textureMatrix = new THREE.Matrix4();
 
     this.material = new THREE.ShaderMaterial({
-      side: THREE.DoubleSide,   // match the seg viz (which renders) — rule out back-face culling
+      side: THREE.DoubleSide,
+      transparent: true,        // blend the reflection OVER the surface's real material
+      depthWrite: false,
       uniforms: {
         tReflect:      { value: this.rt.texture },
         textureMatrix: { value: this.textureMatrix },
@@ -77,13 +79,13 @@ export class PlanarMirror {
           // Manual perspective divide (texture2DProj can fail to compile on WebGL2).
           // Guard w<=0 (fragment behind the reflection camera → garbage) and fade
           // at the RT edges so boundary polygons don't go black / smear.
-          if (vCoord.w <= 0.0) { gl_FragColor = vec4(uTint, 1.0); return; }
+          if (vCoord.w <= 0.0) { gl_FragColor = vec4(0.0); return; }   // no reflection → material shows
           vec2 uv = vCoord.xy / vCoord.w;
           vec2 e  = smoothstep(0.0, 0.04, uv) * (1.0 - smoothstep(0.96, 1.0, uv));
           float vis = e.x * e.y;
           // Roughness blur — sunflower disc (no mipmap dependency).
           vec3 refl;
-          float blurR = uRoughness * 0.03;
+          float blurR = uRoughness * 0.012;
           if (blurR > 0.0005) {
             vec3 acc = vec3(0.0);
             for (int t = 0; t < 12; t++) {
@@ -96,7 +98,10 @@ export class PlanarMirror {
           } else {
             refl = texture2D(tReflect, clamp(uv, 0.0, 1.0)).rgb;
           }
-          gl_FragColor = vec4(mix(uTint, refl, uReflectivity * vis), 1.0);
+          // Blend the reflection OVER the real material (rendered underneath):
+          // alpha = reflectionIntensity × solidness × edge-fade. The surface keeps
+          // its RGB / metalness / roughness shading; the mirror adds on top.
+          gl_FragColor = vec4(refl, clamp(uReflectivity * vis, 0.0, 1.0));
         }
       `,
     });
