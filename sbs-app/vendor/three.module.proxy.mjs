@@ -88,7 +88,8 @@ export const LinearSRGBColorSpace = THREE_NS.LinearSRGBColorSpace;
 // OutputPass) and the N8AO ambient-occlusion pass. All exist on window.THREE
 // in r152; this just surfaces them as ES named exports for the vendored addons.
 export const Clock                 = THREE_NS.Clock;
-export const WebGLRenderTarget     = THREE_NS.WebGLRenderTarget;
+export const WebGLRenderTarget         = THREE_NS.WebGLRenderTarget;
+export const WebGLMultipleRenderTargets = THREE_NS.WebGLMultipleRenderTargets;
 export const ShaderChunk           = THREE_NS.ShaderChunk;
 export const ShaderMaterial        = THREE_NS.ShaderMaterial;
 export const RawShaderMaterial     = THREE_NS.RawShaderMaterial;
