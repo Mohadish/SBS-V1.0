@@ -77,6 +77,7 @@ class SSRReflectPass extends Pass {
       maxDistance: 8.0,   // WORLD units — contact range; tune to model scale
       thickness:   1.0,   // surface thickness for the hit test (world units)
       steps:       24,    // ray-march samples (clamped to 64 in-shader)
+      flatMirror:  1.0,   // 0..1 — how much FLAT faces drop the contact fade (mirror-like)
     };
 
     // ── G-buffer prepass material (MRT, GLSL3) ──────────────────────────────
@@ -132,6 +133,8 @@ class SSRReflectPass extends Pass {
         uMaxDist:     { value: this.params.maxDistance },
         uThickness:   { value: this.params.thickness },
         uSteps:       { value: this.params.steps },
+        uResolution:  { value: new Vector2(this.width, this.height) },
+        uFlatStrength:{ value: this.params.flatMirror },
       },
       vertexShader: /* glsl */`
         varying vec2 vUv;
@@ -150,6 +153,8 @@ class SSRReflectPass extends Pass {
         uniform float uMaxDist;
         uniform float uThickness;
         uniform float uSteps;
+        uniform vec2  uResolution;
+        uniform float uFlatStrength;
 
         vec3 viewPos(vec2 uv, float d) {
           vec4 clip = vec4(uv * 2.0 - 1.0, d * 2.0 - 1.0, 1.0);
@@ -171,6 +176,17 @@ class SSRReflectPass extends Pass {
           float roughness = nr.a;
           float reflInt   = mp.r;
           float solid     = mp.g;
+
+          // Flatness sense: do neighbouring normals agree with this one?
+          // 1 = flat → behave like a mirror (drop the contact distance-fade);
+          // 0 = curved → keep the tuned contact look. Quantization-tolerant.
+          vec2 px = 1.5 / uResolution;
+          vec3 na = normalize(texture2D(tNormalRough, vUv + vec2(px.x, 0.0)).rgb * 2.0 - 1.0);
+          vec3 nb = normalize(texture2D(tNormalRough, vUv - vec2(px.x, 0.0)).rgb * 2.0 - 1.0);
+          vec3 nc = normalize(texture2D(tNormalRough, vUv + vec2(0.0, px.y)).rgb * 2.0 - 1.0);
+          vec3 nd = normalize(texture2D(tNormalRough, vUv - vec2(0.0, px.y)).rgb * 2.0 - 1.0);
+          float dev = (1.0 - dot(na, N)) + (1.0 - dot(nb, N)) + (1.0 - dot(nc, N)) + (1.0 - dot(nd, N));
+          float flatness = (1.0 - smoothstep(0.004, 0.08, dev)) * uFlatStrength;
 
           vec3 P = viewPos(vUv, d);
           vec3 R = reflect(normalize(P), N);
@@ -198,6 +214,7 @@ class SSRReflectPass extends Pass {
               float dist     = distance(rayPos, P);
               float distFrac = clamp(dist / uMaxDist, 0.0, 1.0);
               float distFade = 1.0 - distFrac;
+              distFade = mix(distFade, 1.0, flatness);   // flat faces → full mirror reach (no contact fade)
               vec2  e        = smoothstep(0.0, 0.12, sUv) * (1.0 - smoothstep(0.88, 1.0, sUv));
               float edgeFade = e.x * e.y;
 
@@ -258,6 +275,8 @@ class SSRReflectPass extends Pass {
     u.uMaxDist.value   = this.params.maxDistance;
     u.uThickness.value = this.params.thickness;
     u.uSteps.value     = this.params.steps;
+    u.uResolution.value.set(this.width, this.height);
+    u.uFlatStrength.value = this.params.flatMirror;
 
     renderer.setRenderTarget(this.renderToScreen ? null : writeBuffer);
     renderer.autoClear = true;

@@ -12,7 +12,7 @@ import * as userSettings from '../core/user-settings.js';
 
 const DEFAULTS = {
   ao:  { enabled: true,  intensity: 4.0, radius: 24.0, falloff: 1.0 },
-  ssr: { enabled: false, intensity: 1.0, roughness: 0.3, maxDistance: 8.0, thickness: 1.0, steps: 24 },
+  ssr: { enabled: false, intensity: 1.0, roughness: 0.3, maxDistance: 8.0, thickness: 1.0, steps: 24, flatMirror: 1.0 },
 };
 
 const AO_SLIDERS = [
@@ -25,6 +25,7 @@ const SSR_SLIDERS = [
   { key: 'maxDistance', label: 'Max distance', min: 0,   max: 2000, step: 10,   digits: 0 },
   { key: 'thickness',   label: 'Thickness',    min: 0.1, max: 50,   step: 0.1,  digits: 1 },
   { key: 'steps',       label: 'Steps',        min: 4,   max: 400,  step: 1,    digits: 0 },
+  { key: 'flatMirror',  label: 'Flat mirror',  min: 0,   max: 1,    step: 0.01, digits: 2 },
 ];
 
 function _merge(base, over) {
