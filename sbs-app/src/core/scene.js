@@ -424,14 +424,10 @@ export class SceneCore extends Emitter {
   }
 
   /** Public render-once entry point used by offline export per-frame capture.
-   * Renders DIRECTLY with the AO composer BYPASSED: N8AO's per-frame cost +
-   * render-target state stalls the frame-by-frame offline export on heavy
-   * models. The live viewport keeps AO via _render(); AO-in-export is Phase 3. */
+   * Renders the SAME way the live viewport does — through the AO composer when
+   * AO is on — so the exported mp4 has ambient occlusion. */
   renderFrame() {
-    const prevAO = this._aoEnabled;
-    this._aoEnabled = false;
-    try { this._render(); }
-    finally { this._aoEnabled = prevAO; }
+    this._render();
   }
 
   // ═══════════════════════════════════════════════════════════════════════
