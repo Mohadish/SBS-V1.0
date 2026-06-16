@@ -837,6 +837,19 @@ function _buildContextMenuItems(node) {
     ],
   });
 
+  // ── Clean tree — collapse redundant import wrapper folders ────────────
+  // STEP/CAD imports create deep chains of empty + single-child folders that
+  // group nothing. One-click cleanup, scoped to THIS branch (right-click the
+  // model/scene root to clean the whole tree). Only folders that are identity
+  // in every step are touched; geometry-bearing, locked and moved folders are
+  // left alone. One undo.
+  if (count === 1 && (node.type === 'folder' || node.type === 'model' || node.type === 'scene')) {
+    items.push({
+      label: '🧹 Clean redundant folders',
+      action: () => actions.cleanTree(node.id),
+    });
+  }
+
   // ── Folder lock (V0.1.92, replaces the old Group menu) ────────────────
   // A locked folder promotes viewport selection to the whole folder and
   // collapses in the tree. To group loose objects: New folder / Move to

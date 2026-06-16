@@ -857,6 +857,155 @@ export function unisolate() {
 /** TRUE when an isolate is engaged — UI shows Un-isolate and greys hide/show. */
 export function hasIsolateSnapshot() { return isIsolateEngaged(); }
 
+// ═══════════════════════════════════════════════════════════════════════════
+//  CLEAN TREE — collapse redundant import wrapper folders
+// ═══════════════════════════════════════════════════════════════════════════
+//
+// STEP/OCCT import (buildNodeFromOcct) mirrors the CAD assembly verbatim → deep
+// chains of single-child folders that group NOTHING (a 12,874-node model is
+// ~2,070 such wrappers). This collapses them:
+//   - folder with 0 meshes in its subtree   → removed
+//   - folder with exactly 1 child           → child hoisted up (eats chains)
+//   - folder with >=2 children              → kept (real grouping)
+//
+// SAFETY: only folders that are IDENTITY in their base AND in EVERY step's
+// transform snapshot are touched, so nothing shifts. Locked (make-transformable
+// / group) and archived folders are always left alone. The model's own node is
+// never collapsed. Works the same whether the scene re-imports the model or
+// loads from snapshots, because we rewrite each step's snapshot tree + maps and
+// re-stage to rebuild the scene. One undo entry.
+
+const _CT_EPS = 1e-5;
+function _ctVecZero(v)   { return !v || (Math.abs(v[0]) < _CT_EPS && Math.abs(v[1]) < _CT_EPS && Math.abs(v[2]) < _CT_EPS); }
+function _ctQuatId(q)    { return !q || (Math.abs(q[0]) < _CT_EPS && Math.abs(q[1]) < _CT_EPS && Math.abs(q[2]) < _CT_EPS && Math.abs(1 - q[3]) < _CT_EPS); }
+function _ctScaleOne(s)  { return !s || (Math.abs(1 - s[0]) < _CT_EPS && Math.abs(1 - s[1]) < _CT_EPS && Math.abs(1 - s[2]) < _CT_EPS); }
+
+/** A folder that carries its OWN geometry (some imports type leaf parts as
+ *  'folder' with a meshIndex/fingerprint) is a PART, not grouping — never
+ *  collapse it or we'd delete the part. */
+function _folderHasGeometry(n) { return (n.meshIndex != null) || !!n.fingerprint; }
+
+/** A folder is safe to collapse only if removing it cannot move any descendant —
+ *  i.e. it contributes an identity transform in its base and in every step. */
+function _folderIsIdentityEverywhere(node, allSteps) {
+  if (!_ctVecZero(node.localOffset)       || !_ctQuatId(node.localQuaternion))     return false;
+  if (!_ctVecZero(node.baseLocalPosition) || !_ctQuatId(node.baseLocalQuaternion)) return false;
+  if (!_ctScaleOne(node.baseLocalScale))                                           return false;
+  for (const s of allSteps) {
+    const t = s?.snapshot?.transforms?.[node.id];
+    if (!t) continue;                                  // no entry ⇒ identity default
+    if (!_ctVecZero(t.localOffset) || !_ctQuatId(t.localQuaternion)) return false;
+  }
+  return true;
+}
+
+/** Bottom-up collapse of the LIVE tree under `scopeRoot`. Mutates `.children`
+ *  arrays in place; records removed folder ids and a node→old-children backup
+ *  so the change is fully reversible. */
+function _collapseLiveFolders(scopeRoot, isCollapsible, removedIds, backup) {
+  const recurse = (node) => {
+    const kids = node.children;
+    if (!kids || !kids.length) return;
+    // Traverse ALL containers depth-first — the part tree often sits under a
+    // 'model'/'scene'/replaceModel node, NOT a 'folder'. Only collapsing into
+    // folder-typed children here would skip the whole subtree.
+    for (const c of kids) recurse(c);
+    const newKids = [];
+    let changed = false;
+    for (const c of kids) {
+      if (c.type === 'folder' && isCollapsible(c)) {
+        const cc = c.children || [];
+        if (cc.length === 0) { removedIds.add(c.id); changed = true; }          // empty → drop
+        else if (cc.length === 1) {                                             // wrapper → hoist
+          const only = cc[0];
+          if (!only.name && c.name) only.name = c.name;
+          newKids.push(only); removedIds.add(c.id); changed = true;
+        } else { newKids.push(c); }                                             // ≥2 → keep
+      } else { newKids.push(c); }
+    }
+    if (changed) { backup.set(node, kids); node.children = newKids; }
+  };
+  recurse(scopeRoot);
+}
+
+/** Remove `removedIds` folders from a serialized snapshot tree spec, hoisting
+ *  each removed folder's children into its parent. Pure — returns a new spec. */
+function _removeIdsFromSpec(spec, removedIds) {
+  if (!spec) return spec;
+  const out = [];
+  for (const c of (spec.children || [])) {
+    const rc = _removeIdsFromSpec(c, removedIds);
+    if (rc && rc.type === 'folder' && removedIds.has(rc.id)) out.push(...(rc.children || []));
+    else out.push(rc);
+  }
+  return { ...spec, children: out };
+}
+
+/**
+ * Collapse redundant wrapper folders. scopeRootId = null → whole tree; otherwise
+ * only that node's subtree. One undo entry.
+ */
+export function cleanTree(scopeRootId = null) {
+  const treeData = state.get('treeData');
+  if (!treeData) return;
+  const allSteps  = state.get('steps') || [];
+  const scopeRoot = scopeRootId ? state.get('nodeById')?.get(scopeRootId) : treeData;
+  if (!scopeRoot) return;
+
+  const isCollapsible = (n) =>
+    n.type === 'folder' && n !== scopeRoot &&
+    n.locked !== true && n.archived !== true &&
+    !_folderHasGeometry(n) &&
+    _folderIsIdentityEverywhere(n, allSteps);
+
+  // 1. Collapse the live tree, collecting removed ids + a reversible backup.
+  const removedIds = new Set();
+  const backup     = new Map();   // node → previous children array
+  _collapseLiveFolders(scopeRoot, isCollapsible, removedIds, backup);
+
+  if (!removedIds.size) { setStatus('Clean tree — no redundant folders found'); return; }
+
+  const childrenNew = new Map();
+  for (const node of backup.keys()) childrenNew.set(node, node.children);
+
+  // 2. Rewrite every step snapshot: drop removed ids from the tree spec +
+  //    visibility + transforms. Plain data → safe to clone.
+  const oldSteps = allSteps;
+  const newSteps = allSteps.map(s => {
+    const snap = s?.snapshot;
+    if (!snap) return s;
+    const next = { ...snap };
+    if (snap.tree)       next.tree       = _removeIdsFromSpec(snap.tree, removedIds);
+    if (snap.visibility) { next.visibility = { ...snap.visibility }; for (const id of removedIds) delete next.visibility[id]; }
+    if (snap.transforms) { next.transforms = { ...snap.transforms }; for (const id of removedIds) delete next.transforms[id]; }
+    return { ...s, snapshot: next };
+  });
+
+  // apply: swap child arrays + steps, rebuild nodeById, re-stage active step so
+  // the Three scene rebuilds from the thinned snapshot tree.
+  const apply = (childMap, stepsArr) => {
+    for (const [node, kids] of childMap) node.children = kids;
+    const nb = _nodes_buildNodeMap(treeData);
+    state.setState({ steps: stepsArr, nodeById: nb });
+    state.markDirty();
+    const active = stepsArr.find(x => x.id === state.get('activeStepId'));
+    if (active?.snapshot) steps.applySnapshotInstant(active.snapshot);
+    state.emit('change:treeData', treeData);
+  };
+
+  apply(childrenNew, newSteps);
+  // Deselect — a removed folder may have been selected (stale gizmo otherwise).
+  // setState emits change:selectedId / change:multiSelectedIds → gizmo updates.
+  state.setState({ selectedId: null, multiSelectedIds: new Set() });
+  setStatus(`Clean tree — removed ${removedIds.size} redundant folder(s)`);
+
+  undoManager.push(
+    `Clean tree (${removedIds.size} folders)`,
+    () => apply(backup,      oldSteps),
+    () => apply(childrenNew, newSteps),
+  );
+}
+
 // ─── Step / chapter multi-selection (state.selectedStepIds) ──────────────
 //
 // Routed through actions.js so every change goes through the undo log.
