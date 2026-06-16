@@ -78,6 +78,7 @@ class SSRReflectPass extends Pass {
       thickness:   1.0,   // surface thickness for the hit test (world units)
       steps:       24,    // ray-march samples (clamped to 64 in-shader)
       flatMirror:  1.0,   // 0..1 — how much FLAT faces drop the contact fade (mirror-like)
+      debug:       0,     // 1 = visualise per-pixel flatness (white=flat, black=curved)
     };
 
     // ── G-buffer prepass material (MRT, GLSL3) ──────────────────────────────
@@ -135,6 +136,7 @@ class SSRReflectPass extends Pass {
         uSteps:       { value: this.params.steps },
         uResolution:  { value: new Vector2(this.width, this.height) },
         uFlatStrength:{ value: this.params.flatMirror },
+        uDebug:       { value: 0 },
       },
       vertexShader: /* glsl */`
         varying vec2 vUv;
@@ -155,6 +157,7 @@ class SSRReflectPass extends Pass {
         uniform float uSteps;
         uniform vec2  uResolution;
         uniform float uFlatStrength;
+        uniform float uDebug;
 
         vec3 viewPos(vec2 uv, float d) {
           vec4 clip = vec4(uv * 2.0 - 1.0, d * 2.0 - 1.0, 1.0);
@@ -186,7 +189,9 @@ class SSRReflectPass extends Pass {
           vec3 nc = normalize(texture2D(tNormalRough, vUv + vec2(0.0, px.y)).rgb * 2.0 - 1.0);
           vec3 nd = normalize(texture2D(tNormalRough, vUv - vec2(0.0, px.y)).rgb * 2.0 - 1.0);
           float dev = (1.0 - dot(na, N)) + (1.0 - dot(nb, N)) + (1.0 - dot(nc, N)) + (1.0 - dot(nd, N));
-          float flatness = (1.0 - smoothstep(0.004, 0.08, dev)) * uFlatStrength;
+          float flatRaw  = 1.0 - smoothstep(0.004, 0.08, dev);
+          float flatness = flatRaw * uFlatStrength;
+          if (uDebug > 0.5) { gl_FragColor = vec4(vec3(flatRaw), 1.0); return; }   // DEBUG: white=flat, black=curved
 
           vec3 P = viewPos(vUv, d);
           vec3 R = reflect(normalize(P), N);
@@ -277,6 +282,7 @@ class SSRReflectPass extends Pass {
     u.uSteps.value     = this.params.steps;
     u.uResolution.value.set(this.width, this.height);
     u.uFlatStrength.value = this.params.flatMirror;
+    u.uDebug.value = this.params.debug || 0;
 
     renderer.setRenderTarget(this.renderToScreen ? null : writeBuffer);
     renderer.autoClear = true;
