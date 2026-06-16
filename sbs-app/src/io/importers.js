@@ -989,11 +989,22 @@ async function _maybeBakeCache(srcPath, headBytes, occtResult, assetId = null) {
   const target = mode === 'sbsobj' ? _swapExt(srcPath, 'sbsobj') : srcPath;
   const res    = await window.sbsNative?.writeFile?.(target, baked);
   if (res?.ok) {
-    // For 'sbsobj' (a NEW file), repoint the live asset → the .sbsobj so the
-    // project saves THAT reference and every later open / project reload hits
-    // the cache. 'inplace' already keeps the same path (now cached), so no
-    // repoint needed there.
-    if (mode === 'sbsobj' && assetId) _repointAsset(assetId, target, baked.length);
+    // Record the asset's identity from the file AS WRITTEN so the NEXT project
+    // load verifies clean (no "wrong file" prompt). Read the actual on-disk
+    // size + mtime; fall back to the written-buffer length + now if stat fails.
+    if (assetId) {
+      let size = baked.length;
+      let mtime = Date.now();
+      try {
+        const st = await window.sbsNative?.statFile?.(target);
+        if (st) { size = st.size; mtime = st.mtimeMs; }
+      } catch { /* keep fallbacks */ }
+      // 'sbsobj' is a NEW file → repoint the asset's path to it. 'inplace' keeps
+      // the same path but the appended tail changed size+mtime → reconcile those
+      // (the old code skipped this entirely, which caused the repeat re-prompt).
+      if (mode === 'sbsobj') _repointAsset(assetId, target, size, mtime);
+      else                   _reconcileAssetMeta(assetId, size, mtime);
+    }
     state.emit('status', `⚡ Fast-load cache saved → ${_basename(target)} — now using it for this model.`);
     console.log(`[import] baked cache (${mode}) → ${target}  (${(baked.length / 1e6).toFixed(1)} MB)`);
   } else {
@@ -1008,7 +1019,7 @@ async function _maybeBakeCache(srcPath, headBytes, occtResult, assetId = null) {
  * the on-disk file the project will reload from is swapped. Result: saving the
  * project records the .sbsobj, and reopening it fast-loads from the cache.
  */
-function _repointAsset(assetId, newPath, sizeBytes) {
+function _repointAsset(assetId, newPath, sizeBytes, mtimeMs) {
   const assets = state.get('assets') || [];
   const idx = assets.findIndex(a => a.id === assetId);
   if (idx < 0) return;
@@ -1022,11 +1033,37 @@ function _repointAsset(assetId, newPath, sizeBytes) {
     relativePath: prev.relativePath ? _swapExt(prev.relativePath, newExt) : '',
     fileSize:     sizeBytes ?? prev.fileSize,
     fileHash:     null,
-    lastModified: Date.now(),
+    // Use the file's ACTUAL on-disk mtime (stat) when available — NOT Date.now().
+    // The verifier compares within a 2s window; a guessed timestamp can drift and
+    // re-trigger the "wrong file" warning on reload.
+    lastModified: mtimeMs ?? Date.now(),
   };
   state.setState({ assets: next });
   state.markDirty?.();
   console.log(`[import] asset ${assetId} repointed → ${newPath}`);
+}
+
+/**
+ * Update ONLY an asset's size/mtime fingerprint to the current file (path, name
+ * and relativePath untouched). Used after an IN-PLACE cache bake: appending the
+ * fast-load tail grows the file and bumps its mtime, so the saved metadata must
+ * follow — otherwise every reload sees a size/date mismatch and re-prompts
+ * "wrong file", forcing the user to override again and again.
+ */
+function _reconcileAssetMeta(assetId, sizeBytes, mtimeMs) {
+  const assets = state.get('assets') || [];
+  const idx = assets.findIndex(a => a.id === assetId);
+  if (idx < 0) return;
+  const next = assets.slice();
+  next[idx] = {
+    ...next[idx],
+    fileSize:     sizeBytes ?? next[idx].fileSize,
+    lastModified: mtimeMs   ?? Date.now(),
+    fileHash:     null,
+  };
+  state.setState({ assets: next });
+  state.markDirty?.();
+  console.log(`[import] asset ${assetId} cache-reconciled → size=${sizeBytes}, mtime=${Math.round(mtimeMs ?? 0)}`);
 }
 
 // ── Native CAD converter routing ────────────────────────────────────────────
@@ -1289,8 +1326,16 @@ async function _tryNativeCad(file, ext, assetEntry, opts) {
     try { await window.sbsNative.deletePath?.(outPath); } catch { /* ignore */ }
   } else if (node?.assetId) {
     // Repoint the asset → the cached file so the project saves THAT reference
-    // and every later open fast-loads from the tail.
-    _repointAsset(node.assetId, outPath, bytes.byteLength ?? bytes.length ?? null);
+    // and every later open fast-loads from the tail. Record the ACTUAL on-disk
+    // mtime (not Date.now()): a big file's write can take >2s, drifting a
+    // guessed timestamp past the verifier's 2s window → re-prompt "wrong file".
+    let size = bytes.byteLength ?? bytes.length ?? null;
+    let mtime = Date.now();
+    try {
+      const st = await window.sbsNative.statFile?.(outPath);
+      if (st) { size = st.size; mtime = st.mtimeMs; }
+    } catch { /* keep fallbacks */ }
+    _repointAsset(node.assetId, outPath, size, mtime);
   }
 
   const took = Math.round(_now() - _t0);
