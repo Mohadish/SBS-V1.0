@@ -77,8 +77,6 @@ class SSRReflectPass extends Pass {
       maxDistance: 8.0,   // WORLD units — contact range; tune to model scale
       thickness:   1.0,   // surface thickness for the hit test (world units)
       steps:       24,    // ray-march samples (clamped to 64 in-shader)
-      flatMirror:  1.0,   // 0..1 — how much FLAT faces drop the contact fade (mirror-like)
-      debug:       0,     // 1 = visualise per-pixel flatness (white=flat, black=curved)
     };
 
     // ── G-buffer prepass material (MRT, GLSL3) ──────────────────────────────
@@ -134,9 +132,6 @@ class SSRReflectPass extends Pass {
         uMaxDist:     { value: this.params.maxDistance },
         uThickness:   { value: this.params.thickness },
         uSteps:       { value: this.params.steps },
-        uResolution:  { value: new Vector2(this.width, this.height) },
-        uFlatStrength:{ value: this.params.flatMirror },
-        uDebug:       { value: 0 },
       },
       vertexShader: /* glsl */`
         varying vec2 vUv;
@@ -155,9 +150,6 @@ class SSRReflectPass extends Pass {
         uniform float uMaxDist;
         uniform float uThickness;
         uniform float uSteps;
-        uniform vec2  uResolution;
-        uniform float uFlatStrength;
-        uniform float uDebug;
 
         vec3 viewPos(vec2 uv, float d) {
           vec4 clip = vec4(uv * 2.0 - 1.0, d * 2.0 - 1.0, 1.0);
@@ -180,29 +172,23 @@ class SSRReflectPass extends Pass {
           float reflInt   = mp.r;
           float solid     = mp.g;
 
-          // Flatness sense: do neighbouring normals agree with this one?
-          // 1 = flat → behave like a mirror (drop the contact distance-fade);
-          // 0 = curved → keep the tuned contact look. Quantization-tolerant.
-          vec2 px = 1.5 / uResolution;
-          vec3 na = normalize(texture2D(tNormalRough, vUv + vec2(px.x, 0.0)).rgb * 2.0 - 1.0);
-          vec3 nb = normalize(texture2D(tNormalRough, vUv - vec2(px.x, 0.0)).rgb * 2.0 - 1.0);
-          vec3 nc = normalize(texture2D(tNormalRough, vUv + vec2(0.0, px.y)).rgb * 2.0 - 1.0);
-          vec3 nd = normalize(texture2D(tNormalRough, vUv - vec2(0.0, px.y)).rgb * 2.0 - 1.0);
-          float dev = (1.0 - dot(na, N)) + (1.0 - dot(nb, N)) + (1.0 - dot(nc, N)) + (1.0 - dot(nd, N));
-          float flatRaw  = 1.0 - smoothstep(0.004, 0.08, dev);
-          float flatness = flatRaw * uFlatStrength;
-          if (uDebug > 0.5) { gl_FragColor = vec4(vec3(flatRaw), 1.0); return; }   // DEBUG: white=flat, black=curved
-
           vec3 P = viewPos(vUv, d);
           vec3 R = reflect(normalize(P), N);
 
           float stepLen = uMaxDist / max(uSteps, 1.0);
-          vec3 rayPos = P;
+          vec3  prevPos  = P;
+          vec3  rayPos   = P;
+          float prevDiff = -1.0;          // start in front of everything
           float a = 0.0;
-          vec3 reflCol = vec3(0.0);
+          vec3  reflCol  = vec3(0.0);
+          bool  found    = false;
+          vec2  hitUv    = vec2(0.0);
+          float hitDist  = 0.0;
 
-          for (int i = 0; i < 64; i++) {
+          // ── Coarse march: find the first FRONT→BEHIND crossing ──────────────
+          for (int i = 0; i < 128; i++) {
             if (float(i) >= uSteps) break;
+            prevPos = rayPos;
             rayPos += R * stepLen;
 
             vec4 clip = uProj * vec4(rayPos, 1.0);
@@ -211,36 +197,54 @@ class SSRReflectPass extends Pass {
             if (sUv.x < 0.0 || sUv.x > 1.0 || sUv.y < 0.0 || sUv.y > 1.0) break;
 
             float sD = texture2D(tDepth, sUv).x;
-            if (sD >= 1.0) continue;
-            vec3 sP = viewPos(sUv, sD);
+            if (sD >= 1.0) { prevDiff = -1.0; continue; }   // over background → in front
+            float diff = viewPos(sUv, sD).z - rayPos.z;     // > 0 once the ray is behind a surface
 
-            float diff = sP.z - rayPos.z;   // > 0 when the ray is behind the surface
-            if (diff > 0.0 && diff < uThickness) {
-              float dist     = distance(rayPos, P);
-              float distFrac = clamp(dist / uMaxDist, 0.0, 1.0);
-              float distFade = 1.0 - distFrac;
-              distFade = mix(distFade, 1.0, flatness);   // flat faces → full mirror reach (no contact fade)
-              vec2  e        = smoothstep(0.0, 0.12, sUv) * (1.0 - smoothstep(0.88, 1.0, sUv));
-              float edgeFade = e.x * e.y;
-
-              // PER-MATERIAL roughness blur (sunflower disc, distance-scaled).
-              float blurR = roughness * 0.045 * (0.25 + 0.75 * distFrac);
-              if (blurR > 0.0002) {
-                vec3 acc = vec3(0.0);
-                for (int t = 0; t < 12; t++) {
-                  float f   = float(t);
-                  float ang = f * 2.39996323;
-                  vec2  o   = vec2(cos(ang), sin(ang)) * (blurR * sqrt((f + 0.5) / 12.0));
-                  acc += texture2D(tDiffuse, sUv + o).rgb;
-                }
-                reflCol = acc / 12.0;
-              } else {
-                reflCol = texture2D(tDiffuse, sUv).rgb;
+            if (diff > 0.0 && prevDiff <= 0.0) {
+              // ── Binary-search the exact crossing between prevPos & rayPos ────
+              // Removes the coarse-step banding ("onion rings") — the hit lands
+              // on the real surface instead of wherever a fixed step happened to.
+              vec3 lo = prevPos, hi = rayPos;
+              for (int b = 0; b < 7; b++) {
+                vec3 mid = (lo + hi) * 0.5;
+                vec4 mc  = uProj * vec4(mid, 1.0);
+                vec2 mUv = (mc.xy / mc.w) * 0.5 + 0.5;
+                if (viewPos(mUv, texture2D(tDepth, mUv).x).z - mid.z > 0.0) hi = mid; else lo = mid;
               }
-              // Alpha = contact × edge × per-material reflectionIntensity × solidness.
-              a = distFade * edgeFade * reflInt * solid;
+              vec4 fc = uProj * vec4(hi, 1.0);
+              hitUv   = (fc.xy / fc.w) * 0.5 + 0.5;
+              // Reject silhouette gaps: the refined point must sit ON a surface.
+              if (abs(viewPos(hitUv, texture2D(tDepth, hitUv).x).z - hi.z) < uThickness + stepLen) {
+                found   = true;
+                hitDist = distance(hi, P);
+              }
               break;
             }
+            prevDiff = diff;
+          }
+
+          if (found) {
+            float distFrac = clamp(hitDist / uMaxDist, 0.0, 1.0);
+            float distFade = 1.0 - distFrac;
+            vec2  e        = smoothstep(0.0, 0.12, hitUv) * (1.0 - smoothstep(0.88, 1.0, hitUv));
+            float edgeFade = e.x * e.y;
+
+            // PER-MATERIAL roughness blur (sunflower disc, distance-scaled).
+            float blurR = roughness * 0.045 * (0.25 + 0.75 * distFrac);
+            if (blurR > 0.0002) {
+              vec3 acc = vec3(0.0);
+              for (int t = 0; t < 12; t++) {
+                float f   = float(t);
+                float ang = f * 2.39996323;
+                vec2  o   = vec2(cos(ang), sin(ang)) * (blurR * sqrt((f + 0.5) / 12.0));
+                acc += texture2D(tDiffuse, hitUv + o).rgb;
+              }
+              reflCol = acc / 12.0;
+            } else {
+              reflCol = texture2D(tDiffuse, hitUv).rgb;
+            }
+            // Alpha = contact × edge × per-material reflectionIntensity × solidness.
+            a = distFade * edgeFade * reflInt * solid;
           }
 
           a = clamp(a * uIntensity, 0.0, 1.0);
@@ -280,9 +284,6 @@ class SSRReflectPass extends Pass {
     u.uMaxDist.value   = this.params.maxDistance;
     u.uThickness.value = this.params.thickness;
     u.uSteps.value     = this.params.steps;
-    u.uResolution.value.set(this.width, this.height);
-    u.uFlatStrength.value = this.params.flatMirror;
-    u.uDebug.value = this.params.debug || 0;
 
     renderer.setRenderTarget(this.renderToScreen ? null : writeBuffer);
     renderer.autoClear = true;

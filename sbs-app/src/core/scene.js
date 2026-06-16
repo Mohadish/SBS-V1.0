@@ -633,7 +633,6 @@ export class SceneCore extends Emitter {
       if (ss.maxDistance != null) p.maxDistance = ss.maxDistance;
       if (ss.thickness   != null) p.thickness   = ss.thickness;
       if (ss.steps       != null) p.steps       = ss.steps;
-      if (ss.flatMirror  != null) p.flatMirror  = ss.flatMirror;
     }
     this.requestRender(300);
   }
