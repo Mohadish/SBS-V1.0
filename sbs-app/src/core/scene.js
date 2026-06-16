@@ -1063,6 +1063,18 @@ export class SceneCore extends Emitter {
     if (this._mirrors) for (const m of this._mirrors) m.setDebug?.(on);
     this.requestRender(300);
   }
+  /** Remove planar mirrors whose sub-mesh lives under `root` (re-run dedup). */
+  removePlanarMirrorsUnder(root) {
+    if (!this._mirrors || !root) return;
+    const keep = [];
+    for (const m of this._mirrors) {
+      let p = m.mesh, under = false;
+      while (p) { if (p === root) { under = true; break; } p = p.parent; }
+      if (under) { try { m.dispose(); } catch {} } else keep.push(m);
+    }
+    this._mirrors = keep;
+    this.requestRender(300);
+  }
   /** Remove all planar mirrors, restoring their original materials. */
   clearPlanarMirrors() {
     if (this._mirrors) { for (const m of this._mirrors) { try { m.dispose(); } catch {} } }

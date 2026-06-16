@@ -376,6 +376,7 @@ window.sbsMirror = {
     const id   = state.get('selectedId');
     const node = id ? state.get('nodeById')?.get?.(id) : null;
     if (!node?.object3d) { console.warn('[mirror] select a mesh/model first'); return; }
+    sceneCore.removePlanarMirrorsUnder(node.object3d);   // re-run replaces, never stacks
     const meshes = [];
     node.object3d.traverse(o => { if (o.isMesh && !o.userData.isMirrorSubmesh) meshes.push(o); });
     const angle = state.get('shapeFaceAngleThreshold') ?? 5;
