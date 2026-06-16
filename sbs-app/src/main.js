@@ -371,6 +371,37 @@ window.sbsMirror = {
     if (m) { m.material.polygonOffset = true; m.material.polygonOffsetFactor = -2; m.material.polygonOffsetUnits = -2; }
     console.log('[mirror] face mirror on largest flat region (area', region.areaLocal.toFixed(2) + '). If blank, run window.sbsMirror.debug(true) — magenta = visible.');
   },
+  // 2c: mirror ALL flat faces across every mesh under the selection (capped).
+  allFromSelected: (cap = 8) => {
+    const id   = state.get('selectedId');
+    const node = id ? state.get('nodeById')?.get?.(id) : null;
+    if (!node?.object3d) { console.warn('[mirror] select a mesh/model first'); return; }
+    const meshes = [];
+    node.object3d.traverse(o => { if (o.isMesh && !o.userData.isMirrorSubmesh) meshes.push(o); });
+    const angle = state.get('shapeFaceAngleThreshold') ?? 5;
+    let count = 0, flatTotal = 0;
+    for (const mesh of meshes) {
+      if (count >= cap) break;
+      const flats = segmentMeshFaces(mesh, angle).filter(r => r.flat);
+      flatTotal += flats.length;
+      if (!flats.length) continue;
+      const minArea = flats[0].areaLocal * 0.04;   // skip tiny slivers
+      mesh.geometry.computeBoundingSphere?.();
+      const eps = (mesh.geometry.boundingSphere?.radius || 1) * 0.004;
+      for (const region of flats) {
+        if (count >= cap) break;
+        if (region.areaLocal < minArea) continue;
+        const sub = new window.THREE.Mesh(regionGeometry(mesh, region));
+        sub.userData.noSelect = true; sub.userData.isMirrorSubmesh = true;
+        sub.position.copy(region.normalLocal).multiplyScalar(eps);
+        mesh.add(sub);
+        const m = sceneCore.addPlanarMirror(sub);
+        if (m) { m.material.polygonOffset = true; m.material.polygonOffsetFactor = -2; m.material.polygonOffsetUnits = -2; }
+        count++;
+      }
+    }
+    console.log(`[mirror] ${count} face mirrors made (cap ${cap}, ${flatTotal} flat regions found). Each = 1 extra scene render/frame — expect the framerate to drop with count.`);
+  },
   debug: (b) => sceneCore.setMirrorDebug(b !== false),
   info:  () => sceneCore.mirrorInfo(),
   clear: () => { sceneCore.clearPlanarMirrors(); console.log('[mirror] cleared'); },
