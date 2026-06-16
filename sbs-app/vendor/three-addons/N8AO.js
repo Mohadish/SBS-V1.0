@@ -1325,7 +1325,7 @@ class $87431ee93b037844$export$2489f9981ab0fa82 extends (0, $5Whe3$Pass1) {
         this.effectShaderQuad.material.uniforms["viewMatrixInv"].value = this.camera.matrixWorld;
         this.effectShaderQuad.material.uniforms["cameraPos"].value = this.camera.getWorldPosition(new $5Whe3$Vector3());
         this.effectShaderQuad.material.uniforms["resolution"].value = this.configuration.halfRes ? this._r.clone().multiplyScalar(0.5).floor() : this._r;
-        this.effectShaderQuad.material.uniforms["time"].value = performance.now() / 1000;
+        this.effectShaderQuad.material.uniforms["time"].value = (this.frozenTime != null ? this.frozenTime : performance.now() / 1000);
         this.effectShaderQuad.material.uniforms["samples"].value = this.samples;
         this.effectShaderQuad.material.uniforms["samplesR"].value = this.samplesR;
         this.effectShaderQuad.material.uniforms["bluenoise"].value = this.bluenoise;
@@ -1354,7 +1354,7 @@ class $87431ee93b037844$export$2489f9981ab0fa82 extends (0, $5Whe3$Pass1) {
             this.poissonBlurQuad.material.uniforms["viewMatrixInv"].value = this.camera.matrixWorld;
             this.poissonBlurQuad.material.uniforms["cameraPos"].value = this.camera.getWorldPosition(new $5Whe3$Vector3());
             this.poissonBlurQuad.material.uniforms["resolution"].value = this.configuration.halfRes ? this._r.clone().multiplyScalar(0.5).floor() : this._r;
-            this.poissonBlurQuad.material.uniforms["time"].value = performance.now() / 1000;
+            this.poissonBlurQuad.material.uniforms["time"].value = (this.frozenTime != null ? this.frozenTime : performance.now() / 1000);
             this.poissonBlurQuad.material.uniforms["blueNoise"].value = this.bluenoise;
             this.poissonBlurQuad.material.uniforms["radius"].value = this.configuration.denoiseRadius * (this.configuration.halfRes ? 0.5 : 1);
             this.poissonBlurQuad.material.uniforms["worldRadius"].value = trueRadius;
@@ -1767,7 +1767,7 @@ class $05f6997e4b65da14$export$2d57db20b5eb5e0a extends (0, $5Whe3$Pass) {
         this.effectShaderQuad.material.uniforms["viewMatrixInv"].value = this.camera.matrixWorld;
         this.effectShaderQuad.material.uniforms["cameraPos"].value = this.camera.getWorldPosition(new $5Whe3$Vector3());
         this.effectShaderQuad.material.uniforms["resolution"].value = this.configuration.halfRes ? this._r.clone().multiplyScalar(0.5).floor() : this._r;
-        this.effectShaderQuad.material.uniforms["time"].value = performance.now() / 1000;
+        this.effectShaderQuad.material.uniforms["time"].value = (this.frozenTime != null ? this.frozenTime : performance.now() / 1000);
         this.effectShaderQuad.material.uniforms["samples"].value = this.samples;
         this.effectShaderQuad.material.uniforms["samplesR"].value = this.samplesR;
         this.effectShaderQuad.material.uniforms["bluenoise"].value = this.bluenoise;
@@ -1796,7 +1796,7 @@ class $05f6997e4b65da14$export$2d57db20b5eb5e0a extends (0, $5Whe3$Pass) {
             this.poissonBlurQuad.material.uniforms["viewMatrixInv"].value = this.camera.matrixWorld;
             this.poissonBlurQuad.material.uniforms["cameraPos"].value = this.camera.getWorldPosition(new $5Whe3$Vector3());
             this.poissonBlurQuad.material.uniforms["resolution"].value = this.configuration.halfRes ? this._r.clone().multiplyScalar(0.5).floor() : this._r;
-            this.poissonBlurQuad.material.uniforms["time"].value = performance.now() / 1000;
+            this.poissonBlurQuad.material.uniforms["time"].value = (this.frozenTime != null ? this.frozenTime : performance.now() / 1000);
             this.poissonBlurQuad.material.uniforms["blueNoise"].value = this.bluenoise;
             this.poissonBlurQuad.material.uniforms["radius"].value = this.configuration.denoiseRadius * (this.configuration.halfRes ? 0.5 : 1);
             this.poissonBlurQuad.material.uniforms["worldRadius"].value = trueRadius;

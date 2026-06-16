@@ -381,6 +381,15 @@ export class SceneCore extends Emitter {
     // The composer's last pass restores the render target to screen, so the
     // outline + overlay below still composite on top exactly as before.
     const composer = (this._aoEnabled !== false) ? this._ensureComposer() : null;
+    if (composer && this._n8aoPass) {
+      // Freeze N8AO's noise seed while the camera is still → every re-render
+      // produces IDENTICAL AO → no shimmer, even when the loop wakes on a mouse
+      // move / box-select. Live seed only while the camera actually moves
+      // (motion masks the per-frame variation).
+      const key = this._camKey();
+      if (key !== this._aoCamKey) { this._aoCamKey = key; this._n8aoPass.frozenTime = null; }
+      else if (this._n8aoPass.frozenTime == null) { this._n8aoPass.frozenTime = performance.now() / 1000; }
+    }
     this.renderer.autoClear = true;
     if (composer) composer.render();
     else          this.renderer.render(this.scene, this.camera);
