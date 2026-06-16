@@ -260,23 +260,6 @@ export class SceneCore extends Emitter {
       const shouldRender = this._shouldRender(now);
       this._idle = !shouldRender;
 
-      // ── TEMP AO-flicker diagnostic (once/sec) — remove after diagnosis ──
-      {
-        const key = this._camKey();
-        this._dgT0 = this._dgT0 || now;
-        if (this._dgPrev !== undefined && key !== this._dgPrev) this._dgCK = (this._dgCK || 0) + 1;
-        this._dgPrev = key;
-        if (shouldRender) this._dgR = (this._dgR || 0) + 1;
-        if (now - this._dgT0 >= 1000) {
-          console.log('[AO-diag] renders/s=' + (this._dgR || 0) +
-            '  camKeyΔ/s=' + (this._dgCK || 0) +
-            '  thumbs/s=' + (this._dgThumb || 0) +
-            '  frozenTime=' + (this._n8aoPass ? this._n8aoPass.frozenTime : 'n/a') +
-            '  idle=' + this._idle);
-          this._dgR = 0; this._dgCK = 0; this._dgThumb = 0; this._dgT0 = now;
-        }
-      }
-
       // External tick hooks (animations, gizmos, notes rendering, etc.)
       this._tickHooks.forEach(fn => { try { fn(now, delta); } catch(e) { console.error(e); } });
 
@@ -359,8 +342,7 @@ export class SceneCore extends Emitter {
    *     drawn in order, scaled to (w,h).
    */
   captureThumbnail(w = 120, h = 80, quality = 0.55, opts = {}) {
-    if (this._thumbsOff === true) return null;  // TEMP diag kill-switch (window.sbsRender.thumbs(false))
-    this._dgThumb = (this._dgThumb || 0) + 1;   // TEMP AO-diag counter
+    if (this._thumbsOff === true) return null;  // debug kill-switch (window.sbsRender.thumbs(false))
     // Backwards-compat: accept boolean as the old withoutOverlay flag.
     if (typeof opts === 'boolean') opts = { withoutOverlayScene: opts };
 
@@ -422,6 +404,46 @@ export class SceneCore extends Emitter {
     }
   }
 
+  /**
+   * Capture a thumbnail by REUSING the next main render instead of doing a
+   * separate scene render. A separate render — even to an offscreen target —
+   * perturbs the full-scene N8AO pass's GL state, so the next AO frame comes
+   * back under-occluded (the "bright then AO builds" blink, at the capture
+   * rate). Reusing the frame the loop already drew means zero extra GPU work
+   * and nothing to disturb. _render() fulfils the request right after
+   * composer.render() (scene+AO, before the outline + gizmo overlay), so the
+   * grab is clean. Resolves with a JPEG data-URL, or null.
+   *
+   * @param {{ extraLayers?: (w:number,h:number)=>Array<HTMLCanvasElement|null> }} [opts]
+   * @returns {Promise<string|null>}
+   */
+  requestThumbnail(w = 120, h = 80, quality = 0.55, opts = {}) {
+    if (this._thumbsOff === true) return Promise.resolve(null);
+    return new Promise((resolve) => {
+      this._pendingThumb = { w, h, quality, opts, resolve };
+    });
+  }
+
+  /** Read the just-rendered live canvas into a downscaled JPEG (no re-render). */
+  _grabCanvasThumb(w, h, quality, opts) {
+    const dom = this.renderer?.domElement;
+    if (!dom || !dom.width || !dom.height) return null;
+    const off = document.createElement('canvas');
+    off.width = w; off.height = h;
+    const ctx = off.getContext('2d');
+    if (!ctx) return null;
+    try {
+      ctx.drawImage(dom, 0, 0, w, h);
+      if (typeof opts.extraLayers === 'function') {
+        const layers = opts.extraLayers(w, h) || [];
+        for (const layer of layers) { if (layer) ctx.drawImage(layer, 0, 0, w, h); }
+      }
+      return off.toDataURL('image/jpeg', quality);
+    } catch (e) {
+      return null;
+    }
+  }
+
   _render() {
     if (!this.renderer) return;
     // Main scene — through the N8AO composer when AO is enabled, else direct.
@@ -440,6 +462,15 @@ export class SceneCore extends Emitter {
     this.renderer.autoClear = true;
     if (composer) composer.render();
     else          this.renderer.render(this.scene, this.camera);
+
+    // Fulfil a pending thumbnail grab by REUSING this render — the canvas is
+    // now scene+AO, before the outline/gizmo passes below. No separate render
+    // → no perturbation of the N8AO pass (the cause of the static-frame blink).
+    if (this._pendingThumb) {
+      const p = this._pendingThumb; this._pendingThumb = null;
+      try { p.resolve(this._grabCanvasThumb(p.w, p.h, p.quality, p.opts)); }
+      catch (e) { p.resolve(null); }
+    }
 
     // V0.2.22.21 — combined silhouette outline (additive composite over
     // the just-drawn scene). Early-exits when nothing is selected.

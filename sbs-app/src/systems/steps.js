@@ -195,31 +195,37 @@ class StepManager {
     if (!force && now - this._lastThumbMs < this._thumbIntervalMs) return;
     const activeId = state.get('activeStepId');
     if (!activeId) return;
-    // Hide the per-mesh selection overlay/outline children, render scene
-    // only (no gizmo overlay scene), capture, then restore visuals. The
-    // Konva 2D per-step overlay (text boxes, images) is composited on top
-    // so the saved preview matches what the user sees.
-    //
-    // Header layer is INTENTIONALLY excluded from thumbnails — headers
-    // would dominate a 120×80 preview and the same header repeats on
-    // every step's thumbnail, creating visual noise that hides what's
-    // actually different about each step. Headers still appear on the
-    // live viewport (above this layer) and in the exported video.
-    //
-    // The next rAF's regular _render redraws everything normally — no
-    // flicker on the live viewport.
-    this._materials?.setSelectionVisualsVisible(false);
-    const dataUrl = sceneCore.captureThumbnail(120, 80, 0.55, {
-      withoutOverlayScene: true,
-      extraLayers: (w, h) => [rasterizeOverlay({ width: w, height: h })],
-    });
-    this._materials?.setSelectionVisualsVisible(true);
-    if (!dataUrl) return;
-    const step = state.get('steps').find(s => s.id === activeId);
-    if (!step) return;
-    step.thumbnail = dataUrl;
     this._lastThumbMs = now;
-    state.emit('step:thumb', { stepId: activeId, dataUrl });
+
+    // The Konva 2D per-step overlay (text/images) is composited on top so the
+    // preview matches what the user sees. Header is INTENTIONALLY excluded —
+    // it would dominate a 120×80 preview and repeat identically on every step.
+    const extraLayers = (w, h) => [rasterizeOverlay({ width: w, height: h })];
+    const store = (dataUrl) => {
+      if (!dataUrl) return;
+      const step = state.get('steps').find(s => s.id === activeId);
+      if (!step) return;
+      step.thumbnail = dataUrl;
+      state.emit('step:thumb', { stepId: activeId, dataUrl });
+    };
+
+    if (force) {
+      // Step CHANGED — capture the outgoing step's final frame synchronously,
+      // before the new step's transition starts. This path does its OWN render
+      // (selection visuals hidden first). It runs once per step change and any
+      // 1-frame AO disturbance is masked by the transition that follows.
+      this._materials?.setSelectionVisualsVisible(false);
+      const dataUrl = sceneCore.captureThumbnail(120, 80, 0.55, {
+        withoutOverlayScene: true, extraLayers,
+      });
+      this._materials?.setSelectionVisualsVisible(true);
+      store(dataUrl);
+    } else {
+      // Periodic refresh during editing — REUSE the main render (no separate
+      // render → no AO blink). Fulfilled after composer.render() but before the
+      // outline/gizmo passes, so the preview stays clean.
+      sceneCore.requestThumbnail(120, 80, 0.55, { extraLayers }).then(store);
+    }
   }
 
 
