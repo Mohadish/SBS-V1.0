@@ -220,6 +220,7 @@ export class SceneCore extends Emitter {
       window.sbsRender = {
         freeze: (b) => { this._freezeWhenIdle = (b !== false); this.requestRender(0); },
         wake:   ()  => this.requestRender(0),
+        thumbs: (b) => { this._thumbsOff = (b === false); console.log('[scene] thumbnail capture', b === false ? 'OFF' : 'ON'); },
       };
     }
 
@@ -358,6 +359,7 @@ export class SceneCore extends Emitter {
    *     drawn in order, scaled to (w,h).
    */
   captureThumbnail(w = 120, h = 80, quality = 0.55, opts = {}) {
+    if (this._thumbsOff === true) return null;  // TEMP diag kill-switch (window.sbsRender.thumbs(false))
     this._dgThumb = (this._dgThumb || 0) + 1;   // TEMP AO-diag counter
     // Backwards-compat: accept boolean as the old withoutOverlay flag.
     if (typeof opts === 'boolean') opts = { withoutOverlayScene: opts };
