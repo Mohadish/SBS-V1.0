@@ -82,3 +82,30 @@ export const Raycaster = THREE_NS.Raycaster;
 export const SphereGeometry = THREE_NS.SphereGeometry;
 export const TorusGeometry = THREE_NS.TorusGeometry;
 export const LinearSRGBColorSpace = THREE_NS.LinearSRGBColorSpace;
+
+// ── Post-processing additions (V0.3.0.1) ─────────────────────────────────────
+// Needed by EffectComposer + passes (Pass/RenderPass/ShaderPass/MaskPass/
+// OutputPass) and the N8AO ambient-occlusion pass. All exist on window.THREE
+// in r152; this just surfaces them as ES named exports for the vendored addons.
+export const Clock                 = THREE_NS.Clock;
+export const WebGLRenderTarget     = THREE_NS.WebGLRenderTarget;
+export const ShaderChunk           = THREE_NS.ShaderChunk;
+export const ShaderMaterial        = THREE_NS.ShaderMaterial;
+export const RawShaderMaterial     = THREE_NS.RawShaderMaterial;
+export const UniformsUtils         = THREE_NS.UniformsUtils;
+export const DataTexture           = THREE_NS.DataTexture;
+export const DepthTexture          = THREE_NS.DepthTexture;
+export const HalfFloatType         = THREE_NS.HalfFloatType;
+export const FloatType             = THREE_NS.FloatType;
+export const UnsignedIntType       = THREE_NS.UnsignedIntType;
+export const UnsignedInt248Type    = THREE_NS.UnsignedInt248Type;
+export const RGBAFormat            = THREE_NS.RGBAFormat;
+export const RedFormat             = THREE_NS.RedFormat;
+export const DepthFormat           = THREE_NS.DepthFormat;
+export const DepthStencilFormat    = THREE_NS.DepthStencilFormat;
+export const NoColorSpace          = THREE_NS.NoColorSpace;
+export const REVISION              = THREE_NS.REVISION;
+export const LinearToneMapping     = THREE_NS.LinearToneMapping;
+export const ReinhardToneMapping   = THREE_NS.ReinhardToneMapping;
+export const CineonToneMapping     = THREE_NS.CineonToneMapping;
+export const ACESFilmicToneMapping = THREE_NS.ACESFilmicToneMapping;

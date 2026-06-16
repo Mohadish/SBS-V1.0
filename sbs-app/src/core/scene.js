@@ -34,6 +34,12 @@ import * as clock from './clock.js';
 // scene render to composite a single outline around the union of
 // selected meshes.
 import { initOutlinePass, resizeOutlinePass, renderOutlinePass } from '../systems/outline-pass.js';
+// V0.3.0.1 — ambient occlusion via N8AO through a minimal EffectComposer.
+// These addons resolve bare `three` to the global-THREE proxy via the import
+// map in index.html. Wired as an opt-in pass; falls back to direct render.
+import { EffectComposer } from '../../vendor/three-addons/postprocessing/EffectComposer.js';
+import { RenderPass }     from '../../vendor/three-addons/postprocessing/RenderPass.js';
+import { N8AOPass }       from '../../vendor/three-addons/N8AO.js';
 
 // ── Mini event emitter (no dependency on state.js) ────────────────────────
 class Emitter {
@@ -314,9 +320,13 @@ export class SceneCore extends Emitter {
 
   _render() {
     if (!this.renderer) return;
-    // Main scene
+    // Main scene — through the N8AO composer when AO is enabled, else direct.
+    // The composer's last pass restores the render target to screen, so the
+    // outline + overlay below still composite on top exactly as before.
+    const composer = (this._aoEnabled !== false) ? this._ensureComposer() : null;
     this.renderer.autoClear = true;
-    this.renderer.render(this.scene, this.camera);
+    if (composer) composer.render();
+    else          this.renderer.render(this.scene, this.camera);
 
     // V0.2.22.21 — combined silhouette outline (additive composite over
     // the just-drawn scene). Early-exits when nothing is selected.
@@ -329,6 +339,67 @@ export class SceneCore extends Emitter {
       this.renderer.clearDepth();
       this.renderer.render(this.overlayScene, this.camera);
       this.renderer.autoClear = true;
+    }
+  }
+
+  // ═══════════════════════════════════════════════════════════════════════
+  //  AMBIENT OCCLUSION (N8AO via EffectComposer) — V0.3.0.1
+  // ═══════════════════════════════════════════════════════════════════════
+  /**
+   * Lazily build the AO composer at the renderer's current size. Returns the
+   * composer, or null if construction failed (AO then disables itself so the
+   * viewport keeps rendering directly). N8AOPass renders its own depth from the
+   * scene — so the custom unified shader's dither-discard naturally shapes the
+   * AO coverage. screenSpaceRadius keeps the AO scale-independent across the
+   * very different model sizes CAD assemblies come in.
+   */
+  _ensureComposer() {
+    if (this._composer) return this._composer;
+    if (!this.renderer || !this.scene || !this.camera) return null;
+    try {
+      const size = this.renderer.getSize(new THREE.Vector2());
+      const composer = new EffectComposer(this.renderer);
+      composer.addPass(new RenderPass(this.scene, this.camera));
+      const n8ao = new N8AOPass(this.scene, this.camera, size.width, size.height);
+      const c = n8ao.configuration;
+      c.screenSpaceRadius = true;   // aoRadius in px → scale-independent
+      c.aoRadius          = 24.0;
+      c.distanceFalloff   = 1.0;
+      c.intensity         = 4.0;
+      c.aoSamples         = 16;
+      c.denoiseSamples    = 8;
+      c.denoiseRadius     = 12;
+      c.gammaCorrection   = true;   // final sRGB (renderer uses NoToneMapping → no OutputPass)
+      c.accumulate        = false;  // NEVER cross-frame accumulate — ghosts under motion
+      composer.addPass(n8ao);
+      this._n8aoPass = n8ao;
+      this._composer = composer;
+      // Console tuning hook for the spike: window.sbsAO.set({aoRadius:32,intensity:5}) / .on(false)
+      if (typeof window !== 'undefined') {
+        window.sbsAO = {
+          set:  (o) => this.setAOConfig(o),
+          on:   (b) => this.setAOEnabled(b),
+          pass: n8ao,
+        };
+      }
+      console.log('[scene] N8AO composer ready', size.width + 'x' + size.height);
+      return composer;
+    } catch (e) {
+      console.error('[scene] N8AO composer init failed — AO disabled:', e);
+      this._aoEnabled = false;
+      this._composer = null;
+      return null;
+    }
+  }
+
+  /** Toggle ambient occlusion on/off (off → direct render). */
+  setAOEnabled(on) { this._aoEnabled = !!on; }
+
+  /** Live-tune N8AO config, e.g. setAOConfig({ aoRadius: 32, intensity: 5 }). */
+  setAOConfig(opts = {}) {
+    if (!this._n8aoPass) return;
+    for (const [k, v] of Object.entries(opts)) {
+      try { this._n8aoPass.configuration[k] = v; } catch (_) { /* ignore bad keys */ }
     }
   }
 
@@ -377,6 +448,8 @@ export class SceneCore extends Emitter {
     this.renderer.setSize(c.width, c.height, false);   // false = don't touch CSS, we set it next
     // V0.2.22.21 — keep the outline pass's offscreen target in sync.
     resizeOutlinePass(c.width, c.height);
+    // V0.3.0.1 — keep the AO composer's render targets at canonical size too.
+    if (this._composer) this._composer.setSize(c.width, c.height);
 
     // 2. Camera at canonical aspect — every render projects the same
     //    frustum on every machine. Output is reproducible.
