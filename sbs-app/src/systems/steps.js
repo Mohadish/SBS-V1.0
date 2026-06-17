@@ -2972,7 +2972,15 @@ function rebuildFromTreeSpec(spec, nodeById, object3dById, parentObject3d) {
     // mesh from kind + params + quality (restored from the spec if the live
     // node somehow lost them, e.g. when restored from a snapshot alone).
     node = nodeById.get(spec.id);
-    if (!node) return null;
+    if (!node) {
+      // Procedural + self-contained (the spec carries primKind/primParams/quality),
+      // so materialise it from the spec when no live node exists yet — e.g. a
+      // primitive nested in CUSTOM FOLDERS UNDER A MODEL, which the load's reattach
+      // pass can't reach before those folders are rebuilt. Mirrors the folder
+      // branch's create-from-spec, so the box no longer vanishes on reload.
+      node = { id: spec.id, type: 'primitive' };
+      nodeById.set(spec.id, node);
+    }
     node.name         = spec.name || node.name;
     node.localVisible = spec.localVisible !== false;
     // Primitive shape params are STRUCTURAL (not per-step animated). Use the spec
