@@ -342,20 +342,24 @@ initUserSettings()
 // standard-material fallbacks) so the planar mirror honours roughness / reflection
 // intensity / solidness, like SSR does.
 function _mirrorParamsFromMaterial(mat) {
-  let roughness = 0.45, reflectionIntensity = 0.5, solidness = 1.0;
+  let roughness = 0.45, reflectionIntensity = 0.5, solidness = 1.0, metalness = 0.0, color = null;
   if (mat) {
     const u = mat.uniforms;
     if (u) {
       if (u.uRoughness)           roughness           = u.uRoughness.value;
       if (u.uReflectionIntensity) reflectionIntensity = u.uReflectionIntensity.value;
       if (u.uSolidness)           solidness           = u.uSolidness.value;
+      if (u.uMetalness)           metalness           = u.uMetalness.value;
+      if (u.uColor)               color               = u.uColor.value;
     } else {
       if (typeof mat.roughness === 'number')       roughness           = mat.roughness;
       if (typeof mat.envMapIntensity === 'number') reflectionIntensity = Math.min(1, mat.envMapIntensity * 2);
       if (typeof mat.opacity === 'number')         solidness           = mat.opacity;
+      if (typeof mat.metalness === 'number')       metalness           = mat.metalness;
+      if (mat.color)                               color               = mat.color;
     }
   }
-  return { roughness, reflectionIntensity, solidness };
+  return { roughness, reflectionIntensity, solidness, metalness, color };
 }
 
 window.sbsMirror = {

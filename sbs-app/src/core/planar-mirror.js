@@ -56,6 +56,8 @@ export class PlanarMirror {
         textureMatrix: { value: this.textureMatrix },
         uReflectivity: { value: (opts.reflectionIntensity != null ? opts.reflectionIntensity : 0.9) * (opts.solidness != null ? opts.solidness : 1.0) },
         uRoughness:    { value: opts.roughness != null ? opts.roughness : 0.0 },
+        uTintColor:    { value: opts.color ? new THREE.Color(opts.color) : new THREE.Color(0xffffff) },
+        uMetalness:    { value: opts.metalness != null ? opts.metalness : 0.0 },
         uTint:         { value: new THREE.Color(0x0a0a0a) },
         uDebug:        { value: 0 },
       },
@@ -72,6 +74,8 @@ export class PlanarMirror {
         uniform sampler2D tReflect;
         uniform float uReflectivity;   // = reflectionIntensity × solidness
         uniform float uRoughness;      // 0 = mirror-sharp, 1 = blurred
+        uniform vec3  uTintColor;      // surface colour — tints the reflection by metalness
+        uniform float uMetalness;
         uniform vec3  uTint;
         uniform float uDebug;
         varying vec4 vCoord;
@@ -102,7 +106,10 @@ export class PlanarMirror {
           // ADD the reflection onto the real material (rendered underneath): with
           // AdditiveBlending the surface keeps ALL of its RGB / shading, and the
           // mirror adds on top — weight = reflectionIntensity × solidness × edge-fade.
-          gl_FragColor = vec4(refl, clamp(uReflectivity * vis, 0.0, 1.0));
+          // Metalness tints the reflection by the surface colour (non-metal → true
+          // colours; metal → albedo-tinted), matching the curved env/SSR treatment.
+          vec3 tint = mix(vec3(1.0), uTintColor, uMetalness);
+          gl_FragColor = vec4(refl * tint, clamp(uReflectivity * vis, 0.0, 1.0));
         }
       `,
     });
