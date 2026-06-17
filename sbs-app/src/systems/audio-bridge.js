@@ -307,8 +307,18 @@ export function mixTrackToFloat32(track, totalMs, targetRate) {
     // hard-clamped to [-1, 1] to prevent digital clipping. Voice-over-voice
     // is rare in practice; clamping keeps it safe when it happens.
     const src = seg.samples;
+    // De-click: ramp each clip in (and out) over a few ms so its onset doesn't
+    // step from silence straight to signal — that discontinuity (or a leading
+    // transient from the TTS source) is the audible "tick" at each clip's start.
+    // ~5 ms is inaudible for speech; capped at half the clip for very short ones.
+    const fade = Math.min(Math.floor(targetRate * 0.005), Math.floor(len / 2));
     for (let i = 0; i < len; i++) {
-      const v = out[startFrame + i] + src[i];
+      let g = 1;
+      if (fade > 0) {
+        if (i < fade)             g = i / fade;
+        else if (i >= len - fade) g = (len - i) / fade;
+      }
+      const v = out[startFrame + i] + src[i] * g;
       out[startFrame + i] = v > 1 ? 1 : (v < -1 ? -1 : v);
     }
   }

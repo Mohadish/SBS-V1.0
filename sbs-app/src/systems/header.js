@@ -525,6 +525,12 @@ export function waitForHeaderStable() {
 let _currentRefreshPromise = Promise.resolve();
 let _refreshPending        = [];
 
+// Cache of the last rasterised text canvas per header item id. On a step-change
+// rebuild we seed the new node with it as a PLACEHOLDER so the header keeps showing
+// the previous text (right position) until the new async raster lands — instead of a
+// one-frame blank ("header blink") that the offline export captured per frame.
+const _headerImgCache = new Map();
+
 /**
  * Build a single Konva node for a header item. Text → Konva.Text;
  * image → Konva.Image (with async dataUrl load). Returns null on bad
@@ -572,6 +578,10 @@ function _buildNode(item, ctx, inert) {
   // and the item fields become a fallback / migration source.
   const textHtml = _buildHeaderTextHtml(item, ctx);
   node.setAttr('textHtml', textHtml);
+  // Placeholder: show the previous raster (if any) immediately so a step-change
+  // rebuild doesn't flash blank for the frames before the new async raster lands.
+  const _cachedImg = _headerImgCache.get(item.id);
+  if (_cachedImg) node.image(_cachedImg);
   if (!inert) _attachItemHandlers(node, item);
   // Async raster — Konva.Image draws nothing until the canvas lands,
   // which is fine: empty image = no drawImage call (per Konva sceneFunc
@@ -670,6 +680,7 @@ async function _hydrateHeaderText(node, textHtml, item) {
     if (node.isDestroyed?.()) return;
     if (!canvas.width || !canvas.height) return;   // defensive — _htmlToCanvas already clamps
     node.image(canvas);
+    if (item?.id) _headerImgCache.set(item.id, canvas);   // seed placeholder for the next rebuild
     _layer?.batchDraw();
   } catch (e) {
     console.warn('[header] text rasterise failed', e);
