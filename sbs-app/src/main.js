@@ -359,7 +359,39 @@ function _mirrorParamsFromMaterial(mat) {
       if (mat.color)                               color               = mat.color;
     }
   }
-  return { roughness, reflectionIntensity, solidness, metalness, color };
+  return { roughness, reflectionIntensity, solidness, metalness, color, sourceMaterial: mat };
+}
+
+// Build per-face flat mirrors for a list of meshes (shared by allFromSelected /
+// allFromColor). Clears existing mirrors under each mesh first (dedup), then turns
+// every sizeable flat region into a planar mirror honouring the host material's
+// params. Capped — each mirror is one extra scene render per frame.
+function _buildFlatMirrors(meshes, cap = 8) {
+  meshes.forEach(m => sceneCore.removePlanarMirrorsUnder(m));
+  const angle = state.get('shapeFaceAngleThreshold') ?? 5;
+  let count = 0, flatTotal = 0;
+  for (const mesh of meshes) {
+    if (count >= cap) break;
+    const flats = segmentMeshFaces(mesh, angle).filter(r => r.flat);
+    flatTotal += flats.length;
+    if (!flats.length) continue;
+    const minArea = flats[0].areaLocal * 0.04;   // skip tiny slivers
+    mesh.geometry.computeBoundingSphere?.();
+    const eps = (mesh.geometry.boundingSphere?.radius || 1) * 0.004;
+    const sp  = _mirrorParamsFromMaterial(mesh.material);
+    for (const region of flats) {
+      if (count >= cap) break;
+      if (region.areaLocal < minArea) continue;
+      const sub = new window.THREE.Mesh(regionGeometry(mesh, region));
+      sub.userData.noSelect = true; sub.userData.isMirrorSubmesh = true;
+      sub.position.copy(region.normalLocal).multiplyScalar(eps);
+      mesh.add(sub);
+      const m = sceneCore.addPlanarMirror(sub, sp);
+      if (m) { m.material.polygonOffset = true; m.material.polygonOffsetFactor = -2; m.material.polygonOffsetUnits = -2; }
+      count++;
+    }
+  }
+  return { count, flatTotal, meshCount: meshes.length };
 }
 
 window.sbsMirror = {
@@ -400,32 +432,34 @@ window.sbsMirror = {
     const id   = state.get('selectedId');
     const node = id ? state.get('nodeById')?.get?.(id) : null;
     if (!node?.object3d) { console.warn('[mirror] select a mesh/model first'); return; }
-    sceneCore.removePlanarMirrorsUnder(node.object3d);   // re-run replaces, never stacks
     const meshes = [];
     node.object3d.traverse(o => { if (o.isMesh && !o.userData.isMirrorSubmesh) meshes.push(o); });
-    const angle = state.get('shapeFaceAngleThreshold') ?? 5;
-    let count = 0, flatTotal = 0;
-    for (const mesh of meshes) {
-      if (count >= cap) break;
-      const flats = segmentMeshFaces(mesh, angle).filter(r => r.flat);
-      flatTotal += flats.length;
-      if (!flats.length) continue;
-      const minArea = flats[0].areaLocal * 0.04;   // skip tiny slivers
-      mesh.geometry.computeBoundingSphere?.();
-      const eps = (mesh.geometry.boundingSphere?.radius || 1) * 0.004;
-      for (const region of flats) {
-        if (count >= cap) break;
-        if (region.areaLocal < minArea) continue;
-        const sub = new window.THREE.Mesh(regionGeometry(mesh, region));
-        sub.userData.noSelect = true; sub.userData.isMirrorSubmesh = true;
-        sub.position.copy(region.normalLocal).multiplyScalar(eps);
-        mesh.add(sub);
-        const m = sceneCore.addPlanarMirror(sub, _mirrorParamsFromMaterial(mesh.material));
-        if (m) { m.material.polygonOffset = true; m.material.polygonOffsetFactor = -2; m.material.polygonOffsetUnits = -2; }
-        count++;
-      }
+    const r = _buildFlatMirrors(meshes, cap);
+    console.log(`[mirror] ${r.count} face mirrors made (cap ${cap}, ${r.flatTotal} flat regions). Each = 1 extra render/frame — framerate drops with count.`);
+  },
+  // 2c per-COLOUR: mirror all flat faces of every mesh assigned a colour preset.
+  // The bridge to the per-colour "Flat mirror" toggle. Call with no id to list ids.
+  allFromColor: (presetId, cap = 12) => {
+    if (!presetId) {
+      const presets = state.get('colorPresets') || [];
+      console.warn('[mirror] usage: allFromColor(presetId). Presets:',
+        presets.map(p => `${p.id} (${p.name})`).join(' | ') || '(none)');
+      return;
     }
-    console.log(`[mirror] ${count} face mirrors made (cap ${cap}, ${flatTotal} flat regions found). Each = 1 extra scene render/frame — expect the framerate to drop with count.`);
+    const assign   = materials.meshColorAssignments || {};
+    const defs     = materials.meshDefaultColors    || {};
+    const nodeById = state.get('nodeById');
+    const ids = new Set();
+    for (const nid of new Set([...Object.keys(assign), ...Object.keys(defs)])) {
+      if ((assign[nid] ?? defs[nid]) === presetId) ids.add(nid);
+    }
+    const meshes = [];
+    ids.forEach(nid => nodeById?.get?.(nid)?.object3d?.traverse(o => {
+      if (o.isMesh && !o.userData.isMirrorSubmesh) meshes.push(o);
+    }));
+    if (!meshes.length) { console.warn('[mirror] no meshes use colour', presetId); return; }
+    const r = _buildFlatMirrors(meshes, cap);
+    console.log(`[mirror] colour ${presetId}: ${r.count} mirrors on ${r.meshCount} mesh(es) (cap ${cap}, ${r.flatTotal} flat regions).`);
   },
   debug: (b) => sceneCore.setMirrorDebug(b !== false),
   info:  () => sceneCore.mirrorInfo(),

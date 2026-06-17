@@ -35,6 +35,7 @@ export class PlanarMirror {
     const size = opts.size || 1024;
     this.mesh = mesh;
     this.originalMaterial = mesh.material;
+    this.sourceMaterial = opts.sourceMaterial || null;   // host material → live param read
 
     const plane = computeMeshPlaneLocal(mesh);
     this.pointLocal  = plane.point;
@@ -90,7 +91,7 @@ export class PlanarMirror {
           float vis = e.x * e.y;
           // Roughness blur — sunflower disc (no mipmap dependency).
           vec3 refl;
-          float blurR = uRoughness * 0.012;
+          float blurR = uRoughness * 0.022;
           if (blurR > 0.0005) {
             vec3 acc = vec3(0.0);
             for (int t = 0; t < 12; t++) {
@@ -119,6 +120,18 @@ export class PlanarMirror {
   /** Render the reflected scene into the RT. Call ONCE per frame, pre-composer. */
   update(renderer, scene, camera) {
     const THREE = window.THREE;
+    // Live-read the host material's params so slider edits apply WITHOUT a rebuild
+    // (roughness blur, reflection intensity, solidness, metalness tint, colour).
+    const sm = this.sourceMaterial;
+    if (sm && sm.uniforms) {
+      const u = sm.uniforms, mu = this.material.uniforms;
+      if (u.uRoughness) mu.uRoughness.value = u.uRoughness.value;
+      const reflI = u.uReflectionIntensity ? u.uReflectionIntensity.value : 0.5;
+      const solid = u.uSolidness ? u.uSolidness.value : 1.0;
+      mu.uReflectivity.value = reflI * solid;
+      if (u.uMetalness) mu.uMetalness.value = u.uMetalness.value;
+      if (u.uColor && mu.uTintColor.value.copy) mu.uTintColor.value.copy(u.uColor.value);
+    }
     // World plane from the live transform → the mirror follows the host mesh.
     this.mesh.updateWorldMatrix(true, false);
     const mirrorPos = this.pointLocal.clone().applyMatrix4(this.mesh.matrixWorld);
