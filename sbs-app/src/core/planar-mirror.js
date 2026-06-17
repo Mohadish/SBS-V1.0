@@ -193,13 +193,18 @@ export class PlanarMirror {
     const prevXr = renderer.xr.enabled;
     renderer.xr.enabled = false;
     this.mesh.visible = false;            // don't reflect the mirror itself
-    renderer.setRenderTarget(this.rt);
-    renderer.autoClear = true;
-    renderer.clear();
-    renderer.render(scene, vc);
-    this.mesh.visible = true;
-    renderer.xr.enabled = prevXr;
-    renderer.setRenderTarget(prevRT);
+    // try/finally so a render throw (swallowed by SceneCore._render's try/catch)
+    // can't leave the mirror face permanently invisible or the renderer state dirty.
+    try {
+      renderer.setRenderTarget(this.rt);
+      renderer.autoClear = true;
+      renderer.clear();
+      renderer.render(scene, vc);
+    } finally {
+      this.mesh.visible = true;
+      renderer.xr.enabled = prevXr;
+      renderer.setRenderTarget(prevRT);
+    }
   }
 
   setDebug(on) {

@@ -573,8 +573,11 @@ window.sbsHexInfo = () => {
 // ── Stuck text-field diagnostics + unstick (V0.3.0.48) ─────────────────────────
 // Run window.sbsDiag.input() WHEN typing is stuck → captures the cause. Run
 // window.sbsFix.input() to force-unstick (close stray modals, clear inert, refocus).
-window.sbsDiag = {
-  input: () => {
+// EXTEND window.sbsDiag — do NOT reassign it: actions.js already populates it at import
+// (unstuckInputs, cablesAudit, visibilityAudit, rmHealth, …) and the Edit menu + Ctrl+Alt+U
+// call window.sbsDiag.unstuckInputs. A full `= {}` reassignment would wipe those.
+window.sbsDiag = window.sbsDiag || {};
+window.sbsDiag.input = () => {
     const desc = el => el ? `${el.tagName}${el.id ? '#' + el.id : ''}${typeof el.className === 'string' && el.className ? '.' + el.className.split(' ')[0] : ''}` : null;
     const ae = document.activeElement;
     const openD = [...document.querySelectorAll('dialog')].filter(d => d.open);
@@ -598,7 +601,6 @@ window.sbsDiag = {
     console.log('%c[diag] WHEN STUCK expect: activeIsEditable=true, documentHasFocus=true, modalDialogs=0, editSessionActive=false, syntheticKeydownPrevented=false. Anything else = the cause — send me this table.', 'font-weight:bold');
     (console.table || console.log)(report);
     return report;
-  },
 };
 // Archived-flag persistence diagnostic. Run BEFORE saving with something archived:
 // compares the live archived nodes against what serialize() would actually write to
@@ -620,8 +622,8 @@ window.sbsDiag.archived = () => {
   console.log('  → live has them but SAVE does not = save bug. Both have them but they vanish after reload = load/remap bug.');
   return { live, saved };
 };
-window.sbsFix = {
-  input: () => {
+window.sbsFix = window.sbsFix || {};
+window.sbsFix.input = () => {
     const done = [];
     [...document.querySelectorAll('dialog')].filter(d => d.open).forEach(d => { try { d.close(); done.push('closed <dialog> ' + (d.id || '')); } catch {} });
     [...document.querySelectorAll('[inert]')].forEach(n => { try { n.removeAttribute('inert'); done.push('cleared [inert]'); } catch {} });
@@ -630,7 +632,6 @@ window.sbsFix = {
     try { window.focus(); document.body.focus?.(); } catch {}
     console.log('[fix] unstick:', done.length ? done.join(', ') : 'no stray dialogs/inert/session; focus reset. If still stuck, run window.sbsDiag.input() and send me the table.');
     return done;
-  },
 };
 
 // Flat-face segmentation viz (V0.3.0.29, Tier-2 stage 2a): window.sbsSegment.show()
