@@ -48,8 +48,9 @@ export class PlanarMirror {
 
     this.material = new THREE.ShaderMaterial({
       side: THREE.DoubleSide,
-      transparent: true,        // blend the reflection OVER the surface's real material
+      transparent: true,
       depthWrite: false,
+      blending: THREE.AdditiveBlending,   // ADD reflection onto the full material (like curved env/SSR), never replace it
       uniforms: {
         tReflect:      { value: this.rt.texture },
         textureMatrix: { value: this.textureMatrix },
@@ -98,9 +99,9 @@ export class PlanarMirror {
           } else {
             refl = texture2D(tReflect, clamp(uv, 0.0, 1.0)).rgb;
           }
-          // Blend the reflection OVER the real material (rendered underneath):
-          // alpha = reflectionIntensity × solidness × edge-fade. The surface keeps
-          // its RGB / metalness / roughness shading; the mirror adds on top.
+          // ADD the reflection onto the real material (rendered underneath): with
+          // AdditiveBlending the surface keeps ALL of its RGB / shading, and the
+          // mirror adds on top — weight = reflectionIntensity × solidness × edge-fade.
           gl_FragColor = vec4(refl, clamp(uReflectivity * vis, 0.0, 1.0));
         }
       `,
