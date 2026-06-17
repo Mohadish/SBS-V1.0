@@ -2975,10 +2975,14 @@ function rebuildFromTreeSpec(spec, nodeById, object3dById, parentObject3d) {
     if (!node) return null;
     node.name         = spec.name || node.name;
     node.localVisible = spec.localVisible !== false;
-    if (spec.primKind)            node.primKind    = spec.primKind;
-    if (spec.primParams)          node.primParams  = spec.primParams;
-    if (spec.primQuality != null) node.primQuality = spec.primQuality;
-    if (spec.primLinkId)          node.primLinkId  = spec.primLinkId;
+    // Primitive shape params are STRUCTURAL (not per-step animated). Use the spec
+    // only as a FALLBACK when the live node lost them — otherwise an unconditional
+    // overwrite from a stale snapshot reset a resized box back to default dimensions
+    // on load (the live node already carries the correct saved params).
+    if (spec.primKind    && !node.primKind)              node.primKind    = spec.primKind;
+    if (spec.primParams  && !node.primParams)            node.primParams  = spec.primParams;
+    if (spec.primQuality != null && node.primQuality == null) node.primQuality = spec.primQuality;
+    if (spec.primLinkId  && !node.primLinkId)            node.primLinkId  = spec.primLinkId;
     node.children     = [];
     const obj = ensurePrimitiveObject3D(node);
     if (obj) {

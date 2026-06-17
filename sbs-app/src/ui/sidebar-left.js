@@ -1062,6 +1062,10 @@ function _cloneSpecAsPhantom(specNode) {
     type:              specNode.type || 'folder',
     missing:           true,
     localVisible:      specNode.localVisible !== false,
+    // Archive flag must survive folder reconstruction — the generic phantom path
+    // (used for custom folders) previously dropped it, so an archived folder came
+    // back un-archived on reload while its contents stayed archived.
+    archived:          specNode.archived === true,
     object3d:          null,
     // Geometry bounds — used to render a bounding-box placeholder in the scene
     // so missing objects have a real, visible, interactive stand-in.
