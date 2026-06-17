@@ -305,12 +305,12 @@ class GizmoController {
     for (const axis of ['x', 'y', 'z']) {
       const color = AX[axis];
 
-      const shaftGeo = new T.CylinderGeometry(0.025, 0.025, 0.72, 8);
+      const shaftGeo = new T.CylinderGeometry(0.0125, 0.0125, 0.72, 8);
       const shaftMat = new T.MeshBasicMaterial({ color, depthTest: false });
       const shaft    = new T.Mesh(shaftGeo, shaftMat);
       shaft.position.y = 0.36;
 
-      const coneGeo  = new T.ConeGeometry(0.065, 0.25, 8);
+      const coneGeo  = new T.ConeGeometry(0.038, 0.25, 8);
       const coneMat  = new T.MeshBasicMaterial({ color, depthTest: false });
       const cone     = new T.Mesh(coneGeo, coneMat);
       cone.position.y = 0.845;
@@ -339,12 +339,12 @@ class GizmoController {
     // V0.2.22.114: shrunk + tucked inward + lower opacity so they read as small
     // plane-drag handles, not a big floating "rectangle" near the object.
     const planes = [
-      { axis: 'xz', color: AX.y, pos: [0.16, 0, 0.16],    rotX: -Math.PI / 2, rotY: 0 },
-      { axis: 'xy', color: AX.z, pos: [0.16, 0.16, 0],    rotX: 0,            rotY: 0 },
-      { axis: 'yz', color: AX.x, pos: [0, 0.16, 0.16],    rotX: 0,            rotY: Math.PI / 2 },
+      { axis: 'xz', color: AX.y, pos: [0.20, 0, 0.20],    rotX: -Math.PI / 2, rotY: 0 },
+      { axis: 'xy', color: AX.z, pos: [0.20, 0.20, 0],    rotX: 0,            rotY: 0 },
+      { axis: 'yz', color: AX.x, pos: [0, 0.20, 0.20],    rotX: 0,            rotY: Math.PI / 2 },
     ];
     for (const p of planes) {
-      const vGeo  = new T.PlaneGeometry(0.09, 0.09);
+      const vGeo  = new T.PlaneGeometry(0.18, 0.18);
       const vMat  = new T.MeshBasicMaterial({ color: p.color, side: T.DoubleSide, transparent: true, opacity: 0.45, depthTest: false });
       const vis   = new T.Mesh(vGeo, vMat);
       vis.position.set(...p.pos);
@@ -352,7 +352,7 @@ class GizmoController {
       vis.rotation.y = p.rotY;
       this._group.add(vis);
 
-      const hGeo  = new T.PlaneGeometry(0.13, 0.13);
+      const hGeo  = new T.PlaneGeometry(0.26, 0.26);
       const hMat  = new T.MeshBasicMaterial({ visible: false, side: T.DoubleSide, depthTest: false });
       const hit   = new T.Mesh(hGeo, hMat);
       hit.position.set(...p.pos);
@@ -369,7 +369,7 @@ class GizmoController {
     for (const axis of ['x', 'y', 'z']) {
       const color = AX[axis];
 
-      const geo  = new T.TorusGeometry(0.55, 0.030, 8, 56);
+      const geo  = new T.TorusGeometry(0.55, 0.015, 8, 56);
       const mat  = new T.MeshBasicMaterial({ color, depthTest: false });
       const ring = new T.Mesh(geo, mat);
       this._orientRing(ring, axis);
