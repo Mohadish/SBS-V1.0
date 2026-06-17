@@ -25,6 +25,8 @@ import { captureTransformSnapshot } from '../core/transforms.js';
 import {
   moveNode, findParent, buildNodeMap, isDescendantOf, serializeModelTree,
 } from '../core/nodes.js';
+import { chooseFromButtons } from '../ui/prompt.js';
+import { setStatus }         from '../ui/status.js';
 
 // ── Spec-tree helpers (immutable, mirror injectHardwareInstanceIntoAllSteps) ──
 function _containsId(spec, id) {
@@ -178,4 +180,58 @@ export function clearFollow(followerId) {
   const nodeById = state.get('nodeById');
   const A = nodeById?.get?.(followerId);
   if (A?.follow) { A.follow = null; state.markDirty?.(); console.log('[follow] cleared on', followerId); }
+}
+
+// ── Stage 4: verified click-to-pick-target flow (r-click → "Follow Object") ───
+let _pickFollowerId = null;
+
+/** Begin picking a target for `followerId`. Next viewport click = the target. */
+export function startFollowPick(followerId) {
+  const A = state.get('nodeById')?.get?.(followerId);
+  if (!A) { console.warn('[follow] pick: invalid follower'); return; }
+  _pickFollowerId = followerId;
+  state.setState({ followPickActive: true });
+  setStatus(`Follow Object — click the object "${A.name || 'this'}" should follow (Esc to cancel).`, 'info', 8000);
+}
+
+export function isFollowPicking() { return !!_pickFollowerId; }
+
+export function cancelFollowPick() {
+  if (!_pickFollowerId) return;
+  _pickFollowerId = null;
+  state.setState({ followPickActive: false });
+  setStatus('Follow cancelled.', 'muted', 1200);
+}
+
+/**
+ * Handle a target click during pick mode. `targetNodeId` is the node the user
+ * clicked (already resolved + highlighted by the caller). Shows a verify/confirm
+ * dialog with the scope choice, then applies. Returns true (consumed the click).
+ */
+export async function onFollowPickClick(targetNodeId) {
+  const followerId = _pickFollowerId;
+  if (!followerId) return false;
+  if (!targetNodeId)               { setStatus('Click an object to follow (Esc to cancel).', 'warn', 2000); return true; }
+  if (targetNodeId === followerId) { setStatus('Pick a DIFFERENT object as the target.', 'warn', 2200); return true; }
+  const nodeById = state.get('nodeById');
+  const A = nodeById?.get?.(followerId);
+  const B = nodeById?.get?.(targetNodeId);
+  if (!A || !B) { cancelFollowPick(); return true; }
+
+  const choice = await chooseFromButtons(
+    'Follow Object',
+    `Make "${A.name || 'the selected object'}" follow "${B.name || 'this object'}" — keeping it in that object's folder across steps?`,
+    [
+      { id: 'all',      label: 'Follow — all steps', primary: true },
+      { id: 'forward',  label: 'From this step → forward' },
+      { id: 'backward', label: 'Up to this step' },
+      { id: 'cancel',   label: 'Cancel' },
+    ],
+  );
+  _pickFollowerId = null;
+  state.setState({ followPickActive: false });
+  if (!choice || choice === 'cancel') { setStatus('Follow cancelled.', 'muted', 1200); return true; }
+  const ok = applyFollow(followerId, targetNodeId, { scope: choice });
+  if (ok) setStatus(`"${A.name || 'Object'}" now follows "${B.name || 'target'}".`, 'success', 2500);
+  return true;
 }

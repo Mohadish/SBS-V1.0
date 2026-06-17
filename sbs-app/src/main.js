@@ -87,7 +87,7 @@ import { openSettingsModal }   from './ui/settings-modal.js';
 import { segmentMeshFaces, buildRegionViz, regionGeometry, regionAspect } from './core/mesh-segment.js';
 import { geometrySignature } from './core/geometry-signature.js';
 import { detectHex } from './core/socket-detect.js';
-import { applyFollow, clearFollow } from './systems/follow.js';
+import { applyFollow, clearFollow, startFollowPick, isFollowPicking, cancelFollowPick, onFollowPickClick } from './systems/follow.js';
 import * as editSession from './systems/edit-session.js';
 import { openModelSourceDialog } from './ui/model-source-dialog.js';
 import { schedulePrecache, cancel as cancelPrecache } from './systems/narration-precache.js';
@@ -1371,6 +1371,18 @@ canvas.addEventListener('pointerdown', e => {
     e.stopPropagation();
     _gizmoConsumed = true;
     hardwarePlacePicker.onPointerDown(e.clientX, e.clientY);
+    return;
+  }
+
+  // Follow-Object target pick — the click selects the object to follow.
+  if (isFollowPicking()) {
+    e.preventDefault();
+    e.stopPropagation();
+    _gizmoConsumed = true;
+    const hit = sceneCore.pick(e.clientX, e.clientY);
+    const targetId = hit?.object?.userData?.flatShapeNodeId ?? hit?.object?.userData?.meshNodeId ?? null;
+    if (targetId) actionSetSelection(targetId);   // highlight the target for verification
+    onFollowPickClick(targetId);
     return;
   }
 
@@ -2711,6 +2723,13 @@ canvas.addEventListener('contextmenu', e => {
     items.push({ label: '↺ Reset transform', action: () => resetTransform(selId) });
     items.push({ label: '─', disabled: true });
   }
+  // Follow Object (V0.3.0.64) — A rides B's folder across steps.
+  if (multiIds.size === 1 && node && !node.archived && node.type !== 'scene') {
+    items.push(node.follow
+      ? { label: '🔗 Stop following', action: () => clearFollow(node.id) }
+      : { label: '🔗 Follow object…',  action: () => startFollowPick(node.id) });
+    items.push({ label: '─', disabled: true });
+  }
   if (hasSel) {
     const _isolated = actions.hasIsolateSnapshot();
     items.push({
@@ -3153,6 +3172,13 @@ window.addEventListener('keydown', async e => {
       e.preventDefault();
       return;
     }
+  }
+
+  // Follow-Object target pick — Esc cancels.
+  if (isFollowPicking() && key === 'Escape') {
+    cancelFollowPick();
+    e.preventDefault();
+    return;
   }
 
   // ── Selection ────────────────────────────────────────────────────────────

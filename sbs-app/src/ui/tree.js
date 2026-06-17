@@ -18,6 +18,7 @@ import { sceneCore }            from '../core/scene.js';
 import { steps }                from '../systems/steps.js';
 import * as actions             from '../systems/actions.js';
 import { undoManager }          from '../systems/undo.js';
+import { startFollowPick, clearFollow } from '../systems/follow.js';
 import {
   findNode,
   findParent,
@@ -1346,6 +1347,14 @@ function _buildContextMenuItems(node) {
       label: '🔄 Convert to Replace-Model',
       action: () => actions.convertToReplaceModel(node.id),
     });
+  }
+
+  // ── Follow Object (V0.3.0.64) — A rides B's folder across steps. The cleaner
+  // replacement for Convert-to-Replace-Model. Single non-archived node.
+  if (count === 1 && node && !node.archived && node.type !== 'scene') {
+    items.push(node.follow
+      ? { label: '🔗 Stop following', action: () => clearFollow(node.id) }
+      : { label: '🔗 Follow object…',  action: () => startFollowPick(node.id) });
   }
 
   // ── RM-only actions (B.2-NEW.2) ───────────────────────────────────────
