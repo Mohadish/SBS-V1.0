@@ -371,6 +371,10 @@ let _flatMirrorCap = 300;
 // Skip flat regions longer/thinner than this (chamfers, edge strips) — useless as
 // mirrors and the worst count-inflaters. window.sbsMirror.setMaxAspect(n).
 let _flatMirrorMaxAspect = 15;
+// Last-seen flatMirror flag per preset — lets the 'materials:presetUpdated' reconciler
+// (below) build/clear mirrors only when the flag actually flips (incl. on undo/redo),
+// without rebuilding on every unrelated colour/roughness edit.
+const _flatMirrorFlagCache = new Map();
 
 // Build per-face flat mirrors for a list of meshes (shared by allFromSelected /
 // allFromColor). Clears existing mirrors under each mesh first (dedup), then turns
@@ -496,12 +500,16 @@ window.sbsMirror = {
   // Rebuild all flat mirrors from the presets' flatMirror flag (project load / refresh).
   syncFromPresets: () => {
     sceneCore.clearPlanarMirrors();
-    const flagged = (state.get('colorPresets') || []).filter(p => p.flatMirror);
+    const presets = state.get('colorPresets') || [];
+    const flagged = presets.filter(p => p.flatMirror);
     let total = 0;
     for (const p of flagged) {
       const meshes = _meshesForColor(p.id);
       if (meshes.length) total += _buildFlatMirrors(meshes).count;
     }
+    // Seed the reconciler cache so a later unrelated edit of a flagged colour
+    // doesn't trigger a redundant rebuild.
+    presets.forEach(p => _flatMirrorFlagCache.set(p.id, !!p.flatMirror));
     if (flagged.length) console.log(`[mirror] synced ${total} mirror(s) from ${flagged.length} flat-mirror colour(s)`);
     return total;
   },
@@ -687,6 +695,21 @@ state.on('project:loaded', () => schedulePrecache('project-loaded'));
 state.on('project:loaded', () => setTimeout(() => {
   try { window.sbsMirror?.syncFromPresets?.(); } catch (e) { console.warn('[mirror] sync on load failed', e); }
 }, 0));
+// Keep flat mirrors in sync with each colour's flatMirror flag across DO / UNDO / REDO.
+// materials.updatePreset and its undo/redo all emit 'materials:presetUpdated', so we
+// build/clear here when (and only when) the flag flips — the checkbox handler no longer
+// does it imperatively, which previously left orphan mirrors after Ctrl+Z.
+state.on('materials:presetUpdated', (preset) => {
+  if (!preset || !preset.id) return;
+  const was = _flatMirrorFlagCache.get(preset.id) || false;
+  const now = !!preset.flatMirror;
+  if (was === now) return;
+  _flatMirrorFlagCache.set(preset.id, now);
+  try {
+    if (now) window.sbsMirror?.allFromColor?.(preset.id);
+    else     window.sbsMirror?.clearColor?.(preset.id);
+  } catch (e) { console.warn('[mirror] flatMirror flag sync failed', e); }
+});
 // Any export-options change re-runs the pass. Internally idempotent — only
 // steps with stale/missing clips get re-synthesized.
 state.on('change:export',  () => schedulePrecache('export-options-change'));

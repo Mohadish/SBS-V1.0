@@ -1064,6 +1064,17 @@ function _cloneSpecAsPhantom(specNode) {
       children: (specNode.children || []).map(_cloneSpecAsPhantom),
     };
   }
+  // V0.3.0.56 — hardware nuts (bolt-driven child of a hardwareInstance): same shape as
+  // the bolt. Without this branch a nut fell through the generic phantom path
+  // (missing:true + field whitelist) and was lost on reload.
+  if (specNode.type === 'hardwareNut') {
+    return {
+      ...specNode,
+      missing:  false,
+      object3d: null,
+      children: (specNode.children || []).map(_cloneSpecAsPhantom),
+    };
+  }
   // V0.2.22.90 — parametric primitives: spec carries primKind/primParams/
   // primQuality; ensurePrimitiveObject3D rebuilds the mesh on first pass.
   if (specNode.type === 'primitive') {
@@ -1206,7 +1217,7 @@ function _insertPhantomCustomFolders(savedSceneRoot) {
  */
 function _reattachProceduralNodes(savedSceneRoot) {
   if (!savedSceneRoot) return;
-  const RECONSTRUCT = new Set(['flatShape', 'hardwareInstance', 'primitive']);
+  const RECONSTRUCT = new Set(['flatShape', 'hardwareInstance', 'hardwareNut', 'primitive']);
   const nodeById = state.get('nodeById') || new Map();
   let changed = false;
   const added = [];
@@ -2182,9 +2193,10 @@ function _renderColorsTab() {
         _upd('ssrReflective', e.target.checked);
       });
       pane.querySelector('.cp-flat-mirror')?.addEventListener('change', e => {
+        // Only flip the flag (undoable). The mirrors are built/cleared by the
+        // 'materials:presetUpdated' reconciler in main.js, so the build rides
+        // do/undo/redo with the flag and never desyncs.
         _upd('flatMirror', e.target.checked);
-        if (e.target.checked) window.sbsMirror?.allFromColor?.(preset.id);
-        else                  window.sbsMirror?.clearColor?.(preset.id);
       });
       pane.querySelector('.cp-del').addEventListener('click', () =>
         _deletePresetWithProtection(preset, presets, missingMeshIds));
