@@ -85,6 +85,8 @@ import { initCableRender, getCablePointMeshes, getCableSegmentMeshes, getCableSo
 import { initUserSettings, get as getUserSettings } from './core/user-settings.js';
 import { openSettingsModal }   from './ui/settings-modal.js';
 import { segmentMeshFaces, buildRegionViz, regionGeometry, regionAspect } from './core/mesh-segment.js';
+import { geometrySignature } from './core/geometry-signature.js';
+import * as editSession from './systems/edit-session.js';
 import { openModelSourceDialog } from './ui/model-source-dialog.js';
 import { schedulePrecache, cancel as cancelPrecache } from './systems/narration-precache.js';
 
@@ -512,6 +514,72 @@ window.sbsMirror = {
   debug: (b) => sceneCore.setMirrorDebug(b !== false),
   info:  () => sceneCore.mirrorInfo(),
   clear: () => { sceneCore.clearPlanarMirrors(); console.log('[mirror] cleared'); },
+};
+
+// ── Select Similar (V0.3.0.48) ────────────────────────────────────────────────
+// Pick one mesh → select every part with a matching geometry fingerprint. CAD
+// assemblies keep repeated parts (screws/nuts/washers) as instances of the same
+// geometry, so identical fingerprints group them reliably. window.sbsSelectSimilar().
+window.sbsSelectSimilar = () => {
+  const id = state.get('selectedId');
+  if (!id) { console.warn('[similar] select one mesh first'); return; }
+  const node = state.get('nodeById')?.get?.(id);
+  let refMesh = null;
+  node?.object3d?.traverse(o => { if (!refMesh && o.isMesh) refMesh = o; });
+  if (!refMesh) { console.warn('[similar] the selection has no mesh'); return; }
+  const refSig = geometrySignature(refMesh);
+  if (!refSig) { console.warn('[similar] could not fingerprint the selection'); return; }
+  const matches = [];
+  for (const [nid, mesh] of materials.meshById) {
+    if (geometrySignature(mesh) === refSig) matches.push(nid);
+  }
+  if (!matches.length) { console.warn('[similar] no matches'); return; }
+  actions.setSelection(matches[0], new Set(matches));
+  console.log(`[similar] selected ${matches.length} part(s) matching signature ${refSig}`);
+  return matches.length;
+};
+
+// ── Stuck text-field diagnostics + unstick (V0.3.0.48) ─────────────────────────
+// Run window.sbsDiag.input() WHEN typing is stuck → captures the cause. Run
+// window.sbsFix.input() to force-unstick (close stray modals, clear inert, refocus).
+window.sbsDiag = {
+  input: () => {
+    const desc = el => el ? `${el.tagName}${el.id ? '#' + el.id : ''}${typeof el.className === 'string' && el.className ? '.' + el.className.split(' ')[0] : ''}` : null;
+    const ae = document.activeElement;
+    const openD = [...document.querySelectorAll('dialog')].filter(d => d.open);
+    const modal = openD.filter(d => { try { return d.matches(':modal'); } catch { return false; } });
+    const inert = [...document.querySelectorAll('[inert]')];
+    let editActive = false; try { editActive = editSession.isActive(); } catch {}
+    let synthPrevented = null;
+    if (ae) { try { const ev = new KeyboardEvent('keydown', { key: 'a', code: 'KeyA', bubbles: true, cancelable: true }); ae.dispatchEvent(ev); synthPrevented = ev.defaultPrevented; } catch {} }
+    const report = {
+      activeElement: desc(ae),
+      activeIsEditable: !!ae && (['INPUT', 'TEXTAREA'].includes(ae.tagName) || ae.isContentEditable),
+      documentHasFocus: document.hasFocus(),
+      openDialogs: openD.length,
+      modalDialogs: modal.length,
+      modalIds: modal.map(desc).join(', '),
+      inertNodes: inert.length,
+      inertIds: inert.slice(0, 6).map(desc).join(', '),
+      editSessionActive: editActive,
+      syntheticKeydownPrevented: synthPrevented,
+    };
+    console.log('%c[diag] WHEN STUCK expect: activeIsEditable=true, documentHasFocus=true, modalDialogs=0, editSessionActive=false, syntheticKeydownPrevented=false. Anything else = the cause — send me this table.', 'font-weight:bold');
+    (console.table || console.log)(report);
+    return report;
+  },
+};
+window.sbsFix = {
+  input: () => {
+    const done = [];
+    [...document.querySelectorAll('dialog')].filter(d => d.open).forEach(d => { try { d.close(); done.push('closed <dialog> ' + (d.id || '')); } catch {} });
+    [...document.querySelectorAll('[inert]')].forEach(n => { try { n.removeAttribute('inert'); done.push('cleared [inert]'); } catch {} });
+    try { if (editSession.isActive()) { editSession.end({ commit: false }); done.push('ended edit session'); } } catch {}
+    try { document.activeElement?.blur?.(); } catch {}
+    try { window.focus(); document.body.focus?.(); } catch {}
+    console.log('[fix] unstick:', done.length ? done.join(', ') : 'no stray dialogs/inert/session; focus reset. If still stuck, run window.sbsDiag.input() and send me the table.');
+    return done;
+  },
 };
 
 // Flat-face segmentation viz (V0.3.0.29, Tier-2 stage 2a): window.sbsSegment.show()
