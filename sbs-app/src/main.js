@@ -439,13 +439,22 @@ window.sbsMirror = {
   },
   // 2c per-COLOUR: mirror all flat faces of every mesh assigned a colour preset.
   // The bridge to the per-colour "Flat mirror" toggle. Call with no id to list ids.
-  allFromColor: (presetId, cap = 12) => {
-    if (!presetId) {
-      const presets = state.get('colorPresets') || [];
-      console.warn('[mirror] usage: allFromColor(presetId). Presets:',
-        presets.map(p => `${p.id} (${p.name})`).join(' | ') || '(none)');
+  allFromColor: (sel, cap = 12) => {
+    const presets = state.get('colorPresets') || [];
+    const shortOf = p => (p.id.match(/_(\d+)$/) || [])[1] || '?';
+    if (sel == null || sel === '') {
+      console.log('[mirror] usage: allFromColor("#hex")  OR  allFromColor(<number>)\n' +
+        presets.map(p => `   ${String(shortOf(p)).padStart(3)}   ${p.color}   ${p.name && p.name !== p.color ? p.name : ''}`).join('\n'));
       return;
     }
+    const s = String(sel).trim().toLowerCase().replace(/^#/, '');
+    const preset = presets.find(p =>
+      p.id === sel ||
+      String(p.color || '').toLowerCase().replace(/^#/, '') === s ||
+      String(p.name  || '').toLowerCase().replace(/^#/, '') === s ||
+      String(shortOf(p)) === s);
+    if (!preset) { console.warn('[mirror] no colour matches', JSON.stringify(sel), '— run allFromColor() to list them.'); return; }
+    const presetId = preset.id;
     const assign   = materials.meshColorAssignments || {};
     const defs     = materials.meshDefaultColors    || {};
     const nodeById = state.get('nodeById');
@@ -457,9 +466,9 @@ window.sbsMirror = {
     ids.forEach(nid => nodeById?.get?.(nid)?.object3d?.traverse(o => {
       if (o.isMesh && !o.userData.isMirrorSubmesh) meshes.push(o);
     }));
-    if (!meshes.length) { console.warn('[mirror] no meshes use colour', presetId); return; }
+    if (!meshes.length) { console.warn('[mirror] no meshes use colour', preset.color, `(${presetId})`); return; }
     const r = _buildFlatMirrors(meshes, cap);
-    console.log(`[mirror] colour ${presetId}: ${r.count} mirrors on ${r.meshCount} mesh(es) (cap ${cap}, ${r.flatTotal} flat regions).`);
+    console.log(`[mirror] ${preset.color}: ${r.count} mirrors on ${r.meshCount} mesh(es) (cap ${cap}, ${r.flatTotal} flat regions).`);
   },
   debug: (b) => sceneCore.setMirrorDebug(b !== false),
   info:  () => sceneCore.mirrorInfo(),
