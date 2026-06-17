@@ -40,7 +40,7 @@ import {
 import { applyAllTransforms } from './core/transforms.js';
 
 // ── I/O ───────────────────────────────────────────────────────────────────────
-import { saveProject, getSuggestedFilename } from './io/project.js';
+import { saveProject, getSuggestedFilename, serialize } from './io/project.js';
 
 // ── UI ────────────────────────────────────────────────────────────────────────
 import { initStatus, setStatus }  from './ui/status.js';
@@ -599,6 +599,26 @@ window.sbsDiag = {
     (console.table || console.log)(report);
     return report;
   },
+};
+// Archived-flag persistence diagnostic. Run BEFORE saving with something archived:
+// compares the live archived nodes against what serialize() would actually write to
+// the file — pinpoints save (flag missing from serialized tree) vs load (flag in the
+// save but gone after reload). Run again AFTER reload to see if the live tree kept it.
+window.sbsDiag.archived = () => {
+  const nodeById = state.get('nodeById');
+  const live = [];
+  nodeById?.forEach?.((n, id) => { if (n && n.archived === true) live.push(`${n.name || '(node)'} [${id}]`); });
+  let saved = [];
+  try {
+    const proj = serialize();
+    const walk = (n) => { if (!n) return; if (n.archived === true) saved.push(n.id); (n.children || []).forEach(walk); };
+    walk(proj.tree?.root);
+  } catch (e) { saved = [`(serialize failed: ${e.message})`]; }
+  console.log('%c[diag] archived — live tree vs what would be SAVED:', 'font-weight:bold');
+  console.log('  live archived nodes :', live.length, live);
+  console.log('  in serialized save  :', saved.length, saved);
+  console.log('  → live has them but SAVE does not = save bug. Both have them but they vanish after reload = load/remap bug.');
+  return { live, saved };
 };
 window.sbsFix = {
   input: () => {
