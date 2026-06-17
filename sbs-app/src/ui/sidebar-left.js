@@ -24,7 +24,7 @@ import {
   createAnimationPreset, DEFAULT_ANIMATION_PRESET_STRING,
 } from '../core/schema.js';
 import { buildNodeMap }    from '../core/nodes.js';
-import { applyNodeSourceTransformToObject3D } from '../core/transforms.js';
+import { applyNodeSourceTransformToObject3D, applyAllVisibility } from '../core/transforms.js';
 import { showContextMenu, showConfirmDialog } from './context-menu.js';
 import { undoManager }    from '../systems/undo.js';
 
@@ -849,6 +849,24 @@ async function _onOpenProject() {
     const userSteps = (state.get('steps') || []).filter(s => !s.isBaseStep && !s.hidden);
     if (userSteps.length) {
       steps.activateStep(userSteps[0].id, false);
+    }
+
+    // Authoritative archive re-apply — AFTER the tree is fully rebuilt. Custom folders
+    // (esp. nested under a model) are created FRESH by the step rebuilds above, without
+    // `archived`; the earlier pass ran before they existed. Re-apply the saved flags
+    // from the saved spec now, then refresh visibility so archived folders + their
+    // contents (by inheritance) hide. Once set, later step changes reuse these nodes,
+    // so the flag sticks.
+    if (savedSceneRoot) {
+      const nbm = state.get('nodeById');
+      (function applyArch(spec) {
+        if (!spec) return;
+        const live = nbm?.get(spec.id);
+        if (live) live.archived = spec.archived === true;
+        for (const c of (spec.children || [])) applyArch(c);
+      })(savedSceneRoot);
+      applyAllVisibility(state.get('treeData'), steps.object3dById);
+      state.emit('change:treeData', state.get('treeData'));
     }
 
     setStatus(`Opened: ${state.get('projectName')}.`);
