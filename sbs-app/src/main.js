@@ -362,26 +362,30 @@ function _mirrorParamsFromMaterial(mat) {
   return { roughness, reflectionIntensity, solidness, metalness, color, sourceMaterial: mat };
 }
 
+// Total flat-mirror safety ceiling (each mirror = 1 extra scene render/frame). High
+// enough to fully cover normal projects; raise/lower via window.sbsMirror.setCap(n).
+let _flatMirrorCap = 300;
+
 // Build per-face flat mirrors for a list of meshes (shared by allFromSelected /
 // allFromColor). Clears existing mirrors under each mesh first (dedup), then turns
-// every sizeable flat region into a planar mirror honouring the host material's
-// params. Capped — each mirror is one extra scene render per frame.
-function _buildFlatMirrors(meshes, cap = 8) {
+// every flat region above a sliver threshold into a planar mirror honouring the host
+// material's params. hitCap=true means coverage was truncated by the cap.
+function _buildFlatMirrors(meshes, cap = _flatMirrorCap) {
   meshes.forEach(m => sceneCore.removePlanarMirrorsUnder(m));
   const angle = state.get('shapeFaceAngleThreshold') ?? 5;
-  let count = 0, flatTotal = 0;
+  let count = 0, flatTotal = 0, hitCap = false;
   for (const mesh of meshes) {
-    if (count >= cap) break;
+    if (count >= cap) { hitCap = true; break; }
     const flats = segmentMeshFaces(mesh, angle).filter(r => r.flat);
     flatTotal += flats.length;
     if (!flats.length) continue;
-    const minArea = flats[0].areaLocal * 0.015;  // skip only tiny slivers (more coverage)
+    const minArea = flats[0].areaLocal * 0.005;  // skip only true slivers
     mesh.geometry.computeBoundingSphere?.();
     const eps = (mesh.geometry.boundingSphere?.radius || 1) * 0.004;
     const sp  = _mirrorParamsFromMaterial(mesh.material);
     for (const region of flats) {
-      if (count >= cap) break;
       if (region.areaLocal < minArea) continue;
+      if (count >= cap) { hitCap = true; break; }
       const sub = new window.THREE.Mesh(regionGeometry(mesh, region));
       sub.userData.noSelect = true; sub.userData.isMirrorSubmesh = true;
       sub.position.copy(region.normalLocal).multiplyScalar(eps);
@@ -391,7 +395,7 @@ function _buildFlatMirrors(meshes, cap = 8) {
       count++;
     }
   }
-  return { count, flatTotal, meshCount: meshes.length };
+  return { count, flatTotal, meshCount: meshes.length, hitCap };
 }
 
 // Meshes whose effective colour (per-step assignment → project default) is presetId.
@@ -443,18 +447,18 @@ window.sbsMirror = {
     console.log('[mirror] face mirror on largest flat region (area', region.areaLocal.toFixed(2) + '). If blank, run window.sbsMirror.debug(true) — magenta = visible.');
   },
   // 2c: mirror ALL flat faces across every mesh under the selection (capped).
-  allFromSelected: (cap = 8) => {
+  allFromSelected: (cap = _flatMirrorCap) => {
     const id   = state.get('selectedId');
     const node = id ? state.get('nodeById')?.get?.(id) : null;
     if (!node?.object3d) { console.warn('[mirror] select a mesh/model first'); return; }
     const meshes = [];
     node.object3d.traverse(o => { if (o.isMesh && !o.userData.isMirrorSubmesh) meshes.push(o); });
     const r = _buildFlatMirrors(meshes, cap);
-    console.log(`[mirror] ${r.count} face mirrors made (cap ${cap}, ${r.flatTotal} flat regions). Each = 1 extra render/frame — framerate drops with count.`);
+    console.log(`[mirror] ${r.count} face mirrors` + (r.hitCap ? ` — CAPPED at ${cap}; window.sbsMirror.setCap() to raise` : ` (all ${r.flatTotal} flat regions)`) + '. Each = 1 render/frame.');
   },
   // 2c per-COLOUR: mirror all flat faces of every mesh assigned a colour preset.
   // The bridge to the per-colour "Flat mirror" toggle. Call with no id to list ids.
-  allFromColor: (sel, cap = 24) => {
+  allFromColor: (sel, cap = _flatMirrorCap) => {
     const presets = state.get('colorPresets') || [];
     const shortOf = p => (p.id.match(/_(\d+)$/) || [])[1] || '?';
     if (sel == null || sel === '') {
@@ -472,7 +476,8 @@ window.sbsMirror = {
     const meshes = _meshesForColor(preset.id);
     if (!meshes.length) { console.warn('[mirror] no meshes use colour', preset.color, `(${preset.id})`); return; }
     const r = _buildFlatMirrors(meshes, cap);
-    console.log(`[mirror] ${preset.color}: ${r.count} mirrors on ${r.meshCount} mesh(es) (cap ${cap}, ${r.flatTotal} flat regions).`);
+    console.log(`[mirror] ${preset.color}: ${r.count} mirrors on ${r.meshCount} mesh(es)` +
+      (r.hitCap ? ` — CAPPED at ${cap} (more flat faces remain; window.sbsMirror.setCap(${cap * 2}) then re-tick)` : ` (all ${r.flatTotal} flat regions)`) + '.');
   },
   // Remove flat mirrors from every mesh using a colour preset (toggle OFF).
   clearColor: (presetId) => {
@@ -487,11 +492,15 @@ window.sbsMirror = {
     let total = 0;
     for (const p of flagged) {
       const meshes = _meshesForColor(p.id);
-      if (meshes.length) total += _buildFlatMirrors(meshes, 24).count;
+      if (meshes.length) total += _buildFlatMirrors(meshes).count;
     }
     if (flagged.length) console.log(`[mirror] synced ${total} mirror(s) from ${flagged.length} flat-mirror colour(s)`);
     return total;
   },
+  // Adjust the total flat-mirror ceiling (each mirror = 1 render/frame). Lower it on
+  // huge projects to bound the framerate; re-tick the colour / syncFromPresets to apply.
+  setCap: (n) => { _flatMirrorCap = Math.max(1, n | 0); console.log('[mirror] flat-mirror cap =', _flatMirrorCap, '— re-tick the colour or run window.sbsMirror.syncFromPresets() to apply.'); return _flatMirrorCap; },
+  getCap: () => _flatMirrorCap,
   debug: (b) => sceneCore.setMirrorDebug(b !== false),
   info:  () => sceneCore.mirrorInfo(),
   clear: () => { sceneCore.clearPlanarMirrors(); console.log('[mirror] cleared'); },
