@@ -20,7 +20,7 @@ import { state }        from '../core/state.js';
 import { sceneCore }    from '../core/scene.js';
 import { steps }        from './steps.js';
 import { undoManager }  from './undo.js';
-import { setInstanceWorldPose } from './hardware-actions.js';
+import { setNodeWorldPoseRaw } from './hardware-actions.js';
 import { captureTransformSnapshot } from '../core/transforms.js';
 import {
   moveNode, findParent, buildNodeMap, isDescendantOf, serializeModelTree,
@@ -116,7 +116,7 @@ export function applyFollow(followerId, targetId, opts = {}) {
   if (Aobj && folderObj && Aobj.parent !== folderObj) {
     folderObj.add(Aobj);                                // object3d reparent
   }
-  if (Aobj) setInstanceWorldPose(A, Aobj, worldPos, worldQuat);   // local delta rel. to folder (washer-comp = 0 for non-hardware)
+  if (Aobj) setNodeWorldPoseRaw(A, Aobj, worldPos, worldQuat);   // EXACT world pose preserved (no washer comp — right for follow)
 
   // The fixed per-step delta A holds relative to the folder (so it rides it).
   const xfSnap  = captureTransformSnapshot(A);

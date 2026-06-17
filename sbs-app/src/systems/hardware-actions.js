@@ -869,6 +869,14 @@ export function setInstanceWorldPose(node, obj, worldPos, worldQuat) {
  * render time — see memory feedback_align_enabled_flags). No undo push;
  * callers own that. Mirrors folder-align-picker's decompose+write.
  */
+/** Public: write a world pose onto ANY node + its object3d WITHOUT hardware washer
+ *  compensation. Follow-Object uses this to preserve a follower's EXACT current world
+ *  pose on reparent (setInstanceWorldPose would shift a washered screw by the stack
+ *  height — wrong for follow, right for placement). */
+export function setNodeWorldPoseRaw(node, obj, worldPos, worldQuat) {
+  return _setInstancePoseRaw(node, obj, worldPos, worldQuat);
+}
+
 function _setInstancePoseRaw(node, obj, worldPos, worldQuat) {
   const T = window.THREE;
   if (!T || !node || !obj) return false;
