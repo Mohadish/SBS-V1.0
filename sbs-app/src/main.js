@@ -86,6 +86,7 @@ import { initUserSettings, get as getUserSettings } from './core/user-settings.j
 import { openSettingsModal }   from './ui/settings-modal.js';
 import { segmentMeshFaces, buildRegionViz, regionGeometry, regionAspect } from './core/mesh-segment.js';
 import { geometrySignature } from './core/geometry-signature.js';
+import { detectHex } from './core/socket-detect.js';
 import * as editSession from './systems/edit-session.js';
 import { openModelSourceDialog } from './ui/model-source-dialog.js';
 import { schedulePrecache, cancel as cancelPrecache } from './systems/narration-precache.js';
@@ -537,6 +538,36 @@ window.sbsSelectSimilar = () => {
   actions.setSelection(matches[0], new Set(matches));
   console.log(`[similar] selected ${matches.length} part(s) matching signature ${refSig}`);
   return matches.length;
+};
+
+// ── Select by HEX socket/head (V0.3.0.49 spike) ───────────────────────────────
+// Detect the hex pattern (6 flat walls ~60° around an axis) and select every hex
+// fastener — Allen-socket screws, hex bolt heads, hex nuts — regardless of length.
+// window.sbsHexInfo() prints the selected part's hex score so you can pick a threshold.
+window.sbsSelectHex = (minScore = 0.8) => {
+  const matches = [];
+  for (const [nid, mesh] of materials.meshById) {
+    if (detectHex(mesh, { minScore })) matches.push(nid);
+  }
+  if (!matches.length) {
+    console.warn(`[hex] none found at score≥${minScore}. Select your screw + run window.sbsHexInfo() to see its score, then window.sbsSelectHex(<lower>).`);
+    return;
+  }
+  actions.setSelection(matches[0], new Set(matches));
+  console.log(`[hex] selected ${matches.length} hex fastener(s) at score≥${minScore}.`);
+  return matches.length;
+};
+window.sbsHexInfo = () => {
+  const id = state.get('selectedId');
+  const node = id ? state.get('nodeById')?.get?.(id) : null;
+  let mesh = null;
+  node?.object3d?.traverse(o => { if (!mesh && o.isMesh) mesh = o; });
+  if (!mesh) { console.warn('[hex] select a screw first'); return; }
+  const h = detectHex(mesh, { minScore: 0 });
+  if (!h) { console.log('[hex] no analysable flat regions on this mesh'); return; }
+  const suggest = Math.max(0.6, +(h.score - 0.1).toFixed(2));
+  console.log(`[hex] selected part → score ${h.score.toFixed(3)} (≥0.8 = clean hex), walls ${h.walls}, radius ${h.radius.toFixed(2)}. Try window.sbsSelectHex(${suggest}).`);
+  return h;
 };
 
 // ── Stuck text-field diagnostics + unstick (V0.3.0.48) ─────────────────────────
