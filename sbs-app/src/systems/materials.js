@@ -368,6 +368,7 @@ class MaterialsSystem {
     if (!p.color)                                 p.color              = '#4a90d9';
     if (p.outlineEnabled === undefined)           p.outlineEnabled     = null;
     if (p.ssrReflective === undefined)            p.ssrReflective      = false;
+    if (p.flatMirror === undefined)               p.flatMirror         = false;
     if (!p.backFaceColor)                         p.backFaceColor      = '#ffffff';
     if (typeof p.backFaceOpacity !== 'number')    p.backFaceOpacity    = 0.35;
     if (typeof p.backFaceEdgeDarken !== 'number') p.backFaceEdgeDarken = 0.45;

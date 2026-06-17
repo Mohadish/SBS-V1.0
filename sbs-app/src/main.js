@@ -394,6 +394,21 @@ function _buildFlatMirrors(meshes, cap = 8) {
   return { count, flatTotal, meshCount: meshes.length };
 }
 
+// Meshes whose effective colour (per-step assignment → project default) is presetId.
+function _meshesForColor(presetId) {
+  const assign   = materials.meshColorAssignments || {};
+  const defs     = materials.meshDefaultColors    || {};
+  const nodeById = state.get('nodeById');
+  const meshes = [];
+  for (const nid of new Set([...Object.keys(assign), ...Object.keys(defs)])) {
+    if ((assign[nid] ?? defs[nid]) !== presetId) continue;
+    nodeById?.get?.(nid)?.object3d?.traverse(o => {
+      if (o.isMesh && !o.userData.isMirrorSubmesh) meshes.push(o);
+    });
+  }
+  return meshes;
+}
+
 window.sbsMirror = {
   fromSelected: () => {
     const id   = state.get('selectedId');
@@ -454,21 +469,28 @@ window.sbsMirror = {
       String(p.name  || '').toLowerCase().replace(/^#/, '') === s ||
       String(shortOf(p)) === s);
     if (!preset) { console.warn('[mirror] no colour matches', JSON.stringify(sel), '— run allFromColor() to list them.'); return; }
-    const presetId = preset.id;
-    const assign   = materials.meshColorAssignments || {};
-    const defs     = materials.meshDefaultColors    || {};
-    const nodeById = state.get('nodeById');
-    const ids = new Set();
-    for (const nid of new Set([...Object.keys(assign), ...Object.keys(defs)])) {
-      if ((assign[nid] ?? defs[nid]) === presetId) ids.add(nid);
-    }
-    const meshes = [];
-    ids.forEach(nid => nodeById?.get?.(nid)?.object3d?.traverse(o => {
-      if (o.isMesh && !o.userData.isMirrorSubmesh) meshes.push(o);
-    }));
-    if (!meshes.length) { console.warn('[mirror] no meshes use colour', preset.color, `(${presetId})`); return; }
+    const meshes = _meshesForColor(preset.id);
+    if (!meshes.length) { console.warn('[mirror] no meshes use colour', preset.color, `(${preset.id})`); return; }
     const r = _buildFlatMirrors(meshes, cap);
     console.log(`[mirror] ${preset.color}: ${r.count} mirrors on ${r.meshCount} mesh(es) (cap ${cap}, ${r.flatTotal} flat regions).`);
+  },
+  // Remove flat mirrors from every mesh using a colour preset (toggle OFF).
+  clearColor: (presetId) => {
+    const meshes = _meshesForColor(presetId);
+    meshes.forEach(m => sceneCore.removePlanarMirrorsUnder(m));
+    console.log(`[mirror] cleared flat mirrors for colour ${presetId} (${meshes.length} mesh(es))`);
+  },
+  // Rebuild all flat mirrors from the presets' flatMirror flag (project load / refresh).
+  syncFromPresets: () => {
+    sceneCore.clearPlanarMirrors();
+    const flagged = (state.get('colorPresets') || []).filter(p => p.flatMirror);
+    let total = 0;
+    for (const p of flagged) {
+      const meshes = _meshesForColor(p.id);
+      if (meshes.length) total += _buildFlatMirrors(meshes, 24).count;
+    }
+    if (flagged.length) console.log(`[mirror] synced ${total} mirror(s) from ${flagged.length} flat-mirror colour(s)`);
+    return total;
   },
   debug: (b) => sceneCore.setMirrorDebug(b !== false),
   info:  () => sceneCore.mirrorInfo(),
@@ -522,6 +544,12 @@ window.sbsNative?.onMenu?.('menu:recoverStuckInputs', () => {
 //   • on narration-voice change in the Export tab — the existing path
 //     already invalidates clips; trigger a fresh pass to re-cache them.
 state.on('project:loaded', () => schedulePrecache('project-loaded'));
+// Flat mirrors are derived (not saved) — rebuild them once a project finishes
+// loading, from each colour preset's flatMirror flag. Deferred so the scene tree
+// + material assignments are settled first.
+state.on('project:loaded', () => setTimeout(() => {
+  try { window.sbsMirror?.syncFromPresets?.(); } catch (e) { console.warn('[mirror] sync on load failed', e); }
+}, 0));
 // Any export-options change re-runs the pass. Internally idempotent — only
 // steps with stale/missing clips get re-synthesized.
 state.on('change:export',  () => schedulePrecache('export-options-change'));

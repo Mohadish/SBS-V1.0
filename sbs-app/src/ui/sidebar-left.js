@@ -2121,6 +2121,10 @@ function _renderColorsTab() {
           <input type="checkbox" class="cp-ssr-reflective" ${preset.ssrReflective ? 'checked' : ''} />
           <span class="small">Reflective (SSR contact reflections)</span>
         </label>
+        <label class="colorlab" style="margin-top:8px;flex-direction:row;align-items:center;gap:8px;cursor:pointer">
+          <input type="checkbox" class="cp-flat-mirror" ${preset.flatMirror ? 'checked' : ''} />
+          <span class="small">Flat mirror (true planar reflections on flat faces)</span>
+        </label>
         <div style="display:flex;justify-content:flex-end;margin-top:12px">
           <button class="btn cp-del" title="${isDefault ? 'Default color — replacement required' : usedByMissing ? 'Used by missing asset' : 'Delete'}">🗑 Delete</button>
         </div>
@@ -2154,6 +2158,11 @@ function _renderColorsTab() {
       });
       pane.querySelector('.cp-ssr-reflective')?.addEventListener('change', e => {
         _upd('ssrReflective', e.target.checked);
+      });
+      pane.querySelector('.cp-flat-mirror')?.addEventListener('change', e => {
+        _upd('flatMirror', e.target.checked);
+        if (e.target.checked) window.sbsMirror?.allFromColor?.(preset.id);
+        else                  window.sbsMirror?.clearColor?.(preset.id);
       });
       pane.querySelector('.cp-del').addEventListener('click', () =>
         _deletePresetWithProtection(preset, presets, missingMeshIds));
