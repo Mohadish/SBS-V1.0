@@ -115,6 +115,36 @@ export function regionGeometry(mesh, region) {
   return g;
 }
 
+/**
+ * In-plane elongation of a flat region (long axis / short axis), via 2-D PCA of
+ * its vertices projected onto the region plane. A square/disc face → ~1; a chamfer
+ * or thin edge strip → high. Orientation-independent (catches diagonal slivers).
+ */
+export function regionAspect(mesh, region) {
+  const THREE = window.THREE;
+  const pos = mesh.geometry.getAttribute('position');
+  const idx = mesh.geometry.getIndex();
+  const vIndex = (t, k) => (idx ? idx.getX(t * 3 + k) : (t * 3 + k));
+  const n  = region.normalLocal;
+  const up = Math.abs(n.y) < 0.9 ? new THREE.Vector3(0, 1, 0) : new THREE.Vector3(1, 0, 0);
+  const u  = new THREE.Vector3().crossVectors(up, n).normalize();
+  const v  = new THREE.Vector3().crossVectors(n, u).normalize();
+  const p  = new THREE.Vector3();
+  let cnt = 0, sa = 0, sb = 0, saa = 0, sbb = 0, sab = 0;
+  for (const t of region.tris) for (let k = 0; k < 3; k++) {
+    p.fromBufferAttribute(pos, vIndex(t, k));
+    const a = p.dot(u), b = p.dot(v);
+    sa += a; sb += b; saa += a * a; sbb += b * b; sab += a * b; cnt++;
+  }
+  if (cnt < 2) return 1;
+  const ma = sa / cnt, mb = sb / cnt;
+  const vaa = saa / cnt - ma * ma, vbb = sbb / cnt - mb * mb, vab = sab / cnt - ma * mb;
+  const tr = vaa + vbb, det = vaa * vbb - vab * vab;
+  const disc = Math.sqrt(Math.max(0, tr * tr / 4 - det));
+  const l1 = tr / 2 + disc, l2 = tr / 2 - disc;
+  return Math.sqrt(l1 / Math.max(l2, 1e-12));
+}
+
 /** Debug viz: overlay each region as a translucent flat colour on the mesh. */
 export function buildRegionViz(mesh, regions, maxRegions = 40) {
   const THREE = window.THREE;
