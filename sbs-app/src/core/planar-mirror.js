@@ -122,7 +122,11 @@ export class PlanarMirror {
     const THREE = window.THREE;
     // Live-read the host material's params so slider edits apply WITHOUT a rebuild
     // (roughness blur, reflection intensity, solidness, metalness tint, colour).
-    const sm = this.sourceMaterial;
+    // Read the host's CURRENT material via the parent — applyAll() REPLACES
+    // mesh.material on every recolour / step change, so a cached reference goes
+    // stale and edits silently stop reaching the mirror.
+    const host = this.mesh && this.mesh.parent;
+    const sm = (host && host.material && host.material.uniforms) ? host.material : this.sourceMaterial;
     if (sm && sm.uniforms) {
       const u = sm.uniforms, mu = this.material.uniforms;
       if (u.uRoughness) mu.uRoughness.value = u.uRoughness.value;

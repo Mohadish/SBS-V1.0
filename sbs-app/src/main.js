@@ -375,7 +375,7 @@ function _buildFlatMirrors(meshes, cap = 8) {
     const flats = segmentMeshFaces(mesh, angle).filter(r => r.flat);
     flatTotal += flats.length;
     if (!flats.length) continue;
-    const minArea = flats[0].areaLocal * 0.04;   // skip tiny slivers
+    const minArea = flats[0].areaLocal * 0.015;  // skip only tiny slivers (more coverage)
     mesh.geometry.computeBoundingSphere?.();
     const eps = (mesh.geometry.boundingSphere?.radius || 1) * 0.004;
     const sp  = _mirrorParamsFromMaterial(mesh.material);
@@ -439,7 +439,7 @@ window.sbsMirror = {
   },
   // 2c per-COLOUR: mirror all flat faces of every mesh assigned a colour preset.
   // The bridge to the per-colour "Flat mirror" toggle. Call with no id to list ids.
-  allFromColor: (sel, cap = 12) => {
+  allFromColor: (sel, cap = 24) => {
     const presets = state.get('colorPresets') || [];
     const shortOf = p => (p.id.match(/_(\d+)$/) || [])[1] || '?';
     if (sel == null || sel === '') {
