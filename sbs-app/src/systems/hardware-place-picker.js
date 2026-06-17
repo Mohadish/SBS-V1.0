@@ -30,6 +30,7 @@ import { placeInstance, realignInstance } from './hardware-actions.js';
 import { findSnapTarget }        from './snap-picker.js';
 import { circumcenterAndNormal } from './pivot-center-picker.js';
 import { setStatus }   from '../ui/status.js';
+import { getPathToNode, buildNodeMap } from '../core/nodes.js';
 
 const HOVER_COLOR = 0x55ddff;   // surface crosshair (cyan)
 const PT_COLOR    = 0xffee44;   // placed 3-pt markers (yellow)
@@ -121,13 +122,14 @@ export function onPointerDown(clientX, clientY) {
   if (_state.mode === 'surface') {
     const hit = _surfaceHitAt(clientX, clientY);
     const { worldPos, worldQuat } = _resolveSurface(hit);
-    _commit(worldPos, worldQuat);
+    _commit(worldPos, worldQuat, hit?.object);   // hit.object = host mesh → parent model
     return true;
   }
 
   // 3-point mode — accumulate snapped points; fit + commit at 3.
   const t = findSnapTarget(clientX, clientY);
   if (!t || _isExcludedHit(t.mesh)) return true;   // mid-aim / own mesh
+  if (_state.points.length === 0) _state.refMesh = t.mesh;   // first point's mesh → parent model (per "use the first one")
   _state.points.push(t.point.clone());
   _rebuildPoints();
   if (_state.points.length === 3) {
@@ -139,7 +141,7 @@ export function onPointerDown(clientX, clientY) {
       return true;
     }
     const { worldPos, worldQuat } = _resolve3pt(fit);
-    _commit(worldPos, worldQuat);
+    _commit(worldPos, worldQuat, _state.refMesh);
   }
   return true;
 }
@@ -181,15 +183,39 @@ function _resolve3pt(fit) {
   return { worldPos: fit.center.clone(), worldQuat: q };
 }
 
-function _commit(worldPos, worldQuat) {
+// Nearest MODEL ancestor of the picked surface mesh → the screw's parent. Walks the
+// data-node path up from the picked object3d's node. Returns null when there's no model
+// ancestor (e.g. a primitive / shape at scene root), so the caller falls back to the
+// Hardware folder.
+function _modelAncestorId(mesh) {
+  if (!mesh) return null;
+  let o = mesh, nodeId = null;
+  while (o && !nodeId) { nodeId = o.userData?.meshNodeId || o.userData?.nodeId; o = o.parent; }
+  if (!nodeId) return null;
+  const root = state.get('treeData');
+  if (!root) return null;
+  const nodeById = state.get('nodeById') || buildNodeMap(root);
+  const path = getPathToNode(root, nodeId);   // [rootId, …, nodeId]
+  for (let i = path.length - 1; i >= 0; i--) {
+    const n = nodeById.get(path[i]);
+    if (n && n.type === 'model') return n.id;
+  }
+  return null;
+}
+
+function _commit(worldPos, worldQuat, refMesh) {
   const intent = _state.intent;
   if (intent.kind === 'place') {
-    const inst = placeInstance(intent.templateId, null, {
+    // Parent the screw under the host MODEL it was placed on → it becomes a child of
+    // that model and follows it on move / save / load. Falls back to the Hardware
+    // folder when the surface has no model ancestor.
+    const parentId = _modelAncestorId(refMesh);
+    const inst = placeInstance(intent.templateId, parentId, {
       worldPose: { position: worldPos, quaternion: worldQuat },
     });
     if (inst) {
       state.setSelection?.(inst.id);
-      setStatus('Nut placed.', 'success', 2000);
+      setStatus(parentId ? 'Screw placed — child of its model.' : 'Screw placed.', 'success', 2000);
     }
   } else if (intent.kind === 'align') {
     const ok = realignInstance(intent.nodeId, worldPos, worldQuat);
