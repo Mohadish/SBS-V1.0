@@ -2522,37 +2522,49 @@ async function _recreateNode(spec) {
  * @param {{width?:number, height?:number}} [opts]
  */
 export function rasterizeOverlay(opts = {}) {
-  if (!_stage || _layer.getChildren().length === 0) return null;
+  if (!_stage) return null;
+  // Composite the GHOST layer (outgoing content, fading OUT during a step
+  // crossfade) UNDER the main layer (incoming, fading IN) — matching the live
+  // stage z-order (added ghost-then-layer). Previously only _layer was rasterised,
+  // so on EXPORT the outgoing overlay vanished the instant it moved to the ghost
+  // layer (the one-frame fade-out cut), while fade-in still worked. The _uiLayer
+  // (transformer/selection) is intentionally excluded. layer.toCanvas bakes each
+  // layer's own opacity — that's what drives the fade — so no extra alpha needed.
+  // In steady state the ghost layer is empty, so this is a no-op vs. before.
+  const layers = [_ghostLayer, _layer].filter(l => l && l.getChildren().length > 0);
+  if (!layers.length) return null;
+
   // Render at the project's CANONICAL size (state.export.width × height).
-  // Nodes are stored in canonical pixels.
-  //
-  // Konva's layer.toCanvas inherits the parent stage's transform, so
-  // the live stage.scale (safeFrame / canonical) would scale node
-  // positions during the raster — items would land at the safe-frame
-  // sub-rect of the output canvas instead of filling it. We zero the
-  // stage transform for the raster, then restore the previous values.
+  // Konva's layer.toCanvas inherits the stage transform, so the live stage.scale
+  // (safeFrame / canonical) would offset node positions — zero it for the raster,
+  // then restore.
   const c = getCanonicalSize();
   const targetW = opts.width  || c.width;
-  const targetH = opts.height || c.height;
   const pixelRatio = targetW / c.width;
 
   const savedScale = _stage.scale();
   const savedPos   = _stage.position();
   _stage.scale({ x: 1, y: 1 });
   _stage.position({ x: 0, y: 0 });
-  let canvas;
+  let out = null;
   try {
-    canvas = _layer.toCanvas({
-      x: 0, y: 0,
-      width:  c.width,
-      height: c.height,
-      pixelRatio,
-    });
+    if (layers.length === 1) {
+      out = layers[0].toCanvas({ x: 0, y: 0, width: c.width, height: c.height, pixelRatio });
+    } else {
+      out = document.createElement('canvas');
+      out.width  = Math.round(c.width  * pixelRatio);
+      out.height = Math.round(c.height * pixelRatio);
+      const octx = out.getContext('2d');
+      for (const lyr of layers) {
+        const lc = lyr.toCanvas({ x: 0, y: 0, width: c.width, height: c.height, pixelRatio });
+        octx.drawImage(lc, 0, 0);
+      }
+    }
   } finally {
     _stage.scale(savedScale);
     _stage.position(savedPos);
   }
-  return canvas;
+  return out;
 }
 
 // ─── Internals ─────────────────────────────────────────────────────────────
