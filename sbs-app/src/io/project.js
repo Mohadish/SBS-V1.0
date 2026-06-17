@@ -1176,6 +1176,11 @@ export function applySpecFieldsToNodes(specNode, nodeById, parentSpec = null) {
     if (specNode.sourceNodeId) {
       live.sourceNodeId = specNode.sourceNodeId;
     }
+    // Follow-Object relationship (V0.3.0.62). Lives on the follower node; stripNode
+    // keeps it on save, but this whitelist patch would otherwise drop it for
+    // model/mesh followers. The re-attach branches (hardwareInstance/flatShape/
+    // primitive) already keep it via the {...specNode} spread.
+    if (specNode.follow) live.follow = specNode.follow;
 
     if (Array.isArray(specNode.localOffset))          live.localOffset          = specNode.localOffset;
     if (Array.isArray(specNode.localQuaternion))       live.localQuaternion       = specNode.localQuaternion;
