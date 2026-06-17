@@ -5852,13 +5852,17 @@ export function setupUndoKeyboard() {
     // the editor is FOCUSED; this branch handles the case where
     // focus has drifted onto the toolbar / colour picker / etc. but
     // a session is still open.
+    // Normalise case so Caps Lock doesn't break undo/redo: with Caps Lock ON an
+    // unshifted "z" arrives as e.key "Z" (and Shift+z as "z"), so comparing to a
+    // literal 'z'/'Z' silently failed. Use the lowercased key + e.shiftKey.
+    const k = (e.key || '').toLowerCase();
     if (editSession.isActive()) {
-      if (!e.shiftKey && e.key === 'z') {
+      if (!e.shiftKey && k === 'z') {
         e.preventDefault();
         editSession.undoLocal();   // false-return = local stack empty; we still swallow
         return;
       }
-      if (e.key === 'y' || (e.shiftKey && e.key === 'Z')) {
+      if (k === 'y' || (e.shiftKey && k === 'z')) {
         e.preventDefault();
         editSession.redoLocal();
         return;
@@ -5866,9 +5870,9 @@ export function setupUndoKeyboard() {
     }
 
     if (_isInputFocused()) return;
-    if (!e.shiftKey && e.key === 'z') { e.preventDefault(); undoManager.undo(); }
-    if (e.key === 'y')                { e.preventDefault(); undoManager.redo(); }
-    if (e.shiftKey && e.key === 'Z')  { e.preventDefault(); undoManager.redo(); }
+    if (!e.shiftKey && k === 'z') { e.preventDefault(); undoManager.undo(); }
+    if (k === 'y')                { e.preventDefault(); undoManager.redo(); }
+    if (e.shiftKey && k === 'z')  { e.preventDefault(); undoManager.redo(); }
   });
 }
 

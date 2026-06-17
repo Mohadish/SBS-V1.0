@@ -1087,6 +1087,25 @@ export function applySpecFieldsToNodes(specNode, nodeById, parentSpec = null) {
     return;
   }
 
+  // V0.3.0.50 — parametric primitives (box/cylinder/sphere/...): procedural, no
+  // asset-import path, so the fresh load never creates a live node and the part was
+  // silently dropped on reload. Re-attach from the saved spec (primParams /
+  // primQuality / primLinkId ride along via the spread); steps.js rebuildFromTreeSpec
+  // rebuilds the THREE.Mesh on the next step activation (ensurePrimitiveObject3D).
+  if (specNode.type === 'primitive') {
+    const parentId  = parentSpec?.id ?? null;
+    const parentLive = parentId ? nodeById.get(parentId) : null;
+    if (parentLive) {
+      const exists = (parentLive.children || []).some(c => c.id === specNode.id);
+      if (!exists) {
+        const primLive = { ...specNode, object3d: null, children: [] };
+        parentLive.children = [...(parentLive.children || []), primLive];
+        nodeById.set(primLive.id, primLive);
+      }
+    }
+    return;
+  }
+
   // V0.2.22.38 — hardware instances: same story as flat shapes. The
   // saved spec lives in the project's scene tree (under whatever folder
   // the user organised them into); ensureHardwareInstanceObject3D builds
