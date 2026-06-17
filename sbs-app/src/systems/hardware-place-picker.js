@@ -188,18 +188,20 @@ function _resolve3pt(fit) {
 // ancestor (e.g. a primitive / shape at scene root), so the caller falls back to the
 // Hardware folder.
 function _modelAncestorId(mesh) {
-  if (!mesh) return null;
+  if (!mesh) { console.warn('[hw-place] no picked mesh'); return null; }
   let o = mesh, nodeId = null;
   while (o && !nodeId) { nodeId = o.userData?.meshNodeId || o.userData?.nodeId; o = o.parent; }
-  if (!nodeId) return null;
+  if (!nodeId) { console.warn('[hw-place] picked mesh has no meshNodeId/nodeId', mesh.name, mesh.userData); return null; }
   const root = state.get('treeData');
   if (!root) return null;
-  const nodeById = state.get('nodeById') || buildNodeMap(root);
-  const path = getPathToNode(root, nodeId);   // [rootId, …, nodeId]
+  const nodeById = buildNodeMap(root);          // fresh from the live tree — never a stale state map
+  const path = getPathToNode(root, nodeId);     // [rootId, …, nodeId]
   for (let i = path.length - 1; i >= 0; i--) {
     const n = nodeById.get(path[i]);
     if (n && n.type === 'model') return n.id;
   }
+  console.warn('[hw-place] no model ancestor for node', nodeId,
+    '— path types:', path.map(id => nodeById.get(id)?.type).join(' > ') || '(empty)');
   return null;
 }
 
