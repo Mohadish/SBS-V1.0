@@ -87,6 +87,7 @@ import { openSettingsModal }   from './ui/settings-modal.js';
 import { segmentMeshFaces, buildRegionViz, regionGeometry, regionAspect } from './core/mesh-segment.js';
 import { geometrySignature } from './core/geometry-signature.js';
 import { detectHex } from './core/socket-detect.js';
+import { applyFollow, clearFollow } from './systems/follow.js';
 import * as editSession from './systems/edit-session.js';
 import { openModelSourceDialog } from './ui/model-source-dialog.js';
 import { schedulePrecache, cancel as cancelPrecache } from './systems/narration-precache.js';
@@ -577,6 +578,24 @@ window.sbsHexInfo = () => {
   console.log(`[hex] selected part → score ${h.score.toFixed(3)} (≥0.8 = clean hex), walls ${h.walls}, radius ${h.radius.toFixed(2)}. Try window.sbsSelectHex(${suggest}).`);
   return h;
 };
+
+// ── Follow Object (V0.3.0.63, Stage 2 console test) ───────────────────────────
+// Selection form: select the FOLLOWER, shift-select the TARGET, then
+// window.sbsFollow('all'|'forward'|'backward'). Explicit form (unambiguous):
+// window.sbsFollow.ids(followerId, targetId, scope). window.sbsUnfollow() clears.
+window.sbsFollow = (scope = 'all') => {
+  const primary = state.get('selectedId');
+  const multi   = [...(state.get('multiSelectedIds') || [])];
+  const target  = multi.find(id => id !== primary);
+  if (!primary || !target) {
+    console.warn('[follow] select the FOLLOWER then shift-select the TARGET, or use window.sbsFollow.ids(followerId, targetId, scope).');
+    return;
+  }
+  console.log('[follow] follower =', primary, '| target =', target, '| scope =', scope);
+  return applyFollow(primary, target, { scope });
+};
+window.sbsFollow.ids = (followerId, targetId, scope = 'all') => applyFollow(followerId, targetId, { scope });
+window.sbsUnfollow = () => clearFollow(state.get('selectedId'));
 
 // ── Stuck text-field diagnostics + unstick (V0.3.0.48) ─────────────────────────
 // Run window.sbsDiag.input() WHEN typing is stuck → captures the cause. Run
