@@ -36,6 +36,7 @@ import {
   removeNodeById,
   buildNodeMap,
   getNearestContainerAncestor,
+  getPathToNode,
 }                         from './core/nodes.js';
 import { applyAllTransforms } from './core/transforms.js';
 
@@ -2050,8 +2051,27 @@ canvas.addEventListener('dblclick', e => {
   const meshNodeId = hit.object.userData?.meshNodeId;
   if (!meshNodeId) return;
 
-  // V0.3.0.72 — pop UP to the IMMEDIATE-PARENT container and select it as a clean,
-  // MOVABLE UNIT. The multi-set is JUST the container id, so:
+  // V0.3.0.74 — LOCKED folder: double-click TEMPORARILY UNLOCKS it so its objects
+  // become individually selectable, and selects the top-level object inside (the
+  // folder's direct child on the path to the click). The folder auto re-locks once
+  // none of its objects stay selected (see _autoRelockTempUnlocked). Nested locked
+  // folders stay locked — double-click again to step inside, recursively.
+  const lockedAnc = actions.findLockedFolderAncestor(root, meshNodeId);
+  if (lockedAnc) {
+    const temp = new Set(state.get('tempUnlockFolderIds') || []);
+    temp.add(lockedAnc.id);
+    state.setState({ tempUnlockFolderIds: temp });
+    const path = getPathToNode(root, meshNodeId) || [];
+    const idx  = path.indexOf(lockedAnc.id);
+    const childId = (idx >= 0 && idx + 1 < path.length) ? path[idx + 1] : meshNodeId;
+    actionSetSelection(childId, new Set([childId]));
+    setStatus(`🔓 "${lockedAnc.name || 'folder'}" temporarily unlocked — pick objects inside; click away to re-lock.`, 'info', 3500);
+    _lastUnitDbl = null;   // not the unlocked-folder unit escalation
+    return;
+  }
+
+  // V0.3.0.72 — UNLOCKED container: pop UP to the IMMEDIATE-PARENT container and
+  // select it as a clean, MOVABLE UNIT. The multi-set is JUST the container id, so:
   //   • outline-pass wraps its descendant mass into ONE folder silhouette, and
   //   • applySelectionHighlight tints nothing (no mesh ids in the set) — no clutter.
   // The gizmo targets the container, so you can grab and move the whole group.
@@ -2062,6 +2082,31 @@ canvas.addEventListener('dblclick', e => {
   actionSetSelection(container.id, new Set([container.id]));
   _lastUnitDbl = { container: container.id, t: performance.now() };
 });
+
+// V0.3.0.74 — auto re-lock. A temporarily-unlocked folder reverts to locked the
+// moment none of its objects (itself or any descendant) remain selected. Runs on
+// every selection change; nested temp-unlocked folders re-lock independently.
+function _autoRelockTempUnlocked() {
+  const temp = state.get('tempUnlockFolderIds');
+  if (!temp || temp.size === 0) return;
+  const multi = state.get('multiSelectedIds') || new Set();
+  const nbm   = state.get('nodeById');
+  if (!nbm) return;
+  const stillUnlocked = new Set();
+  for (const fid of temp) {
+    const folder = nbm.get(fid);
+    if (!folder) continue;   // node gone → drop (effectively re-lock)
+    let sel = false;
+    (function walk(n) {
+      if (sel) return;
+      if (multi.has(n.id)) { sel = true; return; }
+      for (const c of (n.children || [])) walk(c);
+    })(folder);
+    if (sel) stillUnlocked.add(fid);
+  }
+  if (stillUnlocked.size !== temp.size) state.setState({ tempUnlockFolderIds: stillUnlocked });
+}
+state.on('selection:change', _autoRelockTempUnlocked);
 
 // ══════════════════════════════════════════════════════════════════════════
 //  RAY-SELECT — disambiguate overlapping picks (V0.1.89)

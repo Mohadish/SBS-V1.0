@@ -1915,13 +1915,18 @@ export function setFolderLocked(folderId, locked) {
  */
 export function findLockedFolderAncestor(root, nodeId) {
   if (!root || !nodeId) return null;
+  // V0.3.0.74 — a TEMPORARILY-unlocked folder (double-click) is treated as NOT
+  // locked here, so clicks inside it select the actual objects instead of
+  // promoting back up to the folder. The transient set lives in state.
+  const tempUnlocked = state.get('tempUnlockFolderIds');
   let found = null;
   (function walk(node, ancestors) {
     if (found) return;
     if (node.id === nodeId) {
       for (let i = ancestors.length - 1; i >= 0; i--) {
         const a = ancestors[i];
-        if (a.type === 'folder' && a.locked === true) {
+        if (a.type === 'folder' && a.locked === true
+            && !(tempUnlocked && tempUnlocked.has(a.id))) {
           found = a;
           return;
         }
