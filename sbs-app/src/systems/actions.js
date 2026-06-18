@@ -13,6 +13,7 @@
 import state                    from '../core/state.js';
 import { undoManager }          from './undo.js';
 import { applyFollow }          from './follow.js';   // paste keeps the source's attachment
+import { chooseFromButtons }    from '../ui/prompt.js';   // multi-step transform scope prompt
 import { setStatus }            from '../ui/status.js';
 import { selectionActs }        from './select-act.js';
 import { materials }            from '../systems/materials.js';
@@ -3144,6 +3145,7 @@ export function commitTransformEdit(nodeId) {
   if (!node) return;
   const to = captureTransformSnapshot(node);
   if (JSON.stringify(from) === JSON.stringify(to)) return;
+  _msXfNote(nodeId, from);   // V0.3.0.79 — start/continue a multi-step transform session
   const obj3d = steps.object3dById?.get(nodeId);
   undoManager.push(
     'Transform',
@@ -3168,6 +3170,117 @@ export function commitTransformEdit(nodeId) {
   );
   steps.scheduleTransformSync();
 }
+
+// ─── Multi-step transform (V0.3.0.79) ──────────────────────────────────────
+// A gizmo edit made while 2+ steps are selected can be carried to OTHER steps as a
+// DELTA (each step keeps its own pose/animation, just shifted). The session spans
+// from the first edit until the object is deselected ("clicked out"); on deselect we
+// prompt for the scope and stamp the net delta onto the chosen steps. One undo.
+let _msXf = null;   // { nodeId, baseline: transformSnapshot }
+
+function _msXfNote(nodeId, fromSnap) {
+  const stepSel = state.get('selectedStepIds');
+  if (!(stepSel instanceof Set) || stepSel.size < 2) { _msXf = null; return; }  // gate: 2+ steps
+  if (_msXf?.nodeId === nodeId) return;          // session already running → keep first baseline
+  _msXf = { nodeId, baseline: fromSnap };
+}
+
+function _quatMulArr(a, b) {                       // a ∘ b  (both [x,y,z,w])
+  const T = window.THREE; if (!T) return [...b];
+  const r = new T.Quaternion(a[0], a[1], a[2], a[3]).multiply(new T.Quaternion(b[0], b[1], b[2], b[3]));
+  return [r.x, r.y, r.z, r.w];
+}
+function _quatInvArr(a) {
+  const T = window.THREE; if (!T) return [...a];
+  const q = new T.Quaternion(a[0], a[1], a[2], a[3]).invert();
+  return [q.x, q.y, q.z, q.w];
+}
+
+// On deselect: if a session's object left the selection, compute its net delta and
+// (when still 2+ steps selected) prompt to carry it to other steps.
+async function _maybeFinalizeMultiStepXf() {
+  if (!_msXf) return;
+  const multi = state.get('multiSelectedIds') || new Set();
+  if (multi.has(_msXf.nodeId)) return;           // still selected → keep editing
+  const sess = _msXf; _msXf = null;              // claim (avoid re-entry during the async prompt)
+  const node = state.get('nodeById')?.get(sess.nodeId);
+  if (!node) return;
+  const cur = captureTransformSnapshot(node);
+  const b   = sess.baseline;
+  const dOff = [
+    (cur.localOffset?.[0] || 0) - (b.localOffset?.[0] || 0),
+    (cur.localOffset?.[1] || 0) - (b.localOffset?.[1] || 0),
+    (cur.localOffset?.[2] || 0) - (b.localOffset?.[2] || 0),
+  ];
+  const dQuat  = _quatMulArr(cur.localQuaternion || [0, 0, 0, 1], _quatInvArr(b.localQuaternion || [0, 0, 0, 1]));
+  const moved  = Math.hypot(dOff[0], dOff[1], dOff[2]);
+  const rotAng = 2 * Math.acos(Math.min(1, Math.abs(dQuat[3] ?? 1)));
+  if (moved < 1e-4 && rotAng < 1e-4) return;     // negligible → nothing to carry
+
+  const stepSel = state.get('selectedStepIds');
+  if (!(stepSel instanceof Set) || stepSel.size < 2) return;  // selection changed since edit
+
+  const choice = await chooseFromButtons(
+    'Carry this change to other steps?',
+    `"${node.name || 'Object'}" was transformed with ${stepSel.size} steps selected. Apply the same move/rotation to:`,
+    [
+      { id: 'selected', label: `Selected steps (${stepSel.size})`, primary: true },
+      { id: 'all',      label: 'All steps' },
+      { id: 'earlier',  label: 'This step + earlier' },
+      { id: 'later',    label: 'This step + later' },
+      { id: 'cancel',   label: 'Just this step' },
+    ],
+  );
+  if (!choice || choice === 'cancel') return;
+
+  const allSteps  = state.get('steps') || [];
+  const activeId  = state.get('activeStepId');
+  const activeIdx = allSteps.findIndex(s => s.id === activeId);
+  let scope;
+  if      (choice === 'all')     scope = new Set(allSteps.map(s => s.id));
+  else if (choice === 'earlier') scope = new Set(allSteps.slice(0, activeIdx + 1).map(s => s.id));
+  else if (choice === 'later')   scope = new Set(allSteps.slice(Math.max(0, activeIdx)).map(s => s.id));
+  else                           scope = new Set(stepSel);
+  scope.delete(activeId);        // the active step already holds the live result
+  if (scope.size === 0) return;
+
+  _stampTransformDelta(sess.nodeId, dOff, dQuat, scope);
+}
+
+// Add (dOff, dQuat) to the node's pose in each target step's snapshot. One undo.
+function _stampTransformDelta(nodeId, dOff, dQuat, targetIds) {
+  steps.flushSync?.();           // make sure the ACTIVE step's stored snapshot is current first
+  const allSteps  = state.get('steps') || [];
+  const prevSteps = allSteps.map(s => (targetIds.has(s.id) ? JSON.parse(JSON.stringify(s)) : s));
+  const build = (s) => {
+    if (!targetIds.has(s.id)) return s;
+    const snap = s.snapshot || {};
+    const cur  = snap.transforms?.[nodeId];
+    if (!cur) return s;          // object not posed in this step → leave it
+    const shifted = JSON.parse(JSON.stringify(cur));
+    shifted.localOffset = [
+      (cur.localOffset?.[0] || 0) + dOff[0],
+      (cur.localOffset?.[1] || 0) + dOff[1],
+      (cur.localOffset?.[2] || 0) + dOff[2],
+    ];
+    shifted.localQuaternion = _quatMulArr(dQuat, cur.localQuaternion || [0, 0, 0, 1]);
+    return { ...s, snapshot: { ...snap, transforms: { ...(snap.transforms || {}), [nodeId]: shifted } } };
+  };
+  const nextSteps = allSteps.map(build);
+  const apply = (arr) => {
+    state.setState({ steps: arr });
+    state.markDirty();
+    state.emit('steps:bulkApplied', { stepIds: [...targetIds] });
+  };
+  apply(nextSteps);
+  undoManager.push(
+    `Carry transform to ${targetIds.size} step${targetIds.size === 1 ? '' : 's'}`,
+    () => apply(prevSteps),
+    () => apply(nextSteps),
+  );
+  setStatus(`Carried the change to ${targetIds.size} other step${targetIds.size === 1 ? '' : 's'}.`, 'success', 2500);
+}
+state.on('selection:change', _maybeFinalizeMultiStepXf);
 
 /**
  * Walk the tree and report any folder/model nodes whose baseLocal* fields
