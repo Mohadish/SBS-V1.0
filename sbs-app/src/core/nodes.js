@@ -586,6 +586,12 @@ export function serializeModelTree(node) {
     spec.primParams  = node.primParams || {};
     spec.primQuality = node.primQuality ?? 3;
     if (node.primLinkId) spec.primLinkId = node.primLinkId;
+    // V0.3.0.77 — base-face origin flag MUST ride the per-step snapshot too. A
+    // FOLLOWED primitive nests under the target's model/folder, so the load
+    // reattach can't place it early and it's materialised from THIS snapshot spec
+    // (not the scene tree). Without the flag it rebuilds CENTRE-pivot and the saved
+    // base-on-surface transform sinks it half-into the surface on reload.
+    if (node.baseAtOrigin != null) spec.baseAtOrigin = node.baseAtOrigin;
   }
   return spec;
 }
