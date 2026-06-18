@@ -9,6 +9,7 @@
  */
 import state        from '../core/state.js';
 import * as actions  from '../systems/actions.js';
+import * as hardwarePlacePicker from '../systems/hardware-place-picker.js';
 
 const _esc = (s) => String(s ?? '').replace(/[&<>"']/g,
   c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
@@ -79,7 +80,13 @@ export function renderPrimitivesTab(panel) {
   `;
 
   panel.querySelectorAll('.prim-btn').forEach(b =>
-    b.addEventListener('click', () => actions.createPrimitive(b.dataset.kind)));
+    b.addEventListener('click', () => {
+      // Create at origin, then immediately enter place-on-surface mode so the
+      // user drops it where they click (surface) or in front of the camera
+      // (empty space) — instead of it just popping at 0,0,0.
+      const id = actions.createPrimitive(b.dataset.kind);
+      if (id) hardwarePlacePicker.startPlaceNodeOnSurface(id);
+    }));
 
   if (!editing) return;
   const id = editing.id;

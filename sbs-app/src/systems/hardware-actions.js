@@ -969,6 +969,28 @@ export function realignInstance(nodeId, worldPos, worldQuat) {
   return true;
 }
 
+/**
+ * Generic undoable re-pose of ANY node to a world pose. Used by primitive
+ * place-on-surface (the picker's 'placeNode' intent). Mirrors realignInstance
+ * but for an arbitrary node via setNodeWorldPoseRaw (no washer compensation).
+ */
+export function placeNodeAtWorldPose(nodeId, worldPos, worldQuat) {
+  const nodeById = state.get('nodeById') || buildNodeMap(state.get('treeData'));
+  const node = nodeById?.get(nodeId);
+  const obj  = steps.object3dById?.get(nodeId) || node?.object3d;
+  if (!node || !obj) return false;
+  const before = _snapXf(node);
+  if (!setNodeWorldPoseRaw(node, obj, worldPos, worldQuat)) return false;
+  const after = _snapXf(node);
+  state.emit('change:treeData', state.get('treeData'));
+  undoManager.push(
+    `Place "${node.name || 'object'}"`,
+    () => _applyXf(nodeId, before),
+    () => _applyXf(nodeId, after),
+  );
+  return true;
+}
+
 function _snapXf(n) {
   return {
     localOffset:      [...(n.localOffset      || [0, 0, 0])],

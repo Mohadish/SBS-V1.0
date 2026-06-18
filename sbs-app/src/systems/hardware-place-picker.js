@@ -26,7 +26,7 @@
 import { state }       from '../core/state.js';
 import { sceneCore }   from '../core/scene.js';
 import { steps }       from './steps.js';
-import { placeInstance, realignInstance } from './hardware-actions.js';
+import { placeInstance, realignInstance, placeNodeAtWorldPose } from './hardware-actions.js';
 import { findSnapTarget }        from './snap-picker.js';
 import { circumcenterAndNormal } from './pivot-center-picker.js';
 import { setStatus }   from '../ui/status.js';
@@ -68,6 +68,17 @@ export function startAlignBy3Points(nodeId) {
   if (!nodeId) return;
   _begin({ mode: '3pt', intent: { kind: 'align', nodeId }, exclude: nodeId });
   setStatus('Snap 3 points around a circle to align the nut to its centre. Backspace = undo point · Esc = cancel.', 'info', 7000);
+}
+
+/**
+ * Place an EXISTING node (e.g. a freshly-created primitive) at the next click —
+ * on a surface, or in front of the camera if you click empty space. Same
+ * mechanics as nut placement; kept upright (orient afterwards with the gizmo).
+ */
+export function startPlaceNodeOnSurface(nodeId) {
+  if (!nodeId) return;
+  _begin({ mode: 'surface', intent: { kind: 'placeNode', nodeId }, exclude: nodeId });
+  setStatus('Click a surface to drop it there, or empty space to place it in front. Esc to cancel.', 'info', 7000);
 }
 
 function _begin({ mode, intent, exclude = null }) {
@@ -222,6 +233,11 @@ function _commit(worldPos, worldQuat, refMesh) {
   } else if (intent.kind === 'align') {
     const ok = realignInstance(intent.nodeId, worldPos, worldQuat);
     if (ok) setStatus('Nut aligned.', 'success', 2000);
+  } else if (intent.kind === 'placeNode') {
+    // Generic node (primitive) placement — position at the clicked point, kept
+    // upright (worldQuat null); the user orients afterwards with the gizmo.
+    const ok = placeNodeAtWorldPose(intent.nodeId, worldPos, null);
+    if (ok) { state.setSelection?.(intent.nodeId); setStatus('Placed.', 'success', 1800); }
   }
   cancel();
 }
