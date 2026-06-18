@@ -27,7 +27,7 @@ export const SCHEMA_VERSIONS = {
   screen:     1,
 };
 
-export const APP_VERSION  = 'V0.3.0.69';
+export const APP_VERSION  = 'V0.3.0.70';
 // Format: YYYY-MM-DD. Bump along with APP_VERSION on every build worth
 // labelling so the File tab shows you're running the expected slice.
 export const APP_RELEASED = '2026-06-10';
@@ -399,6 +399,11 @@ export function createPrimitiveNode(overrides = {}) {
     primKind:    'box',     // box | plane | sphere | cylinder | cone | torus | capsule | tube | pyramid | geosphere
     primParams:  {},        // per-kind { width, height, … } — see PRIMITIVE_DEFS
     primQuality: 3,         // 1-5 surface intricacy
+    // Base-face origin (V0.3.0.70): extruded kinds (box/cyl/cone/pyramid/tube/plane)
+    // pivot at their BASE and grow upward (+Y) instead of about their centre, so they
+    // sit ON a surface. Round/centred kinds ignore it. NEW primitives only — absent on
+    // legacy nodes (→ falsy → centre pivot) keeps old .sbsproj files pixel-identical.
+    baseAtOrigin: true,
     // Parameter-link group (V0.3.0.69). Primitives sharing a primLinkId share
     // their build parameters (kind/params/quality) — editing one ripples to all
     // ("Paste Instance"). Position / rotation / scale / folder / visibility stay

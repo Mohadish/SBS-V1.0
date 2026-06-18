@@ -32,6 +32,7 @@ import { circumcenterAndNormal } from './pivot-center-picker.js';
 import { setStatus }   from '../ui/status.js';
 import { findParent } from '../core/nodes.js';
 import { applyFollow } from './follow.js';
+import { BASE_FACE_KINDS } from './primitives.js';
 
 const HOVER_COLOR = 0x55ddff;   // surface crosshair (cyan)
 const PT_COLOR    = 0xffee44;   // placed 3-pt markers (yellow)
@@ -76,10 +77,16 @@ export function startAlignBy3Points(nodeId) {
  * on a surface, or in front of the camera if you click empty space. Same
  * mechanics as nut placement; kept upright (orient afterwards with the gizmo).
  */
-export function startPlaceNodeOnSurface(nodeId) {
+export function startPlaceNodeOnSurface(nodeId, opts = {}) {
   if (!nodeId) return;
-  _begin({ mode: 'surface', intent: { kind: 'placeNode', nodeId }, exclude: nodeId });
+  _begin({ mode: 'surface', intent: { kind: 'placeNode', nodeId, autoConnect: opts.autoConnect !== false }, exclude: nodeId });
   setStatus('Click a surface to drop it there, or empty space to place it in front. Esc to cancel.', 'info', 7000);
+}
+/** Generic node (primitive) placement at a 3-point circle centre. */
+export function startPlaceNodeBy3Points(nodeId, opts = {}) {
+  if (!nodeId) return;
+  _begin({ mode: '3pt', intent: { kind: 'placeNode', nodeId, autoConnect: opts.autoConnect !== false }, exclude: nodeId });
+  setStatus('Snap 3 points around a circle to place it at the centre. Backspace = undo point · Esc = cancel.', 'info', 7000);
 }
 
 function _begin({ mode, intent, exclude = null }) {
@@ -239,14 +246,17 @@ function _commit(worldPos, worldQuat, refMesh) {
     const ok = realignInstance(intent.nodeId, worldPos, worldQuat);
     if (ok) setStatus('Nut aligned.', 'success', 2000);
   } else if (intent.kind === 'placeNode') {
-    // Generic node (primitive) placement — position at the clicked point, kept
-    // upright (worldQuat null); the user orients afterwards with the gizmo.
-    const ok = placeNodeAtWorldPose(intent.nodeId, worldPos, null);
+    // Base-face primitives orient their base to the clicked surface / 3-pt circle so
+    // they extrude OUTWARD from it; centred kinds (sphere/torus/…) and legacy
+    // (centre-pivot) primitives stay upright. Empty space → identity quat = upright.
+    const node = state.get('nodeById')?.get?.(intent.nodeId);
+    const aligned = !!(node && node.type === 'primitive' && node.baseAtOrigin && BASE_FACE_KINDS.has(node.primKind));
+    const ok = placeNodeAtWorldPose(intent.nodeId, worldPos, aligned ? worldQuat : null);
     if (ok) {
       state.setSelection?.(intent.nodeId);
-      // Auto-connect: placed on a surface → the primitive follows that object (like
-      // screws), tracking it across all steps. Empty space → free primitive.
-      const tgt = _followTargetOf(refMesh);
+      // Auto-connect (toggle, default on): on a surface → follow that object across all
+      // steps (like screws). Toggle off, or empty space → free primitive left at root.
+      const tgt = (intent.autoConnect !== false) ? _followTargetOf(refMesh) : null;
       if (tgt) { applyFollow(intent.nodeId, tgt.targetId, { scope: 'all' }); setStatus('Placed — following its part.', 'success', 1800); }
       else     setStatus('Placed.', 'success', 1800);
     }

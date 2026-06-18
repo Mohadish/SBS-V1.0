@@ -131,7 +131,20 @@ export function defaultPrimitiveParams(kind) {
 }
 
 function _buildKey(node) {
-  return `${node.primKind}|${node.primQuality}|${JSON.stringify(node.primParams || {})}`;
+  return `${node.primKind}|${node.primQuality}|${node.baseAtOrigin ? 'B' : 'C'}|${JSON.stringify(node.primParams || {})}`;
+}
+
+// Base-face primitives (V0.3.0.70): origin at the BASE so the primitive extrudes
+// UPWARD (+Y) from Y=0 instead of growing symmetrically about its centre — drop a
+// cylinder on a surface and it sits ON it, "height" only adds on top. Round/centred
+// kinds (torus/capsule/sphere/geosphere) keep their centre pivot. Gated by the
+// per-primitive baseAtOrigin flag so EXISTING (centre-pivot) primitives are untouched.
+export const BASE_FACE_KINDS = new Set(['box', 'cylinder', 'cone', 'pyramid', 'tube', 'plane']);
+function _applyBaseFace(geom, kind, params) {
+  if (!BASE_FACE_KINDS.has(kind)) return;
+  if (kind === 'plane') { geom.rotateX(-Math.PI / 2); return; }   // lie flat, base face up (+Y)
+  const h = Number(params?.height);
+  if (Number.isFinite(h)) geom.translate(0, h / 2, 0);            // base at Y=0, extrude +Y
 }
 
 const _warned = new Set();
@@ -142,12 +155,14 @@ function _warnOnce(node, msg) {
 }
 
 /** Build the THREE geometry for a kind + params + quality (smooth normals). */
-export function buildPrimitiveGeometry(kind, params, quality) {
+export function buildPrimitiveGeometry(kind, params, quality, baseAtOrigin = false) {
   const def = PRIMITIVE_DEFS[kind];
   if (!def || !T()) return null;
   const q = Math.max(1, Math.min(5, quality || 3));
   try {
-    const geom = def.build(params || defaultPrimitiveParams(kind), q);
+    const p = params || defaultPrimitiveParams(kind);
+    const geom = def.build(p, q);
+    if (baseAtOrigin) _applyBaseFace(geom, kind, p);   // base-face origin (new primitives)
     geom.computeBoundingBox?.();
     geom.computeVertexNormals?.();   // smooth shading on curved surfaces
     return geom;
@@ -175,7 +190,7 @@ export function ensurePrimitiveObject3D(node) {
   }
   _warned.delete(node.id);
 
-  const geom = buildPrimitiveGeometry(node.primKind, node.primParams, node.primQuality);
+  const geom = buildPrimitiveGeometry(node.primKind, node.primParams, node.primQuality, node.baseAtOrigin);
   if (!geom) {
     _warnOnce(node, `"${node.name || node.id}" (${node.primKind}) produced no geometry.`);
     return null;
@@ -218,7 +233,7 @@ export function ensurePrimitiveObject3D(node) {
 export function rebuildPrimitive(node) {
   const mesh = node?.object3d;
   if (!mesh) return ensurePrimitiveObject3D(node);
-  const geom = buildPrimitiveGeometry(node.primKind, node.primParams, node.primQuality);
+  const geom = buildPrimitiveGeometry(node.primKind, node.primParams, node.primQuality, node.baseAtOrigin);
   if (!geom) return mesh;
   const old = mesh.geometry;
   mesh.geometry = geom;
