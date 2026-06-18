@@ -182,6 +182,95 @@ export function clearFollow(followerId) {
   if (A?.follow) { A.follow = null; state.markDirty?.(); console.log('[follow] cleared on', followerId); }
 }
 
+/**
+ * Detach a follower back to the SCENE ROOT — it becomes a free object (no follow),
+ * keeping its current world position, across all steps. The "go back to root" option
+ * of the Stop-following dialog. Mirrors applyFollow but reparents to root + clears
+ * the flag. Undoable.
+ */
+export function unfollowToRoot(followerId) {
+  const T = window.THREE;
+  const root = state.get('treeData');
+  if (!root) return false;
+  const A = (state.get('nodeById') || buildNodeMap(root)).get(followerId);
+  if (!A) { console.warn('[follow] node not found'); return false; }
+  const rootId = root.id;
+  const allIds = _scopedStepIds('all', null);
+
+  const beforeParentId = findParent(root, A.id)?.id || null;
+  const beforeFollow   = A.follow ? { ...A.follow } : null;
+  const stepsBefore    = JSON.parse(JSON.stringify(state.get('steps') || []));
+
+  // Live reparent to the scene root, world pose preserved.
+  const Aobj    = steps.object3dById?.get(A.id) || A.object3d || null;
+  const rootObj = steps.object3dById?.get(rootId) || sceneCore.rootGroup;
+  const worldPos = new T.Vector3(), worldQuat = new T.Quaternion();
+  if (Aobj) { Aobj.updateWorldMatrix(true, false); Aobj.getWorldPosition(worldPos); Aobj.getWorldQuaternion(worldQuat); }
+  moveNode(root, A.id, rootId);
+  if (Aobj && rootObj && Aobj.parent !== rootObj) rootObj.add(Aobj);
+  if (Aobj) setNodeWorldPoseRaw(A, Aobj, worldPos, worldQuat);
+
+  const xfSnap  = captureTransformSnapshot(A);
+  const visFlag = A.localVisible !== false;
+  const spec    = serializeModelTree(A);
+  const scoped  = new Set(allIds);
+  const updated = (state.get('steps') || []).map(step => {
+    if (!scoped.has(step.id)) return step;
+    const snap = step.snapshot;
+    if (!snap || !snap.tree) return step;
+    let newTree = _removeFromSpec(snap.tree, A.id);
+    newTree = _addUnder(newTree, rootId, spec) || { ...newTree, children: [...(newTree.children || []), spec] };
+    return {
+      ...step,
+      snapshot: { ...snap, tree: newTree,
+        visibility: { ...(snap.visibility || {}), [A.id]: visFlag },
+        transforms: { ...(snap.transforms || {}), [A.id]: xfSnap } },
+    };
+  });
+  state.setState({ steps: updated });
+
+  A.follow = null;
+  state.setState({ nodeById: buildNodeMap(root), treeData: root });
+  state.emit('change:treeData', root);
+  state.markDirty?.();
+  sceneCore.requestRender?.(300);
+  console.log(`[follow] "${A.name || A.id}" detached to root.`);
+
+  undoManager.push(
+    'Stop following (to root)',
+    () => {
+      const r2 = state.get('treeData');
+      state.setState({ steps: stepsBefore });
+      if (beforeParentId) moveNode(r2, A.id, beforeParentId);
+      A.follow = beforeFollow;
+      state.setState({ nodeById: buildNodeMap(r2) });
+      const cur = state.get('activeStepId');
+      if (cur) steps.activateStep(cur, false); else steps.activateBaseStep?.();
+      state.emit('change:treeData', r2);
+    },
+    () => unfollowToRoot(followerId),
+  );
+  return true;
+}
+
+/**
+ * "Stop following" dialog: detach to root, re-target a different object, or cancel.
+ * (Clearing the flag alone left the object sitting in its old folder with no way back.)
+ */
+export async function promptStopFollowing(nodeId) {
+  const choice = await chooseFromButtons(
+    'Stop following',
+    'What should this object do now?',
+    [
+      { id: 'root',     label: 'Detach — move back to root (free object)', primary: true },
+      { id: 'retarget', label: 'Follow a different object…' },
+      { id: 'cancel',   label: 'Cancel' },
+    ],
+  );
+  if (choice === 'root')          unfollowToRoot(nodeId);
+  else if (choice === 'retarget') startFollowPick(nodeId);
+}
+
 // ── Stage 4: verified click-to-pick-target flow (r-click → "Follow Object") ───
 let _pickFollowerId = null;
 

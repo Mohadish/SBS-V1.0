@@ -18,7 +18,7 @@ import { sceneCore }            from '../core/scene.js';
 import { steps }                from '../systems/steps.js';
 import * as actions             from '../systems/actions.js';
 import { undoManager }          from '../systems/undo.js';
-import { startFollowPick, clearFollow } from '../systems/follow.js';
+import { startFollowPick, promptStopFollowing } from '../systems/follow.js';
 import {
   findNode,
   findParent,
@@ -1353,7 +1353,7 @@ function _buildContextMenuItems(node) {
   // replacement for Convert-to-Replace-Model. Single non-archived node.
   if (count === 1 && node && !node.archived && node.type !== 'scene') {
     items.push(node.follow
-      ? { label: '🔗 Stop following', action: () => clearFollow(node.id) }
+      ? { label: '🔗 Stop following…', action: () => promptStopFollowing(node.id) }
       : { label: '🔗 Follow object…',  action: () => startFollowPick(node.id) });
   }
 
