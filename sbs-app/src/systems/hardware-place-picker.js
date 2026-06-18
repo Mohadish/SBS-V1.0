@@ -30,7 +30,7 @@ import { placeInstance, realignInstance, placeNodeAtWorldPose } from './hardware
 import { findSnapTarget }        from './snap-picker.js';
 import { circumcenterAndNormal } from './pivot-center-picker.js';
 import { setStatus }   from '../ui/status.js';
-import { getPathToNode, buildNodeMap } from '../core/nodes.js';
+import { findParent } from '../core/nodes.js';
 
 const HOVER_COLOR = 0x55ddff;   // surface crosshair (cyan)
 const PT_COLOR    = 0xffee44;   // placed 3-pt markers (yellow)
@@ -194,41 +194,45 @@ function _resolve3pt(fit) {
   return { worldPos: fit.center.clone(), worldQuat: q };
 }
 
-// Nearest MODEL ancestor of the picked surface mesh → the screw's parent. Walks the
-// data-node path up from the picked object3d's node. Returns null when there's no model
-// ancestor (e.g. a primitive / shape at scene root), so the caller falls back to the
-// Hardware folder.
-function _modelAncestorId(mesh) {
-  if (!mesh) { console.warn('[hw-place] no picked mesh'); return null; }
+// The clicked surface's node + its PARENT FOLDER (where a placed screw becomes a
+// sibling that follows it). Works for ANY object type — CAD mesh, primitive, shape —
+// because it uses the node's actual parent, not a 'model' ancestor. Returns null for
+// empty space (no surface) → the caller places a free screw in the Hardware folder.
+function _followTargetOf(mesh) {
+  if (!mesh) return null;
   let o = mesh, nodeId = null;
   while (o && !nodeId) { nodeId = o.userData?.meshNodeId || o.userData?.nodeId; o = o.parent; }
-  if (!nodeId) { console.warn('[hw-place] picked mesh has no meshNodeId/nodeId', mesh.name, mesh.userData); return null; }
+  if (!nodeId) return null;
   const root = state.get('treeData');
   if (!root) return null;
-  const nodeById = buildNodeMap(root);          // fresh from the live tree — never a stale state map
-  const path = getPathToNode(root, nodeId);     // [rootId, …, nodeId]
-  for (let i = path.length - 1; i >= 0; i--) {
-    const n = nodeById.get(path[i]);
-    if (n && n.type === 'model') return n.id;
-  }
-  console.warn('[hw-place] no model ancestor for node', nodeId,
-    '— path types:', path.map(id => nodeById.get(id)?.type).join(' > ') || '(empty)');
-  return null;
+  const parent = findParent(root, nodeId);
+  return parent ? { targetId: nodeId, parentFolderId: parent.id } : null;
 }
 
 function _commit(worldPos, worldQuat, refMesh) {
   const intent = _state.intent;
   if (intent.kind === 'place') {
-    // Parent the screw under the host MODEL it was placed on → it becomes a child of
-    // that model and follows it on move / save / load. Falls back to the Hardware
-    // folder when the surface has no model ancestor.
-    const parentId = _modelAncestorId(refMesh);
-    const inst = placeInstance(intent.templateId, parentId, {
+    // Auto-connect (Follow Object): the screw joins the clicked object's PARENT FOLDER
+    // — a sibling of what it was placed on — and tracks it across ALL steps. Works for
+    // any object type (CAD mesh, primitive, …), no 'model' ancestor required. Empty
+    // space (no surface) → a free screw in the Hardware folder, no follow.
+    const tgt  = _followTargetOf(refMesh);
+    const inst = placeInstance(intent.templateId, tgt?.parentFolderId || null, {
       worldPose: { position: worldPos, quaternion: worldQuat },
     });
     if (inst) {
       state.setSelection?.(inst.id);
-      setStatus(parentId ? 'Screw placed — child of its model.' : 'Screw placed.', 'success', 2000);
+      if (tgt) {
+        inst.follow = {
+          targetId: tgt.targetId, parentFolderId: tgt.parentFolderId, scope: 'all',
+          fromStepId: state.get('activeStepId') || null,
+          mimicOpacity: false, mimicColor: false, wrapperId: null,
+        };
+        state.markDirty?.();
+        setStatus('Screw placed — following its part.', 'success', 2000);
+      } else {
+        setStatus('Screw placed.', 'success', 2000);
+      }
     }
   } else if (intent.kind === 'align') {
     const ok = realignInstance(intent.nodeId, worldPos, worldQuat);
