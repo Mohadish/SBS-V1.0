@@ -1689,6 +1689,19 @@ window.addEventListener('pointerup', e => {
   const found = _pickInRect(_dragStartX, _dragStartY, e.clientX, e.clientY, windowMode);
 
   const current = new Set(state.get('multiSelectedIds') || []);
+  // V0.3.0.75 — Alt+drag INVERT from a folder UNIT (with or without Ctrl). If only a
+  // container is selected as a unit, expand it to all interior objects first, so the
+  // drag removes from the FULL interior (matching the Alt-click invert) instead of
+  // having nothing to remove. Drops the unit treatment → partial multi-select.
+  if (doRemove && current.size === 1) {
+    const _nbm = state.get('nodeById');
+    const _u   = _nbm?.get([...current][0]);
+    if (_u && state.get('selectedId') === _u.id
+        && (_u.type === 'folder' || _u.type === 'model') && (_u.children || []).length) {
+      current.clear();
+      (function w(n) { if (materials.meshById?.has(n.id)) current.add(n.id); for (const c of (n.children || [])) w(c); })(_u);
+    }
+  }
   let multi;
   if (doRemove) {
     multi = current;
@@ -1880,10 +1893,12 @@ canvas.addEventListener('click', e => {
   const meshNodeId = hit.object.userData?.meshNodeId;
   if (!meshNodeId) return;
 
-  // V0.3.0.72 — TRIPLE-click escalation. If this is a 3rd rapid click on the SAME
-  // container the preceding double-click selected as a unit, select ALL its
-  // interior objects (every descendant with a registered mesh). Plain clicks only
-  // (modifiers fall through to add/remove/toggle). Consumes the click.
+  // V0.3.0.72/74 — TRIPLE-click escalation. A 3rd rapid click on the SAME container
+  // the preceding double-click selected as a unit selects ALL its interior objects —
+  // every LEAF object, recursing through sub-folders whether LOCKED or UNLOCKED (the
+  // walk never stops at a lock; folder nodes themselves aren't selected, only objects
+  // with a registered mesh). Plain clicks only (modifiers fall through to add/remove/
+  // toggle). Consumes the click.
   if (_lastUnitDbl && !e.shiftKey && !e.ctrlKey && !e.metaKey && !e.altKey
       && (performance.now() - _lastUnitDbl.t) < 500) {
     const cont = getNearestContainerAncestor(root, meshNodeId);
@@ -1892,9 +1907,9 @@ canvas.addEventListener('click', e => {
       const interior = new Set();
       (function walk(n) {
         if (materials.meshById?.has(n.id)) interior.add(n.id);
-        for (const c of (n.children || [])) walk(c);
+        for (const c of (n.children || [])) walk(c);   // recurse through everything, locks included
       })(cont);
-      actionSetSelection(cont.id, interior);   // unit silhouette + interior highlighted
+      actionSetSelection(cont.id, interior);   // group gizmo + every interior object highlighted
       return;
     }
     _lastUnitDbl = null;
@@ -1999,6 +2014,28 @@ canvas.addEventListener('click', e => {
       _scheduleRaySelect(cands, e.clientX, e.clientY, 'add');
     }
   } else if (mode === 'remove') {
+    // V0.3.0.75 — INVERT from a folder UNIT. When only a container (folder/model) is
+    // selected as a unit (locked or unlocked) and you Alt-click an object inside it,
+    // select every interior object EXCEPT the one clicked — instead of the old
+    // "nothing to remove". Drops the unit outline/gizmo (it's a partial set now).
+    const _unitId = (multi.size === 1) ? [...multi][0] : null;
+    const _unit   = (_unitId && state.get('selectedId') === _unitId) ? nbm.get(_unitId) : null;
+    const _unitIsContainer = _unit && (_unit.type === 'folder' || _unit.type === 'model') && (_unit.children || []).length;
+    const _path = _unitIsContainer ? (getPathToNode(root, meshNodeId) || []) : [];
+    const _uIdx = _unitIsContainer ? _path.indexOf(_unit.id) : -1;
+    if (_uIdx >= 0) {
+      const clickedObjId = (_uIdx + 1 < _path.length) ? _path[_uIdx + 1] : meshNodeId;
+      const excluded = new Set();
+      (function w(n) { if (!n) return; excluded.add(n.id); for (const c of (n.children || [])) w(c); })(nbm.get(clickedObjId));
+      const rest = new Set();
+      (function w(n) { if (materials.meshById?.has(n.id) && !excluded.has(n.id)) rest.add(n.id); for (const c of (n.children || [])) w(c); })(_unit);
+      if (rest.size === 0) { actionClearSelection(); setStatus('Removed the only object — selection cleared.'); }
+      else {
+        actionSetSelection([...rest][0], rest);
+        setStatus(`Selected ${rest.size} object${rest.size === 1 ? '' : 's'} — all but "${nbm.get(clickedObjId)?.name || 'one'}".`);
+      }
+      return;
+    }
     const cands = allEntities.filter(ent => multi.has(ent.targetId));
     if (cands.length === 0) {
       setStatus('Nothing to remove — nothing selected under the cursor.');
