@@ -12,6 +12,7 @@
 
 import state                    from '../core/state.js';
 import { undoManager }          from './undo.js';
+import { applyFollow }          from './follow.js';   // paste keeps the source's attachment
 import { setStatus }            from '../ui/status.js';
 import { selectionActs }        from './select-act.js';
 import { materials }            from '../systems/materials.js';
@@ -8381,11 +8382,30 @@ function _primitiveParent() {
   return root;
 }
 
-/** Create + insert a primitive from an explicit spec; selects it; one undo. */
-function _spawnPrimitive({ kind, params, quality, primLinkId, name, undoLabel }) {
+/** A sensible "next to it" shift distance for a paste — roughly the object's width. */
+function _primLateralOffset(kind, p = {}) {
+  switch (kind) {
+    case 'box':
+    case 'plane':     return Math.max(1, p.width || 20);
+    case 'pyramid':   return Math.max(1, p.base  || 20);
+    case 'cylinder':
+    case 'cone':
+    case 'sphere':
+    case 'geosphere': return Math.max(1, 2 * (p.radius || 10));
+    case 'capsule':   return Math.max(1, 2 * (p.radius || 6));
+    case 'torus':     return Math.max(1, 2 * ((p.radius || 10) + (p.tube || 3)));
+    case 'tube':      return Math.max(1, 2 * (p.outer || 10));
+    default:          return 20;
+  }
+}
+
+/** Create + insert a primitive from an explicit spec; selects it; one undo.
+ *  parentId overrides the default (selected-folder) parent; transform overrides the
+ *  default origin pose; baseAtOrigin overrides the default base-face flag. */
+function _spawnPrimitive({ kind, params, quality, primLinkId, name, undoLabel, parentId, transform, baseAtOrigin }) {
   const def = PRIMITIVE_DEFS[kind];
   if (!def) return null;
-  const parent = _primitiveParent();
+  const parent = (parentId && state.get('nodeById')?.get(parentId)) || _primitiveParent();
   if (!parent) return null;
   const node = createPrimitiveNode({
     name:        name || def.label,
@@ -8393,6 +8413,8 @@ function _spawnPrimitive({ kind, params, quality, primLinkId, name, undoLabel })
     primParams:  { ...(params || defaultPrimitiveParams(kind)) },
     primQuality: quality ?? 3,
     primLinkId:  primLinkId || generateId('primLink'),
+    ...(baseAtOrigin != null ? { baseAtOrigin } : {}),
+    ...(transform || {}),
   });
   if (!ensurePrimitiveObject3D(node)) return null;
   _readdPrimitiveNode(node, parent.id);
@@ -8418,46 +8440,78 @@ export function copyPrimitive(nodeId) {
   const n = state.get('nodeById')?.get(nodeId);
   if (!n || n.type !== 'primitive') return false;
   _primClipboard = {
-    kind:       n.primKind,
-    params:     { ...(n.primParams || {}) },
-    quality:    n.primQuality ?? 3,
-    primLinkId: n.primLinkId || null,
-    name:       n.name,
+    sourceId:     nodeId,              // re-looked-up at paste for live transform / parent / follow
+    kind:         n.primKind,
+    params:       { ...(n.primParams || {}) },
+    quality:      n.primQuality ?? 3,
+    primLinkId:   n.primLinkId || null,
+    name:         n.name,
+    baseAtOrigin: n.baseAtOrigin,
   };
   return true;
 }
 
 export function hasPrimitiveClipboard() { return !!_primClipboard; }
 
-/** Paste an INDEPENDENT copy — its own parameter group (edits don't link back). */
-export function pastePrimitive() {
+/**
+ * Shared paste (V0.3.0.78). Pastes NEXT TO the source (offset by ~its width) in the
+ * SAME parent folder — not at the origin — and, if the source was following something,
+ * makes the copy follow the same target too (keeps the hierarchy/attachment). Falls
+ * back to a plain origin-spawn when the source no longer exists.
+ *   linked=false → independent param group · linked=true → shares the source's group.
+ */
+function _pastePrimitive({ linked }) {
   if (!_primClipboard) return null;
-  return _spawnPrimitive({
-    kind:       _primClipboard.kind,
-    params:     _primClipboard.params,
-    quality:    _primClipboard.quality,
-    primLinkId: generateId('primLink'),     // fresh group → independent
-    name:       _primClipboard.name,
-    undoLabel:  'Paste primitive',
+  const cb   = _primClipboard;
+  const root = state.get('treeData');
+  const srcN = cb.sourceId ? state.get('nodeById')?.get(cb.sourceId) : null;
+  const live = (srcN && srcN.type === 'primitive') ? srcN : null;
+
+  // Linked instance follows the group's CURRENT params; else the clipboard snapshot.
+  const members = (linked && cb.primLinkId) ? _primitivesInLink(cb.primLinkId) : [];
+  const ref     = members[0] || live;
+  const params  = ref ? { ...(ref.primParams || {}) } : cb.params;
+  const quality = ref ? (ref.primQuality ?? 3)        : cb.quality;
+  const baseAtOrigin = live ? live.baseAtOrigin : cb.baseAtOrigin;
+
+  // Same parent + offset-to-the-side transform (so it lands next to the original).
+  const parentId = live ? (findParent(root, live.id)?.id || null) : null;
+  let transform = null;
+  if (live) {
+    const off = _primLateralOffset(live.primKind, live.primParams);
+    const lo  = live.localOffset || [0, 0, 0];
+    transform = {
+      localOffset:         [lo[0] + off, lo[1], lo[2]],
+      localQuaternion:     [...(live.localQuaternion     || [0, 0, 0, 1])],
+      baseLocalPosition:   [...(live.baseLocalPosition   || [0, 0, 0])],
+      baseLocalQuaternion: [...(live.baseLocalQuaternion || [0, 0, 0, 1])],
+      baseLocalScale:      [...(live.baseLocalScale      || [1, 1, 1])],
+    };
+  }
+
+  const id = _spawnPrimitive({
+    kind:       cb.kind,
+    params, quality, baseAtOrigin, parentId, transform,
+    primLinkId: linked ? (cb.primLinkId || generateId('primLink')) : generateId('primLink'),
+    name:       cb.name,
+    undoLabel:  linked ? 'Paste linked primitive' : 'Paste primitive',
   });
+  if (!id) return null;
+
+  // Keep the attachment: if the source was following an object, the copy follows it
+  // too (same target + scope) — reuses the Follow Object baking across all steps.
+  if (live?.follow?.targetId) {
+    try { applyFollow(id, live.follow.targetId, { scope: live.follow.scope || 'all' }); }
+    catch (e) { console.warn('[paste] could not copy follow relationship', e); }
+  }
+  return id;
 }
 
+/** Paste an INDEPENDENT copy — its own parameter group (edits don't link back). */
+export function pastePrimitive()         { return _pastePrimitive({ linked: false }); }
+
 /** Paste a LINKED instance — shares the source's parameter group (ripples). */
-export function pastePrimitiveInstance() {
-  if (!_primClipboard) return null;
-  // Match the CURRENT params of the link group (the original may have changed
-  // since copy); fall back to the clipboard snapshot.
-  const members = _primClipboard.primLinkId ? _primitivesInLink(_primClipboard.primLinkId) : [];
-  const src = members[0];
-  return _spawnPrimitive({
-    kind:       _primClipboard.kind,
-    params:     src ? { ...src.primParams } : _primClipboard.params,
-    quality:    src ? src.primQuality       : _primClipboard.quality,
-    primLinkId: _primClipboard.primLinkId || generateId('primLink'),
-    name:       _primClipboard.name,
-    undoLabel:  'Paste linked primitive',
-  });
-}
+export function pastePrimitiveInstance() { return _pastePrimitive({ linked: true  }); }
 
 /** Delete a primitive (undoable). */
 export function deletePrimitive(nodeId) {
