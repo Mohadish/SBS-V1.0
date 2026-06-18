@@ -1780,6 +1780,12 @@ function _pickCableSocket(clientX, clientY) {
 
 // ── Click: select object ─────────────────────────────────────────────────────
 
+// V0.3.0.72 — progressive container selection. A double-click selects the
+// immediate-parent container as a clean movable UNIT (set here by the dblclick
+// handler); a 3rd rapid click on the SAME container escalates to "select all
+// interior". Window-gated so a later unrelated click isn't mistaken for a triple.
+let _lastUnitDbl = null;   // { container: id, t: performance.now() }
+
 canvas.addEventListener('click', e => {
   if (e.button !== 0) return;
   // Suppress click after gizmo interaction or drag-select
@@ -1864,6 +1870,26 @@ canvas.addEventListener('click', e => {
 
   const meshNodeId = hit.object.userData?.meshNodeId;
   if (!meshNodeId) return;
+
+  // V0.3.0.72 — TRIPLE-click escalation. If this is a 3rd rapid click on the SAME
+  // container the preceding double-click selected as a unit, select ALL its
+  // interior objects (every descendant with a registered mesh). Plain clicks only
+  // (modifiers fall through to add/remove/toggle). Consumes the click.
+  if (_lastUnitDbl && !e.shiftKey && !e.ctrlKey && !e.metaKey && !e.altKey
+      && (performance.now() - _lastUnitDbl.t) < 500) {
+    const cont = getNearestContainerAncestor(root, meshNodeId);
+    if (cont && cont.id === _lastUnitDbl.container) {
+      _lastUnitDbl = null;
+      const interior = new Set();
+      (function walk(n) {
+        if (materials.meshById?.has(n.id)) interior.add(n.id);
+        for (const c of (n.children || [])) walk(c);
+      })(cont);
+      actionSetSelection(cont.id, interior);   // unit silhouette + interior highlighted
+      return;
+    }
+    _lastUnitDbl = null;
+  }
 
   // Selecting a mesh clears any cable-point / socket selection — the
   // gizmo can only follow one target at a time.
@@ -2011,20 +2037,17 @@ canvas.addEventListener('dblclick', e => {
   const meshNodeId = hit.object.userData?.meshNodeId;
   if (!meshNodeId) return;
 
-  // Double-click selects all meshes in the nearest container (model/folder)
+  // V0.3.0.72 — pop UP to the IMMEDIATE-PARENT container and select it as a clean,
+  // MOVABLE UNIT. The multi-set is JUST the container id, so:
+  //   • outline-pass wraps its descendant mass into ONE folder silhouette, and
+  //   • applySelectionHighlight tints nothing (no mesh ids in the set) — no clutter.
+  // The gizmo targets the container, so you can grab and move the whole group.
+  // A 3rd rapid click (handled in the click listener) selects all the interior.
   const container = getNearestContainerAncestor(root, meshNodeId);
   if (!container) return;
 
-  // Collect every mesh descendant of the container
-  const meshIds = new Set();
-  const walk = n => {
-    if (n.type === 'mesh') meshIds.add(n.id);
-    (n.children || []).forEach(walk);
-  };
-  walk(container);
-
-  state.setSelection(container.id, meshIds);
-  materials.applySelectionHighlight(meshIds);
+  actionSetSelection(container.id, new Set([container.id]));
+  _lastUnitDbl = { container: container.id, t: performance.now() };
 });
 
 // ══════════════════════════════════════════════════════════════════════════
