@@ -188,14 +188,14 @@ export function clearFollow(followerId) {
  * of the Stop-following dialog. Mirrors applyFollow but reparents to root + clears
  * the flag. Undoable.
  */
-export function unfollowToRoot(followerId) {
+export function unfollowToRoot(followerId, scope = 'all') {
   const T = window.THREE;
   const root = state.get('treeData');
   if (!root) return false;
   const A = (state.get('nodeById') || buildNodeMap(root)).get(followerId);
   if (!A) { console.warn('[follow] node not found'); return false; }
   const rootId = root.id;
-  const allIds = _scopedStepIds('all', null);
+  const scopedIds = _scopedStepIds(scope, state.get('activeStepId') || null);
 
   const beforeParentId = findParent(root, A.id)?.id || null;
   const beforeFollow   = A.follow ? { ...A.follow } : null;
@@ -213,7 +213,7 @@ export function unfollowToRoot(followerId) {
   const xfSnap  = captureTransformSnapshot(A);
   const visFlag = A.localVisible !== false;
   const spec    = serializeModelTree(A);
-  const scoped  = new Set(allIds);
+  const scoped  = new Set(scopedIds);
   const updated = (state.get('steps') || []).map(step => {
     if (!scoped.has(step.id)) return step;
     const snap = step.snapshot;
@@ -248,7 +248,7 @@ export function unfollowToRoot(followerId) {
       if (cur) steps.activateStep(cur, false); else steps.activateBaseStep?.();
       state.emit('change:treeData', r2);
     },
-    () => unfollowToRoot(followerId),
+    () => unfollowToRoot(followerId, scope),
   );
   return true;
 }
@@ -267,8 +267,19 @@ export async function promptStopFollowing(nodeId) {
       { id: 'cancel',   label: 'Cancel' },
     ],
   );
-  if (choice === 'root')          unfollowToRoot(nodeId);
-  else if (choice === 'retarget') startFollowPick(nodeId);
+  if (choice === 'root') {
+    const scope = await chooseFromButtons(
+      'Detach to root — which steps?',
+      'The current step is always included.',
+      [
+        { id: 'all',      label: 'All steps', primary: true },
+        { id: 'forward',  label: 'This step → forward' },
+        { id: 'backward', label: 'This step → backward' },
+        { id: 'cancel',   label: 'Cancel' },
+      ],
+    );
+    if (scope && scope !== 'cancel') unfollowToRoot(nodeId, scope);
+  } else if (choice === 'retarget') startFollowPick(nodeId);
 }
 
 // ── Stage 4: verified click-to-pick-target flow (r-click → "Follow Object") ───

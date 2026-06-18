@@ -31,6 +31,7 @@ import { findSnapTarget }        from './snap-picker.js';
 import { circumcenterAndNormal } from './pivot-center-picker.js';
 import { setStatus }   from '../ui/status.js';
 import { findParent } from '../core/nodes.js';
+import { applyFollow } from './follow.js';
 
 const HOVER_COLOR = 0x55ddff;   // surface crosshair (cyan)
 const PT_COLOR    = 0xffee44;   // placed 3-pt markers (yellow)
@@ -241,7 +242,14 @@ function _commit(worldPos, worldQuat, refMesh) {
     // Generic node (primitive) placement — position at the clicked point, kept
     // upright (worldQuat null); the user orients afterwards with the gizmo.
     const ok = placeNodeAtWorldPose(intent.nodeId, worldPos, null);
-    if (ok) { state.setSelection?.(intent.nodeId); setStatus('Placed.', 'success', 1800); }
+    if (ok) {
+      state.setSelection?.(intent.nodeId);
+      // Auto-connect: placed on a surface → the primitive follows that object (like
+      // screws), tracking it across all steps. Empty space → free primitive.
+      const tgt = _followTargetOf(refMesh);
+      if (tgt) { applyFollow(intent.nodeId, tgt.targetId, { scope: 'all' }); setStatus('Placed — following its part.', 'success', 1800); }
+      else     setStatus('Placed.', 'success', 1800);
+    }
   }
   cancel();
 }
