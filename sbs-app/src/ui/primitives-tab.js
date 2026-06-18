@@ -11,6 +11,11 @@ import state        from '../core/state.js';
 import * as actions  from '../systems/actions.js';
 import * as hardwarePlacePicker from '../systems/hardware-place-picker.js';
 
+// Auto-connect (Follow Object) toggle for primitive placement — default ON,
+// persisted across re-renders for the session. On → the placed primitive follows
+// the surface object it lands on across all steps; off → free primitive at root.
+let _autoConnect = true;
+
 const _esc = (s) => String(s ?? '').replace(/[&<>"']/g,
   c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 
@@ -32,6 +37,15 @@ function _styleOnce() {
     .prim-row input[type=number]{flex:1;min-width:0;box-sizing:border-box;padding:3px 6px;
       background:var(--panel,#0f172a);border:1px solid var(--line,#334155);border-radius:4px;color:var(--text,#e2e8f0);}
     .prim-row input[type=range]{flex:1;}
+    .prim-place{padding:10px;border-top:1px solid var(--line,#334155);margin-top:4px;}
+    .prim-place-btns{display:flex;gap:6px;margin-bottom:9px;}
+    .prim-place-btn{flex:1;display:flex;flex-direction:column;align-items:center;gap:2px;padding:7px 4px;
+      background:var(--panel2,#1e293b);border:1px solid var(--line,#334155);border-radius:6px;
+      color:var(--text,#e2e8f0);cursor:pointer;font-size:11px;line-height:1.2;}
+    .prim-place-btn:hover{border-color:#0ea5e9;background:rgba(14,165,233,0.10);}
+    .prim-place-btn .ico{font-size:15px;}
+    .prim-toggle{display:flex;align-items:center;gap:7px;font-size:11.5px;color:#cbd5e1;cursor:pointer;user-select:none;}
+    .prim-toggle input{cursor:pointer;margin:0;}
   `;
   document.head.appendChild(s);
 }
@@ -67,29 +81,53 @@ export function renderPrimitivesTab(panel) {
         <span id="prim-quality-val" style="flex:0 0 14px;text-align:right">${editing.primQuality ?? 3}</span>
       </label>
       <div class="small muted" style="font-size:10px;margin-left:96px;opacity:0.7">1 = chunky · 5 = smooth</div>` : '';
+    // Placement controls — only meaningful for NEW base-face primitives (which
+    // orient to the clicked surface). Legacy centre-pivot primitives still place,
+    // just upright. Auto-connect toggle reflects the persisted session default.
+    const place = `<div class="prim-place">
+        <div class="prim-place-btns">
+          <button class="prim-place-btn" data-place="surface" title="Click a surface (or empty space) to drop it there, base aligned to the surface.">
+            <span class="ico">📍</span><span>Place on surface</span></button>
+          <button class="prim-place-btn" data-place="3pt" title="Snap 3 points around a circular feature to place it at the centre.">
+            <span class="ico">⊚</span><span>Place by 3 points</span></button>
+        </div>
+        <label class="prim-toggle" title="On: the primitive follows the object it lands on, across all steps. Off: free primitive, left at root.">
+          <input type="checkbox" id="prim-autoconnect" ${_autoConnect ? 'checked' : ''} />
+          <span>Create as follow object (attach to surface)</span>
+        </label>
+      </div>`;
     editor = `<div class="prim-editor">
         <div class="prim-editor-title">${_esc(d.label || editing.primKind)} — parameters</div>
         ${rows}${qRow}
-      </div>`;
+      </div>${place}`;
   }
 
   panel.innerHTML = `
-    <div class="small muted" style="padding:8px 10px 0">Click to create — drops into the selected folder/model (or scene). Move it with the gizmo.</div>
+    <div class="small muted" style="padding:8px 10px 0">Click a shape to create it — then tweak its parameters and place it on a surface (or move it with the gizmo).</div>
     <div class="prim-grid">${grid}</div>
     ${editor}
   `;
 
   panel.querySelectorAll('.prim-btn').forEach(b =>
     b.addEventListener('click', () => {
-      // Create at origin, then immediately enter place-on-surface mode so the
-      // user drops it where they click (surface) or in front of the camera
-      // (empty space) — instead of it just popping at 0,0,0.
-      const id = actions.createPrimitive(b.dataset.kind);
-      if (id) hardwarePlacePicker.startPlaceNodeOnSurface(id);
+      // Create it (selected → its parameter + placement panel opens below). The
+      // user then tweaks params and chooses how to place it (surface / 3-pt),
+      // instead of auto-entering placement immediately.
+      actions.createPrimitive(b.dataset.kind);
     }));
 
   if (!editing) return;
   const id = editing.id;
+
+  // Auto-connect toggle (persist the choice for the session) + place buttons.
+  const acBox = panel.querySelector('#prim-autoconnect');
+  if (acBox) acBox.addEventListener('change', () => { _autoConnect = acBox.checked; });
+  panel.querySelectorAll('.prim-place-btn').forEach(btn =>
+    btn.addEventListener('click', () => {
+      const opts = { autoConnect: _autoConnect };
+      if (btn.dataset.place === '3pt') hardwarePlacePicker.startPlaceNodeBy3Points(id, opts);
+      else                             hardwarePlacePicker.startPlaceNodeOnSurface(id, opts);
+    }));
 
   // Number params — live on input, commit one undo on change (before snapshot
   // captured at focus so the whole drag is a single undo step).
