@@ -2171,6 +2171,52 @@ function _cancelDeferredRaySelect() {
   if (_rayOpenTimer) { clearTimeout(_rayOpenTimer); _rayOpenTimer = null; }
 }
 
+// V0.3.0.76 — modifier cursor badge. While Shift (+ / add), Alt (− / remove) or
+// Ctrl-⌘ (± / toggle) is held and the cursor hovers the viewport with no button
+// down, a small badge follows the cursor signalling what the NEXT click will do
+// (it opens the ray-select picker if the click is ambiguous — Phase 1). Hidden the
+// instant a button goes down (drag → the marquee icon takes over) and during any
+// special pick mode. Purely visual — no effect on the actual selection logic.
+const _modBadge = document.createElement('div');
+_modBadge.id = 'mod-cursor-badge';
+_modBadge.style.cssText = ['position:fixed', 'pointer-events:none', 'display:none',
+  'z-index:1000', 'filter:drop-shadow(0 1px 2px rgba(0,0,0,.6))'].join(';');
+document.body.appendChild(_modBadge);
+let _modPX = 0, _modPY = 0, _modInCanvas = false, _modBtnDown = false;
+function _modBadgeSVG(op) {
+  const col = op === '+' ? '#4ade80' : op === '−' ? '#f87171' : '#67e8f9';
+  return `<svg xmlns="http://www.w3.org/2000/svg" width="22" height="22" style="display:block">`
+    + `<text x="11" y="16" font-size="17" text-anchor="middle" fill="${col}" stroke="black"`
+    + ` stroke-width="0.9" font-family="sans-serif" font-weight="bold" paint-order="stroke">${op}</text></svg>`;
+}
+function _anyPickModeActive() {
+  return !!(state.get('hwPlaceActive') || state.get('alignFolderId') || state.get('align3FolderId')
+    || state.get('replaceModelPickingForId') || state.get('shapeDrawing')
+    || state.get('pivotCenterPickingNodeId') || state.get('addPolygonFromFacePicking') || _raySelect);
+}
+function _refreshModBadge(alt, shift, ctrl) {
+  const op = alt ? '−' : shift ? '+' : ctrl ? '±' : null;
+  if (!op || !_modInCanvas || _modBtnDown || _anyPickModeActive()) { _modBadge.style.display = 'none'; return; }
+  _modBadge.innerHTML = _modBadgeSVG(op);
+  _modBadge.style.left = (_modPX + 16) + 'px';
+  _modBadge.style.top  = (_modPY + 12) + 'px';
+  _modBadge.style.display = 'block';
+}
+canvas.addEventListener('pointermove', e => {
+  _modPX = e.clientX; _modPY = e.clientY; _modInCanvas = true; _modBtnDown = e.buttons !== 0;
+  _refreshModBadge(e.altKey, e.shiftKey, e.ctrlKey || e.metaKey);
+});
+canvas.addEventListener('pointerenter', () => { _modInCanvas = true; });
+canvas.addEventListener('pointerleave', () => { _modInCanvas = false; _modBadge.style.display = 'none'; });
+canvas.addEventListener('pointerdown',  () => { _modBtnDown = true;  _modBadge.style.display = 'none'; });
+window.addEventListener('pointerup',    e => { _modBtnDown = false; _refreshModBadge(e.altKey, e.shiftKey, e.ctrlKey || e.metaKey); });
+const _modKeyRefresh = (e) => {
+  if (e.key === 'Shift' || e.key === 'Alt' || e.key === 'Control' || e.key === 'Meta')
+    _refreshModBadge(e.altKey, e.shiftKey, e.ctrlKey || e.metaKey);
+};
+document.addEventListener('keydown', _modKeyRefresh);
+document.addEventListener('keyup',   _modKeyRefresh);
+
 // Shift the hue of a #rrggbb hex by `deg` degrees (HSL space). Used to make
 // the candidate-preview color clearly distinct from the cyan selection while
 // staying related to the user's chosen palette.
