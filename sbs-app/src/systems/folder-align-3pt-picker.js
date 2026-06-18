@@ -30,6 +30,7 @@ import { circumcenterAndNormal }       from './pivot-center-picker.js';
 import {
   alignFolderBySurfaceMatch,
   getFolderObject3D,
+  ALIGNABLE_TYPES,
 }                                      from './folder-align-picker.js';
 import { setStoredQuaternion }         from '../core/transforms.js';
 
@@ -56,7 +57,7 @@ export function start(folderId) {
   if (_state) cancel();
   const nodeById = state.get('nodeById');
   const folder = nodeById?.get(folderId);
-  if (!folder || folder.type !== 'folder') return;
+  if (!folder || !ALIGNABLE_TYPES.has(folder.type)) return;
   if (!window.THREE || !sceneCore?.overlayScene) return;
   const T = window.THREE;
   _state = {
@@ -139,7 +140,7 @@ export function commit() {
       state.emit('change:treeData', state.get('treeData'));
     };
     undoManager.push(
-      `Align folder by 3 points "${name}"`,
+      `Align by 3 points "${name}"`,
       () => apply(beforeXf),
       () => apply(afterXf),
     );
@@ -270,13 +271,15 @@ function _passesPhaseFilter(clientX, clientY) {
   return false;
 }
 
-function _collectDescendantMeshIds(folderNode) {
+function _collectDescendantMeshIds(rootNode) {
+  // Self + every descendant id (any type) — see folder-align-picker.js for why
+  // (leaf primitives align to their own surface; nested non-mesh kids qualify).
   const out = new Set();
   (function walk(n) {
     if (!n) return;
-    if (n.type === 'mesh') out.add(n.id);
+    out.add(n.id);
     for (const c of (n.children || [])) walk(c);
-  })(folderNode);
+  })(rootNode);
   return out;
 }
 

@@ -881,22 +881,21 @@ function _buildContextMenuItems(node) {
       action: () => _pasteFolderTransforms(node),
     });
 
-    // V0.2.22.32 — 1-point folder align. Pick a source surface on a
-    // descendant mesh, then a target surface anywhere else; the folder's
-    // per-step localOffset/Quaternion are computed so the source point
-    // mates flush against the target. Live preview after the second pick;
-    // Enter commits, Esc reverts. Per-step only — baseLocal* untouched.
+  }
+
+  // ── Surface-match align (V0.3.0.71) — folders + primitives / models / shapes ──
+  // Pick a SOURCE surface on this object (or its contents), then a TARGET surface
+  // elsewhere; the per-step pose is computed so source mates flush to target. Live
+  // preview after the 2nd pick; Enter commits, Esc reverts. Per-step only —
+  // baseLocal* untouched. Available even on a LOCKED folder. 3-pt variant matches
+  // circular features concentrically. Was folder-only before V0.3.0.71.
+  if (count === 1 && !node.archived && folderAlignPicker.ALIGNABLE_TYPES.has(node.type)) {
     items.push({
-      label: '🎯 Align folder to surface…',
+      label: '🎯 Align to surface…',
       action: () => folderAlignPicker.start(node.id),
     });
-    // V0.2.22.33 — 3-point concentric folder align. Snap 3 points on a
-    // circular feature inside the folder (defines source circle center +
-    // axis), then 3 points on a circular feature elsewhere (target).
-    // Folder snaps so the two circles share a center + axis. Backspace
-    // removes the last point in the current phase.
     items.push({
-      label: '🎯 Align folder by 3 points (concentric)…',
+      label: '🎯 Align by 3 points (concentric)…',
       action: () => folderAlign3ptPicker.start(node.id),
     });
   }

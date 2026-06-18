@@ -2723,6 +2723,14 @@ canvas.addEventListener('contextmenu', e => {
     items.push({ label: '↺ Reset transform', action: () => resetTransform(selId) });
     items.push({ label: '─', disabled: true });
   }
+  // Surface-match align (V0.3.0.71) — folders + primitives / models / shapes, now
+  // in the VIEWPORT too (was tree-only). Acts on the selection; r-clicking a locked
+  // folder promotes selection to the whole folder, so it aligns the unit.
+  if (multiIds.size === 1 && node && !node.archived && folderAlignPicker.ALIGNABLE_TYPES.has(node.type)) {
+    items.push({ label: '🎯 Align to surface…',               action: () => folderAlignPicker.start(node.id) });
+    items.push({ label: '🎯 Align by 3 points (concentric)…', action: () => folderAlign3ptPicker.start(node.id) });
+    items.push({ label: '─', disabled: true });
+  }
   // Follow Object (V0.3.0.64) — A rides B's folder across steps.
   if (multiIds.size === 1 && node && !node.archived && node.type !== 'scene') {
     items.push(node.follow

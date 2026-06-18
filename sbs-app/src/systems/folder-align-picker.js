@@ -37,6 +37,13 @@ const HOVER_COLOR_SRC = 0x55ddff;   // cyan-ish for source phase
 const HOVER_COLOR_TGT = 0xff8c1a;   // orange for target phase
 const MARKER_BASE     = 0.025;      // ~25 px on a 1080p viewport
 
+// Node types the surface-match align tool accepts (V0.3.0.71). Folders were the
+// original target; primitives / models / flat-shapes are transformable single
+// objects that benefit too. (Hardware has its own surface picker; raw meshes move
+// via their model; scene/notes aren't surface-alignable.) Shared with the 3-pt
+// picker and the tree / viewport menus so the gate stays consistent everywhere.
+export const ALIGNABLE_TYPES = new Set(['folder', 'model', 'primitive', 'flatShape']);
+
 let _state = null;
 
 // ─── Public lifecycle ─────────────────────────────────────────────────────
@@ -55,7 +62,7 @@ export function start(folderId, { onChange } = {}) {
   if (_state) cancel();
   const nodeById = state.get('nodeById');
   const folder = nodeById?.get(folderId);
-  if (!folder || folder.type !== 'folder') return;
+  if (!folder || !ALIGNABLE_TYPES.has(folder.type)) return;
   if (!window.THREE || !sceneCore?.overlayScene) return;
   const T = window.THREE;
   _state = {
@@ -147,7 +154,7 @@ function _fallbackPush(folderId, name, beforeXf, afterXf) {
     };
     apply(afterXf);
     undoManager.push(
-      `Align folder "${name}"`,
+      `Align "${name}"`,
       () => apply(beforeXf),
       () => apply(afterXf),
     );
@@ -235,13 +242,16 @@ function _faceHitAt(clientX, clientY, phase) {
   return null;
 }
 
-function _collectDescendantMeshIds(folderNode) {
+function _collectDescendantMeshIds(rootNode) {
+  // Self + every descendant id (any type). The aligned node's OWN surface is a
+  // valid SOURCE (so leaf primitives/shapes align to themselves), and nested
+  // primitives/hardware inside a folder now qualify too — not just 'mesh' kids.
   const out = new Set();
   (function walk(n) {
     if (!n) return;
-    if (n.type === 'mesh') out.add(n.id);
+    out.add(n.id);
     for (const c of (n.children || [])) walk(c);
-  })(folderNode);
+  })(rootNode);
   return out;
 }
 
