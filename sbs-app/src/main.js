@@ -1178,6 +1178,10 @@ function _pickInRect(x1, y1, x2, y2, windowMode = false) {
 // ── Pointer down on canvas: start potential drag-select ──────────────────────
 
 canvas.addEventListener('pointerdown', e => {
+  // A fresh press cancels any still-pending (deferred) ray-select popup from a
+  // prior click — so starting an orbit/gizmo drag right after a click can't let
+  // the popup surface mid-drag. (The current click schedules its own AFTER this.)
+  _cancelDeferredRaySelect();
   // In-editor "Add polygon from face" picker — checked BEFORE the shape
   // editor's general click intercept because the editor is in 'edit'
   // phase while the picker is armed, and would otherwise eat the click.
@@ -1792,6 +1796,10 @@ canvas.addEventListener('click', e => {
   if (_gizmoConsumed) { _gizmoConsumed = false; return; }
   if (_justDragged)   { _justDragged   = false; return; }
   hideContextMenu();
+  // Any new click cancels a still-pending ray-select popup from the PREVIOUS click
+  // (so a double/triple never lets it surface). An already-open popup is handled by
+  // the _raySelect branch below.
+  _cancelDeferredRaySelect();
 
   // ── Replace-Model viewport picker (B.2-NEW.2) ────────────────────────
   // When the user clicked "🎯 Pick from viewport…" in the add-to-replace
@@ -1974,7 +1982,7 @@ canvas.addEventListener('click', e => {
 
   if (mode === 'replace') {
     if (allEntities.length >= 2) {
-      _openRaySelect(allEntities, e.clientX, e.clientY, 'replace');
+      _scheduleRaySelect(allEntities, e.clientX, e.clientY, 'replace');
     } else {
       actionSetSelection(target, clickSet);
     }
@@ -1987,7 +1995,7 @@ canvas.addEventListener('click', e => {
       for (const id of ent.meshIds) multi.add(id);
       actionSetSelection(ent.targetId, multi);
     } else {
-      _openRaySelect(cands, e.clientX, e.clientY, 'add');
+      _scheduleRaySelect(cands, e.clientX, e.clientY, 'add');
     }
   } else if (mode === 'remove') {
     const cands = allEntities.filter(ent => multi.has(ent.targetId));
@@ -2003,12 +2011,12 @@ canvas.addEventListener('click', e => {
         actionSetSelection(multi.has(prevPrimary) ? prevPrimary : [...multi][0], multi);
       }
     } else {
-      _openRaySelect(cands, e.clientX, e.clientY, 'remove');
+      _scheduleRaySelect(cands, e.clientX, e.clientY, 'remove');
     }
   } else { // toggle
     if (allEntities.length === 0) return;
     if (allEntities.length === 1) _commitToggle(allEntities[0]);
-    else _openRaySelect(allEntities, e.clientX, e.clientY, 'toggle');
+    else _scheduleRaySelect(allEntities, e.clientX, e.clientY, 'toggle');
   }
 });
 
@@ -2026,6 +2034,11 @@ canvas.addEventListener('dblclick', e => {
     e.stopPropagation();
     return;
   }
+
+  // A double-click must never leave the single-click ray-select popup up: kill any
+  // pending (deferred) open AND any already-open popup.
+  _cancelDeferredRaySelect();
+  if (_raySelect) _raySelectCancel();
 
   const root = state.get('treeData');
   const nbm  = state.get('nodeById');
@@ -2060,6 +2073,21 @@ canvas.addEventListener('dblclick', e => {
 // (viewport) cycles, hovering a list row previews it, R-click or a row
 // mousedown confirms, Esc cancels.
 let _raySelect = null;   // { entities, index, el, color }
+
+// V0.3.0.73 — the ray-select popup must appear on a SINGLE click only, never during
+// a double/triple. We DEFER opening it by ~300ms; a follow-up click (cancel at the
+// top of the click handler), the dblclick handler, or the triple branch cancels the
+// pending open before it ever shows. Only ambiguous (2+ under cursor) clicks defer;
+// plain single-object clicks select immediately as before.
+const RAY_DEFER_MS = 300;
+let _rayOpenTimer = null;
+function _scheduleRaySelect(entities, x, y, mode = 'replace') {
+  _cancelDeferredRaySelect();
+  _rayOpenTimer = setTimeout(() => { _rayOpenTimer = null; _openRaySelect(entities, x, y, mode); }, RAY_DEFER_MS);
+}
+function _cancelDeferredRaySelect() {
+  if (_rayOpenTimer) { clearTimeout(_rayOpenTimer); _rayOpenTimer = null; }
+}
 
 // Shift the hue of a #rrggbb hex by `deg` degrees (HSL space). Used to make
 // the candidate-preview color clearly distinct from the cyan selection while
