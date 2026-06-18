@@ -1272,12 +1272,14 @@ class GizmoController {
       return parentQ.clone().multiply(localQ).multiply(planeQ);
     }
 
-    // V0.2.22.72 — hardware instances align the gizmo to the NUT'S OWN
+    // V0.2.22.72 — hardware instances align the gizmo to the OBJECT'S OWN
     // orientation (a surface-placed nut is tilted via localQuaternion). The
     // generic parent frame would show world axes when the parent is the
     // identity Hardware folder, so LOCAL mode "looked like world" until the
     // user toggled to pivot. Use the object's live world quaternion.
-    if (this._node.type === 'hardwareInstance' || this._node.type === 'hardwareNut') {
+    // V0.3.0.66 — primitives have the identical problem (placed under an
+    // identity folder, rotated via their own localQuaternion) → same fix.
+    if (this._node.type === 'hardwareInstance' || this._node.type === 'hardwareNut' || this._node.type === 'primitive') {
       const T = window.THREE;
       const q = new T.Quaternion();
       this._obj3d.getWorldQuaternion(q);
