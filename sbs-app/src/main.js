@@ -3232,6 +3232,9 @@ function _refreshSafeFrame() {
   // Also strip the legacy `hidden` attribute on first run.
   _safeFrameEl.removeAttribute('hidden');
   _safeFrameEl.classList.toggle('show', !!showFrame);
+  // V0.3.0.86 — "Show safe frame" now drives the live OVERSCAN: on → zoom out so the
+  // surrounding scene shows (dimmed by this overlay); off → tight WYSIWYG export frame.
+  sceneCore.setOverscan(showFrame ? 1.3 : 1);
   if (!showFrame) return;
   positionSafeFrameEl(_safeFrameEl, _viewportSurfaceEl || viewer);
 }

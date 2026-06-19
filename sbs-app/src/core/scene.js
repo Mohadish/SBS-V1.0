@@ -228,6 +228,9 @@ export class SceneCore extends Emitter {
         freeze: (b) => { this._freezeWhenIdle = (b !== false); this.requestRender(0); },
         wake:   ()  => this.requestRender(0),
         thumbs: (b) => { this._thumbsOff = (b === false); console.log('[scene] thumbnail capture', b === false ? 'OFF' : 'ON'); },
+        // Live overscan margin around the export frame (1 = WYSIWYG). Tied to the
+        // "Show safe frame" toggle, but tunable here, e.g. window.sbsRender.overscan(1.5).
+        overscan: (n) => { this.setOverscan(n); console.log('[scene] live overscan ×', this.getOverscan()); return this.getOverscan(); },
       };
       // Adaptive near/far controls. on(false) → legacy fixed 0.1/1e6 planes (A/B).
       // set({nearFactor, farMargin, ratioCap}) — lower nearFactor pushes the near
@@ -407,7 +410,15 @@ export class SceneCore extends Emitter {
     const ctx = off.getContext('2d');
     if (!ctx) return null;
     try {
-      ctx.drawImage(src, 0, 0, w, h);
+      // V0.3.0.86 — the live render is OVERSCAN (a scene margin around the export
+      // frame); a thumbnail must show ONLY the export frame = the centre 1/ov of it.
+      const ov = this._exportFraming ? 1 : (this._overscan || 1);
+      if (ov > 1) {
+        const sw = src.width / ov, sh = src.height / ov;
+        ctx.drawImage(src, (src.width - sw) / 2, (src.height - sh) / 2, sw, sh, 0, 0, w, h);
+      } else {
+        ctx.drawImage(src, 0, 0, w, h);
+      }
       if (typeof opts.extraLayers === 'function') {
         const layers = opts.extraLayers(w, h) || [];
         for (const layer of layers) {
@@ -718,20 +729,39 @@ export class SceneCore extends Emitter {
     // 2. Camera at canonical aspect — every render projects the same
     //    frustum on every machine. Output is reproducible.
     this.camera.aspect = c.aspect;
+    // V0.3.0.86 — live OVERSCAN. With ov>1 the live camera zooms OUT (zoom=1/ov) so
+    // the viewport shows the export frame PLUS a surrounding margin of scene (which
+    // the safe-frame overlay dims). Export + thumbnails force ov=1 (the tight export
+    // frame). The canvas CSS box grows by the same ov, so the export frame still maps
+    // to the inner computeSafeFrameRect rect — where the overlay + the Konva overlay
+    // already sit (so nothing else needs to move).
+    const ov = this._exportFraming ? 1 : (this._overscan || 1);
+    this.camera.zoom = 1 / ov;
     this.camera.updateProjectionMatrix();
 
-    // 3. CSS box = safe-frame rect inside container. computeSafeFrameRect
+    // 3. CSS box = safe-frame rect (× overscan) inside container. computeSafeFrameRect
     //    returns the largest canonical-aspect rectangle that fits, centred.
     const sf = computeSafeFrameRect({ width: pw, height: ph });
+    const ow = sf.width * ov, oh = sf.height * ov;
     const dom = this.renderer.domElement;
     dom.style.position = 'absolute';
-    dom.style.left   = `${sf.x}px`;
-    dom.style.top    = `${sf.y}px`;
-    dom.style.width  = `${sf.width}px`;
-    dom.style.height = `${sf.height}px`;
+    dom.style.left   = `${sf.x - (ow - sf.width) / 2}px`;
+    dom.style.top    = `${sf.y - (oh - sf.height) / 2}px`;
+    dom.style.width  = `${ow}px`;
+    dom.style.height = `${oh}px`;
 
     this.emit('resize', { width: c.width, height: c.height });
   }
+
+  /**
+   * Live-viewport overscan factor (V0.3.0.86). 1 = WYSIWYG (canvas == export frame).
+   * >1 shows a margin of scene around the export frame (dimmed by the safe-frame
+   * overlay). Driven by the "Show safe frame" toggle. Console: window.sbsRender.overscan(n).
+   */
+  setOverscan(f) { this._overscan = Math.max(1, Number(f) || 1); this.fitToCanonical(); this.requestRender(0); }
+  getOverscan() { return this._overscan || 1; }
+  /** Force the tight export frame (ov=1) while exporting / capturing a thumbnail. */
+  setExportFraming(on) { this._exportFraming = !!on; this.fitToCanonical(); }
 
   /** @deprecated — use fitToCanonical(). Kept as an alias for callers. */
   resize() { this.fitToCanonical(); }

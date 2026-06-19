@@ -703,6 +703,8 @@ async function _exportMp4({ fps = DEFAULT_FPS, bitrate = DEFAULT_BITRATE,
 
   // Suppress live narration playback while the timeline runs for capture.
   state.setState({ _exporting: true });
+  // V0.3.0.86 — render the TIGHT export frame (no live overscan margin) during capture.
+  sceneCore.setExportFraming(true);
   // Authoring-aid Bbox placeholders are hidden from the encoded frames
   // unless the user opts in via Export tab → "Export boundary boxes".
   // Pair the hide BEFORE _hardResetToFirstStep with the restore in
@@ -740,6 +742,7 @@ async function _exportMp4({ fps = DEFAULT_FPS, bitrate = DEFAULT_BITRATE,
       sceneCore.startLoop();
     }
     state.setState({ _exporting: false });
+    sceneCore.setExportFraming(false);   // restore live overscan
     if (!exportBboxes) steps.setPlaceholderBboxesVisible(true);
   }
 
