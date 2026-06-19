@@ -481,7 +481,11 @@ export class SceneCore extends Emitter {
     // Use the composer when AO OR SSR is on (SSR is a composer pass). When AO is
     // off the N8AO pass is disabled but the composer still runs for SSR / the
     // plain RenderPass.
-    const composer = (this._aoEnabled !== false || this._ssrEnabled) ? this._ensureComposer() : null;
+    // V0.3.0.80 — ALWAYS render through the composer (when it built) so the N8AO
+    // pass's sRGB gammaCorrection is applied even with AO "off". The direct path
+    // below skips that gamma, which made the IBL/HDRI lighting look dark/flat when
+    // AO was toggled off. "AO off" is now intensity 0 (setAOEnabled), not a bypass.
+    const composer = this._ensureComposer();
     if (composer && this._n8aoPass) {
       // Freeze N8AO's noise seed while the camera is still → every re-render
       // produces IDENTICAL AO → no shimmer, even when the loop wakes on a mouse
@@ -549,7 +553,10 @@ export class SceneCore extends Emitter {
       c.accumulate        = false;  // NEVER cross-frame accumulate — ghosts under motion
       composer.addPass(n8ao);
       this._n8aoPass = n8ao;
-      n8ao.enabled = (this._aoEnabled !== false);
+      this._aoIntensity ??= c.intensity;   // remember the "on" intensity for toggling
+      // Pass stays ENABLED so its gammaCorrection always runs; AO "off" = intensity 0.
+      n8ao.enabled = true;
+      n8ao.configuration.intensity = (this._aoEnabled !== false) ? (this._aoIntensity ?? c.intensity) : 0;
 
       // SSR contact reflections. Last pass when enabled → renders to screen; the
       // composer's isLastEnabledPass() handles the on/off swap automatically.
@@ -596,7 +603,12 @@ export class SceneCore extends Emitter {
   /** Toggle ambient occlusion on/off (toggles the N8AO pass; composer stays). */
   setAOEnabled(on) {
     this._aoEnabled = !!on;
-    if (this._n8aoPass) this._n8aoPass.enabled = !!on;
+    // Keep the pass + composer running so gammaCorrection (and thus the IBL/HDRI
+    // lighting) stays; "off" just zeroes the AO darkening.
+    if (this._n8aoPass) {
+      this._n8aoPass.enabled = true;
+      this._n8aoPass.configuration.intensity = on ? (this._aoIntensity ?? 4.0) : 0;
+    }
     this.requestRender(300);
   }
 
@@ -611,6 +623,10 @@ export class SceneCore extends Emitter {
   setAOConfig(opts = {}) {
     if (!this._n8aoPass) return;
     for (const [k, v] of Object.entries(opts)) {
+      if (k === 'intensity') {
+        this._aoIntensity = v;                    // remember the "on" intensity
+        if (this._aoEnabled === false) continue;  // don't un-mute the AO while it's off
+      }
       try { this._n8aoPass.configuration[k] = v; } catch (_) { /* ignore bad keys */ }
     }
   }
@@ -628,12 +644,13 @@ export class SceneCore extends Emitter {
     this._aoEnabled  = (ao.enabled !== false);
     this._ssrEnabled = !!(s.ssr && s.ssr.enabled);
     if (this._n8aoPass) {
-      this._n8aoPass.enabled = this._aoEnabled;
+      this._n8aoPass.enabled = true;   // always on (gamma); intensity 0 = AO off
       const cfg = {};
       if (ao.intensity != null) cfg.intensity       = ao.intensity;
       if (ao.radius    != null) cfg.aoRadius         = ao.radius;
       if (ao.falloff   != null) cfg.distanceFalloff  = ao.falloff;
       this.setAOConfig(cfg);
+      if (this._aoEnabled === false) this._n8aoPass.configuration.intensity = 0;
     }
     if (this._ssrPass) {
       this._ssrPass.enabled = this._ssrEnabled;

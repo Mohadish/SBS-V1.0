@@ -715,6 +715,19 @@ state.on('project:loaded', () => schedulePrecache('project-loaded'));
 state.on('project:loaded', () => setTimeout(() => {
   try { window.sbsMirror?.syncFromPresets?.(); } catch (e) { console.warn('[mirror] sync on load failed', e); }
 }, 0));
+// V0.3.0.80 — the project:loaded pass above can fire BEFORE the model's meshes are
+// registered (model load is async, especially asset reintegration). With no meshes,
+// _meshesForColor() is empty so syncFromPresets() builds nothing — which is why flat
+// mirrors "didn't persist" and only came back after manually re-ticking the colour.
+// Re-run the sync once meshes actually arrive. Debounced so a multi-model load (or
+// reintegration) collapses to a single rebuild after the last model lands.
+let _mirrorResyncTimer = null;
+state.on('model:loaded', () => {
+  clearTimeout(_mirrorResyncTimer);
+  _mirrorResyncTimer = setTimeout(() => {
+    try { window.sbsMirror?.syncFromPresets?.(); } catch (e) { console.warn('[mirror] resync on model load failed', e); }
+  }, 250);
+});
 // Keep flat mirrors in sync with each colour's flatMirror flag across DO / UNDO / REDO.
 // materials.updatePreset and its undo/redo all emit 'materials:presetUpdated', so we
 // build/clear here when (and only when) the flag flips — the checkbox handler no longer
