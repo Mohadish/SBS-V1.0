@@ -218,35 +218,51 @@ function _setupTreeMarquee() {
 
 // ── Public API ────────────────────────────────────────────────────────────────
 
-// ── "Show only selected" tree filter (V0.3.0.81) ──────────────────────────────
-// When on, the tree renders only the selected nodes + their ancestor folders (the
-// scaffolding) + a selected folder's own contents. Everything else is hidden, and
-// the kept folders are force-opened so the selection is always visible.
-let _showOnlySelected = false;
-let _filterVisible    = new Set();
-export function isShowOnlySelected() { return _showOnlySelected; }
-export function toggleShowOnlySelected() {
-  _showOnlySelected = !_showOnlySelected;
+// ── Tree filters (V0.3.0.82) ──────────────────────────────────────────────────
+// Combinable predicate filters. A node "matches" if it passes ALL active filters;
+// the tree then renders matches + their ancestor folders (scaffolding), force-opened.
+// 'onlySelected' on its own also reveals a selected folder's own contents (legacy UX).
+const _filters = { onlySelected: false, archived: false, hardware: false, onlyVisible: false, hidden: false };
+let _filterVisible = new Set();
+export function getFilter(key) { return !!_filters[key]; }
+export function toggleFilter(key) {
+  if (!(key in _filters)) return false;
+  _filters[key] = !_filters[key];
   renderTree();
   _scrollSelectedIntoView();
-  return _showOnlySelected;
+  return _filters[key];
+}
+function _anyFilterActive() {
+  return _filters.onlySelected || _filters.archived || _filters.hardware || _filters.onlyVisible || _filters.hidden;
+}
+function _nodeMatchesFilters(node, selSet) {
+  if (_filters.onlySelected && !selSet.has(node.id))                                          return false;
+  if (_filters.archived     && node.archived !== true)                                        return false;
+  if (_filters.hardware     && node.type !== 'hardwareInstance' && node.type !== 'hardwareNut') return false;
+  if (_filters.onlyVisible  && node.localVisible === false)                                    return false;
+  if (_filters.hidden       && node.localVisible !== false)                                    return false;
+  return true;
 }
 function _computeFilterVisible() {
   _filterVisible = new Set();
   const root = state.get('treeData');
   if (!root) return;
   _filterVisible.add(root.id);
-  const sel = new Set(state.get('multiSelectedIds') || []);
+  const selSet = new Set(state.get('multiSelectedIds') || []);
   const primary = state.get('selectedId');
-  if (primary) sel.add(primary);
-  if (sel.size === 0) return;
-  const nodeById = state.get('nodeById') || new Map();
-  for (const id of sel) {
-    _filterVisible.add(id);
-    _collectAncestors(root, id, _filterVisible);            // scaffolding above
-    const n = nodeById.get(id);                             // + a selected folder's contents
-    if (n) (function down(x) { for (const c of (x.children || [])) { _filterVisible.add(c.id); down(c); } })(n);
-  }
+  if (primary) selSet.add(primary);
+  const solo = _filters.onlySelected && !_filters.archived && !_filters.hardware
+            && !_filters.onlyVisible && !_filters.hidden;
+  (function walk(node, ancestors) {
+    if (node !== root && _nodeMatchesFilters(node, selSet)) {
+      for (const a of ancestors) _filterVisible.add(a.id);   // scaffolding above the match
+      _filterVisible.add(node.id);
+      if (solo && node.children?.length) {                   // selected folder → reveal its contents
+        (function down(x) { for (const c of (x.children || [])) { _filterVisible.add(c.id); down(c); } })(node);
+      }
+    }
+    for (const c of (node.children || [])) walk(c, [...ancestors, node]);
+  })(root, []);
 }
 
 export function renderTree() {
@@ -257,7 +273,7 @@ export function renderTree() {
     _container.innerHTML = '<div class="tree-empty">No models loaded.</div>';
     return;
   }
-  if (_showOnlySelected) _computeFilterVisible();
+  if (_anyFilterActive()) _computeFilterVisible();
   const el = _buildNode(root, 0);
   if (el) _container.appendChild(el);
 }
@@ -339,9 +355,9 @@ function _collectAncestors(root, targetId, out) {
 // ── Tree construction ─────────────────────────────────────────────────────────
 
 function _buildNode(node, depth) {
-  // "Show only selected" filter: drop anything outside the computed visible set
-  // (root always stays). Parent's child loop skips the resulting nulls.
-  if (_showOnlySelected && !_filterVisible.has(node.id)) return null;
+  // Active tree filters: drop anything outside the computed visible set (root always
+  // stays). Parent's child loop skips the resulting nulls.
+  if (_anyFilterActive() && !_filterVisible.has(node.id)) return null;
 
   const wrap = document.createElement('div');
   wrap.appendChild(_buildRow(node, depth));
@@ -353,9 +369,9 @@ function _buildNode(node, depth) {
   // via twisty + _expanded set).
   const isLockedGroup = node.type === 'folder' && node.locked === true;
   const hasKids = (node.children?.length ?? 0) > 0;
-  // Filter mode force-opens every kept folder (even locked ones) so the selected
+  // Filter mode force-opens every kept folder (even locked ones) so the matched
   // nodes inside actually show; non-visible children null out in the loop.
-  const showKids = hasKids && (_showOnlySelected || (!isLockedGroup && _expanded.has(node.id)));
+  const showKids = hasKids && (_anyFilterActive() || (!isLockedGroup && _expanded.has(node.id)));
   if (showKids) {
     const childList = document.createElement('div');
     childList.className = 'children';

@@ -1910,6 +1910,64 @@ export function setFolderLocked(folderId, locked) {
   return true;
 }
 
+/** Make every hidden, non-archived node visible on the current step (one undo). */
+export function unhideAll() {
+  const root = state.get('treeData');
+  if (!root) return false;
+  const ids = [];
+  (function walk(n) {
+    if (n.archived !== true && n.localVisible === false) ids.push(n.id);
+    for (const c of (n.children || [])) walk(c);
+  })(root);
+  if (!ids.length) { setStatus('Nothing hidden to show.'); return false; }
+  toggleVisibility(ids);   // all collected are hidden → flips them visible (proper machinery + undo)
+  setStatus(`Unhid ${ids.length} object${ids.length === 1 ? '' : 's'}.`, 'success', 2000);
+  return true;
+}
+
+/**
+ * Lock or unlock folders in bulk, one undo. scope:
+ *   'all'      → every folder in the tree.
+ *   'selected' → the selected folders + the parent folders of selected non-folder
+ *                objects (so "lock the parts I picked" works from a model selection).
+ */
+export function setAllFoldersLocked(locked, scope = 'all') {
+  const root = state.get('treeData');
+  if (!root) return false;
+  const nodeById = state.get('nodeById') || new Map();
+  let ids = [];
+  if (scope === 'selected') {
+    const sel = new Set(state.get('multiSelectedIds') || []);
+    const primary = state.get('selectedId');
+    if (primary) sel.add(primary);
+    const set = new Set();
+    for (const id of sel) {
+      const n = nodeById.get(id);
+      if (!n) continue;
+      if (n.type === 'folder') set.add(n.id);
+      else { const p = findParent(root, id); if (p && p.type === 'folder') set.add(p.id); }
+    }
+    ids = [...set];
+  } else {
+    (function walk(n) { if (n.type === 'folder') ids.push(n.id); for (const c of (n.children || [])) walk(c); })(root);
+  }
+  const targets = ids.filter(id => { const n = nodeById.get(id); return n && (n.locked === true) !== !!locked; });
+  if (!targets.length) { setStatus(locked ? 'Folders already locked.' : 'Folders already unlocked.'); return false; }
+  const apply = (val) => {
+    for (const id of targets) { const n = state.get('nodeById')?.get(id); if (n) n.locked = val; }
+    state.emit('change:treeData', state.get('treeData'));
+    state.markDirty();
+  };
+  apply(!!locked);
+  undoManager.push(
+    `${locked ? 'Lock' : 'Unlock'} ${targets.length} folder${targets.length === 1 ? '' : 's'}`,
+    () => apply(!locked),
+    () => apply(!!locked),
+  );
+  setStatus(`${locked ? 'Locked' : 'Unlocked'} ${targets.length} folder${targets.length === 1 ? '' : 's'}.`, 'success', 2000);
+  return true;
+}
+
 /**
  * Walk up the tree to find the nearest LOCKED folder ancestor. Used by the
  * viewport selection promotion (mirrors findReplaceModelAncestor). Returns

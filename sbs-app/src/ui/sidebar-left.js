@@ -17,13 +17,13 @@ import {
   buildIdRemapFromSpec, applyIdRemap, applySpecFieldsToNodes,
   collectAllMeshSpecs, buildDisplacedMeshIdRemap,
 }                          from '../io/project.js';
-import { initTree, renderTree, expandPathToNode, collapseAll, toggleShowOnlySelected } from './tree.js';
+import { initTree, renderTree, expandPathToNode, collapseAll, toggleFilter, getFilter } from './tree.js';
 import { setStatus }       from './status.js';
 import {
   createCameraView, generateId, APP_VERSION, APP_RELEASED,
   createAnimationPreset, DEFAULT_ANIMATION_PRESET_STRING,
 } from '../core/schema.js';
-import { buildNodeMap }    from '../core/nodes.js';
+import { buildNodeMap, findParent }    from '../core/nodes.js';
 import { applyNodeSourceTransformToObject3D, applyAllVisibility } from '../core/transforms.js';
 import { showContextMenu, showConfirmDialog } from './context-menu.js';
 import { undoManager }    from '../systems/undo.js';
@@ -1434,37 +1434,71 @@ function _renderTreeTab() {
     _treeInited = true;
     el.innerHTML = `
       <div class="topbar" style="gap:6px;flex-wrap:wrap">
-        <button class="btn" id="btn-select-all">Select All</button>
-        <button class="btn" id="btn-deselect">Deselect</button>
-        <button class="btn" id="btn-collapse">Collapse</button>
-        <button class="btn" id="btn-only-selected" title="Show only the selected objects + their folders">Only Sel.</button>
         <button class="btn" id="btn-new-folder">New Folder</button>
+        <button class="btn" id="btn-unhide-all" title="Show all hidden models (archived stay hidden)">Unhide all</button>
+        <button class="btn" id="btn-lock-folders"   title="Lock folders (or the selected parts)">🔒 Lock folders</button>
+        <button class="btn" id="btn-unlock-folders" title="Unlock folders (or the selected parts)">🔓 Unlock folders</button>
+      </div>
+      <div class="topbar" style="gap:6px;flex-wrap:wrap;align-items:center">
+        <span class="small muted" style="font-weight:600;margin-right:2px">Filter:</span>
+        <button class="btn" id="btn-f-selected" data-filter="onlySelected">Only Selected</button>
+        <button class="btn" id="btn-f-archived" data-filter="archived">Archived</button>
+        <button class="btn" id="btn-f-hardware" data-filter="hardware">Hardware</button>
+        <button class="btn" id="btn-f-visible"  data-filter="onlyVisible">Only Visible</button>
+        <button class="btn" id="btn-f-hidden"   data-filter="hidden">Hidden</button>
       </div>
       <div id="tree-mount" class="tree"></div>
     `;
 
-    el.querySelector('#btn-select-all')?.addEventListener('click', () => {
-      const root = state.get('treeData');
-      if (!root) return;
-      const ids = new Set();
-      const walk = n => { ids.add(n.id); (n.children || []).forEach(walk); };
-      walk(root);
-      state.setSelection(root.id, ids);
-    });
-    el.querySelector('#btn-deselect')?.addEventListener('click', () => state.clearSelection());
-    el.querySelector('#btn-collapse')?.addEventListener('click', () => collapseAll());
-    el.querySelector('#btn-only-selected')?.addEventListener('click', (e) => {
-      const on = toggleShowOnlySelected();
-      const b = e.currentTarget;
-      b.style.background  = on ? 'rgba(14,165,233,0.25)' : '';
-      b.style.borderColor = on ? '#0ea5e9' : '';
-    });
     el.querySelector('#btn-new-folder')?.addEventListener('click', _onCreateFolder);
+    el.querySelector('#btn-unhide-all')?.addEventListener('click', () => actions.unhideAll());
+    el.querySelector('#btn-lock-folders')?.addEventListener('click', () =>
+      actions.setAllFoldersLocked(true,  _hasLockSelection() ? 'selected' : 'all'));
+    el.querySelector('#btn-unlock-folders')?.addEventListener('click', () =>
+      actions.setAllFoldersLocked(false, _hasLockSelection() ? 'selected' : 'all'));
+
+    // Filter toggles — shared handler; each reflects its active state.
+    const _setBtnActive = (btn, on) => {
+      btn.style.background  = on ? 'rgba(14,165,233,0.25)' : '';
+      btn.style.borderColor = on ? '#0ea5e9' : '';
+    };
+    el.querySelectorAll('[data-filter]').forEach(btn => {
+      _setBtnActive(btn, getFilter(btn.dataset.filter));
+      btn.addEventListener('click', () => _setBtnActive(btn, toggleFilter(btn.dataset.filter)));
+    });
 
     initTree(el.querySelector('#tree-mount'));
+    _updateLockButtons();
+    state.on('selection:change', _updateLockButtons);
   }
 
   renderTree();
+}
+
+// Lock/Unlock buttons target the SELECTION when it resolves to folders (selected
+// folders, or the parent folders of selected objects); otherwise ALL folders. The
+// labels flip accordingly on every selection change.
+function _hasLockSelection() {
+  const root = state.get('treeData');
+  const nb   = state.get('nodeById');
+  if (!root || !nb) return false;
+  const sel = new Set(state.get('multiSelectedIds') || []);
+  const p = state.get('selectedId'); if (p) sel.add(p);
+  for (const id of sel) {
+    const n = nb.get(id); if (!n) continue;
+    if (n.type === 'folder') return true;
+    const par = findParent(root, id);
+    if (par && par.type === 'folder') return true;
+  }
+  return false;
+}
+function _updateLockButtons() {
+  const el = _panel('tree'); if (!el) return;
+  const sel = _hasLockSelection();
+  const lk = el.querySelector('#btn-lock-folders');
+  const ul = el.querySelector('#btn-unlock-folders');
+  if (lk) lk.textContent = sel ? '🔒 Lock selected'   : '🔒 Lock folders';
+  if (ul) ul.textContent = sel ? '🔓 Unlock selected' : '🔓 Unlock folders';
 }
 
 function _onCreateFolder() {
@@ -1500,6 +1534,7 @@ function _onCreateFolder() {
 
     state.setState({ nodeById: buildNodeMap(root) });
     expandPathToNode(node.id);
+    state.setSelection(node.id);   // V0.3.0.82 — auto-locate: select → tree auto-scrolls to it
     steps.scheduleTransformSync();
     setStatus(`Created folder "${node.name}".`);
   });
