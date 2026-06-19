@@ -902,11 +902,11 @@ class GizmoController {
    */
   onRightClick(clientX, clientY) {
     if (!this._visible) return false;
-    // V0.3.0.84 — a 2nd right-click while the transform panel is open CLOSES it and
-    // returns false, so the regular context menu opens instead. This lets the user
-    // reach the context menu even on a small model the gizmo fully covers (1st click
-    // = transform panel, 2nd click = context menu).
-    if (this._panel) { this._closePanel(); return false; }
+    // V0.3.0.84 — a 2nd right-click while the transform panel is open returns false
+    // (without consuming) so the regular context menu opens ALONGSIDE the panel (which
+    // stays up-left). Lets the user reach the context menu even on a small model the
+    // gizmo fully covers: 1st click = transform panel, 2nd click = context menu.
+    if (this._panel) return false;
     const el = this._raycastElements(clientX, clientY);
     if (!el) return false;
     this._showTransformPanel(clientX, clientY);
