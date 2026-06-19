@@ -902,6 +902,11 @@ class GizmoController {
    */
   onRightClick(clientX, clientY) {
     if (!this._visible) return false;
+    // V0.3.0.84 — a 2nd right-click while the transform panel is open CLOSES it and
+    // returns false, so the regular context menu opens instead. This lets the user
+    // reach the context menu even on a small model the gizmo fully covers (1st click
+    // = transform panel, 2nd click = context menu).
+    if (this._panel) { this._closePanel(); return false; }
     const el = this._raycastElements(clientX, clientY);
     if (!el) return false;
     this._showTransformPanel(clientX, clientY);
@@ -1460,8 +1465,8 @@ class GizmoController {
 
     panel.style.cssText = [
       'position:fixed',
-      `left:${clientX + 12}px`,
-      `top:${clientY - 8}px`,
+      `left:${Math.max(8, clientX - 240)}px`,
+      `top:${Math.max(8, clientY - 90)}px`,
       'z-index:9999',
       'background:#1e293b',
       'border:1px solid #334155',
@@ -1478,18 +1483,21 @@ class GizmoController {
 
     this._rebindPanel();   // populates HTML + snapshot + wires events
 
-    // V0.2.22.72 — open ONE full panel-width to the RIGHT of the cursor so
-    // the panel doesn't cover the model under the click (a small model could
-    // be completely hidden otherwise). Then clamp into the viewport.
+    // V0.3.0.84 — open to the UPPER-LEFT of the cursor (panel's bottom-right near the
+    // click). Keeps it off the model under the click AND clear of where a 2nd-click
+    // context menu (which opens down-right of the cursor) would appear, so the two
+    // never overlap. Clamp into the viewport.
     requestAnimationFrame(() => {
       const r = panel.getBoundingClientRect();
       const vw = window.innerWidth, vh = window.innerHeight;
-      let left = clientX + 12 + r.width;   // shift right by one panel width
-      let top  = clientY - 8;
+      let left = clientX - r.width  - 8;
+      let top  = clientY - r.height - 8;
+      if (left < 8) left = 8;
+      if (top  < 8) top  = 8;
       if (left + r.width  > vw - 8) left = vw - r.width  - 8;
       if (top  + r.height > vh - 8) top  = vh - r.height - 8;
-      panel.style.left = `${Math.max(8, left)}px`;
-      panel.style.top  = `${Math.max(8, top)}px`;
+      panel.style.left = `${left}px`;
+      panel.style.top  = `${top}px`;
     });
 
     // Esc reverts the active node's edits and closes the panel. NO outside-

@@ -226,7 +226,7 @@ label.colorlab{display:block;font-size:12px;color:var(--muted);margin-top:4px}
 
 /* ── Selection / export frame ────────────────────────────────── */
 #selection-rect,#selectionRect{position:absolute;border:1px solid #60a5fa;background:rgba(96,165,250,0.12);pointer-events:none;display:none;z-index:20}
-#export-safe-frame,#exportSafeFrame{position:absolute;display:none;pointer-events:none;border:2px dashed rgba(147,197,253,.95);border-radius:12px;box-shadow:0 0 0 9999px rgba(15,23,42,.28);z-index:21}
+#export-safe-frame,#exportSafeFrame{position:absolute;display:none;pointer-events:none;border:2px dashed rgba(147,197,253,.95);border-radius:12px;box-shadow:0 0 0 9999px rgba(15,23,42,.20);z-index:21}
 #export-safe-frame.show,#exportSafeFrame.show{display:block}
 #export-safe-frame-label,#exportSafeFrameLabel{position:absolute;left:10px;top:10px;padding:5px 8px;border-radius:999px;background:rgba(15,23,42,.95);border:1px solid #475569;color:#dbeafe;font-size:11px;letter-spacing:.04em;white-space:nowrap}
 
