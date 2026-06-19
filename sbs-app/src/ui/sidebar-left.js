@@ -1433,19 +1433,19 @@ function _renderTreeTab() {
   if (!_treeInited) {
     _treeInited = true;
     el.innerHTML = `
-      <div class="topbar" style="gap:6px;flex-wrap:wrap">
+      <div class="topbar tree-bar" style="flex-wrap:wrap">
         <button class="btn" id="btn-new-folder">New Folder</button>
         <button class="btn" id="btn-unhide-all" title="Show all hidden models (archived stay hidden)">Unhide all</button>
-        <button class="btn" id="btn-lock-folders"   title="Lock folders (or the selected parts)">🔒 Lock folders</button>
-        <button class="btn" id="btn-unlock-folders" title="Unlock folders (or the selected parts)">🔓 Unlock folders</button>
+        <button class="btn" id="btn-lock-folders"   title="Lock folders (or the selected parts)">🔒 Lock</button>
+        <button class="btn" id="btn-unlock-folders" title="Unlock folders (or the selected parts)">🔓 Unlock</button>
       </div>
-      <div class="topbar" style="gap:6px;flex-wrap:wrap;align-items:center">
-        <span class="small muted" style="font-weight:600;margin-right:2px">Filter:</span>
-        <button class="btn" id="btn-f-selected" data-filter="onlySelected">Only Selected</button>
-        <button class="btn" id="btn-f-archived" data-filter="archived">Archived</button>
-        <button class="btn" id="btn-f-hardware" data-filter="hardware">Hardware</button>
-        <button class="btn" id="btn-f-visible"  data-filter="onlyVisible">Only Visible</button>
-        <button class="btn" id="btn-f-hidden"   data-filter="hidden">Hidden</button>
+      <div class="topbar tree-bar" style="flex-wrap:wrap;align-items:center">
+        <span class="small muted" style="font-weight:600;margin-right:1px">Filter:</span>
+        <button class="btn" id="btn-f-selected" data-filter="onlySelected" title="Only selected objects">Sel</button>
+        <button class="btn" id="btn-f-archived" data-filter="archived" title="Only archived">Arch</button>
+        <button class="btn" id="btn-f-hardware" data-filter="hardware" title="Only hardware (screws / nuts)">HW</button>
+        <button class="btn" id="btn-f-visible"  data-filter="onlyVisible" title="Only visible">Vis</button>
+        <button class="btn" id="btn-f-hidden"   data-filter="hidden" title="Only hidden">Hid</button>
       </div>
       <div id="tree-mount" class="tree"></div>
     `;
@@ -1497,8 +1497,8 @@ function _updateLockButtons() {
   const sel = _hasLockSelection();
   const lk = el.querySelector('#btn-lock-folders');
   const ul = el.querySelector('#btn-unlock-folders');
-  if (lk) lk.textContent = sel ? '🔒 Lock selected'   : '🔒 Lock folders';
-  if (ul) ul.textContent = sel ? '🔓 Unlock selected' : '🔓 Unlock folders';
+  if (lk) lk.textContent = sel ? '🔒 Lock sel'   : '🔒 Lock';
+  if (ul) ul.textContent = sel ? '🔓 Unlock sel' : '🔓 Unlock';
 }
 
 function _onCreateFolder() {
