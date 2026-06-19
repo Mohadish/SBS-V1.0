@@ -3341,6 +3341,48 @@ function _stampTransformDelta(nodeId, dOff, dQuat, targetIds) {
 state.on('selection:change', _maybeFinalizeMultiStepXf);
 
 /**
+ * Set a node's uniform scale GLOBALLY (V0.3.0.87). Scale is NOT animated — it lives in
+ * baseLocalScale (the home pose). This writes it to the live node AND every step's
+ * snapshot so the object is the same scale in all steps. One undo. `scale` = a number
+ * (uniform) or [x,y,z].
+ */
+export function setNodeScaleGlobal(nodeId, scale) {
+  const node = state.get('nodeById')?.get(nodeId);
+  if (!node) return false;
+  const v = Array.isArray(scale)
+    ? [Number(scale[0]) || 1, Number(scale[1]) || 1, Number(scale[2]) || 1]
+    : [Number(scale) || 1, Number(scale) || 1, Number(scale) || 1];
+  // Befores for undo (live + each step that stores this node's transform).
+  const beforeLive  = [...(node.baseLocalScale || [1, 1, 1])];
+  const beforeSteps = {};
+  for (const st of (state.get('steps') || [])) {
+    const t = st.snapshot?.transforms?.[nodeId];
+    if (t) beforeSteps[st.id] = [...(t.baseLocalScale || [1, 1, 1])];
+  }
+  const apply = (liveVal, perStep) => {
+    const n = state.get('nodeById')?.get(nodeId);
+    if (n) {
+      n.baseLocalScale = [...liveVal];
+      const o = steps.object3dById?.get(nodeId);
+      if (o) applyNodeTransformToObject3D(n, o);
+    }
+    for (const st of (state.get('steps') || [])) {
+      const t = st.snapshot?.transforms?.[nodeId];
+      if (t) t.baseLocalScale = [...(perStep ? (perStep[st.id] || liveVal) : liveVal)];
+    }
+    steps.scheduleTransformSync?.();
+    state.markDirty?.();
+    state.emit('change:treeData', state.get('treeData'));
+  };
+  apply(v, null);
+  undoManager.push('Scale object',
+    () => apply(beforeLive, beforeSteps),
+    () => apply(v, null),
+  );
+  return true;
+}
+
+/**
  * Walk the tree and report any folder/model nodes whose baseLocal* fields
  * are non-identity. flatShape is INTENTIONALLY skipped — its baseLocal*
  * stores the placement world-pose (set at insertion time), so non-identity

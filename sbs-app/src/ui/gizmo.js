@@ -1693,6 +1693,12 @@ class GizmoController {
         ${this._axisRow('rz', 'Z', fmtA(ez), '#5588e0')}
       </div>
 
+      ${isPivotMode ? '' : `
+      <div style="margin-top:8px;">
+        <div style="font-size:10px;color:#64748b;margin-bottom:4px;letter-spacing:0.5px;">SCALE (uniform · all steps)</div>
+        ${this._axisRow('scale', 'S', fmt(no.baseLocalScale?.[0] ?? 1), '#c084fc')}
+      </div>`}
+
       ${isPivotMode ? `
       <div style="margin-top:10px;">
         <button data-action="snap-to-surface" style="width:100%;font-size:11px;padding:5px 8px;background:#1c2538;border:1px solid #fb923c;border-radius:4px;color:#fb923c;cursor:pointer;font-weight:600;letter-spacing:0.3px;">
@@ -1801,6 +1807,24 @@ class GizmoController {
     // last valid value while the user edits.
     panel.querySelectorAll('[data-field]').forEach(inp => {
       const field = inp.dataset.field;
+
+      // V0.3.0.87 — uniform GLOBAL scale (baseLocalScale, identical in every step).
+      // Its own undoable action; commit on blur / Enter (not per-keystroke) so one
+      // edit = one undo. Refuses non-positive values.
+      if (field === 'scale') {
+        const commitScale = () => {
+          const v = parseExpression(inp.value);
+          if (Number.isFinite(v) && v > 0) actions.setNodeScaleGlobal(no.id, v);
+          this._refreshPanel();
+        };
+        inp.addEventListener('blur', commitScale);
+        inp.addEventListener('keydown', e => {
+          if (e.key === 'Escape') return;
+          e.stopPropagation();
+          if (e.key === 'Enter') inp.blur();
+        });
+        return;
+      }
 
       const apply = () => {
         const val = parseExpression(inp.value);
