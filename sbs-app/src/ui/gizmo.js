@@ -397,14 +397,12 @@ class GizmoController {
     this._group.add(dot);
     this._pivotDot = dot;
 
-    // ── Phase 2 / 2.1 global-edit indicator AND scale handle ─────────────
-    // A red CUBE at the gizmo hub. Visible only while the active node is
-    // a flatShape AND state.globalEditNodeId === that node — so it both
-    // signals "global mode active" (replaces the prior red sphere) AND
-    // serves as the uniform-scale handle (drag UP grows, DOWN shrinks,
-    // writing to baseLocalScale). Outside global mode there is no scale
-    // gesture at all per Phase 2.1 spec.
-    const GLOBAL_BOX_COLOUR = 0xef4444;
+    // ── Uniform-scale handle (V0.3.0.88) ─────────────────────────────────
+    // A WHITE CUBE at the gizmo hub, shown for ANY selected object in 'all'
+    // mode. Drag UP grows / DOWN shrinks; on commit it writes baseLocalScale
+    // GLOBALLY (the same scale in every step, via actions.setNodeScaleGlobal)
+    // — scale is not per-step animated. Hidden for cable targets.
+    const GLOBAL_BOX_COLOUR = 0xffffff;
     const visGeo = new T.BoxGeometry(0.14, 0.14, 0.14);
     const visMat = new T.MeshBasicMaterial({ color: GLOBAL_BOX_COLOUR, depthTest: false });
     const vis    = new T.Mesh(visGeo, visMat);
@@ -571,16 +569,12 @@ class GizmoController {
   }
 
   _applyMode() {
-    // The scale element is the global-mode red cube — visible ONLY when:
-    //   - the active node is a flatShape, AND
-    //   - state.globalEditNodeId === that node.
-    // Outside global mode there's no scale gesture (per Phase 2.1 spec).
-    const isFlatShape = this._node?.type === 'flatShape';
-    const inGlobal    = isFlatShape && state.get('globalEditNodeId') === this._node.id;
+    // The scale element (white hub cube) is shown for any object in 'all' mode;
+    // translate/rotate handles follow the active mode.
     for (const el of this._elements) {
       let show;
       if (el.type === 'scale') {
-        show = inGlobal;
+        show = !this._cableTarget && this._mode === 'all';   // V0.3.0.88 — always available in 'all' mode
       } else {
         show = this._mode === 'all'
           || (this._mode === 'translate' && (el.type === 'translate' || el.type === 'plane'))
@@ -695,11 +689,11 @@ class GizmoController {
 
     // Orange dot at gizmo hub — only while editing the pivot.
     if (this._pivotDot) this._pivotDot.visible = isPivotEditing;
-    // Red cube at gizmo hub — visible only when this flatShape is in
-    // global-edit mode. It also doubles as the uniform-scale handle.
-    const inGlobalEdit = node?.type === 'flatShape' && state.get('globalEditNodeId') === node.id;
-    if (this._globalDot) this._globalDot.visible = !!inGlobalEdit;
-    if (this._globalHit) this._globalHit.visible = !!inGlobalEdit;
+    // White uniform-scale handle at the hub — shown for any object in 'all' mode
+    // (V0.3.0.88). Drag to scale globally. Hidden for cable targets / other modes.
+    const showScale = !this._cableTarget && this._mode === 'all';
+    if (this._globalDot) this._globalDot.visible = showScale;
+    if (this._globalHit) this._globalHit.visible = showScale;
 
     // Constant screen-space size
     const cam    = sceneCore.camera;
@@ -761,7 +755,9 @@ class GizmoController {
     // Same logic for translate-global mode: enter/commit pair brackets it.
     const inPivotEdit       = !!this._node && state.get('pivotEditNodeId')      === this._node.id;
     const inGlobalEdit = !!this._node && state.get('globalEditNodeId') === this._node.id;
-    if (this._node && !inPivotEdit && !inGlobalEdit) actions.beginTransformEdit(this._node.id);
+    // Scale drags commit through setNodeScaleGlobal (their own undo), so skip the
+    // per-step transform batch for them (V0.3.0.88).
+    if (this._node && !inPivotEdit && !inGlobalEdit && this._dragEl?.type !== 'scale') actions.beginTransformEdit(this._node.id);
 
     const T = window.THREE;
     const no = this._node;
@@ -872,7 +868,14 @@ class GizmoController {
     const inGlobalEdit = !!this._node && state.get('globalEditNodeId') === this._node.id;
     const endType      = _endEl?.type;
 
-    if (this._node && inPivotEdit) {
+    if (this._node && endType === 'scale') {
+      // V0.3.0.88 — uniform scale is GLOBAL (all steps) in any mode. The drag already
+      // mutated the live baseLocalScale; revert it, then re-apply it globally with
+      // correct before/after undo via setNodeScaleGlobal.
+      const finalScale = [...(this._node.baseLocalScale || [1, 1, 1])];
+      this._node.baseLocalScale = [...this._startBaseScale];
+      actions.setNodeScaleGlobal(this._node.id, finalScale);
+    } else if (this._node && inPivotEdit) {
       actions.commitPivotDrag(this._node.id, {
         offset: this._startPivotOffset,
         quat:   this._startPivotQuat,
@@ -882,8 +885,6 @@ class GizmoController {
         actions.commitGlobalTranslateDrag(this._node.id, this._startBasePosition);
       } else if (endType === 'rotate') {
         actions.commitGlobalRotateDrag(this._node.id, this._startBaseQuaternion);
-      } else if (endType === 'scale') {
-        actions.commitGlobalScaleDrag(this._node.id, this._startBaseScale);
       }
     } else if (this._node) {
       actions.commitTransformEdit(this._node.id);
@@ -1410,10 +1411,8 @@ class GizmoController {
     rc.setFromCamera(ptr, sceneCore.camera);
     this._group.updateMatrixWorld(true);
 
-    const isFlatShape = this._node?.type === 'flatShape';
-    const inGlobal    = isFlatShape && state.get('globalEditNodeId') === this._node.id;
     const active = this._elements.filter(e => {
-      if (e.type === 'scale') return inGlobal;
+      if (e.type === 'scale') return !this._cableTarget && this._mode === 'all';   // V0.3.0.88
       return this._mode === 'all'
         || (this._mode === 'translate' && (e.type === 'translate' || e.type === 'plane'))
         || (this._mode === 'rotate'    &&  e.type === 'rotate');
