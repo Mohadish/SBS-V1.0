@@ -1463,10 +1463,14 @@ class GizmoController {
     const panel = document.createElement('div');
     this._panel = panel;
 
+    // V0.3.0.85 — pin to a fixed corner of the viewport (top-right), not the cursor,
+    // so it's always in a predictable, out-of-the-way spot.
+    const _surf = document.getElementById('viewport-surface');
+    const _sr = _surf ? _surf.getBoundingClientRect() : null;
     panel.style.cssText = [
       'position:fixed',
-      `left:${Math.max(8, clientX - 240)}px`,
-      `top:${Math.max(8, clientY - 90)}px`,
+      `left:${Math.max(8, (_sr ? _sr.right : window.innerWidth) - 260)}px`,
+      `top:${Math.max(8, (_sr ? _sr.top : 0) + 12)}px`,
       'z-index:9999',
       'background:#1e293b',
       'border:1px solid #334155',
@@ -1483,19 +1487,16 @@ class GizmoController {
 
     this._rebindPanel();   // populates HTML + snapshot + wires events
 
-    // V0.3.0.84 — open to the UPPER-LEFT of the cursor (panel's bottom-right near the
-    // click). Keeps it off the model under the click AND clear of where a 2nd-click
-    // context menu (which opens down-right of the cursor) would appear, so the two
-    // never overlap. Clamp into the viewport.
+    // V0.3.0.85 — pin to the TOP-RIGHT corner of the viewport (clear of the model under
+    // the click and of both sidebars), a fixed predictable spot instead of the cursor.
     requestAnimationFrame(() => {
       const r = panel.getBoundingClientRect();
-      const vw = window.innerWidth, vh = window.innerHeight;
-      let left = clientX - r.width  - 8;
-      let top  = clientY - r.height - 8;
+      const right = _sr ? _sr.right : (window.innerWidth - 8);
+      const top0  = _sr ? _sr.top  : 8;
+      let left = right - r.width - 12;
+      let top  = top0 + 12;
       if (left < 8) left = 8;
       if (top  < 8) top  = 8;
-      if (left + r.width  > vw - 8) left = vw - r.width  - 8;
-      if (top  + r.height > vh - 8) top  = vh - r.height - 8;
       panel.style.left = `${left}px`;
       panel.style.top  = `${top}px`;
     });
