@@ -1042,11 +1042,11 @@ function _buildContextMenuItems(node) {
   // from the generic transform-node menu; here we add copy-pose + delete.
   if (count === 1 && node.type === 'hardwareNut') {
     items.push({
-      label: '📋 Copy step pose',
+      label: '📋 Copy Transforms',
       action: () => actions.copyInstanceStepPose(node.id),
     });
     items.push({
-      label: '📥 Paste step pose',
+      label: '📌 Paste Transforms',
       disabled: !actions.hasInstancePoseClipboard(),
       action: () => actions.pasteInstanceStepPose(node.id),
     });
@@ -1084,12 +1084,12 @@ function _buildContextMenuItems(node) {
     // Copy / paste the active step's pose (translation + rotation +
     // visibility) — cross-instance allowed. Same as flatShape/mesh.
     items.push({
-      label: '📋 Copy step pose',
+      label: '📋 Copy Transforms',
       action: () => actions.copyInstanceStepPose(node.id),
     });
     const _hwSelStep = state.get('selectedStepIds')?.size ?? 0;
     items.push({
-      label: _hwSelStep >= 2 ? `📥 Paste step pose to ${_hwSelStep} steps` : '📥 Paste step pose',
+      label: _hwSelStep >= 2 ? `📌 Paste Transforms to ${_hwSelStep} steps` : '📌 Paste Transforms',
       disabled: !actions.hasInstancePoseClipboard(),
       action: () => actions.pasteInstanceStepPose(node.id),
     });
@@ -1273,7 +1273,7 @@ function _buildContextMenuItems(node) {
     // state.selectedStepIds (when ≥ 2) or just the active step. Cross-
     // instance paste IS allowed — pose is id-agnostic.
     items.push({
-      label: '📋 Copy step pose',
+      label: '📋 Copy Transforms',
       action: () => actions.copyInstanceStepPose(node.id),
     });
     // V0.2.22.18 — cache selectedStepIds once. The original two reads of
@@ -1283,8 +1283,8 @@ function _buildContextMenuItems(node) {
     const _selStepCount = state.get('selectedStepIds')?.size ?? 0;
     items.push({
       label: _selStepCount >= 2
-        ? `📥 Paste step pose to ${_selStepCount} steps`
-        : '📥 Paste step pose',
+        ? `📌 Paste Transforms to ${_selStepCount} steps`
+        : '📌 Paste Transforms',
       disabled: !actions.hasInstancePoseClipboard(),
       action: () => actions.pasteInstanceStepPose(node.id),
     });
@@ -1407,11 +1407,12 @@ function _buildContextMenuItems(node) {
     });
   }
 
-  // ── Convert to Replace-Model (B.2-NEW.1) ─────────────────────────────
-  // Single non-archived mesh / flatShape / model only. Folders are NOT
-  // allowed. The action just flips node.type → 'replaceModel' (same id,
-  // same transforms, same per-step state).
-  if (count === 1
+  // ── Convert to Replace-Model (B.2-NEW.1) — HIDDEN V0.3.0.91 ──────────
+  // Follow Object replaces this; the menu entry is disabled (the action +
+  // convertToReplaceModel stay in the codebase for legacy projects). Flip
+  // CONVERT_TO_RM_ENABLED to re-enable.
+  const CONVERT_TO_RM_ENABLED = false;
+  if (CONVERT_TO_RM_ENABLED && count === 1
       && (node.type === 'mesh' || node.type === 'flatShape' || node.type === 'model')
       && !node.archived) {
     items.push({

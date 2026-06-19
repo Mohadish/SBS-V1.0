@@ -2740,14 +2740,14 @@ canvas.addEventListener('contextmenu', e => {
         : actions.enterGlobalEdit(node.id),
     });
     items.push({
-      label: '📋 Copy step pose',
+      label: '📋 Copy Transforms',
       action: () => actions.copyInstanceStepPose(node.id),
     });
     const stepSel = state.get('selectedStepIds');
     items.push({
       label: stepSel instanceof Set && stepSel.size >= 2
-        ? `📥 Paste step pose to ${stepSel.size} steps`
-        : '📥 Paste step pose',
+        ? `📌 Paste Transforms to ${stepSel.size} steps`
+        : '📌 Paste Transforms',
       disabled: !actions.hasInstancePoseClipboard(),
       action: () => actions.pasteInstanceStepPose(node.id),
     });
@@ -2784,11 +2784,11 @@ canvas.addEventListener('contextmenu', e => {
     && [...multiSet].every(id => nodeById?.get(id)?.type === 'hardwareInstance');
   if (node?.type === 'hardwareNut') {
     items.push({
-      label: '📋 Copy step pose',
+      label: '📋 Copy Transforms',
       action: () => actions.copyInstanceStepPose(node.id),
     });
     items.push({
-      label: '📥 Paste step pose',
+      label: '📌 Paste Transforms',
       disabled: !actions.hasInstancePoseClipboard(),
       action: () => actions.pasteInstanceStepPose(node.id),
     });
@@ -2834,14 +2834,14 @@ canvas.addEventListener('contextmenu', e => {
     // Copy / paste the active step's pose (translation + rotation +
     // visibility) — cross-instance allowed.
     items.push({
-      label: '📋 Copy step pose',
+      label: '📋 Copy Transforms',
       action: () => actions.copyInstanceStepPose(node.id),
     });
     const _hwStepSel = state.get('selectedStepIds');
     items.push({
       label: _hwStepSel instanceof Set && _hwStepSel.size >= 2
-        ? `📥 Paste step pose to ${_hwStepSel.size} steps`
-        : '📥 Paste step pose',
+        ? `📌 Paste Transforms to ${_hwStepSel.size} steps`
+        : '📌 Paste Transforms',
       disabled: !actions.hasInstancePoseClipboard(),
       action: () => actions.pasteInstanceStepPose(node.id),
     });
@@ -2982,11 +2982,11 @@ canvas.addEventListener('contextmenu', e => {
         action: () => showColorForNode(node.id),
       });
     }
-    // ── Convert to Replace-Model (B.2-NEW.1) ─────────────────────────────
-    // Mirrors the tree r-click entry. Single non-archived node only —
-    // mesh / flatShape / model (NOT folder). Just flips node.type; no
-    // immediate visual change beyond the 🔄 icon in the tree.
-    if (multiIds.size === 1 && node && !node.archived &&
+    // ── Convert to Replace-Model (B.2-NEW.1) — HIDDEN V0.3.0.91 ──────────
+    // Follow Object replaces this; menu entry disabled (action kept for legacy).
+    // Flip CONVERT_TO_RM_ENABLED to re-enable.
+    const CONVERT_TO_RM_ENABLED = false;
+    if (CONVERT_TO_RM_ENABLED && multiIds.size === 1 && node && !node.archived &&
         (node.type === 'mesh' || node.type === 'flatShape' || node.type === 'model')) {
       items.push({
         label: '🔄 Convert to Replace-Model',
