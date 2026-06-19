@@ -2895,7 +2895,17 @@ function rebuildFromTreeSpec(spec, nodeById, object3dById, parentObject3d) {
     // subsequent rebuilds — the data tree is the source of truth, the
     // saved spec only carries id/type/name/visibility.
     node = nodeById.get(spec.id);
-    if (!node) return null;
+    if (!node) {
+      // V0.3.0.89 — materialise from the spec when no live node exists. A shape placed
+      // ON a PRIMITIVE / FOLLOWED object can be unreachable by the load's async reattach
+      // pass (the parent isn't rebuilt in time) — exactly the case the primitive branch
+      // below handles. Without this the flatShape returned null and silently VANISHED on
+      // reload (the "shapes on follow objects don't persist" bug). Geometry rebuilds from
+      // the template via templateId; per-step pose comes from the transforms snapshot.
+      if (!spec.templateId) return null;   // no template → cannot rebuild
+      node = { id: spec.id, type: 'flatShape' };
+      nodeById.set(spec.id, node);
+    }
     node.name         = spec.name || node.name;
     node.localVisible = spec.localVisible !== false;
     // Restore the template pointer / baked plane from the spec if the live node
@@ -2947,7 +2957,14 @@ function rebuildFromTreeSpec(spec, nodeById, object3dById, parentObject3d) {
     // when the template signature matches, rebuilds when the template
     // was edited, returns null when the template is missing (orphan).
     node = nodeById.get(spec.id);
-    if (!node) return null;
+    if (!node) {
+      // V0.3.0.89 — materialise from the spec when no live node exists (same as the
+      // flatShape / primitive branches): a screw placed on a PRIMITIVE / FOLLOWED object
+      // can be unreachable by the load reattach, and would otherwise vanish on reload.
+      if (!spec.templateId) return null;   // no template → cannot rebuild
+      node = { id: spec.id, type: 'hardwareInstance' };
+      nodeById.set(spec.id, node);
+    }
     node.name         = spec.name || node.name;
     node.localVisible = spec.localVisible !== false;
     node.templateId   = spec.templateId || node.templateId || null;
