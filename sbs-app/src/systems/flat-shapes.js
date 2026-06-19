@@ -179,7 +179,10 @@ export function buildFlatShapeMesh(polygons, fill, planeQuat = [0, 0, 0, 1], ima
     const tex = loader.load(image.dataUrl);
     tex.colorSpace = T.SRGBColorSpace ?? tex.colorSpace;
     tex.anisotropy = 4;
-    tex.needsUpdate = true;
+    // V0.3.0.90 — do NOT set needsUpdate here: the image loads ASYNC, so flagging the
+    // empty texture for upload makes THREE warn "Texture marked for update but no image
+    // data found" on the first render(s). TextureLoader sets needsUpdate itself once the
+    // image arrives, so the texture still uploads + shows — just without the warning.
     mat = new T.MeshBasicMaterial({
       map:         tex,
       color:       0xffffff,

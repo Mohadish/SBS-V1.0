@@ -784,6 +784,11 @@ export function captureTransformSnapshot(node) {
     orientationSteps:    [...node.orientationSteps],
     pivotLocalOffset:    [...node.pivotLocalOffset],
     pivotLocalQuaternion:[...node.pivotLocalQuaternion],
+    // V0.3.0.90 — carry the (global) scale too. Scale lives in baseLocalScale and is NOT
+    // a per-step delta, but it must ride the snapshot so a node MATERIALISED from a
+    // snapshot on load (a flatShape/primitive/hardware whose live node wasn't reattached)
+    // gets its scale back instead of defaulting to 1.
+    baseLocalScale:      [...(node.baseLocalScale || [1, 1, 1])],
     moveEnabled:         node.moveEnabled !== false,
     rotateEnabled:       node.rotateEnabled !== false,
     pivotEnabled:        node.pivotEnabled !== false,
@@ -802,6 +807,11 @@ export function applyTransformSnapshot(node, snap) {
   node.orientationSteps     = [...(snap.orientationSteps    ?? [0, 0, 0])];
   node.pivotLocalOffset     = [...(snap.pivotLocalOffset    ?? [0, 0, 0])];
   node.pivotLocalQuaternion = [...(snap.pivotLocalQuaternion?? [0, 0, 0, 1])];
+  // V0.3.0.90 — restore scale only when the snapshot carries it. GUARDED so pre-fix
+  // saves (no baseLocalScale in the snapshot) keep the node's live/scene-tree scale
+  // instead of being reset to 1. Interpolated transition snapshots omit it too →
+  // scale stays put during a transition (it's global, not animated).
+  if (snap.baseLocalScale) node.baseLocalScale = [...snap.baseLocalScale];
   node.moveEnabled          = snap.moveEnabled   !== false;
   node.rotateEnabled        = snap.rotateEnabled !== false;
   node.pivotEnabled         = snap.pivotEnabled  !== false;
