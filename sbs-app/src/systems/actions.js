@@ -5971,17 +5971,22 @@ export function setupUndoKeyboard() {
     // the editor is FOCUSED; this branch handles the case where
     // focus has drifted onto the toolbar / colour picker / etc. but
     // a session is still open.
-    // Normalise case so Caps Lock doesn't break undo/redo: with Caps Lock ON an
-    // unshifted "z" arrives as e.key "Z" (and Shift+z as "z"), so comparing to a
-    // literal 'z'/'Z' silently failed. Use the lowercased key + e.shiftKey.
-    const k = (e.key || '').toLowerCase();
+    // Match on the PHYSICAL key (e.code) so undo/redo work under ANY keyboard layout
+    // (V0.3.0.81) — with a non-Latin layout active (Hebrew, etc.) e.key is the
+    // localised character ('ז' on the Z key) and a literal 'z' compare silently
+    // failed. e.code === 'KeyZ'/'KeyY' is layout-independent. The lowercased e.key
+    // stays as a fallback and also covers the old Caps-Lock case (unshifted "z"
+    // arriving as "Z").
+    const k   = (e.key || '').toLowerCase();
+    const isZ = e.code === 'KeyZ' || k === 'z';
+    const isY = e.code === 'KeyY' || k === 'y';
     if (editSession.isActive()) {
-      if (!e.shiftKey && k === 'z') {
+      if (!e.shiftKey && isZ) {
         e.preventDefault();
         editSession.undoLocal();   // false-return = local stack empty; we still swallow
         return;
       }
-      if (k === 'y' || (e.shiftKey && k === 'z')) {
+      if (isY || (e.shiftKey && isZ)) {
         e.preventDefault();
         editSession.redoLocal();
         return;
@@ -5989,9 +5994,9 @@ export function setupUndoKeyboard() {
     }
 
     if (_isInputFocused()) return;
-    if (!e.shiftKey && k === 'z') { e.preventDefault(); undoManager.undo(); }
-    if (k === 'y')                { e.preventDefault(); undoManager.redo(); }
-    if (e.shiftKey && k === 'z')  { e.preventDefault(); undoManager.redo(); }
+    if (!e.shiftKey && isZ) { e.preventDefault(); undoManager.undo(); }
+    if (isY)               { e.preventDefault(); undoManager.redo(); }
+    if (e.shiftKey && isZ) { e.preventDefault(); undoManager.redo(); }
   });
 }
 

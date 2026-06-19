@@ -132,7 +132,7 @@ state.on('change:treeData',         () => { _syncExpanded(); renderTree(); });
 // tree — re-render on template rename / create / delete so labels
 // update without a project reload.
 state.on('change:noteTemplates',    () => renderTree());
-state.on('selection:change',        () => { _syncExpanded(); renderTree(); });
+state.on('selection:change',        () => { _syncExpanded(); renderTree(); _scrollSelectedIntoView(); });
 state.on('change:activeStepId',     () => renderTree());
 // step:applied fires AFTER applyVisibilitySnapshot has mutated each
 // node.localVisible. change:activeStepId above fires too early — at
@@ -218,6 +218,37 @@ function _setupTreeMarquee() {
 
 // ── Public API ────────────────────────────────────────────────────────────────
 
+// ── "Show only selected" tree filter (V0.3.0.81) ──────────────────────────────
+// When on, the tree renders only the selected nodes + their ancestor folders (the
+// scaffolding) + a selected folder's own contents. Everything else is hidden, and
+// the kept folders are force-opened so the selection is always visible.
+let _showOnlySelected = false;
+let _filterVisible    = new Set();
+export function isShowOnlySelected() { return _showOnlySelected; }
+export function toggleShowOnlySelected() {
+  _showOnlySelected = !_showOnlySelected;
+  renderTree();
+  _scrollSelectedIntoView();
+  return _showOnlySelected;
+}
+function _computeFilterVisible() {
+  _filterVisible = new Set();
+  const root = state.get('treeData');
+  if (!root) return;
+  _filterVisible.add(root.id);
+  const sel = new Set(state.get('multiSelectedIds') || []);
+  const primary = state.get('selectedId');
+  if (primary) sel.add(primary);
+  if (sel.size === 0) return;
+  const nodeById = state.get('nodeById') || new Map();
+  for (const id of sel) {
+    _filterVisible.add(id);
+    _collectAncestors(root, id, _filterVisible);            // scaffolding above
+    const n = nodeById.get(id);                             // + a selected folder's contents
+    if (n) (function down(x) { for (const c of (x.children || [])) { _filterVisible.add(c.id); down(c); } })(n);
+  }
+}
+
 export function renderTree() {
   if (!_container) return;
   const root = state.get('treeData');
@@ -226,7 +257,25 @@ export function renderTree() {
     _container.innerHTML = '<div class="tree-empty">No models loaded.</div>';
     return;
   }
-  _container.appendChild(_buildNode(root, 0));
+  if (_showOnlySelected) _computeFilterVisible();
+  const el = _buildNode(root, 0);
+  if (el) _container.appendChild(el);
+}
+
+// V0.3.0.81 — auto-scroll the tree so the selected node is visible. _syncExpanded
+// has already opened its ancestors (so the row is rendered); block:'nearest' only
+// scrolls when it's actually off-screen, so clicking a visible row never jumps.
+// Multiple selected → the primary (anchor) row.
+function _scrollSelectedIntoView() {
+  if (!_container) return;
+  let id = state.get('selectedId');
+  if (!id) {
+    const multi = state.get('multiSelectedIds');
+    if (multi instanceof Set && multi.size) id = [...multi][0];
+  }
+  if (!id) return;
+  const row = _container.querySelector(`.tree-row[data-node-id="${(window.CSS?.escape?.(id)) || id}"]`);
+  if (row) requestAnimationFrame(() => row.scrollIntoView({ block: 'nearest', behavior: 'smooth' }));
 }
 
 export function expandPathToNode(nodeId) {
@@ -290,6 +339,10 @@ function _collectAncestors(root, targetId, out) {
 // ── Tree construction ─────────────────────────────────────────────────────────
 
 function _buildNode(node, depth) {
+  // "Show only selected" filter: drop anything outside the computed visible set
+  // (root always stays). Parent's child loop skips the resulting nulls.
+  if (_showOnlySelected && !_filterVisible.has(node.id)) return null;
+
   const wrap = document.createElement('div');
   wrap.appendChild(_buildRow(node, depth));
 
@@ -300,12 +353,15 @@ function _buildNode(node, depth) {
   // via twisty + _expanded set).
   const isLockedGroup = node.type === 'folder' && node.locked === true;
   const hasKids = (node.children?.length ?? 0) > 0;
-  const showKids = hasKids && !isLockedGroup && _expanded.has(node.id);
+  // Filter mode force-opens every kept folder (even locked ones) so the selected
+  // nodes inside actually show; non-visible children null out in the loop.
+  const showKids = hasKids && (_showOnlySelected || (!isLockedGroup && _expanded.has(node.id)));
   if (showKids) {
     const childList = document.createElement('div');
     childList.className = 'children';
     for (const child of node.children) {
-      childList.appendChild(_buildNode(child, depth + 1));
+      const el = _buildNode(child, depth + 1);
+      if (el) childList.appendChild(el);
     }
     wrap.appendChild(childList);
   }

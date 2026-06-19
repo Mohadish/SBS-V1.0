@@ -558,7 +558,11 @@ function _enterTextEdit(node, ctxOverride) {
       return;
     }
     const mod = e.ctrlKey || e.metaKey;
-    if (mod && !e.shiftKey && e.key === 'z') {
+    // Physical-key match so undo/redo survive non-Latin layouts (V0.3.0.81).
+    const kc  = (e.key || '').toLowerCase();
+    const isZ = e.code === 'KeyZ' || kc === 'z';
+    const isY = e.code === 'KeyY' || kc === 'y';
+    if (mod && !e.shiftKey && isZ) {
       if (editSession.canUndoLocal()) {
         e.preventDefault();
         e.stopPropagation();
@@ -568,7 +572,7 @@ function _enterTextEdit(node, ctxOverride) {
       }
       return;
     }
-    if (mod && (e.key === 'y' || (e.shiftKey && e.key === 'Z'))) {
+    if (mod && (isY || (e.shiftKey && isZ))) {
       if (editSession.canRedoLocal()) {
         e.preventDefault();
         e.stopPropagation();

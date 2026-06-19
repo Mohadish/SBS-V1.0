@@ -17,7 +17,7 @@ import {
   buildIdRemapFromSpec, applyIdRemap, applySpecFieldsToNodes,
   collectAllMeshSpecs, buildDisplacedMeshIdRemap,
 }                          from '../io/project.js';
-import { initTree, renderTree, expandPathToNode, collapseAll } from './tree.js';
+import { initTree, renderTree, expandPathToNode, collapseAll, toggleShowOnlySelected } from './tree.js';
 import { setStatus }       from './status.js';
 import {
   createCameraView, generateId, APP_VERSION, APP_RELEASED,
@@ -1437,6 +1437,7 @@ function _renderTreeTab() {
         <button class="btn" id="btn-select-all">Select All</button>
         <button class="btn" id="btn-deselect">Deselect</button>
         <button class="btn" id="btn-collapse">Collapse</button>
+        <button class="btn" id="btn-only-selected" title="Show only the selected objects + their folders">Only Sel.</button>
         <button class="btn" id="btn-new-folder">New Folder</button>
       </div>
       <div id="tree-mount" class="tree"></div>
@@ -1452,6 +1453,12 @@ function _renderTreeTab() {
     });
     el.querySelector('#btn-deselect')?.addEventListener('click', () => state.clearSelection());
     el.querySelector('#btn-collapse')?.addEventListener('click', () => collapseAll());
+    el.querySelector('#btn-only-selected')?.addEventListener('click', (e) => {
+      const on = toggleShowOnlySelected();
+      const b = e.currentTarget;
+      b.style.background  = on ? 'rgba(14,165,233,0.25)' : '';
+      b.style.borderColor = on ? '#0ea5e9' : '';
+    });
     el.querySelector('#btn-new-folder')?.addEventListener('click', _onCreateFolder);
 
     initTree(el.querySelector('#tree-mount'));
