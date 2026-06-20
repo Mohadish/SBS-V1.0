@@ -51,6 +51,7 @@ import { initStepNav }            from './ui/step-nav.js';
 import { initStepsPanel }         from './ui/steps-panel.js';
 import { initSidebarLeft, showColorForNode } from './ui/sidebar-left.js';
 import { initContextMenu, hideContextMenu, showContextMenu, canonicalizeMenuOrder } from './ui/context-menu.js';
+import { promptString } from './ui/prompt.js';
 import { showMoveToFolderDialog, showAddToReplaceDialog, showReplaceModeDialog, showInputDialog, showInsertAnimDialog } from './ui/tree.js';
 import { positionSafeFrameEl }    from './core/safe-frame.js';
 import { initOverlay, getStage as getOverlayStage } from './systems/overlay.js';
@@ -3030,6 +3031,17 @@ canvas.addEventListener('contextmenu', e => {
       label: '📁→ Move to folder…',
       action: () => showMoveToFolderDialog([...multiIds]),
     });
+    // Rename (V0.3.0.105, parity with the tree). renameNodeGlobal cascades the new
+    // name into every step's snapshot, so it's correct for folders too.
+    if (multiIds.size === 1 && node && node.type !== 'scene' && node.type !== 'note') {
+      items.push({
+        label: `✏ Rename "${(node.name || '').slice(0, 24)}"`,
+        action: async () => {
+          const name = await promptString('Rename', node.name || '');
+          if (name) actions.renameNodeGlobal(node.id, name);
+        },
+      });
+    }
     // Make transformable — wrap a single node in a locked pivot-folder so
     // it gets a gizmo (centred on the node, oriented to its parent folder).
     if (multiIds.size === 1 && node && !node.archived &&
