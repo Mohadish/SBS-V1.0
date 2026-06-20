@@ -975,28 +975,10 @@ function _buildContextMenuItems(node) {
     });
   }
 
-  // ── Archive / Unarchive ─────────────────────────────────────────────────
-  // Archive = "locked-hidden, preserved": the node stays in the tree with
-  // its full per-step history, but is forced invisible regardless of any
-  // snapshot. Toggle is r-click only (deliberately not on the eye button)
-  // because it's a semi-permanent decision, not a per-step animation.
-  // Disallowed on the scene root and on note rows (handled above).
-  if (node.type !== 'scene') {
-    const anyNotArchived = targetIds.some(id => nodeById?.get(id)?.archived !== true);
-    const anyArchived    = targetIds.some(id => nodeById?.get(id)?.archived === true);
-    if (anyNotArchived) {
-      items.push({
-        label: `🗃️ Archive ${label}`,
-        action: () => actions.archiveNodes(targetIds),
-      });
-    }
-    if (anyArchived) {
-      items.push({
-        label: `📤 Unarchive ${label}`,
-        action: () => actions.unarchiveNodes(targetIds),
-      });
-    }
-  }
+  // ── Archive / Unarchive ──────────────────────────────────────────────
+  // (V0.3.0.93 — relocated to the very BOTTOM of the menu, under Delete.
+  // Archive has its own filter tab, so it's de-emphasised here. See the
+  // archive block near the end of this builder.)
 
   // ── Per-note Show / Hide list ────────────────────────────────────────────
   // Lists notes that are DIRECT children of THIS specific node — only the
@@ -1200,25 +1182,8 @@ function _buildContextMenuItems(node) {
 
   items.push({ separator: true });
 
-  // ── Navigate ────────────────────────────────────────────────────────────────
-  const parent = root ? findParent(root, node.id) : null;
-  items.push({
-    label: '⬆ Select Parent',
-    disabled: !parent || parent.type === 'scene',
-    action: () => parent && state.setSelection(parent.id, new Set([parent.id])),
-  });
-
-  items.push({
-    label: '⬇ Select Children',
-    disabled: !(node.children?.length),
-    action: () => {
-      const ids = new Set();
-      (node.children || []).forEach(c => _collectAllIds(c, ids));
-      if (ids.size) state.setSelection([...ids][0], ids);
-    },
-  });
-
-  items.push({ separator: true });
+  // (V0.3.0.93 — "Select Parent / Select Children" removed per menu
+  // unification; double/triple-click selection covers the same ground.)
 
   // ── Folder operations ────────────────────────────────────────────────────────
   const isContainer = node.type === 'folder' || node.type === 'model' || node.type === 'scene';
@@ -1473,6 +1438,29 @@ function _buildContextMenuItems(node) {
       label: '🗑 Delete assembly…',
       action: () => _onDeleteAssemblyMenu(node),
     });
+  }
+
+  // ── Archive / Unarchive — BOTTOM of the menu (V0.3.0.93) ──────────────
+  // Archive = "locked-hidden, preserved": the node stays in the tree with
+  // its full per-step history but is forced invisible. It has its own
+  // filter tab, so it lives here at the bottom, under Delete. Scene root
+  // and note rows are excluded (notes handled by their own menu above).
+  if (node.type !== 'scene') {
+    const anyNotArchived = targetIds.some(id => nodeById?.get(id)?.archived !== true);
+    const anyArchived    = targetIds.some(id => nodeById?.get(id)?.archived === true);
+    if (anyNotArchived || anyArchived) items.push({ separator: true });
+    if (anyNotArchived) {
+      items.push({
+        label: `🗃️ Archive ${label}`,
+        action: () => actions.archiveNodes(targetIds),
+      });
+    }
+    if (anyArchived) {
+      items.push({
+        label: `📤 Unarchive ${label}`,
+        action: () => actions.unarchiveNodes(targetIds),
+      });
+    }
   }
 
   // ── Copy / Paste tree (scene root only) ──────────────────────────
