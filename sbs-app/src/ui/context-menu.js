@@ -248,9 +248,17 @@ function _menuGroup(label) {
   return _MENU_DEFAULT_GROUP;
 }
 
+// A menu item that's purely a divider — either the tree style ({separator:true})
+// or the viewport style ({label:'─', disabled:true}). Both are dropped before
+// re-sorting; canonicalizeMenuOrder regenerates dividers between sections (else
+// the viewport's literal '─' items pile up in the 'special' group — the "7 dashes").
+function _isDivider(it) {
+  return !it || it.separator === true || (it.label === '─' && it.disabled === true);
+}
+
 export function canonicalizeMenuOrder(items) {
   if (!Array.isArray(items) || items.length < 2) return items;
-  const real = items.filter(it => it && !it.separator);
+  const real = items.filter(it => !_isDivider(it));
   const ranked = real.map((it, i) => ({ it, i, g: _menuGroup(it.label || '') }));
   ranked.sort((a, b) => (a.g - b.g) || (a.i - b.i));   // stable within a section
   const out = [];

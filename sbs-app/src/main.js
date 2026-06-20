@@ -3057,7 +3057,7 @@ canvas.addEventListener('contextmenu', e => {
     // Show color — single mesh/flatShape selection only. Ambiguous which
     // color to show when multiple objects are selected, so the option
     // only appears when exactly one bindable node is selected.
-    if (multiIds.size === 1 && (node?.type === 'mesh' || node?.type === 'flatShape' || node?.type === 'hardwareInstance')) {
+    if (multiIds.size === 1 && (node?.type === 'mesh' || node?.type === 'flatShape' || node?.type === 'hardwareInstance' || node?.type === 'primitive')) {
       items.push({
         label: '🎨 Show color',
         action: () => showColorForNode(node.id),

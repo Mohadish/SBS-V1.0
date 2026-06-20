@@ -1179,7 +1179,7 @@ function _buildContextMenuItems(node) {
   // Switches to the Colors tab and expands the preset currently assigned
   // to this node at the active step. Hidden on multi-selection because
   // "which color?" is ambiguous when multiple meshes are selected.
-  if (count === 1 && (node.type === 'mesh' || node.type === 'flatShape' || node.type === 'hardwareInstance')) {
+  if (count === 1 && (node.type === 'mesh' || node.type === 'flatShape' || node.type === 'hardwareInstance' || node.type === 'primitive')) {
     items.push({
       label: '🎨 Show color',
       action: () => showColorForNode(node.id),
