@@ -38,7 +38,7 @@ import {
   getNearestContainerAncestor,
   getPathToNode,
 }                         from './core/nodes.js';
-import { applyAllTransforms } from './core/transforms.js';
+import { applyAllTransforms, isTransformNode, isNearZero, isIdentityQuaternion } from './core/transforms.js';
 
 // ── I/O ───────────────────────────────────────────────────────────────────────
 import { saveProject, getSuggestedFilename, serialize } from './io/project.js';
@@ -2962,8 +2962,24 @@ canvas.addEventListener('contextmenu', e => {
     items.push({ label: '─', disabled: true });
   }
 
+  // Reset — 3-way (V0.3.0.105, parity with the tree menu; was one combined item).
   if (isTransformable) {
-    items.push({ label: '↺ Reset transform', action: () => resetTransform(selId) });
+    const _txIds = [...multiIds].filter(id => isTransformNode(nodeById?.get(id)));
+    items.push({ label: '↺ Reset Move',           action: () => _txIds.forEach(id => actions.resetTransformField(id, 'move')) });
+    items.push({ label: '↺ Reset Rotation',       action: () => _txIds.forEach(id => actions.resetTransformField(id, 'rotate')) });
+    items.push({ label: '↺ Reset All Transforms', action: () => _txIds.forEach(id => actions.resetTransformField(id, 'all')) });
+    items.push({ label: '─', disabled: true });
+  }
+  // Pivot tools (V0.3.0.105, parity with the tree menu — folder-only for now). Copy /
+  // Paste transfer the BLUE pivot; snap / 3-pt enter a viewport pick mode.
+  if (multiIds.size === 1 && node?.type === 'folder' && !node.archived) {
+    const _hasBluePivot = node.pivotEnabled === true && (
+      !isNearZero(node.pivotLocalOffset) || !isIdentityQuaternion(node.pivotLocalQuaternion)
+    );
+    items.push({ label: '⊕ Copy Pivot',  disabled: !_hasBluePivot,                 action: () => actions.copyPivot(node.id) });
+    items.push({ label: '⊕ Paste Pivot', disabled: !actions.hasPivotClipboard(),    action: () => actions.pastePivot(node.id) });
+    items.push({ label: '🧲 Snap Pivot to Surface…',     action: () => actions.startPivotSnapPicking(node.id) });
+    items.push({ label: '⊕ Pivot Center via 3 Points…',  action: () => actions.startPivotCenterPicking(node.id) });
     items.push({ label: '─', disabled: true });
   }
   // Surface-match align (V0.3.0.71) — folders + primitives / models / shapes, now
