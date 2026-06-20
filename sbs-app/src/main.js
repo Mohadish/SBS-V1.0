@@ -50,7 +50,7 @@ import { initHud }                from './ui/hud.js';
 import { initStepNav }            from './ui/step-nav.js';
 import { initStepsPanel }         from './ui/steps-panel.js';
 import { initSidebarLeft, showColorForNode } from './ui/sidebar-left.js';
-import { initContextMenu, hideContextMenu, showContextMenu } from './ui/context-menu.js';
+import { initContextMenu, hideContextMenu, showContextMenu, canonicalizeMenuOrder } from './ui/context-menu.js';
 import { showMoveToFolderDialog, showAddToReplaceDialog, showReplaceModeDialog, showInputDialog, showInsertAnimDialog } from './ui/tree.js';
 import { positionSafeFrameEl }    from './core/safe-frame.js';
 import { initOverlay, getStage as getOverlayStage } from './systems/overlay.js';
@@ -3122,7 +3122,11 @@ canvas.addEventListener('contextmenu', e => {
     items.push({ label: '✖ Deselect  [Esc]', action: () => { actionClearSelection(); gizmo.hide(); } });
   }
 
-  if (items.length) showContextMenu(items, e.clientX, e.clientY);
+  // V0.3.0.96 — same canonical section order as the tree menu, so an object's
+  // viewport r-click reads identically. Camera / Fit-view / Deselect sink to the
+  // bottom (group 13). Mode menus (shape draw, cable routing) show earlier and
+  // are NOT canonicalized.
+  if (items.length) showContextMenu(canonicalizeMenuOrder(items), e.clientX, e.clientY);
 });
 
 /**

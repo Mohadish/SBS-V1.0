@@ -40,7 +40,7 @@ import {
 }                               from '../core/transforms.js';
 import { generateId }           from '../core/schema.js';
 import { setStatus }            from './status.js';
-import { showContextMenu, hideContextMenu, showConfirmDialog } from './context-menu.js';
+import { showContextMenu, hideContextMenu, showConfirmDialog, canonicalizeMenuOrder } from './context-menu.js';
 import { showColorForNode, editHardwareTemplate } from './sidebar-left.js';
 import * as folderAlignPicker   from '../systems/folder-align-picker.js';
 import * as folderAlign3ptPicker from '../systems/folder-align-3pt-picker.js';
@@ -1510,7 +1510,10 @@ function _buildContextMenuItems(node) {
     });
   }
 
-  return items;
+  // V0.3.0.96 — re-sort the entity menu into one canonical section order so every
+  // node type reads the same (separators regenerated). Note / archived / RM-child
+  // menus return early above and are NOT canonicalized.
+  return canonicalizeMenuOrder(items);
 }
 
 // ─── Delete-assembly orchestrator + dialog ────────────────────────────────

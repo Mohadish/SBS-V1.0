@@ -199,6 +199,70 @@ export function hideContextMenu() {
   _liveBtns = [];
 }
 
+// ── Canonical menu order (V0.3.0.96) ──────────────────────────────────────────
+// The tree + viewport ENTITY menus push items in code order, which differs per
+// node type. canonicalizeMenuOrder() re-sorts a finished item list into ONE
+// section order so every object / folder / model reads the same, and regenerates
+// the separators between sections. Pure reorder — each item's action / disabled /
+// submenu is preserved. Items whose label matches no rule fall into the per-type
+// "special" section (group 8) in their original relative order (stable sort).
+// Apply ONLY to the entity menu — pass mode-specific menus (shape editor, cable
+// routing, note picking) through untouched.
+const _MENU_SECTIONS = [
+  // [matcher(label), group] — first match wins; groups render in ascending order.
+  // Viewport-only globals — tested FIRST so '🎯 Fit view' doesn't match the
+  // entity '🎯 Fit' rule below; they sink to the very bottom (group 13).
+  [l => l.startsWith('📷') || l.startsWith('🎯 Fit view') || l.startsWith('✖ Deselect'), 13],
+  [l => l.startsWith('⚠️'),                                          0],  // missing-asset header
+  [l => l.startsWith('💬 Add Note'),                                 1],  // add note
+  [l => l.startsWith('🗒 Notes on') || /^\s+[👁🚫]/.test(l),         1],  // notes list (header + rows)
+  [l => l.startsWith('👁 Visibility'),                               2],  // "this object" group
+  [l => l.startsWith('🔍 Isolate') || l.startsWith('🌐 Un-isolate'), 2],
+  [l => l.startsWith('🎯 Fit'),                                      2],
+  [l => l.startsWith('✏ Rename'),                                    2],
+  [l => l.startsWith('📁→ Move'),                                    2],
+  [l => l.includes('Copy Transforms') || l.includes('Paste Transforms')
+        || l.startsWith('↺ Reset'),                                  3],  // transforms
+  [l => l.startsWith('🎯 Align'),                                    4],  // align
+  [l => l.startsWith('⊕ Copy Pivot') || l.startsWith('⊕ Paste Pivot')
+        || l.startsWith('🧲 Snap Pivot') || l.startsWith('⊕ Pivot'), 5],  // pivot
+  [l => l.includes('Follow object') || l.includes('Stop following'), 6],  // follow
+  [l => (l.startsWith('📋 Copy') && !l.includes('Transforms') && !l.includes('tree'))
+        || l.startsWith('📄 Paste') || l.startsWith('🔗 Paste Instance')
+        || l.startsWith('🪄 Make transformable')
+        || l.startsWith('＋ Add to replace'),                        7],  // object clipboard / upgrade
+  // group 8 = per-type SPECIAL (default) — hardware / shape-edit / show-color
+  [l => l.startsWith('🧹 Clean') || l.startsWith('🔒 Lock') || l.startsWith('🔓 Unlock')
+        || l.startsWith('📁＋ New Folder') || l.startsWith('⤵') || l.startsWith('⊟ Collapse'), 9], // tree-only utilities
+  [l => l.startsWith('🗑') || l.startsWith('🚫🔄 Remove'),           10], // delete
+  [l => l.startsWith('🗃') || l.startsWith('📤 Unarchive'),          11], // archive (bottom)
+  [l => l.includes('Copy tree') || l.includes('Paste tree'),         12], // scene tree clipboard
+];
+const _MENU_DEFAULT_GROUP = 8;
+
+function _menuGroup(label) {
+  const l = label || '';
+  for (const [test, g] of _MENU_SECTIONS) {
+    try { if (test(l)) return g; } catch (_) {}
+  }
+  return _MENU_DEFAULT_GROUP;
+}
+
+export function canonicalizeMenuOrder(items) {
+  if (!Array.isArray(items) || items.length < 2) return items;
+  const real = items.filter(it => it && !it.separator);
+  const ranked = real.map((it, i) => ({ it, i, g: _menuGroup(it.label || '') }));
+  ranked.sort((a, b) => (a.g - b.g) || (a.i - b.i));   // stable within a section
+  const out = [];
+  let prevG = null;
+  for (const r of ranked) {
+    if (prevG !== null && r.g !== prevG) out.push({ separator: true });
+    out.push(r.it);
+    prevG = r.g;
+  }
+  return out;
+}
+
 /**
  * Yes / No confirm dialog. Calls onYes if the user confirms.
  * Lives next to showContextMenu so any module that uses the context
