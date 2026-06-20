@@ -10911,15 +10911,19 @@ export function deleteShapeTemplate(templateId, { skipConfirm = false } = {}) {
   if (!tpl) return false;
 
   const root = state.get('treeData');
-  const instanceIds = [];
-  if (root) {
-    const stack = [root];
-    while (stack.length) {
-      const n = stack.pop();
-      if (n.type === 'flatShape' && n.templateId === templateId) instanceIds.push(n.id);
-      if (n.children) for (const c of n.children) stack.push(c);
-    }
-  }
+  // V0.3.0.111 — scan the live tree AND every step snapshot, so a snapshot-only
+  // instance (not in the active step's tree) is removed too instead of orphaning
+  // into the next save. _removeShapeInstance now cleans snapshots even when the
+  // node isn't live.
+  const instanceIdSet = new Set();
+  const scan = (spec) => {
+    if (!spec) return;
+    if (spec.type === 'flatShape' && spec.templateId === templateId) instanceIdSet.add(spec.id);
+    (spec.children || []).forEach(scan);
+  };
+  scan(root);
+  for (const s of state.get('steps') || []) scan(s.snapshot?.tree);
+  const instanceIds = [...instanceIdSet];
 
   if (!skipConfirm && instanceIds.length > 0) {
     const ok = confirm(
@@ -11021,22 +11025,26 @@ function _removeShapeInstance(instanceId) {
   const root = state.get('treeData');
   if (!root) return;
   const node = state.get('nodeById')?.get(instanceId);
-  if (!node) return;
 
-  // Detach mesh + dispose
-  disposeFlatShape(node);
-  steps.object3dById.delete(instanceId);
+  // V0.3.0.111 — only the LIVE-tree work is gated on the node existing; the snapshot
+  // cleanup below ALWAYS runs, so a snapshot-only instance (not in the active step's
+  // live tree) is still purged instead of orphaning into the next save.
+  if (node) {
+    // Detach mesh + dispose
+    disposeFlatShape(node);
+    steps.object3dById.delete(instanceId);
 
-  // Splice from parent
-  const stack = [{ parent: null, node: root }];
-  while (stack.length) {
-    const { parent, node: n } = stack.pop();
-    if (n.id === instanceId && parent) {
-      const idx = parent.children.findIndex(c => c.id === instanceId);
-      if (idx >= 0) parent.children.splice(idx, 1);
-      break;
+    // Splice from parent (live tree)
+    const stack = [{ parent: null, node: root }];
+    while (stack.length) {
+      const { parent, node: n } = stack.pop();
+      if (n.id === instanceId && parent) {
+        const idx = parent.children.findIndex(c => c.id === instanceId);
+        if (idx >= 0) parent.children.splice(idx, 1);
+        break;
+      }
+      if (n.children) for (const c of n.children) stack.push({ parent: n, node: c });
     }
-    if (n.children) for (const c of n.children) stack.push({ parent: n, node: c });
   }
 
   // Remove from every step's snapshot too — keeps snapshots in sync so a
@@ -11056,6 +11064,68 @@ function _removeShapeInstance(instanceId) {
   });
   state.setState({ steps: nextSteps, nodeById: _nodes_buildNodeMap(root) });
   state.emit('change:treeData', root);
+}
+
+/**
+ * Self-heal (V0.3.0.111): remove flatShape instances whose template no longer
+ * exists (templateId set but absent from state.shapeTemplates). They can't build
+ * geometry — they load INVISIBLE and spam the "template not found" warn. They get
+ * baked into a save when a template is deleted while a snapshot-only instance
+ * lingers (the old delete path only scanned the live tree). Scans the live tree AND
+ * every step snapshot and strips matches from both. Called once on project load.
+ * Returns the count removed. No undo entry — these nodes render nothing.
+ */
+export function pruneOrphanShapeInstances() {
+  const validTpl  = new Set((state.get('shapeTemplates') || []).map(t => t.id));
+  const orphanIds = new Set();
+  const scan = (spec) => {
+    if (!spec) return;
+    if (spec.type === 'flatShape' && spec.templateId && !validTpl.has(spec.templateId)) {
+      orphanIds.add(spec.id);
+    }
+    (spec.children || []).forEach(scan);
+  };
+  const root = state.get('treeData');
+  scan(root);
+  const allSteps = state.get('steps') || [];
+  for (const s of allSteps) scan(s.snapshot?.tree);
+  if (!orphanIds.size) return 0;
+
+  // Dispose any live meshes + splice from the live tree IN PLACE (preserve identities).
+  for (const id of orphanIds) {
+    const node = state.get('nodeById')?.get(id);
+    if (node) { try { disposeFlatShape(node); } catch (_) {} steps.object3dById?.delete(id); }
+  }
+  if (root) {
+    for (const id of orphanIds) {
+      const stack = [{ parent: null, node: root }];
+      while (stack.length) {
+        const { parent, node: n } = stack.pop();
+        if (n.id === id && parent) {
+          const i = parent.children.findIndex(c => c.id === id);
+          if (i >= 0) parent.children.splice(i, 1);
+          break;
+        }
+        if (n.children) for (const c of n.children) stack.push({ parent: n, node: c });
+      }
+    }
+  }
+  // Strip from every step snapshot (tree + visibility + transforms).
+  const nextSteps = allSteps.map(s => {
+    const snap = s.snapshot;
+    if (!snap) return s;
+    let tree = snap.tree, vis = snap.visibility, tr = snap.transforms, changed = false;
+    for (const id of orphanIds) {
+      if (tree) { const nt = _removeFromTreeSpec(tree, id); if (nt !== tree) { tree = nt; changed = true; } }
+      if (vis && vis[id] !== undefined) { vis = { ...vis }; delete vis[id]; changed = true; }
+      if (tr  && tr[id]  !== undefined) { tr  = { ...tr };  delete tr[id];  changed = true; }
+    }
+    return changed ? { ...s, snapshot: { ...snap, tree, visibility: vis, transforms: tr } } : s;
+  });
+  state.setState({ steps: nextSteps, nodeById: _nodes_buildNodeMap(root) });
+  state.emit('change:treeData', root);
+  console.warn(`[flatShape] pruned ${orphanIds.size} orphan shape instance(s) with missing templates:`, [...orphanIds]);
+  return orphanIds.size;
 }
 
 function _propagateNewNodeToSteps(node, parentId, opts = {}) {

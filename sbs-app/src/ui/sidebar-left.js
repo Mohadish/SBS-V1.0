@@ -846,6 +846,12 @@ async function _onOpenProject() {
     try { actions.rebuildReplaceModelChildren?.(); }
     catch (err) { console.warn('[replaceModel] post-load rebuild failed:', err); }
 
+    // V0.3.0.111 — self-heal orphan flatShapes (templateId → missing template). They
+    // load invisible + spam the "template not found" warn; strip them from the live
+    // tree + every snapshot BEFORE activating a step so the rebuild is clean.
+    try { actions.pruneOrphanShapeInstances?.(); }
+    catch (err) { console.warn('[flatShape] orphan prune failed:', err); }
+
     const userSteps = (state.get('steps') || []).filter(s => !s.isBaseStep && !s.hidden);
     if (userSteps.length) {
       steps.activateStep(userSteps[0].id, false);
