@@ -1392,8 +1392,10 @@ function _buildContextMenuItems(node) {
   // ── Make transformable (V0.2.22.79) ───────────────────────────────────
   // Wrap a single node in a locked pivot-folder named after it → instant
   // gizmo, centred on the node, oriented to its parent folder.
-  if (count === 1 && !node.archived
-      && node.type !== 'scene' && node.type !== 'note' && node.type !== 'hardwareNut') {
+  // V0.3.0.107 — RAW MESH only. Folders / primitives / shapes / hardware / models
+  // are already transformable (own gizmo), so they don't need it; a bare mesh
+  // (loaded-model part) is the one node type that gains a gizmo from wrapping.
+  if (count === 1 && !node.archived && node.type === 'mesh') {
     items.push({
       label: '🪄 Make transformable',
       action: () => actions.makeTransformable(node.id),

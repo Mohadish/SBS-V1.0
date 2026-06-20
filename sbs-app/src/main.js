@@ -3042,10 +3042,9 @@ canvas.addEventListener('contextmenu', e => {
         },
       });
     }
-    // Make transformable — wrap a single node in a locked pivot-folder so
-    // it gets a gizmo (centred on the node, oriented to its parent folder).
-    if (multiIds.size === 1 && node && !node.archived &&
-        node.type !== 'note' && node.type !== 'scene' && node.type !== 'hardwareNut') {
+    // Make transformable — RAW MESH only (V0.3.0.107). Everything else already
+    // has its own gizmo; a bare loaded-model mesh is the one that needs wrapping.
+    if (multiIds.size === 1 && node && !node.archived && node.type === 'mesh') {
       items.push({
         label: '🪄 Make transformable',
         action: () => actions.makeTransformable(node.id),
