@@ -145,7 +145,11 @@ export function showContextMenu(items, x, y, opts = {}) {
     }
 
     // Submenu (flyout): renders with a ▸ indicator; opens a side panel on
-    // hover or click. No own action.
+    // hover or click. HYBRID rows (V0.3.0.92): if the item ALSO carries an
+    // `action`, the ▸ still opens the flyout on hover, but a plain click runs
+    // the primary action and closes — so the row is both a button and a
+    // submenu opener (used by the Visibility row: click = hide/show this step,
+    // hover = the across-steps options).
     if (Array.isArray(item.submenu)) {
       const btn = document.createElement('button');
       btn.className   = 'context-menu__item';
@@ -153,8 +157,18 @@ export function showContextMenu(items, x, y, opts = {}) {
       btn.disabled    = !!item.disabled;
       const open = () => { if (!btn.disabled) _openFlyout(btn, item.submenu); };
       btn.addEventListener('mouseenter', open);
-      btn.addEventListener('click', e => { e.stopPropagation(); open(); });
+      if (typeof item.action === 'function') {
+        btn.addEventListener('click', e => {
+          e.stopPropagation();
+          _modState = _ctxFromEvent(e);
+          hideContextMenu();
+          item.action(_modState);
+        });
+      } else {
+        btn.addEventListener('click', e => { e.stopPropagation(); open(); });
+      }
       _el.appendChild(btn);
+      if (typeof item.liveLabel === 'function') _liveBtns.push({ btn, item });
       continue;
     }
 

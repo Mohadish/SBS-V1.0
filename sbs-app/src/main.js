@@ -2935,6 +2935,9 @@ canvas.addEventListener('contextmenu', e => {
     items.push({
       label: '👁 Visibility',
       disabled: _isolated,   // while isolated, the mask owns hide/show
+      // Hybrid row (V0.3.0.92): click = standard hide/show this step; hover ▸ =
+      // the across-steps submenu below.
+      action: () => actions.toggleVisibility(multiIds),
       submenu: [
         { label: '👁 Hide / Show — this step', action: () => actions.toggleVisibility(multiIds) },
         { separator: true },

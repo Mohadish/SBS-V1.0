@@ -898,6 +898,9 @@ function _buildContextMenuItems(node) {
   items.push({
     label: '👁 Visibility',
     disabled: actions.hasIsolateSnapshot(),   // while isolated, the mask owns hide/show
+    // Hybrid row (V0.3.0.92): click = standard hide/show this step; hover ▸ =
+    // the across-steps submenu below.
+    action: () => actions.toggleVisibility(targetIds),
     submenu: [
       { label: allVisible ? `🚫 Hide ${label} — this step` : `👁 Show ${label} — this step`,
         action: () => actions.toggleVisibility(targetIds) },
