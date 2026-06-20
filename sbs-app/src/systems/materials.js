@@ -1412,7 +1412,11 @@ gl_FragColor.a = 1.0;
    * @param {Map}     object3dById   steps.object3dById
    */
   advanceVisibilityTransitions(nowMs, object3dById) {
-    if (!this._visTransitions.size) return false;
+    if (!this._visTransitions.size) {
+      // Even with no active fades, a deferred-hide may now be clear to finish
+      // (its last fading descendant just completed on a prior frame).
+      return this._flushDeferredHides(object3dById);
+    }
 
     const outlineSettings = state.get('geometryOutline');
     const done            = [];
@@ -1435,22 +1439,74 @@ gl_FragColor.a = 1.0;
       this._visTransitions.delete(nodeId);
 
       if (tr.hide) {
-        // Fade complete — now actually hide the Three.js object
         const obj = object3dById.get(nodeId);
-        if (obj) obj.visible = false;
-        // Reset transitionOpacity to 1.0 so the object renders normally if shown again
-        const mesh = this.meshById.get(nodeId);
-        if (mesh) this._setMaterialFade(mesh.material, 1.0);
-        const bp = mesh?.userData?.falloffBackPass;
-        if (bp) this._setMaterialFade(bp.material, 1.0);
+        // V0.3.0.103 — if a DESCENDANT is still fading (e.g. an image shape placed
+        // on this primitive, fading in the separate 'shape' channel), DON'T hide
+        // obj yet — doing so would cascade-hide the descendant and snap its fade.
+        // Keep it invisible via material opacity (already ~0) and defer the real
+        // hide until the descendant finishes.
+        if (obj && this._hasFadingDescendant(obj, object3dById)) {
+          (this._deferredHides = this._deferredHides || new Set()).add(nodeId);
+        } else {
+          this._finishHide(nodeId, obj);
+        }
       }
       // showing: already at t=1.0, outline opacity already at target — nothing more to do
     }
-    // V0.1.74: return true on the frame where the LAST transition just
-    // completed so the caller (steps._advanceObjectTransitions) can
-    // re-cascade folder-ancestor visibility that was temporarily kept
-    // visible to let the fade render.
-    return done.length > 0 && this._visTransitions.size === 0;
+    // A descendant completing this frame may free a deferred ancestor.
+    this._flushDeferredHides(object3dById);
+    // V0.1.74: return true on the frame where the LAST transition just completed
+    // (and no deferred hide is still pending) so the caller re-cascades ancestors.
+    return done.length > 0 && this._visTransitions.size === 0 && !(this._deferredHides?.size);
+  }
+
+  /**
+   * Declare the FULL set of node ids that will hide during the current step
+   * transition (mesh + shape channels), set by steps.js before the phases run.
+   * Lets a completed ancestor fade DEFER its real hide while a descendant is
+   * still pending OR fading in a later phase. Resets the deferred set too.
+   */
+  setPendingHideSet(ids) {
+    this._pendingHideIds = new Set(ids || []);
+    this._deferredHides  = new Set();
+  }
+
+  /** True if any node still PENDING/active in the hide set is a descendant of `obj`. */
+  _hasFadingDescendant(obj, object3dById) {
+    if (!this._pendingHideIds?.size) return false;
+    for (const otherId of this._pendingHideIds) {
+      const o = object3dById.get(otherId);
+      if (!o || o === obj) continue;
+      let p = o.parent;
+      while (p) { if (p === obj) return true; p = p.parent; }
+    }
+    return false;
+  }
+
+  /** Actually hide a completed hiding mesh + reset its fade material to 1.0. */
+  _finishHide(nodeId, obj) {
+    if (obj) obj.visible = false;
+    const mesh = this.meshById.get(nodeId);
+    if (mesh) this._setMaterialFade(mesh.material, 1.0);
+    const bp = mesh?.userData?.falloffBackPass;
+    if (bp) this._setMaterialFade(bp.material, 1.0);
+    this._pendingHideIds?.delete(nodeId);
+  }
+
+  /** Finish any deferred hides whose descendants have all stopped fading. Returns
+   * true if that drained the last pending hide (used as the re-cascade trigger). */
+  _flushDeferredHides(object3dById) {
+    if (!this._deferredHides?.size) return false;
+    let flushed = false;
+    for (const id of [...this._deferredHides]) {
+      const obj = object3dById.get(id);
+      if (!obj || !this._hasFadingDescendant(obj, object3dById)) {
+        this._finishHide(id, obj);
+        this._deferredHides.delete(id);
+        flushed = true;
+      }
+    }
+    return flushed && this._deferredHides.size === 0 && this._visTransitions.size === 0;
   }
 
   /**

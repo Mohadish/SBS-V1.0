@@ -605,6 +605,12 @@ class StepManager {
       showingShapeIds = [];
     }
 
+    // V0.3.0.103 — declare the FULL hide set (mesh + shape channels) so a primitive
+    // whose fade completes first defers its real hide while a shape placed ON it is
+    // still pending/fading in the separate 'shape' phase (else hiding the primitive
+    // cascade-snaps the shape).
+    this._materials?.setPendingHideSet?.([...hidingMeshIds, ...hidingShapeIds]);
+
     // V0.2.22.53 — STAGE insertion actors. The insert effect fully owns
     // each flagged screw's reveal + motion: build the exploded transient
     // pieces at THIS step's final pose now, hide the merged mesh, and
@@ -1438,6 +1444,15 @@ class StepManager {
       const { nodeById } = state.pick('nodeById');
       if (nodeById) applyAllVisibilityToScene(nodeById, this.object3dById);
       this._fadeRestoredAncestors.clear();
+    }
+
+    // V0.3.0.103 — while object transitions are running, re-assert visibility on
+    // every not-yet-finished hide target (and its folders) EACH frame, so there's
+    // no 1-frame "blink" where a to-be-faded object is skipped before its fade
+    // phase begins. Uses materials' live pending set (finished hides are removed,
+    // so we never re-show something that already faded out).
+    if (this._objectTransitions.length && this._materials?._pendingHideIds?.size) {
+      this._restoreFadeAncestors([...this._materials._pendingHideIds]);
     }
 
     if (!this._objectTransitions.length) return;
