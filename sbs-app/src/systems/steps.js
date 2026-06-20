@@ -726,7 +726,7 @@ class StepManager {
         // case (animating parent + pivoted child) is a known limitation
         // for now (todo: pivot-aware lerp in parent-local frame).
         const pivotExtras = inheritExtras.inheritParentId
-          ? {}
+          ? _buildLocalPivotExtras(worldFrom, worldTo, inheritExtras.localFrom, inheritExtras.localTo)
           : _buildPivotExtras(worldFrom, worldTo);
         this._objectTransitions.push({
           nodeId, worldFrom, worldTo, startMs,
@@ -1070,7 +1070,7 @@ class StepManager {
             parentMap, changedSet, fromWorldTransforms, toWorldTransforms,
           );
           const pivotExtras = inheritExtras.inheritParentId
-            ? {}
+            ? _buildLocalPivotExtras(worldFrom, worldTo, inheritExtras.localFrom, inheritExtras.localTo)
             : _buildPivotExtras(worldFrom, worldTo);
           this._objectTransitions.push({
             nodeId, worldFrom, worldTo, startMs,
@@ -1247,7 +1247,7 @@ class StepManager {
           parentMap, changedSet, fromWorldTransforms, toWorldTransforms,
         );
         const pivotExtras = inheritExtras.inheritParentId
-          ? {}
+          ? _buildLocalPivotExtras(worldFrom, worldTo, inheritExtras.localFrom, inheritExtras.localTo)
           : _buildPivotExtras(worldFrom, worldTo);
         this._objectTransitions.push({
           nodeId, worldFrom, worldTo, startMs,
@@ -1433,6 +1433,31 @@ class StepManager {
               lerpedPivotWorld[2] - offsetWorld.z,
             ];
             _setWorldTransformOnObject(obj, lerpedPos, lerpedQuat);
+            _writeDataStateFromObject3D(node, obj);  // V0.2.22.17 Stage 1
+          } else if (tr.inheritParentId && tr.localPivotData && tr.localFrom && tr.localTo) {
+            // COMBINED branch (V0.3.0.100): pivoted child of an ANIMATING parent.
+            // Arc around the pivot in PARENT-LOCAL space — the parent's matrixWorld
+            // is already at its own lerped state this frame (depth sort), so an
+            // offset pivot stays put even while the parent moves. Without this the
+            // child chord-slid through the pivot ("remote swing" inside a moving
+            // folder). Mirrors the world-space pivot branch but in the parent frame.
+            const THREE = window.THREE;
+            const lerpedQuatLocal   = slerpQuaternion(tr.localFrom.quaternion, tr.localTo.quaternion, alpha);
+            const lerpedPivLocal    = lerpVec3(tr.localPivotData.pivLocalFrom, tr.localPivotData.pivLocalTo, alpha);
+            const lerpedPivotParent = lerpVec3(tr.localPivotData.parentFrom,   tr.localPivotData.parentTo,   alpha);
+            const offsetParent = new THREE.Vector3(
+              lerpedPivLocal[0], lerpedPivLocal[1], lerpedPivLocal[2],
+            ).applyQuaternion(
+              new THREE.Quaternion(lerpedQuatLocal[0], lerpedQuatLocal[1], lerpedQuatLocal[2], lerpedQuatLocal[3]),
+            );
+            obj.position.set(
+              lerpedPivotParent[0] - offsetParent.x,
+              lerpedPivotParent[1] - offsetParent.y,
+              lerpedPivotParent[2] - offsetParent.z,
+            );
+            obj.quaternion.set(lerpedQuatLocal[0], lerpedQuatLocal[1], lerpedQuatLocal[2], lerpedQuatLocal[3]);
+            obj.updateMatrix();
+            obj.updateMatrixWorld(false);
             _writeDataStateFromObject3D(node, obj);  // V0.2.22.17 Stage 1
           } else if (tr.inheritParentId && tr.localFrom && tr.localTo) {
             // PARENT-LOCAL lerp branch. The tree-data parent is also
@@ -3334,6 +3359,43 @@ function _buildPivotExtras(worldFrom, worldTo) {
       worldTo:   computePivotWorld(worldTo,   pivLocalTo),
       localFrom: [...pivLocalFrom],
       localTo:   [...pivLocalTo],
+    },
+  };
+}
+
+// V0.3.0.100 — COMBINED case: a pivoted child whose parent is ALSO animating this
+// transition. _buildPivotExtras arcs in WORLD space, but here the child rides the
+// parent via the parent-local lerp (inheritExtras), so we build the pivot arc in
+// PARENT-LOCAL space instead. localFrom/localTo are the child's pose relative to the
+// parent at each end (from _buildInheritExtras). Per-frame, the consumer arcs the
+// child around its pivot in parent-local space; the parent's own (already-updated)
+// matrixWorld then carries it to the right world position. Fixes "pivot swings to a
+// remote spot when the pivoted object is inside a moving folder".
+function _buildLocalPivotExtras(worldFrom, worldTo, localFrom, localTo) {
+  const THREE = window.THREE;
+  if (!THREE || !worldFrom || !worldTo || !localFrom || !localTo) return {};
+  if (!worldFrom.pivotEnabled || !worldTo.pivotEnabled) return {};
+  const pivLocalFrom = worldFrom.pivotLocalOffset || [0, 0, 0];
+  const pivLocalTo   = worldTo.pivotLocalOffset   || [0, 0, 0];
+  const _isZero = v => Math.abs(v[0]) + Math.abs(v[1]) + Math.abs(v[2]) < 1e-7;
+  if (_isZero(pivLocalFrom) && _isZero(pivLocalTo)) return {};
+
+  // pivotParent_X = childLocalPos_X + rotate(childLocalQuat_X, pivotLocal_X)
+  const computePivotParent = (localPose, pivLocal) => {
+    const offP = new THREE.Vector3(pivLocal[0], pivLocal[1], pivLocal[2])
+      .applyQuaternion(new THREE.Quaternion(...localPose.quaternion));
+    return [
+      localPose.position[0] + offP.x,
+      localPose.position[1] + offP.y,
+      localPose.position[2] + offP.z,
+    ];
+  };
+  return {
+    localPivotData: {
+      parentFrom:   computePivotParent(localFrom, pivLocalFrom),
+      parentTo:     computePivotParent(localTo,   pivLocalTo),
+      pivLocalFrom: [...pivLocalFrom],
+      pivLocalTo:   [...pivLocalTo],
     },
   };
 }
