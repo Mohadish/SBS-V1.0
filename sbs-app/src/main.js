@@ -1298,8 +1298,13 @@ canvas.addEventListener('pointerdown', e => {
     e.stopPropagation();
     _gizmoConsumed = true;
     const hit = sceneCore.pick(e.clientX, e.clientY);
-    if (hit?.object?.userData?.meshNodeId === notePickMeshId) {
+    const hitMeshId = hit?.object?.userData?.meshNodeId || null;
+    if (hitMeshId === notePickMeshId) {
       actions.createNoteAtHit(notePickMeshId, hit);
+    } else if (hitMeshId && state.get('nodeById')?.get(notePickMeshId)?.type === 'model') {
+      // Model target (V0.3.0.94): a model has no single mesh, so anchor the
+      // note to the actual child face that was clicked.
+      actions.createNoteAtHit(hitMeshId, hit);
     } else {
       actions.cancelNotePicking();
     }
@@ -2760,6 +2765,18 @@ canvas.addEventListener('contextmenu', e => {
 
   // ── Parametric primitive (V0.2.22.94) — copy / paste / paste-instance / delete ──
   if (node?.type === 'primitive') {
+    // Per-step pose clipboard (V0.3.0.94) — same as flatShape / hardware.
+    items.push({
+      label: '📋 Copy Transforms',
+      action: () => actions.copyInstanceStepPose(node.id),
+    });
+    const _primSelStep = state.get('selectedStepIds')?.size ?? 0;
+    items.push({
+      label: _primSelStep >= 2 ? `📌 Paste Transforms to ${_primSelStep} steps` : '📌 Paste Transforms',
+      disabled: !actions.hasInstancePoseClipboard(),
+      action: () => actions.pasteInstanceStepPose(node.id),
+    });
+    items.push({ label: '─', disabled: true });
     items.push({ label: '📋 Copy', action: () => actions.copyPrimitive(node.id) });
     items.push({
       label:    '📄 Paste (independent)',

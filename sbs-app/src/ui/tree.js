@@ -1012,11 +1012,16 @@ function _buildContextMenuItems(node) {
     items.push({ separator: true });
   }
 
-  // ── Add Note (mesh-only, anchored to a face) ────────────────────────────────
-  // Promoted to the top of the menu so it's where the user looks first.
-  // Click flow: this item arms face-pick mode (state.notePickingMeshId);
-  // the next viewport click on the same mesh creates the balloon.
-  if (node.type === 'mesh' && !node.missing) {
+  // ── Add Note (objects + models, anchored to a face — V0.3.0.94) ──────────────
+  // Click flow: this item arms face-pick mode (state.notePickingMeshId); the
+  // next viewport click anchors the balloon. Available on objects (mesh /
+  // primitive / shape / hardware — their meshes carry meshNodeId=own id) and
+  // on models (the pick handler anchors the note to the clicked child face).
+  // NOT on folders / scene / notes.
+  const NOTE_TARGET = node.type === 'mesh' || node.type === 'primitive'
+                   || node.type === 'flatShape' || node.type === 'hardwareInstance'
+                   || node.type === 'model';
+  if (NOTE_TARGET && !node.missing) {
     items.push({
       label: '💬 Add Note…',
       action: () => actions.startNotePicking(node.id),
@@ -1267,6 +1272,21 @@ function _buildContextMenuItems(node) {
 
   // ── Parametric primitive — copy / paste / paste-instance / delete (V0.2.22.94) ──
   if (node.type === 'primitive') {
+    items.push({ separator: true });
+    // Per-step pose clipboard (V0.3.0.94) — same as flatShape / hardware. Copy
+    // captures the ACTIVE step's transform + visibility; paste applies it to
+    // the selected steps (≥2) or just the active step. Distinct from the
+    // object Copy/Paste below, which clones the whole primitive.
+    items.push({
+      label: '📋 Copy Transforms',
+      action: () => actions.copyInstanceStepPose(node.id),
+    });
+    const _primSelStep = state.get('selectedStepIds')?.size ?? 0;
+    items.push({
+      label: _primSelStep >= 2 ? `📌 Paste Transforms to ${_primSelStep} steps` : '📌 Paste Transforms',
+      disabled: !actions.hasInstancePoseClipboard(),
+      action: () => actions.pasteInstanceStepPose(node.id),
+    });
     items.push({ separator: true });
     items.push({ label: '📋 Copy', action: () => actions.copyPrimitive(node.id) });
     items.push({

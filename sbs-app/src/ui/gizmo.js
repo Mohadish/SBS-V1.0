@@ -1462,13 +1462,13 @@ class GizmoController {
     const panel = document.createElement('div');
     this._panel = panel;
 
-    // V0.3.0.85 — pin to a fixed corner of the viewport (top-right), not the cursor,
-    // so it's always in a predictable, out-of-the-way spot.
+    // V0.3.0.94 — pin to the TOP-LEFT corner of the viewport (was top-right),
+    // a predictable out-of-the-way spot clear of the model under the click.
     const _surf = document.getElementById('viewport-surface');
     const _sr = _surf ? _surf.getBoundingClientRect() : null;
     panel.style.cssText = [
       'position:fixed',
-      `left:${Math.max(8, (_sr ? _sr.right : window.innerWidth) - 260)}px`,
+      `left:${Math.max(8, (_sr ? _sr.left : 0) + 12)}px`,
       `top:${Math.max(8, (_sr ? _sr.top : 0) + 12)}px`,
       'z-index:9999',
       'background:#1e293b',
@@ -1486,13 +1486,12 @@ class GizmoController {
 
     this._rebindPanel();   // populates HTML + snapshot + wires events
 
-    // V0.3.0.85 — pin to the TOP-RIGHT corner of the viewport (clear of the model under
-    // the click and of both sidebars), a fixed predictable spot instead of the cursor.
+    // V0.3.0.94 — pin to the TOP-LEFT corner of the viewport (clear of the model
+    // under the click), a fixed predictable spot instead of the cursor.
     requestAnimationFrame(() => {
-      const r = panel.getBoundingClientRect();
-      const right = _sr ? _sr.right : (window.innerWidth - 8);
+      const left0 = _sr ? _sr.left : 8;
       const top0  = _sr ? _sr.top  : 8;
-      let left = right - r.width - 12;
+      let left = left0 + 12;
       let top  = top0 + 12;
       if (left < 8) left = 8;
       if (top  < 8) top  = 8;
