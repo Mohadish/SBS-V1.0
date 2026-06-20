@@ -1516,8 +1516,8 @@ canvas.addEventListener('pointerdown', e => {
     return;
   }
 
-  // Gizmo gets first chance
-  if (gizmo.onPointerDown(e.clientX, e.clientY)) {
+  // Gizmo gets first chance (pass initial Ctrl/⌘ state for Ctrl-drag global)
+  if (gizmo.onPointerDown(e.clientX, e.clientY, e.ctrlKey || e.metaKey)) {
     canvas.setPointerCapture(e.pointerId);
     _gizmoConsumed = true;
     return;

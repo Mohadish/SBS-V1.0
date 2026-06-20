@@ -3338,6 +3338,74 @@ function _stampTransformDelta(nodeId, dOff, dQuat, targetIds) {
   );
   setStatus(`Carried the change to ${targetIds.size} other step${targetIds.size === 1 ? '' : 's'}.`, 'success', 2500);
 }
+
+// ─── Ctrl-drag GLOBAL commit (V0.3.0.98) ────────────────────────────────────
+// Called by the gizmo when a per-step translate/rotate drag ends with Ctrl held.
+// Commits the active-step change (one undo, same as commitTransformEdit) then
+// prompts to BROADCAST the same delta to a step RANGE — all / this / previous+this
+// / following+this (this step always included) — and stamps it onto those steps'
+// snapshots via _stampTransformDelta. Bypasses the 2+-step _msXf session so the two
+// mechanisms never double-prompt. Async: fire-and-forget from the gizmo.
+export async function commitTransformEditGlobalCtrl(nodeId) {
+  const batch = (_transformBatch && _transformBatch.nodeId === nodeId) ? _transformBatch : null;
+  _transformBatch = null;
+  _msXf = null;                                   // suppress the deselect-time multi-step prompt
+  const node = state.get('nodeById')?.get(nodeId);
+  if (!node || !batch) return;
+  const from = batch.from;
+  const to   = captureTransformSnapshot(node);
+  if (JSON.stringify(from) === JSON.stringify(to)) return;   // no real change
+
+  // 1) Active-step undo for the live change (identical to commitTransformEdit).
+  undoManager.push('Transform',
+    () => { const n = state.get('nodeById')?.get(nodeId); if (!n) return; applyTransformSnapshot(n, from);
+            const o = steps.object3dById?.get(nodeId); if (o) applyNodeTransformToObject3D(n, o); steps.scheduleTransformSync(); },
+    () => { const n = state.get('nodeById')?.get(nodeId); if (!n) return; applyTransformSnapshot(n, to);
+            const o = steps.object3dById?.get(nodeId); if (o) applyNodeTransformToObject3D(n, o); steps.scheduleTransformSync(); },
+  );
+  steps.scheduleTransformSync();
+
+  const allSteps = state.get('steps') || [];
+  if (allSteps.length < 2) return;                // single step — nothing to broadcast to
+
+  // 2) Net delta of this drag.
+  const dOff = [
+    (to.localOffset?.[0] || 0) - (from.localOffset?.[0] || 0),
+    (to.localOffset?.[1] || 0) - (from.localOffset?.[1] || 0),
+    (to.localOffset?.[2] || 0) - (from.localOffset?.[2] || 0),
+  ];
+  const dQuat  = _quatMulArr(to.localQuaternion || [0, 0, 0, 1], _quatInvArr(from.localQuaternion || [0, 0, 0, 1]));
+  const moved  = Math.hypot(dOff[0], dOff[1], dOff[2]);
+  const rotAng = 2 * Math.acos(Math.min(1, Math.abs(dQuat[3] ?? 1)));
+  if (moved < 1e-4 && rotAng < 1e-4) return;
+
+  // 3) Range prompt (this step is always included in every option).
+  const what = rotAng >= 1e-4 ? (moved >= 1e-4 ? 'move + rotation' : 'rotation') : 'move';
+  const choice = await chooseFromButtons(
+    '🌐 Global transform — apply to…',
+    `Carry this ${what} of "${node.name || 'Object'}" to which steps?`,
+    [
+      { id: 'all',     label: 'All steps', primary: true },
+      { id: 'earlier', label: 'Previous + this step' },
+      { id: 'later',   label: 'Following + this step' },
+      { id: 'this',    label: 'This step only' },
+      { id: 'cancel',  label: 'Cancel' },
+    ],
+  );
+  if (!choice || choice === 'cancel' || choice === 'this') return;   // 'this' = active only (already done)
+
+  // 4) Resolve scope + stamp the delta (active step already holds the live result).
+  const activeId  = state.get('activeStepId');
+  const activeIdx = allSteps.findIndex(s => s.id === activeId);
+  let scope;
+  if      (choice === 'all')     scope = new Set(allSteps.map(s => s.id));
+  else if (choice === 'earlier') scope = new Set(allSteps.slice(0, activeIdx + 1).map(s => s.id));
+  else if (choice === 'later')   scope = new Set(allSteps.slice(Math.max(0, activeIdx)).map(s => s.id));
+  else                           return;
+  scope.delete(activeId);
+  if (scope.size === 0) return;
+  _stampTransformDelta(nodeId, dOff, dQuat, scope);
+}
 state.on('selection:change', _maybeFinalizeMultiStepXf);
 
 /**

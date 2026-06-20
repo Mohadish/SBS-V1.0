@@ -713,7 +713,7 @@ class GizmoController {
 
   // ── Pointer: down / move / up ─────────────────────────────────────────────
 
-  onPointerDown(clientX, clientY) {
+  onPointerDown(clientX, clientY, ctrlInit = false) {
     if (!this._visible) return false;
     // If a prior drag was deferred (click-armed or numeric-locked),
     // commit it before processing this new click. Without this, a user
@@ -814,6 +814,17 @@ class GizmoController {
     this._lastAmount = null;
     if (this._onDragEvent) this._onDragEvent('start', { type: el.type, axis: el.axis, node: no });
 
+    // Ctrl-drag GLOBAL (V0.3.0.98) — for a normal per-step translate/rotate drag,
+    // arm live-Ctrl tracking + the 🌐 badge. On release with Ctrl held the commit
+    // broadcasts the delta to a step range (handled in onPointerUp). Excludes
+    // pivot / global-edit / scale / cable drags.
+    if (this._node && !inPivotEdit && !inGlobalEdit
+        && (el.type === 'translate' || el.type === 'plane' || el.type === 'rotate')) {
+      this._armGlobalDrag(ctrlInit, clientX, clientY);
+    } else {
+      this._ctrlGlobal = false;
+    }
+
     return true;
   }
 
@@ -832,7 +843,7 @@ class GizmoController {
     //       drag — so the user might still want to type a number into
     //       this engaged handle. Commit happens later on Enter, on a
     //       click outside the handle, or via Esc revert.
-    if (this._numericLock || !this._dragMoved) return;
+    if (this._numericLock || !this._dragMoved) { this._teardownGlobalDrag(); return; }
     const _endEl = this._dragEl;
     this._dragging = false;
     this._numericLock = false;
@@ -887,14 +898,75 @@ class GizmoController {
         actions.commitGlobalRotateDrag(this._node.id, this._startBaseQuaternion);
       }
     } else if (this._node) {
-      actions.commitTransformEdit(this._node.id);
+      // Ctrl-drag GLOBAL (V0.3.0.98): on a translate/rotate release with Ctrl
+      // held, broadcast the delta to a step range instead of just this step.
+      const wantGlobal = this._ctrlGlobal
+        && (endType === 'translate' || endType === 'plane' || endType === 'rotate');
+      if (wantGlobal) actions.commitTransformEditGlobalCtrl(this._node.id);
+      else            actions.commitTransformEdit(this._node.id);
     }
+    this._teardownGlobalDrag();
     if (this._dragEl) {
       this._setElColor(this._dragEl, this._dragEl.baseColor);
       this._dragEl = null;
     }
     // Refresh panel values after drag ends
     if (this._panel) this._refreshPanel();
+  }
+
+  // ── Ctrl-drag GLOBAL helpers (V0.3.0.98) ──────────────────────────────────
+  // While a normal per-step translate/rotate drag is live, track the Ctrl key
+  // continuously (seeded from the pointerdown state) and show a 🌐 badge by the
+  // cursor whenever it's held. onPointerUp reads this._ctrlGlobal to decide
+  // whether to broadcast the delta to a step range.
+  _ensureGlobalBadge() {
+    if (this._globalBadge) return this._globalBadge;
+    const b = document.createElement('div');
+    b.textContent = '🌐 Global';
+    b.style.cssText = [
+      'position:fixed', 'z-index:10000', 'pointer-events:none', 'display:none',
+      'background:#0f766e', 'color:#ecfeff', 'border:1px solid #5eead4',
+      'border-radius:6px', 'padding:2px 7px', 'font-size:11px', 'font-weight:600',
+      'letter-spacing:0.3px', 'box-shadow:0 4px 14px rgba(0,0,0,0.45)',
+    ].join(';');
+    document.body.appendChild(b);
+    this._globalBadge = b;
+    return b;
+  }
+
+  _updateGlobalBadge() {
+    const b = this._ensureGlobalBadge();
+    const t = this._dragEl?.type;
+    const show = this._dragging && this._ctrlGlobal
+      && (t === 'translate' || t === 'plane' || t === 'rotate');
+    if (!show) { b.style.display = 'none'; return; }
+    b.style.display = 'block';
+    b.style.left = `${(this._lastDragX ?? this._startClientX ?? 0) + 16}px`;
+    b.style.top  = `${(this._lastDragY ?? this._startClientY ?? 0) + 16}px`;
+  }
+
+  _armGlobalDrag(ctrlInit, clientX, clientY) {
+    this._ctrlGlobal = !!ctrlInit;
+    this._lastDragX  = clientX;
+    this._lastDragY  = clientY;
+    if (!this._globalKeyHandler) {
+      this._globalKeyHandler = (e) => {
+        const on = !!(e.ctrlKey || e.metaKey);
+        if (on !== this._ctrlGlobal) { this._ctrlGlobal = on; this._updateGlobalBadge(); }
+      };
+    }
+    document.addEventListener('keydown', this._globalKeyHandler, true);
+    document.addEventListener('keyup',   this._globalKeyHandler, true);
+    this._updateGlobalBadge();
+  }
+
+  _teardownGlobalDrag() {
+    if (this._globalKeyHandler) {
+      document.removeEventListener('keydown', this._globalKeyHandler, true);
+      document.removeEventListener('keyup',   this._globalKeyHandler, true);
+    }
+    this._ctrlGlobal = false;
+    if (this._globalBadge) this._globalBadge.style.display = 'none';
   }
 
   /**
@@ -925,6 +997,11 @@ class GizmoController {
     // Numeric input has hijacked the drag — typed values apply via
     // applyNumericAmount(); ignore mouse motion until lock is released.
     if (this._numericLock) return;
+
+    // Ctrl-drag global badge follows the cursor (V0.3.0.98).
+    this._lastDragX = clientX;
+    this._lastDragY = clientY;
+    this._updateGlobalBadge();
 
     // ── Scale handle (Phase 2.1, GLOBAL ONLY) ─────────────────────────────
     // Uses pure screen-space dy — no plane projection needed. Drag UP →
