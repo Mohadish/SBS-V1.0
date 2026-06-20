@@ -681,6 +681,12 @@ window.sbsDiag.shapes = () => {
   return { live, saved, savedTpls, orphans };
 };
 window.sbsFix = window.sbsFix || {};
+// Manually re-run the orphan-shape self-heal (also runs automatically on load).
+window.sbsFix.pruneShapes = () => {
+  const n = actions.pruneOrphanShapeInstances?.() ?? 0;
+  console.log(n ? `[fix] pruned ${n} orphan shape(s). Save to persist.` : '[fix] no orphan shapes.');
+  return n;
+};
 window.sbsFix.input = () => {
     const done = [];
     [...document.querySelectorAll('dialog')].filter(d => d.open).forEach(d => { try { d.close(); done.push('closed <dialog> ' + (d.id || '')); } catch {} });
