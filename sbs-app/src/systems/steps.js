@@ -741,6 +741,7 @@ class StepManager {
 
       // Visibility fades (BEFORE beginColorTransition)
       if (hidingMeshIds.length || showingMeshIds.length) {
+        this._restoreFadeAncestors(hidingMeshIds);   // V0.3.0.101 — re-assert at fade-start
         this._materials?.beginVisibilityTransitions(
           hidingMeshIds, showingMeshIds, objDur, easeFn,
         );
@@ -961,24 +962,42 @@ class StepManager {
     // so the fade actually renders. We track those ancestors and re-
     // cascade visibility once all fade transitions complete (see
     // _advanceObjectTransitions below).
-    this._fadeRestoredAncestors = this._fadeRestoredAncestors || new Set();
-    const allHiding = [...hidingMeshIds, ...hidingShapeIds];
-    if (allHiding.length) {
-      for (const meshId of allHiding) {
-        const obj = this.object3dById.get(meshId);
-        if (!obj) continue;
-        let p = obj.parent;
-        while (p && p !== sceneCore.rootGroup) {
-          if (p.visible === false) {
-            p.visible = true;
-            this._fadeRestoredAncestors.add(p);
-          }
-          p = p.parent;
-        }
-      }
-    }
+    this._restoreFadeAncestors([...hidingMeshIds, ...hidingShapeIds]);
 
     return { hidingMeshIds, showingMeshIds, hidingShapeIds, showingShapeIds };
+  }
+
+  /**
+   * Walk each hiding mesh's CURRENT Three.js ancestor chain and force any
+   * invisible ancestor (a folder hidden this step) back to visible so the
+   * renderer doesn't skip the subtree and the fade actually renders. Tracked
+   * in _fadeRestoredAncestors and re-cascaded once all fades finish.
+   *
+   * V0.3.0.101 — extracted from _prepareVisibility and ALSO called at the moment
+   * each fade STARTS (beginVisibilityTransitions). The upfront restore could be
+   * undone before a later visibility phase ran (e.g. an obj phase that reparented
+   * a primitive into a hidden folder ran first) — producing an abrupt "threshold"
+   * disappear instead of a fade. Re-asserting at fade-start fixes that regardless
+   * of phase ordering. Idempotent — already-visible ancestors are left alone.
+   */
+  _restoreFadeAncestors(meshIds) {
+    if (!meshIds?.length) return;
+    this._fadeRestoredAncestors = this._fadeRestoredAncestors || new Set();
+    for (const meshId of meshIds) {
+      const obj = this.object3dById.get(meshId);
+      if (!obj) continue;
+      // The fading mesh itself must render — a prior obj phase that reparented it
+      // into a hidden folder (and re-cascaded) may have flipped it off.
+      obj.visible = true;
+      let p = obj.parent;
+      while (p && p !== sceneCore.rootGroup) {
+        if (p.visible === false) {
+          p.visible = true;
+          this._fadeRestoredAncestors.add(p);
+        }
+        p = p.parent;
+      }
+    }
   }
 
   /**
@@ -1094,6 +1113,7 @@ class StepManager {
       if (types.includes('visibility') && !visHandled &&
           (hidingMeshIds.length || showingMeshIds.length)) {
         visHandled = true;
+        this._restoreFadeAncestors(hidingMeshIds);   // V0.3.0.101 — re-assert at fade-start
         this._materials?.beginVisibilityTransitions(
           hidingMeshIds, showingMeshIds, durationMs, easeFn,
         );
@@ -1126,6 +1146,7 @@ class StepManager {
       if (types.includes('shape') && !shapeHandled) {
         shapeHandled = true;
         if (hidingShapeIds.length || showingShapeIds.length) {
+          this._restoreFadeAncestors(hidingShapeIds);   // V0.3.0.101 — re-assert at fade-start
           this._materials?.beginVisibilityTransitions(
             hidingShapeIds, showingShapeIds, durationMs, easeFn,
           );
@@ -1270,6 +1291,7 @@ class StepManager {
     // (no shape slot in string) ride along automatically.
     if (!visHandled && (hidingMeshIds.length || showingMeshIds.length)) {
       visHandled = true;
+      this._restoreFadeAncestors(hidingMeshIds);   // V0.3.0.101 — re-assert at fade-start
       this._materials?.beginVisibilityTransitions(
         hidingMeshIds, showingMeshIds, fallbackObj, easeFn,
       );
@@ -1277,6 +1299,7 @@ class StepManager {
     }
     if (!shapeHandled && (hidingShapeIds.length || showingShapeIds.length)) {
       shapeHandled = true;
+      this._restoreFadeAncestors(hidingShapeIds);   // V0.3.0.101 — re-assert at fade-start
       this._materials?.beginVisibilityTransitions(
         hidingShapeIds, showingShapeIds, fallbackObj, easeFn,
       );
