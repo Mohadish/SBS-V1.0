@@ -3409,12 +3409,23 @@ window.addEventListener('keydown', async e => {
   }
 
   // ── Fit ──────────────────────────────────────────────────────────────────
+  // F frames the SELECTION (the whole point of the shortcut). Only when nothing
+  // is selected does it fall back to fitting the entire scene. V0.3.0.110 — was
+  // always fitting rootGroup, so it zoomed out to the whole scene every time.
   if (key === 'f' || key === 'F') {
     e.preventDefault();
     if (!sceneCore.rootGroup || !window.THREE) return;
-    const box = new THREE.Box3().setFromObject(sceneCore.rootGroup);
-    if (!box.isEmpty()) {
-      sceneCore.animateCameraTo(sceneCore.fitStateForBox(box, 1.15), 800, 'smooth');
+    const selSet = state.get('multiSelectedIds');
+    const selId  = state.get('selectedId');
+    const ids = (selSet instanceof Set && selSet.size) ? selSet
+              : (selId ? new Set([selId]) : null);
+    if (ids) {
+      _fitToSelection(ids);
+    } else {
+      const box = new THREE.Box3().setFromObject(sceneCore.rootGroup);
+      if (!box.isEmpty()) {
+        sceneCore.animateCameraTo(sceneCore.fitStateForBox(box, 1.15), 800, 'smooth');
+      }
     }
     return;
   }
