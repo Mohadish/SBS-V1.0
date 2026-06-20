@@ -1230,15 +1230,20 @@ function _buildContextMenuItems(node) {
       action: () => actions.editShapeInstance(node.id),
     });
 
-    // Global Transform mode — drag handles write base* fields, change
-    // ripples to every step. Red cube indicator at the gizmo hub.
+    // Global Transform mode — HIDDEN V0.3.0.97. Made redundant by multi-step
+    // selection + Paste Transforms (and the coming Ctrl-drag global). The
+    // enter/commitGlobalEdit code stays for legacy; flip GLOBAL_XF_ENABLED on
+    // to restore the menu entry.
+    const GLOBAL_XF_ENABLED = false;
     const inMode = state.get('globalEditNodeId') === node.id;
-    items.push({
-      label: inMode ? '✓ Global Transform (active)' : '🌐 Global Transform',
-      action: () => inMode
-        ? actions.commitGlobalEdit()
-        : actions.enterGlobalEdit(node.id),
-    });
+    if (GLOBAL_XF_ENABLED) {
+      items.push({
+        label: inMode ? '✓ Global Transform (active)' : '🌐 Global Transform',
+        action: () => inMode
+          ? actions.commitGlobalEdit()
+          : actions.enterGlobalEdit(node.id),
+      });
+    }
 
     // ── Step-pose clipboard (Phase 2 #3) ─────────────────────────────────
     // Copy captures the ACTIVE step's per-step transform + visibility for

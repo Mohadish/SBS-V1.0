@@ -2767,12 +2767,17 @@ canvas.addEventListener('contextmenu', e => {
       // Edit THIS instance directly — no second "click an instance" step.
       action: () => actions.editShapeInstance(node.id),
     });
-    items.push({
-      label: inGlobal ? '✓ Global Transform (active)' : '🌐 Global Transform',
-      action: () => inGlobal
-        ? actions.commitGlobalEdit()
-        : actions.enterGlobalEdit(node.id),
-    });
+    // Global Transform mode — HIDDEN V0.3.0.97 (redundant w/ multi-step + Paste
+    // Transforms). Code kept for legacy; flip GLOBAL_XF_ENABLED to restore.
+    const GLOBAL_XF_ENABLED = false;
+    if (GLOBAL_XF_ENABLED) {
+      items.push({
+        label: inGlobal ? '✓ Global Transform (active)' : '🌐 Global Transform',
+        action: () => inGlobal
+          ? actions.commitGlobalEdit()
+          : actions.enterGlobalEdit(node.id),
+      });
+    }
     items.push({
       label: '📋 Copy Transforms',
       action: () => actions.copyInstanceStepPose(node.id),
