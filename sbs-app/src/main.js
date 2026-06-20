@@ -38,7 +38,7 @@ import {
   getNearestContainerAncestor,
   getPathToNode,
 }                         from './core/nodes.js';
-import { applyAllTransforms, isTransformNode, isNearZero, isIdentityQuaternion } from './core/transforms.js';
+import { applyAllTransforms, isTransformNode, isNearZero, isIdentityQuaternion, PIVOT_TYPES } from './core/transforms.js';
 
 // ── I/O ───────────────────────────────────────────────────────────────────────
 import { saveProject, getSuggestedFilename, serialize } from './io/project.js';
@@ -2971,9 +2971,9 @@ canvas.addEventListener('contextmenu', e => {
     items.push({ label: '↺ Reset All Transforms', action: () => _txIds.forEach(id => actions.resetTransformField(id, 'all')) });
     items.push({ label: '─', disabled: true });
   }
-  // Pivot tools (V0.3.0.105, parity with the tree menu — folder-only for now). Copy /
+  // Pivot tools (V0.3.0.108 — folders + created objects, parity with the tree). Copy /
   // Paste transfer the BLUE pivot; snap / 3-pt enter a viewport pick mode.
-  if (multiIds.size === 1 && node?.type === 'folder' && !node.archived) {
+  if (multiIds.size === 1 && node && !node.archived && PIVOT_TYPES.has(node.type)) {
     const _hasBluePivot = node.pivotEnabled === true && (
       !isNearZero(node.pivotLocalOffset) || !isIdentityQuaternion(node.pivotLocalQuaternion)
     );

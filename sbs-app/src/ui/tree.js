@@ -37,6 +37,7 @@ import {
   setStoredQuaternion,
   isNearZero,
   isIdentityQuaternion,
+  PIVOT_TYPES,
 }                               from '../core/transforms.js';
 import { generateId }           from '../core/schema.js';
 import { setStatus }            from './status.js';
@@ -1326,11 +1327,13 @@ function _buildContextMenuItems(node) {
   }
 
   // ── Pivot ────────────────────────────────────────────────────────────────
-  // Folder-only (model-root has no pivot per the P-P1 fix). Copy / Paste
-  // transfer the BLUE pivot value, useful for replicating pivot setups
-  // across steps or between similar folders. Snap-to-surface puts the
-  // app into a one-shot click-pick mode handled in main.js.
-  if (node.type === 'folder') {
+  // V0.3.0.108 — folders + created objects (primitive / shape / hardware). Copy /
+  // Paste transfer the BLUE pivot value; Snap / 3-pt enter a one-shot pick mode.
+  // Raw model-root is still excluded (P-P1: an imported model's reference frame is
+  // the asset frame, so relocating its pivot has no visually-verifiable meaning).
+  // The gizmo's pivot-preserving rotation is generic (keys off pivotEnabled), so no
+  // other change is needed to support these types.
+  if (count === 1 && !node.archived && PIVOT_TYPES.has(node.type)) {
     const hasBluePivot = node.pivotEnabled === true && (
       !isNearZero(node.pivotLocalOffset) || !isIdentityQuaternion(node.pivotLocalQuaternion)
     );

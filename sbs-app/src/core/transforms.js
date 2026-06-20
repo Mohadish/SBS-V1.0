@@ -489,6 +489,15 @@ export function isTransformNode(node) {
       || node.type === 'primitive';          // V0.2.22.90 — parametric primitives
 }
 
+/**
+ * Node types that can carry a relocatable BLUE pivot (Copy/Paste/Snap/3-pt).
+ * Folders + user-created objects (primitive / shape / hardware). Raw model-root
+ * is intentionally excluded (P-P1: an imported model's frame is the asset frame).
+ * Wrapped models become folders, so they're covered. The gizmo's pivot-preserving
+ * rotation keys off pivotEnabled, so it already works for all of these. V0.3.0.108.
+ */
+export const PIVOT_TYPES = new Set(['folder', 'primitive', 'flatShape', 'hardwareInstance']);
+
 
 // ═══════════════════════════════════════════════════════════════════════════
 //  COMPUTED LOCAL TRANSFORM
