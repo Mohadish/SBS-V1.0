@@ -963,6 +963,7 @@ class StepManager {
     // cascade visibility once all fade transitions complete (see
     // _advanceObjectTransitions below).
     this._restoreFadeAncestors([...hidingMeshIds, ...hidingShapeIds]);
+    this._fadeTrace('prepare-end', [...hidingMeshIds, ...hidingShapeIds]);
 
     return { hidingMeshIds, showingMeshIds, hidingShapeIds, showingShapeIds };
   }
@@ -997,6 +998,31 @@ class StepManager {
         }
         p = p.parent;
       }
+    }
+  }
+
+  // Diagnostic (V0.3.0.102) — set window.sbsDiag.fadeTrace = true, reproduce, and
+  // read the console to see exactly where/when a fading object loses visibility.
+  // Logs each id's own obj.visible + material fade opacity + the visible state of
+  // every ancestor folder, at the labelled checkpoint.
+  _fadeTrace(label, ids) {
+    if (typeof window === 'undefined' || !window.sbsDiag?.fadeTrace || !ids?.length) return;
+    const nodeById = state.get('nodeById');
+    for (const id of ids) {
+      const obj  = this.object3dById.get(id);
+      const node = nodeById?.get(id);
+      const mesh = this._materials?.meshById?.get(id);
+      let op = '?';
+      try {
+        op = mesh?.material?.uniforms?.uDitherOpacity?.value
+          ?? mesh?.material?.uniforms?.uOpacity?.value
+          ?? mesh?.material?.opacity ?? '?';
+      } catch (_) {}
+      const chain = [];
+      let p = obj?.parent;
+      while (p && p !== sceneCore.rootGroup) { chain.push(`${p.name || '(grp)'}=${p.visible}`); p = p.parent; }
+      // eslint-disable-next-line no-console
+      console.log(`[fadeTrace ${label}] ${node?.name || id}: objVis=${obj?.visible} op=${op} | ${chain.join(' < ') || '(no ancestors)'}`);
     }
   }
 
@@ -1074,6 +1100,11 @@ class StepManager {
       // pivot-aware variant so an offset pivot stays put during rotation.
       if (types.includes('obj') && !objHandled && changedNodeIds.length) {
         objHandled = true;
+        // V0.3.0.102 — keep hiding objects VISIBLE going into the move so a fade
+        // scheduled in a later (or the same) block still has something to fade.
+        // Without this they snap-hide at the start of the move ("threshold").
+        this._restoreFadeAncestors([...hidingMeshIds, ...hidingShapeIds]);
+        this._fadeTrace('obj-phase-start', [...hidingMeshIds, ...hidingShapeIds]);
         if (typeof window !== 'undefined' && window.sbsDiag?.animTrace) {
           // eslint-disable-next-line no-console
           console.log(`[anim] OBJ phase fire (phase-loop) gen=${myGen} t=${performance.now().toFixed(0)} count=${changedNodeIds.length} dur=${durationMs}`);
@@ -1114,6 +1145,7 @@ class StepManager {
           (hidingMeshIds.length || showingMeshIds.length)) {
         visHandled = true;
         this._restoreFadeAncestors(hidingMeshIds);   // V0.3.0.101 — re-assert at fade-start
+        this._fadeTrace('vis-phase-start', hidingMeshIds);
         this._materials?.beginVisibilityTransitions(
           hidingMeshIds, showingMeshIds, durationMs, easeFn,
         );
