@@ -568,13 +568,20 @@ class GizmoController {
                                                        : '#94a3b8';
   }
 
+  // V0.3.0.99 — uniform scale is SHAPE-ONLY. Folders / meshes / primitives never
+  // show the white scale hub (scaling them would distort geometry / break the
+  // transform model). Only flatShape instances get it, in 'all' mode.
+  _scaleAllowed() {
+    return this._node?.type === 'flatShape' && !this._cableTarget && this._mode === 'all';
+  }
+
   _applyMode() {
-    // The scale element (white hub cube) is shown for any object in 'all' mode;
+    // The scale element (white hub cube) is SHAPE-ONLY in 'all' mode;
     // translate/rotate handles follow the active mode.
     for (const el of this._elements) {
       let show;
       if (el.type === 'scale') {
-        show = !this._cableTarget && this._mode === 'all';   // V0.3.0.88 — always available in 'all' mode
+        show = this._scaleAllowed();   // V0.3.0.99 — flatShape only
       } else {
         show = this._mode === 'all'
           || (this._mode === 'translate' && (el.type === 'translate' || el.type === 'plane'))
@@ -689,9 +696,9 @@ class GizmoController {
 
     // Orange dot at gizmo hub — only while editing the pivot.
     if (this._pivotDot) this._pivotDot.visible = isPivotEditing;
-    // White uniform-scale handle at the hub — shown for any object in 'all' mode
-    // (V0.3.0.88). Drag to scale globally. Hidden for cable targets / other modes.
-    const showScale = !this._cableTarget && this._mode === 'all';
+    // White uniform-scale handle at the hub — SHAPE-ONLY (V0.3.0.99). Drag to
+    // scale globally. Hidden for folders / meshes / primitives / cables / modes.
+    const showScale = this._scaleAllowed();
     if (this._globalDot) this._globalDot.visible = showScale;
     if (this._globalHit) this._globalHit.visible = showScale;
 
@@ -1489,7 +1496,7 @@ class GizmoController {
     this._group.updateMatrixWorld(true);
 
     const active = this._elements.filter(e => {
-      if (e.type === 'scale') return !this._cableTarget && this._mode === 'all';   // V0.3.0.88
+      if (e.type === 'scale') return this._scaleAllowed();   // V0.3.0.99 — flatShape only
       return this._mode === 'all'
         || (this._mode === 'translate' && (e.type === 'translate' || e.type === 'plane'))
         || (this._mode === 'rotate'    &&  e.type === 'rotate');
@@ -1768,7 +1775,7 @@ class GizmoController {
         ${this._axisRow('rz', 'Z', fmtA(ez), '#5588e0')}
       </div>
 
-      ${isPivotMode ? '' : `
+      ${(isPivotMode || no.type !== 'flatShape') ? '' : `
       <div style="margin-top:8px;">
         <div style="font-size:10px;color:#64748b;margin-bottom:4px;letter-spacing:0.5px;">SCALE (uniform · all steps)</div>
         ${this._axisRow('scale', 'S', fmt(no.baseLocalScale?.[0] ?? 1), '#c084fc')}
