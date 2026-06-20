@@ -650,6 +650,35 @@ window.sbsDiag.archived = () => {
   console.log('  → live has them but SAVE does not = save bug. Both have them but they vanish after reload = load/remap bug.');
   return { live, saved };
 };
+// Shape persistence diag (V0.3.0.95). Run BEFORE save and AFTER reload, then
+// compare: fewer in "save tree" than "live" = SAVE drops instances; equal here
+// but fewer after reload = LOAD drops them; orphans>0 = a template didn't persist.
+window.sbsDiag.shapes = () => {
+  const nodeById = state.get('nodeById');
+  const tplIds = new Set((state.get('shapeTemplates') || []).map(t => t.id));
+  const live = [];
+  nodeById?.forEach?.((n, id) => {
+    if (n && n.type === 'flatShape') {
+      live.push({ id, name: n.name || '(shape)', templateId: n.templateId, tplOK: tplIds.has(n.templateId) });
+    }
+  });
+  let saved = [], savedTpls = [];
+  try {
+    const proj = serialize();
+    const walk = (n) => { if (!n) return; if (n.type === 'flatShape') saved.push({ id: n.id, templateId: n.templateId }); (n.children || []).forEach(walk); };
+    walk(proj.tree?.root);
+    savedTpls = (proj.shapes?.items || []).map(t => t.id);
+  } catch (e) { saved = [`(serialize failed: ${e.message})`]; }
+  const savedTplSet = new Set(savedTpls);
+  const orphans = saved.filter(s => s.templateId && !savedTplSet.has(s.templateId));
+  console.log('%c[diag] shapes — live vs SAVE:', 'font-weight:bold');
+  console.log('  live flatShape instances :', live.length, live);
+  console.log('  in serialized save tree  :', saved.length, saved);
+  console.log('  templates in save library:', savedTpls.length, savedTpls);
+  console.log('  ORPHAN saved instances (template NOT saved):', orphans.length, orphans);
+  console.log('  → fewer in save-tree than live = SAVE drops; equal now but fewer after reload = LOAD drops; orphans>0 = template lost.');
+  return { live, saved, savedTpls, orphans };
+};
 window.sbsFix = window.sbsFix || {};
 window.sbsFix.input = () => {
     const done = [];

@@ -1083,6 +1083,12 @@ export function applySpecFieldsToNodes(specNode, nodeById, parentSpec = null) {
         parentLive.children = [...(parentLive.children || []), shapeLive];
         nodeById.set(shapeLive.id, shapeLive);
       }
+    } else {
+      // V0.3.0.95 diag — the shape's saved parent didn't resolve in the live
+      // map, so it would be SILENTLY DROPPED here. Surface it so the cause
+      // (parent id not remapped / parent outside the walked subtree) is visible.
+      console.warn('[load] flatShape NOT reattached — parent missing in live map',
+        { id: specNode.id, name: specNode.name, parentId, templateId: specNode.templateId });
     }
     return;
   }
