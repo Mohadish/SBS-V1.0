@@ -922,22 +922,29 @@ class StepManager {
       return { hidingMeshIds, showingMeshIds, hidingShapeIds, showingShapeIds };
     }
 
-    // Record current Three.js visibility
+    // Record current Three.js visibility (effective) + each node's OWN localVisible
+    // (so we can tell an INTENTIONAL shape hide/show from a CASCADE one below).
     const prevMeshVis = new Map();
+    const prevOwnVis  = new Map();
     for (const [nodeId] of this._materials.meshById) {
-      const obj = this.object3dById.get(nodeId);
+      const obj  = this.object3dById.get(nodeId);
       prevMeshVis.set(nodeId, obj ? obj.visible : false);
+      const node = nodeById?.get(nodeId);
+      prevOwnVis.set(nodeId, node ? node.localVisible !== false : false);
     }
 
     // Apply target visibility to data model + Three.js objects
     applyVisibilitySnapshot(nodeById, visibilitySnapshot);
     applyAllVisibilityToScene(nodeById, this.object3dById);
 
-    // Compute which meshes changed effective visibility. flatShape nodes
-    // get partitioned out so the caller can route them to the dedicated
-    // 'shape' threshold-snap channel if the animation string opted into
-    // it. When there's no 'shape' slot the caller folds them back into
-    // the regular hiding/showing mesh arrays — legacy fade behaviour.
+    // Compute which meshes changed effective visibility. flatShape nodes route to
+    // the dedicated 'shape' channel ONLY when they were hidden/shown ON THEIR OWN
+    // (own localVisible flipped). A shape that changed only because its GROUP /
+    // FOLDER toggled (a CASCADE change, own localVisible unchanged) folds into the
+    // regular mesh channel so it fades together with its group on the SAME timeline
+    // — fixes the shape-vs-folder driver conflict (V0.3.0.104). The caller still
+    // folds the remaining (intentional) shapes into the mesh arrays when there's no
+    // 'shape' slot in the animation string.
     for (const [nodeId] of this._materials.meshById) {
       const prevVis = prevMeshVis.get(nodeId) ?? false;
       const obj     = this.object3dById.get(nodeId);
@@ -945,12 +952,14 @@ class StepManager {
       const node    = nodeById?.get(nodeId);
       const isShape = node?.type === 'flatShape';
       if (prevVis && !newVis) {
-        if (isShape) hidingShapeIds.push(nodeId);
-        else         hidingMeshIds.push(nodeId);
+        const ownHidden = node?.localVisible === false;       // intentional vs cascade
+        if (isShape && ownHidden) hidingShapeIds.push(nodeId);
+        else                      hidingMeshIds.push(nodeId);  // mesh OR cascade-hidden shape
         if (obj) obj.visible = true;   // keep visible — fade/snap will hide it
       } else if (!prevVis && newVis) {
-        if (isShape) showingShapeIds.push(nodeId);
-        else         showingMeshIds.push(nodeId);
+        const ownShown = prevOwnVis.get(nodeId) === false && node?.localVisible !== false;
+        if (isShape && ownShown) showingShapeIds.push(nodeId);
+        else                     showingMeshIds.push(nodeId);  // mesh OR cascade-shown shape
       }
     }
 
