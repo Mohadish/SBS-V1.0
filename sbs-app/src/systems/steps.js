@@ -1115,10 +1115,14 @@ class StepManager {
       // pivot-aware variant so an offset pivot stays put during rotation.
       if (types.includes('obj') && !objHandled && changedNodeIds.length) {
         objHandled = true;
-        // V0.3.0.102 — keep hiding objects VISIBLE going into the move so a fade
-        // scheduled in a later (or the same) block still has something to fade.
-        // Without this they snap-hide at the start of the move ("threshold").
-        this._restoreFadeAncestors([...hidingMeshIds, ...hidingShapeIds]);
+        // V0.3.0.113 — keep hiding objects VISIBLE going into the move ONLY while
+        // their fade is still PENDING (uses the live _pendingHideIds, which drops an
+        // object the moment its fade finishes). Using the static hide set here re-
+        // showed objects that already faded out in an EARLIER phase (e.g. a
+        // "visibility(...), obj(...)" string) — they popped back to full opacity for
+        // the whole move, then hid again. The per-frame re-assert below already
+        // uses the pending set; this matches it.
+        this._restoreFadeAncestors([...(this._materials?._pendingHideIds || [])]);
         this._fadeTrace('obj-phase-start', [...hidingMeshIds, ...hidingShapeIds]);
         if (typeof window !== 'undefined' && window.sbsDiag?.animTrace) {
           // eslint-disable-next-line no-console
