@@ -1192,7 +1192,12 @@ function _buildContextMenuItems(node) {
   // unification; double/triple-click selection covers the same ground.)
 
   // ── Folder operations ────────────────────────────────────────────────────────
-  const isContainer = node.type === 'folder' || node.type === 'model' || node.type === 'scene';
+  // V0.3.0.121 (P1) — primitives are now CONTAINERS too: they can hold other
+  // objects (so a primitive can follow / be a parent like a folder). The data
+  // layer already round-trips children under any node; this opens the parenting
+  // UI for primitives.
+  const isContainer = node.type === 'folder' || node.type === 'model'
+                   || node.type === 'scene'  || node.type === 'primitive';
 
   if (isContainer) {
     items.push({
@@ -1201,7 +1206,7 @@ function _buildContextMenuItems(node) {
     });
   }
 
-  if (node.type === 'folder' || node.type === 'model' || node.type === 'scene') {
+  if (isContainer) {
     const otherSelected = targetIds.filter(id => id !== node.id);
     if (otherSelected.length > 0 || (multiIds.size > 0 && !multiIds.has(node.id))) {
       items.push({
@@ -2750,7 +2755,9 @@ export function showMoveToFolderDialog(nodeIds) {
   // set. Rendered as a real collapsible tree, not a flat dropdown. ──
   const buildTree = (node) => {
     if (excluded.has(node.id)) return null;
-    if (!(node.type === 'scene' || node.type === 'folder' || node.type === 'model')) return null;
+    // V0.3.0.121 (P1) — primitives are containers too, so they're valid move targets.
+    if (!(node.type === 'scene' || node.type === 'folder' || node.type === 'model'
+          || node.type === 'primitive')) return null;
     const children = (node.children || []).map(buildTree).filter(Boolean);
     return {
       id: node.id, type: node.type,

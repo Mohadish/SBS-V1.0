@@ -8941,11 +8941,28 @@ export function pastePrimitiveInstance() { return _pastePrimitive({ linked: true
 export function deletePrimitive(nodeId) {
   const node = state.get('nodeById')?.get(nodeId);
   if (!node || node.type !== 'primitive') return;
-  const parentId = _findNodeParentId(nodeId);
+  // V0.3.0.121 (P1) — a container primitive deletes its contents too, after a
+  // confirm. (Empty primitives delete silently as before.)
+  let descendants = 0;
+  (function count(n) { for (const c of (n.children || [])) { descendants++; count(c); } })(node);
+  if (descendants > 0 &&
+      !confirm(`Delete this primitive and ${descendants} item${descendants === 1 ? '' : 's'} inside it?`)) {
+    return;
+  }
+  const parentId  = _findNodeParentId(nodeId);
+  const activeId  = state.get('activeStepId');
+  const prevSteps = descendants > 0 ? JSON.parse(JSON.stringify(state.get('steps') || [])) : null;
   _removePrimitiveNode(nodeId);
   state.markDirty();
   undoManager.push('Delete primitive',
-    () => _readdPrimitiveNode(node, parentId),
+    () => {
+      _readdPrimitiveNode(node, parentId);
+      // Rebuild the contained objects' meshes from the restored snapshots.
+      if (prevSteps) {
+        state.setState({ steps: prevSteps });
+        if (activeId) steps.activateStep(activeId, false);
+      }
+    },
     () => _removePrimitiveNode(nodeId),
   );
 }
@@ -9002,11 +9019,21 @@ function _readdPrimitiveNode(node, parentId) {
 function _removePrimitiveNode(id) {
   const root = state.get('treeData');
   if (!root) return;
-  const obj = state.get('nodeById')?.get(id)?.object3d || steps.object3dById?.get(id);
-  if (obj) { if (obj.parent) obj.parent.remove(obj); obj.geometry?.dispose?.(); obj.material?.dispose?.(); }
-  materials?.unregisterMesh?.(id);
-  steps.object3dById.delete(id);
+  // V0.3.0.121 (P1) — primitives are containers, so collect the WHOLE subtree
+  // (id + descendants) and dispose / unregister / snapshot-clean every member,
+  // not just the primitive itself. (Single primitives have no children, so this
+  // is identical to the old behaviour for them.)
+  const nb = state.get('nodeById');
+  const subtreeIds = [];
+  (function collect(n) { if (!n) return; subtreeIds.push(n.id); (n.children || []).forEach(collect); })(nb?.get(id));
+  for (const sid of subtreeIds) {
+    const obj = nb?.get(sid)?.object3d || steps.object3dById?.get(sid);
+    if (obj) { if (obj.parent) obj.parent.remove(obj); obj.geometry?.dispose?.(); obj.material?.dispose?.(); }
+    materials?.unregisterMesh?.(sid);
+    steps.object3dById.delete(sid);
+  }
 
+  // Splice the subtree root from the live tree (removes its children data with it).
   const stack = [{ parent: null, node: root }];
   while (stack.length) {
     const { parent, node: n } = stack.pop();
@@ -9014,13 +9041,17 @@ function _removePrimitiveNode(id) {
     if (n.children) for (const c of n.children) stack.push({ parent: n, node: c });
   }
 
+  // Strip every subtree id from every step snapshot.
   const nextSteps = (state.get('steps') || []).map(s => {
     const snap = s.snapshot || {};
-    const newTree = _removeFromTreeSpec(snap.tree, id);
-    if (newTree === snap.tree && !snap.visibility?.[id] && !snap.transforms?.[id]) return s;
-    const vis = { ...(snap.visibility || {}) }; delete vis[id];
-    const tr  = { ...(snap.transforms  || {}) }; delete tr[id];
-    return { ...s, snapshot: { ...snap, tree: newTree, visibility: vis, transforms: tr } };
+    let tree = snap.tree, vis = snap.visibility, tr = snap.transforms, changed = false;
+    for (const sid of subtreeIds) {
+      const nt = tree ? _removeFromTreeSpec(tree, sid) : tree;
+      if (nt !== tree) { tree = nt; changed = true; }
+      if (vis && vis[sid] !== undefined) { vis = { ...vis }; delete vis[sid]; changed = true; }
+      if (tr  && tr[sid]  !== undefined) { tr  = { ...tr };  delete tr[sid];  changed = true; }
+    }
+    return changed ? { ...s, snapshot: { ...snap, tree, visibility: vis, transforms: tr } } : s;
   });
   state.setState({ steps: nextSteps, nodeById: _nodes_buildNodeMap(root) });
   state.emit('change:treeData', root);

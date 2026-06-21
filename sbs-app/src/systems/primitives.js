@@ -198,7 +198,16 @@ export function ensurePrimitiveObject3D(node) {
 
   // Keep the current colour across a param/quality rebuild.
   const prevColor = existing?.material?.color ? '#' + existing.material.color.getHexString() : null;
+  // V0.3.0.121 (P1) — primitives can now CONTAIN other objects (their Three.js
+  // nodes are parented under this mesh). A param/quality edit disposes + recreates
+  // the mesh, which would ORPHAN those children. Detach the real contained nodes
+  // first and re-attach them to the new mesh below. (Helper objects like outlines
+  // lack a node id, so they're left for the materials system to rebuild.)
+  let _preservedChildren = [];
   if (existing) {
+    _preservedChildren = existing.children.filter(c =>
+      (c.userData?.nodeId && c.userData.nodeId !== node.id) || c.userData?.isCustomFolder);
+    for (const c of _preservedChildren) existing.remove(c);
     if (existing.parent) existing.parent.remove(existing);
     existing.geometry?.dispose?.();
     existing.material?.dispose?.();
@@ -218,6 +227,8 @@ export function ensurePrimitiveObject3D(node) {
   mesh.userData.meshNodeId      = node.id;   // enables raycast → selection
   mesh.userData.nodeId          = node.id;
   mesh.userData.primBuildKey    = sig;
+  // Re-attach contained objects orphaned by the mesh recreation (P1).
+  for (const c of _preservedChildren) mesh.add(c);
   node.object3d = mesh;
   materials?.registerMesh?.(node.id, mesh);
   return mesh;
