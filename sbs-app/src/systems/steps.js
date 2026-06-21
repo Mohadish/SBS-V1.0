@@ -932,6 +932,11 @@ class StepManager {
       const node = nodeById?.get(nodeId);
       prevOwnVis.set(nodeId, node ? node.localVisible !== false : false);
     }
+    // Pre-transition effective visibility of EVERY object (meshes AND folders,
+    // which aren't in meshById) so the priority rule below can tell whether a
+    // shape's ANCESTOR is also transitioning visibility this step (V0.3.0.124).
+    const prevVisAll = new Map();
+    for (const [id, obj] of this.object3dById) prevVisAll.set(id, !!obj?.visible);
 
     // Apply target visibility to data model + Three.js objects
     applyVisibilitySnapshot(nodeById, visibilitySnapshot);
@@ -961,6 +966,50 @@ class StepManager {
         if (isShape && ownShown) showingShapeIds.push(nodeId);
         else                     showingMeshIds.push(nodeId);  // mesh OR cascade-shown shape
       }
+    }
+
+    // ── Shape-vs-visibility PRIORITY rule (V0.3.0.124) ────────────────
+    // THE law: a shape resolves its visibility in exactly ONE channel per
+    // step. If any ANCESTOR (folder / primitive / model) is ALSO transitioning
+    // visibility this step, the shape must fade WITH its group on the general
+    // 'visibility' channel — never on the independent 'shape' channel. Group
+    // transition dominates. Without this, a shape that toggles on its own while
+    // its parent also appears/disappears runs on a separate timeline and the two
+    // fight (the blink / threshold / "visible when it shouldn't be" bug). The
+    // cascade case (own visibility unchanged) is already folded above; this adds
+    // the missing case: own-toggled AND inside a transitioning ancestor.
+    if (hidingShapeIds.length || showingShapeIds.length) {
+      // What changed effective visibility this step? Meshes restored to
+      // visible for their fade (line ~958) read as "unchanged", so union the
+      // detected sets in explicitly; folders show up via the prevVisAll diff.
+      const transitioning = new Set([
+        ...hidingMeshIds, ...showingMeshIds, ...hidingShapeIds, ...showingShapeIds,
+      ]);
+      for (const [id, prev] of prevVisAll) {
+        if (prev !== !!this.object3dById.get(id)?.visible) transitioning.add(id);
+      }
+      // Data-tree parent index (covers folders, which have no mesh ancestor).
+      const parentId = new Map();
+      (function walk(n, pid) {
+        if (!n) return;
+        if (pid != null) parentId.set(n.id, pid);
+        for (const c of (n.children || [])) walk(c, n.id);
+      })(state.get('treeData'), null);
+      const ancestorTransitioning = (id) => {
+        let p = parentId.get(id), guard = 0;
+        while (p != null && guard++ < 4096) {
+          if (transitioning.has(p)) return true;
+          p = parentId.get(p);
+        }
+        return false;
+      };
+      const reroute = (shapeIds, meshIds) => {
+        for (let i = shapeIds.length - 1; i >= 0; i--) {
+          if (ancestorTransitioning(shapeIds[i])) meshIds.push(shapeIds.splice(i, 1)[0]);
+        }
+      };
+      reroute(hidingShapeIds,  hidingMeshIds);
+      reroute(showingShapeIds, showingMeshIds);
     }
 
     // ── Folder-cascade fade fix (V0.1.74) ─────────────────────────────
