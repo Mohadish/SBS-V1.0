@@ -1652,6 +1652,14 @@ gl_FragColor.a = 1.0;
     // transparent — flipping it dynamically requires needsUpdate.
     if (!handled && material.transparent === true && 'opacity' in material) {
       material.opacity = value;
+      handled = true;
+    }
+    // V0.3.0.114 — last resort: an OPAQUE material that never got the dither chunk
+    // (e.g. a primitive material restored from its clean original, or registered
+    // before the patch shipped). Install it now so it fades instead of snapping.
+    if (!handled && !material.isShaderMaterial && material.transparent !== true) {
+      this._patchScreenDoorFade(material);
+      if (material.userData?.transitionFadeState) material.userData.transitionFadeState.value = value;
     }
   }
 
@@ -2377,9 +2385,18 @@ gl_FragColor.a = 1.0;
     // SSR G-buffer prepass hook (no-op outside the prepass). Feeds this mesh's
     // material roughness / reflectionIntensity / solidness + reflective flag.
     mesh.onBeforeRender = ssrPrepassHook;
-    // Store original material (deep-clone to avoid sharing)
+    // Store original material (deep-clone to avoid sharing) — capture it CLEAN,
+    // before the screen-door patch below, so a later restore-to-original is pristine.
     if (mesh.material && !this.originalMaterials.has(nodeId)) {
       this.originalMaterials.set(nodeId, mesh.material.clone());
+    }
+    // V0.3.0.114 — make every OPAQUE registered mesh dither-fadeable during step
+    // transitions. Previously only the managed (colored) material got the screen-door
+    // patch (see _buildManagedMaterial), so a freshly-created primitive's raw
+    // MeshStandardMaterial couldn't fade and snapped ("pop in/out"). Skip transparent
+    // materials (flatShapes) — those fade via the opacity fallback in _setMaterialFade.
+    if (mesh.material && !Array.isArray(mesh.material) && mesh.material.transparent !== true) {
+      this._patchScreenDoorFade(mesh.material);
     }
   }
 
