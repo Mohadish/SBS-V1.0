@@ -8647,7 +8647,11 @@ export function placeShapeInstance(templateId, options = {}) {
   _propagateNewNodeToSteps(instance, parent.id, { activeStepOnly: true });
 
   state.emit('change:treeData', root);
+  // V0.3.0.117 — solidify the new instance into the active step snapshot now (see the
+  // primitive path) instead of waiting for the debounced sync, so it's a standard
+  // hide/show object immediately.
   steps.scheduleTransformSync();
+  steps.flushSync?.();
   state.markDirty();
 
   if (undoLabel) {
@@ -8909,7 +8913,13 @@ function _readdPrimitiveNode(node, parentId) {
   state.setState({ nodeById: _nodes_buildNodeMap(root) });
   _propagateNewNodeToSteps(node, parentId, { activeStepOnly: true });
   state.emit('change:treeData', root);
+  // V0.3.0.117 — SOLIDIFY now. scheduleTransformSync only marks dirty; the actual
+  // active-step snapshot capture is debounced (500ms) and skipped mid-animation, so a
+  // just-created primitive could go a step transition with its live state not yet
+  // written back — making the newest object misbehave in hide/show ("last-added blink")
+  // until a later sync settled it. Flush immediately so it's a standard object at once.
   steps.scheduleTransformSync?.();
+  steps.flushSync?.();
 }
 
 /** Remove a primitive from the tree + every step snapshot; dispose the mesh. */
