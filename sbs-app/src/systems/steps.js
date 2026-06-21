@@ -978,7 +978,7 @@ class StepManager {
     // cascade visibility once all fade transitions complete (see
     // _advanceObjectTransitions below).
     this._restoreFadeAncestors([...hidingMeshIds, ...hidingShapeIds]);
-    this._fadeTrace('prepare-end', [...hidingMeshIds, ...hidingShapeIds]);
+    this._fadeTrace('prepare-end', [...hidingMeshIds, ...hidingShapeIds, ...showingMeshIds, ...showingShapeIds]);
 
     return { hidingMeshIds, showingMeshIds, hidingShapeIds, showingShapeIds };
   }
@@ -1024,21 +1024,42 @@ class StepManager {
     if (typeof window === 'undefined' || !window.sbsDiag?.fadeTrace || !ids?.length) return;
     const nodeById = state.get('nodeById');
     for (const id of ids) {
-      const obj  = this.object3dById.get(id);
-      const node = nodeById?.get(id);
-      const mesh = this._materials?.meshById?.get(id);
-      let op = '?';
-      try {
-        op = mesh?.material?.uniforms?.uDitherOpacity?.value
-          ?? mesh?.material?.uniforms?.uOpacity?.value
-          ?? mesh?.material?.opacity ?? '?';
-      } catch (_) {}
-      const chain = [];
-      let p = obj?.parent;
-      while (p && p !== sceneCore.rootGroup) { chain.push(`${p.name || '(grp)'}=${p.visible}`); p = p.parent; }
       // eslint-disable-next-line no-console
-      console.log(`[fadeTrace ${label}] ${node?.name || id}: objVis=${obj?.visible} op=${op} | ${chain.join(' < ') || '(no ancestors)'}`);
+      console.log(`[fadeTrace ${label}] ${this._fadeNodeStr(id, nodeById)}`);
     }
+  }
+
+  // Per-frame tracer (V0.3.0.122) — set window.sbsDiag.fadeTraceNode = '<nodeId>'
+  // (grab the id from window.sbsDiag.shapes()) to log THAT node's objVis + material
+  // opacity + ancestor visibility EVERY frame of a transition. The frame-by-frame
+  // timeline is what reveals a blink / threshold that the start-of-phase checkpoints
+  // miss. Logs only while its opacity/visibility actually changes (to limit spam).
+  _fadeTraceNodeFrame() {
+    if (typeof window === 'undefined') return;
+    const id = window.sbsDiag?.fadeTraceNode;
+    if (!id) { this._lastTraceNodeStr = null; return; }
+    const s = this._fadeNodeStr(id, state.get('nodeById'));
+    if (s !== this._lastTraceNodeStr) {
+      this._lastTraceNodeStr = s;
+      // eslint-disable-next-line no-console
+      console.log(`[fadeTrace ~] ${s}`);
+    }
+  }
+
+  _fadeNodeStr(id, nodeById) {
+    const obj  = this.object3dById.get(id);
+    const node = nodeById?.get(id);
+    const mat  = this._materials?.meshById?.get(id)?.material;
+    let op = '?';
+    try {
+      op = mat?.uniforms?.uDitherOpacity?.value ?? mat?.uniforms?.uOpacity?.value
+        ?? (mat?.opacity != null ? Number(mat.opacity).toFixed(2) : '?');
+    } catch (_) {}
+    const transp = mat?.transparent === true ? 'T' : 'o';
+    const chain = [];
+    let p = obj?.parent;
+    while (p && p !== sceneCore.rootGroup) { chain.push(`${p.name || '(grp)'}=${p.visible}`); p = p.parent; }
+    return `${node?.type}:${node?.name || id} objVis=${obj?.visible} op=${op} mat=${transp} | ${chain.join(' < ') || '(no ancestors)'}`;
   }
 
   /**
@@ -1123,7 +1144,7 @@ class StepManager {
         // the whole move, then hid again. The per-frame re-assert below already
         // uses the pending set; this matches it.
         this._restoreFadeAncestors([...(this._materials?._pendingHideIds || [])]);
-        this._fadeTrace('obj-phase-start', [...hidingMeshIds, ...hidingShapeIds]);
+        this._fadeTrace('obj-phase-start', [...hidingMeshIds, ...hidingShapeIds, ...showingMeshIds, ...showingShapeIds]);
         if (typeof window !== 'undefined' && window.sbsDiag?.animTrace) {
           // eslint-disable-next-line no-console
           console.log(`[anim] OBJ phase fire (phase-loop) gen=${myGen} t=${performance.now().toFixed(0)} count=${changedNodeIds.length} dur=${durationMs}`);
@@ -1164,7 +1185,7 @@ class StepManager {
           (hidingMeshIds.length || showingMeshIds.length)) {
         visHandled = true;
         this._restoreFadeAncestors(hidingMeshIds);   // V0.3.0.101 — re-assert at fade-start
-        this._fadeTrace('vis-phase-start', hidingMeshIds);
+        this._fadeTrace('vis-phase-start', [...hidingMeshIds, ...showingMeshIds]);
         this._materials?.beginVisibilityTransitions(
           hidingMeshIds, showingMeshIds, durationMs, easeFn,
         );
@@ -1420,6 +1441,7 @@ class StepManager {
 
   // ─── Object transition tick ────────────────────────────────────────────
   _advanceObjectTransitions(nowMs) {
+    this._fadeTraceNodeFrame();   // V0.3.0.122 — per-frame node trace (sbsDiag.fadeTraceNode)
     // V0.1.77 diag: trace the first 12 frames of OBJ animation. Shows
     // alpha progression — if alpha rewinds, the lerp itself is the bug;
     // if alpha is monotonic, the stutter is somewhere else (e.g. another
