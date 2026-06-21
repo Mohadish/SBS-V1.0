@@ -29,6 +29,11 @@ export function renderCableTab(container) {
   const cables    = listCables();
   const placingId = state.get('cablePlacingId');
 
+  // V0.3.0.120 — adopt a cable selected from the VIEWPORT (state.selectedCableId)
+  // as the expanded/active cable, so clicking a cable opens its editor here.
+  const _viewSel = state.get('selectedCableId');
+  if (_viewSel && cables.find(c => c.id === _viewSel)) _activeCableId = _viewSel;
+
   container.innerHTML = `
     <div class="section">
       <div class="title">Cables</div>
@@ -102,25 +107,37 @@ export function renderCableTab(container) {
     const id  = row.dataset.cblId;
     const act = e.target.closest('[data-cbl-act]')?.dataset.cblAct;
 
-    if (act === 'place')     { actions.startCablePlacement(id); _activeCableId = id; return; }
+    if (act === 'place')     { actions.startCablePlacement(id); _setActiveCable(id); return; }
     if (act === 'hide')      { actions.toggleCableVisibility(id); return; }
     if (act === 'highlight') { actions.toggleCableHighlight(id); return; }
     if (act === 'delete')    {
       if (confirm('Delete this cable?')) {
         actions.deleteCable(id);
-        if (_activeCableId === id) _activeCableId = null;
+        if (_activeCableId === id) _setActiveCable(null);
       }
       return;
     }
-    // Plain click → open editor.
-    _activeCableId = id;
+    // Plain click → open editor + show this cable's node markers.
+    _setActiveCable(id);
     _renderEditor(container);
   });
 
   if (_activeCableId && cables.find(c => c.id === _activeCableId)) {
+    _setActiveCable(_activeCableId);   // keep state.selectedCableId in sync
     _renderEditor(container);
   } else {
-    _activeCableId = null;
+    _setActiveCable(null);
+  }
+}
+
+/**
+ * V0.3.0.120 — set the expanded/active cable AND mirror it into state.selectedCableId
+ * so the viewport draws pick markers on that cable's nodes. Idempotent.
+ */
+function _setActiveCable(id) {
+  _activeCableId = id;
+  if (state.get('selectedCableId') !== (id || null)) {
+    state.setState({ selectedCableId: id || null });
   }
 }
 
@@ -421,7 +438,7 @@ function _renderSocketEditor(cableId, node) {
 
 function _onCreate() {
   const cable = actions.createCable(`Cable ${listCables().length}`);
-  _activeCableId = cable.id;
+  _setActiveCable(cable.id);
   // Auto-enter placement so the user can immediately start clicking
   // points — same UX as header / overlay add.
   actions.startCablePlacement(cable.id);

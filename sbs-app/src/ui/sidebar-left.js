@@ -292,6 +292,11 @@ export function initSidebarLeft() {
 function _switchTab(tab) {
   if (!TABS.includes(tab) || tab === _activeTab) return;
   _activeTab = tab;
+  // V0.3.0.120 — cable node markers belong to the Cables tab only. Clear the
+  // selected-cable marker when leaving so they don't linger over the model.
+  if (tab !== 'cables' && state.get('selectedCableId')) {
+    state.setState({ selectedCableId: null });
+  }
   _container.querySelectorAll('.tabBtn').forEach(b =>
     b.classList.toggle('active', b.dataset.tab === tab));
   _container.querySelectorAll('.tabPanel').forEach(p =>
@@ -321,6 +326,16 @@ function _switchTab(tab) {
 export function editHardwareTemplate(templateId) {
   if (_activeTab !== 'hardware') _switchTab('hardware');
   _hwStartEditTemplate(templateId);
+}
+
+/**
+ * V0.3.0.120 — clicking a cable in the viewport: select it (node markers appear)
+ * and open the Cables tab with that cable's editor expanded.
+ */
+export function openCableTabForCable(cableId) {
+  if (cableId) state.setState({ selectedCableId: cableId });
+  if (_activeTab === 'cables') _renderActiveTab();   // already here → just re-render
+  else _switchTab('cables');                          // switch renders the tab
 }
 
 export function showColorForNode(nodeId) {

@@ -49,7 +49,7 @@ import { showActivationDialog, showHardLockDialog, showGraceWarning } from './ui
 import { initHud }                from './ui/hud.js';
 import { initStepNav }            from './ui/step-nav.js';
 import { initStepsPanel }         from './ui/steps-panel.js';
-import { initSidebarLeft, showColorForNode } from './ui/sidebar-left.js';
+import { initSidebarLeft, showColorForNode, openCableTabForCable } from './ui/sidebar-left.js';
 import { initContextMenu, hideContextMenu, showContextMenu, canonicalizeMenuOrder } from './ui/context-menu.js';
 import { promptString } from './ui/prompt.js';
 import { showMoveToFolderDialog, showAddToReplaceDialog, showReplaceModeDialog, showInputDialog, showInsertAnimDialog } from './ui/tree.js';
@@ -1964,6 +1964,13 @@ canvas.addEventListener('click', e => {
   const socketHit = _pickCableSocket(e.clientX, e.clientY);
   if (socketHit) {
     actions.selectCableSocket(socketHit.cableId, socketHit.nodeId);
+    return;
+  }
+  // V0.3.0.120 — clicking a cable BODY (not a node/socket) selects that cable and
+  // opens the Cables tab, so its node pick-markers appear and you can grab them.
+  const segHitSel = _pickCableSegment(e.clientX, e.clientY);
+  if (segHitSel?.cableId) {
+    openCableTabForCable(segHitSel.cableId);
     return;
   }
 

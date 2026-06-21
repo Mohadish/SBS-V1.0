@@ -249,6 +249,12 @@ function createInitialState() {
     // and vice versa so the gizmo can only follow one target at a time.
     selectedCablePoint: null,
 
+    // V0.3.0.120 — the cable whose nodes show pick MARKERS in the viewport
+    // (set when a cable is selected in the Cables tab or clicked in the viewport;
+    // cleared when leaving the Cables tab). Makes the otherwise-tiny nodes easy
+    // to see + click.
+    selectedCableId: null,
+
     // V0.3.0.119 — multi-select of cable POINTS for moving several together.
     // Array of { cableId, nodeId } (mesh-anchored, socket-free points only).
     // selectedCablePoint stays the PRIMARY (last-clicked); this is the full set.

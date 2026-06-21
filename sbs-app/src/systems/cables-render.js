@@ -83,6 +83,9 @@ export function initCableRender() {
   // Cheap — no geometry rebuild, just material emissive flips.
   state.on('change:selectedCablePoint',  _applySelectionHighlight);
   state.on('change:selectedCablePoints', _applySelectionHighlight);   // V0.3.0.119 multi
+  // V0.3.0.120 — selected-cable node markers (emissive + on-top now; the per-frame
+  // tick rescales them via _pointScaleFor, so request a render to kick it).
+  state.on('change:selectedCableId', () => { _applySelectionHighlight(); sceneCore.requestRender?.(); });
   // E2: same for socket selection.
   state.on('change:selectedCableSocket', _applySelectionHighlight);
 
@@ -618,24 +621,37 @@ function _buildSegments(cable, entry, positions, radius, color) {
  * frame radius rewrites) so we don't fight it here.
  */
 const _SELECT_EMISSIVE = new THREE.Color('#22d3ee');
+const _MARKER_EMISSIVE = new THREE.Color('#0ea5e9');   // V0.3.0.120 — node pick markers
 function _applySelectionHighlight() {
   const selPt   = state.get('selectedCablePoint');
   const selSock = state.get('selectedCableSocket');
   // V0.3.0.119 — highlight EVERY multi-selected point, not just the primary.
   const selSet  = new Set((state.get('selectedCablePoints') || []).map(p => `${p.cableId}:${p.nodeId}`));
+  // V0.3.0.120 — the selected cable's nodes ALL get a visible, always-on-top
+  // marker so they're easy to see + pick (cable nodes are otherwise tiny).
+  const markerCableId = state.get('selectedCableId');
   for (const entry of _cableSubgroups.values()) {
     for (const m of entry.points) {
       const mat = m.material;
       if (!mat?.emissive) continue;
-      const isSel = selSet.has(`${m.userData.cableId}:${m.userData.nodeId}`)
+      const isPicked = selSet.has(`${m.userData.cableId}:${m.userData.nodeId}`)
         || (selPt && m.userData.cableId === selPt.cableId && m.userData.nodeId === selPt.nodeId);
-      if (isSel) {
+      const isMarker = markerCableId && m.userData.cableId === markerCableId;
+      if (isPicked) {
         mat.emissive.copy(_SELECT_EMISSIVE);
         mat.emissiveIntensity = 0.9;
+      } else if (isMarker) {
+        mat.emissive.copy(_MARKER_EMISSIVE);
+        mat.emissiveIntensity = 0.55;
       } else {
         mat.emissive.setRGB(0, 0, 0);
         mat.emissiveIntensity = 0;
       }
+      // Markers + picked nodes render ON TOP (depthTest off) so they show through
+      // the model and are always clickable; others render normally.
+      const onTop = isPicked || isMarker;
+      mat.depthTest = !onTop;
+      m.renderOrder = onTop ? 9000 : 0;
     }
     for (const m of (entry.sockets || [])) {
       const mat = m.material;
@@ -658,7 +674,13 @@ function _pointScaleFor(cableId, nodeId, baseRadius) {
   const inMulti = (state.get('selectedCablePoints') || [])
     .some(p => p.cableId === cableId && p.nodeId === nodeId);   // V0.3.0.119
   const isSel = inMulti || (sel && sel.cableId === cableId && sel.nodeId === nodeId);
-  return baseRadius * (isSel ? 1.4 : 1.0);  // unselected = exactly the cable radius; selected inflates
+  // V0.3.0.120 — every node of the SELECTED cable inflates into a pick marker so
+  // it's easy to see/grab; the picked node(s) inflate the most. Use a floor so the
+  // marker is visible even on a very thin cable.
+  const isMarker = state.get('selectedCableId') === cableId;
+  if (isSel)     return Math.max(baseRadius * 1.8, baseRadius + 6);
+  if (isMarker)  return Math.max(baseRadius * 1.5, baseRadius + 4);
+  return baseRadius;  // unselected = exactly the cable radius
 }
 
 function _disposeSubgroup(entry) {
