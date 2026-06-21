@@ -173,27 +173,40 @@ export function beginCableTransitions(toCablesSnap, durationMs, easeFn, onDone) 
     const fromColorHex  = fromHighlight ? highlightColor : baseColor;
     const toColorHex    = toHighlight   ? highlightColor : baseColor;
 
-    // V0.3.0.126 (cable morph) — FREE-node position lerp. FROM = live
-    // node.position (captured now, before applyStepSnapshot sets TO on
-    // step:applied); TO = snapshot. Only nodes that actually move are kept.
+    // Cable morph — per-node POSE lerp. FROM = live node values (captured now,
+    // before applyStepSnapshot sets TO on step:applied); TO = snapshot. Only nodes
+    // that actually change are kept. pos=free world pos (V0.3.0.126); anc=mesh
+    // anchored offset; sq=socket facing (V0.3.0.128).
     let fromPos = null, toPos = null, hasPos = false;
+    let fromAnc = null, toAnc = null, hasAnc = false;
+    let fromSQ  = null, toSQ  = null, hasSQ  = false;
+    const near = (a, b, n) => { for (let i = 0; i < n; i++) if (Math.abs(a[i] - b[i]) >= 1e-4) return false; return true; };
     const toNodes = toEntry?.nodes;
     if (toNodes && typeof toNodes === 'object') {
       for (const n of (cable.nodes || [])) {
-        if (n.anchorType !== 'free' || !Array.isArray(n.position)) continue;
-        const tp = toNodes[n.id];
-        if (!Array.isArray(tp)) continue;
-        const fp = n.position;
-        if (Math.abs(fp[0] - tp[0]) < 1e-4 && Math.abs(fp[1] - tp[1]) < 1e-4
-            && Math.abs(fp[2] - tp[2]) < 1e-4) continue;
-        if (!fromPos) { fromPos = new Map(); toPos = new Map(); }
-        fromPos.set(n.id, fp.slice());
-        toPos.set(n.id, tp.slice());
-        hasPos = true;
+        const o = toNodes[n.id];
+        if (!o) continue;
+        const pose = Array.isArray(o) ? { pos: o } : o;   // legacy array = free position
+        if (n.anchorType === 'free' && Array.isArray(n.position) && Array.isArray(pose.pos)
+            && !near(n.position, pose.pos, 3)) {
+          if (!fromPos) { fromPos = new Map(); toPos = new Map(); }
+          fromPos.set(n.id, n.position.slice()); toPos.set(n.id, pose.pos.slice()); hasPos = true;
+        }
+        if (n.anchorType === 'mesh' && Array.isArray(n.anchorLocal) && Array.isArray(pose.anc)
+            && !near(n.anchorLocal, pose.anc, 3)) {
+          if (!fromAnc) { fromAnc = new Map(); toAnc = new Map(); }
+          fromAnc.set(n.id, n.anchorLocal.slice()); toAnc.set(n.id, pose.anc.slice()); hasAnc = true;
+        }
+        const cq = n.anchorType === 'mesh' ? n.socket?.localQuaternion : n.socket?.quaternion;
+        if (n.socket && Array.isArray(cq) && cq.length === 4 && Array.isArray(pose.sq) && pose.sq.length === 4
+            && !near(cq, pose.sq, 4)) {
+          if (!fromSQ) { fromSQ = new Map(); toSQ = new Map(); }
+          fromSQ.set(n.id, cq.slice()); toSQ.set(n.id, pose.sq.slice()); hasSQ = true;
+        }
       }
     }
 
-    if (fromVisible === toVisible && fromColorHex === toColorHex && !hasPos) continue;
+    if (fromVisible === toVisible && fromColorHex === toColorHex && !hasPos && !hasAnc && !hasSQ) continue;
 
     _cableTransitions.set(cable.id, {
       fromOpacity: fromVisible ? 1 : 0,
@@ -201,6 +214,8 @@ export function beginCableTransitions(toCablesSnap, durationMs, easeFn, onDone) 
       fromColor:   new THREE.Color(fromColorHex),
       toColor:     new THREE.Color(toColorHex),
       fromPos, toPos, hasPos,
+      fromAnc, toAnc, hasAnc,
+      fromSQ,  toSQ,  hasSQ,
       startMs, durationMs, easeFn,
     });
   }
@@ -243,7 +258,7 @@ export function snapCableTransitionsToFinal() {
     for (const m of entry.points)   { m.material.opacity = t.toOpacity; m.material.color.copy(t.toColor); }
     for (const m of entry.segments) { m.material.opacity = t.toOpacity; m.material.color.copy(t.toColor); }
     for (const m of (entry.sockets || [])) { m.material.opacity = t.toOpacity; }
-    entry._morphPos = null;   // V0.3.0.126 — drop morph; node.position is now TO (applyStepSnapshot)
+    entry._morphPos = null; entry._morphAnchor = null; entry._morphSockQuat = null;   // drop morph; pose is now TO
   }
   _cableTransitions.clear();
   if (_cableTransitionDoneCb) {
@@ -267,19 +282,33 @@ function _advanceCableTransitions(nowMs) {
       for (const m of entry.points)   { m.material.opacity = opacity; m.material.color.copy(color); }
       for (const m of entry.segments) { m.material.opacity = opacity; m.material.color.copy(color); }
       for (const m of (entry.sockets || [])) { m.material.opacity = opacity; }
-      // V0.3.0.126 — lerped FREE-node positions for _tickAnchorRefresh to render
-      // (it runs right after this in the same tick). Mesh/branch nodes are NOT
-      // here, so the tick still resolves them live (auto-follow).
+      // Lerped poses for _tickAnchorRefresh to render (runs right after this in
+      // the same tick). _morphPos = free-node WORLD positions (V0.3.0.126).
+      // _morphAnchor = mesh-anchored OFFSETS (mesh-local; the tick still composes
+      // them with the host's live matrix → morph AND auto-follow). _morphSockQuat =
+      // socket facing. Nodes not listed resolve live (V0.3.0.128).
       if (t.hasPos && t.fromPos) {
-        let mp = entry._morphPos;
-        if (!mp) { mp = new Map(); entry._morphPos = mp; }
+        let mp = entry._morphPos; if (!mp) { mp = new Map(); entry._morphPos = mp; }
         for (const [nodeId, fp] of t.fromPos) {
           const tp = t.toPos.get(nodeId);
           mp.set(nodeId, new THREE.Vector3(
-            fp[0] + (tp[0] - fp[0]) * u,
-            fp[1] + (tp[1] - fp[1]) * u,
-            fp[2] + (tp[2] - fp[2]) * u,
-          ));
+            fp[0] + (tp[0] - fp[0]) * u, fp[1] + (tp[1] - fp[1]) * u, fp[2] + (tp[2] - fp[2]) * u));
+        }
+      }
+      if (t.hasAnc && t.fromAnc) {
+        let ma = entry._morphAnchor; if (!ma) { ma = new Map(); entry._morphAnchor = ma; }
+        for (const [nodeId, fa] of t.fromAnc) {
+          const ta = t.toAnc.get(nodeId);
+          ma.set(nodeId, [fa[0] + (ta[0] - fa[0]) * u, fa[1] + (ta[1] - fa[1]) * u, fa[2] + (ta[2] - fa[2]) * u]);
+        }
+      }
+      if (t.hasSQ && t.fromSQ) {
+        let mq = entry._morphSockQuat; if (!mq) { mq = new Map(); entry._morphSockQuat = mq; }
+        for (const [nodeId, fq] of t.fromSQ) {
+          const tq = t.toSQ.get(nodeId);
+          const q = new THREE.Quaternion(fq[0], fq[1], fq[2], fq[3])
+            .slerp(new THREE.Quaternion(tq[0], tq[1], tq[2], tq[3]), u);
+          mq.set(nodeId, [q.x, q.y, q.z, q.w]);
         }
       }
     }
@@ -288,7 +317,7 @@ function _advanceCableTransitions(nowMs) {
   if (allDone) {
     for (const [cableId] of _cableTransitions) {
       const entry = _cableSubgroups.get(cableId);
-      if (entry) entry._morphPos = null;   // done → tick resolves live again (node.position now = TO)
+      if (entry) { entry._morphPos = null; entry._morphAnchor = null; entry._morphSockQuat = null; }   // done → tick resolves live (now = TO)
     }
     _cableTransitions.clear();
     if (_cableTransitionDoneCb) {
@@ -769,12 +798,23 @@ function _tickAnchorRefresh() {
     if (!entry.group.visible) continue;   // skip hidden cables
 
     const radius = cableEffectiveRadius(cable) * globalScale;
-    // V0.3.0.126 — during a cable-shape transition, _advanceCableTransitions (run
-    // at the top of this tick) parks lerped FREE-node positions in entry._morphPos.
-    // Use them so the tube morphs; mesh/branch nodes still resolve live (follow).
-    const morph = entry._morphPos;
+    // During a cable-shape transition, _advanceCableTransitions (run at the top of
+    // this tick) parks lerped poses on entry. Free nodes → world pos in _morphPos
+    // (V0.3.0.126). Mesh nodes → lerped OFFSET in _morphAnchor: we temporarily swap
+    // the node's anchorLocal and resolve through the host's LIVE matrix, so the
+    // point both morphs AND rides the moving part (V0.3.0.128). Unlisted nodes
+    // resolve live (auto-follow).
+    const morph    = entry._morphPos;
+    const morphAnc = entry._morphAnchor;
     const positions = (cable.nodes || []).map(n => {
       if (morph && n.anchorType === 'free' && morph.has(n.id)) return morph.get(n.id).clone();
+      if (morphAnc && n.anchorType === 'mesh' && morphAnc.has(n.id)) {
+        const saved = n.anchorLocal;
+        n.anchorLocal = morphAnc.get(n.id);
+        const r = resolveNodeWorldPosition(n, ctx);
+        n.anchorLocal = saved;
+        return r.pos ? new THREE.Vector3(r.pos[0], r.pos[1], r.pos[2]) : null;
+      }
       const r = resolveNodeWorldPosition(n, ctx);
       return r.pos ? new THREE.Vector3(r.pos[0], r.pos[1], r.pos[2]) : null;
     });
@@ -813,13 +853,20 @@ function _tickAnchorRefresh() {
     // indexed against entry.points (only nodes with a socket exist).
     if (entry.sockets && entry.sockets.length) {
       const T = window.THREE;
+      const morphSQ = entry._morphSockQuat;   // V0.3.0.128 — lerped socket facing
       for (const box of entry.sockets) {
         const idx = (cable.nodes || []).findIndex(n => n.id === box.userData.nodeId);
         if (idx < 0) { box.visible = false; continue; }
         const node = cable.nodes[idx];
         const p    = positions[idx];
         if (!p || !node?.socket) { box.visible = false; continue; }
+        // Temporarily swap the socket's facing to the morphed value, resolve its
+        // WORLD quat through the host's live matrix, then restore.
+        const sqKey = node.anchorType === 'mesh' ? 'localQuaternion' : 'quaternion';
+        let savedSQ; const hasMorphSQ = morphSQ && morphSQ.has(node.id);
+        if (hasMorphSQ) { savedSQ = node.socket[sqKey]; node.socket[sqKey] = morphSQ.get(node.id); }
         const wq = _socketWorldQuat(node);
+        if (hasMorphSQ) node.socket[sqKey] = savedSQ;
         if (!wq) { box.visible = false; continue; }
         const actual = socketActualSize(cable, node.socket);
         const w = actual.w * globalScale;

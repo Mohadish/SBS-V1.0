@@ -86,15 +86,23 @@ export function captureStepSnapshot() {
   const cables = listCables();
   const out = {};
   for (const cable of cables) {
-    // V0.3.0.126 (cable morph Part 1) — capture each FREE node's world
-    // position so the cable's SHAPE is per-step and can lerp between steps.
-    // Mesh-anchored + branch nodes are excluded: they auto-follow their host
-    // (resolved live each frame), so storing them would fight the follow.
+    // Cable morph — per-step node POSE so the cable's shape can lerp between
+    // steps. Per node we store whichever apply:
+    //   pos = free node world position        (V0.3.0.126)
+    //   anc = mesh-anchored offset anchorLocal (V0.3.0.128 — the point's spot on
+    //         its host; combined with the host's own animated transform this lets
+    //         an anchored point morph AND ride the part)
+    //   sq  = socket facing (localQuaternion for a mesh host, quaternion for free)
+    // A mesh node's WORLD position still auto-follows its host every frame; `anc`
+    // only varies the offset. Branch nodes follow their parent cable (not stored).
     const nodes = {};
     for (const n of (cable.nodes || [])) {
-      if (n.anchorType === 'free' && Array.isArray(n.position)) {
-        nodes[n.id] = n.position.slice();
-      }
+      const pose = {};
+      if (n.anchorType === 'free' && Array.isArray(n.position))    pose.pos = n.position.slice();
+      if (n.anchorType === 'mesh' && Array.isArray(n.anchorLocal)) pose.anc = n.anchorLocal.slice();
+      const sq = n.anchorType === 'mesh' ? n.socket?.localQuaternion : n.socket?.quaternion;
+      if (n.socket && Array.isArray(sq) && sq.length === 4)         pose.sq  = sq.slice();
+      if (Object.keys(pose).length) nodes[n.id] = pose;
     }
     out[cable.id] = {
       visible:   !!cable.visible,
@@ -122,13 +130,24 @@ export function applyStepSnapshot(snap) {
     const next = { ...cable };
     if (override.visible   !== undefined) next.visible   = !!override.visible;
     if (override.highlight !== undefined) next.highlight = !!override.highlight;
-    // V0.3.0.126 — per-step free-node positions (cable morph). Non-destructive:
-    // a snapshot WITHOUT `nodes` (old projects) leaves every position as-is, so
-    // legacy cables keep one global shape until the user varies them per step.
+    // Per-step node pose (cable morph). Non-destructive: a snapshot WITHOUT `nodes`
+    // (old projects) leaves every pose as-is. Legacy V0.3.0.126 stored a bare
+    // position array; V0.3.0.128 stores { pos, anc, sq } — both handled.
     if (override.nodes && typeof override.nodes === 'object') {
       next.nodes = (cable.nodes || []).map(n => {
-        const p = override.nodes[n.id];
-        return (n.anchorType === 'free' && Array.isArray(p)) ? { ...n, position: p.slice() } : n;
+        const o = override.nodes[n.id];
+        if (!o) return n;
+        const pose = Array.isArray(o) ? { pos: o } : o;   // legacy array = free position
+        const nn = { ...n };
+        if (n.anchorType === 'free' && Array.isArray(pose.pos)) nn.position    = pose.pos.slice();
+        if (n.anchorType === 'mesh' && Array.isArray(pose.anc)) nn.anchorLocal = pose.anc.slice();
+        if (n.socket && Array.isArray(pose.sq) && pose.sq.length === 4) {
+          const sock = { ...n.socket };
+          if (n.anchorType === 'mesh') sock.localQuaternion = pose.sq.slice();
+          else                          sock.quaternion      = pose.sq.slice();
+          nn.socket = sock;
+        }
+        return nn;
       });
     }
     return next;

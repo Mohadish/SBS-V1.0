@@ -5981,6 +5981,7 @@ export function commitCableSocketRotate(cableId, nodeId) {
 
   state.setState({ cables: [...(state.get('cables') || [])] });
   state.markDirty();
+  steps.scheduleSync();   // V0.3.0.128 — capture socket facing + anchor into THIS step (morph)
   undoManager.push(
     'Rotate socket',
     () => {
@@ -6105,6 +6106,7 @@ export function commitCablePointMove(cableId, nodeId) {
   // path is harmless — we already updated in place during drag).
   state.setState({ cables: [...(state.get('cables') || [])] });
   state.markDirty();
+  steps.scheduleSync();   // V0.3.0.128 — capture the new anchored pose into THIS step (morph)
 
   undoManager.push(
     'Move cable point',
@@ -6179,6 +6181,7 @@ export function commitCablePointsMove() {
     }
     state.setState({ cables: [...(state.get('cables') || [])] });
     state.markDirty();
+    steps.scheduleSync();   // V0.3.0.128 — per-step capture so multi-point moves morph
   };
   apply('after');
   undoManager.push(
