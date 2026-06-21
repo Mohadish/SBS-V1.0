@@ -618,7 +618,13 @@ class GizmoController {
         this._group.quaternion.copy(this._startRefQuat);
         this._cableStandIn.quaternion.copy(this._startRefQuat);
       } else {
-        const q = this._cableTarget.getWorldQuat ? this._cableTarget.getWorldQuat() : null;
+        // V0.3.0.118 — WORLD space (the cable default): orient the gizmo to world
+        // axes so the visual matches the world drag axes (was always the point's
+        // surface frame → gizmo looked tilted at a "weird angle"). LOCAL toggle
+        // restores the surface frame.
+        const q = this._spaceMode === 'world'
+          ? null
+          : (this._cableTarget.getWorldQuat ? this._cableTarget.getWorldQuat() : null);
         if (q) {
           this._group.quaternion.copy(q);
           this._cableStandIn.quaternion.copy(q);
@@ -1338,9 +1344,11 @@ class GizmoController {
    * drift.
    */
   _gizmoReferenceQuat() {
-    // C5-B: cable-point mode uses the target's surface-aligned quat
-    // so _axisVec, drag plane, and label all share the same frame.
+    // Cable-point mode. WORLD space (default, V0.3.0.118) → world axes so the
+    // drag-lock pose matches the world drag axes; LOCAL → the point's surface frame.
     if (this._cableTarget) {
+      const T = window.THREE;
+      if (this._spaceMode === 'world') return T ? new T.Quaternion() : null;
       const q = this._cableTarget.getWorldQuat ? this._cableTarget.getWorldQuat() : null;
       return q || null;
     }
