@@ -4966,7 +4966,7 @@ export function stopCablePlacement() {
  *
  * Pass null to clear.
  */
-export function selectCablePoint(cableId, nodeId) {
+export function selectCablePoint(cableId, nodeId, additive = false) {
   if (!cableId || !nodeId) {
     clearCablePointSelection();
     return;
@@ -4975,7 +4975,7 @@ export function selectCablePoint(cableId, nodeId) {
   // selecting the point would just give a translate-only gizmo that
   // can't drive the back-face / scale semantics the socket needs.
   // Redirect to socket selection so the user always interacts with
-  // the right anchor.
+  // the right anchor. (Sockets don't join the multi-point set — V0.3.0.119.)
   const node = _findCableNode(cableId, nodeId);
   if (node?.socket) {
     selectCableSocket(cableId, nodeId);
@@ -4991,12 +4991,25 @@ export function selectCablePoint(cableId, nodeId) {
   if (state.get('selectedCableSocket')) {
     state.setState({ selectedCableSocket: null });
   }
-  state.setState({ selectedCablePoint: { cableId, nodeId } });
+  // V0.3.0.119 — multi-select set. Shift toggles a point in/out; a plain click
+  // resets to just the clicked point. selectedCablePoint stays the PRIMARY.
+  const same = (a) => a.cableId === cableId && a.nodeId === nodeId;
+  let multi = [...(state.get('selectedCablePoints') || [])];
+  if (additive) {
+    const idx = multi.findIndex(same);
+    if (idx >= 0) multi.splice(idx, 1);            // toggle off
+    else          multi.push({ cableId, nodeId });  // toggle on
+  } else {
+    multi = [{ cableId, nodeId }];
+  }
+  const primary = multi.some(same) ? { cableId, nodeId }
+                : (multi.length ? { ...multi[multi.length - 1] } : null);
+  state.setState({ selectedCablePoints: multi, selectedCablePoint: primary });
 }
 
 export function clearCablePointSelection() {
-  if (state.get('selectedCablePoint')) {
-    state.setState({ selectedCablePoint: null });
+  if (state.get('selectedCablePoint') || (state.get('selectedCablePoints')?.length ?? 0) > 0) {
+    state.setState({ selectedCablePoint: null, selectedCablePoints: [] });
   }
 }
 
@@ -5014,8 +5027,8 @@ export function selectCableSocket(cableId, nodeId) {
     state.setSelection(null, new Set());
     materials.applySelectionHighlight([]);
   }
-  if (state.get('selectedCablePoint')) {
-    state.setState({ selectedCablePoint: null });
+  if (state.get('selectedCablePoint') || (state.get('selectedCablePoints')?.length ?? 0) > 0) {
+    state.setState({ selectedCablePoint: null, selectedCablePoints: [] });
   }
   state.setState({ selectedCableSocket: { cableId, nodeId } });
 }
@@ -6080,6 +6093,69 @@ export function commitCablePointMove(cableId, nodeId) {
       state.setState({ cables: [...(state.get('cables') || [])] });
       state.markDirty();
     },
+  );
+}
+
+// ─── Multi-point cable move (V0.3.0.119) ────────────────────────────────────
+// Move several selected cable POINTS together by the same WORLD delta — one
+// gizmo, one undo. Each point keeps its own per-mesh anchor frame; the shared
+// world delta is converted into each point's local anchor independently (mirrors
+// the single-point apply). Mesh-anchored, socket-free points only.
+let _cablePointsMoveBatch = null;   // [{ cableId, nodeId, snapshot:[x,y,z] }]
+
+export function beginCablePointsMove(points) {
+  _cablePointsMoveBatch = [];
+  for (const { cableId, nodeId } of (points || [])) {
+    const node = _findCableNode(cableId, nodeId);
+    if (node?.anchorType === 'mesh' && Array.isArray(node.anchorLocal)) {
+      _cablePointsMoveBatch.push({ cableId, nodeId, snapshot: node.anchorLocal.slice() });
+    }
+  }
+}
+
+export function applyCablePointsCumulativeDelta(worldDelta) {
+  if (!_cablePointsMoveBatch || !_cablePointsMoveBatch.length) return;
+  const T = window.THREE; if (!T) return;
+  const nodeById = state.get('nodeById');
+  for (const b of _cablePointsMoveBatch) {
+    const node = _findCableNode(b.cableId, b.nodeId);
+    if (!node || node.anchorType !== 'mesh' || !Array.isArray(node.anchorLocal)) continue;
+    const obj = nodeById?.get?.(node.nodeId)?.object3d;
+    if (!obj) continue;
+    obj.updateMatrixWorld?.(true);
+    const w = new T.Vector3(b.snapshot[0], b.snapshot[1], b.snapshot[2]);
+    obj.localToWorld(w);          // start world pos
+    w.add(worldDelta);            // shared world delta
+    obj.worldToLocal(w);          // back to this point's mesh-local
+    node.anchorLocal[0] = w.x; node.anchorLocal[1] = w.y; node.anchorLocal[2] = w.z;
+  }
+}
+
+export function commitCablePointsMove() {
+  if (!_cablePointsMoveBatch) return;
+  const batch = _cablePointsMoveBatch; _cablePointsMoveBatch = null;
+  const changes = [];
+  for (const b of batch) {
+    const node = _findCableNode(b.cableId, b.nodeId);
+    if (!node || !Array.isArray(node.anchorLocal)) continue;
+    const before = b.snapshot, after = node.anchorLocal.slice();
+    if (before[0] === after[0] && before[1] === after[1] && before[2] === after[2]) continue;
+    changes.push({ cableId: b.cableId, nodeId: b.nodeId, before, after });
+  }
+  if (!changes.length) return;
+  const apply = (which) => {
+    for (const c of changes) {
+      const n = _findCableNode(c.cableId, c.nodeId);
+      if (n && Array.isArray(n.anchorLocal)) n.anchorLocal = c[which].slice();
+    }
+    state.setState({ cables: [...(state.get('cables') || [])] });
+    state.markDirty();
+  };
+  apply('after');
+  undoManager.push(
+    `Move ${changes.length} cable point${changes.length === 1 ? '' : 's'}`,
+    () => apply('before'),
+    () => apply('after'),
   );
 }
 

@@ -82,6 +82,7 @@ export function initCableRender() {
   // Phase A: re-apply per-point selection highlight on selection change.
   // Cheap — no geometry rebuild, just material emissive flips.
   state.on('change:selectedCablePoint',  _applySelectionHighlight);
+  state.on('change:selectedCablePoints', _applySelectionHighlight);   // V0.3.0.119 multi
   // E2: same for socket selection.
   state.on('change:selectedCableSocket', _applySelectionHighlight);
 
@@ -620,11 +621,14 @@ const _SELECT_EMISSIVE = new THREE.Color('#22d3ee');
 function _applySelectionHighlight() {
   const selPt   = state.get('selectedCablePoint');
   const selSock = state.get('selectedCableSocket');
+  // V0.3.0.119 — highlight EVERY multi-selected point, not just the primary.
+  const selSet  = new Set((state.get('selectedCablePoints') || []).map(p => `${p.cableId}:${p.nodeId}`));
   for (const entry of _cableSubgroups.values()) {
     for (const m of entry.points) {
       const mat = m.material;
       if (!mat?.emissive) continue;
-      const isSel = selPt && m.userData.cableId === selPt.cableId && m.userData.nodeId === selPt.nodeId;
+      const isSel = selSet.has(`${m.userData.cableId}:${m.userData.nodeId}`)
+        || (selPt && m.userData.cableId === selPt.cableId && m.userData.nodeId === selPt.nodeId);
       if (isSel) {
         mat.emissive.copy(_SELECT_EMISSIVE);
         mat.emissiveIntensity = 0.9;
@@ -651,7 +655,9 @@ function _applySelectionHighlight() {
 /** Multiplier for the selected point's sphere — applied in tick + rebuild. */
 function _pointScaleFor(cableId, nodeId, baseRadius) {
   const sel = state.get('selectedCablePoint');
-  const isSel = sel && sel.cableId === cableId && sel.nodeId === nodeId;
+  const inMulti = (state.get('selectedCablePoints') || [])
+    .some(p => p.cableId === cableId && p.nodeId === nodeId);   // V0.3.0.119
+  const isSel = inMulti || (sel && sel.cableId === cableId && sel.nodeId === nodeId);
   return baseRadius * (isSel ? 1.4 : 1.0);  // unselected = exactly the cable radius; selected inflates
 }
 

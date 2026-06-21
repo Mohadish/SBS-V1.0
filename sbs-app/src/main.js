@@ -806,6 +806,13 @@ function _syncGizmoToSelection() {
   // C5-B: cable-point selection — translate-only gizmo.
   const cableSel = state.get('selectedCablePoint');
   if (cableSel) {
+    // V0.3.0.119 — 2+ points selected → one gizmo at their centroid that moves
+    // them all together. Single selection keeps the existing per-point target.
+    const multi = state.get('selectedCablePoints') || [];
+    if (multi.length >= 2) {
+      const multiTarget = _buildCablePointsGizmoTarget(multi);
+      if (multiTarget) { gizmo.showForCablePoint(multiTarget); return; }
+    }
     const target = _buildCablePointGizmoTarget(cableSel.cableId, cableSel.nodeId);
     if (target) { gizmo.showForCablePoint(target); return; }
     // Fall through to hide if target couldn't be built (free / branch
@@ -889,6 +896,47 @@ function _buildCablePointGizmoTarget(cableId, nodeId) {
     commitMove() { actions.commitCablePointMove(cableId, nodeId); },
   };
 }
+
+/**
+ * V0.3.0.119 — composite gizmo target for MULTIPLE selected cable points.
+ * One world-oriented gizmo at the points' centroid; dragging fans the same world
+ * delta out to every point (begin/apply/commit all → one undo). Only mesh-anchored
+ * points contribute; returns null if fewer than 2 resolve.
+ */
+function _buildCablePointsGizmoTarget(points) {
+  const T = window.THREE;
+  const pts = (points || []).filter(p => {
+    const n = _findCableNodeFor(p.cableId, p.nodeId);
+    return n && n.anchorType === 'mesh';
+  });
+  if (pts.length < 2) return null;
+  const worldOf = (cableId, nodeId) => {
+    const cables = state.get('cables') || [];
+    const n = cables.find(x => x.id === cableId)?.nodes?.find(x => x.id === nodeId);
+    if (!n) return null;
+    const r = resolveNodeWorldPosition(n, { makeVec3: (x, y, z) => new T.Vector3(x, y, z) });
+    return r.pos ? new T.Vector3(r.pos[0], r.pos[1], r.pos[2]) : null;
+  };
+  return {
+    isMulti: true,
+    getWorldPos() {
+      const c = new T.Vector3(); let n = 0;
+      for (const p of pts) { const w = worldOf(p.cableId, p.nodeId); if (w) { c.add(w); n++; } }
+      return n ? c.multiplyScalar(1 / n) : null;
+    },
+    getWorldQuat() { return new T.Quaternion(); },   // world-aligned
+    beginMove() { actions.beginCablePointsMove(pts); },
+    applyCumulativeDelta(worldDelta) { actions.applyCablePointsCumulativeDelta(worldDelta); },
+    commitMove() { actions.commitCablePointsMove(); },
+  };
+}
+
+/** Local helper: find a cable node ({cableId,nodeId}) without building a target. */
+function _findCableNodeFor(cableId, nodeId) {
+  const cables = state.get('cables') || [];
+  return cables.find(c => c.id === cableId)?.nodes?.find(n => n.id === nodeId) || null;
+}
+
 /**
  * E2: build a cable-socket gizmo target. Same translate plumbing as
  * the point target (translate moves the host point — socket follows
@@ -967,6 +1015,7 @@ function _buildCableSocketGizmoTarget(cableId, nodeId) {
 state.on('selection:change',            _syncGizmoToSelection);
 state.on('change:treeData',             _syncGizmoToSelection);
 state.on('change:selectedCablePoint',   _syncGizmoToSelection);
+state.on('change:selectedCablePoints',  _syncGizmoToSelection);   // V0.3.0.119 multi-move
 state.on('change:selectedCableSocket',  _syncGizmoToSelection);
 state.on('change:shapeDrawing',         _syncGizmoToSelection);
 
@@ -1904,7 +1953,9 @@ canvas.addEventListener('click', e => {
   // BEFORE the tree/nbm guard or cables-only sessions never select.
   const cableHit = _pickCablePoint(e.clientX, e.clientY);
   if (cableHit) {
-    actions.selectCablePoint(cableHit.cableId, cableHit.nodeId);
+    // V0.3.0.119 — Shift adds/removes the point from the multi-select set so
+    // several cable points can be moved together.
+    actions.selectCablePoint(cableHit.cableId, cableHit.nodeId, e.shiftKey);
     return;
   }
   // E2: socket pick after point pick — the point sphere sits at the

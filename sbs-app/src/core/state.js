@@ -249,6 +249,12 @@ function createInitialState() {
     // and vice versa so the gizmo can only follow one target at a time.
     selectedCablePoint: null,
 
+    // V0.3.0.119 — multi-select of cable POINTS for moving several together.
+    // Array of { cableId, nodeId } (mesh-anchored, socket-free points only).
+    // selectedCablePoint stays the PRIMARY (last-clicked); this is the full set.
+    // Shift-click adds/removes; a plain click resets it to the single clicked point.
+    selectedCablePoints: [],
+
     // C5 (Phase E2): currently selected cable SOCKET. { cableId, nodeId }
     // | null. Mutually exclusive with selectedCablePoint and the mesh
     // selection — selecting any of the three clears the others. Drives
