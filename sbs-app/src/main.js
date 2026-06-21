@@ -680,6 +680,21 @@ window.sbsDiag.shapes = () => {
   console.log('  → fewer in save-tree than live = SAVE drops; equal now but fewer after reload = LOAD drops; orphans>0 = template lost.');
   return { live, saved, savedTpls, orphans };
 };
+// V0.3.0.123 — easy per-frame trace: click the misbehaving shape to SELECT it,
+// then run window.sbsDiag.traceSelected(). Play the step, copy the [fadeTrace ~]
+// lines, then window.sbsDiag.traceOff().
+window.sbsDiag.traceSelected = () => {
+  const id = state.get('selectedId');
+  if (!id) {
+    console.log('%c[trace] Nothing selected. Click the misbehaving shape first, then run this again.', 'color:#f59e0b');
+    return null;
+  }
+  const node = state.get('nodeById')?.get(id);
+  window.sbsDiag.fadeTraceNode = id;
+  console.log(`%c[trace] ON for "${node?.name || id}" (${node?.type}). Now PLAY the step, then copy every [fadeTrace ~] line. Run window.sbsDiag.traceOff() when done.`, 'color:#22c55e;font-weight:bold');
+  return id;
+};
+window.sbsDiag.traceOff = () => { window.sbsDiag.fadeTraceNode = null; console.log('[trace] off.'); };
 window.sbsFix = window.sbsFix || {};
 // Manually re-run the orphan-shape self-heal (also runs automatically on load).
 window.sbsFix.pruneShapes = () => {
