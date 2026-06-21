@@ -400,6 +400,21 @@ class StepManager {
       }
     }
 
+    // ── flatShape end-state authority (V0.3.0.127) ──────────────────────
+    // applySnapshotInstant is always a SNAP to a final/target state (the
+    // finalize at the end of a transition, or an instant jump/load — never a
+    // transition START; verified all callers). flatShapes don't self-heal their
+    // opacity (applyAll only writes their color), so a fade interrupted by this
+    // snap or a rapid replay strands them: stuck at 0 → "fade in then only an
+    // outline"; stuck at 1 + a re-asserted obj.visible → "fade out then pop back".
+    // Make the just-applied visibility the SOLE authority: kill any in-flight
+    // fade, drop the pending-hide re-assert that could re-show a hidden shape,
+    // then force every flatShape opaque (obj.visible decides shown-vs-hidden).
+    // This is the root fix three independent audits converged on.
+    this._materials?.cancelVisibilityTransitions?.();
+    this._materials?.setPendingHideSet?.([]);
+    this._materials?.resetFlatShapeOpacities?.();
+
     // Isolate overlay: a kept mesh that is hidden on THIS step (but forced
     // visible by the mask) is not in the self-heal set above — re-assert full
     // opacity so it never renders as a ghost (obj.visible=true yet opacity 0)
@@ -1264,14 +1279,19 @@ class StepManager {
       // shapes faster (or with their own offset) than the meshes.
       //
       // For snap/threshold behaviour, use a tiny duration like shape(0).
-      if (types.includes('shape') && !shapeHandled) {
+      // V0.3.0.127 — gate `shapeHandled` on having ACTUAL work, mirroring the
+      // visibility handler (line ~1233). Previously this set shapeHandled=true on
+      // the mere PRESENCE of a 'shape' slot, before the length check — so an empty
+      // shape channel (e.g. all shapes rerouted to the mesh arrays by the V0.3.0.124
+      // priority rule) marked the channel "handled" while doing nothing AND
+      // suppressed the shape fallback below, stranding any snapped-to-0 shape.
+      if (types.includes('shape') && !shapeHandled &&
+          (hidingShapeIds.length || showingShapeIds.length)) {
         shapeHandled = true;
-        if (hidingShapeIds.length || showingShapeIds.length) {
-          this._restoreFadeAncestors(hidingShapeIds);   // V0.3.0.101 — re-assert at fade-start
-          this._materials?.beginVisibilityTransitions(
-            hidingShapeIds, showingShapeIds, durationMs, easeFn,
-          );
-        }
+        this._restoreFadeAncestors(hidingShapeIds);   // V0.3.0.101 — re-assert at fade-start
+        this._materials?.beginVisibilityTransitions(
+          hidingShapeIds, showingShapeIds, durationMs, easeFn,
+        );
       }
 
       // H1: cable transitions — opacity (visibility flip) + colour lerp.

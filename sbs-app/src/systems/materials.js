@@ -1541,6 +1541,28 @@ gl_FragColor.a = 1.0;
     this._visTransitions.clear();
   }
 
+  /**
+   * V0.3.0.127 — force EVERY flatShape's material back to full opacity.
+   * Unlike regular meshes (rebuilt by applyAll → opacity self-restores to 1.0),
+   * the flatShape branch of applyAll only writes color and never touches opacity
+   * (materials.js ~860-882). So a fade interrupted by a snapshot snap / rapid
+   * replay leaves a shape's opacity STRANDED: at 0 it renders as an outline /
+   * sparse dither ("fade in then only an outline"); at 1 with obj.visible later
+   * re-asserted it pops back ("fade out then pop"). The snapshot's obj.visible is
+   * the sole authority for shown-vs-hidden — opacity is just reset to 1.0 so
+   * visible shapes are solid and hidden ones (visible=false) are primed. Called at
+   * every applySnapshotInstant finalize. Root fix for the recurring shape blink/
+   * threshold/outline/pop family (3 independent audits converged here).
+   */
+  resetFlatShapeOpacities() {
+    for (const [, mesh] of this.meshById) {
+      if (!mesh?.userData?.flatShapeNodeId) continue;
+      this._setMaterialFade(mesh.material, 1.0);
+      const bp = mesh.userData?.falloffBackPass;
+      if (bp) this._setMaterialFade(bp.material, 1.0);
+    }
+  }
+
 
   // ═══════════════════════════════════════════════════════════════════════
   //  ASSIGNMENT
