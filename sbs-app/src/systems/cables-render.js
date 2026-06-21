@@ -173,13 +173,34 @@ export function beginCableTransitions(toCablesSnap, durationMs, easeFn, onDone) 
     const fromColorHex  = fromHighlight ? highlightColor : baseColor;
     const toColorHex    = toHighlight   ? highlightColor : baseColor;
 
-    if (fromVisible === toVisible && fromColorHex === toColorHex) continue;
+    // V0.3.0.126 (cable morph) — FREE-node position lerp. FROM = live
+    // node.position (captured now, before applyStepSnapshot sets TO on
+    // step:applied); TO = snapshot. Only nodes that actually move are kept.
+    let fromPos = null, toPos = null, hasPos = false;
+    const toNodes = toEntry?.nodes;
+    if (toNodes && typeof toNodes === 'object') {
+      for (const n of (cable.nodes || [])) {
+        if (n.anchorType !== 'free' || !Array.isArray(n.position)) continue;
+        const tp = toNodes[n.id];
+        if (!Array.isArray(tp)) continue;
+        const fp = n.position;
+        if (Math.abs(fp[0] - tp[0]) < 1e-4 && Math.abs(fp[1] - tp[1]) < 1e-4
+            && Math.abs(fp[2] - tp[2]) < 1e-4) continue;
+        if (!fromPos) { fromPos = new Map(); toPos = new Map(); }
+        fromPos.set(n.id, fp.slice());
+        toPos.set(n.id, tp.slice());
+        hasPos = true;
+      }
+    }
+
+    if (fromVisible === toVisible && fromColorHex === toColorHex && !hasPos) continue;
 
     _cableTransitions.set(cable.id, {
       fromOpacity: fromVisible ? 1 : 0,
       toOpacity:   toVisible   ? 1 : 0,
       fromColor:   new THREE.Color(fromColorHex),
       toColor:     new THREE.Color(toColorHex),
+      fromPos, toPos, hasPos,
       startMs, durationMs, easeFn,
     });
   }
@@ -222,6 +243,7 @@ export function snapCableTransitionsToFinal() {
     for (const m of entry.points)   { m.material.opacity = t.toOpacity; m.material.color.copy(t.toColor); }
     for (const m of entry.segments) { m.material.opacity = t.toOpacity; m.material.color.copy(t.toColor); }
     for (const m of (entry.sockets || [])) { m.material.opacity = t.toOpacity; }
+    entry._morphPos = null;   // V0.3.0.126 — drop morph; node.position is now TO (applyStepSnapshot)
   }
   _cableTransitions.clear();
   if (_cableTransitionDoneCb) {
@@ -245,10 +267,29 @@ function _advanceCableTransitions(nowMs) {
       for (const m of entry.points)   { m.material.opacity = opacity; m.material.color.copy(color); }
       for (const m of entry.segments) { m.material.opacity = opacity; m.material.color.copy(color); }
       for (const m of (entry.sockets || [])) { m.material.opacity = opacity; }
+      // V0.3.0.126 — lerped FREE-node positions for _tickAnchorRefresh to render
+      // (it runs right after this in the same tick). Mesh/branch nodes are NOT
+      // here, so the tick still resolves them live (auto-follow).
+      if (t.hasPos && t.fromPos) {
+        let mp = entry._morphPos;
+        if (!mp) { mp = new Map(); entry._morphPos = mp; }
+        for (const [nodeId, fp] of t.fromPos) {
+          const tp = t.toPos.get(nodeId);
+          mp.set(nodeId, new THREE.Vector3(
+            fp[0] + (tp[0] - fp[0]) * u,
+            fp[1] + (tp[1] - fp[1]) * u,
+            fp[2] + (tp[2] - fp[2]) * u,
+          ));
+        }
+      }
     }
     if (raw < 1) allDone = false;
   }
   if (allDone) {
+    for (const [cableId] of _cableTransitions) {
+      const entry = _cableSubgroups.get(cableId);
+      if (entry) entry._morphPos = null;   // done → tick resolves live again (node.position now = TO)
+    }
     _cableTransitions.clear();
     if (_cableTransitionDoneCb) {
       const cb = _cableTransitionDoneCb;
@@ -728,7 +769,12 @@ function _tickAnchorRefresh() {
     if (!entry.group.visible) continue;   // skip hidden cables
 
     const radius = cableEffectiveRadius(cable) * globalScale;
+    // V0.3.0.126 — during a cable-shape transition, _advanceCableTransitions (run
+    // at the top of this tick) parks lerped FREE-node positions in entry._morphPos.
+    // Use them so the tube morphs; mesh/branch nodes still resolve live (follow).
+    const morph = entry._morphPos;
     const positions = (cable.nodes || []).map(n => {
+      if (morph && n.anchorType === 'free' && morph.has(n.id)) return morph.get(n.id).clone();
       const r = resolveNodeWorldPosition(n, ctx);
       return r.pos ? new THREE.Vector3(r.pos[0], r.pos[1], r.pos[2]) : null;
     });

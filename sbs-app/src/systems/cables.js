@@ -86,9 +86,20 @@ export function captureStepSnapshot() {
   const cables = listCables();
   const out = {};
   for (const cable of cables) {
+    // V0.3.0.126 (cable morph Part 1) — capture each FREE node's world
+    // position so the cable's SHAPE is per-step and can lerp between steps.
+    // Mesh-anchored + branch nodes are excluded: they auto-follow their host
+    // (resolved live each frame), so storing them would fight the follow.
+    const nodes = {};
+    for (const n of (cable.nodes || [])) {
+      if (n.anchorType === 'free' && Array.isArray(n.position)) {
+        nodes[n.id] = n.position.slice();
+      }
+    }
     out[cable.id] = {
       visible:   !!cable.visible,
       highlight: !!cable.highlight,
+      nodes,
     };
   }
   return out;
@@ -111,6 +122,15 @@ export function applyStepSnapshot(snap) {
     const next = { ...cable };
     if (override.visible   !== undefined) next.visible   = !!override.visible;
     if (override.highlight !== undefined) next.highlight = !!override.highlight;
+    // V0.3.0.126 — per-step free-node positions (cable morph). Non-destructive:
+    // a snapshot WITHOUT `nodes` (old projects) leaves every position as-is, so
+    // legacy cables keep one global shape until the user varies them per step.
+    if (override.nodes && typeof override.nodes === 'object') {
+      next.nodes = (cable.nodes || []).map(n => {
+        const p = override.nodes[n.id];
+        return (n.anchorType === 'free' && Array.isArray(p)) ? { ...n, position: p.slice() } : n;
+      });
+    }
     return next;
   });
   state.setState({ cables });
