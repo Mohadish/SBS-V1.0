@@ -1459,12 +1459,14 @@ class StepManager {
       this._fadeRestoredAncestors.clear();
     }
 
-    // V0.3.0.103 — while object transitions are running, re-assert visibility on
-    // every not-yet-finished hide target (and its folders) EACH frame, so there's
-    // no 1-frame "blink" where a to-be-faded object is skipped before its fade
-    // phase begins. Uses materials' live pending set (finished hides are removed,
-    // so we never re-show something that already faded out).
-    if (this._objectTransitions.length && this._materials?._pendingHideIds?.size) {
+    // V0.3.0.116 — re-assert visibility on every not-yet-finished hide target (and
+    // its folder ancestors) EACH frame of the WHOLE transition, not just while object
+    // transitions are active. A folder→folder MOVE tears down + recreates the target
+    // folder group (cleanupFolderGroups) and re-cascades data visibility, which could
+    // re-hide a to-be-faded object's freshly-rebuilt ancestor for a frame ("blink
+    // just before the move"). Uses the live pending set (a hide is dropped the moment
+    // its fade finishes, so we never re-show something that already faded out).
+    if (this._materials?._pendingHideIds?.size) {
       this._restoreFadeAncestors([...this._materials._pendingHideIds]);
     }
 
