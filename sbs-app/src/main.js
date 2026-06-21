@@ -3389,6 +3389,48 @@ state.on('change:export', () => {
 // overlay coordinates through this rect.
 const _safeFrameEl   = document.getElementById('export-safe-frame');
 const _viewportSurfaceEl = document.getElementById('viewport-surface');
+
+// ── Global Mode visual indicator (V0.3.0.125) ──────────────────────────────
+// Thick blue inset border + faint "GLOBAL MODE" watermark over the viewport
+// while state.globalMode is on, plus a discoverable toggle button (Spacebar is
+// the primary toggle). pointer-events:none on the overlay so it never blocks.
+(function _setupGlobalModeIndicator() {
+  const surf = _viewportSurfaceEl;
+  if (!surf) return;
+  if (getComputedStyle(surf).position === 'static') surf.style.position = 'relative';
+
+  const ov = document.createElement('div');
+  ov.id = 'global-mode-overlay';
+  ov.style.cssText = 'position:absolute;inset:0;pointer-events:none;z-index:55;display:none;'
+    + 'box-shadow:inset 0 0 0 4px #2563eb, inset 0 0 30px 6px rgba(37,99,235,0.30);';
+  const wm = document.createElement('div');
+  wm.textContent = 'GLOBAL MODE';
+  wm.style.cssText = 'position:absolute;left:50%;top:50%;transform:translate(-50%,-50%);'
+    + 'font:800 64px/1 system-ui,sans-serif;letter-spacing:10px;color:#3b82f6;'
+    + 'opacity:0.10;white-space:nowrap;user-select:none;';
+  ov.appendChild(wm);
+  surf.appendChild(ov);
+
+  const btn = document.createElement('button');
+  btn.id = 'global-mode-btn';
+  btn.title = 'Toggle Global Mode (Space) — transform edits carry across steps on deselect';
+  btn.style.cssText = 'position:absolute;top:8px;right:10px;z-index:60;pointer-events:auto;'
+    + 'cursor:pointer;font:600 12px system-ui,sans-serif;padding:5px 11px;border-radius:6px;'
+    + 'border:1px solid #2563eb;background:rgba(17,24,39,0.78);color:#93c5fd;transition:all .12s;';
+  btn.addEventListener('click', () => actions.toggleGlobalMode());
+  surf.appendChild(btn);
+
+  const sync = () => {
+    const on = !!state.get('globalMode');
+    ov.style.display     = on ? 'block' : 'none';
+    btn.textContent      = on ? '🌐 Global: ON' : '🌐 Global';
+    btn.style.background  = on ? '#2563eb' : 'rgba(17,24,39,0.78)';
+    btn.style.color       = on ? '#ffffff' : '#93c5fd';
+    btn.style.boxShadow   = on ? '0 0 10px 2px rgba(37,99,235,0.6)' : 'none';
+  };
+  state.on('change:globalMode', sync);
+  sync();
+})();
 function _refreshSafeFrame() {
   if (!_safeFrameEl) return;
   const showFrame = state.get('export')?.showSafeFrame !== false;
@@ -3478,7 +3520,10 @@ window.addEventListener('keydown', async e => {
   // synchronously, so reading it inside the unite call is safe.
   if (key === 'ArrowLeft')  { e.preventDefault(); steps.activateRelativeStep(-1); actions.uniteStepSelectionWithActive(); return; }
   if (key === 'ArrowRight') { e.preventDefault(); steps.activateRelativeStep(+1); actions.uniteStepSelectionWithActive(); return; }
-  if (key === ' ')          { e.preventDefault(); steps.activateRelativeStep(+1); actions.uniteStepSelectionWithActive(); return; }
+  // Space → GLOBAL MODE toggle (V0.3.0.125). Step-forward stays on ArrowRight
+  // (Space was a redundant duplicate of it). Guarded by _isInputFocused above,
+  // so Space still types normally in text fields.
+  if (key === ' ')          { e.preventDefault(); actions.toggleGlobalMode(); return; }
 
   // ── Gizmo space toggle (Local ↔ World) ──────────────────────────────────
   if (key === 'l' || key === 'L') {

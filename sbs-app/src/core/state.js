@@ -314,6 +314,14 @@ function createInitialState() {
     // pivot-edit commit). Esc rolls back the open session.
     globalEditNodeId: null,
 
+    // GLOBAL MODE (V0.3.0.125) — a persistent toggle (Spacebar). When ON,
+    // any transform edit opens a multi-step "carry" session regardless of how
+    // many steps are selected: the net delta from first-edit to DESELECT is
+    // computed and a scope prompt (all / this+prev / this+following / this only
+    // / selected) stamps it across steps. Replaces the old Ctrl-hold gesture
+    // (which couldn't capture typed inputs and was easy to forget).
+    globalMode: false,
+
     // Node id awaiting a "snap pivot to surface" raycast. When set,
     // the next viewport pointerdown is intercepted: it raycasts
     // against the scene, and on a hit positions+orients the pivot

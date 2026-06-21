@@ -962,17 +962,14 @@ class GizmoController {
   }
 
   _armGlobalDrag(ctrlInit, clientX, clientY) {
-    this._ctrlGlobal = !!ctrlInit;
+    // V0.3.0.125 — the Ctrl-hold global gesture is RETIRED in favour of the
+    // Spacebar Global Mode toggle (state.globalMode), which also captures typed
+    // inputs and can't be forgotten mid-drag. Force-disarm so `wantGlobal` stays
+    // false and every drag takes the normal commitTransformEdit path (the carry
+    // session is driven by globalMode now). Code kept dormant for reference.
+    this._ctrlGlobal = false;
     this._lastDragX  = clientX;
     this._lastDragY  = clientY;
-    if (!this._globalKeyHandler) {
-      this._globalKeyHandler = (e) => {
-        const on = !!(e.ctrlKey || e.metaKey);
-        if (on !== this._ctrlGlobal) { this._ctrlGlobal = on; this._updateGlobalBadge(); }
-      };
-    }
-    document.addEventListener('keydown', this._globalKeyHandler, true);
-    document.addEventListener('keyup',   this._globalKeyHandler, true);
     this._updateGlobalBadge();
   }
 

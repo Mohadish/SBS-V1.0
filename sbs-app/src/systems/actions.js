@@ -3237,8 +3237,12 @@ export function commitTransformEdit(nodeId) {
 let _msXf = null;   // { nodeId, baseline: transformSnapshot }
 
 function _msXfNote(nodeId, fromSnap) {
-  const stepSel = state.get('selectedStepIds');
-  if (!(stepSel instanceof Set) || stepSel.size < 2) { _msXf = null; return; }  // gate: 2+ steps
+  // Enter a carry session when GLOBAL MODE is on (any selection) OR when 2+ steps
+  // are selected (legacy multi-step path). V0.3.0.125.
+  const stepSel  = state.get('selectedStepIds');
+  const isGlobal = !!state.get('globalMode');
+  const haveSel  = (stepSel instanceof Set) && stepSel.size >= 2;
+  if (!isGlobal && !haveSel) { _msXf = null; return; }
   if (_msXf?.nodeId === nodeId) return;          // session already running → keep first baseline
   _msXf = { nodeId, baseline: fromSnap };
 }
@@ -3275,19 +3279,27 @@ async function _maybeFinalizeMultiStepXf() {
   const rotAng = 2 * Math.acos(Math.min(1, Math.abs(dQuat[3] ?? 1)));
   if (moved < 1e-4 && rotAng < 1e-4) return;     // negligible → nothing to carry
 
-  const stepSel = state.get('selectedStepIds');
-  if (!(stepSel instanceof Set) || stepSel.size < 2) return;  // selection changed since edit
+  // Two ways into this prompt (V0.3.0.125): GLOBAL MODE (any selection) or the
+  // legacy 2+-step multi-select. "Selected steps" only makes sense for the latter.
+  const isGlobal = !!state.get('globalMode');
+  const stepSel  = state.get('selectedStepIds');
+  const haveSel  = (stepSel instanceof Set) && stepSel.size >= 2;
+  if (!isGlobal && !haveSel) return;             // selection changed since edit
+
+  const what = rotAng >= 1e-4 ? (moved >= 1e-4 ? 'move + rotation' : 'rotation') : 'move';
+  const buttons = [];
+  if (haveSel) buttons.push({ id: 'selected', label: `Selected steps (${stepSel.size})`, primary: !isGlobal });
+  buttons.push({ id: 'all',     label: 'All steps', primary: isGlobal });
+  buttons.push({ id: 'earlier', label: 'Previous + this step' });
+  buttons.push({ id: 'later',   label: 'Following + this step' });
+  buttons.push({ id: 'cancel',  label: 'Just this step' });
 
   const choice = await chooseFromButtons(
-    'Carry this change to other steps?',
-    `"${node.name || 'Object'}" was transformed with ${stepSel.size} steps selected. Apply the same move/rotation to:`,
-    [
-      { id: 'selected', label: `Selected steps (${stepSel.size})`, primary: true },
-      { id: 'all',      label: 'All steps' },
-      { id: 'earlier',  label: 'This step + earlier' },
-      { id: 'later',    label: 'This step + later' },
-      { id: 'cancel',   label: 'Just this step' },
-    ],
+    isGlobal ? '🌐 Global Mode — apply to…' : 'Carry this change to other steps?',
+    isGlobal
+      ? `Apply this ${what} of "${node.name || 'Object'}" to which steps?`
+      : `"${node.name || 'Object'}" was transformed with ${stepSel.size} steps selected. Apply the same ${what} to:`,
+    buttons,
   );
   if (!choice || choice === 'cancel') return;
 
@@ -3295,15 +3307,32 @@ async function _maybeFinalizeMultiStepXf() {
   const activeId  = state.get('activeStepId');
   const activeIdx = allSteps.findIndex(s => s.id === activeId);
   let scope;
-  if      (choice === 'all')     scope = new Set(allSteps.map(s => s.id));
-  else if (choice === 'earlier') scope = new Set(allSteps.slice(0, activeIdx + 1).map(s => s.id));
-  else if (choice === 'later')   scope = new Set(allSteps.slice(Math.max(0, activeIdx)).map(s => s.id));
-  else                           scope = new Set(stepSel);
+  if      (choice === 'all')      scope = new Set(allSteps.map(s => s.id));
+  else if (choice === 'earlier')  scope = new Set(allSteps.slice(0, activeIdx + 1).map(s => s.id));
+  else if (choice === 'later')    scope = new Set(allSteps.slice(Math.max(0, activeIdx)).map(s => s.id));
+  else if (choice === 'selected' && haveSel) scope = new Set(stepSel);
+  else return;
   scope.delete(activeId);        // the active step already holds the live result
   if (scope.size === 0) return;
 
   _stampTransformDelta(sess.nodeId, dOff, dQuat, scope);
 }
+
+// ─── Global Mode toggle (V0.3.0.125) ───────────────────────────────────────
+// Persistent mode (Spacebar). Replaces the Ctrl-hold global gesture: when ON,
+// EVERY transform edit (gizmo OR typed input) opens a carry session and prompts
+// on deselect to stamp the net delta across steps. See _msXfNote / state.globalMode.
+export function setGlobalMode(on) {
+  const next = !!on;
+  if (state.get('globalMode') === next) return;
+  state.setState({ globalMode: next });   // emits change:globalMode (status.js indicator listens)
+  setStatus(
+    next ? '🌐 Global Mode ON — transform edits prompt to carry across steps when you deselect.'
+         : 'Global Mode off.',
+    'info', 2800,
+  );
+}
+export function toggleGlobalMode() { setGlobalMode(!state.get('globalMode')); }
 
 // Add (dOff, dQuat) to the node's pose in each target step's snapshot. One undo.
 function _stampTransformDelta(nodeId, dOff, dQuat, targetIds) {
