@@ -960,6 +960,23 @@ function _pointScaleFor(cableId, nodeId, baseRadius) {
   return baseRadius;  // unselected = exactly the cable radius
 }
 
+/**
+ * V0.3.0.149 — the node orbs are a viewport-only selection helper: shown ONLY while
+ * the cable is actively selected / placed / point-edited, and NEVER during export
+ * (same category as the authoring bounding boxes). Otherwise they linger over the
+ * model and bake into rendered frames.
+ */
+function _cableMarkersVisible(cableId) {
+  if (state.get('_exporting')) return false;
+  if (state.get('selectedCableId') === cableId) return true;
+  if (state.get('cablePlacingId')  === cableId) return true;
+  const sp = state.get('selectedCablePoint');   if (sp && sp.cableId === cableId) return true;
+  const ss = state.get('selectedCableSocket');  if (ss && ss.cableId === cableId) return true;
+  const sps = state.get('selectedCablePoints');
+  if (Array.isArray(sps) && sps.some(p => p.cableId === cableId)) return true;
+  return false;
+}
+
 function _disposeSubgroup(entry) {
   for (const m of entry.points)   m.material?.dispose?.();
   for (const m of entry.segments) m.material?.dispose?.();
@@ -1038,11 +1055,14 @@ function _tickAnchorRefresh() {
     }
 
     // Reposition point spheres in lock-step with the resolver output.
-    // (Geometry stays — only transforms change.)
+    // (Geometry stays — only transforms change.) V0.3.0.149 — orbs are a
+    // viewport-only selection helper: hidden unless this cable is active, and
+    // hidden during export.
+    const _orbsOn = _cableMarkersVisible(cable.id);
     for (let i = 0; i < entry.points.length && i < positions.length; i++) {
       const p = positions[i];
       const sphere = entry.points[i];
-      if (!p) { sphere.visible = false; continue; }
+      if (!p || !_orbsOn) { sphere.visible = false; continue; }
       sphere.visible = true;
       sphere.position.copy(p);
       sphere.scale.setScalar(_pointScaleFor(sphere.userData.cableId, sphere.userData.nodeId, radius));

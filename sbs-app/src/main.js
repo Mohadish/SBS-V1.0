@@ -49,7 +49,7 @@ import { showActivationDialog, showHardLockDialog, showGraceWarning } from './ui
 import { initHud }                from './ui/hud.js';
 import { initStepNav }            from './ui/step-nav.js';
 import { initStepsPanel }         from './ui/steps-panel.js';
-import { initSidebarLeft, showColorForNode, openCableTabForCable } from './ui/sidebar-left.js';
+import { initSidebarLeft, showColorForNode, openCableTabForCable, clearActiveCable } from './ui/sidebar-left.js';
 import { initContextMenu, hideContextMenu, showContextMenu, canonicalizeMenuOrder } from './ui/context-menu.js';
 import { promptString } from './ui/prompt.js';
 import { showMoveToFolderDialog, showAddToReplaceDialog, showReplaceModeDialog, showInputDialog, showInsertAnimDialog } from './ui/tree.js';
@@ -2100,6 +2100,7 @@ canvas.addEventListener('click', e => {
       actionClearSelection();
       actions.clearCablePointSelection();
       actions.clearCableSocketSelection();
+      clearActiveCable();   // V0.3.0.149 — drop the cable's node orbs on click-out
     }
     return;
   }
@@ -2133,6 +2134,7 @@ canvas.addEventListener('click', e => {
   // gizmo can only follow one target at a time.
   actions.clearCablePointSelection();
   actions.clearCableSocketSelection();
+  clearActiveCable();   // V0.3.0.149 — and drop the selected cable's node orbs
 
   // ── Selection promotion (B.2-NEW.2 RM + V0.1.92 locked folders) ──────
   // Two promotion paths, in priority order:

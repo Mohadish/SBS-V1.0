@@ -92,7 +92,8 @@ function _runSelectByMatches(matches, m, contextLabel) {
 import { renderAnimationTab } from './animation-tab.js';
 import { renderHeaderTab }    from './header-tab.js';
 import { renderStyleTab }     from './style-tab.js';
-import { renderCableTab }     from './cable-tab.js';
+import { renderCableTab, clearActiveCable } from './cable-tab.js';
+export { clearActiveCable };
 import { renderHardwareTab, startEditTemplate as _hwStartEditTemplate } from './hardware-tab.js';
 import { renderPrimitivesTab } from './primitives-tab.js';   // V0.2.22.90: parametric primitives
 import { regenerateHardwareAsset } from '../systems/hardware-actions.js';

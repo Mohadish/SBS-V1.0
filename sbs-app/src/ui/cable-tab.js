@@ -142,6 +142,17 @@ function _setActiveCable(id) {
 }
 
 /**
+ * V0.3.0.149 — deselect the active cable so its node orbs/markers vanish. Clears
+ * BOTH the module-private _activeCableId (else renderCableTab re-asserts it on the
+ * next re-render) and state.selectedCableId. Called from the viewport on click-out /
+ * mesh-select so the orbs don't linger.
+ */
+export function clearActiveCable() {
+  _activeCableId = null;
+  if (state.get('selectedCableId')) state.setState({ selectedCableId: null });
+}
+
+/**
  * Phase F: render cables as a tree — roots first, branches indented
  * under their source cable, recursive. A "branch" is any cable whose
  * branchSource.cableId points to another cable in the list. Detects
