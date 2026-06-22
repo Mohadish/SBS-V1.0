@@ -5592,56 +5592,22 @@ export function toggleSocketPlugged(cableId, nodeId) {
     return;
   }
   const next = !node.socket.plugged;
-  const sockName = node.socket.name || 'socket';
 
-  // Phase A (V0.3.0.135) — plug/unplug AUTO-CREATES the next step (a new cable
-  // "arrangement state"): clone the CURRENT step's arrangement, flip THIS socket's
-  // plug bit in it, insert it right after, and activate WITH animation so the
-  // transition plays the connect/unplug travel (V0.3.0.134). Each plug/unplug thus
-  // stacks a new full cable snapshot the user can then re-pose.
-  steps.flushSync?.();
-  const allSteps = state.get('steps') || [];
-  const curId    = state.get('activeStepId');
-  const srcIdx   = allSteps.findIndex(s => s.id === curId);
-  const source   = srcIdx >= 0 ? allSteps[srcIdx] : null;
-
-  const liveToggle = (val) => {
+  // Plug/unplug applies to THE CURRENT STEP (per-step state). The step IS the log of
+  // the cable's arrangement — NO auto step creation (V0.3.0.136 reverts Phase A). The
+  // connect/unplug TRAVEL animation plays when you NAVIGATE into a step whose plug
+  // state differs from the previous one (beginCableTransitions, V0.3.0.134).
+  const set = (val) => {
     const n = _findCableNode(cableId, nodeId);
     if (!n?.socket) return;
     n.socket.plugged = val;
     state.setState({ cables: [...(state.get('cables') || [])] });
     state.markDirty();
-    steps.scheduleSync();
+    steps.scheduleSync();   // store the plug state ON this step
   };
-  if (!source) {   // no active step — plain live toggle (degenerate fallback)
-    liveToggle(next);
-    undoManager.push(next ? 'Plug socket' : 'Unplug socket', () => liveToggle(!next), () => liveToggle(next));
-    return;
-  }
-
-  const newStep = JSON.parse(JSON.stringify(source));
-  newStep.id   = generateId('step');
-  newStep.name = `${next ? 'Plug' : 'Unplug'} — ${sockName}`;
-  newStep.snapshot = newStep.snapshot || {};
-  const cables = (newStep.snapshot.cables = newStep.snapshot.cables || {});
-  const cEntry = (cables[cableId] = cables[cableId] || { visible: true, highlight: false, nodes: {} });
-  cEntry.nodes = cEntry.nodes || {};
-  cEntry.nodes[nodeId] = { ...(cEntry.nodes[nodeId] || {}), pl: next };   // flip THIS socket only
-
-  const prevSteps = allSteps;
-  const nextSteps = [...allSteps];
-  nextSteps.splice(srcIdx + 1, 0, newStep);
-  state.setState({ steps: nextSteps });
-  state.markDirty();
-  state.emit('step:created', newStep);
-  steps.activateStep(newStep.id, true);   // animate current → new step (connect travel)
-
-  undoManager.push(
-    next ? `Plug ${sockName} (new step)` : `Unplug ${sockName} (new step)`,
-    () => { state.setState({ steps: prevSteps }); state.markDirty(); steps.activateStep(curId, false); },
-    () => { state.setState({ steps: nextSteps }); state.markDirty(); steps.activateStep(newStep.id, false); },
-  );
-  setStatus(next ? `🔌 New step — "${sockName}" plugs in.` : `New step — "${sockName}" unplugs.`, 'info', 3000);
+  set(next);
+  undoManager.push(next ? 'Plug socket' : 'Unplug socket', () => set(!next), () => set(next));
+  setStatus(next ? '🔌 Plugged on this step.' : 'Unplugged on this step.', 'info', 2800);
 }
 
 /**
