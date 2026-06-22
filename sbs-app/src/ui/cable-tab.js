@@ -237,6 +237,9 @@ function _renderEditor(container) {
     : '';
 
   const curveMode = cable.curve || (cable.flexible ? 'flexible' : 'straight');   // V0.3.0.158
+  const parentJoint = cable.branchSource   // V0.3.0.160 — joint lives on the parent (split) node
+    ? listCables().find(c => c.id === cable.branchSource.cableId)?.nodes?.find(n => n.id === cable.branchSource.nodeId)?.branchJoint
+    : null;
 
   host.innerHTML = `
     <div class="section">
@@ -270,12 +273,16 @@ function _renderEditor(container) {
                value="${state.get('cableFilletReach') ?? 40}" style="flex:1;" />
       </label>
       ${cable.branchSource ? `
-      <label class="colorlab" style="display:flex;align-items:center;gap:8px;margin-top:6px;">
-        <span class="small" style="flex:0 0 72px;">Branch length</span>
-        <input type="number" id="cbl-branch-len" min="0" max="5000" step="1"
-               value="${((cable.nodes || []).find(n => n.anchorType === 'branch')?.branchExit?.length) ?? 50}" style="flex:1;" />
+      <div class="small" style="margin-top:8px;font-weight:500;">Branch joint <span class="muted">(on the main cable)</span></div>
+      <label class="colorlab" style="display:flex;align-items:center;gap:8px;margin-top:4px;">
+        <span class="small" style="flex:0 0 90px;">Straight length</span>
+        <input type="number" id="cbl-joint-len" min="0" max="5000" step="1" value="${parentJoint?.length ?? 60}" style="flex:1;" />
       </label>
-      <div class="small muted" style="margin-top:4px;line-height:1.4;">Straight emergence out of the parent (perpendicular by default; rotate control next). Shows in Fillet mode.</div>
+      <label class="colorlab" style="display:flex;align-items:center;gap:8px;margin-top:4px;">
+        <span class="small" style="flex:0 0 90px;">Rotate (&deg;)</span>
+        <input type="number" id="cbl-joint-ang" min="-180" max="180" step="1" value="${parentJoint?.angle ?? 0}" style="flex:1;" />
+      </label>
+      <div class="small muted" style="margin-top:4px;line-height:1.4;">Inserts a straight area on the MAIN cable at the split so the corner isn't filleted away and the branch connects cleanly. Rotate aims the junction. Fillet mode.</div>
       ` : ''}
 
       <div class="card" style="margin-top:10px;padding:0;">
@@ -319,9 +326,8 @@ function _renderEditor(container) {
   host.querySelector('#cbl-fillet-reach')?.addEventListener('change', e => {
     actions.setCableFilletReach(e.target.value);
   });
-  host.querySelector('#cbl-branch-len')?.addEventListener('change', e => {
-    actions.setBranchExitLength(cable.id, e.target.value);
-  });
+  host.querySelector('#cbl-joint-len')?.addEventListener('change', e => actions.setBranchJointLength(cable.id, e.target.value));
+  host.querySelector('#cbl-joint-ang')?.addEventListener('change', e => actions.setBranchJointAngle(cable.id, e.target.value));
 
   // Per-point + socket row delegation (select / delete / select socket).
   host.querySelector('#cbl-points')?.addEventListener('click', e => {

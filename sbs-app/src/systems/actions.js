@@ -4801,25 +4801,38 @@ export function setCableFilletReach(value) {
 }
 
 /**
- * V0.3.0.159 — set the straight EMERGENCE length of a branch: the branch-start
- * node's exit run (along the branch exit direction) before the cable filets toward
- * its route. Per-cable structural (the renderer rebuilds). Undoable.
+ * V0.3.0.160 — the branch JOINT lives on the PARENT (split) node of the main cable.
+ * Length = the straight area inserted through that joint (so the main cable's corner
+ * isn't filleted away → no gap); angle = the in-plane rotation of the joint vector
+ * (aims both the main cable's flat section and the branch). Edited from the branch's
+ * cable tab but stored on the parent node. Undoable.
  */
-export function setBranchExitLength(cableId, length) {
-  const node = (cables.getCable(cableId)?.nodes || []).find(n => n.anchorType === 'branch');
-  if (!node) return;
-  const v = Math.max(0, Number(length) || 0);
-  const prev = node.branchExit?.length ?? 50;
-  if (v === prev) return;
-  const set = (val) => {
-    const n = (cables.getCable(cableId)?.nodes || []).find(x => x.anchorType === 'branch');
-    if (!n) return;
-    n.branchExit = { ...(n.branchExit || {}), length: val };
+function _branchParentNode(branchCableId) {
+  const start = (cables.getCable(branchCableId)?.nodes || []).find(n => n.anchorType === 'branch');
+  if (!start?.sourceCableId) return null;
+  return (cables.getCable(start.sourceCableId)?.nodes || []).find(n => n.id === start.sourceNodeId) || null;
+}
+
+function _setBranchJoint(branchCableId, field, val, label) {
+  const pn = _branchParentNode(branchCableId);
+  if (!pn) return;
+  const prev = pn.branchJoint?.[field] ?? (field === 'length' ? 60 : 0);
+  if (val === prev) return;
+  const set = (v) => {
+    const p = _branchParentNode(branchCableId); if (!p) return;
+    p.branchJoint = { ...(p.branchJoint || {}), [field]: v };
     state.setState({ cables: [...(state.get('cables') || [])] });
     state.markDirty();
   };
-  set(v);
-  undoManager.push('Branch exit length', () => set(prev), () => set(v));
+  set(val);
+  undoManager.push(label, () => set(prev), () => set(val));
+}
+
+export function setBranchJointLength(branchCableId, length) {
+  _setBranchJoint(branchCableId, 'length', Math.max(0, Number(length) || 0), 'Branch joint length');
+}
+export function setBranchJointAngle(branchCableId, angle) {
+  _setBranchJoint(branchCableId, 'angle', Number(angle) || 0, 'Branch joint angle');
 }
 
 /**

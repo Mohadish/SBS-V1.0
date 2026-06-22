@@ -844,26 +844,37 @@ function _buildFlexCurve(cable, positions, entry) {
  * animation. Returns a CatmullRom over the dense filleted path.
  */
 /**
- * V0.3.0.159 — the world EXIT direction for a branch-start node. Default = the
- * parent point's surface normal (the branch emerges perpendicular to the parent
- * part — a clean line out of it). A stored `branchExit.dir` (world) overrides it
- * (set by the rotate control, coming next).
+ * V0.3.0.160 — the JOINT vector at a split node on the MAIN cable: the through-
+ * tangent (chord of the two neighbours) rotated by the joint angle in the bend
+ * plane. The straight area runs along this; the branch aligns to the same vector.
  */
-function _branchExitDir(branchNode) {
-  if (Array.isArray(branchNode.branchExit?.dir) && branchNode.branchExit.dir.length === 3) {
-    return new THREE.Vector3(...branchNode.branchExit.dir).normalize();
+function _jointDir(P, prev, next, angleDeg) {
+  let tan = next.clone().sub(prev);
+  if (tan.length() < 1e-6) tan = next.clone().sub(P);
+  tan.normalize();
+  if (angleDeg) {
+    const nrm = prev.clone().sub(P).cross(next.clone().sub(P));
+    if (nrm.length() > 1e-6) tan.applyAxisAngle(nrm.normalize(), angleDeg * Math.PI / 180);
   }
-  const pCable = listCables().find(c => c.id === branchNode.sourceCableId);
-  const pNode  = pCable?.nodes?.find(n => n.id === branchNode.sourceNodeId);
-  if (pNode?.anchorType === 'mesh' && pNode.nodeId && Array.isArray(pNode.normalLocal)) {
-    const obj = state.get('nodeById')?.get?.(pNode.nodeId)?.object3d;
-    if (obj) {
-      const q = new THREE.Quaternion(); obj.getWorldQuaternion(q);
-      return new THREE.Vector3(pNode.normalLocal[0], pNode.normalLocal[1], pNode.normalLocal[2])
-        .applyQuaternion(q).normalize();
-    }
-  }
-  return null;
+  return tan;
+}
+
+/**
+ * The branch-start exit point: emerge from the split point along the PARENT joint's
+ * cached vector (toward the branch's route), reaching the end of the main cable's
+ * straight area so the main cable + branch share one clean line — a smooth Y, no
+ * gap. The main cable's render caches the vector on the parent node. V0.3.0.160.
+ */
+function _branchAlignExit(branchNode, P, nextPos, gScale) {
+  const pc    = listCables().find(c => c.id === branchNode.sourceCableId);
+  const pNode = pc?.nodes?.find(n => n.id === branchNode.sourceNodeId);
+  if (!pNode || !Array.isArray(pNode._jointDirWorld)) return null;
+  const dir = new THREE.Vector3(...pNode._jointDirWorld);
+  if (dir.length() < 1e-6) return null;
+  dir.normalize();
+  if (nextPos && dir.dot(nextPos.clone().sub(P)) < 0) dir.multiplyScalar(-1);   // toward the route
+  const L = Math.max((pNode.branchJoint?.length ?? 60) * gScale, 1);
+  return P.clone().addScaledVector(dir, L / 2);
 }
 
 function _buildFilletCurve(cable, positions, entry) {
@@ -875,28 +886,35 @@ function _buildFilletCurve(cable, positions, entry) {
   const gScale = state.get('cableGlobalScale') ?? 1;
   const corners = [];
   for (let k = 0; k < raw.length; k++) {
-    const r = raw[k], isFirst = k === 0, isLast = k === raw.length - 1;
-    // Branch-start exit vector (note 2): a straight run along the branch exit
-    // direction so the branch emerges cleanly before filleting toward its route.
-    if (isFirst && r.node?.anchorType === 'branch') {
-      const dir = _branchExitDir(r.node);
-      if (dir) {
-        const H = Math.max((r.node.branchExit?.length ?? 50) * gScale, 1);
-        corners.push(r.p.clone(), r.p.clone().addScaledVector(dir, H));
-        continue;
-      }
+    const r = raw[k], P = r.p, node = r.node, isFirst = k === 0, isLast = k === raw.length - 1;
+    // SPLIT JOINT (main cable): a node that HAS branches gets a STRAIGHT AREA through
+    // it, along the joint vector, so its corner isn't filleted away (which would pull
+    // the cable off the split point and open a gap to the branch). Cache the vector
+    // on the node so the branch can align to the same line. V0.3.0.160.
+    if (node?.branchCableIds?.length && !isFirst && !isLast) {
+      const dir = _jointDir(P, raw[k - 1].p, raw[k + 1].p, node.branchJoint?.angle ?? 0);
+      node._jointDirWorld = [dir.x, dir.y, dir.z];
+      const L = Math.max((node.branchJoint?.length ?? 60) * gScale, 0);
+      if (L > 1) { corners.push(P.clone().addScaledVector(dir, -L / 2), P.clone().addScaledVector(dir, L / 2)); continue; }
     }
-    if ((isFirst || isLast) && r.node?.socket) {
-      const ax = _socketAxisMorphed(r.node, entry);
+    // BRANCH-START: emerge from the split point ALONG the parent joint vector toward
+    // the branch's route, so the two share the straight line (smooth Y, no gap).
+    if (isFirst && node?.anchorType === 'branch') {
+      const exit = _branchAlignExit(node, P, raw[1]?.p, gScale);
+      if (exit) { corners.push(P.clone(), exit); continue; }
+    }
+    // Socket endpoint exit vector (note 1).
+    if ((isFirst || isLast) && node?.socket) {
+      const ax = _socketAxisMorphed(node, entry);
       if (ax) {
-        const H = Math.max(socketActualSize(cable, r.node.socket).d * gScale, 1);
-        const exit = r.p.clone().addScaledVector(ax, H);
-        if (isFirst) corners.push(r.p.clone(), exit);
-        else         corners.push(exit, r.p.clone());
+        const H = Math.max(socketActualSize(cable, node.socket).d * gScale, 1);
+        const exit = P.clone().addScaledVector(ax, H);
+        if (isFirst) corners.push(P.clone(), exit);
+        else         corners.push(exit, P.clone());
         continue;
       }
     }
-    corners.push(r.p.clone());
+    corners.push(P.clone());
   }
   if (corners.length < 2) return null;
   const reach = state.get('cableFilletReach') ?? 40;
@@ -946,8 +964,14 @@ function _posHash(cable, positions, entry) {
   let s = mode.slice(0, 2);   // 'st' | 'fl' | 'fi' — distinct per body type
   if (mode === 'fillet') {
     s += 'L' + (state.get('cableFilletReach') ?? 40);   // reach reshapes the path
-    for (const n of (cable.nodes || [])) {              // branch exit length/dir reshape it too
-      if (n.anchorType === 'branch' && n.branchExit) s += '|b' + (n.branchExit.length ?? 50) + (n.branchExit.dir || '');
+    for (const n of (cable.nodes || [])) {
+      // split joints on THIS cable, and the parent joint a branch-start reads.
+      if (n.branchCableIds?.length && n.branchJoint) s += '|j' + (n.branchJoint.length ?? 60) + ',' + (n.branchJoint.angle ?? 0);
+      if (n.anchorType === 'branch' && n.sourceCableId) {
+        const pn = listCables().find(c => c.id === n.sourceCableId)?.nodes?.find(x => x.id === n.sourceNodeId);
+        if (pn?.branchJoint) s += '|J' + (pn.branchJoint.length ?? 60) + ',' + (pn.branchJoint.angle ?? 0);
+        if (Array.isArray(pn?._jointDirWorld)) s += '|d' + pn._jointDirWorld.map(v => v.toFixed(1)).join(',');
+      }
     }
   }
   for (const p of positions) s += p ? `|${p.x.toFixed(2)},${p.y.toFixed(2)},${p.z.toFixed(2)}` : '|x';
