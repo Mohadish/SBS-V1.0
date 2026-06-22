@@ -753,12 +753,39 @@ function _socketAxis(node) {
   return new THREE.Vector3(0, 0, 1).applyQuaternion(wq).normalize();
 }
 
+// V0.3.0.147 — the flex curve's exit/entry tangent must track the socket's
+// ANIMATING facing during a transition. _socketAxis reads the LIVE orientation,
+// which is committed to its FINAL value early (V0.3.0.137 plug-early), so the
+// cable's last segment snapped to the final direction at frame 1 even while the
+// endpoints travelled. Honor the per-frame morph maps when present: world-space
+// _morphConnQuat (plug travel) or host-local _morphSockQuat (facing morph).
+function _socketAxisMorphed(node, entry) {
+  if (!node?.socket) return null;
+  const T = window.THREE;
+  const cq = entry?._morphConnQuat?.get(node.id);
+  if (cq) {
+    return new T.Vector3(0, 0, 1)
+      .applyQuaternion(new T.Quaternion(cq[0], cq[1], cq[2], cq[3])).normalize();
+  }
+  const sq = entry?._morphSockQuat?.get(node.id);
+  if (sq && node.anchorType === 'mesh' && node.nodeId) {
+    const obj = state.get('nodeById')?.get?.(node.nodeId)?.object3d;
+    if (obj) {
+      const meshQ = new T.Quaternion();
+      obj.getWorldQuaternion(meshQ);
+      const world = meshQ.multiply(new T.Quaternion(sq[0], sq[1], sq[2], sq[3]));
+      return new T.Vector3(0, 0, 1).applyQuaternion(world).normalize();
+    }
+  }
+  return _socketAxis(node);
+}
+
 /**
  * CatmullRom curve through the resolvable node positions. A socketed ENDPOINT
  * gets a phantom control point a short way along its socket axis, so the cable
  * emerges/arrives straight out of the socket (plugged-in) before curving.
  */
-function _buildFlexCurve(cable, positions) {
+function _buildFlexCurve(cable, positions, entry) {
   const pts = [], idxs = [];
   for (let i = 0; i < positions.length; i++) {
     if (positions[i]) { pts.push(positions[i]); idxs.push(i); }
@@ -769,10 +796,10 @@ function _buildFlexCurve(cable, positions) {
   const last = pts.length - 1;
 
   const ctrl = [pts[0]];
-  const startAxis = _socketAxis(nodes[idxs[0]]);
+  const startAxis = _socketAxisMorphed(nodes[idxs[0]], entry);
   if (startAxis) ctrl.push(pts[0].clone().addScaledVector(startAxis, handleFrac * pts[0].distanceTo(pts[1])));
   for (let k = 1; k < last; k++) ctrl.push(pts[k]);
-  const endAxis = _socketAxis(nodes[idxs[last]]);
+  const endAxis = _socketAxisMorphed(nodes[idxs[last]], entry);
   if (endAxis) ctrl.push(pts[last].clone().addScaledVector(endAxis, handleFrac * pts[last].distanceTo(pts[last - 1])));
   ctrl.push(pts[last]);
 
@@ -794,9 +821,17 @@ function _makeFlexTube(curve, radius, color, cableId) {
 }
 
 /** Cheap change-detector for the per-tick: flexible flag + quantized positions. */
-function _posHash(cable, positions) {
+function _posHash(cable, positions, entry) {
   let s = cable.flexible ? 'F' : 'S';
   for (const p of positions) s += p ? `|${p.x.toFixed(2)},${p.y.toFixed(2)},${p.z.toFixed(2)}` : '|x';
+  // V0.3.0.147 — include the morphing socket facing so the flex tube rebuilds and
+  // re-derives its exit tangent even when the endpoint barely moves (pure rotation).
+  if (entry && cable.flexible) {
+    for (const n of (cable.nodes || [])) {
+      const q = entry._morphConnQuat?.get(n.id) || entry._morphSockQuat?.get(n.id);
+      if (q) s += `|q${q[0].toFixed(2)},${q[1].toFixed(2)},${q[2].toFixed(2)},${q[3].toFixed(2)}`;
+    }
+  }
   return s;
 }
 
@@ -810,13 +845,13 @@ function _buildSegments(cable, entry, positions, radius, color) {
   entry.segments   = [];
   entry._isFlexible = !!cable.flexible;
   if (cable.flexible) {
-    const curve = _buildFlexCurve(cable, positions);
+    const curve = _buildFlexCurve(cable, positions, entry);
     if (curve) {
       const tube = _makeFlexTube(curve, radius, color, cable.id);
       entry.group.add(tube);
       entry.segments.push(tube);
     }
-    entry._posHash = _posHash(cable, positions);
+    entry._posHash = _posHash(cable, positions, entry);
   } else {
     for (let i = 0; i < positions.length - 1; i++) {
       const a = positions[i], b = positions[i + 1];
@@ -996,7 +1031,7 @@ function _tickAnchorRefresh() {
     // or the path moves (cheap hash gate avoids per-frame rebuilds when static).
     // Straight: just re-pose the cheap cylinders.
     if (cable.flexible || entry._isFlexible) {
-      const hash = _posHash(cable, positions);
+      const hash = _posHash(cable, positions, entry);
       if (cable.flexible !== entry._isFlexible || hash !== entry._posHash) {
         _buildSegments(cable, entry, positions, radius, entry._color || new THREE.Color('#ffb24a'));
       }
