@@ -186,6 +186,18 @@ export function commitLiveCablesToDefiningSteps(activeStepId) {
   }
 }
 
+/**
+ * V0.3.0.158 — a cable's corner/curve mode: 'straight' | 'flexible' | 'fillet'.
+ * Backward-compatible: falls back to the legacy `flexible` boolean when `curve`
+ * is unset (old projects). 'flexible' = Catmull-Rom spline; 'fillet' = straight
+ * runs with rounded (tangent-arc) corners.
+ */
+export function cableCurveMode(cable) {
+  const c = cable && cable.curve;
+  if (c === 'straight' || c === 'flexible' || c === 'fillet') return c;
+  return (cable && cable.flexible) ? 'flexible' : 'straight';
+}
+
 /** Capture per-step cable DISPLAY (visible/highlight) for all cables. Per-step, not
  *  cascade — written to every synced step so visibility is step-sensitive. V0.3.0.156. */
 export function captureCableDisplaySnapshot() {

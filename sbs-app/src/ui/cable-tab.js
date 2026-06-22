@@ -236,6 +236,8 @@ function _renderEditor(container) {
     ? _renderSocketEditor(cable.id, selectedSocketNode)
     : '';
 
+  const curveMode = cable.curve || (cable.flexible ? 'flexible' : 'straight');   // V0.3.0.158
+
   host.innerHTML = `
     <div class="section">
       <div class="title">Editing: ${_esc(cable.name || '(unnamed)')}</div>
@@ -254,9 +256,18 @@ function _renderEditor(container) {
         </label>
       </div>
 
-      <label class="colorlab" style="display:flex;align-items:center;gap:8px;margin-top:8px;cursor:pointer;">
-        <input type="checkbox" id="cbl-flexible" ${cable.flexible ? 'checked' : ''} />
-        <span class="small">Flexible (curved — socketed ends follow the socket direction)</span>
+      <label class="colorlab" style="display:flex;align-items:center;gap:8px;margin-top:8px;">
+        <span class="small" style="flex:0 0 72px;">Cable type</span>
+        <select id="cbl-curve" style="flex:1;">
+          <option value="straight" ${curveMode === 'straight' ? 'selected' : ''}>Straight</option>
+          <option value="flexible" ${curveMode === 'flexible' ? 'selected' : ''}>Curved (flexible)</option>
+          <option value="fillet"   ${curveMode === 'fillet'   ? 'selected' : ''}>Fillet (rounded corners)</option>
+        </select>
+      </label>
+      <label class="colorlab" id="cbl-fillet-row" style="display:${curveMode === 'fillet' ? 'flex' : 'none'};align-items:center;gap:8px;margin-top:6px;">
+        <span class="small" style="flex:0 0 72px;">Fillet reach</span>
+        <input type="number" id="cbl-fillet-reach" min="0" max="5000" step="1"
+               value="${state.get('cableFilletReach') ?? 40}" style="flex:1;" />
       </label>
 
       <div class="card" style="margin-top:10px;padding:0;">
@@ -292,8 +303,13 @@ function _renderEditor(container) {
     const size = Math.max(5, Number.isFinite(v) ? v : 100);
     actions.setCableStyle(cable.id, { size });
   });
-  host.querySelector('#cbl-flexible')?.addEventListener('change', e => {
-    actions.setCableFlexible(cable.id, e.target.checked);
+  host.querySelector('#cbl-curve')?.addEventListener('change', e => {
+    actions.setCableCurveMode(cable.id, e.target.value);
+    const row = host.querySelector('#cbl-fillet-row');
+    if (row) row.style.display = e.target.value === 'fillet' ? 'flex' : 'none';
+  });
+  host.querySelector('#cbl-fillet-reach')?.addEventListener('change', e => {
+    actions.setCableFilletReach(e.target.value);
   });
 
   // Per-point + socket row delegation (select / delete / select socket).

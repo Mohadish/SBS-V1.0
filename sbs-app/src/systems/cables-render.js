@@ -32,7 +32,7 @@
 import state    from '../core/state.js';
 import sceneCore from '../core/scene.js';
 import * as clock from '../core/clock.js';
-import { resolveNodeWorldPosition, listCables } from './cables.js';
+import { resolveNodeWorldPosition, listCables, cableCurveMode } from './cables.js';
 import { socketActualSize, cableEffectiveRadius } from './actions.js';
 import steps from './steps.js';   // for object3dById fallback in anchor resolution
 
@@ -78,6 +78,7 @@ export function initCableRender() {
   state.on('change:cableGlobalScale',    _refreshAll);
   state.on('change:cableGlobalRadius',   _refreshAll);
   state.on('change:cableHighlightColor', _refreshAll);
+  state.on('change:cableFilletReach',    _refreshAll);   // V0.3.0.158 — rebuild fillet tubes
 
   // Phase A: re-apply per-point selection highlight on selection change.
   // Cheap — no geometry rebuild, just material emissive flips.
@@ -834,6 +835,64 @@ function _buildFlexCurve(cable, positions, entry) {
   return new THREE.CatmullRomCurve3(ctrl, false, 'catmullrom', 0.5);
 }
 
+/**
+ * V0.3.0.158 — FILLET mode: straight runs with rounded (tangent-arc) corners. Each
+ * corner's setback "reach" is capped by the shorter neighbour (it halts at the next
+ * point). Socketed ENDPOINTS get a SOCKET-EXIT vector — a straight run of the
+ * socket's height along the socket axis — so the cable filets cleanly INTO the
+ * socket direction (note 1). The exit axis is morph-aware, so it tracks a plug
+ * animation. Returns a CatmullRom over the dense filleted path.
+ */
+function _buildFilletCurve(cable, positions, entry) {
+  const T = THREE;
+  const nodes = cable.nodes || [];
+  const raw = [];
+  for (let i = 0; i < positions.length; i++) if (positions[i]) raw.push({ p: positions[i].clone(), node: nodes[i] });
+  if (raw.length < 2) return null;
+  const gScale = state.get('cableGlobalScale') ?? 1;
+  const corners = [];
+  for (let k = 0; k < raw.length; k++) {
+    const r = raw[k], isFirst = k === 0, isLast = k === raw.length - 1;
+    if ((isFirst || isLast) && r.node?.socket) {
+      const ax = _socketAxisMorphed(r.node, entry);
+      if (ax) {
+        const H = Math.max(socketActualSize(cable, r.node.socket).d * gScale, 1);
+        const exit = r.p.clone().addScaledVector(ax, H);
+        if (isFirst) corners.push(r.p.clone(), exit);
+        else         corners.push(exit, r.p.clone());
+        continue;
+      }
+    }
+    corners.push(r.p.clone());
+  }
+  if (corners.length < 2) return null;
+  const reach = state.get('cableFilletReach') ?? 40;
+  const path = [corners[0].clone()];
+  for (let i = 1; i < corners.length - 1; i++) {
+    const A = corners[i - 1], P = corners[i], B = corners[i + 1];
+    const v1 = A.clone().sub(P), v2 = B.clone().sub(P);
+    const l1 = v1.length(), l2 = v2.length();
+    if (l1 < 1e-3 || l2 < 1e-3) { path.push(P.clone()); continue; }
+    v1.normalize(); v2.normalize();
+    const ang = Math.min(Math.max(v1.angleTo(v2), 0), Math.PI);
+    const d = Math.min(reach, 0.49 * l1, 0.49 * l2);
+    if (ang > Math.PI * 0.997 || d < 0.5) { path.push(P.clone()); continue; }
+    const T1 = P.clone().addScaledVector(v1, d), T2 = P.clone().addScaledVector(v2, d);
+    const bis = v1.clone().add(v2);
+    if (bis.length() < 1e-4) { path.push(P.clone()); continue; }
+    bis.normalize();
+    const C = P.clone().addScaledVector(bis, d / Math.cos(ang / 2));
+    const w1 = T1.clone().sub(C), w2 = T2.clone().sub(C);
+    const axis = w1.clone().cross(w2);
+    if (axis.length() < 1e-6) { path.push(T1, T2); continue; }
+    axis.normalize();
+    const sweep = w1.angleTo(w2), N = 12;
+    for (let s = 0; s <= N; s++) path.push(C.clone().add(w1.clone().applyAxisAngle(axis, (s / N) * sweep)));
+  }
+  path.push(corners[corners.length - 1].clone());
+  return new T.CatmullRomCurve3(path, false, 'centripetal', 0.5);
+}
+
 /** Tube mesh skinned along the flexible curve. */
 function _makeFlexTube(curve, radius, color, cableId) {
   const segs = Math.min(240, Math.max(24, curve.points.length * 24));
@@ -850,11 +909,13 @@ function _makeFlexTube(curve, radius, color, cableId) {
 
 /** Cheap change-detector for the per-tick: flexible flag + quantized positions. */
 function _posHash(cable, positions, entry) {
-  let s = cable.flexible ? 'F' : 'S';
+  const mode = cableCurveMode(cable);
+  let s = mode.slice(0, 2);   // 'st' | 'fl' | 'fi' — distinct per body type
+  if (mode === 'fillet') s += 'L' + (state.get('cableFilletReach') ?? 40);   // reach reshapes the path
   for (const p of positions) s += p ? `|${p.x.toFixed(2)},${p.y.toFixed(2)},${p.z.toFixed(2)}` : '|x';
-  // V0.3.0.147 — include the morphing socket facing so the flex tube rebuilds and
-  // re-derives its exit tangent even when the endpoint barely moves (pure rotation).
-  if (entry && cable.flexible) {
+  // V0.3.0.147 — include the morphing socket facing so a tube rebuilds and re-derives
+  // its exit tangent / socket-exit vector even when the endpoint barely moves.
+  if (entry && mode !== 'straight') {
     for (const n of (cable.nodes || [])) {
       const q = entry._morphConnQuat?.get(n.id) || entry._morphSockQuat?.get(n.id);
       if (q) s += `|q${q[0].toFixed(2)},${q[1].toFixed(2)},${q[2].toFixed(2)},${q[3].toFixed(2)}`;
@@ -871,9 +932,11 @@ function _buildSegments(cable, entry, positions, radius, color) {
     entry.group.remove(m);
   }
   entry.segments   = [];
-  entry._isFlexible = !!cable.flexible;
-  if (cable.flexible) {
-    const curve = _buildFlexCurve(cable, positions, entry);
+  const mode = cableCurveMode(cable);          // 'straight' | 'flexible' | 'fillet'
+  entry._isFlexible = (mode !== 'straight');   // flag = "is a tube" (vs cylinders)
+  if (mode !== 'straight') {
+    const curve = (mode === 'fillet') ? _buildFilletCurve(cable, positions, entry)
+                                      : _buildFlexCurve(cable, positions, entry);
     if (curve) {
       const tube = _makeFlexTube(curve, radius, color, cable.id);
       entry.group.add(tube);
@@ -1111,9 +1174,10 @@ function _tickAnchorRefresh() {
     // Cable body. Flexible: rebuild the spline tube when the flexible flag flips
     // or the path moves (cheap hash gate avoids per-frame rebuilds when static).
     // Straight: just re-pose the cheap cylinders.
-    if (cable.flexible || entry._isFlexible) {
+    const _isTube = cableCurveMode(cable) !== 'straight';
+    if (_isTube || entry._isFlexible) {
       const hash = _posHash(cable, positions, entry);
-      if (cable.flexible !== entry._isFlexible || hash !== entry._posHash) {
+      if (_isTube !== entry._isFlexible || hash !== entry._posHash) {
         _buildSegments(cable, entry, positions, radius, entry._color || new THREE.Color('#ffb24a'));
       }
     } else {

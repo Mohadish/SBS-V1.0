@@ -4779,6 +4779,28 @@ export function setCableFlexible(cableId, on) {
 }
 
 /**
+ * V0.3.0.158 — set a cable's corner/curve mode: 'straight' | 'flexible' | 'fillet'.
+ * Per-cable structural (marks dirty; the renderer rebuilds the body). Keeps the
+ * legacy `flexible` flag in sync for backward compatibility.
+ */
+export function setCableCurveMode(cableId, mode) {
+  const cable = cables.getCable(cableId);
+  if (!cable || !['straight', 'flexible', 'fillet'].includes(mode)) return;
+  const prevMode = cables.cableCurveMode(cable);
+  if (prevMode === mode) return;
+  const set = (m) => { cables.updateCable(cableId, { curve: m, flexible: m === 'flexible' }); state.markDirty(); };
+  set(mode);
+  undoManager.push('Cable corner mode', () => set(prevMode), () => set(mode));
+}
+
+/** Global fillet reach (setback distance the rounded corner eats into each segment). */
+export function setCableFilletReach(value) {
+  const v = Math.max(0, Number(value) || 0);
+  state.setState({ cableFilletReach: v });
+  state.markDirty();
+}
+
+/**
  * Patch a cable's name / style fields. NOT undoable per-keystroke —
  * caller is expected to debounce / commit on blur if precision is
  * needed (mirrors the style-template slider pattern). Lightweight
