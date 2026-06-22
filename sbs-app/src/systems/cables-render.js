@@ -385,9 +385,21 @@ function _advanceCableTransitions(nowMs) {
     if (raw < 1) allDone = false;
   }
   if (allDone) {
+    const _cablesNow = listCables();
     for (const [cableId, t] of _cableTransitions) {
       const entry = _cableSubgroups.get(cableId);
-      if (t.hasConn) _ctrace(`DONE cable=${cableId} — morph cleared → tick resolves live state`);
+      // V0.3.0.140 — COMMIT the TO node poses to the live cable the instant the morph
+      // releases, so the tick resolves the final state immediately. Without this the
+      // non-socket nodes briefly resolve their OLD (state-0) positions until
+      // applyStepSnapshot fires a frame or two later — the "snap to 0 then 1" at the
+      // end (the socket already avoided this via the early plug commit).
+      const c = _cablesNow.find(x => x.id === cableId);
+      if (c) {
+        if (t.hasPos && t.toPos) for (const [nid, tp] of t.toPos) { const nd = c.nodes?.find(n => n.id === nid); if (nd && Array.isArray(nd.position))    nd.position    = tp.slice(); }
+        if (t.hasAnc && t.toAnc) for (const [nid, ta] of t.toAnc) { const nd = c.nodes?.find(n => n.id === nid); if (nd && Array.isArray(nd.anchorLocal)) nd.anchorLocal = ta.slice(); }
+        if (t.hasSQ  && t.toSQ)  for (const [nid, tq] of t.toSQ)  { const nd = c.nodes?.find(n => n.id === nid); if (nd?.socket) { if (nd.anchorType === 'mesh') nd.socket.localQuaternion = tq.slice(); else nd.socket.quaternion = tq.slice(); } }
+      }
+      if (t.hasConn) _ctrace(`DONE cable=${cableId} — committed TO poses → tick resolves final state`);
       if (entry) { entry._morphPos = null; entry._morphAnchor = null; entry._morphSockQuat = null; entry._morphConnect = null; entry._morphConnQuat = null; }   // done → tick resolves live (now = TO)
     }
     _cableTransitions.clear();
@@ -916,6 +928,13 @@ function _tickAnchorRefresh() {
       const r = resolveNodeWorldPosition(n, ctx);
       return r.pos ? new THREE.Vector3(r.pos[0], r.pos[1], r.pos[2]) : null;
     });
+
+    // V0.3.0.140 — trace the whole cable's node positions (not just the socket) so
+    // the OTHER animated nodes' snap/recall (#1/#4) is visible.
+    if (_CT() && (_cableTransitions.size > 0 || _ctTail > 0) && (_ctFrame % 3 === 0)) {
+      const samp = positions.slice(0, 6).map((p, i) => `${i}:${p ? _fmtV(p) : '-'}`).join(' ');
+      _ctrace(`nodes cable=${cable.id} [${samp}]`);
+    }
 
     // Reposition point spheres in lock-step with the resolver output.
     // (Geometry stays — only transforms change.)
