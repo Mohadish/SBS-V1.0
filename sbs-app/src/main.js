@@ -2832,26 +2832,13 @@ canvas.addEventListener('contextmenu', e => {
   // the segment meshes here so the menu action has the world point.
   const segHit = _pickCableSegment(e.clientX, e.clientY);
   if (segHit) {
-    // Recover the world hit point — _pickCableSegment doesn't return
-    // it. Run a quick raycast against the segment meshes only.
-    const T = window.THREE;
-    const meshes = getCableSegmentMeshes();
-    const rect = canvas.getBoundingClientRect();
-    const ndc = new T.Vector2(
-      ((e.clientX - rect.left) / rect.width)  * 2 - 1,
-      -((e.clientY - rect.top)  / rect.height) * 2 + 1,
-    );
-    const ray = new T.Raycaster();
-    ray.setFromCamera(ndc, sceneCore.camera);
-    const hits = ray.intersectObjects(meshes, false).filter(h => h.object.visible);
-    const hitPoint = hits[0]?.point;
+    // V0.3.0.150 — insert a point at the segment's MIDPOINT, propagated to EVERY
+    // step at that step's exact midpoint (steps.computeCableMidpointsPerStep).
+    // No hit point needed.
     const items = [
       {
-        label: '＋ Insert point here',
-        action: () => {
-          if (!hitPoint) return;
-          actions.insertCablePointAtSegmentHit(segHit.cableId, segHit.fromNodeId, hitPoint);
-        },
+        label: '＋ Insert point (midpoint)',
+        action: () => actions.insertCablePointMidpoint(segHit.cableId, segHit.fromNodeId),
       },
     ];
     showContextMenu(items, e.clientX, e.clientY);

@@ -6104,6 +6104,99 @@ export function insertCablePointAtSegmentHit(cableId, fromNodeId, hitPoint) {
 }
 
 /**
+ * V0.3.0.150 — insert a cable point at the MIDPOINT of a segment, propagated to
+ * EVERY step. The new node attaches to the PREVIOUS node's host by default (mesh
+ * anchor), falling back to a free point if that neighbour is free. Per the
+ * self-contained-snapshot rule, the node is written into every step's cable
+ * snapshot at the EXACT midpoint of its two neighbours AS THEY SIT IN THAT STEP
+ * (measured via steps.computeCableMidpointsPerStep), so navigating between states
+ * shows it correctly and the user can then adjust it per state. One undo entry.
+ */
+export function insertCablePointMidpoint(cableId, fromNodeId) {
+  const cable = (state.get('cables') || []).find(c => c.id === cableId);
+  if (!cable) return false;
+  const nodes = cable.nodes || [];
+  const aIdx  = nodes.findIndex(n => n.id === fromNodeId);
+  if (aIdx < 0 || aIdx >= nodes.length - 1) return false;   // need a successor
+  const A = nodes[aIdx];
+  const B = nodes[aIdx + 1];
+
+  // Attach to the PREVIOUS node's host by default (mesh); else a free point.
+  const hostNodeId = (A.anchorType === 'mesh' && A.nodeId) ? A.nodeId : null;
+
+  // Exact midpoint of A & B in EVERY step + the current step.
+  const mids = steps.computeCableMidpointsPerStep(cableId, A.id, B.id, hostNodeId);
+  const cur  = mids.current;
+  if (!cur) return false;
+
+  const newNode = hostNodeId
+    ? cables.createCableNode({
+        type:        'point',
+        anchorType:  'mesh',
+        nodeId:      hostNodeId,
+        anchorLocal: Array.isArray(cur.anc) ? cur.anc.slice() : [0, 0, 0],
+        normalLocal: Array.isArray(A.normalLocal) ? A.normalLocal.slice() : null,
+      })
+    : cables.createCableNode({
+        type:       'point',
+        anchorType: 'free',
+        position:   Array.isArray(cur.pos) ? cur.pos.slice() : [0, 0, 0],
+      });
+
+  const insertIdx = aIdx + 1;
+
+  // Undo snapshot: cables array + each affected step's cable entry.
+  const beforeCables = JSON.parse(JSON.stringify(state.get('cables') || []));
+  const beforeSteps  = new Map();
+  for (const s of (state.get('steps') || [])) {
+    const entry = s.snapshot?.cables?.[cableId];
+    if (entry) beforeSteps.set(s.id, JSON.parse(JSON.stringify(entry)));
+  }
+
+  const apply = () => {
+    // 1. Splice into the live cable.
+    const list = (state.get('cables') || []).map(c => {
+      if (c.id !== cableId) return c;
+      const ns = (c.nodes || []).slice();
+      ns.splice(Math.min(insertIdx, ns.length), 0, newNode);
+      return { ...c, nodes: ns };
+    });
+    // 2. Write the new node's per-step pose into every step that has this cable.
+    for (const s of (state.get('steps') || [])) {
+      const entry = s.snapshot?.cables?.[cableId];
+      if (!entry) continue;
+      const pose = mids.perStep.get(s.id);
+      if (!pose) continue;
+      if (!entry.nodes) entry.nodes = {};
+      entry.nodes[newNode.id] = pose.anc ? { anc: pose.anc.slice() } : { pos: pose.pos.slice() };
+    }
+    state.setState({ cables: list, steps: [...(state.get('steps') || [])] });
+    state.markDirty();
+  };
+
+  apply();
+
+  undoManager.push(
+    'Insert cable point',
+    () => {
+      state.setState({ cables: JSON.parse(JSON.stringify(beforeCables)) });
+      for (const s of (state.get('steps') || [])) {
+        if (!s.snapshot?.cables) continue;
+        if (beforeSteps.has(s.id))      s.snapshot.cables[cableId] = JSON.parse(JSON.stringify(beforeSteps.get(s.id)));
+        else if (s.snapshot.cables[cableId]?.nodes) delete s.snapshot.cables[cableId].nodes[newNode.id];
+      }
+      state.setState({ steps: [...(state.get('steps') || [])] });
+      state.markDirty();
+    },
+    () => apply(),
+  );
+
+  // Select the new point so its orb shows + it's immediately movable.
+  selectCablePoint(cableId, newNode.id);
+  return true;
+}
+
+/**
  * Apply an insert-point pick. Builds a mesh-anchored node at the hit
  * and splices it into the cable at the position chosen at picking
  * start. One undo entry — removes the spliced node on undo.

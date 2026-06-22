@@ -299,6 +299,82 @@ class StepManager {
     };
   }
 
+  /**
+   * V0.3.0.150 — measure the EXACT midpoint of two cable neighbours AS THEY SIT
+   * IN EVERY STEP, for an inserted cable point. The midpoint in a given step
+   * depends on that step's host transforms AND the neighbours' per-step poses, so
+   * we briefly apply each step's transforms (transforms-only — cheap, no tree /
+   * material churn), resolve both neighbours with their per-step pose overrides,
+   * and convert the world midpoint into the new node's host-local frame (or leave
+   * it world, for a free point). The full current snapshot is captured up front
+   * and re-applied in `finally`, so the scene is always restored even on error.
+   *
+   * @returns {{ perStep: Map<string, object>, current: object|null }}
+   *   pose = { anc:[x,y,z] } for a mesh-hosted point, or { pos:[x,y,z] } for free.
+   */
+  computeCableMidpointsPerStep(cableId, aId, bId, hostNodeId) {
+    const THREE = window.THREE;
+    const result = { perStep: new Map(), current: null };
+    if (!THREE) return result;
+    const nodeById  = state.get('nodeById');
+    const liveCable = (state.get('cables') || []).find(c => c.id === cableId);
+    const A = liveCable?.nodes?.find(n => n.id === aId);
+    const B = liveCable?.nodes?.find(n => n.id === bId);
+    if (!A || !B) return result;
+    const hostObj  = hostNodeId ? this.object3dById.get(hostNodeId) : null;
+    const activeId = state.get('activeStepId');
+    const ctx = {
+      makeVec3:     (x, y, z) => new THREE.Vector3(x, y, z),
+      object3dById: this.object3dById,
+    };
+    // Resolve A & B at whatever transforms are currently applied, honouring each
+    // node's per-step pose override (anc / pos) when the step stored one. Temp
+    // copies so resolveNodeWorldPosition's cache write never touches the live node.
+    const measure = (snapNodes) => {
+      const aPose = snapNodes?.[aId];
+      const bPose = snapNodes?.[bId];
+      const aTmp = { ...A };
+      const bTmp = { ...B };
+      if (aPose?.anc) aTmp.anchorLocal = aPose.anc;  if (aPose?.pos) aTmp.position = aPose.pos;
+      if (bPose?.anc) bTmp.anchorLocal = bPose.anc;  if (bPose?.pos) bTmp.position = bPose.pos;
+      const ra = cablesSystem.resolveNodeWorldPosition(aTmp, ctx);
+      const rb = cablesSystem.resolveNodeWorldPosition(bTmp, ctx);
+      if (!ra.pos || !rb.pos) return null;
+      const mid = new THREE.Vector3(
+        (ra.pos[0] + rb.pos[0]) / 2,
+        (ra.pos[1] + rb.pos[1]) / 2,
+        (ra.pos[2] + rb.pos[2]) / 2,
+      );
+      if (hostObj) {
+        hostObj.updateMatrixWorld?.(true);
+        const local = hostObj.worldToLocal(mid.clone());
+        return { anc: [local.x, local.y, local.z] };
+      }
+      return { pos: [mid.x, mid.y, mid.z] };
+    };
+    const restore = this.captureSnapshot();
+    try {
+      for (const s of (state.get('steps') || [])) {
+        if (!this._isPlayable(s)) continue;
+        const tf = s.snapshot?.transforms;
+        if (tf) { applyAllTransformSnapshots(nodeById, tf); applyAllTransformsToScene(nodeById, this.object3dById); }
+        const pose = measure(s.snapshot?.cables?.[cableId]?.nodes);
+        if (pose) {
+          result.perStep.set(s.id, pose);
+          if (s.id === activeId) result.current = pose;
+        }
+      }
+    } finally {
+      this.applySnapshotInstant(restore, { suppressCamera: true });
+    }
+    // Live/current pose fallback if the active step wasn't playable.
+    if (!result.current) {
+      const active = (state.get('steps') || []).find(s => s.id === activeId);
+      result.current = measure(active?.snapshot?.cables?.[cableId]?.nodes) || measure(null);
+    }
+    return result;
+  }
+
   // ═══════════════════════════════════════════════════════════════════════
   //  APPLY SNAPSHOT TO SCENE
   // ═══════════════════════════════════════════════════════════════════════
