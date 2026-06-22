@@ -1134,7 +1134,7 @@ function _showPlugActionMenu(step, displayNumber, x, y) {
     for (const a of acts) {
       const verb = a.action === 'plug' ? '🔌 Plug' : '⏏ Unplug';
       items.push({
-        label:   `${a.cableName} · ${verb} · ${a.socketLabel}`,
+        label:   `${a.cableName} · ${verb} · ${a.socketLabel} · State ${a.stateIndex}`,
         submenu: [
           { label: '✕ Remove this action', action: () => actions.removeCablePlugAction(a.cableId, step.id) },
         ],

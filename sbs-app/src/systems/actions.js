@@ -6243,12 +6243,13 @@ export function insertCablePointMidpoint(cableId, fromNodeId) {
 
   const insertIdx = aIdx + 1;
 
-  // Undo snapshot: cables array + each affected step's cable entry.
+  // Undo snapshot: cables array + each STATE-DEFINING step's cable entry (the only
+  // ones we touch — see below).
   const beforeCables = JSON.parse(JSON.stringify(state.get('cables') || []));
   const beforeSteps  = new Map();
   for (const s of (state.get('steps') || [])) {
     const entry = s.snapshot?.cables?.[cableId];
-    if (entry) beforeSteps.set(s.id, JSON.parse(JSON.stringify(entry)));
+    if (entry?.nodes) beforeSteps.set(s.id, JSON.parse(JSON.stringify(entry)));
   }
 
   const apply = () => {
@@ -6259,13 +6260,16 @@ export function insertCablePointMidpoint(cableId, fromNodeId) {
       ns.splice(Math.min(insertIdx, ns.length), 0, newNode);
       return { ...c, nodes: ns };
     });
-    // 2. Write the new node's per-step pose into every step that has this cable.
+    // 2. Write the new node's per-STATE pose ONLY into state-defining steps (those
+    //    that actually carry `nodes`). Vis-only steps (which now exist on EVERY step
+    //    for per-step visibility) must NOT gain a `nodes` map — that would turn them
+    //    into fake states + corrupt plug resolution. Non-defining steps inherit the
+    //    new node by cascade. One position per state. V0.3.0.157.
     for (const s of (state.get('steps') || [])) {
       const entry = s.snapshot?.cables?.[cableId];
-      if (!entry) continue;
+      if (!entry?.nodes) continue;
       const pose = mids.perStep.get(s.id);
       if (!pose) continue;
-      if (!entry.nodes) entry.nodes = {};
       entry.nodes[newNode.id] = pose.anc ? { anc: pose.anc.slice() } : { pos: pose.pos.slice() };
     }
     state.setState({ cables: list, steps: [...(state.get('steps') || [])] });

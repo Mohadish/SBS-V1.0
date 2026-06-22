@@ -238,9 +238,31 @@ export function getPlugActionStepIds() {
 }
 
 /**
+ * A cable's STATE INDEX at a step (V0.3.0.157): 0 = the initial state (the first
+ * step is ALWAYS state 0), incremented at each plug-config change. Computed from
+ * the current step order, so it renumbers automatically on reorder.
+ */
+export function cableStateIndexAtStep(cableId, stepId) {
+  const steps = state.get('steps') || [];
+  const idx = steps.findIndex(s => s.id === stepId);
+  if (idx < 0) return 0;
+  const cable = (state.get('cables') || []).find(c => c.id === cableId);
+  const socketIds = (cable?.nodes || []).filter(n => n.socket).map(n => n.id);
+  let carried = null, prevSig = null, n = 0;
+  for (let i = 0; i <= idx; i++) {
+    const own = steps[i]?.snapshot?.cables?.[cableId];
+    if (own?.nodes) carried = own;
+    const sig = _cablePlugSig(carried, socketIds);
+    if (prevSig !== null && sig !== prevSig) n++;
+    prevSig = sig;
+  }
+  return n;
+}
+
+/**
  * The plug/unplug ACTIONS at a given step — each cable socket whose plug config
  * changes vs the previous step. Returns [{cableId, cableName, nodeId, socketLabel,
- * action:'plug'|'unplug'}]. Used by the 🔌 step right-click manager (V0.3.0.153).
+ * action:'plug'|'unplug', stateIndex}]. Used by the 🔌 step right-click manager.
  */
 export function getStepCableActions(stepId) {
   const steps = state.get('steps') || [];
@@ -256,16 +278,20 @@ export function getStepCableActions(stepId) {
   const out = [];
   for (const cable of cables) {
     const socketNodes = (cable.nodes || []).filter(n => n.socket);
+    if (!socketNodes.length) continue;
+    let stateIdx = null;   // computed once per cable, only when it has an action here
     for (const sn of socketNodes) {
       const a = plOf(cur[cable.id],  sn.id);
       const b = plOf(prev[cable.id], sn.id);
       if (a !== null && a !== b) {
+        if (stateIdx === null) stateIdx = cableStateIndexAtStep(cable.id, stepId);
         out.push({
           cableId:     cable.id,
           cableName:   cable.name || 'Cable',
           nodeId:      sn.id,
           socketLabel: `pt ${cable.nodes.indexOf(sn) + 1}`,
           action:      a ? 'plug' : 'unplug',
+          stateIndex:  stateIdx,
         });
       }
     }
