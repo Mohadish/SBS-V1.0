@@ -150,6 +150,15 @@ export function getCableSocketMeshes() {
 let _cableTransitions = new Map();    // cableId → transition record
 let _cableTransitionDoneCb = null;
 
+// Diagnostic (V0.3.0.139) — window.sbsDiag.cableTrace = true logs the plug/unplug
+// travel timeline: BEGIN (from/to pos + facing), per-frame rendered box pose,
+// applyStepSnapshot timing, DONE. Record one plug/unplug cycle and read it back.
+const _CT = () => (typeof window !== 'undefined' && !!window.sbsDiag?.cableTrace);
+function _ctrace(msg) { if (_CT()) console.log(`[cableTrace] ${msg}`); }
+const _fmtV = (v) => v ? `${v.x.toFixed(1)},${v.y.toFixed(1)},${v.z.toFixed(1)}` : 'null';
+const _fmtQ = (q) => q ? `${q.x.toFixed(2)},${q.y.toFixed(2)},${q.z.toFixed(2)},${q.w.toFixed(2)}` : 'null';
+let _ctTail = 0, _ctFrame = 0;   // log a tail of frames AFTER the transition (catches end-snap)
+
 export function beginCableTransitions(toCablesSnap, durationMs, easeFn, onDone) {
   // Resolve any in-flight transition so a prior phase await unblocks.
   if (_cableTransitionDoneCb) {
@@ -235,6 +244,9 @@ export function beginCableTransitions(toCablesSnap, durationMs, easeFn, onDone) 
                 toQ:   toWQ   ? [toWQ.x,   toWQ.y,   toWQ.z,   toWQ.w]   : null,   // animate the rotation too
               });
               hasConn = true;
+              _ctrace(`BEGIN cable=${cable.id} node=${n.id} ${fromPlugged}->${toPlugged} `
+                + `from=(${_fmtV(fromV)}) to=(${_fmtV(toV)}) approach=(${_fmtV(approach)}) `
+                + `fromQ=(${fromWQ ? _fmtQ(fromWQ) : '-'}) toQ=(${toWQ ? _fmtQ(toWQ) : '-'}) dur=${durationMs}`);
             }
           }
         }
@@ -306,6 +318,7 @@ export function snapCableTransitionsToFinal() {
 
 function _advanceCableTransitions(nowMs) {
   if (!_cableTransitions.size) return;
+  if (_CT()) _ctTail = 14;   // keep tracing ~14 frames past completion
   let allDone = true;
   for (const [cableId, t] of _cableTransitions) {
     const elapsed = nowMs - t.startMs;
@@ -372,8 +385,9 @@ function _advanceCableTransitions(nowMs) {
     if (raw < 1) allDone = false;
   }
   if (allDone) {
-    for (const [cableId] of _cableTransitions) {
+    for (const [cableId, t] of _cableTransitions) {
       const entry = _cableSubgroups.get(cableId);
+      if (t.hasConn) _ctrace(`DONE cable=${cableId} — morph cleared → tick resolves live state`);
       if (entry) { entry._morphPos = null; entry._morphAnchor = null; entry._morphSockQuat = null; entry._morphConnect = null; entry._morphConnQuat = null; }   // done → tick resolves live (now = TO)
     }
     _cableTransitions.clear();
@@ -860,6 +874,7 @@ function _tickAnchorRefresh() {
   // even when no cables exist yet (e.g. brand-new project) wouldn't
   // matter, but the size check below would skip — keep it ahead.
   _advanceCableTransitions(clock.now());
+  if (_CT()) { _ctFrame++; if (_cableTransitions.size === 0 && _ctTail > 0) _ctTail--; }
 
   if (!_cableRoot || _cableSubgroups.size === 0) return;
   const cables = listCables();
@@ -968,6 +983,13 @@ function _tickAnchorRefresh() {
         box.quaternion.copy(wq);
         const zWorld = new T.Vector3(0, 0, 1).applyQuaternion(wq);
         box.position.copy(p).addScaledVector(zWorld, -d / 2);
+        // Per-frame trace of the connecting socket (during + ~14 frames past the
+        // transition) so a recorded cycle shows glide-vs-snap. V0.3.0.139.
+        if (_CT() && node.socket.connectTarget && (_cableTransitions.size > 0 || _ctTail > 0) && (_ctFrame % 3 === 0)) {
+          _ctrace(`f node=${node.id} boxPos=(${_fmtV(box.position)}) boxQ=(${_fmtQ(box.quaternion)}) `
+            + `plug=${node.socket.plugged} mc=${entry._morphConnect?.has(node.id) ? 'Y' : 'n'} `
+            + `mcq=${entry._morphConnQuat?.has(node.id) ? 'Y' : 'n'}`);
+        }
       }
     }
   }

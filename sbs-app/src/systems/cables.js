@@ -125,6 +125,15 @@ export function captureStepSnapshot() {
  */
 export function applyStepSnapshot(snap) {
   if (!snap || typeof snap !== 'object') return;
+  if (typeof window !== 'undefined' && window.sbsDiag?.cableTrace) {   // V0.3.0.139
+    const pls = [];
+    for (const ov of Object.values(snap)) {
+      if (ov?.nodes) for (const [nid, pose] of Object.entries(ov.nodes)) {
+        if (pose && typeof pose === 'object' && typeof pose.pl === 'boolean') pls.push(`${String(nid).slice(-5)}=${pose.pl}`);
+      }
+    }
+    console.log(`[cableTrace] >> applyStepSnapshot — plug states applied: ${pls.join(' ') || '(none)'}`);
+  }
   const cables = (state.get('cables') || []).map(cable => {
     const override = snap[cable.id];
     if (!override) return cable;
