@@ -975,21 +975,39 @@ function _buildCableSocketGizmoTarget(cableId, nodeId) {
      * the back face can't be resolved (no socket / no host mesh).
      */
     getWorldPos() {
+      const cs0 = state.get('cables') || [];
+      const n0  = cs0.find(x => x.id === cableId)?.nodes?.find(x => x.id === nodeId);
+      const ctx = { makeVec3: (x, y, z) => new T.Vector3(x, y, z) };
+      // V0.3.0.130 — PLUGGED: the socket sits on its target; the gizmo rides it
+      // there (resolveNodeWorldPosition Tier 0), not its old unplugged back face.
+      if (n0?.socket?.plugged && n0.socket.connectTarget) {
+        const r = resolveNodeWorldPosition(n0, ctx);
+        if (r.pos) return new T.Vector3(r.pos[0], r.pos[1], r.pos[2]);
+      }
       const back = actions.socketBackFaceWorld(cableId, nodeId);
       if (back) return back;
-      const cs = state.get('cables') || [];
-      const c = cs.find(x => x.id === cableId);
-      const n = c?.nodes?.find(x => x.id === nodeId);
-      if (!n) return null;
-      const ctx = { makeVec3: (x, y, z) => new T.Vector3(x, y, z) };
-      const r   = resolveNodeWorldPosition(n, ctx);
+      if (!n0) return null;
+      const r = resolveNodeWorldPosition(n0, ctx);
       return r.pos ? new T.Vector3(r.pos[0], r.pos[1], r.pos[2]) : null;
     },
     getWorldQuat() {
       const cs = state.get('cables') || [];
       const c = cs.find(x => x.id === cableId);
       const n = c?.nodes?.find(x => x.id === nodeId);
-      if (!n?.socket || n.anchorType !== 'mesh' || !n.nodeId) return new T.Quaternion();
+      if (!n?.socket) return new T.Quaternion();
+      // V0.3.0.130 — PLUGGED: align to the TARGET surface (matches the render's
+      // _socketWorldQuat) so the rotate gizmo sits square on the connection.
+      const ct = n.socket.plugged ? n.socket.connectTarget : null;
+      if (ct?.nodeId) {
+        const tObj = state.get('nodeById')?.get?.(ct.nodeId)?.object3d;
+        if (tObj && Array.isArray(ct.normalLocal) && ct.normalLocal.length === 3) {
+          const tQ = new T.Quaternion(); tObj.getWorldQuaternion(tQ);
+          const wn = new T.Vector3(ct.normalLocal[0], ct.normalLocal[1], ct.normalLocal[2])
+            .applyQuaternion(tQ).normalize();
+          return new T.Quaternion().setFromUnitVectors(new T.Vector3(0, 0, 1), wn);
+        }
+      }
+      if (n.anchorType !== 'mesh' || !n.nodeId) return new T.Quaternion();
       const sceneNode = state.get('nodeById')?.get?.(n.nodeId);
       const obj = sceneNode?.object3d;
       if (!obj) return new T.Quaternion();
