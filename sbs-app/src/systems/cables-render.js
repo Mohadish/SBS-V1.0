@@ -180,7 +180,9 @@ export function beginCableTransitions(toCablesSnap, durationMs, easeFn, onDone) 
     let fromPos = null, toPos = null, hasPos = false;
     let fromAnc = null, toAnc = null, hasAnc = false;
     let fromSQ  = null, toSQ  = null, hasSQ  = false;
+    let conn    = null, hasConn = false;   // V0.3.0.134 — socket plug travel paths
     const near = (a, b, n) => { for (let i = 0; i < n; i++) if (Math.abs(a[i] - b[i]) >= 1e-4) return false; return true; };
+    const _resCtx = { makeVec3: (x, y, z) => new THREE.Vector3(x, y, z), object3dById: steps.object3dById };
     const toNodes = toEntry?.nodes;
     if (toNodes && typeof toNodes === 'object') {
       for (const n of (cable.nodes || [])) {
@@ -203,10 +205,36 @@ export function beginCableTransitions(toCablesSnap, durationMs, easeFn, onDone) 
           if (!fromSQ) { fromSQ = new Map(); toSQ = new Map(); }
           fromSQ.set(n.id, cq.slice()); toSQ.set(n.id, pose.sq.slice()); hasSQ = true;
         }
+        // Socket PLUG transition (V0.3.0.134) — the connector TRAVELS to/from its
+        // plugged position (reposition→pause→assemble), overriding the jump. FROM =
+        // live plug state (before applyStepSnapshot sets TO); resolve both states.
+        if (n.socket?.connectTarget) {
+          const toPlugged   = (typeof pose.pl === 'boolean') ? pose.pl : !!n.socket.plugged;
+          const fromPlugged = !!n.socket.plugged;
+          if (fromPlugged !== toPlugged) {
+            const fromR = resolveNodeWorldPosition(n, _resCtx);
+            const saved = n.socket.plugged; n.socket.plugged = toPlugged;
+            const toR = resolveNodeWorldPosition(n, _resCtx);
+            const wq = _socketWorldQuat(n);
+            n.socket.plugged = saved;
+            if (fromR.pos && toR.pos) {
+              const fromV = new THREE.Vector3(fromR.pos[0], fromR.pos[1], fromR.pos[2]);
+              const toV   = new THREE.Vector3(toR.pos[0],   toR.pos[1],   toR.pos[2]);
+              const d = socketActualSize(cable, n.socket).d * (state.get('cableGlobalScale') ?? 1);
+              const normal  = wq ? new THREE.Vector3(0, 0, 1).applyQuaternion(wq).normalize()
+                                 : new THREE.Vector3(0, 1, 0);
+              const seated  = toPlugged ? toV : fromV;                     // the connected end
+              const approach = seated.clone().addScaledVector(normal, Math.max(d, 1));   // back off by ~1 depth
+              if (!conn) conn = new Map();
+              conn.set(n.id, { from: fromV, to: toV, approach });
+              hasConn = true;
+            }
+          }
+        }
       }
     }
 
-    if (fromVisible === toVisible && fromColorHex === toColorHex && !hasPos && !hasAnc && !hasSQ) continue;
+    if (fromVisible === toVisible && fromColorHex === toColorHex && !hasPos && !hasAnc && !hasSQ && !hasConn) continue;
 
     _cableTransitions.set(cable.id, {
       fromOpacity: fromVisible ? 1 : 0,
@@ -216,6 +244,7 @@ export function beginCableTransitions(toCablesSnap, durationMs, easeFn, onDone) 
       fromPos, toPos, hasPos,
       fromAnc, toAnc, hasAnc,
       fromSQ,  toSQ,  hasSQ,
+      conn,    hasConn,
       startMs, durationMs, easeFn,
     });
   }
@@ -258,7 +287,7 @@ export function snapCableTransitionsToFinal() {
     for (const m of entry.points)   { m.material.opacity = t.toOpacity; m.material.color.copy(t.toColor); }
     for (const m of entry.segments) { m.material.opacity = t.toOpacity; m.material.color.copy(t.toColor); }
     for (const m of (entry.sockets || [])) { m.material.opacity = t.toOpacity; }
-    entry._morphPos = null; entry._morphAnchor = null; entry._morphSockQuat = null;   // drop morph; pose is now TO
+    entry._morphPos = null; entry._morphAnchor = null; entry._morphSockQuat = null; entry._morphConnect = null;   // drop morph; pose is now TO
   }
   _cableTransitions.clear();
   if (_cableTransitionDoneCb) {
@@ -311,13 +340,26 @@ function _advanceCableTransitions(nowMs) {
           mq.set(nodeId, [q.x, q.y, q.z, q.w]);
         }
       }
+      // V0.3.0.134 — socket plug TRAVEL: reposition (from→approach) → pause →
+      // assemble (approach→to). Parks a world pos in _morphConnect, which the tick
+      // honours FIRST (overriding the plugged jump). Linear segments, eased overall.
+      if (t.hasConn && t.conn) {
+        let mc = entry._morphConnect; if (!mc) { mc = new Map(); entry._morphConnect = mc; }
+        for (const [nodeId, c] of t.conn) {
+          let p;
+          if (u <= 0.6)      p = c.from.clone().lerp(c.approach, u / 0.6);
+          else if (u <= 0.75) p = c.approach.clone();                       // pause at approach
+          else                p = c.approach.clone().lerp(c.to, (u - 0.75) / 0.25);
+          mc.set(nodeId, p);
+        }
+      }
     }
     if (raw < 1) allDone = false;
   }
   if (allDone) {
     for (const [cableId] of _cableTransitions) {
       const entry = _cableSubgroups.get(cableId);
-      if (entry) { entry._morphPos = null; entry._morphAnchor = null; entry._morphSockQuat = null; }   // done → tick resolves live (now = TO)
+      if (entry) { entry._morphPos = null; entry._morphAnchor = null; entry._morphSockQuat = null; entry._morphConnect = null; }   // done → tick resolves live (now = TO)
     }
     _cableTransitions.clear();
     if (_cableTransitionDoneCb) {
@@ -827,9 +869,12 @@ function _tickAnchorRefresh() {
     // the node's anchorLocal and resolve through the host's LIVE matrix, so the
     // point both morphs AND rides the moving part (V0.3.0.128). Unlisted nodes
     // resolve live (auto-follow).
-    const morph    = entry._morphPos;
-    const morphAnc = entry._morphAnchor;
+    const morph     = entry._morphPos;
+    const morphAnc  = entry._morphAnchor;
+    const morphConn = entry._morphConnect;
     const positions = (cable.nodes || []).map(n => {
+      // V0.3.0.134 — socket plug TRAVEL wins over everything (incl. the plugged jump).
+      if (morphConn && morphConn.has(n.id)) return morphConn.get(n.id).clone();
       if (morph && n.anchorType === 'free' && morph.has(n.id)) return morph.get(n.id).clone();
       if (morphAnc && n.anchorType === 'mesh' && morphAnc.has(n.id)) {
         const saved = n.anchorLocal;
