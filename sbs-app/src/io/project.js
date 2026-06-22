@@ -32,6 +32,7 @@ import {
 import { materials }                  from '../systems/materials.js';
 import { steps   }                  from '../systems/steps.js';
 import * as narrationCache           from '../systems/narration-cache.js';
+import { flattenCablesToCascade }    from '../systems/cables.js';   // V0.3.0.151 cascade migration
 import { clearIsolate }              from '../core/isolate-state.js';
 
 /**
@@ -1246,6 +1247,14 @@ export async function loadProject(fileOrText, filePath = null) {
 
   clearIsolate();   // isolate is runtime-only — a freshly-loaded project starts un-isolated
   applyProjectToState(project);
+
+  // V0.3.0.151 — migrate existing per-step cable data into the cascade model
+  // (arrangement only on state-defining steps). In-memory; the file is untouched
+  // until the user saves. Guarded so a migration hiccup never blocks the load.
+  try {
+    const removed = flattenCablesToCascade();
+    if (removed) console.log(`[cables] flattened ${removed} redundant per-step entr${removed === 1 ? 'y' : 'ies'} → cascade (state-defining steps only). Save to persist.`);
+  } catch (e) { console.warn('[cables] cascade flatten skipped:', e); }
 
   if (filePath) _setProjectMeta(filePath);
 

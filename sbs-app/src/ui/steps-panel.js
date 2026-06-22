@@ -18,8 +18,10 @@ import * as userSettings    from '../core/user-settings.js';
 import * as narrationCache  from '../systems/narration-cache.js';
 import { parseAnimation, resolveAnimationString } from '../systems/animation.js';
 import { openPrivateAnimationEditor } from './animation-tab.js';
+import { getPlugActionStepIds } from '../systems/cables.js';   // V0.3.0.152 🔌 step marker
 
 let _container    = null;
+let _plugActionStepIds = new Set();   // V0.3.0.152 — steps holding a cable plug/unplug action
 let _dragId       = null;          // id of step being dragged (single-drag fallback)
 let _dragIds      = [];            // ids of all steps being dragged (set when multi-drag)
 let _dragChapterId = null;         // id of chapter being dragged (header drag)
@@ -368,6 +370,7 @@ export function renderStepsPanel() {
   const allSteps    = (state.get('steps') || []).filter(s => !s.isBaseStep);
   const allChapters = state.get('chapters') || [];
   const activeId    = state.get('activeStepId');
+  _plugActionStepIds = getPlugActionStepIds();   // V0.3.0.152 — recompute 🔌 markers
 
   if (allSteps.length === 0) {
     list.innerHTML = '<div class="small muted" style="padding:12px;">No steps yet.<br>Press <b>+ Step</b> to capture the current scene.</div>';
@@ -1149,6 +1152,17 @@ function _buildStepCard(step, displayNumber, isActive, isExpanded, total, groupO
   // reorder by grabbing the step's title row.
   card.dataset.stepId = step.id;
   card.style.marginBottom = '8px';
+
+  // V0.3.0.152 — 🔌 marker for a step that holds a cable plug/unplug action.
+  // Absolutely positioned so it overlays the card WITHOUT changing the row height.
+  if (_plugActionStepIds.has(step.id)) {
+    card.style.position = card.style.position || 'relative';
+    const badge = document.createElement('div');
+    badge.textContent = '🔌';
+    badge.title = 'Cable plug / unplug action on this step';
+    badge.style.cssText = 'position:absolute;top:2px;right:3px;font-size:11px;line-height:1;z-index:4;pointer-events:none;filter:drop-shadow(0 0 1px rgba(0,0,0,0.6));';
+    card.appendChild(badge);
+  }
 
   // Top row identical in both states — except the thumbnail is hidden when
   // the card is expanded (per the original step-layout spec).

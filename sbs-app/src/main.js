@@ -57,7 +57,7 @@ import { positionSafeFrameEl }    from './core/safe-frame.js';
 import { initOverlay, getStage as getOverlayStage } from './systems/overlay.js';
 import { initOverlayToolbar }  from './ui/overlay-toolbar.js';
 import { initHeaderLayer }     from './systems/header.js';
-import { initCables, resolveNodeWorldPosition } from './systems/cables.js';        // C1: cables wire step:applied → applyStepSnapshot; C5-B: pos resolver for gizmo target
+import { initCables, resolveNodeWorldPosition, flattenCablesToCascade, resolveCableSnapshotAtStep, applyStepSnapshot as applyCableStepSnapshot } from './systems/cables.js';        // C1: cables wire step:applied → applyStepSnapshot; C5-B: pos resolver for gizmo target; V0.3.0.151 cascade flatten
 import * as pivotCenterPicker     from './systems/pivot-center-picker.js';   // 3-point center pivot tool — snap-based picker for cylinder-axis pivot placement
 import * as folderAlignPicker     from './systems/folder-align-picker.js';   // V0.2.22.32 — 1-point folder-to-surface align
 import * as folderAlign3ptPicker  from './systems/folder-align-3pt-picker.js'; // V0.2.22.33 — 3-point concentric folder align
@@ -606,6 +606,17 @@ window.sbsUnfollow = () => clearFollow(state.get('selectedId'));
 // (unstuckInputs, cablesAudit, visibilityAudit, rmHealth, …) and the Edit menu + Ctrl+Alt+U
 // call window.sbsDiag.unstuckInputs. A full `= {}` reassignment would wipe those.
 window.sbsDiag = window.sbsDiag || {};
+// V0.3.0.151 — run the cascade flatten on the CURRENT session (no reload). Converts
+// existing per-step cable data to defining-steps-only, re-resolves the live cable,
+// and re-renders. Save to persist. window.sbsCable.flatten()
+window.sbsCable = window.sbsCable || {};
+window.sbsCable.flatten = () => {
+  const removed = flattenCablesToCascade();
+  applyCableStepSnapshot(resolveCableSnapshotAtStep(state.get('activeStepId')));
+  sceneCore.requestRender?.(0);
+  console.log(`[cables] flatten: removed ${removed} per-step entr${removed === 1 ? 'y' : 'ies'} → cascade. Save to persist.`);
+  return removed;
+};
 window.sbsDiag.input = () => {
     const desc = el => el ? `${el.tagName}${el.id ? '#' + el.id : ''}${typeof el.className === 'string' && el.className ? '.' + el.className.split(' ')[0] : ''}` : null;
     const ae = document.activeElement;

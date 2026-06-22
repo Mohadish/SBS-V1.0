@@ -171,6 +171,85 @@ export function commitLiveCablesToDefiningSteps(activeStepId) {
   }
 }
 
+/** Per-step plug-config signature for a cable (carry-forward resolved). */
+function _cablePlugSig(entry, socketIds) {
+  return socketIds.map((sid) => {
+    const p = entry?.nodes?.[sid];
+    return (p && !Array.isArray(p) && typeof p.pl === 'boolean') ? (p.pl ? '1' : '0') : '?';
+  }).join(',');
+}
+
+/**
+ * Step ids that hold a plug/unplug ACTION = where some cable's plug config
+ * changes vs the previous step (the first step is the initial state, not an
+ * action). Used for the 🔌 step marker. One pass, carry-forward resolved.
+ */
+export function getPlugActionStepIds() {
+  const steps  = state.get('steps') || [];
+  const cables = state.get('cables') || [];
+  const result = new Set();
+  for (const cable of cables) {
+    const socketIds = (cable.nodes || []).filter(n => n.socket).map(n => n.id);
+    if (!socketIds.length) continue;
+    let carried = null, prevSig = null;
+    for (let i = 0; i < steps.length; i++) {
+      const own = steps[i]?.snapshot?.cables?.[cable.id];
+      if (own) carried = own;
+      const sig = _cablePlugSig(carried, socketIds);
+      if (prevSig !== null && sig !== prevSig) result.add(steps[i].id);
+      prevSig = sig;
+    }
+  }
+  return result;
+}
+
+/**
+ * FLATTEN existing per-step cable data into the cascade form (V0.3.0.151): for
+ * each cable, split the timeline into plug-config spans; take each span's SETTLED
+ * arrangement from the LAST step of the span, write it onto the span's FIRST
+ * (state-defining) step, and clear the cable from every other step. Idempotent.
+ * In-memory only — the project file is untouched until the user saves. Returns the
+ * number of step entries removed (a measure of how much was collapsed).
+ */
+export function flattenCablesToCascade() {
+  const steps  = state.get('steps') || [];
+  const cables = state.get('cables') || [];
+  if (!steps.length) return 0;
+  let removed = 0;
+  for (const cable of cables) {
+    const cid = cable.id;
+    const socketIds = (cable.nodes || []).filter(n => n.socket).map(n => n.id);
+    // Resolve each step's entry (own or carried-forward) + plug signature.
+    let carried = null;
+    const perStep = steps.map((s) => {
+      const own = s?.snapshot?.cables?.[cid];
+      if (own) carried = own;
+      return { entry: carried, sig: _cablePlugSig(carried, socketIds) };
+    });
+    // State spans: a new span starts wherever the signature changes (step 0 always).
+    const boundaries = [];
+    let prevSig = null;
+    for (let i = 0; i < perStep.length; i++) {
+      if (perStep[i].sig !== prevSig) { boundaries.push(i); prevSig = perStep[i].sig; }
+    }
+    // Write each span's settled (last-step) arrangement to its boundary; clear the rest.
+    for (let bi = 0; bi < boundaries.length; bi++) {
+      const b      = boundaries[bi];
+      const nextB  = (bi + 1 < boundaries.length) ? boundaries[bi + 1] : steps.length;
+      const settled = perStep[nextB - 1]?.entry;
+      if (settled) {
+        if (!steps[b].snapshot)        steps[b].snapshot = {};
+        if (!steps[b].snapshot.cables) steps[b].snapshot.cables = {};
+        steps[b].snapshot.cables[cid] = JSON.parse(JSON.stringify(settled));
+      }
+      for (let i = b + 1; i < nextB; i++) {
+        if (steps[i]?.snapshot?.cables?.[cid]) { delete steps[i].snapshot.cables[cid]; removed++; }
+      }
+    }
+  }
+  return removed;
+}
+
 /**
  * Merge a step's snapshot of variable fields back into state.cables.
  * Cables in state without an entry in `snap` are left untouched —
