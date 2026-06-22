@@ -18,7 +18,7 @@ import * as userSettings    from '../core/user-settings.js';
 import * as narrationCache  from '../systems/narration-cache.js';
 import { parseAnimation, resolveAnimationString } from '../systems/animation.js';
 import { openPrivateAnimationEditor } from './animation-tab.js';
-import { getPlugActionStepIds } from '../systems/cables.js';   // V0.3.0.152 🔌 step marker
+import { getPlugActionStepIds, getStepCableActions } from '../systems/cables.js';   // V0.3.0.152/153 🔌 step marker + manager
 
 let _container    = null;
 let _plugActionStepIds = new Set();   // V0.3.0.152 — steps holding a cable plug/unplug action
@@ -1121,6 +1121,31 @@ function _chapterTopInsertIndex(chapterId) {
 
 // ── Step card ────────────────────────────────────────────────────────────────
 
+// V0.3.0.153 — 🔌 plug-action manager menu. Shows the step number + each cable
+// action on the step (hover a row → ✕ Remove this action, which un-defines that
+// state so it inherits the previous one). Plus 🗑 Delete this step. (Both, per
+// the user's choice.) Driven by the 🔌 badge's right-click.
+function _showPlugActionMenu(step, displayNumber, x, y) {
+  const acts  = getStepCableActions(step.id);
+  const items = [{ label: `Step ${displayNumber}`, disabled: true }, { separator: true }];
+  if (!acts.length) {
+    items.push({ label: '(no cable actions on this step)', disabled: true });
+  } else {
+    for (const a of acts) {
+      const verb = a.action === 'plug' ? '🔌 Plug' : '⏏ Unplug';
+      items.push({
+        label:   `${a.cableName} · ${verb} · ${a.socketLabel}`,
+        submenu: [
+          { label: '✕ Remove this action', action: () => actions.removeCablePlugAction(a.cableId, step.id) },
+        ],
+      });
+    }
+  }
+  items.push({ separator: true });
+  items.push({ label: '🗑 Delete this step', action: () => _deleteStep(step.id) });
+  showContextMenu(items, x, y);
+}
+
 function _buildStepCard(step, displayNumber, isActive, isExpanded, total, groupOpts = {}) {
   const isSelected = _selHas(step.id);
   const { isSubStep = false, isGroupHead = false, isGroupCollapsed = false } = groupOpts;
@@ -1153,14 +1178,20 @@ function _buildStepCard(step, displayNumber, isActive, isExpanded, total, groupO
   card.dataset.stepId = step.id;
   card.style.marginBottom = '8px';
 
-  // V0.3.0.152 — 🔌 marker for a step that holds a cable plug/unplug action.
+  // V0.3.0.152/153 — 🔌 marker for a step holding a cable plug/unplug action.
   // Absolutely positioned so it overlays the card WITHOUT changing the row height.
+  // Right-click opens the plug-action manager (inspect + remove action / delete step).
   if (_plugActionStepIds.has(step.id)) {
     card.style.position = card.style.position || 'relative';
     const badge = document.createElement('div');
     badge.textContent = '🔌';
-    badge.title = 'Cable plug / unplug action on this step';
-    badge.style.cssText = 'position:absolute;top:2px;right:3px;font-size:11px;line-height:1;z-index:4;pointer-events:none;filter:drop-shadow(0 0 1px rgba(0,0,0,0.6));';
+    badge.title = 'Cable plug / unplug action — right-click to manage';
+    badge.style.cssText = 'position:absolute;top:0;right:0;font-size:11px;line-height:1;z-index:5;padding:2px 3px;cursor:context-menu;filter:drop-shadow(0 0 1px rgba(0,0,0,0.6));';
+    badge.addEventListener('click', e => e.stopPropagation());            // don't activate the step
+    badge.addEventListener('contextmenu', e => {
+      e.preventDefault(); e.stopPropagation();                            // own menu, not the step menu
+      _showPlugActionMenu(step, displayNumber, e.clientX, e.clientY);
+    });
     card.appendChild(badge);
   }
 

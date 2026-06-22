@@ -5680,6 +5680,42 @@ export function toggleSocketPlugged(cableId, nodeId) {
 }
 
 /**
+ * V0.3.0.153 — remove a cable's plug/unplug ACTION at a step: delete that step's
+ * stored entry for the cable so the step stops being state-defining and inherits
+ * the previous state (cascade). The cleanup primitive for rogue plug actions.
+ * Re-resolves the live cable at the active step. Undoable.
+ */
+export function removeCablePlugAction(cableId, stepId) {
+  const step  = (state.get('steps') || []).find(s => s.id === stepId);
+  const entry = step?.snapshot?.cables?.[cableId];
+  if (!entry) return false;
+  const before = JSON.parse(JSON.stringify(entry));
+  const reResolve = () => cables.applyStepSnapshot(cables.resolveCableSnapshotAtStep(state.get('activeStepId')));
+  const apply = () => {
+    const st = (state.get('steps') || []).find(s => s.id === stepId);
+    if (st?.snapshot?.cables) delete st.snapshot.cables[cableId];
+    state.setState({ steps: [...(state.get('steps') || [])] });
+    reResolve();
+    state.markDirty();
+  };
+  const undo = () => {
+    const st = (state.get('steps') || []).find(s => s.id === stepId);
+    if (st) {
+      st.snapshot = st.snapshot || {};
+      st.snapshot.cables = st.snapshot.cables || {};
+      st.snapshot.cables[cableId] = JSON.parse(JSON.stringify(before));
+    }
+    state.setState({ steps: [...(state.get('steps') || [])] });
+    reResolve();
+    state.markDirty();
+  };
+  apply();
+  undoManager.push('Remove cable plug action', undo, apply);
+  setStatus('Plug action removed — step reverts to the previous state.', 'info', 2600);
+  return true;
+}
+
+/**
  * Realign a socket to its surface default — local +Z aligned to the host (or, when
  * plugged, the target) surface normal — clearing any manual rotation. "Realign to
  * zero". Per-step (the facing rides the cable snapshot). V0.3.0.130.

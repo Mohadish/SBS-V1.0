@@ -204,6 +204,42 @@ export function getPlugActionStepIds() {
 }
 
 /**
+ * The plug/unplug ACTIONS at a given step — each cable socket whose plug config
+ * changes vs the previous step. Returns [{cableId, cableName, nodeId, socketLabel,
+ * action:'plug'|'unplug'}]. Used by the 🔌 step right-click manager (V0.3.0.153).
+ */
+export function getStepCableActions(stepId) {
+  const steps = state.get('steps') || [];
+  const idx = steps.findIndex(s => s.id === stepId);
+  if (idx <= 0) return [];   // first step = initial state, not an action
+  const cables = state.get('cables') || [];
+  const plOf = (snap, nodeId) => {
+    const p = snap?.nodes?.[nodeId];
+    return (p && !Array.isArray(p) && typeof p.pl === 'boolean') ? p.pl : null;
+  };
+  const cur  = resolveCableSnapshotAtStep(steps[idx].id);
+  const prev = resolveCableSnapshotAtStep(steps[idx - 1].id);
+  const out = [];
+  for (const cable of cables) {
+    const socketNodes = (cable.nodes || []).filter(n => n.socket);
+    for (const sn of socketNodes) {
+      const a = plOf(cur[cable.id],  sn.id);
+      const b = plOf(prev[cable.id], sn.id);
+      if (a !== null && a !== b) {
+        out.push({
+          cableId:     cable.id,
+          cableName:   cable.name || 'Cable',
+          nodeId:      sn.id,
+          socketLabel: `pt ${cable.nodes.indexOf(sn) + 1}`,
+          action:      a ? 'plug' : 'unplug',
+        });
+      }
+    }
+  }
+  return out;
+}
+
+/**
  * FLATTEN existing per-step cable data into the cascade form (V0.3.0.151): for
  * each cable, split the timeline into plug-config spans; take each span's SETTLED
  * arrangement from the LAST step of the span, write it onto the span's FIRST
