@@ -287,6 +287,11 @@ function createInitialState() {
     // follows along the new normal). Cleared on Esc / successful pick.
     cableSocketReanchorPickingId: null,    // { cableId, nodeId } | null
 
+    // V0.3.0.129 — a socket is awaiting a "set connection point" pick: the next
+    // viewport click raycasts a destination mesh face and stores it as where the
+    // socket plugs in (socket.connectTarget). Cleared on Esc / successful pick.
+    cableSocketConnectPickingId: null,     // { cableId, nodeId } | null
+
     // ── UI state
     activeSidebarTab:   'files',      // which left sidebar tab is open
     gridVisible:        false,

@@ -5522,6 +5522,82 @@ export function cancelCableSocketReanchor() {
   }
 }
 
+// ─── Socket connection point + plug state (V0.3.0.129, Phase 1) ───────────────
+// Set the DESTINATION a socket plugs into (right-click → Set connection point →
+// pick a mesh face), then toggle the socket plugged/unplugged PER STEP. When
+// plugged, the socket node resolves onto the target (jump-to-final) so the user
+// can shape the plugged-state cable layout. The connect ANIMATION is Phase 2.
+
+export function startCableSocketConnectPick(cableId, nodeId) {
+  const node = _findCableNode(cableId, nodeId);
+  if (!node?.socket) return;
+  state.setState({ cableSocketConnectPickingId: { cableId, nodeId } });
+  setStatus('Click the surface this socket plugs into…', 'info', 5000);
+}
+
+export function cancelCableSocketConnectPick() {
+  if (state.get('cableSocketConnectPickingId')) {
+    state.setState({ cableSocketConnectPickingId: null });
+  }
+}
+
+/** Apply a connection-point pick: store { nodeId, anchorLocal, normalLocal } on the socket. */
+export function applyCableSocketConnectTarget(hit) {
+  const target = state.get('cableSocketConnectPickingId');
+  if (!target || !hit?.point || !hit?.object) { cancelCableSocketConnectPick(); return false; }
+  const node = _findCableNode(target.cableId, target.nodeId);
+  if (!node?.socket) { cancelCableSocketConnectPick(); return false; }
+  const meshNodeId = _findTreeNodeIdForObject(hit.object);
+  if (!meshNodeId) { cancelCableSocketConnectPick(); return false; }
+
+  const T = window.THREE;
+  const localPos    = hit.object.worldToLocal(hit.point.clone());
+  const localNormal = hit.face?.normal ? hit.face.normal.clone().normalize() : new T.Vector3(0, 0, 1);
+  const before = node.socket.connectTarget ? { ...node.socket.connectTarget } : null;
+  const after  = {
+    nodeId:      meshNodeId,
+    anchorLocal: [localPos.x, localPos.y, localPos.z],
+    normalLocal: [localNormal.x, localNormal.y, localNormal.z],
+  };
+  const set = (val) => {
+    const n = _findCableNode(target.cableId, target.nodeId);
+    if (!n?.socket) return;
+    n.socket.connectTarget = val ? { ...val } : null;
+    state.setState({ cables: [...(state.get('cables') || [])] });
+    state.markDirty();
+  };
+  node.socket.connectTarget = after;
+  state.setState({ cables: [...(state.get('cables') || [])], cableSocketConnectPickingId: null });
+  state.markDirty();
+  undoManager.push('Set socket connection point', () => set(before), () => set(after));
+  setStatus('🔌 Connection point set. Right-click the socket → Plug to connect on this step.', 'success', 3500);
+  return true;
+}
+
+/** Toggle a socket plugged/unplugged ON THE ACTIVE STEP (per-step, one undo). */
+export function toggleSocketPlugged(cableId, nodeId) {
+  const node = _findCableNode(cableId, nodeId);
+  if (!node?.socket) return;
+  if (!node.socket.connectTarget) {
+    setStatus('Set a connection point first (right-click socket → Set connection point).', 'info', 4000);
+    return;
+  }
+  const next = !node.socket.plugged;
+  const set = (val) => {
+    const n = _findCableNode(cableId, nodeId);
+    if (!n?.socket) return;
+    n.socket.plugged = val;
+    state.setState({ cables: [...(state.get('cables') || [])] });
+    state.markDirty();
+    steps.scheduleSync();   // per-step plug state
+  };
+  set(next);
+  undoManager.push(next ? 'Plug socket' : 'Unplug socket', () => set(!next), () => set(next));
+  setStatus(next
+    ? '🔌 Plugged — the socket jumped to its target; shape the cable for this step.'
+    : 'Unplugged.', 'info', 3000);
+}
+
 /**
  * Apply a socket re-anchor pick. Snaps the back face to the new mesh
  * + face position, resets the socket's orientation to align with the

@@ -1069,6 +1069,10 @@ state.on('change:cableInsertPickingTarget', target => {
 state.on('change:cableSocketReanchorPickingId', target => {
   canvas.style.cursor = target ? 'crosshair' : '';
 });
+// V0.3.0.129: crosshair for socket connection-point pick mode.
+state.on('change:cableSocketConnectPickingId', target => {
+  canvas.style.cursor = target ? 'crosshair' : '';
+});
 // Shape editor — same crosshair signal during draw mode (pickPlane or addVertices).
 state.on('change:shapeDrawing', dr => {
   canvas.style.cursor = dr ? 'crosshair' : '';
@@ -1564,6 +1568,18 @@ canvas.addEventListener('pointerdown', e => {
     const hit = sceneCore.pick(e.clientX, e.clientY);
     if (hit) actions.applyCableSocketReanchor(hit);
     else     actions.cancelCableSocketReanchor();
+    return;
+  }
+
+  // V0.3.0.129 — socket "set connection point" pick: raycast a destination mesh
+  // face and store it as where the socket plugs in.
+  const sockConnect = state.get('cableSocketConnectPickingId');
+  if (sockConnect) {
+    e.preventDefault();
+    e.stopPropagation();
+    const hit = sceneCore.pick(e.clientX, e.clientY);
+    if (hit) actions.applyCableSocketConnectTarget(hit);
+    else     actions.cancelCableSocketConnectPick();
     return;
   }
 
@@ -2693,11 +2709,22 @@ canvas.addEventListener('contextmenu', e => {
     const sockIsLast    = sockNodeCount > 0 && sockCable.nodes[sockNodeCount - 1].id === socketHit.nodeId;
     const sockIsFirst   = sockNodeCount > 0 && sockCable.nodes[0].id === socketHit.nodeId;
     const sockCanPrepend = sockIsFirst && !sockCable?.branchSource;
+    const sockNode      = sockCable?.nodes?.find(n => n.id === socketHit.nodeId);
+    const sockHasTarget = !!sockNode?.socket?.connectTarget;
     const items = [
       {
         label: '↺ Re-anchor socket…',
         action: () => actions.startCableSocketReanchor(socketHit.cableId, socketHit.nodeId),
       },
+      { label: '─', disabled: true },
+      {   // V0.3.0.129 — connection animation (Phase 1)
+        label: sockHasTarget ? '🔌 Connection point (re-set)…' : '🔌 Set connection point…',
+        action: () => actions.startCableSocketConnectPick(socketHit.cableId, socketHit.nodeId),
+      },
+      ...(sockHasTarget ? [{
+        label: sockNode.socket.plugged ? '⏏ Unplug (this step)' : '🔗 Plug (this step)',
+        action: () => actions.toggleSocketPlugged(socketHit.cableId, socketHit.nodeId),
+      }] : []),
       ...(sockIsLast ? [{
         label: '→ Continue routing (end)',
         action: () => actions.startCablePlacement(socketHit.cableId),
@@ -3698,6 +3725,11 @@ window.addEventListener('keydown', async e => {
     // C5-E2: socket re-anchor pick — Esc cancels.
     if (state.get('cableSocketReanchorPickingId')) {
       actions.cancelCableSocketReanchor();
+      return;
+    }
+    // V0.3.0.129: socket connection-point pick — Esc cancels.
+    if (state.get('cableSocketConnectPickingId')) {
+      actions.cancelCableSocketConnectPick();
       return;
     }
     // Phase A/E2: clear any cable-point + socket selection alongside

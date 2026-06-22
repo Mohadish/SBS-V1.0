@@ -27,7 +27,7 @@ export const SCHEMA_VERSIONS = {
   screen:     1,
 };
 
-export const APP_VERSION  = 'V0.3.0.128';
+export const APP_VERSION  = 'V0.3.0.129';
 // Format: YYYY-MM-DD. Bump along with APP_VERSION on every build worth
 // labelling so the File tab shows you're running the expected slice.
 export const APP_RELEASED = '2026-06-10';
@@ -1047,6 +1047,13 @@ export function createCableSocket(overrides = {}) {
     size:             { w: 10, h: 10, d: 18 },
     localQuaternion:  null,               // [x,y,z,w] when host node is mesh-anchored
     quaternion:       null,               // [x,y,z,w] world-space, for free/branch hosts
+    // Socket connection animation (V0.3.0.129, Phase 1). connectTarget = where this
+    // socket plugs IN (right-click → Set connection point): { nodeId, anchorLocal
+    // [x,y,z], normalLocal [x,y,z] } on the destination mesh. `plugged` is PER-STEP
+    // (captured in the cable step snapshot; live value = active step) — when true the
+    // socket node resolves to connectTarget so the user can shape the plugged layout.
+    connectTarget:    null,
+    plugged:          false,
     ...overrides,
   };
 }

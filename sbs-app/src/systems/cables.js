@@ -102,6 +102,7 @@ export function captureStepSnapshot() {
       if (n.anchorType === 'mesh' && Array.isArray(n.anchorLocal)) pose.anc = n.anchorLocal.slice();
       const sq = n.anchorType === 'mesh' ? n.socket?.localQuaternion : n.socket?.quaternion;
       if (n.socket && Array.isArray(sq) && sq.length === 4)         pose.sq  = sq.slice();
+      if (n.socket)                                                 pose.pl  = !!n.socket.plugged;   // V0.3.0.129 per-step plug
       if (Object.keys(pose).length) nodes[n.id] = pose;
     }
     out[cable.id] = {
@@ -141,10 +142,13 @@ export function applyStepSnapshot(snap) {
         const nn = { ...n };
         if (n.anchorType === 'free' && Array.isArray(pose.pos)) nn.position    = pose.pos.slice();
         if (n.anchorType === 'mesh' && Array.isArray(pose.anc)) nn.anchorLocal = pose.anc.slice();
-        if (n.socket && Array.isArray(pose.sq) && pose.sq.length === 4) {
+        if (n.socket && (typeof pose.pl === 'boolean' || (Array.isArray(pose.sq) && pose.sq.length === 4))) {
           const sock = { ...n.socket };
-          if (n.anchorType === 'mesh') sock.localQuaternion = pose.sq.slice();
-          else                          sock.quaternion      = pose.sq.slice();
+          if (Array.isArray(pose.sq) && pose.sq.length === 4) {
+            if (n.anchorType === 'mesh') sock.localQuaternion = pose.sq.slice();
+            else                          sock.quaternion      = pose.sq.slice();
+          }
+          if (typeof pose.pl === 'boolean') sock.plugged = pose.pl;   // V0.3.0.129 — per-step plug state
           nn.socket = sock;
         }
         return nn;
@@ -170,6 +174,24 @@ export function applyStepSnapshot(snap) {
  */
 export function resolveNodeWorldPosition(node, ctx = {}) {
   if (!node) return { pos: null, tier: 'unresolved' };
+
+  // Tier 0 (V0.3.0.129) — a PLUGGED socket resolves onto its connection target
+  // (destination mesh.matrixWorld * connectTarget.anchorLocal), so the node jumps
+  // onto the thing it plugs into. This is the per-step "jump to final position".
+  // Overrides the node's own anchor; the cable body follows. The connect ANIMATION
+  // (Phase 2) drives this same position along an offset-approach path instead.
+  const ct = node.socket?.plugged ? node.socket.connectTarget : null;
+  if (ct?.nodeId && Array.isArray(ct.anchorLocal)) {
+    const T = window.THREE;
+    const tNode = (ctx.nodeById || state.get('nodeById'))?.get?.(ct.nodeId);
+    const tObj  = tNode?.object3d || ctx.object3dById?.get?.(ct.nodeId);
+    if (tObj && T) {
+      tObj.updateMatrixWorld?.();
+      const p = new T.Vector3(ct.anchorLocal[0], ct.anchorLocal[1], ct.anchorLocal[2]);
+      tObj.localToWorld(p);
+      return { pos: [p.x, p.y, p.z], tier: 'live' };
+    }
+  }
 
   // Tier 1: free node has its own world `position` directly.
   if (node.anchorType === 'free' && Array.isArray(node.position)) {
