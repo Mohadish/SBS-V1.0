@@ -442,8 +442,7 @@ function _rebuildCable(cable, entry) {
   // mesh handoffs are smooth.
   const positions = (cable.nodes || []).map(n => {
     const r = resolveNodeWorldPosition(n, ctx);
-    const p = r.pos ? new THREE.Vector3(r.pos[0], r.pos[1], r.pos[2]) : null;
-    return _seatPluggedSocket(n, p, cable, globalScale);   // V0.3.0.132 — seat plugged sockets by depth
+    return r.pos ? new THREE.Vector3(r.pos[0], r.pos[1], r.pos[2]) : null;
   });
 
   // Point spheres — one per resolvable node. Unresolvable nodes
@@ -540,7 +539,12 @@ function _socketWorldQuat(node) {
     if (tObj) {
       const tQ = new T.Quaternion();
       tObj.getWorldQuaternion(tQ);
-      if (Array.isArray(ct.normalLocal) && ct.normalLocal.length === 3) {
+      // Editable plugged orientation (target-local), user-adjustable via rotate.
+      if (Array.isArray(ct.localQuaternion) && ct.localQuaternion.length === 4) {
+        return tQ.multiply(new T.Quaternion(
+          ct.localQuaternion[0], ct.localQuaternion[1], ct.localQuaternion[2], ct.localQuaternion[3]));
+      }
+      if (Array.isArray(ct.normalLocal) && ct.normalLocal.length === 3) {   // legacy default
         const wn = new T.Vector3(ct.normalLocal[0], ct.normalLocal[1], ct.normalLocal[2])
           .applyQuaternion(tQ).normalize();
         return new T.Quaternion().setFromUnitVectors(new T.Vector3(0, 0, 1), wn);
@@ -585,23 +589,6 @@ function _socketWorldQuat(node) {
     );
   }
   return new T.Quaternion();   // identity fallback
-}
-
-/**
- * V0.3.0.132 — seat a PLUGGED socket's cable point OUT along its facing by the
- * socket depth, so the socket BODY sits on the target surface (back face on the
- * surface, front + cable end out) — matching the unplugged IK-shift convention.
- * Without this the resolver returns the bare surface point, leaving the box
- * half-buried in the target (the "back end flashes with the surface" z-fight).
- * No-op for non-plugged nodes. Returns the (possibly lifted) Vector3.
- */
-function _seatPluggedSocket(node, p, cable, globalScale) {
-  if (!p || !(node?.socket?.plugged && node.socket.connectTarget)) return p;
-  const wq = _socketWorldQuat(node);
-  if (!wq) return p;
-  const d = socketActualSize(cable, node.socket).d * (globalScale ?? 1);
-  const zWorld = new THREE.Vector3(0, 0, 1).applyQuaternion(wq);
-  return p.clone().addScaledVector(zWorld, d);
 }
 
 /**
@@ -852,8 +839,7 @@ function _tickAnchorRefresh() {
         return r.pos ? new THREE.Vector3(r.pos[0], r.pos[1], r.pos[2]) : null;
       }
       const r = resolveNodeWorldPosition(n, ctx);
-      const p = r.pos ? new THREE.Vector3(r.pos[0], r.pos[1], r.pos[2]) : null;
-      return _seatPluggedSocket(n, p, cable, globalScale);   // V0.3.0.132 — seat plugged sockets by depth
+      return r.pos ? new THREE.Vector3(r.pos[0], r.pos[1], r.pos[2]) : null;
     });
 
     // Reposition point spheres in lock-step with the resolver output.

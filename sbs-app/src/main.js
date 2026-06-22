@@ -1005,11 +1005,17 @@ function _buildCableSocketGizmoTarget(cableId, nodeId) {
       const ct = n.socket.plugged ? n.socket.connectTarget : null;
       if (ct?.nodeId) {
         const tObj = state.get('nodeById')?.get?.(ct.nodeId)?.object3d;
-        if (tObj && Array.isArray(ct.normalLocal) && ct.normalLocal.length === 3) {
+        if (tObj) {
           const tQ = new T.Quaternion(); tObj.getWorldQuaternion(tQ);
-          const wn = new T.Vector3(ct.normalLocal[0], ct.normalLocal[1], ct.normalLocal[2])
-            .applyQuaternion(tQ).normalize();
-          return new T.Quaternion().setFromUnitVectors(new T.Vector3(0, 0, 1), wn);
+          if (Array.isArray(ct.localQuaternion) && ct.localQuaternion.length === 4) {
+            return tQ.multiply(new T.Quaternion(
+              ct.localQuaternion[0], ct.localQuaternion[1], ct.localQuaternion[2], ct.localQuaternion[3]));
+          }
+          if (Array.isArray(ct.normalLocal) && ct.normalLocal.length === 3) {
+            const wn = new T.Vector3(ct.normalLocal[0], ct.normalLocal[1], ct.normalLocal[2])
+              .applyQuaternion(tQ).normalize();
+            return new T.Quaternion().setFromUnitVectors(new T.Vector3(0, 0, 1), wn);
+          }
         }
       }
       if (n.anchorType !== 'mesh' || !n.nodeId) return new T.Quaternion();
@@ -1049,12 +1055,20 @@ function _buildCableSocketGizmoTarget(cableId, nodeId) {
       if (_plugged()) actions.commitSocketConnectAdjust();
       else            actions.commitCablePointMove(cableId, nodeId);
     },
-    // Rotate writes node.socket.localQuaternion via the dedicated batch.
-    beginRotate() { actions.beginCableSocketRotate(cableId, nodeId); },
-    applyRotateAroundAxis(worldAxis, angle) {
-      actions.applyCableSocketRotateAxisAngle(cableId, nodeId, worldAxis, angle);
+    // Rotate: PLUGGED → spin the connection facing (connectTarget.localQuaternion);
+    // else → the host-relative socket rotate. V0.3.0.133.
+    beginRotate() {
+      if (_plugged()) actions.beginSocketConnectRotate(cableId, nodeId);
+      else            actions.beginCableSocketRotate(cableId, nodeId);
     },
-    commitRotate() { actions.commitCableSocketRotate(cableId, nodeId); },
+    applyRotateAroundAxis(worldAxis, angle) {
+      if (_plugged()) actions.applySocketConnectRotate(cableId, nodeId, worldAxis, angle);
+      else            actions.applyCableSocketRotateAxisAngle(cableId, nodeId, worldAxis, angle);
+    },
+    commitRotate() {
+      if (_plugged()) actions.commitSocketConnectRotate(cableId, nodeId);
+      else            actions.commitCableSocketRotate(cableId, nodeId);
+    },
   };
 }
 state.on('selection:change',            _syncGizmoToSelection);

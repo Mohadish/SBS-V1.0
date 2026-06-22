@@ -5551,13 +5551,22 @@ export function applyCableSocketConnectTarget(hit) {
   if (!meshNodeId) { cancelCableSocketConnectPick(); return false; }
 
   const T = window.THREE;
-  const localPos    = hit.object.worldToLocal(hit.point.clone());
+  const cable = (state.get('cables') || []).find(c => c.id === target.cableId);
   const localNormal = hit.face?.normal ? hit.face.normal.clone().normalize() : new T.Vector3(0, 0, 1);
+  // Default plugged transform = align to surface + offset by the socket DEPTH, then
+  // the user free-adjusts from here (gizmo move/rotate). The result IS the plug's
+  // final position. V0.3.0.133.
+  const depth = cable ? socketActualSize(cable, node.socket).d * (state.get('cableGlobalScale') ?? 1) : 0;
+  const worldNormal = localNormal.clone().transformDirection(hit.object.matrixWorld).normalize();
+  const seatedWorld = hit.point.clone().addScaledVector(worldNormal, depth);   // lift OUT by depth
+  const anchorLocal = hit.object.worldToLocal(seatedWorld.clone());
+  const lq = new T.Quaternion().setFromUnitVectors(new T.Vector3(0, 0, 1), localNormal); // surface-aligned, target-local
   const before = node.socket.connectTarget ? { ...node.socket.connectTarget } : null;
   const after  = {
-    nodeId:      meshNodeId,
-    anchorLocal: [localPos.x, localPos.y, localPos.z],
-    normalLocal: [localNormal.x, localNormal.y, localNormal.z],
+    nodeId:          meshNodeId,
+    anchorLocal:     [anchorLocal.x, anchorLocal.y, anchorLocal.z],
+    normalLocal:     [localNormal.x, localNormal.y, localNormal.z],
+    localQuaternion: [lq.x, lq.y, lq.z, lq.w],
   };
   const set = (val) => {
     const n = _findCableNode(target.cableId, target.nodeId);
@@ -5606,6 +5615,27 @@ export function toggleSocketPlugged(cableId, nodeId) {
 export function resetSocketOrientation(cableId, nodeId) {
   const node = _findCableNode(cableId, nodeId);
   if (!node?.socket) return;
+  const T = window.THREE;
+  // Plugged → reset the CONNECTION facing to its surface default (the target
+  // normal), clearing any manual roll the user applied to the plug. V0.3.0.133.
+  const ct = node.socket.plugged ? node.socket.connectTarget : null;
+  if (ct?.nodeId && Array.isArray(ct.normalLocal) && T) {
+    const beforeQ = Array.isArray(ct.localQuaternion) ? ct.localQuaternion.slice() : null;
+    const q = new T.Quaternion().setFromUnitVectors(new T.Vector3(0, 0, 1),
+      new T.Vector3(ct.normalLocal[0], ct.normalLocal[1], ct.normalLocal[2]).normalize());
+    const afterQ = [q.x, q.y, q.z, q.w];
+    const setC = (val) => {
+      const n = _findCableNode(cableId, nodeId);
+      if (!n?.socket?.connectTarget) return;
+      n.socket.connectTarget.localQuaternion = val ? val.slice() : null;
+      state.setState({ cables: [...(state.get('cables') || [])] });
+      state.markDirty();
+    };
+    setC(afterQ);
+    undoManager.push('Realign connection', () => setC(beforeQ), () => setC(afterQ));
+    setStatus('Connection facing realigned to surface (0).', 'success', 2000);
+    return;
+  }
   const before = Array.isArray(node.socket.localQuaternion) ? node.socket.localQuaternion.slice() : null;
   const after  = _quatFromNormalLocal(node);   // [x,y,z,w] surface-aligned default
   const set = (val) => {
@@ -5670,6 +5700,58 @@ export function commitSocketConnectAdjust() {
   };
   set(after);
   undoManager.push('Adjust connection point', () => set(snapshot), () => set(after));
+}
+
+// Rotate the PLUGGED orientation (connectTarget.localQuaternion, target-local) via
+// the gizmo's world-axis rotate. V0.3.0.133.
+let _socketConnectRotateBatch = null;
+
+export function beginSocketConnectRotate(cableId, nodeId) {
+  const node = _findCableNode(cableId, nodeId);
+  const ct = node?.socket?.connectTarget;
+  if (!ct) return;
+  _socketConnectRotateBatch = {
+    cableId, nodeId,
+    startQuat: Array.isArray(ct.localQuaternion) ? ct.localQuaternion.slice() : [0, 0, 0, 1],
+  };
+}
+
+export function applySocketConnectRotate(cableId, nodeId, worldAxis, angle) {
+  if (!_socketConnectRotateBatch || !worldAxis) return;
+  const T = window.THREE; if (!T) return;
+  const node = _findCableNode(cableId, nodeId);
+  const ct = node?.socket?.connectTarget;
+  if (!ct) return;
+  const tObj = state.get('nodeById')?.get?.(ct.nodeId)?.object3d;
+  if (!tObj) return;
+  const tQ = new T.Quaternion(); tObj.getWorldQuaternion(tQ);
+  // World-axis rotation → target-local frame, pre-multiplied onto the start quat.
+  const localAxis = worldAxis.clone().applyQuaternion(tQ.clone().invert()).normalize();
+  const delta = new T.Quaternion().setFromAxisAngle(localAxis, angle);
+  const s = _socketConnectRotateBatch.startQuat;
+  const newQ = delta.multiply(new T.Quaternion(s[0], s[1], s[2], s[3]));
+  ct.localQuaternion = [newQ.x, newQ.y, newQ.z, newQ.w];
+  state.setState({ cables: [...(state.get('cables') || [])] });
+}
+
+export function commitSocketConnectRotate(cableId, nodeId) {
+  if (!_socketConnectRotateBatch) return;
+  const { startQuat } = _socketConnectRotateBatch;
+  _socketConnectRotateBatch = null;
+  const node = _findCableNode(cableId, nodeId);
+  const ct = node?.socket?.connectTarget;
+  if (!ct || !Array.isArray(ct.localQuaternion)) return;
+  const after = ct.localQuaternion.slice();
+  if (startQuat.every((v, i) => v === after[i])) return;
+  const set = (val) => {
+    const n = _findCableNode(cableId, nodeId);
+    if (!n?.socket?.connectTarget) return;
+    n.socket.connectTarget.localQuaternion = val.slice();
+    state.setState({ cables: [...(state.get('cables') || [])] });
+    state.markDirty();
+  };
+  set(after);
+  undoManager.push('Rotate connection', () => set(startQuat), () => set(after));
 }
 
 /**
