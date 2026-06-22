@@ -5592,22 +5592,63 @@ export function toggleSocketPlugged(cableId, nodeId) {
     return;
   }
   const next = !node.socket.plugged;
+  const allSteps = state.get('steps') || [];
+  const curIdx   = allSteps.findIndex(s => s.id === state.get('activeStepId'));
 
-  // Plug/unplug applies to THE CURRENT STEP (per-step state). The step IS the log of
-  // the cable's arrangement — NO auto step creation (V0.3.0.136 reverts Phase A). The
-  // connect/unplug TRAVEL animation plays when you NAVIGATE into a step whose plug
-  // state differs from the previous one (beginCableTransitions, V0.3.0.134).
-  const set = (val) => {
+  // Read/write the live cable's node POSITIONS (anchorLocal / free position).
+  const readLayout = () => {
+    const c = (state.get('cables') || []).find(x => x.id === cableId);
+    const out = {};
+    for (const nd of (c?.nodes || [])) out[nd.id] = {
+      anc: Array.isArray(nd.anchorLocal) ? nd.anchorLocal.slice() : null,
+      pos: Array.isArray(nd.position)    ? nd.position.slice()    : null,
+    };
+    return out;
+  };
+  const writeLayout = (L) => {
+    if (!L) return;
+    const c = (state.get('cables') || []).find(x => x.id === cableId);
+    for (const nd of (c?.nodes || [])) {
+      const e = L[nd.id]; if (!e) continue;
+      if (e.anc && Array.isArray(nd.anchorLocal)) nd.anchorLocal = e.anc.slice();
+      if (e.pos && Array.isArray(nd.position))    nd.position    = e.pos.slice();
+    }
+  };
+  // UNPLUG recalls the IMMEDIATELY PREVIOUS step's cable layout (user's choice).
+  const prevLayout = (!next && curIdx > 0) ? (() => {
+    const nodes = allSteps[curIdx - 1]?.snapshot?.cables?.[cableId]?.nodes;
+    if (!nodes) return null;
+    const out = {};
+    for (const [nid, pose] of Object.entries(nodes)) {
+      const p = Array.isArray(pose) ? { pos: pose } : pose;
+      out[nid] = { anc: p.anc || null, pos: p.pos || null };
+    }
+    return out;
+  })() : null;
+  const beforeLayout = prevLayout ? readLayout() : null;
+
+  // Apply plug state (+ optional layout) and store it ON the current step.
+  const apply = (plug, layout) => {
     const n = _findCableNode(cableId, nodeId);
     if (!n?.socket) return;
-    n.socket.plugged = val;
+    n.socket.plugged = plug;
+    if (layout) writeLayout(layout);
     state.setState({ cables: [...(state.get('cables') || [])] });
     state.markDirty();
-    steps.scheduleSync();   // store the plug state ON this step
+    steps.scheduleSync();   // step IS the log — store the arrangement here
   };
-  set(next);
-  undoManager.push(next ? 'Plug socket' : 'Unplug socket', () => set(!next), () => set(next));
-  setStatus(next ? '🔌 Plugged on this step.' : 'Unplugged on this step.', 'info', 2800);
+
+  apply(next, prevLayout);
+  undoManager.push(
+    next ? 'Plug socket' : 'Unplug socket',
+    () => apply(!next, beforeLayout),
+    () => apply(next, prevLayout),
+  );
+  setStatus(
+    next ? '🔌 Plugged on this step.'
+         : (prevLayout ? 'Unplugged — cable recalled to the previous step.' : 'Unplugged on this step.'),
+    'info', 2800,
+  );
 }
 
 /**
