@@ -295,7 +295,12 @@ class StepManager {
       // untouched on apply (so a fresh cable stays visible across all
       // past steps until the user explicitly varies it). See
       // systems/cables.js.
-      cables: cablesSystem.captureStepSnapshot(),
+      // Cables follow the CASCADE model (V0.3.0.151) — NOT auto-captured per step.
+      // A cable's arrangement lives only on its state-defining steps, written by
+      // commitLiveCablesToDefiningSteps (on sync) + the plug action. A fresh
+      // snapshot therefore carries no cables; syncActiveStepNow preserves the
+      // active step's existing entry, and new steps inherit by cascade.
+      cables: undefined,
     };
   }
 
@@ -1858,11 +1863,19 @@ class StepManager {
     // the snapshot — template-bound steps pull from cameraViews, free
     // steps use their own snapshot.camera.
     const resolvedSnap = this._resolveStepSnapshot(step);
+    // CASCADE (V0.3.0.151): give the animation the RESOLVED cable state for its
+    // target (nearest state-defining entry ≤ this step) so transitions INTO a
+    // non-defining step (e.g. stepping back across an unplug) still animate, and
+    // within-state nav is a no-op (TO == FROM). Shallow-copy — never mutate the
+    // stored snapshot, which _resolveStepSnapshot may return by reference.
+    const targetSnap = resolvedSnap
+      ? { ...resolvedSnap, cables: cablesSystem.resolveCableSnapshotAtStep(step.id) }
+      : resolvedSnap;
 
     if (shouldAnimate) {
       this._animRunning       = true;
-      this._currentTargetSnap = resolvedSnap;
-      await this.applySnapshotAnimated(resolvedSnap, tr);
+      this._currentTargetSnap = targetSnap;
+      await this.applySnapshotAnimated(targetSnap, tr);
       // Only clear flags if we're still the active animation (no newer step started)
       if (myToken === this._activationToken) {
         this._animRunning                  = false;
@@ -1872,7 +1885,7 @@ class StepManager {
     } else {
       this._animRunning       = false;
       this._currentTargetSnap = null;
-      this.applySnapshotInstant(resolvedSnap);
+      this.applySnapshotInstant(targetSnap);
     }
 
     state.emit('step:applied', step);
@@ -2157,7 +2170,15 @@ class StepManager {
       }
     }
 
+    // CASCADE cables (V0.3.0.151): preserve the active step's existing entry (it's
+    // only present if this step is state-defining for a cable), then push each live
+    // cable's arrangement onto its state-defining step. Skip while a cable plug/
+    // morph animation is in flight so a transitional pose is never stored.
+    newSnapshot.cables = step.snapshot?.cables;
     step.snapshot = newSnapshot;
+    if (!cablesRender.hasActiveCableTransitions?.()) {
+      cablesSystem.commitLiveCablesToDefiningSteps(activeId);
+    }
     this._dirty   = false;
     state.setState({ _stepDirty: false, steps: [...steps] });
     state.emit('step:synced', step);

@@ -82,36 +82,93 @@ export function getCable(id) {
  * state.cables. Returned object is keyed by cable id; absent
  * keys mean "use the cable's current values" on apply.
  */
-export function captureStepSnapshot() {
-  const cables = listCables();
-  const out = {};
-  for (const cable of cables) {
-    // Cable morph — per-step node POSE so the cable's shape can lerp between
-    // steps. Per node we store whichever apply:
-    //   pos = free node world position        (V0.3.0.126)
-    //   anc = mesh-anchored offset anchorLocal (V0.3.0.128 — the point's spot on
-    //         its host; combined with the host's own animated transform this lets
-    //         an anchored point morph AND ride the part)
-    //   sq  = socket facing (localQuaternion for a mesh host, quaternion for free)
-    // A mesh node's WORLD position still auto-follows its host every frame; `anc`
-    // only varies the offset. Branch nodes follow their parent cable (not stored).
-    const nodes = {};
-    for (const n of (cable.nodes || [])) {
-      const pose = {};
-      if (n.anchorType === 'free' && Array.isArray(n.position))    pose.pos = n.position.slice();
-      if (n.anchorType === 'mesh' && Array.isArray(n.anchorLocal)) pose.anc = n.anchorLocal.slice();
-      const sq = n.anchorType === 'mesh' ? n.socket?.localQuaternion : n.socket?.quaternion;
-      if (n.socket && Array.isArray(sq) && sq.length === 4)         pose.sq  = sq.slice();
-      if (n.socket)                                                 pose.pl  = !!n.socket.plugged;   // V0.3.0.129 per-step plug
-      if (Object.keys(pose).length) nodes[n.id] = pose;
-    }
-    out[cable.id] = {
-      visible:   !!cable.visible,
-      highlight: !!cable.highlight,
-      nodes,
-    };
+// Capture ONE cable's arrangement (visible/highlight + per-node pose). Per node:
+//   pos = free node world position        (V0.3.0.126)
+//   anc = mesh-anchored offset anchorLocal (V0.3.0.128 — combined with the host's
+//         own animated transform this lets an anchored point ride the part)
+//   sq  = socket facing (localQuaternion for a mesh host, quaternion for free)
+//   pl  = per-step plug state (V0.3.0.129)
+// A mesh node's WORLD position still auto-follows its host every frame; `anc`
+// only varies the offset. Branch nodes follow their parent cable (not stored).
+export function captureCableArrangement(cableOrId) {
+  const cable = typeof cableOrId === 'string'
+    ? listCables().find(c => c.id === cableOrId) : cableOrId;
+  if (!cable) return null;
+  const nodes = {};
+  for (const n of (cable.nodes || [])) {
+    const pose = {};
+    if (n.anchorType === 'free' && Array.isArray(n.position))    pose.pos = n.position.slice();
+    if (n.anchorType === 'mesh' && Array.isArray(n.anchorLocal)) pose.anc = n.anchorLocal.slice();
+    const sq = n.anchorType === 'mesh' ? n.socket?.localQuaternion : n.socket?.quaternion;
+    if (n.socket && Array.isArray(sq) && sq.length === 4)         pose.sq  = sq.slice();
+    if (n.socket)                                                 pose.pl  = !!n.socket.plugged;
+    if (Object.keys(pose).length) nodes[n.id] = pose;
   }
+  return { visible: !!cable.visible, highlight: !!cable.highlight, nodes };
+}
+
+export function captureStepSnapshot() {
+  const out = {};
+  for (const cable of listCables()) out[cable.id] = captureCableArrangement(cable);
   return out;
+}
+
+// ─── Cascade model (V0.3.0.151) ───────────────────────────────────────────
+// A cable's arrangement lives ONLY on "state-defining" steps (the step that
+// holds a plug/unplug action, plus the first step's initial state). Every other
+// step inherits it by cascade. So a cable's truth at any step = the nearest
+// stored entry at a step ≤ this one.
+
+/**
+ * Resolve the full cable snapshot AT a step by cascading: for each cable, take
+ * the nearest stored entry at a step ≤ stepId (walk forward, nearest wins).
+ * Returns a {cableId: {visible,highlight,nodes}} map ready for applyStepSnapshot.
+ */
+export function resolveCableSnapshotAtStep(stepId) {
+  const steps = state.get('steps') || [];
+  const idx = steps.findIndex(s => s.id === stepId);
+  if (idx < 0) return {};
+  const merged = {};
+  for (let i = 0; i <= idx; i++) {
+    const c = steps[i]?.snapshot?.cables;
+    if (!c) continue;
+    for (const cid of Object.keys(c)) merged[cid] = c[cid];   // nearest (later) wins
+  }
+  return merged;
+}
+
+/**
+ * Find the index of the state-defining step for a cable as seen from a given
+ * step — the nearest step ≤ fromIdx that already holds an entry for that cable.
+ * Falls back to 0 (the first step = the initial state) when none exists yet.
+ */
+export function definingStepIndexForCable(cableId, fromIdx) {
+  const steps = state.get('steps') || [];
+  for (let i = Math.min(fromIdx, steps.length - 1); i >= 0; i--) {
+    if (steps[i]?.snapshot?.cables?.[cableId]) return i;
+  }
+  return 0;
+}
+
+/**
+ * Cascade WRITE: push each live cable's current arrangement onto its STATE-
+ * DEFINING step (not the active step). This is what makes an edit anywhere in a
+ * state fill the whole state — the state's one stored entry is updated, and every
+ * step in the span inherits it. Idempotent when nothing changed (re-writes the
+ * same resolved arrangement). Callers must skip this during any cable animation.
+ */
+export function commitLiveCablesToDefiningSteps(activeStepId) {
+  const steps = state.get('steps') || [];
+  const activeIdx = steps.findIndex(s => s.id === activeStepId);
+  if (activeIdx < 0) return;
+  for (const cable of listCables()) {
+    const defIdx  = definingStepIndexForCable(cable.id, activeIdx);
+    const defStep = steps[defIdx];
+    if (!defStep) continue;
+    if (!defStep.snapshot)        defStep.snapshot = {};
+    if (!defStep.snapshot.cables) defStep.snapshot.cables = {};
+    defStep.snapshot.cables[cable.id] = captureCableArrangement(cable);
+  }
 }
 
 /**
@@ -384,8 +441,11 @@ export function removeCable(id) {
  */
 export function initCables() {
   state.on('step:applied', (step) => {
-    if (!step || !step.snapshot) return;
-    applyStepSnapshot(step.snapshot.cables);
+    if (!step) return;
+    // Cascade resolution (V0.3.0.151): a cable's arrangement at this step is the
+    // nearest state-defining entry ≤ this step, not the step's own (which is empty
+    // for non-defining steps). Handles jumps + within-state nav uniformly.
+    applyStepSnapshot(resolveCableSnapshotAtStep(step.id));
   });
 }
 

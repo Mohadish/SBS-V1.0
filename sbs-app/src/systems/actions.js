@@ -5635,21 +5635,41 @@ export function toggleSocketPlugged(cableId, nodeId) {
   })() : null;
   const beforeLayout = prevLayout ? readLayout() : null;
 
+  // CASCADE (V0.3.0.151): a plug/unplug action makes the CURRENT step STATE-
+  // DEFINING for this cable. Store the cable's arrangement directly on this step.
+  // Undo restores (or removes, if it didn't exist) the step's prior entry, so
+  // undoing a fresh plug leaves the step non-defining again.
+  const curStepId  = state.get('activeStepId');
+  const _curStep   = () => (state.get('steps') || []).find(s => s.id === curStepId);
+  const beforeEntry = (() => {
+    const e = _curStep()?.snapshot?.cables?.[cableId];
+    return e ? JSON.parse(JSON.stringify(e)) : null;
+  })();
+  const writeEntry = (entry) => {
+    const st = _curStep(); if (!st) return;
+    st.snapshot = st.snapshot || {};
+    st.snapshot.cables = st.snapshot.cables || {};
+    if (entry) st.snapshot.cables[cableId] = entry;
+    else       delete st.snapshot.cables[cableId];
+  };
+
   // Apply plug state (+ optional layout) and store it ON the current step.
-  const apply = (plug, layout) => {
+  // entry === undefined → capture the live arrangement (a forward/redo action);
+  // an explicit entry (incl. null) restores a prior snapshot state (undo).
+  const apply = (plug, layout, entry) => {
     const n = _findCableNode(cableId, nodeId);
     if (!n?.socket) return;
     n.socket.plugged = plug;
     if (layout) writeLayout(layout);
-    state.setState({ cables: [...(state.get('cables') || [])] });
+    writeEntry(entry === undefined ? cables.captureCableArrangement(cableId) : entry);
+    state.setState({ cables: [...(state.get('cables') || [])], steps: [...(state.get('steps') || [])] });
     state.markDirty();
-    steps.scheduleSync();   // step IS the log — store the arrangement here
   };
 
   apply(next, prevLayout);
   undoManager.push(
     next ? 'Plug socket' : 'Unplug socket',
-    () => apply(!next, beforeLayout),
+    () => apply(!next, beforeLayout, beforeEntry),
     () => apply(next, prevLayout),
   );
   setStatus(

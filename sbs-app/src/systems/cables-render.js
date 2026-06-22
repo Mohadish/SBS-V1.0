@@ -150,6 +150,11 @@ export function getCableSocketMeshes() {
 let _cableTransitions = new Map();    // cableId → transition record
 let _cableTransitionDoneCb = null;
 
+// V0.3.0.151 — true while any cable plug/morph animation is mid-flight. The step
+// sync must NOT capture cable arrangements during this window (it would store a
+// transitional pose onto a state-defining step).
+export function hasActiveCableTransitions() { return _cableTransitions.size > 0; }
+
 // Diagnostic (V0.3.0.139) — window.sbsDiag.cableTrace = true logs the plug/unplug
 // travel timeline: BEGIN (from/to pos + facing), per-frame rendered box pose,
 // applyStepSnapshot timing, DONE. Record one plug/unplug cycle and read it back.
