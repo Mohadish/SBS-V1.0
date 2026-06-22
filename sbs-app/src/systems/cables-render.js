@@ -253,6 +253,18 @@ export function beginCableTransitions(toCablesSnap, durationMs, easeFn, onDone) 
       }
     }
 
+    // V0.3.0.141 — one-line node structure dump (per node: index:anchorType@host /
+    // what the TO snapshot holds for it). Reveals whether a stuck node auto-follows
+    // a host vs carries a per-step pose, and whether the TO step's snapshot even has
+    // its data. Only for cables with a plug transition (to limit spam).
+    if (_CT() && hasConn) {
+      _ctrace(`STRUCT cable=${cable.id}: ` + (cable.nodes || []).map((nd, i) => {
+        const o = toNodes?.[nd.id];
+        const has = o === undefined ? 'NOsnap' : (Array.isArray(o) ? 'pos' : (Object.keys(o).join('') || 'empty'));
+        return `${i}:${nd.anchorType}${nd.nodeId ? '@' + String(nd.nodeId).slice(-4) : ''}/${has}`;
+      }).join('  '));
+    }
+
     if (fromVisible === toVisible && fromColorHex === toColorHex && !hasPos && !hasAnc && !hasSQ && !hasConn) continue;
 
     _cableTransitions.set(cable.id, {
