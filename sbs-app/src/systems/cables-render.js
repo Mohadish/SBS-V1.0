@@ -189,6 +189,7 @@ export function beginCableTransitions(toCablesSnap, durationMs, easeFn, onDone) 
     let fromPos = null, toPos = null, hasPos = false;
     let fromAnc = null, toAnc = null, hasAnc = false;
     let fromSQ  = null, toSQ  = null, hasSQ  = false;
+    let sqBack  = null;                     // V0.3.0.145 — fixed back face for facing-morph node sweep
     let conn    = null, hasConn = false;   // V0.3.0.134 — socket plug travel paths
     const near = (a, b, n) => { for (let i = 0; i < n; i++) if (Math.abs(a[i] - b[i]) >= 1e-4) return false; return true; };
     const _resCtx = { makeVec3: (x, y, z) => new THREE.Vector3(x, y, z), object3dById: steps.object3dById };
@@ -213,6 +214,15 @@ export function beginCableTransitions(toCablesSnap, durationMs, easeFn, onDone) 
             && !near(cq, pose.sq, 4)) {
           if (!fromSQ) { fromSQ = new Map(); toSQ = new Map(); }
           fromSQ.set(n.id, cq.slice()); toSQ.set(n.id, pose.sq.slice()); hasSQ = true;
+          // V0.3.0.145 — couple the cable node to the animating facing (mesh socket):
+          // back face (anchorLocal − depth·localForward) is fixed; the node (front)
+          // sweeps. Applied per-frame in the advance via _morphAnchor.
+          if (n.anchorType === 'mesh' && Array.isArray(n.anchorLocal)) {
+            const dd = socketActualSize(cable, n.socket).d * (state.get('cableGlobalScale') ?? 1);
+            const lf = new THREE.Vector3(0, 0, 1).applyQuaternion(new THREE.Quaternion(cq[0], cq[1], cq[2], cq[3]));
+            if (!sqBack) sqBack = new Map();
+            sqBack.set(n.id, { back: [n.anchorLocal[0] - lf.x * dd, n.anchorLocal[1] - lf.y * dd, n.anchorLocal[2] - lf.z * dd], d: dd });
+          }
         }
         // Socket PLUG transition (V0.3.0.134) — the connector TRAVELS to/from its
         // plugged position (reposition→pause→assemble), overriding the jump. FROM =
@@ -283,7 +293,7 @@ export function beginCableTransitions(toCablesSnap, durationMs, easeFn, onDone) 
       toColor:     new THREE.Color(toColorHex),
       fromPos, toPos, hasPos,
       fromAnc, toAnc, hasAnc,
-      fromSQ,  toSQ,  hasSQ,
+      fromSQ,  toSQ,  hasSQ,  sqBack,
       conn,    hasConn,
       startMs, durationMs, easeFn,
     });
@@ -374,11 +384,20 @@ function _advanceCableTransitions(nowMs) {
       }
       if (t.hasSQ && t.fromSQ) {
         let mq = entry._morphSockQuat; if (!mq) { mq = new Map(); entry._morphSockQuat = mq; }
+        let ma = entry._morphAnchor;
         for (const [nodeId, fq] of t.fromSQ) {
           const tq = t.toSQ.get(nodeId);
           const q = new THREE.Quaternion(fq[0], fq[1], fq[2], fq[3])
             .slerp(new THREE.Quaternion(tq[0], tq[1], tq[2], tq[3]), u);
           mq.set(nodeId, [q.x, q.y, q.z, q.w]);
+          // V0.3.0.145 — sweep the cable node's anchorLocal with the facing so its
+          // last segment tracks the rotating socket (matches manual gizmo rotation).
+          const sb = t.sqBack?.get(nodeId);
+          if (sb) {
+            if (!ma) { ma = new Map(); entry._morphAnchor = ma; }
+            const lf = new THREE.Vector3(0, 0, 1).applyQuaternion(q);
+            ma.set(nodeId, [sb.back[0] + lf.x * sb.d, sb.back[1] + lf.y * sb.d, sb.back[2] + lf.z * sb.d]);
+          }
         }
       }
       // V0.3.0.134 — socket plug TRAVEL: reposition (from→approach) → pause →
