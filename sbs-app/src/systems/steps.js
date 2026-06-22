@@ -295,12 +295,11 @@ class StepManager {
       // untouched on apply (so a fresh cable stays visible across all
       // past steps until the user explicitly varies it). See
       // systems/cables.js.
-      // Cables follow the CASCADE model (V0.3.0.151) — NOT auto-captured per step.
-      // A cable's arrangement lives only on its state-defining steps, written by
-      // commitLiveCablesToDefiningSteps (on sync) + the plug action. A fresh
-      // snapshot therefore carries no cables; syncActiveStepNow preserves the
-      // active step's existing entry, and new steps inherit by cascade.
-      cables: undefined,
+      // Cables (V0.3.0.156): node arrangement + plug are per-STATE (cascade — written
+      // to state-defining steps by commitLiveCablesToDefiningSteps). Visible/highlight
+      // are per-STEP and captured here for EVERY step (decoupled from the plug state).
+      // syncActiveStepNow merges this display onto the active step's preserved nodes.
+      cables: cablesSystem.captureCableDisplaySnapshot(),
     };
   }
 
@@ -2170,11 +2169,19 @@ class StepManager {
       }
     }
 
-    // CASCADE cables (V0.3.0.151): preserve the active step's existing entry (it's
-    // only present if this step is state-defining for a cable), then push each live
-    // cable's arrangement onto its state-defining step. Skip while a cable plug/
-    // morph animation is in flight so a transitional pose is never stored.
-    newSnapshot.cables = step.snapshot?.cables;
+    // CABLES (V0.3.0.156): merge the fresh per-step DISPLAY (visible/highlight, from
+    // captureSnapshot) onto the active step's preserved entry (which carries cascade
+    // nodes if this step is state-defining), then push live node arrangements onto
+    // their state-defining steps. Skip the node commit during a cable animation so a
+    // transitional pose is never stored.
+    const _prevCab = step.snapshot?.cables || {};
+    const _disp    = newSnapshot.cables || {};
+    const _merged  = {};
+    for (const cid of new Set([...Object.keys(_prevCab), ...Object.keys(_disp)])) {
+      _merged[cid] = { ...(_prevCab[cid] || {}) };   // keep nodes
+      if (_disp[cid]) { _merged[cid].visible = _disp[cid].visible; _merged[cid].highlight = _disp[cid].highlight; }
+    }
+    newSnapshot.cables = _merged;
     step.snapshot = newSnapshot;
     if (!cablesRender.hasActiveCableTransitions?.()) {
       cablesSystem.commitLiveCablesToDefiningSteps(activeId);

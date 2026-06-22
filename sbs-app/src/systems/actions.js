@@ -4699,14 +4699,55 @@ export function toggleCableVisibility(cableId) {
   const cable = cables.getCable(cableId);
   if (!cable) return;
   const next = !cable.visible;
-  cables.updateCable(cableId, { visible: next });
-  // V0.3.0.155 — cable visibility is GLOBAL (per-cable), NOT per-step / per-state.
-  // updateCable already persists it on state.cables; no scheduleSync (which would
-  // bake it into the active step / plug-state).
-  undoManager.push(next ? 'Show cable' : 'Hide cable',
-    () => cables.updateCable(cableId, { visible: !next }),
-    () => cables.updateCable(cableId, { visible: next  }),
-  );
+  _setCableDisplayAcrossSteps(cableId, 'visible', next, next ? 'Show cable' : 'Hide cable');
+}
+
+// V0.3.0.156 — cable visibility + highlight are PER-STEP (decoupled from the plug
+// state). A toggle writes the field across the TARGET steps: Global Mode → ALL steps;
+// else 2+ steps selected → those; else the active step. One undoable transaction;
+// re-resolves the live cable so the viewport reflects the active step. Mirrors
+// assignPreset's selectedStepIds routing + globalMode.
+function _cableDisplayTargetStepIds() {
+  if (state.get('globalMode')) return new Set((state.get('steps') || []).map(s => s.id));
+  const sel = state.get('selectedStepIds');
+  if (sel instanceof Set && sel.size >= 2) return new Set(sel);
+  const a = state.get('activeStepId');
+  return new Set(a ? [a] : []);
+}
+
+function _setCableDisplayAcrossSteps(cableId, field, val, label) {
+  const targets = _cableDisplayTargetStepIds();
+  if (!targets.size) return;
+  const reResolve = () => cables.applyStepSnapshot(cables.resolveCableSnapshotAtStep(state.get('activeStepId')));
+  const before = [];
+  for (const s of (state.get('steps') || [])) {
+    if (!targets.has(s.id)) continue;
+    const e = s.snapshot?.cables?.[cableId];
+    before.push({ id: s.id, prev: (e && e[field] !== undefined) ? e[field] : undefined });
+  }
+  const write = (v) => {
+    for (const s of (state.get('steps') || [])) {
+      if (!targets.has(s.id)) continue;
+      s.snapshot = s.snapshot || {};
+      s.snapshot.cables = s.snapshot.cables || {};
+      s.snapshot.cables[cableId] = { ...(s.snapshot.cables[cableId] || {}), [field]: v };
+    }
+    state.setState({ steps: [...(state.get('steps') || [])] });
+    reResolve();
+    state.markDirty();
+  };
+  const undo = () => {
+    for (const b of before) {
+      const e = (state.get('steps') || []).find(s => s.id === b.id)?.snapshot?.cables?.[cableId];
+      if (!e) continue;
+      if (b.prev === undefined) delete e[field]; else e[field] = b.prev;
+    }
+    state.setState({ steps: [...(state.get('steps') || [])] });
+    reResolve();
+    state.markDirty();
+  };
+  write(val);
+  undoManager.push(label, undo, () => write(val));
 }
 
 /** Toggle cable highlight. Undoable. Per-step. */
@@ -4714,12 +4755,7 @@ export function toggleCableHighlight(cableId) {
   const cable = cables.getCable(cableId);
   if (!cable) return;
   const next = !cable.highlight;
-  cables.updateCable(cableId, { highlight: next });
-  // V0.3.0.155 — highlight is GLOBAL (per-cable), not per-step / per-state.
-  undoManager.push(next ? 'Highlight cable' : 'Unhighlight cable',
-    () => cables.updateCable(cableId, { highlight: !next }),
-    () => cables.updateCable(cableId, { highlight: next  }),
-  );
+  _setCableDisplayAcrossSteps(cableId, 'highlight', next, next ? 'Highlight cable' : 'Unhighlight cable');
 }
 
 /**

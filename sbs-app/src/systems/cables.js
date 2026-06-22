@@ -134,7 +134,16 @@ export function resolveCableSnapshotAtStep(stepId) {
   for (let i = 0; i <= idx; i++) {
     const c = steps[i]?.snapshot?.cables;
     if (!c) continue;
-    for (const cid of Object.keys(c)) merged[cid] = c[cid];   // nearest (later) wins
+    for (const cid of Object.keys(c)) {
+      const e = c[cid]; if (!e) continue;
+      if (!merged[cid]) merged[cid] = {};
+      // NODES + plug cascade per-STATE: nearest entry that actually carries nodes.
+      if (e.nodes) merged[cid].nodes = e.nodes;
+      // VISIBLE / HIGHLIGHT are per-STEP (carry-forward), independent of the plug
+      // state: nearest entry that carries the field. V0.3.0.156.
+      if (e.visible   !== undefined) merged[cid].visible   = e.visible;
+      if (e.highlight !== undefined) merged[cid].highlight = e.highlight;
+    }
   }
   return merged;
 }
@@ -147,7 +156,7 @@ export function resolveCableSnapshotAtStep(stepId) {
 export function definingStepIndexForCable(cableId, fromIdx) {
   const steps = state.get('steps') || [];
   for (let i = Math.min(fromIdx, steps.length - 1); i >= 0; i--) {
-    if (steps[i]?.snapshot?.cables?.[cableId]) return i;
+    if (steps[i]?.snapshot?.cables?.[cableId]?.nodes) return i;   // node-defining only
   }
   return 0;
 }
@@ -169,8 +178,20 @@ export function commitLiveCablesToDefiningSteps(activeStepId) {
     if (!defStep) continue;
     if (!defStep.snapshot)        defStep.snapshot = {};
     if (!defStep.snapshot.cables) defStep.snapshot.cables = {};
-    defStep.snapshot.cables[cable.id] = captureCableArrangement(cable);
+    // Merge nodes only — never clobber the defining step's own per-step visible/highlight.
+    defStep.snapshot.cables[cable.id] = {
+      ...(defStep.snapshot.cables[cable.id] || {}),
+      nodes: captureCableArrangement(cable).nodes,
+    };
   }
+}
+
+/** Capture per-step cable DISPLAY (visible/highlight) for all cables. Per-step, not
+ *  cascade — written to every synced step so visibility is step-sensitive. V0.3.0.156. */
+export function captureCableDisplaySnapshot() {
+  const out = {};
+  for (const c of listCables()) out[c.id] = { visible: !!c.visible, highlight: !!c.highlight };
+  return out;
 }
 
 /** Per-step plug-config signature for a cable (carry-forward resolved). */
@@ -204,7 +225,7 @@ export function getPlugActionStepIds() {
     const prev = new Map();   // nodeId → previous resolved pl
     for (let i = 0; i < steps.length; i++) {
       const own = steps[i]?.snapshot?.cables?.[cable.id];
-      if (own) carried = own;
+      if (own?.nodes) carried = own;   // only node-bearing entries define the plug state
       for (const sid of socketIds) {
         const pl = plOf(carried, sid);
         const pp = prev.has(sid) ? prev.get(sid) : null;
@@ -268,11 +289,12 @@ export function flattenCablesToCascade() {
   for (const cable of cables) {
     const cid = cable.id;
     const socketIds = (cable.nodes || []).filter(n => n.socket).map(n => n.id);
-    // Resolve each step's entry (own or carried-forward) + plug signature.
+    // Resolve each step's NODE arrangement (own or carried-forward) + plug signature.
+    // Only node-bearing entries define a state; vis-only entries are ignored here.
     let carried = null;
     const perStep = steps.map((s) => {
       const own = s?.snapshot?.cables?.[cid];
-      if (own) carried = own;
+      if (own?.nodes) carried = own;
       return { entry: carried, sig: _cablePlugSig(carried, socketIds) };
     });
     // State spans: a new span starts wherever the signature changes (step 0 always).
@@ -286,13 +308,23 @@ export function flattenCablesToCascade() {
       const b      = boundaries[bi];
       const nextB  = (bi + 1 < boundaries.length) ? boundaries[bi + 1] : steps.length;
       const settled = perStep[nextB - 1]?.entry;
-      if (settled) {
+      if (settled?.nodes) {
         if (!steps[b].snapshot)        steps[b].snapshot = {};
         if (!steps[b].snapshot.cables) steps[b].snapshot.cables = {};
-        steps[b].snapshot.cables[cid] = JSON.parse(JSON.stringify(settled));
+        // Merge the settled NODES onto the boundary; keep that step's own per-step
+        // visible/highlight intact.
+        steps[b].snapshot.cables[cid] = {
+          ...(steps[b].snapshot.cables[cid] || {}),
+          nodes: JSON.parse(JSON.stringify(settled.nodes)),
+        };
       }
       for (let i = b + 1; i < nextB; i++) {
-        if (steps[i]?.snapshot?.cables?.[cid]) { delete steps[i].snapshot.cables[cid]; removed++; }
+        const e = steps[i]?.snapshot?.cables?.[cid];
+        if (e?.nodes) {
+          delete e.nodes;                                   // collapse nodes; keep visible/highlight
+          if (Object.keys(e).length === 0) delete steps[i].snapshot.cables[cid];
+          removed++;
+        }
       }
     }
   }
@@ -323,9 +355,10 @@ export function applyStepSnapshot(snap) {
     const override = snap[cable.id];
     if (!override) return cable;
     const next = { ...cable };
-    // V0.3.0.155 — visible/highlight are GLOBAL (per-cable); NEVER applied from a
-    // step snapshot. The live cable.visible/highlight stay put across navigation.
-    // (Legacy snapshots may still carry these fields — deliberately ignored.)
+    // V0.3.0.156 — visible/highlight are PER-STEP (resolved carry-forward, decoupled
+    // from the plug state). Apply them so navigation reflects each step's visibility.
+    if (override.visible   !== undefined) next.visible   = !!override.visible;
+    if (override.highlight !== undefined) next.highlight = !!override.highlight;
     // Per-step node pose (cable morph). Non-destructive: a snapshot WITHOUT `nodes`
     // (old projects) leaves every pose as-is. Legacy V0.3.0.126 stored a bare
     // position array; V0.3.0.128 stores { pos, anc, sq } — both handled.
