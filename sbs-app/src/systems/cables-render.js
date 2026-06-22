@@ -218,7 +218,11 @@ export function beginCableTransitions(toCablesSnap, durationMs, easeFn, onDone) 
           // back face (anchorLocal − depth·localForward) is fixed; the node (front)
           // sweeps. Applied per-frame in the advance via _morphAnchor.
           if (n.anchorType === 'mesh' && Array.isArray(n.anchorLocal)) {
-            const dd = socketActualSize(cable, n.socket).d * (state.get('cableGlobalScale') ?? 1);
+            // d in MESH-LOCAL units = socketActualSize().d with NO globalScale —
+            // exactly what the manual rotate uses (_socketBackFaceMeshLocal). The
+            // earlier globalScale was wrong: anchorLocal lives in the host's local
+            // frame, not world. V0.3.0.146.
+            const dd = socketActualSize(cable, n.socket).d;
             const lf = new THREE.Vector3(0, 0, 1).applyQuaternion(new THREE.Quaternion(cq[0], cq[1], cq[2], cq[3]));
             if (!sqBack) sqBack = new Map();
             sqBack.set(n.id, { back: [n.anchorLocal[0] - lf.x * dd, n.anchorLocal[1] - lf.y * dd, n.anchorLocal[2] - lf.z * dd], d: dd });

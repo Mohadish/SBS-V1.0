@@ -6247,6 +6247,16 @@ export function applyCableSocketRotateAxisAngle(cableId, nodeId, worldAxis, angl
       back[2] + d * newForward.z,
     ];
   }
+  // V0.3.0.146 listener — see exactly how the MANUAL rotate reassigns the node so
+  // we can confirm the animation now uses the identical formula. Enable with
+  // window.sbsDiag.cableTrace = true, then drag the socket's rotate gizmo.
+  if (typeof window !== 'undefined' && window.sbsDiag?.cableTrace) {
+    // eslint-disable-next-line no-console
+    console.log(`[cableTrace] MANUAL node=${nodeId} `
+      + `localQ=(${newQ.x.toFixed(2)},${newQ.y.toFixed(2)},${newQ.z.toFixed(2)},${newQ.w.toFixed(2)}) `
+      + `anchorLocal=(${node.anchorLocal.map(v => Number(v).toFixed(1)).join(',')}) `
+      + `back=(${back ? back.map(v => Number(v).toFixed(1)).join(',') : '-'}) d=${Number(d).toFixed(1)}`);
+  }
 }
 
 export function commitCableSocketRotate(cableId, nodeId) {
