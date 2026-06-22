@@ -4700,13 +4700,12 @@ export function toggleCableVisibility(cableId) {
   if (!cable) return;
   const next = !cable.visible;
   cables.updateCable(cableId, { visible: next });
-  // Cable visibility is part of the per-step snapshot — scheduleSync
-  // pushes the change into the active step so navigating away and
-  // back preserves it (and the next step keeps its own value).
-  steps.scheduleSync();
+  // V0.3.0.155 — cable visibility is GLOBAL (per-cable), NOT per-step / per-state.
+  // updateCable already persists it on state.cables; no scheduleSync (which would
+  // bake it into the active step / plug-state).
   undoManager.push(next ? 'Show cable' : 'Hide cable',
-    () => { cables.updateCable(cableId, { visible: !next }); steps.scheduleSync(); },
-    () => { cables.updateCable(cableId, { visible: next  }); steps.scheduleSync(); },
+    () => cables.updateCable(cableId, { visible: !next }),
+    () => cables.updateCable(cableId, { visible: next  }),
   );
 }
 
@@ -4716,10 +4715,10 @@ export function toggleCableHighlight(cableId) {
   if (!cable) return;
   const next = !cable.highlight;
   cables.updateCable(cableId, { highlight: next });
-  steps.scheduleSync();
+  // V0.3.0.155 — highlight is GLOBAL (per-cable), not per-step / per-state.
   undoManager.push(next ? 'Highlight cable' : 'Unhighlight cable',
-    () => { cables.updateCable(cableId, { highlight: !next }); steps.scheduleSync(); },
-    () => { cables.updateCable(cableId, { highlight: next  }); steps.scheduleSync(); },
+    () => cables.updateCable(cableId, { highlight: !next }),
+    () => cables.updateCable(cableId, { highlight: next  }),
   );
 }
 

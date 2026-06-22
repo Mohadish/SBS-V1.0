@@ -104,7 +104,9 @@ export function captureCableArrangement(cableOrId) {
     if (n.socket)                                                 pose.pl  = !!n.socket.plugged;
     if (Object.keys(pose).length) nodes[n.id] = pose;
   }
-  return { visible: !!cable.visible, highlight: !!cable.highlight, nodes };
+  // V0.3.0.155 — visible/highlight are GLOBAL (per-cable), NOT part of the per-state
+  // arrangement. Only the node poses (+ plug) are stored on state-defining steps.
+  return { nodes };
 }
 
 export function captureStepSnapshot() {
@@ -321,8 +323,9 @@ export function applyStepSnapshot(snap) {
     const override = snap[cable.id];
     if (!override) return cable;
     const next = { ...cable };
-    if (override.visible   !== undefined) next.visible   = !!override.visible;
-    if (override.highlight !== undefined) next.highlight = !!override.highlight;
+    // V0.3.0.155 — visible/highlight are GLOBAL (per-cable); NEVER applied from a
+    // step snapshot. The live cable.visible/highlight stay put across navigation.
+    // (Legacy snapshots may still carry these fields — deliberately ignored.)
     // Per-step node pose (cable morph). Non-destructive: a snapshot WITHOUT `nodes`
     // (old projects) leaves every pose as-is. Legacy V0.3.0.126 stored a bare
     // position array; V0.3.0.128 stores { pos, anc, sq } — both handled.

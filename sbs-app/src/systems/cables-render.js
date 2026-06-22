@@ -180,9 +180,11 @@ export function beginCableTransitions(toCablesSnap, durationMs, easeFn, onDone) 
   for (const cable of cables) {
     const fromVisible   = cable.visible !== false;
     const toEntry       = toCablesSnap?.[cable.id];
-    const toVisible     = toEntry?.visible   !== undefined ? !!toEntry.visible   : fromVisible;
+    // V0.3.0.155 — cable visibility + highlight are GLOBAL (per-cable), never per-step
+    // and never tied to the plug-state. A step transition must not fade them.
+    const toVisible     = fromVisible;
     const fromHighlight = !!cable.highlight;
-    const toHighlight   = toEntry?.highlight !== undefined ? !!toEntry.highlight : fromHighlight;
+    const toHighlight   = fromHighlight;
     const baseColor     = cable.style?.color ?? '#ffb24a';
     const fromColorHex  = fromHighlight ? highlightColor : baseColor;
     const toColorHex    = toHighlight   ? highlightColor : baseColor;
