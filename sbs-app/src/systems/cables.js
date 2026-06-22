@@ -188,16 +188,27 @@ export function getPlugActionStepIds() {
   const steps  = state.get('steps') || [];
   const cables = state.get('cables') || [];
   const result = new Set();
+  // Match getStepCableActions EXACTLY (icon iff the manager has an action): per
+  // socket, mark a step where the resolved plug state changes to a non-null value
+  // vs the previous step (step 0 = initial state, never an action). V0.3.0.154.
+  const plOf = (entry, nodeId) => {
+    const p = entry?.nodes?.[nodeId];
+    return (p && !Array.isArray(p) && typeof p.pl === 'boolean') ? p.pl : null;
+  };
   for (const cable of cables) {
     const socketIds = (cable.nodes || []).filter(n => n.socket).map(n => n.id);
     if (!socketIds.length) continue;
-    let carried = null, prevSig = null;
+    let carried = null;
+    const prev = new Map();   // nodeId → previous resolved pl
     for (let i = 0; i < steps.length; i++) {
       const own = steps[i]?.snapshot?.cables?.[cable.id];
       if (own) carried = own;
-      const sig = _cablePlugSig(carried, socketIds);
-      if (prevSig !== null && sig !== prevSig) result.add(steps[i].id);
-      prevSig = sig;
+      for (const sid of socketIds) {
+        const pl = plOf(carried, sid);
+        const pp = prev.has(sid) ? prev.get(sid) : null;
+        if (i > 0 && pl !== null && pl !== pp) result.add(steps[i].id);
+        prev.set(sid, pl);
+      }
     }
   }
   return result;

@@ -5006,6 +5006,13 @@ export function selectCablePoint(cableId, nodeId, additive = false) {
   // Redirect to socket selection so the user always interacts with
   // the right anchor. (Sockets don't join the multi-point set — V0.3.0.119.)
   const node = _findCableNode(cableId, nodeId);
+  // V0.3.0.154 — a branch-start point IS its parent point. Redirect selection to
+  // the parent so the gizmo appears and a drag moves the shared point — movable
+  // from the branch OR the parent (recurses if the parent is itself a branch).
+  if (node?.anchorType === 'branch' && node.sourceCableId && node.sourceNodeId) {
+    selectCablePoint(node.sourceCableId, node.sourceNodeId, additive);
+    return;
+  }
   if (node?.socket) {
     selectCableSocket(cableId, nodeId);
     return;

@@ -994,6 +994,32 @@ function _disposeSubgroup(entry) {
 // ─── Per-frame anchor refresh ────────────────────────────────────────────
 
 /**
+ * V0.3.0.154 — resolve a branch-start's PARENT point honouring the parent cable's
+ * live per-frame morph (world-space connect/free overrides, or a mesh anchor swap),
+ * so a branch follows the parent through an animation instead of snapping to the
+ * parent's stored pose at the end. Falls back to the parent's resolved position.
+ */
+function _branchParentMorphedPos(parentCableId, parentNodeId, ctx) {
+  const pEntry = _cableSubgroups.get(parentCableId);
+  if (pEntry?._morphConnect?.has(parentNodeId)) return pEntry._morphConnect.get(parentNodeId).clone();
+  const pCable = listCables().find(c => c.id === parentCableId);
+  const pNode  = pCable?.nodes?.find(x => x.id === parentNodeId);
+  if (!pNode) return null;
+  if (pEntry?._morphPos && pNode.anchorType === 'free' && pEntry._morphPos.has(parentNodeId)) {
+    return pEntry._morphPos.get(parentNodeId).clone();
+  }
+  if (pEntry?._morphAnchor && pNode.anchorType === 'mesh' && pEntry._morphAnchor.has(parentNodeId)) {
+    const saved = pNode.anchorLocal;
+    pNode.anchorLocal = pEntry._morphAnchor.get(parentNodeId);
+    const r = resolveNodeWorldPosition(pNode, ctx);
+    pNode.anchorLocal = saved;
+    return r.pos ? new THREE.Vector3(r.pos[0], r.pos[1], r.pos[2]) : null;
+  }
+  const r = resolveNodeWorldPosition(pNode, ctx);
+  return r.pos ? new THREE.Vector3(r.pos[0], r.pos[1], r.pos[2]) : null;
+}
+
+/**
  * On every tick, walk mesh-anchored nodes (and branch-start nodes
  * that recurse onto them) and update their visuals in place. We
  * skip the heavy geometry rebuild path — just reposition / scale
@@ -1047,6 +1073,13 @@ function _tickAnchorRefresh() {
         const r = resolveNodeWorldPosition(n, ctx);
         n.anchorLocal = saved;
         return r.pos ? new THREE.Vector3(r.pos[0], r.pos[1], r.pos[2]) : null;
+      }
+      // V0.3.0.154 — a branch-start node tracks its PARENT point through the
+      // parent's per-frame MORPH (not its stored pose), so the branch follows the
+      // animation instead of snapping at the end.
+      if (n.anchorType === 'branch' && n.sourceCableId && n.sourceNodeId) {
+        const bp = _branchParentMorphedPos(n.sourceCableId, n.sourceNodeId, ctx);
+        if (bp) return bp;
       }
       const r = resolveNodeWorldPosition(n, ctx);
       return r.pos ? new THREE.Vector3(r.pos[0], r.pos[1], r.pos[2]) : null;
