@@ -2725,6 +2725,10 @@ canvas.addEventListener('contextmenu', e => {
         label: sockNode.socket.plugged ? '⏏ Unplug (this step)' : '🔗 Plug (this step)',
         action: () => actions.toggleSocketPlugged(socketHit.cableId, socketHit.nodeId),
       }] : []),
+      {
+        label: '🧭 Realign to zero',
+        action: () => actions.resetSocketOrientation(socketHit.cableId, socketHit.nodeId),
+      },
       ...(sockIsLast ? [{
         label: '→ Continue routing (end)',
         action: () => actions.startCablePlacement(socketHit.cableId),

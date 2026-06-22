@@ -530,6 +530,24 @@ function _socketWorldQuat(node) {
   const sock = node.socket;
   if (!sock) return null;
 
+  // V0.3.0.130 — PLUGGED socket: orient to the connection TARGET's surface, the
+  // same way default placement aligns to its own host (local +Z → surface normal).
+  // So a plugged socket seats flush + facing the destination, not its old host.
+  const ct = sock.plugged ? sock.connectTarget : null;
+  if (ct?.nodeId) {
+    const tObj = state.get('nodeById')?.get?.(ct.nodeId)?.object3d;
+    if (tObj) {
+      const tQ = new T.Quaternion();
+      tObj.getWorldQuaternion(tQ);
+      if (Array.isArray(ct.normalLocal) && ct.normalLocal.length === 3) {
+        const wn = new T.Vector3(ct.normalLocal[0], ct.normalLocal[1], ct.normalLocal[2])
+          .applyQuaternion(tQ).normalize();
+        return new T.Quaternion().setFromUnitVectors(new T.Vector3(0, 0, 1), wn);
+      }
+      return tQ;
+    }
+  }
+
   // Mesh-anchored: compose meshWorldQuat * (sock.localQuaternion or
   // a normal-derived default).
   if (node.anchorType === 'mesh' && node.nodeId) {

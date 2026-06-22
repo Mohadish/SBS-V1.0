@@ -5599,6 +5599,29 @@ export function toggleSocketPlugged(cableId, nodeId) {
 }
 
 /**
+ * Realign a socket to its surface default — local +Z aligned to the host (or, when
+ * plugged, the target) surface normal — clearing any manual rotation. "Realign to
+ * zero". Per-step (the facing rides the cable snapshot). V0.3.0.130.
+ */
+export function resetSocketOrientation(cableId, nodeId) {
+  const node = _findCableNode(cableId, nodeId);
+  if (!node?.socket) return;
+  const before = Array.isArray(node.socket.localQuaternion) ? node.socket.localQuaternion.slice() : null;
+  const after  = _quatFromNormalLocal(node);   // [x,y,z,w] surface-aligned default
+  const set = (val) => {
+    const n = _findCableNode(cableId, nodeId);
+    if (!n?.socket) return;
+    n.socket.localQuaternion = val ? val.slice() : null;
+    state.setState({ cables: [...(state.get('cables') || [])] });
+    state.markDirty();
+    steps.scheduleSync();
+  };
+  set(after);
+  undoManager.push('Realign socket', () => set(before), () => set(after));
+  setStatus('Socket realigned to surface (0).', 'success', 2000);
+}
+
+/**
  * Apply a socket re-anchor pick. Snaps the back face to the new mesh
  * + face position, resets the socket's orientation to align with the
  * new surface normal, and re-runs the IK shift so the cable point
