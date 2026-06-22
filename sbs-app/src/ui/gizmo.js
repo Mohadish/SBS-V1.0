@@ -488,10 +488,11 @@ class GizmoController {
     this._visible = true;
     this._group.visible = true;
     this._mode = mode;
-    // V0.3.0.115 — cable points default to WORLD axes (was 'local'/surface frame,
-    // which made node positioning feel weird). The LOCAL/WORLD toggle still works
-    // if the user wants the point's surface frame back.
-    this._spaceMode = 'world';
+    // V0.3.0.115 — cable POINTS default to WORLD axes (node positioning felt weird
+    // in the surface frame). V0.3.0.132 — SOCKETS ('all' mode) default to LOCAL so
+    // fine-adjusting the connection point slides along the surface (X/Y) + in/out
+    // (Z). The LOCAL/WORLD toggle (L) still works either way.
+    this._spaceMode = (mode === 'all') ? 'local' : 'world';
     this._applyMode();
     this._tick();
     if (this._spaceLabelEl) this._spaceLabelEl.style.display = '';

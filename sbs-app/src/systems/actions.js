@@ -5621,6 +5621,57 @@ export function resetSocketOrientation(cableId, nodeId) {
   setStatus('Socket realigned to surface (0).', 'success', 2000);
 }
 
+// ─── Fine-adjust the CONNECTION POINT (V0.3.0.132) ───────────────────────────
+// When a socket is plugged it sits on connectTarget; dragging the socket gizmo
+// should nudge that target point on the destination surface (a global property
+// of the socket — same connection across steps), not the host cable point.
+let _socketConnectAdjustBatch = null;
+
+export function beginSocketConnectAdjust(cableId, nodeId) {
+  const node = _findCableNode(cableId, nodeId);
+  const ct = node?.socket?.connectTarget;
+  if (!ct?.nodeId || !Array.isArray(ct.anchorLocal)) return;
+  _socketConnectAdjustBatch = { cableId, nodeId, snapshot: ct.anchorLocal.slice() };
+}
+
+export function applySocketConnectDelta(worldDelta) {
+  if (!_socketConnectAdjustBatch || !worldDelta) return;
+  const T = window.THREE; if (!T) return;
+  const { cableId, nodeId, snapshot } = _socketConnectAdjustBatch;
+  const node = _findCableNode(cableId, nodeId);
+  const ct = node?.socket?.connectTarget;
+  if (!ct) return;
+  const tObj = state.get('nodeById')?.get?.(ct.nodeId)?.object3d;
+  if (!tObj) return;
+  tObj.updateMatrixWorld?.(true);
+  const w = new T.Vector3(snapshot[0], snapshot[1], snapshot[2]);
+  tObj.localToWorld(w);            // snapshot anchor → world
+  w.add(worldDelta);               // shared world delta (cumulative from grab)
+  tObj.worldToLocal(w);            // back to the target's local frame
+  ct.anchorLocal = [w.x, w.y, w.z];
+  state.setState({ cables: [...(state.get('cables') || [])] });
+}
+
+export function commitSocketConnectAdjust() {
+  if (!_socketConnectAdjustBatch) return;
+  const { cableId, nodeId, snapshot } = _socketConnectAdjustBatch;
+  _socketConnectAdjustBatch = null;
+  const node = _findCableNode(cableId, nodeId);
+  const ct = node?.socket?.connectTarget;
+  if (!ct || !Array.isArray(ct.anchorLocal)) return;
+  const after = ct.anchorLocal.slice();
+  if (snapshot[0] === after[0] && snapshot[1] === after[1] && snapshot[2] === after[2]) return;
+  const set = (val) => {
+    const n = _findCableNode(cableId, nodeId);
+    if (!n?.socket?.connectTarget) return;
+    n.socket.connectTarget.anchorLocal = val.slice();
+    state.setState({ cables: [...(state.get('cables') || [])] });
+    state.markDirty();
+  };
+  set(after);
+  undoManager.push('Adjust connection point', () => set(snapshot), () => set(after));
+}
+
 /**
  * Apply a socket re-anchor pick. Snaps the back face to the new mesh
  * + face position, resets the socket's orientation to align with the

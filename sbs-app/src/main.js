@@ -965,6 +965,11 @@ function _buildCableSocketGizmoTarget(cableId, nodeId) {
   const node   = cable?.nodes?.find(n => n.id === nodeId);
   if (!node || !node.socket || node.anchorType !== 'mesh') return null;
   const T = window.THREE;
+  // Live plug check — the socket may be toggled while selected (V0.3.0.132).
+  const _plugged = () => {
+    const n = (state.get('cables') || []).find(c => c.id === cableId)?.nodes?.find(x => x.id === nodeId);
+    return !!(n?.socket?.plugged && n.socket.connectTarget);
+  };
   return {
     cableId, nodeId,
     hasRotate: true,
@@ -1030,13 +1035,20 @@ function _buildCableSocketGizmoTarget(cableId, nodeId) {
       }
       return meshQ;
     },
-    // Translate routes to the cable point (the socket has no separate
-    // position offset — moving the host point moves the socket).
-    beginMove() { actions.beginCablePointMove(cableId, nodeId); },
-    applyCumulativeDelta(worldDelta) {
-      actions.applyCablePointCumulativeDelta(cableId, nodeId, worldDelta);
+    // Translate: a PLUGGED socket nudges its CONNECTION POINT (fine-adjust on the
+    // destination surface); otherwise it moves the host cable point. V0.3.0.132.
+    beginMove() {
+      if (_plugged()) actions.beginSocketConnectAdjust(cableId, nodeId);
+      else            actions.beginCablePointMove(cableId, nodeId);
     },
-    commitMove() { actions.commitCablePointMove(cableId, nodeId); },
+    applyCumulativeDelta(worldDelta) {
+      if (_plugged()) actions.applySocketConnectDelta(worldDelta);
+      else            actions.applyCablePointCumulativeDelta(cableId, nodeId, worldDelta);
+    },
+    commitMove() {
+      if (_plugged()) actions.commitSocketConnectAdjust();
+      else            actions.commitCablePointMove(cableId, nodeId);
+    },
     // Rotate writes node.socket.localQuaternion via the dedicated batch.
     beginRotate() { actions.beginCableSocketRotate(cableId, nodeId); },
     applyRotateAroundAxis(worldAxis, angle) {
