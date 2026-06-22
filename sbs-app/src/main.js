@@ -695,6 +695,33 @@ window.sbsDiag.traceSelected = () => {
   return id;
 };
 window.sbsDiag.traceOff = () => { window.sbsDiag.fadeTraceNode = null; console.log('[trace] off.'); };
+// V0.3.0.142 — one-shot inspector: dump what EVERY step stores for a cable (per
+// node: anc/pos/pl). Reveals contaminated or missing per-step data without
+// recording. Run window.sbsDiag.cableSteps() to list cables, or pass a cable id.
+window.sbsDiag.cableSteps = (cableId) => {
+  const steps = state.get('steps') || [];
+  if (!cableId) {
+    console.log('Cables:', (state.get('cables') || []).map(c => `${c.id} (${c.nodes?.length || 0} nodes)`));
+    console.log('Run window.sbsDiag.cableSteps("<cableId>") to dump per-step data.');
+    return;
+  }
+  const fmt = (a, n) => Array.isArray(a) ? a.slice(0, n).map(v => Number(v).toFixed(0)).join(',') : '?';
+  steps.forEach((s, i) => {
+    const c = s.snapshot?.cables?.[cableId];
+    if (!c) { console.log(`step ${i} "${s.name}": (NO cable entry)`); return; }
+    const nodeStr = c.nodes && Object.keys(c.nodes).length
+      ? Object.entries(c.nodes).map(([nid, pose]) => {
+          const p = Array.isArray(pose) ? { pos: pose } : (pose || {});
+          const bits = [];
+          if (p.anc) bits.push(`anc=${fmt(p.anc, 3)}`);
+          if (p.pos) bits.push(`pos=${fmt(p.pos, 3)}`);
+          if (typeof p.pl === 'boolean') bits.push(`pl=${p.pl}`);
+          return `${String(nid).slice(-5)}{${bits.join(' ')}}`;
+        }).join('  ')
+      : '(no nodes captured)';
+    console.log(`step ${i} "${s.name}": vis=${c.visible} ${nodeStr}`);
+  });
+};
 window.sbsFix = window.sbsFix || {};
 // Manually re-run the orphan-shape self-heal (also runs automatically on load).
 window.sbsFix.pruneShapes = () => {
