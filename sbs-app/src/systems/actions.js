@@ -5614,16 +5614,24 @@ export function toggleSocketPlugged(cableId, nodeId) {
       if (e.pos && Array.isArray(nd.position))    nd.position    = e.pos.slice();
     }
   };
-  // UNPLUG recalls the IMMEDIATELY PREVIOUS step's cable layout (user's choice).
-  const prevLayout = (!next && curIdx > 0) ? (() => {
-    const nodes = allSteps[curIdx - 1]?.snapshot?.cables?.[cableId]?.nodes;
-    if (!nodes) return null;
-    const out = {};
-    for (const [nid, pose] of Object.entries(nodes)) {
-      const p = Array.isArray(pose) ? { pos: pose } : pose;
-      out[nid] = { anc: p.anc || null, pos: p.pos || null };
+  // UNPLUG recalls the cable's PRE-PLUG layout: the most recent EARLIER step (that
+  // has cable data) where THIS socket was UNPLUGGED — NOT just the previous step,
+  // which is normally the plug itself (cableSteps confirmed that left node poses stuck
+  // at the plugged value). Falls back to __base__/step 0 (always state-0). V0.3.0.143.
+  const prevLayout = (!next) ? (() => {
+    for (let i = curIdx - 1; i >= 0; i--) {
+      const nodes = allSteps[i]?.snapshot?.cables?.[cableId]?.nodes;
+      if (!nodes) continue;
+      const sp = nodes[nodeId];
+      if (sp && !Array.isArray(sp) && sp.pl === true) continue;   // socket was plugged here → skip
+      const out = {};
+      for (const [nid, pose] of Object.entries(nodes)) {
+        const p = Array.isArray(pose) ? { pos: pose } : pose;
+        out[nid] = { anc: p.anc || null, pos: p.pos || null };
+      }
+      return out;
     }
-    return out;
+    return null;
   })() : null;
   const beforeLayout = prevLayout ? readLayout() : null;
 
