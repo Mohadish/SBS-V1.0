@@ -269,6 +269,14 @@ function _renderEditor(container) {
         <input type="number" id="cbl-fillet-reach" min="0" max="5000" step="1"
                value="${state.get('cableFilletReach') ?? 40}" style="flex:1;" />
       </label>
+      ${cable.branchSource ? `
+      <label class="colorlab" style="display:flex;align-items:center;gap:8px;margin-top:6px;">
+        <span class="small" style="flex:0 0 72px;">Branch length</span>
+        <input type="number" id="cbl-branch-len" min="0" max="5000" step="1"
+               value="${((cable.nodes || []).find(n => n.anchorType === 'branch')?.branchExit?.length) ?? 50}" style="flex:1;" />
+      </label>
+      <div class="small muted" style="margin-top:4px;line-height:1.4;">Straight emergence out of the parent (perpendicular by default; rotate control next). Shows in Fillet mode.</div>
+      ` : ''}
 
       <div class="card" style="margin-top:10px;padding:0;">
         <div class="title" style="padding:8px 10px;border-bottom:1px solid var(--line);">
@@ -310,6 +318,9 @@ function _renderEditor(container) {
   });
   host.querySelector('#cbl-fillet-reach')?.addEventListener('change', e => {
     actions.setCableFilletReach(e.target.value);
+  });
+  host.querySelector('#cbl-branch-len')?.addEventListener('change', e => {
+    actions.setBranchExitLength(cable.id, e.target.value);
   });
 
   // Per-point + socket row delegation (select / delete / select socket).

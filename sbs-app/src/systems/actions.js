@@ -4801,6 +4801,28 @@ export function setCableFilletReach(value) {
 }
 
 /**
+ * V0.3.0.159 — set the straight EMERGENCE length of a branch: the branch-start
+ * node's exit run (along the branch exit direction) before the cable filets toward
+ * its route. Per-cable structural (the renderer rebuilds). Undoable.
+ */
+export function setBranchExitLength(cableId, length) {
+  const node = (cables.getCable(cableId)?.nodes || []).find(n => n.anchorType === 'branch');
+  if (!node) return;
+  const v = Math.max(0, Number(length) || 0);
+  const prev = node.branchExit?.length ?? 50;
+  if (v === prev) return;
+  const set = (val) => {
+    const n = (cables.getCable(cableId)?.nodes || []).find(x => x.anchorType === 'branch');
+    if (!n) return;
+    n.branchExit = { ...(n.branchExit || {}), length: val };
+    state.setState({ cables: [...(state.get('cables') || [])] });
+    state.markDirty();
+  };
+  set(v);
+  undoManager.push('Branch exit length', () => set(prev), () => set(v));
+}
+
+/**
  * Patch a cable's name / style fields. NOT undoable per-keystroke —
  * caller is expected to debounce / commit on blur if precision is
  * needed (mirrors the style-template slider pattern). Lightweight

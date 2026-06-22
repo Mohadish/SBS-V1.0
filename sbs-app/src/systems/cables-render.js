@@ -843,6 +843,29 @@ function _buildFlexCurve(cable, positions, entry) {
  * socket direction (note 1). The exit axis is morph-aware, so it tracks a plug
  * animation. Returns a CatmullRom over the dense filleted path.
  */
+/**
+ * V0.3.0.159 — the world EXIT direction for a branch-start node. Default = the
+ * parent point's surface normal (the branch emerges perpendicular to the parent
+ * part — a clean line out of it). A stored `branchExit.dir` (world) overrides it
+ * (set by the rotate control, coming next).
+ */
+function _branchExitDir(branchNode) {
+  if (Array.isArray(branchNode.branchExit?.dir) && branchNode.branchExit.dir.length === 3) {
+    return new THREE.Vector3(...branchNode.branchExit.dir).normalize();
+  }
+  const pCable = listCables().find(c => c.id === branchNode.sourceCableId);
+  const pNode  = pCable?.nodes?.find(n => n.id === branchNode.sourceNodeId);
+  if (pNode?.anchorType === 'mesh' && pNode.nodeId && Array.isArray(pNode.normalLocal)) {
+    const obj = state.get('nodeById')?.get?.(pNode.nodeId)?.object3d;
+    if (obj) {
+      const q = new THREE.Quaternion(); obj.getWorldQuaternion(q);
+      return new THREE.Vector3(pNode.normalLocal[0], pNode.normalLocal[1], pNode.normalLocal[2])
+        .applyQuaternion(q).normalize();
+    }
+  }
+  return null;
+}
+
 function _buildFilletCurve(cable, positions, entry) {
   const T = THREE;
   const nodes = cable.nodes || [];
@@ -853,6 +876,16 @@ function _buildFilletCurve(cable, positions, entry) {
   const corners = [];
   for (let k = 0; k < raw.length; k++) {
     const r = raw[k], isFirst = k === 0, isLast = k === raw.length - 1;
+    // Branch-start exit vector (note 2): a straight run along the branch exit
+    // direction so the branch emerges cleanly before filleting toward its route.
+    if (isFirst && r.node?.anchorType === 'branch') {
+      const dir = _branchExitDir(r.node);
+      if (dir) {
+        const H = Math.max((r.node.branchExit?.length ?? 50) * gScale, 1);
+        corners.push(r.p.clone(), r.p.clone().addScaledVector(dir, H));
+        continue;
+      }
+    }
     if ((isFirst || isLast) && r.node?.socket) {
       const ax = _socketAxisMorphed(r.node, entry);
       if (ax) {
@@ -911,7 +944,12 @@ function _makeFlexTube(curve, radius, color, cableId) {
 function _posHash(cable, positions, entry) {
   const mode = cableCurveMode(cable);
   let s = mode.slice(0, 2);   // 'st' | 'fl' | 'fi' — distinct per body type
-  if (mode === 'fillet') s += 'L' + (state.get('cableFilletReach') ?? 40);   // reach reshapes the path
+  if (mode === 'fillet') {
+    s += 'L' + (state.get('cableFilletReach') ?? 40);   // reach reshapes the path
+    for (const n of (cable.nodes || [])) {              // branch exit length/dir reshape it too
+      if (n.anchorType === 'branch' && n.branchExit) s += '|b' + (n.branchExit.length ?? 50) + (n.branchExit.dir || '');
+    }
+  }
   for (const p of positions) s += p ? `|${p.x.toFixed(2)},${p.y.toFixed(2)},${p.z.toFixed(2)}` : '|x';
   // V0.3.0.147 — include the morphing socket facing so a tube rebuilds and re-derives
   // its exit tangent / socket-exit vector even when the endpoint barely moves.
