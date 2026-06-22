@@ -258,18 +258,27 @@ export function beginCableTransitions(toCablesSnap, durationMs, easeFn, onDone) 
               // only matching at the endpoints.
               const fromBack = fromV.clone().addScaledVector(fwdF, -d);
               const toBack   = toV.clone().addScaledVector(fwdT, -d);
-              const seatedBack   = toPlugged ? toBack : fromBack;
-              const approachBack = seatedBack.clone().addScaledVector(fwdT.clone().normalize(), Math.max(d, 1));
+              // V0.3.0.148 — recast in HOST(unplugged)↔SEATED(plugged) terms so plug and
+              // unplug are exact time-reverses. APPROACH = seated offset OUT along the
+              // seated plug normal; the approach→seated gap IS the insertion stroke
+              // (Phase 2), tunable via state.cablePlugInsertScale.
+              const seatedBack = toPlugged ? toBack : fromBack;
+              const hostBack   = toPlugged ? fromBack : toBack;
+              const seatedQ    = toPlugged ? qT : qF;
+              const hostQ      = toPlugged ? qF : qT;
+              const seatFwd    = new THREE.Vector3(0, 0, 1).applyQuaternion(seatedQ).normalize();
+              const insertDist = Math.max(d, 1) * (state.get('cablePlugInsertScale') ?? 1);
+              const approachBack = seatedBack.clone().addScaledVector(seatFwd, insertDist);
               if (!conn) conn = new Map();
               conn.set(n.id, {
-                fromBack, toBack, approachBack, d,
-                fromQ: [qF.x, qF.y, qF.z, qF.w],
-                toQ:   [qT.x, qT.y, qT.z, qT.w],
+                hostBack, seatedBack, approachBack, d, toPlugged,
+                hostQ:   [hostQ.x, hostQ.y, hostQ.z, hostQ.w],
+                seatedQ: [seatedQ.x, seatedQ.y, seatedQ.z, seatedQ.w],
               });
               hasConn = true;
               _ctrace(`BEGIN cable=${cable.id} node=${n.id} ${fromPlugged}->${toPlugged} `
-                + `fromBack=(${_fmtV(fromBack)}) toBack=(${_fmtV(toBack)}) d=${d.toFixed(1)} `
-                + `fromQ=(${_fmtQ(qF)}) toQ=(${_fmtQ(qT)}) dur=${durationMs}`);
+                + `host=(${_fmtV(hostBack)}) seated=(${_fmtV(seatedBack)}) approach=(${_fmtV(approachBack)}) `
+                + `d=${d.toFixed(1)} insert=${insertDist.toFixed(1)} dur=${durationMs}`);
             }
           }
         }
@@ -410,18 +419,30 @@ function _advanceCableTransitions(nowMs) {
       if (t.hasConn && t.conn) {
         let mc = entry._morphConnect; if (!mc) { mc = new Map(); entry._morphConnect = mc; }
         let mq = entry._morphConnQuat; if (!mq) { mq = new Map(); entry._morphConnQuat = mq; }
+        // V0.3.0.148 — two clean phases along the HOST↔SEATED axis:
+        //   Phase 1 (s≤0.6): MOVE + ROTATE together (host→approach + host→seated facing).
+        //   pause (0.6–0.75) → Phase 2 (s>0.75): straight PUSH-IN (approach→seated), facing
+        //   HELD at seated (no rotation). s = host→seated progress; plug runs s=u, unplug
+        //   runs s=1−u → unplug is the exact reverse: push-out, then move+rotate back.
         for (const [nodeId, c] of t.conn) {
-          // Back face travels reposition (→approach, u≤0.6) → pause (≤0.75) → assemble.
-          let back;
-          if (u <= 0.6)       back = c.fromBack.clone().lerp(c.approachBack, u / 0.6);
-          else if (u <= 0.75) back = c.approachBack.clone();
-          else                back = c.approachBack.clone().lerp(c.toBack, (u - 0.75) / 0.25);
-          // Orientation slerps FROM→TO facing.
-          const q = new THREE.Quaternion(c.fromQ[0], c.fromQ[1], c.fromQ[2], c.fromQ[3])
-            .slerp(new THREE.Quaternion(c.toQ[0], c.toQ[1], c.toQ[2], c.toQ[3]), u);
+          const s = c.toPlugged ? u : (1 - u);
+          const seatedQ = new THREE.Quaternion(c.seatedQ[0], c.seatedQ[1], c.seatedQ[2], c.seatedQ[3]);
+          const hostQ   = new THREE.Quaternion(c.hostQ[0], c.hostQ[1], c.hostQ[2], c.hostQ[3]);
+          let back, q;
+          if (s <= 0.6) {
+            const k = s / 0.6;
+            back = c.hostBack.clone().lerp(c.approachBack, k);
+            q    = hostQ.clone().slerp(seatedQ, k);            // rotate WITH the move
+          } else if (s <= 0.75) {
+            back = c.approachBack.clone();
+            q    = seatedQ;                                    // arrived + fully turned; pause
+          } else {
+            back = c.approachBack.clone().lerp(c.seatedBack, (s - 0.75) / 0.25);
+            q    = seatedQ;                                    // straight push-in, no rotation
+          }
           mq.set(nodeId, [q.x, q.y, q.z, q.w]);
-          // V0.3.0.144 — cable node = back + depth·forward(orientation): the node
-          // (and thus the cable's last segment) SWEEPS with the rotating socket.
+          // cable node = back + depth·forward(orientation): the node (and last segment)
+          // sweeps with the socket in Phase 1, then translates straight in Phase 2.
           const fwd = new THREE.Vector3(0, 0, 1).applyQuaternion(q);
           mc.set(nodeId, back.addScaledVector(fwd, c.d));
         }
