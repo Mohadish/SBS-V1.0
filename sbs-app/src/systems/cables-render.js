@@ -212,21 +212,28 @@ export function beginCableTransitions(toCablesSnap, durationMs, easeFn, onDone) 
           const toPlugged   = (typeof pose.pl === 'boolean') ? pose.pl : !!n.socket.plugged;
           const fromPlugged = !!n.socket.plugged;
           if (fromPlugged !== toPlugged) {
-            const fromR = resolveNodeWorldPosition(n, _resCtx);
-            const saved = n.socket.plugged; n.socket.plugged = toPlugged;
-            const toR = resolveNodeWorldPosition(n, _resCtx);
-            const wq = _socketWorldQuat(n);
-            n.socket.plugged = saved;
+            const fromR  = resolveNodeWorldPosition(n, _resCtx);
+            const fromWQ = _socketWorldQuat(n);                 // FROM-state facing
+            // Commit the plug state EARLY (don't restore) so when the travel override
+            // clears at the end the socket is already in its TO state — no end snap
+            // (was: snap to state-0 then state-1). V0.3.0.137.
+            n.socket.plugged = toPlugged;
+            const toR  = resolveNodeWorldPosition(n, _resCtx);
+            const toWQ = _socketWorldQuat(n);                   // TO-state facing
             if (fromR.pos && toR.pos) {
               const fromV = new THREE.Vector3(fromR.pos[0], fromR.pos[1], fromR.pos[2]);
               const toV   = new THREE.Vector3(toR.pos[0],   toR.pos[1],   toR.pos[2]);
               const d = socketActualSize(cable, n.socket).d * (state.get('cableGlobalScale') ?? 1);
-              const normal  = wq ? new THREE.Vector3(0, 0, 1).applyQuaternion(wq).normalize()
-                                 : new THREE.Vector3(0, 1, 0);
+              const normal  = toWQ ? new THREE.Vector3(0, 0, 1).applyQuaternion(toWQ).normalize()
+                                   : new THREE.Vector3(0, 1, 0);
               const seated  = toPlugged ? toV : fromV;                     // the connected end
               const approach = seated.clone().addScaledVector(normal, Math.max(d, 1));   // back off by ~1 depth
               if (!conn) conn = new Map();
-              conn.set(n.id, { from: fromV, to: toV, approach });
+              conn.set(n.id, {
+                from: fromV, to: toV, approach,
+                fromQ: fromWQ ? [fromWQ.x, fromWQ.y, fromWQ.z, fromWQ.w] : null,
+                toQ:   toWQ   ? [toWQ.x,   toWQ.y,   toWQ.z,   toWQ.w]   : null,   // animate the rotation too
+              });
               hasConn = true;
             }
           }
@@ -287,7 +294,7 @@ export function snapCableTransitionsToFinal() {
     for (const m of entry.points)   { m.material.opacity = t.toOpacity; m.material.color.copy(t.toColor); }
     for (const m of entry.segments) { m.material.opacity = t.toOpacity; m.material.color.copy(t.toColor); }
     for (const m of (entry.sockets || [])) { m.material.opacity = t.toOpacity; }
-    entry._morphPos = null; entry._morphAnchor = null; entry._morphSockQuat = null; entry._morphConnect = null;   // drop morph; pose is now TO
+    entry._morphPos = null; entry._morphAnchor = null; entry._morphSockQuat = null; entry._morphConnect = null; entry._morphConnQuat = null;   // drop morph; pose is now TO
   }
   _cableTransitions.clear();
   if (_cableTransitionDoneCb) {
@@ -345,12 +352,20 @@ function _advanceCableTransitions(nowMs) {
       // honours FIRST (overriding the plugged jump). Linear segments, eased overall.
       if (t.hasConn && t.conn) {
         let mc = entry._morphConnect; if (!mc) { mc = new Map(); entry._morphConnect = mc; }
+        let mq = entry._morphConnQuat;
         for (const [nodeId, c] of t.conn) {
           let p;
           if (u <= 0.6)      p = c.from.clone().lerp(c.approach, u / 0.6);
           else if (u <= 0.75) p = c.approach.clone();                       // pause at approach
           else                p = c.approach.clone().lerp(c.to, (u - 0.75) / 0.25);
           mc.set(nodeId, p);
+          // Rotate the connector as it travels (FROM-facing → TO-facing). V0.3.0.137.
+          if (c.fromQ && c.toQ) {
+            if (!mq) { mq = new Map(); entry._morphConnQuat = mq; }
+            const q = new THREE.Quaternion(c.fromQ[0], c.fromQ[1], c.fromQ[2], c.fromQ[3])
+              .slerp(new THREE.Quaternion(c.toQ[0], c.toQ[1], c.toQ[2], c.toQ[3]), u);
+            mq.set(nodeId, [q.x, q.y, q.z, q.w]);
+          }
         }
       }
     }
@@ -359,7 +374,7 @@ function _advanceCableTransitions(nowMs) {
   if (allDone) {
     for (const [cableId] of _cableTransitions) {
       const entry = _cableSubgroups.get(cableId);
-      if (entry) { entry._morphPos = null; entry._morphAnchor = null; entry._morphSockQuat = null; entry._morphConnect = null; }   // done → tick resolves live (now = TO)
+      if (entry) { entry._morphPos = null; entry._morphAnchor = null; entry._morphSockQuat = null; entry._morphConnect = null; entry._morphConnQuat = null; }   // done → tick resolves live (now = TO)
     }
     _cableTransitions.clear();
     if (_cableTransitionDoneCb) {
@@ -921,20 +936,28 @@ function _tickAnchorRefresh() {
     // indexed against entry.points (only nodes with a socket exist).
     if (entry.sockets && entry.sockets.length) {
       const T = window.THREE;
-      const morphSQ = entry._morphSockQuat;   // V0.3.0.128 — lerped socket facing
+      const morphSQ   = entry._morphSockQuat;   // V0.3.0.128 — lerped socket facing
+      const morphCQ   = entry._morphConnQuat;   // V0.3.0.137 — connect-travel facing (world quat)
       for (const box of entry.sockets) {
         const idx = (cable.nodes || []).findIndex(n => n.id === box.userData.nodeId);
         if (idx < 0) { box.visible = false; continue; }
         const node = cable.nodes[idx];
         const p    = positions[idx];
         if (!p || !node?.socket) { box.visible = false; continue; }
-        // Temporarily swap the socket's facing to the morphed value, resolve its
-        // WORLD quat through the host's live matrix, then restore.
-        const sqKey = node.anchorType === 'mesh' ? 'localQuaternion' : 'quaternion';
-        let savedSQ; const hasMorphSQ = morphSQ && morphSQ.has(node.id);
-        if (hasMorphSQ) { savedSQ = node.socket[sqKey]; node.socket[sqKey] = morphSQ.get(node.id); }
-        const wq = _socketWorldQuat(node);
-        if (hasMorphSQ) node.socket[sqKey] = savedSQ;
+        let wq;
+        if (morphCQ && morphCQ.has(node.id)) {
+          // Connect travel — use the slerped WORLD facing directly (rotates as it goes).
+          const q = morphCQ.get(node.id);
+          wq = new T.Quaternion(q[0], q[1], q[2], q[3]);
+        } else {
+          // Temporarily swap the socket's facing to the morphed value, resolve its
+          // WORLD quat through the host's live matrix, then restore.
+          const sqKey = node.anchorType === 'mesh' ? 'localQuaternion' : 'quaternion';
+          let savedSQ; const hasMorphSQ = morphSQ && morphSQ.has(node.id);
+          if (hasMorphSQ) { savedSQ = node.socket[sqKey]; node.socket[sqKey] = morphSQ.get(node.id); }
+          wq = _socketWorldQuat(node);
+          if (hasMorphSQ) node.socket[sqKey] = savedSQ;
+        }
         if (!wq) { box.visible = false; continue; }
         const actual = socketActualSize(cable, node.socket);
         const w = actual.w * globalScale;
