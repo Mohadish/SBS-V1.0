@@ -230,23 +230,32 @@ export function beginCableTransitions(toCablesSnap, durationMs, easeFn, onDone) 
             const toR  = resolveNodeWorldPosition(n, _resCtx);
             const toWQ = _socketWorldQuat(n);                   // TO-state facing
             if (fromR.pos && toR.pos) {
-              const fromV = new THREE.Vector3(fromR.pos[0], fromR.pos[1], fromR.pos[2]);
+              const fromV = new THREE.Vector3(fromR.pos[0], fromR.pos[1], fromR.pos[2]);   // cable node (front face)
               const toV   = new THREE.Vector3(toR.pos[0],   toR.pos[1],   toR.pos[2]);
               const d = socketActualSize(cable, n.socket).d * (state.get('cableGlobalScale') ?? 1);
-              const normal  = toWQ ? new THREE.Vector3(0, 0, 1).applyQuaternion(toWQ).normalize()
-                                   : new THREE.Vector3(0, 1, 0);
-              const seated  = toPlugged ? toV : fromV;                     // the connected end
-              const approach = seated.clone().addScaledVector(normal, Math.max(d, 1));   // back off by ~1 depth
+              const qF = fromWQ || new THREE.Quaternion();
+              const qT = toWQ   || new THREE.Quaternion();
+              const fwdF = new THREE.Vector3(0, 0, 1).applyQuaternion(qF);
+              const fwdT = new THREE.Vector3(0, 0, 1).applyQuaternion(qT);
+              // V0.3.0.144 — animate the BACK FACE (cable node minus depth·forward) +
+              // the orientation; the cable node is DERIVED each frame as
+              // back + depth·forward(orientation) so the cable's last segment SWEEPS
+              // with the rotating socket (matches manual gizmo rotation) instead of
+              // only matching at the endpoints.
+              const fromBack = fromV.clone().addScaledVector(fwdF, -d);
+              const toBack   = toV.clone().addScaledVector(fwdT, -d);
+              const seatedBack   = toPlugged ? toBack : fromBack;
+              const approachBack = seatedBack.clone().addScaledVector(fwdT.clone().normalize(), Math.max(d, 1));
               if (!conn) conn = new Map();
               conn.set(n.id, {
-                from: fromV, to: toV, approach,
-                fromQ: fromWQ ? [fromWQ.x, fromWQ.y, fromWQ.z, fromWQ.w] : null,
-                toQ:   toWQ   ? [toWQ.x,   toWQ.y,   toWQ.z,   toWQ.w]   : null,   // animate the rotation too
+                fromBack, toBack, approachBack, d,
+                fromQ: [qF.x, qF.y, qF.z, qF.w],
+                toQ:   [qT.x, qT.y, qT.z, qT.w],
               });
               hasConn = true;
               _ctrace(`BEGIN cable=${cable.id} node=${n.id} ${fromPlugged}->${toPlugged} `
-                + `from=(${_fmtV(fromV)}) to=(${_fmtV(toV)}) approach=(${_fmtV(approach)}) `
-                + `fromQ=(${fromWQ ? _fmtQ(fromWQ) : '-'}) toQ=(${toWQ ? _fmtQ(toWQ) : '-'}) dur=${durationMs}`);
+                + `fromBack=(${_fmtV(fromBack)}) toBack=(${_fmtV(toBack)}) d=${d.toFixed(1)} `
+                + `fromQ=(${_fmtQ(qF)}) toQ=(${_fmtQ(qT)}) dur=${durationMs}`);
             }
           }
         }
@@ -377,20 +386,21 @@ function _advanceCableTransitions(nowMs) {
       // honours FIRST (overriding the plugged jump). Linear segments, eased overall.
       if (t.hasConn && t.conn) {
         let mc = entry._morphConnect; if (!mc) { mc = new Map(); entry._morphConnect = mc; }
-        let mq = entry._morphConnQuat;
+        let mq = entry._morphConnQuat; if (!mq) { mq = new Map(); entry._morphConnQuat = mq; }
         for (const [nodeId, c] of t.conn) {
-          let p;
-          if (u <= 0.6)      p = c.from.clone().lerp(c.approach, u / 0.6);
-          else if (u <= 0.75) p = c.approach.clone();                       // pause at approach
-          else                p = c.approach.clone().lerp(c.to, (u - 0.75) / 0.25);
-          mc.set(nodeId, p);
-          // Rotate the connector as it travels (FROM-facing → TO-facing). V0.3.0.137.
-          if (c.fromQ && c.toQ) {
-            if (!mq) { mq = new Map(); entry._morphConnQuat = mq; }
-            const q = new THREE.Quaternion(c.fromQ[0], c.fromQ[1], c.fromQ[2], c.fromQ[3])
-              .slerp(new THREE.Quaternion(c.toQ[0], c.toQ[1], c.toQ[2], c.toQ[3]), u);
-            mq.set(nodeId, [q.x, q.y, q.z, q.w]);
-          }
+          // Back face travels reposition (→approach, u≤0.6) → pause (≤0.75) → assemble.
+          let back;
+          if (u <= 0.6)       back = c.fromBack.clone().lerp(c.approachBack, u / 0.6);
+          else if (u <= 0.75) back = c.approachBack.clone();
+          else                back = c.approachBack.clone().lerp(c.toBack, (u - 0.75) / 0.25);
+          // Orientation slerps FROM→TO facing.
+          const q = new THREE.Quaternion(c.fromQ[0], c.fromQ[1], c.fromQ[2], c.fromQ[3])
+            .slerp(new THREE.Quaternion(c.toQ[0], c.toQ[1], c.toQ[2], c.toQ[3]), u);
+          mq.set(nodeId, [q.x, q.y, q.z, q.w]);
+          // V0.3.0.144 — cable node = back + depth·forward(orientation): the node
+          // (and thus the cable's last segment) SWEEPS with the rotating socket.
+          const fwd = new THREE.Vector3(0, 0, 1).applyQuaternion(q);
+          mc.set(nodeId, back.addScaledVector(fwd, c.d));
         }
       }
     }
