@@ -1218,6 +1218,7 @@ state.on('change:cableSocketReanchorPickingId', target => {
 // V0.3.0.129: crosshair for socket connection-point pick mode.
 state.on('change:cableSocketConnectPickingId', target => {
   canvas.style.cursor = target ? 'crosshair' : '';
+  if (!target) _hideConnectArrow();   // V0.3.0.169 — drop the surface arrow when the pick ends/cancels
 });
 // Shape editor — same crosshair signal during draw mode (pickPlane or addVertices).
 state.on('change:shapeDrawing', dr => {
@@ -1723,6 +1724,8 @@ canvas.addEventListener('pointerdown', e => {
   if (sockConnect) {
     e.preventDefault();
     e.stopPropagation();
+    _gizmoConsumed = true;   // V0.3.0.169 — suppress the follow-up click so no ray-select popup fires
+    _hideConnectArrow();
     const hit = sceneCore.pick(e.clientX, e.clientY);
     if (hit) actions.applyCableSocketConnectTarget(hit);
     else     actions.cancelCableSocketConnectPick();
@@ -1775,6 +1778,41 @@ canvas.addEventListener('pointerdown', e => {
 }, { capture: false });
 
 // ── Pointer move: gizmo drag or grow marquee ─────────────────────────────────
+
+// V0.3.0.169 — surface-alignment arrow shown while picking a socket's CONNECTION
+// POINT: a little arrow on the hovered face pointing along its outward normal, so
+// you can SEE the surface the socket will align to before clicking. Renders on top.
+let _connectArrow = null;
+function _ensureConnectArrow() {
+  const T = window.THREE;
+  if (_connectArrow || !T) return _connectArrow;
+  _connectArrow = new T.ArrowHelper(new T.Vector3(0, 0, 1), new T.Vector3(), 1, 0x22d3ee, 0.4, 0.28);
+  _connectArrow.visible = false;
+  for (const m of [_connectArrow.line, _connectArrow.cone]) {
+    if (!m) continue;
+    m.renderOrder = 9999;
+    if (m.material) { m.material.depthTest = false; m.material.transparent = true; }
+  }
+  sceneCore.scene.add(_connectArrow);
+  return _connectArrow;
+}
+function _hideConnectArrow() { if (_connectArrow) { _connectArrow.visible = false; sceneCore.requestRender?.(); } }
+function _updateConnectArrow(clientX, clientY) {
+  const T = window.THREE;
+  const arrow = _ensureConnectArrow();
+  if (!arrow) return;
+  const hit = sceneCore.pick(clientX, clientY);
+  if (!hit || !hit.point) { arrow.visible = false; sceneCore.requestRender?.(); return; }
+  const n = new T.Vector3(0, 0, 1);
+  if (hit.face && hit.object) n.copy(hit.face.normal).transformDirection(hit.object.matrixWorld).normalize();
+  arrow.position.copy(hit.point);
+  arrow.setDirection(n);
+  const dist = sceneCore.camera.position.distanceTo(hit.point);
+  const len  = Math.max(dist * 0.09, 1);
+  arrow.setLength(len, len * 0.32, len * 0.2);
+  arrow.visible = true;
+  sceneCore.requestRender?.();
+}
 
 canvas.addEventListener('pointermove', e => {
   // Shape editor — keep the rubber-band line + snap-close hover live as
@@ -1830,6 +1868,12 @@ canvas.addEventListener('pointermove', e => {
     if (state.get('cableInsertPickingTarget')) {
       const hit = sceneCore.pick(e.clientX, e.clientY);
       setInsertHoverPosition(hit ? hit.point : null);
+      return;
+    }
+    // V0.3.0.169: socket connection-point pick — surface-aligned arrow on the
+    // hovered face so the user sees what the socket will snap to before clicking.
+    if (state.get('cableSocketConnectPickingId')) {
+      _updateConnectArrow(e.clientX, e.clientY);
       return;
     }
     // No button — update hover
@@ -2006,6 +2050,15 @@ window.addEventListener('pointerup', e => {
 // raycast against `getCablePointMeshes()` and return the closest hit's
 // userData. Caller checks for null.
 
+// V0.3.0.169 — true effective visibility: a leaf mesh reads visible=true even when
+// its CABLE GROUP is hidden (cables-render sets entry.group.visible, not the leaves),
+// so the old `h.object.visible` filter let HIDDEN cables stay clickable (clicking
+// empty space would grab one + pop open the Cables tab). Walk the parent chain.
+function _visibleInWorld(obj) {
+  for (let o = obj; o; o = o.parent) if (o.visible === false) return false;
+  return true;
+}
+
 function _pickCablePoint(clientX, clientY) {
   if (!window.THREE) return null;
   const meshes = getCablePointMeshes();
@@ -2018,7 +2071,7 @@ function _pickCablePoint(clientX, clientY) {
   );
   const ray = new T.Raycaster();
   ray.setFromCamera(ndc, sceneCore.camera);
-  const hits = ray.intersectObjects(meshes, false).filter(h => h.object.visible);
+  const hits = ray.intersectObjects(meshes, false).filter(h => _visibleInWorld(h.object));
   if (!hits.length) return null;
   return {
     cableId: hits[0].object.userData.cableId,
@@ -2043,7 +2096,7 @@ function _pickCableSegment(clientX, clientY) {
   );
   const ray = new T.Raycaster();
   ray.setFromCamera(ndc, sceneCore.camera);
-  const hits = ray.intersectObjects(meshes, false).filter(h => h.object.visible);
+  const hits = ray.intersectObjects(meshes, false).filter(h => _visibleInWorld(h.object));
   if (!hits.length) return null;
   return {
     cableId:    hits[0].object.userData.cableId,
@@ -2068,7 +2121,7 @@ function _pickCableSocket(clientX, clientY) {
   );
   const ray = new T.Raycaster();
   ray.setFromCamera(ndc, sceneCore.camera);
-  const hits = ray.intersectObjects(meshes, false).filter(h => h.object.visible);
+  const hits = ray.intersectObjects(meshes, false).filter(h => _visibleInWorld(h.object));
   if (!hits.length) return null;
   return {
     cableId: hits[0].object.userData.cableId,
