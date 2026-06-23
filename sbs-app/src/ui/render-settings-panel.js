@@ -2,13 +2,14 @@
  * Render settings panel (V0.3.0.18) — AO + SSR contact-reflection sliders.
  *
  * A single reusable builder mounted in TWO places (Files tab → under Background,
- * and Settings modal → Scene tab), both reading/writing the SAME global
- * userSettings.render store — so they stay linked. Live-applies to the viewport
- * on drag (sceneCore.applyRenderSettings) and persists on release
- * (userSettings.patch). Machine-scope for now; per-project override comes later.
+ * and Settings modal → Scene tab), both reading/writing the SAME PER-PROJECT
+ * state.render store — so they stay linked. Live-applies to the viewport on drag
+ * (sceneCore.applyRenderSettings) and persists on release (state.setState + markDirty,
+ * so it saves WITH the project). V0.3.0.162 — was machine-global; now per-project,
+ * seeded from userSettings.render (the new-project default).
  */
 import { sceneCore } from '../core/scene.js';
-import * as userSettings from '../core/user-settings.js';
+import state from '../core/state.js';
 
 const DEFAULTS = {
   ao:  { enabled: true,  intensity: 4.0, radius: 24.0, falloff: 1.0 },
@@ -36,7 +37,7 @@ function _merge(base, over) {
 
 /** Build and return the render-settings panel element (caller appends it). */
 export function buildRenderSettingsPanel() {
-  const working = _merge(DEFAULTS, userSettings.get().render);
+  const working = _merge(DEFAULTS, state.get('render'));   // V0.3.0.162 — per-project
 
   const row = (group, s) => `
     <label class="small" style="display:block;margin-top:8px;">
@@ -70,7 +71,7 @@ export function buildRenderSettingsPanel() {
 
   const snapshot  = () => ({ ao: { ...working.ao }, ssr: { ...working.ssr } });
   const applyLive = () => sceneCore.applyRenderSettings(snapshot());
-  const persist   = () => userSettings.patch({ render: snapshot() });
+  const persist   = () => { state.setState({ render: snapshot() }); state.markDirty(); };   // V0.3.0.162 — saves with the project
 
   wrap.querySelectorAll('input[data-toggle]').forEach(cb => {
     cb.addEventListener('change', () => {

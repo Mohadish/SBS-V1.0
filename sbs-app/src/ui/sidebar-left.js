@@ -522,7 +522,7 @@ function _renderFilesTab() {
   el.querySelector('#btn-toggle-grid')?.addEventListener('click',  _onToggleGrid);
   el.querySelector('#btn-toggle-theme')?.addEventListener('click', _onToggleTheme);
 
-  // AO + SSR sliders (shared panel; linked to global userSettings.render).
+  // AO + SSR sliders (shared panel; per-project state.render).
   el.querySelector('#render-settings-mount')?.appendChild(buildRenderSettingsPanel());
 
   // ── Background controls (undoable; change:* listener repaints on restore) ─

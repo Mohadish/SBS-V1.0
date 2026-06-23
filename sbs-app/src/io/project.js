@@ -247,6 +247,7 @@ export function serialize() {
   cfg.backgroundGradient   = JSON.parse(JSON.stringify(
     state.get('backgroundGradient') ?? { enabled: false, color1: '#0f172a', color2: '#1e293b', angleDeg: 180 }
   ));
+  cfg.render               = JSON.parse(JSON.stringify(state.get('render') ?? {}));   // V0.3.0.162 — per-project AO + SSR
   cfg.solidOverride        = state.get('solidOverride')        ?? false;
   cfg.gridVisible          = state.get('gridVisible')          ?? false;
   cfg.cameraAnimDurationMs = state.get('cameraAnimDurationMs') ?? 1500;
@@ -642,6 +643,15 @@ export function applyProjectToState(project) {
       color2:   s.backgroundGradient?.color2   ?? '#1e293b',
       angleDeg: Number.isFinite(s.backgroundGradient?.angleDeg) ? s.backgroundGradient.angleDeg : 180,
     },
+    // V0.3.0.162 — per-project AO + SSR. Merge the saved render over the current
+    // (seeded-from-user-default) values so a legacy project with no render block
+    // keeps the user default, and a partial block fills its gaps. change:render
+    // (main.js) re-applies it to the viewport.
+    render: (() => {
+      const cur = state.get('render') || {};
+      const r   = s.render || {};
+      return { ao: { ...cur.ao, ...r.ao }, ssr: { ...cur.ssr, ...r.ssr } };
+    })(),
     solidOverride:        s.solidOverride           ?? false,
     gridVisible:          s.gridVisible             ?? false,
     cameraAnimDurationMs: s.cameraAnimDurationMs    ?? 1500,

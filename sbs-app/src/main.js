@@ -318,8 +318,12 @@ initUserSettings()
     if (typeof sc.cameraZoomScale === 'number') {
       sceneCore.setUserZoomScale(sc.cameraZoomScale);
     }
-    // V0.3.0.18 — apply saved AO + SSR render settings to the live viewport.
-    if (cur.render) sceneCore.applyRenderSettings(cur.render);
+    // V0.3.0.162 — AO + SSR are now PER-PROJECT (state.render). Apply on any change
+    // (project load / render panel). A brand-new project (none loaded yet) seeds its
+    // copy from the user default; a loaded project already set state.render itself.
+    state.on('change:render', rs => { if (rs) sceneCore.applyRenderSettings(rs); });
+    if (!state.get('_projectLoaded') && cur.render) state.setState({ render: cur.render });
+    sceneCore.applyRenderSettings(state.get('render'));
     if (typeof sc.shapeFaceAngleThreshold === 'number') {
       state.setState({ shapeFaceAngleThreshold: sc.shapeFaceAngleThreshold });
     }

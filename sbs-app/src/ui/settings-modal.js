@@ -479,7 +479,7 @@ function _renderSceneTab(body) {
     </div>
   `;
 
-  // AO + SSR sliders (shared panel; linked to global userSettings.render).
+  // AO + SSR sliders (shared panel; per-project state.render).
   body.appendChild(buildRenderSettingsPanel());
 
   // ── Zoom slider ─────────────────────────────────────────────────────────

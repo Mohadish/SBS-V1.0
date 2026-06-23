@@ -442,6 +442,16 @@ function createInitialState() {
       color2:   '#1e293b',
       angleDeg: 180,
     },
+
+    // ── Viewport render settings (AO + SSR) — PER-PROJECT (V0.3.0.162). Seeded
+    // from userSettings.render (the new-project default) on boot, saved inside the
+    // project (project.settings.render), and edited by the render panel. Was
+    // previously user-global; now each project holds its own.
+    render: {
+      ao:  { enabled: true,  intensity: 4.0, radius: 24.0, falloff: 1.0 },
+      ssr: { enabled: false, intensity: 1.0, roughness: 0.3, maxDistance: 8.0, thickness: 1.0, steps: 24 },
+    },
+
     solidOverride:   false,
 
     // ── Animation durations
