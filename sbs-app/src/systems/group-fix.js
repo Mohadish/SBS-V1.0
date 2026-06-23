@@ -30,6 +30,7 @@ import { captureTransformSnapshot } from '../core/transforms.js';
 import { moveNode, findParent, buildNodeMap, isDescendantOf, serializeModelTree } from '../core/nodes.js';
 import { chooseFromButtons } from '../ui/prompt.js';
 import { setStatus }         from '../ui/status.js';
+import { isolateSelection, enterPivotEdit, commitPivotEdit } from './actions.js';   // V0.3.0.172 pivot-in-flow
 
 // ── Immutable spec-tree helpers (mirror follow.js / injectHardwareInstanceIntoAllSteps) ──
 function _containsId(spec, id) {
@@ -105,8 +106,69 @@ function _xfFromWorld(w) {
   };
 }
 
+// ── Pivot-in-flow (V0.3.0.172) ──────────────────────────────────────────────
+// After wrapping, optionally: isolate the group + enter pivot edit so the user
+// places the rotation centre seeing only the group; when they UN-ISOLATE, lock
+// that pivot UNIFORMLY across all the group's scoped steps (so a later Global-Mode
+// rotation pivots there in every step). Un-isolate is the "done" signal.
+let _pendingGroupPivot = null;   // { folderId, scopedIds } | null
+
+state.on('isolate:changed', (e) => {
+  if (e?.active) return;             // engaging — wait for the un-isolate
+  if (!_pendingGroupPivot) return;   // not our flow
+  const { folderId, scopedIds } = _pendingGroupPivot;
+  _pendingGroupPivot = null;
+  _finalizeGroupPivot(folderId, scopedIds);
+});
+
+function _startGroupPivotFlow(folderId, scopedIds) {
+  _pendingGroupPivot = { folderId, scopedIds };
+  state.setSelection?.(folderId, new Set([folderId]));   // isolateSelection isolates the multi-set
+  isolateSelection();
+  enterPivotEdit(folderId);
+  setStatus('Group isolated — drag the orange pivot to the rotation centre, then click Un-isolate to lock it across all the group’s steps.', 'info', 9000);
+}
+
+function _finalizeGroupPivot(folderId, scopedIds) {
+  if (state.get('pivotEditNodeId') === folderId) commitPivotEdit();   // exit RED mode (no extra undo)
+  const F = state.get('nodeById')?.get?.(folderId);
+  if (!F) return;
+  const after = {
+    pivotLocalOffset:     [...(F.pivotLocalOffset     || [0, 0, 0])],
+    pivotLocalQuaternion: [...(F.pivotLocalQuaternion || [0, 0, 0, 1])],
+    pivotEnabled:         F.pivotEnabled !== false,
+  };
+  const scopedSet = new Set(scopedIds || []);
+  // Snapshot each scoped step's CURRENT folder pivot (for undo).
+  const before = new Map();
+  for (const step of (state.get('steps') || [])) {
+    if (!scopedSet.has(step.id)) continue;
+    const t = step.snapshot?.transforms?.[folderId];
+    if (!t) continue;
+    before.set(step.id, {
+      pivotLocalOffset:     [...(t.pivotLocalOffset     || [0, 0, 0])],
+      pivotLocalQuaternion: [...(t.pivotLocalQuaternion || [0, 0, 0, 1])],
+      pivotEnabled:         t.pivotEnabled !== false,
+    });
+  }
+  if (!before.size) { setStatus('Pivot set.', 'info', 1800); return; }
+  const apply = (which) => {
+    const updated = (state.get('steps') || []).map(step => {
+      if (!before.has(step.id)) return step;
+      const t  = step.snapshot.transforms[folderId];
+      const np = which === 'after' ? after : before.get(step.id);
+      return { ...step, snapshot: { ...step.snapshot, transforms: { ...step.snapshot.transforms, [folderId]: { ...t, ...np } } } };
+    });
+    state.setState({ steps: updated });
+    state.markDirty?.();
+  };
+  apply('after');
+  undoManager.push('Set group pivot across steps', () => apply('before'), () => apply('after'));
+  setStatus('Pivot locked across the group. Press Space (Global Mode) + rotate the folder — it pivots here in every step.', 'success', 5500);
+}
+
 /**
- * Core action. Returns { ok, folderId, strategy, scopedCount } or { error }.
+ * Core action. Returns { ok, folderId, strategy, scopedCount, scopedIds } or { error }.
  */
 export function groupObjectsForGlobalEdit(nodeIds, scope = 'all') {
   const root = state.get('treeData');
@@ -224,7 +286,7 @@ export function groupObjectsForGlobalEdit(nodeIds, scope = 'all') {
     },
     () => groupObjectsForGlobalEdit(nodeIds, scope),
   );
-  return { ok: true, folderId: F.id, strategy, scopedCount: scopedIds.length };
+  return { ok: true, folderId: F.id, strategy, scopedCount: scopedIds.length, scopedIds };
 }
 
 /**
@@ -263,7 +325,21 @@ export async function promptGroupForGlobalEdit(nodeIds) {
     setStatus(`Couldn't group: ${res.error}.`, 'warn', 3000);
     return;
   }
-  if (res?.ok) {
-    setStatus(`Grouped ${ids.length} object(s) across ${res.scopedCount} step(s). Now turn on Global Mode (Space) and move/rotate the folder — it ripples to every scoped step.`, 'success', 5000);
+  if (!res?.ok) return;
+
+  // Offer to place the rotation pivot now (isolate → drag → un-isolate locks it
+  // across the group's steps). Skip → user sets it later / rotates about origin.
+  const piv = await chooseFromButtons(
+    'Set the group pivot?',
+    `Grouped ${ids.length} object(s) across ${res.scopedCount} step(s). Place a rotation pivot now? The group will isolate so you see only it — drag the orange pivot, then UN-ISOLATE to lock it across every one of the group's steps.`,
+    [
+      { id: 'set',  label: 'Set pivot now', primary: true },
+      { id: 'skip', label: 'Skip — I’ll set it later' },
+    ],
+  );
+  if (piv === 'set') {
+    _startGroupPivotFlow(res.folderId, res.scopedIds);
+  } else {
+    setStatus('Turn on Global Mode (Space) and move/rotate the folder — it ripples to every scoped step.', 'success', 4500);
   }
 }
