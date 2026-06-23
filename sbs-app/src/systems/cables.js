@@ -319,6 +319,35 @@ export function getStepCableActions(stepId) {
  * In-memory only — the project file is untouched until the user saves. Returns the
  * number of step entries removed (a measure of how much was collapsed).
  */
+/**
+ * V0.3.0.167 — backfill the State-0 unplugged baseline for SOCKETED cables that
+ * have NO stored node-state on any step (broken by pre-V0.3.0.167 socket-add,
+ * which never registered step 0). Such cables were never plugged, so the live
+ * arrangement IS the unplugged one — capturing it at step 0 is exact, adds no
+ * visual change (it already cascades everywhere), and gives plug/unplug a real
+ * State-0 to diff against. Cables that already carry any node-state are left
+ * untouched (we never guess a lost unplugged layout). Returns count fixed.
+ */
+export function ensureSocketBaselines() {
+  const steps = state.get('steps') || [];
+  if (!steps.length) return 0;
+  const s0 = steps[0];
+  let fixed = 0;
+  for (const cable of listCables()) {
+    if (!(cable.nodes || []).some(n => n.socket)) continue;                 // no socket → no plug state
+    if (steps.some(s => s?.snapshot?.cables?.[cable.id]?.nodes)) continue;  // already stated → don't touch
+    s0.snapshot = s0.snapshot || {};
+    s0.snapshot.cables = s0.snapshot.cables || {};
+    s0.snapshot.cables[cable.id] = {
+      ...(s0.snapshot.cables[cable.id] || {}),
+      nodes: captureCableArrangement(cable).nodes,
+    };
+    fixed++;
+  }
+  if (fixed) state.setState({ steps: [...steps] });
+  return fixed;
+}
+
 export function flattenCablesToCascade() {
   const steps  = state.get('steps') || [];
   const cables = state.get('cables') || [];

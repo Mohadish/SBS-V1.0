@@ -32,7 +32,7 @@ import {
 import { materials }                  from '../systems/materials.js';
 import { steps   }                  from '../systems/steps.js';
 import * as narrationCache           from '../systems/narration-cache.js';
-import { flattenCablesToCascade }    from '../systems/cables.js';   // V0.3.0.151 cascade migration
+import { flattenCablesToCascade, ensureSocketBaselines } from '../systems/cables.js';   // V0.3.0.151 cascade migration; V0.3.0.167 socket State-0 backfill
 import { clearIsolate }              from '../core/isolate-state.js';
 
 /**
@@ -1273,6 +1273,9 @@ export async function loadProject(fileOrText, filePath = null) {
   try {
     const removed = flattenCablesToCascade();
     if (removed) console.log(`[cables] flattened ${removed} redundant per-step entr${removed === 1 ? 'y' : 'ies'} → cascade (state-defining steps only). Save to persist.`);
+    // V0.3.0.167 — give every socketed-but-never-stated cable its State-0 unplugged baseline.
+    const seeded = ensureSocketBaselines();
+    if (seeded) console.log(`[cables] registered State-0 unplugged baseline for ${seeded} socketed cable(s). Save to persist.`);
   } catch (e) { console.warn('[cables] cascade flatten skipped:', e); }
 
   if (filePath) _setProjectMeta(filePath);

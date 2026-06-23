@@ -5607,33 +5607,72 @@ export function addCableSocket(cableId, nodeId) {
   }
 
   node.socket = socket;
-  state.setState({ cables: [...(state.get('cables') || [])] });
+
+  // V0.3.0.167 — register the UNPLUGGED baseline (State 0) at STEP ONE the instant
+  // a socket is first added, no matter which step you're on. Without a node-bearing
+  // entry at step 0 the cable has NO state until the first plug, so every step
+  // before the plug falls through to the live (now-plugged) socket and the
+  // unplugged arrangement has nowhere to live. Step 0 is never a plug ACTION
+  // (getPlugActionStepIds guards i>0) — it's the initial state the manager shows
+  // as "State 0", and toggleSocketPlugged already treats it as the unplug fallback.
+  const _step0 = () => (state.get('steps') || [])[0] || null;
+  const beforeS0 = (() => {
+    const e = _step0()?.snapshot?.cables?.[cableId];
+    return e ? JSON.parse(JSON.stringify(e)) : null;
+  })();
+  const writeBaseline = () => {
+    const s0 = _step0();
+    if (!s0) return null;
+    s0.snapshot = s0.snapshot || {};
+    s0.snapshot.cables = s0.snapshot.cables || {};
+    s0.snapshot.cables[cableId] = {
+      ...(s0.snapshot.cables[cableId] || {}),
+      nodes: cables.captureCableArrangement(cableId).nodes,   // pl=false (socket just added)
+    };
+    return JSON.parse(JSON.stringify(s0.snapshot.cables[cableId]));
+  };
+  const afterS0 = writeBaseline();
+
+  state.setState({ cables: [...(state.get('cables') || [])], steps: [...(state.get('steps') || [])] });
   state.markDirty();
   undoManager.push(
     'Add socket',
     () => {
       const n = _findCableNode(cableId, nodeId);
-      if (!n) return;
-      n.socket = null;
-      if (didShift && beforeAnchor) n.anchorLocal = beforeAnchor.slice();
-      state.setState({ cables: [...(state.get('cables') || [])] });
+      if (n) {
+        n.socket = null;
+        if (didShift && beforeAnchor) n.anchorLocal = beforeAnchor.slice();
+      }
+      const s0 = _step0();
+      if (s0?.snapshot?.cables) {
+        if (beforeS0) s0.snapshot.cables[cableId] = JSON.parse(JSON.stringify(beforeS0));
+        else          delete s0.snapshot.cables[cableId];
+      }
+      state.setState({ cables: [...(state.get('cables') || [])], steps: [...(state.get('steps') || [])] });
       state.markDirty();
     },
     () => {
       const n = _findCableNode(cableId, nodeId);
-      if (!n) return;
-      n.socket = socket;
-      if (didShift) {
-        const nx = n.normalLocal[0];
-        const ny = n.normalLocal[1];
-        const nz = n.normalLocal[2];
-        n.anchorLocal = [
-          beforeAnchor[0] + actualD * nx,
-          beforeAnchor[1] + actualD * ny,
-          beforeAnchor[2] + actualD * nz,
-        ];
+      if (n) {
+        n.socket = socket;
+        if (didShift) {
+          const nx = n.normalLocal[0];
+          const ny = n.normalLocal[1];
+          const nz = n.normalLocal[2];
+          n.anchorLocal = [
+            beforeAnchor[0] + actualD * nx,
+            beforeAnchor[1] + actualD * ny,
+            beforeAnchor[2] + actualD * nz,
+          ];
+        }
       }
-      state.setState({ cables: [...(state.get('cables') || [])] });
+      const s0 = _step0();
+      if (s0 && afterS0) {
+        s0.snapshot = s0.snapshot || {};
+        s0.snapshot.cables = s0.snapshot.cables || {};
+        s0.snapshot.cables[cableId] = JSON.parse(JSON.stringify(afterS0));
+      }
+      state.setState({ cables: [...(state.get('cables') || [])], steps: [...(state.get('steps') || [])] });
       state.markDirty();
     },
   );
