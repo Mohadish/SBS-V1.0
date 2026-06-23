@@ -737,6 +737,41 @@ window.sbsDiag.cableSteps = (cableId) => {
     console.log(`step ${i} "${s.name}": vis=${c.visible} ${nodeStr}`);
   });
 };
+// V0.3.0.168 — "Group for global edit" DRY RUN. Select objects, then run
+// window.sbsGroupFix.dryRun()  (or 'forward'/'backward'/'selected'). NON-DESTRUCTIVE:
+// it only RESOLVES + reports each selected object's world pose across the scoped
+// steps so we can confirm the per-step resolution is correct before wiring the
+// actual (destructive) wrap. Reports pose count, how many are DISTINCT (static vs
+// animated), and any steps where an object is missing.
+window.sbsGroupFix = window.sbsGroupFix || {};
+window.sbsGroupFix.dryRun = (scope = 'all') => {
+  const sel = [...(state.get('multiSelectedIds') || [])];
+  if (!sel.length) { console.log('[groupFix] Select 1+ objects in the tree/viewport first.'); return; }
+  const allSteps = (state.get('steps') || []).filter(s => !s.isBaseStep);
+  const ids   = allSteps.map(s => s.id);
+  const active = state.get('activeStepId');
+  const aIdx  = ids.indexOf(active);
+  let scoped  = ids;
+  if (scope === 'forward'  && aIdx >= 0) scoped = ids.slice(aIdx);
+  if (scope === 'backward' && aIdx >= 0) scoped = ids.slice(0, aIdx + 1);
+  if (scope === 'selected') { const ss = state.get('selectedStepIds'); const f = ids.filter(id => ss?.has?.(id)); scoped = f.length ? f : ids; }
+  const poses    = steps.resolveObjectWorldPosesPerStep(sel, scoped);
+  const nodeById = state.get('nodeById');
+  console.log(`[groupFix] DRY RUN — ${sel.length} object(s) × ${scoped.length} step(s) (scope: ${scope}). NOTHING changed.`);
+  for (const id of sel) {
+    const name = nodeById?.get?.(id)?.name || id;
+    const seen = []; let missing = 0;
+    for (const sid of scoped) {
+      const w = poses.get(sid)?.get(id);
+      if (!w) { missing++; continue; }
+      seen.push(w.pos.map(v => Number(v).toFixed(0)).join(','));
+    }
+    const distinct = new Set(seen).size;
+    console.log(`  "${name}": ${seen.length} resolved, ${distinct} distinct${missing ? `, MISSING in ${missing} step(s)` : ''} | first=[${seen[0] || '-'}] last=[${seen[seen.length - 1] || '-'}]`);
+  }
+  console.log('[groupFix] If the positions look right (and "MISSING" is 0), say the word and I wire the actual wrap.');
+  return poses;
+};
 window.sbsFix = window.sbsFix || {};
 // Manually re-run the orphan-shape self-heal (also runs automatically on load).
 window.sbsFix.pruneShapes = () => {

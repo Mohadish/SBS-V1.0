@@ -379,6 +379,44 @@ class StepManager {
     return result;
   }
 
+  /**
+   * V0.3.0.168 — resolve each given node's WORLD pose (pos/quat/scale) at every
+   * SCOPED step, by briefly applying each step's transforms to the live scene and
+   * reading the object3d world matrices, then restoring (mirrors
+   * computeCableMidpointsPerStep). Non-destructive — used both by the dry-run
+   * report and by the actual "Group for global edit" wrap so the wrapped objects
+   * keep their exact per-step world pose. Returns
+   *   Map<stepId, Map<nodeId, { pos:[x,y,z], quat:[x,y,z,w], scale:[x,y,z] }>>.
+   */
+  resolveObjectWorldPosesPerStep(nodeIds, scopedStepIds) {
+    const THREE = window.THREE;
+    const out = new Map();
+    if (!THREE || !nodeIds?.length) return out;
+    const nodeById = state.get('nodeById');
+    const scoped   = new Set(scopedStepIds || []);
+    const restore  = this.captureSnapshot();
+    try {
+      for (const s of (state.get('steps') || [])) {
+        if (!scoped.has(s.id) || !this._isPlayable(s)) continue;
+        const tf = s.snapshot?.transforms;
+        if (tf) { applyAllTransformSnapshots(nodeById, tf); applyAllTransformsToScene(nodeById, this.object3dById); }
+        const m = new Map();
+        for (const id of nodeIds) {
+          const obj = this.object3dById.get(id);
+          if (!obj) continue;
+          obj.updateWorldMatrix(true, false);
+          const p = new THREE.Vector3(), q = new THREE.Quaternion(), sc = new THREE.Vector3();
+          obj.matrixWorld.decompose(p, q, sc);
+          m.set(id, { pos: [p.x, p.y, p.z], quat: [q.x, q.y, q.z, q.w], scale: [sc.x, sc.y, sc.z] });
+        }
+        out.set(s.id, m);
+      }
+    } finally {
+      this.applySnapshotInstant(restore, { suppressCamera: true });
+    }
+    return out;
+  }
+
   // ═══════════════════════════════════════════════════════════════════════
   //  APPLY SNAPSHOT TO SCENE
   // ═══════════════════════════════════════════════════════════════════════
