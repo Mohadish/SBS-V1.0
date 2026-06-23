@@ -5231,6 +5231,127 @@ export function clearCableSocketSelection() {
   }
 }
 
+// ─── Whole-cable multi-select + cross-cable edits (V0.3.0.166) ──────────────
+
+/**
+ * Set the whole-cable selection set (ephemeral, no undo). `primaryId` is the
+ * last-clicked cable (drives the single-cable editor / node markers); it must be
+ * in the list (else the last id is used). Idempotent — skips a no-op setState so
+ * tab + viewport selection don't ping-pong re-renders.
+ */
+export function setCableSelection(ids, primaryId) {
+  const list = Array.from(new Set((ids || []).filter(Boolean)));
+  const primary = primaryId && list.includes(primaryId) ? primaryId
+                : (list.length ? list[list.length - 1] : null);
+  const curList = state.get('selectedCableIds') || [];
+  const curPrim = state.get('selectedCableId') || null;
+  const same = curPrim === primary && curList.length === list.length
+            && list.every(x => curList.includes(x));
+  if (same) return;
+  state.setState({ selectedCableIds: list, selectedCableId: primary });
+}
+
+/** Run `fn(cable, node)` for every socketed node across the given cable ids. */
+function _eachSocketNode(ids, fn) {
+  for (const cid of (ids || [])) {
+    const cable = cables.getCable(cid);
+    if (!cable) continue;
+    for (const n of (cable.nodes || [])) if (n.socket) fn(cable, n);
+  }
+}
+
+/** Set the body colour of several cables at once. One undo entry. */
+export function setCablesColor(ids, color) {
+  const targets = (ids || []).map(id => cables.getCable(id)).filter(Boolean);
+  if (!targets.length) return;
+  const before = targets.map(c => ({ id: c.id, color: c.style?.color }));
+  const apply = () => { for (const c of targets) cables.updateCableStyle(c.id, { color }); state.markDirty(); };
+  apply();
+  undoManager.push(`Colour ${targets.length} cable${targets.length === 1 ? '' : 's'}`,
+    () => { for (const b of before) cables.updateCableStyle(b.id, { color: b.color }); state.markDirty(); },
+    apply,
+  );
+}
+
+/** Set the colour of every socket across several cables. One undo entry. */
+export function setCablesSocketColor(ids, color) {
+  const changes = [];
+  _eachSocketNode(ids, (cable, n) => { changes.push({ cableId: cable.id, nodeId: n.id, before: n.socket.color }); });
+  if (!changes.length) return;
+  const apply = (toColor, useBefore) => {
+    for (const ch of changes) {
+      const n = _findCableNode(ch.cableId, ch.nodeId);
+      if (n?.socket) n.socket.color = useBefore ? ch.before : toColor;
+    }
+    state.setState({ cables: [...(state.get('cables') || [])] });
+    state.markDirty();
+  };
+  apply(color, false);
+  undoManager.push(`Socket colour ×${changes.length}`,
+    () => apply(null, true),
+    () => apply(color, false),
+  );
+}
+
+/**
+ * Set socket dimensions (absolute mm) across every socket of several cables.
+ * `sizePatch` = { w?, h?, d? } — only the supplied axes change (so editing W
+ * leaves each socket's H/D alone). A depth (D) change slides the cable point
+ * along the socket axis (back face stays on the surface), mirroring the single-
+ * socket editor. One undo entry.
+ */
+export function setCablesSocketSize(ids, sizePatch) {
+  if (!sizePatch) return;
+  const T = window.THREE;
+  const changes = [];
+  _eachSocketNode(ids, (cable, n) => {
+    const beforeSize   = { ...n.socket.size };
+    const beforeAnchor = Array.isArray(n.anchorLocal) ? n.anchorLocal.slice() : null;
+    const oldD = socketActualSize(cable, n.socket).d;
+    n.socket.size = {
+      ...n.socket.size,
+      ...(sizePatch.w !== undefined ? { w: Math.max(0.1, +sizePatch.w) } : {}),
+      ...(sizePatch.h !== undefined ? { h: Math.max(0.1, +sizePatch.h) } : {}),
+      ...(sizePatch.d !== undefined ? { d: Math.max(0.1, +sizePatch.d) } : {}),
+    };
+    const newD = socketActualSize(cable, n.socket).d;
+    if (T && Array.isArray(n.anchorLocal) && Math.abs(newD - oldD) > 1e-6) {
+      const fwd = _socketForwardMeshLocal(n);
+      const delta = newD - oldD;
+      n.anchorLocal = [
+        n.anchorLocal[0] + delta * fwd.x,
+        n.anchorLocal[1] + delta * fwd.y,
+        n.anchorLocal[2] + delta * fwd.z,
+      ];
+    }
+    changes.push({
+      cableId: cable.id, nodeId: n.id,
+      beforeSize, afterSize: { ...n.socket.size },
+      beforeAnchor, afterAnchor: Array.isArray(n.anchorLocal) ? n.anchorLocal.slice() : null,
+    });
+  });
+  if (!changes.length) return;
+  state.setState({ cables: [...(state.get('cables') || [])] });
+  state.markDirty();
+  steps.scheduleSync();
+  const apply = (which) => {
+    for (const ch of changes) {
+      const n = _findCableNode(ch.cableId, ch.nodeId);
+      if (!n?.socket) continue;
+      n.socket.size = { ...(which === 'after' ? ch.afterSize : ch.beforeSize) };
+      const anchor = which === 'after' ? ch.afterAnchor : ch.beforeAnchor;
+      if (anchor && Array.isArray(n.anchorLocal)) n.anchorLocal = anchor.slice();
+    }
+    state.setState({ cables: [...(state.get('cables') || [])] });
+    state.markDirty();
+    steps.scheduleSync();
+  };
+  undoManager.push(`Socket size ×${changes.length}`,
+    () => apply('before'),
+    () => apply('after'),
+  );
+}
+
 // ─── Cable point move (Phase B) ───────────────────────────────────────────
 //
 // Drag-batched, mesh-anchor-only writes to cable.nodes[i].anchorLocal.

@@ -23,6 +23,7 @@ import { listCables } from '../systems/cables.js';
 import { showContextMenu } from './context-menu.js';
 
 let _activeCableId = null;       // which cable's editor is expanded
+let _lastClickedCableId = null;  // V0.3.0.166 — anchor for Shift-range select in the list
 let _socketLockRatio = false;    // sticky lock-ratio toggle in socket editor
 
 export function renderCableTab(container) {
@@ -119,9 +120,12 @@ export function renderCableTab(container) {
       }
       return;
     }
-    // Plain click → open editor + show this cable's node markers.
-    _setActiveCable(id);
-    _renderEditor(container);
+    // V0.3.0.166 — modifier-aware whole-cable selection:
+    //   Ctrl/Cmd-click = toggle one in/out · Shift-click = range from last
+    //   click · plain click = just this one. The change:selectedCableIds
+    //   listener (sidebar-left) re-renders the tab — rows + shared edit panel.
+    const sel = _computeCableRowSelection(id, e);
+    actions.setCableSelection(sel.ids, sel.primary);
   });
 
   // V0.3.0.163 — right-click a cable row → duplicate (in place, no offset).
@@ -138,11 +142,17 @@ export function renderCableTab(container) {
     ], e.clientX, e.clientY);
   });
 
-  if (_activeCableId && cables.find(c => c.id === _activeCableId)) {
+  // V0.3.0.166 — multi-aware tail. With 2+ cables selected, just render the
+  // shared panel — never call _setActiveCable (it would collapse the set to one).
+  const selIds = state.get('selectedCableIds') || [];
+  if (selIds.length >= 2) {
+    _renderEditor(container);
+  } else if (_activeCableId && cables.find(c => c.id === _activeCableId)) {
     _setActiveCable(_activeCableId);   // keep state.selectedCableId in sync
     _renderEditor(container);
   } else {
-    _setActiveCable(null);
+    _activeCableId = null;
+    _renderEditor(container);          // clears editor when nothing valid is selected
   }
 }
 
@@ -152,9 +162,33 @@ export function renderCableTab(container) {
  */
 function _setActiveCable(id) {
   _activeCableId = id;
-  if (state.get('selectedCableId') !== (id || null)) {
-    state.setState({ selectedCableId: id || null });
+  _lastClickedCableId = id || null;
+  actions.setCableSelection(id ? [id] : [], id || null);   // V0.3.0.166 — single-select resets the whole-cable set
+}
+
+/**
+ * V0.3.0.166 — given a clicked cable id + the mouse event, compute the new
+ * whole-cable selection: Ctrl/Cmd toggles one, Shift selects a range from the
+ * last click (list order), plain click resets to just that cable.
+ */
+function _computeCableRowSelection(id, e) {
+  const cur = new Set(state.get('selectedCableIds') || []);
+  if (e.ctrlKey || e.metaKey) {
+    if (cur.has(id)) cur.delete(id); else cur.add(id);
+    _lastClickedCableId = id;
+    const ids = [...cur];
+    return { ids, primary: cur.has(id) ? id : (ids[ids.length - 1] || null) };
   }
+  if (e.shiftKey && _lastClickedCableId && _lastClickedCableId !== id) {
+    const order = listCables().map(c => c.id);
+    const a = order.indexOf(_lastClickedCableId), b = order.indexOf(id);
+    if (a >= 0 && b >= 0) {
+      const [lo, hi] = a < b ? [a, b] : [b, a];
+      return { ids: [...new Set([...cur, ...order.slice(lo, hi + 1)])], primary: id };
+    }
+  }
+  _lastClickedCableId = id;
+  return { ids: [id], primary: id };
 }
 
 /**
@@ -165,7 +199,8 @@ function _setActiveCable(id) {
  */
 export function clearActiveCable() {
   _activeCableId = null;
-  if (state.get('selectedCableId')) state.setState({ selectedCableId: null });
+  _lastClickedCableId = null;
+  actions.setCableSelection([], null);   // V0.3.0.166 — clears primary + the whole-cable set
 }
 
 /**
@@ -214,9 +249,15 @@ function _renderCableRow(cable, placingId, depth = 0) {
   // (matches the scene-tree convention) plus a thin guide marker.
   const indent = depth * 14;
   const branchIndicator = depth > 0 ? '<span class="small muted" style="margin-right:4px;">└</span>' : '';
+  // V0.3.0.166 — primary (active) cable gets a stronger tint; other members of
+  // the whole-cable multi-select set get a lighter one.
+  const inSel = (state.get('selectedCableIds') || []).includes(cable.id);
+  const rowBg = _activeCableId === cable.id ? 'background:rgba(34,211,238,0.14);'
+              : inSel                        ? 'background:rgba(34,211,238,0.07);'
+                                             : '';
   return `
     <div class="row" data-cbl-id="${_esc(cable.id)}"
-         style="display:flex;align-items:center;gap:6px;padding:8px 10px 8px ${10 + indent}px;border-bottom:1px solid var(--line);cursor:pointer;${_activeCableId === cable.id ? 'background:rgba(34,211,238,0.08);' : ''}">
+         style="display:flex;align-items:center;gap:6px;padding:8px 10px 8px ${10 + indent}px;border-bottom:1px solid var(--line);cursor:pointer;${rowBg}">
       ${branchIndicator}
       <span style="display:inline-block;width:10px;height:10px;border-radius:50%;background:${_esc(cable.style?.color || '#ffb24a')};flex-shrink:0;"></span>
       <button class="btn icon" data-cbl-act="hide" title="Show / hide" style="width:24px;height:24px;padding:0;opacity:${cable.visible ? 1 : 0.4};">${eye}</button>
@@ -234,6 +275,13 @@ function _renderCableRow(cable, placingId, depth = 0) {
 function _renderEditor(container) {
   const host = container.querySelector('#cbl-editor');
   if (!host) return;
+  // V0.3.0.166 — 2+ cables selected → the shared cross-cable edit panel.
+  const selIds = state.get('selectedCableIds') || [];
+  if (selIds.length >= 2) {
+    host.innerHTML = _renderMultiEditor(selIds);
+    _wireMultiEditor(host, selIds);
+    return;
+  }
   const cable = listCables().find(c => c.id === _activeCableId);
   if (!cable) { host.innerHTML = ''; return; }
 
@@ -490,6 +538,69 @@ function _renderSocketEditor(cableId, node) {
       </div>
     </div>
   `;
+}
+
+/**
+ * V0.3.0.166 — shared editor shown when 2+ cables are selected. Edits apply to
+ * EVERY selected cable at once: body colour, socket colour, socket W/H/D (mm).
+ * Field values are seeded from a representative (the primary cable / its first
+ * socket) — they're "apply to all", not a per-cable readout.
+ */
+function _renderMultiEditor(ids) {
+  const cs = listCables().filter(c => ids.includes(c.id));
+  const n  = cs.length;
+  const primary = cs.find(c => c.id === _activeCableId) || cs[0];
+  const cableColor = primary?.style?.color || '#ffb24a';
+  // First socket found (primary first) seeds the socket fields.
+  let sock = null;
+  const ordered = [primary, ...cs.filter(c => c !== primary)].filter(Boolean);
+  for (const c of ordered) { for (const nd of (c.nodes || [])) { if (nd.socket) { sock = nd.socket; break; } } if (sock) break; }
+  const sockColor  = sock?.color || '#ff9d57';
+  const sz         = sock?.size || { w: 4, h: 4, d: 6 };
+  const sockCount  = cs.reduce((a, c) => a + (c.nodes || []).filter(x => x.socket).length, 0);
+  const mm = (v) => Math.round((Number(v) || 0) * 100) / 100;
+  const noSockets = sockCount === 0;
+  const sockDisabled = noSockets ? 'disabled style="opacity:0.5;"' : '';
+  return `
+    <div class="section">
+      <div class="title">Editing ${n} cables <span class="small muted">(${sockCount} socket${sockCount === 1 ? '' : 's'})</span></div>
+      <div class="small muted" style="margin-bottom:8px;">Every change applies to all ${n} selected cables.</div>
+
+      <div class="grid2" style="gap:6px;">
+        <label class="colorlab">Cable color
+          <input type="color" id="mc-cable-color" value="${_esc(cableColor)}" />
+        </label>
+        <label class="colorlab">Socket color
+          <input type="color" id="mc-sock-color" value="${_esc(sockColor)}" ${sockDisabled} />
+        </label>
+      </div>
+
+      <div class="small muted" style="margin-top:8px;">Socket size (mm) — applies to all sockets. D = depth into surface.</div>
+      <div class="grid2" style="margin-top:4px;gap:6px;">
+        <label class="colorlab">W (mm)
+          <input type="number" id="mc-sock-w" min="0.1" max="1000" step="0.5" value="${mm(sz.w)}" ${sockDisabled} />
+        </label>
+        <label class="colorlab">H (mm)
+          <input type="number" id="mc-sock-h" min="0.1" max="1000" step="0.5" value="${mm(sz.h)}" ${sockDisabled} />
+        </label>
+      </div>
+      <div class="grid2" style="margin-top:6px;gap:6px;">
+        <label class="colorlab">D (mm)
+          <input type="number" id="mc-sock-d" min="0.1" max="1000" step="0.5" value="${mm(sz.d)}" ${sockDisabled} />
+        </label>
+      </div>
+      ${noSockets ? `<div class="small muted" style="margin-top:8px;">None of these cables have sockets yet — add sockets to use the socket fields.</div>` : ''}
+    </div>
+  `;
+}
+
+function _wireMultiEditor(host, ids) {
+  host.querySelector('#mc-cable-color')?.addEventListener('change', e => actions.setCablesColor(ids, e.target.value));
+  host.querySelector('#mc-sock-color')?.addEventListener('change', e => actions.setCablesSocketColor(ids, e.target.value));
+  // Per-axis: editing W leaves each socket's H/D untouched.
+  host.querySelector('#mc-sock-w')?.addEventListener('change', e => actions.setCablesSocketSize(ids, { w: Number(e.target.value) }));
+  host.querySelector('#mc-sock-h')?.addEventListener('change', e => actions.setCablesSocketSize(ids, { h: Number(e.target.value) }));
+  host.querySelector('#mc-sock-d')?.addEventListener('change', e => actions.setCablesSocketSize(ids, { d: Number(e.target.value) }));
 }
 
 // ─── Create / lifecycle ─────────────────────────────────────────────────────

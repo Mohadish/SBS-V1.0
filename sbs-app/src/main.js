@@ -2112,7 +2112,7 @@ canvas.addEventListener('click', e => {
   // opens the Cables tab, so its node pick-markers appear and you can grab them.
   const segHitSel = _pickCableSegment(e.clientX, e.clientY);
   if (segHitSel?.cableId) {
-    openCableTabForCable(segHitSel.cableId);
+    openCableTabForCable(segHitSel.cableId, e.shiftKey);   // V0.3.0.166 — Shift adds to the multi-cable set
     return;
   }
 

@@ -87,6 +87,8 @@ export function initCableRender() {
   // V0.3.0.120 — selected-cable node markers (emissive + on-top now; the per-frame
   // tick rescales them via _pointScaleFor, so request a render to kick it).
   state.on('change:selectedCableId', () => { _applySelectionHighlight(); sceneCore.requestRender?.(); });
+  // V0.3.0.166 — whole-cable multi-select body glow.
+  state.on('change:selectedCableIds', () => { _applySelectionHighlight(); sceneCore.requestRender?.(); });
   // E2: same for socket selection.
   state.on('change:selectedCableSocket', _applySelectionHighlight);
 
@@ -1031,6 +1033,7 @@ function _buildSegments(cable, entry, positions, radius, color) {
  */
 const _SELECT_EMISSIVE = new THREE.Color('#22d3ee');
 const _MARKER_EMISSIVE = new THREE.Color('#0ea5e9');   // V0.3.0.120 — node pick markers
+const _MULTI_EMISSIVE  = new THREE.Color('#22d3ee');   // V0.3.0.166 — whole-cable multi-select body glow
 function _applySelectionHighlight() {
   const selPt   = state.get('selectedCablePoint');
   const selSock = state.get('selectedCableSocket');
@@ -1039,7 +1042,9 @@ function _applySelectionHighlight() {
   // V0.3.0.120 — the selected cable's nodes ALL get a visible, always-on-top
   // marker so they're easy to see + pick (cable nodes are otherwise tiny).
   const markerCableId = state.get('selectedCableId');
-  for (const entry of _cableSubgroups.values()) {
+  // V0.3.0.166 — whole-cable multi-select: glow the body of every selected cable.
+  const selCableIds = new Set(state.get('selectedCableIds') || []);
+  for (const [cid, entry] of _cableSubgroups) {
     for (const m of entry.points) {
       const mat = m.material;
       if (!mat?.emissive) continue;
@@ -1073,6 +1078,15 @@ function _applySelectionHighlight() {
         mat.emissive.setRGB(0, 0, 0);
         mat.emissiveIntensity = 0;
       }
+    }
+    // V0.3.0.166 — selected whole cables glow on the BODY (segments / tube) so a
+    // multi-cable selection reads clearly without cluttering with node orbs.
+    const bodySel = selCableIds.has(cid);
+    for (const m of (entry.segments || [])) {
+      const mat = m.material;
+      if (!mat?.emissive) continue;
+      if (bodySel) { mat.emissive.copy(_MULTI_EMISSIVE); mat.emissiveIntensity = 0.45; }
+      else         { mat.emissive.setRGB(0, 0, 0);       mat.emissiveIntensity = 0; }
     }
   }
 }

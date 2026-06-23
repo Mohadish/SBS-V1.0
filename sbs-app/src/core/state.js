@@ -260,6 +260,13 @@ function createInitialState() {
     // to see + click.
     selectedCableId: null,
 
+    // V0.3.0.166 — WHOLE-CABLE multi-select set (for cross-cable edits: color,
+    // socket color, socket dims). Array of cable ids. selectedCableId stays the
+    // PRIMARY (last-clicked). Tab (Ctrl=toggle / Shift=range) + viewport
+    // (Shift-click a cable body = add) both drive this one set. Distinct from
+    // selectedCablePoints (node-level group) — cable-level vs node-level.
+    selectedCableIds: [],
+
     // V0.3.0.119 — multi-select of cable POINTS for moving several together.
     // Array of { cableId, nodeId } (mesh-anchored, socket-free points only).
     // selectedCablePoint stays the PRIMARY (last-clicked); this is the full set.

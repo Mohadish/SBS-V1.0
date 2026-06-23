@@ -263,6 +263,7 @@ export function initSidebarLeft() {
   state.on('change:cablePlacingId',      () => { if (_activeTab === 'cables') _renderCableTabPanel(); });
   state.on('change:selectedCablePoint',  () => { if (_activeTab === 'cables') _renderCableTabPanel(); });
   state.on('change:selectedCableSocket', () => { if (_activeTab === 'cables') _renderCableTabPanel(); });
+  state.on('change:selectedCableIds',    () => { if (_activeTab === 'cables') _renderCableTabPanel(); });   // V0.3.0.166 multi-cable
   state.on('change:cableDefaultDiameter', () => { if (_activeTab === 'cables') _renderCableTabPanel(); });
   state.on('change:cableHighlightColor', () => { if (_activeTab === 'cables') _renderCableTabPanel(); });
   state.on('change:styleTemplates',        () => {
@@ -333,8 +334,18 @@ export function editHardwareTemplate(templateId) {
  * V0.3.0.120 — clicking a cable in the viewport: select it (node markers appear)
  * and open the Cables tab with that cable's editor expanded.
  */
-export function openCableTabForCable(cableId) {
-  if (cableId) state.setState({ selectedCableId: cableId });
+export function openCableTabForCable(cableId, additive = false) {
+  if (cableId) {
+    // V0.3.0.166 — Shift-click a cable body in the viewport ADDS it to the
+    // whole-cable multi-select set (matches the tab's Ctrl/Shift behaviour);
+    // a plain click replaces the selection with just this cable.
+    if (additive) {
+      const cur = state.get('selectedCableIds') || [];
+      actions.setCableSelection(cur.includes(cableId) ? cur : [...cur, cableId], cableId);
+    } else {
+      actions.setCableSelection([cableId], cableId);
+    }
+  }
   if (_activeTab === 'cables') _renderActiveTab();   // already here → just re-render
   else _switchTab('cables');                          // switch renders the tab
 }
