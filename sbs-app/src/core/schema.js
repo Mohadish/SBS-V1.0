@@ -27,7 +27,7 @@ export const SCHEMA_VERSIONS = {
   screen:     1,
 };
 
-export const APP_VERSION  = 'V0.3.0.174';
+export const APP_VERSION  = 'V0.3.0.175';
 // Format: YYYY-MM-DD. Bump along with APP_VERSION on every build worth
 // labelling so the File tab shows you're running the expected slice.
 export const APP_RELEASED = '2026-06-10';
@@ -1048,6 +1048,11 @@ export function createCableSocket(overrides = {}) {
     // Was a % of (cable radius × SOCKET_BASE). addCableSocket seeds a sensible
     // default proportional to the host cable's diameter at creation time.
     size:             { w: 4, h: 4, d: 6 },
+    // V0.3.0.175 — socket SHAPE: 'box' (w×h×d) or 'cylinder' (radius × height,
+    // where height = the depth `d` along the socket axis). Cylinder ignores w/h
+    // and uses `radius`. Old projects with no `shape` default to 'box'.
+    shape:            'box',
+    radius:           4,
     localQuaternion:  null,               // [x,y,z,w] when host node is mesh-anchored
     quaternion:       null,               // [x,y,z,w] world-space, for free/branch hosts
     // Socket connection animation (V0.3.0.129, Phase 1). connectTarget = where this

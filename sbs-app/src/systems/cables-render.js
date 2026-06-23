@@ -47,6 +47,7 @@ let _initialised     = false;
 let _UNIT_CYLINDER   = null;        // CylinderGeometry(1, 1, 1, 12) — scaled per-segment
 let _UNIT_SPHERE     = null;        // SphereGeometry(1, 16, 16)     — scaled per-point
 let _UNIT_BOX        = null;        // BoxGeometry(1, 1, 1)          — scaled per-socket
+let _UNIT_CYL_Z      = null;        // V0.3.0.175 CylinderGeometry r1 h1, axis=Z — round sockets
 
 // ─── Init ────────────────────────────────────────────────────────────────
 
@@ -68,6 +69,8 @@ export function initCableRender() {
   _UNIT_CYLINDER = new THREE.CylinderGeometry(1, 1, 1, 12, 1, false);
   _UNIT_SPHERE   = new THREE.SphereGeometry(1, 16, 16);
   _UNIT_BOX      = new THREE.BoxGeometry(1, 1, 1);
+  _UNIT_CYL_Z    = new THREE.CylinderGeometry(1, 1, 1, 24);   // r=1 (X/Y), h=1 (Y)…
+  _UNIT_CYL_Z.rotateX(Math.PI / 2);                            // …rotate so the height runs along Z (the socket axis)
 
   _cableRoot = new THREE.Group();
   _cableRoot.name = 'CableRoot';
@@ -649,14 +652,21 @@ function _rebuildCable(cable, entry) {
     const h = actual.h * globalScale;
     const d = actual.d * globalScale;
     const sockColor = new THREE.Color(node.socket.color || '#ff9d57');
+    // V0.3.0.175 — cylinder socket: round cross-section (radius), height = depth d.
+    const isCyl = node.socket.shape === 'cylinder';
     const box = new THREE.Mesh(
-      _UNIT_BOX,
+      isCyl ? _UNIT_CYL_Z : _UNIT_BOX,
       new THREE.MeshStandardMaterial({
         color: sockColor, metalness: 0.3, roughness: 0.5,
         transparent: true, opacity: 1,
       }),
     );
-    box.scale.set(w, h, d);
+    if (isCyl) {
+      const r = Math.max(0.1, node.socket.radius ?? 4) * globalScale;
+      box.scale.set(r, r, d);   // radius in X/Y, height = d along Z
+    } else {
+      box.scale.set(w, h, d);
+    }
     box.quaternion.copy(wq);
     // Centre offset: +d/2 along the socket's world +Z so the BACK face
     // (-Z in box-local) touches the cable point.

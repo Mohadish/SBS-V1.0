@@ -5696,8 +5696,10 @@ export function setCableSocketProps(cableId, nodeId, patch) {
   // the surface, front face = anchor sweeps along the forward axis).
   const oldD = socketActualSize(cable, node.socket).d;
 
-  if (patch.color  !== undefined) node.socket.color = patch.color;
-  if (patch.name   !== undefined) node.socket.name  = patch.name;
+  if (patch.color  !== undefined) node.socket.color  = patch.color;
+  if (patch.name   !== undefined) node.socket.name   = patch.name;
+  if (patch.shape  !== undefined) node.socket.shape  = patch.shape === 'cylinder' ? 'cylinder' : 'box';   // V0.3.0.175
+  if (patch.radius !== undefined) node.socket.radius = Math.max(0.1, +patch.radius);                        // V0.3.0.175 (no IK — radius doesn't change depth)
   if (patch.size) {
     // V0.3.0.165 — absolute mm; floor at 0.1mm (was a 10% floor).
     node.socket.size = {

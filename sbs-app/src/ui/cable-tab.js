@@ -426,9 +426,18 @@ function _renderEditor(container) {
     host.querySelector('#sock-color')?.addEventListener('change', e => {
       actions.setCableSocketProps(cable.id, ptId, { color: e.target.value });
     });
-    const wInput    = host.querySelector('#sock-w');
-    const hInput    = host.querySelector('#sock-h');
-    const dInput    = host.querySelector('#sock-d');
+    // V0.3.0.175 — shape picker (re-render so the right dimension fields show) +
+    // cylinder radius. The dimension wiring below sends only the fields present.
+    host.querySelector('#sock-shape')?.addEventListener('change', e => {
+      actions.setCableSocketProps(cable.id, ptId, { shape: e.target.value });
+      _renderEditor(container);   // re-render to swap the dimension fields
+    });
+    host.querySelector('#sock-radius')?.addEventListener('change', e => {
+      actions.setCableSocketProps(cable.id, ptId, { radius: Number(e.target.value) });
+    });
+    const wInput    = host.querySelector('#sock-w');   // box only
+    const hInput    = host.querySelector('#sock-h');   // box only
+    const dInput    = host.querySelector('#sock-d');   // both (D / Height)
     const lockInput = host.querySelector('#sock-lock');
     lockInput?.addEventListener('change', () => {
       _socketLockRatio = !!lockInput.checked;   // sticky across re-renders
@@ -437,30 +446,24 @@ function _renderEditor(container) {
     Object.entries(inputs).forEach(([key, input]) => {
       if (!input) return;
       input.addEventListener('change', () => {
-        const newVal = Number(input.value);
         if (lockInput?.checked) {
-          // Compute ratio from the field that changed vs its prior
-          // value — read from cable state (live) since the input has
-          // already been overwritten.
           const live = (state.get('cables') || [])
             .find(c => c.id === cable.id)?.nodes
             .find(n => n.id === ptId)?.socket?.size;
           const oldVal = live ? live[key] : 100;
           if (oldVal > 0) {
-            const ratio = newVal / oldVal;
+            const ratio = Number(input.value) / oldVal;
             for (const [k, inp] of Object.entries(inputs)) {
               if (!inp || k === key) continue;
               inp.value = String(Math.round(Number(inp.value) * ratio * 100) / 100);   // mm, 2dp
             }
           }
         }
-        actions.setCableSocketProps(cable.id, ptId, {
-          size: {
-            w: Number(wInput.value),
-            h: Number(hInput.value),
-            d: Number(dInput.value),
-          },
-        });
+        const sz = {};                       // cylinder has no W/H — send only present fields
+        if (wInput) sz.w = Number(wInput.value);
+        if (hInput) sz.h = Number(hInput.value);
+        if (dInput) sz.d = Number(dInput.value);
+        actions.setCableSocketProps(cable.id, ptId, { size: sz });
       });
     });
   }
@@ -507,22 +510,21 @@ function _renderPointRow(node, index, selectedPointNodeId, selectedSocketNodeId)
 }
 
 function _renderSocketEditor(cableId, node) {
-  const sock = node.socket;
-  const size = sock.size || { w: 4, h: 4, d: 6 };
-  const mm = (v) => Math.round((Number(v) || 0) * 100) / 100;   // V0.3.0.165 — tidy mm display
-  return `
-    <div class="card" style="margin-top:10px;padding:10px;">
-      <div class="title" style="margin-bottom:8px;">Socket</div>
-      <div class="grid2" style="gap:6px;">
-        <label class="colorlab">Color
-          <input type="color" id="sock-color" value="${_esc(sock.color || '#ff9d57')}" />
+  const sock  = node.socket;
+  const size  = sock.size || { w: 4, h: 4, d: 6 };
+  const shape = sock.shape === 'cylinder' ? 'cylinder' : 'box';   // V0.3.0.175
+  const mm = (v) => Math.round((Number(v) || 0) * 100) / 100;
+  const dims = shape === 'cylinder' ? `
+      <div class="small muted" style="margin-top:8px;">Cylinder — absolute mm. Height = depth into the surface.</div>
+      <div class="grid2" style="margin-top:4px;gap:6px;">
+        <label class="colorlab">Radius (mm)
+          <input type="number" id="sock-radius" min="0.1" max="1000" step="0.5" value="${mm(sock.radius ?? 4)}" />
         </label>
-        <label class="colorlab" style="display:flex;align-items:center;gap:6px;">
-          <input type="checkbox" id="sock-lock" ${_socketLockRatio ? 'checked' : ''} />
-          <span class="small">Lock ratio</span>
+        <label class="colorlab">Height (mm)
+          <input type="number" id="sock-d" min="0.1" max="1000" step="0.5" value="${mm(size.d)}" />
         </label>
-      </div>
-      <div class="small muted" style="margin-top:8px;">Absolute size in mm (world units). D = depth into the surface.</div>
+      </div>` : `
+      <div class="small muted" style="margin-top:8px;">Box — absolute mm (world units). D = depth into the surface.</div>
       <div class="grid2" style="margin-top:4px;gap:6px;">
         <label class="colorlab">W (mm)
           <input type="number" id="sock-w" min="0.1" max="1000" step="0.5" value="${mm(size.w)}" />
@@ -535,7 +537,27 @@ function _renderSocketEditor(cableId, node) {
         <label class="colorlab">D (mm)
           <input type="number" id="sock-d" min="0.1" max="1000" step="0.5" value="${mm(size.d)}" />
         </label>
+      </div>`;
+  return `
+    <div class="card" style="margin-top:10px;padding:10px;">
+      <div class="title" style="margin-bottom:8px;">Socket</div>
+      <div class="grid2" style="gap:6px;">
+        <label class="colorlab">Color
+          <input type="color" id="sock-color" value="${_esc(sock.color || '#ff9d57')}" />
+        </label>
+        <label class="colorlab" style="display:flex;align-items:center;gap:6px;">
+          <input type="checkbox" id="sock-lock" ${_socketLockRatio ? 'checked' : ''} />
+          <span class="small">Lock ratio</span>
+        </label>
       </div>
+      <label class="colorlab" style="display:flex;align-items:center;gap:8px;margin-top:8px;">
+        <span class="small" style="flex:0 0 50px;">Shape</span>
+        <select id="sock-shape" style="flex:1;">
+          <option value="box"      ${shape === 'box'      ? 'selected' : ''}>Box (rectangular)</option>
+          <option value="cylinder" ${shape === 'cylinder' ? 'selected' : ''}>Cylinder (round)</option>
+        </select>
+      </label>
+      ${dims}
     </div>
   `;
 }
