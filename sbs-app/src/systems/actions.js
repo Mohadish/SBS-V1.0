@@ -5787,12 +5787,15 @@ export function toggleSocketPlugged(cableId, nodeId) {
 export function removeCablePlugAction(cableId, stepId) {
   const step  = (state.get('steps') || []).find(s => s.id === stepId);
   const entry = step?.snapshot?.cables?.[cableId];
-  if (!entry) return false;
+  if (!entry?.nodes) return false;   // only a node-defining entry holds a plug action
   const before = JSON.parse(JSON.stringify(entry));
   const reResolve = () => cables.applyStepSnapshot(cables.resolveCableSnapshotAtStep(state.get('activeStepId')));
   const apply = () => {
     const st = (state.get('steps') || []).find(s => s.id === stepId);
-    if (st?.snapshot?.cables) delete st.snapshot.cables[cableId];
+    const e  = st?.snapshot?.cables?.[cableId];
+    // V0.3.0.161 — remove ONLY the node arrangement (un-define the state); keep this
+    // step's per-step visible/highlight. Drop the entry entirely only if now empty.
+    if (e) { delete e.nodes; if (Object.keys(e).length === 0) delete st.snapshot.cables[cableId]; }
     state.setState({ steps: [...(state.get('steps') || [])] });
     reResolve();
     state.markDirty();

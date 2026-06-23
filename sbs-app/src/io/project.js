@@ -237,6 +237,8 @@ export function serialize() {
   project.cables = project.cables || { schema_version: 1, items: [] };
   project.cables.items          = JSON.parse(JSON.stringify(state.get('cables') || []));
   project.cables.globalScale    = state.get('cableGlobalScale')    ?? 1.0;
+  project.cables.globalRadius   = state.get('cableGlobalRadius')   ?? 1.0;   // V0.3.0.161
+  project.cables.filletReach    = state.get('cableFilletReach')    ?? 40;    // V0.3.0.161
   project.cables.highlightColor = state.get('cableHighlightColor') ?? '#22d3ee';
 
   // ── Settings ──────────────────────────────────────────────────────────────
@@ -697,6 +699,8 @@ export function applyProjectToState(project) {
     // worldPos / worldQuat baked into each cable node by the saver.
     cables:               project.cables?.items              || [],
     cableGlobalScale:     project.cables?.globalScale        ?? 1.0,
+    cableGlobalRadius:    project.cables?.globalRadius        ?? 1.0,   // V0.3.0.161 — was not restored
+    cableFilletReach:     project.cables?.filletReach         ?? 40,    // V0.3.0.161 — fillet mode
     cableHighlightColor:  project.cables?.highlightColor     ?? '#22d3ee',
   });
 
