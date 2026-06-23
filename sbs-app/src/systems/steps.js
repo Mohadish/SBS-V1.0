@@ -395,6 +395,7 @@ class StepManager {
     const nodeById = state.get('nodeById');
     const scoped   = new Set(scopedStepIds || []);
     const restore  = this.captureSnapshot();
+    const _box     = new THREE.Box3();
     try {
       for (const s of (state.get('steps') || [])) {
         if (!scoped.has(s.id) || !this._isPlayable(s)) continue;
@@ -407,7 +408,13 @@ class StepManager {
           obj.updateWorldMatrix(true, false);
           const p = new THREE.Vector3(), q = new THREE.Quaternion(), sc = new THREE.Vector3();
           obj.matrixWorld.decompose(p, q, sc);
-          m.set(id, { pos: [p.x, p.y, p.z], quat: [q.x, q.y, q.z, q.w], scale: [sc.x, sc.y, sc.z] });
+          // V0.3.0.170 — also capture the VISUAL world centre (bbox). CAD parts have
+          // baked geometry + identity transforms, so `pos` (the transform origin) reads
+          // [0,0,0]; `center` is where the part actually sits + is what we place the
+          // group folder's pivot at. `pos/quat/scale` (transform) is what the wrap preserves.
+          _box.setFromObject(obj);
+          const c = _box.isEmpty() ? p.clone() : _box.getCenter(new THREE.Vector3());
+          m.set(id, { pos: [p.x, p.y, p.z], quat: [q.x, q.y, q.z, q.w], scale: [sc.x, sc.y, sc.z], center: [c.x, c.y, c.z] });
         }
         out.set(s.id, m);
       }

@@ -764,12 +764,14 @@ window.sbsGroupFix.dryRun = (scope = 'all') => {
     for (const sid of scoped) {
       const w = poses.get(sid)?.get(id);
       if (!w) { missing++; continue; }
-      seen.push(w.pos.map(v => Number(v).toFixed(0)).join(','));
+      // V0.3.0.170 — report the VISUAL centre (bbox), not the transform origin
+      // (which is [0,0,0] for baked CAD geometry and tells you nothing).
+      seen.push((w.center || w.pos).map(v => Number(v).toFixed(0)).join(','));
     }
     const distinct = new Set(seen).size;
-    console.log(`  "${name}": ${seen.length} resolved, ${distinct} distinct${missing ? `, MISSING in ${missing} step(s)` : ''} | first=[${seen[0] || '-'}] last=[${seen[seen.length - 1] || '-'}]`);
+    console.log(`  "${name}": ${seen.length} resolved, ${distinct} distinct centre${distinct === 1 ? '' : 's'}${missing ? `, MISSING in ${missing} step(s)` : ''} | first=[${seen[0] || '-'}] last=[${seen[seen.length - 1] || '-'}]`);
   }
-  console.log('[groupFix] If the positions look right (and "MISSING" is 0), say the word and I wire the actual wrap.');
+  console.log('[groupFix] These are VISUAL centres (mm). Expect each part at a DIFFERENT, sensible spot (not all 0,0,0). "MISSING in 3" = your 3 hidden steps — fine. If the centres look right, say the word and I wire the wrap.');
   return poses;
 };
 window.sbsFix = window.sbsFix || {};
