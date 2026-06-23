@@ -19,6 +19,7 @@ import { steps }                from '../systems/steps.js';
 import * as actions             from '../systems/actions.js';
 import { undoManager }          from '../systems/undo.js';
 import { startFollowPick, promptStopFollowing } from '../systems/follow.js';
+import { promptGroupForGlobalEdit } from '../systems/group-fix.js';   // V0.3.0.171
 import {
   findNode,
   findParent,
@@ -1430,6 +1431,15 @@ function _buildContextMenuItems(node) {
     items.push(node.follow
       ? { label: '🔗 Stop following…', action: () => promptStopFollowing(node.id) }
       : { label: '🔗 Follow object…',  action: () => startFollowPick(node.id) });
+  }
+
+  // ── Group for global edit (V0.3.0.171) — wrap 2+ selected objects in a folder
+  // ACROSS steps so one Global-Mode move/rotate fixes them all at once. Multi only.
+  if (count >= 2) {
+    items.push({
+      label: '📦 Group for global edit…',
+      action: () => promptGroupForGlobalEdit([...(state.get('multiSelectedIds') || [])]),
+    });
   }
 
   // ── RM-only actions (B.2-NEW.2) ───────────────────────────────────────
