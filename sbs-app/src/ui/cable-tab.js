@@ -20,6 +20,7 @@
 import { state }      from '../core/state.js';
 import * as actions   from '../systems/actions.js';
 import { listCables } from '../systems/cables.js';
+import { showContextMenu } from './context-menu.js';
 
 let _activeCableId = null;       // which cable's editor is expanded
 let _socketLockRatio = false;    // sticky lock-ratio toggle in socket editor
@@ -120,6 +121,20 @@ export function renderCableTab(container) {
     // Plain click → open editor + show this cable's node markers.
     _setActiveCable(id);
     _renderEditor(container);
+  });
+
+  // V0.3.0.163 — right-click a cable row → duplicate (in place, no offset).
+  container.querySelector('#cbl-list')?.addEventListener('contextmenu', e => {
+    const row = e.target.closest('[data-cbl-id]');
+    if (!row) return;
+    e.preventDefault();
+    const id = row.dataset.cblId;
+    showContextMenu([
+      { label: 'Duplicate', submenu: [
+        { label: 'Keep connections',  action: () => { const c = actions.duplicateCable(id, true);  if (c) _setActiveCable(c.id); } },
+        { label: 'Clean connections', action: () => { const c = actions.duplicateCable(id, false); if (c) _setActiveCable(c.id); } },
+      ]},
+    ], e.clientX, e.clientY);
   });
 
   if (_activeCableId && cables.find(c => c.id === _activeCableId)) {

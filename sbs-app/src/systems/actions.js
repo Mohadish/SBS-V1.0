@@ -4836,6 +4836,84 @@ export function setBranchJointAngle(branchCableId, angle) {
 }
 
 /**
+ * V0.3.0.163 — duplicate a cable IN PLACE (no offset). Fresh cable id + fresh node
+ * ids (the per-step plug history is remapped to the new node ids). `keepConnections`:
+ *   true  = full clone — sockets keep their connect targets + the per-step plug/
+ *           unplug history is copied (the copy plugs identically across all steps).
+ *   false = geometry/sockets only — connect targets cleared + unplugged (the base
+ *           'state 0' everywhere, no plug history).
+ * One undo entry.
+ */
+export function duplicateCable(cableId, keepConnections) {
+  const orig = cables.getCable(cableId);
+  if (!orig) return null;
+  const beforeCables = JSON.parse(JSON.stringify(state.get('cables') || []));
+
+  const clone = JSON.parse(JSON.stringify(orig));
+  clone.id   = cables.generateId('cable');
+  clone.name = (orig.name || 'Cable') + ' copy';
+  const nodeMap = {};
+  for (const n of (clone.nodes || [])) {
+    const old = n.id;
+    n.id = cables.generateId('cnode');
+    nodeMap[old] = n.id;
+    n.branchCableIds = [];   // children aren't duplicated
+    if (n.socket && !keepConnections) { n.socket.connectTarget = null; n.socket.plugged = false; }
+  }
+
+  // Per-step plug/arrangement history — only when keeping connections. Remap node ids.
+  const stepEntries = [];
+  if (keepConnections) {
+    for (const s of (state.get('steps') || [])) {
+      const oe = s.snapshot?.cables?.[cableId];
+      if (!oe) continue;
+      const copy = JSON.parse(JSON.stringify(oe));
+      if (copy.nodes) {
+        const rn = {};
+        for (const [oid, pose] of Object.entries(copy.nodes)) rn[nodeMap[oid] || oid] = pose;
+        copy.nodes = rn;
+      }
+      stepEntries.push({ stepId: s.id, entry: copy });
+    }
+  }
+
+  const parent = clone.branchSource || null;   // duplicate of a branch → register on its parent
+
+  const apply = () => {
+    const list = (state.get('cables') || []).filter(c => c.id !== clone.id);
+    list.push(JSON.parse(JSON.stringify(clone)));
+    if (parent) {
+      const pn = (list.find(c => c.id === parent.cableId)?.nodes || []).find(n => n.id === parent.nodeId);
+      if (pn && !(pn.branchCableIds || []).includes(clone.id)) pn.branchCableIds = [...(pn.branchCableIds || []), clone.id];
+    }
+    for (const { stepId, entry } of stepEntries) {
+      const st = (state.get('steps') || []).find(x => x.id === stepId);
+      if (!st) continue;
+      st.snapshot = st.snapshot || {};
+      st.snapshot.cables = st.snapshot.cables || {};
+      st.snapshot.cables[clone.id] = JSON.parse(JSON.stringify(entry));
+    }
+    state.setState({ cables: list, steps: [...(state.get('steps') || [])] });
+    state.markDirty();
+  };
+  apply();
+  undoManager.push('Duplicate cable',
+    () => {
+      state.setState({ cables: JSON.parse(JSON.stringify(beforeCables)) });
+      for (const { stepId } of stepEntries) {
+        const st = (state.get('steps') || []).find(x => x.id === stepId);
+        if (st?.snapshot?.cables) delete st.snapshot.cables[clone.id];
+      }
+      state.setState({ steps: [...(state.get('steps') || [])] });
+      state.markDirty();
+    },
+    () => apply(),
+  );
+  setStatus(keepConnections ? 'Cable duplicated (with connections).' : 'Cable duplicated (clean).', 'info', 2400);
+  return clone;
+}
+
+/**
  * Patch a cable's name / style fields. NOT undoable per-keystroke —
  * caller is expected to debounce / commit on blur if precision is
  * needed (mirrors the style-template slider pattern). Lightweight
