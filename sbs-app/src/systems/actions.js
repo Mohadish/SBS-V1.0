@@ -4663,6 +4663,12 @@ export async function applyPivotCenter(nodeId, p1, p2, p3) {
 /** Add a fresh cable. Returns the new cable record. Undoable. */
 export function createCable(name) {
   const cable = cables.addCable(name ? { name } : {});
+  // V0.3.0.165 — seed the project's default-new-cable diameter (absolute mm).
+  const defDia = state.get('cableDefaultDiameter');
+  if (typeof defDia === 'number' && cable.style && cable.style.diameter !== defDia) {
+    cable.style.diameter = defDia;
+    state.setState({ cables: [...(state.get('cables') || [])] });
+  }
   undoManager.push(`Add cable${name ? ` "${name}"` : ''}`,
     () => { cables.removeCable(cable.id); },
     () => {
@@ -4939,87 +4945,14 @@ export function setCableStyle(cableId, stylePatch) {
   const cable = cables.getCable(cableId);
   if (!cable || !stylePatch) return;
   const prev = { ...(cable.style || {}) };
-  // Snapshot anchorLocal of all socketed nodes BEFORE the patch — we
-  // need both the old + new effective radius to compute the slide.
-  const beforeAnchors = new Map();
-  if (stylePatch.size !== undefined) {
-    for (const n of (cable.nodes || [])) {
-      if (n.socket && n.anchorType === 'mesh' && Array.isArray(n.anchorLocal)) {
-        beforeAnchors.set(n.id, n.anchorLocal.slice());
-      }
-    }
-  }
-  const r0 = cableEffectiveRadius(cable);
-
   cables.updateCableStyle(cableId, stylePatch);
   const next = { ...(cables.getCable(cableId)?.style || {}) };
   if (JSON.stringify(prev) === JSON.stringify(next)) return;
-
-  // Apply the IK slide for sockets if size changed.
-  if (stylePatch.size !== undefined) {
-    const c2 = cables.getCable(cableId);
-    const r1 = cableEffectiveRadius(c2);
-    const ratio = r1 / (r0 || 1);
-    if (Math.abs(r1 - r0) > 1e-6) {
-      for (const n of (c2.nodes || [])) {
-        if (!n.socket || n.anchorType !== 'mesh' || !Array.isArray(n.anchorLocal)) continue;
-        const sizeDPct = (n.socket.size?.d ?? 100) / 100;
-        const oldDepth = SOCKET_BASE_D * r0 * sizeDPct;
-        const newDepth = SOCKET_BASE_D * r1 * sizeDPct;
-        const delta = newDepth - oldDepth;
-        const fwd = _socketForwardMeshLocal(n);
-        n.anchorLocal = [
-          n.anchorLocal[0] + delta * fwd.x,
-          n.anchorLocal[1] + delta * fwd.y,
-          n.anchorLocal[2] + delta * fwd.z,
-        ];
-      }
-      state.setState({ cables: [...(state.get('cables') || [])] });
-      state.markDirty();
-    }
-  }
-
+  // V0.3.0.165 — diameter is ABSOLUTE and independent of socket size, so a
+  // diameter/colour change no longer needs the old socket-anchor IK slide.
   undoManager.push('Edit cable style',
-    () => {
-      cables.updateCableStyle(cableId, prev);
-      // Restore pre-patch anchors so the slide is fully reversible.
-      if (beforeAnchors.size) {
-        const c = cables.getCable(cableId);
-        if (c) {
-          for (const n of (c.nodes || [])) {
-            const before = beforeAnchors.get(n.id);
-            if (before) n.anchorLocal = before.slice();
-          }
-          state.setState({ cables: [...(state.get('cables') || [])] });
-        }
-      }
-    },
-    () => {
-      cables.updateCableStyle(cableId, next);
-      // Re-apply the slide on redo.
-      if (stylePatch.size !== undefined) {
-        const c2 = cables.getCable(cableId);
-        if (c2) {
-          const r1redo = cableEffectiveRadius(c2);
-          for (const n of (c2.nodes || [])) {
-            if (!n.socket || n.anchorType !== 'mesh') continue;
-            const before = beforeAnchors.get(n.id);
-            if (!before) continue;
-            const sizeDPct = (n.socket.size?.d ?? 100) / 100;
-            const oldDepth = SOCKET_BASE_D * r0 * sizeDPct;
-            const newDepth = SOCKET_BASE_D * r1redo * sizeDPct;
-            const delta = newDepth - oldDepth;
-            const fwd = _socketForwardMeshLocal(n);
-            n.anchorLocal = [
-              before[0] + delta * fwd.x,
-              before[1] + delta * fwd.y,
-              before[2] + delta * fwd.z,
-            ];
-          }
-          state.setState({ cables: [...(state.get('cables') || [])] });
-        }
-      }
-    },
+    () => { cables.updateCableStyle(cableId, prev); },
+    () => { cables.updateCableStyle(cableId, next); },
   );
 }
 
@@ -5386,94 +5319,61 @@ export function applyCablePointCumulativeDelta(cableId, nodeId, worldDelta) {
  * so a freshly-added socket sits flush on the host face automatically.
  */
 /**
- * Socket size is now stored as percentages (100 = default). The
- * actual world dimensions = cable.style.radius * SOCKET_BASE_*.
- * Centralised here + in cables-render so the multiplier model is
- * consistent across UI inputs, render scale, and the IK shift.
+ * V0.3.0.165 — socket sizes are now ABSOLUTE (mm). These base multipliers are
+ * NO LONGER the runtime size model; they only (a) SEED a sensible default when
+ * a new socket is added (= base × cable radius, so it looks proportional at
+ * birth), (b) feed the v1→v2 migration, and (c) act as a last-resort fallback
+ * in socketActualSize when a socket somehow has no stored size.
  */
-export const SOCKET_BASE_W = 4;   // multiplier on cable radius
+export const SOCKET_BASE_W = 4;   // seed/fallback: × cable radius
 export const SOCKET_BASE_H = 4;
 export const SOCKET_BASE_D = 6;
 
 /**
- * Phase G: a cable's effective radius is the project-level
- * cableGlobalRadius multiplied by the per-cable size %, fallback
- * to legacy cable.style.radius for older project files that don't
- * have the `size` field yet.
+ * V0.3.0.165 — a cable's effective radius is its ABSOLUTE diameter / 2 (mm).
+ * Fallbacks below only guard un-migrated in-memory data.
  */
 export function cableEffectiveRadius(cable) {
-  const globalR = state.get('cableGlobalRadius') ?? 1.0;
-  const sizePct = cable?.style?.size;
-  if (typeof sizePct === 'number') return globalR * (sizePct / 100);
-  // Legacy path — old projects stored an absolute radius. Treat it
-  // as if a same-thickness % so existing cables don't suddenly grow.
+  // V0.3.0.165 — ABSOLUTE: radius = diameter / 2 (world mm). Old projects are
+  // migrated to style.diameter at load; the fallbacks below only guard stray
+  // un-migrated in-memory data so nothing ever renders at zero.
+  const dia = cable?.style?.diameter;
+  if (typeof dia === 'number') return dia / 2;
   const legacyR = cable?.style?.radius;
   if (typeof legacyR === 'number') return legacyR;
-  return globalR;
+  const sizePct = cable?.style?.size;
+  if (typeof sizePct === 'number') return (state.get('cableGlobalRadius') ?? 1.0) * (sizePct / 100);
+  return (state.get('cableDefaultDiameter') ?? 2.0) / 2;
 }
 
 export function socketActualSize(cable, socket) {
+  // V0.3.0.165 — ABSOLUTE world dimensions (mm), read straight off the socket.
+  // Independent of the cable's diameter. Fallback derives from the cable radius
+  // only when a socket has no stored size (shouldn't happen post-migration).
+  const sz = socket?.size;
+  if (sz && typeof sz.w === 'number' && typeof sz.h === 'number' && typeof sz.d === 'number') {
+    return { w: sz.w, h: sz.h, d: sz.d };
+  }
   const radius = cableEffectiveRadius(cable);
-  const sz = socket?.size || { w: 100, h: 100, d: 100 };
-  return {
-    w: SOCKET_BASE_W * radius * (sz.w / 100),
-    h: SOCKET_BASE_H * radius * (sz.h / 100),
-    d: SOCKET_BASE_D * radius * (sz.d / 100),
-  };
+  return { w: SOCKET_BASE_W * radius, h: SOCKET_BASE_H * radius, d: SOCKET_BASE_D * radius };
 }
 
 /**
- * Phase G: project-level cable global radius. Push undo entry so the
- * before/after value is reversible. setState fires change:cableGlobalRadius
- * which the render module subscribes to via _refreshAll.
+ * V0.3.0.165 — project-level DEFAULT diameter for NEW cables (absolute mm).
+ * Setting it never touches existing cables (each holds its own diameter); it
+ * only seeds the next createCable(). Replaces the old global-radius multiplier,
+ * which rescaled every cable + IK-slid sockets. One undo entry.
  */
-export function setCableGlobalRadius(value) {
-  const before = state.get('cableGlobalRadius') ?? 1.0;
-  const after  = Math.max(0.05, +value || 1.0);
+export function setCableDefaultDiameter(value) {
+  const before = state.get('cableDefaultDiameter') ?? 2.0;
+  const after  = Math.max(0.1, +value || 2.0);
   if (before === after) return;
-
-  // Sockets are sized by global radius — depth grew/shrank, so the
-  // cable point's anchor (which sits at the socket's front face) must
-  // slide along the forward axis to keep the back face on the surface.
-  // Per-node mutate; the undo path flips r0/r1 to walk the math back.
-  const adjust = (r0, r1) => {
-    const cur = state.get('cables') || [];
-    for (const c of cur) {
-      for (const n of (c.nodes || [])) {
-        if (!n.socket || n.anchorType !== 'mesh' || !Array.isArray(n.anchorLocal)) continue;
-        const sizeDPct = (n.socket.size?.d ?? 100) / 100;
-        const oldDepth = SOCKET_BASE_D * r0 * sizeDPct;
-        const newDepth = SOCKET_BASE_D * r1 * sizeDPct;
-        const delta = newDepth - oldDepth;
-        const fwd = _socketForwardMeshLocal(n);
-        n.anchorLocal = [
-          n.anchorLocal[0] + delta * fwd.x,
-          n.anchorLocal[1] + delta * fwd.y,
-          n.anchorLocal[2] + delta * fwd.z,
-        ];
-      }
-    }
-  };
-
-  state.setState({ cableGlobalRadius: after });
-  adjust(before, after);
-  state.setState({ cables: [...(state.get('cables') || [])] });
+  state.setState({ cableDefaultDiameter: after });
   state.markDirty();
-
   undoManager.push(
-    'Set cable global radius',
-    () => {
-      state.setState({ cableGlobalRadius: before });
-      adjust(after, before);
-      state.setState({ cables: [...(state.get('cables') || [])] });
-      state.markDirty();
-    },
-    () => {
-      state.setState({ cableGlobalRadius: after });
-      adjust(before, after);
-      state.setState({ cables: [...(state.get('cables') || [])] });
-      state.markDirty();
-    },
+    'Set default cable diameter',
+    () => { state.setState({ cableDefaultDiameter: before }); state.markDirty(); },
+    () => { state.setState({ cableDefaultDiameter: after });  state.markDirty(); },
   );
 }
 
@@ -5553,11 +5453,16 @@ export function socketBackFaceWorld(cableId, nodeId) {
 export function addCableSocket(cableId, nodeId) {
   const node = _findCableNode(cableId, nodeId);
   if (!node || node.socket) return false;
-  // Size as percentage of cable-radius defaults — direct dimension
-  // entry isn't part of the UI; user adjusts via 100% sliders + a
-  // lock-ratio checkbox in the cable-tab editor.
+  // V0.3.0.165 — seed an ABSOLUTE socket size (mm) proportional to THIS cable's
+  // diameter at creation (matches the old default look: 4r × 4r × 6r), then it's
+  // independent. User adjusts exact mm via the W/H/D fields in the cable editor.
   const cable  = (state.get('cables') || []).find(c => c.id === cableId);
-  const socket = cables.createCableSocket({ size: { w: 100, h: 100, d: 100 } });
+  const r0     = cableEffectiveRadius(cable);
+  const socket = cables.createCableSocket({ size: {
+    w: SOCKET_BASE_W * r0,
+    h: SOCKET_BASE_H * r0,
+    d: SOCKET_BASE_D * r0,
+  } });
 
   // IK shift: lift the cable point by the socket's actual depth along
   // the surface normal so the back face lands on the anchored surface
@@ -5634,11 +5539,12 @@ export function setCableSocketProps(cableId, nodeId, patch) {
   if (patch.color  !== undefined) node.socket.color = patch.color;
   if (patch.name   !== undefined) node.socket.name  = patch.name;
   if (patch.size) {
+    // V0.3.0.165 — absolute mm; floor at 0.1mm (was a 10% floor).
     node.socket.size = {
       ...node.socket.size,
-      ...(patch.size.w !== undefined ? { w: Math.max(10, +patch.size.w) } : {}),
-      ...(patch.size.h !== undefined ? { h: Math.max(10, +patch.size.h) } : {}),
-      ...(patch.size.d !== undefined ? { d: Math.max(10, +patch.size.d) } : {}),
+      ...(patch.size.w !== undefined ? { w: Math.max(0.1, +patch.size.w) } : {}),
+      ...(patch.size.h !== undefined ? { h: Math.max(0.1, +patch.size.h) } : {}),
+      ...(patch.size.d !== undefined ? { d: Math.max(0.1, +patch.size.d) } : {}),
     };
   }
 

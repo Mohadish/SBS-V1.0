@@ -23,11 +23,11 @@ export const SCHEMA_VERSIONS = {
   color:      3,   // v3: reflectionIntensity replaces envMapIntensity+falloffStrength
   note:       1,
   asset:      1,
-  cable:      1,
+  cable:      2,   // v2: absolute mm sizing — cable.style.diameter + socket.size{w,h,d} in world units (was % of cable radius)
   screen:     1,
 };
 
-export const APP_VERSION  = 'V0.3.0.164';
+export const APP_VERSION  = 'V0.3.0.165';
 // Format: YYYY-MM-DD. Bump along with APP_VERSION on every build worth
 // labelling so the File tab shows you're running the expected slice.
 export const APP_RELEASED = '2026-06-10';
@@ -1044,7 +1044,10 @@ export function createCableSocket(overrides = {}) {
     id:               generateId('csock'),
     name:             '',
     color:            '#ff9d57',
-    size:             { w: 10, h: 10, d: 18 },
+    // V0.3.0.165 — ABSOLUTE world dimensions (mm), independent of the cable.
+    // Was a % of (cable radius × SOCKET_BASE). addCableSocket seeds a sensible
+    // default proportional to the host cable's diameter at creation time.
+    size:             { w: 4, h: 4, d: 6 },
     localQuaternion:  null,               // [x,y,z,w] when host node is mesh-anchored
     quaternion:       null,               // [x,y,z,w] world-space, for free/branch hosts
     // Socket connection animation (V0.3.0.129, Phase 1). connectTarget = where this
@@ -1070,11 +1073,12 @@ export function createCable(overrides = {}) {
                                           // emerge along the socket axis) instead of straight segments
     style: {
       color:     '#ffb24a',
-      // Phase G: per-cable size % multiplier on cableGlobalRadius
-      // (default 100). Effective radius = globalRadius × (size/100).
-      // Legacy `radius` field is still read by cableEffectiveRadius()
-      // when `size` is missing, so old projects keep their look.
-      size:      100,
+      // V0.3.0.165 — ABSOLUTE outer diameter in world units (mm). Render uses
+      // radius = diameter/2. Replaces the old size-% multiplier on a project
+      // global radius. createCable() callers seed this from cableDefaultDiameter
+      // (the project's default-new-cable size); old projects migrate via the
+      // cable v1→v2 migration (computes the equivalent absolute diameter).
+      diameter:  2.0,
       type:      'straight',              // 'straight' | 'catenary' | 'bezier' (only 'straight' rendered today)
     },
     ...overrides,
@@ -1146,7 +1150,40 @@ export const MIGRATIONS = {
   ],
   note:    [],
   asset:   [],
-  cable:   [],
+  cable: [
+    // v1 → v2: percentage sizing → ABSOLUTE world (mm). Computes the exact
+    // size the v1 formula was already rendering, so projects look identical.
+    //   old radius = globalRadius × (style.size/100)  [or legacy style.radius]
+    //   old socket = SOCKET_BASE{4,4,6} × radius × (socket.size{w,h,d}/100)
+    // The whole-section `data` carries `globalRadius` (saved alongside items).
+    // Idempotent: a cable that already has style.diameter is left untouched.
+    (data) => {
+      const globalR = (typeof data.globalRadius === 'number') ? data.globalRadius : 1.0;
+      const SB_W = 4, SB_H = 4, SB_D = 6;
+      const pct = (v) => (typeof v === 'number' ? v : 100) / 100;
+      const items = (data.items || []).map(cable => {
+        const st = { ...(cable.style || {}) };
+        if (typeof st.diameter === 'number') return cable;   // already v2
+        let radius;
+        if (typeof st.size === 'number')        radius = globalR * (st.size / 100);
+        else if (typeof st.radius === 'number') radius = st.radius;
+        else                                    radius = globalR;
+        st.diameter = radius * 2;
+        delete st.size;   // drop the obsolete percentage field
+        const nodes = (cable.nodes || []).map(n => {
+          if (!n.socket) return n;
+          const sz = n.socket.size || {};
+          return { ...n, socket: { ...n.socket, size: {
+            w: SB_W * radius * pct(sz.w),
+            h: SB_H * radius * pct(sz.h),
+            d: SB_D * radius * pct(sz.d),
+          } } };
+        });
+        return { ...cable, style: st, nodes };
+      });
+      return { ...data, items };
+    },
+  ],
   screen:  [],
 };
 

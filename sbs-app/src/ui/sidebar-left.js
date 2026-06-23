@@ -263,7 +263,7 @@ export function initSidebarLeft() {
   state.on('change:cablePlacingId',      () => { if (_activeTab === 'cables') _renderCableTabPanel(); });
   state.on('change:selectedCablePoint',  () => { if (_activeTab === 'cables') _renderCableTabPanel(); });
   state.on('change:selectedCableSocket', () => { if (_activeTab === 'cables') _renderCableTabPanel(); });
-  state.on('change:cableGlobalRadius',   () => { if (_activeTab === 'cables') _renderCableTabPanel(); });
+  state.on('change:cableDefaultDiameter', () => { if (_activeTab === 'cables') _renderCableTabPanel(); });
   state.on('change:cableHighlightColor', () => { if (_activeTab === 'cables') _renderCableTabPanel(); });
   state.on('change:styleTemplates',        () => {
     if (_activeTab === 'style')  _renderStyleTabPanel();

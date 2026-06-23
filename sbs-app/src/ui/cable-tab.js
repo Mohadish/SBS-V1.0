@@ -55,9 +55,10 @@ export function renderCableTab(container) {
 
       <div class="card" style="margin-top:8px;padding:8px 10px;">
         <label class="colorlab" style="display:flex;align-items:center;gap:8px;">
-          <span class="small" style="flex:0 0 100px;">Global Radius</span>
-          <input type="number" id="cbl-global-radius" min="0.05" max="50" step="0.1"
-                 value="${state.get('cableGlobalRadius') ?? 1}"
+          <span class="small" style="flex:0 0 100px;">Default Ø (mm)</span>
+          <input type="number" id="cbl-default-dia" min="0.1" max="500" step="0.1"
+                 value="${state.get('cableDefaultDiameter') ?? 2}"
+                 title="Diameter for newly-created cables. Doesn't affect existing cables."
                  style="flex:1;" />
         </label>
         <label class="colorlab" style="display:flex;align-items:center;gap:8px;margin-top:6px;">
@@ -93,9 +94,9 @@ export function renderCableTab(container) {
 
   container.querySelector('#cbl-new')?.addEventListener('click', _onCreate);
   container.querySelector('#cbl-stop')?.addEventListener('click', () => actions.stopCablePlacement());
-  // Phase G: project-level cable global radius commits on change.
-  container.querySelector('#cbl-global-radius')?.addEventListener('change', e => {
-    actions.setCableGlobalRadius(Number(e.target.value));
+  // V0.3.0.165 — project-level DEFAULT diameter for new cables (absolute mm).
+  container.querySelector('#cbl-default-dia')?.addEventListener('change', e => {
+    actions.setCableDefaultDiameter(Number(e.target.value));
   });
   container.querySelector('#cbl-highlight-color')?.addEventListener('change', e => {
     actions.setCableHighlightColor(e.target.value);
@@ -268,9 +269,9 @@ function _renderEditor(container) {
         <label class="colorlab">Color
           <input type="color" id="cbl-color" value="${_esc(cable.style?.color || '#ffb24a')}" />
         </label>
-        <label class="colorlab">Size %
-          <input type="number" id="cbl-size" min="5" max="1000" step="5"
-                 value="${cable.style?.size ?? (typeof cable.style?.radius === 'number' ? Math.round(cable.style.radius * 100 / (state.get('cableGlobalRadius') ?? 1)) : 100)}" />
+        <label class="colorlab">Diameter (mm)
+          <input type="number" id="cbl-dia" min="0.1" max="500" step="0.1"
+                 value="${(typeof cable.style?.diameter === 'number' ? cable.style.diameter : 2).toFixed(2)}" />
         </label>
       </div>
 
@@ -324,14 +325,11 @@ function _renderEditor(container) {
   // Style fields — change-event commits.
   host.querySelector('#cbl-color')?.addEventListener('change',
     e => actions.setCableStyle(cable.id, { color: e.target.value }));
-  host.querySelector('#cbl-size')?.addEventListener('change', e => {
-    // V0.2.22.18 — Number.isFinite + explicit fallback. `|| 100` coerced
-    // a user-typed 0 to 100; naive `?? 100` wouldn't catch NaN
-    // (Number('abc') = NaN, and NaN ?? 100 = NaN). The Math.max(5, …)
-    // floor handles "too small" — we just need a real number going in.
+  host.querySelector('#cbl-dia')?.addEventListener('change', e => {
+    // V0.3.0.165 — absolute diameter (mm). Floor 0.1; NaN → fall back to 2.
     const v = Number(e.target.value);
-    const size = Math.max(5, Number.isFinite(v) ? v : 100);
-    actions.setCableStyle(cable.id, { size });
+    const diameter = Math.max(0.1, Number.isFinite(v) ? v : 2);
+    actions.setCableStyle(cable.id, { diameter });
   });
   host.querySelector('#cbl-curve')?.addEventListener('change', e => {
     actions.setCableCurveMode(cable.id, e.target.value);
@@ -404,7 +402,7 @@ function _renderEditor(container) {
             const ratio = newVal / oldVal;
             for (const [k, inp] of Object.entries(inputs)) {
               if (!inp || k === key) continue;
-              inp.value = String(Math.round(Number(inp.value) * ratio));
+              inp.value = String(Math.round(Number(inp.value) * ratio * 100) / 100);   // mm, 2dp
             }
           }
         }
@@ -462,7 +460,8 @@ function _renderPointRow(node, index, selectedPointNodeId, selectedSocketNodeId)
 
 function _renderSocketEditor(cableId, node) {
   const sock = node.socket;
-  const size = sock.size || { w: 100, h: 100, d: 100 };
+  const size = sock.size || { w: 4, h: 4, d: 6 };
+  const mm = (v) => Math.round((Number(v) || 0) * 100) / 100;   // V0.3.0.165 — tidy mm display
   return `
     <div class="card" style="margin-top:10px;padding:10px;">
       <div class="title" style="margin-bottom:8px;">Socket</div>
@@ -475,18 +474,18 @@ function _renderSocketEditor(cableId, node) {
           <span class="small">Lock ratio</span>
         </label>
       </div>
-      <div class="small muted" style="margin-top:8px;">Size as % of default (cable radius × 4 / 4 / 6).</div>
+      <div class="small muted" style="margin-top:8px;">Absolute size in mm (world units). D = depth into the surface.</div>
       <div class="grid2" style="margin-top:4px;gap:6px;">
-        <label class="colorlab">W %
-          <input type="number" id="sock-w" min="10" max="500" step="5" value="${size.w}" />
+        <label class="colorlab">W (mm)
+          <input type="number" id="sock-w" min="0.1" max="1000" step="0.5" value="${mm(size.w)}" />
         </label>
-        <label class="colorlab">H %
-          <input type="number" id="sock-h" min="10" max="500" step="5" value="${size.h}" />
+        <label class="colorlab">H (mm)
+          <input type="number" id="sock-h" min="0.1" max="1000" step="0.5" value="${mm(size.h)}" />
         </label>
       </div>
       <div class="grid2" style="margin-top:6px;gap:6px;">
-        <label class="colorlab">D %
-          <input type="number" id="sock-d" min="10" max="500" step="5" value="${size.d}" />
+        <label class="colorlab">D (mm)
+          <input type="number" id="sock-d" min="0.1" max="1000" step="0.5" value="${mm(size.d)}" />
         </label>
       </div>
     </div>

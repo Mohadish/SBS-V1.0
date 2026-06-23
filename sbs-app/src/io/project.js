@@ -234,10 +234,12 @@ export function serialize() {
   // variable overrides ride inside step.snapshot.cables, captured by
   // steps.js. Project-level visual globals (scale + highlight colour)
   // travel here too so they restore in one shot. See systems/cables.js.
-  project.cables = project.cables || { schema_version: 1, items: [] };
+  project.cables = project.cables || { schema_version: 2, items: [] };
+  project.cables.schema_version = 2;   // V0.3.0.165 — absolute mm sizing (see MIGRATIONS.cable)
   project.cables.items          = JSON.parse(JSON.stringify(state.get('cables') || []));
   project.cables.globalScale    = state.get('cableGlobalScale')    ?? 1.0;
-  project.cables.globalRadius   = state.get('cableGlobalRadius')   ?? 1.0;   // V0.3.0.161
+  project.cables.globalRadius   = state.get('cableGlobalRadius')   ?? 1.0;   // V0.3.0.161 (legacy; kept for migration)
+  project.cables.defaultDiameter = state.get('cableDefaultDiameter') ?? 2.0; // V0.3.0.165 — default for NEW cables
   project.cables.filletReach    = state.get('cableFilletReach')    ?? 40;    // V0.3.0.161
   project.cables.highlightColor = state.get('cableHighlightColor') ?? '#22d3ee';
 
@@ -519,7 +521,7 @@ export function parseProjectFile(text) {
 
   // New format — run per-section migrations
   const project = { ...raw };
-  const sections = ['assets', 'tree', 'steps', 'chapters', 'cameras', 'colors', 'notes', 'selections', 'settings'];
+  const sections = ['assets', 'tree', 'steps', 'chapters', 'cameras', 'colors', 'notes', 'selections', 'settings', 'cables'];
   for (const sectionName of sections) {
     if (project[sectionName]) {
       project[sectionName] = migrateSection(sectionName, project[sectionName]);
@@ -710,6 +712,9 @@ export function applyProjectToState(project) {
     cables:               project.cables?.items              || [],
     cableGlobalScale:     project.cables?.globalScale        ?? 1.0,
     cableGlobalRadius:    project.cables?.globalRadius        ?? 1.0,   // V0.3.0.161 — was not restored
+    // V0.3.0.165 — default-new-cable diameter (mm). Migrated projects with no
+    // explicit value inherit old globalRadius × 2 so new cables match their look.
+    cableDefaultDiameter: project.cables?.defaultDiameter ?? ((project.cables?.globalRadius ?? 1.0) * 2),
     cableFilletReach:     project.cables?.filletReach         ?? 40,    // V0.3.0.161 — fillet mode
     cableHighlightColor:  project.cables?.highlightColor     ?? '#22d3ee',
   });

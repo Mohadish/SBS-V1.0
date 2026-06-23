@@ -225,7 +225,12 @@ function createInitialState() {
     // default 1.0 here and per-cable size = 100%, a fresh cable
     // renders at thickness = 1.0 — much thinner than the old default
     // of 3 and with finer slider granularity (size step = 5%).
-    cableGlobalRadius:   1.0,
+    cableGlobalRadius:   1.0,         // V0.3.0.165 — legacy; kept only for migrating old projects (no longer a runtime multiplier)
+    // V0.3.0.165 — cables now hold their own ABSOLUTE diameter (mm). This is the
+    // default diameter seeded into NEWLY-created cables (changing it never
+    // touches existing cables). Loaded from project.cables.defaultDiameter
+    // (migrated projects fall back to old globalRadius × 2).
+    cableDefaultDiameter: 2.0,
     cableHighlightColor: '#22d3ee',   // colour when cable.highlight=true
 
     // C3: id of the cable currently in placement mode. While set, the

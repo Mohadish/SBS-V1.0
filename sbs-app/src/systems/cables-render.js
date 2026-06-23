@@ -524,7 +524,7 @@ export function setInsertHoverPosition(worldPos) {
   let radius = 3;
   if (target) {
     const c = listCables().find(x => x.id === target.cableId);
-    radius = c?.style?.radius ?? 3;
+    if (c) radius = cableEffectiveRadius(c);   // V0.3.0.165 — absolute diameter/2
   }
   _insertHoverSphere.scale.setScalar(radius * 1.4);
 }
