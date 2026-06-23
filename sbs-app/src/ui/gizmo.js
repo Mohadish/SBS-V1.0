@@ -156,7 +156,28 @@ class GizmoController {
   applyNumericAmount(value) {
     if (!this._dragging || !this._dragEl || !this._obj3d) return false;
     if (!Number.isFinite(value)) return false;
-    if (this._cableTarget) return false;
+    // V0.3.0.164 — numeric entry now works for cable targets (point / socket /
+    // group). Replicates the cable drag-apply axis math with the typed amount:
+    // translate value = world units along the axis; rotate value = degrees. The
+    // cumulative-from-start apply keeps it idempotent, so revertToDragStart's
+    // applyNumericAmount(0) cleanly returns to the pre-drag pose.
+    if (this._cableTarget) {
+      const cel = this._dragEl;
+      if (cel.type === 'translate') {
+        const worldD = this._axisVec(cel.axis).clone().multiplyScalar(value);
+        this._cableTarget.applyCumulativeDelta(worldD);
+        this._lastAmount = value;
+        return true;
+      }
+      if (cel.type === 'rotate' && this._cableTarget.applyRotateAroundAxis) {
+        const rad    = (value * Math.PI) / 180;
+        const signed = (cel.axis === 'x' || cel.axis === 'y') ? -rad : rad;
+        this._cableTarget.applyRotateAroundAxis(this._axisVec(cel.axis), signed);
+        this._lastAmount = value;
+        return true;
+      }
+      return false;   // plane numeric unsupported for cable targets
+    }
     const el = this._dragEl;
     const no = this._node;
     // 'plane' has two-axis input that needs a different field; 'scale'
@@ -288,11 +309,16 @@ class GizmoController {
       'font-weight:700',
       'letter-spacing:1px',
       'color:#94a3b8',
-      'pointer-events:none',
+      // V0.3.0.164 — clickable toggle (was pointer-events:none): a non-keyboard
+      // way to pick Local/World, esp. for cable sockets + groups. 'L' still works.
+      'pointer-events:auto',
+      'cursor:pointer',
       'display:none',
       'user-select:none',
     ].join(';');
+    el.title = 'Click (or press L) to toggle Local / World axes';
     el.textContent = 'LOCAL';
+    el.addEventListener('click', () => this.toggleSpace());
     document.getElementById('viewer')?.appendChild(el)
       ?? document.body.appendChild(el);
     this._spaceLabelEl = el;
@@ -564,9 +590,9 @@ class GizmoController {
   _updateSpaceLabel() {
     if (!this._spaceLabelEl) return;
     const mode = this._spaceMode;
-    this._spaceLabelEl.textContent = mode === 'local' ? 'LOCAL'
+    this._spaceLabelEl.textContent = (mode === 'local' ? 'LOCAL'
                                    : mode === 'world' ? 'WORLD'
-                                                       : 'PIVOT';
+                                                       : 'PIVOT') + ' ⇄';
     this._spaceLabelEl.style.color = mode === 'local' ? '#60a5fa'
                                    : mode === 'pivot' ? '#fb923c'
                                                        : '#94a3b8';

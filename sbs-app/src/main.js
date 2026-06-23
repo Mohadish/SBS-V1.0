@@ -868,7 +868,9 @@ function _syncGizmoToSelection() {
     const multi = state.get('selectedCablePoints') || [];
     if (multi.length >= 2) {
       const multiTarget = _buildCablePointsGizmoTarget(multi);
-      if (multiTarget) { gizmo.showForCablePoint(multiTarget); return; }
+      // V0.3.0.164 — 'all' mode so the group gets translate + ROTATE handles
+      // (was translate-only). Rotate spins the whole subtree about the centroid.
+      if (multiTarget) { gizmo.showForCableTarget(multiTarget, 'all'); return; }
     }
     const target = _buildCablePointGizmoTarget(cableSel.cableId, cableSel.nodeId);
     if (target) { gizmo.showForCablePoint(target); return; }
@@ -976,15 +978,38 @@ function _buildCablePointsGizmoTarget(points) {
   };
   return {
     isMulti: true,
+    hasRotate: true,   // V0.3.0.164 — group rotate about the centroid
     getWorldPos() {
       const c = new T.Vector3(); let n = 0;
       for (const p of pts) { const w = worldOf(p.cableId, p.nodeId); if (w) { c.add(w); n++; } }
       return n ? c.multiplyScalar(1 / n) : null;
     },
-    getWorldQuat() { return new T.Quaternion(); },   // world-aligned
+    // V0.3.0.164 — LOCAL frame = the double-clicked group ROOT node's surface
+    // orientation (per user spec). Falls back to world axes (identity) when no
+    // root is set (e.g. a shift-built selection) or it can't be resolved. The
+    // gizmo's WORLD toggle ignores this and uses world axes either way.
+    getWorldQuat() {
+      const root = state.get('selectedCableGroupRoot');
+      if (!root) return new T.Quaternion();
+      const cs = state.get('cables') || [];
+      const n  = cs.find(x => x.id === root.cableId)?.nodes?.find(x => x.id === root.nodeId);
+      if (!n || n.anchorType !== 'mesh' || !n.nodeId) return new T.Quaternion();
+      const obj = state.get('nodeById')?.get?.(n.nodeId)?.object3d;
+      if (!obj) return new T.Quaternion();
+      const meshQ = new T.Quaternion(); obj.getWorldQuaternion(meshQ);
+      if (Array.isArray(n.normalLocal) && n.normalLocal.length === 3) {
+        const wn = new T.Vector3(n.normalLocal[0], n.normalLocal[1], n.normalLocal[2])
+          .applyQuaternion(meshQ).normalize();
+        return new T.Quaternion().setFromUnitVectors(new T.Vector3(0, 0, 1), wn);
+      }
+      return meshQ;
+    },
     beginMove() { actions.beginCablePointsMove(pts); },
     applyCumulativeDelta(worldDelta) { actions.applyCablePointsCumulativeDelta(worldDelta); },
     commitMove() { actions.commitCablePointsMove(); },
+    beginRotate() { actions.beginCableGroupRotate(pts); },
+    applyRotateAroundAxis(worldAxis, angle) { actions.applyCableGroupRotate(worldAxis, angle); },
+    commitRotate() { actions.commitCableGroupRotate(); },
   };
 }
 
@@ -2308,6 +2333,16 @@ canvas.addEventListener('dblclick', e => {
   // pending (deferred) open AND any already-open popup.
   _cancelDeferredRaySelect();
   if (_raySelect) _raySelectCancel();
+
+  // V0.3.0.164 — double-click a cable NODE → select its downstream subtree (the
+  // node + all following nodes + branch descendants + their sockets) as one
+  // movable/rotatable group. Runs before the tree guard (cables can exist with
+  // no model loaded) and before mesh logic so it has priority on cable spheres.
+  const cableDbl = _pickCablePoint(e.clientX, e.clientY);
+  if (cableDbl) {
+    actions.selectCableNodeSubtree(cableDbl.cableId, cableDbl.nodeId);
+    return;
+  }
 
   const root = state.get('treeData');
   const nbm  = state.get('nodeById');

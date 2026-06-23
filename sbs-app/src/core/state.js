@@ -261,6 +261,13 @@ function createInitialState() {
     // Shift-click adds/removes; a plain click resets it to the single clicked point.
     selectedCablePoints: [],
 
+    // V0.3.0.164 — the node double-clicked to seed a downstream-subtree group
+    // selection. { cableId, nodeId } | null. Defines the group gizmo's LOCAL
+    // frame (per user spec: local axes = the double-clicked node's orientation).
+    // Stays put while you shift-toggle individual items out; cleared on a plain
+    // single-click or when the cable-point selection is cleared.
+    selectedCableGroupRoot: null,
+
     // C5 (Phase E2): currently selected cable SOCKET. { cableId, nodeId }
     // | null. Mutually exclusive with selectedCablePoint and the mesh
     // selection — selecting any of the three clears the others. Drives

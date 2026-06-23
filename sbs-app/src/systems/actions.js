@@ -5210,13 +5210,66 @@ export function selectCablePoint(cableId, nodeId, additive = false) {
   }
   const primary = multi.some(same) ? { cableId, nodeId }
                 : (multi.length ? { ...multi[multi.length - 1] } : null);
-  state.setState({ selectedCablePoints: multi, selectedCablePoint: primary });
+  // V0.3.0.164 — a plain (non-additive) click starts a fresh selection, so it
+  // drops the double-click group root. Shift-toggling individual items KEEPS the
+  // root so the group gizmo's local frame stays anchored to the clicked node.
+  const groupRoot = additive ? (state.get('selectedCableGroupRoot') || null) : null;
+  state.setState({ selectedCablePoints: multi, selectedCablePoint: primary, selectedCableGroupRoot: groupRoot });
 }
 
 export function clearCablePointSelection() {
-  if (state.get('selectedCablePoint') || (state.get('selectedCablePoints')?.length ?? 0) > 0) {
-    state.setState({ selectedCablePoint: null, selectedCablePoints: [] });
+  if (state.get('selectedCablePoint') || (state.get('selectedCablePoints')?.length ?? 0) > 0
+      || state.get('selectedCableGroupRoot')) {
+    state.setState({ selectedCablePoint: null, selectedCablePoints: [], selectedCableGroupRoot: null });
   }
+}
+
+/**
+ * V0.3.0.164 — double-click a cable node → select the whole DOWNSTREAM SUBTREE:
+ * that node + every following node in its cable + every branch cable that splits
+ * off at/after it (recursively, their nodes + sockets too). Hard-scoped to this
+ * cable and its branch descendants — it never climbs to a parent or sibling cable.
+ * Sockets ride their host node (selecting the node includes its socket). The
+ * double-clicked node becomes the group root (defines the gizmo's local frame).
+ * Shift-click afterwards toggles individual items out (see selectCablePoint).
+ */
+export function selectCableNodeSubtree(rootCableId, rootNodeId) {
+  const rootCable = cables.getCable(rootCableId);
+  if (!rootCable) return;
+  const startIdx = (rootCable.nodes || []).findIndex(n => n.id === rootNodeId);
+  if (startIdx < 0) return;
+
+  const items = [];
+  const seen  = new Set();
+  const add = (cid, nid) => {
+    const k = cid + '|' + nid;
+    if (!seen.has(k)) { seen.add(k); items.push({ cableId: cid, nodeId: nid }); }
+  };
+  const walkCable = (cable, fromIdx) => {
+    const ns = cable.nodes || [];
+    for (let i = Math.max(0, fromIdx); i < ns.length; i++) {
+      const n = ns[i];
+      add(cable.id, n.id);
+      for (const bid of (n.branchCableIds || [])) {
+        const bc = cables.getCable(bid);
+        if (bc && bc.id !== cable.id) walkCable(bc, 0);   // whole branch from its start
+      }
+    }
+  };
+  walkCable(rootCable, startIdx);
+  if (!items.length) return;
+
+  // Clear the other (mutually-exclusive) selections — gizmo follows one target.
+  if (state.get('selectedId') || (state.get('multiSelectedIds')?.size ?? 0) > 0) {
+    state.setSelection(null, new Set());
+    materials.applySelectionHighlight([]);
+  }
+  state.setState({
+    selectedCableSocket:    null,
+    selectedCablePoints:    items,
+    selectedCablePoint:     { cableId: rootCableId, nodeId: rootNodeId },
+    selectedCableGroupRoot: { cableId: rootCableId, nodeId: rootNodeId },
+  });
 }
 
 /**
@@ -6813,6 +6866,113 @@ export function commitCablePointsMove() {
   apply('after');
   undoManager.push(
     `Move ${changes.length} cable point${changes.length === 1 ? '' : 's'}`,
+    () => apply('before'),
+    () => apply('after'),
+  );
+}
+
+// ─── Multi-point cable ROTATE (V0.3.0.164) ──────────────────────────────────
+// Rotate a selected group of cable nodes (+ their sockets) as ONE RIGID BODY
+// about the group centroid. Each node's WORLD position spins about the centroid;
+// each socket's facing rotates by the same world delta. Mesh-anchored nodes only
+// (branch-start nodes ride their source and are skipped). One gizmo, one undo.
+let _cableGroupRotateBatch = null;
+
+export function beginCableGroupRotate(points) {
+  const T = window.THREE; if (!T) { _cableGroupRotateBatch = null; return; }
+  const nodeById = state.get('nodeById');
+  const items = [];
+  const centroid = new T.Vector3(); let cN = 0;
+  for (const { cableId, nodeId } of (points || [])) {
+    const node = _findCableNode(cableId, nodeId);
+    if (!node || node.anchorType !== 'mesh' || !Array.isArray(node.anchorLocal)) continue;
+    const obj = nodeById?.get?.(node.nodeId)?.object3d;
+    if (!obj) continue;
+    obj.updateMatrixWorld?.(true);
+    const sw = new T.Vector3(node.anchorLocal[0], node.anchorLocal[1], node.anchorLocal[2]);
+    obj.localToWorld(sw);
+    const it = { cableId, nodeId, startAnchor: node.anchorLocal.slice(), startWorld: [sw.x, sw.y, sw.z] };
+    if (node.socket) {
+      if (!Array.isArray(node.socket.localQuaternion) || node.socket.localQuaternion.length !== 4) {
+        node.socket.localQuaternion = _quatFromNormalLocal(node);
+      }
+      it.startSocketQuat = node.socket.localQuaternion.slice();
+    }
+    items.push(it);
+    centroid.add(sw); cN++;
+  }
+  if (!items.length) { _cableGroupRotateBatch = null; return; }
+  centroid.multiplyScalar(1 / cN);
+  _cableGroupRotateBatch = { items, centroid: [centroid.x, centroid.y, centroid.z] };
+}
+
+export function applyCableGroupRotate(worldAxis, angle) {
+  if (!_cableGroupRotateBatch) return;
+  const T = window.THREE; if (!T) return;
+  const nodeById = state.get('nodeById');
+  const R = new T.Quaternion().setFromAxisAngle(worldAxis.clone().normalize(), angle);
+  const c = _cableGroupRotateBatch.centroid;
+  const C = new T.Vector3(c[0], c[1], c[2]);
+  for (const it of _cableGroupRotateBatch.items) {
+    const node = _findCableNode(it.cableId, it.nodeId);
+    if (!node || !Array.isArray(node.anchorLocal)) continue;
+    const obj = nodeById?.get?.(node.nodeId)?.object3d;
+    if (!obj) continue;
+    obj.updateMatrixWorld?.(true);
+    // Rigid-rotate the node's world position about the centroid → new mesh-local anchor.
+    const sw  = new T.Vector3(it.startWorld[0], it.startWorld[1], it.startWorld[2]);
+    const rel = sw.clone().sub(C).applyQuaternion(R);
+    const nw  = C.clone().add(rel);
+    obj.worldToLocal(nw);
+    node.anchorLocal[0] = nw.x; node.anchorLocal[1] = nw.y; node.anchorLocal[2] = nw.z;
+    // Socket facing spins by the same world rotation.
+    if (node.socket && it.startSocketQuat) {
+      const meshQ = new T.Quaternion(); obj.getWorldQuaternion(meshQ);
+      const startLocalQ = new T.Quaternion(
+        it.startSocketQuat[0], it.startSocketQuat[1], it.startSocketQuat[2], it.startSocketQuat[3]);
+      const newWorldFacing = R.clone().multiply(meshQ.clone().multiply(startLocalQ));
+      const newLocalQ = meshQ.clone().invert().multiply(newWorldFacing);
+      node.socket.localQuaternion = [newLocalQ.x, newLocalQ.y, newLocalQ.z, newLocalQ.w];
+    }
+  }
+}
+
+export function commitCableGroupRotate() {
+  if (!_cableGroupRotateBatch) return;
+  const batch = _cableGroupRotateBatch; _cableGroupRotateBatch = null;
+  const changes = [];
+  for (const it of batch.items) {
+    const node = _findCableNode(it.cableId, it.nodeId);
+    if (!node || !Array.isArray(node.anchorLocal)) continue;
+    const afterAnchor = node.anchorLocal.slice();
+    const afterSocket = node.socket?.localQuaternion ? node.socket.localQuaternion.slice() : null;
+    const movedAnchor = it.startAnchor.some((v, i) => v !== afterAnchor[i]);
+    const movedSocket = it.startSocketQuat && afterSocket
+      && it.startSocketQuat.some((v, i) => v !== afterSocket[i]);
+    if (!movedAnchor && !movedSocket) continue;
+    changes.push({
+      cableId: it.cableId, nodeId: it.nodeId,
+      beforeAnchor: it.startAnchor, afterAnchor,
+      beforeSocket: it.startSocketQuat || null, afterSocket,
+    });
+  }
+  if (!changes.length) return;
+  const apply = (which) => {
+    for (const ch of changes) {
+      const n = _findCableNode(ch.cableId, ch.nodeId);
+      if (!n) continue;
+      const anchor = which === 'after' ? ch.afterAnchor : ch.beforeAnchor;
+      if (Array.isArray(n.anchorLocal) && anchor) n.anchorLocal = anchor.slice();
+      const sq = which === 'after' ? ch.afterSocket : ch.beforeSocket;
+      if (n.socket && sq) n.socket.localQuaternion = sq.slice();
+    }
+    state.setState({ cables: [...(state.get('cables') || [])] });
+    state.markDirty();
+    steps.scheduleSync();
+  };
+  apply('after');
+  undoManager.push(
+    `Rotate ${changes.length} cable item${changes.length === 1 ? '' : 's'}`,
     () => apply('before'),
     () => apply('after'),
   );
