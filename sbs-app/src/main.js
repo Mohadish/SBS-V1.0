@@ -2082,6 +2082,33 @@ function _pickCablePoint(clientX, clientY) {
   };
 }
 
+/** World distance from point P to segment AB. */
+function _distPointToSegment(p, a, b) {
+  const ab = b.clone().sub(a);
+  const t = Math.max(0, Math.min(1, p.clone().sub(a).dot(ab) / Math.max(ab.lengthSq(), 1e-9)));
+  return p.distanceTo(a.clone().add(ab.multiplyScalar(t)));
+}
+/**
+ * V0.3.0.173 — find the node-pair whose straight segment is nearest a world point.
+ * Flex/fillet cables render as ONE tube (no per-segment ids), so this recovers the
+ * segment a tube hit belongs to → "Insert point" works in curve/fillet mode too.
+ */
+function _nearestCableSegment(cableId, point) {
+  if (!window.THREE || !point) return null;
+  const T = window.THREE;
+  const nodes = (state.get('cables') || []).find(c => c.id === cableId)?.nodes || [];
+  if (nodes.length < 2) return null;
+  const ctx = { makeVec3: (x, y, z) => new T.Vector3(x, y, z) };
+  const pos = nodes.map(n => { const r = resolveNodeWorldPosition(n, ctx); return r.pos ? new T.Vector3(r.pos[0], r.pos[1], r.pos[2]) : null; });
+  let best = null, bestD = Infinity;
+  for (let i = 0; i < pos.length - 1; i++) {
+    if (!pos[i] || !pos[i + 1]) continue;
+    const d = _distPointToSegment(point, pos[i], pos[i + 1]);
+    if (d < bestD) { bestD = d; best = { fromNodeId: nodes[i].id, toNodeId: nodes[i + 1].id }; }
+  }
+  return best;
+}
+
 /**
  * Phase D: raycast cable segment cylinders. Returns { cableId,
  * fromNodeId, toNodeId } for the closest hit segment, or null.
@@ -2100,11 +2127,15 @@ function _pickCableSegment(clientX, clientY) {
   ray.setFromCamera(ndc, sceneCore.camera);
   const hits = ray.intersectObjects(meshes, false).filter(h => _visibleInWorld(h.object));
   if (!hits.length) return null;
-  return {
-    cableId:    hits[0].object.userData.cableId,
-    fromNodeId: hits[0].object.userData.fromNodeId,
-    toNodeId:   hits[0].object.userData.toNodeId,
-  };
+  const obj = hits[0].object;
+  let fromNodeId = obj.userData.fromNodeId;
+  let toNodeId   = obj.userData.toNodeId;
+  if (!fromNodeId && obj.userData.cableId) {
+    // Tube (flex/fillet) — no per-segment ids; resolve the nearest node-pair.
+    const seg = _nearestCableSegment(obj.userData.cableId, hits[0].point);
+    if (seg) { fromNodeId = seg.fromNodeId; toNodeId = seg.toNodeId; }
+  }
+  return { cableId: obj.userData.cableId, fromNodeId, toNodeId };
 }
 
 /**

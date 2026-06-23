@@ -1648,9 +1648,49 @@ class GizmoController {
    * Esc-revert, (c) re-enters pivot edit on the new node if the panel
    * is in PIVOT space mode and the new node is transformable.
    */
+  /** V0.3.0.173 — minimal transform panel for a cable target (group / socket): a
+   *  working LOCAL/WORLD toggle + how to type exact values (drag a handle + type). */
+  _cablePanelHTML() {
+    const closeBtn = `<button data-action="close" title="Close panel" style="font-size:13px;line-height:1;padding:2px 7px;background:transparent;border:1px solid var(--line,#334155);border-radius:4px;color:var(--muted,#94a3b8);cursor:pointer;font-weight:700;">×</button>`;
+    const title = this._cableTarget?.isMulti ? 'Cable group' : 'Cable / socket';
+    const sl = this._spaceMode === 'local', sw = this._spaceMode === 'world';
+    return `
+      <div data-panel-drag="1" style="display:flex;align-items:center;justify-content:space-between;gap:8px;margin-bottom:10px;cursor:move;user-select:none;padding:2px 0;border-bottom:1px solid #1e293b;">
+        <span style="font-weight:700;font-size:13px;color:#f1f5f9;letter-spacing:0.3px;flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">${title}</span>
+        ${closeBtn}
+      </div>
+      <div style="display:flex;gap:4px;margin-bottom:10px;">
+        <button data-space="local" style="${this._spaceBtn(sl)}">LOCAL</button>
+        <button data-space="world" style="${this._spaceBtn(sw)}">WORLD</button>
+      </div>
+      <div style="font-size:11px;color:#94a3b8;line-height:1.55;">
+        <b>LOCAL</b> = the picked node's surface frame · <b>WORLD</b> = world axes (the <b>L</b> key does this too).<br>
+        <span style="color:#64748b;">Exact value: grab a handle (arrow / ring), type a number — mm to move, ° to rotate — then Enter.</span>
+      </div>
+    `;
+  }
+
   _rebindPanel() {
     const panel = this._panel;
     if (!panel) return;
+
+    // V0.3.0.173 — cable targets (group / socket) get a minimal panel with a WORKING
+    // LOCAL/WORLD toggle. The mesh panel greyed them out, so you couldn't switch to
+    // world from the panel (only the L key / bottom-left label did it).
+    if (this._cableTarget) {
+      panel.innerHTML = this._cablePanelHTML();
+      panel._panelNodeId = null;
+      panel._preOpenSnapshot = null;
+      panel.querySelectorAll('[data-space]').forEach(btn => {
+        btn.addEventListener('click', () => {
+          this.setSpace(btn.dataset.space);
+          panel.querySelectorAll('[data-space]').forEach(b => { b.style.cssText = this._spaceBtn(b.dataset.space === this._spaceMode); });
+        });
+      });
+      panel.querySelector('[data-action="close"]')?.addEventListener('click', () => this._closePanel());
+      this._wirePanelDragHandle(panel);
+      return;
+    }
 
     const newNode = (this._node && !this._cableTarget) ? this._node : null;
     const newObj  = newNode ? this._obj3d : null;
@@ -2082,7 +2122,13 @@ class GizmoController {
    * Re-render current values into open panel without recreating it.
    */
   _refreshPanel() {
-    if (!this._panel || !this._node) return;
+    if (!this._panel) return;
+    // V0.3.0.173 — cable panel: keep the LOCAL/WORLD highlight in sync (e.g. L key).
+    if (this._cableTarget) {
+      this._panel.querySelectorAll('[data-space]').forEach(b => { b.style.cssText = this._spaceBtn(b.dataset.space === this._spaceMode); });
+      return;
+    }
+    if (!this._node) return;
     const no = this._node;
     const isPivotMode = this._spaceMode === 'pivot';
 
