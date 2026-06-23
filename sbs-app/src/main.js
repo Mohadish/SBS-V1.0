@@ -3673,22 +3673,11 @@ const _viewportSurfaceEl = document.getElementById('viewport-surface');
   ov.appendChild(wm);
   surf.appendChild(ov);
 
-  const btn = document.createElement('button');
-  btn.id = 'global-mode-btn';
-  btn.title = 'Toggle Global Mode (Space) — transform edits carry across steps on deselect';
-  btn.style.cssText = 'position:absolute;top:8px;right:10px;z-index:60;pointer-events:auto;'
-    + 'cursor:pointer;font:600 12px system-ui,sans-serif;padding:5px 11px;border-radius:6px;'
-    + 'border:1px solid #2563eb;background:rgba(17,24,39,0.78);color:#93c5fd;transition:all .12s;';
-  btn.addEventListener('click', () => actions.toggleGlobalMode());
-  surf.appendChild(btn);
-
+  // V0.3.0.174 — removed the always-on top-right "🌐 Global" toggle button: it
+  // sat over the header/overlay UI. Space toggles Global Mode and the blue
+  // viewport overlay (below) is the on-screen indication.
   const sync = () => {
-    const on = !!state.get('globalMode');
-    ov.style.display     = on ? 'block' : 'none';
-    btn.textContent      = on ? '🌐 Global: ON' : '🌐 Global';
-    btn.style.background  = on ? '#2563eb' : 'rgba(17,24,39,0.78)';
-    btn.style.color       = on ? '#ffffff' : '#93c5fd';
-    btn.style.boxShadow   = on ? '0 0 10px 2px rgba(37,99,235,0.6)' : 'none';
+    ov.style.display = state.get('globalMode') ? 'block' : 'none';
   };
   state.on('change:globalMode', sync);
   sync();

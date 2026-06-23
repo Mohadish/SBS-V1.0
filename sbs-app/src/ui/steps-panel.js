@@ -959,7 +959,11 @@ function _resolveTargetGroupForSlot() {
   const prevStep = stepOf(prevEl);
   if (nextStep?.groupId)  return nextStep.groupId;
   if (prevStep?.groupHead) return prevStep.id;
-  // prev is a sub-step but next isn't part of same group → out
+  // V0.3.0.174 — the slot sits AFTER a group's last sub-step (prev is a sub-step,
+  // next isn't part of the group). Previously this fell through to top-level, so
+  // you could never drop at the END of a group — only one-before-last. Now it
+  // joins that group as its last position (the orange end-of-group slot).
+  if (prevStep?.groupId) return prevStep.groupId;
   return null;
 }
 
@@ -2179,10 +2183,41 @@ async function _deleteChapter(chapterId) {
 
 async function _onAddStep() {
   await steps.flushSync();
-  const chapterId = state.get('_pendingChapterId') ?? null;
-  const step = actions.createStep('New Step', { chapterId });
-  if (chapterId) state.setState({ _pendingChapterId: null });
-  setStatus(`Created step "${step.name}".`);
+  const all = state.get('steps') || [];
+
+  // Empty project — make a blank first step (into the just-made chapter if any).
+  if (!all.length) {
+    const chapterId = state.get('_pendingChapterId') ?? null;
+    const step = actions.createStep('New Step', { chapterId });
+    if (chapterId) state.setState({ _pendingChapterId: null });
+    setStatus(`Created step "${step.name}".`);
+    return;
+  }
+
+  // V0.3.0.174 — "New step" now DUPLICATES the LAST step (no selection needed),
+  // so you can be anywhere. If the last step's chapter is followed by an EMPTY
+  // chapter, the copy lands as that chapter's first step; otherwise it lands right
+  // after the last step.
+  const lastStep = all[all.length - 1];
+  const chapters = state.get('chapters') || [];
+  let emptyChapter = null;
+  const chIdx = chapters.findIndex(c => c.id === lastStep.chapterId);
+  if (chIdx >= 0) {
+    for (let i = chIdx + 1; i < chapters.length; i++) {
+      if (!all.some(s => s.chapterId === chapters[i].id)) { emptyChapter = chapters[i]; break; }
+    }
+  }
+
+  const copy = actions.duplicateStep(lastStep.id);   // copy lands right after lastStep
+  if (copy && emptyChapter) {
+    // Re-home the copy into the trailing empty chapter (mutate in place so
+    // duplicateStep's undo/redo, which captured this ref, stays consistent).
+    copy.chapterId = emptyChapter.id;
+    state.setState({ steps: [...(state.get('steps') || [])] });
+    state.markDirty();
+  }
+  if (state.get('_pendingChapterId')) state.setState({ _pendingChapterId: null });
+  if (copy) setStatus(`New step — copy of "${lastStep.name}"${emptyChapter ? ` → "${emptyChapter.name}"` : ''}.`);
 }
 
 // ── Video export ────────────────────────────────────────────────────────────
@@ -2352,20 +2387,30 @@ function _promptString(title, defaultVal = '') {
         <input type="text" id="_sp-input" value="${_escStep(defaultVal)}"
           style="margin-top:10px;width:100%;box-sizing:border-box" />
         <div style="display:flex;gap:8px;justify-content:flex-end;margin-top:12px">
-          <button class="btn" id="_sp-cancel">Cancel</button>
-          <button class="btn" id="_sp-ok">OK</button>
+          <button type="button" class="btn" id="_sp-cancel">Cancel</button>
+          <button type="button" class="btn" id="_sp-ok">OK</button>
         </div>
       </div>
     `;
     document.body.appendChild(dlg);
     const input  = dlg.querySelector('#_sp-input');
-    const done   = (val) => { dlg.close(); dlg.remove(); resolve(val); };
+    // V0.3.0.174 — idempotent close (guard against a double fire leaving the
+    // dialog up) + close() wrapped so a throw can't skip remove().
+    let settled = false;
+    const done   = (val) => {
+      if (settled) return;
+      settled = true;
+      try { dlg.close(); } catch {}
+      dlg.remove();
+      resolve(val);
+    };
     dlg.querySelector('#_sp-cancel').addEventListener('click', () => done(null));
     dlg.querySelector('#_sp-ok').addEventListener('click', () => done(input.value.trim() || null));
     input.addEventListener('keydown', e => {
-      if (e.key === 'Enter')  done(input.value.trim() || null);
-      if (e.key === 'Escape') done(null);
+      if (e.key === 'Enter')  { e.preventDefault(); done(input.value.trim() || null); }
+      if (e.key === 'Escape') { e.preventDefault(); done(null); }
     });
+    dlg.addEventListener('cancel', e => { e.preventDefault(); done(null); });   // native Esc on <dialog>
     dlg.showModal();
     // Explicit focus — <dialog> sometimes auto-focuses the first button
     // instead of the input, which eats the Enter keystroke.
