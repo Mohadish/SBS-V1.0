@@ -346,11 +346,11 @@ class GizmoController {
       this._orientAxis(visGroup, axis);
       this._group.add(visGroup);
 
-      // V0.3.0.178 — TIGHT hit sleeve that hugs the visible arrow (shaft 0.0125 +
-      // cone 0.038), tapered like it. Was 0.18→0.06 (≈14× the shaft), whose fat
-      // tip — when the arrow pointed at the camera — covered the plane handles so
-      // you couldn't pick them. Now ~0.06 at the cone, ~0.03 at the shaft.
-      const hitGeo   = new T.CylinderGeometry(0.06, 0.03, 0.97, 8);
+      // V0.3.0.178/179 — hit sleeve hugging the visible arrow (shaft 0.0125 +
+      // cone 0.038) with only a ~1px margin: 0.042 at the cone, 0.02 at the shaft.
+      // Was a fat 0.18→0.06 cone whose tip covered the plane handles when the arrow
+      // pointed at the camera; even 0.06→0.03 was still too much border.
+      const hitGeo   = new T.CylinderGeometry(0.042, 0.02, 0.97, 8);
       const hitMat   = new T.MeshBasicMaterial({ visible: false, depthTest: false });
       const hit      = new T.Mesh(hitGeo, hitMat);
       hit.position.y = 0.485;
@@ -382,7 +382,7 @@ class GizmoController {
       vis.rotation.y = p.rotY;
       this._group.add(vis);
 
-      const hGeo  = new T.PlaneGeometry(0.26, 0.26);
+      const hGeo  = new T.PlaneGeometry(0.20, 0.20);   // V0.3.0.179 — ~1px margin over the 0.18 visible plane (was 0.26)
       const hMat  = new T.MeshBasicMaterial({ visible: false, side: T.DoubleSide, depthTest: false });
       const hit   = new T.Mesh(hGeo, hMat);
       hit.position.set(...p.pos);
@@ -405,7 +405,7 @@ class GizmoController {
       this._orientRing(ring, axis);
       this._group.add(ring);
 
-      const hitGeo = new T.TorusGeometry(0.55, 0.04, 6, 56);   // V0.3.0.178 — tighter ring hit (was 0.085, visible tube 0.015)
+      const hitGeo = new T.TorusGeometry(0.55, 0.022, 8, 64);   // V0.3.0.179 — ~1px hug of the visible ring (tube 0.015; was 0.085→0.04)
       const hitMat = new T.MeshBasicMaterial({ visible: false, depthTest: false });
       const hit    = new T.Mesh(hitGeo, hitMat);
       this._orientRing(hit, axis);
@@ -439,7 +439,7 @@ class GizmoController {
     vis.visible  = false;
     this._group.add(vis);
 
-    const hitGeo = new T.BoxGeometry(0.22, 0.22, 0.22);
+    const hitGeo = new T.BoxGeometry(0.165, 0.165, 0.165);   // V0.3.0.179 — ~1px margin over the 0.14 visible hub (was 0.22)
     const hitMat = new T.MeshBasicMaterial({ visible: false, depthTest: false });
     const hit    = new T.Mesh(hitGeo, hitMat);
     hit.visible  = false;
