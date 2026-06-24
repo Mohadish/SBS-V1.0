@@ -5293,6 +5293,43 @@ export function setCablesSocketColor(ids, color) {
   );
 }
 
+/** V0.3.0.176 — set the SHAPE ('box'|'cylinder') of every socket across cables. One undo. */
+export function setCablesSocketShape(ids, shape) {
+  const s = shape === 'cylinder' ? 'cylinder' : 'box';
+  const changes = [];
+  _eachSocketNode(ids, (cable, n) => { changes.push({ cableId: cable.id, nodeId: n.id, before: n.socket.shape || 'box' }); });
+  if (!changes.length) return;
+  const apply = (useBefore) => {
+    for (const ch of changes) {
+      const n = _findCableNode(ch.cableId, ch.nodeId);
+      if (n?.socket) n.socket.shape = useBefore ? ch.before : s;
+    }
+    state.setState({ cables: [...(state.get('cables') || [])] });
+    state.markDirty();
+  };
+  apply(false);
+  undoManager.push(`Socket shape ×${changes.length}`, () => apply(true), () => apply(false));
+}
+
+/** V0.3.0.176 — set the cylinder RADIUS (mm) of every socket across cables. One undo. */
+export function setCablesSocketRadius(ids, radius) {
+  const r = Math.max(0.1, +radius);
+  if (!Number.isFinite(r)) return;
+  const changes = [];
+  _eachSocketNode(ids, (cable, n) => { changes.push({ cableId: cable.id, nodeId: n.id, before: n.socket.radius ?? 4 }); });
+  if (!changes.length) return;
+  const apply = (useBefore) => {
+    for (const ch of changes) {
+      const n = _findCableNode(ch.cableId, ch.nodeId);
+      if (n?.socket) n.socket.radius = useBefore ? ch.before : r;
+    }
+    state.setState({ cables: [...(state.get('cables') || [])] });
+    state.markDirty();
+  };
+  apply(false);
+  undoManager.push(`Socket radius ×${changes.length}`, () => apply(true), () => apply(false));
+}
+
 /**
  * Set socket dimensions (absolute mm) across every socket of several cables.
  * `sizePatch` = { w?, h?, d? } — only the supplied axes change (so editing W

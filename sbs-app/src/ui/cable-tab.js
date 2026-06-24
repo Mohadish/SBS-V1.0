@@ -579,6 +579,8 @@ function _renderMultiEditor(ids) {
   for (const c of ordered) { for (const nd of (c.nodes || [])) { if (nd.socket) { sock = nd.socket; break; } } if (sock) break; }
   const sockColor  = sock?.color || '#ff9d57';
   const sz         = sock?.size || { w: 4, h: 4, d: 6 };
+  const sockShape  = sock?.shape === 'cylinder' ? 'cylinder' : 'box';   // V0.3.0.176
+  const sockRadius = sock?.radius ?? 4;
   const sockCount  = cs.reduce((a, c) => a + (c.nodes || []).filter(x => x.socket).length, 0);
   const mm = (v) => Math.round((Number(v) || 0) * 100) / 100;
   const noSockets = sockCount === 0;
@@ -597,7 +599,14 @@ function _renderMultiEditor(ids) {
         </label>
       </div>
 
-      <div class="small muted" style="margin-top:8px;">Socket size (mm) — applies to all sockets. D = depth into surface.</div>
+      <label class="colorlab" style="display:flex;align-items:center;gap:8px;margin-top:8px;">
+        <span class="small" style="flex:0 0 50px;">Shape</span>
+        <select id="mc-sock-shape" ${sockDisabled}>
+          <option value="box"      ${sockShape === 'box'      ? 'selected' : ''}>Box (rectangular)</option>
+          <option value="cylinder" ${sockShape === 'cylinder' ? 'selected' : ''}>Cylinder (round)</option>
+        </select>
+      </label>
+      <div class="small muted" style="margin-top:8px;">Socket size (mm) — all sockets. W/H = box · Radius = cylinder · D = depth/height (both).</div>
       <div class="grid2" style="margin-top:4px;gap:6px;">
         <label class="colorlab">W (mm)
           <input type="number" id="mc-sock-w" min="0.1" max="1000" step="0.5" value="${mm(sz.w)}" ${sockDisabled} />
@@ -607,8 +616,11 @@ function _renderMultiEditor(ids) {
         </label>
       </div>
       <div class="grid2" style="margin-top:6px;gap:6px;">
-        <label class="colorlab">D (mm)
+        <label class="colorlab">D / Height (mm)
           <input type="number" id="mc-sock-d" min="0.1" max="1000" step="0.5" value="${mm(sz.d)}" ${sockDisabled} />
+        </label>
+        <label class="colorlab">Radius (mm)
+          <input type="number" id="mc-sock-radius" min="0.1" max="1000" step="0.5" value="${mm(sockRadius)}" ${sockDisabled} />
         </label>
       </div>
       ${noSockets ? `<div class="small muted" style="margin-top:8px;">None of these cables have sockets yet — add sockets to use the socket fields.</div>` : ''}
@@ -619,6 +631,9 @@ function _renderMultiEditor(ids) {
 function _wireMultiEditor(host, ids) {
   host.querySelector('#mc-cable-color')?.addEventListener('change', e => actions.setCablesColor(ids, e.target.value));
   host.querySelector('#mc-sock-color')?.addEventListener('change', e => actions.setCablesSocketColor(ids, e.target.value));
+  // V0.3.0.176 — shape + radius across all selected cables' sockets.
+  host.querySelector('#mc-sock-shape')?.addEventListener('change', e => actions.setCablesSocketShape(ids, e.target.value));
+  host.querySelector('#mc-sock-radius')?.addEventListener('change', e => actions.setCablesSocketRadius(ids, Number(e.target.value)));
   // Per-axis: editing W leaves each socket's H/D untouched.
   host.querySelector('#mc-sock-w')?.addEventListener('change', e => actions.setCablesSocketSize(ids, { w: Number(e.target.value) }));
   host.querySelector('#mc-sock-h')?.addEventListener('change', e => actions.setCablesSocketSize(ids, { h: Number(e.target.value) }));
