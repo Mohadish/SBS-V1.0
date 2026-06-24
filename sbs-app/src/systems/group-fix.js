@@ -28,7 +28,7 @@ import { undoManager } from './undo.js';
 import { createNode }  from '../core/schema.js';
 import { captureTransformSnapshot } from '../core/transforms.js';
 import { moveNode, findParent, buildNodeMap, isDescendantOf, serializeModelTree } from '../core/nodes.js';
-import { chooseFromButtons } from '../ui/prompt.js';
+import { chooseFromButtons, promptString } from '../ui/prompt.js';
 import { setStatus }         from '../ui/status.js';
 import { isolateSelection, enterPivotEdit, commitPivotEdit } from './actions.js';   // V0.3.0.172 pivot-in-flow
 
@@ -170,7 +170,7 @@ function _finalizeGroupPivot(folderId, scopedIds) {
 /**
  * Core action. Returns { ok, folderId, strategy, scopedCount, scopedIds } or { error }.
  */
-export function groupObjectsForGlobalEdit(nodeIds, scope = 'all') {
+export function groupObjectsForGlobalEdit(nodeIds, scope = 'all', folderName = '') {
   const root = state.get('treeData');
   if (!root) return { error: 'no-scene' };
   const nodeById = state.get('nodeById') || buildNodeMap(root);
@@ -208,8 +208,10 @@ export function groupObjectsForGlobalEdit(nodeIds, scope = 'all') {
     ? ids.map(id => { const n = nodeById.get(id); return { id, bp: [...(n.baseLocalPosition || [0, 0, 0])], bq: [...(n.baseLocalQuaternion || [0, 0, 0, 1])] }; })
     : [];
 
-  // The folder.
-  const F = createNode('folder', { name: 'Global group' });
+  // The folder. Name persists globally (folders carry one id across every
+  // step they live in — see renameNodeGlobal), so a real name beats "Global
+  // group" for navigating the tree at step 40.
+  const F = createNode('folder', { name: (folderName || '').trim() || 'Global group' });
   const fXf = _identityXf();
   const idSet = new Set(ids);
   const scopedSet = new Set(scopedIds);
@@ -284,7 +286,7 @@ export function groupObjectsForGlobalEdit(nodeIds, scope = 'all') {
       state.emit('change:treeData', r);
       state.markDirty?.();
     },
-    () => groupObjectsForGlobalEdit(nodeIds, scope),
+    () => groupObjectsForGlobalEdit(nodeIds, scope, F.name),
   );
   return { ok: true, folderId: F.id, strategy, scopedCount: scopedIds.length, scopedIds };
 }
@@ -320,7 +322,12 @@ export async function promptGroupForGlobalEdit(nodeIds) {
   );
   if (!scope || scope === 'cancel') return;
 
-  const res = groupObjectsForGlobalEdit(ids, scope);
+  // Name it — a real name persists across every scoped step (folder ids are
+  // global). Blank/cancel falls back to "Global group" rather than aborting
+  // the heavy op the user already confirmed.
+  const name = (await promptString('Name this group', 'Global group')) || 'Global group';
+
+  const res = groupObjectsForGlobalEdit(ids, scope, name);
   if (res?.error) {
     setStatus(`Couldn't group: ${res.error}.`, 'warn', 3000);
     return;

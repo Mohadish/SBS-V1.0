@@ -356,6 +356,27 @@ function _collectAncestors(root, targetId, out) {
 
 // ── Tree construction ─────────────────────────────────────────────────────────
 
+// Folders float to the top of every level (V0.3.0.181). DISPLAY-ONLY — never
+// mutates node.children, so step snapshots, drag-drop (drops re-parent into a
+// container by id, not by sibling position) and save/load are all untouched.
+// Stable partition keeps creation order within folders and within non-folders.
+// Used by BOTH the renderer and _visibleNodeIds so shift-range selection
+// matches what the user sees. When folders are collapsed, only loose
+// objects/models remain visible below them — exactly the user's ask.
+function _sortedChildren(node) {
+  const kids = node?.children || [];
+  if (kids.length < 2) return kids;
+  let sawFolder = false, sawOther = false, mixed = false;
+  for (const c of kids) {
+    if (c.type === 'folder') { sawFolder = true; if (sawOther) mixed = true; }
+    else { sawOther = true; }
+  }
+  if (!mixed) return kids;   // already folder-first (or single-kind) → no realloc
+  const folders = [], rest = [];
+  for (const c of kids) (c.type === 'folder' ? folders : rest).push(c);
+  return folders.concat(rest);
+}
+
 function _buildNode(node, depth) {
   // Active tree filters: drop anything outside the computed visible set (root always
   // stays). Parent's child loop skips the resulting nulls.
@@ -377,7 +398,7 @@ function _buildNode(node, depth) {
   if (showKids) {
     const childList = document.createElement('div');
     childList.className = 'children';
-    for (const child of node.children) {
+    for (const child of _sortedChildren(node)) {
       const el = _buildNode(child, depth + 1);
       if (el) childList.appendChild(el);
     }
@@ -669,7 +690,7 @@ function _visibleNodeIds() {
     const isLockedFolder = node.type === 'folder' && node.locked === true;
     const hasKids = (node.children?.length ?? 0) > 0;
     if (hasKids && !isLockedFolder && _expanded.has(node.id)) {
-      for (const c of node.children) walk(c);
+      for (const c of _sortedChildren(node)) walk(c);
     }
   })(root);
   return out;
@@ -1367,26 +1388,17 @@ function _buildContextMenuItems(node) {
   items.push({ separator: true });
 
   // ── General ──────────────────────────────────────────────────────────────────
-  // Rename: nodes whose identity is GLOBAL across steps (mesh / flatShape /
-  // replaceModel) cascade their new name into every step's snapshot.tree
-  // via actions.renameNodeGlobal. Folders / models keep the legacy per-step
-  // rename — their name lives only on the live tree (folders are step-local
-  // containers; renaming them across steps is a separate, larger change).
+  // Rename is GLOBAL by default (V0.3.0.181). Every renamable node — folders,
+  // models, primitives, mesh / flatShape / replaceModel — carries one id across
+  // the timeline, so renameNodeGlobal cascades the new name into every step's
+  // snapshot.tree. No more per-step name drift / revert-on-navigate. (Folders
+  // used to rename per-step only; the user asked for one persistent name since
+  // a folder's id already persists across the steps it lives in.)
   if (node.type !== 'scene' && node.type !== 'note') {
-    const useGlobalRename = node.type === 'mesh' ||
-                            node.type === 'flatShape' ||
-                            node.type === 'replaceModel';
     items.push({
       label: `✏ Rename "${(node.name || '').slice(0, 24)}"`,
       action: () => _showInputDialog('Rename', node.name || '', name => {
-        if (useGlobalRename) {
-          actions.renameNodeGlobal(node.id, name);
-        } else {
-          node.name = name;
-          if (node.object3d) node.object3d.name = name;
-          state.emit('change:treeData', state.get('treeData'));
-          steps.scheduleTransformSync();
-        }
+        actions.renameNodeGlobal(node.id, name);
       }),
     });
   }
@@ -2790,6 +2802,8 @@ export function showMoveToFolderDialog(nodeIds) {
         Moving ${nodeIds.length} item${nodeIds.length > 1 ? 's' : ''} — pick a destination
         ${common ? '' : '<br><span style="color:#fbbf24">Items come from different folders — choose where they go.</span>'}
       </p>
+      <input type="text" id="mtf-search" placeholder="🔍 filter folders by name…"
+        style="width:100%;box-sizing:border-box;margin-bottom:6px;padding:5px 8px;background:#0b1220;border:1px solid #334155;border-radius:6px;color:#e2e8f0;font-size:12px;" />
       <div id="mtf-tree" style="max-height:300px;overflow:auto;border:1px solid #334155;border-radius:6px;padding:4px;background:#0b1220;user-select:none;"></div>
       <label class="colorlab" style="margin-top:10px">New sub-folder name (optional)
         <input type="text" id="mtf-new-name" placeholder="leave blank to move into the selected folder" style="margin-top:6px" />
@@ -2802,17 +2816,28 @@ export function showMoveToFolderDialog(nodeIds) {
   `;
 
   const treeEl = dlg.querySelector('#mtf-tree');
+  const search = dlg.querySelector('#mtf-search');
   const input  = dlg.querySelector('#mtf-new-name');
   const accept = dlg.querySelector('#mtf-accept');
   const cancel = dlg.querySelector('#mtf-cancel');
 
   const ICON = { scene: '🌐', folder: '🗂', model: '🧩' };
 
+  // Search filter (V0.3.0.181): a node survives if it (or any descendant)
+  // name-matches. Root always stays as the anchor. Active query force-expands
+  // so matches deep in collapsed branches actually show.
+  let query = '';
+  const nameHit = (n) => (n.name || '').toLowerCase().includes(query);
+  const subtreeHit = (n) => nameHit(n) || (n.children || []).some(subtreeHit);
+
   const render = () => {
     treeEl.innerHTML = '';
+    let shown = 0;
     const walk = (node, depth) => {
+      if (query && node.id !== treeData.id && !subtreeHit(node)) return;
+      shown++;
       const hasKids     = node.children.length > 0;
-      const isCollapsed = collapsed.has(node.id);
+      const isCollapsed = query ? false : collapsed.has(node.id);
       const sel         = node.id === selectedId;
 
       const row = document.createElement('div');
@@ -2845,7 +2870,15 @@ export function showMoveToFolderDialog(nodeIds) {
       if (hasKids && !isCollapsed) for (const c of node.children) walk(c, depth + 1);
     };
     walk(treeData, 0);
+    if (query && shown <= 1) {
+      const empty = document.createElement('div');
+      empty.style.cssText = 'padding:8px 6px;color:#64748b;font-size:12px;';
+      empty.textContent = 'No folders match.';
+      treeEl.appendChild(empty);
+    }
   };
+
+  search.addEventListener('input', () => { query = search.value.trim().toLowerCase(); render(); });
 
   treeEl.addEventListener('click', (e) => {
     const tog = e.target.closest('[data-toggle]');
