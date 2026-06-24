@@ -346,7 +346,11 @@ class GizmoController {
       this._orientAxis(visGroup, axis);
       this._group.add(visGroup);
 
-      const hitGeo   = new T.CylinderGeometry(0.18, 0.06, 0.97, 8);
+      // V0.3.0.178 — TIGHT hit sleeve that hugs the visible arrow (shaft 0.0125 +
+      // cone 0.038), tapered like it. Was 0.18→0.06 (≈14× the shaft), whose fat
+      // tip — when the arrow pointed at the camera — covered the plane handles so
+      // you couldn't pick them. Now ~0.06 at the cone, ~0.03 at the shaft.
+      const hitGeo   = new T.CylinderGeometry(0.06, 0.03, 0.97, 8);
       const hitMat   = new T.MeshBasicMaterial({ visible: false, depthTest: false });
       const hit      = new T.Mesh(hitGeo, hitMat);
       hit.position.y = 0.485;
@@ -401,7 +405,7 @@ class GizmoController {
       this._orientRing(ring, axis);
       this._group.add(ring);
 
-      const hitGeo = new T.TorusGeometry(0.55, 0.085, 6, 56);
+      const hitGeo = new T.TorusGeometry(0.55, 0.04, 6, 56);   // V0.3.0.178 — tighter ring hit (was 0.085, visible tube 0.015)
       const hitMat = new T.MeshBasicMaterial({ visible: false, depthTest: false });
       const hit    = new T.Mesh(hitGeo, hitMat);
       this._orientRing(hit, axis);
