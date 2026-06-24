@@ -1305,11 +1305,17 @@ function _tickAnchorRefresh() {
         }
         if (!wq) { box.visible = false; continue; }
         const actual = socketActualSize(cable, node.socket);
-        const w = actual.w * globalScale;
-        const h = actual.h * globalScale;
         const d = actual.d * globalScale;
         box.visible = true;
-        box.scale.set(w, h, d);
+        // V0.3.0.180 — this per-frame re-scale must honor the CYLINDER shape too.
+        // It always wrote (w,h,d), overwriting the build's (r,r,d) every frame — so
+        // the cylinder rendered at the box width and editing the RADIUS did nothing.
+        if (node.socket.shape === 'cylinder') {
+          const r = Math.max(0.1, node.socket.radius ?? 4) * globalScale;
+          box.scale.set(r, r, d);
+        } else {
+          box.scale.set(actual.w * globalScale, actual.h * globalScale, d);
+        }
         box.quaternion.copy(wq);
         const zWorld = new T.Vector3(0, 0, 1).applyQuaternion(wq);
         box.position.copy(p).addScaledVector(zWorld, -d / 2);
