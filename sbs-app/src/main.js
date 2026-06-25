@@ -532,7 +532,19 @@ window.sbsMirror = {
   clear: () => { sceneCore.clearPlanarMirrors(); console.log('[mirror] cleared'); },
 };
 
+// Renderer WebGPU Kokoro engine — debug hooks. Synth auto-routes through this
+// when ready (see systems/tts.js); these let you drive it manually:
+//   await window.sbsTTSWebGPU.warmUp()   → init + report 'ready'|'unavailable'
+//   await window.sbsTTSWebGPU.state()    → current engine state
+//   await window.sbsTTSWebGPU.synth('hello there')   → { dataUrl, durationMs }
+window.sbsTTSWebGPU = {
+  warmUp: ()                          => import('./systems/tts-webgpu.js').then(m => m.warmUp()),
+  state:  ()                          => import('./systems/tts-webgpu.js').then(m => m.getState()),
+  synth:  (t, v = 'af_heart', s = 1)  => import('./systems/tts-webgpu.js').then(m => m.synthesize(t, v, s)),
+};
+
 // ── Select Similar (V0.3.0.48) ────────────────────────────────────────────────
+
 // Pick one mesh → select every part with a matching geometry fingerprint. CAD
 // assemblies keep repeated parts (screws/nuts/washers) as instances of the same
 // geometry, so identical fingerprints group them reliably. window.sbsSelectSimilar().

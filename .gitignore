@@ -37,6 +37,12 @@ Thumbs.db
 # it up via build.extraResources at packaging time.
 sbs-app/kokoro-bundle/
 
+# WebGPU-Kokoro vendored assets — regenerated (+ patched) from node_modules by
+# `npm run vendor-tts`. The wasm is ~21 MB; the bundle is patched, so it must be
+# produced by the script, not committed. Build runs vendor-tts automatically.
+sbs-app/vendor/kokoro.web.js
+sbs-app/vendor/ort/
+
 # User-project saves — large binary CAD files (FBX, GLB, STEP) + per-user
 # .sbsproj scratch files. Should never have been tracked. Files stay on
 # disk locally; new ones won't enter git.

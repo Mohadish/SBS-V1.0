@@ -85,6 +85,9 @@ contextBridge.exposeInMainWorld('sbsNative', {
     // lives in the preload or gets embedded in the binary.
     gcpSynthesize: (text, voice, speed = 1, apiKey = '') =>
       ipcRenderer.invoke('tts:gcp-synthesize', text, voice, speed, apiKey),
+    // file:// URL of the Kokoro model bundle, resolved by main (dev / packaged /
+    // worktree). The renderer WebGPU engine fetches the model + voices from here.
+    kokoroBundleUrl: () => ipcRenderer.invoke('tts:kokoroBundleUrl'),
   },
 
   // ── License (3-factor commercial licensing, see electron/license/) ──────

@@ -10,8 +10,9 @@
     "bytenode": "node scripts/build-bytenode.js",
     "bytenode:clean": "node scripts/build-bytenode.js --clean",
     "ensure-models": "node scripts/ensure-kokoro-bundle.js",
-    "build": "npm run ensure-models && npm run bytenode && electron-builder",
-    "build:nobytenode": "npm run ensure-models && electron-builder",
+    "vendor-tts": "node scripts/vendor-tts-webgpu.js",
+    "build": "npm run ensure-models && npm run vendor-tts && npm run bytenode && electron-builder",
+    "build:nobytenode": "npm run ensure-models && npm run vendor-tts && electron-builder",
     "fetch-models": "node scripts/fetch-kokoro.js"
   },
   "build": {
@@ -66,7 +67,9 @@
       "!**/{.eslintrc,.eslintignore,.babelrc}"
     ],
     "asarUnpack": [
-      "node_modules/onnxruntime-node/**/*"
+      "node_modules/onnxruntime-node/**/*",
+      "vendor/ort/**/*",
+      "vendor/kokoro.web.js"
     ],
     "extraResources": [
       {

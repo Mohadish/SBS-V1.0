@@ -160,6 +160,23 @@ export async function synthesize(text, voiceId, opts = {}) {
     const pipe = body.indexOf('|');
     const source    = pipe >= 0 ? body.slice(0, pipe) : 'sapi5';
     const voiceName = pipe >= 0 ? body.slice(pipe + 1) : body;
+
+    // Kokoro fast-path: synth on the renderer's WebGPU when available
+    // (~0.7 s/clip vs ~6 s on the node CPU worker). OPPORTUNISTIC — if the GPU
+    // engine isn't ready (no GPU / weak GPU / init failed / mid-session loss),
+    // we fall straight through to the CPU worker below. The CPU path is never
+    // removed, so this works on any machine. See systems/tts-webgpu.js.
+    if (source === 'kokoro') {
+      try {
+        const wg = await import('./tts-webgpu.js');
+        if (wg.isReady()) return await wg.synthesize(text, voiceName, speed);
+        if (wg.getState() === 'untried') wg.warmUp();   // kick background init; CPU takes this clip
+      } catch (e) {
+        console.warn('[tts] WebGPU path errored — using CPU worker:', e?.message || e);
+      }
+      // fall through → node CPU worker
+    }
+
     const res = await window.sbsNative.tts.synthesize(text, voiceName, speed, { source });
     if (!res.ok) throw new Error(res.error || 'TTS failed.');
     const dataUrl = `data:${res.mime};base64,${res.data}`;

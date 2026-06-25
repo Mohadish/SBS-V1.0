@@ -51,6 +51,15 @@ function _kokoroBundlePaths() {
   };
 }
 
+// The renderer WebGPU TTS engine needs the model bundle as a fetchable file://
+// URL. _kokoroBundleDir() already handles dev / packaged / worktree, so this is
+// the single source of truth shared with the node worker. Trailing sep → the
+// resulting URL ends in '/', so the engine can append the repo path directly.
+ipcMain.handle('tts:kokoroBundleUrl', () => {
+  try { return require('url').pathToFileURL(_kokoroBundleDir() + path.sep).href; }
+  catch (e) { console.warn('[kokoro] bundle-url resolve failed:', e?.message); return null; }
+});
+
 function _ensureKokoroWorker() {
   if (_kokoroWorker) return _kokoroWorker;
   const paths = _kokoroBundlePaths();
