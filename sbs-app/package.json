@@ -9,8 +9,9 @@
     "dev": "electron . --dev",
     "bytenode": "node scripts/build-bytenode.js",
     "bytenode:clean": "node scripts/build-bytenode.js --clean",
-    "build": "npm run bytenode && electron-builder",
-    "build:nobytenode": "electron-builder",
+    "ensure-models": "node scripts/ensure-kokoro-bundle.js",
+    "build": "npm run ensure-models && npm run bytenode && electron-builder",
+    "build:nobytenode": "npm run ensure-models && electron-builder",
     "fetch-models": "node scripts/fetch-kokoro.js"
   },
   "build": {
