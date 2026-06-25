@@ -2080,9 +2080,33 @@ class StepManager {
     // If animating: snap to final only. Don't chain into a new step.
     if (this.snapCurrentToFinal()) return;
 
-    const steps = state.get('steps').filter(s => this._isPlayable(s));
+    const allSteps = state.get('steps') || [];
+    const steps = allSteps.filter(s => this._isPlayable(s));
     const activeId  = state.get('activeStepId');
     const currentIdx = steps.findIndex(s => s.id === activeId);
+
+    // The active step can be NON-playable — the user clicked a hidden step in
+    // the panel to view it. It has no slot in the playable list, so
+    // currentIdx === -1; the forward path's `-1 + delta` then snapped to step 0
+    // (the reported "jumps to the first step" bug) and backward no-op'd. Anchor
+    // to the hidden step's position in the FULL ordered list and move to the
+    // adjacent PLAYABLE step instead.
+    if (currentIdx < 0) {
+      const activeFull = allSteps.findIndex(s => s.id === activeId);
+      if (activeFull < 0) {                                   // active unknown → ends
+        const t = delta < 0 ? steps[steps.length - 1] : steps[0];
+        return t ? this.activateStep(t.id, animate, { fromArrow: true }) : undefined;
+      }
+      if (delta >= 0) {                                       // first playable AFTER it
+        const next = steps.find(s => allSteps.indexOf(s) > activeFull);
+        return next ? this.activateStep(next.id, animate, { fromArrow: true }) : undefined;
+      }
+      let prev = null;                                        // last top-level playable BEFORE it
+      for (let i = steps.length - 1; i >= 0; i--) {
+        if (allSteps.indexOf(steps[i]) < activeFull && !steps[i].groupId) { prev = steps[i]; break; }
+      }
+      return prev ? this.activateStep(prev.id, animate, { fromArrow: true }) : undefined;
+    }
 
     // Step-groups (Phase C/D): arrow navigation has group-aware semantics.
     //   RIGHT (+1): step forward by one in the flat array. If the
