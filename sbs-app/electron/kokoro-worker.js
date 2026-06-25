@@ -62,6 +62,17 @@ async function _load() {
     const fs       = require('fs');
     const modelDir = path.join(workerData.bundleDir, 'onnx-community', 'Kokoro-82M-v1.0-ONNX', 'onnx');
     const have     = (suffix) => fs.existsSync(path.join(modelDir, `model${suffix}.onnx`));
+    // Distinguish "model files missing" (a fresh worktree without the gitignored
+    // bundle) from a real device/dtype incompatibility. Without this guard the
+    // missing-files case falls through to the generic "no working device/dtype
+    // combination" message, which sends debugging the wrong direction.
+    if (!have('') && !have('_fp16') && !have('_quantized')) {
+      throw new Error(
+        `Kokoro model bundle not found under ${modelDir}. The bundle is gitignored, ` +
+        `so a fresh git worktree has no copy — copy sbs-app/kokoro-bundle from your ` +
+        `main checkout, or run the fetch-kokoro script.`,
+      );
+    }
     const candidates = [];
     if (hasDml && have(''))           candidates.push({ device: 'dml', dtype: 'fp32' });
     if (hasDml && have('_fp16'))      candidates.push({ device: 'dml', dtype: 'fp16' });

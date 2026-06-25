@@ -26,11 +26,27 @@ let _kokoroWorker = null;
 let _kokoroSeq    = 0;
 const _kokoroPending = new Map();   // id → { resolve, reject }
 
+// Resolve the Kokoro model bundle. Packaged → resources. Dev → this checkout's
+// sbs-app/kokoro-bundle, BUT that dir is gitignored, so a fresh git worktree
+// has no copy of its own. Fall back to the main checkout's bundle (same model)
+// so TTS works in every worktree without re-fetching ~90 MB per checkout.
+function _kokoroBundleDir() {
+  if (app.isPackaged) return path.join(process.resourcesPath, 'kokoro-bundle');
+  const MODEL = path.join('onnx-community', 'Kokoro-82M-v1.0-ONNX', 'onnx', 'model_quantized.onnx');
+  const candidates = [path.join(APP_ROOT, 'kokoro-bundle')];
+  // APP_ROOT = <root>/.claude/worktrees/<name>/sbs-app → the project root (and
+  // its primary sbs-app/kokoro-bundle) is the part before /.claude/worktrees/.
+  const m = APP_ROOT.replace(/\\/g, '/').match(/^(.*)\/\.claude\/worktrees\/[^/]+\/sbs-app$/i);
+  if (m) candidates.push(path.join(m[1], 'sbs-app', 'kokoro-bundle'));
+  for (const dir of candidates) {
+    try { if (fs.existsSync(path.join(dir, MODEL))) return dir; } catch {}
+  }
+  return candidates[0];   // missing everywhere → worker throws a clear error
+}
+
 function _kokoroBundlePaths() {
   return {
-    bundleDir: app.isPackaged
-      ? path.join(process.resourcesPath, 'kokoro-bundle')
-      : path.join(APP_ROOT, 'kokoro-bundle'),
+    bundleDir: _kokoroBundleDir(),
     cacheDir: path.join(app.getPath('userData'), 'kokoro-cache'),
   };
 }
