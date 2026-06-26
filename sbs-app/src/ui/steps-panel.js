@@ -1631,6 +1631,16 @@ function _showStepContextMenu(step, x, y) {
       action:   () => _invertSelectedSteps() },
     { separator: true },
     { label: '✏ Rename…',   action: () => _renameStep(step.id) },
+    { label: '🔢 Auto-name all (by chapter)', action: () => {
+        const res = actions.autoNameStepsByChapter();
+        if (res?.ok) setStatus(`Renamed ${res.count} step${res.count === 1 ? '' : 's'} → C{chapter}-{n}.`, 'success', 3000);
+        else setStatus(`Couldn’t auto-name: ${res?.error || 'unknown'}.`, 'warn', 2500);
+      } },
+    { label: '📝 Auto-name all (from narration)', action: () => {
+        const res = actions.autoNameStepsFromNarration();
+        if (res?.ok) setStatus(`Named ${res.count} step${res.count === 1 ? '' : 's'} from narration (${res.named} narrated, rest carried forward).`, 'success', 3500);
+        else setStatus(`Couldn’t auto-name: ${res?.error || 'unknown'}.`, 'warn', 2500);
+      } },
     { label: '⎘ Duplicate', action: () => _duplicateStep(step.id) },
     { label: '📋 Copy',     action: () => _copyStepsToClipboard([step.id]) },
   ];

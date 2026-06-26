@@ -501,6 +501,112 @@ export function renameStep(stepId, name) {
   );
 }
 
+/**
+ * Auto-name every (non-base) step "C{chapter}-{n}" — chapter number (by order
+ * of first appearance in the timeline) + the step's position WITHIN its chapter
+ * (resets each chapter). Steps outside any chapter get a plain running number.
+ * Wipes the "copy of copy of…" mess in one undoable move. Returns {ok,count}.
+ */
+export function autoNameStepsByChapter() {
+  const all = state.get('steps') || [];
+  const targets = all.filter(s => !s.isBaseStep);
+  if (!targets.length) return { ok: false, error: 'no steps to rename' };
+
+  // Chapter numbers by FIRST appearance in step order (robust to chapters-list order).
+  const chapterNum = new Map();
+  let nextCh = 0;
+  for (const s of targets) {
+    const ch = s.chapterId ?? null;
+    if (ch && !chapterNum.has(ch)) chapterNum.set(ch, ++nextCh);
+  }
+  // Running counter per chapter (and one for chapterless steps) → "C{ch}-{n}".
+  const counters = new Map();
+  const newName  = new Map();
+  for (const s of targets) {
+    const ch  = s.chapterId ?? null;
+    const key = ch ?? '__none__';
+    const n   = (counters.get(key) || 0) + 1;
+    counters.set(key, n);
+    newName.set(s.id, (ch && chapterNum.has(ch)) ? `C${chapterNum.get(ch)}-${n}` : `${n}`);
+  }
+
+  const before = new Map(all.map(s => [s.id, s.name]));
+  const apply = (names) => {
+    const cur = state.get('steps') || [];
+    for (const s of cur) if (names.has(s.id)) s.name = names.get(s.id);
+    state.setState({ steps: [...cur] });   // change:steps → steps-panel re-renders
+    state.markDirty?.();
+  };
+  apply(newName);
+  undoManager.push(
+    `Auto-name ${newName.size} steps by chapter`,
+    () => apply(before),
+    () => apply(newName),
+  );
+  return { ok: true, count: newName.size };
+}
+
+/**
+ * Auto-name every (non-base) step from its NARRATION (heuristic, no AI). A
+ * narrated step → the first few meaningful words of its narration (leading
+ * filler dropped, capitalised, capped). The non-narrated steps that follow it →
+ * the SAME base name + " (2)", " (3)"… (continuations of that narration). Steps
+ * before any narration get a plain running number. One undoable move.
+ * Returns {ok,count,named} (named = how many came from real narration).
+ */
+export function autoNameStepsFromNarration() {
+  const all = state.get('steps') || [];
+  const targets = all.filter(s => !s.isBaseStep);
+  if (!targets.length) return { ok: false, error: 'no steps to rename' };
+
+  const FILLER = new Set(['now', 'so', 'and', 'then', 'okay', 'ok', 'well', 'next',
+    'here', 'we', 'will', "we'll", 'let', 'us', "let's", 'going', 'gonna', 'to',
+    'the', 'a', 'an', 'this', 'that']);
+  const titleFromNarration = (text) => {
+    const cleaned = String(text || '').replace(/[\r\n]+/g, ' ').trim();
+    if (!cleaned) return '';
+    let words = cleaned.split(/\s+/);
+    let i = 0;
+    while (i < words.length - 1 && FILLER.has(words[i].toLowerCase().replace(/[^a-z']/g, ''))) i++;
+    words = words.slice(i, i + 5);
+    let name = words.join(' ').replace(/[.,;:!?"]+$/, '').trim();
+    if (name.length > 32) name = name.slice(0, 32).replace(/\s+\S*$/, '').trim() + '…';
+    return name ? name[0].toUpperCase() + name.slice(1) : '';
+  };
+
+  const newName = new Map();
+  let base = null, runN = 0, plainN = 0, named = 0;
+  for (const s of targets) {
+    const text = s.narration?.text?.trim();
+    if (text) {
+      base = titleFromNarration(text) || 'Step';
+      runN = 1; named++;
+      newName.set(s.id, base);
+    } else if (base) {                       // continuation of the last narration
+      runN += 1;
+      newName.set(s.id, `${base} (${runN})`);
+    } else {                                 // before any narration
+      plainN += 1;
+      newName.set(s.id, `${plainN}`);
+    }
+  }
+
+  const before = new Map(all.map(s => [s.id, s.name]));
+  const apply = (names) => {
+    const cur = state.get('steps') || [];
+    for (const s of cur) if (names.has(s.id)) s.name = names.get(s.id);
+    state.setState({ steps: [...cur] });     // change:steps → steps-panel re-renders
+    state.markDirty?.();
+  };
+  apply(newName);
+  undoManager.push(
+    `Auto-name ${newName.size} steps from narration`,
+    () => apply(before),
+    () => apply(newName),
+  );
+  return { ok: true, count: newName.size, named };
+}
+
 export function reorderStep(stepId, newIndex) {
   const oldIndex = steps.getStepIndex(stepId);
   steps.reorderStep(stepId, newIndex);

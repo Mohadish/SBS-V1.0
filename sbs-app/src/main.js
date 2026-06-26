@@ -575,6 +575,10 @@ window.sbsReparent = {
   },
 };
 
+// Auto-name every step — also in the step right-click menu.
+window.sbsRenameSteps          = () => actions.autoNameStepsByChapter();
+window.sbsRenameStepsNarration = () => actions.autoNameStepsFromNarration();
+
 // Pick one mesh → select every part with a matching geometry fingerprint. CAD
 // assemblies keep repeated parts (screws/nuts/washers) as instances of the same
 // geometry, so identical fingerprints group them reliably. window.sbsSelectSimilar().
