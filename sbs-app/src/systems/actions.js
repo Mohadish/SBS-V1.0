@@ -1556,6 +1556,84 @@ function _centerPivotOnTarget(folderId, nodeId) {
   applyNodeTransformToObject3D(fnode, folderObj, true);
 }
 
+/**
+ * Center a folder's VIRTUAL pivot on its CONTENTS' bbox-centre, ONCE, and write
+ * that pivot UNIFORMLY into every (scoped) step that already overrides the
+ * folder's transform — the fling-safe pattern (same pivot in every step, never
+ * per-step divergence; steps with no override fall through to the live node's
+ * value, which is this same centre). Used ONLY at folder CREATION (plain
+ * new-folder-from-selection + global group). It NEVER recenters an existing
+ * folder and NEVER fires on a later move-into-folder. Returns { ok }.
+ *
+ * @param {string}        folderId
+ * @param {string[]|null} scopedStepIds  limit the uniform write to these step ids
+ *        (global-group scope); null = every step that overrides the folder.
+ */
+export function centerFolderPivotUniform(folderId, scopedStepIds = null) {
+  const T = window.THREE;
+  const fnode = state.get('nodeById')?.get(folderId);
+  if (!T || !fnode || fnode.type !== 'folder') return { ok: false };
+
+  // Sync the live scene graph so the folder's children are parented + matrices
+  // current (mirrors makeTransformable) before we measure the bbox.
+  steps.applySnapshotInstant({ tree: serializeModelTree(state.get('treeData')) });
+
+  const folderObj = steps.object3dById?.get(folderId);
+  if (!folderObj) return { ok: false };
+  folderObj.updateMatrixWorld(true);
+
+  // bbox of the folder's CONTENTS (a folder Group has no geometry of its own, so
+  // setFromObject traverses its children). Empty folder → nothing to centre.
+  const box = new T.Box3().setFromObject(folderObj);
+  if (!box || box.isEmpty()) return { ok: false };
+  const center = box.getCenter(new T.Vector3());
+  const local  = folderObj.worldToLocal(center.clone());
+
+  // Live (home) pivot — also enables move/rotate so the gizmo is usable.
+  ensureTransformDefaults(fnode);
+  fnode.pivotLocalOffset     = [local.x, local.y, local.z];
+  fnode.pivotLocalQuaternion = [0, 0, 0, 1];
+  fnode.pivotEnabled         = true;
+  fnode.moveEnabled          = true;
+  fnode.rotateEnabled        = true;
+  applyNodeTransformToObject3D(fnode, folderObj, true);
+
+  // Pivot-only fields written into per-step overrides (matches _finalizeGroupPivot).
+  const after = {
+    pivotLocalOffset:     [local.x, local.y, local.z],
+    pivotLocalQuaternion: [0, 0, 0, 1],
+    pivotEnabled:         true,
+  };
+  const scopedSet = scopedStepIds ? new Set(scopedStepIds) : null;
+
+  // Record each scoped step's CURRENT folder pivot (for undo) where an override
+  // exists, then write the SAME centred pivot into every one of them.
+  const before = new Map();
+  for (const step of (state.get('steps') || [])) {
+    if (scopedSet && !scopedSet.has(step.id)) continue;
+    const t = step.snapshot?.transforms?.[folderId];
+    if (!t) continue;
+    before.set(step.id, {
+      pivotLocalOffset:     [...(t.pivotLocalOffset     || [0, 0, 0])],
+      pivotLocalQuaternion: [...(t.pivotLocalQuaternion || [0, 0, 0, 1])],
+      pivotEnabled:         t.pivotEnabled !== false,
+    });
+  }
+  const apply = (which) => {
+    const updated = (state.get('steps') || []).map(step => {
+      if (!before.has(step.id)) return step;
+      const t  = step.snapshot.transforms[folderId];
+      const np = which === 'after' ? after : before.get(step.id);
+      return { ...step, snapshot: { ...step.snapshot, transforms: { ...step.snapshot.transforms, [folderId]: { ...t, ...np } } } };
+    });
+    state.setState({ steps: updated });
+    state.markDirty?.();
+  };
+  apply('after');
+  undoManager.push('Center new folder pivot', () => apply('before'), () => apply('after'));
+  return { ok: true };
+}
+
 /** Restore each step's snapshot {tree, transforms, visibility} from clones. */
 function _restoreStepStructures(clones) {
   const byId = new Map(clones.map(c => [c.id, c]));

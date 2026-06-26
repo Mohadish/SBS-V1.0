@@ -30,7 +30,7 @@ import { captureTransformSnapshot } from '../core/transforms.js';
 import { moveNode, findParent, buildNodeMap, isDescendantOf, serializeModelTree } from '../core/nodes.js';
 import { chooseFromButtons, promptString } from '../ui/prompt.js';
 import { setStatus }         from '../ui/status.js';
-import { isolateSelection, enterPivotEdit, commitPivotEdit } from './actions.js';   // V0.3.0.172 pivot-in-flow
+import { isolateSelection, enterPivotEdit, commitPivotEdit, centerFolderPivotUniform } from './actions.js';   // V0.3.0.172 pivot-in-flow
 
 // ── Immutable spec-tree helpers (mirror follow.js / injectHardwareInstanceIntoAllSteps) ──
 function _containsId(spec, id) {
@@ -334,19 +334,24 @@ export async function promptGroupForGlobalEdit(nodeIds) {
   }
   if (!res?.ok) return;
 
-  // Offer to place the rotation pivot now (isolate → drag → un-isolate locks it
-  // across the group's steps). Skip → user sets it later / rotates about origin.
+  // Auto-center the group's pivot on its contents at CREATION (uniform across all
+  // scoped steps → fling-safe). Gives a sensible default even if the user skips
+  // the manual placement below; the manual drag still overrides it.
+  centerFolderPivotUniform(res.folderId, res.scopedIds);
+
+  // Offer to fine-tune the pivot now (isolate → drag → un-isolate re-locks it
+  // across the group's steps). Skip → keep the auto-centered pivot.
   const piv = await chooseFromButtons(
-    'Set the group pivot?',
-    `Grouped ${ids.length} object(s) across ${res.scopedCount} step(s). Place a rotation pivot now? The group will isolate so you see only it — drag the orange pivot, then UN-ISOLATE to lock it across every one of the group's steps.`,
+    'Adjust the group pivot?',
+    `Grouped ${ids.length} object(s) across ${res.scopedCount} step(s). The rotation pivot is auto-centered on the group. Want to move it? The group will isolate so you see only it — drag the orange pivot, then UN-ISOLATE to lock it across every one of the group's steps.`,
     [
-      { id: 'set',  label: 'Set pivot now', primary: true },
-      { id: 'skip', label: 'Skip — I’ll set it later' },
+      { id: 'set',  label: 'Adjust pivot', primary: true },
+      { id: 'skip', label: 'Keep centered' },
     ],
   );
   if (piv === 'set') {
     _startGroupPivotFlow(res.folderId, res.scopedIds);
   } else {
-    setStatus('Turn on Global Mode (Space) and move/rotate the folder — it ripples to every scoped step.', 'success', 4500);
+    setStatus('Pivot centered on the group. Turn on Global Mode (Space) and move/rotate the folder — it ripples to every scoped step.', 'success', 4500);
   }
 }

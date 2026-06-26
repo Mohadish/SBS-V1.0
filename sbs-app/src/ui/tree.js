@@ -2913,7 +2913,12 @@ export function showMoveToFolderDialog(nodeIds) {
       const newNode = newId
         ? (state.get('nodeById')?.get(newId) || findNode(state.get('treeData'), newId))
         : null;
-      if (newNode) _moveIdsIntoNode(nodeIds, newNode);
+      if (newNode) {
+        _moveIdsIntoNode(nodeIds, newNode);
+        // Auto-center the new folder's gizmo pivot on its contents (creation
+        // only — never recenters later). Uniform across steps → fling-safe.
+        actions.centerFolderPivotUniform(newId);
+      }
     } else {
       _moveIdsIntoNode(nodeIds, destNode);
     }
