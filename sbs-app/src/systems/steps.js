@@ -1986,14 +1986,14 @@ class StepManager {
     if (shouldAnimate) {
       this._animRunning       = true;
       this._currentTargetSnap = targetSnap;
-      // Reparent-arc straighten settings. Default ON (threshold 10). Per-step
-      // override: step.reparentArc === false disables it for THIS step;
-      // step.reparentArcThreshold overrides the distance. Global default via
-      // state.reparentArc / state.reparentArcThreshold (window.sbsReparent.*).
-      // Passed without mutating step.transition.
+      // Reparent-arc hold settings. Default ON (threshold 10). Per-step override
+      // lives in step.transition (persisted + undoable via updateTransition):
+      // tr.reparentArc === false disables it for THIS step; tr.reparentArcThreshold
+      // overrides the distance. Global default via state.reparentArc /
+      // state.reparentArcThreshold (window.sbsReparent.*). Read-only here.
       const _arc = {
-        enabled:   step.reparentArc !== undefined ? !!step.reparentArc : (state.get('reparentArc') !== false),
-        threshold: step.reparentArcThreshold ?? state.get('reparentArcThreshold') ?? 10,
+        enabled:   tr.reparentArc !== undefined ? !!tr.reparentArc : (state.get('reparentArc') !== false),
+        threshold: tr.reparentArcThreshold ?? state.get('reparentArcThreshold') ?? 10,
       };
       await this.applySnapshotAnimated(targetSnap, { ...tr, holdReparent: _arc });
       // Only clear flags if we're still the active animation (no newer step started)

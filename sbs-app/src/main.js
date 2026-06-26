@@ -561,14 +561,17 @@ window.sbsReparent = {
   on:  () => { state.setState({ reparentArc: true  }); console.log('[reparent] global default = ON'); },
   off: () => { state.setState({ reparentArc: false }); console.log('[reparent] global default = OFF'); },
   threshold: (n) => { state.setState({ reparentArcThreshold: Math.max(0, +n || 0) }); console.log('[reparent] global threshold =', state.get('reparentArcThreshold')); },
-  stepOn:   () => { const s = steps._getActiveStep?.(); if (!s) return console.warn('[reparent] no active step'); s.reparentArc = true;  console.log(`[reparent] step "${s.name || s.id}" = ON`); },
-  stepOff:  () => { const s = steps._getActiveStep?.(); if (!s) return console.warn('[reparent] no active step'); s.reparentArc = false; console.log(`[reparent] step "${s.name || s.id}" = OFF`); },
-  stepAuto: () => { const s = steps._getActiveStep?.(); if (!s) return console.warn('[reparent] no active step'); delete s.reparentArc; delete s.reparentArcThreshold; console.log(`[reparent] step "${s.name || s.id}" = AUTO (uses global)`); },
+  // Per-step helpers write to step.transition via the undoable/persisted action
+  // (same field the popover checkbox uses).
+  stepOn:   () => { const s = steps._getActiveStep?.(); if (!s) return console.warn('[reparent] no active step'); actions.updateTransition(s.id, { reparentArc: true  }); console.log(`[reparent] step "${s.name || s.id}" = ON`); },
+  stepOff:  () => { const s = steps._getActiveStep?.(); if (!s) return console.warn('[reparent] no active step'); actions.updateTransition(s.id, { reparentArc: false }); console.log(`[reparent] step "${s.name || s.id}" = OFF`); },
+  stepAuto: () => { const s = steps._getActiveStep?.(); if (!s) return console.warn('[reparent] no active step'); actions.updateTransition(s.id, { reparentArc: undefined, reparentArcThreshold: undefined }); console.log(`[reparent] step "${s.name || s.id}" = AUTO (uses global)`); },
   status: () => {
     const s = steps._getActiveStep?.();
+    const t = s?.transition || {};
     const gOn = state.get('reparentArc') !== false, gThr = state.get('reparentArcThreshold') ?? 10;
-    const sOv = s && s.reparentArc !== undefined ? (s.reparentArc ? 'ON' : 'OFF') : 'auto';
-    console.log(`[reparent] global=${gOn ? 'ON' : 'OFF'} thr=${gThr} | step "${s?.name || s?.id || '—'}" override=${sOv} thr=${s?.reparentArcThreshold ?? '(global)'}`);
+    const sOv = t.reparentArc !== undefined ? (t.reparentArc ? 'ON' : 'OFF') : 'auto';
+    console.log(`[reparent] global=${gOn ? 'ON' : 'OFF'} thr=${gThr} | step "${s?.name || s?.id || '—'}" override=${sOv} thr=${t.reparentArcThreshold ?? '(global)'}`);
   },
 };
 

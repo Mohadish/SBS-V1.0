@@ -2069,6 +2069,13 @@ function _buildTransitionRow(step) {
       <input type="checkbox" class="tran-fade" ${t.visibilityFade !== false ? 'checked' : ''} />
       <span class="small muted">Fade visibility changes</span>
     </label>
+    <label style="display:flex;align-items:center;gap:6px;cursor:pointer;" title="When an object changes folders but barely moves, hold it still instead of letting it swing through a big arc.">
+      <input type="checkbox" class="tran-reparent" ${t.reparentArc !== false ? 'checked' : ''} />
+      <span class="small muted">Smooth reparent jumps</span>
+      <input type="number" class="tran-reparent-thr" min="0" step="1" value="${t.reparentArcThreshold ?? 10}"
+             title="Hold the object still if its visual centre moves less than this many units when it changes folders."
+             style="width:48px;margin-left:auto" />
+    </label>
   `;
 
   // Form controls are inside a step card whose root <div> has its own
@@ -2116,6 +2123,13 @@ function _buildTransitionRow(step) {
   });
   wrap.querySelector('.tran-fade').addEventListener('change', e => {
     actions.updateTransition(stepId, { visibilityFade: e.target.checked });
+  });
+  wrap.querySelector('.tran-reparent').addEventListener('change', e => {
+    actions.updateTransition(stepId, { reparentArc: e.target.checked });
+  });
+  wrap.querySelector('.tran-reparent-thr').addEventListener('change', e => {
+    const n = Math.max(0, parseFloat(e.target.value));
+    actions.updateTransition(stepId, { reparentArcThreshold: Number.isFinite(n) ? n : 10 });
   });
 
   return wrap;
