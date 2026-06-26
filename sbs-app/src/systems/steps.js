@@ -918,9 +918,14 @@ class StepManager {
         const worldFrom = fromWorldTransforms[nodeId];
         const worldTo   = toWorldTransforms[nodeId];
         if (!worldFrom || !worldTo) continue;
-        // Reparent-arc straighten: barely-moved reparented object → no arc
-        // extras → plain straight world-lerp (still ticks + writes data back).
+        // Reparent-arc straighten: a barely-moved reparented object whose origin
+        // is offset from its geometry STILL swings under a straight world-lerp
+        // (origin lerps linearly while rotation slerps → offset geometry sweeps).
+        // So HOLD it at the target pose for the whole transition (worldFrom=worldTo
+        // → constant) and drop the arc extras. It stays in _objectTransitions, so
+        // its per-frame data write-back still runs → data never desyncs (no cascade).
         const _straight = this._shouldReparentStraight(_arc, _structChanged, _fromCenters, nodeId);
+        const _wf = _straight ? worldTo : worldFrom;   // hold at target when straight
         const inheritExtras = _straight ? {} : _buildInheritExtras(
           nodeId, worldFrom, worldTo,
           parentMap, changedSet, fromWorldTransforms, toWorldTransforms,
@@ -932,7 +937,7 @@ class StepManager {
           ? _buildLocalPivotExtras(worldFrom, worldTo, inheritExtras.localFrom, inheritExtras.localTo)
           : _buildPivotExtras(worldFrom, worldTo));
         this._objectTransitions.push({
-          nodeId, worldFrom, worldTo, startMs,
+          nodeId, worldFrom: _wf, worldTo, startMs,
           durationMs: objDur, easeFn, isWorld: true,
           depth: depthMap[nodeId] ?? 0,
           ...inheritExtras,
@@ -1403,6 +1408,7 @@ class StepManager {
           const worldTo   = toWorldTransforms[nodeId];
           if (!worldFrom || !worldTo) continue;
           const _straight = this._shouldReparentStraight(_arc, _structChanged, _fromCenters, nodeId);
+          const _wf = _straight ? worldTo : worldFrom;   // hold at target when straight (no swing)
           const inheritExtras = _straight ? {} : _buildInheritExtras(
             nodeId, worldFrom, worldTo,
             parentMap, changedSet, fromWorldTransforms, toWorldTransforms,
@@ -1411,7 +1417,7 @@ class StepManager {
             ? _buildLocalPivotExtras(worldFrom, worldTo, inheritExtras.localFrom, inheritExtras.localTo)
             : _buildPivotExtras(worldFrom, worldTo));
           this._objectTransitions.push({
-            nodeId, worldFrom, worldTo, startMs,
+            nodeId, worldFrom: _wf, worldTo, startMs,
             durationMs, easeFn, isWorld: true,
             depth: depthMap[nodeId] ?? 0,
             ...inheritExtras,
@@ -1589,6 +1595,7 @@ class StepManager {
         const worldTo   = toWorldTransforms[nodeId];
         if (!worldFrom || !worldTo) continue;
         const _straight = this._shouldReparentStraight(_arc, _structChanged, _fromCenters, nodeId);
+        const _wf = _straight ? worldTo : worldFrom;   // hold at target when straight (no swing)
         const inheritExtras = _straight ? {} : _buildInheritExtras(
           nodeId, worldFrom, worldTo,
           parentMap, changedSet, fromWorldTransforms, toWorldTransforms,
@@ -1597,7 +1604,7 @@ class StepManager {
           ? _buildLocalPivotExtras(worldFrom, worldTo, inheritExtras.localFrom, inheritExtras.localTo)
           : _buildPivotExtras(worldFrom, worldTo));
         this._objectTransitions.push({
-          nodeId, worldFrom, worldTo, startMs,
+          nodeId, worldFrom: _wf, worldTo, startMs,
           durationMs: fallbackObj, easeFn, isWorld: true,
           depth: depthMap[nodeId] ?? 0,
           ...inheritExtras,
