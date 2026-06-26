@@ -598,6 +598,27 @@ class StepManager {
   }
 
   /**
+   * Reparent-arc straighten test. True when nodeId reparented this transition
+   * (structChanged) AND its visual bbox-centre barely moved (< threshold) — the
+   * swing artifact. The caller then builds this object's transition WITHOUT the
+   * pivot/inherit arc extras, so it takes the plain straight world-lerp. It is
+   * NOT removed from the animation: it still ticks and still gets its per-frame
+   * data write-back, so data never desyncs from screen. Read-only here.
+   */
+  _shouldReparentStraight(arc, structChanged, fromCenters, nodeId) {
+    if (!arc?.enabled || !structChanged?.has(nodeId) || !fromCenters?.[nodeId]) return false;
+    const obj = this.object3dById?.get(nodeId);
+    const TH  = window.THREE;
+    if (!obj || !TH) return false;
+    const box = new TH.Box3().setFromObject(obj);
+    if (box.isEmpty()) return false;
+    const delta = box.getCenter(new TH.Vector3()).distanceTo(fromCenters[nodeId]);
+    const straight = delta < arc.threshold;
+    if (window.sbsReparentDebug) console.log(`[reparent] ${nodeId} reparented Δ=${delta.toFixed(1)} thr=${arc.threshold} → ${straight ? 'STRAIGHT' : 'arc'}`);
+    return straight;
+  }
+
+  /**
    * Animate from the current scene state to a step snapshot.
    * If the step (or project) has an animation preset, runs phases sequentially.
    * Otherwise falls back to the previous simultaneous mode (global cam/obj durations).
@@ -637,6 +658,38 @@ class StepManager {
     // ── Capture FROM world positions (before any hierarchy or transform change) ─
     this._warmMatrices();
     const fromWorldTransforms = captureWorldTransforms(state.get('treeData'), this.object3dById);
+
+    // ── Reparent-arc straighten (threshold detector) ─────────────────────────
+    // Find objects whose TREE PARENT changes this transition (live FROM tree vs
+    // the TO spec) and record their FROM visual-centre (bbox) while still in the
+    // from-config. This does NOT remove the object from the animation — see
+    // _shouldReparentStraight + the build loops. When such an object barely
+    // moves, we deny it the pivot/inherit ARC math (the 625u swing) and let it
+    // take the plain straight world-lerp. Crucially the object STAYS in
+    // _objectTransitions, so its per-frame _writeDataStateFromObject3D still
+    // runs and its data never desyncs from the screen (no home cascade).
+    const _arc = transition.holdReparent;            // { enabled, threshold } | undefined
+    let _structChanged = null, _fromCenters = null;
+    if (_arc?.enabled) {
+      const fromParents = captureParentMap(state.get('treeData'));   // FROM structure
+      const toParents   = _parentMapFromSpec(toSnapshot.tree);       // TO structure
+      const TH = window.THREE;
+      _structChanged = new Set();
+      _fromCenters   = {};
+      for (const id in fromParents) {
+        if (toParents[id] && fromParents[id] !== toParents[id]) {    // reparented this step
+          _structChanged.add(id);
+          const obj = this.object3dById?.get(id);
+          if (obj && TH) {
+            const box = new TH.Box3().setFromObject(obj);
+            if (!box.isEmpty()) _fromCenters[id] = box.getCenter(new TH.Vector3());
+          }
+        }
+      }
+      if (window.sbsReparentDebug) {
+        console.log('[reparent] thr=%s reparented=%s ids=%o', _arc.threshold, _structChanged.size, [..._structChanged]);
+      }
+    }
 
     // ── Rebuild target tree hierarchy (v0.266 approach) ──────────────────────
     // 1. Tear down all folder groups — they'll be recreated for the target step.
@@ -836,6 +889,7 @@ class StepManager {
       cameraHandled = await this._runPhasedAnimation(toSnapshot, phases, {
         changedNodeIds, fromWorldTransforms, toWorldTransforms, depthMap,
         parentMap, changedSet,
+        arc: _arc, structChanged: _structChanged, fromCenters: _fromCenters,
         hidingMeshIds, showingMeshIds,
         hidingShapeIds, showingShapeIds,
         stagedActorIds: _stagedActorIds,
@@ -864,16 +918,19 @@ class StepManager {
         const worldFrom = fromWorldTransforms[nodeId];
         const worldTo   = toWorldTransforms[nodeId];
         if (!worldFrom || !worldTo) continue;
-        const inheritExtras = _buildInheritExtras(
+        // Reparent-arc straighten: barely-moved reparented object → no arc
+        // extras → plain straight world-lerp (still ticks + writes data back).
+        const _straight = this._shouldReparentStraight(_arc, _structChanged, _fromCenters, nodeId);
+        const inheritExtras = _straight ? {} : _buildInheritExtras(
           nodeId, worldFrom, worldTo,
           parentMap, changedSet, fromWorldTransforms, toWorldTransforms,
         );
         // Pivot data only when NOT inheriting from parent — the combined
         // case (animating parent + pivoted child) is a known limitation
         // for now (todo: pivot-aware lerp in parent-local frame).
-        const pivotExtras = inheritExtras.inheritParentId
+        const pivotExtras = _straight ? {} : (inheritExtras.inheritParentId
           ? _buildLocalPivotExtras(worldFrom, worldTo, inheritExtras.localFrom, inheritExtras.localTo)
-          : _buildPivotExtras(worldFrom, worldTo);
+          : _buildPivotExtras(worldFrom, worldTo));
         this._objectTransitions.push({
           nodeId, worldFrom, worldTo, startMs,
           durationMs: objDur, easeFn, isWorld: true,
@@ -1262,6 +1319,7 @@ class StepManager {
     const {
       changedNodeIds, fromWorldTransforms, toWorldTransforms, depthMap,
       parentMap = {}, changedSet = new Set(),
+      arc: _arc = null, structChanged: _structChanged = null, fromCenters: _fromCenters = null,
       hidingMeshIds, showingMeshIds,
       hidingShapeIds = [], showingShapeIds = [],
       stagedActorIds = new Set(),
@@ -1344,13 +1402,14 @@ class StepManager {
           const worldFrom = fromWorldTransforms[nodeId];
           const worldTo   = toWorldTransforms[nodeId];
           if (!worldFrom || !worldTo) continue;
-          const inheritExtras = _buildInheritExtras(
+          const _straight = this._shouldReparentStraight(_arc, _structChanged, _fromCenters, nodeId);
+          const inheritExtras = _straight ? {} : _buildInheritExtras(
             nodeId, worldFrom, worldTo,
             parentMap, changedSet, fromWorldTransforms, toWorldTransforms,
           );
-          const pivotExtras = inheritExtras.inheritParentId
+          const pivotExtras = _straight ? {} : (inheritExtras.inheritParentId
             ? _buildLocalPivotExtras(worldFrom, worldTo, inheritExtras.localFrom, inheritExtras.localTo)
-            : _buildPivotExtras(worldFrom, worldTo);
+            : _buildPivotExtras(worldFrom, worldTo));
           this._objectTransitions.push({
             nodeId, worldFrom, worldTo, startMs,
             durationMs, easeFn, isWorld: true,
@@ -1529,13 +1588,14 @@ class StepManager {
         const worldFrom = fromWorldTransforms[nodeId];
         const worldTo   = toWorldTransforms[nodeId];
         if (!worldFrom || !worldTo) continue;
-        const inheritExtras = _buildInheritExtras(
+        const _straight = this._shouldReparentStraight(_arc, _structChanged, _fromCenters, nodeId);
+        const inheritExtras = _straight ? {} : _buildInheritExtras(
           nodeId, worldFrom, worldTo,
           parentMap, changedSet, fromWorldTransforms, toWorldTransforms,
         );
-        const pivotExtras = inheritExtras.inheritParentId
+        const pivotExtras = _straight ? {} : (inheritExtras.inheritParentId
           ? _buildLocalPivotExtras(worldFrom, worldTo, inheritExtras.localFrom, inheritExtras.localTo)
-          : _buildPivotExtras(worldFrom, worldTo);
+          : _buildPivotExtras(worldFrom, worldTo));
         this._objectTransitions.push({
           nodeId, worldFrom, worldTo, startMs,
           durationMs: fallbackObj, easeFn, isWorld: true,
@@ -1919,7 +1979,16 @@ class StepManager {
     if (shouldAnimate) {
       this._animRunning       = true;
       this._currentTargetSnap = targetSnap;
-      await this.applySnapshotAnimated(targetSnap, tr);
+      // Reparent-arc straighten settings. Default ON (threshold 10). Per-step
+      // override: step.reparentArc === false disables it for THIS step;
+      // step.reparentArcThreshold overrides the distance. Global default via
+      // state.reparentArc / state.reparentArcThreshold (window.sbsReparent.*).
+      // Passed without mutating step.transition.
+      const _arc = {
+        enabled:   step.reparentArc !== undefined ? !!step.reparentArc : (state.get('reparentArc') !== false),
+        threshold: step.reparentArcThreshold ?? state.get('reparentArcThreshold') ?? 10,
+      };
+      await this.applySnapshotAnimated(targetSnap, { ...tr, holdReparent: _arc });
       // Only clear flags if we're still the active animation (no newer step started)
       if (myToken === this._activationToken) {
         this._animRunning                  = false;
@@ -3681,6 +3750,18 @@ function _composeLocalFromWorlds(parentWorld, childWorld) {
  * (parent-arc branch wins for now — the combined case isn't on the
  * user's critical path; logged as a follow-up).
  */
+// id → immediate-parent-id from a serialized tree spec (the TARGET step), to
+// compare vs the live FROM structure and detect reparents. Read-only.
+function _parentMapFromSpec(spec) {
+  const map = {};
+  (function walk(node, parentId) {
+    if (!node) return;
+    if (parentId != null) map[node.id] = parentId;
+    for (const c of (node.children || [])) walk(c, node.id);
+  })(spec, null);
+  return map;
+}
+
 function _buildPivotExtras(worldFrom, worldTo) {
   const THREE = window.THREE;
   if (!THREE || !worldFrom || !worldTo) return {};

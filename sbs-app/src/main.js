@@ -545,6 +545,33 @@ window.sbsTTSWebGPU = {
 
 // ── Select Similar (V0.3.0.48) ────────────────────────────────────────────────
 
+// ── Reparent-arc straighten controls ──────────────────────────────────────
+// When an object moves between folders but barely changes visual position, the
+// transition's pivot/inherit math used to fling it through a big arc. This
+// feature gives those objects a plain straight world-lerp instead. It does NOT
+// remove them from the animation, so their per-frame data write-back still runs
+// (no home drift). Default ON, threshold 10.
+//   window.sbsReparent.off() / .on()      → global default off / on
+//   window.sbsReparent.threshold(20)      → widen the "barely moved" window
+//   window.sbsReparent.stepOff()/stepOn() → override the CURRENT step only
+//   window.sbsReparent.stepAuto()         → clear the current step's override
+//   window.sbsReparent.status()           → print the effective settings
+//   window.sbsReparentDebug = true        → log each reparented object's decision
+window.sbsReparent = {
+  on:  () => { state.setState({ reparentArc: true  }); console.log('[reparent] global default = ON'); },
+  off: () => { state.setState({ reparentArc: false }); console.log('[reparent] global default = OFF'); },
+  threshold: (n) => { state.setState({ reparentArcThreshold: Math.max(0, +n || 0) }); console.log('[reparent] global threshold =', state.get('reparentArcThreshold')); },
+  stepOn:   () => { const s = steps._getActiveStep?.(); if (!s) return console.warn('[reparent] no active step'); s.reparentArc = true;  console.log(`[reparent] step "${s.name || s.id}" = ON`); },
+  stepOff:  () => { const s = steps._getActiveStep?.(); if (!s) return console.warn('[reparent] no active step'); s.reparentArc = false; console.log(`[reparent] step "${s.name || s.id}" = OFF`); },
+  stepAuto: () => { const s = steps._getActiveStep?.(); if (!s) return console.warn('[reparent] no active step'); delete s.reparentArc; delete s.reparentArcThreshold; console.log(`[reparent] step "${s.name || s.id}" = AUTO (uses global)`); },
+  status: () => {
+    const s = steps._getActiveStep?.();
+    const gOn = state.get('reparentArc') !== false, gThr = state.get('reparentArcThreshold') ?? 10;
+    const sOv = s && s.reparentArc !== undefined ? (s.reparentArc ? 'ON' : 'OFF') : 'auto';
+    console.log(`[reparent] global=${gOn ? 'ON' : 'OFF'} thr=${gThr} | step "${s?.name || s?.id || '—'}" override=${sOv} thr=${s?.reparentArcThreshold ?? '(global)'}`);
+  },
+};
+
 // Pick one mesh → select every part with a matching geometry fingerprint. CAD
 // assemblies keep repeated parts (screws/nuts/washers) as instances of the same
 // geometry, so identical fingerprints group them reliably. window.sbsSelectSimilar().
