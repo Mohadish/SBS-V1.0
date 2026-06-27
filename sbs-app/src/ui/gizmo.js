@@ -1819,18 +1819,17 @@ class GizmoController {
     const [ox, oy, oz] = this._offsetInPanelFrame(no);
     const fmt = v => parseFloat(v.toFixed(4));
 
-    // Rotation values:
-    //   PIVOT mode  → Euler from pivotLocalQuaternion.
-    //   LOCAL/WORLD → Euler from localQuaternion (parent-local).
-    const rotSrc = isPivotMode
-      ? (no.pivotLocalQuaternion ?? [0, 0, 0, 1])
-      : (no.localQuaternion       ?? [0, 0, 0, 1]);
-    const [ex, ey, ez] = this._quatToEulerDeg(rotSrc);
+    // Rotation values (space-aware): PIVOT → pivot quat, WORLD → absolute world
+    // quat, LOCAL → parent-local quat. See _panelRotEuler.
+    const [ex, ey, ez] = this._panelRotEuler(no);
     const fmtA = v => parseFloat(v.toFixed(2));
 
     const spaceLocal = this._spaceMode === 'local';
     const spaceWorld = this._spaceMode === 'world';
     const spacePivot = isPivotMode;
+    // STEP 1 (V0.3.1.x): WORLD shows the ABSOLUTE pose from scene 0,0,0 but is
+    // READ-ONLY for now (display + verify before editing is wired in step 2).
+    const worldRO = spaceWorld;
 
     return `
       ${headerHTML}
@@ -1841,17 +1840,17 @@ class GizmoController {
       </div>
 
       <div style="margin-bottom:8px;">
-        <div style="font-size:10px;color:#64748b;margin-bottom:4px;letter-spacing:0.5px;">${isPivotMode ? 'PIVOT TRANSLATE (offset from home)' : 'TRANSLATE (offset)'}</div>
-        ${this._axisRow('tx', 'X', fmt(ox), '#e05555')}
-        ${this._axisRow('ty', 'Y', fmt(oy), '#55cc55')}
-        ${this._axisRow('tz', 'Z', fmt(oz), '#5588e0')}
+        <div style="font-size:10px;color:#64748b;margin-bottom:4px;letter-spacing:0.5px;">${isPivotMode ? 'PIVOT TRANSLATE (offset from home)' : (spaceWorld ? 'TRANSLATE (world · from 0,0,0 · read-only)' : 'TRANSLATE (offset)')}</div>
+        ${this._axisRow('tx', 'X', fmt(ox), '#e05555', worldRO)}
+        ${this._axisRow('ty', 'Y', fmt(oy), '#55cc55', worldRO)}
+        ${this._axisRow('tz', 'Z', fmt(oz), '#5588e0', worldRO)}
       </div>
 
       <div>
-        <div style="font-size:10px;color:#64748b;margin-bottom:4px;letter-spacing:0.5px;">${isPivotMode ? 'PIVOT ROTATE (°)' : 'ROTATE (°)'}</div>
-        ${this._axisRow('rx', 'X', fmtA(ex), '#e05555')}
-        ${this._axisRow('ry', 'Y', fmtA(ey), '#55cc55')}
-        ${this._axisRow('rz', 'Z', fmtA(ez), '#5588e0')}
+        <div style="font-size:10px;color:#64748b;margin-bottom:4px;letter-spacing:0.5px;">${isPivotMode ? 'PIVOT ROTATE (°)' : (spaceWorld ? 'ROTATE (world ° · read-only)' : 'ROTATE (°)')}</div>
+        ${this._axisRow('rx', 'X', fmtA(ex), '#e05555', worldRO)}
+        ${this._axisRow('ry', 'Y', fmtA(ey), '#55cc55', worldRO)}
+        ${this._axisRow('rz', 'Z', fmtA(ez), '#5588e0', worldRO)}
       </div>
 
       ${(isPivotMode || no.type !== 'flatShape') ? '' : `
@@ -1902,15 +1901,16 @@ class GizmoController {
     ].join(';');
   }
 
-  _axisRow(id, label, value, color) {
+  _axisRow(id, label, value, color, readonly = false) {
     // type=text (not number) so the user can type math expressions —
     // `sin(pi/4)*100`, `180/2`, `2+3*4` — evaluated live by parseExpression.
+    // readonly (WORLD mode, step 1) → dimmed + non-editable; display only.
     return `
       <div style="display:flex;align-items:center;gap:8px;margin-bottom:4px;">
         <span style="color:${color};font-weight:700;width:12px;flex-shrink:0;">${label}</span>
-        <input data-field="${id}" type="text" value="${value}" autocomplete="off" spellcheck="false"
+        <input data-field="${id}" type="text" value="${value}" autocomplete="off" spellcheck="false" ${readonly ? 'readonly' : ''}
           style="flex:1;background:var(--panel);border:1px solid var(--line);border-radius:4px;
-                 color:var(--text);padding:3px 6px;font-size:12px;outline:none;width:0;font-family:monospace;" />
+                 color:${readonly ? 'var(--muted,#94a3b8)' : 'var(--text)'};padding:3px 6px;font-size:12px;outline:none;width:0;font-family:monospace;${readonly ? 'opacity:0.85;cursor:default;' : ''}" />
       </div>`;
   }
 
@@ -2080,10 +2080,30 @@ class GizmoController {
       const p = no.pivotLocalOffset ?? [0, 0, 0];
       return [p[0], p[1], p[2]];
     }
+    if (this._spaceMode === 'world' && this._obj3d) {
+      // WORLD (V0.3.1.x) — the gizmo anchor (the pivot, or the origin if no
+      // pivot) measured ABSOLUTELY from the scene's 0,0,0. Read-only in step 1.
+      this._obj3d.updateWorldMatrix(true, false);
+      const piv = (no.pivotEnabled === false) ? [0, 0, 0] : (no.pivotLocalOffset ?? [0, 0, 0]);
+      const w = this._obj3d.localToWorld(new T.Vector3(piv[0], piv[1], piv[2]));
+      return [w.x, w.y, w.z];
+    }
     const parentToGizmo = this._parentToGizmoQuat();
     const v = new T.Vector3(...(no.localOffset ?? [0, 0, 0]));
     if (parentToGizmo) v.applyQuaternion(parentToGizmo);
     return [v.x, v.y, v.z];
+  }
+
+  // Euler (deg) for the ROTATE rows, space-aware: PIVOT → pivot quat, WORLD →
+  // absolute world quat (decomposed from matrixWorld), LOCAL → parent-local quat.
+  _panelRotEuler(no) {
+    const T = window.THREE;
+    if (this._spaceMode === 'pivot') return this._quatToEulerDeg(no.pivotLocalQuaternion ?? [0, 0, 0, 1]);
+    if (this._spaceMode === 'world' && this._obj3d) {
+      const q = new T.Quaternion(); this._obj3d.getWorldQuaternion(q);
+      return this._quatToEulerDeg([q.x, q.y, q.z, q.w]);
+    }
+    return this._quatToEulerDeg(no.localQuaternion ?? [0, 0, 0, 1]);
   }
 
   /**
@@ -2138,10 +2158,7 @@ class GizmoController {
 
     // Translate displayed in the gizmo's reference frame (matches input).
     const [ox, oy, oz] = this._offsetInPanelFrame(no);
-    const rotSrc = isPivotMode
-      ? (no.pivotLocalQuaternion ?? [0, 0, 0, 1])
-      : (no.localQuaternion       ?? [0, 0, 0, 1]);
-    const [ex, ey, ez] = this._quatToEulerDeg(rotSrc);
+    const [ex, ey, ez] = this._panelRotEuler(no);
     const fmt  = v => parseFloat(v.toFixed(4));
     const fmtA = v => parseFloat(v.toFixed(2));
 
