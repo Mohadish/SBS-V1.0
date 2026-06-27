@@ -4641,6 +4641,86 @@ export function pastePivot(nodeId) {
   return true;
 }
 
+/**
+ * Paste the clipboard pivot onto a folder ACROSS the currently multi-selected
+ * steps — but ONLY into a step whose snapshot actually contains the folder id
+ * (the user's hard rule). Steps lacking the folder are skipped; an override is
+ * never invented where the folder doesn't exist. One undo. Re-applies the active
+ * step so the gizmo updates if it was among the targets.
+ *
+ * Returns { ok, applied, skippedNoFolder, selected, uncovered } where
+ * `uncovered` = steps that DO contain the folder but were NOT pasted to (they
+ * keep a different pivot → possible swing; surfaced to the user as a warning).
+ */
+export function pastePivotToSelectedSteps(nodeId) {
+  if (!_pivotClipboard) return { ok: false, error: 'no pivot copied' };
+  const node = state.get('nodeById')?.get(nodeId);
+  if (!node) return { ok: false, error: 'folder not found' };
+
+  const selRaw = state.get('selectedStepIds');
+  const selSet = new Set(selRaw instanceof Set ? [...selRaw] : (selRaw || []));
+  if (!selSet.size) return { ok: false, error: 'no steps selected' };
+
+  const allSteps = state.get('steps') || [];
+  // "Present" = the folder id is structurally in the step's snapshot tree
+  // (fallback: it already has a transform override for it).
+  const stepHasFolder = (step) =>
+    _specHasId(step.snapshot?.tree, nodeId) ||
+    (step.snapshot?.transforms ? step.snapshot.transforms[nodeId] !== undefined : false);
+
+  const piv = {
+    pivotLocalOffset:     [..._pivotClipboard.offset],
+    pivotLocalQuaternion: [..._pivotClipboard.quaternion],
+    pivotEnabled:         true,
+  };
+
+  // Resolve targets (selected ∧ present) + record each one's prior pivot (or
+  // null when it had no override at all, so undo can fully remove ours).
+  const before = new Map();
+  const targetIds = new Set();
+  let skippedNoFolder = 0;
+  for (const step of allSteps) {
+    if (!selSet.has(step.id)) continue;
+    if (!stepHasFolder(step)) { skippedNoFolder++; continue; }
+    targetIds.add(step.id);
+    const t = step.snapshot?.transforms?.[nodeId];
+    before.set(step.id, t ? {
+      pivotLocalOffset:     [...(t.pivotLocalOffset     || [0, 0, 0])],
+      pivotLocalQuaternion: [...(t.pivotLocalQuaternion || [0, 0, 0, 1])],
+      pivotEnabled:         t.pivotEnabled !== false,
+    } : null);
+  }
+  if (!targetIds.size) {
+    return { ok: false, error: 'none of the selected steps contain this folder', skippedNoFolder, selected: selSet.size };
+  }
+
+  const apply = (which) => {
+    const updated = (state.get('steps') || []).map(step => {
+      if (!targetIds.has(step.id)) return step;
+      const snap = step.snapshot || {};
+      const tr   = snap.transforms || {};
+      if (which === 'after') {
+        return { ...step, snapshot: { ...snap, transforms: { ...tr, [nodeId]: { ...(tr[nodeId] || {}), ...piv } } } };
+      }
+      const b = before.get(step.id);
+      if (b === null) {                                  // had no override → remove ours
+        const { [nodeId]: _drop, ...rest } = tr;
+        return { ...step, snapshot: { ...snap, transforms: rest } };
+      }
+      return { ...step, snapshot: { ...snap, transforms: { ...tr, [nodeId]: { ...(tr[nodeId] || {}), ...b } } } };
+    });
+    state.setState({ steps: updated });
+    _reapplyActiveSnapshot();                            // refresh gizmo if active step was a target
+    state.markDirty?.();
+  };
+  apply('after');
+  undoManager.push(`Paste pivot to ${targetIds.size} step(s)`, () => apply('before'), () => apply('after'));
+
+  const totalWithFolder = allSteps.filter(stepHasFolder).length;
+  const uncovered = Math.max(0, totalWithFolder - targetIds.size);
+  return { ok: true, applied: targetIds.size, skippedNoFolder, selected: selSet.size, uncovered };
+}
+
 // ─── Snap pivot to surface (raycast pick + position+orient) ────────────────
 //
 // startPivotSnapPicking puts the app into "next viewport click picks

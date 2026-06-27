@@ -1375,6 +1375,24 @@ function _buildContextMenuItems(node) {
       disabled: !actions.hasPivotClipboard(),
       action: () => actions.pastePivot(node.id),
     });
+    {
+      const _selCount = (state.get('selectedStepIds') instanceof Set) ? state.get('selectedStepIds').size : 0;
+      items.push({
+        label: `⊕ Paste Pivot → selected steps${_selCount ? ` (${_selCount})` : ''}`,
+        disabled: !actions.hasPivotClipboard() || _selCount === 0,
+        action: () => {
+          const res = actions.pastePivotToSelectedSteps(node.id);
+          if (res?.ok) {
+            let msg = `Pasted pivot to ${res.applied} step${res.applied === 1 ? '' : 's'}.`;
+            if (res.skippedNoFolder) msg += ` ${res.skippedNoFolder} selected ${res.skippedNoFolder === 1 ? 'step lacks' : 'steps lack'} this folder — skipped.`;
+            if (res.uncovered)       msg += ` ⚠ ${res.uncovered} other ${res.uncovered === 1 ? 'step still has' : 'steps still have'} a different pivot for this folder (possible swing).`;
+            setStatus(msg, res.uncovered ? 'warn' : 'success', res.uncovered ? 6500 : 3500);
+          } else {
+            setStatus(`Couldn’t paste pivot: ${res?.error || 'unknown'}.`, 'warn', 3000);
+          }
+        },
+      });
+    }
     items.push({
       label: '🧲 Snap Pivot to Surface…',
       action: () => actions.startPivotSnapPicking(node.id),
