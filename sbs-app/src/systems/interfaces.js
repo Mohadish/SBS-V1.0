@@ -75,12 +75,22 @@ function _geomOf(node) {
 }
 function _applyGeom(node, g) {
   if (!node || !g) return;
+  // Translation the interface is about to undergo — bonded shapes ride it too,
+  // so resetting/default-repositioning an interface carries its shapes along.
+  const dx = (g.x ?? node.x()) - node.x();
+  const dy = (g.y ?? node.y()) - node.y();
   node.position({ x: g.x, y: g.y });
   if (g.width  != null) node.width(g.width);
   if (g.height != null) node.height(g.height);
   node.scaleX(g.scaleX ?? 1);
   node.scaleY(g.scaleY ?? 1);
   node.rotation(g.rotation ?? 0);
+  if (isInterfaceNode(node) && (dx || dy)) {
+    for (const s of overlay.getAttachedShapes?.(node) || []) {
+      s.x(s.x() + dx);
+      s.y(s.y() + dy);
+    }
+  }
   node.getLayer()?.batchDraw();
 }
 

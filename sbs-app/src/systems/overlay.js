@@ -1789,7 +1789,10 @@ function _blinkInterface(node) {
   if (_ifaceBlink?.node === node) return;
   _clearInterfaceBlink();
   if (!node) return;
-  const r = node.getClientRect();
+  // The stage carries the safe-frame scale/position; the layers are identity.
+  // Use the box RELATIVE TO THE LAYER so the highlight (also on a layer) lines
+  // up — getClientRect() (absolute) would double-apply the stage transform.
+  const r = node.getClientRect({ relativeTo: _layer });
   const rect = new Konva.Rect({
     x: r.x, y: r.y, width: r.width, height: r.height,
     stroke: '#38bdf8', strokeWidth: 3, dash: [8, 4], cornerRadius: 4, listening: false,
@@ -1807,6 +1810,9 @@ function _clearInterfaceBlink() {
   _uiLayer.batchDraw();
   _ifaceBlink = null;
 }
+
+/** Shapes bonded to the given interface node (public wrapper). */
+export function getAttachedShapes(ifaceNode) { return _attachedShapesOf(ifaceNode); }
 
 /** Trigger the overlay's debounced save after a programmatic node change. */
 export function scheduleSave() { _scheduleSave(); }
