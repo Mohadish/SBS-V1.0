@@ -112,3 +112,93 @@ export async function insertFirstInterface() {
   }
   return { ok: true, node, name: first.name };
 }
+
+/** True if a Konva node is one of our interface overlays. */
+export function isInterfaceNode(node) {
+  return !!(node && (node.getAttr?.('isInterface') || node.hasName?.('interface')));
+}
+
+/** Load an HTMLImageElement from a data URL (resolves null on error). */
+function _loadImageEl(src) {
+  return new Promise((resolve) => {
+    const img = new Image();
+    img.onload  = () => resolve(img);
+    img.onerror = () => resolve(null);
+    img.src = src;
+  });
+}
+
+/**
+ * Swap the image shown by an interface node to a different library image,
+ * keeping its current pose. Updates the round-tripped `src` + `interfaceImage`
+ * attrs. Returns true on success.
+ */
+export async function swapInterfaceImage(node, imgPath, name) {
+  if (!node) return false;
+  const dataUrl = await loadImageDataUrl(imgPath, name);
+  if (!dataUrl) return false;
+  const img = await _loadImageEl(dataUrl);
+  if (!img) return false;
+  node.image(img);
+  node.setAttr('src', dataUrl);
+  node.setAttr('interfaceImage', name);
+  node.setAttr('naturalW', img.width);
+  node.setAttr('naturalH', img.height);
+  node.getLayer()?.batchDraw();
+  return true;
+}
+
+/**
+ * Open a thumbnail picker over the library folder. Resolves the chosen
+ * { name, path }, or null if cancelled / empty.
+ */
+export async function pickFromLibrary() {
+  const imgs = await listLibraryImages();
+  if (!imgs.length) return null;
+  return new Promise((resolve) => {
+    const dlg = document.createElement('dialog');
+    dlg.style.cssText = [
+      'border:1px solid var(--line,#334)', 'border-radius:10px',
+      'background:var(--panel,#0f172a)', 'color:var(--text,#e2e8f0)',
+      'padding:14px', 'max-width:560px', 'width:80vw', 'max-height:80vh',
+    ].join(';');
+    const title = document.createElement('div');
+    title.textContent = `Pick an interface (${imgs.length})`;
+    title.style.cssText = 'font-size:13px;margin-bottom:10px;opacity:0.85;';
+    const grid = document.createElement('div');
+    grid.style.cssText = 'display:grid;grid-template-columns:repeat(auto-fill,minmax(110px,1fr));gap:8px;overflow:auto;max-height:60vh;';
+    const cancel = document.createElement('button');
+    cancel.textContent = 'Cancel';
+    cancel.className = 'btn';
+    cancel.style.cssText = 'margin-top:12px;';
+
+    const cleanup = (val) => { try { dlg.close(); } catch {} dlg.remove(); resolve(val); };
+    for (const im of imgs) {
+      const cell = document.createElement('button');
+      cell.title = im.name;
+      cell.style.cssText = 'display:flex;flex-direction:column;gap:4px;align-items:center;background:var(--panel2,#1e293b);border:1px solid var(--line,#334);border-radius:6px;padding:6px;cursor:pointer;';
+      const el = document.createElement('img');
+      el.style.cssText = 'width:100%;height:78px;object-fit:contain;background:rgba(0,0,0,0.2);border-radius:4px;';
+      loadImageDataUrl(im.path, im.name).then(url => { if (url) el.src = url; });
+      const cap = document.createElement('div');
+      cap.textContent = im.name;
+      cap.style.cssText = 'font-size:10px;opacity:0.75;max-width:100%;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;';
+      cell.append(el, cap);
+      cell.addEventListener('click', () => cleanup(im));
+      grid.appendChild(cell);
+    }
+    cancel.addEventListener('click', () => cleanup(null));
+    dlg.addEventListener('cancel', (e) => { e.preventDefault(); cleanup(null); });
+    dlg.append(title, grid, cancel);
+    document.body.appendChild(dlg);
+    dlg.showModal();
+  });
+}
+
+/** Right-click → Change image: pick from the library, then swap. */
+export async function changeInterfaceImage(node) {
+  if (!isInterfaceNode(node)) return false;
+  const pick = await pickFromLibrary();
+  if (!pick) return false;
+  return swapInterfaceImage(node, pick.path, pick.name);
+}

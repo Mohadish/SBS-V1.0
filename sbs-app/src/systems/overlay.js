@@ -20,6 +20,7 @@ import { sceneCore } from '../core/scene.js';   // H2: tick hook for overlay fad
 import * as clock    from '../core/clock.js';
 import { getCanonicalSize, computeSafeFrameRect } from '../core/safe-frame.js';
 import { showContextMenu } from '../ui/context-menu.js';
+import * as interfaces from './interfaces.js';   // interface overlay (used lazily in the right-click menu)
 import { mountTextToolbar, unmountTextToolbar, execCommandApplier, setToolbarValues, wasColorPickedRecently, setStyleDropdown, setStyleLocked } from '../ui/text-toolbar.js';
 import { mountShapeToolbar, unmountShapeToolbar } from '../ui/shape-toolbar.js';
 import { getTextToolbarSlot }  from '../ui/overlay-toolbar.js';
@@ -1720,7 +1721,16 @@ function _showEmptyViewportContextMenu(x, y) {
 function _showOverlayContextMenu(node, x, y) {
   const sel = _transformer?.nodes() || [node];
   const hasClipboard = !!_overlayClipboard?.length;
+  // Interface overlays get a "Change image" entry (pick from the library folder).
+  // Reset/Update-default land in the next slice.
+  const ifaceItems = interfaces.isInterfaceNode(node)
+    ? [
+        { label: '🖼 Change image…', action: () => interfaces.changeInterfaceImage(node) },
+        { separator: true },
+      ]
+    : [];
   showContextMenu([
+    ...ifaceItems,
     { label: '⎘ Duplicate',        action: _duplicateSelected },
     { label: '📋 Copy',            action: _copyToOverlayClipboard },
     { label: '📥 Paste',           disabled: !hasClipboard, action: () => _pasteFromOverlayClipboard({ inPlace: false }) },
