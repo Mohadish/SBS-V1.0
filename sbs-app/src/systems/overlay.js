@@ -1744,9 +1744,14 @@ function _showOverlayContextMenu(node, x, y) {
   // Reset/Update-default land in the next slice.
   const ifaceItems = interfaces.isInterfaceNode(node)
     ? [
-        { label: '🖼 Change image…',            action: () => interfaces.changeInterfaceImage(node) },
-        { label: '⤺ Reset to default position', action: () => interfaces.resetToDefault(node) },
-        { label: '⊹ Update default position',   action: () => interfaces.updateDefaultFromNode(node) },
+        { label: '🖼 Change image…', action: () => interfaces.changeInterfaceImage(node) },
+        // State-aware: at default → just an indicator; moved → the two actions.
+        ...(node.getAttr('atDefault')
+          ? [{ label: '✓ In default position', disabled: true }]
+          : [
+              { label: '↩ Reset to default position', action: () => interfaces.resetToDefault(node) },
+              { label: '⊹ Set as default position',   action: () => interfaces.updateDefaultFromNode(node) },
+            ]),
         { separator: true },
       ]
     : [];
