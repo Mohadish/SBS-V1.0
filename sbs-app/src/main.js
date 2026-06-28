@@ -579,6 +579,59 @@ window.sbsReparent = {
 window.sbsRenameSteps          = () => actions.autoNameStepsByChapter();
 window.sbsRenameStepsNarration = () => actions.autoNameStepsFromNarration();
 
+// DIAGNOSTIC (read-only — no UI, no storage, no shared code touched). Logs the
+// SELECTED object's pivot pose measured RELATIVE TO ITS PARENT FOLDER'S PIVOT —
+// the exact math behind the planned LOCAL lens. Verify these numbers against your
+// mental model BEFORE we wire it into the panel.
+//   - TRANSLATE: child pivot offset from the parent pivot, in the PARENT's frame.
+//     Zero ⇒ child pivot sits exactly on the parent pivot.
+//   - ROTATE: child orientation relative to the parent's orientation (the delta).
+//     Parent 30° + child 45° world ⇒ reads 15°. Zero ⇒ child aligned to parent.
+//   - Object with no parent folder (at root) ⇒ parent = world origin/identity, so
+//     these equal the WORLD readout.
+window.sbsLocalRel = () => {
+  const T = window.THREE;
+  const id = state.get('selectedId');
+  const nodeById = state.get('nodeById');
+  const root = state.get('treeData');
+  if (!T || !id || !nodeById) { console.warn('[localRel] select an object first'); return; }
+  const node = nodeById.get(id);
+  const obj  = steps.object3dById?.get(id);
+  if (!node || !obj) { console.warn('[localRel] no object3d for the selection'); return; }
+  obj.updateWorldMatrix(true, false);
+
+  // Child pivot world pose (pivot, or origin if no pivot — matches the WORLD lens).
+  const cPiv = (node.pivotEnabled === false) ? [0, 0, 0] : (node.pivotLocalOffset ?? [0, 0, 0]);
+  const childPivotWorld = obj.localToWorld(new T.Vector3(cPiv[0], cPiv[1], cPiv[2]));
+  const childQ = obj.getWorldQuaternion(new T.Quaternion());
+
+  // Parent folder (data-tree parent) pivot world pose, or world origin at root.
+  const parentNode = findParent(root, id);
+  let parentPivotWorld = new T.Vector3(0, 0, 0);
+  let parentQ = new T.Quaternion();
+  if (parentNode && parentNode.type !== 'scene') {
+    const parentObj = steps.object3dById?.get(parentNode.id);
+    if (parentObj) {
+      parentObj.updateWorldMatrix(true, false);
+      const pPiv = (parentNode.pivotEnabled === false) ? [0, 0, 0] : (parentNode.pivotLocalOffset ?? [0, 0, 0]);
+      parentPivotWorld = parentObj.localToWorld(new T.Vector3(pPiv[0], pPiv[1], pPiv[2]));
+      parentObj.getWorldQuaternion(parentQ);
+    }
+  }
+
+  const invParentQ = parentQ.clone().invert();
+  const relPos = childPivotWorld.clone().sub(parentPivotWorld).applyQuaternion(invParentQ);
+  const relQ   = invParentQ.clone().multiply(childQ);
+  const e = new T.Euler().setFromQuaternion(relQ, 'XYZ');
+  const f   = v => +v.toFixed(2);
+  const deg = r => +(r * 180 / Math.PI).toFixed(2);
+  const out = { translate: [f(relPos.x), f(relPos.y), f(relPos.z)], rotate: [deg(e.x), deg(e.y), deg(e.z)] };
+  console.log(`[localRel] "${node.name || id}" relative to parent "${parentNode?.name || '(root)'}"`);
+  console.log('  TRANSLATE (parent-pivot frame):', out.translate);
+  console.log('  ROTATE °  (rel to parent):', out.rotate);
+  return out;
+};
+
 // Pick one mesh → select every part with a matching geometry fingerprint. CAD
 // assemblies keep repeated parts (screws/nuts/washers) as instances of the same
 // geometry, so identical fingerprints group them reliably. window.sbsSelectSimilar().
