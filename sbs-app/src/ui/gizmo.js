@@ -2225,9 +2225,13 @@ class GizmoController {
       const pObj = steps.object3dById?.get(pn.id);
       if (pObj) {
         pObj.updateWorldMatrix(true, false);
-        const pPiv = (pn.pivotEnabled === false) ? [0, 0, 0] : (pn.pivotLocalOffset ?? [0, 0, 0]);
-        pos.copy(pObj.localToWorld(new T.Vector3(pPiv[0], pPiv[1], pPiv[2])));
-        pObj.getWorldQuaternion(quat);
+        // Use the canonical pivot helpers: POSITION = parent pivot world point,
+        // ORIENTATION = parent pivot world frame (object world quat ×
+        // pivotLocalQuaternion). Plain getWorldQuaternion ignored the pivot's own
+        // orientation, so rotation fell back to world while translation (pivot-
+        // based) worked — the bug the user hit.
+        pos.copy(getPivotWorldPosition(pn, pObj));
+        quat.copy(getPivotWorldQuaternion(pn, pObj));
       }
     }
     return { pos, quat };
