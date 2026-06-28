@@ -1237,7 +1237,13 @@ function _attachNode(node) {
   node.on('dragstart', () => {
     const own  = _transformer?.nodes() || [];
     const peer = getLayerSelection('header');
-    const sel  = [...own, ...peer];
+    let sel  = [...own, ...peer];
+    // Interface drag → carry its bonded shapes along (move as ONE). They ride
+    // the same multi-drag delta below.
+    if (node.getAttr('isInterface')) {
+      const bonded = _attachedShapesOf(node);
+      if (bonded.length) sel = [...new Set([...sel, node, ...bonded])];
+    }
     // P7-C-2: ALWAYS snapshot drag-start positions, even for single-node
     // drags — that snapshot is what dragend uses to push a "Move N
     // item(s)" undo entry. Multi-drag delta logic (in dragmove) still
@@ -1286,6 +1292,22 @@ function _attachNode(node) {
         () => _restoreNodePositions(after),
       );
     }
+  });
+
+  // Interface attachment: while dragging a SHAPE (not an interface), blink the
+  // interface under the pointer; on release, bond to it if released OVER one,
+  // else unbond. The mouse-release position is what decides (per spec).
+  node.on('dragmove', () => {
+    if (node.getAttr('isInterface')) return;           // moving an interface, not a shape
+    _blinkInterface(_ifaceUnderPoint(_stage.getPointerPosition()));
+  });
+  node.on('dragend', () => {
+    if (node.getAttr('isInterface')) return;           // interface move handled above
+    const pt = _stage.getPointerPosition() || _rectCenter(node);
+    const iface = _ifaceUnderPoint(pt);
+    _clearInterfaceBlink();
+    node.setAttr('attachedTo', iface ? _ensureIfaceId(iface) : null);
+    _scheduleSave();
   });
 
   // P7-C-2: snapshot ALL transformer-tracked nodes' geometry on
@@ -1728,6 +1750,62 @@ function _showEmptyViewportContextMenu(x, y) {
 /** Live interface overlay nodes in the current step (Konva name 'interface'). */
 export function getInterfaceNodes() {
   return _layer ? _layer.find('.interface') : [];
+}
+
+// ── Interface attachment (bonded shapes) ────────────────────────────────────
+// A shape "bonds" to an interface when the mouse releases OVER it. The bond is a
+// stable id pair (ifaceId on the interface, attachedTo on the shape) — NO
+// reparenting (so no scale refactor) — and moving the interface carries its
+// bonded shapes along via the existing multi-drag delta.
+let _ifaceIdSeq = 0;
+function _ensureIfaceId(node) {
+  let id = node.getAttr('ifaceId');
+  if (!id) { id = 'iface_' + Date.now().toString(36) + '_' + (_ifaceIdSeq++); node.setAttr('ifaceId', id); }
+  return id;
+}
+/** Interface whose bounding box contains stage point pt, or null. */
+function _ifaceUnderPoint(pt) {
+  if (!pt) return null;
+  for (const n of getInterfaceNodes()) {
+    const r = n.getClientRect();
+    if (pt.x >= r.x && pt.x <= r.x + r.width && pt.y >= r.y && pt.y <= r.y + r.height) return n;
+  }
+  return null;
+}
+/** Shapes bonded to this interface (attachedTo === its ifaceId). */
+function _attachedShapesOf(ifaceNode) {
+  const id = ifaceNode?.getAttr('ifaceId');
+  if (!id || !_layer) return [];
+  return _layer.getChildren(n => n.getAttr && n.getAttr('attachedTo') === id);
+}
+function _rectCenter(node) {
+  const r = node.getClientRect();
+  return { x: r.x + r.width / 2, y: r.y + r.height / 2 };
+}
+
+// Blink highlight over an interface while a shape hovers it.
+let _ifaceBlink = null;   // { node, rect, timer }
+function _blinkInterface(node) {
+  if (_ifaceBlink?.node === node) return;
+  _clearInterfaceBlink();
+  if (!node) return;
+  const r = node.getClientRect();
+  const rect = new Konva.Rect({
+    x: r.x, y: r.y, width: r.width, height: r.height,
+    stroke: '#38bdf8', strokeWidth: 3, dash: [8, 4], cornerRadius: 4, listening: false,
+  });
+  _uiLayer.add(rect);
+  let on = true;
+  const timer = setInterval(() => { on = !on; rect.opacity(on ? 1 : 0.2); _uiLayer.batchDraw(); }, 220);
+  _ifaceBlink = { node, rect, timer };
+  _uiLayer.batchDraw();
+}
+function _clearInterfaceBlink() {
+  if (!_ifaceBlink) return;
+  clearInterval(_ifaceBlink.timer);
+  _ifaceBlink.rect.destroy();
+  _uiLayer.batchDraw();
+  _ifaceBlink = null;
 }
 
 /** Trigger the overlay's debounced save after a programmatic node change. */
