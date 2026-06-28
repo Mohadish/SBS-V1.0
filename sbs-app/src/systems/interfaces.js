@@ -60,7 +60,28 @@ export async function listLibraryImages() {
 // lands in a later phase.
 export function getDefaultPose() { return state.get('interfaceDefaultPose') || null; }
 export function setDefaultPose(pose) {
-  state.setState({ interfaceDefaultPose: pose ? { x: pose.x, y: pose.y, width: pose.width, height: pose.height } : null });
+  state.setState({ interfaceDefaultPose: pose ? { ...pose } : null });
+}
+
+// Full Konva geometry (Konva resizes via scaleX/scaleY, so we must carry scale
+// + rotation, not just width/height, or reset would lose the user's resize).
+function _geomOf(node) {
+  return {
+    x: node.x(), y: node.y(),
+    width: node.width(), height: node.height(),
+    scaleX: node.scaleX(), scaleY: node.scaleY(),
+    rotation: node.rotation(),
+  };
+}
+function _applyGeom(node, g) {
+  if (!node || !g) return;
+  node.position({ x: g.x, y: g.y });
+  if (g.width  != null) node.width(g.width);
+  if (g.height != null) node.height(g.height);
+  node.scaleX(g.scaleX ?? 1);
+  node.scaleY(g.scaleY ?? 1);
+  node.rotation(g.rotation ?? 0);
+  node.getLayer()?.batchDraw();
 }
 
 /** Read a library image file → data URL (the form overlay.addImage round-trips).
@@ -102,14 +123,8 @@ export async function insertFirstInterface() {
   node.setAttr('interfaceImage', first.name);
 
   const def = getDefaultPose();
-  if (def) {
-    node.position({ x: def.x, y: def.y });
-    node.width(def.width);
-    node.height(def.height);
-    node.getLayer()?.batchDraw();
-  } else {
-    setDefaultPose({ x: node.x(), y: node.y(), width: node.width(), height: node.height() });
-  }
+  if (def) _applyGeom(node, def);
+  else     setDefaultPose(_geomOf(node));
   return { ok: true, node, name: first.name };
 }
 
@@ -201,4 +216,30 @@ export async function changeInterfaceImage(node) {
   const pick = await pickFromLibrary();
   if (!pick) return false;
   return swapInterfaceImage(node, pick.path, pick.name);
+}
+
+/** Right-click → Reset to default position: snap THIS interface to the default pose. */
+export function resetToDefault(node) {
+  const def = getDefaultPose();
+  if (!def || !isInterfaceNode(node)) return false;
+  _applyGeom(node, def);
+  overlay.scheduleSave?.();
+  return true;
+}
+
+/**
+ * Right-click → Update default position: make this interface's CURRENT pose the
+ * new shared default, then re-snap every other interface in the live overlay to
+ * it. (Re-snapping ALL steps arrives with Phase D persistence.) Returns { ok, count }.
+ */
+export function updateDefaultFromNode(node) {
+  if (!isInterfaceNode(node)) return { ok: false, count: 0 };
+  const pose = _geomOf(node);
+  setDefaultPose(pose);
+  let count = 1;
+  for (const other of overlay.getInterfaceNodes?.() || []) {
+    if (other !== node) { _applyGeom(other, pose); count++; }
+  }
+  overlay.scheduleSave?.();
+  return { ok: true, count };
 }

@@ -1718,6 +1718,14 @@ function _showEmptyViewportContextMenu(x, y) {
   ], x, y);
 }
 
+/** Live interface overlay nodes in the current step (Konva name 'interface'). */
+export function getInterfaceNodes() {
+  return _layer ? _layer.find('.interface') : [];
+}
+
+/** Trigger the overlay's debounced save after a programmatic node change. */
+export function scheduleSave() { _scheduleSave(); }
+
 function _showOverlayContextMenu(node, x, y) {
   const sel = _transformer?.nodes() || [node];
   const hasClipboard = !!_overlayClipboard?.length;
@@ -1725,7 +1733,9 @@ function _showOverlayContextMenu(node, x, y) {
   // Reset/Update-default land in the next slice.
   const ifaceItems = interfaces.isInterfaceNode(node)
     ? [
-        { label: '🖼 Change image…', action: () => interfaces.changeInterfaceImage(node) },
+        { label: '🖼 Change image…',            action: () => interfaces.changeInterfaceImage(node) },
+        { label: '⤺ Reset to default position', action: () => interfaces.resetToDefault(node) },
+        { label: '⊹ Update default position',   action: () => interfaces.updateDefaultFromNode(node) },
         { separator: true },
       ]
     : [];
