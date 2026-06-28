@@ -632,6 +632,13 @@ class GizmoController {
     if (!this._visible || !this._obj3d || !this._group) return;
     const T   = window.THREE;
 
+    // V0.3.1.x — keep the numeric panel LIVE every frame so it always reflects
+    // the current step (even mid-transition), selection, gizmo drag, or undo —
+    // the "always updated" behaviour. Skipped while a panel field is focused so
+    // it never clobbers what the user is typing. _refreshPanel only sets values
+    // (no re-render), so this is cheap.
+    if (this._panel && !this._isPanelFieldFocused()) this._refreshPanel();
+
     // C5-B: cable-point mode — refresh stand-in to current target world
     // pose every frame, then mirror it onto the gizmo group. Frame is
     // surface-aligned (target.getWorldQuat maps +Z to face normal) so
@@ -2145,6 +2152,14 @@ class GizmoController {
   /**
    * Re-render current values into open panel without recreating it.
    */
+  // True while the user is typing in one of the panel's fields — used to skip the
+  // per-frame live refresh so it doesn't overwrite a value mid-edit.
+  _isPanelFieldFocused() {
+    const a = document.activeElement;
+    return !!(a && this._panel && this._panel.contains(a)
+             && (a.tagName === 'INPUT' || a.tagName === 'TEXTAREA'));
+  }
+
   _refreshPanel() {
     if (!this._panel) return;
     // V0.3.0.173 — cable panel: keep the LOCAL/WORLD highlight in sync (e.g. L key).
