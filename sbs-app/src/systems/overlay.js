@@ -1306,8 +1306,25 @@ function _attachNode(node) {
     const pt = _stage.getPointerPosition() || _rectCenter(node);
     const iface = _ifaceUnderPoint(pt);
     _clearInterfaceBlink();
-    node.setAttr('attachedTo', iface ? _ensureIfaceId(iface) : null);
+    if (iface) {
+      node.setAttr('attachedTo', _ensureIfaceId(iface));
+      _captureBondPct(node, iface);          // remember bbox as % of the interface
+    } else {
+      node.setAttr('attachedTo', null);
+      node.setAttr('bondPct', null);
+    }
     _scheduleSave();
+  });
+
+  // Interface scale → re-place/re-size its bonded shapes from their % (live and
+  // on release). When a BONDED SHAPE is itself resized/moved, re-capture its %.
+  node.on('transform', () => {
+    if (node.getAttr('isInterface')) syncBondedShapes(node);
+  });
+  node.on('transformend', () => {
+    if (node.getAttr('isInterface')) { syncBondedShapes(node); return; }
+    const iface = _interfaceOf(node);
+    if (iface) { _captureBondPct(node, iface); _scheduleSave(); }
   });
 
   // P7-C-2: snapshot ALL transformer-tracked nodes' geometry on
@@ -1781,6 +1798,63 @@ function _attachedShapesOf(ifaceNode) {
 function _rectCenter(node) {
   const r = node.getClientRect();
   return { x: r.x + r.width / 2, y: r.y + r.height / 2 };
+}
+
+/** The interface a bonded shape belongs to (attachedTo === ifaceId), or null. */
+function _interfaceOf(shape) {
+  const id = shape?.getAttr?.('attachedTo');
+  if (!id) return null;
+  return getInterfaceNodes().find(n => n.getAttr('ifaceId') === id) || null;
+}
+
+/** Record a bonded shape's bbox as PERCENTAGES of its interface's bbox (the
+ *  source of truth used to re-place + re-size it whenever the interface scales).
+ *  Interface = 100% × 100%; we store the shape's top-left + bottom-right as
+ *  fractions {l,t,r,b}. */
+function _captureBondPct(shape, ifaceNode) {
+  if (!shape || !ifaceNode) return;
+  const IB = ifaceNode.getClientRect({ relativeTo: _layer });
+  const SB = shape.getClientRect({ relativeTo: _layer });
+  if (!IB.width || !IB.height) return;
+  shape.setAttr('bondPct', {
+    l: (SB.x - IB.x) / IB.width,
+    t: (SB.y - IB.y) / IB.height,
+    r: (SB.x + SB.width  - IB.x) / IB.width,
+    b: (SB.y + SB.height - IB.y) / IB.height,
+  });
+}
+
+/** Fit a shape's bounding box to `box` (layer coords) via scale + reposition.
+ *  Generic across shape types. (Stroke scales proportionally too — fine for now,
+ *  per spec.) */
+function _fitShapeToBox(shape, box) {
+  const cur = shape.getClientRect({ relativeTo: _layer });
+  if (cur.width > 0 && cur.height > 0 && box.width > 0 && box.height > 0) {
+    shape.scaleX(shape.scaleX() * (box.width  / cur.width));
+    shape.scaleY(shape.scaleY() * (box.height / cur.height));
+  }
+  const after = shape.getClientRect({ relativeTo: _layer });
+  shape.x(shape.x() + (box.x - after.x));
+  shape.y(shape.y() + (box.y - after.y));
+}
+
+/** Re-place + re-size every bonded shape from its stored % against the
+ *  interface's CURRENT bbox. Called on interface scale + default/reset. */
+export function syncBondedShapes(ifaceNode) {
+  if (!ifaceNode) return;
+  const IB = ifaceNode.getClientRect({ relativeTo: _layer });
+  if (!IB.width || !IB.height) return;
+  for (const s of _attachedShapesOf(ifaceNode)) {
+    const p = s.getAttr('bondPct');
+    if (!p) continue;
+    _fitShapeToBox(s, {
+      x: IB.x + p.l * IB.width,
+      y: IB.y + p.t * IB.height,
+      width:  (p.r - p.l) * IB.width,
+      height: (p.b - p.t) * IB.height,
+    });
+  }
+  _layer.batchDraw();
 }
 
 // Blink highlight over an interface while a shape hovers it.
