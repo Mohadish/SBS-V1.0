@@ -39,6 +39,7 @@ import {
   captureTransformSnapshot,
   applyTransformSnapshot,
 } from '../core/transforms.js';
+import { setNodeWorldPoseRaw } from '../systems/hardware-actions.js';
 import { parseExpression } from './gizmo-numeric.js';
 
 // ── Constants ────────────────────────────────────────────────────────────────
@@ -1834,9 +1835,10 @@ class GizmoController {
     const spaceLocal = this._spaceMode === 'local';
     const spaceWorld = this._spaceMode === 'world';
     const spacePivot = isPivotMode;
-    // STEP 1 (V0.3.1.x): WORLD shows the ABSOLUTE pose from scene 0,0,0 but is
-    // READ-ONLY for now (display + verify before editing is wired in step 2).
-    const worldRO = spaceWorld;
+    // V0.3.1.x: WORLD shows + EDITS the ABSOLUTE pose from scene 0,0,0. Editing
+    // back-solves to the per-step localOffset/localQuaternion via the verified
+    // setNodeWorldPoseRaw — never touches baseLocal (home). All fields editable.
+    const worldRO = false;
 
     return `
       ${headerHTML}
@@ -1847,14 +1849,14 @@ class GizmoController {
       </div>
 
       <div style="margin-bottom:8px;">
-        <div style="font-size:10px;color:#64748b;margin-bottom:4px;letter-spacing:0.5px;">${isPivotMode ? 'PIVOT TRANSLATE (offset from home)' : (spaceWorld ? 'TRANSLATE (world · from 0,0,0 · read-only)' : 'TRANSLATE (offset)')}</div>
+        <div style="font-size:10px;color:#64748b;margin-bottom:4px;letter-spacing:0.5px;">${isPivotMode ? 'PIVOT TRANSLATE (offset from home)' : (spaceWorld ? 'TRANSLATE (world · from 0,0,0)' : 'TRANSLATE (offset)')}</div>
         ${this._axisRow('tx', 'X', fmt(ox), '#e05555', worldRO)}
         ${this._axisRow('ty', 'Y', fmt(oy), '#55cc55', worldRO)}
         ${this._axisRow('tz', 'Z', fmt(oz), '#5588e0', worldRO)}
       </div>
 
       <div>
-        <div style="font-size:10px;color:#64748b;margin-bottom:4px;letter-spacing:0.5px;">${isPivotMode ? 'PIVOT ROTATE (°)' : (spaceWorld ? 'ROTATE (world ° · read-only)' : 'ROTATE (°)')}</div>
+        <div style="font-size:10px;color:#64748b;margin-bottom:4px;letter-spacing:0.5px;">${isPivotMode ? 'PIVOT ROTATE (°)' : (spaceWorld ? 'ROTATE (world °)' : 'ROTATE (°)')}</div>
         ${this._axisRow('rx', 'X', fmtA(ex), '#e05555', worldRO)}
         ${this._axisRow('ry', 'Y', fmtA(ey), '#55cc55', worldRO)}
         ${this._axisRow('rz', 'Z', fmtA(ez), '#5588e0', worldRO)}
@@ -2020,6 +2022,16 @@ class GizmoController {
   _applyPanelValue(field, val, no, obj) {
     const isPivotMode = this._spaceMode === 'pivot';
 
+    // WORLD mode — ABSOLUTE edit, the inverse of the WORLD readout. Translate
+    // moves the gizmo anchor to the typed world coord; rotate sets the absolute
+    // world orientation while orbiting around the anchor so it spins in place.
+    // Handled separately because the LOCAL/PIVOT path below works in offsets.
+    // Undo is bracketed by the field's focus/blur begin/commitTransformEdit.
+    if (this._spaceMode === 'world' && obj && window.THREE) {
+      this._applyWorldPanelValue(field, val, no, obj);
+      return;
+    }
+
     if (field === 'tx' || field === 'ty' || field === 'tz') {
       if (isPivotMode) {
         // PIVOT space mode: edit pivotLocalOffset directly (object-local).
@@ -2069,6 +2081,45 @@ class GizmoController {
     }
 
     applyNodeTransformToObject3D(no, obj, true);
+  }
+
+  /**
+   * WORLD-mode panel edit (the inverse of the WORLD readout). Moves the object
+   * so its gizmo anchor (pivot, or origin if no pivot) lands at the typed
+   * ABSOLUTE world coordinate / orientation. Anchor computed identically to
+   * _offsetInPanelFrame so read and write never drift. Rotation orbits the
+   * origin around the anchor so it spins in place rather than flinging.
+   * Writes via setNodeWorldPoseRaw → per-step localOffset/localQuaternion only
+   * (never baseLocal); undo is the field's focus/blur begin/commitTransformEdit.
+   */
+  _applyWorldPanelValue(field, val, no, obj) {
+    const T = window.THREE;
+    obj.updateWorldMatrix(true, false);
+    const piv = (no.pivotEnabled === false) ? [0, 0, 0] : (no.pivotLocalOffset ?? [0, 0, 0]);
+    const anchorWorld = obj.localToWorld(new T.Vector3(piv[0], piv[1], piv[2]));
+    const originWorld = obj.getWorldPosition(new T.Vector3());
+    const worldQ      = obj.getWorldQuaternion(new T.Quaternion());
+
+    if (field === 'tx' || field === 'ty' || field === 'tz') {
+      const target = anchorWorld.clone();
+      if (field === 'tx') target.x = val;
+      if (field === 'ty') target.y = val;
+      if (field === 'tz') target.z = val;
+      const delta = target.sub(anchorWorld);                  // anchor → typed world point
+      setNodeWorldPoseRaw(no, obj, originWorld.add(delta), worldQ);
+      return;
+    }
+
+    if (field === 'rx' || field === 'ry' || field === 'rz') {
+      const [cx, cy, cz] = this._panelRotEuler(no);            // current absolute world euler
+      const targetQ = this._eulerDegToQuat(field === 'rx' ? val : cx,
+                                           field === 'ry' ? val : cy,
+                                           field === 'rz' ? val : cz);
+      const R   = targetQ.clone().multiply(worldQ.clone().invert());   // world-space rotation delta
+      const rel = originWorld.sub(anchorWorld).applyQuaternion(R);     // orbit origin about the anchor
+      setNodeWorldPoseRaw(no, obj, anchorWorld.add(rel), targetQ);
+      return;
+    }
   }
 
   /**
