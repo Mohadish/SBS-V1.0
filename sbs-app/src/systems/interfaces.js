@@ -161,6 +161,7 @@ export async function swapInterfaceImage(node, imgPath, name) {
   node.setAttr('naturalW', img.width);
   node.setAttr('naturalH', img.height);
   node.getLayer()?.batchDraw();
+  overlay.scheduleSave?.();   // persist the new image into step.overlay (else it reverts on reload)
   return true;
 }
 
@@ -238,14 +239,50 @@ export function resetToDefault(node) {
  * slice.) Returns { ok, count }.
  */
 export function updateDefaultFromNode(node) {
-  if (!isInterfaceNode(node)) return { ok: false, count: 0 };
+  if (!isInterfaceNode(node)) return { ok: false, count: 0, steps: 0 };
   const pose = _geomOf(node);
   setDefaultPose(pose);
   node.setAttr('atDefault', true);   // the node that defines the default IS at default
+
+  // 1) Live (active) step — re-snap every other at-default interface, then write
+  //    the active step's overlay JSON NOW (its nodes already moved).
   let count = 1;
   for (const other of overlay.getInterfaceNodes?.() || []) {
     if (other !== node && other.getAttr('atDefault')) { _applyGeom(other, pose); count++; }
   }
-  overlay.scheduleSave?.();
-  return { ok: true, count };
+  overlay.flushSave?.();
+
+  // 2) Every OTHER step — patch its saved overlay JSON in place so at-default
+  //    interfaces there move too (the cascade). Non-default ones are left alone.
+  const allSteps = state.get('steps') || [];
+  const activeId = state.get('activeStepId');
+  let stepsChanged = 1;
+  for (const step of allSteps) {
+    if (step.id === activeId || !step.overlay) continue;
+    const r = _cascadeDefaultIntoStepJSON(step.overlay, pose);
+    if (r.changed) { step.overlay = r.json; stepsChanged++; }
+  }
+  if (stepsChanged > 1) { state.setState({ steps: [...allSteps] }); state.markDirty?.(); }
+  return { ok: true, count, steps: stepsChanged };
+}
+
+/** Patch a step's overlay JSON: move every at-default interface node to `pose`.
+ *  Returns { json, changed }. Leaves moved (non-default) interfaces untouched. */
+function _cascadeDefaultIntoStepJSON(json, pose) {
+  let spec;
+  try { spec = JSON.parse(json); } catch { return { json, changed: false }; }
+  let changed = false;
+  (function walk(node) {
+    if (!node || typeof node !== 'object') return;
+    const a = node.attrs;
+    if (a && a.isInterface && a.atDefault) {
+      a.x = pose.x; a.y = pose.y;
+      a.width = pose.width; a.height = pose.height;
+      a.scaleX = pose.scaleX; a.scaleY = pose.scaleY;
+      a.rotation = pose.rotation;
+      changed = true;
+    }
+    for (const c of (node.children || [])) walk(c);
+  })(spec);
+  return { json: changed ? JSON.stringify(spec) : json, changed };
 }

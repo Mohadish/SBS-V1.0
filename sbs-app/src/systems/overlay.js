@@ -1733,6 +1733,10 @@ export function getInterfaceNodes() {
 /** Trigger the overlay's debounced save after a programmatic node change. */
 export function scheduleSave() { _scheduleSave(); }
 
+/** Force the ACTIVE step's overlay JSON current NOW (serialises the live stage).
+ *  Used before a cross-step edit so the active step isn't left stale. */
+export function flushSave() { _writeOverlayToStep(state.get('activeStepId')); }
+
 function _showOverlayContextMenu(node, x, y) {
   const sel = _transformer?.nodes() || [node];
   const hasClipboard = !!_overlayClipboard?.length;
