@@ -89,19 +89,20 @@ export function initOverlayToolbar() {
     try { await overlay.addImage(file); }
     catch (e) { setStatus(`Image load failed: ${e.message}`, 'danger'); }
   });
-  // Interface (Phase A): first click prompts for the library folder; once set,
-  // reports what's in it. Actual insert at the default pose lands in Phase B.
+  // Interface: first click (no folder yet) prompts for the library folder;
+  // every click after that inserts the first library image at the default pose.
   btnIface.addEventListener('click', async () => {
-    const hadFolder = !!interfaces.getLibraryFolder();
-    const folder = await interfaces.ensureLibraryFolder();
-    if (!folder) { setStatus('No interface folder chosen.', 'warn', 2500); return; }
-    const imgs = await interfaces.listLibraryImages();
-    const name = folder.split(/[\\/]/).filter(Boolean).pop() || folder;
-    if (!hadFolder) {
-      setStatus(`Interface library set → "${name}" (${imgs.length} image${imgs.length === 1 ? '' : 's'}). Click again to insert. [insert lands in Phase B]`, 'success', 5000);
-    } else {
-      setStatus(`Interface library "${name}" — ${imgs.length} image${imgs.length === 1 ? '' : 's'}. [insert lands in Phase B]`, 'info', 4000);
+    if (!interfaces.getLibraryFolder()) {
+      const folder = await interfaces.chooseLibraryFolder();
+      if (!folder) { setStatus('No interface folder chosen.', 'warn', 2500); return; }
+      const imgs = await interfaces.listLibraryImages();
+      const name = folder.split(/[\\/]/).filter(Boolean).pop() || folder;
+      setStatus(`Interface library set → "${name}" (${imgs.length} image${imgs.length === 1 ? '' : 's'}). Click again to insert.`, 'success', 5000);
+      return;
     }
+    const res = await interfaces.insertFirstInterface();
+    if (res.ok) setStatus(`Interface inserted: ${res.name}.`, 'success', 2500);
+    else        setStatus(`Couldn’t insert interface: ${res.error}.`, 'warn', 3000);
   });
   btnRect .addEventListener('click', () => { if (overlay.addRect())     setStatus('Rectangle added.'); });
   btnCirc .addEventListener('click', () => { if (overlay.addCircle())   setStatus('Circle added.'); });
