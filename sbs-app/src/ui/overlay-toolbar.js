@@ -15,6 +15,7 @@
  */
 
 import * as overlay from '../systems/overlay.js';
+import * as interfaces from '../systems/interfaces.js';
 import { setStatus } from './status.js';
 import { state } from '../core/state.js';
 import { chooseFromButtons } from './prompt.js';
@@ -70,6 +71,7 @@ export function initOverlayToolbar() {
   _tools.style.cssText = 'display:none;gap:4px;align-items:center;flex-wrap:nowrap;';
   const btnText  = _btn('+ T',  'Add text box (opens editor)');
   const btnImg   = _btn('+ 🖼', 'Add image');
+  const btnIface = _btn('+ 🖥', 'Insert interface (image from your library folder)');
   const btnRect  = _btn('▭',   'Add rectangle');
   const btnCirc  = _btn('●',   'Add circle');
   const btnEll   = _btn('⬭',   'Add ellipse');
@@ -87,6 +89,20 @@ export function initOverlayToolbar() {
     try { await overlay.addImage(file); }
     catch (e) { setStatus(`Image load failed: ${e.message}`, 'danger'); }
   });
+  // Interface (Phase A): first click prompts for the library folder; once set,
+  // reports what's in it. Actual insert at the default pose lands in Phase B.
+  btnIface.addEventListener('click', async () => {
+    const hadFolder = !!interfaces.getLibraryFolder();
+    const folder = await interfaces.ensureLibraryFolder();
+    if (!folder) { setStatus('No interface folder chosen.', 'warn', 2500); return; }
+    const imgs = await interfaces.listLibraryImages();
+    const name = folder.split(/[\\/]/).filter(Boolean).pop() || folder;
+    if (!hadFolder) {
+      setStatus(`Interface library set → "${name}" (${imgs.length} image${imgs.length === 1 ? '' : 's'}). Click again to insert. [insert lands in Phase B]`, 'success', 5000);
+    } else {
+      setStatus(`Interface library "${name}" — ${imgs.length} image${imgs.length === 1 ? '' : 's'}. [insert lands in Phase B]`, 'info', 4000);
+    }
+  });
   btnRect .addEventListener('click', () => { if (overlay.addRect())     setStatus('Rectangle added.'); });
   btnCirc .addEventListener('click', () => { if (overlay.addCircle())   setStatus('Circle added.'); });
   btnEll  .addEventListener('click', () => { if (overlay.addEllipse())  setStatus('Ellipse added.'); });
@@ -94,7 +110,7 @@ export function initOverlayToolbar() {
   btnLine .addEventListener('click', () => { if (overlay.addLine())     setStatus('Line added.'); });
   btnArrow.addEventListener('click', () => { if (overlay.addArrow())    setStatus('Arrow added.'); });
   btnDel  .addEventListener('click', () => overlay.deleteSelected());
-  _tools.append(btnText, btnImg, btnRect, btnCirc, btnEll, btnTri, btnLine, btnArrow, btnDel);
+  _tools.append(btnText, btnImg, btnIface, btnRect, btnCirc, btnEll, btnTri, btnLine, btnArrow, btnDel);
 
   // The editing toggle is rightmost — always visible, single source of
   // truth for entering/leaving overlay editing. The old "Done" button
