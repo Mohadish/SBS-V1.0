@@ -40,6 +40,7 @@ import {
   applyTransformSnapshot,
 } from '../core/transforms.js';
 import { setNodeWorldPoseRaw } from '../systems/hardware-actions.js';
+import { findParent } from '../core/nodes.js';
 import { parseExpression } from './gizmo-numeric.js';
 
 // ── Constants ────────────────────────────────────────────────────────────────
@@ -474,6 +475,11 @@ class GizmoController {
     this._cableTarget = null;          // exit cable-point mode if entering
     this._node    = node;
     this._obj3d   = obj3d;
+    // Cache the data-tree parent once (for the LOCAL = relative-to-parent-pivot
+    // readout) so the per-frame panel refresh doesn't re-walk the tree. Refreshed
+    // here on every (re)show — and the gizmo re-shows on change:treeData, so a
+    // reparent updates it.
+    this._parentNode = node ? findParent(state.get('treeData'), node.id) : null;
     this._visible = true;
     this._group.visible = true;
     this._mode = 'all';
@@ -1835,10 +1841,11 @@ class GizmoController {
     const spaceLocal = this._spaceMode === 'local';
     const spaceWorld = this._spaceMode === 'world';
     const spacePivot = isPivotMode;
-    // V0.3.1.x: WORLD shows + EDITS the ABSOLUTE pose from scene 0,0,0. Editing
-    // back-solves to the per-step localOffset/localQuaternion via the verified
-    // setNodeWorldPoseRaw — never touches baseLocal (home). All fields editable.
-    const worldRO = false;
+    // V0.3.1.x: WORLD shows + EDITS the ABSOLUTE pose (editable, back-solved via
+    // setNodeWorldPoseRaw → per-step only, never baseLocal). LOCAL now shows the
+    // child pivot RELATIVE TO THE PARENT FOLDER'S PIVOT — READ-ONLY this step,
+    // until the edit-inverse is wired + verified.
+    const fieldRO = spaceLocal;
 
     return `
       ${headerHTML}
@@ -1849,17 +1856,17 @@ class GizmoController {
       </div>
 
       <div style="margin-bottom:8px;">
-        <div style="font-size:10px;color:#64748b;margin-bottom:4px;letter-spacing:0.5px;">${isPivotMode ? 'PIVOT TRANSLATE (offset from home)' : (spaceWorld ? 'TRANSLATE (world · from 0,0,0)' : 'TRANSLATE (offset)')}</div>
-        ${this._axisRow('tx', 'X', fmt(ox), '#e05555', worldRO)}
-        ${this._axisRow('ty', 'Y', fmt(oy), '#55cc55', worldRO)}
-        ${this._axisRow('tz', 'Z', fmt(oz), '#5588e0', worldRO)}
+        <div style="font-size:10px;color:#64748b;margin-bottom:4px;letter-spacing:0.5px;">${isPivotMode ? 'PIVOT TRANSLATE (offset from home)' : (spaceWorld ? 'TRANSLATE (world · from 0,0,0)' : 'TRANSLATE (rel to parent pivot · read-only)')}</div>
+        ${this._axisRow('tx', 'X', fmt(ox), '#e05555', fieldRO)}
+        ${this._axisRow('ty', 'Y', fmt(oy), '#55cc55', fieldRO)}
+        ${this._axisRow('tz', 'Z', fmt(oz), '#5588e0', fieldRO)}
       </div>
 
       <div>
-        <div style="font-size:10px;color:#64748b;margin-bottom:4px;letter-spacing:0.5px;">${isPivotMode ? 'PIVOT ROTATE (°)' : (spaceWorld ? 'ROTATE (world °)' : 'ROTATE (°)')}</div>
-        ${this._axisRow('rx', 'X', fmtA(ex), '#e05555', worldRO)}
-        ${this._axisRow('ry', 'Y', fmtA(ey), '#55cc55', worldRO)}
-        ${this._axisRow('rz', 'Z', fmtA(ez), '#5588e0', worldRO)}
+        <div style="font-size:10px;color:#64748b;margin-bottom:4px;letter-spacing:0.5px;">${isPivotMode ? 'PIVOT ROTATE (°)' : (spaceWorld ? 'ROTATE (world °)' : 'ROTATE (rel to parent ° · read-only)')}</div>
+        ${this._axisRow('rx', 'X', fmtA(ex), '#e05555', fieldRO)}
+        ${this._axisRow('ry', 'Y', fmtA(ey), '#55cc55', fieldRO)}
+        ${this._axisRow('rz', 'Z', fmtA(ez), '#5588e0', fieldRO)}
       </div>
 
       ${(isPivotMode || no.type !== 'flatShape') ? '' : `
@@ -1977,6 +1984,10 @@ class GizmoController {
     // last valid value while the user edits.
     panel.querySelectorAll('[data-field]').forEach(inp => {
       const field = inp.dataset.field;
+
+      // Read-only fields (e.g. LOCAL = rel-to-parent, this step) get NO edit
+      // handlers — so focus/blur can't run apply() and nudge the object.
+      if (inp.hasAttribute('readonly')) return;
 
       // V0.3.0.87 — uniform GLOBAL scale (baseLocalScale, identical in every step).
       // Its own undoable action; commit on blur / Enter (not per-keystroke) so one
@@ -2140,11 +2151,17 @@ class GizmoController {
     }
     if (this._spaceMode === 'world' && this._obj3d) {
       // WORLD (V0.3.1.x) — the gizmo anchor (the pivot, or the origin if no
-      // pivot) measured ABSOLUTELY from the scene's 0,0,0. Read-only in step 1.
+      // pivot) measured ABSOLUTELY from the scene's 0,0,0.
       this._obj3d.updateWorldMatrix(true, false);
       const piv = (no.pivotEnabled === false) ? [0, 0, 0] : (no.pivotLocalOffset ?? [0, 0, 0]);
       const w = this._obj3d.localToWorld(new T.Vector3(piv[0], piv[1], piv[2]));
       return [w.x, w.y, w.z];
+    }
+    if (this._spaceMode === 'local' && this._obj3d) {
+      // LOCAL (V0.3.1.x) — the child pivot measured RELATIVE TO THE PARENT
+      // FOLDER'S PIVOT, in the parent's frame. Zero ⇒ child pivot on parent
+      // pivot. Read-only in this step (matches window.sbsLocalRel).
+      return this._localRelToParent(no).pos;
     }
     const parentToGizmo = this._parentToGizmoQuat();
     const v = new T.Vector3(...(no.localOffset ?? [0, 0, 0]));
@@ -2153,7 +2170,7 @@ class GizmoController {
   }
 
   // Euler (deg) for the ROTATE rows, space-aware: PIVOT → pivot quat, WORLD →
-  // absolute world quat (decomposed from matrixWorld), LOCAL → parent-local quat.
+  // absolute world quat, LOCAL → orientation relative to the parent folder.
   _panelRotEuler(no) {
     const T = window.THREE;
     if (this._spaceMode === 'pivot') return this._quatToEulerDeg(no.pivotLocalQuaternion ?? [0, 0, 0, 1]);
@@ -2161,7 +2178,44 @@ class GizmoController {
       const q = new T.Quaternion(); this._obj3d.getWorldQuaternion(q);
       return this._quatToEulerDeg([q.x, q.y, q.z, q.w]);
     }
+    if (this._spaceMode === 'local' && this._obj3d) {
+      return this._localRelToParent(no).euler;
+    }
     return this._quatToEulerDeg(no.localQuaternion ?? [0, 0, 0, 1]);
+  }
+
+  // LOCAL readout math — child pivot pose RELATIVE TO THE PARENT FOLDER'S PIVOT.
+  // Mirrors window.sbsLocalRel exactly. Returns { pos:[x,y,z], euler:[x,y,z]° }.
+  // Parent = the cached data-tree parent (this._parentNode); at root, parent is
+  // world origin/identity so this equals the WORLD readout. Read-only here —
+  // writes nothing.
+  _localRelToParent(no) {
+    const T = window.THREE;
+    const obj = this._obj3d;
+    if (!T || !obj) return { pos: [0, 0, 0], euler: [0, 0, 0] };
+    obj.updateWorldMatrix(true, false);
+    const cPiv = (no.pivotEnabled === false) ? [0, 0, 0] : (no.pivotLocalOffset ?? [0, 0, 0]);
+    const childPivotWorld = obj.localToWorld(new T.Vector3(cPiv[0], cPiv[1], cPiv[2]));
+    const childQ = obj.getWorldQuaternion(new T.Quaternion());
+
+    let parentPivotWorld = new T.Vector3(0, 0, 0);
+    let parentQ = new T.Quaternion();
+    const pn = this._parentNode;
+    if (pn && pn.type !== 'scene') {
+      const pObj = steps.object3dById?.get(pn.id);
+      if (pObj) {
+        pObj.updateWorldMatrix(true, false);
+        const pPiv = (pn.pivotEnabled === false) ? [0, 0, 0] : (pn.pivotLocalOffset ?? [0, 0, 0]);
+        parentPivotWorld = pObj.localToWorld(new T.Vector3(pPiv[0], pPiv[1], pPiv[2]));
+        pObj.getWorldQuaternion(parentQ);
+      }
+    }
+    const invPQ  = parentQ.clone().invert();
+    const relPos = childPivotWorld.clone().sub(parentPivotWorld).applyQuaternion(invPQ);
+    const relQ   = invPQ.clone().multiply(childQ);
+    const e = new T.Euler().setFromQuaternion(relQ, 'XYZ');
+    const r2d = 180 / Math.PI;
+    return { pos: [relPos.x, relPos.y, relPos.z], euler: [e.x * r2d, e.y * r2d, e.z * r2d] };
   }
 
   /**
