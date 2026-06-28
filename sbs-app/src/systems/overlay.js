@@ -1219,6 +1219,13 @@ function _attachNode(node) {
     _setSelection(node, additive);
   });
 
+  // Interface "at default" tracking: a real move or resize takes an interface
+  // OUT of the default condition, so a later "Update default position" leaves it
+  // alone. Clicking/selecting (no drag) does NOT clear it.
+  node.on('dragstart transformend', () => {
+    if (node.getAttr('isInterface') && node.getAttr('atDefault')) node.setAttr('atDefault', false);
+  });
+
   // Multi-node drag — now CROSS-LAYER. Konva's per-node draggable only
   // moves the grabbed node; siblings (in the same OR the header layer)
   // stay put. We stash starting positions across both layers' selections

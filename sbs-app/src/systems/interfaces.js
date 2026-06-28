@@ -125,6 +125,7 @@ export async function insertFirstInterface() {
   const def = getDefaultPose();
   if (def) _applyGeom(node, def);
   else     setDefaultPose(_geomOf(node));
+  node.setAttr('atDefault', true);   // born at the default condition
   return { ok: true, node, name: first.name };
 }
 
@@ -218,27 +219,32 @@ export async function changeInterfaceImage(node) {
   return swapInterfaceImage(node, pick.path, pick.name);
 }
 
-/** Right-click → Reset to default position: snap THIS interface to the default pose. */
+/** Right-click → Reset to default position: snap THIS interface to the default
+ *  pose and put it back INTO the default condition. */
 export function resetToDefault(node) {
   const def = getDefaultPose();
   if (!def || !isInterfaceNode(node)) return false;
   _applyGeom(node, def);
+  node.setAttr('atDefault', true);
   overlay.scheduleSave?.();
   return true;
 }
 
 /**
  * Right-click → Update default position: make this interface's CURRENT pose the
- * new shared default, then re-snap every other interface in the live overlay to
- * it. (Re-snapping ALL steps arrives with Phase D persistence.) Returns { ok, count }.
+ * new shared default, then re-snap every OTHER interface that is still in the
+ * default condition (atDefault) to it — interfaces you've deliberately moved are
+ * left where they are. (Re-snap across ALL steps arrives with the persistence
+ * slice.) Returns { ok, count }.
  */
 export function updateDefaultFromNode(node) {
   if (!isInterfaceNode(node)) return { ok: false, count: 0 };
   const pose = _geomOf(node);
   setDefaultPose(pose);
+  node.setAttr('atDefault', true);   // the node that defines the default IS at default
   let count = 1;
   for (const other of overlay.getInterfaceNodes?.() || []) {
-    if (other !== node) { _applyGeom(other, pose); count++; }
+    if (other !== node && other.getAttr('atDefault')) { _applyGeom(other, pose); count++; }
   }
   overlay.scheduleSave?.();
   return { ok: true, count };
