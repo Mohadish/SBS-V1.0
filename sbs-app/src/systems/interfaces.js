@@ -63,14 +63,17 @@ export function setDefaultPose(pose) {
   state.setState({ interfaceDefaultPose: pose ? { x: pose.x, y: pose.y, width: pose.width, height: pose.height } : null });
 }
 
-/** Read a library image file → data URL (the form overlay.addImage round-trips). */
+/** Read a library image file → data URL (the form overlay.addImage round-trips).
+ *  fs:readFile returns an envelope { ok, data } — NOT the string directly. */
 export async function loadImageDataUrl(imgPath, name) {
   const nat = window.sbsNative;
   if (!nat?.readFile) return null;
-  const base64 = await nat.readFile(imgPath, 'base64');
-  if (!base64) return null;
+  let result;
+  try { result = await nat.readFile(imgPath, 'base64'); }
+  catch { return null; }
+  if (!result?.ok || typeof result.data !== 'string' || !result.data) return null;
   const ext = (name || imgPath).split('.').pop().toLowerCase();
-  return `data:image/${MIME[ext] || 'png'};base64,${base64}`;
+  return `data:image/${MIME[ext] || 'png'};base64,${result.data}`;
 }
 
 /**
@@ -89,7 +92,9 @@ export async function insertFirstInterface() {
   const dataUrl = await loadImageDataUrl(first.path, first.name);
   if (!dataUrl) return { ok: false, error: 'could not read the image file' };
 
-  const node = await overlay.addImage(dataUrl);
+  let node;
+  try { node = await overlay.addImage(dataUrl); }
+  catch (e) { return { ok: false, error: `image load failed: ${e?.message || e}` }; }
   if (!node) return { ok: false, error: 'overlay is not in edit mode' };
 
   node.addName?.('interface');
