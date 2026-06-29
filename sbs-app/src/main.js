@@ -543,14 +543,30 @@ window.sbsTTSWebGPU = {
   synth:  (t, v = 'af_heart', s = 1)  => import('./systems/tts-webgpu.js').then(m => m.synthesize(t, v, s)),
 };
 
+// TTS engine controls + diagnostics from the console:
+//   await window.sbsTTS.engine()        → { webgpu:'ready'|…, webgpuError, forceCpu }
+//   await window.sbsTTS.forceCPU(true)  → ALWAYS use the CPU worker (persisted)
+//   await window.sbsTTS.forceCPU(false) → GPU when ready, CPU otherwise
+// forceCPU is the guaranteed-reliable escape hatch: it survives reloads and takes
+// effect on the very next synth, so the CPU can always cover for the GPU.
+window.sbsTTS = {
+  engine:   ()          => import('./systems/tts.js').then(m => m.getEngineStatus()),
+  forceCPU: (on = true) => import('./systems/tts.js').then(m => m.setForceCpu(on)),
+};
+
 // EAGER warm-up at launch (background). The fp32 Kokoro model is ~325 MB and the
 // GPU shaders must compile, so a cold warm-up takes tens of seconds. Doing it
 // lazily (only on the first synth) means early clips fall back to the slow CPU
 // worker → "TTS doesn't work, then works after a while". Critically, a renderer
 // reload (Ctrl+R) resets the engine to 'untried', so this must re-run on every
 // load — which it does (main.js re-executes). Idempotent: warmUp() no-ops if
-// already ready/initializing. Small delay so the 3D scene/UI boot first.
-setTimeout(() => {
+// already ready/initializing. Small delay so the 3D scene/UI boot first. Skipped
+// entirely when the user has forced the CPU path (no point loading 325 MB).
+setTimeout(async () => {
+  try {
+    const us = await import('./core/user-settings.js');
+    if (us.get?.()?.tts?.forceCpu) { console.log('[tts] forceCpu set — skipping GPU warm-up (CPU worker only).'); return; }
+  } catch {}
   window.sbsTTSWebGPU.warmUp()
     .then((st) => console.log(`[tts] launch warm-up → ${st}`))
     .catch(() => {});

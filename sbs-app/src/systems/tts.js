@@ -166,7 +166,12 @@ export async function synthesize(text, voiceId, opts = {}) {
     // engine isn't ready (no GPU / weak GPU / init failed / mid-session loss),
     // we fall straight through to the CPU worker below. The CPU path is never
     // removed, so this works on any machine. See systems/tts-webgpu.js.
-    if (source === 'kokoro') {
+    // GPU is OPT-OUTABLE. `tts.forceCpu` (persisted setting) routes Kokoro
+    // straight to the CPU worker — a guaranteed-reliable fallback the user can
+    // flip if the GPU misbehaves. Read fresh each call so it takes effect on the
+    // very next synth (no reload). Default off → GPU when ready, CPU otherwise.
+    const forceCpu = !!userSettings.get()?.tts?.forceCpu;
+    if (source === 'kokoro' && !forceCpu) {
       try {
         const wg = await import('./tts-webgpu.js');
         if (wg.isReady()) {
@@ -201,6 +206,26 @@ export async function synthesize(text, voiceId, opts = {}) {
   }
 
   throw new Error(`Unknown voice backend: ${voiceId}`);
+}
+
+/** Engine diagnostics for the console (window.sbsTTS.engine()). Reports the GPU
+ *  engine state + whether the user has forced the CPU path. */
+export async function getEngineStatus() {
+  let webgpu = 'n/a', webgpuError = null;
+  try {
+    const wg = await import('./tts-webgpu.js');
+    webgpu = wg.getState();
+    webgpuError = wg.lastError()?.message || null;
+  } catch (e) { webgpuError = e?.message || String(e); }
+  return { webgpu, webgpuError, forceCpu: !!userSettings.get()?.tts?.forceCpu };
+}
+
+/** Force (or unforce) the CPU worker for Kokoro, persisted across launches.
+ *  window.sbsTTS.forceCPU(true) → always CPU; (false) → GPU when available. */
+export async function setForceCpu(on = true) {
+  await userSettings.patch({ tts: { forceCpu: !!on } });
+  console.log(`[tts] forceCpu = ${!!on} — Kokoro will use ${on ? 'the CPU worker' : 'GPU when ready, else CPU'}.`);
+  return !!on;
 }
 
 /** Reject if `promise` hasn't settled within `ms`; fires `onTimeout` once.
