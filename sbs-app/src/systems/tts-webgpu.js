@@ -31,6 +31,16 @@ export function getState()  { return _state; }
 export function isReady()   { return _state === 'ready'; }
 export function lastError() { return _lastError; }
 
+/** Force the engine off for the rest of the session — callers route to the CPU
+ *  worker. Used when a synth times out (a deadlocked ONNX session can't recover).
+ *  A renderer reload (Ctrl+R) resets the module and retries WebGPU. */
+export function markUnavailable(reason) {
+  if (_state === 'unavailable') return;
+  console.warn('[tts-webgpu] forced unavailable —', reason || '(no reason)');
+  _state = 'unavailable';
+  _tts = null;
+}
+
 // ── Chromium-120 polyfill: ReadableStream async iteration ──────────────────────
 function _installReadableStreamAsyncIterator() {
   if (typeof ReadableStream === 'undefined') return;
@@ -145,7 +155,21 @@ function _u8ToB64(u8) {
  * @param {string} speaker  Kokoro voice id, e.g. 'af_heart'
  * @param {number} [speed]
  */
-export async function synthesize(text, speaker, speed = 1.0) {
+// Serialize every synth. ONNX Runtime Web sessions are NOT reentrant — two
+// overlapping generate() calls on the same session deadlock (the classic
+// "works once, then every clip hangs forever"). Chain so only one runs at a
+// time; the chain survives a failure so a bad clip can't wedge the queue.
+let _synthChain = Promise.resolve();
+export function synthesize(text, speaker, speed = 1.0) {
+  const job = _synthChain.then(
+    () => _synthesizeNow(text, speaker, speed),
+    () => _synthesizeNow(text, speaker, speed),
+  );
+  _synthChain = job.catch(() => {});
+  return job;
+}
+
+async function _synthesizeNow(text, speaker, speed = 1.0) {
   if (_state !== 'ready' || !_tts) throw new Error('WebGPU TTS engine not ready');
   const voice = (speaker && _tts.voices?.[speaker]) ? speaker : (Object.keys(_tts.voices || {})[0] || 'af_heart');
   const rate  = Number.isFinite(Number(speed)) && Number(speed) > 0 ? Number(speed) : 1.0;

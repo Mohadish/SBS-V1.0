@@ -1982,6 +1982,9 @@ export async function previewStepNarration(step, currentText) {
     setStatus(`Real voice ready (${(out.durationMs / 1000).toFixed(1)}s) — click ▶ to hear it.`);
   }).catch(err => {
     console.warn('[tts] background synth:', err?.message);
+    // Clear the sticky "Synthesizing…" status so a failed/timed-out real synth
+    // doesn't leave it spinning forever (the placeholder already played).
+    setStatus(`Real voice unavailable (${err?.message || 'synth error'}) — placeholder used.`, 'warning', 5000);
   });
 
   // Placeholder via fast OS voice. If we can't find one, just status the

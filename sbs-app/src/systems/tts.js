@@ -169,7 +169,14 @@ export async function synthesize(text, voiceId, opts = {}) {
     if (source === 'kokoro') {
       try {
         const wg = await import('./tts-webgpu.js');
-        if (wg.isReady()) return await wg.synthesize(text, voiceName, speed);
+        if (wg.isReady()) {
+          // Cap the GPU synth: a healthy clip is ~0.7 s, so anything past 15 s is
+          // a wedged/deadlocked session. On timeout, disable WebGPU for the rest
+          // of the session and fall through to CPU — never hang the caller (which
+          // would freeze the "Synthesizing…" status forever).
+          return await _withTimeout(wg.synthesize(text, voiceName, speed), 15000,
+            () => wg.markUnavailable?.('synth exceeded 15 s'));
+        }
         if (wg.getState() === 'untried') wg.warmUp();   // kick background init; CPU takes this clip
       } catch (e) {
         console.warn('[tts] WebGPU path errored — using CPU worker:', e?.message || e);
@@ -194,6 +201,21 @@ export async function synthesize(text, voiceId, opts = {}) {
   }
 
   throw new Error(`Unknown voice backend: ${voiceId}`);
+}
+
+/** Reject if `promise` hasn't settled within `ms`; fires `onTimeout` once.
+ *  The underlying work keeps running but the caller is freed to fall back. */
+function _withTimeout(promise, ms, onTimeout) {
+  return new Promise((resolve, reject) => {
+    const t = setTimeout(() => {
+      try { onTimeout?.(); } catch {}
+      reject(new Error(`TTS synth timed out after ${ms} ms`));
+    }, ms);
+    promise.then(
+      (v) => { clearTimeout(t); resolve(v); },
+      (e) => { clearTimeout(t); reject(e); },
+    );
+  });
 }
 
 // ── Internal ────────────────────────────────────────────────────────────────
