@@ -2646,6 +2646,12 @@ async function _loadFromActiveStep() {
     }
   }
   _layer.batchDraw();
+  // Re-fit every interface's bonded shapes to its CURRENT bbox on entry. This is
+  // what makes a cross-step default size-change actually rescale the shapes
+  // (the cascade resizes the interface in the saved JSON, but the shapes only
+  // re-derive from their % here). No-op for interfaces that didn't change.
+  for (const iface of getInterfaceNodes()) syncBondedShapes(iface);
+  _layer.batchDraw();
 }
 
 async function _recreateNode(spec) {
