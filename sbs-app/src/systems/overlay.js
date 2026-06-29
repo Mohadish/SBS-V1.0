@@ -161,6 +161,9 @@ export function initOverlay() {
   // step:applied (fired AFTER animation completes) is the canonical
   // load trigger now; the crossfade flag suppresses it when needed.
   state.on('step:applied', _onStepApplied);
+  // Undo/redo may restore an interface's pose/size without touching its bonded
+  // shapes — re-fit them from their % so undo sticks (no navigate-to-refresh).
+  state.on('undo:applied', () => { for (const iface of getInterfaceNodes()) syncBondedShapes(iface); });
 
   // Live style-template propagation. When a template changes, every
   // text box on the ACTIVE step that's bound to it re-rasterises.
@@ -2316,8 +2319,10 @@ function _configTransformerForNodes(nodes) {
     return;
   }
   // Anything with an image (or mixed) — lock aspect, corners only.
+  // Interfaces: no rotation handle (per spec — interfaces don't rotate).
+  const hasInterface = nodes.some(n => n.getAttr?.('isInterface'));
   _transformer.keepRatio(true);
-  _transformer.rotateEnabled(true);
+  _transformer.rotateEnabled(!hasInterface);
   _transformer.enabledAnchors(['top-left', 'top-right', 'bottom-left', 'bottom-right']);
 }
 

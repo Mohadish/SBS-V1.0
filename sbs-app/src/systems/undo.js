@@ -77,6 +77,7 @@ class UndoManager {
     // result === false means "evicted / no-op" — don't pollute redo stack
     if (result !== false) this._redo.push(cmd);
     state.emit('undo:change');
+    state.emit('undo:applied');   // fired ONLY on undo/redo (not push) — see overlay re-fit
   }
 
   redo() {
@@ -85,6 +86,7 @@ class UndoManager {
     cmd.redo();
     this._undo.push(cmd);
     state.emit('undo:change');
+    state.emit('undo:applied');
   }
 
   canUndo()   { return this._undo.length > 0; }
