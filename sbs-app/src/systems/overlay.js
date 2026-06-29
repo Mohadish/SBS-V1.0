@@ -21,6 +21,7 @@ import * as clock    from '../core/clock.js';
 import { getCanonicalSize, computeSafeFrameRect } from '../core/safe-frame.js';
 import { showContextMenu } from '../ui/context-menu.js';
 import { setStatus } from '../ui/status.js';
+import { promptString } from '../ui/prompt.js';
 import * as interfaces from './interfaces.js';   // interface overlay (used lazily in the right-click menu)
 import { mountTextToolbar, unmountTextToolbar, execCommandApplier, setToolbarValues, wasColorPickedRecently, setStyleDropdown, setStyleLocked } from '../ui/text-toolbar.js';
 import { mountShapeToolbar, unmountShapeToolbar } from '../ui/shape-toolbar.js';
@@ -1537,6 +1538,7 @@ function _snapNodeGeom(node) {
     if (c) snap.crop = { x: c.x, y: c.y, width: c.width, height: c.height };
     snap.zoomDensityX = node.getAttr('zoomDensityX');
     snap.zoomDensityY = node.getAttr('zoomDensityY');
+    snap.zoomMult     = node.getAttr('zoomMult');
   }
   return snap;
 }
@@ -1600,6 +1602,7 @@ async function _restoreNodeGeom(snaps) {
       if (s.crop) s.n.crop({ ...s.crop });
       if (s.zoomDensityX != null) s.n.setAttr('zoomDensityX', s.zoomDensityX);
       if (s.zoomDensityY != null) s.n.setAttr('zoomDensityY', s.zoomDensityY);
+      if (s.zoomMult     != null) s.n.setAttr('zoomMult',     s.zoomMult);
     }
     if (s.n.getClassName() === 'Image' && s.n.getAttr('textHtml')) {
       await _reflowTextBox(s.n);
@@ -2072,6 +2075,54 @@ function _recomputeZoomCrop(node) {
   node.getLayer()?.batchDraw();
 }
 
+/** Set a zoom's magnification. The FRAME stays put (manual resize already owns
+ *  window size); the multiplier tightens/widens the source region about its
+ *  centre — higher × = tighter crop = more magnified. Self-contained (no
+ *  interface needed), and the magnification is preserved under interface scaling
+ *  because density is re-derived from frame ÷ crop. Undoable. */
+export function setZoomMultiplier(node, newM) {
+  if (!node?.getAttr('isZoom') || !(newM > 0)) return;
+  const before = [_snapNodeGeom(node)];
+  _applyZoomMultiplier(node, newM);
+  const after = [_snapNodeGeom(node)];
+  undoManager.push('Zoom level',
+    () => _restoreNodeGeom(before),
+    () => _restoreNodeGeom(after),
+  );
+  _scheduleSave();
+}
+
+function _applyZoomMultiplier(node, newM) {
+  const oldM = node.getAttr('zoomMult') || 2;
+  const k = newM / oldM;
+  if (!(k > 0)) return;
+  const c = node.crop();
+  if (!c?.width || !c?.height) return;
+  const img  = node.image?.();
+  const natW = img?.naturalWidth  || img?.width  || Infinity;
+  const natH = img?.naturalHeight || img?.height || Infinity;
+  // Scale the source region by 1/k about its centre (frame unchanged).
+  const cx = c.x + c.width / 2, cy = c.y + c.height / 2;
+  let cw = Math.min(c.width  / k, natW);
+  let ch = Math.min(c.height / k, natH);
+  let nx = Math.max(0, Math.min(cx - cw / 2, natW - cw));
+  let ny = Math.max(0, Math.min(cy - ch / 2, natH - ch));
+  node.crop({ x: nx, y: ny, width: cw, height: ch });
+  node.setAttr('zoomMult', newM);
+  node.setAttr('zoomDensityX', node.width()  / cw);
+  node.setAttr('zoomDensityY', node.height() / ch);
+  node.getLayer()?.batchDraw();
+}
+
+async function _promptZoomMultiplier(node) {
+  const cur = node.getAttr('zoomMult') || 2;
+  const s = await promptString('Zoom multiplier (e.g. 2.5)', String(cur));
+  if (s == null) return;
+  const m = parseFloat(String(s).replace(/[×x]/i, '').trim());
+  if (!(m > 0)) { setStatus('Enter a number greater than 0.', 'warn', 2500); return; }
+  setZoomMultiplier(node, m);
+}
+
 // Blink highlight over an interface while a shape hovers it.
 let _ifaceBlink = null;   // { node, rect, timer }
 function _blinkInterface(node) {
@@ -2129,8 +2180,24 @@ function _showOverlayContextMenu(node, x, y) {
         { separator: true },
       ]
     : [];
+  // Zoom clips: a "Zoom level" submenu (presets + custom multiplier).
+  const zoomItems = node.getAttr('isZoom')
+    ? (() => {
+        const cur = node.getAttr('zoomMult') || 2;
+        const preset = (m) => ({ label: `${cur === m ? '✓ ' : ''}${m}×`, action: () => setZoomMultiplier(node, m) });
+        return [
+          { label: '🔎 Zoom level', submenu: [
+            preset(1.5), preset(2), preset(3), preset(4),
+            { separator: true },
+            { label: 'Custom…', action: () => _promptZoomMultiplier(node) },
+          ] },
+          { separator: true },
+        ];
+      })()
+    : [];
   showContextMenu([
     ...ifaceItems,
+    ...zoomItems,
     { label: '⎘ Duplicate',        action: _duplicateSelected },
     { label: '📋 Copy',            action: _copyToOverlayClipboard },
     { label: '📥 Paste',           disabled: !hasClipboard, action: () => _pasteFromOverlayClipboard({ inPlace: false }) },
