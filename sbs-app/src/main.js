@@ -553,6 +553,11 @@ window.sbsTTS = {
   engine:   ()          => import('./systems/tts.js').then(m => m.getEngineStatus()),
   forceCPU: (on = true) => import('./systems/tts.js').then(m => m.setForceCpu(on)),
 };
+// Full TTS diagnostic — run when a clip misbehaves. No arg → uses the active
+// step's narration. Reports engine state, flags hidden/suspicious characters in
+// the text (the paste-breaks-Kokoro culprit), shows the sanitized form, and runs
+// a real synth to confirm it works:  await window.sbsTTSDiag()
+window.sbsTTSDiag = (text) => import('./systems/tts.js').then(m => m.diagnose(text));
 
 // EAGER warm-up at launch (background). The fp32 Kokoro model is ~325 MB and the
 // GPU shaders must compile, so a cold warm-up takes tens of seconds. Doing it

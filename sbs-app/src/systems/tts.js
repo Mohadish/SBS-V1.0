@@ -114,8 +114,13 @@ export async function listVoices() {
  * @returns {Promise<{ dataUrl:string, mime:string, durationMs:number }>}
  */
 export async function synthesize(text, voiceId, opts = {}) {
-  if (!text?.trim()) throw new Error('Narration text is empty.');
-  if (!voiceId)      throw new Error('No voice selected — pick one in the Export tab.');
+  // Sanitize FIRST. Pasted text carries Unicode the Kokoro phonemizer chokes on
+  // (smart quotes, dashes, NBSP, zero-width, BOM, control chars, newlines) — on a
+  // bad char generate() throws or HANGS, which is the "typed works, pasted fails"
+  // bug. Central here so GPU, CPU worker, preview, export + precache all benefit.
+  text = _sanitizeForSynth(text);
+  if (!text)    throw new Error('Narration text is empty.');
+  if (!voiceId) throw new Error('No voice selected — pick one in the Export tab.');
 
   const speed = Number(opts.speed) || 1.0;
 
@@ -206,6 +211,69 @@ export async function synthesize(text, voiceId, opts = {}) {
   }
 
   throw new Error(`Unknown voice backend: ${voiceId}`);
+}
+
+/** Normalize narration text into something every TTS backend can phonemize.
+ *  Conservative: fixes the known phonemizer-breakers without altering meaning. */
+export function _sanitizeForSynth(text) {
+  // Pure-ASCII source: problematic chars built from code points (no literals).
+  const cc = String.fromCharCode;
+  let ctrl = '';
+  for (let i = 0; i <= 0x1F; i++) if ([0x09, 0x0A, 0x0D, 0x0B, 0x0C].indexOf(i) < 0) ctrl += cc(i);
+  ctrl += cc(0x7F);
+  const zeroWidth = cc(0x200B, 0x200C, 0x200D, 0xFEFF);
+  const spaces    = cc(0xA0, 0x1680, 0x2000, 0x2001, 0x2002, 0x2003, 0x2004, 0x2005, 0x2006, 0x2007, 0x2008, 0x2009, 0x200A, 0x202F, 0x205F, 0x3000);
+  const sQuote    = cc(0x2018, 0x2019, 0x201A, 0x201B, 0x2032);
+  const dQuote    = cc(0x201C, 0x201D, 0x201E, 0x201F, 0x2033);
+  const dash      = cc(0x2013, 0x2014, 0x2015);
+  const ws        = cc(0x20, 0x09, 0x0A, 0x0D, 0x0B, 0x0C);
+  return String(text == null ? '' : text)
+    .normalize('NFC')
+    .replace(new RegExp('[' + zeroWidth + ']', 'g'), '')          // zero-width + BOM
+    .replace(new RegExp('[' + spaces + ']', 'g'), ' ')            // exotic spaces
+    .replace(new RegExp('[' + sQuote + ']', 'g'), "'")           // smart single quotes
+    .replace(new RegExp('[' + dQuote + ']', 'g'), '"')           // smart double quotes
+    .replace(new RegExp('[' + dash + ']', 'g'), '-')              // en/em dash
+    .replace(new RegExp(cc(0x2026), 'g'), '...')                  // ellipsis
+    .replace(new RegExp('[' + ctrl + ']', 'g'), ' ')             // control chars
+    .replace(new RegExp('[' + ws + ']+', 'g'), ' ')              // collapse whitespace
+    .trim();
+}
+
+/** Full TTS diagnostic for the console (window.sbsTTSDiag(text?)). Analyzes the
+ *  text for hidden/suspicious characters, shows the sanitized form, reports the
+ *  engine state, and runs a real synth of the sanitized text to confirm it works.
+ *  No text → uses the active step's narration. */
+export async function diagnose(text) {
+  if (text == null) {
+    try {
+      const { state } = await import('../core/state.js');
+      const id = state.get('activeStepId');
+      text = (state.get('steps') || []).find(s => s.id === id)?.narration?.text || '';
+    } catch { text = ''; }
+  }
+  const raw = String(text ?? '');
+  const sanitized = _sanitizeForSynth(raw);
+  const suspicious = [];
+  for (const ch of raw) {                              // iterate by code point
+    const c = ch.codePointAt(0);
+    const bad = c < 0x20 || c === 0x7F || c === 0xA0
+      || (c >= 0x2000 && c <= 0x206F) || c === 0xFEFF || c > 0x2E7F;
+    if (bad) suspicious.push(`U+${c.toString(16).toUpperCase().padStart(4, '0')} ${JSON.stringify(ch)}`);
+  }
+  const engine = await getEngineStatus();
+  let voiceId = 'os:kokoro|af_heart';
+  try { const { state } = await import('../core/state.js'); voiceId = state.get('export')?.narrationVoice || voiceId; } catch {}
+  let synthTest;
+  try {
+    const t0 = performance.now();
+    const out = await synthesize(raw, voiceId);
+    synthTest = { ok: true, ms: Math.round(performance.now() - t0), durationMs: out.durationMs };
+  } catch (e) { synthTest = { ok: false, error: e?.message || String(e) }; }
+  const report = { engine, voiceId, rawLength: raw.length, sanitizedLength: sanitized.length,
+    changedBySanitize: raw !== sanitized, suspiciousChars: suspicious, sanitizedPreview: sanitized.slice(0, 160), synthTest };
+  console.log('[tts-diag]', report);
+  return report;
 }
 
 /** Engine diagnostics for the console (window.sbsTTS.engine()). Reports the GPU
