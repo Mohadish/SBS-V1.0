@@ -543,6 +543,19 @@ window.sbsTTSWebGPU = {
   synth:  (t, v = 'af_heart', s = 1)  => import('./systems/tts-webgpu.js').then(m => m.synthesize(t, v, s)),
 };
 
+// EAGER warm-up at launch (background). The fp32 Kokoro model is ~325 MB and the
+// GPU shaders must compile, so a cold warm-up takes tens of seconds. Doing it
+// lazily (only on the first synth) means early clips fall back to the slow CPU
+// worker → "TTS doesn't work, then works after a while". Critically, a renderer
+// reload (Ctrl+R) resets the engine to 'untried', so this must re-run on every
+// load — which it does (main.js re-executes). Idempotent: warmUp() no-ops if
+// already ready/initializing. Small delay so the 3D scene/UI boot first.
+setTimeout(() => {
+  window.sbsTTSWebGPU.warmUp()
+    .then((st) => console.log(`[tts] launch warm-up → ${st}`))
+    .catch(() => {});
+}, 2000);
+
 // ── Select Similar (V0.3.0.48) ────────────────────────────────────────────────
 
 // ── Reparent-arc straighten controls ──────────────────────────────────────
