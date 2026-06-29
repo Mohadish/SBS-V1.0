@@ -1333,7 +1333,20 @@ function _attachNode(node) {
   // Interface scale → re-place/re-size its bonded shapes from their % (live and
   // on release). When a BONDED SHAPE is itself resized/moved, re-capture its %.
   node.on('transform', () => {
-    if (node.getAttr('isInterface')) syncBondedShapes(node);
+    if (node.getAttr('isInterface')) { syncBondedShapes(node); return; }
+    if (node.getAttr('isZoom')) {
+      // Live viewport: bake the transformer's scale into width/height EACH frame
+      // and re-crop, so dragging a handle shows MORE/LESS of the source in real
+      // time (constant density) instead of stretching until release. Same
+      // resize-not-scale trick Konva's text-resize example uses.
+      const sx = node.scaleX(), sy = node.scaleY();
+      if (sx !== 1 || sy !== 1) {
+        node.width(node.width() * sx);
+        node.height(node.height() * sy);
+        node.scaleX(1); node.scaleY(1);
+      }
+      _recomputeZoomCrop(node);
+    }
   });
   node.on('transformend', () => {
     if (node.getAttr('isInterface')) { syncBondedShapes(node); return; }
