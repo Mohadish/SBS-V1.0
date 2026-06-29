@@ -20,6 +20,7 @@ import { sceneCore } from '../core/scene.js';   // H2: tick hook for overlay fad
 import * as clock    from '../core/clock.js';
 import { getCanonicalSize, computeSafeFrameRect } from '../core/safe-frame.js';
 import { showContextMenu } from '../ui/context-menu.js';
+import { setStatus } from '../ui/status.js';
 import * as interfaces from './interfaces.js';   // interface overlay (used lazily in the right-click menu)
 import { mountTextToolbar, unmountTextToolbar, execCommandApplier, setToolbarValues, wasColorPickedRecently, setStyleDropdown, setStyleLocked } from '../ui/text-toolbar.js';
 import { mountShapeToolbar, unmountShapeToolbar } from '../ui/shape-toolbar.js';
@@ -91,6 +92,8 @@ export function initOverlay() {
 
   // Click an empty area → deselect.
   _stage.on('pointerdown', (e) => {
+    // Zoom-region draw mode: the next press-drag-release defines the region.
+    if (_zoomDraw) { e.evt?.preventDefault?.(); _zoomDrawStart(); return; }
     if (e.target === _stage) {
       _setSelection(null);
       // Empty-area click while editing = the user (likely) tried to click a 3D
@@ -98,6 +101,9 @@ export function initOverlay() {
       if (_editing) state.emit('overlay:misclick');
     }
   });
+  // Zoom-region draw: live preview + finalize. Inert unless _zoomDraw is active.
+  _stage.on('pointermove', () => { if (_zoomDraw?.active) _zoomDrawMove(); });
+  _stage.on('pointerup',   () => { if (_zoomDraw?.active) _zoomDrawEnd();  });
 
   // Right-click on empty viewport → paste-only context menu (Paste / Paste
   // in place / Delete-disabled). Lets the user paste a copied textbox or
@@ -163,7 +169,12 @@ export function initOverlay() {
   state.on('step:applied', _onStepApplied);
   // Undo/redo may restore an interface's pose/size without touching its bonded
   // shapes — re-fit them from their % so undo sticks (no navigate-to-refresh).
-  state.on('undo:applied', () => { for (const iface of getInterfaceNodes()) syncBondedShapes(iface); });
+  state.on('undo:applied', () => {
+    for (const iface of getInterfaceNodes()) syncBondedShapes(iface);
+    // Geometry-undo restores w/h but not `crop` — re-derive each zoom's crop
+    // from the restored frame so an undone resize isn't left stretched.
+    for (const z of _zoomNodes()) _recomputeZoomCrop(z);
+  });
 
   // Live style-template propagation. When a template changes, every
   // text box on the ACTIVE step that's bound to it re-rasterises.
@@ -1301,11 +1312,11 @@ function _attachNode(node) {
   // interface under the pointer; on release, bond to it if released OVER one,
   // else unbond. The mouse-release position is what decides (per spec).
   node.on('dragmove', () => {
-    if (node.getAttr('isInterface')) return;           // moving an interface, not a shape
+    if (node.getAttr('isInterface') || node.getAttr('isZoom')) return;   // interface/zoom: not bondable shapes
     _blinkInterface(_ifaceUnderPoint(_stage.getPointerPosition()));
   });
   node.on('dragend', () => {
-    if (node.getAttr('isInterface')) return;           // interface move handled above
+    if (node.getAttr('isInterface') || node.getAttr('isZoom')) return;   // interface move / zoom drag handled elsewhere
     const pt = _stage.getPointerPosition() || _rectCenter(node);
     const iface = _ifaceUnderPoint(pt);
     _clearInterfaceBlink();
@@ -1384,6 +1395,8 @@ function _attachNode(node) {
       node.scaleX(1);
       node.scaleY(1);
     }
+    // Zoom: resize is a viewport — re-crop at constant density (never stretch).
+    if (node.getAttr('isZoom')) _recomputeZoomCrop(node);
     const editing = _activeTextEditor && _activeTextEditor.node === node;
     if (editing) {
       // In edit mode the editor IS the source of truth — sync its width
@@ -1860,6 +1873,142 @@ export function syncBondedShapes(ifaceNode) {
   _layer.batchDraw();
 }
 
+// ─── Interface ZOOM (Z1) ────────────────────────────────────────────────────
+// A zoom is a magnified CROP of an interface's image, living as its own free
+// element. Created by drawing a rectangle over an interface: that region becomes
+// a 2× clip you can move/delete like any node. KEY: resizing a zoom is a
+// VIEWPORT, not a stretch — the pixel density (zoomDensityX/Y = display-px per
+// natural-px) is held constant, so a bigger frame shows MORE of the source
+// (re-crops), never blows up the pixels. The zoom carries its own `src`+`crop`
+// so it round-trips on save and never auto-updates with the interface's image.
+let _zoomDraw = null;   // { iface, active, start:{x,y}, rect } while drawing
+
+/** Live zoom clips on the active layer. */
+function _zoomNodes() { return _layer ? _layer.getChildren(n => n.getAttr('isZoom')) : []; }
+
+/** Right-click interface → Add zoom: arm the next press-drag-release to define
+ *  the zoom region over this interface. */
+export function startZoomDraw(ifaceNode) {
+  if (!ifaceNode || !_layer) return;
+  _setSelection(null);
+  _cancelZoomDraw();
+  // Freeze dragging on existing nodes so pressing on the interface DRAWS the box
+  // instead of moving the interface. Restored in _cancelZoomDraw.
+  const dragState = _layer.getChildren().map(n => [n, n.draggable()]);
+  for (const [n] of dragState) n.draggable(false);
+  _zoomDraw = { iface: ifaceNode, active: false, start: null, rect: null, dragState };
+  if (_container) _container.style.cursor = 'crosshair';
+  setStatus('Draw a box over the interface to zoom that region.', 'info', 4000);
+}
+
+function _cancelZoomDraw() {
+  if (_zoomDraw?.rect) { _zoomDraw.rect.destroy(); _uiLayer?.batchDraw(); }
+  if (_zoomDraw?.dragState) {
+    for (const [n, d] of _zoomDraw.dragState) { if (!n.isDestroyed?.()) n.draggable(d); }
+  }
+  _zoomDraw = null;
+  if (_container) _container.style.cursor = '';
+}
+
+function _zoomDrawStart() {
+  const p = _layer.getRelativePointerPosition();
+  if (!p) return;
+  _zoomDraw.active = true;
+  _zoomDraw.start  = { x: p.x, y: p.y };
+  _zoomDraw.rect   = new Konva.Rect({
+    x: p.x, y: p.y, width: 0, height: 0,
+    stroke: '#22d3ee', strokeWidth: 1.5, dash: [6, 4],
+    fill: 'rgba(34,211,238,0.12)', listening: false,
+  });
+  _uiLayer.add(_zoomDraw.rect);
+  _uiLayer.batchDraw();
+}
+
+function _zoomDrawMove() {
+  const p = _layer.getRelativePointerPosition();
+  if (!p || !_zoomDraw?.rect) return;
+  const s = _zoomDraw.start;
+  _zoomDraw.rect.setAttrs({
+    x: Math.min(s.x, p.x), y: Math.min(s.y, p.y),
+    width:  Math.abs(p.x - s.x), height: Math.abs(p.y - s.y),
+  });
+  _uiLayer.batchDraw();
+}
+
+function _zoomDrawEnd() {
+  const iface = _zoomDraw?.iface;
+  const r = _zoomDraw?.rect;
+  const R = r ? { x: r.x(), y: r.y(), width: r.width(), height: r.height() } : null;
+  _cancelZoomDraw();
+  if (!iface || !R || R.width < 6 || R.height < 6) {
+    setStatus?.('Zoom cancelled — draw a larger box.', 'warn', 2500);
+    return;
+  }
+  _createZoomFromRegion(iface, R);
+}
+
+/** Build a zoom element from a drawn region R (layer coords) over `iface`. */
+function _createZoomFromRegion(iface, R) {
+  const img = iface.image?.();
+  if (!img) return;
+  const IB = iface.getClientRect({ relativeTo: _layer });
+  if (!IB.width || !IB.height) return;
+  const natW = iface.getAttr('naturalW') || img.naturalWidth  || img.width  || IB.width;
+  const natH = iface.getAttr('naturalH') || img.naturalHeight || img.height || IB.height;
+  // Clamp the drawn region to the interface bounds — can't zoom outside the image.
+  const x0 = Math.max(R.x, IB.x), y0 = Math.max(R.y, IB.y);
+  const x1 = Math.min(R.x + R.width,  IB.x + IB.width);
+  const y1 = Math.min(R.y + R.height, IB.y + IB.height);
+  const rw = x1 - x0, rh = y1 - y0;
+  if (rw < 4 || rh < 4) return;
+  const M = 2;   // default magnification (multiplier slice comes next)
+  const crop = {
+    x: (x0 - IB.x) / IB.width  * natW,
+    y: (y0 - IB.y) / IB.height * natH,
+    width:  rw / IB.width  * natW,
+    height: rh / IB.height * natH,
+  };
+  const frameW = rw * M, frameH = rh * M;
+  const zoom = new Konva.Image({
+    image: img,
+    crop,
+    x: x0 + rw / 2 - frameW / 2,    // expand from the drawn region's centre
+    y: y0 + rh / 2 - frameH / 2,
+    width: frameW, height: frameH,
+    draggable: true,
+    name: 'userImage',
+  });
+  zoom.setAttr('isZoom', true);
+  zoom.setAttr('zoomMult', M);
+  zoom.setAttr('zoomDensityX', frameW / crop.width);   // display-px per natural-px, held on resize
+  zoom.setAttr('zoomDensityY', frameH / crop.height);
+  zoom.setAttr('zoomIfaceId', _ensureIfaceId(iface));  // for a future "Update image"
+  zoom.setAttr('src', iface.getAttr('src'));           // self-contained on reload
+  _layer.add(zoom);
+  _attachNode(zoom);
+  _setSelection(zoom);
+  _layer.batchDraw();
+  _scheduleSave();
+}
+
+/** Resize = viewport, not stretch. Recompute the crop from frame ÷ density so the
+ *  pixel density stays constant; clamp so we never crop past the image edge. */
+function _recomputeZoomCrop(node) {
+  const Dx = node.getAttr('zoomDensityX'), Dy = node.getAttr('zoomDensityY');
+  if (!Dx || !Dy) return;
+  const img  = node.image?.();
+  const natW = img?.naturalWidth  || img?.width  || Infinity;
+  const natH = img?.naturalHeight || img?.height || Infinity;
+  const crop = node.crop() || { x: 0, y: 0, width: 0, height: 0 };
+  let cw = node.width()  / Dx;
+  let ch = node.height() / Dy;
+  const cwMax = natW - crop.x, chMax = natH - crop.y;
+  if (cw > cwMax) { cw = cwMax; node.width(cw * Dx); }
+  if (ch > chMax) { ch = chMax; node.height(ch * Dy); }
+  node.crop({ x: crop.x, y: crop.y, width: cw, height: ch });
+  node.getLayer()?.batchDraw();
+}
+
 // Blink highlight over an interface while a shape hovers it.
 let _ifaceBlink = null;   // { node, rect, timer }
 function _blinkInterface(node) {
@@ -1906,6 +2055,7 @@ function _showOverlayContextMenu(node, x, y) {
   const ifaceItems = interfaces.isInterfaceNode(node)
     ? [
         { label: '🖼 Change image…', action: () => interfaces.changeInterfaceImage(node) },
+        { label: '🔍 Add zoom',       action: () => startZoomDraw(node) },
         // State-aware: at default → just an indicator; moved → the two actions.
         ...(node.getAttr('atDefault')
           ? [{ label: '✓ In default position', disabled: true }]
@@ -2311,6 +2461,18 @@ function _configTransformerForNodes(nodes) {
   if (allShapes) {
     _transformer.keepRatio(false);
     _transformer.rotateEnabled(true);
+    _transformer.enabledAnchors([
+      'top-left', 'top-center', 'top-right',
+      'middle-left', 'middle-right',
+      'bottom-left', 'bottom-center', 'bottom-right',
+    ]);
+    return;
+  }
+  // Zoom clips: free resize (each axis re-crops independently), no rotation,
+  // no aspect-lock — the frame is a viewport into the magnified image.
+  if (nodes.every(n => n.getAttr?.('isZoom'))) {
+    _transformer.keepRatio(false);
+    _transformer.rotateEnabled(false);
     _transformer.enabledAnchors([
       'top-left', 'top-center', 'top-right',
       'middle-left', 'middle-right',
@@ -2780,6 +2942,8 @@ export function rasterizeOverlay(opts = {}) {
 
 function _onKeyDown(e) {
   if (!_editing) return;
+  // Escape cancels an armed zoom-region draw (un-freezes dragging).
+  if (e.key === 'Escape' && _zoomDraw) { _cancelZoomDraw(); e.preventDefault(); return; }
   // Don't intercept anything while typing in any editable. Browsers'
   // native Ctrl+C / Ctrl+V handle text selection inside contenteditable.
   const ae = document.activeElement;
