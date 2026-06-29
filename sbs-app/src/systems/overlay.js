@@ -1365,6 +1365,17 @@ function _attachNode(node) {
   node.on('transformstart', () => {
     const tracked = _transformer?.nodes() || [node];
     _xformSnapBefore = tracked.map(n => _snapNodeGeom(n));
+    // Zoom: pin the source image in space for the whole gesture. The anchor is
+    // the SCREEN position of image-pixel (0,0); holding it constant means any
+    // handle reveals/hides image on its side instead of sliding it. Transient
+    // (plain prop, not a Konva attr) so it never serialises.
+    for (const n of tracked) {
+      if (n.getAttr('isZoom')) {
+        const c  = n.crop() || { x: 0, y: 0 };
+        const Dx = n.getAttr('zoomDensityX') || 1, Dy = n.getAttr('zoomDensityY') || 1;
+        n._zoomAnchor = { x: n.x() - c.x * Dx, y: n.y() - c.y * Dy };
+      }
+    }
   });
 
   // LIVE resize during edit — when the user drags a transform anchor on a
@@ -1410,7 +1421,8 @@ function _attachNode(node) {
       node.scaleY(1);
     }
     // Zoom: resize is a viewport — re-crop at constant density (never stretch).
-    if (node.getAttr('isZoom')) _recomputeZoomCrop(node);
+    // Then release the pin so non-resize recomputes keep the source origin.
+    if (node.getAttr('isZoom')) { _recomputeZoomCrop(node); node._zoomAnchor = null; }
     const editing = _activeTextEditor && _activeTextEditor.node === node;
     if (editing) {
       // In edit mode the editor IS the source of truth — sync its width
@@ -2057,21 +2069,42 @@ function _createZoomFromRegion(iface, R) {
   _scheduleSave();
 }
 
-/** Resize = viewport, not stretch. Recompute the crop from frame ÷ density so the
- *  pixel density stays constant; clamp so we never crop past the image edge. */
+/** Resize = viewport, not stretch. Recompute the crop from frame ÷ density at
+ *  constant pixel density.
+ *  - During a MANUAL resize (anchor set): the image is pinned in space, so each
+ *    handle reveals/hides image on its side rather than sliding it. The frame is
+ *    clamped to the image's on-screen rect so we never crop past an edge.
+ *  - Otherwise (programmatic / undo): keep the source origin, just resize the
+ *    window from the top-left. */
 function _recomputeZoomCrop(node) {
   const Dx = node.getAttr('zoomDensityX'), Dy = node.getAttr('zoomDensityY');
   if (!Dx || !Dy) return;
   const img  = node.image?.();
   const natW = img?.naturalWidth  || img?.width  || Infinity;
   const natH = img?.naturalHeight || img?.height || Infinity;
-  const crop = node.crop() || { x: 0, y: 0, width: 0, height: 0 };
-  let cw = node.width()  / Dx;
-  let ch = node.height() / Dy;
-  const cwMax = natW - crop.x, chMax = natH - crop.y;
-  if (cw > cwMax) { cw = cwMax; node.width(cw * Dx); }
-  if (ch > chMax) { ch = chMax; node.height(ch * Dy); }
-  node.crop({ x: crop.x, y: crop.y, width: cw, height: ch });
+  const IA = node._zoomAnchor;
+  if (IA) {
+    // Image pinned: IA = screen pos of image-pixel (0,0). Clamp the frame to the
+    // image's screen rect [IA, IA + nat·D]; crop = (frame − IA) ÷ D.
+    let fx = node.x(), fy = node.y(), fw = node.width(), fh = node.height();
+    const imgRight  = IA.x + (Number.isFinite(natW) ? natW * Dx : Infinity);
+    const imgBottom = IA.y + (Number.isFinite(natH) ? natH * Dy : Infinity);
+    if (fx < IA.x) { fw -= (IA.x - fx); fx = IA.x; }
+    if (fy < IA.y) { fh -= (IA.y - fy); fy = IA.y; }
+    if (fx + fw > imgRight)  fw = imgRight  - fx;
+    if (fy + fh > imgBottom) fh = imgBottom - fy;
+    fw = Math.max(1, fw); fh = Math.max(1, fh);
+    node.x(fx); node.y(fy); node.width(fw); node.height(fh);
+    node.crop({ x: (fx - IA.x) / Dx, y: (fy - IA.y) / Dy, width: fw / Dx, height: fh / Dy });
+  } else {
+    const crop = node.crop() || { x: 0, y: 0, width: 0, height: 0 };
+    let cw = node.width()  / Dx;
+    let ch = node.height() / Dy;
+    const cwMax = natW - crop.x, chMax = natH - crop.y;
+    if (cw > cwMax) { cw = cwMax; node.width(cw * Dx); }
+    if (ch > chMax) { ch = chMax; node.height(ch * Dy); }
+    node.crop({ x: crop.x, y: crop.y, width: cw, height: ch });
+  }
   node.getLayer()?.batchDraw();
 }
 
