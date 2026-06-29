@@ -1312,11 +1312,11 @@ function _attachNode(node) {
   // interface under the pointer; on release, bond to it if released OVER one,
   // else unbond. The mouse-release position is what decides (per spec).
   node.on('dragmove', () => {
-    if (node.getAttr('isInterface') || node.getAttr('isZoom')) return;   // interface/zoom: not bondable shapes
+    if (node.getAttr('isInterface')) return;           // moving an interface, not a shape
     _blinkInterface(_ifaceUnderPoint(_stage.getPointerPosition()));
   });
   node.on('dragend', () => {
-    if (node.getAttr('isInterface') || node.getAttr('isZoom')) return;   // interface move / zoom drag handled elsewhere
+    if (node.getAttr('isInterface')) return;           // interface move handled above
     const pt = _stage.getPointerPosition() || _rectCenter(node);
     const iface = _ifaceUnderPoint(pt);
     _clearInterfaceBlink();
@@ -1507,7 +1507,7 @@ function _serializeNode(node) {
 // ─── P7-C-2: drag / resize geometry snapshots ──────────────────────────────
 
 function _snapNodeGeom(node) {
-  return {
+  const snap = {
     n:        node,
     x:        node.x(),
     y:        node.y(),
@@ -1517,6 +1517,27 @@ function _snapNodeGeom(node) {
     scaleY:   node.scaleY(),
     rotation: node.rotation(),
   };
+  // Zoom: crop + density aren't derivable from geometry — snapshot them so an
+  // undone resize restores the exact viewport (bondPct is re-derived instead).
+  if (node.getAttr('isZoom')) {
+    const c = node.crop();
+    if (c) snap.crop = { x: c.x, y: c.y, width: c.width, height: c.height };
+    snap.zoomDensityX = node.getAttr('zoomDensityX');
+    snap.zoomDensityY = node.getAttr('zoomDensityY');
+  }
+  return snap;
+}
+
+/** After an undo/redo restores node geometry, re-derive each bonded shape's
+ *  bondPct from its restored geometry. bondPct is a cache of (shape vs interface)
+ *  bbox — restoring geometry without it would leave the undo:applied re-fit
+ *  pulling the shape from a stale %. */
+function _reconcileBondAfterRestore(nodes) {
+  for (const n of nodes) {
+    if (!n || n.isDestroyed?.()) continue;
+    const iface = _interfaceOf(n);
+    if (iface) _captureBondPct(n, iface);
+  }
 }
 
 /**
@@ -1535,6 +1556,7 @@ function _restoreNodePositions(snaps) {
     s.n.y(s.y);
     if (s.n.getLayer && s.n.getLayer() !== _layer) peerLayer = s.n.getLayer();
   }
+  _reconcileBondAfterRestore(snaps.map(s => s.n));
   _layer.batchDraw();
   peerLayer?.batchDraw?.();
   // Header peers also need their state.headerItems entry resynced.
@@ -1561,10 +1583,16 @@ async function _restoreNodeGeom(snaps) {
     s.n.scaleX(s.scaleX);
     s.n.scaleY(s.scaleY);
     s.n.rotation(s.rotation);
+    if (s.n.getAttr('isZoom')) {
+      if (s.crop) s.n.crop({ ...s.crop });
+      if (s.zoomDensityX != null) s.n.setAttr('zoomDensityX', s.zoomDensityX);
+      if (s.zoomDensityY != null) s.n.setAttr('zoomDensityY', s.zoomDensityY);
+    }
     if (s.n.getClassName() === 'Image' && s.n.getAttr('textHtml')) {
       await _reflowTextBox(s.n);
     }
   }
+  _reconcileBondAfterRestore(snaps.map(s => s.n));
   _layer.batchDraw();
   _scheduleSave();
   return any ? undefined : false;
@@ -1844,6 +1872,24 @@ function _captureBondPct(shape, ifaceNode) {
  *  Generic across shape types. (Stroke scales proportionally too — fine for now,
  *  per spec.) */
 function _fitShapeToBox(shape, box) {
+  if (shape.getAttr('isZoom')) {
+    // Interface-driven scaling of a ZOOM: scale the FRAME to the box and let the
+    // magnified content grow with it — the source region (crop) is unchanged, so
+    // magnification stays constant RELATIVE to the interface. Then re-derive the
+    // density so a later MANUAL resize (the viewport/crop path) measures from the
+    // current size. (Manual resize keeps density + re-crops; this keeps crop +
+    // re-densities — the two paths are duals.)
+    if (box.width > 0 && box.height > 0) {
+      shape.scaleX(1); shape.scaleY(1);
+      shape.width(box.width);
+      shape.height(box.height);
+      shape.position({ x: box.x, y: box.y });
+      const crop = shape.crop();
+      if (crop?.width)  shape.setAttr('zoomDensityX', box.width  / crop.width);
+      if (crop?.height) shape.setAttr('zoomDensityY', box.height / crop.height);
+    }
+    return;
+  }
   const cur = shape.getClientRect({ relativeTo: _layer });
   if (cur.width > 0 && cur.height > 0 && box.width > 0 && box.height > 0) {
     shape.scaleX(shape.scaleX() * (box.width  / cur.width));
@@ -1984,8 +2030,12 @@ function _createZoomFromRegion(iface, R) {
   zoom.setAttr('zoomDensityY', frameH / crop.height);
   zoom.setAttr('zoomIfaceId', _ensureIfaceId(iface));  // for a future "Update image"
   zoom.setAttr('src', iface.getAttr('src'));           // self-contained on reload
+  // Bonded to its source interface by DEFAULT — follows + scales with it like
+  // any bonded shape (same mechanic: drag it out to unbond, back in to re-bond).
+  zoom.setAttr('attachedTo', _ensureIfaceId(iface));
   _layer.add(zoom);
   _attachNode(zoom);
+  _captureBondPct(zoom, iface);                        // needs the node on the layer (bbox)
   _setSelection(zoom);
   _layer.batchDraw();
   _scheduleSave();
