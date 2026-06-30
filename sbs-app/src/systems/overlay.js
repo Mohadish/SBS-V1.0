@@ -124,6 +124,8 @@ export function initOverlay() {
 
   // H2: per-frame advance for overlay fade transitions.
   sceneCore.addTickHook(_advanceOverlayFade);
+  // S2: per-frame advance for image-sequence playback (inert when none active).
+  sceneCore.addTickHook(_advanceSequences);
 
   // Resize stage to match viewport surface.
   _syncSize();
@@ -318,6 +320,9 @@ export function setEditingMode(on) {
   // header workstream. _editing remains the source of truth for code
   // inside this module; state.overlayEditing is purely a broadcast.
   state.setState({ overlayEditing: _editing });
+  // S2: sequences are static (frame 0) while editing, animate in view mode.
+  if (_editing) _stopSequences();
+  else          _startSequences();
 }
 
 // ─── Creating nodes ────────────────────────────────────────────────────────
@@ -2157,6 +2162,109 @@ async function _promptZoomMultiplier(node) {
   setZoomMultiplier(node, m);
 }
 
+// ─── Image-sequence playback (S2) ───────────────────────────────────────────
+// During VIEW (not edit), an image with a `sequence` swaps through its frames at
+// their % points across the step window, crossfading each. The window = the
+// step's narration duration (or the sequence's fixed override), starting once
+// the overlay is loaded (we start at _loadFromActiveStep's end = after the step
+// transition). Crossfade = a clone of the node showing the next frame, faded in
+// on the NON-serialized _uiLayer (so transient frames never hit the project
+// file), then committed to the base node's image. The base node's `src` attr is
+// never touched → the saved/reloaded overlay always shows frame 0.
+let _seqPlaybacks = [];          // [{ node, frames:[{pct,img}], windowMs, startMs, currentIdx, baseOpacity, xfade, done, dead }]
+let _seqToken     = 0;           // guards against a stale async start overwriting a newer one
+const SEQ_CROSSFADE_MS = 220;
+
+function _stopSequences() {
+  for (const pb of _seqPlaybacks) {
+    if (pb.xfade?.clone && !pb.xfade.clone.isDestroyed?.()) pb.xfade.clone.destroy();
+    if (pb.node && !pb.node.isDestroyed?.() && pb.frames?.[0]?.img) {
+      pb.node.image(pb.frames[0].img);                 // restore the base frame
+      pb.node.opacity(pb.baseOpacity ?? 1);
+    }
+  }
+  if (_uiLayer) for (const n of _uiLayer.getChildren(c => c.getAttr && c.getAttr('_seqClone'))) n.destroy();
+  _seqPlaybacks = [];
+  _layer?.batchDraw(); _uiLayer?.batchDraw();
+}
+
+async function _startSequences() {
+  const myToken = ++_seqToken;
+  _stopSequences();
+  if (_editing || !_layer) return;                     // animate in VIEW mode only
+  const narrMs = (() => {
+    try {
+      const id = state.get('activeStepId');
+      return (state.get('steps') || []).find(s => s.id === id)?.narration?.durationMs || 0;
+    } catch { return 0; }
+  })();
+  const candidates = _layer.getChildren(n => {
+    const s = n.getAttr && n.getAttr('sequence');
+    return s && Array.isArray(s.frames) && s.frames.length >= 2;
+  });
+  if (!candidates.length) return;
+  const playbacks = [];
+  for (const node of candidates) {
+    const seq = node.getAttr('sequence');
+    const windowMs = (seq.overrideMs != null ? seq.overrideMs : narrMs) || 3000;
+    const frames = [];
+    for (const f of seq.frames) {
+      let img = null;
+      if (f.src) { try { img = await _loadImage(f.src); } catch {} }
+      frames.push({ pct: Number(f.pct) || 0, img });
+    }
+    if (myToken !== _seqToken) return;                 // superseded while preloading
+    frames.sort((a, b) => a.pct - b.pct);
+    if (!frames[0].img) frames[0].img = node.image();  // base fallback = node's own image
+    node.image(frames[0].img);
+    playbacks.push({ node, frames, windowMs, startMs: clock.now(), currentIdx: 0, baseOpacity: node.opacity(), xfade: null, done: false });
+  }
+  if (myToken !== _seqToken) return;
+  _seqPlaybacks = playbacks;
+  _layer.batchDraw();
+}
+
+function _advanceSequences(nowMs) {
+  if (!_seqPlaybacks.length) return;
+  let drawLayer = false, drawUi = false;
+  for (const pb of _seqPlaybacks) {
+    if (pb.node?.isDestroyed?.()) { pb.dead = true; continue; }
+    if (pb.xfade) {                                     // advance an in-flight crossfade
+      const t = Math.min(1, (nowMs - pb.xfade.startMs) / SEQ_CROSSFADE_MS);
+      const e = t * t * (3 - 2 * t);                   // smoothstep
+      if (!pb.xfade.clone.isDestroyed?.()) pb.xfade.clone.opacity(pb.baseOpacity * e);
+      drawUi = true;
+      if (t >= 1) {                                     // commit: base becomes target, drop clone
+        pb.node.image(pb.frames[pb.xfade.targetIdx].img);
+        pb.currentIdx = pb.xfade.targetIdx;
+        if (!pb.xfade.clone.isDestroyed?.()) pb.xfade.clone.destroy();
+        pb.xfade = null;
+        drawLayer = true;
+      }
+      continue;                                         // one transition at a time
+    }
+    if (pb.done) continue;
+    const frac = pb.windowMs > 0 ? (nowMs - pb.startMs) / pb.windowMs : 1;
+    if (frac >= 1) { pb.done = true; continue; }        // window over → hold last frame
+    let target = pb.currentIdx;
+    for (let i = pb.currentIdx + 1; i < pb.frames.length; i++) {
+      if (pb.frames[i].pct <= frac * 100) target = i; else break;
+    }
+    if (target > pb.currentIdx && pb.frames[target]?.img && _uiLayer) {
+      const clone = pb.node.clone({ listening: false, draggable: false });
+      clone.image(pb.frames[target].img);
+      clone.opacity(0);
+      clone.setAttr('_seqClone', true);                 // marks it transient (swept, never serialized)
+      _uiLayer.add(clone);
+      pb.xfade = { clone, startMs: nowMs, targetIdx: target };
+      drawUi = true;
+    }
+  }
+  if (_seqPlaybacks.some(pb => pb.dead)) _seqPlaybacks = _seqPlaybacks.filter(pb => !pb.dead);
+  if (drawLayer) _layer?.batchDraw();
+  if (drawUi)    _uiLayer?.batchDraw();
+}
+
 // Blink highlight over an interface while a shape hovers it.
 let _ifaceBlink = null;   // { node, rect, timer }
 function _blinkInterface(node) {
@@ -2995,6 +3103,9 @@ async function _loadFromActiveStep() {
   // re-derive from their % here). No-op for interfaces that didn't change.
   for (const iface of getInterfaceNodes()) syncBondedShapes(iface);
   _layer.batchDraw();
+  // S2: start image-sequence playback now that the step's overlay is loaded +
+  // visible (this runs after the step transition). No-op in edit mode / no seqs.
+  _startSequences();
 }
 
 async function _recreateNode(spec) {
