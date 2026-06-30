@@ -73,3 +73,7 @@ sbs-app/electron/license/*.jsc
 sbs-viewer/license/*.jsc
 sbs-viewer/dist/
 sbs-viewer/node_modules/
+
+# TTS diagnostic temp dumps (written by window.sbsTTS.dumpText / sbsTTSDiag)
+tts-diag.json
+tts-textdump.json
