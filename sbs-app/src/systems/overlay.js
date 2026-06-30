@@ -22,6 +22,7 @@ import { getCanonicalSize, computeSafeFrameRect } from '../core/safe-frame.js';
 import { showContextMenu } from '../ui/context-menu.js';
 import { setStatus } from '../ui/status.js';
 import { promptString } from '../ui/prompt.js';
+import { openSequenceEditor } from '../ui/sequence-editor.js';
 import * as interfaces from './interfaces.js';   // interface overlay (used lazily in the right-click menu)
 import { mountTextToolbar, unmountTextToolbar, execCommandApplier, setToolbarValues, wasColorPickedRecently, setStyleDropdown, setStyleLocked } from '../ui/text-toolbar.js';
 import { mountShapeToolbar, unmountShapeToolbar } from '../ui/shape-toolbar.js';
@@ -2228,9 +2229,21 @@ function _showOverlayContextMenu(node, x, y) {
         ];
       })()
     : [];
+  // Image sequence (S1): any plain image / interface (not text boxes or zooms)
+  // can carry a swap-through frame sequence. Opens the authoring editor.
+  const isSeqTarget = node.getClassName?.() === 'Image'
+    && node.getAttr('src') && !node.getAttr('textHtml') && !node.getAttr('isZoom');
+  const seqItems = isSeqTarget
+    ? [
+        { label: node.getAttr('sequence') ? '🎞 Edit image sequence…' : '🎞 Add image sequence…',
+          action: () => openSequenceEditor(node, () => _scheduleSave()) },
+        { separator: true },
+      ]
+    : [];
   showContextMenu([
     ...ifaceItems,
     ...zoomItems,
+    ...seqItems,
     { label: '⎘ Duplicate',        action: _duplicateSelected },
     { label: '📋 Copy',            action: _copyToOverlayClipboard },
     { label: '📥 Paste',           disabled: !hasClipboard, action: () => _pasteFromOverlayClipboard({ inPlace: false }) },
