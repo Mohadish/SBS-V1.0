@@ -227,7 +227,17 @@ export function _sanitizeForSynth(text) {
   let ctrl = '';
   for (let i = 0; i <= 0x1F; i++) if ([0x09, 0x0A, 0x0D, 0x0B, 0x0C].indexOf(i) < 0) ctrl += cc(i);
   ctrl += cc(0x7F);
-  const zeroWidth = cc(0x200B, 0x200C, 0x200D, 0xFEFF);
+  // Invisible / formatting / directional chars — the usual paste artefacts (web,
+  // PDF, RTL sources) that survive a naive clean and can wedge the phonemizer.
+  // Strip them ALL: soft hyphen, Arabic letter mark, Hangul/Khmer/Mongolian
+  // fillers, zero-width + directional marks/embeddings/isolates, word joiners,
+  // variation selectors, BOM, interlinear annotation.
+  let invisible = '';
+  for (const [a, b] of [[0x00AD], [0x061C], [0x115F, 0x1160], [0x17B4, 0x17B5], [0x180B, 0x180F],
+                        [0x200B, 0x200F], [0x202A, 0x202E], [0x2060, 0x2064], [0x2066, 0x206F],
+                        [0xFE00, 0xFE0F], [0xFEFF], [0xFFF9, 0xFFFB]]) {
+    for (let c = a; c <= (b ?? a); c++) invisible += cc(c);
+  }
   const spaces    = cc(0xA0, 0x1680, 0x2000, 0x2001, 0x2002, 0x2003, 0x2004, 0x2005, 0x2006, 0x2007, 0x2008, 0x2009, 0x200A, 0x202F, 0x205F, 0x3000);
   const sQuote    = cc(0x2018, 0x2019, 0x201A, 0x201B, 0x2032);
   const dQuote    = cc(0x201C, 0x201D, 0x201E, 0x201F, 0x2033);
@@ -235,7 +245,7 @@ export function _sanitizeForSynth(text) {
   const ws        = cc(0x20, 0x09, 0x0A, 0x0D, 0x0B, 0x0C);
   return String(text == null ? '' : text)
     .normalize('NFC')
-    .replace(new RegExp('[' + zeroWidth + ']', 'g'), '')          // zero-width + BOM
+    .replace(new RegExp('[' + invisible + ']', 'g'), '')          // invisible / formatting / directional
     .replace(new RegExp('[' + spaces + ']', 'g'), ' ')            // exotic spaces
     .replace(new RegExp('[' + sQuote + ']', 'g'), "'")           // smart single quotes
     .replace(new RegExp('[' + dQuote + ']', 'g'), '"')           // smart double quotes
@@ -280,6 +290,27 @@ export async function diagnose(text) {
     changedBySanitize: raw !== sanitized, suspiciousChars: suspicious, sanitizedPreview: sanitized.slice(0, 160), synthTest };
   console.log('[tts-diag]', report);
   return report;
+}
+
+/** Dump the active step's RAW narration text as per-character code points — NO
+ *  synth, so it's safe to run on a wedged/sticky step. Used to identify a paste
+ *  artefact the sanitizer might miss. `flagged` = the non-ASCII/control chars to
+ *  scan; `kept:false` means the sanitizer already removes it. */
+export async function dumpNarrationText(stepId) {
+  const { state } = await import('../core/state.js');
+  const id   = stepId || state.get('activeStepId');
+  const step = (state.get('steps') || []).find(s => s.id === id);
+  const raw  = String(step?.narration?.text ?? '');
+  const sanitized = _sanitizeForSynth(raw);
+  const chars = [...raw].map((ch, i) => {
+    const n = ch.codePointAt(0);
+    return { i, code: 'U+' + n.toString(16).toUpperCase().padStart(4, '0'), char: ch, kept: sanitized.includes(ch) };
+  });
+  const flagged = chars.filter(c => {
+    const n = parseInt(c.code.slice(2), 16);
+    return n < 0x20 || n === 0x7F || n > 0x7E;
+  });
+  return { stepId: id, rawLength: raw.length, sanitizedLength: sanitized.length, changed: raw !== sanitized, raw, sanitized, flagged, chars };
 }
 
 /** Engine diagnostics for the console (window.sbsTTS.engine()). Reports the GPU

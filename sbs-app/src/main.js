@@ -555,6 +555,16 @@ window.sbsTTS = {
   // Unstick a step whose real-voice synth wedged (its de-dup key is poisoned) —
   // no need to duplicate the step. Returns how many in-flight entries it cleared.
   clearPending: () => import('./ui/steps-panel.js').then(m => { const n = m.clearPendingSynths(); console.log(`[tts] cleared ${n} pending synth entr${n === 1 ? 'y' : 'ies'}`); return n; }),
+  // Capture the active step's narration text char-by-char (NO synth — safe on a
+  // stuck step) and write it to a file Claude can read. Run while a step is sticky.
+  dumpText: async () => {
+    const rep = await (await import('./systems/tts.js')).dumpNarrationText();
+    try { await window.sbsNative.writeFile('E:/SBS-V1.0 - Claude/.claude/worktrees/V0.3.1/tts-textdump.json', JSON.stringify(rep, null, 2), 'utf-8'); }
+    catch (e) { console.warn('[tts] dumpText write failed:', e?.message); }
+    console.log(`[tts] text dump written — ${rep.flagged.length} flagged char(s), changed=${rep.changed}`);
+    alert('Text captured — tell Claude "done"');
+    return rep;
+  },
 };
 // Full TTS diagnostic — run when a clip misbehaves. No arg → uses the active
 // step's narration. Reports engine state, flags hidden/suspicious characters in
