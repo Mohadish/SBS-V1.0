@@ -12,6 +12,7 @@
 
 import state                    from '../core/state.js';
 import { undoManager }          from './undo.js';
+import { cloneShareStrings, structEqual } from '../core/clone.js';   // cheap undo snapshots (share base64, don't copy)
 import { applyFollow }          from './follow.js';   // paste keeps the source's attachment
 import { chooseFromButtons }    from '../ui/prompt.js';   // multi-step transform scope prompt
 import { setStatus }            from '../ui/status.js';
@@ -301,9 +302,9 @@ export function deletePresets(ids) {
   if (deletable.length === 0) return { deleted: 0, skipped };
 
   const del = new Set(deletable);
-  const beforePresets = JSON.parse(JSON.stringify(all));
+  const beforePresets = cloneShareStrings(all);
   const beforeAssign  = { ...materials.meshColorAssignments };
-  const beforeSteps   = JSON.parse(JSON.stringify(state.get('steps') || []));
+  const beforeSteps   = cloneShareStrings(state.get('steps') || []);
 
   const apply = () => {
     // Drop the presets.
@@ -354,10 +355,10 @@ export function unifyPresets(survivorId, mergedIds) {
   const merged = new Set((mergedIds || []).filter(id => id !== survivorId && all.some(p => p.id === id)));
   if (merged.size === 0) return false;
 
-  const beforePresets  = JSON.parse(JSON.stringify(all));
+  const beforePresets  = cloneShareStrings(all);
   const beforeDefaults = { ...materials.meshDefaultColors };
   const beforeAssign   = { ...materials.meshColorAssignments };
-  const beforeSteps    = JSON.parse(JSON.stringify(state.get('steps') || []));
+  const beforeSteps    = cloneShareStrings(state.get('steps') || []);
 
   const apply = () => {
     for (const k of Object.keys(materials.meshDefaultColors)) {
@@ -470,7 +471,7 @@ export function deleteStep(stepId) {
   const all      = state.get('steps');
   const step     = all.find(s => s.id === stepId);
   if (!step) return;
-  const snapshot  = JSON.parse(JSON.stringify(step));
+  const snapshot  = cloneShareStrings(step);
   const idx       = all.indexOf(step);
   const prevActive = state.get('activeStepId');
 
@@ -1265,16 +1266,16 @@ export function forceUniteStepSelection(stepId) {
 export function commitStateChange(label, keys, mutator, opts = {}) {
   const snap = () => {
     const o = {};
-    for (const k of keys) o[k] = JSON.parse(JSON.stringify(state.get(k) ?? null));
+    for (const k of keys) o[k] = cloneShareStrings(state.get(k) ?? null);
     return o;
   };
   const before = snap();
   mutator();
   const after = snap();
-  if (JSON.stringify(before) === JSON.stringify(after)) return false;   // no-op
+  if (structEqual(before, after)) return false;   // no-op (cheap: shared strings short-circuit)
   const apply = (s) => {
     const patch = {};
-    for (const k of keys) patch[k] = JSON.parse(JSON.stringify(s[k]));
+    for (const k of keys) patch[k] = cloneShareStrings(s[k]);
     state.setState(patch);
     state.markDirty();
     // If 'steps' is among the restored keys and the active step vanished
@@ -7441,7 +7442,7 @@ export function deleteAnimPreset(presetId) {
   const newPresets  = presets.filter(p => p.id !== presetId);
 
   // Clear any step references to this preset
-  const stepsBefore = JSON.parse(JSON.stringify(state.get('steps') || []));
+  const stepsBefore = cloneShareStrings(state.get('steps') || []);
   const stepsAfter  = stepsBefore.map(s =>
     s.transition?.animPresetId === presetId
       ? { ...s, transition: { ...s.transition, animPresetId: null } }
@@ -9528,7 +9529,7 @@ function _placePendingImageAtClick(clientX, clientY) {
 
   // Snapshot for undo BEFORE we mutate anything that goes into steps.
   const prevTemplates = state.get('shapeTemplates') || [];
-  const prevSteps     = JSON.parse(JSON.stringify(state.get('steps') || []));
+  const prevSteps     = cloneShareStrings(state.get('steps') || []);
 
   // ── Create template ─────────────────────────────────────────────────
   const tpl = createShapeTemplate({
@@ -9552,7 +9553,7 @@ function _placePendingImageAtClick(clientX, clientY) {
   // ── Place first instance (no undo push — we bundle below) ───────────
   const instanceId = placeShapeInstance(tpl.id, { plane, undoLabel: null });
 
-  const nextSteps = JSON.parse(JSON.stringify(state.get('steps') || []));
+  const nextSteps = cloneShareStrings(state.get('steps') || []);
 
   undoManager.push(`Create image "${tpl.name}"`,
     () => _undoCreateTemplate(tpl.id, instanceId, prevTemplates, prevSteps),
@@ -9831,8 +9832,8 @@ function onShapeEditorCommit({ plane, polygons, points, editingTemplateId }) {
   // Auto-place one instance at the plane pose.
   const instanceId = placeShapeInstance(tpl.id, { plane, undoLabel: null });
 
-  const prevSteps = JSON.parse(JSON.stringify(state.get('steps') || []));
-  const nextSteps = JSON.parse(JSON.stringify(state.get('steps') || []));
+  const prevSteps = cloneShareStrings(state.get('steps') || []);
+  const nextSteps = cloneShareStrings(state.get('steps') || []);
 
   undoManager.push(`Create shape "${tpl.name}"`,
     () => _undoCreateTemplate(tpl.id, instanceId, prevTemplates, prevSteps),
@@ -10168,7 +10169,7 @@ export function deletePrimitive(nodeId) {
   }
   const parentId  = _findNodeParentId(nodeId);
   const activeId  = state.get('activeStepId');
-  const prevSteps = descendants > 0 ? JSON.parse(JSON.stringify(state.get('steps') || [])) : null;
+  const prevSteps = descendants > 0 ? cloneShareStrings(state.get('steps') || []) : null;
   _removePrimitiveNode(nodeId);
   state.markDirty();
   undoManager.push('Delete primitive',
@@ -10578,9 +10579,9 @@ export function createShapeFromFaceAtClick(clientX, clientY) {
   });
   state.setState({ shapeTemplates: [...prevTemplates, tpl] });
 
-  const prevSteps = JSON.parse(JSON.stringify(state.get('steps') || []));
+  const prevSteps = cloneShareStrings(state.get('steps') || []);
   const instanceId = placeShapeInstance(tpl.id, { plane, undoLabel: null });
-  const nextSteps  = JSON.parse(JSON.stringify(state.get('steps') || []));
+  const nextSteps  = cloneShareStrings(state.get('steps') || []);
 
   undoManager.push(`Create shape "${tpl.name}" (from face)`,
     () => _undoCreateTemplate(tpl.id, instanceId, prevTemplates, prevSteps),
@@ -12268,7 +12269,7 @@ export function deleteShapeTemplate(templateId, { skipConfirm = false } = {}) {
 
   // Snapshot for undo
   const prevTpl   = JSON.parse(JSON.stringify(tpl));
-  const prevSteps = JSON.parse(JSON.stringify(state.get('steps') || []));
+  const prevSteps = cloneShareStrings(state.get('steps') || []);
 
   // Remove instances
   for (const id of instanceIds) _removeShapeInstance(id);
@@ -12280,7 +12281,7 @@ export function deleteShapeTemplate(templateId, { skipConfirm = false } = {}) {
   state.markDirty();
 
   const nextTplList = state.get('shapeTemplates');
-  const nextSteps   = JSON.parse(JSON.stringify(state.get('steps') || []));
+  const nextSteps   = cloneShareStrings(state.get('steps') || []);
 
   undoManager.push(`Delete shape "${tpl.name || ''}"`,
     () => {

@@ -10,6 +10,7 @@ import { state }    from '../core/state.js';
 import { steps }    from '../systems/steps.js';
 import * as actions from '../systems/actions.js';
 import { createChapter, generateId } from '../core/schema.js';
+import { cloneShareStrings } from '../core/clone.js';   // copy/paste steps without duplicating base64
 import { setStatus } from './status.js';
 import { showContextMenu } from './context-menu.js';
 import { exportTimelineVideo, exportTimelineSbsProc, downloadBlob } from '../systems/video-export.js';
@@ -1788,7 +1789,7 @@ function _showChapterContextMenu(chapter, x, y) {
 // ── Copy / paste clipboard operations ──────────────────────────────────────
 
 function _cloneStep(step) {
-  const copy = JSON.parse(JSON.stringify(step));
+  const copy = cloneShareStrings(step);   // shares the big base64 strings; structure is independent
   copy.id = generateId('step');
   return copy;
 }
@@ -1800,7 +1801,7 @@ function _copyStepsToClipboard(stepIds) {
     .filter(Boolean)
     .sort((a, b) => all.indexOf(a) - all.indexOf(b));   // preserve visual order
   if (!picked.length) return;
-  _clipboard = { kind: 'steps', data: JSON.parse(JSON.stringify(picked)) };
+  _clipboard = { kind: 'steps', data: cloneShareStrings(picked) };   // share base64, don't duplicate
   setStatus(`Copied ${picked.length} step(s).`);
 }
 
