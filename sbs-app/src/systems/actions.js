@@ -639,16 +639,44 @@ export function moveStepToChapter(stepId, chapterId, newIndex) {
  * before + after because restoring individual positions becomes brittle
  * when the set is large or crosses chapter boundaries.
  */
+// Lightweight structural snapshot for step reorder/move undo: ONLY the order +
+// chapter/group assignment (a few KB), never the step bodies. The old undo
+// deep-cloned the entire steps array (JSON.parse(JSON.stringify)) — on a big
+// project that duplicated GBs of inline base64 TWICE per move, allocated in one
+// burst, which spiked the JS heap into OOM crashes on drag (V0.3.1.46). Restore
+// reorders the SAME step objects + patches the 4 fields — zero data copied. Also
+// more correct: it undoes only the move, not unrelated data edited afterwards.
+function _stepStructureSnapshot() {
+  return (state.get('steps') || []).map(s => ({
+    id: s.id, chapterId: s.chapterId ?? null, groupId: s.groupId ?? null, groupHead: !!s.groupHead,
+  }));
+}
+function _applyStepStructure(snapshot) {
+  const byId = new Map((state.get('steps') || []).map(s => [s.id, s]));
+  const ordered = [];
+  for (const o of snapshot) {
+    const s = byId.get(o.id);
+    if (!s) continue;
+    s.chapterId = o.chapterId;
+    s.groupId   = o.groupId;
+    s.groupHead = o.groupHead;
+    ordered.push(s);
+  }
+  // Keep any step created since the snapshot (not in it) at the end so undo/redo
+  // of a move never drops unrelated new steps.
+  const seen = new Set(snapshot.map(o => o.id));
+  for (const s of byId.values()) if (!seen.has(s.id)) ordered.push(s);
+  state.setState({ steps: ordered });
+  state.markDirty();
+  state.emit('steps:reordered');
+}
+
 export function moveStepsToChapter(stepIds, chapterId, newIndex) {
   if (!stepIds?.length) return;
-  const prevSteps = JSON.parse(JSON.stringify(state.get('steps') || []));
+  const before = _stepStructureSnapshot();
   steps.moveStepsToChapter(stepIds, chapterId, newIndex);
-  const nextSteps = JSON.parse(JSON.stringify(state.get('steps') || []));
-  undoManager.push(
-    'Move steps',
-    () => { state.setState({ steps: prevSteps }); state.markDirty(); state.emit('steps:reordered'); },
-    () => { state.setState({ steps: nextSteps }); state.markDirty(); state.emit('steps:reordered'); },
-  );
+  const after = _stepStructureSnapshot();
+  undoManager.push('Move steps', () => _applyStepStructure(before), () => _applyStepStructure(after));
 }
 
 /**
@@ -664,7 +692,7 @@ export function moveStepsToChapter(stepIds, chapterId, newIndex) {
  */
 export function moveStepsToChapterAndRegroup(stepIds, chapterId, newIndex, groupAssignment = null) {
   if (!stepIds?.length) return;
-  const prevSteps = JSON.parse(JSON.stringify(state.get('steps') || []));
+  const before = _stepStructureSnapshot();
   steps.moveStepsToChapter(stepIds, chapterId, newIndex);
   if (groupAssignment && Object.keys(groupAssignment).length) {
     const cur = state.get('steps') || [];
@@ -677,12 +705,8 @@ export function moveStepsToChapterAndRegroup(stepIds, chapterId, newIndex, group
     });
     state.setState({ steps: next });
   }
-  const nextSteps = JSON.parse(JSON.stringify(state.get('steps') || []));
-  undoManager.push(
-    'Move steps',
-    () => { state.setState({ steps: prevSteps }); state.markDirty(); state.emit('steps:reordered'); },
-    () => { state.setState({ steps: nextSteps }); state.markDirty(); state.emit('steps:reordered'); },
-  );
+  const after = _stepStructureSnapshot();
+  undoManager.push('Move steps', () => _applyStepStructure(before), () => _applyStepStructure(after));
   state.markDirty();
   state.emit('steps:reordered');
 }
