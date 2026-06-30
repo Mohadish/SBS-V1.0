@@ -2217,7 +2217,10 @@ async function _startSequences() {
     frames.sort((a, b) => a.pct - b.pct);
     if (!frames[0].img) frames[0].img = node.image();  // base fallback = node's own image
     node.image(frames[0].img);
-    playbacks.push({ node, frames, windowMs, startMs: clock.now(), currentIdx: 0, baseOpacity: node.opacity(), xfade: null, done: false });
+    // startMs anchors on the FIRST tick (null now) so it shares the tick's clock —
+    // wall-clock live, the synthetic export clock during render. Capturing
+    // clock.now() here would desync against the export's fireSyntheticTick time.
+    playbacks.push({ node, frames, windowMs, startMs: null, currentIdx: 0, baseOpacity: node.opacity(), xfade: null, done: false });
   }
   if (myToken !== _seqToken) return;
   _seqPlaybacks = playbacks;
@@ -2229,17 +2232,15 @@ function _advanceSequences(nowMs) {
   let drawLayer = false, drawUi = false;
   for (const pb of _seqPlaybacks) {
     if (pb.node?.isDestroyed?.()) { pb.dead = true; continue; }
-    if (pb.xfade) {                                     // advance an in-flight crossfade
+    if (pb.startMs == null) pb.startMs = nowMs;         // anchor to this tick's clock (live OR export)
+    if (pb.xfade) {                                     // fade the OLD frame out over the (already-committed) new one
       const t = Math.min(1, (nowMs - pb.xfade.startMs) / SEQ_CROSSFADE_MS);
       const e = t * t * (3 - 2 * t);                   // smoothstep
-      if (!pb.xfade.clone.isDestroyed?.()) pb.xfade.clone.opacity(pb.baseOpacity * e);
+      if (!pb.xfade.clone.isDestroyed?.()) pb.xfade.clone.opacity(pb.baseOpacity * (1 - e));
       drawUi = true;
-      if (t >= 1) {                                     // commit: base becomes target, drop clone
-        pb.node.image(pb.frames[pb.xfade.targetIdx].img);
-        pb.currentIdx = pb.xfade.targetIdx;
+      if (t >= 1) {
         if (!pb.xfade.clone.isDestroyed?.()) pb.xfade.clone.destroy();
         pb.xfade = null;
-        drawLayer = true;
       }
       continue;                                         // one transition at a time
     }
@@ -2250,14 +2251,24 @@ function _advanceSequences(nowMs) {
     for (let i = pb.currentIdx + 1; i < pb.frames.length; i++) {
       if (pb.frames[i].pct <= frac * 100) target = i; else break;
     }
-    if (target > pb.currentIdx && pb.frames[target]?.img && _uiLayer) {
-      const clone = pb.node.clone({ listening: false, draggable: false });
-      clone.image(pb.frames[target].img);
-      clone.opacity(0);
-      clone.setAttr('_seqClone', true);                 // marks it transient (swept, never serialized)
-      _uiLayer.add(clone);
-      pb.xfade = { clone, startMs: nowMs, targetIdx: target };
-      drawUi = true;
+    if (target > pb.currentIdx && pb.frames[target]?.img) {
+      // Commit the base to the NEW frame at the % point — this is what bakes into
+      // the exported video (the crossfade clone on _uiLayer is NOT captured by
+      // rasterizeOverlay, so export sees a clean cut at the right time). Live, we
+      // ALSO fade the OLD frame out on top for a smooth dissolve.
+      const oldImg = pb.frames[pb.currentIdx].img;
+      pb.node.image(pb.frames[target].img);
+      pb.currentIdx = target;
+      drawLayer = true;
+      if (oldImg && _uiLayer) {
+        const clone = pb.node.clone({ listening: false, draggable: false });
+        clone.image(oldImg);
+        clone.opacity(pb.baseOpacity);
+        clone.setAttr('_seqClone', true);               // transient (swept, never serialized/exported)
+        _uiLayer.add(clone);
+        pb.xfade = { clone, startMs: nowMs };
+        drawUi = true;
+      }
     }
   }
   if (_seqPlaybacks.some(pb => pb.dead)) _seqPlaybacks = _seqPlaybacks.filter(pb => !pb.dead);
