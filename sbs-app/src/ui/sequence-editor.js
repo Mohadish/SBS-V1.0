@@ -17,6 +17,7 @@
  *   - overrideMs = null → window is the narration duration; number → fixed window
  */
 import { state } from '../core/state.js';
+import { narrationContextForStep } from '../systems/narration-timeline.js';
 
 /** ~`count` narration words leading up to `fraction` (0..1) of the clip. Estimate
  *  weighted by word length + a punctuation-pause bump. */
@@ -50,14 +51,6 @@ function _readFileAsDataURL() {
   });
 }
 
-function _activeStepNarration() {
-  try {
-    const id = state.get('activeStepId');
-    const step = (state.get('steps') || []).find(s => s.id === id);
-    return { text: step?.narration?.text || '', durationMs: step?.narration?.durationMs || 0 };
-  } catch { return { text: '', durationMs: 0 }; }
-}
-
 function _esc(s) {
   return String(s).replace(/[&<>"]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
 }
@@ -78,21 +71,23 @@ export function openSequenceEditor(node, onChange = () => {}) {
   }
   const commit = () => { node.setAttr('sequence', seq); onChange(); };
 
-  const narr = _activeStepNarration();
+  const ctx = narrationContextForStep(state.get('activeStepId'));   // narration audible here (incl. group overflow)
   const dlg = document.createElement('dialog');
   dlg.className = 'sbs-dialog';
   dlg.style.cssText = 'min-width:540px;max-width:700px;color:var(--text);';
   document.body.appendChild(dlg);
 
   const render = () => {
-    const windowMs = (seq.overrideMs != null ? seq.overrideMs : narr.durationMs) || 0;
+    const windowMs = (seq.overrideMs != null ? seq.overrideMs : ctx.windowMs) || 0;
     const fmtTime  = (pct) => windowMs ? `${(windowMs * pct / 100 / 1000).toFixed(2)}s` : '—';
     const rows = seq.frames.map((f, i) => {
       const isBase = i === 0;
       const pct    = isBase ? 0 : (Number(f.pct) || 0);
+      // Map this transition into the narration timeline (offset handles overflow).
+      const frac   = ctx.durationMs > 0 ? (ctx.offsetMs + (pct / 100) * (ctx.windowMs || 0)) / ctx.durationMs : null;
       const words  = isBase
         ? '<i style="opacity:0.6;">start</i>'
-        : (narr.text ? _esc(wordsLeadingUpTo(narr.text, pct / 100)) : '<i style="opacity:0.6;">(no narration)</i>');
+        : (ctx.text && frac != null ? _esc(wordsLeadingUpTo(ctx.text, frac)) : '<i style="opacity:0.6;">(no narration)</i>');
       return `
         <div class="seq-row" data-i="${i}" style="display:flex;align-items:center;gap:8px;padding:6px 0;border-top:1px solid rgba(255,255,255,0.08);">
           <img src="${_esc(f.src || '')}" alt="" style="width:56px;height:40px;object-fit:contain;background:rgba(0,0,0,0.25);border-radius:4px;flex:0 0 auto;" />
@@ -105,7 +100,11 @@ export function openSequenceEditor(node, onChange = () => {}) {
     }).join('');
     const winLabel = seq.overrideMs != null
       ? `Window: <b>${(seq.overrideMs / 1000).toFixed(2)}s</b> (fixed)`
-      : (narr.durationMs ? `Window: <b>${(narr.durationMs / 1000).toFixed(2)}s</b> (narration)` : 'No narration on this step yet — turn on a fixed window to see times.');
+      : ctx.isOverflow
+        ? `Window: <b>${(ctx.windowMs / 1000).toFixed(2)}s</b> — carried-over narration (from ${(ctx.offsetMs / 1000).toFixed(1)}s in)`
+        : ctx.durationMs
+          ? `Window: <b>${(ctx.durationMs / 1000).toFixed(2)}s</b> (narration)`
+          : (ctx.windowMs ? `Window: <b>${(ctx.windowMs / 1000).toFixed(2)}s</b> (step duration) — no narration` : 'No narration / timing — turn on a fixed window to see times.');
     dlg.innerHTML = `
       <div class="sbs-dialog__body" style="display:flex;flex-direction:column;gap:10px;">
         <div class="sbs-dialog__title">Image Sequence — ${seq.frames.length} frame${seq.frames.length === 1 ? '' : 's'}</div>

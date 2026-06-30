@@ -1,0 +1,95 @@
+/**
+ * SBS — Narration timeline helper (edit-time, pure).
+ *
+ * Answers: "what narration is audible during a given step, and where are we in
+ * it?" — including GROUP OVERFLOW, where a group head's (or earlier sub-step's)
+ * narration carries over into later sub-steps that have no narration of their own.
+ *
+ * This mirrors the player/exporter's timing model (animation-string phase
+ * durations + group-membership overflow) but as a small READ-ONLY estimate used
+ * by the image-sequence editor + playback to drive the "word leading up to this
+ * transition" preview and the sequence window. It does NOT force or change any
+ * narration; if the user retimes a step it simply goes stale (visible on
+ * playback), per the agreed design.
+ *
+ * Estimate caveats (intentional, per spec): step display duration ≈ its full
+ * transition-animation duration; the last-step audio-tail wait + inter-step
+ * breath are not modelled. Good enough for "vicinity" word alignment.
+ */
+import { state } from '../core/state.js';
+import { parseAnimation, resolveAnimationString } from './animation.js';
+
+const _groupKeyOf = (s) => (s?.groupHead ? s.id : (s?.groupId || null));
+
+function _resolveAL(tk) {
+  if (tk === 'AL1') return state.get('cameraAnimDurationMs') ?? 1500;
+  if (tk === 'AL2') return state.get('objectAnimDurationMs')  ?? 1500;
+  return 0;
+}
+
+/** { totalMs, narrOffsetMs } for a step from its animation string. */
+function _animTiming(step) {
+  const presets = state.get('animationPresets') || [];
+  const animStr = resolveAnimationString(step.transition || {}, presets);
+  const phases  = animStr ? parseAnimation(animStr, _resolveAL) : null;
+  if (!phases || !phases.length) return { totalMs: 0, narrOffsetMs: 0 };
+  let total = 0, narrOffset = 0, found = false;
+  for (const ph of phases) {
+    if (!found && ph.types?.includes('narration')) { narrOffset = total; found = true; }
+    total += ph.durationMs || 0;
+  }
+  return { totalMs: total, narrOffsetMs: found ? narrOffset : 0 };
+}
+
+function _playableSteps() {
+  return (state.get('steps') || []).filter(s => s && !s.hidden && !s.isBaseStep);
+}
+
+/**
+ * Narration context for a step (used by the sequence editor + playback window).
+ * @returns {{ text:string, durationMs:number, offsetMs:number, windowMs:number, isOverflow:boolean }}
+ *   - own narration  → this step's text/duration, offset 0, window = its duration
+ *   - overflow        → the in-group source whose narration is still audible here:
+ *                       its text/duration, the ms-offset into it at this step's
+ *                       start, window = this step's display duration
+ *   - none            → empty text, window = this step's display duration
+ */
+export function narrationContextForStep(stepId) {
+  const steps = _playableSteps();
+  const idx = steps.findIndex(s => s.id === stepId);
+  const empty = { text: '', durationMs: 0, offsetMs: 0, windowMs: 0, isOverflow: false };
+  if (idx < 0) return empty;
+  const step = steps[idx];
+
+  // Own narration → straightforward.
+  const ownDur = step.narration?.durationMs || 0;
+  if (ownDur > 0 && step.narration?.text) {
+    return { text: step.narration.text, durationMs: ownDur, offsetMs: 0, windowMs: ownDur, isOverflow: false };
+  }
+
+  // Estimated step-start markers (cumulative transition durations).
+  const timing  = steps.map(_animTiming);
+  const markers = [];
+  let acc = 0;
+  for (let i = 0; i < steps.length; i++) { markers[i] = acc; acc += timing[i].totalMs; }
+
+  const myWindow = timing[idx].totalMs || 0;
+
+  // Look back within the SAME group for a narration that's still audible here.
+  const gkey = _groupKeyOf(step);
+  if (gkey != null) {
+    for (let j = idx - 1; j >= 0; j--) {
+      if (_groupKeyOf(steps[j]) !== gkey) break;        // left the group
+      const dur = steps[j].narration?.durationMs || 0;
+      if (dur > 0 && steps[j].narration?.text) {
+        const narrStart = markers[j] + timing[j].narrOffsetMs;
+        const offset    = markers[idx] - narrStart;
+        if (offset >= 0 && offset < dur) {              // still playing here → overflow
+          return { text: steps[j].narration.text, durationMs: dur, offsetMs: offset, windowMs: myWindow, isOverflow: true };
+        }
+        break;                                          // nearest source already ended → no overflow
+      }
+    }
+  }
+  return { text: '', durationMs: 0, offsetMs: 0, windowMs: myWindow, isOverflow: false };
+}

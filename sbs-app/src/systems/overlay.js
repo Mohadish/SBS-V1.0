@@ -23,6 +23,7 @@ import { showContextMenu } from '../ui/context-menu.js';
 import { setStatus } from '../ui/status.js';
 import { promptString } from '../ui/prompt.js';
 import { openSequenceEditor } from '../ui/sequence-editor.js';
+import { narrationContextForStep } from './narration-timeline.js';
 import * as interfaces from './interfaces.js';   // interface overlay (used lazily in the right-click menu)
 import { mountTextToolbar, unmountTextToolbar, execCommandApplier, setToolbarValues, wasColorPickedRecently, setStyleDropdown, setStyleLocked } from '../ui/text-toolbar.js';
 import { mountShapeToolbar, unmountShapeToolbar } from '../ui/shape-toolbar.js';
@@ -2192,21 +2193,18 @@ async function _startSequences() {
   const myToken = ++_seqToken;
   _stopSequences();
   if (_editing || !_layer) return;                     // animate in VIEW mode only
-  const narrMs = (() => {
-    try {
-      const id = state.get('activeStepId');
-      return (state.get('steps') || []).find(s => s.id === id)?.narration?.durationMs || 0;
-    } catch { return 0; }
-  })();
   const candidates = _layer.getChildren(n => {
     const s = n.getAttr && n.getAttr('sequence');
     return s && Array.isArray(s.frames) && s.frames.length >= 2;
   });
   if (!candidates.length) return;
+  // Window = narration audible during this step (own OR group overflow), or the
+  // step's display duration when there's none — same source as the editor.
+  const ctx = narrationContextForStep(state.get('activeStepId'));
   const playbacks = [];
   for (const node of candidates) {
     const seq = node.getAttr('sequence');
-    const windowMs = (seq.overrideMs != null ? seq.overrideMs : narrMs) || 3000;
+    const windowMs = (seq.overrideMs != null ? seq.overrideMs : ctx.windowMs) || 3000;
     const frames = [];
     for (const f of seq.frames) {
       let img = null;

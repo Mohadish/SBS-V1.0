@@ -163,6 +163,10 @@ export async function swapInterfaceImage(node, imgPath, name) {
   node.setAttr('interfaceImage', name);
   node.setAttr('naturalW', img.width);
   node.setAttr('naturalH', img.height);
+  // If this interface has an image sequence, keep its BASE frame (0) in sync with
+  // the swapped image — else playback would still flash the old base frame.
+  const seq = node.getAttr('sequence');
+  if (seq?.frames?.[0]) { seq.frames[0].src = dataUrl; node.setAttr('sequence', seq); }
   node.getLayer()?.batchDraw();
   overlay.scheduleSave?.();   // persist the new image into step.overlay (else it reverts on reload)
   return true;
