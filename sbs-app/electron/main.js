@@ -7,6 +7,14 @@
 require('bytenode');
 
 const { app, BrowserWindow, Menu, ipcMain, dialog, shell } = require('electron');
+
+// Raise the V8 heap ceiling. A heavy project (3D scene + textures + overlay image
+// sequences + inline audio/base64) can exhaust the default ~2-4 GB renderer heap
+// and OOM-crash V8 ("last resort" GC → FATAL heap out of memory). 8 GB gives real
+// headroom. Must be set before app is ready; applies to main + renderer V8.
+// NOTE: this is headroom, not a leak fix — if memory still climbs unbounded it's
+// a leak to hunt, not a ceiling to raise further.
+app.commandLine.appendSwitch('js-flags', '--max-old-space-size=8192');
 const path  = require('path');
 const fs    = require('fs');
 const https = require('https');
