@@ -194,7 +194,13 @@ export async function synthesize(text, voiceId, opts = {}) {
       // fall through → node CPU worker
     }
 
-    const res = await window.sbsNative.tts.synthesize(text, voiceName, speed, { source });
+    // Bound the CPU-worker call too (the GPU path already has its own timeout).
+    // A wedged worker that never replies would otherwise hang this synth forever
+    // and poison the caller's de-dup key. 30s is far beyond a real CPU synth (~6s).
+    const res = await _withTimeout(
+      window.sbsNative.tts.synthesize(text, voiceName, speed, { source }),
+      30_000, null,
+    );
     if (!res.ok) throw new Error(res.error || 'TTS failed.');
     const dataUrl = `data:${res.mime};base64,${res.data}`;
     // V0.2.22.2: parse the WAV header directly for duration. SAPI5-via-`say`

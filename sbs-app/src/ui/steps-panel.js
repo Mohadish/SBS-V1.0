@@ -1912,8 +1912,22 @@ function _ensureSynth(stepId, text, voiceId, speed) {
   if (_pendingSynths.has(key)) return _pendingSynths.get(key);
   const p = ttsSynthesize(text, voiceId, { speed });
   _pendingSynths.set(key, p);
-  p.finally(() => _pendingSynths.delete(key));
+  p.finally(() => { if (_pendingSynths.get(key) === p) _pendingSynths.delete(key); });
+  // Safety net: a synth that WEDGES and never settles would otherwise poison this
+  // key forever — every later ▶ on the same step+text returns the dead promise so
+  // "the real voice never generates" until you change the text or duplicate the
+  // step (both mint a new key). Evict after 30s so the next click starts fresh.
+  setTimeout(() => { if (_pendingSynths.get(key) === p) _pendingSynths.delete(key); }, 30_000);
   return p;
+}
+
+/** Drop all in-flight synth de-dup entries — unsticks a step whose real-voice
+ *  synth wedged, WITHOUT duplicating it. Returns the count cleared. Exposed as
+ *  window.sbsTTS.clearPending(). */
+export function clearPendingSynths() {
+  const n = _pendingSynths.size;
+  _pendingSynths.clear();
+  return n;
 }
 
 let _voiceListCachedPromise = null;

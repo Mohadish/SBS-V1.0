@@ -552,6 +552,9 @@ window.sbsTTSWebGPU = {
 window.sbsTTS = {
   engine:   ()          => import('./systems/tts.js').then(m => m.getEngineStatus()),
   forceCPU: (on = true) => import('./systems/tts.js').then(m => m.setForceCpu(on)),
+  // Unstick a step whose real-voice synth wedged (its de-dup key is poisoned) —
+  // no need to duplicate the step. Returns how many in-flight entries it cleared.
+  clearPending: () => import('./ui/steps-panel.js').then(m => { const n = m.clearPendingSynths(); console.log(`[tts] cleared ${n} pending synth entr${n === 1 ? 'y' : 'ies'}`); return n; }),
 };
 // Full TTS diagnostic — run when a clip misbehaves. No arg → uses the active
 // step's narration. Reports engine state, flags hidden/suspicious characters in
