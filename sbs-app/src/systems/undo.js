@@ -12,7 +12,10 @@ class UndoManager {
   constructor() {
     this._undo    = [];   // [ { label, undo, redo } ]
     this._redo    = [];
-    this._maxSize = 200;  // V0.2.16: default bumped from 100; user-tunable in the Undo tab
+    this._maxSize = 60;   // V0.3.1.48: lowered from 200 — each base64-changing edit's
+                          // undo entry RETAINS that step's old overlay/frames/audio,
+                          // so a deep stack pins gigabytes on big projects. Still
+                          // user-tunable in the Undo tab; clear via window.sbsFreeMemory().
   }
 
   /** Current cap (queried by the Undo tab settings UI). */

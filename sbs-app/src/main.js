@@ -572,6 +572,18 @@ window.sbsTTS = {
 // a real synth to confirm it works:  await window.sbsTTSDiag()
 window.sbsTTSDiag = (text) => import('./systems/tts.js').then(m => m.diagnose(text));
 
+// Emergency memory relief: drop the undo/redo history, which on a big project
+// pins the OLD base64 (overlay / sequence frames / audio) of every base64-changing
+// edit. Run when the heap is climbing toward the ~3.5 GB cage; the freed data is
+// collectable on the next GC. Returns how many undo entries were cleared.
+window.sbsFreeMemory = () => import('./systems/undo.js').then(({ undoManager }) => {
+  const n = undoManager.listUndo().length;
+  undoManager.clear();
+  const heap = performance.memory ? ` (heap ${(performance.memory.usedJSHeapSize / 1048576).toFixed(0)} MB used)` : '';
+  console.log(`[mem] cleared ${n} undo entries — their retained base64 is now collectable${heap}`);
+  return n;
+});
+
 // EAGER warm-up at launch (background). The fp32 Kokoro model is ~325 MB and the
 // GPU shaders must compile, so a cold warm-up takes tens of seconds. Doing it
 // lazily (only on the first synth) means early clips fall back to the slow CPU
