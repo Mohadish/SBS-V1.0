@@ -584,6 +584,37 @@ window.sbsFreeMemory = () => import('./systems/undo.js').then(({ undoManager }) 
   return n;
 });
 
+// Where is the heap going? Sums the INLINE base64 (overlay JSON incl. sequence
+// frames, + narration audio) held in the steps, and whether the audio cache
+// folder is set. Read-only, no synth — safe to run any time. This tells us which
+// disk-cache actually matters for THIS project.
+window.sbsMemReport = () => import('./core/state.js').then((m) => {
+  const state = m.state ?? m.default;
+  const steps = state.get('steps') || [];
+  let overlayBytes = 0, narrInlineBytes = 0, narrInlineCount = 0, narrDiskCount = 0, seqFrames = 0;
+  for (const s of steps) {
+    if (typeof s.overlay === 'string') {
+      overlayBytes += s.overlay.length;
+      seqFrames += (s.overlay.match(/"sequence"/g) || []).length;   // rough: sequences present
+    }
+    const n = s.narration;
+    if (n?.dataUrl) { narrInlineBytes += n.dataUrl.length; narrInlineCount++; }
+    else if (n?.dataFile) narrDiskCount++;
+  }
+  const mb = (b) => +(b / 1048576).toFixed(1);
+  const rep = {
+    steps: steps.length,
+    audioCacheFolder: state.get('audioCacheFolder') || 'NOT SET → all narration is inline base64',
+    overlayInline_MB: mb(overlayBytes),
+    stepsWithSequences: seqFrames,
+    narrationInline: `${narrInlineCount} clips = ${mb(narrInlineBytes)} MB`,
+    narrationOnDisk: narrDiskCount,
+    heapUsed_MB: performance.memory ? mb(performance.memory.usedJSHeapSize) : 'n/a',
+  };
+  console.log('[mem-report]', rep);
+  return rep;
+});
+
 // EAGER warm-up at launch (background). The fp32 Kokoro model is ~325 MB and the
 // GPU shaders must compile, so a cold warm-up takes tens of seconds. Doing it
 // lazily (only on the first synth) means early clips fall back to the slow CPU
