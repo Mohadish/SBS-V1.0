@@ -1801,6 +1801,15 @@ async function _onPasteTree() {
   }
   if (choice === 'cancel' || !choice) return;
 
+  // Multi-step: if 2+ steps are selected, paste onto ALL of them (one batched
+  // undo). Single selection keeps the original single-step behavior.
+  const selIds = [...(state.get('selectedStepIds') || [])].filter(Boolean);
+  if (selIds.length >= 2) {
+    const n = actions.pasteTreeApplyToSteps(selIds, _copiedSnapshot, choice);
+    if (n) setStatus(`Pasted "${_copiedFromStepName}" onto ${n} selected step${n > 1 ? 's' : ''}.`);
+    else   setStatus('Paste failed (no selected step could accept it).', 'danger');
+    return;
+  }
   const ok = actions.pasteTreeApply(activeId, _copiedSnapshot, choice);
   if (ok) {
     setStatus(`Pasted tree from "${_copiedFromStepName}" onto "${step.name || 'step'}".`);

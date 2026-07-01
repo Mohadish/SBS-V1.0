@@ -11792,7 +11792,7 @@ export function diffTreeSpec(source, target) {
  * @param {string}  option          one of the option codes above
  * @returns {boolean} true on success
  */
-export function pasteTreeApply(stepId, sourceSnapshot, option) {
+export function pasteTreeApply(stepId, sourceSnapshot, option, opts = {}) {
   if (!stepId || !sourceSnapshot?.tree) return false;
   const stepsArr = state.get('steps') || [];
   const step = stepsArr.find(s => s.id === stepId);
@@ -11883,41 +11883,69 @@ export function pasteTreeApply(stepId, sourceSnapshot, option) {
   const afterVisibility = JSON.parse(JSON.stringify(step.snapshot.visibility || {}));
   const afterFolderBases = _captureFolderBases(diff.addedFolders);
 
-  undoManager.push('Paste tree',
-    () => {
-      const s = (state.get('steps') || []).find(x => x.id === stepId);
-      if (!s) return;
-      s.snapshot.tree        = JSON.parse(JSON.stringify(beforeTree));
-      s.snapshot.transforms  = JSON.parse(JSON.stringify(beforeTransforms));
-      s.snapshot.visibility  = JSON.parse(JSON.stringify(beforeVisibility));
-      if (state.get('activeStepId') === stepId) {
-        steps.applySnapshotInstant(s.snapshot);
-        _applyFolderBases(diff.addedFolders, beforeFolderBases);
-        state.emit('change:treeData', state.get('treeData'));
-      }
-      state.markDirty();
-    },
-    () => {
-      const s = (state.get('steps') || []).find(x => x.id === stepId);
-      if (!s) return;
-      s.snapshot.tree        = JSON.parse(JSON.stringify(afterTree));
-      s.snapshot.transforms  = JSON.parse(JSON.stringify(afterTransforms));
-      s.snapshot.visibility  = JSON.parse(JSON.stringify(afterVisibility));
-      if (state.get('activeStepId') === stepId) {
-        steps.applySnapshotInstant(s.snapshot);
-        _applyFolderBases(diff.addedFolders, afterFolderBases);
-        state.emit('change:treeData', state.get('treeData'));
-      }
-      state.markDirty();
-    },
-  );
+  // Undo/redo closures — extracted so the multi-step wrapper can batch N pastes
+  // into ONE undo entry (opts.noUndo returns them instead of pushing).
+  const undoFn = () => {
+    const s = (state.get('steps') || []).find(x => x.id === stepId);
+    if (!s) return;
+    s.snapshot.tree        = JSON.parse(JSON.stringify(beforeTree));
+    s.snapshot.transforms  = JSON.parse(JSON.stringify(beforeTransforms));
+    s.snapshot.visibility  = JSON.parse(JSON.stringify(beforeVisibility));
+    if (state.get('activeStepId') === stepId) {
+      steps.applySnapshotInstant(s.snapshot);
+      _applyFolderBases(diff.addedFolders, beforeFolderBases);
+      state.emit('change:treeData', state.get('treeData'));
+    }
+    state.markDirty();
+  };
+  const redoFn = () => {
+    const s = (state.get('steps') || []).find(x => x.id === stepId);
+    if (!s) return;
+    s.snapshot.tree        = JSON.parse(JSON.stringify(afterTree));
+    s.snapshot.transforms  = JSON.parse(JSON.stringify(afterTransforms));
+    s.snapshot.visibility  = JSON.parse(JSON.stringify(afterVisibility));
+    if (state.get('activeStepId') === stepId) {
+      steps.applySnapshotInstant(s.snapshot);
+      _applyFolderBases(diff.addedFolders, afterFolderBases);
+      state.emit('change:treeData', state.get('treeData'));
+    }
+    state.markDirty();
+  };
 
   // Audit the result — paste is the main vector for home-anchor drift,
   // and the safety filter at copy time is best-effort. The verifier
   // logs to console; it doesn't toast unless drift is actually found.
   try { verifyHomePositions(); } catch (err) { console.warn('[home-verifier] post-paste check failed:', err); }
 
+  if (opts.noUndo) return { ok: true, undoFn, redoFn };
+  undoManager.push('Paste tree', undoFn, redoFn);
   return true;
+}
+
+/**
+ * Paste a copied tree/transforms onto EVERY step in `stepIds` (multi-step
+ * selection), as ONE batched undo entry. Plain options only — preserve-world
+ * back-solves against the live active step, so it's left single-step (per the
+ * agreed scope). Steps that can't accept the paste (base step, no diff, removals
+ * without a remove option) are skipped. The active step (if selected) applies
+ * live; the rest update their stored snapshot.
+ */
+export function pasteTreeApplyToSteps(stepIds, sourceSnapshot, option) {
+  const ids = [...new Set(stepIds || [])];
+  if (!ids.length || !sourceSnapshot?.tree) return false;
+  const results = [];
+  for (const id of ids) {
+    const r = pasteTreeApply(id, sourceSnapshot, option, { noUndo: true });
+    if (r && r.ok) results.push(r);
+  }
+  if (!results.length) return false;
+  const label = `Paste to ${results.length} step${results.length > 1 ? 's' : ''}`;
+  undoManager.push(label,
+    () => { for (const r of results) r.undoFn(); },
+    () => { for (const r of results) r.redoFn(); },
+  );
+  state.markDirty();
+  return results.length;
 }
 
 /**
