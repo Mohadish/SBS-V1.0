@@ -1910,9 +1910,15 @@ const _pendingSynths = new Map();   // dedupKey → Promise<{dataUrl, durationMs
 
 function _ensureSynth(stepId, text, voiceId, speed) {
   const key = `${stepId}|${voiceId}|${speed}|${text}`;
-  if (_pendingSynths.has(key)) return _pendingSynths.get(key);
+  const cacheHit = _pendingSynths.has(key);
+  console.log(`[tts-flow] ensureSynth len=${text.length} cacheHit=${cacheHit}`);   // cacheHit=true on a stick = poisoned key
+  if (cacheHit) return _pendingSynths.get(key);
   const p = ttsSynthesize(text, voiceId, { speed });
   _pendingSynths.set(key, p);
+  p.then(
+    (o) => console.log(`[tts-flow] synth OK len=${text.length} dur=${o?.durationMs}ms`),
+    (e) => console.log(`[tts-flow] synth REJECT len=${text.length}: ${e?.message}`),
+  );
   p.finally(() => { if (_pendingSynths.get(key) === p) _pendingSynths.delete(key); });
   // Safety net: a synth that WEDGES and never settles would otherwise poison this
   // key forever — every later ▶ on the same step+text returns the dead promise so
@@ -1981,7 +1987,11 @@ export async function previewStepNarration(step, currentText) {
   // voice later" rather than "make this one preview jump the line".
   const realSynth = _ensureSynth(step.id, text, voiceId, speed);
   realSynth.then(async out => {
-    if (step.narration?.text !== text) return;
+    // guardMatch=false → the saved narration.text differs from what we synthesized
+    // (paste-vs-save mismatch) → result discarded, "real voice never appears".
+    const guardMatch = step.narration?.text === text;
+    console.log(`[tts-flow] realSynth resolved guardMatch=${guardMatch} savedLen=${(step.narration?.text || '').length} synthLen=${text.length}`);
+    if (!guardMatch) return;
     // Try to write the WAV to the project's audio cache folder. If caching
     // is disabled OR the voice is OS-fast (synth is already cheap), dataFile
     // stays undefined and we fall back to inline dataUrl in the project file.
