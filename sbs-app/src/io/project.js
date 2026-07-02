@@ -258,6 +258,11 @@ export function serialize() {
   cfg.geometryOutline      = { ...(state.get('geometryOutline') || {}) };
   cfg.export               = { ...(state.get('export')         || {}) };
   cfg.audioCacheFolder     = state.get('audioCacheFolder')      ?? null;
+  // Interface overlay: the SHARED default pose + library folder were runtime-only
+  // and lost on load — so on reload interfaces drifted to their per-step saved
+  // pose ("multiple positions") and "reset/at-default" broke. Persist them.
+  cfg.interfaceDefaultPose   = state.get('interfaceDefaultPose')   ?? null;
+  cfg.interfaceLibraryFolder = state.get('interfaceLibraryFolder') ?? null;
   // V0.2.22.58 — per-project hardware insertion-animation default
   // (null = none → fall back to the system "Nuts" defaults on load).
   cfg.hardwareDefaults     = state.get('hardwareDefaults')      ?? null;
@@ -668,6 +673,10 @@ export function applyProjectToState(project) {
                             ? { ...state.get('export'), ...s.export }
                             : state.get('export'),
     audioCacheFolder:     s.audioCacheFolder ?? null,
+    // Interface shared default pose + library folder (missing on legacy files
+    // → null → falls back to per-interface behavior, no crash).
+    interfaceDefaultPose:   s.interfaceDefaultPose   ?? null,
+    interfaceLibraryFolder: s.interfaceLibraryFolder ?? null,
     // V0.2.22.58 — per-project hardware-animation default (missing on
     // legacy files → null → system defaults apply).
     hardwareDefaults:     s.hardwareDefaults ?? null,

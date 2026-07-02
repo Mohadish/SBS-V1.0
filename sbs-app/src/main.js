@@ -858,6 +858,37 @@ window.sbsDiag.archived = () => {
 // Shape persistence diag (V0.3.0.95). Run BEFORE save and AFTER reload, then
 // compare: fewer in "save tree" than "live" = SAVE drops instances; equal here
 // but fewer after reload = LOAD drops them; orphans>0 = a template didn't persist.
+// Interface bond health for the ACTIVE step. Run after load to verify bonds
+// survived save/load: `orphanedBonds` = shapes whose attachedTo doesn't match any
+// live interface (= broken bond); `defaultPose` null after load = the shared
+// default wasn't persisted. window.sbsDiag.iface()
+window.sbsDiag.iface = async () => {
+  const ov = await import('./systems/overlay.js');
+  const ifaces = ov.getInterfaceNodes ? ov.getInterfaceNodes() : [];
+  let defaultPose = null;
+  try { defaultPose = (await import('./systems/interfaces.js')).getDefaultPose(); } catch {}
+  const ifaceIds = new Set(ifaces.map(n => n.getAttr('ifaceId')).filter(Boolean));
+  const layer = ifaces[0]?.getLayer?.();
+  const orphanedBonds = [];
+  if (layer) for (const c of layer.getChildren()) {
+    const at = c.getAttr && c.getAttr('attachedTo');
+    if (at && !ifaceIds.has(at)) orphanedBonds.push({ node: c.name?.() || c.getClassName?.(), attachedTo: at });
+  }
+  const rep = {
+    defaultPose,
+    interfaces: ifaces.map(n => ({
+      ifaceId:   n.getAttr('ifaceId') || '(NONE — bonds can\'t match!)',
+      atDefault: !!n.getAttr('atDefault'),
+      bonded:    (ov.getAttachedShapes ? ov.getAttachedShapes(n) : []).length,
+      pos:       `${Math.round(n.x())},${Math.round(n.y())}`,
+      size:      `${Math.round(n.width())}x${Math.round(n.height())}`,
+    })),
+    orphanedBonds,
+  };
+  console.log('[iface-diag]', rep);
+  return rep;
+};
+
 window.sbsDiag.shapes = () => {
   const nodeById = state.get('nodeById');
   const tplIds = new Set((state.get('shapeTemplates') || []).map(t => t.id));
