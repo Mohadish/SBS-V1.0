@@ -615,6 +615,18 @@ window.sbsMemReport = () => import('./core/state.js').then((m) => {
   return rep;
 });
 
+// Interface library folder controls — the folder is now persisted per project
+// (V0.3.1.52), but if you pick the WRONG one, you had to restart. These let you
+// check / re-pick / clear it live (then Save to persist the correction):
+//   await window.sbsIface.folder()      → current library folder path
+//   await window.sbsIface.setFolder()   → re-open the folder picker (fix a wrong pick)
+//   window.sbsIface.clearFolder()       → forget it (next insert re-prompts)
+window.sbsIface = {
+  folder:      () => import('./systems/interfaces.js').then(m => m.getLibraryFolder()),
+  setFolder:   () => import('./systems/interfaces.js').then(m => m.chooseLibraryFolder()),
+  clearFolder: () => import('./systems/interfaces.js').then(m => { m.setLibraryFolder(null); console.log('[iface] library folder cleared — next insert will re-prompt'); return true; }),
+};
+
 // EAGER warm-up at launch (background). The fp32 Kokoro model is ~325 MB and the
 // GPU shaders must compile, so a cold warm-up takes tens of seconds. Doing it
 // lazily (only on the first synth) means early clips fall back to the slow CPU
