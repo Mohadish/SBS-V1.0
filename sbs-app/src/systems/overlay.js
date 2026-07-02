@@ -2196,9 +2196,12 @@ function _stopSequences() {
 export function diagSequences() {
   if (!_layer) return { error: 'overlay layer not ready' };
   const nodes = _layer.getChildren(n => n.getAttr && n.getAttr('sequence'));
+  let stepWindowMs = null;
+  try { stepWindowMs = narrationContextForStep(state.get('activeStepId'))?.windowMs ?? null; } catch {}
   return {
     editing: _editing,   // sequences only animate in VIEW mode
     activePlaybacks: _seqPlaybacks.length,
+    stepWindowMs,        // frame @X% swaps at X% of THIS (or overrideMs) — huge window = late swaps
     seqNodes: nodes.map(n => {
       const s = n.getAttr('sequence') || {};
       return {
@@ -2206,6 +2209,7 @@ export function diagSequences() {
         isInterface: !!n.getAttr('isInterface') || !!n.hasName?.('interface'),
         frames: s.frames?.length || 0,
         framesWithSrc: (s.frames || []).filter(f => f && f.src).length,
+        pcts: (s.frames || []).map(f => f?.pct),   // swap-points; all 0/100 or missing = degenerate
         overrideMs: s.overrideMs ?? null,
         playing: _seqPlaybacks.some(pb => pb.node === n),
       };
