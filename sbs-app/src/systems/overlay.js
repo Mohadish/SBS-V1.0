@@ -3106,11 +3106,16 @@ async function _loadFromActiveStep() {
     }
   }
   _layer.batchDraw();
-  // Re-fit every interface's bonded shapes to its CURRENT bbox on entry. This is
-  // what makes a cross-step default size-change actually rescale the shapes
-  // (the cascade resizes the interface in the saved JSON, but the shapes only
-  // re-derive from their % here). No-op for interfaces that didn't change.
-  for (const iface of getInterfaceNodes()) syncBondedShapes(iface);
+  // Re-fit every interface's bonded shapes to its CURRENT bbox on entry, AND heal
+  // the isInterface attr. getInterfaceNodes() finds interfaces by NAME, but the
+  // LIVE handlers (move-together, atDefault-clear, scale-sync) check the
+  // isInterface ATTR — if it's missing (old project / didn't round-trip), refresh
+  // + the menu still work (name-based) while live sync silently no-ops. Setting
+  // the attr makes every path agree.
+  for (const iface of getInterfaceNodes()) {
+    if (!iface.getAttr('isInterface')) iface.setAttr('isInterface', true);
+    syncBondedShapes(iface);
+  }
   _layer.batchDraw();
   // S2: start image-sequence playback now that the step's overlay is loaded +
   // visible (this runs after the step transition). No-op in edit mode / no seqs.
