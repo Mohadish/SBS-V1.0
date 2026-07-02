@@ -3105,13 +3105,12 @@ async function _loadFromActiveStep() {
       _attachNode(node);
     }
   }
-  _layer.batchDraw();
-  // Re-fit every interface's bonded shapes to its CURRENT bbox on entry, AND heal
-  // the isInterface attr. getInterfaceNodes() finds interfaces by NAME, but the
-  // LIVE handlers (move-together, atDefault-clear, scale-sync) check the
-  // isInterface ATTR — if it's missing (old project / didn't round-trip), refresh
-  // + the menu still work (name-based) while live sync silently no-ops. Setting
-  // the attr makes every path agree.
+  // Heal the isInterface attr + re-derive bonded shapes from their % BEFORE the
+  // first draw, so they appear at their correct positions immediately — no
+  // load-at-old-position-then-snap. (Shapes are ALWAYS derived on load, so the
+  // stored position is just a cache; fresh projects behave identically.)
+  // getInterfaceNodes() finds interfaces by NAME; the attr heal lets the live
+  // handlers (move-together, atDefault-clear, scale-sync) agree.
   for (const iface of getInterfaceNodes()) {
     if (!iface.getAttr('isInterface')) iface.setAttr('isInterface', true);
     syncBondedShapes(iface);

@@ -625,6 +625,17 @@ window.sbsIface = {
   folder:      () => import('./systems/interfaces.js').then(m => m.getLibraryFolder()),
   setFolder:   () => import('./systems/interfaces.js').then(m => m.chooseLibraryFolder()),
   clearFolder: () => import('./systems/interfaces.js').then(m => { m.setLibraryFolder(null); console.log('[iface] library folder cleared — next insert will re-prompt'); return true; }),
+  // Re-derive every bonded shape on the CURRENT step from its % and BAKE the
+  // corrected positions into this step's stored overlay. Bonded shapes are
+  // always derived on load anyway (so this is a cache refresh, not a repair) —
+  // use it to clean a step's stored data after a default change. Safe (current
+  // step only; no full-project sweep). Then Save the project to persist.
+  reSave: () => import('./systems/overlay.js').then(m => {
+    for (const iface of (m.getInterfaceNodes?.() || [])) m.syncBondedShapes?.(iface);
+    m.flushSave?.();
+    console.log('[iface] re-fit + baked current step’s bonded shapes');
+    return true;
+  }),
 };
 
 // EAGER warm-up at launch (background). The fp32 Kokoro model is ~325 MB and the
