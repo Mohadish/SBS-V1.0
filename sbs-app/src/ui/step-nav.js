@@ -54,9 +54,15 @@ export function initStepNav() {
     const step = allSteps.find(s => s.id === _editingStepId);
     _editingStepId = null;
     if (!step) return;
-    if ((step.narration?.text || '') === _editingValue) return;
+    // Trim on commit: a trailing/leading space wedges the Kokoro phonemizer AND
+    // breaks the preview guard (saved-untrimmed vs preview-trimmed mismatch →
+    // the real voice is silently discarded, the long-standing "paste = sticky"
+    // bug). Trimming only the STORED value (not narrInput.value) never disturbs
+    // ongoing typing — a mid-sentence space the user is still typing survives.
+    const val = _editingValue.trim();
+    if ((step.narration?.text || '') === val) return;
     // Drop any cached audio when text changes — user must re-preview / re-export.
-    step.narration = { text: _editingValue };
+    step.narration = { text: val };
     state.markDirty();
   };
   narrInput.addEventListener('input', () => {

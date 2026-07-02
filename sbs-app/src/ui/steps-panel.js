@@ -1968,7 +1968,7 @@ export async function previewStepNarration(step, currentText) {
   // we have *something* playable — either inline dataUrl or a disk file we
   // can lazy-load.
   const n = step.narration || {};
-  const matches = n.text === text && n.voiceId === voiceId && n.speed === speed;
+  const matches = (n.text || '').trim() === text && n.voiceId === voiceId && n.speed === speed;
   const fresh   = matches && (n.dataUrl || n.dataFile);
   if (fresh) {
     const url = await narrationCache.ensurePlayable(step);
@@ -1989,7 +1989,7 @@ export async function previewStepNarration(step, currentText) {
   realSynth.then(async out => {
     // guardMatch=false → the saved narration.text differs from what we synthesized
     // (paste-vs-save mismatch) → result discarded, "real voice never appears".
-    const guardMatch = step.narration?.text === text;
+    const guardMatch = (step.narration?.text ?? '').trim() === text;
     console.log(`[tts-flow] realSynth resolved guardMatch=${guardMatch} savedLen=${(step.narration?.text || '').length} synthLen=${text.length}`);
     if (!guardMatch) return;
     // Try to write the WAV to the project's audio cache folder. If caching

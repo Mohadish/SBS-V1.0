@@ -60,7 +60,7 @@ async function _runOnce(signal, reason) {
     const text = s.narration?.text?.trim();
     if (!text) continue;
     const n = s.narration;
-    const matches = n?.text === text && n?.voiceId === voiceId && n?.speed === speed;
+    const matches = (n?.text || '').trim() === text && n?.voiceId === voiceId && n?.speed === speed;
     const fresh   = matches && (n?.dataUrl || n?.dataFile);
     if (!fresh) todo.push(s);
   }
@@ -72,13 +72,14 @@ async function _runOnce(signal, reason) {
     const s = todo[i];
     setStatus(`Caching narration ${i + 1}/${todo.length}…`, 'info', 0);
     try {
-      const text = s.narration.text;
+      const text = (s.narration.text || '').trim();   // clean: trailing space wedges phonemizer + comparisons
       const out  = await ttsSynthesize(text, voiceId, { speed });
       // It's possible the user navigated / edited mid-synth — re-check the
-      // step still wants the same text before stamping the cache.
+      // step still wants the same text before stamping the cache (trim-tolerant
+      // so an old project's untrimmed saved text still matches).
       if (signal.aborted) return;
       const cur = state.get('steps').find(x => x.id === s.id);
-      if (!cur || cur.narration?.text !== text) continue;
+      if (!cur || (cur.narration?.text || '').trim() !== text) continue;
       // Try to land the WAV on disk — drops the bulky base64 from the
       // project file on next save. Falls back to inline dataUrl when the
       // user hasn't picked a cache folder.
