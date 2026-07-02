@@ -2189,6 +2189,30 @@ function _stopSequences() {
   _layer?.batchDraw(); _uiLayer?.batchDraw();
 }
 
+/** Diagnostic: report the active step's image-sequence state (window.sbsDiag.seq()).
+ *  Shows every node carrying a sequence — whether it's an interface, its frame
+ *  count/src status, and whether it's currently PLAYING. Helps tell "not working"
+ *  apart: no sequence stored / <2 frames / edit-mode / not playing / frames w/o src. */
+export function diagSequences() {
+  if (!_layer) return { error: 'overlay layer not ready' };
+  const nodes = _layer.getChildren(n => n.getAttr && n.getAttr('sequence'));
+  return {
+    editing: _editing,   // sequences only animate in VIEW mode
+    activePlaybacks: _seqPlaybacks.length,
+    seqNodes: nodes.map(n => {
+      const s = n.getAttr('sequence') || {};
+      return {
+        type: n.getClassName?.(),
+        isInterface: !!n.getAttr('isInterface') || !!n.hasName?.('interface'),
+        frames: s.frames?.length || 0,
+        framesWithSrc: (s.frames || []).filter(f => f && f.src).length,
+        overrideMs: s.overrideMs ?? null,
+        playing: _seqPlaybacks.some(pb => pb.node === n),
+      };
+    }),
+  };
+}
+
 async function _startSequences() {
   const myToken = ++_seqToken;
   _stopSequences();

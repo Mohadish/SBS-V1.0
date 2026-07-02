@@ -912,6 +912,18 @@ window.sbsDiag.iface = async () => {
   return rep;
 };
 
+// Image-sequence health for the ACTIVE step. Run in VIEW mode on the step whose
+// sequence "isn't working". Tells apart the failure modes: `editing:true` = still
+// in edit mode (sequences only play in view), `frames<2` = not enough frames,
+// `framesWithSrc<frames` = a frame failed to store its image, `playing:false`
+// with frames>=2 in view mode = the tick isn't picking it up. window.sbsDiag.seq()
+window.sbsDiag.seq = async () => {
+  const ov = await import('./systems/overlay.js');
+  const rep = ov.diagSequences ? ov.diagSequences() : { error: 'diagSequences not exported' };
+  console.log('[seq-diag]', rep);
+  return rep;
+};
+
 window.sbsDiag.shapes = () => {
   const nodeById = state.get('nodeById');
   const tplIds = new Set((state.get('shapeTemplates') || []).map(t => t.id));
