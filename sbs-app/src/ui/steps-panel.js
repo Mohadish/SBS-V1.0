@@ -9,6 +9,7 @@
 import { state }    from '../core/state.js';
 import { steps }    from '../systems/steps.js';
 import * as actions from '../systems/actions.js';
+import * as overlay from '../systems/overlay.js';   // copy/paste whole overlay preset (#19)
 import { createChapter, generateId } from '../core/schema.js';
 import { cloneShareStrings } from '../core/clone.js';   // copy/paste steps without duplicating base64
 import { setStatus } from './status.js';
@@ -1644,9 +1645,27 @@ function _showStepContextMenu(step, x, y) {
       } },
     { label: '⎘ Duplicate', action: () => _duplicateStep(step.id) },
     { label: '📋 Copy',     action: () => _copyStepsToClipboard([step.id]) },
+    { label: '🎨 Copy overlay', action: () => {
+        const r = overlay.copyStepOverlay(step.id);
+        if (!r.ok) { setStatus('Overlay unreadable — nothing copied.', 'warn', 2500); return; }
+        setStatus(r.count
+          ? `Copied overlay (${r.count} element${r.count === 1 ? '' : 's'}). Right-click a step → Paste overlay.`
+          : 'This step’s overlay is empty — nothing to copy.', r.count ? 'success' : 'warn', 3500);
+      } },
   ];
   if (_clipboard?.kind === 'steps') {
     items.push({ label: `📥 Paste under (${_clipboard.data.length})`, action: () => _pasteStepsUnder(step.id) });
+  }
+  // Paste overlay preset (#19). Empty target → single item (no choice needed);
+  // non-empty target → offer Replace vs Add-on-top (your "ask over or replace").
+  const _clipN = overlay.overlayClipCount();
+  if (_clipN > 0) {
+    if (overlay.stepOverlayUserCount(step.id) > 0) {
+      items.push({ label: `🖌️ Paste overlay — Replace (${_clipN})`, action: () => _pasteOverlay(step.id, 'replace') });
+      items.push({ label: `➕ Paste overlay — Add on top (${_clipN})`, action: () => _pasteOverlay(step.id, 'add') });
+    } else {
+      items.push({ label: `🖌️ Paste overlay (${_clipN})`, action: () => _pasteOverlay(step.id, 'replace') });
+    }
   }
   // "Update camera as template" is only meaningful when the active step
   // is bound to a template — that's the template the action targets.
@@ -1787,6 +1806,13 @@ function _showChapterContextMenu(chapter, x, y) {
 }
 
 // ── Copy / paste clipboard operations ──────────────────────────────────────
+
+// Paste the copied overlay preset onto a step (#19). Undo lives in overlay.js.
+function _pasteOverlay(stepId, mode) {
+  const r = overlay.pasteStepOverlay(stepId, mode);
+  if (!r.ok) { setStatus(`Paste overlay failed: ${r.error}.`, 'warn', 2500); return; }
+  setStatus(`Pasted overlay — ${mode === 'add' ? 'added on top of' : 'replaced'} (${r.count} element${r.count === 1 ? '' : 's'}). Headers untouched.`, 'success', 3000);
+}
 
 function _cloneStep(step) {
   const copy = cloneShareStrings(step);   // shares the big base64 strings; structure is independent

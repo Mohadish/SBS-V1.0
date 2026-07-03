@@ -2913,6 +2913,69 @@ function _writeOverlayToStep(stepId) {
   state.markDirty();
 }
 
+// ── Copy / Paste a whole overlay preset across steps (V0.3.1.63, backlog #19) ──
+// Copies a step's overlay USER content (all content-layer children EXCEPT baked
+// `sbs-header-item` header nodes) and pastes it onto another step — Replace (swap
+// user content, keep target's headers) or Add-on-top (stack above existing, keep
+// headers). Data-level (works on any step, active or not); undo via undoManager.
+// No id remapping: two interfaces coexisting is fine, default interfaces carry
+// their `atDefault`+geometry in the spec, and Replace is the common case.
+let _overlayClip = null;   // array of content-layer child specs (headers excluded)
+
+function _findContentLayerSpec(spec) {
+  const layers = spec?.children || [];
+  return layers.find(l => l.className === 'Layer' && l.attrs?.name === 'sbs-overlay-content')
+      || layers.find(l => l.className === 'Layer' && !l.attrs?.name && (l.children || []).length > 0)
+      || layers.find(l => l.className === 'Layer' && (l.children || []).length > 0)
+      || null;
+}
+const _isHeaderChild = (c) => c?.attrs?.name === 'sbs-header-item';
+const _stepById = (id) => (state.get('steps') || []).find(s => s.id === id);
+
+/** Non-header content-node specs of a step's overlay. [] if none, null if unparseable. */
+function _extractOverlayContent(stepId) {
+  const step = _stepById(stepId);
+  if (!step?.overlay) return [];
+  let spec; try { spec = JSON.parse(step.overlay); } catch { return null; }
+  const layer = _findContentLayerSpec(spec);
+  return layer ? (layer.children || []).filter(c => !_isHeaderChild(c)) : [];
+}
+
+/** Copy a step's overlay content into the clipboard. Returns { ok, count }. */
+export function copyStepOverlay(stepId) {
+  const c = _extractOverlayContent(stepId);
+  if (c === null) return { ok: false, error: 'overlay unreadable' };
+  _overlayClip = c;
+  return { ok: true, count: c.length };
+}
+
+export function overlayClipCount() { return _overlayClip ? _overlayClip.length : 0; }
+export function stepOverlayUserCount(stepId) { const c = _extractOverlayContent(stepId); return Array.isArray(c) ? c.length : 0; }
+
+/** Paste the clipboard onto a step. mode 'replace' | 'add'. Undo-able. { ok, count, mode }. */
+export function pasteStepOverlay(stepId, mode = 'replace') {
+  if (!_overlayClip || !_overlayClip.length) return { ok: false, error: 'clipboard empty' };
+  const step = _stepById(stepId);
+  if (!step) return { ok: false, error: 'step not found' };
+  const before = step.overlay ?? null;
+  let spec; try { spec = step.overlay ? JSON.parse(step.overlay) : null; } catch { spec = null; }
+  if (!spec) spec = { attrs: {}, className: 'Stage', children: [] };
+  let layer = _findContentLayerSpec(spec);
+  if (!layer) { layer = { attrs: { name: 'sbs-overlay-content' }, className: 'Layer', children: [] }; (spec.children || (spec.children = [])).push(layer); }
+  const kids = layer.children || [];
+  const headers = kids.filter(_isHeaderChild);
+  const existingUser = kids.filter(c => !_isHeaderChild(c));
+  layer.children = (mode === 'add') ? [...existingUser, ..._overlayClip, ...headers]
+                                    : [..._overlayClip, ...headers];
+  step.overlay = JSON.stringify(spec);
+  const after = step.overlay;
+  state.markDirty();
+  const restore = (str) => { const s = _stepById(stepId); if (!s) return; s.overlay = str; state.markDirty(); if (stepId === state.get('activeStepId')) _scheduleLoad(); };
+  if (stepId === state.get('activeStepId')) _scheduleLoad();
+  undoManager.push(`Paste overlay (${mode})`, () => restore(before), () => restore(after));
+  return { ok: true, count: _overlayClip.length, mode };
+}
+
 /**
  * Konva.Stage.toJSON serialises every node attr — including
  * Konva.Image's `image`, which is an HTMLCanvasElement we built via
