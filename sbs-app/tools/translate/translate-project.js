@@ -68,6 +68,12 @@ function protectHtml(html) {
   for (const k of keepList) if (k && /[^\x00-\x7F]/.test(k)) t = t.split(k).join(NT_OPEN + esc(k) + NT_CLOSE);
   return t;
 }
+// Strip Hebrew nikud/cantillation (combining marks) — added for Hebrew TTS,
+// irrelevant once we re-synthesize in the target language, and they break exact
+// glossary matching (מקב vs מָקָב) + can confuse the translator. Keeps letters +
+// punctuation (maqaf, sof pasuq).
+const NIKUD = /[֑-ׇֽֿׁׂׅׄ]/g;   // combining marks only (keeps maqaf/sof-pasuq)
+const stripNikud = (s) => s.replace(NIKUD, '');
 function unwrapNoTranslate(s) { return s.replace(/<span translate="no">([\s\S]*?)<\/span>/g, '$1'); }
 function stripTags(s) {
   return unwrapNoTranslate(s).replace(/<[^>]+>/g, '')
@@ -132,11 +138,11 @@ function walkUserTextBoxes(ov, cb) { let ord = 0; (function w(n){ if(!n||typeof 
 
   // Translate.
   if (plain.length) {
-    const tr = await translateBatch(plain.map(u => protectPlain(u.src)), 'html');
+    const tr = await translateBatch(plain.map(u => protectPlain(stripNikud(u.src))), 'html');
     plain.forEach((u, i) => u.apply(stripTags(tr[i]).trim()));
   }
   if (html.length) {
-    const tr = await translateBatch(html.map(u => protectHtml(u.src)), 'html');
+    const tr = await translateBatch(html.map(u => protectHtml(stripNikud(u.src))), 'html');
     html.forEach((u, i) => u.apply(flipDirection(unwrapNoTranslate(tr[i]))));
   }
   (html._finalizers || []).forEach(fn => fn());
