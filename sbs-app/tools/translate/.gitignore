@@ -1,0 +1,6 @@
+# Never commit the API key or generated translations/outputs
+google-key.txt
+*-EN.sbsproj
+*.out.sbsproj
+strings.json
+translations*.json

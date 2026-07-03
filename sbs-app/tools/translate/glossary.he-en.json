@@ -1,0 +1,34 @@
+{
+  "_note": "Hebrew→English glossary for SBS .sbsproj translation. This is the CAPTURED terminology skill — edit it, it improves every future run. keep = preserve verbatim (proper nouns/brands). keepPatterns = regexes preserved verbatim (part numbers, machine codes). force = replace a source term with a fixed English term BEFORE machine translation, so the tool never mistranslates domain vocabulary. Longest source strings are matched first.",
+  "domain": "Osterwalder powder-compaction / tableting press — punch, die, press set, filler shoe.",
+  "keep": ["OSTERWALDER", "Osterwalder", "Ostervalder", "Osterwald"],
+  "keepPatterns": [
+    "\\b\\d{3,}\\b",
+    "\\bH\\d+\\b",
+    "\\bAL\\d+\\b"
+  ],
+  "force": {
+    "סט לחיצה": "press set",
+    "סט הלחיצה": "the press set",
+    "מתאם מקב עליון": "upper punch adapter",
+    "מתאם מקב תחתון": "lower punch adapter",
+    "מקב עליון": "upper punch",
+    "מקב תחתון": "lower punch",
+    "מקב": "punch",
+    "תבנית": "die",
+    "נעל מילוי": "filler shoe",
+    "הוראת עבודה": "work instruction",
+    "הוראת העבודה": "the work instruction",
+    "דף הלחיצה": "the pressing sheet",
+    "שואב אבק": "vacuum cleaner",
+    "בורג הנעילה": "the locking screw",
+    "פין תחתון": "lower pin",
+    "פין החולץ": "the extractor pin",
+    "מפתח מומנט": "torque wrench",
+    "מכבש": "press",
+    "מק\"ט": "part number",
+    "מקט": "part number",
+    "המכבש התחתון": "the lower press",
+    "מתאם": "adapter"
+  }
+}
