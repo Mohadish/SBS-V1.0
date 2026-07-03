@@ -95,6 +95,10 @@ export function initOverlay() {
 
   // Click an empty area → deselect.
   _stage.on('pointerdown', (e) => {
+    // Edit-preview sequences: the FIRST interaction (this fires for clicks on
+    // nodes too — Konva events bubble to the stage) pops every playing sequence
+    // back to its base frame so editing resumes from the first-entry state.
+    if (_editing && _seqPlaybacks.length) _stopSequences();
     // Zoom-region draw mode: the next press-drag-release defines the region.
     if (_zoomDraw) { e.evt?.preventDefault?.(); _zoomDrawStart(); return; }
     if (e.target === _stage) {
@@ -321,9 +325,13 @@ export function setEditingMode(on) {
   // header workstream. _editing remains the source of truth for code
   // inside this module; state.overlayEditing is purely a broadcast.
   state.setState({ overlayEditing: _editing });
-  // S2: sequences are static (frame 0) while editing, animate in view mode.
-  if (_editing) _stopSequences();
-  else          _startSequences();
+  // Sequences now play a ONE-SHOT PREVIEW in edit mode too (V0.3.1.60), not just
+  // view mode. Same playback; the only edit-mode difference is it returns to the
+  // base frame (frame 0) at the end OR on the first interaction (see
+  // _advanceSequences' end-revert + the stage pointerdown revert), so editing
+  // always resumes from the first-entry state. Start playback whichever mode we
+  // entered — leaving edit mode plays it in view mode as before.
+  _startSequences();
 }
 
 // ─── Creating nodes ────────────────────────────────────────────────────────
@@ -2189,6 +2197,18 @@ function _stopSequences() {
   _layer?.batchDraw(); _uiLayer?.batchDraw();
 }
 
+/** Pop ONE playback's node back to its base (frame 0) + kill any in-flight
+ *  crossfade clone. Used by the edit-preview end-revert; leaves the playback in
+ *  _seqPlaybacks (marked done) so it won't replay until re-started. */
+function _revertPlaybackToBase(pb) {
+  if (pb.xfade?.clone && !pb.xfade.clone.isDestroyed?.()) { pb.xfade.clone.destroy(); pb.xfade = null; }
+  if (pb.node && !pb.node.isDestroyed?.() && pb.frames?.[0]?.img) {
+    pb.node.image(pb.frames[0].img);
+    pb.node.opacity(pb.baseOpacity ?? 1);
+    pb.currentIdx = 0;
+  }
+}
+
 /** Diagnostic: report the active step's image-sequence state (window.sbsDiag.seq()).
  *  Shows every node carrying a sequence — whether it's an interface, its frame
  *  count/src status, and whether it's currently PLAYING. Helps tell "not working"
@@ -2220,7 +2240,7 @@ export function diagSequences() {
 async function _startSequences() {
   const myToken = ++_seqToken;
   _stopSequences();
-  if (_editing || !_layer) return;                     // animate in VIEW mode only
+  if (!_layer) return;                                 // plays in VIEW and edit-preview mode
   const candidates = _layer.getChildren(n => {
     const s = n.getAttr && n.getAttr('sequence');
     return s && Array.isArray(s.frames) && s.frames.length >= 2;
@@ -2272,7 +2292,14 @@ function _advanceSequences(nowMs) {
     }
     if (pb.done) continue;
     const frac = pb.windowMs > 0 ? (nowMs - pb.startMs) / pb.windowMs : 1;
-    if (frac >= 1) { pb.done = true; continue; }        // window over → hold last frame
+    if (frac >= 1) {                                     // window over
+      pb.done = true;
+      // Edit-preview: pop back to the first-entry (base) frame at the end so
+      // editing resumes from frame 0. VIEW mode holds the last frame (unchanged
+      // — needed for export/display continuity).
+      if (_editing) { _revertPlaybackToBase(pb); drawLayer = true; }
+      continue;
+    }
     let target = pb.currentIdx;
     for (let i = pb.currentIdx + 1; i < pb.frames.length; i++) {
       if (pb.frames[i].pct <= frac * 100) target = i; else break;
