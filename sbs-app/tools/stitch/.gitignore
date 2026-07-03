@@ -1,0 +1,6 @@
+# ffmpeg binaries (137MB) — fetched locally, never committed
+bin/
+# generated stitch state + outputs
+*.state.json
+*-stitched.mp4
+_toc-*.mp4

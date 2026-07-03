@@ -1,0 +1,8 @@
+{
+  "output": "GEN9-multijig-full.mp4",
+  "toc": { "title": "GEN.9 Multi-Jig Calibration", "durationSec": 6 },
+  "books": [
+    { "title": "Part 1 — Setup",       "export": "part-1.sbsproc", "sbsproj": "CTS-Gen9-setup-animation-3.1.60-V2-part -1.sbsproj" },
+    { "title": "Part 2 — Calibration", "export": "part-2.sbsproc", "sbsproj": "CTS-Gen9-setup-animation-V2-part -2 - 01.sbsproj" }
+  ]
+}
