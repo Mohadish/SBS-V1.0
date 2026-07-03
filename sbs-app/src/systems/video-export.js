@@ -578,6 +578,7 @@ async function _exportMp4({ fps = DEFAULT_FPS, bitrate = DEFAULT_BITRATE,
   const frameIntervalUs = 1_000_000 / fps;
   const frameIntervalMs = 1000 / fps;
   let nextFrameUs = 0;
+  let _framesRendered = 0, _framesReused = 0;   // holds-only 3D-render-skip stats
   const _captureAndEncode = () => {
     // 1. Lay down the 3D frame at native size.
     // Stage 4: extract just the SAFE-FRAME rect from the live viewport
@@ -632,14 +633,29 @@ async function _exportMp4({ fps = DEFAULT_FPS, bitrate = DEFAULT_BITRATE,
   // renders, captures & encodes one frame per slot. Shared by the
   // setSleepImpl (steps animation phases) and _setWaitImpl (inter-step
   // holds) overrides so both produce matching encoded duration.
-  const _syntheticSleep = async (ms) => {
+  const _syntheticSleep = async (ms, opts = {}) => {
     if (signal?.aborted) throw new DOMException('aborted', 'AbortError');
+    // Holds-only 3D-render skip (V0.3.1.59): an inter-step hold is static in 3D
+    // by construction — the transition already finished and (confirmed with the
+    // user) nothing animates while a step just sits and narrates. Re-rendering
+    // the heavy scene (meshes + SSAA + AO) every frame produces PIXEL-IDENTICAL
+    // output, so we render the hold's FIRST frame once (insurance the canvas is
+    // current) then reuse it: preserveDrawingBuffer keeps the last frame on the
+    // WebGL canvas for the composite drawImage. We STILL fireSyntheticTick +
+    // raster the overlay/header/notes and encode one frame per slot every frame,
+    // so image-sequence flipbooks + dynamic header text still animate and the
+    // encoded duration + audio sync stay exact. Animation phases pass no flag →
+    // render every frame as before.
+    const staticHold = !!opts.staticHold;
+    let renderThisHoldFrame = true;
     const target = synthMs + Math.max(0, ms);
     while (synthMs + frameIntervalMs <= target) {
       if (_encoderError) throw _encoderError;   // dead encoder → abort, don't spin
       synthMs += frameIntervalMs;
       sceneCore.fireSyntheticTick(synthMs, frameIntervalMs);
-      sceneCore.renderFrame();
+      if (!staticHold || renderThisHoldFrame) { sceneCore.renderFrame(); _framesRendered++; }
+      else                                     { _framesReused++; }
+      renderThisHoldFrame = false;
       _captureAndEncode();
       // Backpressure — let the encoder drain so we don't OOM with
       // a multi-thousand-frame queue on long timelines. Watchdog: if the queue
@@ -726,12 +742,16 @@ async function _exportMp4({ fps = DEFAULT_FPS, bitrate = DEFAULT_BITRATE,
       // fight the synthetic clock.
       sceneCore.stopLoop();
       clock.setClockImpl(() => synthMs);
-      setSleepImpl(_syntheticSleep);
-      _setWaitImpl(_syntheticSleep);
+      setSleepImpl(_syntheticSleep);                                   // animation phases → render every frame
+      _setWaitImpl((ms) => _syntheticSleep(ms, { staticHold: true })); // inter-step holds → static 3D, reuse the frame
       offlineActive = true;
     }
     console.log('[export] timeline playback…' + (offline ? ' (offline mode)' : ''));
     await _playTimeline(stepsToPlay, perStepHold, onProgress, signal, onStepStart, offline);
+    const _totFrames = _framesRendered + _framesReused;
+    if (offline && _totFrames > 0) {
+      console.log(`[export] holds-only render skip — 3D rendered ${_framesRendered}/${_totFrames} frames, reused ${_framesReused} static hold frame(s) (${Math.round(100 * _framesReused / _totFrames)}% of 3D renders skipped).`);
+    }
   } finally {
     unsubTick();
     if (offlineActive) {
