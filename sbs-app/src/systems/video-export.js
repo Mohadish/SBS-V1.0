@@ -250,6 +250,140 @@ export function downloadBlob(blob, filename) {
 //  MP4 — WebCodecs VideoEncoder + mp4-muxer
 // ═══════════════════════════════════════════════════════════════════════════
 
+/**
+ * Group-aware audio-tail-aware perStepHold (V0.2.22.10/.11 model, extracted
+ * V0.3.1.74 so the timing-only dry run shares the EXACT same code — one source
+ * of truth). See the long design comment at the _exportMp4 call site history:
+ * overflow allowed iff next step is in the same group AND has no audio; else
+ * wait for the whole group's audio tail (offset-aware) + stepHoldMs breath.
+ */
+function _computePerStepHolds(stepsToPlay, stepHoldMs) {
+  const globalObjDur = state.get('objectAnimDurationMs') ?? 1500;
+  const _estimateAnimDur = (s) => {
+    const t = s.transition || {};
+    return t.durationOverride === true ? (t.objectDurationMs ?? globalObjDur) : globalObjDur;
+  };
+  const groupKeyOf  = (s) => s.groupHead ? s.id : (s.groupId || null);
+  const groupKeys   = stepsToPlay.map(groupKeyOf);
+  const narrDurs    = stepsToPlay.map(s => s.narration?.durationMs || 0);
+  const animDurs    = stepsToPlay.map(_estimateAnimDur);
+  const narrOffsets = stepsToPlay.map(_narrationStartOffsetMs);   // audio starts at markers[i]+offset
+  const markers     = new Array(stepsToPlay.length);
+  markers[0] = 0;
+  const perStepHold = new Array(stepsToPlay.length);
+  const _diagTiming = !!(typeof window !== 'undefined' && window.sbsDiag?.exportTiming);
+  if (_diagTiming) {
+    console.log('[export] perStepHold table:');
+    console.log('  [#] groupKey  | name           | anim | narr | nOff | mkr  | hold | reason');
+  }
+  let _overflowCount = 0;
+  for (let i = 0; i < stepsToPlay.length; i++) {
+    const step    = stepsToPlay[i];
+    const nextI   = i + 1;
+    const myKey   = groupKeys[i];
+    const nextKey = nextI < stepsToPlay.length ? groupKeys[nextI] : null;
+    const inSameGroupAsNext = myKey !== null && myKey === nextKey;
+    const nextHasAudio = nextI < stepsToPlay.length && narrDurs[nextI] > 0;
+    const stepAnimEnd  = markers[i] + animDurs[i];
+    let hold, reason;
+    if (inSameGroupAsNext && !nextHasAudio) {
+      hold   = stepHoldMs;                       // overflow into next-step frames
+      reason = 'OVERFLOW (same group, next no audio)';
+      _overflowCount++;
+    } else {
+      let groupAudioEnd = stepAnimEnd;                          // floor
+      groupAudioEnd = Math.max(groupAudioEnd, markers[i] + narrOffsets[i] + narrDurs[i]);
+      if (myKey !== null) {
+        for (let j = i - 1; j >= 0 && groupKeys[j] === myKey; j--) {
+          groupAudioEnd = Math.max(groupAudioEnd, markers[j] + narrOffsets[j] + narrDurs[j]);
+        }
+      }
+      hold   = Math.max(0, groupAudioEnd - stepAnimEnd) + stepHoldMs;
+      reason = inSameGroupAsNext
+        ? 'wait (next in-group has audio, collision avoid)'
+        : (myKey !== null ? 'wait (end of group)' : 'wait (top-level)');
+    }
+    perStepHold[i] = hold;
+    if (nextI < stepsToPlay.length) markers[nextI] = stepAnimEnd + hold;
+    if (_diagTiming) {
+      const keyShort = (myKey || '—').slice(0, 8).padEnd(8);
+      const nm = (step.name || '').slice(0, 14).padEnd(14);
+      console.log(`  [${String(i).padStart(2)}] ${keyShort} | ${nm} | anim=${String(animDurs[i]).padStart(5)} | narr=${String(narrDurs[i]).padStart(5)} | nOff=${String(narrOffsets[i]).padStart(4)} | mkr=${String(markers[i]).padStart(5)} | hold=${String(hold).padStart(5)} | ${reason}`);
+    }
+  }
+  const _totalEstMs = (markers[stepsToPlay.length - 1] || 0) + animDurs[animDurs.length - 1] + perStepHold[perStepHold.length - 1];
+  console.log(`[export] timing: ${stepsToPlay.length} step(s), ${_overflowCount} overflow(s), est total ${Math.round(_totalEstMs)}ms`);
+  return perStepHold;
+}
+
+/**
+ * TIMING-ONLY DRY RUN (V0.3.1.74) — measure every step's EXACT timeline
+ * duration WITHOUT rendering or encoding a single frame.
+ *
+ * Plays the timeline through the SAME machinery as the offline export: real
+ * activateStep animations (multi-phase strings, insert reposition→pause→
+ * assemble, cable morphs), the same group-aware perStepHold, the same
+ * synthetic clock quantised to the same fps — so the measured markers match a
+ * real export to within a frame. The only difference: the per-frame render +
+ * encode is skipped entirely, so ~an hour of rendering becomes ~a minute.
+ *
+ * Results are persisted via _recordRenderedDurations (renderedDurationMs on
+ * each step) → computeChapterTimecodes turns exact → refresh the TOC box and
+ * render ONCE with correct times baked in.
+ */
+export async function measureTimelineDurations({ fps = DEFAULT_FPS, onProgress, signal } = {}) {
+  const stepsToPlay = (state.get('steps') || []).filter(s => steps._isPlayable(s));
+  if (!stepsToPlay.length) throw new Error('No steps to measure.');
+  const exp = state.get('export') || {};
+  const stepHoldMs = Number.isFinite(exp.stepHoldMs) ? exp.stepHoldMs : POST_STEP_HOLD_MS;
+  const prevActiveId = state.get('activeStepId');
+
+  // Narration clips must exist for the hold math (durations) — same pre-synth
+  // pass the real export runs; cached clips make this a no-op.
+  try { await _synthesizeMissingClips(stepsToPlay, onProgress, signal); } catch (e) { console.warn('[measure] pre-synth skipped:', e?.message); }
+  const perStepHold = _computePerStepHolds(stepsToPlay, stepHoldMs);
+
+  const frameIntervalMs = 1000 / fps;
+  let synthMs = 0;
+  const _timingSleep = async (ms) => {
+    if (signal?.aborted) throw new DOMException('aborted', 'AbortError');
+    const target = synthMs + Math.max(0, ms);
+    let n = 0;
+    while (synthMs + frameIntervalMs <= target) {
+      synthMs += frameIntervalMs;
+      sceneCore.fireSyntheticTick(synthMs, frameIntervalMs);
+      // Yield every ~2s of timeline so the UI breathes + async image rasters resolve.
+      if (++n % 100 === 0) { await new Promise(r => setTimeout(r, 0)); if (signal?.aborted) throw new DOMException('aborted', 'AbortError'); }
+    }
+    if (target > synthMs) { const rem = target - synthMs; synthMs = target; sceneCore.fireSyntheticTick(synthMs, rem); }
+  };
+
+  const stepMarkers = [];
+  const onStepStart = (i, step) => stepMarkers.push({ stepId: step.id, timeInMs: Math.round(synthMs) });
+
+  state.setState({ _exporting: true });        // suppress live narration playback
+  await _hardResetToFirstStep(stepsToPlay);
+  sceneCore.stopLoop();
+  clock.setClockImpl(() => synthMs);
+  setSleepImpl(_timingSleep);
+  _setWaitImpl(_timingSleep);
+  try {
+    await _playTimeline(stepsToPlay, perStepHold, onProgress, signal, onStepStart, true);
+    // Sentinel so the LAST step also gets a measured duration (gap to the end).
+    stepMarkers.push({ stepId: '__end__', timeInMs: Math.round(synthMs) });
+    _recordRenderedDurations(stepMarkers);
+    return { steps: stepsToPlay.length, totalMs: Math.round(synthMs) };
+  } finally {
+    clock.setClockImpl(null);
+    setSleepImpl(null);
+    _setWaitImpl(null);
+    sceneCore.startLoop();
+    state.setState({ _exporting: false });
+    // Land the scene back where the user was (instant apply).
+    try { if (prevActiveId) await steps.activateStep(prevActiveId, false); } catch {}
+  }
+}
+
 async function _exportMp4({ fps = DEFAULT_FPS, bitrate = DEFAULT_BITRATE,
                             stepHoldMs = POST_STEP_HOLD_MS,
                             includeNarration = true,
@@ -373,13 +507,8 @@ async function _exportMp4({ fps = DEFAULT_FPS, bitrate = DEFAULT_BITRATE,
       // run-time actual under realtime browser throttling. Default
       // offline mode (V0.2.22.3) makes the synthetic clock deterministic
       // and drift-free.
-      const globalObjDur = state.get('objectAnimDurationMs') ?? 1500;
-      const _estimateAnimDur = (s) => {
-        const t = s.transition || {};
-        return t.durationOverride === true
-          ? (t.objectDurationMs ?? globalObjDur)
-          : globalObjDur;
-      };
+      const perStepHoldComputed = _computePerStepHolds(stepsToPlay, stepHoldMs);
+      perStepHoldComputed.forEach((h, i) => { perStepHold[i] = h; });
       // V0.2.22.10 — group-aware audio-tail-aware perStepHold.
       //
       // Diagnosis from V0.2.22.9: my classifier treated group HEADS as
@@ -407,74 +536,6 @@ async function _exportMp4({ fps = DEFAULT_FPS, bitrate = DEFAULT_BITRATE,
       // The last step in a group does the heavy lifting of waiting for
       // the group's audio tail so nothing leaks into the next group /
       // top-level step.
-      const groupKeyOf = (s) => s.groupHead ? s.id : (s.groupId || null);
-      const groupKeys  = stepsToPlay.map(groupKeyOf);
-      const narrDurs   = stepsToPlay.map(s => s.narration?.durationMs || 0);
-      const animDurs   = stepsToPlay.map(_estimateAnimDur);
-      // V0.2.22.11 — per-step narration start offset (animation string).
-      // Audio for step i begins at markers[i] + narrOffsets[i], not at
-      // markers[i]. Without this, collision-avoidance underestimates the
-      // audio end time and overflow into next-step frames starts at the
-      // wrong moment.
-      const narrOffsets = stepsToPlay.map(_narrationStartOffsetMs);
-      const markers    = new Array(stepsToPlay.length);   // estimated step starts
-      markers[0] = 0;
-
-      // V0.2.22.14 — diagnostic table trimmed. To re-enable the per-step
-      // breakdown (audited during the narration-timing work), set
-      //   window.sbsDiag = { ...window.sbsDiag, exportTiming: true };
-      // in DevTools before starting an export.
-      const _diagTiming = !!(typeof window !== 'undefined' && window.sbsDiag?.exportTiming);
-      if (_diagTiming) {
-        console.log('[export] perStepHold table:');
-        console.log('  [#] groupKey  | name           | anim | narr | nOff | mkr  | hold | reason');
-      }
-      let _overflowCount = 0;
-      for (let i = 0; i < stepsToPlay.length; i++) {
-        const step    = stepsToPlay[i];
-        const nextI   = i + 1;
-        const myKey   = groupKeys[i];
-        const nextKey = nextI < stepsToPlay.length ? groupKeys[nextI] : null;
-        const inSameGroupAsNext = myKey !== null && myKey === nextKey;
-        const nextHasAudio = nextI < stepsToPlay.length && narrDurs[nextI] > 0;
-        const stepAnimEnd  = markers[i] + animDurs[i];
-
-        let hold, reason;
-        if (inSameGroupAsNext && !nextHasAudio) {
-          // Overflow allowed — audio plays into next-step frames.
-          hold   = stepHoldMs;
-          reason = 'OVERFLOW (same group, next no audio)';
-          _overflowCount++;
-        } else {
-          // Wait for ALL in-group audio tails to finish, not just own.
-          // Audio for step k starts at markers[k] + narrOffsets[k] and
-          // ends narrDurs[k] later (V0.2.22.11 offset-aware).
-          let groupAudioEnd = stepAnimEnd;                          // floor
-          groupAudioEnd = Math.max(groupAudioEnd, markers[i] + narrOffsets[i] + narrDurs[i]);
-          if (myKey !== null) {
-            // walk backwards through prior in-group steps; their audio
-            // started earlier but may extend past stepAnimEnd
-            for (let j = i - 1; j >= 0 && groupKeys[j] === myKey; j--) {
-              groupAudioEnd = Math.max(groupAudioEnd, markers[j] + narrOffsets[j] + narrDurs[j]);
-            }
-          }
-          hold   = Math.max(0, groupAudioEnd - stepAnimEnd) + stepHoldMs;
-          reason = inSameGroupAsNext
-            ? 'wait (next in-group has audio, collision avoid)'
-            : (myKey !== null ? 'wait (end of group)' : 'wait (top-level)');
-        }
-        perStepHold[i] = hold;
-        if (nextI < stepsToPlay.length) markers[nextI] = stepAnimEnd + hold;
-
-        if (_diagTiming) {
-          const keyShort = (myKey || '—').slice(0, 8).padEnd(8);
-          const nm = (step.name || '').slice(0, 14).padEnd(14);
-          console.log(`  [${String(i).padStart(2)}] ${keyShort} | ${nm} | anim=${String(animDurs[i]).padStart(5)} | narr=${String(narrDurs[i]).padStart(5)} | nOff=${String(narrOffsets[i]).padStart(4)} | mkr=${String(markers[i]).padStart(5)} | hold=${String(hold).padStart(5)} | ${reason}`);
-        }
-      }
-      const _totalEstMs = (markers[stepsToPlay.length - 1] || 0) + animDurs[animDurs.length - 1] + perStepHold[perStepHold.length - 1];
-      console.log(`[export] timing: ${stepsToPlay.length} step(s), ${_overflowCount} overflow(s), est total ${Math.round(_totalEstMs)}ms`);
-
       console.log('[export] decoding audio segments…');
       audioSegments = await _decodeNarrationSegments(stepsToPlay, AUDIO_RATE);
       audioTrackEnabled = audioSegments.hasAudio;

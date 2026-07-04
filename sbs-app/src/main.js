@@ -630,6 +630,32 @@ window.sbsToc = () => import('./systems/narration-timeline.js').then(m => {
   return r;
 });
 
+// TOC SYNC (V0.3.1.74) — measure the timeline EXACTLY without rendering a
+// single frame: plays every step through the real animation machinery (inserts,
+// cables, multi-phase, group holds) on the synthetic clock, records each step's
+// measured duration, then refreshes any TOC boxes on the current step. ~a
+// minute instead of a full render. Save afterwards to persist, then render
+// ONCE with the exact TOC baked in.
+//   await window.sbsTocSync()
+window.sbsTocSync = async () => {
+  const ve = await import('./systems/video-export.js');
+  const t0 = performance.now();
+  console.log('%c[toc-sync] measuring timeline (no rendering — the viewport will fast-forward)…', 'font-weight:bold;color:#22c55e');
+  const r = await ve.measureTimelineDurations({
+    onProgress: (p) => { if (p.total && (p.current % 20 === 0 || p.current === p.total)) console.log(`[toc-sync] step ${p.current}/${p.total}`); },
+  });
+  const fmt = (ms) => { const s = Math.round(ms / 1000); return `${Math.floor(s / 60)}:${String(s % 60).padStart(2, '0')}`; };
+  console.log(`[toc-sync] done in ${((performance.now() - t0) / 1000).toFixed(1)}s — ${r.steps} steps measured, total video length ${fmt(r.totalMs)}.`);
+  try {
+    const ov = await import('./systems/overlay.js');
+    await ov.waitForOverlayStable?.();
+    const n = await ov.refreshTocBoxes?.();
+    console.log(n ? `[toc-sync] refreshed ${n} TOC box(es) on this step.` : '[toc-sync] no TOC box on this step — right-click yours → Refresh timecodes.');
+  } catch {}
+  console.log('[toc-sync] SAVE the project to persist the measured times.');
+  return window.sbsToc();
+};
+
 // Interface library folder controls — the folder is now persisted per project
 // (V0.3.1.52), but if you pick the WRONG one, you had to restart. These let you
 // check / re-pick / clear it live (then Save to persist the correction):

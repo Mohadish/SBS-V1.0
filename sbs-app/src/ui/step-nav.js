@@ -63,6 +63,10 @@ export function initStepNav() {
     if ((step.narration?.text || '') === val) return;
     // Drop any cached audio when text changes — user must re-preview / re-export.
     step.narration = { text: val };
+    // The measured timeline duration is stale too (narration length changed) —
+    // drop it so the TOC falls back to the estimate (flagged ~) until the next
+    // sbsTocSync / export re-measures.
+    delete step.renderedDurationMs;
     state.markDirty();
   };
   narrInput.addEventListener('input', () => {

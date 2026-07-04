@@ -432,6 +432,16 @@ async function _refreshTocBox(node) {
   _scheduleSave();
 }
 
+/** Refresh every TOC box on the ACTIVE step (used by sbsTocSync after a
+ *  timing measurement). Returns how many were refreshed. */
+export async function refreshTocBoxes() {
+  if (!_layer) return 0;
+  const boxes = _layer.getChildren(n => n.getAttr && n.getAttr('isToc'));
+  for (const b of boxes) await _refreshTocBox(b);
+  if (boxes.length) _layer.batchDraw();
+  return boxes.length;
+}
+
 // ─── Live in-place text editing (Phase 2) ───────────────────────────────────
 //
 // Replaces the modal popup. Double-click a text box → a contenteditable
