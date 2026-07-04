@@ -78,6 +78,7 @@ export function initOverlayToolbar() {
   const btnTri   = _btn('▲',   'Add triangle');
   const btnLine  = _btn('—',   'Add line');
   const btnArrow = _btn('→',   'Add arrow');
+  const btnToc   = _btn('▤',   'Add table of contents (auto from chapters + timecodes)');
   const btnDel   = _btn('🗑',   'Delete selected');
   btnText.addEventListener('click', async () => {
     const node = await overlay.addTextBox();
@@ -110,8 +111,13 @@ export function initOverlayToolbar() {
   btnTri  .addEventListener('click', () => { if (overlay.addTriangle()) setStatus('Triangle added.'); });
   btnLine .addEventListener('click', () => { if (overlay.addLine())     setStatus('Line added.'); });
   btnArrow.addEventListener('click', () => { if (overlay.addArrow())    setStatus('Arrow added.'); });
+  btnToc  .addEventListener('click', async () => {
+    const node = await overlay.addTocBox();
+    if (node) setStatus('Table of contents added — edit lines directly, or right-click → Refresh timecodes.', 'success', 4000);
+    else      setStatus('Couldn’t add table of contents.', 'warn', 2500);
+  });
   btnDel  .addEventListener('click', () => overlay.deleteSelected());
-  _tools.append(btnText, btnImg, btnIface, btnRect, btnCirc, btnEll, btnTri, btnLine, btnArrow, btnDel);
+  _tools.append(btnText, btnImg, btnIface, btnRect, btnCirc, btnEll, btnTri, btnLine, btnArrow, btnToc, btnDel);
 
   // The editing toggle is rightmost — always visible, single source of
   // truth for entering/leaving overlay editing. The old "Done" button

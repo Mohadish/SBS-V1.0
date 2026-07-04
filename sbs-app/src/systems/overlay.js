@@ -385,6 +385,53 @@ export async function addTextBox() {
   return node;
 }
 
+/** Build the Table-of-Contents list HTML (chapter name + timecode per line) from
+ *  the current timeline. Timecodes are the ESTIMATE from computeChapterTimecodes
+ *  (snap to exact export markers later). */
+async function _generateTocHtml() {
+  const { computeChapterTimecodes } = await import('./narration-timeline.js');
+  const { chapters } = computeChapterTimecodes();
+  const fmt = (ms) => { const s = Math.round(ms / 1000); return `${Math.floor(s / 60)}:${String(s % 60).padStart(2, '0')}`; };
+  const esc = (s) => String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+  const rows = chapters.filter(c => c.chapterId).map(c =>
+    `<div style="display:flex;justify-content:space-between;gap:40px;padding:3px 0"><span>${esc(c.name)}</span><span style="opacity:0.85">${fmt(c.startMs)}</span></div>`
+  ).join('') || '<div style="opacity:0.7">(no chapters yet)</div>';
+  return `<div style="font-family:Arial;font-size:34px;color:#ffffff;text-align:left;line-height:1.35"><div style="font-size:44px;font-weight:bold;margin-bottom:10px">Table of Contents</div>${rows}</div>`;
+}
+
+/** Insert an auto-generated Table of Contents on the current step. It's a normal
+ *  editable text box (edit/rename/remove lines directly in the text editor) tagged
+ *  isToc so right-click → "Refresh timecodes" regenerates it from the chapters.
+ *  Per-step + multiple independent instances by nature (it's overlay content). */
+export async function addTocBox() {
+  if (!_stage) return null;
+  const html = await _generateTocHtml();
+  const canvas = await _htmlToCanvas(html, { width: 620 });
+  if (!canvas?.width || !canvas?.height) { console.warn('[overlay] addTocBox: bad canvas'); return null; }
+  const node = new Konva.Image({
+    x: Math.max(20, _stage.width() * 0.12),
+    y: Math.max(20, _stage.height() * 0.18),
+    image: canvas, width: canvas.width, height: canvas.height, draggable: true, name: 'userTextBox',
+  });
+  node.setAttr('textHtml',  html);
+  node.setAttr('textWidth', canvas.width);
+  node.setAttr('naturalW',  canvas.width);
+  node.setAttr('naturalH',  canvas.height);
+  node.setAttr('isToc',     true);
+  _layer.add(node); _attachNode(node); _setSelection(node);
+  _pushAddNodeUndo(node, 'Add table of contents');
+  _scheduleSave();
+  return node;
+}
+
+/** Regenerate a TOC box's lines from the current chapters/timecodes (right-click). */
+async function _refreshTocBox(node) {
+  if (!node || !node.getAttr('isToc')) return;
+  node.setAttr('textHtml', await _generateTocHtml());
+  await _reflowTextBox(node);
+  _scheduleSave();
+}
+
 // ─── Live in-place text editing (Phase 2) ───────────────────────────────────
 //
 // Replaces the modal popup. Double-click a text box → a contenteditable
@@ -2412,10 +2459,14 @@ function _showOverlayContextMenu(node, x, y) {
         { separator: true },
       ]
     : [];
+  const tocItems = node.getAttr('isToc')
+    ? [{ label: '🔄 Refresh timecodes', action: () => _refreshTocBox(node) }, { separator: true }]
+    : [];
   showContextMenu([
     ...ifaceItems,
     ...zoomItems,
     ...seqItems,
+    ...tocItems,
     { label: '⎘ Duplicate',        action: _duplicateSelected },
     { label: '📋 Copy',            action: _copyToOverlayClipboard },
     { label: '📥 Paste',           disabled: !hasClipboard, action: () => _pasteFromOverlayClipboard({ inPlace: false }) },
