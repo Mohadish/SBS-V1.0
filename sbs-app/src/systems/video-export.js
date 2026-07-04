@@ -344,7 +344,14 @@ export async function measureTimelineDurations({ fps = DEFAULT_FPS, onProgress, 
   const perStepHold = _computePerStepHolds(stepsToPlay, stepHoldMs);
 
   const frameIntervalMs = 1000 / fps;
-  let synthMs = 0;
+  let synthMs   = 0;
+  // ENCODED-frame time — mirrors the real export's nextFrameUs exactly. The
+  // encoder emits one frame per FULL frame slot; a sleep's sub-frame remainder
+  // advances the synthetic clock but encodes NOTHING, so the real video runs a
+  // fraction shorter than the clock at every phase/hold boundary. Counting raw
+  // synthMs overshot ~40ms/step (+6s over 14min, user-measured); markers must
+  // be in encoded time, like the export's own step markers. (V0.3.1.75)
+  let encodedMs = 0;
   const _timingSleep = async (ms) => {
     if (signal?.aborted) throw new DOMException('aborted', 'AbortError');
     const target = synthMs + Math.max(0, ms);
@@ -352,14 +359,15 @@ export async function measureTimelineDurations({ fps = DEFAULT_FPS, onProgress, 
     while (synthMs + frameIntervalMs <= target) {
       synthMs += frameIntervalMs;
       sceneCore.fireSyntheticTick(synthMs, frameIntervalMs);
+      encodedMs += frameIntervalMs;                        // ← one encoded frame per full slot
       // Yield every ~2s of timeline so the UI breathes + async image rasters resolve.
       if (++n % 100 === 0) { await new Promise(r => setTimeout(r, 0)); if (signal?.aborted) throw new DOMException('aborted', 'AbortError'); }
     }
-    if (target > synthMs) { const rem = target - synthMs; synthMs = target; sceneCore.fireSyntheticTick(synthMs, rem); }
+    if (target > synthMs) { const rem = target - synthMs; synthMs = target; sceneCore.fireSyntheticTick(synthMs, rem); }   // no frame — matches encoder
   };
 
   const stepMarkers = [];
-  const onStepStart = (i, step) => stepMarkers.push({ stepId: step.id, timeInMs: Math.round(synthMs) });
+  const onStepStart = (i, step) => stepMarkers.push({ stepId: step.id, timeInMs: Math.round(encodedMs) });
 
   state.setState({ _exporting: true });        // suppress live narration playback
   await _hardResetToFirstStep(stepsToPlay);
@@ -370,9 +378,9 @@ export async function measureTimelineDurations({ fps = DEFAULT_FPS, onProgress, 
   try {
     await _playTimeline(stepsToPlay, perStepHold, onProgress, signal, onStepStart, true);
     // Sentinel so the LAST step also gets a measured duration (gap to the end).
-    stepMarkers.push({ stepId: '__end__', timeInMs: Math.round(synthMs) });
+    stepMarkers.push({ stepId: '__end__', timeInMs: Math.round(encodedMs) });
     _recordRenderedDurations(stepMarkers);
-    return { steps: stepsToPlay.length, totalMs: Math.round(synthMs) };
+    return { steps: stepsToPlay.length, totalMs: Math.round(encodedMs) };
   } finally {
     clock.setClockImpl(null);
     setSleepImpl(null);
