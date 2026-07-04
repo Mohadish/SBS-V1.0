@@ -103,24 +103,19 @@ export function narrationContextForStep(stepId) {
  * either way. An ESTIMATE — validate against a real export, refine from markers.
  */
 function _stepTimelineMs(step, stepHoldMs) {
-  // Match the ACTUAL render timeline: a PHASED step (explicit animation string)
-  // takes its phase-sum; a plain/simultaneous step (no string) takes
-  // objectAnimDurationMs or its per-step override. The OLD model used ONLY the
-  // phase-sum and returned 0ms for plain steps → under-count ~1500ms/step → the
-  // compounding offset. Narration extends the hold past the animation; + breath.
-  const { totalMs: phasedMs } = _animTiming(step);
-  let animMs = phasedMs;
-  if (!animMs) {                                             // no phased string → default/simultaneous
-    const globalObjDur = state.get('objectAnimDurationMs') ?? 1500;
-    const t = step.transition || {};
-    animMs = (t.durationOverride === true) ? (t.objectDurationMs ?? globalObjDur) : globalObjDur;
-  }
-  // Narration plays AFTER the transition settles (SBS's animate-then-explain
-  // pattern) — ADDITIVE, not overlapping. The old max() dropped the whole
-  // animation time on every narrated step (narr > anim), which is the residual
-  // that grew with narration in the validation data. + inter-step breath.
+  // EXACT replica of the exporter's per-step marker advance (video-export
+  // _estimateAnimDur + _narrationStartOffsetMs + perStepHold): a step lasts
+  //   max(animDur, narrOffset + narrDur) + stepHoldMs
+  // where animDur = objectAnimDurationMs (or per-step override) — NOT the
+  // phased-string total — and narration starts at narrOffset (the phases BEFORE
+  // its narration phase), not at 0 (overlap → under-counts) nor after the whole
+  // animation (additive → over-counts). Group audio-tail is approximated per-step.
+  const globalObjDur = state.get('objectAnimDurationMs') ?? 1500;
+  const t = step.transition || {};
+  const animMs = (t.durationOverride === true) ? (t.objectDurationMs ?? globalObjDur) : globalObjDur;
+  const { narrOffsetMs } = _animTiming(step);   // === exporter's _narrationStartOffsetMs
   const narrMs = step.narration?.durationMs || 0;
-  return animMs + narrMs + stepHoldMs;
+  return Math.max(animMs, narrOffsetMs + narrMs) + stepHoldMs;
 }
 
 /**
