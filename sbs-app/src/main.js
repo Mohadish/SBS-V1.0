@@ -646,6 +646,20 @@ window.sbsTocSync = async () => {
   });
   const fmt = (ms) => { const s = Math.round(ms / 1000); return `${Math.floor(s / 60)}:${String(s % 60).padStart(2, '0')}`; };
   console.log(`[toc-sync] done in ${((performance.now() - t0) / 1000).toFixed(1)}s — ${r.steps} steps measured, total video length ${fmt(r.totalMs)}.`);
+  // Diagnostic dump: per-step measurements → <project folder>/toc-measure.json,
+  // so the numbers can be diffed offline against a real render's .sbsproc
+  // markers step-by-step (pinpoints WHERE any residual drift lives).
+  try {
+    const pp = state.get('projectPath');
+    const dir = pp ? pp.replace(/[\\/][^\\/]*$/, '') : null;
+    if (dir && window.sbsNative?.writeFile) {
+      const rows = (state.get('steps') || [])
+        .filter(s => Number.isFinite(s.renderedDurationMs))
+        .map(s => ({ id: s.id, name: s.name, ms: s.renderedDurationMs }));
+      await window.sbsNative.writeFile(dir + '/toc-measure.json', JSON.stringify({ totalMs: r.totalMs, steps: rows }, null, 1), 'utf8');
+      console.log(`[toc-sync] diagnostic written: ${dir}/toc-measure.json (${rows.length} steps)`);
+    }
+  } catch (e) { console.warn('[toc-sync] diagnostic dump failed:', e?.message); }
   try {
     const ov = await import('./systems/overlay.js');
     await ov.waitForOverlayStable?.();
