@@ -331,10 +331,15 @@ function _computePerStepHolds(stepsToPlay, stepHoldMs) {
  * each step) → computeChapterTimecodes turns exact → refresh the TOC box and
  * render ONCE with correct times baked in.
  */
-export async function measureTimelineDurations({ fps = DEFAULT_FPS, onProgress, signal } = {}) {
+export async function measureTimelineDurations({ fps, onProgress, signal } = {}) {
   const stepsToPlay = (state.get('steps') || []).filter(s => steps._isPlayable(s));
   if (!stepsToPlay.length) throw new Error('No steps to measure.');
   const exp = state.get('export') || {};
+  // fps MUST match the project's real export fps — frame quantization depends on
+  // it. (48fps drops ~10ms/sleep that 50fps's grid-aligned constants don't; the
+  // DEFAULT_FPS assumption caused a systematic +35ms/step overshoot on a 48fps
+  // project — user-measured, marker-forensics-confirmed. V0.3.1.77)
+  if (!Number.isFinite(fps)) fps = Number.isFinite(exp.fps) && exp.fps > 0 ? exp.fps : DEFAULT_FPS;
   const stepHoldMs = Number.isFinite(exp.stepHoldMs) ? exp.stepHoldMs : POST_STEP_HOLD_MS;
   const prevActiveId = state.get('activeStepId');
 
