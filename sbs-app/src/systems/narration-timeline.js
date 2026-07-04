@@ -155,6 +155,30 @@ export function computeChapterTimecodes(opts = {}) {
  * in between → elapsed-before-this-step / chapter total. Steps outside any
  * chapter → 0 (empty bar).
  */
+/**
+ * The active step's SPAN within its chapter — { startFrac, endFrac, durMs } —
+ * for the CONTINUOUS progress-bar fill: the bar animates startFrac→endFrac
+ * over the step's real duration. Because endFrac−startFrac is exactly this
+ * step's share of the chapter total, the fill rate is CONSTANT across step
+ * boundaries — globally linear over the whole chapter, per the user's spec.
+ * null when the step is outside any chapter (bar shows empty).
+ */
+export function chapterProgressSpan(stepId) {
+  const steps = _playableSteps();
+  const idx = steps.findIndex(s => s.id === stepId);
+  if (idx < 0) return null;
+  const ch = steps[idx].chapterId ?? null;
+  if (!ch) return null;
+  const stepHoldMs = state.get('export')?.stepHoldMs ?? 400;
+  const durOf = (s) => Number.isFinite(s.renderedDurationMs) ? s.renderedDurationMs : _stepTimelineMs(s, stepHoldMs);
+  const members = steps.filter(s => (s.chapterId ?? null) === ch);
+  const total = members.reduce((t, s) => t + durOf(s), 0);
+  if (!(total > 0)) return null;
+  let before = 0, dur = 0;
+  for (const s of members) { if (s.id === stepId) { dur = durOf(s); break; } before += durOf(s); }
+  return { startFrac: before / total, endFrac: Math.min(1, (before + dur) / total), durMs: dur };
+}
+
 export function chapterProgressForStep(stepId) {
   const steps = _playableSteps();
   const idx = steps.findIndex(s => s.id === stepId);

@@ -53,7 +53,9 @@ import { htmlToCanvas, enterTextEditor } from './overlay.js';   // P2/P3: shared
 import { registerLayer, getLayerSelection, scheduleOverlaySave } from './cross-layer.js';
 import { getStyleTemplate } from './style-templates.js';        // P4b: per-item style binding
 import { undoManager }      from './undo.js';                   // P7-C: drag / resize undo entries
-import { chapterProgressForStep } from './narration-timeline.js'; // chapter progress bar (#15)
+import { chapterProgressSpan } from './narration-timeline.js';  // chapter progress bar (#15)
+import { sceneCore }        from '../core/scene.js';             // tick hook drives the continuous fill
+import * as clock           from '../core/clock.js';             // synthetic during export, wall live
 
 // ─── Pure data helpers (no DOM / Konva — usable from export, tests) ─────────
 
@@ -185,12 +187,49 @@ export function buildRenderContext() {
     ? chapters.findIndex(c => c.id === effectiveStep.chapterId)
     : -1;
   const chapter  = chapterIndex >= 0 ? chapters[chapterIndex] : null;
-  // Chapter-progress fraction for the progress-bar kind. Computed against the
-  // ACTIVE step (not the group-effective one) so the bar advances through a
-  // group's sub-steps rather than freezing on the head.
-  let chapterProgress = 0;
-  try { chapterProgress = chapterProgressForStep(activeId); } catch { /* keep 0 */ }
-  return { step: effectiveStep, stepIndex, chapter, chapterIndex, chapterProgress };
+  return { step: effectiveStep, stepIndex, chapter, chapterIndex };
+}
+
+// ── Chapter progress bar: CONTINUOUS fill (V0.3.1.80) ───────────────────────
+// The bar animates linearly across the chapter's REAL duration instead of
+// jumping per step. Each active step contributes its measured share of the
+// chapter (startFrac→endFrac over durMs from chapterProgressSpan), so the rate
+// is constant across step boundaries — one steady linear fill for the whole
+// chapter. clock.now() is the SYNTHETIC clock during export (deterministic,
+// keeps filling through narration holds — where most chapter time lives) and
+// the wall clock live. Computed against the ACTIVE step id (not the group-
+// effective one) so the fill advances through group sub-steps.
+let _progressBars   = [];     // [{ canvas, item }] — live chapterProgress nodes this refresh
+let _progressSpan   = null;   // { startFrac, endFrac, durMs } for the active step
+let _progressStepId = null;
+let _progressT0     = 0;
+let _progressLastF  = -1;
+let _progressTickOn = false;
+
+function _syncProgressSpan() {
+  const activeId = state.get('activeStepId');
+  if (activeId === _progressStepId) return;   // mid-step refreshes keep the clock running
+  _progressStepId = activeId;
+  _progressT0     = clock.now();
+  try { _progressSpan = chapterProgressSpan(activeId); } catch { _progressSpan = null; }
+}
+function _currentProgressFrac() {
+  if (!_progressSpan) return 0;
+  const { startFrac, endFrac, durMs } = _progressSpan;
+  if (!(durMs > 0)) return endFrac;
+  const a = Math.max(0, Math.min(1, (clock.now() - _progressT0) / durMs));
+  return startFrac + a * (endFrac - startFrac);
+}
+function _drawProgressBar(cnv, item, frac) {
+  const g = cnv.getContext('2d');
+  const cw = cnv.width, chh = cnv.height;
+  const r = Math.min(chh / 2, 12);            // canvas is 2× supersampled → 12 = 6px radius
+  g.clearRect(0, 0, cw, chh);
+  const rr = (w) => { g.beginPath(); g.roundRect(0, 0, w, chh, r); g.fill(); };
+  g.fillStyle = item.trackColor || 'rgba(255,255,255,0.4)';
+  rr(cw);
+  const f = Math.max(0, Math.min(1, frac));
+  if (f > 0) { g.fillStyle = item.fillColor || '#3b82f6'; rr(Math.max(r * 2, Math.round(cw * f))); }
 }
 
 // ─── State mutations (centralised so undo/redo and events stay in sync) ─────
@@ -451,6 +490,21 @@ export function initHeaderLayer(stage) {
   // Register with the cross-layer registry — overlay reads this to
   // include header siblings in combined multi-drag, and to persist
   // header positions after a cross-layer drag commits.
+  // Continuous chapter-progress fill — tick-driven redraw of the bar canvases
+  // (per synthetic frame during export, per rAF live). Redraws only on a
+  // visible change (~0.2% of the bar) so idle cost is nil.
+  if (!_progressTickOn) {
+    _progressTickOn = true;
+    sceneCore.addTickHook(() => {
+      if (!_progressBars.length || !_progressSpan || !_layer) return;
+      const f = _currentProgressFrac();
+      if (Math.abs(f - _progressLastF) < 0.002) return;
+      _progressLastF = f;
+      for (const b of _progressBars) _drawProgressBar(b.canvas, b.item, f);
+      _layer.batchDraw();
+    });
+  }
+
   registerLayer('header', {
     getSelection: () => {
       if (!_layer) return [];
@@ -476,6 +530,11 @@ export function initHeaderLayer(stage) {
  */
 export function refreshHeaderLayer() {
   if (!_layer) return;
+  // Progress bars are rebuilt below; re-anchor the fill clock if the active
+  // step changed (mid-step refreshes keep it running — no restart on restyle).
+  _progressBars = [];
+  _progressLastF = -1;
+  _syncProgressSpan();
 
   // Track every async hydrate (text raster, image load) kicked off
   // by _buildNode during this refresh. waitForHeaderStable() returns
@@ -577,9 +636,9 @@ function _buildNode(item, ctx, inert) {
   }
 
   // Chapter progress bar — drawn synchronously onto a canvas (no async raster,
-  // so it can never blink during export; the per-step refreshHeaderLayer on
-  // change:activeStepId re-draws it at each step's fraction, which the export
-  // raster picks up per step automatically).
+  // no blink). Built at the CURRENT animated fraction; the tick hook then
+  // redraws the same canvas continuously (see the continuous-fill block above),
+  // and the export's per-frame _layer.toCanvas raster picks it up as it fills.
   if (item.kind === 'chapterProgress') {
     const node = new Konva.Image({
       x: item.x, y: item.y, width: item.w, height: item.h,
@@ -587,21 +646,13 @@ function _buildNode(item, ctx, inert) {
     });
     node.setAttr('headerId',   item.id);
     node.setAttr('headerKind', item.kind);
-    const frac = Math.max(0, Math.min(1, ctx.chapterProgress ?? 0));
     const S = 2;                                   // supersample for crisp rounded edges
-    const cw = Math.max(2, Math.round(item.w * S)), chh = Math.max(2, Math.round(item.h * S));
     const cnv = document.createElement('canvas');
-    cnv.width = cw; cnv.height = chh;
-    const g = cnv.getContext('2d');
-    const r = Math.min(chh / 2, 6 * S);
-    const rr = (x, y, w, h) => { g.beginPath(); g.roundRect(x, y, w, h, r); g.fill(); };
-    g.fillStyle = item.trackColor || 'rgba(255,255,255,0.4)';
-    rr(0, 0, cw, chh);
-    if (frac > 0) {
-      g.fillStyle = item.fillColor || '#3b82f6';
-      rr(0, 0, Math.max(r * 2, Math.round(cw * frac)), chh);
-    }
+    cnv.width  = Math.max(2, Math.round(item.w * S));
+    cnv.height = Math.max(2, Math.round(item.h * S));
+    _drawProgressBar(cnv, item, _currentProgressFrac());
     node.image(cnv);
+    _progressBars.push({ canvas: cnv, item });     // tick hook keeps it filling
     if (!inert) _attachItemHandlers(node, item);
     return node;
   }
