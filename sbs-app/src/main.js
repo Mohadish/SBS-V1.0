@@ -623,9 +623,10 @@ window.sbsMemReport = () => import('./core/state.js').then((m) => {
 window.sbsToc = () => import('./systems/narration-timeline.js').then(m => {
   const r = m.computeChapterTimecodes();
   const fmt = (ms) => { const s = Math.round(ms / 1000); return `${Math.floor(s / 60)}:${String(s % 60).padStart(2, '0')}`; };
-  console.log('%c[TOC] estimated chapter timecodes — compare to a real export:', 'font-weight:bold;color:#22c55e');
-  for (const c of r.chapters) console.log(`  ${fmt(c.startMs).padStart(6)}   ${c.name}`);
-  console.log(`  total ≈ ${fmt(r.totalMs)}`);
+  const hdr = r.hasEstimate ? '⚠ some chapters ESTIMATED (re-export to sync all)' : '✓ all MEASURED from last render';
+  console.log(`%c[TOC] chapter timecodes — ${hdr}:`, 'font-weight:bold;color:#22c55e');
+  for (const c of r.chapters) console.log(`  ${fmt(c.startMs).padStart(6)}  ${c.measured ? '✓' : '~'}  ${c.name}`);
+  console.log(`  total ${fmt(r.totalMs)}   (✓ = exact from render, ~ = estimate)`);
   return r;
 });
 

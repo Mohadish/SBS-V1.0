@@ -121,23 +121,28 @@ function _stepTimelineMs(step, stepHoldMs) {
 /**
  * Compute each chapter's START TIME in the final playback/export timeline —
  * the data behind an auto-generated Table of Contents. Walks the playable steps
- * in order, summing per-step timeline durations, and records the cumulative time
- * at each chapter boundary. Returns { chapters:[{chapterId,name,startMs,
- * startStepId}], totalMs }. Pure/read-only; safe to call any time.
+ * in order, summing per-step durations, recording the cumulative time at each
+ * chapter boundary. Each step prefers its MEASURED duration (renderedDurationMs,
+ * written by the exporter) — EXACT, insert/cable time included — and falls back
+ * to the estimate for steps not yet rendered (or edited since). Returns
+ * { chapters:[{chapterId,name,startMs,startStepId,measured}], totalMs, hasEstimate }.
+ * Pure/read-only; safe to call any time.
  */
 export function computeChapterTimecodes(opts = {}) {
   const stepHoldMs = opts.stepHoldMs ?? (state.get('export')?.stepHoldMs ?? 400);   // POST_STEP_HOLD_MS
   const steps      = _playableSteps();
   const chapItems  = state.get('chapters')?.items || state.get('chapters') || [];
   const nameById   = new Map((Array.isArray(chapItems) ? chapItems : []).map(c => [c.id, c.name]));
-  const out = []; let t = 0; let lastCh;
+  const out = []; let t = 0; let lastCh; let cleanSoFar = true; let hasEstimate = false;
   for (const s of steps) {
     const ch = s.chapterId ?? null;
     if (ch !== lastCh) {
-      out.push({ chapterId: ch, name: ch ? (nameById.get(ch) || '(chapter)') : '(no chapter)', startMs: Math.round(t), startStepId: s.id });
+      // A chapter's start time is EXACT only if every step before it was measured.
+      out.push({ chapterId: ch, name: ch ? (nameById.get(ch) || '(chapter)') : '(no chapter)', startMs: Math.round(t), startStepId: s.id, measured: cleanSoFar });
       lastCh = ch;
     }
-    t += _stepTimelineMs(s, stepHoldMs);
+    if (Number.isFinite(s.renderedDurationMs)) { t += s.renderedDurationMs; }
+    else { t += _stepTimelineMs(s, stepHoldMs); hasEstimate = true; cleanSoFar = false; }
   }
-  return { chapters: out, totalMs: Math.round(t) };
+  return { chapters: out, totalMs: Math.round(t), hasEstimate };
 }

@@ -748,6 +748,10 @@ async function _exportMp4({ fps = DEFAULT_FPS, bitrate = DEFAULT_BITRATE,
     }
     console.log('[export] timeline playback…' + (offline ? ' (offline mode)' : ''));
     await _playTimeline(stepsToPlay, perStepHold, onProgress, signal, onStepStart, offline);
+    // Persist the MEASURED per-step durations into the project so the Table of
+    // Contents computes exact chapter timecodes — inserts/cables and all — from
+    // real render times, not the estimate. (V0.3.1.73)
+    _recordRenderedDurations(stepMarkers);
     const _totFrames = _framesRendered + _framesReused;
     if (offline && _totFrames > 0) {
       console.log(`[export] holds-only render skip — 3D rendered ${_framesRendered}/${_totFrames} frames, reused ${_framesReused} static hold frame(s) (${Math.round(100 * _framesReused / _totFrames)}% of 3D renders skipped).`);
@@ -1103,6 +1107,28 @@ let _waitImpl = (ms) => new Promise(r => setTimeout(r, ms));
 function _wait(ms) { return _waitImpl(ms); }
 function _setWaitImpl(fn) {
   _waitImpl = fn || ((ms) => new Promise(r => setTimeout(r, ms)));
+}
+
+/**
+ * Write each step's MEASURED duration (gap to the next step's real activation
+ * time) onto the step as `renderedDurationMs`, then markDirty. The TOC's
+ * computeChapterTimecodes prefers these measured values over its estimate, so
+ * chapter timecodes become EXACT after an export — including insert/cable
+ * animation time the project file can't otherwise express. Steps missing from
+ * the marker list (and the final step) keep no measured value → estimate. (V0.3.1.73)
+ */
+function _recordRenderedDurations(stepMarkers) {
+  if (!Array.isArray(stepMarkers) || stepMarkers.length < 2) return;
+  const sorted = [...stepMarkers].sort((a, b) => (a.timeInMs || 0) - (b.timeInMs || 0));
+  const byId = new Map((state.get('steps') || []).map(s => [s.id, s]));
+  let n = 0;
+  for (let i = 0; i < sorted.length - 1; i++) {
+    const step = byId.get(sorted[i].stepId);
+    if (!step) continue;
+    step.renderedDurationMs = Math.max(0, Math.round((sorted[i + 1].timeInMs || 0) - (sorted[i].timeInMs || 0)));
+    n++;
+  }
+  if (n) { state.markDirty(); console.log(`[export] recorded ${n} measured step durations → exact TOC timing.`); }
 }
 
 /**
