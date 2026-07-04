@@ -23,7 +23,7 @@ import { steps, setSleepImpl } from './steps.js';
 import { isIsolateEngaged, suspendIsolate, resumeIsolate } from '../core/isolate-state.js';
 import * as clock    from '../core/clock.js';
 import { sceneCore } from '../core/scene.js';
-import { rasterizeOverlay, waitForOverlayStable }     from './overlay.js';
+import { rasterizeOverlay, waitForOverlayStable, refreshAllTocBoxesData } from './overlay.js';
 import { rasterizeHeaderLayer, waitForHeaderStable }  from './header.js';
 import { rasterizeNotesLayer }                        from './notes-render.js';
 import { rasterizeTagsLayer }                         from './hardware-insert-anim.js';
@@ -408,6 +408,23 @@ async function _exportMp4({ fps = DEFAULT_FPS, bitrate = DEFAULT_BITRATE,
 
   const stepsToPlay = (state.get('steps') || []).filter(s => steps._isPlayable(s));
   if (!stepsToPlay.length) throw new Error('No steps to export — add at least one step first.');
+
+  // AUTO-SYNC (V0.3.1.78, user-requested "mandatory check before render"): if
+  // any step lacks a measured duration (new/edited since the last sync), run
+  // the timing-only dry run FIRST, then rewrite every TOC box (style-preserving)
+  // so THIS render bakes exact chapter times — no manual sbsTocSync needed.
+  // All-measured projects skip this entirely (zero cost).
+  const _staleCount = stepsToPlay.filter(s => !Number.isFinite(s.renderedDurationMs)).length;
+  if (_staleCount > 0) {
+    console.log(`[export] auto-sync: ${_staleCount} step(s) without measured timing — running the timing pass first…`);
+    await measureTimelineDurations({
+      fps,
+      onProgress: (p) => onProgress?.({ ...p, stepName: `Timing: ${p.stepName ?? ''}` }),
+      signal,
+    });
+    const tocSteps = await refreshAllTocBoxesData();
+    if (tocSteps) console.log(`[export] auto-sync: refreshed TOC boxes in ${tocSteps} step(s).`);
+  }
 
   // Output dimensions come from the project's canonical export config
   // (state.export.width × state.export.height), NOT the viewport canvas.
@@ -824,8 +841,10 @@ async function _exportMp4({ fps = DEFAULT_FPS, bitrate = DEFAULT_BITRATE,
     await _playTimeline(stepsToPlay, perStepHold, onProgress, signal, onStepStart, offline);
     // Persist the MEASURED per-step durations into the project so the Table of
     // Contents computes exact chapter timecodes — inserts/cables and all — from
-    // real render times, not the estimate. (V0.3.1.73)
-    _recordRenderedDurations(stepMarkers);
+    // real render times, not the estimate. (V0.3.1.73) End sentinel so the LAST
+    // step gets a duration too — else it stays untagged and the auto-sync
+    // re-triggers on every export. (V0.3.1.78)
+    _recordRenderedDurations([...stepMarkers, { stepId: '__end__', timeInMs: nextFrameUs / 1000 }]);
     const _totFrames = _framesRendered + _framesReused;
     if (offline && _totFrames > 0) {
       console.log(`[export] holds-only render skip — 3D rendered ${_framesRendered}/${_totFrames} frames, reused ${_framesReused} static hold frame(s) (${Math.round(100 * _framesReused / _totFrames)}% of 3D renders skipped).`);

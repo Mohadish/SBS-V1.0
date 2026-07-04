@@ -663,8 +663,8 @@ window.sbsTocSync = async () => {
   try {
     const ov = await import('./systems/overlay.js');
     await ov.waitForOverlayStable?.();
-    const n = await ov.refreshTocBoxes?.();
-    console.log(n ? `[toc-sync] refreshed ${n} TOC box(es) on this step.` : '[toc-sync] no TOC box on this step — right-click yours → Refresh timecodes.');
+    const n = await ov.refreshAllTocBoxesData?.();   // style-preserving, EVERY step's stored overlay
+    console.log(n ? `[toc-sync] refreshed TOC boxes in ${n} step(s) (styles preserved).` : '[toc-sync] no TOC boxes found in any step.');
   } catch {}
   console.log('[toc-sync] SAVE the project to persist the measured times.');
   return window.sbsToc();

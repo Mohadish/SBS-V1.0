@@ -385,10 +385,30 @@ export async function addTextBox() {
   return node;
 }
 
+/** Pull the user's styling out of an existing TOC box's HTML so a refresh can
+ *  KEEP it (the #1 complaint: restyling was lost on every refresh). Model per
+ *  the user's rule: the chosen size/color drive the BODY; the title is derived
+ *  (≈1.3× body, bold, same color). Body size = the smallest font-size present
+ *  (the title is always the bigger one); color/family/align = first found. */
+function _extractTocStyle(html) {
+  const s = typeof html === 'string' ? html : '';
+  const sizes = [...s.matchAll(/font-size:\s*(\d+(?:\.\d+)?)px/g)].map(m => parseFloat(m[1])).filter(v => v > 4);
+  const colorM = s.match(/color:\s*(rgb\([^)]+\)|#[0-9a-fA-F]{3,8})/);
+  const famM   = s.match(/font-family:\s*([^;"'<>]+)/);
+  const alignM = s.match(/text-align:\s*(left|center|right)/);
+  return {
+    size:   sizes.length ? Math.min(...sizes) : 34,
+    color:  colorM ? colorM[1] : '#ffffff',
+    family: famM ? famM[1].trim() : 'Arial',
+    align:  alignM ? alignM[1] : 'left',
+  };
+}
+
 /** Build the Table-of-Contents list HTML (chapter name + timecode per line) from
- *  the current timeline. Timecodes are the ESTIMATE from computeChapterTimecodes
- *  (snap to exact export markers later). */
-async function _generateTocHtml() {
+ *  the current timeline, in the given (or default) style. Title = body×1.3 bold. */
+async function _generateTocHtml(style = null) {
+  const st = style || { size: 34, color: '#ffffff', family: 'Arial', align: 'left' };
+  const titlePx = Math.round(st.size * 1.3);
   const { computeChapterTimecodes } = await import('./narration-timeline.js');
   const { chapters } = computeChapterTimecodes();
   const fmt = (ms) => { const s = Math.round(ms / 1000); return `${Math.floor(s / 60)}:${String(s % 60).padStart(2, '0')}`; };
@@ -396,7 +416,7 @@ async function _generateTocHtml() {
   const rows = chapters.filter(c => c.chapterId).map(c =>
     `<div style="display:flex;justify-content:space-between;gap:40px;padding:3px 0"><span>${esc(c.name)}</span><span style="opacity:0.85">${fmt(c.startMs)}</span></div>`
   ).join('') || '<div style="opacity:0.7">(no chapters yet)</div>';
-  return `<div style="font-family:Arial;font-size:34px;color:#ffffff;text-align:left;line-height:1.35"><div style="font-size:44px;font-weight:bold;margin-bottom:10px">Table of Contents</div>${rows}</div>`;
+  return `<div style="font-family:${st.family};font-size:${st.size}px;color:${st.color};text-align:${st.align};line-height:1.35"><div style="font-size:${titlePx}px;font-weight:bold;margin-bottom:10px">Table of Contents</div>${rows}</div>`;
 }
 
 /** Insert an auto-generated Table of Contents on the current step. It's a normal
@@ -424,10 +444,11 @@ export async function addTocBox() {
   return node;
 }
 
-/** Regenerate a TOC box's lines from the current chapters/timecodes (right-click). */
+/** Regenerate a TOC box's lines from the current chapters/timecodes (right-click)
+ *  — PRESERVING the user's styling (extracted from the current HTML). */
 async function _refreshTocBox(node) {
   if (!node || !node.getAttr('isToc')) return;
-  node.setAttr('textHtml', await _generateTocHtml());
+  node.setAttr('textHtml', await _generateTocHtml(_extractTocStyle(node.getAttr('textHtml'))));
   await _reflowTextBox(node);
   _scheduleSave();
 }
@@ -440,6 +461,28 @@ export async function refreshTocBoxes() {
   for (const b of boxes) await _refreshTocBox(b);
   if (boxes.length) _layer.batchDraw();
   return boxes.length;
+}
+
+/** DATA-LEVEL refresh of every TOC box in EVERY step's stored overlay (style-
+ *  preserving). The live-layer refresh only reaches the active step; TOC boxes
+ *  on other steps live as baked overlay JSON, which the export loads directly —
+ *  so a pre-render auto-sync must rewrite them all. The raster regenerates from
+ *  textHtml at load time, so updating the JSON is sufficient. Returns steps touched. */
+export async function refreshAllTocBoxesData() {
+  const allSteps = state.get('steps') || [];
+  let touched = 0;
+  for (const st of allSteps) {
+    if (typeof st.overlay !== 'string' || !st.overlay.includes('"isToc":true')) continue;
+    let spec; try { spec = JSON.parse(st.overlay); } catch { continue; }
+    const tocNodes = [];
+    (function walk(o) { if (!o || typeof o !== 'object') return; if (o.attrs?.isToc && o.attrs.textHtml !== undefined) tocNodes.push(o); (o.children || []).forEach(walk); })(spec);
+    if (!tocNodes.length) continue;
+    for (const tn of tocNodes) tn.attrs.textHtml = await _generateTocHtml(_extractTocStyle(tn.attrs.textHtml));
+    st.overlay = JSON.stringify(spec);
+    touched++;
+  }
+  if (touched) { state.markDirty(); _scheduleLoad(); }   // reload active step so the live view matches
+  return touched;
 }
 
 // ─── Live in-place text editing (Phase 2) ───────────────────────────────────
