@@ -93,16 +93,31 @@ for (let i = 0; i < man.books.length; i++) {
 }
 
 // ── Compute the unified TOC (offset each book by the sum of prior durations) ──
+// Sequence = [intro books] → [TOC card] → [content books]. A book marked
+// "role":"intro" is an opener (title/disclaimers/safety) — it plays FIRST and is
+// NOT listed as a chapter in the TOC. The TOC card is rebuilt every run and lists
+// the content parts at their REAL positions (after the intro + the card), so
+// changing a later book never forces re-rendering the intro.
+const tocSec  = man.toc?.durationSec || 6;
+const intros  = books.filter(b => b.role === 'intro');
+const content = books.filter(b => b.role !== 'intro');
+const introMs = intros.reduce((s, b) => s + (b.durationMs || 0), 0);
+
 console.log('=== BOOKS ===');
-let offset = 0; const flatToc = [];
 for (const b of books) {
   const changeTag = b.changed === null ? '' : (b.changed ? '  ⚠ CHANGED since last stitch → re-export' : '  ✓ unchanged');
-  console.log(`  [${b.i}] ${b.title || b.export}  dur=${b.durationMs != null ? fmtTime(b.durationMs) : '?'}${changeTag}`);
+  const roleTag = b.role === 'intro' ? ' [intro/opener]' : '';
+  console.log(`  [${b.i}] ${b.title || b.export}${roleTag}  dur=${b.durationMs != null ? fmtTime(b.durationMs) : '?'}${changeTag}`);
+}
+// TOC lists CONTENT parts, offset by the intro + the TOC-card duration.
+let offset = introMs + tocSec * 1000; const flatToc = [];
+for (const b of content) {
   flatToc.push({ ms: offset, name: b.title || `Book ${b.i + 1}`, book: true });
   for (const e of b.toc) flatToc.push({ ms: offset + e.ms, name: e.name, book: false });
-  if (b.durationMs != null) offset += b.durationMs; else console.log('     (duration unknown until --run probes the video)');
+  if (b.durationMs != null) offset += b.durationMs;
 }
 console.log('\n=== TABLE OF CONTENTS (measured from the real renders) ===');
+if (intros.length) console.log(`  ${fmtTime(0).padStart(6)}  · intro (${fmtTime(introMs)})`);
 for (const e of flatToc) console.log(`  ${fmtTime(e.ms).padStart(6)}  ${e.book ? '▶ ' : '   '}${e.name}`);
 console.log(`\n  total: ${fmtTime(offset)}`);
 
@@ -110,7 +125,6 @@ if (!RUN) { console.log('\n(plan only — re-run with --run to build the video)'
 
 // ── Build the TOC intro card matching the books' video params ────────────────
 const params = probeVideoParams(books[0].mp4Path);
-const tocSec = man.toc?.durationSec || 6;
 const esc = (s) => String(s).replace(/[\\:']/g, m => '\\' + m).replace(/%/g, '\\%');
 const lines = [{ y: 'h*0.10', size: 64, text: man.toc?.title || 'Contents' }];
 flatToc.filter(e => e.book).forEach((e, idx) => lines.push({ y: `h*0.28+${idx}*70`, size: 40, text: `${fmtTime(e.ms)}   ${e.name}` }));
@@ -122,7 +136,7 @@ execFileSync(FFMPEG, ['-y', '-f', 'lavfi', '-i', `color=c=black:s=${params.w}x${
   '-vf', draw, '-c:v', 'libx264', '-pix_fmt', params.pix, '-c:a', 'aac', '-shortest', tocMp4], { stdio: 'inherit' });
 
 // ── Concat: TOC + every book (re-encode filter = robust to any param drift) ──
-const inputs = [tocMp4, ...books.map(b => b.mp4Path)];
+const inputs = [...intros.map(b => b.mp4Path), tocMp4, ...content.map(b => b.mp4Path)];
 const outPath = rel(man.output || 'final-stitched.mp4');
 const args = [];
 inputs.forEach(f => args.push('-i', f));
