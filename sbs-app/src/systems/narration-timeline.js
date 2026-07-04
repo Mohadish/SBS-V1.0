@@ -115,8 +115,12 @@ function _stepTimelineMs(step, stepHoldMs) {
     const t = step.transition || {};
     animMs = (t.durationOverride === true) ? (t.objectDurationMs ?? globalObjDur) : globalObjDur;
   }
+  // Narration plays AFTER the transition settles (SBS's animate-then-explain
+  // pattern) — ADDITIVE, not overlapping. The old max() dropped the whole
+  // animation time on every narrated step (narr > anim), which is the residual
+  // that grew with narration in the validation data. + inter-step breath.
   const narrMs = step.narration?.durationMs || 0;
-  return Math.max(animMs, narrMs) + stepHoldMs;
+  return animMs + narrMs + stepHoldMs;
 }
 
 /**
