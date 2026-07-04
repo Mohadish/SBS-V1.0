@@ -8,7 +8,7 @@
  * Header item shape (HeaderItem):
  *   {
  *     id:        string,           // generated, stable
- *     kind:      'custom' | 'stepName' | 'stepNumber' | 'chapterName' | 'chapterNumber' | 'image',
+ *     kind:      'custom' | 'stepName' | 'stepNumber' | 'chapterName' | 'chapterNumber' | 'image' | 'chapterProgress',
  *     visible:   boolean,          // hide toggle (order preserved)
  *     x:         number,           // px (relative to render canvas, top-left origin)
  *     y:         number,
@@ -53,6 +53,7 @@ import { htmlToCanvas, enterTextEditor } from './overlay.js';   // P2/P3: shared
 import { registerLayer, getLayerSelection, scheduleOverlaySave } from './cross-layer.js';
 import { getStyleTemplate } from './style-templates.js';        // P4b: per-item style binding
 import { undoManager }      from './undo.js';                   // P7-C: drag / resize undo entries
+import { chapterProgressForStep } from './narration-timeline.js'; // chapter progress bar (#15)
 
 // ─── Pure data helpers (no DOM / Konva — usable from export, tests) ─────────
 
@@ -89,6 +90,20 @@ export function makeHeaderItem(kind = 'custom', opts = {}) {
   }
   if (kind === 'custom') {
     return { ...base, text: opts.text ?? 'Header' };
+  }
+  // Chapter progress bar (backlog #15) — a track that fills left→right as the
+  // active chapter advances (time-weighted, empty at chapter start, full at its
+  // last step, resets on the next chapter). Colors per-item so future UI can
+  // restyle; defaults = the user's spec (white track, blue fill).
+  if (kind === 'chapterProgress') {
+    return {
+      ...base,
+      w: opts.w ?? 420,
+      h: opts.h ?? 12,
+      text: '',
+      trackColor: opts.trackColor ?? 'rgba(255,255,255,0.4)',
+      fillColor:  opts.fillColor  ?? '#3b82f6',
+    };
   }
   // Dynamic kinds — text computed live; we still keep a `text` slot as a
   // fallback for migrations / "no active step" edge cases.
@@ -170,7 +185,12 @@ export function buildRenderContext() {
     ? chapters.findIndex(c => c.id === effectiveStep.chapterId)
     : -1;
   const chapter  = chapterIndex >= 0 ? chapters[chapterIndex] : null;
-  return { step: effectiveStep, stepIndex, chapter, chapterIndex };
+  // Chapter-progress fraction for the progress-bar kind. Computed against the
+  // ACTIVE step (not the group-effective one) so the bar advances through a
+  // group's sub-steps rather than freezing on the head.
+  let chapterProgress = 0;
+  try { chapterProgress = chapterProgressForStep(activeId); } catch { /* keep 0 */ }
+  return { step: effectiveStep, stepIndex, chapter, chapterIndex, chapterProgress };
 }
 
 // ─── State mutations (centralised so undo/redo and events stay in sync) ─────
@@ -553,6 +573,36 @@ function _buildNode(item, ctx, inert) {
     node.setAttr('naturalH',   item.naturalH || null);
     if (!inert) _attachItemHandlers(node, item);
     if (item.dataUrl) _refreshPending.push(_hydrateImage(node, item.dataUrl));
+    return node;
+  }
+
+  // Chapter progress bar — drawn synchronously onto a canvas (no async raster,
+  // so it can never blink during export; the per-step refreshHeaderLayer on
+  // change:activeStepId re-draws it at each step's fraction, which the export
+  // raster picks up per step automatically).
+  if (item.kind === 'chapterProgress') {
+    const node = new Konva.Image({
+      x: item.x, y: item.y, width: item.w, height: item.h,
+      draggable: !inert, listening: !inert, name: 'sbs-header-item',
+    });
+    node.setAttr('headerId',   item.id);
+    node.setAttr('headerKind', item.kind);
+    const frac = Math.max(0, Math.min(1, ctx.chapterProgress ?? 0));
+    const S = 2;                                   // supersample for crisp rounded edges
+    const cw = Math.max(2, Math.round(item.w * S)), chh = Math.max(2, Math.round(item.h * S));
+    const cnv = document.createElement('canvas');
+    cnv.width = cw; cnv.height = chh;
+    const g = cnv.getContext('2d');
+    const r = Math.min(chh / 2, 6 * S);
+    const rr = (x, y, w, h) => { g.beginPath(); g.roundRect(x, y, w, h, r); g.fill(); };
+    g.fillStyle = item.trackColor || 'rgba(255,255,255,0.4)';
+    rr(0, 0, cw, chh);
+    if (frac > 0) {
+      g.fillStyle = item.fillColor || '#3b82f6';
+      rr(0, 0, Math.max(r * 2, Math.round(cw * frac)), chh);
+    }
+    node.image(cnv);
+    if (!inert) _attachItemHandlers(node, item);
     return node;
   }
 

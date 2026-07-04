@@ -68,12 +68,13 @@ const setHeaderStepNumberPerChapter = (v) =>
   actions.commitStateChange('Header step numbering', ['headerStepNumberPerChapter'], () => header.setHeaderStepNumberPerChapter(v));
 
 const KIND_LABELS = {
-  custom:        'Header Text',
-  stepName:      'Step Name',
-  stepNumber:    'Step Number',
-  chapterName:   'Chapter Name',
-  chapterNumber: 'Chapter Number',
-  image:         'Header Image',
+  custom:          'Header Text',
+  stepName:        'Step Name',
+  stepNumber:      'Step Number',
+  chapterName:     'Chapter Name',
+  chapterNumber:   'Chapter Number',
+  image:           'Header Image',
+  chapterProgress: 'Chapter Progress',
 };
 
 let _activeItemId = null;   // which item's editor is expanded
@@ -105,6 +106,7 @@ export function renderHeaderTab(container) {
         <button class="btn" id="hdr-new-step-name">+ Step Name</button>
         <button class="btn" id="hdr-new-ch-num">+ Chapter #</button>
         <button class="btn" id="hdr-new-ch-name">+ Chapter Name</button>
+        <button class="btn" id="hdr-new-ch-prog" title="Progress bar that fills as the current chapter advances (empty at chapter start, full at its last step)">+ Progress Bar</button>
       </div>
 
       <div class="card" style="margin-top:8px;display:grid;grid-template-columns:1fr 1fr;gap:6px;">
@@ -177,6 +179,7 @@ export function renderHeaderTab(container) {
   container.querySelector('#hdr-new-step-name').addEventListener('click', () => _create('stepName'));
   container.querySelector('#hdr-new-ch-num')   .addEventListener('click', () => _create('chapterNumber'));
   container.querySelector('#hdr-new-ch-name')  .addEventListener('click', () => _create('chapterName'));
+  container.querySelector('#hdr-new-ch-prog')  .addEventListener('click', () => _create('chapterProgress'));
   container.querySelector('#hdr-new-image')    .addEventListener('click', () => _createImage());
 
   // ─── Top-row toggles ───────────────────────────────────────────────────

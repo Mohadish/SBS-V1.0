@@ -146,3 +146,29 @@ export function computeChapterTimecodes(opts = {}) {
   }
   return { chapters: out, totalMs: Math.round(t), hasEstimate };
 }
+
+/**
+ * How far through its CHAPTER a step is, 0..1 — drives the chapter-progress
+ * header bar (backlog #15). TIME-weighted: measured renderedDurationMs when
+ * available, the estimate otherwise. Rules (per the user's spec): chapter's
+ * first step → 0 (bar starts empty), chapter's last step → 1 (ends full),
+ * in between → elapsed-before-this-step / chapter total. Steps outside any
+ * chapter → 0 (empty bar).
+ */
+export function chapterProgressForStep(stepId) {
+  const steps = _playableSteps();
+  const idx = steps.findIndex(s => s.id === stepId);
+  if (idx < 0) return 0;
+  const ch = steps[idx].chapterId ?? null;
+  if (!ch) return 0;
+  const stepHoldMs = state.get('export')?.stepHoldMs ?? 400;
+  const durOf = (s) => Number.isFinite(s.renderedDurationMs) ? s.renderedDurationMs : _stepTimelineMs(s, stepHoldMs);
+  const members = steps.filter(s => (s.chapterId ?? null) === ch);
+  if (members.length <= 1) return 1;
+  if (members[members.length - 1].id === stepId) return 1;
+  const total = members.reduce((t, s) => t + durOf(s), 0);
+  if (!(total > 0)) return 0;
+  let before = 0;
+  for (const s of members) { if (s.id === stepId) break; before += durOf(s); }
+  return Math.max(0, Math.min(1, before / total));
+}
