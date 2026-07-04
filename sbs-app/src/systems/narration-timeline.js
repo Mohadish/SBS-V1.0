@@ -93,3 +93,42 @@ export function narrationContextForStep(stepId) {
   }
   return { text: '', durationMs: 0, offsetMs: 0, windowMs: myWindow, isOverflow: false };
 }
+
+/**
+ * A step's total time on the timeline: its transition animation, extended so the
+ * narration finishes, plus the inter-step breath (stepHoldMs). Mirrors the
+ * exporter's perStepHold intent: hold = max(0, audioEnd - animEnd) + breath.
+ * Group narration overflow is APPROXIMATED per-step (the head carries its clip);
+ * cumulative chapter boundaries stay close because a group's total time is ~equal
+ * either way. An ESTIMATE — validate against a real export, refine from markers.
+ */
+function _stepTimelineMs(step, stepHoldMs) {
+  const { totalMs: animMs, narrOffsetMs } = _animTiming(step);
+  const narrMs   = step.narration?.durationMs || 0;
+  const audioEnd = narrOffsetMs + narrMs;
+  return Math.max(animMs, audioEnd) + stepHoldMs;
+}
+
+/**
+ * Compute each chapter's START TIME in the final playback/export timeline —
+ * the data behind an auto-generated Table of Contents. Walks the playable steps
+ * in order, summing per-step timeline durations, and records the cumulative time
+ * at each chapter boundary. Returns { chapters:[{chapterId,name,startMs,
+ * startStepId}], totalMs }. Pure/read-only; safe to call any time.
+ */
+export function computeChapterTimecodes(opts = {}) {
+  const stepHoldMs = opts.stepHoldMs ?? (state.get('export')?.stepHoldMs ?? 100);
+  const steps      = _playableSteps();
+  const chapItems  = state.get('chapters')?.items || state.get('chapters') || [];
+  const nameById   = new Map((Array.isArray(chapItems) ? chapItems : []).map(c => [c.id, c.name]));
+  const out = []; let t = 0; let lastCh;
+  for (const s of steps) {
+    const ch = s.chapterId ?? null;
+    if (ch !== lastCh) {
+      out.push({ chapterId: ch, name: ch ? (nameById.get(ch) || '(chapter)') : '(no chapter)', startMs: Math.round(t), startStepId: s.id });
+      lastCh = ch;
+    }
+    t += _stepTimelineMs(s, stepHoldMs);
+  }
+  return { chapters: out, totalMs: Math.round(t) };
+}

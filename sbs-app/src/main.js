@@ -615,6 +615,20 @@ window.sbsMemReport = () => import('./core/state.js').then((m) => {
   return rep;
 });
 
+// Table-of-Contents timing engine (V0.3.1.68) — computes each CHAPTER's start
+// time in the final timeline (the data behind an auto-generated TOC). This is an
+// ESTIMATE from the animation + narration + breath model; VALIDATE the numbers
+// against a real export before we build the visible TOC step on top of them.
+//   await window.sbsToc()
+window.sbsToc = () => import('./systems/narration-timeline.js').then(m => {
+  const r = m.computeChapterTimecodes();
+  const fmt = (ms) => { const s = Math.round(ms / 1000); return `${Math.floor(s / 60)}:${String(s % 60).padStart(2, '0')}`; };
+  console.log('%c[TOC] estimated chapter timecodes — compare to a real export:', 'font-weight:bold;color:#22c55e');
+  for (const c of r.chapters) console.log(`  ${fmt(c.startMs).padStart(6)}   ${c.name}`);
+  console.log(`  total ≈ ${fmt(r.totalMs)}`);
+  return r;
+});
+
 // Interface library folder controls — the folder is now persisted per project
 // (V0.3.1.52), but if you pick the WRONG one, you had to restart. These let you
 // check / re-pick / clear it live (then Save to persist the correction):
