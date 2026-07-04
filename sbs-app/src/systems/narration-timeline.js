@@ -103,10 +103,20 @@ export function narrationContextForStep(stepId) {
  * either way. An ESTIMATE — validate against a real export, refine from markers.
  */
 function _stepTimelineMs(step, stepHoldMs) {
-  const { totalMs: animMs, narrOffsetMs } = _animTiming(step);
-  const narrMs   = step.narration?.durationMs || 0;
-  const audioEnd = narrOffsetMs + narrMs;
-  return Math.max(animMs, audioEnd) + stepHoldMs;
+  // Match the ACTUAL render timeline: a PHASED step (explicit animation string)
+  // takes its phase-sum; a plain/simultaneous step (no string) takes
+  // objectAnimDurationMs or its per-step override. The OLD model used ONLY the
+  // phase-sum and returned 0ms for plain steps → under-count ~1500ms/step → the
+  // compounding offset. Narration extends the hold past the animation; + breath.
+  const { totalMs: phasedMs } = _animTiming(step);
+  let animMs = phasedMs;
+  if (!animMs) {                                             // no phased string → default/simultaneous
+    const globalObjDur = state.get('objectAnimDurationMs') ?? 1500;
+    const t = step.transition || {};
+    animMs = (t.durationOverride === true) ? (t.objectDurationMs ?? globalObjDur) : globalObjDur;
+  }
+  const narrMs = step.narration?.durationMs || 0;
+  return Math.max(animMs, narrMs) + stepHoldMs;
 }
 
 /**
@@ -117,7 +127,7 @@ function _stepTimelineMs(step, stepHoldMs) {
  * startStepId}], totalMs }. Pure/read-only; safe to call any time.
  */
 export function computeChapterTimecodes(opts = {}) {
-  const stepHoldMs = opts.stepHoldMs ?? (state.get('export')?.stepHoldMs ?? 100);
+  const stepHoldMs = opts.stepHoldMs ?? (state.get('export')?.stepHoldMs ?? 400);   // POST_STEP_HOLD_MS
   const steps      = _playableSteps();
   const chapItems  = state.get('chapters')?.items || state.get('chapters') || [];
   const nameById   = new Map((Array.isArray(chapItems) ? chapItems : []).map(c => [c.id, c.name]));
