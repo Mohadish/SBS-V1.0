@@ -87,7 +87,9 @@ for (let i = 0; i < man.books.length; i++) {
   }
   const srcHash = b.sbsproj ? hashFile(rel(b.sbsproj)) : null;
   const changed = b.sbsproj ? (state.hashes[b.sbsproj] !== srcHash) : null;
-  const durationMs = manifest?.total_duration_ms ?? (RUN ? probeDurationMs(mp4Path) : null);
+  // Duration: from the .sbsproc manifest if present, else measure the .mp4 with
+  // ffprobe (works in plan mode too — the .mp4 IS the real file on disk).
+  const durationMs = manifest?.total_duration_ms ?? probeDurationMs(mp4Path);
   const toc = manifest ? tocEntriesFromManifest(manifest) : [];
   books.push({ ...b, i, exportPath, mp4Path, isProc, manifest, srcHash, changed, durationMs, toc });
 }
