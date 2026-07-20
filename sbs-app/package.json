@@ -31,7 +31,8 @@
       "perMachine": false,
       "createDesktopShortcut": true,
       "createStartMenuShortcut": true,
-      "deleteAppDataOnUninstall": false
+      "deleteAppDataOnUninstall": false,
+      "license": "assets/eula.txt"
     },
     "mac": {
       "target": "dmg",

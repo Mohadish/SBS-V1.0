@@ -1,0 +1,64 @@
+SBS Step Browser — End User License Agreement (EULA)
+
+Copyright (c) 2026 Napo 3D. All rights reserved.
+
+IMPORTANT — READ CAREFULLY. By installing or using SBS Step Browser (the
+"Software"), you agree to be bound by the terms of this Agreement. If you do
+not agree, do not install or use the Software.
+
+1. OWNERSHIP
+   The Software, including all code, design, documentation, and included
+   assets, is the exclusive property of Napo 3D and is protected by copyright
+   and other intellectual-property laws. This Agreement grants you a license
+   to use the Software; it does not transfer any ownership rights.
+
+2. LICENSE GRANT
+   Subject to the terms of this Agreement and a valid activation issued by
+   Napo 3D, you are granted a limited, non-exclusive, non-transferable
+   license to install and use the Software on the machine(s) for which it
+   was activated, solely for the purposes agreed upon in writing with
+   Napo 3D.
+
+3. RESTRICTIONS
+   Except as expressly permitted in writing by Napo 3D, you may NOT:
+   a) copy, distribute, sell, rent, lease, sublicense, or otherwise make the
+      Software available to any third party;
+   b) use the Software outside the scope of the agreement under which it was
+      provided;
+   c) reverse-engineer, decompile, disassemble, or otherwise attempt to
+      derive the source code of the Software or its licensing mechanism;
+   d) modify the Software or create derivative works based on it;
+   e) remove or alter any proprietary notices on or in the Software;
+   f) transfer, share, or circumvent license activations.
+
+4. ACTIVATION
+   The Software requires activation with credentials and a license key
+   issued by Napo 3D, bound to specific hardware. Attempting to bypass,
+   tamper with, or defeat the activation mechanism is a material breach of
+   this Agreement.
+
+5. CONTENT
+   Content you create with the Software (projects, exported videos) is
+   yours. This Agreement covers the Software itself, not your work product.
+
+6. TERM AND TERMINATION
+   This Agreement is effective until terminated. It terminates automatically
+   if you breach any of its terms, or upon expiry of your license period.
+   Upon termination you must cease all use of the Software and uninstall it.
+
+7. NO WARRANTY
+   The Software is provided "AS IS", without warranty of any kind, express
+   or implied, including but not limited to warranties of merchantability,
+   fitness for a particular purpose, or non-infringement.
+
+8. LIMITATION OF LIABILITY
+   To the maximum extent permitted by law, Napo 3D shall not be liable for
+   any indirect, incidental, special, or consequential damages arising from
+   the use of, or inability to use, the Software.
+
+9. GOVERNING LAW
+   This Agreement is governed by the laws of the State of Israel, and any
+   dispute arising from it shall be subject to the exclusive jurisdiction of
+   the competent courts of Israel.
+
+For licensing inquiries: Napo 3D — napo3d@gmail.com
