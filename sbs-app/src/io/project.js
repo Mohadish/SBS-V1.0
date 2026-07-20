@@ -301,12 +301,20 @@ function _isGzipBytes(bytes) {
   return !!bytes && bytes.length > 2 && bytes[0] === 0x1f && bytes[1] === 0x8b;
 }
 
-async function _gzipString(str) {
+async function _gzipString(str, onProgress = null) {
   const cs = new CompressionStream('gzip');
   const w  = cs.writable.getWriter();
-  w.write(new TextEncoder().encode(str));
-  w.close();
-  return new Uint8Array(await new Response(cs.readable).arrayBuffer());
+  // Start draining BEFORE writing — with chunked awaited writes, the stream
+  // backpressures and would deadlock if nothing consumed the readable side.
+  const outP = new Response(cs.readable).arrayBuffer();
+  const data = new TextEncoder().encode(str);   // encode once (byte-safe to slice)
+  const CHUNK = 8 * 1024 * 1024;                // 8 MB per write → UI can breathe + report progress
+  for (let off = 0; off < data.length; off += CHUNK) {
+    await w.write(data.subarray(off, Math.min(data.length, off + CHUNK)));
+    onProgress?.(Math.min(data.length, off + CHUNK), data.length);
+  }
+  await w.close();
+  return new Uint8Array(await outP);
 }
 
 async function _gunzipToString(bytes) {
@@ -318,8 +326,8 @@ async function _gunzipToString(bytes) {
 }
 
 /** Project JSON string → bytes to write (gzipped if supported, else plain UTF-8). */
-async function _encodeProjectBytes(jsonString) {
-  return _hasCompression ? await _gzipString(jsonString) : new TextEncoder().encode(jsonString);
+async function _encodeProjectBytes(jsonString, onProgress = null) {
+  return _hasCompression ? await _gzipString(jsonString, onProgress) : new TextEncoder().encode(jsonString);
 }
 
 /** Bytes read from disk → project JSON string, auto-detecting gzip vs plain. */
@@ -355,6 +363,14 @@ export async function saveProject(options = {}) {
     electronPath  = null,
   } = options;
 
+  // Save-progress overlay (V0.3.1.83): a big project serializes to 1GB+ of JSON
+  // before compressing back down — seconds of "nothing visibly happening".
+  // Emit staged progress (main.js renders the overlay); double-rAF so the
+  // overlay actually PAINTS before the blocking serialize+stringify starts.
+  const _t0 = performance.now();
+  state.emit('save:progress', { stage: 'serialize' });
+  await new Promise(r => requestAnimationFrame(() => requestAnimationFrame(r)));
+
   steps.flushSync();       // ensure active step snapshot is current
   steps.upsertBaseStep();  // capture scene into hidden Step 0 staging area
 
@@ -363,7 +379,9 @@ export async function saveProject(options = {}) {
   // Electron path then crushes the cross-step redundancy (~30-40x total). The
   // file stays valid JSON, so older app builds without gzip still open it.
   const content  = JSON.stringify(project);
-  const bytes    = await _encodeProjectBytes(content);   // gzip in the renderer
+  state.emit('save:progress', { stage: 'compress', done: 0, total: content.length });
+  const bytes    = await _encodeProjectBytes(content,    // gzip in the renderer
+    (done, total) => state.emit('save:progress', { stage: 'compress', done, total }));
   const filename = suggestedName.endsWith('.sbsproj')
     ? suggestedName
     : `${suggestedName.replace(/\.(json|sbsproj)$/i, '')}.sbsproj`;
@@ -378,14 +396,16 @@ export async function saveProject(options = {}) {
       savePath = existingPath;          // silent overwrite — no dialog
     } else {
       savePath = electronPath || await window.sbsNative.saveProject(filename);
-      if (!savePath) return { saved: false, cancelled: true };
+      if (!savePath) { state.emit('save:progress', { stage: 'cancelled' }); return { saved: false, cancelled: true }; }
     }
     // Write the gzipped bytes via the always-present binary fs:writeFile
     // handler (no dependency on a freshly-restarted main process).
+    state.emit('save:progress', { stage: 'write', bytes: bytes.length });
     const writeResult = await window.sbsNative.writeFile(savePath, bytes, null);
-    if (!writeResult?.ok) throw new Error(writeResult?.error || 'Write failed');
+    if (!writeResult?.ok) { state.emit('save:progress', { stage: 'error', message: writeResult?.error || 'Write failed' }); throw new Error(writeResult?.error || 'Write failed'); }
     _setProjectMeta(savePath);
     state.markClean();
+    state.emit('save:progress', { stage: 'done', bytes: bytes.length, rawBytes: content.length, ms: performance.now() - _t0 });
     state.emit('project:saved', { path: savePath });
     return { saved: true, path: savePath };
   }
@@ -399,12 +419,15 @@ export async function saveProject(options = {}) {
       const saveHandle = (mode === 'auto' && storedHandle)
         ? storedHandle
         : await window.showSaveFilePicker({ suggestedName: filename, types: FILE_TYPES });
+      state.emit('save:progress', { stage: 'write', bytes: bytes.length });
       await _writeToHandle(saveHandle, bytes);
       state.setState({ fsaFileHandle: saveHandle });   // persist for next auto-save
       _setProjectMeta(saveHandle.name);
       state.markClean();
+      state.emit('save:progress', { stage: 'done', bytes: bytes.length, rawBytes: content.length, ms: performance.now() - _t0 });
       return { saved: true, handle: saveHandle };
     } catch (err) {
+      state.emit('save:progress', { stage: err.name === 'AbortError' ? 'cancelled' : 'error', message: err?.message });
       if (err.name === 'AbortError') return { saved: false, cancelled: true };
       throw err;
     }
@@ -413,6 +436,7 @@ export async function saveProject(options = {}) {
   // ── Path 3: <a download> fallback ────────────────────────────────────────
   _triggerDownload(filename, bytes, 'application/gzip');
   state.markClean();
+  state.emit('save:progress', { stage: 'done', bytes: bytes.length, rawBytes: content.length, ms: performance.now() - _t0 });
   return { saved: true, downloaded: true };
 }
 

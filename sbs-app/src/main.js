@@ -1084,6 +1084,37 @@ window.sbsGroupFix.dryRun = (scope = 'all') => {
   console.log('[groupFix] These are VISUAL centres (mm). Expect each part at a DIFFERENT, sensible spot (not all 0,0,0). "MISSING in 3" = your 3 hidden steps — fine. If the centres look right, say the word and I wire the wrap.');
   return poses;
 };
+// ── Save-progress overlay (V0.3.1.83) — big saves serialize 1GB+ before the
+// file shrinks back to ~100MB; without feedback the app just looks frozen.
+// io/project.js emits 'save:progress' stages; this renders them.
+const _saveOv = document.createElement('div');
+_saveOv.id = 'save-progress-overlay';
+_saveOv.style.cssText = 'position:fixed;top:14px;left:50%;transform:translateX(-50%);z-index:3000;display:none;'
+  + 'background:rgba(15,23,42,0.94);color:#e2e8f0;padding:10px 16px;border-radius:10px;'
+  + 'font:13px sans-serif;box-shadow:0 4px 16px rgba(0,0,0,.5);min-width:300px;pointer-events:none';
+_saveOv.innerHTML = '<div id="save-ov-text">Saving…</div>'
+  + '<div style="margin-top:6px;height:4px;background:rgba(255,255,255,0.15);border-radius:2px">'
+  + '<div id="save-ov-bar" style="height:100%;width:0%;background:#3b82f6;border-radius:2px;transition:width .15s"></div></div>';
+document.body.appendChild(_saveOv);
+let _saveOvHideT = null;
+state.on('save:progress', (p) => {
+  const txt = _saveOv.querySelector('#save-ov-text');
+  const bar = _saveOv.querySelector('#save-ov-bar');
+  const mb  = (n) => (n / 1048576) >= 100 ? Math.round(n / 1048576) + ' MB' : (n / 1048576).toFixed(1) + ' MB';
+  clearTimeout(_saveOvHideT);
+  _saveOv.style.display = 'block';
+  if (p.stage === 'serialize')      { txt.textContent = '💾 Saving — gathering project data…'; bar.style.width = '4%'; }
+  else if (p.stage === 'compress')  { const f = p.total ? p.done / p.total : 0;
+    txt.textContent = `💾 Saving — compressing ${Math.round(f * 100)}%  (${mb(p.done)} / ${mb(p.total)})`;
+    bar.style.width = (4 + f * 84) + '%'; }
+  else if (p.stage === 'write')     { txt.textContent = `💾 Saving — writing ${mb(p.bytes)} to disk…`; bar.style.width = '92%'; }
+  else if (p.stage === 'done')      { txt.textContent = `✓ Saved ${mb(p.bytes)} (${mb(p.rawBytes)} uncompressed) in ${(p.ms / 1000).toFixed(1)}s`;
+    bar.style.width = '100%'; _saveOvHideT = setTimeout(() => { _saveOv.style.display = 'none'; }, 2600); }
+  else if (p.stage === 'cancelled') { _saveOv.style.display = 'none'; }
+  else if (p.stage === 'error')     { txt.textContent = `⚠ Save failed: ${p.message || 'unknown error'}`;
+    bar.style.width = '100%'; _saveOvHideT = setTimeout(() => { _saveOv.style.display = 'none'; }, 6000); }
+});
+
 window.sbsFix = window.sbsFix || {};
 // Ghost text editor (stuck editable text box floating over every step):
 // force-commit + tear it down. window.sbsFix.textEditor()
@@ -1623,6 +1654,11 @@ function _beginMarqueeCursor(e) {
   _setMarqueeCursor(!!(e.ctrlKey || e.metaKey), !!e.shiftKey, !!e.altKey);
   // Update the badge when modifiers change mid-drag, even without mouse motion.
   _marqueeKeyHandler = (ev) => {
+    // GHOST-BADGE SELF-HEAL (V0.3.1.83): if the drag already ended but this
+    // handler is still alive (a release path skipped _endMarqueeCursor — e.g.
+    // released while holding Ctrl/Shift/Alt), the badge is a ghost that keeps
+    // reacting to modifiers. First modifier event after the drag → kill it.
+    if (!_isDragging) { _endMarqueeCursor(); return; }
     _setMarqueeCursor(!!(ev.ctrlKey || ev.metaKey), !!ev.shiftKey, !!ev.altKey);
     _positionMarqueeIcon(_marqueeLastX, _marqueeLastY);
   };
@@ -1640,6 +1676,14 @@ function _endMarqueeCursor() {
     _marqueeKeyHandler = null;
   }
 }
+// Ghost-badge safety nets (V0.3.1.83): odd drag endings (pointercancel, alt-tab
+// mid-drag) must never strand the badge — pair with the self-heal inside
+// _marqueeKeyHandler so no release path can leave it on screen.
+window.addEventListener('pointercancel', () => {
+  if (_isDragging) { _hideMarquee(); _isDragging = false; }
+  _endMarqueeCursor();
+});
+window.addEventListener('blur', () => _endMarqueeCursor());
 let _justDragged = false;   // skip click event that fires right after a drag
 let _dragOnCanvas = false;  // drag only counts when it started on the canvas
 let _gizmoConsumed = false; // gizmo took the pointerdown — suppress next click
