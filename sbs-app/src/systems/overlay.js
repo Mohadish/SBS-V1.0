@@ -575,7 +575,12 @@ function _enterTextEdit(node, ctxOverride) {
 
   const div = document.createElement('div');
   div.contentEditable = 'true';
-  div.spellcheck      = false;
+  // Spellcheck ON (V0.3.1.84): Chromium's native checker — on Windows it uses
+  // the OS spellchecker (offline, all installed Windows languages incl. Hebrew).
+  // Squiggles are editor chrome only — they never reach the rasterised textHtml
+  // (the raster is drawn from the HTML, not the live contenteditable). R-click
+  // suggestions come from the main process ('context-menu' → replaceMisspelling).
+  div.spellcheck      = true;
   div.innerHTML       = node.getAttr('textHtml') || '<div>Text</div>';
   div.dataset.sbsTextEditor = '1';
   // CSS MUST match _htmlToCanvas exactly — padding, font-family, font-size,

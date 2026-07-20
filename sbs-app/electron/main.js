@@ -251,6 +251,29 @@ function createWindow() {
 
   mainWindow.loadFile(path.join(APP_ROOT, 'src', 'index.html'));
 
+  // ── Spellcheck suggestions (V0.3.1.84) ────────────────────────────────────
+  // Chromium's spellchecker is ON (uses the Windows OS spellchecker → fully
+  // offline, all installed Windows languages incl. Hebrew). This adds the
+  // right-click menu on a misspelled word: native suggestions →
+  // replaceMisspelling, plus "Add to dictionary". Shown ONLY when a
+  // misspelled word is under the cursor, so the renderer's own custom
+  // context menus everywhere else are untouched.
+  mainWindow.webContents.on('context-menu', (event, params) => {
+    if (!params.misspelledWord) return;
+    const wc = mainWindow.webContents;
+    const items = (params.dictionarySuggestions || []).slice(0, 6).map(s => ({
+      label: s,
+      click: () => wc.replaceMisspelling(s),
+    }));
+    if (!items.length) items.push({ label: '(no suggestions)', enabled: false });
+    items.push({ type: 'separator' });
+    items.push({
+      label: `Add "${params.misspelledWord}" to dictionary`,
+      click: () => wc.session.addWordToSpellCheckerDictionary(params.misspelledWord),
+    });
+    Menu.buildFromTemplate(items).popup();
+  });
+
   mainWindow.once('ready-to-show', () => {
     mainWindow.show();
     if (IS_DEV) mainWindow.webContents.openDevTools();
