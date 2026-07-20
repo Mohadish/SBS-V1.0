@@ -837,47 +837,63 @@ function _enterTextEdit(node, ctxOverride) {
   });
 }
 
-/** Close the in-place editor, re-rasterise on the way out (unless discard). */
+/** Close the in-place editor, re-rasterise on the way out (unless discard).
+ *
+ *  HARDENED (V0.3.1.82) after the user's alt-tab repro: the old body removed
+ *  the listeners FIRST, then awaited the commit raster, and removed the DOM
+ *  LAST. A wedged raster (seen after leaving/re-entering the app window —
+ *  Chromium occlusion quirks) killed the teardown mid-flight: listeners gone
+ *  (click-outside dead forever) but the editor DOM never removed → the
+ *  immortal ghost editor. Now: (1) the session is CLAIMED immediately
+ *  (re-entrancy safe — a second call can't re-await the same hang), (2) the
+ *  commit is TIME-BOUNDED (fast path unchanged/flicker-free; a hung raster
+ *  can't hold the DOM hostage), (3) div.remove() lives in a finally that
+ *  ALWAYS runs. */
 async function _exitTextEdit(opts = {}) {
   if (!_activeTextEditor) return;
-  const { node, div, onDocMouseDown, onKeyDown, onPaste, prevOpacity, onSelectionChange, ctx } = _activeTextEditor;
-  document.removeEventListener('mousedown', onDocMouseDown, true);
-  if (onSelectionChange) document.removeEventListener('selectionchange', onSelectionChange);
-  div.removeEventListener('keydown', onKeyDown);
-  if (onPaste) div.removeEventListener('paste', onPaste);
-  unmountTextToolbar();
+  const sess = _activeTextEditor;
+  _activeTextEditor = null;                        // claim NOW — no re-entry on the same session
+  const { node, div, onDocMouseDown, onKeyDown, onPaste, prevOpacity, onSelectionChange, ctx } = sess;
+  try {
+    document.removeEventListener('mousedown', onDocMouseDown, true);
+    if (onSelectionChange) document.removeEventListener('selectionchange', onSelectionChange);
+    div.removeEventListener('keydown', onKeyDown);
+    if (onPaste) div.removeEventListener('paste', onPaste);
+    unmountTextToolbar();
 
-  const html = div.innerHTML;
+    const html = div.innerHTML;
 
-  if (!opts.discard && html) {
-    // Commit goes through the controller so each context decides how to
-    // persist + re-raster (overlay: set textHtml attr + _reflowTextBox;
-    // header: updateHeaderItem with new textHtml). Awaited so the new
-    // raster is in place BEFORE we remove the editor — kills the
-    // "nothing → raster" flicker on click-out.
-    try { await ctx.onCommit?.(html); }
-    catch (e) { console.warn('[text-editor] commit failed', e); }
+    if (!opts.discard && html) {
+      // Commit goes through the controller (overlay: textHtml + reflow;
+      // header: updateHeaderItem). Awaited so the new raster is in place
+      // BEFORE the editor is removed (no flicker) — but RACED against a
+      // timeout so a wedged raster can only delay the ghost-free teardown,
+      // never prevent it. The commit itself keeps running in the background
+      // if it eventually resolves.
+      try {
+        await Promise.race([
+          Promise.resolve(ctx.onCommit?.(html)),
+          new Promise(res => setTimeout(res, 2000)),
+        ]);
+      } catch (e) { console.warn('[text-editor] commit failed', e); }
+    }
+
+    // P7-A: close the edit session (discard → restoreLocal while the div is
+    // still mounted; commit → one main-undo entry for the whole edit).
+    try { editSession.end({ commit: !opts.discard }); }
+    catch (e) { console.warn('[text-editor] session end failed', e); }
+  } finally {
+    try { node.opacity(typeof prevOpacity === 'number' ? prevOpacity : 1); } catch {}
+    div.remove();                                  // ALWAYS — the ghost dies here
+    try { ctx.configureTransformer?.(); } catch {}
+    try {
+      const nodeLayer = node.getLayer();
+      const trLayer   = ctx.transformer?.getLayer?.();
+      nodeLayer?.batchDraw();
+      if (trLayer && trLayer !== nodeLayer) trLayer.batchDraw();
+    } catch {}
+    try { ctx.onSave?.(); } catch {}
   }
-
-  // P7-A: close the edit session.
-  //   discard → restoreLocal(seed) reverts node attrs (editor div is
-  //             still mounted at this point, so the snapshot is valid).
-  //   commit  → push ONE main-undo entry capturing the seed → final diff,
-  //             so the user can Ctrl-Z this whole edit later (outside
-  //             the editor) without seeing every B/I/U press individually.
-  editSession.end({ commit: !opts.discard });
-
-  // Now swap visibility back. The new raster is in place, so removing
-  // the editor reveals it instantly without an empty frame.
-  node.opacity(typeof prevOpacity === 'number' ? prevOpacity : 1);
-  div.remove();
-  _activeTextEditor = null;
-  ctx.configureTransformer?.();
-  const nodeLayer = node.getLayer();
-  const trLayer   = ctx.transformer?.getLayer?.();
-  nodeLayer?.batchDraw();
-  if (trLayer && trLayer !== nodeLayer) trLayer.batchDraw();
-  ctx.onSave?.();
 }
 
 /**
