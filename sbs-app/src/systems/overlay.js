@@ -317,6 +317,13 @@ export function isEditing() { return _editing; }
 export function getStage() { return _stage; }
 
 export function setEditingMode(on) {
+  // GHOST-EDITOR FIX (V0.3.1.81): commit + tear down any live in-place text
+  // editor on EVERY mode flip. The click-outside detector whitelists the
+  // toolbar, so clicking "✏ Edit overlay" never committed the editor —
+  // setEditingMode(false) then left the contenteditable DOM orphaned above the
+  // canvas: permanently visible across ALL steps, editable, unselectable,
+  // undeletable (it's not a Konva node). Commit (not discard) so no text is lost.
+  if (_activeTextEditor) _exitTextEdit().catch(() => {});
   _editing = !!on;
   if (_container) _container.classList.toggle('editing', _editing);
   if (!_editing) _setSelection(null);
@@ -546,6 +553,12 @@ function _overlayEditorCtx(node) {
  */
 export function enterTextEditor(node, ctx) {
   _enterTextEdit(node, ctx);
+}
+
+/** Force-close any live in-place text editor (rescue for a ghost editor —
+ *  window.sbsFix.textEditor). Commits by default; { discard:true } to drop. */
+export function closeTextEditor(opts = {}) {
+  return _exitTextEdit(opts);
 }
 
 /** Open the in-place editor on a text-box node. */
@@ -3289,6 +3302,12 @@ async function _loadFromActiveStep() {
   const myToken = ++_loadToken;
   const steps = state.get('steps') || [];
   const step  = steps.find(s => s.id === activeId);
+
+  // GHOST-EDITOR FIX (V0.3.1.81): a step change that arrives WITHOUT a mouse
+  // click (keyboard nav, programmatic activate) never triggers the editor's
+  // click-outside commit — destroyChildren below would then orphan the live
+  // contenteditable DOM above the canvas forever. Commit + tear it down first.
+  if (_activeTextEditor) { try { await _exitTextEdit(); } catch { /* teardown is best-effort */ } }
 
   // Clear current content + selection.
   _transformer.nodes([]);

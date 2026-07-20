@@ -1085,6 +1085,13 @@ window.sbsGroupFix.dryRun = (scope = 'all') => {
   return poses;
 };
 window.sbsFix = window.sbsFix || {};
+// Ghost text editor (stuck editable text box floating over every step):
+// force-commit + tear it down. window.sbsFix.textEditor()
+window.sbsFix.textEditor = () => import('./systems/overlay.js').then(m => {
+  const p = m.closeTextEditor?.();
+  console.log('[fix] text editor force-closed (committed). If a ghost remains, run window.sbsFix.textEditor() again after clicking the viewport.');
+  return p;
+});
 // Manually re-run the orphan-shape self-heal (also runs automatically on load).
 window.sbsFix.pruneShapes = () => {
   const n = actions.pruneOrphanShapeInstances?.() ?? 0;
