@@ -670,6 +670,22 @@ window.sbsTocSync = async () => {
   return window.sbsToc();
 };
 
+// RENDER-CACHE FILL (V0.3.2.3) — render every MISSING segment into
+// <project>/_rendercache/ (header-less, silent, narration-timed; see
+// systems/render-cache.js). The viewport fast-forwards while it works —
+// same takeover as an export. Re-run any time: cached segments skip.
+//   await window.sbsCacheRender()
+window.sbsCacheRender = async () => {
+  const rc = await import('./systems/render-cache.js');
+  const t0 = performance.now();
+  const r = await rc.renderMissingSegments({
+    onProgress: (p) => console.log(`[cache] segment ${p.current}/${p.total} — ${p.stepName}`),
+  });
+  console.log(`%c[cache] done in ${((performance.now() - t0) / 60000).toFixed(1)} min — rendered ${r.rendered}, already cached ${r.reused}, failed ${r.failed} (of ${r.total}) → ${r.dir}`,
+    'font-weight:bold;color:#22c55e');
+  return r;
+};
+
 // RENDER-CACHE PLAN (V0.3.2.2) — dry-run the segment planner: how the timeline
 // divides into cacheable segments, each segment's content-addressed key, and
 // which are already cached in <project>/_rendercache/. Prints the would-be

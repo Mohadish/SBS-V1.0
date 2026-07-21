@@ -405,6 +405,9 @@ async function _exportMp4({ fps = DEFAULT_FPS, bitrate = DEFAULT_BITRATE,
                             _stepsRange  = null,    // [fromIdx, toIdx] into the playable list → render just that span
                             _zeroLeadHold = false,  // lead step emits 0 frames → output starts exactly at the transition into step 2 of the span
                             _noAutoSync   = false,  // segment/test renders skip the TOC timing pass
+                            // V0.3.2.3 — cached-segment mode:
+                            _noHeader     = false,  // exclude the ENTIRE header layer (composited at assembly instead)
+                            _noAudioTrack = false,  // narration-TIMED holds but NO audio track (audio mixed globally at assembly)
                             onProgress, signal } = {}) {
   const _wallStartMs = performance.now();   // for the end-of-export summary
   const canvas = sceneCore.renderer?.domElement;
@@ -574,10 +577,16 @@ async function _exportMp4({ fps = DEFAULT_FPS, bitrate = DEFAULT_BITRATE,
       // The last step in a group does the heavy lifting of waiting for
       // the group's audio tail so nothing leaks into the next group /
       // top-level step.
-      console.log('[export] decoding audio segments…');
-      audioSegments = await _decodeNarrationSegments(stepsToPlay, AUDIO_RATE);
-      audioTrackEnabled = audioSegments.hasAudio;
-      console.log(`[export] audio decoded: ${audioTrackEnabled ? `${audioSegments.segments.length} clip(s)` : 'no clips'}`);
+      if (_noAudioTrack) {
+        // Segment mode: holds above are narration-TIMED (the video makes room
+        // for the voice), but the audio itself is mixed globally at assembly.
+        audioTrackEnabled = false;
+      } else {
+        console.log('[export] decoding audio segments…');
+        audioSegments = await _decodeNarrationSegments(stepsToPlay, AUDIO_RATE);
+        audioTrackEnabled = audioSegments.hasAudio;
+        console.log(`[export] audio decoded: ${audioTrackEnabled ? `${audioSegments.segments.length} clip(s)` : 'no clips'}`);
+      }
     } catch (err) {
       console.warn('[export] audio bridge failed — exporting video only:', err);
       audioTrackEnabled = false;
@@ -721,7 +730,7 @@ async function _exportMp4({ fps = DEFAULT_FPS, bitrate = DEFAULT_BITRATE,
     //    headers always sit on top — dynamic kinds (stepName /
     //    stepNumber / chapter*) resolve their text against whichever
     //    step is active at this exact tick, automatically.
-    const hd = rasterizeHeaderLayer({ width, height });
+    const hd = _noHeader ? null : rasterizeHeaderLayer({ width, height });
     if (hd) compositeCtx.drawImage(hd, 0, 0, width, height);
     // 4. Encode.
     const frame = new VideoFrame(composite, { timestamp: nextFrameUs });
