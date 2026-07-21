@@ -4227,6 +4227,21 @@ function _renderExportTab() {
         </label>
 
         <label style="display:flex;align-items:flex-start;gap:6px;margin-top:8px;cursor:pointer;">
+          <input type="checkbox" id="exp-use-cache" ${exp.useRenderCache !== false ? 'checked' : ''} style="margin-top:3px;" />
+          <span class="small muted">
+            ⚡ Incremental render (segment cache)
+            <div class="small muted" style="font-size:11px;opacity:0.75;margin-top:2px;">
+              Renders only steps that changed since the last export, reuses the rest from <b>_rendercache</b>, then stitches + composites headers. Output lands next to the project file. Uncheck for the classic full render.
+            </div>
+          </span>
+        </label>
+
+        <label style="display:flex;align-items:center;gap:6px;margin-top:4px;margin-left:18px;cursor:pointer;">
+          <input type="checkbox" id="exp-force-full" />
+          <span class="small muted" style="font-size:11px;">Force re-render of every segment this once (ignore cache)</span>
+        </label>
+
+        <label style="display:flex;align-items:flex-start;gap:6px;margin-top:8px;cursor:pointer;">
           <input type="checkbox" id="exp-bboxes" ${exp.exportBoundaryBoxes ? 'checked' : ''} style="margin-top:3px;" />
           <span class="small muted">
             Export boundary boxes
@@ -4330,6 +4345,8 @@ function _renderExportTab() {
     state.setExportOption('showSafeFrame', !!e.target.checked));
   el.querySelector('#exp-offline-render')?.addEventListener('change', e =>
     state.setExportOption('offlineRender', !!e.target.checked));
+  el.querySelector('#exp-use-cache')?.addEventListener('change', e =>
+    state.setExportOption('useRenderCache', !!e.target.checked));
   el.querySelector('#exp-bboxes')?.addEventListener('change', e =>
     state.setExportOption('exportBoundaryBoxes', !!e.target.checked));
   el.querySelector('#exp-fps').addEventListener('change', e =>
@@ -4612,6 +4629,27 @@ async function _onExportTabStart() {
   try {
     set('Preparing…');
     await steps.flushSync();
+
+    // ⚡ Incremental path (V0.3.2.14): render only changed segments, stitch the
+    // rest from the cache, composite headers + bar, mux audio. mp4-only; falls
+    // through to the classic full render when unchecked / unavailable.
+    const _useCache = exp.useRenderCache !== false
+      && (exp.outputFormat || 'mp4') === 'mp4'
+      && !!window.sbsNative?.ffmpeg;
+    if (_useCache) {
+      const rc = await import('../systems/render-cache.js');
+      const force = !!document.getElementById('exp-force-full')?.checked;
+      const r = await rc.assembleFromCache({
+        signal: _exportTabCtrl.signal,
+        force,
+        onProgress: (p) => set(p.total ? `Segment ${p.current}/${p.total}: ${p.stepName}` : (p.stepName || 'Working…')),
+      });
+      const fc = document.getElementById('exp-force-full'); if (fc) fc.checked = false;   // one-shot
+      const mb = r.sizeMB != null ? ` (${r.sizeMB} MB)` : '';
+      set(`Done — ${(r.totalMs / 60000).toFixed(1)} min video${mb} → ${r.path}  (reused ${r.reused}, rendered ${r.rendered})`);
+      setStatus(`Incremental export done: reused ${r.reused}, rendered ${r.rendered} → ${r.path}`, 'success', 8000);
+      return;
+    }
 
     // exportTimelineVideo handles pre-synthesis internally now — every export
     // entry point (timeline button, Export tab) gets the missing-clip pass.

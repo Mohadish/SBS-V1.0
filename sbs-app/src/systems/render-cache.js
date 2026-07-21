@@ -164,9 +164,10 @@ function _wavFromFloat32(pcm, rate) {
  * NOT YET: header layer / progress bar composite (slice 3c) — the output is
  * header-less for now. Returns { path, totalMs, segments, reused, rendered }.
  */
-export async function assembleFromCache({ onProgress, signal, output } = {}) {
+export async function assembleFromCache({ onProgress, signal, output, force = false } = {}) {
   const ve = await import('./video-export.js');
   const timings = [];
+  let renderedCount = 0;
   let _t = performance.now();
   const _mark = (label) => { timings.push([label, performance.now() - _t]); _t = performance.now(); };
 
@@ -195,7 +196,9 @@ export async function assembleFromCache({ onProgress, signal, output } = {}) {
     return { markersByStepId, files, totalMs: cum };
   };
 
-  let plan = _checkFill(await renderMissingSegments({ onProgress, signal }));
+  const fill1 = await renderMissingSegments({ onProgress, signal, force });
+  let plan = _checkFill(fill1);
+  renderedCount += fill1.rendered;
   _mark('render segments');
 
   let TL = await readTimeline(plan);
@@ -224,7 +227,9 @@ export async function assembleFromCache({ onProgress, signal, output } = {}) {
       const touched = await ov.refreshAllTocBoxesData?.({ chapters: chaptersExact });
       if (touched) {
         onProgress?.({ stepName: `TOC stamped with exact times (${touched} step(s)) — re-rendering host segment(s)…` });
-        plan = _checkFill(await renderMissingSegments({ onProgress, signal }));
+        const fill2 = await renderMissingSegments({ onProgress, signal });
+        plan = _checkFill(fill2);
+        renderedCount += fill2.rendered;
         TL = await readTimeline(plan);
       }
     } catch (e) { console.warn('[assemble] exact-TOC stamp failed:', e?.message); }
@@ -378,14 +383,36 @@ export async function assembleFromCache({ onProgress, signal, output } = {}) {
   console.log('%c[assemble] stage timing:', 'font-weight:bold;color:#38bdf8');
   for (const [label, ms] of timings) console.log(`   ${label.padEnd(26)} ${(ms / 1000).toFixed(1)}s`);
   console.log(`   ${'TOTAL'.padEnd(26)} ${totalS.toFixed(1)}s  (${(totalS / 60).toFixed(1)} min)`);
-  return { path: outPath, totalMs, segments: plan.spans.length, reused: plan.hits, rendered: plan.spans.length - plan.hits,
-           headers: !!(hdrListPath || boxFilters.length), timings };
+  // Step markers in playable order — the .sbsproc manifest consumes these.
+  const stepMarkers = plan.spans.flatMap(span =>
+    span.steps.map(s => ({ stepId: s.id, timeInMs: Math.round(markersByStepId.get(s.id) ?? 0) })));
+  return { path: outPath, totalMs, segments: plan.spans.length,
+           reused: plan.spans.length - renderedCount, rendered: renderedCount,
+           headers: !!(hdrListPath || boxFilters.length), timings, stepMarkers };
 }
 
-export async function renderMissingSegments({ onProgress, signal } = {}) {
+/**
+ * Incremental .sbsproc export (V0.3.2.14): assemble the mp4 from the cache,
+ * then pack it with a manifest built from the assembly's OWN exact markers —
+ * the same numbers the audio and TOC use, so the viewer's step windows match
+ * the video by construction.
+ */
+export async function assembleToSbsProc(opts = {}) {
+  const ve = await import('./video-export.js');
+  const r = await assembleFromCache(opts);
+  const rf = await window.sbsNative.readFile(r.path, 'buffer');
+  if (!rf?.ok) throw new Error('assembled mp4 read failed: ' + rf?.error);
+  const bytes = rf.data instanceof Uint8Array ? rf.data : new Uint8Array(rf.data);
+  const manifest = ve.buildSbsProcManifest({ stepMarkers: r.stepMarkers, totalDurationMs: r.totalMs });
+  const blob = ve.packSbsProcBlob(manifest, bytes);
+  return { ...r, blob, manifest, extension: 'sbsproc', totalDurationMs: r.totalMs };
+}
+
+export async function renderMissingSegments({ onProgress, signal, force = false } = {}) {
   const { exportTimelineVideo } = await import('./video-export.js');
   const plan = await planWithCacheStatus();
   if (!plan.dir) throw new Error('Save the project first — the cache lives next to the .sbsproj.');
+  if (force) { for (const s of plan.spans) s.cached = false; plan.hits = 0; }   // human override: re-render everything
   const misses = plan.spans.filter(s => !s.cached);
   let done = 0, failed = 0;
   for (const span of misses) {

@@ -1291,3 +1291,8 @@ function _withTimeout(promise, ms, label) {
 // phase offset) and marker-based mixing into one master track.
 export { _decodeNarrationSegments as decodeNarrationSegments,
          _mixPcmFromMarkers      as mixPcmFromMarkers };
+
+// V0.3.2.14 — the incremental (.sbsproc) assembly reuses the manifest builder
+// and the binary packer (it supplies its own stepMarkers + totalDurationMs).
+export { _buildSbsProcManifest as buildSbsProcManifest,
+         _packSbsProcBlob     as packSbsProcBlob };

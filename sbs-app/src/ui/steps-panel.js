@@ -2364,6 +2364,22 @@ async function _onExportSbsProc() {
 
   try {
     await steps.flushSync();
+
+    // ⚡ Incremental .sbsproc (V0.3.2.14) — same cache-assembled video, packed
+    // with exact assembly markers. Falls through to the classic path when the
+    // Export tab's incremental checkbox is off / ffmpeg unavailable.
+    if (exp.useRenderCache !== false && window.sbsNative?.ffmpeg) {
+      const rc = await import('../systems/render-cache.js');
+      const r = await rc.assembleToSbsProc({
+        signal: _exportingCtrl.signal,
+        onProgress: (p) => setStatus(p.total ? `Exporting ${p.current}/${p.total}: ${p.stepName}…` : `${p.stepName || 'Working…'}`, 'info', 0),
+      });
+      downloadBlob(r.blob, `${projectName}-${stamp}.sbsproc`);
+      const stepCount = r.manifest?.steps?.length ?? 0;
+      setStatus(`Exported ${(r.blob.size / 1e6).toFixed(1)} MB .sbsproc (incremental: reused ${r.reused}, rendered ${r.rendered}) · ${stepCount} viewer-step(s) · ${(r.totalMs / 1000).toFixed(1)}s.`);
+      return;
+    }
+
     const { blob, extension, manifest, totalDurationMs } = await exportTimelineSbsProc({
       fps:        Number(exp.fps) || 30,
       stepHoldMs: Number(exp.stepHoldMs) || 400,
