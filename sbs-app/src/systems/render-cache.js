@@ -165,6 +165,29 @@ function _wavFromFloat32(pcm, rate) {
  * header-less for now. Returns { path, totalMs, segments, reused, rendered }.
  */
 export async function assembleFromCache({ onProgress, signal, output } = {}) {
+  const ve = await import('./video-export.js');
+
+  // TOC + timing sync (V0.3.2.10) — the old export path did this and the new
+  // path skipped it, so TOC boxes drifted out of sync after edits. Order
+  // matters: sync timings → refresh TOC text → THEN plan (a refreshed TOC
+  // changes its host segment's overlay → re-keys → that segment re-renders
+  // with correct numbers; overlay text never affects durations, so markers
+  // stay stable — no circularity).
+  {
+    const playable0 = (state.get('steps') || []).filter(s => steps._isPlayable(s));
+    const stale = playable0.filter(s => !Number.isFinite(s.renderedDurationMs)).length;
+    if (stale > 0) {
+      onProgress?.({ stepName: `timing sync — ${stale} step(s) unmeasured…` });
+      await ve.measureTimelineDurations({ onProgress, signal });
+    }
+    try {
+      const ov = await import('./overlay.js');
+      await ov.waitForOverlayStable?.();
+      const n = await ov.refreshAllTocBoxesData?.();
+      if (n) onProgress?.({ stepName: `TOC refreshed in ${n} step(s)` });
+    } catch (e) { console.warn('[assemble] TOC refresh failed:', e?.message); }
+  }
+
   const fill = await renderMissingSegments({ onProgress, signal });
   if (fill.failed) throw new Error(`${fill.failed} segment(s) failed to render — aborting assembly`);
   // Use the FILL's plan — never re-plan mid-run (rendering mutates step data →
@@ -212,7 +235,8 @@ export async function assembleFromCache({ onProgress, signal, output } = {}) {
   const allHdrItems = (state.get('headerItems') || []).filter(i => i.visible !== false);
   const headersOn = !state.get('headersHidden') && allHdrItems.length > 0;
   let hdrListPath = null;
-  const boxFilters = [];
+  const boxFilters = [];    // static track boxes (drawbox is fine for constants)
+  const fillChains = [];    // animated fills: color source → time-cropped → overlaid
   if (headersOn) {
     const staticItems = allHdrItems.filter(i => i.kind !== 'chapterProgress');
     if (staticItems.length) {
@@ -247,23 +271,28 @@ export async function assembleFromCache({ onProgress, signal, output } = {}) {
         if (last && last.ch === ch) last.end = span._startMs + span._durMs;
         else wins.push({ ch, start: span._startMs, end: span._startMs + span._durMs });
       }
+      // NOTE (V0.3.2.10): drawbox CANNOT animate — in its expressions `t` is
+      // the THICKNESS, not time (the stuck-full-bar bug). The fill is instead a
+      // solid color source CROPPED to a growing width (crop DOES evaluate `t`
+      // as timestamp per frame) and overlaid during its chapter's window.
       for (const item of progItems) {
         const x = Math.round(item.x), y = Math.round(item.y), w = Math.round(item.w), h = Math.round(item.h);
         boxFilters.push(`drawbox=x=${x}:y=${y}:w=${w}:h=${h}:color=${_ffColor(item.trackColor, 'white@0.4')}:t=fill`);
         for (const win of wins) {
           if (!win.ch) continue;                       // outside chapters the bar stays empty
-          const cs = (win.start / 1000).toFixed(3);
-          const ce = (win.end   / 1000).toFixed(3);
-          const cd = Math.max(0.001, (win.end - win.start) / 1000).toFixed(3);
-          boxFilters.push(`drawbox=x=${x}:y=${y}:w='max(2,trunc(${w}*min(1,(t-${cs})/${cd})))':h=${h}`
-            + `:color=${_ffColor(item.fillColor, '0x3b82f6')}:t=fill:enable='between(t,${cs},${ce})'`);
+          fillChains.push({
+            color: _ffColor(item.fillColor, '0x3b82f6'),
+            w, h, x, y,
+            cs: (win.start / 1000).toFixed(3),
+            ce: (win.end   / 1000).toFixed(3),
+            cd: Math.max(0.001, (win.end - win.start) / 1000).toFixed(3),
+          });
         }
       }
     }
   }
 
   // Global audio master at the assembled markers.
-  const ve = await import('./video-export.js');
   const playable = (state.get('steps') || []).filter(s => steps._isPlayable(s));
   onProgress?.({ stepName: 'decoding narration clips…' });
   const audio = await ve.decodeNarrationSegments(playable, 48000);
@@ -287,6 +316,12 @@ export async function assembleFromCache({ onProgress, signal, output } = {}) {
   let vLabel = '[0:v]';
   if (hdrListPath)      { chains.push(`[0:v][1:v]overlay=0:0:eof_action=pass[vh]`); vLabel = '[vh]'; }
   if (boxFilters.length) { chains.push(`${vLabel}${boxFilters.join(',')}[vb]`); vLabel = '[vb]'; }
+  fillChains.forEach((f, i) => {
+    chains.push(`color=c=${f.color}:s=${f.w}x${f.h}:r=25:d=${(totalMs / 1000 + 1).toFixed(3)}[pf${i}]`);
+    chains.push(`[pf${i}]crop=w='max(2,min(iw,iw*((t-${f.cs})/${f.cd})))':h=ih:x=0:y=0[pfc${i}]`);
+    chains.push(`${vLabel}[pfc${i}]overlay=x=${f.x}:y=${f.y}:eof_action=pass:enable='between(t,${f.cs},${f.ce})'[vf${i}]`);
+    vLabel = `[vf${i}]`;
+  });
   if (chains.length) {
     args.push('-filter_complex', chains.join(';'), '-map', vLabel);
     if (aPath) args.push('-map', `${aInIdx}:a:0`);
