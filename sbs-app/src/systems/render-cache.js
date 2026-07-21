@@ -67,6 +67,26 @@ export async function computeSegmentPlan() {
     spans.push({ from: i, to: i, groupKey: gk, steps: [playable[i]] });
   }
 
+  // DEFINITION-level state (V0.3.2.7): things edited ONCE that change pixels
+  // across MANY steps — primitive parameters (live tree = the truth; the frozen
+  // copies in step snapshots go stale, which is exactly why they can't key
+  // this), flat-shape templates, color presets, cable styles. Any definition
+  // edit re-keys EVERY segment — the user's own rule: a project-wide change
+  // means render everything. Without this, a primitive param fix would silently
+  // reuse stale cached pixels.
+  const _prims = [];
+  (function walk(n) {
+    if (!n) return;
+    if (n.type === 'primitive') _prims.push({ id: n.id, k: n.primKind, p: n.primParams, q: n.primQuality, b: n.baseAtOrigin });
+    (n.children || []).forEach(walk);
+  })(state.get('treeData'));
+  const defsKey = {
+    prims:  _prims,
+    shapes: state.get('shapeTemplates') || [],
+    colors: state.get('colorPresets')   || [],
+    cables: (state.get('cables') || []).map(c => ({ id: c.id, style: c.style })),
+  };
+
   // Pixel-affecting global settings. NO header config, NO positions, NO
   // sibling durations — segments are header-less (assembly composites the
   // header layer), so keys stay stable across moves/reorders/timing tweaks.
@@ -86,6 +106,7 @@ export async function computeSegmentPlan() {
       prev: prev ? _stepKeyView(prev) : null,
       steps: span.steps.map(_stepKeyView),
       settings: settingsKey,
+      defs: defsKey,
     });
     span.key   = await _sha1hex(payload);
     span.name  = span.steps[0].name || '(step)';
