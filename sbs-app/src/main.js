@@ -670,6 +670,29 @@ window.sbsTocSync = async () => {
   return window.sbsToc();
 };
 
+// RENDER-CACHE PLAN (V0.3.2.2) — dry-run the segment planner: how the timeline
+// divides into cacheable segments, each segment's content-addressed key, and
+// which are already cached in <project>/_rendercache/. Prints the would-be
+// render savings. No rendering, no writes.
+//   await window.sbsRenderPlan()
+window.sbsRenderPlan = async () => {
+  const rc = await import('./systems/render-cache.js');
+  const p = await rc.planWithCacheStatus();
+  const fmt = (ms) => { const s = Math.round(ms / 1000); return `${Math.floor(s / 60)}:${String(s % 60).padStart(2, '0')}`; };
+  console.log(`%c[render-plan] ${p.playableCount} steps → ${p.spans.length} segments · cached ${p.hits} · to render ${p.misses}`, 'font-weight:bold;color:#22c55e');
+  let cachedMs = 0, dirtyMs = 0;
+  for (const s of p.spans) {
+    const ms = s.steps.reduce((t, st) => t + (st.renderedDurationMs || 0), 0);
+    if (s.cached) cachedMs += ms; else dirtyMs += ms;
+  }
+  console.log(`[render-plan] video time: ${fmt(cachedMs)} reusable · ${fmt(dirtyMs)} needs rendering${p.dir ? '' : '  (save the project to enable the cache dir)'}`);
+  for (const s of p.spans.slice(0, 8)) {
+    console.log(`  [${String(s.from).padStart(3)}${s.count > 1 ? '-' + s.to : '   '}] ${s.cached ? '✓ cached' : '✗ render'}  ${s.key}  ${s.name.slice(0, 32)}${s.count > 1 ? `  (group ×${s.count})` : ''}`);
+  }
+  if (p.spans.length > 8) console.log(`  … ${p.spans.length - 8} more (returned in the result object)`);
+  return p;
+};
+
 // PROOF-OF-SEAM (V0.3.2.1) — the step-render-cache's foundational experiment.
 // Renders step K and step K+1 as SEPARATE video segments plus one contiguous
 // reference, into <project folder>/_seamtest/. Offline we ffmpeg-concat
