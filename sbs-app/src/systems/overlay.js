@@ -413,11 +413,14 @@ function _extractTocStyle(html) {
 
 /** Build the Table-of-Contents list HTML (chapter name + timecode per line) from
  *  the current timeline, in the given (or default) style. Title = body×1.3 bold. */
-async function _generateTocHtml(style = null) {
+async function _generateTocHtml(style = null, chaptersOverride = null) {
   const st = style || { size: 34, color: '#ffffff', family: 'Arial', align: 'left' };
   const titlePx = Math.round(st.size * 1.3);
-  const { computeChapterTimecodes } = await import('./narration-timeline.js');
-  const { chapters } = computeChapterTimecodes();
+  let chapters = chaptersOverride;
+  if (!chapters) {
+    const { computeChapterTimecodes } = await import('./narration-timeline.js');
+    chapters = computeChapterTimecodes().chapters;
+  }
   const fmt = (ms) => { const s = Math.round(ms / 1000); return `${Math.floor(s / 60)}:${String(s % 60).padStart(2, '0')}`; };
   const esc = (s) => String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
   const rows = chapters.filter(c => c.chapterId).map(c =>
@@ -475,7 +478,7 @@ export async function refreshTocBoxes() {
  *  on other steps live as baked overlay JSON, which the export loads directly —
  *  so a pre-render auto-sync must rewrite them all. The raster regenerates from
  *  textHtml at load time, so updating the JSON is sufficient. Returns steps touched. */
-export async function refreshAllTocBoxesData() {
+export async function refreshAllTocBoxesData(opts = {}) {
   const allSteps = state.get('steps') || [];
   let touched = 0;
   for (const st of allSteps) {
@@ -484,9 +487,11 @@ export async function refreshAllTocBoxesData() {
     const tocNodes = [];
     (function walk(o) { if (!o || typeof o !== 'object') return; if (o.attrs?.isToc && o.attrs.textHtml !== undefined) tocNodes.push(o); (o.children || []).forEach(walk); })(spec);
     if (!tocNodes.length) continue;
-    for (const tn of tocNodes) tn.attrs.textHtml = await _generateTocHtml(_extractTocStyle(tn.attrs.textHtml));
-    st.overlay = JSON.stringify(spec);
-    touched++;
+    // opts.chapters: EXACT times injected by the assembly (read off the real
+    // stitched timeline) — bypasses the estimate entirely.
+    for (const tn of tocNodes) tn.attrs.textHtml = await _generateTocHtml(_extractTocStyle(tn.attrs.textHtml), opts.chapters || null);
+    const json = JSON.stringify(spec);
+    if (json !== st.overlay) { st.overlay = json; touched++; }
   }
   if (touched) { state.markDirty(); _scheduleLoad(); }   // reload active step so the live view matches
   return touched;

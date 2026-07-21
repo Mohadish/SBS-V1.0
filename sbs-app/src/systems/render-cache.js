@@ -166,53 +166,72 @@ function _wavFromFloat32(pcm, rate) {
  */
 export async function assembleFromCache({ onProgress, signal, output } = {}) {
   const ve = await import('./video-export.js');
+  const timings = [];
+  let _t = performance.now();
+  const _mark = (label) => { timings.push([label, performance.now() - _t]); _t = performance.now(); };
 
-  // TOC + timing sync (V0.3.2.10) — the old export path did this and the new
-  // path skipped it, so TOC boxes drifted out of sync after edits. Order
-  // matters: sync timings → refresh TOC text → THEN plan (a refreshed TOC
-  // changes its host segment's overlay → re-keys → that segment re-renders
-  // with correct numbers; overlay text never affects durations, so markers
-  // stay stable — no circularity).
+  const _checkFill = (fill) => {
+    if (fill.failed) throw new Error(`${fill.failed} segment(s) failed to render — aborting assembly`);
+    const missing = fill.plan.spans.filter(s => !s.cached).length;
+    if (missing) throw new Error(`${missing} segment(s) unaccounted for after fill`);
+    return fill.plan;   // ONE plan per run — never re-plan mid-flight
+  };
+
+  // Sidecars → global markers + each span's assembled-time window.
+  const readTimeline = async (plan) => {
+    let cum = 0;
+    const markersByStepId = new Map();
+    const files = [];
+    for (const span of plan.spans) {
+      const sj = await window.sbsNative.readFile(`${plan.dir}/seg-${span.key}.json`, 'utf8');
+      if (!sj?.ok) throw new Error(`sidecar missing for "${span.name}" — clear _rendercache and refill`);
+      const sc = JSON.parse(sj.data);
+      for (const st of (sc.steps || [])) markersByStepId.set(st.stepId, cum + st.ms);
+      files.push(`${plan.dir}/seg-${span.key}.mp4`);
+      span._startMs = cum;
+      span._durMs   = sc.durationMs || 0;
+      cum += span._durMs;
+    }
+    return { markersByStepId, files, totalMs: cum };
+  };
+
+  let plan = _checkFill(await renderMissingSegments({ onProgress, signal }));
+  _mark('render segments');
+
+  let TL = await readTimeline(plan);
+
+  // EXACT TOC (V0.3.2.13): chapter times read off THE ASSEMBLED TIMELINE
+  // ITSELF — not the measured-duration estimate, which accumulates ~1 frame of
+  // rounding per segment and drifted seconds by the late chapters. Stamp the
+  // true times into the TOC boxes; if any box actually changed, only its host
+  // segment re-renders (overlay text never affects durations → the timeline is
+  // stable → no circularity).
   {
-    const playable0 = (state.get('steps') || []).filter(s => steps._isPlayable(s));
-    const stale = playable0.filter(s => !Number.isFinite(s.renderedDurationMs)).length;
-    if (stale > 0) {
-      onProgress?.({ stepName: `timing sync — ${stale} step(s) unmeasured…` });
-      await ve.measureTimelineDurations({ onProgress, signal });
+    const chapItems = state.get('chapters')?.items || state.get('chapters') || [];
+    const chapName  = new Map(chapItems.map(c => [c.id, c.name]));
+    const chaptersExact = [];
+    let lastCh;
+    for (const span of plan.spans) {
+      const ch = span.steps[0].chapterId ?? null;
+      if (ch !== lastCh) {
+        chaptersExact.push({ chapterId: ch, name: ch ? (chapName.get(ch) || '(chapter)') : '(no chapter)', startMs: Math.round(span._startMs) });
+        lastCh = ch;
+      }
     }
     try {
       const ov = await import('./overlay.js');
       await ov.waitForOverlayStable?.();
-      const n = await ov.refreshAllTocBoxesData?.();
-      if (n) onProgress?.({ stepName: `TOC refreshed in ${n} step(s)` });
-    } catch (e) { console.warn('[assemble] TOC refresh failed:', e?.message); }
+      const touched = await ov.refreshAllTocBoxesData?.({ chapters: chaptersExact });
+      if (touched) {
+        onProgress?.({ stepName: `TOC stamped with exact times (${touched} step(s)) — re-rendering host segment(s)…` });
+        plan = _checkFill(await renderMissingSegments({ onProgress, signal }));
+        TL = await readTimeline(plan);
+      }
+    } catch (e) { console.warn('[assemble] exact-TOC stamp failed:', e?.message); }
   }
-
-  const fill = await renderMissingSegments({ onProgress, signal });
-  if (fill.failed) throw new Error(`${fill.failed} segment(s) failed to render — aborting assembly`);
-  // Use the FILL's plan — never re-plan mid-run (rendering mutates step data →
-  // fingerprints drift → a re-plan would disown the files just written; the
-  // "137 still missing after fill" bug).
-  const plan = fill.plan;
-  const stillMissing = plan.spans.filter(s => !s.cached).length;
-  if (stillMissing) throw new Error(`${stillMissing} segment(s) unaccounted for after fill`);
-
-  // Global markers from the sidecars: each span's steps at (cumulative + local).
-  // Also stamp each span's assembled-time window (header track + bars need it).
-  let cum = 0;
-  const markersByStepId = new Map();
-  const files = [];
-  for (const span of plan.spans) {
-    const sj = await window.sbsNative.readFile(`${plan.dir}/seg-${span.key}.json`, 'utf8');
-    if (!sj?.ok) throw new Error(`sidecar missing for "${span.name}" — clear _rendercache and refill`);
-    const sc = JSON.parse(sj.data);
-    for (const st of (sc.steps || [])) markersByStepId.set(st.stepId, cum + st.ms);
-    files.push(`${plan.dir}/seg-${span.key}.mp4`);
-    span._startMs = cum;
-    span._durMs   = sc.durationMs || 0;
-    cum += span._durMs;
-  }
-  const totalMs = cum;
+  _mark('timeline + exact TOC');
+  const { markersByStepId, files } = TL;
+  const totalMs = TL.totalMs;
 
   // Lossless video concat (same codec/params by construction).
   onProgress?.({ stepName: 'stitching video (lossless concat)…' });
@@ -221,6 +240,7 @@ export async function assembleFromCache({ onProgress, signal, output } = {}) {
   const vPath = `${plan.dir}/_assembly-video.mp4`;
   let r = await window.sbsNative.ffmpeg(['-y', '-f', 'concat', '-safe', '0', '-i', listPath, '-c', 'copy', vPath]);
   if (!r?.ok) throw new Error('concat failed: ' + (r?.stderrTail || '').slice(-300));
+  _mark('stitch (lossless concat)');
 
   // ── Header track (V0.3.2.8, slice 3c) ──────────────────────────────────────
   // One static PNG per span (dynamic text resolved against the span's HEAD step
@@ -292,6 +312,8 @@ export async function assembleFromCache({ onProgress, signal, output } = {}) {
     }
   }
 
+  _mark('header track');
+
   // Global audio master at the assembled markers.
   const playable = (state.get('steps') || []).filter(s => steps._isPlayable(s));
   onProgress?.({ stepName: 'decoding narration clips…' });
@@ -303,6 +325,8 @@ export async function assembleFromCache({ onProgress, signal, output } = {}) {
     const w = await window.sbsNative.writeFile(aPath, _wavFromFloat32(pcm, 48000), null);
     if (!w?.ok) throw new Error('audio master write failed: ' + w?.error);
   }
+
+  _mark('audio master');
 
   // ── Final pass: composite headers + bar (re-encode) OR plain mux (copy) ────
   const projDir = (state.get('projectPath') || '').replace(/[\\/][^\\/]*$/, '');
@@ -349,8 +373,13 @@ export async function assembleFromCache({ onProgress, signal, output } = {}) {
   args.push(outPath);
   r = await window.sbsNative.ffmpeg(args);
   if (!r?.ok) throw new Error('composite/mux failed: ' + (r?.stderrTail || '').slice(-300));
-  return { path: outPath, totalMs, segments: plan.spans.length, reused: fill.reused, rendered: fill.rendered,
-           headers: !!(hdrListPath || boxFilters.length) };
+  _mark('composite + mux');
+  const totalS = timings.reduce((a, [, ms]) => a + ms, 0) / 1000;
+  console.log('%c[assemble] stage timing:', 'font-weight:bold;color:#38bdf8');
+  for (const [label, ms] of timings) console.log(`   ${label.padEnd(26)} ${(ms / 1000).toFixed(1)}s`);
+  console.log(`   ${'TOTAL'.padEnd(26)} ${totalS.toFixed(1)}s  (${(totalS / 60).toFixed(1)} min)`);
+  return { path: outPath, totalMs, segments: plan.spans.length, reused: plan.hits, rendered: plan.spans.length - plan.hits,
+           headers: !!(hdrListPath || boxFilters.length), timings };
 }
 
 export async function renderMissingSegments({ onProgress, signal } = {}) {
