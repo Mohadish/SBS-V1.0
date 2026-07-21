@@ -1285,3 +1285,9 @@ function _withTimeout(promise, ms, label) {
     new Promise((_, rej) => setTimeout(() => rej(new Error(`${label} timed out after ${ms}ms`)), ms)),
   ]);
 }
+
+// V0.3.2.5 — the render-cache assembly reuses the export's audio machinery:
+// per-step decode (ensurePlayable → mono Float32 @ rate, with the narration
+// phase offset) and marker-based mixing into one master track.
+export { _decodeNarrationSegments as decodeNarrationSegments,
+         _mixPcmFromMarkers      as mixPcmFromMarkers };

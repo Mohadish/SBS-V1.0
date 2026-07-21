@@ -670,6 +670,26 @@ window.sbsTocSync = async () => {
   return window.sbsToc();
 };
 
+// ASSEMBLE (V0.3.2.5) — the first real incremental export: renders only the
+// MISSING segments, reuses everything cached, stitches losslessly, mixes the
+// global voiceover, muxes → <project>/<exportName>-assembled.mp4.
+// KNOWN LIMIT: header layer + progress bar are NOT composited yet (slice 3c)
+// — the output is header-less.
+//   await window.sbsAssemble()
+window.sbsAssemble = async () => {
+  const rc = await import('./systems/render-cache.js');
+  const t0 = performance.now();
+  console.log('%c[assemble] start — renders misses first (cached segments skip), then stitches. Output has NO headers yet.', 'color:#f59e0b');
+  const r = await rc.assembleFromCache({
+    onProgress: (p) => p.total ? console.log(`[assemble] segment ${p.current}/${p.total} — ${p.stepName}`)
+                               : console.log(`[assemble] ${p.stepName}`),
+  });
+  const fmt = (ms) => { const s = Math.round(ms / 1000); return `${Math.floor(s / 60)}:${String(s % 60).padStart(2, '0')}`; };
+  console.log(`%c[assemble] ✓ done in ${((performance.now() - t0) / 60000).toFixed(1)} min — ${fmt(r.totalMs)} video from ${r.segments} segments (reused ${r.reused}, rendered ${r.rendered}) → ${r.path}`,
+    'font-weight:bold;color:#22c55e');
+  return r;
+};
+
 // RENDER-CACHE FILL (V0.3.2.3) — render every MISSING segment into
 // <project>/_rendercache/ (header-less, silent, narration-timed; see
 // systems/render-cache.js). The viewport fast-forwards while it works —

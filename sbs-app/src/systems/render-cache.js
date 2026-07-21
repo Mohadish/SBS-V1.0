@@ -104,6 +104,83 @@ export async function computeSegmentPlan() {
  * assembly pass uses those to place audio + compute global markers.
  * Returns { rendered, reused, failed, dir }.
  */
+/** Float32 mono PCM → 16-bit WAV bytes (for ffmpeg to mux). */
+function _wavFromFloat32(pcm, rate) {
+  const n = pcm.length;
+  const buf = new ArrayBuffer(44 + n * 2);
+  const v = new DataView(buf);
+  const ws = (o, s) => { for (let i = 0; i < s.length; i++) v.setUint8(o + i, s.charCodeAt(i)); };
+  ws(0, 'RIFF'); v.setUint32(4, 36 + n * 2, true); ws(8, 'WAVE');
+  ws(12, 'fmt '); v.setUint32(16, 16, true); v.setUint16(20, 1, true); v.setUint16(22, 1, true);
+  v.setUint32(24, rate, true); v.setUint32(28, rate * 2, true); v.setUint16(32, 2, true); v.setUint16(34, 16, true);
+  ws(36, 'data'); v.setUint32(40, n * 2, true);
+  for (let i = 0; i < n; i++) {
+    const s = Math.max(-1, Math.min(1, pcm[i]));
+    v.setInt16(44 + i * 2, s < 0 ? s * 0x8000 : s * 0x7fff, true);
+  }
+  return new Uint8Array(buf);
+}
+
+/**
+ * ASSEMBLE the final video from the cache (V0.3.2.5 — slices 3a+3b).
+ *   1. Render any missing segments (reuses everything cached).
+ *   2. Read every sidecar → global step markers (cumulative) + total length.
+ *   3. ffmpeg concat (stream copy — lossless, seconds).
+ *   4. Decode narration clips → mix ONE master track at the global markers
+ *      (the export's own machinery) → WAV → ffmpeg mux (video copied, AAC audio).
+ * NOT YET: header layer / progress bar composite (slice 3c) — the output is
+ * header-less for now. Returns { path, totalMs, segments, reused, rendered }.
+ */
+export async function assembleFromCache({ onProgress, signal, output } = {}) {
+  const fill = await renderMissingSegments({ onProgress, signal });
+  if (fill.failed) throw new Error(`${fill.failed} segment(s) failed to render — aborting assembly`);
+  const plan = await planWithCacheStatus();
+  if (plan.misses) throw new Error(`${plan.misses} segment(s) still missing after fill`);
+
+  // Global markers from the sidecars: each span's steps at (cumulative + local).
+  let cum = 0;
+  const markersByStepId = new Map();
+  const files = [];
+  for (const span of plan.spans) {
+    const sj = await window.sbsNative.readFile(`${plan.dir}/seg-${span.key}.json`, 'utf8');
+    if (!sj?.ok) throw new Error(`sidecar missing for "${span.name}" — clear _rendercache and refill`);
+    const sc = JSON.parse(sj.data);
+    for (const st of (sc.steps || [])) markersByStepId.set(st.stepId, cum + st.ms);
+    files.push(`${plan.dir}/seg-${span.key}.mp4`);
+    cum += sc.durationMs || 0;
+  }
+  const totalMs = cum;
+
+  // Lossless video concat (same codec/params by construction).
+  onProgress?.({ stepName: 'stitching video (lossless concat)…' });
+  const listPath = `${plan.dir}/_list.txt`;
+  await window.sbsNative.writeFile(listPath, files.map(f => `file '${f.replace(/\\/g, '/')}'`).join('\n'), 'utf8');
+  const vPath = `${plan.dir}/_assembly-video.mp4`;
+  let r = await window.sbsNative.ffmpeg(['-y', '-f', 'concat', '-safe', '0', '-i', listPath, '-c', 'copy', vPath]);
+  if (!r?.ok) throw new Error('concat failed: ' + (r?.stderrTail || '').slice(-300));
+
+  // Global audio master at the assembled markers.
+  const ve = await import('./video-export.js');
+  const playable = (state.get('steps') || []).filter(s => steps._isPlayable(s));
+  onProgress?.({ stepName: 'decoding narration clips…' });
+  const audio = await ve.decodeNarrationSegments(playable, 48000);
+  const projDir = (state.get('projectPath') || '').replace(/[\\/][^\\/]*$/, '');
+  const outPath = output || `${projDir}/${(state.get('export')?.fileName) || 'sbs_export'}-assembled.mp4`;
+  onProgress?.({ stepName: 'muxing final video…' });
+  if (audio.hasAudio) {
+    const pcm = ve.mixPcmFromMarkers(audio, markersByStepId, totalMs, 48000);
+    const aPath = `${plan.dir}/_assembly-audio.wav`;
+    const w = await window.sbsNative.writeFile(aPath, _wavFromFloat32(pcm, 48000), null);
+    if (!w?.ok) throw new Error('audio master write failed: ' + w?.error);
+    r = await window.sbsNative.ffmpeg(['-y', '-i', vPath, '-i', aPath,
+      '-map', '0:v:0', '-map', '1:a:0', '-c:v', 'copy', '-c:a', 'aac', '-b:a', '192k', outPath]);
+  } else {
+    r = await window.sbsNative.ffmpeg(['-y', '-i', vPath, '-c', 'copy', outPath]);
+  }
+  if (!r?.ok) throw new Error('mux failed: ' + (r?.stderrTail || '').slice(-300));
+  return { path: outPath, totalMs, segments: plan.spans.length, reused: fill.reused, rendered: fill.rendered };
+}
+
 export async function renderMissingSegments({ onProgress, signal } = {}) {
   const { exportTimelineVideo } = await import('./video-export.js');
   const plan = await planWithCacheStatus();
