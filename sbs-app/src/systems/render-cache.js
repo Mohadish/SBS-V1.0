@@ -316,14 +316,26 @@ export async function assembleFromCache({ onProgress, signal, output } = {}) {
   let vLabel = '[0:v]';
   if (hdrListPath)      { chains.push(`[0:v][1:v]overlay=0:0:eof_action=pass[vh]`); vLabel = '[vh]'; }
   if (boxFilters.length) { chains.push(`${vLabel}${boxFilters.join(',')}[vb]`); vLabel = '[vb]'; }
+  // Animated fill (V0.3.2.11): the canonical ffmpeg progress-bar idiom. A
+  // solid strip SLIDES right inside a transparent bar-sized canvas (the canvas
+  // clips the spill), then the canvas overlays at the bar's position during
+  // its chapter window. overlay x-expressions evaluate per frame — no dynamic
+  // crop sizes (which starved the graph → "received no packets").
+  const dTot = (totalMs / 1000 + 1).toFixed(3);
   fillChains.forEach((f, i) => {
-    chains.push(`color=c=${f.color}:s=${f.w}x${f.h}:r=25:d=${(totalMs / 1000 + 1).toFixed(3)}[pf${i}]`);
-    chains.push(`[pf${i}]crop=w='max(2,min(iw,iw*((t-${f.cs})/${f.cd})))':h=ih:x=0:y=0[pfc${i}]`);
-    chains.push(`${vLabel}[pfc${i}]overlay=x=${f.x}:y=${f.y}:eof_action=pass:enable='between(t,${f.cs},${f.ce})'[vf${i}]`);
+    chains.push(`color=c=${f.color}:s=${f.w}x${f.h}:r=25:d=${dTot}[pf${i}]`);
+    chains.push(`color=c=black@0.0:s=${f.w}x${f.h}:r=25:d=${dTot},format=rgba[pc${i}]`);
+    chains.push(`[pc${i}][pf${i}]overlay=x='-${f.w}+${f.w}*clip((t-${f.cs})/${f.cd},0,1)':y=0[pm${i}]`);
+    chains.push(`${vLabel}[pm${i}]overlay=x=${f.x}:y=${f.y}:eof_action=pass:enable='between(t,${f.cs},${f.ce})'[vf${i}]`);
     vLabel = `[vf${i}]`;
   });
   if (chains.length) {
-    args.push('-filter_complex', chains.join(';'), '-map', vLabel);
+    // Script file instead of an argv-inlined graph: debuggable (persists next
+    // to the cache) and immune to Windows command-line length limits.
+    const fgPath = `${plan.dir}/_filtergraph.txt`;
+    const wfg = await window.sbsNative.writeFile(fgPath, chains.join(';\n'), 'utf8');
+    if (!wfg?.ok) throw new Error('filtergraph write failed');
+    args.push('-filter_complex_script', fgPath, '-map', vLabel);
     if (aPath) args.push('-map', `${aInIdx}:a:0`);
     args.push('-c:v', 'libx264', '-preset', 'fast', '-b:v', String(exp.videoBitrate || 4_000_000), '-pix_fmt', 'yuv420p');
   } else {
