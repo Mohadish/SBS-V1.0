@@ -33,6 +33,7 @@ import { materials }                  from '../systems/materials.js';
 import { steps   }                  from '../systems/steps.js';
 import * as narrationCache           from '../systems/narration-cache.js';
 import { flattenCablesToCascade, ensureSocketBaselines } from '../systems/cables.js';   // V0.3.0.151 cascade migration; V0.3.0.167 socket State-0 backfill
+import { rebuildPrimitive }          from '../systems/primitives.js';   // V0.3.2.6 param-sync on load
 import { clearIsolate }              from '../core/isolate-state.js';
 
 /**
@@ -1155,11 +1156,30 @@ export function applySpecFieldsToNodes(specNode, nodeById, parentSpec = null) {
     const parentId  = parentSpec?.id ?? null;
     const parentLive = parentId ? nodeById.get(parentId) : null;
     if (parentLive) {
-      const exists = (parentLive.children || []).some(c => c.id === specNode.id);
-      if (!exists) {
+      const existing = (parentLive.children || []).find(c => c.id === specNode.id);
+      if (!existing) {
         const primLive = { ...specNode, object3d: null, children: [] };
         parentLive.children = [...(parentLive.children || []), primLive];
         nodeById.set(primLive.id, primLive);
+      } else {
+        // V0.3.2.6 — PARAM-PERSISTENCE FIX. If the live node already exists at
+        // load (the active step's snapshot.tree rebuilt it FIRST, with the
+        // params frozen at that step's capture time), the create-only path
+        // silently kept the STALE params — user-edited parameters reverted on
+        // every save+reload. The PROJECT tree is the saved truth for primitive
+        // definitions: sync kind/params/quality onto the live node and rebuild
+        // the mesh if one was already built. (Old primitives predating params-
+        // in-step-snapshots never hit this — why the bug looked generational.)
+        const before = JSON.stringify([existing.primKind, existing.primParams, existing.primQuality, existing.baseAtOrigin]);
+        const after  = JSON.stringify([specNode.primKind, specNode.primParams, specNode.primQuality, specNode.baseAtOrigin]);
+        if (before !== after) {
+          existing.primKind    = specNode.primKind    ?? existing.primKind;
+          existing.primParams  = specNode.primParams ? { ...specNode.primParams } : existing.primParams;
+          existing.primQuality = specNode.primQuality ?? existing.primQuality;
+          if (specNode.baseAtOrigin !== undefined) existing.baseAtOrigin = specNode.baseAtOrigin;
+          try { rebuildPrimitive(existing); } catch (e) { console.warn('[load] primitive rebuild after param-sync failed:', e?.message); }
+          console.log(`[load] primitive "${specNode.name}" — params synced from saved project (stale step-snapshot copy overridden)`);
+        }
       }
     }
     return;
