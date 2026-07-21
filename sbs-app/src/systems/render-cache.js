@@ -408,11 +408,20 @@ export async function assembleToSbsProc(opts = {}) {
   return { ...r, blob, manifest, extension: 'sbsproc', totalDurationMs: r.totalMs };
 }
 
-export async function renderMissingSegments({ onProgress, signal, force = false } = {}) {
+export async function renderMissingSegments({ onProgress, signal, force = false, forceStepIds = null } = {}) {
   const { exportTimelineVideo } = await import('./video-export.js');
   const plan = await planWithCacheStatus();
   if (!plan.dir) throw new Error('Save the project first — the cache lives next to the .sbsproj.');
   if (force) { for (const s of plan.spans) s.cached = false; plan.hits = 0; }   // human override: re-render everything
+  else if (forceStepIds?.size) {
+    // Surgical override (user design): re-render the segments CONTAINING the
+    // selected steps. A step inside a group forces its whole group's segment
+    // (a group IS one segment); the previous step is the render's starting
+    // pose automatically; the following segment needs nothing (end states are
+    // identical by construction).
+    for (const s of plan.spans) if (s.steps.some(st => forceStepIds.has(st.id))) s.cached = false;
+    plan.hits = plan.spans.filter(s => s.cached).length;
+  }
   const misses = plan.spans.filter(s => !s.cached);
   let done = 0, failed = 0;
   for (const span of misses) {

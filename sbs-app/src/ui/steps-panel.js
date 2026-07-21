@@ -1645,6 +1645,8 @@ function _showStepContextMenu(step, x, y) {
       } },
     { label: '⎘ Duplicate', action: () => _duplicateStep(step.id) },
     { label: '📋 Copy',     action: () => _copyStepsToClipboard([step.id]) },
+    { label: '🔁 Re-render cache segment',
+      action: () => _forceRenderCache([step.id]) },
     { label: '🎨 Copy overlay', action: () => {
         const r = overlay.copyStepOverlay(step.id);
         if (!r.ok) { setStatus('Overlay unreadable — nothing copied.', 'warn', 2500); return; }
@@ -1758,6 +1760,8 @@ function _showMultiStepContextMenu(stepIds, x, y) {
         actions.updateStepCameraAsTemplate(selSteps.map(s => s.id));
         setStatus(`Updated template "${activeTplLabel}" + bound ${selSteps.length} step(s).`);
       } },
+    { label: `🔁 Re-render cache (${selSteps.length} step(s))`,
+      action: () => _forceRenderCache(selSteps.map(s => s.id)) },
     { separator: true },
     { label: `🗑 Delete (${selSteps.length})`,
       action: async () => {
@@ -1806,6 +1810,24 @@ function _showChapterContextMenu(chapter, x, y) {
 }
 
 // ── Copy / paste clipboard operations ──────────────────────────────────────
+
+// Surgical cache override (user design): re-render the segments containing the
+// given steps NOW (fresh pixels under the same keys — the next export reuses
+// them). A group substep forces its whole group's segment. Also fills any
+// genuinely-missing segments it encounters.
+async function _forceRenderCache(stepIds) {
+  try {
+    const rc = await import('../systems/render-cache.js');
+    setStatus('Re-rendering cache segment(s)…', 'info', 0);
+    const r = await rc.renderMissingSegments({
+      forceStepIds: new Set(stepIds),
+      onProgress: (p) => setStatus(`Re-rendering segment ${p.current}/${p.total}: ${p.stepName}…`, 'info', 0),
+    });
+    setStatus(`Re-rendered ${r.rendered} cache segment(s)${r.failed ? ` (${r.failed} failed)` : ''} — next export uses them.`, r.failed ? 'warning' : 'success', 6000);
+  } catch (e) {
+    setStatus(`Cache re-render failed: ${e.message}`, 'danger', 6000);
+  }
+}
 
 // Paste the copied overlay preset onto a step (#19). Undo lives in overlay.js.
 function _pasteOverlay(stepId, mode) {
