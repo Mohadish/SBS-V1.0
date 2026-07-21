@@ -125,6 +125,18 @@ export async function computeSegmentPlan() {
  * assembly pass uses those to place audio + compute global markers.
  * Returns { rendered, reused, failed, dir }.
  */
+/** CSS color → ffmpeg color syntax ('#rrggbb'→'0xrrggbb', 'rgba(r,g,b,a)'→'0xrrggbb@a'). */
+function _ffColor(c, fallback) {
+  const s = String(c || fallback || 'white').trim();
+  const m = s.match(/^rgba?\(\s*(\d+)\s*,\s*(\d+)\s*,\s*(\d+)(?:\s*,\s*([\d.]+))?\s*\)$/i);
+  if (m) {
+    const hex = [m[1], m[2], m[3]].map(v => (+v).toString(16).padStart(2, '0')).join('');
+    return `0x${hex}${m[4] != null ? `@${m[4]}` : ''}`;
+  }
+  if (s.startsWith('#')) return '0x' + s.slice(1);
+  return s;
+}
+
 /** Float32 mono PCM → 16-bit WAV bytes (for ffmpeg to mux). */
 function _wavFromFloat32(pcm, rate) {
   const n = pcm.length;
@@ -159,6 +171,7 @@ export async function assembleFromCache({ onProgress, signal, output } = {}) {
   if (plan.misses) throw new Error(`${plan.misses} segment(s) still missing after fill`);
 
   // Global markers from the sidecars: each span's steps at (cumulative + local).
+  // Also stamp each span's assembled-time window (header track + bars need it).
   let cum = 0;
   const markersByStepId = new Map();
   const files = [];
@@ -168,7 +181,9 @@ export async function assembleFromCache({ onProgress, signal, output } = {}) {
     const sc = JSON.parse(sj.data);
     for (const st of (sc.steps || [])) markersByStepId.set(st.stepId, cum + st.ms);
     files.push(`${plan.dir}/seg-${span.key}.mp4`);
-    cum += sc.durationMs || 0;
+    span._startMs = cum;
+    span._durMs   = sc.durationMs || 0;
+    cum += span._durMs;
   }
   const totalMs = cum;
 
@@ -180,26 +195,109 @@ export async function assembleFromCache({ onProgress, signal, output } = {}) {
   let r = await window.sbsNative.ffmpeg(['-y', '-f', 'concat', '-safe', '0', '-i', listPath, '-c', 'copy', vPath]);
   if (!r?.ok) throw new Error('concat failed: ' + (r?.stderrTail || '').slice(-300));
 
+  // ── Header track (V0.3.2.8, slice 3c) ──────────────────────────────────────
+  // One static PNG per span (dynamic text resolved against the span's HEAD step
+  // — matches the live header's treat-group-as-one-step rule), played as a
+  // concat image sequence and overlaid in the final pass. The progress bar
+  // animates via per-chapter ffmpeg drawbox width expressions (same linear fill
+  // as the live bar; square corners — cosmetic difference only).
+  const exp  = state.get('export') || {};
+  const expW = (Number.isFinite(exp.width)  && exp.width  > 0) ? exp.width  : 1920;
+  const expH = (Number.isFinite(exp.height) && exp.height > 0) ? exp.height : 1080;
+  const header = await import('./header.js');
+  const allHdrItems = (state.get('headerItems') || []).filter(i => i.visible !== false);
+  const headersOn = !state.get('headersHidden') && allHdrItems.length > 0;
+  let hdrListPath = null;
+  const boxFilters = [];
+  if (headersOn) {
+    const staticItems = allHdrItems.filter(i => i.kind !== 'chapterProgress');
+    if (staticItems.length) {
+      onProgress?.({ stepName: 'rendering header track…' });
+      const lines = [];
+      for (let i = 0; i < plan.spans.length; i++) {
+        const span = plan.spans[i];
+        const ctx = header.buildRenderContext(span.steps[0].id);
+        const cnv = await header.rasterizeHeaderDataToCanvas(ctx, { width: expW, height: expH });
+        if (!cnv) { lines.length = 0; break; }
+        const blob  = await new Promise(res => cnv.toBlob(res, 'image/png'));
+        const bytes = new Uint8Array(await blob.arrayBuffer());
+        const w = await window.sbsNative.writeFile(`${plan.dir}/_hdr/span-${i}.png`, bytes, null);
+        if (!w?.ok) throw new Error('header png write failed: ' + w?.error);
+        lines.push(`file '_hdr/span-${i}.png'`, `duration ${(span._durMs / 1000).toFixed(3)}`);
+      }
+      if (lines.length) {
+        lines.push(`file '_hdr/span-${plan.spans.length - 1}.png'`);   // concat-demuxer quirk: repeat the last entry
+        hdrListPath = `${plan.dir}/_hdrlist.txt`;
+        const w = await window.sbsNative.writeFile(hdrListPath, lines.join('\n'), 'utf8');
+        if (!w?.ok) throw new Error('header list write failed');
+      }
+    }
+    // Progress bars: track = constant box; fill = width grows linearly across
+    // each chapter's assembled-time window.
+    const progItems = allHdrItems.filter(i => i.kind === 'chapterProgress');
+    if (progItems.length) {
+      const wins = [];
+      for (const span of plan.spans) {
+        const ch = span.steps[0].chapterId ?? null;
+        const last = wins[wins.length - 1];
+        if (last && last.ch === ch) last.end = span._startMs + span._durMs;
+        else wins.push({ ch, start: span._startMs, end: span._startMs + span._durMs });
+      }
+      for (const item of progItems) {
+        const x = Math.round(item.x), y = Math.round(item.y), w = Math.round(item.w), h = Math.round(item.h);
+        boxFilters.push(`drawbox=x=${x}:y=${y}:w=${w}:h=${h}:color=${_ffColor(item.trackColor, 'white@0.4')}:t=fill`);
+        for (const win of wins) {
+          if (!win.ch) continue;                       // outside chapters the bar stays empty
+          const cs = (win.start / 1000).toFixed(3);
+          const ce = (win.end   / 1000).toFixed(3);
+          const cd = Math.max(0.001, (win.end - win.start) / 1000).toFixed(3);
+          boxFilters.push(`drawbox=x=${x}:y=${y}:w='max(2,trunc(${w}*min(1,(t-${cs})/${cd})))':h=${h}`
+            + `:color=${_ffColor(item.fillColor, '0x3b82f6')}:t=fill:enable='between(t,${cs},${ce})'`);
+        }
+      }
+    }
+  }
+
   // Global audio master at the assembled markers.
   const ve = await import('./video-export.js');
   const playable = (state.get('steps') || []).filter(s => steps._isPlayable(s));
   onProgress?.({ stepName: 'decoding narration clips…' });
   const audio = await ve.decodeNarrationSegments(playable, 48000);
-  const projDir = (state.get('projectPath') || '').replace(/[\\/][^\\/]*$/, '');
-  const outPath = output || `${projDir}/${(state.get('export')?.fileName) || 'sbs_export'}-assembled.mp4`;
-  onProgress?.({ stepName: 'muxing final video…' });
+  let aPath = null;
   if (audio.hasAudio) {
     const pcm = ve.mixPcmFromMarkers(audio, markersByStepId, totalMs, 48000);
-    const aPath = `${plan.dir}/_assembly-audio.wav`;
+    aPath = `${plan.dir}/_assembly-audio.wav`;
     const w = await window.sbsNative.writeFile(aPath, _wavFromFloat32(pcm, 48000), null);
     if (!w?.ok) throw new Error('audio master write failed: ' + w?.error);
-    r = await window.sbsNative.ffmpeg(['-y', '-i', vPath, '-i', aPath,
-      '-map', '0:v:0', '-map', '1:a:0', '-c:v', 'copy', '-c:a', 'aac', '-b:a', '192k', outPath]);
-  } else {
-    r = await window.sbsNative.ffmpeg(['-y', '-i', vPath, '-c', 'copy', outPath]);
   }
-  if (!r?.ok) throw new Error('mux failed: ' + (r?.stderrTail || '').slice(-300));
-  return { path: outPath, totalMs, segments: plan.spans.length, reused: fill.reused, rendered: fill.rendered };
+
+  // ── Final pass: composite headers + bar (re-encode) OR plain mux (copy) ────
+  const projDir = (state.get('projectPath') || '').replace(/[\\/][^\\/]*$/, '');
+  const outPath = output || `${projDir}/${(state.get('export')?.fileName) || 'sbs_export'}-assembled.mp4`;
+  onProgress?.({ stepName: 'compositing + muxing final video…' });
+  const args = ['-y', '-i', vPath];
+  let aInIdx = 1;
+  if (hdrListPath) { args.push('-f', 'concat', '-safe', '0', '-i', hdrListPath); aInIdx = 2; }
+  if (aPath) args.push('-i', aPath);
+  const chains = [];
+  let vLabel = '[0:v]';
+  if (hdrListPath)      { chains.push(`[0:v][1:v]overlay=0:0:eof_action=pass[vh]`); vLabel = '[vh]'; }
+  if (boxFilters.length) { chains.push(`${vLabel}${boxFilters.join(',')}[vb]`); vLabel = '[vb]'; }
+  if (chains.length) {
+    args.push('-filter_complex', chains.join(';'), '-map', vLabel);
+    if (aPath) args.push('-map', `${aInIdx}:a:0`);
+    args.push('-c:v', 'libx264', '-preset', 'fast', '-b:v', String(exp.videoBitrate || 4_000_000), '-pix_fmt', 'yuv420p');
+  } else {
+    args.push('-map', '0:v:0');
+    if (aPath) args.push('-map', `${aInIdx}:a:0`);
+    args.push('-c:v', 'copy');
+  }
+  if (aPath) args.push('-c:a', 'aac', '-b:a', '192k');
+  args.push(outPath);
+  r = await window.sbsNative.ffmpeg(args);
+  if (!r?.ok) throw new Error('composite/mux failed: ' + (r?.stderrTail || '').slice(-300));
+  return { path: outPath, totalMs, segments: plan.spans.length, reused: fill.reused, rendered: fill.rendered,
+           headers: !!(hdrListPath || boxFilters.length) };
 }
 
 export async function renderMissingSegments({ onProgress, signal } = {}) {

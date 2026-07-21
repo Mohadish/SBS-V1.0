@@ -142,11 +142,11 @@ export function resolveHeaderText(item, ctx) {
  * index 0 made every header "Step Number" off by one — the first
  * user step rendered as "Step 2".
  */
-export function buildRenderContext() {
+export function buildRenderContext(activeIdOverride) {
   const allSteps = state.get('steps') || [];
   const visible  = allSteps.filter(s => !s.hidden && !s.isBaseStep);
   const chapters = state.get('chapters') || [];
-  const activeId = state.get('activeStepId');
+  const activeId = activeIdOverride ?? state.get('activeStepId');   // override: assembly rasters per-step headers without activating (V0.3.2.8)
   const activeStep = visible.find(s => s.id === activeId) || null;
 
   // Step-groups: the header treats a group as ONE step. When a sub-
@@ -521,6 +521,42 @@ export function initHeaderLayer(stage) {
   });
 
   refreshHeaderLayer();
+}
+
+/**
+ * DATA-DRIVEN header raster (V0.3.2.8 — render-cache assembly, slice 3c).
+ * Draws every visible header item EXCEPT the progress bar (ffmpeg animates
+ * that at assembly) onto a transparent canvas at the given size, resolving
+ * dynamic text against the PASSED context — no live layer, no step
+ * activation, no scene. Mirrors the live pipeline's sizing (htmlToCanvas at
+ * item.w×item.h, drawn at item.x/item.y in canonical coordinates).
+ * Returns the canvas, or null when headers are hidden / nothing to draw.
+ */
+export async function rasterizeHeaderDataToCanvas(ctx, { width = 1920, height = 1080 } = {}) {
+  if (state.get('headersHidden')) return null;
+  const items = (state.get('headerItems') || [])
+    .filter(it => it.visible !== false && it.kind !== 'chapterProgress');
+  if (!items.length) return null;
+  const cnv = document.createElement('canvas');
+  cnv.width = width; cnv.height = height;
+  const g = cnv.getContext('2d');
+  for (const item of items) {
+    try {
+      if (item.kind === 'image') {
+        if (!item.dataUrl) continue;
+        const img = await new Promise((res, rej) => {
+          const i = new Image(); i.onload = () => res(i); i.onerror = () => rej(new Error('img load'));
+          i.src = item.dataUrl;
+        });
+        g.drawImage(img, item.x, item.y, item.w, item.h);
+      } else {
+        const html = _buildHeaderTextHtml(item, ctx);
+        const c = await htmlToCanvas(html, { width: Math.max(1, item.w | 0), height: Math.max(1, item.h | 0), padding: 0 });
+        if (c?.width && c?.height) g.drawImage(c, item.x, item.y, item.w, item.h);
+      }
+    } catch (e) { console.warn('[header] data-raster item failed:', item.kind, e?.message); }
+  }
+  return cnv;
 }
 
 /**
