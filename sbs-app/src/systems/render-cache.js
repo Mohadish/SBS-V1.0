@@ -335,7 +335,9 @@ export async function assembleFromCache({ onProgress, signal, output } = {}) {
     const fgPath = `${plan.dir}/_filtergraph.txt`;
     const wfg = await window.sbsNative.writeFile(fgPath, chains.join(';\n'), 'utf8');
     if (!wfg?.ok) throw new Error('filtergraph write failed');
-    args.push('-filter_complex_script', fgPath, '-map', vLabel);
+    // FFmpeg 8+ removed -filter_complex_script; the modern equivalent is the
+    // generic read-option-from-file form: -/filter_complex <path>.
+    args.push('-/filter_complex', fgPath, '-map', vLabel);
     if (aPath) args.push('-map', `${aInIdx}:a:0`);
     args.push('-c:v', 'libx264', '-preset', 'fast', '-b:v', String(exp.videoBitrate || 4_000_000), '-pix_fmt', 'yuv420p');
   } else {
