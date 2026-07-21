@@ -670,6 +670,37 @@ window.sbsTocSync = async () => {
   return window.sbsToc();
 };
 
+// PROOF-OF-SEAM (V0.3.2.1) — the step-render-cache's foundational experiment.
+// Renders step K and step K+1 as SEPARATE video segments plus one contiguous
+// reference, into <project folder>/_seamtest/. Offline we ffmpeg-concat
+// segA+segB and pixel-compare against ref — if the seam is invisible, per-step
+// cached rendering is viable. K = index into the PLAYABLE step list (step 1 of
+// the timeline = 1; K needs a step before AND after it). Video-only, short
+// holds, no TOC side effects.
+//   await window.sbsSeamTest(K)
+window.sbsSeamTest = async (k) => {
+  const ve = await import('./systems/video-export.js');
+  const pp = state.get('projectPath');
+  if (!pp) { console.warn('[seam] save the project first (need a folder to write into)'); return; }
+  const dir = pp.replace(/[\\/][^\\/]*$/, '') + '/_seamtest';
+  const mk = async (name, from, to) => {
+    console.log(`[seam] rendering ${name} (steps ${from}..${to})…`);
+    const { blob } = await ve.exportTimelineVideo({
+      format: 'mp4', offline: true, includeNarration: false,
+      _stepsRange: [from, to], _zeroLeadHold: true, _noAutoSync: true,
+    });
+    const bytes = new Uint8Array(await blob.arrayBuffer());
+    const r = await window.sbsNative.writeFile(`${dir}/${name}`, bytes, null);
+    if (!r?.ok) throw new Error(`write failed: ${r?.error}`);
+    console.log(`[seam] ✓ ${name}  (${(bytes.length / 1e6).toFixed(1)} MB)`);
+  };
+  await mk('segA.mp4', k - 1, k);       // transition into K + K's hold
+  await mk('segB.mp4', k,     k + 1);   // transition into K+1 + its hold
+  await mk('ref.mp4',  k - 1, k + 1);   // both, contiguous — the ground truth
+  console.log(`[seam] done → ${dir}  (segA+segB concat should equal ref)`);
+  return dir;
+};
+
 // Interface library folder controls — the folder is now persisted per project
 // (V0.3.1.52), but if you pick the WRONG one, you had to restart. These let you
 // check / re-pick / clear it live (then Save to persist the correction):

@@ -401,12 +401,20 @@ async function _exportMp4({ fps = DEFAULT_FPS, bitrate = DEFAULT_BITRATE,
                             stepHoldMs = POST_STEP_HOLD_MS,
                             includeNarration = true,
                             offline = false,
+                            // V0.3.2.1 — step-render-cache groundwork (proof-of-seam):
+                            _stepsRange  = null,    // [fromIdx, toIdx] into the playable list → render just that span
+                            _zeroLeadHold = false,  // lead step emits 0 frames → output starts exactly at the transition into step 2 of the span
+                            _noAutoSync   = false,  // segment/test renders skip the TOC timing pass
                             onProgress, signal } = {}) {
   const _wallStartMs = performance.now();   // for the end-of-export summary
   const canvas = sceneCore.renderer?.domElement;
   if (!canvas) throw new Error('No 3D canvas available to export.');
 
-  const stepsToPlay = (state.get('steps') || []).filter(s => steps._isPlayable(s));
+  let stepsToPlay = (state.get('steps') || []).filter(s => steps._isPlayable(s));
+  if (Array.isArray(_stepsRange)) {
+    const [f, t] = _stepsRange;
+    stepsToPlay = stepsToPlay.slice(Math.max(0, f), Math.min(stepsToPlay.length, t + 1));
+  }
   if (!stepsToPlay.length) throw new Error('No steps to export — add at least one step first.');
 
   // AUTO-SYNC (V0.3.1.78, user-requested "mandatory check before render"): if
@@ -415,7 +423,7 @@ async function _exportMp4({ fps = DEFAULT_FPS, bitrate = DEFAULT_BITRATE,
   // so THIS render bakes exact chapter times — no manual sbsTocSync needed.
   // All-measured projects skip this entirely (zero cost).
   const _staleCount = stepsToPlay.filter(s => !Number.isFinite(s.renderedDurationMs)).length;
-  if (_staleCount > 0) {
+  if (!_noAutoSync && _staleCount > 0) {
     console.log(`[export] auto-sync: ${_staleCount} step(s) without measured timing — running the timing pass first…`);
     await measureTimelineDurations({
       fps,
@@ -575,6 +583,13 @@ async function _exportMp4({ fps = DEFAULT_FPS, bitrate = DEFAULT_BITRATE,
       audioTrackEnabled = false;
     }
   }
+
+  // Segment semantics (V0.3.2.1): with _zeroLeadHold the FIRST step of the span
+  // is instant-applied by the hard reset but contributes ZERO frames (its hold
+  // is zeroed; offline frames are only emitted inside sleeps). The output then
+  // starts exactly at the transition into the span's second step — i.e. a
+  // segment = "transition into step K + K's hold", given span [K-1, …].
+  if (_zeroLeadHold && perStepHold.length) perStepHold[0] = 0;
 
   const muxerCfg = {
     target: new ArrayBufferTarget(),
@@ -844,7 +859,11 @@ async function _exportMp4({ fps = DEFAULT_FPS, bitrate = DEFAULT_BITRATE,
     // real render times, not the estimate. (V0.3.1.73) End sentinel so the LAST
     // step gets a duration too — else it stays untagged and the auto-sync
     // re-triggers on every export. (V0.3.1.78)
-    _recordRenderedDurations([...stepMarkers, { stepId: '__end__', timeInMs: nextFrameUs / 1000 }]);
+    // Segment/partial/silent renders must NOT poison the measured TOC durations
+    // (zeroed lead hold + missing narration give wrong per-step times).
+    if (!_stepsRange && !_zeroLeadHold && includeNarration) {
+      _recordRenderedDurations([...stepMarkers, { stepId: '__end__', timeInMs: nextFrameUs / 1000 }]);
+    }
     const _totFrames = _framesRendered + _framesReused;
     if (offline && _totFrames > 0) {
       console.log(`[export] holds-only render skip — 3D rendered ${_framesRendered}/${_totFrames} frames, reused ${_framesReused} static hold frame(s) (${Math.round(100 * _framesReused / _totFrames)}% of 3D renders skipped).`);
