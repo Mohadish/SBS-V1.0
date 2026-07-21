@@ -553,6 +553,32 @@ ipcMain.handle('fs:readFile', async (_, filePath, encoding = 'base64') => {
 });
 
 // Write a file
+// ── ffmpeg bridge (V0.3.2.4) — render-cache assembly ─────────────────────────
+// Runs ONLY the bundled ffmpeg (never an arbitrary exe): dev = tools/stitch/bin,
+// packaged = resources/ffmpeg. Args come as an array (no shell, no injection).
+// Returns { ok, code, stderrTail } — stderr tail only, ffmpeg is chatty.
+function _ffmpegPath() {
+  const dev = path.join(APP_ROOT, 'tools', 'stitch', 'bin', 'ffmpeg.exe');
+  const packed = path.join(process.resourcesPath || '', 'ffmpeg', 'ffmpeg.exe');
+  if (fs.existsSync(dev)) return dev;
+  if (fs.existsSync(packed)) return packed;
+  return null;
+}
+ipcMain.handle('ffmpeg:run', async (_, args) => {
+  const exe = _ffmpegPath();
+  if (!exe) return { ok: false, code: -1, stderrTail: 'ffmpeg not found (tools/stitch/bin in dev; resources/ffmpeg packaged)' };
+  if (!Array.isArray(args) || args.some(a => typeof a !== 'string')) {
+    return { ok: false, code: -1, stderrTail: 'args must be an array of strings' };
+  }
+  return new Promise((resolve) => {
+    const child = spawn(exe, args, { windowsHide: true });
+    let tail = '';
+    child.stderr.on('data', (d) => { tail = (tail + d.toString()).slice(-4000); });
+    child.on('error', (err) => resolve({ ok: false, code: -1, stderrTail: String(err?.message || err) }));
+    child.on('close', (code) => resolve({ ok: code === 0, code, stderrTail: tail }));
+  });
+});
+
 ipcMain.handle('fs:writeFile', async (_, filePath, data, encoding = 'utf-8') => {
   try {
     fs.mkdirSync(path.dirname(filePath), { recursive: true });

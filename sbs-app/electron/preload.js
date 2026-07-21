@@ -31,6 +31,7 @@ contextBridge.exposeInMainWorld('sbsNative', {
   readFile:  (filePath, encoding) => ipcRenderer.invoke('fs:readFile',  filePath, encoding),
   writeFile: (filePath, data, enc)=> ipcRenderer.invoke('fs:writeFile', filePath, data, enc),
   fileExists:(filePath)           => ipcRenderer.invoke('fs:exists',    filePath),
+  ffmpeg:    (args)               => ipcRenderer.invoke('ffmpeg:run',   args),   // V0.3.2.4 render-cache assembly (bundled binary only)
   statFile:  (filePath)           => ipcRenderer.invoke('fs:stat',      filePath),
   listDir:   (dirPath)            => ipcRenderer.invoke('fs:listDir',   dirPath),
   deletePath:(p, opts={})         => ipcRenderer.invoke('fs:deletePath', p, opts),
