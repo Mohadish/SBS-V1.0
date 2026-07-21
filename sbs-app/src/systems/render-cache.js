@@ -167,8 +167,12 @@ function _wavFromFloat32(pcm, rate) {
 export async function assembleFromCache({ onProgress, signal, output } = {}) {
   const fill = await renderMissingSegments({ onProgress, signal });
   if (fill.failed) throw new Error(`${fill.failed} segment(s) failed to render — aborting assembly`);
-  const plan = await planWithCacheStatus();
-  if (plan.misses) throw new Error(`${plan.misses} segment(s) still missing after fill`);
+  // Use the FILL's plan — never re-plan mid-run (rendering mutates step data →
+  // fingerprints drift → a re-plan would disown the files just written; the
+  // "137 still missing after fill" bug).
+  const plan = fill.plan;
+  const stillMissing = plan.spans.filter(s => !s.cached).length;
+  if (stillMissing) throw new Error(`${stillMissing} segment(s) unaccounted for after fill`);
 
   // Global markers from the sidecars: each span's steps at (cumulative + local).
   // Also stamp each span's assembled-time window (header track + bars need it).
@@ -335,6 +339,7 @@ export async function renderMissingSegments({ onProgress, signal } = {}) {
       };
       w = await window.sbsNative.writeFile(`${plan.dir}/seg-${span.key}.json`, JSON.stringify(sidecar), 'utf8');
       if (!w?.ok) throw new Error(w?.error || 'sidecar write failed');
+      span.cached = true;          // this run's plan now knows the file exists
       done++;
     } catch (e) {
       console.warn(`[render-cache] segment "${span.name}" failed:`, e?.message);
@@ -342,7 +347,12 @@ export async function renderMissingSegments({ onProgress, signal } = {}) {
       if (e?.name === 'AbortError') throw e;
     }
   }
-  return { rendered: done, reused: plan.hits, failed, dir: plan.dir, total: plan.spans.length };
+  // Return THE PLAN too (V0.3.2.9): rendering mutates project data mid-run
+  // (overlay self-heals, narration stamps on step activation), so fingerprints
+  // recomputed AFTER the fill can differ from the ones the files were written
+  // under. One run = one plan — the assembly must consume THIS plan, never
+  // re-derive it.
+  return { rendered: done, reused: plan.hits, failed, dir: plan.dir, total: plan.spans.length, plan };
 }
 
 /** Plan + check which segments already exist in <project>/_rendercache/. */
