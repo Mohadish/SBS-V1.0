@@ -80,11 +80,15 @@ export async function computeSegmentPlan() {
     if (n.type === 'primitive') _prims.push({ id: n.id, k: n.primKind, p: n.primParams, q: n.primQuality, b: n.baseAtOrigin });
     (n.children || []).forEach(walk);
   })(state.get('treeData'));
+  // Sorted by id (V0.3.2.20): tree/list REORDERING must not re-key — only
+  // actual definition content changes should (forensics showed a pure shuffle
+  // contributing to a full invalidation).
+  const _byId = (a, b) => String(a.id).localeCompare(String(b.id));
   const defsKey = {
-    prims:  _prims,
-    shapes: state.get('shapeTemplates') || [],
-    colors: state.get('colorPresets')   || [],
-    cables: (state.get('cables') || []).map(c => ({ id: c.id, style: c.style })),
+    prims:  _prims.slice().sort(_byId),
+    shapes: (state.get('shapeTemplates') || []).slice().sort(_byId),
+    colors: (state.get('colorPresets')   || []).slice().sort(_byId),
+    cables: (state.get('cables') || []).map(c => ({ id: c.id, style: c.style })).sort(_byId),
   };
 
   // Pixel-affecting global settings. NO header config, NO positions, NO
@@ -112,7 +116,7 @@ export async function computeSegmentPlan() {
     span.name  = span.steps[0].name || '(step)';
     span.count = span.steps.length;
   }
-  return { spans, playableCount: playable.length };
+  return { spans, playableCount: playable.length, settingsKey, defsKey };
 }
 
 /**
@@ -461,6 +465,15 @@ export async function renderMissingSegments({ onProgress, signal, force = false,
       if (e?.name === 'AbortError') throw e;
     }
   }
+  // Record this fill's key inputs so the next plan can NAME the cause of any
+  // mass invalidation (V0.3.2.20).
+  if (done > 0 && !failed) {
+    try {
+      await window.sbsNative.writeFile(`${plan.dir}/_keyinputs.json`,
+        JSON.stringify({ settings: plan.settingsKey, defs: plan.defsKey }), 'utf8');
+    } catch { /* best-effort */ }
+  }
+
   // Return THE PLAN too (V0.3.2.9): rendering mutates project data mid-run
   // (overlay self-heals, narration stamps on step activation), so fingerprints
   // recomputed AFTER the fill can differ from the ones the files were written
@@ -483,5 +496,27 @@ export async function planWithCacheStatus() {
     }
     if (span.cached) hits++;
   }
-  return { ...plan, dir, hits, misses: plan.spans.length - hits };
+  const out = { ...plan, dir, hits, misses: plan.spans.length - hits };
+
+  // WHY-INVALIDATED report (V0.3.2.20): when most of the cache missed, diff
+  // the current key inputs against the ones recorded at the last successful
+  // fill and NAME the cause — no more silent full re-renders.
+  if (dir && out.misses > plan.spans.length / 2) {
+    try {
+      const prev = await window.sbsNative.readFile(`${dir}/_keyinputs.json`, 'utf8');
+      if (prev?.ok) {
+        const old = JSON.parse(prev.data);
+        const parts = [];
+        for (const k of ['prims', 'shapes', 'colors', 'cables']) {
+          if (JSON.stringify(old.defs?.[k]) !== JSON.stringify(plan.defsKey[k])) parts.push(k === 'prims' ? 'primitives' : k);
+        }
+        if (JSON.stringify(old.settings) !== JSON.stringify(plan.settingsKey)) parts.push('render settings');
+        if (parts.length) {
+          out.invalidationHint = `cache mass-invalidated because DEFINITIONS changed: ${parts.join(', ')} (your rule: project-wide change → render everything)`;
+          console.warn('[render-cache] ' + out.invalidationHint);
+        }
+      }
+    } catch { /* report is best-effort */ }
+  }
+  return out;
 }
