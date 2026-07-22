@@ -319,7 +319,15 @@ export async function assembleFromCache({ onProgress, signal, output, force = fa
       for (const st of (sc.steps || [])) markersByStepId.set(st.stepId, cum + st.ms);
       files.push(`${plan.dir}/seg-${span.key}.mp4`);
       span._startMs = cum;
-      span._durMs   = sc.durationMs || 0;
+      // PHANTOM-FRAME CORRECTION (V0.3.2.28): the muxer declares each
+      // segment ONE FRAME shorter than the encoder counted (ffprobe-verified
+      // on a real 160-segment assembly: every file exactly -1 frame vs its
+      // sidecar). The concat demuxer stacks the DECLARED durations, so the
+      // real timeline runs 1 frame/segment shorter than the model — audio,
+      // TOC and header switches all landed cumulatively LATE (−6.7s over
+      // 18.5min at 24fps). Place everything on the declared timeline.
+      const fpsUsed = Number(sc.fps) || Number(state.get('export')?.fps) || 50;
+      span._durMs   = Math.max(0, (sc.durationMs || 0) - 1000 / fpsUsed);
       cum += span._durMs;
     }
     return { markersByStepId, files, totalMs: cum };
@@ -626,6 +634,7 @@ export async function renderMissingSegments({ onProgress, signal, force = false,
       const inSpan = new Set(span.steps.map(s => s.id));
       const sidecar = {
         key: span.key, durationMs: res.totalDurationMs,
+        fps: Number.isFinite(Number(exp.fps)) ? Number(exp.fps) : 50,   // for the phantom-frame correction at assembly
         steps: (res.stepMarkers || [])
           .filter(m => inSpan.has(m.stepId))          // drop the zero-frame lead step's marker
           .map(m => ({ stepId: m.stepId, ms: m.timeInMs })),
