@@ -789,7 +789,12 @@ function _buildHeaderTextHtml(item, ctx) {
     `color:${color}`,
     `text-shadow:0 1px 2px rgba(0,0,0,0.45)`,
   ].join(';');
-  return `<div style="height:100%;display:flex;align-items:center"><div style="${innerStyle}">${escaped}</div></div>`;
+  // V0.3.2.16 — the template's fillColor (textbox background) was silently
+  // dropped for headers: this builder cherry-picked font fields only, so a
+  // style with a solid/semi-transparent background applied everywhere EXCEPT
+  // header items. Fill the whole item rect (outer shell), matching textboxes.
+  const fill = src.fillColor ? `;background:${src.fillColor}` : '';
+  return `<div style="height:100%;display:flex;align-items:center${fill}"><div style="${innerStyle}">${escaped}</div></div>`;
 }
 
 function _safeAlign(a) {
