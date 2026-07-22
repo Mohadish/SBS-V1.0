@@ -134,7 +134,7 @@ export async function computeSegmentPlan() {
     epoch: RENDER_CACHE_EPOCH,
   };
 
-  const plan = { spans, playableCount: playable.length, settingsKey, defsKey };
+  const plan = { spans, playableCount: playable.length, settingsKey, defsKey, _viewJson: new Map() };
   for (const span of spans) {
     span._prevRef = span.from > 0 ? playable[span.from - 1] : null;
     span.name  = span.steps[0].name || '(step)';
@@ -158,11 +158,22 @@ async function _keySpan(span, plan) {
   return span.key;
 }
 
+/** Per-pass memo: canonicalizing a 150MB project costs ~10s, and each step
+ *  is needed twice (as span member + as the next span's lead). One canon per
+ *  step per pass. The settle pass clears the memo — data may have changed. */
+function _stepJson(step, plan) {
+  let j = plan._viewJson?.get(step);
+  if (!j) { j = JSON.stringify(_stepKeyView(step)); plan._viewJson?.set(step, j); }
+  return j;
+}
+
 function _spanPayload(span, plan) {
-  const prevJson  = JSON.stringify(span._prevRef ? _stepKeyView(span._prevRef) : null);
-  const stepsJson = JSON.stringify(span.steps.map(_stepKeyView));
+  const prevJson  = span._prevRef ? _stepJson(span._prevRef, plan) : 'null';
+  const stepsJson = '[' + span.steps.map(s => _stepJson(s, plan)).join(',') + ']';
+  plan._settingsJson ||= JSON.stringify(_canon(plan.settingsKey));
+  plan._defsJson     ||= JSON.stringify(_canon(plan.defsKey));
   return { prevJson, stepsJson,
-    full: `{"prev":${prevJson},"steps":${stepsJson},"settings":${JSON.stringify(_canon(plan.settingsKey))},"defs":${JSON.stringify(_canon(plan.defsKey))}}` };
+    full: `{"prev":${prevJson},"steps":${stepsJson},"settings":${plan._settingsJson},"defs":${plan._defsJson}}` };
 }
 
 /** Drift forensics (V0.3.2.21): compare this plan against the previous one
@@ -528,6 +539,7 @@ export async function assembleToSbsProc(opts = {}) {
 
 export async function renderMissingSegments({ onProgress, signal, force = false, forceStepIds = null } = {}) {
   const { exportTimelineVideo } = await import('./video-export.js');
+  onProgress?.({ stepName: 'fingerprinting steps… (a few seconds on big projects)' });
   const plan = await planWithCacheStatus();
   if (!plan.dir) throw new Error('Save the project first — the cache lives next to the .sbsproj.');
   if (force) { for (const s of plan.spans) s.cached = false; plan.hits = 0; }   // human override: re-render everything
@@ -594,6 +606,7 @@ export async function renderMissingSegments({ onProgress, signal, force = false,
   // and re-file any segment whose fingerprint moved — disk ends up keyed
   // exactly as the next plan will compute, so the next export HITS.
   let rekeyed = 0;
+  plan._viewJson?.clear();   // step data may have changed during playback — re-fingerprint fresh
   for (const span of plan.spans) {
     if (!span.cached) continue;
     const oldKey = span.key;
