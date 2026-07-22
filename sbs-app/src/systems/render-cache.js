@@ -104,19 +104,103 @@ export async function computeSegmentPlan() {
     epoch: RENDER_CACHE_EPOCH,
   };
 
+  const plan = { spans, playableCount: playable.length, settingsKey, defsKey };
   for (const span of spans) {
-    const prev = span.from > 0 ? playable[span.from - 1] : null;
-    const payload = JSON.stringify({
-      prev: prev ? _stepKeyView(prev) : null,
-      steps: span.steps.map(_stepKeyView),
-      settings: settingsKey,
-      defs: defsKey,
-    });
-    span.key   = await _sha1hex(payload);
+    span._prevRef = span.from > 0 ? playable[span.from - 1] : null;
     span.name  = span.steps[0].name || '(step)';
     span.count = span.steps.length;
+    await _keySpan(span, plan);
   }
-  return { spans, playableCount: playable.length, settingsKey, defsKey };
+  return plan;
+}
+
+/** (Re)compute a span's key + part-hashes from the CURRENT live objects.
+ *  Called at plan time AND again right after a span renders (V0.3.2.21):
+ *  step activation during rendering self-heals/rewrites step data, so the
+ *  settled post-render state is the only stable thing to file the cache
+ *  under — keying at plan time wrote files under fingerprints that were
+ *  obsolete by the next run (the back-to-back full-re-render bug). */
+async function _keySpan(span, plan) {
+  const p = _spanPayload(span, plan);
+  span._prevH  = await _sha1hex(p.prevJson);
+  span._stepsH = await _sha1hex(p.stepsJson);
+  span.key = await _sha1hex(p.full);
+  return span.key;
+}
+
+function _spanPayload(span, plan) {
+  const prevJson  = JSON.stringify(span._prevRef ? _stepKeyView(span._prevRef) : null);
+  const stepsJson = JSON.stringify(span.steps.map(_stepKeyView));
+  return { prevJson, stepsJson,
+    full: `{"prev":${prevJson},"steps":${stepsJson},"settings":${JSON.stringify(plan.settingsKey)},"defs":${JSON.stringify(plan.defsKey)}}` };
+}
+
+/** Drift forensics (V0.3.2.21): compare this plan against the previous one
+ *  (_rendercache/_lastplan.json) and NAME what changed — which spans, which
+ *  part (step data vs prev-step vs defs vs settings), and for the first
+ *  drifted span a field-by-field payload diff down to the first differing
+ *  character. This is how we catch fields that silently rewrite themselves
+ *  between runs and churn the cache. */
+async function _reportPlanDrift(out, dir) {
+  const lastPath = `${dir}/_lastplan.json`;
+  let old = null;
+  try {
+    const r = await window.sbsNative.readFile(lastPath, 'utf8');
+    if (r?.ok) old = JSON.parse(r.data);
+  } catch { /* first run */ }
+
+  if (old && out.misses > 0) {
+    try {
+      const defsChanged     = JSON.stringify(old.defs)     !== JSON.stringify(out.defsKey);
+      const settingsChanged = JSON.stringify(old.settings) !== JSON.stringify(out.settingsKey);
+      let stepsDrift = 0, prevDrift = 0, comparable = old.spans?.length === out.spans.length;
+      if (comparable) {
+        for (let i = 0; i < out.spans.length; i++) {
+          if (old.spans[i].stepsH !== out.spans[i]._stepsH) stepsDrift++;
+          else if (old.spans[i].prevH !== out.spans[i]._prevH) prevDrift++;
+        }
+      }
+      console.warn(`[render-cache] plan drift vs previous plan: ` +
+        (comparable ? `${stepsDrift} span(s) with changed STEP data, ${prevDrift} with changed PREV-step only, ` : `span count ${old.spans?.length} → ${out.spans.length}, `) +
+        `defs ${defsChanged ? 'CHANGED' : 'same'}, settings ${settingsChanged ? 'CHANGED' : 'same'}`);
+
+      // Field-level diff of the first drifted span's payload.
+      if (comparable && old.sample) {
+        const i = out.spans.findIndex((s, j) => old.spans[j].stepsH !== s._stepsH || old.spans[j].prevH !== s._prevH);
+        if (i === old.sample.index) {
+          const cur = JSON.parse(_spanPayload(out.spans[i], out).full);
+          const prev = JSON.parse(old.sample.payload);
+          const diffs = [];
+          const strCtx = (a, b) => {
+            let k = 0; while (k < a.length && a[k] === b[k]) k++;
+            return `…${a.slice(Math.max(0, k - 50), k + 50)}… → …${b.slice(Math.max(0, k - 50), k + 50)}…`;
+          };
+          const cmp = (pa, pb, pfx) => {
+            if (diffs.length >= 12) return;
+            if (JSON.stringify(pa) === JSON.stringify(pb)) return;
+            if (typeof pa === 'string' && typeof pb === 'string') { diffs.push(`${pfx}: ${strCtx(pa, pb)}`); return; }
+            if (typeof pa !== 'object' || typeof pb !== 'object' || !pa || !pb) { diffs.push(`${pfx}: ${JSON.stringify(pa)?.slice(0, 80)} → ${JSON.stringify(pb)?.slice(0, 80)}`); return; }
+            for (const k of new Set([...Object.keys(pa), ...Object.keys(pb)])) cmp(pa[k], pb[k], `${pfx}.${k}`);
+          };
+          cmp(prev, cur, `span${i}("${out.spans[i].name.slice(0, 20)}")`);
+          if (diffs.length) console.warn('[render-cache] first drifted span, field diff (previous → current):\n' + diffs.join('\n'));
+        }
+      }
+      out.driftReport = { defsChanged, settingsChanged, stepsDrift, prevDrift, comparable };
+    } catch (e) { console.warn('[render-cache] drift report failed:', e?.message); }
+  }
+
+  // Record THIS plan for the next comparison. Sample = payload of the first
+  // span that currently misses (most likely to drift again), else span 0.
+  try {
+    const si = Math.max(0, out.spans.findIndex(s => !s.cached));
+    await window.sbsNative.writeFile(lastPath, JSON.stringify({
+      when: new Date().toISOString(),
+      settings: out.settingsKey, defs: out.defsKey,
+      spans: out.spans.map(s => ({ name: s.name, key: s.key, prevH: s._prevH, stepsH: s._stepsH })),
+      sample: out.spans.length ? { index: si, payload: _spanPayload(out.spans[si], out).full } : null,
+    }), 'utf8');
+  } catch { /* best-effort */ }
 }
 
 /**
@@ -443,6 +527,17 @@ export async function renderMissingSegments({ onProgress, signal, force = false,
         _noAutoSync: true,
       });
       const bytes = new Uint8Array(await res.blob.arrayBuffer());
+      // RE-KEY FROM SETTLED STATE (V0.3.2.21): activating the span's steps
+      // during the render can rewrite their data (overlay self-heal, bonded-
+      // shape sync, narration stamps). The next plan will fingerprint THAT
+      // settled form — so the file must be named by it, not by the pre-render
+      // key. Filing under stale keys is why back-to-back exports missed 100%.
+      const preKey = span.key;
+      await _keySpan(span, plan);
+      if (span.key !== preKey) {
+        span.file = `${plan.dir}/seg-${span.key}.mp4`;
+        console.log(`[render-cache] "${span.name}" re-keyed post-render ${preKey} → ${span.key} (step data settled during render)`);
+      }
       let w = await window.sbsNative.writeFile(`${plan.dir}/seg-${span.key}.mp4`, bytes, null);
       if (!w?.ok) throw new Error(w?.error || 'mp4 write failed');
       // Sidecar: duration + step offsets INSIDE the segment (assembly needs
@@ -497,6 +592,7 @@ export async function planWithCacheStatus() {
     if (span.cached) hits++;
   }
   const out = { ...plan, dir, hits, misses: plan.spans.length - hits };
+  if (dir) await _reportPlanDrift(out, dir);
 
   // WHY-INVALIDATED report (V0.3.2.20): when most of the cache missed, diff
   // the current key inputs against the ones recorded at the last successful
