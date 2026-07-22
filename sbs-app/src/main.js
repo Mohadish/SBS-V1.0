@@ -1207,6 +1207,28 @@ state.on('save:progress', (p) => {
     bar.style.width = '100%'; _saveOvHideT = setTimeout(() => { _saveOv.style.display = 'none'; }, 6000); }
 });
 
+// ── Auto-backup (V0.3.2.18) ──────────────────────────────────────────────────
+// Every 10 minutes, if there are unsaved changes (and no export is running),
+// write a rolling <name>.autosave.sbsproj next to the project. Openable like
+// any project — after a crash, File→Open the .autosave file and you've lost
+// at most 10 minutes. Never touches the real file or the unsaved flag.
+let _autosaveBusy = false;
+setInterval(async () => {
+  if (_autosaveBusy) return;
+  if (!state.get('projectDirty') || state.get('_exporting') || !state.get('projectPath')) return;
+  _autosaveBusy = true;
+  try {
+    const { autosaveBackup } = await import('./io/project.js');
+    const r = await autosaveBackup();
+    if (r.saved) setStatus(`Auto-backup saved (${r.mb} MB) — ${r.path.split(/[\\/]/).pop()}`, 'info', 4000);
+    else if (!r.skipped) console.warn('[autosave] failed:', r.error);
+  } catch (e) {
+    console.warn('[autosave] error:', e?.message);
+  } finally {
+    _autosaveBusy = false;
+  }
+}, 10 * 60 * 1000);
+
 window.sbsFix = window.sbsFix || {};
 // Ghost text editor (stuck editable text box floating over every step):
 // force-commit + tear it down. window.sbsFix.textEditor()

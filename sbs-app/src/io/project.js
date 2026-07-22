@@ -333,6 +333,24 @@ async function _encodeProjectBytes(jsonString, onProgress = null) {
 }
 
 /**
+ * AUTO-BACKUP (V0.3.2.18) — write the full current project to a rolling
+ * <name>.autosave.sbsproj next to the real file (openable like any project;
+ * NEVER touches the main file or the dirty flag). Born from a renderer crash
+ * that cost three hours of unsaved work. Uses the streaming encoder — safe at
+ * any project size.
+ */
+export async function autosaveBackup() {
+  const pp = state.get('projectPath');
+  if (!pp || !window.sbsNative?.writeFile) return { skipped: true };
+  steps.flushSync();
+  const project = serialize();
+  const { bytes } = await _encodeProjectStream(project, null);
+  const path = pp.replace(/\.sbsproj$/i, '') + '.autosave.sbsproj';
+  const r = await window.sbsNative.writeFile(path, bytes, null);
+  return { saved: !!r?.ok, path, mb: (bytes.length / 1e6).toFixed(1), error: r?.error };
+}
+
+/**
  * STREAMING project encoder (V0.3.2.17). Serializes the project INTO the gzip
  * stream piece by piece — per top-level section, and per-STEP for the heavy
  * steps array — so no single giant JSON string is ever built. V8 caps any one
