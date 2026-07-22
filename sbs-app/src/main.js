@@ -729,6 +729,18 @@ window.sbsRenderPlan = async () => {
   return p;
 };
 
+// CACHE JANITOR (V0.3.2.26) — delete _rendercache segments no plan references.
+// Runs automatically after every successful export; manual sweep from here.
+// Refuses while steps/chapters are hidden (their segments are NOT orphans) —
+// override with {force:true} if you know what you're doing.
+//   await window.sbsCachePurge()
+window.sbsCachePurge = async (opts = {}) => {
+  const rc = await import('./systems/render-cache.js');
+  const p = await rc.planWithCacheStatus();
+  if (!p.dir) { console.warn('[cache-purge] save the project first — no cache dir.'); return null; }
+  return rc.purgeOrphans(p, opts);
+};
+
 // PROOF-OF-SEAM (V0.3.2.1) — the step-render-cache's foundational experiment.
 // Renders step K and step K+1 as SEPARATE video segments plus one contiguous
 // reference, into <project folder>/_seamtest/. Offline we ffmpeg-concat

@@ -515,9 +515,51 @@ export async function assembleFromCache({ onProgress, signal, output, force = fa
   // Step markers in playable order — the .sbsproc manifest consumes these.
   const stepMarkers = plan.spans.flatMap(span =>
     span.steps.map(s => ({ stepId: s.id, timeInMs: Math.round(markersByStepId.get(s.id) ?? 0) })));
+  // Janitor (V0.3.2.26): the export succeeded, the plan is the truth — sweep
+  // segment files no plan references anymore. Best-effort, never fatal.
+  try { await purgeOrphans(plan); } catch (e) { console.warn('[render-cache] purge failed:', e?.message); }
   return { path: outPath, totalMs, segments: plan.spans.length,
            reused: plan.spans.length - renderedCount, rendered: renderedCount,
            headers: !!(hdrListPath || boxFilters.length), timings, stepMarkers };
+}
+
+/**
+ * Delete orphaned segment files — cache entries no current plan references
+ * (V0.3.2.26). Old fingerprints pile up: every edit re-keys its segment and
+ * strands the previous file; an epoch bump strands everything. Runs
+ * automatically after each successful assembly, BUT only when nothing is
+ * hidden: hidden chapters/steps are excluded from the plan, and their
+ * perfectly valid cached segments would read as orphans and be destroyed —
+ * hiding chapters for a test export must never cost the main cache.
+ * Manual: await window.sbsCachePurge()  (add {force:true} to override the
+ * hidden-content guard).
+ */
+export async function purgeOrphans(plan, { force = false } = {}) {
+  if (!plan?.dir || !window.sbsNative?.listDir || !window.sbsNative?.deletePath) return { skipped: 'unavailable' };
+  if (!force) {
+    const anyHiddenStep = (state.get('steps') || []).some(s => s && !s.isBaseStep && s.hidden);
+    const chapItems = state.get('chapters')?.items || state.get('chapters') || [];
+    const anyHiddenChapter = Array.isArray(chapItems) && chapItems.some(c => c?.hidden);
+    if (anyHiddenStep || anyHiddenChapter) {
+      console.log('[render-cache] purge skipped — hidden steps/chapters present (their cached segments are NOT orphans). Override: await window.sbsCachePurge({force:true})');
+      return { skipped: 'hidden-content' };
+    }
+  }
+  const entries = await window.sbsNative.listDir(plan.dir);
+  if (!Array.isArray(entries)) return { skipped: 'listDir failed' };
+  const keep = new Set();
+  for (const s of plan.spans) { keep.add(`seg-${s.key}.mp4`); keep.add(`seg-${s.key}.json`); }
+  let n = 0, bytes = 0;
+  for (const f of entries) {
+    if (f.isDir) continue;
+    if (!/^seg-[0-9a-f]{16}\.(mp4|json)$/.test(f.name)) continue;   // segments only — never intermediates/metadata
+    if (keep.has(f.name)) continue;
+    const r = await window.sbsNative.deletePath(`${plan.dir}/${f.name}`);
+    if (r?.ok) { n++; bytes += f.size || 0; }
+  }
+  const mb = +(bytes / 1e6).toFixed(1);
+  console.log(`[render-cache] purge: ${n} orphaned file(s) removed, ${mb} MB freed (${plan.spans.length} live segment(s) kept)`);
+  return { deleted: n, mb };
 }
 
 /**
