@@ -4633,9 +4633,19 @@ async function _onExportTabStart() {
     // ⚡ Incremental path (V0.3.2.14): render only changed segments, stitch the
     // rest from the cache, composite headers + bar, mux audio. mp4-only; falls
     // through to the classic full render when unchecked / unavailable.
-    const _useCache = exp.useRenderCache !== false
-      && (exp.outputFormat || 'mp4') === 'mp4'
-      && !!window.sbsNative?.ffmpeg;
+    const _fmtOk = (exp.outputFormat || 'mp4') === 'mp4';
+    const _ff    = !!window.sbsNative?.ffmpeg;
+    const _useCache = exp.useRenderCache !== false && _fmtOk && _ff;
+    // LOUD gate (V0.3.2.24): a silent fallback to the classic full render
+    // cost three 30-minute mystery re-renders. Name the path + the reason.
+    console.log(`[export] path: ${_useCache ? 'INCREMENTAL (segment cache)' : 'CLASSIC full render'} — cacheEnabled=${exp.useRenderCache !== false} format=${exp.outputFormat || 'mp4'} ffmpegBridge=${_ff}`);
+    if (!_useCache) {
+      const why = exp.useRenderCache === false ? 'the ⚡ checkbox is off'
+        : !_fmtOk ? `format is "${exp.outputFormat}" — cache is mp4-only`
+        : 'ffmpeg bridge missing — full app restart needed';
+      setStatus(`⚠ Render cache SKIPPED: ${why}. Running classic full render.`, 'warning', 12000);
+      set(`Classic FULL render (cache skipped: ${why})…`);
+    }
     if (_useCache) {
       const rc = await import('../systems/render-cache.js');
       const force = !!document.getElementById('exp-force-full')?.checked;
