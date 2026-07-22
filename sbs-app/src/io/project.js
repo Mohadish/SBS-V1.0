@@ -604,8 +604,11 @@ export async function pickProjectFile() {
  * @returns {object}     project in createEmptyProject() shape
  */
 export function parseProjectFile(text) {
-  const raw = JSON.parse(text);
+  return _migrateParsedProject(JSON.parse(text));
+}
 
+/** Shared migration tail (used by both the normal and the streaming parser). */
+function _migrateParsedProject(raw) {
   // Legacy POC format (has projectFormat:'sbsproj' at root)
   if (raw.projectFormat === 'sbsproj') {
     return _migrateLegacyPoc(raw);
@@ -617,6 +620,106 @@ export function parseProjectFile(text) {
   for (const sectionName of sections) {
     if (project[sectionName]) {
       project[sectionName] = migrateSection(sectionName, project[sectionName]);
+    }
+  }
+  return project;
+}
+
+/** gunzip → BYTES (no string — see the streaming parser below). */
+async function _gunzipToBytes(bytes) {
+  const ds = new DecompressionStream('gzip');
+  const w  = ds.writable.getWriter();
+  w.write(bytes);
+  w.close();
+  return new Uint8Array(await new Response(ds.readable).arrayBuffer());
+}
+
+/**
+ * STREAMING PARSER (V0.3.2.19) — parse a project too big for JSON.parse.
+ * V8 caps any one string at ~512MB; a 546MB project saved fine (streamed
+ * save, V0.3.2.17) and then COULD NOT OPEN. This scanner walks the UTF-8
+ * bytes (string/escape-aware depth tracking), extracts each top-level
+ * section — and each STEP individually — as a byte range, and JSON.parses
+ * every piece on its own. No string ever approaches the limit. Validated
+ * against the real 546MB file offline (228 steps, 9.7s) before shipping.
+ */
+function _parseProjectBytesStreaming(s) {
+  const dec = new TextDecoder();
+  let i = 0;
+  const err = (m) => { throw new Error(`stream-parse: ${m} @ byte ${i}`); };
+  const ws = () => { while (i < s.length && (s[i] === 0x20 || s[i] === 0x09 || s[i] === 0x0A || s[i] === 0x0D)) i++; };
+  const scanString = () => {
+    i++;
+    while (i < s.length) {
+      const c = s[i];
+      if (c === 0x5C) { i += 2; continue; }
+      if (c === 0x22) { i++; return; }
+      i++;
+    }
+    err('unterminated string');
+  };
+  const scanValue = () => {
+    ws();
+    const start = i;
+    const c = s[i];
+    if (c === 0x22) { scanString(); return [start, i]; }
+    if (c === 0x7B || c === 0x5B) {
+      let depth = 0;
+      while (i < s.length) {
+        const b = s[i];
+        if (b === 0x22) { scanString(); continue; }
+        if (b === 0x7B || b === 0x5B) { depth++; i++; continue; }
+        if (b === 0x7D || b === 0x5D) { depth--; i++; if (!depth) return [start, i]; continue; }
+        i++;
+      }
+      err('unterminated object/array');
+    }
+    while (i < s.length && s[i] !== 0x2C && s[i] !== 0x7D && s[i] !== 0x5D && s[i] > 0x20) i++;
+    return [start, i];
+  };
+  const parseRange = (r) => JSON.parse(dec.decode(s.subarray(r[0], r[1])));
+
+  ws();
+  if (s[i] !== 0x7B) err('project must start with {');
+  i++;
+  const project = {};
+  for (;;) {
+    ws();
+    if (s[i] === 0x7D) { i++; break; }
+    if (s[i] === 0x2C) { i++; continue; }
+    if (s[i] !== 0x22) err('expected key');
+    const k0 = i; scanString();
+    const key = JSON.parse(dec.decode(s.subarray(k0, i)));
+    ws(); if (s[i] !== 0x3A) err('expected :'); i++;
+    ws();
+    if (key === 'steps' && s[i] === 0x7B) {
+      i++;
+      const stepsObj = {};
+      for (;;) {
+        ws();
+        if (s[i] === 0x7D) { i++; break; }
+        if (s[i] === 0x2C) { i++; continue; }
+        const sk0 = i; scanString();
+        const sk = JSON.parse(dec.decode(s.subarray(sk0, i)));
+        ws(); if (s[i] !== 0x3A) err('expected : in steps'); i++;
+        ws();
+        if (sk === 'items' && s[i] === 0x5B) {
+          i++;
+          const items = [];
+          for (;;) {
+            ws();
+            if (s[i] === 0x5D) { i++; break; }
+            if (s[i] === 0x2C) { i++; continue; }
+            items.push(parseRange(scanValue()));
+          }
+          stepsObj.items = items;
+        } else {
+          stepsObj[sk] = parseRange(scanValue());
+        }
+      }
+      project.steps = stepsObj;
+    } else {
+      project[key] = parseRange(scanValue());
     }
   }
   return project;
@@ -1370,14 +1473,23 @@ export function applySpecFieldsToNodes(specNode, nodeById, parentSpec = null) {
  */
 export async function loadProject(fileOrText, filePath = null) {
   // A File/Blob may be gzipped (new) or plain JSON (legacy) — read its bytes and
-  // let _decodeProjectBytes auto-detect. A raw string is already decoded text.
-  let text;
+  // auto-detect. A raw string is already decoded text. Projects whose JSON
+  // exceeds ~400MB take the STREAMING parser (V0.3.2.19) — beyond ~512MB a
+  // single JS string is impossible, so the old decode-then-JSON.parse path
+  // simply cannot open large files.
+  let project;
   if (typeof fileOrText === 'string') {
-    text = fileOrText;
+    project = parseProjectFile(fileOrText);
   } else {
-    text = await _decodeProjectBytes(new Uint8Array(await fileOrText.arrayBuffer()));
+    const fileBytes = new Uint8Array(await fileOrText.arrayBuffer());
+    const raw = _isGzipBytes(fileBytes) ? await _gunzipToBytes(fileBytes) : fileBytes;
+    if (raw.length > 400_000_000) {
+      console.log(`[load] large project (${(raw.length / 1e6).toFixed(0)} MB JSON) — streaming parse`);
+      project = _migrateParsedProject(_parseProjectBytesStreaming(raw));
+    } else {
+      project = parseProjectFile(new TextDecoder().decode(raw));
+    }
   }
-  const project = parseProjectFile(text);
 
   clearIsolate();   // isolate is runtime-only — a freshly-loaded project starts un-isolated
   applyProjectToState(project);
