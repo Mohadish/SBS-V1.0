@@ -1049,7 +1049,10 @@ async function _synthesizeMissingClips(stepsToPlay, onProgress, signal) {
     if (!text) continue;
     withText++;
     const n = s.narration;
-    const matches = n?.text === text && n?.voiceId === voiceId && n?.speed === speed;
+    // Compare TRIMMED-to-TRIMMED (V0.3.2.22). The stamp below stores trimmed
+    // text; comparing raw stored text against the trimmed scan value made any
+    // step with stray whitespace re-synthesize on EVERY export, forever.
+    const matches = n?.text?.trim() === text && n?.voiceId === voiceId && n?.speed === speed;
     const fresh   = matches && (n?.dataUrl || n?.dataFile);
     if (fresh) { alreadyCached++; continue; }
     todo.push(s);
@@ -1063,7 +1066,7 @@ async function _synthesizeMissingClips(stepsToPlay, onProgress, signal) {
     onProgress?.({ current: 0, total: 0, stepName: `Synthesizing ${i + 1}/${todo.length}: ${s.name}` });
     console.log(`[export] pre-synth ${i + 1}/${todo.length}: "${s.name}"`);
     try {
-      const text = s.narration.text;
+      const text = s.narration.text.trim();   // stamp what the freshness check compares
       const out  = await ttsSynthesize(text, voiceId, { speed });
       const dataFile = await narrationCache
         .saveClipToDisk({

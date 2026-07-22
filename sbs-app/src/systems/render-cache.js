@@ -32,9 +32,26 @@ import { state } from '../core/state.js';
 import { steps } from './steps.js';
 
 /** Bump when renderer/exporter changes make previously-cached pixels stale. */
-export const RENDER_CACHE_EPOCH = 1;
+export const RENDER_CACHE_EPOCH = 2;   // 2: canonical hashing (V0.3.2.22)
 
 const _groupKeyOf = (s) => s.groupHead ? s.id : (s.groupId || null);
+
+/** Canonical form for hashing (V0.3.2.22): object keys sorted, numbers
+ *  rounded to 1e-4. Several subsystems rewrite step data with identical
+ *  visual content but different bytes — overlay re-serialization shuffles
+ *  Konva attr insertion order, bonded-shape sync re-derives floats, synth
+ *  passes replace whole narration objects. None of that noise may ever
+ *  change a fingerprint; only content that changes pixels should. */
+function _canon(v) {
+  if (typeof v === 'number') return Number.isFinite(v) ? Math.round(v * 1e4) / 1e4 : v;
+  if (Array.isArray(v)) return v.map(_canon);
+  if (v && typeof v === 'object') {
+    const o = {};
+    for (const k of Object.keys(v).sort()) o[k] = _canon(v[k]);
+    return o;
+  }
+  return v;
+}
 
 /** Step as it matters to pixels: strip volatile / non-rendered fields. */
 function _stepKeyView(s) {
@@ -42,11 +59,24 @@ function _stepKeyView(s) {
   delete c.thumbnail;
   delete c.renderedDurationMs;      // measurement, not content (durations enter via the chapter vector)
   if (c.narration) {
-    const n = { ...c.narration };
-    delete n.dataUrl; delete n.dataFile; delete n.mime;   // audio body isn't in the segment
-    c.narration = n;                                       // text + durationMs stay (hold timing)
+    // Fixed-shape view: the narration object is wholesale-replaced by the
+    // synth/precache passes (audio body, property order, re-measured
+    // duration) without the audible content changing. Only what affects
+    // pixels/timing keys: the spoken text + hold duration.
+    c.narration = {
+      text: String(c.narration.text || '').trim(),
+      voiceId: c.narration.voiceId ?? null,
+      speed: c.narration.speed ?? 1,
+      durationMs: Math.round(c.narration.durationMs || 0),
+    };
   }
-  return c;
+  // Overlay is a serialized Konva-stage string — parse it so canonicalization
+  // reaches inside (activation-time reflow/heal/sync rewrites reorder attrs
+  // and nudge floats on visually identical overlays).
+  if (typeof c.overlay === 'string' && c.overlay) {
+    try { c.overlay = JSON.parse(c.overlay); } catch { /* unparseable → keys as raw string */ }
+  }
+  return _canon(c);
 }
 
 async function _sha1hex(str) {
@@ -132,7 +162,7 @@ function _spanPayload(span, plan) {
   const prevJson  = JSON.stringify(span._prevRef ? _stepKeyView(span._prevRef) : null);
   const stepsJson = JSON.stringify(span.steps.map(_stepKeyView));
   return { prevJson, stepsJson,
-    full: `{"prev":${prevJson},"steps":${stepsJson},"settings":${JSON.stringify(plan.settingsKey)},"defs":${JSON.stringify(plan.defsKey)}}` };
+    full: `{"prev":${prevJson},"steps":${stepsJson},"settings":${JSON.stringify(_canon(plan.settingsKey))},"defs":${JSON.stringify(_canon(plan.defsKey))}}` };
 }
 
 /** Drift forensics (V0.3.2.21): compare this plan against the previous one
@@ -517,8 +547,15 @@ export async function renderMissingSegments({ onProgress, signal, force = false,
     onProgress?.({ current: done + 1, total: misses.length, stepName: span.name });
     try {
       const isFirst = span.from === 0;
+      // Honor the project's export settings (V0.3.2.22) — without these the
+      // segments silently rendered at the built-in defaults (50fps/400ms/8M)
+      // while the cache key claimed the configured values.
+      const exp = state.get('export') || {};
       const res = await exportTimelineVideo({
         format: 'mp4', offline: true,
+        fps:        Number.isFinite(Number(exp.fps))          ? Number(exp.fps)          : 50,
+        stepHoldMs: Number.isFinite(Number(exp.stepHoldMs))   ? Number(exp.stepHoldMs)   : 800,
+        bitrate:    Number.isFinite(Number(exp.videoBitrate)) ? Number(exp.videoBitrate) : 4_000_000,
         includeNarration: true,           // narration-TIMED holds…
         _noAudioTrack: true,              // …but no audio in the file
         _noHeader: true,                  // header layer composites at assembly
@@ -527,17 +564,6 @@ export async function renderMissingSegments({ onProgress, signal, force = false,
         _noAutoSync: true,
       });
       const bytes = new Uint8Array(await res.blob.arrayBuffer());
-      // RE-KEY FROM SETTLED STATE (V0.3.2.21): activating the span's steps
-      // during the render can rewrite their data (overlay self-heal, bonded-
-      // shape sync, narration stamps). The next plan will fingerprint THAT
-      // settled form — so the file must be named by it, not by the pre-render
-      // key. Filing under stale keys is why back-to-back exports missed 100%.
-      const preKey = span.key;
-      await _keySpan(span, plan);
-      if (span.key !== preKey) {
-        span.file = `${plan.dir}/seg-${span.key}.mp4`;
-        console.log(`[render-cache] "${span.name}" re-keyed post-render ${preKey} → ${span.key} (step data settled during render)`);
-      }
       let w = await window.sbsNative.writeFile(`${plan.dir}/seg-${span.key}.mp4`, bytes, null);
       if (!w?.ok) throw new Error(w?.error || 'mp4 write failed');
       // Sidecar: duration + step offsets INSIDE the segment (assembly needs
@@ -560,6 +586,41 @@ export async function renderMissingSegments({ onProgress, signal, force = false,
       if (e?.name === 'AbortError') throw e;
     }
   }
+  // FINAL SETTLE PASS (V0.3.2.22): playback is over — every step has been
+  // activated and the data is as settled as this session gets. A span's steps
+  // can still be mutated AFTER its own render (the lead step belongs to the
+  // previous span; cable arrangements write back onto earlier defining
+  // steps), so keying any earlier is too early. Re-key EVERY cached span now
+  // and re-file any segment whose fingerprint moved — disk ends up keyed
+  // exactly as the next plan will compute, so the next export HITS.
+  let rekeyed = 0;
+  for (const span of plan.spans) {
+    if (!span.cached) continue;
+    const oldKey = span.key;
+    await _keySpan(span, plan);
+    if (span.key === oldKey) continue;
+    try {
+      const mp4 = await window.sbsNative.readFile(`${plan.dir}/seg-${oldKey}.mp4`, 'buffer');
+      const sj  = await window.sbsNative.readFile(`${plan.dir}/seg-${oldKey}.json`, 'utf8');
+      if (!mp4?.ok || !sj?.ok) throw new Error('source segment unreadable');
+      const sc = JSON.parse(sj.data); sc.key = span.key;
+      const b = mp4.data instanceof Uint8Array ? mp4.data : new Uint8Array(mp4.data);
+      let w = await window.sbsNative.writeFile(`${plan.dir}/seg-${span.key}.mp4`, b, null);
+      if (!w?.ok) throw new Error(w?.error || 'mp4 copy failed');
+      w = await window.sbsNative.writeFile(`${plan.dir}/seg-${span.key}.json`, JSON.stringify(sc), 'utf8');
+      if (!w?.ok) throw new Error(w?.error || 'sidecar copy failed');
+      span.file = `${plan.dir}/seg-${span.key}.mp4`;
+      rekeyed++;
+    } catch (e) {
+      // Copy failed → keep pointing at the file that DOES exist so this
+      // run's assembly still works; the next plan will just miss this span.
+      console.warn(`[render-cache] settle re-file of "${span.name}" failed:`, e?.message);
+      span.key = oldKey;
+      span.file = `${plan.dir}/seg-${oldKey}.mp4`;
+    }
+  }
+  if (rekeyed) console.log(`[render-cache] settle pass: ${rekeyed} segment(s) re-filed under settled fingerprints`);
+
   // Record this fill's key inputs so the next plan can NAME the cause of any
   // mass invalidation (V0.3.2.20).
   if (done > 0 && !failed) {
