@@ -2339,6 +2339,27 @@ async function _onExportVideo() {
 
   try {
     await steps.flushSync();
+
+    // ⚡ Incremental path (V0.3.2.25). THIS BUTTON BYPASSED THE SEGMENT CACHE:
+    // the Export tab's Start got the incremental branch in V0.3.2.14 but this
+    // one still called the classic renderer directly — pressing it re-rendered
+    // everything and wrote nothing to _rendercache, with the ⚡ checkbox
+    // silently irrelevant. Same gate + same loud announcement as the tab now.
+    const _fmtOk = (exp.outputFormat || 'mp4') === 'mp4';
+    const _ff    = !!window.sbsNative?.ffmpeg;
+    const _useCache = exp.useRenderCache !== false && _fmtOk && _ff;
+    console.log(`[export] path: ${_useCache ? 'INCREMENTAL (segment cache)' : 'CLASSIC full render'} — cacheEnabled=${exp.useRenderCache !== false} format=${exp.outputFormat || 'mp4'} ffmpegBridge=${_ff}`);
+    if (_useCache) {
+      const rc = await import('../systems/render-cache.js');
+      const r = await rc.assembleFromCache({
+        signal: _exportingCtrl.signal,
+        onProgress: (p) => setStatus(p.total ? `Segment ${p.current}/${p.total}: ${p.stepName}…` : `${p.stepName || 'Working…'}`, 'info', 0),
+      });
+      setStatus(`Incremental export done: reused ${r.reused}, rendered ${r.rendered} → ${r.path}`, 'success', 10000);
+      return;
+    }
+    setStatus(`⚠ Render cache SKIPPED: ${exp.useRenderCache === false ? 'the ⚡ checkbox is off' : !_fmtOk ? `format is "${exp.outputFormat}" — cache is mp4-only` : 'ffmpeg bridge missing — full app restart needed'}. Classic full render…`, 'warning', 12000);
+
     const { blob, extension } = await exportTimelineVideo({
       format:      exp.outputFormat || 'mp4',
       fps:         Number(exp.fps) || 30,
