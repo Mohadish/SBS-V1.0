@@ -1195,7 +1195,9 @@ state.on('save:progress', (p) => {
   _saveOv.style.display = 'block';
   if (p.stage === 'serialize')      { txt.textContent = '💾 Saving — gathering project data…'; bar.style.width = '4%'; }
   else if (p.stage === 'compress')  { const f = p.total ? p.done / p.total : 0;
-    txt.textContent = `💾 Saving — compressing ${Math.round(f * 100)}%  (${mb(p.done)} / ${mb(p.total)})`;
+    txt.textContent = p.unit === 'steps'
+      ? `💾 Saving — compressing step ${p.done}/${p.total} (${Math.round(f * 100)}%)`
+      : `💾 Saving — compressing ${Math.round(f * 100)}%  (${mb(p.done)} / ${mb(p.total)})`;
     bar.style.width = (4 + f * 84) + '%'; }
   else if (p.stage === 'write')     { txt.textContent = `💾 Saving — writing ${mb(p.bytes)} to disk…`; bar.style.width = '92%'; }
   else if (p.stage === 'done')      { txt.textContent = `✓ Saved ${mb(p.bytes)} (${mb(p.rawBytes)} uncompressed) in ${(p.ms / 1000).toFixed(1)}s`;

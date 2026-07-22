@@ -34,6 +34,7 @@ import { steps   }                  from '../systems/steps.js';
 import * as narrationCache           from '../systems/narration-cache.js';
 import { flattenCablesToCascade, ensureSocketBaselines } from '../systems/cables.js';   // V0.3.0.151 cascade migration; V0.3.0.167 socket State-0 backfill
 import { rebuildPrimitive }          from '../systems/primitives.js';   // V0.3.2.6 param-sync on load
+import { cloneShareStrings }         from '../core/clone.js';            // V0.3.2.17 string-limit-proof serialize
 import { clearIsolate }              from '../core/isolate-state.js';
 
 /**
@@ -164,7 +165,7 @@ export function serialize() {
   project.tree.root = treeData ? stripNode(treeData) : null;
 
   // ── Steps ────────────────────────────────────────────────────────────────
-  project.steps.items = JSON.parse(JSON.stringify(state.get('steps') || []));
+  project.steps.items = cloneShareStrings((state.get('steps') || []));
 
   // When narration audio is cached on disk (dataFile present), drop the
   // bulky inline base64 dataUrl from the saved file — the WAV lives in
@@ -176,50 +177,50 @@ export function serialize() {
   }
 
   // ── Chapters ─────────────────────────────────────────────────────────────
-  project.chapters.items = JSON.parse(JSON.stringify(state.get('chapters') || []));
+  project.chapters.items = cloneShareStrings((state.get('chapters') || []));
 
   // ── Camera views ─────────────────────────────────────────────────────────
-  project.cameras.items = JSON.parse(JSON.stringify(state.get('cameraViews') || []));
+  project.cameras.items = cloneShareStrings((state.get('cameraViews') || []));
 
   // ── Color presets + mesh assignments ─────────────────────────────────────
-  project.colors.items       = JSON.parse(JSON.stringify(state.get('colorPresets') || []));
+  project.colors.items       = cloneShareStrings((state.get('colorPresets') || []));
   project.colors.assignments = { ...materials.meshColorAssignments };
   project.colors.defaults    = { ...materials.meshDefaultColors };
 
   // ── Notes ─────────────────────────────────────────────────────────────────
-  project.notes.templates = JSON.parse(JSON.stringify(state.get('noteTemplates') || []));
+  project.notes.templates = cloneShareStrings((state.get('noteTemplates') || []));
   project.notes.presets   = { ...(state.get('notePresets') || {}) };
 
   // ── Selections ────────────────────────────────────────────────────────────
-  project.selections.groups       = JSON.parse(JSON.stringify(state.get('selectionGroups') || []));
+  project.selections.groups       = cloneShareStrings((state.get('selectionGroups') || []));
   project.selections.outlineColor = state.get('selectionOutlineColor') || '#00ffff';
 
   // ── Animation presets ──────────────────────────────────────────────────────
-  project.animationPresets.items = JSON.parse(JSON.stringify(state.get('animationPresets') || []));
+  project.animationPresets.items = cloneShareStrings((state.get('animationPresets') || []));
 
   // ── Headers (project-level overlay) ────────────────────────────────────────
   project.headers = project.headers || { schema_version: 1, items: [] };
-  project.headers.items   = JSON.parse(JSON.stringify(state.get('headerItems')   || []));
+  project.headers.items   = cloneShareStrings((state.get('headerItems')   || []));
   project.headers.locked  = !!state.get('headersLocked');
   project.headers.hidden  = !!state.get('headersHidden');
-  project.headers.default = JSON.parse(JSON.stringify(state.get('headerDefault') || {}));
+  project.headers.default = cloneShareStrings((state.get('headerDefault') || {}));
   project.headers.stepNumberPerChapter = !!state.get('headerStepNumberPerChapter');
 
   // Text style templates — same shape as header items, lives in its
   // own project section so it can be saved/loaded independently and
   // bundled into the unified preset file alongside header items.
   project.styles = project.styles || { schema_version: 1, items: [] };
-  project.styles.items = JSON.parse(JSON.stringify(state.get('styleTemplates') || []));
+  project.styles.items = cloneShareStrings((state.get('styleTemplates') || []));
 
   // Flat-shape templates — project-level polygon library. Instances live
   // as regular tree nodes (type='flatShape', templateId pointer) and
   // round-trip via stripNode like every other tree node.
   project.shapes = project.shapes || { schema_version: 1, items: [] };
-  project.shapes.items  = JSON.parse(JSON.stringify(state.get('shapeTemplates')      || []));
+  project.shapes.items  = cloneShareStrings((state.get('shapeTemplates')      || []));
   // V0.1.85: shape-tab groupings. Tab-only, doesn't touch the tree, so
   // it lives alongside templates in the shapes section. Older files
   // without `groups` load as [] via the default below.
-  project.shapes.groups = JSON.parse(JSON.stringify(state.get('shapeTemplateGroups') || []));
+  project.shapes.groups = cloneShareStrings((state.get('shapeTemplateGroups') || []));
 
   // V0.2.22.38 — Hardware templates. Procedural fastener library; each
   // template carries kind ('screw' for now) + params. Instances live as
@@ -228,7 +229,7 @@ export function serialize() {
   // this section load with hardwareTemplates=[] which is correct: there
   // are no instances to orphan.
   project.hardware = project.hardware || { schema_version: 1, templates: [] };
-  project.hardware.templates = JSON.parse(JSON.stringify(state.get('hardwareTemplates') || []));
+  project.hardware.templates = cloneShareStrings((state.get('hardwareTemplates') || []));
 
   // Cables — 3D wires routed between mesh anchors and free points.
   // The cable list is project-global (topology-hoisted); per-step
@@ -237,7 +238,7 @@ export function serialize() {
   // travel here too so they restore in one shot. See systems/cables.js.
   project.cables = project.cables || { schema_version: 2, items: [] };
   project.cables.schema_version = 2;   // V0.3.0.165 — absolute mm sizing (see MIGRATIONS.cable)
-  project.cables.items          = JSON.parse(JSON.stringify(state.get('cables') || []));
+  project.cables.items          = cloneShareStrings((state.get('cables') || []));
   project.cables.globalScale    = state.get('cableGlobalScale')    ?? 1.0;
   project.cables.globalRadius   = state.get('cableGlobalRadius')   ?? 1.0;   // V0.3.0.161 (legacy; kept for migration)
   project.cables.defaultDiameter = state.get('cableDefaultDiameter') ?? 2.0; // V0.3.0.165 — default for NEW cables
@@ -250,7 +251,7 @@ export function serialize() {
   cfg.backgroundGradient   = JSON.parse(JSON.stringify(
     state.get('backgroundGradient') ?? { enabled: false, color1: '#0f172a', color2: '#1e293b', angleDeg: 180 }
   ));
-  cfg.render               = JSON.parse(JSON.stringify(state.get('render') ?? {}));   // V0.3.0.162 — per-project AO + SSR
+  cfg.render               = cloneShareStrings((state.get('render') ?? {}));   // V0.3.0.162 — per-project AO + SSR
   cfg.solidOverride        = state.get('solidOverride')        ?? false;
   cfg.gridVisible          = state.get('gridVisible')          ?? false;
   cfg.cameraAnimDurationMs = state.get('cameraAnimDurationMs') ?? 1500;
@@ -331,6 +332,49 @@ async function _encodeProjectBytes(jsonString, onProgress = null) {
   return _hasCompression ? await _gzipString(jsonString, onProgress) : new TextEncoder().encode(jsonString);
 }
 
+/**
+ * STREAMING project encoder (V0.3.2.17). Serializes the project INTO the gzip
+ * stream piece by piece — per top-level section, and per-STEP for the heavy
+ * steps array — so no single giant JSON string is ever built. V8 caps any one
+ * string at ~512MB; a large project's stringify crossed it ("RangeError:
+ * Invalid string length") and saving became impossible. Byte-identical output
+ * to JSON.stringify(project). Returns { bytes, rawBytes }.
+ */
+async function _encodeProjectStream(project, onProgress = null) {
+  if (!_hasCompression) {
+    const s = JSON.stringify(project);          // legacy no-gzip envs only (small projects)
+    const b = new TextEncoder().encode(s);
+    return { bytes: b, rawBytes: b.length };
+  }
+  const cs   = new CompressionStream('gzip');
+  const w    = cs.writable.getWriter();
+  const outP = new Response(cs.readable).arrayBuffer();
+  const enc  = new TextEncoder();
+  let rawBytes = 0;
+  const push = async (s) => { const b = enc.encode(s); rawBytes += b.length; await w.write(b); };
+  const keys = Object.keys(project);
+  await push('{');
+  for (let ki = 0; ki < keys.length; ki++) {
+    const k = keys[ki];
+    await push(`${JSON.stringify(k)}:`);
+    const v = project[k];
+    if (k === 'steps' && v && Array.isArray(v.items)) {
+      await push(`{"schema_version":${JSON.stringify(v.schema_version ?? 1)},"items":[`);
+      for (let i = 0; i < v.items.length; i++) {
+        await push((i ? ',' : '') + JSON.stringify(v.items[i]));
+        onProgress?.(i + 1, v.items.length);
+      }
+      await push(']}');
+    } else {
+      await push(JSON.stringify(v));
+    }
+    if (ki < keys.length - 1) await push(',');
+  }
+  await push('}');
+  await w.close();
+  return { bytes: new Uint8Array(await outP), rawBytes };
+}
+
 /** Bytes read from disk → project JSON string, auto-detecting gzip vs plain. */
 async function _decodeProjectBytes(bytes) {
   if (_isGzipBytes(bytes)) {
@@ -379,10 +423,10 @@ export async function saveProject(options = {}) {
   // Minified (no pretty-print). Whitespace was ~70% of large files; gzip on the
   // Electron path then crushes the cross-step redundancy (~30-40x total). The
   // file stays valid JSON, so older app builds without gzip still open it.
-  const content  = JSON.stringify(project);
-  state.emit('save:progress', { stage: 'compress', done: 0, total: content.length });
-  const bytes    = await _encodeProjectBytes(content,    // gzip in the renderer
-    (done, total) => state.emit('save:progress', { stage: 'compress', done, total }));
+  // V0.3.2.17 — streamed: no whole-project JSON string is ever built (V8 max
+  // string ~512MB made big-project saves impossible). Progress = steps written.
+  const { bytes, rawBytes } = await _encodeProjectStream(project,
+    (done, total) => state.emit('save:progress', { stage: 'compress', done, total, unit: 'steps' }));
   const filename = suggestedName.endsWith('.sbsproj')
     ? suggestedName
     : `${suggestedName.replace(/\.(json|sbsproj)$/i, '')}.sbsproj`;
@@ -406,7 +450,7 @@ export async function saveProject(options = {}) {
     if (!writeResult?.ok) { state.emit('save:progress', { stage: 'error', message: writeResult?.error || 'Write failed' }); throw new Error(writeResult?.error || 'Write failed'); }
     _setProjectMeta(savePath);
     state.markClean();
-    state.emit('save:progress', { stage: 'done', bytes: bytes.length, rawBytes: content.length, ms: performance.now() - _t0 });
+    state.emit('save:progress', { stage: 'done', bytes: bytes.length, rawBytes, ms: performance.now() - _t0 });
     state.emit('project:saved', { path: savePath });
     return { saved: true, path: savePath };
   }
@@ -425,7 +469,7 @@ export async function saveProject(options = {}) {
       state.setState({ fsaFileHandle: saveHandle });   // persist for next auto-save
       _setProjectMeta(saveHandle.name);
       state.markClean();
-      state.emit('save:progress', { stage: 'done', bytes: bytes.length, rawBytes: content.length, ms: performance.now() - _t0 });
+      state.emit('save:progress', { stage: 'done', bytes: bytes.length, rawBytes, ms: performance.now() - _t0 });
       return { saved: true, handle: saveHandle };
     } catch (err) {
       state.emit('save:progress', { stage: err.name === 'AbortError' ? 'cancelled' : 'error', message: err?.message });
@@ -437,7 +481,7 @@ export async function saveProject(options = {}) {
   // ── Path 3: <a download> fallback ────────────────────────────────────────
   _triggerDownload(filename, bytes, 'application/gzip');
   state.markClean();
-  state.emit('save:progress', { stage: 'done', bytes: bytes.length, rawBytes: content.length, ms: performance.now() - _t0 });
+  state.emit('save:progress', { stage: 'done', bytes: bytes.length, rawBytes, ms: performance.now() - _t0 });
   return { saved: true, downloaded: true };
 }
 
