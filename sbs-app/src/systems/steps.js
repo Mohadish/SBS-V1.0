@@ -3188,6 +3188,13 @@ function cleanupFolderGroups(rootNode, object3dById) {
   });
 }
 
+// Session definition registry for primitives (V0.3.2.27): id → the params
+// last seen on a LIVE node. A tree rebuild from a step captured before a
+// primitive existed drops that node; a later step then recreates it from its
+// own frozen spec — a time capsule with historical dimensions. The registry
+// survives the drop, so recreation restores the CURRENT definition.
+const _primDefRegistry = new Map();
+
 /**
  * Rebuild the Three.js hierarchy and data tree from a serialised tree spec.
  * Mirrors v0.266's rebuildTreeFromSpec:
@@ -3439,6 +3446,7 @@ function rebuildFromTreeSpec(spec, nodeById, object3dById, parentObject3d) {
     // mesh from kind + params + quality (restored from the spec if the live
     // node somehow lost them, e.g. when restored from a snapshot alone).
     node = nodeById.get(spec.id);
+    let recreated = false;
     if (!node) {
       // Procedural + self-contained (the spec carries primKind/primParams/quality),
       // so materialise it from the spec when no live node exists yet — e.g. a
@@ -3447,18 +3455,44 @@ function rebuildFromTreeSpec(spec, nodeById, object3dById, parentObject3d) {
       // branch's create-from-spec, so the box no longer vanishes on reload.
       node = { id: spec.id, type: 'primitive' };
       nodeById.set(spec.id, node);
+      recreated = true;
     }
     node.name         = spec.name || node.name;
     node.localVisible = spec.localVisible !== false;
-    // Primitive shape params are STRUCTURAL (not per-step animated). Use the spec
-    // only as a FALLBACK when the live node lost them — otherwise an unconditional
-    // overwrite from a stale snapshot reset a resized box back to default dimensions
-    // on load (the live node already carries the correct saved params).
+    // Primitive shape params are STRUCTURAL (definition-level, not per-step
+    // animated). Steps freeze a COPY of the params at capture time, so a spec
+    // is a time capsule — never authoritative. Priority for a recreated node
+    // (V0.3.2.27): the session definition registry (last params seen on the
+    // LIVE node) → spec as last resort. Recreating from the spec alone is how
+    // playback silently reverted primitives to historical dimensions (the
+    // "Cylinder resets to defaults" persist bug + render-cache defs churn).
+    if (recreated) {
+      const def = _primDefRegistry.get(spec.id);
+      if (def) {
+        node.primKind    = def.primKind;
+        node.primParams  = def.primParams;
+        node.primQuality = def.primQuality;
+        node.primLinkId  = def.primLinkId;
+        node.baseAtOrigin = def.baseAtOrigin;
+        console.log(`[steps] primitive "${node.name || spec.id}" recreated from the session definition registry (live params preserved)`);
+      } else {
+        console.warn(`[steps] primitive "${node.name || spec.id}" recreated from a STEP SPEC — params may be historical (no live definition seen this session)`);
+      }
+    }
     if (spec.primKind    && !node.primKind)              node.primKind    = spec.primKind;
     if (spec.primParams  && !node.primParams)            node.primParams  = spec.primParams;
     if (spec.primQuality != null && node.primQuality == null) node.primQuality = spec.primQuality;
     if (spec.primLinkId  && !node.primLinkId)            node.primLinkId  = spec.primLinkId;
     if (spec.baseAtOrigin != null && node.baseAtOrigin == null) node.baseAtOrigin = spec.baseAtOrigin;
+    // Record the definition every time we see the node alive — the registry
+    // survives tree rebuilds that drop the node itself.
+    if (node.primParams) {
+      _primDefRegistry.set(node.id, {
+        primKind: node.primKind, primParams: node.primParams,
+        primQuality: node.primQuality, primLinkId: node.primLinkId,
+        baseAtOrigin: node.baseAtOrigin,
+      });
+    }
     node.children     = [];
     const obj = ensurePrimitiveObject3D(node);
     if (obj) {
