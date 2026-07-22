@@ -544,6 +544,16 @@ export async function assembleFromCache({ onProgress, signal, output, force = fa
  */
 export async function purgeOrphans(plan, { force = false } = {}) {
   if (!plan?.dir || !window.sbsNative?.listDir || !window.sbsNative?.deletePath) return { skipped: 'unavailable' };
+  // ZERO-OVERLAP GUARD (V0.3.2.29): if the current plan matches NOTHING on
+  // disk (e.g. definitions were just edited and no export has run since),
+  // the keep-set is empty and a purge — even a forced one — would sweep the
+  // entire cache including segments that are one export away from being the
+  // live set's history. Purge only makes sense against a plan that owns at
+  // least part of the disk. (Auto-purge after an export always does.)
+  if (!plan.hits) {
+    console.log('[render-cache] purge skipped — the current plan matches nothing on disk (edit pending?). Export first, then purge.');
+    return { skipped: 'no-overlap' };
+  }
   if (!force) {
     const anyHiddenStep = (state.get('steps') || []).some(s => s && !s.isBaseStep && s.hidden);
     const chapItems = state.get('chapters')?.items || state.get('chapters') || [];
