@@ -342,11 +342,21 @@ async function _encodeProjectBytes(jsonString, onProgress = null) {
 export async function autosaveBackup() {
   const pp = state.get('projectPath');
   if (!pp || !window.sbsNative?.writeFile) return { skipped: true };
+  // Announce it (V0.3.2.36). This used to run silently with onProgress=null,
+  // so on a big project the UI just froze mid-action for several seconds with
+  // no explanation. Same overlay as a manual save, labelled as a backup.
+  const t0 = Date.now();
+  state.emit('save:progress', { stage: 'serialize', autosave: true });
   steps.flushSync();
   const project = serialize();
-  const { bytes } = await _encodeProjectStream(project, null);
+  const { bytes, rawBytes } = await _encodeProjectStream(project,
+    (done, total) => state.emit('save:progress', { stage: 'compress', done, total, unit: 'steps', autosave: true }));
   const path = pp.replace(/\.sbsproj$/i, '') + '.autosave.sbsproj';
+  state.emit('save:progress', { stage: 'write', bytes: bytes.length, autosave: true });
   const r = await window.sbsNative.writeFile(path, bytes, null);
+  state.emit('save:progress', r?.ok
+    ? { stage: 'done', bytes: bytes.length, rawBytes, ms: Date.now() - t0, autosave: true }
+    : { stage: 'error', message: r?.error || 'write failed', autosave: true });
   return { saved: !!r?.ok, path, mb: (bytes.length / 1e6).toFixed(1), error: r?.error };
 }
 

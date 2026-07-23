@@ -1205,14 +1205,15 @@ state.on('save:progress', (p) => {
   const mb  = (n) => (n / 1048576) >= 100 ? Math.round(n / 1048576) + ' MB' : (n / 1048576).toFixed(1) + ' MB';
   clearTimeout(_saveOvHideT);
   _saveOv.style.display = 'block';
-  if (p.stage === 'serialize')      { txt.textContent = '💾 Saving — gathering project data…'; bar.style.width = '4%'; }
+  const what = p.autosave ? '🛟 Auto-backup' : '💾 Saving';
+  if (p.stage === 'serialize')      { txt.textContent = `${what} — gathering project data…`; bar.style.width = '4%'; }
   else if (p.stage === 'compress')  { const f = p.total ? p.done / p.total : 0;
     txt.textContent = p.unit === 'steps'
-      ? `💾 Saving — compressing step ${p.done}/${p.total} (${Math.round(f * 100)}%)`
-      : `💾 Saving — compressing ${Math.round(f * 100)}%  (${mb(p.done)} / ${mb(p.total)})`;
+      ? `${what} — compressing step ${p.done}/${p.total} (${Math.round(f * 100)}%)`
+      : `${what} — compressing ${Math.round(f * 100)}%  (${mb(p.done)} / ${mb(p.total)})`;
     bar.style.width = (4 + f * 84) + '%'; }
-  else if (p.stage === 'write')     { txt.textContent = `💾 Saving — writing ${mb(p.bytes)} to disk…`; bar.style.width = '92%'; }
-  else if (p.stage === 'done')      { txt.textContent = `✓ Saved ${mb(p.bytes)} (${mb(p.rawBytes)} uncompressed) in ${(p.ms / 1000).toFixed(1)}s`;
+  else if (p.stage === 'write')     { txt.textContent = `${what} — writing ${mb(p.bytes)} to disk…`; bar.style.width = '92%'; }
+  else if (p.stage === 'done')      { txt.textContent = `✓ ${p.autosave ? 'Backed up' : 'Saved'} ${mb(p.bytes)} (${mb(p.rawBytes)} uncompressed) in ${(p.ms / 1000).toFixed(1)}s`;
     bar.style.width = '100%'; _saveOvHideT = setTimeout(() => { _saveOv.style.display = 'none'; }, 2600); }
   else if (p.stage === 'cancelled') { _saveOv.style.display = 'none'; }
   else if (p.stage === 'error')     { txt.textContent = `⚠ Save failed: ${p.message || 'unknown error'}`;
@@ -1224,14 +1225,34 @@ state.on('save:progress', (p) => {
 // write a rolling <name>.autosave.sbsproj next to the project. Openable like
 // any project — after a crash, File→Open the .autosave file and you've lost
 // at most 10 minutes. Never touches the real file or the unsaved flag.
-let _autosaveBusy = false;
+// IDLE-GATED (V0.3.2.36): serializing a large project blocks the renderer for
+// seconds. Firing that on a blind timer froze the app mid-action ("it just gets
+// stuck"). Now the backup waits until you've been idle for a few seconds, and
+// keeps waiting while you work — it only ever lands in a natural pause. If you
+// somehow never pause, a hard ceiling forces one so a crash can't cost more
+// than that. window.sbsAutosave.now() / .off() / .status() to drive it manually.
+const AUTOSAVE_EVERY_MS = 10 * 60 * 1000;   // aim for one backup per 10 min of dirty work
+const AUTOSAVE_IDLE_MS  = 6 * 1000;         // "you stopped typing/dragging" threshold
+const AUTOSAVE_MAX_WAIT = 25 * 60 * 1000;   // never postpone longer than this
+let _autosaveBusy = false, _autosaveOff = false;
+let _lastInputAt = Date.now(), _lastBackupAt = Date.now();
+for (const ev of ['pointerdown', 'pointermove', 'keydown', 'wheel']) {
+  window.addEventListener(ev, () => { _lastInputAt = Date.now(); }, { capture: true, passive: true });
+}
 setInterval(async () => {
-  if (_autosaveBusy) return;
+  if (_autosaveBusy || _autosaveOff) return;
   if (!state.get('projectDirty') || state.get('_exporting') || !state.get('projectPath')) return;
+  const now = Date.now();
+  const due = now - _lastBackupAt >= AUTOSAVE_EVERY_MS;
+  if (!due) return;
+  const idle    = now - _lastInputAt >= AUTOSAVE_IDLE_MS;
+  const overdue = now - _lastBackupAt >= AUTOSAVE_MAX_WAIT;
+  if (!idle && !overdue) return;             // you're mid-action — try again shortly
   _autosaveBusy = true;
   try {
     const { autosaveBackup } = await import('./io/project.js');
     const r = await autosaveBackup();
+    _lastBackupAt = Date.now();
     if (r.saved) setStatus(`Auto-backup saved (${r.mb} MB) — ${r.path.split(/[\\/]/).pop()}`, 'info', 4000);
     else if (!r.skipped) console.warn('[autosave] failed:', r.error);
   } catch (e) {
@@ -1239,7 +1260,18 @@ setInterval(async () => {
   } finally {
     _autosaveBusy = false;
   }
-}, 10 * 60 * 1000);
+}, 15 * 1000);   // cheap check; the work itself still happens at most every 10 min
+
+window.sbsAutosave = {
+  now:  async () => { const { autosaveBackup } = await import('./io/project.js'); const r = await autosaveBackup(); _lastBackupAt = Date.now(); return r; },
+  off:  () => { _autosaveOff = true;  console.log('[autosave] disabled for this session — Ctrl+S still works.'); },
+  on:   () => { _autosaveOff = false; _lastBackupAt = Date.now(); console.log('[autosave] enabled.'); },
+  status: () => ({
+    enabled: !_autosaveOff, dirty: !!state.get('projectDirty'),
+    minsSinceBackup: +((Date.now() - _lastBackupAt) / 60000).toFixed(1),
+    secsSinceInput:  +((Date.now() - _lastInputAt) / 1000).toFixed(1),
+  }),
+};
 
 window.sbsFix = window.sbsFix || {};
 // Ghost text editor (stuck editable text box floating over every step):
