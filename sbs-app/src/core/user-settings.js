@@ -103,6 +103,20 @@ const DEFAULTS = {
     enabled:      false,
     googleApiKey: '',
   },
+  // V0.3.2.37 — Auto-backup ("Autosave" settings tab). Writing a large
+  // project blocks the renderer for seconds, so by default the backup waits
+  // for a natural pause instead of interrupting mid-action. Rotating slots
+  // give you several restore points instead of one.
+  autosave: {
+    enabled:       true,
+    intervalMin:   10,     // back up after this much DIRTY work
+    waitForIdle:   true,   // postpone while actively working (off = save on the dot)
+    idleSec:       6,      // "you stopped" threshold
+    nudgeWhenBusy: true,   // if busy when due, offer a dismissible prompt…
+    maxWaitMin:    25,     // …and force one anyway after this long
+    slots:         3,      // rotating files: .autosave1 / 2 / 3 …
+    folder:        '',     // '' = alongside the project file
+  },
   // V0.2.22.58 — SYSTEM-level defaults for the hardware insertion
   // animation (the "Nuts" settings tab). Per-instance values that are
   // left as "use default" resolve to the project default (.sbsproj),

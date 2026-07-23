@@ -42,6 +42,7 @@ import { applyAllTransforms, isTransformNode, isNearZero, isIdentityQuaternion, 
 
 // ── I/O ───────────────────────────────────────────────────────────────────────
 import { saveProject, getSuggestedFilename, serialize } from './io/project.js';
+import * as userSettings from './core/user-settings.js';
 
 // ── UI ────────────────────────────────────────────────────────────────────────
 import { initStatus, setStatus }  from './ui/status.js';
@@ -1231,45 +1232,122 @@ state.on('save:progress', (p) => {
 // keeps waiting while you work — it only ever lands in a natural pause. If you
 // somehow never pause, a hard ceiling forces one so a crash can't cost more
 // than that. window.sbsAutosave.now() / .off() / .status() to drive it manually.
-const AUTOSAVE_EVERY_MS = 10 * 60 * 1000;   // aim for one backup per 10 min of dirty work
-const AUTOSAVE_IDLE_MS  = 6 * 1000;         // "you stopped typing/dragging" threshold
-const AUTOSAVE_MAX_WAIT = 25 * 60 * 1000;   // never postpone longer than this
+// All of it configurable in Settings → Autosave (V0.3.2.37): interval, whether
+// to wait for a pause, the nudge, rotating slot count, destination folder.
+// A manual Ctrl+S restarts the clock. window.sbsAutosave.now()/.off()/.status()
 let _autosaveBusy = false, _autosaveOff = false;
 let _lastInputAt = Date.now(), _lastBackupAt = Date.now();
+let _nudgeShownFor = 0;    // the _lastBackupAt value the visible nudge belongs to
+
 for (const ev of ['pointerdown', 'pointermove', 'keydown', 'wheel']) {
   window.addEventListener(ev, () => { _lastInputAt = Date.now(); }, { capture: true, passive: true });
 }
-setInterval(async () => {
-  if (_autosaveBusy || _autosaveOff) return;
-  if (!state.get('projectDirty') || state.get('_exporting') || !state.get('projectPath')) return;
-  const now = Date.now();
-  const due = now - _lastBackupAt >= AUTOSAVE_EVERY_MS;
-  if (!due) return;
-  const idle    = now - _lastInputAt >= AUTOSAVE_IDLE_MS;
-  const overdue = now - _lastBackupAt >= AUTOSAVE_MAX_WAIT;
-  if (!idle && !overdue) return;             // you're mid-action — try again shortly
+// A real save restarts the counter — everything is already on disk.
+state.on('save:progress', (p) => {
+  if (p?.stage === 'done' && !p.autosave) { _lastBackupAt = Date.now(); _dismissNudge(); }
+});
+
+function _autosaveCfg() {
+  const a = (userSettings.get?.() || {}).autosave || {};
+  return {
+    enabled:       a.enabled !== false,
+    intervalMs:    Math.max(1, Number(a.intervalMin) || 10) * 60000,
+    waitForIdle:   a.waitForIdle !== false,
+    idleMs:        Math.max(1, Number(a.idleSec) || 6) * 1000,
+    nudgeWhenBusy: a.nudgeWhenBusy !== false,
+    maxWaitMs:     Math.max(1, Number(a.maxWaitMin) || 25) * 60000,
+    slots:         Math.max(1, Math.min(9, Number(a.slots) || 3)),
+    folder:        (a.folder || '').trim(),
+  };
+}
+
+/** Next rotating slot = the missing one, else the oldest on disk. Statting the
+ *  files (instead of keeping a counter) makes rotation survive restarts. */
+async function _nextBackupPath(cfg) {
+  const pp = state.get('projectPath');
+  if (!pp) return null;
+  const base = pp.replace(/\.sbsproj$/i, '');
+  const name = base.split(/[\\/]/).pop();
+  const dir  = cfg.folder || base.replace(/[\\/][^\\/]*$/, '');
+  const paths = [];
+  for (let i = 1; i <= cfg.slots; i++) paths.push(`${dir}/${name}.autosave${cfg.slots > 1 ? i : ''}.sbsproj`);
+  if (!window.sbsNative?.statFile) return paths[0];
+  let oldest = paths[0], oldestT = Infinity;
+  for (const p of paths) {
+    let t = 0;                                  // missing file → treat as oldest → claim it first
+    try { const s = await window.sbsNative.statFile(p); t = s ? s.mtimeMs : 0; } catch { t = 0; }
+    if (t < oldestT) { oldestT = t; oldest = p; }
+    if (t === 0) break;
+  }
+  return oldest;
+}
+
+async function _runBackup() {
+  if (_autosaveBusy) return null;
   _autosaveBusy = true;
   try {
+    const cfg = _autosaveCfg();
     const { autosaveBackup } = await import('./io/project.js');
-    const r = await autosaveBackup();
+    const r = await autosaveBackup({ path: await _nextBackupPath(cfg) });
     _lastBackupAt = Date.now();
-    if (r.saved) setStatus(`Auto-backup saved (${r.mb} MB) — ${r.path.split(/[\\/]/).pop()}`, 'info', 4000);
+    _dismissNudge();
+    if (r.saved) setStatus(`🛟 Auto-backup saved (${r.mb} MB) — ${r.path.split(/[\\/]/).pop()}`, 'info', 4000);
     else if (!r.skipped) console.warn('[autosave] failed:', r.error);
+    return r;
   } catch (e) {
     console.warn('[autosave] error:', e?.message);
+    return null;
   } finally {
     _autosaveBusy = false;
   }
-}, 15 * 1000);   // cheap check; the work itself still happens at most every 10 min
+}
+
+// ── "Good time to back up" nudge — offered instead of interrupting you ──────
+let _nudgeEl = null;
+function _dismissNudge() { if (_nudgeEl) { _nudgeEl.remove(); _nudgeEl = null; } }
+function _showNudge(minsDirty) {
+  if (_nudgeEl) return;
+  _nudgeEl = document.createElement('div');
+  _nudgeEl.style.cssText = 'position:fixed;right:16px;bottom:16px;z-index:99998;background:var(--panel,#1e293b);'
+    + 'color:var(--text,#e2e8f0);border:1px solid var(--line,#334155);border-left:3px solid #f59e0b;border-radius:8px;'
+    + 'padding:10px 12px;font:13px sans-serif;box-shadow:0 6px 20px rgba(0,0,0,.45);max-width:300px';
+  _nudgeEl.innerHTML = '<div style="margin-bottom:8px">🛟 <b>Good time to back up</b><br>'
+    + `<span style="opacity:.75;font-size:12px">${minsDirty} min of unsaved work. Backing up pauses the app for a few seconds.</span></div>`
+    + '<div style="display:flex;gap:6px;justify-content:flex-end">'
+    + '<button id="nudge-later" style="background:transparent;color:inherit;border:1px solid var(--line,#334155);border-radius:4px;padding:4px 10px;cursor:pointer">Later</button>'
+    + '<button id="nudge-now" style="background:#f59e0b;color:#111;border:none;border-radius:4px;padding:4px 10px;cursor:pointer;font-weight:600">Back up now</button></div>';
+  document.body.appendChild(_nudgeEl);
+  _nudgeEl.querySelector('#nudge-now').addEventListener('click', () => { _dismissNudge(); _runBackup(); });
+  _nudgeEl.querySelector('#nudge-later').addEventListener('click', () => {
+    _dismissNudge();
+    _lastBackupAt = Date.now();      // snooze a full interval
+  });
+}
+
+setInterval(async () => {
+  const cfg = _autosaveCfg();
+  if (_autosaveBusy || _autosaveOff || !cfg.enabled) return;
+  if (!state.get('projectDirty') || state.get('_exporting') || !state.get('projectPath')) return;
+  const now = Date.now();
+  if (now - _lastBackupAt < cfg.intervalMs) return;                        // not due yet
+  if (!cfg.waitForIdle)                       { await _runBackup(); return; }   // save on the dot
+  if (now - _lastInputAt >= cfg.idleMs)       { await _runBackup(); return; }   // you paused
+  if (now - _lastBackupAt >= cfg.maxWaitMs)   { await _runBackup(); return; }   // ceiling
+  if (cfg.nudgeWhenBusy && _nudgeShownFor !== _lastBackupAt) {            // busy → offer, don't freeze
+    _nudgeShownFor = _lastBackupAt;
+    _showNudge(Math.round((now - _lastBackupAt) / 60000));
+  }
+}, 5 * 1000);
 
 window.sbsAutosave = {
-  now:  async () => { const { autosaveBackup } = await import('./io/project.js'); const r = await autosaveBackup(); _lastBackupAt = Date.now(); return r; },
-  off:  () => { _autosaveOff = true;  console.log('[autosave] disabled for this session — Ctrl+S still works.'); },
+  now:  () => _runBackup(),
+  off:  () => { _autosaveOff = true;  _dismissNudge(); console.log('[autosave] disabled for this session — Ctrl+S still works.'); },
   on:   () => { _autosaveOff = false; _lastBackupAt = Date.now(); console.log('[autosave] enabled.'); },
-  status: () => ({
-    enabled: !_autosaveOff, dirty: !!state.get('projectDirty'),
+  status: async () => ({
+    ..._autosaveCfg(), sessionDisabled: _autosaveOff, dirty: !!state.get('projectDirty'),
     minsSinceBackup: +((Date.now() - _lastBackupAt) / 60000).toFixed(1),
     secsSinceInput:  +((Date.now() - _lastInputAt) / 1000).toFixed(1),
+    nextSlot: await _nextBackupPath(_autosaveCfg()),
   }),
 };
 

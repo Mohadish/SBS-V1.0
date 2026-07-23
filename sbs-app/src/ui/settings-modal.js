@@ -40,6 +40,7 @@ export async function openSettingsModal(initialTab = 'language') {
           <button class="settings-tab" data-tab="scene">Scene</button>
           <button class="settings-tab" data-tab="import">Import</button>
           <button class="settings-tab" data-tab="export">Export</button>
+          <button class="settings-tab" data-tab="autosave">Autosave</button>
           <button class="settings-tab" data-tab="nuts">Nuts</button>
           <button class="settings-tab" data-tab="cloud">Cloud TTS</button>
         </nav>
@@ -104,6 +105,91 @@ function _showTab(name) {
   if (name === 'export')   _renderExportTab(body);
   if (name === 'nuts')     _renderNutsTab(body);
   if (name === 'cloud')    _renderCloudTab(body);
+  if (name === 'autosave') _renderAutosaveTab(body);
+}
+
+/**
+ * V0.3.2.37 — Autosave tab. Writing a large project blocks the renderer for
+ * seconds, so the point of these controls is WHEN that pause is allowed to
+ * happen. Rotating slots give several restore points instead of one.
+ */
+function _renderAutosaveTab(body) {
+  const s = userSettings.get().autosave || {};
+  const row = (label, control, hint) =>
+    `<div style="margin-bottom:14px"><label style="display:flex;align-items:center;gap:8px;font-size:13px">${control}<span>${label}</span></label>`
+    + (hint ? `<div class="small muted" style="font-size:11px;opacity:.7;margin:3px 0 0 26px">${hint}</div>` : '') + '</div>';
+  const num = (id, val, min, max, w = 60) =>
+    `<input type="number" id="${id}" value="${val}" min="${min}" max="${max}" style="width:${w}px;padding:4px 6px;border:1px solid var(--line);border-radius:4px;background:var(--panel2);color:var(--text)" />`;
+
+  body.innerHTML = `
+    <h3 style="margin:0 0 4px">Auto-backup</h3>
+    <div class="small muted" style="font-size:12px;margin-bottom:14px;opacity:.8">
+      Writes a spare copy of the project so a crash can't cost you everything. It never touches your real
+      file — <b>Ctrl+S is still the save</b>. On a large project a backup pauses the app for a few seconds,
+      which is what the timing options below are for.
+    </div>
+
+    ${row('Enable auto-backup',
+          `<input type="checkbox" id="as-enabled" ${s.enabled !== false ? 'checked' : ''} />`,
+          'A manual save restarts the countdown.')}
+
+    ${row(`Back up after ${num('as-interval', s.intervalMin ?? 10, 1, 240)} minutes of unsaved work`, '',
+          'Counts only while there are changes to save.')}
+
+    ${row('Wait for a pause in my work',
+          `<input type="checkbox" id="as-idle" ${s.waitForIdle !== false ? 'checked' : ''} />`,
+          `Off = back up the moment it's due, even mid-action. On = wait until you've been idle for
+           ${num('as-idlesec', s.idleSec ?? 6, 1, 120, 50)} seconds.`)}
+
+    ${row('If I\'m still working, ask instead of interrupting',
+          `<input type="checkbox" id="as-nudge" ${s.nudgeWhenBusy !== false ? 'checked' : ''} />`,
+          `Shows a dismissible "good time to back up" prompt. Backs up anyway after
+           ${num('as-maxwait', s.maxWaitMin ?? 25, 1, 480)} minutes so a crash can't cost more than that.`)}
+
+    ${row(`Keep ${num('as-slots', s.slots ?? 3, 1, 9, 50)} rotating backups`, '',
+          'Cycles through <code>name.autosave1 / 2 / 3</code> — oldest overwritten first, so you can step back through several versions.')}
+
+    <div style="margin-bottom:6px;font-size:13px">Backup folder</div>
+    <div style="display:flex;gap:6px;align-items:center">
+      <input type="text" id="as-folder" value="${(s.folder || '').replace(/"/g, '&quot;')}" placeholder="(next to the project file)"
+             style="flex:1;padding:6px 8px;border:1px solid var(--line);border-radius:4px;background:var(--panel2);color:var(--text);font-size:12px" />
+      <button id="as-browse" class="btn" style="padding:6px 10px">Browse…</button>
+      <button id="as-clear"  class="btn" style="padding:6px 10px">Default</button>
+    </div>
+    <div class="small muted" style="font-size:11px;opacity:.7;margin-top:4px">Empty = alongside the project. A folder on another drive doubles as off-machine insurance.</div>
+
+    <div style="margin-top:18px;display:flex;gap:8px;align-items:center">
+      <button id="as-now" class="btn" style="padding:6px 12px">Back up now</button>
+      <span id="as-status" class="small muted" style="font-size:11px;opacity:.8"></span>
+    </div>
+  `;
+
+  const save = (patch) => userSettings.patch({ autosave: patch });
+  const bind = (id, ev, fn) => body.querySelector('#' + id)?.addEventListener(ev, fn);
+  bind('as-enabled', 'change', e => save({ enabled: !!e.target.checked }));
+  bind('as-idle',    'change', e => save({ waitForIdle: !!e.target.checked }));
+  bind('as-nudge',   'change', e => save({ nudgeWhenBusy: !!e.target.checked }));
+  bind('as-interval','change', e => save({ intervalMin: Math.max(1, Number(e.target.value) || 10) }));
+  bind('as-idlesec', 'change', e => save({ idleSec:     Math.max(1, Number(e.target.value) || 6) }));
+  bind('as-maxwait', 'change', e => save({ maxWaitMin:  Math.max(1, Number(e.target.value) || 25) }));
+  bind('as-slots',   'change', e => save({ slots: Math.max(1, Math.min(9, Number(e.target.value) || 3)) }));
+  bind('as-folder',  'change', e => save({ folder: e.target.value.trim() }));
+  bind('as-clear',   'click',  () => { const i = body.querySelector('#as-folder'); i.value = ''; save({ folder: '' }); });
+  bind('as-browse',  'click',  async () => {
+    const dir = await window.sbsNative?.chooseFolder?.({ title: 'Choose backup folder' });
+    if (dir) { body.querySelector('#as-folder').value = dir; save({ folder: dir }); }
+  });
+  bind('as-now', 'click', async () => {
+    const st = body.querySelector('#as-status');
+    if (st) st.textContent = 'Backing up…';
+    const r = await window.sbsAutosave?.now?.();
+    if (st) st.textContent = r?.saved ? `Saved ${r.mb} MB → ${r.path.split(/[\\/]/).pop()}`
+                                      : (r?.skipped ? 'Save the project once first.' : 'Backup failed — see console.');
+  });
+  window.sbsAutosave?.status?.().then(x => {
+    const st = body.querySelector('#as-status');
+    if (st && x) st.textContent = `Last backup ${x.minsSinceBackup} min ago · next slot: ${String(x.nextSlot || '').split(/[\\/]/).pop() || '—'}`;
+  }).catch(() => {});
 }
 
 /**

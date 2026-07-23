@@ -339,7 +339,7 @@ async function _encodeProjectBytes(jsonString, onProgress = null) {
  * that cost three hours of unsaved work. Uses the streaming encoder — safe at
  * any project size.
  */
-export async function autosaveBackup() {
+export async function autosaveBackup({ path: pathOverride } = {}) {
   const pp = state.get('projectPath');
   if (!pp || !window.sbsNative?.writeFile) return { skipped: true };
   // Announce it (V0.3.2.36). This used to run silently with onProgress=null,
@@ -351,7 +351,7 @@ export async function autosaveBackup() {
   const project = serialize();
   const { bytes, rawBytes } = await _encodeProjectStream(project,
     (done, total) => state.emit('save:progress', { stage: 'compress', done, total, unit: 'steps', autosave: true }));
-  const path = pp.replace(/\.sbsproj$/i, '') + '.autosave.sbsproj';
+  const path = pathOverride || (pp.replace(/\.sbsproj$/i, '') + '.autosave.sbsproj');
   state.emit('save:progress', { stage: 'write', bytes: bytes.length, autosave: true });
   const r = await window.sbsNative.writeFile(path, bytes, null);
   state.emit('save:progress', r?.ok
