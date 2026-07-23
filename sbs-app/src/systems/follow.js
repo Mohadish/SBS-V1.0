@@ -20,6 +20,7 @@ import { state }        from '../core/state.js';
 import { sceneCore }    from '../core/scene.js';
 import { steps }        from './steps.js';
 import { undoManager }  from './undo.js';
+import { cloneShareStrings } from '../core/clone.js';
 import { setNodeWorldPoseRaw } from './hardware-actions.js';
 import { captureTransformSnapshot } from '../core/transforms.js';
 import {
@@ -102,7 +103,7 @@ export function applyFollow(followerId, targetId, opts = {}) {
   // ── Capture BEFORE state for undo ──────────────────────────────────────────
   const beforeParentId = findParent(root, A.id)?.id || null;
   const beforeFollow   = A.follow ? { ...A.follow } : null;
-  const stepsBefore    = JSON.parse(JSON.stringify(state.get('steps') || []));   // snapshots are plain specs
+  const stepsBefore    = cloneShareStrings(state.get('steps') || []);   // structural clone, shares base64 strings (V0.3.2.31 — JSON.stringify blew V8's 512MB string cap on big projects)
 
   // ── LIVE reparent, preserving A's world pose ───────────────────────────────
   const Aobj      = steps.object3dById?.get(A.id) || A.object3d || null;
@@ -199,7 +200,7 @@ export function unfollowToRoot(followerId, scope = 'all') {
 
   const beforeParentId = findParent(root, A.id)?.id || null;
   const beforeFollow   = A.follow ? { ...A.follow } : null;
-  const stepsBefore    = JSON.parse(JSON.stringify(state.get('steps') || []));
+  const stepsBefore    = cloneShareStrings(state.get('steps') || []);   // V0.3.2.31 — was JSON.stringify (512MB string cap)
 
   // Live reparent to the scene root, world pose preserved.
   const Aobj    = steps.object3dById?.get(A.id) || A.object3d || null;

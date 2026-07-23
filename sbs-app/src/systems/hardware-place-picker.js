@@ -219,6 +219,10 @@ function _followTargetOf(mesh) {
 
 function _commit(worldPos, worldQuat, refMesh) {
   const intent = _state.intent;
+  // GUARANTEED TEARDOWN (V0.3.2.31): a throw in any placement/follow step
+  // used to skip cancel() below, stranding the ghost shape + placement
+  // crosshairs and freezing selection. cancel() must always run.
+  try {
   if (intent.kind === 'place') {
     // Auto-connect (Follow Object): the screw joins the clicked object's PARENT FOLDER
     // — a sibling of what it was placed on — and tracks it across ALL steps. Works for
@@ -261,7 +265,12 @@ function _commit(worldPos, worldQuat, refMesh) {
       else     setStatus('Placed.', 'success', 1800);
     }
   }
-  cancel();
+  } catch (err) {
+    console.error('[place-picker] commit failed:', err);
+    setStatus(`Placement failed: ${err?.message || err}`, 'danger', 4000);
+  } finally {
+    cancel();   // always tear down the ghost + crosshairs, success or throw
+  }
 }
 
 // ─── Raycast helpers ──────────────────────────────────────────────────────────
