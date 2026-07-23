@@ -4614,6 +4614,24 @@ let _exportTabCtrl = null;   // AbortController, null when idle
 
 async function _onExportTabStart() {
   if (_exportTabCtrl) return;                     // already running
+
+  const exp = state.get('export') || {};
+  const fileBase = (exp.fileName || 'sbs_export').replace(/\s+/g, '_');
+  const stamp    = new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19);
+  const vidExt   = (exp.outputFormat || 'mp4').startsWith('webm') ? 'webm' : (exp.outputFormat || 'mp4');
+  // WHERE FIRST (V0.3.2.30): destination + name before any rendering; null
+  // dialog result = user cancelled; undefined bridge (pre-restart) = fall
+  // back to the old automatic delivery.
+  let outPath;
+  if (window.sbsNative?.saveFile) {
+    outPath = await window.sbsNative.saveFile({
+      title: 'Export Video',
+      defaultPath: `${fileBase}-${stamp}.${vidExt}`,
+      filters: [{ name: vidExt.toUpperCase(), extensions: [vidExt] }],
+    });
+    if (!outPath) return;   // cancelled
+    if (!outPath.toLowerCase().endsWith('.' + vidExt)) outPath += '.' + vidExt;
+  }
   _exportTabCtrl = new AbortController();
 
   const startBtn  = document.getElementById('btn-export');
@@ -4623,8 +4641,6 @@ async function _onExportTabStart() {
   if (cancelBtn) cancelBtn.disabled = false;
 
   const set = (txt) => { if (statusEl) statusEl.textContent = txt; };
-  const exp = state.get('export') || {};
-  const fileBase = (exp.fileName || 'sbs_export').replace(/\s+/g, '_');
 
   try {
     set('Preparing…');
@@ -4652,6 +4668,7 @@ async function _onExportTabStart() {
       const r = await rc.assembleFromCache({
         signal: _exportTabCtrl.signal,
         force,
+        output: outPath || undefined,   // user-chosen destination (V0.3.2.30)
         onProgress: (p) => set(p.total ? `Segment ${p.current}/${p.total}: ${p.stepName}` : (p.stepName || 'Working…')),
       });
       const fc = document.getElementById('exp-force-full'); if (fc) fc.checked = false;   // one-shot
@@ -4685,10 +4702,10 @@ async function _onExportTabStart() {
       },
     });
 
-    set(`Encoding finished (${codec?.toUpperCase()}) — downloading ${(blob.size / 1e6).toFixed(1)} MB`);
-    const stamp = new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19);
-    downloadBlob(blob, `${fileBase}-${stamp}.${extension}`);
-    set(`Done. Saved ${fileBase}-${stamp}.${extension} (${(blob.size / 1e6).toFixed(1)} MB, ${codec?.toUpperCase()}).`);
+    set(`Encoding finished (${codec?.toUpperCase()}) — saving ${(blob.size / 1e6).toFixed(1)} MB`);
+    if (outPath) { const { saveBlobToPath } = await import('../systems/video-export.js'); await saveBlobToPath(blob, outPath); }
+    else downloadBlob(blob, `${fileBase}-${stamp}.${extension}`);
+    set(`Done. Saved ${outPath || `${fileBase}-${stamp}.${extension}`} (${(blob.size / 1e6).toFixed(1)} MB, ${codec?.toUpperCase()}).`);
     setStatus(`Exported ${extension.toUpperCase()} / ${codec?.toUpperCase()} (${(blob.size / 1e6).toFixed(1)} MB).`);
   } catch (err) {
     if (err?.name === 'AbortError') { set('Cancelled.'); setStatus('Export cancelled.', 'warning'); }

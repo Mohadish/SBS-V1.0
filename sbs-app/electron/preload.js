@@ -20,6 +20,7 @@ contextBridge.exposeInMainWorld('sbsNative', {
   openImage:          ()          => ipcRenderer.invoke('dialog:openImage'),
   openProject:        ()          => ipcRenderer.invoke('dialog:openProject'),
   saveProject:        (name)      => ipcRenderer.invoke('dialog:saveProject', name),
+  saveFile:           (opts = {}) => ipcRenderer.invoke('dialog:saveFile', opts),   // V0.3.2.30 generic save dialog (exports)
   saveHeader:         (name)      => ipcRenderer.invoke('dialog:saveHeader', name),
   openHeader:         ()          => ipcRenderer.invoke('dialog:openHeader'),
   saveNoteLib:        (name)      => ipcRenderer.invoke('dialog:saveNoteLib', name),

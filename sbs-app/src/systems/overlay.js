@@ -1678,8 +1678,11 @@ function _serializeNode(node) {
     'name', 'kind',
     'fill', 'stroke', 'strokeWidth', 'opacity', 'cornerRadius',
     'radius', 'radiusX', 'radiusY', 'sides', 'data',
+    // Line/Arrow geometry (V0.3.2.30) — omitting these was why a pasted
+    // arrow lost its tail (points defaulted to [] and could never grow back).
+    'points', 'pointerLength', 'pointerWidth',
   ]) {
-    if (a[k] != null) out.attrs[k] = a[k];
+    if (a[k] != null) out.attrs[k] = Array.isArray(a[k]) ? a[k].slice() : a[k];
   }
   return out;
 }

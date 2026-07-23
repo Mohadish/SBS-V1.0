@@ -246,6 +246,18 @@ export function downloadBlob(blob, filename) {
   setTimeout(() => URL.revokeObjectURL(url), 1000);
 }
 
+/**
+ * Write a Blob to a user-chosen absolute path via the binary fs bridge
+ * (V0.3.2.30). Exports ask WHERE FIRST (dialog), render, then land here —
+ * no browser-download behavior. Throws on write failure.
+ */
+export async function saveBlobToPath(blob, outPath) {
+  const bytes = new Uint8Array(await blob.arrayBuffer());
+  const r = await window.sbsNative.writeFile(outPath, bytes, null);
+  if (!r?.ok) throw new Error('write failed: ' + (r?.error || 'unknown'));
+  return outPath;
+}
+
 // ═══════════════════════════════════════════════════════════════════════════
 //  MP4 — WebCodecs VideoEncoder + mp4-muxer
 // ═══════════════════════════════════════════════════════════════════════════

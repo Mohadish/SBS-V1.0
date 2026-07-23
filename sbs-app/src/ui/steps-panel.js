@@ -14,7 +14,22 @@ import { createChapter, generateId } from '../core/schema.js';
 import { cloneShareStrings } from '../core/clone.js';   // copy/paste steps without duplicating base64
 import { setStatus } from './status.js';
 import { showContextMenu } from './context-menu.js';
-import { exportTimelineVideo, exportTimelineSbsProc, downloadBlob } from '../systems/video-export.js';
+import { exportTimelineVideo, exportTimelineSbsProc, downloadBlob, saveBlobToPath } from '../systems/video-export.js';
+
+/** Ask WHERE to save an export FIRST (V0.3.2.30). Returns the chosen path
+ *  (extension enforced), null when the user cancelled, or undefined when the
+ *  dialog bridge isn't loaded yet (pre-restart) → caller falls back to the
+ *  old automatic delivery. */
+async function _askExportPath(title, defaultName, ext) {
+  if (!window.sbsNative?.saveFile) return undefined;
+  const p = await window.sbsNative.saveFile({
+    title,
+    defaultPath: defaultName,
+    filters: [{ name: ext.toUpperCase(), extensions: [ext] }],
+  });
+  if (!p) return null;
+  return p.toLowerCase().endsWith('.' + ext) ? p : p + '.' + ext;
+}
 import { listVoices as ttsListVoices, synthesize as ttsSynthesize } from '../systems/tts.js';
 import * as userSettings    from '../core/user-settings.js';
 import * as narrationCache  from '../systems/narration-cache.js';
@@ -2329,13 +2344,17 @@ async function _onExportVideo() {
     _exportingCtrl.abort();
     return;
   }
-  _exportingCtrl = new AbortController();
-  const origText = btn.textContent;
-  btn.textContent = '■ Cancel export';
-
   const exp         = state.get('export') || {};
   const projectName = exp.fileName || state.get('projectName') || 'timeline';
   const stamp       = new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19);
+  const vidExt      = (exp.outputFormat || 'mp4').startsWith('webm') ? 'webm' : (exp.outputFormat || 'mp4');
+  // WHERE FIRST (V0.3.2.30): pick destination + name before any rendering.
+  const outPath = await _askExportPath('Export Video', `${projectName}-${stamp}.${vidExt}`, vidExt);
+  if (outPath === null) return;   // user cancelled the dialog
+
+  _exportingCtrl = new AbortController();
+  const origText = btn.textContent;
+  btn.textContent = '■ Cancel export';
 
   try {
     await steps.flushSync();
@@ -2353,6 +2372,7 @@ async function _onExportVideo() {
       const rc = await import('../systems/render-cache.js');
       const r = await rc.assembleFromCache({
         signal: _exportingCtrl.signal,
+        output: outPath || undefined,   // user-chosen destination (V0.3.2.30)
         onProgress: (p) => setStatus(p.total ? `Segment ${p.current}/${p.total}: ${p.stepName}…` : `${p.stepName || 'Working…'}`, 'info', 0),
       });
       setStatus(`Incremental export done: reused ${r.reused}, rendered ${r.rendered} → ${r.path}`, 'success', 10000);
@@ -2370,8 +2390,9 @@ async function _onExportVideo() {
         setStatus(`Exporting ${current}/${total}: ${stepName}…`, 'info', 0);
       },
     });
-    downloadBlob(blob, `${projectName}-${stamp}.${extension}`);
-    setStatus(`Exported ${(blob.size / 1e6).toFixed(1)} MB as ${extension.toUpperCase()}.`);
+    if (outPath) { await saveBlobToPath(blob, outPath); }
+    else downloadBlob(blob, `${projectName}-${stamp}.${extension}`);
+    setStatus(`Exported ${(blob.size / 1e6).toFixed(1)} MB as ${extension.toUpperCase()}${outPath ? ` → ${outPath}` : ''}.`);
   } catch (err) {
     if (err?.name === 'AbortError') setStatus('Export cancelled.', 'warning');
     else {
@@ -2397,13 +2418,16 @@ async function _onExportSbsProc() {
     _exportingCtrl.abort();
     return;
   }
-  _exportingCtrl = new AbortController();
-  const origText = btn ? btn.textContent : '';
-  if (btn) btn.textContent = '■ Cancel export';
-
   const exp         = state.get('export') || {};
   const projectName = exp.fileName || state.get('projectName') || 'process';
   const stamp       = new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19);
+  // WHERE FIRST (V0.3.2.30): pick destination + name before any rendering.
+  const outPath = await _askExportPath('Export SBS Process', `${projectName}-${stamp}.sbsproc`, 'sbsproc');
+  if (outPath === null) return;   // user cancelled the dialog
+
+  _exportingCtrl = new AbortController();
+  const origText = btn ? btn.textContent : '';
+  if (btn) btn.textContent = '■ Cancel export';
 
   try {
     await steps.flushSync();
@@ -2417,9 +2441,10 @@ async function _onExportSbsProc() {
         signal: _exportingCtrl.signal,
         onProgress: (p) => setStatus(p.total ? `Exporting ${p.current}/${p.total}: ${p.stepName}…` : `${p.stepName || 'Working…'}`, 'info', 0),
       });
-      downloadBlob(r.blob, `${projectName}-${stamp}.sbsproc`);
+      if (outPath) { await saveBlobToPath(r.blob, outPath); }
+      else downloadBlob(r.blob, `${projectName}-${stamp}.sbsproc`);
       const stepCount = r.manifest?.steps?.length ?? 0;
-      setStatus(`Exported ${(r.blob.size / 1e6).toFixed(1)} MB .sbsproc (incremental: reused ${r.reused}, rendered ${r.rendered}) · ${stepCount} viewer-step(s) · ${(r.totalMs / 1000).toFixed(1)}s.`);
+      setStatus(`Exported ${(r.blob.size / 1e6).toFixed(1)} MB .sbsproc (incremental: reused ${r.reused}, rendered ${r.rendered}) · ${stepCount} viewer-step(s) · ${(r.totalMs / 1000).toFixed(1)}s${outPath ? ` → ${outPath}` : ''}.`);
       return;
     }
 
@@ -2437,9 +2462,10 @@ async function _onExportSbsProc() {
         setStatus(`Exporting ${current}/${total}: ${stepName}…`, 'info', 0);
       },
     });
-    downloadBlob(blob, `${projectName}-${stamp}.${extension}`);
+    if (outPath) { await saveBlobToPath(blob, outPath); }
+    else downloadBlob(blob, `${projectName}-${stamp}.${extension}`);
     const stepCount = manifest?.steps?.length ?? 0;
-    setStatus(`Exported ${(blob.size / 1e6).toFixed(1)} MB .sbsproc · ${stepCount} viewer-step(s) · ${(totalDurationMs / 1000).toFixed(1)}s.`);
+    setStatus(`Exported ${(blob.size / 1e6).toFixed(1)} MB .sbsproc · ${stepCount} viewer-step(s) · ${(totalDurationMs / 1000).toFixed(1)}s${outPath ? ` → ${outPath}` : ''}.`);
   } catch (err) {
     if (err?.name === 'AbortError') setStatus('Export cancelled.', 'warning');
     else {

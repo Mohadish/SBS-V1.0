@@ -477,6 +477,17 @@ ipcMain.handle('dialog:saveProject', async (_, defaultName) => {
   return result.canceled ? null : result.filePath;
 });
 
+// Generic save dialog (V0.3.2.30) — caller supplies title/defaultPath/filters.
+// Exports (mp4 / sbsproc) ask WHERE FIRST, then write there when done.
+ipcMain.handle('dialog:saveFile', async (_, opts = {}) => {
+  const result = await dialog.showSaveDialog(mainWindow, {
+    title:       opts.title       || 'Save File',
+    defaultPath: opts.defaultPath || undefined,
+    filters:     opts.filters     || undefined,
+  });
+  return result.canceled ? null : result.filePath;
+});
+
 // Save / open .sbsheader files — header layout setup, portable across projects.
 ipcMain.handle('dialog:saveHeader', async (_, defaultName) => {
   const result = await dialog.showSaveDialog(mainWindow, {

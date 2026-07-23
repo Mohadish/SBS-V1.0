@@ -2875,7 +2875,7 @@ canvas.addEventListener('click', e => {
       for (const id of ent.meshIds) multi.add(id);
       actionSetSelection(ent.targetId, multi);
     } else {
-      _scheduleRaySelect(cands, e.clientX, e.clientY, 'add');
+      _scheduleRaySelect(cands, e.clientX, e.clientY, 'add', 0);
     }
   } else if (mode === 'remove') {
     // V0.3.0.75 — INVERT from a folder UNIT. When only a container (folder/model) is
@@ -2913,12 +2913,12 @@ canvas.addEventListener('click', e => {
         actionSetSelection(multi.has(prevPrimary) ? prevPrimary : [...multi][0], multi);
       }
     } else {
-      _scheduleRaySelect(cands, e.clientX, e.clientY, 'remove');
+      _scheduleRaySelect(cands, e.clientX, e.clientY, 'remove', 0);
     }
   } else { // toggle
     if (allEntities.length === 0) return;
     if (allEntities.length === 1) _commitToggle(allEntities[0]);
-    else _scheduleRaySelect(allEntities, e.clientX, e.clientY, 'toggle');
+    else _scheduleRaySelect(allEntities, e.clientX, e.clientY, 'toggle', 0);
   }
 });
 
@@ -3037,9 +3037,13 @@ let _raySelect = null;   // { entities, index, el, color }
 // plain single-object clicks select immediately as before.
 const RAY_DEFER_MS = 300;
 let _rayOpenTimer = null;
-function _scheduleRaySelect(entities, x, y, mode = 'replace') {
+// delay=0 for modifier clicks (V0.3.2.30): the deferral exists to keep the
+// popup out of double/triple-click gestures, but those are plain-click-only
+// (the escalation branches require no modifiers) — Ctrl/Shift/Alt clicks
+// paid the 300ms wait for nothing, which read as "opens on Ctrl release".
+function _scheduleRaySelect(entities, x, y, mode = 'replace', delay = RAY_DEFER_MS) {
   _cancelDeferredRaySelect();
-  _rayOpenTimer = setTimeout(() => { _rayOpenTimer = null; _openRaySelect(entities, x, y, mode); }, RAY_DEFER_MS);
+  _rayOpenTimer = setTimeout(() => { _rayOpenTimer = null; _openRaySelect(entities, x, y, mode); }, delay);
 }
 function _cancelDeferredRaySelect() {
   if (_rayOpenTimer) { clearTimeout(_rayOpenTimer); _rayOpenTimer = null; }
