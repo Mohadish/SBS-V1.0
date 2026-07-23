@@ -611,52 +611,70 @@ export async function assembleFromCache({ onProgress, signal, output, force = fa
 }
 
 /**
- * Delete orphaned segment files — cache entries no current plan references
- * (V0.3.2.26). Old fingerprints pile up: every edit re-keys its segment and
- * strands the previous file; an epoch bump strands everything. Runs
- * automatically after each successful assembly, BUT only when nothing is
- * hidden: hidden chapters/steps are excluded from the plan, and their
- * perfectly valid cached segments would read as orphans and be destroyed —
- * hiding chapters for a test export must never cost the main cache.
- * Manual: await window.sbsCachePurge()  (add {force:true} to override the
- * hidden-content guard).
+ * Delete dead segment files (V0.3.2.34 — precise, replaces the blunt refusals).
+ *
+ * The old janitor refused to run whenever ANY step/chapter was hidden, or
+ * whenever the plan matched nothing on disk. Both are normal working states,
+ * so it never ran: 1146 files / 2.5 GB accumulated across four cache
+ * generations. It now deletes only what is PROVABLY dead:
+ *
+ *   1. Wrong generation — the cache epoch is baked into every key, so a
+ *      segment stamped with a different epoch (or with no sidecar at all,
+ *      i.e. pre-dating the stamp) can NEVER be referenced again. Always safe,
+ *      hidden content or not.
+ *   2. Superseded fingerprints — same epoch but unreferenced. Only swept when
+ *      NOTHING is hidden, because then the plan covers the whole project and
+ *      is authoritative. With hidden chapters these are kept: they are very
+ *      likely the hidden content's own segments. ({force:true} sweeps them
+ *      anyway — costs a re-render if you unhide.)
+ *
+ * Runs automatically after each successful assembly. Manual:
+ *   await window.sbsCachePurge()      // or ({force:true})
  */
 export async function purgeOrphans(plan, { force = false } = {}) {
   if (!plan?.dir || !window.sbsNative?.listDir || !window.sbsNative?.deletePath) return { skipped: 'unavailable' };
-  // ZERO-OVERLAP GUARD (V0.3.2.29): if the current plan matches NOTHING on
-  // disk (e.g. definitions were just edited and no export has run since),
-  // the keep-set is empty and a purge — even a forced one — would sweep the
-  // entire cache including segments that are one export away from being the
-  // live set's history. Purge only makes sense against a plan that owns at
-  // least part of the disk. (Auto-purge after an export always does.)
-  if (!plan.hits) {
-    console.log('[render-cache] purge skipped — the current plan matches nothing on disk (edit pending?). Export first, then purge.');
-    return { skipped: 'no-overlap' };
-  }
-  if (!force) {
-    const anyHiddenStep = (state.get('steps') || []).some(s => s && !s.isBaseStep && s.hidden);
-    const chapItems = state.get('chapters')?.items || state.get('chapters') || [];
-    const anyHiddenChapter = Array.isArray(chapItems) && chapItems.some(c => c?.hidden);
-    if (anyHiddenStep || anyHiddenChapter) {
-      console.log('[render-cache] purge skipped — hidden steps/chapters present (their cached segments are NOT orphans). Override: await window.sbsCachePurge({force:true})');
-      return { skipped: 'hidden-content' };
-    }
-  }
   const entries = await window.sbsNative.listDir(plan.dir);
   if (!Array.isArray(entries)) return { skipped: 'listDir failed' };
-  const keep = new Set();
-  for (const s of plan.spans) { keep.add(`seg-${s.key}.mp4`); keep.add(`seg-${s.key}.json`); }
-  let n = 0, bytes = 0;
-  for (const f of entries) {
-    if (f.isDir) continue;
-    if (!/^seg-[0-9a-f]{16}\.(mp4|json)$/.test(f.name)) continue;   // segments only — never intermediates/metadata
-    if (keep.has(f.name)) continue;
-    const r = await window.sbsNative.deletePath(`${plan.dir}/${f.name}`);
-    if (r?.ok) { n++; bytes += f.size || 0; }
+
+  const anyHiddenStep = (state.get('steps') || []).some(s => s && !s.isBaseStep && s.hidden);
+  const chapItems = state.get('chapters')?.items || state.get('chapters') || [];
+  const anyHiddenChapter = Array.isArray(chapItems) && chapItems.some(c => c?.hidden);
+  const sweepSuperseded = force || !(anyHiddenStep || anyHiddenChapter);
+
+  const live = new Set(plan.spans.map(s => s.key));                 // referenced by the current plan
+  const haveSidecar = new Set(entries.filter(f => /^seg-[0-9a-f]{16}\.json$/.test(f.name)).map(f => f.name.slice(4, 20)));
+  const segKeys = [...new Set(entries.filter(f => /^seg-[0-9a-f]{16}\.mp4$/.test(f.name)).map(f => f.name.slice(4, 20)))];
+  const sizeOf = new Map(entries.map(f => [f.name, f.size || 0]));
+
+  let deadEpoch = 0, deadSuper = 0, kept = 0, bytes = 0;
+  for (const key of segKeys) {
+    if (live.has(key)) { kept++; continue; }
+    let reason = null;
+    if (!haveSidecar.has(key)) {
+      reason = 'epoch';                                              // no sidecar → unusable by assembly anyway
+    } else {
+      let epoch = null;
+      try {
+        const sj = await window.sbsNative.readFile(`${plan.dir}/seg-${key}.json`, 'utf8');
+        if (sj?.ok) epoch = JSON.parse(sj.data)?.epoch ?? null;
+      } catch { /* unreadable → treat as old generation */ }
+      if (epoch !== RENDER_CACHE_EPOCH) reason = 'epoch';
+      else if (sweepSuperseded) reason = 'superseded';
+    }
+    if (!reason) { kept++; continue; }
+    for (const ext of ['mp4', 'json']) {
+      const name = `seg-${key}.${ext}`;
+      if (!sizeOf.has(name)) continue;
+      const r = await window.sbsNative.deletePath(`${plan.dir}/${name}`);
+      if (r?.ok) bytes += sizeOf.get(name);
+    }
+    if (reason === 'epoch') deadEpoch++; else deadSuper++;
   }
   const mb = +(bytes / 1e6).toFixed(1);
-  console.log(`[render-cache] purge: ${n} orphaned file(s) removed, ${mb} MB freed (${plan.spans.length} live segment(s) kept)`);
-  return { deleted: n, mb };
+  const held = (!sweepSuperseded && (anyHiddenStep || anyHiddenChapter))
+    ? ' · same-generation orphans KEPT (hidden steps/chapters present — likely theirs; {force:true} to sweep)' : '';
+  console.log(`[render-cache] purge: ${deadEpoch} old-generation + ${deadSuper} superseded segment(s) removed, ${mb} MB freed · ${kept} kept${held}`);
+  return { deleted: deadEpoch + deadSuper, deadEpoch, deadSuper, kept, mb };
 }
 
 /**
@@ -723,6 +741,7 @@ export async function renderMissingSegments({ onProgress, signal, force = false,
       const inSpan = new Set(span.steps.map(s => s.id));
       const sidecar = {
         key: span.key, durationMs: res.totalDurationMs,
+        epoch: RENDER_CACHE_EPOCH,   // cache generation — the purge deletes anything not from the current one
         fps: Number.isFinite(Number(exp.fps)) ? Number(exp.fps) : 50,   // for the phantom-frame correction at assembly
         steps: (res.stepMarkers || [])
           .filter(m => inSpan.has(m.stepId))          // drop the zero-frame lead step's marker
