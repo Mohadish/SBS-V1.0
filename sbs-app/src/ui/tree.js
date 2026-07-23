@@ -933,6 +933,10 @@ function _buildContextMenuItems(node) {
       { separator: true },
       { label: '▶ 👁 Show on all following steps', action: () => actions.setNodeVisibilityAcrossSteps(targetIds, true,  'following') },
       { label: '▶ 🚫 Hide on all following steps', action: () => actions.setNodeVisibilityAcrossSteps(targetIds, false, 'following') },
+      { separator: true },
+      // A newly created object is visible in EVERY step until told otherwise —
+      // this is the one-click "it belongs here and nowhere else".
+      { label: `⦿ 👁 Show ONLY on this step`,      action: () => actions.setNodeVisibilityAcrossSteps(targetIds, true,  'only') },
     ],
   });
 

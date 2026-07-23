@@ -3864,6 +3864,10 @@ canvas.addEventListener('contextmenu', e => {
         { separator: true },
         { label: '▶ 👁 Show on all following steps', action: () => actions.setNodeVisibilityAcrossSteps(multiIds, true,  'following') },
         { label: '▶ 🚫 Hide on all following steps', action: () => actions.setNodeVisibilityAcrossSteps(multiIds, false, 'following') },
+        { separator: true },
+        // A newly created object is visible in EVERY step until told otherwise —
+        // this is the one-click "it belongs here and nowhere else".
+        { label: '⦿ 👁 Show ONLY on this step',      action: () => actions.setNodeVisibilityAcrossSteps(multiIds, true,  'only') },
       ],
     });
     if (_isolated) {

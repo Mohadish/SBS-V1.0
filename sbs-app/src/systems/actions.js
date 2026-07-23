@@ -3231,34 +3231,44 @@ function _toggleVisibilityMulti(ids, newVis, stepIdSet, treeData) {
 
 /**
  * Set one-or-more nodes' visibility across a range of steps relative to the
- * ACTIVE step (exclusive) — as a SINGLE undo entry. scope:
+ * ACTIVE step — as a SINGLE undo entry. scope:
  *   'following' → every step AFTER the active one
  *   'previous'  → every step BEFORE the active one
+ *   'only'      → visible HERE, hidden on EVERY other step (V0.3.2.35)
  * Per the agreed scope: affects only the exact nodes (no child cascade, no
- * show-ancestor cascade) and never the active step itself (use plain Hide/Show
- * for that). Writes straight into each target step's self-contained snapshot
- * visibility map. The active view doesn't change — the affected step cards
- * flash via 'steps:bulkApplied' so the user sees what was touched.
+ * show-ancestor cascade). 'following'/'previous' never touch the active step
+ * itself (use plain Hide/Show for that); 'only' does by definition — it is the
+ * "I just created this and it must not appear anywhere else" command, which is
+ * also what keeps a new object from re-rendering the whole video (a newly
+ * created object is visible in EVERY step until told otherwise). Writes
+ * straight into each target step's self-contained snapshot visibility map;
+ * affected step cards flash via 'steps:bulkApplied'.
  */
 export function setNodeVisibilityAcrossSteps(nodeIds, visible, scope) {
   if (isIsolateEngaged()) { setStatus('Un-isolate to change hide/show'); return; }
   const nodeById = state.get('nodeById');
   const ids = [...(nodeIds || [])].filter(id => nodeById?.has(id));
-  if (!ids.length || (scope !== 'following' && scope !== 'previous')) return;
+  if (!ids.length || (scope !== 'following' && scope !== 'previous' && scope !== 'only')) return;
 
   const allSteps  = state.get('steps') || [];
   const activeIdx = allSteps.findIndex(s => s.id === state.get('activeStepId'));
   if (activeIdx < 0) return;
-  const inRange = (idx) => scope === 'following' ? idx > activeIdx : idx < activeIdx;
+  // Target visibility for a step index, or null to leave that step untouched.
+  const targetFor = (idx) => {
+    if (scope === 'only') return idx === activeIdx;
+    const inRange = scope === 'following' ? idx > activeIdx : idx < activeIdx;
+    return inRange ? visible : null;
+  };
 
   const nextSteps = allSteps.map((s, idx) => {
-    if (!inRange(idx)) return s;
+    const want = targetFor(idx);
+    if (want === null) return s;
     const snap   = s.snapshot || {};
     const oldVis = snap.visibility || {};
     // Skip steps already at the target for every id (keeps refcount equality).
-    if (ids.every(id => (oldVis[id] !== false) === visible)) return s;
+    if (ids.every(id => (oldVis[id] !== false) === want)) return s;
     const newViz = { ...oldVis };
-    for (const id of ids) newViz[id] = visible;
+    for (const id of ids) newViz[id] = want;
     return { ...s, snapshot: { ...snap, visibility: newViz } };
   });
 
@@ -3274,8 +3284,15 @@ export function setNodeVisibilityAcrossSteps(nodeIds, visible, scope) {
   };
   apply(nextSteps);
 
+  if (scope === 'only') {
+    const activeStepId = allSteps[activeIdx]?.id;
+    const others = touched.filter(s => s.id !== activeStepId).length;
+    setStatus(`Visible on this step only — hidden on ${others} other step(s).`, 'success');
+  }
   undoManager.push(
-    `${visible ? 'Show' : 'Hide'} ${ids.length} node(s) on ${touched.length} ${scope} step(s)`,
+    scope === 'only'
+      ? `Show ${ids.length} node(s) only on this step`
+      : `${visible ? 'Show' : 'Hide'} ${ids.length} node(s) on ${touched.length} ${scope} step(s)`,
     () => apply(allSteps),
     () => apply(nextSteps),
   );
