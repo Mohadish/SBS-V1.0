@@ -32,7 +32,7 @@ import { state } from '../core/state.js';
 import { steps } from './steps.js';
 
 /** Bump when renderer/exporter changes make previously-cached pixels stale. */
-export const RENDER_CACHE_EPOCH = 3;   // 2: canonical hashing (V0.3.2.22); 3: per-segment scoped defs (V0.3.2.32)
+export const RENDER_CACHE_EPOCH = 4;   // 2: canonical hashing (V0.3.2.22); 3: scoped defs (.32); 4: pruned object roster (.33)
 
 const _groupKeyOf = (s) => s.groupHead ? s.id : (s.groupId || null);
 
@@ -53,8 +53,20 @@ function _canon(v) {
   return v;
 }
 
-/** Step as it matters to pixels: strip volatile / non-rendered fields. */
-function _stepKeyView(s) {
+const _pick = (obj, keep) => { const o = {}; for (const k in obj) if (keep.has(k)) o[k] = obj[k]; return o; };
+
+/** Keep a node if it (or any descendant) contributes pixels — ancestors are
+ *  retained because a visible node's world transform depends on them. */
+function _pruneTree(n, keep) {
+  if (!n) return null;
+  const kids = (n.children || []).map(c => _pruneTree(c, keep)).filter(Boolean);
+  if (kids.length || keep.has(n.id)) return { ...n, children: kids };
+  return null;
+}
+
+/** Step as it matters to pixels: strip volatile / non-rendered fields, and
+ *  (V0.3.2.33) prune the PROJECT-WIDE OBJECT ROSTER down to `keep`. */
+function _stepKeyView(s, keep) {
   const c = { ...s };
   delete c.thumbnail;
   delete c.renderedDurationMs;      // measurement, not content (durations enter via the chapter vector)
@@ -75,6 +87,21 @@ function _stepKeyView(s) {
   // and nudge floats on visually identical overlays).
   if (typeof c.overlay === 'string' && c.overlay) {
     try { c.overlay = JSON.parse(c.overlay); } catch { /* unparseable → keys as raw string */ }
+  }
+  // ROSTER PRUNE (V0.3.2.33). Every step freezes a record for EVERY object in
+  // the project — a visibility flag, a transform, a tree entry — including
+  // objects HIDDEN in that step. So adding / deleting / unarchiving ONE object
+  // rewrote all ~200 step records at once and re-keyed every segment, for
+  // pixels that never changed. Keep only the objects that actually appear in
+  // this segment (its steps + the prev step it animates from); everything
+  // hidden throughout contributes nothing and must not touch the fingerprint.
+  if (keep && c.snapshot) {
+    const sn = { ...c.snapshot };
+    if (sn.visibility) sn.visibility = _pick(sn.visibility, keep);
+    if (sn.transforms) sn.transforms = _pick(sn.transforms, keep);
+    if (sn.materials)  sn.materials  = _pick(sn.materials,  keep);
+    if (sn.tree)       sn.tree       = _pruneTree(sn.tree, keep);
+    c.snapshot = sn;
   }
   return _canon(c);
 }
@@ -139,7 +166,7 @@ export async function computeSegmentPlan() {
     epoch: RENDER_CACHE_EPOCH,
   };
 
-  const plan = { spans, playableCount: playable.length, settingsKey, defsKey, _defScope, _viewJson: new Map() };
+  const plan = { spans, playableCount: playable.length, settingsKey, defsKey, _defScope };
   for (const span of spans) {
     span._prevRef = span.from > 0 ? playable[span.from - 1] : null;
     span.name  = span.steps[0].name || '(step)';
@@ -149,44 +176,48 @@ export async function computeSegmentPlan() {
   return plan;
 }
 
-/** Node ids that CONTRIBUTE PIXELS in a step (localVisible !== false). Returns
- *  null when the step carries no visibility map → the caller must fall back to
- *  the full definition set (never scope on missing data → never serve stale
- *  pixels). localVisible is LOCAL (an ancestor-hidden node reads visible here),
- *  which only ever OVER-includes → a harmless extra re-render, never a stale one. */
-function _visibleIdsOfStep(step) {
-  const vis = step?.snapshot?.visibility;
-  if (!vis || typeof vis !== 'object') return null;
-  const out = new Set();
-  for (const id in vis) if (vis[id] !== false) out.add(id);
-  return out.size ? out : null;
+/** THE VISIBLE SET — the one source of truth for this segment's fingerprint.
+ *  Node ids that contribute pixels anywhere in the span: its own steps PLUS
+ *  the prev step (the transition animates FROM it, so a node fading out there
+ *  still paints). Hidden (localVisible === false) and archived nodes paint
+ *  nothing. Returns null when a step lacks the tree/visibility data → caller
+ *  keys EVERYTHING (never scope on missing data → never serve stale pixels).
+ *
+ *  Deliberately does NOT propagate a hidden parent down to its children: that
+ *  would only shrink the set further, and over-including is the safe direction
+ *  (a harmless extra re-render, never a stale frame). */
+function _spanVisible(span) {
+  const ids = new Set();
+  const forVis = span._prevRef ? [span._prevRef, ...span.steps] : span.steps;
+  for (const st of forVis) {
+    const snap = st?.snapshot;
+    const tree = snap?.tree, vis = snap?.visibility;
+    if (!tree || !vis) return null;
+    (function walk(n) {
+      if (!n) return;
+      const hidden = vis[n.id] === false || n.localVisible === false || n.archived === true;
+      if (!hidden) ids.add(n.id);
+      (n.children || []).forEach(walk);
+    })(tree);
+  }
+  return ids;
 }
 
-/** Per-segment scoped definitions: only the primitives / shape-templates
- *  referenced by nodes VISIBLE across this span (its steps + the PREV step,
- *  which the transition animates FROM). colors/cables stay global.
- *
- *  Safe under every edit:
- *   - ADD a primitive/shape (visible only at the end) → absent from earlier
- *     spans' visible sets → earlier keys unchanged → reused.
+/** Per-segment scoped definitions, from the span's visible set. colors/cables
+ *  stay global (cross-cutting). Safe under every edit:
+ *   - ADD a primitive/shape hidden here → not in V → key unchanged → reused.
  *   - EDIT params → only spans whose visible nodes reference it re-key.
- *   - DELETE → the def was PRESENT+visible, so it was IN the scoped list;
- *     removing it from the live tree drops it out → key changes → re-render.
- *   - Any step missing a visibility map → full defs (conservative). */
-function _scopedDefs(span, plan) {
+ *   - DELETE → it WAS present+visible (so it was in the list) → drops out →
+ *     key changes → re-render. No stale.
+ *   - V null (missing data) → full defs (conservative). */
+function _scopedDefs(V, plan) {
   const sc = plan._defScope;
-  const stepsForVis = span._prevRef ? [span._prevRef, ...span.steps] : span.steps;
-  const vis = new Set();
-  for (const st of stepsForVis) {
-    const v = _visibleIdsOfStep(st);
-    if (!v) return { prims: sc.allPrims, shapes: sc.allShapes, colors: sc.colors, cables: sc.cables };
-    for (const id of v) vis.add(id);
-  }
+  if (!V) return { prims: sc.allPrims, shapes: sc.allShapes, colors: sc.colors, cables: sc.cables };
   const prims = [];
-  for (const id of vis) { const d = sc.primById.get(id); if (d) prims.push(d); }
+  for (const id of V) { const d = sc.primById.get(id); if (d) prims.push(d); }
   prims.sort(sc.byId);
   const tplIds = new Set();
-  for (const id of vis) { const t = sc.shapeTplOfNode.get(id); if (t) tplIds.add(t); }
+  for (const id of V) { const t = sc.shapeTplOfNode.get(id); if (t) tplIds.add(t); }
   const shapes = [...tplIds].map(t => sc.tplById.get(t) || { id: t, gone: true }).sort(sc.byId);
   return { prims, shapes, colors: sc.colors, cables: sc.cables };
 }
@@ -198,7 +229,11 @@ function _scopedDefs(span, plan) {
  *  under — keying at plan time wrote files under fingerprints that were
  *  obsolete by the next run (the back-to-back full-re-render bug). */
 async function _keySpan(span, plan) {
-  span._defsJson = JSON.stringify(_canon(_scopedDefs(span, plan)));   // per-span scoped (V0.3.2.32)
+  // ONE visible set drives both halves of the fingerprint (V0.3.2.33):
+  // which definitions this segment depends on, and which objects' step
+  // records it keys on.
+  span._keep     = _spanVisible(span);                                  // null → key everything (conservative)
+  span._defsJson = JSON.stringify(_canon(_scopedDefs(span._keep, plan)));
   const p = _spanPayload(span, plan);
   span._prevH  = await _sha1hex(p.prevJson);
   span._stepsH = await _sha1hex(p.stepsJson);
@@ -206,18 +241,15 @@ async function _keySpan(span, plan) {
   return span.key;
 }
 
-/** Per-pass memo: canonicalizing a 150MB project costs ~10s, and each step
- *  is needed twice (as span member + as the next span's lead). One canon per
- *  step per pass. The settle pass clears the memo — data may have changed. */
-function _stepJson(step, plan) {
-  let j = plan._viewJson?.get(step);
-  if (!j) { j = JSON.stringify(_stepKeyView(step)); plan._viewJson?.set(step, j); }
-  return j;
-}
-
+/** Step views are SPAN-SCOPED now (each span prunes to its own visible set),
+ *  so the old cross-span memo is gone — a step is viewed at most twice per
+ *  pass (as a member, and as the next span's lead). Pruning shrinks the data
+ *  dramatically, so this is cheaper than the unpruned single-pass was. */
 function _spanPayload(span, plan) {
-  const prevJson  = span._prevRef ? _stepJson(span._prevRef, plan) : 'null';
-  const stepsJson = '[' + span.steps.map(s => _stepJson(s, plan)).join(',') + ']';
+  const keep = span._keep;
+  const view = (st) => JSON.stringify(_stepKeyView(st, keep));
+  const prevJson  = span._prevRef ? view(span._prevRef) : 'null';
+  const stepsJson = '[' + span.steps.map(view).join(',') + ']';
   plan._settingsJson ||= JSON.stringify(_canon(plan.settingsKey));
   return { prevJson, stepsJson,
     full: `{"prev":${prevJson},"steps":${stepsJson},"settings":${plan._settingsJson},"defs":${span._defsJson}}` };
@@ -714,7 +746,7 @@ export async function renderMissingSegments({ onProgress, signal, force = false,
   // and re-file any segment whose fingerprint moved — disk ends up keyed
   // exactly as the next plan will compute, so the next export HITS.
   let rekeyed = 0;
-  plan._viewJson?.clear();   // step data may have changed during playback — re-fingerprint fresh
+  // (step views are computed fresh per span — nothing cached to invalidate)
   for (const span of plan.spans) {
     if (!span.cached) continue;
     const oldKey = span.key;
