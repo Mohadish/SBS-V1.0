@@ -32,7 +32,7 @@ import { state } from '../core/state.js';
 import { steps } from './steps.js';
 
 /** Bump when renderer/exporter changes make previously-cached pixels stale. */
-export const RENDER_CACHE_EPOCH = 2;   // 2: canonical hashing (V0.3.2.22)
+export const RENDER_CACHE_EPOCH = 3;   // 2: canonical hashing (V0.3.2.22); 3: per-segment scoped defs (V0.3.2.32)
 
 const _groupKeyOf = (s) => s.groupHead ? s.id : (s.groupId || null);
 
@@ -97,29 +97,34 @@ export async function computeSegmentPlan() {
     spans.push({ from: i, to: i, groupKey: gk, steps: [playable[i]] });
   }
 
-  // DEFINITION-level state (V0.3.2.7): things edited ONCE that change pixels
-  // across MANY steps — primitive parameters (live tree = the truth; the frozen
-  // copies in step snapshots go stale, which is exactly why they can't key
-  // this), flat-shape templates, color presets, cable styles. Any definition
-  // edit re-keys EVERY segment — the user's own rule: a project-wide change
-  // means render everything. Without this, a primitive param fix would silently
-  // reuse stale cached pixels.
-  const _prims = [];
+  // DEFINITION-level state, PER-SEGMENT SCOPED (V0.3.2.32). Primitives and
+  // flat-shape templates are node-INSTANCE-scoped: a segment's pixels depend
+  // only on the ones its VISIBLE nodes reference. Keying every segment on the
+  // WHOLE definition set (the old blunt rule) meant adding/editing ONE
+  // primitive re-rendered the entire movie — even for a shape shown only at
+  // the end. Now each span keys on just the defs it actually contains, so
+  // "add things at the end" reuses everything before it. (colors + cables stay
+  // global below: a preset/style edit is cross-cutting and rarer — safe to
+  // keep conservative than risk a stale colour.)
+  const primById       = new Map();   // primitive node id → def
+  const shapeTplOfNode = new Map();   // flatShape node id → templateId
   (function walk(n) {
     if (!n) return;
-    if (n.type === 'primitive') _prims.push({ id: n.id, k: n.primKind, p: n.primParams, q: n.primQuality, b: n.baseAtOrigin });
+    if (n.type === 'primitive') primById.set(n.id, { id: n.id, k: n.primKind, p: n.primParams, q: n.primQuality, b: n.baseAtOrigin });
+    else if (n.type === 'flatShape' && n.templateId) shapeTplOfNode.set(n.id, n.templateId);
     (n.children || []).forEach(walk);
   })(state.get('treeData'));
-  // Sorted by id (V0.3.2.20): tree/list REORDERING must not re-key — only
-  // actual definition content changes should (forensics showed a pure shuffle
-  // contributing to a full invalidation).
   const _byId = (a, b) => String(a.id).localeCompare(String(b.id));
-  const defsKey = {
-    prims:  _prims.slice().sort(_byId),
-    shapes: (state.get('shapeTemplates') || []).slice().sort(_byId),
-    colors: (state.get('colorPresets')   || []).slice().sort(_byId),
+  const tplById   = new Map((state.get('shapeTemplates') || []).map(t => [t.id, t]));
+  const allPrims  = [...primById.values()].sort(_byId);                 // conservative fallback (missing vis map)
+  const allShapes = (state.get('shapeTemplates') || []).slice().sort(_byId);
+  const _defScope = {
+    primById, shapeTplOfNode, tplById, allPrims, allShapes, byId: _byId,
+    colors: (state.get('colorPresets') || []).slice().sort(_byId),
     cables: (state.get('cables') || []).map(c => ({ id: c.id, style: c.style })).sort(_byId),
   };
+  // Coarse global roster — for the drift report / _keyinputs only, NOT per-span keys.
+  const defsKey = { prims: allPrims, shapes: allShapes, colors: _defScope.colors, cables: _defScope.cables };
 
   // Pixel-affecting global settings. NO header config, NO positions, NO
   // sibling durations — segments are header-less (assembly composites the
@@ -134,7 +139,7 @@ export async function computeSegmentPlan() {
     epoch: RENDER_CACHE_EPOCH,
   };
 
-  const plan = { spans, playableCount: playable.length, settingsKey, defsKey, _viewJson: new Map() };
+  const plan = { spans, playableCount: playable.length, settingsKey, defsKey, _defScope, _viewJson: new Map() };
   for (const span of spans) {
     span._prevRef = span.from > 0 ? playable[span.from - 1] : null;
     span.name  = span.steps[0].name || '(step)';
@@ -144,6 +149,48 @@ export async function computeSegmentPlan() {
   return plan;
 }
 
+/** Node ids that CONTRIBUTE PIXELS in a step (localVisible !== false). Returns
+ *  null when the step carries no visibility map → the caller must fall back to
+ *  the full definition set (never scope on missing data → never serve stale
+ *  pixels). localVisible is LOCAL (an ancestor-hidden node reads visible here),
+ *  which only ever OVER-includes → a harmless extra re-render, never a stale one. */
+function _visibleIdsOfStep(step) {
+  const vis = step?.snapshot?.visibility;
+  if (!vis || typeof vis !== 'object') return null;
+  const out = new Set();
+  for (const id in vis) if (vis[id] !== false) out.add(id);
+  return out.size ? out : null;
+}
+
+/** Per-segment scoped definitions: only the primitives / shape-templates
+ *  referenced by nodes VISIBLE across this span (its steps + the PREV step,
+ *  which the transition animates FROM). colors/cables stay global.
+ *
+ *  Safe under every edit:
+ *   - ADD a primitive/shape (visible only at the end) → absent from earlier
+ *     spans' visible sets → earlier keys unchanged → reused.
+ *   - EDIT params → only spans whose visible nodes reference it re-key.
+ *   - DELETE → the def was PRESENT+visible, so it was IN the scoped list;
+ *     removing it from the live tree drops it out → key changes → re-render.
+ *   - Any step missing a visibility map → full defs (conservative). */
+function _scopedDefs(span, plan) {
+  const sc = plan._defScope;
+  const stepsForVis = span._prevRef ? [span._prevRef, ...span.steps] : span.steps;
+  const vis = new Set();
+  for (const st of stepsForVis) {
+    const v = _visibleIdsOfStep(st);
+    if (!v) return { prims: sc.allPrims, shapes: sc.allShapes, colors: sc.colors, cables: sc.cables };
+    for (const id of v) vis.add(id);
+  }
+  const prims = [];
+  for (const id of vis) { const d = sc.primById.get(id); if (d) prims.push(d); }
+  prims.sort(sc.byId);
+  const tplIds = new Set();
+  for (const id of vis) { const t = sc.shapeTplOfNode.get(id); if (t) tplIds.add(t); }
+  const shapes = [...tplIds].map(t => sc.tplById.get(t) || { id: t, gone: true }).sort(sc.byId);
+  return { prims, shapes, colors: sc.colors, cables: sc.cables };
+}
+
 /** (Re)compute a span's key + part-hashes from the CURRENT live objects.
  *  Called at plan time AND again right after a span renders (V0.3.2.21):
  *  step activation during rendering self-heals/rewrites step data, so the
@@ -151,6 +198,7 @@ export async function computeSegmentPlan() {
  *  under — keying at plan time wrote files under fingerprints that were
  *  obsolete by the next run (the back-to-back full-re-render bug). */
 async function _keySpan(span, plan) {
+  span._defsJson = JSON.stringify(_canon(_scopedDefs(span, plan)));   // per-span scoped (V0.3.2.32)
   const p = _spanPayload(span, plan);
   span._prevH  = await _sha1hex(p.prevJson);
   span._stepsH = await _sha1hex(p.stepsJson);
@@ -171,9 +219,8 @@ function _spanPayload(span, plan) {
   const prevJson  = span._prevRef ? _stepJson(span._prevRef, plan) : 'null';
   const stepsJson = '[' + span.steps.map(s => _stepJson(s, plan)).join(',') + ']';
   plan._settingsJson ||= JSON.stringify(_canon(plan.settingsKey));
-  plan._defsJson     ||= JSON.stringify(_canon(plan.defsKey));
   return { prevJson, stepsJson,
-    full: `{"prev":${prevJson},"steps":${stepsJson},"settings":${plan._settingsJson},"defs":${plan._defsJson}}` };
+    full: `{"prev":${prevJson},"steps":${stepsJson},"settings":${plan._settingsJson},"defs":${span._defsJson}}` };
 }
 
 /** Drift forensics (V0.3.2.21): compare this plan against the previous one
