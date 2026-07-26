@@ -1021,6 +1021,62 @@ function _migrateStepGroupFields() {
     console.log(`[migrate] Defaulted/repaired step-group fields on ${migrated} legacy step record(s).`);
     state.setState({ steps: [...stepsArr] });
   }
+  _repairGroupContiguity();
+}
+
+/**
+ * GROUP CONTIGUITY REPAIR (V0.3.2.44). A step group is a CONTIGUOUS run:
+ * one head followed immediately by its members. Before this version, pasting
+ * copied steps kept the ORIGINAL group identity — a pasted copy 50 steps away
+ * claimed membership in the distant group, and every group-aware system
+ * followed the chain to the wrong place: arrow-key navigation jumped steps,
+ * playback/export folded the copies into a group head that wasn't there (new
+ * steps silently missing from exports). The paste is fixed at the source;
+ * this repairs files that already carry the damage. Rules, walking in order:
+ *   - a run of members whose head is NOT the step right where the run
+ *     expects it (head absent / seen in an earlier run / mid-timeline ghost)
+ *     is re-headed: first step of the run becomes a fresh head, the rest its
+ *     members. Single-step ghosts just lose their grouping.
+ * Runs on every load; logs what it changed. Also: window.sbsFix.stepGroups().
+ */
+export function _repairGroupContiguity() {
+  const stepsArr = state.get('steps') || [];
+  const keyOf = (s) => (s.groupHead ? s.id : (s.groupId || null));
+  // Partition into contiguous runs by group key.
+  const runs = [];
+  for (let i = 0; i < stepsArr.length; i++) {
+    const k = keyOf(stepsArr[i]);
+    const last = runs[runs.length - 1];
+    if (k !== null && last && last.key === k) { last.steps.push(stepsArr[i]); continue; }
+    runs.push({ key: k, steps: [stepsArr[i]] });
+  }
+  const claimed = new Set();
+  let repairedRuns = 0, touched = 0;
+  for (const run of runs) {
+    if (run.key === null) continue;
+    const headInRun = run.steps.some(s => s.id === run.key);
+    const duplicate = claimed.has(run.key);
+    claimed.add(run.key);
+    if (headInRun && !duplicate) continue;             // healthy group
+    // Ghost or orphaned run — give it a fresh, self-contained identity.
+    repairedRuns++;
+    if (run.steps.length === 1) {
+      const s = run.steps[0];
+      if (s.groupHead || s.groupId) { s.groupHead = false; s.groupId = null; touched++; }
+      continue;
+    }
+    const head = run.steps[0];
+    if (!head.groupHead || head.groupId) { head.groupHead = true; head.groupId = null; touched++; }
+    for (const s of run.steps.slice(1)) {
+      if (s.groupId !== head.id || s.groupHead) { s.groupHead = false; s.groupId = head.id; touched++; }
+    }
+  }
+  if (touched) {
+    console.warn(`[migrate] GROUP REPAIR: ${repairedRuns} broken group run(s) re-headed/cleared (${touched} step record(s) fixed) — pasted copies used to keep the original group's identity.`);
+    state.setState({ steps: [...stepsArr] });
+    state.markDirty();
+  }
+  return { repairedRuns, touched };
 }
 
 function _migrateLegacyDefaultStamps() {

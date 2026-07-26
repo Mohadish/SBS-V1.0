@@ -2638,6 +2638,11 @@ class StepManager {
     const copy = createStep({
       name:         source.name + ' (copy)',
       chapterId:    source.chapterId,
+      // Group JOIN (V0.3.2.44): the copy lands right after the source, i.e.
+      // INSIDE the source's contiguous group run. It must be a member of the
+      // same group (head's dup joins as a member too) — an ungrouped step in
+      // the middle of a run would split the group in two.
+      groupId:      source.groupHead ? source.id : (source.groupId || null),
       voiceText:    source.voiceText,
       voiceEnabled: source.voiceEnabled,
       transition:   { ...source.transition },

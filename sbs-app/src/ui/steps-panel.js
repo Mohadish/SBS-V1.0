@@ -1857,6 +1857,28 @@ function _cloneStep(step) {
   return copy;
 }
 
+/** Clone a BLOCK of steps for pasting, remapping group identity (V0.3.2.44).
+ *  Groups are contiguous runs anchored to a head step id. Keeping the source
+ *  group's identity on a pasted copy made it claim membership in a group 50
+ *  steps away — navigation followed the chain across the timeline and export
+ *  folded the copies into a distant head (steps silently missing). Rules:
+ *  head copied → it heads a NEW group; members whose head is in the pasted
+ *  set → remapped to the head's new id; members whose head was NOT copied →
+ *  grouping stripped (standalone steps). */
+function _clonePastedBlock(stepsData) {
+  const copies = stepsData.map(s => ({ src: s, copy: _cloneStep(s) }));
+  const newIdOf = new Map(copies.map(({ src, copy }) => [src.id, copy.id]));
+  for (const { src, copy } of copies) {
+    if (src.groupHead) { copy.groupHead = true; copy.groupId = null; continue; }   // heads a new group (its members remap below)
+    if (src.groupId) {
+      const mapped = newIdOf.get(src.groupId);
+      if (mapped) { copy.groupId = mapped; }
+      else        { copy.groupId = null; copy.groupHead = false; }   // head not in the paste → standalone
+    }
+  }
+  return copies.map(c => c.copy);
+}
+
 function _copyStepsToClipboard(stepIds) {
   const all = state.get('steps') || [];
   const picked = stepIds
@@ -1874,11 +1896,8 @@ function _pasteStepsUnder(targetStepId) {
   const tgtIdx  = all.findIndex(s => s.id === targetStepId);
   if (tgtIdx < 0) return;
   const target  = all[tgtIdx];
-  const pasted  = _clipboard.data.map(s => {
-    const copy = _cloneStep(s);
-    copy.chapterId = target.chapterId ?? null;
-    return copy;
-  });
+  const pasted  = _clonePastedBlock(_clipboard.data);
+  for (const copy of pasted) copy.chapterId = target.chapterId ?? null;
   const newAll = [...all.slice(0, tgtIdx + 1), ...pasted, ...all.slice(tgtIdx + 1)];
   actions.commitStateChange(`Paste ${pasted.length} step(s)`, ['steps'], () => {
     state.setState({ steps: newAll });
@@ -1891,11 +1910,8 @@ function _pasteStepsUnder(targetStepId) {
 function _pasteStepsIntoChapter(chapterId) {
   if (_clipboard?.kind !== 'steps') return;
   const all    = state.get('steps') || [];
-  const pasted = _clipboard.data.map(s => {
-    const copy = _cloneStep(s);
-    copy.chapterId = chapterId;
-    return copy;
-  });
+  const pasted = _clonePastedBlock(_clipboard.data);
+  for (const copy of pasted) copy.chapterId = chapterId;
   // Append at end of chapter (normalizeOrder will regroup regardless).
   actions.commitStateChange(`Paste ${pasted.length} step(s) into chapter`, ['steps'], () => {
     state.setState({ steps: [...all, ...pasted] });
@@ -1934,11 +1950,8 @@ function _pasteChapterUnder(targetChapterId) {
   const insertAt = tgtIdx >= 0 ? tgtIdx + 1 : chapters.length;
   const newChapters = [...chapters.slice(0, insertAt), newChapter, ...chapters.slice(insertAt)];
 
-  const pastedSteps = stepTpls.map(s => {
-    const copy = _cloneStep(s);
-    copy.chapterId = newChapter.id;
-    return copy;
-  });
+  const pastedSteps = _clonePastedBlock(stepTpls);
+  for (const copy of pastedSteps) copy.chapterId = newChapter.id;
   const newSteps = [...(state.get('steps') || []), ...pastedSteps];
 
   actions.commitStateChange(`Paste chapter "${newChapter.name}"`, ['steps', 'chapters'], () => {

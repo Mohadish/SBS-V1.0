@@ -1352,6 +1352,10 @@ window.sbsAutosave = {
 };
 
 window.sbsFix = window.sbsFix || {};
+// Step-group contiguity repair (V0.3.2.44) — re-heads/clears group runs
+// corrupted by the old paste (copies kept the original group's identity:
+// arrow-key jumps, export skipping pasted steps). Also runs on every load.
+window.sbsFix.stepGroups = () => import('./io/project.js').then(m => m._repairGroupContiguity());
 // Ghost text editor (stuck editable text box floating over every step):
 // force-commit + tear it down. window.sbsFix.textEditor()
 window.sbsFix.textEditor = () => import('./systems/overlay.js').then(m => {
