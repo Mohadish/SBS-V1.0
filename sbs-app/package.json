@@ -11,9 +11,13 @@
     "bytenode:clean": "node scripts/build-bytenode.js --clean",
     "ensure-models": "node scripts/ensure-kokoro-bundle.js",
     "vendor-tts": "node scripts/vendor-tts-webgpu.js",
-    "build": "npm run ensure-models && npm run vendor-tts && npm run bytenode && electron-builder",
-    "build:nobytenode": "npm run ensure-models && npm run vendor-tts && electron-builder",
+    "sanitize-sbom": "node scripts/sanitize-sbom.js",
+    "build": "npm run ensure-models && npm run vendor-tts && npm run bytenode && npm run sanitize-sbom && electron-builder",
+    "build:nobytenode": "npm run ensure-models && npm run vendor-tts && npm run sanitize-sbom && electron-builder",
     "fetch-models": "node scripts/fetch-kokoro.js"
+  },
+  "overrides": {
+    "protobufjs": "8.0.1"
   },
   "build": {
     "appId": "com.sbs.stepbrowser",

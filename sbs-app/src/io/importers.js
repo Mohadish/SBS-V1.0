@@ -33,6 +33,17 @@ import * as userSettings from '../core/user-settings.js';   // remembered bake p
 // Three.js add-on loaders — imported as ES modules from the local vendor bundles.
 // These bundles import from three.module.proxy.mjs which wraps window.THREE,
 // so three.min.js must have been loaded as a script tag before this module runs.
+// Absolute path of a dropped / <input>-picked File. Electron removed the
+// File.path property in modern versions — the replacement lives in the
+// preload (webUtils.getPathForFile → window.sbsNative.pathForFile). Try the
+// legacy property first (older Electron), then the bridge. '' when neither
+// applies (e.g. a Blob without a disk identity).
+function _diskPathOf(file) {
+  if (!file) return '';
+  if (typeof file.path === 'string' && file.path) return file.path;
+  try { return window.sbsNative?.pathForFile?.(file) || ''; } catch { return ''; }
+}
+
 import { OBJLoader }   from '../../vendor/OBJLoader.bundle.mjs';
 import { STLLoader }   from '../../vendor/STLLoader.bundle.mjs';
 import { GLTFLoader }  from '../../vendor/GLTFLoader.bundle.mjs';
@@ -865,7 +876,7 @@ function _buildOcctModel(result, file, format, assetEntry) {
     type:         format,
     fileSize:     file.size,
     lastModified: file.lastModified ?? null,
-    originalPath: assetEntry?.originalPath || file.path || '',
+    originalPath: assetEntry?.originalPath || _diskPathOf(file),
     relativePath: assetEntry?.relativePath || '',
   }, obj3dMap);
 }
@@ -952,7 +963,7 @@ async function loadOcctFile(file, format, assetEntry = null, opts = {}) {
   // ── BAKE: first open of an un-cached original → offer a fast-load copy ──
   // Skipped while restoring a project (no prompts) or when no path to write to.
   if (!footer && !opts.skipBake && !_loadingFromProject) {
-    const srcPath = opts.sourcePath || file.path || assetEntry?.originalPath || assetEntry?.resolvedPath || '';
+    const srcPath = opts.sourcePath || _diskPathOf(file) || assetEntry?.originalPath || assetEntry?.resolvedPath || '';
     if (srcPath && format === 'step') {
       _maybeBakeCache(srcPath, head, result, node?.assetId)
         .catch(err => console.warn('[import] bake skipped:', err?.message || err));
@@ -1242,7 +1253,7 @@ function _promptImportStructure(def) {
 }
 
 async function _tryNativeCad(file, ext, assetEntry, opts) {
-  const srcPath = opts.sourcePath || file.path || assetEntry?.originalPath || assetEntry?.resolvedPath || '';
+  const srcPath = opts.sourcePath || _diskPathOf(file) || assetEntry?.originalPath || assetEntry?.resolvedPath || '';
   if (!srcPath) return null;                                   // need a real path to convert
 
   let available = false;
@@ -1419,7 +1430,7 @@ async function loadObjFile(file, assetEntry = null) {
     type:         'obj',
     fileSize:     file.size,
     lastModified: file.lastModified ?? null,
-    originalPath: assetEntry?.originalPath || file.path || '',
+    originalPath: assetEntry?.originalPath || _diskPathOf(file),
     relativePath: assetEntry?.relativePath || '',
   }, obj3dMap);
 }
@@ -1447,7 +1458,7 @@ async function loadStlFile(file, assetEntry = null) {
     type:         'stl',
     fileSize:     file.size,
     lastModified: file.lastModified ?? null,
-    originalPath: assetEntry?.originalPath || file.path || '',
+    originalPath: assetEntry?.originalPath || _diskPathOf(file),
     relativePath: assetEntry?.relativePath || '',
   }, obj3dMap);
 }
@@ -1495,7 +1506,7 @@ async function loadGltfFile(file, assetEntry = null) {
           type:         ext,
           fileSize:     file.size,
     lastModified: file.lastModified ?? null,
-          originalPath: assetEntry?.originalPath || file.path || '',
+          originalPath: assetEntry?.originalPath || _diskPathOf(file),
           relativePath: assetEntry?.relativePath || '',
         }, obj3dMap, true, { globalDedup: false }));
       } catch (err) { reject(err); }
@@ -1536,7 +1547,7 @@ async function loadFbxFile(file, assetEntry = null) {
     type:         'fbx',
     fileSize:     file.size,
     lastModified: file.lastModified ?? null,
-    originalPath: assetEntry?.originalPath || file.path || '',
+    originalPath: assetEntry?.originalPath || _diskPathOf(file),
     relativePath: assetEntry?.relativePath || '',
   }, obj3dMap, true, { globalDedup: false });
 }

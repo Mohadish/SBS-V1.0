@@ -11,9 +11,17 @@
  * Rule: only add things here that the UI genuinely needs.
  */
 
-const { contextBridge, ipcRenderer } = require('electron');
+const { contextBridge, ipcRenderer, webUtils } = require('electron');
 
 contextBridge.exposeInMainWorld('sbsNative', {
+
+  // ── File → absolute path (Electron 41 migration) ─────────────────────────
+  // File.path was removed from the File object in modern Electron; the
+  // sanctioned replacement is webUtils.getPathForFile, which only exists in
+  // the preload. Renderer code calls this for dropped / <input>-picked files.
+  // Guarded so the same preload also runs on older Electron (webUtils absent
+  // there — File.path still works natively in that case).
+  pathForFile: (file) => { try { return webUtils?.getPathForFile?.(file) || ''; } catch { return ''; } },
 
   // ── Dialogs ──────────────────────────────────────────────────────────────
   openModel:          ()          => ipcRenderer.invoke('dialog:openModel'),
