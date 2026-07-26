@@ -1,6 +1,6 @@
 {
   "name": "sbs-step-browser",
-  "version": "0.3.1-84",
+  "version": "0.3.2-40",
   "description": "SBS Step Browser — CAD Presentation Tool",
   "author": "SBS Step Browser",
   "main": "electron/main.js",
@@ -98,12 +98,12 @@
     ]
   },
   "dependencies": {
-    "bytenode": "^1.5.7",
     "kokoro-js": "^1.2.1",
     "say": "^0.16.0"
   },
   "devDependencies": {
-    "electron": "^28.3.3",
+    "bytenode": "^1.6.0",
+    "electron": "^41.10.3",
     "electron-builder": "^24.13.3"
   }
 }
