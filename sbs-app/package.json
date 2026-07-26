@@ -101,11 +101,11 @@
     ]
   },
   "dependencies": {
+    "bytenode": "^1.6.0",
     "kokoro-js": "^1.2.1",
     "say": "^0.16.0"
   },
   "devDependencies": {
-    "bytenode": "^1.6.0",
     "electron": "^41.10.3",
     "electron-builder": "^26.15.3"
   }
