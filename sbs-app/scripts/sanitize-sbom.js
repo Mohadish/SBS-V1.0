@@ -76,9 +76,12 @@ for (const pj of walkPackageJsons(ROOT)) {
     const deps = obj[sect];
     if (!deps) continue;
     for (const [name, range] of Object.entries(deps)) {
-      if (/^\d+\.\d+\.\d+/.test(String(range))) continue;   // already exact
       const v = installedVersion(pkgDir, name);
-      if (v) { deps[name] = v; pinned++; touched = true; }
+      // Always pin to the INSTALLED version — even when the declaration is
+      // already exact. A previous sanitize pass (or upstream pinning) can
+      // leave a stale exact version behind after an override changes what's
+      // actually installed; the SBOM must read what ships.
+      if (v && String(range) !== v) { deps[name] = v; pinned++; touched = true; }
     }
   }
 

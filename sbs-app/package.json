@@ -66,6 +66,7 @@
       "!electron/license/index.js",
       "!electron/license/time-monitor.js",
       "!**/node_modules/*/{CHANGELOG.md,README.md,README,readme.md,readme}",
+      "!**/node_modules/**/*.{md,markdown}",
       "!**/*.{iml,o,hprof,orig,pyc,pyo,rbc,swp,csproj,sln,xproj}",
       "!.editorconfig",
       "!**/._*",
