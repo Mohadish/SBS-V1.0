@@ -1,6 +1,6 @@
 {
   "name": "sbs-step-browser",
-  "version": "0.3.2-44",
+  "version": "0.3.2-45",
   "description": "SBS Step Browser — CAD Presentation Tool",
   "author": "SBS Step Browser",
   "main": "electron/main.js",
@@ -80,6 +80,13 @@
       "vendor/kokoro.web.js"
     ],
     "extraResources": [
+      {
+        "from": "tools/stitch/bin",
+        "to": "ffmpeg",
+        "filter": [
+          "ffmpeg.exe"
+        ]
+      },
       {
         "from": "kokoro-bundle",
         "to": "kokoro-bundle",
