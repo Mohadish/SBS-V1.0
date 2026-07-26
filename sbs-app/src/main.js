@@ -3270,6 +3270,11 @@ function _raySelectPreview() {
   // silhouette outline — harmless and visually consistent with selection
   // (which is also silhouette + per-mesh hull).
   setOutlinePreview(ent.targetId, _raySelect.color);
+  // The scene renders ON DEMAND, and the two preview calls above only set data —
+  // they don't wake the loop. Without this the highlight didn't paint until the
+  // NEXT input woke a frame, which for a Ctrl+click is releasing Ctrl: the popup
+  // "waited for key release" (V0.3.2.38). Force the frame now.
+  sceneCore.requestRender?.(0);
   if (_raySelect.el) {
     _raySelect.el.querySelectorAll('[data-ray-idx]').forEach(row => {
       const on = Number(row.dataset.rayIdx) === _raySelect.index;
@@ -3333,6 +3338,7 @@ function _raySelectCancel() {
   // Selection highlight was never disturbed — just drop the preview channels.
   materials.clearPreviewHighlight();
   clearOutlinePreview();   // V0.2.22.21.4
+  sceneCore.requestRender?.(0);   // render-on-demand: repaint so the preview clears now, not on next input (V0.3.2.38)
   setStatus('Selection cancelled.');
 }
 
