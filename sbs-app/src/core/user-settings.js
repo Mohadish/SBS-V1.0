@@ -117,6 +117,10 @@ const DEFAULTS = {
     slots:         3,      // rotating files: .autosave1 / 2 / 3 …
     folder:        '',     // '' = alongside the project file
   },
+  // 🎬 Lighting presets (V0.3.2.54) — saved production looks, USER-level so a
+  // look saved once is available in EVERY project (the user's "load
+  // environments across projects"). Each: { id, name, production:{...} }.
+  lightingPresets: [],
   // V0.2.22.58 — SYSTEM-level defaults for the hardware insertion
   // animation (the "Nuts" settings tab). Per-instance values that are
   // left as "use default" resolve to the project default (.sbsproj),

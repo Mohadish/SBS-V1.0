@@ -17,6 +17,7 @@
  */
 import state from '../core/state.js';
 import { sceneCore } from '../core/scene.js';
+import * as userSettings from '../core/user-settings.js';
 
 const HDRI_LABELS = {
   '': 'Built-in studio', studio_small_08: 'Studio — soft boxes',
@@ -42,16 +43,21 @@ function _write(patch) {
 }
 
 export function openLightStage() {
-  if (_dlg) { try { _dlg.close(); _dlg.remove(); } catch {} _dlg = null; }
+  if (_dlg) { try { _dlg.remove(); } catch {} _dlg = null; }
   const p = _prod();
 
-  _dlg = document.createElement('dialog');
+  // NON-MODAL, DRAGGABLE (V0.3.2.54): a plain floating panel — the viewport
+  // stays fully interactive (orbit the object while you light it), and the
+  // header is a drag handle so the panel can be parked anywhere.
+  _dlg = document.createElement('div');
   _dlg.className = 'light-stage-dlg';
-  _dlg.style.cssText = 'width:min(560px,94vw);background:var(--panel,#1e293b);color:var(--text,#e2e8f0);'
-    + 'border:1px solid var(--line,#334155);border-radius:12px;padding:0;';
+  _dlg.style.cssText = 'position:fixed;top:80px;right:24px;z-index:9000;width:min(560px,94vw);'
+    + 'background:var(--panel,#1e293b);color:var(--text,#e2e8f0);'
+    + 'border:1px solid var(--line,#334155);border-radius:12px;padding:0;'
+    + 'box-shadow:0 10px 40px rgba(0,0,0,.5);';
   _dlg.innerHTML = `
-    <div style="display:flex;align-items:center;justify-content:space-between;padding:12px 16px;border-bottom:1px solid var(--line,#334155)">
-      <b>💡 Light Stage</b>
+    <div id="ls-drag" style="display:flex;align-items:center;justify-content:space-between;padding:12px 16px;border-bottom:1px solid var(--line,#334155);cursor:move;user-select:none">
+      <b>💡 Light Stage <span class="small muted" style="opacity:.5;font-weight:400">⠿ drag</span></b>
       <label class="small" style="display:flex;align-items:center;gap:6px;cursor:pointer;">
         <input type="checkbox" id="ls-enabled" ${p.enabled ? 'checked' : ''}/> Production look
       </label>
@@ -79,6 +85,11 @@ export function openLightStage() {
         <div class="small muted" style="text-align:center;font-size:11px;opacity:.7;margin-top:4px">drag Key/Fill to aim · click a light</div>
       </div>
       <div style="flex:1 1 auto;min-width:0">
+        <div style="display:flex;gap:6px;align-items:center;margin-bottom:10px">
+          <select id="ls-preset" style="flex:1;min-width:0;padding:5px 6px;background:var(--panel2,#0f172a);color:inherit;border:1px solid var(--line,#334155);border-radius:6px"></select>
+          <button id="ls-preset-save" title="Save current look as a preset" style="background:#f59e0b;color:#111;border:none;border-radius:6px;padding:5px 9px;cursor:pointer;font-weight:600">＋</button>
+          <button id="ls-preset-del" title="Delete selected preset" style="background:transparent;color:inherit;border:1px solid var(--line,#334155);border-radius:6px;padding:5px 9px;cursor:pointer">🗑</button>
+        </div>
         <div id="ls-selpanel"></div>
         <div style="margin-top:14px">
           <button id="ls-env" style="width:100%;text-align:left;background:var(--panel2,#0f172a);color:inherit;border:1px solid var(--line,#334155);border-radius:6px;padding:8px 10px;cursor:pointer">
@@ -150,14 +161,65 @@ export function openLightStage() {
   svg.addEventListener('pointermove', (e) => { if (dragging) { _write({ angle: Math.round(angleFromEvent(e)) }); layout(); } });
   svg.addEventListener('pointerup', () => { dragging = null; });
 
+  // ── Presets (user-level library — available in every project) ──────────
+  const PROD_KEYS = ['exposure','key','fill','rim','angle','rimWidth','contrast','saturation','hdri','envIntensity','envBlur'];
+  const refreshPresets = (selectId) => {
+    const list = userSettings.get().lightingPresets || [];
+    $('#ls-preset').innerHTML = `<option value="">— presets (${list.length}) —</option>`
+      + list.map(pr => `<option value="${pr.id}" ${pr.id === selectId ? 'selected' : ''}>${_esc(pr.name)}</option>`).join('');
+  };
+  refreshPresets();
+  $('#ls-preset').addEventListener('change', async (e) => {
+    const pr = (userSettings.get().lightingPresets || []).find(x => x.id === e.target.value);
+    if (!pr) return;
+    _write({ ...pr.production, enabled: true });
+    $('#ls-enabled').checked = true;
+    $('#ls-envname').textContent = HDRI_LABELS[pr.production.hdri || ''] || 'Built-in studio';
+    renderSel(); layout();
+  });
+  $('#ls-preset-save').addEventListener('click', async () => {
+    const name = (prompt('Name this lighting preset:', 'My look') || '').trim();
+    if (!name) return;
+    const pp = _prod();
+    const production = {}; for (const k of PROD_KEYS) production[k] = pp[k];
+    const id = 'lp_' + name.toLowerCase().replace(/[^a-z0-9]+/g, '-') + '_' + (userSettings.get().lightingPresets || []).length;
+    const list = [...(userSettings.get().lightingPresets || []).filter(p => p.name !== name), { id, name, production }];
+    await userSettings.patch({ lightingPresets: list });
+    refreshPresets(id);
+  });
+  $('#ls-preset-del').addEventListener('click', async () => {
+    const sel = $('#ls-preset').value;
+    if (!sel) { alert('Pick a preset to delete first.'); return; }
+    const list = (userSettings.get().lightingPresets || []).filter(p => p.id !== sel);
+    await userSettings.patch({ lightingPresets: list });
+    refreshPresets();
+  });
+
   $('#ls-enabled').addEventListener('change', (e) => { _write({ enabled: e.target.checked }); });
   $('#ls-env').addEventListener('click', () => _openEnvPicker($, layout));
-  $('#ls-close').addEventListener('click', () => { _dlg.close(); _dlg.remove(); _dlg = null; });
-  _dlg.addEventListener('keydown', (e) => { if (e.key === 'Escape') { _dlg.close(); _dlg.remove(); _dlg = null; } });
+  const close = () => { try { _dlg.remove(); } catch {} _dlg = null; };
+  $('#ls-close').addEventListener('click', close);
+
+  // ── Drag the whole panel by its header ─────────────────────────────────
+  const handle = $('#ls-drag');
+  let panDrag = null;
+  handle.addEventListener('pointerdown', (e) => {
+    if (e.target.closest('#ls-close, #ls-enabled')) return;
+    const r = _dlg.getBoundingClientRect();
+    panDrag = { dx: e.clientX - r.left, dy: e.clientY - r.top };
+    _dlg.style.right = 'auto';
+    handle.setPointerCapture(e.pointerId);
+  });
+  handle.addEventListener('pointermove', (e) => {
+    if (!panDrag) return;
+    _dlg.style.left = Math.max(0, Math.min(window.innerWidth  - 60, e.clientX - panDrag.dx)) + 'px';
+    _dlg.style.top  = Math.max(0, Math.min(window.innerHeight - 40, e.clientY - panDrag.dy)) + 'px';
+  });
+  handle.addEventListener('pointerup', () => { panDrag = null; });
+
   _wireSliders(_dlg);
   renderSel();
   layout();
-  _dlg.showModal();
 }
 
 function _openEnvPicker($, layout) {
@@ -167,6 +229,8 @@ function _openEnvPicker($, layout) {
   _write({ hdri: next });
   $('#ls-envname').textContent = HDRI_LABELS[next] || 'Built-in studio';
 }
+
+const _esc = (s) => String(s).replace(/[&<>"]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
 
 function _sliderRow(key, label, min, max, step, val) {
   const v = Number(val ?? min);

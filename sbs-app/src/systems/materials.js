@@ -680,6 +680,19 @@ class MaterialsSystem {
         minFilter: THREE.LinearMipmapLinearFilter,
         type: THREE.HalfFloatType,     // keep the HDR range for glints
       }).fromEquirectangularTexture(renderer, eqTex);
+      // BLUR FIX (V0.3.2.54): fromEquirectangularTexture only renders MIP 0.
+      // The SBS shader blurs via textureLod up the mip chain (env blur + per-
+      // material roughness), so without the full chain those samples read
+      // BLACK — "blur does nothing". Force GL to build the cube's mipmaps now.
+      try {
+        const gl = renderer.getContext();
+        const tp = renderer.properties.get(cubeRT.texture);
+        if (tp?.__webglTexture) {
+          gl.bindTexture(gl.TEXTURE_CUBE_MAP, tp.__webglTexture);
+          gl.generateMipmap(gl.TEXTURE_CUBE_MAP);
+          renderer.state.reset?.();     // don't leave our binding in three's state
+        }
+      } catch (e) { console.warn('[materials] cube mipmap gen failed:', e?.message); }
       const oldCube = this._hdriCubeMap;
       this._hdriCubeMap = cubeRT.texture;
 
