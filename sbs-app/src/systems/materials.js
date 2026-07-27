@@ -35,10 +35,10 @@ import { ssrPrepassHook } from '../../vendor/three-addons/SSRReflectPass.js';
 // cleanup needed).
 const _sbsEdgesGeoCache = new WeakMap();
 
-// 🎬 Production Render tone-mapping state (V0.3.2.47) — module-level so
-// materials created at ANY time (preset edits, model loads) inherit the
-// current mode. Written only by materials.setProductionToneMapping().
-const _prodToneMap = { on: 0, exposure: 1.0 };
+// 🎬 Production Render look state (V0.3.2.47/48) — module-level so materials
+// created at ANY time (preset edits, model loads) inherit the current mode.
+// Written only by materials.setProductionLook(). angle stored in RADIANS.
+const _prodToneMap = { on: 0, exposure: 1.0, key: 1.0, fill: 1.0, rim: 1.0, angle: 35 * Math.PI / 180 };
 
 // V0.2.7: shift a #rrggbb hex by `deg` degrees in HSL space. Used to derive
 // the expanded-color YELLOW + MAGENTA hulls from the current selection
@@ -113,6 +113,37 @@ vec3 sbsPhong(vec3 albedo, vec3 N, vec3 V, float roughness, float metalness, flo
   vec3  specular  = specColor * spec * specF0 * reflectivity * 3.0;
   return ambient + diffuse + specular;
 }
+
+// ── 🎬 Production light rig (V0.3.2.48) ────────────────────────────────────
+// Three-point cinematography, replacing the flat hardcoded view-space light
+// when Production Render is ON:
+//   KEY  — warm, WORLD-fixed (form/shadow side stays put as the camera moves;
+//          azimuth spins with uRigAngle so the rig can be aimed per project)
+//   FILL — cool, WORLD-fixed, opposite side, low elevation — lifts shadows
+//   RIM  — cool-white, CAMERA-relative backlight: rims only read against the
+//          silhouette, so this one is deliberately view-space (cinema practice)
+vec3 sbsRigPhong(vec3 albedo, vec3 Nw, vec3 Vw, vec3 Nv, vec3 Vv,
+                 float roughness, float metalness, float reflectivity,
+                 float keyI, float fillI, float rimI, float angleRad) {
+  float sa = sin(angleRad), ca = cos(angleRad);
+  vec3 Lkey  = normalize(vec3(0.766 * sa, 0.643, 0.766 * ca));                          // elevation 40°
+  vec3 Lfill = normalize(vec3(0.966 * sin(angleRad + 2.62), 0.259, 0.966 * cos(angleRad + 2.62))); // el 15°, az +150°
+  vec3 warm = vec3(1.0, 0.956, 0.878);
+  vec3 cool = vec3(0.845, 0.914, 1.0);
+  float dK = max(dot(Nw, Lkey),  0.0);
+  float dF = max(dot(Nw, Lfill), 0.0);
+  float shin = exp2(mix(1.0, 12.0, 1.0 - roughness));
+  float spec = pow(max(dot(reflect(-Lkey, Nw), Vw), 0.0), shin);
+  vec3  specColor = mix(vec3(1.0), albedo, metalness);
+  float specF0    = mix(0.04, 1.0, metalness);
+  vec3 ambient  = albedo * 0.10;
+  vec3 diffuse  = albedo * (warm * (dK * 0.85 * keyI) + cool * (dF * 0.22 * fillI));
+  vec3 specular = specColor * spec * specF0 * reflectivity * 3.0 * keyI;
+  vec3 Lrim  = normalize(vec3(-0.25, 0.4, -1.0));                 // behind-above, view space
+  float edge = pow(1.0 - clamp(dot(Nv, Vv), 0.0, 1.0), 2.5);
+  vec3 rim   = cool * (max(dot(Nv, Lrim), 0.0) * edge * 1.2 * rimI);
+  return ambient + diffuse + specular + rim;
+}
 `;
 
 // ─── Vertex shader (shared by all SBS shader materials) ──────────────────
@@ -149,6 +180,10 @@ uniform float uReflectionIntensity;  // 0=matte, 1=shiny (0.5=neutral default)
 uniform samplerCube uEnvMap;         // PMREM environment cube (roughness-prefiltered)
 uniform float uToneMapOn;            // 🎬 Production Render (V0.3.2.47): 1 = ACES filmic
 uniform float uExposure;             //     linear-space exposure — applied only when on
+uniform float uRigKey;               // 🎬 rig intensities (V0.3.2.48) — key / fill / rim
+uniform float uRigFill;
+uniform float uRigRim;
+uniform float uRigAngle;             //     rig azimuth, radians (spins key+fill around world Y)
 // ACES filmic fit (Narkowicz 2015) — cinematic contrast + soft highlight
 // rolloff. Runs in LINEAR space, before the gamma below. The SBS unified
 // shader is a raw ShaderMaterial, so renderer.toneMapping never touches it —
@@ -176,11 +211,19 @@ void main() {
   vec3 albedo   = pow(uColor, vec3(2.2));               // sRGB → linear
   vec3 litColor = sbsPhong(albedo, N, V, uRoughness, uMetalness, uReflectionIntensity);
 
-  // ── Environment map reflection (world space) ──────────────────────────
+  // ── 🎬 Production light rig (world-fixed key/fill + view-space rim) ───
   // transpose(mat3(viewMatrix)) = camera→world rotation (viewMatrix is world→camera,
   // and for cameras the 3×3 block is orthogonal so transpose = inverse).
-  mat3  v2w    = transpose(mat3(viewMatrix));
-  vec3  R_w    = reflect(-(v2w * V), normalize(v2w * N));
+  mat3 v2w = transpose(mat3(viewMatrix));
+  vec3 Nw  = normalize(v2w * N);
+  vec3 Vw  = normalize(v2w * V);
+  vec3 rigColor = sbsRigPhong(albedo, Nw, Vw, N, V,
+                              uRoughness, uMetalness, uReflectionIntensity,
+                              uRigKey, uRigFill, uRigRim, uRigAngle);
+  litColor = mix(litColor, rigColor, uToneMapOn);   // one switch = the whole production look
+
+  // ── Environment map reflection (world space) ──────────────────────────
+  vec3  R_w    = reflect(-Vw, Nw);
   // textureLod samples the PMREM mip that matches the roughness level
   vec3  envRGB = textureLod(uEnvMap, R_w, uRoughness * 8.0).rgb;
   vec3  envF0  = mix(vec3(0.04), albedo, uMetalness);   // Fresnel F0
@@ -691,6 +734,10 @@ class MaterialsSystem {
         uEnvMap:              { value: this.metalEnvMap },
         uToneMapOn:           { value: _prodToneMap.on },        // 🎬 current mode at creation
         uExposure:            { value: _prodToneMap.exposure },
+        uRigKey:              { value: _prodToneMap.key },
+        uRigFill:             { value: _prodToneMap.fill },
+        uRigRim:              { value: _prodToneMap.rim },
+        uRigAngle:            { value: _prodToneMap.angle },
         transitionOpacity:    fadeState,
       },
       vertexShader:   SBS_VERT,
@@ -724,13 +771,23 @@ class MaterialsSystem {
    * the exposure slider is butter). New materials read _prodToneMap at
    * creation, so preset edits/rebuilds inherit the mode automatically.
    */
-  setProductionToneMapping(enabled, exposure) {
-    _prodToneMap.on       = enabled ? 1 : 0;
-    _prodToneMap.exposure = Number(exposure) > 0 ? Number(exposure) : 1.0;
+  setProductionLook(prod = {}) {
+    _prodToneMap.on       = prod.enabled ? 1 : 0;
+    _prodToneMap.exposure = Number(prod.exposure) > 0 ? Number(prod.exposure) : 1.0;
+    _prodToneMap.key      = Number.isFinite(Number(prod.key))  ? Number(prod.key)  : 1.0;
+    _prodToneMap.fill     = Number.isFinite(Number(prod.fill)) ? Number(prod.fill) : 1.0;
+    _prodToneMap.rim      = Number.isFinite(Number(prod.rim))  ? Number(prod.rim)  : 1.0;
+    _prodToneMap.angle    = (Number.isFinite(Number(prod.angle)) ? Number(prod.angle) : 35) * Math.PI / 180;
     const apply = (m) => {
-      if (m?.uniforms?.uToneMapOn) {
-        m.uniforms.uToneMapOn.value = _prodToneMap.on;
-        m.uniforms.uExposure.value  = _prodToneMap.exposure;
+      const u = m?.uniforms;
+      if (!u?.uToneMapOn) return;
+      u.uToneMapOn.value = _prodToneMap.on;
+      u.uExposure.value  = _prodToneMap.exposure;
+      if (u.uRigKey) {
+        u.uRigKey.value   = _prodToneMap.key;
+        u.uRigFill.value  = _prodToneMap.fill;
+        u.uRigRim.value   = _prodToneMap.rim;
+        u.uRigAngle.value = _prodToneMap.angle;
       }
     };
     sceneCore.scene?.traverse(o => {
@@ -738,6 +795,11 @@ class MaterialsSystem {
       for (const m of ms) apply(m);
     });
     sceneCore.requestRender?.(150);
+  }
+
+  /** @deprecated V0.3.2.47 shim — use setProductionLook(prod). */
+  setProductionToneMapping(enabled, exposure) {
+    this.setProductionLook({ ..._prodToneMap, enabled, exposure, angle: _prodToneMap.angle * 180 / Math.PI });
   }
 
   /**

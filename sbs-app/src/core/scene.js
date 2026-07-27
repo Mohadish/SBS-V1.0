@@ -701,7 +701,7 @@ export class SceneCore extends Emitter {
       // in-shader behind uniforms. Dynamic import dodges the module cycle
       // (materials.js imports sceneCore).
       import('../systems/materials.js')
-        .then(m => m.materials?.setProductionToneMapping?.(!!prod.enabled, wantExp))
+        .then(m => m.materials?.setProductionLook?.(prod))
         .catch(() => {});
     }
     this.requestRender(300);
