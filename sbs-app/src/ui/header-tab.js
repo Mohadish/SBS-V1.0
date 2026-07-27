@@ -75,6 +75,7 @@ const KIND_LABELS = {
   chapterNumber:   'Chapter Number',
   image:           'Header Image',
   chapterProgress: 'Chapter Progress',
+  subtitle:        'Subtitle (voiceover)',
 };
 
 let _activeItemId = null;   // which item's editor is expanded
@@ -107,6 +108,7 @@ export function renderHeaderTab(container) {
         <button class="btn" id="hdr-new-ch-num">+ Chapter #</button>
         <button class="btn" id="hdr-new-ch-name">+ Chapter Name</button>
         <button class="btn" id="hdr-new-ch-prog" title="Progress bar that fills as the current chapter advances (empty at chapter start, full at its last step)">+ Progress Bar</button>
+        <button class="btn" id="hdr-new-subtitle" title="Caption showing each step's voiceover text, verbatim. Position once; it auto-fills per step. Wraps in its box.">💬 Subtitle</button>
       </div>
 
       <div class="card" style="margin-top:8px;display:grid;grid-template-columns:1fr 1fr;gap:6px;">
@@ -180,6 +182,7 @@ export function renderHeaderTab(container) {
   container.querySelector('#hdr-new-ch-num')   .addEventListener('click', () => _create('chapterNumber'));
   container.querySelector('#hdr-new-ch-name')  .addEventListener('click', () => _create('chapterName'));
   container.querySelector('#hdr-new-ch-prog')  .addEventListener('click', () => _create('chapterProgress'));
+  container.querySelector('#hdr-new-subtitle') .addEventListener('click', () => _create('subtitle'));
   container.querySelector('#hdr-new-image')    .addEventListener('click', () => _createImage());
 
   // ─── Top-row toggles ───────────────────────────────────────────────────

@@ -107,6 +107,20 @@ export function makeHeaderItem(kind = 'custom', opts = {}) {
       fillColor:  opts.fillColor  ?? '#3b82f6',
     };
   }
+  // 🎬 Subtitle (V0.3.2.57) — caption of the step's narration. Defaults to a
+  // wide, bottom-centred band (canonical 1920×1080 frame) with a readable
+  // semi-transparent backing (see _buildHeaderTextHtml); text WRAPS in the box.
+  if (kind === 'subtitle') {
+    return {
+      ...base,
+      x: opts.x ?? 260,
+      y: opts.y ?? 930,
+      w: opts.w ?? 1400,
+      h: opts.h ?? 110,
+      align: opts.align ?? 'center',
+      text: '',
+    };
+  }
   // Dynamic kinds — text computed live; we still keep a `text` slot as a
   // fallback for migrations / "no active step" edge cases.
   return { ...base, text: '' };
@@ -126,6 +140,13 @@ export function resolveHeaderText(item, ctx) {
     case 'stepNumber':     return String(ctx?.stepIndex != null ? ctx.stepIndex + 1 : '');
     case 'chapterName':    return String(ctx?.chapter?.name ?? '');
     case 'chapterNumber':  return String(ctx?.chapterIndex != null ? ctx.chapterIndex + 1 : '');
+    // 🎬 Subtitle (V0.3.2.57) — the step's spoken narration, VERBATIM. Resolves
+    // against ctx.step (the group-effective step, like every other dynamic
+    // header): a group plays ONE voiceover (the head's, overflowing across its
+    // sub-steps), so the caption follows the head throughout — and live
+    // playback and export stay identical.
+    case 'subtitle':       return String(ctx?.step?.narration?.text
+                                      ?? ctx?.step?.voiceText ?? '').trim();
     case 'image':          return '';   // image kind has no text
     default:               return '';
   }
@@ -770,7 +791,10 @@ function _buildHeaderTextHtml(item, ctx) {
   const def = state.get('headerDefault') || {};
   const src = tpl || def;
 
-  const text       = resolveHeaderText(item, ctx) || ' ';
+  const resolved   = resolveHeaderText(item, ctx);
+  // A subtitle on a step with no voiceover renders NOTHING — no empty band.
+  if (item.kind === 'subtitle' && !resolved.trim()) return '';
+  const text       = resolved || ' ';
   const escaped    = _escHtml(text);
   const fontFamily = src.fontFamily     || 'Arial';
   const fontSize   = src.fontSize       || 32;
@@ -793,8 +817,12 @@ function _buildHeaderTextHtml(item, ctx) {
   // dropped for headers: this builder cherry-picked font fields only, so a
   // style with a solid/semi-transparent background applied everywhere EXCEPT
   // header items. Fill the whole item rect (outer shell), matching textboxes.
-  const fill = src.fillColor ? `;background:${src.fillColor}` : '';
-  return `<div style="height:100%;display:flex;align-items:center${fill}"><div style="${innerStyle}">${escaped}</div></div>`;
+  // Subtitles get a readable semi-transparent backing band by default (unless
+  // a style template already supplies a fill) — standard caption legibility.
+  const fillColor = src.fillColor || (item.kind === 'subtitle' ? 'rgba(0,0,0,0.55)' : '');
+  const fill = fillColor ? `;background:${fillColor}` : '';
+  const pad  = item.kind === 'subtitle' ? ';padding:0 18px;box-sizing:border-box' : '';
+  return `<div style="height:100%;display:flex;align-items:center${fill}${pad}"><div style="${innerStyle}">${escaped}</div></div>`;
 }
 
 function _safeAlign(a) {
