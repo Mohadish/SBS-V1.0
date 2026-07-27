@@ -19,7 +19,8 @@ const DEFAULTS = {
   // every existing project renders exactly as before). Rides state.render →
   // saved with the project AND part of the render-cache fingerprint, so
   // preview-segments and production-segments never mix.
-  production: { enabled: false, exposure: 1.0, key: 1.0, fill: 1.0, rim: 1.0, angle: 35, hdri: '' },
+  production: { enabled: false, exposure: 1.0, key: 1.0, fill: 1.0, rim: 1.0, angle: 35, hdri: '',
+                rimWidth: 0.45, contrast: 1.0, saturation: 1.0 },
 };
 
 // 🎬 Bundled HDRI environments (assets/hdri/, Poly Haven CC0). '' = the
@@ -48,7 +49,10 @@ const PROD_SLIDERS = [
   { key: 'key',      label: 'Key light (warm)',    min: 0,   max: 2.5, step: 0.05, digits: 2 },
   { key: 'fill',     label: 'Fill light (cool)',   min: 0,   max: 2.5, step: 0.05, digits: 2 },
   { key: 'rim',      label: 'Rim / backlight',     min: 0,   max: 2.5, step: 0.05, digits: 2 },
+  { key: 'rimWidth', label: 'Rim width (spread)',  min: 0,   max: 1,   step: 0.05, digits: 2 },
   { key: 'angle',    label: 'Rig angle (°)',       min: 0,   max: 360, step: 5,    digits: 0 },
+  { key: 'contrast',   label: 'Contrast (grade)',   min: 0.5, max: 1.8, step: 0.02, digits: 2 },
+  { key: 'saturation', label: 'Saturation (grade)', min: 0,   max: 2,   step: 0.05, digits: 2 },
 ];
 const _slidersOf = (group) => group === 'ao' ? AO_SLIDERS : group === 'production' ? PROD_SLIDERS : SSR_SLIDERS;
 

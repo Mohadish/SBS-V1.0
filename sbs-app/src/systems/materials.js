@@ -38,7 +38,8 @@ const _sbsEdgesGeoCache = new WeakMap();
 // 🎬 Production Render look state (V0.3.2.47/48) — module-level so materials
 // created at ANY time (preset edits, model loads) inherit the current mode.
 // Written only by materials.setProductionLook(). angle stored in RADIANS.
-const _prodToneMap = { on: 0, exposure: 1.0, key: 1.0, fill: 1.0, rim: 1.0, angle: 35 * Math.PI / 180 };
+const _prodToneMap = { on: 0, exposure: 1.0, key: 1.0, fill: 1.0, rim: 1.0, angle: 35 * Math.PI / 180,
+                       rimWidth: 0.45, contrast: 1.0, saturation: 1.0 };
 
 // V0.2.7: shift a #rrggbb hex by `deg` degrees in HSL space. Used to derive
 // the expanded-color YELLOW + MAGENTA hulls from the current selection
@@ -124,7 +125,7 @@ vec3 sbsPhong(vec3 albedo, vec3 N, vec3 V, float roughness, float metalness, flo
 //          silhouette, so this one is deliberately view-space (cinema practice)
 vec3 sbsRigPhong(vec3 albedo, vec3 Nw, vec3 Vw, vec3 Nv, vec3 Vv,
                  float roughness, float metalness, float reflectivity,
-                 float keyI, float fillI, float rimI, float angleRad) {
+                 float keyI, float fillI, float rimI, float angleRad, float rimWidth) {
   float sa = sin(angleRad), ca = cos(angleRad);
   vec3 Lkey  = normalize(vec3(0.766 * sa, 0.643, 0.766 * ca));                          // elevation 40°
   vec3 Lfill = normalize(vec3(0.966 * sin(angleRad + 2.62), 0.259, 0.966 * cos(angleRad + 2.62))); // el 15°, az +150°
@@ -140,7 +141,11 @@ vec3 sbsRigPhong(vec3 albedo, vec3 Nw, vec3 Vw, vec3 Nv, vec3 Vv,
   vec3 diffuse  = albedo * (warm * (dK * 0.85 * keyI) + cool * (dF * 0.22 * fillI));
   vec3 specular = specColor * spec * specF0 * reflectivity * 3.0 * keyI;
   vec3 Lrim  = normalize(vec3(-0.25, 0.4, -1.0));                 // behind-above, view space
-  float edge = pow(1.0 - clamp(dot(Nv, Vv), 0.0, 1.0), 2.5);
+  // RIM WIDTH (user finding #2): exponent controls how far the rim bleeds
+  // inward from the silhouette across the curvature. width 0 → exp 5 (a
+  // hairline on the most tangent faces), width 1 → exp 0.8 (falls off across
+  // the whole curved body).
+  float edge = pow(1.0 - clamp(dot(Nv, Vv), 0.0, 1.0), mix(5.0, 0.8, clamp(rimWidth, 0.0, 1.0)));
   // CURVATURE GATE (user finding): on a flat plate every pixel shares one
   // normal, so at grazing angles the WHOLE face passes the edge test and
   // floods white. Rim is a curved-surface effect — gate it by local surface
@@ -190,6 +195,9 @@ uniform float uRigKey;               // 🎬 rig intensities (V0.3.2.48) — key
 uniform float uRigFill;
 uniform float uRigRim;
 uniform float uRigAngle;             //     rig azimuth, radians (spins key+fill around world Y)
+uniform float uRimWidth;             // 🎬 rim falloff spread: 0 = silhouette hairline, 1 = across the curvature
+uniform float uContrast;             // 🎬 filmic grade (V0.3.2.50) — post-ACES contrast around mid-gray
+uniform float uSaturation;           //     and color saturation (1 = neutral for both)
 // ACES filmic fit (Narkowicz 2015) — cinematic contrast + soft highlight
 // rolloff. Runs in LINEAR space, before the gamma below. The SBS unified
 // shader is a raw ShaderMaterial, so renderer.toneMapping never touches it —
@@ -225,7 +233,7 @@ void main() {
   vec3 Vw  = normalize(v2w * V);
   vec3 rigColor = sbsRigPhong(albedo, Nw, Vw, N, V,
                               uRoughness, uMetalness, uReflectionIntensity,
-                              uRigKey, uRigFill, uRigRim, uRigAngle);
+                              uRigKey, uRigFill, uRigRim, uRigAngle, uRimWidth);
   litColor = mix(litColor, rigColor, uToneMapOn);   // one switch = the whole production look
 
   // ── Environment map reflection (world space) ──────────────────────────
@@ -240,6 +248,14 @@ void main() {
 
   // ── Gamma correction ─────────────────────────────────────────────────
   litColor = pow(max(litColor, vec3(0.0)), vec3(1.0 / 2.2));
+
+  // ── 🎬 Filmic grade (production only, V0.3.2.50) ──────────────────────
+  // The visible personality of the filmic look: saturation (luma-preserving)
+  // + contrast pivoted on mid-gray, applied display-space after the curve.
+  float lumG   = dot(litColor, vec3(0.2126, 0.7152, 0.0722));
+  vec3  graded = mix(vec3(lumG), litColor, uSaturation);
+  graded       = clamp(mix(vec3(0.5), graded, uContrast), 0.0, 1.0);
+  litColor     = mix(litColor, graded, uToneMapOn);
 
   // ── Dither fade (step transitions) ───────────────────────────────────
   float fade = clamp(transitionOpacity, 0.0, 1.0);
@@ -792,6 +808,9 @@ class MaterialsSystem {
         uRigFill:             { value: _prodToneMap.fill },
         uRigRim:              { value: _prodToneMap.rim },
         uRigAngle:            { value: _prodToneMap.angle },
+        uRimWidth:            { value: _prodToneMap.rimWidth },
+        uContrast:            { value: _prodToneMap.contrast },
+        uSaturation:          { value: _prodToneMap.saturation },
         transitionOpacity:    fadeState,
       },
       vertexShader:   SBS_VERT,
@@ -832,16 +851,22 @@ class MaterialsSystem {
     _prodToneMap.fill     = Number.isFinite(Number(prod.fill)) ? Number(prod.fill) : 1.0;
     _prodToneMap.rim      = Number.isFinite(Number(prod.rim))  ? Number(prod.rim)  : 1.0;
     _prodToneMap.angle    = (Number.isFinite(Number(prod.angle)) ? Number(prod.angle) : 35) * Math.PI / 180;
+    _prodToneMap.rimWidth   = Number.isFinite(Number(prod.rimWidth))   ? Number(prod.rimWidth)   : 0.45;
+    _prodToneMap.contrast   = Number.isFinite(Number(prod.contrast))   ? Number(prod.contrast)   : 1.0;
+    _prodToneMap.saturation = Number.isFinite(Number(prod.saturation)) ? Number(prod.saturation) : 1.0;
     const apply = (m) => {
       const u = m?.uniforms;
       if (!u?.uToneMapOn) return;
       u.uToneMapOn.value = _prodToneMap.on;
       u.uExposure.value  = _prodToneMap.exposure;
       if (u.uRigKey) {
-        u.uRigKey.value   = _prodToneMap.key;
-        u.uRigFill.value  = _prodToneMap.fill;
-        u.uRigRim.value   = _prodToneMap.rim;
-        u.uRigAngle.value = _prodToneMap.angle;
+        u.uRigKey.value      = _prodToneMap.key;
+        u.uRigFill.value     = _prodToneMap.fill;
+        u.uRigRim.value      = _prodToneMap.rim;
+        u.uRigAngle.value    = _prodToneMap.angle;
+        u.uRimWidth.value    = _prodToneMap.rimWidth;
+        u.uContrast.value    = _prodToneMap.contrast;
+        u.uSaturation.value  = _prodToneMap.saturation;
       }
     };
     sceneCore.scene?.traverse(o => {
