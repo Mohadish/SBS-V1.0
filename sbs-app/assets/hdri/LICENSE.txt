@@ -1,0 +1,3 @@
+HDRI environment maps in this folder are from Poly Haven (polyhaven.com),
+licensed CC0 1.0 Universal (public domain) - free for any use, no attribution
+required. https://polyhaven.com/license

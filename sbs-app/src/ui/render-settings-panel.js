@@ -19,8 +19,18 @@ const DEFAULTS = {
   // every existing project renders exactly as before). Rides state.render →
   // saved with the project AND part of the render-cache fingerprint, so
   // preview-segments and production-segments never mix.
-  production: { enabled: false, exposure: 1.0, key: 1.0, fill: 1.0, rim: 1.0, angle: 35 },
+  production: { enabled: false, exposure: 1.0, key: 1.0, fill: 1.0, rim: 1.0, angle: 35, hdri: '' },
 };
+
+// 🎬 Bundled HDRI environments (assets/hdri/, Poly Haven CC0). '' = the
+// built-in procedural studio the app has always used.
+const HDRI_OPTIONS = [
+  { value: '',                     label: 'Built-in studio (default)' },
+  { value: 'studio_small_08',      label: 'Studio — soft boxes' },
+  { value: 'studio_small_09',      label: 'Studio — bright' },
+  { value: 'photo_studio_01',      label: 'Photo studio — warm' },
+  { value: 'brown_photostudio_02', label: 'Photo studio — earthy' },
+];
 
 const AO_SLIDERS = [
   { key: 'intensity', label: 'Intensity',        min: 0, max: 8,   step: 0.1,  digits: 1 },
@@ -77,6 +87,12 @@ export function buildRenderSettingsPanel() {
       <input type="checkbox" data-toggle="production" ${working.production.enabled ? 'checked' : ''} /> Production look enabled
     </label>
     ${PROD_SLIDERS.map(s => row('production', s)).join('')}
+    <label class="small" style="display:block;margin-top:8px;">
+      Environment (reflections &amp; ambience)
+      <select data-hdri style="width:100%;margin-top:4px;padding:4px 6px;background:var(--panel2);color:var(--text);border:1px solid var(--line);border-radius:4px;">
+        ${HDRI_OPTIONS.map(o => `<option value="${o.value}" ${o.value === (working.production.hdri || '') ? 'selected' : ''}>${o.label}</option>`).join('')}
+      </select>
+    </label>
 
     <div class="title" style="margin-top:14px;">Ambient occlusion</div>
     <label class="small" style="display:flex;align-items:center;gap:6px;margin-top:8px;cursor:pointer;">
@@ -99,6 +115,12 @@ export function buildRenderSettingsPanel() {
   const snapshot  = () => ({ ao: { ...working.ao }, ssr: { ...working.ssr }, production: { ...working.production } });
   const applyLive = () => sceneCore.applyRenderSettings(snapshot());
   const persist   = () => { state.setState({ render: snapshot() }); state.markDirty(); };   // V0.3.0.162 — saves with the project
+
+  wrap.querySelector('select[data-hdri]')?.addEventListener('change', (e) => {
+    working.production.hdri = e.target.value || '';
+    applyLive();
+    persist();
+  });
 
   wrap.querySelectorAll('input[data-toggle]').forEach(cb => {
     cb.addEventListener('change', () => {

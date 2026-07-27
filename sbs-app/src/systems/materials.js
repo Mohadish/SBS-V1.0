@@ -141,7 +141,13 @@ vec3 sbsRigPhong(vec3 albedo, vec3 Nw, vec3 Vw, vec3 Nv, vec3 Vv,
   vec3 specular = specColor * spec * specF0 * reflectivity * 3.0 * keyI;
   vec3 Lrim  = normalize(vec3(-0.25, 0.4, -1.0));                 // behind-above, view space
   float edge = pow(1.0 - clamp(dot(Nv, Vv), 0.0, 1.0), 2.5);
-  vec3 rim   = cool * (max(dot(Nv, Lrim), 0.0) * edge * 1.2 * rimI);
+  // CURVATURE GATE (user finding): on a flat plate every pixel shares one
+  // normal, so at grazing angles the WHOLE face passes the edge test and
+  // floods white. Rim is a curved-surface effect — gate it by local surface
+  // curvature (screen-space normal derivative): flat face → ~0 → no rim;
+  // curved silhouette → full rim.
+  float curv = clamp(length(fwidth(Nv)) * 18.0, 0.0, 1.0);
+  vec3 rim   = cool * (max(dot(Nv, Lrim), 0.0) * edge * curv * 1.2 * rimI);
   return ambient + diffuse + specular + rim;
 }
 `;
@@ -599,6 +605,54 @@ class MaterialsSystem {
 
     // Rebuild all materials so uEnvMap is the PMREM version
     this.applyAll();
+  }
+
+  /**
+   * 🎬 Production HDRI environment (V0.3.2.49). Swaps the reflection/IBL
+   * environment to a real .hdr from assets/hdri/ (Poly Haven, CC0) — same
+   * PMREM pipeline as the procedural default, so it feeds uEnvMap (SBS
+   * shader) AND scene.environment (textured materials) identically.
+   * Active ONLY while Production Render is on; turning it off (or picking
+   * "Built-in studio") rebuilds the procedural map, keeping preview mode
+   * byte-identical to what every project has always looked like.
+   */
+  async applyProductionEnvironment(prod) {
+    const want = (prod?.enabled && prod?.hdri) ? String(prod.hdri) : null;
+    if (want === (this._activeHdri ?? null)) return;
+    const renderer = sceneCore.renderer;
+    if (!renderer) return;
+    this._activeHdri = want;
+
+    if (!want) {                       // back to the built-in procedural studio
+      this._pmremEnvMap = null;
+      this._initPmremEnvMap();         // rebuilds + applyAll()
+      return;
+    }
+    try {
+      const { decodeRGBE } = await import('../../vendor/rgbe-decode.mjs');
+      const url = new URL('../../assets/hdri/' + want + '.hdr', import.meta.url);
+      let p = decodeURIComponent(url.pathname);
+      if (/^\/[A-Za-z]:/.test(p)) p = p.slice(1);          // windows file:// → drive path
+      const r = await window.sbsNative.readFile(p, 'buffer');
+      if (!r?.ok) throw new Error(r?.error || 'read failed: ' + p);
+      const img = decodeRGBE(r.data instanceof Uint8Array ? r.data : new Uint8Array(r.data));
+      if (this._activeHdri !== want) return;               // selection changed mid-load
+      const eqTex = new THREE.DataTexture(img.data, img.width, img.height, THREE.RGBAFormat, THREE.FloatType);
+      eqTex.mapping = THREE.EquirectangularReflectionMapping;
+      eqTex.needsUpdate = true;
+      const pmrem = new THREE.PMREMGenerator(renderer);
+      pmrem.compileEquirectangularShader();
+      const rt = pmrem.fromEquirectangular(eqTex);
+      pmrem.dispose();
+      eqTex.dispose();
+      this._pmremEnvMap = rt.texture;
+      if (sceneCore.scene) sceneCore.scene.environment = this._pmremEnvMap;
+      this.applyAll();
+      console.log(`[materials] 🎬 HDRI environment "${want}" active (${img.width}x${img.height})`);
+    } catch (e) {
+      console.warn('[materials] HDRI load failed — keeping current environment:', e?.message);
+      this._activeHdri = null;
+    }
   }
 
 

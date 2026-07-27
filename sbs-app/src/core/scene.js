@@ -701,7 +701,10 @@ export class SceneCore extends Emitter {
       // in-shader behind uniforms. Dynamic import dodges the module cycle
       // (materials.js imports sceneCore).
       import('../systems/materials.js')
-        .then(m => m.materials?.setProductionLook?.(prod))
+        .then(m => {
+          m.materials?.setProductionLook?.(prod);
+          m.materials?.applyProductionEnvironment?.(prod);   // HDRI (V0.3.2.49)
+        })
         .catch(() => {});
     }
     this.requestRender(300);
