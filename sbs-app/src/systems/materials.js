@@ -237,7 +237,7 @@ void main() {
   mat3 v2w = transpose(mat3(viewMatrix));
   vec3 Nw  = normalize(v2w * N);
   vec3 Vw  = normalize(v2w * V);
-  vec3 envAmb   = textureLod(uEnvMap, Nw, 6.0).rgb * uEnvIntensity;   // deep-blurred env = irradiance-ish
+  vec3 envAmb   = textureLod(uEnvMap, Nw, 4.0).rgb * uEnvIntensity;   // pre-blurred cube = irradiance-ish (V0.3.2.55)
   vec3 rigColor = sbsRigPhong(albedo, Nw, Vw, N, V,
                               uRoughness, uMetalness, uReflectionIntensity,
                               uRigKey, uRigFill, uRigRim, uRigAngle, uRimWidth,
@@ -246,11 +246,10 @@ void main() {
 
   // ── Environment map reflection (world space) ──────────────────────────
   vec3  R_w    = reflect(-Vw, Nw);
-  // textureLod mip = roughness blur, PLUS global uEnvBlur (production) that
-  // pushes the whole reflection toward diffuse — the "tone it down / blur it"
-  // control. Clamped to the 8-mip range.
-  float envLod = clamp(uRoughness * 8.0 + uEnvBlur * 7.0, 0.0, 8.0);
-  vec3  envRGB = textureLod(uEnvMap, R_w, envLod).rgb * uEnvIntensity;
+  // Global env blur is now BAKED into the cube source (CPU downsample in JS,
+  // V0.3.2.55) — reliable, no float-mip dependency. uEnvBlur kept as a uniform
+  // (harmless) but the shader just samples the pre-blurred cube.
+  vec3  envRGB = textureLod(uEnvMap, R_w, uRoughness * 4.0).rgb * uEnvIntensity;
   vec3  envF0  = mix(vec3(0.04), albedo, uMetalness);   // Fresnel F0
   litColor    += envRGB * envF0 * uReflectionIntensity * 2.0;
 
@@ -648,70 +647,122 @@ class MaterialsSystem {
    */
   async applyProductionEnvironment(prod) {
     const want = (prod?.enabled && prod?.hdri) ? String(prod.hdri) : null;
-    if (want === (this._activeHdri ?? null)) return;
+    const blurQ = Math.round(Math.max(0, Math.min(1, Number(prod?.envBlur) || 0)) * 10) / 10;   // quantize so tiny jitters don't rebuild
+    const key = want ? `${want}|${blurQ}` : null;
+    if (key === (this._envKey ?? null)) return;
+
     const renderer = sceneCore.renderer;
     if (!renderer) return;
+    this._envKey = key;
     this._activeHdri = want;
 
     if (!want) {                       // back to the built-in procedural studio
       this._hdriCubeMap?.dispose?.();
       this._hdriCubeMap = null;
+      this._hdriEquirect = null;
       this._pmremEnvMap = null;
       this._initPmremEnvMap();         // rebuilds scene.environment + applyAll()
       return;
     }
+
+    // Only READ + DECODE the file when the HDRI itself changed; a blur change
+    // reuses the cached float equirect (user's design: re-blur the original).
+    if (this._hdriEquirect?.name !== want) {
+      try {
+        const { decodeRGBE } = await import('../../vendor/rgbe-decode.mjs');
+        const url = new URL('../../assets/hdri/' + want + '.hdr', import.meta.url);
+        let p = decodeURIComponent(url.pathname);
+        if (/^\/[A-Za-z]:/.test(p)) p = p.slice(1);          // windows file:// → drive path
+        const r = await window.sbsNative.readFile(p, 'buffer');
+        if (!r?.ok) throw new Error(r?.error || 'read failed: ' + p);
+        const img = decodeRGBE(r.data instanceof Uint8Array ? r.data : new Uint8Array(r.data));
+        if (this._activeHdri !== want) return;               // selection changed mid-load
+        this._hdriEquirect = { name: want, data: img.data, w: img.width, h: img.height };
+      } catch (e) {
+        console.warn('[materials] HDRI load failed — keeping current environment:', e?.message);
+        this._envKey = null; this._activeHdri = null;
+        return;
+      }
+    }
+
     try {
-      const { decodeRGBE } = await import('../../vendor/rgbe-decode.mjs');
-      const url = new URL('../../assets/hdri/' + want + '.hdr', import.meta.url);
-      let p = decodeURIComponent(url.pathname);
-      if (/^\/[A-Za-z]:/.test(p)) p = p.slice(1);          // windows file:// → drive path
-      const r = await window.sbsNative.readFile(p, 'buffer');
-      if (!r?.ok) throw new Error(r?.error || 'read failed: ' + p);
-      const img = decodeRGBE(r.data instanceof Uint8Array ? r.data : new Uint8Array(r.data));
-      if (this._activeHdri !== want) return;               // selection changed mid-load
-      const eqTex = new THREE.DataTexture(img.data, img.width, img.height, THREE.RGBAFormat, THREE.FloatType);
+      const src = this._hdriEquirect;
+      // CPU BLUR (V0.3.2.55, user's approach): downsampling the equirect IS a
+      // low-pass blur, dodging the flaky float-cube-mipmap path entirely.
+      // GEOMETRIC resolution curve (512→12) so the softening feels EVEN across
+      // the slider — a linear px curve barely blurs until the very end because
+      // big studio softboxes survive moderate downsampling.
+      const tw = Math.max(12, Math.round(512 * Math.pow(12 / 512, blurQ)));
+      const th = Math.max(6, tw >> 1);
+      const ds = this._downsampleEquirect(src.data, src.w, src.h, tw, th);
+      const eqTex = new THREE.DataTexture(ds, tw, th, THREE.RGBAFormat, THREE.FloatType);
       eqTex.mapping = THREE.EquirectangularReflectionMapping;
+      eqTex.minFilter = THREE.LinearFilter; eqTex.magFilter = THREE.LinearFilter;
+      eqTex.generateMipmaps = false;
       eqTex.needsUpdate = true;
 
-      // 1. REAL CubeTexture for the SBS shader's samplerCube (uEnvMap) — with
-      //    full mips so the shader's roughness textureLod keeps working.
-      const cubeRT = new THREE.WebGLCubeRenderTarget(512, {
-        generateMipmaps: true,
-        minFilter: THREE.LinearMipmapLinearFilter,
+      // Cube for the SBS shader's samplerCube. No mipmaps needed — blur is
+      // baked into the source, so linear filtering is enough and reliable.
+      const cubeRT = new THREE.WebGLCubeRenderTarget(256, {
+        generateMipmaps: false,
+        minFilter: THREE.LinearFilter,
+        magFilter: THREE.LinearFilter,
         type: THREE.HalfFloatType,     // keep the HDR range for glints
       }).fromEquirectangularTexture(renderer, eqTex);
-      // BLUR FIX (V0.3.2.54): fromEquirectangularTexture only renders MIP 0.
-      // The SBS shader blurs via textureLod up the mip chain (env blur + per-
-      // material roughness), so without the full chain those samples read
-      // BLACK — "blur does nothing". Force GL to build the cube's mipmaps now.
-      try {
-        const gl = renderer.getContext();
-        const tp = renderer.properties.get(cubeRT.texture);
-        if (tp?.__webglTexture) {
-          gl.bindTexture(gl.TEXTURE_CUBE_MAP, tp.__webglTexture);
-          gl.generateMipmap(gl.TEXTURE_CUBE_MAP);
-          renderer.state.reset?.();     // don't leave our binding in three's state
-        }
-      } catch (e) { console.warn('[materials] cube mipmap gen failed:', e?.message); }
       const oldCube = this._hdriCubeMap;
       this._hdriCubeMap = cubeRT.texture;
 
-      // 2. PMREM for scene.environment (textured MeshStandardMaterial path).
-      const pmrem = new THREE.PMREMGenerator(renderer);
-      pmrem.compileEquirectangularShader();
-      const rt = pmrem.fromEquirectangular(eqTex);
-      pmrem.dispose();
+      // PMREM for scene.environment (textured MeshStandardMaterial path) —
+      // full-res source, crisp roughness mips. Only rebuilt when the HDRI
+      // itself changes; a blur-only change reuses it (blur is a SBS-shader
+      // concern, textured materials keep the sharp env).
+      if (this._pmremForHdri !== want) {
+        const fullTex = new THREE.DataTexture(src.data, src.w, src.h, THREE.RGBAFormat, THREE.FloatType);
+        fullTex.mapping = THREE.EquirectangularReflectionMapping;
+        fullTex.needsUpdate = true;
+        const pmrem = new THREE.PMREMGenerator(renderer);
+        pmrem.compileEquirectangularShader();
+        const rt = pmrem.fromEquirectangular(fullTex);
+        pmrem.dispose();
+        fullTex.dispose();
+        this._pmremEnvMap = rt.texture;
+        this._pmremForHdri = want;
+        if (sceneCore.scene) sceneCore.scene.environment = this._pmremEnvMap;
+      }
       eqTex.dispose();
-      this._pmremEnvMap = rt.texture;
-      if (sceneCore.scene) sceneCore.scene.environment = this._pmremEnvMap;
 
       this.applyAll();                 // rebind uEnvMap everywhere
       oldCube?.dispose?.();
-      console.log(`[materials] 🎬 HDRI environment "${want}" active (${img.width}x${img.height} → cube 512 + PMREM)`);
+      console.log(`[materials] 🎬 HDRI "${want}" @ blur ${blurQ} → source ${tw}x${th}`);
     } catch (e) {
-      console.warn('[materials] HDRI load failed — keeping current environment:', e?.message);
-      this._activeHdri = null;
+      console.warn('[materials] HDRI cube build failed:', e?.message);
+      this._envKey = null;
     }
+  }
+
+  /** Area-average downsample of an RGBA float equirect (horizontal wrap, so
+   *  the 360° seam stays continuous). Cheap low-pass = the environment blur. */
+  _downsampleEquirect(src, sw, sh, tw, th) {
+    const out = new Float32Array(tw * th * 4);
+    const xScale = sw / tw, yScale = sh / th;
+    for (let ty = 0; ty < th; ty++) {
+      const y0 = Math.floor(ty * yScale), y1 = Math.max(y0 + 1, Math.floor((ty + 1) * yScale));
+      for (let tx = 0; tx < tw; tx++) {
+        const x0 = Math.floor(tx * xScale), x1 = Math.max(x0 + 1, Math.floor((tx + 1) * xScale));
+        let r = 0, g = 0, b = 0, n = 0;
+        for (let y = y0; y < y1 && y < sh; y++) {
+          for (let x = x0; x < x1; x++) {
+            const sx = ((x % sw) + sw) % sw;
+            const i = (y * sw + sx) * 4;
+            r += src[i]; g += src[i + 1]; b += src[i + 2]; n++;
+          }
+        }
+        const o = (ty * tw + tx) * 4;
+        const inv = n ? 1 / n : 0;
+        out[o] = r * inv; out[o + 1] = g * inv; out[o + 2] = b * inv; out[o + 3] = 1;
+      }
+    }
+    return out;
   }
 
 
