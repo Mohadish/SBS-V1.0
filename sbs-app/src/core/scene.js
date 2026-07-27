@@ -672,6 +672,29 @@ export class SceneCore extends Emitter {
       if (ss.thickness   != null) p.thickness   = ss.thickness;
       if (ss.steps       != null) p.steps       = ss.steps;
     }
+
+    // ── 🎬 Production Render, stage 1 (V0.3.2.46) ───────────────────────────
+    // ACES filmic tone mapping + exposure — the first piece of the final-
+    // output look. OFF (default) = the classic preview look, byte-identical
+    // for every existing project. Tone mapping is COMPILED INTO material
+    // programs, so flipping the mode must mark every material for recompile
+    // or the viewport silently keeps the old curve.
+    if (this.renderer) {
+      const prod    = s.production || {};
+      const wantTM  = prod.enabled ? THREE.ACESFilmicToneMapping : THREE.NoToneMapping;
+      const wantExp = prod.enabled ? (Number(prod.exposure) > 0 ? Number(prod.exposure) : 1.0) : 1.0;
+      const flip    = this.renderer.toneMapping !== wantTM;
+      if (flip || this.renderer.toneMappingExposure !== wantExp) {
+        this.renderer.toneMapping         = wantTM;
+        this.renderer.toneMappingExposure = wantExp;
+        if (flip && this.scene) {
+          this.scene.traverse(o => {
+            const mats = Array.isArray(o.material) ? o.material : (o.material ? [o.material] : []);
+            for (const m of mats) m.needsUpdate = true;
+          });
+        }
+      }
+    }
     this.requestRender(300);
   }
 

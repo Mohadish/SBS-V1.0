@@ -14,6 +14,12 @@ import state from '../core/state.js';
 const DEFAULTS = {
   ao:  { enabled: true,  intensity: 4.0, radius: 24.0, falloff: 1.0 },
   ssr: { enabled: false, intensity: 1.0, roughness: 0.3, maxDistance: 8.0, thickness: 1.0, steps: 24 },
+  // 🎬 Production Render (V0.3.2.46) — the final-output look, stage 1: ACES
+  // filmic tone mapping + exposure. OFF = classic preview look (back-compat:
+  // every existing project renders exactly as before). Rides state.render →
+  // saved with the project AND part of the render-cache fingerprint, so
+  // preview-segments and production-segments never mix.
+  production: { enabled: false, exposure: 1.0 },
 };
 
 const AO_SLIDERS = [
@@ -27,11 +33,16 @@ const SSR_SLIDERS = [
   { key: 'thickness',   label: 'Thickness',    min: 0.1, max: 50,   step: 0.1,  digits: 1 },
   { key: 'steps',       label: 'Steps',        min: 4,   max: 400,  step: 1,    digits: 0 },
 ];
+const PROD_SLIDERS = [
+  { key: 'exposure', label: 'Exposure', min: 0.3, max: 2.5, step: 0.05, digits: 2 },
+];
+const _slidersOf = (group) => group === 'ao' ? AO_SLIDERS : group === 'production' ? PROD_SLIDERS : SSR_SLIDERS;
 
 function _merge(base, over) {
   return {
-    ao:  { ...base.ao,  ...(over && over.ao  || {}) },
-    ssr: { ...base.ssr, ...(over && over.ssr || {}) },
+    ao:         { ...base.ao,         ...(over && over.ao         || {}) },
+    ssr:        { ...base.ssr,        ...(over && over.ssr        || {}) },
+    production: { ...base.production, ...(over && over.production || {}) },
   };
 }
 
@@ -51,7 +62,19 @@ export function buildRenderSettingsPanel() {
   const wrap = document.createElement('div');
   wrap.className = 'section';
   wrap.innerHTML = `
-    <div class="title">Ambient occlusion</div>
+    <div class="title" style="display:flex;align-items:center;gap:6px;">🎬 Production Render</div>
+    <div class="small muted" style="font-size:11px;opacity:0.75;margin-top:2px;">
+      Two looks, one switch. <b>OFF = Preview</b> — the classic flat look every existing project was
+      built with. <b>ON = Production</b> — filmic tone mapping (cinematic contrast &amp; highlight
+      rolloff), the first stage of the final-output render. Applies to the viewport AND exports;
+      switching re-renders cached segments once.
+    </div>
+    <label class="small" style="display:flex;align-items:center;gap:6px;margin-top:8px;cursor:pointer;">
+      <input type="checkbox" data-toggle="production" ${working.production.enabled ? 'checked' : ''} /> Production look enabled
+    </label>
+    ${PROD_SLIDERS.map(s => row('production', s)).join('')}
+
+    <div class="title" style="margin-top:14px;">Ambient occlusion</div>
     <label class="small" style="display:flex;align-items:center;gap:6px;margin-top:8px;cursor:pointer;">
       <input type="checkbox" data-toggle="ao" ${working.ao.enabled ? 'checked' : ''} /> Enabled
     </label>
@@ -69,7 +92,7 @@ export function buildRenderSettingsPanel() {
     </div>
   `;
 
-  const snapshot  = () => ({ ao: { ...working.ao }, ssr: { ...working.ssr } });
+  const snapshot  = () => ({ ao: { ...working.ao }, ssr: { ...working.ssr }, production: { ...working.production } });
   const applyLive = () => sceneCore.applyRenderSettings(snapshot());
   const persist   = () => { state.setState({ render: snapshot() }); state.markDirty(); };   // V0.3.0.162 — saves with the project
 
@@ -83,7 +106,7 @@ export function buildRenderSettingsPanel() {
 
   wrap.querySelectorAll('input[data-slider]').forEach(input => {
     const [group, key] = input.dataset.slider.split('.');
-    const meta  = (group === 'ao' ? AO_SLIDERS : SSR_SLIDERS).find(s => s.key === key);
+    const meta  = _slidersOf(group).find(s => s.key === key);
     const valEl = wrap.querySelector(`[data-val="${group}.${key}"]`);
     input.addEventListener('input', () => {
       const v = Number(input.value);
