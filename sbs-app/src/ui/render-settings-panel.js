@@ -10,6 +10,7 @@
  */
 import { sceneCore } from '../core/scene.js';
 import state from '../core/state.js';
+import { openLightStage } from './light-stage.js';
 
 const DEFAULTS = {
   ao:  { enabled: true,  intensity: 4.0, radius: 24.0, falloff: 1.0 },
@@ -95,7 +96,12 @@ export function buildRenderSettingsPanel() {
     <label class="small" style="display:flex;align-items:center;gap:6px;margin-top:8px;cursor:pointer;">
       <input type="checkbox" data-toggle="production" ${working.production.enabled ? 'checked' : ''} /> Production look enabled
     </label>
-    ${PROD_SLIDERS.map(s => row('production', s)).join('')}
+    <button data-open-lightstage style="width:100%;margin-top:8px;background:linear-gradient(90deg,#f59e0b22,#3b82f622);color:var(--text);border:1px solid var(--line);border-radius:6px;padding:8px;cursor:pointer;font-weight:600">
+      💡 Open Light Stage
+    </button>
+    <details style="margin-top:8px">
+      <summary class="small muted" style="cursor:pointer;font-size:11px;opacity:.7">Advanced sliders</summary>
+      ${PROD_SLIDERS.map(s => row('production', s)).join('')}
     <label class="small" style="display:block;margin-top:8px;">
       Environment (reflections &amp; ambience)
       <select data-hdri style="width:100%;margin-top:4px;padding:4px 6px;background:var(--panel2);color:var(--text);border:1px solid var(--line);border-radius:4px;">
@@ -103,6 +109,7 @@ export function buildRenderSettingsPanel() {
       </select>
     </label>
     ${ENV_SLIDERS.map(s => row('production', s)).join('')}
+    </details>
 
     <div class="title" style="margin-top:14px;">Ambient occlusion</div>
     <label class="small" style="display:flex;align-items:center;gap:6px;margin-top:8px;cursor:pointer;">
@@ -125,6 +132,8 @@ export function buildRenderSettingsPanel() {
   const snapshot  = () => ({ ao: { ...working.ao }, ssr: { ...working.ssr }, production: { ...working.production } });
   const applyLive = () => sceneCore.applyRenderSettings(snapshot());
   const persist   = () => { state.setState({ render: snapshot() }); state.markDirty(); };   // V0.3.0.162 — saves with the project
+
+  wrap.querySelector('[data-open-lightstage]')?.addEventListener('click', () => openLightStage());
 
   wrap.querySelector('select[data-hdri]')?.addEventListener('change', (e) => {
     working.production.hdri = e.target.value || '';
