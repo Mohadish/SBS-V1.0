@@ -125,7 +125,8 @@ vec3 sbsPhong(vec3 albedo, vec3 N, vec3 V, float roughness, float metalness, flo
 //          silhouette, so this one is deliberately view-space (cinema practice)
 vec3 sbsRigPhong(vec3 albedo, vec3 Nw, vec3 Vw, vec3 Nv, vec3 Vv,
                  float roughness, float metalness, float reflectivity,
-                 float keyI, float fillI, float rimI, float angleRad, float rimWidth) {
+                 float keyI, float fillI, float rimI, float angleRad, float rimWidth,
+                 vec3 envAmbient) {
   float sa = sin(angleRad), ca = cos(angleRad);
   vec3 Lkey  = normalize(vec3(0.766 * sa, 0.643, 0.766 * ca));                          // elevation 40°
   vec3 Lfill = normalize(vec3(0.966 * sin(angleRad + 2.62), 0.259, 0.966 * cos(angleRad + 2.62))); // el 15°, az +150°
@@ -137,7 +138,10 @@ vec3 sbsRigPhong(vec3 albedo, vec3 Nw, vec3 Vw, vec3 Nv, vec3 Vv,
   float spec = pow(max(dot(reflect(-Lkey, Nw), Vw), 0.0), shin);
   vec3  specColor = mix(vec3(1.0), albedo, metalness);
   float specF0    = mix(0.04, 1.0, metalness);
-  vec3 ambient  = albedo * 0.10;
+  // Ambient = the ENVIRONMENT's blurred light from this surface's direction
+  // (V0.3.2.51) — so switching HDRIs visibly re-tints the whole object, not
+  // just the mirror highlights. envAmbient is sampled in main() from uEnvMap.
+  vec3 ambient  = albedo * envAmbient * 0.45;
   vec3 diffuse  = albedo * (warm * (dK * 0.85 * keyI) + cool * (dF * 0.22 * fillI));
   vec3 specular = specColor * spec * specF0 * reflectivity * 3.0 * keyI;
   vec3 Lrim  = normalize(vec3(-0.25, 0.4, -1.0));                 // behind-above, view space
@@ -231,9 +235,11 @@ void main() {
   mat3 v2w = transpose(mat3(viewMatrix));
   vec3 Nw  = normalize(v2w * N);
   vec3 Vw  = normalize(v2w * V);
+  vec3 envAmb   = textureLod(uEnvMap, Nw, 6.0).rgb;   // deep-blurred env = irradiance-ish
   vec3 rigColor = sbsRigPhong(albedo, Nw, Vw, N, V,
                               uRoughness, uMetalness, uReflectionIntensity,
-                              uRigKey, uRigFill, uRigRim, uRigAngle, uRimWidth);
+                              uRigKey, uRigFill, uRigRim, uRigAngle, uRimWidth,
+                              envAmb);
   litColor = mix(litColor, rigColor, uToneMapOn);   // one switch = the whole production look
 
   // ── Environment map reflection (world space) ──────────────────────────
@@ -541,9 +547,12 @@ class MaterialsSystem {
     return tex;
   }
 
-  /** Returns the best available env map: PMREM HDR when ready, else canvas fallback. */
+  /** Returns the best available env map for the SBS shader's samplerCube.
+   *  IMPORTANT: this MUST be a real CubeTexture — PMREM output is a 2D
+   *  CubeUV-packed texture and silently fails when bound to a samplerCube
+   *  (the V0.3.2.49 HDRI "does nothing" bug). HDRI cube wins when active. */
   get metalEnvMap() {
-    return this._pmremEnvMap
+    return this._hdriCubeMap
       ?? (this._canvasEnvMap ??= this._createCanvasEnvMap());
   }
 
@@ -640,8 +649,10 @@ class MaterialsSystem {
     this._activeHdri = want;
 
     if (!want) {                       // back to the built-in procedural studio
+      this._hdriCubeMap?.dispose?.();
+      this._hdriCubeMap = null;
       this._pmremEnvMap = null;
-      this._initPmremEnvMap();         // rebuilds + applyAll()
+      this._initPmremEnvMap();         // rebuilds scene.environment + applyAll()
       return;
     }
     try {
@@ -656,6 +667,18 @@ class MaterialsSystem {
       const eqTex = new THREE.DataTexture(img.data, img.width, img.height, THREE.RGBAFormat, THREE.FloatType);
       eqTex.mapping = THREE.EquirectangularReflectionMapping;
       eqTex.needsUpdate = true;
+
+      // 1. REAL CubeTexture for the SBS shader's samplerCube (uEnvMap) — with
+      //    full mips so the shader's roughness textureLod keeps working.
+      const cubeRT = new THREE.WebGLCubeRenderTarget(512, {
+        generateMipmaps: true,
+        minFilter: THREE.LinearMipmapLinearFilter,
+        type: THREE.HalfFloatType,     // keep the HDR range for glints
+      }).fromEquirectangularTexture(renderer, eqTex);
+      const oldCube = this._hdriCubeMap;
+      this._hdriCubeMap = cubeRT.texture;
+
+      // 2. PMREM for scene.environment (textured MeshStandardMaterial path).
       const pmrem = new THREE.PMREMGenerator(renderer);
       pmrem.compileEquirectangularShader();
       const rt = pmrem.fromEquirectangular(eqTex);
@@ -663,8 +686,10 @@ class MaterialsSystem {
       eqTex.dispose();
       this._pmremEnvMap = rt.texture;
       if (sceneCore.scene) sceneCore.scene.environment = this._pmremEnvMap;
-      this.applyAll();
-      console.log(`[materials] 🎬 HDRI environment "${want}" active (${img.width}x${img.height})`);
+
+      this.applyAll();                 // rebind uEnvMap everywhere
+      oldCube?.dispose?.();
+      console.log(`[materials] 🎬 HDRI environment "${want}" active (${img.width}x${img.height} → cube 512 + PMREM)`);
     } catch (e) {
       console.warn('[materials] HDRI load failed — keeping current environment:', e?.message);
       this._activeHdri = null;
