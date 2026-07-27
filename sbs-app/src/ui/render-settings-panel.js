@@ -20,7 +20,7 @@ const DEFAULTS = {
   // saved with the project AND part of the render-cache fingerprint, so
   // preview-segments and production-segments never mix.
   production: { enabled: false, exposure: 1.0, key: 1.0, fill: 1.0, rim: 1.0, angle: 35, hdri: '',
-                rimWidth: 0.45, contrast: 1.0, saturation: 1.0 },
+                rimWidth: 0.45, contrast: 1.0, saturation: 1.0, envIntensity: 0.5, envBlur: 0.35 },
 };
 
 // 🎬 Bundled HDRI environments (assets/hdri/, Poly Haven CC0). '' = the
@@ -54,7 +54,12 @@ const PROD_SLIDERS = [
   { key: 'contrast',   label: 'Contrast (grade)',   min: 0.5, max: 1.8, step: 0.02, digits: 2 },
   { key: 'saturation', label: 'Saturation (grade)', min: 0,   max: 2,   step: 0.05, digits: 2 },
 ];
-const _slidersOf = (group) => group === 'ao' ? AO_SLIDERS : group === 'production' ? PROD_SLIDERS : SSR_SLIDERS;
+const ENV_SLIDERS = [
+  { key: 'envIntensity', label: 'Environment strength', min: 0, max: 2, step: 0.05, digits: 2 },
+  { key: 'envBlur',      label: 'Environment blur',     min: 0, max: 1, step: 0.05, digits: 2 },
+];
+const _slidersOf = (group) => group === 'ao' ? AO_SLIDERS : group === 'ssr' ? SSR_SLIDERS
+  : [...PROD_SLIDERS, ...ENV_SLIDERS];   // production: rig + grade + env all live in one namespace
 
 function _merge(base, over) {
   return {
@@ -97,6 +102,7 @@ export function buildRenderSettingsPanel() {
         ${HDRI_OPTIONS.map(o => `<option value="${o.value}" ${o.value === (working.production.hdri || '') ? 'selected' : ''}>${o.label}</option>`).join('')}
       </select>
     </label>
+    ${ENV_SLIDERS.map(s => row('production', s)).join('')}
 
     <div class="title" style="margin-top:14px;">Ambient occlusion</div>
     <label class="small" style="display:flex;align-items:center;gap:6px;margin-top:8px;cursor:pointer;">

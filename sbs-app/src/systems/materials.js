@@ -39,7 +39,7 @@ const _sbsEdgesGeoCache = new WeakMap();
 // created at ANY time (preset edits, model loads) inherit the current mode.
 // Written only by materials.setProductionLook(). angle stored in RADIANS.
 const _prodToneMap = { on: 0, exposure: 1.0, key: 1.0, fill: 1.0, rim: 1.0, angle: 35 * Math.PI / 180,
-                       rimWidth: 0.45, contrast: 1.0, saturation: 1.0 };
+                       rimWidth: 0.45, contrast: 1.0, saturation: 1.0, envIntensity: 0.5, envBlur: 0.35 };
 
 // V0.2.7: shift a #rrggbb hex by `deg` degrees in HSL space. Used to derive
 // the expanded-color YELLOW + MAGENTA hulls from the current selection
@@ -202,6 +202,8 @@ uniform float uRigAngle;             //     rig azimuth, radians (spins key+fill
 uniform float uRimWidth;             // 🎬 rim falloff spread: 0 = silhouette hairline, 1 = across the curvature
 uniform float uContrast;             // 🎬 filmic grade (V0.3.2.50) — post-ACES contrast around mid-gray
 uniform float uSaturation;           //     and color saturation (1 = neutral for both)
+uniform float uEnvIntensity;         // 🎬 HDRI strength (V0.3.2.52) — scales reflections + ambience
+uniform float uEnvBlur;              //     global env blur: 0 = sharp reflections, 1 = fully diffuse
 // ACES filmic fit (Narkowicz 2015) — cinematic contrast + soft highlight
 // rolloff. Runs in LINEAR space, before the gamma below. The SBS unified
 // shader is a raw ShaderMaterial, so renderer.toneMapping never touches it —
@@ -235,7 +237,7 @@ void main() {
   mat3 v2w = transpose(mat3(viewMatrix));
   vec3 Nw  = normalize(v2w * N);
   vec3 Vw  = normalize(v2w * V);
-  vec3 envAmb   = textureLod(uEnvMap, Nw, 6.0).rgb;   // deep-blurred env = irradiance-ish
+  vec3 envAmb   = textureLod(uEnvMap, Nw, 6.0).rgb * uEnvIntensity;   // deep-blurred env = irradiance-ish
   vec3 rigColor = sbsRigPhong(albedo, Nw, Vw, N, V,
                               uRoughness, uMetalness, uReflectionIntensity,
                               uRigKey, uRigFill, uRigRim, uRigAngle, uRimWidth,
@@ -244,8 +246,11 @@ void main() {
 
   // ── Environment map reflection (world space) ──────────────────────────
   vec3  R_w    = reflect(-Vw, Nw);
-  // textureLod samples the PMREM mip that matches the roughness level
-  vec3  envRGB = textureLod(uEnvMap, R_w, uRoughness * 8.0).rgb;
+  // textureLod mip = roughness blur, PLUS global uEnvBlur (production) that
+  // pushes the whole reflection toward diffuse — the "tone it down / blur it"
+  // control. Clamped to the 8-mip range.
+  float envLod = clamp(uRoughness * 8.0 + uEnvBlur * 7.0, 0.0, 8.0);
+  vec3  envRGB = textureLod(uEnvMap, R_w, envLod).rgb * uEnvIntensity;
   vec3  envF0  = mix(vec3(0.04), albedo, uMetalness);   // Fresnel F0
   litColor    += envRGB * envF0 * uReflectionIntensity * 2.0;
 
@@ -836,6 +841,8 @@ class MaterialsSystem {
         uRimWidth:            { value: _prodToneMap.rimWidth },
         uContrast:            { value: _prodToneMap.contrast },
         uSaturation:          { value: _prodToneMap.saturation },
+        uEnvIntensity:        { value: _prodToneMap.envIntensity },
+        uEnvBlur:             { value: _prodToneMap.envBlur },
         transitionOpacity:    fadeState,
       },
       vertexShader:   SBS_VERT,
@@ -879,6 +886,8 @@ class MaterialsSystem {
     _prodToneMap.rimWidth   = Number.isFinite(Number(prod.rimWidth))   ? Number(prod.rimWidth)   : 0.45;
     _prodToneMap.contrast   = Number.isFinite(Number(prod.contrast))   ? Number(prod.contrast)   : 1.0;
     _prodToneMap.saturation = Number.isFinite(Number(prod.saturation)) ? Number(prod.saturation) : 1.0;
+    _prodToneMap.envIntensity = Number.isFinite(Number(prod.envIntensity)) ? Number(prod.envIntensity) : 0.5;
+    _prodToneMap.envBlur      = Number.isFinite(Number(prod.envBlur))      ? Number(prod.envBlur)      : 0.35;
     const apply = (m) => {
       const u = m?.uniforms;
       if (!u?.uToneMapOn) return;
@@ -892,6 +901,8 @@ class MaterialsSystem {
         u.uRimWidth.value    = _prodToneMap.rimWidth;
         u.uContrast.value    = _prodToneMap.contrast;
         u.uSaturation.value  = _prodToneMap.saturation;
+        if (u.uEnvIntensity) u.uEnvIntensity.value = _prodToneMap.envIntensity;
+        if (u.uEnvBlur)      u.uEnvBlur.value       = _prodToneMap.envBlur;
       }
     };
     sceneCore.scene?.traverse(o => {

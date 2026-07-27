@@ -855,9 +855,18 @@ export function applyProjectToState(project) {
     // keeps the user default, and a partial block fills its gaps. change:render
     // (main.js) re-applies it to the viewport.
     render: (() => {
+      // Per-section merge of the saved render over the seeded default — every
+      // section (ao, ssr, production, and anything added later) round-trips.
+      // V0.3.2.52: was a hardcoded {ao, ssr} that SILENTLY DROPPED production
+      // on load, so lighting/HDRI settings saved but vanished on reopen.
       const cur = state.get('render') || {};
       const r   = s.render || {};
-      return { ao: { ...cur.ao, ...r.ao }, ssr: { ...cur.ssr, ...r.ssr } };
+      const out = {};
+      for (const k of new Set([...Object.keys(cur), ...Object.keys(r)])) {
+        out[k] = (cur[k] && typeof cur[k] === 'object' && r[k] && typeof r[k] === 'object')
+          ? { ...cur[k], ...r[k] } : (r[k] ?? cur[k]);
+      }
+      return out;
     })(),
     solidOverride:        s.solidOverride           ?? false,
     gridVisible:          s.gridVisible             ?? false,
