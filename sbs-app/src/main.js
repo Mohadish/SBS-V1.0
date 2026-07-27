@@ -1266,7 +1266,12 @@ function _autosaveCfg() {
 async function _nextBackupPath(cfg) {
   const pp = state.get('projectPath');
   if (!pp) return null;
-  const base = pp.replace(/\.sbsproj$/i, '');
+  // Strip .sbsproj AND any existing .autosaveN suffix (V0.3.2.56) so backups
+  // always cycle off the ORIGINAL project name. Without this, opening an
+  // autosave file (e.g. crash recovery) made the next backup stack onto it —
+  // name.autosave2.autosave1.autosave3… forever. "Save As" a new name and
+  // autosaves start fresh under that name automatically.
+  const base = pp.replace(/\.sbsproj$/i, '').replace(/(\.autosave\d*)+$/i, '');
   const name = base.split(/[\\/]/).pop();
   const dir  = cfg.folder || base.replace(/[\\/][^\\/]*$/, '');
   const paths = [];

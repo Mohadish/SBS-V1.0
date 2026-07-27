@@ -351,7 +351,10 @@ export async function autosaveBackup({ path: pathOverride } = {}) {
   const project = serialize();
   const { bytes, rawBytes } = await _encodeProjectStream(project,
     (done, total) => state.emit('save:progress', { stage: 'compress', done, total, unit: 'steps', autosave: true }));
-  const path = pathOverride || (pp.replace(/\.sbsproj$/i, '') + '.autosave.sbsproj');
+  // Fallback base also strips any .autosaveN suffix (V0.3.2.56) so an
+  // autosave-of-an-autosave can never stack when no path override is passed.
+  const path = pathOverride
+    || (pp.replace(/\.sbsproj$/i, '').replace(/(\.autosave\d*)+$/i, '') + '.autosave.sbsproj');
   state.emit('save:progress', { stage: 'write', bytes: bytes.length, autosave: true });
   const r = await window.sbsNative.writeFile(path, bytes, null);
   state.emit('save:progress', r?.ok
