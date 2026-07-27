@@ -685,6 +685,8 @@ export class SceneCore extends Emitter {
       const wantExp = prod.enabled ? (Number(prod.exposure) > 0 ? Number(prod.exposure) : 1.0) : 1.0;
       const flip    = this.renderer.toneMapping !== wantTM;
       if (flip || this.renderer.toneMappingExposure !== wantExp) {
+        // renderer-level tone mapping covers the BUILT-IN material paths
+        // (textured MeshStandardMaterial presets). Compiled-in → recompile.
         this.renderer.toneMapping         = wantTM;
         this.renderer.toneMappingExposure = wantExp;
         if (flip && this.scene) {
@@ -694,6 +696,13 @@ export class SceneCore extends Emitter {
           });
         }
       }
+      // The SBS unified ShaderMaterial (ALL non-texture presets — i.e. most
+      // of every scene) ignores renderer.toneMapping entirely; its ACES lives
+      // in-shader behind uniforms. Dynamic import dodges the module cycle
+      // (materials.js imports sceneCore).
+      import('../systems/materials.js')
+        .then(m => m.materials?.setProductionToneMapping?.(!!prod.enabled, wantExp))
+        .catch(() => {});
     }
     this.requestRender(300);
   }

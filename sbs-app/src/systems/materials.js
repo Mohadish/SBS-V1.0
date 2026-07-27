@@ -35,6 +35,11 @@ import { ssrPrepassHook } from '../../vendor/three-addons/SSRReflectPass.js';
 // cleanup needed).
 const _sbsEdgesGeoCache = new WeakMap();
 
+// 🎬 Production Render tone-mapping state (V0.3.2.47) — module-level so
+// materials created at ANY time (preset edits, model loads) inherit the
+// current mode. Written only by materials.setProductionToneMapping().
+const _prodToneMap = { on: 0, exposure: 1.0 };
+
 // V0.2.7: shift a #rrggbb hex by `deg` degrees in HSL space. Used to derive
 // the expanded-color YELLOW + MAGENTA hulls from the current selection
 // color, so changing the selection palette retunes them automatically
@@ -142,6 +147,17 @@ uniform float uMetalness;
 uniform float uRoughness;
 uniform float uReflectionIntensity;  // 0=matte, 1=shiny (0.5=neutral default)
 uniform samplerCube uEnvMap;         // PMREM environment cube (roughness-prefiltered)
+uniform float uToneMapOn;            // 🎬 Production Render (V0.3.2.47): 1 = ACES filmic
+uniform float uExposure;             //     linear-space exposure — applied only when on
+// ACES filmic fit (Narkowicz 2015) — cinematic contrast + soft highlight
+// rolloff. Runs in LINEAR space, before the gamma below. The SBS unified
+// shader is a raw ShaderMaterial, so renderer.toneMapping never touches it —
+// production tone mapping must live here, as uniforms (live, no recompile).
+vec3 sbsACES(vec3 x) {
+  const float a = 2.51; const float b = 0.03; const float c = 2.43;
+  const float d = 0.59; const float e = 0.14;
+  return clamp((x * (a * x + b)) / (x * (c * x + d) + e), 0.0, 1.0);
+}
 // viewMatrix is injected automatically by Three.js — do NOT redeclare it here
 uniform float transitionOpacity;     // 0=invisible, 1=visible (dither fade)
 ${DITHER_NOISE_GLSL}
@@ -170,6 +186,9 @@ void main() {
   vec3  envF0  = mix(vec3(0.04), albedo, uMetalness);   // Fresnel F0
   litColor    += envRGB * envF0 * uReflectionIntensity * 2.0;
 
+  // ── 🎬 Production tone mapping (gated — preview path untouched) ───────
+  litColor = mix(litColor, sbsACES(litColor * uExposure), uToneMapOn);
+
   // ── Gamma correction ─────────────────────────────────────────────────
   litColor = pow(max(litColor, vec3(0.0)), vec3(1.0 / 2.2));
 
@@ -192,6 +211,13 @@ uniform vec3  uBackColor;
 uniform float uBackAlpha;
 uniform float uBackEdgeDarken;
 uniform float transitionOpacity;
+uniform float uToneMapOn;            // 🎬 Production Render — keeps the inner shell
+uniform float uExposure;             //     consistent with the tone-mapped front
+vec3 sbsACES(vec3 x) {
+  const float a = 2.51; const float b = 0.03; const float c = 2.43;
+  const float d = 0.59; const float e = 0.14;
+  return clamp((x * (a * x + b)) / (x * (c * x + d) + e), 0.0, 1.0);
+}
 ${DITHER_NOISE_GLSL}
 void main() {
   vec3  V   = normalize(-vViewPos);
@@ -203,7 +229,13 @@ void main() {
   float alpha  = clamp(uBackAlpha, 0.0, 1.0);
   float fade   = clamp(transitionOpacity, 0.0, 1.0);
   if (fade <= transitionDitherNoise(gl_FragCoord.xy)) discard;
-  gl_FragColor = vec4(uBackColor * darken, alpha);
+  // 🎬 Production tone mapping — the flat back tint is authored in sRGB, so
+  // linearize → ACES → re-gamma (gated; preview path byte-identical).
+  vec3 backC = uBackColor * darken;
+  vec3 linC  = pow(max(backC, vec3(0.0)), vec3(2.2));
+  linC       = mix(linC, sbsACES(linC * uExposure), uToneMapOn);
+  backC      = pow(linC, vec3(1.0 / 2.2));
+  gl_FragColor = vec4(backC, alpha);
 }`;
 
 
@@ -657,6 +689,8 @@ class MaterialsSystem {
         uRoughness:           { value: preset.roughness           ?? 0.45 },
         uReflectionIntensity: { value: preset.reflectionIntensity ?? 0.5 },
         uEnvMap:              { value: this.metalEnvMap },
+        uToneMapOn:           { value: _prodToneMap.on },        // 🎬 current mode at creation
+        uExposure:            { value: _prodToneMap.exposure },
         transitionOpacity:    fadeState,
       },
       vertexShader:   SBS_VERT,
@@ -683,6 +717,30 @@ class MaterialsSystem {
   }
 
   /**
+   * 🎬 Production Render tone mapping (V0.3.2.47). The SBS unified shader is a
+   * raw ShaderMaterial — renderer.toneMapping can't reach it, so ACES lives in
+   * the shader behind uToneMapOn/uExposure uniforms. This pushes the current
+   * mode to every live SBS material (uniform writes — instant, no recompile;
+   * the exposure slider is butter). New materials read _prodToneMap at
+   * creation, so preset edits/rebuilds inherit the mode automatically.
+   */
+  setProductionToneMapping(enabled, exposure) {
+    _prodToneMap.on       = enabled ? 1 : 0;
+    _prodToneMap.exposure = Number(exposure) > 0 ? Number(exposure) : 1.0;
+    const apply = (m) => {
+      if (m?.uniforms?.uToneMapOn) {
+        m.uniforms.uToneMapOn.value = _prodToneMap.on;
+        m.uniforms.uExposure.value  = _prodToneMap.exposure;
+      }
+    };
+    sceneCore.scene?.traverse(o => {
+      const ms = Array.isArray(o.material) ? o.material : (o.material ? [o.material] : []);
+      for (const m of ms) apply(m);
+    });
+    sceneCore.requestRender?.(150);
+  }
+
+  /**
    * Back-face pass material (optional — only created when backFaceEnabled=true).
    * Renders the inner surface with its own colour and edge darkening.
    */
@@ -695,6 +753,8 @@ class MaterialsSystem {
         uBackColor:        { value: new THREE.Color(preset.backFaceColor ?? '#ffffff') },
         uBackAlpha:        { value: preset.backFaceOpacity     ?? 0.35 },
         uBackEdgeDarken:   { value: preset.backFaceEdgeDarken ?? 0.45 },
+        uToneMapOn:        { value: _prodToneMap.on },        // 🎬 current mode at creation
+        uExposure:         { value: _prodToneMap.exposure },
         transitionOpacity: fadeState,
       },
       vertexShader:   SBS_VERT,
