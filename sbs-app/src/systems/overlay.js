@@ -1681,8 +1681,16 @@ function _serializeNode(node) {
     // Line/Arrow geometry (V0.3.2.30) — omitting these was why a pasted
     // arrow lost its tail (points defaulted to [] and could never grow back).
     'points', 'pointerLength', 'pointerWidth',
+    // Zoom-crop geometry (V0.3.2.58) — omitting these made a pasted zoom lose
+    // its crop, so Konva scaled the WHOLE interface image into the small frame
+    // instead of showing the cropped region. cropX/Y/W/H are Konva's crop;
+    // isZoom + density + bond fields keep it a functioning interface zoom.
+    'cropX', 'cropY', 'cropWidth', 'cropHeight',
+    'isZoom', 'zoomDensityX', 'zoomDensityY', 'zoomMult', 'zoomIfaceId',
+    'attachedTo', 'bondPct',
   ]) {
-    if (a[k] != null) out.attrs[k] = Array.isArray(a[k]) ? a[k].slice() : a[k];
+    if (a[k] != null) out.attrs[k] = Array.isArray(a[k]) ? a[k].slice()
+                                    : (a[k] && typeof a[k] === 'object' ? { ...a[k] } : a[k]);
   }
   return out;
 }
@@ -2291,17 +2299,43 @@ function _applyZoomMultiplier(node, newM) {
   const img  = node.image?.();
   const natW = img?.naturalWidth  || img?.width  || Infinity;
   const natH = img?.naturalHeight || img?.height || Infinity;
-  // Scale the source region by 1/k about its centre (frame unchanged).
+  // Magnification lives in the CROP (the frame is the interface box). Smaller
+  // crop in the same frame = bigger. Desired crop = current / k; de-magnifying
+  // (k<1) GROWS the crop. Clamp UNIFORMLY — preserve aspect, scale both axes by
+  // the same factor (V0.3.2.58). The old per-axis Math.min(…,natW)/Math.min(…,
+  // natH) froze the wider axis first, so de-magnifying "only shrank on Y" and
+  // 1× was unreachable once one axis hit the image edge.
+  let cw = c.width / k, ch = c.height / k;
+  const fit = Math.min(1, natW / cw, natH / ch);   // grown crop bigger than the image → scale both down equally
+  cw *= fit; ch *= fit;
   const cx = c.x + c.width / 2, cy = c.y + c.height / 2;
-  let cw = Math.min(c.width  / k, natW);
-  let ch = Math.min(c.height / k, natH);
-  let nx = Math.max(0, Math.min(cx - cw / 2, natW - cw));
-  let ny = Math.max(0, Math.min(cy - ch / 2, natH - ch));
+  const nx = Math.max(0, Math.min(cx - cw / 2, natW - cw));
+  const ny = Math.max(0, Math.min(cy - ch / 2, natH - ch));
   node.crop({ x: nx, y: ny, width: cw, height: ch });
   node.setAttr('zoomMult', newM);
   node.setAttr('zoomDensityX', node.width()  / cw);
   node.setAttr('zoomDensityY', node.height() / ch);
   node.getLayer()?.batchDraw();
+}
+
+/** Reset a zoom to 1× — de-magnify (crop grows to 1× the interface scale) and
+ *  recentre the region in the image. The missing "just crop a region and move
+ *  it around" state (V0.3.2.58). Own undo entry. */
+function _resetZoomToNatural(node) {
+  const c0 = node.crop();
+  if (!c0?.width || !c0?.height) { setStatus('No crop to reset.', 'warn', 2000); return; }
+  const before = [_snapNodeGeom(node)];
+  _applyZoomMultiplier(node, 1);                    // → 1×, uniform-clamped
+  const c = node.crop();
+  const img = node.image?.();
+  const natW = img?.naturalWidth || img?.width || 0, natH = img?.naturalHeight || img?.height || 0;
+  if (natW && natH && c?.width) {                   // recentre the (grown) crop in the image
+    node.crop({ x: Math.max(0, (natW - c.width) / 2), y: Math.max(0, (natH - c.height) / 2), width: c.width, height: c.height });
+    node.getLayer()?.batchDraw();
+  }
+  const after = [_snapNodeGeom(node)];
+  undoManager.push('Reset zoom to 1×', () => _restoreNodeGeom(before), () => _restoreNodeGeom(after));
+  _scheduleSave();
 }
 
 async function _promptZoomMultiplier(node) {
@@ -2535,9 +2569,10 @@ function _showOverlayContextMenu(node, x, y) {
         const preset = (m) => ({ label: `${cur === m ? '✓ ' : ''}${m}×`, action: () => setZoomMultiplier(node, m) });
         return [
           { label: '🔎 Zoom level', submenu: [
-            preset(1.5), preset(2), preset(3), preset(4),
+            preset(1), preset(1.5), preset(2), preset(3), preset(4),
             { separator: true },
             { label: 'Custom…', action: () => _promptZoomMultiplier(node) },
+            { label: '↺ Reset to 1× (natural crop)', action: () => _resetZoomToNatural(node) },
           ] },
           { separator: true },
         ];
