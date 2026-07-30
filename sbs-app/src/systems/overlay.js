@@ -686,6 +686,15 @@ function _enterTextEdit(node, ctxOverride) {
   // so we beat anything else that might consume the click. Skip if the
   // event landed inside the editor (or, later, the toolbar).
   const onDocMouseDown = (e) => {
+    // ZOMBIE GUARD (V0.3.2.59): a listener whose session/div is gone must be
+    // INERT. The old deferred-add race could leave this bound to a detached
+    // div; a detached div's .contains() is always false, so EVERY click
+    // anywhere then tore down whatever editor was open — the persistent
+    // "can't edit any text box, drag-select exits" bug.
+    if (!div.isConnected || _activeTextEditor?.div !== div) {
+      document.removeEventListener('mousedown', onDocMouseDown, true);
+      return;
+    }
     if (div.contains(e.target)) return;
     if (e.target?.closest?.('[data-sbs-text-toolbar]')) return;   // Phase 3
     // Swallow the click that fires when the OS colour-picker dialog
@@ -694,8 +703,13 @@ function _enterTextEdit(node, ctxOverride) {
     if (wasColorPickedRecently()) return;
     _exitTextEdit();
   };
-  // Defer one tick so the same dblclick that opened us doesn't immediately close us.
-  setTimeout(() => document.addEventListener('mousedown', onDocMouseDown, true), 0);
+  // Register SYNCHRONOUSLY (V0.3.2.59) — the old setTimeout(0) deferral was
+  // the sole source of the leak: an _exitTextEdit that ran before the timer
+  // fired left removeEventListener a no-op, then the timer bound a zombie for
+  // the life of the page. The deferral was also pointless: a mousedown-capture
+  // listener added inside the dblclick handler cannot catch that double-click's
+  // already-fired mousedowns.
+  document.addEventListener('mousedown', onDocMouseDown, true);
 
   // Esc cancels (no save); Enter inserts a newline (browser default).
   // Ctrl+Z / Ctrl+Y route to the local edit-session stack first — if a
