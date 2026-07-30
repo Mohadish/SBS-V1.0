@@ -1306,6 +1306,20 @@ export function buildDisplacedMeshIdRemap(liveModelNode, allSavedMeshSpecs, asse
  * @param {object}               specNode  saved node (with saved IDs)
  * @param {Map<string,TreeNode>} nodeById  live map (already has remapped IDs)
  */
+// Node types whose HOME base pose IS their placement (not derived from
+// imported geometry) — so it must be restored from the saved tree on load.
+// mesh/model/scene are excluded: their base comes from the geometry bake.
+const PROCEDURAL_BASE_TYPES = new Set(['flatShape', 'primitive', 'hardwareInstance', 'hardwareNut', 'folder']);
+
+/** Restore a node's authoritative HOME base pose from the saved spec onto the
+ *  live node (V0.3.2.60). Only the three base arrays; copied by value. */
+function _restoreBaseFromSpec(live, specNode) {
+  if (!live || !specNode) return;
+  if (Array.isArray(specNode.baseLocalPosition)   && specNode.baseLocalPosition.length   === 3) live.baseLocalPosition   = specNode.baseLocalPosition.slice();
+  if (Array.isArray(specNode.baseLocalQuaternion) && specNode.baseLocalQuaternion.length === 4) live.baseLocalQuaternion = specNode.baseLocalQuaternion.slice();
+  if (Array.isArray(specNode.baseLocalScale)      && specNode.baseLocalScale.length      === 3) live.baseLocalScale      = specNode.baseLocalScale.slice();
+}
+
 export function applySpecFieldsToNodes(specNode, nodeById, parentSpec = null) {
   if (!specNode) return;
 
@@ -1423,6 +1437,11 @@ export function applySpecFieldsToNodes(specNode, nodeById, parentSpec = null) {
           try { rebuildPrimitive(existing); } catch (e) { console.warn('[load] primitive rebuild after param-sync failed:', e?.message); }
           console.log(`[load] primitive "${specNode.name}" — params synced from saved project (stale step-snapshot copy overridden)`);
         }
+        // BASE POSE RECONCILE (V0.3.2.60) — this early-return branch skipped
+        // the base restore in the generic path below, so a primitive rebuilt
+        // from a step snapshot (base zeroed) stayed at the wrong home. Restore
+        // the authoritative base from the saved project tree.
+        _restoreBaseFromSpec(existing, specNode);
       }
     }
     return;
@@ -1518,6 +1537,18 @@ export function applySpecFieldsToNodes(specNode, nodeById, parentSpec = null) {
     if (Array.isArray(specNode.sourceLocalPosition))   live.sourceLocalPosition   = specNode.sourceLocalPosition;
     if (Array.isArray(specNode.sourceLocalQuaternion)) live.sourceLocalQuaternion = specNode.sourceLocalQuaternion;
     if (Array.isArray(specNode.sourceLocalScale))      live.sourceLocalScale      = specNode.sourceLocalScale;
+    // BASE POSE RECONCILE (V0.3.2.60) — the keystone fix for "primitives/shapes
+    // snap to reset on load" and the "nut correction applied twice" bug. A
+    // node's home pose (baseLocalPosition/Quaternion/Scale) is the AUTHORITATIVE
+    // placement for PROCEDURAL objects (flat shapes bake their point into base;
+    // bolt-nuts sit at [0,-L,0]; global-edit writes base on any of these). It
+    // is saved in the project tree (stripNode keeps it) but this "existing
+    // node" branch never restored it — so a procedural node already live with a
+    // stale/zeroed base kept the wrong home, the next save baked it in, and no
+    // load healed it. Restore it here from the authoritative spec.
+    //   GATED to procedural types: mesh/model base is re-derived from geometry
+    //   on import (storeBaseTransformFromObject3D) — leave that path alone.
+    if (PROCEDURAL_BASE_TYPES.has(specNode.type)) _restoreBaseFromSpec(live, specNode);
     live.colorPresetId = specNode.colorPresetId || null;
   }
   (specNode.children || []).forEach(sc => applySpecFieldsToNodes(sc, nodeById, specNode));
