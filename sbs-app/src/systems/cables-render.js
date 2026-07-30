@@ -36,6 +36,50 @@ import { resolveNodeWorldPosition, listCables, cableCurveMode } from './cables.j
 import { socketActualSize, cableEffectiveRadius } from './actions.js';
 import steps from './steps.js';   // for object3dById fallback in anchor resolution
 
+// ── Screen-door dither fade (V0.3.2.61) ─────────────────────────────────────
+// Cables faded via material.opacity kept WRITING DEPTH at full strength, so
+// N8AO drew their contact shadow at full strength through the whole fade and
+// then hard-removed it when the cable was hidden — the "floating AO ghost that
+// snaps out". Meshes avoid this by fading through a dither DISCARD that runs
+// BEFORE the depth write, so faded pixels drop out of the depth buffer and the
+// AO fades in lockstep. Give cables the same technique (self-contained here to
+// avoid a materials.js import cycle). Drive `transitionFadeState.value` 1→0;
+// keep material.opacity at 1 so coverage == the fade.
+const _CABLE_DITHER_GLSL = `
+float sbsCableDither(vec2 p){ vec2 c=floor(p); return fract(52.9829189*fract(dot(c,vec2(0.06711056,0.00583715)))); }`;
+function _patchCableFade(material) {
+  if (!material || material.userData?.sbsCableFadePatched) return;
+  material.userData = material.userData || {};
+  const fadeState = { value: 1.0 };
+  material.userData.transitionFadeState = fadeState;
+  const prior = material.onBeforeCompile;
+  material.onBeforeCompile = function (shader) {
+    if (typeof prior === 'function') prior.call(this, shader);
+    shader.uniforms.transitionOpacity = fadeState;
+    if (!shader.fragmentShader.includes('uniform float transitionOpacity')) {
+      shader.fragmentShader = `uniform float transitionOpacity;\n${_CABLE_DITHER_GLSL}\n` + shader.fragmentShader;
+    }
+    shader.fragmentShader = shader.fragmentShader.replace('#include <dithering_fragment>',
+      `float sbsCov = clamp(gl_FragColor.a,0.0,1.0)*clamp(transitionOpacity,0.0,1.0);
+       if (sbsCov <= sbsCableDither(gl_FragCoord.xy)) discard;
+       gl_FragColor.a = 1.0;
+       #include <dithering_fragment>`);
+  };
+  const priorKey = material.customProgramCacheKey;
+  material.customProgramCacheKey = function () {
+    return (typeof priorKey === 'function' ? priorKey.call(this) : '') + '|sbs_cable_dither';
+  };
+  material.userData.sbsCableFadePatched = true;
+  material.opacity = 1;            // coverage now driven by transitionFadeState
+  material.needsUpdate = true;     // force the program rebuild (installing onBeforeCompile alone won't)
+}
+/** Drive a cable material's fade: dither coverage when patched, plain opacity else. */
+function _setCableFade(material, o) {
+  if (!material) return;
+  const fs = material.userData?.transitionFadeState;
+  if (fs) { fs.value = o; material.opacity = 1; } else { material.opacity = o; }
+}
+
 // ─── Module state ────────────────────────────────────────────────────────
 
 let _cableRoot       = null;        // THREE.Group on sceneCore.scene
@@ -332,9 +376,11 @@ export function beginCableTransitions(toCablesSnap, durationMs, easeFn, onDone) 
     const entry = _cableSubgroups.get(cableId);
     if (!entry) continue;
     entry.group.visible = true;   // force on for the fade window
-    for (const m of entry.points)   { m.material.opacity = t.fromOpacity; m.material.color.copy(t.fromColor); }
-    for (const m of entry.segments) { m.material.opacity = t.fromOpacity; m.material.color.copy(t.fromColor); }
-    for (const m of (entry.sockets || [])) { m.material.opacity = t.fromOpacity; }
+    // Patch every material for dither-fade the first time it enters a fade, so
+    // its depth drops with the fade and its AO fades too (V0.3.2.61).
+    for (const m of entry.points)   { _patchCableFade(m.material); _setCableFade(m.material, t.fromOpacity); m.material.color.copy(t.fromColor); }
+    for (const m of entry.segments) { _patchCableFade(m.material); _setCableFade(m.material, t.fromOpacity); m.material.color.copy(t.fromColor); }
+    for (const m of (entry.sockets || [])) { _patchCableFade(m.material); _setCableFade(m.material, t.fromOpacity); }
   }
 
   if (_cableTransitions.size === 0) {
@@ -360,9 +406,9 @@ export function snapCableTransitionsToFinal() {
   for (const [cableId, t] of _cableTransitions) {
     const entry = _cableSubgroups.get(cableId);
     if (!entry) continue;
-    for (const m of entry.points)   { m.material.opacity = t.toOpacity; m.material.color.copy(t.toColor); }
-    for (const m of entry.segments) { m.material.opacity = t.toOpacity; m.material.color.copy(t.toColor); }
-    for (const m of (entry.sockets || [])) { m.material.opacity = t.toOpacity; }
+    for (const m of entry.points)   { _setCableFade(m.material, t.toOpacity); m.material.color.copy(t.toColor); }
+    for (const m of entry.segments) { _setCableFade(m.material, t.toOpacity); m.material.color.copy(t.toColor); }
+    for (const m of (entry.sockets || [])) { _setCableFade(m.material, t.toOpacity); }
     entry._morphPos = null; entry._morphAnchor = null; entry._morphSockQuat = null; entry._morphConnect = null; entry._morphConnQuat = null;   // drop morph; pose is now TO
   }
   _cableTransitions.clear();
@@ -385,9 +431,9 @@ function _advanceCableTransitions(nowMs) {
     const color   = t.fromColor.clone().lerp(t.toColor, u);
     const entry   = _cableSubgroups.get(cableId);
     if (entry) {
-      for (const m of entry.points)   { m.material.opacity = opacity; m.material.color.copy(color); }
-      for (const m of entry.segments) { m.material.opacity = opacity; m.material.color.copy(color); }
-      for (const m of (entry.sockets || [])) { m.material.opacity = opacity; }
+      for (const m of entry.points)   { _setCableFade(m.material, opacity); m.material.color.copy(color); }
+      for (const m of entry.segments) { _setCableFade(m.material, opacity); m.material.color.copy(color); }
+      for (const m of (entry.sockets || [])) { _setCableFade(m.material, opacity); }
       // Lerped poses for _tickAnchorRefresh to render (runs right after this in
       // the same tick). _morphPos = free-node WORLD positions (V0.3.0.126).
       // _morphAnchor = mesh-anchored OFFSETS (mesh-local; the tick still composes

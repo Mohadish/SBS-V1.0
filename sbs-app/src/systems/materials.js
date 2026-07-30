@@ -1097,6 +1097,12 @@ gl_FragColor.a = 1.0;
     };
 
     material.userData.transitionDitherPatched = true;
+    // FORCE RECOMPILE (V0.3.2.61) — installing onBeforeCompile + a changed
+    // cache key does NOT by itself rebuild an already-compiled program; only a
+    // version bump does. Without this, a primitive whose clean MeshStandard-
+    // Material was already compiled kept a dither-less program → its fade
+    // ramp had zero visual effect and it hard-SNAPPED off at the end.
+    material.needsUpdate = true;
   }
 
   /**
@@ -1206,6 +1212,10 @@ gl_FragColor.a = 1.0;
         } else if (original && mesh.material !== original) {
           _disposeGenerated(mesh.material);
           mesh.material = original;
+          // A no-preset primitive reverts to its CLEAN original — re-install the
+          // dither-fade so it can still ramp out (else it hard-snaps). The patch
+          // no-ops if already done and forces a recompile (V0.3.2.61).
+          this._patchScreenDoorFade(mesh.material);
         }
         continue;
       }
