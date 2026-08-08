@@ -1361,6 +1361,9 @@ window.sbsFix = window.sbsFix || {};
 // corrupted by the old paste (copies kept the original group's identity:
 // arrow-key jumps, export skipping pasted steps). Also runs on every load.
 window.sbsFix.stepGroups = () => import('./io/project.js').then(m => m._repairGroupContiguity());
+// Tree reconcile (V0.3.2.62) — re-insert nodes the load dropped from the tree
+// while step snapshots still reference them (also runs automatically on load).
+window.sbsFix.treeNodes = () => import('./io/project.js').then(m => m.reconcileSnapshotTreeNodes());
 // Ghost text editor (stuck editable text box floating over every step):
 // force-commit + tear it down. window.sbsFix.textEditor()
 window.sbsFix.textEditor = () => import('./systems/overlay.js').then(m => {
@@ -1432,6 +1435,19 @@ window.sbsNative?.onMenu?.('menu:recoverStuckInputs', () => {
 //   • on narration-voice change in the Export tab — the existing path
 //     already invalidates clips; trigger a fresh pass to re-cache them.
 state.on('project:loaded', () => schedulePrecache('project-loaded'));
+// TREE RECONCILE (V0.3.2.62): the load's async reattach is a race — custom
+// folders / RM wrappers under models (and their bonded shapes) can silently
+// drop from the live tree while step snapshots still reference them; saving
+// that state corrupts the file permanently (destroyed a client-machine
+// project on 0.3.2-45). Sweep AFTER the async passes settle and re-insert
+// whatever lost the race. Runs twice (early + late) — idempotent.
+state.on('project:loaded', () => {
+  const run = (tag) => import('./io/project.js')
+    .then(m => { const r = m.reconcileSnapshotTreeNodes(); if (r.repaired) console.warn(`[load] tree reconcile (${tag}) repaired ${r.repaired} node(s)`); })
+    .catch(e => console.warn('[load] tree reconcile failed:', e?.message));
+  setTimeout(() => run('early'), 1200);
+  setTimeout(() => run('late'),  4000);
+});
 // Flat mirrors are derived (not saved) — rebuild them once a project finishes
 // loading, from each colour preset's flatMirror flag. Deferred so the scene tree
 // + material assignments are settled first.

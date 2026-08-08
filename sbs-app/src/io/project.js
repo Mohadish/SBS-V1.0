@@ -36,6 +36,7 @@ import { flattenCablesToCascade, ensureSocketBaselines } from '../systems/cables
 import { rebuildPrimitive }          from '../systems/primitives.js';   // V0.3.2.6 param-sync on load
 import { cloneShareStrings }         from '../core/clone.js';            // V0.3.2.17 string-limit-proof serialize
 import { clearIsolate }              from '../core/isolate-state.js';
+import { buildNodeMap }              from '../core/nodes.js';            // V0.3.2.62 tree reconcile
 
 /**
  * H1 migration: append `cable(500)` / `overlay(500)` slots to legacy
@@ -841,8 +842,13 @@ function _hexOrDefault(v, def) {
  *
  * @param {object} project  migrated project from parseProjectFile()
  */
+// Stashed on every load: the SAVED project tree spec — full-fidelity node specs
+// (incl. base pose, follow, RM fields) for the tree-reconcile pass below.
+let _lastLoadedTreeSpecRoot = null;
+
 export function applyProjectToState(project) {
   const s = project.settings || {};
+  _lastLoadedTreeSpecRoot = project.tree?.root || null;
 
   // ── Settings ──────────────────────────────────────────────────────────────
   state.setState({
@@ -1310,6 +1316,79 @@ export function buildDisplacedMeshIdRemap(liveModelNode, allSavedMeshSpecs, asse
 // imported geometry) — so it must be restored from the saved tree on load.
 // mesh/model/scene are excluded: their base comes from the geometry bake.
 const PROCEDURAL_BASE_TYPES = new Set(['flatShape', 'primitive', 'hardwareInstance', 'hardwareNut', 'folder']);
+
+/**
+ * TREE RECONCILE (V0.3.2.62) — the productized field-repair ritual. The load's
+ * async reattach is a RACE: on any given load, some nodes (custom folders /
+ * Replace-Model wrappers under models, and the shapes bonded to them) can lose
+ * the race and silently DROP from the live tree while every step snapshot
+ * still references them. Symptoms in the field: object in the scene but not
+ * in the tree, shapes gone null, counts varying per load, saves of that state
+ * permanently corrupted (this destroyed a client-machine project on 0.3.2-45).
+ *
+ * This pass runs AFTER the load settles: any node referenced by a step
+ * snapshot but missing from the live tree is re-inserted — preferring its
+ * FULL spec from the saved project tree (base pose, follow, RM fields), with
+ * the snapshot spec as fallback — and its live children are moved back inside.
+ * Idempotent; logs loudly; also exposed as window.sbsFix.treeNodes().
+ */
+export function reconcileSnapshotTreeNodes() {
+  const root = state.get('treeData');
+  if (!root) return { repaired: 0 };
+  const liveIds = new Set();
+  (function w(n) { if (!n) return; liveIds.add(n.id); (n.children || []).forEach(w); })(root);
+
+  // Collect missing ids (first occurrence wins) from every step snapshot.
+  const missing = new Map();   // id → { snapSpec, snapParentId }
+  for (const s of (state.get('steps') || [])) {
+    (function w(n, parent) {
+      if (!n) return;
+      if (!liveIds.has(n.id) && !missing.has(n.id)) missing.set(n.id, { snapSpec: n, snapParentId: parent?.id || null });
+      (n.children || []).forEach(c => w(c, n));
+    })(s.snapshot?.tree, null);
+  }
+  if (!missing.size) return { repaired: 0 };
+
+  // Index the SAVED project tree for full-fidelity specs + parents.
+  const savedSpec = new Map(), savedParent = new Map();
+  (function w(n, parent) {
+    if (!n) return;
+    savedSpec.set(n.id, n);
+    savedParent.set(n.id, parent?.id || null);
+    (n.children || []).forEach(c => w(c, n));
+  })(_lastLoadedTreeSpecRoot, null);
+
+  const byId = new Map();
+  (function w(n) { if (!n) return; byId.set(n.id, n); (n.children || []).forEach(w); })(root);
+
+  const repairedIds = [];
+  for (const [id, info] of missing) {
+    const spec     = savedSpec.get(id) || info.snapSpec;             // prefer full saved spec
+    const parentId = savedParent.get(id) ?? info.snapParentId;
+    const parentLive = byId.get(parentId) || root;
+    const nodeLive = { ...spec, object3d: null, children: [] };
+    for (const c of (spec.children || [])) {
+      const childLive = byId.get(c.id);
+      if (!childLive) continue;
+      (function detach(n) {
+        if (!n?.children) return;
+        const i = n.children.findIndex(x => x.id === c.id);
+        if (i >= 0) { n.children.splice(i, 1); return; }
+        n.children.forEach(detach);
+      })(root);
+      nodeLive.children.push(childLive);
+    }
+    parentLive.children = [...(parentLive.children || []), nodeLive];
+    byId.set(id, nodeLive);
+    repairedIds.push(`${id} (${nodeLive.type})`);
+  }
+
+  state.setState({ treeData: root, nodeById: buildNodeMap(root) });
+  state.emit('change:treeData', root);
+  state.markDirty();
+  console.warn(`[load] TREE RECONCILE: re-inserted ${repairedIds.length} node(s) the load dropped from the tree (step snapshots still referenced them): ${repairedIds.join(', ')}`);
+  return { repaired: repairedIds.length, ids: repairedIds };
+}
 
 /** Restore a node's authoritative HOME base pose from the saved spec onto the
  *  live node (V0.3.2.60). Only the three base arrays; copied by value. */
