@@ -100,6 +100,15 @@ contextBridge.exposeInMainWorld('sbsNative', {
     kokoroBundleUrl: () => ipcRenderer.invoke('tts:kokoroBundleUrl'),
   },
 
+  // ── 🌐 Translation (V0.3.2.63 — subtitle layer) ─────────────────────────
+  // Google Translate v2 through the main process (no CORS there). Key
+  // passed per-call from the renderer (userSettings.cloud), same contract
+  // as gcpSynthesize — never stored in preload/main, never in the binary.
+  translate: {
+    batch: (texts, source, target, apiKey = '') =>
+      ipcRenderer.invoke('translate:batch', texts, source, target, apiKey),
+  },
+
   // ── License (3-factor commercial licensing, see electron/license/) ──────
   // The renderer NEVER touches private validation logic — it can only
   // ask "what's my status" and "validate / activate this tuple".

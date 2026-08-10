@@ -32,6 +32,7 @@ import * as header     from '../systems/header.js';
 import { selectHeader, exportHeaderSetup, importHeaderSetup } from '../systems/header.js';
 import * as actions    from '../systems/actions.js';
 import { listStyleTemplates } from '../systems/style-templates.js';
+import * as subtitles  from '../systems/subtitles.js';   // 🌐 per-step subtitle overrides + translation (V0.3.2.63)
 
 // ── Undoable wrappers (V0.1.88) ─────────────────────────────────────────────
 // The raw header.* mutators only setState/markDirty (no undo) — that's
@@ -249,7 +250,9 @@ export function renderHeaderTab(container) {
 }
 
 function _renderItemRow(item, index, total, styles) {
-  const label   = KIND_LABELS[item.kind] || item.kind;
+  const label   = (item.kind === 'subtitle' && item.subLang)
+    ? `Subtitle (${subtitles.SUBTITLE_LANGS.find(l => l.code === item.subLang)?.label || item.subLang})`
+    : (KIND_LABELS[item.kind] || item.kind);
   const eye     = item.visible ? '👁' : '·';
   const preview = _itemPreviewText(item);
   const isText  = item.kind !== 'image';
@@ -353,6 +356,33 @@ function _renderEditor(container) {
         </div>
       ` : ''}
 
+      ${item.kind === 'subtitle' ? `
+        <label class="colorlab" style="margin-top:8px;">Language
+          <select id="hdr-sub-lang" style="width:100%;">
+            ${subtitles.SUBTITLE_LANGS.map(l =>
+              `<option value="${_esc(l.code)}" ${(item.subLang || '') === l.code ? 'selected' : ''}>${_esc(l.label)}</option>`
+            ).join('')}
+          </select>
+        </label>
+        ${item.subLang ? `
+          <div style="margin-top:8px;display:flex;gap:6px;align-items:center;flex-wrap:wrap;">
+            <button class="btn" id="hdr-sub-translate"
+                    title="Translate every step's voiceover into this language. INCREMENTAL: lines already translated (and unchanged) are skipped; hand-edited lines are never overwritten.">
+              🌐 Translate missing / stale
+            </button>
+            <span class="small muted" id="hdr-sub-progress"></span>
+          </div>
+        ` : ''}
+        <div class="small muted" style="margin-top:6px;line-height:1.4;">
+          In edit mode, <b>double-click the subtitle on the canvas</b> to
+          hand-edit that step's caption (the voiceover is never touched).
+          The corner tag shows AUTO / EDITED / STALE — it is editor-only,
+          never rendered. Click its ↺ to restore the auto text
+          ${item.subLang ? '(re-translates that line)' : '(re-copies the voiceover)'}.
+          Edited lines are never overwritten by batch translation.
+        </div>
+      ` : ''}
+
       ${item.kind === 'image' ? `
         <div style="margin-top:8px;">
           <button class="btn" id="hdr-replace-image">Replace image…</button>
@@ -392,6 +422,39 @@ function _renderEditor(container) {
   bind('#hdr-h',    'h', v => Math.max(20, Number(v) || 0));
 
   host.querySelector('#hdr-replace-image')?.addEventListener('click', () => _replaceImage(item.id));
+
+  // 🌐 Subtitle controls (V0.3.2.63) — language slot + incremental batch
+  // translation. Editing/refreshing individual lines happens on the canvas
+  // (double-click the subtitle in edit mode / click its corner chip).
+  host.querySelector('#hdr-sub-lang')?.addEventListener('change', (e) => {
+    updateHeaderItem(item.id, { subLang: e.target.value });
+  });
+  host.querySelector('#hdr-sub-translate')?.addEventListener('click', async (e) => {
+    const btn  = e.currentTarget;
+    const prog = host.querySelector('#hdr-sub-progress');
+    btn.disabled = true;
+    const origLabel = btn.textContent;
+    btn.textContent = '🌐 Translating…';
+    try {
+      const res = await subtitles.translateAllSubtitles({
+        lang: item.subLang || 'he',
+        onProgress: (done, total) => { if (prog) prog.textContent = `${done}/${total}`; },
+      });
+      if (res.ok) {
+        const kept = res.skippedEdited ? ` — ${res.skippedEdited} edited line(s) kept` : '';
+        setStatus(res.translated
+          ? `Translated ${res.translated} subtitle(s)${kept}.`
+          : `All subtitles already up to date${kept}.`, 'info', 6000);
+        if (prog) prog.textContent = res.translated ? `done (${res.translated})` : 'up to date';
+      } else {
+        setStatus(res.error || 'Translation failed.', 'error', 8000);
+        if (prog) prog.textContent = res.translated ? `stopped after ${res.translated}` : 'failed';
+      }
+    } finally {
+      btn.disabled = false;
+      btn.textContent = origLabel;
+    }
+  });
 }
 
 // ─── Create / image helpers ─────────────────────────────────────────────────

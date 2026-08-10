@@ -1219,3 +1219,78 @@ ipcMain.handle('tts:gcp-synthesize', async (_, text, voice, speed, apiKey) => {
     return { ok: false, error: e?.message || 'Google TTS failed.' };
   }
 });
+
+// ─── 🌐 Translation (V0.3.2.63 — subtitle layer) ────────────────────────────
+// Google Translate v2 REST via the main process (renderer fetch would hit
+// CORS on a file:// origin). Same key-handling contract as tts:gcp-synthesize:
+// the API key arrives PER CALL from the renderer (userSettings.cloud) and is
+// never stored here or embedded in the binary. Authoring-time only — end
+// users of exported videos never need this (captions are baked pixels).
+
+function _gtranslateHttpsRequest(apiKey, payload) {
+  return new Promise((resolve, reject) => {
+    const body = Buffer.from(payload, 'utf8');
+    const req = https.request({
+      method: 'POST',
+      hostname: 'translation.googleapis.com',
+      path: `/language/translate/v2?key=${encodeURIComponent(apiKey)}`,
+      headers: {
+        'Content-Type': 'application/json; charset=utf-8',
+        'Content-Length': body.length,
+      },
+      timeout: 30000,
+    }, (res) => {
+      const chunks = [];
+      res.on('data', c => chunks.push(c));
+      res.on('end',  () => {
+        const text = Buffer.concat(chunks).toString('utf8');
+        if (res.statusCode >= 200 && res.statusCode < 300) {
+          try { resolve(JSON.parse(text)); }
+          catch (e) { reject(new Error('Bad JSON from Google Translate: ' + e.message)); }
+        } else {
+          let msg = `Google Translate HTTP ${res.statusCode}`;
+          try { msg = JSON.parse(text)?.error?.message || msg; } catch {}
+          reject(new Error(msg));
+        }
+      });
+    });
+    req.on('error',   reject);
+    req.on('timeout', () => { req.destroy(new Error('Google Translate request timed out (30s).')); });
+    req.write(body);
+    req.end();
+  });
+}
+
+// v2 returns text with HTML entities even in format:'text' mode (quotes,
+// apostrophes). Decode the common ones; &amp; LAST so it can't re-expand.
+function _decodeHtmlEntities(s) {
+  return String(s ?? '')
+    .replace(/&#(\d+);/g, (_, n) => String.fromCodePoint(Number(n)))
+    .replace(/&quot;/g, '"')
+    .replace(/&#39;|&apos;/g, "'")
+    .replace(/&lt;/g, '<')
+    .replace(/&gt;/g, '>')
+    .replace(/&amp;/g, '&');
+}
+
+ipcMain.handle('translate:batch', async (_, texts, source, target, apiKey) => {
+  if (!Array.isArray(texts) || !texts.length) return { ok: false, error: 'No texts to translate.' };
+  if (!target)                                return { ok: false, error: 'No target language.' };
+  if (!apiKey)                                return { ok: false, error: 'No Google API key configured (Settings → Cloud TTS).' };
+  const payload = JSON.stringify({
+    q:      texts.map(t => String(t ?? '')),
+    target: String(target),
+    format: 'text',
+    ...(source ? { source: String(source) } : {}),   // omitted → Google auto-detects
+  });
+  try {
+    const json = await _gtranslateHttpsRequest(apiKey, payload);
+    const arr  = json?.data?.translations;
+    if (!Array.isArray(arr) || arr.length !== texts.length) {
+      return { ok: false, error: 'Google Translate returned an unexpected shape.' };
+    }
+    return { ok: true, texts: arr.map(t => _decodeHtmlEntities(t?.translatedText)) };
+  } catch (e) {
+    return { ok: false, error: e?.message || 'Google Translate failed.' };
+  }
+});

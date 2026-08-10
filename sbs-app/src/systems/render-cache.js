@@ -70,6 +70,9 @@ function _stepKeyView(s, keep) {
   const c = { ...s };
   delete c.thumbnail;
   delete c.renderedDurationMs;      // measurement, not content (durations enter via the chapter vector)
+  delete c.subtitles;               // 🌐 V0.3.2.63: subtitle overrides/translations composite at
+                                    // ASSEMBLY (header layer) — editing a caption must never
+                                    // re-key or re-render a 3D segment
   if (c.narration) {
     // Fixed-shape view: the narration object is wholesale-replaced by the
     // synth/precache passes (audio body, property order, re-measured

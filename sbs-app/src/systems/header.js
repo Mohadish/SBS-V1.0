@@ -50,6 +50,8 @@
 import { state }            from '../core/state.js';
 import { generateId }       from '../core/schema.js';
 import { htmlToCanvas, enterTextEditor } from './overlay.js';   // P2/P3: shared rasteriser + editor
+import * as subtitles       from './subtitles.js';              // 🌐 per-step subtitle overrides + translation (V0.3.2.63)
+import { setStatus }        from '../ui/status.js';             // chip-refresh feedback
 import { registerLayer, getLayerSelection, scheduleOverlaySave } from './cross-layer.js';
 import { getStyleTemplate } from './style-templates.js';        // P4b: per-item style binding
 import { undoManager }      from './undo.js';                   // P7-C: drag / resize undo entries
@@ -119,6 +121,7 @@ export function makeHeaderItem(kind = 'custom', opts = {}) {
       h: opts.h ?? 110,
       align: opts.align ?? 'center',
       text: '',
+      subLang: opts.subLang ?? '',   // '' = original (voiceover); 'he' = Hebrew translation slot
     };
   }
   // Dynamic kinds — text computed live; we still keep a `text` slot as a
@@ -145,8 +148,10 @@ export function resolveHeaderText(item, ctx) {
     // header): a group plays ONE voiceover (the head's, overflowing across its
     // sub-steps), so the caption follows the head throughout — and live
     // playback and export stay identical.
-    case 'subtitle':       return String(ctx?.step?.narration?.text
-                                      ?? ctx?.step?.voiceText ?? '').trim();
+    // V0.3.2.63: routed through the per-step OVERRIDE slot (hand-edits /
+    // translations, keyed by item.subLang). No entry → falls back to the
+    // live narration text, exactly the old behaviour.
+    case 'subtitle':       return subtitles.resolveSubtitleText(ctx?.step, item.subLang || '');
     case 'image':          return '';   // image kind has no text
     default:               return '';
   }
@@ -631,6 +636,13 @@ export function refreshHeaderLayer() {
     if (!node) continue;
     _layer.add(node);
     newNodesById.set(item.id, node);
+    // 🌐 Subtitle status chip (V0.3.2.63) — EDIT-MODE ONLY UI (inert mode
+    // never builds it), and rasterizeHeaderLayer hides chips during export
+    // snapshots, so it can never reach a rendered frame.
+    if (item.kind === 'subtitle' && !inert) {
+      const chip = _buildSubtitleChip(item, ctx);
+      if (chip) _layer.add(chip);
+    }
   }
 
   // Restore selection where the underlying item still exists — but
@@ -822,7 +834,12 @@ function _buildHeaderTextHtml(item, ctx) {
   const fillColor = src.fillColor || (item.kind === 'subtitle' ? 'rgba(0,0,0,0.55)' : '');
   const fill = fillColor ? `;background:${fillColor}` : '';
   const pad  = item.kind === 'subtitle' ? ';padding:0 18px;box-sizing:border-box' : '';
-  return `<div style="height:100%;display:flex;align-items:center${fill}${pad}"><div style="${innerStyle}">${escaped}</div></div>`;
+  // Subtitles are bidi-aware (V0.3.2.63): dir="auto" lets the browser pick
+  // RTL for Hebrew/Arabic lines from the first strong character, so
+  // punctuation and mixed Latin terms order correctly. Alignment still
+  // follows the item's L/C/R buttons.
+  const dir  = item.kind === 'subtitle' ? ' dir="auto"' : '';
+  return `<div style="height:100%;display:flex;align-items:center${fill}${pad}"><div${dir} style="${innerStyle}">${escaped}</div></div>`;
 }
 
 function _safeAlign(a) {
@@ -1015,11 +1032,14 @@ function _attachItemHandlers(node, item) {
   // Dynamic kinds (stepNumber etc.) skip this — their content is auto-
   // resolved per step, so freezing user-typed text on them would be
   // a footgun. Image kind also skips.
-  if (item.kind === 'custom') {
+  // V0.3.2.63: subtitle joins in — but its editor commits to the STEP's
+  // per-language override slot (never the voiceover, never the item).
+  if (item.kind === 'custom' || item.kind === 'subtitle') {
     node.on('dblclick', () => {
       const sel = _transformer?.nodes() || [];
       if (sel.length > 1) return;          // mirror overlay: no edit while multi-selected
-      _openHeaderTextEditor(node, item);
+      if (item.kind === 'subtitle') _openSubtitleEditor(node, item);
+      else                          _openHeaderTextEditor(node, item);
     });
   }
 }
@@ -1153,6 +1173,148 @@ function _openHeaderTextEditor(node, item) {
     // future polish, not required by P4b.
   };
   enterTextEditor(node, ctx);
+}
+
+/**
+ * 🌐 In-place SUBTITLE editor (V0.3.2.63). Same editor UI as custom
+ * headers, but the commit target is the STEP's per-language override slot
+ * (subtitles.setSubtitleOverride) — the voiceover text and the header item
+ * are never touched. Editing marks the line EDITED with the current source
+ * fingerprint, so later voiceover changes flag it STALE instead of
+ * silently overwriting it.
+ */
+function _openSubtitleEditor(node, item) {
+  const rctx = buildRenderContext();
+  const step = rctx?.step;
+  if (!step) return;                       // no active step → nothing to edit
+  const lang       = item.subLang || '';
+  const seedText   = subtitles.resolveSubtitleText(step, lang);
+  let   committedText = null;              // set by onCommit when text really changed
+
+  // Shim ctx that resolves the subtitle to a given text — reuses the real
+  // styling pipeline (band, template, dir="auto") for the live re-raster.
+  const withText = (text) => ({
+    ...rctx,
+    step: {
+      ...step,
+      subtitles: { ...(step.subtitles || {}), [subtitles.langKeyOf(lang)]: { text } },
+    },
+  });
+
+  const ctx = {
+    transformer: _transformer,
+    configureTransformer: () => _configTransformerForNodes(_transformer.nodes()),
+    onCommit: async (html) => {
+      const plain = _htmlToPlainText(html);
+      if (plain === seedText) return;      // no-edit → no override, no undo entry
+      committedText = plain;
+      // Live re-raster so the reveal lands on the new text seamlessly.
+      const wrapped = _buildHeaderTextHtml(item, withText(plain));
+      node.setAttr('textHtml', wrapped);
+      await _hydrateHeaderText(node, wrapped, item);
+    },
+    onSave: () => {
+      if (committedText == null) return;
+      // Undoable write to the step slot; change:steps re-renders the layer
+      // (and the AUTO→EDITED chip) from data.
+      subtitles.setSubtitleOverride(step.id, lang, committedText);
+    },
+  };
+  enterTextEditor(node, ctx);
+}
+
+/**
+ * Editor HTML → plain subtitle text. <br> and block boundaries become
+ * newlines first so multi-line edits don't glue words together; all other
+ * markup is dropped (subtitles store PLAIN text — styling comes from the
+ * item's style binding, not from inline spans).
+ */
+function _htmlToPlainText(html) {
+  const norm = String(html || '')
+    .replace(/<br\s*\/?>/gi, '\n')
+    .replace(/<\/(div|p)>\s*<(div|p)[^>]*>/gi, '\n');
+  const d = document.createElement('div');
+  d.innerHTML = norm;
+  // NOTE: the replace targets a LITERAL U+00A0 (nbsp from &nbsp; in
+  // contenteditable HTML) — invisible in source, real in the file bytes.
+  return (d.textContent || '').replace(/ /g, ' ').trim();
+}
+
+// ─── 🌐 Subtitle status chip (V0.3.2.63) ────────────────────────────────────
+// Small tag at the subtitle box's top-left, EDIT-MODE ONLY (refreshHeaderLayer
+// builds it only when the layer is interactive; rasterizeHeaderLayer hides
+// chips during export snapshots; the data-raster path never builds them).
+//   AUTO   — showing the live voiceover copy / a fresh translation
+//   EDITED — hand-edited, source unchanged since
+//   STALE  — the voiceover changed AFTER this line was edited/translated
+//   NOT TRANSLATED — translated language with no translation yet
+// Clicking ↺ refreshes the line: Original → back to the voiceover copy;
+// translated language → re-translate the current voiceover now.
+
+const _CHIP_COLORS = {
+  auto:    '#475569',   // slate — informational
+  edited:  '#b45309',   // amber — user content lives here
+  stale:   '#b91c1c',   // red — needs attention
+  missing: '#7c3aed',   // violet — not translated yet
+};
+
+function _buildSubtitleChip(item, ctx) {
+  const step = ctx?.step;
+  if (!step) return null;
+  const lang   = item.subLang || '';
+  const status = subtitles.subtitleStatus(step, lang);
+  // Refresh is a no-op for an Original line already in auto mode — show
+  // nothing at all there (zero chrome until the user actually edits).
+  if (!lang && status === 'auto') return null;
+  const label = {
+    auto:    'AUTO',
+    edited:  'EDITED',
+    stale:   'STALE',
+    missing: 'NOT TRANSLATED',
+  }[status] || 'AUTO';
+  const text = `${lang ? lang.toUpperCase() + ' · ' : ''}${label}  ↺`;
+
+  const g = new Konva.Group({
+    x: item.x,
+    y: Math.max(0, item.y - 28),
+    name: 'sbs-subtitle-chip',
+    listening: true,
+  });
+  const t = new Konva.Text({
+    text, fontSize: 13, fontFamily: 'Arial', fontStyle: 'bold',
+    fill: '#ffffff', padding: 5,
+  });
+  const bg = new Konva.Rect({
+    width: t.width(), height: t.height(),
+    fill: _CHIP_COLORS[status] || _CHIP_COLORS.auto,
+    cornerRadius: 4, opacity: 0.92,
+  });
+  g.add(bg);
+  g.add(t);
+  g.on('click tap', (e) => {
+    e.cancelBubble = true;
+    _onChipRefresh(step.id, lang, status);
+  });
+  g.on('mouseenter', () => { if (_stage) _stage.container().style.cursor = 'pointer'; });
+  g.on('mouseleave', () => { if (_stage) _stage.container().style.cursor = ''; });
+  return g;
+}
+
+function _onChipRefresh(stepId, lang, status) {
+  if (!lang) {
+    // Original language: ↺ = drop the hand-edit, back to the live copy.
+    if (status === 'edited' || status === 'stale') {
+      subtitles.clearSubtitleOverride(stepId, lang);
+      setStatus('Subtitle reset to the voiceover text.', 'info');
+    }
+    return;
+  }
+  // Translated language: ↺ = re-translate the CURRENT voiceover.
+  setStatus('Translating subtitle…', 'info');
+  subtitles.refreshSubtitle(stepId, lang).then(res => {
+    if (res?.ok) setStatus('Subtitle re-translated.', 'info');
+    else         setStatus(res?.error || 'Translation failed.', 'error', 8000);
+  });
 }
 
 function _selectHeaderNode(node, additive) {
@@ -1354,14 +1516,21 @@ function _uniqueName(name, taken) {
 export function rasterizeHeaderLayer(opts = {}) {
   if (!_layer || !_stage) return null;
   if (state.get('headersHidden')) return null;
-  // visible-children = real items (transformer + invisible items skipped)
-  const real = _layer.getChildren().filter(c => c !== _transformer);
+  // visible-children = real items (transformer + invisible items + subtitle
+  // status chips skipped — chips are edit-mode UI, never content)
+  const real = _layer.getChildren().filter(c =>
+    c !== _transformer && c.name?.() !== 'sbs-subtitle-chip');
   if (real.length === 0) return null;
 
   // Hide the transformer for the export snapshot so its handles/border
-  // don't bleed into the rendered frame. Restore after.
+  // don't bleed into the rendered frame. Restore after. Subtitle chips
+  // (AUTO/EDITED/STALE tags, V0.3.2.63) get the same treatment — they are
+  // NEVER part of rendered output, even when exporting from edit mode.
   const wasVisible = _transformer.visible();
   _transformer.visible(false);
+  const chips = _layer.getChildren().filter(c => c.name?.() === 'sbs-subtitle-chip');
+  const chipVis = chips.map(c => c.visible());
+  chips.forEach(c => c.visible(false));
 
   // Render at canonical size (matches the overlay rasteriser). Header
   // items live in canonical coordinates. Same as overlay: zero the
@@ -1392,6 +1561,7 @@ export function rasterizeHeaderLayer(opts = {}) {
   }
 
   _transformer.visible(wasVisible);
+  chips.forEach((c, i) => c.visible(chipVis[i]));
   return canvas;
 }
 
