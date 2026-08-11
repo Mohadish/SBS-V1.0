@@ -74,6 +74,54 @@ export function chooseFromButtons(title, message, buttons) {
   });
 }
 
+/**
+ * Like chooseFromButtons, but with a scrollable BEFORE → AFTER preview list
+ * between the message and the buttons. For bulk operations that must show
+ * exactly what they will change before the user commits (V0.3.2.66).
+ *
+ * @param {string} title
+ * @param {string} message
+ * @param {Array<{label?:string, from:string, to:string}>} rows
+ * @param {Array<{id:string,label:string,primary?:boolean,danger?:boolean}>} buttons
+ * @returns {Promise<string|null>} the chosen button id, or null on cancel
+ */
+export function chooseWithPreview(title, message, rows, buttons) {
+  return new Promise(resolve => {
+    const dlg = document.createElement('dialog');
+    dlg.className = 'sbs-dialog';
+    const btnHtml = buttons.map(b => {
+      const colour = b.danger ? 'color:#f87171;' : (b.primary ? 'color:#22d3ee;font-weight:600;' : '');
+      return `<button class="btn" data-sbs-choice="${_esc(b.id)}" style="${colour}">${_esc(b.label)}</button>`;
+    }).join('');
+    // dir="auto" on the text cells so Hebrew previews read correctly.
+    const rowHtml = (rows || []).map(r => `
+      <div style="padding:6px 8px;border-bottom:1px solid var(--line);">
+        ${r.label ? `<div class="small muted" style="font-size:11px;margin-bottom:2px;">${_esc(r.label)}</div>` : ''}
+        <div dir="auto" style="font-size:12px;color:#f87171;white-space:pre-wrap;word-break:break-word;">− ${_esc(r.from)}</div>
+        <div dir="auto" style="font-size:12px;color:#4ade80;white-space:pre-wrap;word-break:break-word;">+ ${_esc(r.to)}</div>
+      </div>
+    `).join('');
+    dlg.innerHTML = `
+      <div class="sbs-dialog__body" style="max-width:min(760px,90vw);">
+        <div class="sbs-dialog__title">${_esc(title)}</div>
+        ${message ? `<div class="small muted" style="margin-top:8px;line-height:1.5;white-space:pre-wrap;">${_esc(message)}</div>` : ''}
+        <div style="margin-top:10px;max-height:min(46vh,420px);overflow:auto;border:1px solid var(--line);border-radius:6px;background:rgba(0,0,0,0.18);">
+          ${rowHtml || '<div class="small muted" style="padding:10px;">Nothing to change.</div>'}
+        </div>
+        <div style="display:flex;gap:8px;justify-content:flex-end;margin-top:12px;flex-wrap:wrap;">${btnHtml}</div>
+      </div>
+    `;
+    document.body.appendChild(dlg);
+    const done = (id) => { dlg.close(); dlg.remove(); resolve(id); };
+    dlg.querySelectorAll('[data-sbs-choice]').forEach(btn => {
+      btn.addEventListener('click', () => done(btn.dataset.sbsChoice));
+    });
+    dlg.addEventListener('keydown', e => { if (e.key === 'Escape') done(null); });
+    dlg.addEventListener('cancel', e => { e.preventDefault(); done(null); });
+    dlg.showModal();
+  });
+}
+
 function _esc(s) {
   return String(s ?? '').replace(/[&<>"']/g,
     c => ({ '&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;' })[c]);

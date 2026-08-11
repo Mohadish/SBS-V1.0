@@ -33,6 +33,7 @@ import { selectHeader, exportHeaderSetup, importHeaderSetup } from '../systems/h
 import * as actions    from '../systems/actions.js';
 import { listStyleTemplates } from '../systems/style-templates.js';
 import * as subtitles  from '../systems/subtitles.js';   // 🌐 per-step subtitle overrides + translation (V0.3.2.63)
+import { chooseWithPreview } from './prompt.js';          // ✨ dry-run preview for the punctuation sweep
 
 // ── Undoable wrappers (V0.1.88) ─────────────────────────────────────────────
 // The raw header.* mutators only setState/markDirty (no undo) — that's
@@ -381,6 +382,12 @@ function _renderEditor(container) {
             <span class="small muted" id="hdr-sub-progress"></span>
           </div>
         ` : ''}
+        <div style="margin-top:8px;">
+          <button class="btn" id="hdr-sub-polish"
+                  title="Sweep every caption: capitalize the first letter and end the line with a period. Shows a full preview before applying. Affects captions only — the voiceover audio and text are never touched.">
+            ✨ Fix punctuation…
+          </button>
+        </div>
         <div class="small muted" style="margin-top:6px;line-height:1.4;">
           In edit mode, <b>double-click the subtitle on the canvas</b> to
           hand-edit that step's caption (the voiceover is never touched).
@@ -439,6 +446,35 @@ function _renderEditor(container) {
   });
   host.querySelector('#hdr-sub-dir')?.addEventListener('change', (e) => {
     updateHeaderItem(item.id, { subDir: e.target.value });
+  });
+
+  // ✨ Punctuation sweep — dry-run preview, then one undoable commit.
+  host.querySelector('#hdr-sub-polish')?.addEventListener('click', async () => {
+    const lang = item.subLang || '';
+    const plan = subtitles.planPunctuationSweep({ lang });
+    if (!plan.changes.length) {
+      setStatus(`All ${plan.unchanged} caption(s) are already correctly punctuated.`, 'info', 6000);
+      return;
+    }
+    const caps = plan.changes.filter(c => c.actions.includes('capitalized')).length;
+    const dots = plan.changes.filter(c => c.actions.includes('period')).length;
+    const msg =
+      `${plan.changes.length} caption(s) will change — ${caps} capitalized, ${dots} given a closing period.\n` +
+      `${plan.unchanged} already correct, ${plan.skipped} left alone (code/annotation lines).\n\n` +
+      `Captions only: the voiceover text and audio are NOT touched, and nothing re-renders.`;
+    const choice = await chooseWithPreview(
+      '✨ Fix caption punctuation',
+      msg,
+      plan.changes.map(c => ({ label: c.stepName, from: c.from, to: c.to })),
+      [
+        { id: 'apply',  label: `Apply to ${plan.changes.length} caption(s)`, primary: true },
+        { id: 'cancel', label: 'Cancel' },
+      ],
+    );
+    if (choice !== 'apply') return;
+    const res = subtitles.applyPunctuationSweep(plan, { lang });
+    const note = res.dropped ? ` ${res.dropped} skipped (changed while the preview was open).` : '';
+    setStatus(`Punctuation fixed on ${res.applied} caption(s).${note} Ctrl+Z undoes the whole sweep.`, 'info', 7000);
   });
   host.querySelector('#hdr-sub-translate')?.addEventListener('click', async (e) => {
     const btn  = e.currentTarget;

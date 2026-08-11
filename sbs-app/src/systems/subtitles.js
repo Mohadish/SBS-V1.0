@@ -37,6 +37,7 @@
 import { state }         from '../core/state.js';
 import * as actions      from './actions.js';
 import * as userSettings from '../core/user-settings.js';
+import { polishLine }    from './text-polish.js';   // ✨ punctuation sweep (V0.3.2.66)
 
 /** Languages offered by the subtitle header item. code '' = original. */
 export const SUBTITLE_LANGS = [
@@ -213,4 +214,81 @@ export async function translateAllSubtitles({ lang = 'he', force = false, onProg
   onProgress?.(jobs.length, jobs.length);
   _writeEntries(`Translate ${writes.length} subtitles`, writes);
   return { ok: true, translated: writes.length, skippedEdited };
+}
+
+// ─── ✨ Punctuation sweep (V0.3.2.66) ───────────────────────────────────────
+//
+// Capitalize the first letter + ensure a terminal period across every step's
+// caption, so pasted voiceover reads as clean subtitles.
+//
+// The sweep writes to the SUBTITLE layer, never to step.narration. That is a
+// deliberate architectural choice, not a limitation: narration text is a
+// first-class input to the render-cache segment key (render-cache.js
+// _stepKeyView), so rewriting it on every step would miss every cached
+// segment and re-render the whole movie — and purgeOrphans would then delete
+// the old segments permanently. Subtitles are explicitly stripped from that
+// key, so a caption sweep costs zero renders, zero re-synthesis and zero
+// translation spend. Same on-screen result, none of the damage.
+
+/**
+ * Compute the sweep WITHOUT applying it — the dry-run that powers the
+ * preview. Returns { changes:[{stepId, stepName, from, to, actions}],
+ * unchanged, skipped }.
+ */
+export function planPunctuationSweep({ lang = '', opts = {} } = {}) {
+  const steps = (state.get('steps') || []).filter(s => !s.isBaseStep);
+  const changes = [];
+  let unchanged = 0, skipped = 0;
+  for (const s of steps) {
+    const src = subtitleSourceText(s);
+    if (!src) continue;                       // silent step — nothing to caption
+    const current = resolveSubtitleText(s, lang);
+    const r = polishLine(current, opts);
+    if (r.skipped) { skipped++; continue; }
+    if (!r.changed) { unchanged++; continue; }
+    changes.push({
+      stepId:   s.id,
+      stepName: s.name || '(unnamed step)',
+      from:     current,
+      to:       r.text,
+      actions:  r.actions,
+    });
+  }
+  return { changes, unchanged, skipped };
+}
+
+/**
+ * Apply a previously computed sweep plan. One undoable commit for the lot.
+ * Entries are marked `edited` so a later Translate-All never clobbers the
+ * polished text (hand-edits are sacred in translateAllSubtitles).
+ */
+export function applyPunctuationSweep(plan, { lang = '' } = {}) {
+  const changes = plan?.changes || [];
+  if (!changes.length) return { ok: true, applied: 0 };
+  const byId = new Map((state.get('steps') || []).map(s => [s.id, s]));
+  const writes = [];
+  let dropped = 0;
+  for (const c of changes) {
+    const s = byId.get(c.stepId);
+    // RE-VERIFY against CURRENT state. The plan was built before the preview
+    // modal opened and the user may have sat on it — a step could have been
+    // deleted, or its voiceover edited, in the meantime. Writing the stale
+    // polished text stamped with the NEW source fingerprint would mark a
+    // caption "fresh" that no longer matches what is spoken. Skip any line
+    // whose source moved under us; it simply stays unpolished.
+    if (!s) { dropped++; continue; }
+    if (resolveSubtitleText(s, lang) !== c.from) { dropped++; continue; }
+    writes.push({
+      stepId: c.stepId,
+      lang,
+      entry: {
+        text:    c.to,
+        srcHash: srcHashOf(subtitleSourceText(s)),
+        edited:  true,
+      },
+    });
+  }
+  if (!writes.length) return { ok: true, applied: 0, dropped };
+  _writeEntries(`Fix punctuation on ${writes.length} subtitles`, writes);
+  return { ok: true, applied: writes.length, dropped };
 }
