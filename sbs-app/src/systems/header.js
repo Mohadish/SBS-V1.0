@@ -151,7 +151,10 @@ export function resolveHeaderText(item, ctx) {
     // V0.3.2.63: routed through the per-step OVERRIDE slot (hand-edits /
     // translations, keyed by item.subLang). No entry → falls back to the
     // live narration text, exactly the old behaviour.
-    case 'subtitle':       return subtitles.resolveSubtitleText(ctx?.step, item.subLang || '');
+    // V0.3.2.64: resolves against ctx.subtitleStep — inside a group, the
+    // latest sub-step that SPEAKS owns the caption (head carries until then).
+    case 'subtitle':       return subtitles.resolveSubtitleText(
+                                    ctx?.subtitleStep || ctx?.step, item.subLang || '');
     case 'image':          return '';   // image kind has no text
     default:               return '';
   }
@@ -213,7 +216,24 @@ export function buildRenderContext(activeIdOverride) {
     ? chapters.findIndex(c => c.id === effectiveStep.chapterId)
     : -1;
   const chapter  = chapterIndex >= 0 ? chapters[chapterIndex] : null;
-  return { step: effectiveStep, stepIndex, chapter, chapterIndex };
+
+  // 🌐 Subtitle-effective step (V0.3.2.64): the caption follows the LATEST
+  // SPOKEN narration. The head's voiceover carries across its sub-steps
+  // (one VO overflowing — the V0.3.2.57 rule), BUT a sub-step that speaks
+  // its OWN narration takes the caption over from that sub-step onward,
+  // matching what the viewer actually hears. Walk back from the active
+  // sub-step to the head; first step with narration text wins; none → head.
+  let subtitleStep = effectiveStep;
+  if (activeStep && effectiveStep && activeStep.id !== effectiveStep.id) {
+    const headIdx = visible.findIndex(s => s.id === effectiveStep.id);
+    const actIdx  = visible.findIndex(s => s.id === activeStep.id);
+    for (let i = actIdx; i > headIdx && i >= 0; i--) {
+      const s = visible[i];
+      if (s.groupId !== effectiveStep.id) break;   // safety: left the group
+      if (String(s.narration?.text ?? s.voiceText ?? '').trim()) { subtitleStep = s; break; }
+    }
+  }
+  return { step: effectiveStep, stepIndex, chapter, chapterIndex, subtitleStep };
 }
 
 // ── Chapter progress bar: CONTINUOUS fill (V0.3.1.80) ───────────────────────
@@ -1185,7 +1205,9 @@ function _openHeaderTextEditor(node, item) {
  */
 function _openSubtitleEditor(node, item) {
   const rctx = buildRenderContext();
-  const step = rctx?.step;
+  // V0.3.2.64: edit the step whose narration OWNS the caption right now
+  // (inside a group that's the latest speaking sub-step, not always the head).
+  const step = rctx?.subtitleStep || rctx?.step;
   if (!step) return;                       // no active step → nothing to edit
   const lang       = item.subLang || '';
   const seedText   = subtitles.resolveSubtitleText(step, lang);
@@ -1193,13 +1215,14 @@ function _openSubtitleEditor(node, item) {
 
   // Shim ctx that resolves the subtitle to a given text — reuses the real
   // styling pipeline (band, template, dir="auto") for the live re-raster.
-  const withText = (text) => ({
-    ...rctx,
-    step: {
+  // Overrides BOTH step and subtitleStep: resolution reads subtitleStep first.
+  const withText = (text) => {
+    const shim = {
       ...step,
       subtitles: { ...(step.subtitles || {}), [subtitles.langKeyOf(lang)]: { text } },
-    },
-  });
+    };
+    return { ...rctx, step: shim, subtitleStep: shim };
+  };
 
   const ctx = {
     transformer: _transformer,
@@ -1259,7 +1282,9 @@ const _CHIP_COLORS = {
 };
 
 function _buildSubtitleChip(item, ctx) {
-  const step = ctx?.step;
+  // V0.3.2.64: the chip reports/refreshes the caption's OWNER step (inside
+  // a group: the latest speaking sub-step; otherwise the effective step).
+  const step = ctx?.subtitleStep || ctx?.step;
   if (!step) return null;
   const lang   = item.subLang || '';
   const status = subtitles.subtitleStatus(step, lang);

@@ -486,19 +486,46 @@ export async function assembleFromCache({ onProgress, signal, output, force = fa
     if (staticItems.length) {
       onProgress?.({ stepName: 'rendering header track…' });
       const lines = [];
+      let lastPng = null;
+      outer:
       for (let i = 0; i < plan.spans.length; i++) {
         const span = plan.spans[i];
-        const ctx = header.buildRenderContext(span.steps[0].id);
-        const cnv = await header.rasterizeHeaderDataToCanvas(ctx, { width: expW, height: expH });
-        if (!cnv) { lines.length = 0; break; }
-        const blob  = await new Promise(res => cnv.toBlob(res, 'image/png'));
-        const bytes = new Uint8Array(await blob.arrayBuffer());
-        const w = await window.sbsNative.writeFile(`${plan.dir}/_hdr/span-${i}.png`, bytes, null);
-        if (!w?.ok) throw new Error('header png write failed: ' + w?.error);
-        lines.push(`file '_hdr/span-${i}.png'`, `duration ${(span._durMs / 1000).toFixed(3)}`);
+        // 🌐 V0.3.2.64: PER-STEP caption windows inside a span. A sub-step
+        // that speaks its own narration takes the subtitle over mid-group,
+        // so the header track must switch inside the span's clip. Window
+        // starts come from the sidecar step markers (the SAME clock the
+        // narration mix uses) → captions land exactly with their audio.
+        // Consecutive windows whose caption OWNER doesn't change are merged
+        // — spans with no speaking sub-steps collapse back to the old one-
+        // PNG-per-span (dynamic kinds all resolve via the head, so only the
+        // subtitle owner can differ inside a span).
+        const wins = [];   // { stepId, startMs }
+        for (const s of span.steps) {
+          const sctx    = header.buildRenderContext(s.id);
+          const ownerId = sctx.subtitleStep?.id || sctx.step?.id || null;
+          const abs     = markersByStepId.get(s.id);
+          const startMs = Math.max(0, (Number.isFinite(abs) ? abs : span._startMs) - span._startMs);
+          const last    = wins[wins.length - 1];
+          if (last && last.ownerId === ownerId) continue;   // same caption → extend
+          wins.push({ stepId: s.id, ownerId, startMs });
+        }
+        for (let k = 0; k < wins.length; k++) {
+          const endMs = (k + 1 < wins.length) ? wins[k + 1].startMs : span._durMs;
+          const durMs = Math.max(40, endMs - wins[k].startMs);
+          const ctx = header.buildRenderContext(wins[k].stepId);
+          const cnv = await header.rasterizeHeaderDataToCanvas(ctx, { width: expW, height: expH });
+          if (!cnv) { lines.length = 0; break outer; }
+          const blob  = await new Promise(res => cnv.toBlob(res, 'image/png'));
+          const bytes = new Uint8Array(await blob.arrayBuffer());
+          const png   = `_hdr/span-${i}-${k}.png`;
+          const w = await window.sbsNative.writeFile(`${plan.dir}/${png}`, bytes, null);
+          if (!w?.ok) throw new Error('header png write failed: ' + w?.error);
+          lines.push(`file '${png}'`, `duration ${(durMs / 1000).toFixed(3)}`);
+          lastPng = png;
+        }
       }
       if (lines.length) {
-        lines.push(`file '_hdr/span-${plan.spans.length - 1}.png'`);   // concat-demuxer quirk: repeat the last entry
+        lines.push(`file '${lastPng}'`);   // concat-demuxer quirk: repeat the last entry
         hdrListPath = `${plan.dir}/_hdrlist.txt`;
         const w = await window.sbsNative.writeFile(hdrListPath, lines.join('\n'), 'utf8');
         if (!w?.ok) throw new Error('header list write failed');
