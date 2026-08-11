@@ -364,6 +364,14 @@ function _renderEditor(container) {
             ).join('')}
           </select>
         </label>
+        <label class="colorlab" style="margin-top:8px;">Direction
+          <select id="hdr-sub-dir" style="width:100%;"
+                  title="How the caption lays out mixed Hebrew/English/number text. Auto detects from the first letter of each line — force Right-to-left if a Hebrew line opening with a number or English word comes out scrambled.">
+            <option value="auto" ${(item.subDir ?? 'auto') === 'auto' ? 'selected' : ''}>Auto-detect (per line)</option>
+            <option value="rtl"  ${item.subDir === 'rtl'  ? 'selected' : ''}>Right-to-left (עברית)</option>
+            <option value="ltr"  ${item.subDir === 'ltr'  ? 'selected' : ''}>Left-to-right</option>
+          </select>
+        </label>
         ${item.subLang ? `
           <div style="margin-top:8px;display:flex;gap:6px;align-items:center;flex-wrap:wrap;">
             <button class="btn" id="hdr-sub-translate"
@@ -428,6 +436,9 @@ function _renderEditor(container) {
   // (double-click the subtitle in edit mode / click its corner chip).
   host.querySelector('#hdr-sub-lang')?.addEventListener('change', (e) => {
     updateHeaderItem(item.id, { subLang: e.target.value });
+  });
+  host.querySelector('#hdr-sub-dir')?.addEventListener('change', (e) => {
+    updateHeaderItem(item.id, { subDir: e.target.value });
   });
   host.querySelector('#hdr-sub-translate')?.addEventListener('click', async (e) => {
     const btn  = e.currentTarget;

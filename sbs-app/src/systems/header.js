@@ -122,6 +122,7 @@ export function makeHeaderItem(kind = 'custom', opts = {}) {
       align: opts.align ?? 'center',
       text: '',
       subLang: opts.subLang ?? '',   // '' = original (voiceover); 'he' = Hebrew translation slot
+      subDir:  opts.subDir  ?? 'auto', // 'auto' = per-line first-strong-char detection; 'rtl'/'ltr' = forced
     };
   }
   // Dynamic kinds — text computed live; we still keep a `text` slot as a
@@ -858,7 +859,12 @@ function _buildHeaderTextHtml(item, ctx) {
   // RTL for Hebrew/Arabic lines from the first strong character, so
   // punctuation and mixed Latin terms order correctly. Alignment still
   // follows the item's L/C/R buttons.
-  const dir  = item.kind === 'subtitle' ? ' dir="auto"' : '';
+  // V0.3.2.65: item.subDir can FORCE rtl/ltr — auto's first-strong rule
+  // guesses wrong when a Hebrew line OPENS with a number or English term
+  // (period jumps to the wrong end, mixed runs scramble). Forced rtl keeps
+  // the Hebrew reading order while numbers/Latin runs stay internally LTR.
+  const subDir = (item.subDir === 'rtl' || item.subDir === 'ltr') ? item.subDir : 'auto';
+  const dir  = item.kind === 'subtitle' ? ` dir="${subDir}"` : '';
   return `<div style="height:100%;display:flex;align-items:center${fill}${pad}"><div${dir} style="${innerStyle}">${escaped}</div></div>`;
 }
 

@@ -20,7 +20,7 @@ export function initStepNav() {
       <button class="btn btn-icon step-nav__prev" title="Previous step (←)" style="flex-shrink:0;">&#8592;</button>
       <span   class="step-nav__label" style="flex-shrink:0;min-width:90px;text-align:center;font-size:12px;"></span>
       <button class="btn btn-icon step-nav__next" title="Next step (→)" style="flex-shrink:0;">&#8594;</button>
-      <input type="text" class="step-nav__narration" spellcheck="true" placeholder="Voice-over text for this step…"
+      <input type="text" class="step-nav__narration" spellcheck="true" dir="auto" placeholder="Voice-over text for this step…"
              style="flex:1 1 auto;min-width:0;height:28px;padding:0 10px;font-size:13px;background:rgba(255,255,255,0.04);color:var(--text);border:1px solid rgba(255,255,255,0.10);border-radius:6px;caret-color:#f59e0b;" />
       <button class="btn btn-icon step-nav__mute" title="Auto-play narration on step change (toggle to mute)" style="flex-shrink:0;">🔊</button>
       <button class="btn btn-icon step-nav__preview" title="Preview narration" style="flex-shrink:0;">&#9654;</button>
