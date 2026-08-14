@@ -3201,6 +3201,62 @@ function cleanupFolderGroups(rootNode, object3dById) {
 const _primDefRegistry = new Map();
 
 /**
+ * 🔩 Seed the primitive definition registry from the SAVED project tree —
+ * called at load, BEFORE any step activation (V0.3.2.67).
+ *
+ * The registry used to start every session EMPTY, so the first
+ * rebuildFromTreeSpec of a loaded project had nothing to serve and fell back
+ * to the STEP SNAPSHOT's frozen copy of primParams — a time capsule from
+ * whenever that step was captured, often the primitive's creation-time
+ * DEFAULTS. A primitive whose parent materializes late (nested under a model
+ * folder / follow wrapper) is unreachable by the load reattach pass, so
+ * nothing corrected it, and the next save baked the stale params into the
+ * project tree PERMANENTLY — "my primitives reset to default dimensions".
+ *
+ * The saved project TREE is the authority for primitive definitions. Warm
+ * the registry with it before anything rebuilds, and the step time capsules
+ * can never win again.
+ */
+export function seedPrimitiveDefsFromTree(specRoot) {
+  _primDefRegistry.clear();
+  let n = 0;
+  (function walk(spec) {
+    if (!spec) return;
+    if (spec.type === 'primitive' && spec.primParams && Object.keys(spec.primParams).length) {
+      _primDefRegistry.set(spec.id, {
+        primKind:     spec.primKind,
+        primParams:   { ...spec.primParams },
+        primQuality:  spec.primQuality,
+        primLinkId:   spec.primLinkId,
+        baseAtOrigin: spec.baseAtOrigin,
+      });
+      n++;
+    }
+    (spec.children || []).forEach(walk);
+  })(specRoot);
+  if (n) console.log(`[steps] primitive definitions seeded from saved tree: ${n}`);
+  return n;
+}
+
+/**
+ * Refresh one live node's registry entry. Called from the param-edit path
+ * (actions.setPrimitiveParams) so the registry tracks the LIVE definition
+ * instead of only refreshing when a step activation happens to visit the
+ * node — the old edit-blind window.
+ */
+export function notePrimitiveDef(node) {
+  if (!node || node.type !== 'primitive') return;
+  if (!node.primParams || !Object.keys(node.primParams).length) return;
+  _primDefRegistry.set(node.id, {
+    primKind:     node.primKind,
+    primParams:   { ...node.primParams },
+    primQuality:  node.primQuality,
+    primLinkId:   node.primLinkId,
+    baseAtOrigin: node.baseAtOrigin,
+  });
+}
+
+/**
  * Rebuild the Three.js hierarchy and data tree from a serialised tree spec.
  * Mirrors v0.266's rebuildTreeFromSpec:
  *   - folder nodes → fresh THREE.Group each time, added to parent3d
@@ -3475,25 +3531,30 @@ function rebuildFromTreeSpec(spec, nodeById, object3dById, parentObject3d) {
       const def = _primDefRegistry.get(spec.id);
       if (def) {
         node.primKind    = def.primKind;
-        node.primParams  = def.primParams;
+        node.primParams  = { ...def.primParams };   // COPY — registry must never share an object with a live node (V0.3.2.67)
         node.primQuality = def.primQuality;
         node.primLinkId  = def.primLinkId;
         node.baseAtOrigin = def.baseAtOrigin;
-        console.log(`[steps] primitive "${node.name || spec.id}" recreated from the session definition registry (live params preserved)`);
+        console.log(`[steps] primitive "${node.name || spec.id}" recreated from the definition registry (live params preserved)`);
       } else {
-        console.warn(`[steps] primitive "${node.name || spec.id}" recreated from a STEP SPEC — params may be historical (no live definition seen this session)`);
+        console.warn(`[steps] primitive "${node.name || spec.id}" recreated from a STEP SPEC — params may be historical (no definition seen this session; registry seeds from the saved tree at load as of V0.3.2.67, so this should only fire for a primitive absent from the saved project tree)`);
       }
     }
+    // V0.3.2.67: an EMPTY params bag ({}) is truthy but meaningless — it
+    // renders at library defaults. Treat it as missing everywhere, or one
+    // poisoned copy propagates through every guard on this chain.
+    const _hasParams = (p) => p && Object.keys(p).length > 0;
     if (spec.primKind    && !node.primKind)              node.primKind    = spec.primKind;
-    if (spec.primParams  && !node.primParams)            node.primParams  = spec.primParams;
+    if (_hasParams(spec.primParams) && !_hasParams(node.primParams)) node.primParams = { ...spec.primParams };
     if (spec.primQuality != null && node.primQuality == null) node.primQuality = spec.primQuality;
     if (spec.primLinkId  && !node.primLinkId)            node.primLinkId  = spec.primLinkId;
     if (spec.baseAtOrigin != null && node.baseAtOrigin == null) node.baseAtOrigin = spec.baseAtOrigin;
     // Record the definition every time we see the node alive — the registry
-    // survives tree rebuilds that drop the node itself.
-    if (node.primParams) {
+    // survives tree rebuilds that drop the node itself. Copies only; an empty
+    // bag must never enter the registry (it would "protect" the poison).
+    if (_hasParams(node.primParams)) {
       _primDefRegistry.set(node.id, {
-        primKind: node.primKind, primParams: node.primParams,
+        primKind: node.primKind, primParams: { ...node.primParams },
         primQuality: node.primQuality, primLinkId: node.primLinkId,
         baseAtOrigin: node.baseAtOrigin,
       });

@@ -1082,6 +1082,44 @@ window.sbsDiag.seq = async () => {
   return rep;
 };
 
+// 🔩 Primitive-definition probe (V0.3.2.67) — for the "dimensions reset to
+// default" family. Per primitive: LIVE params, whether they equal the library
+// DEFAULTS (suspect), whether they're EMPTY (poison), and every distinct
+// historical copy frozen in step snapshots. Run BEFORE remaking anything.
+window.sbsDiag.prims = () => import('./systems/primitives.js').then(({ defaultPrimitiveParams }) => {
+  const stepsArr = state.get('steps') || [];
+  const out = [];
+  state.get('nodeById')?.forEach?.((n, id) => {
+    if (!n || n.type !== 'primitive') return;
+    const live = JSON.stringify(n.primParams || {});
+    const defs = JSON.stringify(defaultPrimitiveParams(n.primKind) || {});
+    const hist = new Map();
+    for (const s of stepsArr) {
+      const find = (t) => { if (!t) return null; if (t.id === id) return t;
+        for (const c of (t.children || [])) { const r = find(c); if (r) return r; } return null; };
+      const spec = find(s.snapshot?.tree);
+      if (!spec) continue;
+      const p = JSON.stringify(spec.primParams ?? '(absent)');
+      if (!hist.has(p)) hist.set(p, []);
+      hist.get(p).push(s.name || s.id);
+    }
+    out.push({
+      name: n.name || id, kind: n.primKind, link: n.primLinkId || '',
+      LIVE: live.slice(0, 60),
+      AT_DEFAULTS: live === defs ? '⚠️ YES' : 'no',
+      EMPTY: live === '{}' ? '⚠️' : '',
+      edited: n._paramsUserEdited ? '✏️' : '',
+      snapshotVariants: hist.size,
+    });
+  });
+  console.table(out);
+  console.log('primitives:', out.length,
+    '| at-defaults:', out.filter(o => o.AT_DEFAULTS === '⚠️ YES').length,
+    '| empty:', out.filter(o => o.EMPTY).length,
+    '| multi-variant snapshots:', out.filter(o => o.snapshotVariants > 1).length);
+  return out;
+});
+
 window.sbsDiag.shapes = () => {
   const nodeById = state.get('nodeById');
   const tplIds = new Set((state.get('shapeTemplates') || []).map(t => t.id));
@@ -1364,6 +1402,7 @@ window.sbsFix.stepGroups = () => import('./io/project.js').then(m => m._repairGr
 // Tree reconcile (V0.3.2.62) — re-insert nodes the load dropped from the tree
 // while step snapshots still reference them (also runs automatically on load).
 window.sbsFix.treeNodes = () => import('./io/project.js').then(m => m.reconcileSnapshotTreeNodes());
+window.sbsFix.prims     = () => import('./io/project.js').then(m => m.reassertPrimitiveDefs());   // 🔩 restore saved-tree primitive params now
 // Ghost text editor (stuck editable text box floating over every step):
 // force-commit + tear it down. window.sbsFix.textEditor()
 window.sbsFix.textEditor = () => import('./systems/overlay.js').then(m => {
@@ -1443,7 +1482,12 @@ state.on('project:loaded', () => schedulePrecache('project-loaded'));
 // whatever lost the race. Runs twice (early + late) — idempotent.
 state.on('project:loaded', () => {
   const run = (tag) => import('./io/project.js')
-    .then(m => { const r = m.reconcileSnapshotTreeNodes(); if (r.repaired) console.warn(`[load] tree reconcile (${tag}) repaired ${r.repaired} node(s)`); })
+    .then(m => {
+      const r = m.reconcileSnapshotTreeNodes(); if (r.repaired) console.warn(`[load] tree reconcile (${tag}) repaired ${r.repaired} node(s)`);
+      // 🔩 V0.3.2.67: same timers, second repair — primitives whose params a
+      // step-snapshot time capsule overwrote get the saved-tree truth back.
+      const p = m.reassertPrimitiveDefs(); if (p.fixed) console.warn(`[load] primitive params re-asserted (${tag}): ${p.fixed}`);
+    })
     .catch(e => console.warn('[load] tree reconcile failed:', e?.message));
   setTimeout(() => run('early'), 1200);
   setTimeout(() => run('late'),  4000);

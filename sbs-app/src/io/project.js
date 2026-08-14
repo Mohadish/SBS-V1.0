@@ -30,7 +30,7 @@ import {
   DEFAULT_ANIMATION_PRESET_STRING,
 }                                     from '../core/schema.js';
 import { materials }                  from '../systems/materials.js';
-import { steps   }                  from '../systems/steps.js';
+import { steps, seedPrimitiveDefsFromTree, notePrimitiveDef } from '../systems/steps.js';
 import * as narrationCache           from '../systems/narration-cache.js';
 import { flattenCablesToCascade, ensureSocketBaselines } from '../systems/cables.js';   // V0.3.0.151 cascade migration; V0.3.0.167 socket State-0 backfill
 import { rebuildPrimitive }          from '../systems/primitives.js';   // V0.3.2.6 param-sync on load
@@ -850,6 +850,14 @@ export function applyProjectToState(project) {
   const s = project.settings || {};
   _lastLoadedTreeSpecRoot = project.tree?.root || null;
 
+  // 🔩 V0.3.2.67 — warm the primitive definition registry from the saved
+  // tree BEFORE any rebuild runs. Without this the first activation of a
+  // loaded project recreated late-parented primitives from STEP-SNAPSHOT
+  // time capsules (often creation-time defaults), and the next save baked
+  // those stale dimensions in permanently.
+  try { seedPrimitiveDefsFromTree(_lastLoadedTreeSpecRoot); }
+  catch (e) { console.warn('[load] primitive definition seed failed:', e?.message); }
+
   // ── Settings ──────────────────────────────────────────────────────────────
   state.setState({
     backgroundColor:      s.backgroundColor        ?? '#0f172a',
@@ -1388,6 +1396,48 @@ export function reconcileSnapshotTreeNodes() {
   state.markDirty();
   console.warn(`[load] TREE RECONCILE: re-inserted ${repairedIds.length} node(s) the load dropped from the tree (step snapshots still referenced them): ${repairedIds.join(', ')}`);
   return { repaired: repairedIds.length, ids: repairedIds };
+}
+
+/**
+ * 🔩 Late primitive-definition re-assert (V0.3.2.67) — the second half of
+ * the "primitives reset to default dimensions" fix. Runs with the tree
+ * reconcile timers (project:loaded +1200ms/+4000ms), AFTER the async
+ * rebuild passes settle. Any live primitive whose definition drifted from
+ * the saved project tree (because a step-snapshot time capsule created it)
+ * is restored to the saved truth and its mesh rebuilt.
+ *
+ * A primitive the user ALREADY resized this session (_paramsUserEdited,
+ * stamped by actions.setPrimitiveParams) is never touched — a late timer
+ * must not revert a fresh edit. New primitives absent from the saved tree
+ * are skipped (nothing to assert).
+ */
+export function reassertPrimitiveDefs() {
+  const nodeById = state.get('nodeById');
+  let fixed = 0;
+  if (!_lastLoadedTreeSpecRoot || !nodeById) return { fixed };
+  (function walk(spec) {
+    if (!spec) return;
+    if (spec.type === 'primitive' && spec.primParams && Object.keys(spec.primParams).length) {
+      const live = nodeById.get(spec.id);
+      if (live && live.type === 'primitive' && !live._paramsUserEdited) {
+        const a = JSON.stringify([live.primKind, live.primParams, live.primQuality, live.baseAtOrigin]);
+        const b = JSON.stringify([spec.primKind, spec.primParams, spec.primQuality, spec.baseAtOrigin]);
+        if (a !== b) {
+          live.primKind    = spec.primKind ?? live.primKind;
+          live.primParams  = { ...spec.primParams };
+          live.primQuality = spec.primQuality ?? live.primQuality;
+          if (spec.baseAtOrigin !== undefined) live.baseAtOrigin = spec.baseAtOrigin;
+          try { rebuildPrimitive(live); } catch (e) { console.warn('[load] primitive re-assert rebuild failed:', e?.message); }
+          notePrimitiveDef(live);
+          console.warn(`[load] primitive "${spec.name || spec.id}" — params re-asserted from the saved tree (a historical step-snapshot copy had won the load race)`);
+          fixed++;
+        }
+      }
+    }
+    (spec.children || []).forEach(walk);
+  })(_lastLoadedTreeSpecRoot);
+  if (fixed) state.emit('change:treeData', state.get('treeData'));
+  return { fixed };
 }
 
 /** Restore a node's authoritative HOME base pose from the saved spec onto the

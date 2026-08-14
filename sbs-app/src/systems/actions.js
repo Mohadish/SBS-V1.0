@@ -19,6 +19,7 @@ import { setStatus }            from '../ui/status.js';
 import { selectionActs }        from './select-act.js';
 import { materials }            from '../systems/materials.js';
 import steps                    from '../systems/steps.js';
+import { notePrimitiveDef }     from '../systems/steps.js';   // 🔩 V0.3.2.67: param edits refresh the definition registry
 import sceneCore                from '../core/scene.js';
 import { createAnimationPreset, createCameraView, createNode, createNoteNode, createNoteTemplate, createShapeTemplate, createShapeTemplateGroup, createFlatShapeNode, createPrimitiveNode, generateId } from '../core/schema.js';
 import * as editSession         from './edit-session.js';   // P7-A: gate Ctrl-Z while in overlay edit
@@ -10317,7 +10318,16 @@ function _setPrimParamsRaw(nodeId, params) {
   if (!n) return;
   // Ripple to every member of the parameter-link group (shared parameters).
   const group = n.primLinkId ? _primitivesInLink(n.primLinkId) : [];
-  for (const t of (group.length ? group : [n])) { t.primParams = { ...params }; rebuildPrimitive(t); }
+  for (const t of (group.length ? group : [n])) {
+    t.primParams = { ...params };
+    // V0.3.2.67: stamp the edit + refresh the definition registry NOW.
+    // _paramsUserEdited shields this session's edits from the post-load
+    // re-assert pass; the registry note closes the edit-blind window where
+    // a rebuild between edit and next activation served stale params.
+    t._paramsUserEdited = true;
+    notePrimitiveDef(t);
+    rebuildPrimitive(t);
+  }
   state.emit('change:treeData', state.get('treeData'));
 }
 
