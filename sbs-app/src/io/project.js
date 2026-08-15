@@ -137,8 +137,11 @@ function _migrateSelectionGroups(items) {
  */
 function stripNode(node) {
   if (!node) return null;
+  // _paramsUserEdited is SESSION-scoped (V0.3.2.67 re-assert shield for
+  // edits made between load and the repair timers) — persisting it would
+  // permanently exempt the node from every future load repair.
   // eslint-disable-next-line no-unused-vars
-  const { object3d, _transient, ...rest } = node;
+  const { object3d, _transient, _paramsUserEdited, ...rest } = node;
   return {
     ...rest,
     children: (rest.children || []).map(stripNode),

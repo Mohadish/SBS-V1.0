@@ -3222,6 +3222,10 @@ export function seedPrimitiveDefsFromTree(specRoot) {
   let n = 0;
   (function walk(spec) {
     if (!spec) return;
+    // Scrub the session-scoped edit shield from loaded specs: files saved by
+    // V0.3.2.67 (before stripNode learned to drop it) carry the flag, and any
+    // node built via {...spec} would inherit a permanent repair exemption.
+    if (spec._paramsUserEdited !== undefined) delete spec._paramsUserEdited;
     if (spec.type === 'primitive' && spec.primParams && Object.keys(spec.primParams).length) {
       _primDefRegistry.set(spec.id, {
         primKind:     spec.primKind,
