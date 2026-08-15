@@ -29,6 +29,7 @@ import { createNode }  from '../core/schema.js';
 import { captureTransformSnapshot } from '../core/transforms.js';
 import { moveNode, findParent, buildNodeMap, isDescendantOf, serializeModelTree } from '../core/nodes.js';
 import { chooseFromButtons, promptString } from '../ui/prompt.js';
+import { cloneShareStrings } from '../core/clone.js';   // undo snapshots must not duplicate inline base64
 import { setStatus }         from '../ui/status.js';
 import { isolateSelection, enterPivotEdit, commitPivotEdit, centerFolderPivotUniform } from './actions.js';   // V0.3.0.172 pivot-in-flow
 
@@ -202,7 +203,12 @@ export function groupObjectsForGlobalEdit(nodeIds, scope = 'all', folderName = '
     : null;
 
   // Undo capture.
-  const stepsBefore   = JSON.parse(JSON.stringify(state.get('steps') || []));
+  // cloneShareStrings, NOT a JSON round-trip: steps carry inline base64
+  // narration / overlay images, so a deep clone duplicates hundreds of MB
+  // inside the ~3.5GB heap cage — and JSON.stringify of the whole steps
+  // array throws past V8's ~512MB string cap on a large project (the exact
+  // failure already fixed in follow.js V0.3.2.31).
+  const stepsBefore   = cloneShareStrings(state.get('steps') || []);
   const beforeParents = ids.map(id => ({ id, parentId: findParent(root, id)?.id || root.id }));
   const beforeHomes   = strategy === 'B'
     ? ids.map(id => { const n = nodeById.get(id); return { id, bp: [...(n.baseLocalPosition || [0, 0, 0])], bq: [...(n.baseLocalQuaternion || [0, 0, 0, 1])] }; })

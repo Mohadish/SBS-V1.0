@@ -3570,7 +3570,10 @@ export function toggleGlobalMode() { setGlobalMode(!state.get('globalMode')); }
 function _stampTransformDelta(nodeId, dOff, dQuat, targetIds) {
   steps.flushSync?.();           // make sure the ACTIVE step's stored snapshot is current first
   const allSteps  = state.get('steps') || [];
-  const prevSteps = allSteps.map(s => (targetIds.has(s.id) ? JSON.parse(JSON.stringify(s)) : s));
+  // cloneShareStrings, not a JSON round-trip: these are WHOLE steps carrying
+  // inline base64 narration/overlay data, and Global Mode targets many of
+  // them at once (see the same fix at line ~646 and in follow.js V0.3.2.31).
+  const prevSteps = allSteps.map(s => (targetIds.has(s.id) ? cloneShareStrings(s) : s));
   const build = (s) => {
     if (!targetIds.has(s.id)) return s;
     const snap = s.snapshot || {};
@@ -3701,7 +3704,7 @@ function _commitGlobalCtrlDelta(nodeId, from, to, dOff, dQuat, scope) {
   const prevSteps = allSteps.map(s => {
     if (!scope.has(s.id)) return s;
     if (s.id === activeId) return setXf(s, from);          // active reverts to pre-drag
-    return JSON.parse(JSON.stringify(s));                  // others: current pose preserved
+    return cloneShareStrings(s);                           // others: current pose preserved (shares base64)
   });
   const nextSteps = allSteps.map(s => {
     if (!scope.has(s.id)) return s;

@@ -1929,8 +1929,13 @@ function _copyChapterToClipboard(chapterId) {
   _clipboard = {
     kind: 'chapter',
     data: {
-      chapter: JSON.parse(JSON.stringify(chapter)),
-      steps:   JSON.parse(JSON.stringify(chSteps)),
+      // cloneShareStrings, NOT a JSON round-trip: a chapter's steps carry
+      // inline base64 narration / overlay images / sequence frames, and
+      // duplicating those strings inside the ~3.5GB heap cage is the known
+      // OOM path (and JSON.stringify throws outright past V8's ~512MB
+      // string cap). Structure is copied; the big strings are shared.
+      chapter: cloneShareStrings(chapter),
+      steps:   cloneShareStrings(chSteps),
     },
   };
   setStatus(`Copied chapter "${chapter.name}" (${chSteps.length} step(s)).`);
@@ -1941,7 +1946,7 @@ function _pasteChapterUnder(targetChapterId) {
   const { chapter: chTpl, steps: stepTpls } = _clipboard.data;
 
   // New chapter with fresh id + name suffix to disambiguate.
-  const newChapter = { ...JSON.parse(JSON.stringify(chTpl)),
+  const newChapter = { ...cloneShareStrings(chTpl),
                        id: generateId('chapter'),
                        name: (chTpl.name || 'Chapter') + ' (copy)' };
 
