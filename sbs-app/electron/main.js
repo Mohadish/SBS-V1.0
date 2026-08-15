@@ -593,8 +593,36 @@ ipcMain.handle('ffmpeg:run', async (_, args) => {
 ipcMain.handle('fs:writeFile', async (_, filePath, data, encoding = 'utf-8') => {
   try {
     fs.mkdirSync(path.dirname(filePath), { recursive: true });
-    fs.writeFileSync(filePath, data, encoding);
-    return { ok: true };
+
+    // ATOMIC WRITE (V0.3.2.69). writeFileSync TRUNCATES the target before it
+    // writes, so a crash / power loss / disk-full partway through a save left
+    // a half-written file where the user's only good project used to be. Now
+    // the bytes go to a sibling temp file, get fsync'd to the platter, and are
+    // renamed over the target — rename(2) is atomic within a volume, so the
+    // previous file survives intact until the new one is complete. A failure
+    // at any point leaves the original untouched and removes the temp.
+    const tmp = `${filePath}.tmp-${process.pid}-${Date.now().toString(36)}`;
+    let fd = null;
+    try {
+      fd = fs.openSync(tmp, 'w');
+      fs.writeFileSync(fd, data, encoding);
+      fs.fsyncSync(fd);          // durability: don't rename over good data with a dirty cache
+      fs.closeSync(fd); fd = null;
+      fs.renameSync(tmp, filePath);
+      return { ok: true };
+    } catch (e) {
+      if (fd !== null) { try { fs.closeSync(fd); } catch { /* already closed */ } }
+      try { if (fs.existsSync(tmp)) fs.unlinkSync(tmp); } catch { /* best-effort cleanup */ }
+      // Windows can refuse the rename when the target is held open by another
+      // process (AV scanner, sync client). Fall back to the direct write so a
+      // save never fails outright — no worse than the pre-V0.3.2.69 behaviour.
+      if (e && (e.code === 'EPERM' || e.code === 'EBUSY' || e.code === 'EXDEV')) {
+        console.warn(`[fs] atomic rename failed (${e.code}) — falling back to direct write:`, filePath);
+        fs.writeFileSync(filePath, data, encoding);
+        return { ok: true, atomic: false };
+      }
+      throw e;
+    }
   } catch (err) {
     return { ok: false, error: err.message };
   }
