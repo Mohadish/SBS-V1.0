@@ -48,6 +48,7 @@ import {
 import { washerStackThickness }         from './hardware-generator.js';
 import { applyNodeTransformToObject3D, setStoredQuaternion } from '../core/transforms.js';
 import { undoManager }                  from './undo.js';
+import { stripNodesFromAllStepSnapshots } from './actions.js';   // V0.3.2.73 — a delete must clear step snapshots too
 
 const HARDWARE_FOLDER_NAME = 'Hardware';
 
@@ -323,7 +324,20 @@ export function deleteInstances(ids) {
   };
   for (const t of targets) _removeOne(t.snapshot.id);
 
-  state.setState({ nodeById: buildNodeMap(root), treeData: root });
+  // V0.3.2.73 — removing the node from the LIVE tree is only half a delete.
+  // Every step snapshot is a standalone scene description, so a leftover id
+  // is re-materialised by rebuildFromTreeSpec on the next step activation,
+  // visible (the inject baked visibility=true into every step). That is the
+  // "deleted screws come back" bug. Scrub the ids from all snapshots too,
+  // and keep the previous steps array so undo can put them back.
+  const stepsBefore = state.get('steps') || [];
+  const scrub = stripNodesFromAllStepSnapshots(targets.map(t => t.snapshot.id), stepsBefore);
+
+  state.setState({
+    nodeById: buildNodeMap(root),
+    treeData: root,
+    ...(scrub.changed ? { steps: scrub.steps } : {}),
+  });
   state.markDirty?.();
   state.emit('change:treeData', root);
 
@@ -335,6 +349,10 @@ export function deleteInstances(ids) {
     label,
     () => {
       const root2 = state.get('treeData');
+      // Restore the per-step snapshot entries too (tree spec / visibility /
+      // transforms), otherwise undo brings the screw back in the live tree
+      // only — and the next step change deletes it again.
+      if (scrub.changed) state.setState({ steps: stepsBefore });
       for (const t of targets) {
         const parent = (state.get('nodeById') || buildNodeMap(root2)).get(t.parentId);
         if (!parent) continue;
@@ -366,7 +384,14 @@ export function deleteInstances(ids) {
           return true;
         });
       }
-      state.setState({ nodeById: buildNodeMap(root2), treeData: root2 });
+      // Re-scrub the snapshots, mirroring the forward path — otherwise redo
+      // leaves the ids in every step and the screw resurrects again.
+      const reScrub = stripNodesFromAllStepSnapshots(targets.map(t => t.snapshot.id), state.get('steps') || []);
+      state.setState({
+        nodeById: buildNodeMap(root2),
+        treeData: root2,
+        ...(reScrub.changed ? { steps: reScrub.steps } : {}),
+      });
       state.emit('change:treeData', root2);
     },
   );

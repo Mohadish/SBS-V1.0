@@ -2682,7 +2682,29 @@ class StepManager {
     const idx      = steps.findIndex(s => s.id === stepId);
     if (idx < 0) return;
 
-    const newSteps = steps.filter(s => s.id !== stepId);
+    // V0.3.2.73 — deleting a GROUP HEAD used to orphan its sub-steps: they
+    // keep groupId pointing at a step that no longer exists, so the panel
+    // (which renders sub-steps under their head) stops showing them, while
+    // playback and export still run them. They become invisible AND
+    // unreachable — not selectable, editable, hideable or deletable.
+    // Promote the first surviving member to head and re-point the rest, so
+    // the group stays intact and visible minus the deleted step.
+    const orphans = steps.filter(s => s.groupId === stepId && s.id !== stepId);
+    let newSteps = steps.filter(s => s.id !== stepId);
+    if (orphans.length) {
+      const newHead = orphans[0];
+      const rest    = new Set(orphans.slice(1).map(s => s.id));
+      newSteps = newSteps.map(s => {
+        if (s.id === newHead.id) {
+          // Becomes the head: heads carry groupHead, not groupId.
+          const { groupId: _drop, ...restOfStep } = s;
+          return { ...restOfStep, groupHead: true };
+        }
+        if (rest.has(s.id)) return { ...s, groupId: newHead.id };
+        return s;
+      });
+      console.warn(`[steps] deleted group head "${steps[idx]?.name || stepId}" — promoted "${newHead.name || newHead.id}" to head, kept ${orphans.length} member(s) in the group`);
+    }
     state.setState({ steps: newSteps });
     state.markDirty();
 

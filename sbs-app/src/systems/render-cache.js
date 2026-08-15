@@ -30,6 +30,7 @@
 
 import { state } from '../core/state.js';
 import { steps } from './steps.js';
+import { resolveAnimationString } from './animation.js';   // V0.3.2.73 — preset content must reach the segment key
 
 /** Bump when renderer/exporter changes make previously-cached pixels stale. */
 export const RENDER_CACHE_EPOCH = 4;   // 2: canonical hashing (V0.3.2.22); 3: scoped defs (.32); 4: pruned object roster (.33)
@@ -66,8 +67,17 @@ function _pruneTree(n, keep) {
 
 /** Step as it matters to pixels: strip volatile / non-rendered fields, and
  *  (V0.3.2.33) prune the PROJECT-WIDE OBJECT ROSTER down to `keep`. */
-function _stepKeyView(s, keep) {
+function _stepKeyView(s, keep, animStr) {
   const c = { ...s };
+  // 🎬 V0.3.2.73 — the RESOLVED animation string. A step stores only
+  // `transition.animPresetId`; the choreography itself lives in the preset.
+  // So editing a preset (or switching which one is default) left every key
+  // identical and the cache served the OLD choreography — while the audio
+  // mix, which is rebuilt at assembly time, moved to the NEW timings. Stale
+  // pixels against fresh audio. Keying on the resolved string makes the
+  // dependency explicit, and keeps it SCOPED: only spans whose steps
+  // actually resolve to a changed string re-render.
+  if (animStr !== undefined) c._animResolved = String(animStr || '');
   delete c.thumbnail;
   delete c.renderedDurationMs;      // measurement, not content (durations enter via the chapter vector)
   delete c.subtitles;               // 🌐 V0.3.2.63: subtitle overrides/translations composite at
@@ -169,7 +179,16 @@ export async function computeSegmentPlan() {
     epoch: RENDER_CACHE_EPOCH,
   };
 
-  const plan = { spans, playableCount: playable.length, settingsKey, defsKey, _defScope };
+  // Resolver for the per-step choreography (V0.3.2.73) — computed once per
+  // plan so _stepKeyView can fold the RESOLVED animation string into each
+  // step's fingerprint (see the note there).
+  const _animPresets = state.get('animationPresets') || [];
+  const plan = { spans, playableCount: playable.length, settingsKey, defsKey, _defScope,
+    _animOf: (st) => {
+      try { return resolveAnimationString(st?.transition || {}, _animPresets) || ''; }
+      catch { return ''; }
+    },
+  };
   for (const span of spans) {
     span._prevRef = span.from > 0 ? playable[span.from - 1] : null;
     span.name  = span.steps[0].name || '(step)';
@@ -250,7 +269,7 @@ async function _keySpan(span, plan) {
  *  dramatically, so this is cheaper than the unpruned single-pass was. */
 function _spanPayload(span, plan) {
   const keep = span._keep;
-  const view = (st) => JSON.stringify(_stepKeyView(st, keep));
+  const view = (st) => JSON.stringify(_stepKeyView(st, keep, plan._animOf?.(st)));
   const prevJson  = span._prevRef ? view(span._prevRef) : 'null';
   const stepsJson = '[' + span.steps.map(view).join(',') + ']';
   plan._settingsJson ||= JSON.stringify(_canon(plan.settingsKey));

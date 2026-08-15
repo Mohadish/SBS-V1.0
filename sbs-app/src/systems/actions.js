@@ -472,22 +472,37 @@ export function deleteStep(stepId) {
   const all      = state.get('steps');
   const step     = all.find(s => s.id === stepId);
   if (!step) return;
-  const snapshot  = cloneShareStrings(step);
-  const idx       = all.indexOf(step);
+  const snapshot   = cloneShareStrings(step);
   const prevActive = state.get('activeStepId');
 
+  // V0.3.2.73 — snapshot the WHOLE steps array, not just the deleted step.
+  // Deleting a group head now promotes a survivor to head and re-points the
+  // other members (steps.deleteStep), so restoring only the removed step
+  // would leave TWO heads and a half-repointed group. Capturing before/after
+  // makes undo exact for every case. cloneShareStrings keeps the inline
+  // base64 shared rather than duplicated.
+  const before = cloneShareStrings(all);
+
   steps.deleteStep(stepId);
+
+  const after = cloneShareStrings(state.get('steps') || []);
   undoManager.push(
     `Delete "${snapshot.name}"`,
     () => {
-      const cur = [...state.get('steps')];
-      cur.splice(Math.min(idx, cur.length), 0, snapshot);
-      state.setState({ steps: cur });
+      state.setState({ steps: cloneShareStrings(before) });
       if (prevActive === stepId) state.setActiveStep(stepId);
       state.markDirty();
       state.emit('step:created', snapshot);
     },
-    () => { steps.deleteStep(snapshot.id); },
+    () => {
+      state.setState({ steps: cloneShareStrings(after) });
+      state.markDirty();
+      const cur = state.get('steps') || [];
+      if (state.get('activeStepId') === stepId) {
+        const first = cur.find(x => !x.isBaseStep);
+        if (first) steps.activateStep(first.id, false);
+      }
+    },
   );
 }
 
@@ -10190,17 +10205,26 @@ export function deletePrimitive(nodeId) {
   }
   const parentId  = _findNodeParentId(nodeId);
   const activeId  = state.get('activeStepId');
-  const prevSteps = descendants > 0 ? cloneShareStrings(state.get('steps') || []) : null;
+  // V0.3.2.73 — capture the steps ALWAYS, not just for container primitives.
+  // _removePrimitiveNode strips the id from EVERY step's snapshot (tree,
+  // visibility, transforms), while the undo's _readdPrimitiveNode re-adds it
+  // via _propagateNewNodeToSteps({activeStepOnly:true}) — visible on the
+  // active step only, at the current pose. So undoing the delete of a
+  // CHILDLESS primitive that was animated across steps silently destroyed
+  // its whole choreography: hidden everywhere else, all per-step poses
+  // replaced by the one it happened to be deleted at.
+  const prevSteps = cloneShareStrings(state.get('steps') || []);
   _removePrimitiveNode(nodeId);
   state.markDirty();
   undoManager.push('Delete primitive',
     () => {
       _readdPrimitiveNode(node, parentId);
-      // Rebuild the contained objects' meshes from the restored snapshots.
-      if (prevSteps) {
-        state.setState({ steps: prevSteps });
-        if (activeId) steps.activateStep(activeId, false);
-      }
+      // Restore the per-step snapshots (the primitive's own visibility and
+      // poses, plus any contained objects'), then re-activate so the scene
+      // reflects them. cloneShareStrings again so repeated undo/redo cycles
+      // can't mutate the captured baseline.
+      state.setState({ steps: cloneShareStrings(prevSteps) });
+      if (activeId) steps.activateStep(activeId, false);
     },
     () => _removePrimitiveNode(nodeId),
   );
@@ -12575,6 +12599,39 @@ function _addToTreeSpec(spec, parentId, child) {
 }
 
 /** Returns a new spec with the node `id` (and any descendants) stripped out. */
+/**
+ * Scrub node ids out of EVERY step snapshot (tree spec + visibility +
+ * transforms) and return the new steps array — without touching state.
+ *
+ * V0.3.2.73: exported because deleting a node from the LIVE tree alone is
+ * not a delete. Step snapshots are standalone scene descriptions, so any id
+ * left behind is re-materialised by rebuildFromTreeSpec on the next step
+ * activation — the object comes back from the dead, visible, because the
+ * baked visibility entry says so. The hardware delete path had exactly this
+ * bug (deleted screws resurrected on step change and on load).
+ *
+ * Pass the ids to remove; returns { steps, changed }.
+ */
+export function stripNodesFromAllStepSnapshots(ids, allSteps = state.get('steps') || []) {
+  const idSet = ids instanceof Set ? ids : new Set(ids || []);
+  if (!idSet.size) return { steps: allSteps, changed: false };
+  let anyChanged = false;
+  const nextSteps = allSteps.map(s => {
+    const snap = s.snapshot;
+    if (!snap) return s;
+    let tree = snap.tree, vis = snap.visibility, tr = snap.transforms, changed = false;
+    for (const id of idSet) {
+      if (tree) { const nt = _removeFromTreeSpec(tree, id); if (nt !== tree) { tree = nt; changed = true; } }
+      if (vis && vis[id] !== undefined) { vis = { ...vis }; delete vis[id]; changed = true; }
+      if (tr  && tr[id]  !== undefined) { tr  = { ...tr };  delete tr[id];  changed = true; }
+    }
+    if (!changed) return s;
+    anyChanged = true;
+    return { ...s, snapshot: { ...snap, tree, visibility: vis, transforms: tr } };
+  });
+  return { steps: nextSteps, changed: anyChanged };
+}
+
 function _removeFromTreeSpec(spec, id) {
   if (!spec) return spec;
   if (spec.id === id) return null;

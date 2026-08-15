@@ -1190,10 +1190,17 @@ function _buildContextMenuItems(node) {
   }
 
   // ── Isolate ─────────────────────────────────────────────────────────────────
-  items.push({
-    label: '🔍 Isolate',
-    action: () => _isolateNodes(new Set(targetIds)),
-  });
+  // V0.3.2.73 — parity with the viewport menu. This used to call the legacy
+  // _isolateNodes(), which wrote localVisible on EVERY mesh in the project
+  // and let the debounced sync bake that into the active step's snapshot —
+  // permanently, with no undo entry and no way back except re-showing every
+  // object by hand. actions.isolateSelection() is a non-destructive mask
+  // that never writes per-step snapshots, and pairs with Un-isolate.
+  if (actions.hasIsolateSnapshot()) {
+    items.push({ label: '🌐 Un-isolate', action: () => actions.unisolate() });
+  } else {
+    items.push({ label: '🔍 Isolate', action: () => actions.isolateSelection() });
+  }
 
   // ── Fit To ──────────────────────────────────────────────────────────────────
   items.push({
@@ -2008,18 +2015,10 @@ function _showDeleteAssemblyDialog(modelNode, deps) {
 
 // ── Context actions ───────────────────────────────────────────────────────────
 
-function _isolateNodes(targetIds) {
-  const nodeById = state.get('nodeById');
-  if (!nodeById) return;
-  for (const [id, node] of nodeById) {
-    if (node.type !== 'mesh') continue;
-    node.localVisible = targetIds.has(id);
-  }
-  applyAllVisibility(state.get('treeData'), steps.object3dById);
-  state.emit('change:treeData', state.get('treeData'));
-  steps.scheduleSync();
-  setStatus(`Isolated ${targetIds.size} item(s).`);
-}
+// (V0.3.2.73) _isolateNodes removed — the tree menu now uses the same
+// non-destructive, undoable mask as the viewport (actions.isolateSelection).
+// The old implementation wrote localVisible across every mesh and let the
+// dirty-sync bake it into the active step's snapshot with no undo.
 
 function _fitToNodes(targetIds) {
   const THREE = window.THREE;

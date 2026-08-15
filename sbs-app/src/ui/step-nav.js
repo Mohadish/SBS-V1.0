@@ -7,6 +7,7 @@
 
 import { state } from '../core/state.js';
 import { steps } from '../systems/steps.js';
+import * as actions from '../systems/actions.js';   // V0.3.2.73 — narration edits must be undoable
 import { previewStepNarration } from './steps-panel.js';
 
 let _el = null;
@@ -61,13 +62,31 @@ export function initStepNav() {
     // ongoing typing — a mid-sentence space the user is still typing survives.
     const val = _editingValue.trim();
     if ((step.narration?.text || '') === val) return;
-    // Drop any cached audio when text changes — user must re-preview / re-export.
-    step.narration = { text: val };
-    // The measured timeline duration is stale too (narration length changed) —
-    // drop it so the TOC falls back to the estimate (flagged ~) until the next
-    // sbsTocSync / export re-measures.
-    delete step.renderedDurationMs;
-    state.markDirty();
+    // V0.3.2.73 — routed through actions.commitStateChange so typing the
+    // voice-over is UNDOABLE like every other authoring action. It used to
+    // mutate the step object directly: Ctrl+Z reverted some unrelated
+    // earlier action instead, and any later undo/redo of a ['steps']
+    // snapshot silently threw the typed text away with no way back.
+    // coalesceKey folds a typing burst on one step into a single entry.
+    const stepId = step.id;
+    actions.commitStateChange(
+      'Edit voice-over text',
+      ['steps'],
+      () => {
+        const arr = state.get('steps') || [];
+        const s = arr.find(x => x.id === stepId);
+        if (!s) return;
+        // Drop any cached audio when text changes — user must re-preview / re-export.
+        s.narration = { text: val };
+        // The measured timeline duration is stale too (narration length changed) —
+        // drop it so the TOC falls back to the estimate (flagged ~) until the next
+        // sbsTocSync / export re-measures.
+        delete s.renderedDurationMs;
+        state.setState({ steps: [...arr] });
+        state.markDirty();
+      },
+      { coalesceKey: `narration:${stepId}` },
+    );
   };
   narrInput.addEventListener('input', () => {
     _editingStepId = state.get('activeStepId');
