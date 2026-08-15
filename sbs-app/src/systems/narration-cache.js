@@ -67,15 +67,42 @@ import { state } from '../core/state.js';
  *      resolve the relative cache folder against).
  */
 export function isCacheEnabled() {
-  return !!(state.get('audioCacheFolder') && state.get('projectPath'));
+  return !!(safeCacheFolderName() && state.get('projectPath'));
+}
+
+/**
+ * The configured cache folder, validated (V0.3.2.72).
+ *
+ * `audioCacheFolder` is a string stored IN THE PROJECT FILE, and the purge
+ * feature deletes the folder's subdirectories recursively. Two ways that
+ * ended badly before this guard:
+ *   • '.' or '' — the folder resolves to the PROJECT folder itself, so
+ *     "Purge cache" deletes every subfolder next to the project (models,
+ *     textures, exports). Picking "put the audio next to the project" in
+ *     the folder chooser produced exactly this.
+ *   • '../../..' or an absolute path — a project file from someone else
+ *     could aim the purge at any directory on the machine.
+ *
+ * A cache folder must be a plain relative subfolder INSIDE the project
+ * directory. Anything else disables caching rather than risking the delete.
+ * Returns the sanitized folder, or null when unusable.
+ */
+export function safeCacheFolderName() {
+  const raw = state.get('audioCacheFolder');
+  if (typeof raw !== 'string') return null;
+  const folder = raw.trim().replace(/[\\/]+$/, '');
+  if (!folder) return null;
+  if (folder === '.' || folder === '..') return null;
+  if (/^[a-zA-Z]:[\\/]/.test(folder) || folder.startsWith('/') || folder.startsWith('\\')) return null;  // absolute
+  if (folder.split(/[\\/]+/).some(seg => seg === '..')) return null;                                      // escapes upward
+  return folder;
 }
 
 /** Absolute path of the cache folder, or null if not configured / project unsaved. */
 export function cacheFolderAbsolute() {
-  if (!isCacheEnabled()) return null;
   const projectDir = _projectDir();
-  const folder     = state.get('audioCacheFolder');
-  if (!projectDir) return null;
+  const folder     = safeCacheFolderName();
+  if (!projectDir || !folder) return null;
   return _join(projectDir, folder);
 }
 

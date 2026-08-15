@@ -658,12 +658,74 @@ ipcMain.handle('fs:listDir', async (_, dirPath) => {
   } catch { return null; }
 });
 
+/**
+ * Guard for RECURSIVE directory deletion (V0.3.2.72).
+ *
+ * fs:deletePath used to hand any renderer-supplied string straight to
+ * fs.rmSync({recursive, force}). Two real ways that destroyed data:
+ *   • The audio-cache folder is a string stored IN THE PROJECT FILE. Setting
+ *     it to the project folder itself (the natural "put the audio next to
+ *     the project" choice) turned "Purge cache" into "delete every subfolder
+ *     of my project" — models, textures, exports.
+ *   • A .sbsproj from someone else could carry "../../../Users/you/Documents"
+ *     and Purge would recursively wipe it.
+ *
+ * Returns a reason string when the target is too dangerous to remove
+ * recursively, or null when it's fine. Single FILE deletes are unaffected —
+ * they can only ever remove one file.
+ */
+function _unsafeRecursiveTarget(p) {
+  const resolved = path.resolve(p);
+  const root = path.parse(resolved).root;                       // 'E:\' or '/'
+  const rest = resolved.slice(root.length).replace(/[\\/]+$/, '');
+  if (!rest) return 'the filesystem root';
+  const segs = rest.split(/[\\/]+/).filter(Boolean);
+  if (segs.length < 2) return 'a top-level directory';          // E:\anything
+
+  const PROFILE_DIRS = ['desktop', 'documents', 'downloads', 'pictures', 'videos', 'music', 'onedrive'];
+  const home = path.resolve(os.homedir());
+  if (resolved === home) return 'the user home folder';
+  if (path.dirname(resolved) === home && PROFILE_DIRS.includes(path.basename(resolved).toLowerCase())) {
+    return `the user's ${path.basename(resolved)} folder`;
+  }
+  // ANY profile on the machine, not just the one we're running as — a crafted
+  // relative path resolves against the project dir and can land in another
+  // account's folders (\Users\someone\Documents), which the home check above
+  // would miss entirely.
+  const winProfile = /^[a-z]:[\\/]users[\\/]([^\\/]+)([\\/]([^\\/]+))?[\\/]?$/i.exec(resolved);
+  if (winProfile) {
+    const sub = (winProfile[3] || '').toLowerCase();
+    if (!sub) return 'a user profile folder';
+    if (PROFILE_DIRS.includes(sub)) return `a user's ${winProfile[3]} folder`;
+  }
+  const lower = resolved.toLowerCase();
+  for (const sys of ['c:\\windows', 'c:\\program files', 'c:\\program files (x86)', 'c:\\programdata', '/etc', '/usr', '/bin', '/system']) {
+    if (lower === sys || lower.startsWith(sys + path.sep) || lower.startsWith(sys + '/')) return 'a system directory';
+  }
+  return null;
+}
+
 // Delete a file or folder. `recursive: true` is required for non-empty dirs.
 // Returns { ok, error? }. Quietly succeeds when the path doesn't exist (idempotent).
 ipcMain.handle('fs:deletePath', async (_, targetPath, opts = {}) => {
   try {
+    if (typeof targetPath !== 'string' || !targetPath.trim()) {
+      return { ok: false, error: 'No path given.' };
+    }
     if (!fs.existsSync(targetPath)) return { ok: true };
-    fs.rmSync(targetPath, { recursive: !!opts.recursive, force: true });
+    const recursive = !!opts.recursive;
+    // Only recursive DIRECTORY removal is capable of the damage above.
+    let isDir = false;
+    try { isDir = fs.statSync(targetPath).isDirectory(); } catch { /* treat as file */ }
+    if (recursive && isDir) {
+      const why = _unsafeRecursiveTarget(targetPath);
+      if (why) {
+        const msg = `Refused to recursively delete ${why}: ${path.resolve(targetPath)}`;
+        console.error('[fs] ' + msg);
+        return { ok: false, error: msg };
+      }
+    }
+    fs.rmSync(targetPath, { recursive, force: true });
     return { ok: true };
   } catch (err) {
     return { ok: false, error: err.message };

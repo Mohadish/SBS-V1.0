@@ -281,7 +281,10 @@ export function groupObjectsForGlobalEdit(nodeIds, scope = 'all', folderName = '
     'Group for global edit',
     () => {
       const r = state.get('treeData');
-      state.setState({ steps: JSON.parse(JSON.stringify(stepsBefore)) });
+      // Clone on restore too (not the captured baseline itself), so repeated
+      // undo/redo cycles can't mutate it — and share base64 rather than
+      // duplicating it, same reason as the capture above.
+      state.setState({ steps: cloneShareStrings(stepsBefore) });
       for (const b of beforeParents) moveNode(r, b.id, b.parentId);
       for (const h of beforeHomes) { const n = (state.get('nodeById') || buildNodeMap(r)).get(h.id); if (n) { n.baseLocalPosition = h.bp; n.baseLocalQuaternion = h.bq; } }
       const p = (state.get('nodeById') || buildNodeMap(r)).get(targetParentId) || r;

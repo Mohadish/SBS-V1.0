@@ -452,16 +452,22 @@ function _renderEditor(container) {
   host.querySelector('#hdr-sub-polish')?.addEventListener('click', async () => {
     const lang = item.subLang || '';
     const plan = subtitles.planPunctuationSweep({ lang });
+    const held = [];
+    if (plan.untranslated) held.push(`${plan.untranslated} not translated yet (translate first — polishing them would store source text in this language)`);
+    if (plan.stale)        held.push(`${plan.stale} stale (voiceover changed — use ↺ on the chip so the staleness isn't hidden)`);
     if (!plan.changes.length) {
-      setStatus(`All ${plan.unchanged} caption(s) are already correctly punctuated.`, 'info', 6000);
+      const why = held.length ? ` Held back: ${held.join('; ')}.` : '';
+      setStatus(`Nothing to fix — ${plan.unchanged} caption(s) already correct.${why}`, 'info', 9000);
       return;
     }
     const caps = plan.changes.filter(c => c.actions.includes('capitalized')).length;
     const dots = plan.changes.filter(c => c.actions.includes('period')).length;
     const msg =
       `${plan.changes.length} caption(s) will change — ${caps} capitalized, ${dots} given a closing period.\n` +
-      `${plan.unchanged} already correct, ${plan.skipped} left alone (code/annotation lines).\n\n` +
-      `Captions only: the voiceover text and audio are NOT touched, and nothing re-renders.`;
+      `${plan.unchanged} already correct, ${plan.skipped} left alone (code/annotation lines).\n` +
+      (held.length ? `Held back: ${held.join('; ')}.\n` : '') +
+      `\nCaptions only: the voiceover text and audio are NOT touched, and nothing re-renders.\n` +
+      `Note: an edited caption stops auto-following later voiceover changes for that step.`;
     const choice = await chooseWithPreview(
       '✨ Fix caption punctuation',
       msg,

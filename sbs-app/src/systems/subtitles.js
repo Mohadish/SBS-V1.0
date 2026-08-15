@@ -238,10 +238,36 @@ export async function translateAllSubtitles({ lang = 'he', force = false, onProg
 export function planPunctuationSweep({ lang = '', opts = {} } = {}) {
   const steps = (state.get('steps') || []).filter(s => !s.isBaseStep);
   const changes = [];
-  let unchanged = 0, skipped = 0;
+  let unchanged = 0, skipped = 0, untranslated = 0, stale = 0;
   for (const s of steps) {
     const src = subtitleSourceText(s);
     if (!src) continue;                       // silent step — nothing to caption
+    const entry  = getSubtitleEntry(s, lang);
+    const status = subtitleStatus(s, lang);
+
+    // V0.3.2.72 — three ways the sweep used to corrupt the caption layer:
+    //
+    // 1. UNTRANSLATED lines in a translated slot. resolveSubtitleText falls
+    //    back to the SOURCE text when no entry exists, so polishing wrote
+    //    English into the Hebrew slot marked edited+fresh — after which
+    //    "Translate missing / stale" reported everything up to date and made
+    //    zero API calls, and the export burned in English captions.
+    if (lang && !entry) { untranslated++; continue; }
+    //
+    // 2. STALE entries. Re-stamping them with the CURRENT source hash
+    //    destroys the only signal that the caption no longer matches what is
+    //    spoken — the chip flips from red STALE to amber EDITED and batch
+    //    translate then skips it forever. Leave staleness alone; ↺ on the
+    //    chip is the intended repair.
+    if (status === 'stale') { stale++; continue; }
+    //
+    // 3. ORIGINAL-language lines that have NO override yet still track the
+    //    voiceover live. Polishing every one of them freezes the whole
+    //    project's captions, so a later narration edit silently stops
+    //    reaching the caption and the export ships the old wording. Only
+    //    polish what the polish would actually change — handled below by
+    //    the r.changed check, which leaves untouched lines live-following.
+
     const current = resolveSubtitleText(s, lang);
     const r = polishLine(current, opts);
     if (r.skipped) { skipped++; continue; }
@@ -252,9 +278,10 @@ export function planPunctuationSweep({ lang = '', opts = {} } = {}) {
       from:     current,
       to:       r.text,
       actions:  r.actions,
+      hadEntry: !!entry,
     });
   }
-  return { changes, unchanged, skipped };
+  return { changes, unchanged, skipped, untranslated, stale };
 }
 
 /**
