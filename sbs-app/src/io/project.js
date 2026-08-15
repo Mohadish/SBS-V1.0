@@ -631,13 +631,26 @@ function _migrateParsedProject(raw) {
     return _migrateLegacyPoc(raw);
   }
 
-  // New format — run per-section migrations
+  // New format — run per-section migrations.
+  //
+  // V0.3.2.70 — THE MIGRATION SYSTEM WAS DEAD. This loop passed PLURAL
+  // section names ('colors', 'cables', 'steps'…) while MIGRATIONS and
+  // SCHEMA_VERSIONS are keyed SINGULAR ('color', 'cable', 'step'). Every
+  // lookup missed, so `migrations` was always [] and `currentVersion`
+  // always 1 — meaning the color v1→v2→v3 chain and the cable v1→v2
+  // absolute-mm conversion had NEVER RUN on a single legacy project.
+  // ('tree' matched by luck; its migration list is empty.)
+  const MIGRATION_KEY = {
+    assets: 'asset', tree: 'tree', steps: 'step', cameras: 'camera',
+    colors: 'color', notes: 'note', cables: 'cable', screens: 'screen',
+    // chapters / selections / settings have no registered migrations
+  };
   const project = { ...raw };
   const sections = ['assets', 'tree', 'steps', 'chapters', 'cameras', 'colors', 'notes', 'selections', 'settings', 'cables'];
   for (const sectionName of sections) {
-    if (project[sectionName]) {
-      project[sectionName] = migrateSection(sectionName, project[sectionName]);
-    }
+    if (!project[sectionName]) continue;
+    const key = MIGRATION_KEY[sectionName] || sectionName;
+    project[sectionName] = migrateSection(key, project[sectionName], sectionName);
   }
   return project;
 }

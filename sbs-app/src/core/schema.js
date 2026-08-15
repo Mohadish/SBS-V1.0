@@ -27,7 +27,7 @@ export const SCHEMA_VERSIONS = {
   screen:     1,
 };
 
-export const APP_VERSION  = 'V0.3.2.69';
+export const APP_VERSION  = 'V0.3.2.70';
 // Format: YYYY-MM-DD. Bump along with APP_VERSION on every build worth
 // labelling so the File tab shows you're running the expected slice.
 export const APP_RELEASED = '2026-07-02';
@@ -1196,16 +1196,52 @@ export const MIGRATIONS = {
  * Migrate a section's data from its saved version to the current version.
  * Unknown fields are always preserved.
  */
-export function migrateSection(sectionName, data) {
+export function migrateSection(sectionName, data, label = sectionName) {
   const migrations = MIGRATIONS[sectionName] || [];
   const savedVersion = data?.schema_version ?? 1;
   const currentVersion = SCHEMA_VERSIONS[sectionName] ?? 1;
 
+  // V0.3.2.70 — THE VERSION STAMP CANNOT BE TRUSTED on existing files.
+  // While the migration lookup was broken (plural vs singular keys, see
+  // _migrateParsedProject), every load skipped the migrations and every
+  // SAVE re-stamped the section with the CURRENT version anyway — cables
+  // are stamped 2 unconditionally (project.js), and the rest inherit their
+  // version from createEmptyProject(). So there are projects on disk that
+  // claim v3 colours / v2 cables while holding v1 data. A purely
+  // version-gated loop would skip those forever.
+  //
+  // Every registered migration is written to be IDEMPOTENT and
+  // CONTENT-DETECTING (colour v1→v2 bails on `solidness !== undefined`,
+  // v2→v3 on `reflectionIntensity !== undefined`, cable v1→v2 on
+  // `style.diameter` being a number), so running the FULL chain is safe
+  // and is the only way to heal a mis-stamped file. Data already in the
+  // current shape passes through untouched.
+  // Content fingerprint for the "was it really legacy?" report. Migrations
+  // always return a fresh object, so identity comparison says nothing — only
+  // the serialized items reveal a real change. Bounded: today only colour and
+  // cable have migrations (tens of items); a huge section would skip the
+  // check rather than pay for it.
+  const fingerprint = (d) => {
+    const items = d?.items;
+    if (!Array.isArray(items) || items.length > 5000) return null;
+    try { return JSON.stringify(items); } catch { return null; }
+  };
+  const fpBefore = savedVersion >= currentVersion ? fingerprint(data) : null;
+
   let result = { ...data };
-  for (let v = savedVersion; v < currentVersion; v++) {
-    const migrate = migrations[v - 1];
-    if (typeof migrate === 'function') {
+  for (let i = 0; i < migrations.length; i++) {
+    const migrate = migrations[i];
+    if (typeof migrate !== 'function') continue;
+    try {
       result = migrate(result);
+    } catch (e) {
+      console.error(`[migrate] "${label}" migration ${i + 1}→${i + 2} failed — section left as-is:`, e?.message);
+    }
+  }
+  if (fpBefore !== null) {
+    const fpAfter = fingerprint(result);
+    if (fpAfter !== null && fpAfter !== fpBefore) {
+      console.warn(`[migrate] "${label}" claimed schema_version ${savedVersion} but held legacy data — healed by content-detecting migration.`);
     }
   }
   result.schema_version = currentVersion;
