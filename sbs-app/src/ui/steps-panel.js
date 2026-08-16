@@ -1373,7 +1373,12 @@ function _buildStepActionRow(step) {
   const btnDup    = _mkBtn('⧉',  'Duplicate step');
   const btnDel    = _mkBtn('🗑', 'Delete step');
 
-  btnCam.addEventListener('click',    e => { e.stopPropagation(); actions.updateStepCameraFromCurrent(step.id); setStatus('Camera saved for step.'); });
+  btnCam.addEventListener('click',    e => {
+    e.stopPropagation();
+    try { steps.snapCurrentToFinal?.(); } catch { /* best-effort */ }
+    actions.updateStepCameraFromCurrent(step.id);
+    setStatus('Camera saved for step.');
+  });
   btnHide.addEventListener('click',   e => { e.stopPropagation(); actions.toggleStepsHidden([step.id]); });
   btnRename.addEventListener('click', e => { e.stopPropagation(); _renameStep(step.id); });
   btnDup.addEventListener('click',    e => { e.stopPropagation(); _duplicateStep(step.id); });
@@ -1693,7 +1698,11 @@ function _showStepContextMenu(step, x, y) {
     { label: step.hidden ? '👁 Show in playback' : '🚫 Hide from playback',
       action: () => actions.toggleStepsHidden([step.id]) },
     { label: '📷 Update step camera',
-      action: () => { actions.updateStepCameraFromCurrent(step.id); setStatus('Camera saved for step.'); } },
+      action: () => {
+        try { steps.snapCurrentToFinal?.(); } catch { /* best-effort */ }
+        actions.updateStepCameraFromCurrent(step.id);
+        setStatus('Camera saved for step.');
+      } },
     { label: activeTplLabel
         ? `📷🔗 Update template "${activeTplLabel}"`
         : '📷🔗 Update template (none bound to step)',
@@ -1765,8 +1774,14 @@ function _showMultiStepContextMenu(stepIds, x, y) {
       action: () => _copyStepsToClipboard(stepIds) },
     { label: anyVisible ? '🚫 Hide from playback' : '👁 Show in playback',
       action: () => actions.toggleStepsHidden(selSteps.map(s => s.id)) },
-    { label: '📷 Update step camera',
-      action: () => { actions.updateStepCameraFromCurrentMulti(selSteps.map(s => s.id)); setStatus(`Camera saved for ${selSteps.length} steps.`); } },
+    { label: `📷 Update step camera (${selSteps.length} selected steps)`,
+      action: () => {
+        // Settle any in-flight transition so the captured view is the one
+        // on screen, not a mid-animation pose (V0.3.2.74).
+        try { steps.snapCurrentToFinal?.(); } catch { /* best-effort */ }
+        actions.updateStepCameraFromCurrentMulti(selSteps.map(s => s.id));
+        setStatus(`Camera saved for ${selSteps.length} selected steps.`);
+      } },
     { label: activeTplLabel
         ? `📷🔗 Update template "${activeTplLabel}"`
         : '📷🔗 Update template (none bound to step)',

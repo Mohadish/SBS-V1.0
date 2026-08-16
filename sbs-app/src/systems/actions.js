@@ -8088,6 +8088,54 @@ export function updateStepCameraAsTemplate(stepIds, templateId = null) {
 }
 
 /**
+ * Which steps a "Update step camera" action targets, from anywhere in the UI
+ * (V0.3.2.74). ONE rule everywhere: the multi-step selection wins; with no
+ * selection, the active step.
+ *
+ * Before this, the viewport's camera action always wrote to the ACTIVE step
+ * only — so doing it "on screen" with five steps selected silently updated
+ * one, while doing the same thing from the timeline updated five. Same
+ * intent, different result, no feedback either way.
+ *
+ * Returns { ids, fromSelection } so callers can label the menu and the
+ * status line with the real count instead of leaving the user guessing.
+ */
+export function cameraTargetSteps() {
+  const sel = state.get('selectedStepIds');
+  const ids = (sel instanceof Set && sel.size) ? [...sel] : [];
+  if (ids.length) {
+    // Keep only ids that still exist, in timeline order (stable + readable).
+    const all = state.get('steps') || [];
+    const keep = new Set(ids);
+    const ordered = all.filter(s => keep.has(s.id)).map(s => s.id);
+    if (ordered.length) return { ids: ordered, fromSelection: true };
+  }
+  const activeId = state.get('activeStepId');
+  return { ids: activeId ? [activeId] : [], fromSelection: false };
+}
+
+/**
+ * THE camera-update entry point for every menu (V0.3.2.74). Applies the
+ * current view to `cameraTargetSteps()` in one undo entry.
+ *
+ * Also settles any in-flight step transition first: mid-animation the live
+ * camera is somewhere between two steps, so capturing it saved a
+ * transitional angle that matched nothing the user could see.
+ *
+ * Returns the number of steps written.
+ */
+export function updateStepCameraForSelection() {
+  // Settle the camera before reading it — snapCurrentToFinal is a no-op when
+  // nothing is animating.
+  try { steps.snapCurrentToFinal?.(); } catch { /* best-effort */ }
+  const { ids } = cameraTargetSteps();
+  if (!ids.length) return 0;
+  if (ids.length === 1) { updateStepCameraFromCurrent(ids[0]); return 1; }
+  updateStepCameraFromCurrentMulti(ids);
+  return ids.length;
+}
+
+/**
  * Multi-step "Update camera" — applies the current view as a free-camera
  * snapshot to every selected step. One undo entry.
  */

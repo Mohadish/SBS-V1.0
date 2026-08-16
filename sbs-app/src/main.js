@@ -4157,16 +4157,20 @@ canvas.addEventListener('contextmenu', e => {
     const tpl = (state.get('cameraViews') || []).find(v => v.id === active.cameraBinding.templateId);
     return tpl?.name || null;
   })();
+  // V0.3.2.74 — the viewport action now honours the step selection exactly
+  // like the timeline menu does (it used to always write the ACTIVE step
+  // only, so "update the camera on my 5 selected steps" silently updated
+  // one). The count is in the label so the scope is never a guess.
+  const _camTargets = actions.cameraTargetSteps();
   items.push({
-    label: '📷 Update step camera',
+    label: _camTargets.ids.length > 1
+      ? `📷 Update step camera (${_camTargets.ids.length} selected steps)`
+      : '📷 Update step camera',
+    disabled: _camTargets.ids.length === 0,
     action: () => {
-      const activeId = state.get('activeStepId');
-      if (activeId) {
-        actions.updateStepCameraFromCurrent(activeId);
-        setStatus('Camera saved for step.');
-      } else {
-        setStatus('No active step.', 'warn');
-      }
+      const n = actions.updateStepCameraForSelection();
+      if (!n) { setStatus('No active step.', 'warn'); return; }
+      setStatus(n > 1 ? `Camera saved for ${n} selected steps.` : 'Camera saved for step.');
     },
   });
   items.push({
