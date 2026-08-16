@@ -72,6 +72,7 @@ export function initOverlayToolbar() {
   const btnText  = _btn('+ T',  'Add text box (opens editor)');
   const btnImg   = _btn('+ 🖼', 'Add image');
   const btnIface = _btn('+ 🖥', 'Insert interface (image from your library folder)');
+  const btnVideo = _btn('+ 🎬', 'Add video clip (played from disk — trim start/end and mute in its right-click menu)');
   const btnRect  = _btn('▭',   'Add rectangle');
   const btnCirc  = _btn('●',   'Add circle');
   const btnEll   = _btn('⬭',   'Add ellipse');
@@ -89,6 +90,31 @@ export function initOverlayToolbar() {
     if (!file) return;
     try { await overlay.addImage(file); }
     catch (e) { setStatus(`Image load failed: ${e.message}`, 'danger'); }
+  });
+  // 🎬 V0.3.2.75 — the clip is REFERENCED from disk, never copied into the
+  // project (a video inlined as base64 would blow the renderer's heap).
+  // We need the real path, which modern Electron only exposes through the
+  // preload bridge — same helper the model importer uses.
+  btnVideo.addEventListener('click', async () => {
+    const file = await _pickVideoFile();
+    if (!file) return;
+    const abs = (typeof file.path === 'string' && file.path)
+      ? file.path
+      : (window.sbsNative?.pathForFile?.(file) || '');
+    if (!abs) {
+      setStatus('Could not resolve that file\'s path on disk — try dragging it from a normal folder.', 'danger', 7000);
+      return;
+    }
+    setStatus('Opening video…');
+    try {
+      const node = await overlay.addVideo(abs);
+      if (node) {
+        const secs = (Number(node.getAttr('videoDurationMs') || 0) / 1000).toFixed(1);
+        setStatus(`Video added (${secs}s, muted). Right-click it to trim and unmute.`, 'success', 7000);
+      }
+    } catch (e) {
+      setStatus(`Video failed: ${e.message}`, 'danger', 10000);
+    }
   });
   // Interface: first click (no folder yet) prompts for the library folder;
   // every click after that inserts the first library image at the default pose.
@@ -117,7 +143,7 @@ export function initOverlayToolbar() {
     else      setStatus('Couldn’t add table of contents.', 'warn', 2500);
   });
   btnDel  .addEventListener('click', () => overlay.deleteSelected());
-  _tools.append(btnText, btnImg, btnIface, btnRect, btnCirc, btnEll, btnTri, btnLine, btnArrow, btnToc, btnDel);
+  _tools.append(btnText, btnImg, btnVideo, btnIface, btnRect, btnCirc, btnEll, btnTri, btnLine, btnArrow, btnToc, btnDel);
 
   // The editing toggle is rightmost — always visible, single source of
   // truth for entering/leaving overlay editing. The old "Done" button
@@ -202,6 +228,19 @@ function _pickImageFile() {
     const inp = document.createElement('input');
     inp.type = 'file';
     inp.accept = 'image/*';
+    inp.onchange = () => resolve(inp.files?.[0] || null);
+    inp.oncancel = () => resolve(null);
+    inp.click();
+  });
+}
+
+function _pickVideoFile() {
+  return new Promise(resolve => {
+    const inp = document.createElement('input');
+    inp.type = 'file';
+    // Only what Chromium can actually decode — an unsupported container
+    // fails late and confusingly, so keep it out of the picker.
+    inp.accept = 'video/mp4,video/webm,video/ogg,video/quicktime,.mp4,.m4v,.webm,.ogv,.mov';
     inp.onchange = () => resolve(inp.files?.[0] || null);
     inp.oncancel = () => resolve(null);
     inp.click();

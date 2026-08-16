@@ -1120,6 +1120,9 @@ window.sbsDiag.prims = () => import('./systems/primitives.js').then(({ defaultPr
   return out;
 });
 
+// 🎬 window.sbsDiag.videos() — loaded clips, playback state, trim window.
+window.sbsDiag.videos = () => import('./systems/video-overlay.js').then(m => m.diagVideos());
+
 window.sbsDiag.shapes = () => {
   const nodeById = state.get('nodeById');
   const tplIds = new Set((state.get('shapeTemplates') || []).map(t => t.id));

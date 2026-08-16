@@ -17,6 +17,7 @@
 
 import { state }     from '../core/state.js';
 import { sceneCore } from '../core/scene.js';   // H2: tick hook for overlay fade
+import * as videoOverlay from './video-overlay.js';   // 🎬 V0.3.2.75 — disk-referenced video clips
 import * as clock    from '../core/clock.js';
 import { getCanonicalSize, computeSafeFrameRect } from '../core/safe-frame.js';
 import { showContextMenu } from '../ui/context-menu.js';
@@ -1154,6 +1155,100 @@ function _wireShapeTransformend(node, kind) {
  * default size 30% × 18% of the stage. Selectable, draggable, resizable
  * through the same transformer + drag pipeline as text / image nodes.
  */
+/**
+ * 🎬 Add a video clip to this step's overlay (V0.3.2.75).
+ *
+ * `absPath` is a real path on disk — the file is referenced, never copied
+ * into the project (see systems/video-overlay.js for why). Returns the
+ * Konva node, or throws with a readable message when the file can't be
+ * decoded (wrong codec is the common case).
+ */
+export async function addVideo(absPath) {
+  if (!_stage) return null;
+  const { abs, rel } = videoOverlay.describeVideoPath(absPath);
+  if (!abs) throw new Error('No file path — pick the video from disk.');
+
+  const node = new Konva.Image({
+    x: 0, y: 0, width: 640, height: 360,
+    draggable: true,
+    name: 'userVideo',
+  });
+  node.setAttr('isVideo', true);
+  node.setAttr('videoId', `vid_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 6)}`);
+  node.setAttr('videoPath', abs);
+  node.setAttr('videoRel',  rel);     // '' when the clip lives outside the project folder
+  node.setAttr('muted', true);        // voice-over wins until the user says otherwise
+  node.setAttr('volume', 1);
+  node.setAttr('trimInMs', 0);
+  node.setAttr('trimOutMs', 0);       // 0 = "to the end", resolved once duration is known
+
+  // Load the element first so we know the real size + duration before placing.
+  const video = await videoOverlay.attachVideoElement(node);
+  if (!video) throw new Error('Video could not be opened.');
+
+  const vw = video.videoWidth  || 640;
+  const vh = video.videoHeight || 360;
+  const scale = Math.min((_stage.width() * 0.5) / vw, (_stage.height() * 0.5) / vh, 1);
+  node.width(vw * scale);
+  node.height(vh * scale);
+  node.x((_stage.width()  - node.width())  / 2);
+  node.y((_stage.height() - node.height()) / 2);
+  node.setAttr('trimOutMs', Number(node.getAttr('videoDurationMs') ?? 0));
+
+  // Poster: one small JPEG of the first frame, inlined so the node draws
+  // instantly on reload and still shows something if the file goes missing.
+  try { node.setAttr('posterSrc', await _captureVideoPoster(video)); }
+  catch { /* poster is optional */ }
+
+  _layer.add(node);
+  _attachNode(node);
+  _setSelection(node);
+  _pushAddNodeUndo(node, 'Add video');
+  _scheduleSave();
+  // Park on the first frame; playback starts when the step is active.
+  try { video.pause(); video.currentTime = 0; } catch { /* ignore */ }
+  _layer.batchDraw();
+  return node;
+}
+
+/**
+ * Open the trim/audio dialog for a video node and apply the result as ONE
+ * undoable change (V0.3.2.75). Loaded on demand so the dialog module never
+ * costs anything for projects with no video.
+ */
+async function _openVideoTrim(node) {
+  const { openVideoTrimDialog } = await import('../ui/video-trim-dialog.js');
+  const before = {
+    trimInMs:  Number(node.getAttr('trimInMs')  ?? 0),
+    trimOutMs: Number(node.getAttr('trimOutMs') ?? 0),
+    muted:     node.getAttr('muted') !== false,
+    volume:    Number(node.getAttr('volume') ?? 1),
+  };
+  const res = await openVideoTrimDialog(node);
+  if (!res) return;
+  videoOverlay.setVideoOptions(node, res);
+  _scheduleSave();
+  undoManager.push(
+    'Trim video',
+    () => { videoOverlay.setVideoOptions(node, before); _scheduleSave(); },
+    () => { videoOverlay.setVideoOptions(node, res);    _scheduleSave(); },
+  );
+  const win = ((res.trimOutMs - res.trimInMs) / 1000).toFixed(2);
+  setStatus(`Clip set to ${win}s${res.muted ? ' (muted)' : ' (audio on)'}.`, 'success', 5000);
+}
+
+/** Small first-frame JPEG (max 480px wide) — cheap enough to inline. */
+async function _captureVideoPoster(video) {
+  const vw = video.videoWidth || 0, vh = video.videoHeight || 0;
+  if (!vw || !vh) return '';
+  const scale = Math.min(1, 480 / vw);
+  const c = document.createElement('canvas');
+  c.width  = Math.max(1, Math.round(vw * scale));
+  c.height = Math.max(1, Math.round(vh * scale));
+  c.getContext('2d').drawImage(video, 0, 0, c.width, c.height);
+  return c.toDataURL('image/jpeg', 0.7);
+}
+
 export function addRect() {
   if (!_stage) return null;
   const sw = _stage.width(), sh = _stage.height();
@@ -1702,6 +1797,12 @@ function _serializeNode(node) {
     'cropX', 'cropY', 'cropWidth', 'cropHeight',
     'isZoom', 'zoomDensityX', 'zoomDensityY', 'zoomMult', 'zoomIfaceId',
     'attachedTo', 'bondPct',
+    // 🎬 Video (V0.3.2.75) — the file itself is NEVER inlined: only a path
+    // (project-relative when the clip lives inside the project folder), the
+    // trim window, the mute state, and a small poster frame so the node has
+    // something to draw before the file loads (or if it's gone missing).
+    'isVideo', 'videoId', 'videoPath', 'videoRel', 'videoDurationMs',
+    'trimInMs', 'trimOutMs', 'muted', 'volume', 'posterSrc',
   ]) {
     if (a[k] != null) out.attrs[k] = Array.isArray(a[k]) ? a[k].slice()
                                     : (a[k] && typeof a[k] === 'object' ? { ...a[k] } : a[k]);
@@ -2606,7 +2707,28 @@ function _showOverlayContextMenu(node, x, y) {
   const tocItems = node.getAttr('isToc')
     ? [{ label: '🔄 Refresh timecodes', action: () => _refreshTocBox(node) }, { separator: true }]
     : [];
+  // 🎬 Video clips (V0.3.2.75): trim window + audio, and a quick mute toggle
+  // so the common case (this clip must not talk over my voice-over) is one
+  // click rather than a trip through the dialog.
+  const videoItems = videoOverlay.isVideoNode(node)
+    ? [
+        { label: '🎬 Trim & audio…', action: () => _openVideoTrim(node) },
+        { label: node.getAttr('muted') !== false ? '🔊 Unmute clip' : '🔇 Mute clip (use voice-over)',
+          action: () => {
+            videoOverlay.setVideoOptions(node, { muted: node.getAttr('muted') === false });
+            _scheduleSave();
+            setStatus(node.getAttr('muted') !== false ? 'Clip muted — voice-over plays.' : 'Clip audio on.');
+          } },
+        { label: '↩ Reset to natural size',
+          action: () => {
+            const nw = Number(node.getAttr('naturalW') || 0), nh = Number(node.getAttr('naturalH') || 0);
+            if (nw && nh) { node.width(nw); node.height(nh); node.scaleX(1); node.scaleY(1); _layer.batchDraw(); _scheduleSave(); }
+          } },
+        { separator: true },
+      ]
+    : [];
   showContextMenu([
+    ...videoItems,
     ...ifaceItems,
     ...zoomItems,
     ...seqItems,
@@ -3388,6 +3510,11 @@ async function _loadFromActiveStep() {
   if (_activeTextEditor) { try { await _exitTextEdit(); } catch { /* teardown is best-effort */ } }
 
   // Clear current content + selection.
+  // 🎬 Release video elements FIRST (V0.3.2.75) — destroyChildren would drop
+  // the Konva nodes while their <video> elements kept decoding in the
+  // background, which is both a memory leak and audible (a muted-by-default
+  // clip is silent, but an unmuted one would keep playing into the next step).
+  videoOverlay.detachAll();
   _transformer.nodes([]);
   _layer.destroyChildren();
 
@@ -3438,6 +3565,10 @@ async function _loadFromActiveStep() {
   // S2: start image-sequence playback now that the step's overlay is loaded +
   // visible (this runs after the step transition). No-op in edit mode / no seqs.
   _startSequences();
+  // 🎬 V0.3.2.75 — same moment for video: play each clip from its trim-in
+  // point. Clips on steps that aren't on screen stay parked (never decoding),
+  // because the previous step's elements were released just above.
+  videoOverlay.startVideos(_layer.getChildren().filter(n => videoOverlay.isVideoNode(n)));
 }
 
 async function _recreateNode(spec) {
@@ -3463,6 +3594,27 @@ async function _recreateNode(spec) {
     // here fails the next draw with a 0×0 error.
     const { src, textHtml, textWidth, naturalW, naturalH, fillColor, styleId, image, ...rest } = spec.attrs || {};
     void image;   // intentionally discarded
+
+    // 🎬 VIDEO (V0.3.2.75). The clip is a file on disk, so recreation is:
+    // build the node, show the poster frame immediately (so the step never
+    // renders an empty box), then attach the <video> element in the
+    // background. A missing/undecodable file leaves the poster in place and
+    // reports once — the step stays usable and the link is repairable.
+    if (spec.attrs?.isVideo) {
+      const vnode = new Konva.Image({ ...rest, draggable: true });
+      if (Number.isFinite(naturalW)) vnode.setAttr('naturalW', naturalW);
+      if (Number.isFinite(naturalH)) vnode.setAttr('naturalH', naturalH);
+      const poster = spec.attrs.posterSrc;
+      if (poster) {
+        _loadImage(poster).then(img => { if (!vnode.isDestroyed?.()) { vnode.image(img); vnode.getLayer()?.batchDraw(); } })
+                          .catch(() => { /* poster is a nicety, not a requirement */ });
+      }
+      videoOverlay.attachVideoElement(vnode)
+        .then(() => vnode.getLayer()?.batchDraw())
+        .catch(e => console.warn('[overlay] video not loaded:', e?.message));
+      return vnode;
+    }
+
     const node = new Konva.Image({ ...rest, draggable: true });
     if (Number.isFinite(naturalW)) node.setAttr('naturalW', naturalW);
     if (Number.isFinite(naturalH)) node.setAttr('naturalH', naturalH);
