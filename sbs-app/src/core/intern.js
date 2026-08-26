@@ -52,10 +52,13 @@ export function resetInternPool() { _pool = new Map(); }
  * the original (nothing to do) or a rope sharing pooled URI leaves, and
  * sharedChars counts URI chars that now reference an EXISTING pool entry.
  */
-export function internOverlayString(str) {
+export function internOverlayString(str, targetPool = null) {
   // NOTE: callers can NOT detect "a rope was built" by comparing the result
   // to the input — strings are primitives, equal content compares === no
   // matter how it's stored. The `found` counter is the only signal.
+  // `targetPool` (V0.3.2.78): the full-pass sweep passes a FRESH map here —
+  // still-referenced canonicals are carried over from the old pool by
+  // reference (no recopy), everything else is left behind to be GC'd.
   if (typeof str !== 'string' || str.length < 4096) return { s: str, sharedChars: 0, found: 0 };
 
   const parts = [];
@@ -72,9 +75,16 @@ export function internOverlayString(str) {
     if (j - (semi + 8) < 4096) { i = j; continue; }   // small URI — not worth pooling
 
     const uriProbe = _deslice(str.substring(i, j));
-    let canonical = _pool.get(uriProbe);
+    const pool = targetPool || _pool;
+    let canonical = pool.get(uriProbe);
+    if (!canonical && targetPool) {
+      // Sweep pass: reuse the OLD pool's canonical (no recopy) but file it
+      // in the NEW pool — carrying it over marks it "still referenced".
+      canonical = _pool.get(uriProbe);
+      if (canonical) pool.set(canonical, canonical);
+    }
     if (canonical) sharedChars += canonical.length;
-    else { canonical = uriProbe; _pool.set(canonical, canonical); }
+    else { canonical = uriProbe; pool.set(canonical, canonical); }
 
     if (i > last) parts.push(_deslice(str.substring(last, i)));
     parts.push(canonical);
@@ -98,10 +108,15 @@ export function internOverlayString(str) {
  * Returns stats for the console/log.
  */
 export function internAllStepOverlays(steps) {
+  // SWEEP-AS-YOU-GO (V0.3.2.78): every full pass rebuilds the pool from
+  // what the overlays ACTUALLY reference right now. An image the user
+  // deleted from every step simply never gets carried into the new pool,
+  // so its bytes become collectable — the pool can shrink, not only grow.
+  const nextPool = new Map();
   let interned = 0, sharedMB = 0;
   for (const s of steps || []) {
     if (!s || typeof s.overlay !== 'string') continue;
-    const r = internOverlayString(s.overlay);
+    const r = internOverlayString(s.overlay, nextPool);
     // Assign on `found`, never on inequality — equal-content strings compare
     // === regardless of representation, so a comparison can never detect the
     // rebuilt rope (the bug the first test run caught: the rope was built
@@ -109,7 +124,10 @@ export function internAllStepOverlays(steps) {
     if (r.found) { s.overlay = r.s; interned++; }
     sharedMB += r.sharedChars / 1e6;
   }
+  const dropped = _pool.size - [..._pool.keys()].filter(k => nextPool.has(k)).length;
+  if (dropped > 0) console.log(`[intern] ${dropped} orphaned image(s) released from the pool (deleted from all steps)`);
+  _pool = nextPool;
   let poolMB = 0;
   for (const v of _pool.values()) poolMB += v.length / 1e6;
-  return { interned, poolImages: _pool.size, poolMB: +poolMB.toFixed(1), sharedMB: +sharedMB.toFixed(1) };
+  return { interned, poolImages: _pool.size, poolMB: +poolMB.toFixed(1), sharedMB: +sharedMB.toFixed(1), droppedOrphans: dropped };
 }
