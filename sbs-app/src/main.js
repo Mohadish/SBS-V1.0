@@ -1120,6 +1120,10 @@ window.sbsDiag.prims = () => import('./systems/primitives.js').then(({ defaultPr
   return out;
 });
 
+// 🧵 window.sbsMemDedupe() — re-share duplicate overlay image strings now
+// (V0.3.2.77; runs automatically at load/save/autosave/cache-plan).
+window.sbsMemDedupe = () => import('./io/project.js').then(m => m._reinternAfterWholesaleRead('manual'));
+
 // 🎬 window.sbsDiag.videos() — loaded clips, playback state, trim window.
 window.sbsDiag.videos = () => import('./systems/video-overlay.js').then(m => m.diagVideos());
 

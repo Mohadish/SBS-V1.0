@@ -31,6 +31,7 @@ import {
 }                                     from '../core/schema.js';
 import { materials }                  from '../systems/materials.js';
 import { steps, seedPrimitiveDefsFromTree, notePrimitiveDef } from '../systems/steps.js';
+import { internAllStepOverlays, resetInternPool } from '../core/intern.js';   // 🧵 V0.3.2.77 image-string dedupe
 import * as narrationCache           from '../systems/narration-cache.js';
 import { flattenCablesToCascade, ensureSocketBaselines } from '../systems/cables.js';   // V0.3.0.151 cascade migration; V0.3.0.167 socket State-0 backfill
 import { rebuildPrimitive }          from '../systems/primitives.js';   // V0.3.2.6 param-sync on load
@@ -364,7 +365,35 @@ export async function autosaveBackup({ path: pathOverride } = {}) {
   state.emit('save:progress', r?.ok
     ? { stage: 'done', bytes: bytes.length, rawBytes, ms: Date.now() - t0, autosave: true }
     : { stage: 'error', message: r?.error || 'write failed', autosave: true });
+  // 🧵 V0.3.2.77 — autosave read every overlay rope (flattening them); put
+  // the sharing back so the every-few-minutes backup doesn't slowly grow
+  // the heap toward the cage between manual saves.
+  if (r?.ok) _reinternAfterWholesaleRead('autosave');
   return { saved: !!r?.ok, path, mb: (bytes.length / 1e6).toFixed(1), error: r?.error };
+}
+
+// ─── 🧵 Overlay string interning hooks (V0.3.2.77) ──────────────────────────
+
+/** Load-time entry: fresh pool for the incoming project, then intern. */
+function _internOnLoad(stepsArr) {
+  try {
+    resetInternPool();
+    const t0 = performance.now();
+    const r = internAllStepOverlays(stepsArr);
+    if (r.interned) {
+      console.log(`[intern] ${r.interned} overlay(s) deduped on load — image pool ${r.poolImages} unique (${r.poolMB} MB), ~${r.sharedMB} MB now shared (${Math.round(performance.now() - t0)}ms)`);
+    }
+  } catch (e) { console.warn('[intern] load-time dedupe failed (project unaffected):', e?.message); }
+  return stepsArr;
+}
+
+/** Post-save/autosave/cache-plan entry — re-share what the read flattened. */
+export function _reinternAfterWholesaleRead(tag) {
+  try {
+    const t0 = performance.now();
+    const r = internAllStepOverlays(state.get('steps') || []);
+    if (r.interned) console.log(`[intern] re-deduped after ${tag}: ${r.interned} overlay(s), ~${r.sharedMB} MB re-shared (${Math.round(performance.now() - t0)}ms)`);
+  } catch (e) { console.warn('[intern] re-dedupe failed:', e?.message); }
 }
 
 /**
@@ -487,6 +516,10 @@ export async function saveProject(options = {}) {
     state.markClean();
     state.emit('save:progress', { stage: 'done', bytes: bytes.length, rawBytes, ms: performance.now() - _t0 });
     state.emit('project:saved', { path: savePath });
+    // 🧵 V0.3.2.77 — serializing the overlays FLATTENED their ropes in
+    // place (reading a cons string un-shares it), so a save quietly grows
+    // the heap back by the deduped ~150MB. Re-intern now that it's done.
+    _reinternAfterWholesaleRead('save');
     return { saved: true, path: savePath };
   }
 
@@ -926,7 +959,7 @@ export function applyProjectToState(project) {
 
   // ── Content arrays ────────────────────────────────────────────────────────
   state.setState({
-    steps:                project.steps?.items              || [],
+    steps:                _internOnLoad(project.steps?.items || []),
     chapters:             project.chapters?.items           || [],
     cameraViews:          project.cameras?.items            || [],
     colorPresets:         project.colors?.items             || [],

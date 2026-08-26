@@ -183,6 +183,10 @@ export async function computeSegmentPlan() {
   // plan so _stepKeyView can fold the RESOLVED animation string into each
   // step's fingerprint (see the note there).
   const _animPresets = state.get('animationPresets') || [];
+  // 🧵 V0.3.2.77 — keying parses every step's overlay, which FLATTENS the
+  // interned ropes (un-shares ~150MB on the big project). Re-share once the
+  // plan is computed; fire-and-forget, order irrelevant.
+  setTimeout(() => import('../io/project.js').then(m => m._reinternAfterWholesaleRead('cache-plan')).catch(() => {}), 0);
   const plan = { spans, playableCount: playable.length, settingsKey, defsKey, _defScope,
     _animOf: (st) => {
       try { return resolveAnimationString(st?.transition || {}, _animPresets) || ''; }
