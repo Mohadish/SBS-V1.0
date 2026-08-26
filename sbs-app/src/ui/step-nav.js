@@ -7,7 +7,7 @@
 
 import { state } from '../core/state.js';
 import { steps } from '../systems/steps.js';
-import * as actions from '../systems/actions.js';   // V0.3.2.73 — narration edits must be undoable
+import { undoManager } from '../systems/undo.js';   // V0.3.2.76 — targeted narration undo (O(1) captures)
 import { previewStepNarration } from './steps-panel.js';
 
 let _el = null;
@@ -62,29 +62,36 @@ export function initStepNav() {
     // ongoing typing — a mid-sentence space the user is still typing survives.
     const val = _editingValue.trim();
     if ((step.narration?.text || '') === val) return;
-    // V0.3.2.73 — routed through actions.commitStateChange so typing the
-    // voice-over is UNDOABLE like every other authoring action. It used to
-    // mutate the step object directly: Ctrl+Z reverted some unrelated
-    // earlier action instead, and any later undo/redo of a ['steps']
-    // snapshot silently threw the typed text away with no way back.
-    // coalesceKey folds a typing burst on one step into a single entry.
+    // V0.3.2.76 — TARGETED undo, not commitStateChange. The .73 version
+    // snapshotted the WHOLE steps array twice (before + after) and deep-
+    // compared both on EVERY typing pause — on a 261-step project that is
+    // an allocation storm inside the ~3.5GB heap cage, and it produced real
+    // OOM crashes while "just editing text" ("MarkCompactCollector: young
+    // object promotion failed"). Undoability stays; the captures shrink to
+    // the ONE step's narration fields. Coalescing still folds a typing
+    // burst into one entry — undo.js keeps the FIRST undo closure (the
+    // pre-burst text) and replaces the redo with the latest.
     const stepId = step.id;
-    actions.commitStateChange(
+    const prevNarration = step.narration;            // replaced, never mutated — safe by reference
+    const prevRendered  = step.renderedDurationMs;
+    const applyText = (narration, renderedDurationMs) => {
+      const arr = state.get('steps') || [];
+      const s = arr.find(x => x.id === stepId);
+      if (!s) return;
+      s.narration = narration;
+      // The measured timeline duration is stale on any text change — drop it
+      // so the TOC falls back to the estimate (flagged ~) until re-measure.
+      if (renderedDurationMs === undefined) delete s.renderedDurationMs;
+      else s.renderedDurationMs = renderedDurationMs;
+      state.setState({ steps: [...arr] });
+      state.markDirty();
+    };
+    // Drop any cached audio when text changes — user must re-preview / re-export.
+    applyText({ text: val }, undefined);
+    undoManager.push(
       'Edit voice-over text',
-      ['steps'],
-      () => {
-        const arr = state.get('steps') || [];
-        const s = arr.find(x => x.id === stepId);
-        if (!s) return;
-        // Drop any cached audio when text changes — user must re-preview / re-export.
-        s.narration = { text: val };
-        // The measured timeline duration is stale too (narration length changed) —
-        // drop it so the TOC falls back to the estimate (flagged ~) until the next
-        // sbsTocSync / export re-measures.
-        delete s.renderedDurationMs;
-        state.setState({ steps: [...arr] });
-        state.markDirty();
-      },
+      () => applyText(prevNarration, prevRendered),
+      () => applyText({ text: val }, undefined),
       { coalesceKey: `narration:${stepId}` },
     );
   };

@@ -472,33 +472,46 @@ export function deleteStep(stepId) {
   const all      = state.get('steps');
   const step     = all.find(s => s.id === stepId);
   if (!step) return;
-  const snapshot   = cloneShareStrings(step);
+  const snapshot   = cloneShareStrings(step);       // ONE step — cheap
+  const idx        = all.indexOf(step);
   const prevActive = state.get('activeStepId');
 
-  // V0.3.2.73 — snapshot the WHOLE steps array, not just the deleted step.
-  // Deleting a group head now promotes a survivor to head and re-points the
-  // other members (steps.deleteStep), so restoring only the removed step
-  // would leave TWO heads and a half-repointed group. Capturing before/after
-  // makes undo exact for every case. cloneShareStrings keeps the inline
-  // base64 shared rather than duplicated.
-  const before = cloneShareStrings(all);
+  // V0.3.2.76 — capture only what the delete TOUCHES, not the whole array.
+  // The .73 version cloned all ~261 steps twice per delete (before + after)
+  // to make group-head promotion undo exact; two structural clones of every
+  // snapshot tree per delete fed the OOM crashes on the big project. The
+  // delete touches exactly: the removed step, plus (for a group head) the
+  // members whose groupId/groupHead fields get rewritten. Capture those
+  // FIELDS by id and the undo is still exact — at one-thousandth the size.
+  const memberFields = all
+    .filter(s => s.groupId === stepId && s.id !== stepId)
+    .map(s => ({ id: s.id, groupId: s.groupId, groupHead: s.groupHead }));
 
   steps.deleteStep(stepId);
 
-  const after = cloneShareStrings(state.get('steps') || []);
   undoManager.push(
     `Delete "${snapshot.name}"`,
     () => {
-      state.setState({ steps: cloneShareStrings(before) });
+      const cur = [...(state.get('steps') || [])];
+      cur.splice(Math.min(idx, cur.length), 0, snapshot);
+      // Restore the group fields the promotion rewrote (groupHead added to
+      // the promoted member, groupId re-pointed on the rest).
+      for (const m of memberFields) {
+        const s = cur.find(x => x.id === m.id);
+        if (!s) continue;
+        if (m.groupId === undefined) delete s.groupId; else s.groupId = m.groupId;
+        if (m.groupHead === undefined) delete s.groupHead; else s.groupHead = m.groupHead;
+      }
+      state.setState({ steps: cur });
       if (prevActive === stepId) state.setActiveStep(stepId);
       state.markDirty();
       state.emit('step:created', snapshot);
     },
     () => {
-      state.setState({ steps: cloneShareStrings(after) });
-      state.markDirty();
+      // Re-run the real delete — deterministic, including the promotion.
+      steps.deleteStep(snapshot.id);
       const cur = state.get('steps') || [];
-      if (state.get('activeStepId') === stepId) {
+      if (state.get('activeStepId') === snapshot.id) {
         const first = cur.find(x => !x.isBaseStep);
         if (first) steps.activateStep(first.id, false);
       }
