@@ -1153,13 +1153,17 @@ function _pointScaleFor(cableId, nodeId, baseRadius) {
   const inMulti = (state.get('selectedCablePoints') || [])
     .some(p => p.cableId === cableId && p.nodeId === nodeId);   // V0.3.0.119
   const isSel = inMulti || (sel && sel.cableId === cableId && sel.nodeId === nodeId);
-  // V0.3.0.120 — every node of the SELECTED cable inflates into a pick marker so
-  // it's easy to see/grab; the picked node(s) inflate the most. Use a floor so the
-  // marker is visible even on a very thin cable.
+  // V0.3.2.79 — STRICTLY PROPORTIONAL to the cable's thickness. The old
+  // absolute floors (`baseRadius + 4/6`) were meant to keep markers visible
+  // on thin cables, but on a 0.05-radius cable they produced spheres ~80×
+  // the cable — completely burying it and making point-editing impossible.
+  // User spec: a pivot sphere is a fixed 30% thicker than its cable
+  // (thickness 0.1 → sphere 0.13), always. Selection still reads through
+  // proportion alone: cable selected → 1.5×, picked node(s) → 1.8×.
   const isMarker = state.get('selectedCableId') === cableId;
-  if (isSel)     return Math.max(baseRadius * 1.8, baseRadius + 6);
-  if (isMarker)  return Math.max(baseRadius * 1.5, baseRadius + 4);
-  return baseRadius;  // unselected = exactly the cable radius
+  if (isSel)     return baseRadius * 1.8;
+  if (isMarker)  return baseRadius * 1.5;
+  return baseRadius * 1.3;   // unselected: 30% proud of the surface, so pivots always peek out
 }
 
 /**
