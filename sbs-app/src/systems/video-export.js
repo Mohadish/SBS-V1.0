@@ -25,6 +25,7 @@ import * as clock    from '../core/clock.js';
 import { sceneCore } from '../core/scene.js';
 import { rasterizeOverlay, waitForOverlayStable, refreshAllTocBoxesData } from './overlay.js';
 import * as videoOverlay from './video-overlay.js';   // 🎬 V0.3.2.82 — seek-per-frame + step duration
+import { stepHasOverlaySlot } from './narration-timeline.js';   // 🎬 V0.3.2.84 — video-in-phase vs video-in-hold
 import { rasterizeHeaderLayer, waitForHeaderStable }  from './header.js';
 import { rasterizeNotesLayer }                        from './notes-render.js';
 import { rasterizeTagsLayer }                         from './hardware-insert-anim.js';
@@ -471,12 +472,15 @@ async function _exportMp4({ fps = DEFAULT_FPS, bitrate = DEFAULT_BITRATE,
   // the recompute after _synthesizeMissingClips below).
   const perStepHold = stepsToPlay.map(step => {
     const narrMs = includeNarration ? (step.narration?.durationMs || 0) : 0;
-    // 🎬 V0.3.2.82 — LONGEST FEATURE WINS: a step hosting a video must hold
-    // long enough to play its whole trimmed window (videos never overflow
-    // into the next step; they freeze on their last frame instead). Same
-    // term added to narration-timeline's estimate so the TOC agrees.
+    // 🎬 V0.3.2.84 — with an overlay slot in the animation string, the
+    // video plays INSIDE the stretched overlay phase (the phase engine
+    // holds that block open for the whole trimmed window), so it must NOT
+    // also inflate the hold — that would double-count the clip. Only a
+    // step with NO overlay slot plays its clip during the hold. Mirrors
+    // narration-timeline's estimate exactly.
     const videoMs = videoOverlay.stepVideoWindowMs(step);
-    return Math.max(narrMs, videoMs) + stepHoldMs;
+    const videoInHold = (videoMs > 0 && !stepHasOverlaySlot(step)) ? videoMs : 0;
+    return Math.max(narrMs, videoInHold) + stepHoldMs;
   });
 
   // Pick a codec the host actually supports. Chromium/Electron builds vary:

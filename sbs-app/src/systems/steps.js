@@ -29,6 +29,7 @@ import { rasterizeOverlay }         from './overlay.js';
 import * as cablesSystem            from './cables.js';   // C1: per-step cable snapshot capture/apply
 import * as cablesRender            from './cables-render.js';   // H1: cable phase animations
 import * as overlaySystem           from './overlay.js';   // H2: overlay phase fade-in / fade-out
+import * as videoOverlay            from './video-overlay.js';   // 🎬 V0.3.2.84 — video stretches the overlay block
 import { ensureFlatShapeObject3D }   from './flat-shapes.js'; // M1: 2D shapes in 3D — build mesh on demand
 import { ensurePrimitiveObject3D }   from './primitives.js';  // V0.2.22.90: parametric primitives — build mesh on demand
 import { ensureHardwareInstanceObject3D, ensureHardwareNutObject3D } from './hardware-templates.js'; // V0.2.22.38: procedural hardware — build mesh on demand
@@ -1369,8 +1370,27 @@ class StepManager {
         overlayHandled = true;
         const sustained = types.includes('overlays');
         phasePromises.push(new Promise(resolve => {
-          if (sustained) overlaySystem.beginOverlaySustainedFade(durationMs, easeFn, resolve);
-          else           overlaySystem.beginOverlayCrossfade   (durationMs, easeFn, resolve);
+          // 🎬 V0.3.2.84 — VIDEO-BEARING OVERLAYS stretch this block. The
+          // fade-in plays over the clip's frozen first frame (clips park
+          // until triggered); when the fade completes, playback starts and
+          // the block stays OPEN for the whole trimmed window — so any
+          // later block (obj, shape, …) waits for the video to reach its
+          // final still frame, exactly the "unique" semantics: video never
+          // overflows, everything after it queues behind it. _sleep is the
+          // export-overridable sleep, so live and encode agree to the frame.
+          const done = async () => {
+            try {
+              const activeStep = (state.get('steps') || []).find(s => s.id === state.get('activeStepId'));
+              const vMs = activeStep ? videoOverlay.stepVideoWindowMs(activeStep) : 0;
+              if (vMs > 0) {
+                videoOverlay.beginPlayback();
+                await _sleep(vMs);
+              }
+            } catch { /* video timing is additive — never break the transition */ }
+            resolve();
+          };
+          if (sustained) overlaySystem.beginOverlaySustainedFade(durationMs, easeFn, done);
+          else           overlaySystem.beginOverlayCrossfade   (durationMs, easeFn, done);
         }));
         // V0.2.22.57 — spec-name tags appear at the overlay block.
         if (stagedActorIds.size) showInsertTags();

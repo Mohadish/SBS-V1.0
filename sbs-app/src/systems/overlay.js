@@ -3572,6 +3572,12 @@ async function _loadFromActiveStep() {
   // cover video-element readiness, or the export's first frames capture the
   // node before its decoder has a frame — the "blinks in" half of the bug.
   await videoOverlay.startVideos(_layer.getChildren().filter(n => videoOverlay.isVideoNode(n)));
+  // V0.3.2.84 — clips park until triggered. With an overlay fade in flight,
+  // the phase engine triggers playback when the fade COMPLETES (fade lands
+  // on the frozen first frame). Without one (anim string has no overlay
+  // slot → this load runs post-animation), start immediately: the clip
+  // plays during the hold, which the duration model sizes to fit.
+  if (!_activeFade) videoOverlay.beginPlayback();
 }
 
 async function _recreateNode(spec) {

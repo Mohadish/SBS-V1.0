@@ -17,7 +17,7 @@
  * breath are not modelled. Good enough for "vicinity" word alignment.
  */
 import { state } from '../core/state.js';
-import { parseAnimation, resolveAnimationString } from './animation.js';
+import { parseAnimation, resolveAnimationString, DEFAULT_ANIMATION_STR } from './animation.js';
 import { stepVideoWindowMs } from './video-overlay.js';   // 🎬 V0.3.2.82 — video length drives step duration
 
 const _groupKeyOf = (s) => (s?.groupHead ? s.id : (s?.groupId || null));
@@ -116,13 +116,31 @@ function _stepTimelineMs(step, stepHoldMs) {
   const animMs = (t.durationOverride === true) ? (t.objectDurationMs ?? globalObjDur) : globalObjDur;
   const { narrOffsetMs } = _animTiming(step);   // === exporter's _narrationStartOffsetMs
   const narrMs = step.narration?.durationMs || 0;
-  // 🎬 V0.3.2.82 — a video on the step's overlay is a third duration input
-  // (LONGEST FEATURE WINS). Unlike narration, a video never overflows into
-  // the next step — the step stretches to fit its trimmed window and the
-  // clip freezes on its last frame for whatever remains. Same term the
-  // exporter adds to perStepHold, so estimate and encode can't drift.
+  // 🎬 V0.3.2.84 — a video on the step's overlay is a third duration input,
+  // and its placement depends on the animation string. With an overlay slot
+  // (the normal case) the video STRETCHES that slot: fade-in lands on the
+  // frozen first frame, playback runs inside the phase chain, and every
+  // later block (obj etc.) queues behind it — so it adds SEQUENTIALLY to
+  // the animation. Without an overlay slot the clip plays during the hold
+  // instead, so it competes with narration via max(). Videos never overflow
+  // into the next step either way. Mirrored exactly in the exporter's
+  // perStepHold, so estimate and encode can't drift.
   const videoMs = stepVideoWindowMs(step);
+  if (videoMs > 0 && stepHasOverlaySlot(step)) {
+    return Math.max(animMs + videoMs, narrOffsetMs + narrMs) + stepHoldMs;
+  }
   return Math.max(animMs, narrOffsetMs + narrMs, videoMs) + stepHoldMs;
+}
+
+/**
+ * True when the step's RESOLVED animation string contains an overlay slot
+ * ('overlay(...)' or sustained 'overlays(...)'). Decides where a video's
+ * window lives: inside the phase chain (slot present) or in the hold.
+ */
+export function stepHasOverlaySlot(step) {
+  const presets = state.get('animationPresets') || [];
+  const str = resolveAnimationString(step?.transition || {}, presets) || DEFAULT_ANIMATION_STR;
+  return /\boverlays?\s*\(/i.test(str);
 }
 
 /**

@@ -37,6 +37,7 @@
  */
 
 import { state } from '../core/state.js';
+import * as clock from '../core/clock.js';   // synthetic during export, wall live — anchors playback
 // NOTE: core/scene.js is imported LAZILY (inside _wireTick) — it drags the
 // whole Three.js module graph with it, which would make this module's pure
 // helpers (stepVideoWindowMs, trim math) untestable outside the app.
@@ -200,7 +201,25 @@ function _wireStepGuard() {
   if (_stepGuardWired) return;
   _stepGuardWired = true;
   state.on?.('change:activeStepId', () => {
-    for (const { video } of _players.values()) { try { video.pause(); } catch { /* gone */ } }
+    for (const p of _players.values()) {
+      // 🎬 V0.3.2.84 — FREEZE the last shown frame onto a canvas before
+      // anything else. The outgoing overlay fades on the ghost layer; with
+      // the node still bound to the <video> element, releasing the element
+      // snapped the clip to black mid-fade (the reported "clips off
+      // sharply"). A canvas copy fades out like any image, and the element
+      // can then be silenced/released with zero visual consequence.
+      try {
+        const { node, video } = p;
+        if (node && !node.isDestroyed?.() && video.readyState >= 2 && video.videoWidth) {
+          const c = document.createElement('canvas');
+          c.width = video.videoWidth; c.height = video.videoHeight;
+          c.getContext('2d').drawImage(video, 0, 0);
+          node.image(c);
+          node.getLayer()?.batchDraw();
+        }
+      } catch { /* freeze is cosmetic — never block the silence below */ }
+      try { p.video.pause(); } catch { /* gone */ }
+    }
     setTimeout(() => {
       for (const [id, p] of [..._players.entries()]) {
         if (!p.node || p.node.isDestroyed?.()) { detachVideo(p.node); _players.delete(id); }
@@ -333,10 +352,14 @@ export async function seekAllToClock(synthMs) {
   for (const p of _players.values()) {
     const { node, video } = p;
     if (node?.isDestroyed?.() || video.readyState < 1) continue;
-    if (p.anchorMs == null) p.anchorMs = synthMs;
+    // V0.3.2.84 — no anchor yet means playback hasn't been TRIGGERED
+    // (beginPlayback fires when the overlay fade-in completes): hold the
+    // frozen first frame. The fade lands on a still, exactly per spec.
     const inMs  = _trimIn(node);
     const outMs = _trimOut(node) || Number(node.getAttr('videoDurationMs') ?? 0);
-    const target = Math.min(Math.max(inMs + (synthMs - p.anchorMs), inMs), outMs) / 1000;
+    const target = (p.anchorMs == null)
+      ? inMs / 1000
+      : Math.min(Math.max(inMs + (synthMs - p.anchorMs), inMs), outMs) / 1000;
     if (Math.abs(video.currentTime - target) < 0.012) continue;   // within ~1/4 frame — keep
     waits.push(new Promise((resolve) => {
       let done = false;
@@ -369,18 +392,33 @@ export async function startVideos(nodes) {
     // audio for a node that no longer exists.
     if (node.isDestroyed?.()) { detachVideo(node); continue; }
     const p = _players.get(node.getAttr('videoId') || node._id);
-    if (p) p.anchorMs = null;                      // export mode re-anchors on the next seek
-    try {
-      v.currentTime = _trimIn(node) / 1000;
-      // 🎬 EXPORT MODE (V0.3.2.82): never .play() — the synthetic clock owns
-      // time and seekAllToClock() drives every frame. Wall-clock playback
-      // during export was the "blinking video" bug: random frames, and
-      // captures racing the decoder.
-      if (_isExporting()) continue;
-      // Live: play() rejects when the tab has no user gesture; muted
-      // playback is always allowed, which is our default.
-      await v.play().catch(() => {});
-    } catch { /* leave parked on the first frame */ }
+    if (p) p.anchorMs = null;                      // parked until beginPlayback() triggers
+    // V0.3.2.84 — clips no longer auto-play at overlay load. They PARK on
+    // their trim-in frame; the overlay fade-in plays over that still, and
+    // beginPlayback() (fired when the fade completes — or immediately when
+    // the step's animation has no overlay slot) starts them. Live and
+    // export share the trigger; export additionally drives time via
+    // seekAllToClock instead of play().
+    try { v.currentTime = _trimIn(node) / 1000; } catch { /* pre-metadata */ }
+  }
+}
+
+/**
+ * 🎬 Start playback for every parked clip (V0.3.2.84). Called by the phase
+ * engine when the overlay fade-in COMPLETES — the fade lands on the frozen
+ * first frame, then motion starts. Anchors export seeking to the synthetic
+ * clock at this exact moment; plays the elements live.
+ */
+export function beginPlayback() {
+  const nowMs = clock.now();
+  for (const p of _players.values()) {
+    const { node, video } = p;
+    if (!node || node.isDestroyed?.()) continue;
+    if (p.anchorMs != null) continue;              // already running
+    p.anchorMs = nowMs;
+    if (!_isExporting()) {
+      try { video.play().catch(() => {}); } catch { /* parked */ }
+    }
   }
 }
 
