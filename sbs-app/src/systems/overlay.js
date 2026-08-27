@@ -2730,12 +2730,32 @@ function _showOverlayContextMenu(node, x, y) {
         { separator: true },
       ]
     : [];
+  // V0.3.2.86 — layer order, in the menu at last. The machinery (multi-
+  // select-safe, undoable, persisted) has existed for a long time but only
+  // on PageUp/PageDown/Home/End — undiscoverable. Videos being ordinary
+  // overlay citizens (the user's explicit architecture decision: no special
+  // backdrop layer), this is how a clip goes ON TOP of an interface image
+  // to play inside its window — or under anything else.
+  const arrange = (key) => {
+    const nodes = _transformer?.nodes()?.length ? _transformer.nodes() : [node];
+    if (_reorderSelection(key, nodes)) { _layer.batchDraw(); _scheduleSave(); }
+  };
+  const arrangeItems = [
+    { label: '🔼 Arrange', submenu: [
+      { label: 'Bring forward',  action: () => arrange('PageUp') },
+      { label: 'Send backward',  action: () => arrange('PageDown') },
+      { label: 'Bring to front', action: () => arrange('Home') },
+      { label: 'Send to back',   action: () => arrange('End') },
+    ] },
+    { separator: true },
+  ];
   showContextMenu([
     ...videoItems,
     ...ifaceItems,
     ...zoomItems,
     ...seqItems,
     ...tocItems,
+    ...arrangeItems,
     { label: '⎘ Duplicate',        action: _duplicateSelected },
     { label: '📋 Copy',            action: _copyToOverlayClipboard },
     { label: '📥 Paste',           disabled: !hasClipboard, action: () => _pasteFromOverlayClipboard({ inPlace: false }) },
