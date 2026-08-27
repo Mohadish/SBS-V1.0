@@ -1044,6 +1044,15 @@ async function _playTimeline(stepsToPlay, holdsMsArg, onProgress, signal, onStep
     if (i > 0) await steps.activateStep(step.id, true);
     const drainStart = (!offline) ? performance.now() : 0;
     await Promise.all([waitForOverlayStable(), waitForHeaderStable()]);
+    // 🎬 V0.3.2.88 — a ZERO-HOLD step is the segment's LEAD: it exists only
+    // as the FROM state for the transition into the next step. Its video
+    // already finished during ITS OWN segment, so its correct end-state is
+    // the TRIM-OUT frame — not trim-in, where a fresh staging parks it.
+    // Without this, the crossfade at every segment boundary faded out the
+    // WRONG frame (or an unattached clip = the reported threshold cut).
+    if ((holds[i] ?? 0) === 0 && videoOverlay.hasActiveVideos()) {
+      await videoOverlay.parkAtEnd();
+    }
     const drainMs = (!offline) ? (performance.now() - drainStart) : 0;
     const wanted    = holds[i] ?? POST_STEP_HOLD_MS;
     const remaining = Math.max(0, wanted - drainMs);

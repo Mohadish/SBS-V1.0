@@ -422,6 +422,58 @@ export async function seekAllToClock(synthMs) {
   if (waits.length) await Promise.all(waits);
 }
 
+/**
+ * 🧊 Park every live clip on its TRIM-OUT frame (V0.3.2.88). Used when a
+ * step is staged as a segment's zero-hold LEAD: the clip finished during
+ * its own segment, so the crossfade out of it must show the LAST frame of
+ * the selected window. The far-past anchor makes every later synthetic
+ * seek clamp to trim-out.
+ */
+export async function parkAtEnd() {
+  for (const p of _players.values()) {
+    const { node, video } = p;
+    if (!node || node.isDestroyed?.() || video.readyState < 1) continue;
+    const outMs = _trimOut(node) || Number(node.getAttr('videoDurationMs') ?? 0);
+    p.anchorMs = -1e12;
+    await new Promise((res) => {
+      if (Math.abs(video.currentTime * 1000 - outMs) < 12) return res();
+      const ok = () => res();
+      video.addEventListener('seeked', ok, { once: true });
+      setTimeout(ok, 400);
+      try { video.currentTime = outMs / 1000; } catch { ok(); }
+    });
+  }
+}
+
+/**
+ * 🔊 The video clips on a step's overlay, as data (V0.3.2.88) — feeds the
+ * export audio mix. Returns [{ abs, inMs, outMs, muted, volume }].
+ */
+export function stepVideoClips(step) {
+  const ov = step?.overlay;
+  if (typeof ov !== 'string' || !ov || ov.indexOf('"isVideo":true') === -1) return [];
+  const out = [];
+  try {
+    const dir = _projectDir();
+    (function walk(n) {
+      if (!n) return;
+      const a = n.attrs;
+      if (a?.isVideo) {
+        const abs = (a.videoRel && dir) ? _norm(dir) + '/' + _norm(a.videoRel) : _norm(a.videoPath || '');
+        const dur = Number(a.videoDurationMs ?? 0);
+        const inMs  = Math.max(0, Number(a.trimInMs ?? 0));
+        let outMs = Number(a.trimOutMs ?? 0) || dur;
+        if (dur > 0) outMs = Math.min(outMs, dur);
+        if (abs && outMs > inMs) {
+          out.push({ abs, inMs, outMs, muted: a.muted !== false, volume: Math.max(0, Math.min(1, Number(a.volume ?? 1))) });
+        }
+      }
+      (n.children || []).forEach(walk);
+    })(JSON.parse(ov));
+  } catch { /* unparseable overlay → no clips */ }
+  return out;
+}
+
 // ─── Playback control ───────────────────────────────────────────────────────
 
 /**

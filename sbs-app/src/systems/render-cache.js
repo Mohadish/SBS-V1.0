@@ -124,6 +124,56 @@ async function _sha1hex(str) {
   return [...new Uint8Array(buf)].map(b => b.toString(16).padStart(2, '0')).join('').slice(0, 16);
 }
 
+/**
+ * 🔊 Decode the audio of every unmuted video clip across the playable steps
+ * (V0.3.2.88). Returns segments in the narration-mix shape:
+ * [{ stepId, samples: monoFloat32@rate, offsetMs }]. Decode is cached per
+ * (path, window) so a clip reused on several steps decodes once.
+ */
+async function _decodeVideoClipAudio(playable, sampleRate, onProgress) {
+  const vo = await import('./video-overlay.js');
+  const nt = await import('./narration-timeline.js');
+  const { resampleToMonoFloat32 } = await import('./audio-bridge.js');
+  const out = [];
+  const cache = new Map();   // `${abs}|${inMs}|${outMs}` -> Float32Array (unit volume)
+  for (const step of playable) {
+    const clips = vo.stepVideoClips(step);
+    for (const clip of clips) {
+      if (clip.muted) continue;
+      const key = `${clip.abs}|${clip.inMs}|${clip.outMs}`;
+      let samples = cache.get(key);
+      if (samples === undefined) {
+        samples = null;
+        try {
+          onProgress?.({ stepName: `decoding clip audio: ${clip.abs.split(/[\\/]/).pop()}…` });
+          const resp = await fetch(vo.fileUrlFor(clip.abs));
+          if (!resp.ok) throw new Error(`read failed (${resp.status})`);
+          const bytes = await resp.arrayBuffer();
+          const actx = new AudioContext({ sampleRate });
+          let buf;
+          try { buf = await actx.decodeAudioData(bytes); }
+          finally { actx.close().catch(() => {}); }
+          const mono = await resampleToMonoFloat32(buf, sampleRate);
+          const a = Math.max(0, Math.round(clip.inMs  / 1000 * sampleRate));
+          const b = Math.min(mono.length, Math.round(clip.outMs / 1000 * sampleRate));
+          samples = (b > a) ? mono.slice(a, b) : null;   // slice = fresh buffer; the full decode is released
+        } catch (e) {
+          console.warn(`[assembly] clip audio skipped (${clip.abs.split(/[\\/]/).pop()}):`, e?.message);
+        }
+        cache.set(key, samples);
+      }
+      if (!samples) continue;
+      let s = samples;
+      if (clip.volume !== 1) {
+        s = new Float32Array(samples.length);
+        for (let i = 0; i < samples.length; i++) s[i] = samples[i] * clip.volume;
+      }
+      out.push({ stepId: step.id, samples: s, offsetMs: nt.videoAudioStartOffsetMs(step) });
+    }
+  }
+  return out;
+}
+
 /** Divide the playable timeline into segments + compute cache keys. */
 export async function computeSegmentPlan() {
   const playable = (state.get('steps') || []).filter(s => steps._isPlayable(s));
@@ -592,6 +642,22 @@ export async function assembleFromCache({ onProgress, signal, output, force = fa
   const playable = (state.get('steps') || []).filter(s => steps._isPlayable(s));
   onProgress?.({ stepName: 'decoding narration clips…' });
   const audio = await ve.decodeNarrationSegments(playable, 48000);
+
+  // 🔊 VIDEO CLIP AUDIO (V0.3.2.88 — Phase 3). Unmuted clips join the mix
+  // as one more "place PCM at the step marker" input, offset to the moment
+  // playback actually triggers (overlay fade-in completion — the same
+  // clock the visuals use, so lips stay on faces). The file's audio is
+  // decoded once per unique (path, window), sliced to the trimmed window,
+  // scaled by the clip's volume. Failures skip the clip with a warning —
+  // a missing/unreadable file must never sink the whole assembly.
+  try {
+    const vseg = await _decodeVideoClipAudio(playable, 48000, onProgress);
+    if (vseg.length) {
+      audio.segments = [...(audio.segments || []), ...vseg];
+      audio.hasAudio = true;
+      console.log(`[assembly] video audio: ${vseg.length} clip(s) mixed in`);
+    }
+  } catch (e) { console.warn('[assembly] video audio skipped:', e?.message); }
   let aPath = null;
   if (audio.hasAudio) {
     const pcm = ve.mixPcmFromMarkers(audio, markersByStepId, totalMs, 48000);

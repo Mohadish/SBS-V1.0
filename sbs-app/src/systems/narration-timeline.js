@@ -144,6 +144,26 @@ export function stepHasOverlaySlot(step) {
 }
 
 /**
+ * 🔊 When a step's VIDEO starts making sound, relative to step start
+ * (V0.3.2.88) — the audio-mix twin of narrOffsetMs. Playback triggers when
+ * the overlay fade-in COMPLETES, so the offset is the sum of phases before
+ * the overlay block PLUS that block's own duration. No overlay slot →
+ * playback starts after the whole animation (the .84 fallback) → totalMs.
+ */
+export function videoAudioStartOffsetMs(step) {
+  const presets = state.get('animationPresets') || [];
+  const animStr = resolveAnimationString(step?.transition || {}, presets) || DEFAULT_ANIMATION_STR;
+  const phases  = parseAnimation(animStr, _resolveAL);
+  if (!phases || !phases.length) return 0;
+  let total = 0;
+  for (const ph of phases) {
+    total += ph.durationMs || 0;
+    if (ph.types?.includes('overlay') || ph.types?.includes('overlays')) return total;
+  }
+  return total;   // no overlay block → after the whole animation
+}
+
+/**
  * Compute each chapter's START TIME in the final playback/export timeline —
  * the data behind an auto-generated Table of Contents. Walks the playable steps
  * in order, summing per-step durations, recording the cumulative time at each
