@@ -1845,6 +1845,26 @@ function _showChapterContextMenu(chapter, x, y) {
 // given steps NOW (fresh pixels under the same keys — the next export reuses
 // them). A group substep forces its whole group's segment. Also fills any
 // genuinely-missing segments it encounters.
+/**
+ * Map timeline step NUMBERS (1-based, top-level — what the panel and the
+ * export prompt display; groups count as one) to internal step ids,
+ * including every sub-step of a selected group head so the whole group
+ * segment is forced (V0.3.2.80).
+ */
+function _stepIdsForTopLevelNumbers(numbers) {
+  const want = new Set(numbers);
+  const all  = (state.get('steps') || []).filter(s => !s.isBaseStep && !s.hidden);
+  const picked = new Set();
+  let n = 0;
+  for (const s of all) {
+    if (!s.groupId) n++;                       // sub-steps don't advance the number
+    if (!s.groupId && want.has(n)) picked.add(s.id);
+  }
+  // second pass: sub-steps of any picked head ride along
+  for (const s of all) if (s.groupId && picked.has(s.groupId)) picked.add(s.id);
+  return [...picked];
+}
+
 async function _forceRenderCache(stepIds) {
   try {
     const rc = await import('../systems/render-cache.js');
@@ -2377,12 +2397,31 @@ async function _onExportVideo() {
     _exportingCtrl.abort();
     return;
   }
+  // 🎬 V0.3.2.80 — full vs. specific-steps prompt (non-modal, movable; the
+  // timeline stays clickable so the user can look up step numbers while
+  // typing ranges). The manual re-render is the HUMAN VERIFICATION step for
+  // cache staleness the fingerprints can't see (upstream fixes that changed
+  // what earlier steps leave behind in the live scene).
+  const { openExportPrompt } = await import('./export-prompt.js');
+  const choice = await openExportPrompt();
+  if (!choice) return;
+  let forceIds = null;
+  if (choice.mode === 'selection') {
+    forceIds = _stepIdsForTopLevelNumbers(choice.withNeighbors);
+    if (!forceIds.length) { setStatus('That range matched no steps.', 'warn', 5000); return; }
+  }
+  const needsAssemble = choice.mode === 'full' || choice.thenFull;
+
   const exp         = state.get('export') || {};
   const projectName = exp.fileName || state.get('projectName') || 'timeline';
   const stamp       = new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19);
   const vidExt      = (exp.outputFormat || 'mp4').startsWith('webm') ? 'webm' : (exp.outputFormat || 'mp4');
-  // WHERE FIRST (V0.3.2.30): pick destination + name before any rendering.
-  const outPath = await _askExportPath('Export Video', `${projectName}-${stamp}.${vidExt}`, vidExt);
+  // WHERE FIRST (V0.3.2.30): pick destination + name before any rendering —
+  // but only when a video is actually assembled; a selection-only re-render
+  // writes segments into the cache, not a file.
+  const outPath = needsAssemble
+    ? await _askExportPath('Export Video', `${projectName}-${stamp}.${vidExt}`, vidExt)
+    : undefined;
   if (outPath === null) return;   // user cancelled the dialog
 
   _exportingCtrl = new AbortController();
@@ -2391,6 +2430,22 @@ async function _onExportVideo() {
 
   try {
     await steps.flushSync();
+
+    // 🎯 Forced re-render of the selected steps (+ their n−1/n+1 neighbours):
+    // their spans are marked uncached, so the cached segments are OVERWRITTEN.
+    if (forceIds) {
+      const rc = await import('../systems/render-cache.js');
+      const r = await rc.renderMissingSegments({
+        forceStepIds: new Set(forceIds),
+        signal: _exportingCtrl.signal,
+        onProgress: (p) => setStatus(`Re-rendering segment ${p.current}/${p.total}: ${p.stepName}…`, 'info', 0),
+      });
+      if (!needsAssemble) {
+        setStatus(`Re-rendered ${r.rendered} segment(s)${r.failed ? ` (${r.failed} FAILED)` : ''} — next export picks them up from cache.`, r.failed ? 'warning' : 'success', 10000);
+        return;
+      }
+      setStatus(`Re-rendered ${r.rendered} segment(s) — assembling the complete video…`, 'info', 0);
+    }
 
     // ⚡ Incremental path (V0.3.2.25). THIS BUTTON BYPASSED THE SEGMENT CACHE:
     // the Export tab's Start got the incremental branch in V0.3.2.14 but this
