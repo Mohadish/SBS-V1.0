@@ -233,12 +233,26 @@ export function detachVideo(node) {
   const id = node?.getAttr?.('videoId') || node?._id;
   const p = id != null ? _players.get(id) : null;
   if (!p) return;
+  // 🧊 FREEZE BEFORE RELEASE (V0.3.2.87). Releasing an element blanks it
+  // instantly — and if the node is mid-fade on the ghost layer, that reads
+  // as the clip vanishing at the fade threshold. The step-change event
+  // already freezes, but the export's activation order can reach THIS
+  // release first — so the freeze lives here too, making it ordering-proof:
+  // no path can blank a still-visible node.
+  try {
+    const { node: n, video: v } = p;
+    if (n && !n.isDestroyed?.() && n.image() === v && v.readyState >= 2 && v.videoWidth) {
+      const c = document.createElement('canvas');
+      c.width = v.videoWidth; c.height = v.videoHeight;
+      c.getContext('2d').drawImage(v, 0, 0);
+      n.image(c);
+      n.getLayer()?.batchDraw();
+    }
+  } catch { /* cosmetic — never block the release */ }
   try { p.video.pause(); } catch { /* already gone */ }
   p.video.removeAttribute('src');
   try { p.video.load(); } catch { /* best-effort release */ }
   _players.delete(id);
-  // Leave node.image() alone — a destroyed Konva node doesn't care, and a
-  // live one keeps showing its last frame until re-attached.
 }
 
 /** Release everything (step change / project close). */
