@@ -18,6 +18,7 @@
  */
 import { state } from '../core/state.js';
 import { parseAnimation, resolveAnimationString } from './animation.js';
+import { stepVideoWindowMs } from './video-overlay.js';   // 🎬 V0.3.2.82 — video length drives step duration
 
 const _groupKeyOf = (s) => (s?.groupHead ? s.id : (s?.groupId || null));
 
@@ -115,7 +116,13 @@ function _stepTimelineMs(step, stepHoldMs) {
   const animMs = (t.durationOverride === true) ? (t.objectDurationMs ?? globalObjDur) : globalObjDur;
   const { narrOffsetMs } = _animTiming(step);   // === exporter's _narrationStartOffsetMs
   const narrMs = step.narration?.durationMs || 0;
-  return Math.max(animMs, narrOffsetMs + narrMs) + stepHoldMs;
+  // 🎬 V0.3.2.82 — a video on the step's overlay is a third duration input
+  // (LONGEST FEATURE WINS). Unlike narration, a video never overflows into
+  // the next step — the step stretches to fit its trimmed window and the
+  // clip freezes on its last frame for whatever remains. Same term the
+  // exporter adds to perStepHold, so estimate and encode can't drift.
+  const videoMs = stepVideoWindowMs(step);
+  return Math.max(animMs, narrOffsetMs + narrMs, videoMs) + stepHoldMs;
 }
 
 /**

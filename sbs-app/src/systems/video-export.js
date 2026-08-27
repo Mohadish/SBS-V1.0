@@ -24,6 +24,7 @@ import { isIsolateEngaged, suspendIsolate, resumeIsolate } from '../core/isolate
 import * as clock    from '../core/clock.js';
 import { sceneCore } from '../core/scene.js';
 import { rasterizeOverlay, waitForOverlayStable, refreshAllTocBoxesData } from './overlay.js';
+import * as videoOverlay from './video-overlay.js';   // 🎬 V0.3.2.82 — seek-per-frame + step duration
 import { rasterizeHeaderLayer, waitForHeaderStable }  from './header.js';
 import { rasterizeNotesLayer }                        from './notes-render.js';
 import { rasterizeTagsLayer }                         from './hardware-insert-anim.js';
@@ -470,7 +471,12 @@ async function _exportMp4({ fps = DEFAULT_FPS, bitrate = DEFAULT_BITRATE,
   // the recompute after _synthesizeMissingClips below).
   const perStepHold = stepsToPlay.map(step => {
     const narrMs = includeNarration ? (step.narration?.durationMs || 0) : 0;
-    return narrMs + stepHoldMs;
+    // 🎬 V0.3.2.82 — LONGEST FEATURE WINS: a step hosting a video must hold
+    // long enough to play its whole trimmed window (videos never overflow
+    // into the next step; they freeze on their last frame instead). Same
+    // term added to narration-timeline's estimate so the TOC agrees.
+    const videoMs = videoOverlay.stepVideoWindowMs(step);
+    return Math.max(narrMs, videoMs) + stepHoldMs;
   });
 
   // Pick a codec the host actually supports. Chromium/Electron builds vary:
@@ -780,6 +786,11 @@ async function _exportMp4({ fps = DEFAULT_FPS, bitrate = DEFAULT_BITRATE,
       if (_encoderError) throw _encoderError;   // dead encoder → abort, don't spin
       synthMs += frameIntervalMs;
       sceneCore.fireSyntheticTick(synthMs, frameIntervalMs);
+      // 🎬 V0.3.2.82 — deterministic video: seek every live clip to THIS
+      // frame's synthetic timestamp and wait for the decoder before the
+      // capture below rasterises the overlay. No-op (no await, no cost)
+      // when the step has no video.
+      if (videoOverlay.hasActiveVideos()) await videoOverlay.seekAllToClock(synthMs);
       if (!staticHold || renderThisHoldFrame) { sceneCore.renderFrame(); _framesRendered++; }
       else                                     { _framesReused++; }
       renderThisHoldFrame = false;

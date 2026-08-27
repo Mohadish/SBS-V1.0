@@ -3568,7 +3568,10 @@ async function _loadFromActiveStep() {
   // 🎬 V0.3.2.75 — same moment for video: play each clip from its trim-in
   // point. Clips on steps that aren't on screen stay parked (never decoding),
   // because the previous step's elements were released just above.
-  videoOverlay.startVideos(_layer.getChildren().filter(n => videoOverlay.isVideoNode(n)));
+  // AWAITED since V0.3.2.82: the load promise (waitForOverlayStable) must
+  // cover video-element readiness, or the export's first frames capture the
+  // node before its decoder has a frame — the "blinks in" half of the bug.
+  await videoOverlay.startVideos(_layer.getChildren().filter(n => videoOverlay.isVideoNode(n)));
 }
 
 async function _recreateNode(spec) {

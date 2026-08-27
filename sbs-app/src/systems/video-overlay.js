@@ -36,8 +36,10 @@
  * video audio in the exported mix. Those are Phases 2-4.
  */
 
-import { state }     from '../core/state.js';
-import { sceneCore } from '../core/scene.js';
+import { state } from '../core/state.js';
+// NOTE: core/scene.js is imported LAZILY (inside _wireTick) — it drags the
+// whole Three.js module graph with it, which would make this module's pure
+// helpers (stepVideoWindowMs, trim math) untestable outside the app.
 
 // Live playback registry: nodeId → { node, video, path }
 const _players = new Map();
@@ -210,6 +212,90 @@ export function setVideoOptions(node, patch = {}) {
   }
 }
 
+// ─── Step duration contribution (V0.3.2.82) ─────────────────────────────────
+//
+// "Longest feature wins": a step hosting a video must last at least the
+// video's trimmed window, exactly like it must last at least its narration.
+// Unlike narration, a video NEVER overflows into the next step — it freezes
+// on its last frame (the trim clamp) and the step is stretched to fit it.
+// Consumed by BOTH duration paths (narration-timeline estimate + the
+// exporter's perStepHold) so the TOC and the encoded video can't drift.
+
+const _winMemo = new Map();   // stepId -> { ref: overlayString, ms }
+
+/**
+ * The longest trimmed video window on a step's overlay, in ms (0 = none).
+ * Parses the overlay string once per unique string (memoized by reference).
+ */
+export function stepVideoWindowMs(step) {
+  const ov = step?.overlay;
+  if (typeof ov !== 'string' || !ov || ov.indexOf('"isVideo":true') === -1) return 0;
+  const memo = _winMemo.get(step.id);
+  if (memo && memo.ref === ov) return memo.ms;
+  let ms = 0;
+  try {
+    const spec = JSON.parse(ov);
+    (function walk(n) {
+      if (!n) return;
+      const a = n.attrs;
+      if (a?.isVideo) {
+        const dur = Number(a.videoDurationMs ?? 0);
+        const inMs  = Math.max(0, Number(a.trimInMs ?? 0));
+        let outMs = Number(a.trimOutMs ?? 0) || dur;
+        if (dur > 0) outMs = Math.min(outMs, dur);
+        ms = Math.max(ms, Math.max(0, outMs - inMs));
+      }
+      (n.children || []).forEach(walk);
+    })(spec);
+  } catch { /* unparseable overlay → contributes nothing */ }
+  _winMemo.set(step.id, { ref: ov, ms });
+  return ms;
+}
+
+// ─── Export mode (V0.3.2.82 — Phase 2: deterministic seek-per-frame) ────────
+//
+// The exporter runs a SYNTHETIC clock, frame by frame; a <video> playing at
+// wall-clock speed lands random frames in the capture — the "blinking".
+// In export mode clips never .play(): every encoded frame SEEKS the element
+// to an exact timestamp derived from the synthetic clock and awaits the
+// decoder before capture. Deterministic → cache-safe. The trim clamp gives
+// the freeze-frame ends for free (fade-in/out play over a still frame).
+
+function _isExporting() { try { return !!state.get('_exporting'); } catch { return false; } }
+
+export function hasActiveVideos() { return _players.size > 0; }
+
+/**
+ * Seek every live clip to the synthetic clock and resolve when their frames
+ * are decoded. `synthMs` anchors each player on first sight — a clip plays
+ * its window [trimIn..trimOut] from the moment its step's overlay loaded,
+ * frozen at both ends by the clamp.
+ */
+export async function seekAllToClock(synthMs) {
+  if (!_players.size) return;
+  const waits = [];
+  for (const p of _players.values()) {
+    const { node, video } = p;
+    if (node?.isDestroyed?.() || video.readyState < 1) continue;
+    if (p.anchorMs == null) p.anchorMs = synthMs;
+    const inMs  = _trimIn(node);
+    const outMs = _trimOut(node) || Number(node.getAttr('videoDurationMs') ?? 0);
+    const target = Math.min(Math.max(inMs + (synthMs - p.anchorMs), inMs), outMs) / 1000;
+    if (Math.abs(video.currentTime - target) < 0.012) continue;   // within ~1/4 frame — keep
+    waits.push(new Promise((resolve) => {
+      let done = false;
+      const ok = () => { if (!done) { done = true; video.removeEventListener('seeked', ok); resolve(); } };
+      video.addEventListener('seeked', ok, { once: true });
+      // A dead decoder must never stall the export — cap the wait; the
+      // capture then reuses the previous decoded frame (visually a held
+      // frame, never a blink).
+      setTimeout(ok, 250);
+      try { video.currentTime = target; } catch { ok(); }
+    }));
+  }
+  if (waits.length) await Promise.all(waits);
+}
+
 // ─── Playback control ───────────────────────────────────────────────────────
 
 /**
@@ -223,10 +309,17 @@ export async function startVideos(nodes) {
     let v = null;
     try { v = await attachVideoElement(node); } catch { continue; }
     if (!v) continue;
+    const p = _players.get(node.getAttr('videoId') || node._id);
+    if (p) p.anchorMs = null;                      // export mode re-anchors on the next seek
     try {
       v.currentTime = _trimIn(node) / 1000;
-      // play() rejects when the tab has no user gesture; muted playback is
-      // always allowed, which is our default.
+      // 🎬 EXPORT MODE (V0.3.2.82): never .play() — the synthetic clock owns
+      // time and seekAllToClock() drives every frame. Wall-clock playback
+      // during export was the "blinking video" bug: random frames, and
+      // captures racing the decoder.
+      if (_isExporting()) continue;
+      // Live: play() rejects when the tab has no user gesture; muted
+      // playback is always allowed, which is our default.
       await v.play().catch(() => {});
     } catch { /* leave parked on the first frame */ }
   }
@@ -244,7 +337,9 @@ export function stopVideos() {
 function _wireTick() {
   if (_tickWired) return;
   _tickWired = true;
-  sceneCore.addTickHook(_advanceVideos);
+  import('../core/scene.js')
+    .then(m => m.sceneCore.addTickHook(_advanceVideos))
+    .catch(e => { _tickWired = false; console.warn('[video] tick hook not wired:', e?.message); });
 }
 
 /**
@@ -256,6 +351,7 @@ function _wireTick() {
  */
 function _advanceVideos(/* nowMs */) {
   if (!_players.size) return;
+  if (_isExporting()) return;   // export: seekAllToClock() owns time — wall-clock logic would fight it
   let draw = false;
   for (const [id, p] of [..._players.entries()]) {
     const { node, video } = p;
