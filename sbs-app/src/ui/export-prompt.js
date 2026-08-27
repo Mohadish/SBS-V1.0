@@ -30,17 +30,30 @@ import { state }     from '../core/state.js';
 import { setStatus } from './status.js';
 
 /**
- * Parse "0-10, 28-55, 124, 74" → sorted unique step numbers, clamped to
- * [1..max]. Ranges may be reversed (55-28 works). Returns
- * { base, withNeighbors, error } — error is the first bad token, or null.
+ * Parse "0-10, 28-55, C11, 124, C4" → sorted unique step numbers, clamped
+ * to [1..max]. Ranges may be reversed (55-28 works). `C<n>` (V0.3.2.81,
+ * case-insensitive) expands to every step of chapter n via the `chapters`
+ * map (chapter number → its top-level step numbers); an unknown chapter is
+ * reported as a bad token. Returns { base, withNeighbors, chaptersUsed,
+ * error } — error is the first bad token, or null.
  */
-export function parseStepRanges(text, max) {
+export function parseStepRanges(text, max, chapters = null) {
   const base = new Set();
+  const chaptersUsed = [];
   for (const raw of String(text || '').split(',')) {
     const tok = raw.trim();
     if (!tok) continue;
+    const cm = /^[cC]\s*(\d+)$/.exec(tok);
+    if (cm) {
+      const num = parseInt(cm[1], 10);
+      const stepNums = chapters?.get?.(num);
+      if (!stepNums || !stepNums.length) return { base: [], withNeighbors: [], chaptersUsed: [], error: tok };
+      for (const n of stepNums) if (n >= 1 && n <= max) base.add(n);
+      chaptersUsed.push(num);
+      continue;
+    }
     const m = /^(\d+)\s*(?:-\s*(\d+))?$/.exec(tok);
-    if (!m) return { base: [], withNeighbors: [], error: tok };
+    if (!m) return { base: [], withNeighbors: [], chaptersUsed: [], error: tok };
     let a = parseInt(m[1], 10);
     let b = m[2] !== undefined ? parseInt(m[2], 10) : a;
     if (b < a) [a, b] = [b, a];
@@ -54,7 +67,27 @@ export function parseStepRanges(text, max) {
     if (n < max) withNeighbors.add(n + 1);
   }
   const sort = (s) => [...s].sort((x, y) => x - y);
-  return { base: sort(base), withNeighbors: sort(withNeighbors), error: null };
+  return { base: sort(base), withNeighbors: sort(withNeighbors), chaptersUsed, error: null };
+}
+
+/**
+ * Chapter number (1-based, chapters-array order — same numbering the TOC
+ * and chapterNumber headers use) → that chapter's top-level step numbers.
+ */
+function _chapterStepMap() {
+  const chapters = state.get('chapters') || [];
+  const numOfChapter = new Map(chapters.map((c, i) => [c.id, i + 1]));
+  const map = new Map();
+  let n = 0;
+  for (const s of (state.get('steps') || [])) {
+    if (s.isBaseStep || s.hidden) continue;
+    if (!s.groupId) n++; else continue;          // groups count as one; sub-steps ride with the head
+    const cnum = numOfChapter.get(s.chapterId);
+    if (!cnum) continue;
+    if (!map.has(cnum)) map.set(cnum, []);
+    map.get(cnum).push(n);
+  }
+  return map;
 }
 
 /** Count of top-level (non-group-member) visible steps — the timeline numbering. */
@@ -102,9 +135,9 @@ export function openExportPrompt() {
       <div style="padding:12px;">
         <button class="btn" id="xp-full" style="width:100%;font-weight:600;color:#22d3ee;">▶ Render full project (incremental)</button>
 
-        <div class="small muted" style="margin:12px 0 6px;">— or re-render specific steps (overwrites their cache) —</div>
+        <div class="small muted" style="margin:12px 0 6px;">— or re-render specific steps (overwrites their cache; C4 = all of chapter 4) —</div>
         <div style="display:flex;gap:6px;">
-          <input id="xp-ranges" type="text" placeholder="e.g. 0-10, 28-55, 124, 89-102, 74"
+          <input id="xp-ranges" type="text" placeholder="e.g. 0-10, C11, 124, 89-102, 74"
                  style="flex:1;font-family:Consolas,monospace;font-size:12px;padding:6px 8px;background:rgba(255,255,255,0.05);color:inherit;border:1px solid var(--line,#334155);border-radius:6px;" />
           <button class="btn" id="xp-add-cur" title="Append the active step's number">+ current</button>
         </div>
@@ -140,14 +173,17 @@ export function openExportPrompt() {
     drag.addEventListener('pointerup', () => { dOff = null; });
 
     // ── parsing preview ──
-    const input   = el.querySelector('#xp-ranges');
-    const preview = el.querySelector('#xp-preview');
-    const btnSel  = el.querySelector('#xp-selection');
-    let parsed = { base: [], withNeighbors: [], error: null };
+    const input    = el.querySelector('#xp-ranges');
+    const preview  = el.querySelector('#xp-preview');
+    const btnSel   = el.querySelector('#xp-selection');
+    const chapters = _chapterStepMap();
+    let parsed = { base: [], withNeighbors: [], chaptersUsed: [], error: null };
     const refresh = () => {
-      parsed = parseStepRanges(input.value, max);
+      parsed = parseStepRanges(input.value, max, chapters);
       if (parsed.error) {
-        preview.textContent = `Can't read "${parsed.error}" — use numbers and ranges, comma-separated.`;
+        preview.textContent = /^[cC]/.test(parsed.error)
+          ? `"${parsed.error}" — no such chapter (project has ${chapters.size}).`
+          : `Can't read "${parsed.error}" — numbers, ranges, or C<chapter>, comma-separated.`;
         preview.style.color = '#f87171';
         btnSel.disabled = true;
       } else if (!parsed.base.length) {
@@ -155,12 +191,29 @@ export function openExportPrompt() {
         btnSel.disabled = true;
       } else {
         const extra = parsed.withNeighbors.length - parsed.base.length;
-        preview.textContent = `${parsed.base.length} step(s) selected + ${extra} neighbour(s) (n−1/n+1) = ${parsed.withNeighbors.length} to re-render.`;
+        const chap  = parsed.chaptersUsed.length
+          ? ` (incl. chapter${parsed.chaptersUsed.length > 1 ? 's' : ''} ${parsed.chaptersUsed.join(', ')})`
+          : '';
+        preview.textContent = `${parsed.base.length} step(s)${chap} + ${extra} neighbour(s) (n−1/n+1) = ${parsed.withNeighbors.length} to re-render.`;
         preview.style.color = '#94a3b8';
         btnSel.disabled = false;
       }
     };
-    input.addEventListener('input', refresh);
+    // 💾 V0.3.2.81 — the ranges text is PROJECT data: prefill from the file,
+    // persist as you type (debounced). The export section round-trips
+    // wholesale through save/load, so the field rides along with defaults-
+    // safe behaviour on older files.
+    input.value = String((state.get('export') || {}).rerenderRanges || '');
+    let _saveT = null;
+    input.addEventListener('input', () => {
+      refresh();
+      clearTimeout(_saveT);
+      _saveT = setTimeout(() => {
+        state.setState({ export: { ...(state.get('export') || {}), rerenderRanges: input.value } });
+        state.markDirty();
+      }, 400);
+    });
+    refresh();
     el.querySelector('#xp-add-cur').addEventListener('click', () => {
       const n = _activeTopLevelNumber();
       if (n == null) { setStatus('No active step.', 'warn', 2500); return; }
