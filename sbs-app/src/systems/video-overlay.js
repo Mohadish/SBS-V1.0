@@ -106,8 +106,15 @@ export async function attachVideoElement(node) {
   const id = node.getAttr('videoId') || node._id;
   const existing = _players.get(id);
   const path = resolveVideoPath(node);
-  if (existing && existing.path === path) return existing.video;
-  if (existing) detachVideo(node);
+  if (existing && existing.path === path) {
+    // Same clip, NEW Konva node (step revisit recreates nodes): rebind the
+    // element to the fresh node — the old binding pointed at a destroyed
+    // node, which left the new one on its poster and orphaned the audio.
+    existing.node = node;
+    node.image(existing.video);
+    return existing.video;
+  }
+  if (existing) detachVideo(existing.node || node);
   if (!path) return null;
 
   const video = document.createElement('video');
@@ -120,6 +127,28 @@ export async function attachVideoElement(node) {
   // Never let the element drive layout; it lives off-DOM and is only a
   // pixel source for Konva.
   video.style.display = 'none';
+
+  // Register in the pool BEFORE awaiting readiness (V0.3.2.83). A 13-minute
+  // file can take seconds to open; if the user left the step mid-load, the
+  // element used to be invisible to detachAll — an ORPHAN that finished
+  // loading later and played its audio forever. In the pool from birth,
+  // every cleanup path can reach it.
+  _players.set(id, { node, video, path });
+
+  // 🔊 Element-level trim clamp (V0.3.2.83): the tick-driven clamp only
+  // runs while the render loop draws — but AUDIO plays straight from the
+  // element, canvas or no canvas. 'timeupdate' fires from the media stack
+  // itself (~4Hz), so the clip can never sound past its OUT point even if
+  // no frame is being drawn anywhere.
+  video.addEventListener('timeupdate', () => {
+    const entry = _players.get(id);
+    const n = entry?.node;
+    if (!n || n.isDestroyed?.()) { try { video.pause(); } catch { /* gone */ } return; }
+    const outMs = _trimOut(n);
+    if (outMs > 0 && video.currentTime * 1000 >= outMs && !video.paused && !_isExporting()) {
+      try { video.pause(); video.currentTime = outMs / 1000; } catch { /* ignore */ }
+    }
+  });
 
   const ready = new Promise((resolve, reject) => {
     let settled = false;
@@ -134,7 +163,11 @@ export async function attachVideoElement(node) {
     setTimeout(() => { if (!settled) bad(); }, 15000);
   });
 
-  try { await ready; } catch (e) { video.src = ''; throw e; }
+  try { await ready; }
+  catch (e) { _players.delete(id); video.src = ''; throw e; }
+  // The step may have changed while the file was opening — a slow load must
+  // never end with an invisible element playing audio into the wrong step.
+  if (node.isDestroyed?.()) { detachVideo(node); throw new Error('step changed while the video was loading'); }
 
   // Natural size — used for fit-on-insert and the Reset action.
   if (video.videoWidth)  node.setAttr('naturalW', video.videoWidth);
@@ -148,9 +181,32 @@ export async function attachVideoElement(node) {
   try { video.currentTime = inMs / 1000; } catch { /* pre-metadata seek */ }
 
   node.image(video);
-  _players.set(id, { node, video, path });
+  _players.set(id, { node, video, path });   // refresh (registered pre-ready; node may be newer)
   _wireTick();
+  _wireStepGuard();
   return video;
+}
+
+// ─── 🔇 Step-change safety net (V0.3.2.83) ──────────────────────────────────
+// Overlay content can be torn down by MORE than one path (normal reload,
+// the H2 fade pre-load which SKIPS the reload, edit-mode rebuilds). Rather
+// than trusting every path to release players, react to the step change
+// itself: the moment the active step moves, SILENCE everything; a beat
+// later, drop any player whose node is gone. startVideos() then restarts
+// whatever the incoming step legitimately owns. This is what ends the
+// "revisit stacks another audio track" acapella.
+let _stepGuardWired = false;
+function _wireStepGuard() {
+  if (_stepGuardWired) return;
+  _stepGuardWired = true;
+  state.on?.('change:activeStepId', () => {
+    for (const { video } of _players.values()) { try { video.pause(); } catch { /* gone */ } }
+    setTimeout(() => {
+      for (const [id, p] of [..._players.entries()]) {
+        if (!p.node || p.node.isDestroyed?.()) { detachVideo(p.node); _players.delete(id); }
+      }
+    }, 50);
+  });
 }
 
 /** Stop + release a node's element. Safe to call twice. */
@@ -309,6 +365,9 @@ export async function startVideos(nodes) {
     let v = null;
     try { v = await attachVideoElement(node); } catch { continue; }
     if (!v) continue;
+    // The await above can outlive the step (rapid navigation) — never start
+    // audio for a node that no longer exists.
+    if (node.isDestroyed?.()) { detachVideo(node); continue; }
     const p = _players.get(node.getAttr('videoId') || node._id);
     if (p) p.anchorMs = null;                      // export mode re-anchors on the next seek
     try {
