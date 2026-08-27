@@ -1227,6 +1227,9 @@ async function _openVideoTrim(node) {
   const res = await openVideoTrimDialog(node);
   if (!res) return;
   videoOverlay.setVideoOptions(node, res);
+  // V0.3.2.85 — trim moved → the poster must show the NEW first frame
+  // (fades seed from it). Async and cosmetic; save again once it lands.
+  videoOverlay.refreshPoster(node).then(ok => { if (ok) _scheduleSave(); });
   _scheduleSave();
   undoManager.push(
     'Trim video',
@@ -3615,8 +3618,16 @@ async function _recreateNode(spec) {
       if (Number.isFinite(naturalH)) vnode.setAttr('naturalH', naturalH);
       const poster = spec.attrs.posterSrc;
       if (poster) {
-        _loadImage(poster).then(img => { if (!vnode.isDestroyed?.()) { vnode.image(img); vnode.getLayer()?.batchDraw(); } })
-                          .catch(() => { /* poster is a nicety, not a requirement */ });
+        _loadImage(poster).then(img => {
+          if (vnode.isDestroyed?.()) return;
+          // V0.3.2.85 — the poster is a PLACEHOLDER only. It loads async and
+          // could land AFTER the video element bound, replacing live footage
+          // with a still — one source of the export's "wrong image in the
+          // fade". Never clobber a bound element.
+          if (vnode.image() instanceof HTMLVideoElement) return;
+          vnode.image(img);
+          vnode.getLayer()?.batchDraw();
+        }).catch(() => { /* poster is a nicety, not a requirement */ });
       }
       videoOverlay.attachVideoElement(vnode)
         .then(() => vnode.getLayer()?.batchDraw())

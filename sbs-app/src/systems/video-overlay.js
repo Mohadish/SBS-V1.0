@@ -262,6 +262,39 @@ export function trimmedDurationMs(node) {
   return Math.max(0, _trimOut(node) - _trimIn(node));
 }
 
+/**
+ * Re-capture the node's poster AT ITS TRIM-IN FRAME (V0.3.2.85). The poster
+ * used to be grabbed at second 0 of the source at insert time — trim to
+ * 20s→25s and every fade-in seeded from a frame the clip never shows (the
+ * export's frame-exact capture made it visible; live replaced it too fast
+ * to notice). Seek → wait for the decoder → capture → restore position.
+ */
+export async function refreshPoster(node) {
+  const p = _players.get(node?.getAttr?.('videoId') || node?._id);
+  if (!p || p.video.readyState < 2 || !p.video.videoWidth) return false;
+  const { video } = p;
+  const inMs = _trimIn(node);
+  const prev = video.currentTime;
+  const seekTo = (t) => new Promise((res) => {
+    if (Math.abs(video.currentTime - t) < 0.01) return res();
+    const ok = () => res();
+    video.addEventListener('seeked', ok, { once: true });
+    setTimeout(ok, 400);
+    try { video.currentTime = t; } catch { res(); }
+  });
+  try {
+    await seekTo(inMs / 1000);
+    const scale = Math.min(1, 480 / video.videoWidth);
+    const c = document.createElement('canvas');
+    c.width  = Math.max(1, Math.round(video.videoWidth * scale));
+    c.height = Math.max(1, Math.round(video.videoHeight * scale));
+    c.getContext('2d').drawImage(video, 0, 0, c.width, c.height);
+    node.setAttr('posterSrc', c.toDataURL('image/jpeg', 0.7));
+    await seekTo(prev);
+    return true;
+  } catch { return false; }
+}
+
 /** Apply a trim/mute patch to a node and re-sync the live element. */
 export function setVideoOptions(node, patch = {}) {
   if (!isVideoNode(node)) return;
