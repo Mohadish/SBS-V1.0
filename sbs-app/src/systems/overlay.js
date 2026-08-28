@@ -3518,6 +3518,7 @@ function _advanceOverlayFade(nowMs) {
 }
 let _vtraceN = 0;
 let _vtraceRastN = 0;
+let _vtracePxN = 0;
 
 // null = not probed yet; probed lazily on the first rasterizeOverlay call.
 let _konvaBakesLayerOpacity = null;
@@ -3802,6 +3803,19 @@ export function rasterizeOverlay(opts = {}) {
       octx.drawImage(lc, 0, 0);
     }
     octx.globalAlpha = 1;
+    // 🔬 V0.3.2.92 — sample what actually LEFT this function: the alpha of
+    // the composited output at the frame centre while a ghost fade is live.
+    // If this alpha never ramps, the fade dies HERE; if it ramps and the
+    // final video still cuts, the bug is downstream in the frame composite.
+    if (typeof window !== 'undefined' && window.sbsDiag?.videoExportTrace && _ghostLayer?.getChildren().length) {
+      _vtracePxN = (_vtracePxN || 0) + 1;
+      if (_vtracePxN % 8 === 1) {
+        try {
+          const px = octx.getImageData(Math.floor(out.width / 2), Math.floor(out.height / 2), 1, 1).data;
+          console.log(`[vtrace] OUT-PIXEL centre rgba=(${px[0]},${px[1]},${px[2]},${px[3]}) ghostOp=${_ghostLayer.opacity().toFixed(2)} mainOp=${_layer.opacity().toFixed(2)} bakes=${_konvaBakesLayerOpacity}`);
+        } catch (e) { console.log('[vtrace] OUT-PIXEL read failed:', e?.message); }
+      }
+    }
   } finally {
     _stage.scale(savedScale);
     _stage.position(savedPos);

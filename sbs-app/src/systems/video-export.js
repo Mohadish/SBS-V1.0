@@ -483,6 +483,18 @@ async function _exportMp4({ fps = DEFAULT_FPS, bitrate = DEFAULT_BITRATE,
     return Math.max(narrMs, videoInHold) + stepHoldMs;
   });
 
+  // 🔬 V0.3.2.92 — SELF-ARMING fade diagnostics. Any export containing a
+  // video step turns the trace on automatically (no user setup): every run
+  // produces the ghost-handoff / fade-ramp / composite-pixel evidence the
+  // fade-out investigation has been missing from every manual repro.
+  if (typeof window !== 'undefined' && stepsToPlay.some(s => videoOverlay.stepVideoWindowMs(s) > 0)) {
+    window.sbsDiag = window.sbsDiag || {};
+    if (!window.sbsDiag.videoExportTrace) {
+      window.sbsDiag.videoExportTrace = true;
+      console.log('[vtrace] AUTO-ENABLED — export contains a video step; expect GHOST HANDOFF / fade / pixel lines below');
+    }
+  }
+
   // Pick a codec the host actually supports. Chromium/Electron builds vary:
   // some ship OpenH264 encoding (H.264/avc), most ship software VP9 encoding,
   // newer builds ship AV1. mp4-muxer accepts all three in an MP4 container
