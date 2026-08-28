@@ -411,7 +411,11 @@ function _propagateConstStyle(node, styleId) {
 export async function unifyConstantTitles() {
   flushSave();   // live edits on the active step participate
   const stepsArr = state.get('steps') || [];
-  const TOL = 14;
+  // V0.3.2.102: 25px chaining distance. The first version used a grid
+  // bucket — boxes 2px apart could straddle a bucket line and land in
+  // different clusters ("1 pixel off fails"), splintering one real title
+  // into 21 types. Distance-chaining has no boundaries: near boxes link.
+  const TOL = 25;
 
   // Pass 1 — parse + cluster.
   const parsed = [];
@@ -432,17 +436,60 @@ export async function unifyConstantTitles() {
     }
     if (boxes.length) parsed.push({ step: s, spec, boxes });
   }
-  const clusters = new Map();
+  // Group by exact style first (a false style merge would restyle boxes),
+  // then union-find within each style group: two boxes link when both
+  // |dx| and |dy| ≤ TOL, links chain, no grid boundaries.
+  const byStyle = new Map();
   for (const e of parsed) {
     for (const n of e.boxes) {
       const a = n.attrs;
-      const key = `${Math.round((a.x || 0) / TOL)}|${Math.round((a.y || 0) / TOL)}|${a.styleId || ''}`;
-      let c = clusters.get(key);
-      if (!c) clusters.set(key, c = { styleId: a.styleId || null, members: [], stepIds: new Set(), posCount: new Map() });
-      c.members.push({ entry: e, node: n });
-      c.stepIds.add(e.step.id);
-      const pk = `${Math.round(a.x || 0)},${Math.round(a.y || 0)}`;
-      c.posCount.set(pk, (c.posCount.get(pk) || 0) + 1);
+      const k = a.styleId || '';
+      let list = byStyle.get(k);
+      if (!list) byStyle.set(k, list = []);
+      list.push({ entry: e, node: n, x: a.x || 0, y: a.y || 0 });
+    }
+  }
+  const clusters = [];
+  for (const [styleKey, items] of byStyle) {
+    const parent = items.map((_, i) => i);
+    // STEP-DISJOINT GUARD: a cluster may hold at most ONE box per step.
+    // Two boxes on the same step are distinct roles by definition (title +
+    // subtitle 24px apart, same style) — without this guard chaining would
+    // merge them and the load-time sync would collapse both onto one pinned
+    // position on every step. Each root tracks its step set; a union that
+    // would put two same-step boxes in one cluster is refused.
+    const rootSteps = items.map(it => new Set([it.entry.step.id]));
+    const find = (i) => { while (parent[i] !== i) { parent[i] = parent[parent[i]]; i = parent[i]; } return i; };
+    for (let i = 0; i < items.length; i++) {
+      for (let j = i + 1; j < items.length; j++) {
+        if (Math.abs(items[i].x - items[j].x) <= TOL && Math.abs(items[i].y - items[j].y) <= TOL) {
+          const a = find(i), b = find(j);
+          if (a === b) continue;
+          const [small, large] = rootSteps[a].size <= rootSteps[b].size ? [a, b] : [b, a];
+          let clash = false;
+          for (const sid of rootSteps[small]) { if (rootSteps[large].has(sid)) { clash = true; break; } }
+          if (clash) continue;
+          parent[small] = large;
+          for (const sid of rootSteps[small]) rootSteps[large].add(sid);
+        }
+      }
+    }
+    const groups = new Map();
+    for (let i = 0; i < items.length; i++) {
+      const r = find(i);
+      let g = groups.get(r);
+      if (!g) groups.set(r, g = []);
+      g.push(items[i]);
+    }
+    for (const members of groups.values()) {
+      const c = { styleId: styleKey || null, members: [], stepIds: new Set(), posCount: new Map() };
+      for (const m of members) {
+        c.members.push({ entry: m.entry, node: m.node });
+        c.stepIds.add(m.entry.step.id);
+        const pk = `${Math.round(m.x)},${Math.round(m.y)}`;
+        c.posCount.set(pk, (c.posCount.get(pk) || 0) + 1);
+      }
+      clusters.push(c);
     }
   }
 
@@ -452,7 +499,7 @@ export async function unifyConstantTitles() {
   const touched = new Map();   // stepId -> entry
   let unified = 0;
   const baseCounts = new Map();
-  for (const c of clusters.values()) {
+  for (const c of clusters) {
     if (c.stepIds.size < 2) continue;
     let bestPk = null, bestN = -1;
     for (const [pk, n] of c.posCount) if (n > bestN) { bestN = n; bestPk = pk; }
@@ -487,15 +534,86 @@ export async function unifyConstantTitles() {
     state.markDirty();
     _scheduleLoad();   // active step re-reads its (possibly patched) overlay
   };
+  const newIds = new Set(newDefs.map(d => d.id));
   swap(nextOverlays, [...prevDefs, ...newDefs]);
+  // Defs splice against the CURRENT array at undo time (stale-snapshot rule).
   undoManager.push('Unify constant titles',
-    () => swap(prevOverlays, prevDefs),
-    () => swap(nextOverlays, [...prevDefs, ...newDefs]),
+    () => swap(prevOverlays, _constDefs().filter(d => !newIds.has(d.id))),
+    () => swap(nextOverlays, [..._constDefs().filter(d => !newIds.has(d.id)), ...newDefs]),
   );
 
   console.table(newDefs.map(d => ({ name: d.name, x: d.x, y: d.y, style: d.styleId || '(none)' })));
   setStatus(`Unified ${unified} title(s) into ${newDefs.length} constant type(s) across ${touched.size} step(s) — rename via the 📌 dropdown's ✏️.`, 'success', 10000);
   return { created: newDefs.length, unified, steps: touched.size };
+}
+
+/**
+ * Project-wide usage census for constant defs (V0.3.2.102). Scans overlay
+ * STRINGS for `"constId":"<id>"` — no JSON.parse, so it stays cheap on huge
+ * projects (Konva/stage JSON is always compact JSON.stringify output, and
+ * _serialiseStageJson re-stringifies, so the needle shape is guaranteed).
+ * flushSave() first so the active step's live boxes are counted too.
+ * Returns Map(defId → { count, stepIds }).
+ */
+export function countConstUsage() {
+  flushSave();
+  const out = new Map();
+  for (const d of _constDefs()) out.set(d.id, { count: 0, stepIds: [] });
+  for (const s of (state.get('steps') || [])) {
+    const str = typeof s.overlay === 'string' ? s.overlay : '';
+    if (!str) continue;
+    for (const [id, u] of out) {
+      const needle = `"constId":"${id}"`;
+      let i = str.indexOf(needle), n = 0;
+      while (i !== -1) { n++; i = str.indexOf(needle, i + needle.length); }
+      if (n) { u.count += n; u.stepIds.push(s.id); }
+    }
+  }
+  return out;
+}
+
+/** Delete a constant def — refuses unless it has ZERO instances project-wide. */
+export function deleteConstDef(defId) {
+  const defs = _constDefs();
+  const def = defs.find(d => d.id === defId);
+  if (!def) return { ok: false, reason: 'missing' };
+  const u = countConstUsage().get(defId);
+  if (u && u.count > 0) {
+    setStatus(`"${def.name}" is in use ${u.count}× on ${u.stepIds.length} step(s) — detach those boxes first.`, 'warn', 7000);
+    return { ok: false, reason: 'in-use', count: u.count, steps: u.stepIds.length };
+  }
+  _saveConstDefs(defs.filter(d => d.id !== defId));
+  // Undo/redo splice against the CURRENT array, never a captured snapshot —
+  // a snapshot restore would silently destroy defs created after the delete.
+  undoManager.push(`Delete constant "${def.name}"`,
+    () => { if (!_constDefs().some(d => d.id === def.id)) _saveConstDefs([..._constDefs(), def]); },
+    () => _saveConstDefs(_constDefs().filter(d => d.id !== def.id)),
+  );
+  setStatus(`Deleted constant "${def.name}".`, 'info', 4000);
+  return { ok: true };
+}
+
+/** Edit-menu cleanup: remove ALL constant defs with zero instances. */
+export function cleanupUnusedConstDefs() {
+  const defs = _constDefs();
+  if (!defs.length) { setStatus('No constant titles defined.', 'info', 4000); return { removed: 0, kept: 0 }; }
+  const usage = countConstUsage();
+  const kept = [], removed = [];
+  for (const d of defs) ((usage.get(d.id)?.count || 0) > 0 ? kept : removed).push(d);
+  if (!removed.length) {
+    setStatus(`All ${defs.length} constant title(s) are in use — nothing to clean.`, 'info', 5000);
+    return { removed: 0, kept: defs.length };
+  }
+  const removedIds = new Set(removed.map(d => d.id));
+  _saveConstDefs(kept);
+  // Splice-style undo (see deleteConstDef) — never restore a stale snapshot.
+  undoManager.push('Clean up unused constant titles',
+    () => _saveConstDefs([..._constDefs().filter(d => !removedIds.has(d.id)), ...removed]),
+    () => _saveConstDefs(_constDefs().filter(d => !removedIds.has(d.id))),
+  );
+  setStatus(`Removed ${removed.length} unused constant title(s); kept ${kept.length} in use.`, 'success', 7000);
+  console.table(removed.map(d => ({ removed: d.name })));
+  return { removed: removed.length, kept: kept.length };
 }
 
 /** Insert an instance of a constant text box on the active step. */
@@ -3113,6 +3231,10 @@ function _refreshMultiToolbar() {
         _saveConstDefs([..._constDefs()]);
         _refreshMultiToolbar();   // rebuilds this dropdown with live handlers + the new name
         setStatus(`Constant renamed to "${def.name}".`, 'success', 3000);
+      }, (defId) => {
+        // 🗑 — deleteConstDef refuses in-use defs with an explanatory status.
+        const res = deleteConstDef(defId);
+        if (res.ok) _refreshMultiToolbar();   // dropdown loses the deleted entry
       });
     } else {
       setConstDropdown(null);

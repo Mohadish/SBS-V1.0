@@ -326,6 +326,14 @@ function buildMenu() {
           label: 'Unify Constant Titles',
           click: () => mainWindow?.webContents.send('menu:unifyConstTitles'),
         },
+        {
+          label: 'Constant Titles…',
+          click: () => mainWindow?.webContents.send('menu:constTitlesPanel'),
+        },
+        {
+          label: 'Clean Up Unused Constant Titles',
+          click: () => mainWindow?.webContents.send('menu:cleanupConstTitles'),
+        },
         { type: 'separator' },
         { label: 'Model source transform…', click: () => mainWindow?.webContents.send('menu:modelSourceTransform') },
       ],

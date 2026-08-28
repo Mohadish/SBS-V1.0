@@ -159,6 +159,7 @@ export function setStyleDropdown(templates, currentId, onChange) {
 
 let _constSel  = null;   // 📌 constant-text-box dropdown (canvas selection mode)
 let _constEdit = null;   // ✏️ rename button beside it
+let _constDel  = null;   // 🗑 delete button (only empty constants may die)
 
 /**
  * 📌 Constant-text-box picker (V0.3.2.100) — mirrors the style dropdown.
@@ -167,10 +168,11 @@ let _constEdit = null;   // ✏️ rename button beside it
  * onRename(defId) is fired by the ✏️ pencil for the currently chosen
  * definition (the caller owns the prompt + persistence).
  */
-export function setConstDropdown(defs, currentId, onChange, onRename) {
+export function setConstDropdown(defs, currentId, onChange, onRename, onDelete) {
   if (!_toolbar) return;
   if (_constSel)  { _constSel.remove();  _constSel  = null; }
   if (_constEdit) { _constEdit.remove(); _constEdit = null; }
+  if (_constDel)  { _constDel.remove();  _constDel  = null; }
   if (!Array.isArray(defs)) return;
 
   const sel = document.createElement('select');
@@ -205,15 +207,31 @@ export function setConstDropdown(defs, currentId, onChange, onRename) {
   ].join(';');
   edit.addEventListener('mousedown', e => e.stopPropagation());
   edit.addEventListener('click', () => { if (sel.value) onRename?.(sel.value); });
+
+  // 🗑 delete-the-constant (V0.3.2.102). Only an EMPTY constant may die —
+  // the handler refuses in-use defs with a status explaining where they
+  // live (the attached box you're editing counts as usage, so from here
+  // this mostly fires the explanation; the Constant Titles panel is the
+  // proper cleanup home, with counts and disabled bins).
+  const del = document.createElement('button');
+  del.textContent = '🗑';
+  del.title = 'Delete this constant (only when no step uses it)';
+  del.style.cssText = edit.style.cssText;
+  del.addEventListener('mousedown', e => e.stopPropagation());
+  del.addEventListener('click', () => { if (sel.value) onDelete?.(sel.value); });
+
   const _syncConstEdit = () => {
     edit.style.display = sel.value ? '' : 'none';
+    del.style.display  = sel.value ? '' : 'none';
   };
   _syncConstEdit();
 
+  _toolbar.prepend(del);
   _toolbar.prepend(edit);
   _toolbar.prepend(sel);
   _constSel  = sel;
   _constEdit = edit;
+  _constDel  = del;
 }
 
 /**

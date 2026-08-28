@@ -1487,6 +1487,27 @@ window.sbsNative?.onMenu?.('menu:unifyConstTitles', () => {
   window.sbsUnifyTitles().catch(err => console.error('[unify-titles] failed:', err));
 });
 
+// Edit → "Constant Titles…" (V0.3.2.102) — floating navigator panel: usage
+// counts per type, ▲▼ step-jumping like a document search, rename/delete,
+// clean-up. Console alias: sbsConstPanel().
+window.sbsConstPanel = async () => {
+  const m = await import('./ui/const-titles-panel.js');
+  m.openConstTitlesPanel();
+};
+window.sbsNative?.onMenu?.('menu:constTitlesPanel', () => {
+  window.sbsConstPanel().catch(err => console.error('[const-panel] failed:', err));
+});
+
+// Edit → "Clean Up Unused Constant Titles" — deletes every constant type
+// with zero instances project-wide (one undo). Console alias: sbsCleanupTitles().
+window.sbsCleanupTitles = async () => {
+  const m = await import('./systems/overlay.js');
+  return m.cleanupUnusedConstDefs();
+};
+window.sbsNative?.onMenu?.('menu:cleanupConstTitles', () => {
+  window.sbsCleanupTitles().catch(err => console.error('[cleanup-titles] failed:', err));
+});
+
 // Background narration pre-cache:
 //   • on project load — synthesize every step's saved text once, in the
 //     background, so Preview / Export are instant when the user gets there.

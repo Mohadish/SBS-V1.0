@@ -72,6 +72,12 @@ contextBridge.exposeInMainWorld('sbsNative', {
       'menu:openSettings',
       'menu:modelSourceTransform',
       'menu:recoverStuckInputs',
+      // 📌 V0.3.2.102 — constant-title tools. THIS LIST IS A WHITELIST:
+      // a menu channel missing here subscribes to nothing, silently —
+      // that's exactly how the Unify item shipped dead in .101.
+      'menu:unifyConstTitles',
+      'menu:constTitlesPanel',
+      'menu:cleanupConstTitles',
     ];
     if (!allowed.includes(channel)) return;
     ipcRenderer.on(channel, (_e, ...args) => cb(...args));
