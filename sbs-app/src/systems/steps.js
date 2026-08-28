@@ -1369,7 +1369,7 @@ class StepManager {
       if ((types.includes('overlay') || types.includes('overlays')) && !overlayHandled) {
         overlayHandled = true;
         const sustained = types.includes('overlays');
-        phasePromises.push(new Promise(resolve => {
+        phasePromises.push((async () => {
           // 🎬 V0.3.2.84 — VIDEO-BEARING OVERLAYS stretch this block. The
           // fade-in plays over the clip's frozen first frame (clips park
           // until triggered); when the fade completes, playback starts and
@@ -1378,20 +1378,50 @@ class StepManager {
           // final still frame, exactly the "unique" semantics: video never
           // overflows, everything after it queues behind it. _sleep is the
           // export-overridable sleep, so live and encode agree to the frame.
-          const done = async () => {
-            try {
-              const activeStep = (state.get('steps') || []).find(s => s.id === state.get('activeStepId'));
-              const vMs = activeStep ? videoOverlay.stepVideoWindowMs(activeStep) : 0;
-              if (vMs > 0) {
-                videoOverlay.beginPlayback();
-                await _sleep(vMs);
-              }
-            } catch { /* video timing is additive — never break the transition */ }
-            resolve();
-          };
-          if (sustained) overlaySystem.beginOverlaySustainedFade(durationMs, easeFn, done);
-          else           overlaySystem.beginOverlayCrossfade   (durationMs, easeFn, done);
-        }));
+          let fadeDone = false;
+          const doneP = new Promise(resolve => {
+            const done = async () => {
+              try {
+                const activeStep = (state.get('steps') || []).find(s => s.id === state.get('activeStepId'));
+                const vMs = activeStep ? videoOverlay.stepVideoWindowMs(activeStep) : 0;
+                if (vMs > 0) {
+                  videoOverlay.beginPlayback();
+                  await _sleep(vMs);
+                }
+              } catch { /* video timing is additive — never break the transition */ }
+              fadeDone = true;
+              resolve();
+            };
+            if (sustained) overlaySystem.beginOverlaySustainedFade(durationMs, easeFn, done);
+            else           overlaySystem.beginOverlayCrossfade   (durationMs, easeFn, done);
+          });
+          // ⏱ V0.3.2.96 — EXPORT CLOCK DRIVER. Since .95 the crossfade arms
+          // only after the incoming step LOADS (so fade frames never capture
+          // a half-built layer). But offline, synthetic time advances ONLY
+          // while something sleeps: once this block's slot sleep ends and
+          // the engine merely AWAITS this promise, the clock stops — the
+          // fade can arm but never progress, and the export hangs forever
+          // (the reported stuck-at-fade-out). Keep the clock beating in
+          // small beats until the fade completes; the extra held-ghost
+          // frames are exactly the "previous still holds a moment longer"
+          // the .95 design intends. Live mode never needs this — real time
+          // advances on its own.
+          if (state.get('_exporting')) {
+            // Cap the driver so no future fade defect can wedge an export
+            // forever again: generous headroom for load + fade + a video
+            // window, then bail loudly and let the export finish (one
+            // rough transition beats a hung render).
+            const capMs = durationMs + 120_000;
+            let driven = 0;
+            while (!fadeDone && driven < capMs) { await _sleep(40); driven += 40; }
+            if (!fadeDone) {
+              console.error(`[export] overlay fade did not complete within ${Math.round(capMs / 1000)}s — continuing without it (transition may look abrupt)`);
+              await Promise.race([doneP, _sleep(1000)]);
+              return;
+            }
+          }
+          await doneP;
+        })());
         // V0.2.22.57 — spec-name tags appear at the overlay block.
         if (stagedActorIds.size) showInsertTags();
       }
