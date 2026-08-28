@@ -1197,7 +1197,10 @@ export async function addVideo(absPath) {
 
   // Poster: one small JPEG of the first frame, inlined so the node draws
   // instantly on reload and still shows something if the file goes missing.
-  try { node.setAttr('posterSrc', await _captureVideoPoster(video)); }
+  try {
+    node.setAttr('posterSrc', await _captureVideoPoster(video));
+    node.setAttr('posterAtMs', 0);   // fresh insert = untrimmed, poster at 0 (self-heals on trim)
+  }
   catch { /* poster is optional */ }
 
   _layer.add(node);
@@ -1805,7 +1808,7 @@ function _serializeNode(node) {
     // trim window, the mute state, and a small poster frame so the node has
     // something to draw before the file loads (or if it's gone missing).
     'isVideo', 'videoId', 'videoPath', 'videoRel', 'videoDurationMs',
-    'trimInMs', 'trimOutMs', 'muted', 'volume', 'posterSrc',
+    'trimInMs', 'trimOutMs', 'muted', 'volume', 'posterSrc', 'posterAtMs',
   ]) {
     if (a[k] != null) out.attrs[k] = Array.isArray(a[k]) ? a[k].slice()
                                     : (a[k] && typeof a[k] === 'object' ? { ...a[k] } : a[k]);

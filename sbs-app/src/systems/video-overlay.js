@@ -255,8 +255,38 @@ export async function attachVideoElement(node) {
   }
 
   // Seek to the trim start so the node shows the right first frame at rest.
+  // AWAITED (V0.3.2.94) so the poster freshness check below can capture the
+  // genuinely-decoded trim-in frame.
   const inMs = _trimIn(node);
-  try { video.currentTime = inMs / 1000; } catch { /* pre-metadata seek */ }
+  await new Promise((res) => {
+    if (Math.abs(video.currentTime * 1000 - inMs) < 12) return res();
+    const ok = () => res();
+    video.addEventListener('seeked', ok, { once: true });
+    setTimeout(ok, 400);
+    try { video.currentTime = inMs / 1000; } catch { res(); }
+  });
+
+  // 🩹 SELF-HEALING POSTER (V0.3.2.94). The poster is the still slate the
+  // fade-in plays over — it MUST show the trim-in frame. Older nodes carry
+  // a poster captured at source second 0 (pre-.85 insert), and the .91
+  // transcode re-point never refreshed it: the exported fade-in faded the
+  // clip in over an IRRELEVANT frame. The node now records WHICH ms its
+  // poster shows (posterAtMs); any mismatch with the current trim-in
+  // re-captures right here, where the decoder is already parked on the
+  // correct frame. Heals every stale node on its next load, forever.
+  try {
+    if (Number(node.getAttr('posterAtMs') ?? -1) !== inMs && video.videoWidth) {
+      const scale = Math.min(1, 480 / video.videoWidth);
+      const c = document.createElement('canvas');
+      c.width  = Math.max(1, Math.round(video.videoWidth * scale));
+      c.height = Math.max(1, Math.round(video.videoHeight * scale));
+      c.getContext('2d').drawImage(video, 0, 0, c.width, c.height);
+      node.setAttr('posterSrc', c.toDataURL('image/jpeg', 0.7));
+      node.setAttr('posterAtMs', inMs);
+      import('./overlay.js').then(m => m.scheduleSave?.()).catch(() => {});
+      console.log(`[video] poster re-captured at trim-in (${(inMs / 1000).toFixed(2)}s) — fade-in slate now matches the clip`);
+    }
+  } catch { /* poster is cosmetic — never block the attach */ }
 
   node.image(video);
   _players.set(id, { node, video, path });   // refresh (registered pre-ready; node may be newer)
@@ -385,6 +415,7 @@ export async function refreshPoster(node) {
     c.height = Math.max(1, Math.round(video.videoHeight * scale));
     c.getContext('2d').drawImage(video, 0, 0, c.width, c.height);
     node.setAttr('posterSrc', c.toDataURL('image/jpeg', 0.7));
+    node.setAttr('posterAtMs', inMs);   // V0.3.2.94 — freshness marker for the self-healing check
     await seekTo(prev);
     return true;
   } catch { return false; }
