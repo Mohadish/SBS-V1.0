@@ -151,10 +151,23 @@ export async function attachVideoElement(node) {
     // element to the fresh node — the old binding pointed at a destroyed
     // node, which left the new one on its poster and orphaned the audio.
     existing.node = node;
-    node.image(existing.video);
-    return existing.video;
+    // V0.3.2.93 — THE FADE-OUT ROOT CAUSE (trace-proven: ghost handoff
+    // carried "img=HTMLVideoElement rs=0"). Since .83 registers elements
+    // PRE-readiness, this branch could grab a still-loading entry and bind
+    // its EMPTY element immediately — the caller believed the attach was
+    // complete, waitForOverlayStable resolved, and the boundary crossfade
+    // faded a video that draws nothing. WAIT for the pending load before
+    // binding; if the element still has no media after that, fall through
+    // and build a fresh one instead of handing back a dead shell.
+    if (existing.ready) { try { await existing.ready; } catch { /* falls through below */ } }
+    if (existing.video.readyState >= 2) {
+      node.image(existing.video);
+      return existing.video;
+    }
+    detachVideo(existing.node || node);
+  } else if (existing) {
+    detachVideo(existing.node || node);
   }
-  if (existing) detachVideo(existing.node || node);
   if (!path) return null;
 
   const video = document.createElement('video');
@@ -173,7 +186,8 @@ export async function attachVideoElement(node) {
   // element used to be invisible to detachAll — an ORPHAN that finished
   // loading later and played its audio forever. In the pool from birth,
   // every cleanup path can reach it.
-  _players.set(id, { node, video, path });
+  const entry = { node, video, path, ready: null };
+  _players.set(id, entry);
 
   // 🔊 Element-level trim clamp (V0.3.2.83): the tick-driven clamp only
   // runs while the render loop draws — but AUDIO plays straight from the
@@ -202,6 +216,10 @@ export async function attachVideoElement(node) {
     video.addEventListener('error',      bad, { once: true });
     setTimeout(() => { if (!settled) bad(); }, 15000);
   });
+  // Expose the pending load on the entry so the same-path reuse branch can
+  // WAIT instead of binding an empty element (V0.3.2.93). Swallowed here —
+  // the await below carries the real rejection.
+  entry.ready = ready.catch(() => null).finally(() => { entry.ready = null; });
 
   try { await ready; }
   catch (e) {
