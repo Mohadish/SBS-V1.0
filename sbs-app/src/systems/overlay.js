@@ -1805,7 +1805,7 @@ function _serializeNode(node) {
     // trim window, the mute state, and a small poster frame so the node has
     // something to draw before the file loads (or if it's gone missing).
     'isVideo', 'videoId', 'videoPath', 'videoRel', 'videoDurationMs',
-    'trimInMs', 'trimOutMs', 'muted', 'volume', 'posterSrc',
+    'trimInMs', 'trimOutMs', 'muted', 'volume', 'posterSrc', 'posterAtMs',
   ]) {
     if (a[k] != null) out.attrs[k] = Array.isArray(a[k]) ? a[k].slice()
                                     : (a[k] && typeof a[k] === 'object' ? { ...a[k] } : a[k]);
@@ -3448,12 +3448,27 @@ function _beginOverlayFade(durationMs, easeFn, onDone, mode) {
   _layer.batchDraw();
   _suppressNextStepAppliedLoad = true;
   _currentLoadPromise = (async () => { await _loadFromActiveStep(); })();
-  _activeFade = {
-    startMs: clock.now(),
-    durationMs, easeFn, onDone,
-    crossfade: mode === 'crossfade',
-    sustained: mode === 'sustained',
+  const arm = () => {
+    _activeFade = {
+      startMs: clock.now(),
+      durationMs, easeFn, onDone,
+      crossfade: mode === 'crossfade',
+      sustained: mode === 'sustained',
+    };
   };
+  // 🎬 V0.3.2.95 — EXPORT ONLY: don't start the fade until the incoming
+  // content has actually loaded. Export frames encode WHILE the load runs;
+  // arming immediately let early fade frames capture the incoming layer
+  // half-built — for a video step that meant the stale poster slate (source
+  // second 0) fading in before the real element reached its trim-in frame:
+  // the reported "something irrelevant, faded over". The ghost holds the
+  // previous step at full opacity for the extra beat, which is exactly the
+  // still-frame behaviour the spec wants. Live keeps arming instantly —
+  // humans prefer responsiveness over frame-exactness; the export needs the
+  // opposite. finally() (not then) so a failed load can never leave the
+  // fade unarmed and hang the phase promise.
+  if (state.get('_exporting')) _currentLoadPromise.finally(arm);
+  else arm();
 }
 
 /**
@@ -3636,7 +3651,23 @@ async function _loadFromActiveStep() {
   // AWAITED since V0.3.2.82: the load promise (waitForOverlayStable) must
   // cover video-element readiness, or the export's first frames capture the
   // node before its decoder has a frame — the "blinks in" half of the bug.
-  await videoOverlay.startVideos(_layer.getChildren().filter(n => videoOverlay.isVideoNode(n)));
+  const _videoNodes = _layer.getChildren().filter(n => videoOverlay.isVideoNode(n));
+  await videoOverlay.startVideos(_videoNodes);
+  // 🩹 LAZY POSTER HEAL (V0.3.2.95 — the .94 attempt did this INSIDE the
+  // attach path and destabilised live playback; reverted). Out-of-band and
+  // fire-and-forget instead: a poster whose recorded frame (posterAtMs)
+  // doesn't match the current trim-in is re-captured via refreshPoster
+  // (which seeks, snapshots, and RESTORES the position) after the step has
+  // fully loaded. Heals the stale "source second 0" fade-in slates without
+  // touching element lifecycle or timing.
+  for (const vn of _videoNodes) {
+    const inMs = Math.max(0, Number(vn.getAttr('trimInMs') ?? 0));
+    if (Number(vn.getAttr('posterAtMs') ?? -1) !== inMs) {
+      videoOverlay.refreshPoster(vn).then(ok => {
+        if (ok) { vn.setAttr('posterAtMs', inMs); _scheduleSave(); }
+      }).catch(() => { /* cosmetic */ });
+    }
+  }
   // V0.3.2.84 — clips park until triggered. With an overlay fade in flight,
   // the phase engine triggers playback when the fade COMPLETES (fade lands
   // on the frozen first frame). Without one (anim string has no overlay
