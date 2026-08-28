@@ -397,6 +397,107 @@ function _propagateConstStyle(node, styleId) {
   }
 }
 
+/**
+ * 🧹 UNIFY CONSTANT TITLES (V0.3.2.101) — the post-processing sweep.
+ * Walks EVERY step's overlay, clusters plain text boxes by (position
+ * within a ~14px tolerance + EXACT style binding), and turns every
+ * cluster that appears on ≥2 distinct steps into a new constant type
+ * with all members stamped. Definition position = the cluster's most
+ * common exact spot, so hand-placed strays snap to the majority on
+ * their next load. Style must match exactly — a false merge would
+ * restyle boxes, a miss costs nothing (per the user: misses accepted).
+ * One undo entry restores every touched overlay + the definitions.
+ */
+export async function unifyConstantTitles() {
+  flushSave();   // live edits on the active step participate
+  const stepsArr = state.get('steps') || [];
+  const TOL = 14;
+
+  // Pass 1 — parse + cluster.
+  const parsed = [];
+  for (const s of stepsArr) {
+    if (typeof s.overlay !== 'string' || !s.overlay) continue;
+    let spec; try { spec = JSON.parse(s.overlay); } catch { continue; }
+    const boxes = [];
+    for (const layer of (spec.children || [])) {
+      for (const n of (layer.children || [])) {
+        const a = n.attrs || {};
+        // Plain user text boxes only. Headers (`sbs-header-item`) also carry
+        // textHtml and ARE same-position/same-style on every step by design —
+        // without this exclusion the sweep would swallow every header.
+        if (!a.textHtml || a.isToc || a.constId || a.isVideo) continue;
+        if (a.name === 'sbs-header-item') continue;
+        boxes.push(n);
+      }
+    }
+    if (boxes.length) parsed.push({ step: s, spec, boxes });
+  }
+  const clusters = new Map();
+  for (const e of parsed) {
+    for (const n of e.boxes) {
+      const a = n.attrs;
+      const key = `${Math.round((a.x || 0) / TOL)}|${Math.round((a.y || 0) / TOL)}|${a.styleId || ''}`;
+      let c = clusters.get(key);
+      if (!c) clusters.set(key, c = { styleId: a.styleId || null, members: [], stepIds: new Set(), posCount: new Map() });
+      c.members.push({ entry: e, node: n });
+      c.stepIds.add(e.step.id);
+      const pk = `${Math.round(a.x || 0)},${Math.round(a.y || 0)}`;
+      c.posCount.set(pk, (c.posCount.get(pk) || 0) + 1);
+    }
+  }
+
+  // Pass 2 — mint definitions for clusters spanning ≥2 steps, stamp members.
+  const prevDefs = _constDefs();
+  const newDefs = [];
+  const touched = new Map();   // stepId -> entry
+  let unified = 0;
+  const baseCounts = new Map();
+  for (const c of clusters.values()) {
+    if (c.stepIds.size < 2) continue;
+    let bestPk = null, bestN = -1;
+    for (const [pk, n] of c.posCount) if (n > bestN) { bestN = n; bestPk = pk; }
+    const [mx, my] = bestPk.split(',').map(Number);
+    const base = c.styleId ? (getStyleTemplate(c.styleId)?.name || 'Styled') : 'Title';
+    const nth = (baseCounts.get(base) || 0) + 1;
+    baseCounts.set(base, nth);
+    const def = {
+      id: `ctb_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 6)}_${newDefs.length}`,
+      name: nth > 1 ? `${base} (auto ${nth})` : `${base} (auto)`,
+      anchor: 'tl', x: mx, y: my, styleId: c.styleId,
+    };
+    newDefs.push(def);
+    for (const m of c.members) {
+      m.node.attrs.constId = def.id;
+      unified++;
+      touched.set(m.entry.step.id, m.entry);
+    }
+  }
+  if (!newDefs.length) {
+    setStatus('Unify found no repeating title patterns (needs the same position + style on at least 2 steps).', 'info', 8000);
+    return { created: 0, unified: 0 };
+  }
+
+  // Apply + ONE targeted undo entry (overlay STRINGS are shared refs — cheap).
+  const prevOverlays = [...touched.values()].map(e => ({ id: e.step.id, overlay: e.step.overlay }));
+  const nextOverlays = [...touched.values()].map(e => ({ id: e.step.id, overlay: JSON.stringify(e.spec) }));
+  const swap = (overlays, defs) => {
+    const arr = state.get('steps') || [];
+    for (const p of overlays) { const s = arr.find(x => x.id === p.id); if (s) s.overlay = p.overlay; }
+    state.setState({ steps: [...arr], constTextBoxes: defs });
+    state.markDirty();
+    _scheduleLoad();   // active step re-reads its (possibly patched) overlay
+  };
+  swap(nextOverlays, [...prevDefs, ...newDefs]);
+  undoManager.push('Unify constant titles',
+    () => swap(prevOverlays, prevDefs),
+    () => swap(nextOverlays, [...prevDefs, ...newDefs]),
+  );
+
+  console.table(newDefs.map(d => ({ name: d.name, x: d.x, y: d.y, style: d.styleId || '(none)' })));
+  setStatus(`Unified ${unified} title(s) into ${newDefs.length} constant type(s) across ${touched.size} step(s) — rename via the 📌 dropdown's ✏️.`, 'success', 10000);
+  return { created: newDefs.length, unified, steps: touched.size };
+}
+
 /** Insert an instance of a constant text box on the active step. */
 export async function insertConstTextBox(defId) {
   const def = _constDefs().find(d => d.id === defId);

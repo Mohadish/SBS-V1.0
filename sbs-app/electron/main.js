@@ -322,6 +322,10 @@ function buildMenu() {
           accelerator: 'Ctrl+Alt+U',
           click: () => mainWindow?.webContents.send('menu:recoverStuckInputs'),
         },
+        {
+          label: 'Unify Constant Titles',
+          click: () => mainWindow?.webContents.send('menu:unifyConstTitles'),
+        },
         { type: 'separator' },
         { label: 'Model source transform…', click: () => mainWindow?.webContents.send('menu:modelSourceTransform') },
       ],

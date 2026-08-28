@@ -1475,6 +1475,18 @@ window.sbsNative?.onMenu?.('menu:recoverStuckInputs', () => {
   }
 });
 
+// Edit → "Unify Constant Titles" (V0.3.2.101) — post-processing sweep:
+// clusters same-position + same-style text boxes across ALL steps into
+// new constant types. One undo entry reverses the whole batch.
+// Console alias sbsUnifyTitles() runs it without the menu (Ctrl+R-testable).
+window.sbsUnifyTitles = async () => {
+  const m = await import('./systems/overlay.js');
+  return m.unifyConstantTitles();
+};
+window.sbsNative?.onMenu?.('menu:unifyConstTitles', () => {
+  window.sbsUnifyTitles().catch(err => console.error('[unify-titles] failed:', err));
+});
+
 // Background narration pre-cache:
 //   • on project load — synthesize every step's saved text once, in the
 //     background, so Preview / Export are instant when the user gets there.
