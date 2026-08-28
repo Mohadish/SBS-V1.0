@@ -431,6 +431,11 @@ export async function unifyConstantTitles() {
         // without this exclusion the sweep would swallow every header.
         if (!a.textHtml || a.isToc || a.constId || a.isVideo) continue;
         if (a.name === 'sbs-header-item') continue;
+        // Interface-bonded boxes (attachedTo = ifaceId) belong to their
+        // interface, not to a project-wide pin — a constId would fight the
+        // bond's follow-the-interface geometry. Deliberate manual "Make
+        // constant" on one stays allowed; the AUTO sweep must ignore them.
+        if (a.attachedTo) continue;
         boxes.push(n);
       }
     }
