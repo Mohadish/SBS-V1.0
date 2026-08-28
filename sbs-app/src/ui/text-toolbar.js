@@ -157,6 +157,65 @@ export function setStyleDropdown(templates, currentId, onChange) {
   _styleSel = sel;
 }
 
+let _constSel  = null;   // 📌 constant-text-box dropdown (canvas selection mode)
+let _constEdit = null;   // ✏️ rename button beside it
+
+/**
+ * 📌 Constant-text-box picker (V0.3.2.100) — mirrors the style dropdown.
+ * Pass defs (array) + the selected box's current constId to show; pass
+ * null to hide. onChange(defId|null) attaches/detaches the selected box;
+ * onRename(defId) is fired by the ✏️ pencil for the currently chosen
+ * definition (the caller owns the prompt + persistence).
+ */
+export function setConstDropdown(defs, currentId, onChange, onRename) {
+  if (!_toolbar) return;
+  if (_constSel)  { _constSel.remove();  _constSel  = null; }
+  if (_constEdit) { _constEdit.remove(); _constEdit = null; }
+  if (!Array.isArray(defs)) return;
+
+  const sel = document.createElement('select');
+  sel.title = 'Attach this text box to a constant (pinned position + unified style)';
+  sel.style.cssText = [
+    'background:#1f2937', 'color:#e5e7eb',
+    'border:1px solid #334155', 'border-radius:6px',
+    'height:28px', 'padding:0 6px', 'font-size:13px', 'cursor:pointer',
+    'min-width:110px', 'order:-1',
+  ].join(';');
+  const noneOpt = document.createElement('option');
+  noneOpt.value = '';
+  noneOpt.textContent = '(not constant)';
+  sel.appendChild(noneOpt);
+  for (const d of defs) {
+    const o = document.createElement('option');
+    o.value = d.id;
+    o.textContent = `📌 ${d.name || 'Unnamed'}`;
+    sel.appendChild(o);
+  }
+  sel.value = currentId || '';
+  sel.addEventListener('mousedown', e => e.stopPropagation());
+  sel.addEventListener('change', () => { onChange(sel.value || null); _syncConstEdit(); });
+
+  const edit = document.createElement('button');
+  edit.textContent = '✏️';
+  edit.title = 'Rename this constant';
+  edit.style.cssText = [
+    'background:#1f2937', 'color:#e5e7eb', 'border:1px solid #334155',
+    'border-radius:6px', 'height:28px', 'width:30px', 'font-size:13px',
+    'cursor:pointer', 'order:-1',
+  ].join(';');
+  edit.addEventListener('mousedown', e => e.stopPropagation());
+  edit.addEventListener('click', () => { if (sel.value) onRename?.(sel.value); });
+  const _syncConstEdit = () => {
+    edit.style.display = sel.value ? '' : 'none';
+  };
+  _syncConstEdit();
+
+  _toolbar.prepend(edit);
+  _toolbar.prepend(sel);
+  _constSel  = sel;
+  _constEdit = edit;
+}
+
 /**
  * When a style is bound, hide the locked group so only Align L/C/R and
  * the style dropdown remain. Call after every selection change /

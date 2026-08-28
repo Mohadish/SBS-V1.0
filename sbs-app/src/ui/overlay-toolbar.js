@@ -83,6 +83,30 @@ export function initOverlayToolbar() {
   const btnArrow = _btn('→',   'Add arrow');
   const btnToc   = _btn('▤',   'Add table of contents (auto from chapters + timecodes)');
   const btnDel   = _btn('🗑',   'Delete selected');
+  // 🔒 Header layer lock (V0.3.2.100) — same toggle the Header tab has,
+  // surfaced on the edit toolbar per user request. Label always shows the
+  // CURRENT state; click flips it (undoable, same wrapper as the tab).
+  const btnHdrLock = _btn('🔒 Header', 'Toggle the header layer lock (locked = headers can\'t be dragged/edited on the canvas)');
+  const _syncHdrLock = () => {
+    const locked = !!state.get('headersLocked');
+    btnHdrLock.textContent = locked ? '🔒 Header locked' : '🔓 Header unlocked';
+    btnHdrLock.style.opacity = locked ? '1' : '0.75';
+  };
+  btnHdrLock.addEventListener('click', async () => {
+    // Dynamic imports: static ones would close an import cycle
+    // (overlay-toolbar ← overlay ← steps ← actions / header).
+    const [{ setHeadersLocked }, actions] = await Promise.all([
+      import('../systems/header.js'), import('../systems/actions.js'),
+    ]);
+    const locked = !!state.get('headersLocked');
+    actions.commitStateChange(
+      locked ? 'Unlock header layer' : 'Lock header layer',
+      ['headersLocked'],
+      () => setHeadersLocked(!locked),
+    );
+  });
+  state.on('change:headersLocked', _syncHdrLock);
+  _syncHdrLock();
   btnText.addEventListener('click', async () => {
     const node = await overlay.addTextBox();
     if (node) setStatus('Text box added — double-click to edit.');
@@ -160,7 +184,7 @@ export function initOverlayToolbar() {
     );
   });
 
-  _tools.append(btnText, btnConst, btnImg, btnVideo, btnIface, btnRect, btnCirc, btnEll, btnTri, btnLine, btnArrow, btnToc, btnDel);
+  _tools.append(btnText, btnConst, btnImg, btnVideo, btnIface, btnRect, btnCirc, btnEll, btnTri, btnLine, btnArrow, btnToc, btnDel, btnHdrLock);
 
   // The editing toggle is rightmost — always visible, single source of
   // truth for entering/leaving overlay editing. The old "Done" button

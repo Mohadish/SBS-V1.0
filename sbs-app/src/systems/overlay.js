@@ -26,7 +26,7 @@ import { promptString } from '../ui/prompt.js';
 import { openSequenceEditor } from '../ui/sequence-editor.js';
 import { narrationContextForStep } from './narration-timeline.js';
 import * as interfaces from './interfaces.js';   // interface overlay (used lazily in the right-click menu)
-import { mountTextToolbar, unmountTextToolbar, execCommandApplier, setToolbarValues, wasColorPickedRecently, setStyleDropdown, setStyleLocked } from '../ui/text-toolbar.js';
+import { mountTextToolbar, unmountTextToolbar, execCommandApplier, setToolbarValues, wasColorPickedRecently, setStyleDropdown, setStyleLocked, setConstDropdown } from '../ui/text-toolbar.js';
 import { mountShapeToolbar, unmountShapeToolbar } from '../ui/shape-toolbar.js';
 import { getTextToolbarSlot }  from '../ui/overlay-toolbar.js';
 import * as textEngine from './text-engine.js';
@@ -872,6 +872,7 @@ function _enterTextEdit(node, ctxOverride) {
       setStyleLocked(!!initialStyleId);
     } else {
       setStyleDropdown(null);    // explicitly hide
+      setConstDropdown(null);    // 📌 hidden while typing — attach/detach from selection mode
       setStyleLocked(false);
     }
   }
@@ -2983,8 +2984,41 @@ function _refreshMultiToolbar() {
       _scheduleSave();
     });
     setStyleLocked(uniformId ? true : false);
+    // 📌 Constant picker (V0.3.2.100) — single plain text box only (multi
+    // would be ambiguous; TOC boxes are machine-managed). The ✏️ pencil
+    // renames the chosen definition everywhere it appears.
+    const solo = textBoxes.length === 1 ? textBoxes[0] : null;
+    if (solo && !solo.getAttr('isToc')) {
+      setConstDropdown(_constDefs(), solo.getAttr('constId') || '', (defId) => {
+        if (!defId) {
+          solo.setAttr('constId', null);
+          setStatus('Detached — now a normal text box.', 'info', 3000);
+        } else {
+          const def = _constDefs().find(d => d.id === defId);
+          if (def) {
+            solo.setAttr('constId', def.id);
+            _applyConstToNode(solo, def);
+            _layer.batchDraw();
+            setStatus(`Attached to "${def.name}".`, 'success', 3000);
+          }
+        }
+        _scheduleSave();
+      }, async (defId) => {
+        const def = _constDefs().find(d => d.id === defId);
+        if (!def) return;
+        const name = await promptString('Rename constant', def.name || '');
+        if (!name || !name.trim() || name.trim() === def.name) return;
+        def.name = name.trim();
+        _saveConstDefs([..._constDefs()]);
+        _refreshMultiToolbar();   // rebuilds this dropdown with live handlers + the new name
+        setStatus(`Constant renamed to "${def.name}".`, 'success', 3000);
+      });
+    } else {
+      setConstDropdown(null);
+    }
   } else {
     unmountTextToolbar();
+    setConstDropdown(null);
   }
 }
 
