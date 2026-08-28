@@ -3436,6 +3436,13 @@ function _beginOverlayFade(durationMs, easeFn, onDone, mode) {
   for (const c of [..._layer.getChildren()]) c.moveTo(_ghostLayer);
   _ghostLayer.opacity(1);
   _ghostLayer.batchDraw();
+  if (typeof window !== 'undefined' && window.sbsDiag?.videoExportTrace) {
+    const kinds = _ghostLayer.getChildren().map(c => {
+      const img = c.image?.();
+      return `${c.getClassName()}${c.getAttr?.('isVideo') ? '[VIDEO img=' + (img?.constructor?.name || 'none') + ' rs=' + (img?.readyState ?? '-') + ' t=' + (img?.currentTime?.toFixed?.(2) ?? '-') + ']' : ''}`;
+    });
+    console.log(`[vtrace] GHOST HANDOFF: ${kinds.length} node(s) → ghost: ${kinds.join(', ')}`);
+  }
   // Reset _layer + load new step's content into it at opacity 0.
   _layer.opacity(0);
   _layer.batchDraw();
@@ -3492,6 +3499,16 @@ function _advanceOverlayFade(nowMs) {
   _ghostLayer.opacity(ghostA);
   _layer.batchDraw();
   _ghostLayer.batchDraw();
+  if (typeof window !== 'undefined' && window.sbsDiag?.videoExportTrace) {
+    _vtraceN = (_vtraceN || 0) + 1;
+    if (_vtraceN % 8 === 1 || raw >= 1) {
+      const g = _ghostLayer.getChildren().map(c => {
+        const img = c.image?.();
+        return c.getAttr?.('isVideo') ? `VIDEO(img=${img?.constructor?.name || 'none'})` : c.getClassName();
+      });
+      console.log(`[vtrace] fade raw=${raw.toFixed(2)} layerA=${layerA.toFixed(2)} ghostA=${ghostA.toFixed(2)} ghost=[${g.join(',')}]`);
+    }
+  }
   if (raw >= 1) {
     _ghostLayer.destroyChildren();
     _ghostLayer.batchDraw();
@@ -3499,6 +3516,8 @@ function _advanceOverlayFade(nowMs) {
     if (onDone) onDone();
   }
 }
+let _vtraceN = 0;
+let _vtraceRastN = 0;
 
 // Drive the fade from sceneCore's tick so the lerp runs in-step with
 // the rest of the per-frame work (cable transitions, gizmo, etc.).
@@ -3715,6 +3734,12 @@ export function rasterizeOverlay(opts = {}) {
   // In steady state the ghost layer is empty, so this is a no-op vs. before.
   const layers = [_ghostLayer, _layer].filter(l => l && l.getChildren().length > 0);
   if (!layers.length) return null;
+  if (typeof window !== 'undefined' && window.sbsDiag?.videoExportTrace && _ghostLayer?.getChildren().length) {
+    _vtraceRastN = (_vtraceRastN || 0) + 1;
+    if (_vtraceRastN % 8 === 1) {
+      console.log(`[vtrace] rasterizeOverlay: layers=[${layers.map(l => l === _ghostLayer ? `ghost(op=${l.opacity().toFixed(2)},n=${l.getChildren().length})` : `main(op=${l.opacity().toFixed(2)},n=${l.getChildren().length})`).join(', ')}]`);
+    }
+  }
 
   // Render at the project's CANONICAL size (state.export.width × height).
   // Konva's layer.toCanvas inherits the stage transform, so the live stage.scale

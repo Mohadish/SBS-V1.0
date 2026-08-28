@@ -241,14 +241,18 @@ export function detachVideo(node) {
   // no path can blank a still-visible node.
   try {
     const { node: n, video: v } = p;
-    if (n && !n.isDestroyed?.() && n.image() === v && v.readyState >= 2 && v.videoWidth) {
+    const eligible = n && !n.isDestroyed?.() && n.image() === v && v.readyState >= 2 && v.videoWidth;
+    if (window.sbsDiag?.videoExportTrace) {
+      console.log(`[vtrace] detachVideo: freeze=${eligible ? 'YES' : 'no'} destroyed=${!!n?.isDestroyed?.()} imageIsElement=${n?.image?.() === v} rs=${v?.readyState} t=${v?.currentTime?.toFixed?.(2)}`);
+    }
+    if (eligible) {
       const c = document.createElement('canvas');
       c.width = v.videoWidth; c.height = v.videoHeight;
       c.getContext('2d').drawImage(v, 0, 0);
       n.image(c);
       n.getLayer()?.batchDraw();
     }
-  } catch { /* cosmetic — never block the release */ }
+  } catch (e) { if (window.sbsDiag?.videoExportTrace) console.log('[vtrace] detach freeze THREW:', e?.message); }
   try { p.video.pause(); } catch { /* already gone */ }
   p.video.removeAttribute('src');
   try { p.video.load(); } catch { /* best-effort release */ }
@@ -430,6 +434,9 @@ export async function seekAllToClock(synthMs) {
  * seek clamp to trim-out.
  */
 export async function parkAtEnd() {
+  if (window.sbsDiag?.videoExportTrace) {
+    console.log(`[vtrace] parkAtEnd: ${_players.size} player(s)`);
+  }
   for (const p of _players.values()) {
     const { node, video } = p;
     if (!node || node.isDestroyed?.() || video.readyState < 1) continue;
