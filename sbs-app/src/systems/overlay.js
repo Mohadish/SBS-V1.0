@@ -2840,7 +2840,24 @@ function _showOverlayContextMenu(node, x, y) {
       ? [{ label: '📌 Constant definition missing — detach',
            action: () => { node.setAttr('constId', null); _scheduleSave(); } },
          { separator: true }]
-      : [{ label: '📌 Make constant text box…',
+      : [
+         // V0.3.2.99 — adopt an EXISTING definition: the box keeps its text
+         // (and its width — per-instance by design) but snaps to the chosen
+         // constant's position and style, and follows it from now on.
+         ...(_constDefs().length ? [{
+           label: '📌 Attach to constant',
+           submenu: _constDefs().map(d => ({
+             label: `📌 ${d.name}`,
+             action: () => {
+               node.setAttr('constId', d.id);
+               _applyConstToNode(node, d);
+               _layer.batchDraw();
+               _scheduleSave();
+               setStatus(`Attached to "${d.name}" — snapped to its position and style; text kept.`, 'success', 4500);
+             },
+           })),
+         }] : []),
+         { label: '📌 Make constant text box…',
            action: async () => {
              const name = await promptString('Name this constant text box', `Constant ${_constDefs().length + 1}`);
              if (!name) return;
