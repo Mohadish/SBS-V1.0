@@ -3519,6 +3519,28 @@ function _advanceOverlayFade(nowMs) {
 let _vtraceN = 0;
 let _vtraceRastN = 0;
 
+// null = not probed yet; probed lazily on the first rasterizeOverlay call.
+let _konvaBakesLayerOpacity = null;
+
+/** Render a 50%-opacity layer to canvas and read back one pixel. ~128 alpha
+ *  means Konva baked the layer opacity; ~255 means it ignored it. */
+function _probeLayerOpacityBaking() {
+  try {
+    const div = document.createElement('div');
+    const stage = new Konva.Stage({ container: div, width: 2, height: 2 });
+    const layer = new Konva.Layer({ opacity: 0.5 });
+    layer.add(new Konva.Rect({ x: 0, y: 0, width: 2, height: 2, fill: '#ffffff' }));
+    stage.add(layer);
+    const c = layer.toCanvas({ x: 0, y: 0, width: 2, height: 2, pixelRatio: 1 });
+    const alpha = c.getContext('2d').getImageData(0, 0, 1, 1).data[3];
+    stage.destroy();
+    return alpha < 200;
+  } catch (e) {
+    console.warn('[overlay] opacity-baking probe failed — assuming baked (legacy behaviour):', e?.message);
+    return true;
+  }
+}
+
 // Drive the fade from sceneCore's tick so the lerp runs in-step with
 // the rest of the per-frame work (cable transitions, gizmo, etc.).
 // (sceneCore import is at the top of the file; addTickHook is wired
@@ -3749,24 +3771,37 @@ export function rasterizeOverlay(opts = {}) {
   const targetW = opts.width  || c.width;
   const pixelRatio = targetW / c.width;
 
+  // V0.3.2.90 — DOES layer.toCanvas bake the layer's own opacity? The old
+  // comment above asserted yes; the exported fade-out (ghost layer alone,
+  // full opacity for the whole window, then a cut) says otherwise. Instead
+  // of trusting either claim, PROBE Konva once at runtime: render a
+  // half-opacity test layer, read the pixel back. If baking is real,
+  // nothing changes; if it isn't, we apply each layer's opacity ourselves
+  // via globalAlpha. Either way the compensation can't double-apply.
+  if (_konvaBakesLayerOpacity === null) {
+    _konvaBakesLayerOpacity = _probeLayerOpacityBaking();
+    console.log(`[overlay] probe: layer.toCanvas ${_konvaBakesLayerOpacity ? 'BAKES layer opacity — no compensation' : 'does NOT bake layer opacity — compensating with globalAlpha'}`);
+  }
+
   const savedScale = _stage.scale();
   const savedPos   = _stage.position();
   _stage.scale({ x: 1, y: 1 });
   _stage.position({ x: 0, y: 0 });
   let out = null;
   try {
-    if (layers.length === 1) {
-      out = layers[0].toCanvas({ x: 0, y: 0, width: c.width, height: c.height, pixelRatio });
-    } else {
-      out = document.createElement('canvas');
-      out.width  = Math.round(c.width  * pixelRatio);
-      out.height = Math.round(c.height * pixelRatio);
-      const octx = out.getContext('2d');
-      for (const lyr of layers) {
-        const lc = lyr.toCanvas({ x: 0, y: 0, width: c.width, height: c.height, pixelRatio });
-        octx.drawImage(lc, 0, 0);
-      }
+    // Always composite through one output canvas (the old single-layer
+    // shortcut returned layer.toCanvas() RAW, which skipped any chance of
+    // applying the layer's opacity when Konva doesn't bake it).
+    out = document.createElement('canvas');
+    out.width  = Math.round(c.width  * pixelRatio);
+    out.height = Math.round(c.height * pixelRatio);
+    const octx = out.getContext('2d');
+    for (const lyr of layers) {
+      const lc = lyr.toCanvas({ x: 0, y: 0, width: c.width, height: c.height, pixelRatio });
+      octx.globalAlpha = _konvaBakesLayerOpacity ? 1 : Math.max(0, Math.min(1, lyr.opacity()));
+      octx.drawImage(lc, 0, 0);
     }
+    octx.globalAlpha = 1;
   } finally {
     _stage.scale(savedScale);
     _stage.position(savedPos);
