@@ -537,7 +537,7 @@ export async function unifyConstantTitles() {
     for (const p of overlays) { const s = arr.find(x => x.id === p.id); if (s) s.overlay = p.overlay; }
     state.setState({ steps: [...arr], constTextBoxes: defs });
     state.markDirty();
-    _scheduleLoad();   // active step re-reads its (possibly patched) overlay
+    _markOverlayStringsAuthoritative();   // patched strings win over the stale stage until reload
   };
   const newIds = new Set(newDefs.map(d => d.id));
   swap(nextOverlays, [...prevDefs, ...newDefs]);
@@ -619,6 +619,77 @@ export function cleanupUnusedConstDefs() {
   setStatus(`Removed ${removed.length} unused constant title(s); kept ${kept.length} in use.`, 'success', 7000);
   console.table(removed.map(d => ({ removed: d.name })));
   return { removed: removed.length, kept: kept.length };
+}
+
+/**
+ * Select the active step's instance of a constant def (V0.3.2.104) — the
+ * Constant Titles panel calls this after a ▲▼ jump so the box is instantly
+ * ready to work with. Enters overlay edit mode if needed (selection only
+ * exists there; setEditingMode broadcasts so the toolbar follows).
+ */
+export function selectConstInstance(defId) {
+  if (!_stage || !_layer || !defId) return false;
+  const node = (_layer.getChildren() || []).find(n => n.getAttr?.('constId') === defId);
+  if (!node) return false;
+  if (!_editing) setEditingMode(true);
+  _setSelection(node);
+  return true;
+}
+
+/**
+ * Merge constant type `fromId` INTO `intoId` (V0.3.2.104): every box
+ * stamped with `from` is re-stamped to `into` (raw string swap — the
+ * `"constId":"…"` needle is structurally unique in compact stage JSON,
+ * see countConstUsage), the `from` def is deleted, and each re-stamped
+ * box snaps to `into`'s pin on its next load. One undo entry; def
+ * closures splice against the CURRENT array (stale-snapshot rule).
+ */
+export function mergeConstDefs(fromId, intoId) {
+  if (!fromId || !intoId || fromId === intoId) return { ok: false };
+  const from = _constDefs().find(d => d.id === fromId);
+  const into = _constDefs().find(d => d.id === intoId);
+  if (!from || !into) return { ok: false };
+  flushSave();
+  const needleFrom = `"constId":"${fromId}"`;
+  const needleInto = `"constId":"${intoId}"`;
+  const prev = [], next = [];
+  let boxes = 0;
+  for (const s of (state.get('steps') || [])) {
+    const str = typeof s.overlay === 'string' ? s.overlay : '';
+    if (!str || !str.includes(needleFrom)) continue;
+    const parts = str.split(needleFrom);
+    boxes += parts.length - 1;
+    prev.push({ id: s.id, overlay: str });
+    next.push({ id: s.id, overlay: parts.join(needleInto) });
+  }
+  const applySteps = (overlays) => {
+    if (!overlays.length) return;
+    const arr = state.get('steps') || [];
+    for (const p of overlays) { const st = arr.find(x => x.id === p.id); if (st) st.overlay = p.overlay; }
+    state.setState({ steps: [...arr] });
+    state.markDirty();
+    _markOverlayStringsAuthoritative();   // patched strings win over the stale stage until reload
+  };
+  applySteps(next);
+  // Belt + suspenders: re-stamp the LIVE stage's nodes too, so even a
+  // serialisation that slips past the authoritative-strings guard writes
+  // the merged id, and the visible canvas is consistent immediately.
+  for (const n of (_layer?.getChildren?.() || [])) {
+    if (n.getAttr?.('constId') === fromId) n.setAttr('constId', into.id);
+  }
+  _saveConstDefs(_constDefs().filter(d => d.id !== from.id));
+  undoManager.push(`Merge constant "${from.name}" into "${into.name}"`,
+    () => {
+      applySteps(prev);
+      if (!_constDefs().some(d => d.id === from.id)) _saveConstDefs([..._constDefs(), from]);
+    },
+    () => {
+      applySteps(next);
+      _saveConstDefs(_constDefs().filter(d => d.id !== from.id));
+    },
+  );
+  setStatus(`Merged "${from.name}" into "${into.name}" — ${boxes} box(es) on ${next.length} step(s) re-pinned.`, 'success', 8000);
+  return { ok: true, boxes, steps: next.length };
 }
 
 /** Insert an instance of a constant text box on the active step. */
@@ -776,7 +847,7 @@ export async function refreshAllTocBoxesData(opts = {}) {
     const json = JSON.stringify(spec);
     if (json !== st.overlay) { st.overlay = json; touched++; }
   }
-  if (touched) { state.markDirty(); _scheduleLoad(); }   // reload active step so the live view matches
+  if (touched) { state.markDirty(); _markOverlayStringsAuthoritative(); }   // strings authoritative until reload
   return touched;
 }
 
@@ -3642,6 +3713,15 @@ function _flushPendingSave() {
 
 function _writeOverlayToStep(stepId) {
   if (!_stage || !stepId) return;
+  // STALE-STAGE GUARD (V0.3.2.104): after a data-level op patches step
+  // overlay STRINGS behind the live stage's back (unify / merge / their
+  // undo closures), the strings are authoritative and the stage is stale
+  // until _scheduleLoad's RAF rebuilds it. Serialising the stale stage
+  // here would clobber the patch — the exact bug: merge → panel refresh →
+  // countConstUsage → flushSave rewrote the active step's just-merged
+  // overlay and orphaned its boxes. No user edit can exist in this
+  // window (the stage is about to be rebuilt from the strings anyway).
+  if (_overlayStringsAuthoritative) return;
   const steps = state.get('steps') || [];
   const step  = steps.find(s => s.id === stepId);
   if (!step) return;
@@ -3708,8 +3788,8 @@ export function pasteStepOverlay(stepId, mode = 'replace') {
   step.overlay = JSON.stringify(spec);
   const after = step.overlay;
   state.markDirty();
-  const restore = (str) => { const s = _stepById(stepId); if (!s) return; s.overlay = str; state.markDirty(); if (stepId === state.get('activeStepId')) _scheduleLoad(); };
-  if (stepId === state.get('activeStepId')) _scheduleLoad();
+  const restore = (str) => { const s = _stepById(stepId); if (!s) return; s.overlay = str; state.markDirty(); if (stepId === state.get('activeStepId')) _markOverlayStringsAuthoritative(); };
+  if (stepId === state.get('activeStepId')) _markOverlayStringsAuthoritative();
   undoManager.push(`Paste overlay (${mode})`, () => restore(before), () => restore(after));
   return { ok: true, count: _overlayClip.length, mode };
 }
@@ -3746,6 +3826,10 @@ function _serialiseStageJson() {
 
 let _loadRaf = 0;
 let _currentLoadPromise = Promise.resolve();
+// True from "a data-level op patched overlay strings" until the next load
+// rebuilds the live stage from them — see the guard in _writeOverlayToStep.
+let _overlayStringsAuthoritative = false;
+function _markOverlayStringsAuthoritative() { _overlayStringsAuthoritative = true; _scheduleLoad(); }
 function _scheduleLoad() {
   // Defer by a frame so step.snapshot application completes before restore.
   // Cancel any prior RAF so rapid step changes don't queue multiple loads.
@@ -3758,7 +3842,7 @@ function _scheduleLoad() {
     _loadRaf = requestAnimationFrame(async () => {
       _loadRaf = 0;
       try { await _loadFromActiveStep(); }
-      finally { resolve(); }
+      finally { _overlayStringsAuthoritative = false; resolve(); }
     });
   });
 }

@@ -19,9 +19,13 @@
 
 import { state } from '../core/state.js';
 import { steps } from '../systems/steps.js';   // StepManager instance — activateStep is a method
-import { countConstUsage, deleteConstDef, cleanupUnusedConstDefs } from '../systems/overlay.js';
+import {
+  countConstUsage, deleteConstDef, cleanupUnusedConstDefs,
+  mergeConstDefs, selectConstInstance, waitForOverlayStable,
+} from '../systems/overlay.js';
 import { promptString } from './prompt.js';
 import { setStatus } from './status.js';
+import { showContextMenu } from './context-menu.js';
 
 let _win        = null;
 let _selectedId = null;
@@ -53,7 +57,10 @@ function _build() {
     'border:1px solid var(--line,#334155)',
     'border-radius:10px',
     'box-shadow:0 10px 30px rgba(0,0,0,0.5)',
-    'z-index:9999',
+    // z 45, NOT the floating-window 9999 tier: this panel opens context
+    // menus (z 90) and promptString modals (z 50) — both must paint and
+    // hit-test ABOVE it, or its menus/prompts render underneath it.
+    'z-index:45',
     'display:flex', 'flex-direction:column',
     'user-select:none',
   ].join(';');
@@ -203,6 +210,28 @@ function _render() {
       if ((_usage.get(def.id)?.stepIds || []).length && !_navPos.has(def.id)) _jump(+1);
       else _syncPos();
     });
+    // Right-click → "Unify into ▸" — merge THIS type into another one:
+    // every instance re-stamped and re-pinned, this def deleted. The
+    // human-judgment consolidation pass after the auto sweep.
+    row.addEventListener('contextmenu', (e) => {
+      e.preventDefault();
+      e.stopPropagation();
+      const others = (state.get('constTextBoxes') || []).filter(d => d.id !== def.id);
+      if (!others.length) return;
+      showContextMenu([{
+        label: `Unify "${def.name}" into…`,
+        submenu: others.map(o => ({
+          label: `📌 ${o.name || 'Unnamed'}`,
+          action: () => {
+            const res = mergeConstDefs(def.id, o.id);
+            if (!res.ok) return;
+            if (_selectedId === def.id) { _selectedId = o.id; _navPos.delete(o.id); }
+            _navPos.delete(def.id);
+            _refresh();
+          },
+        })),
+      }], e.clientX, e.clientY);
+    });
     list.appendChild(row);
   }
 
@@ -236,15 +265,30 @@ function _syncPos() {
 
 // ─── Navigate ───────────────────────────────────────────────────────────────
 
-function _jump(dir) {
+let _jumpSeq = 0;   // stale-jump guard for rapid ▲▲▲ clicking
+
+async function _jump(dir) {
   if (!_selectedId) return;
-  const ids = _usage.get(_selectedId)?.stepIds || [];
+  const defId = _selectedId;
+  const ids = _usage.get(defId)?.stepIds || [];
   if (!ids.length) return;
-  const cur  = _navPos.get(_selectedId);
+  const cur  = _navPos.get(defId);
   const next = cur == null
     ? (dir > 0 ? 0 : ids.length - 1)
     : (((cur + dir) % ids.length) + ids.length) % ids.length;   // wraps
-  _navPos.set(_selectedId, next);
-  steps.activateStep(ids[next], false);   // instant, like middle-click
+  _navPos.set(defId, next);
   _syncPos();
+  const seq = ++_jumpSeq;
+  try {
+    await steps.activateStep(ids[next], false);   // instant, like middle-click
+    await waitForOverlayStable();                  // overlay nodes exist now
+    // Only the LATEST jump selects — and only if the active step is STILL
+    // the one we jumped to. The seq guard catches newer panel jumps; the
+    // step check catches outside navigation (step-card click, arrows,
+    // undo) landing inside our await window — selecting there would force
+    // edit mode on a step the user deliberately went to.
+    if (seq === _jumpSeq && _win && state.get('activeStepId') === ids[next]) selectConstInstance(defId);
+  } catch (err) {
+    console.warn('[const-panel] jump/select failed:', err);
+  }
 }

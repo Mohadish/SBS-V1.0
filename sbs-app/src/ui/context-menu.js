@@ -129,6 +129,10 @@ function _openFlyout(parentBtn, subItems) {
 export function showContextMenu(items, x, y, opts = {}) {
   if (!_el) return;
 
+  // Re-invoking while a submenu flyout is open (right-click A, then
+  // right-click B) must close A's flyout — a lingering one still fires
+  // its OLD items' actions on click (V0.3.2.104: wrong-row const merge).
+  _closeFlyout();
   _el.innerHTML = '';
   // Seed mod state from the show event (else neutral).
   _modState = opts.initialMods
