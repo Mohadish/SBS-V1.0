@@ -836,6 +836,7 @@ function _removeDropSlot() {
  */
 function _positionDropSlot(list, mouseY) {
   if (!_dropSlot) _dropSlot = _buildDropSlot();
+  _lastDragY = mouseY;   // V0.3.2.97 — the group-tail slot is bimodal; the resolver needs the cursor
 
   let insertBefore = null;
 
@@ -880,6 +881,10 @@ function _positionDropSlot(list, mouseY) {
   // Already in the right place? (Check parent too — renderStepsPanel can
   // orphan the slot with a stale sibling reference.)
   if (_dropSlot.parentNode === list && _dropSlot.nextSibling === insertBefore) {
+    // V0.3.2.97 — the slot POSITION is unchanged but the group-tail MODE can
+    // flip with cursor Y alone (over the group's last card = join, below it
+    // = standalone). Recolour on every dragover, not only on slot moves.
+    if (_dragIds.length) _updateDropSlotColor();
     _updateDropTargetChapter();
     return;
   }
@@ -976,13 +981,26 @@ function _resolveTargetGroupForSlot() {
   const prevStep = stepOf(prevEl);
   if (nextStep?.groupId)  return nextStep.groupId;
   if (prevStep?.groupHead) return prevStep.id;
-  // V0.3.0.174 — the slot sits AFTER a group's last sub-step (prev is a sub-step,
-  // next isn't part of the group). Previously this fell through to top-level, so
-  // you could never drop at the END of a group — only one-before-last. Now it
-  // joins that group as its last position (the orange end-of-group slot).
-  if (prevStep?.groupId) return prevStep.groupId;
+  // V0.3.2.97 — BIMODAL GROUP TAIL (user spec). V0.3.0.174 made this slot
+  // ALWAYS join the group, which fixed "can't drop at the END of a group"
+  // by creating the inverse trap: when the group closes the timeline you
+  // could never drop BELOW it as a standalone next step. The position now
+  // reads the CURSOR's intent, defaulting to standalone:
+  //   • cursor still over the group's last card (its lower half — that's
+  //     what put the slot here)          → JOIN the group (amber, indented
+  //     meaning),
+  //   • cursor below the card, in open timeline space → STANDALONE next
+  //     step (blue). Drift back up over the group and it flips to join;
+  //     drift away again and it resets to blue — live, until release.
+  // Both the slot colour and the actual drop share this resolver, so what
+  // you see is always what you get.
+  if (prevStep?.groupId) {
+    const prevRect = prevEl.getBoundingClientRect();
+    return (_lastDragY <= prevRect.bottom + 2) ? prevStep.groupId : null;
+  }
   return null;
 }
+let _lastDragY = 0;
 
 /**
  * On dragover, if the cursor sits over a collapsed group head's row,
