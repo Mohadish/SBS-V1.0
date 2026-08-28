@@ -18,6 +18,7 @@ import * as overlay from '../systems/overlay.js';
 import * as interfaces from '../systems/interfaces.js';
 import { setStatus } from './status.js';
 import { state } from '../core/state.js';
+import { showContextMenu } from './context-menu.js';   // 📌 constant-text-box picker
 import { chooseFromButtons } from './prompt.js';
 
 let _bar = null;
@@ -73,6 +74,7 @@ export function initOverlayToolbar() {
   const btnImg   = _btn('+ 🖼', 'Add image');
   const btnIface = _btn('+ 🖥', 'Insert interface (image from your library folder)');
   const btnVideo = _btn('+ 🎬', 'Add video clip (played from disk — trim start/end and mute in its right-click menu)');
+  const btnConst = _btn('+ 📌', 'Insert a constant text box (pinned position + unified style on every step; per-step text). Create one first: right-click any text box → "Make constant text box…"');
   const btnRect  = _btn('▭',   'Add rectangle');
   const btnCirc  = _btn('●',   'Add circle');
   const btnEll   = _btn('⬭',   'Add ellipse');
@@ -143,7 +145,22 @@ export function initOverlayToolbar() {
     else      setStatus('Couldn’t add table of contents.', 'warn', 2500);
   });
   btnDel  .addEventListener('click', () => overlay.deleteSelected());
-  _tools.append(btnText, btnImg, btnVideo, btnIface, btnRect, btnCirc, btnEll, btnTri, btnLine, btnArrow, btnToc, btnDel);
+  // 📌 Insert a constant text box: one definition inserts directly; several
+  // open a picker; none yet → point at the creation flow.
+  btnConst.addEventListener('click', async (e) => {
+    const defs = state.get('constTextBoxes') || [];
+    if (!defs.length) {
+      setStatus('No constant text boxes defined yet — right-click any text box → "📌 Make constant text box…"', 'info', 7000);
+      return;
+    }
+    if (defs.length === 1) { await overlay.insertConstTextBox(defs[0].id); return; }
+    showContextMenu(
+      defs.map(d => ({ label: `📌 ${d.name}`, action: () => overlay.insertConstTextBox(d.id) })),
+      e.clientX, e.clientY,
+    );
+  });
+
+  _tools.append(btnText, btnConst, btnImg, btnVideo, btnIface, btnRect, btnCirc, btnEll, btnTri, btnLine, btnArrow, btnToc, btnDel);
 
   // The editing toggle is rightmost — always visible, single source of
   // truth for entering/leaving overlay editing. The old "Done" button

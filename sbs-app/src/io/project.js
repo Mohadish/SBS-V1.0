@@ -217,6 +217,10 @@ export function serialize() {
   project.styles = project.styles || { schema_version: 1, items: [] };
   project.styles.items = cloneShareStrings((state.get('styleTemplates') || []));
 
+  // 📌 Constant text boxes (V0.3.2.98)
+  project.constTexts = project.constTexts || { schema_version: 1, items: [] };
+  project.constTexts.items = cloneShareStrings((state.get('constTextBoxes') || []));
+
   // Flat-shape templates — project-level polygon library. Instances live
   // as regular tree nodes (type='flatShape', templateId pointer) and
   // round-trip via stripNode like every other tree node.
@@ -977,6 +981,7 @@ export function applyProjectToState(project) {
     headerDefault:        project.headers?.default           || state.get('headerDefault'),
     headerStepNumberPerChapter: !!project.headers?.stepNumberPerChapter,
     styleTemplates:       project.styles?.items              || [],
+    constTextBoxes:       project.constTexts?.items          || [],   // 📌 V0.3.2.98 — safe [] on legacy files
     shapeTemplates:       project.shapes?.items              || [],
     // V0.2.22.38 — hardware template library, see core/schema.js
     // createHardwareTemplate. Missing on legacy files → empty list, no

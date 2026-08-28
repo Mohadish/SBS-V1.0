@@ -353,6 +353,64 @@ export function setEditingMode(on) {
  * soon as the user clicks outside (or presses Escape), the node
  * re-rasterises from the contenteditable's HTML.
  */
+// ─── 📌 Constant text boxes (V0.3.2.98) ─────────────────────────────────────
+// Project-level PINNED definitions ({id, name, anchor:'tl'|'tr', x, y,
+// styleId}); instances are ordinary text boxes with a constId + per-step
+// text. The definition owns the anchor-corner position and the style —
+// WIDTH is per-instance (resized from the free edge; a right-anchored box
+// grows leftward). Enforcement = the load-time sync pass: move an instance,
+// leave, come back → it has snapped home, unless "Set as new position"
+// wrote the move into the definition (which every step then follows).
+
+function _constDefs()          { return state.get('constTextBoxes') || []; }
+function _constDefOf(node)     { const id = node?.getAttr?.('constId'); return id ? _constDefs().find(d => d.id === id) : null; }
+function _saveConstDefs(items) { state.setState({ constTextBoxes: items }); state.markDirty(); }
+
+/** The node's current anchor-corner x under a definition's anchor mode. */
+function _constAnchorX(node, anchor) {
+  return anchor === 'tr' ? node.x() + node.width() * node.scaleX() : node.x();
+}
+
+/** Pin a node to its definition: anchor position + style. Width untouched. */
+function _applyConstToNode(node, def) {
+  node.y(def.y);
+  node.x(def.anchor === 'tr' ? def.x - node.width() * node.scaleX() : def.x);
+  if ((node.getAttr('styleId') || null) !== (def.styleId || null)) {
+    node.setAttr('styleId', def.styleId || null);
+    _reflowTextBox(node).catch(() => {});
+  }
+}
+
+/** Write a style change through to the definition + every sibling instance
+ *  on the CURRENT step (other steps re-sync at their next load). */
+function _propagateConstStyle(node, styleId) {
+  const def = _constDefOf(node);
+  if (!def || (def.styleId || null) === (styleId || null)) return;
+  def.styleId = styleId || null;
+  _saveConstDefs([..._constDefs()]);
+  for (const n of _layer?.getChildren() || []) {
+    if (n === node || n.getAttr?.('constId') !== def.id) continue;
+    if ((n.getAttr('styleId') || null) !== (styleId || null)) {
+      n.setAttr('styleId', styleId || null);
+      _reflowTextBox(n).catch(() => {});
+    }
+  }
+}
+
+/** Insert an instance of a constant text box on the active step. */
+export async function insertConstTextBox(defId) {
+  const def = _constDefs().find(d => d.id === defId);
+  if (!def || !_stage) return null;
+  const node = await addTextBox();           // auto-enters the editor — type straight away
+  if (!node) return null;
+  node.setAttr('constId', def.id);
+  if (def.styleId) { node.setAttr('styleId', def.styleId); await _reflowTextBox(node); }
+  _applyConstToNode(node, def);
+  _layer.batchDraw();
+  _scheduleSave();
+  return node;
+}
+
 export async function addTextBox() {
   if (!_stage) return null;
   const html = '<div>Text</div>';
@@ -541,6 +599,10 @@ function _overlayEditorCtx(node) {
       editSession.record();
       node.setAttr('styleId', id || null);
       _reflowTextBox(node).catch(() => {});
+      // 📌 V0.3.2.98 — a constant instance's binding writes through to its
+      // definition: every sibling (this step now, other steps at load)
+      // adopts the same style. "Change one to style 3 → they all change."
+      _propagateConstStyle(node, id || null);
       _scheduleSave();
     },
   };
@@ -1786,6 +1848,7 @@ function _serializeNode(node) {
   // Inline payload — only the fields _recreateNode looks at.
   for (const k of [
     'src', 'textHtml', 'textWidth', 'naturalW', 'naturalH', 'fillColor', 'styleId',
+    'constId',   // 📌 V0.3.2.98 — membership in a constant-text-box definition
     // Shape primitives — Konva.Rect / Circle / Ellipse / Path / etc.
     'name', 'kind',
     'fill', 'stroke', 'strokeWidth', 'opacity', 'cornerRadius',
@@ -2740,6 +2803,60 @@ function _showOverlayContextMenu(node, x, y) {
     const nodes = _transformer?.nodes()?.length ? _transformer.nodes() : [node];
     if (_reorderSelection(key, nodes)) { _layer.batchDraw(); _scheduleSave(); }
   };
+  // 📌 Constant text boxes (V0.3.2.98) — creation on any plain text box;
+  // management verbs on an instance, mirroring the interface default-pose menu.
+  const isTextBox = !!node.getAttr('textHtml') && !node.getAttr('isToc');
+  const constDef  = isTextBox ? _constDefOf(node) : null;
+  const constItems = !isTextBox ? [] : (constDef
+    ? [{ label: `📌 Constant "${constDef.name}"`, submenu: [
+          { label: '⊹ Set as new position (all steps)',
+            action: () => {
+              constDef.x = _constAnchorX(node, constDef.anchor);
+              constDef.y = node.y();
+              _saveConstDefs([..._constDefs()]);
+              setStatus(`Constant "${constDef.name}" repositioned — every step follows.`, 'success', 4000);
+            } },
+          { label: '↺ Snap back to constant position',
+            action: () => { _applyConstToNode(node, constDef); _layer.batchDraw(); } },
+          { separator: true },
+          { label: `${constDef.anchor !== 'tr' ? '✓ ' : ''}Anchor: ⌜ top-left`,
+            action: () => {
+              // Re-derive x under the new mode from where the box sits NOW,
+              // so switching anchors never makes anything jump.
+              constDef.anchor = 'tl'; constDef.x = _constAnchorX(node, 'tl');
+              _saveConstDefs([..._constDefs()]);
+            } },
+          { label: `${constDef.anchor === 'tr' ? '✓ ' : ''}Anchor: ⌝ top-right`,
+            action: () => {
+              constDef.anchor = 'tr'; constDef.x = _constAnchorX(node, 'tr');
+              _saveConstDefs([..._constDefs()]);
+            } },
+          { separator: true },
+          { label: '✂ Detach from constant (this box only)',
+            action: () => { node.setAttr('constId', null); _scheduleSave(); setStatus('Detached — now a normal text box.', 'info', 3000); } },
+        ] },
+        { separator: true }]
+    : node.getAttr('constId')
+      ? [{ label: '📌 Constant definition missing — detach',
+           action: () => { node.setAttr('constId', null); _scheduleSave(); } },
+         { separator: true }]
+      : [{ label: '📌 Make constant text box…',
+           action: async () => {
+             const name = await promptString('Name this constant text box', `Constant ${_constDefs().length + 1}`);
+             if (!name) return;
+             const def = {
+               id: `ctb_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 6)}`,
+               name: name.trim(), anchor: 'tl',
+               x: node.x(), y: node.y(),
+               styleId: node.getAttr('styleId') || null,
+             };
+             _saveConstDefs([..._constDefs(), def]);
+             node.setAttr('constId', def.id);
+             _scheduleSave();
+             setStatus(`Constant "${def.name}" created — insert it on any step via the 📌 toolbar button.`, 'success', 6000);
+           } },
+         { separator: true }]);
+
   const arrangeItems = [
     { label: '🔼 Arrange', submenu: [
       { label: 'Bring forward',  action: () => arrange('PageUp') },
@@ -2755,6 +2872,7 @@ function _showOverlayContextMenu(node, x, y) {
     ...zoomItems,
     ...seqItems,
     ...tocItems,
+    ...constItems,
     ...arrangeItems,
     { label: '⎘ Duplicate',        action: _duplicateSelected },
     { label: '📋 Copy',            action: _copyToOverlayClipboard },
@@ -2842,6 +2960,7 @@ function _refreshMultiToolbar() {
       for (const n of textBoxes) {
         n.setAttr('styleId', newId || null);
         _reflowTextBox(n).catch(() => {});
+        _propagateConstStyle(n, newId || null);   // 📌 V0.3.2.98 — write through to the definition
       }
       setStyleLocked(!!newId);
       _scheduleSave();
@@ -3640,6 +3759,14 @@ async function _loadFromActiveStep() {
   for (const iface of getInterfaceNodes()) {
     if (!iface.getAttr('isInterface')) iface.setAttr('isInterface', true);
     syncBondedShapes(iface);
+  }
+  // 📌 V0.3.2.98 — constant text boxes snap home on every step load: the
+  // definition's anchor position + style are re-asserted (width stays this
+  // instance's own). A missing definition leaves the box as a normal one.
+  for (const n of _layer.getChildren()) {
+    if (!n.getAttr?.('constId')) continue;
+    const def = _constDefOf(n);
+    if (def) _applyConstToNode(n, def);
   }
   _layer.batchDraw();
   // S2: start image-sequence playback now that the step's overlay is loaded +

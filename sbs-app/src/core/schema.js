@@ -27,7 +27,7 @@ export const SCHEMA_VERSIONS = {
   screen:     1,
 };
 
-export const APP_VERSION  = 'V0.3.2.97';
+export const APP_VERSION  = 'V0.3.2.98';
 // Format: YYYY-MM-DD. Bump along with APP_VERSION on every build worth
 // labelling so the File tab shows you're running the expected slice.
 export const APP_RELEASED = '2026-07-02';
@@ -132,6 +132,16 @@ export function createEmptyProject() {
     shapes: {
       schema_version: 1,
       items: [],          // ShapeTemplate[]
+    },
+
+    // 📌 Constant text boxes (V0.3.2.98) — project-level pinned-position
+    // definitions: { id, name, anchor:'tl'|'tr', x, y, styleId }. x/y is the
+    // ANCHOR CORNER's position; width is per-instance (each step's box sets
+    // its own, resized from the free edge). Instances are ordinary overlay
+    // text boxes carrying constId + their own per-step text.
+    constTexts: {
+      schema_version: 1,
+      items: [],          // ConstTextDef[]
     },
 
     // App-level settings saved with the project
