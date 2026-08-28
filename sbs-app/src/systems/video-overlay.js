@@ -95,6 +95,45 @@ export function fileUrlFor(absPath) {
   return 'file://' + encodeURI(p);
 }
 
+// ─── Transcode-on-demand (V0.3.2.91) ────────────────────────────────────────
+//
+// Chromium decodes H.264/VP9/AV1 — not HEVC or ProRes. Editors export HEVC
+// .mp4 by default these days, and the failure is maximally confusing: the
+// AAC audio decodes fine while the picture silently falls back to the
+// poster. We ship ffmpeg, so convert instead of erroring: the transcoded
+// copy lands NEXT TO the source as <name>.sbs-h264.mp4 and is reused on
+// every later load (re-transcoded only if the source is newer).
+
+const _transcoding = new Map();   // abs -> Promise<string|null> (dedupe concurrent requests)
+
+export async function transcodeToPlayable(absPath, onStatus) {
+  const out = absPath.replace(/\.[^.\\/]+$/, '') + '.sbs-h264.mp4';
+  if (_transcoding.has(absPath)) return _transcoding.get(absPath);
+  const job = (async () => {
+    try {
+      const [src, dst] = await Promise.all([
+        window.sbsNative.statFile?.(absPath), window.sbsNative.statFile?.(out),
+      ]);
+      if (dst && (!src || dst.mtimeMs >= src.mtimeMs)) return out;   // fresh cached conversion
+      onStatus?.(`Converting video to H.264 (one-time): ${absPath.split(/[\\/]/).pop()}…`);
+      const r = await window.sbsNative.ffmpeg([
+        '-y', '-i', absPath,
+        '-c:v', 'libx264', '-preset', 'fast', '-crf', '18', '-pix_fmt', 'yuv420p',
+        '-c:a', 'aac', '-b:a', '192k',
+        '-movflags', '+faststart',
+        out,
+      ]);
+      if (!r?.ok) throw new Error(r?.stderrTail?.slice(-200) || 'ffmpeg failed');
+      return out;
+    } catch (e) {
+      console.warn('[video] transcode failed:', e?.message);
+      return null;
+    } finally { _transcoding.delete(absPath); }
+  })();
+  _transcoding.set(absPath, job);
+  return job;
+}
+
 // ─── Element lifecycle ──────────────────────────────────────────────────────
 
 /**
@@ -165,7 +204,27 @@ export async function attachVideoElement(node) {
   });
 
   try { await ready; }
-  catch (e) { _players.delete(id); video.src = ''; throw e; }
+  catch (e) {
+    _players.delete(id);
+    video.src = '';
+    // 🎞 AUTO-TRANSCODE (V0.3.2.91). An undecodable video track (HEVC is the
+    // common case — its AAC audio decodes, so it half-works confusingly)
+    // gets one shot at conversion via the bundled ffmpeg, then the node is
+    // re-pointed at the H.264 copy and the attach retried once.
+    if (!/\.sbs-h264\.mp4$/i.test(path)) {
+      const { setStatus } = await import('../ui/status.js').catch(() => ({ setStatus: null }));
+      const converted = await transcodeToPlayable(path, (m) => setStatus?.(m, 'info', 0));
+      if (converted && !node.isDestroyed?.()) {
+        const { abs, rel } = describeVideoPath(converted);
+        node.setAttr('videoPath', abs);
+        node.setAttr('videoRel',  rel);
+        setStatus?.('Video converted to H.264 — loading…', 'success', 5000);
+        import('./overlay.js').then(m => m.scheduleSave?.()).catch(() => {});
+        return attachVideoElement(node);
+      }
+    }
+    throw e;
+  }
   // The step may have changed while the file was opening — a slow load must
   // never end with an invisible element playing audio into the wrong step.
   if (node.isDestroyed?.()) { detachVideo(node); throw new Error('step changed while the video was loading'); }
