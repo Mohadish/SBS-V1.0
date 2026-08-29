@@ -1676,4 +1676,8 @@ function _disposeSceneSubtree(root) {
   });
 }
 
+// B1/H1 (V0.3.2.105): shared GPU-dispose helper — New Project / Open Project
+// drop the scene through this too, instead of leaking geometry + textures.
+export { _disposeSceneSubtree as disposeSceneSubtree };
+
 export default { loadModelFile, removeModel, getFileExt };

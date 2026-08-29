@@ -511,6 +511,26 @@ class AppState extends EventEmitter {
   }
 
   /** Update one or more keys and emit change events */
+  /**
+   * B1/U1 (V0.3.2.105): reset the given keys to their createInitialState()
+   * values in ONE setState patch (fires each panel's change: listeners, so
+   * every UI surface repaints without extra plumbing). Used by New Project
+   * to wipe every project-persisted slice — the old hand-rolled patch reset
+   * 16 keys and leaked the other ~27 (headers, styles, cables, libraries…)
+   * into the "fresh" project. Warns on unknown keys so list drift is loud.
+   */
+  resetKeysToInitial(keys, extra = {}) {
+    const init = createInitialState();
+    const patch = {};
+    for (const k of keys) {
+      if (k in init) patch[k] = init[k];
+      else console.warn('[state] resetKeysToInitial: no initial value for', k);
+    }
+    // `extra` merges into the SAME setState so the whole reset is atomic —
+    // no listener ever observes a half-reset state between two patches.
+    this.setState({ ...patch, ...extra });
+  }
+
   setState(patch) {
     const changed = [];
     for (const [key, value] of Object.entries(patch)) {

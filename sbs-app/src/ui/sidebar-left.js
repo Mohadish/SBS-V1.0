@@ -10,12 +10,12 @@ import { steps }           from '../systems/steps.js';
 import { materials }       from '../systems/materials.js';
 import * as actions        from '../systems/actions.js';
 import { sceneCore }       from '../core/scene.js';
-import { loadModelFile }   from '../io/importers.js';
+import { loadModelFile, disposeSceneSubtree } from '../io/importers.js';
 import { showAssetVerifyDialog } from './asset-verify.js';
 import {
   saveProject, loadProject, pickProjectFile, getSuggestedFilename,
   buildIdRemapFromSpec, applyIdRemap, applySpecFieldsToNodes,
-  collectAllMeshSpecs, buildDisplacedMeshIdRemap,
+  collectAllMeshSpecs, buildDisplacedMeshIdRemap, PROJECT_STATE_KEYS,
 }                          from '../io/project.js';
 import { initTree, renderTree, expandPathToNode, collapseAll, toggleFilter, getFilter } from './tree.js';
 import { setStatus }       from './status.js';
@@ -586,14 +586,31 @@ function _renderFilesTab() {
 
 function _onNewProject() {
   if (state.get('projectDirty') && !confirm('Discard unsaved changes and start a new project?')) return;
-  // Clear Three.js scene
+  // B1/H1 (V0.3.2.105): dispose GPU resources BEFORE dropping the scene —
+  // remove() alone leaked every geometry/material/texture per New Project.
   if (sceneCore.rootGroup) {
     while (sceneCore.rootGroup.children.length) {
-      sceneCore.rootGroup.remove(sceneCore.rootGroup.children[0]);
+      const child = sceneCore.rootGroup.children[0];
+      disposeSceneSubtree(child);
+      sceneCore.rootGroup.remove(child);
     }
   }
   steps.object3dById.clear();
   steps.meshById.clear();
+  // B1/H1: mirror _onOpenProject's registry clears — New Project left all
+  // four materials maps (and the asset/phantom trackers) populated with
+  // dead references, pinning the old scene in JS heap on top of the GPU leak.
+  materials.meshById.clear();
+  materials.originalMaterials.clear();
+  materials.meshColorAssignments = {};
+  materials.meshDefaultColors    = {};
+  _assetStatus.clear();
+  _phantomNodes.clear();
+
+  // B1/U1: undo entries reference the destroyed scene. change:projectPath
+  // clears history on real transitions, but Untitled → Untitled is
+  // null → null and never fires — remember to clear explicitly below.
+  const wasUntitled = !state.get('projectPath');
 
   // Pull user-default background from prefs so new projects inherit it.
   const us = userSettings.get();
@@ -612,16 +629,30 @@ function _onNewProject() {
     isDefault: true,
   });
 
-  state.setState({
+  // B1/U1 — THE HEADERS BUG: the overrides below used to be the WHOLE
+  // reset (16 keys). Everything else — headers, text styles, constant
+  // boxes, note/shape/hardware libraries, cables + sizing, render/export
+  // settings, interface defaults — leaked into the "new" project.
+  // resetKeysToInitial wipes every project-persisted slice and merges the
+  // overrides in ONE atomic setState, so each panel's change: listener
+  // repaints exactly once, never against a half-reset state.
+  state.resetKeysToInitial(PROJECT_STATE_KEYS, {
     projectPath: null, projectName: 'Untitled', projectDirty: false,
-    assets: [], treeData: null, nodeById: new Map(),
-    steps: [], chapters: [], activeStepId: null,
-    cameraViews: [], colorPresets: [], selectedId: null,
+    treeData: null, nodeById: new Map(),
+    activeStepId: null, selectedId: null,
     multiSelectedIds: new Set(),
     animationPresets: [defaultAnim],
     backgroundColor:    bgColor,
     backgroundGradient: bgGrad,
+    // Keys with no createInitialState entry, reset explicitly.
+    interfaceDefaultPose: null,
+    interfaceLibraryFolder: null,
+    cableFilletReach: 40,
+    // Stale FS handle would let a later Save silently overwrite the OLD
+    // project's file from the "new" one.
+    fsaFileHandle: null,
   });
+  if (wasUntitled) undoManager.clear();   // null→null: change:projectPath never fires
   setStatus('New project.');
 }
 
@@ -633,10 +664,15 @@ async function _onOpenProject() {
 
     const { file, path = null } = picked;
 
-    // Clear existing scene before loading new project
+    // Clear existing scene before loading new project.
+    // B1/M20 (V0.3.2.105): dispose GPU resources too — Open already
+    // cleared the registries below but leaked the outgoing scene's
+    // geometry/materials/textures.
     if (sceneCore.rootGroup) {
       while (sceneCore.rootGroup.children.length) {
-        sceneCore.rootGroup.remove(sceneCore.rootGroup.children[0]);
+        const child = sceneCore.rootGroup.children[0];
+        disposeSceneSubtree(child);
+        sceneCore.rootGroup.remove(child);
       }
     }
     steps.object3dById.clear();

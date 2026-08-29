@@ -899,6 +899,31 @@ function _hexOrDefault(v, def) {
 // (incl. base pose, follow, RM fields) for the tree-reconcile pass below.
 let _lastLoadedTreeSpecRoot = null;
 
+/**
+ * B1/U1 (V0.3.2.105): every project-persisted state key — the exact set
+ * applyProjectToState below writes. New Project resets ALL of these via
+ * state.resetKeysToInitial(); keep this list in lockstep when adding a
+ * persisted key to applyProjectToState, or the new slice will leak from
+ * the old project into File → New Project (the headers bug).
+ * (interfaceDefaultPose / interfaceLibraryFolder / cableFilletReach /
+ *  animationPresets have no createInitialState entry — New Project's own
+ *  patch resets those explicitly.)
+ */
+export const PROJECT_STATE_KEYS = [
+  'backgroundColor', 'backgroundGradient',
+  'render', 'solidOverride', 'gridVisible',
+  'cameraAnimDurationMs', 'objectAnimDurationMs', 'cameraFillLight', 'geometryOutline',
+  'export', 'audioCacheFolder', 'hardwareDefaults',
+  'steps', 'chapters', 'cameraViews', 'colorPresets',
+  'noteTemplates', 'notePresets', 'selectionGroups', 'selectionOutlineColor',
+  'assets',
+  'headerItems', 'headersLocked', 'headersHidden', 'headerDefault', 'headerStepNumberPerChapter',
+  'styleTemplates', 'constTextBoxes',
+  'shapeTemplates', 'hardwareTemplates', 'shapeTemplateGroups',
+  'selectedShapeTemplateIds', 'selectedShapeTemplateGroupIds', 'selectedColorPresetIds',
+  'cables', 'cableGlobalScale', 'cableGlobalRadius', 'cableDefaultDiameter', 'cableHighlightColor',
+];
+
 export function applyProjectToState(project) {
   const s = project.settings || {};
   _lastLoadedTreeSpecRoot = project.tree?.root || null;
