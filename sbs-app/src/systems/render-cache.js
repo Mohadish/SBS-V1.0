@@ -226,6 +226,11 @@ export async function computeSegmentPlan() {
     bg: state.get('backgroundColor'), bgGrad: state.get('backgroundGradient'),
     render: state.get('render'),
     camMs: state.get('cameraAnimDurationMs'), objMs: state.get('objectAnimDurationMs'),
+    // B5/M8 (V0.3.2.109): boundary boxes change every rendered pixel but
+    // weren't keyed — toggling the option happily reused clips showing the
+    // previous state. Spread-only-when-ON so the default-off case keeps
+    // every existing cache key valid (no mass re-render for anyone).
+    ...(exp.exportBoundaryBoxes ? { bboxes: true } : {}),
     epoch: RENDER_CACHE_EPOCH,
   };
 
@@ -533,7 +538,10 @@ export async function assembleFromCache({ onProgress, signal, output, force = fa
   // Lossless video concat (same codec/params by construction).
   onProgress?.({ stepName: 'stitching video (lossless concat)…' });
   const listPath = `${plan.dir}/_list.txt`;
-  await window.sbsNative.writeFile(listPath, files.map(f => `file '${f.replace(/\\/g, '/')}'`).join('\n'), 'utf8');
+  // B5/M10 (V0.3.2.109): escape single quotes for ffmpeg's concat list
+  // ('…' → '\'' close-escape-reopen) — a project path like O'Brien made
+  // every assembly die with "concat failed".
+  await window.sbsNative.writeFile(listPath, files.map(f => `file '${f.replace(/\\/g, '/').replace(/'/g, "'\\''")}'`).join('\n'), 'utf8');
   const vPath = `${plan.dir}/_assembly-video.mp4`;
   let r = await window.sbsNative.ffmpeg(['-y', '-f', 'concat', '-safe', '0', '-i', listPath, '-c', 'copy', vPath]);
   if (!r?.ok) throw new Error('concat failed: ' + (r?.stderrTail || '').slice(-300));
@@ -939,7 +947,16 @@ export async function planWithCacheStatus() {
     span.file   = dir ? `${dir}/seg-${span.key}.mp4` : null;
     span.cached = false;
     if (span.file && window.sbsNative?.fileExists) {
-      try { span.cached = !!(await window.sbsNative.fileExists(span.file)); } catch { /* treat as miss */ }
+      // B5/M7 (V0.3.2.109): a hit requires the .mp4 AND its seg-<key>.json
+      // timing sidecar. A crash mid-render leaves the mp4 without the
+      // sidecar; treating that orphan as cached made readTimeline fail and
+      // assembly wedge FOREVER (purgeOrphans skips plan-referenced keys, and
+      // it only runs after a successful assembly, which never came). As a
+      // plain miss it re-renders and rewrites both files — self-healing.
+      try {
+        span.cached = !!(await window.sbsNative.fileExists(span.file))
+                   && !!(await window.sbsNative.fileExists(`${dir}/seg-${span.key}.json`));
+      } catch { /* treat as miss */ }
     }
     if (span.cached) hits++;
   }
