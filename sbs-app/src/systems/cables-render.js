@@ -1184,9 +1184,13 @@ function _cableMarkersVisible(cableId) {
 }
 
 function _disposeSubgroup(entry) {
-  for (const m of entry.points)   m.material?.dispose?.();
-  for (const m of entry.segments) m.material?.dispose?.();
-  for (const m of (entry.sockets || [])) m.material?.dispose?.();
+  // B8/L4 (V0.3.2.112): mirror _rebuildCable's teardown — flexible/fillet
+  // segments own a per-cable TubeGeometry that this path leaked on every
+  // cable DELETE (rebuilds disposed it correctly; deletion didn't). The
+  // shared unit geometries stay untouched.
+  for (const m of entry.points)   { m.material?.dispose?.(); if (m.geometry && m.geometry !== _UNIT_SPHERE)   m.geometry.dispose?.(); }
+  for (const m of entry.segments) { m.material?.dispose?.(); if (m.geometry && m.geometry !== _UNIT_CYLINDER) m.geometry.dispose?.(); }
+  for (const m of (entry.sockets || [])) { m.material?.dispose?.(); if (m.geometry && m.geometry !== _UNIT_BOX) m.geometry.dispose?.(); }
   entry.points   = [];
   entry.segments = [];
   entry.sockets  = [];

@@ -77,7 +77,18 @@ export function getSubtitleEntry(step, lang) {
  */
 export function resolveSubtitleText(step, lang) {
   const e = getSubtitleEntry(step, lang);
-  return e ? e.text : subtitleSourceText(step);
+  if (!e) return subtitleSourceText(step);
+  // B8/M13 (V0.3.2.112): an original-language entry written by the
+  // punctuation sweep (swept, never hand-edited) must keep LIVE-FOLLOWING
+  // the voiceover. When the narration moved on since the sweep, re-derive
+  // the polish from the CURRENT source instead of showing the frozen old
+  // wording (which silently reached exports too).
+  if (!lang && e.swept && !e.edited && e.srcHash !== srcHashOf(subtitleSourceText(step))) {
+    const src = subtitleSourceText(step);
+    const r = polishLine(src || '');
+    return (r && r.changed) ? r.text : src;
+  }
+  return e.text;
 }
 
 /**
@@ -92,7 +103,10 @@ export function subtitleStatus(step, lang) {
   const src = subtitleSourceText(step);
   const e   = getSubtitleEntry(step, lang);
   if (!e) return (lang && src) ? 'missing' : 'auto';
-  if (e.srcHash !== srcHashOf(src)) return 'stale';
+  // B8/M13: a swept (not hand-edited) orig-language entry re-derives live
+  // when the source moves (see resolveSubtitleText) — that's 'auto', not
+  // 'stale'; there is nothing for the user to repair.
+  if (e.srcHash !== srcHashOf(src)) return (!lang && e.swept && !e.edited) ? 'auto' : 'stale';
   return e.edited ? 'edited' : 'auto';
 }
 
@@ -305,14 +319,17 @@ export function applyPunctuationSweep(plan, { lang = '' } = {}) {
     // whose source moved under us; it simply stays unpolished.
     if (!s) { dropped++; continue; }
     if (resolveSubtitleText(s, lang) !== c.from) { dropped++; continue; }
+    // B8/M13 (V0.3.2.112): original-language sweep results are marked
+    // swept (NOT edited) so they keep live-following the voiceover —
+    // edited:true froze every polished caption against later narration
+    // edits. Translated languages stay edited:true on purpose: the polish
+    // there must survive Translate-All (hand-edits are sacred).
     writes.push({
       stepId: c.stepId,
       lang,
-      entry: {
-        text:    c.to,
-        srcHash: srcHashOf(subtitleSourceText(s)),
-        edited:  true,
-      },
+      entry: lang
+        ? { text: c.to, srcHash: srcHashOf(subtitleSourceText(s)), edited: true }
+        : { text: c.to, srcHash: srcHashOf(subtitleSourceText(s)), edited: false, swept: true },
     });
   }
   if (!writes.length) return { ok: true, applied: 0, dropped };
