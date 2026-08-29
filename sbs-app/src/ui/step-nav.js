@@ -167,8 +167,10 @@ function _getActiveStep() {
 export function renderStepNav() {
   if (!_el) return;
 
-  const allSteps  = state.get('steps') || [];
-  const visible   = allSteps.filter(s => !s.hidden && !s.isBaseStep);
+  // B4/M5 (V0.3.2.108): route through the ONE canonical playable rule —
+  // the local filter here missed the hidden-CHAPTER clause, so nav
+  // numbering counted steps of hidden chapters.
+  const visible   = steps.getVisibleSteps();
   const activeId  = state.get('activeStepId');
   const activeIdx = visible.findIndex(s => s.id === activeId);
 

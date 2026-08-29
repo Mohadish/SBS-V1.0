@@ -71,6 +71,17 @@ export function parseStepRanges(text, max, chapters = null) {
 }
 
 /**
+ * B4/M5 (V0.3.2.108): the ONE playable filter for this dialog — steps.js's
+ * _isPlayable rule inlined (hidden step, base step, hidden CHAPTER). The
+ * three helpers below each had their own copy that missed the chapter
+ * clause, so the export dialog's numbers disagreed with what renders.
+ */
+function _playableSteps() {
+  const chHidden = new Set((state.get('chapters') || []).filter(c => c.hidden).map(c => c.id));
+  return (state.get('steps') || []).filter(s => !s.isBaseStep && !s.hidden && !chHidden.has(s.chapterId));
+}
+
+/**
  * Chapter number (1-based, chapters-array order — same numbering the TOC
  * and chapterNumber headers use) → that chapter's top-level step numbers.
  */
@@ -79,8 +90,7 @@ function _chapterStepMap() {
   const numOfChapter = new Map(chapters.map((c, i) => [c.id, i + 1]));
   const map = new Map();
   let n = 0;
-  for (const s of (state.get('steps') || [])) {
-    if (s.isBaseStep || s.hidden) continue;
+  for (const s of _playableSteps()) {
     if (!s.groupId) n++; else continue;          // groups count as one; sub-steps ride with the head
     const cnum = numOfChapter.get(s.chapterId);
     if (!cnum) continue;
@@ -92,12 +102,12 @@ function _chapterStepMap() {
 
 /** Count of top-level (non-group-member) visible steps — the timeline numbering. */
 function _topLevelCount() {
-  return (state.get('steps') || []).filter(s => !s.isBaseStep && !s.hidden && !s.groupId).length;
+  return _playableSteps().filter(s => !s.groupId).length;
 }
 
 /** The active step's timeline number (group members resolve to their head's number). */
 function _activeTopLevelNumber() {
-  const all = (state.get('steps') || []).filter(s => !s.isBaseStep && !s.hidden);
+  const all = _playableSteps();
   const activeId = state.get('activeStepId');
   let n = 0, hit = null;
   for (const s of all) {

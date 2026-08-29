@@ -1871,7 +1871,10 @@ function _showChapterContextMenu(chapter, x, y) {
  */
 function _stepIdsForTopLevelNumbers(numbers) {
   const want = new Set(numbers);
-  const all  = (state.get('steps') || []).filter(s => !s.isBaseStep && !s.hidden);
+  // B4/M5 (V0.3.2.108): canonical playable rule (incl. hidden CHAPTERS) —
+  // the local filter counted hidden chapters' steps, so the numbers the
+  // export dialog showed didn't match what actually renders.
+  const all  = steps.getVisibleSteps();
   const picked = new Set();
   let n = 0;
   for (const s of all) {

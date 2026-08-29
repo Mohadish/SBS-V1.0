@@ -174,8 +174,14 @@ export function resolveHeaderText(item, ctx) {
  */
 export function buildRenderContext(activeIdOverride) {
   const allSteps = state.get('steps') || [];
-  const visible  = allSteps.filter(s => !s.hidden && !s.isBaseStep);
   const chapters = state.get('chapters') || [];
+  // B4/M5 (V0.3.2.108): also exclude steps of HIDDEN CHAPTERS — this is
+  // steps.js's _isPlayable rule, inlined (importing steps.js here would
+  // close the steps → overlay → header cycle). Without it the numbers
+  // burned into exported headers counted hidden chapters' steps ("Step 7"
+  // for the 5th step the viewer sees).
+  const chHidden = new Set(chapters.filter(c => c.hidden).map(c => c.id));
+  const visible  = allSteps.filter(s => !s.hidden && !s.isBaseStep && !chHidden.has(s.chapterId));
   const activeId = activeIdOverride ?? state.get('activeStepId');   // override: assembly rasters per-step headers without activating (V0.3.2.8)
   const activeStep = visible.find(s => s.id === activeId) || null;
 

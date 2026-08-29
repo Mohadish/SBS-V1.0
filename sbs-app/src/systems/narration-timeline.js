@@ -43,7 +43,13 @@ function _animTiming(step) {
 }
 
 function _playableSteps() {
-  return (state.get('steps') || []).filter(s => s && !s.hidden && !s.isBaseStep);
+  // B4/M9 (V0.3.2.108): also exclude steps of HIDDEN CHAPTERS (steps.js's
+  // _isPlayable rule inlined — importing steps.js here would close the
+  // steps → overlay → narration-timeline cycle). Without this the TOC
+  // listed hidden chapters and their playtime inflated every later
+  // chapter's start timecode.
+  const chHidden = new Set((state.get('chapters') || []).filter(c => c.hidden).map(c => c.id));
+  return (state.get('steps') || []).filter(s => s && !s.hidden && !s.isBaseStep && !chHidden.has(s.chapterId));
 }
 
 /**
