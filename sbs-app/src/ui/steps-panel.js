@@ -1950,7 +1950,20 @@ function _pasteStepsUnder(targetStepId) {
   if (tgtIdx < 0) return;
   const target  = all[tgtIdx];
   const pasted  = _clonePastedBlock(_clipboard.data);
-  for (const copy of pasted) copy.chapterId = target.chapterId ?? null;
+  // B3/M3 (V0.3.2.107): the block lands right after the target — inside the
+  // target's contiguous group run when the target is a head/member. An
+  // ungrouped step there splits the group permanently, so flatten the
+  // pasted block into that group (same join rule as duplicateStep). When
+  // the target is ungrouped, the block keeps its own internal groups.
+  const joinGroupId = target.groupHead ? target.id : (target.groupId || null);
+  for (const copy of pasted) {
+    copy.chapterId = target.chapterId ?? null;
+    if (joinGroupId) {
+      copy.groupId     = joinGroupId;
+      copy.groupHead   = false;
+      copy.groupLocked = false;
+    }
+  }
   const newAll = [...all.slice(0, tgtIdx + 1), ...pasted, ...all.slice(tgtIdx + 1)];
   actions.commitStateChange(`Paste ${pasted.length} step(s)`, ['steps'], () => {
     state.setState({ steps: newAll });
@@ -2358,6 +2371,15 @@ async function _deleteChapter(chapterId) {
       chapters: (state.get('chapters') || []).filter(c => c.id !== chapterId),
     });
     steps.normalizeOrder();
+    // B3/M11 (V0.3.2.107): if the ACTIVE step was inside the deleted
+    // chapter, activeStepId now dangles — syncActiveStepNow finds no step
+    // and silently returns, so every later edit was discarded into the
+    // void. Repoint to the first surviving real step (or null).
+    const remaining = state.get('steps') || [];
+    if (!remaining.some(s => s.id === state.get('activeStepId'))) {
+      const fallback = remaining.find(s => !s.isBaseStep)?.id ?? null;
+      state.setActiveStep(fallback);
+    }
     state.markDirty();
   });
   setStatus(stepsIn.length > 0

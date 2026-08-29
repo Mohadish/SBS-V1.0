@@ -1980,18 +1980,22 @@ class StepManager {
     // (V0.2.22.73).
     finalizeInsertActors();
 
+    // B3/L1 (V0.3.2.107): snap FIRST, then flush. flushSync (and
+    // syncActiveStepNow inside it) refuses to run while _animRunning is
+    // true, and only snapCurrentToFinal clears that flag — in the old
+    // order, an edit made mid-animation was silently discarded when the
+    // user clicked away before the transition finished. snapCurrentToFinal
+    // is a no-op when nothing is animating, so normal navigation is
+    // unchanged; it does NOT rebuild the tree — it only snaps object
+    // positions/materials, since node data is already at the target state.
+    this.snapCurrentToFinal();
+
     // Flush any pending dirty-sync into the LEAVING step BEFORE we
     // change the active step. Otherwise quick toggle-then-navigate
     // (under the 500ms scheduleSync timer) loses the change. Cable
     // visibility is the most visible victim — material + visibility
     // toggles all rely on this same race.
     this.flushSync();
-
-    // If another animation is in progress (direct step card click mid-anim),
-    // snap it to final so the scene is clean before starting a new transition.
-    // snapCurrentToFinal does NOT rebuild the tree — it only snaps object positions
-    // and materials since the tree/node data is already at the target state.
-    this.snapCurrentToFinal();
 
 
     // Capture the OUTGOING step's final viewport state before we switch away.
@@ -2497,8 +2501,17 @@ class StepManager {
       ? overrides.chapterId
       : (active?.chapterId ?? null);
 
+    // B3/M3 (V0.3.2.107): the new step lands right AFTER the active step.
+    // When the active step is a group head or member, that position is
+    // inside the group's contiguous run — an ungrouped step there splits
+    // the group permanently. Join it instead (same rule as duplicateStep's
+    // V0.3.2.44 fix). Explicit overrides.groupId still wins.
+    const inheritedGroupId = overrides.groupId !== undefined
+      ? overrides.groupId
+      : (active ? (active.groupHead ? active.id : (active.groupId || null)) : null);
+
     const label = name ?? this._nextStepLabel(steps);
-    const step  = createStep({ name: label, ...overrides, chapterId: inheritedChapterId });
+    const step  = createStep({ name: label, ...overrides, chapterId: inheritedChapterId, groupId: inheritedGroupId });
     step.snapshot = this.captureSnapshot();
 
     // Insert after active step, or at end
@@ -2695,6 +2708,12 @@ class StepManager {
       groupId:      source.groupHead ? source.id : (source.groupId || null),
       voiceText:    source.voiceText,
       voiceEnabled: source.voiceEnabled,
+      // B3/M6 (V0.3.2.107): these three were dropped — the copy came out
+      // visible, unbound from its camera template, and with no recorded
+      // narration even when the source had all three.
+      hidden:       !!source.hidden,
+      ...(source.cameraBinding ? { cameraBinding: { ...source.cameraBinding } } : {}),
+      ...(source.narration     ? { narration:     { ...source.narration } }     : {}),
       transition:   { ...source.transition },
       snapshot:     JSON.parse(JSON.stringify(source.snapshot)),
       // step.overlay is a Konva.Stage JSON string (text boxes, images,
@@ -3037,28 +3056,13 @@ class StepManager {
     const clampedIdx = Math.max(0, Math.min(chapters.length, newChapterIdx));
     chapters.splice(clampedIdx, 0, chapter);
 
-    // Rebuild steps order: for each chapter in new order, emit its steps in
-    // their original relative order; ungrouped steps keep their positions
-    // relative to the nearest preceding chapter.
-    const allSteps    = state.get('steps') || [];
-    const byChapter   = new Map();
-    const ungrouped   = [];
-    for (const s of allSteps) {
-      if (s.chapterId && chapters.some(c => c.id === s.chapterId)) {
-        if (!byChapter.has(s.chapterId)) byChapter.set(s.chapterId, []);
-        byChapter.get(s.chapterId).push(s);
-      } else {
-        ungrouped.push(s);
-      }
-    }
-    const newSteps = [];
-    for (const c of chapters) {
-      const chSteps = byChapter.get(c.id) || [];
-      newSteps.push(...chSteps);
-    }
-    newSteps.push(...ungrouped);
-
-    state.setState({ chapters, steps: newSteps });
+    // B3/M4 (V0.3.2.107): the old hand-rolled rebuild here emitted
+    // [chapters..., ungrouped + base LAST] while normalizeOrder enforces
+    // [base, ungrouped, chapters...] — so the next unrelated edit that
+    // called normalizeOrder silently re-shuffled the timeline ("step order
+    // rearranges itself"). Delegate to the one canonical orderer instead.
+    state.setState({ chapters });
+    this.normalizeOrder();
     state.markDirty();
     state.emit('steps:reordered');
   }
