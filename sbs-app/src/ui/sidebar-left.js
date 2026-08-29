@@ -938,6 +938,14 @@ async function _onOpenProject() {
       state.emit('change:treeData', state.get('treeData'));
     }
 
+    // B7/M2 (V0.3.2.111): the REAL "everything is loaded" signal. Fires
+    // after the per-asset load loop (which can wait on the relink dialog
+    // indefinitely), _reattachProceduralNodes, activateBaseStep, the
+    // Replace-Model rebuild, orphan pruning, first-step activation, and
+    // the archive re-apply. The tree-reconcile sweep anchors HERE instead
+    // of project:loaded, which fires before any model starts loading.
+    state.emit('project:modelsSettled');
+
     setStatus(`Opened: ${state.get('projectName')}.`);
 
     // Post-load SUGGESTION (never auto-runs): CAD/STEP imports leave deep chains

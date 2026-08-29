@@ -1520,17 +1520,36 @@ state.on('project:loaded', () => schedulePrecache('project-loaded'));
 // that state corrupts the file permanently (destroyed a client-machine
 // project on 0.3.2-45). Sweep AFTER the async passes settle and re-insert
 // whatever lost the race. Runs twice (early + late) — idempotent.
+const _runTreeReconcile = (tag) => import('./io/project.js')
+  .then(m => {
+    const r = m.reconcileSnapshotTreeNodes(); if (r.repaired) console.warn(`[load] tree reconcile (${tag}) repaired ${r.repaired} node(s)`);
+    // 🔩 V0.3.2.67: same timers, second repair — primitives whose params a
+    // step-snapshot time capsule overwrote get the saved-tree truth back.
+    const p = m.reassertPrimitiveDefs(); if (p.fixed) console.warn(`[load] primitive params re-asserted (${tag}): ${p.fixed}`);
+  })
+  .catch(e => console.warn('[load] tree reconcile failed:', e?.message));
+// B7/M2 (V0.3.2.111): anchored to the REAL completion signal instead of
+// wall-clock guesses after project:loaded. project:loaded fires BEFORE any
+// model starts loading (and the relink dialog can hold loading open
+// indefinitely), so the old 1.2s/4s timers either swept a half-built scene
+// (inserting duplicate ghost entries for parts still arriving) or both
+// expired before loading finished and the sweep never ran at all.
+// modelsSettled fires after the whole load flow in sidebar-left.js settles;
+// the two short passes remain (idempotent) to catch late async raster work.
+let _settledSeen = false;
+state.on('project:modelsSettled', () => {
+  _settledSeen = true;
+  setTimeout(() => _runTreeReconcile('early'), 300);
+  setTimeout(() => _runTreeReconcile('late'),  2500);
+});
+// Safety net: if an exotic load path (or a mid-flow exception) never emits
+// modelsSettled, still reconcile once — late is better than never, and the
+// sweep is idempotent.
 state.on('project:loaded', () => {
-  const run = (tag) => import('./io/project.js')
-    .then(m => {
-      const r = m.reconcileSnapshotTreeNodes(); if (r.repaired) console.warn(`[load] tree reconcile (${tag}) repaired ${r.repaired} node(s)`);
-      // 🔩 V0.3.2.67: same timers, second repair — primitives whose params a
-      // step-snapshot time capsule overwrote get the saved-tree truth back.
-      const p = m.reassertPrimitiveDefs(); if (p.fixed) console.warn(`[load] primitive params re-asserted (${tag}): ${p.fixed}`);
-    })
-    .catch(e => console.warn('[load] tree reconcile failed:', e?.message));
-  setTimeout(() => run('early'), 1200);
-  setTimeout(() => run('late'),  4000);
+  _settledSeen = false;
+  setTimeout(() => {
+    if (!_settledSeen) { console.warn('[load] modelsSettled never fired — fallback tree reconcile'); _runTreeReconcile('fallback'); }
+  }, 8000);
 });
 // Flat mirrors are derived (not saved) — rebuild them once a project finishes
 // loading, from each colour preset's flatMirror flag. Deferred so the scene tree
