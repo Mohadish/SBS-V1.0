@@ -632,6 +632,13 @@ export function duplicateInstance(nodeId) {
       (src.localOffset?.[1] || 0),
       (src.localOffset?.[2] || 0),
     ],
+    // B6/M14 (V0.3.2.110): these were dropped — the copy came out as a
+    // plain un-rotated bare screw with default insertion animation.
+    // Copies, never shared references.
+    localQuaternion:  [...(src.localQuaternion  || [0, 0, 0, 1])],
+    orientationSteps: [...(src.orientationSteps || [0, 0, 0])],
+    ...(src.washers    ? { washers:    { ...src.washers } }    : {}),
+    ...(src.insertAnim ? { insertAnim: { ...src.insertAnim } } : {}),
   });
 
   parent.children = [...(parent.children || []), copy];

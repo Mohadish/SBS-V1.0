@@ -159,6 +159,13 @@ export function applyFollow(followerId, targetId, opts = {}) {
   console.log(`[follow] "${A.name || A.id}" now follows "${B.name || B.id}" (in folder "${parentFolder.name || parentFolderId}") — scope ${scope}, ${touched} step(s) updated${skipped ? `, ${skipped} skipped (folder not present in those steps)` : ''}.`);
 
   // ── Undo: restore steps + A's parent/transform/follow ──────────────────────
+  // B6/M15 (V0.3.2.110): redo used to RE-INVOKE applyFollow — which pushed a
+  // fresh undo entry (duplicate history, two Ctrl+Z to reverse, redo stack
+  // cleared) and re-derived scope from CURRENT state (wrong step range if
+  // the user navigated first). Capture the AFTER state and replay it purely,
+  // mirroring the undo closure.
+  const stepsAfter  = cloneShareStrings(state.get('steps'));
+  const afterFollow = { ...A.follow };
   undoManager.push(
     'Follow object',
     () => {
@@ -171,7 +178,17 @@ export function applyFollow(followerId, targetId, opts = {}) {
       if (cur) steps.activateStep(cur, false); else steps.activateBaseStep?.();
       state.emit('change:treeData', r2);
     },
-    () => applyFollow(followerId, targetId, opts),
+    () => {
+      const r2 = state.get('treeData');
+      state.setState({ steps: stepsAfter });
+      moveNode(r2, A.id, parentFolderId);
+      A.follow = { ...afterFollow };
+      state.setState({ nodeById: buildNodeMap(r2) });
+      const cur = state.get('activeStepId');
+      if (cur) steps.activateStep(cur, false); else steps.activateBaseStep?.();
+      state.emit('change:treeData', r2);
+      state.markDirty?.();
+    },
   );
   return true;
 }
@@ -237,6 +254,9 @@ export function unfollowToRoot(followerId, scope = 'all') {
   sceneCore.requestRender?.(300);
   console.log(`[follow] "${A.name || A.id}" detached to root.`);
 
+  // B6/M15 (V0.3.2.110): pure-replay redo — see applyFollow's push above.
+  const stepsAfter    = cloneShareStrings(state.get('steps'));
+  const afterParentId = findParent(state.get('treeData'), A.id)?.id || null;
   undoManager.push(
     'Stop following (to root)',
     () => {
@@ -249,7 +269,17 @@ export function unfollowToRoot(followerId, scope = 'all') {
       if (cur) steps.activateStep(cur, false); else steps.activateBaseStep?.();
       state.emit('change:treeData', r2);
     },
-    () => unfollowToRoot(followerId, scope),
+    () => {
+      const r2 = state.get('treeData');
+      state.setState({ steps: stepsAfter });
+      if (afterParentId) moveNode(r2, A.id, afterParentId);
+      A.follow = null;
+      state.setState({ nodeById: buildNodeMap(r2) });
+      const cur = state.get('activeStepId');
+      if (cur) steps.activateStep(cur, false); else steps.activateBaseStep?.();
+      state.emit('change:treeData', r2);
+      state.markDirty?.();
+    },
   );
   return true;
 }

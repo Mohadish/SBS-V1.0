@@ -343,6 +343,86 @@ export function deletePresets(ids) {
 }
 
 /**
+ * B6/M12 (V0.3.2.110): Replace & Delete a color preset as ONE undoable
+ * action. The dialog used to run four mutations where only the final
+ * deletePreset was undoable — Ctrl+Z brought the color back while meshes
+ * and step snapshots kept the replacement (half-undone project).
+ * Mirrors deletePresets' capture/apply/restore pattern above.
+ *
+ * @param {string}   oldId           preset being deleted
+ * @param {string}   newId           replacement preset
+ * @param {string[]} phantomMeshIds  mesh ids on missing assets — their
+ *                                   defaults/assignments swap too
+ */
+export function replaceAndDeletePreset(oldId, newId, phantomMeshIds = []) {
+  const all = state.get('colorPresets') || [];
+  const preset = all.find(p => p.id === oldId);
+  if (!preset || !newId || oldId === newId) return false;
+
+  const beforePresets  = cloneShareStrings(all);
+  const beforeAssign   = { ...materials.meshColorAssignments };
+  const beforeDefaults = { ...materials.meshDefaultColors };
+  const beforeSteps    = cloneShareStrings(state.get('steps') || []);
+  const phantoms = new Set(phantomMeshIds);
+
+  const apply = () => {
+    // 1. Live default colors (reassignDefault semantics, inlined so the
+    //    whole apply replays without side pushes).
+    for (const nodeId of Object.keys(materials.meshDefaultColors)) {
+      if (materials.meshDefaultColors[nodeId] === oldId) {
+        materials.meshDefaultColors[nodeId] = newId;
+        if (materials.meshColorAssignments[nodeId] === oldId) {
+          materials.meshColorAssignments[nodeId] = newId;
+        }
+      }
+    }
+    // 2. Missing-asset (phantom) meshes: defaults + active assignments.
+    for (const meshId of phantoms) {
+      if (materials.meshDefaultColors[meshId]    === oldId) materials.meshDefaultColors[meshId]    = newId;
+      if (materials.meshColorAssignments[meshId] === oldId) materials.meshColorAssignments[meshId] = newId;
+    }
+    // 3. EVERY step snapshot: swap oldId → newId. Entries that would now
+    //    merely track the mesh's new default are STRIPPED (tracking-default
+    //    rule — a snapshot value equal to the default is not an override).
+    //    Covers live meshes too: the old dialog only patched phantom ids,
+    //    leaving live-mesh snapshot overrides dangling at the deleted id.
+    const steps2 = (state.get('steps') || []).map(s => {
+      const mat = s.snapshot?.materials;
+      if (!mat) return s;
+      let changed = false; const nm = { ...mat };
+      for (const [mid, pid] of Object.entries(mat)) {
+        if (pid !== oldId) continue;
+        changed = true;
+        if (materials.meshDefaultColors[mid] === newId) delete nm[mid];
+        else nm[mid] = newId;
+      }
+      return changed ? { ...s, snapshot: { ...s.snapshot, materials: nm } } : s;
+    });
+    state.setState({
+      steps: steps2,
+      colorPresets: (state.get('colorPresets') || []).filter(p => p.id !== oldId),
+    });
+    materials.applyAll();
+    state.emit('materials:defaultColorsChanged');
+    state.markDirty();
+  };
+  apply();
+  undoManager.push(
+    `Replace & delete color "${preset.name || ''}"`,
+    () => {
+      materials.meshColorAssignments = { ...beforeAssign };
+      materials.meshDefaultColors    = { ...beforeDefaults };
+      state.setState({ colorPresets: beforePresets, steps: beforeSteps });
+      materials.applyAll();
+      state.emit('materials:defaultColorsChanged');
+      state.markDirty();
+    },
+    () => apply(),
+  );
+  return true;
+}
+
+/**
  * Unify a set of color presets into one survivor (V0.1.97). Every reference
  * to a merged preset — project-level DEFAULTS (meshDefaultColors), live
  * step-override assignments (meshColorAssignments), and EVERY step
@@ -5031,14 +5111,36 @@ export function deleteCable(cableId) {
   const cable = cables.getCable(cableId);
   if (!cable) return false;
   const snapshot = JSON.parse(JSON.stringify(cable));   // deep-clone for restore
+  // B6/L2 (V0.3.2.110): removeCable never touched the per-step snapshot
+  // entries (steps.js's sync merge deliberately preserves existing keys),
+  // so every deleted cable's data was carried and saved forever. Sweep
+  // them out, remembering exactly what was removed for undo.
+  const sweepStepEntries = () => {
+    const removed = new Map();   // stepId → entry
+    for (const s of (state.get('steps') || [])) {
+      const entry = s.snapshot?.cables?.[cableId];
+      if (entry !== undefined) { removed.set(s.id, entry); delete s.snapshot.cables[cableId]; }
+    }
+    if (removed.size) state.setState({ steps: [...(state.get('steps') || [])] });
+    return removed;
+  };
   cables.removeCable(cableId);
+  const removedEntries = sweepStepEntries();
   undoManager.push(`Delete cable "${cable.name || ''}"`,
     () => {
       const list = (state.get('cables') || []).filter(c => c.id !== cableId);
       state.setState({ cables: [...list, snapshot] });
+      // Splice the per-step entries back exactly where they were.
+      for (const s of (state.get('steps') || [])) {
+        if (!removedEntries.has(s.id)) continue;
+        if (!s.snapshot) s.snapshot = {};
+        if (!s.snapshot.cables) s.snapshot.cables = {};
+        s.snapshot.cables[cableId] = removedEntries.get(s.id);
+      }
+      if (removedEntries.size) state.setState({ steps: [...(state.get('steps') || [])] });
       state.markDirty();
     },
-    () => { cables.removeCable(cableId); },
+    () => { cables.removeCable(cableId); sweepStepEntries(); },
   );
   return true;
 }
@@ -10211,7 +10313,11 @@ function _pastePrimitive({ linked }) {
   const ref     = members[0] || live;
   const params  = ref ? { ...(ref.primParams || {}) } : cb.params;
   const quality = ref ? (ref.primQuality ?? 3)        : cb.quality;
-  const baseAtOrigin = live ? live.baseAtOrigin : cb.baseAtOrigin;
+  // B6/L3 (V0.3.2.110): `!!` normalizes legacy centre-pivot primitives
+  // (no baseAtOrigin field). Undefined used to fall through _spawnPrimitive's
+  // `!= null` guard into the schema default (base-at-origin), so the paste
+  // landed shifted by half its height next to the original.
+  const baseAtOrigin = !!(live ? live.baseAtOrigin : cb.baseAtOrigin);
 
   // Same parent + offset-to-the-side transform (so it lands next to the original).
   const parentId = live ? (findParent(root, live.id)?.id || null) : null;

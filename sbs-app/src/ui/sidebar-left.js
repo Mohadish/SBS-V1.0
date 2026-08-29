@@ -2564,41 +2564,15 @@ function _showReplacementPicker(preset, allPresets, defaultCount, missingCount =
   dlg.querySelector('#dlg-confirm').addEventListener('click', () => {
     const newId = dlg.querySelector('#dlg-replace-sel').value;
     if (!newId) return;
-    // Reassign default colors (live meshes)
-    materials.reassignDefault(preset.id, newId);
-    // Reassign missing-asset mesh colors: defaults, active assignments, and all step snapshots
-    const missingIds = _collectPhantomMeshIds();
-    for (const meshId of missingIds) {
-      if (materials.meshDefaultColors[meshId] === preset.id)
-        materials.meshDefaultColors[meshId] = newId;
-      if (materials.meshColorAssignments[meshId] === preset.id)
-        materials.meshColorAssignments[meshId] = newId;
-    }
-    // Patch step snapshots. Architectural rule: a snapshot entry whose value
-    // equals the project default is NOT a real override — strip it so future
-    // default changes propagate. So when we replace oldId → newId, if newId
-    // matches the mesh's new default, drop the entry entirely instead of
-    // stamping it.
-    const allSteps = state.get('steps') || [];
-    let stepsDirty = false;
-    for (const step of allSteps) {
-      const mats = step.snapshot?.materials;
-      if (!mats) continue;
-      for (const meshId of missingIds) {
-        if (mats[meshId] !== preset.id) continue;
-        if (materials.meshDefaultColors[meshId] === newId) {
-          delete mats[meshId];                 // tracking-default → strip
-        } else {
-          mats[meshId] = newId;                // real override → swap
-        }
-        stepsDirty = true;
-      }
-    }
-    if (stepsDirty) state.setState({ steps: [...allSteps] });
     if (_expandedPresetId === preset.id) _expandedPresetId = null;
-    actions.deletePreset(preset.id);
+    // B6/M12 (V0.3.2.110): ONE undoable action replaces the four separate
+    // mutations that used to live here — only the final deletePreset was
+    // undoable, so Ctrl+Z restored the color but left every mesh and step
+    // snapshot recolored. All the reassign/phantom/snapshot logic
+    // (including the tracking-default strip rule) now lives in
+    // actions.replaceAndDeletePreset.
+    actions.replaceAndDeletePreset(preset.id, newId, Array.from(_collectPhantomMeshIds()));
     dlg.close(); dlg.remove();
-    state.markDirty();
     setStatus(`Replaced color and deleted "${preset.name}".`);
   });
 }
