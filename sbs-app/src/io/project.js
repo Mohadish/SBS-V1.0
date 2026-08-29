@@ -141,10 +141,17 @@ function stripNode(node) {
   // _paramsUserEdited is SESSION-scoped (V0.3.2.67 re-assert shield for
   // edits made between load and the repair timers) — persisting it would
   // permanently exempt the node from every future load repair.
+  // B2/M1 (V0.3.2.106): `missing` is persisted ONLY when exactly true
+  // (phantom subtrees for still-missing assets must round-trip).
+  // `missing: false` is an in-memory relink marker — buildIdRemapFromSpec
+  // EXCLUDES spec nodes carrying explicit false from re-matching, so a
+  // saved false poisoned the next load: relinked parts lost their saved
+  // identity (colors + per-step positions/visibility).
   // eslint-disable-next-line no-unused-vars
-  const { object3d, _transient, _paramsUserEdited, ...rest } = node;
+  const { object3d, _transient, _paramsUserEdited, missing, ...rest } = node;
   return {
     ...rest,
+    ...(missing === true ? { missing: true } : {}),
     children: (rest.children || []).map(stripNode),
   };
 }
@@ -926,6 +933,17 @@ export const PROJECT_STATE_KEYS = [
 
 export function applyProjectToState(project) {
   const s = project.settings || {};
+  // B2/M1 heal: builds before V0.3.2.106 persisted `missing: false`, which
+  // buildIdRemapFromSpec's displaced-mesh filter reads as "skip re-matching"
+  // — scrub it on load so already-poisoned files relink correctly again.
+  // (In-place mutation is intentional: treeData is built from these same
+  // spec objects later, so every consumer sees the healed tree.)
+  const _scrubMissingFalse = (n) => {
+    if (!n) return;
+    if (n.missing === false) delete n.missing;
+    (n.children || []).forEach(_scrubMissingFalse);
+  };
+  _scrubMissingFalse(project.tree?.root);
   _lastLoadedTreeSpecRoot = project.tree?.root || null;
 
   // 🔩 V0.3.2.67 — warm the primitive definition registry from the saved

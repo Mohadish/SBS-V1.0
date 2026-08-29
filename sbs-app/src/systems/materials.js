@@ -1930,9 +1930,14 @@ gl_FragColor.a = 1.0;
         this._outlineBackMeshes.set(savedId, this._outlineBackMeshes.get(freshId));
         this._outlineBackMeshes.delete(freshId);
       }
-      if (this._originalMaterials?.has(freshId)) {
-        this._originalMaterials.set(savedId, this._originalMaterials.get(freshId));
-        this._originalMaterials.delete(freshId);
+      // B2/M16 (V0.3.2.106): was `this._originalMaterials` — a field that
+      // does not exist (the real one is `originalMaterials`); the optional
+      // chain silently skipped the whole block, so originals were never
+      // remapped to saved IDs: solid-override off / revert showed the wrong
+      // look and textured parts lost their maps after reopen or relink.
+      if (this.originalMaterials.has(freshId)) {
+        this.originalMaterials.set(savedId, this.originalMaterials.get(freshId));
+        this.originalMaterials.delete(freshId);
       }
     }
 
