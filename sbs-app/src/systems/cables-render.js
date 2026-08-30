@@ -1190,7 +1190,14 @@ function _disposeSubgroup(entry) {
   // shared unit geometries stay untouched.
   for (const m of entry.points)   { m.material?.dispose?.(); if (m.geometry && m.geometry !== _UNIT_SPHERE)   m.geometry.dispose?.(); }
   for (const m of entry.segments) { m.material?.dispose?.(); if (m.geometry && m.geometry !== _UNIT_CYLINDER) m.geometry.dispose?.(); }
-  for (const m of (entry.sockets || [])) { m.material?.dispose?.(); if (m.geometry && m.geometry !== _UNIT_BOX) m.geometry.dispose?.(); }
+  // Sockets carry ONLY shared unit geometries (box or, since V0.3.0.175,
+  // _UNIT_CYL_Z for round sockets) — exempt both. V0.3.2.113: the .112
+  // guard checked _UNIT_BOX alone, so deleting a cable with a round socket
+  // disposed the cylinder every other cable's round sockets still use.
+  for (const m of (entry.sockets || [])) {
+    m.material?.dispose?.();
+    if (m.geometry && m.geometry !== _UNIT_BOX && m.geometry !== _UNIT_CYL_Z) m.geometry.dispose?.();
+  }
   entry.points   = [];
   entry.segments = [];
   entry.sockets  = [];

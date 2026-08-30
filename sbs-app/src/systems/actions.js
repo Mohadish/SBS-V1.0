@@ -381,6 +381,20 @@ export function replaceAndDeletePreset(oldId, newId, phantomMeshIds = []) {
       if (materials.meshDefaultColors[meshId]    === oldId) materials.meshDefaultColors[meshId]    = newId;
       if (materials.meshColorAssignments[meshId] === oldId) materials.meshColorAssignments[meshId] = newId;
     }
+    // 2b. V0.3.2.113 — EVERY remaining live assignment still pointing at the
+    // deleted preset. Loop 1 only converts assignments on meshes whose
+    // DEFAULT was oldId; a mesh with a different default plus an active
+    // override === oldId kept a dangling id (the old dialog's
+    // deletePreset → pruneDeletedPreset used to strip those). Dangling =
+    // applyAll finds no preset and reinstalls the original import material,
+    // and the next sync writes the dead id back into the step snapshot.
+    // Same tracking-default rule as the snapshot pass: drop instead of
+    // stamping when the replacement already IS the mesh's default.
+    for (const meshId of Object.keys(materials.meshColorAssignments)) {
+      if (materials.meshColorAssignments[meshId] !== oldId) continue;
+      if (materials.meshDefaultColors[meshId] === newId) delete materials.meshColorAssignments[meshId];
+      else materials.meshColorAssignments[meshId] = newId;
+    }
     // 3. EVERY step snapshot: swap oldId → newId. Entries that would now
     //    merely track the mesh's new default are STRIPPED (tracking-default
     //    rule — a snapshot value equal to the default is not an override).

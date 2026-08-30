@@ -1591,6 +1591,13 @@ state.on('change:export',  () => schedulePrecache('export-options-change'));
 
 // Clear undo history when a new project loads (fresh slate)
 state.on('change:projectPath', () => { undoManager.clear(); selectionActs.clear(); });
+// V0.3.2.113: change:projectPath is SUPPRESSED when the value doesn't change —
+// reopening the same .sbsproj (the standard discard-changes gesture) and every
+// web-mode open (no path at all) left the old stack alive, so Ctrl+Z replayed
+// closures over disposed object3ds and pre-reload steps arrays. project:loaded
+// fires from loadProject only, so it's the reliable "a project just loaded"
+// signal for every open path. (New Project clears explicitly — see sidebar-left.)
+state.on('project:loaded', () => { undoManager.clear(); selectionActs.clear(); });
 
 // ── Gizmo: follow selection ───────────────────────────────────────────────────
 function _syncGizmoToSelection() {

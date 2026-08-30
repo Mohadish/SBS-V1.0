@@ -644,6 +644,11 @@ function _onNewProject() {
     animationPresets: [defaultAnim],
     backgroundColor:    bgColor,
     backgroundGradient: bgGrad,
+    // V0.3.2.113: AO/SSR are per-project, but userSettings.render is the
+    // documented NEW-PROJECT default (same contract as the background
+    // above) — without this the reset stamped factory values over a
+    // user's customised defaults and saved them into the new project.
+    ...(us.render ? { render: us.render } : {}),
     // Keys with no createInitialState entry, reset explicitly.
     interfaceDefaultPose: null,
     interfaceLibraryFolder: null,
@@ -662,7 +667,12 @@ async function _onOpenProject() {
     const picked = await pickProjectFile();
     if (!picked) return;
 
-    const { file, path = null } = picked;
+    // V0.3.2.113: capture the FSA save handle (web mode) — Open used to
+    // discard it, so the PREVIOUS project's handle stayed in state and the
+    // next Ctrl+S (auto mode reuses the stored handle with no dialog)
+    // silently wrote this project's bytes into the OLD project's file.
+    // Electron mode returns no handle and saves via projectPath; null there.
+    const { file, path = null, handle = null } = picked;
 
     // Clear existing scene before loading new project.
     // B1/M20 (V0.3.2.105): dispose GPU resources too — Open already
@@ -681,7 +691,7 @@ async function _onOpenProject() {
     materials.originalMaterials.clear();
     materials.meshColorAssignments = {};
     materials.meshDefaultColors    = {};
-    state.setState({ treeData: null, nodeById: new Map() });
+    state.setState({ treeData: null, nodeById: new Map(), fsaFileHandle: handle });
 
     // Clear stale asset status before new project loads
     _assetStatus.clear();
