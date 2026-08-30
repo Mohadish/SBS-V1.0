@@ -931,6 +931,23 @@ export const PROJECT_STATE_KEYS = [
   'cables', 'cableGlobalScale', 'cableGlobalRadius', 'cableDefaultDiameter', 'cableHighlightColor',
 ];
 
+/**
+ * V0.3.2.114: SESSION keys that arm a modal viewport interaction. NOT
+ * persisted (deliberately absent from PROJECT_STATE_KEYS, which is
+ * contractually "the exact set applyProjectToState writes") — but they must
+ * be cleared alongside a project swap. A placement/pick mode armed when the
+ * user hits New or Open keeps swallowing every viewport click against a
+ * cable that no longer exists, with no visible way out but Esc.
+ */
+export const SESSION_MODAL_KEYS = [
+  'cablePlacingId', 'cablePlacingAtStart',
+  'selectedCableId', 'selectedCableIds',
+  'selectedCablePoint', 'selectedCablePoints', 'selectedCableGroupRoot',
+  'selectedCableSocket',
+  'cableReanchorPickingId', 'cableInsertPickingTarget',
+  'cableSocketReanchorPickingId', 'cableSocketConnectPickingId',
+];
+
 export function applyProjectToState(project) {
   const s = project.settings || {};
   // B2/M1 heal: builds before V0.3.2.106 persisted `missing: false`, which

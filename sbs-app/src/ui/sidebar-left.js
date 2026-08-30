@@ -15,7 +15,7 @@ import { showAssetVerifyDialog } from './asset-verify.js';
 import {
   saveProject, loadProject, pickProjectFile, getSuggestedFilename,
   buildIdRemapFromSpec, applyIdRemap, applySpecFieldsToNodes,
-  collectAllMeshSpecs, buildDisplacedMeshIdRemap, PROJECT_STATE_KEYS,
+  collectAllMeshSpecs, buildDisplacedMeshIdRemap, PROJECT_STATE_KEYS, SESSION_MODAL_KEYS,
 }                          from '../io/project.js';
 import { initTree, renderTree, expandPathToNode, collapseAll, toggleFilter, getFilter } from './tree.js';
 import { setStatus }       from './status.js';
@@ -636,7 +636,11 @@ function _onNewProject() {
   // resetKeysToInitial wipes every project-persisted slice and merges the
   // overrides in ONE atomic setState, so each panel's change: listener
   // repaints exactly once, never against a half-reset state.
-  state.resetKeysToInitial(PROJECT_STATE_KEYS, {
+  // SESSION_MODAL_KEYS ride along (V0.3.2.114): an armed cable placement /
+  // pick mode would otherwise keep eating viewport clicks against cables
+  // this reset just deleted. Same single atomic setState, so each listener
+  // (cursor reset, connect-arrow hide, cables panel) fires exactly once.
+  state.resetKeysToInitial([...PROJECT_STATE_KEYS, ...SESSION_MODAL_KEYS], {
     projectPath: null, projectName: 'Untitled', projectDirty: false,
     treeData: null, nodeById: new Map(),
     activeStepId: null, selectedId: null,
@@ -692,6 +696,11 @@ async function _onOpenProject() {
     materials.meshColorAssignments = {};
     materials.meshDefaultColors    = {};
     state.setState({ treeData: null, nodeById: new Map(), fsaFileHandle: handle });
+
+    // Same modal-mode clear as New Project (V0.3.2.114): applyProjectToState
+    // never writes these, so a placement/pick mode armed at Open time would
+    // dangle against the newly loaded project's cables.
+    state.resetKeysToInitial(SESSION_MODAL_KEYS);
 
     // Clear stale asset status before new project loads
     _assetStatus.clear();

@@ -65,7 +65,20 @@ export function narrationContextForStep(stepId) {
   const steps = _playableSteps();
   const idx = steps.findIndex(s => s.id === stepId);
   const empty = { text: '', durationMs: 0, offsetMs: 0, windowMs: 0, isOverflow: false };
-  if (idx < 0) return empty;
+  if (idx < 0) {
+    // V0.3.2.114: off-sequence step (hidden, or inside a hidden chapter).
+    // It has no place in the playback timeline — but the sequence editor and
+    // live image-sequence playback still need its own window while the user
+    // edits it, and V0.3.2.108's hidden-chapter clause started dropping them
+    // here. TOC/timecode callers keep using _playableSteps and are unaffected.
+    const s = (state.get('steps') || []).find(x => x.id === stepId);
+    if (!s) return empty;
+    const own = s.narration?.durationMs || 0;
+    if (own > 0 && s.narration?.text) {
+      return { text: s.narration.text, durationMs: own, offsetMs: 0, windowMs: own, isOverflow: false };
+    }
+    return { text: '', durationMs: 0, offsetMs: 0, windowMs: _animTiming(s).totalMs || 0, isOverflow: false };
+  }
   const step = steps[idx];
 
   // Own narration → straightforward.

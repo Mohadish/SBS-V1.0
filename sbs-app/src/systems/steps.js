@@ -2162,6 +2162,9 @@ class StepManager {
       this._onObjectTransitionsDone();
       this._onObjectTransitionsDone = null;
     }
+    // V0.3.2.114: remember WHICH nodes the lerp was driving before we drop
+    // the transition list — the write-back below must touch only those.
+    const _animIds = new Set((this._objectTransitions || []).map(t => t.nodeId));
     this._objectTransitions = [];
     // H1: snap any in-flight cable phase to final + resolve its await
     cablesRender.snapCableTransitionsToFinal();
@@ -2186,13 +2189,41 @@ class StepManager {
         const wt = this._currentTargetWorldTransforms[node.id];
         if (!wt) return;
         _setWorldTransformOnObject(obj, wt.position, wt.quaternion);
+        // V0.3.2.114: also write the FINAL pose back into the node DATA for
+        // nodes the lerp was driving. Every animation frame writes its
+        // interpolated pose into node.localOffset/localQuaternion, and this
+        // snap used to move only the Object3Ds — so after an interrupt the
+        // data tree held mid-flight values. Harmless until V0.3.2.107 made
+        // flushSync run right after the snap: a pending transform sync then
+        // captured those mid-lerp poses into the leaving step's snapshot and
+        // saved them (objects frozen mid-air in the step data).
+        // Restricted to _animIds on purpose: writing back for every node
+        // would clobber a mid-animation edit on a NON-animating node, which
+        // is exactly what V0.3.2.107 exists to preserve.
+        if (_animIds.has(node.id)) _writeDataStateFromObject3D(node, obj);
       });
       this._warmMatrices();
     }
 
-    // Snap material colours to target
+    // Snap material colours to target.
+    // V0.3.2.114: MERGE rather than replace. applySnapshot overwrites
+    // meshColorAssignments wholesale, so a colour edit made mid-animation
+    // was wiped one line before the flush that V0.3.2.107 added to rescue
+    // it. beginColorTransition seeded the live map with the raw target at
+    // animation start, so any deviation from target here IS the user's
+    // mid-animation edit — keep those, snap everything else.
     if (this._currentTargetSnap?.materials && this._materials) {
-      this._materials.applySnapshot(this._currentTargetSnap.materials);
+      const target = this._currentTargetSnap.materials;
+      const live   = this._materials.meshColorAssignments || {};
+      const merged = { ...target };
+      for (const id of new Set([...Object.keys(target), ...Object.keys(live)])) {
+        const t = target[id] ?? null;
+        const l = live[id]   ?? null;
+        if (l === t) continue;
+        if (l == null) delete merged[id];
+        else           merged[id] = l;
+      }
+      this._materials.applySnapshot(merged);   // fresh object — never mutates the stored snapshot
     }
 
     this._animRunning                  = false;

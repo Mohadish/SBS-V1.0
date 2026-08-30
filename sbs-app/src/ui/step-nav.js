@@ -173,6 +173,14 @@ export function renderStepNav() {
   const visible   = steps.getVisibleSteps();
   const activeId  = state.get('activeStepId');
   const activeIdx = visible.findIndex(s => s.id === activeId);
+  // V0.3.2.114: numbering uses the playable list (V0.3.2.108's fix, correct),
+  // but IDENTITY and control enablement resolve against the FULL list. A step
+  // inside a hidden chapter is off-sequence yet still editable — resolving it
+  // only against `visible` left the whole bar inert (both arrows dead, voice
+  // field blanked + disabled) even though the keyboard path deliberately
+  // navigates away from a non-playable step.
+  const allSteps  = state.get('steps') || [];
+  const activeFull = allSteps.findIndex(s => s.id === activeId);
 
   const label = _el.querySelector('.step-nav__label');
   const prev  = _el.querySelector('.step-nav__prev');
@@ -181,11 +189,19 @@ export function renderStepNav() {
 
   if (!label || !prev || !next) return;
 
+  // Narration field follows the ACTIVE step whether or not it's playable —
+  // synced before the empty-list bail so a project with every chapter
+  // hidden keeps a usable voiceover editor.
+  const activeAny = activeFull >= 0 ? allSteps[activeFull] : null;
+  if (narr && document.activeElement !== narr) {
+    narr.value    = activeAny?.narration?.text || '';
+    narr.disabled = !activeAny;
+  }
+
   if (visible.length === 0) {
-    label.textContent = 'No steps';
+    label.textContent = activeAny ? `– / 0 — ${activeAny.name || ''}` : 'No steps';
     prev.disabled     = true;
     next.disabled     = true;
-    if (narr) { narr.value = ''; narr.disabled = true; }
     return;
   }
 
@@ -202,13 +218,16 @@ export function renderStepNav() {
     if (i === activeIdx) activeTopLevelIdx = topLevelTotal;
   }
 
+  // '–' for an off-sequence step is right: it genuinely has no playback slot.
   const displayIdx = activeIdx >= 0 ? activeTopLevelIdx : '–';
-  const active     = activeIdx >= 0 ? visible[activeIdx] : null;
+  const active     = activeAny;   // identity from the full list (see above)
   // Show the GROUP head's name for sub-steps (per spec — header treats
   // a group as one step). Falls back to active.name when not in a group.
   let displayName = active?.name || '';
   if (active?.groupId) {
-    const head = visible.find(s => s.id === active.groupId);
+    // Search allSteps: a sub-step inside a hidden chapter must still
+    // resolve its head's name.
+    const head = allSteps.find(s => s.id === active.groupId);
     if (head) displayName = head.name || '';
   }
   label.textContent = `${displayIdx} / ${topLevelTotal}${active ? ' — ' + displayName : ''}`;
@@ -225,13 +244,17 @@ export function renderStepNav() {
   for (let i = searchFrom; i >= 0; i--) {
     if (!visible[i].groupId) { hasPrevTopLevel = true; break; }
   }
-  prev.disabled = activeIdx < 0 || !hasPrevTopLevel;
-  next.disabled = activeIdx < 0 || activeIdx >= visible.length - 1;
-
-  // Keep the narration input in sync with the active step. Avoid stomping
-  // the user's current typing by only writing when the field isn't focused.
-  if (narr && document.activeElement !== narr) {
-    narr.value    = active?.narration?.text || '';
-    narr.disabled = !active;
+  if (activeIdx >= 0) {
+    prev.disabled = !hasPrevTopLevel;
+    next.disabled = activeIdx >= visible.length - 1;
+  } else {
+    // V0.3.2.114: off-sequence active step (hidden step, or a step inside a
+    // hidden chapter). activateRelativeStep already handles this case by
+    // walking to the nearest playable step either side — so mirror that
+    // instead of hard-disabling both arrows, which made the bar inert
+    // during the hide-a-chapter-but-keep-editing workflow.
+    const posOf = (s) => allSteps.indexOf(s);
+    prev.disabled = activeFull < 0 || !visible.some(s => posOf(s) < activeFull && !s.groupId);
+    next.disabled = activeFull < 0 || !visible.some(s => posOf(s) > activeFull);
   }
 }

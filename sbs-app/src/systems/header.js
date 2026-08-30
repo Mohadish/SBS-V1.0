@@ -183,7 +183,14 @@ export function buildRenderContext(activeIdOverride) {
   const chHidden = new Set(chapters.filter(c => c.hidden).map(c => c.id));
   const visible  = allSteps.filter(s => !s.hidden && !s.isBaseStep && !chHidden.has(s.chapterId));
   const activeId = activeIdOverride ?? state.get('activeStepId');   // override: assembly rasters per-step headers without activating (V0.3.2.8)
-  const activeStep = visible.find(s => s.id === activeId) || null;
+  // V0.3.2.114: an off-sequence active step (hidden, or inside a hidden
+  // chapter) keeps its IDENTITY — name, chapter, subtitle — but gets NO
+  // sequence number (handled below). Resolving it only against `visible`
+  // left activeStep null while live-editing inside a hidden chapter, which
+  // blanked the name and burned "Step 0" into the live header.
+  const activeStep = visible.find(s => s.id === activeId)
+                  || allSteps.find(s => s.id === activeId && !s.isBaseStep)
+                  || null;
 
   // Step-groups: the header treats a group as ONE step. When a sub-
   // step is active, every dynamic header (stepName / stepNumber /
@@ -193,7 +200,9 @@ export function buildRenderContext(activeIdOverride) {
   // (head + every sub-step), and the very next step shows "Step 6"
   // (NOT "Step 10" as the flat-array index would give).
   const effectiveStep = activeStep?.groupId
-    ? (visible.find(s => s.id === activeStep.groupId) || activeStep)
+    ? (visible.find(s => s.id === activeStep.groupId)
+       || allSteps.find(s => s.id === activeStep.groupId)   // off-sequence group head
+       || activeStep)
     : activeStep;
 
   // TOP-LEVEL step index — sub-steps don't count toward stepNumber.
@@ -212,12 +221,18 @@ export function buildRenderContext(activeIdOverride) {
   // Per-chapter step index (Step Number restarts at 1 each chapter)
   // when the user has opted in via state.headerStepNumberPerChapter.
   // Default false → global top-level numbering.
-  let stepIndex = topLevelIdx;
-  if (state.get('headerStepNumberPerChapter') && effectiveStep?.chapterId) {
+  // V0.3.2.114: null (not -1) when the effective step isn't in the playable
+  // sequence — resolveHeaderText renders '' for null but "0" for -1
+  // (`stepIndex != null ? stepIndex + 1 : ''`), which is how a hidden
+  // chapter's steps showed "Step 0" in the live header.
+  const inSequence = !!effectiveStep && visible.some(s => s.id === effectiveStep.id);
+  let stepIndex = inSequence ? topLevelIdx : null;
+  if (inSequence && state.get('headerStepNumberPerChapter') && effectiveStep?.chapterId) {
     const chapterTopLevel = visible.filter(
       s => !s.groupId && s.chapterId === effectiveStep.chapterId,
     );
-    stepIndex = chapterTopLevel.findIndex(s => s.id === effectiveStep.id);
+    const perCh = chapterTopLevel.findIndex(s => s.id === effectiveStep.id);
+    stepIndex = perCh >= 0 ? perCh : null;
   }
   const chapterIndex = effectiveStep?.chapterId
     ? chapters.findIndex(c => c.id === effectiveStep.chapterId)

@@ -1545,11 +1545,25 @@ state.on('project:modelsSettled', () => {
 // Safety net: if an exotic load path (or a mid-flow exception) never emits
 // modelsSettled, still reconcile once — late is better than never, and the
 // sweep is idempotent.
+// V0.3.2.114: the fallback must never fire WHILE loading is still in
+// progress. A big multi-model project can easily take longer than the
+// timeout, and sweeping a half-built tree is the very thing this batch
+// removed (it inserts ghost specs for not-yet-arrived models and marks the
+// project dirty; the later rebuild erases them, but the spurious dirty flag
+// and wasted pass remain). So: if a model landed recently, the open flow is
+// demonstrably alive — re-arm instead of sweeping.
+let _lastModelLoadedAt = 0;
+state.on('model:loaded', () => { _lastModelLoadedAt = performance.now(); });
 state.on('project:loaded', () => {
   _settledSeen = false;
-  setTimeout(() => {
-    if (!_settledSeen) { console.warn('[load] modelsSettled never fired — fallback tree reconcile'); _runTreeReconcile('fallback'); }
-  }, 8000);
+  let tries = 0;
+  const arm = (delayMs) => setTimeout(() => {
+    if (_settledSeen) return;                                   // normal path won
+    if (performance.now() - _lastModelLoadedAt < 5000 && ++tries < 24) return arm(5000);
+    console.warn('[load] modelsSettled never fired — fallback tree reconcile');
+    _runTreeReconcile('fallback');
+  }, delayMs);
+  arm(8000);
 });
 // Flat mirrors are derived (not saved) — rebuild them once a project finishes
 // loading, from each colour preset's flatMirror flag. Deferred so the scene tree

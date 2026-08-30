@@ -2374,17 +2374,24 @@ async function _deleteChapter(chapterId) {
       chapters: (state.get('chapters') || []).filter(c => c.id !== chapterId),
     });
     steps.normalizeOrder();
-    // B3/M11 (V0.3.2.107): if the ACTIVE step was inside the deleted
-    // chapter, activeStepId now dangles — syncActiveStepNow finds no step
-    // and silently returns, so every later edit was discarded into the
-    // void. Repoint to the first surviving real step (or null).
-    const remaining = state.get('steps') || [];
-    if (!remaining.some(s => s.id === state.get('activeStepId'))) {
-      const fallback = remaining.find(s => !s.isBaseStep)?.id ?? null;
-      state.setActiveStep(fallback);
-    }
     state.markDirty();
   });
+  // B3/M11 (V0.3.2.107): if the ACTIVE step was inside the deleted chapter,
+  // activeStepId now dangles — syncActiveStepNow finds no step and silently
+  // returns, so every later edit was discarded into the void.
+  // V0.3.2.114: repoint by ACTIVATING the fallback, not by moving the
+  // pointer. state.setActiveStep only writes the id — the live scene stayed
+  // posed at the DELETED step, so the next dirty sync captured that scene
+  // into the survivor's snapshot, non-undoably overwriting its authored
+  // visibility/materials. activateStep is the house convention here
+  // (steps.deleteStep and commitStateChange's vanished-active guard both
+  // use it). Runs AFTER the commit so the mutator stays a pure data change.
+  const remaining = state.get('steps') || [];
+  if (!remaining.some(s => s.id === state.get('activeStepId'))) {
+    const fallback = remaining.find(s => !s.isBaseStep) || null;
+    if (fallback) steps.activateStep(fallback.id, false);
+    else          state.setActiveStep(null);
+  }
   setStatus(stepsIn.length > 0
     ? `Deleted chapter "${chapter.name}" and ${stepsIn.length} step(s).`
     : `Deleted chapter "${chapter.name}".`);
