@@ -2386,8 +2386,14 @@ async function _deleteChapter(chapterId) {
   // visibility/materials. activateStep is the house convention here
   // (steps.deleteStep and commitStateChange's vanished-active guard both
   // use it). Runs AFTER the commit so the mutator stays a pure data change.
+  // V0.3.2.115: only a DANGLING id needs repointing. A null activeStepId is
+  // not dangling — syncActiveStepNow already no-ops on it — and activating
+  // here would rebuild the scene, jump the camera and start narration off an
+  // unrelated chapter delete. Same `act &&` test commitStateChange's
+  // vanished-active guard uses.
   const remaining = state.get('steps') || [];
-  if (!remaining.some(s => s.id === state.get('activeStepId'))) {
+  const act       = state.get('activeStepId');
+  if (act && !remaining.some(s => s.id === act)) {
     const fallback = remaining.find(s => !s.isBaseStep) || null;
     if (fallback) steps.activateStep(fallback.id, false);
     else          state.setActiveStep(null);

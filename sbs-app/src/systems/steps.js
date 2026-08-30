@@ -97,6 +97,7 @@ class StepManager {
     // Snap-to-final: track whether an animated transition is in progress and
     // what its target snapshot is so we can commit it before starting a new one.
     this._animRunning               = false;
+    this._colorSeeded               = false;   // V0.3.2.115 — see snapCurrentToFinal
     this._currentTargetSnap         = null;
     this._currentTargetWorldTransforms = null;  // stored so snapCurrentToFinal can position ALL nodes (incl. mesh)
     this._activationToken           = 0;   // incremented per activateStep call; prevents stale async from clearing flags
@@ -637,6 +638,10 @@ class StepManager {
 
     // ── Cancel any in-flight animation ───────────────────────────────────
     this._animGeneration++;
+    // V0.3.2.115: false until beginColorTransition has seeded the live
+    // colour map with THIS transition's target. snapCurrentToFinal's merge
+    // is only valid after that point — see the guard there.
+    this._colorSeeded = false;
     const myGen = this._animGeneration;
     // Resolve any dangling object-transitions promise so old awaits unblock
     if (this._onObjectTransitionsDone) {
@@ -967,6 +972,7 @@ class StepManager {
       // Color/material transition
       if (toSnapshot.materials && this._materials) {
         this._materials.beginColorTransition(toSnapshot.materials, objDur, easeFn);
+        this._colorSeeded = true;   // live map now holds the target (V0.3.2.115)
       }
 
       // Cable transitions — opacity + colour lerp. Without this kick-off
@@ -1503,6 +1509,7 @@ class StepManager {
           toSnapshot.materials && this._materials) {
         colorHandled = true;
         this._materials.beginColorTransition(toSnapshot.materials, durationMs, easeFn);
+        this._colorSeeded = true;   // live map now holds the target (V0.3.2.115)
         // beginColorTransition calls applyAll() which resets transitionOpacity=1.0
         // on all meshes. If the vis phase hasn't run yet, re-zero showing meshes
         // so they stay invisible until their phase starts.
@@ -1697,6 +1704,7 @@ class StepManager {
     if (!colorHandled && toSnapshot.materials && this._materials) {
       colorHandled = true;
       this._materials.beginColorTransition(toSnapshot.materials, fallbackObj, easeFn);
+      this._colorSeeded = true;   // live map now holds the target (V0.3.2.115)
       // applyAll inside beginColorTransition resets transitionOpacity=1.0
       // on every mesh — re-zero anything that hasn't fired its visibility
       // phase yet, identical to the explicit-color-phase guard above.
@@ -2214,16 +2222,26 @@ class StepManager {
     // mid-animation edit — keep those, snap everything else.
     if (this._currentTargetSnap?.materials && this._materials) {
       const target = this._currentTargetSnap.materials;
-      const live   = this._materials.meshColorAssignments || {};
-      const merged = { ...target };
-      for (const id of new Set([...Object.keys(target), ...Object.keys(live)])) {
-        const t = target[id] ?? null;
-        const l = live[id]   ?? null;
-        if (l === t) continue;
-        if (l == null) delete merged[id];
-        else           merged[id] = l;
+      if (!this._colorSeeded) {
+        // V0.3.2.115 — the merge below is only valid once beginColorTransition
+        // has seeded the live map with THIS target. In PHASED mode the colour
+        // slot may not have run yet, so the live map is still the OUTGOING
+        // step's: merging would repaint the incoming step in the previous
+        // step's colours and the next dirty sync would write them into its
+        // snapshot, non-undoably. Snap to the target, as before .114.
+        this._materials.applySnapshot(target);
+      } else {
+        const live   = this._materials.meshColorAssignments || {};
+        const merged = { ...target };
+        for (const id of new Set([...Object.keys(target), ...Object.keys(live)])) {
+          const t = target[id] ?? null;
+          const l = live[id]   ?? null;
+          if (l === t) continue;
+          if (l == null) delete merged[id];
+          else           merged[id] = l;
+        }
+        this._materials.applySnapshot(merged);   // fresh object — never mutates the stored snapshot
       }
-      this._materials.applySnapshot(merged);   // fresh object — never mutates the stored snapshot
     }
 
     this._animRunning                  = false;
