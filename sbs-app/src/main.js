@@ -1508,6 +1508,18 @@ window.sbsNative?.onMenu?.('menu:cleanupConstTitles', () => {
   window.sbsCleanupTitles().catch(err => console.error('[cleanup-titles] failed:', err));
 });
 
+// 🌍 Edit → "Languages…" (V0.3.2.116) — one project, many languages. Each
+// language is a JSON pack beside the .sbsproj holding narration, step and
+// chapter names, on-screen text and per-language title positions.
+// Console alias: sbsLangPanel().
+window.sbsLangPanel = async () => {
+  const m = await import('./ui/language-panel.js');
+  return m.openLanguagePanel();
+};
+window.sbsNative?.onMenu?.('menu:languagePanel', () => {
+  window.sbsLangPanel().catch(err => console.error('[lang-panel] failed:', err));
+});
+
 // Background narration pre-cache:
 //   • on project load — synthesize every step's saved text once, in the
 //     background, so Preview / Export are instant when the user gets there.

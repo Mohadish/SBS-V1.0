@@ -335,6 +335,11 @@ function buildMenu() {
           click: () => mainWindow?.webContents.send('menu:cleanupConstTitles'),
         },
         { type: 'separator' },
+        {
+          label: 'Languages…',
+          click: () => mainWindow?.webContents.send('menu:languagePanel'),
+        },
+        { type: 'separator' },
         { label: 'Model source transform…', click: () => mainWindow?.webContents.send('menu:modelSourceTransform') },
       ],
     },
@@ -1375,14 +1380,17 @@ function _decodeHtmlEntities(s) {
     .replace(/&amp;/g, '&');
 }
 
-ipcMain.handle('translate:batch', async (_, texts, source, target, apiKey) => {
+ipcMain.handle('translate:batch', async (_, texts, source, target, apiKey, format) => {
   if (!Array.isArray(texts) || !texts.length) return { ok: false, error: 'No texts to translate.' };
   if (!target)                                return { ok: false, error: 'No target language.' };
   if (!apiKey)                                return { ok: false, error: 'No Google API key configured (Settings → Cloud TTS).' };
+  // V0.3.2.116 — 'html' keeps markup intact (language packs translate whole
+  // text-box HTML); 'text' stays the default so existing callers are unchanged.
+  const fmt = format === 'html' ? 'html' : 'text';
   const payload = JSON.stringify({
     q:      texts.map(t => String(t ?? '')),
     target: String(target),
-    format: 'text',
+    format: fmt,
     ...(source ? { source: String(source) } : {}),   // omitted → Google auto-detects
   });
   try {
@@ -1391,7 +1399,13 @@ ipcMain.handle('translate:batch', async (_, texts, source, target, apiKey) => {
     if (!Array.isArray(arr) || arr.length !== texts.length) {
       return { ok: false, error: 'Google Translate returned an unexpected shape.' };
     }
-    return { ok: true, texts: arr.map(t => _decodeHtmlEntities(t?.translatedText)) };
+    // In 'text' mode Google entity-encodes its output, so decode it. In
+    // 'html' mode the entities are PART of the markup being returned —
+    // decoding &amp; back to & there would corrupt the HTML.
+    return {
+      ok: true,
+      texts: arr.map(t => (fmt === 'html' ? String(t?.translatedText ?? '') : _decodeHtmlEntities(t?.translatedText))),
+    };
   } catch (e) {
     return { ok: false, error: e?.message || 'Google Translate failed.' };
   }

@@ -276,6 +276,11 @@ export function serialize() {
   cfg.geometryOutline      = { ...(state.get('geometryOutline') || {}) };
   cfg.export               = { ...(state.get('export')         || {}) };
   cfg.audioCacheFolder     = state.get('audioCacheFolder')      ?? null;
+  // 🌍 V0.3.2.116 — which language the project file currently HOLDS, and which
+  // one it was authored in. Translations live in <project>.<lang>.sbslang.json
+  // sidecars, never in here; these two just say what you are looking at.
+  cfg.sourceLang           = state.get('sourceLang')            ?? 'en';
+  cfg.activeLang           = state.get('activeLang')            ?? (state.get('sourceLang') ?? 'en');
   // Interface overlay: the SHARED default pose + library folder were runtime-only
   // and lost on load — so on reload interfaces drifted to their per-step saved
   // pose ("multiple positions") and "reset/at-default" broke. Persist them.
@@ -921,6 +926,7 @@ export const PROJECT_STATE_KEYS = [
   'render', 'solidOverride', 'gridVisible',
   'cameraAnimDurationMs', 'objectAnimDurationMs', 'cameraFillLight', 'geometryOutline',
   'export', 'audioCacheFolder', 'hardwareDefaults',
+  'sourceLang', 'activeLang',
   'steps', 'chapters', 'cameraViews', 'colorPresets',
   'noteTemplates', 'notePresets', 'selectionGroups', 'selectionOutlineColor',
   'assets',
@@ -1012,6 +1018,10 @@ export function applyProjectToState(project) {
                             ? { ...state.get('export'), ...s.export }
                             : state.get('export'),
     audioCacheFolder:     s.audioCacheFolder ?? null,
+    // 🌍 V0.3.2.116 — legacy files have neither; both default to 'en' so an
+    // untranslated project behaves exactly as before.
+    sourceLang:           s.sourceLang ?? 'en',
+    activeLang:           s.activeLang ?? s.sourceLang ?? 'en',
     // Interface shared default pose + library folder (missing on legacy files
     // → null → falls back to per-interface behavior, no crash).
     interfaceDefaultPose:   s.interfaceDefaultPose   ?? null,

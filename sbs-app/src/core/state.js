@@ -398,6 +398,12 @@ function createInitialState() {
     // null → inline base64 in project file (legacy behaviour).
     audioCacheFolder: null,
 
+    // 🌍 V0.3.2.116 — language packs. sourceLang = the language the project was
+    // authored in; activeLang = the language its text currently holds. Equal
+    // until you switch. Translations live in sidecar .sbslang.json files.
+    sourceLang: 'en',
+    activeLang: 'en',
+
     export: {
       fileName:           'sbs_export',
       outputFormat:       'mp4',

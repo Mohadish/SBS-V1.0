@@ -941,7 +941,14 @@ export async function renderMissingSegments({ onProgress, signal, force = false,
 export async function planWithCacheStatus() {
   const plan = await computeSegmentPlan();
   const pp = state.get('projectPath');
-  const dir = pp ? pp.replace(/[\\/][^\\/]*$/, '') + '/_rendercache' : null;
+  // 🌍 V0.3.2.116 — each language renders into its own cache folder, so two
+  // languages of the same project stay warm side by side instead of evicting
+  // each other (segment keys already differ by content; this keeps the PURGE
+  // passes from treating the inactive language's segments as orphans).
+  const _al = state.get('activeLang') || state.get('sourceLang') || 'en';
+  const _sl = state.get('sourceLang') || 'en';
+  const _langDir = _al && _al !== _sl ? `/_rendercache/${_al}` : '/_rendercache';
+  const dir = pp ? pp.replace(/[\\/][^\\/]*$/, '') + _langDir : null;
   let hits = 0;
   for (const span of plan.spans) {
     span.file   = dir ? `${dir}/seg-${span.key}.mp4` : null;

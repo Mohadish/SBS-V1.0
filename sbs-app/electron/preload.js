@@ -78,6 +78,7 @@ contextBridge.exposeInMainWorld('sbsNative', {
       'menu:unifyConstTitles',
       'menu:constTitlesPanel',
       'menu:cleanupConstTitles',
+      'menu:languagePanel',        // 🌍 V0.3.2.116 — language packs
     ];
     if (!allowed.includes(channel)) return;
     ipcRenderer.on(channel, (_e, ...args) => cb(...args));
@@ -111,8 +112,10 @@ contextBridge.exposeInMainWorld('sbsNative', {
   // passed per-call from the renderer (userSettings.cloud), same contract
   // as gcpSynthesize — never stored in preload/main, never in the binary.
   translate: {
-    batch: (texts, source, target, apiKey = '') =>
-      ipcRenderer.invoke('translate:batch', texts, source, target, apiKey),
+    // format: 'text' (default, entity-decoded) | 'html' (markup preserved —
+    // language packs send whole text-box HTML through this). V0.3.2.116.
+    batch: (texts, source, target, apiKey = '', format = 'text') =>
+      ipcRenderer.invoke('translate:batch', texts, source, target, apiKey, format),
   },
 
   // ── License (3-factor commercial licensing, see electron/license/) ──────

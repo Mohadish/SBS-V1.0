@@ -552,6 +552,166 @@ export async function unifyConstantTitles() {
   return { created: newDefs.length, unified, steps: touched.size };
 }
 
+// ─── 🌍 Language packs: overlay text units (V0.3.2.116) ─────────────────────
+//
+// The translator needs to read and write every on-screen text box across the
+// WHOLE project, keyed by an identity that survives saving, reordering and
+// editing. Overlay-internal knowledge (compact JSON strings, the content-layer
+// vs baked-header-layer split, the authoritative-strings guard, interning)
+// stays in this module; language-packs.js only ever sees {key, html} pairs.
+//
+// Identity = a `tid` attr stamped lazily on first scan, exactly like
+// ifaceId/videoId. Konva serialises unknown attrs verbatim and _recreateNode
+// spreads them back, so it round-trips through save/load for free.
+
+let _tidSeq = 0;
+function _newTid() { return `tx_${Date.now().toString(36)}_${(_tidSeq++).toString(36)}_${Math.random().toString(36).slice(2, 5)}`; }
+
+/** Is this content-layer node a translatable, user-authored text box? */
+function _isTranslatableTextSpec(a) {
+  if (!a || !a.textHtml) return false;
+  if (a.isToc) return false;              // regenerated from chapters — never authored here
+  if (a.isVideo) return false;
+  if (a.name === 'sbs-header-item') return false;   // baked header copy, dead weight
+  return true;
+}
+
+/**
+ * Scan every step for translatable text boxes, stamping a `tid` where absent.
+ * Returns [{ key:'text:<tid>', html, stepId, constId }]. Stamping mutates the
+ * overlay strings of steps that had unstamped boxes — that is a one-time
+ * re-key of those steps' render-cache segments, which the caller discloses.
+ */
+export function scanTextUnits() {
+  flushSave();
+  const out = [];
+  const arr = state.get('steps') || [];
+  const patched = [];
+  // Duplicating a STEP copies its overlay string verbatim, tids included, so
+  // the same tid can legitimately appear on two independent boxes. First
+  // sighting keeps the id; later ones are re-stamped, otherwise two boxes
+  // would share one pack entry and diverge the moment either is edited.
+  const seen = new Set();
+  for (const s of arr) {
+    if (typeof s.overlay !== 'string' || !s.overlay) continue;
+    let spec; try { spec = JSON.parse(s.overlay); } catch { continue; }
+    const layer = _findContentLayerSpec(spec);
+    if (!layer) continue;
+    let dirty = false;
+    for (const n of (layer.children || [])) {
+      const a = n.attrs || {};
+      if (!_isTranslatableTextSpec(a)) continue;
+      if (!a.tid || seen.has(a.tid)) { a.tid = _newTid(); dirty = true; }
+      seen.add(a.tid);
+      out.push({ key: `text:${a.tid}`, html: a.textHtml, stepId: s.id, constId: a.constId || null });
+    }
+    if (dirty) patched.push({ id: s.id, overlay: JSON.stringify(spec) });
+  }
+  if (patched.length) {
+    for (const p of patched) { const st = arr.find(x => x.id === p.id); if (st) st.overlay = p.overlay; }
+    state.setState({ steps: [...arr] });
+    state.markDirty();
+    _markOverlayStringsAuthoritative();
+  }
+  return out;
+}
+
+/**
+ * Write translated HTML back into every matching text box.
+ * @param {Map<string,string>} byKey  'text:<tid>' → new textHtml
+ * @returns {{steps:number, boxes:number}}
+ */
+export function applyTextUnits(byKey) {
+  if (!byKey || !byKey.size) return { steps: 0, boxes: 0 };
+  flushSave();
+  const arr = state.get('steps') || [];
+  const patched = [];
+  let boxes = 0;
+  for (const s of arr) {
+    if (typeof s.overlay !== 'string' || !s.overlay) continue;
+    let spec; try { spec = JSON.parse(s.overlay); } catch { continue; }
+    const layer = _findContentLayerSpec(spec);
+    if (!layer) continue;
+    let dirty = false;
+    for (const n of (layer.children || [])) {
+      const a = n.attrs || {};
+      if (!_isTranslatableTextSpec(a) || !a.tid) continue;
+      const next = byKey.get(`text:${a.tid}`);
+      if (typeof next !== 'string' || next === a.textHtml) continue;
+      a.textHtml = next;
+      dirty = true; boxes++;
+    }
+    if (dirty) patched.push({ id: s.id, overlay: JSON.stringify(spec) });
+  }
+  if (!patched.length) return { steps: 0, boxes: 0 };
+  for (const p of patched) { const st = arr.find(x => x.id === p.id); if (st) st.overlay = p.overlay; }
+  state.setState({ steps: [...arr] });
+  state.markDirty();
+  _markOverlayStringsAuthoritative();   // live stage is stale until the reload
+  return { steps: patched.length, boxes };
+}
+
+/**
+ * Public form of the stale-stage guard (V0.3.2.116). ANY caller that writes
+ * step.overlay strings directly — including an undo closure restoring a whole
+ * steps array — must call this, or the next debounced _writeOverlayToStep
+ * serialises the still-stale live stage over the patch.
+ */
+export function markOverlayStringsAuthoritative() { _markOverlayStringsAuthoritative(); }
+
+/**
+ * Per-box geometry overrides (language packs store these sparsely: only
+ * boxes the user actually moved while that language was active).
+ * read → Map('text:<tid>' → {x,y,textWidth}); write applies them back.
+ */
+export function readTextBoxGeometry() {
+  const out = new Map();
+  for (const s of (state.get('steps') || [])) {
+    if (typeof s.overlay !== 'string' || !s.overlay) continue;
+    let spec; try { spec = JSON.parse(s.overlay); } catch { continue; }
+    const layer = _findContentLayerSpec(spec);
+    if (!layer) continue;
+    for (const n of (layer.children || [])) {
+      const a = n.attrs || {};
+      if (!_isTranslatableTextSpec(a) || !a.tid) continue;
+      out.set(`text:${a.tid}`, { x: a.x ?? 0, y: a.y ?? 0, textWidth: a.textWidth ?? null });
+    }
+  }
+  return out;
+}
+
+export function applyTextBoxGeometry(byKey) {
+  if (!byKey || !byKey.size) return 0;
+  flushSave();
+  const arr = state.get('steps') || [];
+  const patched = [];
+  let n = 0;
+  for (const s of arr) {
+    if (typeof s.overlay !== 'string' || !s.overlay) continue;
+    let spec; try { spec = JSON.parse(s.overlay); } catch { continue; }
+    const layer = _findContentLayerSpec(spec);
+    if (!layer) continue;
+    let dirty = false;
+    for (const node of (layer.children || [])) {
+      const a = node.attrs || {};
+      if (!_isTranslatableTextSpec(a) || !a.tid) continue;
+      const g = byKey.get(`text:${a.tid}`);
+      if (!g) continue;
+      if (typeof g.x === 'number' && g.x !== a.x) { a.x = g.x; dirty = true; }
+      if (typeof g.y === 'number' && g.y !== a.y) { a.y = g.y; dirty = true; }
+      if (typeof g.textWidth === 'number' && g.textWidth !== a.textWidth) { a.textWidth = g.textWidth; dirty = true; }
+      if (dirty) n++;
+    }
+    if (dirty) patched.push({ id: s.id, overlay: JSON.stringify(spec) });
+  }
+  if (!patched.length) return 0;
+  for (const p of patched) { const st = arr.find(x => x.id === p.id); if (st) st.overlay = p.overlay; }
+  state.setState({ steps: [...arr] });
+  state.markDirty();
+  _markOverlayStringsAuthoritative();
+  return n;
+}
+
 /**
  * Project-wide usage census for constant defs (V0.3.2.102). Scans overlay
  * STRINGS for `"constId":"<id>"` — no JSON.parse, so it stays cheap on huge
