@@ -577,20 +577,19 @@ function _isTranslatableTextSpec(a) {
 }
 
 /**
- * Scan every step for translatable text boxes, stamping a `tid` where absent.
- * Returns [{ key:'text:<tid>', html, stepId, constId }]. Stamping mutates the
- * overlay strings of steps that had unstamped boxes — that is a one-time
- * re-key of those steps' render-cache segments, which the caller discloses.
+ * 🧠 MEMORY (V0.3.2.121): ONE parse pass that returns text AND geometry.
+ * Language switching used to call scanTextUnits + readTextBoxGeometry (and
+ * the apply pair) separately, each doing its own JSON.parse of every step's
+ * overlay. Every parse materialises fresh copies of the base64 images
+ * embedded in those strings, so a big project blew the ~3.5GB renderer cage
+ * on the second switch. Callers that need both must use this.
  */
-export function scanTextUnits() {
+export function scanTextUnitsAndGeometry() {
   flushSave();
-  const out = [];
+  const units = [];
+  const geom = new Map();
   const arr = state.get('steps') || [];
   const patched = [];
-  // Duplicating a STEP copies its overlay string verbatim, tids included, so
-  // the same tid can legitimately appear on two independent boxes. First
-  // sighting keeps the id; later ones are re-stamped, otherwise two boxes
-  // would share one pack entry and diverge the moment either is edited.
   const seen = new Set();
   for (const s of arr) {
     if (typeof s.overlay !== 'string' || !s.overlay) continue;
@@ -603,9 +602,12 @@ export function scanTextUnits() {
       if (!_isTranslatableTextSpec(a)) continue;
       if (!a.tid || seen.has(a.tid)) { a.tid = _newTid(); dirty = true; }
       seen.add(a.tid);
-      out.push({ key: `text:${a.tid}`, html: a.textHtml, stepId: s.id, constId: a.constId || null });
+      const key = `text:${a.tid}`;
+      units.push({ key, html: a.textHtml, stepId: s.id, constId: a.constId || null });
+      geom.set(key, { x: a.x ?? 0, y: a.y ?? 0, textWidth: a.textWidth ?? null });
     }
     if (dirty) patched.push({ id: s.id, overlay: JSON.stringify(spec) });
+    spec = null;   // let the parsed tree go before the next step is read
   }
   if (patched.length) {
     for (const p of patched) { const st = arr.find(x => x.id === p.id); if (st) st.overlay = p.overlay; }
@@ -613,16 +615,18 @@ export function scanTextUnits() {
     state.markDirty();
     _markOverlayStringsAuthoritative();
   }
-  return out;
+  return { units, geom };
 }
 
 /**
- * Write translated HTML back into every matching text box.
- * @param {Map<string,string>} byKey  'text:<tid>' → new textHtml
- * @returns {{steps:number, boxes:number}}
+ * ONE parse pass that applies BOTH translated text and geometry.
+ * @param {Map<string,string>} textByKey   'text:<tid>' → new textHtml
+ * @param {Map<string,object>} geomByKey   'text:<tid>' → {x,y,textWidth}
  */
-export function applyTextUnits(byKey) {
-  if (!byKey || !byKey.size) return { steps: 0, boxes: 0 };
+export function applyTextUnitsAndGeometry(textByKey, geomByKey) {
+  const hasText = textByKey && textByKey.size;
+  const hasGeom = geomByKey && geomByKey.size;
+  if (!hasText && !hasGeom) return { steps: 0, boxes: 0 };
   flushSave();
   const arr = state.get('steps') || [];
   const patched = [];
@@ -636,18 +640,24 @@ export function applyTextUnits(byKey) {
     for (const n of (layer.children || [])) {
       const a = n.attrs || {};
       if (!_isTranslatableTextSpec(a) || !a.tid) continue;
-      const next = byKey.get(`text:${a.tid}`);
-      if (typeof next !== 'string' || next === a.textHtml) continue;
-      a.textHtml = next;
-      dirty = true; boxes++;
+      const key = `text:${a.tid}`;
+      const nextHtml = hasText ? textByKey.get(key) : undefined;
+      if (typeof nextHtml === 'string' && nextHtml !== a.textHtml) { a.textHtml = nextHtml; dirty = true; boxes++; }
+      const g = hasGeom ? geomByKey.get(key) : null;
+      if (g) {
+        if (typeof g.x === 'number' && g.x !== a.x) { a.x = g.x; dirty = true; }
+        if (typeof g.y === 'number' && g.y !== a.y) { a.y = g.y; dirty = true; }
+        if (typeof g.textWidth === 'number' && g.textWidth !== a.textWidth) { a.textWidth = g.textWidth; dirty = true; }
+      }
     }
     if (dirty) patched.push({ id: s.id, overlay: JSON.stringify(spec) });
+    spec = null;
   }
   if (!patched.length) return { steps: 0, boxes: 0 };
   for (const p of patched) { const st = arr.find(x => x.id === p.id); if (st) st.overlay = p.overlay; }
   state.setState({ steps: [...arr] });
   state.markDirty();
-  _markOverlayStringsAuthoritative();   // live stage is stale until the reload
+  _markOverlayStringsAuthoritative();
   return { steps: patched.length, boxes };
 }
 
@@ -658,59 +668,6 @@ export function applyTextUnits(byKey) {
  * serialises the still-stale live stage over the patch.
  */
 export function markOverlayStringsAuthoritative() { _markOverlayStringsAuthoritative(); }
-
-/**
- * Per-box geometry overrides (language packs store these sparsely: only
- * boxes the user actually moved while that language was active).
- * read → Map('text:<tid>' → {x,y,textWidth}); write applies them back.
- */
-export function readTextBoxGeometry() {
-  const out = new Map();
-  for (const s of (state.get('steps') || [])) {
-    if (typeof s.overlay !== 'string' || !s.overlay) continue;
-    let spec; try { spec = JSON.parse(s.overlay); } catch { continue; }
-    const layer = _findContentLayerSpec(spec);
-    if (!layer) continue;
-    for (const n of (layer.children || [])) {
-      const a = n.attrs || {};
-      if (!_isTranslatableTextSpec(a) || !a.tid) continue;
-      out.set(`text:${a.tid}`, { x: a.x ?? 0, y: a.y ?? 0, textWidth: a.textWidth ?? null });
-    }
-  }
-  return out;
-}
-
-export function applyTextBoxGeometry(byKey) {
-  if (!byKey || !byKey.size) return 0;
-  flushSave();
-  const arr = state.get('steps') || [];
-  const patched = [];
-  let n = 0;
-  for (const s of arr) {
-    if (typeof s.overlay !== 'string' || !s.overlay) continue;
-    let spec; try { spec = JSON.parse(s.overlay); } catch { continue; }
-    const layer = _findContentLayerSpec(spec);
-    if (!layer) continue;
-    let dirty = false;
-    for (const node of (layer.children || [])) {
-      const a = node.attrs || {};
-      if (!_isTranslatableTextSpec(a) || !a.tid) continue;
-      const g = byKey.get(`text:${a.tid}`);
-      if (!g) continue;
-      if (typeof g.x === 'number' && g.x !== a.x) { a.x = g.x; dirty = true; }
-      if (typeof g.y === 'number' && g.y !== a.y) { a.y = g.y; dirty = true; }
-      if (typeof g.textWidth === 'number' && g.textWidth !== a.textWidth) { a.textWidth = g.textWidth; dirty = true; }
-      if (dirty) n++;
-    }
-    if (dirty) patched.push({ id: s.id, overlay: JSON.stringify(spec) });
-  }
-  if (!patched.length) return 0;
-  for (const p of patched) { const st = arr.find(x => x.id === p.id); if (st) st.overlay = p.overlay; }
-  state.setState({ steps: [...arr] });
-  state.markDirty();
-  _markOverlayStringsAuthoritative();
-  return n;
-}
 
 /**
  * Project-wide usage census for constant defs (V0.3.2.102). Scans overlay

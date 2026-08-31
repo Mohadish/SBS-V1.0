@@ -51,10 +51,10 @@ import { undoManager }  from './undo.js';
 import { cloneShareStrings } from '../core/clone.js';
 import * as userSettings from '../core/user-settings.js';
 import {
-  scanTextUnits, applyTextUnits,
-  readTextBoxGeometry, applyTextBoxGeometry,
+  scanTextUnitsAndGeometry, applyTextUnitsAndGeometry,
   markOverlayStringsAuthoritative,
 } from './overlay.js';
+import { _reinternAfterWholesaleRead } from '../io/project.js';
 
 export const PACK_VERSION = 1;
 
@@ -99,8 +99,11 @@ export function srcHashOf(text) {
  * project currently holds. Also stamps `tid` on unstamped text boxes.
  * @returns {Array<{key,fmt,src,label}>}
  */
-export function scanUnits() {
+export function scanUnits(shared = null) {
   const units = [];
+  // `shared` lets a caller reuse ONE overlay parse across several packs —
+  // parsing every step's overlay per pack is what blew the memory cage.
+  const ov = shared || scanTextUnitsAndGeometry();
   for (const s of (state.get('steps') || [])) {
     if (s.isBaseStep) continue;
     if (s.name)              units.push({ key: `step:${s.id}:name`,      fmt: 'text', src: s.name,             label: 'Step name' });
@@ -109,7 +112,7 @@ export function scanUnits() {
   for (const c of (state.get('chapters') || [])) {
     if (c.name) units.push({ key: `chapter:${c.id}:name`, fmt: 'text', src: c.name, label: 'Chapter name' });
   }
-  for (const u of scanTextUnits()) {
+  for (const u of ov.units) {
     units.push({ key: u.key, fmt: 'html', src: u.html, label: 'Text box' });
   }
   for (const h of (state.get('headerItems') || [])) {
@@ -212,7 +215,7 @@ export async function listPackLanguages() {
  * Never touches `tgt` — nothing here re-translates.
  * @returns {{pack, added:number, stale:number, removed:number, edited:number, ok:number}}
  */
-export function reconcilePack(pack, units) {
+export function reconcilePack(pack, units, geom = null) {
   const next = { ...pack, entries: { ...pack.entries } };
   const live = new Set(units.map(u => u.key));
   // ONLY the source language may author `src`. When a TRANSLATION is live the
@@ -309,7 +312,7 @@ export function reconcilePack(pack, units) {
   const boxes = { ...(next.boxes || {}) };
   if (isSrc) {
     for (const k of Object.keys(boxes)) if (!live.has(k)) delete boxes[k];
-    for (const [k, g] of readTextBoxGeometry()) {
+    for (const [k, g] of (geom || new Map())) {
       if (!live.has(k)) continue;
       boxes[k] = { ...(boxes[k] || {}), src: g };
     }
@@ -423,8 +426,9 @@ export async function translatePack(pack, { force = false, onProgress, apiKey } 
  * Called before switching away, so hand-edits made in the app are never lost
  * and edits to the ORIGINAL surface as drift in every other language.
  */
-export function captureInto(pack, field) {
-  const units = scanUnits();
+export function captureInto(pack, field, shared = null) {
+  const ov = shared || scanTextUnitsAndGeometry();
+  const units = scanUnits(ov);
   const byKey = new Map(units.map(u => [u.key, u]));
   let changed = 0;
   for (const [k, e] of Object.entries(pack.entries || {})) {
@@ -519,7 +523,7 @@ export function captureInto(pack, field) {
   pack.constTexts = ct;
 
   const boxes = { ...(pack.boxes || {}) };
-  for (const [k, g] of readTextBoxGeometry()) {
+  for (const [k, g] of ov.geom) {
     if (!pack.entries[k]) continue;
     const cur = boxes[k];
     if (side === 'src') { boxes[k] = { ...(cur || {}), src: g }; continue; }
@@ -536,7 +540,7 @@ export function captureInto(pack, field) {
 
 // ─── Apply (a pack → the project) ───────────────────────────────────────────
 
-function _applyStrings(resolve, textKeys, audioFor = () => null) {
+function _applyStrings(resolve, textKeys, audioFor = () => null, boxGeom = null) {
   const steps = state.get('steps') || [];
   const chapters = state.get('chapters') || [];
   const headerItems = state.get('headerItems') || [];
@@ -593,13 +597,14 @@ function _applyStrings(resolve, textKeys, audioFor = () => null) {
 
   state.setState({ steps: nextSteps, chapters: nextChapters, headerItems: nextHeaders });
 
-  // Text boxes live inside the overlay strings — one pass through overlay.js.
+  // Text boxes live inside the overlay strings — text AND geometry go
+  // through ONE parse pass (two passes doubled peak memory on big projects).
   const textMap = new Map();
   for (const key of (textKeys || [])) {
     const v = resolve(key);
     if (v != null) textMap.set(key, v);
   }
-  n += applyTextUnits(textMap).boxes;
+  n += applyTextUnitsAndGeometry(textMap, boxGeom).boxes;
   state.markDirty();
   return n;
 }
@@ -609,7 +614,13 @@ function _applyStrings(resolve, textKeys, audioFor = () => null) {
  * back to their src record when the target side was never laid out, so a
  * freshly translated language starts exactly where the original sits.
  */
-function _applyPositions(pack, side) {
+/**
+ * Constant-set positions only — the per-BOX geometry is handed back to the
+ * caller so it can ride along with the text in a single overlay pass
+ * (V0.3.2.121: two passes meant two full parses of every overlay).
+ * @returns {{touched:number, geom:Map}}
+ */
+function _applyConstPositions(pack, side) {
   const defs = state.get('constTextBoxes') || [];
   const ct = pack.constTexts || {};
   let touched = 0;
@@ -628,7 +639,7 @@ function _applyPositions(pack, side) {
     const g = rec && (rec[side] || rec.src);
     if (g) geom.set(k, g);
   }
-  return touched + applyTextBoxGeometry(geom);
+  return { touched, geom };
 }
 
 /**
@@ -644,6 +655,13 @@ export async function switchLanguage(lang, { onProgress } = {}) {
   // 1. Capture what is live so nothing typed in the app is lost. A failed
   // write here ABORTS the switch: proceeding would overwrite the project with
   // the other language and silently discard everything just edited.
+  // 🧠 ONE overlay parse for the whole capture phase (V0.3.2.121). Parsing
+  // every step's overlay per pack materialises fresh copies of the embedded
+  // base64 images each time — with several packs that alone can exhaust the
+  // ~3.5GB renderer cage.
+  const ovCapture = scanTextUnitsAndGeometry();
+  const unitsCapture = scanUnits(ovCapture);
+
   let fromPack = null;   // reused below as the restore source when lang === src
   if (from === src) {
     // Live text IS the source: fold it into EVERY pack's `src` so each
@@ -660,8 +678,8 @@ export async function switchLanguage(lang, { onProgress } = {}) {
         continue;
       }
       if (!p) continue;
-      const { pack: rec } = reconcilePack(p, scanUnits());
-      captureInto(rec, 'src');
+      const { pack: rec } = reconcilePack(p, unitsCapture, ovCapture.geom);
+      captureInto(rec, 'src', ovCapture);
       const w = await savePack(rec);
       if (!w.ok) return { ok: false, error: `Could not update the ${code} pack (${w.error}) — nothing was switched.` };
     }
@@ -691,8 +709,8 @@ export async function switchLanguage(lang, { onProgress } = {}) {
         `so the ${src} originals cannot be restored from it. Restore ${packPathFor(from)}, ` +
         `or switch into another translation whose pack still exists, then back to ${src}.` };
     }
-    const { pack: rec } = reconcilePack(p || emptyPack(from), scanUnits());
-    captureInto(rec, 'tgt');
+    const { pack: rec } = reconcilePack(p || emptyPack(from), unitsCapture, ovCapture.geom);
+    captureInto(rec, 'tgt', ovCapture);
     const w = await savePack(rec);
     if (!w.ok) return { ok: false, error: `Could not save the ${from} pack (${w.error}) — nothing was switched.` };
     fromPack = rec;
@@ -709,8 +727,9 @@ export async function switchLanguage(lang, { onProgress } = {}) {
   // Snapshots taken AFTER the last await, inside the no-await window — so an
   // edit committed while loadPack was in flight lands in beforeSteps and
   // stays recoverable via Ctrl+Z instead of being silently overwritten.
-  const units = scanUnits();
-  const textKeys = units.filter(u => u.key.startsWith('text:')).map(u => u.key);
+  // Reuse the capture-phase scan: nothing between here and there re-parses
+  // overlays, and a second full parse is exactly what exhausted the heap.
+  const textKeys = ovCapture.units.map(u => u.key);
   const beforeSteps    = cloneShareStrings(state.get('steps') || []);
   const beforeChapters = cloneShareStrings(state.get('chapters') || []);
   const beforeHeaders  = cloneShareStrings(state.get('headerItems') || []);
@@ -743,11 +762,12 @@ export async function switchLanguage(lang, { onProgress } = {}) {
     audioFor = (k) => { const a = target.entries?.[k]?.audio; return a?.tgt || a?.src || null; };
   }
 
-  const changed = _applyStrings(resolve, textKeys, audioFor);
   // Positions: the target's `tgt` side going INTO a translation, or the
-  // leaving pack's `src` side coming back to the original.
-  if (target) _applyPositions(target, 'tgt');
-  else if (fromPack) _applyPositions(fromPack, 'src');
+  // leaving pack's `src` side coming back to the original. Constant sets
+  // apply now; per-box geometry rides with the text through ONE overlay pass.
+  const posPack = target || fromPack;
+  const pos = posPack ? _applyConstPositions(posPack, target ? 'tgt' : 'src') : { touched: 0, geom: new Map() };
+  const changed = _applyStrings(resolve, textKeys, audioFor, pos.geom);
   state.setState({ activeLang: lang });
 
   // Undo restores the strings AND the geometry wholesale — geometry lives in
@@ -772,6 +792,12 @@ export async function switchLanguage(lang, { onProgress } = {}) {
     () => restore(afterSteps,  afterChapters,  afterHeaders,  afterDefs,  lang),
   );
 
+  // 🧵 Re-share the overlay string pool. Parsing + re-stringifying every
+  // overlay FLATTENED the interned ropes, un-sharing the duplicated base64
+  // image data (~150MB+ on a big project) — without this the session's
+  // headroom shrinks permanently after every switch, which is how the
+  // second switch hit the heap cage.
+  _reinternAfterWholesaleRead('language switch');
   return { ok: true, changed, lang };
 }
 
@@ -828,12 +854,15 @@ export async function scanLanguage(lang) {
   if (activeLang() !== sourceLang()) {
     return { ok: false, error: `Switch back to ${sourceLang()} before scanning — the project currently holds ${activeLang()}.` };
   }
-  const units = scanUnits();
+  const ov = scanTextUnitsAndGeometry();     // ONE overlay parse
+  const units = scanUnits(ov);
   let pack;
   try { pack = (await loadPack(lang)) || emptyPack(lang); }
   catch (e) { return { ok: false, error: e.message }; }
-  const rep   = reconcilePack(pack, units);
+  const rep   = reconcilePack(pack, units, ov.geom);
   const saved = await savePack(rep.pack);
+  // The scan's parse flattened the interned ropes — re-share them.
+  _reinternAfterWholesaleRead('language scan');
   if (!saved.ok) return { ok: false, error: saved.error };
   const unpositioned = Object.values(rep.pack.constTexts || {})
     .filter(v => v && !v.positioned).length;
