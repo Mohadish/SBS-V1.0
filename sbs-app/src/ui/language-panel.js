@@ -76,7 +76,7 @@ function _build() {
   _wireDrag(_win.querySelector('#lang-header'));
   _win.querySelector('#lang-close').addEventListener('click', closeLanguagePanel);
   _win.querySelector('#lang-refresh').addEventListener('click', () => _refresh());
-  _win.querySelector('#lang-add').addEventListener('click', _onAdd);
+  _win.querySelector('#lang-add').addEventListener('click', () => { _onAdd().catch(e => console.error('[lang] add failed:', e)); });
 }
 
 function _wireDrag(handle) {
@@ -101,15 +101,26 @@ function _wireDrag(handle) {
 
 function _say(msg) { const el = _win?.querySelector('#lang-status'); if (el) el.textContent = msg || ''; }
 
+let _refreshing = false;
+
 async function _refresh() {
-  if (!_win) return;
-  const codes = await lang.listPackLanguages();
-  _rows = [];
-  for (const code of codes) {
-    const pack = await lang.loadPack(code);
-    _rows.push({ code, pack });
+  if (!_win || _refreshing) return;   // overlapping refreshes duplicated rows
+  _refreshing = true;
+  try {
+    const codes = await lang.listPackLanguages();
+    const rows = [];
+    for (const code of codes) {
+      // A corrupt pack now throws rather than reading as "no pack" — surface
+      // it as a row so the user can see WHICH file is broken.
+      try { rows.push({ code, pack: await lang.loadPack(code) }); }
+      catch (e) { rows.push({ code, pack: null, error: e.message }); }
+    }
+    if (!_win) return;               // panel closed while we awaited
+    _rows = rows;
+    _render();
+  } finally {
+    _refreshing = false;
   }
-  _render();
 }
 
 function _statsOf(pack) {
@@ -134,7 +145,16 @@ function _render() {
   const note = _win.querySelector('#lang-note');
   note.textContent = !saved
     ? 'Save the project first — language packs live in files beside the .sbsproj.'
-    : `Project is authored in "${src}" and currently holds "${act}". Translations live in ${'<project>'}.<lang>.sbslang.json beside the project file.`;
+    : `Authored in "${src}", currently showing "${act}". Packs live beside the project as <project>.<lang>.sbslang.json. Voiceover AUDIO and subtitle overrides are separate systems and are not swapped.`;
+
+  // The add/refresh buttons sit outside the row list, so they need their own
+  // busy state — otherwise they stay live during a long translate.
+  for (const sel of ['#lang-add', '#lang-refresh']) {
+    const b = _win.querySelector(sel);
+    if (!b) continue;
+    b.disabled = _busy;
+    b.style.opacity = _busy ? '0.45' : '';
+  }
 
   const list = _win.querySelector('#lang-list');
   list.textContent = '';
@@ -144,9 +164,9 @@ function _render() {
     stats: null,
   }));
 
-  for (const { code, pack } of _rows) {
+  for (const { code, pack, error } of _rows) {
     if (code === src) continue;
-    list.appendChild(_langRow({ code, isSource: false, active: act === code, stats: _statsOf(pack) }));
+    list.appendChild(_langRow({ code, isSource: false, active: act === code, stats: pack ? _statsOf(pack) : null, error }));
   }
 
   if (!_rows.filter(r => r.code !== src).length) {
@@ -158,7 +178,7 @@ function _render() {
   }
 }
 
-function _langRow({ code, isSource, active, stats }) {
+function _langRow({ code, isSource, active, stats, error }) {
   const row = document.createElement('div');
   row.style.cssText = [
     'display:flex', 'flex-direction:column', 'gap:6px', 'padding:9px 10px',
@@ -202,7 +222,12 @@ function _langRow({ code, isSource, active, stats }) {
   top.appendChild(mkBtn(active ? 'Showing' : 'Switch to', 'Put this language into the project', () => _onSwitch(code), active));
   row.appendChild(top);
 
-  if (stats) {
+  if (error) {
+    const e = document.createElement('div');
+    e.style.cssText = 'font-size:11.5px;color:#e06a5c;line-height:1.45;';
+    e.textContent = error;
+    row.appendChild(e);
+  } else if (stats) {
     const s = document.createElement('div');
     s.className = 'small muted';
     s.style.cssText = 'font-size:11.5px;display:flex;gap:10px;flex-wrap:wrap;';
@@ -228,6 +253,7 @@ function _guardSource() {
 }
 
 async function _onAdd() {
+  if (_busy) { setStatus('Busy — wait for the current operation to finish.', 'warn', 4000); return; }
   if (!state.get('projectPath')) { setStatus('Save the project first — packs live beside the .sbsproj.', 'warn', 6000); return; }
   const code = (await promptString('Language code (e.g. he, es, fr)', 'he') || '').trim().toLowerCase();
   if (!code) return;

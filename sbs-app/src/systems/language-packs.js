@@ -112,8 +112,12 @@ export function scanUnits() {
   }
   for (const h of (state.get('headerItems') || [])) {
     if (h.kind !== 'custom') continue;                    // other kinds are derived
+    // BOTH slots, not either/or: a header renders `text` in default/template
+    // mode and `textHtml` once canvas-edited, and a leftover textHtml can sit
+    // beside the text that is actually on screen. Translating only one leaves
+    // the header in the source language the moment the other is the live one.
     if (h.textHtml) units.push({ key: `header:${h.id}:textHtml`, fmt: 'html', src: h.textHtml, label: 'Header' });
-    else if (h.text) units.push({ key: `header:${h.id}:text`,    fmt: 'text', src: h.text,     label: 'Header' });
+    if (h.text)     units.push({ key: `header:${h.id}:text`,     fmt: 'text', src: h.text,     label: 'Header' });
   }
   return units;
 }
@@ -131,24 +135,37 @@ export function emptyPack(lang) {
   };
 }
 
+/**
+ * Read a pack. Returns null ONLY when the file genuinely does not exist.
+ * A file that exists but cannot be read or parsed THROWS — callers must not
+ * treat a corrupt pack as "no pack yet" and overwrite it with an empty one,
+ * which would destroy every translation in it.
+ */
 export async function loadPack(lang) {
   const path = packPathFor(lang);
   if (!path || !window.sbsNative?.readFile) return null;
+  if (window.sbsNative.fileExists && !(await window.sbsNative.fileExists(path))) return null;
+  let txt;
   try {
-    if (window.sbsNative.fileExists && !(await window.sbsNative.fileExists(path))) return null;
     const r = await window.sbsNative.readFile(path, 'utf8');
-    const txt = typeof r === 'string' ? r : (r?.data ?? r?.text ?? '');
-    if (!txt) return null;
-    const p = JSON.parse(txt);
-    if (!p || !p.entries) return null;
-    p.entries    = p.entries    || {};
-    p.constTexts = p.constTexts || {};
-    p.boxes      = p.boxes      || {};
-    return p;
+    if (r && r.ok === false) throw new Error(r.error || 'read failed');
+    txt = typeof r === 'string' ? r : (r?.data ?? r?.text ?? '');
   } catch (e) {
-    console.warn('[lang] loadPack failed:', e?.message);
-    return null;
+    throw new Error(`Cannot read ${lang} pack (${e?.message || e}) — fix or move the file; refusing to overwrite it.`);
   }
+  if (!txt || !String(txt).trim()) {
+    throw new Error(`The ${lang} pack is empty — fix or move the file; refusing to overwrite it.`);
+  }
+  let p;
+  try { p = JSON.parse(txt); }
+  catch (e) { throw new Error(`The ${lang} pack is not valid JSON (${e?.message}) — fix or move the file; refusing to overwrite it.`); }
+  if (!p || typeof p !== 'object' || !p.entries) {
+    throw new Error(`The ${lang} pack is missing its entries — fix or move the file; refusing to overwrite it.`);
+  }
+  p.entries    = p.entries    || {};
+  p.constTexts = p.constTexts || {};
+  p.boxes      = p.boxes      || {};
+  return p;
 }
 
 export async function savePack(pack) {
@@ -191,11 +208,24 @@ export async function listPackLanguages() {
 export function reconcilePack(pack, units) {
   const next = { ...pack, entries: { ...pack.entries } };
   const live = new Set(units.map(u => u.key));
-  let added = 0, stale = 0, removed = 0, edited = 0, ok = 0;
+  // ONLY the source language may author `src`. When a TRANSLATION is live the
+  // scan returns translated text, and writing that into `src` would destroy
+  // the one remaining copy of the original — after which "switch back to the
+  // original" re-applies the translation. This is a prune-only pass then.
+  const isSrc = (activeLang() === sourceLang());
+  let added = 0, stale = 0, removed = 0, edited = 0, fresh = 0;
 
   for (const u of units) {
-    const hash = srcHashOf(u.src);
     const cur = next.entries[u.key];
+    if (!isSrc) {
+      // A key first seen while a translation is live has no known source
+      // text. Record the translation, leave `src` empty, and let the next
+      // source-side scan fill it in — never guess.
+      if (!cur) { next.entries[u.key] = { fmt: u.fmt, src: '', srcHash: '', tgt: u.src, state: 'edited' }; added++; }
+      else fresh++;
+      continue;
+    }
+    const hash = srcHashOf(u.src);
     if (!cur) {
       next.entries[u.key] = { fmt: u.fmt, src: u.src, srcHash: hash, tgt: '', state: 'new' };
       added++;
@@ -208,7 +238,7 @@ export function reconcilePack(pack, units) {
     }
     next.entries[u.key] = { ...cur, fmt: u.fmt, src: u.src };
     if (cur.state === 'edited') edited++;
-    else if (cur.tgt) ok++;
+    else if (cur.tgt) fresh++;
     else added++;
   }
 
@@ -221,7 +251,6 @@ export function reconcilePack(pack, units) {
   // A new set starts with tgt = src (inherits the source position) and
   // positioned:false, so the panel can report "3 sets not yet positioned for
   // Hebrew". A deleted set becomes null and is cleaned on the next scan.
-  const isSrc = (activeLang() === sourceLang());
   const defs = state.get('constTextBoxes') || [];
   const ct = { ...(next.constTexts || {}) };
   const liveDefs = new Set(defs.map(d => d.id));
@@ -246,7 +275,9 @@ export function reconcilePack(pack, units) {
   }
   next.boxes = boxes;
 
-  return { pack: next, added, stale, removed, edited, ok };
+  // NOTE the field is `fresh`, not `ok` — callers spread this report next to
+  // an `ok: true` success flag and a numeric `ok` would silently clobber it.
+  return { pack: next, added, stale, removed, edited, fresh };
 }
 
 /** Units still needing machine translation (never includes hand-edited ones). */
@@ -285,26 +316,36 @@ export async function translatePack(pack, { force = false, onProgress, apiKey } 
   const keys = pendingKeys(pack, { force });
   if (!keys.length) return { ok: true, translated: 0 };
 
+  // Two passes, because the two formats are NOT interchangeable. 'html'
+  // preserves markup but returns entity-encoded output that must stay encoded;
+  // 'text' is decoded for us. Sending a step name or narration line through
+  // the html path would bake &#39; and &quot; into plain fields — and the TTS
+  // would read them out loud.
+  const htmlKeys = keys.filter(k => pack.entries[k].fmt === 'html');
+  const textKeys = keys.filter(k => pack.entries[k].fmt !== 'html');
   const CHUNK = 24;   // HTML units are large; stay well under Google's 128-q cap
   let done = 0;
-  for (let i = 0; i < keys.length; i += CHUNK) {
-    const slice = keys.slice(i, i + CHUNK);
-    onProgress?.(done, keys.length);
-    // Everything goes through the HTML path: text-box and header units ARE
-    // markup, and plain strings survive it unchanged. Source omitted → Google
-    // auto-detects, so this works whatever the project language is.
-    const res = await window.sbsNative.translate.batch(
-      slice.map(k => pack.entries[k].src), '', pack.lang, key, 'html',
-    );
-    if (!res?.ok) return { ok: false, error: res?.error || 'Translation failed.', translated: done };
-    slice.forEach((k, n) => {
-      const t = String(res.texts?.[n] ?? '');
-      if (!t) return;
-      pack.entries[k] = { ...pack.entries[k], tgt: t, state: 'auto' };
-      done++;
-    });
+  const total = keys.length;
+
+  for (const [fmt, group] of [['text', textKeys], ['html', htmlKeys]]) {
+    for (let i = 0; i < group.length; i += CHUNK) {
+      const slice = group.slice(i, i + CHUNK);
+      onProgress?.(done, total);
+      // Source omitted → Google auto-detects, so this works whatever language
+      // the project is authored in.
+      const res = await window.sbsNative.translate.batch(
+        slice.map(k => pack.entries[k].src), '', pack.lang, key, fmt,
+      );
+      if (!res?.ok) return { ok: false, error: res?.error || 'Translation failed.', translated: done };
+      slice.forEach((k, n) => {
+        const t = String(res.texts?.[n] ?? '');
+        if (!t) return;
+        pack.entries[k] = { ...pack.entries[k], tgt: t, state: 'auto' };
+        done++;
+      });
+    }
   }
-  onProgress?.(keys.length, keys.length);
+  onProgress?.(total, total);
   return { ok: true, translated: done };
 }
 
@@ -330,6 +371,12 @@ export function captureInto(pack, field) {
       changed++;
     } else {
       if (e.tgt === u.src) continue;
+      // A line with no translation yet shows the SOURCE text through as a
+      // fallback. Seeing that source text live is not a hand-edit — recording
+      // it as one would freeze the original into the target language and, since
+      // 'edited' is never machine-translated again, make it permanently
+      // untranslatable. Only a real deviation counts.
+      if (!e.tgt && u.src === e.src) continue;
       // Typed over a machine translation in the app → it is now a hand-edit.
       pack.entries[k] = { ...e, tgt: u.src, state: 'edited' };
       changed++;
@@ -462,22 +509,35 @@ export async function switchLanguage(lang, { onProgress } = {}) {
   const src = sourceLang();
 
   onProgress?.('Capturing current language…');
-  // 1. Capture what is live so nothing typed in the app is lost.
+  // 1. Capture what is live so nothing typed in the app is lost. A failed
+  // write here ABORTS the switch: proceeding would overwrite the project with
+  // the other language and silently discard everything just edited.
   if (from === src) {
     // Live text IS the source: fold it into EVERY pack's `src` so each
     // language learns which of its lines have drifted.
     for (const code of await listPackLanguages()) {
-      const p = await loadPack(code);
+      let p;
+      try { p = await loadPack(code); }
+      catch (e) { return { ok: false, error: e.message }; }
       if (!p) continue;
       const { pack: rec } = reconcilePack(p, scanUnits());
       captureInto(rec, 'src');
-      await savePack(rec);
+      const w = await savePack(rec);
+      if (!w.ok) return { ok: false, error: `Could not update the ${code} pack (${w.error}) — nothing was switched.` };
     }
   } else {
-    const p = (await loadPack(from)) || emptyPack(from);
+    let p;
+    try { p = await loadPack(from); }
+    catch (e) { return { ok: false, error: e.message }; }
+    if (!p) {
+      // No pack for the language currently in the project: its originals have
+      // no home, so switching would strand them. Refuse rather than guess.
+      return { ok: false, error: `The ${from} pack is missing — restore it beside the project before switching, or the ${from} text has nowhere to go.` };
+    }
     const { pack: rec } = reconcilePack(p, scanUnits());
     captureInto(rec, 'tgt');
-    await savePack(rec);
+    const w = await savePack(rec);
+    if (!w.ok) return { ok: false, error: `Could not save the ${from} pack (${w.error}) — nothing was switched.` };
   }
 
   onProgress?.('Applying…');
@@ -492,20 +552,26 @@ export async function switchLanguage(lang, { onProgress } = {}) {
 
   let target = null;
   if (lang !== src) {
-    target = await loadPack(lang);
+    try { target = await loadPack(lang); }
+    catch (e) { return { ok: false, error: e.message }; }
     if (!target) return { ok: false, error: `No pack for "${lang}" — scan and translate it first.` };
   }
 
-  // Resolver: target language reads `tgt` (falling back to `src` when a line
-  // was never translated); the SOURCE language reads `src` out of any pack.
+  // Resolver. Going INTO a translation: read `tgt`, falling back to `src` for
+  // lines never translated. Coming BACK to the original: read `src` out of the
+  // pack of the language we are LEAVING — that pack is the one that recorded
+  // these originals. (Reading "any pack" would restore a different language's
+  // idea of the source.)
   let resolve;
   if (lang === src) {
-    const any = (await listPackLanguages()).find(c => c !== src);
-    const p = any ? await loadPack(any) : null;
-    resolve = (k) => {
-      const e = p?.entries?.[k];
-      return e ? e.src : null;
-    };
+    let p;
+    try { p = await loadPack(from); }
+    catch (e) { return { ok: false, error: e.message }; }
+    if (!p) return { ok: false, error: `The ${from} pack is missing — cannot restore the original text.` };
+    // A blank `src` means the line was first seen while a translation was
+    // live, so its original is unknown; leave the field untouched rather than
+    // blanking it.
+    resolve = (k) => { const e = p.entries?.[k]; return (e && e.src) ? e.src : null; };
   } else {
     resolve = (k) => {
       const e = target.entries?.[k];
@@ -519,9 +585,11 @@ export async function switchLanguage(lang, { onProgress } = {}) {
   // INTO a translation, or any pack's `src` side coming back to the original.
   if (target) _applyPositions(target, 'tgt');
   else {
-    const anyCode = (await listPackLanguages()).find(c => c !== src);
-    const anyPack = anyCode ? await loadPack(anyCode) : null;
-    if (anyPack) _applyPositions(anyPack, 'src');
+    // Same rule as the strings: the layout we are restoring is the one the
+    // pack we are LEAVING recorded on its src side.
+    let p = null;
+    try { p = await loadPack(from); } catch { /* strings already resolved above */ }
+    if (p) _applyPositions(p, 'src');
   }
   state.setState({ activeLang: lang });
 
@@ -562,13 +630,17 @@ export async function scanLanguage(lang) {
     return { ok: false, error: `Switch back to ${sourceLang()} before scanning — the project currently holds ${activeLang()}.` };
   }
   const units = scanUnits();
-  const pack  = (await loadPack(lang)) || emptyPack(lang);
+  let pack;
+  try { pack = (await loadPack(lang)) || emptyPack(lang); }
+  catch (e) { return { ok: false, error: e.message }; }
   const rep   = reconcilePack(pack, units);
   const saved = await savePack(rep.pack);
   if (!saved.ok) return { ok: false, error: saved.error };
   const unpositioned = Object.values(rep.pack.constTexts || {})
     .filter(v => v && !v.positioned).length;
-  return { ok: true, ...rep, total: units.length, unpositioned, path: saved.path };
+  // Spread FIRST: the report carries its own counters and one of them used to
+  // land on top of this `ok` flag.
+  return { ...rep, ok: true, total: units.length, unpositioned, path: saved.path };
 }
 
 /** Scan, then machine-translate everything pending, then save the pack. */
@@ -581,7 +653,7 @@ export async function translateLanguage(lang, { force = false, onProgress } = {}
   const saved = await savePack(pack);
   if (!res.ok) return { ok: false, error: res.error, translated: res.translated || 0, pack };
   if (!saved.ok) return { ok: false, error: saved.error, translated: res.translated };
-  return { ok: true, translated: res.translated, pack, ...scan };
+  return { ...scan, ok: true, translated: res.translated, pack };
 }
 
 // ─── Console helpers ────────────────────────────────────────────────────────
