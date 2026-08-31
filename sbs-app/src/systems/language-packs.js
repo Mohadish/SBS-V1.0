@@ -244,12 +244,17 @@ export function reconcilePack(pack, units) {
       // silently destroying the user's own wording. Keep the state, record
       // the drift separately so the panel can still report it.
       const keepEdit = cur.state === 'edited' && !!cur.tgt;
+      // srcHash '' uniquely means "source never known" (entries authored
+      // while a translation was live, hatch-recreated packs) — the FIRST
+      // source fill is not drift, and flagging it would stamp a permanent
+      // false review marker on every such line.
+      const firstFill = cur.srcHash === '';
       next.entries[u.key] = {
         ...cur, fmt: u.fmt, src: u.src, srcHash: hash,
         state: keepEdit ? 'edited' : (cur.tgt ? 'stale' : 'new'),
-        ...(keepEdit ? { drifted: true } : {}),
+        ...(keepEdit && !firstFill ? { drifted: true } : {}),
       };
-      if (keepEdit) { edited++; stale++; }
+      if (keepEdit) { edited++; if (!firstFill) stale++; }
       else if (cur.tgt) stale++;
       else added++;
       continue;
@@ -321,6 +326,10 @@ export function pendingKeys(pack, { force = false } = {}) {
   const out = [];
   for (const [k, e] of Object.entries(pack.entries || {})) {
     if (e.state === 'edited') continue;                 // hand-fixes are sacred
+    // Deleted in this language — translating it would bill for text the
+    // resolver then applies as '' anyway. The blank stays authoritative
+    // until the user retypes in that language (which clears the flag).
+    if (e.blanked) continue;
     if (!e.tgt || e.state === 'new' || e.state === 'stale' || force) out.push(k);
   }
   return out;
@@ -393,7 +402,10 @@ export async function translatePack(pack, { force = false, onProgress, apiKey } 
       slice.forEach((k, n) => {
         const t = String(res.texts?.[n] ?? '');
         if (!t) return;
-        pack.entries[k] = { ...pack.entries[k], tgt: t, state: 'auto' };
+        // A fresh translation is an explicit "this line should show" — clear
+        // any deletion marker (belt: pendingKeys already excludes blanked).
+        const { blanked, ...rest } = pack.entries[k];
+        pack.entries[k] = { ...rest, tgt: t, state: 'auto' };
         done++;
       });
     }
@@ -425,10 +437,11 @@ export function captureInto(pack, field) {
       // (drift is recorded separately), or the next Translate would hand the
       // user's own wording back to the machine.
       const keepEdit = e.state === 'edited' && !!e.tgt;
+      const firstFill = e.srcHash === '';   // first source fill ≠ drift
       pack.entries[k] = {
         ...e, src: u.src, srcHash: srcHashOf(u.src),
         state: keepEdit ? 'edited' : (e.tgt ? 'stale' : 'new'),
-        ...(keepEdit ? { drifted: true } : {}),
+        ...(keepEdit && !firstFill ? { drifted: true } : {}),
       };
       changed++;
     } else {
@@ -665,10 +678,18 @@ export async function switchLanguage(lang, { onProgress } = {}) {
     // label translated text as the source, and the next source-side reconcile
     // would then write the translation into every sibling pack's src,
     // destroying the last recoverable copies of the originals.
-    if (!p && lang === src) {
+    // Refuse the trip to the SOURCE when the leaving pack cannot restore it:
+    // missing outright, OR a hatch-RECREATED pack (every entry src:'') — the
+    // latter passes a mere existence check but has no src side, and letting
+    // it through would label translated text as the original, after which
+    // the next source-side reconcile poisons every sibling pack's src.
+    const _es = p ? Object.values(p.entries || {}) : [];
+    const srcless = p && _es.length > 0 && !_es.some(e => e && e.srcHash);
+    if ((!p || srcless) && lang === src) {
       return { ok: false, error:
-        `The ${from} pack is missing, so the ${src} originals cannot be restored from it. ` +
-        `Restore ${packPathFor(from)}, or switch into another translation whose pack still exists, then back to ${src}.` };
+        `The ${from} pack ${p ? 'has no source side (it was re-created after its file was lost)' : 'is missing'}, ` +
+        `so the ${src} originals cannot be restored from it. Restore ${packPathFor(from)}, ` +
+        `or switch into another translation whose pack still exists, then back to ${src}.` };
     }
     const { pack: rec } = reconcilePack(p || emptyPack(from), scanUnits());
     captureInto(rec, 'tgt');
@@ -832,6 +853,31 @@ export async function translateLanguage(lang, { force = false, onProgress } = {}
   if (!res.ok) return { ok: false, error: res.error, translated: res.translated || 0, pack };
   if (!saved.ok) return { ok: false, error: saved.error, translated: res.translated };
   return { ...scan, ok: true, translated: res.translated, pack };
+}
+
+/**
+ * ✓ Drift review complete (V0.3.2.120). A review can end with "the
+ * translation is fine as-is" — retyping identical text is a no-op, so
+ * without this the drifted flag (and its ⚠ count) would be stuck until the
+ * wording actually changed. Clears the flag on every (or the given) drifted
+ * entries of a language's pack.
+ */
+export async function markReviewed(langCode, keys = null) {
+  let pack;
+  try { pack = await loadPack(langCode); }
+  catch (e) { return { ok: false, error: e.message }; }
+  if (!pack) return { ok: false, error: `No pack for "${langCode}".` };
+  let cleared = 0;
+  for (const [k, e] of Object.entries(pack.entries || {})) {
+    if (e.drifted && (!keys || keys.includes(k))) {
+      const { drifted, ...rest } = e;
+      pack.entries[k] = rest;
+      cleared++;
+    }
+  }
+  if (!cleared) return { ok: true, cleared: 0 };
+  const saved = await savePack(pack);
+  return saved.ok ? { ok: true, cleared } : { ok: false, error: saved.error };
 }
 
 // ─── Console helpers ────────────────────────────────────────────────────────

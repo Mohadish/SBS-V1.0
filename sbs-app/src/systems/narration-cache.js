@@ -335,13 +335,24 @@ export async function ensurePlayable(step) {
   if (n.dataUrl)  return n.dataUrl;
   if (!n.dataFile) return null;
   const url = await loadClipFromDisk(n.dataFile, n.mime || 'audio/wav');
-  if (url) n.dataUrl = url;
-  // V0.3.2.119 — a pointer whose file is gone (purged cache, moved project,
-  // or a language-pack reattach to a since-deleted clip) must stop counting
-  // as "fresh": drop it so every presence-based check re-synthesizes instead
-  // of silently exporting that step without narration.
-  else { delete n.dataFile; }
-  return url;
+  if (url) { n.dataUrl = url; return url; }
+  // V0.3.2.120 — a pointer whose file is CONFIRMED gone (purged cache, moved
+  // project, a language-pack reattach to a since-deleted clip) must stop
+  // counting as "fresh": drop it so presence-based checks re-synthesize
+  // instead of silently exporting that step without narration.
+  // CONFIRMED is the operative word: loadClipFromDisk also returns null for
+  // a disabled cache, a missing bridge, or a transient read error — states
+  // where the file may be perfectly fine, and deleting the pointer would
+  // permanently destroy a valid clip reference.
+  try {
+    const root = cacheFolderAbsolute();          // non-null ⇒ cache enabled
+    if (root && window.sbsNative?.fileExists &&
+        !(await window.sbsNative.fileExists(_join(root, n.dataFile)))) {
+      delete n.dataFile;
+      state.markDirty?.();
+    }
+  } catch { /* uncertain — keep the pointer */ }
+  return null;
 }
 
 // ─── Folder inspection / cleanup ────────────────────────────────────────────

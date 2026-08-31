@@ -126,10 +126,11 @@ async function _refresh() {
 function _statsOf(pack) {
   const es = Object.values(pack?.entries || {});
   const s = { total: es.length, done: 0, stale: 0, edited: 0, missing: 0 };
+  s.drifted = 0;
   for (const e of es) {
     if (e.state === 'edited') {
       s.edited++;
-      if (e.drifted) s.stale++;   // hand-edited AND the source moved — worth review, never auto-overwritten
+      if (e.drifted) { s.stale++; s.drifted++; }   // hand-edited AND the source moved — review, never auto-overwritten
     }
     else if (e.state === 'stale') s.stale++;
     else if (e.tgt) s.done++;
@@ -221,6 +222,9 @@ function _langRow({ code, isSource, active, stats, error }) {
   if (!isSource) {
     top.appendChild(mkBtn('Scan', 'Rescan the project and report what changed since this language was translated', () => _onScan(code)));
     top.appendChild(mkBtn('Translate', 'Machine-translate everything new or stale (hand-edited lines are kept)', () => _onTranslate(code)));
+    if (stats?.drifted) {
+      top.appendChild(mkBtn('✓ Reviewed', 'The drifted hand-edited lines are fine as they are — clear the review markers', () => _onReviewed(code)));
+    }
   }
   top.appendChild(mkBtn(active ? 'Showing' : 'Switch to', 'Put this language into the project', () => _onSwitch(code), active));
   row.appendChild(top);
@@ -303,6 +307,21 @@ async function _onTranslate(code) {
   } catch (e) {
     console.error('[lang] translate failed:', e);
     setStatus(`Translation failed: ${e?.message || e}`, 'warn', 8000);
+  } finally {
+    _busy = false;
+    await _refresh();
+  }
+}
+
+async function _onReviewed(code) {
+  if (_busy) return;
+  _busy = true; _render(); _say(`Clearing review markers for ${code}…`);
+  try {
+    const r = await lang.markReviewed(code);
+    if (!r.ok) setStatus(r.error, 'warn', 7000);
+    else setStatus(r.cleared ? `Cleared ${r.cleared} review marker(s) for ${code}.` : 'Nothing to clear.', 'info', 5000);
+  } catch (e) {
+    setStatus(`Failed: ${e?.message || e}`, 'warn', 7000);
   } finally {
     _busy = false;
     await _refresh();

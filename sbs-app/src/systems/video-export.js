@@ -1101,7 +1101,15 @@ async function _synthesizeMissingClips(stepsToPlay, onProgress, signal) {
     // text; comparing raw stored text against the trimmed scan value made any
     // step with stray whitespace re-synthesize on EVERY export, forever.
     const matches = n?.text?.trim() === text && n?.voiceId === voiceId && n?.speed === speed;
-    const fresh   = matches && (n?.dataUrl || n?.dataFile);
+    let fresh     = matches && !!n?.dataUrl;
+    // V0.3.2.120 — a dataFile POINTER is not proof the clip exists (purged
+    // cache, moved project, language-pack reattach to a since-deleted file).
+    // Probe it now: success hydrates n.dataUrl (the decode loop reads it
+    // moments later anyway — no extra IO), failure drops the dead pointer so
+    // this step re-synthesizes on THIS export instead of shipping silent.
+    if (!fresh && matches && n?.dataFile) {
+      fresh = !!(await narrationCache.ensurePlayable(s));
+    }
     if (fresh) { alreadyCached++; continue; }
     todo.push(s);
   }
