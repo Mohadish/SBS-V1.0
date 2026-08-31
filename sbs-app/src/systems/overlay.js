@@ -589,7 +589,7 @@ export function scanTextUnitsAndGeometry() {
   const units = [];
   const geom = new Map();
   const arr = state.get('steps') || [];
-  const patched = [];
+  let patched = 0;
   const seen = new Set();
   for (const s of arr) {
     if (typeof s.overlay !== 'string' || !s.overlay) continue;
@@ -606,11 +606,14 @@ export function scanTextUnitsAndGeometry() {
       units.push({ key, html: a.textHtml, stepId: s.id, constId: a.constId || null });
       geom.set(key, { x: a.x ?? 0, y: a.y ?? 0, textWidth: a.textWidth ?? null });
     }
-    if (dirty) patched.push({ id: s.id, overlay: JSON.stringify(spec) });
+    // Assign IN THE LOOP so the old overlay string becomes garbage
+    // immediately. Collecting them all first kept both the old and the new
+    // copy of EVERY overlay alive at once — a full extra copy of the
+    // project's heaviest data at peak, on the exact operation that OOM'd.
+    if (dirty) { s.overlay = JSON.stringify(spec); patched++; }
     spec = null;   // let the parsed tree go before the next step is read
   }
-  if (patched.length) {
-    for (const p of patched) { const st = arr.find(x => x.id === p.id); if (st) st.overlay = p.overlay; }
+  if (patched) {
     state.setState({ steps: [...arr] });
     state.markDirty();
     _markOverlayStringsAuthoritative();
@@ -629,7 +632,7 @@ export function applyTextUnitsAndGeometry(textByKey, geomByKey) {
   if (!hasText && !hasGeom) return { steps: 0, boxes: 0 };
   flushSave();
   const arr = state.get('steps') || [];
-  const patched = [];
+  let patched = 0;
   let boxes = 0;
   for (const s of arr) {
     if (typeof s.overlay !== 'string' || !s.overlay) continue;
@@ -650,15 +653,16 @@ export function applyTextUnitsAndGeometry(textByKey, geomByKey) {
         if (typeof g.textWidth === 'number' && g.textWidth !== a.textWidth) { a.textWidth = g.textWidth; dirty = true; }
       }
     }
-    if (dirty) patched.push({ id: s.id, overlay: JSON.stringify(spec) });
+    // In-loop assign — see the note in scanTextUnitsAndGeometry: buffering
+    // the rewritten strings kept a second copy of every overlay alive.
+    if (dirty) { s.overlay = JSON.stringify(spec); patched++; }
     spec = null;
   }
-  if (!patched.length) return { steps: 0, boxes: 0 };
-  for (const p of patched) { const st = arr.find(x => x.id === p.id); if (st) st.overlay = p.overlay; }
+  if (!patched) return { steps: 0, boxes: 0 };
   state.setState({ steps: [...arr] });
   state.markDirty();
   _markOverlayStringsAuthoritative();
-  return { steps: patched.length, boxes };
+  return { steps: patched, boxes };
 }
 
 /**
