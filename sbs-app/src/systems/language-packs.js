@@ -70,7 +70,9 @@ function _projectParts() {
   const i = pp.lastIndexOf(s);
   const dir  = i >= 0 ? pp.slice(0, i) : '.';
   const file = i >= 0 ? pp.slice(i + 1) : pp;
-  const base = file.replace(/\.sbsproj$/i, '');
+  // Strip the autosave suffix (same convention as io/project.js) so a crash
+  // recovery opened from Guide.autosave1.sbsproj still finds Guide.<lang>.…
+  const base = file.replace(/\.sbsproj$/i, '').replace(/(\.autosave\d*)+$/i, '');
   return { dir, base, sep: s };
 }
 
@@ -162,6 +164,11 @@ export async function loadPack(lang) {
   if (!p || typeof p !== 'object' || !p.entries) {
     throw new Error(`The ${lang} pack is missing its entries — fix or move the file; refusing to overwrite it.`);
   }
+  // The FILENAME decides which language a pack IS. `lang` inside the file is
+  // untrusted content, and savePack routes its write by it — a copied or
+  // hand-edited pack could otherwise overwrite a DIFFERENT language's file.
+  if (p.lang && p.lang !== lang) console.warn(`[lang] ${lang} pack declares lang="${p.lang}" — using the filename.`);
+  p.lang = lang;
   p.entries    = p.entries    || {};
   p.constTexts = p.constTexts || {};
   p.boxes      = p.boxes      || {};
@@ -232,18 +239,37 @@ export function reconcilePack(pack, units) {
       continue;
     }
     if (cur.srcHash !== hash) {
-      next.entries[u.key] = { ...cur, fmt: u.fmt, src: u.src, srcHash: hash, state: cur.tgt ? 'stale' : 'new' };
-      if (cur.tgt) stale++; else added++;
+      // HAND-FIXES ARE SACRED, even across drift. Demoting an edited entry
+      // to 'stale' would hand it back to the machine on the next Translate,
+      // silently destroying the user's own wording. Keep the state, record
+      // the drift separately so the panel can still report it.
+      const keepEdit = cur.state === 'edited' && !!cur.tgt;
+      next.entries[u.key] = {
+        ...cur, fmt: u.fmt, src: u.src, srcHash: hash,
+        state: keepEdit ? 'edited' : (cur.tgt ? 'stale' : 'new'),
+        ...(keepEdit ? { drifted: true } : {}),
+      };
+      if (keepEdit) { edited++; stale++; }
+      else if (cur.tgt) stale++;
+      else added++;
       continue;
     }
-    next.entries[u.key] = { ...cur, fmt: u.fmt, src: u.src };
+    // Source matches again (e.g. the edit was reverted) — drift resolved.
+    const { drifted, ...rest } = cur;
+    next.entries[u.key] = { ...rest, fmt: u.fmt, src: u.src };
     if (cur.state === 'edited') edited++;
     else if (cur.tgt) fresh++;
     else added++;
   }
 
-  for (const key of Object.keys(next.entries)) {
-    if (!live.has(key)) { delete next.entries[key]; removed++; }
+  // Only the SOURCE scan is a reliable inventory. While a translation is live
+  // a blanked or unloaded field simply drops out of scanUnits(), and pruning
+  // on that would delete the entry holding the only copy of the original.
+  // Genuinely deleted units are cleaned on the next source-side scan.
+  if (isSrc) {
+    for (const key of Object.keys(next.entries)) {
+      if (!live.has(key)) { delete next.entries[key]; removed++; }
+    }
   }
 
   // Constant-title definitions: a full record per language, not a delta.
@@ -258,16 +284,22 @@ export function reconcilePack(pack, units) {
     const here = { anchor: d.anchor || 'tl', x: d.x, y: d.y, styleId: d.styleId || null };
     const cur = ct[d.id];
     if (!cur)      ct[d.id] = { src: here, tgt: { ...here }, positioned: false };
-    else if (isSrc) ct[d.id] = { ...cur, src: here, tgt: cur.tgt || { ...here } };
+    // Until a language is deliberately laid out (positioned), its tgt TRACKS
+    // the source — otherwise repositioning a set in the original would never
+    // reach translations, whose tgt froze at pack-creation time.
+    else if (isSrc) ct[d.id] = { ...cur, src: here, tgt: cur.positioned ? (cur.tgt || { ...here }) : { ...here } };
   }
-  for (const id of Object.keys(ct)) if (!liveDefs.has(id)) ct[id] = null;
+  // Removal is source-scan-only, same rule as the entries above.
+  if (isSrc) {
+    for (const id of Object.keys(ct)) if (!liveDefs.has(id)) ct[id] = null;
+  }
   next.constTexts = ct;
 
-  // Per-box records: drop any whose box no longer exists; refresh the src side
-  // while the source language is live.
+  // Per-box records: refresh the src side while the source language is live;
+  // prune only on a source scan.
   const boxes = { ...(next.boxes || {}) };
-  for (const k of Object.keys(boxes)) if (!live.has(k)) delete boxes[k];
   if (isSrc) {
+    for (const k of Object.keys(boxes)) if (!live.has(k)) delete boxes[k];
     for (const [k, g] of readTextBoxGeometry()) {
       if (!live.has(k)) continue;
       boxes[k] = { ...(boxes[k] || {}), src: g };
@@ -323,20 +355,37 @@ export async function translatePack(pack, { force = false, onProgress, apiKey } 
   // would read them out loud.
   const htmlKeys = keys.filter(k => pack.entries[k].fmt === 'html');
   const textKeys = keys.filter(k => pack.entries[k].fmt !== 'html');
-  const CHUNK = 24;   // HTML units are large; stay well under Google's 128-q cap
-  let done = 0;
+  const CHUNK = 24;            // count cap — well under Google's 128-q limit
+  const MAX_BYTES = 90_000;    // payload cap — under Google's ~200KB request cap
+  const bytes = (s) => { try { return new TextEncoder().encode(String(s ?? '')).length; } catch { return String(s ?? '').length * 2; } };
+  let done = 0, firstErr = null;
   const total = keys.length;
 
   for (const [fmt, group] of [['text', textKeys], ['html', htmlKeys]]) {
-    for (let i = 0; i < group.length; i += CHUNK) {
-      const slice = group.slice(i, i + CHUNK);
+    let i = 0;
+    while (i < group.length) {
+      // Budget by BYTES as well as count: one huge HTML unit (embedded
+      // styling) could otherwise push a request over the API cap — and a
+      // failing chunk must not doom every unit queued after it.
+      const slice = [];
+      let size = 0;
+      while (i < group.length && slice.length < CHUNK) {
+        const b = bytes(pack.entries[group[i]].src);
+        if (slice.length && size + b > MAX_BYTES) break;   // always take at least one
+        slice.push(group[i]); size += b; i++;
+      }
       onProgress?.(done, total);
       // Source omitted → Google auto-detects, so this works whatever language
       // the project is authored in.
       const res = await window.sbsNative.translate.batch(
         slice.map(k => pack.entries[k].src), '', pack.lang, key, fmt,
       );
-      if (!res?.ok) return { ok: false, error: res?.error || 'Translation failed.', translated: done };
+      if (!res?.ok) {
+        // Remember the failure but keep going — the other chunks are
+        // independent, and everything that succeeds is kept.
+        if (!firstErr) firstErr = res?.error || 'Translation failed.';
+        continue;
+      }
       slice.forEach((k, n) => {
         const t = String(res.texts?.[n] ?? '');
         if (!t) return;
@@ -346,6 +395,7 @@ export async function translatePack(pack, { force = false, onProgress, apiKey } 
     }
   }
   onProgress?.(total, total);
+  if (firstErr) return { ok: false, error: `${firstErr} (${done}/${total} translated and kept)`, translated: done };
   return { ok: true, translated: done };
 }
 
@@ -367,7 +417,15 @@ export function captureInto(pack, field) {
     if (field === 'src') {
       if (e.src === u.src) continue;
       // The original moved on: keep the translation but flag it for review.
-      pack.entries[k] = { ...e, src: u.src, srcHash: srcHashOf(u.src), state: e.tgt ? 'stale' : 'new' };
+      // Same rule as reconcilePack — an EDITED translation keeps its state
+      // (drift is recorded separately), or the next Translate would hand the
+      // user's own wording back to the machine.
+      const keepEdit = e.state === 'edited' && !!e.tgt;
+      pack.entries[k] = {
+        ...e, src: u.src, srcHash: srcHashOf(u.src),
+        state: keepEdit ? 'edited' : (e.tgt ? 'stale' : 'new'),
+        ...(keepEdit ? { drifted: true } : {}),
+      };
       changed++;
     } else {
       if (e.tgt === u.src) continue;
@@ -383,6 +441,25 @@ export function captureInto(pack, field) {
     }
   }
   const side = field === 'src' ? 'src' : 'tgt';
+
+  // 🎧 Park narration AUDIO metadata per side, keyed to the exact text it was
+  // synthesized for. Applying a language replaces the whole narration record
+  // (the clip belongs to the old text) — without this, every round trip threw
+  // away BOTH languages' clips and forced a re-synthesis (re-billed on Cloud
+  // TTS). Only DISK-cached clips are parked; inline base64 clips would bloat
+  // the pack file enormously, so they re-synthesize (set an audio cache
+  // folder to keep clips across switches).
+  for (const [k, e] of Object.entries(pack.entries || {})) {
+    const m = /^step:(.+):narration$/.exec(k);
+    if (!m) continue;
+    const st = (state.get('steps') || []).find(x => x.id === m[1]);
+    const n = st?.narration;
+    const au = { ...(e.audio || {}) };
+    au[side] = (n?.dataFile && n.voiceId)
+      ? { voiceId: n.voiceId, speed: n.speed, durationMs: n.durationMs, mime: n.mime, dataFile: n.dataFile, forText: n.text }
+      : (au[side] || null);   // keep an older parked clip rather than erase it
+    pack.entries[k] = { ...pack.entries[k], audio: au };
+  }
 
   // Positions as they stand in the language being captured.
   const defs = state.get('constTextBoxes') || [];
@@ -416,7 +493,7 @@ export function captureInto(pack, field) {
 
 // ─── Apply (a pack → the project) ───────────────────────────────────────────
 
-function _applyStrings(resolve, textKeys) {
+function _applyStrings(resolve, textKeys, audioFor = () => null) {
   const steps = state.get('steps') || [];
   const chapters = state.get('chapters') || [];
   const headerItems = state.get('headerItems') || [];
@@ -434,7 +511,13 @@ function _applyStrings(resolve, textKeys) {
       // OLD text and must not be played over the new one. Same convention as
       // the step-nav editor. renderedDurationMs goes too, or chapter
       // timecodes keep reporting the previous language's timings.
-      out.narration = { text: narr };
+      // 🎧 EXCEPT when the pack parked a disk-cached clip for EXACTLY this
+      // text — reattach it, so a round trip doesn't re-bill both languages'
+      // synthesis. forText is the guarantee the clip matches the words.
+      const au = audioFor(`step:${s.id}:narration`);
+      out.narration = (au && au.forText === narr && au.dataFile)
+        ? { text: narr, voiceId: au.voiceId, speed: au.speed, durationMs: au.durationMs, mime: au.mime, dataFile: au.dataFile }
+        : { text: narr };
       delete out.renderedDurationMs;
       n++;
     }
@@ -512,13 +595,21 @@ export async function switchLanguage(lang, { onProgress } = {}) {
   // 1. Capture what is live so nothing typed in the app is lost. A failed
   // write here ABORTS the switch: proceeding would overwrite the project with
   // the other language and silently discard everything just edited.
+  let fromPack = null;   // reused below as the restore source when lang === src
   if (from === src) {
     // Live text IS the source: fold it into EVERY pack's `src` so each
     // language learns which of its lines have drifted.
     for (const code of await listPackLanguages()) {
       let p;
       try { p = await loadPack(code); }
-      catch (e) { return { ok: false, error: e.message }; }
+      catch (e) {
+        // A corrupt pack for a language we are NOT touching must not block a
+        // switch into a healthy one. We never write to it here, so skipping
+        // is exactly as safe as refusing — the panel flags the broken file.
+        // The TARGET pack still hard-fails below.
+        console.warn('[lang] skipping unreadable pack during capture:', e.message);
+        continue;
+      }
       if (!p) continue;
       const { pack: rec } = reconcilePack(p, scanUnits());
       captureInto(rec, 'src');
@@ -528,16 +619,16 @@ export async function switchLanguage(lang, { onProgress } = {}) {
   } else {
     let p;
     try { p = await loadPack(from); }
-    catch (e) { return { ok: false, error: e.message }; }
-    if (!p) {
-      // No pack for the language currently in the project: its originals have
-      // no home, so switching would strand them. Refuse rather than guess.
-      return { ok: false, error: `The ${from} pack is missing — restore it beside the project before switching, or the ${from} text has nowhere to go.` };
-    }
-    const { pack: rec } = reconcilePack(p, scanUnits());
+    catch (e) { return { ok: false, error: e.message }; }   // CORRUPT → refuse, it holds data
+    // MISSING (not corrupt) is different: the pack's data is already gone,
+    // nothing else in the app can reset activeLang, and refusing would lock
+    // the project in this language forever. Re-create the pack and capture
+    // the live text into it — the escape hatch.
+    const { pack: rec } = reconcilePack(p || emptyPack(from), scanUnits());
     captureInto(rec, 'tgt');
     const w = await savePack(rec);
     if (!w.ok) return { ok: false, error: `Could not save the ${from} pack (${w.error}) — nothing was switched.` };
+    fromPack = rec;
   }
 
   onProgress?.('Applying…');
@@ -560,37 +651,28 @@ export async function switchLanguage(lang, { onProgress } = {}) {
   // Resolver. Going INTO a translation: read `tgt`, falling back to `src` for
   // lines never translated. Coming BACK to the original: read `src` out of the
   // pack of the language we are LEAVING — that pack is the one that recorded
-  // these originals. (Reading "any pack" would restore a different language's
-  // idea of the source.)
-  let resolve;
+  // these originals (fromPack was just reconciled + saved above, so reuse it
+  // rather than re-reading disk). A blank `src` means the line was first seen
+  // while a translation was live, so its original is unknown; leave the field
+  // untouched rather than blanking it.
+  // NOTE: no awaits from here through the activeLang commit — a serialize()
+  // (autosave) landing between "text applied" and "activeLang set" would
+  // write a project whose label lies about its contents.
+  let resolve, audioFor;
   if (lang === src) {
-    let p;
-    try { p = await loadPack(from); }
-    catch (e) { return { ok: false, error: e.message }; }
-    if (!p) return { ok: false, error: `The ${from} pack is missing — cannot restore the original text.` };
-    // A blank `src` means the line was first seen while a translation was
-    // live, so its original is unknown; leave the field untouched rather than
-    // blanking it.
-    resolve = (k) => { const e = p.entries?.[k]; return (e && e.src) ? e.src : null; };
+    const p = fromPack;
+    resolve  = (k) => { const e = p?.entries?.[k]; return (e && e.src) ? e.src : null; };
+    audioFor = (k) => p?.entries?.[k]?.audio?.src || null;
   } else {
-    resolve = (k) => {
-      const e = target.entries?.[k];
-      if (!e) return null;
-      return e.tgt || e.src || null;
-    };
+    resolve  = (k) => { const e = target.entries?.[k]; return e ? (e.tgt || e.src || null) : null; };
+    audioFor = (k) => target.entries?.[k]?.audio?.tgt || null;
   }
 
-  const changed = _applyStrings(resolve, textKeys);
-  // Positions come from whichever pack we have: the target's `tgt` side going
-  // INTO a translation, or any pack's `src` side coming back to the original.
+  const changed = _applyStrings(resolve, textKeys, audioFor);
+  // Positions: the target's `tgt` side going INTO a translation, or the
+  // leaving pack's `src` side coming back to the original.
   if (target) _applyPositions(target, 'tgt');
-  else {
-    // Same rule as the strings: the layout we are restoring is the one the
-    // pack we are LEAVING recorded on its src side.
-    let p = null;
-    try { p = await loadPack(from); } catch { /* strings already resolved above */ }
-    if (p) _applyPositions(p, 'src');
-  }
+  else if (fromPack) _applyPositions(fromPack, 'src');
   state.setState({ activeLang: lang });
 
   // Undo restores the strings AND the geometry wholesale — geometry lives in
@@ -616,6 +698,48 @@ export async function switchLanguage(lang, { onProgress } = {}) {
   );
 
   return { ok: true, changed, lang };
+}
+
+/**
+ * 🧳 Carry the language sidecars across a Save As (V0.3.2.118). Packs are
+ * addressed by the live projectPath, so saving under a new name would strand
+ * every translation with the old file — and once a translation is active,
+ * the stranded packs hold the only copy of the originals. Copies, never
+ * moves; never clobbers an existing destination.
+ */
+export async function migratePacksTo(oldPath, newPath) {
+  try {
+    if (!oldPath || !newPath || oldPath === newPath) return 0;
+    if (!window.sbsNative?.listDir || !window.sbsNative?.readFile || !window.sbsNative?.writeFile) return 0;
+    const part = (p) => {
+      const sep = _sep(p); const i = p.lastIndexOf(sep);
+      return {
+        dir: i >= 0 ? p.slice(0, i) : '.', sep,
+        base: (i >= 0 ? p.slice(i + 1) : p).replace(/\.sbsproj$/i, '').replace(/(\.autosave\d*)+$/i, ''),
+      };
+    };
+    const o = part(oldPath), n = part(newPath);
+    if (o.dir === n.dir && o.base === n.base) return 0;
+    const entries = await window.sbsNative.listDir(o.dir);
+    const names = (entries || []).map(e => (typeof e === 'string' ? e : e?.name)).filter(Boolean);
+    const rx = new RegExp(`^${o.base.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\.([A-Za-z-]{2,10})\\.sbslang\\.json$`);
+    let copied = 0;
+    for (const name of names) {
+      const m = name.match(rx);
+      if (!m) continue;
+      const dest = `${n.dir}${n.sep}${n.base}.${m[1]}.sbslang.json`;
+      if (window.sbsNative.fileExists && (await window.sbsNative.fileExists(dest))) continue;   // never clobber
+      const r = await window.sbsNative.readFile(`${o.dir}${o.sep}${name}`, 'utf8');
+      const txt = typeof r === 'string' ? r : (r?.data ?? '');
+      if (!txt) continue;
+      await window.sbsNative.writeFile(dest, txt, 'utf8');
+      copied++;
+    }
+    return copied;
+  } catch (e) {
+    console.warn('[lang] pack migration failed:', e?.message);
+    return 0;
+  }
 }
 
 // ─── Orchestration (what the panel calls) ───────────────────────────────────

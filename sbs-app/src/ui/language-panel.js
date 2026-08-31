@@ -127,7 +127,10 @@ function _statsOf(pack) {
   const es = Object.values(pack?.entries || {});
   const s = { total: es.length, done: 0, stale: 0, edited: 0, missing: 0 };
   for (const e of es) {
-    if (e.state === 'edited') s.edited++;
+    if (e.state === 'edited') {
+      s.edited++;
+      if (e.drifted) s.stale++;   // hand-edited AND the source moved — worth review, never auto-overwritten
+    }
     else if (e.state === 'stale') s.stale++;
     else if (e.tgt) s.done++;
     else s.missing++;

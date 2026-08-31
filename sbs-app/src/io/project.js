@@ -528,6 +528,16 @@ export async function saveProject(options = {}) {
     state.emit('save:progress', { stage: 'write', bytes: bytes.length });
     const writeResult = await window.sbsNative.writeFile(savePath, bytes, null);
     if (!writeResult?.ok) { state.emit('save:progress', { stage: 'error', message: writeResult?.error || 'Write failed' }); throw new Error(writeResult?.error || 'Write failed'); }
+    // 🌍 V0.3.2.118 — Save As strands language packs (they are addressed by
+    // projectPath), and once a translation is active the stranded packs hold
+    // the only copy of the originals. Copy them alongside; never clobbers.
+    if (existingPath && savePath !== existingPath) {
+      try {
+        const lp = await import('../systems/language-packs.js');
+        const moved = await lp.migratePacksTo(existingPath, savePath);
+        if (moved) console.log(`[lang] copied ${moved} language pack(s) to the new location.`);
+      } catch (e) { console.warn('[lang] pack migration skipped:', e?.message); }
+    }
     _setProjectMeta(savePath);
     state.markClean();
     state.emit('save:progress', { stage: 'done', bytes: bytes.length, rawBytes, ms: performance.now() - _t0 });
