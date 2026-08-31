@@ -336,6 +336,11 @@ export async function ensurePlayable(step) {
   if (!n.dataFile) return null;
   const url = await loadClipFromDisk(n.dataFile, n.mime || 'audio/wav');
   if (url) n.dataUrl = url;
+  // V0.3.2.119 — a pointer whose file is gone (purged cache, moved project,
+  // or a language-pack reattach to a since-deleted clip) must stop counting
+  // as "fresh": drop it so every presence-based check re-synthesizes instead
+  // of silently exporting that step without narration.
+  else { delete n.dataFile; }
   return url;
 }
 

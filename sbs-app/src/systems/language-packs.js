@@ -254,10 +254,14 @@ export function reconcilePack(pack, units) {
       else added++;
       continue;
     }
-    // Source matches again (e.g. the edit was reverted) — drift resolved.
-    const { drifted, ...rest } = cur;
-    next.entries[u.key] = { ...rest, fmt: u.fmt, src: u.src };
-    if (cur.state === 'edited') edited++;
+    // Hash matches = unchanged SINCE THE LAST SCAN — the mismatch branch
+    // above refreshed the stored hash at detection time, so a match here can
+    // never mean "the drift resolved". The drifted flag therefore survives
+    // reconciles and is cleared only when the user actually REVISES the
+    // translation (captureInto's tgt branch) — that is the review the flag
+    // exists to prompt.
+    next.entries[u.key] = { ...cur, fmt: u.fmt, src: u.src };
+    if (cur.state === 'edited') { edited++; if (cur.drifted) stale++; }
     else if (cur.tgt) fresh++;
     else added++;
   }
@@ -436,8 +440,34 @@ export function captureInto(pack, field) {
       // untranslatable. Only a real deviation counts.
       if (!e.tgt && u.src === e.src) continue;
       // Typed over a machine translation in the app → it is now a hand-edit.
-      pack.entries[k] = { ...e, tgt: u.src, state: 'edited' };
+      // Revising the translation is also the act that RESOLVES a drift review
+      // — the user has now seen the line — so the flag clears here, and only
+      // here.
+      const { drifted, blanked, ...rest } = e;
+      pack.entries[k] = { ...rest, tgt: u.src, state: 'edited' };
       changed++;
+    }
+  }
+
+  // 🗑 Record deletions the scan cannot see (tgt side only). A field blanked
+  // while a translation is live simply DROPS OUT of scanUnits, so without an
+  // explicit marker the old text resurrects on the next switch. Only fields
+  // whose OWNER still exists are marked — owner-gone keys are structural
+  // deletes, cleaned by the next source-side prune.
+  if (field !== 'src') {
+    const stepsArr    = state.get('steps') || [];
+    const chaptersArr = state.get('chapters') || [];
+    const headersArr  = state.get('headerItems') || [];
+    for (const [k, e] of Object.entries(pack.entries || {})) {
+      if (byKey.has(k)) {
+        if (e.blanked) { const { blanked, ...rest } = e; pack.entries[k] = rest; changed++; }
+        continue;
+      }
+      let m, ownerExists = false;
+      if ((m = /^step:(.+):(name|narration)$/.exec(k)))       ownerExists = stepsArr.some(s => s.id === m[1]);
+      else if ((m = /^chapter:(.+):name$/.exec(k)))            ownerExists = chaptersArr.some(c => c.id === m[1]);
+      else if ((m = /^header:(.+):(text|textHtml)$/.exec(k)))  ownerExists = headersArr.some(h => h.id === m[1]);
+      if (ownerExists && !e.blanked) { pack.entries[k] = { ...e, blanked: true }; changed++; }
     }
   }
   const side = field === 'src' ? 'src' : 'tgt';
@@ -514,8 +544,14 @@ function _applyStrings(resolve, textKeys, audioFor = () => null) {
       // 🎧 EXCEPT when the pack parked a disk-cached clip for EXACTLY this
       // text — reattach it, so a round trip doesn't re-bill both languages'
       // synthesis. forText is the guarantee the clip matches the words.
+      // Reattach only when the clip matches the words AND today's voice
+      // settings — the app deliberately invalidates clips on voice/speed
+      // change, and a parked copy must not resurrect an old voice.
       const au = audioFor(`step:${s.id}:narration`);
-      out.narration = (au && au.forText === narr && au.dataFile)
+      const exp = state.get('export') || {};
+      const settingsOk = au && au.voiceId === exp.narrationVoice
+        && (Number(au.speed) || 1) === (Number(exp.narrationSpeed) || 1);
+      out.narration = (au && settingsOk && au.forText === narr && au.dataFile)
         ? { text: narr, voiceId: au.voiceId, speed: au.speed, durationMs: au.durationMs, mime: au.mime, dataFile: au.dataFile }
         : { text: narr };
       delete out.renderedDurationMs;
@@ -624,6 +660,16 @@ export async function switchLanguage(lang, { onProgress } = {}) {
     // nothing else in the app can reset activeLang, and refusing would lock
     // the project in this language forever. Re-create the pack and capture
     // the live text into it — the escape hatch.
+    // BUT never when the destination is the SOURCE language: a recreated pack
+    // has no src side, so the originals cannot be restored — the switch would
+    // label translated text as the source, and the next source-side reconcile
+    // would then write the translation into every sibling pack's src,
+    // destroying the last recoverable copies of the originals.
+    if (!p && lang === src) {
+      return { ok: false, error:
+        `The ${from} pack is missing, so the ${src} originals cannot be restored from it. ` +
+        `Restore ${packPathFor(from)}, or switch into another translation whose pack still exists, then back to ${src}.` };
+    }
     const { pack: rec } = reconcilePack(p || emptyPack(from), scanUnits());
     captureInto(rec, 'tgt');
     const w = await savePack(rec);
@@ -632,21 +678,23 @@ export async function switchLanguage(lang, { onProgress } = {}) {
   }
 
   onProgress?.('Applying…');
-  const units = scanUnits();
-  const textKeys = units.filter(u => u.key.startsWith('text:')).map(u => u.key);
-
-  const beforeSteps    = cloneShareStrings(state.get('steps') || []);
-  const beforeChapters = cloneShareStrings(state.get('chapters') || []);
-  const beforeHeaders  = cloneShareStrings(state.get('headerItems') || []);
-  const beforeDefs     = cloneShareStrings(state.get('constTextBoxes') || []);
-  const beforeLang     = from;
-
   let target = null;
   if (lang !== src) {
     try { target = await loadPack(lang); }
     catch (e) { return { ok: false, error: e.message }; }
     if (!target) return { ok: false, error: `No pack for "${lang}" — scan and translate it first.` };
   }
+
+  // Snapshots taken AFTER the last await, inside the no-await window — so an
+  // edit committed while loadPack was in flight lands in beforeSteps and
+  // stays recoverable via Ctrl+Z instead of being silently overwritten.
+  const units = scanUnits();
+  const textKeys = units.filter(u => u.key.startsWith('text:')).map(u => u.key);
+  const beforeSteps    = cloneShareStrings(state.get('steps') || []);
+  const beforeChapters = cloneShareStrings(state.get('chapters') || []);
+  const beforeHeaders  = cloneShareStrings(state.get('headerItems') || []);
+  const beforeDefs     = cloneShareStrings(state.get('constTextBoxes') || []);
+  const beforeLang     = from;
 
   // Resolver. Going INTO a translation: read `tgt`, falling back to `src` for
   // lines never translated. Coming BACK to the original: read `src` out of the
@@ -664,8 +712,14 @@ export async function switchLanguage(lang, { onProgress } = {}) {
     resolve  = (k) => { const e = p?.entries?.[k]; return (e && e.src) ? e.src : null; };
     audioFor = (k) => p?.entries?.[k]?.audio?.src || null;
   } else {
-    resolve  = (k) => { const e = target.entries?.[k]; return e ? (e.tgt || e.src || null) : null; };
-    audioFor = (k) => target.entries?.[k]?.audio?.tgt || null;
+    // blanked = the user deleted this field while THIS language was live;
+    // '' applies the deletion instead of resurrecting old text.
+    resolve  = (k) => { const e = target.entries?.[k]; return e ? (e.blanked ? '' : (e.tgt || e.src || null)) : null; };
+    // Untranslated lines fall back to the SOURCE text — so the parked
+    // source-side clip is the right audio for them (translation→translation
+    // switches would otherwise re-bill every untranslated line). The
+    // forText === narr guard downstream keeps a mismatched clip out.
+    audioFor = (k) => { const a = target.entries?.[k]?.audio; return a?.tgt || a?.src || null; };
   }
 
   const changed = _applyStrings(resolve, textKeys, audioFor);
