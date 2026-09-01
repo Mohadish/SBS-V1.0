@@ -475,19 +475,53 @@ export async function writeReadme() {
  *
  * Returns { deletedFolders, clearedSteps }.
  */
+/**
+ * Voice slugs that are still NEEDED — the active voice plus every voice any
+ * language pack has audio parked under (V0.3.2.123).
+ *
+ * Before this, purge deleted every folder except the active voice. Once a
+ * project has more than one language that is catastrophic: each language uses
+ * its own voice, so purging while Hebrew is active deleted the entire English
+ * narration cache. Nothing was corrupted, but a full re-synthesis is exactly
+ * the cost the disk cache exists to avoid.
+ */
+async function _protectedVoiceSlugs() {
+  const keep = new Set([activeVoiceSlug()]);
+  try {
+    const lp = await import('./language-packs.js');
+    for (const code of await lp.listPackLanguages()) {
+      let pack;
+      try { pack = await lp.loadPack(code); } catch { continue; }   // corrupt: keep everything
+      for (const e of Object.values(pack?.entries || {})) {
+        for (const side of ['src', 'tgt']) {
+          const v = e?.audio?.[side]?.voiceId;
+          if (v) keep.add(_voiceSlug(v));
+        }
+      }
+    }
+  } catch (err) {
+    // Cannot read the packs → cannot prove a folder is unused. Purge nothing
+    // rather than delete another language's audio on a guess.
+    console.warn('[narration-cache] purge: language packs unreadable, keeping all voices:', err?.message);
+    return null;
+  }
+  return keep;
+}
+
 export async function purgeInactiveVoices(steps) {
-  const out = { deletedFolders: 0, clearedSteps: 0 };
+  const out = { deletedFolders: 0, clearedSteps: 0, protected: 0 };
   if (!isCacheEnabled())              return out;
   if (!window.sbsNative?.deletePath)  return out;
 
   const folders = await listVoiceFolders();
   if (!folders) return out;
 
-  const active = activeVoiceSlug();
+  const keep = await _protectedVoiceSlugs();
+  if (!keep) return out;                       // unreadable packs → delete nothing
   const root   = cacheFolderAbsolute();
   const dead   = new Set();
   for (const f of folders) {
-    if (f.name === active) continue;
+    if (keep.has(f.name)) { out.protected++; continue; }
     const target = _join(root, f.name);
     const res = await window.sbsNative.deletePath(target, { recursive: true });
     if (res?.ok) {

@@ -151,6 +151,26 @@ function _render() {
     ? 'Save the project first — language packs live in files beside the .sbsproj.'
     : `Authored in "${src}", currently showing "${act}". Packs live beside the project as <project>.<lang>.sbslang.json. Voiceover AUDIO and subtitle overrides are separate systems and are not swapped.`;
 
+  // ⚠ Narration audio belongs to the WORDS, so switching language detaches
+  // every clip. Until that language is synthesized each step reports a 0-length
+  // voiceover — which makes the exporter give it no hold at all, so the video
+  // races through the steps and the TOC timecodes come out wrong. Nothing else
+  // in the app says this out loud, so say it here.
+  const silent = (state.get('steps') || [])
+    .filter(s => !s.isBaseStep && s.narration?.text?.trim() && !s.narration?.dataUrl && !s.narration?.dataFile).length;
+  let warn = _win.querySelector('#lang-warn');
+  if (!warn) {
+    warn = document.createElement('div');
+    warn.id = 'lang-warn';
+    warn.style.cssText = 'margin:8px 14px 0;padding:8px 10px;border-radius:6px;font-size:11.5px;line-height:1.5;'
+                       + 'background:rgba(217,160,61,0.14);border:1px solid rgba(217,160,61,0.5);color:#d9a03d;';
+    note.after(warn);
+  }
+  warn.style.display = silent ? '' : 'none';
+  warn.textContent = silent
+    ? `⚠ ${silent} step(s) have voiceover text but no audio in "${act}". Export will not hold on those steps and chapter times will be wrong until they are synthesized.`
+    : '';
+
   // The add/refresh buttons sit outside the row list, so they need their own
   // busy state — otherwise they stay live during a long translate.
   for (const sel of ['#lang-add', '#lang-refresh']) {

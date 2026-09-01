@@ -4567,7 +4567,10 @@ function _renderExportTab() {
     try {
       const r = await narrationCache.purgeInactiveVoices(state.get('steps') || []);
       if (r.deletedFolders || r.clearedSteps) state.markDirty();
-      setStatus(`Purged ${r.deletedFolders} inactive folder(s); ${r.clearedSteps} step(s) reset to text-only.`);
+      // Say what was KEPT too — voices belonging to other languages are
+      // protected now, and silence there would look like the purge failed.
+      const kept = r.protected ? ` ${r.protected} voice folder(s) kept (in use by a language).` : '';
+      setStatus(`Purged ${r.deletedFolders} inactive folder(s); ${r.clearedSteps} step(s) reset to text-only.${kept}`);
     } catch (err) {
       setStatus(`Purge failed: ${err.message}`, 'danger');
     } finally {

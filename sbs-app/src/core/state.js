@@ -396,7 +396,15 @@ function createInitialState() {
     // disk. When set, step.narration.dataFile (sha1.wav filename) replaces
     // the bulky inline base64 dataUrl on save — keeps .sbsproj small.
     // null → inline base64 in project file (legacy behaviour).
-    audioCacheFolder: null,
+    // V0.3.2.123 — narration audio goes to DISK by default, in an `audio`
+    // subfolder beside the project. The old default (null) meant every
+    // synthesized clip was inlined as base64 into the .sbsproj: the single
+    // biggest contributor to project bloat and to the renderer's memory
+    // pressure. Caching stays inactive until the project is saved
+    // (isCacheEnabled requires a projectPath), so unsaved work is unchanged,
+    // and EXISTING projects keep whatever they had — load reads their own
+    // stored value, so nothing silently moves.
+    audioCacheFolder: 'audio',
 
     // 🌍 V0.3.2.116 — language packs. sourceLang = the language the project was
     // authored in; activeLang = the language its text currently holds. Equal
