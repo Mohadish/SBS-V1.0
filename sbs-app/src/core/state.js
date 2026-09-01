@@ -420,6 +420,13 @@ function createInitialState() {
     // English voice and synthesized Hebrew text with an English engine.
     narrationVoices: {},
 
+    // 🔤 V0.3.2.131 — find/replace rules for the ORIGINAL language, keyed by
+    // language code: { en: [ {id, find, replace, caseSensitive}, … ] }.
+    // Rules live with the text they correct: a translation's rules sit in its
+    // pack (that is where its text lives), the original's sit here (that is
+    // where ITS text lives — in the project itself).
+    replaceRules: {},
+
     export: {
       fileName:           'sbs_export',
       outputFormat:       'mp4',

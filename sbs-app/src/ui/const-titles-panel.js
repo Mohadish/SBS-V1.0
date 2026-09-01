@@ -32,7 +32,7 @@ import { setStatus } from './status.js';
 import { showContextMenu } from './context-menu.js';
 
 let _win        = null;
-let _tab        = 'const';     // 'const' | 'review'
+let _tab        = 'const';     // 'const' | 'review' | 'rules'
 let _selectedId = null;
 let _navPos     = new Map();   // defId → index into its stepIds (kept while open)
 let _usage      = new Map();   // defId → { count, stepIds } — snapshot, see 🔄
@@ -118,7 +118,7 @@ function _build() {
       <button class="btn" id="ctp-rule-add" type="button" style="padding:4px 10px;font-size:12px;">＋ Add rule</button>
       <span class="small muted" id="ctp-rule-note" style="flex:1;font-size:11.5px;"></span>
       <button class="btn" id="ctp-rule-run" type="button"
-              title="Apply every rule to everything already translated in this language"
+              title="Apply every rule across this language — the original's rules rewrite the project text itself"
               style="padding:4px 10px;font-size:12px;">▶ Run rules now</button>
     </div>
   `;
@@ -363,7 +363,7 @@ async function _onAuthorizeAll() {
 
 // ─── 🔤 Replace rules tab ───────────────────────────────────────────────────
 
-let _rulesPack = null;
+let _rules = [];
 
 async function _renderRules() {
   if (!_win) return;
@@ -372,24 +372,16 @@ async function _renderRules() {
   list.textContent = '';
   const note = _win.querySelector('#ctp-rule-note');
   const isSource = code === lang.sourceLang();
-
-  if (isSource) {
-    note.textContent = '';
-    const m = document.createElement('div');
-    m.className = 'small muted';
-    m.style.cssText = 'padding:14px 8px;font-size:12px;line-height:1.5;text-align:center;';
-    m.textContent = `Replace rules belong to a translation. Switch to a language other than "${code}" to edit its rules.`;
-    list.appendChild(m);
-    return;
-  }
-
-  const rules = _rulesPack?.rules || [];
-  note.textContent = rules.length ? `${rules.length} rule(s) for ${code}` : `no rules for ${code} yet`;
+  const rules = _rules || [];
+  note.textContent = (rules.length ? `${rules.length} rule(s) for ${code}` : `no rules for ${code} yet`)
+                   + (isSource ? ' — these rewrite the original text' : '');
   if (!rules.length) {
     const m = document.createElement('div');
     m.className = 'small muted';
     m.style.cssText = 'padding:14px 8px;font-size:12px;line-height:1.5;text-align:center;';
-    m.textContent = 'No rules yet. A rule finds a phrase in this language and replaces it — applied to every new translation, and to existing ones with "Run rules now".';
+    m.textContent = isSource
+      ? 'No rules yet. A rule finds a phrase and replaces it throughout the ORIGINAL text — step names, chapters, voiceover and titles. Every translation is flagged for review afterwards, because the source changed.'
+      : 'No rules yet. A rule finds a phrase in this language and replaces it — applied to every new translation, and to existing ones with "Run rules now".';
     list.appendChild(m);
     return;
   }
@@ -430,20 +422,17 @@ async function _renderRules() {
 
 async function _onEditRule(rule) {
   const code = lang.activeLang();
-  if (code === lang.sourceLang()) return;
   const find = await promptString('Find this phrase (in ' + code + '):', rule?.find || '');
   if (find == null || !find.trim()) return;
   const replace = await promptString(`Replace "${find.trim()}" with:`, rule?.replace ?? '');
   if (replace == null) return;
   try {
-    const pack = await lang.loadPack(code);
-    if (!pack) { setStatus(`No pack for "${code}" — scan it first.`, 'warn', 6000); return; }
-    const res = lang.upsertRule(pack.rules || [], {
+    const cur = await lang.getRules(code);
+    const res = lang.upsertRule(cur, {
       id: rule?.id, find, replace, caseSensitive: rule?.caseSensitive || false,
     });
     if (!res.ok) { setStatus(res.error, 'warn', 7000); return; }
-    pack.rules = res.rules;
-    const w = await lang.savePack(pack);
+    const w = await lang.setRules(code, res.rules);
     if (!w.ok) { setStatus(w.error, 'warn', 7000); return; }
     setStatus(res.collapsed
       ? `Rule saved — ${res.collapsed} earlier rule(s) now point straight at the new wording.`
@@ -457,10 +446,8 @@ async function _onEditRule(rule) {
 async function _onDeleteRule(rule) {
   const code = lang.activeLang();
   try {
-    const pack = await lang.loadPack(code);
-    if (!pack) return;
-    pack.rules = (pack.rules || []).filter(r => r.id !== rule.id);
-    const w = await lang.savePack(pack);
+    const cur = await lang.getRules(code);
+    const w = await lang.setRules(code, cur.filter(r => r.id !== rule.id));
     if (!w.ok) { setStatus(w.error, 'warn', 6000); return; }
     setStatus('Rule deleted. Text already replaced stays as it is.', 'info', 6000);
     await _refresh();
@@ -469,7 +456,6 @@ async function _onDeleteRule(rule) {
 
 async function _onRunRules() {
   const code = lang.activeLang();
-  if (code === lang.sourceLang()) { setStatus('Switch to a translation first.', 'warn', 5000); return; }
   const res = await lang.runRules(code);
   if (!res.ok) { setStatus(res.error, 'warn', 7000); return; }
   setStatus(res.changed
@@ -491,8 +477,8 @@ async function _refresh() {
   _win.querySelector('#ctp-foot-rules').style.display  = _tab === 'rules'  ? 'flex' : 'none';
 
   if (_tab === 'rules') {
-    try { _rulesPack = await lang.loadPack(lang.activeLang()); }
-    catch (e) { _rulesPack = null; setStatus(e?.message || 'Could not read the pack.', 'warn', 7000); }
+    try { _rules = await lang.getRules(lang.activeLang()); }
+    catch (e) { _rules = []; setStatus(e?.message || 'Could not read the rules.', 'warn', 7000); }
     await _renderRules();
     return;
   }

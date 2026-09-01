@@ -1009,11 +1009,78 @@ export function upsertRule(rules, { id, find, replace, caseSensitive = false }) 
   return { ok: true, rules: next, collapsed };
 }
 
+/** Rules for a language — pack for a translation, project settings for the original. */
+export async function getRules(langCode) {
+  if (langCode === sourceLang()) return (state.get('replaceRules') || {})[langCode] || [];
+  try { const p = await loadPack(langCode); return p?.rules || []; }
+  catch { return []; }
+}
+
+export async function setRules(langCode, rules) {
+  if (langCode === sourceLang()) {
+    state.setState({ replaceRules: { ...(state.get('replaceRules') || {}), [langCode]: rules } });
+    state.markDirty();
+    return { ok: true };
+  }
+  let pack;
+  try { pack = await loadPack(langCode); }
+  catch (e) { return { ok: false, error: e.message }; }
+  if (!pack) return { ok: false, error: `No pack for "${langCode}" — scan it first.` };
+  pack.rules = rules;
+  return savePack(pack);
+}
+
+/**
+ * Rules for the ORIGINAL language rewrite the project's own text — there is
+ * no `tgt` to correct, so this is a correction layer over the source itself:
+ * step names, chapter names, voiceover and on-screen titles.
+ *
+ * Every translation notices on the next switch, because the source text (and
+ * therefore its fingerprint) has moved — hand-edited translations are kept
+ * and flagged, machine ones are re-translated. So correcting the original
+ * ripples outward exactly like any other source edit.
+ */
+async function _runSourceRules(langCode) {
+  const rules = await getRules(langCode);
+  if (!rules.length) return { ok: true, changed: 0 };
+  if (activeLang() !== langCode) {
+    return { ok: false, error: `Switch to "${langCode}" first — these rules rewrite the project's own text.` };
+  }
+  const units = scanUnits();
+  const next = new Map();
+  for (const u of units) {
+    const out = applyRulesToText(rules, u.src, u.fmt);
+    if (out !== u.src) next.set(u.key, out);
+  }
+  if (!next.size) return { ok: true, changed: 0 };
+
+  const beforeSteps    = cloneShareStrings(state.get('steps') || []);
+  const beforeChapters = cloneShareStrings(state.get('chapters') || []);
+  const beforeHeaders  = cloneShareStrings(state.get('headerItems') || []);
+  const textKeys = [...next.keys()].filter(k => k.startsWith('text:'));
+  const changed = _applyStrings((k) => next.get(k) ?? null, textKeys);
+
+  const afterSteps    = cloneShareStrings(state.get('steps') || []);
+  const afterChapters = cloneShareStrings(state.get('chapters') || []);
+  const afterHeaders  = cloneShareStrings(state.get('headerItems') || []);
+  const restore = (s, c, h) => {
+    state.setState({ steps: [...s], chapters: [...c], headerItems: [...h] });
+    markOverlayStringsAuthoritative();
+    state.markDirty();
+  };
+  undoManager.push(`Replace rules (${langCode})`,
+    () => restore(beforeSteps, beforeChapters, beforeHeaders),
+    () => restore(afterSteps,  afterChapters,  afterHeaders),
+  );
+  return { ok: true, changed };
+}
+
 /**
  * Rewrite every translated entry through the current rules, and push the
  * result into the live project when that language is showing. One undo entry.
  */
 export async function runRules(langCode) {
+  if (langCode === sourceLang()) return _runSourceRules(langCode);
   let pack;
   try { pack = await loadPack(langCode); }
   catch (e) { return { ok: false, error: e.message }; }
