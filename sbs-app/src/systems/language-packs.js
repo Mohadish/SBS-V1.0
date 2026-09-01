@@ -132,7 +132,9 @@ export function scanUnits(shared = null) {
     if (c.name) units.push({ key: `chapter:${c.id}:name`, fmt: 'text', src: c.name, label: 'Chapter name' });
   }
   for (const u of ov.units) {
-    units.push({ key: u.key, fmt: 'html', src: u.html, label: 'Text box' });
+    // stepId rides along so the Title Manager can jump to the step a text
+    // box actually lives on.
+    units.push({ key: u.key, fmt: 'html', src: u.html, label: 'Text box', stepId: u.stepId });
   }
   for (const h of (state.get('headerItems') || [])) {
     if (h.kind !== 'custom') continue;                    // other kinds are derived
@@ -494,7 +496,12 @@ export function captureInto(pack, field, shared = null) {
       // — the user has now seen the line — so the flag clears here, and only
       // here.
       const { drifted, blanked, ...rest } = e;
-      pack.entries[k] = { ...rest, tgt: u.src, state: 'edited' };
+      const next = { ...rest, tgt: u.src, state: 'edited' };
+      // Review queue: a row the user OPENED ('seen') and has now actually
+      // changed becomes ✱ 'edited'. That is the whole difference between
+      // "looked at, left alone" and "looked at, fixed".
+      if (next.review?.tgt === 'seen') next.review = { ...next.review, tgt: 'edited' };
+      pack.entries[k] = next;
       changed++;
     }
   }
@@ -1125,6 +1132,79 @@ export async function acceptMachineTranslation(langCode, key) {
     () => { restore(after); },
   );
   return { ok: true, text: next };
+}
+
+/**
+ * Rows for the Title Manager's review tab, already in display order.
+ *
+ * MARKERS (the four states, in sort order):
+ *   '!'   new        — auto-translated / added / changed, not looked at
+ *   '!p'  drifted    — the source moved but YOUR hand-edit was kept (pen);
+ *                      needs surgical attention, never auto-overwritten
+ *   '!*'  seen       — you opened it and left it as-is
+ *   '*'   edited     — you opened it and changed it
+ *   ''    none       — an ordinary title, nothing to review
+ *
+ * Within each group rows keep the order they appear in the project.
+ * `side` is 'tgt' when a translation is showing, 'src' when the original is —
+ * so the tab means "changes affecting what you are looking at" either way.
+ */
+export async function reviewRows(langCode = activeLang()) {
+  const src  = sourceLang();
+  const side = langCode === src ? 'src' : 'tgt';
+  const units = scanUnits();                       // canonical project order
+  const order = new Map(units.map((u, i) => [u.key, i]));
+
+  // Showing the original: its review markers live in the packs that wrote to
+  // it, so merge across every translation. Showing a translation: just its own.
+  const codes = side === 'src'
+    ? (await listPackLanguages()).filter(c => c !== src)
+    : [langCode];
+
+  const byKey = new Map();
+  for (const code of codes) {
+    let pack;
+    try { pack = await loadPack(code); } catch { continue; }
+    if (!pack) continue;
+    for (const [k, e] of Object.entries(pack.entries || {})) {
+      const st = e.review?.[side];
+      const pen = side === 'tgt' && e.state === 'edited' && !!e.drifted;
+      const mark = st === 'new' ? '!' : pen ? '!p' : st === 'seen' ? '!*' : st === 'edited' ? '*' : '';
+      const prev = byKey.get(k);
+      // A key marked in two languages keeps the most urgent marker.
+      const rank = (m) => ({ '!': 0, '!p': 1, '!*': 2, '*': 3, '': 4 }[m]);
+      if (prev && rank(prev.mark) <= rank(mark)) continue;
+      byKey.set(k, { key: k, lang: code, mark, entry: e });
+    }
+  }
+
+  const rows = [];
+  for (const u of units) {
+    const hit = byKey.get(u.key);
+    rows.push({
+      key:    u.key,
+      lang:   hit?.lang || langCode,
+      mark:   hit?.mark || '',
+      label:  u.label,
+      stepId: u.stepId || _stepIdOf(u.key),
+      text:   hit?.entry ? (side === 'src' ? (hit.entry.src || u.src) : (hit.entry.tgt || u.src)) : u.src,
+      order:  order.get(u.key) ?? 0,
+    });
+  }
+  const rank = (m) => ({ '!': 0, '!p': 1, '!*': 2, '*': 3, '': 4 }[m] ?? 4);
+  rows.sort((a, b) => (rank(a.mark) - rank(b.mark)) || (a.order - b.order));
+  return { rows, side, lang: langCode };
+}
+
+/** Step a unit belongs to, for the jump-to-title action. */
+function _stepIdOf(key) {
+  let m;
+  if ((m = /^step:(.+):(?:name|narration)$/.exec(key))) return m[1];
+  if ((m = /^chapter:(.+):name$/.exec(key))) {
+    const first = (state.get('steps') || []).find(s => s.chapterId === m[1] && !s.isBaseStep);
+    return first?.id || null;
+  }
+  return null;
 }
 
 /** Mark review rows: 'seen' when opened, 'edited' once the text changes. */

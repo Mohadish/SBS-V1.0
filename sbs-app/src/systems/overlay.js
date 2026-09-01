@@ -748,6 +748,21 @@ export function cleanupUnusedConstDefs() {
  * ready to work with. Enters overlay edit mode if needed (selection only
  * exists there; setEditingMode broadcasts so the toolbar follows).
  */
+/**
+ * Select a text box by its language-pack id (V0.3.2.127) — the Title
+ * Manager's "click a row to go to that title". Same shape as
+ * selectConstInstance, but keyed on the `tid` stamped during a scan rather
+ * than on a constant definition.
+ */
+export function selectTextUnitByTid(tid) {
+  if (!_stage || !_layer || !tid) return false;
+  const node = (_layer.getChildren() || []).find(n => n.getAttr?.('tid') === tid);
+  if (!node) return false;
+  if (!_editing) setEditingMode(true);
+  _setSelection(node);
+  return true;
+}
+
 export function selectConstInstance(defId) {
   if (!_stage || !_layer || !defId) return false;
   const node = (_layer.getChildren() || []).find(n => n.getAttr?.('constId') === defId);

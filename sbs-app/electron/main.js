@@ -327,7 +327,10 @@ function buildMenu() {
           click: () => mainWindow?.webContents.send('menu:unifyConstTitles'),
         },
         {
-          label: 'Constant Titles…',
+          // Renamed V0.3.2.127 — the panel now manages constant titles AND
+          // the per-language translation review. Channel name kept so the
+          // preload whitelist and the renderer handler stay untouched.
+          label: 'Title Manager…',
           click: () => mainWindow?.webContents.send('menu:constTitlesPanel'),
         },
         {

@@ -21,13 +21,15 @@ import { state } from '../core/state.js';
 import { steps } from '../systems/steps.js';   // StepManager instance — activateStep is a method
 import {
   countConstUsage, deleteConstDef, cleanupUnusedConstDefs,
-  mergeConstDefs, selectConstInstance, waitForOverlayStable,
+  mergeConstDefs, selectConstInstance, selectTextUnitByTid, waitForOverlayStable,
 } from '../systems/overlay.js';
+import * as lang from '../systems/language-packs.js';
 import { promptString } from './prompt.js';
 import { setStatus } from './status.js';
 import { showContextMenu } from './context-menu.js';
 
 let _win        = null;
+let _tab        = 'const';     // 'const' | 'review'
 let _selectedId = null;
 let _navPos     = new Map();   // defId → index into its stepIds (kept while open)
 let _usage      = new Map();   // defId → { count, stepIds } — snapshot, see 🔄
@@ -71,16 +73,21 @@ function _build() {
       background:rgba(59,130,246,0.18);border-bottom:1px solid var(--line,#334155);
       border-top-left-radius:10px;border-top-right-radius:10px;
     ">
-      <span style="flex:1;font-weight:600;font-size:13px;color:#dbeafe;">📌 Constant titles</span>
-      <button class="btn" id="ctp-refresh" type="button" title="Recount usage"
+      <span style="flex:1;font-weight:600;font-size:13px;color:#dbeafe;">🏷 Title manager</span>
+      <button class="btn" id="ctp-refresh" type="button" title="Rescan"
               style="padding:2px 8px;font-size:12px;">🔄</button>
       <button class="btn" id="ctp-close" type="button" style="padding:2px 8px;font-size:12px;">✕</button>
+    </div>
+
+    <div id="ctp-tabs" style="display:flex;gap:4px;padding:8px 10px 0;border-bottom:1px solid var(--line,#334155);">
+      <button class="btn" data-tab="const"  type="button" style="padding:4px 12px;font-size:12px;">📌 Constant titles</button>
+      <button class="btn" data-tab="review" type="button" style="padding:4px 12px;font-size:12px;">🌍 Translated titles</button>
     </div>
 
     <div id="ctp-list" style="flex:1;overflow-y:auto;padding:8px;display:flex;
                               flex-direction:column;gap:4px;min-height:60px;"></div>
 
-    <div style="padding:10px 12px;border-top:1px solid var(--line,#334155);
+    <div id="ctp-foot-const" style="padding:10px 12px;border-top:1px solid var(--line,#334155);
                 display:flex;align-items:center;gap:8px;">
       <button class="btn" id="ctp-prev" type="button" title="Previous step using this type"
               style="padding:4px 10px;">▲</button>
@@ -90,12 +97,28 @@ function _build() {
       <button class="btn" id="ctp-cleanup" type="button" title="Delete every type with zero instances"
               style="padding:4px 10px;font-size:12px;">🧹 Clean up</button>
     </div>
+
+    <div id="ctp-foot-review" style="padding:10px 12px;border-top:1px solid var(--line,#334155);
+                display:none;align-items:center;gap:8px;">
+      <label class="small muted" style="display:flex;align-items:center;gap:5px;font-size:11.5px;cursor:pointer;">
+        <input type="checkbox" id="ctp-filter" checked> only changed
+      </label>
+      <span class="small muted" id="ctp-review-count" style="flex:1;font-size:11.5px;"></span>
+      <button class="btn" id="ctp-authorize" type="button"
+              title="Clear the markers on rows you have already looked at (untouched ❗ rows stay)"
+              style="padding:4px 10px;font-size:12px;">✓ Authorize all</button>
+    </div>
   `;
 
   document.body.appendChild(_win);
   _wireDrag(_win.querySelector('#ctp-header'));
   _win.querySelector('#ctp-close')  .addEventListener('click', closeConstTitlesPanel);
   _win.querySelector('#ctp-refresh').addEventListener('click', _refresh);
+  _win.querySelectorAll('#ctp-tabs [data-tab]').forEach(b => {
+    b.addEventListener('click', () => { _tab = b.dataset.tab; _refresh(); });
+  });
+  _win.querySelector('#ctp-filter').addEventListener('change', () => _renderReview());
+  _win.querySelector('#ctp-authorize').addEventListener('click', _onAuthorizeAll);
   _win.querySelector('#ctp-prev')   .addEventListener('click', () => _jump(-1));
   _win.querySelector('#ctp-next')   .addEventListener('click', () => _jump(+1));
   _win.querySelector('#ctp-cleanup').addEventListener('click', () => { cleanupUnusedConstDefs(); _refresh(); });
@@ -121,9 +144,174 @@ function _wireDrag(handle) {
 
 // ─── Render ─────────────────────────────────────────────────────────────────
 
-/** Recount usage (string scan over every step), then render. */
-function _refresh() {
+// ─── 🌍 Translated titles tab ───────────────────────────────────────────────
+//
+// A review queue for everything the translation engine changed in the
+// language you are currently viewing. Markers, in sort order:
+//   ❗   changed / newly translated — not looked at
+//   ❗✏  the source moved but YOUR hand-edit was kept — needs judgement
+//   ❗✱  you opened it and left it alone
+//   ✱   you opened it and changed it
+// Rows keep project order inside each group. "Authorize all" clears only
+// what you actually opened; untouched ❗ rows survive.
+
+const MARK_LABEL = { '!': '❗', '!p': '❗✏', '!*': '❗✱', '*': '✱', '': '' };
+const MARK_TITLE = {
+  '!':  'Changed by translation — not reviewed yet',
+  '!p': 'The original changed, but your hand-edit was kept. Right-click to take the machine translation instead.',
+  '!*': 'You opened this and left it as it was',
+  '*':  'You opened this and edited it',
+  '':   '',
+};
+
+let _reviewRows = [];
+let _reviewSide = 'tgt';
+
+async function _renderReview() {
   if (!_win) return;
+  const list = _win.querySelector('#ctp-list');
+  list.textContent = '';
+  const onlyChanged = !!_win.querySelector('#ctp-filter')?.checked;
+  const rows = onlyChanged ? _reviewRows.filter(r => r.mark) : _reviewRows;
+
+  const marked = _reviewRows.filter(r => r.mark).length;
+  const unseen = _reviewRows.filter(r => r.mark === '!' || r.mark === '!p').length;
+  const countEl = _win.querySelector('#ctp-review-count');
+  if (countEl) countEl.textContent = marked
+    ? `${marked} changed · ${unseen} not reviewed`
+    : 'nothing changed in this language';
+
+  if (!rows.length) {
+    const empty = document.createElement('div');
+    empty.className = 'small muted';
+    empty.style.cssText = 'padding:14px 8px;font-size:12px;line-height:1.5;text-align:center;';
+    empty.textContent = onlyChanged
+      ? 'No translation changes to review. Untick "only changed" to see every title.'
+      : 'No titles found in this project.';
+    list.appendChild(empty);
+    return;
+  }
+
+  for (const r of rows) {
+    const row = document.createElement('div');
+    row.style.cssText = [
+      'display:flex', 'align-items:center', 'gap:8px', 'padding:6px 8px',
+      'border-radius:6px', 'cursor:pointer', 'font-size:12.5px',
+      'background:var(--panel2,#1e293b)',
+      `border:1px solid ${r.mark === '!' || r.mark === '!p' ? 'rgba(217,160,61,0.55)' : 'var(--line,#334155)'}`,
+      'color:var(--text,#e2e8f0)',
+    ].join(';');
+
+    const mark = document.createElement('span');
+    mark.style.cssText = 'width:26px;flex:none;font-size:12px;';
+    mark.textContent = MARK_LABEL[r.mark] || '';
+    mark.title = MARK_TITLE[r.mark] || '';
+
+    const kind = document.createElement('span');
+    kind.className = 'small muted';
+    kind.style.cssText = 'width:74px;flex:none;font-size:10.5px;text-transform:uppercase;letter-spacing:0.05em;';
+    kind.textContent = r.label;
+
+    const txt = document.createElement('span');
+    txt.style.cssText = 'flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;';
+    // Text-box entries are HTML — show readable text, not markup.
+    const plain = String(r.text || '').replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim();
+    txt.textContent = plain || '(empty)';
+    txt.title = plain;
+
+    row.append(mark, kind, txt);
+    row.addEventListener('click', () => _onOpenRow(r));
+    row.addEventListener('contextmenu', (e) => { e.preventDefault(); e.stopPropagation(); _onRowMenu(e, r); });
+    list.appendChild(row);
+  }
+}
+
+/** Click a row → go to that title, select it, and mark it as seen. */
+async function _onOpenRow(r) {
+  try {
+    if (r.stepId && r.stepId !== state.get('activeStepId')) {
+      await steps.activateStep(r.stepId, false);
+      await waitForOverlayStable();
+    }
+    const m = /^text:(.+)$/.exec(r.key);
+    if (m) selectTextUnitByTid(m[1]);
+    // ❗ → ❗✱ : opened, not yet changed. Editing it later promotes to ✱.
+    if (r.mark === '!' || r.mark === '!p') {
+      await lang.setReviewState(r.lang, r.key, _reviewSide, 'seen');
+      await _refresh();
+    }
+  } catch (e) {
+    setStatus(`Could not open that title: ${e?.message || e}`, 'warn', 6000);
+  }
+}
+
+function _onRowMenu(e, r) {
+  const items = [];
+  if (r.mark === '!p') {
+    items.push({
+      label: '↺ Update to translated version',
+      action: async () => {
+        const res = await lang.acceptMachineTranslation(r.lang, r.key);
+        if (!res.ok) setStatus(res.error, 'warn', 7000);
+        else setStatus('Replaced with the machine translation — Ctrl+Z restores your version.', 'success', 7000);
+        await _refresh();
+      },
+    });
+  }
+  if (r.mark) {
+    items.push({
+      label: '✓ Accept translation',
+      action: async () => {
+        await lang.setReviewState(r.lang, r.key, _reviewSide, 'edited');
+        await lang.clearReviewed(r.lang, _reviewSide);
+        await _refresh();
+      },
+    });
+  }
+  if (!items.length) return;
+  showContextMenu(items, e.clientX, e.clientY);
+}
+
+async function _onAuthorizeAll() {
+  const code = lang.activeLang();
+  const targets = _reviewSide === 'src'
+    ? [...new Set(_reviewRows.filter(r => r.mark).map(r => r.lang))]
+    : [code];
+  let cleared = 0;
+  for (const c of targets) {
+    const res = await lang.clearReviewed(c, _reviewSide);
+    if (res.ok) cleared += res.cleared || 0;
+    else setStatus(res.error, 'warn', 6000);
+  }
+  setStatus(cleared
+    ? `Authorized ${cleared} reviewed change(s). Unreviewed ❗ rows were kept.`
+    : 'Nothing reviewed yet — open a row first, then authorize.', 'info', 7000);
+  await _refresh();
+}
+
+/** Recount usage (string scan over every step), then render. */
+async function _refresh() {
+  if (!_win) return;
+  _win.querySelectorAll('#ctp-tabs [data-tab]').forEach(b => {
+    const on = b.dataset.tab === _tab;
+    b.style.opacity = on ? '' : '0.55';
+    b.style.background = on ? 'rgba(59,130,246,0.25)' : '';
+  });
+  _win.querySelector('#ctp-foot-const').style.display  = _tab === 'const'  ? 'flex' : 'none';
+  _win.querySelector('#ctp-foot-review').style.display = _tab === 'review' ? 'flex' : 'none';
+
+  if (_tab === 'review') {
+    try {
+      const r = await lang.reviewRows();
+      _reviewRows = r.rows;
+      _reviewSide = r.side;
+    } catch (e) {
+      _reviewRows = []; _reviewSide = 'tgt';
+      setStatus(`Could not read the language packs: ${e?.message || e}`, 'warn', 7000);
+    }
+    await _renderReview();
+    return;
+  }
   _usage = countConstUsage();
   _render();
 }

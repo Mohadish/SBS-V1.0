@@ -1494,6 +1494,7 @@ window.sbsConstPanel = async () => {
   const m = await import('./ui/const-titles-panel.js');
   m.openConstTitlesPanel();
 };
+window.sbsTitleManager = window.sbsConstPanel;   // V0.3.2.127 — panel's new name
 window.sbsNative?.onMenu?.('menu:constTitlesPanel', () => {
   window.sbsConstPanel().catch(err => console.error('[const-panel] failed:', err));
 });
