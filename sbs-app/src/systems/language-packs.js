@@ -749,6 +749,21 @@ export async function switchLanguage(lang, { onProgress } = {}) {
     fromPack = rec;
   }
 
+  // 🔁 PROPAGATE (V0.3.2.125) — every language learns what changed, before the
+  // incoming one is applied, so switching INTO a language shows it already up
+  // to date. Runs between capture and apply for exactly that reason.
+  // Best-effort: a translation failure must never block the switch itself —
+  // the languages simply stay out of date and the panel reports it.
+  try {
+    if (translationAvailable()) {
+      onProgress?.('Updating other languages…');
+      const sync = await syncLanguages({ leaving: from, onProgress: (m) => onProgress?.(m) });
+      if (sync.errors?.length) console.warn('[lang] sync issues:', sync.errors.join(' | '));
+    }
+  } catch (e) {
+    console.warn('[lang] propagation skipped:', e?.message);
+  }
+
   onProgress?.('Applying…');
   let target = null;
   if (lang !== src) {
@@ -888,6 +903,259 @@ export async function migratePacksTo(oldPath, newPath) {
     console.warn('[lang] pack migration failed:', e?.message);
     return 0;
   }
+}
+
+// ─── 🔁 Cross-language propagation (V0.3.2.125) ─────────────────────────────
+//
+// Edits made in ANY language reach the others — not only edits to the
+// original. Fired on language switch (after the outgoing language is
+// captured, before the incoming one is applied), and available as an
+// explicit "Sync languages" action.
+//
+// TWO DIRECTIONS, and they are not symmetrical:
+//
+//   FORWARD (source → translations). The source moved, so each translation
+//   is out of date. A translation the machine owns is simply re-translated.
+//   A translation YOU hand-edited is NEVER overwritten — it keeps your
+//   wording and is flagged `drifted` for review, because the difference is
+//   usually deliberate (a corrected number, a phrasing that language needs).
+//
+//   BACK (translation → source, and onward to the others). Content authored
+//   in a translation has no source text at all — switching to the original
+//   would leave the foreign text sitting there. Those get back-translated so
+//   the original is complete. This direction writes machine text over an
+//   authored original, so every entry it touches is marked for review.
+//
+// REVIEW STATE lives per side: entry.review = { src?, tgt? } with values
+// 'new' (changed, not looked at) → 'seen' (opened, left alone) → 'edited'
+// (opened and changed). The Title Manager reads it; nothing else does.
+
+/**
+ * Push ONE unit's text into the live project — used by the review actions so
+ * a single line can change without re-running a whole language switch (which
+ * would drag propagation along as a side effect).
+ */
+export function applyOneEntry(key, value) {
+  if (typeof value !== 'string') return 0;
+  return _applyStrings((k) => (k === key ? value : null), key.startsWith('text:') ? [key] : []);
+}
+
+function _markReview(entry, side, value) {
+  const review = { ...(entry.review || {}) };
+  review[side] = value;
+  return { ...entry, review };
+}
+
+/**
+ * Back-translate anything authored in `lang` that the source language has no
+ * text for, so switching to the original never shows foreign text.
+ * @returns {number} entries filled
+ */
+async function _backfillSource(pack, { apiKey, onProgress } = {}) {
+  const src = sourceLang();
+  const keys = Object.entries(pack.entries || {})
+    .filter(([, e]) => e.tgt && !e.src)      // born in this language
+    .map(([k]) => k);
+  if (!keys.length) return 0;
+
+  const key = (apiKey || _apiKey() || '').trim();
+  if (!key || !window.sbsNative?.translate?.batch) return 0;
+
+  let filled = 0;
+  const CHUNK = 24;
+  for (const fmt of ['text', 'html']) {
+    const group = keys.filter(k => (pack.entries[k].fmt === 'html') === (fmt === 'html'));
+    for (let i = 0; i < group.length; i += CHUNK) {
+      const slice = group.slice(i, i + CHUNK);
+      onProgress?.(`Back-filling ${src} from ${pack.lang}… ${filled}/${keys.length}`);
+      const res = await window.sbsNative.translate.batch(
+        slice.map(k => pack.entries[k].tgt), '', src, key, fmt,
+      );
+      if (!res?.ok) { console.warn('[lang] backfill failed:', res?.error); continue; }
+      slice.forEach((k, n) => {
+        const t = String(res.texts?.[n] ?? '');
+        if (!t) return;
+        const e = pack.entries[k];
+        // The original now has machine text where it had nothing — always
+        // flag it, this is the lossy direction.
+        pack.entries[k] = _markReview({ ...e, src: t, srcHash: srcHashOf(t) }, 'src', 'new');
+        filled++;
+      });
+    }
+  }
+  return filled;
+}
+
+/**
+ * Bring one translation pack up to date with the current source text.
+ * Machine-owned translations are re-translated; hand-edited ones are kept
+ * and left flagged for review.
+ * @returns {{translated:number, kept:number}}
+ */
+async function _propagateInto(pack, { apiKey, onProgress } = {}) {
+  const stale = [];
+  let kept = 0;
+  for (const [k, e] of Object.entries(pack.entries || {})) {
+    if (!e.src) continue;
+    if (e.state === 'edited') { if (e.drifted) kept++; continue; }   // yours — never overwritten
+    if (e.state === 'stale' || e.state === 'new' || !e.tgt) stale.push(k);
+  }
+  if (!stale.length) return { translated: 0, kept };
+
+  const key = (apiKey || _apiKey() || '').trim();
+  if (!key || !window.sbsNative?.translate?.batch) return { translated: 0, kept };
+
+  let translated = 0;
+  const CHUNK = 24;
+  for (const fmt of ['text', 'html']) {
+    const group = stale.filter(k => (pack.entries[k].fmt === 'html') === (fmt === 'html'));
+    for (let i = 0; i < group.length; i += CHUNK) {
+      const slice = group.slice(i, i + CHUNK);
+      onProgress?.(`Updating ${pack.lang}… ${translated}/${stale.length}`);
+      const res = await window.sbsNative.translate.batch(
+        slice.map(k => pack.entries[k].src), '', pack.lang, key, fmt,
+      );
+      if (!res?.ok) { console.warn('[lang] propagate failed:', res?.error); continue; }
+      slice.forEach((k, n) => {
+        const t = String(res.texts?.[n] ?? '');
+        if (!t) return;
+        const { blanked, ...rest } = pack.entries[k];
+        pack.entries[k] = _markReview({ ...rest, tgt: t, state: 'auto' }, 'tgt', 'new');
+        translated++;
+      });
+    }
+  }
+  return { translated, kept };
+}
+
+/**
+ * Propagate every pending change across all languages. `leaving` is the
+ * language whose edits triggered this (its pack is back-filled first, so the
+ * source is complete before the other languages translate FROM it).
+ */
+export async function syncLanguages({ leaving = null, onProgress } = {}) {
+  const src = sourceLang();
+  const codes = await listPackLanguages();
+  const out = { backfilled: 0, translated: 0, kept: 0, languages: 0, errors: [] };
+  if (!translationAvailable()) { out.errors.push('No Google API key — Settings → Cloud TTS tab.'); return out; }
+
+  // 1. BACK: complete the source from the language we are leaving.
+  if (leaving && leaving !== src) {
+    try {
+      const p = await loadPack(leaving);
+      if (p) {
+        const n = await _backfillSource(p, { onProgress });
+        if (n) { const w = await savePack(p); if (!w.ok) out.errors.push(w.error); }
+        out.backfilled += n;
+      }
+    } catch (e) { out.errors.push(e.message); }
+  }
+
+  // 2. FORWARD: every language learns the current source.
+  for (const code of codes) {
+    if (code === src) continue;
+    let p;
+    try { p = await loadPack(code); } catch (e) { out.errors.push(e.message); continue; }
+    if (!p) continue;
+    // Reconcile first so `src` reflects the live original and drift is marked.
+    const { pack: rec } = reconcilePack(p, scanUnits());
+    const r = await _propagateInto(rec, { onProgress });
+    out.translated += r.translated;
+    out.kept       += r.kept;
+    out.languages++;
+    const w = await savePack(rec);
+    if (!w.ok) out.errors.push(w.error);
+  }
+  return out;
+}
+
+/**
+ * ✏ "Update to translated version" — replace ONE hand-edited translation
+ * with a fresh machine translation of the current source. Explicit and
+ * undoable, because a hand-edit usually exists for a reason.
+ */
+export async function acceptMachineTranslation(langCode, key) {
+  let pack;
+  try { pack = await loadPack(langCode); }
+  catch (e) { return { ok: false, error: e.message }; }
+  if (!pack) return { ok: false, error: `No pack for "${langCode}".` };
+  const e = pack.entries?.[key];
+  if (!e || !e.src) return { ok: false, error: 'Nothing to translate for that line.' };
+
+  const apiKey = _apiKey();
+  if (!apiKey || !window.sbsNative?.translate?.batch) return { ok: false, error: 'No Google API key — Settings → Cloud TTS tab.' };
+  const res = await window.sbsNative.translate.batch([e.src], '', langCode, apiKey, e.fmt === 'html' ? 'html' : 'text');
+  if (!res?.ok) return { ok: false, error: res.error || 'Translation failed.' };
+  const next = String(res.texts?.[0] ?? '');
+  if (!next) return { ok: false, error: 'Translation came back empty.' };
+
+  const before = { ...e };
+  const { drifted, blanked, ...rest } = e;
+  pack.entries[key] = _markReview({ ...rest, tgt: next, state: 'auto' }, 'tgt', 'new');
+  const w = await savePack(pack);
+  if (!w.ok) return { ok: false, error: w.error };
+
+  // Put the new text on screen straight away when this language is showing.
+  if (activeLang() === langCode) applyOneEntry(key, next);
+
+  // Undoable: the hand-edit is the thing being discarded, so put it back
+  // exactly as it was — including its review + drift markers. Deliberately
+  // NOT a re-switch: that would re-run propagation as a side effect of an
+  // undo. Only this one line moves.
+  const after = pack.entries[key];
+  const restore = async (entry) => {
+    let p; try { p = await loadPack(langCode); } catch { return; }
+    if (!p) return;
+    p.entries[key] = entry;
+    await savePack(p);
+    if (activeLang() === langCode) applyOneEntry(key, entry.tgt || entry.src || '');
+  };
+  undoManager.push(`Accept machine translation (${langCode})`,
+    () => { restore(before); },
+    () => { restore(after); },
+  );
+  return { ok: true, text: next };
+}
+
+/** Mark review rows: 'seen' when opened, 'edited' once the text changes. */
+export async function setReviewState(langCode, keys, side, value) {
+  let pack;
+  try { pack = await loadPack(langCode); }
+  catch (e) { return { ok: false, error: e.message }; }
+  if (!pack) return { ok: false, error: `No pack for "${langCode}".` };
+  let n = 0;
+  for (const k of (Array.isArray(keys) ? keys : [keys])) {
+    const e = pack.entries?.[k];
+    if (!e) continue;
+    pack.entries[k] = _markReview(e, side, value);
+    n++;
+  }
+  if (!n) return { ok: true, changed: 0 };
+  const w = await savePack(pack);
+  return w.ok ? { ok: true, changed: n } : { ok: false, error: w.error };
+}
+
+/** "Authorize all" — clear review markers the user has actually SEEN. */
+export async function clearReviewed(langCode, side) {
+  let pack;
+  try { pack = await loadPack(langCode); }
+  catch (e) { return { ok: false, error: e.message }; }
+  if (!pack) return { ok: false, error: `No pack for "${langCode}".` };
+  let cleared = 0;
+  for (const [k, e] of Object.entries(pack.entries || {})) {
+    const st = e.review?.[side];
+    // Untouched 'new' rows survive — clearing those would defeat the queue.
+    if (st !== 'seen' && st !== 'edited') continue;
+    const review = { ...e.review };
+    delete review[side];
+    const next = { ...e, review };
+    if (!Object.keys(review).length) delete next.review;
+    pack.entries[k] = next;
+    cleared++;
+  }
+  if (!cleared) return { ok: true, cleared: 0 };
+  const w = await savePack(pack);
+  return w.ok ? { ok: true, cleared } : { ok: false, error: w.error };
 }
 
 // ─── Orchestration (what the panel calls) ───────────────────────────────────
