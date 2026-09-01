@@ -1040,19 +1040,45 @@ export async function setRules(langCode, rules) {
  * and flagged, machine ones are re-translated. So correcting the original
  * ripples outward exactly like any other source edit.
  */
-async function _runSourceRules(langCode) {
+/**
+ * Subtitles are a SEPARATE text from the voiceover — a step can say one thing
+ * and caption another — so rules have to be applied to them in their own pass,
+ * against their own slot ('' / 'orig' for the original language, the language
+ * code for a translation). Batched into a single undo entry.
+ * @returns {number} captions rewritten
+ */
+function _runRulesOnSubtitles(rules, langCode) {
+  if (!rules.length) return 0;
+  const slot = langCode === sourceLang() ? '' : langCode;
+  const key  = subtitles.langKeyOf(slot);
+  const writes = [];
+  for (const s of (state.get('steps') || [])) {
+    if (s.isBaseStep) continue;
+    const cur = s.subtitles?.[key]?.text;
+    if (!cur) continue;                     // no override of its own — nothing to correct
+    const next = applyRulesToText(rules, cur, 'text');
+    if (next !== cur) writes.push({ stepId: s.id, lang: slot, text: next });
+  }
+  if (!writes.length) return 0;
+  subtitles.setSubtitleOverrides(writes, `Replace rules — subtitles (${langCode})`);
+  return writes.length;
+}
+
+async function _runSourceRules(langCode, { bake = false } = {}) {
   const rules = await getRules(langCode);
   if (!rules.length) return { ok: true, changed: 0 };
   if (activeLang() !== langCode) {
     return { ok: false, error: `Switch to "${langCode}" first — these rules rewrite the project's own text.` };
   }
+  const subs = _runRulesOnSubtitles(rules, langCode);   // own undo entry (separate system)
   const units = scanUnits();
   const next = new Map();
   for (const u of units) {
     const out = applyRulesToText(rules, u.src, u.fmt);
     if (out !== u.src) next.set(u.key, out);
   }
-  if (!next.size) return { ok: true, changed: 0 };
+  if (!next.size && !subs) return { ok: true, changed: 0, subtitles: 0 };
+  if (!next.size) { if (bake) await setRules(langCode, []); return { ok: true, changed: 0, subtitles: subs, baked: bake }; }
 
   const beforeSteps    = cloneShareStrings(state.get('steps') || []);
   const beforeChapters = cloneShareStrings(state.get('chapters') || []);
@@ -1063,30 +1089,41 @@ async function _runSourceRules(langCode) {
   const afterSteps    = cloneShareStrings(state.get('steps') || []);
   const afterChapters = cloneShareStrings(state.get('chapters') || []);
   const afterHeaders  = cloneShareStrings(state.get('headerItems') || []);
-  const restore = (s, c, h) => {
+  // Baking finalises: the corrected text becomes the truth and the rules stop
+  // running. The rule list rides in the SAME undo entry as the text, so one
+  // Ctrl+Z gives back both rather than stranding you with reverted text and
+  // no rules to re-apply.
+  if (bake) await setRules(langCode, []);
+  const restore = (s, c, h, rl) => {
     state.setState({ steps: [...s], chapters: [...c], headerItems: [...h] });
+    if (rl) state.setState({ replaceRules: { ...(state.get('replaceRules') || {}), [langCode]: rl } });
     markOverlayStringsAuthoritative();
     state.markDirty();
   };
-  undoManager.push(`Replace rules (${langCode})`,
-    () => restore(beforeSteps, beforeChapters, beforeHeaders),
-    () => restore(afterSteps,  afterChapters,  afterHeaders),
+  undoManager.push(`${bake ? 'Bake' : 'Replace'} rules (${langCode})`,
+    () => restore(beforeSteps, beforeChapters, beforeHeaders, bake ? rules : null),
+    () => restore(afterSteps,  afterChapters,  afterHeaders,  bake ? [] : null),
   );
-  return { ok: true, changed };
+  return { ok: true, changed, subtitles: subs, baked: bake };
 }
 
 /**
  * Rewrite every translated entry through the current rules, and push the
  * result into the live project when that language is showing. One undo entry.
  */
-export async function runRules(langCode) {
-  if (langCode === sourceLang()) return _runSourceRules(langCode);
+export async function runRules(langCode, { bake = false } = {}) {
+  if (langCode === sourceLang()) return _runSourceRules(langCode, { bake });
   let pack;
   try { pack = await loadPack(langCode); }
   catch (e) { return { ok: false, error: e.message }; }
   if (!pack) return { ok: false, error: `No pack for "${langCode}".` };
   const rules = pack.rules || [];
   if (!rules.length) return { ok: true, changed: 0 };
+
+  // Captions are their own text — corrected in their own pass (see the
+  // helper's note). Only meaningful while this language is showing, since
+  // subtitle overrides live on the steps, not in the pack.
+  const subs = activeLang() === langCode ? _runRulesOnSubtitles(rules, langCode) : 0;
 
   const before = new Map();
   let changed = 0;
@@ -1101,7 +1138,13 @@ export async function runRules(langCode) {
     pack.entries[k] = _markReview({ ...e, tgt: next }, 'tgt', 'new');
     changed++;
   }
-  if (!changed) return { ok: true, changed: 0 };
+  if (!changed) {
+    if (bake) { pack.rules = []; await savePack(pack); }
+    return { ok: true, changed: 0, subtitles: subs, baked: bake };
+  }
+  // Baking finalises: the corrected translations become the truth and the
+  // rules stop running on future translations.
+  if (bake) pack.rules = [];
   const w = await savePack(pack);
   if (!w.ok) return { ok: false, error: w.error };
 
@@ -1109,15 +1152,21 @@ export async function runRules(langCode) {
   if (live) for (const [k, e] of Object.entries(pack.entries)) if (before.has(k)) applyOneEntry(k, e.tgt);
 
   const after = new Map([...before.keys()].map(k => [k, pack.entries[k].tgt]));
-  const restore = async (map) => {
+  // The rule list rides in the same undo entry as the text, so one Ctrl+Z
+  // gives back both rather than leaving reverted text and no rules.
+  const restore = async (map, rl) => {
     let p; try { p = await loadPack(langCode); } catch { return; }
     if (!p) return;
     for (const [k, v] of map) if (p.entries[k]) p.entries[k] = { ...p.entries[k], tgt: v };
+    if (rl) p.rules = rl;
     await savePack(p);
     if (activeLang() === langCode) for (const [k, v] of map) applyOneEntry(k, v);
   };
-  undoManager.push(`Replace rules (${langCode})`, () => restore(before), () => restore(after));
-  return { ok: true, changed };
+  undoManager.push(`${bake ? 'Bake' : 'Replace'} rules (${langCode})`,
+    () => restore(before, bake ? rules : null),
+    () => restore(after,  bake ? [] : null),
+  );
+  return { ok: true, changed, subtitles: subs, baked: bake };
 }
 
 // ─── 🔁 Cross-language propagation (V0.3.2.125) ─────────────────────────────

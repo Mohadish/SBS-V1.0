@@ -27,7 +27,7 @@ import * as lang from '../systems/language-packs.js';
 import * as actions from '../systems/actions.js';
 import * as subtitles from '../systems/subtitles.js';
 import { setStepNarrationText } from './step-nav.js';
-import { promptString } from './prompt.js';
+import { promptString, chooseFromButtons } from './prompt.js';
 import { setStatus } from './status.js';
 import { showContextMenu } from './context-menu.js';
 
@@ -120,6 +120,9 @@ function _build() {
       <button class="btn" id="ctp-rule-run" type="button"
               title="Apply every rule across this language — the original's rules rewrite the project text itself"
               style="padding:4px 10px;font-size:12px;">▶ Run rules now</button>
+      <button class="btn" id="ctp-rule-bake" type="button"
+              title="Apply every rule, then delete the rules — the corrected text becomes the text"
+              style="padding:4px 10px;font-size:12px;">🔥 Bake</button>
     </div>
   `;
 
@@ -133,7 +136,8 @@ function _build() {
   _win.querySelector('#ctp-filter').addEventListener('change', () => _renderReview());
   _win.querySelector('#ctp-authorize').addEventListener('click', _onAuthorizeAll);
   _win.querySelector('#ctp-rule-add').addEventListener('click', () => _onEditRule(null));
-  _win.querySelector('#ctp-rule-run').addEventListener('click', _onRunRules);
+  _win.querySelector('#ctp-rule-run').addEventListener('click', () => _onRunRules(false));
+  _win.querySelector('#ctp-rule-bake').addEventListener('click', () => _onRunRules(true));
   _win.querySelector('#ctp-prev')   .addEventListener('click', () => _jump(-1));
   _win.querySelector('#ctp-next')   .addEventListener('click', () => _jump(+1));
   _win.querySelector('#ctp-cleanup').addEventListener('click', () => { cleanupUnusedConstDefs(); _refresh(); });
@@ -454,13 +458,29 @@ async function _onDeleteRule(rule) {
   } catch (e) { setStatus(`Delete failed: ${e?.message || e}`, 'warn', 6000); }
 }
 
-async function _onRunRules() {
+async function _onRunRules(bake) {
   const code = lang.activeLang();
-  const res = await lang.runRules(code);
+  if (bake) {
+    const rules = await lang.getRules(code);
+    if (!rules.length) { setStatus('No rules to bake.', 'warn', 5000); return; }
+    const ok = await chooseFromButtons(
+      `Bake ${rules.length} rule(s) into ${code}?`,
+      'The corrected text becomes the text, and the rules are deleted. One Ctrl+Z restores both.',
+      [{ id: 'bake', label: '🔥 Bake', primary: true }, { id: 'cancel', label: 'Cancel' }],
+    );
+    if (ok !== 'bake') return;
+  }
+  const res = await lang.runRules(code, { bake });
   if (!res.ok) { setStatus(res.error, 'warn', 7000); return; }
-  setStatus(res.changed
-    ? `Rules applied to ${res.changed} line(s) — Ctrl+Z reverses the whole run.`
-    : 'Nothing matched — every line already reads the way the rules say.', 'info', 8000);
+  const bits = [];
+  if (res.changed)   bits.push(`${res.changed} line(s)`);
+  if (res.subtitles) bits.push(`${res.subtitles} subtitle(s)`);
+  const what = bits.length ? bits.join(' + ') : 'nothing';
+  setStatus(bake
+    ? `Baked into ${what} — the rules are gone; the text is now the truth. Ctrl+Z restores both.`
+    : (bits.length ? `Rules applied to ${what} — Ctrl+Z reverses the run.`
+                   : 'Nothing matched — every line already reads the way the rules say.'),
+    bake ? 'success' : 'info', 8000);
   await _refresh();
 }
 

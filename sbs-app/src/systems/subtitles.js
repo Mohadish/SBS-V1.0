@@ -142,6 +142,29 @@ export function setSubtitleOverride(stepId, lang, text) {
 }
 
 /** Drop the override — back to the live voiceover copy. */
+/**
+ * Batch form of setSubtitleOverride (V0.3.2.132) — one undo entry for many
+ * steps. Used by the language-pack replace rules, which can rewrite dozens of
+ * captions at once; calling the single-step setter in a loop would bury the
+ * user's history under one entry per caption.
+ * @param {Array<{stepId, lang, text}>} items
+ */
+export function setSubtitleOverrides(items, label = 'Edit subtitles') {
+  const arr = state.get('steps') || [];
+  const writes = [];
+  for (const it of (items || [])) {
+    const s = arr.find(x => x.id === it.stepId);
+    if (!s) continue;
+    writes.push({
+      stepId: it.stepId,
+      lang:   it.lang,
+      entry:  { text: String(it.text ?? ''), srcHash: srcHashOf(subtitleSourceText(s)), edited: true },
+    });
+  }
+  if (!writes.length) return false;
+  return _writeEntries(label, writes);
+}
+
 export function clearSubtitleOverride(stepId, lang) {
   return _writeEntries('Reset subtitle to auto', [{ stepId, lang, entry: null }]);
 }
