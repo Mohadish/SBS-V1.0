@@ -85,6 +85,7 @@ function _build() {
     <div id="ctp-tabs" style="display:flex;gap:4px;padding:8px 10px 0;border-bottom:1px solid var(--line,#334155);">
       <button class="btn" data-tab="const"  type="button" style="padding:4px 12px;font-size:12px;">📌 Constant titles</button>
       <button class="btn" data-tab="review" type="button" style="padding:4px 12px;font-size:12px;">🌍 Translated titles</button>
+      <button class="btn" data-tab="rules"  type="button" style="padding:4px 12px;font-size:12px;">🔤 Replace rules</button>
     </div>
 
     <div id="ctp-list" style="flex:1;overflow-y:auto;padding:8px;display:flex;
@@ -111,6 +112,15 @@ function _build() {
               title="Clear the markers on rows you have already looked at (untouched ❗ rows stay)"
               style="padding:4px 10px;font-size:12px;">✓ Authorize all</button>
     </div>
+
+    <div id="ctp-foot-rules" style="padding:10px 12px;border-top:1px solid var(--line,#334155);
+                display:none;align-items:center;gap:8px;">
+      <button class="btn" id="ctp-rule-add" type="button" style="padding:4px 10px;font-size:12px;">＋ Add rule</button>
+      <span class="small muted" id="ctp-rule-note" style="flex:1;font-size:11.5px;"></span>
+      <button class="btn" id="ctp-rule-run" type="button"
+              title="Apply every rule to everything already translated in this language"
+              style="padding:4px 10px;font-size:12px;">▶ Run rules now</button>
+    </div>
   `;
 
   document.body.appendChild(_win);
@@ -122,6 +132,8 @@ function _build() {
   });
   _win.querySelector('#ctp-filter').addEventListener('change', () => _renderReview());
   _win.querySelector('#ctp-authorize').addEventListener('click', _onAuthorizeAll);
+  _win.querySelector('#ctp-rule-add').addEventListener('click', () => _onEditRule(null));
+  _win.querySelector('#ctp-rule-run').addEventListener('click', _onRunRules);
   _win.querySelector('#ctp-prev')   .addEventListener('click', () => _jump(-1));
   _win.querySelector('#ctp-next')   .addEventListener('click', () => _jump(+1));
   _win.querySelector('#ctp-cleanup').addEventListener('click', () => { cleanupUnusedConstDefs(); _refresh(); });
@@ -349,6 +361,123 @@ async function _onAuthorizeAll() {
   await _refresh();
 }
 
+// ─── 🔤 Replace rules tab ───────────────────────────────────────────────────
+
+let _rulesPack = null;
+
+async function _renderRules() {
+  if (!_win) return;
+  const code = lang.activeLang();
+  const list = _win.querySelector('#ctp-list');
+  list.textContent = '';
+  const note = _win.querySelector('#ctp-rule-note');
+  const isSource = code === lang.sourceLang();
+
+  if (isSource) {
+    note.textContent = '';
+    const m = document.createElement('div');
+    m.className = 'small muted';
+    m.style.cssText = 'padding:14px 8px;font-size:12px;line-height:1.5;text-align:center;';
+    m.textContent = `Replace rules belong to a translation. Switch to a language other than "${code}" to edit its rules.`;
+    list.appendChild(m);
+    return;
+  }
+
+  const rules = _rulesPack?.rules || [];
+  note.textContent = rules.length ? `${rules.length} rule(s) for ${code}` : `no rules for ${code} yet`;
+  if (!rules.length) {
+    const m = document.createElement('div');
+    m.className = 'small muted';
+    m.style.cssText = 'padding:14px 8px;font-size:12px;line-height:1.5;text-align:center;';
+    m.textContent = 'No rules yet. A rule finds a phrase in this language and replaces it — applied to every new translation, and to existing ones with "Run rules now".';
+    list.appendChild(m);
+    return;
+  }
+
+  for (const r of rules) {
+    const row = document.createElement('div');
+    row.style.cssText = [
+      'display:flex', 'align-items:center', 'gap:8px', 'padding:7px 9px',
+      'border-radius:6px', 'font-size:12.5px', 'cursor:pointer',
+      'background:var(--panel2,#1e293b)', 'border:1px solid var(--line,#334155)',
+      'color:var(--text,#e2e8f0)',
+    ].join(';');
+    const find = document.createElement('span');
+    find.style.cssText = 'flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;';
+    find.textContent = r.find;
+    const arrow = document.createElement('span');
+    arrow.className = 'small muted';
+    arrow.style.cssText = 'flex:none;font-size:11px;';
+    arrow.textContent = '→';
+    const rep = document.createElement('span');
+    rep.style.cssText = 'flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;';
+    rep.textContent = r.replace || '(delete)';
+    const cs = document.createElement('span');
+    cs.className = 'small muted';
+    cs.style.cssText = 'flex:none;font-size:10px;';
+    cs.textContent = r.caseSensitive ? 'Aa' : '';
+    cs.title = r.caseSensitive ? 'Case sensitive' : '';
+    row.append(find, arrow, rep, cs);
+    row.title = 'Click to edit · right-click to delete';
+    row.addEventListener('click', () => _onEditRule(r));
+    row.addEventListener('contextmenu', (e) => {
+      e.preventDefault(); e.stopPropagation();
+      showContextMenu([{ label: '🗑 Delete rule', action: () => _onDeleteRule(r) }], e.clientX, e.clientY);
+    });
+    list.appendChild(row);
+  }
+}
+
+async function _onEditRule(rule) {
+  const code = lang.activeLang();
+  if (code === lang.sourceLang()) return;
+  const find = await promptString('Find this phrase (in ' + code + '):', rule?.find || '');
+  if (find == null || !find.trim()) return;
+  const replace = await promptString(`Replace "${find.trim()}" with:`, rule?.replace ?? '');
+  if (replace == null) return;
+  try {
+    const pack = await lang.loadPack(code);
+    if (!pack) { setStatus(`No pack for "${code}" — scan it first.`, 'warn', 6000); return; }
+    const res = lang.upsertRule(pack.rules || [], {
+      id: rule?.id, find, replace, caseSensitive: rule?.caseSensitive || false,
+    });
+    if (!res.ok) { setStatus(res.error, 'warn', 7000); return; }
+    pack.rules = res.rules;
+    const w = await lang.savePack(pack);
+    if (!w.ok) { setStatus(w.error, 'warn', 7000); return; }
+    setStatus(res.collapsed
+      ? `Rule saved — ${res.collapsed} earlier rule(s) now point straight at the new wording.`
+      : 'Rule saved. It applies to every new translation; use "Run rules now" for existing ones.', 'success', 8000);
+    await _refresh();
+  } catch (e) {
+    setStatus(`Could not save the rule: ${e?.message || e}`, 'warn', 7000);
+  }
+}
+
+async function _onDeleteRule(rule) {
+  const code = lang.activeLang();
+  try {
+    const pack = await lang.loadPack(code);
+    if (!pack) return;
+    pack.rules = (pack.rules || []).filter(r => r.id !== rule.id);
+    const w = await lang.savePack(pack);
+    if (!w.ok) { setStatus(w.error, 'warn', 6000); return; }
+    setStatus('Rule deleted. Text already replaced stays as it is.', 'info', 6000);
+    await _refresh();
+  } catch (e) { setStatus(`Delete failed: ${e?.message || e}`, 'warn', 6000); }
+}
+
+async function _onRunRules() {
+  const code = lang.activeLang();
+  if (code === lang.sourceLang()) { setStatus('Switch to a translation first.', 'warn', 5000); return; }
+  const res = await lang.runRules(code);
+  if (!res.ok) { setStatus(res.error, 'warn', 7000); return; }
+  setStatus(res.changed
+    ? `Rules applied to ${res.changed} line(s) — Ctrl+Z reverses the whole run.`
+    : 'Nothing matched — every line already reads the way the rules say.', 'info', 8000);
+  await _refresh();
+}
+
 /** Recount usage (string scan over every step), then render. */
 async function _refresh() {
   if (!_win) return;
@@ -359,6 +488,14 @@ async function _refresh() {
   });
   _win.querySelector('#ctp-foot-const').style.display  = _tab === 'const'  ? 'flex' : 'none';
   _win.querySelector('#ctp-foot-review').style.display = _tab === 'review' ? 'flex' : 'none';
+  _win.querySelector('#ctp-foot-rules').style.display  = _tab === 'rules'  ? 'flex' : 'none';
+
+  if (_tab === 'rules') {
+    try { _rulesPack = await lang.loadPack(lang.activeLang()); }
+    catch (e) { _rulesPack = null; setStatus(e?.message || 'Could not read the pack.', 'warn', 7000); }
+    await _renderRules();
+    return;
+  }
 
   if (_tab === 'review') {
     try {

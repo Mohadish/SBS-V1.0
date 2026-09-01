@@ -444,7 +444,9 @@ export async function translatePack(pack, { force = false, onProgress, apiKey } 
         // A fresh translation is an explicit "this line should show" — clear
         // any deletion marker (belt: pendingKeys already excludes blanked).
         const { blanked, ...rest } = pack.entries[k];
-        pack.entries[k] = { ...rest, tgt: t, state: 'auto' };
+        // Rules run on every fresh translation, so corrected phrasing
+        // never has to be re-fixed by hand after each re-translate.
+        pack.entries[k] = { ...rest, tgt: applyRulesToText(pack.rules, t, rest.fmt), state: 'auto' };
         done++;
       });
     }
@@ -940,6 +942,117 @@ export async function migratePacksTo(oldPath, newPath) {
   }
 }
 
+// ─── 🔤 Replace rules (V0.3.2.130) ──────────────────────────────────────────
+//
+// Per-language find/replace, stored IN the pack so they travel with the
+// project and are visible in the JSON:
+//
+//   "rules": [ { id, find, replace, caseSensitive } ]
+//
+// Applied automatically after every machine translation, and on demand
+// across everything already translated ("Run rules now").
+//
+// COLLAPSING. Adding Y→Z rewrites any existing rule that produced Y, so
+// X→Y becomes X→Z. The alternative — chaining at apply time — is
+// order-dependent and can loop forever (Y→Z plus Z→Y), so rules are kept
+// collapsed and applied in a SINGLE pass instead.
+
+/** Case-aware literal replace-all. */
+function _replaceAll(text, find, replace, caseSensitive) {
+  if (!find) return text;
+  const rx = new RegExp(find.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), caseSensitive ? 'g' : 'gi');
+  return text.replace(rx, replace);
+}
+
+/**
+ * Apply every rule once, left to right.
+ * HTML units are split on tags so replacements only ever touch the visible
+ * text — a rule for a common word must never rewrite an attribute or a tag
+ * name and corrupt the markup.
+ */
+export function applyRulesToText(rules, text, fmt = 'text') {
+  if (!rules?.length || !text) return text;
+  const run = (chunk) => {
+    let out = chunk;
+    for (const r of rules) out = _replaceAll(out, r.find, r.replace ?? '', !!r.caseSensitive);
+    return out;
+  };
+  if (fmt !== 'html') return run(text);
+  return String(text).split(/(<[^>]*>)/g).map(part => (part.startsWith('<') ? part : run(part))).join('');
+}
+
+/**
+ * Add or update a rule, collapsing chains and refusing cycles.
+ * @returns {{ok, rules?, collapsed?, error?}}
+ */
+export function upsertRule(rules, { id, find, replace, caseSensitive = false }) {
+  const f = String(find ?? '').trim();
+  const r = String(replace ?? '');
+  if (!f) return { ok: false, error: 'Nothing to find.' };
+  if (f === r) return { ok: false, error: 'Find and replace are identical.' };
+  // A rule that turns the new replacement back into the new find would make
+  // the pair oscillate on every run.
+  const inverse = (rules || []).find(x => x.id !== id && x.find === r && x.replace === f);
+  if (inverse) return { ok: false, error: `That reverses an existing rule ("${r}" → "${f}").` };
+
+  let next = (rules || []).filter(x => x.id !== id);
+  // COLLAPSE: anything that used to produce `find` now produces `replace`
+  // directly, so X→Y→Z is stored as X→Z and applied in one pass.
+  let collapsed = 0;
+  next = next.map(x => {
+    if (x.replace === f) { collapsed++; return { ...x, replace: r }; }
+    return x;
+  });
+  // Re-adding the same find replaces the old rule rather than stacking.
+  next = next.filter(x => x.find !== f);
+  next.push({ id: id || `rl_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 5)}`, find: f, replace: r, caseSensitive: !!caseSensitive });
+  return { ok: true, rules: next, collapsed };
+}
+
+/**
+ * Rewrite every translated entry through the current rules, and push the
+ * result into the live project when that language is showing. One undo entry.
+ */
+export async function runRules(langCode) {
+  let pack;
+  try { pack = await loadPack(langCode); }
+  catch (e) { return { ok: false, error: e.message }; }
+  if (!pack) return { ok: false, error: `No pack for "${langCode}".` };
+  const rules = pack.rules || [];
+  if (!rules.length) return { ok: true, changed: 0 };
+
+  const before = new Map();
+  let changed = 0;
+  for (const [k, e] of Object.entries(pack.entries || {})) {
+    if (!e.tgt) continue;
+    const next = applyRulesToText(rules, e.tgt, e.fmt);
+    if (next === e.tgt) continue;
+    before.set(k, e.tgt);
+    // A rule is an explicit instruction, so it applies to hand-edited lines
+    // too — but the result is surfaced for review rather than applied
+    // silently, and the entry keeps its 'edited' standing.
+    pack.entries[k] = _markReview({ ...e, tgt: next }, 'tgt', 'new');
+    changed++;
+  }
+  if (!changed) return { ok: true, changed: 0 };
+  const w = await savePack(pack);
+  if (!w.ok) return { ok: false, error: w.error };
+
+  const live = activeLang() === langCode;
+  if (live) for (const [k, e] of Object.entries(pack.entries)) if (before.has(k)) applyOneEntry(k, e.tgt);
+
+  const after = new Map([...before.keys()].map(k => [k, pack.entries[k].tgt]));
+  const restore = async (map) => {
+    let p; try { p = await loadPack(langCode); } catch { return; }
+    if (!p) return;
+    for (const [k, v] of map) if (p.entries[k]) p.entries[k] = { ...p.entries[k], tgt: v };
+    await savePack(p);
+    if (activeLang() === langCode) for (const [k, v] of map) applyOneEntry(k, v);
+  };
+  undoManager.push(`Replace rules (${langCode})`, () => restore(before), () => restore(after));
+  return { ok: true, changed };
+}
+
 // ─── 🔁 Cross-language propagation (V0.3.2.125) ─────────────────────────────
 //
 // Edits made in ANY language reach the others — not only edits to the
@@ -1055,7 +1168,7 @@ async function _propagateInto(pack, { apiKey, onProgress } = {}) {
         const t = String(res.texts?.[n] ?? '');
         if (!t) return;
         const { blanked, ...rest } = pack.entries[k];
-        pack.entries[k] = _markReview({ ...rest, tgt: t, state: 'auto' }, 'tgt', 'new');
+        pack.entries[k] = _markReview({ ...rest, tgt: applyRulesToText(pack.rules, t, rest.fmt), state: 'auto' }, 'tgt', 'new');
         translated++;
       });
     }
@@ -1126,12 +1239,14 @@ export async function acceptMachineTranslation(langCode, key) {
 
   const before = { ...e };
   const { drifted, blanked, ...rest } = e;
-  pack.entries[key] = _markReview({ ...rest, tgt: next, state: 'auto' }, 'tgt', 'new');
+  const ruled = applyRulesToText(pack.rules, next, e.fmt);
+  pack.entries[key] = _markReview({ ...rest, tgt: ruled, state: 'auto' }, 'tgt', 'new');
   const w = await savePack(pack);
   if (!w.ok) return { ok: false, error: w.error };
 
-  // Put the new text on screen straight away when this language is showing.
-  if (activeLang() === langCode) applyOneEntry(key, next);
+  // Put the new text on screen straight away when this language is showing —
+  // the RULED text, so the screen matches what was stored.
+  if (activeLang() === langCode) applyOneEntry(key, ruled);
 
   // Undoable: the hand-edit is the thing being discarded, so put it back
   // exactly as it was — including its review + drift markers. Deliberately
