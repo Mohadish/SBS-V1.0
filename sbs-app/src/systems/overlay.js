@@ -754,12 +754,17 @@ export function cleanupUnusedConstDefs() {
  * selectConstInstance, but keyed on the `tid` stamped during a scan rather
  * than on a constant definition.
  */
-export function selectTextUnitByTid(tid) {
+export function selectTextUnitByTid(tid, { edit = false } = {}) {
   if (!_stage || !_layer || !tid) return false;
   const node = (_layer.getChildren() || []).find(n => n.getAttr?.('tid') === tid);
   if (!node) return false;
   if (!_editing) setEditingMode(true);
   _setSelection(node);
+  // edit:true drops straight into the in-place editor — double-clicking a
+  // row in the Title Manager should land the caret in the actual box, on the
+  // canvas, with all its styling intact (rather than editing markup in a
+  // list field, which would flatten the formatting).
+  if (edit) { try { enterTextEditor(node); } catch (e) { console.warn('[overlay] enterTextEditor failed:', e?.message); } }
   return true;
 }
 

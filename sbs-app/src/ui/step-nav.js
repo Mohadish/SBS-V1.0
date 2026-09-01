@@ -12,6 +12,56 @@ import { previewStepNarration } from './steps-panel.js';
 
 let _el = null;
 
+/**
+ * THE single narration-text writer (V0.3.2.128 — extracted from the nav bar's
+ * commit so the Title Manager writes voiceover through the same path instead
+ * of growing a second one that drifts).
+ *
+ * Trims on commit: a leading/trailing space wedges the Kokoro phonemizer AND
+ * breaks the preview guard (saved-untrimmed vs preview-trimmed → the real
+ * voice is silently discarded, the long-standing "paste = sticky" bug).
+ *
+ * TARGETED undo, deliberately NOT commitStateChange (V0.3.2.76): that
+ * snapshotted the WHOLE steps array twice and deep-compared on every typing
+ * pause — on a 261-step project an allocation storm inside the ~3.5GB heap
+ * cage, and a real source of OOM crashes while "just editing text". The
+ * captures here are the ONE step's narration fields. Coalescing still folds a
+ * typing burst into a single entry.
+ *
+ * @returns {boolean} true when the text actually changed
+ */
+export function setStepNarrationText(stepId, rawText) {
+  const arr0 = state.get('steps') || [];
+  const step = arr0.find(s => s.id === stepId);
+  if (!step) return false;
+  const val = String(rawText ?? '').trim();
+  if ((step.narration?.text || '') === val) return false;
+
+  const prevNarration = step.narration;            // replaced, never mutated — safe by reference
+  const prevRendered  = step.renderedDurationMs;
+  const applyText = (narration, renderedDurationMs) => {
+    const arr = state.get('steps') || [];
+    const s = arr.find(x => x.id === stepId);
+    if (!s) return;
+    s.narration = narration;
+    // The measured timeline duration is stale on any text change — drop it
+    // so the TOC falls back to the estimate (flagged ~) until re-measure.
+    if (renderedDurationMs === undefined) delete s.renderedDurationMs;
+    else s.renderedDurationMs = renderedDurationMs;
+    state.setState({ steps: [...arr] });
+    state.markDirty();
+  };
+  // Drop any cached audio when text changes — user must re-preview / re-export.
+  applyText({ text: val }, undefined);
+  undoManager.push(
+    'Edit voice-over text',
+    () => applyText(prevNarration, prevRendered),
+    () => applyText({ text: val }, undefined),
+    { coalesceKey: `narration:${stepId}` },
+  );
+  return true;
+}
+
 export function initStepNav() {
   _el = document.getElementById('step-nav-bar');
   if (!_el) return;
@@ -60,40 +110,7 @@ export function initStepNav() {
     // the real voice is silently discarded, the long-standing "paste = sticky"
     // bug). Trimming only the STORED value (not narrInput.value) never disturbs
     // ongoing typing — a mid-sentence space the user is still typing survives.
-    const val = _editingValue.trim();
-    if ((step.narration?.text || '') === val) return;
-    // V0.3.2.76 — TARGETED undo, not commitStateChange. The .73 version
-    // snapshotted the WHOLE steps array twice (before + after) and deep-
-    // compared both on EVERY typing pause — on a 261-step project that is
-    // an allocation storm inside the ~3.5GB heap cage, and it produced real
-    // OOM crashes while "just editing text" ("MarkCompactCollector: young
-    // object promotion failed"). Undoability stays; the captures shrink to
-    // the ONE step's narration fields. Coalescing still folds a typing
-    // burst into one entry — undo.js keeps the FIRST undo closure (the
-    // pre-burst text) and replaces the redo with the latest.
-    const stepId = step.id;
-    const prevNarration = step.narration;            // replaced, never mutated — safe by reference
-    const prevRendered  = step.renderedDurationMs;
-    const applyText = (narration, renderedDurationMs) => {
-      const arr = state.get('steps') || [];
-      const s = arr.find(x => x.id === stepId);
-      if (!s) return;
-      s.narration = narration;
-      // The measured timeline duration is stale on any text change — drop it
-      // so the TOC falls back to the estimate (flagged ~) until re-measure.
-      if (renderedDurationMs === undefined) delete s.renderedDurationMs;
-      else s.renderedDurationMs = renderedDurationMs;
-      state.setState({ steps: [...arr] });
-      state.markDirty();
-    };
-    // Drop any cached audio when text changes — user must re-preview / re-export.
-    applyText({ text: val }, undefined);
-    undoManager.push(
-      'Edit voice-over text',
-      () => applyText(prevNarration, prevRendered),
-      () => applyText({ text: val }, undefined),
-      { coalesceKey: `narration:${stepId}` },
-    );
+    setStepNarrationText(step.id, _editingValue);
   };
   narrInput.addEventListener('input', () => {
     _editingStepId = state.get('activeStepId');

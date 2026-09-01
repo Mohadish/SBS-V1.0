@@ -24,6 +24,9 @@ import {
   mergeConstDefs, selectConstInstance, selectTextUnitByTid, waitForOverlayStable,
 } from '../systems/overlay.js';
 import * as lang from '../systems/language-packs.js';
+import * as actions from '../systems/actions.js';
+import * as subtitles from '../systems/subtitles.js';
+import { setStepNarrationText } from './step-nav.js';
 import { promptString } from './prompt.js';
 import { setStatus } from './status.js';
 import { showContextMenu } from './context-menu.js';
@@ -220,7 +223,9 @@ async function _renderReview() {
     txt.title = plain;
 
     row.append(mark, kind, txt);
+    row.title = 'Click to go to it · double-click to edit';
     row.addEventListener('click', () => _onOpenRow(r));
+    row.addEventListener('dblclick', () => _onEditRow(r));
     row.addEventListener('contextmenu', (e) => { e.preventDefault(); e.stopPropagation(); _onRowMenu(e, r); });
     list.appendChild(row);
   }
@@ -242,6 +247,61 @@ async function _onOpenRow(r) {
     }
   } catch (e) {
     setStatus(`Could not open that title: ${e?.message || e}`, 'warn', 6000);
+  }
+}
+
+/**
+ * Double-click → open the RIGHT editor for that kind of row, rather than
+ * editing in the list. Reusing the real editors means formatting, validation
+ * and undo all behave exactly as they do everywhere else — and a styled text
+ * box keeps its styling, which editing markup in a list field would flatten.
+ */
+async function _onEditRow(r) {
+  try {
+    if (r.stepId && r.stepId !== state.get('activeStepId')) {
+      await steps.activateStep(r.stepId, false);
+      await waitForOverlayStable();
+    }
+    let m;
+    if ((m = /^text:(.+)$/.exec(r.key))) {
+      // Straight into the in-place editor on the canvas.
+      if (!selectTextUnitByTid(m[1], { edit: true })) {
+        setStatus('That text box is not on this step any more — rescan.', 'warn', 6000);
+      }
+      return;
+    }
+    if ((m = /^step:(.+):name$/.exec(r.key))) {
+      const step = steps.getStepById(m[1]);
+      const name = await promptString('Step name:', step?.name || '');
+      if (name && name.trim()) actions.renameStep(m[1], name.trim());
+    } else if ((m = /^chapter:(.+):name$/.exec(r.key))) {
+      const ch = (state.get('chapters') || []).find(c => c.id === m[1]);
+      const name = await promptString('Chapter name:', ch?.name || '');
+      // Same shape the steps panel's chapter rename uses — there is no
+      // actions.renameChapter to call, the mutation IS the commit.
+      if (name && name.trim()) {
+        const chapterId = m[1], next = name.trim();
+        actions.commitStateChange('Rename chapter', ['chapters'], () => {
+          state.setState({ chapters: (state.get('chapters') || []).map(c => c.id === chapterId ? { ...c, name: next } : c) });
+          state.markDirty();
+        });
+      }
+    } else if ((m = /^step:(.+):narration$/.exec(r.key))) {
+      const step = steps.getStepById(m[1]);
+      const text = await promptString('Voice-over text:', step?.narration?.text || '');
+      // Same writer the nav bar uses — targeted undo, drops the stale
+      // measured duration, trims for the phonemizer.
+      if (text != null) setStepNarrationText(m[1], text);
+    } else if ((m = /^subtitle:(.+):(.+)$/.exec(r.key))) {
+      const step = steps.getStepById(m[1]);
+      const lng  = m[2] === 'orig' ? '' : m[2];
+      const cur  = step?.subtitles?.[m[2]]?.text || '';
+      const text = await promptString('Subtitle text:', cur);
+      if (text != null) subtitles.setSubtitleOverride(m[1], lng, text);
+    }
+    await _refresh();
+  } catch (e) {
+    setStatus(`Could not edit that: ${e?.message || e}`, 'warn', 6000);
   }
 }
 

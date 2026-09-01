@@ -56,6 +56,7 @@ import {
 } from './overlay.js';
 import { _reinternAfterWholesaleRead } from '../io/project.js';
 import * as projectPaths from '../core/project-paths.js';   // 📁 folder layout
+import * as subtitles from './subtitles.js';   // 💬 separate system — read-only here
 
 export const PACK_VERSION = 1;
 
@@ -1178,7 +1179,34 @@ export async function reviewRows(langCode = activeLang()) {
     }
   }
 
-  const rows = [];
+  // 💬 Subtitle rows (V0.3.2.128). Subtitles are a SEPARATE system with their
+  // own per-language storage and their own freshness tracking — deliberately
+  // not folded into the packs, which would create two sources of truth for the
+  // same text. They appear here as their own rows so a step with a distinct
+  // caption is visible and editable in one list, and their existing status
+  // maps onto the same markers: stale → ❗, hand-edited → ✱.
+  const subRows = [];
+  try {
+    const subLang = side === 'src' ? '' : langCode;
+    for (const s of (state.get('steps') || [])) {
+      if (s.isBaseStep) continue;
+      const entry = s.subtitles?.[subLang || 'orig'];
+      if (!entry?.text) continue;                       // only steps with their OWN caption
+      const st = subtitles.subtitleStatus(s, subLang);
+      subRows.push({
+        key: `subtitle:${s.id}:${subLang || 'orig'}`,
+        lang: langCode,
+        mark: st === 'stale' ? '!' : st === 'edited' ? '*' : '',
+        label: 'Subtitle',
+        stepId: s.id,
+        text: entry.text,
+        order: (order.get(`step:${s.id}:narration`) ?? order.get(`step:${s.id}:name`) ?? 0) + 0.5,
+        isSubtitle: true,
+      });
+    }
+  } catch (e) { console.warn('[lang] subtitle rows skipped:', e?.message); }
+
+  const rows = [...subRows];
   for (const u of units) {
     const hit = byKey.get(u.key);
     rows.push({
