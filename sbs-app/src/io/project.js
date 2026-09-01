@@ -280,6 +280,7 @@ export function serialize() {
   // 🌍 V0.3.2.116 — which language the project file currently HOLDS, and which
   // one it was authored in. Translations live in <project>.<lang>.sbslang.json
   // sidecars, never in here; these two just say what you are looking at.
+  cfg.narrationVoices      = { ...(state.get('narrationVoices')  || {}) };
   cfg.sourceLang           = state.get('sourceLang')            ?? 'en';
   cfg.activeLang           = state.get('activeLang')            ?? (state.get('sourceLang') ?? 'en');
   // Interface overlay: the SHARED default pose + library folder were runtime-only
@@ -941,7 +942,7 @@ export const PROJECT_STATE_KEYS = [
   'render', 'solidOverride', 'gridVisible',
   'cameraAnimDurationMs', 'objectAnimDurationMs', 'cameraFillLight', 'geometryOutline',
   'export', 'audioCacheFolder', 'hardwareDefaults',
-  'sourceLang', 'activeLang',
+  'sourceLang', 'activeLang', 'narrationVoices',
   'steps', 'chapters', 'cameraViews', 'colorPresets',
   'noteTemplates', 'notePresets', 'selectionGroups', 'selectionOutlineColor',
   'assets',
@@ -1035,6 +1036,7 @@ export function applyProjectToState(project) {
     audioCacheFolder:     s.audioCacheFolder ?? null,
     // 🌍 V0.3.2.116 — legacy files have neither; both default to 'en' so an
     // untranslated project behaves exactly as before.
+    narrationVoices:      s.narrationVoices ?? {},
     sourceLang:           s.sourceLang ?? 'en',
     activeLang:           s.activeLang ?? s.sourceLang ?? 'en',
     // Interface shared default pose + library folder (missing on legacy files

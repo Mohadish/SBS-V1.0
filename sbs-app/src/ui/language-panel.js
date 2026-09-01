@@ -254,7 +254,27 @@ function _langRow({ code, isSource, active, stats, error }) {
     e.style.cssText = 'font-size:11.5px;color:#e06a5c;line-height:1.45;';
     e.textContent = error;
     row.appendChild(e);
-  } else if (stats) {
+  }
+
+  // 🎙 Which voice this language speaks with — remembered per language and
+  // restored on switch. The ACTIVE row reads the live Export setting, so
+  // changing the voice in the Export tab shows up here immediately.
+  {
+    const voices = state.get('narrationVoices') || {};
+    const vId = (active ? (state.get('export') || {}).narrationVoice : voices[code]?.voiceId) || null;
+    const v = document.createElement('div');
+    v.className = 'small muted';
+    v.style.cssText = 'font-size:11px;';
+    if (vId) {
+      v.textContent = `🎙 ${String(vId).split('|').pop()}`;
+    } else {
+      v.textContent = '🎙 no voice set — switch to this language and pick one in the Export tab';
+      v.style.color = '#d9a03d';
+    }
+    row.appendChild(v);
+  }
+
+  if (!error && stats) {
     const s = document.createElement('div');
     s.className = 'small muted';
     s.style.cssText = 'font-size:11.5px;display:flex;gap:10px;flex-wrap:wrap;';

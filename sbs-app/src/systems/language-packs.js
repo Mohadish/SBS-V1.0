@@ -782,6 +782,23 @@ export async function switchLanguage(lang, { onProgress } = {}) {
     catch (e) { console.warn('[lang] could not reload the leaving pack:', e?.message); }
   }
 
+  // 🎙 VOICE PER LANGUAGE (V0.3.2.129). Remember the voice the language we
+  // are leaving was using, then restore the one this language used before.
+  // Applied BEFORE the strings, because the parked-clip reattach in
+  // _applyStrings only accepts a clip whose voice matches the CURRENT
+  // setting — with the old language's voice still in effect it would reject
+  // every clip belonging to the language being entered.
+  // Nothing is invalidated here: clip wiping is wired to the voice DROPDOWN,
+  // not to the setting, so a programmatic change is safe.
+  const voices = { ...(state.get('narrationVoices') || {}) };
+  const exp0 = state.get('export') || {};
+  if (exp0.narrationVoice) voices[from] = { voiceId: exp0.narrationVoice, speed: exp0.narrationSpeed ?? 1 };
+  const want = voices[lang];
+  state.setState({ narrationVoices: voices });
+  if (want?.voiceId && want.voiceId !== exp0.narrationVoice) {
+    state.setState({ export: { ...state.get('export'), narrationVoice: want.voiceId, narrationSpeed: want.speed ?? 1 } });
+  }
+
   onProgress?.('Applying…');
   let target = null;
   if (lang !== src) {

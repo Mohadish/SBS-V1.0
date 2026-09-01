@@ -412,6 +412,14 @@ function createInitialState() {
     sourceLang: 'en',
     activeLang: 'en',
 
+    // 🎙 V0.3.2.129 — the narration voice REMEMBERED PER LANGUAGE:
+    //   { en: { voiceId, speed }, he: { voiceId, speed }, … }
+    // export.narrationVoice stays "the voice in effect right now" so every
+    // existing consumer is untouched; this map is what a language switch
+    // saves into and restores from. Without it, switching to Hebrew kept the
+    // English voice and synthesized Hebrew text with an English engine.
+    narrationVoices: {},
+
     export: {
       fileName:           'sbs_export',
       outputFormat:       'mp4',
