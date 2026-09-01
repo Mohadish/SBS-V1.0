@@ -764,6 +764,16 @@ export async function switchLanguage(lang, { onProgress } = {}) {
     console.warn('[lang] propagation skipped:', e?.message);
   }
 
+  // Propagation wrote to its OWN copy of the leaving pack (loaded from disk),
+  // so the fromPack captured above is now stale — and it is exactly what the
+  // switch-back-to-source resolver reads. Without this refresh, content
+  // authored in a translation gets back-filled into the file and then IGNORED
+  // on the very switch that triggered it, leaving the foreign text on screen.
+  if (fromPack) {
+    try { const fresh = await loadPack(from); if (fresh) fromPack = fresh; }
+    catch (e) { console.warn('[lang] could not reload the leaving pack:', e?.message); }
+  }
+
   onProgress?.('Applying…');
   let target = null;
   if (lang !== src) {
