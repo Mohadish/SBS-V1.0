@@ -4479,13 +4479,15 @@ function _renderExportTab() {
       cacheSummary.innerHTML = '';
       return;
     }
-    narrationCache.listVoiceFolders().then(folders => {
+    Promise.all([narrationCache.listVoiceFolders(), narrationCache.protectedVoiceSlugs()]).then(([folders, keep]) => {
       if (!cacheSummary.isConnected) return;
       if (!folders) { cacheSummary.innerHTML = '(folder not yet created)'; return; }
       if (!folders.length) { cacheSummary.innerHTML = '(empty — no clips cached yet)'; return; }
-      const active = narrationCache.activeVoiceSlug();
       const totalBytes = folders.reduce((s, f) => s + f.totalBytes, 0);
-      const stale = folders.filter(f => f.name !== active);
+      // "Stale" must mean "the purge would actually delete this". Another
+      // language's voice is protected, so counting it as stale would promise
+      // a cleanup that never happens. keep === null → purge is disabled.
+      const stale = keep ? folders.filter(f => !keep.has(f.name)) : [];
       const totalMb  = (totalBytes / 1024 / 1024).toFixed(1);
       const staleMb  = (stale.reduce((s, f) => s + f.totalBytes, 0) / 1024 / 1024).toFixed(1);
       cacheSummary.innerHTML =

@@ -191,7 +191,13 @@ export async function clipRelativePath({ text, voiceId, speed, stepName, stepId 
   const voiceSlug = _voiceSlug(voiceId);
   const stepSlug  = _slugify(stepName, 40) || (stepId ? String(stepId).slice(0, 8) : 'step');
   const hash      = await _shortHash(text, speed);
-  return `${voiceSlug}/${stepSlug}__${hash}.wav`;
+  // V0.3.2.124 — filed under the LANGUAGE first, so a multi-language project
+  // has one obvious folder per language instead of relying on "different
+  // language happens to use a different voice". Clips written before this
+  // keep their "<voice>/file.wav" pointers and still resolve, because the
+  // pointer is stored per step and simply joined onto the cache root.
+  const lang = state.get('activeLang') || state.get('sourceLang') || 'en';
+  return `${lang}/${voiceSlug}/${stepSlug}__${hash}.wav`;
 }
 
 // ─── Save / load ────────────────────────────────────────────────────────────
@@ -373,24 +379,41 @@ export async function listVoiceFolders() {
   const top  = await window.sbsNative.listDir(root);
   if (!Array.isArray(top)) return [];
 
+  // TWO LAYOUTS COEXIST (V0.3.2.124). Modern: <audio>/<lang>/<voice>/*.wav.
+  // Legacy: <audio>/<voice>/*.wav. Tell them apart by looking inside — a
+  // VOICE folder holds .wav files, a LANGUAGE folder holds voice folders.
+  // Getting this wrong would let the purge treat "he" as a voice slug and
+  // delete an entire language's audio in one go.
   const out = [];
-  for (const entry of top) {
-    if (!entry.isDir) continue;
-    const sub = await window.sbsNative.listDir(_join(root, entry.name));
+  const _scan = async (absDir, name, lang) => {
+    const sub = await window.sbsNative.listDir(absDir);
     let totalBytes = 0, fileCount = 0;
+    const childDirs = [];
     if (Array.isArray(sub)) {
       for (const f of sub) {
-        if (f.isDir) continue;
+        if (f.isDir) { childDirs.push(f); continue; }
         totalBytes += f.size || 0;
         fileCount++;
       }
     }
+    // Holds folders and no clips of its own → it is a language folder.
+    if (!fileCount && childDirs.length) {
+      for (const c of childDirs) await _scan(_join(absDir, c.name), c.name, name);
+      return;
+    }
     out.push({
-      name:       entry.name,
+      name,                       // voice slug — what the purge protects on
+      lang:       lang || null,   // null for legacy clips filed outside a language
+      rel:        lang ? `${lang}/${name}` : name,
       totalBytes,
       fileCount,
-      mtimeMs:    entry.mtimeMs || 0,
+      mtimeMs:    0,
     });
+  };
+
+  for (const entry of top) {
+    if (!entry.isDir) continue;
+    await _scan(_join(root, entry.name), entry.name, null);
   }
   return out;
 }
@@ -485,7 +508,7 @@ export async function writeReadme() {
  * narration cache. Nothing was corrupted, but a full re-synthesis is exactly
  * the cost the disk cache exists to avoid.
  */
-async function _protectedVoiceSlugs() {
+export async function protectedVoiceSlugs() {
   const keep = new Set([activeVoiceSlug()]);
   try {
     const lp = await import('./language-packs.js');
@@ -516,16 +539,19 @@ export async function purgeInactiveVoices(steps) {
   const folders = await listVoiceFolders();
   if (!folders) return out;
 
-  const keep = await _protectedVoiceSlugs();
+  const keep = await protectedVoiceSlugs();
   if (!keep) return out;                       // unreadable packs → delete nothing
   const root   = cacheFolderAbsolute();
   const dead   = new Set();
   for (const f of folders) {
     if (keep.has(f.name)) { out.protected++; continue; }
-    const target = _join(root, f.name);
+    // Delete the VOICE folder by its relative path — under the per-language
+    // layout that is "<lang>/<voice>", never the language folder itself.
+    const rel = f.rel || f.name;
+    const target = _join(root, rel);
     const res = await window.sbsNative.deletePath(target, { recursive: true });
     if (res?.ok) {
-      dead.add(f.name);
+      dead.add(rel);
       out.deletedFolders++;
     } else {
       console.warn('[narration-cache] purge failed for', f.name, res?.error);
@@ -536,7 +562,10 @@ export async function purgeInactiveVoices(steps) {
   for (const s of steps || []) {
     const n = s?.narration;
     if (!n?.dataFile) continue;
-    const folder = String(n.dataFile).split('/')[0];
+    // dataFile is "<voice>/file.wav" (legacy) or "<lang>/<voice>/file.wav"
+    // (modern) — match whichever prefix identifies the folder we deleted.
+    const segs = String(n.dataFile).split('/');
+    const folder = segs.length > 2 ? `${segs[0]}/${segs[1]}` : segs[0];
     if (dead.has(folder)) {
       delete n.dataFile;
       delete n.dataUrl;   // any in-memory hydration is now stale too

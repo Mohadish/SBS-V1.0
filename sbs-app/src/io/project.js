@@ -32,6 +32,7 @@ import {
 import { materials }                  from '../systems/materials.js';
 import { steps, seedPrimitiveDefsFromTree, notePrimitiveDef } from '../systems/steps.js';
 import { internAllStepOverlays, resetInternPool } from '../core/intern.js';   // 🧵 V0.3.2.77 image-string dedupe
+import * as projectPaths              from '../core/project-paths.js';   // 📁 folder layout
 import * as narrationCache           from '../systems/narration-cache.js';
 import { flattenCablesToCascade, ensureSocketBaselines } from '../systems/cables.js';   // V0.3.0.151 cascade migration; V0.3.0.167 socket State-0 backfill
 import { rebuildPrimitive }          from '../systems/primitives.js';   // V0.3.2.6 param-sync on load
@@ -374,7 +375,11 @@ export async function autosaveBackup({ path: pathOverride } = {}) {
     (done, total) => state.emit('save:progress', { stage: 'compress', done, total, unit: 'steps', autosave: true }));
   // Fallback base also strips any .autosaveN suffix (V0.3.2.56) so an
   // autosave-of-an-autosave can never stack when no path override is passed.
-  const path = pathOverride
+  // 📁 V0.3.2.124 — autosaves live in <project>/backups/. fs:writeFile
+  // creates the folder, so no separate mkdir. Recovery still finds older
+  // autosaves beside the project: they are ordinary .sbsproj files the user
+  // opens by hand, and nothing indexes them by path.
+  const path = pathOverride || projectPaths.autosavePath().path
     || (pp.replace(/\.sbsproj$/i, '').replace(/(\.autosave\d*)+$/i, '') + '.autosave.sbsproj');
   state.emit('save:progress', { stage: 'write', bytes: bytes.length, autosave: true });
   const r = await window.sbsNative.writeFile(path, bytes, null);

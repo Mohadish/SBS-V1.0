@@ -29,6 +29,7 @@
  */
 
 import { state } from '../core/state.js';
+import * as projectPaths from '../core/project-paths.js';   // 📁 folder layout
 import { steps } from './steps.js';
 import { resolveAnimationString } from './animation.js';   // V0.3.2.73 — preset content must reach the segment key
 
@@ -940,15 +941,22 @@ export async function renderMissingSegments({ onProgress, signal, force = false,
 /** Plan + check which segments already exist in <project>/_rendercache/. */
 export async function planWithCacheStatus() {
   const plan = await computeSegmentPlan();
-  const pp = state.get('projectPath');
-  // 🌍 V0.3.2.116 — each language renders into its own cache folder, so two
-  // languages of the same project stay warm side by side instead of evicting
-  // each other (segment keys already differ by content; this keeps the PURGE
-  // passes from treating the inactive language's segments as orphans).
-  const _al = state.get('activeLang') || state.get('sourceLang') || 'en';
-  const _sl = state.get('sourceLang') || 'en';
-  const _langDir = _al && _al !== _sl ? `/_rendercache/${_al}` : '/_rendercache';
-  const dir = pp ? pp.replace(/[\\/][^\\/]*$/, '') + _langDir : null;
+  // 🌍 Each language renders into its own cache folder, so two languages of
+  // the same project stay warm side by side instead of evicting each other
+  // (segment keys already differ by content; this keeps the PURGE passes from
+  // treating the inactive language's segments as orphans).
+  // V0.3.2.124 — now <project>/render/<lang>/, part of the project folder
+  // layout. A project whose segments were rendered under the older
+  // _rendercache path keeps using it, so nobody loses a warm cache to the
+  // rename; new projects (and any language rendered from now on) use the
+  // layout path.
+  const _rc = projectPaths.renderCacheDir();
+  let dir = _rc.dir;
+  if (dir && _rc.legacy && window.sbsNative?.fileExists) {
+    // Prefer whichever already holds this language's segments.
+    const modernSeen = await window.sbsNative.fileExists(dir);
+    if (!modernSeen && await window.sbsNative.fileExists(_rc.legacy)) dir = _rc.legacy;
+  }
   let hits = 0;
   for (const span of plan.spans) {
     span.file   = dir ? `${dir}/seg-${span.key}.mp4` : null;

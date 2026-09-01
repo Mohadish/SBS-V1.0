@@ -55,6 +55,7 @@ import {
   markOverlayStringsAuthoritative,
 } from './overlay.js';
 import { _reinternAfterWholesaleRead } from '../io/project.js';
+import * as projectPaths from '../core/project-paths.js';   // 📁 folder layout
 
 export const PACK_VERSION = 1;
 
@@ -76,9 +77,27 @@ function _projectParts() {
   return { dir, base, sep: s };
 }
 
+/**
+ * Where a pack lives. Modern: <project>/languages/<lang>.sbslang.json.
+ * Legacy (V0.3.2.116–123): <project>/<base>.<lang>.sbslang.json, flat beside
+ * the project file. Packs written before the folder layout stay exactly where
+ * they are and keep being read — a project is never silently reorganised.
+ */
 export function packPathFor(lang) {
-  const p = _projectParts();
-  return p ? `${p.dir}${p.sep}${p.base}.${lang}.sbslang.json` : null;
+  return projectPaths.langPackPath(lang).path;
+}
+export function packPathLegacy(lang) {
+  return projectPaths.langPackPath(lang).legacy;
+}
+/** The path a pack should be READ from: legacy if that is where it already is. */
+async function _readPathFor(lang) {
+  const { path, legacy } = projectPaths.langPackPath(lang);
+  if (!path) return null;
+  if (window.sbsNative?.fileExists) {
+    if (await window.sbsNative.fileExists(path))   return path;
+    if (legacy && await window.sbsNative.fileExists(legacy)) return legacy;
+  }
+  return path;
 }
 
 export function sourceLang() { return state.get('sourceLang') || 'en'; }
@@ -147,8 +166,9 @@ export function emptyPack(lang) {
  * which would destroy every translation in it.
  */
 export async function loadPack(lang) {
-  const path = packPathFor(lang);
-  if (!path || !window.sbsNative?.readFile) return null;
+  if (!window.sbsNative?.readFile) return null;
+  const path = await _readPathFor(lang);
+  if (!path) return null;
   if (window.sbsNative.fileExists && !(await window.sbsNative.fileExists(path))) return null;
   let txt;
   try {
@@ -179,7 +199,10 @@ export async function loadPack(lang) {
 }
 
 export async function savePack(pack) {
-  const path = packPathFor(pack.lang);
+  // Write back to wherever this pack already lives — a legacy pack stays put
+  // rather than being silently duplicated into languages/ and leaving a stale
+  // twin behind. New packs are written into the layout folder.
+  const path = await _readPathFor(pack.lang);
   if (!path || !window.sbsNative?.writeFile) return { ok: false, error: 'No project path — save the project first.' };
   try {
     // Pretty-printed on purpose: the pack is meant to be readable and
@@ -197,12 +220,22 @@ export async function savePack(pack) {
 export async function listPackLanguages() {
   const p = _projectParts();
   if (!p || !window.sbsNative?.listDir) return [];
-  try {
-    const entries = await window.sbsNative.listDir(p.dir);
-    const names = (entries || []).map(e => (typeof e === 'string' ? e : e?.name)).filter(Boolean);
-    const rx = new RegExp(`^${p.base.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\.([A-Za-z-]{2,10})\\.sbslang\\.json$`);
-    return names.map(n => (n.match(rx) || [])[1]).filter(Boolean);
-  } catch { return []; }
+  const found = new Set();
+  const read = async (dir, rx) => {
+    try {
+      const entries = await window.sbsNative.listDir(dir);
+      for (const e of (entries || [])) {
+        const n = typeof e === 'string' ? e : e?.name;
+        const m = n && n.match(rx);
+        if (m) found.add(m[1]);
+      }
+    } catch { /* folder absent — fine */ }
+  };
+  // Both locations: languages/<lang>.sbslang.json (layout) and the flat
+  // <base>.<lang>.sbslang.json beside the project (pre-layout projects).
+  await read(projectPaths.subDir('languages'), projectPaths.LANG_PACK_MODERN_RX);
+  await read(p.dir, projectPaths.langPackLegacyRx(p.base));
+  return [...found];
 }
 
 // ─── Merge a fresh scan into a pack (the drift report) ──────────────────────
@@ -821,16 +854,30 @@ export async function migratePacksTo(oldPath, newPath) {
     };
     const o = part(oldPath), n = part(newPath);
     if (o.dir === n.dir && o.base === n.base) return 0;
-    const entries = await window.sbsNative.listDir(o.dir);
-    const names = (entries || []).map(e => (typeof e === 'string' ? e : e?.name)).filter(Boolean);
-    const rx = new RegExp(`^${o.base.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\.([A-Za-z-]{2,10})\\.sbslang\\.json$`);
+
+    // Gather from BOTH locations of the old project: languages/<lang>.… and
+    // the pre-layout flat <base>.<lang>.… beside the file.
+    const sources = new Map();   // lang → absolute source path
+    const collect = async (dir, rx) => {
+      let entries;
+      try { entries = await window.sbsNative.listDir(dir); } catch { return; }
+      for (const e of (entries || [])) {
+        const nm = typeof e === 'string' ? e : e?.name;
+        const m = nm && nm.match(rx);
+        if (m && !sources.has(m[1])) sources.set(m[1], `${dir}${o.sep}${nm}`);
+      }
+    };
+    await collect(`${o.dir}${o.sep}${projectPaths.DIR.languages}`, projectPaths.LANG_PACK_MODERN_RX);
+    await collect(o.dir, projectPaths.langPackLegacyRx(o.base));
+
+    // Write into the NEW project's layout folder — Save As creates a fresh
+    // project, so it gets the current organisation regardless of how the
+    // original was laid out.
     let copied = 0;
-    for (const name of names) {
-      const m = name.match(rx);
-      if (!m) continue;
-      const dest = `${n.dir}${n.sep}${n.base}.${m[1]}.sbslang.json`;
+    for (const [lang, src] of sources) {
+      const dest = `${n.dir}${n.sep}${projectPaths.DIR.languages}${n.sep}${lang}.sbslang.json`;
       if (window.sbsNative.fileExists && (await window.sbsNative.fileExists(dest))) continue;   // never clobber
-      const r = await window.sbsNative.readFile(`${o.dir}${o.sep}${name}`, 'utf8');
+      const r = await window.sbsNative.readFile(src, 'utf8');
       const txt = typeof r === 'string' ? r : (r?.data ?? '');
       if (!txt) continue;
       await window.sbsNative.writeFile(dest, txt, 'utf8');
