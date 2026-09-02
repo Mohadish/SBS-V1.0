@@ -27,10 +27,10 @@ export const SCHEMA_VERSIONS = {
   screen:     1,
 };
 
-export const APP_VERSION  = 'V0.3.2.132';
+export const APP_VERSION  = 'V0.3.2.134';
 // Format: YYYY-MM-DD. Bump along with APP_VERSION on every build worth
 // labelling so the File tab shows you're running the expected slice.
-export const APP_RELEASED = '2026-07-02';
+export const APP_RELEASED = '2026-09-02';
 
 
 // ═══════════════════════════════════════════════════════════════════════════
