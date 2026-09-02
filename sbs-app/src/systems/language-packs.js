@@ -60,6 +60,14 @@ import * as subtitles from './subtitles.js';   // 💬 separate system — read-
 
 export const PACK_VERSION = 1;
 
+/**
+ * Small gap between translation requests. Google throttles per user and
+ * answers a burst with "User Rate Limit Exceeded" rather than queuing; the
+ * main process retries with backoff, but not bursting in the first place is
+ * cheaper than recovering. Negligible against a request's own latency.
+ */
+const _pace = (ms = 150) => new Promise(r => setTimeout(r, ms));
+
 // ─── Identity / paths ───────────────────────────────────────────────────────
 
 const _sep = (p) => (p.includes('\\') ? '\\' : '/');
@@ -432,10 +440,14 @@ export async function translatePack(pack, { force = false, onProgress, apiKey } 
       const res = await window.sbsNative.translate.batch(
         slice.map(k => pack.entries[k].src), '', pack.lang, key, fmt,
       );
+      await _pace();
       if (!res?.ok) {
         // Remember the failure but keep going — the other chunks are
-        // independent, and everything that succeeds is kept.
+        // independent, and everything that succeeds is kept. A rate-limit
+        // error means the whole run is being throttled, though, so stop
+        // rather than hammering the remaining chunks into the same wall.
         if (!firstErr) firstErr = res?.error || 'Translation failed.';
+        if (/rate limit/i.test(String(res?.error || ''))) return { ok: false, error: firstErr, translated: done };
         continue;
       }
       slice.forEach((k, n) => {
@@ -1235,6 +1247,7 @@ async function _backfillSource(pack, { apiKey, onProgress } = {}) {
       const res = await window.sbsNative.translate.batch(
         slice.map(k => pack.entries[k].tgt), '', src, key, fmt,
       );
+      await _pace();
       if (!res?.ok) { console.warn('[lang] backfill failed:', res?.error); continue; }
       slice.forEach((k, n) => {
         const t = String(res.texts?.[n] ?? '');
@@ -1279,6 +1292,7 @@ async function _propagateInto(pack, { apiKey, onProgress } = {}) {
       const res = await window.sbsNative.translate.batch(
         slice.map(k => pack.entries[k].src), '', pack.lang, key, fmt,
       );
+      await _pace();
       if (!res?.ok) { console.warn('[lang] propagate failed:', res?.error); continue; }
       slice.forEach((k, n) => {
         const t = String(res.texts?.[n] ?? '');

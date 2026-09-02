@@ -1420,6 +1420,39 @@ ipcMain.handle('tts:gcp-synthesize', async (_, text, voice, speed, apiKey) => {
 // never stored here or embedded in the binary. Authoring-time only — end
 // users of exported videos never need this (captions are baked pixels).
 
+/**
+ * Google Translate throttles per USER as well as per project, and answers a
+ * burst with 403 "User Rate Limit Exceeded" (or 429) rather than queuing.
+ * Those are RETRYABLE — the request was never processed — so backing off and
+ * repeating is the documented handling, and without it a perfectly ordinary
+ * batch fails outright and reports a quota problem the user does not have.
+ * 5xx is retried for the same reason. Everything else (bad key, billing
+ * disabled, malformed request) fails immediately: repeating it would only
+ * waste time and hide the real message. V0.3.2.135.
+ */
+const _sleepMs = (ms) => new Promise(r => setTimeout(r, ms));
+
+function _isRetryableTranslateError(err) {
+  const m = String(err?.message || '');
+  return /rate limit|rateLimitExceeded|userRateLimitExceeded|too many requests|\b429\b|HTTP 5\d\d/i.test(m);
+}
+
+async function _gtranslateWithBackoff(apiKey, payload, attempts = 4) {
+  let last;
+  for (let i = 0; i < attempts; i++) {
+    try { return await _gtranslateHttpsRequest(apiKey, payload); }
+    catch (err) {
+      last = err;
+      if (i === attempts - 1 || !_isRetryableTranslateError(err)) throw err;
+      // 0.6s, 1.8s, 5.4s (+jitter so parallel callers don't resynchronise).
+      const wait = Math.round(600 * Math.pow(3, i) * (0.75 + Math.random() * 0.5));
+      console.warn(`[translate] ${err.message} — retrying in ${wait}ms (${i + 1}/${attempts - 1})`);
+      await _sleepMs(wait);
+    }
+  }
+  throw last;
+}
+
 function _gtranslateHttpsRequest(apiKey, payload) {
   return new Promise((resolve, reject) => {
     const body = Buffer.from(payload, 'utf8');
@@ -1480,7 +1513,7 @@ ipcMain.handle('translate:batch', async (_, texts, source, target, apiKey, forma
     ...(source ? { source: String(source) } : {}),   // omitted → Google auto-detects
   });
   try {
-    const json = await _gtranslateHttpsRequest(apiKey, payload);
+    const json = await _gtranslateWithBackoff(apiKey, payload);
     const arr  = json?.data?.translations;
     if (!Array.isArray(arr) || arr.length !== texts.length) {
       return { ok: false, error: 'Google Translate returned an unexpected shape.' };
@@ -1493,6 +1526,12 @@ ipcMain.handle('translate:batch', async (_, texts, source, target, apiKey, forma
       texts: arr.map(t => (fmt === 'html' ? String(t?.translatedText ?? '') : _decodeHtmlEntities(t?.translatedText))),
     };
   } catch (e) {
-    return { ok: false, error: e?.message || 'Google Translate failed.' };
+    let msg = e?.message || 'Google Translate failed.';
+    if (/rate limit/i.test(msg)) {
+      msg = `${msg} — Google is throttling this key. It retried and still failed, so this is usually a quota set to 0, `
+          + 'billing not enabled on the Cloud Translation API, or another app sharing the key. '
+          + 'Check quotas for "Cloud Translation API" in the Google Cloud console.';
+    }
+    return { ok: false, error: msg };
   }
 });
