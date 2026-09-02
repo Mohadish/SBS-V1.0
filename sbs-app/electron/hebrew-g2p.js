@@ -75,6 +75,11 @@ const MODERN_SCHEMA = { x: 'χ', r: 'ʁ', g: 'ɡ' };
 
 const PUNCTUATION = new Set(['.', ',', '!', '?', ' ']);
 
+// Chars introduced by hyper-phoneme escapes ([word](/ipa/)) — postClean must
+// let them through, exactly like Python's lexicon.ADDITIONAL_PHONEMES
+// (module-global and persistent across calls, mirroring the original).
+const ADDITIONAL_PHONEMES = new Set();
+
 const SET_PHONEMES = new Set([
   ...Object.values(NIKUD_PHONEMES),
   ...Object.values(LETTERS_PHONEMES),
@@ -363,7 +368,8 @@ function postClean(phonemes) {
   const out = [];
   for (const ch of phonemes) {
     if (ch === '-') out.push(' ');
-    else if (SET_PHONEMES.has(ch) || ch === ' ' || PUNCTUATION.has(ch)) out.push(ch);
+    else if (SET_PHONEMES.has(ch) || ADDITIONAL_PHONEMES.has(ch) ||
+             ch === ' ' || PUNCTUATION.has(ch)) out.push(ch);
   }
   return out.join('');
 }
@@ -391,8 +397,12 @@ function phonemize(text) {
     return phonemes;
   });
 
-  // hyper-phonemes: [word](/ipa/) → ipa
-  text = text.replace(/\[(.+?)\]\(\/(.+?)\/\)/g, (_, __, ipa) => ipa);
+  // hyper-phonemes: [word](/ipa/) → ipa. Register each escaped char so
+  // postClean keeps it (Python adds them to lexicon.ADDITIONAL_PHONEMES).
+  text = text.replace(/\[(.+?)\]\(\/(.+?)\/\)/g, (_, __, ipa) => {
+    for (const ch of ipa) ADDITIONAL_PHONEMES.add(ch);
+    return ipa;
+  });
 
   text = postClean(text);
   return text;
@@ -422,7 +432,7 @@ class Nikud {
    */
   constructor(modelPath, tokenizerPath) {
     this._modelPath = modelPath;
-    this._session = null;
+    this._sessionPromise = null;
     const tok = JSON.parse(fs.readFileSync(tokenizerPath, 'utf-8'));
     this._vocab = tok.model.vocab;
     this._cls = this._vocab['[CLS]'];
@@ -431,29 +441,61 @@ class Nikud {
   }
 
   async _ensureSession() {
-    if (this._session) return this._session;
-    const ort = require('onnxruntime-node');
-    this._session = await ort.InferenceSession.create(this._modelPath);
-    return this._session;
+    // Cache the PROMISE, not the resolved session: two interleaved cold calls
+    // would otherwise both pass a null check and create the 300MB native
+    // session twice, leaking one (same pattern as the worker's _loadPromise).
+    if (!this._sessionPromise) {
+      const ort = require('onnxruntime-node');
+      this._sessionPromise = ort.InferenceSession.create(this._modelPath);
+      this._sessionPromise.catch(() => { this._sessionPromise = null; });
+    }
+    return this._sessionPromise;
   }
 
-  // Char-level tokenize matching the dictabert tokenizer: NFKC → lowercase →
-  // strip accents → one token per char. Returns ids + a map back to source
-  // character indices (chars the normalizer deletes produce no token).
+  // Char-level tokenize matching the dictabert tokenizer's FULL normalizer
+  // chain: NFKC → Lowercase → StripAccents → Replace('<foreign>'→'[UNK]') →
+  // Replace(disallowed-run → '[UNK]'), then one token per char with the
+  // literal '[UNK]' kept as a single token (per the pre_tokenizer).
+  //
+  // Two subtleties the review proved matter (input ids otherwise diverge and
+  // can flip the model's stress/nikud predictions):
+  //   1. StripAccents removes COMBINING marks only — it does NOT decompose,
+  //      so composed é survives it and then falls to the disallowed Replace.
+  //      (Do not NFD here.)
+  //   2. A RUN of disallowed chars collapses to ONE [UNK] token, not N.
+  //
+  // Returns ids + a map back to source character indices (positions that
+  // produce no token, or that sit inside a collapsed [UNK] run, map to -1 /
+  // the run's first char — non-Hebrew chars never receive diacritics anyway).
   _tokenize(text) {
+    // Allowed set — verbatim from the vendored tokenizer.json Replace regex.
+    const ALLOWED = /[\u0590-\u05ff\x00-\x7f\u200c-\u203f\u20a0-\u20bf\u2200-\u22ff\u2150-\u218b\ufb00-\ufb4f]/;
     const ids = [this._cls];
     const srcIndex = [-1];
     const chars = [...text];
+    let inUnkRun = false;
     for (let i = 0; i < chars.length; i++) {
+      // '<foreign>' literal → one [UNK] (first Replace normalizer).
+      if (chars[i] === '<' && chars.slice(i, i + 9).join('') === '<foreign>') {
+        ids.push(this._unk); srcIndex.push(-1);
+        i += 8; inUnkRun = false; continue;
+      }
+      // NFKC → lowercase → strip combining marks WITHOUT decomposing.
       let c = chars[i].normalize('NFKC').toLowerCase();
-      c = [...c.normalize('NFD')].filter(ch => !/\p{M}/u.test(ch)).join('');
-      if (!c) continue;
-      // Multi-char NFKC expansions: tokenize each resulting char, all mapping
-      // back to the same source position (mirrors offset behaviour closely
-      // enough for per-char Hebrew).
+      c = [...c].filter(ch => !/\p{Mn}/u.test(ch)).join('');
+      if (!c) { continue; }
       for (const ch of c) {
-        ids.push(this._vocab[ch] ?? this._unk);
-        srcIndex.push(i);
+        if (ALLOWED.test(ch)) {
+          ids.push(this._vocab[ch] ?? this._unk);
+          srcIndex.push(i);
+          inUnkRun = false;
+        } else if (!inUnkRun) {
+          // First char of a disallowed run → single [UNK] for the whole run.
+          ids.push(this._unk);
+          srcIndex.push(-1);
+          inUnkRun = true;
+        }
+        // subsequent disallowed chars: swallowed into the same [UNK]
       }
     }
     ids.push(this._sep);

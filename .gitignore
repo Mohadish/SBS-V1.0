@@ -83,3 +83,4 @@ tts-textdump.json
 # Populated from E:\hebrew-tts-spike. See scripts/fetch-kokoro-he.js.
 sbs-app/kokoro-he/
 sbs-app/out-he-test/
+sbs-app/dist-he/

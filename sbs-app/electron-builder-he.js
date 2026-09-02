@@ -13,6 +13,10 @@ const base = require('./package.json').build;
 
 module.exports = {
   ...base,
+  // SEPARATE output dir — never let a HEBREW-TEST artifact (or its
+  // win-unpacked tree, which carries the non-commercial model with no
+  // filename marking at all) sit next to customer builds in dist/.
+  directories: { ...(base.directories || {}), output: 'dist-he' },
   extraResources: [
     ...(base.extraResources || []),
     { from: 'kokoro-he', to: 'kokoro-he', filter: ['**/*'] },

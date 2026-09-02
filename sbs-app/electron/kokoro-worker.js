@@ -18,12 +18,26 @@ const path = require('path');
 
 let _instance = null;
 let _loadPromise = null;
+
+// Model loads are SERIALIZED. Both loaders mutate the process-global
+// tx.env.localModelPath and transformers.js re-reads it on every file fetch,
+// so two cold loads interleaving (English synth + Hebrew synth arriving
+// together) resolve files against the wrong root — either both ladders fail
+// with the misleading "no working device/dtype combination", or a later
+// candidate silently loads on a degraded backend (review finding, V0.3.2.133).
+// Synthesis itself is NOT serialized — only the load ladders.
+let _loadChain = Promise.resolve();
+function _serializeLoad(fn) {
+  const run = _loadChain.then(fn, fn);
+  _loadChain = run.catch(() => {});
+  return run;
+}
 let _activeBackend = 'unknown';   // 'dml' | 'cpu' — for timing logs
 
 async function _load() {
   if (_instance)    return _instance;
   if (_loadPromise) return _loadPromise;
-  _loadPromise = (async () => {
+  _loadPromise = _serializeLoad(async () => {
     const km  = require('kokoro-js');
     const tx  = require('@huggingface/transformers');
     let   ort = null;
@@ -122,7 +136,7 @@ async function _load() {
       msg:  `[kokoro-worker] model ready — backend=${_activeBackend}, ${Object.keys(tts.voices || {}).length} voices, total=${Date.now() - t0}ms`,
     });
     return tts;
-  })();
+  });
   _loadPromise.catch(() => { _loadPromise = null; });
   return _loadPromise;
 }
@@ -178,7 +192,7 @@ async function _loadHebrew() {
   if (_heLoad)     return _heLoad;
   if (!workerData.hebrewDir) throw new Error('Hebrew add-on is not installed');
 
-  _heLoad = (async () => {
+  _heLoad = _serializeLoad(async () => {
     const km = require('kokoro-js');
     const tx = require('@huggingface/transformers');
     let   ort = null;
@@ -187,7 +201,6 @@ async function _loadHebrew() {
     // transformers.js resolves <localModelPath><modelId>, so point it at the
     // add-on's PARENT and use the folder name as the id. Restored afterwards so
     // a later English load still resolves against kokoro-bundle.
-    const prevPath = tx.env.localModelPath;
     tx.env.localModelPath = path.dirname(workerData.hebrewDir) + path.sep;
     const heId = path.basename(workerData.hebrewDir);
 
@@ -226,11 +239,13 @@ async function _loadHebrew() {
           msg: `[kokoro-he] x ${c.device}/${c.dtype} - ${err?.message?.split('\n')[0] || err}` });
       }
     }
-    tx.env.localModelPath = prevPath;
+    // Restore to the ENGLISH bundle root (not a captured snapshot): with the
+    // load lock held, this is the only value the next English load expects.
+    tx.env.localModelPath = workerData.bundleDir + path.sep;
     if (!tts) throw new Error('Hebrew Kokoro: no working device/dtype combination');
     _heInstance = tts;
     return tts;
-  })();
+  });
   _heLoad.catch(() => { _heLoad = null; });
   return _heLoad;
 }
