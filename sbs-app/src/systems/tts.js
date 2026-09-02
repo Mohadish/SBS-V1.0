@@ -176,6 +176,25 @@ export async function synthesize(text, voiceId, opts = {}) {
     // flip if the GPU misbehaves. Read fresh each call so it takes effect on the
     // very next synth (no reload). Default off → GPU when ready, CPU otherwise.
     const forceCpu = !!userSettings.get()?.tts?.forceCpu;
+
+    // Hebrew Kokoro add-on (V0.3.2.133): `he_`-prefixed kokoro voices belong to
+    // the separate Hebrew checkpoint. Everything language-specific (nikud
+    // restoration -> IPA -> tokens -> synth) happens inside the node worker,
+    // so this branch just forwards TEXT like the English path does. The worker
+    // errors clearly when the add-on folder is absent; no WebGPU path yet —
+    // the Hebrew model is CPU/DML via the worker only.
+    if (source === 'kokoro' && voiceName.startsWith('he_')) {
+      const res = await _withTimeout(
+        window.sbsNative.tts.synthesizeHe(text, voiceName, speed),
+        45_000, null,
+      );
+      if (!res.ok) throw new Error(res.error || 'Hebrew TTS failed.');
+      const dataUrl = `data:${res.mime};base64,${res.data}`;
+      let durationMs = (res.mime === 'audio/wav') ? _wavDurationMsFromB64(res.data) : 0;
+      if (!durationMs) durationMs = await _measureAudioDuration(dataUrl);
+      return { dataUrl, mime: res.mime, durationMs };
+    }
+
     if (source === 'kokoro' && !forceCpu) {
       try {
         const wg = await import('./tts-webgpu.js');

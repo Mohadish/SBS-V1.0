@@ -97,6 +97,7 @@ contextBridge.exposeInMainWorld('sbsNative', {
   tts: {
     listVoices: ()                                     => ipcRenderer.invoke('tts:listVoices'),
     synthesize: (text, voice, speed = 1, opts = {})    => ipcRenderer.invoke('tts:synthesize', text, voice, speed, opts),
+    synthesizeHe: (text, voice, speed = 1)             => ipcRenderer.invoke('tts:synthesizeHe', text, voice, speed),
     // V0.2.22.35 — Google Cloud TTS (gated behind userSettings.cloud.enabled
     // + googleApiKey in the renderer). Key passed per-call so it never
     // lives in the preload or gets embedded in the binary.
@@ -105,6 +106,7 @@ contextBridge.exposeInMainWorld('sbsNative', {
     // file:// URL of the Kokoro model bundle, resolved by main (dev / packaged /
     // worktree). The renderer WebGPU engine fetches the model + voices from here.
     kokoroBundleUrl: () => ipcRenderer.invoke('tts:kokoroBundleUrl'),
+    kokoroHeUrl:     () => ipcRenderer.invoke('tts:kokoroHeUrl'),
   },
 
   // ── 🌐 Translation (V0.3.2.63 — subtitle layer) ─────────────────────────

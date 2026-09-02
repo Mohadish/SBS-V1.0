@@ -53,9 +53,42 @@ function _kokoroBundleDir() {
   return candidates[0];   // missing everywhere → worker throws a clear error
 }
 
+// Hebrew Kokoro add-on (V0.3.2.133) - an OPTIONAL, fully removable folder.
+//
+// The Hebrew voice is a different 82M checkpoint, not a voicepack: a `.bin`
+// cannot teach the English model a language. So the add-on carries its own
+// model.onnx + tokenizer + voicepack, resolved exactly like kokoro-bundle.
+//
+// PRESENCE-GATED: when the folder is absent every Hebrew code path is inert
+// and the app behaves exactly as it did before. Delete the folder to revert.
+//
+// NOT SHIPPABLE: the current voice derives from SASPEECH (c IPBC) and is
+// licensed NON-COMMERCIAL. It is gitignored and excluded from the default
+// build - see `npm run build:he` for the test-only installer.
+function _kokoroHeDir() {
+  if (app.isPackaged) {
+    const d = path.join(process.resourcesPath, 'kokoro-he');
+    try { return fs.existsSync(path.join(d, 'onnx', 'model.onnx')) ? d : null; } catch { return null; }
+  }
+  const MODEL = path.join('onnx', 'model.onnx');
+  const candidates = [path.join(APP_ROOT, 'kokoro-he')];
+  const m = APP_ROOT.replace(/\\/g, '/').match(/^(.*)\/\.claude\/worktrees\/[^/]+\/sbs-app$/i);
+  if (m) candidates.push(path.join(m[1], 'sbs-app', 'kokoro-he'));
+  for (const dir of candidates) {
+    try { if (fs.existsSync(path.join(dir, MODEL))) return dir; } catch {}
+  }
+  return null;   // absent -> Hebrew stays completely switched off
+}
+
+/** True when the Hebrew add-on is installed. */
+function _hasHebrewAddon() {
+  return !!_kokoroHeDir();
+}
+
 function _kokoroBundlePaths() {
   return {
     bundleDir: _kokoroBundleDir(),
+    hebrewDir: _kokoroHeDir(),
     cacheDir: path.join(app.getPath('userData'), 'kokoro-cache'),
   };
 }
@@ -67,6 +100,15 @@ function _kokoroBundlePaths() {
 ipcMain.handle('tts:kokoroBundleUrl', () => {
   try { return require('url').pathToFileURL(_kokoroBundleDir() + path.sep).href; }
   catch (e) { console.warn('[kokoro] bundle-url resolve failed:', e?.message); return null; }
+});
+
+// Same, for the Hebrew add-on. Returns null when the add-on is not installed,
+// which is the renderer's signal to leave every Hebrew path switched off.
+ipcMain.handle('tts:kokoroHeUrl', () => {
+  const dir = _kokoroHeDir();
+  if (!dir) return null;
+  try { return require('url').pathToFileURL(dir + path.sep).href; }
+  catch (e) { console.warn('[kokoro-he] url resolve failed:', e?.message); return null; }
 });
 
 function _ensureKokoroWorker() {
@@ -104,6 +146,14 @@ function _kokoroSynth(text, voice, speed) {
     const id = ++_kokoroSeq;
     _kokoroPending.set(id, { resolve, reject });
     _ensureKokoroWorker().postMessage({ kind: 'synth', id, text, voice, speed });
+  });
+}
+
+function _kokoroHeSynth(phonemes, voice, speed) {
+  return new Promise((resolve, reject) => {
+    const id = ++_kokoroSeq;
+    _kokoroPending.set(id, { resolve, reject });
+    _ensureKokoroWorker().postMessage({ kind: 'synth-he', id, text: phonemes, voice, speed });
   });
 }
 
@@ -958,6 +1008,14 @@ async function _enumerateVoices() {
     voices.push({ name: v.name, culture: v.culture, lang: v.lang, gender: v.gender, source: 'kokoro' });
   }
 
+  // Hebrew add-on voices - listed ONLY when the add-on folder is installed, so
+  // a stock build shows exactly the voices it always did.
+  if (_hasHebrewAddon()) {
+    for (const v of _KOKORO_HE_VOICES) {
+      voices.push({ name: v.name, culture: v.culture, lang: v.lang, gender: v.gender, source: 'kokoro' });
+    }
+  }
+
   _voiceListCache = voices;
   return voices;
 }
@@ -965,6 +1023,13 @@ async function _enumerateVoices() {
 // Kokoro v1.0 voice manifest. Listing here (instead of querying the model
 // at boot) means the voice dropdown populates without forcing a model
 // download. Names exactly match the keys kokoro-js exposes on tts.voices.
+// Hebrew add-on voice manifest. Separate list so the presence gate can add it
+// without touching the English one. `he_` prefix is how tts.js routes a synth
+// to the Hebrew checkpoint instead of the English one.
+const _KOKORO_HE_VOICES = [
+  { name: 'he_shaul', culture: 'he-IL', lang: 'Hebrew', gender: 'Male' },
+];
+
 const _KOKORO_VOICES = [
   // American English
   { name: 'af_heart',    culture: 'en-US', lang: 'English (American)', gender: 'Female' },
@@ -1143,6 +1208,24 @@ function _buildOneCoreSynthCommand(voiceName, text, outFile, speed) {
     PS_SYNTH_ONECORE_BODY,
   ].join('\n');
 }
+
+// Hebrew add-on synth (V0.3.2.133). Forwards PLAIN TEXT to the kokoro worker,
+// which runs the whole Hebrew chain (nikud ONNX -> IPA -> tokens -> model).
+// Nothing ORT-related may run in the main process: loading onnxruntime-node in
+// both main and a worker_thread crashes the app on the second main-side
+// inference (exit 127, verified live).
+ipcMain.handle('tts:synthesizeHe', async (_, text, voice, speed) => {
+  if (!text || !text.trim()) return { ok: false, error: 'Empty text.' };
+  if (!_kokoroHeDir()) return { ok: false, error: 'Hebrew add-on is not installed (kokoro-he folder missing).' };
+  try {
+    const wavBuf = await _kokoroHeSynth(text, voice, speed);
+    const b64 = (Buffer.isBuffer(wavBuf) ? wavBuf : Buffer.from(wavBuf)).toString('base64');
+    return { ok: true, data: b64, mime: 'audio/wav' };
+  } catch (e) {
+    console.warn('[kokoro-he] synth failed:', e?.message);
+    return { ok: false, error: e?.message || 'Hebrew synthesis failed.' };
+  }
+});
 
 ipcMain.handle('tts:synthesize', async (_, text, voice, speed, opts) => {
   if (!text || !text.trim()) return { ok: false, error: 'Empty text.' };

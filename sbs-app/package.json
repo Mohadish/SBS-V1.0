@@ -13,6 +13,7 @@
     "vendor-tts": "node scripts/vendor-tts-webgpu.js",
     "sanitize-sbom": "node scripts/sanitize-sbom.js",
     "build": "npm run ensure-models && npm run vendor-tts && npm run bytenode && npm run sanitize-sbom && electron-builder",
+    "build:he": "npm run ensure-models && npm run vendor-tts && npm run bytenode && npm run sanitize-sbom && electron-builder --config electron-builder-he.js",
     "build:nobytenode": "npm run ensure-models && npm run vendor-tts && npm run sanitize-sbom && electron-builder",
     "fetch-models": "node scripts/fetch-kokoro.js"
   },

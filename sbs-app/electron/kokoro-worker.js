@@ -127,9 +127,170 @@ async function _load() {
   return _loadPromise;
 }
 
+// ---------------------------------------------------------------------------
+// Hebrew add-on (V0.3.2.133)
+//
+// A separate 82M checkpoint, loaded lazily and ONLY when a Hebrew clip is
+// actually requested - warming both models would double the ~325 MB resident
+// cost against the renderer's heap ceiling for no benefit.
+//
+// Two deliberate departures from the English path:
+//   1. Input is IPA PHONEMES, not text. kokoro-js's phonemizer is espeak
+//      English and cannot produce Hebrew IPA, so the renderer phonemizes
+//      (nikud -> IPA) and we skip straight to the token path.
+//   2. We read the voicepack ourselves instead of letting kokoro-js do it.
+//      kokoro-js resolves voices relative to its OWN package directory
+//      (node_modules/kokoro-js/voices), which is inside the asar in a
+//      packaged build and therefore not writable. Reading from the add-on
+//      folder keeps the whole feature inside one removable directory.
+// ---------------------------------------------------------------------------
+
+let _heInstance = null;
+let _heLoad     = null;
+let _heVoices   = new Map();   // name -> Float32Array(510*256)
+let _heNikud    = null;        // lazy phonikud ONNX session (lives HERE, not main)
+
+// ALL onnxruntime-node usage must stay inside this worker. Loading the native
+// binding in BOTH main and a worker_thread crashes the app on the second
+// main-side inference (verified live, V0.3.2.133: exit 127 right after the
+// worker initialized its own ORT). So the nikud model runs here too, and the
+// main process never touches ORT.
+function _heG2p() { return require('./hebrew-g2p.js'); }
+
+async function _heTextToPhonemes(text) {
+  const g2p = _heG2p();
+  if (!_heNikud) {
+    _heNikud = new g2p.Nikud(
+      path.join(workerData.hebrewDir, 'nikud', 'phonikud-1.0.onnx'),
+      path.join(workerData.hebrewDir, 'nikud', 'tokenizer.json'),
+    );
+  }
+  const t0 = Date.now();
+  const vocalized = await _heNikud.addDiacritics(text);
+  const phonemes  = g2p.phonemize(vocalized);
+  parentPort.postMessage({ kind: 'log',
+    msg: `[kokoro-he] g2p ${Date.now() - t0}ms: "${text.slice(0, 30)}" -> "${phonemes.slice(0, 60)}"` });
+  return phonemes;
+}
+
+async function _loadHebrew() {
+  if (_heInstance) return _heInstance;
+  if (_heLoad)     return _heLoad;
+  if (!workerData.hebrewDir) throw new Error('Hebrew add-on is not installed');
+
+  _heLoad = (async () => {
+    const km = require('kokoro-js');
+    const tx = require('@huggingface/transformers');
+    let   ort = null;
+    try { ort = require('onnxruntime-node'); } catch { /* CPU-only build */ }
+
+    // transformers.js resolves <localModelPath><modelId>, so point it at the
+    // add-on's PARENT and use the folder name as the id. Restored afterwards so
+    // a later English load still resolves against kokoro-bundle.
+    const prevPath = tx.env.localModelPath;
+    tx.env.localModelPath = path.dirname(workerData.hebrewDir) + path.sep;
+    const heId = path.basename(workerData.hebrewDir);
+
+    // CPU ONLY - deliberately no DML for the Hebrew graph. Verified live
+    // (V0.3.2.133): the export's ConvTranspose fails DML inference with
+    // "parameter is incorrect" (same op family as the English q8/DML issue).
+    // Until the model is re-exported DML-compatible there is nothing to gain
+    // from trying. CPU synth is ~0.8-1 s/clip warm - fine for narration.
+    const candidates = [{ device: 'cpu', dtype: 'fp32' }];
+
+    let tts = null, chosen = null;
+    for (const c of candidates) {
+      try {
+        const t0 = Date.now();
+        const cand = await km.KokoroTTS.from_pretrained(heId, { dtype: c.dtype, device: c.device });
+        // Smoke-test with a REAL inference before locking the backend in.
+        // Same trap as the English q8 path: our fp32 export's ConvTranspose
+        // LOADS on DML then throws "parameter is incorrect" at first synth
+        // (verified live, V0.3.2.133). Only a forward pass reveals it.
+        {
+          const { input_ids } = cand.tokenizer('salom.', { truncation: true });
+          const style = await _heVoice('he_shaul');
+          await cand.model({
+            input_ids,
+            style: new tx.Tensor('float32', style.slice(0, 256), [1, 256]),
+            speed: new tx.Tensor('float32', [1], [1]),
+          });
+        }
+        tts = cand;
+        chosen = c;
+        parentPort.postMessage({ kind: 'log',
+          msg: `[kokoro-he] loaded+smoked ${c.device}/${c.dtype} in ${Date.now() - t0}ms` });
+        break;
+      } catch (err) {
+        parentPort.postMessage({ kind: 'log',
+          msg: `[kokoro-he] x ${c.device}/${c.dtype} - ${err?.message?.split('\n')[0] || err}` });
+      }
+    }
+    tx.env.localModelPath = prevPath;
+    if (!tts) throw new Error('Hebrew Kokoro: no working device/dtype combination');
+    _heInstance = tts;
+    return tts;
+  })();
+  _heLoad.catch(() => { _heLoad = null; });
+  return _heLoad;
+}
+
+/** Load a voicepack straight from the add-on folder (see note 2 above). */
+async function _heVoice(name) {
+  if (_heVoices.has(name)) return _heVoices.get(name);
+  const fsp  = require('fs/promises');
+  const file = path.join(workerData.hebrewDir, 'voices', `${name}.bin`);
+  const { buffer, byteOffset, byteLength } = await fsp.readFile(file);
+  const data = new Float32Array(buffer.slice(byteOffset, byteOffset + byteLength));
+  _heVoices.set(name, data);
+  return data;
+}
+
+/**
+ * Synthesize from PRE-COMPUTED IPA phonemes.
+ * Mirrors kokoro-js generate_from_ids(), which we cannot call directly because
+ * it resolves the voicepack from its own package folder.
+ */
+async function _heSynth(phonemes, voice, speed) {
+  const tx  = require('@huggingface/transformers');
+  const tts = await _loadHebrew();
+
+  const { input_ids } = tts.tokenizer(phonemes, { truncation: true });
+  const n     = input_ids.dims.at(-1);
+  const style = (await _heVoice(voice))
+    .slice(256 * Math.min(Math.max(n - 2, 0), 509),
+           256 * Math.min(Math.max(n - 2, 0), 509) + 256);
+
+  const { waveform } = await tts.model({
+    input_ids,
+    style: new tx.Tensor('float32', style, [1, 256]),
+    speed: new tx.Tensor('float32', [speed], [1]),
+  });
+  return new tx.RawAudio(waveform.data, 24000);
+}
+
 parentPort.on('message', async (msg) => {
-  if (msg?.kind !== 'synth') return;
+  if (msg?.kind !== 'synth' && msg?.kind !== 'synth-he') return;
   const { id, text, voice, speed } = msg;
+
+  // Hebrew branch: `text` is plain Hebrew; the full chain (nikud -> IPA ->
+  // tokens -> model) runs here so ORT never loads in the main process.
+  if (msg.kind === 'synth-he') {
+    try {
+      const t0   = Date.now();
+      const rate = Number.isFinite(Number(speed)) && Number(speed) > 0 ? Number(speed) : 1.0;
+      const phonemes = await _heTextToPhonemes(text);
+      if (!phonemes.trim()) throw new Error('Hebrew G2P produced no phonemes.');
+      const audio = await _heSynth(phonemes, voice, rate);
+      parentPort.postMessage({ kind: 'log',
+        msg: `[kokoro-he] synth ${Date.now() - t0}ms (voice=${voice}, phonemes=${(text || '').length})` });
+      parentPort.postMessage({ id, ok: true, wav: Buffer.from(audio.toWav()) });
+    } catch (e) {
+      parentPort.postMessage({ id, ok: false, error: e?.message || String(e) });
+    }
+    return;
+  }
+
   try {
     const tts = await _load();
     const t0  = Date.now();

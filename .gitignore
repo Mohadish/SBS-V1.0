@@ -77,3 +77,9 @@ sbs-viewer/node_modules/
 # TTS diagnostic temp dumps (written by window.sbsTTS.dumpText / sbsTTSDiag)
 tts-diag.json
 tts-textdump.json
+
+# Hebrew Kokoro test add-on — NON-COMMERCIAL model (SASPEECH/IPBC).
+# 605 MB, and must never be committed or shipped in a commercial build.
+# Populated from E:\hebrew-tts-spike. See scripts/fetch-kokoro-he.js.
+sbs-app/kokoro-he/
+sbs-app/out-he-test/
