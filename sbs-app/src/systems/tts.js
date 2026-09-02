@@ -136,20 +136,31 @@ export async function synthesize(text, voiceId, opts = {}) {
   // propagate as throws so the caller can surface them to the user
   // (Export tab status, narration-precache log, etc).
   if (voiceId.startsWith('gcp:')) {
-    if (!window.sbsNative?.tts?.gcpSynthesize) {
-      throw new Error('Cloud TTS unavailable (not running in Electron).');
-    }
+    // 🛟 V0.3.2.136 — CLOUD IS NOT ALWAYS THERE. A cloud voice can be
+    // unusable for reasons that have nothing to do with this project: the
+    // key was removed, billing lapsed, the quota is spent, the machine is
+    // offline. Rather than failing the whole narration, fall back to a LOCAL
+    // voice that speaks the same language and say so. The caller gets audio
+    // and the reason; nothing silently produces nothing.
+    const fallback = async (why) => {
+      const alt = await pickLocalVoiceFor(_gcpLangOf(voiceId));
+      if (!alt) throw new Error(`${why} No offline voice for that language is installed either.`);
+      console.warn(`[tts] ${why} Falling back to ${alt.id}.`);
+      const out = await synthesize(text, alt.id, { speed });
+      return { ...out, fellBackTo: alt.id, fellBackReason: why };
+    };
+
+    if (!window.sbsNative?.tts?.gcpSynthesize) return fallback('Cloud TTS is unavailable here.');
     const us = userSettings.get();
-    if (!us?.cloud?.enabled) {
-      throw new Error('Cloud TTS is disabled — open Settings → Cloud TTS to enable.');
-    }
+    if (!us?.cloud?.enabled)                    return fallback('Cloud TTS is switched off in Settings.');
     const apiKey = (us?.cloud?.googleApiKey || '').trim();
-    if (!apiKey) {
-      throw new Error('No Google Cloud TTS API key — open Settings → Cloud TTS.');
-    }
+    if (!apiKey)                                return fallback('No Google Cloud TTS API key is configured.');
+
     const voiceName = voiceId.slice(4);   // strip 'gcp:'
     const res = await window.sbsNative.tts.gcpSynthesize(text, voiceName, speed, apiKey);
-    if (!res?.ok) throw new Error(res?.error || 'Google Cloud TTS failed.');
+    // Quota, billing, auth, network — all reasons to use the local voice
+    // instead of producing silence.
+    if (!res?.ok) return fallback(`Google Cloud TTS failed (${res?.error || 'unknown error'}).`);
     const dataUrl = `data:${res.mime};base64,${res.data}`;
     // Same WAV-header path as the OS branch — main process wraps PCM in
     // a 44-byte WAV header before returning, so this is reliable.
@@ -377,6 +388,52 @@ function _withTimeout(promise, ms, onTimeout) {
  * Linux:  varies.
  * We do a best-effort extraction; fallback to "—".
  */
+/** Language of a cloud voice id — 'gcp:he-IL-Wavenet-A' → 'he'. */
+function _gcpLangOf(voiceId) {
+  const m = /^gcp:([a-z]{2})-/i.exec(voiceId || '');
+  return m ? m[1].toLowerCase() : '';
+}
+
+/** Two-letter language of a voice entry, from its lang/culture/name. */
+function _langCodeOf(v) {
+  const c = String(v.culture || '').toLowerCase();
+  let m = /^([a-z]{2})[-_]/.exec(c);
+  if (m) return m[1];
+  const id = String(v.id || '');
+  m = /^gcp:([a-z]{2})-/i.exec(id);
+  if (m) return m[1].toLowerCase();
+  // OS voices carry a human label like "Microsoft Asaf - Hebrew (Israel)".
+  const label = `${v.lang || ''} ${v.name || ''}`.toLowerCase();
+  for (const [code, ...words] of [
+    ['he', 'hebrew', 'עברית'], ['en', 'english'], ['de', 'german'], ['fr', 'french'],
+    ['es', 'spanish'], ['it', 'italian'], ['pt', 'portuguese'], ['ru', 'russian'],
+    ['ar', 'arabic'], ['zh', 'chinese'], ['ja', 'japanese'],
+  ]) if (words.some(w => label.includes(w))) return code;
+  return '';
+}
+
+/**
+ * 🛟 The best OFFLINE voice for a language, or null.
+ *
+ * Order matters: a local neural voice (Kokoro) beats an OS voice on quality,
+ * and OneCore beats SAPI5 — SAPI5 pipes text as ASCII (see say/platform/base),
+ * which destroys Hebrew and every other non-Latin script, so it is never a
+ * valid fallback for those languages.
+ */
+export async function pickLocalVoiceFor(langCode) {
+  const want = String(langCode || '').slice(0, 2).toLowerCase();
+  if (!want) return null;
+  let voices = [];
+  try { voices = await listVoices(); } catch { return null; }
+  const local = voices.filter(v => v.backend === 'os' && _langCodeOf(v) === want);
+  const rank = (v) => (v.source === 'kokoro' ? 0 : v.source === 'onecore' ? 1 : 2);
+  local.sort((a, b) => rank(a) - rank(b));
+  // Non-Latin scripts must never land on SAPI5.
+  const nonLatin = ['he', 'ar', 'ru', 'zh', 'ja', 'ko', 'el', 'th', 'hi'].includes(want);
+  const usable = nonLatin ? local.filter(v => v.source !== 'sapi5') : local;
+  return usable[0] || null;
+}
+
 function _inferLang(name) {
   const m = /-\s*(.+?)\s*$/.exec(name);
   return m ? m[1] : '—';

@@ -16,6 +16,8 @@ import { state } from '../core/state.js';
 import { setStatus } from './status.js';
 import { promptString } from './prompt.js';
 import * as lang from '../systems/language-packs.js';
+import * as tts from '../systems/tts.js';
+import { showContextMenu } from './context-menu.js';
 
 let _win = null;
 let _rows = [];        // [{ code, report }]
@@ -268,9 +270,15 @@ function _langRow({ code, isSource, active, stats, error }) {
     if (vId) {
       v.textContent = `🎙 ${String(vId).split('|').pop()}`;
     } else {
-      v.textContent = '🎙 no voice set — switch to this language and pick one in the Export tab';
+      v.textContent = '🎙 no voice set — click to choose';
       v.style.color = '#d9a03d';
     }
+    // Pick the voice for THIS language without leaving the panel. Offline
+    // voices that actually speak it are offered first and labelled, because
+    // a cloud voice stops working the moment the key or billing does.
+    v.style.cursor = 'pointer';
+    v.title = 'Choose the voice for this language';
+    v.addEventListener('click', (ev) => { ev.stopPropagation(); _pickVoice(code, ev); });
     row.appendChild(v);
   }
 
@@ -297,6 +305,39 @@ function _guardSource() {
     return false;
   }
   return true;
+}
+
+/** Voice menu for one language: offline matches first, then everything else. */
+async function _pickVoice(code, ev) {
+  let voices = [];
+  try { voices = await tts.listVoices(); } catch (e) { setStatus(`Could not list voices: ${e?.message || e}`, 'warn', 6000); return; }
+  const best = await tts.pickLocalVoiceFor(code);
+  const isMatch = (v) => best && v.id === best.id;
+  const offline = voices.filter(v => v.backend === 'os');
+  const cloud   = voices.filter(v => v.backend !== 'os');
+
+  const label = (v) => `${isMatch(v) ? '★ ' : ''}${v.name}${v.culture ? `  (${v.culture})` : ''}`;
+  const set = (id) => {
+    const next = { ...(state.get('narrationVoices') || {}), [code]: { voiceId: id, speed: (state.get('export') || {}).narrationSpeed ?? 1 } };
+    state.setState({ narrationVoices: next });
+    // Showing this language? Make it the live voice too.
+    if (lang.activeLang() === code) state.setState({ export: { ...state.get('export'), narrationVoice: id } });
+    state.markDirty();
+    setStatus(`${code}: voice set to ${String(id).split('|').pop()}.`, 'success', 5000);
+    _refresh();
+  };
+
+  const items = [];
+  if (best) items.push({ label: `★ ${best.name} — offline, speaks ${code}`, action: () => set(best.id) });
+  if (offline.length) {
+    items.push({ separator: true });
+    items.push({ label: '💻 Offline voices', submenu: offline.map(v => ({ label: label(v), action: () => set(v.id) })) });
+  }
+  if (cloud.length) {
+    items.push({ label: '☁ Cloud voices (need a key + billing)', submenu: cloud.map(v => ({ label: label(v), action: () => set(v.id) })) });
+  }
+  if (!items.length) { setStatus('No voices available.', 'warn', 5000); return; }
+  showContextMenu(items, ev.clientX, ev.clientY);
 }
 
 async function _onAdd() {
