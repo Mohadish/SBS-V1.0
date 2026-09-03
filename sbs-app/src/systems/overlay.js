@@ -30,7 +30,7 @@ import { mountTextToolbar, unmountTextToolbar, execCommandApplier, setToolbarVal
 import { mountShapeToolbar, unmountShapeToolbar, setShapeStyleDropdown, setShapeStyleLocked } from '../ui/shape-toolbar.js';
 import * as userSettings from '../core/user-settings.js';
 import { listShapeStyles, getShapeStyle, SHAPE_STYLE_KEYS } from './shape-styles.js';
-import { getTextToolbarSlot }  from '../ui/overlay-toolbar.js';
+import { getTextToolbarSlot, showFloatingToolbar, hideFloatingToolbar } from '../ui/overlay-toolbar.js';
 import * as textEngine from './text-engine.js';
 import { getStyleTemplate, listStyleTemplates } from './style-templates.js';
 import { registerLayer, getLayerSelection, persistNodeIfHeader } from './cross-layer.js';
@@ -91,6 +91,13 @@ export function initOverlay() {
   _stage.add(_ghostLayer);   // below _layer so new content draws on top
   _stage.add(_layer);
   _stage.add(_uiLayer);
+
+  // The floating style panel follows whatever it's parked against. Konva
+  // BUBBLES dragmove, so this one layer-level listener covers dragging any
+  // node — including multi-select drags where the panel's anchor isn't the
+  // node under the cursor. (transform does NOT bubble; that listener is
+  // attached to the anchor node itself in _anchorFloatingTo.)
+  _layer.on('dragmove.floatbar', _repositionFloatingToolbar);
 
   _transformer = new Konva.Transformer({
     rotateEnabled: true,
@@ -257,6 +264,9 @@ function _syncSize() {
   _stage.scale({ x: sf.scale, y: sf.scale });
   _stage.position({ x: sf.x, y: sf.y });
   _stage.batchDraw();
+  // The re-fit moved every node on screen; the floating panel has to
+  // follow or it ends up pointing at empty canvas.
+  _repositionFloatingToolbar();
 }
 
 // Stage 3a: rescale all overlay nodes when the canonical export size
@@ -1323,6 +1333,8 @@ function _enterTextEdit(node, ctxOverride) {
       setConstDropdown(null);    // 📌 hidden while typing — attach/detach from selection mode
       setStyleLocked(false);
     }
+    // Float the panel over the box being typed into, same as selection mode.
+    _anchorFloatingTo(node);
   }
   // Sync the dropdowns to whatever style is at the caret. Re-fires on
   // every selection change so moving the caret across mixed-style runs
@@ -1396,6 +1408,7 @@ async function _exitTextEdit(opts = {}) {
     div.removeEventListener('keydown', onKeyDown);
     if (onPaste) div.removeEventListener('paste', onPaste);
     unmountTextToolbar();
+    _clearFloatingToolbar();
 
     const html = div.innerHTML;
 
@@ -3516,9 +3529,17 @@ function _refreshMultiToolbar() {
   const textBoxes = sel.filter(n => n.getAttr?.('textHtml'));
   const shapes    = sel.filter(n => n.name?.() === 'userShape');
 
-  // Shape-toolbar wins when ANY shape is selected and no text box is in
-  // the selection. Mixed selections fall back to text toolbar (text-edit
-  // is the more specific UX). When neither: unmount both.
+  // MIXED SELECTION (V0.3.2.141) — text and shapes together have no
+  // meaningful shared property set, so the panel disappears entirely
+  // rather than showing controls that apply to half the selection.
+  if (textBoxes.length && shapes.length) {
+    unmountTextToolbar();
+    unmountShapeToolbar();
+    _clearFloatingToolbar();
+    return;
+  }
+
+  // Shape-toolbar when only shapes are selected. When neither: unmount both.
   if (textBoxes.length === 0 && shapes.length >= 1) {
     unmountTextToolbar();
     mountShapeToolbar(host, () => _summariseShapeAttrs(shapes), (patch) => applyShapeAttrs(patch));
@@ -3547,6 +3568,7 @@ function _refreshMultiToolbar() {
     // Lock if ANY selected shape is bound — editing an unlocked mixed
     // selection would write values the next resolve throws away.
     setShapeStyleLocked(shapes.some(n => !!n.getAttr('shapeStyleId')));
+    _anchorFloatingTo(shapes[shapes.length - 1]);
     return;
   }
   unmountShapeToolbar();
@@ -3569,46 +3591,85 @@ function _refreshMultiToolbar() {
       _scheduleSave();
     });
     setStyleLocked(uniformId ? true : false);
-    // 📌 Constant picker (V0.3.2.100) — single plain text box only (multi
-    // would be ambiguous; TOC boxes are machine-managed). The ✏️ pencil
-    // renames the chosen definition everywhere it appears.
-    const solo = textBoxes.length === 1 ? textBoxes[0] : null;
-    if (solo && !solo.getAttr('isToc')) {
-      setConstDropdown(_constDefs(), solo.getAttr('constId') || '', (defId) => {
-        if (!defId) {
-          solo.setAttr('constId', null);
-          setStatus('Detached — now a normal text box.', 'info', 3000);
-        } else {
-          const def = _constDefs().find(d => d.id === defId);
-          if (def) {
-            solo.setAttr('constId', def.id);
-            _applyConstToNode(solo, def);
-            _layer.batchDraw();
-            setStatus(`Attached to "${def.name}".`, 'success', 3000);
-          }
-        }
-        _scheduleSave();
-      }, async (defId) => {
-        const def = _constDefs().find(d => d.id === defId);
-        if (!def) return;
-        const name = await promptString('Rename constant', def.name || '');
-        if (!name || !name.trim() || name.trim() === def.name) return;
-        def.name = name.trim();
-        _saveConstDefs([..._constDefs()]);
-        _refreshMultiToolbar();   // rebuilds this dropdown with live handlers + the new name
-        setStatus(`Constant renamed to "${def.name}".`, 'success', 3000);
-      }, (defId) => {
-        // 🗑 — deleteConstDef refuses in-use defs with an explanatory status.
-        const res = deleteConstDef(defId);
-        if (res.ok) _refreshMultiToolbar();   // dropdown loses the deleted entry
-      });
-    } else {
-      setConstDropdown(null);
-    }
+    // 📌 The constant-text picker is deliberately NOT on this panel
+    // (V0.3.2.141). The panel now floats over the box you're editing and
+    // is meant for styling only; constant management is per-project
+    // bookkeeping and lives in the right-click menu, which carries the
+    // full set (attach, detach, reposition, re-anchor, rename, delete).
+    setConstDropdown(null);
+    _anchorFloatingTo(textBoxes[textBoxes.length - 1]);
   } else {
     unmountTextToolbar();
     setConstDropdown(null);
+    _clearFloatingToolbar();
   }
+}
+
+// ─── Floating panel anchoring (V0.3.2.141) ──────────────────────────────────
+
+let _floatAnchor = null;   // the Konva node the panel is parked against
+
+/**
+ * The anchor node's bounding box in PAGE coordinates.
+ *
+ * getClientRect() is already absolute — it folds in the node's own
+ * transforms AND the stage's scale/position (the safe-frame fit) — so
+ * pairing it with the container's rect is the same mapping the in-place
+ * text editor uses. Using node.width() instead would be wrong here:
+ * it lies on circles, arrows and lines.
+ */
+function _floatRectFor(node) {
+  if (!node || !_container || typeof node.getClientRect !== 'function') return null;
+  if (typeof node.getStage === 'function' && !node.getStage()) return null;   // destroyed
+  const cr = _container.getBoundingClientRect();
+  const b  = node.getClientRect();
+  if (!b || (!b.width && !b.height)) return null;
+  return {
+    left:   cr.left + b.x,
+    top:    cr.top  + b.y,
+    right:  cr.left + b.x + b.width,
+    bottom: cr.top  + b.y + b.height,
+  };
+}
+
+/**
+ * Park the panel against `node` and keep it there while the node moves.
+ *
+ * The listener goes on the NODE, not the layer: Konva bubbles `dragmove`
+ * but fires `transform` directly on the node with no bubbling, so a
+ * layer-level handler alone would miss every resize/rotate. The `.floatbar`
+ * namespace lets us detach cleanly without touching other listeners.
+ */
+function _anchorFloatingTo(node) {
+  if (_floatAnchor && _floatAnchor !== node) _floatAnchor.off?.('.floatbar');
+  _floatAnchor = node || null;
+  if (_floatAnchor) {
+    _floatAnchor.off?.('.floatbar');
+    _floatAnchor.on?.(
+      'dragmove.floatbar transform.floatbar transformend.floatbar dragend.floatbar',
+      _repositionFloatingToolbar,
+    );
+  }
+  showFloatingToolbar(_floatRectFor(_floatAnchor));
+}
+
+/** Drop the panel and stop following. */
+function _clearFloatingToolbar() {
+  if (_floatAnchor) _floatAnchor.off?.('.floatbar');
+  _floatAnchor = null;
+  hideFloatingToolbar();
+}
+
+/**
+ * Re-park against the remembered anchor. Called while the user drags or
+ * resizes the thing the panel is serving, and after a window resize
+ * (which re-fits the stage and moves every node on screen).
+ */
+function _repositionFloatingToolbar() {
+  if (!_floatAnchor) return;
+  const rect = _floatRectFor(_floatAnchor);
+  if (!rect) { _clearFloatingToolbar(); return; }
+  showFloatingToolbar(rect);
 }
 
 /**
@@ -4421,6 +4482,10 @@ async function _loadFromActiveStep() {
     const def = _constDefOf(n);
     if (def) _applyConstToNode(n, def);
   }
+  // The step rebuild destroyed every node, so anything the floating panel
+  // was parked against is gone. Drop it rather than leave it hovering over
+  // unrelated content.
+  _clearFloatingToolbar();
   _layer.batchDraw();
   // S2: start image-sequence playback now that the step's overlay is loaded +
   // visible (this runs after the step transition). No-op in edit mode / no seqs.

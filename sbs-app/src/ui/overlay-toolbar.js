@@ -280,8 +280,117 @@ async function _onOverlayMisclick() {
  * in-place text editor is open. Lives on the same row as the Add /
  * Delete buttons and the Edit toggle — no separate floating bar.
  */
+// ─── Floating style panel (V0.3.2.141) ──────────────────────────────────────
+//
+// The style controls used to live in a slot inside the top-right overlay
+// bar, miles from whatever you were editing. They now ride directly above
+// (or below) the selected box/shape.
+//
+// position:fixed on document.body rather than inside #viewport-surface: the
+// panel has to escape the viewport's clipping, and page coordinates are what
+// the Konva→DOM mapping already produces (container rect + absolute node
+// position, the same pairing the in-place text editor uses).
+//
+// z-index 40 keeps it above the overlay chrome (z30) and below the modal
+// layer (z50) — the ladder that lets context menus and prompts open over it.
+
+let _floatBar  = null;
+let _floatSlot = null;
+
+const FLOAT_GAP    = 10;   // px between the panel and the box it serves
+const FLOAT_MARGIN = 8;    // px minimum clearance from the window edge
+
+function _ensureFloatBar() {
+  if (_floatBar) return;
+  _floatBar = document.createElement('div');
+  _floatBar.id = 'overlay-float-toolbar';
+  _floatBar.dataset.sbsFloatToolbar = '1';
+  // The in-place text editor's click-outside detector whitelists
+  // [data-sbs-text-toolbar]. The mounted toolbar carries that marker, but
+  // the panel's own padding does not — a click landing on the 6px gutter
+  // would tear the editor down mid-edit. Mark the whole panel.
+  _floatBar.dataset.sbsTextToolbar = '1';
+  _floatBar.style.cssText = [
+    'position:fixed', 'top:0', 'left:0', 'z-index:40',
+    'display:none', 'gap:6px', 'align-items:center', 'flex-wrap:nowrap',
+    'background:rgba(10,15,25,0.95)',
+    'border:1px solid rgba(255,255,255,0.12)',
+    'border-radius:8px', 'padding:4px 6px',
+    'font-size:12px', 'user-select:none',
+    'backdrop-filter:blur(6px)',
+    'box-shadow:0 6px 20px rgba(0,0,0,0.45)',
+    'max-width:calc(100vw - 16px)',
+  ].join(';');
+  _floatSlot = document.createElement('div');
+  _floatSlot.id = 'overlay-float-slot';
+  _floatSlot.style.cssText = 'display:flex;gap:4px;align-items:center;flex-wrap:nowrap;';
+  _floatBar.appendChild(_floatSlot);
+  document.body.appendChild(_floatBar);
+}
+
+/**
+ * The mount point for the text / shape toolbars. Returns the FLOATING
+ * panel's slot — the legacy `_textSlot` inside the top bar is retained
+ * (harmless, empty) so nothing that still references the bar's layout
+ * breaks.
+ */
 export function getTextToolbarSlot() {
-  return _textSlot;
+  _ensureFloatBar();
+  return _floatSlot;
+}
+
+/**
+ * Park the panel against a box. `rect` is the target's bounding box in
+ * PAGE coordinates ({left, top, right, bottom}).
+ *
+ * Sits above the box by default and flips below when there isn't room —
+ * that is the whole point of the flip, so the panel never covers the
+ * thing you're editing or slides off-screen. If neither side fits (a box
+ * taller than the window) it clamps into view rather than vanishing.
+ */
+export function showFloatingToolbar(rect) {
+  _ensureFloatBar();
+  if (!rect) { hideFloatingToolbar(); return; }
+  if (!_floatSlot.childElementCount) { hideFloatingToolbar(); return; }
+
+  // Both toolbars set the host to display:none when they unmount — and
+  // mountTextToolbar uses the host element ITSELF as its root — so the slot
+  // arrives here hidden after any previous unmount. Re-show it, or the
+  // panel measures 0×0 and renders as an empty sliver.
+  _floatSlot.style.display = 'flex';
+
+  // Measure while invisible so the user never sees it at the old spot.
+  _floatBar.style.visibility = 'hidden';
+  _floatBar.style.display    = 'flex';
+  const w = _floatBar.offsetWidth;
+  const h = _floatBar.offsetHeight;
+
+  const vw = window.innerWidth;
+  const vh = window.innerHeight;
+
+  // Vertical: prefer above, flip below when the top is too close.
+  let top = rect.top - h - FLOAT_GAP;
+  if (top < FLOAT_MARGIN) {
+    const below = rect.bottom + FLOAT_GAP;
+    top = (below + h + FLOAT_MARGIN <= vh) ? below : FLOAT_MARGIN;
+  }
+  top = Math.max(FLOAT_MARGIN, Math.min(top, vh - h - FLOAT_MARGIN));
+
+  // Horizontal: centre on the box, then clamp into the window.
+  let left = rect.left + (rect.right - rect.left) / 2 - w / 2;
+  left = Math.max(FLOAT_MARGIN, Math.min(left, vw - w - FLOAT_MARGIN));
+
+  _floatBar.style.left       = `${Math.round(left)}px`;
+  _floatBar.style.top        = `${Math.round(top)}px`;
+  _floatBar.style.visibility = 'visible';
+}
+
+export function hideFloatingToolbar() {
+  if (_floatBar) _floatBar.style.display = 'none';
+}
+
+export function isFloatingToolbarVisible() {
+  return !!_floatBar && _floatBar.style.display !== 'none';
 }
 
 function _setEditing(on) {
