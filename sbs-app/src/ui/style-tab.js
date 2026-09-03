@@ -43,7 +43,8 @@ import {
 import { exportHeaderSetup, importHeaderSetup } from '../systems/header.js';
 import { setStatus }    from './status.js';
 import { promptString, chooseFromButtons } from './prompt.js';
-import { mountTextToolbar, unmountTextToolbar, setToolbarValues } from './text-toolbar.js';
+import { mountTextToolbar, unmountTextToolbar, setToolbarValues, setTextEffects } from './text-toolbar.js';
+import { textEffectsCss } from '../systems/text-effects.js';
 
 let _activeId  = null;        // which template is being edited
 let _container = null;
@@ -247,6 +248,20 @@ function _renderEditor() {
 
   _slot = host.querySelector('#style-toolbar-slot');
   mountTextToolbar(_slot, _styleApplier, null, { showAlignment: false });
+  // Fx — the style's own drop shadow + outline (V0.3.2.145). Editing them
+  // here updates every box bound to this template, which is the whole
+  // point: per-box effects are only for boxes that carry no style.
+  setTextEffects(
+    () => {
+      const cur = listStyleTemplates().find(t => t.id === _activeId);
+      return { shadow: cur?.shadow || null, outline: cur?.outline || null };
+    },
+    (patch) => {
+      if (!_activeId) return;
+      updateStyleTemplate(_activeId, { shadow: patch.shadow, outline: patch.outline });
+      _refreshTextStyleInPlace();
+    },
+  );
   // Seed the toolbar dropdowns with the current template values so the
   // user sees the right starting state.
   setToolbarValues({
@@ -268,6 +283,10 @@ function _previewCssFull(tpl) {
     `text-decoration:${tpl.textDecoration || 'none'}`,
     'line-height:1.4',
   ];
+  // Show the style's drop shadow / outline in the preview too, or the Fx
+  // controls would appear to do nothing until a bound box is looked at.
+  const fx = textEffectsCss(tpl.shadow, tpl.outline);
+  if (fx.css) parts.push(`text-shadow:${fx.css}`);
   if (tpl.fillColor) parts.push(`background-color:${tpl.fillColor}`);
   return parts.join(';');
 }

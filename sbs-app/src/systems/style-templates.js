@@ -47,6 +47,11 @@ export function defaultStyleValues() {
     fontStyle:      'normal',
     textDecoration: '',
     fillColor:      null,
+    // V0.3.2.145 — drop shadow + outline travel WITH the style, so setting
+    // them once updates every box bound to it. Shape of each object is
+    // defined in systems/text-effects.js; null = effect off.
+    shadow:         null,
+    outline:        null,
   };
 }
 

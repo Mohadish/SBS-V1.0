@@ -264,12 +264,19 @@ export function setTextEffects(getValues, onChange, onSessionEnd) {
     e.stopPropagation();
     openTextEffectsPopover(b, getValues, onChange, onSessionEnd);
   });
+  // Tagged lockable: a style-bound box takes its effects FROM the style,
+  // so the per-box Fx button hides alongside the other style-owned
+  // controls (V0.3.2.145). Alignment remains the only thing left live.
+  b.dataset.sbsStyleLockable = '1';
   _toolbar.appendChild(b);
   _fxBtn = b;
 }
 
 export function setStyleLocked(locked) {
   if (!_toolbar) return;
+  // Binding a style while the Fx popover is open would leave it editing
+  // per-box effects that no longer apply to anything.
+  if (locked) closeTextEffectsPopover();
   _toolbar.querySelectorAll('[data-sbs-style-lockable]').forEach(el => {
     el.style.display = locked ? 'none' : '';
   });

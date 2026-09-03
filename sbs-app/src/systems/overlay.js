@@ -1568,9 +1568,13 @@ async function _reflowTextBox(node) {
     };
   }
 
-  // Drop shadow + outline (V0.3.2.144). Per-box, so they survive a style
-  // binding — like corner radius on shapes, they aren't part of the style.
-  const fx = textEffectsCss(node.getAttr('textShadow'), node.getAttr('textOutline'));
+  // Drop shadow + outline. A BOUND box takes them from the template like
+  // everything else (V0.3.2.145) — set the effect once on the style and
+  // every box carrying it follows, via the existing styleTemplate:updated
+  // reflow. Unbound boxes keep their own per-box effects.
+  const fx = tpl
+    ? textEffectsCss(tpl.shadow, tpl.outline)
+    : textEffectsCss(node.getAttr('textShadow'), node.getAttr('textOutline'));
   if (fx.css) {
     opts.textShadow = fx.css;
     // The SVG has hard bounds and the content div clips, so an effect
@@ -3751,7 +3755,6 @@ function _refreshMultiToolbar() {
       setStyleLocked(!!newId);
       _scheduleSave();
     });
-    setStyleLocked(uniformId ? true : false);
     // 📌 The constant-text picker is deliberately NOT on this panel
     // (V0.3.2.141). The panel now floats over the box you're editing and
     // is meant for styling only; constant management is per-project
@@ -3766,6 +3769,9 @@ function _refreshMultiToolbar() {
       (patch) => _applyTextEffects(textBoxes, patch),
       ()      => _endTextEffectsSession(textBoxes),
     );
+    // AFTER setTextEffects: the lock hides tagged controls that already
+    // exist, and the Fx button is one of them.
+    setStyleLocked(!!uniformId);
     _anchorFloatingTo(textBoxes[textBoxes.length - 1]);
   } else {
     unmountTextToolbar();
