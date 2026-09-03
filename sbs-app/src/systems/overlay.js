@@ -2410,6 +2410,9 @@ function _serializeNode(node) {
     // Shape primitives — Konva.Rect / Circle / Ellipse / Path / etc.
     'name', 'kind',
     'fill', 'stroke', 'strokeWidth', 'opacity', 'cornerRadius',
+    'shapeStyleId',   // V0.3.2.140 — binding to a shape style; without it a
+                      // copied/duplicated shape came back unbound, and
+                      // undoing a delete resurrected it unbound too.
     'radius', 'radiusX', 'radiusY', 'sides', 'data',
     // Line/Arrow geometry (V0.3.2.30) — omitting these was why a pasted
     // arrow lost its tail (points defaulted to [] and could never grow back).
