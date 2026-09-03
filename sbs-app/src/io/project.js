@@ -237,6 +237,10 @@ export function serialize() {
   project.constShapes = project.constShapes || { schema_version: 1, items: [] };
   project.constShapes.items = cloneShareStrings((state.get('constShapes') || []));
 
+  // 🔗 Linked shape instances (V0.3.2.150)
+  project.shapeLinks = project.shapeLinks || { schema_version: 1, items: [] };
+  project.shapeLinks.items = cloneShareStrings((state.get('shapeLinks') || []));
+
   // Flat-shape templates — project-level polygon library. Instances live
   // as regular tree nodes (type='flatShape', templateId pointer) and
   // round-trip via stripNode like every other tree node.
@@ -956,7 +960,7 @@ export const PROJECT_STATE_KEYS = [
   'noteTemplates', 'notePresets', 'selectionGroups', 'selectionOutlineColor',
   'assets',
   'headerItems', 'headersLocked', 'headersHidden', 'headerDefault', 'headerStepNumberPerChapter',
-  'styleTemplates', 'shapeStyles', 'constTextBoxes', 'constShapes',
+  'styleTemplates', 'shapeStyles', 'constTextBoxes', 'constShapes', 'shapeLinks',
   'shapeTemplates', 'hardwareTemplates', 'shapeTemplateGroups',
   'selectedShapeTemplateIds', 'selectedShapeTemplateGroupIds', 'selectedColorPresetIds',
   'cables', 'cableGlobalScale', 'cableGlobalRadius', 'cableDefaultDiameter', 'cableHighlightColor',
@@ -1081,6 +1085,7 @@ export function applyProjectToState(project) {
     shapeStyles:          project.styles?.shapeItems         || [],   // V0.3.2.139 — safe [] on legacy files
     constTextBoxes:       project.constTexts?.items          || [],   // 📌 V0.3.2.98 — safe [] on legacy files
     constShapes:          project.constShapes?.items         || [],   // 📌 V0.3.2.143 — safe [] on legacy files
+    shapeLinks:           project.shapeLinks?.items         || [],   // 🔗 V0.3.2.150 — safe [] on legacy files
     shapeTemplates:       project.shapes?.items              || [],
     // V0.2.22.38 — hardware template library, see core/schema.js
     // createHardwareTemplate. Missing on legacy files → empty list, no

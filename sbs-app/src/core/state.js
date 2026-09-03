@@ -154,6 +154,10 @@ function createInitialState() {
     // Position ONLY — size stays per-instance, and styling is a separate
     // binding via shapeStyleId. Instances carry constShapeId.
     constShapes:    [],               // ConstShapeDef[]
+    // 🔗 Linked shape instances (V0.3.2.150) — ONE logical shape appearing on
+    // many steps. The definition owns geometry + style + position; instances
+    // carry a linkId. Wider than a shape style, which shares only paint.
+    shapeLinks:     [],               // ShapeLinkDef[]
 
     // ── Flat-shape templates — project-level polygon library. Each entry
     // owns a polygon + fill; placed instances live in the scene tree

@@ -214,8 +214,28 @@ export async function computeSegmentPlan() {
     colors: (state.get('colorPresets') || []).slice().sort(_byId),
     cables: (state.get('cables') || []).map(c => ({ id: c.id, style: c.style })).sort(_byId),
   };
+  // V0.3.2.150 — OVERLAY-side project definitions. These were absent, so a
+  // cached segment could be re-used after the definition that draws its
+  // overlay changed: edit a linked shape's size, export, and the cached
+  // spans still carry the old geometry.
+  //
+  // Deliberately coarse. The 3D defs above are scoped per span by the nodes
+  // that span actually shows; the equivalent for overlay defs would mean
+  // parsing each span's overlay JSON to learn which ids it references. Until
+  // that exists, any change to an overlay definition invalidates every
+  // cached segment — slower re-exports, but never a stale frame. Correct and
+  // slow beats fast and wrong for a deliverable the user ships.
+  const _overlayDefs = {
+    shapeStyles: (state.get('shapeStyles') || []).slice().sort(_byId),
+    constShapes: (state.get('constShapes') || []).slice().sort(_byId),
+    shapeLinks:  (state.get('shapeLinks')  || []).slice().sort(_byId),
+  };
+
   // Coarse global roster — for the drift report / _keyinputs only, NOT per-span keys.
-  const defsKey = { prims: allPrims, shapes: allShapes, colors: _defScope.colors, cables: _defScope.cables };
+  const defsKey = {
+    prims: allPrims, shapes: allShapes, colors: _defScope.colors, cables: _defScope.cables,
+    overlay: _overlayDefs,
+  };
 
   // Pixel-affecting global settings. NO header config, NO positions, NO
   // sibling durations — segments are header-less (assembly composites the

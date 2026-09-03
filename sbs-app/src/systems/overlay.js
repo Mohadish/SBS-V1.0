@@ -30,6 +30,10 @@ import { mountTextToolbar, unmountTextToolbar, execCommandApplier, setToolbarVal
 import { mountShapeToolbar, unmountShapeToolbar, setShapeStyleDropdown, setShapeStyleLocked } from '../ui/shape-toolbar.js';
 import * as userSettings from '../core/user-settings.js';
 import { listShapeStyles, getShapeStyle, SHAPE_STYLE_KEYS } from './shape-styles.js';
+import {
+  listShapeLinks, getShapeLink, addShapeLink, updateShapeLink,
+  makeShapeLink, renameShapeLink, GEOM_KEYS, STYLE_KEYS as LINK_STYLE_KEYS,
+} from './shape-links.js';
 import { textEffectsCss } from './text-effects.js';
 import { getTextToolbarSlot, showFloatingToolbar, hideFloatingToolbar } from '../ui/overlay-toolbar.js';
 import * as textEngine from './text-engine.js';
@@ -402,6 +406,139 @@ function _applyConstToNode(node, def) {
     node.setAttr('styleId', def.styleId || null);
     _reflowTextBox(node).catch(() => {});
   }
+}
+
+// ─── 🔗 Linked shape instances (V0.3.2.150) ─────────────────────────────────
+//
+// One logical shape across many steps: geometry, style and position are all
+// shared. See systems/shape-links.js for why this resolves at draw time
+// rather than broadcasting to every stored step.
+
+function _linkDefOf(node) {
+  const id = node?.getAttr?.('linkId');
+  return id ? getShapeLink(id) : null;
+}
+
+/** Konva class name for a node, e.g. 'Rect'. */
+const _classOf = (node) => (typeof node?.getClassName === 'function' ? node.getClassName() : '');
+
+/**
+ * Read a node's current geometry + style into definition shape.
+ *
+ * Geometry keys are per-kind (GEOM_KEYS) because there is no shared
+ * width/height across Konva shapes — a Circle has a radius, a Line an array
+ * of points. Reading a fixed set would work on rectangles and quietly
+ * mangle everything else.
+ *
+ * Only ever called on gesture END. Mid-gesture the size lives in
+ * scaleX/scaleY and is baked into the real attrs by _wireShapeTransformend's
+ * transformend handler, which is registered BEFORE _attachNode's — so by the
+ * time this runs the geometry is final and scale is back to 1.
+ */
+function _captureLinkFrom(node) {
+  const cls  = _classOf(node);
+  const geom = {};
+  for (const k of (GEOM_KEYS[cls] || [])) {
+    const v = node.getAttr(k);
+    if (v !== undefined) geom[k] = Array.isArray(v) ? v.slice() : v;
+  }
+  const style = {};
+  for (const k of LINK_STYLE_KEYS) style[k] = node.getAttr(k);
+  return {
+    className:    cls,
+    x:            node.x(),
+    y:            node.y(),
+    rotation:     node.rotation() || 0,
+    geom,
+    style,
+    shapeStyleId: node.getAttr('shapeStyleId') || null,
+  };
+}
+
+/**
+ * Stamp a definition onto a node. Returns false and self-heals a dangling or
+ * cross-kind link rather than writing nonsense onto the shape.
+ */
+function _applyLinkToNode(node, def) {
+  if (!node || !def) return false;
+  // A link never crosses shape kinds — a Rect's width/height means nothing
+  // to a Circle. Refuse rather than corrupt.
+  if (def.className && _classOf(node) !== def.className) return false;
+  for (const [k, v] of Object.entries(def.geom || {})) {
+    node.setAttr(k, Array.isArray(v) ? v.slice() : v);
+  }
+  for (const k of LINK_STYLE_KEYS) {
+    if (def.style && k in def.style) node.setAttr(k, def.style[k]);
+  }
+  node.x(def.x);
+  node.y(def.y);
+  node.rotation(def.rotation || 0);
+  // Scale is always identity on a linked shape: geometry is authoritative,
+  // and a stale scale would multiply it.
+  node.scaleX(1);
+  node.scaleY(1);
+  if ((node.getAttr('shapeStyleId') || null) !== (def.shapeStyleId || null)) {
+    node.setAttr('shapeStyleId', def.shapeStyleId || null);
+  }
+  return true;
+}
+
+/** Drop a link whose definition is gone, keeping the shape as it looks. */
+function _healDanglingLink(node) {
+  const id = node?.getAttr?.('linkId');
+  if (id && !getShapeLink(id)) { node.setAttr('linkId', null); return true; }
+  return false;
+}
+
+/**
+ * Push a definition onto every OTHER instance currently on screen.
+ *
+ * Walks the ghost layer too: a step crossfade MOVES the outgoing step's real
+ * nodes there rather than destroying them, so during a transition live
+ * instances exist on both layers.
+ *
+ * Skips nodes involved in the gesture that triggered this — the source and
+ * the transformer's current selection — because those already hold the new
+ * values, and rewriting them would fight the gesture that just ended.
+ *
+ * The transformer's selection is the right set to skip: multi-drag moves
+ * exactly the transformer's nodes. (_multiDragStarts is a closure variable
+ * inside _attachNode, not module state — reaching for it here would throw.)
+ */
+function _echoLinkToSiblings(source, def) {
+  if (!def) return;
+  const busy = new Set([source, ...(_transformer?.nodes() || [])]);
+  let touched = false;
+  for (const layer of [_layer, _ghostLayer]) {
+    for (const n of layer?.getChildren() || []) {
+      if (busy.has(n) || n.getAttr?.('linkId') !== def.id) continue;
+      if (_applyLinkToNode(n, def)) touched = true;
+    }
+  }
+  if (touched) { _layer?.batchDraw(); _ghostLayer?.batchDraw(); }
+}
+
+/**
+ * A linked instance was edited: write the new state into the definition and
+ * echo it to same-step siblings. Every other step re-resolves on load.
+ *
+ * Fires on gesture END only. Per-frame would mean a state write and an undo
+ * entry per pointer move.
+ */
+function _syncLinkFrom(node) {
+  const def = _linkDefOf(node);
+  if (!def) return;
+  const captured = _captureLinkFrom(node);
+  updateShapeLink(def.id, captured);
+  _echoLinkToSiblings(node, { ...def, ...captured });
+  _scheduleSave();
+}
+
+/** Wire gesture-end sync onto a linked node. Namespaced so unlink can detach
+ *  it without stripping _attachNode's unnamespaced handlers. */
+function _wireLinkSync(node) {
+  node.off('.linksync');
+  node.on('dragend.linksync transformend.linksync', () => _syncLinkFrom(node));
 }
 
 // ─── 📌 Constant shape positions (V0.3.2.143) ───────────────────────────────
@@ -2183,6 +2320,10 @@ export function applyShapeAttrs(patch) {
   // The values the user just chose become the defaults for the next shape.
   _rememberShapeDefaults(patch);
 
+  // 🔗 A paint change on a linked instance belongs to the whole link. This
+  // path never goes through drag/transform, so it needs its own sync.
+  for (const n of sel) if (n.getAttr('linkId')) _syncLinkFrom(n);
+
   // Capture AFTER-state for the redo closure.
   const after = new Map();
   for (const n of sel) after.set(n, _snapshotShapeAttrs(n));
@@ -2529,6 +2670,7 @@ function _serializeNode(node) {
                       // copied/duplicated shape came back unbound, and
                       // undoing a delete resurrected it unbound too.
     'constShapeId',   // 📌 V0.3.2.143 — membership in a constant-position def
+    'linkId',         // 🔗 V0.3.2.150 — membership in a linked-shape definition
     'textShadow', 'textOutline',   // V0.3.2.144 — per-box drop shadow + outline
     'radius', 'radiusX', 'radiusY', 'sides', 'data',
     // Line/Arrow geometry (V0.3.2.30) — omitting these was why a pasted
@@ -3552,6 +3694,63 @@ function _showOverlayContextMenu(node, x, y) {
            } },
          { separator: true }]);
 
+  // 🔗 Linked shape instances (V0.3.2.150). A link shares the WHOLE shape —
+  // geometry, paint and position — so it sits above the position-only pin
+  // below it in the menu.
+  const isShapeNode = node.name?.() === 'userShape';
+  const linkDef     = isShapeNode ? _linkDefOf(node) : null;
+  const sameKindLinks = isShapeNode
+    ? listShapeLinks().filter(l => l.className === _classOf(node))
+    : [];
+  const linkItems = !isShapeNode ? [] : (linkDef
+    ? [{ label: `🔗 Linked "${linkDef.name}"`, submenu: [
+          { label: '✏ Rename link…',
+            action: async () => {
+              const name = await promptString('Rename linked shape', linkDef.name || '');
+              if (name && name.trim()) renameShapeLink(linkDef.id, name.trim());
+            } },
+          { label: '↺ Reset this one to the link',
+            action: () => { _applyLinkToNode(node, _linkDefOf(node)); _layer.batchDraw(); _scheduleSave(); } },
+          { separator: true },
+          { label: '✂ Break link (make unique)',
+            action: () => {
+              // The shape keeps exactly the look it has; only the membership
+              // goes. Re-linking later is the "Link to" entry below.
+              node.off('.linksync');
+              node.setAttr('linkId', null);
+              _scheduleSave();
+              setStatus('Unlinked — this shape is now unique.', 'info', 3000);
+            } },
+        ] },
+        { separator: true }]
+    : [
+       ...(sameKindLinks.length ? [{
+         label: '🔗 Link to',
+         submenu: sameKindLinks.map(l => ({
+           label: `🔗 ${l.name}`,
+           action: () => {
+             node.setAttr('linkId', l.id);
+             _applyLinkToNode(node, l);
+             _wireLinkSync(node);
+             _layer.batchDraw();
+             _scheduleSave();
+             setStatus(`Linked to "${l.name}" — it now matches everywhere.`, 'success', 4000);
+           },
+         })),
+       }] : []),
+       { label: '🔗 Make linked shape…',
+         action: async () => {
+           const name = await promptString('Name this linked shape', `Linked shape ${listShapeLinks().length + 1}`);
+           if (!name) return;
+           const def = makeShapeLink({ name: name.trim(), ..._captureLinkFrom(node) });
+           addShapeLink(def);
+           node.setAttr('linkId', def.id);
+           _wireLinkSync(node);
+           _scheduleSave();
+           setStatus(`"${def.name}" created — copy it to other steps and they stay identical.`, 'success', 6000);
+         } },
+       { separator: true }]);
+
   // 📌 Constant SHAPE positions (V0.3.2.143) — mirrors the text block
   // above. Position only: no style, and size stays per-instance.
   const isShape       = node.name?.() === 'userShape';
@@ -3635,6 +3834,7 @@ function _showOverlayContextMenu(node, x, y) {
     ...seqItems,
     ...tocItems,
     ...constItems,
+    ...linkItems,
     ...constShapeItems,
     ...arrangeItems,
     { label: '⎘ Duplicate',        action: _duplicateSelected },
@@ -4790,6 +4990,15 @@ async function _recreateNode(spec) {
     const Cls = Konva[spec.className];
     const node = new Cls({ ...spec.attrs, draggable: true });
     _wireShapeTransformend(node, SHAPE_CLASSES[spec.className]);
+    // 🔗 A linked instance takes its whole shape — geometry, paint, position —
+    // from the definition. Runs BEFORE the style resolve below so a shape that
+    // also carries shapeStyleId still ends up painted by the style: the
+    // narrower binding wins. No bbox measurement here, because the node is not
+    // in the layer yet; the link stores absolute x/y so none is needed.
+    if (node.getAttr('linkId')) {
+      if (!_healDanglingLink(node)) _applyLinkToNode(node, _linkDefOf(node));
+      _wireLinkSync(node);
+    }
     // A bound shape takes its fill/outline from the template, not from the
     // values frozen into this step's snapshot — that's what makes editing a
     // style reach steps that weren't on screen when it changed.
