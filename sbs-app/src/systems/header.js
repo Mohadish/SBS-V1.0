@@ -54,6 +54,7 @@ import * as subtitles       from './subtitles.js';              // 🌐 per-step
 import { setStatus }        from '../ui/status.js';             // chip-refresh feedback
 import { registerLayer, getLayerSelection, scheduleOverlaySave } from './cross-layer.js';
 import { getStyleTemplate } from './style-templates.js';        // P4b: per-item style binding
+import { textEffectsCss }   from './text-effects.js';           // V0.3.2.149: shadow/outline from the bound style
 import { undoManager }      from './undo.js';                   // P7-C: drag / resize undo entries
 import { chapterProgressSpan } from './narration-timeline.js';  // chapter progress bar (#15)
 import { sceneCore }        from '../core/scene.js';             // tick hook drives the continuous fill
@@ -619,7 +620,7 @@ export async function rasterizeHeaderDataToCanvas(ctx, { width = 1920, height = 
         g.drawImage(img, item.x, item.y, item.w, item.h);
       } else {
         const html = _buildHeaderTextHtml(item, ctx);
-        const c = await htmlToCanvas(html, { width: Math.max(1, item.w | 0), height: Math.max(1, item.h | 0), padding: 0 });
+        const c = await htmlToCanvas(html, { width: Math.max(1, item.w | 0), height: Math.max(1, item.h | 0), padding: _headerFxExtent(item) });
         if (c?.width && c?.height) g.drawImage(c, item.x, item.y, item.w, item.h);
       }
     } catch (e) { console.warn('[header] data-raster item failed:', item.kind, e?.message); }
@@ -832,6 +833,37 @@ function _buildNode(item, ctx, inert) {
  * had — applied at the outer shell so it's consistent across all
  * three render branches.
  */
+/** Default readability shadow for header text over arbitrary 3D content. */
+const HEADER_READABILITY_SHADOW = '0 1px 2px rgba(0,0,0,0.45)';
+
+/**
+ * The text-shadow for a header item: the bound style's compiled drop
+ * shadow + outline when it defines any, else the readability default.
+ * `src` is the style template, or headerDefault when the item is unbound.
+ */
+function _headerTextShadow(src) {
+  const fx = textEffectsCss(src?.shadow, src?.outline);
+  return fx.css || HEADER_READABILITY_SHADOW;
+}
+
+/**
+ * How far this item's effects reach past its glyphs, in px — 0 when it has
+ * none. Header items rasterise at padding:0 into a fixed rect with
+ * overflow:hidden, so an outline on left-aligned text would be sliced off
+ * at the edge. The raster needs that much padding to hold it.
+ *
+ * Returning 0 for the no-effects case is deliberate: every existing header
+ * keeps its exact current pixel layout, and only an item that actually asks
+ * for an effect pays the inset.
+ */
+function _headerFxExtent(item) {
+  if (!item) return 0;
+  if (item.kind === 'custom' && item.styleId === 'custom') return 0;   // raw HTML branch
+  const tpl = (item.styleId && item.styleId !== 'custom') ? getStyleTemplate(item.styleId) : null;
+  const src = tpl || state.get('headerDefault') || {};
+  return textEffectsCss(src.shadow, src.outline).extent;
+}
+
 function _buildHeaderTextHtml(item, ctx) {
   const align = _safeAlign(item.align);
 
@@ -865,7 +897,16 @@ function _buildHeaderTextHtml(item, ctx) {
     `font-style:${fontStyle}`,
     `text-decoration:${decoration || 'none'}`,
     `color:${color}`,
-    `text-shadow:0 1px 2px rgba(0,0,0,0.45)`,
+    // V0.3.2.149 — a bound style's drop shadow / outline now reaches header
+    // items too. This line used to be an unconditional readability shadow,
+    // which is why a chapter-name header bound to a style with effects
+    // showed none of them: the hardcoded value simply won.
+    //
+    // The readability shadow stays the DEFAULT, because header text sits
+    // over arbitrary 3D content and needs it. A style that defines its own
+    // effects replaces it outright rather than stacking — two shadows at
+    // different offsets read as a printing error, not a design.
+    `text-shadow:${_headerTextShadow(src)}`,
   ].join(';');
   // V0.3.2.16 — the template's fillColor (textbox background) was silently
   // dropped for headers: this builder cherry-picked font fields only, so a
@@ -908,7 +949,10 @@ async function _hydrateHeaderText(node, textHtml, item) {
     const canvas = await htmlToCanvas(textHtml, {
       width:   Math.max(1, item.w | 0),
       height:  Math.max(1, item.h | 0),
-      padding: 0,           // Konva.Text had no padding; preserve visual parity
+      // 0 unless the item's style carries a drop shadow / outline, which
+      // needs room inside the raster or it clips at the item's edge.
+      // Konva.Text had no padding; the no-effects case preserves that parity.
+      padding: _headerFxExtent(item),
     });
     if (!canvas) return;
     if (node.isDestroyed?.()) return;
