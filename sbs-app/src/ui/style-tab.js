@@ -33,6 +33,13 @@ import {
   removeStyleTemplate,
   renameStyleTemplate,
 } from '../systems/style-templates.js';
+import {
+  listShapeStyles,
+  addShapeStyle,
+  updateShapeStyle,
+  removeShapeStyle,
+  renameShapeStyle,
+} from '../systems/shape-styles.js';
 import { exportHeaderSetup, importHeaderSetup } from '../systems/header.js';
 import { setStatus }    from './status.js';
 import { promptString, chooseFromButtons } from './prompt.js';
@@ -41,9 +48,49 @@ import { mountTextToolbar, unmountTextToolbar, setToolbarValues } from './text-t
 let _activeId  = null;        // which template is being edited
 let _container = null;
 let _slot      = null;        // host for the mounted text-toolbar
+let _tab       = 'text';      // 'text' | 'shape'
 
+/**
+ * Tab shell. Text styles and shape styles are two lists of the same kind
+ * of thing — saved looks you bind to — so they share this panel rather
+ * than competing for sidebar space.
+ */
 export function renderStyleTab(container) {
   _container = container;
+  if (!container) return;
+
+  const tabBtn = (id, label, on) => `
+    <button class="btn" id="${id}" style="flex:1;${on
+      ? 'background:rgba(34,211,238,0.14);border-color:rgba(34,211,238,0.5);font-weight:600;'
+      : 'opacity:0.75;'}">${label}</button>`;
+
+  container.innerHTML = `
+    <div class="section" style="padding-bottom:0;">
+      <div style="display:flex;gap:6px;">
+        ${tabBtn('sty-tab-text',  'Text styles',  _tab === 'text')}
+        ${tabBtn('sty-tab-shape', 'Shape styles', _tab === 'shape')}
+      </div>
+    </div>
+    <div id="style-tab-body"></div>
+  `;
+
+  container.querySelector('#sty-tab-text').addEventListener('click', () => {
+    if (_tab === 'text') return;
+    _tab = 'text'; _activeShapeId = null; unmountTextToolbar();
+    renderStyleTab(_container);
+  });
+  container.querySelector('#sty-tab-shape').addEventListener('click', () => {
+    if (_tab === 'shape') return;
+    _tab = 'shape'; _activeId = null; unmountTextToolbar();
+    renderStyleTab(_container);
+  });
+
+  const body = container.querySelector('#style-tab-body');
+  if (_tab === 'shape') _renderShapeBody(body);
+  else                  _renderTextBody(body);
+}
+
+function _renderTextBody(container) {
   if (!container) return;
   const items = listStyleTemplates();
 
@@ -242,6 +289,195 @@ function _fillAlpha(rgba) {
   if (!rgba) return null;
   const m = /^rgba\([^,]+,[^,]+,[^,]+,\s*([\d.]+)\s*\)/i.exec(String(rgba));
   return m ? Math.round(parseFloat(m[1]) * 100) : 100;
+}
+
+// ═══ Shape styles ═══════════════════════════════════════════════════════
+//
+// Same idea as text styles, different property set: fill (colour + its own
+// alpha) and outline (colour + thickness). Corner radius is deliberately
+// absent — it's rectangle geometry, not styling, so it stays per-shape and
+// keeps working even on a shape that's bound to a style.
+
+let _activeShapeId = null;
+
+function _renderShapeBody(container) {
+  if (!container) return;
+  const items = listShapeStyles();
+
+  container.innerHTML = `
+    <div class="section">
+      <div class="title">Shape Styles</div>
+      <div class="small muted" style="margin-top:6px;line-height:1.5;">
+        Saved fill + outline looks. Bind a shape via the canvas toolbar's
+        style dropdown — while bound, the style wins and the shape's own
+        fill/outline controls are hidden. Pick <em>(no style)</em> to unbind;
+        the shape keeps the look it has and becomes editable again.
+        Corner radius stays per-shape either way.
+      </div>
+
+      <div class="card" style="margin-top:10px;display:flex;gap:6px;">
+        <button class="btn" id="shapestyle-new" style="flex:1;">+ New shape style</button>
+      </div>
+
+      <div class="card" style="margin-top:8px;padding:0;">
+        <div class="title" style="padding:8px 10px;border-bottom:1px solid var(--line);">
+          Styles <span class="small muted">(${items.length})</span>
+        </div>
+        <div id="shapestyle-list">
+          ${items.length === 0
+            ? `<div class="small muted" style="padding:10px;">No shape styles yet — pick "+ New shape style".</div>`
+            : items.map(t => _shapeRow(t)).join('')}
+        </div>
+      </div>
+
+      <div id="shapestyle-editor"></div>
+    </div>
+  `;
+
+  container.querySelector('#shapestyle-new').addEventListener('click', () => {
+    const tpl = addShapeStyle({ name: `Shape style ${listShapeStyles().length + 1}` });
+    _activeShapeId = tpl.id;
+    renderStyleTab(_container);
+  });
+
+  container.querySelector('#shapestyle-list')?.addEventListener('click', (e) => {
+    const row = e.target.closest('[data-shapestyle-id]');
+    if (!row) return;
+    const id  = row.dataset.shapestyleId;
+    const act = e.target.closest('[data-shapestyle-act]')?.dataset.shapestyleAct;
+    if (act === 'delete') {
+      if (confirm('Delete this shape style? Shapes using it keep their current look and become editable again.')) {
+        removeShapeStyle(id);
+        if (_activeShapeId === id) _activeShapeId = null;
+        renderStyleTab(_container);
+      }
+      return;
+    }
+    if (act === 'rename') {
+      const tpl = listShapeStyles().find(t => t.id === id);
+      promptString('Shape style name:', tpl?.name || '').then(name => {
+        if (name) { renameShapeStyle(id, name); renderStyleTab(_container); }
+      });
+      return;
+    }
+    _activeShapeId = id;
+    renderStyleTab(_container);
+  });
+
+  if (_activeShapeId && items.find(t => t.id === _activeShapeId)) _renderShapeEditor();
+  else _activeShapeId = null;
+}
+
+function _shapeRow(tpl) {
+  return `
+    <div class="row" data-shapestyle-id="${_esc(tpl.id)}"
+         style="display:flex;align-items:center;gap:8px;padding:8px 10px;border-bottom:1px solid var(--line);cursor:pointer;${_activeShapeId === tpl.id ? 'background:rgba(34,211,238,0.08);' : ''}">
+      <div style="flex:0 0 46px;height:26px;border-radius:4px;${_shapeSwatchCss(tpl)}"></div>
+      <div style="flex:1;min-width:0;">
+        <div class="small" style="font-weight:600;">${_esc(tpl.name || 'Untitled')}</div>
+        <div class="small muted" style="font-size:11px;">
+          ${tpl.fill ? 'fill' : 'no fill'} · ${tpl.stroke ? `${tpl.strokeWidth || 0}px outline` : 'no outline'}
+        </div>
+      </div>
+      <button class="btn icon" data-shapestyle-act="rename" title="Rename" style="width:24px;height:24px;padding:0;">✎</button>
+      <button class="btn icon" data-shapestyle-act="delete" title="Delete" style="width:24px;height:24px;padding:0;color:#f87171;">✕</button>
+    </div>
+  `;
+}
+
+function _shapeSwatchCss(tpl) {
+  const parts = [];
+  parts.push(`background:${tpl.fill || 'transparent'}`);
+  if (tpl.stroke) parts.push(`border:${Math.min(6, Math.max(1, tpl.strokeWidth || 1))}px solid ${tpl.stroke}`);
+  else            parts.push('border:1px dashed rgba(255,255,255,0.2)');
+  return parts.join(';');
+}
+
+function _renderShapeEditor() {
+  const host = _container?.querySelector('#shapestyle-editor');
+  if (!host) return;
+  const tpl = listShapeStyles().find(t => t.id === _activeShapeId);
+  if (!tpl) { host.innerHTML = ''; return; }
+
+  const fillOn = tpl.fill != null;
+  const strkOn = tpl.stroke != null;
+
+  host.innerHTML = `
+    <div class="section">
+      <div class="title">Editing: ${_esc(tpl.name)}</div>
+      <div style="margin-top:8px;display:flex;gap:10px;align-items:center;flex-wrap:wrap;
+                  background:rgba(10,15,25,0.85);border:1px solid rgba(255,255,255,0.08);
+                  border-radius:8px;padding:8px;font-size:12px;">
+        <label style="display:flex;align-items:center;gap:4px;" title="Fill colour">
+          Fill <input id="ss-fill" type="color" value="${_esc(_fillHex(tpl.fill) || '#4a90d9')}"
+               style="width:28px;height:24px;padding:0;border:1px solid var(--line);background:transparent" />
+          <input id="ss-fill-on" type="checkbox" ${fillOn ? 'checked' : ''} title="Enable fill" />
+        </label>
+        <label style="display:flex;align-items:center;gap:4px;" title="Fill opacity">
+          α <input id="ss-fill-alpha" type="range" min="0" max="1" step="0.01"
+               value="${_alphaOfRgba(tpl.fill)}" style="width:70px" />
+        </label>
+        <label style="display:flex;align-items:center;gap:4px;" title="Outline colour">
+          Line <input id="ss-stroke" type="color" value="${_esc(tpl.stroke || '#4a90d9')}"
+               style="width:28px;height:24px;padding:0;border:1px solid var(--line);background:transparent" />
+          <input id="ss-stroke-on" type="checkbox" ${strkOn ? 'checked' : ''} title="Enable outline" />
+        </label>
+        <label style="display:flex;align-items:center;gap:4px;" title="Outline thickness in pixels">
+          Thick <input id="ss-stroke-w" type="number" min="0" max="200" step="1" value="${tpl.strokeWidth ?? 3}"
+               style="width:46px;height:22px;padding:0 4px;font-size:12px" />
+        </label>
+      </div>
+      <div class="small muted" style="margin-top:8px;">Live preview:</div>
+      <div style="margin-top:4px;padding:14px;border-radius:8px;border:1px solid var(--line);
+                  display:flex;justify-content:center;">
+        <div id="ss-preview" style="width:120px;height:64px;border-radius:6px;${_shapeSwatchCss(tpl)}"></div>
+      </div>
+    </div>
+  `;
+
+  const q = (sel) => host.querySelector(sel);
+  // Compose from the LIVE control values every time, so each tweak stacks
+  // on the latest state rather than the moment-of-render snapshot.
+  const composeFill = () => _composeRgba(q('#ss-fill').value, q('#ss-fill-alpha').value);
+  const patch = (p) => {
+    updateShapeStyle(_activeShapeId, p);
+    const cur = listShapeStyles().find(t => t.id === _activeShapeId);
+    if (!cur) return;
+    // Repaint preview + the list row in place. A full re-render would
+    // steal focus from the slider mid-drag.
+    q('#ss-preview').style.cssText = `width:120px;height:64px;border-radius:6px;${_shapeSwatchCss(cur)}`;
+    const row = _container?.querySelector(`[data-shapestyle-id="${cur.id}"]`);
+    if (row) {
+      const sw = row.firstElementChild;
+      if (sw) sw.style.cssText = `flex:0 0 46px;height:26px;border-radius:4px;${_shapeSwatchCss(cur)}`;
+      const meta = row.querySelector('.small.muted');
+      if (meta) meta.textContent =
+        `${cur.fill ? 'fill' : 'no fill'} · ${cur.stroke ? `${cur.strokeWidth || 0}px outline` : 'no outline'}`;
+    }
+  };
+
+  q('#ss-fill')      .addEventListener('input',  () => { if (q('#ss-fill-on').checked) patch({ fill: composeFill() }); });
+  q('#ss-fill-alpha').addEventListener('input',  () => { if (q('#ss-fill-on').checked) patch({ fill: composeFill() }); });
+  q('#ss-fill-on')   .addEventListener('change', e  => patch({ fill: e.target.checked ? composeFill() : null }));
+  q('#ss-stroke')    .addEventListener('input',  () => { if (q('#ss-stroke-on').checked) patch({ stroke: q('#ss-stroke').value }); });
+  q('#ss-stroke-on') .addEventListener('change', e  => patch({ stroke: e.target.checked ? q('#ss-stroke').value : null }));
+  q('#ss-stroke-w')  .addEventListener('input',  e  => patch({ strokeWidth: Math.max(0, Number(e.target.value) || 0) }));
+}
+
+/** Build 'rgba(r,g,b,a)' from a #rrggbb hex + 0..1 alpha. */
+function _composeRgba(hex, alpha) {
+  const h = /^#[0-9a-f]{6}$/i.test(String(hex)) ? String(hex) : '#4a90d9';
+  const r = parseInt(h.slice(1, 3), 16);
+  const g = parseInt(h.slice(3, 5), 16);
+  const b = parseInt(h.slice(5, 7), 16);
+  const a = Math.max(0, Math.min(1, Number(alpha)));
+  return `rgba(${r},${g},${b},${a})`;
+}
+
+/** Alpha 0..1 from an rgba() string; 1 for hex / rgb() / null. */
+function _alphaOfRgba(rgba) {
+  const m = /^rgba\([^,]+,[^,]+,[^,]+,\s*([\d.]+)\s*\)$/i.exec(String(rgba || ''));
+  return m ? Math.max(0, Math.min(1, parseFloat(m[1]))) : 1;
 }
 
 // ─── Lifecycle ──────────────────────────────────────────────────────────

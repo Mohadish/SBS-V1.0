@@ -131,6 +131,10 @@ function createInitialState() {
     // live to every box that references it. Empty = no presets, every
     // box is free-form. See systems/style-templates.js.
     styleTemplates: [],               // StyleTemplate[]
+    // Shape-side twin of styleTemplates (V0.3.2.139). Overlay shapes bind
+    // via a shapeStyleId attr; the template owns fill + outline, while
+    // corner radius stays per-shape. See systems/shape-styles.js.
+    shapeStyles:    [],               // ShapeStyle[]
     constTextBoxes: [],               // 📌 ConstTextDef[] (V0.3.2.98) — pinned text-box definitions
 
     // ── Flat-shape templates — project-level polygon library. Each entry

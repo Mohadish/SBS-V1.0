@@ -27,8 +27,9 @@ import { openSequenceEditor } from '../ui/sequence-editor.js';
 import { narrationContextForStep } from './narration-timeline.js';
 import * as interfaces from './interfaces.js';   // interface overlay (used lazily in the right-click menu)
 import { mountTextToolbar, unmountTextToolbar, execCommandApplier, setToolbarValues, wasColorPickedRecently, setStyleDropdown, setStyleLocked, setConstDropdown } from '../ui/text-toolbar.js';
-import { mountShapeToolbar, unmountShapeToolbar } from '../ui/shape-toolbar.js';
+import { mountShapeToolbar, unmountShapeToolbar, setShapeStyleDropdown, setShapeStyleLocked } from '../ui/shape-toolbar.js';
 import * as userSettings from '../core/user-settings.js';
+import { listShapeStyles, getShapeStyle, SHAPE_STYLE_KEYS } from './shape-styles.js';
 import { getTextToolbarSlot }  from '../ui/overlay-toolbar.js';
 import * as textEngine from './text-engine.js';
 import { getStyleTemplate, listStyleTemplates } from './style-templates.js';
@@ -68,6 +69,12 @@ export function initOverlay() {
   // Sticky shape defaults from last session. Async, but shapes can't be
   // created before the UI is interactive, so it always lands in time.
   _hydrateShapeDefaults();
+
+  // Editing a shape style repaints every bound shape currently on stage.
+  // Shapes in other steps re-resolve from their id when those steps load.
+  state.on('shapeStyle:updated', _reresolveShapeStyles);
+  // Deleting a style unbinds the shapes using it, keeping their look.
+  state.on('shapeStyle:removed', _reresolveShapeStyles);
 
   _stage = new Konva.Stage({
     container: _container,
@@ -1631,6 +1638,62 @@ const SHAPE_DEFAULTS = {
 /** Keys the shape toolbar can emit, and therefore the ones that stick. */
 const STICKY_SHAPE_KEYS = ['fill', 'stroke', 'strokeWidth', 'cornerRadius'];
 
+// ─── Shape style templates (V0.3.2.139) ─────────────────────────────────────
+//
+// A shape bound via `shapeStyleId` takes its fill + outline from the
+// template, exactly the way a text box bound via `styleId` takes its
+// typography. Resolution happens at LOAD time (and on template edits for
+// the shapes currently on stage) rather than by rewriting every stored
+// step: each step re-resolves from the id when it loads, so editing a
+// template reaches shapes in steps that aren't on screen.
+//
+// Corner radius is NOT part of a style — it's rectangle geometry, so it
+// stays per-shape and editable even while a style is bound.
+
+/**
+ * Write a bound shape's style values onto its Konva attrs. No-ops when the
+ * shape isn't bound, or when the template it points at is gone (a deleted
+ * template leaves the shape keeping the look it last had — the values are
+ * already on the node — rather than snapping back to factory blue).
+ */
+function _resolveShapeStyle(node) {
+  const id = node?.getAttr?.('shapeStyleId');
+  if (!id) return false;
+  const tpl = getShapeStyle(id);
+  if (!tpl) {
+    // Template is gone (deleted, or the shape was pasted in from another
+    // project). Self-heal: drop the dangling id so the shape keeps the
+    // look already on its attrs and becomes editable again. Without this
+    // the toolbar would stay locked against a style that no longer exists.
+    node.setAttr('shapeStyleId', null);
+    return true;
+  }
+  for (const k of SHAPE_STYLE_KEYS) node.setAttr(k, tpl[k]);
+  return true;
+}
+
+/**
+ * Unbind, keeping the current look. Per spec the style is absolute while
+ * bound, and picking "(no style)" hands the shape back to the user as it
+ * stands — so the resolved values are already the node's attrs and all we
+ * do is drop the id. Nothing jumps; editing continues from there.
+ */
+function _bakeShapeStyle(node) {
+  if (!node?.getAttr?.('shapeStyleId')) return;
+  _resolveShapeStyle(node);          // make sure attrs match the template
+  node.setAttr('shapeStyleId', null);
+}
+
+/** Re-resolve every bound shape on the live stage. */
+function _reresolveShapeStyles() {
+  if (!_layer) return;
+  let touched = false;
+  for (const n of _layer.find('.userShape')) {
+    if (_resolveShapeStyle(n)) touched = true;
+  }
+  if (touched) { _layer.batchDraw(); _scheduleSave(); }
+}
+
 /** Load the persisted sticky defaults over the factory ones. Fire-and-forget. */
 async function _hydrateShapeDefaults() {
   try {
@@ -1957,7 +2020,10 @@ export function addArrow() {
  *     coalesce window so a new burst is guaranteed to push a brand-new
  *     entry rather than coalesce into the previous one.
  */
-const _SNAP_KEYS = ['fill', 'stroke', 'strokeWidth', 'opacity', 'cornerRadius'];
+// shapeStyleId rides along so undo restores the BINDING as well as the
+// look — otherwise undoing a "bind to style" would put the old colours
+// back while leaving the shape bound, and the next resolve would repaint it.
+const _SNAP_KEYS = ['fill', 'stroke', 'strokeWidth', 'opacity', 'cornerRadius', 'shapeStyleId'];
 
 let _shapeEditBefore = null;   // Map<KonvaNode, attrs>
 let _shapeEditTimer  = null;
@@ -3453,6 +3519,31 @@ function _refreshMultiToolbar() {
   if (textBoxes.length === 0 && shapes.length >= 1) {
     unmountTextToolbar();
     mountShapeToolbar(host, () => _summariseShapeAttrs(shapes), (patch) => applyShapeAttrs(patch));
+    // Shape style picker. Multi-select assigns the same style to every
+    // selected shape; a selection mixing different bindings shows
+    // "(no style)" rather than pretending one of them is authoritative.
+    const sIds = new Set(shapes.map(n => n.getAttr('shapeStyleId') || ''));
+    setShapeStyleDropdown(listShapeStyles(), sIds.size === 1 ? [...sIds][0] : '', (newId) => {
+      const before = new Map();
+      for (const n of shapes) before.set(n, _snapshotShapeAttrs(n));
+      for (const n of shapes) {
+        if (newId) { n.setAttr('shapeStyleId', newId); _resolveShapeStyle(n); }
+        else       { _bakeShapeStyle(n); }
+      }
+      const after = new Map();
+      for (const n of shapes) after.set(n, _snapshotShapeAttrs(n));
+      _layer.batchDraw();
+      setShapeStyleLocked(!!newId);
+      undoManager.push(
+        newId ? 'Bind shape style' : 'Unbind shape style',
+        () => _restoreShapeAttrsMap(before),
+        () => _restoreShapeAttrsMap(after),
+      );
+      _scheduleSave();
+    });
+    // Lock if ANY selected shape is bound — editing an unlocked mixed
+    // selection would write values the next resolve throws away.
+    setShapeStyleLocked(shapes.some(n => !!n.getAttr('shapeStyleId')));
     return;
   }
   unmountShapeToolbar();
@@ -4374,6 +4465,10 @@ async function _recreateNode(spec) {
     const Cls = Konva[spec.className];
     const node = new Cls({ ...spec.attrs, draggable: true });
     _wireShapeTransformend(node, SHAPE_CLASSES[spec.className]);
+    // A bound shape takes its fill/outline from the template, not from the
+    // values frozen into this step's snapshot — that's what makes editing a
+    // style reach steps that weren't on screen when it changed.
+    _resolveShapeStyle(node);
     return node;
   }
 

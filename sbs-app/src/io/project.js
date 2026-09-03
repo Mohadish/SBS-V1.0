@@ -224,6 +224,9 @@ export function serialize() {
   // bundled into the unified preset file alongside header items.
   project.styles = project.styles || { schema_version: 1, items: [] };
   project.styles.items = cloneShareStrings((state.get('styleTemplates') || []));
+  // Shape styles ride in the same section (V0.3.2.139) under their own key,
+  // so a legacy file simply has no `shapeItems` and loads to an empty list.
+  project.styles.shapeItems = cloneShareStrings((state.get('shapeStyles') || []));
 
   // 📌 Constant text boxes (V0.3.2.98)
   project.constTexts = project.constTexts || { schema_version: 1, items: [] };
@@ -948,7 +951,7 @@ export const PROJECT_STATE_KEYS = [
   'noteTemplates', 'notePresets', 'selectionGroups', 'selectionOutlineColor',
   'assets',
   'headerItems', 'headersLocked', 'headersHidden', 'headerDefault', 'headerStepNumberPerChapter',
-  'styleTemplates', 'constTextBoxes',
+  'styleTemplates', 'shapeStyles', 'constTextBoxes',
   'shapeTemplates', 'hardwareTemplates', 'shapeTemplateGroups',
   'selectedShapeTemplateIds', 'selectedShapeTemplateGroupIds', 'selectedColorPresetIds',
   'cables', 'cableGlobalScale', 'cableGlobalRadius', 'cableDefaultDiameter', 'cableHighlightColor',
@@ -1070,6 +1073,7 @@ export function applyProjectToState(project) {
     headerDefault:        project.headers?.default           || state.get('headerDefault'),
     headerStepNumberPerChapter: !!project.headers?.stepNumberPerChapter,
     styleTemplates:       project.styles?.items              || [],
+    shapeStyles:          project.styles?.shapeItems         || [],   // V0.3.2.139 — safe [] on legacy files
     constTextBoxes:       project.constTexts?.items          || [],   // 📌 V0.3.2.98 — safe [] on legacy files
     shapeTemplates:       project.shapes?.items              || [],
     // V0.2.22.38 — hardware template library, see core/schema.js

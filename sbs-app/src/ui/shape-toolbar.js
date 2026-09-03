@@ -100,18 +100,18 @@ export function mountShapeToolbar(host, getValues, applyFn) {
     'font-size:12px', 'user-select:none',
   ].join(';');
   _bar.innerHTML = `
-    <label style="display:flex;align-items:center;gap:4px" title="Fill colour">
+    <label data-sbs-shape-lockable style="display:flex;align-items:center;gap:4px" title="Fill colour">
       Fill <input id="shp-fill" type="color" style="width:28px;height:24px;padding:0;border:1px solid var(--line);background:transparent" />
       <input id="shp-fill-on" type="checkbox" title="Enable fill" checked />
     </label>
-    <label style="display:flex;align-items:center;gap:4px" title="Fill alpha (0 = transparent, 1 = opaque) — only the fill, stroke stays solid">
+    <label data-sbs-shape-lockable style="display:flex;align-items:center;gap:4px" title="Fill alpha (0 = transparent, 1 = opaque) — only the fill, stroke stays solid">
       α <input id="shp-fill-alpha" type="range" min="0" max="1" step="0.01" style="width:60px" />
     </label>
-    <label style="display:flex;align-items:center;gap:4px" title="Stroke colour">
+    <label data-sbs-shape-lockable style="display:flex;align-items:center;gap:4px" title="Stroke colour">
       Line <input id="shp-stroke" type="color" style="width:28px;height:24px;padding:0;border:1px solid var(--line);background:transparent" />
       <input id="shp-stroke-on" type="checkbox" title="Enable stroke" checked />
     </label>
-    <label style="display:flex;align-items:center;gap:4px" title="Line thickness in pixels">
+    <label data-sbs-shape-lockable style="display:flex;align-items:center;gap:4px" title="Line thickness in pixels">
       Thick <input id="shp-stroke-w" type="number" min="0" max="200" step="1"
              style="width:46px;height:22px;padding:0 4px;font-size:12px" />
     </label>
@@ -169,12 +169,73 @@ export function mountShapeToolbar(host, getValues, applyFn) {
   });
 }
 
+// ─── Shape style binding (V0.3.2.139) ───────────────────────────────────────
+
+let _styleSel = null;
+
+/**
+ * Style picker for the selected shape(s) — the shape-side twin of
+ * text-toolbar's setStyleDropdown.
+ *
+ *   styles:    [{ id, name }]
+ *   currentId: the shapeStyleId of the selection ('' = none / mixed)
+ *   onChange:  (styleId|null) => void
+ *
+ * Pass styles: null to remove the picker entirely.
+ */
+export function setShapeStyleDropdown(styles, currentId, onChange) {
+  if (!_bar) return;
+  if (_styleSel) _styleSel.remove();
+  _styleSel = null;
+  if (!Array.isArray(styles)) return;
+
+  const sel = document.createElement('select');
+  sel.title = 'Bind this shape to a shape style';
+  sel.style.cssText = [
+    'background:#1f2937', 'color:#e5e7eb',
+    'border:1px solid #334155', 'border-radius:6px',
+    'height:28px', 'padding:0 6px', 'font-size:13px', 'cursor:pointer',
+    'min-width:120px', 'order:-1',   // keep the picker leftmost
+  ].join(';');
+  const noneOpt = document.createElement('option');
+  noneOpt.value = '';
+  noneOpt.textContent = '(no style)';
+  sel.appendChild(noneOpt);
+  for (const s of styles) {
+    const o = document.createElement('option');
+    o.value = s.id;
+    o.textContent = s.name || 'Untitled';
+    sel.appendChild(o);
+  }
+  sel.value = currentId || '';
+  sel.addEventListener('mousedown', e => e.stopPropagation());
+  sel.addEventListener('change', () => onChange(sel.value || null));
+  _bar.prepend(sel);
+  _styleSel = sel;
+}
+
+/**
+ * Hide the fill / outline controls while a style is bound — per spec the
+ * style is absolute, and the only way to change the look is to pick a
+ * different one (or "(no style)").
+ *
+ * Corner radius is deliberately excluded from the lock: it is rectangle
+ * geometry rather than styling, so it stays live on a bound shape.
+ */
+export function setShapeStyleLocked(locked) {
+  if (!_bar) return;
+  _bar.querySelectorAll('[data-sbs-shape-lockable]').forEach(el => {
+    el.style.display = locked ? 'none' : 'flex';
+  });
+}
+
 export function unmountShapeToolbar() {
   if (_bar) {
     const host = _bar.parentElement;
     _bar.remove();
     _bar = null;
     _applyFn = null;
+    _styleSel = null;
     if (host && host.dataset.sbsShapeToolbar) {
       host.style.display = 'none';
       delete host.dataset.sbsShapeToolbar;
