@@ -26,10 +26,11 @@ import { promptString } from '../ui/prompt.js';
 import { openSequenceEditor } from '../ui/sequence-editor.js';
 import { narrationContextForStep } from './narration-timeline.js';
 import * as interfaces from './interfaces.js';   // interface overlay (used lazily in the right-click menu)
-import { mountTextToolbar, unmountTextToolbar, execCommandApplier, setToolbarValues, wasColorPickedRecently, setStyleDropdown, setStyleLocked, setConstDropdown } from '../ui/text-toolbar.js';
+import { mountTextToolbar, unmountTextToolbar, execCommandApplier, setToolbarValues, wasColorPickedRecently, setStyleDropdown, setStyleLocked, setConstDropdown, setTextEffects } from '../ui/text-toolbar.js';
 import { mountShapeToolbar, unmountShapeToolbar, setShapeStyleDropdown, setShapeStyleLocked } from '../ui/shape-toolbar.js';
 import * as userSettings from '../core/user-settings.js';
 import { listShapeStyles, getShapeStyle, SHAPE_STYLE_KEYS } from './shape-styles.js';
+import { textEffectsCss } from './text-effects.js';
 import { getTextToolbarSlot, showFloatingToolbar, hideFloatingToolbar } from '../ui/overlay-toolbar.js';
 import * as textEngine from './text-engine.js';
 import { getStyleTemplate, listStyleTemplates } from './style-templates.js';
@@ -1406,6 +1407,10 @@ function _enterTextEdit(node, ctxOverride) {
       setConstDropdown(null);    // 📌 hidden while typing — attach/detach from selection mode
       setStyleLocked(false);
     }
+    // No Fx button while typing: the box's raster is replaced by the live
+    // contenteditable, so effect changes would show nothing until exit.
+    // Select the box (single click) to reach them.
+    setTextEffects(null);
     // Float the panel over the box being typed into, same as selection mode.
     _anchorFloatingTo(node);
   }
@@ -1561,6 +1566,19 @@ async function _reflowTextBox(node) {
       textDecoration: tpl.textDecoration || '',
       bgColor:        tpl.fillColor || opts.bgColor,
     };
+  }
+
+  // Drop shadow + outline (V0.3.2.144). Per-box, so they survive a style
+  // binding — like corner radius on shapes, they aren't part of the style.
+  const fx = textEffectsCss(node.getAttr('textShadow'), node.getAttr('textOutline'));
+  if (fx.css) {
+    opts.textShadow = fx.css;
+    // The SVG has hard bounds and the content div clips, so an effect
+    // reaching further than the box's padding would simply be cut off.
+    // Widen the padding just enough to hold it. Default padding is 8px,
+    // which already covers ordinary settings — only a large shadow moves
+    // the text inward, and it's that or a clipped effect.
+    if (fx.extent > 8) opts.padding = fx.extent;
   }
 
   // Auto-height: do NOT pass `height` to the rasteriser. The canvas
@@ -2500,6 +2518,7 @@ function _serializeNode(node) {
                       // copied/duplicated shape came back unbound, and
                       // undoing a delete resurrected it unbound too.
     'constShapeId',   // 📌 V0.3.2.143 — membership in a constant-position def
+    'textShadow', 'textOutline',   // V0.3.2.144 — per-box drop shadow + outline
     'radius', 'radiusX', 'radiusY', 'sides', 'data',
     // Line/Arrow geometry (V0.3.2.30) — omitting these was why a pasted
     // arrow lost its tail (points defaulted to [] and could never grow back).
@@ -3739,12 +3758,87 @@ function _refreshMultiToolbar() {
     // bookkeeping and lives in the right-click menu, which carries the
     // full set (attach, detach, reposition, re-anchor, rename, delete).
     setConstDropdown(null);
+    // Fx — drop shadow + outline. Reads from the LAST selected box (the one
+    // the panel is anchored to) and writes to every selected box.
+    const fxAnchor = textBoxes[textBoxes.length - 1];
+    setTextEffects(
+      () => ({ shadow: fxAnchor.getAttr('textShadow'), outline: fxAnchor.getAttr('textOutline') }),
+      (patch) => _applyTextEffects(textBoxes, patch),
+      ()      => _endTextEffectsSession(textBoxes),
+    );
     _anchorFloatingTo(textBoxes[textBoxes.length - 1]);
   } else {
     unmountTextToolbar();
     setConstDropdown(null);
     _clearFloatingToolbar();
   }
+}
+
+// ─── Text drop shadow + outline (V0.3.2.144) ────────────────────────────────
+//
+// Stored per box as two plain-object attrs (textShadow / textOutline), so
+// they survive a style binding — they belong to the box, not the template,
+// the same way corner radius stays with a style-bound shape.
+//
+// A slider drag fires an event per pixel and each one re-rasterises the
+// box, so applies are debounced; undo collapses the whole popover session
+// into ONE entry rather than one per pixel.
+
+let _fxBefore = null;    // Map<node, {shadow, outline}> at popover open
+let _fxTimer  = null;
+
+function _fxSnapshot(nodes) {
+  const m = new Map();
+  for (const n of nodes) {
+    m.set(n, {
+      shadow:  n.getAttr('textShadow')  ? { ...n.getAttr('textShadow') }  : null,
+      outline: n.getAttr('textOutline') ? { ...n.getAttr('textOutline') } : null,
+    });
+  }
+  return m;
+}
+
+function _fxRestore(map) {
+  for (const [n, v] of map) {
+    if (typeof n.getStage === 'function' && !n.getStage()) continue;   // destroyed
+    n.setAttr('textShadow',  v.shadow);
+    n.setAttr('textOutline', v.outline);
+    _reflowTextBox(n).catch(() => {});
+  }
+  _scheduleSave();
+}
+
+function _applyTextEffects(nodes, patch) {
+  if (!_fxBefore) _fxBefore = _fxSnapshot(nodes);
+  for (const n of nodes) {
+    n.setAttr('textShadow',  patch.shadow  ? { ...patch.shadow }  : null);
+    n.setAttr('textOutline', patch.outline ? { ...patch.outline } : null);
+  }
+  // Trailing debounce — a drag coalesces into one raster per ~60ms instead
+  // of one per slider pixel.
+  clearTimeout(_fxTimer);
+  _fxTimer = setTimeout(() => {
+    _fxTimer = null;
+    for (const n of nodes) {
+      if (typeof n.getStage === 'function' && !n.getStage()) continue;
+      _reflowTextBox(n).catch(() => {});
+    }
+    _scheduleSave();
+  }, 60);
+}
+
+/** Popover closed — commit the whole burst as a single undo entry. */
+function _endTextEffectsSession(nodes) {
+  if (!_fxBefore) return;
+  const before = _fxBefore;
+  _fxBefore = null;
+  const after = _fxSnapshot(nodes);
+  const key = (m) => JSON.stringify([...m.values()]);
+  if (key(before) === key(after)) return;              // opened and changed nothing
+  undoManager.push('Text effects',
+    () => _fxRestore(before),
+    () => _fxRestore(after),
+  );
 }
 
 // ─── Floating panel anchoring (V0.3.2.141) ──────────────────────────────────
@@ -5221,6 +5315,7 @@ async function _htmlToCanvas(html, opts = {}) {
     fontWeight = 'normal',           // style-template overrides
     fontStyle  = 'normal',
     textDecoration = '',
+    textShadow = '',                 // compiled drop shadow + outline
   } = opts;
 
   // XHTML normalisation. SVG foreignObject parses its inner content as
@@ -5286,6 +5381,7 @@ async function _htmlToCanvas(html, opts = {}) {
     `font-weight:${fontWeight}`,
     `font-style:${fontStyle}`,
     `text-decoration:${textDecoration || 'none'}`,
+    ...(textShadow ? [`text-shadow:${textShadow}`] : []),
     `background-color:${bgColor}`,
     'box-sizing:border-box',
     'white-space:pre-wrap',

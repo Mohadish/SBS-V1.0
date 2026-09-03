@@ -24,6 +24,7 @@
  */
 
 import * as textEngine from '../systems/text-engine.js';
+import { openTextEffectsPopover, closeTextEffectsPopover } from './text-effects-popover.js';
 import { ACTIONS } from '../systems/text-engine.js';
 
 const FONTS = [
@@ -239,6 +240,34 @@ export function setConstDropdown(defs, currentId, onChange, onRename, onDelete) 
  * the style dropdown remain. Call after every selection change /
  * styleId update.
  */
+let _fxBtn = null;
+
+/**
+ * "Fx" button — drop shadow + outline for the whole box (V0.3.2.144).
+ *
+ * Deliberately OUTSIDE the style-lockable group: these effects are a
+ * property of the box, not of the style template, so they stay reachable
+ * on a style-bound box — the same reasoning that keeps corner radius live
+ * on a style-bound shape.
+ *
+ * Pass getValues: null to remove the button.
+ */
+export function setTextEffects(getValues, onChange, onSessionEnd) {
+  if (!_toolbar) return;
+  if (_fxBtn) { _fxBtn.remove(); _fxBtn = null; }
+  closeTextEffectsPopover();
+  if (typeof getValues !== 'function') return;
+
+  const b = _btn('Fx', 'Drop shadow and outline (applies to the whole box)');
+  b.addEventListener('mousedown', e => e.stopPropagation());
+  b.addEventListener('click', (e) => {
+    e.stopPropagation();
+    openTextEffectsPopover(b, getValues, onChange, onSessionEnd);
+  });
+  _toolbar.appendChild(b);
+  _fxBtn = b;
+}
+
 export function setStyleLocked(locked) {
   if (!_toolbar) return;
   _toolbar.querySelectorAll('[data-sbs-style-lockable]').forEach(el => {
@@ -278,6 +307,8 @@ export function setToolbarValues({ fontSize, fontName, color, fillColor, fillAlp
 }
 
 export function unmountTextToolbar() {
+  closeTextEffectsPopover();
+  _fxBtn = null;
   if (_toolbar) {
     _toolbar.innerHTML = '';
     _toolbar.style.display = 'none';
