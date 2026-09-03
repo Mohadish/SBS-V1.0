@@ -43,6 +43,7 @@ export async function openSettingsModal(initialTab = 'language') {
           <button class="settings-tab" data-tab="autosave">Autosave</button>
           <button class="settings-tab" data-tab="nuts">Nuts</button>
           <button class="settings-tab" data-tab="cloud">Cloud TTS</button>
+          <button class="settings-tab" data-tab="translate">Translation</button>
         </nav>
         <section id="settings-body" style="flex:1;padding:14px 16px;overflow:auto;font-size:13px;">
         </section>
@@ -105,6 +106,7 @@ function _showTab(name) {
   if (name === 'export')   _renderExportTab(body);
   if (name === 'nuts')     _renderNutsTab(body);
   if (name === 'cloud')    _renderCloudTab(body);
+  if (name === 'translate') _renderTranslateTab(body);
   if (name === 'autosave') _renderAutosaveTab(body);
 }
 
@@ -721,4 +723,154 @@ function _renderExportTab(body) {
 function _esc(s) {
   return String(s ?? '').replace(/[&<>"']/g,
     c => ({ '&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;' })[c]);
+}
+
+/**
+ * V0.3.2.147 — Translation engine tab.
+ *
+ * The offline engine talks to an OpenAI-compatible server running on this
+ * machine, which is the protocol Ollama, LM Studio and llama.cpp's server
+ * all speak — so the runtime stays the user's choice, not ours.
+ *
+ * The Test button round-trips a real sentence and shows what came back. A
+ * tick that only proved the socket opened would hide the failure that
+ * actually matters: a server that answers but translates badly, or chats
+ * back instead of translating.
+ */
+function _renderTranslateTab(body) {
+  const cur     = userSettings.get();
+  const t       = cur.translate || {};
+  const isLocal = (t.provider || 'google') === 'local';
+  const gloss   = (Array.isArray(t.glossary) ? t.glossary : [])
+    .map(g => `${g.from} = ${g.to}`).join('\n');
+
+  body.innerHTML = `
+    <h3 style="margin:0 0 6px 0;font-size:14px;">Translation engine</h3>
+    <p class="small muted" style="margin:0 0 12px 0;">
+      Used by language packs and subtitles. The offline engine runs a model
+      on this computer — no account, no API key, no internet.
+    </p>
+
+    <label style="display:flex;align-items:center;gap:8px;margin:6px 0;cursor:pointer;">
+      <input type="radio" name="tr-provider" value="google" ${isLocal ? '' : 'checked'} />
+      <span><strong>Google Cloud Translation</strong> — needs internet and a billed API key.</span>
+    </label>
+    <label style="display:flex;align-items:center;gap:8px;margin:6px 0;cursor:pointer;">
+      <input type="radio" name="tr-provider" value="local" ${isLocal ? 'checked' : ''} />
+      <span><strong>Offline (local model)</strong> — runs on this machine's GPU.</span>
+    </label>
+
+    <div id="tr-local" style="display:${isLocal ? 'block' : 'none'};margin-top:14px;border-top:1px solid var(--line);padding-top:12px;">
+      <label class="small muted" style="display:block;margin-bottom:4px;">Server URL (OpenAI-compatible)</label>
+      <input type="text" id="tr-url" value="${_esc(t.localBaseUrl || '')}" spellcheck="false"
+             placeholder="http://127.0.0.1:11434/v1"
+             style="width:100%;padding:6px 8px;border:1px solid var(--line);border-radius:4px;background:var(--panel2);color:var(--text);font-family:monospace;font-size:12px;" />
+      <p class="small muted" style="margin:4px 0 10px 0;font-size:11px;">
+        Ollama <code>http://127.0.0.1:11434/v1</code> ·
+        LM Studio <code>http://127.0.0.1:1234/v1</code> ·
+        llama.cpp <code>http://127.0.0.1:8080/v1</code>
+      </p>
+
+      <label class="small muted" style="display:block;margin-bottom:4px;">Model name</label>
+      <input type="text" id="tr-model" value="${_esc(t.localModel || '')}" spellcheck="false"
+             placeholder="gemma3:12b"
+             style="width:100%;padding:6px 8px;border:1px solid var(--line);border-radius:4px;background:var(--panel2);color:var(--text);font-family:monospace;font-size:12px;" />
+      <p class="small muted" style="margin:4px 0 10px 0;font-size:11px;">
+        Exactly as the server names it — <code>ollama list</code> for Ollama.
+      </p>
+
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;">
+        <div>
+          <label class="small muted" style="display:block;margin-bottom:4px;">Timeout (seconds)</label>
+          <input type="number" id="tr-timeout" min="5" max="900" value="${Math.round((t.timeoutMs || 120000) / 1000)}"
+                 style="width:100%;padding:6px 8px;border:1px solid var(--line);border-radius:4px;background:var(--panel2);color:var(--text);font-size:12px;" />
+        </div>
+        <div>
+          <label class="small muted" style="display:block;margin-bottom:4px;">Parallel requests</label>
+          <input type="number" id="tr-conc" min="1" max="8" value="${Number(t.concurrency) || 2}"
+                 style="width:100%;padding:6px 8px;border:1px solid var(--line);border-radius:4px;background:var(--panel2);color:var(--text);font-size:12px;" />
+        </div>
+      </div>
+      <p class="small muted" style="margin:4px 0 10px 0;font-size:11px;">
+        Raise parallel requests only if the server is configured for it —
+        Ollama needs <code>OLLAMA_NUM_PARALLEL</code>. Too high just queues.
+      </p>
+
+      <label class="small muted" style="display:block;margin:10px 0 4px 0;">Glossary — one <code>term = translation</code> per line</label>
+      <textarea id="tr-gloss" rows="5" spellcheck="false"
+                style="width:100%;padding:6px 8px;border:1px solid var(--line);border-radius:4px;background:var(--panel2);color:var(--text);font-family:monospace;font-size:12px;">${_esc(gloss)}</textarea>
+      <p class="small muted" style="margin:4px 0 12px 0;font-size:11px;">
+        Forced on every translation. This is the offline engine's real
+        advantage — your terminology is instructed, not guessed at.
+      </p>
+
+      <div style="display:flex;gap:8px;align-items:center;">
+        <button class="btn" id="tr-test">Test connection</button>
+        <span id="tr-test-out" class="small muted"></span>
+      </div>
+      <pre id="tr-test-sample" class="small" style="display:none;margin-top:8px;padding:8px;background:var(--panel2);border:1px solid var(--line);border-radius:4px;white-space:pre-wrap;font-size:11px;"></pre>
+    </div>
+  `;
+
+  const q = (sel) => body.querySelector(sel);
+
+  const readGlossary = () => String(q('#tr-gloss')?.value || '')
+    .split('\n')
+    .map(line => {
+      const i = line.indexOf('=');
+      if (i < 0) return null;
+      const from = line.slice(0, i).trim();
+      const to   = line.slice(i + 1).trim();
+      return (from && to) ? { from, to } : null;
+    })
+    .filter(Boolean);
+
+  const save = async () => {
+    const secs = Number(q('#tr-timeout')?.value);
+    await userSettings.patch({ translate: {
+      provider:     body.querySelector('input[name="tr-provider"]:checked')?.value || 'google',
+      localBaseUrl: String(q('#tr-url')?.value || '').trim(),
+      localModel:   String(q('#tr-model')?.value || '').trim(),
+      timeoutMs:    (Number.isFinite(secs) && secs > 0 ? secs : 120) * 1000,
+      concurrency:  Math.max(1, Math.min(8, Number(q('#tr-conc')?.value) || 2)),
+      glossary:     readGlossary(),
+    } });
+    window.dispatchEvent(new CustomEvent('sbs:user-settings-changed', { detail: { section: 'translate' } }));
+  };
+
+  for (const r of body.querySelectorAll('input[name="tr-provider"]')) {
+    r.addEventListener('change', async () => {
+      q('#tr-local').style.display = (r.value === 'local' && r.checked) ? 'block' : 'none';
+      await save();
+    });
+  }
+  for (const sel of ['#tr-url', '#tr-model', '#tr-timeout', '#tr-conc', '#tr-gloss']) {
+    q(sel)?.addEventListener('change', save);
+  }
+
+  q('#tr-test')?.addEventListener('click', async () => {
+    await save();                                    // test exactly what's on screen
+    const out    = q('#tr-test-out');
+    const sample = q('#tr-test-sample');
+    out.textContent = 'Testing…';
+    out.style.color = '';
+    sample.style.display = 'none';
+    const secs = Number(q('#tr-timeout')?.value);
+    const res  = await window.sbsNative?.translate?.testLocal?.({
+      baseUrl:   String(q('#tr-url').value || '').trim(),
+      model:     String(q('#tr-model').value || '').trim(),
+      target:    'he',
+      timeoutMs: (Number.isFinite(secs) && secs > 0 ? secs : 120) * 1000,
+    });
+    if (!res) { out.textContent = 'Test unavailable in this build.'; return; }
+    if (res.ok) {
+      out.textContent = `OK — ${res.ms} ms`;
+      out.style.color = '#4ade80';
+      sample.style.display = 'block';
+      sample.textContent = `EN  ${res.sample}\nHE  ${res.text}`;
+    } else {
+      out.textContent = res.error || 'Failed.';
+      out.style.color = '#f87171';
+    }
+  });
 }

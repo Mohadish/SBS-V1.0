@@ -116,6 +116,22 @@ const DEFAULTS = {
     enabled:      false,
     googleApiKey: '',
   },
+  // V0.3.2.147 — translation engine. 'google' keeps the Cloud Translation
+  // path; 'local' talks to an OpenAI-compatible server on this machine
+  // (Ollama / LM Studio / llama.cpp), so translation works with no account,
+  // no key and no internet. Machine-scope: it describes THIS computer's
+  // setup, not the project.
+  translate: {
+    provider:     'google',                     // 'google' | 'local'
+    localBaseUrl: 'http://127.0.0.1:11434/v1',  // Ollama's default
+    localModel:   '',                           // e.g. 'gemma3:12b'
+    timeoutMs:    120000,                       // a cold model load is slow
+    concurrency:  2,                            // parallel requests to the server
+    // [{ from, to }] — terms the model MUST translate a specific way.
+    // This is where a local engine beats a cloud one: domain vocabulary
+    // can be enforced rather than hoped for.
+    glossary:     [],
+  },
   // V0.3.2.37 — Auto-backup ("Autosave" settings tab). Writing a large
   // project blocks the renderer for seconds, so by default the backup waits
   // for a natural pause instead of interrupting mid-action. Rotating slots

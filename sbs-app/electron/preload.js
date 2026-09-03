@@ -116,8 +116,13 @@ contextBridge.exposeInMainWorld('sbsNative', {
   translate: {
     // format: 'text' (default, entity-decoded) | 'html' (markup preserved —
     // language packs send whole text-box HTML through this). V0.3.2.116.
-    batch: (texts, source, target, apiKey = '', format = 'text') =>
-      ipcRenderer.invoke('translate:batch', texts, source, target, apiKey, format),
+    // `local` (V0.3.2.147) routes the whole request to the offline engine
+    // instead of Google: { provider:'local', baseUrl, model, glossary, ... }.
+    // Omitted / provider !== 'local' keeps the existing Google behaviour.
+    batch: (texts, source, target, apiKey = '', format = 'text', local = null) =>
+      ipcRenderer.invoke('translate:batch', texts, source, target, apiKey, format, local),
+    // Probe the local server: returns { ok, ms, sample, text } or { ok:false, error }.
+    testLocal: (cfg) => ipcRenderer.invoke('translate:testLocal', cfg),
   },
 
   // ── License (3-factor commercial licensing, see electron/license/) ──────

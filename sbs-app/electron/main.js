@@ -1499,9 +1499,28 @@ function _decodeHtmlEntities(s) {
     .replace(/&amp;/g, '&');
 }
 
-ipcMain.handle('translate:batch', async (_, texts, source, target, apiKey, format) => {
+ipcMain.handle('translate:batch', async (_, texts, source, target, apiKey, format, local) => {
   if (!Array.isArray(texts) || !texts.length) return { ok: false, error: 'No texts to translate.' };
   if (!target)                                return { ok: false, error: 'No target language.' };
+
+  // V0.3.2.147 — OFFLINE PROVIDER. Every translation in the app funnels
+  // through this one handler, so routing here swaps the engine for the
+  // whole feature: language packs, subtitles, single-entry re-translate.
+  // Nothing above this line changes.
+  if (local && local.provider === 'local') {
+    const { translateLocalBatch } = require('./translate-local');
+    return translateLocalBatch({
+      texts, source, target,
+      format:      format === 'html' ? 'html' : 'text',
+      baseUrl:     local.baseUrl,
+      model:       local.model,
+      glossary:    local.glossary,
+      timeoutMs:   local.timeoutMs,
+      concurrency: local.concurrency,
+      apiKey:      local.apiKey,
+    });
+  }
+
   if (!apiKey)                                return { ok: false, error: 'No Google API key configured (Settings → Cloud TTS).' };
   // V0.3.2.116 — 'html' keeps markup intact (language packs translate whole
   // text-box HTML); 'text' stays the default so existing callers are unchanged.
@@ -1534,4 +1553,13 @@ ipcMain.handle('translate:batch', async (_, texts, source, target, apiKey, forma
     }
     return { ok: false, error: msg };
   }
+});
+
+// Connection probe for Settings → Translation. Round-trips one short
+// sentence so the user sees latency AND a sample of the model's output —
+// a server that answers but translates badly is the failure mode that
+// matters, and a bare "connected" tick would hide it.
+ipcMain.handle('translate:testLocal', async (_, cfg) => {
+  const { testLocalTranslator } = require('./translate-local');
+  return testLocalTranslator(cfg || {});
 });

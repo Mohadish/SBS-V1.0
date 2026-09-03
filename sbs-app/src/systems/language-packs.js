@@ -50,6 +50,7 @@ import { state }        from '../core/state.js';
 import { undoManager }  from './undo.js';
 import { cloneShareStrings } from '../core/clone.js';
 import * as userSettings from '../core/user-settings.js';
+import { translateBatch, isLocalProvider, providerBlocker } from './translate-provider.js';
 import {
   scanTextUnitsAndGeometry, applyTextUnitsAndGeometry,
   markOverlayStringsAuthoritative,
@@ -385,6 +386,7 @@ export function pendingKeys(pack, { force = false } = {}) {
 // ─── Machine translation ────────────────────────────────────────────────────
 
 function _apiKey() {
+  if (isLocalProvider()) return 'local';   // placeholder — offline needs no key
   try { return (userSettings.get()?.cloud?.googleApiKey || '').trim(); }
   catch { return ''; }
 }
@@ -401,7 +403,7 @@ export function translationAvailable() {
  */
 export async function translatePack(pack, { force = false, onProgress, apiKey } = {}) {
   const key = (apiKey || _apiKey() || '').trim();
-  if (!key) return { ok: false, error: 'No Google API key — Settings → Cloud TTS tab.' };
+  if (!key) return { ok: false, error: (providerBlocker() || 'Translation unavailable.') };
   if (!window.sbsNative?.translate?.batch) {
     return { ok: false, error: 'Translation bridge missing — restart the app (main-process update).' };
   }
@@ -437,7 +439,7 @@ export async function translatePack(pack, { force = false, onProgress, apiKey } 
       onProgress?.(done, total);
       // Source omitted → Google auto-detects, so this works whatever language
       // the project is authored in.
-      const res = await window.sbsNative.translate.batch(
+      const res = await translateBatch(
         slice.map(k => pack.entries[k].src), '', pack.lang, key, fmt,
       );
       await _pace();
@@ -1244,7 +1246,7 @@ async function _backfillSource(pack, { apiKey, onProgress } = {}) {
     for (let i = 0; i < group.length; i += CHUNK) {
       const slice = group.slice(i, i + CHUNK);
       onProgress?.(`Back-filling ${src} from ${pack.lang}… ${filled}/${keys.length}`);
-      const res = await window.sbsNative.translate.batch(
+      const res = await translateBatch(
         slice.map(k => pack.entries[k].tgt), '', src, key, fmt,
       );
       await _pace();
@@ -1289,7 +1291,7 @@ async function _propagateInto(pack, { apiKey, onProgress } = {}) {
     for (let i = 0; i < group.length; i += CHUNK) {
       const slice = group.slice(i, i + CHUNK);
       onProgress?.(`Updating ${pack.lang}… ${translated}/${stale.length}`);
-      const res = await window.sbsNative.translate.batch(
+      const res = await translateBatch(
         slice.map(k => pack.entries[k].src), '', pack.lang, key, fmt,
       );
       await _pace();
@@ -1315,7 +1317,7 @@ export async function syncLanguages({ leaving = null, onProgress } = {}) {
   const src = sourceLang();
   const codes = await listPackLanguages();
   const out = { backfilled: 0, translated: 0, kept: 0, languages: 0, errors: [] };
-  if (!translationAvailable()) { out.errors.push('No Google API key — Settings → Cloud TTS tab.'); return out; }
+  if (!translationAvailable()) { out.errors.push((providerBlocker() || 'Translation unavailable.')); return out; }
 
   // 1. BACK: complete the source from the language we are leaving.
   if (leaving && leaving !== src) {
@@ -1361,8 +1363,8 @@ export async function acceptMachineTranslation(langCode, key) {
   if (!e || !e.src) return { ok: false, error: 'Nothing to translate for that line.' };
 
   const apiKey = _apiKey();
-  if (!apiKey || !window.sbsNative?.translate?.batch) return { ok: false, error: 'No Google API key — Settings → Cloud TTS tab.' };
-  const res = await window.sbsNative.translate.batch([e.src], '', langCode, apiKey, e.fmt === 'html' ? 'html' : 'text');
+  if (!apiKey || !window.sbsNative?.translate?.batch) return { ok: false, error: (providerBlocker() || 'Translation unavailable.') };
+  const res = await translateBatch([e.src], '', langCode, apiKey, e.fmt === 'html' ? 'html' : 'text');
   if (!res?.ok) return { ok: false, error: res.error || 'Translation failed.' };
   const next = String(res.texts?.[0] ?? '');
   if (!next) return { ok: false, error: 'Translation came back empty.' };

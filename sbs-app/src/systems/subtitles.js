@@ -37,6 +37,7 @@
 import { state }         from '../core/state.js';
 import * as actions      from './actions.js';
 import * as userSettings from '../core/user-settings.js';
+import { translateBatch, isLocalProvider, providerBlocker } from './translate-provider.js';
 import { polishLine }    from './text-polish.js';   // ✨ punctuation sweep (V0.3.2.66)
 
 /** Languages offered by the subtitle header item. code '' = original. */
@@ -172,6 +173,7 @@ export function clearSubtitleOverride(stepId, lang) {
 // ─── Translation (authoring-time, Google v2 via main process) ───────────────
 
 function _apiKey() {
+  if (isLocalProvider()) return 'local';   // placeholder — offline needs no key
   try { return (userSettings.get()?.cloud?.googleApiKey || '').trim(); }
   catch { return ''; }
 }
@@ -182,12 +184,12 @@ export function translationAvailable() {
 
 async function _translateBatch(texts, target) {
   const key = _apiKey();
-  if (!key) return { ok: false, error: 'No Google API key — Settings → Cloud TTS tab.' };
+  if (!key) return { ok: false, error: (providerBlocker() || 'Translation unavailable.') };
   if (!window.sbsNative?.translate?.batch) {
     return { ok: false, error: 'Translation bridge missing — restart the app (main-process update).' };
   }
   // source omitted → Google auto-detects (projects can be any language)
-  return window.sbsNative.translate.batch(texts, '', target, key);
+  return translateBatch(texts, '', target, key);
 }
 
 /**
