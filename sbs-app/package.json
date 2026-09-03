@@ -73,7 +73,11 @@
       "!**/._*",
       "!**/{.DS_Store,.git,.hg,.svn,CVS,RCS,SCCS,.gitignore,.gitattributes}",
       "!**/{__pycache__,thumbs.db,.flowconfig,.idea,.vs,__tests__}",
-      "!**/{.eslintrc,.eslintignore,.babelrc}"
+      "!**/{.eslintrc,.eslintignore,.babelrc}",
+      "!node_modules/onnxruntime-node/bin/napi-v3/darwin/**",
+      "!node_modules/onnxruntime-node/bin/napi-v3/linux/**",
+      "!node_modules/onnxruntime-node/bin/napi-v3/win32/arm64/**",
+      "!**/node_modules/**/*.map"
     ],
     "asarUnpack": [
       "node_modules/onnxruntime-node/**/*",
