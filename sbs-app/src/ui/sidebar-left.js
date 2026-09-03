@@ -665,10 +665,14 @@ function _onNewProject() {
   // pick mode would otherwise keep eating viewport clicks against cables
   // this reset just deleted. Same single atomic setState, so each listener
   // (cursor reset, connect-arrow hide, cables panel) fires exactly once.
-  state.resetKeysToInitial([...PROJECT_STATE_KEYS, ...SESSION_MODAL_KEYS], {
+  // activeStepId is reset from createInitialState() alongside `steps`, NOT
+  // overridden to null (V0.3.2.146): a new project now opens with one step
+  // already there, and the two have to come from the SAME init call or the
+  // active id points at a step that doesn't exist.
+  state.resetKeysToInitial([...PROJECT_STATE_KEYS, ...SESSION_MODAL_KEYS, 'activeStepId'], {
     projectPath: null, projectName: 'Untitled', projectDirty: false,
     treeData: null, nodeById: new Map(),
-    activeStepId: null, selectedId: null,
+    selectedId: null,
     multiSelectedIds: new Set(),
     animationPresets: [defaultAnim],
     backgroundColor:    bgColor,
@@ -962,6 +966,12 @@ async function _onOpenProject() {
     const userSteps = (state.get('steps') || []).filter(s => !s.isBaseStep && !s.hidden);
     if (userSteps.length) {
       steps.activateStep(userSteps[0].id, false);
+    } else {
+      // A project with no usable steps (legacy file saved before any were
+      // added). Since V0.3.2.146 the app boots with a seeded step, so
+      // leaving activeStepId alone here would point it at a step this load
+      // just replaced — clear it rather than dangle.
+      state.setState({ activeStepId: null });
     }
 
     // Authoritative archive re-apply — AFTER the tree is fully rebuilt. Custom folders

@@ -1,3 +1,5 @@
+import { createStep } from './schema.js';
+
 /**
  * SBS Step Browser — App State
  * =============================
@@ -41,6 +43,18 @@ class EventEmitter {
 
 // ── Initial state ──────────────────────────────────────────────────────────
 function createInitialState() {
+  // V0.3.2.146 — every project opens with one step already there, instead
+  // of an empty timeline the user has to prime with "+ Step" before
+  // anything can be captured. Built here rather than in the New Project
+  // handler so BOTH app boot and every project reset get it from the same
+  // place, with steps[0] and activeStepId guaranteed to agree (a single
+  // createInitialState() call feeds resetKeysToInitial).
+  //
+  // Safe before any model exists: loading a model injects itself into every
+  // existing step snapshot (see steps.js), which is what makes an empty
+  // first step a supported starting point rather than a step that hides
+  // the model you load next.
+  const firstStep = createStep({ name: 'Step 1' });
   return {
     // ── App meta
     appVersion:     '1.0.0',
@@ -64,9 +78,9 @@ function createInitialState() {
     multiSelectedIds:   new Set(),    // all selected node ids
 
     // ── Steps
-    steps:          [],               // ordered array of step objects
+    steps:          [firstStep],      // ordered array of step objects
     chapters:       [],               // ordered array of chapter objects
-    activeStepId:   null,             // currently active step id
+    activeStepId:   firstStep.id,     // currently active step id
 
     // ── Camera views
     cameraViews:    [],               // saved camera presets
