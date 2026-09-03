@@ -55,9 +55,25 @@ let _tab       = 'text';      // 'text' | 'shape'
  * of thing — saved looks you bind to — so they share this panel rather
  * than competing for sidebar space.
  */
+let _subscribed = false;
+
+/**
+ * Keep the preview honest for value changes that don't come from this
+ * tab's own controls — undo/redo of a style edit being the case that
+ * matters. Those leave the template list unchanged, so the sidebar
+ * (correctly) doesn't rebuild the tab, and without this the swatch would
+ * show the pre-undo colour.
+ */
+function _ensureStyleSubscription() {
+  if (_subscribed) return;
+  _subscribed = true;
+  state.on('styleTemplate:updated', () => _refreshTextStyleInPlace());
+}
+
 export function renderStyleTab(container) {
   _container = container;
   if (!container) return;
+  _ensureStyleSubscription();
 
   const tabBtn = (id, label, on) => `
     <button class="btn" id="${id}" style="flex:1;${on
@@ -275,7 +291,36 @@ function _styleApplier(action, value) {
     case 'fillColor':   patch = { fillColor: String(value) }; break;
     // alignLeft/Center/Right intentionally not supported in style mode.
   }
-  if (patch) updateStyleTemplate(_activeId, patch);
+  if (patch) {
+    updateStyleTemplate(_activeId, patch);
+    _refreshTextStyleInPlace();
+  }
+}
+
+/**
+ * Repaint the preview + the list row for the active template without
+ * rebuilding the tab. The sidebar deliberately no longer re-renders on
+ * values-only edits (it was killing the open colour picker after one
+ * click), so the preview has to keep itself current.
+ */
+function _refreshTextStyleInPlace() {
+  const tpl = listStyleTemplates().find(t => t.id === _activeId);
+  if (!tpl || !_container) return;
+
+  const prev = _container.querySelector('#style-preview');
+  if (prev) {
+    prev.style.cssText = `margin-top:4px;padding:12px;border-radius:8px;border:1px solid var(--line);${_previewCssFull(tpl)}`;
+  }
+
+  const row = _container.querySelector(`[data-style-id="${tpl.id}"]`);
+  if (row) {
+    const sw = row.firstElementChild;
+    if (sw) {
+      sw.style.cssText = `flex:0 0 100px;${_previewCss(tpl)};border-radius:4px;padding:4px 6px;text-align:center;overflow:hidden;white-space:nowrap;text-overflow:ellipsis;`;
+    }
+    const meta = row.querySelector('.small.muted');
+    if (meta) meta.textContent = `${tpl.fontFamily || ''} · ${tpl.fontSize || 16}px · ${tpl.color || '#fff'}`;
+  }
 }
 
 function _fillHex(rgba) {

@@ -267,11 +267,11 @@ export function initSidebarLeft() {
   state.on('change:cableDefaultDiameter', () => { if (_activeTab === 'cables') _renderCableTabPanel(); });
   state.on('change:cableHighlightColor', () => { if (_activeTab === 'cables') _renderCableTabPanel(); });
   state.on('change:styleTemplates',        () => {
-    if (_activeTab === 'style')  _renderStyleTabPanel();
+    _maybeRenderStyleTab();                                 // skips values-only edits — see _maybeRenderStyleTab
     if (_activeTab === 'header') _renderHeaderTabPanel();   // P4b: row dropdowns refresh + Save button enable
   });
   state.on('styleTemplate:updated',        () => {
-    if (_activeTab === 'style')  _renderStyleTabPanel();
+    _maybeRenderStyleTab();
     if (_activeTab === 'header') _renderHeaderTabPanel();   // P4b: dropdown option labels refresh on rename
   });
   state.on('styleTemplate:removed',        () => {
@@ -397,7 +397,32 @@ function _renderHeaderTabPanel() {
 }
 
 function _renderStyleTabPanel() {
+  _styleListSig = _styleSig();
   renderStyleTab(_panel('style'));
+}
+
+// V0.3.2.142 — the style tab used to re-render on EVERY styleTemplate
+// change. Dragging a colour picker fires a change per movement, and each
+// re-render destroyed the live <input type="color"> — so the OS picker
+// slammed shut after a single click and the colour could never be dialled
+// in. (Shape styles never had the bug: nothing re-renders on their event.)
+//
+// A values-only edit leaves the template LIST identical, so comparing
+// ids+names tells us whether the list actually needs rebuilding. Colour,
+// size and weight edits repaint their own preview in place (see
+// style-tab.js _refreshTextStyleInPlace); adds, renames, deletes and undo
+// restores change the signature and still rebuild.
+let _styleListSig = '';
+
+function _styleSig() {
+  return (state.get('styleTemplates') || []).map(t => `${t.id}:${t.name}`).join('|');
+}
+
+function _maybeRenderStyleTab() {
+  const sig     = _styleSig();
+  const changed = sig !== _styleListSig;
+  _styleListSig = sig;
+  if (_activeTab === 'style' && changed) _renderStyleTabPanel();
 }
 
 function _renderCableTabPanel() {
