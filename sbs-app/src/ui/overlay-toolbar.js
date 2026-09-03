@@ -184,7 +184,51 @@ export function initOverlayToolbar() {
     );
   });
 
-  _tools.append(btnText, btnConst, btnImg, btnVideo, btnIface, btnRect, btnCirc, btnEll, btnTri, btnLine, btnArrow, btnToc, btnDel, btnHdrLock);
+  // ── 🧹 Grouped inserts (V0.3.2.137) ────────────────────────────────────
+  // Thirteen bare icons sitting shoulder to shoulder was unreadable. The
+  // inserts now collapse into two labelled dropdowns; Add-text stays a
+  // button of its own because it is the one used constantly.
+  //
+  // The menu entries CLICK THE ORIGINAL BUTTONS rather than re-implementing
+  // their handlers. Those handlers carry real behaviour — file pickers,
+  // transcode prompts, library-folder checks, error reporting — and copying
+  // any of it here would be a second version to keep in step.
+  const _menuFrom = (btn, entries) => (ev) => {
+    const r = btn.getBoundingClientRect();
+    showContextMenu(
+      entries.map(([icon, name, target]) => ({
+        label: `${icon} ${name}`,
+        action: () => target.click(),
+      })),
+      r.left, r.bottom + 4,
+    );
+    ev.stopPropagation();
+  };
+
+  const btnShape = _btn('▭ Shape ▾', 'Add a shape');
+  btnShape.addEventListener('click', _menuFrom(btnShape, [
+    ['▭', 'Rectangle', btnRect],
+    ['●', 'Circle',    btnCirc],
+    ['⬭', 'Ellipse',   btnEll],
+    ['▲', 'Triangle',  btnTri],
+    ['—', 'Line',      btnLine],
+    ['→', 'Arrow',     btnArrow],
+  ]));
+
+  const btnAssets = _btn('🖼 Assets ▾', 'Insert an image, video, interface or table of contents');
+  btnAssets.addEventListener('click', _menuFrom(btnAssets, [
+    ['🖼', 'Image',             btnImg],
+    ['🎬', 'Video clip',        btnVideo],
+    ['🖥', 'Interface',         btnIface],
+    ['▤', 'Table of contents', btnToc],
+  ]));
+
+  // The originals stay live (the menu clicks them) but are never shown.
+  for (const b of [btnImg, btnVideo, btnIface, btnRect, btnCirc, btnEll, btnTri, btnLine, btnArrow, btnToc]) {
+    b.style.display = 'none';
+    _tools.appendChild(b);
+  }
+  _tools.append(btnText, btnConst, _sep(), btnShape, btnAssets, _sep(), btnDel, btnHdrLock);
 
   // The editing toggle is rightmost — always visible, single source of
   // truth for entering/leaving overlay editing. The old "Done" button
