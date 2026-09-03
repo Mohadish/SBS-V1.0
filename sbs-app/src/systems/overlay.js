@@ -403,6 +403,79 @@ function _applyConstToNode(node, def) {
   }
 }
 
+// ─── 📌 Constant shape positions (V0.3.2.143) ───────────────────────────────
+//
+// The shape-side twin of constant text boxes: a definition owns an anchor
+// corner + coordinates, and every shape carrying its id snaps there on
+// each step load. POSITION ONLY — size stays per-instance, and styling is
+// a separate binding (shapeStyleId).
+//
+// Everything here works in BOUNDING-BOX space rather than node.x()/y(),
+// because a Konva node's position means different things per shape kind:
+// a Rect's x/y is its top-left, but a Circle's and an Ellipse's is its
+// CENTRE. Pinning those two kinds to the same definition by raw position
+// would visibly misalign them.
+
+function _constShapeDefs()        { return state.get('constShapes') || []; }
+function _constShapeDefOf(node)   { const id = node?.getAttr?.('constShapeId'); return id ? _constShapeDefs().find(d => d.id === id) : null; }
+function _saveConstShapeDefs(items) { state.setState({ constShapes: items }); state.markDirty(); }
+
+/**
+ * The node's bounding box in LAYER coordinates — the same space its x/y
+ * lives in. skipStroke keeps the pin on the shape's geometry, so changing
+ * outline thickness (or binding a style with a different one) doesn't
+ * nudge a pinned shape by half a stroke.
+ */
+function _shapeBox(node) {
+  return node.getClientRect({ relativeTo: _layer, skipStroke: true });
+}
+
+/** Where the node's anchor corner sits right now, under an anchor mode. */
+function _constShapeAnchorPos(node, anchor) {
+  const b = _shapeBox(node);
+  return { x: anchor === 'tr' ? b.x + b.width : b.x, y: b.y };
+}
+
+/** Pin a shape to its definition. Size and styling untouched. */
+function _applyConstShapeToNode(node, def) {
+  const b = _shapeBox(node);
+  // Offset between the node's own origin and its bbox top-left — zero for
+  // a Rect, half the diameter for a Circle. Shifting by it is what makes
+  // one definition line up shapes of different kinds.
+  const dx = node.x() - b.x;
+  const dy = node.y() - b.y;
+  const left = def.anchor === 'tr' ? def.x - b.width : def.x;
+  node.x(left + dx);
+  node.y(def.y + dy);
+}
+
+/** Re-pin every shape on the CURRENT step that follows `def`. */
+function _applyConstShapeToStep(def) {
+  for (const n of _layer?.getChildren() || []) {
+    if (n.getAttr?.('constShapeId') === def.id) _applyConstShapeToNode(n, def);
+  }
+  _layer?.batchDraw();
+}
+
+/**
+ * Commit a new position/anchor for a definition, with undo. The change is
+ * project-wide — every step's copies move — so it gets its own entry
+ * rather than riding along with whatever the user did last.
+ */
+function _updateConstShapeDef(def, patch, label) {
+  const before = { x: def.x, y: def.y, anchor: def.anchor };
+  const after  = { ...before, ...patch };
+  const write  = (vals) => {
+    const live = _constShapeDefs().find(d => d.id === def.id);
+    if (!live) return;
+    Object.assign(live, vals);
+    _saveConstShapeDefs([..._constShapeDefs()]);
+    _applyConstShapeToStep(live);
+  };
+  write(after);
+  undoManager.push(label, () => write(before), () => write(after));
+}
+
 /** Write a style change through to the definition + every sibling instance
  *  on the CURRENT step (other steps re-sync at their next load). */
 function _propagateConstStyle(node, styleId) {
@@ -2426,6 +2499,7 @@ function _serializeNode(node) {
     'shapeStyleId',   // V0.3.2.140 — binding to a shape style; without it a
                       // copied/duplicated shape came back unbound, and
                       // undoing a delete resurrected it unbound too.
+    'constShapeId',   // 📌 V0.3.2.143 — membership in a constant-position def
     'radius', 'radiusX', 'radiusY', 'sides', 'data',
     // Line/Arrow geometry (V0.3.2.30) — omitting these was why a pasted
     // arrow lost its tail (points defaulted to [] and could never grow back).
@@ -3448,6 +3522,73 @@ function _showOverlayContextMenu(node, x, y) {
            } },
          { separator: true }]);
 
+  // 📌 Constant SHAPE positions (V0.3.2.143) — mirrors the text block
+  // above. Position only: no style, and size stays per-instance.
+  const isShape       = node.name?.() === 'userShape';
+  const constShapeDef = isShape ? _constShapeDefOf(node) : null;
+  const constShapeItems = !isShape ? [] : (constShapeDef
+    ? [{ label: `📌 Pinned "${constShapeDef.name}"`, submenu: [
+          { label: '⊹ Set as new position (all steps)',
+            action: () => {
+              const p = _constShapeAnchorPos(node, constShapeDef.anchor);
+              _updateConstShapeDef(constShapeDef, { x: p.x, y: p.y },
+                `Reposition "${constShapeDef.name}"`);
+              setStatus(`"${constShapeDef.name}" repositioned — every step follows.`, 'success', 4000);
+            } },
+          { label: '↺ Snap back to pinned position',
+            action: () => { _applyConstShapeToNode(node, constShapeDef); _layer.batchDraw(); _scheduleSave(); } },
+          { separator: true },
+          { label: `${constShapeDef.anchor !== 'tr' ? '✓ ' : ''}Anchor: ⌜ top-left`,
+            action: () => {
+              // Re-derive the corner from where the shape sits NOW, so
+              // switching anchors never makes anything jump.
+              const p = _constShapeAnchorPos(node, 'tl');
+              _updateConstShapeDef(constShapeDef, { anchor: 'tl', x: p.x, y: p.y }, 'Anchor pinned shape left');
+            } },
+          { label: `${constShapeDef.anchor === 'tr' ? '✓ ' : ''}Anchor: ⌝ top-right`,
+            action: () => {
+              const p = _constShapeAnchorPos(node, 'tr');
+              _updateConstShapeDef(constShapeDef, { anchor: 'tr', x: p.x, y: p.y }, 'Anchor pinned shape right');
+            } },
+          { separator: true },
+          { label: '✂ Unpin (this shape only)',
+            action: () => { node.setAttr('constShapeId', null); _scheduleSave(); setStatus('Unpinned — now a normal shape.', 'info', 3000); } },
+        ] },
+        { separator: true }]
+    : node.getAttr('constShapeId')
+      ? [{ label: '📌 Pin definition missing — unpin',
+           action: () => { node.setAttr('constShapeId', null); _scheduleSave(); } },
+         { separator: true }]
+      : [
+         ...(_constShapeDefs().length ? [{
+           label: '📌 Pin to position',
+           submenu: _constShapeDefs().map(d => ({
+             label: `📌 ${d.name}`,
+             action: () => {
+               node.setAttr('constShapeId', d.id);
+               _applyConstShapeToNode(node, d);
+               _layer.batchDraw();
+               _scheduleSave();
+               setStatus(`Pinned to "${d.name}" — snapped to its position; size kept.`, 'success', 4500);
+             },
+           })),
+         }] : []),
+         { label: '📌 Make pinned position…',
+           action: async () => {
+             const name = await promptString('Name this pinned position', `Position ${_constShapeDefs().length + 1}`);
+             if (!name) return;
+             const p = _constShapeAnchorPos(node, 'tl');
+             const def = {
+               id: `csp_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 6)}`,
+               name: name.trim(), anchor: 'tl', x: p.x, y: p.y,
+             };
+             _saveConstShapeDefs([..._constShapeDefs(), def]);
+             node.setAttr('constShapeId', def.id);
+             _scheduleSave();
+             setStatus(`Pinned position "${def.name}" created — pin any shape to it from its right-click menu.`, 'success', 6000);
+           } },
+         { separator: true }]);
+
   const arrangeItems = [
     { label: '🔼 Arrange', submenu: [
       { label: 'Bring forward',  action: () => arrange('PageUp') },
@@ -3464,6 +3605,7 @@ function _showOverlayContextMenu(node, x, y) {
     ...seqItems,
     ...tocItems,
     ...constItems,
+    ...constShapeItems,
     ...arrangeItems,
     { label: '⎘ Duplicate',        action: _duplicateSelected },
     { label: '📋 Copy',            action: _copyToOverlayClipboard },
@@ -4481,6 +4623,14 @@ async function _loadFromActiveStep() {
     if (!n.getAttr?.('constId')) continue;
     const def = _constDefOf(n);
     if (def) _applyConstToNode(n, def);
+  }
+  // 📌 V0.3.2.143 — same for pinned shapes. Runs here, after every node is
+  // in the layer, because the bounding-box measurement needs the node
+  // attached. A missing definition leaves the shape where it is.
+  for (const n of _layer.getChildren()) {
+    if (!n.getAttr?.('constShapeId')) continue;
+    const def = _constShapeDefOf(n);
+    if (def) _applyConstShapeToNode(n, def);
   }
   // The step rebuild destroyed every node, so anything the floating panel
   // was parked against is gone. Drop it rather than leave it hovering over

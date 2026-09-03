@@ -136,6 +136,10 @@ function createInitialState() {
     // corner radius stays per-shape. See systems/shape-styles.js.
     shapeStyles:    [],               // ShapeStyle[]
     constTextBoxes: [],               // 📌 ConstTextDef[] (V0.3.2.98) — pinned text-box definitions
+    // 📌 Shape-side twin (V0.3.2.143): { id, name, anchor:'tl'|'tr', x, y }.
+    // Position ONLY — size stays per-instance, and styling is a separate
+    // binding via shapeStyleId. Instances carry constShapeId.
+    constShapes:    [],               // ConstShapeDef[]
 
     // ── Flat-shape templates — project-level polygon library. Each entry
     // owns a polygon + fill; placed instances live in the scene tree
