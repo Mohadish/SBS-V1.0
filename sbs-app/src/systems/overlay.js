@@ -1520,6 +1520,13 @@ async function _exitTextEdit(opts = {}) {
       if (trLayer && trLayer !== nodeLayer) trLayer.batchDraw();
     } catch {}
     try { ctx.onSave?.(); } catch {}
+    // V0.3.2.148 — hand the panel back in SELECTION mode for whatever is
+    // still selected. Leaving the editor unmounted the toolbar and nothing
+    // re-mounted it, so a freshly created text box sat there selected with
+    // no panel (and therefore no Fx) until the user deselected and clicked
+    // it again. Reads the live selection, so it correctly shows nothing
+    // when the click-out landed on empty canvas.
+    try { _refreshMultiToolbar(); } catch {}
   }
 }
 
