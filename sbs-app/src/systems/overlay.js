@@ -28,6 +28,7 @@ import { narrationContextForStep } from './narration-timeline.js';
 import * as interfaces from './interfaces.js';   // interface overlay (used lazily in the right-click menu)
 import { mountTextToolbar, unmountTextToolbar, execCommandApplier, setToolbarValues, wasColorPickedRecently, setStyleDropdown, setStyleLocked, setConstDropdown } from '../ui/text-toolbar.js';
 import { mountShapeToolbar, unmountShapeToolbar } from '../ui/shape-toolbar.js';
+import * as userSettings from '../core/user-settings.js';
 import { getTextToolbarSlot }  from '../ui/overlay-toolbar.js';
 import * as textEngine from './text-engine.js';
 import { getStyleTemplate, listStyleTemplates } from './style-templates.js';
@@ -63,6 +64,10 @@ export function initOverlay() {
   }
   _container = document.getElementById('overlay-stage');
   if (!_container) return;
+
+  // Sticky shape defaults from last session. Async, but shapes can't be
+  // created before the UI is interactive, so it always lands in time.
+  _hydrateShapeDefaults();
 
   _stage = new Konva.Stage({
     container: _container,
@@ -1607,6 +1612,14 @@ function _restoreLayerOrder(ids) {
 // All visual attributes round-trip via Konva.toJSON, so per-step persistence
 // works without extra serialisation hooks.
 
+// V0.3.2.138 — these are STICKY, not constant. Editing fill / outline /
+// thickness / radius on a selected shape records the new values here (see
+// _rememberShapeDefaults), so the next shape you create inherits them.
+// Hydrated from machine settings at boot and persisted on every change,
+// so the choice survives a restart and follows the user across projects.
+//
+// `opacity` is deliberately NOT sticky: it stays 1 always, with the visible
+// transparency living inside the rgba fill.
 const SHAPE_DEFAULTS = {
   fill:         'rgba(74,144,217,0.45)',  // alpha 0.45 = "Fill α" slider value
   stroke:       '#4A90D9',                // solid — alpha lives in fill only
@@ -1614,6 +1627,45 @@ const SHAPE_DEFAULTS = {
   opacity:      1,                         // node-level opacity stays 1 always
   cornerRadius: 0,
 };
+
+/** Keys the shape toolbar can emit, and therefore the ones that stick. */
+const STICKY_SHAPE_KEYS = ['fill', 'stroke', 'strokeWidth', 'cornerRadius'];
+
+/** Load the persisted sticky defaults over the factory ones. Fire-and-forget. */
+async function _hydrateShapeDefaults() {
+  try {
+    await userSettings.initUserSettings();
+    const saved = userSettings.get()?.overlay?.shapeDefaults || {};
+    for (const k of STICKY_SHAPE_KEYS) {
+      if (k in saved) SHAPE_DEFAULTS[k] = saved[k];
+    }
+  } catch { /* factory defaults stand */ }
+}
+
+/**
+ * Record a shape-toolbar patch as the new creation defaults.
+ *
+ * Guard: a shape with neither fill nor outline is invisible. The user may
+ * legitimately want that for the shape they're editing, but inheriting it
+ * would make the NEXT "add shape" look like it did nothing. So when a patch
+ * would leave both unpainted we keep the previous outline in the defaults
+ * only — the edited shape itself is untouched.
+ */
+function _rememberShapeDefaults(patch) {
+  const next = { ...SHAPE_DEFAULTS };
+  let touched = false;
+  for (const k of STICKY_SHAPE_KEYS) {
+    if (k in patch) { next[k] = patch[k]; touched = true; }
+  }
+  if (!touched) return;
+  if (next.fill == null && next.stroke == null) next.stroke = SHAPE_DEFAULTS.stroke;
+
+  for (const k of STICKY_SHAPE_KEYS) SHAPE_DEFAULTS[k] = next[k];
+
+  const toSave = {};
+  for (const k of STICKY_SHAPE_KEYS) toSave[k] = SHAPE_DEFAULTS[k];
+  userSettings.patch({ overlay: { shapeDefaults: toSave } }).catch(() => {});
+}
 
 /**
  * Wire transformend handler for a freshly-added shape. Bakes the
@@ -1946,6 +1998,9 @@ export function applyShapeAttrs(patch) {
     for (const [k, v] of Object.entries(patch)) n.setAttr(k, v);
   }
   _layer.batchDraw();
+
+  // The values the user just chose become the defaults for the next shape.
+  _rememberShapeDefaults(patch);
 
   // Capture AFTER-state for the redo closure.
   const after = new Map();

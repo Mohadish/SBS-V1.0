@@ -37,6 +37,19 @@ const DEFAULTS = {
   narration: {
     lastUsedVoice: '',
   },
+  // V0.3.2.138 — "sticky" shape defaults. Editing fill/outline/thickness/
+  // radius on a selected overlay shape records those values here, and the
+  // next shape you create is born with them. Machine-scope on purpose:
+  // it's a tool setting (like a brush), not project data, so it follows
+  // the user across projects and survives a restart.
+  overlay: {
+    shapeDefaults: {
+      fill:         'rgba(74,144,217,0.45)',
+      stroke:       '#4A90D9',
+      strokeWidth:  3,
+      cornerRadius: 0,
+    },
+  },
   scene: {
     // Wheel-zoom step multiplier. Step = distance × baseFactor × cameraZoomScale.
     // 1.0 = default; lower = finer/slower zoom, higher = coarser/faster.
