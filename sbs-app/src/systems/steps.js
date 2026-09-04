@@ -1444,6 +1444,14 @@ class StepManager {
               // stalled. Two different faults that looked identical.
               let why = '';
               try { why = ' · ' + JSON.stringify(overlaySystem.describeOverlayLoadState?.() || {}); } catch {}
+              // Heap at the moment of the stall. A silent image-decode stall
+              // near the renderer's ~3.5 GB ceiling looks identical to a
+              // logic hang from the outside; this number tells them apart.
+              try {
+                if (performance?.memory) {
+                  why += ` · heapMB=${Math.round(performance.memory.usedJSHeapSize / 1048576)}`;
+                }
+              } catch {}
               console.error(`[export] overlay fade did not complete within ${Math.round(capMs / 1000)}s on step "${this.getActiveStep?.()?.name ?? '?'}" — continuing without it (transition may look abrupt)${why}`);
               await Promise.race([doneP, _sleep(1000)]);
               return;

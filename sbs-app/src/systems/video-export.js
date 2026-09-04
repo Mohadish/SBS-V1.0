@@ -782,6 +782,16 @@ async function _exportMp4({ fps = DEFAULT_FPS, bitrate = DEFAULT_BITRATE,
   // renders, captures & encodes one frame per slot. Shared by the
   // setSleepImpl (steps animation phases) and _setWaitImpl (inter-step
   // holds) overrides so both produce matching encoded duration.
+  // V0.3.2.154 — heap probe. The renderer has a hard ~3.5 GB ceiling and
+  // inlined base64 (overlay images, sequences, audio) is its main consumer.
+  // Near that ceiling an image decode can stall SILENTLY — no error, no
+  // rejection — which is exactly how a step "hangs on load" with an empty
+  // console. Logging the level per step turns that from a guess into a
+  // number, and shows whether it climbs across the export.
+  const _heapMB = () => (performance.memory
+    ? Math.round(performance.memory.usedJSHeapSize / 1048576)
+    : null);
+
   const _syntheticSleep = async (ms, opts = {}) => {
     if (signal?.aborted) throw new DOMException('aborted', 'AbortError');
     // Holds-only 3D-render skip (V0.3.1.59): an inter-step hold is static in 3D
@@ -923,6 +933,8 @@ async function _exportMp4({ fps = DEFAULT_FPS, bitrate = DEFAULT_BITRATE,
     }
     const _totFrames = _framesRendered + _framesReused;
     if (offline && _totFrames > 0) {
+      const _h = _heapMB();
+      if (_h !== null) console.log(`[export] heap after this segment: ${_h} MB${_h > 2600 ? '  ⚠ NEAR THE ~3500 MB CEILING — image decodes can stall silently here' : ''}`);
       console.log(`[export] holds-only render skip — 3D rendered ${_framesRendered}/${_totFrames} frames, reused ${_framesReused} static hold frame(s) (${Math.round(100 * _framesReused / _totFrames)}% of 3D renders skipped).`);
     }
   } finally {
