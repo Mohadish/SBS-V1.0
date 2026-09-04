@@ -1419,7 +1419,24 @@ class StepManager {
             // rough transition beats a hung render).
             const capMs = durationMs + 120_000;
             let driven = 0;
-            while (!fadeDone && driven < capMs) { await _sleep(40); driven += 40; }
+            // V0.3.2.153 — minOneFrame is load-bearing, not a nicety.
+            // The synthetic sleep only emits a frame when the requested ms
+            // covers a whole frame interval. At 24 fps that interval is
+            // 41.67ms, so a bare _sleep(40) advanced the synthetic clock and
+            // encoded NOTHING for the full 122-second cap. Every 3D
+            // transition therefore completed inside a window where no frame
+            // was captured, and the exported video jumped straight to final
+            // positions with no movement at all.
+            //
+            // At 30 fps (33.33ms) a 40ms sleep DID emit a frame, which is
+            // exactly why the same export animated correctly there — the
+            // symptom was frame-rate dependent, which is what identified it.
+            //
+            // NOT a fix for the separate stall this loop exists to survive:
+            // steps that hang here do so at 30 fps too, where frames are
+            // being emitted. Cause still unknown; this only stops the
+            // timeout from also destroying the animation.
+            while (!fadeDone && driven < capMs) { await _sleep(40, { minOneFrame: true }); driven += 40; }
             if (!fadeDone) {
               // V0.3.2.152 — say WHY. "loadStillRunning: true" means the
               // step's content never finished loading, so the fade was
@@ -4422,7 +4439,7 @@ function _scheduleNoteFades(treeData, toSnapshot, startMs, durationMs, easeFn) {
 // out via setSleepImpl so animation phases advance on a synthetic
 // clock instead of being throttled by setTimeout / rAF behaviour.
 let _sleepImpl = (ms) => new Promise(resolve => setTimeout(resolve, Math.max(0, ms)));
-function _sleep(ms) { return _sleepImpl(ms); }
+function _sleep(ms, opts) { return _sleepImpl(ms, opts); }
 export function setSleepImpl(fn) {
   _sleepImpl = fn || ((ms) => new Promise(resolve => setTimeout(resolve, Math.max(0, ms))));
 }

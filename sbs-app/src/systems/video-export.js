@@ -797,7 +797,16 @@ async function _exportMp4({ fps = DEFAULT_FPS, bitrate = DEFAULT_BITRATE,
     // render every frame as before.
     const staticHold = !!opts.staticHold;
     let renderThisHoldFrame = true;
-    const target = synthMs + Math.max(0, ms);
+    // V0.3.2.153 — for callers that must not advance time without capturing
+    // it. The loop below only emits a frame when the requested span covers a
+    // whole frame interval, so a fixed-ms poll can advance the synthetic
+    // clock and encode nothing at some frame rates (a 40ms sleep at 24fps:
+    // 41.67 > 40). A polling loop doing that silently fast-forwards every
+    // animation into a window where no frame exists. minOneFrame widens the
+    // span to one frame so the poll always captures. See the overlay-fade
+    // driver in steps.js.
+    const wantMs = opts.minOneFrame ? Math.max(ms, frameIntervalMs) : ms;
+    const target = synthMs + Math.max(0, wantMs);
     while (synthMs + frameIntervalMs <= target) {
       if (_encoderError) throw _encoderError;   // dead encoder → abort, don't spin
       synthMs += frameIntervalMs;
