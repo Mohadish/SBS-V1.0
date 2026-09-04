@@ -980,6 +980,61 @@ window.sbsUnfollow = () => clearFollow(state.get('selectedId'));
 // (unstuckInputs, cablesAudit, visibilityAudit, rmHealth, …) and the Edit menu + Ctrl+Alt+U
 // call window.sbsDiag.unstuckInputs. A full `= {}` reassignment would wipe those.
 window.sbsDiag = window.sbsDiag || {};
+
+// V0.3.2.153 — inspect every step's overlay as DATA, without loading any of
+// it. A step that hangs on load cannot be diagnosed by opening it; this reads
+// the stored JSON instead, so the inspection itself is never what breaks.
+//
+// Reports size first (a plain string length, no parse) because the failure
+// this exists for — a base64 image inlined into the overlay, duplicated per
+// step — shows up as size long before it shows up as structure. Only the
+// heaviest steps get parsed.
+//
+//   window.sbsDiag.overlayScan()        // top 10 heaviest
+//   window.sbsDiag.overlayScan(25)      // top 25
+window.sbsDiag.overlayScan = (topN = 10) => {
+  const steps = state.get('steps') || [];
+  const rows = steps.map((st, i) => ({
+    i, name: st.name || '(unnamed)',
+    bytes: typeof st.overlay === 'string' ? st.overlay.length : 0,
+  }));
+  const total = rows.reduce((a, r) => a + r.bytes, 0);
+  const heavy = rows.filter(r => r.bytes > 0).sort((a, b) => b.bytes - a.bytes).slice(0, topN);
+
+  console.log(`[overlayScan] ${steps.length} step(s), overlay total ${(total / 1048576).toFixed(1)} MB`);
+  console.table(heavy.map(r => ({
+    step: r.i + 1, name: r.name.slice(0, 44), MB: +(r.bytes / 1048576).toFixed(2),
+  })));
+
+  // Parse only the heaviest — a big parse is exactly what we are hunting.
+  for (const r of heavy.slice(0, 5)) {
+    let parsed = null;
+    try { parsed = JSON.parse(steps[r.i].overlay); } catch (e) {
+      console.warn(`  step ${r.i + 1} "${r.name}": overlay JSON will not parse —`, e.message);
+      continue;
+    }
+    const kinds = {}; const bigSrcs = [];
+    const walk = (kids) => {
+      for (const c of kids || []) {
+        const a2 = c.attrs || {};
+        const k = a2.isVideo ? 'video' : a2.textHtml ? 'text' : a2.src ? 'image'
+                : (a2.kind || c.className || 'node');
+        kinds[k] = (kinds[k] || 0) + 1;
+        for (const key of ['src', 'posterSrc']) {
+          const v = a2[key];
+          if (typeof v === 'string' && v.length > 100000) {
+            bigSrcs.push(`${key} ${(v.length / 1048576).toFixed(2)} MB ${v.slice(0, 30)}…`);
+          }
+        }
+        if (c.children) walk(c.children);
+      }
+    };
+    walk(parsed?.children);
+    console.log(`  step ${r.i + 1} "${r.name}" — ${(r.bytes / 1048576).toFixed(2)} MB`, kinds,
+      bigSrcs.length ? { inlinedAssets: bigSrcs } : '');
+  }
+  return { steps: steps.length, totalMB: +(total / 1048576).toFixed(1), heaviest: heavy };
+};
 // V0.3.0.151 — run the cascade flatten on the CURRENT session (no reload). Converts
 // existing per-step cable data to defining-steps-only, re-resolves the live cable,
 // and re-renders. Save to persist. window.sbsCable.flatten()
