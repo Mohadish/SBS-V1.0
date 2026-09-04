@@ -55,7 +55,7 @@ import { initContextMenu, hideContextMenu, showContextMenu, canonicalizeMenuOrde
 import { promptString } from './ui/prompt.js';
 import { showMoveToFolderDialog, showAddToReplaceDialog, showReplaceModeDialog, showInputDialog, showInsertAnimDialog } from './ui/tree.js';
 import { positionSafeFrameEl }    from './core/safe-frame.js';
-import { initOverlay, getStage as getOverlayStage } from './systems/overlay.js';
+import { initOverlay, getStage as getOverlayStage, handleAnchorPick, cancelAnchoredArrowPlacement } from './systems/overlay.js';
 import { initOverlayToolbar }  from './ui/overlay-toolbar.js';
 import { initHeaderLayer }     from './systems/header.js';
 import { initCables, resolveNodeWorldPosition, flattenCablesToCascade, resolveCableSnapshotAtStep, applyStepSnapshot as applyCableStepSnapshot } from './systems/cables.js';        // C1: cables wire step:applied → applyStepSnapshot; C5-B: pos resolver for gizmo target; V0.3.0.151 cascade flatten
@@ -2458,6 +2458,19 @@ canvas.addEventListener('pointerdown', e => {
   // new anchored point; a click on empty space is ignored (the user
   // is mid-aim — ESC cancels). The ghost preview (pointermove handler
   // below) shows where the new point would land.
+  // 🎯 V0.3.2.151 — 3D-anchored arrow: place an endpoint by clicking a
+  // surface. Sits BEFORE the cable modes for no reason other than ordering;
+  // only one pick mode is ever armed at a time. A click on empty space is
+  // ignored (the user is mid-aim) — ESC cancels, matching the cable modes.
+  const anchorPick = state.get('anchorArrowPicking');
+  if (anchorPick) {
+    e.preventDefault();
+    e.stopPropagation();
+    const hit = sceneCore.pick(e.clientX, e.clientY);
+    if (hit?.point) handleAnchorPick(hit.point);
+    return;
+  }
+
   const insertTarget = state.get('cableInsertPickingTarget');
   if (insertTarget) {
     e.preventDefault();
@@ -4641,6 +4654,15 @@ window.addEventListener('keydown', async e => {
       e.preventDefault();
       return;
     }
+  }
+
+  // 🎯 3D-anchored arrow placement — Esc cancels. Placed BEFORE the other
+  // Escape branches: the mode drops out of overlay editing while armed, so
+  // leaving it stuck would strand the user with the overlay disabled.
+  if (key === 'Escape' && state.get('anchorArrowPicking')) {
+    cancelAnchoredArrowPlacement();
+    e.preventDefault();
+    return;
   }
 
   // Follow-Object target pick — Esc cancels.

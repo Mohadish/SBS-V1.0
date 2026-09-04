@@ -35,6 +35,10 @@ import {
   makeShapeLink, renameShapeLink, GEOM_KEYS, STYLE_KEYS as LINK_STYLE_KEYS,
 } from './shape-links.js';
 import { textEffectsCss } from './text-effects.js';
+import {
+  ANCHOR_KIND, isAnchoredNode, reprojectNode, reprojectAll,
+  hasAnchoredNodes, refreshCameraMatrices,
+} from './anchored-shapes.js';
 import { getTextToolbarSlot, showFloatingToolbar, hideFloatingToolbar } from '../ui/overlay-toolbar.js';
 import * as textEngine from './text-engine.js';
 import { getStyleTemplate, listStyleTemplates } from './style-templates.js';
@@ -153,6 +157,10 @@ export function initOverlay() {
   window.addEventListener('keydown', _onKeyDown);
 
   // H2: per-frame advance for overlay fade transitions.
+  // 🎯 V0.3.2.151 — reproject 3D-anchored shapes. Runs every frame the scene
+  // ticks, which covers user orbiting AND the step-transition camera tween,
+  // and fires under fireSyntheticTick during an offline export too.
+  sceneCore.addTickHook(_reprojectAnchored);
   sceneCore.addTickHook(_advanceOverlayFade);
   // S2: per-frame advance for image-sequence playback (inert when none active).
   sceneCore.addTickHook(_advanceSequences);
@@ -406,6 +414,171 @@ function _applyConstToNode(node, def) {
     node.setAttr('styleId', def.styleId || null);
     _reflowTextBox(node).catch(() => {});
   }
+}
+
+// ─── 🎯 3D-anchored shapes (V0.3.2.151) ─────────────────────────────────────
+//
+// Endpoints live in world space; the drawn geometry is recomputed from them
+// every frame. See systems/anchored-shapes.js for the coordinate chain and
+// for why `points` must never be treated as authored state.
+
+/** Tick hook: re-derive every anchored shape's geometry from its anchors. */
+function _reprojectAnchored() {
+  if (!_layer) return;
+  const layers = [_layer, _ghostLayer];
+  // Cheap bail — most projects have no anchored shapes on most steps, and
+  // this runs on every rendered frame.
+  if (!hasAnchoredNodes(layers)) return;
+  if (!refreshCameraMatrices()) return;
+  reprojectAll(layers);
+  _layer.batchDraw();
+  _ghostLayer?.batchDraw();
+}
+
+/**
+ * Create a 3D-anchored arrow / line between two world points.
+ *
+ * Deliberately NOT draggable and excluded from the transformer: its geometry
+ * is derived, so dragging would move it for exactly one frame and then snap
+ * back. Endpoints are moved by right-click → reposition, which re-picks in
+ * the 3D scene — the same interaction the cable points use.
+ */
+export function addAnchoredArrow(worldA, worldB, opts = {}) {
+  if (!_stage) return null;
+  const node = new Konva.Arrow({
+    x: 0, y: 0,
+    points:        [0, 0, 0, 0],       // derived on the first tick
+    pointerLength: 14,
+    pointerWidth:  14,
+    pointerAtBeginning: !!opts.headA,
+    pointerAtEnding:    opts.headB !== false,   // default: head at the far end
+    fill:          SHAPE_DEFAULTS.stroke,       // arrow head reads stroke colour
+    stroke:        SHAPE_DEFAULTS.stroke,
+    strokeWidth:   SHAPE_DEFAULTS.strokeWidth,
+    opacity:       SHAPE_DEFAULTS.opacity,
+    draggable:     false,
+    name:          'userShape',
+  });
+  node.setAttr('kind',    ANCHOR_KIND);
+  node.setAttr('anchorA', [worldA.x, worldA.y, worldA.z]);
+  node.setAttr('anchorB', [worldB.x, worldB.y, worldB.z]);
+  node.setAttr('headA',   !!opts.headA);
+  node.setAttr('headB',   opts.headB !== false);
+  // No _wireShapeTransformend: that bakes scale into `points`, which are
+  // derived here — it would fight the reprojection.
+  _layer.add(node);
+  _attachNode(node);
+  refreshCameraMatrices();
+  reprojectNode(node);
+  _layer.batchDraw();
+  _pushAddNodeUndo(node, 'Add 3D arrow');
+  _scheduleSave();
+  return node;
+}
+
+/** Move one endpoint of an anchored shape to a new world position. */
+export function setAnchorPoint(node, which, world) {
+  if (!isAnchoredNode(node) || !world) return false;
+  const key    = which === 'a' ? 'anchorA' : 'anchorB';
+  const before = (node.getAttr(key) || []).slice();
+  const after  = [world.x, world.y, world.z];
+  const write  = (v) => {
+    if (typeof node.getStage === 'function' && !node.getStage()) return;
+    node.setAttr(key, v.slice());
+    refreshCameraMatrices();
+    reprojectNode(node);
+    _layer?.batchDraw();
+    _scheduleSave();
+  };
+  write(after);
+  undoManager.push('Move 3D anchor', () => write(before), () => write(after));
+  return true;
+}
+
+/**
+ * Arm the two-click placement mode for a new 3D arrow.
+ *
+ * The click has to reach the 3D canvas, and in overlay-edit mode the Konva
+ * stage owns pointer events — so placement drops out of overlay editing for
+ * its duration and restores it afterwards. Camera movement is unavailable
+ * while overlay editing anyway, which is what makes a two-click placement
+ * stable: the projection cannot shift between the first and second click.
+ */
+export function startAnchoredArrowPlacement(opts = {}) {
+  _anchorPlaceOpts = { headA: !!opts.headA, headB: opts.headB !== false };
+  _anchorEditingWas = _editing;
+  if (_editing) setEditingMode(false);
+  state.setState({ anchorArrowPicking: {} });
+  setStatus('Click the arrow TAIL on the model…', 'info', 6000);
+}
+
+/** Arm a re-pick for ONE endpoint of an existing anchored shape. */
+export function startAnchorReposition(node, which) {
+  if (!isAnchoredNode(node)) return;
+  _anchorEditingWas = _editing;
+  if (_editing) setEditingMode(false);
+  state.setState({ anchorArrowPicking: { node, which } });
+  setStatus(`Click the new ${which === 'a' ? 'tail' : 'head'} position…`, 'info', 6000);
+}
+
+export function cancelAnchoredArrowPlacement() {
+  if (!state.get('anchorArrowPicking')) return;
+  state.setState({ anchorArrowPicking: null });
+  if (_anchorEditingWas) setEditingMode(true);
+  _anchorEditingWas = false;
+  setStatus('Placement cancelled.', 'info', 2000);
+}
+
+let _anchorPlaceOpts   = null;
+let _anchorEditingWas  = false;
+
+/**
+ * A surface was clicked while a placement mode was armed. Drives the little
+ * state machine: reposition an existing endpoint, take the first point, or
+ * take the second and build the shape.
+ *
+ * `world` is the raw THREE hit point. It is COPIED, not referenced — the
+ * anchor must not alias a vector the scene may reuse.
+ */
+export function handleAnchorPick(world) {
+  const pick = state.get('anchorArrowPicking');
+  if (!pick || !world) return;
+
+  // Repositioning one end of an existing shape.
+  if (pick.node) {
+    setAnchorPoint(pick.node, pick.which, world);
+    state.setState({ anchorArrowPicking: null });
+    if (_anchorEditingWas) setEditingMode(true);
+    _anchorEditingWas = false;
+    setStatus('Anchor moved.', 'success', 2500);
+    return;
+  }
+
+  // First click — remember the tail and wait for the head.
+  if (!pick.first) {
+    state.setState({ anchorArrowPicking: { first: { x: world.x, y: world.y, z: world.z } } });
+    setStatus('Now click the arrow HEAD…', 'info', 6000);
+    return;
+  }
+
+  // Second click — build it.
+  const a = pick.first;
+  const b = { x: world.x, y: world.y, z: world.z };
+  state.setState({ anchorArrowPicking: null });
+  if (_anchorEditingWas) setEditingMode(true);
+  _anchorEditingWas = false;
+  addAnchoredArrow(a, b, _anchorPlaceOpts || {});
+  _anchorPlaceOpts = null;
+  setStatus('3D arrow placed — it tracks the camera now.', 'success', 4000);
+}
+
+/** Toggle an arrowhead on one end. */
+export function setAnchorHead(node, which, on) {
+  if (!isAnchoredNode(node)) return;
+  if (which === 'a') { node.setAttr('headA', !!on); node.pointerAtBeginning(!!on); }
+  else               { node.setAttr('headB', !!on); node.pointerAtEnding(!!on); }
+  _layer?.batchDraw();
+  _scheduleSave();
 }
 
 // ─── 🔗 Linked shape instances (V0.3.2.150) ─────────────────────────────────
@@ -2671,6 +2844,9 @@ function _serializeNode(node) {
                       // undoing a delete resurrected it unbound too.
     'constShapeId',   // 📌 V0.3.2.143 — membership in a constant-position def
     'linkId',         // 🔗 V0.3.2.150 — membership in a linked-shape definition
+    // 🎯 V0.3.2.151 — 3D anchors. These are the AUTHORED state of an anchored
+    // shape; its `points` are derived per frame and deliberately not trusted.
+    'anchorA', 'anchorB', 'headA', 'headB',
     'textShadow', 'textOutline',   // V0.3.2.144 — per-box drop shadow + outline
     'radius', 'radiusX', 'radiusY', 'sides', 'data',
     // Line/Arrow geometry (V0.3.2.30) — omitting these was why a pasted
@@ -3694,10 +3870,28 @@ function _showOverlayContextMenu(node, x, y) {
            } },
          { separator: true }]);
 
+  // 🎯 3D-anchored arrow (V0.3.2.151) — endpoints are re-picked in the 3D
+  // scene, never dragged, because their 2D position is derived every frame.
+  const anchorItems = !isAnchoredNode(node) ? [] : [
+    { label: '🎯 3D arrow', submenu: [
+        { label: '⊹ Reposition TAIL…', action: () => startAnchorReposition(node, 'a') },
+        { label: '⊹ Reposition HEAD…', action: () => startAnchorReposition(node, 'b') },
+        { separator: true },
+        { label: `${node.getAttr('headA') ? '✓ ' : ''}Arrowhead on tail`,
+          action: () => setAnchorHead(node, 'a', !node.getAttr('headA')) },
+        { label: `${node.getAttr('headB') ? '✓ ' : ''}Arrowhead on head`,
+          action: () => setAnchorHead(node, 'b', !node.getAttr('headB')) },
+      ] },
+    { separator: true },
+  ];
+
   // 🔗 Linked shape instances (V0.3.2.150). A link shares the WHOLE shape —
   // geometry, paint and position — so it sits above the position-only pin
   // below it in the menu.
-  const isShapeNode = node.name?.() === 'userShape';
+  // Anchored shapes are excluded: a link stamps `points` across every step,
+  // and an anchored shape's points are derived from the camera — linking one
+  // would broadcast one step's camera pose onto all the others.
+  const isShapeNode = node.name?.() === 'userShape' && !isAnchoredNode(node);
   const linkDef     = isShapeNode ? _linkDefOf(node) : null;
   const sameKindLinks = isShapeNode
     ? listShapeLinks().filter(l => l.className === _classOf(node))
@@ -3834,6 +4028,7 @@ function _showOverlayContextMenu(node, x, y) {
     ...seqItems,
     ...tocItems,
     ...constItems,
+    ...anchorItems,
     ...linkItems,
     ...constShapeItems,
     ...arrangeItems,
@@ -4400,6 +4595,10 @@ function _configTransformerForNode(node) {
  * transformer). Selection-only state with no nodes has no effect.
  */
 function _configTransformerForNodes(nodes) {
+  // 🎯 Anchored shapes carry derived geometry — a transformer handle would
+  // resize them for exactly one frame before the next reprojection snapped
+  // them back. Endpoints move via right-click → reposition instead.
+  nodes = (nodes || []).filter(n => !isAnchoredNode(n));
   if (!_transformer || !nodes?.length) return;
   const allTextBoxes = nodes.every(n => n.getClassName?.() === 'Image' && n.getAttr('textHtml'));
   if (allTextBoxes) {
@@ -4617,6 +4816,19 @@ function _serialiseStageJson() {
   const stripImage = (children) => {
     for (const c of children || []) {
       if (c?.attrs && 'image' in c.attrs) delete c.attrs.image;
+      // 🎯 V0.3.2.151 — an anchored shape's `points` are DERIVED from the
+      // camera, recomputed every frame. Persisting them would bake the
+      // camera pose at save time into the project file and, worse, churn the
+      // render cache: it fingerprints this JSON at 1e-4, so a shape that
+      // re-serialises differently after every orbit would invalidate cached
+      // export segments for no visual reason. The world anchors are the
+      // authored state; points are rebuilt on the first tick after load.
+      if (c?.attrs?.kind === ANCHOR_KIND) {
+        c.attrs.points = [0, 0, 0, 0];
+        c.attrs.x = 0;
+        c.attrs.y = 0;
+        delete c.attrs.visible;   // cull state is derived too
+      }
       if (c?.children) stripImage(c.children);
     }
   };

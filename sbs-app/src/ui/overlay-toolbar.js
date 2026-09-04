@@ -81,6 +81,8 @@ export function initOverlayToolbar() {
   const btnTri   = _btn('▲',   'Add triangle');
   const btnLine  = _btn('—',   'Add line');
   const btnArrow = _btn('→',   'Add arrow');
+  const btn3dArrow = _btn('🎯↗', 'Add 3D arrow — click two points ON THE MODEL. The ends stay fixed in 3D space, so the arrow follows when you move the camera.');
+  btn3dArrow.addEventListener('click', () => overlay.startAnchoredArrowPlacement());
   const btnToc   = _btn('▤',   'Add table of contents (auto from chapters + timecodes)');
   const btnDel   = _btn('🗑',   'Delete selected');
   // 🔒 Header layer lock (V0.3.2.100) — same toggle the Header tab has,
@@ -213,6 +215,7 @@ export function initOverlayToolbar() {
     ['▲', 'Triangle',  btnTri],
     ['—', 'Line',      btnLine],
     ['→', 'Arrow',     btnArrow],
+    ['🎯', '3D arrow (anchored to the model)', btn3dArrow],
   ]));
 
   const btnAssets = _btn('🖼 Assets ▾', 'Insert an image, video, interface or table of contents');
@@ -224,7 +227,7 @@ export function initOverlayToolbar() {
   ]));
 
   // The originals stay live (the menu clicks them) but are never shown.
-  for (const b of [btnImg, btnVideo, btnIface, btnRect, btnCirc, btnEll, btnTri, btnLine, btnArrow, btnToc]) {
+  for (const b of [btnImg, btnVideo, btnIface, btnRect, btnCirc, btnEll, btnTri, btnLine, btnArrow, btn3dArrow, btnToc]) {
     b.style.display = 'none';
     _tools.appendChild(b);
   }

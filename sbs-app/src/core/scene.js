@@ -795,6 +795,18 @@ export class SceneCore extends Emitter {
    */
   setOverscan(f) { this._overscan = Math.max(1, Number(f) || 1); this.fitToCanonical(); this.requestRender(0); }
   getOverscan() { return this._overscan || 1; }
+  /**
+   * The overscan factor actually in force RIGHT NOW — 1 while export framing
+   * is on, whatever the live setting says (V0.3.2.151).
+   *
+   * getOverscan() deliberately reports the user's live preference and ignores
+   * _exportFraming, which is correct for the settings UI and wrong for anyone
+   * projecting coordinates: both internal users of the factor read
+   * `this._exportFraming ? 1 : (this._overscan || 1)` instead. Anything mapping
+   * world space onto the canonical frame needs THIS value, or every projected
+   * point lands scaled-off-centre in an export.
+   */
+  getEffectiveOverscan() { return this._exportFraming ? 1 : (this._overscan || 1); }
   /** Force the tight export frame (ov=1) while exporting / capturing a thumbnail. */
   setExportFraming(on) { this._exportFraming = !!on; this.fitToCanonical(); }
 

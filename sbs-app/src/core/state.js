@@ -326,6 +326,12 @@ function createInitialState() {
     // where position is 'before' | 'after'. Cleared on Esc, on a
     // successful pick, or when selection changes.
     cableInsertPickingTarget: null,
+    // 🎯 V0.3.2.151 — 3D-anchored arrow placement. Same modal-pick pattern as
+    // the cable modes above. Holds { first } while waiting for the SECOND
+    // click (first = the world point already captured), or {} when armed and
+    // waiting for the first. null = not placing. Also used for repositioning
+    // a single endpoint: { node, which } targets an existing shape.
+    anchorArrowPicking: null,
 
     // C5 (Phase E2 follow-up): a SOCKET is awaiting a re-anchor pick.
     // Same modal-pick pattern as cableReanchorPickingId but the click
