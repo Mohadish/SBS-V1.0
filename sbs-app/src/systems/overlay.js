@@ -4874,20 +4874,45 @@ export function describeOverlayLoadState() {
 // rebuilds the live stage from them — see the guard in _writeOverlayToStep.
 let _overlayStringsAuthoritative = false;
 function _markOverlayStringsAuthoritative() { _overlayStringsAuthoritative = true; _scheduleLoad(); }
+let _loadTimer = 0;
+
 function _scheduleLoad() {
   // Defer by a frame so step.snapshot application completes before restore.
-  // Cancel any prior RAF so rapid step changes don't queue multiple loads.
-  if (_loadRaf) cancelAnimationFrame(_loadRaf);
+  // Cancel any prior schedule so rapid step changes don't queue multiple loads.
+  if (_loadRaf)   { cancelAnimationFrame(_loadRaf); _loadRaf = 0; }
+  if (_loadTimer) { clearTimeout(_loadTimer);       _loadTimer = 0; }
+
+  const run = async (resolve) => {
+    try { await _loadFromActiveStep(); }
+    finally { _overlayStringsAuthoritative = false; resolve(); }
+  };
+
   // Track the load's promise so video export (and future deterministic
   // callers) can await it via waitForOverlayStable() — without this,
   // the first few frames after a step transition can capture a partial
   // / empty layer because async raster is still in flight.
   _currentLoadPromise = new Promise(resolve => {
-    _loadRaf = requestAnimationFrame(async () => {
-      _loadRaf = 0;
-      try { await _loadFromActiveStep(); }
-      finally { _overlayStringsAuthoritative = false; resolve(); }
-    });
+    // ── V0.3.2.155 — NEVER requestAnimationFrame during an offline export.
+    //
+    // An offline export STOPS the render loop and drives everything from
+    // timers, and the browser only fires rAF callbacks when the page
+    // actually paints. So during long stretches of an export nothing paints,
+    // this callback is never serviced, and the promise below never resolves.
+    //
+    // Everything downstream then waits on it forever: the crossfade is armed
+    // from _currentLoadPromise.finally(), so the fade never starts, and the
+    // export's driver loop burns its full 122-second cap before giving up.
+    //
+    // The tell was that the app stayed fully interactive while "stuck", and
+    // that clicking through the timeline INSTANTLY un-stuck it — an
+    // interaction forces a paint, the starved rAF finally fires, and the
+    // load completes. A hang that a mouse click cures is a starved frame
+    // callback, not slow code and not memory.
+    //
+    // setTimeout keeps the same one-task deferral (snapshot application
+    // still lands first) without depending on the compositor.
+    if (state.get('_exporting')) _loadTimer = setTimeout(() => { _loadTimer = 0; run(resolve); }, 0);
+    else _loadRaf = requestAnimationFrame(() => { _loadRaf = 0; run(resolve); });
   });
 }
 

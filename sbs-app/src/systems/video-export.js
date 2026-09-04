@@ -1354,8 +1354,20 @@ async function _hardResetToFirstStep(stepsToPlay) {
   // animate=false → instant apply, identical to a step-card double-click.
   await steps.activateStep(stepsToPlay[0].id, false);
   // Two rAF + a small buffer so render + tick hooks settle before capture.
-  await new Promise(r => requestAnimationFrame(r));
-  await new Promise(r => requestAnimationFrame(r));
+  //
+  // V0.3.2.155 — each rAF is RACED against a timeout. A bare
+  // `await new Promise(r => requestAnimationFrame(r))` is an unbounded wait:
+  // the browser only services frame callbacks when the page paints, and an
+  // export stops the render loop and can go long stretches without painting.
+  // The race keeps the settle behaviour when frames are flowing and degrades
+  // to a short delay when they are not, instead of hanging the export before
+  // it has encoded anything.
+  const _frameOrTimeout = () => Promise.race([
+    new Promise(r => requestAnimationFrame(r)),
+    new Promise(r => setTimeout(r, 100)),
+  ]);
+  await _frameOrTimeout();
+  await _frameOrTimeout();
   await _wait(50);
 }
 
