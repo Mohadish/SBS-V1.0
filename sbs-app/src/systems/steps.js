@@ -1421,7 +1421,13 @@ class StepManager {
             let driven = 0;
             while (!fadeDone && driven < capMs) { await _sleep(40); driven += 40; }
             if (!fadeDone) {
-              console.error(`[export] overlay fade did not complete within ${Math.round(capMs / 1000)}s — continuing without it (transition may look abrupt)`);
+              // V0.3.2.152 — say WHY. "loadStillRunning: true" means the
+              // step's content never finished loading, so the fade was
+              // never armed; false means it loaded and the fade itself
+              // stalled. Two different faults that looked identical.
+              let why = '';
+              try { why = ' · ' + JSON.stringify(overlaySystem.describeOverlayLoadState?.() || {}); } catch {}
+              console.error(`[export] overlay fade did not complete within ${Math.round(capMs / 1000)}s on step "${this.getActiveStep?.()?.name ?? '?'}" — continuing without it (transition may look abrupt)${why}`);
               await Promise.race([doneP, _sleep(1000)]);
               return;
             }

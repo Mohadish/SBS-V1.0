@@ -4838,6 +4838,38 @@ function _serialiseStageJson() {
 
 let _loadRaf = 0;
 let _currentLoadPromise = Promise.resolve();
+// True while a step's overlay load is still running. Read by
+// describeOverlayLoadState() so a stuck export can say WHY it is stuck.
+let _loadInFlight = false;
+
+/**
+ * Snapshot of why the overlay might not be ready (V0.3.2.152).
+ *
+ * The export's 122-second bail could previously only report THAT the fade
+ * never completed. That is two very different faults wearing one message:
+ * either the step's content never finished loading (so the fade was never
+ * armed), or it loaded and the fade itself failed to advance. This tells
+ * them apart in one line, and names what the step actually holds.
+ */
+export function describeOverlayLoadState() {
+  const kids = _layer?.getChildren?.() || [];
+  const kinds = {};
+  for (const n of kids) {
+    const k = n.getAttr?.('isVideo')     ? 'video'
+            : n.getAttr?.('textHtml')    ? 'text'
+            : n.getAttr?.('isInterface') ? 'interface'
+            : n.getAttr?.('src')         ? 'image'
+            : (n.getAttr?.('kind') || n.getClassName?.() || 'node');
+    kinds[k] = (kinds[k] || 0) + 1;
+  }
+  return {
+    loadStillRunning: _loadInFlight,
+    fadeArmed:        !!_activeFade,
+    ghostNodes:       _ghostLayer?.getChildren?.().length ?? 0,
+    liveNodes:        kids.length,
+    contents:         kinds,
+  };
+}
 // True from "a data-level op patched overlay strings" until the next load
 // rebuilds the live stage from them — see the guard in _writeOverlayToStep.
 let _overlayStringsAuthoritative = false;
@@ -4941,7 +4973,11 @@ function _beginOverlayFade(durationMs, easeFn, onDone, mode) {
   _layer.opacity(0);
   _layer.batchDraw();
   _suppressNextStepAppliedLoad = true;
-  _currentLoadPromise = (async () => { await _loadFromActiveStep(); })();
+  _loadInFlight = true;
+  _currentLoadPromise = (async () => {
+    try { await _loadFromActiveStep(); }
+    finally { _loadInFlight = false; }
+  })();
   const arm = () => {
     _activeFade = {
       startMs: clock.now(),
@@ -5486,11 +5522,51 @@ function _fileToDataURL(file) {
   });
 }
 
+/**
+ * Load an image source.
+ *
+ * V0.3.2.152 — HARD TIMEOUT. This used to wait on onload/onerror with no
+ * bound. An image that neither fires is not hypothetical: a decoder that
+ * stalls, an oversized data URL, or a source the compositor never gets to
+ * leaves the promise pending FOREVER.
+ *
+ * That matters far beyond one missing picture, because this sits inside the
+ * chain a video export blocks on: _loadImage -> _htmlToCanvas ->
+ * _reflowTextBox -> _loadFromActiveStep -> the promise whose resolution ARMS
+ * the overlay crossfade. A single stalled image therefore means the fade is
+ * never armed, the export's emergency driver spins for its full 122-second
+ * cap, and — because that driver advances the synthetic clock the whole time
+ * — every 3D transition completes inside a window where nothing is encoded.
+ * The exported video shows objects and camera snapping to their final
+ * positions with no movement at all.
+ *
+ * So the failure presented as "animations are broken" when the actual cause
+ * was one asset that never loaded. Timing out turns that silent, whole-export
+ * corruption into a named error on one element.
+ */
+const IMAGE_LOAD_TIMEOUT_MS = 15000;
+
 function _loadImage(src) {
   return new Promise((resolve, reject) => {
     const img = new Image();
-    img.onload  = () => resolve(img);
-    img.onerror = reject;
+    let settled = false;
+    const timer = setTimeout(() => {
+      if (settled) return;
+      settled = true;
+      const kind = /^data:/i.test(String(src || '')) ? `data URL (${String(src).length} chars)` : String(src).slice(0, 200);
+      const err = new Error(`Image load timed out after ${IMAGE_LOAD_TIMEOUT_MS / 1000}s — ${kind}`);
+      console.error('[overlay] STALLED IMAGE — this is what hangs a step load (and, in an export, the whole transition):', kind);
+      try { img.src = ''; } catch { /* best effort: let the decoder go */ }
+      reject(err);
+    }, IMAGE_LOAD_TIMEOUT_MS);
+    img.onload = () => {
+      if (settled) return;
+      settled = true; clearTimeout(timer); resolve(img);
+    };
+    img.onerror = (e) => {
+      if (settled) return;
+      settled = true; clearTimeout(timer); reject(e);
+    };
     img.src = src;
   });
 }
