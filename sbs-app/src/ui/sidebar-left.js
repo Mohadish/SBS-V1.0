@@ -1130,9 +1130,26 @@ async function _loadModelFile(file, assetEntry = null, skipColorExtraction = fal
     if (modelNode && !assetEntry) {
       // assetEntry is set only during project reload — skip auto-step logic then.
       const existingSteps = state.get('steps') || [];
-      if (existingSteps.length === 0) {
-        // First model ever → auto-create first step so the scene is never stepless
-        steps.createStepFromCurrent('Step 1');
+      // V0.3.2.159 — "pristine" means no step has ever CAPTURED anything, which
+      // is not the same as having no steps. Since .146 a project opens with one
+      // seeded step whose snapshot is empty (tree === null), so the old
+      // `length === 0` test stopped firing and the first model went down the
+      // inject path instead.
+      //
+      // That path cannot handle an empty snapshot: injectModelIntoAllSteps
+      // appends to snapshot.tree and skips the step entirely when that tree is
+      // null. The model therefore never entered the step, and activating it
+      // rebuilt the scene without the model — objects vanishing from a saved
+      // project, which is what this cost the user.
+      const pristine = existingSteps.length === 0
+        || existingSteps.every(st => !st.snapshot?.tree);
+      if (pristine) {
+        // Capture into the seeded step rather than adding a second one, so the
+        // timeline does not grow an empty leading step on every first import.
+        const seeded = existingSteps.find(st => st.id === state.get('activeStepId'))
+                    || existingSteps[0];
+        if (seeded) steps.captureIntoStep(seeded.id);
+        else        steps.createStepFromCurrent('Step 1');
       } else {
         // Additional model → backfill into every existing step so switching
         // steps never removes the new model from the scene.

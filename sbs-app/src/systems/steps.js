@@ -2570,6 +2570,25 @@ class StepManager {
    * @param {string} [name]    step name (auto-generated if omitted)
    * @returns {Step}
    */
+  /**
+   * Capture the CURRENT scene into an existing step, replacing its snapshot.
+   *
+   * V0.3.2.159 — needed because a project now opens with one seeded step whose
+   * snapshot is empty. Loading the first model into it must CAPTURE, not
+   * inject: injectModelIntoAllSteps appends to snapshot.tree and does nothing
+   * at all when that tree is null, which silently produced steps that rebuild
+   * the scene without the model in it.
+   */
+  captureIntoStep(stepId) {
+    const arr  = state.get('steps') || [];
+    const step = arr.find(s => s.id === stepId);
+    if (!step) return false;
+    const snap = this.captureSnapshot();
+    state.setState({ steps: arr.map(s => (s.id === stepId ? { ...s, snapshot: snap } : s)) });
+    state.markDirty();
+    return true;
+  }
+
   createStepFromCurrent(name, overrides = {}) {
     const steps    = state.get('steps');
     const activeId = state.get('activeStepId');
@@ -2652,13 +2671,24 @@ class StepManager {
       // Skip if this step already has the model in its tree
       if (snap.tree && specContainsId(snap.tree, modelNode.id)) return step;
 
-      // Append to the scene_root's children list in the serialised tree
+      // Append to the scene_root's children list in the serialised tree.
+      //
+      // V0.3.2.159 — a step with NO tree used to fall straight through here,
+      // leaving newTree null: visibility and transforms were written but the
+      // model never entered the tree, so activating that step rebuilt the
+      // scene without it. Silent, and it looks exactly like objects vanishing
+      // from a saved project. Warn instead of skipping quietly — a step that
+      // reaches this function is expected to have been captured.
       let newTree = snap.tree;
       if (newTree) {
         newTree = {
           ...newTree,
           children: [...(newTree.children || []), modelSpec],
         };
+      } else {
+        console.warn(`[steps] injectModelIntoAllSteps: step "${step.name || step.id}" has no snapshot tree — `
+          + 'the model cannot be injected into it and that step will render without it. '
+          + 'Capture the step (or re-save from a good load) to repair it.');
       }
 
       return {
