@@ -1023,8 +1023,14 @@ export async function planWithCacheStatus() {
       if (prev?.ok) {
         const old = JSON.parse(prev.data);
         const parts = [];
-        for (const k of ['prims', 'shapes', 'colors', 'cables']) {
-          if (JSON.stringify(old.defs?.[k]) !== JSON.stringify(plan.defsKey[k])) parts.push(k === 'prims' ? 'primitives' : k);
+        // V0.3.2.157 — 'overlay' included. Without it, a full re-render caused
+        // by editing a shape style, a linked shape or a pinned position was
+        // reported with no cause at all, which is how .150's broken keying
+        // stayed invisible: the one report that exists to explain a mass
+        // invalidation could not name the input that triggered it.
+        const _label = { prims: 'primitives', overlay: 'overlay definitions (shape styles / links / pinned positions)' };
+        for (const k of ['prims', 'shapes', 'colors', 'cables', 'overlay']) {
+          if (JSON.stringify(old.defs?.[k]) !== JSON.stringify(plan.defsKey[k])) parts.push(_label[k] || k);
         }
         if (JSON.stringify(old.settings) !== JSON.stringify(plan.settingsKey)) parts.push('render settings');
         if (parts.length) {
