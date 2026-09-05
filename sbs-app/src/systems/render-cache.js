@@ -34,7 +34,7 @@ import { steps } from './steps.js';
 import { resolveAnimationString } from './animation.js';   // V0.3.2.73 — preset content must reach the segment key
 
 /** Bump when renderer/exporter changes make previously-cached pixels stale. */
-export const RENDER_CACHE_EPOCH = 4;   // 2: canonical hashing (V0.3.2.22); 3: scoped defs (.32); 4: pruned object roster (.33)
+export const RENDER_CACHE_EPOCH = 5;   // 2: canonical hashing (V0.3.2.22); 3: scoped defs (.32); 4: pruned object roster (.33); 5: overlay defs reach the span key (.156) — existing segments were keyed without them and may be stale
 
 const _groupKeyOf = (s) => s.groupHead ? s.id : (s.groupId || null);
 
@@ -209,11 +209,6 @@ export async function computeSegmentPlan() {
   const tplById   = new Map((state.get('shapeTemplates') || []).map(t => [t.id, t]));
   const allPrims  = [...primById.values()].sort(_byId);                 // conservative fallback (missing vis map)
   const allShapes = (state.get('shapeTemplates') || []).slice().sort(_byId);
-  const _defScope = {
-    primById, shapeTplOfNode, tplById, allPrims, allShapes, byId: _byId,
-    colors: (state.get('colorPresets') || []).slice().sort(_byId),
-    cables: (state.get('cables') || []).map(c => ({ id: c.id, style: c.style })).sort(_byId),
-  };
   // V0.3.2.150 — OVERLAY-side project definitions. These were absent, so a
   // cached segment could be re-used after the definition that draws its
   // overlay changed: edit a linked shape's size, export, and the cached
@@ -231,6 +226,14 @@ export async function computeSegmentPlan() {
     shapeLinks:  (state.get('shapeLinks')  || []).slice().sort(_byId),
   };
 
+  const _defScope = {
+    primById, shapeTplOfNode, tplById, allPrims, allShapes, byId: _byId,
+    // V0.3.2.156 — overlay-side definitions belong on the SPAN key, not just
+    // the drift report. See _scopedDefs.
+    overlay: _overlayDefs,
+    colors: (state.get('colorPresets') || []).slice().sort(_byId),
+    cables: (state.get('cables') || []).map(c => ({ id: c.id, style: c.style })).sort(_byId),
+  };
   // Coarse global roster — for the drift report / _keyinputs only, NOT per-span keys.
   const defsKey = {
     prims: allPrims, shapes: allShapes, colors: _defScope.colors, cables: _defScope.cables,
@@ -314,14 +317,27 @@ function _spanVisible(span) {
  *   - V null (missing data) → full defs (conservative). */
 function _scopedDefs(V, plan) {
   const sc = plan._defScope;
-  if (!V) return { prims: sc.allPrims, shapes: sc.allShapes, colors: sc.colors, cables: sc.cables };
+  // Overlay defs are NOT scoped by visible 3D nodes — a shape style or a
+  // linked shape has nothing to do with which meshes a span shows — so they
+  // ride on every span unconditionally. Any edit to one therefore changes
+  // every span key and invalidates the whole cache.
+  //
+  // V0.3.2.156 — this is where they were MISSING. .150 added them to defsKey,
+  // which its own comment two lines above declares is "for the drift report /
+  // _keyinputs only, NOT per-span keys". The commit message claimed the cache
+  // invalidated on overlay-def changes; it did not. Because styles, links and
+  // pinned positions resolve at step LOAD time, editing one leaves every
+  // unopened step's stored overlay string byte-identical — so every span was a
+  // cache HIT and an incremental export silently shipped the OLD paint,
+  // geometry and positions.
+  if (!V) return { prims: sc.allPrims, shapes: sc.allShapes, colors: sc.colors, cables: sc.cables, overlay: sc.overlay };
   const prims = [];
   for (const id of V) { const d = sc.primById.get(id); if (d) prims.push(d); }
   prims.sort(sc.byId);
   const tplIds = new Set();
   for (const id of V) { const t = sc.shapeTplOfNode.get(id); if (t) tplIds.add(t); }
   const shapes = [...tplIds].map(t => sc.tplById.get(t) || { id: t, gone: true }).sort(sc.byId);
-  return { prims, shapes, colors: sc.colors, cables: sc.cables };
+  return { prims, shapes, colors: sc.colors, cables: sc.cables, overlay: sc.overlay };
 }
 
 /** (Re)compute a span's key + part-hashes from the CURRENT live objects.
