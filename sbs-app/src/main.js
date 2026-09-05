@@ -1598,6 +1598,44 @@ window.sbsNative?.onMenu?.('menu:languagePanel', () => {
   window.sbsLangPanel().catch(err => console.error('[lang-panel] failed:', err));
 });
 
+// 🧭 Edit → "Rebuild Cascade (fix rogue objects)" (V0.3.2.162).
+//
+// Re-derives the live scene's world transforms from the stored tree. For the
+// rare case where a structural edit — typically a move into a folder with
+// "keep position", then back out of the offset-correction folder that creates
+// — leaves an object DRAWN somewhere its own data does not say it is. Until
+// now the only cure was saving and reloading the project.
+//
+// Reports through the status bar, not just the console: a utility whose result
+// is invisible unless you happen to have devtools open is a utility nobody
+// trusts. "Nothing moved" is a real answer here and is stated plainly, because
+// it tells us the fault is deeper than this repairs.
+window.sbsNative?.onMenu?.('menu:rebuildCascade', async () => {
+  try {
+    const m = await import('./systems/cascade-rebuild.js');
+    const r = m.rebuildCascade('Edit ▸ Rebuild Cascade');
+    if (!r.checked) {
+      setStatus('Rebuild Cascade: nothing to rebuild — no model is loaded.', 'warn', 4000);
+      return;
+    }
+    if (!r.moved.length) {
+      setStatus(`Rebuild Cascade: ${r.checked} object(s) re-derived, none had drifted.`, 'success', 5000);
+      console.log(`[cascade] rebuild: ${r.checked} object(s) re-derived, nothing moved.`);
+      return;
+    }
+    const worst = r.moved[0];
+    setStatus(
+      `Rebuild Cascade: corrected ${r.moved.length} object(s) — worst "${worst.name}" by ${worst.distance}. See console.`,
+      'success', 9000,
+    );
+    console.warn(`[cascade] rebuild CORRECTED ${r.moved.length} of ${r.checked} object(s):`);
+    console.table(r.moved.slice(0, 30));
+  } catch (err) {
+    console.error('[cascade] rebuild failed:', err);
+    setStatus(`Rebuild Cascade failed: ${err.message}`, 'danger', 8000);
+  }
+});
+
 // Background narration pre-cache:
 //   • on project load — synthesize every step's saved text once, in the
 //     background, so Preview / Export are instant when the user gets there.

@@ -79,6 +79,7 @@ contextBridge.exposeInMainWorld('sbsNative', {
       'menu:constTitlesPanel',
       'menu:cleanupConstTitles',
       'menu:languagePanel',        // 🌍 V0.3.2.116 — language packs
+      'menu:rebuildCascade',       // 🧭 V0.3.2.162 — Edit ▸ Rebuild Cascade
     ];
     if (!allowed.includes(channel)) return;
     ipcRenderer.on(channel, (_e, ...args) => cb(...args));

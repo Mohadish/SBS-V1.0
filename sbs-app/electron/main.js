@@ -393,6 +393,15 @@ function buildMenu() {
           click: () => mainWindow?.webContents.send('menu:languagePanel'),
         },
         { type: 'separator' },
+        {
+          // V0.3.2.162 — re-derives the live scene's world transforms from the
+          // stored tree. For the rare case where a structural edit leaves an
+          // object DRAWN somewhere its own data does not say it is, which
+          // until now only a save-and-reload could clear.
+          label: 'Rebuild Cascade (fix rogue objects)',
+          click: () => mainWindow?.webContents.send('menu:rebuildCascade'),
+        },
+        { type: 'separator' },
         { label: 'Model source transform…', click: () => mainWindow?.webContents.send('menu:modelSourceTransform') },
       ],
     },
