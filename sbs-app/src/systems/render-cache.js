@@ -34,7 +34,7 @@ import { steps } from './steps.js';
 import { resolveAnimationString } from './animation.js';   // V0.3.2.73 — preset content must reach the segment key
 
 /** Bump when renderer/exporter changes make previously-cached pixels stale. */
-export const RENDER_CACHE_EPOCH = 5;   // 2: canonical hashing (V0.3.2.22); 3: scoped defs (.32); 4: pruned object roster (.33); 5: overlay defs reach the span key (.156) — existing segments were keyed without them and may be stale
+export const RENDER_CACHE_EPOCH = 5;   // 2: canonical hashing (V0.3.2.22); 3: scoped defs (.32); 4: pruned object roster (.33); 5: overlay defs — shape AND text — reach the span key (.156/.158); anything cached before that was keyed without them
 
 const _groupKeyOf = (s) => s.groupHead ? s.id : (s.groupId || null);
 
@@ -224,6 +224,15 @@ export async function computeSegmentPlan() {
     shapeStyles: (state.get('shapeStyles') || []).slice().sort(_byId),
     constShapes: (state.get('constShapes') || []).slice().sort(_byId),
     shapeLinks:  (state.get('shapeLinks')  || []).slice().sort(_byId),
+    // V0.3.2.158 — TEXT-side definitions, missing since text styles shipped.
+    // A text box stores textHtml + styleId and resolves the template at LOAD
+    // time (overlay.js _reflowTextBox), exactly like a shape style: editing a
+    // text style leaves every stored overlay string byte-identical, so the
+    // cache saw no change and re-used segments drawn with the OLD font,
+    // colour, fill and — since .145 — drop shadow and outline.
+    // constTextBoxes owns pinned text position + style binding, same story.
+    styleTemplates: (state.get('styleTemplates') || []).slice().sort(_byId),
+    constTextBoxes: (state.get('constTextBoxes') || []).slice().sort(_byId),
   };
 
   const _defScope = {
