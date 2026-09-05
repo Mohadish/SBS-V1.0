@@ -121,12 +121,18 @@ export function rebuildCascade(reason = 'manual') {
 }
 
 /**
- * Rebuild and report. Called after operations that rewrite many steps at
- * once — exactly the ones that provoke the drift, and already slow enough
- * that a rebuild disappears into them.
+ * Rebuild and report, for automatic use after operations that rewrite many
+ * steps at once.
  *
- * Silent when nothing moved, which is the common case; loud when something
- * did, because that is a reproduction case we have been unable to catch.
+ * NOT WIRED IN (V0.3.2.161). It was, briefly, and that was premature: it
+ * automated a mechanism nobody has yet confirmed actually corrects the
+ * fault. The drift is rare, so the honest order is to leave this a manual
+ * utility, wait for a recurrence, and see whether window.sbsRebuild()
+ * repairs it. If it does, re-enable this at the scope prompts — the
+ * argument for putting it there is sound, it just has to come second.
+ *
+ * Silent when nothing moved; loud when something did, because that is a
+ * reproduction case that has so far been impossible to capture.
  */
 export function rebuildAfter(reason) {
   const r = rebuildCascade(reason);

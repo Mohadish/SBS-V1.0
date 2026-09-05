@@ -22,7 +22,6 @@
  * existing steps — a sync never rewrites another step's tree).
  */
 import { state }       from '../core/state.js';
-import { rebuildAfter as _rebuildCascadeAfter } from './cascade-rebuild.js';
 import { sceneCore }   from '../core/scene.js';
 import { steps }       from './steps.js';
 import { undoManager } from './undo.js';
@@ -348,11 +347,6 @@ export async function promptGroupForGlobalEdit(nodeIds) {
   // scoped steps → fling-safe). Gives a sensible default even if the user skips
   // the manual placement below; the manual drag still overrides it.
   centerFolderPivotUniform(res.folderId, res.scopedIds);
-
-  // V0.3.2.160 — this is the archetypal drift trigger: objects wrapped into a
-  // new folder across many steps, with an offset correction applied so they
-  // keep their world position. Re-derive and report anything that moved.
-  _rebuildCascadeAfter(`group ${ids.length} object(s) across ${res.scopedIds?.length ?? '?'} step(s)`);
 
   // Offer to fine-tune the pivot now (isolate → drag → un-isolate re-locks it
   // across the group's steps). Skip → keep the auto-centered pivot.
