@@ -981,6 +981,28 @@ window.sbsUnfollow = () => clearFollow(state.get('selectedId'));
 // call window.sbsDiag.unstuckInputs. A full `= {}` reassignment would wipe those.
 window.sbsDiag = window.sbsDiag || {};
 
+// V0.3.2.160 — manual cascade rebuild. Re-derives the live scene's world
+// transforms from the stored tree and REPORTS what moved. Read-only with
+// respect to project data: it rewrites no tree, no step and no snapshot, so
+// the worst case is that it changes nothing.
+//
+// This is the in-app equivalent of the save-and-reload the user has been
+// using as a workaround, minus the file round trip — and unlike that
+// workaround it says what it corrected, so the operation responsible can be
+// identified instead of guessed at.
+//
+//   window.sbsRebuild()        // rebuild + report
+window.sbsRebuild = () => import('./systems/cascade-rebuild.js').then(m => {
+  const r = m.rebuildCascade('manual');
+  if (!r.moved.length) {
+    console.log(`[cascade] rebuild: ${r.checked} object(s) re-derived, nothing moved — the live scene already matched its data.`);
+  } else {
+    console.warn(`[cascade] rebuild CORRECTED ${r.moved.length} of ${r.checked} object(s):`);
+    console.table(r.moved.slice(0, 30));
+  }
+  return r;
+});
+
 // V0.3.2.153 — inspect every step's overlay as DATA, without loading any of
 // it. A step that hangs on load cannot be diagnosed by opening it; this reads
 // the stored JSON instead, so the inspection itself is never what breaks.

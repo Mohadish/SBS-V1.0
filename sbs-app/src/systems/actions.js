@@ -11,6 +11,7 @@
  */
 
 import state                    from '../core/state.js';
+import { rebuildAfter as _rebuildCascadeAfter } from './cascade-rebuild.js';
 import { undoManager }          from './undo.js';
 import { cloneShareStrings, structEqual } from '../core/clone.js';   // cheap undo snapshots (share base64, don't copy)
 import { applyFollow }          from './follow.js';   // paste keeps the source's attachment
@@ -3670,6 +3671,11 @@ async function _maybeFinalizeMultiStepXf() {
   if (scope.size === 0) return;
 
   _stampTransformDelta(sess.nodeId, dOff, dQuat, scope);
+  // V0.3.2.160 — re-derive after a multi-step stamp. This prompt marks exactly
+  // the operations that provoke cascade drift, and the user has already
+  // accepted that "apply to N steps" takes a moment, so the cost lands where
+  // it is expected. Silent unless something actually moved.
+  _rebuildCascadeAfter(`carry ${what} to ${scope.size} step(s)`);
 }
 
 // ─── Global Mode toggle (V0.3.0.125) ───────────────────────────────────────
@@ -3786,6 +3792,7 @@ export async function commitTransformEditGlobalCtrl(nodeId) {
   else { _pushActiveTransformUndo(nodeId, from, to); return; }
   // scope INCLUDES the active step — one combined undo covers everything.
   _commitGlobalCtrlDelta(nodeId, from, to, dOff, dQuat, scope);
+  _rebuildCascadeAfter(`carry transform to ${scope.size} step(s)`);
 }
 
 // One-click active-step transform undo (the commitTransformEdit body, reusable).
