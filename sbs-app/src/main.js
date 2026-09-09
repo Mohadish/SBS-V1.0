@@ -992,13 +992,21 @@ window.sbsDiag = window.sbsDiag || {};
 // identified instead of guessed at.
 //
 //   window.sbsRebuild()        // rebuild + report
-window.sbsRebuild = () => import('./systems/cascade-rebuild.js').then(m => {
-  const r = m.rebuildCascade('manual');
+window.sbsRebuild = () => import('./systems/cascade-rebuild.js').then(async m => {
+  const r = await m.rebuildCascade('manual');
+  if (r.parentMismatches?.length) {
+    console.warn(`[cascade] parent mismatches BEFORE rebuild (the drift capture):`);
+    console.table(r.parentMismatches.slice(0, 30));
+  }
   if (!r.moved.length) {
     console.log(`[cascade] rebuild: ${r.checked} object(s) re-derived, nothing moved — the live scene already matched its data.`);
   } else {
     console.warn(`[cascade] rebuild CORRECTED ${r.moved.length} of ${r.checked} object(s):`);
     console.table(r.moved.slice(0, 30));
+  }
+  if (r.parentMismatchesAfter?.length) {
+    console.warn(`[cascade] ${r.parentMismatchesAfter.length} parent mismatch(es) SURVIVED the rebuild — the fault is deeper than step replay:`);
+    console.table(r.parentMismatchesAfter.slice(0, 30));
   }
   return r;
 });
@@ -1613,25 +1621,31 @@ window.sbsNative?.onMenu?.('menu:languagePanel', () => {
 window.sbsNative?.onMenu?.('menu:rebuildCascade', async () => {
   try {
     const m = await import('./systems/cascade-rebuild.js');
-    const r = m.rebuildCascade('Edit ▸ Rebuild Cascade');
+    const r = await m.rebuildCascade('Edit ▸ Rebuild Cascade');
+    if (r.skipped === 'exporting') {
+      setStatus('Rebuild Cascade: skipped — an export is running.', 'warn', 4000);
+      return;
+    }
     if (!r.checked) {
       setStatus('Rebuild Cascade: nothing to rebuild — no model is loaded.', 'warn', 4000);
       return;
     }
-    // 🧭 V0.3.2.164 — parent-chain audit. The first live drift test came back
-    // "no objects moved", which clears the stale-local-transform theory and
-    // points at objects hanging under the WRONG live parent (re-applying a
-    // correct local under a wrong parent moves nothing). The audit names
-    // those objects; it does not re-parent — capture first, automate second.
-    const pm = r.parentMismatches || [];
+    // 🧭 The before-audit is the drift CAPTURE (taken while the fault stood);
+    // the after-audit is the verdict on whether the step replay cleaned it.
+    const pm  = r.parentMismatches      || [];
+    const pmA = r.parentMismatchesAfter || [];
     if (pm.length) {
-      console.warn(`[cascade] PARENT MISMATCH on ${pm.length} object(s) — live scene parent differs from the tree. This is the drift capture we have been hunting; please report it:`);
+      console.warn(`[cascade] PARENT MISMATCH on ${pm.length} object(s) BEFORE rebuild — the drift capture we have been hunting; please report it:`);
       console.table(pm.slice(0, 30));
+    }
+    if (pmA.length) {
+      console.warn(`[cascade] ${pmA.length} parent mismatch(es) SURVIVED the rebuild — the fault is deeper than step replay:`);
+      console.table(pmA.slice(0, 30));
     }
     if (!r.moved.length) {
       setStatus(pm.length
-        ? `Rebuild Cascade: nothing moved, but ${pm.length} object(s) sit under the WRONG parent — see console (drift capture!).`
-        : `Rebuild Cascade: ${r.checked} object(s) re-derived, none had drifted.`,
+        ? `Rebuild Cascade: ${pm.length} parent mismatch(es) found but nothing moved — see console (report this!).`
+        : `Rebuild Cascade: full re-derive done, ${r.checked} object(s) — scene already matched its data.`,
         pm.length ? 'warn' : 'success', pm.length ? 10000 : 5000);
       console.log(`[cascade] rebuild: ${r.checked} object(s) re-derived, nothing moved.`);
       return;
@@ -1639,8 +1653,8 @@ window.sbsNative?.onMenu?.('menu:rebuildCascade', async () => {
     const worst = r.moved[0];
     setStatus(
       `Rebuild Cascade: corrected ${r.moved.length} object(s) — worst "${worst.name}" by ${worst.distance}.`
-      + (pm.length ? ` ${pm.length} parent mismatch(es) remain — see console.` : ' See console.'),
-      pm.length ? 'warn' : 'success', 9000,
+      + (pmA.length ? ` ${pmA.length} parent mismatch(es) remain — see console.` : ' Details in console.'),
+      pmA.length ? 'warn' : 'success', 9000,
     );
     console.warn(`[cascade] rebuild CORRECTED ${r.moved.length} of ${r.checked} object(s):`);
     console.table(r.moved.slice(0, 30));

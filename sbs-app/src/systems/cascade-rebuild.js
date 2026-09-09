@@ -17,20 +17,20 @@
  * Saving and reloading fixes it, which is the proof: nothing was ever wrong
  * on disk.
  *
- * WHAT THIS DOES, AND WHAT IT DELIBERATELY DOES NOT
- * -------------------------------------------------
- * It re-derives the DERIVED layer only: re-applies each node's stored local
- * transform onto its live Object3D and forces a full world-matrix cascade
- * from the root. It does not touch the tree, the steps, the snapshots or the
- * project file. The worst case is that it changes nothing.
+ * WHAT THIS DOES (V0.3.2.165 — second core)
+ * ------------------------------------------
+ * It replays the LOAD path on the already-loaded objects: capture the scene
+ * into hidden Step 0 exactly as saveProject() does, activate the base step
+ * (full folder-group cleanup + rebuild-from-tree-spec + apply-all-transforms
+ * — the pass that rebuilds the PARENT structure), replay the user's active
+ * step, sweep orphan placeholders. Save + restart + reload, minus reading
+ * the geometry files. It still never touches applyProjectToState — that
+ * path is entangled with id remapping and model reattachment and stays
+ * load-only. See rebuildCascade() for why the first core (re-apply locals,
+ * cascade matrices) was retired: the user's live test proved it a no-op.
  *
- * It is NOT an in-memory save/load round trip. That was the obvious idea and
- * it is too dangerous here: applyProjectToState is entangled with id
- * remapping, primitive-registry seeding and model reattachment, and running
- * it against a live scene risks the very data it is meant to protect.
- *
- * THE DETECTOR IS THE POINT
- * -------------------------
+ * THE DETECTOR IS STILL THE POINT
+ * -------------------------------
  * rebuild() measures every node's world position before and after and reports
  * what MOVED. A rebuild that silently heals is a rebuild nobody ever learns
  * from — and this bug has already survived a long time by being invisible.
@@ -42,17 +42,9 @@
 import { state }     from '../core/state.js';
 import { steps }     from './steps.js';
 import { sceneCore } from '../core/scene.js';
-import { applyNodeTransformToObject3D } from '../core/transforms.js';
 
 /** Movement below this is float noise, not drift. Millimetres in world units. */
 const DRIFT_EPSILON = 1e-3;
-
-function _flattenTree(node, out = []) {
-  if (!node) return out;
-  out.push(node);
-  for (const c of node.children || []) _flattenTree(c, out);
-  return out;
-}
 
 /** World position of every live object, keyed by node id. */
 function _snapshotWorldPositions() {
@@ -141,36 +133,71 @@ function _auditParentChain(root) {
 }
 
 /**
- * Re-derive the live scene's transforms from the stored tree.
+ * Re-derive the live scene from the stored data — the in-memory equivalent
+ * of save + restart + reload, minus reading the geometry files.
+ *
+ * 🔁 V0.3.2.165 — the core was REPLACED. The original implementation
+ * re-applied each node's stored local transform and cascaded world matrices.
+ * The user's live test proved that does nothing: the locals already match
+ * what the scene shows ("no objects moved"), because the drift is not a
+ * stale local — it is structure, an object hanging under the wrong live
+ * parent. What provably heals it is a full reload, and the user's own
+ * reading of that was exact: the expensive part of a reload is re-importing
+ * geometry from disk; the derivation itself is seconds even on a huge
+ * project. So this now runs the reload's own replay path on the already-
+ * loaded objects:
+ *
+ *   1. flushSync()        — the active step's snapshot captures any pending edit
+ *   2. upsertBaseStep()   — the scene is captured into hidden Step 0, exactly
+ *                           as saveProject() does before writing the file.
+ *                           Safe even on a drifted scene: capture stores the
+ *                           LOCAL data, which was never wrong — proven every
+ *                           time save-then-reload healed.
+ *   3. activateBaseStep() — full cleanupFolderGroups + rebuildFromTreeSpec +
+ *                           apply-all-transforms from the base snapshot; this
+ *                           is the step that rebuilds the PARENT structure
+ *   4. activateStep(active, no-animate) — the user's step replayed on top,
+ *                           the same way a fresh load lands on it
+ *   5. removeOrphanedPlaceholders() — same sweep the relink contract runs
+ *
+ * Steps 3-5 are reintegrateFromStep0's contract, inlined so the async step
+ * activation can be awaited — the before/after report must measure a scene
+ * that has settled, not one mid-flight.
+ *
+ * THE REPORT REMAINS THE POINT. World positions are measured before and
+ * after, and the parent-chain audit runs BEFORE the rebuild (capturing the
+ * fault as it stood — this is the reproduction evidence) and again AFTER
+ * (proving the rebuild cleaned it, or telling us it could not).
  *
  * @param {string} reason  what triggered it — appears in the report
- * @returns {{ moved: Array, checked: number, reason: string }}
+ * @returns {Promise<{ moved: Array, checked: number,
+ *                     parentMismatches: Array, parentMismatchesAfter: Array,
+ *                     reason: string }>}
  */
-export function rebuildCascade(reason = 'manual') {
+export async function rebuildCascade(reason = 'manual') {
   const root = state.get('treeData');
-  if (!root) return { moved: [], checked: 0, reason };
-
-  const before = _snapshotWorldPositions();
-
-  // Re-apply each node's OWN stored local transform onto its live object.
-  // This is the step incremental edits can miss: the data was updated, the
-  // object3d was not, or was updated before its new parent chain settled.
-  const nodes = _flattenTree(root);
-  const byId  = steps.object3dById;
-  let applied = 0;
-  for (const node of nodes) {
-    const obj = byId?.get(node.id);
-    if (!obj) continue;
-    try { applyNodeTransformToObject3D(node, obj, false); applied++; }
-    catch (e) { console.warn('[cascade] could not re-apply transform for', node.name || node.id, e?.message); }
+  if (!root) return { moved: [], checked: 0, parentMismatches: [], parentMismatchesAfter: [], reason };
+  if (state.get('_exporting')) {
+    console.warn('[cascade] rebuild skipped — an export is running.');
+    return { moved: [], checked: 0, parentMismatches: [], parentMismatchesAfter: [], reason, skipped: 'exporting' };
   }
 
-  // ONE cascade at the end, not one per node: parents must settle before
-  // children read them, and doing it per node is both wrong and O(n depth).
+  const before = _snapshotWorldPositions();
+  // Audit FIRST — this is the drift capture, taken while the fault stands.
+  const parentMismatches = _auditParentChain(root);
+
+  const activeStepId = state.get('activeStepId');
+  steps.flushSync();
+  steps.upsertBaseStep();
+  steps.activateBaseStep();
+  if (activeStepId) await steps.activateStep(activeStepId, false);
+  steps.removeOrphanedPlaceholders();
+
   try { sceneCore.rootGroup?.updateWorldMatrix(false, true); }
   catch (e) { console.warn('[cascade] world-matrix update failed:', e?.message); }
 
   const after = _snapshotWorldPositions();
+  const parentMismatchesAfter = _auditParentChain(root);
 
   const moved = [];
   for (const [id, pos] of after) {
@@ -182,13 +209,8 @@ export function rebuildCascade(reason = 'manual') {
   }
   moved.sort((a, b) => b.distance - a.distance);
 
-  // 🧭 V0.3.2.164 — the audit runs regardless of whether anything moved:
-  // "nothing moved" + parent mismatches is precisely the signature that
-  // distinguishes the wrong-parent theory from the stale-local one.
-  const parentMismatches = _auditParentChain(root);
-
   sceneCore.requestRender?.(0);
-  return { moved, checked: applied, parentMismatches, reason };
+  return { moved, checked: after.size, parentMismatches, parentMismatchesAfter, reason };
 }
 
 /**
@@ -205,8 +227,8 @@ export function rebuildCascade(reason = 'manual') {
  * Silent when nothing moved; loud when something did, because that is a
  * reproduction case that has so far been impossible to capture.
  */
-export function rebuildAfter(reason) {
-  const r = rebuildCascade(reason);
+export async function rebuildAfter(reason) {
+  const r = await rebuildCascade(reason);
   if (!r.moved.length) return r;
 
   const top = r.moved.slice(0, 8)
