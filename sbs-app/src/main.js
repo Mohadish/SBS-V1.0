@@ -56,7 +56,8 @@ import { promptString } from './ui/prompt.js';
 import { showMoveToFolderDialog, showAddToReplaceDialog, showReplaceModeDialog, showInputDialog, showInsertAnimDialog, getFilter } from './ui/tree.js';
 import { positionSafeFrameEl }    from './core/safe-frame.js';
 import { initOverlay, getStage as getOverlayStage, handleAnchorPick, cancelAnchoredArrowPlacement } from './systems/overlay.js';
-import { initOverlayToolbar }  from './ui/overlay-toolbar.js';
+import { initOverlayToolbar, toggleOverlayEditing } from './ui/overlay-toolbar.js';
+import { matches as keyMatches, keyLabel } from './core/keymap.js';   // 🎹 central shortcut table
 import { initHeaderLayer }     from './systems/header.js';
 import { initCables, resolveNodeWorldPosition, flattenCablesToCascade, resolveCableSnapshotAtStep, applyStepSnapshot as applyCableStepSnapshot } from './systems/cables.js';        // C1: cables wire step:applied → applyStepSnapshot; C5-B: pos resolver for gizmo target; V0.3.0.151 cascade flatten
 import * as pivotCenterPicker     from './systems/pivot-center-picker.js';   // 3-point center pivot tool — snap-based picker for cylinder-axis pivot placement
@@ -4628,11 +4629,16 @@ const _viewportSurfaceEl = document.getElementById('viewport-surface');
 
   const ov = document.createElement('div');
   ov.id = 'global-mode-overlay';
+  // V0.3.2.168 — border 3× thicker (4→12px): when the 4px amber Work-Camera
+  // frame sits on top of it, 8px of blue still shows inside, so both modes
+  // read at a glance.
   ov.style.cssText = 'position:absolute;inset:0;pointer-events:none;z-index:55;display:none;'
-    + 'box-shadow:inset 0 0 0 4px #2563eb, inset 0 0 30px 6px rgba(37,99,235,0.30);';
+    + 'box-shadow:inset 0 0 0 12px #2563eb, inset 0 0 30px 6px rgba(37,99,235,0.30);';
   const wm = document.createElement('div');
   wm.textContent = 'GLOBAL MODE';
-  wm.style.cssText = 'position:absolute;left:50%;top:50%;transform:translate(-50%,-50%);'
+  // V0.3.2.168 — raised to 33% so it never overlaps the WORK CAMERA
+  // watermark (centred) when both modes are on together.
+  wm.style.cssText = 'position:absolute;left:50%;top:33%;transform:translate(-50%,-50%);'
     + 'font:800 64px/1 system-ui,sans-serif;letter-spacing:10px;color:#3b82f6;'
     + 'opacity:0.10;white-space:nowrap;user-select:none;';
   ov.appendChild(wm);
@@ -4672,7 +4678,7 @@ const _viewportSurfaceEl = document.getElementById('viewport-surface');
     + 'font:800 64px/1 system-ui,sans-serif;letter-spacing:10px;color:#f59e0b;'
     + 'opacity:0.10;white-space:nowrap;user-select:none;';
   const hint = document.createElement('div');
-  hint.textContent = 'steps play without moving the camera — W to exit';
+  hint.textContent = `steps play without moving the camera — ${keyLabel('workCamera')} to exit`;
   hint.style.cssText = 'position:absolute;left:50%;top:calc(50% + 48px);transform:translateX(-50%);'
     + 'font:600 13px/1 system-ui,sans-serif;letter-spacing:2px;color:#f59e0b;'
     + 'opacity:0.35;white-space:nowrap;user-select:none;';
@@ -4680,11 +4686,35 @@ const _viewportSurfaceEl = document.getElementById('viewport-surface');
   ov.appendChild(hint);
   surf.appendChild(ov);
 
+  // 🎥 V0.3.2.168 — always-visible toggle button, top-LEFT of the viewport:
+  // the left mirror of the overlay bar's "✏ Edit overlay (O)" on the right.
+  // The advertised key comes from the keymap, so a future custom binding
+  // renames the button automatically.
+  const btn = document.createElement('button');
+  btn.id = 'btn-work-camera';
+  btn.className = 'btn';
+  btn.style.cssText = 'position:absolute;top:8px;left:8px;z-index:30;'
+    + 'height:24px;padding:0 8px;font-size:12px;'
+    + 'background:rgba(10,15,25,0.85);border:1px solid rgba(255,255,255,0.08);border-radius:8px;';
+  btn.addEventListener('click', () => state.setState({ workCamera: !state.get('workCamera') }));
+  surf.appendChild(btn);
+
+  const syncBtn = (on) => {
+    const k = keyLabel('workCamera');
+    btn.textContent = on ? `🎥 Work camera ON (${k})` : `🎥 Work camera (${k})`;
+    btn.title = on
+      ? 'Inspection mode is ON — steps play without moving the camera. Never rendered. Click to return to the step camera.'
+      : 'Inspection mode — orbit freely while stepping through; the camera stops following steps. Never rendered.';
+    btn.style.background = on ? 'rgba(217,119,6,0.35)' : 'rgba(10,15,25,0.85)';
+  };
+  syncBtn(false);
+
   state.on('change:workCamera', () => {
     const on = !!state.get('workCamera');
     ov.style.display = on ? 'block' : 'none';
+    syncBtn(on);
     if (on) {
-      setStatus('Work camera ON — steps play without moving the camera. Never rendered. W to exit.', 'info', 5000);
+      setStatus(`Work camera ON — steps play without moving the camera. Never rendered. ${keyLabel('workCamera')} to exit.`, 'info', 5000);
     } else {
       // Fly home to the active step's recorded pose.
       steps.reapplyActiveStepCamera?.(600);
@@ -4791,18 +4821,24 @@ window.addEventListener('keydown', async e => {
   // Space → GLOBAL MODE toggle (V0.3.0.125). Step-forward stays on ArrowRight
   // (Space was a redundant duplicate of it). Guarded by _isInputFocused above,
   // so Space still types normally in text fields.
-  if (key === ' ')          { e.preventDefault(); actions.toggleGlobalMode(); return; }
-  // W → 🎥 WORK CAMERA toggle (V0.3.2.166, backlog #21). Physical KeyW so it
-  // works on non-Latin layouts (same fix as undo's KeyZ). Guarded by
-  // _isInputFocused above, so W still types normally in text fields.
-  if (e.code === 'KeyW' && !e.ctrlKey && !e.altKey && !e.metaKey) {
+  if (keyMatches('globalMode', e)) { e.preventDefault(); actions.toggleGlobalMode(); return; }
+  // 🎹 V0.3.2.168 — mode toggles resolve through core/keymap.js (physical
+  // codes, layout-independent; future custom keybindings write there).
+  // Guarded by _isInputFocused above, so the letters still type normally.
+  if (keyMatches('workCamera', e) && !e.ctrlKey && !e.altKey && !e.metaKey) {
     e.preventDefault();
     state.setState({ workCamera: !state.get('workCamera') });
     return;
   }
+  // O → ✏ overlay editing toggle — same path as the button, labels stay in sync.
+  if (keyMatches('overlayEdit', e) && !e.ctrlKey && !e.altKey && !e.metaKey) {
+    e.preventDefault();
+    toggleOverlayEditing();
+    return;
+  }
 
   // ── Gizmo space toggle (Local ↔ World) ──────────────────────────────────
-  if (key === 'l' || key === 'L') {
+  if (keyMatches('gizmoSpace', e)) {   // 🎹 was `key === 'l'` — now layout-independent + rebindable
     e.preventDefault();
     gizmo.toggleSpace();
     return;

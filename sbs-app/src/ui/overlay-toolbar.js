@@ -20,6 +20,7 @@ import { setStatus } from './status.js';
 import { state } from '../core/state.js';
 import { showContextMenu } from './context-menu.js';   // 📌 constant-text-box picker
 import { chooseFromButtons } from './prompt.js';
+import { keyLabel } from '../core/keymap.js';          // 🎹 advertised shortcut stays in sync
 
 let _bar = null;
 let _mainBtn = null;
@@ -236,7 +237,7 @@ export function initOverlayToolbar() {
   // The editing toggle is rightmost — always visible, single source of
   // truth for entering/leaving overlay editing. The old "Done" button
   // was redundant with this toggle and has been removed.
-  _mainBtn = _btn('✏ Edit overlay', 'Toggle overlay editing mode');
+  _mainBtn = _btn(`✏ Edit overlay (${keyLabel('overlayEdit')})`, 'Toggle overlay editing mode');
   _mainBtn.addEventListener('click', () => _setEditing(!overlay.isEditing()));
 
   // Append in left-to-right DOM order: text slot · tools · toggle.
@@ -398,9 +399,20 @@ export function isFloatingToolbarVisible() {
 
 function _setEditing(on) {
   overlay.setEditingMode(on);
-  _mainBtn.textContent = on ? '✏ Editing…' : '✏ Edit overlay';
+  const k = keyLabel('overlayEdit');
+  _mainBtn.textContent = on ? `✏ Editing… (${k})` : `✏ Edit overlay (${k})`;
   _mainBtn.style.background = on ? 'rgba(245,158,11,0.25)' : '';
   _tools.style.display      = on ? 'flex' : 'none';
+}
+
+/**
+ * 🎹 V0.3.2.168 — the keyboard shortcut's entry point (keymap 'overlayEdit').
+ * Same path as clicking the button, so the label/tools stay in sync. No-op
+ * before the toolbar exists.
+ */
+export function toggleOverlayEditing() {
+  if (!_mainBtn) return;
+  _setEditing(!overlay.isEditing());
 }
 
 // ── Utils ──────────────────────────────────────────────────────────────────
