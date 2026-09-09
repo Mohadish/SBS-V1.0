@@ -53,7 +53,7 @@ import { initStepsPanel }         from './ui/steps-panel.js';
 import { initSidebarLeft, showColorForNode, openCableTabForCable, clearActiveCable } from './ui/sidebar-left.js';
 import { initContextMenu, hideContextMenu, showContextMenu, canonicalizeMenuOrder } from './ui/context-menu.js';
 import { promptString } from './ui/prompt.js';
-import { showMoveToFolderDialog, showAddToReplaceDialog, showReplaceModeDialog, showInputDialog, showInsertAnimDialog } from './ui/tree.js';
+import { showMoveToFolderDialog, showAddToReplaceDialog, showReplaceModeDialog, showInputDialog, showInsertAnimDialog, getFilter } from './ui/tree.js';
 import { positionSafeFrameEl }    from './core/safe-frame.js';
 import { initOverlay, getStage as getOverlayStage, handleAnchorPick, cancelAnchoredArrowPlacement } from './systems/overlay.js';
 import { initOverlayToolbar }  from './ui/overlay-toolbar.js';
@@ -3224,7 +3224,18 @@ canvas.addEventListener('click', e => {
   const lockedGroupNode    = !promotedRmNode
     ? actions.findLockedFolderAncestor?.(root, meshNodeId)
     : null;
-  const promotedContainer  = promotedRmNode || lockedGroupNode || null;
+  // 🗂️ V0.3.2.167 — FOLD-MODE promotion (backlog #22 follow-up). While the
+  // folders-only tree filter is on, the user is restructuring hierarchy:
+  //   3. Fold filter: a click on any part selects that part's NEAREST
+  //      container (folder, or model when no folder wraps it) as one clean
+  //      unit — never the mesh, never a parent above the folder. Same
+  //      clean-unit semantics as a locked folder / tree click on a folder.
+  // RM and locked-folder promotion keep priority — a locked assembly stays
+  // one unit even in Fold mode. Double-click drilling is untouched.
+  const foldFolderNode     = (!promotedRmNode && !lockedGroupNode && getFilter('foldersOnly'))
+    ? getNearestContainerAncestor(root, meshNodeId)
+    : null;
+  const promotedContainer  = promotedRmNode || lockedGroupNode || foldFolderNode || null;
 
   // V0.1.85: locked shape-tab group — flatShape instances whose template
   // belongs to a locked shape group expand the click to every instance of
@@ -3259,8 +3270,8 @@ canvas.addEventListener('click', e => {
   };
 
   const clickSet = promotedContainer
-    ? (lockedGroupNode === promotedContainer
-        ? new Set([target])                  // locked folder: clean unit
+    ? ((lockedGroupNode === promotedContainer || foldFolderNode === promotedContainer)
+        ? new Set([target])                  // locked folder / fold-mode: clean unit
         : buildContainerSet(target))         // RM: full descendant set
     : (shapeGroupSet && shapeGroupSet.size > 0 ? shapeGroupSet : new Set([target]));
 
@@ -3289,7 +3300,10 @@ canvas.addEventListener('click', e => {
   };
 
   if (mode === 'replace') {
-    if (allEntities.length >= 2) {
+    // 🗂️ Fold mode skips the overlapping-entities popup: the answer to "which
+    // of these parts did you mean" is the same folder either way, so a plain
+    // click selects the promoted container directly.
+    if (allEntities.length >= 2 && !foldFolderNode) {
       _scheduleRaySelect(allEntities, e.clientX, e.clientY, 'replace');
     } else {
       actionSetSelection(target, clickSet);
