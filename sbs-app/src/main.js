@@ -57,7 +57,7 @@ import { showMoveToFolderDialog, showAddToReplaceDialog, showReplaceModeDialog, 
 import { positionSafeFrameEl }    from './core/safe-frame.js';
 import { initOverlay, getStage as getOverlayStage, handleAnchorPick, cancelAnchoredArrowPlacement } from './systems/overlay.js';
 import { initOverlayToolbar, toggleOverlayEditing } from './ui/overlay-toolbar.js';
-import { matches as keyMatches, keyLabel } from './core/keymap.js';   // 🎹 central shortcut table
+import { matches as keyMatches, keyLabel, setKeyOverrides } from './core/keymap.js';   // 🎹 central shortcut table
 import { initHeaderLayer }     from './systems/header.js';
 import { initCables, resolveNodeWorldPosition, flattenCablesToCascade, resolveCableSnapshotAtStep, applyStepSnapshot as applyCableStepSnapshot } from './systems/cables.js';        // C1: cables wire step:applied → applyStepSnapshot; C5-B: pos resolver for gizmo target; V0.3.0.151 cascade flatten
 import * as pivotCenterPicker     from './systems/pivot-center-picker.js';   // 3-point center pivot tool — snap-based picker for cylinder-axis pivot placement
@@ -319,6 +319,12 @@ initUserSettings()
     const sc  = cur.scene || {};
     if (typeof sc.cameraZoomScale === 'number') {
       sceneCore.setUserZoomScale(sc.cameraZoomScale);
+    }
+    // 🎹 V0.3.2.169 — apply stored keybinding overrides, then tell every
+    // label that advertises a shortcut to re-render itself.
+    if (cur.keymap && Object.keys(cur.keymap).length) {
+      setKeyOverrides(cur.keymap);
+      window.dispatchEvent(new CustomEvent('sbs:keymap-changed'));
     }
     // V0.3.0.162 — AO + SSR are now PER-PROJECT (state.render). Apply on any change
     // (project load / render panel). A brand-new project (none loaded yet) seeds its
@@ -4706,8 +4712,11 @@ const _viewportSurfaceEl = document.getElementById('viewport-surface');
       ? 'Inspection mode is ON — steps play without moving the camera. Never rendered. Click to return to the step camera.'
       : 'Inspection mode — orbit freely while stepping through; the camera stops following steps. Never rendered.';
     btn.style.background = on ? 'rgba(217,119,6,0.35)' : 'rgba(10,15,25,0.85)';
+    hint.textContent = `steps play without moving the camera — ${k} to exit`;
   };
   syncBtn(false);
+  // 🎹 rebound key → refresh the advertised letter everywhere in this chrome
+  window.addEventListener('sbs:keymap-changed', () => syncBtn(!!state.get('workCamera')));
 
   state.on('change:workCamera', () => {
     const on = !!state.get('workCamera');

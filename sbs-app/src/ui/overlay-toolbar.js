@@ -245,6 +245,13 @@ export function initOverlayToolbar() {
 
   surface.appendChild(_bar);
 
+  // 🎹 rebound key → refresh the advertised "(O)" on the toggle.
+  window.addEventListener('sbs:keymap-changed', () => {
+    if (!_mainBtn) return;
+    const k = keyLabel('overlayEdit');
+    _mainBtn.textContent = overlay.isEditing() ? `✏ Editing… (${k})` : `✏ Edit overlay (${k})`;
+  });
+
   // Blink + (after 3) prompt when the user clicks the viewport while editing.
   state.on('overlay:misclick', _onOverlayMisclick);
   // Entering OR leaving overlay edit resets the nudge state.

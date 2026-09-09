@@ -40,12 +40,22 @@ export function matches(action, e) {
   return !!c && e.code === c;
 }
 
-/** Human label for buttons/tooltips: 'KeyW' → 'W', 'Digit3' → '3', 'Space' → 'Space'. */
-export function keyLabel(action) {
-  const c = keyFor(action) || '';
+/** Human label for a raw code: 'KeyW' → 'W', 'Digit3' → '3', 'Space' → 'Space'. */
+export function labelForCode(c) {
+  c = c || '';
   if (c.startsWith('Key'))   return c.slice(3);
   if (c.startsWith('Digit')) return c.slice(5);
   return c;
+}
+
+/** Human label for an action's current binding. */
+export function keyLabel(action) {
+  return labelForCode(keyFor(action));
+}
+
+/** The factory default for an action (the Keybindings panel's "Reset" target). */
+export function defaultKeyFor(action) {
+  return DEFAULTS[action] || null;
 }
 
 /** Replace all overrides (the future Keybindings panel's write entry point). */

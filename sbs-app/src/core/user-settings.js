@@ -132,6 +132,10 @@ const DEFAULTS = {
     // can be enforced rather than hoped for.
     glossary:     [],
   },
+  // 🎹 V0.3.2.169 — Keybindings overrides (Settings ▸ Keybindings). Only
+  // DIFFERENCES from core/keymap.js DEFAULTS are stored, keyed by action id
+  // with KeyboardEvent.code values: { workCamera: 'KeyC' }. Machine-scope.
+  keymap: {},
   // V0.3.2.37 — Auto-backup ("Autosave" settings tab). Writing a large
   // project blocks the renderer for seconds, so by default the backup waits
   // for a natural pause instead of interrupting mid-action. Rotating slots

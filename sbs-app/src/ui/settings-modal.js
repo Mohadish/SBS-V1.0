@@ -10,6 +10,7 @@
  */
 
 import * as userSettings from '../core/user-settings.js';
+import { getBindings, defaultKeyFor, labelForCode, setKeyOverrides } from '../core/keymap.js';   // 🎹 Keybindings tab
 import { buildRenderSettingsPanel } from './render-settings-panel.js';
 import { listVoices, invalidateVoiceCache } from '../systems/tts.js';
 import sceneCore         from '../core/scene.js';
@@ -37,6 +38,7 @@ export async function openSettingsModal(initialTab = 'language') {
       <div style="display:flex;flex:1;min-height:0;">
         <nav id="settings-tabs" style="width:140px;border-right:1px solid #334155;padding:8px 0;display:flex;flex-direction:column;gap:2px;">
           <button class="settings-tab" data-tab="language">Language</button>
+          <button class="settings-tab" data-tab="keys">Keybindings</button>
           <button class="settings-tab" data-tab="scene">Scene</button>
           <button class="settings-tab" data-tab="import">Import</button>
           <button class="settings-tab" data-tab="export">Export</button>
@@ -101,6 +103,7 @@ function _showTab(name) {
   const body = _dlg.querySelector('#settings-body');
   body.innerHTML = '';
   if (name === 'language') _renderLanguageTab(body);
+  if (name === 'keys')     _renderKeysTab(body);
   if (name === 'scene')    _renderSceneTab(body);
   if (name === 'import')   _renderImportTab(body);
   if (name === 'export')   _renderExportTab(body);
@@ -108,6 +111,107 @@ function _showTab(name) {
   if (name === 'cloud')    _renderCloudTab(body);
   if (name === 'translate') _renderTranslateTab(body);
   if (name === 'autosave') _renderAutosaveTab(body);
+}
+
+/**
+ * 🎹 V0.3.2.169 — Keybindings tab. Renders core/keymap.js's action table;
+ * click a key button, press the new key, done. Only DIFFERENCES from the
+ * defaults are persisted (userSettings.keymap), applied live via
+ * setKeyOverrides + the 'sbs:keymap-changed' event every advertised label
+ * listens for. Esc cancels a capture; collisions are refused.
+ */
+let _kbCapture = null;   // the one armed key-capture listener, if any
+
+const _KEY_ACTIONS = [
+  { id: 'workCamera',  name: '🎥 Work camera',        desc: 'Steps play without moving the camera (never rendered).' },
+  { id: 'overlayEdit', name: '✏ Edit overlay',        desc: 'Enter / leave overlay editing.' },
+  { id: 'globalMode',  name: '🌐 Global Mode',         desc: 'Transform edits carry across steps on deselect.' },
+  { id: 'gizmoSpace',  name: '⤧ Gizmo Local / World', desc: 'Toggle the transform gizmo\'s coordinate space.' },
+];
+
+function _renderKeysTab(body) {
+  const overrides = { ...(userSettings.get().keymap || {}) };
+  const bindings  = getBindings();
+
+  body.innerHTML = `
+    <h3 style="margin:0 0 6px 0;font-size:14px;">Keybindings</h3>
+    <p class="small muted" style="margin:0 0 12px 0;">
+      Click a key, then press the new one. Esc cancels. Keys are matched by
+      physical position, so they work on any keyboard layout.
+    </p>
+    <div id="kb-rows" style="display:flex;flex-direction:column;gap:8px;"></div>
+    <div style="margin-top:14px;">
+      <button class="btn" id="kb-reset-all">Restore defaults</button>
+      <span class="small muted" id="kb-msg" style="margin-left:10px;"></span>
+    </div>
+  `;
+
+  const rowsEl = body.querySelector('#kb-rows');
+  const msgEl  = body.querySelector('#kb-msg');
+  const say    = (t) => { msgEl.textContent = t; };
+
+  const commit = async () => {
+    // Persist only real differences; drop overrides equal to the default.
+    for (const k of Object.keys(overrides)) {
+      if (overrides[k] === defaultKeyFor(k)) delete overrides[k];
+    }
+    setKeyOverrides(overrides);
+    await userSettings.patch({ keymap: overrides });
+    window.dispatchEvent(new CustomEvent('sbs:keymap-changed'));
+    _renderKeysTab(body);   // re-render with fresh labels
+  };
+
+  for (const a of _KEY_ACTIONS) {
+    const row = document.createElement('div');
+    row.style.cssText = 'display:flex;align-items:center;gap:10px;';
+    const code = bindings[a.id];
+    const isDefault = code === defaultKeyFor(a.id);
+    row.innerHTML = `
+      <div style="flex:1;min-width:0;">
+        <div style="font-size:13px;">${a.name}</div>
+        <div class="small muted">${a.desc}</div>
+      </div>
+      <button class="btn" data-kb="${a.id}" style="min-width:72px;height:26px;"
+              title="Click, then press the new key">${_esc(labelForCode(code))}</button>
+      <button class="btn" data-kb-reset="${a.id}" style="height:26px;padding:0 8px;"
+              title="Back to the default (${_esc(labelForCode(defaultKeyFor(a.id)))})"
+              ${isDefault ? 'disabled' : ''}>↺</button>
+    `;
+    rowsEl.appendChild(row);
+  }
+
+  rowsEl.querySelectorAll('[data-kb]').forEach(btn => btn.addEventListener('click', () => {
+    const action = btn.dataset.kb;
+    // Only one live capture at a time — arming a second button disarms the first.
+    if (_kbCapture) { window.removeEventListener('keydown', _kbCapture, true); _kbCapture = null; }
+    btn.textContent = 'Press a key…';
+    say('');
+    const capture = (e) => {
+      e.preventDefault(); e.stopPropagation();
+      // Bare modifiers hold, they don't bind.
+      if (/^(Control|Shift|Alt|Meta)/.test(e.code)) return;
+      window.removeEventListener('keydown', capture, true);
+      _kbCapture = null;
+      if (e.code === 'Escape') { _renderKeysTab(body); return; }
+      // Refuse a collision — one key, one action.
+      const clash = _KEY_ACTIONS.find(x => x.id !== action && getBindings()[x.id] === e.code);
+      if (clash) { say(`"${labelForCode(e.code)}" is already ${clash.name} — pick another key.`); _renderKeysTab(body); return; }
+      overrides[action] = e.code;
+      commit();
+    };
+    _kbCapture = capture;
+    window.addEventListener('keydown', capture, true);
+  }));
+
+  rowsEl.querySelectorAll('[data-kb-reset]').forEach(btn => btn.addEventListener('click', () => {
+    delete overrides[btn.dataset.kbReset];
+    commit();
+  }));
+
+  body.querySelector('#kb-reset-all')?.addEventListener('click', () => {
+    for (const k of Object.keys(overrides)) delete overrides[k];
+    commit();
+  });
 }
 
 /**
