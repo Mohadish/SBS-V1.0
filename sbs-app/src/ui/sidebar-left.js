@@ -1683,6 +1683,7 @@ function _renderTreeTab() {
         <button class="btn" id="btn-f-hardware" data-filter="hardware" title="Only hardware (screws / nuts)">HW</button>
         <button class="btn" id="btn-f-visible"  data-filter="onlyVisible" title="Only visible">Vis</button>
         <button class="btn" id="btn-f-hidden"   data-filter="hidden" title="Only hidden">Hid</button>
+        <button class="btn" id="btn-f-folders"  data-filter="foldersOnly" title="Only containers (folders / models) — selected parts stay visible">Fold</button>
       </div>
       <div id="tree-mount" class="tree"></div>
     `;

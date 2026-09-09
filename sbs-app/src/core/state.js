@@ -379,6 +379,15 @@ function createInitialState() {
     // (which couldn't capture typed inputs and was easy to forget).
     globalMode: false,
 
+    // 🎥 WORK CAMERA (V0.3.2.166) — inspection mode. While true, activating a
+    // step applies everything EXCEPT the camera, so the user can orbit freely
+    // and study the scene without the camera snapping to each step's recorded
+    // pose. Authoring aid only, runtime-only (never persisted): export always
+    // uses the recorded cameras regardless (the gate checks _exporting), and
+    // thumbnail capture is paused while it is on so no work-camera frame can
+    // leak into a deliverable. Toggled with W; reset on project load.
+    workCamera: false,
+
     // Node id awaiting a "snap pivot to surface" raycast. When set,
     // the next viewport pointerdown is intercepted: it raycasts
     // against the scene, and on a hit positions+orients the pivot

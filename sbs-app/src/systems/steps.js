@@ -185,7 +185,34 @@ class StepManager {
    *
    * @param {boolean} force   bypass the throttle
    */
+  /**
+   * 🎥 V0.3.2.166 — WORK CAMERA gate. True while the user has the inspection
+   * toggle on AND no export is running. Every step-playback camera
+   * application checks this; nothing else does — fit-all, saved camera
+   * views and manual camera work stay live. During export the gate is
+   * force-false so the recorded cameras always render, per the hard
+   * requirement: "you never render that mode."
+   */
+  _workCamOn() {
+    return state.get('workCamera') === true && !state.get('_exporting');
+  }
+
+  /**
+   * Re-apply the active step's recorded camera (used when the work-camera
+   * toggle turns OFF, so the viewport returns to the step's real pose).
+   */
+  reapplyActiveStepCamera(durationMs = 600) {
+    const step = (state.get('steps') || []).find(s => s.id === state.get('activeStepId'));
+    const cam  = step ? this._resolveStepCamera(step) : null;
+    if (cam) sceneCore.animateCameraTo(cam, durationMs, 'smooth');
+  }
+
   captureActiveThumbnail(force = false) {
+    // 🎥 Work camera on → capture NOTHING. Thumbnails render the live
+    // viewport, which is showing the user's free-orbit camera; a stale but
+    // correct thumbnail beats a fresh one taken from a camera that must
+    // never appear in a deliverable. Captures resume when the toggle is off.
+    if (this._workCamOn()) return;
     const now = performance.now();
     // Skip mid-transition captures — the 5fps throttle would otherwise
     // grab a frame in the middle of camera / object / color / opacity
@@ -490,8 +517,9 @@ class StepManager {
       _applyNotePanelOffsets(nodeById, snapshot.notePanelOffsets);
     }
 
-    // Camera
-    if (snapshot.camera && !opts.suppressCamera) {
+    // Camera (🎥 gated by the work-camera toggle — inspection mode keeps
+    // the user's free orbit; export forces the gate open)
+    if (snapshot.camera && !opts.suppressCamera && !this._workCamOn()) {
       sceneCore.applyCameraState(snapshot.camera);
     }
 
@@ -908,8 +936,9 @@ class StepManager {
       const cameraDur    = useOverride ? (transition.cameraDurationMs ?? globalCam) : globalCam;
       const objDur       = useOverride ? (transition.objectDurationMs  ?? globalObj) : globalObj;
 
-      // Camera
-      const cameraP = toSnapshot.camera
+      // Camera (🎥 work-camera toggle suppresses the fly-to; cameraHandled
+      // stays true so no fallback path re-fires it)
+      const cameraP = (toSnapshot.camera && !this._workCamOn())
         ? sceneCore.animateCameraTo(toSnapshot.camera, cameraDur, easing)
         : Promise.resolve();
 
@@ -1463,10 +1492,12 @@ class StepManager {
         if (stagedActorIds.size) showInsertTags();
       }
 
-      // Camera
+      // Camera (🎥 work-camera toggle: mark handled but fly nowhere)
       if (types.includes('camera') && !cameraHandled && toSnapshot.camera) {
         cameraHandled = true;
-        phasePromises.push(sceneCore.animateCameraTo(toSnapshot.camera, durationMs, easing));
+        if (!this._workCamOn()) {
+          phasePromises.push(sceneCore.animateCameraTo(toSnapshot.camera, durationMs, easing));
+        }
       }
 
       // Object transforms — world-space lerp (v0.266: objects stay in target hierarchy).
@@ -1666,9 +1697,11 @@ class StepManager {
 
     if (!cameraHandled && toSnapshot.camera) {
       cameraHandled = true;
-      fallbackPromises.push(
-        sceneCore.animateCameraTo(toSnapshot.camera, fallbackCam, opts.easing),
-      );
+      if (!this._workCamOn()) {
+        fallbackPromises.push(
+          sceneCore.animateCameraTo(toSnapshot.camera, fallbackCam, opts.easing),
+        );
+      }
     }
     if (!objHandled && changedNodeIds.length) {
       objHandled = true;

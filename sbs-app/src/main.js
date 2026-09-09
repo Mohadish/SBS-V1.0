@@ -4633,6 +4633,58 @@ const _viewportSurfaceEl = document.getElementById('viewport-surface');
   state.on('change:globalMode', sync);
   sync();
 })();
+
+// ── 🎥 Work Camera indicator (V0.3.2.166, backlog #21) ─────────────────────
+// Same treatment as Global Mode: amber inset border + faint watermark while
+// state.workCamera is on. W toggles it (wired in the keyboard section below —
+// physical KeyW, layout-independent). No button, per the V0.3.0.174 lesson:
+// a viewport-corner button sat over the header/overlay UI.
+//
+// While on, step activation applies everything EXCEPT the camera (gates in
+// steps.js), and thumbnail capture pauses. Export ignores the toggle
+// entirely — the mode can never render. Turning it OFF flies the camera
+// back to the active step's recorded pose, so the user always knows the
+// toggle "did something" both ways.
+(function _setupWorkCameraIndicator() {
+  const surf = _viewportSurfaceEl;
+  if (!surf) return;
+  const ov = document.createElement('div');
+  ov.id = 'work-camera-overlay';
+  ov.style.cssText = 'position:absolute;inset:0;pointer-events:none;z-index:55;display:none;'
+    + 'box-shadow:inset 0 0 0 4px #d97706, inset 0 0 30px 6px rgba(217,119,6,0.28);';
+  const wm = document.createElement('div');
+  wm.textContent = 'WORK CAMERA';
+  wm.style.cssText = 'position:absolute;left:50%;top:50%;transform:translate(-50%,-50%);'
+    + 'font:800 64px/1 system-ui,sans-serif;letter-spacing:10px;color:#f59e0b;'
+    + 'opacity:0.10;white-space:nowrap;user-select:none;';
+  const hint = document.createElement('div');
+  hint.textContent = 'steps play without moving the camera — W to exit';
+  hint.style.cssText = 'position:absolute;left:50%;top:calc(50% + 48px);transform:translateX(-50%);'
+    + 'font:600 13px/1 system-ui,sans-serif;letter-spacing:2px;color:#f59e0b;'
+    + 'opacity:0.35;white-space:nowrap;user-select:none;';
+  ov.appendChild(wm);
+  ov.appendChild(hint);
+  surf.appendChild(ov);
+
+  state.on('change:workCamera', () => {
+    const on = !!state.get('workCamera');
+    ov.style.display = on ? 'block' : 'none';
+    if (on) {
+      setStatus('Work camera ON — steps play without moving the camera. Never rendered. W to exit.', 'info', 5000);
+    } else {
+      // Fly home to the active step's recorded pose.
+      steps.reapplyActiveStepCamera?.(600);
+    }
+  });
+
+  // A freshly-loaded project starts in normal playback — an inspection
+  // toggle left on from the previous project would silently eat the first
+  // step's camera. Reset BEFORE the load path activates any step
+  // (project:loaded fires before models start loading).
+  state.on('project:loaded', () => {
+    if (state.get('workCamera')) state.setState({ workCamera: false });
+  });
+})();
 function _refreshSafeFrame() {
   if (!_safeFrameEl) return;
   const showFrame = state.get('export')?.showSafeFrame !== false;
@@ -4726,6 +4778,14 @@ window.addEventListener('keydown', async e => {
   // (Space was a redundant duplicate of it). Guarded by _isInputFocused above,
   // so Space still types normally in text fields.
   if (key === ' ')          { e.preventDefault(); actions.toggleGlobalMode(); return; }
+  // W → 🎥 WORK CAMERA toggle (V0.3.2.166, backlog #21). Physical KeyW so it
+  // works on non-Latin layouts (same fix as undo's KeyZ). Guarded by
+  // _isInputFocused above, so W still types normally in text fields.
+  if (e.code === 'KeyW' && !e.ctrlKey && !e.altKey && !e.metaKey) {
+    e.preventDefault();
+    state.setState({ workCamera: !state.get('workCamera') });
+    return;
+  }
 
   // ── Gizmo space toggle (Local ↔ World) ──────────────────────────────────
   if (key === 'l' || key === 'L') {

@@ -224,7 +224,7 @@ function _setupTreeMarquee() {
 // Combinable predicate filters. A node "matches" if it passes ALL active filters;
 // the tree then renders matches + their ancestor folders (scaffolding), force-opened.
 // 'onlySelected' on its own also reveals a selected folder's own contents (legacy UX).
-const _filters = { onlySelected: false, archived: false, hardware: false, onlyVisible: false, hidden: false };
+const _filters = { onlySelected: false, archived: false, hardware: false, onlyVisible: false, hidden: false, foldersOnly: false };
 let _filterVisible = new Set();
 export function getFilter(key) { return !!_filters[key]; }
 export function toggleFilter(key) {
@@ -235,7 +235,16 @@ export function toggleFilter(key) {
   return _filters[key];
 }
 function _anyFilterActive() {
-  return _filters.onlySelected || _filters.archived || _filters.hardware || _filters.onlyVisible || _filters.hidden;
+  return _filters.onlySelected || _filters.archived || _filters.hardware || _filters.onlyVisible || _filters.hidden || _filters.foldersOnly;
+}
+
+// 🗂️ V0.3.2.166 (backlog #22) — "containers" for the folders-only filter:
+// folders, models, and anything that holds children (primitives-as-containers,
+// Replace-Model wrappers). An empty folder still counts — it exists to be
+// organised into, which is the whole point of this filter.
+function _isContainerNode(node) {
+  return node.type === 'folder' || node.type === 'model' || node.type === 'replaceModel'
+      || (node.children || []).length > 0;
 }
 function _nodeMatchesFilters(node, selSet) {
   if (_filters.onlySelected && !selSet.has(node.id))                                          return false;
@@ -243,6 +252,9 @@ function _nodeMatchesFilters(node, selSet) {
   if (_filters.hardware     && node.type !== 'hardwareInstance' && node.type !== 'hardwareNut') return false;
   if (_filters.onlyVisible  && node.localVisible === false)                                    return false;
   if (_filters.hidden       && node.localVisible !== false)                                    return false;
+  // Folders-only hides leaves — EXCEPT selected ones, so drilling to a part in
+  // the viewport still reveals it inside its folder (composes with Only Sel.).
+  if (_filters.foldersOnly  && !_isContainerNode(node) && !selSet.has(node.id))               return false;
   return true;
 }
 function _computeFilterVisible() {
@@ -254,7 +266,7 @@ function _computeFilterVisible() {
   const primary = state.get('selectedId');
   if (primary) selSet.add(primary);
   const solo = _filters.onlySelected && !_filters.archived && !_filters.hardware
-            && !_filters.onlyVisible && !_filters.hidden;
+            && !_filters.onlyVisible && !_filters.hidden && !_filters.foldersOnly;
   (function walk(node, ancestors) {
     if (node !== root && _nodeMatchesFilters(node, selSet)) {
       for (const a of ancestors) _filterVisible.add(a.id);   // scaffolding above the match
