@@ -198,8 +198,10 @@ class StepManager {
   }
 
   /**
-   * Re-apply the active step's recorded camera (used when the work-camera
-   * toggle turns OFF, so the viewport returns to the step's real pose).
+   * Re-apply the active step's recorded camera. NOT called on work-camera
+   * toggle-off any more (V0.3.2.170 — the user vetoed the auto-flyback:
+   * exiting inspection keeps the current view, and the camera follows again
+   * on the next step activation). Kept as a utility.
    */
   reapplyActiveStepCamera(durationMs = 600) {
     const step = (state.get('steps') || []).find(s => s.id === state.get('activeStepId'));

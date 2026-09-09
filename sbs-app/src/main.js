@@ -4709,7 +4709,7 @@ const _viewportSurfaceEl = document.getElementById('viewport-surface');
     const k = keyLabel('workCamera');
     btn.textContent = on ? `🎥 Work camera ON (${k})` : `🎥 Work camera (${k})`;
     btn.title = on
-      ? 'Inspection mode is ON — steps play without moving the camera. Never rendered. Click to return to the step camera.'
+      ? 'Inspection mode is ON — steps play without moving the camera. Never rendered. Turning it off keeps the current view; the camera follows again on the next step.'
       : 'Inspection mode — orbit freely while stepping through; the camera stops following steps. Never rendered.';
     btn.style.background = on ? 'rgba(217,119,6,0.35)' : 'rgba(10,15,25,0.85)';
     hint.textContent = `steps play without moving the camera — ${k} to exit`;
@@ -4724,10 +4724,11 @@ const _viewportSurfaceEl = document.getElementById('viewport-surface');
     syncBtn(on);
     if (on) {
       setStatus(`Work camera ON — steps play without moving the camera. Never rendered. ${keyLabel('workCamera')} to exit.`, 'info', 5000);
-    } else {
-      // Fly home to the active step's recorded pose.
-      steps.reapplyActiveStepCamera?.(600);
     }
+    // V0.3.2.170 — toggling OFF deliberately does NOT fly back to the step
+    // camera (it did in .166; the user vetoed it). The camera only follows a
+    // step again on the next step activation with the toggle off — the exit
+    // itself leaves the view exactly where the user parked it.
   });
 
   // A freshly-loaded project starts in normal playback — an inspection
