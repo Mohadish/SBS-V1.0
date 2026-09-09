@@ -75,6 +75,72 @@ function _dist(a, b) {
 }
 
 /**
+ * 🧭 V0.3.2.164 — parent-chain audit.
+ *
+ * The user's first live test of the rebuild reported "no objects moved" while
+ * the drift was visibly there — so the stored LOCAL transforms match what the
+ * scene already shows, and re-applying them is a no-op. The remaining way a
+ * correct local transform can produce a wrong world position is a wrong
+ * PARENT: the live Object3D hangs under a different group than the one its
+ * tree node says (a stale offset-correction folder, a folder group from an
+ * earlier step). Save+reload heals exactly this, because the load re-parents
+ * everything from the tree.
+ *
+ * This DETECTS that case and reports it; it deliberately does not re-parent.
+ * Blind re-attachment without a keep-position compensation would itself move
+ * objects, and per the project rule the repair is only automated after a real
+ * capture proves what the fault is.
+ *
+ * Comparison is tolerant of anonymous wrapper groups (Replace-Model wraps,
+ * pivot helpers): for each mapped node we walk UP the live parent chain to
+ * the first ancestor that is itself some node's object3d, and compare that
+ * node id against the nearest tree ancestor that has a live object. Cables
+ * and notes are skipped — they legitimately live under their own scene roots.
+ */
+const _AUDIT_SKIP_TYPES = new Set(['cable', 'note']);
+
+function _auditParentChain(root) {
+  const mismatches = [];
+  const byId = steps.object3dById;
+  if (!byId || !root) return mismatches;
+
+  const nodeById = state.get('nodeById');
+  const nameOf = id => (id == null ? '(scene root)' : (nodeById?.get(id)?.name || id));
+
+  // Reverse map: live Object3D → node id.
+  const rev = new Map();
+  for (const [id, obj] of byId) if (obj) rev.set(obj, id);
+
+  const walk = (node, treeAncestorId) => {
+    if (!node) return;
+    const obj = !_AUDIT_SKIP_TYPES.has(node.type) ? byId.get(node.id) : null;
+    if (obj && node !== root) {
+      let p = obj.parent, liveAncestorId = null, detached = true;
+      while (p) {
+        if (rev.has(p)) { liveAncestorId = rev.get(p); detached = false; break; }
+        if (p === sceneCore.rootGroup || p === sceneCore.scene) { detached = false; break; }
+        p = p.parent;
+      }
+      if (liveAncestorId !== treeAncestorId || detached) {
+        mismatches.push({
+          id:             node.id,
+          name:           node.name || node.id,
+          type:           node.type,
+          expectedParent: nameOf(treeAncestorId),
+          actualParent:   detached ? '(DETACHED — not in scene)' : nameOf(liveAncestorId),
+        });
+      }
+    }
+    const next = obj ? node.id : treeAncestorId;
+    for (const c of node.children || []) walk(c, next);
+  };
+  // The root's own object (if mapped) anchors the chain; its children's
+  // expected ancestor is the root id when mapped, else the scene root (null).
+  walk(root, byId.get(root.id) ? root.id : null);
+  return mismatches;
+}
+
+/**
  * Re-derive the live scene's transforms from the stored tree.
  *
  * @param {string} reason  what triggered it — appears in the report
@@ -116,8 +182,13 @@ export function rebuildCascade(reason = 'manual') {
   }
   moved.sort((a, b) => b.distance - a.distance);
 
+  // 🧭 V0.3.2.164 — the audit runs regardless of whether anything moved:
+  // "nothing moved" + parent mismatches is precisely the signature that
+  // distinguishes the wrong-parent theory from the stale-local one.
+  const parentMismatches = _auditParentChain(root);
+
   sceneCore.requestRender?.(0);
-  return { moved, checked: applied, reason };
+  return { moved, checked: applied, parentMismatches, reason };
 }
 
 /**

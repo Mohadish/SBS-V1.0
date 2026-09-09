@@ -1618,15 +1618,29 @@ window.sbsNative?.onMenu?.('menu:rebuildCascade', async () => {
       setStatus('Rebuild Cascade: nothing to rebuild — no model is loaded.', 'warn', 4000);
       return;
     }
+    // 🧭 V0.3.2.164 — parent-chain audit. The first live drift test came back
+    // "no objects moved", which clears the stale-local-transform theory and
+    // points at objects hanging under the WRONG live parent (re-applying a
+    // correct local under a wrong parent moves nothing). The audit names
+    // those objects; it does not re-parent — capture first, automate second.
+    const pm = r.parentMismatches || [];
+    if (pm.length) {
+      console.warn(`[cascade] PARENT MISMATCH on ${pm.length} object(s) — live scene parent differs from the tree. This is the drift capture we have been hunting; please report it:`);
+      console.table(pm.slice(0, 30));
+    }
     if (!r.moved.length) {
-      setStatus(`Rebuild Cascade: ${r.checked} object(s) re-derived, none had drifted.`, 'success', 5000);
+      setStatus(pm.length
+        ? `Rebuild Cascade: nothing moved, but ${pm.length} object(s) sit under the WRONG parent — see console (drift capture!).`
+        : `Rebuild Cascade: ${r.checked} object(s) re-derived, none had drifted.`,
+        pm.length ? 'warn' : 'success', pm.length ? 10000 : 5000);
       console.log(`[cascade] rebuild: ${r.checked} object(s) re-derived, nothing moved.`);
       return;
     }
     const worst = r.moved[0];
     setStatus(
-      `Rebuild Cascade: corrected ${r.moved.length} object(s) — worst "${worst.name}" by ${worst.distance}. See console.`,
-      'success', 9000,
+      `Rebuild Cascade: corrected ${r.moved.length} object(s) — worst "${worst.name}" by ${worst.distance}.`
+      + (pm.length ? ` ${pm.length} parent mismatch(es) remain — see console.` : ' See console.'),
+      pm.length ? 'warn' : 'success', 9000,
     );
     console.warn(`[cascade] rebuild CORRECTED ${r.moved.length} of ${r.checked} object(s):`);
     console.table(r.moved.slice(0, 30));
