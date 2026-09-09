@@ -161,9 +161,13 @@ function stripNode(node) {
  * Build the full project JSON from current app state.
  * Returns a plain object ready to be JSON.stringify'd.
  *
+ * @param {string|null} [targetPath]  absolute path the file is about to be
+ *        written to. Asset relativePaths are derived against it. Defaults to
+ *        the current projectPath (right for autosave and diagnostics; Save As
+ *        must pass the new location).
  * @returns {object}  complete project in createEmptyProject() shape
  */
-export function serialize() {
+export function serialize(targetPath = null) {
   const project = createEmptyProject();
 
   // ── _sbs metadata ────────────────────────────────────────────────────────
@@ -171,7 +175,50 @@ export function serialize() {
   project._sbs.saved       = new Date().toISOString();
 
   // ── Assets ───────────────────────────────────────────────────────────────
-  project.assets.items = (state.get('assets') || []).map(a => ({ ...a }));
+  // 📦 V0.3.2.163 — relativePath is derived HERE, at save time, against the
+  // file being written. Import cannot do it: an unsaved project has no
+  // projectPath yet, and Save As changes the base. So every importer left it
+  // '' and resolveAssetPath always fell through to the authoring machine's
+  // absolute originalPath — a project never opened clean on another PC.
+  // Re-deriving on every save also heals every pre-.163 file the first time
+  // it is saved again. makeRelativePath returns '' when no relative form
+  // exists (other drive, UNC mismatch); the absolute fallback then stands.
+  //
+  // A STORED hint means "relative to the project file" and keeps meaning
+  // that: it is resolved against where the project lives now and re-derived
+  // against the file being written — identical on a save-in-place, rebased on
+  // Save As and on an autosave into backups/. An asset that was actually
+  // FOUND this session had its hint cleared by the heal and derives from its
+  // verified originalPath instead; an asset that stayed missing (models not
+  // copied yet) keeps its still-portable hint rather than having it replaced
+  // from a stale absolute path.
+  //
+  // Two cases keep the STORED value verbatim:
+  //  - no directory to derive against (web: projectPath is the bare handle
+  //    name) — the file may carry an Electron-derived relativePath that must
+  //    survive a web round trip untouched, exactly as it did before .163;
+  //  - derivation produced nothing (other drive) and the stored value is
+  //    itself relative — a bare legacy 'x.step' hint or an intact nested
+  //    hint. Only an absolute value stored in relativePath (bad legacy data)
+  //    is dropped.
+  const relBase    = targetPath || state.get('projectPath') || null;
+  const canDerive  = !!relBase && /[\\/]/.test(relBase);
+  const loadedBase = state.get('projectPath');
+  const canResolve = !!loadedBase && /[\\/]/.test(loadedBase);
+  project.assets.items = (state.get('assets') || []).map(a => {
+    let relativePath = a.relativePath || '';
+    if (canDerive) {
+      const src = (relativePath && canResolve)
+        ? resolveAssetPath(a, loadedBase)
+        : a.originalPath;
+      if (src) {
+        const derived = makeRelativePath(src, relBase);
+        relativePath = derived
+          || (/^(?:[A-Za-z]:|[\\/])/.test(relativePath) ? '' : relativePath);
+      }
+    }
+    return { ...a, relativePath };
+  });
 
   // ── Tree (strip object3d) ─────────────────────────────────────────────────
   const treeData = state.get('treeData');
@@ -382,19 +429,22 @@ export async function autosaveBackup({ path: pathOverride } = {}) {
   // so on a big project the UI just froze mid-action for several seconds with
   // no explanation. Same overlay as a manual save, labelled as a backup.
   const t0 = Date.now();
-  state.emit('save:progress', { stage: 'serialize', autosave: true });
-  steps.flushSync();
-  const project = serialize();
-  const { bytes, rawBytes } = await _encodeProjectStream(project,
-    (done, total) => state.emit('save:progress', { stage: 'compress', done, total, unit: 'steps', autosave: true }));
   // Fallback base also strips any .autosaveN suffix (V0.3.2.56) so an
   // autosave-of-an-autosave can never stack when no path override is passed.
   // 📁 V0.3.2.124 — autosaves live in <project>/backups/. fs:writeFile
   // creates the folder, so no separate mkdir. Recovery still finds older
   // autosaves beside the project: they are ordinary .sbsproj files the user
   // opens by hand, and nothing indexes them by path.
+  // Decided BEFORE serialize (V0.3.2.163): asset relativePaths are derived
+  // against the file being written, and backups/ is one level below the
+  // project — a backup opened from there must find its models too.
   const path = pathOverride || projectPaths.autosavePath().path
     || (pp.replace(/\.sbsproj$/i, '').replace(/(\.autosave\d*)+$/i, '') + '.autosave.sbsproj');
+  state.emit('save:progress', { stage: 'serialize', autosave: true });
+  steps.flushSync();
+  const project = serialize(path);
+  const { bytes, rawBytes } = await _encodeProjectStream(project,
+    (done, total) => state.emit('save:progress', { stage: 'compress', done, total, unit: 'steps', autosave: true }));
   state.emit('save:progress', { stage: 'write', bytes: bytes.length, autosave: true });
   const r = await window.sbsNative.writeFile(path, bytes, null);
   state.emit('save:progress', r?.ok
@@ -507,10 +557,36 @@ export async function saveProject(options = {}) {
     electronPath  = null,
   } = options;
 
+  const filename = suggestedName.endsWith('.sbsproj')
+    ? suggestedName
+    : `${suggestedName.replace(/\.(json|sbsproj)$/i, '')}.sbsproj`;
+
+  // ── Electron: decide WHERE first (V0.3.2.163) ────────────────────────────
+  // The destination used to be chosen after serialize+compress. It has to
+  // come first now: serialize() derives every asset's relativePath against
+  // the file being written, and a Save As into another folder needs the NEW
+  // folder as its base. Side effect worth having: cancelling the dialog no
+  // longer costs a full compress of the project first.
+  // 'auto'   → overwrite existing path silently; open dialog only if unsaved
+  // 'saveAs' → always open dialog
+  const isElectronSave = !!window.sbsNative?.saveProject;
+  const existingPath   = state.get('projectPath');
+  let savePath = null;
+  if (isElectronSave) {
+    if (mode === 'auto' && existingPath) {
+      savePath = existingPath;          // silent overwrite — no dialog
+    } else {
+      savePath = electronPath || await window.sbsNative.saveProject(filename);
+      if (!savePath) { state.emit('save:progress', { stage: 'cancelled' }); return { saved: false, cancelled: true }; }
+    }
+  }
+
   // Save-progress overlay (V0.3.1.83): a big project serializes to 1GB+ of JSON
   // before compressing back down — seconds of "nothing visibly happening".
   // Emit staged progress (main.js renders the overlay); double-rAF so the
   // overlay actually PAINTS before the blocking serialize+stringify starts.
+  // _t0 starts here, after the dialog: the "saved in N s" readout measures
+  // the save, not how long the user browsed folders.
   const _t0 = performance.now();
   state.emit('save:progress', { stage: 'serialize' });
   await new Promise(r => requestAnimationFrame(() => requestAnimationFrame(r)));
@@ -518,7 +594,7 @@ export async function saveProject(options = {}) {
   steps.flushSync();       // ensure active step snapshot is current
   steps.upsertBaseStep();  // capture scene into hidden Step 0 staging area
 
-  const project  = serialize();
+  const project  = serialize(savePath);
   // Minified (no pretty-print). Whitespace was ~70% of large files; gzip on the
   // Electron path then crushes the cross-step redundancy (~30-40x total). The
   // file stays valid JSON, so older app builds without gzip still open it.
@@ -526,22 +602,9 @@ export async function saveProject(options = {}) {
   // string ~512MB made big-project saves impossible). Progress = steps written.
   const { bytes, rawBytes } = await _encodeProjectStream(project,
     (done, total) => state.emit('save:progress', { stage: 'compress', done, total, unit: 'steps' }));
-  const filename = suggestedName.endsWith('.sbsproj')
-    ? suggestedName
-    : `${suggestedName.replace(/\.(json|sbsproj)$/i, '')}.sbsproj`;
 
   // ── Path 1: Electron IPC ─────────────────────────────────────────────────
-  // 'auto'   → overwrite existing path silently; open dialog only if unsaved
-  // 'saveAs' → always open dialog
-  if (window.sbsNative?.saveProject) {
-    const existingPath = state.get('projectPath');
-    let savePath;
-    if (mode === 'auto' && existingPath) {
-      savePath = existingPath;          // silent overwrite — no dialog
-    } else {
-      savePath = electronPath || await window.sbsNative.saveProject(filename);
-      if (!savePath) { state.emit('save:progress', { stage: 'cancelled' }); return { saved: false, cancelled: true }; }
-    }
+  if (isElectronSave) {
     // Write the gzipped bytes via the always-present binary fs:writeFile
     // handler (no dependency on a freshly-restarted main process).
     state.emit('save:progress', { stage: 'write', bytes: bytes.length });
@@ -1903,11 +1966,13 @@ export async function loadProject(fileOrText, filePath = null) {
 
   if (filePath) _setProjectMeta(filePath);
 
-  // Build resolved-asset list for caller
-  const assets = (project.assets?.items || []).map(assetEntry => ({
+  // Build resolved-asset list for caller — checked against the disk, with the
+  // absolute originalPath as the fallback for a relativePath that no longer
+  // points at a file (V0.3.2.163).
+  const assets = await Promise.all((project.assets?.items || []).map(async assetEntry => ({
     assetEntry,
-    resolvedPath: resolveAssetPath(assetEntry, filePath),
-  }));
+    resolvedPath: await _resolveAssetPathOnDisk(assetEntry, filePath),
+  })));
 
   // Emit so the app can show "loading models…" UI
   state.emit('project:loaded', { project, assets });
@@ -1941,25 +2006,115 @@ export function resolveAssetPath(asset, projectFilePath = null) {
     const rel = asset.relativePath.replace(/\\/g, '/');
     // Simple join — keep the platform separator the OS prefers
     const sep = projectFilePath.includes('\\') ? '\\' : '/';
-    return projectDir + sep + rel.replace(/\//g, sep);
+    return _collapseDots(projectDir + sep + rel.replace(/\//g, sep));
   }
 
   return asset.originalPath || null;
 }
 
 /**
+ * Lexically resolve '.' and '..' segments so a joined path comes out clean:
+ * 'E:\\proj\\backups\\..\\models\\x.step' → 'E:\\models\\x.step'.
+ *
+ * Windows would resolve the dotted form on its own, but the string is also
+ * what gets stored back as originalPath once the file is found there
+ * (V0.3.2.163 heal) — and a stored '..' chain grows by one hop on every
+ * Save As into a new folder, naming directories that need not exist any
+ * more. Collapsing here keeps every candidate, and therefore every healed
+ * record, a plain absolute path. '..' never climbs above the root: the drive
+ * ('E:\\'), the UNC server+share ('\\\\nas\\share\\'), or '/'.
+ */
+function _collapseDots(p) {
+  if (!p || !/(^|[\\/])\.\.?([\\/]|$)/.test(p)) return p;   // nothing to collapse
+  const sep  = p.includes('\\') ? '\\' : '/';
+  const m    = p.match(/^(?:[\\/]{2}|[A-Za-z]:[\\/]?|[\\/])/);
+  const root = m ? m[0] : '';
+  const unc  = /^[\\/]{2}/.test(root);
+  const segs = p.slice(root.length).split(/[\\/]+/).filter(s => s && s !== '.');
+  const out  = [];
+  const floor = unc ? 2 : 0;                               // server + share are part of a UNC root
+  for (const s of segs) {
+    if (s === '..') { if (out.length > floor) out.pop(); }
+    else out.push(s);
+  }
+  return root.replace(/[\\/]/g, sep) + out.join(sep);
+}
+
+/**
+ * Every absolute location an asset might be at, most portable first:
+ *   [0] relativePath joined to the project's directory (moves with the project)
+ *   [1] originalPath (where it was when imported / last found)
+ * Deduplicated; empty when the asset has no path at all (procedural hardware).
+ */
+export function assetPathCandidates(asset, projectFilePath = null) {
+  const out = [];
+  const seen = new Set();
+  const push = p => {
+    if (!p) return;
+    const k = p.replace(/\\/g, '/').toLowerCase();
+    if (seen.has(k)) return;
+    seen.add(k);
+    out.push(p);
+  };
+  push(resolveAssetPath(asset, projectFilePath));
+  push(asset?.originalPath);
+  return out;
+}
+
+/**
+ * 📦 V0.3.2.163 — resolve against the DISK, not just the record.
+ *
+ * resolveAssetPath is a pure string join: once an asset carries a
+ * relativePath, that is its only answer — even when the file is not there
+ * and the absolute originalPath still is. That is exactly the case of a
+ * .sbsproj moved on its own while the models stayed put, which worked before
+ * relative paths existed and must keep working after. So try the candidates
+ * in order and take the first one that exists. When none does, report the
+ * portable one so the verify dialog shows where the file was expected.
+ *
+ * Outside Electron there is no disk to ask — the first candidate stands.
+ */
+async function _resolveAssetPathOnDisk(asset, projectFilePath = null) {
+  const cands = assetPathCandidates(asset, projectFilePath);
+  if (!cands.length) return null;
+  // One candidate = nothing to choose between. Skip the probe: fs.existsSync
+  // on an unreachable network share blocks the main process for the SMB
+  // timeout, and the verify dialog stats the same path right after anyway.
+  if (cands.length < 2) return cands[0];
+  const exists = window.sbsNative?.fileExists;
+  if (typeof exists !== 'function') return cands[0];
+  for (const p of cands) {
+    try { if (await exists(p)) return p; } catch { /* unreadable — try the next */ }
+  }
+  return cands[0];
+}
+
+/**
  * Compute the relative path of `assetPath` from `projectFilePath`'s directory.
+ *
+ * Returns '' — meaning "no relative form, keep the absolute originalPath" — when:
+ *   - either path is missing, or is a bare filename with no directory (the web
+ *     save path stores only the handle's name as projectPath);
+ *   - the two share no root at all: a different Windows drive (E:\ vs D:\), a
+ *     drive letter vs a UNC share, or two different UNC shares — '..' cannot
+ *     climb above a share root any more than above a drive root. The old code
+ *     returned '../../D:/x.step' for the drive case, which resolveAssetPath
+ *     then joined into a path that cannot exist.
  *
  * @param {string} assetPath       absolute path to the asset
  * @param {string} projectFilePath absolute path to the .sbsproj file
- * @returns {string}  relative path using forward slashes
+ * @returns {string}  relative path using forward slashes, or ''
  */
 export function makeRelativePath(assetPath, projectFilePath) {
-  if (!assetPath || !projectFilePath) return assetPath || '';
+  if (!assetPath || !projectFilePath) return '';
 
-  const normalize = p => p.replace(/\\/g, '/').replace(/\/+/g, '/');
-  const projDir   = normalize(projectFilePath).replace(/\/[^/]*$/, '');
-  const asset     = normalize(assetPath);
+  const isUNC     = p => /^[\\/]{2}[^\\/]/.test(String(p));
+  const normalize = p => String(p).replace(/\\/g, '/').replace(/\/+/g, '/');
+  const proj  = normalize(projectFilePath);
+  const asset = normalize(assetPath);
+  if (!proj.includes('/') || !asset.includes('/')) return '';
+
+  const projDir = proj.replace(/\/[^/]*$/, '');
 
   // Find common prefix
   const projParts  = projDir.split('/');
@@ -1969,10 +2124,17 @@ export function makeRelativePath(assetPath, projectFilePath) {
          && projParts[common].toLowerCase() === assetParts[common].toLowerCase()) {
     common++;
   }
+  if (common === 0) return '';   // no shared root → not expressible relatively
+
+  // UNC: normalize() collapsed the leading '//' to '/', so parts are
+  // ['', server, share, ...]. Both must be UNC and agree on server + share.
+  const uncP = isUNC(projectFilePath), uncA = isUNC(assetPath);
+  if (uncP !== uncA) return '';
+  if (uncP && common < 3) return '';
 
   const ups  = projParts.length - common;
   const down = assetParts.slice(common);
-  return [...Array(ups).fill('..'), ...down].join('/') || '.';
+  return [...Array(ups).fill('..'), ...down].join('/');
 }
 
 
@@ -2017,6 +2179,7 @@ export const project = {
   applyIdRemap,
   applySpecFieldsToNodes,
   resolveAssetPath,
+  assetPathCandidates,
   makeRelativePath,
   getSuggestedFilename,
 };

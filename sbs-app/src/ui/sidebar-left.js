@@ -820,6 +820,10 @@ async function _onOpenProject() {
     const unkeyedModelSpecs = allModelSpecs.filter(s => !s.assetId);
     let unkeyedSpecIndex = 0;
 
+    // 📦 V0.3.2.163 — where each file was actually found this time, written
+    // back to the asset records after the loop (see _applyAssetPathHeals).
+    const pathHeals = new Map();
+
     for (const { assetEntry, resolvedPath } of resolvedAssets) {
       setStatus(`Loading ${assetEntry.name}…`, 'info', 0);
       let modelNode = null;
@@ -836,6 +840,7 @@ async function _onOpenProject() {
       } else if (userFile) {
         // User-provided via dialog (web re-link or Electron re-link)
         modelNode = await _loadModelFile(userFile, assetEntry, true);
+        if (modelNode) pathHeals.set(assetEntry.id, _healFromFile(userFile));
       } else if (isElectron && resolvedPath && window.sbsNative?.readFile) {
         // Electron auto-load from saved path. Use the 'buffer' encoding
         // so IPC marshals raw bytes as a Uint8Array — for large OBJs
@@ -844,8 +849,17 @@ async function _onOpenProject() {
         // mapper allocations cascaded into "invalid array length").
         const result = await window.sbsNative.readFile(resolvedPath, 'buffer');
         if (result?.ok) {
-          // result.data is already a Uint8Array (Buffer over IPC).
-          modelNode = await _loadModelFile(new File([result.data], assetEntry.name), assetEntry, true);
+          // result.data is already a Uint8Array (Buffer over IPC). Name the
+          // File after the file actually found — the importer picks its
+          // parser from the extension, and the record's name can lag behind
+          // a relink to another format.
+          const foundName = resolvedPath.split(/[\\/]/).pop() || assetEntry.name;
+          modelNode = await _loadModelFile(new File([result.data], foundName), assetEntry, true);
+          // Found through relativePath (or the absolute fallback): make the
+          // record say so, or the next save derives a relative path from a
+          // location the file is no longer at. The hint is cleared — a
+          // verified location supersedes it, and serialize re-derives.
+          if (modelNode) pathHeals.set(assetEntry.id, { originalPath: resolvedPath, name: foundName, relativePath: '' });
         }
       }
 
@@ -902,6 +916,7 @@ async function _onOpenProject() {
         _insertPhantomNodes(specNode, assetEntry.id);
       }
     }
+    _applyAssetPathHeals(pathHeals);
 
     // Insert phantom nodes for any scene-root custom folders from the saved tree
     // that aren't yet in the live tree (they contain displaced meshes and need to
@@ -1074,6 +1089,69 @@ function _showOverrideSavePrompt(count) {
   dlg.addEventListener('cancel', (e) => { e.preventDefault(); close(); });
 }
 
+// ── 📦 Asset path healing (V0.3.2.163) ──────────────────────────────────────
+// finalizeModelImport writes an asset entry only when its id is NEW, so any
+// later discovery of the file — auto-resolved through relativePath, picked in
+// the verify dialog, relinked from the Files tab — used to leave the stale
+// originalPath in the record. Save then persisted the dead path and the next
+// open prompted again: a project could never be moved and made to stick.
+// These write the found location back. relativePath is cleared here and
+// re-derived by serialize() against whatever file the next save writes.
+
+function _fileDiskPath(file) {
+  if (!file) return '';
+  if (typeof file.path === 'string' && file.path) return file.path;
+  try { return window.sbsNative?.pathForFile?.(file) || ''; } catch { return ''; }
+}
+
+/**
+ * Heal record from a File the user picked: its disk path (Electron only — a
+ * web File has none), its NAME, and the metadata the verify dialog compares
+ * next time. The name matters: the auto-load path rebuilds a File from the
+ * record's name and the importer picks its parser from that extension, so a
+ * .step relinked to an exported .glb must be remembered as the .glb (mirrors
+ * _repointAsset in importers.js, which does the same for the .sbsobj cache).
+ */
+function _healFromFile(file) {
+  const h = {};
+  const p = _fileDiskPath(file);
+  // A verified location supersedes any stored hint — clear it so serialize
+  // re-derives from the picked path. Without a path (web) the hint is left
+  // alone: it may be the record's only portable pointer.
+  if (p) { h.originalPath = p; h.relativePath = ''; }
+  if (file?.name)                          h.name         = file.name;
+  if (Number.isFinite(file?.size))         h.fileSize     = file.size;
+  if (Number.isFinite(file?.lastModified)) h.lastModified = file.lastModified;
+  return h;
+}
+
+/** @param {Map<string, {originalPath?:string, relativePath?:string, name?:string, fileSize?:number, lastModified?:number}>} heals  assetId → fields */
+function _applyAssetPathHeals(heals) {
+  if (!heals?.size) return;
+  let changed = false;
+  const assets = (state.get('assets') || []).map(a => {
+    const h = heals.get(a.id);
+    if (!h) return a;
+    // Web guard: a heal with no path but a DIFFERENT filename would stamp
+    // another file's size/mtime onto a record whose paths still name the old
+    // file — the next Electron open would then flag the correct file as
+    // "wrong". Leave the record alone; the model still loaded for this session.
+    if (!h.originalPath && a.originalPath && h.name) {
+      const recorded = a.originalPath.split(/[\\/]/).pop() || '';
+      if (recorded.toLowerCase() !== h.name.toLowerCase()) return a;
+    }
+    const next = { ...a, ...h };
+    if (h.originalPath && h.originalPath !== a.originalPath) {
+      console.log(`[assets] "${a.name}" found at ${h.originalPath}` +
+                  (a.originalPath ? ` — record said ${a.originalPath}` : ''));
+    }
+    if (Object.keys(next).every(k => next[k] === a[k])) return a;
+    changed = true;
+    return next;
+  });
+  if (changed) state.setState({ assets });
+}
+
 /**
  * Reconcile each overridden asset's saved metadata (fileSize / lastModified)
  * to the CURRENT file on disk. After this, a save records what's actually
@@ -1090,7 +1168,13 @@ async function _reconcileOverriddenAssets(overridden, resolvedAssets) {
     const idx = assets.findIndex(a => a.id === assetEntry.id);
     if (idx < 0) continue;
     try {
-      const stat = await window.sbsNative?.statFile?.(resolvedPath);
+      // Stat the HEALED location, not the load-time candidate: when the user
+      // browsed to a replacement file and overrode, the heal already points
+      // originalPath at the picked file — statting the old resolvedPath here
+      // would stamp the wrong file's size/mtime over the healed record and
+      // re-trigger the "wrong file" warning on every open (V0.3.2.163).
+      const statPath = assets[idx].originalPath || resolvedPath;
+      const stat = await window.sbsNative?.statFile?.(statPath);
       if (stat) {
         assets[idx] = {
           ...assets[idx],
@@ -1452,6 +1536,11 @@ async function _relinkAsset(file, assetEntry) {
 
   const modelNode = await _loadModelFile(file, assetEntry, true);
   if (!modelNode) return;
+
+  // 📦 V0.3.2.163 — record where the user found it. Without this the relink
+  // was in-memory only: the asset entry kept the dead originalPath, save wrote
+  // it back out, and the next open asked for the same file again.
+  _applyAssetPathHeals(new Map([[assetEntry.id, _healFromFile(file)]]));
 
   if (phantom) {
     // Remap fresh IDs → saved IDs stored in phantom
