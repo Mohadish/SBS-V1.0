@@ -1966,13 +1966,37 @@ async function _importStepsFlow(targetStepId) {
   _showImportStepsDialog(project, srcSteps, srcName, targetStepId, picked.path || null);
 }
 
+/**
+ * node id → asset id, built from the SOURCE project's MAIN tree.
+ *
+ * ⚠ V0.3.2.181 — the per-step baked tree (serializeModelTree) is deliberately
+ * LEAN and carries no assetId/sourceAssetId; only the main tree (stripNode =
+ * spread-everything) keeps them. Detection that walked the baked tree alone
+ * found nothing — no missing-models section, no Phase-1 warning — which is
+ * exactly the "was not able to import the objects" the user hit. Node ids are
+ * identical across both trees (stable ids), so a lookup bridges them.
+ * Untagged nodes inside a model subtree inherit the model's assetId.
+ */
+function _buildNodeAssetLookup(root) {
+  const map = new Map();
+  (function walk(n, inherited) {
+    if (!n) return;
+    const own = n.sourceAssetId || n.assetId || null;
+    const eff = own || inherited;
+    if (eff) map.set(n.id, eff);
+    const next = n.type === 'model' ? (n.assetId || inherited) : inherited;
+    for (const c of (n.children || [])) walk(c, next);
+  })(root, null);
+  return map;
+}
+
 /** Model asset ids a step's baked tree references (models + displaced meshes). */
-function _assetsReferencedByStep(step) {
+function _assetsReferencedByStep(step, lookup = null) {
   const out = new Set();
   (function walk(n) {
     if (!n) return;
-    if (n.assetId)       out.add(n.assetId);
-    if (n.sourceAssetId) out.add(n.sourceAssetId);
+    const aid = n.sourceAssetId || n.assetId || lookup?.get(n.id);
+    if (aid) out.add(aid);
     for (const c of (n.children || [])) walk(c);
   })(step?.snapshot?.tree);
   return out;
@@ -1986,15 +2010,15 @@ function _assetsReferencedByStep(step) {
  * are hidden throughout the selection can be skipped and nothing on screen
  * changes.
  */
-function _assetsVisibleInStep(step) {
+function _assetsVisibleInStep(step, lookup = null) {
   const out = new Set();
   const vis = step?.snapshot?.visibility || {};
   (function walk(n, parentVisible) {
     if (!n) return;
     const v = parentVisible && vis[n.id] !== false;
-    if (v) {
-      if (n.type === 'mesh' && n.sourceAssetId) out.add(n.sourceAssetId);
-      else if (n.type === 'model' && n.assetId && !(n.children || []).length) out.add(n.assetId);
+    if (v && n.type === 'mesh') {
+      const aid = n.sourceAssetId || lookup?.get(n.id);
+      if (aid) out.add(aid);
     }
     for (const c of (n.children || [])) walk(c, v);
   })(step?.snapshot?.tree, true);
@@ -2016,8 +2040,9 @@ function _showImportStepsDialog(project, srcSteps, srcName, targetStepId, srcPro
   const targetAssetIds = new Set((state.get('assets') || []).map(a => a.id));
   const srcAssetById   = new Map((project.assets?.items || []).map(a => [a.id, a]));
   const chapterName    = new Map((project.chapters?.items || []).map(c => [c.id, c.name]));
-  const perStepAssets  = new Map(srcSteps.map(s => [s.id, _assetsReferencedByStep(s)]));
-  const perStepVisible = new Map(srcSteps.map(s => [s.id, _assetsVisibleInStep(s)]));
+  const nodeAssetLookup = _buildNodeAssetLookup(project.tree?.root);   // baked trees are lean — bridge by id
+  const perStepAssets  = new Map(srcSteps.map(s => [s.id, _assetsReferencedByStep(s, nodeAssetLookup)]));
+  const perStepVisible = new Map(srcSteps.map(s => [s.id, _assetsVisibleInStep(s, nodeAssetLookup)]));
   // 📥 Phase 2 — per missing asset: where its file is (probed async below),
   // a Browse-picked File override, and whether the user wants it imported.
   const assetState = new Map();   // assetId → { resolvedPath, browsedFile, wanted:'auto'|'yes'|'no' }
