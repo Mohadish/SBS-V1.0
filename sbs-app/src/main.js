@@ -4739,6 +4739,30 @@ const _viewportSurfaceEl = document.getElementById('viewport-surface');
     if (state.get('workCamera')) state.setState({ workCamera: false });
   });
 })();
+
+// ── 📸 Camera-captured flash (V0.3.2.171) ──────────────────────────────────
+// One brief amber glow around the viewport when C records the current view
+// into the step camera — the visual receipt that the capture happened.
+const _camFlashEl = (() => {
+  const surf = _viewportSurfaceEl;
+  if (!surf) return null;
+  const el = document.createElement('div');
+  el.id = 'camera-capture-flash';
+  el.style.cssText = 'position:absolute;inset:0;pointer-events:none;z-index:56;opacity:0;'
+    + 'box-shadow:inset 0 0 0 6px #f59e0b, inset 0 0 60px 12px rgba(245,158,11,0.45);';
+  surf.appendChild(el);
+  return el;
+})();
+function _flashCameraCapture() {
+  if (!_camFlashEl) return;
+  _camFlashEl.style.transition = 'none';
+  _camFlashEl.style.opacity = '1';
+  // Two rAFs so the opacity:1 actually paints before the fade starts.
+  requestAnimationFrame(() => requestAnimationFrame(() => {
+    _camFlashEl.style.transition = 'opacity 0.5s ease-out';
+    _camFlashEl.style.opacity = '0';
+  }));
+}
 function _refreshSafeFrame() {
   if (!_safeFrameEl) return;
   const showFrame = state.get('export')?.showSafeFrame !== false;
@@ -4844,6 +4868,19 @@ window.addEventListener('keydown', async e => {
   if (keyMatches('overlayEdit', e) && !e.ctrlKey && !e.altKey && !e.metaKey) {
     e.preventDefault();
     toggleOverlayEditing();
+    return;
+  }
+  // C → 📷 save the CURRENT view as the step camera (V0.3.2.171). Same
+  // action as right-click "Update step camera": honours the step selection,
+  // always writes a FREE-camera binding, one undo entry. Works from the
+  // work camera too — that is the point: frame freely, press C, the framing
+  // becomes the step's recorded camera. Amber glow = capture receipt.
+  if (keyMatches('captureStepCamera', e) && !e.ctrlKey && !e.altKey && !e.metaKey) {
+    e.preventDefault();
+    const n = actions.updateStepCameraForSelection();
+    if (!n) { setStatus('No active step — nowhere to save the camera.', 'warn'); return; }
+    _flashCameraCapture();
+    setStatus(n > 1 ? `Camera saved for ${n} selected steps.` : 'Camera saved for step.');
     return;
   }
 

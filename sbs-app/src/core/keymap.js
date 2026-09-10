@@ -21,10 +21,11 @@
  */
 
 const DEFAULTS = {
-  workCamera:  'KeyW',    // 🎥 inspection mode — steps play without moving the camera
-  overlayEdit: 'KeyO',    // ✏ toggle overlay editing
-  globalMode:  'Space',   // 🌐 transform edits carry across steps
-  gizmoSpace:  'KeyL',    // ⤧ gizmo Local ↔ World
+  workCamera:        'KeyW',   // 🎥 inspection mode — steps play without moving the camera
+  overlayEdit:       'KeyO',   // ✏ toggle overlay editing
+  globalMode:        'Space',  // 🌐 transform edits carry across steps
+  gizmoSpace:        'KeyL',   // ⤧ gizmo Local ↔ World
+  captureStepCamera: 'KeyC',   // 📷 save the current view as the step's camera (free binding)
 };
 
 let _overrides = {};
