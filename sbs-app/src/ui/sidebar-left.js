@@ -3012,10 +3012,17 @@ function _renderCamerasTab() {
 
   const bindSel = el.querySelector('#active-step-cam-binding');
   bindSel?.addEventListener('change', e => {
-    actions.setStepCameraBinding(activeId, e.target.value || null);
-    setStatus(e.target.value
-      ? `Bound step to camera "${views.find(v => v.id === e.target.value)?.name}".`
-      : 'Step set to free camera.');
+    const tplId = e.target.value || null;
+    // 📷🔗 V0.3.2.176 — honour the step selection: with several steps
+    // selected the binding applies to all of them (one undo entry), same
+    // scoping as "Update step camera". No selection → the active step.
+    const { ids } = actions.cameraTargetSteps();
+    const targets = ids.length ? ids : [activeId];
+    if (targets.length > 1) actions.setStepCameraBindingMulti(targets, tplId);
+    else                    actions.setStepCameraBinding(targets[0], tplId);
+    const tplName = views.find(v => v.id === tplId)?.name;
+    const who = targets.length > 1 ? `${targets.length} selected steps` : 'step';
+    setStatus(tplId ? `Bound ${who} to camera "${tplName}".` : `Set ${who} to free camera.`);
   });
 
   const list = el.querySelector('#cam-list');

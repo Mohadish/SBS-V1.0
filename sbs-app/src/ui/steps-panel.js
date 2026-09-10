@@ -2285,7 +2285,21 @@ function _buildTransitionRow(step) {
   }
 
   wrap.querySelector('.tran-cam-binding').addEventListener('change', e => {
-    actions.setStepCameraBinding(stepId, e.target.value || null);
+    const tplId = e.target.value || null;
+    // 📷🔗 V0.3.2.176 — when this card is part of a multi-step selection,
+    // the change applies to EVERY selected step (one undo entry), matching
+    // "Update step camera"'s selection scoping. A card OUTSIDE the
+    // selection still changes only itself.
+    const sel = state.get('selectedStepIds');
+    if (sel instanceof Set && sel.size > 1 && sel.has(stepId)) {
+      const { ids } = actions.cameraTargetSteps();
+      actions.setStepCameraBindingMulti(ids, tplId);
+      setStatus(tplId
+        ? `Camera template applied to ${ids.length} selected steps.`
+        : `${ids.length} selected steps set to free camera.`);
+    } else {
+      actions.setStepCameraBinding(stepId, tplId);
+    }
   });
   wrap.querySelector('.tran-anim-preset')?.addEventListener('change', e => {
     const v = e.target.value;
