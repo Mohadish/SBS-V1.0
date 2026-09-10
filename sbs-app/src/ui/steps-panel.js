@@ -12,9 +12,10 @@ import * as actions from '../systems/actions.js';
 import * as overlay from '../systems/overlay.js';   // copy/paste whole overlay preset (#19)
 import { createChapter, generateId } from '../core/schema.js';
 import { cloneShareStrings } from '../core/clone.js';   // copy/paste steps without duplicating base64
-import { pickProjectFile, readProjectForImport, assetPathCandidates } from '../io/project.js';   // 📥 import steps from another project
+import { pickProjectFile, readProjectForImport, assetPathCandidates, applySpecFieldsToNodes } from '../io/project.js';   // 📥 import steps from another project
 import { loadModelFile } from '../io/importers.js';       // 📥 Phase 2 — import the missing CAD too
 import { materials } from '../systems/materials.js';       // 📥 Phase 2 — colour defaults for imported meshes
+import { applyNodeSourceTransformToObject3D } from '../core/transforms.js';   // 📥 Phase 2 — model source transform (×100 scale case)
 import { setStatus } from './status.js';
 import { showContextMenu } from './context-menu.js';
 import { exportTimelineVideo, exportTimelineSbsProc, downloadBlob, saveBlobToPath } from '../systems/video-export.js';
@@ -2268,7 +2269,12 @@ async function _doImportSteps(project, srcStepIds, srcName, targetStepId, assetP
       if (!file && plan.path) {
         const r = await window.sbsNative.readFile(plan.path, 'buffer');
         if (!r?.ok) throw new Error(r?.error || 'read failed');
-        file = new File([r.data], plan.path.split(/[\\/]/).pop() || plan.entry.name);
+        // Real on-disk mtime, not Date.now() (V0.3.2.182): the verify
+        // dialog compares saved lastModified against the disk within 2s —
+        // a synthetic timestamp made every reopen flag "wrong file".
+        const st = await window.sbsNative.statFile?.(plan.path).catch(() => null);
+        file = new File([r.data], plan.path.split(/[\\/]/).pop() || plan.entry.name,
+          st?.mtimeMs ? { lastModified: st.mtimeMs } : undefined);
       }
       if (!file) throw new Error('no file');
       // Heal the entry to where the file actually is NOW — the source
@@ -2277,6 +2283,34 @@ async function _doImportSteps(project, srcStepIds, srcName, targetStepId, assetP
       const entry = { ...plan.entry, ...(diskPath ? { originalPath: diskPath, relativePath: '' } : { relativePath: '' }) };
       const modelNode = await loadModelFile(file, { assetEntry: entry, skipColorExtraction: true });
       if (!modelNode) throw new Error('load returned nothing');
+
+      // 📐 V0.3.2.182 — carry the SOURCE project's per-node spec fields,
+      // above all the MODEL SOURCE TRANSFORM. The user's field test: the
+      // source model was scaled ×100 via Edit ▸ Model source transform;
+      // a bare loadModelFile ignores that, the geometry came in 100×
+      // too small and read as "invisible". Same two calls the project
+      // load loop makes after its id remap — spec fields onto the live
+      // nodes, then the source transform baked onto the fresh geometry.
+      // MUST run before injectModelIntoAllSteps, so the stamped
+      // transforms are the corrected ones.
+      const specNode = (function find(n) {
+        if (!n) return null;
+        if (n.id === modelNode.id) return n;
+        for (const c of (n.children || [])) { const r2 = find(c); if (r2) return r2; }
+        return null;
+      })(project.tree?.root);
+      if (specNode) {
+        const nodeById = state.get('nodeById');
+        try {
+          applySpecFieldsToNodes(specNode, nodeById);
+          const liveModel = nodeById?.get(modelNode.id);
+          if (liveModel?.type === 'model') {
+            const outer = steps.object3dById.get(liveModel.id) ?? liveModel.object3d;
+            applyNodeSourceTransformToObject3D(liveModel, outer, steps.object3dById);
+          }
+        } catch (err) { console.warn('[import] spec-field apply failed for', plan.entry.name, err); }
+      }
+
       steps.injectModelIntoAllSteps(modelNode, { visible: false });
       loadedModels.push({ entry: plan.entry, modelNode });
       (function walk(n) {
