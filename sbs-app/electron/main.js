@@ -329,6 +329,25 @@ function createWindow() {
     if (IS_DEV) mainWindow.webContents.openDevTools();
   });
 
+  // ── 🎹 Alt+<key> combos, reliably (V0.3.2.175) ────────────────────────────
+  // The renderer's window.keydown handler saw Alt+C erratically: on Windows,
+  // Alt+<letter> is a system key (WM_SYSKEYDOWN) that menu-bar mnemonic
+  // pre-arming eats — deterministically on the FIRST press, then repeats
+  // while Alt stays held eventually leak through. before-input-event sits
+  // UPSTREAM of both the page and the menu processing (per Electron docs,
+  // preventDefault here would block even menu shortcuts), so it sees every
+  // press including the first. Forward Alt combos to the renderer over IPC;
+  // the renderer's keymap decides whether the code means anything, so
+  // custom keybindings keep working without touching this process.
+  // control is forwarded (NOT filtered): the right Alt key on Hebrew/intl
+  // layouts is AltGr = Ctrl+Alt.
+  mainWindow.webContents.on('before-input-event', (_event, input) => {
+    if (input.type !== 'keyDown' || !input.alt || input.meta) return;
+    if (input.isAutoRepeat) return;
+    if (/^(Alt|Control|Shift|Meta)/.test(input.key || '')) return;   // bare modifier press
+    mainWindow?.webContents.send('key:altCombo', { code: input.code, control: !!input.control, shift: !!input.shift });
+  });
+
   mainWindow.on('closed', () => { mainWindow = null; });
 }
 

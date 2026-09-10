@@ -57,7 +57,7 @@ import { showMoveToFolderDialog, showAddToReplaceDialog, showReplaceModeDialog, 
 import { positionSafeFrameEl }    from './core/safe-frame.js';
 import { initOverlay, getStage as getOverlayStage, handleAnchorPick, cancelAnchoredArrowPlacement } from './systems/overlay.js';
 import { initOverlayToolbar, toggleOverlayEditing } from './ui/overlay-toolbar.js';
-import { matches as keyMatches, keyLabel, keyHint, setKeyOverrides } from './core/keymap.js';   // 🎹 central shortcut table
+import { matches as keyMatches, keyFor, keyLabel, keyHint, setKeyOverrides } from './core/keymap.js';   // 🎹 central shortcut table
 import { initHeaderLayer }     from './systems/header.js';
 import { initCables, resolveNodeWorldPosition, flattenCablesToCascade, resolveCableSnapshotAtStep, applyStepSnapshot as applyCableStepSnapshot } from './systems/cables.js';        // C1: cables wire step:applied → applyStepSnapshot; C5-B: pos resolver for gizmo target; V0.3.0.151 cascade flatten
 import * as pivotCenterPicker     from './systems/pivot-center-picker.js';   // 3-point center pivot tool — snap-based picker for cylinder-axis pivot placement
@@ -4815,6 +4815,22 @@ function _openCameraTemplatePicker() {
   const y = r ? r.top  + r.height / 3      : window.innerHeight / 3;
   showContextMenu(items, x, y);
 }
+
+// 🎹 V0.3.2.175 — Alt combos arrive over IPC from the main process's
+// before-input-event (see electron/main.js): upstream of the Windows
+// menu-bar mnemonic handling that ate the first page-level Alt+letter.
+// The keymap decides here what a code means, so rebinding C in Settings ▸
+// Keybindings keeps working; `control` rides along because right-Alt on
+// Hebrew/intl layouts is AltGr = Ctrl+Alt.
+window.sbsNative?.onMenu?.('key:altCombo', (combo) => {
+  if (!combo || combo.code !== keyFor('captureStepCamera')) return;
+  if (_isInputFocused()) return;
+  try { _openCameraTemplatePicker(); }
+  catch (err) {
+    console.error('[camera] template picker failed:', err);
+    setStatus(`Camera template picker failed: ${err.message}`, 'danger', 6000);
+  }
+});
 function _refreshSafeFrame() {
   if (!_safeFrameEl) return;
   const showFrame = state.get('export')?.showSafeFrame !== false;
@@ -4922,18 +4938,15 @@ window.addEventListener('keydown', async e => {
     toggleOverlayEditing();
     return;
   }
-  // Alt+C → 📷🔗 camera TEMPLATE picker (V0.3.2.172). The Alt combo is
-  // derived from the same binding — rebind C and the combo follows.
-  // ctrlKey is deliberately ALLOWED here (V0.3.2.173): the RIGHT Alt key on
-  // Hebrew/intl layouts is AltGr, which Windows delivers as Ctrl+Alt — a
-  // "!e.ctrlKey" guard made right-Alt+C silently dead.
+  // Alt+C (camera template picker) is NOT handled here any more —
+  // V0.3.2.175 moved it to the 'key:altCombo' IPC path (see the listener by
+  // _openCameraTemplatePicker): on Windows, Alt+<letter> is a system key the
+  // menu-bar mnemonic pre-arming eats, deterministically on the first press,
+  // so the page-level keydown was unreliable. before-input-event in the main
+  // process sees every press. Swallow the page copy when it DOES arrive so
+  // nothing else reacts to it.
   if (keyMatches('captureStepCamera', e) && e.altKey && !e.metaKey) {
     e.preventDefault();
-    try { _openCameraTemplatePicker(); }
-    catch (err) {
-      console.error('[camera] template picker failed:', err);
-      setStatus(`Camera template picker failed: ${err.message}`, 'danger', 6000);
-    }
     return;
   }
   // C → 📷 save the CURRENT view as the step camera (V0.3.2.171). Same
