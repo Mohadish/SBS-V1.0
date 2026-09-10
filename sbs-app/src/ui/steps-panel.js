@@ -16,6 +16,7 @@ import { pickProjectFile, readProjectForImport, assetPathCandidates, applySpecFi
 import { loadModelFile } from '../io/importers.js';       // 📥 Phase 2 — import the missing CAD too
 import { materials } from '../systems/materials.js';       // 📥 Phase 2 — colour defaults for imported meshes
 import { applyNodeSourceTransformToObject3D } from '../core/transforms.js';   // 📥 Phase 2 — model source transform (×100 scale case)
+import { regenerateHardwareAsset } from '../systems/hardware-actions.js';     // 📥 Phase 2 — procedural hardware, no file needed
 import { setStatus } from './status.js';
 import { showContextMenu } from './context-menu.js';
 import { exportTimelineVideo, exportTimelineSbsProc, downloadBlob, saveBlobToPath } from '../systems/video-export.js';
@@ -2011,16 +2012,35 @@ function _assetsReferencedByStep(step, lookup = null) {
  * are hidden throughout the selection can be skipped and nothing on screen
  * changes.
  */
+const _DRAWABLE_TYPES = new Set(['mesh', 'hardwareInstance', 'hardwareNut']);
+
 function _assetsVisibleInStep(step, lookup = null) {
   const out = new Set();
   const vis = step?.snapshot?.visibility || {};
   (function walk(n, parentVisible) {
     if (!n) return;
     const v = parentVisible && vis[n.id] !== false;
-    if (v && n.type === 'mesh') {
+    if (v && _DRAWABLE_TYPES.has(n.type)) {
       const aid = n.sourceAssetId || lookup?.get(n.id);
       if (aid) out.add(aid);
     }
+    for (const c of (n.children || [])) walk(c, v);
+  })(step?.snapshot?.tree, true);
+  return out;
+}
+
+/**
+ * 👁 V0.3.2.183 — node ids of drawables EFFECTIVELY VISIBLE in this step
+ * (inherited visibility walk of the baked tree). Drives the user's rule:
+ * geometry never visible in any selected step is NOT imported.
+ */
+function _visibleNodeIdsInStep(step) {
+  const out = new Set();
+  const vis = step?.snapshot?.visibility || {};
+  (function walk(n, parentVisible) {
+    if (!n) return;
+    const v = parentVisible && vis[n.id] !== false;
+    if (v && _DRAWABLE_TYPES.has(n.type)) out.add(n.id);
     for (const c of (n.children || [])) walk(c, v);
   })(step?.snapshot?.tree, true);
   return out;
@@ -2120,7 +2140,9 @@ function _showImportStepsDialog(project, srcSteps, srcName, targetStepId, srcPro
       assetState.set(aid, st);
       const needed = m.neededIn > 0;
       const wanted = _assetWanted(aid, needed);
-      const hasFile = !!(st.browsedFile || st.resolvedPath);
+      // ⚙ Procedural hardware assets (legacy screws) are GENERATED — no file.
+      const isProcedural = entry?.type === 'hardware' && entry?.hardware;
+      const hasFile = isProcedural || !!(st.browsedFile || st.resolvedPath);
       if (wanted && !hasFile) blocked = entry?.name || aid;
 
       const row = document.createElement('div');
@@ -2131,25 +2153,32 @@ function _showImportStepsDialog(project, srcSteps, srcName, targetStepId, srcPro
       cb.addEventListener('change', () => { st.wanted = cb.checked ? 'yes' : 'no'; refresh(); });
       const info = document.createElement('div');
       info.style.cssText = 'flex:1;min-width:0;';
-      const fileLabel = st.browsedFile ? st.browsedFile.name
+      const fileLabel = isProcedural ? null
+        : st.browsedFile ? st.browsedFile.name
         : st.resolvedPath ? st.resolvedPath.split(/[\\/]/).pop()
         : null;
+      const fileLine = isProcedural
+        ? `<div class="small" style="color:#22c55e;">⚙ procedural — generated, no file needed</div>`
+        : `<div class="small" style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap;${fileLabel ? 'color:#22c55e;' : 'color:#ef4444;'}">${fileLabel ? `✓ ${esc(fileLabel)}` : '✗ file not found — Browse…'}</div>`;
       info.innerHTML = `
         <div class="small" style="font-weight:600;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">${esc(entry?.name || aid)}
           <span class="small muted" style="font-weight:400;">— ${needed ? `visible in ${m.neededIn} selected step(s)` : 'hidden in every selected step'}</span></div>
-        <div class="small" style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap;${fileLabel ? 'color:#22c55e;' : 'color:#ef4444;'}">${fileLabel ? `✓ ${esc(fileLabel)}` : '✗ file not found — Browse…'}</div>`;
-      const browse = document.createElement('button');
-      browse.className = 'btn';
-      browse.textContent = 'Browse…';
-      browse.style.cssText = 'height:24px;padding:0 8px;flex-shrink:0;';
-      browse.addEventListener('click', () => {
-        const inp = document.createElement('input');
-        inp.type = 'file';
-        inp.accept = '.step,.stp,.iges,.igs,.brep,.brp,.obj,.stl,.gltf,.glb,.fbx,.sbsobj,.sbsmesh';
-        inp.onchange = () => { if (inp.files[0]) { st.browsedFile = inp.files[0]; st.wanted = 'yes'; refresh(); } };
-        inp.click();
-      });
-      row.append(cb, info, browse);
+        ${fileLine}`;
+      row.append(cb, info);
+      if (!isProcedural) {
+        const browse = document.createElement('button');
+        browse.className = 'btn';
+        browse.textContent = 'Browse…';
+        browse.style.cssText = 'height:24px;padding:0 8px;flex-shrink:0;';
+        browse.addEventListener('click', () => {
+          const inp = document.createElement('input');
+          inp.type = 'file';
+          inp.accept = '.step,.stp,.iges,.igs,.brep,.brp,.obj,.stl,.gltf,.glb,.fbx,.sbsobj,.sbsmesh';
+          inp.onchange = () => { if (inp.files[0]) { st.browsedFile = inp.files[0]; st.wanted = 'yes'; refresh(); } };
+          inp.click();
+        });
+        row.appendChild(browse);
+      }
       assetRows.appendChild(row);
       assetRowEls.set(aid, row);
     }
@@ -2231,8 +2260,10 @@ function _showImportStepsDialog(project, srcSteps, srcName, targetStepId, srcPro
       const st = assetState.get(aid);
       const cb = row.querySelector('input[type=checkbox]');
       if (!cb?.checked || !st) continue;
-      if (!st.browsedFile && !st.resolvedPath) continue;
-      assetPlan.push({ entry: srcAssetById.get(aid), file: st.browsedFile, path: st.resolvedPath });
+      const entry = srcAssetById.get(aid);
+      const isProcedural = entry?.type === 'hardware' && entry?.hardware;
+      if (!isProcedural && !st.browsedFile && !st.resolvedPath) continue;
+      assetPlan.push({ entry, file: st.browsedFile, path: st.resolvedPath });
     }
     dlg.close(); dlg.remove();
     _doImportSteps(project, ids, srcName, targetStepId, assetPlan);
@@ -2258,6 +2289,15 @@ async function _doImportSteps(project, srcStepIds, srcName, targetStepId, assetP
   // so every node id matches the imported snapshots exactly.
   // Model loading is not undoable (same as loading a model by hand); the
   // steps themselves still land in one undo entry below.
+  // 👁 V0.3.2.183 — the user's rule: geometry NEVER visible in any selected
+  // step is not imported. Union of effectively-visible drawable ids across
+  // the selection, computed on the SOURCE steps' baked trees.
+  const visibleIdsSelected = new Set();
+  for (const s of srcSteps) {
+    for (const id of _visibleNodeIdsInStep(s)) visibleIdsSelected.add(id);
+  }
+  const prunedIds = new Set();
+
   const loadedModels = [];
   const failedModels = [];
   const importedMeshIds = new Set();
@@ -2265,6 +2305,12 @@ async function _doImportSteps(project, srcStepIds, srcName, targetStepId, assetP
     if (!plan?.entry) continue;
     setStatus(`Importing model "${plan.entry.name}"…`, 'info', 0);
     try {
+      let modelNode = null;
+      if (plan.entry.type === 'hardware' && plan.entry.hardware) {
+        // ⚙ Procedural hardware — regenerated from its spec, no file.
+        modelNode = regenerateHardwareAsset({ ...plan.entry });
+        if (!modelNode) throw new Error('hardware regeneration failed');
+      } else {
       let file = plan.file;
       if (!file && plan.path) {
         const r = await window.sbsNative.readFile(plan.path, 'buffer');
@@ -2281,8 +2327,9 @@ async function _doImportSteps(project, srcStepIds, srcName, targetStepId, assetP
       // record's originalPath may point at the authoring machine.
       const diskPath = plan.path || '';
       const entry = { ...plan.entry, ...(diskPath ? { originalPath: diskPath, relativePath: '' } : { relativePath: '' }) };
-      const modelNode = await loadModelFile(file, { assetEntry: entry, skipColorExtraction: true });
+      modelNode = await loadModelFile(file, { assetEntry: entry, skipColorExtraction: true });
       if (!modelNode) throw new Error('load returned nothing');
+      }
 
       // 📐 V0.3.2.182 — carry the SOURCE project's per-node spec fields,
       // above all the MODEL SOURCE TRANSFORM. The user's field test: the
@@ -2311,6 +2358,31 @@ async function _doImportSteps(project, srcStepIds, srcName, targetStepId, assetP
         } catch (err) { console.warn('[import] spec-field apply failed for', plan.entry.name, err); }
       }
 
+      // 👁 PRUNE meshes never visible in the selection — remove the node
+      // from the live tree, the maps and the scene. Conservative disposal:
+      // geometry freed, materials left alone (they can be shared).
+      const toPrune = [];
+      (function collect(n) {
+        if (n.type === 'mesh' && !visibleIdsSelected.has(n.id)) toPrune.push(n);
+        for (const c of (n.children || [])) collect(c);
+      })(modelNode);
+      if (toPrune.length) {
+        const nodeById = state.get('nodeById');
+        for (const n of toPrune) {
+          prunedIds.add(n.id);
+          const obj = steps.object3dById.get(n.id) ?? n.object3d;
+          try { if (obj?.parent) obj.parent.remove(obj); obj?.geometry?.dispose?.(); } catch { /* best-effort */ }
+          steps.object3dById.delete(n.id);
+          nodeById?.delete(n.id);
+          try { materials.unregisterMesh?.(n.id); } catch { /* best-effort */ }
+        }
+        (function strip(n) {
+          n.children = (n.children || []).filter(c => !prunedIds.has(c.id));
+          for (const c of n.children) strip(c);
+        })(modelNode);
+        console.log(`[import] "${plan.entry.name}": kept ${toPrune.length ? 'partial' : 'all'} — pruned ${toPrune.length} mesh(es) never visible in the selected steps.`);
+      }
+
       steps.injectModelIntoAllSteps(modelNode, { visible: false });
       loadedModels.push({ entry: plan.entry, modelNode });
       (function walk(n) {
@@ -2323,22 +2395,83 @@ async function _doImportSteps(project, srcStepIds, srcName, targetStepId, assetP
     }
   }
 
-  // Colour DEFAULTS + base assignments for the imported meshes come from the
-  // source project (per-step overrides ride inside the snapshots anyway).
+  // 🎨 V0.3.2.183 — MATERIALS travel with the steps ("really important").
+  // Colour defaults + base assignments come from the source project for
+  // every mesh the imported steps touch: newly imported meshes get them
+  // outright; same-source meshes already in the target get FILLED only
+  // where the target has no entry of its own (never overwrite the user's
+  // colours). Per-step overrides ride inside the snapshots anyway, and
+  // every referenced preset is merged below.
+  const stepMeshIds = new Set();
+  for (const s of srcSteps) {
+    (function walk(n) {
+      if (!n) return;
+      if (n.type === 'mesh') stepMeshIds.add(n.id);
+      for (const c of (n.children || [])) walk(c);
+    })(s.snapshot?.tree);
+  }
   const colorWanted = new Set();
-  if (importedMeshIds.size) {
+  {
     const srcDefaults    = project.colors?.defaults    || {};
     const srcAssignments = project.colors?.assignments || {};
     for (const [meshId, presetId] of Object.entries(srcDefaults)) {
-      if (importedMeshIds.has(meshId)) { materials.meshDefaultColors[meshId] = presetId; colorWanted.add(presetId); }
+      if (importedMeshIds.has(meshId)
+          || (stepMeshIds.has(meshId) && materials.meshDefaultColors[meshId] == null)) {
+        materials.meshDefaultColors[meshId] = presetId;
+        colorWanted.add(presetId);
+      }
     }
     for (const [meshId, presetId] of Object.entries(srcAssignments)) {
-      if (importedMeshIds.has(meshId)) { materials.meshColorAssignments[meshId] = presetId; colorWanted.add(presetId); }
+      if (importedMeshIds.has(meshId)
+          || (stepMeshIds.has(meshId) && materials.meshColorAssignments[meshId] == null)) {
+        materials.meshColorAssignments[meshId] = presetId;
+        colorWanted.add(presetId);
+      }
     }
   }
 
+  // 🔌 V0.3.2.183 — CABLES. Identity is project-global (state.cables); the
+  // per-step display + arrangement data already ride inside the imported
+  // snapshots keyed by CABLE ID, so bringing the identity over lights them
+  // up. The user's rule: import a cable only when it is VISIBLE in at least
+  // one selected step (snapshot.cables display map). Anchors reference mesh
+  // ids — stable ids bind them; the 3-tier resolution tolerates the rest.
+  const tgtCables    = state.get('cables') || [];
+  const tgtCableIds  = new Set(tgtCables.map(c => c.id));
+  const cableWantIds = new Set();
+  for (const s of srcSteps) {
+    for (const [cid, disp] of Object.entries(s.snapshot?.cables || {})) {
+      if (disp?.visible) cableWantIds.add(cid);
+    }
+  }
+  const cableAdds = (project.cables?.items || [])
+    .filter(c => cableWantIds.has(c.id) && !tgtCableIds.has(c.id))
+    .map(c => ({ ...c }));
+
   // Clone with fresh ids + group remap (same rules as paste).
   const copies = _clonePastedBlock(srcSteps);
+
+  // 👁 Pruned meshes must also leave the imported step COPIES — a baked
+  // spec pointing at a node that will never exist again would make every
+  // activation hunt for it. Tree spec, visibility, transforms, materials.
+  if (prunedIds.size) {
+    const stripTree = (n) => {
+      if (!n) return null;
+      if (prunedIds.has(n.id)) return null;
+      return { ...n, children: (n.children || []).map(stripTree).filter(Boolean) };
+    };
+    for (const copy of copies) {
+      const snap = copy.snapshot;
+      if (!snap) continue;
+      copy.snapshot = {
+        ...snap,
+        tree:       stripTree(snap.tree),
+        visibility: Object.fromEntries(Object.entries(snap.visibility || {}).filter(([id]) => !prunedIds.has(id))),
+        transforms: Object.fromEntries(Object.entries(snap.transforms || {}).filter(([id]) => !prunedIds.has(id))),
+        materials:  Object.fromEntries(Object.entries(snap.materials  || {}).filter(([id]) => !prunedIds.has(id))),
+      };
+    }
+  }
 
   for (const copy of copies) {
     // Camera: resolve a template binding against the SOURCE project's
@@ -2384,14 +2517,16 @@ async function _doImportSteps(project, srcStepIds, srcName, targetStepId, assetP
   }
   const newAll = [...all.slice(0, tgtIdx + 1), ...copies, ...all.slice(tgtIdx + 1)];
 
-  actions.commitStateChange(`Import ${copies.length} step(s) from "${srcName}"`, ['steps', 'colorPresets'], () => {
+  actions.commitStateChange(`Import ${copies.length} step(s) from "${srcName}"`, ['steps', 'colorPresets', 'cables'], () => {
     state.setState({
       steps: newAll,
       ...(presetAdds.length ? { colorPresets: [...tgtPresets, ...presetAdds] } : {}),
+      ...(cableAdds.length  ? { cables: [...tgtCables, ...cableAdds] }         : {}),
     });
     steps.normalizeOrder();
     state.markDirty();
   });
+  if (cableAdds.length) state.emit('change:cables', state.get('cables'));   // cables-render rebuilds
 
   // 📥 Phase 2 — with models freshly loaded, settle the live scene through
   // the proven full-cycle (step 0 → active step → placeholder sweep): the
@@ -2404,6 +2539,8 @@ async function _doImportSteps(project, srcStepIds, srcName, targetStepId, assetP
 
   setStatus(`Imported ${copies.length} step(s) from "${srcName}"`
     + (loadedModels.length ? ` + ${loadedModels.length} model(s)` : '')
+    + (prunedIds.size ? ` (${prunedIds.size} never-visible mesh(es) skipped)` : '')
+    + (cableAdds.length ? ` + ${cableAdds.length} cable(s)` : '')
     + (presetAdds.length ? ` (+${presetAdds.length} colour preset(s))` : '')
     + (failedModels.length ? ` — ⚠ model import FAILED: ${failedModels.join(', ')}` : '')
     + '.', failedModels.length ? 'warn' : 'success', 9000);
