@@ -4921,9 +4921,16 @@ window.addEventListener('keydown', async e => {
   }
   // Alt+C → 📷🔗 camera TEMPLATE picker (V0.3.2.172). The Alt combo is
   // derived from the same binding — rebind C and the combo follows.
-  if (keyMatches('captureStepCamera', e) && e.altKey && !e.ctrlKey && !e.metaKey) {
+  // ctrlKey is deliberately ALLOWED here (V0.3.2.173): the RIGHT Alt key on
+  // Hebrew/intl layouts is AltGr, which Windows delivers as Ctrl+Alt — a
+  // "!e.ctrlKey" guard made right-Alt+C silently dead.
+  if (keyMatches('captureStepCamera', e) && e.altKey && !e.metaKey) {
     e.preventDefault();
-    _openCameraTemplatePicker();
+    try { _openCameraTemplatePicker(); }
+    catch (err) {
+      console.error('[camera] template picker failed:', err);
+      setStatus(`Camera template picker failed: ${err.message}`, 'danger', 6000);
+    }
     return;
   }
   // C → 📷 save the CURRENT view as the step camera (V0.3.2.171). Same
