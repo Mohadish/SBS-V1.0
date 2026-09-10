@@ -4785,6 +4785,20 @@ function _openCameraTemplatePicker() {
   const views = state.get('cameraViews') || [];
   const stepsLabel = targets.ids.length > 1 ? `${targets.ids.length} selected steps` : 'this step';
 
+  const saveAsNew = () => {
+    showInputDialog('New camera template name', `Camera ${views.length + 1}`, (name) => {
+      const id = actions.createCameraTemplate(name);
+      if (!id) return;
+      actions.setStepCameraBindingMulti(targets.ids, id);
+      _flashCameraCapture();
+      setStatus(`New template created and applied to ${stepsLabel}.`);
+    });
+  };
+
+  // No templates yet → the only possible action is "save as new", so skip
+  // the one-row menu and go straight to the name prompt (V0.3.2.174).
+  if (!views.length) { saveAsNew(); return; }
+
   const items = views.map(v => ({
     label: `📷🔗 ${v.name}`,
     action: () => {
@@ -4792,19 +4806,8 @@ function _openCameraTemplatePicker() {
       setStatus(`Camera template "${v.name}" applied to ${stepsLabel}.`);
     },
   }));
-  if (items.length) items.push({ separator: true });
-  items.push({
-    label: '➕ Save current view as new template…',
-    action: () => {
-      showInputDialog('New camera template name', `Camera ${views.length + 1}`, (name) => {
-        const id = actions.createCameraTemplate(name);
-        if (!id) return;
-        actions.setStepCameraBindingMulti(targets.ids, id);
-        _flashCameraCapture();
-        setStatus(`New template created and applied to ${stepsLabel}.`);
-      });
-    },
-  });
+  items.push({ separator: true });
+  items.push({ label: '➕ Save current view as new template…', action: saveAsNew });
 
   // Keyboard-invoked — anchor to the upper third of the viewport, not a cursor.
   const r = _viewportSurfaceEl?.getBoundingClientRect();
