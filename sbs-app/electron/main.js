@@ -342,7 +342,13 @@ function createWindow() {
   // control is forwarded (NOT filtered): the right Alt key on Hebrew/intl
   // layouts is AltGr = Ctrl+Alt.
   mainWindow.webContents.on('before-input-event', (_event, input) => {
-    if (input.type !== 'keyDown' || !input.alt || input.meta) return;
+    // ⚠ V0.3.2.177 — a PHYSICAL key press arrives here as 'rawKeyDown'
+    // (Chromium's NativeWebKeyboardEvent type), not 'keyDown'; a strict
+    // 'keyDown' compare silently dropped every real press — the .175 fix
+    // shipped dead. Accept both, case-insensitively; the renderer dedupes
+    // in case a platform ever delivers the pair for one press.
+    const t = String(input.type || '').toLowerCase();
+    if ((t !== 'keydown' && t !== 'rawkeydown') || !input.alt || input.meta) return;
     if (input.isAutoRepeat) return;
     if (/^(Alt|Control|Shift|Meta)/.test(input.key || '')) return;   // bare modifier press
     mainWindow?.webContents.send('key:altCombo', { code: input.code, control: !!input.control, shift: !!input.shift });

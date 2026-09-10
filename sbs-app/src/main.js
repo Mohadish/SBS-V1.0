@@ -4822,9 +4822,16 @@ function _openCameraTemplatePicker() {
 // The keymap decides here what a code means, so rebinding C in Settings ▸
 // Keybindings keeps working; `control` rides along because right-Alt on
 // Hebrew/intl layouts is AltGr = Ctrl+Alt.
+let _lastAltComboMs = 0;
 window.sbsNative?.onMenu?.('key:altCombo', (combo) => {
-  if (!combo || combo.code !== keyFor('captureStepCamera')) return;
+  if (!combo) return;
+  console.log('[keys] Alt combo received:', combo.code);   // diagnosis breadcrumb — cheap, rare
+  if (combo.code !== keyFor('captureStepCamera')) return;
   if (_isInputFocused()) return;
+  // Dedupe: some platforms could deliver rawKeyDown AND keyDown for one press.
+  const now = performance.now();
+  if (now - _lastAltComboMs < 150) return;
+  _lastAltComboMs = now;
   try { _openCameraTemplatePicker(); }
   catch (err) {
     console.error('[camera] template picker failed:', err);
