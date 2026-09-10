@@ -59,6 +59,18 @@ export function defaultKeyFor(action) {
   return DEFAULTS[action] || null;
 }
 
+/**
+ * Bracketed hint for menus and buttons: keyHint('captureStepCamera') → '[C]',
+ * keyHint('captureStepCamera', 'Alt') → '[Alt+C]'. Square brackets are the
+ * house style for advertised shortcuts (V0.3.2.172). Derived combos (the
+ * Alt+ template picker) follow the base key wherever it is rebound.
+ */
+export function keyHint(action, mod = '') {
+  const l = keyLabel(action);
+  if (!l) return '';
+  return mod ? `[${mod}+${l}]` : `[${l}]`;
+}
+
 /** Replace all overrides (the future Keybindings panel's write entry point). */
 export function setKeyOverrides(map) {
   _overrides = { ...(map || {}) };

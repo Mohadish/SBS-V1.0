@@ -57,7 +57,7 @@ import { showMoveToFolderDialog, showAddToReplaceDialog, showReplaceModeDialog, 
 import { positionSafeFrameEl }    from './core/safe-frame.js';
 import { initOverlay, getStage as getOverlayStage, handleAnchorPick, cancelAnchoredArrowPlacement } from './systems/overlay.js';
 import { initOverlayToolbar, toggleOverlayEditing } from './ui/overlay-toolbar.js';
-import { matches as keyMatches, keyLabel, setKeyOverrides } from './core/keymap.js';   // 🎹 central shortcut table
+import { matches as keyMatches, keyLabel, keyHint, setKeyOverrides } from './core/keymap.js';   // 🎹 central shortcut table
 import { initHeaderLayer }     from './systems/header.js';
 import { initCables, resolveNodeWorldPosition, flattenCablesToCascade, resolveCableSnapshotAtStep, applyStepSnapshot as applyCableStepSnapshot } from './systems/cables.js';        // C1: cables wire step:applied → applyStepSnapshot; C5-B: pos resolver for gizmo target; V0.3.0.151 cascade flatten
 import * as pivotCenterPicker     from './systems/pivot-center-picker.js';   // 3-point center pivot tool — snap-based picker for cylinder-axis pivot placement
@@ -4433,15 +4433,23 @@ canvas.addEventListener('contextmenu', e => {
   // one). The count is in the label so the scope is never a guess.
   const _camTargets = actions.cameraTargetSteps();
   items.push({
-    label: _camTargets.ids.length > 1
+    // 🎹 V0.3.2.172 — advertised bindings in square brackets, straight from
+    // the keymap so a rebind renames the menu row too.
+    label: (_camTargets.ids.length > 1
       ? `📷 Update step camera (${_camTargets.ids.length} selected steps)`
-      : '📷 Update step camera',
+      : '📷 Update step camera') + ` ${keyHint('captureStepCamera')}`,
     disabled: _camTargets.ids.length === 0,
     action: () => {
       const n = actions.updateStepCameraForSelection();
       if (!n) { setStatus('No active step.', 'warn'); return; }
+      _flashCameraCapture();
       setStatus(n > 1 ? `Camera saved for ${n} selected steps.` : 'Camera saved for step.');
     },
+  });
+  items.push({
+    label: `📷🔗 Apply camera template… ${keyHint('captureStepCamera', 'Alt')}`,
+    disabled: _camTargets.ids.length === 0,
+    action: () => _openCameraTemplatePicker(),
   });
   items.push({
     label: _viewportActiveStepTplName
@@ -4707,7 +4715,7 @@ const _viewportSurfaceEl = document.getElementById('viewport-surface');
 
   const syncBtn = (on) => {
     const k = keyLabel('workCamera');
-    btn.textContent = on ? `🎥 Work camera ON (${k})` : `🎥 Work camera (${k})`;
+    btn.textContent = on ? `🎥 Work camera ON ${keyHint('workCamera')}` : `🎥 Work camera ${keyHint('workCamera')}`;
     btn.title = on
       ? 'Inspection mode is ON — steps play without moving the camera. Never rendered. Turning it off keeps the current view; the camera follows again on the next step.'
       : 'Inspection mode — orbit freely while stepping through; the camera stops following steps. Never rendered.';
@@ -4762,6 +4770,47 @@ function _flashCameraCapture() {
     _camFlashEl.style.transition = 'opacity 0.5s ease-out';
     _camFlashEl.style.opacity = '0';
   }));
+}
+
+// ── 📷🔗 Camera template picker (V0.3.2.172) ────────────────────────────────
+// Alt + the Save-step-camera key (the combo follows the binding: rebind C to
+// F and this becomes Alt+F). A popup lists every saved camera template —
+// picking one binds it to all selected steps (setStepCameraBindingMulti:
+// one undo entry, active step re-applies immediately). The ➕ entry saves
+// the CURRENT view as a new template (name prompt) and binds it the same
+// way — frame freely, Alt+C, name it, every selected step now shares it.
+function _openCameraTemplatePicker() {
+  const targets = actions.cameraTargetSteps();
+  if (!targets.ids.length) { setStatus('No active step — nothing to bind a camera to.', 'warn'); return; }
+  const views = state.get('cameraViews') || [];
+  const stepsLabel = targets.ids.length > 1 ? `${targets.ids.length} selected steps` : 'this step';
+
+  const items = views.map(v => ({
+    label: `📷🔗 ${v.name}`,
+    action: () => {
+      actions.setStepCameraBindingMulti(targets.ids, v.id);
+      setStatus(`Camera template "${v.name}" applied to ${stepsLabel}.`);
+    },
+  }));
+  if (items.length) items.push({ separator: true });
+  items.push({
+    label: '➕ Save current view as new template…',
+    action: () => {
+      showInputDialog('New camera template name', `Camera ${views.length + 1}`, (name) => {
+        const id = actions.createCameraTemplate(name);
+        if (!id) return;
+        actions.setStepCameraBindingMulti(targets.ids, id);
+        _flashCameraCapture();
+        setStatus(`New template created and applied to ${stepsLabel}.`);
+      });
+    },
+  });
+
+  // Keyboard-invoked — anchor to the upper third of the viewport, not a cursor.
+  const r = _viewportSurfaceEl?.getBoundingClientRect();
+  const x = r ? r.left + r.width / 2 - 100 : window.innerWidth  / 2 - 100;
+  const y = r ? r.top  + r.height / 3      : window.innerHeight / 3;
+  showContextMenu(items, x, y);
 }
 function _refreshSafeFrame() {
   if (!_safeFrameEl) return;
@@ -4868,6 +4917,13 @@ window.addEventListener('keydown', async e => {
   if (keyMatches('overlayEdit', e) && !e.ctrlKey && !e.altKey && !e.metaKey) {
     e.preventDefault();
     toggleOverlayEditing();
+    return;
+  }
+  // Alt+C → 📷🔗 camera TEMPLATE picker (V0.3.2.172). The Alt combo is
+  // derived from the same binding — rebind C and the combo follows.
+  if (keyMatches('captureStepCamera', e) && e.altKey && !e.ctrlKey && !e.metaKey) {
+    e.preventDefault();
+    _openCameraTemplatePicker();
     return;
   }
   // C → 📷 save the CURRENT view as the step camera (V0.3.2.171). Same
