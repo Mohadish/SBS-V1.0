@@ -1930,6 +1930,24 @@ export function applySpecFieldsToNodes(specNode, nodeById, parentSpec = null) {
  * @param {string}      [filePath]  absolute path (Electron) for relative-path resolution
  * @returns {Promise<{project:object, assets:Array<{assetEntry:object, resolvedPath:string|null}>}>}
  */
+/**
+ * 📥 V0.3.2.179 — read + parse a .sbsproj WITHOUT touching the live state.
+ * The step-import flow opens a SECOND project read-only while the current
+ * one stays loaded; loadProject cannot be used for that (it applies to
+ * state). Same parse pipeline: gzip auto-detect, streaming for huge files,
+ * legacy migrations included.
+ */
+export async function readProjectForImport(fileOrText) {
+  if (typeof fileOrText === 'string') return parseProjectFile(fileOrText);
+  const fileBytes = new Uint8Array(await fileOrText.arrayBuffer());
+  const raw = _isGzipBytes(fileBytes) ? await _gunzipToBytes(fileBytes) : fileBytes;
+  if (raw.length > 400_000_000) {
+    console.log(`[import] large project (${(raw.length / 1e6).toFixed(0)} MB JSON) — streaming parse`);
+    return _migrateParsedProject(_parseProjectBytesStreaming(raw));
+  }
+  return parseProjectFile(new TextDecoder().decode(raw));
+}
+
 export async function loadProject(fileOrText, filePath = null) {
   // A File/Blob may be gzipped (new) or plain JSON (legacy) — read its bytes and
   // auto-detect. A raw string is already decoded text. Projects whose JSON

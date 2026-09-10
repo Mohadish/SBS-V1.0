@@ -12,6 +12,7 @@ import * as actions from '../systems/actions.js';
 import * as overlay from '../systems/overlay.js';   // copy/paste whole overlay preset (#19)
 import { createChapter, generateId } from '../core/schema.js';
 import { cloneShareStrings } from '../core/clone.js';   // copy/paste steps without duplicating base64
+import { pickProjectFile, readProjectForImport } from '../io/project.js';   // 📥 import steps from another project
 import { setStatus } from './status.js';
 import { showContextMenu } from './context-menu.js';
 import { exportTimelineVideo, exportTimelineSbsProc, downloadBlob, saveBlobToPath } from '../systems/video-export.js';
@@ -1696,6 +1697,9 @@ function _showStepContextMenu(step, x, y) {
   if (_clipboard?.kind === 'steps') {
     items.push({ label: `📥 Paste under (${_clipboard.data.length})`, action: () => _pasteStepsUnder(step.id) });
   }
+  // 📥 V0.3.2.179 — bring steps in from ANOTHER .sbsproj (read-only pick →
+  // step picker dialog → inserted after this step).
+  items.push({ label: '📦 Import steps from another project…', action: () => _importStepsFlow(step.id) });
   // Paste overlay preset (#19). Empty target → single item (no choice needed);
   // non-empty target → offer Replace vs Add-on-top (your "ask over or replace").
   const _clipN = overlay.overlayClipCount();
@@ -1911,6 +1915,230 @@ function _cloneStep(step) {
   const copy = cloneShareStrings(step);   // shares the big base64 strings; structure is independent
   copy.id = generateId('step');
   return copy;
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+//  📥 IMPORT STEPS FROM ANOTHER PROJECT (V0.3.2.179, Phase 1)
+// ═══════════════════════════════════════════════════════════════════════════
+//
+// Why this is possible at all: a step is a self-contained snapshot, and tree
+// node ids are derived DETERMINISTICALLY from the asset (stable-id remap at
+// import). Two projects built from the same CAD files therefore agree on
+// every node id, and an imported step simply finds its parts. Steps that
+// reference a model the target does not have are flagged in the picker
+// (Phase 2 will offer to import the CAD along with them).
+//
+// What travels with a step, and how it is adapted:
+//   snapshot        as-is (ids match by stable-id design)
+//   overlay         as-is (attrs are baked into the JSON; a dangling style /
+//                   const / link id self-heals to plain attrs on load)
+//   colour presets  presets referenced by the step and absent in the target
+//                   are copied over (same id → assignments just work)
+//   camera          a template binding is RESOLVED against the source
+//                   project's templates and imported as a free camera
+//   narration       text + voice always; inline audio travels, disk-cached
+//                   audio (dataFile) is dropped — it lives in the SOURCE
+//                   project's folder — and re-synthesizes here from text
+//   transition      kept; animPresetId nulled when the target has no such
+//                   preset (falls back to the project default)
+//   grouping        same rules as paste (_clonePastedBlock); chapter cleared,
+//                   then adopted from the insertion target like paste-under
+//   step ids        regenerated (collision-proof)
+
+async function _importStepsFlow(targetStepId) {
+  let picked;
+  try { picked = await pickProjectFile(); } catch (err) {
+    setStatus(`Could not open project: ${err.message}`, 'danger', 6000);
+    return;
+  }
+  if (!picked) return;
+  const file = picked.file || picked;
+  const srcName = file?.name || 'project';
+  setStatus(`Reading "${srcName}"…`, 'info', 0);
+  let project;
+  try { project = await readProjectForImport(file); }
+  catch (err) { setStatus(`Could not read "${srcName}": ${err.message}`, 'danger', 8000); return; }
+  const srcSteps = (project.steps?.items || []).filter(s => !s.isBaseStep);
+  if (!srcSteps.length) { setStatus(`"${srcName}" has no steps to import.`, 'warn', 5000); return; }
+  setStatus(`"${srcName}" — ${srcSteps.length} step(s).`);
+  _showImportStepsDialog(project, srcSteps, srcName, targetStepId);
+}
+
+/** Model asset ids a step's baked tree references (models + displaced meshes). */
+function _assetsReferencedByStep(step) {
+  const out = new Set();
+  (function walk(n) {
+    if (!n) return;
+    if (n.assetId)       out.add(n.assetId);
+    if (n.sourceAssetId) out.add(n.sourceAssetId);
+    for (const c of (n.children || [])) walk(c);
+  })(step?.snapshot?.tree);
+  return out;
+}
+
+function _showImportStepsDialog(project, srcSteps, srcName, targetStepId) {
+  const targetAssetIds = new Set((state.get('assets') || []).map(a => a.id));
+  const srcAssetById   = new Map((project.assets?.items || []).map(a => [a.id, a]));
+  const chapterName    = new Map((project.chapters?.items || []).map(c => [c.id, c.name]));
+  const perStepAssets  = new Map(srcSteps.map(s => [s.id, _assetsReferencedByStep(s)]));
+
+  const dlg = document.createElement('dialog');
+  dlg.className = 'sbs-dialog';
+  dlg.style.cssText = 'width:min(560px,92vw);max-height:82vh;background:var(--panel);border:1px solid var(--line);border-radius:10px;color:var(--text);padding:0;';
+  const esc = (s) => String(s ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[c]);
+
+  dlg.innerHTML = `
+    <div style="display:flex;flex-direction:column;max-height:82vh;">
+      <div style="padding:12px 16px;border-bottom:1px solid var(--line);">
+        <strong style="font-size:14px;">📥 Import steps from "${esc(srcName)}"</strong>
+        <div class="small muted" style="margin-top:2px;">Selected steps are inserted after the step you right-clicked. One undo entry.</div>
+      </div>
+      <div style="padding:8px 16px;display:flex;gap:8px;align-items:center;">
+        <button class="btn" id="imp-all">Select all</button>
+        <button class="btn" id="imp-none">Select none</button>
+        <span class="small muted" id="imp-count" style="margin-left:auto;"></span>
+      </div>
+      <div id="imp-warn" class="small" style="display:none;color:#f59e0b;padding:0 16px 6px;"></div>
+      <div id="imp-list" style="flex:1;overflow-y:auto;padding:0 12px 8px;display:flex;flex-direction:column;gap:4px;"></div>
+      <div style="padding:10px 16px;border-top:1px solid var(--line);display:flex;gap:8px;justify-content:flex-end;">
+        <button class="btn" id="imp-cancel">Cancel</button>
+        <button class="btn" id="imp-go" disabled>Import</button>
+      </div>
+    </div>`;
+
+  const list   = dlg.querySelector('#imp-list');
+  const warnEl = dlg.querySelector('#imp-warn');
+  const goBtn  = dlg.querySelector('#imp-go');
+  const cntEl  = dlg.querySelector('#imp-count');
+  const checked = new Set();
+
+  const refresh = () => {
+    cntEl.textContent = `${checked.size} of ${srcSteps.length} selected`;
+    goBtn.disabled = checked.size === 0;
+    goBtn.textContent = checked.size ? `Import ${checked.size} step(s)` : 'Import';
+    // Missing-model warning for the CURRENT selection (Phase 2 will import them).
+    const missing = new Set();
+    for (const id of checked) {
+      for (const aid of (perStepAssets.get(id) || [])) {
+        if (!targetAssetIds.has(aid)) missing.add(srcAssetById.get(aid)?.name || aid);
+      }
+    }
+    if (missing.size) {
+      warnEl.style.display = 'block';
+      warnEl.textContent = `⚠ These steps use model(s) not in this project: ${[...missing].join(', ')} — those parts will be missing until the model is loaded here.`;
+    } else warnEl.style.display = 'none';
+  };
+
+  for (const s of srcSteps) {
+    const row = document.createElement('label');
+    row.style.cssText = 'display:flex;align-items:center;gap:10px;padding:4px 6px;border-radius:6px;cursor:pointer;';
+    row.addEventListener('mouseenter', () => row.style.background = 'rgba(127,127,127,0.10)');
+    row.addEventListener('mouseleave', () => row.style.background = '');
+    const cb = document.createElement('input');
+    cb.type = 'checkbox';
+    cb.addEventListener('change', () => { cb.checked ? checked.add(s.id) : checked.delete(s.id); refresh(); });
+    const thumb = document.createElement('div');
+    thumb.style.cssText = 'width:60px;height:40px;flex-shrink:0;border-radius:4px;background:rgba(127,127,127,0.15);overflow:hidden;display:flex;align-items:center;justify-content:center;';
+    if (s.thumbnail) {
+      const img = document.createElement('img');
+      img.src = s.thumbnail;
+      img.style.cssText = 'width:100%;height:100%;object-fit:cover;';
+      thumb.appendChild(img);
+    } else thumb.textContent = '·';
+    const info = document.createElement('div');
+    info.style.cssText = 'flex:1;min-width:0;';
+    const ch = s.chapterId ? chapterName.get(s.chapterId) : null;
+    info.innerHTML = `
+      <div class="small" style="font-weight:600;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">${esc(s.name || 'Step')}${s.groupHead ? ' ⊞' : s.groupId ? ' ·sub' : ''}</div>
+      <div class="small muted" style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">${ch ? esc(ch) + ' · ' : ''}${s.voiceText ? '🎙 ' : ''}${s.hidden ? '🚫 hidden' : ''}</div>`;
+    row.append(cb, thumb, info);
+    list.appendChild(row);
+    row._cb = cb; row._id = s.id;
+  }
+
+  dlg.querySelector('#imp-all').addEventListener('click', () => {
+    for (const row of list.children) { row._cb.checked = true; checked.add(row._id); }
+    refresh();
+  });
+  dlg.querySelector('#imp-none').addEventListener('click', () => {
+    for (const row of list.children) row._cb.checked = false;
+    checked.clear(); refresh();
+  });
+  dlg.querySelector('#imp-cancel').addEventListener('click', () => { dlg.close(); dlg.remove(); });
+  goBtn.addEventListener('click', () => {
+    const ids = srcSteps.filter(s => checked.has(s.id)).map(s => s.id);   // source order
+    dlg.close(); dlg.remove();
+    _doImportSteps(project, ids, srcName, targetStepId);
+  });
+
+  refresh();
+  document.body.appendChild(dlg);
+  dlg.showModal();
+}
+
+function _doImportSteps(project, srcStepIds, srcName, targetStepId) {
+  const srcSteps  = (project.steps?.items || []).filter(s => srcStepIds.includes(s.id));
+  if (!srcSteps.length) return;
+  const srcCams   = project.cameras?.items || [];
+  const tgtPresetIds = new Set((state.get('animationPresets') || []).map(p => p.id));
+
+  // Clone with fresh ids + group remap (same rules as paste).
+  const copies = _clonePastedBlock(srcSteps);
+
+  for (const copy of copies) {
+    // Camera: resolve a template binding against the SOURCE project's
+    // templates and land as a free camera — target has no such template.
+    if (copy.cameraBinding?.mode === 'template') {
+      const tpl = srcCams.find(v => v.id === copy.cameraBinding.templateId);
+      if (tpl) {
+        const cam = { ...tpl };
+        delete cam.id; delete cam.name;
+        copy.snapshot = { ...(copy.snapshot || {}), camera: cam };
+      }
+    }
+    copy.cameraBinding = { mode: 'free', templateId: null };
+    // Narration: dataFile points into the SOURCE project's audio cache —
+    // drop it so playback re-synthesizes from text here. Inline audio stays.
+    if (copy.narration?.dataFile) delete copy.narration.dataFile;
+    // Transition preset must exist here, else fall back to project default.
+    if (copy.transition?.animPresetId && !tgtPresetIds.has(copy.transition.animPresetId)) {
+      copy.transition = { ...copy.transition, animPresetId: null };
+    }
+  }
+
+  // Colour presets referenced by the imported steps and absent here — copy
+  // them over (same id, so the per-mesh assignments resolve unchanged).
+  const tgtPresets   = state.get('colorPresets') || [];
+  const tgtPresetSet = new Set(tgtPresets.map(p => p.id));
+  const srcPresets   = project.colors?.items || [];
+  const wanted       = new Set();
+  for (const s of srcSteps) {
+    for (const pid of Object.values(s.snapshot?.materials || {})) wanted.add(pid);
+  }
+  const presetAdds = srcPresets.filter(p => wanted.has(p.id) && !tgtPresetSet.has(p.id));
+
+  // Insert after the right-clicked step — same landing rules as paste-under.
+  const all    = state.get('steps') || [];
+  let   tgtIdx = all.findIndex(s => s.id === targetStepId);
+  if (tgtIdx < 0) tgtIdx = all.length - 1;
+  const target = all[tgtIdx];
+  const joinGroupId = target?.groupHead ? target.id : (target?.groupId || null);
+  for (const copy of copies) {
+    copy.chapterId = target?.chapterId ?? null;
+    if (joinGroupId) { copy.groupId = joinGroupId; copy.groupHead = false; copy.groupLocked = false; }
+  }
+  const newAll = [...all.slice(0, tgtIdx + 1), ...copies, ...all.slice(tgtIdx + 1)];
+
+  actions.commitStateChange(`Import ${copies.length} step(s) from "${srcName}"`, ['steps', 'colorPresets'], () => {
+    state.setState({
+      steps: newAll,
+      ...(presetAdds.length ? { colorPresets: [...tgtPresets, ...presetAdds] } : {}),
+    });
+    steps.normalizeOrder();
+    state.markDirty();
+  });
+  setStatus(`Imported ${copies.length} step(s) from "${srcName}"`
+    + (presetAdds.length ? ` (+${presetAdds.length} colour preset(s))` : '') + '.', 'success', 7000);
 }
 
 /** Clone a BLOCK of steps for pasting, remapping group identity (V0.3.2.44).
