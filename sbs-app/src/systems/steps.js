@@ -2673,8 +2673,14 @@ class StepManager {
    *   • snapshot.transforms — all transform nodes get their current transforms
    *
    * @param {TreeNode} modelNode  the live tree node returned by loadModelFile
+   * @param {object}   [opts]
+   * @param {boolean}  [opts.visible=true]  visibility stamped into every
+   *        step's snapshot. 📥 V0.3.2.180: the step-import flow loads a model
+   *        that belongs ONLY to the incoming steps — in the project's
+   *        pre-existing steps it must stay hidden, so import passes false
+   *        (the imported steps carry their own baked visibility).
    */
-  injectModelIntoAllSteps(modelNode) {
+  injectModelIntoAllSteps(modelNode, { visible = true } = {}) {
     if (!modelNode) return;
     const stepsArr = state.get('steps') || [];
     if (!stepsArr.length) return;
@@ -2686,7 +2692,7 @@ class StepManager {
     const modelVisibility = {};
     const modelTransforms = {};
     flatten(modelNode).forEach(node => {
-      modelVisibility[node.id] = node.localVisible !== false;
+      modelVisibility[node.id] = visible ? (node.localVisible !== false) : false;
       if (isTransformNode(node)) {
         modelTransforms[node.id] = captureTransformSnapshot(node);
       }

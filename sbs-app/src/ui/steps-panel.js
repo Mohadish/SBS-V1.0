@@ -12,7 +12,9 @@ import * as actions from '../systems/actions.js';
 import * as overlay from '../systems/overlay.js';   // copy/paste whole overlay preset (#19)
 import { createChapter, generateId } from '../core/schema.js';
 import { cloneShareStrings } from '../core/clone.js';   // copy/paste steps without duplicating base64
-import { pickProjectFile, readProjectForImport } from '../io/project.js';   // 📥 import steps from another project
+import { pickProjectFile, readProjectForImport, assetPathCandidates } from '../io/project.js';   // 📥 import steps from another project
+import { loadModelFile } from '../io/importers.js';       // 📥 Phase 2 — import the missing CAD too
+import { materials } from '../systems/materials.js';       // 📥 Phase 2 — colour defaults for imported meshes
 import { setStatus } from './status.js';
 import { showContextMenu } from './context-menu.js';
 import { exportTimelineVideo, exportTimelineSbsProc, downloadBlob, saveBlobToPath } from '../systems/video-export.js';
@@ -1961,7 +1963,7 @@ async function _importStepsFlow(targetStepId) {
   const srcSteps = (project.steps?.items || []).filter(s => !s.isBaseStep);
   if (!srcSteps.length) { setStatus(`"${srcName}" has no steps to import.`, 'warn', 5000); return; }
   setStatus(`"${srcName}" — ${srcSteps.length} step(s).`);
-  _showImportStepsDialog(project, srcSteps, srcName, targetStepId);
+  _showImportStepsDialog(project, srcSteps, srcName, targetStepId, picked.path || null);
 }
 
 /** Model asset ids a step's baked tree references (models + displaced meshes). */
@@ -1976,11 +1978,50 @@ function _assetsReferencedByStep(step) {
   return out;
 }
 
-function _showImportStepsDialog(project, srcSteps, srcName, targetStepId) {
+/**
+ * 📥 Phase 2 (V0.3.2.180) — asset ids with at least one EFFECTIVELY VISIBLE
+ * mesh in this step: the step's baked tree walked with inherited visibility
+ * from snapshot.visibility (a hidden folder hides its whole subtree). This
+ * is what "the step actually NEEDS this model" means — a model whose parts
+ * are hidden throughout the selection can be skipped and nothing on screen
+ * changes.
+ */
+function _assetsVisibleInStep(step) {
+  const out = new Set();
+  const vis = step?.snapshot?.visibility || {};
+  (function walk(n, parentVisible) {
+    if (!n) return;
+    const v = parentVisible && vis[n.id] !== false;
+    if (v) {
+      if (n.type === 'mesh' && n.sourceAssetId) out.add(n.sourceAssetId);
+      else if (n.type === 'model' && n.assetId && !(n.children || []).length) out.add(n.assetId);
+    }
+    for (const c of (n.children || [])) walk(c, v);
+  })(step?.snapshot?.tree, true);
+  return out;
+}
+
+/** First existing candidate path for a source asset, probed via Electron. */
+async function _resolveSourceAssetFile(entry, srcProjectPath) {
+  const cands = assetPathCandidates(entry, srcProjectPath || null);
+  const exists = window.sbsNative?.fileExists;
+  if (typeof exists !== 'function') return null;
+  for (const p of cands) {
+    try { if (await exists(p)) return p; } catch { /* try next */ }
+  }
+  return null;
+}
+
+function _showImportStepsDialog(project, srcSteps, srcName, targetStepId, srcProjectPath = null) {
   const targetAssetIds = new Set((state.get('assets') || []).map(a => a.id));
   const srcAssetById   = new Map((project.assets?.items || []).map(a => [a.id, a]));
   const chapterName    = new Map((project.chapters?.items || []).map(c => [c.id, c.name]));
   const perStepAssets  = new Map(srcSteps.map(s => [s.id, _assetsReferencedByStep(s)]));
+  const perStepVisible = new Map(srcSteps.map(s => [s.id, _assetsVisibleInStep(s)]));
+  // 📥 Phase 2 — per missing asset: where its file is (probed async below),
+  // a Browse-picked File override, and whether the user wants it imported.
+  const assetState = new Map();   // assetId → { resolvedPath, browsedFile, wanted:'auto'|'yes'|'no' }
+  const assetRowEls = new Map();  // assetId → row element (rebuilt on refresh)
 
   const dlg = document.createElement('dialog');
   dlg.className = 'sbs-dialog';
@@ -1999,6 +2040,11 @@ function _showImportStepsDialog(project, srcSteps, srcName, targetStepId) {
         <span class="small muted" id="imp-count" style="margin-left:auto;"></span>
       </div>
       <div id="imp-warn" class="small" style="display:none;color:#f59e0b;padding:0 16px 6px;"></div>
+      <div id="imp-assets" style="display:none;padding:4px 16px 8px;border-bottom:1px solid var(--line);">
+        <div class="small" style="font-weight:600;margin-bottom:4px;">Missing models used by the selected steps</div>
+        <div class="small muted" style="margin-bottom:6px;">Checked models are imported with the steps. Models whose parts are hidden in every selected step are unchecked — skipping them changes nothing on screen.</div>
+        <div id="imp-asset-rows" style="display:flex;flex-direction:column;gap:4px;"></div>
+      </div>
       <div id="imp-list" style="flex:1;overflow-y:auto;padding:0 12px 8px;display:flex;flex-direction:column;gap:4px;"></div>
       <div style="padding:10px 16px;border-top:1px solid var(--line);display:flex;gap:8px;justify-content:flex-end;">
         <button class="btn" id="imp-cancel">Cancel</button>
@@ -2006,28 +2052,113 @@ function _showImportStepsDialog(project, srcSteps, srcName, targetStepId) {
       </div>
     </div>`;
 
-  const list   = dlg.querySelector('#imp-list');
-  const warnEl = dlg.querySelector('#imp-warn');
-  const goBtn  = dlg.querySelector('#imp-go');
-  const cntEl  = dlg.querySelector('#imp-count');
+  const list    = dlg.querySelector('#imp-list');
+  const warnEl  = dlg.querySelector('#imp-warn');
+  const goBtn   = dlg.querySelector('#imp-go');
+  const cntEl   = dlg.querySelector('#imp-count');
+  const assetsBox  = dlg.querySelector('#imp-assets');
+  const assetRows  = dlg.querySelector('#imp-asset-rows');
   const checked = new Set();
+
+  const _assetWanted = (aid, needed) => {
+    const st = assetState.get(aid);
+    if (st?.wanted === 'yes') return true;
+    if (st?.wanted === 'no')  return false;
+    return needed;   // 'auto' → the visibility analysis decides
+  };
 
   const refresh = () => {
     cntEl.textContent = `${checked.size} of ${srcSteps.length} selected`;
-    goBtn.disabled = checked.size === 0;
     goBtn.textContent = checked.size ? `Import ${checked.size} step(s)` : 'Import';
-    // Missing-model warning for the CURRENT selection (Phase 2 will import them).
-    const missing = new Set();
+
+    // Missing models across the CURRENT step selection, with the visibility
+    // verdict: "needed" = at least one of its parts is effectively visible
+    // in at least one selected step.
+    const missing = new Map();   // assetId → { neededIn: count }
     for (const id of checked) {
+      const visSet = perStepVisible.get(id) || new Set();
       for (const aid of (perStepAssets.get(id) || [])) {
-        if (!targetAssetIds.has(aid)) missing.add(srcAssetById.get(aid)?.name || aid);
+        if (targetAssetIds.has(aid)) continue;
+        const m = missing.get(aid) || { neededIn: 0 };
+        if (visSet.has(aid)) m.neededIn++;
+        missing.set(aid, m);
       }
     }
-    if (missing.size) {
+
+    assetRows.innerHTML = '';
+    assetRowEls.clear();
+    let blocked = null;
+    for (const [aid, m] of missing) {
+      const entry  = srcAssetById.get(aid);
+      const st     = assetState.get(aid) || { resolvedPath: null, browsedFile: null, wanted: 'auto' };
+      assetState.set(aid, st);
+      const needed = m.neededIn > 0;
+      const wanted = _assetWanted(aid, needed);
+      const hasFile = !!(st.browsedFile || st.resolvedPath);
+      if (wanted && !hasFile) blocked = entry?.name || aid;
+
+      const row = document.createElement('div');
+      row.style.cssText = 'display:flex;align-items:center;gap:8px;';
+      const cb = document.createElement('input');
+      cb.type = 'checkbox';
+      cb.checked = wanted;
+      cb.addEventListener('change', () => { st.wanted = cb.checked ? 'yes' : 'no'; refresh(); });
+      const info = document.createElement('div');
+      info.style.cssText = 'flex:1;min-width:0;';
+      const fileLabel = st.browsedFile ? st.browsedFile.name
+        : st.resolvedPath ? st.resolvedPath.split(/[\\/]/).pop()
+        : null;
+      info.innerHTML = `
+        <div class="small" style="font-weight:600;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">${esc(entry?.name || aid)}
+          <span class="small muted" style="font-weight:400;">— ${needed ? `visible in ${m.neededIn} selected step(s)` : 'hidden in every selected step'}</span></div>
+        <div class="small" style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap;${fileLabel ? 'color:#22c55e;' : 'color:#ef4444;'}">${fileLabel ? `✓ ${esc(fileLabel)}` : '✗ file not found — Browse…'}</div>`;
+      const browse = document.createElement('button');
+      browse.className = 'btn';
+      browse.textContent = 'Browse…';
+      browse.style.cssText = 'height:24px;padding:0 8px;flex-shrink:0;';
+      browse.addEventListener('click', () => {
+        const inp = document.createElement('input');
+        inp.type = 'file';
+        inp.accept = '.step,.stp,.iges,.igs,.brep,.brp,.obj,.stl,.gltf,.glb,.fbx,.sbsobj,.sbsmesh';
+        inp.onchange = () => { if (inp.files[0]) { st.browsedFile = inp.files[0]; st.wanted = 'yes'; refresh(); } };
+        inp.click();
+      });
+      row.append(cb, info, browse);
+      assetRows.appendChild(row);
+      assetRowEls.set(aid, row);
+    }
+    assetsBox.style.display = missing.size ? 'block' : 'none';
+
+    // Skipped-but-referenced note (parts stay missing until that model is loaded).
+    const skipped = [...missing.keys()].filter(aid => !_assetWanted(aid, missing.get(aid).neededIn > 0));
+    if (skipped.length) {
       warnEl.style.display = 'block';
-      warnEl.textContent = `⚠ These steps use model(s) not in this project: ${[...missing].join(', ')} — those parts will be missing until the model is loaded here.`;
+      warnEl.textContent = `⚠ Skipping: ${skipped.map(aid => srcAssetById.get(aid)?.name || aid).join(', ')} — those parts stay missing until the model is loaded here.`;
     } else warnEl.style.display = 'none';
+
+    goBtn.disabled = checked.size === 0 || !!blocked;
+    if (blocked) goBtn.title = `"${blocked}" is checked but its file was not found — Browse to it or uncheck it.`;
+    else goBtn.title = '';
   };
+
+  // Probe every potentially-missing asset's file location ONCE, up front
+  // (all steps considered, so a later selection change needs no re-probe).
+  (async () => {
+    const allMissing = new Set();
+    for (const s of srcSteps) {
+      for (const aid of (perStepAssets.get(s.id) || [])) {
+        if (!targetAssetIds.has(aid)) allMissing.add(aid);
+      }
+    }
+    for (const aid of allMissing) {
+      const entry = srcAssetById.get(aid);
+      if (!entry) continue;
+      const st = assetState.get(aid) || { resolvedPath: null, browsedFile: null, wanted: 'auto' };
+      st.resolvedPath = await _resolveSourceAssetFile(entry, srcProjectPath);
+      assetState.set(aid, st);
+    }
+    refresh();
+  })();
 
   for (const s of srcSteps) {
     const row = document.createElement('label');
@@ -2067,8 +2198,18 @@ function _showImportStepsDialog(project, srcSteps, srcName, targetStepId) {
   dlg.querySelector('#imp-cancel').addEventListener('click', () => { dlg.close(); dlg.remove(); });
   goBtn.addEventListener('click', () => {
     const ids = srcSteps.filter(s => checked.has(s.id)).map(s => s.id);   // source order
+    // 📥 Phase 2 — the asset plan: every missing model the user left checked,
+    // with its file (browsed File wins over the probed path).
+    const assetPlan = [];
+    for (const [aid, row] of assetRowEls) {
+      const st = assetState.get(aid);
+      const cb = row.querySelector('input[type=checkbox]');
+      if (!cb?.checked || !st) continue;
+      if (!st.browsedFile && !st.resolvedPath) continue;
+      assetPlan.push({ entry: srcAssetById.get(aid), file: st.browsedFile, path: st.resolvedPath });
+    }
     dlg.close(); dlg.remove();
-    _doImportSteps(project, ids, srcName, targetStepId);
+    _doImportSteps(project, ids, srcName, targetStepId, assetPlan);
   });
 
   refresh();
@@ -2076,11 +2217,66 @@ function _showImportStepsDialog(project, srcSteps, srcName, targetStepId) {
   dlg.showModal();
 }
 
-function _doImportSteps(project, srcStepIds, srcName, targetStepId) {
+async function _doImportSteps(project, srcStepIds, srcName, targetStepId, assetPlan = []) {
   const srcSteps  = (project.steps?.items || []).filter(s => srcStepIds.includes(s.id));
   if (!srcSteps.length) return;
   const srcCams   = project.cameras?.items || [];
   const tgtPresetIds = new Set((state.get('animationPresets') || []).map(p => p.id));
+
+  // ── 📥 Phase 2 (V0.3.2.180): load the missing CAD models FIRST ───────────
+  // Order matters: injectModelIntoAllSteps stamps the model (hidden) into
+  // every EXISTING step so old steps neither show nor drop it — and running
+  // it before the new steps are inserted means the imported steps, whose
+  // baked trees already contain these nodes, are never double-stamped.
+  // Stable ids do the rest: the model loads under the SOURCE assetEntry.id,
+  // so every node id matches the imported snapshots exactly.
+  // Model loading is not undoable (same as loading a model by hand); the
+  // steps themselves still land in one undo entry below.
+  const loadedModels = [];
+  const failedModels = [];
+  const importedMeshIds = new Set();
+  for (const plan of assetPlan) {
+    if (!plan?.entry) continue;
+    setStatus(`Importing model "${plan.entry.name}"…`, 'info', 0);
+    try {
+      let file = plan.file;
+      if (!file && plan.path) {
+        const r = await window.sbsNative.readFile(plan.path, 'buffer');
+        if (!r?.ok) throw new Error(r?.error || 'read failed');
+        file = new File([r.data], plan.path.split(/[\\/]/).pop() || plan.entry.name);
+      }
+      if (!file) throw new Error('no file');
+      // Heal the entry to where the file actually is NOW — the source
+      // record's originalPath may point at the authoring machine.
+      const diskPath = plan.path || '';
+      const entry = { ...plan.entry, ...(diskPath ? { originalPath: diskPath, relativePath: '' } : { relativePath: '' }) };
+      const modelNode = await loadModelFile(file, { assetEntry: entry, skipColorExtraction: true });
+      if (!modelNode) throw new Error('load returned nothing');
+      steps.injectModelIntoAllSteps(modelNode, { visible: false });
+      loadedModels.push({ entry: plan.entry, modelNode });
+      (function walk(n) {
+        if (n.type === 'mesh') importedMeshIds.add(n.id);
+        for (const c of (n.children || [])) walk(c);
+      })(modelNode);
+    } catch (err) {
+      console.error(`[import] model "${plan.entry.name}" failed:`, err);
+      failedModels.push(plan.entry.name);
+    }
+  }
+
+  // Colour DEFAULTS + base assignments for the imported meshes come from the
+  // source project (per-step overrides ride inside the snapshots anyway).
+  const colorWanted = new Set();
+  if (importedMeshIds.size) {
+    const srcDefaults    = project.colors?.defaults    || {};
+    const srcAssignments = project.colors?.assignments || {};
+    for (const [meshId, presetId] of Object.entries(srcDefaults)) {
+      if (importedMeshIds.has(meshId)) { materials.meshDefaultColors[meshId] = presetId; colorWanted.add(presetId); }
+    }
+    for (const [meshId, presetId] of Object.entries(srcAssignments)) {
+      if (importedMeshIds.has(meshId)) { materials.meshColorAssignments[meshId] = presetId; colorWanted.add(presetId); }
+    }
+  }
 
   // Clone with fresh ids + group remap (same rules as paste).
   const copies = _clonePastedBlock(srcSteps);
@@ -2111,7 +2307,7 @@ function _doImportSteps(project, srcStepIds, srcName, targetStepId) {
   const tgtPresets   = state.get('colorPresets') || [];
   const tgtPresetSet = new Set(tgtPresets.map(p => p.id));
   const srcPresets   = project.colors?.items || [];
-  const wanted       = new Set();
+  const wanted       = new Set(colorWanted);   // defaults/assignments of imported meshes
   for (const s of srcSteps) {
     for (const pid of Object.values(s.snapshot?.materials || {})) wanted.add(pid);
   }
@@ -2137,8 +2333,21 @@ function _doImportSteps(project, srcStepIds, srcName, targetStepId) {
     steps.normalizeOrder();
     state.markDirty();
   });
+
+  // 📥 Phase 2 — with models freshly loaded, settle the live scene through
+  // the proven full-cycle (step 0 → active step → placeholder sweep): the
+  // new model takes its hidden stance on the current step, colours apply.
+  if (loadedModels.length) {
+    try { materials.applyAll(); } catch { /* colours re-apply on next step change */ }
+    try { steps.reintegrateFromStep0(state.get('activeStepId')); }
+    catch (err) { console.warn('[import] post-load reintegration failed:', err); }
+  }
+
   setStatus(`Imported ${copies.length} step(s) from "${srcName}"`
-    + (presetAdds.length ? ` (+${presetAdds.length} colour preset(s))` : '') + '.', 'success', 7000);
+    + (loadedModels.length ? ` + ${loadedModels.length} model(s)` : '')
+    + (presetAdds.length ? ` (+${presetAdds.length} colour preset(s))` : '')
+    + (failedModels.length ? ` — ⚠ model import FAILED: ${failedModels.join(', ')}` : '')
+    + '.', failedModels.length ? 'warn' : 'success', 9000);
 }
 
 /** Clone a BLOCK of steps for pasting, remapping group identity (V0.3.2.44).
