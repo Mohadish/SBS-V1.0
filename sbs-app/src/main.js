@@ -4822,22 +4822,50 @@ function _openCameraTemplatePicker() {
 // The keymap decides here what a code means, so rebinding C in Settings ▸
 // Keybindings keeps working; `control` rides along because right-Alt on
 // Hebrew/intl layouts is AltGr = Ctrl+Alt.
-let _lastAltComboMs = 0;
-window.sbsNative?.onMenu?.('key:altCombo', (combo) => {
-  if (!combo) return;
-  console.log('[keys] Alt combo received:', combo.code);   // diagnosis breadcrumb — cheap, rare
-  if (combo.code !== keyFor('captureStepCamera')) return;
+// Two triggers can fire for one physical Alt+C press (the OS-level menu
+// accelerator AND the before-input-event forwarder) — this guard makes the
+// second a no-op.
+let _lastPickerMs = 0;
+function _openPickerDeduped() {
   if (_isInputFocused()) return;
-  // Dedupe: some platforms could deliver rawKeyDown AND keyDown for one press.
   const now = performance.now();
-  if (now - _lastAltComboMs < 150) return;
-  _lastAltComboMs = now;
+  if (now - _lastPickerMs < 200) return;
+  _lastPickerMs = now;
   try { _openCameraTemplatePicker(); }
   catch (err) {
     console.error('[camera] template picker failed:', err);
     setStatus(`Camera template picker failed: ${err.message}`, 'danger', 6000);
   }
+}
+
+// 📷🔗 V0.3.2.178 — PRIMARY trigger: the Edit ▸ Apply Camera Template… menu
+// accelerator (Alt+<letter>), registered at the OS level, so it fires on the
+// first press and under any keyboard layout. The letter follows the keymap:
+// see the setAccelerators calls below.
+window.sbsNative?.onMenu?.('menu:cameraTemplates', () => _openPickerDeduped());
+
+// SECONDARY (kept as a diagnosis tap + non-Windows fallback): the
+// before-input-event forwarder. On the user's machine input.code arrived
+// EMPTY (V0.3.2.177 breadcrumb), which is why this path alone was not
+// enough — match code when present, else a single-letter key (latin
+// layouts only; the accelerator covers the rest).
+window.sbsNative?.onMenu?.('key:altCombo', (combo) => {
+  if (!combo) return;
+  console.log('[keys] Alt combo received:', JSON.stringify(combo));   // breadcrumb — cheap, rare
+  const want = keyFor('captureStepCamera');                            // e.g. 'KeyC'
+  const wantLetter = want?.startsWith('Key') ? want.slice(3).toLowerCase() : null;
+  const matches = (combo.code && combo.code === want)
+    || (wantLetter && String(combo.key || '').toLowerCase() === wantLetter);
+  if (matches) _openPickerDeduped();
 });
+
+// 🎹 Publish the current accelerator letter to the native menu — on boot and
+// on every rebind (main rebuilds the menu only when the letter changes).
+function _pushMenuAccelerators() {
+  window.sbsNative?.keymap?.setAccelerators?.({ captureStepCamera: keyLabel('captureStepCamera') });
+}
+_pushMenuAccelerators();
+window.addEventListener('sbs:keymap-changed', _pushMenuAccelerators);
 function _refreshSafeFrame() {
   if (!_safeFrameEl) return;
   const showFrame = state.get('export')?.showSafeFrame !== false;

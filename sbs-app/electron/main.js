@@ -351,13 +351,27 @@ function createWindow() {
     if ((t !== 'keydown' && t !== 'rawkeydown') || !input.alt || input.meta) return;
     if (input.isAutoRepeat) return;
     if (/^(Alt|Control|Shift|Meta)/.test(input.key || '')) return;   // bare modifier press
-    mainWindow?.webContents.send('key:altCombo', { code: input.code, control: !!input.control, shift: !!input.shift });
+    mainWindow?.webContents.send('key:altCombo', { type: input.type, code: input.code, key: input.key, control: !!input.control, shift: !!input.shift });
   });
 
   mainWindow.on('closed', () => { mainWindow = null; });
 }
 
 // ─── Native menu ──────────────────────────────────────────────────────────
+// 🎹 V0.3.2.178 — the Alt+<letter> accelerator for "Apply Camera Template…"
+// follows the renderer's keymap: on boot and on every rebind the renderer
+// sends the current letter and the menu is rebuilt. Only a single latin
+// letter or digit is accepted (an Alt+Space accelerator would shadow the
+// system window menu); anything else keeps the last good letter.
+let _camAccelLetter = 'C';
+ipcMain.on('keymap:accelerators', (_e, map) => {
+  const letter = String(map?.captureStepCamera || '').trim().toUpperCase();
+  if (!/^[A-Z0-9]$/.test(letter) || letter === _camAccelLetter) return;
+  _camAccelLetter = letter;
+  try { Menu.setApplicationMenu(buildMenu()); }
+  catch (err) { console.warn('[menu] accelerator rebuild failed:', err?.message); }
+});
+
 function buildMenu() {
   const isMac = process.platform === 'darwin';
 
@@ -396,6 +410,19 @@ function buildMenu() {
           label: 'Recover stuck inputs',
           accelerator: 'Ctrl+Alt+U',
           click: () => mainWindow?.webContents.send('menu:recoverStuckInputs'),
+        },
+        {
+          // 📷🔗 V0.3.2.178 — the camera-template picker's RELIABLE trigger.
+          // Two page-level attempts failed: window.keydown loses the first
+          // Alt+letter to Windows menu-bar mnemonic pre-arming, and
+          // before-input-event delivered an empty input.code on this
+          // machine. A menu accelerator is registered at the OS level —
+          // first press, any keyboard layout (VK codes stay on the physical
+          // key under Hebrew). The letter follows the renderer's keymap via
+          // 'keymap:accelerators' (menu is rebuilt on rebind).
+          label: 'Apply Camera Template…',
+          accelerator: `Alt+${_camAccelLetter}`,
+          click: () => mainWindow?.webContents.send('menu:cameraTemplates'),
         },
         {
           label: 'Unify Constant Titles',

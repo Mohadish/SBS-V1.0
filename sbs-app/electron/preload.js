@@ -84,9 +84,19 @@ contextBridge.exposeInMainWorld('sbsNative', {
                                    // from before-input-event (Windows menu-bar
                                    // pre-arming eats the first page-level
                                    // Alt+letter keydown)
+      'menu:cameraTemplates',      // 📷🔗 V0.3.2.178 — Edit ▸ Apply Camera
+                                   // Template… (OS-level Alt+C accelerator)
     ];
     if (!allowed.includes(channel)) return;
     ipcRenderer.on(channel, (_e, ...args) => cb(...args));
+  },
+
+  // ── 🎹 Keymap → native menu accelerators (V0.3.2.178) ────────────────────
+  // The renderer tells main the current letter for rebindable shortcuts that
+  // are ALSO registered as menu accelerators (today: captureStepCamera →
+  // Edit ▸ Apply Camera Template… Alt+<letter>). Fire-and-forget.
+  keymap: {
+    setAccelerators: (map) => ipcRenderer.send('keymap:accelerators', map),
   },
 
   // ── User settings (machine-level prefs, persisted to userData/user-settings.json) ─
