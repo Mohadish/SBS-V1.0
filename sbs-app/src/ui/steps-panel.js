@@ -2130,12 +2130,17 @@ function _videoStepOverlayJson(absPath, relPath, seg) {
 
 /** A lightweight step wrapping one rendered-segment window. */
 function _buildVideoStep(srcStep, seg, absPath, relPath) {
+  // ⏱ V0.3.2.195 — DEFAULT transition, deliberately. The video machinery
+  // parks the clip on its first frame and starts it only when the overlay
+  // fade-in COMPLETES; the export duration model then holds the step open
+  // for the whole trimmed window. An instant (0ms) transition — the .194
+  // choice — bypassed all of that: no fade → the fallback started the clip
+  // the moment the step loaded, with no settle pause (user field report).
   const step = createStep({
     name:         srcStep.name || 'Step',
     hidden:       !!srcStep.hidden,
     voiceText:    srcStep.voiceText || '',
     voiceEnabled: srcStep.voiceEnabled !== false,
-    transition:   { durationMs: 0, cameraEasing: 'instant', objectEasing: 'instant', visibilityFade: true, animPresetId: null },
     cameraBinding: { mode: 'free', templateId: null },
     snapshot:     _hiddenSceneSnapshot(),
   });
