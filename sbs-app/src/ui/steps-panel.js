@@ -2058,29 +2058,59 @@ function _visibleNodeIdsInStep(step) {
 // segment is copied ONCE and each step gets its own trimIn/trimOut window on
 // the video node (playback and export both honour trims since V0.3.2.75).
 
-/** Scan the SOURCE project's _rendercache → Map stepId → segment window. */
-async function _scanSourceRenderCache(srcProjectPath) {
+/**
+ * Scan the SOURCE project's render cache → Map stepId → segment window.
+ *
+ * ⚠ V0.3.2.197 — TWO layouts (mirrors render-cache's own resolution):
+ * modern <project>/render/<lang>/ (V0.3.2.124 folder layout, one subdir per
+ * language) and legacy <project>/_rendercache/. The .194 scan only knew the
+ * legacy path, so on modern projects the 🎬 toggle simply never appeared
+ * (the user's report). Preference order: the source's activeLang folder,
+ * then its other language folders, then legacy — the first directory that
+ * names a step wins.
+ */
+async function _scanSourceRenderCache(srcProjectPath, srcProject = null) {
   const out = new Map();
   if (!srcProjectPath || !window.sbsNative?.listDir || !window.sbsNative?.readFile) return out;
-  const dir = srcProjectPath.replace(/[\\/][^\\/]*$/, '') + '/_rendercache';
-  const entries = await window.sbsNative.listDir(dir).catch(() => null);
-  if (!Array.isArray(entries)) return out;
-  for (const e of entries) {
-    if (e.isDir || !/^seg-[0-9a-f]+\.json$/.test(e.name)) continue;
-    const r = await window.sbsNative.readFile(`${dir}/${e.name}`, 'utf8').catch(() => null);
-    if (!r?.ok) continue;
-    let sc; try { sc = JSON.parse(r.data); } catch { continue; }
-    if (!sc?.key) continue;
-    const mp4   = `${dir}/seg-${sc.key}.mp4`;
-    const steps = Array.isArray(sc.steps) ? sc.steps : [];
-    for (let i = 0; i < steps.length; i++) {
-      const inMs  = Number(steps[i].ms) || 0;
-      const outMs = (i + 1 < steps.length) ? (Number(steps[i + 1].ms) || 0) : (Number(sc.durationMs) || 0);
-      if (outMs > inMs) {
-        out.set(steps[i].stepId, { file: mp4, key: sc.key, inMs, outMs, segDurationMs: Number(sc.durationMs) || 0 });
+  const base = srcProjectPath.replace(/[\\/][^\\/]*$/, '');
+
+  // Candidate dirs, preferred first.
+  const dirs = [];
+  const activeLang = srcProject?.settings?.activeLang || srcProject?.settings?.sourceLang || null;
+  const renderRoot = `${base}/render`;
+  const langDirs = await window.sbsNative.listDir(renderRoot).catch(() => null);
+  if (Array.isArray(langDirs)) {
+    const subs = langDirs.filter(e => e.isDir).map(e => e.name);
+    if (activeLang && subs.includes(activeLang)) dirs.push(`${renderRoot}/${activeLang}`);
+    for (const s of subs) {
+      const d = `${renderRoot}/${s}`;
+      if (!dirs.includes(d)) dirs.push(d);
+    }
+  }
+  dirs.push(`${base}/_rendercache`);
+
+  for (const dir of dirs) {
+    const entries = await window.sbsNative.listDir(dir).catch(() => null);
+    if (!Array.isArray(entries)) continue;
+    for (const e of entries) {
+      if (e.isDir || !/^seg-[0-9a-f]+\.json$/.test(e.name)) continue;
+      const r = await window.sbsNative.readFile(`${dir}/${e.name}`, 'utf8').catch(() => null);
+      if (!r?.ok) continue;
+      let sc; try { sc = JSON.parse(r.data); } catch { continue; }
+      if (!sc?.key) continue;
+      const mp4   = `${dir}/seg-${sc.key}.mp4`;
+      const steps = Array.isArray(sc.steps) ? sc.steps : [];
+      for (let i = 0; i < steps.length; i++) {
+        if (out.has(steps[i].stepId)) continue;   // a preferred dir already named it
+        const inMs  = Number(steps[i].ms) || 0;
+        const outMs = (i + 1 < steps.length) ? (Number(steps[i + 1].ms) || 0) : (Number(sc.durationMs) || 0);
+        if (outMs > inMs) {
+          out.set(steps[i].stepId, { file: mp4, key: sc.key, inMs, outMs, segDurationMs: Number(sc.durationMs) || 0 });
+        }
       }
     }
   }
+  if (out.size) console.log(`[import] render-cache scan: ${out.size} step(s) have rendered segments (dirs tried: ${dirs.length}).`);
   return out;
 }
 
@@ -2332,7 +2362,7 @@ function _showImportStepsDialog(project, srcSteps, srcName, targetStepId, srcPro
   // "as video" toggle. Video-marked steps import the CLIP instead of the
   // snapshot — no geometry, no assets, headers stay the target's own.
   (async () => {
-    const found = await _scanSourceRenderCache(srcProjectPath);
+    const found = await _scanSourceRenderCache(srcProjectPath, project);
     if (!found.size) return;
     for (const [sid, seg] of found) videoBySrcId.set(sid, seg);
     for (const row of list.children) {
