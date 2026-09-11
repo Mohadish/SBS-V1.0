@@ -317,6 +317,22 @@ function _computePerStepHolds(stepsToPlay, stepHoldMs) {
         ? 'wait (next in-group has audio, collision avoid)'
         : (myKey !== null ? 'wait (end of group)' : 'wait (top-level)');
     }
+    // 🎬 V0.3.2.203 — VIDEO FLOOR. A step carrying an overlay clip must hold
+    // at least the clip's trimmed window: the clip starts when the incoming
+    // fade completes (= hold start), so hold < window CUT THE CLIP SHORT.
+    // The phased engine's overlay block already sized this via _sleep(vMs);
+    // the SIMULTANEOUS mode — the common default — never did, which is how
+    // a chained video-step import ended "before the final position", and
+    // differently per render (the hold tracked narration timing, not the
+    // clip). The floor here covers BOTH modes at the duration model.
+    try {
+      const vMs = videoOverlay.stepVideoWindowMs(step);
+      if (vMs > 0 && hold < vMs) {
+        if (_diagTiming) console.log(`  [${i}] video floor: hold ${hold} → ${vMs}`);
+        hold = vMs;
+        reason += ' +video-floor';
+      }
+    } catch { /* no clip — fine */ }
     perStepHold[i] = hold;
     if (nextI < stepsToPlay.length) markers[nextI] = stepAnimEnd + hold;
     if (_diagTiming) {
