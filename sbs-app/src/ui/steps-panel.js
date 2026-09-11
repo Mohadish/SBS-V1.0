@@ -2227,6 +2227,10 @@ function _showImportStepsDialog(project, srcSteps, srcName, targetStepId, srcPro
         <strong style="font-size:14px;">📥 Import steps from "${esc(srcName)}"</strong>
         <div class="small muted" style="margin-top:2px;">Selected steps are inserted after the step you right-clicked. One undo entry.</div>
       </div>
+      <div style="padding:8px 16px 0;">
+        <input type="text" id="imp-search" placeholder="🔎 Filter steps by name…" spellcheck="false"
+               style="width:100%;box-sizing:border-box;padding:6px 8px;font-size:12px;background:rgba(255,255,255,0.05);color:inherit;border:1px solid var(--line,#334155);border-radius:6px;" />
+      </div>
       <div style="padding:8px 16px;display:flex;gap:8px;align-items:center;">
         <button class="btn" id="imp-all">Select all</button>
         <button class="btn" id="imp-none">Select none</button>
@@ -2439,6 +2443,7 @@ function _showImportStepsDialog(project, srcSteps, srcName, targetStepId, srcPro
       list.appendChild(head);
       headerCb.addEventListener('change', () => {
         for (const r of groupRowEls) {
+          if (r.style.display === 'none') continue;   // 🔎 filtered out — untouched
           r._cb.checked = headerCb.checked;
           headerCb.checked ? checked.add(r._id) : checked.delete(r._id);
         }
@@ -2478,13 +2483,33 @@ function _showImportStepsDialog(project, srcSteps, srcName, targetStepId, srcPro
       row.append(cb, thumb, info);
       list.appendChild(row);
       row._cb = cb; row._id = s.id; row._syncHeader = syncHeader;
+      row._name = (s.name || '').toLowerCase();   // 🔎 search target
       groupRowEls.push(row);
+    }
+    // 🔎 the header hides when the filter leaves its chapter empty.
+    if (headerCb) {
+      const headEl = list.children[list.children.length - 1 - g.rows.length];
+      if (headEl && !headEl._cb) headEl._rows = groupRowEls;
     }
   }
 
+  // 🔎 V0.3.2.200 — live name filter: hides non-matching step rows and any
+  // chapter header whose steps are all hidden. Selection state is kept on
+  // hidden rows; Select all / none act on the VISIBLE (filtered) rows only.
+  dlg.querySelector('#imp-search')?.addEventListener('input', (e) => {
+    const term = String(e.target.value || '').trim().toLowerCase();
+    for (const el of list.children) {
+      if (el._cb) el.style.display = (!term || el._name.includes(term)) ? 'flex' : 'none';
+    }
+    for (const el of list.children) {
+      if (el._rows) el.style.display = el._rows.some(r => r.style.display !== 'none') ? 'flex' : 'none';
+    }
+  });
+
+  // 🔎 with a filter active, Select all / none act on the VISIBLE rows only.
   dlg.querySelector('#imp-all').addEventListener('click', () => {
     for (const row of list.children) {
-      if (!row._cb) continue;                       // chapter header
+      if (!row._cb || row.style.display === 'none') continue;
       row._cb.checked = true; checked.add(row._id);
       row._syncHeader?.();
     }
@@ -2492,11 +2517,11 @@ function _showImportStepsDialog(project, srcSteps, srcName, targetStepId, srcPro
   });
   dlg.querySelector('#imp-none').addEventListener('click', () => {
     for (const row of list.children) {
-      if (!row._cb) continue;                       // chapter header
-      row._cb.checked = false;
+      if (!row._cb || row.style.display === 'none') continue;
+      row._cb.checked = false; checked.delete(row._id);
       row._syncHeader?.();
     }
-    checked.clear(); refresh();
+    refresh();
   });
   dlg.querySelector('#imp-cancel').addEventListener('click', () => { dlg.close(); dlg.remove(); });
   goBtn.addEventListener('click', () => {
