@@ -758,25 +758,60 @@ async function _exportMp4({ fps = DEFAULT_FPS, bitrate = DEFAULT_BITRATE,
   const maskCompCtx = _maskOn ? maskComp.getContext('2d') : null;
   const maskScratch = _maskOn ? new OffscreenCanvas(width, height) : null;
   const maskScrCtx  = _maskOn ? maskScratch.getContext('2d') : null;
-  const _maskMat    = _maskOn ? new THREE.MeshBasicMaterial({ color: 0xffffff }) : null;
   const _maskBg     = _maskOn ? new THREE.Color(0x000000) : null;
 
-  // Flat white override render of the CURRENT scene state onto the live
-  // canvas (cheap — no AO/SSR/post), captured into mask3d. MUST run BEFORE
-  // the slot's normal renderFrame(): the beauty pass then repaints the
-  // canvas, so the main capture and any later hold-reuse see clean pixels.
+  // 🎚 V0.3.2.201 — the mask is FADE-AWARE. A flat overrideMaterial painted
+  // every visible mesh FULL WHITE, so an object mid fade-in read as solid
+  // coverage from its first frame (user field report: the empty area that
+  // will eventually hold the mesh was treated as solid). The current fade
+  // value lives ON each material (dither chunk userData.transitionFadeState /
+  // shader uniform transitionOpacity / plain transparent opacity), so the
+  // mask pass now swaps each mesh to a GRAY MeshBasicMaterial matching its
+  // fade level — partial gray = partial alpha, and alphamerge honours it.
+  const _grayMats = _maskOn ? new Map() : null;   // level 0..32 → material
+  const _grayMat = (lvl) => {
+    let m = _grayMats.get(lvl);
+    if (!m) {
+      const v = lvl / 32;
+      m = new THREE.MeshBasicMaterial({ color: new THREE.Color(v, v, v) });
+      _grayMats.set(lvl, m);
+    }
+    return m;
+  };
+  const _fadeOf = (material) => {
+    const m = Array.isArray(material) ? material[0] : material;
+    if (!m) return 1;
+    if (m.userData?.transitionFadeState)               return Number(m.userData.transitionFadeState.value ?? 1);
+    if (m.isShaderMaterial && m.uniforms?.transitionOpacity) return Number(m.uniforms.transitionOpacity.value ?? 1);
+    if (m.transparent === true && 'opacity' in m)      return Number(m.opacity ?? 1);
+    return 1;
+  };
+
+  // Cheap coverage render of the CURRENT scene state onto the live canvas
+  // (no AO/SSR/post), captured into mask3d. MUST run BEFORE the slot's
+  // normal renderFrame(): the beauty pass then repaints the canvas, so the
+  // main capture and any later hold-reuse see clean pixels.
   const _renderMask3d = () => {
     const scn = sceneCore.scene, cam = sceneCore.camera, rnd = sceneCore.renderer;
     if (!scn || !cam || !rnd) return;
-    const prevBg = scn.background, prevOv = scn.overrideMaterial;
-    const hid = [];
-    for (const h of [sceneCore.gridHelper, sceneCore.axesHelper]) {
-      if (h && h.visible) { h.visible = false; hid.push(h); }
-    }
+    const prevBg = scn.background;
+    const swaps = [], hidden = [];
     try {
+      scn.traverse((o) => {
+        if (!o.visible) return;
+        if (o.isMesh) {
+          const t = Math.max(0, Math.min(1, _fadeOf(o.material)));
+          if (t <= 0.004) { o.visible = false; hidden.push(o); return; }
+          swaps.push([o, o.material]);
+          o.material = _grayMat(Math.round(t * 32));
+        } else if (o.isLine || o.isLineSegments || o.isPoints || o.isSprite) {
+          // Hairline outlines / grid / axes / markers: no mask contribution,
+          // and their coloured materials would pollute the gray encoding.
+          o.visible = false; hidden.push(o);
+        }
+      });
       cam.updateMatrixWorld(true);   // tick hooks ran; matrices may be stale pre-render
       scn.background = _maskBg;
-      scn.overrideMaterial = _maskMat;
       rnd.render(scn, cam);
       const sf = computeSafeFrameRect({ width: canvas.width, height: canvas.height });
       mask3dCtx.fillStyle = '#000';
@@ -785,8 +820,8 @@ async function _exportMp4({ fps = DEFAULT_FPS, bitrate = DEFAULT_BITRATE,
       else                               mask3dCtx.drawImage(canvas, 0, 0, width, height);
     } finally {
       scn.background = prevBg;
-      scn.overrideMaterial = prevOv;
-      for (const h of hid) h.visible = true;
+      for (const [o, m] of swaps) o.material = m;
+      for (const o of hidden) o.visible = true;
     }
   };
 
