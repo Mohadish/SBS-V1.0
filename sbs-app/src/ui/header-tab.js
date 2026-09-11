@@ -34,7 +34,7 @@ import { readProjectForImport } from '../io/project.js';   // 📥 grab headers 
 import * as actions    from '../systems/actions.js';
 import { listStyleTemplates } from '../systems/style-templates.js';
 import * as subtitles  from '../systems/subtitles.js';   // 🌐 per-step subtitle overrides + translation (V0.3.2.63)
-import { chooseWithPreview } from './prompt.js';          // ✨ dry-run preview for the punctuation sweep
+import { chooseWithPreview, chooseFromButtons } from './prompt.js';   // ✨ dry-run preview; add-vs-replace on setup load
 
 // ── Undoable wrappers (V0.1.88) ─────────────────────────────────────────────
 // The raw header.* mutators only setState/markDirty (no undo) — that's
@@ -652,24 +652,45 @@ async function _onLoadSetup() {
   const payload = await pickHeaderSetupPayload();
   if (!payload) return;
 
-  // Header tab load is ALWAYS additive — items are appended (duplicates
-  // OK; user can clean up via the row ✕), templates are appended with
-  // auto-renaming so existing bindings keep pointing at the right
-  // template. The Default Style block is replaced (it's a single
-  // value; merging makes no sense).
+  // 🧭 V0.3.2.186 — add vs replace is the USER'S call when headers already
+  // exist (same pattern as overlay copy/paste and the Style tab's prompt).
+  //   Add     → items appended (duplicates OK, ✕ to clean up), styles
+  //             appended with auto-renaming, CURRENT default style kept —
+  //             existing items must not change look on an additive load.
+  //   Replace → incoming setup replaces items + default; styles are still
+  //             APPENDED (existing style templates may be referenced by
+  //             overlay text boxes — never silently deleted).
+  const existingCount = (state.get('headerItems') || []).length;
+  let itemsMode = 'add', defaultMode = 'replace';
+  if (existingCount > 0) {
+    const incoming = Array.isArray(payload.items) ? payload.items.length : 0;
+    const choice = await chooseFromButtons(
+      'Load Header Setup',
+      `${incoming} header item(s) in the file. You currently have ${existingCount}. Add on top, or replace your current header?`,
+      [
+        { id: 'cancel',  label: 'Cancel' },
+        { id: 'add',     label: 'Add on top', primary: true },
+        { id: 'replace', label: 'Replace current', danger: true },
+      ],
+    );
+    if (!choice || choice === 'cancel') return;
+    itemsMode   = choice;
+    defaultMode = choice === 'replace' ? 'replace' : 'skip';
+  }
+
   let _imp = {};
   actions.commitStateChange('Load header setup',
     ['headerItems', 'headerDefault', 'styleTemplates'],
     () => {
       _imp = importHeaderSetup(payload, {
-        itemsMode:   'add',
+        itemsMode,
         stylesMode:  'add',
-        defaultMode: 'replace',
+        defaultMode,
       }) || {};
     });
   const { headers, styles, defaultLoaded } = _imp;
   const parts = [];
-  if (headers)       parts.push(`${headers} header item(s) added`);
+  if (headers)       parts.push(`${headers} header item(s) ${itemsMode === 'replace' ? 'replaced yours' : 'added'}`);
   if (styles)        parts.push(`${styles} style(s) added`);
   if (defaultLoaded) parts.push(`default style replaced`);
   if (parts.length) setStatus(`Loaded — ${parts.join(', ')}.`);

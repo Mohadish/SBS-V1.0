@@ -2541,6 +2541,18 @@ async function _doImportSteps(project, srcStepIds, srcName, targetStepId, assetP
     // white, the console names them and why.
     Object.assign(materials.meshDefaultColors,    defaultFills);
     Object.assign(materials.meshColorAssignments, assignmentFills);
+    // 🎛 V0.3.2.186 — THE white-mesh culprit: solidOverride. In a fresh
+    // project it is FALSE (it flips on at the first colour-extracting
+    // import), and with it off applyAll's CAD branch restores the ORIGINAL
+    // import material — which is plain white here, colour extraction is
+    // skipped on project-sourced loads. The panel still highlighted the
+    // right preset (the DATA was fine) and no preset edit could ever paint —
+    // exactly the user's report. Imported colours imply the source authored
+    // with the override on; flip it on like the first manual import does.
+    if (!state.get('solidOverride') && (Object.keys(defaultFills).length || Object.keys(assignmentFills).length)) {
+      state.setState({ solidOverride: true });
+      console.log('[import] solid colour override was OFF — enabled so the imported colours can paint.');
+    }
     const presetById = new Map((state.get('colorPresets') || []).map(p => [p.id, p]));
     const naked = [];
     for (const id of importedMeshIds) {
