@@ -1562,10 +1562,20 @@ export function importHeaderSetup(payload, opts = {}) {
     result.defaultLoaded = true;
   }
 
+  // 🎨 V0.3.2.185 — style ids are re-stamped below, so the imported ITEMS'
+  // styleId bindings must be remapped to the NEW ids, or every item lands
+  // unstyled (the user's "chapter name did not receive the correct style").
+  // '' (use default) and 'custom' pass through untouched.
+  const styleIdRemap = new Map();
+
   if (Array.isArray(payload.styles) && stylesMode !== 'skip') {
     // Always re-stamp ids so loading the same file twice doesn't
     // collide — applies to both replace and add modes.
-    const fresh = payload.styles.map(t => ({ ...t, id: generateId('style') }));
+    const fresh = payload.styles.map(t => {
+      const nid = generateId('style');
+      if (t?.id) styleIdRemap.set(t.id, nid);
+      return { ...t, id: nid };
+    });
     if (stylesMode === 'replace') {
       state.setState({ styleTemplates: fresh });
     } else {
@@ -1579,7 +1589,11 @@ export function importHeaderSetup(payload, opts = {}) {
   }
 
   if (Array.isArray(payload.items) && itemsMode !== 'skip') {
-    const fresh = payload.items.map(it => ({ ...it, id: generateId('hdr') }));
+    const fresh = payload.items.map(it => ({
+      ...it,
+      id: generateId('hdr'),
+      styleId: styleIdRemap.get(it?.styleId) || it?.styleId || '',
+    }));
     if (itemsMode === 'replace') {
       state.setState({ headerItems: fresh });
     } else {

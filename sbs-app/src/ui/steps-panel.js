@@ -2395,38 +2395,36 @@ async function _doImportSteps(project, srcStepIds, srcName, targetStepId, assetP
     }
   }
 
-  // 🎨 V0.3.2.183 — MATERIALS travel with the steps ("really important").
-  // Colour defaults + base assignments come from the source project for
-  // every mesh the imported steps touch: newly imported meshes get them
-  // outright; same-source meshes already in the target get FILLED only
-  // where the target has no entry of its own (never overwrite the user's
-  // colours). Per-step overrides ride inside the snapshots anyway, and
-  // every referenced preset is merged below.
-  const stepMeshIds = new Set();
-  for (const s of srcSteps) {
-    (function walk(n) {
-      if (!n) return;
-      if (n.type === 'mesh') stepMeshIds.add(n.id);
-      for (const c of (n.children || [])) walk(c);
-    })(s.snapshot?.tree);
-  }
-  const colorWanted = new Set();
+  // 🎨 V0.3.2.185 — RELEVANT colours only, anchored to the imported ASSETS.
+  // The .183 broadening keyed on every mesh id in the baked trees — the
+  // source project's ENTIRE scene — which dragged in "all the colours" and
+  // still left imported meshes white where the live-walk fill missed.
+  // Single source of truth now: mesh ids belonging to the imported assets,
+  // read from the SOURCE main tree (stable ids = the live imported meshes).
+  // Their project-default colour comes over as THEIR default here, so
+  // "revert to default" lands on the original colour; per-step highlights
+  // ride inside the imported snapshots and win only on their steps.
+  const importedAssetIds = new Set(assetPlan.map(p => p?.entry?.id).filter(Boolean));
+  const assetMeshIds = new Set(importedMeshIds);
+  (function walk(n, inherited) {
+    if (!n) return;
+    const aid = n.sourceAssetId || n.assetId || inherited;
+    if (n.type === 'mesh' && aid && importedAssetIds.has(aid)) assetMeshIds.add(n.id);
+    const next = n.type === 'model' ? (n.assetId || inherited) : inherited;
+    for (const c of (n.children || [])) walk(c, next);
+  })(project.tree?.root, null);
+
+  const colorWanted     = new Set();
+  const defaultFills    = {};
+  const assignmentFills = {};
   {
     const srcDefaults    = project.colors?.defaults    || {};
     const srcAssignments = project.colors?.assignments || {};
     for (const [meshId, presetId] of Object.entries(srcDefaults)) {
-      if (importedMeshIds.has(meshId)
-          || (stepMeshIds.has(meshId) && materials.meshDefaultColors[meshId] == null)) {
-        materials.meshDefaultColors[meshId] = presetId;
-        colorWanted.add(presetId);
-      }
+      if (assetMeshIds.has(meshId) && !prunedIds.has(meshId)) { defaultFills[meshId] = presetId; colorWanted.add(presetId); }
     }
     for (const [meshId, presetId] of Object.entries(srcAssignments)) {
-      if (importedMeshIds.has(meshId)
-          || (stepMeshIds.has(meshId) && materials.meshColorAssignments[meshId] == null)) {
-        materials.meshColorAssignments[meshId] = presetId;
-        colorWanted.add(presetId);
-      }
+      if (assetMeshIds.has(meshId) && !prunedIds.has(meshId)) { assignmentFills[meshId] = presetId; colorWanted.add(presetId); }
     }
   }
 
@@ -2500,8 +2498,12 @@ async function _doImportSteps(project, srcStepIds, srcName, targetStepId, assetP
   const tgtPresetSet = new Set(tgtPresets.map(p => p.id));
   const srcPresets   = project.colors?.items || [];
   const wanted       = new Set(colorWanted);   // defaults/assignments of imported meshes
+  // Per-step highlight overrides: only for meshes of the imported assets —
+  // same-source meshes already share preset ids with the target by ancestry.
   for (const s of srcSteps) {
-    for (const pid of Object.values(s.snapshot?.materials || {})) wanted.add(pid);
+    for (const [mid, pid] of Object.entries(s.snapshot?.materials || {})) {
+      if (assetMeshIds.has(mid)) wanted.add(pid);
+    }
   }
   const presetAdds = srcPresets.filter(p => wanted.has(p.id) && !tgtPresetSet.has(p.id));
 
@@ -2532,6 +2534,25 @@ async function _doImportSteps(project, srcStepIds, srcName, targetStepId, assetP
   // the proven full-cycle (step 0 → active step → placeholder sweep): the
   // new model takes its hidden stance on the current step, colours apply.
   if (loadedModels.length) {
+    // 🎨 fills land AFTER the commit (presets are in state by now) and are
+    // written into BOTH maps: defaults = "revert to default goes back to
+    // the original colour", assignments = the base state before any step
+    // override. Diagnostic breadcrumb stays — if meshes still come in
+    // white, the console names them and why.
+    Object.assign(materials.meshDefaultColors,    defaultFills);
+    Object.assign(materials.meshColorAssignments, assignmentFills);
+    const presetById = new Map((state.get('colorPresets') || []).map(p => [p.id, p]));
+    const naked = [];
+    for (const id of importedMeshIds) {
+      const pid = materials.meshColorAssignments[id] ?? materials.meshDefaultColors[id] ?? null;
+      if (!pid) naked.push({ id, why: 'no default/assignment in source' });
+      else if (!presetById.has(pid)) naked.push({ id, why: `preset ${pid} not found after merge` });
+    }
+    console.log(`[import] colours: ${Object.keys(defaultFills).length} default(s) + ${Object.keys(assignmentFills).length} assignment(s) filled, ${presetAdds.length} preset(s) merged.`);
+    if (naked.length) {
+      console.warn(`[import] ${naked.length} imported mesh(es) have NO resolvable colour — they will render plain:`);
+      console.table(naked.slice(0, 15));
+    }
     try { materials.applyAll(); } catch { /* colours re-apply on next step change */ }
     try { steps.reintegrateFromStep0(state.get('activeStepId')); }
     catch (err) { console.warn('[import] post-load reintegration failed:', err); }
