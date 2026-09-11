@@ -2535,7 +2535,10 @@ function _showImportStepsDialog(project, srcSteps, srcName, targetStepId, srcPro
       }
     }
     if (videoPlan.size && !state.get('projectPath')) {
-      say('Video import copies clips into the project folder — save this project first.');
+      // ('say' was an orphaned helper name — crashed here, V0.3.2.202)
+      warnEl.style.display = 'block';
+      warnEl.textContent = '⚠ Video import copies clips into the project folder — save this project first.';
+      setStatus('Video import needs a saved project (clips are copied into its folder).', 'warn', 6000);
       return;
     }
     // 📥 Phase 2 — the asset plan: every missing model the user left checked,
