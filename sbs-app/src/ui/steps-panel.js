@@ -2264,6 +2264,18 @@ function _showImportStepsDialog(project, srcSteps, srcName, targetStepId, srcPro
     return needed;   // 'auto' → the visibility analysis decides
   };
 
+  // 🔄 V0.3.2.204 — a manual "don't import this model" is dropped back to
+  // AUTO whenever a step that NEEDS the model (re)joins the snapshot path:
+  // ticking a step, or unticking its 🎬 (video steps need no geometry, so
+  // flipping one back to a real-mesh import must re-tick its models — the
+  // user's "it should automatically retick the relevant models").
+  const _resetAssetOverridesFor = (stepId) => {
+    for (const aid of (perStepAssets.get(stepId) || [])) {
+      const st = assetState.get(aid);
+      if (st?.wanted === 'no') st.wanted = 'auto';
+    }
+  };
+
   const refresh = () => {
     cntEl.textContent = `${checked.size} of ${srcSteps.length} selected`;
     goBtn.textContent = checked.size ? `Import ${checked.size} step(s)` : 'Import';
@@ -2384,7 +2396,8 @@ function _showImportStepsDialog(project, srcSteps, srcName, targetStepId, srcPro
       vcb.type = 'checkbox';
       vcb.addEventListener('click', e => e.stopPropagation());
       vcb.addEventListener('change', () => {
-        vcb.checked ? videoChecked.add(row._id) : videoChecked.delete(row._id);
+        if (vcb.checked) videoChecked.add(row._id);
+        else { videoChecked.delete(row._id); _resetAssetOverridesFor(row._id); }   // 🔄 back to real mesh → re-tick its models
         refresh();
       });
       const ico = document.createElement('span');
@@ -2466,7 +2479,11 @@ function _showImportStepsDialog(project, srcSteps, srcName, targetStepId, srcPro
       row.addEventListener('mouseleave', () => row.style.background = '');
       const cb = document.createElement('input');
       cb.type = 'checkbox';
-      cb.addEventListener('change', () => { cb.checked ? checked.add(s.id) : checked.delete(s.id); syncHeader(); refresh(); });
+      cb.addEventListener('change', () => {
+        if (cb.checked) { checked.add(s.id); _resetAssetOverridesFor(s.id); }   // 🔄 re-tick its models
+        else checked.delete(s.id);
+        syncHeader(); refresh();
+      });
       const thumb = document.createElement('div');
       thumb.style.cssText = 'width:60px;height:40px;flex-shrink:0;border-radius:4px;background:rgba(127,127,127,0.15);overflow:hidden;display:flex;align-items:center;justify-content:center;';
       if (s.thumbnail) {
