@@ -2410,39 +2410,92 @@ function _showImportStepsDialog(project, srcSteps, srcName, targetStepId, srcPro
     }
   })();
 
+  // 🗂 V0.3.2.199 — the list is GROUPED BY CHAPTER (source order) with a
+  // toggle-all checkbox per chapter, and every step shows its NUMBER in the
+  // source timeline. Chapterless steps group under "No chapter".
+  const groups = new Map();   // chapterId|'' → { name, rows: [] }
   for (const s of srcSteps) {
-    const row = document.createElement('label');
-    row.style.cssText = 'display:flex;align-items:center;gap:10px;padding:4px 6px;border-radius:6px;cursor:pointer;';
-    row.addEventListener('mouseenter', () => row.style.background = 'rgba(127,127,127,0.10)');
-    row.addEventListener('mouseleave', () => row.style.background = '');
-    const cb = document.createElement('input');
-    cb.type = 'checkbox';
-    cb.addEventListener('change', () => { cb.checked ? checked.add(s.id) : checked.delete(s.id); refresh(); });
-    const thumb = document.createElement('div');
-    thumb.style.cssText = 'width:60px;height:40px;flex-shrink:0;border-radius:4px;background:rgba(127,127,127,0.15);overflow:hidden;display:flex;align-items:center;justify-content:center;';
-    if (s.thumbnail) {
-      const img = document.createElement('img');
-      img.src = s.thumbnail;
-      img.style.cssText = 'width:100%;height:100%;object-fit:cover;';
-      thumb.appendChild(img);
-    } else thumb.textContent = '·';
-    const info = document.createElement('div');
-    info.style.cssText = 'flex:1;min-width:0;';
-    const ch = s.chapterId ? chapterName.get(s.chapterId) : null;
-    info.innerHTML = `
-      <div class="small" style="font-weight:600;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">${esc(s.name || 'Step')}${s.groupHead ? ' ⊞' : s.groupId ? ' ·sub' : ''}</div>
-      <div class="small muted" style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">${ch ? esc(ch) + ' · ' : ''}${s.voiceText ? '🎙 ' : ''}${s.hidden ? '🚫 hidden' : ''}</div>`;
-    row.append(cb, thumb, info);
-    list.appendChild(row);
-    row._cb = cb; row._id = s.id;
+    const key = s.chapterId || '';
+    if (!groups.has(key)) groups.set(key, { name: key ? (chapterName.get(key) || 'Chapter') : 'No chapter', rows: [] });
+    groups.get(key).rows.push(s);
+  }
+  const multiGroup = groups.size > 1 || [...groups.keys()][0] !== '';   // single real chapter still gets its header
+
+  let stepNo = 0;
+  for (const [gkey, g] of groups) {
+    const groupRowEls = [];
+    let headerCb = null;
+    if (multiGroup || gkey) {
+      const head = document.createElement('div');
+      head.style.cssText = 'display:flex;align-items:center;gap:8px;padding:6px 6px 2px;margin-top:4px;border-top:1px solid var(--line,#334155);';
+      headerCb = document.createElement('input');
+      headerCb.type = 'checkbox';
+      headerCb.title = 'Select / deselect every step in this chapter';
+      const label = document.createElement('div');
+      label.className = 'small';
+      label.style.cssText = 'font-weight:700;flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;';
+      label.innerHTML = `📖 ${esc(g.name)} <span class="muted" style="font-weight:400;">— ${g.rows.length} step(s)</span>`;
+      head.append(headerCb, label);
+      list.appendChild(head);
+      headerCb.addEventListener('change', () => {
+        for (const r of groupRowEls) {
+          r._cb.checked = headerCb.checked;
+          headerCb.checked ? checked.add(r._id) : checked.delete(r._id);
+        }
+        headerCb.indeterminate = false;
+        refresh();
+      });
+    }
+    const syncHeader = () => {
+      if (!headerCb) return;
+      const on = groupRowEls.filter(r => r._cb.checked).length;
+      headerCb.checked       = on === groupRowEls.length && on > 0;
+      headerCb.indeterminate = on > 0 && on < groupRowEls.length;
+    };
+
+    for (const s of g.rows) {
+      stepNo++;
+      const row = document.createElement('label');
+      row.style.cssText = 'display:flex;align-items:center;gap:10px;padding:4px 6px 4px 14px;border-radius:6px;cursor:pointer;';
+      row.addEventListener('mouseenter', () => row.style.background = 'rgba(127,127,127,0.10)');
+      row.addEventListener('mouseleave', () => row.style.background = '');
+      const cb = document.createElement('input');
+      cb.type = 'checkbox';
+      cb.addEventListener('change', () => { cb.checked ? checked.add(s.id) : checked.delete(s.id); syncHeader(); refresh(); });
+      const thumb = document.createElement('div');
+      thumb.style.cssText = 'width:60px;height:40px;flex-shrink:0;border-radius:4px;background:rgba(127,127,127,0.15);overflow:hidden;display:flex;align-items:center;justify-content:center;';
+      if (s.thumbnail) {
+        const img = document.createElement('img');
+        img.src = s.thumbnail;
+        img.style.cssText = 'width:100%;height:100%;object-fit:cover;';
+        thumb.appendChild(img);
+      } else thumb.textContent = '·';
+      const info = document.createElement('div');
+      info.style.cssText = 'flex:1;min-width:0;';
+      info.innerHTML = `
+        <div class="small" style="font-weight:600;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;"><span class="muted" style="font-weight:400;">${stepNo}.</span> ${esc(s.name || 'Step')}${s.groupHead ? ' ⊞' : s.groupId ? ' ·sub' : ''}</div>
+        <div class="small muted" style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">${s.voiceText ? '🎙 ' : ''}${s.hidden ? '🚫 hidden' : ''}</div>`;
+      row.append(cb, thumb, info);
+      list.appendChild(row);
+      row._cb = cb; row._id = s.id; row._syncHeader = syncHeader;
+      groupRowEls.push(row);
+    }
   }
 
   dlg.querySelector('#imp-all').addEventListener('click', () => {
-    for (const row of list.children) { row._cb.checked = true; checked.add(row._id); }
+    for (const row of list.children) {
+      if (!row._cb) continue;                       // chapter header
+      row._cb.checked = true; checked.add(row._id);
+      row._syncHeader?.();
+    }
     refresh();
   });
   dlg.querySelector('#imp-none').addEventListener('click', () => {
-    for (const row of list.children) row._cb.checked = false;
+    for (const row of list.children) {
+      if (!row._cb) continue;                       // chapter header
+      row._cb.checked = false;
+      row._syncHeader?.();
+    }
     checked.clear(); refresh();
   });
   dlg.querySelector('#imp-cancel').addEventListener('click', () => { dlg.close(); dlg.remove(); });
