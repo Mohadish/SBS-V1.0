@@ -4972,6 +4972,19 @@ export function beginOverlaySustainedFade(durationMs, easeFn, onDone) {
 }
 
 function _beginOverlayFade(durationMs, easeFn, onDone, mode) {
+  // 🎬 V0.3.2.196 — EVERY overlay fade completion triggers parked clips,
+  // centrally. Before, only the PHASED engine's overlay block did; in
+  // SIMULTANEOUS mode the fade's onDone merely resolved a promise and the
+  // clip start relied on a load-time "no fade active" fallback — which in
+  // EXPORT races the .95 arming order (load completes BEFORE the fade
+  // arms) and started the clip with no settle pause. beginPlayback() is
+  // idempotent (anchored players are skipped) so the phased path's own
+  // call stays harmless.
+  const _origDone = onDone;
+  onDone = () => {
+    try { videoOverlay.beginPlayback(); } catch { /* no clips — fine */ }
+    if (_origDone) _origDone();
+  };
   if (!_layer || !_ghostLayer) { if (onDone) onDone(); return; }
   // Cancel any in-flight crossfade so the new one isn't fighting it.
   if (_activeFade?.onDone) {
@@ -5244,11 +5257,19 @@ async function _loadFromActiveStep() {
     }
   }
   // V0.3.2.84 — clips park until triggered. With an overlay fade in flight,
-  // the phase engine triggers playback when the fade COMPLETES (fade lands
-  // on the frozen first frame). Without one (anim string has no overlay
-  // slot → this load runs post-animation), start immediately: the clip
-  // plays during the hold, which the duration model sizes to fit.
-  if (!_activeFade) videoOverlay.beginPlayback();
+  // the fade's completion triggers playback (fade lands on the frozen
+  // first frame — central wrapper in _beginOverlayFade since .196).
+  // Without one (anim string has no overlay slot → this load runs
+  // post-animation), start immediately: the clip plays during the hold,
+  // which the duration model sizes to fit.
+  //
+  // ⏱ V0.3.2.196 — DEFERRED one macrotask. In export the arming order is
+  // load-first-fade-second (V0.3.2.95), so checking _activeFade
+  // synchronously here saw "no fade" a beat before the fade armed and
+  // started the clip with no settle pause (live never raced — its load
+  // finishes after arming). The awaited continuation that arms the fade
+  // runs on microtasks, so one setTimeout(0) is guaranteed to observe it.
+  setTimeout(() => { if (!_activeFade) videoOverlay.beginPlayback(); }, 0);
 }
 
 async function _recreateNode(spec) {
