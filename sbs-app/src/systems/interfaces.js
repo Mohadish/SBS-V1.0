@@ -112,8 +112,12 @@ export async function insertFirstInterface() {
   if (!folder) return { ok: false, error: 'no library folder' };
   const imgs = await listLibraryImages();
   if (!imgs.length) return { ok: false, error: 'no images in the library folder' };
-  const first = imgs[0];
-  const dataUrl = await loadImageDataUrl(first.path, first.name);
+  return _insertInterfaceImage(imgs[0].path, imgs[0].name);
+}
+
+/** Shared insert core — path+name → tagged interface node at the default pose. */
+async function _insertInterfaceImage(imgPath, imgName) {
+  const dataUrl = await loadImageDataUrl(imgPath, imgName);
   if (!dataUrl) return { ok: false, error: 'could not read the image file' };
 
   let node;
@@ -123,13 +127,41 @@ export async function insertFirstInterface() {
 
   node.addName?.('interface');
   node.setAttr('isInterface', true);
-  node.setAttr('interfaceImage', first.name);
+  node.setAttr('interfaceImage', imgName);
 
   const def = getDefaultPose();
   if (def) _applyGeom(node, def);
   else     setDefaultPose(_geomOf(node));
   node.setAttr('atDefault', true);   // born at the default condition
-  return { ok: true, node, name: first.name };
+  return { ok: true, node, name: imgName };
+}
+
+/**
+ * 🖼 V0.3.2.189 — first-time flow, redesigned per the user: instead of the
+ * native FOLDER picker (which hides the files, so you choose blind), open an
+ * IMAGE file dialog — you SEE the images while browsing. The picked file is
+ * inserted immediately (right-click it to change the image, as always), and
+ * its parent folder becomes the interface library for every insert after.
+ */
+export async function chooseAndInsertInterfaceFile() {
+  const nat = window.sbsNative;
+  if (!nat?.openFile) {
+    // Old preload / web — fall back to the folder flow.
+    const folder = await chooseLibraryFolder();
+    return folder ? insertFirstInterface() : { ok: false, cancelled: true };
+  }
+  const path = await nat.openFile({
+    title: 'Choose an interface image — its folder becomes your library',
+    filters: [{ name: 'Images', extensions: [...IMG_EXT] }],
+  });
+  if (!path) return { ok: false, cancelled: true };
+  const norm   = path.replace(/\\/g, '/');
+  const cut    = norm.lastIndexOf('/');
+  const folder = norm.slice(0, cut);
+  const name   = norm.slice(cut + 1);
+  setLibraryFolder(folder);
+  const res = await _insertInterfaceImage(`${folder}/${name}`, name);
+  return { ...res, folder };
 }
 
 /** True if a Konva node is one of our interface overlays. */

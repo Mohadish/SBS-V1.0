@@ -145,15 +145,19 @@ export function initOverlayToolbar() {
       setStatus(`Video failed: ${e.message}`, 'danger', 10000);
     }
   });
-  // Interface: first click (no folder yet) prompts for the library folder;
-  // every click after that inserts the first library image at the default pose.
+  // Interface: 🖼 V0.3.2.189 — first click (no library yet) opens an IMAGE
+  // file dialog: you SEE the images while browsing (the folder picker hid
+  // them — "you wanna see what you're looking for"), the picked image is
+  // inserted right away, and its folder becomes the library. Later clicks
+  // insert the first library image at the default pose, as before.
   btnIface.addEventListener('click', async () => {
     if (!interfaces.getLibraryFolder()) {
-      const folder = await interfaces.chooseLibraryFolder();
-      if (!folder) { setStatus('No interface folder chosen.', 'warn', 2500); return; }
-      const imgs = await interfaces.listLibraryImages();
-      const name = folder.split(/[\\/]/).filter(Boolean).pop() || folder;
-      setStatus(`Interface library set → "${name}" (${imgs.length} image${imgs.length === 1 ? '' : 's'}). Click again to insert.`, 'success', 5000);
+      const res = await interfaces.chooseAndInsertInterfaceFile();
+      if (res.cancelled) { setStatus('No interface image chosen.', 'warn', 2500); return; }
+      if (res.ok) {
+        const folderName = (res.folder || '').split(/[\\/]/).filter(Boolean).pop() || '';
+        setStatus(`Interface inserted: ${res.name} — library set to "${folderName}". Right-click the image to change it.`, 'success', 6000);
+      } else setStatus(`Couldn’t insert interface: ${res.error}.`, 'warn', 3000);
       return;
     }
     const res = await interfaces.insertFirstInterface();
