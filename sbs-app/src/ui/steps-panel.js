@@ -15,7 +15,7 @@ import { cloneShareStrings } from '../core/clone.js';   // copy/paste steps with
 import { pickProjectFile, readProjectForImport, assetPathCandidates, applySpecFieldsToNodes, _migrateAnimationPresets } from '../io/project.js';   // 📥 import steps from another project
 import { loadModelFile } from '../io/importers.js';       // 📥 Phase 2 — import the missing CAD too
 import { materials } from '../systems/materials.js';       // 📥 Phase 2 — colour defaults for imported meshes
-import { applyNodeSourceTransformToObject3D, isTransformNode, captureTransformSnapshot } from '../core/transforms.js';   // 📥 Phase 2 — model source transform (×100 scale case) + reverse backfill
+import { applyNodeSourceTransformToObject3D, isTransformNode, captureTransformSnapshot, applyAllVisibility } from '../core/transforms.js';   // 📥 Phase 2 — model source transform (×100 scale case) + reverse backfill + archived sweep
 import { serializeModelTree, flatten as flattenTree } from '../core/nodes.js';   // 📥 V0.3.2.191 — reverse backfill of TARGET scene into imported steps
 import { regenerateHardwareAsset } from '../systems/hardware-actions.js';     // 📥 Phase 2 — procedural hardware, no file needed
 import { setStatus } from './status.js';
@@ -2401,7 +2401,7 @@ async function _doImportSteps(project, srcStepIds, srcName, targetStepId, assetP
       }
 
       steps.injectModelIntoAllSteps(modelNode, { visible: false });
-      loadedModels.push({ entry: plan.entry, modelNode });
+      loadedModels.push({ entry: plan.entry, modelNode, specNode });
       (function walk(n) {
         if (n.type === 'mesh') importedMeshIds.add(n.id);
         for (const c of (n.children || [])) walk(c);
@@ -2637,6 +2637,30 @@ async function _doImportSteps(project, srcStepIds, srcName, targetStepId, assetP
     try { materials.applyAll(); } catch { /* colours re-apply on next step change */ }
     try { steps.reintegrateFromStep0(state.get('activeStepId')); }
     catch (err) { console.warn('[import] post-load reintegration failed:', err); }
+
+    // 🗄 V0.3.2.192 — AUTHORITATIVE archived re-apply, AFTER the rebuilds
+    // (user field report: archived parts came in visible). The spec-field
+    // pass did write `archived` onto the live nodes, but reintegrate's
+    // rebuild creates folder groups FRESH without it — the same documented
+    // gap the project-load flow closes with a final applyArch walk. Same
+    // recipe here, scoped to the imported models' source specs, then one
+    // visibility sweep so archived subtrees actually hide.
+    try {
+      const nbm = state.get('nodeById');
+      let stamped = 0;
+      const applyArch = (spec) => {
+        if (!spec) return;
+        const live = nbm?.get(spec.id);
+        if (live && live.archived !== (spec.archived === true)) { live.archived = spec.archived === true; stamped++; }
+        for (const c of (spec.children || [])) applyArch(c);
+      };
+      for (const lm of loadedModels) applyArch(lm.specNode);
+      if (stamped) {
+        applyAllVisibility(state.get('treeData'), steps.object3dById);
+        state.emit('change:treeData', state.get('treeData'));
+        console.log(`[import] archived flags re-applied on ${stamped} imported node(s).`);
+      }
+    } catch (err) { console.warn('[import] archived re-apply failed:', err); }
   }
 
   setStatus(`Imported ${copies.length} step(s) from "${srcName}"`
