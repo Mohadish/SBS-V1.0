@@ -87,12 +87,15 @@ export function resolveVideoPath(node) {
   return _norm(node?.getAttr?.('videoPath') || '');
 }
 
-/** file:// URL for a Windows or POSIX absolute path. */
+/** file:// URL for a Windows or POSIX absolute path. encodeURI leaves '#'
+ *  (legal in Windows folder names) and '?' unescaped — either one silently
+ *  truncates the URL into a fragment/query and the file never loads. */
 export function fileUrlFor(absPath) {
   const p = _norm(absPath);
   if (!p) return '';
-  if (/^[a-zA-Z]:\//.test(p)) return 'file:///' + encodeURI(p);
-  return 'file://' + encodeURI(p);
+  const enc = encodeURI(p).replace(/#/g, '%23').replace(/\?/g, '%3F');
+  if (/^[a-zA-Z]:\//.test(p)) return 'file:///' + enc;
+  return 'file://' + enc;
 }
 
 // ─── Transcode-on-demand (V0.3.2.91) ────────────────────────────────────────

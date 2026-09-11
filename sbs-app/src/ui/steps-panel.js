@@ -22,6 +22,7 @@ import { regenerateHardwareAsset } from '../systems/hardware-actions.js';     //
 import { setStatus } from './status.js';
 import { showContextMenu } from './context-menu.js';
 import { exportTimelineVideo, exportTimelineSbsProc, downloadBlob, saveBlobToPath } from '../systems/video-export.js';
+import { fileUrlFor } from '../systems/video-overlay.js';   // ▶ import-dialog step preview
 
 /** Ask WHERE to save an export FIRST (V0.3.2.30). Returns the chosen path
  *  (extension enforced), null when the user cancelled, or undefined when the
@@ -2210,6 +2211,25 @@ function _stepVideoKind(step) {
   return full ? 'full' : (has ? 'has' : null);
 }
 
+/** ▶ Voice-over for a SOURCE step, as a playable data URL: inline dataUrl
+ *  wins; else the WAV is read from the source project's own audio cache
+ *  (<srcDir>/<settings.audioCacheFolder>/<narration.dataFile>). Returns
+ *  null when the step has no usable audio (text-only, voice off, no cache). */
+async function _srcNarrationDataUrl(step, srcProjectPath, srcProject) {
+  const n = step?.narration;
+  if (!n || step.voiceEnabled === false) return null;
+  if (n.dataUrl) return n.dataUrl;
+  if (!n.dataFile || !srcProjectPath || !window.sbsNative?.readFile) return null;
+  const dir    = String(srcProjectPath).replace(/[\\/][^\\/]*$/, '');
+  const folder = String(srcProject?.settings?.audioCacheFolder || '').trim().replace(/[\\/]+$/, '');
+  if (!dir || !folder) return null;
+  try {
+    const res = await window.sbsNative.readFile(`${dir}/${folder}/${n.dataFile}`, 'base64');
+    if (!res?.ok || !res.data) return null;
+    return `data:${n.mime || 'audio/wav'};base64,${res.data}`;
+  } catch { return null; }
+}
+
 /** First existing candidate path for a source asset, probed via Electron. */
 async function _resolveSourceAssetFile(entry, srcProjectPath) {
   const cands = assetPathCandidates(entry, srcProjectPath || null);
@@ -2243,7 +2263,8 @@ function _showImportStepsDialog(project, srcSteps, srcName, targetStepId, srcPro
   const esc = (s) => String(s ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[c]);
 
   dlg.innerHTML = `
-    <div style="display:flex;flex-direction:column;max-height:82vh;">
+    <div style="display:flex;align-items:stretch;max-height:82vh;">
+    <div style="display:flex;flex-direction:column;max-height:82vh;flex:1;min-width:0;">
       <div style="padding:12px 16px;border-bottom:1px solid var(--line);">
         <strong style="font-size:14px;">📥 Import steps from "${esc(srcName)}"</strong>
         <div class="small muted" style="margin-top:2px;">Selected steps are inserted after the step you right-clicked. One undo entry.</div>
@@ -2268,6 +2289,23 @@ function _showImportStepsDialog(project, srcSteps, srcName, targetStepId, srcPro
         <button class="btn" id="imp-cancel">Cancel</button>
         <button class="btn" id="imp-go" disabled>Import</button>
       </div>
+    </div>
+    <div id="imp-preview" style="display:none;width:336px;flex-shrink:0;border-left:1px solid var(--line);padding:12px;flex-direction:column;gap:8px;">
+      <div style="display:flex;align-items:center;gap:8px;">
+        <strong class="small" id="imp-pv-name" style="flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">Preview</strong>
+        <button class="btn" id="imp-pv-close" title="Close the preview pane" style="height:22px;padding:0 8px;flex-shrink:0;">✕</button>
+      </div>
+      <div style="width:312px;height:176px;background:#000;border-radius:6px;overflow:hidden;display:flex;align-items:center;justify-content:center;flex-shrink:0;">
+        <video id="imp-pv-video" style="width:100%;height:100%;object-fit:contain;display:none;cursor:pointer;" muted></video>
+        <img id="imp-pv-thumb" style="width:100%;height:100%;object-fit:contain;display:none;" />
+        <div id="imp-pv-msg" class="small muted" style="display:none;padding:8px;text-align:center;"></div>
+      </div>
+      <div class="small muted" id="imp-pv-status" style="line-height:1.4;"></div>
+      <div style="display:flex;gap:8px;">
+        <button class="btn" id="imp-pv-replay" style="height:24px;padding:0 10px;">▶ Replay</button>
+      </div>
+      <div class="small muted" style="margin-top:auto;">Click the video to pause / resume; after it ends, a click replays.</div>
+    </div>
     </div>`;
 
   const list    = dlg.querySelector('#imp-list');
@@ -2277,6 +2315,120 @@ function _showImportStepsDialog(project, srcSteps, srcName, targetStepId, srcPro
   const assetsBox  = dlg.querySelector('#imp-assets');
   const assetRows  = dlg.querySelector('#imp-asset-rows');
   const checked = new Set();
+
+  // ▶ V0.3.2.207 — per-step PREVIEW pane (right side). Plays the step's
+  // rendered clip straight from the SOURCE's render cache (the same segment
+  // window the 🎬 import would copy) plus its voice-over WAV from the
+  // source's audio cache. Steps with no cached segment fall back to the
+  // thumbnail + audio. Nothing here touches app state — pure playback.
+  const pvPane   = dlg.querySelector('#imp-preview');
+  const pvName   = dlg.querySelector('#imp-pv-name');
+  const pvVideo  = dlg.querySelector('#imp-pv-video');
+  const pvThumb  = dlg.querySelector('#imp-pv-thumb');
+  const pvMsg    = dlg.querySelector('#imp-pv-msg');
+  const pvStatus = dlg.querySelector('#imp-pv-status');
+  const pvAudio  = new Audio();
+  let pvToken    = 0;       // stale-async guard — a newer preview wins
+  let pvCurrent  = null;    // step loaded in the pane (for Replay)
+  let pvWindowDone = false; // the clip reached its segment window's end
+
+  const _pvStopMedia = () => {
+    pvToken++;   // invalidates an in-flight _preview too (its WAV read may
+                 // still be crossing IPC — without this, closing the pane or
+                 // dialog mid-load let the voice-over start afterwards)
+    try { pvVideo.pause(); } catch { /* not playing */ }
+    pvVideo.removeAttribute('src');
+    try { pvVideo.load(); } catch { /* releases the file handle */ }
+    try { pvAudio.pause(); } catch { /* not playing */ }
+    pvAudio.removeAttribute('src');
+  };
+  const _pvShow = (el) => {
+    for (const e of [pvVideo, pvThumb, pvMsg]) e.style.display = (e === el) ? 'block' : 'none';
+  };
+  const _preview = async (s) => {
+    _pvStopMedia();               // bumps pvToken — take ours AFTER the stop
+    const token = ++pvToken;
+    pvWindowDone = false;
+    pvCurrent = s;
+    pvPane.style.display = 'flex';
+    dlg.style.width = 'min(920px,94vw)';
+    pvName.textContent = s.name || 'Step';
+    pvStatus.textContent = '…';
+    const seg = videoBySrcId.get(s.id) || null;
+    const audioUrl = await _srcNarrationDataUrl(s, srcProjectPath, project);
+    if (token !== pvToken) return;   // user moved on while the WAV loaded
+    const bits = [];
+    bits.push(seg ? `🎬 ${((seg.outMs - seg.inMs) / 1000).toFixed(1)}s rendered clip`
+                  : 'no rendered clip in the source cache');
+    if (audioUrl) bits.push('🎙 voice-over');
+    else if (s.voiceText || s.narration?.text) bits.push('🎙 text only — no cached audio');
+    pvStatus.textContent = bits.join(' · ');
+    if (audioUrl) pvAudio.src = audioUrl;
+    if (seg) {
+      _pvShow(pvVideo);
+      pvVideo.src = fileUrlFor(seg.file);
+      pvVideo.addEventListener('loadedmetadata', () => {
+        if (token !== pvToken) return;
+        pvVideo.currentTime = (seg.inMs || 0) / 1000;
+        pvVideo.play().catch(() => {});
+        if (audioUrl) pvAudio.play().catch(() => {});
+      }, { once: true });
+      // A stale sidecar can name an mp4 that is gone (interrupted render /
+      // manual purge) — without this the pane is a silent black box and the
+      // voice-over (gated on loadedmetadata) never starts.
+      pvVideo.addEventListener('error', () => {
+        if (token !== pvToken) return;
+        if (s.thumbnail) { _pvShow(pvThumb); pvThumb.src = s.thumbnail; }
+        else { _pvShow(pvMsg); pvMsg.textContent = 'The rendered clip could not be opened (stale cache entry?).'; }
+        pvStatus.textContent = `⚠ clip failed to load${audioUrl ? ' · 🎙 voice-over' : ''}`;
+        if (audioUrl) pvAudio.play().catch(() => {});
+      }, { once: true });
+      const onTime = () => {
+        if (token !== pvToken) { pvVideo.removeEventListener('timeupdate', onTime); return; }
+        if (seg.outMs && pvVideo.currentTime >= seg.outMs / 1000) {
+          pvVideo.pause();
+          pvWindowDone = true;   // the click handler must not resume PAST the
+                                 // window — the same mp4 holds other steps
+          pvVideo.removeEventListener('timeupdate', onTime);
+        }
+      };
+      pvVideo.addEventListener('timeupdate', onTime);
+    } else if (s.thumbnail) {
+      _pvShow(pvThumb);
+      pvThumb.src = s.thumbnail;
+      if (audioUrl) pvAudio.play().catch(() => {});
+    } else {
+      _pvShow(pvMsg);
+      pvMsg.textContent = audioUrl ? 'Playing voice-over (no visual for this step).' : 'Nothing to preview for this step.';
+      if (audioUrl) pvAudio.play().catch(() => {});
+    }
+  };
+  pvVideo.addEventListener('click', () => {
+    // Anything audible/moving → pause it all. Otherwise: window exhausted →
+    // replay from the top (resuming would run into the NEXT step's frames —
+    // the mp4 is a shared multi-step segment); else plain resume, without
+    // rewinding a voice-over that already ended (play() on an ended element
+    // seeks back to 0 per spec).
+    const videoPlaying = !pvVideo.paused;
+    const audioPlaying = !!pvAudio.src && !pvAudio.paused && !pvAudio.ended;
+    if (videoPlaying || audioPlaying) {
+      pvVideo.pause();
+      pvAudio.pause();
+    } else if (pvWindowDone) {
+      if (pvCurrent) _preview(pvCurrent);
+    } else {
+      pvVideo.play().catch(() => {});
+      if (pvAudio.src && !pvAudio.ended) pvAudio.play().catch(() => {});
+    }
+  });
+  dlg.querySelector('#imp-pv-replay').addEventListener('click', () => { if (pvCurrent) _preview(pvCurrent); });
+  dlg.querySelector('#imp-pv-close').addEventListener('click', () => {
+    _pvStopMedia();
+    pvPane.style.display = 'none';
+    dlg.style.width = 'min(560px,92vw)';
+  });
+  // Esc / Cancel / Import — however the dialog closes, kill the audio too.
+  dlg.addEventListener('close', _pvStopMedia);
 
   const _assetWanted = (aid, needed) => {
     const st = assetState.get(aid);
@@ -2534,7 +2686,16 @@ function _showImportStepsDialog(project, srcSteps, srcName, targetStepId, srcPro
       info.innerHTML = `
         <div class="small" style="font-weight:600;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;"><span class="muted" style="font-weight:400;">${stepNo}.</span> ${esc(s.name || 'Step')}${s.groupHead ? ' ⊞' : s.groupId ? ' ·sub' : ''}</div>
         <div class="small muted" style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">${vBadge}${s.voiceText ? '🎙 ' : ''}${s.hidden ? '🚫 hidden' : ''}</div>`;
-      row.append(cb, thumb, info);
+      // ▶ preview — plays the source-cache clip + voice-over in the side pane.
+      // The row is a <label>: preventDefault stops the click from also
+      // toggling the step checkbox.
+      const pv = document.createElement('button');
+      pv.className = 'btn';
+      pv.textContent = '▶';
+      pv.title = 'Preview this step: its rendered clip from the source cache (when one exists) and its voice-over.';
+      pv.style.cssText = 'height:22px;padding:0 7px;flex-shrink:0;font-size:10px;';
+      pv.addEventListener('click', (e) => { e.preventDefault(); e.stopPropagation(); _preview(s); });
+      row.append(cb, thumb, info, pv);
       list.appendChild(row);
       row._cb = cb; row._id = s.id; row._syncHeader = syncHeader;
       row._name = (s.name || '').toLowerCase();   // 🔎 search target
