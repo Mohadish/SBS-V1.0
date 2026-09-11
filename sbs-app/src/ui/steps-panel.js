@@ -2303,7 +2303,15 @@ function _showImportStepsDialog(project, srcSteps, srcName, targetStepId, srcPro
       const st     = assetState.get(aid) || { resolvedPath: null, browsedFile: null, wanted: 'auto' };
       assetState.set(aid, st);
       const needed = m.neededIn > 0;
-      const wanted = _assetWanted(aid, needed);
+      // 🔄 V0.3.2.205 — the DEFAULT is simply CHECKED for every model a
+      // selected mesh-import step references. The visibility verdict proved
+      // an unreliable gatekeeper in the field (a step the user knew showed
+      // the model analysed as "hidden" and silently unticked it — twice);
+      // it stays as the informational line below, nothing more. Weight is
+      // already protected by the import-time pruning of never-visible
+      // meshes, and a deliberate untick is still respected until the step
+      // set changes (the .204 reset rule).
+      const wanted = _assetWanted(aid, true);
       // ⚙ Procedural hardware assets (legacy screws) are GENERATED — no file.
       const isProcedural = entry?.type === 'hardware' && entry?.hardware;
       const hasFile = isProcedural || !!(st.browsedFile || st.resolvedPath);
@@ -2349,7 +2357,7 @@ function _showImportStepsDialog(project, srcSteps, srcName, targetStepId, srcPro
     assetsBox.style.display = missing.size ? 'block' : 'none';
 
     // Skipped-but-referenced note (parts stay missing until that model is loaded).
-    const skipped = [...missing.keys()].filter(aid => !_assetWanted(aid, missing.get(aid).neededIn > 0));
+    const skipped = [...missing.keys()].filter(aid => !_assetWanted(aid, true));   // same default as the rows
     if (skipped.length) {
       warnEl.style.display = 'block';
       warnEl.textContent = `⚠ Skipping: ${skipped.map(aid => srcAssetById.get(aid)?.name || aid).join(', ')} — those parts stay missing until the model is loaded here.`;
