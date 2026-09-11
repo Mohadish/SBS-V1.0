@@ -630,8 +630,14 @@ ipcMain.handle('dialog:saveHeader', async (_, defaultName) => {
 });
 ipcMain.handle('dialog:openHeader', async () => {
   const result = await dialog.showOpenDialog(mainWindow, {
-    title: 'Open Header Setup',
-    filters: [{ name: 'SBS Header Setup', extensions: ['sbsheader','json'] }],
+    title: 'Open Header Setup (or grab headers from a project)',
+    // 📥 V0.3.2.184 — a whole .sbsproj is a valid source: the renderer
+    // detects the extension and pulls the project's header setup out of it.
+    filters: [
+      { name: 'Header Setup or SBS Project', extensions: ['sbsheader', 'json', 'sbsproj'] },
+      { name: 'SBS Header Setup',            extensions: ['sbsheader', 'json'] },
+      { name: 'SBS Project (grab headers)',  extensions: ['sbsproj'] },
+    ],
     properties: ['openFile'],
   });
   return result.canceled ? null : result.filePaths[0];

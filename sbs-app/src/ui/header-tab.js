@@ -29,7 +29,8 @@
 import { state }      from '../core/state.js';
 import { setStatus }  from './status.js';
 import * as header     from '../systems/header.js';
-import { selectHeader, exportHeaderSetup, importHeaderSetup } from '../systems/header.js';
+import { selectHeader, exportHeaderSetup, importHeaderSetup, headerSetupFromProject } from '../systems/header.js';
+import { readProjectForImport } from '../io/project.js';   // 📥 grab headers straight from a .sbsproj
 import * as actions    from '../systems/actions.js';
 import { listStyleTemplates } from '../systems/style-templates.js';
 import * as subtitles  from '../systems/subtitles.js';   // 🌐 per-step subtitle overrides + translation (V0.3.2.63)
@@ -604,37 +605,52 @@ async function _onSaveSetup() {
   setStatus('Saved header setup (downloaded).');
 }
 
-async function _onLoadSetup() {
-  let json = null;
-
+/**
+ * Resolve the picked source into a header-setup payload. Two shapes:
+ * a .sbsheader/.json (plain JSON), or 📥 V0.3.2.184 a whole .sbsproj —
+ * parsed read-only and repackaged, so the user can grab another
+ * project's headers directly. Returns null after emitting a status.
+ */
+export async function pickHeaderSetupPayload() {
   if (window.sbsNative?.openHeader && window.sbsNative?.readFile) {
     const path = await window.sbsNative.openHeader();
-    if (!path) return;
+    if (!path) return null;
+    if (/\.sbsproj$/i.test(path)) {
+      const r = await window.sbsNative.readFile(path, 'buffer');
+      if (!r?.ok) { setStatus(`Load failed: ${r?.error || 'unknown'}`, 'danger'); return null; }
+      try {
+        const project = await readProjectForImport(new File([r.data], path.split(/[\\/]/).pop()));
+        return headerSetupFromProject(project);
+      } catch (err) { setStatus(`Could not read project: ${err.message}`, 'danger'); return null; }
+    }
     const res = await window.sbsNative.readFile(path, 'utf-8');
-    if (!res?.ok) { setStatus(`Load failed: ${res?.error || 'unknown'}`, 'danger'); return; }
-    json = res.data;
-  } else {
-    // Browser fallback — file picker.
-    json = await new Promise(resolve => {
-      const input = document.createElement('input');
-      input.type   = 'file';
-      input.accept = '.sbsheader,.json,application/json';
-      input.onchange = () => {
-        const f = input.files?.[0];
-        if (!f) { resolve(null); return; }
-        const r = new FileReader();
-        r.onload  = () => resolve(String(r.result || ''));
-        r.onerror = () => resolve(null);
-        r.readAsText(f);
-      };
-      input.click();
-    });
-    if (!json) return;
+    if (!res?.ok) { setStatus(`Load failed: ${res?.error || 'unknown'}`, 'danger'); return null; }
+    try { return JSON.parse(res.data); }
+    catch { setStatus('Invalid .sbsheader file (not JSON).', 'danger'); return null; }
   }
+  // Browser fallback — file picker; a .sbsproj resolves through the
+  // read-only project parser (it may be gzipped — never read as text).
+  const f = await new Promise(resolve => {
+    const input = document.createElement('input');
+    input.type   = 'file';
+    input.accept = '.sbsheader,.json,.sbsproj,application/json';
+    input.onchange = () => resolve(input.files?.[0] || null);
+    input.click();
+  });
+  if (!f) return null;
+  if (/\.sbsproj$/i.test(f.name)) {
+    try { return headerSetupFromProject(await readProjectForImport(f)); }
+    catch (err) { setStatus(`Could not read project: ${err.message}`, 'danger'); return null; }
+  }
+  const text = await f.text().catch(() => null);
+  if (!text) return null;
+  try { return JSON.parse(text); }
+  catch { setStatus('Invalid .sbsheader file (not JSON).', 'danger'); return null; }
+}
 
-  let payload;
-  try { payload = JSON.parse(json); }
-  catch (err) { setStatus('Invalid .sbsheader file (not JSON).', 'danger'); return; }
+async function _onLoadSetup() {
+  const payload = await pickHeaderSetupPayload();
+  if (!payload) return;
 
   // Header tab load is ALWAYS additive — items are appended (duplicates
   // OK; user can clean up via the row ✕), templates are appended with

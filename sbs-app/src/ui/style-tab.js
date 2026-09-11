@@ -41,6 +41,7 @@ import {
   renameShapeStyle,
 } from '../systems/shape-styles.js';
 import { exportHeaderSetup, importHeaderSetup } from '../systems/header.js';
+import { pickHeaderSetupPayload } from './header-tab.js';   // 📥 shared source picker (.sbsheader or .sbsproj)
 import { setStatus }    from './status.js';
 import { promptString, chooseFromButtons } from './prompt.js';
 import { mountTextToolbar, unmountTextToolbar, setToolbarValues, setTextEffects } from './text-toolbar.js';
@@ -584,35 +585,10 @@ async function _onSaveSetup() {
 }
 
 async function _onLoadSetup() {
-  let json = null;
-
-  if (window.sbsNative?.openHeader && window.sbsNative?.readFile) {
-    const path = await window.sbsNative.openHeader();
-    if (!path) return;
-    const res = await window.sbsNative.readFile(path, 'utf-8');
-    if (!res?.ok) { setStatus(`Load failed: ${res?.error || 'unknown'}`, 'danger'); return; }
-    json = res.data;
-  } else {
-    json = await new Promise(resolve => {
-      const input = document.createElement('input');
-      input.type   = 'file';
-      input.accept = '.sbsheader,.json,application/json';
-      input.onchange = () => {
-        const f = input.files?.[0];
-        if (!f) { resolve(null); return; }
-        const r = new FileReader();
-        r.onload  = () => resolve(String(r.result || ''));
-        r.onerror = () => resolve(null);
-        r.readAsText(f);
-      };
-      input.click();
-    });
-    if (!json) return;
-  }
-
-  let payload;
-  try { payload = JSON.parse(json); }
-  catch (err) { setStatus('Invalid .sbsheader file (not JSON).', 'danger'); return; }
+  // 📥 V0.3.2.184 — shared picker (header-tab.js): accepts .sbsheader/.json
+  // AND a whole .sbsproj, repackaged read-only into the same payload.
+  const payload = await pickHeaderSetupPayload();
+  if (!payload) return;
 
   // Style tab loads the STYLE side of a .sbsheader, never the header
   // items — those live in the Header tab and shouldn't disappear when

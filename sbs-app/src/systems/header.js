@@ -1514,6 +1514,22 @@ export function exportHeaderSetup() {
 }
 
 /**
+ * 📥 V0.3.2.184 — repackage a parsed .sbsproj as a header-setup payload.
+ * A project's headers/styles sections carry exactly what a .sbsheader
+ * does, so "grab the headers straight from another project" is a
+ * read-only parse plus this repackage — importHeaderSetup then treats
+ * both sources identically.
+ */
+export function headerSetupFromProject(project) {
+  return {
+    _sbsheader: { version: 3, fromProject: true },
+    default: project?.headers?.default || {},
+    items:   project?.headers?.items   || [],
+    styles:  project?.styles?.items    || [],
+  };
+}
+
+/**
  * Load a .sbsheader payload. Behaviour per section is selectable via
  * `opts` so callers can decide whether to replace existing data or
  * append to it:
