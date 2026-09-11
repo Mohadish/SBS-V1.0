@@ -3013,10 +3013,12 @@ function _buildTransitionRow(step) {
       <select class="tran-cam-ease">${easingOptions(t.cameraEasing)}</select>
       <select class="tran-obj-ease">${easingOptions(t.objectEasing)}</select>
     </div>
-    <label style="display:flex;align-items:center;gap:6px;cursor:pointer;">
-      <input type="checkbox" class="tran-fade" ${t.visibilityFade !== false ? 'checked' : ''} />
-      <span class="small muted">Fade visibility changes</span>
-    </label>
+    <!-- "Fade visibility changes" checkbox REMOVED (V0.3.2.193): the
+         transition.visibilityFade flag was written by the UI and stored in
+         the schema but NEVER read by the transition engine — visibility
+         fades run unconditionally (V0.3.0.124/127 fade system). A checkbox
+         that does nothing is worse than none (user: "seems like a relic").
+         The schema field stays for file compatibility. -->
     <label style="display:flex;align-items:center;gap:6px;cursor:pointer;" title="When an object changes folders but barely moves, hold it still instead of letting it swing through a big arc.">
       <input type="checkbox" class="tran-reparent" ${t.reparentArc !== false ? 'checked' : ''} />
       <span class="small muted">Smooth reparent jumps</span>
@@ -3082,9 +3084,6 @@ function _buildTransitionRow(step) {
   });
   wrap.querySelector('.tran-obj-ease').addEventListener('change', e => {
     actions.updateTransition(stepId, { objectEasing: e.target.value });
-  });
-  wrap.querySelector('.tran-fade').addEventListener('change', e => {
-    actions.updateTransition(stepId, { visibilityFade: e.target.checked });
   });
   wrap.querySelector('.tran-reparent').addEventListener('change', e => {
     actions.updateTransition(stepId, { reparentArc: e.target.checked });
