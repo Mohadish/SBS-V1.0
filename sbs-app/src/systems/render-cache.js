@@ -904,10 +904,22 @@ export async function renderMissingSegments({ onProgress, signal, force = false,
         _stepsRange: [isFirst ? 0 : span.from - 1, span.to],
         _zeroLeadHold: !isFirst,          // first segment = its own hold, no lead
         _noAutoSync: true,
+        // 🅰 V0.3.2.198 — OPTIONAL companion coverage-mask stream (Export ▸
+        // "Render alpha masks"). The main mp4 is untouched; the mask rides
+        // beside it as seg-<key>.alpha.mp4 and only the step-import flow
+        // reads it (transparent import). Off by default — it costs render
+        // time.
+        _alphaMask: state.get('export')?.alphaMasks === true,
       });
       const bytes = new Uint8Array(await res.blob.arrayBuffer());
       let w = await window.sbsNative.writeFile(`${plan.dir}/seg-${span.key}.mp4`, bytes, null);
       if (!w?.ok) throw new Error(w?.error || 'mp4 write failed');
+      let hasAlpha = false;
+      if (res.alphaBuffer) {
+        const aw = await window.sbsNative.writeFile(`${plan.dir}/seg-${span.key}.alpha.mp4`, new Uint8Array(res.alphaBuffer), null);
+        if (aw?.ok) hasAlpha = true;
+        else console.warn('[render-cache] alpha mask write failed:', aw?.error);
+      }
       // Sidecar: duration + step offsets INSIDE the segment (assembly needs
       // these for audio placement + global markers). Marker times are already
       // encoded-frame times relative to the segment's own t=0.
@@ -916,6 +928,7 @@ export async function renderMissingSegments({ onProgress, signal, force = false,
         key: span.key, durationMs: res.totalDurationMs,
         epoch: RENDER_CACHE_EPOCH,   // cache generation — the purge deletes anything not from the current one
         fps: Number.isFinite(Number(exp.fps)) ? Number(exp.fps) : 50,   // for the phantom-frame correction at assembly
+        ...(hasAlpha ? { hasAlpha: true } : {}),   // 🅰 companion seg-<key>.alpha.mp4 exists
         steps: (res.stepMarkers || [])
           .filter(m => inSpan.has(m.stepId))          // drop the zero-frame lead step's marker
           .map(m => ({ stepId: m.stepId, ms: m.timeInMs })),
@@ -954,6 +967,12 @@ export async function renderMissingSegments({ onProgress, signal, force = false,
       if (!w?.ok) throw new Error(w?.error || 'mp4 copy failed');
       w = await window.sbsNative.writeFile(`${plan.dir}/seg-${span.key}.json`, JSON.stringify(sc), 'utf8');
       if (!w?.ok) throw new Error(w?.error || 'sidecar copy failed');
+      // 🅰 the companion mask (if any) rekeys along — best-effort.
+      try {
+        const am = await window.sbsNative.readFile(`${plan.dir}/seg-${oldKey}.alpha.mp4`, 'buffer');
+        if (am?.ok) await window.sbsNative.writeFile(`${plan.dir}/seg-${span.key}.alpha.mp4`,
+          am.data instanceof Uint8Array ? am.data : new Uint8Array(am.data), null);
+      } catch { /* no mask — fine */ }
       span.file = `${plan.dir}/seg-${span.key}.mp4`;
       rekeyed++;
     } catch (e) {
@@ -1016,6 +1035,13 @@ export async function planWithCacheStatus() {
       try {
         span.cached = !!(await window.sbsNative.fileExists(span.file))
                    && !!(await window.sbsNative.fileExists(`${dir}/seg-${span.key}.json`));
+        // 🅰 V0.3.2.198 — with "Render alpha masks" ON, a segment cached
+        // WITHOUT its mask counts as a MISS so the mask gets produced
+        // (surgical: only the spans being rendered pay). With the toggle
+        // off, an existing mask is simply kept.
+        if (span.cached && state.get('export')?.alphaMasks === true) {
+          span.cached = !!(await window.sbsNative.fileExists(`${dir}/seg-${span.key}.alpha.mp4`));
+        }
       } catch { /* treat as miss */ }
     }
     if (span.cached) hits++;

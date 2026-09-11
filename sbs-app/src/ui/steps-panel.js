@@ -2099,13 +2099,17 @@ async function _scanSourceRenderCache(srcProjectPath, srcProject = null) {
       let sc; try { sc = JSON.parse(r.data); } catch { continue; }
       if (!sc?.key) continue;
       const mp4   = `${dir}/seg-${sc.key}.mp4`;
+      // 🅰 companion coverage mask (V0.3.2.198) → transparent import possible.
+      const alphaPath = `${dir}/seg-${sc.key}.alpha.mp4`;
+      const alphaFile = (sc.hasAlpha === true || await window.sbsNative.fileExists?.(alphaPath).catch(() => false))
+        ? alphaPath : null;
       const steps = Array.isArray(sc.steps) ? sc.steps : [];
       for (let i = 0; i < steps.length; i++) {
         if (out.has(steps[i].stepId)) continue;   // a preferred dir already named it
         const inMs  = Number(steps[i].ms) || 0;
         const outMs = (i + 1 < steps.length) ? (Number(steps[i + 1].ms) || 0) : (Number(sc.durationMs) || 0);
         if (outMs > inMs) {
-          out.set(steps[i].stepId, { file: mp4, key: sc.key, inMs, outMs, segDurationMs: Number(sc.durationMs) || 0 });
+          out.set(steps[i].stepId, { file: mp4, alphaFile, key: sc.key, inMs, outMs, segDurationMs: Number(sc.durationMs) || 0 });
         }
       }
     }
@@ -2207,9 +2211,10 @@ function _showImportStepsDialog(project, srcSteps, srcName, targetStepId, srcPro
   // a Browse-picked File override, and whether the user wants it imported.
   const assetState = new Map();   // assetId → { resolvedPath, browsedFile, wanted:'auto'|'yes'|'no' }
   const assetRowEls = new Map();  // assetId → row element (rebuilt on refresh)
-  // 🎬 stepId → segment window in the SOURCE's _rendercache (async scan below)
+  // 🎬 stepId → segment window in the SOURCE's render cache (async scan below)
   const videoBySrcId = new Map();
   const videoChecked = new Set();
+  const videoAlphaChecked = new Set();   // 🅰 transparent variant per step
 
   const dlg = document.createElement('dialog');
   dlg.className = 'sbs-dialog';
@@ -2382,6 +2387,25 @@ function _showImportStepsDialog(project, srcSteps, srcName, targetStepId, srcPro
       ico.textContent = '🎬';
       ico.style.cssText = 'font-size:13px;';
       wrap.append(vcb, ico);
+      // 🅰 transparent variant — only when the source rendered a mask.
+      if (seg.alphaFile) {
+        const awrap = document.createElement('label');
+        awrap.style.cssText = 'display:flex;align-items:center;gap:2px;flex-shrink:0;cursor:pointer;';
+        awrap.title = 'TRANSPARENT import: the source rendered an alpha mask for this segment — the clip is converted once to WebM-with-alpha and floats over THIS project\'s live background. Untick to import it solid, background baked, exactly as rendered.';
+        const acb = document.createElement('input');
+        acb.type = 'checkbox';
+        acb.checked = true;   // masks exist because someone planned reuse — default transparent
+        videoAlphaChecked.add(row._id);
+        acb.addEventListener('click', e => e.stopPropagation());
+        acb.addEventListener('change', () => {
+          acb.checked ? videoAlphaChecked.add(row._id) : videoAlphaChecked.delete(row._id);
+        });
+        const aico = document.createElement('span');
+        aico.textContent = '⬚';
+        aico.style.cssText = 'font-size:12px;opacity:0.85;';
+        awrap.append(acb, aico);
+        wrap.appendChild(awrap);
+      }
       row.insertBefore(wrap, row.children[1]);   // between the step checkbox and the thumbnail
     }
   })();
@@ -2427,7 +2451,10 @@ function _showImportStepsDialog(project, srcSteps, srcName, targetStepId, srcPro
     // 🎬 video plan — only for steps both selected AND video-marked.
     const videoPlan = new Map();
     for (const id of ids) {
-      if (videoChecked.has(id) && videoBySrcId.has(id)) videoPlan.set(id, videoBySrcId.get(id));
+      if (videoChecked.has(id) && videoBySrcId.has(id)) {
+        const seg = videoBySrcId.get(id);
+        videoPlan.set(id, { ...seg, transparent: !!seg.alphaFile && videoAlphaChecked.has(id) });
+      }
     }
     if (videoPlan.size && !state.get('projectPath')) {
       say('Video import copies clips into the project folder — save this project first.');
@@ -2473,18 +2500,35 @@ async function _doImportSteps(project, srcStepIds, srcName, targetStepId, assetP
     const copied = new Map();      // source mp4 path → { abs, rel }
     for (const s of videoSrc) {
       const seg = videoPlan.get(s.id);
-      setStatus(`Importing rendered clip for "${s.name}"…`, 'info', 0);
+      setStatus(`Importing rendered clip for "${s.name}"${seg.transparent ? ' (transparent — encoding WebM alpha…)' : '…'}`, 'info', 0);
       try {
-        let dest = copied.get(seg.file);
+        const copyKey = `${seg.file}::${seg.transparent ? 'alpha' : 'solid'}`;
+        let dest = copied.get(copyKey);
         if (!dest) {
-          const rd = await window.sbsNative.readFile(seg.file, 'buffer');
-          if (!rd?.ok) throw new Error(rd?.error || 'segment read failed');
-          const rel = `media/imported-seg-${seg.key}.mp4`;
-          const abs = `${tgtDir}/${rel}`;
-          const wr  = await window.sbsNative.writeFile(abs, rd.data, null);
-          if (!wr?.ok) throw new Error(wr?.error || 'segment copy failed');
-          dest = { abs, rel };
-          copied.set(seg.file, dest);
+          if (seg.transparent) {
+            // 🅰 one-time alphamerge: colour + mask → WebM VP9 with a real
+            // alpha channel (Chromium's <video> renders it transparent).
+            // Slow-ish encode (libvpx) but paid ONCE per imported segment.
+            const rel = `media/imported-seg-${seg.key}.webm`;
+            const abs = `${tgtDir}/${rel}`;
+            const ff = await window.sbsNative.ffmpeg([
+              '-y', '-i', seg.file, '-i', seg.alphaFile,
+              '-filter_complex', '[1:v]format=gray[a];[0:v][a]alphamerge[v]',
+              '-map', '[v]', '-c:v', 'libvpx-vp9', '-pix_fmt', 'yuva420p',
+              '-b:v', '6M', '-an', abs,
+            ]);
+            if (!ff?.ok) throw new Error(`alpha encode failed (ffmpeg ${ff?.code}): ${ff?.stderrTail?.slice(-200) || 'unknown'}`);
+            dest = { abs, rel };
+          } else {
+            const rd = await window.sbsNative.readFile(seg.file, 'buffer');
+            if (!rd?.ok) throw new Error(rd?.error || 'segment read failed');
+            const rel = `media/imported-seg-${seg.key}.mp4`;
+            const abs = `${tgtDir}/${rel}`;
+            const wr  = await window.sbsNative.writeFile(abs, rd.data, null);
+            if (!wr?.ok) throw new Error(wr?.error || 'segment copy failed');
+            dest = { abs, rel };
+          }
+          copied.set(copyKey, dest);
         }
         videoSteps.set(s.id, _buildVideoStep(s, seg, dest.abs, dest.rel));
       } catch (err) {

@@ -422,6 +422,11 @@ async function _exportMp4({ fps = DEFAULT_FPS, bitrate = DEFAULT_BITRATE,
                             // V0.3.2.3 — cached-segment mode:
                             _noHeader     = false,  // exclude the ENTIRE header layer (composited at assembly instead)
                             _noAudioTrack = false,  // narration-TIMED holds but NO audio track (audio mixed globally at assembly)
+                            // 🅰 V0.3.2.198 — OPTIONAL companion coverage-mask stream (step reuse):
+                            // a second H.264 mp4 of the frame's alpha coverage (geometry via a flat
+                            // white override render + overlay/notes/tags via their canvas alpha).
+                            // The MAIN stream is untouched byte-for-byte. Offline mode only.
+                            _alphaMask    = false,
                             onProgress, signal } = {}) {
   const _wallStartMs = performance.now();   // for the end-of-export summary
   const canvas = sceneCore.renderer?.domElement;
@@ -686,6 +691,24 @@ async function _exportMp4({ fps = DEFAULT_FPS, bitrate = DEFAULT_BITRATE,
   });
   encoder.configure({ codec: chosen.webCodec, width, height, bitrate, framerate: fps });
 
+  // 🅰 V0.3.2.198 — companion MASK stream. Same fast H.264 pipeline, its own
+  // muxer; grayscale coverage compresses to a fraction of the beauty bitrate.
+  const _maskOn = _alphaMask && offline;
+  if (_alphaMask && !offline) console.warn('[export] alpha mask requested but export is not offline — skipping the mask stream.');
+  let maskMuxer = null, maskEncoder = null;
+  if (_maskOn) {
+    maskMuxer = new Mp4Muxer({
+      target: new ArrayBufferTarget(),
+      fastStart: 'in-memory',
+      video: { codec: chosen.muxerCodec, width, height, frameRate: fps },
+    });
+    maskEncoder = new VideoEncoder({
+      output: (chunk, meta) => maskMuxer.addVideoChunk(chunk, meta),
+      error:  (e) => { _encoderError = _encoderError || e; console.error('[export] mask encoder error:', e?.message || e); },
+    });
+    maskEncoder.configure({ codec: chosen.webCodec, width, height, bitrate: Math.max(1_000_000, Math.round(bitrate / 3)), framerate: fps });
+  }
+
   // Audio encoder is configured here but NOT pumped yet — the master
   // PCM is mixed AFTER _playTimeline using captured step markers, so
   // the encode runs serially after video. Slight serial cost vs the
@@ -723,6 +746,63 @@ async function _exportMp4({ fps = DEFAULT_FPS, bitrate = DEFAULT_BITRATE,
   // (text boxes, images) into the encoded output.
   const composite    = new OffscreenCanvas(width, height);
   const compositeCtx = composite.getContext('2d');
+
+  // 🅰 Mask canvases. mask3d caches the GEOMETRY coverage (rebuilt only on
+  // frames where the 3D actually re-rendered — static holds reuse it, the
+  // same optimisation the beauty pass gets); maskComposite is rebuilt every
+  // frame from mask3d + the overlay/notes/tags canvases' own alpha (those
+  // animate during holds — videos, sequences, progress bars).
+  const mask3d      = _maskOn ? new OffscreenCanvas(width, height) : null;
+  const mask3dCtx   = _maskOn ? mask3d.getContext('2d') : null;
+  const maskComp    = _maskOn ? new OffscreenCanvas(width, height) : null;
+  const maskCompCtx = _maskOn ? maskComp.getContext('2d') : null;
+  const maskScratch = _maskOn ? new OffscreenCanvas(width, height) : null;
+  const maskScrCtx  = _maskOn ? maskScratch.getContext('2d') : null;
+  const _maskMat    = _maskOn ? new THREE.MeshBasicMaterial({ color: 0xffffff }) : null;
+  const _maskBg     = _maskOn ? new THREE.Color(0x000000) : null;
+
+  // Flat white override render of the CURRENT scene state onto the live
+  // canvas (cheap — no AO/SSR/post), captured into mask3d. MUST run BEFORE
+  // the slot's normal renderFrame(): the beauty pass then repaints the
+  // canvas, so the main capture and any later hold-reuse see clean pixels.
+  const _renderMask3d = () => {
+    const scn = sceneCore.scene, cam = sceneCore.camera, rnd = sceneCore.renderer;
+    if (!scn || !cam || !rnd) return;
+    const prevBg = scn.background, prevOv = scn.overrideMaterial;
+    const hid = [];
+    for (const h of [sceneCore.gridHelper, sceneCore.axesHelper]) {
+      if (h && h.visible) { h.visible = false; hid.push(h); }
+    }
+    try {
+      cam.updateMatrixWorld(true);   // tick hooks ran; matrices may be stale pre-render
+      scn.background = _maskBg;
+      scn.overrideMaterial = _maskMat;
+      rnd.render(scn, cam);
+      const sf = computeSafeFrameRect({ width: canvas.width, height: canvas.height });
+      mask3dCtx.fillStyle = '#000';
+      mask3dCtx.fillRect(0, 0, width, height);
+      if (sf.width > 0 && sf.height > 0) mask3dCtx.drawImage(canvas, sf.x, sf.y, sf.width, sf.height, 0, 0, width, height);
+      else                               mask3dCtx.drawImage(canvas, 0, 0, width, height);
+    } finally {
+      scn.background = prevBg;
+      scn.overrideMaterial = prevOv;
+      for (const h of hid) h.visible = true;
+    }
+  };
+
+  // A layer canvas's ALPHA as white, added onto the mask ('lighter' ≈ max).
+  const _addAlphaAsWhite = (layerCanvas) => {
+    if (!layerCanvas) return;
+    maskScrCtx.clearRect(0, 0, width, height);
+    maskScrCtx.globalCompositeOperation = 'source-over';
+    maskScrCtx.drawImage(layerCanvas, 0, 0, width, height);
+    maskScrCtx.globalCompositeOperation = 'source-in';
+    maskScrCtx.fillStyle = '#fff';
+    maskScrCtx.fillRect(0, 0, width, height);
+    maskCompCtx.globalCompositeOperation = 'lighter';
+    maskCompCtx.drawImage(maskScratch, 0, 0);
+    maskCompCtx.globalCompositeOperation = 'source-over';
+  };
 
   const frameIntervalUs = 1_000_000 / fps;
   const frameIntervalMs = 1000 / fps;
@@ -771,6 +851,24 @@ async function _exportMp4({ fps = DEFAULT_FPS, bitrate = DEFAULT_BITRATE,
     const keyFrame = Math.round(nextFrameUs / frameIntervalUs) % fps === 0;
     try { encoder.encode(frame, { keyFrame }); } catch (e) { frame.close(); throw e; }
     frame.close();
+
+    // 🅰 4b. The mask frame — same timestamp, same keyframe cadence.
+    // Geometry coverage from the cached mask3d; overlay / notes / tags
+    // contribute their own canvas alpha fresh every frame (they animate
+    // during holds). Header excluded — segments are header-less anyway.
+    if (maskEncoder) {
+      maskCompCtx.globalCompositeOperation = 'source-over';
+      maskCompCtx.fillStyle = '#000';
+      maskCompCtx.fillRect(0, 0, width, height);
+      maskCompCtx.drawImage(mask3d, 0, 0);
+      _addAlphaAsWhite(rasterizeOverlay({ width, height }));
+      _addAlphaAsWhite(rasterizeNotesLayer({ width, height }));
+      _addAlphaAsWhite(rasterizeTagsLayer({ width, height }));
+      const mf = new VideoFrame(maskComp, { timestamp: nextFrameUs });
+      try { maskEncoder.encode(mf, { keyFrame }); } catch (e) { mf.close(); throw e; }
+      mf.close();
+    }
+
     nextFrameUs += frameIntervalUs;
   };
 
@@ -826,7 +924,13 @@ async function _exportMp4({ fps = DEFAULT_FPS, bitrate = DEFAULT_BITRATE,
       // capture below rasterises the overlay. No-op (no await, no cost)
       // when the step has no video.
       if (videoOverlay.hasActiveVideos()) await videoOverlay.seekAllToClock(synthMs);
-      if (!staticHold || renderThisHoldFrame) { sceneCore.renderFrame(); _framesRendered++; }
+      if (!staticHold || renderThisHoldFrame) {
+        // 🅰 Mask BEFORE beauty: the flat override render dirties the live
+        // canvas; renderFrame() right after repaints it, so the main capture
+        // (and hold-reuse of the canvas on later frames) stays clean.
+        if (maskEncoder) _renderMask3d();
+        sceneCore.renderFrame(); _framesRendered++;
+      }
       else                                     { _framesReused++; }
       renderThisHoldFrame = false;
       _captureAndEncode();
@@ -954,6 +1058,14 @@ async function _exportMp4({ fps = DEFAULT_FPS, bitrate = DEFAULT_BITRATE,
   console.log('[export] flush video encoder…');
   await encoder.flush();
   encoder.close();
+  if (maskEncoder) {
+    console.log('[export] flush mask encoder…');
+    await Promise.race([
+      maskEncoder.flush(),
+      new Promise((_, rej) => setTimeout(() => rej(new Error('mask encoder flush timed out')), 30_000)),
+    ]).catch(err => { console.warn('[export]', err?.message); });
+    try { maskEncoder.close(); } catch { /* already closed */ }
+  }
 
   const totalEncodedMs = Math.max(0, Math.round(nextFrameUs / 1000));
 
@@ -1000,11 +1112,18 @@ async function _exportMp4({ fps = DEFAULT_FPS, bitrate = DEFAULT_BITRATE,
     `render took ${_renderS.toFixed(1)}s (${_ratio.toFixed(1)}× the video length)`,
   );
 
+  let alphaBuffer = null;
+  if (maskMuxer) {
+    try { maskMuxer.finalize(); alphaBuffer = maskMuxer.target.buffer; }
+    catch (err) { console.warn('[export] mask muxer finalize failed:', err?.message); }
+  }
+
   const blob = new Blob([muxer.target.buffer], { type: 'video/mp4' });
   return {
     blob, extension: 'mp4',
     codec: chosen.muxerCodec + (audioTrackEnabled ? '+' + audioCodec : ''),
     mp4Buffer: muxer.target.buffer,
+    alphaBuffer,                       // 🅰 null unless _alphaMask ran
     totalDurationMs: totalEncodedMs,
     stepMarkers,
   };

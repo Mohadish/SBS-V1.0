@@ -158,6 +158,12 @@ export function openExportPrompt() {
         </label>
         <button class="btn" id="xp-selection" style="width:100%;margin-top:8px;" disabled>🎯 Re-render selection</button>
 
+        <label style="display:flex;align-items:center;gap:6px;margin-top:10px;padding-top:10px;border-top:1px solid var(--line,#334155);cursor:pointer;"
+               title="Writes a companion coverage-mask video beside each rendered segment (seg-*.alpha.mp4). Only used when another project imports a step as TRANSPARENT video — adds render time per segment; the normal export output is unchanged. Surgical with 'Re-render selection': only the rendered steps get masks.">
+          <input type="checkbox" id="xp-alpha" ${state.get('export')?.alphaMasks ? 'checked' : ''} />
+          <span>🅰 Render alpha masks (for step reuse in other projects)</span>
+        </label>
+
         <div style="display:flex;justify-content:space-between;align-items:center;margin-top:12px;padding-top:10px;border-top:1px solid var(--line,#334155);">
           <button class="btn" id="xp-purge" title="Delete cached segments no longer matching any current step (accumulated stale generations)">🧹 Purge stale cache</button>
           <span class="small muted">panel is movable — timeline stays clickable</span>
@@ -233,7 +239,28 @@ export function openExportPrompt() {
 
     const done = (result) => { el.remove(); resolve(result); };
     el.querySelector('#xp-close').addEventListener('click', () => done(null));
-    el.querySelector('#xp-full').addEventListener('click', () => done({ mode: 'full' }));
+    // 🅰 V0.3.2.198 — persist the toggle per-project (rides state.export,
+    // saved with the file, feeds render-cache's segment opts + hit check).
+    el.querySelector('#xp-alpha').addEventListener('change', (e) => {
+      state.setState({ export: { ...(state.get('export') || {}), alphaMasks: !!e.target.checked } });
+      state.markDirty();
+    });
+
+    el.querySelector('#xp-full').addEventListener('click', () => {
+      // 🅰 A FULL render with masks on is a deliberate, slower choice — say so
+      // (per the user's spec). Selection renders stay silent: surgical is
+      // exactly what the toggle is for.
+      if (state.get('export')?.alphaMasks === true) {
+        const ok = confirm(
+          'Alpha masks are ON.\n\n' +
+          'Every rendered segment will also produce a coverage-mask video ' +
+          '(extra render time per segment). This is only needed if another ' +
+          'project will import these steps as TRANSPARENT video.\n\n' +
+          'Render the full project with alpha masks?');
+        if (!ok) return;
+      }
+      done({ mode: 'full' });
+    });
     el.querySelector('#xp-selection').addEventListener('click', () => {
       if (parsed.error || !parsed.base.length) return;
       done({
