@@ -29,6 +29,7 @@ contextBridge.exposeInMainWorld('sbsNative', {
   openProject:        ()          => ipcRenderer.invoke('dialog:openProject'),
   saveProject:        (name)      => ipcRenderer.invoke('dialog:saveProject', name),
   saveFile:           (opts = {}) => ipcRenderer.invoke('dialog:saveFile', opts),   // V0.3.2.30 generic save dialog (exports)
+  openFile:           (opts = {}) => ipcRenderer.invoke('dialog:openFile', opts),   // 🌍 V0.3.2.187 generic open dialog (environment import)
   saveHeader:         (name)      => ipcRenderer.invoke('dialog:saveHeader', name),
   openHeader:         ()          => ipcRenderer.invoke('dialog:openHeader'),
   saveNoteLib:        (name)      => ipcRenderer.invoke('dialog:saveNoteLib', name),

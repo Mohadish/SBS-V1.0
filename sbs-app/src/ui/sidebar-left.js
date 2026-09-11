@@ -16,7 +16,9 @@ import {
   saveProject, loadProject, pickProjectFile, getSuggestedFilename,
   buildIdRemapFromSpec, applyIdRemap, applySpecFieldsToNodes,
   collectAllMeshSpecs, buildDisplacedMeshIdRemap, PROJECT_STATE_KEYS, SESSION_MODAL_KEYS,
+  readProjectForImport,
 }                          from '../io/project.js';
+import { exportEnvironment, environmentFromProject, normalizeEnvPayload, ENV_STATE_KEYS } from '../io/environment.js';   // 🌍 Env tab
 import { initTree, renderTree, expandPathToNode, collapseAll, toggleFilter, getFilter } from './tree.js';
 import { setStatus }       from './status.js';
 import {
@@ -103,7 +105,7 @@ import * as userSettings    from '../core/user-settings.js';
 import { buildRenderSettingsPanel } from './render-settings-panel.js';
 import * as narrationCache  from '../systems/narration-cache.js';
 
-const TABS = ['files', 'tree', 'colors', 'select', 'cameras', 'animation', 'header', 'style', 'cables', 'notes', 'shapes', 'primitives', 'hardware', 'undo', 'export'];
+const TABS = ['files', 'env', 'tree', 'colors', 'select', 'cameras', 'animation', 'header', 'style', 'cables', 'notes', 'shapes', 'primitives', 'hardware', 'undo', 'export'];
 let _activeTab   = 'files';
 let _container   = null;
 let _treeInited  = false;
@@ -119,6 +121,7 @@ export function initSidebarLeft() {
   _container.innerHTML = `
     <div class="tabBar" id="left-tab-bar">
       <button class="tabBtn active" data-tab="files">Files</button>
+      <button class="tabBtn"        data-tab="env" title="Environment — background, production render, AO, reflections">Env</button>
       <button class="tabBtn"        data-tab="tree">Tree</button>
       <button class="tabBtn"        data-tab="colors">Colors</button>
       <button class="tabBtn"        data-tab="select">Select</button>
@@ -212,16 +215,16 @@ export function initSidebarLeft() {
   state.on('change:steps',                 () => { if (_activeTab === 'cameras')   _renderCamerasTab(); });
   state.on('change:projectDirty',          () => { if (_activeTab === 'files')    _renderFilesTab(); });
   state.on('change:theme',                 () => { if (_activeTab === 'files')    _renderFilesTab(); });
-  state.on('change:backgroundColor',       () => { if (_activeTab === 'files')    _renderFilesTab(); });
+  state.on('change:backgroundColor',       () => { if (_activeTab === 'env')      _renderEnvTab(); });
   state.on('change:backgroundGradient',    () => {
     // Refresh only when the toggle's enabled state changes (input/range
     // events otherwise re-render on every drag tick which destroys the
-    // active <input type=color> popup mid-edit).
-    if (_activeTab !== 'files') return;
-    const el = _panel('files');
+    // active <input type=color> popup mid-edit). 🌍 lives on the Env tab now.
+    if (_activeTab !== 'env') return;
+    const el = _panel('env');
     const liveEnabled = !!state.get('backgroundGradient')?.enabled;
     const checkbox = el?.querySelector('#bg-grad-toggle');
-    if (checkbox && checkbox.checked !== liveEnabled) _renderFilesTab();
+    if (checkbox && checkbox.checked !== liveEnabled) _renderEnvTab();
   });
   state.on('change:selectionOutlineColor', () => { if (_activeTab === 'select')   _renderSelectTab(); });
   state.on('change:animationPresets',      () => { if (_activeTab === 'animation') _renderAnimTab(); });
@@ -371,6 +374,7 @@ function _panel(tab) { return document.getElementById(`tab-panel-${tab}`); }
 function _renderActiveTab() {
   switch (_activeTab) {
     case 'files':     _renderFilesTab();   break;
+    case 'env':       _renderEnvTab();     break;
     case 'tree':      _renderTreeTab();    break;
     case 'colors':    _renderColorsTab();  break;
     case 'select':    _renderSelectTab();  break;
@@ -501,6 +505,62 @@ function _renderFilesTab() {
       </div>
     </div>
 
+    <!-- 🌍 V0.3.2.187 — Background + render settings moved to the Env tab -->
+
+    <div class="section" style="margin-top:auto;padding-top:12px">
+      <div class="small muted" style="text-align:center;line-height:1.6">
+        SBS ${_esc(APP_VERSION)}<br>
+        <span style="font-size:10px">${_esc(APP_RELEASED)}</span>
+      </div>
+    </div>
+  `;
+
+  el.querySelector('#btn-new-project')?.addEventListener('click', _onNewProject);
+  el.querySelector('#btn-open-project')?.addEventListener('click', _onOpenProject);
+  el.querySelector('#btn-save-project')?.addEventListener('click', () => _onSaveProject(false));
+  el.querySelector('#btn-save-as')?.addEventListener('click',      () => _onSaveProject(true));
+  el.querySelector('#btn-fit-all')?.addEventListener('click',      _onFitAll);
+  el.querySelector('#btn-toggle-grid')?.addEventListener('click',  _onToggleGrid);
+  el.querySelector('#btn-toggle-theme')?.addEventListener('click', _onToggleTheme);
+
+  el.querySelector('#model-file-input')?.addEventListener('change', e => {
+    const files = Array.from(e.target.files || []);
+    e.target.value = '';
+    for (const f of files) _loadModelFile(f);
+  });
+
+  el.querySelector('#btn-browse-assets')?.addEventListener('click', _onBrowseAssets);
+
+  el.querySelectorAll('[data-browse-asset]').forEach(btn => {
+    const idx   = parseInt(btn.dataset.browseAsset);
+    const asset = (state.get('assets') || [])[idx];
+    if (!asset) return;
+    btn.addEventListener('click', () => _onBrowseSingleAsset(asset));
+  });
+}
+
+// ── 🌍 Environment tab (V0.3.2.187) ──────────────────────────────────────────
+// Everything that defines the scene's LOOK, moved out of the Files tab:
+//   0. Load / Save Environment (.sbsenv, or grab from a whole .sbsproj)
+//   1. Background (colour / gradient)
+//   2. Production Render  ┐
+//   3. Ambient occlusion  ├─ the shared render-settings panel (state.render)
+//   4. Contact reflections┘
+
+function _renderEnvTab() {
+  const el = _panel('env');
+  if (!el) return;
+
+  el.innerHTML = `
+    <div class="section">
+      <div class="title">Environment</div>
+      <div class="small muted" style="margin:4px 0 8px;">Background + render look, saved with the project.</div>
+      <div style="display:flex;gap:6px;flex-wrap:wrap;">
+        <button class="btn" id="btn-env-load" title="Load an environment from a .sbsenv file — or grab it straight from another .sbsproj">📥 Load…</button>
+        <button class="btn" id="btn-env-save" title="Save this project's environment as a portable .sbsenv file">💾 Save…</button>
+      </div>
+    </div>
+
     <div class="section" id="bg-settings-section">
       <div class="title">Background</div>
       <div class="field-row" style="margin-top:8px;">
@@ -541,24 +601,12 @@ function _renderFilesTab() {
     </div>
 
     <div id="render-settings-mount"></div>
-
-    <div class="section" style="margin-top:auto;padding-top:12px">
-      <div class="small muted" style="text-align:center;line-height:1.6">
-        SBS ${_esc(APP_VERSION)}<br>
-        <span style="font-size:10px">${_esc(APP_RELEASED)}</span>
-      </div>
-    </div>
   `;
 
-  el.querySelector('#btn-new-project')?.addEventListener('click', _onNewProject);
-  el.querySelector('#btn-open-project')?.addEventListener('click', _onOpenProject);
-  el.querySelector('#btn-save-project')?.addEventListener('click', () => _onSaveProject(false));
-  el.querySelector('#btn-save-as')?.addEventListener('click',      () => _onSaveProject(true));
-  el.querySelector('#btn-fit-all')?.addEventListener('click',      _onFitAll);
-  el.querySelector('#btn-toggle-grid')?.addEventListener('click',  _onToggleGrid);
-  el.querySelector('#btn-toggle-theme')?.addEventListener('click', _onToggleTheme);
+  el.querySelector('#btn-env-load')?.addEventListener('click', _onLoadEnvironment);
+  el.querySelector('#btn-env-save')?.addEventListener('click', _onSaveEnvironment);
 
-  // AO + SSR sliders (shared panel; per-project state.render).
+  // Production Render / AO / SSR — the shared panel (per-project state.render).
   el.querySelector('#render-settings-mount')?.appendChild(buildRenderSettingsPanel());
 
   // ── Background controls (undoable; change:* listener repaints on restore) ─
@@ -590,21 +638,96 @@ function _renderFilesTab() {
     if (angleVal) angleVal.textContent = `${a}°`;
     _setGradient({ angleDeg: a });
   });
+}
 
-  el.querySelector('#model-file-input')?.addEventListener('change', e => {
-    const files = Array.from(e.target.files || []);
-    e.target.value = '';
-    for (const f of files) _loadModelFile(f);
+async function _onSaveEnvironment() {
+  const payload = exportEnvironment();
+  const json = JSON.stringify(payload, null, 2);
+  if (window.sbsNative?.saveFile && window.sbsNative?.writeFile) {
+    const path = await window.sbsNative.saveFile({
+      title: 'Save Environment',
+      defaultPath: 'environment.sbsenv',
+      filters: [{ name: 'SBS Environment', extensions: ['sbsenv'] }],
+    });
+    if (!path) return;
+    const res = await window.sbsNative.writeFile(path, json, 'utf-8');
+    if (res?.ok) setStatus(`Saved environment → ${path.split(/[\\/]/).pop()}`);
+    else         setStatus(`Save failed: ${res?.error || 'unknown'}`, 'danger');
+    return;
+  }
+  // Browser fallback — download.
+  const blob = new Blob([json], { type: 'application/json' });
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(blob);
+  a.download = 'environment.sbsenv';
+  a.click();
+  setTimeout(() => URL.revokeObjectURL(a.href), 1000);
+  setStatus('Saved environment (downloaded).');
+}
+
+async function _onLoadEnvironment() {
+  let payload = null;
+
+  if (window.sbsNative?.openFile && window.sbsNative?.readFile) {
+    const path = await window.sbsNative.openFile({
+      title: 'Load Environment (.sbsenv, or grab from an SBS project)',
+      filters: [
+        { name: 'Environment or SBS Project', extensions: ['sbsenv', 'json', 'sbsproj'] },
+        { name: 'SBS Environment',            extensions: ['sbsenv', 'json'] },
+        { name: 'SBS Project (grab its environment)', extensions: ['sbsproj'] },
+      ],
+    });
+    if (!path) return;
+    if (/\.sbsproj$/i.test(path)) {
+      const r = await window.sbsNative.readFile(path, 'buffer');
+      if (!r?.ok) { setStatus(`Load failed: ${r?.error || 'unknown'}`, 'danger'); return; }
+      try {
+        const project = await readProjectForImport(new File([r.data], path.split(/[\\/]/).pop()));
+        payload = environmentFromProject(project);
+      } catch (err) { setStatus(`Could not read project: ${err.message}`, 'danger'); return; }
+    } else {
+      const res = await window.sbsNative.readFile(path, 'utf-8');
+      if (!res?.ok) { setStatus(`Load failed: ${res?.error || 'unknown'}`, 'danger'); return; }
+      try { payload = JSON.parse(res.data); }
+      catch { setStatus('Invalid .sbsenv file (not JSON).', 'danger'); return; }
+    }
+  } else {
+    // Browser fallback — a .sbsproj may be gzipped, never read it as text.
+    const f = await new Promise(resolve => {
+      const input = document.createElement('input');
+      input.type = 'file';
+      input.accept = '.sbsenv,.json,.sbsproj,application/json';
+      input.onchange = () => resolve(input.files?.[0] || null);
+      input.click();
+    });
+    if (!f) return;
+    if (/\.sbsproj$/i.test(f.name)) {
+      try { payload = environmentFromProject(await readProjectForImport(f)); }
+      catch (err) { setStatus(`Could not read project: ${err.message}`, 'danger'); return; }
+    } else {
+      const text = await f.text().catch(() => null);
+      if (!text) return;
+      try { payload = JSON.parse(text); }
+      catch { setStatus('Invalid .sbsenv file (not JSON).', 'danger'); return; }
+    }
+  }
+
+  const env = normalizeEnvPayload(payload);
+  if (!env) { setStatus('That file carries no environment settings.', 'warning'); return; }
+
+  // Replace ALL environment parameters — one undo entry. The existing
+  // change:* listeners repaint the scene (background sync in main.js,
+  // change:render → applyRenderSettings).
+  actions.commitStateChange('Load environment', ENV_STATE_KEYS, () => {
+    state.setState({
+      backgroundColor:    env.backgroundColor,
+      backgroundGradient: env.backgroundGradient,
+      render:             env.render,
+    });
+    state.markDirty();
   });
-
-  el.querySelector('#btn-browse-assets')?.addEventListener('click', _onBrowseAssets);
-
-  el.querySelectorAll('[data-browse-asset]').forEach(btn => {
-    const idx   = parseInt(btn.dataset.browseAsset);
-    const asset = (state.get('assets') || [])[idx];
-    if (!asset) return;
-    btn.addEventListener('click', () => _onBrowseSingleAsset(asset));
-  });
+  if (_activeTab === 'env') _renderEnvTab();   // refresh the controls to the new values
+  setStatus('Environment loaded — background + render settings replaced (undoable).', 'success', 6000);
 }
 
 // ── Files actions ─────────────────────────────────────────────────────────────

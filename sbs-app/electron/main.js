@@ -610,6 +610,18 @@ ipcMain.handle('dialog:saveProject', async (_, defaultName) => {
 
 // Generic save dialog (V0.3.2.30) — caller supplies title/defaultPath/filters.
 // Exports (mp4 / sbsproc) ask WHERE FIRST, then write there when done.
+// 🌍 V0.3.2.187 — generic OPEN dialog (mirror of dialog:saveFile). First
+// consumer: the Environment tab's Load (.sbsenv or .sbsproj). Prefer this
+// over adding one bespoke handler per file kind.
+ipcMain.handle('dialog:openFile', async (_, opts = {}) => {
+  const result = await dialog.showOpenDialog(mainWindow, {
+    title:   opts.title   || 'Open File',
+    filters: opts.filters || undefined,
+    properties: ['openFile'],
+  });
+  return result.canceled ? null : result.filePaths[0];
+});
+
 ipcMain.handle('dialog:saveFile', async (_, opts = {}) => {
   const result = await dialog.showSaveDialog(mainWindow, {
     title:       opts.title       || 'Save File',
