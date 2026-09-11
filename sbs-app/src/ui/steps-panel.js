@@ -2189,6 +2189,27 @@ function _buildVideoStep(srcStep, seg, absPath, relPath) {
   return step;
 }
 
+/** 🎞/📹 classification for the import dialog: parse a step's overlay JSON
+ *  for video nodes. 'full' = the step IS a rendered clip (a previous 🎬
+ *  cache import — its media file carries the imported-seg- signature);
+ *  'has' = a regular step with a video overlay in it; null = no video. */
+function _stepVideoKind(step) {
+  if (!step?.overlay) return null;
+  let stage;
+  try { stage = JSON.parse(step.overlay); } catch { return null; }
+  let has = false, full = false;
+  const walk = (n) => {
+    if (!n) return;
+    if (n.attrs?.isVideo) {
+      has = true;
+      if (`${n.attrs.videoRel || ''}|${n.attrs.videoPath || ''}`.includes('imported-seg-')) full = true;
+    }
+    for (const c of (n.children || [])) walk(c);
+  };
+  walk(stage);
+  return full ? 'full' : (has ? 'has' : null);
+}
+
 /** First existing candidate path for a source asset, probed via Electron. */
 async function _resolveSourceAssetFile(entry, srcProjectPath) {
   const cands = assetPathCandidates(entry, srcProjectPath || null);
@@ -2502,9 +2523,17 @@ function _showImportStepsDialog(project, srcSteps, srcName, targetStepId, srcPro
       } else thumb.textContent = '·';
       const info = document.createElement('div');
       info.style.cssText = 'flex:1;min-width:0;';
+      // 🎞 the step IS a rendered clip (a previous cache import) / 📹 the
+      // step merely CONTAINS a video overlay — informational badges only.
+      const vKind  = _stepVideoKind(s);
+      const vBadge = vKind === 'full'
+        ? '<span title="This step IS a rendered video (imported from a render cache) — its content is a clip, not live geometry." style="color:#a78bfa;">🎞 video step</span> '
+        : vKind === 'has'
+          ? '<span title="This step contains a video overlay playing alongside its scene." style="color:#60a5fa;">📹 has video</span> '
+          : '';
       info.innerHTML = `
         <div class="small" style="font-weight:600;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;"><span class="muted" style="font-weight:400;">${stepNo}.</span> ${esc(s.name || 'Step')}${s.groupHead ? ' ⊞' : s.groupId ? ' ·sub' : ''}</div>
-        <div class="small muted" style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">${s.voiceText ? '🎙 ' : ''}${s.hidden ? '🚫 hidden' : ''}</div>`;
+        <div class="small muted" style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">${vBadge}${s.voiceText ? '🎙 ' : ''}${s.hidden ? '🚫 hidden' : ''}</div>`;
       row.append(cb, thumb, info);
       list.appendChild(row);
       row._cb = cb; row._id = s.id; row._syncHeader = syncHeader;
