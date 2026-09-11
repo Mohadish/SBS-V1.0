@@ -348,6 +348,12 @@ export function serialize(targetPath = null) {
   // pose ("multiple positions") and "reset/at-default" broke. Persist them.
   cfg.interfaceDefaultPose   = state.get('interfaceDefaultPose')   ?? null;
   cfg.interfaceLibraryFolder = state.get('interfaceLibraryFolder') ?? null;
+  // 📦 V0.3.2.188 — portable form alongside the absolute one, derived like
+  // asset relativePaths (same relBase, '' when no shared root). Load prefers
+  // whichever actually exists on disk, so the interface library follows a
+  // moved project folder. Non-destructive: old builds ignore the new field.
+  cfg.interfaceLibraryFolderRel = cfg.interfaceLibraryFolder
+    ? makeRelativePath(cfg.interfaceLibraryFolder, relBase) : '';
   // V0.2.22.58 — per-project hardware insertion-animation default
   // (null = none → fall back to the system "Nuts" defaults on load).
   cfg.hardwareDefaults     = state.get('hardwareDefaults')      ?? null;
@@ -1983,6 +1989,58 @@ export async function loadProject(fileOrText, filePath = null) {
   } catch (e) { console.warn('[cables] cascade flatten skipped:', e); }
 
   if (filePath) _setProjectMeta(filePath);
+
+  // 📦 V0.3.2.188 — resolve the interface library folder against the DISK,
+  // exactly like model assets: the portable relative form (saved beside the
+  // absolute one since .188) is tried first, the absolute second, first
+  // existing DIRECTORY wins and is healed into state (the next save
+  // re-derives the relative form from it). Neither exists → keep the
+  // absolute; the insert flow prompts for a re-pick as it always has.
+  try {
+    const s   = project.settings || {};
+    const abs = s.interfaceLibraryFolder;
+    if (abs && filePath && window.sbsNative?.fileExists) {
+      const cands = assetPathCandidates(
+        { originalPath: abs, relativePath: s.interfaceLibraryFolderRel || '' }, filePath);
+      for (const p of cands) {
+        // fs.existsSync is true for directories too — exactly what we want.
+        // eslint-disable-next-line no-await-in-loop
+        if (await window.sbsNative.fileExists(p).catch(() => false)) {
+          if (p !== abs) {
+            state.setState({ interfaceLibraryFolder: p });
+            console.log(`[iface] library folder resolved via portable path → ${p}`);
+          }
+          break;
+        }
+      }
+    }
+  } catch { /* resolution is best-effort — absolute stays */ }
+
+  // 🔊 V0.3.2.188 — audio-cache presence check. The cache folder is always
+  // a subfolder of the project directory, so moving the WHOLE folder keeps
+  // the narration. Moving the .sbsproj alone leaves the clips behind: the
+  // lazy loader already heals pointer-by-pointer (drop dataFile → re-synth,
+  // V0.3.2.120), but the user found out one silent clip at a time. Say it
+  // ONCE, up front, when steps still point into a folder that is not there.
+  try {
+    const s = project.settings || {};
+    if (filePath && s.audioCacheFolder && window.sbsNative?.fileExists) {
+      const hasPointers = (project.steps?.items || []).some(st => st?.narration?.dataFile);
+      if (hasPointers) {
+        const dir = filePath.replace(/[\\/][^\\/]*$/, '')
+                  + (filePath.includes('\\') ? '\\' : '/')
+                  + String(s.audioCacheFolder).replace(/[\\/]+$/, '');
+        const there = await window.sbsNative.fileExists(dir).catch(() => false);
+        if (!there) {
+          console.warn(`[audio] cache folder "${s.audioCacheFolder}" not found beside the project — narration will re-synthesize from text.`);
+          // Dynamic import: io must not statically depend on ui.
+          import('../ui/status.js')
+            .then(m => m.setStatus?.('Audio cache folder not found (project moved without it?) — narration will re-synthesize from text.', 'warn', 12000))
+            .catch(() => {});
+        }
+      }
+    }
+  } catch { /* informational only */ }
 
   // Build resolved-asset list for caller — checked against the disk, with the
   // absolute originalPath as the fallback for a relativePath that no longer
