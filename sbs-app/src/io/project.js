@@ -63,7 +63,7 @@ const _CHANNELS_REQUIRED = [
               // the 🔩 chip is always present + movable in the Anim editor.
               // Inert (no dwell, no effect) on steps with no flagged actor.
 ];
-function _migrateAnimationPresets(items) {
+export function _migrateAnimationPresets(items) {
   // Bootstrap: new project (or loaded project with empty presets array)
   // gets a "Default" preset auto-created, set as the project default.
   // Mirrors the way every project has at least one chapter / one step.

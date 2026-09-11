@@ -12,7 +12,7 @@ import * as actions from '../systems/actions.js';
 import * as overlay from '../systems/overlay.js';   // copy/paste whole overlay preset (#19)
 import { createChapter, generateId } from '../core/schema.js';
 import { cloneShareStrings } from '../core/clone.js';   // copy/paste steps without duplicating base64
-import { pickProjectFile, readProjectForImport, assetPathCandidates, applySpecFieldsToNodes } from '../io/project.js';   // 📥 import steps from another project
+import { pickProjectFile, readProjectForImport, assetPathCandidates, applySpecFieldsToNodes, _migrateAnimationPresets } from '../io/project.js';   // 📥 import steps from another project
 import { loadModelFile } from '../io/importers.js';       // 📥 Phase 2 — import the missing CAD too
 import { materials } from '../systems/materials.js';       // 📥 Phase 2 — colour defaults for imported meshes
 import { applyNodeSourceTransformToObject3D } from '../core/transforms.js';   // 📥 Phase 2 — model source transform (×100 scale case)
@@ -2278,7 +2278,23 @@ async function _doImportSteps(project, srcStepIds, srcName, targetStepId, assetP
   const srcSteps  = (project.steps?.items || []).filter(s => srcStepIds.includes(s.id));
   if (!srcSteps.length) return;
   const srcCams   = project.cameras?.items || [];
-  const tgtPresetIds = new Set((state.get('animationPresets') || []).map(p => p.id));
+  const tgtAnimPresets = state.get('animationPresets') || [];
+  const tgtPresetIds   = new Set(tgtAnimPresets.map(p => p.id));
+
+  // 🎞 V0.3.2.190 — ANIMATION settings travel with the steps (user field
+  // report: they didn't). Named presets the imported steps reference and
+  // the target lacks are MERGED from the source project (same id → the
+  // transition binding just works), run through the same migration the
+  // load path applies. Collected before the copy pass so the null-out
+  // below only ever fires for a preset that exists in NEITHER project.
+  const srcAnimPresets = _migrateAnimationPresets(project.animationPresets?.items || []);
+  const animWanted = new Set();
+  for (const s of srcSteps) {
+    const pid = s.transition?.animPresetId;
+    if (pid && pid !== '__private__') animWanted.add(pid);
+  }
+  const animPresetAdds = srcAnimPresets.filter(p => animWanted.has(p.id) && !tgtPresetIds.has(p.id));
+  for (const p of animPresetAdds) tgtPresetIds.add(p.id);
 
   // ── 📥 Phase 2 (V0.3.2.180): load the missing CAD models FIRST ───────────
   // Order matters: injectModelIntoAllSteps stamps the model (hidden) into
@@ -2487,7 +2503,15 @@ async function _doImportSteps(project, srcStepIds, srcName, targetStepId, assetP
     // drop it so playback re-synthesizes from text here. Inline audio stays.
     if (copy.narration?.dataFile) delete copy.narration.dataFile;
     // Transition preset must exist here, else fall back to project default.
-    if (copy.transition?.animPresetId && !tgtPresetIds.has(copy.transition.animPresetId)) {
+    // 🎞 V0.3.2.190 — '__private__' is a SENTINEL, not a preset id: the
+    // step's own transition.privateAnimation string (which the full clone
+    // already carries). Nulling it — as .179 did — silently dropped every
+    // private animation to the project default: the user's field report.
+    // Named presets are merged above, so a null-out here means the preset
+    // exists in NEITHER project. holdReparent + visibilityFade + easing all
+    // ride inside the cloned transition object untouched.
+    const pid = copy.transition?.animPresetId;
+    if (pid && pid !== '__private__' && !tgtPresetIds.has(pid)) {
       copy.transition = { ...copy.transition, animPresetId: null };
     }
   }
@@ -2519,11 +2543,12 @@ async function _doImportSteps(project, srcStepIds, srcName, targetStepId, assetP
   }
   const newAll = [...all.slice(0, tgtIdx + 1), ...copies, ...all.slice(tgtIdx + 1)];
 
-  actions.commitStateChange(`Import ${copies.length} step(s) from "${srcName}"`, ['steps', 'colorPresets', 'cables'], () => {
+  actions.commitStateChange(`Import ${copies.length} step(s) from "${srcName}"`, ['steps', 'colorPresets', 'cables', 'animationPresets'], () => {
     state.setState({
       steps: newAll,
-      ...(presetAdds.length ? { colorPresets: [...tgtPresets, ...presetAdds] } : {}),
-      ...(cableAdds.length  ? { cables: [...tgtCables, ...cableAdds] }         : {}),
+      ...(presetAdds.length     ? { colorPresets:     [...tgtPresets, ...presetAdds] }         : {}),
+      ...(cableAdds.length      ? { cables:           [...tgtCables, ...cableAdds] }           : {}),
+      ...(animPresetAdds.length ? { animationPresets: [...tgtAnimPresets, ...animPresetAdds] } : {}),
     });
     steps.normalizeOrder();
     state.markDirty();
@@ -2575,6 +2600,7 @@ async function _doImportSteps(project, srcStepIds, srcName, targetStepId, assetP
     + (prunedIds.size ? ` (${prunedIds.size} never-visible mesh(es) skipped)` : '')
     + (cableAdds.length ? ` + ${cableAdds.length} cable(s)` : '')
     + (presetAdds.length ? ` (+${presetAdds.length} colour preset(s))` : '')
+    + (animPresetAdds.length ? ` (+${animPresetAdds.length} animation preset(s))` : '')
     + (failedModels.length ? ` — ⚠ model import FAILED: ${failedModels.join(', ')}` : '')
     + '.', failedModels.length ? 'warn' : 'success', 9000);
 }
