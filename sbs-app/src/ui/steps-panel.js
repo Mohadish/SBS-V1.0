@@ -10,7 +10,8 @@ import { state }    from '../core/state.js';
 import { steps }    from '../systems/steps.js';
 import * as actions from '../systems/actions.js';
 import * as overlay from '../systems/overlay.js';   // copy/paste whole overlay preset (#19)
-import { createChapter, generateId } from '../core/schema.js';
+import { createChapter, generateId, createStep, createEmptySnapshot } from '../core/schema.js';
+import { sceneCore } from '../core/scene.js';   // 🎬 video-step snapshot camera
 import { cloneShareStrings } from '../core/clone.js';   // copy/paste steps without duplicating base64
 import { pickProjectFile, readProjectForImport, assetPathCandidates, applySpecFieldsToNodes, _migrateAnimationPresets } from '../io/project.js';   // 📥 import steps from another project
 import { loadModelFile } from '../io/importers.js';       // 📥 Phase 2 — import the missing CAD too
@@ -2047,6 +2048,108 @@ function _visibleNodeIdsInStep(step) {
   return out;
 }
 
+// ── 🎬 Import a step as RENDERED VIDEO from the source's _rendercache ───────
+// (V0.3.2.194, user idea.) Segments are header-less + subtitle-less BY DESIGN
+// (assembly composites those) and carry no audio track, but their holds are
+// narration-TIMED — so the target's own headers apply cleanly on top and the
+// carried voiceText re-synthesizes into the right window. Each seg-<key>.json
+// sidecar maps the step ids inside the segment to their start offsets, so no
+// content-key recomputation is needed — and no ffmpeg either: a multi-step
+// segment is copied ONCE and each step gets its own trimIn/trimOut window on
+// the video node (playback and export both honour trims since V0.3.2.75).
+
+/** Scan the SOURCE project's _rendercache → Map stepId → segment window. */
+async function _scanSourceRenderCache(srcProjectPath) {
+  const out = new Map();
+  if (!srcProjectPath || !window.sbsNative?.listDir || !window.sbsNative?.readFile) return out;
+  const dir = srcProjectPath.replace(/[\\/][^\\/]*$/, '') + '/_rendercache';
+  const entries = await window.sbsNative.listDir(dir).catch(() => null);
+  if (!Array.isArray(entries)) return out;
+  for (const e of entries) {
+    if (e.isDir || !/^seg-[0-9a-f]+\.json$/.test(e.name)) continue;
+    const r = await window.sbsNative.readFile(`${dir}/${e.name}`, 'utf8').catch(() => null);
+    if (!r?.ok) continue;
+    let sc; try { sc = JSON.parse(r.data); } catch { continue; }
+    if (!sc?.key) continue;
+    const mp4   = `${dir}/seg-${sc.key}.mp4`;
+    const steps = Array.isArray(sc.steps) ? sc.steps : [];
+    for (let i = 0; i < steps.length; i++) {
+      const inMs  = Number(steps[i].ms) || 0;
+      const outMs = (i + 1 < steps.length) ? (Number(steps[i + 1].ms) || 0) : (Number(sc.durationMs) || 0);
+      if (outMs > inMs) {
+        out.set(steps[i].stepId, { file: mp4, key: sc.key, inMs, outMs, segDurationMs: Number(sc.durationMs) || 0 });
+      }
+    }
+  }
+  return out;
+}
+
+/** Snapshot of the CURRENT target scene with everything hidden — a video
+ *  step shows only its full-frame clip, and never drops host geometry. */
+function _hiddenSceneSnapshot() {
+  const snap = createEmptySnapshot();
+  const root = state.get('treeData');
+  if (root) {
+    snap.tree = serializeModelTree(root);
+    for (const n of flattenTree(root)) {
+      if (n === root) continue;
+      snap.visibility[n.id] = false;
+      if (isTransformNode(n)) snap.transforms[n.id] = captureTransformSnapshot(n);
+    }
+  }
+  try { snap.camera = sceneCore.getCameraState(); } catch { snap.camera = null; }
+  return snap;
+}
+
+/** Overlay JSON: one full-frame video node in the content layer (the exact
+ *  attr set overlay.addVideo persists — see its whitelist). Canonical
+ *  1920×1080 coords; videoRel = 'media/…' keeps the clip portable. */
+function _videoStepOverlayJson(absPath, relPath, seg) {
+  const attrs = {
+    x: 0, y: 0, width: 1920, height: 1080,
+    draggable: true, name: 'userVideo',
+    isVideo:  true,
+    videoId:  `vid_${generateId('imp')}`,
+    videoPath: absPath,
+    videoRel:  relPath,
+    muted: true, volume: 1,               // target narration wins
+    trimInMs:  Math.max(0, Math.round(seg.inMs)),
+    trimOutMs: Math.max(0, Math.round(seg.outMs)),
+    videoDurationMs: Math.round(seg.segDurationMs),
+  };
+  return JSON.stringify({
+    attrs: { width: 1920, height: 1080 },
+    className: 'Stage',
+    children: [{
+      attrs: { name: 'sbs-overlay-content' },
+      className: 'Layer',
+      children: [{ attrs, className: 'Image' }],
+    }],
+  });
+}
+
+/** A lightweight step wrapping one rendered-segment window. */
+function _buildVideoStep(srcStep, seg, absPath, relPath) {
+  const step = createStep({
+    name:         srcStep.name || 'Step',
+    hidden:       !!srcStep.hidden,
+    voiceText:    srcStep.voiceText || '',
+    voiceEnabled: srcStep.voiceEnabled !== false,
+    transition:   { durationMs: 0, cameraEasing: 'instant', objectEasing: 'instant', visibilityFade: true, animPresetId: null },
+    cameraBinding: { mode: 'free', templateId: null },
+    snapshot:     _hiddenSceneSnapshot(),
+  });
+  // Narration text + inline audio travel; a dataFile pointer targets the
+  // SOURCE project's cache — drop it so the target re-synthesizes.
+  if (srcStep.narration) {
+    step.narration = { ...srcStep.narration };
+    delete step.narration.dataFile;
+  }
+  step.overlay   = _videoStepOverlayJson(absPath, relPath, seg);
+  step.thumbnail = srcStep.thumbnail || null;
+  return step;
+}
+
 /** First existing candidate path for a source asset, probed via Electron. */
 async function _resolveSourceAssetFile(entry, srcProjectPath) {
   const cands = assetPathCandidates(entry, srcProjectPath || null);
@@ -2069,6 +2172,9 @@ function _showImportStepsDialog(project, srcSteps, srcName, targetStepId, srcPro
   // a Browse-picked File override, and whether the user wants it imported.
   const assetState = new Map();   // assetId → { resolvedPath, browsedFile, wanted:'auto'|'yes'|'no' }
   const assetRowEls = new Map();  // assetId → row element (rebuilt on refresh)
+  // 🎬 stepId → segment window in the SOURCE's _rendercache (async scan below)
+  const videoBySrcId = new Map();
+  const videoChecked = new Set();
 
   const dlg = document.createElement('dialog');
   dlg.className = 'sbs-dialog';
@@ -2123,6 +2229,7 @@ function _showImportStepsDialog(project, srcSteps, srcName, targetStepId, srcPro
     // in at least one selected step.
     const missing = new Map();   // assetId → { neededIn: count }
     for (const id of checked) {
+      if (videoChecked.has(id)) continue;   // 🎬 video steps need no geometry
       const visSet = perStepVisible.get(id) || new Set();
       for (const aid of (perStepAssets.get(id) || [])) {
         if (targetAssetIds.has(aid)) continue;
@@ -2216,6 +2323,34 @@ function _showImportStepsDialog(project, srcSteps, srcName, targetStepId, srcPro
     refresh();
   })();
 
+  // 🎬 Scan the source's _rendercache; steps with a rendered segment get an
+  // "as video" toggle. Video-marked steps import the CLIP instead of the
+  // snapshot — no geometry, no assets, headers stay the target's own.
+  (async () => {
+    const found = await _scanSourceRenderCache(srcProjectPath);
+    if (!found.size) return;
+    for (const [sid, seg] of found) videoBySrcId.set(sid, seg);
+    for (const row of list.children) {
+      const seg = videoBySrcId.get(row._id);
+      if (!seg) continue;
+      const wrap = document.createElement('label');
+      wrap.style.cssText = 'display:flex;align-items:center;gap:3px;flex-shrink:0;cursor:pointer;';
+      wrap.title = `Import as RENDERED VIDEO from the source's render cache (${((seg.outMs - seg.inMs) / 1000).toFixed(1)}s clip, header-free). No geometry is imported for this step; narration text is carried and re-synthesized here.`;
+      const vcb = document.createElement('input');
+      vcb.type = 'checkbox';
+      vcb.addEventListener('click', e => e.stopPropagation());
+      vcb.addEventListener('change', () => {
+        vcb.checked ? videoChecked.add(row._id) : videoChecked.delete(row._id);
+        refresh();
+      });
+      const ico = document.createElement('span');
+      ico.textContent = '🎬';
+      ico.style.cssText = 'font-size:13px;';
+      wrap.append(vcb, ico);
+      row.insertBefore(wrap, row.children[1]);   // between the step checkbox and the thumbnail
+    }
+  })();
+
   for (const s of srcSteps) {
     const row = document.createElement('label');
     row.style.cssText = 'display:flex;align-items:center;gap:10px;padding:4px 6px;border-radius:6px;cursor:pointer;';
@@ -2254,6 +2389,15 @@ function _showImportStepsDialog(project, srcSteps, srcName, targetStepId, srcPro
   dlg.querySelector('#imp-cancel').addEventListener('click', () => { dlg.close(); dlg.remove(); });
   goBtn.addEventListener('click', () => {
     const ids = srcSteps.filter(s => checked.has(s.id)).map(s => s.id);   // source order
+    // 🎬 video plan — only for steps both selected AND video-marked.
+    const videoPlan = new Map();
+    for (const id of ids) {
+      if (videoChecked.has(id) && videoBySrcId.has(id)) videoPlan.set(id, videoBySrcId.get(id));
+    }
+    if (videoPlan.size && !state.get('projectPath')) {
+      say('Video import copies clips into the project folder — save this project first.');
+      return;
+    }
     // 📥 Phase 2 — the asset plan: every missing model the user left checked,
     // with its file (browsed File wins over the probed path).
     const assetPlan = [];
@@ -2267,7 +2411,7 @@ function _showImportStepsDialog(project, srcSteps, srcName, targetStepId, srcPro
       assetPlan.push({ entry, file: st.browsedFile, path: st.resolvedPath });
     }
     dlg.close(); dlg.remove();
-    _doImportSteps(project, ids, srcName, targetStepId, assetPlan);
+    _doImportSteps(project, ids, srcName, targetStepId, assetPlan, videoPlan);
   });
 
   refresh();
@@ -2275,9 +2419,49 @@ function _showImportStepsDialog(project, srcSteps, srcName, targetStepId, srcPro
   dlg.showModal();
 }
 
-async function _doImportSteps(project, srcStepIds, srcName, targetStepId, assetPlan = []) {
-  const srcSteps  = (project.steps?.items || []).filter(s => srcStepIds.includes(s.id));
-  if (!srcSteps.length) return;
+async function _doImportSteps(project, srcStepIds, srcName, targetStepId, assetPlan = [], videoPlan = new Map()) {
+  const chosen = (project.steps?.items || []).filter(s => srcStepIds.includes(s.id));
+  if (!chosen.length) return;
+  // 🎬 Partition: video-marked steps import a rendered CLIP, everything else
+  // takes the full-snapshot path. All the snapshot machinery below (assets,
+  // colours, cables, presets, backfills) runs on the NORMAL subset only.
+  const videoSrc = chosen.filter(s => videoPlan.has(s.id));
+  const srcSteps = chosen.filter(s => !videoPlan.has(s.id));
+
+  // Copy each needed segment ONCE into <project>/media/ and build the
+  // lightweight video steps. Not undoable (file copies, like model loads);
+  // the steps themselves join the single undo entry below.
+  const videoSteps  = new Map();   // srcStepId → new step
+  const videoFailed = [];
+  if (videoSrc.length) {
+    const tgtDir = (state.get('projectPath') || '').replace(/[\\/][^\\/]*$/, '');
+    const copied = new Map();      // source mp4 path → { abs, rel }
+    for (const s of videoSrc) {
+      const seg = videoPlan.get(s.id);
+      setStatus(`Importing rendered clip for "${s.name}"…`, 'info', 0);
+      try {
+        let dest = copied.get(seg.file);
+        if (!dest) {
+          const rd = await window.sbsNative.readFile(seg.file, 'buffer');
+          if (!rd?.ok) throw new Error(rd?.error || 'segment read failed');
+          const rel = `media/imported-seg-${seg.key}.mp4`;
+          const abs = `${tgtDir}/${rel}`;
+          const wr  = await window.sbsNative.writeFile(abs, rd.data, null);
+          if (!wr?.ok) throw new Error(wr?.error || 'segment copy failed');
+          dest = { abs, rel };
+          copied.set(seg.file, dest);
+        }
+        videoSteps.set(s.id, _buildVideoStep(s, seg, dest.abs, dest.rel));
+      } catch (err) {
+        console.error(`[import] video step "${s.name}" failed:`, err);
+        videoFailed.push(s.name || s.id);
+      }
+    }
+  }
+  if (!srcSteps.length && !videoSteps.size) {
+    setStatus(videoFailed.length ? `Video import failed: ${videoFailed.join(', ')}.` : 'Nothing to import.', 'warn', 6000);
+    return;
+  }
   const srcCams   = project.cameras?.items || [];
   const tgtAnimPresets = state.get('animationPresets') || [];
   const tgtPresetIds   = new Set(tgtAnimPresets.map(p => p.id));
@@ -2576,18 +2760,26 @@ async function _doImportSteps(project, srcStepIds, srcName, targetStepId, assetP
   }
 
   // Insert after the right-clicked step — same landing rules as paste-under.
+  // 🎬 Snapshot copies and video steps INTERLEAVE in the original source
+  // order, so a mixed selection lands in the sequence the user saw.
+  const copiesBySrcId = new Map(srcSteps.map((s, i) => [s.id, copies[i]]));
+  const ordered = [];
+  for (const id of srcStepIds) {
+    const st = videoSteps.get(id) || copiesBySrcId.get(id);
+    if (st) ordered.push(st);
+  }
   const all    = state.get('steps') || [];
   let   tgtIdx = all.findIndex(s => s.id === targetStepId);
   if (tgtIdx < 0) tgtIdx = all.length - 1;
   const target = all[tgtIdx];
   const joinGroupId = target?.groupHead ? target.id : (target?.groupId || null);
-  for (const copy of copies) {
+  for (const copy of ordered) {
     copy.chapterId = target?.chapterId ?? null;
     if (joinGroupId) { copy.groupId = joinGroupId; copy.groupHead = false; copy.groupLocked = false; }
   }
-  const newAll = [...all.slice(0, tgtIdx + 1), ...copies, ...all.slice(tgtIdx + 1)];
+  const newAll = [...all.slice(0, tgtIdx + 1), ...ordered, ...all.slice(tgtIdx + 1)];
 
-  actions.commitStateChange(`Import ${copies.length} step(s) from "${srcName}"`, ['steps', 'colorPresets', 'cables', 'animationPresets'], () => {
+  actions.commitStateChange(`Import ${ordered.length} step(s) from "${srcName}"`, ['steps', 'colorPresets', 'cables', 'animationPresets'], () => {
     state.setState({
       steps: newAll,
       ...(presetAdds.length     ? { colorPresets:     [...tgtPresets, ...presetAdds] }         : {}),
@@ -2663,14 +2855,16 @@ async function _doImportSteps(project, srcStepIds, srcName, targetStepId, assetP
     } catch (err) { console.warn('[import] archived re-apply failed:', err); }
   }
 
-  setStatus(`Imported ${copies.length} step(s) from "${srcName}"`
+  setStatus(`Imported ${ordered.length} step(s) from "${srcName}"`
+    + (videoSteps.size ? ` (${videoSteps.size} as rendered video)` : '')
+    + (videoFailed.length ? ` — ⚠ video FAILED: ${videoFailed.join(', ')}` : '')
     + (loadedModels.length ? ` + ${loadedModels.length} model(s)` : '')
     + (prunedIds.size ? ` (${prunedIds.size} never-visible mesh(es) skipped)` : '')
     + (cableAdds.length ? ` + ${cableAdds.length} cable(s)` : '')
     + (presetAdds.length ? ` (+${presetAdds.length} colour preset(s))` : '')
     + (animPresetAdds.length ? ` (+${animPresetAdds.length} animation preset(s))` : '')
     + (failedModels.length ? ` — ⚠ model import FAILED: ${failedModels.join(', ')}` : '')
-    + '.', failedModels.length ? 'warn' : 'success', 9000);
+    + '.', (failedModels.length || videoFailed.length) ? 'warn' : 'success', 9000);
 }
 
 /** Clone a BLOCK of steps for pasting, remapping group identity (V0.3.2.44).
