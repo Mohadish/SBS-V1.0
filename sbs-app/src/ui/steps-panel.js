@@ -15,7 +15,8 @@ import { cloneShareStrings } from '../core/clone.js';   // copy/paste steps with
 import { pickProjectFile, readProjectForImport, assetPathCandidates, applySpecFieldsToNodes, _migrateAnimationPresets } from '../io/project.js';   // 📥 import steps from another project
 import { loadModelFile } from '../io/importers.js';       // 📥 Phase 2 — import the missing CAD too
 import { materials } from '../systems/materials.js';       // 📥 Phase 2 — colour defaults for imported meshes
-import { applyNodeSourceTransformToObject3D } from '../core/transforms.js';   // 📥 Phase 2 — model source transform (×100 scale case)
+import { applyNodeSourceTransformToObject3D, isTransformNode, captureTransformSnapshot } from '../core/transforms.js';   // 📥 Phase 2 — model source transform (×100 scale case) + reverse backfill
+import { serializeModelTree, flatten as flattenTree } from '../core/nodes.js';   // 📥 V0.3.2.191 — reverse backfill of TARGET scene into imported steps
 import { regenerateHardwareAsset } from '../systems/hardware-actions.js';     // 📥 Phase 2 — procedural hardware, no file needed
 import { setStatus } from './status.js';
 import { showContextMenu } from './context-menu.js';
@@ -2530,6 +2531,49 @@ async function _doImportSteps(project, srcStepIds, srcName, targetStepId, assetP
     }
   }
   const presetAdds = srcPresets.filter(p => wanted.has(p.id) && !tgtPresetSet.has(p.id));
+
+  // ── 🚨 V0.3.2.191 — REVERSE BACKFILL: the target's scene into the
+  // imported steps' snapshots. The imported baked trees describe the SOURCE
+  // project's scene only; activating an imported step rebuilds from that
+  // spec, and rebuildFromTreeSpec REMOVES live nodes the spec doesn't
+  // mention — which deleted the HOST project's model from the tree the
+  // moment an imported step was clicked (user lost all geometry; recovered
+  // from the saved file). The .180 inject covered only the opposite
+  // direction (imported models → existing steps). Here every top-level
+  // entity of the CURRENT tree that an imported spec lacks is appended to
+  // it HIDDEN, with its current transforms — the exact mirror of
+  // injectModelIntoAllSteps, applied to the incoming copies.
+  {
+    const rootNow   = state.get('treeData');
+    const topLevel  = (rootNow?.children || []).filter(n => n && n.type !== 'note');
+    const specHas = (spec, id) => {
+      if (!spec) return false;
+      if (spec.id === id) return true;
+      return (spec.children || []).some(c => specHas(c, id));
+    };
+    let backfilled = 0;
+    for (const liveNode of topLevel) {
+      const spec = serializeModelTree(liveNode);
+      if (!spec) continue;
+      const nodes = flattenTree(liveNode);
+      for (const copy of copies) {
+        const snap = copy.snapshot;
+        if (!snap?.tree) continue;
+        if (specHas(snap.tree, liveNode.id)) continue;   // shared ancestry — already there
+        snap.tree       = { ...snap.tree, children: [...(snap.tree.children || []), spec] };
+        snap.visibility = { ...(snap.visibility || {}) };
+        snap.transforms = { ...(snap.transforms || {}) };
+        for (const n of nodes) {
+          snap.visibility[n.id] = false;                 // present but hidden on the imported step
+          if (isTransformNode(n) && snap.transforms[n.id] == null) {
+            snap.transforms[n.id] = captureTransformSnapshot(n);
+          }
+        }
+        backfilled++;
+      }
+    }
+    if (backfilled) console.log(`[import] reverse backfill: target scene stamped (hidden) into ${copies.length} imported step(s) — activating them can no longer drop host geometry.`);
+  }
 
   // Insert after the right-clicked step — same landing rules as paste-under.
   const all    = state.get('steps') || [];
