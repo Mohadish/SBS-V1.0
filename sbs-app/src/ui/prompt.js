@@ -122,6 +122,55 @@ export function chooseWithPreview(title, message, rows, buttons) {
   });
 }
 
+/**
+ * Pick one entry from a LIST — rows stacked one under another, each the full
+ * width of the dialog, scrolling when there are many. Use this instead of
+ * chooseFromButtons whenever the options are content (names of things) rather
+ * than a handful of verbs: buttons lay out side by side, which turns a list
+ * of names into an unreadable row.
+ *
+ * @param {string} title
+ * @param {string} message
+ * @param {Array<{id:string,label:string,detail?:string,current?:boolean}>} items
+ * @param {{cancelLabel?:string}} [opts]
+ * @returns {Promise<string|null>} the chosen id, or null on cancel
+ */
+export function chooseFromList(title, message, items, opts = {}) {
+  return new Promise(resolve => {
+    const dlg = document.createElement('dialog');
+    dlg.className = 'sbs-dialog';
+    const rows = (items || []).map(it => `
+      <button class="btn" data-sbs-pick="${_esc(it.id)}" style="display:block;width:100%;text-align:left;
+              padding:8px 10px;border-radius:0;border:0;border-bottom:1px solid var(--line);background:transparent;">
+        <span style="font-weight:600;${it.current ? 'color:#22d3ee;' : ''}">${_esc(it.label)}${it.current ? ' ✓' : ''}</span>
+        ${it.detail ? `<span class="small muted" style="display:block;margin-top:2px;">${_esc(it.detail)}</span>` : ''}
+      </button>
+    `).join('');
+    dlg.innerHTML = `
+      <div class="sbs-dialog__body" style="width:min(420px,92vw);">
+        <div class="sbs-dialog__title">${_esc(title)}</div>
+        ${message ? `<div class="small muted" style="margin-top:6px;line-height:1.5;">${_esc(message)}</div>` : ''}
+        <div style="margin-top:10px;max-height:min(52vh,440px);overflow:auto;border:1px solid var(--line);border-radius:6px;background:rgba(0,0,0,0.18);">
+          ${rows || '<div class="small muted" style="padding:10px;">Nothing to choose from.</div>'}
+        </div>
+        <div style="display:flex;gap:8px;justify-content:flex-end;margin-top:12px;">
+          <button class="btn" data-sbs-pick="">${_esc(opts.cancelLabel || 'Cancel')}</button>
+        </div>
+      </div>
+    `;
+    document.body.appendChild(dlg);
+    const done = (id) => { dlg.close(); dlg.remove(); resolve(id || null); };
+    dlg.querySelectorAll('[data-sbs-pick]').forEach(btn => {
+      btn.addEventListener('click', () => done(btn.dataset.sbsPick));
+      btn.addEventListener('mouseenter', () => { btn.style.background = 'rgba(127,127,127,0.12)'; });
+      btn.addEventListener('mouseleave', () => { btn.style.background = 'transparent'; });
+    });
+    dlg.addEventListener('keydown', e => { if (e.key === 'Escape') done(null); });
+    dlg.addEventListener('cancel', e => { e.preventDefault(); done(null); });
+    dlg.showModal();
+  });
+}
+
 function _esc(s) {
   return String(s ?? '').replace(/[&<>"']/g,
     c => ({ '&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;' })[c]);

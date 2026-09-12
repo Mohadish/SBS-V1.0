@@ -22,7 +22,7 @@ import * as clock    from '../core/clock.js';
 import { getCanonicalSize, computeSafeFrameRect } from '../core/safe-frame.js';
 import { showContextMenu } from '../ui/context-menu.js';
 import { setStatus, setStickyStatus, clearStickyStatus } from '../ui/status.js';
-import { promptString, chooseFromButtons } from '../ui/prompt.js';
+import { promptString, chooseFromList } from '../ui/prompt.js';
 import { openSequenceEditor } from '../ui/sequence-editor.js';
 import { narrationContextForStep } from './narration-timeline.js';
 import * as interfaces from './interfaces.js';   // interface overlay (used lazily in the right-click menu)
@@ -1092,11 +1092,14 @@ export function isMaskEditing() { return !!_maskEdit; }
 async function _pickCropMask(node, excludeId) {
   const defs = _cropMaskDefs().filter(d => d.id !== excludeId);
   if (!defs.length) { setStatus('No other shared masks in this project yet.', 'info', 4000); return; }
-  const pick = await chooseFromButtons(
+  const pick = await chooseFromList(
     'Use another mask',
     'Every image bound to a shared mask follows it when the mask is edited.',
-    [...defs.map(d => ({ id: d.id, label: `${d.name}  (${Math.round(d.w * 100)}% × ${Math.round(d.h * 100)}%)` })),
-     { id: '', label: 'Cancel' }],
+    defs.map(d => ({
+      id: d.id,
+      label: d.name,
+      detail: `${Math.round(d.w * 100)}% × ${Math.round(d.h * 100)}% of frame${d.rot ? ` · rotated ${Math.round(d.rot)}°` : ''}`,
+    })),
   );
   if (!pick) return;
   if (useCropMask(node, pick)) setStatus(`Using "${_cropMaskDefById(pick)?.name || 'mask'}".`, 'success', 3000);
