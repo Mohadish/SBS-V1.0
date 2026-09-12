@@ -121,6 +121,25 @@ export function initOverlay() {
     enabledAnchors:   ['top-left', 'top-right', 'bottom-left', 'bottom-right'],
   });
   _uiLayer.add(_transformer);
+  // ⇧ Shift on Konva's OWN top rotater levels to 45°/90° too. Konva only
+  // snaps inside rotationSnapTolerance, so widening it to 23° while Shift is
+  // held makes every angle fall within reach of some multiple of 45 — i.e.
+  // forced levelling — and dropping it back restores free rotation. Konva
+  // re-evaluates on pointer movement, so this lands on the next move; the
+  // left knob (below) implements the no-movement case exactly as specified.
+  _transformer.on('transformstart', () => {
+    _topRotActive = _transformer.getActiveAnchor() === 'rotater';
+    if (!_topRotActive) return;
+    window.addEventListener('keydown', _onTopRotShift, true);
+    window.addEventListener('keyup',   _onTopRotShift, true);
+  });
+  _transformer.on('transformend', _clearTopRotSnap);
+  _createSideRotateKnob();
+  // The knob is a CHILD of the transformer, so it inherits its transform and
+  // rotation for free; only its local x/y need following, and the transformer
+  // recomputes width/height on many internal events we can't all hook. A
+  // beforeDraw pass is exact by construction and costs a few arithmetic ops.
+  _uiLayer.on('beforeDraw', _placeSideRotateKnob);
 
   // Click an empty area → deselect.
   _stage.on('pointerdown', (e) => {
@@ -1048,6 +1067,382 @@ function _cancelMaskEdit() {
 
 /** Public: true while the handle rect is up (callers can avoid clashing). */
 export function isMaskEditing() { return !!_maskEdit; }
+
+// ── 🔄 Rotation: second knob, Shift-levelling, type-an-angle (V0.3.2.222) ───
+// Konva gives a transformer exactly ONE rotate anchor, hard-wired above the
+// box (update() pins '.rotater' at x = width/2), and its angle maths assume
+// that position — a second anchor named 'rotater' would be found first by
+// findOne and a left-side one would read 90° off. So the second knob is ours:
+// a child of the transformer (inherits its transform, so it tracks position,
+// scale and rotation for free) with its own pointer maths.
+//
+// Rotating about the box CENTRE is the part worth stating: a node's rotation
+// pivots around its own origin, so turning a selection without also orbiting
+// each node's position around the shared centre would swing items away. Every
+// rotation below goes through _rotateNodesBy, which does both.
+const ROT_KNOB_NAME = 'sbs-rot-left';
+const ROT_SNAPS = [0, 45, 90, 135, 180, 225, 270, 315];
+let _rotKnob  = null;
+let _rotDrag  = null;   // { nodes, centre, startPointerDeg, starts, moved, shift }
+let _topRotActive = false;
+let _topRotSnapOn = false;
+
+function _onTopRotShift(ev) {
+  // isTransforming() self-heals the case where transformend never fired (the
+  // button released outside the window): without it, every later Shift press
+  // anywhere in the app would force-level the transformer.
+  if (!_topRotActive || !_transformer?.isTransforming()) { _clearTopRotSnap(); return; }
+  const on = !!ev.shiftKey;
+  if (on === _topRotSnapOn) return;
+  _topRotSnapOn = on;
+  _transformer.rotationSnaps(on ? ROT_SNAPS : []);
+  _transformer.rotationSnapTolerance(on ? 23 : 5);   // 23 > 45/2 ⇒ always snaps
+}
+
+/** Only writes when Shift actually armed the snap. Konva's _setAttr writes
+ *  arrays unconditionally, so a blanket reset on every transformend would
+ *  add rotationSnaps/rotationSnapTolerance attrs to the transformer — which
+ *  _serialiseStageJson walks, dirtying the project and re-keying the step's
+ *  cached segment for nothing. */
+function _clearTopRotSnap() {
+  _topRotActive = false;
+  window.removeEventListener('keydown', _onTopRotShift, true);
+  window.removeEventListener('keyup',   _onTopRotShift, true);
+  if (!_topRotSnapOn) return;
+  _topRotSnapOn = false;
+  _transformer.rotationSnaps([]);
+  _transformer.rotationSnapTolerance(5);
+}
+
+function _createSideRotateKnob() {
+  _rotKnob = new Konva.Circle({
+    name: ROT_KNOB_NAME,
+    radius: 6,
+    fill: '#fff',
+    stroke: '#f59e0b',
+    strokeWidth: 1,
+    visible: false,
+    strokeScaleEnabled: false,
+  });
+  _transformer.add(_rotKnob);
+  _rotKnob.on('mouseenter', () => { const s = _stage?.container(); if (s) s.style.cursor = 'crosshair'; });
+  _rotKnob.on('mouseleave', () => { const s = _stage?.container(); if (s) s.style.cursor = ''; });
+  _rotKnob.on('pointerdown', _onRotKnobDown);
+}
+
+/** Mirror of Konva's own rotater placement, on the left edge instead of the
+ *  top — the top one sits under the floating style toolbar for wide items. */
+function _placeSideRotateKnob() {
+  if (!_rotKnob || !_transformer) return;
+  const nodes = _transformer.nodes() || [];
+  const show  = nodes.length > 0 && _transformer.rotateEnabled() && !_maskEdit;
+  _rotKnob.visible(show);
+  if (!show) return;
+  const h = _transformer.height();
+  const off = _transformer.rotateAnchorOffset();
+  // Konva's _setAttr skips writes that change nothing, so an unchanged frame
+  // requests no redraw — which is what keeps this beforeDraw hook from
+  // feeding itself. Nothing here may call moveToTop / add / remove: the knob
+  // is already the last child (added after the constructor built the anchors)
+  // and reordering inside a draw would be exactly that loop.
+  _rotKnob.x(-off);
+  _rotKnob.y(h / 2);
+}
+
+const _deg = (rad) => rad * 180 / Math.PI;
+
+/** Absolute-space centre of the current transformer box. */
+function _selectionCentreAbs() {
+  const t = _transformer.getAbsoluteTransform();
+  return t.point({ x: _transformer.width() / 2, y: _transformer.height() / 2 });
+}
+
+// For a MULTI-selection Konva keeps the transformer box axis-aligned (it only
+// re-syncs its own rotation for a single node), so the measured box is the
+// group's bounding box — and that box's centre MOVES as the group turns.
+// Re-deriving it per gesture would make +45° then −45° land somewhere else:
+// two rotations about two different points compose into a translation. So the
+// centre is cached and reused for as long as the same selection has not been
+// touched by anything except these rotations, which by construction leave it
+// exactly where it was. Any other edit changes the signature and it is
+// recomputed.
+let _rotCentre = null;   // { key, sig, centre }
+
+const _rotKey = (nodes) => nodes.map(n => n._id).join(',');
+const _rotSig = (nodes) => nodes.map(n => `${n.x().toFixed(3)},${n.y().toFixed(3)},${n.rotation().toFixed(3)}`).join('|');
+
+function _stableRotCentre(nodes) {
+  const key = _rotKey(nodes), sig = _rotSig(nodes);
+  if (_rotCentre && _rotCentre.key === key && _rotCentre.sig === sig) return _rotCentre.centre;
+  const centre = _selectionCentreAbs();
+  _rotCentre = { key, sig, centre };
+  return centre;
+}
+
+/** Re-stamp the signature after our own rotation so the next gesture reuses
+ *  the same centre. */
+function _keepRotCentre(nodes) {
+  if (_rotCentre && _rotCentre.key === _rotKey(nodes)) _rotCentre.sig = _rotSig(nodes);
+}
+
+/** Snapshot enough per node to re-derive any rotation from scratch — every
+ *  frame recomputes from THIS, never from the previous frame, so switching
+ *  Shift on and off is lossless in both directions. */
+function _captureRotStarts(nodes) {
+  const m = new Map();
+  for (const n of nodes) m.set(n, { pos: n.getAbsolutePosition(), rot: n.rotation() });
+  return m;
+}
+
+/** Turn `nodes` by `deltaDeg` about `centre` (absolute coords), from the
+ *  captured start state. Orbits each node's position and adds the delta to
+ *  its own rotation, which is what keeps a multi-selection rigid. */
+function _rotateNodesBy(nodes, centre, deltaDeg, starts) {
+  const rad = deltaDeg * Math.PI / 180;
+  const cos = Math.cos(rad), sin = Math.sin(rad);
+  for (const n of nodes) {
+    const s = starts.get(n);
+    if (!s || !_isLiveNode(n)) continue;
+    const vx = s.pos.x - centre.x, vy = s.pos.y - centre.y;
+    n.setAbsolutePosition({ x: centre.x + vx * cos - vy * sin, y: centre.y + vx * sin + vy * cos });
+    n.rotation(s.rot + deltaDeg);
+  }
+}
+
+/** Nearest multiple of 45° — the levelling snap. Absolute orientation, not
+ *  the delta: the point is to square up something a few degrees off. */
+const _snap45 = (deg) => Math.round(deg / 45) * 45;
+
+/** Wrap into (-180, 180]. The left knob sits on the ±180 atan2 seam, so the
+ *  first pixel of travel flips sign — raw subtraction reports ≈ -360 for a
+ *  gesture that has barely moved. */
+const _wrapDeg = (d) => { let x = ((d + 180) % 360 + 360) % 360 - 180; return x === -180 ? 180 : x; };
+
+function _applyRotDrag() {
+  if (!_rotDrag) return;
+  const { nodes, centre, startPointerDeg, starts, pointerDeg, shift } = _rotDrag;
+  let delta = _wrapDeg(pointerDeg - startPointerDeg);
+  if (shift) {
+    // Snap the ANCHOR node's resulting orientation, and move everything by
+    // the same corrected delta so a group stays rigid.
+    const anchor = starts.get(nodes[0]);
+    if (anchor) delta = _snap45(anchor.rot + delta) - anchor.rot;
+  }
+  _rotateNodesBy(nodes, centre, delta, starts);
+  _rotDrag.appliedDelta = delta;
+  _transformer.forceUpdate();
+  _layer.batchDraw();
+  _uiLayer.batchDraw();
+  _repositionFloatingToolbar();
+}
+
+function _onRotKnobDown(e) {
+  if (e?.evt) { e.evt.preventDefault(); e.evt.stopPropagation(); }
+  if (e) e.cancelBubble = true;
+  _commitNudgeBatch();   // close any open nudge entry BEFORE this gesture's
+  const nodes = (_transformer?.nodes() || []).filter(n => !isAnchoredNode(n));
+  if (!nodes.length) return;
+  const p = _stage.getPointerPosition();
+  if (!p) return;
+  const centre = _stableRotCentre(nodes);
+  _rotDrag = {
+    nodes,
+    centre,
+    starts: _captureRotStarts(nodes),
+    startPointerDeg: _deg(Math.atan2(p.y - centre.y, p.x - centre.x)),
+    pointerDeg: _deg(Math.atan2(p.y - centre.y, p.x - centre.x)),
+    shift: !!e?.evt?.shiftKey,
+    moved: false,
+    appliedDelta: 0,
+  };
+  _fireTransformStart(nodes, e?.evt);
+  window.addEventListener('pointermove',   _onRotKnobMove,   true);
+  window.addEventListener('pointerup',     _onRotKnobUp,     true);
+  window.addEventListener('pointercancel', _onRotKnobCancel, true);
+  window.addEventListener('keydown',       _onRotKnobKey,    true);
+  window.addEventListener('keyup',         _onRotKnobKey,    true);
+}
+
+function _unbindRotKnob() {
+  window.removeEventListener('pointermove',   _onRotKnobMove,   true);
+  window.removeEventListener('pointerup',     _onRotKnobUp,     true);
+  window.removeEventListener('pointercancel', _onRotKnobCancel, true);
+  window.removeEventListener('keydown',       _onRotKnobKey,    true);
+  window.removeEventListener('keyup',         _onRotKnobKey,    true);
+}
+
+/** A cancelled pointer (touch taken over, button released outside the window)
+ *  never delivers pointerup. Without this the drag state and its four capture
+ *  listeners survive, and every later mouse move keeps rotating. */
+function _onRotKnobCancel() {
+  const d = _rotDrag;
+  _rotDrag = null;
+  _unbindRotKnob();
+  if (!d) return;
+  _rotateNodesBy(d.nodes, d.centre, 0, d.starts);   // back to where it started
+  _transformer.forceUpdate();
+  _layer.batchDraw();
+  _fireTransformEnd(d.nodes);
+  setStatus('Rotation cancelled.', 'info', 2500);
+}
+
+function _onRotKnobMove(ev) {
+  if (!_rotDrag) return;
+  _stage.setPointersPositions(ev);
+  const p = _stage.getPointerPosition();
+  if (!p) return;
+  const { centre } = _rotDrag;
+  const deg = _deg(Math.atan2(p.y - centre.y, p.x - centre.x));
+  if (Math.abs(deg - _rotDrag.startPointerDeg) > 0.4) _rotDrag.moved = true;
+  _rotDrag.pointerDeg = deg;
+  _rotDrag.shift = !!ev.shiftKey;
+  _applyRotDrag();
+}
+
+/** Shift pressed or released mid-drag re-derives from the captured start, so
+ *  letting go of Shift really does land where a free drag would have. */
+/** Shift pressed or released mid-drag re-derives from the captured start, so
+ *  letting go of Shift really does land where a free drag would have. Reads
+ *  ev.shiftKey rather than the key name: a Ctrl press while Shift is held
+ *  must not read as "Shift released". */
+function _onRotKnobKey(ev) {
+  if (!_rotDrag) return;
+  const shift = !!ev.shiftKey;
+  if (shift === _rotDrag.shift) return;
+  _rotDrag.shift = shift;
+  _applyRotDrag();
+}
+
+function _onRotKnobUp() {
+  const d = _rotDrag;
+  _rotDrag = null;
+  _unbindRotKnob();
+  if (!d) return;
+  if (!d.moved) {                      // a click, not a drag → type an angle
+    _rotateNodesBy(d.nodes, d.centre, 0, d.starts);   // undo any jitter
+    _transformer.forceUpdate();
+    _layer.batchDraw();
+    _promptRotateBy(d.nodes);          // fires transformend either way
+    return;
+  }
+  _keepRotCentre(d.nodes);
+  _fireTransformEnd(d.nodes);
+  if (d.shift) setStatus(`Levelled to ${_snap45(d.starts.get(d.nodes[0]).rot + d.appliedDelta)}°.`, 'success', 2500);
+}
+
+/**
+ * transformstart / transformend on the FIRST node only — deliberately, not on
+ * every node. _attachNode's transformstart already snapshots the whole
+ * transformer set for its undo entry, so one node's pair covers the gesture;
+ * firing on all of them would push one "Resize" entry per node (Konva's own
+ * rotater does exactly that, and it is why a 3-item rotate takes 3 undos
+ * there). Leaning on that existing entry is also what keeps the undo in
+ * LOCAL coordinates — a private one built from absolute positions would
+ * teleport the item after any window resize, which changes the stage scale.
+ */
+function _fireTransformStart(nodes, evt) {
+  const n = nodes[0];
+  if (n) { try { n._fire('transformstart', { evt, target: n }); } catch { /* listener threw */ } }
+}
+function _fireTransformEnd(nodes) {
+  const n = nodes[0];
+  if (n) { try { n._fire('transformend', { target: n }); } catch { /* listener threw */ } }
+  _scheduleSave();
+}
+
+async function _promptRotateBy(nodes) {
+  const txt = await promptString('Rotate by how many degrees? (negative = anticlockwise)', '90');
+  const deg = txt == null ? NaN : Number(String(txt).trim());
+  const alive = nodes.filter(_isLiveNode);
+  if (Number.isFinite(deg) && deg && alive.length) {
+    _rotateNodesBy(alive, _stableRotCentre(alive), deg, _captureRotStarts(alive));
+    _keepRotCentre(alive);
+    _transformer.forceUpdate();
+    _layer.batchDraw();
+    setStatus(`Rotated ${deg}°.`, 'success', 2500);
+  } else if (txt != null && !Number.isFinite(deg)) {
+    setStatus('Enter a number of degrees, e.g. 90 or -15.', 'warn', 4000);
+  }
+  // ALWAYS close the gesture, including on Cancel: the pointerdown already
+  // fired transformstart, and leaving that snapshot open would make the next
+  // unrelated transformend push an entry describing this click.
+  _fireTransformEnd(nodes);
+}
+
+// ── ⬅➡ Arrow-key nudge (V0.3.2.222) ────────────────────────────────────────
+// With something selected on the overlay, the arrows move THAT instead of
+// stepping through the timeline. Canonical units, so a nudge is the same
+// distance whatever the window size. Consecutive nudges collapse into one
+// undo entry — 30 taps to line something up should cost one Ctrl+Z, not 30.
+const NUDGE_IDLE_MS = 600;
+let _nudgeBatch = null;   // { starts, timer, label }
+
+export function nudgeSelection(arrowKey, big = false) {
+  if (!_editing || _activeTextEditor || _maskEdit) return false;
+  // Deliberately the four kinds the user asked for: text boxes, shapes,
+  // images and video clips. Interfaces are excluded because moving one has
+  // to carry its bonded shapes and re-capture their bond percentages — that
+  // rides on a real drag gesture, and faking one here leaked a permanent
+  // interface blink and left the bonded shapes behind. Anchored 3D arrows
+  // derive their geometry from the camera, so nudging them means nothing.
+  const nodes = (_transformer?.nodes() || []).filter(n =>
+    !isAnchoredNode(n) && !n.getAttr('isInterface') && !n.getAttr('attachedTo') && !n.getAttr('isZoom'));
+  if (!nodes.length) return false;
+  const step = big ? 10 : 1;
+  const d = arrowKey === 'ArrowLeft'  ? { x: -step, y: 0 }
+          : arrowKey === 'ArrowRight' ? { x:  step, y: 0 }
+          : arrowKey === 'ArrowUp'    ? { x: 0, y: -step }
+          : arrowKey === 'ArrowDown'  ? { x: 0, y:  step }
+          : null;
+  if (!d) return false;
+
+  if (!_nudgeBatch) _nudgeBatch = { starts: new Map(), after: new Map(), timer: null, label: '' };
+  for (const n of nodes) {
+    if (!_nudgeBatch.starts.has(n)) _nudgeBatch.starts.set(n, { x: n.x(), y: n.y() });
+    n.x(n.x() + d.x);
+    n.y(n.y() + d.y);
+    // Recorded NOW, not at commit: anything else that moves this node inside
+    // the idle window (a mouse drag, say) pushes its own entry first, and a
+    // commit-time read would capture that later position as this entry's
+    // "after" — undoing twice would then walk the node forward.
+    _nudgeBatch.after.set(n, { x: n.x(), y: n.y() });
+  }
+  _transformer.forceUpdate();
+  _layer.batchDraw();
+  _uiLayer.batchDraw();
+  _repositionFloatingToolbar();
+
+  clearTimeout(_nudgeBatch.timer);
+  _nudgeBatch.label = `Nudge ${nodes.length > 1 ? `${nodes.length} items` : 'item'}`;
+  _nudgeBatch.timer = setTimeout(_commitNudgeBatch, NUDGE_IDLE_MS);
+  _scheduleSave();
+  return true;
+}
+
+/** Close the open nudge entry. Called on the idle timer AND at the start of
+ *  any other gesture, so entries always land in the order they happened. */
+function _commitNudgeBatch() {
+  const b = _nudgeBatch;
+  _nudgeBatch = null;
+  if (!b) return;
+  clearTimeout(b.timer);
+  const live   = [...b.starts.keys()].filter(_isLiveNode);
+  const before = live.map(n => ({ n, ...b.starts.get(n) }));
+  const after  = live.map(n => ({ n, ...(b.after.get(n) || b.starts.get(n)) }));
+  if (!live.length) return;
+  if (!before.some((it, i) => it.x !== after[i].x || it.y !== after[i].y)) return;
+  const write = (list) => {
+    for (const it of list) {
+      if (!_isLiveNode(it.n)) continue;
+      it.n.x(it.x); it.n.y(it.y);
+    }
+    _transformer?.forceUpdate();
+    _layer?.batchDraw();
+    _repositionFloatingToolbar();
+    _scheduleSave();
+  };
+  undoManager.push(b.label, () => write(before), () => write(after));
+}
 
 // ── 🗂 Library management, shared by masks and pinned positions (V0.3.2.221) ─
 // Both are "project-level definition + per-node id attr", so one set of
@@ -3197,6 +3592,7 @@ function _attachNode(node) {
   // dragend handler below; header siblings need updateHeaderItem each).
   let _multiDragStarts = null;
   node.on('dragstart', () => {
+    _commitNudgeBatch();   // ⬅➡ close any open nudge entry before this drag's
     const own  = _transformer?.nodes() || [];
     const peer = getLayerSelection('header');
     let sel  = [...own, ...peer];
@@ -3310,6 +3706,7 @@ function _attachNode(node) {
   // tracked nodes' attrs, so capturing the lot here is correct.
   let _xformSnapBefore = null;
   node.on('transformstart', () => {
+    _commitNudgeBatch();   // ⬅➡ same ordering rule as dragstart
     const tracked = _transformer?.nodes() || [node];
     _xformSnapBefore = tracked.map(n => _snapNodeGeom(n));
     // Zoom: pin the source image in space for the whole gesture. The anchor is

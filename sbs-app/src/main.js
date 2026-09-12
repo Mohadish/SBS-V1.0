@@ -55,7 +55,7 @@ import { initContextMenu, hideContextMenu, showContextMenu, canonicalizeMenuOrde
 import { promptString } from './ui/prompt.js';
 import { showMoveToFolderDialog, showAddToReplaceDialog, showReplaceModeDialog, showInputDialog, showInsertAnimDialog, getFilter } from './ui/tree.js';
 import { positionSafeFrameEl }    from './core/safe-frame.js';
-import { initOverlay, getStage as getOverlayStage, handleAnchorPick, cancelAnchoredArrowPlacement } from './systems/overlay.js';
+import { initOverlay, getStage as getOverlayStage, handleAnchorPick, cancelAnchoredArrowPlacement, nudgeSelection as nudgeOverlaySelection } from './systems/overlay.js';
 import { initOverlayToolbar, toggleOverlayEditing } from './ui/overlay-toolbar.js';
 import { matches as keyMatches, keyFor, keyLabel, keyHint, setKeyOverrides } from './core/keymap.js';   // 🎹 central shortcut table
 import { initHeaderLayer }     from './systems/header.js';
@@ -4953,6 +4953,15 @@ window.addEventListener('keydown', async e => {
   // we're in multi-select (selection ≥ 2 steps) — see
   // uniteStepSelectionWithActive. activateRelativeStep sets activeStepId
   // synchronously, so reading it inside the unite call is safe.
+  // ⬅➡⬆⬇ V0.3.2.222 — with an overlay item selected the arrows NUDGE it
+  // (Shift = ×10) instead of stepping the timeline. Checked here rather than
+  // in overlay's own window listener because both are bubble-phase on window
+  // and their relative order depends on module init order; one gate in one
+  // place is deterministic. Returns false when nothing is selected, so step
+  // navigation is untouched the rest of the time.
+  if (key === 'ArrowLeft' || key === 'ArrowRight' || key === 'ArrowUp' || key === 'ArrowDown') {
+    if (nudgeOverlaySelection(key, e.shiftKey)) { e.preventDefault(); return; }
+  }
   if (key === 'ArrowLeft')  { e.preventDefault(); steps.activateRelativeStep(-1); actions.uniteStepSelectionWithActive(); return; }
   if (key === 'ArrowRight') { e.preventDefault(); steps.activateRelativeStep(+1); actions.uniteStepSelectionWithActive(); return; }
   // Space → GLOBAL MODE toggle (V0.3.0.125). Step-forward stays on ArrowRight
