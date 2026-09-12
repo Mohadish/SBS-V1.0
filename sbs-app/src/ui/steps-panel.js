@@ -2248,6 +2248,13 @@ function _showImportStepsDialog(project, srcSteps, srcName, targetStepId, srcPro
   const nodeAssetLookup = _buildNodeAssetLookup(project.tree?.root);   // baked trees are lean — bridge by id
   const perStepAssets  = new Map(srcSteps.map(s => [s.id, _assetsReferencedByStep(s, nodeAssetLookup)]));
   const perStepVisible = new Map(srcSteps.map(s => [s.id, _assetsVisibleInStep(s, nodeAssetLookup)]));
+  // 🗂 V0.3.2.209 — the left column lists EVERY CAD model these steps touch,
+  // permanently: already-loaded ones as a green ✓, missing ones with the
+  // import checkbox. Source-registry order.
+  const allReferencedIds = new Set();
+  for (const s of srcSteps) for (const aid of (perStepAssets.get(s.id) || [])) allReferencedIds.add(aid);
+  const allAssetIds = (project.assets?.items || []).map(a => a.id).filter(id => allReferencedIds.has(id));
+  for (const aid of allReferencedIds) if (!allAssetIds.includes(aid)) allAssetIds.push(aid);
   // 📥 Phase 2 — per missing asset: where its file is (probed async below),
   // a Browse-picked File override, and whether the user wants it imported.
   const assetState = new Map();   // assetId → { resolvedPath, browsedFile, wanted:'auto'|'yes'|'no' }
@@ -2259,12 +2266,13 @@ function _showImportStepsDialog(project, srcSteps, srcName, targetStepId, srcPro
 
   const dlg = document.createElement('dialog');
   dlg.className = 'sbs-dialog';
-  dlg.style.cssText = 'width:min(560px,92vw);max-height:82vh;background:var(--panel);border:1px solid var(--line);border-radius:10px;color:var(--text);padding:0;';
+  dlg.style.cssText = 'width:min(1500px,96vw);max-height:82vh;background:var(--panel);border:1px solid var(--line);border-radius:10px;color:var(--text);padding:0;';
   const esc = (s) => String(s ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[c]);
 
-  // 🗂 V0.3.2.208 — THREE-COLUMN layout: missing models LEFT (they no longer
-  // squeeze the step list), steps CENTER, preview RIGHT (doubled, with step
-  // facts + narration text). Header and footer span the full dialog.
+  // 🗂 V0.3.2.209 — CONSTANT three-column layout, all columns deployed from
+  // the moment the dialog opens: CAD models LEFT (green ✓ for already-loaded,
+  // checkbox for missing), steps CENTER, preview RIGHT (idle until a ▶).
+  // One fixed dialog size for every case — no growing/shrinking chrome.
   dlg.innerHTML = `
     <div style="display:flex;flex-direction:column;max-height:82vh;">
       <div style="padding:12px 16px;border-bottom:1px solid var(--line);flex-shrink:0;">
@@ -2272,12 +2280,13 @@ function _showImportStepsDialog(project, srcSteps, srcName, targetStepId, srcPro
         <div class="small muted" style="margin-top:2px;">Selected steps are inserted after the step you right-clicked. One undo entry.</div>
       </div>
       <div style="display:flex;align-items:stretch;flex:1;min-height:0;">
-        <div id="imp-assets" style="display:none;width:250px;flex-shrink:0;border-right:1px solid var(--line);padding:8px 12px;flex-direction:column;min-height:0;">
-          <div class="small" style="font-weight:600;margin-bottom:4px;flex-shrink:0;">Missing models used by the selected steps</div>
-          <div class="small muted" style="margin-bottom:6px;flex-shrink:0;">Checked models are imported with the steps; untick one to skip it. The visibility note under each name is informational.</div>
+        <div id="imp-assets" style="display:flex;width:250px;flex-shrink:0;border-right:1px solid var(--line);padding:8px 12px;flex-direction:column;min-height:0;">
+          <div class="small" style="font-weight:600;margin-bottom:4px;flex-shrink:0;">CAD models used by these steps</div>
+          <div class="small muted" style="margin-bottom:6px;flex-shrink:0;">Green ✓ = already loaded here. Checked missing models are imported with the steps; untick one to skip it.</div>
           <div id="imp-asset-rows" style="flex:1;min-height:0;overflow-y:auto;display:flex;flex-direction:column;gap:4px;"></div>
+          <div id="imp-asset-warn" class="small" style="display:none;color:#f59e0b;padding-top:6px;flex-shrink:0;"></div>
         </div>
-        <div style="display:flex;flex-direction:column;flex:1;min-width:300px;min-height:0;">
+        <div style="display:flex;flex-direction:column;flex:1 1 0%;min-width:320px;min-height:0;">
           <div style="padding:8px 16px 0;flex-shrink:0;">
             <input type="text" id="imp-search" placeholder="🔎 Filter steps by name…" spellcheck="false"
                    style="width:100%;box-sizing:border-box;padding:6px 8px;font-size:12px;background:rgba(255,255,255,0.05);color:inherit;border:1px solid var(--line,#334155);border-radius:6px;" />
@@ -2290,15 +2299,12 @@ function _showImportStepsDialog(project, srcSteps, srcName, targetStepId, srcPro
           <div id="imp-warn" class="small" style="display:none;color:#f59e0b;padding:0 16px 6px;flex-shrink:0;"></div>
           <div id="imp-list" style="flex:1;overflow-y:auto;padding:0 12px 8px;display:flex;flex-direction:column;gap:4px;"></div>
         </div>
-        <div id="imp-preview" style="display:none;width:655px;min-width:340px;flex-shrink:1;border-left:1px solid var(--line);padding:12px;flex-direction:column;gap:8px;min-height:0;overflow-y:auto;overflow-x:hidden;">
-          <div style="display:flex;align-items:center;gap:8px;flex-shrink:0;">
-            <strong id="imp-pv-name" style="font-size:13px;flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">Preview</strong>
-            <button class="btn" id="imp-pv-close" title="Close the preview pane" style="height:22px;padding:0 8px;flex-shrink:0;">✕</button>
-          </div>
+        <div id="imp-preview" style="display:flex;flex:1.35 1 0%;min-width:400px;border-left:1px solid var(--line);padding:12px;flex-direction:column;gap:8px;min-height:0;overflow-y:auto;overflow-x:hidden;">
+          <strong id="imp-pv-name" style="font-size:13px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;flex-shrink:0;">Preview</strong>
           <div style="width:100%;aspect-ratio:16/9;background:#000;border-radius:6px;overflow:hidden;display:flex;align-items:center;justify-content:center;flex-shrink:0;">
             <video id="imp-pv-video" style="width:100%;height:100%;object-fit:contain;display:none;cursor:pointer;" muted></video>
             <img id="imp-pv-thumb" style="width:100%;height:100%;object-fit:contain;display:none;" />
-            <div id="imp-pv-msg" class="small muted" style="display:none;padding:8px;text-align:center;"></div>
+            <div id="imp-pv-msg" class="small muted" style="display:block;padding:8px;text-align:center;">▶ Hit a step's play button to preview it here.</div>
           </div>
           <div class="small muted" id="imp-pv-status" style="line-height:1.4;flex-shrink:0;"></div>
           <div id="imp-pv-info" class="small" style="line-height:1.6;flex-shrink:0;"></div>
@@ -2316,10 +2322,10 @@ function _showImportStepsDialog(project, srcSteps, srcName, targetStepId, srcPro
     </div>`;
 
   const list    = dlg.querySelector('#imp-list');
-  const warnEl  = dlg.querySelector('#imp-warn');
+  const warnEl  = dlg.querySelector('#imp-warn');           // center — save-first warning
+  const assetWarnEl = dlg.querySelector('#imp-asset-warn'); // left — the ⚠ Skipping note
   const goBtn   = dlg.querySelector('#imp-go');
   const cntEl   = dlg.querySelector('#imp-count');
-  const assetsBox  = dlg.querySelector('#imp-assets');
   const assetRows  = dlg.querySelector('#imp-asset-rows');
   const checked = new Set();
 
@@ -2328,7 +2334,6 @@ function _showImportStepsDialog(project, srcSteps, srcName, targetStepId, srcPro
   // window the 🎬 import would copy) plus its voice-over WAV from the
   // source's audio cache. Steps with no cached segment fall back to the
   // thumbnail + audio. Nothing here touches app state — pure playback.
-  const pvPane   = dlg.querySelector('#imp-preview');
   const pvName   = dlg.querySelector('#imp-pv-name');
   const pvVideo  = dlg.querySelector('#imp-pv-video');
   const pvThumb  = dlg.querySelector('#imp-pv-thumb');
@@ -2340,15 +2345,6 @@ function _showImportStepsDialog(project, srcSteps, srcName, targetStepId, srcPro
   let pvToken    = 0;       // stale-async guard — a newer preview wins
   let pvCurrent  = null;    // step loaded in the pane (for Replay)
   let pvWindowDone = false; // the clip reached its segment window's end
-
-  // Dialog width follows which side columns are visible (left assets column
-  // + right preview pane around the fixed 560px step list).
-  const _layoutWidth = () => {
-    const w = 560
-      + (assetsBox.style.display !== 'none' ? 250 : 0)
-      + (pvPane.style.display   !== 'none' ? 657 : 0);
-    dlg.style.width = `min(${w}px, 96vw)`;
-  };
 
   // 🔵 the step currently loaded in the preview pane glows in the list.
   const stepNoById = new Map();   // filled when the rows are built below
@@ -2386,8 +2382,6 @@ function _showImportStepsDialog(project, srcSteps, srcName, targetStepId, srcPro
     const token = ++pvToken;
     pvWindowDone = false;
     pvCurrent = s;
-    pvPane.style.display = 'flex';
-    _layoutWidth();
     _setPlayingRow(s.id);
     const no = stepNoById.get(s.id);
     pvName.textContent = `${no ? no + '. ' : ''}${s.name || 'Step'}`;
@@ -2482,12 +2476,6 @@ function _showImportStepsDialog(project, srcSteps, srcName, targetStepId, srcPro
     }
   });
   dlg.querySelector('#imp-pv-replay').addEventListener('click', () => { if (pvCurrent) _preview(pvCurrent); });
-  dlg.querySelector('#imp-pv-close').addEventListener('click', () => {
-    _pvStopMedia();
-    _setPlayingRow(null);
-    pvPane.style.display = 'none';
-    _layoutWidth();
-  });
   // Esc / Cancel / Import — however the dialog closes, kill the audio too.
   dlg.addEventListener('close', _pvStopMedia);
 
@@ -2529,33 +2517,48 @@ function _showImportStepsDialog(project, srcSteps, srcName, targetStepId, srcPro
       }
     }
 
+    // 🗂 V0.3.2.209 — the left column is PERMANENT and lists every model any
+    // step in this dialog touches. Three row kinds: green ✓ (already loaded
+    // here — no checkbox, nothing to decide), active checkbox (missing AND
+    // referenced by the current selection — .205 default CHECKED), and dimmed
+    // (missing but no selected step uses it — checkbox disabled).
     assetRows.innerHTML = '';
     assetRowEls.clear();
     let blocked = null;
-    for (const [aid, m] of missing) {
+    for (const aid of allAssetIds) {
       const entry  = srcAssetById.get(aid);
-      const st     = assetState.get(aid) || { resolvedPath: null, browsedFile: null, wanted: 'auto' };
+      const row = document.createElement('div');
+      row.style.cssText = 'display:flex;align-items:center;gap:8px;';
+
+      if (targetAssetIds.has(aid)) {
+        row.innerHTML = `
+          <span style="color:#22c55e;font-weight:700;flex-shrink:0;">✓</span>
+          <div style="flex:1;min-width:0;">
+            <div class="small" style="font-weight:600;color:#22c55e;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">${esc(entry?.name || aid)}</div>
+            <div class="small" style="color:#22c55e;opacity:0.75;">already loaded in this project</div>
+          </div>`;
+        assetRows.appendChild(row);
+        assetRowEls.set(aid, row);
+        continue;
+      }
+
+      const m  = missing.get(aid) || null;   // referenced by the CURRENT selection?
+      const st = assetState.get(aid) || { resolvedPath: null, browsedFile: null, wanted: 'auto' };
       assetState.set(aid, st);
-      const needed = m.neededIn > 0;
-      // 🔄 V0.3.2.205 — the DEFAULT is simply CHECKED for every model a
-      // selected mesh-import step references. The visibility verdict proved
-      // an unreliable gatekeeper in the field (a step the user knew showed
-      // the model analysed as "hidden" and silently unticked it — twice);
-      // it stays as the informational line below, nothing more. Weight is
-      // already protected by the import-time pruning of never-visible
-      // meshes, and a deliberate untick is still respected until the step
-      // set changes (the .204 reset rule).
-      const wanted = _assetWanted(aid, true);
+      const inSelection = !!m;
+      const needed = (m?.neededIn || 0) > 0;
+      const wanted = inSelection && _assetWanted(aid, true);   // .205 — default CHECKED when referenced
       // ⚙ Procedural hardware assets (legacy screws) are GENERATED — no file.
       const isProcedural = entry?.type === 'hardware' && entry?.hardware;
       const hasFile = isProcedural || !!(st.browsedFile || st.resolvedPath);
       if (wanted && !hasFile) blocked = entry?.name || aid;
+      if (!inSelection) row.style.opacity = '0.55';
 
-      const row = document.createElement('div');
-      row.style.cssText = 'display:flex;align-items:center;gap:8px;';
       const cb = document.createElement('input');
       cb.type = 'checkbox';
       cb.checked = wanted;
+      cb.disabled = !inSelection;
+      if (!inSelection) cb.title = 'No currently selected step uses this model.';
       cb.addEventListener('change', () => { st.wanted = cb.checked ? 'yes' : 'no'; refresh(); });
       const info = document.createElement('div');
       info.style.cssText = 'flex:1;min-width:0;';
@@ -2566,9 +2569,12 @@ function _showImportStepsDialog(project, srcSteps, srcName, targetStepId, srcPro
       const fileLine = isProcedural
         ? `<div class="small" style="color:#22c55e;">⚙ procedural — generated, no file needed</div>`
         : `<div class="small" style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap;${fileLabel ? 'color:#22c55e;' : 'color:#ef4444;'}">${fileLabel ? `✓ ${esc(fileLabel)}` : '✗ file not found — Browse…'}</div>`;
+      const useLine = !inSelection ? 'not used by the selected steps'
+        : needed ? `visible in ${m.neededIn} selected step(s)`
+        : 'hidden in every selected step';
       info.innerHTML = `
         <div class="small" style="font-weight:600;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">${esc(entry?.name || aid)}
-          <span class="small muted" style="font-weight:400;">— ${needed ? `visible in ${m.neededIn} selected step(s)` : 'hidden in every selected step'}</span></div>
+          <span class="small muted" style="font-weight:400;">— ${useLine}</span></div>
         ${fileLine}`;
       row.append(cb, info);
       if (!isProcedural) {
@@ -2588,15 +2594,14 @@ function _showImportStepsDialog(project, srcSteps, srcName, targetStepId, srcPro
       assetRows.appendChild(row);
       assetRowEls.set(aid, row);
     }
-    assetsBox.style.display = missing.size ? 'flex' : 'none';   // left COLUMN now
-    _layoutWidth();
 
-    // Skipped-but-referenced note (parts stay missing until that model is loaded).
+    // Skipped-but-referenced note — lives in the LEFT column with the rows.
     const skipped = [...missing.keys()].filter(aid => !_assetWanted(aid, true));   // same default as the rows
     if (skipped.length) {
-      warnEl.style.display = 'block';
-      warnEl.textContent = `⚠ Skipping: ${skipped.map(aid => srcAssetById.get(aid)?.name || aid).join(', ')} — those parts stay missing until the model is loaded here.`;
-    } else warnEl.style.display = 'none';
+      assetWarnEl.style.display = 'block';
+      assetWarnEl.textContent = `⚠ Skipping: ${skipped.map(aid => srcAssetById.get(aid)?.name || aid).join(', ')} — those parts stay missing until the model is loaded here.`;
+    } else assetWarnEl.style.display = 'none';
+    warnEl.style.display = 'none';   // center slot is reserved for the save-first warning
 
     goBtn.disabled = checked.size === 0 || !!blocked;
     if (blocked) goBtn.title = `"${blocked}" is checked but its file was not found — Browse to it or uncheck it.`;
