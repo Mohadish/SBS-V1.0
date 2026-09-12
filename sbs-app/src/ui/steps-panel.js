@@ -2262,50 +2262,57 @@ function _showImportStepsDialog(project, srcSteps, srcName, targetStepId, srcPro
   dlg.style.cssText = 'width:min(560px,92vw);max-height:82vh;background:var(--panel);border:1px solid var(--line);border-radius:10px;color:var(--text);padding:0;';
   const esc = (s) => String(s ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[c]);
 
+  // 🗂 V0.3.2.208 — THREE-COLUMN layout: missing models LEFT (they no longer
+  // squeeze the step list), steps CENTER, preview RIGHT (doubled, with step
+  // facts + narration text). Header and footer span the full dialog.
   dlg.innerHTML = `
-    <div style="display:flex;align-items:stretch;max-height:82vh;">
-    <div style="display:flex;flex-direction:column;max-height:82vh;flex:1;min-width:0;">
-      <div style="padding:12px 16px;border-bottom:1px solid var(--line);">
+    <div style="display:flex;flex-direction:column;max-height:82vh;">
+      <div style="padding:12px 16px;border-bottom:1px solid var(--line);flex-shrink:0;">
         <strong style="font-size:14px;">📥 Import steps from "${esc(srcName)}"</strong>
         <div class="small muted" style="margin-top:2px;">Selected steps are inserted after the step you right-clicked. One undo entry.</div>
       </div>
-      <div style="padding:8px 16px 0;">
-        <input type="text" id="imp-search" placeholder="🔎 Filter steps by name…" spellcheck="false"
-               style="width:100%;box-sizing:border-box;padding:6px 8px;font-size:12px;background:rgba(255,255,255,0.05);color:inherit;border:1px solid var(--line,#334155);border-radius:6px;" />
+      <div style="display:flex;align-items:stretch;flex:1;min-height:0;">
+        <div id="imp-assets" style="display:none;width:250px;flex-shrink:0;border-right:1px solid var(--line);padding:8px 12px;flex-direction:column;min-height:0;">
+          <div class="small" style="font-weight:600;margin-bottom:4px;flex-shrink:0;">Missing models used by the selected steps</div>
+          <div class="small muted" style="margin-bottom:6px;flex-shrink:0;">Checked models are imported with the steps; untick one to skip it. The visibility note under each name is informational.</div>
+          <div id="imp-asset-rows" style="flex:1;min-height:0;overflow-y:auto;display:flex;flex-direction:column;gap:4px;"></div>
+        </div>
+        <div style="display:flex;flex-direction:column;flex:1;min-width:300px;min-height:0;">
+          <div style="padding:8px 16px 0;flex-shrink:0;">
+            <input type="text" id="imp-search" placeholder="🔎 Filter steps by name…" spellcheck="false"
+                   style="width:100%;box-sizing:border-box;padding:6px 8px;font-size:12px;background:rgba(255,255,255,0.05);color:inherit;border:1px solid var(--line,#334155);border-radius:6px;" />
+          </div>
+          <div style="padding:8px 16px;display:flex;gap:8px;align-items:center;flex-shrink:0;">
+            <button class="btn" id="imp-all">Select all</button>
+            <button class="btn" id="imp-none">Select none</button>
+            <span class="small muted" id="imp-count" style="margin-left:auto;"></span>
+          </div>
+          <div id="imp-warn" class="small" style="display:none;color:#f59e0b;padding:0 16px 6px;flex-shrink:0;"></div>
+          <div id="imp-list" style="flex:1;overflow-y:auto;padding:0 12px 8px;display:flex;flex-direction:column;gap:4px;"></div>
+        </div>
+        <div id="imp-preview" style="display:none;width:655px;min-width:340px;flex-shrink:1;border-left:1px solid var(--line);padding:12px;flex-direction:column;gap:8px;min-height:0;overflow-y:auto;overflow-x:hidden;">
+          <div style="display:flex;align-items:center;gap:8px;flex-shrink:0;">
+            <strong id="imp-pv-name" style="font-size:13px;flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">Preview</strong>
+            <button class="btn" id="imp-pv-close" title="Close the preview pane" style="height:22px;padding:0 8px;flex-shrink:0;">✕</button>
+          </div>
+          <div style="width:100%;aspect-ratio:16/9;background:#000;border-radius:6px;overflow:hidden;display:flex;align-items:center;justify-content:center;flex-shrink:0;">
+            <video id="imp-pv-video" style="width:100%;height:100%;object-fit:contain;display:none;cursor:pointer;" muted></video>
+            <img id="imp-pv-thumb" style="width:100%;height:100%;object-fit:contain;display:none;" />
+            <div id="imp-pv-msg" class="small muted" style="display:none;padding:8px;text-align:center;"></div>
+          </div>
+          <div class="small muted" id="imp-pv-status" style="line-height:1.4;flex-shrink:0;"></div>
+          <div id="imp-pv-info" class="small" style="line-height:1.6;flex-shrink:0;"></div>
+          <div id="imp-pv-text" class="small muted" style="display:none;max-height:130px;overflow-y:auto;border:1px solid var(--line);border-radius:6px;padding:6px 8px;white-space:pre-wrap;flex-shrink:0;"></div>
+          <div style="display:flex;gap:8px;flex-shrink:0;">
+            <button class="btn" id="imp-pv-replay" style="height:24px;padding:0 10px;">▶ Replay</button>
+          </div>
+          <div class="small muted" style="margin-top:auto;flex-shrink:0;">Click the video to pause / resume; after it ends, a click replays.</div>
+        </div>
       </div>
-      <div style="padding:8px 16px;display:flex;gap:8px;align-items:center;">
-        <button class="btn" id="imp-all">Select all</button>
-        <button class="btn" id="imp-none">Select none</button>
-        <span class="small muted" id="imp-count" style="margin-left:auto;"></span>
-      </div>
-      <div id="imp-warn" class="small" style="display:none;color:#f59e0b;padding:0 16px 6px;"></div>
-      <div id="imp-assets" style="display:none;padding:4px 16px 8px;border-bottom:1px solid var(--line);">
-        <div class="small" style="font-weight:600;margin-bottom:4px;">Missing models used by the selected steps</div>
-        <div class="small muted" style="margin-bottom:6px;">Checked models are imported with the steps. Models whose parts are hidden in every selected step are unchecked — skipping them changes nothing on screen.</div>
-        <div id="imp-asset-rows" style="display:flex;flex-direction:column;gap:4px;"></div>
-      </div>
-      <div id="imp-list" style="flex:1;overflow-y:auto;padding:0 12px 8px;display:flex;flex-direction:column;gap:4px;"></div>
-      <div style="padding:10px 16px;border-top:1px solid var(--line);display:flex;gap:8px;justify-content:flex-end;">
+      <div style="padding:10px 16px;border-top:1px solid var(--line);display:flex;gap:8px;justify-content:flex-end;flex-shrink:0;">
         <button class="btn" id="imp-cancel">Cancel</button>
         <button class="btn" id="imp-go" disabled>Import</button>
       </div>
-    </div>
-    <div id="imp-preview" style="display:none;width:336px;flex-shrink:0;border-left:1px solid var(--line);padding:12px;flex-direction:column;gap:8px;">
-      <div style="display:flex;align-items:center;gap:8px;">
-        <strong class="small" id="imp-pv-name" style="flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">Preview</strong>
-        <button class="btn" id="imp-pv-close" title="Close the preview pane" style="height:22px;padding:0 8px;flex-shrink:0;">✕</button>
-      </div>
-      <div style="width:312px;height:176px;background:#000;border-radius:6px;overflow:hidden;display:flex;align-items:center;justify-content:center;flex-shrink:0;">
-        <video id="imp-pv-video" style="width:100%;height:100%;object-fit:contain;display:none;cursor:pointer;" muted></video>
-        <img id="imp-pv-thumb" style="width:100%;height:100%;object-fit:contain;display:none;" />
-        <div id="imp-pv-msg" class="small muted" style="display:none;padding:8px;text-align:center;"></div>
-      </div>
-      <div class="small muted" id="imp-pv-status" style="line-height:1.4;"></div>
-      <div style="display:flex;gap:8px;">
-        <button class="btn" id="imp-pv-replay" style="height:24px;padding:0 10px;">▶ Replay</button>
-      </div>
-      <div class="small muted" style="margin-top:auto;">Click the video to pause / resume; after it ends, a click replays.</div>
-    </div>
     </div>`;
 
   const list    = dlg.querySelector('#imp-list');
@@ -2327,10 +2334,39 @@ function _showImportStepsDialog(project, srcSteps, srcName, targetStepId, srcPro
   const pvThumb  = dlg.querySelector('#imp-pv-thumb');
   const pvMsg    = dlg.querySelector('#imp-pv-msg');
   const pvStatus = dlg.querySelector('#imp-pv-status');
+  const pvInfo   = dlg.querySelector('#imp-pv-info');
+  const pvText   = dlg.querySelector('#imp-pv-text');
   const pvAudio  = new Audio();
   let pvToken    = 0;       // stale-async guard — a newer preview wins
   let pvCurrent  = null;    // step loaded in the pane (for Replay)
   let pvWindowDone = false; // the clip reached its segment window's end
+
+  // Dialog width follows which side columns are visible (left assets column
+  // + right preview pane around the fixed 560px step list).
+  const _layoutWidth = () => {
+    const w = 560
+      + (assetsBox.style.display !== 'none' ? 250 : 0)
+      + (pvPane.style.display   !== 'none' ? 657 : 0);
+    dlg.style.width = `min(${w}px, 96vw)`;
+  };
+
+  // 🔵 the step currently loaded in the preview pane glows in the list.
+  const stepNoById = new Map();   // filled when the rows are built below
+  let pvRow = null;
+  const PV_ROW_BG = 'rgba(59,130,246,0.18)';
+  const _setPlayingRow = (stepId) => {
+    if (pvRow) { pvRow._playing = false; pvRow.style.background = ''; pvRow.style.outline = ''; pvRow = null; }
+    if (!stepId) return;
+    for (const el of list.children) {
+      if (el._cb && el._id === stepId) {
+        pvRow = el;
+        el._playing = true;
+        el.style.background = PV_ROW_BG;
+        el.style.outline = '1px solid rgba(59,130,246,0.55)';
+        break;
+      }
+    }
+  };
 
   const _pvStopMedia = () => {
     pvToken++;   // invalidates an in-flight _preview too (its WAV read may
@@ -2351,10 +2387,34 @@ function _showImportStepsDialog(project, srcSteps, srcName, targetStepId, srcPro
     pvWindowDone = false;
     pvCurrent = s;
     pvPane.style.display = 'flex';
-    dlg.style.width = 'min(920px,94vw)';
-    pvName.textContent = s.name || 'Step';
+    _layoutWidth();
+    _setPlayingRow(s.id);
+    const no = stepNoById.get(s.id);
+    pvName.textContent = `${no ? no + '. ' : ''}${s.name || 'Step'}`;
     pvStatus.textContent = '…';
     const seg = videoBySrcId.get(s.id) || null;
+
+    // 📋 Step facts — everything known synchronously, shown immediately.
+    const kind        = _stepVideoKind(s);
+    const refs        = [...(perStepAssets.get(s.id) || [])];
+    const missingRefs = refs.filter(aid => !targetAssetIds.has(aid));
+    const chap        = s.chapterId ? (chapterName.get(s.chapterId) || 'Chapter') : null;
+    const narrMs      = Number(s.narration?.durationMs) || 0;
+    const lines = [];
+    if (chap) lines.push(`📖 ${esc(chap)}`);
+    if (kind === 'full')     lines.push('🎞 this step IS a rendered video (from an earlier cache import)');
+    else if (kind === 'has') lines.push('📹 contains a video overlay alongside its scene');
+    if (s.groupHead)         lines.push('⊞ group head');
+    else if (s.groupId)      lines.push('· sub-step of a group');
+    if (s.hidden)            lines.push('🚫 hidden step');
+    if (seg) lines.push(`🎬 rendered clip: ${((seg.outMs - seg.inMs) / 1000).toFixed(1)}s (segment window ${(seg.inMs / 1000).toFixed(1)}–${(seg.outMs / 1000).toFixed(1)}s)${seg.alphaFile ? ' · ⬚ alpha mask available' : ''}`);
+    if (narrMs) lines.push(`🎙 voice-over: ${(narrMs / 1000).toFixed(1)}s`);
+    lines.push(`🧩 references ${refs.length} model(s)${missingRefs.length ? ` — ${missingRefs.length} missing in this project` : ''}`);
+    pvInfo.innerHTML = lines.map(l => `<div>${l}</div>`).join('');
+    const vtxt = String(s.voiceText || s.narration?.text || '').trim();
+    if (vtxt) { pvText.style.display = 'block'; pvText.textContent = vtxt; }
+    else pvText.style.display = 'none';
+
     const audioUrl = await _srcNarrationDataUrl(s, srcProjectPath, project);
     if (token !== pvToken) return;   // user moved on while the WAV loaded
     const bits = [];
@@ -2424,8 +2484,9 @@ function _showImportStepsDialog(project, srcSteps, srcName, targetStepId, srcPro
   dlg.querySelector('#imp-pv-replay').addEventListener('click', () => { if (pvCurrent) _preview(pvCurrent); });
   dlg.querySelector('#imp-pv-close').addEventListener('click', () => {
     _pvStopMedia();
+    _setPlayingRow(null);
     pvPane.style.display = 'none';
-    dlg.style.width = 'min(560px,92vw)';
+    _layoutWidth();
   });
   // Esc / Cancel / Import — however the dialog closes, kill the audio too.
   dlg.addEventListener('close', _pvStopMedia);
@@ -2527,7 +2588,8 @@ function _showImportStepsDialog(project, srcSteps, srcName, targetStepId, srcPro
       assetRows.appendChild(row);
       assetRowEls.set(aid, row);
     }
-    assetsBox.style.display = missing.size ? 'block' : 'none';
+    assetsBox.style.display = missing.size ? 'flex' : 'none';   // left COLUMN now
+    _layoutWidth();
 
     // Skipped-but-referenced note (parts stay missing until that model is loaded).
     const skipped = [...missing.keys()].filter(aid => !_assetWanted(aid, true));   // same default as the rows
@@ -2656,8 +2718,9 @@ function _showImportStepsDialog(project, srcSteps, srcName, targetStepId, srcPro
       stepNo++;
       const row = document.createElement('label');
       row.style.cssText = 'display:flex;align-items:center;gap:10px;padding:4px 6px 4px 14px;border-radius:6px;cursor:pointer;';
-      row.addEventListener('mouseenter', () => row.style.background = 'rgba(127,127,127,0.10)');
-      row.addEventListener('mouseleave', () => row.style.background = '');
+      row.addEventListener('mouseenter', () => { if (!row._playing) row.style.background = 'rgba(127,127,127,0.10)'; });
+      row.addEventListener('mouseleave', () => { if (!row._playing) row.style.background = ''; });
+      stepNoById.set(s.id, stepNo);   // ▶ pane title + facts use the number
       const cb = document.createElement('input');
       cb.type = 'checkbox';
       cb.addEventListener('change', () => {
