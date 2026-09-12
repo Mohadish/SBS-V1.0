@@ -127,33 +127,15 @@ export function initOverlay() {
   // forced levelling — and dropping it back restores free rotation. Konva
   // re-evaluates on pointer movement, so this lands on the next move; the
   // left knob (below) implements the no-movement case exactly as specified.
-  _transformer.on('transformstart', () => {
-    _topRotActive = _transformer.getActiveAnchor() === 'rotater';
-    if (!_topRotActive) return;
-    _topRotStartRot = _transformer.nodes()?.[0]?.rotation() ?? null;
-    window.addEventListener('keydown', _onTopRotShift, true);
-    window.addEventListener('keyup',   _onTopRotShift, true);
-  });
-  _transformer.on('transformend', () => {
-    // A CLICK on Konva's own rotate knob (pressed and released without
-    // turning anything) opens the same type-an-angle mode as the left knob —
-    // the two knobs should not behave differently. Deferred a tick so every
-    // other transformend handler, including the one that pushes the undo
-    // entry, has finished first.
-    const clicked = _topRotActive && _topRotStartRot !== null
-      && (_transformer.nodes()?.[0]?.rotation() ?? null) === _topRotStartRot;
-    _clearTopRotSnap();
-    _topRotStartRot = null;
-    if (!clicked) return;
-    const nodes = (_transformer.nodes() || []).filter(n => !isAnchoredNode(n));
-    if (nodes.length) setTimeout(() => { if (!_angleEntry && !_rotDrag) _beginAngleEntry(nodes); }, 0);
-  });
-  _createSideRotateKnob();
+  // Konva's own rotate anchor is retired: both knobs are ours, so they look
+  // and behave identically and there is exactly one rotation code path.
+  _transformer.rotateLineVisible(false);
+  _createRotateKnobs();
   // The knob is a CHILD of the transformer, so it inherits its transform and
   // rotation for free; only its local x/y need following, and the transformer
   // recomputes width/height on many internal events we can't all hook. A
   // beforeDraw pass is exact by construction and costs a few arithmetic ops.
-  _uiLayer.on('beforeDraw', _placeSideRotateKnob);
+  _uiLayer.on('beforeDraw', _placeRotateKnobs);
 
   // Click an empty area → deselect.
   _stage.on('pointerdown', (e) => {
@@ -1093,7 +1075,7 @@ if (typeof window !== 'undefined') {
         overlayEditingOn: !!_editing,
         selected: sel.length,
         rotateEnabled: !!_transformer?.rotateEnabled(),
-        leftKnobVisible: !!_rotKnob?.visible(),
+        knobsVisible: _rotKnobs.filter(k => k.visible()).length,
         typingAngle: !!_angleEntry,
         typedSoFar: _angleEntry?.buf ?? '',
         draggingKnob: !!_rotDrag,
@@ -1101,8 +1083,8 @@ if (typeof window !== 'undefined') {
       console.table(info);
       if (!_editing) console.warn('→ Overlay editing is OFF: click "✏ Edit overlay" or press O.');
       else if (!sel.length) console.warn('→ Nothing selected: click an item on the canvas.');
-      else if (!info.leftKnobVisible) console.warn('→ The left knob is hidden (rotation disabled for this selection).');
-      else console.log('→ Click the knob on the LEFT of the selection box, then just type, e.g. 90/3, then Enter.');
+      else if (!info.knobsVisible) console.warn('→ Both rotate knobs are hidden (rotation disabled for this selection).');
+      else console.log('→ Press and hold either rotate knob (top or left) and type, e.g. 90/3, then Enter.');
       return info;
     },
     /** Open the typing mode on the current selection without the click. */
@@ -1127,74 +1109,76 @@ if (typeof window !== 'undefined') {
 // pivots around its own origin, so turning a selection without also orbiting
 // each node's position around the shared centre would swing items away. Every
 // rotation below goes through _rotateNodesBy, which does both.
-const ROT_KNOB_NAME = 'sbs-rot-left';
-const ROT_SNAPS = [0, 45, 90, 135, 180, 225, 270, 315];
-let _rotKnob  = null;
+const ROT_KNOB_NAME = 'sbs-rot-knob';
+let _rotKnobs = [];     // [topKnob, leftKnob] — identical, both ours
 let _rotDrag  = null;   // { nodes, centre, startPointerDeg, starts, moved, shift }
-let _topRotActive = false;
-let _topRotSnapOn = false;
-let _topRotStartRot = null;
 
-function _onTopRotShift(ev) {
-  // isTransforming() self-heals the case where transformend never fired (the
-  // button released outside the window): without it, every later Shift press
-  // anywhere in the app would force-level the transformer.
-  if (!_topRotActive || !_transformer?.isTransforming()) { _clearTopRotSnap(); return; }
-  const on = !!ev.shiftKey;
-  if (on === _topRotSnapOn) return;
-  _topRotSnapOn = on;
-  _transformer.rotationSnaps(on ? ROT_SNAPS : []);
-  _transformer.rotationSnapTolerance(on ? 23 : 5);   // 23 > 45/2 ⇒ always snaps
+/** One knob: a white disc with an amber circular-arrow glyph, plus a
+ *  generous invisible hit circle so it is easy to grab. Built from Konva
+ *  primitives with the geometry computed here rather than an SVG path, so
+ *  the arrow and its head can never drift apart. */
+function _makeRotKnob() {
+  const R = 5.1;                       // glyph radius
+  const g = new Konva.Group({ name: ROT_KNOB_NAME, visible: false });
+  g.add(new Konva.Circle({ radius: 8.5, fill: '#fff', stroke: '#f59e0b', strokeWidth: 1, strokeScaleEnabled: false }));
+  // Ring: a 260° arc, leaving a gap for the head to sit in.
+  g.add(new Konva.Arc({
+    innerRadius: R - 0.9, outerRadius: R + 0.9, angle: 260, rotation: -30,
+    fill: '#f59e0b', strokeScaleEnabled: false,
+  }));
+  // Head: a triangle at the arc's start, pointing along the direction of
+  // travel (tangent), so the whole thing reads as "turn".
+  const a = -30 * Math.PI / 180;
+  const px = Math.cos(a) * R, py = Math.sin(a) * R;
+  const tx = Math.sin(a), ty = -Math.cos(a);            // tangent, anticlockwise
+  const nx = Math.cos(a), ny = Math.sin(a);             // outward normal
+  const L = 3.4, W = 2.5;
+  g.add(new Konva.Line({
+    closed: true, fill: '#f59e0b', strokeScaleEnabled: false,
+    points: [
+      px + tx * L,           py + ty * L,
+      px + nx * W,           py + ny * W,
+      px - nx * W,           py - ny * W,
+    ],
+  }));
+  g.add(new Konva.Circle({ radius: 11, fill: 'rgba(0,0,0,0.001)' }));   // hit area
+  g.on('mouseenter', () => { const s = _stage?.container(); if (s) s.style.cursor = 'crosshair'; });
+  g.on('mouseleave', () => { const s = _stage?.container(); if (s) s.style.cursor = ''; });
+  // BOTH bindings on purpose: whichever of the two Konva dispatches first
+  // wins and the other is ignored via the _rotDrag guard. Depending on a
+  // single event family here is what left this dead once already.
+  g.on('pointerdown', _onRotKnobDown);
+  g.on('mousedown',   _onRotKnobDown);
+  _transformer.add(g);
+  return g;
 }
 
-/** Only writes when Shift actually armed the snap. Konva's _setAttr writes
- *  arrays unconditionally, so a blanket reset on every transformend would
- *  add rotationSnaps/rotationSnapTolerance attrs to the transformer — which
- *  _serialiseStageJson walks, dirtying the project and re-keying the step's
- *  cached segment for nothing. */
-function _clearTopRotSnap() {
-  _topRotActive = false;
-  window.removeEventListener('keydown', _onTopRotShift, true);
-  window.removeEventListener('keyup',   _onTopRotShift, true);
-  if (!_topRotSnapOn) return;
-  _topRotSnapOn = false;
-  _transformer.rotationSnaps([]);
-  _transformer.rotationSnapTolerance(5);
+function _createRotateKnobs() {
+  _rotKnobs = [_makeRotKnob(), _makeRotKnob()];   // [top, left]
 }
 
-function _createSideRotateKnob() {
-  _rotKnob = new Konva.Circle({
-    name: ROT_KNOB_NAME,
-    radius: 6,
-    fill: '#fff',
-    stroke: '#f59e0b',
-    strokeWidth: 1,
-    visible: false,
-    strokeScaleEnabled: false,
-  });
-  _transformer.add(_rotKnob);
-  _rotKnob.on('mouseenter', () => { const s = _stage?.container(); if (s) s.style.cursor = 'crosshair'; });
-  _rotKnob.on('mouseleave', () => { const s = _stage?.container(); if (s) s.style.cursor = ''; });
-  _rotKnob.on('pointerdown', _onRotKnobDown);
-}
-
-/** Mirror of Konva's own rotater placement, on the left edge instead of the
- *  top — the top one sits under the floating style toolbar for wide items. */
-function _placeSideRotateKnob() {
-  if (!_rotKnob || !_transformer) return;
+/** Place both knobs and suppress Konva's own rotate anchor. Runs on every
+ *  _uiLayer beforeDraw: Konva's update() fires from more internal events
+ *  than can be hooked individually, and _setAttr skips writes that change
+ *  nothing, so an unchanged frame requests no redraw and this cannot feed
+ *  itself. Nothing here may call moveToTop / add / remove. */
+function _placeRotateKnobs() {
+  if (!_transformer || !_rotKnobs.length) return;
   const nodes = _transformer.nodes() || [];
   const show  = nodes.length > 0 && _transformer.rotateEnabled() && !_maskEdit;
-  _rotKnob.visible(show);
-  if (!show) return;
-  const h = _transformer.height();
+  const w = _transformer.width(), h = _transformer.height();
   const off = _transformer.rotateAnchorOffset();
-  // Konva's _setAttr skips writes that change nothing, so an unchanged frame
-  // requests no redraw — which is what keeps this beforeDraw hook from
-  // feeding itself. Nothing here may call moveToTop / add / remove: the knob
-  // is already the last child (added after the constructor built the anchors)
-  // and reordering inside a draw would be exactly that loop.
-  _rotKnob.x(-off);
-  _rotKnob.y(h / 2);
+  const at = [{ x: w / 2, y: -off }, { x: -off, y: h / 2 }];
+  _rotKnobs.forEach((k, i) => {
+    k.visible(show);
+    if (!show) return;
+    k.x(at[i].x);
+    k.y(at[i].y);
+    // Counter-rotate so the glyph stays upright whatever the box's angle.
+    k.rotation(-_transformer.rotation());
+  });
+  const native = _transformer.findOne('.rotater');
+  if (native) native.visible(false);
 }
 
 const _deg = (rad) => rad * 180 / Math.PI;
@@ -1285,10 +1269,11 @@ function _applyRotDrag() {
 }
 
 function _onRotKnobDown(e) {
+  if (_rotDrag) return;   // pointerdown and mousedown both land; first wins
   if (e?.evt) { e.evt.preventDefault(); e.evt.stopPropagation(); }
   if (e) e.cancelBubble = true;
   _commitNudgeBatch();   // close any open nudge entry BEFORE this gesture's
-  if (_angleEntry) _endAngleEntry(true);   // a second click commits what was typed
+  if (_angleEntry) _endAngleEntry(true);   // a second grab commits what was typed
   const nodes = (_transformer?.nodes() || []).filter(n => !isAnchoredNode(n));
   if (!nodes.length) return;
   const p = _stage.getPointerPosition();
@@ -1305,6 +1290,11 @@ function _onRotKnobDown(e) {
     appliedDelta: 0,
   };
   _fireTransformStart(nodes, e?.evt);
+  // Arm typing IMMEDIATELY, on the press — not on a click-versus-drag verdict
+  // after release. "Click and hold the tool and just type a number" is the
+  // asked-for gesture, and deciding afterwards whether the press counted as a
+  // click is exactly what kept this from ever opening.
+  _beginAngleEntry(nodes, { silent: true });
   window.addEventListener('pointermove',   _onRotKnobMove,   true);
   window.addEventListener('pointerup',     _onRotKnobUp,     true);
   window.addEventListener('pointercancel', _onRotKnobCancel, true);
@@ -1328,6 +1318,7 @@ function _onRotKnobCancel() {
   _rotDrag = null;
   _unbindRotKnob();
   if (!d) return;
+  _endAngleEntry(false, { keepRotation: true });     // disarm typing first
   _rotateNodesBy(d.nodes, d.centre, 0, d.starts);   // back to where it started
   _transformer.forceUpdate();
   _layer.batchDraw();
@@ -1370,13 +1361,18 @@ function _onRotKnobUp() {
   _rotDrag = null;
   _unbindRotKnob();
   if (!d) return;
-  if (!d.moved) {                      // a click, not a drag → type an angle
-    _rotateNodesBy(d.nodes, d.centre, 0, d.starts);   // undo any jitter
+  // Typed something while holding? The typed angle owns the gesture — leave
+  // the entry open so Enter/Esc decides, and throw away the drag's delta.
+  if (_angleEntry?.buf) { _rotateNodesBy(d.nodes, d.centre, 0, d.starts); _applyAngleEntry(); return; }
+  if (!d.moved) {
+    // A plain click: nothing rotated, and typing stays armed and now visible.
+    _rotateNodesBy(d.nodes, d.centre, 0, d.starts);
     _transformer.forceUpdate();
     _layer.batchDraw();
-    _beginAngleEntry(d.nodes);         // type it; fires transformend either way
+    _angleEntryStatus();               // the hint was silent during the hold
     return;
   }
+  _endAngleEntry(false, { keepRotation: true });   // a real drag — disarm typing
   _keepRotCentre(d.nodes);
   _fireTransformEnd(d.nodes);
   if (d.shift) setStatus(`Levelled to ${_snap45(d.starts.get(d.nodes[0]).rot + d.appliedDelta)}°.`, 'success', 2500);
@@ -1412,12 +1408,13 @@ function _fireTransformEnd(nodes) {
 // to feed it radians.
 let _angleEntry = null;   // { nodes, centre, starts, buf }
 
-function _beginAngleEntry(nodes) {
+function _beginAngleEntry(nodes, { silent = false } = {}) {
   const alive = nodes.filter(_isLiveNode);
   if (!alive.length) { _fireTransformEnd(nodes); return; }
+  if (_angleEntry) _endAngleEntry(false);
   _angleEntry = { nodes: alive, centre: _stableRotCentre(alive), starts: _captureRotStarts(alive), buf: '' };
   window.addEventListener('keydown', _onAngleKey, true);
-  _angleEntryStatus();
+  if (!silent) _angleEntryStatus();
 }
 
 // STICKY, not setStatus: the status bar suppresses transient messages
@@ -1444,12 +1441,15 @@ function _applyAngleEntry() {
   _repositionFloatingToolbar();
 }
 
-function _endAngleEntry(commit) {
+function _endAngleEntry(commit, { keepRotation = false } = {}) {
   const a = _angleEntry;
   _angleEntry = null;
   window.removeEventListener('keydown', _onAngleKey, true);
   clearStickyStatus();
   if (!a) return;
+  // keepRotation: the gesture was a DRAG, so the rotation on screen is the
+  // drag's and must not be rewound by this entry's start snapshot.
+  if (keepRotation) return;
   const v = _evalExpr(a.buf);
   const deg = commit && Number.isFinite(v) ? v : 0;
   _rotateNodesBy(a.nodes, a.centre, deg, a.starts);
@@ -1466,7 +1466,7 @@ function _onAngleKey(ev) {
   if (k === 'Shift' || k === 'Control' || k === 'Alt' || k === 'Meta') return;
   ev.preventDefault(); ev.stopPropagation();
   if (k === 'Enter')  { _endAngleEntry(true);  return; }
-  if (k === 'Escape') { _endAngleEntry(false); return; }
+  if (k === 'Escape') { if (_rotDrag) _onRotKnobCancel(); else _endAngleEntry(false); return; }
   if (k === 'Backspace') { _angleEntry.buf = _angleEntry.buf.slice(0, -1); }
   else if (k.length === 1 && /[0-9a-zA-Z+\-*/%^().,° ]/.test(k)) { _angleEntry.buf += k; }
   else return;
