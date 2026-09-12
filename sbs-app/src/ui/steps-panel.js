@@ -2725,9 +2725,15 @@ function _showImportStepsDialog(project, srcSteps, srcName, targetStepId, srcPro
         for (const r of groupRowEls) {
           if (r.style.display === 'none') continue;   // 🔎 filtered out — untouched
           r._cb.checked = headerCb.checked;
-          headerCb.checked ? checked.add(r._id) : checked.delete(r._id);
+          if (headerCb.checked) { checked.add(r._id); _resetAssetOverridesFor(r._id); }   // 🔄 .204 rule
+          else checked.delete(r._id);
         }
-        headerCb.indeterminate = false;
+        // Recount over ALL rows in the group, not just the ones this click
+        // touched: with rows hidden (and under "only selected" the hidden
+        // rows ARE the unticked ones) a blanket indeterminate=false drew a
+        // half-selected chapter as fully checked, and its next click then
+        // deselected instead of selecting. (V0.3.2.215)
+        syncHeader();
         refresh();
       });
     }
@@ -2843,6 +2849,7 @@ function _showImportStepsDialog(project, srcSteps, srcName, targetStepId, srcPro
     for (const row of list.children) {
       if (!row._cb || row.style.display === 'none') continue;
       row._cb.checked = true; checked.add(row._id);
+      _resetAssetOverridesFor(row._id);   // 🔄 .204 rule — same as ticking the row by hand
       row._syncHeader?.();
     }
     refresh();
