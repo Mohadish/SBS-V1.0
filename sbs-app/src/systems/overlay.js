@@ -21,7 +21,7 @@ import * as videoOverlay from './video-overlay.js';   // 🎬 V0.3.2.75 — disk
 import * as clock    from '../core/clock.js';
 import { getCanonicalSize, computeSafeFrameRect } from '../core/safe-frame.js';
 import { showContextMenu } from '../ui/context-menu.js';
-import { setStatus } from '../ui/status.js';
+import { setStatus, setStickyStatus, clearStickyStatus } from '../ui/status.js';
 import { promptString } from '../ui/prompt.js';
 import { openSequenceEditor } from '../ui/sequence-editor.js';
 import { narrationContextForStep } from './narration-timeline.js';
@@ -130,10 +130,24 @@ export function initOverlay() {
   _transformer.on('transformstart', () => {
     _topRotActive = _transformer.getActiveAnchor() === 'rotater';
     if (!_topRotActive) return;
+    _topRotStartRot = _transformer.nodes()?.[0]?.rotation() ?? null;
     window.addEventListener('keydown', _onTopRotShift, true);
     window.addEventListener('keyup',   _onTopRotShift, true);
   });
-  _transformer.on('transformend', _clearTopRotSnap);
+  _transformer.on('transformend', () => {
+    // A CLICK on Konva's own rotate knob (pressed and released without
+    // turning anything) opens the same type-an-angle mode as the left knob —
+    // the two knobs should not behave differently. Deferred a tick so every
+    // other transformend handler, including the one that pushes the undo
+    // entry, has finished first.
+    const clicked = _topRotActive && _topRotStartRot !== null
+      && (_transformer.nodes()?.[0]?.rotation() ?? null) === _topRotStartRot;
+    _clearTopRotSnap();
+    _topRotStartRot = null;
+    if (!clicked) return;
+    const nodes = (_transformer.nodes() || []).filter(n => !isAnchoredNode(n));
+    if (nodes.length) setTimeout(() => { if (!_angleEntry && !_rotDrag) _beginAngleEntry(nodes); }, 0);
+  });
   _createSideRotateKnob();
   // The knob is a CHILD of the transformer, so it inherits its transform and
   // rotation for free; only its local x/y need following, and the transformer
@@ -1069,6 +1083,38 @@ function _cancelMaskEdit() {
 /** Public: true while the handle rect is up (callers can avoid clashing). */
 export function isMaskEditing() { return !!_maskEdit; }
 
+// Console check for the rotation tools — "nothing happens" is otherwise
+// impossible to tell apart from "the knob never got the click".
+if (typeof window !== 'undefined') {
+  window.sbsRot = {
+    status() {
+      const sel = _transformer?.nodes?.() || [];
+      const info = {
+        overlayEditingOn: !!_editing,
+        selected: sel.length,
+        rotateEnabled: !!_transformer?.rotateEnabled(),
+        leftKnobVisible: !!_rotKnob?.visible(),
+        typingAngle: !!_angleEntry,
+        typedSoFar: _angleEntry?.buf ?? '',
+        draggingKnob: !!_rotDrag,
+      };
+      console.table(info);
+      if (!_editing) console.warn('→ Overlay editing is OFF: click "✏ Edit overlay" or press O.');
+      else if (!sel.length) console.warn('→ Nothing selected: click an item on the canvas.');
+      else if (!info.leftKnobVisible) console.warn('→ The left knob is hidden (rotation disabled for this selection).');
+      else console.log('→ Click the knob on the LEFT of the selection box, then just type, e.g. 90/3, then Enter.');
+      return info;
+    },
+    /** Open the typing mode on the current selection without the click. */
+    type() {
+      const nodes = (_transformer?.nodes() || []).filter(n => !isAnchoredNode(n));
+      if (!nodes.length) { console.warn('[rot] nothing selected'); return false; }
+      _beginAngleEntry(nodes);
+      return true;
+    },
+  };
+}
+
 // ── 🔄 Rotation: second knob, Shift-levelling, type-an-angle (V0.3.2.222) ───
 // Konva gives a transformer exactly ONE rotate anchor, hard-wired above the
 // box (update() pins '.rotater' at x = width/2), and its angle maths assume
@@ -1087,6 +1133,7 @@ let _rotKnob  = null;
 let _rotDrag  = null;   // { nodes, centre, startPointerDeg, starts, moved, shift }
 let _topRotActive = false;
 let _topRotSnapOn = false;
+let _topRotStartRot = null;
 
 function _onTopRotShift(ev) {
   // isTransforming() self-heals the case where transformend never fired (the
@@ -1295,7 +1342,10 @@ function _onRotKnobMove(ev) {
   if (!p) return;
   const { centre } = _rotDrag;
   const deg = _deg(Math.atan2(p.y - centre.y, p.x - centre.x));
-  if (Math.abs(deg - _rotDrag.startPointerDeg) > 0.4) _rotDrag.moved = true;
+  // MUST wrap: the knob sits on the ±180 atan2 seam, so a click with one
+  // pixel of hand jitter reads as a ~360° move and the whole gesture was
+  // being classified as a drag — which is why click-to-type never opened.
+  if (Math.abs(_wrapDeg(deg - _rotDrag.startPointerDeg)) > 0.4) _rotDrag.moved = true;
   _rotDrag.pointerDeg = deg;
   _rotDrag.shift = !!ev.shiftKey;
   _applyRotDrag();
@@ -1370,14 +1420,18 @@ function _beginAngleEntry(nodes) {
   _angleEntryStatus();
 }
 
+// STICKY, not setStatus: the status bar suppresses transient messages
+// entirely while its sticky channel is in use (status.js "if (_sticky)
+// return"), and this is exactly the numeric-input readout that channel
+// exists for. Cleared in _endAngleEntry.
 function _angleEntryStatus() {
   if (!_angleEntry) return;
   const { buf } = _angleEntry;
-  if (!buf) { setStatus('↻ Type an angle in degrees — maths allowed (90/3, 45*2, rad(pi/2)). Enter applies, Esc cancels.', 'info', 0); return; }
+  if (!buf) { setStickyStatus('↻ Type an angle in degrees — maths allowed (90/3, 45*2, rad(pi/2)). Enter applies, Esc cancels.'); return; }
   const v = _evalExpr(buf);
-  setStatus(Number.isFinite(v)
+  setStickyStatus(Number.isFinite(v)
     ? `↻ ${buf} = ${Math.round(v * 100) / 100}°   ·   Enter applies, Esc cancels`
-    : `↻ ${buf}   ·   (incomplete)`, 'info', 0);
+    : `↻ ${buf}   ·   (incomplete)`);
 }
 
 function _applyAngleEntry() {
@@ -1394,6 +1448,7 @@ function _endAngleEntry(commit) {
   const a = _angleEntry;
   _angleEntry = null;
   window.removeEventListener('keydown', _onAngleKey, true);
+  clearStickyStatus();
   if (!a) return;
   const v = _evalExpr(a.buf);
   const deg = commit && Number.isFinite(v) ? v : 0;
