@@ -1252,6 +1252,10 @@ const _wrapDeg = (d) => { let x = ((d + 180) % 360 + 360) % 360 - 180; return x 
 
 function _applyRotDrag() {
   if (!_rotDrag) return;
+  // A typed value OWNS the rotation. Once there is anything in the buffer the
+  // mouse stops steering — showing the pointer's angle and then snapping to
+  // the typed one on release said the opposite of what is true.
+  if (_angleEntry?.buf) return;
   const { nodes, centre, startPointerDeg, starts, pointerDeg, shift } = _rotDrag;
   let delta = _wrapDeg(pointerDeg - startPointerDeg);
   if (shift) {
@@ -1361,9 +1365,9 @@ function _onRotKnobUp() {
   _rotDrag = null;
   _unbindRotKnob();
   if (!d) return;
-  // Typed something while holding? The typed angle owns the gesture — leave
-  // the entry open so Enter/Esc decides, and throw away the drag's delta.
-  if (_angleEntry?.buf) { _rotateNodesBy(d.nodes, d.centre, 0, d.starts); _applyAngleEntry(); return; }
+  // Typed something while holding? Releasing the button ENDS the gesture and
+  // keeps that value — same as Enter. Nothing is left armed.
+  if (_angleEntry?.buf) { _endAngleEntry(true); return; }
   if (!d.moved) {
     // A plain click: nothing rotated, and typing stays armed and now visible.
     _rotateNodesBy(d.nodes, d.centre, 0, d.starts);
@@ -1427,7 +1431,7 @@ function _angleEntryStatus() {
   if (!buf) { setStickyStatus('↻ Type an angle in degrees — maths allowed (90/3, 45*2, rad(pi/2)). Enter applies, Esc cancels.'); return; }
   const v = _evalExpr(buf);
   setStickyStatus(Number.isFinite(v)
-    ? `↻ ${buf} = ${Math.round(v * 100) / 100}°   ·   Enter applies, Esc cancels`
+    ? `↻ ${buf} = ${Math.round(v * 100) / 100}°   ·   Enter or release to apply, Esc cancels`
     : `↻ ${buf}   ·   (incomplete)`);
 }
 
@@ -1446,6 +1450,10 @@ function _endAngleEntry(commit, { keepRotation = false } = {}) {
   _angleEntry = null;
   window.removeEventListener('keydown', _onAngleKey, true);
   clearStickyStatus();
+  // Typing and holding the knob are ONE gesture, so ending either ends both:
+  // after Enter the mouse must not keep turning anything.
+  _rotDrag = null;
+  _unbindRotKnob();
   if (!a) return;
   // keepRotation: the gesture was a DRAG, so the rotation on screen is the
   // drag's and must not be rewound by this entry's start snapshot.
