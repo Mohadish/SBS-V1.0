@@ -1052,7 +1052,23 @@ export function deleteCropMaskDef(defId) {
 //   sbsMask.fromBox(0.2)                 the selected image's own box, inset 20%
 //   sbsMask.clear() / sbsMask.get() / sbsMask.list()
 if (typeof window !== 'undefined') {
-  const sel = (node) => node || _transformer?.nodes?.()?.[0] || null;
+  // Every failure to "just work" so far has been one of three things: the
+  // build wasn't reloaded, overlay editing was off so clicking selected
+  // nothing, or the selected node wasn't a plain image. Say which.
+  const sel = (node) => {
+    const n = node || _transformer?.nodes?.()?.[0] || null;
+    if (!n) {
+      console.warn(!_editing
+        ? '[mask] Nothing selected. Overlay editing is OFF — click "✏ Edit overlay" (or press O), then click the image.'
+        : '[mask] Nothing selected. Click the image once so its handles appear, then run the command again.');
+      return null;
+    }
+    if (!_isPlainImageOrVideo(n)) {
+      console.warn(`[mask] The selected item is a ${n.getAttr('textHtml') ? 'text box' : n.getAttr('isToc') ? 'table of contents' : n.getAttr('isZoom') ? 'zoom crop' : interfaces.isInterfaceNode(n) ? 'interface' : n.getClassName()} — masks work on plain images and video clips only.`);
+      return null;
+    }
+    return n;
+  };
   window.sbsMask = {
     get:   (node) => {
       const n = sel(node);
@@ -1090,6 +1106,50 @@ if (typeof window !== 'undefined') {
       return setCropMask(n, { x: (b.x + ix) / c.width, y: (b.y + iy) / c.height, w: (b.width - 2 * ix) / c.width, h: (b.height - 2 * iy) / c.height });
     },
     clear: (node) => { const n = sel(node); return n?.getAttr?.('cropMaskId') ? useCropMask(n, null) : setCropMask(n, null); },
+    /** What the app thinks is going on right now. Run this FIRST when a
+     *  command seems to do nothing. */
+    status: () => {
+      const nodes = _transformer?.nodes?.() || [];
+      const n = nodes[0] || null;
+      const eligible = n ? _isPlainImageOrVideo(n) : false;
+      const info = {
+        overlayEditingOn: !!_editing,
+        selectedCount: nodes.length,
+        selected: n ? `${n.getClassName()} name="${n.name?.() || ''}"` : '(nothing)',
+        canBeMasked: eligible,
+        maskOnIt: n ? (n.getAttr('cropMaskId') ? `global "${_cropMaskDefById(n.getAttr('cropMaskId'))?.name || '(missing def)'}"` : (n.getAttr('cropMask') ? 'private' : 'none')) : '(n/a)',
+        globalMasksInProject: _cropMaskDefs().length,
+        imagesOnThisStep: (_layer?.getChildren() || []).filter(_isPlainImageOrVideo).length,
+      };
+      console.table(info);
+      if (!_editing)            console.warn('→ Turn on overlay editing: click "✏ Edit overlay" in the viewport toolbar, or press O.');
+      else if (!nodes.length)   console.warn('→ Click an image on the canvas so its handles appear.');
+      else if (!eligible)       console.warn('→ Select a plain image or video clip (not text / interface / zoom).');
+      else                      console.log('→ Ready. Try: sbsMask.fromBox(0.25)');
+      return info;
+    },
+    help: () => {
+      console.log([
+        'CROP MASKS — select an image on the canvas first (overlay editing must be ON).',
+        '  sbsMask.status()            what the app sees right now — run this if nothing happens',
+        '  sbsMask.fromBox(0.25)       mask = this image\'s own box, inset 25% on every side',
+        '  sbsMask.set({x,y,w,h})      mask rect in 0..1 of the frame (0,0 = top-left)',
+        '  sbsMask.setPx({x,y,w,h})    same, in canonical pixels (e.g. 1920x1080)',
+        '  sbsMask.get()               what mask this image uses',
+        '  sbsMask.clear()             remove the mask from this image',
+        '',
+        'SHARED MASKS',
+        '  sbsMask.promote("Mask 1")   turn this image\'s private mask into a shared one',
+        '  sbsMask.defs()              list the shared masks in this project',
+        '  sbsMask.use("cmk_...")      make the selected image use a shared mask',
+        '  sbsMask.edit("cmk_...", {x:0.3})   move/resize it — every image using it follows',
+        '  sbsMask.fork()              break this image away into its own private copy',
+        '  sbsMask.users("cmk_...")    how many steps use it (whole project)',
+        '  sbsMask.remove("cmk_...")   delete a shared mask (its images go back to uncropped)',
+        '',
+        'Ctrl+Z undoes any of these.',
+      ].join('\n'));
+    },
     list:  () => (_layer?.getChildren() || [])
       .filter(n => n.getAttr?.('cropMask') || n.getAttr?.('cropMaskId'))
       .map(n => ({ name: n.name(), globalId: n.getAttr('cropMaskId') || null, mask: _resolveMask(n) })),
