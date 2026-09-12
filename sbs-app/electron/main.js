@@ -354,7 +354,69 @@ function createWindow() {
     mainWindow?.webContents.send('key:altCombo', { type: input.type, code: input.code, key: input.key, control: !!input.control, shift: !!input.shift });
   });
 
+  // ── 🚪 V0.3.2.216 — don't let the X discard unsaved work ─────────────────
+  // The renderer mirrors state.projectDirty here on every change (preload
+  // setDirty → 'app:dirty'). One click on the window's X used to end the
+  // session outright; now a dirty session stops and asks. "Save and close"
+  // triggers the normal Save path in the renderer and waits for the dirty
+  // flag to clear — so a cancelled Save-As dialog leaves the window open
+  // rather than closing anyway.
+  mainWindow.on('close', (e) => {
+    if (_forceClose || !_rendererDirty) return;
+    e.preventDefault();
+    if (_closeBusy) return;   // prompt open, or a save-for-close in flight
+    _closeBusy = true;
+    dialog.showMessageBox(mainWindow, {
+      type: 'warning',
+      buttons: ['Save and close', 'Close without saving', 'Cancel'],
+      defaultId: 0,
+      cancelId: 2,
+      noLink: true,
+      title: 'Unsaved changes',
+      message: 'This project has unsaved changes.',
+      detail: 'Closing now loses everything since the last save.',
+    }).then(({ response }) => {
+      if (response === 2) { _closeBusy = false; return; }              // Cancel
+      if (response === 1) { _forceClose = true; mainWindow?.close(); return; }
+      // Save and close. We wait for an explicit answer to THIS request —
+      // never for the global dirty flag to drop. Watching the flag meant any
+      // later save or project load (after a cancelled Save-As, say) would
+      // close the window out from under the user. _closeBusy stays true for
+      // the whole attempt, so a second X can't start a second save.
+      _awaitSaveForClose();
+    }).catch(() => { _closeBusy = false; });
+  });
+
   mainWindow.on('closed', () => { mainWindow = null; });
+}
+
+// 🚪 Unsaved-work state mirrored from the renderer (V0.3.2.216).
+let _rendererDirty = false;
+let _forceClose    = false;
+let _closeBusy     = false;   // prompt open OR save-for-close in flight
+let _saveForCloseTimer = null;
+ipcMain.on('app:dirty', (_e, isDirty) => { _rendererDirty = !!isDirty; });
+
+// The renderer's answer to 'menu:saveForClose'. ONCE per request: the
+// listener is installed for the attempt and removed either way, so a stray
+// later result can never close the window.
+function _awaitSaveForClose() {
+  const done = (_e, ok) => {
+    ipcMain.removeListener('app:saveResult', done);
+    clearTimeout(_saveForCloseTimer);
+    _saveForCloseTimer = null;
+    if (ok) { _forceClose = true; mainWindow?.close(); }
+    else    { _closeBusy = false; }   // cancelled / failed — stay open, let them retry
+  };
+  ipcMain.on('app:saveResult', done);
+  // Safety net only: a renderer that dies mid-save would otherwise leave the
+  // X permanently inert. Big projects legitimately take minutes to serialize.
+  _saveForCloseTimer = setTimeout(() => {
+    ipcMain.removeListener('app:saveResult', done);
+    _saveForCloseTimer = null;
+    _closeBusy = false;
+  }, 15 * 60 * 1000);
+  mainWindow?.webContents.send('menu:saveForClose');
 }
 
 // ─── Native menu ──────────────────────────────────────────────────────────

@@ -290,6 +290,7 @@ export function initSidebarLeft() {
     window.sbsNative.onMenu('menu:openProject',   _onOpenProject);
     window.sbsNative.onMenu('menu:saveProject',   () => _onSaveProject(false));
     window.sbsNative.onMenu('menu:saveProjectAs', () => _onSaveProject(true));
+    window.sbsNative.onMenu('menu:saveForClose',  () => _onSaveForClose());   // 🚪 .216
     window.sbsNative.onMenu('menu:browseAssets',  _onBrowseAssets);
   }
 }
@@ -1314,17 +1315,36 @@ async function _reconcileOverriddenAssets(overridden, resolvedAssets) {
 }
 
 async function _onSaveProject(forceDialog = false) {
-  try {
-    const result = await saveProject({
-      mode: forceDialog ? 'saveAs' : 'auto',
-      suggestedName: getSuggestedFilename(),
-    });
-    if (result.saved) setStatus(`Saved: ${state.get('projectName')}.`);
-    else if (!result.cancelled) setStatus('Save failed.', 'danger');
-  } catch (err) {
-    console.error('Save failed:', err);
-    setStatus('Save failed.', 'danger');
-  }
+  if (_saveInFlight) return _saveInFlight;   // 🚪 .216 — never two serializes at once
+  _saveInFlight = (async () => {
+    try {
+      const result = await saveProject({
+        mode: forceDialog ? 'saveAs' : 'auto',
+        suggestedName: getSuggestedFilename(),
+      });
+      if (result.saved) setStatus(`Saved: ${state.get('projectName')}.`);
+      else if (!result.cancelled) setStatus('Save failed.', 'danger');
+      return !!result.saved;
+    } catch (err) {
+      console.error('Save failed:', err);
+      setStatus('Save failed.', 'danger');
+      return false;
+    } finally {
+      _saveInFlight = null;
+    }
+  })();
+  return _saveInFlight;
+}
+let _saveInFlight = null;
+
+/** 🚪 V0.3.2.216 — the close guard asked us to save before quitting. Answer
+ *  THIS request explicitly; main must never infer the outcome from the
+ *  global dirty flag (a later unrelated save or project load would then
+ *  close the window out from under the user). */
+async function _onSaveForClose() {
+  let ok = false;
+  try { ok = await _onSaveProject(false); } catch { ok = false; }
+  try { window.sbsNative?.saveResult?.(ok); } catch { /* no bridge */ }
 }
 
 async function _loadModelFile(file, assetEntry = null, skipColorExtraction = false) {

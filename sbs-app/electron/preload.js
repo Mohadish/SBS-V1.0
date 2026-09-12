@@ -68,6 +68,7 @@ contextBridge.exposeInMainWorld('sbsNative', {
   onMenu: (channel, cb) => {
     const allowed = [
       'menu:newProject', 'menu:openProject', 'menu:saveProject', 'menu:saveProjectAs',
+      'menu:saveForClose',         // 🚪 V0.3.2.216 — save requested by the close guard
       'menu:loadModel',  'menu:browseAssets',
       'menu:fitAll',     'menu:showAll',
       'menu:openSettings',
@@ -91,6 +92,14 @@ contextBridge.exposeInMainWorld('sbsNative', {
     if (!allowed.includes(channel)) return;
     ipcRenderer.on(channel, (_e, ...args) => cb(...args));
   },
+
+  // ── 🚪 Unsaved-work flag (V0.3.2.216) ────────────────────────────────────
+  // Mirrors state.projectDirty into the main process so mainWindow's close
+  // handler can prompt instead of discarding the session. Fire-and-forget.
+  setDirty: (isDirty) => ipcRenderer.send('app:dirty', !!isDirty),
+  // Answer to a 'menu:saveForClose' request — true only when the file was
+  // actually written (a cancelled Save-As dialog answers false).
+  saveResult: (ok) => ipcRenderer.send('app:saveResult', !!ok),
 
   // ── 🎹 Keymap → native menu accelerators (V0.3.2.178) ────────────────────
   // The renderer tells main the current letter for rebindable shortcuts that

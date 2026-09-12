@@ -5303,6 +5303,9 @@ function _updateTitle() {
   const dirty = state.get('projectDirty');
   const name  = state.get('projectName') || 'Untitled';
   document.title = `${dirty ? '● ' : ''}${name} — SBS Step Browser`;
+  // 🚪 V0.3.2.216 — main process mirrors this flag so closing the window
+  // (X, Alt+F4, Quit) can stop and ask instead of discarding the session.
+  try { window.sbsNative?.setDirty?.(!!dirty); } catch { /* no bridge pre-restart */ }
 }
 state.on('change:projectDirty', _updateTitle);
 state.on('change:projectName',  _updateTitle);

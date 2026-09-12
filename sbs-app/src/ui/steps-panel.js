@@ -2290,9 +2290,15 @@ function _showImportStepsDialog(project, srcSteps, srcName, targetStepId, srcPro
   // One fixed dialog size for every case — no growing/shrinking chrome.
   dlg.innerHTML = `
     <div style="display:flex;flex-direction:column;height:100%;min-height:0;">
-      <div style="padding:12px 16px;border-bottom:1px solid var(--line);flex-shrink:0;">
-        <strong style="font-size:14px;">📥 Import steps from "${esc(srcName)}"</strong>
-        <div class="small muted" style="margin-top:2px;">Selected steps are inserted after the step you right-clicked. One undo entry.${srcStamp ? ` · saved by <b>${esc(srcStamp)}</b>` : ''}${srcStale ? ' <span style="color:#f59e0b;">⚠ old format — per-step visibility data may not match today\'s geometry, so models may import whole</span>' : ''}</div>
+      <div style="padding:12px 16px;border-bottom:1px solid var(--line);flex-shrink:0;display:flex;align-items:center;gap:16px;">
+        <div style="flex:1;min-width:0;">
+          <strong style="font-size:14px;">📥 Import steps from "${esc(srcName)}"</strong>
+          <div class="small muted" style="margin-top:2px;">Selected steps are inserted after the step you right-clicked. One undo entry.${srcStamp ? ` · saved by <b>${esc(srcStamp)}</b>` : ''}${srcStale ? ' <span style="color:#f59e0b;">⚠ old format — per-step visibility data may not match today\'s geometry, so models may import whole</span>' : ''}</div>
+        </div>
+        <div style="display:flex;gap:8px;flex-shrink:0;">
+          <button class="btn" id="imp-cancel">Cancel</button>
+          <button class="btn" id="imp-go" disabled>Import</button>
+        </div>
       </div>
       <div style="display:flex;align-items:stretch;flex:1;min-height:0;">
         <div id="imp-assets" style="display:flex;flex:1 1 720px;min-width:220px;border-right:1px solid var(--line);padding:8px 12px;flex-direction:column;min-height:0;">
@@ -2333,10 +2339,6 @@ function _showImportStepsDialog(project, srcSteps, srcName, targetStepId, srcPro
           </div>
           <div class="small muted" style="margin-top:auto;flex-shrink:0;">Click the video to pause / resume; after it ends, a click replays.</div>
         </div>
-      </div>
-      <div style="padding:10px 16px;border-top:1px solid var(--line);display:flex;gap:8px;justify-content:flex-end;flex-shrink:0;">
-        <button class="btn" id="imp-cancel">Cancel</button>
-        <button class="btn" id="imp-go" disabled>Import</button>
       </div>
     </div>`;
 
