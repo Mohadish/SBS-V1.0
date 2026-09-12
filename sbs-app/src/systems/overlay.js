@@ -385,6 +385,7 @@ export function setEditingMode(on) {
   // undeletable (it's not a Konva node). Commit (not discard) so no text is lost.
   if (_activeTextEditor) _exitTextEdit().catch(() => {});
   if (_maskEdit) _cancelMaskEdit();   // 🎭 its handle lives on the UI layer; never leave it up
+  if (_angleEntry) _endAngleEntry(false);   // ⌨ never leave the keyboard captured
   _editing = !!on;
   if (_container) _container.classList.toggle('editing', _editing);
   if (!_editing) _setSelection(null);
@@ -1240,6 +1241,7 @@ function _onRotKnobDown(e) {
   if (e?.evt) { e.evt.preventDefault(); e.evt.stopPropagation(); }
   if (e) e.cancelBubble = true;
   _commitNudgeBatch();   // close any open nudge entry BEFORE this gesture's
+  if (_angleEntry) _endAngleEntry(true);   // a second click commits what was typed
   const nodes = (_transformer?.nodes() || []).filter(n => !isAnchoredNode(n));
   if (!nodes.length) return;
   const p = _stage.getPointerPosition();
@@ -1322,7 +1324,7 @@ function _onRotKnobUp() {
     _rotateNodesBy(d.nodes, d.centre, 0, d.starts);   // undo any jitter
     _transformer.forceUpdate();
     _layer.batchDraw();
-    _promptRotateBy(d.nodes);          // fires transformend either way
+    _beginAngleEntry(d.nodes);         // type it; fires transformend either way
     return;
   }
   _keepRotCentre(d.nodes);
@@ -1350,23 +1352,142 @@ function _fireTransformEnd(nodes) {
   _scheduleSave();
 }
 
-async function _promptRotateBy(nodes) {
-  const txt = await promptString('Rotate by how many degrees? (negative = anticlockwise)', '90');
-  const deg = txt == null ? NaN : Number(String(txt).trim());
+// ── ⌨ Type-an-angle (V0.3.2.223) ───────────────────────────────────────────
+// Click the knob and just TYPE. No dialog: the keystrokes are captured, the
+// expression is echoed in the status bar with its running value, and the
+// selection rotates live as you type. Enter keeps it, Escape puts it back.
+// Full arithmetic, because "rotate by a third of 90" should not need mental
+// maths: + - * / % ^, brackets, pi/e, and sin cos tan asin acos atan sqrt abs
+// round floor ceil, with trig in DEGREES (this is an angle tool) plus rad()
+// to feed it radians.
+let _angleEntry = null;   // { nodes, centre, starts, buf }
+
+function _beginAngleEntry(nodes) {
   const alive = nodes.filter(_isLiveNode);
-  if (Number.isFinite(deg) && deg && alive.length) {
-    _rotateNodesBy(alive, _stableRotCentre(alive), deg, _captureRotStarts(alive));
-    _keepRotCentre(alive);
-    _transformer.forceUpdate();
-    _layer.batchDraw();
-    setStatus(`Rotated ${deg}°.`, 'success', 2500);
-  } else if (txt != null && !Number.isFinite(deg)) {
-    setStatus('Enter a number of degrees, e.g. 90 or -15.', 'warn', 4000);
+  if (!alive.length) { _fireTransformEnd(nodes); return; }
+  _angleEntry = { nodes: alive, centre: _stableRotCentre(alive), starts: _captureRotStarts(alive), buf: '' };
+  window.addEventListener('keydown', _onAngleKey, true);
+  _angleEntryStatus();
+}
+
+function _angleEntryStatus() {
+  if (!_angleEntry) return;
+  const { buf } = _angleEntry;
+  if (!buf) { setStatus('↻ Type an angle in degrees — maths allowed (90/3, 45*2, rad(pi/2)). Enter applies, Esc cancels.', 'info', 0); return; }
+  const v = _evalExpr(buf);
+  setStatus(Number.isFinite(v)
+    ? `↻ ${buf} = ${Math.round(v * 100) / 100}°   ·   Enter applies, Esc cancels`
+    : `↻ ${buf}   ·   (incomplete)`, 'info', 0);
+}
+
+function _applyAngleEntry() {
+  if (!_angleEntry) return;
+  const { nodes, centre, starts, buf } = _angleEntry;
+  const v = _evalExpr(buf);
+  _rotateNodesBy(nodes, centre, Number.isFinite(v) ? v : 0, starts);
+  _transformer.forceUpdate();
+  _layer.batchDraw();
+  _repositionFloatingToolbar();
+}
+
+function _endAngleEntry(commit) {
+  const a = _angleEntry;
+  _angleEntry = null;
+  window.removeEventListener('keydown', _onAngleKey, true);
+  if (!a) return;
+  const v = _evalExpr(a.buf);
+  const deg = commit && Number.isFinite(v) ? v : 0;
+  _rotateNodesBy(a.nodes, a.centre, deg, a.starts);
+  _keepRotCentre(a.nodes);
+  _transformer.forceUpdate();
+  _layer.batchDraw();
+  _fireTransformEnd(a.nodes);   // the existing transformend undo entry
+  setStatus(deg ? `Rotated ${Math.round(deg * 100) / 100}°.` : 'Rotation cancelled.', deg ? 'success' : 'info', 2500);
+}
+
+function _onAngleKey(ev) {
+  if (!_angleEntry) return;
+  const k = ev.key;
+  if (k === 'Shift' || k === 'Control' || k === 'Alt' || k === 'Meta') return;
+  ev.preventDefault(); ev.stopPropagation();
+  if (k === 'Enter')  { _endAngleEntry(true);  return; }
+  if (k === 'Escape') { _endAngleEntry(false); return; }
+  if (k === 'Backspace') { _angleEntry.buf = _angleEntry.buf.slice(0, -1); }
+  else if (k.length === 1 && /[0-9a-zA-Z+\-*/%^().,° ]/.test(k)) { _angleEntry.buf += k; }
+  else return;
+  _applyAngleEntry();
+  _angleEntryStatus();
+}
+
+/**
+ * Tiny recursive-descent evaluator. Deliberately NOT eval/Function: this app
+ * ships under an enterprise SBOM audit, and a string-to-code path in the
+ * renderer is exactly what such an audit flags. Unknown names or malformed
+ * input return NaN, which the caller renders as "(incomplete)".
+ */
+function _evalExpr(src) {
+  const s = String(src).replace(/°/g, '').trim();
+  if (!s) return NaN;
+  const D = Math.PI / 180;
+  const FN = {
+    sin: (x) => Math.sin(x * D), cos: (x) => Math.cos(x * D), tan: (x) => Math.tan(x * D),
+    asin: (x) => Math.asin(x) / D, acos: (x) => Math.acos(x) / D, atan: (x) => Math.atan(x) / D,
+    sqrt: Math.sqrt, abs: Math.abs, round: Math.round, floor: Math.floor, ceil: Math.ceil,
+    rad: (x) => x / D,            // radians in, degrees out
+    deg: (x) => x,
+  };
+  const CONST = { pi: Math.PI, e: Math.E };
+  let i = 0;
+  const ws = () => { while (i < s.length && s[i] === ' ') i++; };
+  const peek = () => { ws(); return s[i]; };
+  const eat = (c) => { ws(); if (s[i] === c) { i++; return true; } return false; };
+
+  function expr() {                       // + -
+    let v = term();
+    for (;;) {
+      if (eat('+')) v += term();
+      else if (eat('-')) v -= term();
+      else return v;
+    }
   }
-  // ALWAYS close the gesture, including on Cancel: the pointerdown already
-  // fired transformstart, and leaving that snapshot open would make the next
-  // unrelated transformend push an entry describing this click.
-  _fireTransformEnd(nodes);
+  function term() {                       // * / %
+    let v = unary();
+    for (;;) {
+      if (eat('*')) v *= unary();
+      else if (eat('/')) v /= unary();
+      else if (eat('%')) v %= unary();
+      else return v;
+    }
+  }
+  // unary OUTSIDE power, so -2^2 is -(2^2) = -4 as in ordinary notation, and
+  // power's right side is unary so 2^-3 still parses.
+  function unary() {
+    if (eat('-')) return -unary();
+    if (eat('+')) return unary();
+    return power();
+  }
+  function power() {                      // ^ (right-associative)
+    const base = atom();
+    if (eat('^')) return Math.pow(base, unary());
+    return base;
+  }
+  function atom() {
+    ws();
+    if (eat('(')) { const v = expr(); if (!eat(')')) return NaN; return v; }
+    const numMatch = /^\d+(\.\d+)?|^\.\d+/.exec(s.slice(i));
+    if (numMatch) { i += numMatch[0].length; return parseFloat(numMatch[0]); }
+    const nameMatch = /^[a-zA-Z]+/.exec(s.slice(i));
+    if (nameMatch) {
+      const name = nameMatch[0].toLowerCase();
+      i += nameMatch[0].length;
+      if (peek() === '(') { eat('('); const arg = expr(); if (!eat(')')) return NaN; return FN[name] ? FN[name](arg) : NaN; }
+      return name in CONST ? CONST[name] : NaN;
+    }
+    return NaN;
+  }
+  const out = expr();
+  ws();
+  return i === s.length ? out : NaN;      // trailing junk = not a valid expression
 }
 
 // ── ⬅➡ Arrow-key nudge (V0.3.2.222) ────────────────────────────────────────
@@ -1378,7 +1499,7 @@ const NUDGE_IDLE_MS = 600;
 let _nudgeBatch = null;   // { starts, timer, label }
 
 export function nudgeSelection(arrowKey, big = false) {
-  if (!_editing || _activeTextEditor || _maskEdit) return false;
+  if (!_editing || _activeTextEditor || _maskEdit || _angleEntry) return false;
   // Deliberately the four kinds the user asked for: text boxes, shapes,
   // images and video clips. Interfaces are excluded because moving one has
   // to carry its bonded shapes and re-capture their bond percentages — that
@@ -6286,6 +6407,7 @@ async function _loadFromActiveStep() {
   if (!_stage) return;
   // 🎭 The editor's node is about to be destroyed with the rest of the layer.
   if (_maskEdit) _cancelMaskEdit();
+  if (_angleEntry) _endAngleEntry(false);
   const activeId = state.get('activeStepId');
   // Tag this load so a later step-change invalidates a still-running one.
   // Without this, two rapid step switches can interleave: load #1's awaits
