@@ -280,6 +280,7 @@ function _syncSize() {
   // The re-fit moved every node on screen; the floating panel has to
   // follow or it ends up pointing at empty canvas.
   _repositionFloatingToolbar();
+  _maskEdit?.place?.();   // 🎭 keep the Apply/Cancel bar centred too
 }
 
 // Stage 3a: rescale all overlay nodes when the canonical export size
@@ -290,6 +291,10 @@ function _syncSize() {
 // scales with canvas).
 let _prevCanonical = null;   // remembered to compute the next ratio
 function _rescaleOnCanonicalChange() {
+  // 🎭 The mask handle lives on _uiLayer and is NOT rescaled below, so a
+  // resolution change mid-edit would leave it pointing at the old frame
+  // while its geometry is read against the new one.
+  if (_maskEdit) _cancelMaskEdit();
   const c = getCanonicalSize();
   if (!_prevCanonical || !_layer) {
     _prevCanonical = c;
@@ -360,6 +365,7 @@ export function setEditingMode(on) {
   // canvas: permanently visible across ALL steps, editable, unselectable,
   // undeletable (it's not a Konva node). Commit (not discard) so no text is lost.
   if (_activeTextEditor) _exitTextEdit().catch(() => {});
+  if (_maskEdit) _cancelMaskEdit();   // 🎭 its handle lives on the UI layer; never leave it up
   _editing = !!on;
   if (_container) _container.classList.toggle('editing', _editing);
   if (!_editing) _setSelection(null);
@@ -873,14 +879,188 @@ function _saveCropMaskDefs(items) { state.setState({ cropMasks: items }); state.
  *  an empty path: "apply nothing" is visible and recoverable, "clip to
  *  nothing" looks like the image was lost and leaves nothing to click. */
 function _resolveMask(node) {
+  // While the mask editor is open on this node, the LIVE handle rect wins —
+  // that is what makes dragging it preview in real time. NOT during a
+  // raster, though: thumbnails and exported frames must show the COMMITTED
+  // mask, or a half-dragged rect would be baked into a step's stored
+  // thumbnail (captured before the step switch cancels the editor) and into
+  // exported video.
+  if (!_rasterizing && _maskEdit && _maskEdit.node === node) return _maskEditRect();
   const id = node.getAttr('cropMaskId');
   if (id) return _cropMaskDefById(id);
   return node.getAttr('cropMask') || null;
 }
 
-function _maskedDraw(node, ctx, base) {
+// ── 🎭 Mask editor (V0.3.2.220) ────────────────────────────────────────────
+// A draggable/resizable handle rect on _uiLayer — never on the content layer,
+// so it cannot leak into step.overlay, a thumbnail or an exported frame. The
+// image under it draws ghosted-outside / solid-inside for the duration, which
+// is also the escape hatch for a mask that hides the image completely.
+let _maskEdit = null;     // { node, rect, tr, defId, bar, onKey }
+let _rasterizing = false; // true inside rasterizeOverlay — see _resolveMask
+
+/** The handle rect as a normalized mask record, or null when not editing. */
+function _maskEditRect() {
+  if (!_maskEdit?.rect) return null;
+  const r = _maskEdit.rect;
+  const c = getCanonicalSize();
+  const w = Math.abs(r.width()  * r.scaleX());
+  const h = Math.abs(r.height() * r.scaleY());
+  return { kind: 'rect', x: r.x() / c.width, y: r.y() / c.height, w: w / c.width, h: h / c.height };
+}
+
+function _maskEditBar(titleText) {
+  const bar = document.createElement('div');
+  bar.style.cssText = 'position:fixed;z-index:9999;display:flex;gap:8px;align-items:center;padding:8px 12px;'
+    + 'background:var(--panel,#0f172a);border:1px solid var(--line,#334155);border-radius:10px;'
+    + 'box-shadow:0 10px 30px rgba(0,0,0,.5);color:var(--text,#e2e8f0);font-size:12px;';
+  const label = document.createElement('span');
+  label.textContent = titleText;
+  const apply = document.createElement('button');
+  apply.className = 'btn'; apply.textContent = '✓ Apply';
+  const cancel = document.createElement('button');
+  cancel.className = 'btn'; cancel.textContent = '✕ Cancel';
+  const hint = document.createElement('span');
+  hint.className = 'small muted';
+  hint.textContent = 'drag / resize the rectangle · Enter = apply · Esc = cancel';
+  bar.append(label, apply, cancel, hint);
+  document.body.appendChild(bar);
+  const place = () => {
+    const r = _container?.getBoundingClientRect();
+    if (!r) return;
+    bar.style.left = `${Math.round(r.left + r.width / 2 - bar.offsetWidth / 2)}px`;
+    bar.style.top  = `${Math.round(r.bottom - bar.offsetHeight - 16)}px`;
+  };
+  place();
+  return { bar, apply, cancel, place };
+}
+
+/**
+ * Open the mask editor on `node`. `defId` edits a SHARED mask (every image
+ * bound to it follows on Apply); otherwise the node's private mask is
+ * edited, and a node with no mask starts from its own bounding box — so
+ * nothing is cropped until the user shrinks it.
+ */
+export function beginMaskEdit(node, { defId = null, seedFromDefId = null } = {}) {
+  if (!_isPlainImageOrVideo(node)) { setStatus('Masks work on plain images and video clips.', 'warn', 4000); return false; }
+  if (_maskEdit) _cancelMaskEdit();
+  const c = getCanonicalSize();
+  const def  = defId ? _cropMaskDefById(defId) : null;
+  // seedFromDefId: start from a shared mask's shape but commit PRIVATELY —
+  // how "create my own copy of this one" works without mutating anything up
+  // front, so Cancel really leaves the image as it was.
+  const seed = seedFromDefId ? _cropMaskDefById(seedFromDefId) : null;
+  const cur  = def || seed || node.getAttr('cropMask') || null;
+  const box  = _shapeBox(node);
+  const px = cur ? { x: cur.x * c.width, y: cur.y * c.height, w: cur.w * c.width, h: cur.h * c.height }
+                 : { x: box.x, y: box.y, w: box.width, h: box.height };
+
+  const rect = new Konva.Rect({
+    x: px.x, y: px.y, width: px.w, height: px.h,
+    stroke: '#38bdf8', strokeWidth: 2, dash: [8, 5],
+    fill: 'rgba(56,189,248,0.06)',
+    draggable: true, name: 'sbs-mask-handle',
+    strokeScaleEnabled: false,
+  });
+  const tr = new Konva.Transformer({
+    rotateEnabled: false, keepRatio: false, anchorSize: 9,
+    borderStroke: '#38bdf8', anchorStroke: '#38bdf8', anchorFill: '#fff',
+    enabledAnchors: ['top-left', 'top-center', 'top-right', 'middle-left', 'middle-right', 'bottom-left', 'bottom-center', 'bottom-right'],
+    boundBoxFunc: (oldBox, newBox) => (newBox.width < 8 || newBox.height < 8) ? oldBox : newBox,
+  });
+  _uiLayer.add(rect);
+  _uiLayer.add(tr);
+  tr.nodes([rect]);
+  // Bake scale back into width/height so the dashed outline keeps its weight
+  // and the committed rect is plain geometry.
+  rect.on('transformend', () => {
+    rect.width(Math.abs(rect.width() * rect.scaleX()));
+    rect.height(Math.abs(rect.height() * rect.scaleY()));
+    rect.scaleX(1); rect.scaleY(1);
+  });
+  const redraw = () => { _layer?.batchDraw(); _uiLayer?.batchDraw(); };
+  rect.on('dragmove transform transformend', redraw);
+
+  _setSelection(null);   // the content transformer would fight this one
+  const title = def ? `Editing shared mask "${def.name}"` : 'Editing mask';
+  const { bar, apply, cancel, place } = _maskEditBar(title);
+  const onKey = (e) => {
+    if (e.key !== 'Enter' && e.key !== 'Escape') return;
+    // Never take a key that belongs to something the user is typing in, or
+    // to a modal on top of us (a dialog owns its own Escape).
+    const el = document.activeElement;
+    const tag = el?.tagName;
+    if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT' || el?.isContentEditable) return;
+    if (document.querySelector('dialog[open]')) return;
+    e.preventDefault(); e.stopPropagation();
+    if (e.key === 'Enter') _commitMaskEdit(); else _cancelMaskEdit();
+  };
+  apply.addEventListener('click', () => _commitMaskEdit());
+  cancel.addEventListener('click', () => _cancelMaskEdit());
+  window.addEventListener('keydown', onKey, true);
+  window.addEventListener('resize', place);
+
+  _maskEdit = { node, rect, tr, defId: defId || null, bar, onKey, place };
+  redraw();
+  setStatus(def
+    ? `Editing "${def.name}" — Apply moves every image using it.`
+    : 'Drag the rectangle to set what shows through, then Apply.', 'info', 6000);
+  return true;
+}
+
+function _teardownMaskEdit() {
+  if (!_maskEdit) return;
+  const { rect, tr, bar, onKey, place } = _maskEdit;
+  _maskEdit = null;                       // cleared FIRST so the draw path stops previewing
+  try { tr.destroy(); rect.destroy(); } catch { /* already gone */ }
+  try { bar.remove(); } catch { /* already gone */ }
+  window.removeEventListener('keydown', onKey, true);
+  window.removeEventListener('resize', place);
+  _layer?.batchDraw();
+  _uiLayer?.batchDraw();
+}
+
+function _commitMaskEdit() {
+  if (!_maskEdit) return;
+  const { node, defId } = _maskEdit;
+  const m = _maskEditRect();
+  _teardownMaskEdit();
+  if (!m || !(m.w > 0) || !(m.h > 0)) return;
+  if (!defId && !_isLiveNode(node)) {
+    setStatus('That image is no longer on the canvas — mask not applied.', 'warn', 5000);
+    return;
+  }
+  if (defId) {
+    const d = _cropMaskDefById(defId);
+    updateCropMaskDef(defId, { x: m.x, y: m.y, w: m.w, h: m.h }, `Edit mask "${d?.name || ''}"`);
+    setStatus(`"${d?.name || 'Mask'}" updated — every image using it follows.`, 'success', 4000);
+  } else {
+    setCropMask(node, { x: m.x, y: m.y, w: m.w, h: m.h });
+    setStatus('Mask applied. Right-click the image for crop options.', 'success', 4000);
+  }
+}
+
+function _cancelMaskEdit() {
+  if (!_maskEdit) return;
+  _teardownMaskEdit();
+  setStatus('Mask editing cancelled.', 'info', 2500);
+}
+
+/** Public: true while the handle rect is up (callers can avoid clashing). */
+export function isMaskEditing() { return !!_maskEdit; }
+
+function _maskedDraw(node, ctx, base, isHit = false) {
   const m = _resolveMask(node);
   if (!m || m.kind !== 'rect' || !(m.w > 0) || !(m.h > 0)) { base.call(node, ctx); return; }
+  // While this node's mask is being edited, the part OUTSIDE the rect stays
+  // faintly visible, so a mask dragged clear of the image still has something
+  // to aim at. SCENE ONLY: the hit canvas encodes shapes as solid colour keys
+  // and a half-transparent ghost there would make invisible pixels clickable.
+  if (!isHit && !_rasterizing && _maskEdit && _maskEdit.node === node) {
+    const a = ctx.globalAlpha ?? 1;
+    ctx.save();
+    try { ctx.globalAlpha = a * 0.28; base.call(node, ctx); } finally { ctx.restore(); }
+  }
   const c = getCanonicalSize();
   const layer = node.getLayer();
   // layer (= canonical) space → node-local space; copy() first — Konva
@@ -908,8 +1088,8 @@ function _installMaskDraw(node) {
   node.__maskWrapped = true;   // own property, not an attr — never serialises
   const baseScene = Konva.Image.prototype._sceneFunc;
   const baseHit   = Konva.Image.prototype._hitFunc;
-  node.sceneFunc(function (ctx) { _maskedDraw(this, ctx, baseScene); });
-  node.hitFunc(function (ctx)   { _maskedDraw(this, ctx, baseHit); });
+  node.sceneFunc(function (ctx) { _maskedDraw(this, ctx, baseScene, false); });
+  node.hitFunc(function (ctx)   { _maskedDraw(this, ctx, baseHit,   true);  });
 }
 
 /**
@@ -4423,6 +4603,62 @@ function _showOverlayContextMenu(node, x, y) {
            } },
          { separator: true }]);
 
+  // 🎭 Crop masks (V0.3.2.220) — "Add mask…" on a bare image, "Crop options"
+  // once it has one. Private vs shared is the whole vocabulary: a mask starts
+  // private to this image, "Set as global" shares it, and from a shared one
+  // "Create new mask" forks a private copy back out.
+  const maskable = _isPlainImageOrVideo(node);
+  const maskDefs = _cropMaskDefs();
+  const boundId  = node.getAttr('cropMaskId') || null;
+  const boundDef = _cropMaskDefById(boundId);
+  const privateMask = node.getAttr('cropMask') || null;
+  const maskItems = !maskable ? [] : (
+    (boundDef || privateMask)
+      ? [{ label: `🎭 Crop options — ${boundDef ? `“${boundDef.name}”` : 'custom'}`, submenu: [
+          { label: '✎ Edit mask' + (boundDef ? ' (moves every image using it)' : ''),
+            action: () => beginMaskEdit(node, { defId: boundDef ? boundDef.id : null }) },
+          ...(boundDef
+            ? [{ label: '⑂ Create new mask (just for this image)',
+                 // Seeded from the shared shape but committed privately, so
+                 // this is ONE undoable change and Cancel leaves the image
+                 // still using the shared mask.
+                 action: () => beginMaskEdit(node, { seedFromDefId: boundDef.id }) }]
+            : [{ label: '🌐 Set as global mask…',
+                 action: async () => {
+                   const name = await promptString('Name this mask', `Mask ${maskDefs.length + 1}`);
+                   if (!name) return;
+                   const def = promoteCropMaskToGlobal(node, name);
+                   if (def) setStatus(`"${def.name}" is now global — any image can use it.`, 'success', 5000);
+                 } }]),
+          ...(maskDefs.filter(d => d.id !== boundId).length
+            ? [{ separator: true },
+               { label: '🎭 Use another mask', submenu: maskDefs.filter(d => d.id !== boundId).map(d => ({
+                   label: d.name,
+                   action: () => { useCropMask(node, d.id); setStatus(`Using "${d.name}".`, 'success', 3000); },
+                 })) }]
+            : []),
+          { separator: true },
+          { label: '✂ Remove mask (show the whole image)',
+            action: () => { if (boundId) useCropMask(node, null); else setCropMask(node, null); } },
+        ] },
+        { separator: true }]
+      : boundId
+        ? [{ label: '🎭 Mask definition missing — show whole image',
+             action: () => useCropMask(node, null) },
+           { separator: true }]
+        : [{ label: '🎭 Add mask…', submenu: [
+              { label: '▭ New rectangle mask…', action: () => beginMaskEdit(node) },
+              ...(maskDefs.length
+                ? [{ separator: true },
+                   ...maskDefs.map(d => ({
+                     label: `🌐 ${d.name}`,
+                     action: () => { useCropMask(node, d.id); setStatus(`Using "${d.name}".`, 'success', 3000); },
+                   }))]
+                : []),
+            ] },
+           { separator: true }]
+  );
+
   const arrangeItems = [
     { label: '🔼 Arrange', submenu: [
       { label: 'Bring forward',  action: () => arrange('PageUp') },
@@ -4442,6 +4678,7 @@ function _showOverlayContextMenu(node, x, y) {
     ...anchorItems,
     ...linkItems,
     ...constShapeItems,
+    ...maskItems,
     ...arrangeItems,
     { label: '⎘ Duplicate',        action: _duplicateSelected },
     { label: '📋 Copy',            action: _copyToOverlayClipboard },
@@ -5221,9 +5458,19 @@ export function pasteStepOverlay(stepId, mode = 'replace') {
  */
 function _serialiseStageJson() {
   if (!_stage) return null;
+  // 🎭 The mask editor's handle + transformer live on _uiLayer, and toJSON
+  // walks the WHOLE stage — a save scheduled while the editor is open (the
+  // fork path schedules one) would bake them into step.overlay for good, and
+  // the render cache fingerprints that JSON, so the stray nodes would also
+  // invalidate the step's cached segment. Lift them out for the snapshot.
+  const lifted = _maskEdit ? [_maskEdit.tr, _maskEdit.rect] : [];
+  for (const n of lifted) { try { n.remove(); } catch { /* already detached */ } }
   let parsed;
   try { parsed = JSON.parse(_stage.toJSON()); }
   catch { return _stage.toJSON(); }
+  finally {
+    for (const n of [...lifted].reverse()) { try { _uiLayer?.add(n); } catch { /* stage gone */ } }
+  }
   const stripImage = (children) => {
     for (const c of children || []) {
       if (c?.attrs && 'image' in c.attrs) delete c.attrs.image;
@@ -5553,6 +5800,8 @@ export function waitForOverlayStable() {
 
 async function _loadFromActiveStep() {
   if (!_stage) return;
+  // 🎭 The editor's node is about to be destroyed with the rest of the layer.
+  if (_maskEdit) _cancelMaskEdit();
   const activeId = state.get('activeStepId');
   // Tag this load so a later step-change invalidates a still-running one.
   // Without this, two rapid step switches can interleave: load #1's awaits
@@ -5839,6 +6088,8 @@ export function rasterizeOverlay(opts = {}) {
   const savedPos   = _stage.position();
   _stage.scale({ x: 1, y: 1 });
   _stage.position({ x: 0, y: 0 });
+  const wasRasterizing = _rasterizing;
+  _rasterizing = true;   // 🎭 draw the COMMITTED masks, not the editor preview
   let out = null;
   try {
     // Always composite through one output canvas (the old single-layer
@@ -5868,8 +6119,12 @@ export function rasterizeOverlay(opts = {}) {
       }
     }
   } finally {
+    _rasterizing = wasRasterizing;
     _stage.scale(savedScale);
     _stage.position(savedPos);
+    // The masked nodes were just drawn in raster mode; put the live preview
+    // back on screen rather than leaving the committed look behind.
+    if (_maskEdit) _layer?.batchDraw();
   }
   return out;
 }
