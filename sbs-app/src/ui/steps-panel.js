@@ -2278,7 +2278,10 @@ function _showImportStepsDialog(project, srcSteps, srcName, targetStepId, srcPro
   // overflow:hidden — the three columns are all shrinkable (mins sum ~750px),
   // so the dialog itself must never grow a horizontal scrollbar; each column
   // scrolls its own content vertically instead.
-  dlg.style.cssText = 'width:min(2400px,98vw);max-height:92vh;overflow:hidden;background:var(--panel);border:1px solid var(--line);border-radius:10px;color:var(--text);padding:0;';
+  // max-width MUST be set inline: the shared .sbs-dialog class caps every
+  // dialog at min(700px,96vw) (components.css), which silently overrode the
+  // width and kept this three-column console at 700px.
+  dlg.style.cssText = 'width:98vw;max-width:98vw;height:92vh;max-height:92vh;overflow:hidden;background:var(--panel);border:1px solid var(--line);border-radius:10px;color:var(--text);padding:0;';
   const esc = (s) => String(s ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[c]);
 
   // 🗂 V0.3.2.209 — CONSTANT three-column layout, all columns deployed from
@@ -2286,7 +2289,7 @@ function _showImportStepsDialog(project, srcSteps, srcName, targetStepId, srcPro
   // checkbox for missing), steps CENTER, preview RIGHT (idle until a ▶).
   // One fixed dialog size for every case — no growing/shrinking chrome.
   dlg.innerHTML = `
-    <div style="display:flex;flex-direction:column;max-height:92vh;">
+    <div style="display:flex;flex-direction:column;height:100%;min-height:0;">
       <div style="padding:12px 16px;border-bottom:1px solid var(--line);flex-shrink:0;">
         <strong style="font-size:14px;">📥 Import steps from "${esc(srcName)}"</strong>
         <div class="small muted" style="margin-top:2px;">Selected steps are inserted after the step you right-clicked. One undo entry.${srcStamp ? ` · saved by <b>${esc(srcStamp)}</b>` : ''}${srcStale ? ' <span style="color:#f59e0b;">⚠ old format — per-step visibility data may not match today\'s geometry, so models may import whole</span>' : ''}</div>
