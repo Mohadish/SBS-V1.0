@@ -2309,9 +2309,13 @@ function _showImportStepsDialog(project, srcSteps, srcName, targetStepId, srcPro
           <div style="padding:8px 16px;display:flex;gap:8px;align-items:center;flex-shrink:0;">
             <button class="btn" id="imp-all">Select all</button>
             <button class="btn" id="imp-none">Select none</button>
+            <label class="small" id="imp-only-wrap" title="Final review: show only the steps you picked. The name filter is ignored while this is on, and a step you untick stays listed so you can put it back." style="display:flex;align-items:center;gap:5px;cursor:pointer;margin-left:10px;">
+              <input type="checkbox" id="imp-only-sel" /> only selected
+            </label>
             <span class="small muted" id="imp-count" style="margin-left:auto;"></span>
           </div>
           <div id="imp-warn" class="small" style="display:none;color:#f59e0b;padding:0 16px 6px;flex-shrink:0;"></div>
+          <div id="imp-empty" class="small muted" style="display:none;padding:8px 16px;flex-shrink:0;"></div>
           <div id="imp-list" style="flex:1;overflow-y:auto;padding:0 12px 8px;display:flex;flex-direction:column;gap:4px;"></div>
         </div>
         <div id="imp-preview" style="display:flex;flex:1 1 880px;min-width:340px;border-left:1px solid var(--line);padding:12px;flex-direction:column;gap:8px;min-height:0;overflow-y:auto;overflow-x:hidden;">
@@ -2794,14 +2798,44 @@ function _showImportStepsDialog(project, srcSteps, srcName, targetStepId, srcPro
   // 🔎 V0.3.2.200 — live name filter: hides non-matching step rows and any
   // chapter header whose steps are all hidden. Selection state is kept on
   // hidden rows; Select all / none act on the VISIBLE (filtered) rows only.
-  dlg.querySelector('#imp-search')?.addEventListener('input', (e) => {
-    const term = String(e.target.value || '').trim().toLowerCase();
+  // ✅ V0.3.2.214 — "only selected" is the FINAL-REVIEW filter and it wins
+  // outright: the name filter is disabled and ignored while it is on. Its
+  // row set is FROZEN at the moment it is switched on, so unticking a step
+  // during the review leaves the row in place to be put back; the set is
+  // recomputed only on the next switch-on.
+  const searchEl = dlg.querySelector('#imp-search');
+  const onlyEl   = dlg.querySelector('#imp-only-sel');
+  const onlyWrap = dlg.querySelector('#imp-only-wrap');
+  const emptyEl  = dlg.querySelector('#imp-empty');
+  let onlyFrozen = null;   // Set of step ids, or null when the filter is off
+
+  const _applyRowFilter = () => {
+    const term = onlyFrozen ? '' : String(searchEl?.value || '').trim().toLowerCase();
     for (const el of list.children) {
-      if (el._cb) el.style.display = (!term || el._name.includes(term)) ? 'flex' : 'none';
+      if (!el._cb) continue;
+      el.style.display = onlyFrozen
+        ? (onlyFrozen.has(el._id) ? 'flex' : 'none')
+        : ((!term || el._name.includes(term)) ? 'flex' : 'none');
     }
     for (const el of list.children) {
       if (el._rows) el.style.display = el._rows.some(r => r.style.display !== 'none') ? 'flex' : 'none';
     }
+    if (onlyFrozen && !onlyFrozen.size) {
+      emptyEl.style.display = 'block';
+      emptyEl.textContent = 'No steps were selected — untick “only selected” to see the full list.';
+    } else emptyEl.style.display = 'none';
+  };
+
+  searchEl?.addEventListener('input', _applyRowFilter);
+  onlyEl?.addEventListener('change', () => {
+    onlyFrozen = onlyEl.checked ? new Set(checked) : null;
+    if (searchEl) {
+      searchEl.disabled = !!onlyFrozen;
+      searchEl.style.opacity = onlyFrozen ? '0.45' : '';
+      searchEl.title = onlyFrozen ? 'Ignored while “only selected” is on.' : '';
+    }
+    onlyWrap.style.color = onlyFrozen ? '#3b82f6' : '';
+    _applyRowFilter();
   });
 
   // 🔎 with a filter active, Select all / none act on the VISIBLE rows only.
