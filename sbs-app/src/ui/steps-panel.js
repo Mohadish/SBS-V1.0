@@ -2266,7 +2266,10 @@ function _showImportStepsDialog(project, srcSteps, srcName, targetStepId, srcPro
 
   const dlg = document.createElement('dialog');
   dlg.className = 'sbs-dialog';
-  dlg.style.cssText = 'width:min(1500px,96vw);max-height:82vh;background:var(--panel);border:1px solid var(--line);border-radius:10px;color:var(--text);padding:0;';
+  // overflow:hidden — the three columns are all shrinkable (mins sum ~750px),
+  // so the dialog itself must never grow a horizontal scrollbar; each column
+  // scrolls its own content vertically instead.
+  dlg.style.cssText = 'width:min(1500px,96vw);max-height:82vh;overflow:hidden;background:var(--panel);border:1px solid var(--line);border-radius:10px;color:var(--text);padding:0;';
   const esc = (s) => String(s ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[c]);
 
   // 🗂 V0.3.2.209 — CONSTANT three-column layout, all columns deployed from
@@ -2280,13 +2283,13 @@ function _showImportStepsDialog(project, srcSteps, srcName, targetStepId, srcPro
         <div class="small muted" style="margin-top:2px;">Selected steps are inserted after the step you right-clicked. One undo entry.</div>
       </div>
       <div style="display:flex;align-items:stretch;flex:1;min-height:0;">
-        <div id="imp-assets" style="display:flex;width:250px;flex-shrink:0;border-right:1px solid var(--line);padding:8px 12px;flex-direction:column;min-height:0;">
+        <div id="imp-assets" style="display:flex;width:250px;min-width:190px;flex-shrink:1;border-right:1px solid var(--line);padding:8px 12px;flex-direction:column;min-height:0;">
           <div class="small" style="font-weight:600;margin-bottom:4px;flex-shrink:0;">CAD models used by these steps</div>
           <div class="small muted" style="margin-bottom:6px;flex-shrink:0;">Green ✓ = already loaded here. Checked missing models are imported with the steps; untick one to skip it.</div>
           <div id="imp-asset-rows" style="flex:1;min-height:0;overflow-y:auto;display:flex;flex-direction:column;gap:4px;"></div>
           <div id="imp-asset-warn" class="small" style="display:none;color:#f59e0b;padding-top:6px;flex-shrink:0;"></div>
         </div>
-        <div style="display:flex;flex-direction:column;flex:1 1 0%;min-width:320px;min-height:0;">
+        <div style="display:flex;flex-direction:column;flex:1 1 0%;min-width:260px;min-height:0;">
           <div style="padding:8px 16px 0;flex-shrink:0;">
             <input type="text" id="imp-search" placeholder="🔎 Filter steps by name…" spellcheck="false"
                    style="width:100%;box-sizing:border-box;padding:6px 8px;font-size:12px;background:rgba(255,255,255,0.05);color:inherit;border:1px solid var(--line,#334155);border-radius:6px;" />
@@ -2299,7 +2302,7 @@ function _showImportStepsDialog(project, srcSteps, srcName, targetStepId, srcPro
           <div id="imp-warn" class="small" style="display:none;color:#f59e0b;padding:0 16px 6px;flex-shrink:0;"></div>
           <div id="imp-list" style="flex:1;overflow-y:auto;padding:0 12px 8px;display:flex;flex-direction:column;gap:4px;"></div>
         </div>
-        <div id="imp-preview" style="display:flex;flex:1.35 1 0%;min-width:400px;border-left:1px solid var(--line);padding:12px;flex-direction:column;gap:8px;min-height:0;overflow-y:auto;overflow-x:hidden;">
+        <div id="imp-preview" style="display:flex;flex:1.35 1 0%;min-width:300px;border-left:1px solid var(--line);padding:12px;flex-direction:column;gap:8px;min-height:0;overflow-y:auto;overflow-x:hidden;">
           <strong id="imp-pv-name" style="font-size:13px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;flex-shrink:0;">Preview</strong>
           <div style="width:100%;aspect-ratio:16/9;background:#000;border-radius:6px;overflow:hidden;display:flex;align-items:center;justify-content:center;flex-shrink:0;">
             <video id="imp-pv-video" style="width:100%;height:100%;object-fit:contain;display:none;cursor:pointer;" muted></video>
