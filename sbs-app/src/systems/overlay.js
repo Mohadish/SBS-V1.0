@@ -296,6 +296,7 @@ function _syncSize() {
   // follow or it ends up pointing at empty canvas.
   _repositionFloatingToolbar();
   _maskEdit?.place?.();   // 🎭 keep the Apply/Cancel bar centred too
+  if (_xray) _applyXray();   // 👓 a resize can hand the layer a fresh canvas
 }
 
 // Stage 3a: rescale all overlay nodes when the canonical export size
@@ -1086,6 +1087,44 @@ function _cancelMaskEdit() {
 
 /** Public: true while the handle rect is up (callers can avoid clashing). */
 export function isMaskEditing() { return !!_maskEdit; }
+
+// ── 👓 Overlay X-ray (V0.3.2.229) ──────────────────────────────────────────
+// An authoring aid: ghost the 2D overlay so the 3D scene underneath is
+// visible while you line something up — matching a camera to a reference
+// image, or placing a title against geometry.
+//
+// It is applied as CSS opacity on each layer's own <canvas> ELEMENT, never
+// as Konva opacity, for two reasons. First, it is then structurally
+// impossible for it to reach a render: rasterizeOverlay (which serves both
+// exported frames and step thumbnails) draws through layer.toCanvas(), a
+// fresh canvas that knows nothing about the source element's CSS. Second,
+// Konva layer opacity is what the step-transition crossfade animates —
+// borrowing it here would fight the fade.
+//
+// The UI layer is deliberately left opaque: handles and the transformer must
+// stay crisp, since arranging things is the entire point.
+const XRAY_ALPHA = 0.5;
+let _xray = false;
+
+function _applyXray() {
+  if (!_stage) return;
+  for (const lyr of _stage.getLayers()) {
+    if (lyr === _uiLayer) continue;
+    const el = lyr.getNativeCanvasElement?.() || lyr.getCanvas?.()?._canvas;
+    if (el) el.style.opacity = _xray ? String(XRAY_ALPHA) : '';
+  }
+}
+
+export function setOverlayXray(on) {
+  _xray = !!on;
+  _applyXray();
+  setStatus(_xray
+    ? '👓 Overlay X-ray on — the overlay is ghosted for arranging only; renders and exports are unaffected.'
+    : 'Overlay X-ray off.', 'info', 4000);
+  return _xray;
+}
+
+export function isOverlayXray() { return _xray; }
 
 /** Pick a shared mask from a dialog. `excludeId` drops the one already in
  *  use so the list only offers a real change. */

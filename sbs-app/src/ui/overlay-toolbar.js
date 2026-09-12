@@ -253,8 +253,21 @@ export function initOverlayToolbar() {
   _mainBtn = _btn(`✏ Edit overlay ${keyHint('overlayEdit')}`, 'Toggle overlay editing mode');
   _mainBtn.addEventListener('click', () => _setEditing(!overlay.isEditing()));
 
+  // 👓 V0.3.2.229 — ghost the overlay to see the 3D underneath while
+  // arranging. Lives NEXT TO the edit toggle rather than inside the tools
+  // row, because it is just as useful out of edit mode (matching a camera to
+  // a reference image) as in it (placing a title against geometry).
+  const _xrayBtn = _btn('👓 X-ray', 'Ghost the overlay so you can see the 3D scene underneath. Arranging aid only — renders, exports and thumbnails are unaffected.');
+  const _syncXray = () => {
+    const on = overlay.isOverlayXray();
+    _xrayBtn.textContent = on ? '👓 X-ray on' : '👓 X-ray';
+    _xrayBtn.style.background = on ? 'rgba(56,189,248,0.28)' : '';
+  };
+  _xrayBtn.addEventListener('click', () => { overlay.setOverlayXray(!overlay.isOverlayXray()); _syncXray(); });
+  _syncXray();
+
   // Append in left-to-right DOM order: text slot · tools · toggle.
-  _bar.append(_textSlot, _tools, _mainBtn);
+  _bar.append(_textSlot, _tools, _xrayBtn, _mainBtn);
 
   surface.appendChild(_bar);
 
