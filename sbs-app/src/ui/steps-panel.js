@@ -2255,6 +2255,15 @@ function _showImportStepsDialog(project, srcSteps, srcName, targetStepId, srcPro
   for (const s of srcSteps) for (const aid of (perStepAssets.get(s.id) || [])) allReferencedIds.add(aid);
   const allAssetIds = (project.assets?.items || []).map(a => a.id).filter(id => allReferencedIds.has(id));
   for (const aid of allReferencedIds) if (!allAssetIds.includes(aid)) allAssetIds.push(aid);
+  // 🏷 V0.3.2.211 — which build wrote this file, and is it old enough that the
+  // per-step visibility ids can't be trusted against freshly loaded geometry?
+  // Stable mesh ids arrived in V.0.0.3 (2026-04-23) and baked step trees a day
+  // earlier; before that, ids were random per session, so a re-import matches
+  // nothing. Missing baked trees show up the same way (0 referenced models).
+  const srcStamp = String(project._sbs?.app_version || '').trim();
+  const srcStale = !srcStamp
+    || /^V\.?0\.0\./i.test(srcStamp)
+    || !srcSteps.some(s => s?.snapshot?.tree);
   // 📥 Phase 2 — per missing asset: where its file is (probed async below),
   // a Browse-picked File override, and whether the user wants it imported.
   const assetState = new Map();   // assetId → { resolvedPath, browsedFile, wanted:'auto'|'yes'|'no' }
@@ -2280,7 +2289,7 @@ function _showImportStepsDialog(project, srcSteps, srcName, targetStepId, srcPro
     <div style="display:flex;flex-direction:column;max-height:82vh;">
       <div style="padding:12px 16px;border-bottom:1px solid var(--line);flex-shrink:0;">
         <strong style="font-size:14px;">📥 Import steps from "${esc(srcName)}"</strong>
-        <div class="small muted" style="margin-top:2px;">Selected steps are inserted after the step you right-clicked. One undo entry.</div>
+        <div class="small muted" style="margin-top:2px;">Selected steps are inserted after the step you right-clicked. One undo entry.${srcStamp ? ` · saved by <b>${esc(srcStamp)}</b>` : ''}${srcStale ? ' <span style="color:#f59e0b;">⚠ old format — per-step visibility data may not match today\'s geometry, so models may import whole</span>' : ''}</div>
       </div>
       <div style="display:flex;align-items:stretch;flex:1;min-height:0;">
         <div id="imp-assets" style="display:flex;width:250px;min-width:190px;flex-shrink:1;border-right:1px solid var(--line);padding:8px 12px;flex-direction:column;min-height:0;">
@@ -2947,6 +2956,7 @@ async function _doImportSteps(project, srcStepIds, srcName, targetStepId, assetP
 
   const loadedModels = [];
   const failedModels = [];
+  const unprunedModels = [];   // 🛡 .211 — id bridge gave no overlap; nothing pruned
   const importedMeshIds = new Set();
   for (const plan of assetPlan) {
     if (!plan?.entry) continue;
@@ -3009,10 +3019,23 @@ async function _doImportSteps(project, srcStepIds, srcName, targetStepId, assetP
       // from the live tree, the maps and the scene. Conservative disposal:
       // geometry freed, materials left alone (they can be shared).
       const toPrune = [];
+      let meshTotal = 0;
       (function collect(n) {
-        if (n.type === 'mesh' && !visibleIdsSelected.has(n.id)) toPrune.push(n);
+        if (n.type === 'mesh') { meshTotal++; if (!visibleIdsSelected.has(n.id)) toPrune.push(n); }
         for (const c of (n.children || [])) collect(c);
       })(modelNode);
+      // 🛡 V0.3.2.211 — ZERO overlap is not a verdict, it is a broken bridge.
+      // Fresh mesh ids are hashes of assetId + geometry fingerprint + mesh
+      // index, so a source file saved before stable ids existed, or a STEP
+      // asset re-tessellated at another quality since, yields ids the source
+      // snapshots never mention. Pruning on that signal deletes EVERY mesh
+      // and imports a hollow model — silently. (A genuinely all-hidden model
+      // is just as pointless to strip bare.) Keep everything and say so.
+      if (meshTotal && toPrune.length === meshTotal) {
+        console.warn(`[import] "${plan.entry.name}": none of its ${meshTotal} mesh(es) matched the selected steps' visible set — keeping the whole model, pruning nothing. Likely the source file predates stable mesh ids, or its CAD was tessellated at a different quality.`);
+        unprunedModels.push(plan.entry.name);
+        toPrune.length = 0;
+      }
       if (toPrune.length) {
         const nodeById = state.get('nodeById');
         for (const n of toPrune) {
@@ -3027,7 +3050,7 @@ async function _doImportSteps(project, srcStepIds, srcName, targetStepId, assetP
           n.children = (n.children || []).filter(c => !prunedIds.has(c.id));
           for (const c of n.children) strip(c);
         })(modelNode);
-        console.log(`[import] "${plan.entry.name}": kept ${toPrune.length ? 'partial' : 'all'} — pruned ${toPrune.length} mesh(es) never visible in the selected steps.`);
+        console.log(`[import] "${plan.entry.name}": pruned ${toPrune.length} of ${meshTotal} mesh(es) — never visible in the selected steps.`);
       }
 
       steps.injectModelIntoAllSteps(modelNode, { visible: false });
@@ -3309,8 +3332,9 @@ async function _doImportSteps(project, srcStepIds, srcName, targetStepId, assetP
     + (cableAdds.length ? ` + ${cableAdds.length} cable(s)` : '')
     + (presetAdds.length ? ` (+${presetAdds.length} colour preset(s))` : '')
     + (animPresetAdds.length ? ` (+${animPresetAdds.length} animation preset(s))` : '')
+    + (unprunedModels.length ? ` — ⚠ imported WHOLE (the source's visibility data did not match this geometry): ${unprunedModels.join(', ')}` : '')
     + (failedModels.length ? ` — ⚠ model import FAILED: ${failedModels.join(', ')}` : '')
-    + '.', (failedModels.length || videoFailed.length) ? 'warn' : 'success', 9000);
+    + '.', (failedModels.length || videoFailed.length || unprunedModels.length) ? 'warn' : 'success', 9000);
 }
 
 /** Clone a BLOCK of steps for pasting, remapping group identity (V0.3.2.44).
