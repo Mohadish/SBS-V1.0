@@ -22,7 +22,7 @@ import * as clock    from '../core/clock.js';
 import { getCanonicalSize, computeSafeFrameRect } from '../core/safe-frame.js';
 import { showContextMenu } from '../ui/context-menu.js';
 import { setStatus, setStickyStatus, clearStickyStatus } from '../ui/status.js';
-import { promptString } from '../ui/prompt.js';
+import { promptString, chooseFromButtons } from '../ui/prompt.js';
 import { openSequenceEditor } from '../ui/sequence-editor.js';
 import { narrationContextForStep } from './narration-timeline.js';
 import * as interfaces from './interfaces.js';   // interface overlay (used lazily in the right-click menu)
@@ -922,30 +922,50 @@ function _maskEditRect() {
   const c = getCanonicalSize();
   const w = Math.abs(r.width()  * r.scaleX());
   const h = Math.abs(r.height() * r.scaleY());
-  return { kind: 'rect', x: r.x() / c.width, y: r.y() / c.height, w: w / c.width, h: h / c.height };
+  // rot is about the rect's OWN top-left corner (x,y) — Konva's rotation
+  // semantics — so the stored numbers and the handle always agree.
+  return { kind: 'rect', x: r.x() / c.width, y: r.y() / c.height, w: w / c.width, h: h / c.height, rot: r.rotation() || 0 };
 }
 
 function _maskEditBar(titleText) {
   const bar = document.createElement('div');
-  bar.style.cssText = 'position:fixed;z-index:9999;display:flex;gap:8px;align-items:center;padding:8px 12px;'
-    + 'background:var(--panel,#0f172a);border:1px solid var(--line,#334155);border-radius:10px;'
-    + 'box-shadow:0 10px 30px rgba(0,0,0,.5);color:var(--text,#e2e8f0);font-size:12px;';
+  bar.style.cssText = 'position:fixed;z-index:9999;display:flex;gap:8px;align-items:center;padding:7px 10px;'
+    + 'background:var(--panel,#0f172a);border:1px solid #38bdf8;border-radius:10px;'
+    + 'box-shadow:0 10px 30px rgba(0,0,0,.55);color:var(--text,#e2e8f0);font-size:12px;white-space:nowrap;';
   const label = document.createElement('span');
   label.textContent = titleText;
+  label.style.cssText = 'font-weight:600;';
   const apply = document.createElement('button');
-  apply.className = 'btn'; apply.textContent = '✓ Apply';
+  apply.className = 'btn';
+  apply.textContent = '✓ Apply (Enter)';
+  apply.style.cssText = 'height:24px;padding:0 10px;background:rgba(56,189,248,0.25);font-weight:600;';
   const cancel = document.createElement('button');
-  cancel.className = 'btn'; cancel.textContent = '✕ Cancel';
+  cancel.className = 'btn';
+  cancel.textContent = '✕ Cancel (Esc)';
+  cancel.style.cssText = 'height:24px;padding:0 10px;';
   const hint = document.createElement('span');
   hint.className = 'small muted';
-  hint.textContent = 'drag / resize the rectangle · Enter = apply · Esc = cancel';
+  hint.textContent = 'drag · resize · rotate';
   bar.append(label, apply, cancel, hint);
   document.body.appendChild(bar);
+  // Parked just ABOVE the mask rectangle and following it, rather than in a
+  // corner of the viewport: at the bottom of the screen it read as chrome
+  // and went unnoticed. Clamped to stay on screen, and flipped below the
+  // rectangle when there is no room above it.
   const place = () => {
-    const r = _container?.getBoundingClientRect();
-    if (!r) return;
-    bar.style.left = `${Math.round(r.left + r.width / 2 - bar.offsetWidth / 2)}px`;
-    bar.style.top  = `${Math.round(r.bottom - bar.offsetHeight - 16)}px`;
+    const cr = _container?.getBoundingClientRect();
+    const rect = _maskEdit?.rect;
+    if (!cr) return;
+    let cx = cr.left + cr.width / 2, top = cr.top + 12;
+    if (rect) {
+      const box = rect.getClientRect();          // stage (canvas) pixels
+      cx  = cr.left + box.x + box.width / 2;
+      top = cr.top + box.y - bar.offsetHeight - 12;
+      if (top < cr.top + 4) top = cr.top + box.y + box.height + 12;
+    }
+    const w = bar.offsetWidth;
+    bar.style.left = `${Math.round(Math.min(Math.max(cr.left + 4, cx - w / 2), cr.right - w - 4))}px`;
+    bar.style.top  = `${Math.round(Math.min(Math.max(cr.top + 4, top), cr.bottom - bar.offsetHeight - 4))}px`;
   };
   place();
   return { bar, apply, cancel, place };
@@ -973,14 +993,16 @@ export function beginMaskEdit(node, { defId = null, seedFromDefId = null } = {})
 
   const rect = new Konva.Rect({
     x: px.x, y: px.y, width: px.w, height: px.h,
+    rotation: cur?.rot || 0,
     stroke: '#38bdf8', strokeWidth: 2, dash: [8, 5],
     fill: 'rgba(56,189,248,0.06)',
     draggable: true, name: 'sbs-mask-handle',
     strokeScaleEnabled: false,
   });
   const tr = new Konva.Transformer({
-    rotateEnabled: false, keepRatio: false, anchorSize: 9,
+    rotateEnabled: true, rotateAnchorOffset: 28, keepRatio: false, anchorSize: 9,
     borderStroke: '#38bdf8', anchorStroke: '#38bdf8', anchorFill: '#fff',
+    rotationSnapTolerance: 6, rotationSnaps: [0, 45, 90, 135, 180, 225, 270, 315],
     enabledAnchors: ['top-left', 'top-center', 'top-right', 'middle-left', 'middle-right', 'bottom-left', 'bottom-center', 'bottom-right'],
     boundBoxFunc: (oldBox, newBox) => (newBox.width < 8 || newBox.height < 8) ? oldBox : newBox,
   });
@@ -994,7 +1016,7 @@ export function beginMaskEdit(node, { defId = null, seedFromDefId = null } = {})
     rect.height(Math.abs(rect.height() * rect.scaleY()));
     rect.scaleX(1); rect.scaleY(1);
   });
-  const redraw = () => { _layer?.batchDraw(); _uiLayer?.batchDraw(); };
+  const redraw = () => { _layer?.batchDraw(); _uiLayer?.batchDraw(); _maskEdit?.place?.(); };
   rect.on('dragmove transform transformend', redraw);
 
   _setSelection(null);   // the content transformer would fight this one
@@ -1048,10 +1070,10 @@ function _commitMaskEdit() {
   }
   if (defId) {
     const d = _cropMaskDefById(defId);
-    updateCropMaskDef(defId, { x: m.x, y: m.y, w: m.w, h: m.h }, `Edit mask "${d?.name || ''}"`);
+    updateCropMaskDef(defId, { x: m.x, y: m.y, w: m.w, h: m.h, rot: m.rot }, `Edit mask "${d?.name || ''}"`);
     setStatus(`"${d?.name || 'Mask'}" updated — every image using it follows.`, 'success', 4000);
   } else {
-    setCropMask(node, { x: m.x, y: m.y, w: m.w, h: m.h });
+    setCropMask(node, { x: m.x, y: m.y, w: m.w, h: m.h, rot: m.rot });
     setStatus('Mask applied. Right-click the image for crop options.', 'success', 4000);
   }
 }
@@ -1064,6 +1086,21 @@ function _cancelMaskEdit() {
 
 /** Public: true while the handle rect is up (callers can avoid clashing). */
 export function isMaskEditing() { return !!_maskEdit; }
+
+/** Pick a shared mask from a dialog. `excludeId` drops the one already in
+ *  use so the list only offers a real change. */
+async function _pickCropMask(node, excludeId) {
+  const defs = _cropMaskDefs().filter(d => d.id !== excludeId);
+  if (!defs.length) { setStatus('No other shared masks in this project yet.', 'info', 4000); return; }
+  const pick = await chooseFromButtons(
+    'Use another mask',
+    'Every image bound to a shared mask follows it when the mask is edited.',
+    [...defs.map(d => ({ id: d.id, label: `${d.name}  (${Math.round(d.w * 100)}% × ${Math.round(d.h * 100)}%)` })),
+     { id: '', label: 'Cancel' }],
+  );
+  if (!pick) return;
+  if (useCropMask(node, pick)) setStatus(`Using "${_cropMaskDefById(pick)?.name || 'mask'}".`, 'success', 3000);
+}
 
 // Console check for the rotation tools — "nothing happens" is otherwise
 // impossible to tell apart from "the knob never got the click".
@@ -1729,10 +1766,15 @@ function _maskedDraw(node, ctx, base, isHit = false) {
   const t = node.getAbsoluteTransform().copy().invert();
   if (layer) t.multiply(layer.getAbsoluteTransform());
   const px = m.x * c.width, py = m.y * c.height, pw = m.w * c.width, ph = m.h * c.height;
-  const p0 = t.point({ x: px,      y: py });
-  const p1 = t.point({ x: px + pw, y: py });
-  const p2 = t.point({ x: px + pw, y: py + ph });
-  const p3 = t.point({ x: px,      y: py + ph });
+  // Corners in canonical space, turned about the rect's own origin when the
+  // mask carries a rotation, then mapped into node-local space.
+  const rad = (m.rot || 0) * Math.PI / 180;
+  const cs = Math.cos(rad), sn = Math.sin(rad);
+  const corner = (dx, dy) => t.point({ x: px + dx * cs - dy * sn, y: py + dx * sn + dy * cs });
+  const p0 = corner(0,  0);
+  const p1 = corner(pw, 0);
+  const p2 = corner(pw, ph);
+  const p3 = corner(0,  ph);
   ctx.save();
   ctx.beginPath();
   ctx.moveTo(p0.x, p0.y);
@@ -5293,12 +5335,12 @@ function _showOverlayContextMenu(node, x, y) {
                    const def = promoteCropMaskToGlobal(node, name);
                    if (def) setStatus(`"${def.name}" is now global — any image can use it.`, 'success', 5000);
                  } }]),
+          // A DIALOG, not a nested submenu: context-menu.js builds flyout
+          // rows with _makeActionButton, which ignores a further `submenu`,
+          // so a second-level menu renders as a dead row (it did).
           ...(maskDefs.filter(d => d.id !== boundId).length
             ? [{ separator: true },
-               { label: '🎭 Use another mask', submenu: maskDefs.filter(d => d.id !== boundId).map(d => ({
-                   label: d.name,
-                   action: () => { useCropMask(node, d.id); setStatus(`Using "${d.name}".`, 'success', 3000); },
-                 })) }]
+               { label: '🎭 Use another mask…', action: () => _pickCropMask(node, boundId) }]
             : []),
           { separator: true },
           { label: '🗂 Manage masks…',
@@ -5317,11 +5359,7 @@ function _showOverlayContextMenu(node, x, y) {
         : [{ label: '🎭 Add mask…', submenu: [
               { label: '▭ New rectangle mask…', action: () => beginMaskEdit(node) },
               ...(maskDefs.length
-                ? [{ separator: true },
-                   ...maskDefs.map(d => ({
-                     label: `🌐 ${d.name}`,
-                     action: () => { useCropMask(node, d.id); setStatus(`Using "${d.name}".`, 'success', 3000); },
-                   }))]
+                ? [{ separator: true }, { label: '🌐 Use a shared mask…', action: () => _pickCropMask(node, null) }]
                 : []),
             ] },
            { separator: true }]
