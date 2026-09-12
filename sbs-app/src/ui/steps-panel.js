@@ -3294,12 +3294,31 @@ async function _doImportSteps(project, srcStepIds, srcName, targetStepId, assetP
   }
   const newAll = [...all.slice(0, tgtIdx + 1), ...ordered, ...all.slice(tgtIdx + 1)];
 
-  actions.commitStateChange(`Import ${ordered.length} step(s) from "${srcName}"`, ['steps', 'colorPresets', 'cables', 'animationPresets'], () => {
+  // 🎭 V0.3.2.218 — carry the GLOBAL CROP MASKS the imported overlays bind
+  // to. Every other overlay library (styles, pins, links) is left to
+  // self-heal, and that is fine there: a missing text style just means a
+  // default font. A missing crop mask is different in kind — the node draws
+  // UNMASKED, revealing exactly the part the author cropped away, silently.
+  // Copied under the SOURCE id so existing bindings resolve untouched.
+  const tgtMasks    = state.get('cropMasks') || [];
+  const tgtMaskIds  = new Set(tgtMasks.map(m => m.id));
+  const srcMasks    = project.cropMasks?.items || [];
+  const maskAdds    = (() => {
+    const wanted = new Set();
+    for (const s of ordered) {
+      if (typeof s?.overlay !== 'string') continue;
+      for (const m of s.overlay.matchAll(/"cropMaskId"\s*:\s*"([^"]+)"/g)) wanted.add(m[1]);
+    }
+    return srcMasks.filter(m => wanted.has(m.id) && !tgtMaskIds.has(m.id));
+  })();
+
+  actions.commitStateChange(`Import ${ordered.length} step(s) from "${srcName}"`, ['steps', 'colorPresets', 'cables', 'animationPresets', 'cropMasks'], () => {
     state.setState({
       steps: newAll,
       ...(presetAdds.length     ? { colorPresets:     [...tgtPresets, ...presetAdds] }         : {}),
       ...(cableAdds.length      ? { cables:           [...tgtCables, ...cableAdds] }           : {}),
       ...(animPresetAdds.length ? { animationPresets: [...tgtAnimPresets, ...animPresetAdds] } : {}),
+      ...(maskAdds.length       ? { cropMasks:        [...tgtMasks, ...maskAdds] }             : {}),
     });
     steps.normalizeOrder();
     state.markDirty();
@@ -3378,6 +3397,7 @@ async function _doImportSteps(project, srcStepIds, srcName, targetStepId, assetP
     + (cableAdds.length ? ` + ${cableAdds.length} cable(s)` : '')
     + (presetAdds.length ? ` (+${presetAdds.length} colour preset(s))` : '')
     + (animPresetAdds.length ? ` (+${animPresetAdds.length} animation preset(s))` : '')
+    + (maskAdds.length ? ` (+${maskAdds.length} crop mask(s))` : '')
     + (unprunedModels.length ? ` — ⚠ imported WHOLE (the source's visibility data did not match this geometry): ${unprunedModels.join(', ')}` : '')
     + (failedModels.length ? ` — ⚠ model import FAILED: ${failedModels.join(', ')}` : '')
     + '.', (failedModels.length || videoFailed.length || unprunedModels.length) ? 'warn' : 'success', 9000);

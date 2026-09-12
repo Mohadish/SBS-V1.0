@@ -288,6 +288,11 @@ export function serialize(targetPath = null) {
   project.shapeLinks = project.shapeLinks || { schema_version: 1, items: [] };
   project.shapeLinks.items = cloneShareStrings((state.get('shapeLinks') || []));
 
+  // 🎭 Global crop masks (V0.3.2.218) — normalized canvas-fixed rects that
+  // many overlay images/clips share. Private masks ride on their node.
+  project.cropMasks = project.cropMasks || { schema_version: 1, items: [] };
+  project.cropMasks.items = cloneShareStrings((state.get('cropMasks') || []));
+
   // Flat-shape templates — project-level polygon library. Instances live
   // as regular tree nodes (type='flatShape', templateId pointer) and
   // round-trip via stripNode like every other tree node.
@@ -1029,7 +1034,7 @@ export const PROJECT_STATE_KEYS = [
   'noteTemplates', 'notePresets', 'selectionGroups', 'selectionOutlineColor',
   'assets',
   'headerItems', 'headersLocked', 'headersHidden', 'headerDefault', 'headerStepNumberPerChapter',
-  'styleTemplates', 'shapeStyles', 'constTextBoxes', 'constShapes', 'shapeLinks',
+  'styleTemplates', 'shapeStyles', 'constTextBoxes', 'constShapes', 'shapeLinks', 'cropMasks',
   'shapeTemplates', 'hardwareTemplates', 'shapeTemplateGroups',
   'selectedShapeTemplateIds', 'selectedShapeTemplateGroupIds', 'selectedColorPresetIds',
   'cables', 'cableGlobalScale', 'cableGlobalRadius', 'cableDefaultDiameter', 'cableHighlightColor',
@@ -1155,6 +1160,7 @@ export function applyProjectToState(project) {
     constTextBoxes:       project.constTexts?.items          || [],   // 📌 V0.3.2.98 — safe [] on legacy files
     constShapes:          project.constShapes?.items         || [],   // 📌 V0.3.2.143 — safe [] on legacy files
     shapeLinks:           project.shapeLinks?.items         || [],   // 🔗 V0.3.2.150 — safe [] on legacy files
+    cropMasks:            project.cropMasks?.items          || [],   // 🎭 V0.3.2.218 — safe [] on legacy files
     shapeTemplates:       project.shapes?.items              || [],
     // V0.2.22.38 — hardware template library, see core/schema.js
     // createHardwareTemplate. Missing on legacy files → empty list, no

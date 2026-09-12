@@ -158,6 +158,12 @@ function createInitialState() {
     // many steps. The definition owns geometry + style + position; instances
     // carry a linkId. Wider than a shape style, which shares only paint.
     shapeLinks:     [],               // ShapeLinkDef[]
+    // 🎭 Crop masks (V0.3.2.218) — GLOBAL mask definitions
+    // { id, name, kind:'rect', x, y, w, h } in NORMALIZED canonical units
+    // (0..1), fixed in canvas space. An overlay image/clip binds by
+    // cropMaskId; a mask kept private to one node lives inline on it as a
+    // cropMask attr instead and never appears here.
+    cropMasks:      [],               // CropMaskDef[]
 
     // ── Flat-shape templates — project-level polygon library. Each entry
     // owns a polygon + fill; placed instances live in the scene tree

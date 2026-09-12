@@ -808,6 +808,17 @@ function _isPlainImageOrVideo(node) {
   return !!(node.getAttr('src') || node.getAttr('isVideo'));
 }
 
+/**
+ * Is this node still part of the live scene? A step switch runs
+ * `_layer.destroyChildren()`, so an undo entry captured on an earlier step
+ * holds a detached node. NOTE: `node.isDestroyed()` does NOT exist in the
+ * vendored Konva 9.3.22 — `node.isDestroyed?.()` is always undefined and
+ * guards nothing. Layer membership is the check that actually works.
+ */
+function _isLiveNode(node) {
+  return !!(node && typeof node.getLayer === 'function' && node.getLayer());
+}
+
 /** Pin / unpin one node with undo. A wrong pin snaps the node across the
  *  canvas, so Ctrl+Z has to bring it back (the earlier setAttr-only path
  *  pushed nothing). `beforePos` is where the node sat BEFORE the forward
@@ -816,7 +827,7 @@ function _isPlainImageOrVideo(node) {
  *  the entry a no-op rather than a crash. */
 function _pushPinUndo(node, label, beforeId, afterId, beforePos = null) {
   const apply = (id, pos) => {
-    if (!node || node.isDestroyed?.()) return;
+    if (!_isLiveNode(node)) return;
     node.setAttr('constShapeId', id);
     const def = id ? _constShapeDefs().find(d => d.id === id) : null;
     if (def) _applyConstShapeToNode(node, def);
@@ -848,8 +859,27 @@ function _pushPinUndo(node, label, beforeId, afterId, beforePos = null) {
 // that rasterizeOverlay zeroes for export, so a cached path would be right
 // on screen and wrong in the file. Hit-testing is clipped too — only the
 // visible part of a masked image is clickable (user spec).
+// ── Global mask library (V0.3.2.218) ──────────────────────────────────────
+// A mask is PRIVATE when its geometry sits inline on the node (`cropMask`)
+// and GLOBAL when the node instead carries `cropMaskId` into state.cropMasks.
+// Promote moves inline → library; fork copies library → inline. Exactly one
+// of the two is ever set on a node.
+function _cropMaskDefs()          { return state.get('cropMasks') || []; }
+function _cropMaskDefById(id)     { return id ? _cropMaskDefs().find(d => d.id === id) || null : null; }
+function _saveCropMaskDefs(items) { state.setState({ cropMasks: items }); state.markDirty(); }
+
+/** The rect a node draws through, or null. A cropMaskId naming a definition
+ *  that no longer exists resolves to NOTHING — the image draws whole. Never
+ *  an empty path: "apply nothing" is visible and recoverable, "clip to
+ *  nothing" looks like the image was lost and leaves nothing to click. */
+function _resolveMask(node) {
+  const id = node.getAttr('cropMaskId');
+  if (id) return _cropMaskDefById(id);
+  return node.getAttr('cropMask') || null;
+}
+
 function _maskedDraw(node, ctx, base) {
-  const m = node.getAttr('cropMask');
+  const m = _resolveMask(node);
   if (!m || m.kind !== 'rect' || !(m.w > 0) || !(m.h > 0)) { base.call(node, ctx); return; }
   const c = getCanonicalSize();
   const layer = node.getLayer();
@@ -890,17 +920,129 @@ function _installMaskDraw(node) {
  */
 export function setCropMask(node, mask, label = null) {
   if (!_isPlainImageOrVideo(node)) { console.warn('[mask] target must be a plain image or video clip'); return false; }
-  const before = node.getAttr('cropMask') ? { ...node.getAttr('cropMask') } : null;
-  const after  = mask ? { kind: 'rect', ...mask } : null;
+  const before = { m: node.getAttr('cropMask') ? { ...node.getAttr('cropMask') } : null, id: node.getAttr('cropMaskId') || null };
+  const after  = { m: mask ? { kind: 'rect', ...mask } : null, id: null };   // a private mask replaces any global binding
   const write = (v) => {
-    if (node.isDestroyed?.()) return;
-    node.setAttr('cropMask', v);
+    if (!_isLiveNode(node)) { setStatus('That image is on another step — undo it from there.', 'warn', 4000); return; }
+    node.setAttr('cropMask',  v.m);
+    node.setAttr('cropMaskId', v.id);
     _installMaskDraw(node);
     node.getLayer()?.batchDraw();
     _scheduleSave();
   };
   write(after);
-  undoManager.push(label || (after ? 'Set crop mask' : 'Clear crop mask'), () => write(before), () => write(after));
+  undoManager.push(label || (after.m ? 'Set crop mask' : 'Clear crop mask'), () => write(before), () => write(after));
+  return true;
+}
+
+/** Bind a node to a GLOBAL mask (or null to unbind, leaving it unmasked). */
+export function useCropMask(node, defId, label = null) {
+  if (!_isPlainImageOrVideo(node)) { console.warn('[mask] target must be a plain image or video clip'); return false; }
+  if (defId && !_cropMaskDefById(defId)) { console.warn('[mask] no such global mask:', defId); return false; }
+  const before = { m: node.getAttr('cropMask') ? { ...node.getAttr('cropMask') } : null, id: node.getAttr('cropMaskId') || null };
+  const after  = { m: null, id: defId || null };
+  const write = (v) => {
+    if (!_isLiveNode(node)) { setStatus('That image is on another step — undo it from there.', 'warn', 4000); return; }
+    node.setAttr('cropMask',  v.m);
+    node.setAttr('cropMaskId', v.id);
+    _installMaskDraw(node);
+    node.getLayer()?.batchDraw();
+    _scheduleSave();
+  };
+  write(after);
+  const d = _cropMaskDefById(defId);
+  undoManager.push(label || (d ? `Use mask "${d.name}"` : 'Remove mask'), () => write(before), () => write(after));
+  return true;
+}
+
+/** Promote this node's PRIVATE mask into the shared library and bind to it.
+ *  One undo entry covers both the new definition and the binding — a
+ *  half-undone promote would leave an orphan in the list. */
+export function promoteCropMaskToGlobal(node, name) {
+  const m = node?.getAttr?.('cropMask');
+  if (!m) { console.warn('[mask] nothing to promote — this node has no private mask'); return null; }
+  const def = {
+    id: `cmk_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 6)}`,
+    name: String(name || `Mask ${_cropMaskDefs().length + 1}`).trim(),
+    kind: 'rect', x: m.x, y: m.y, w: m.w, h: m.h,
+  };
+  const before = { m: { ...m }, id: null };
+  const apply = () => {
+    if (!_cropMaskDefs().some(d => d.id === def.id)) _saveCropMaskDefs([..._cropMaskDefs(), def]);
+    if (!_isLiveNode(node)) return;
+    node.setAttr('cropMask', null);
+    node.setAttr('cropMaskId', def.id);
+    node.getLayer()?.batchDraw();
+    _scheduleSave();
+  };
+  // Undoing a promote is the one operation here that changes the library AND
+  // a node together, so the two must move together or not at all. Once the
+  // user has left the step, that node's cropMaskId is already baked into the
+  // saved overlay string and cannot be rewritten from here — dropping the
+  // definition anyway would leave a dangling id, i.e. the image silently
+  // uncropped, with the private geometry gone too. So: keep the definition.
+  const revert = () => {
+    if (!_isLiveNode(node)) {
+      setStatus(`"${def.name}" kept — undo the promote from the step you made it on.`, 'warn', 6000);
+      return;
+    }
+    _saveCropMaskDefs(_cropMaskDefs().filter(d => d.id !== def.id));
+    node.setAttr('cropMask',  before.m);
+    node.setAttr('cropMaskId', before.id);
+    node.getLayer()?.batchDraw();
+    _scheduleSave();
+  };
+  apply();
+  undoManager.push(`Make "${def.name}" a global mask`, revert, apply);
+  return def;
+}
+
+/** Break this node away from its global mask: copy the geometry inline so
+ *  the node keeps exactly what it shows, then edit it freely on its own. */
+export function forkCropMaskToCustom(node) {
+  const def = _cropMaskDefById(node?.getAttr?.('cropMaskId'));
+  if (!def) { console.warn('[mask] this node is not using a global mask'); return false; }
+  return setCropMask(node, { x: def.x, y: def.y, w: def.w, h: def.h }, `Fork "${def.name}" into a private mask`);
+}
+
+/** Re-draw every node on the CURRENT step bound to `id` (other steps pick
+ *  the change up at their next load — masks resolve at draw time). */
+function _redrawCropMaskUsers(id) {
+  for (const n of _layer?.getChildren() || []) {
+    if (n.getAttr?.('cropMaskId') === id) n.clearCache?.();
+  }
+  _layer?.batchDraw();
+}
+
+/** Commit new geometry for a global mask — project-wide, so its own undo
+ *  entry rather than riding along with whatever the user did last. */
+export function updateCropMaskDef(defId, patch, label = null) {
+  const def = _cropMaskDefById(defId);
+  if (!def) return false;
+  const before = { x: def.x, y: def.y, w: def.w, h: def.h, name: def.name };
+  const after  = { ...before, ...patch };
+  const write  = (vals) => {
+    const live = _cropMaskDefById(defId);
+    if (!live) return;
+    Object.assign(live, vals);
+    _saveCropMaskDefs([..._cropMaskDefs()]);
+    _redrawCropMaskUsers(defId);
+  };
+  write(after);
+  undoManager.push(label || `Edit mask "${def.name}"`, () => write(before), () => write(after));
+  return true;
+}
+
+/** Delete a global mask. Every node bound to it goes back to UNMASKED at its
+ *  next draw (the resolver treats a dangling id as "no mask"); the ids are
+ *  left alone so a single undo restores both the definition and its users. */
+export function deleteCropMaskDef(defId) {
+  const def = _cropMaskDefById(defId);
+  if (!def) return false;
+  const apply  = () => { _saveCropMaskDefs(_cropMaskDefs().filter(d => d.id !== defId)); _redrawCropMaskUsers(defId); };
+  const revert = () => { if (!_cropMaskDefById(defId)) _saveCropMaskDefs([..._cropMaskDefs(), def]); _redrawCropMaskUsers(defId); };
+  apply();
+  undoManager.push(`Delete mask "${def.name}"`, revert, apply);
   return true;
 }
 
@@ -912,8 +1054,29 @@ export function setCropMask(node, mask, label = null) {
 if (typeof window !== 'undefined') {
   const sel = (node) => node || _transformer?.nodes?.()?.[0] || null;
   window.sbsMask = {
-    get:   (node) => sel(node)?.getAttr?.('cropMask') || null,
+    get:   (node) => {
+      const n = sel(node);
+      if (!n) return null;
+      const id = n.getAttr?.('cropMaskId');
+      return id ? { global: true, id, def: _cropMaskDefById(id) } : (n.getAttr?.('cropMask') || null);
+    },
     set:   (m, node) => setCropMask(sel(node), m),
+    // global library
+    promote: (name, node) => promoteCropMaskToGlobal(sel(node), name),
+    fork:    (node)        => forkCropMaskToCustom(sel(node)),
+    use:     (id, node)    => useCropMask(sel(node), id),
+    defs:    ()            => _cropMaskDefs().map(d => ({ ...d })),
+    edit:    (id, patch)   => updateCropMaskDef(id, patch),
+    remove:  (id)          => deleteCropMaskDef(id),
+    // Project-wide on purpose: counting only the live layer would report 0
+    // for a mask used on every OTHER step and invite a destructive delete.
+    // Substring test rather than JSON.parse — cheaper, and it does not
+    // un-share the interned overlay strings.
+    users:   (id) => {
+      const steps = state.get('steps') || [];
+      const hits = steps.filter(s => typeof s?.overlay === 'string' && s.overlay.includes(`"${id}"`));
+      return { steps: hits.length, of: steps.length, names: hits.slice(0, 12).map(s => s.name || s.id) };
+    },
     setPx: ({ x, y, w, h }, node) => {
       const c = getCanonicalSize();
       return setCropMask(sel(node), { x: x / c.width, y: y / c.height, w: w / c.width, h: h / c.height });
@@ -926,8 +1089,10 @@ if (typeof window !== 'undefined') {
       const ix = b.width * inset, iy = b.height * inset;
       return setCropMask(n, { x: (b.x + ix) / c.width, y: (b.y + iy) / c.height, w: (b.width - 2 * ix) / c.width, h: (b.height - 2 * iy) / c.height });
     },
-    clear: (node) => setCropMask(sel(node), null),
-    list:  () => (_layer?.getChildren() || []).filter(n => n.getAttr?.('cropMask')).map(n => ({ name: n.name(), mask: n.getAttr('cropMask') })),
+    clear: (node) => { const n = sel(node); return n?.getAttr?.('cropMaskId') ? useCropMask(n, null) : setCropMask(n, null); },
+    list:  () => (_layer?.getChildren() || [])
+      .filter(n => n.getAttr?.('cropMask') || n.getAttr?.('cropMaskId'))
+      .map(n => ({ name: n.name(), globalId: n.getAttr('cropMaskId') || null, mask: _resolveMask(n) })),
   };
 }
 
@@ -3010,8 +3175,10 @@ function _serializeNode(node) {
     // something to draw before the file loads (or if it's gone missing).
     'isVideo', 'videoId', 'videoPath', 'videoRel', 'videoDurationMs',
     'trimInMs', 'trimOutMs', 'muted', 'volume', 'posterSrc', 'posterAtMs',
-    'cropMask',   // 🎭 V0.3.2.217 — canvas-fixed crop rect; without it a
-                  // copied / duplicated / undo-restored image came back unmasked
+    'cropMask',     // 🎭 V0.3.2.217 — canvas-fixed crop rect (PRIVATE mask);
+                    // without it a copied / duplicated / undo-restored image
+                    // came back unmasked
+    'cropMaskId',   // 🎭 V0.3.2.218 — binding to a GLOBAL mask definition
   ]) {
     if (a[k] != null) out.attrs[k] = Array.isArray(a[k]) ? a[k].slice()
                                     : (a[k] && typeof a[k] === 'object' ? { ...a[k] } : a[k]);
@@ -4118,8 +4285,8 @@ function _showOverlayContextMenu(node, x, y) {
               _applyConstShapeToNode(node, constShapeDef); _layer.batchDraw(); _scheduleSave();
               const id = constShapeDef.id;
               undoManager.push(`Snap back to "${constShapeDef.name}"`,
-                () => { if (!node.isDestroyed?.()) { node.x(was.x); node.y(was.y); _layer?.batchDraw(); _scheduleSave(); } },
-                () => { const d = _constShapeDefs().find(x => x.id === id); if (d && !node.isDestroyed?.()) { _applyConstShapeToNode(node, d); _layer?.batchDraw(); _scheduleSave(); } });
+                () => { if (_isLiveNode(node)) { node.x(was.x); node.y(was.y); _layer?.batchDraw(); _scheduleSave(); } },
+                () => { const d = _constShapeDefs().find(x => x.id === id); if (d && _isLiveNode(node)) { _applyConstShapeToNode(node, d); _layer?.batchDraw(); _scheduleSave(); } });
             } },
           { separator: true },
           { label: `${constShapeDef.anchor !== 'tr' ? '✓ ' : ''}Anchor: ⌜ top-left`,
@@ -4186,11 +4353,11 @@ function _showOverlayContextMenu(node, x, y) {
              undoManager.push(`Create pinned position "${def.name}"`,
                () => {
                  _saveConstShapeDefs(_constShapeDefs().filter(x => x.id !== def.id));
-                 if (!node.isDestroyed?.()) { node.setAttr('constShapeId', null); _scheduleSave(); }
+                 if (_isLiveNode(node)) { node.setAttr('constShapeId', null); _scheduleSave(); }
                },
                () => {
                  if (!_constShapeDefs().some(x => x.id === def.id)) _saveConstShapeDefs([..._constShapeDefs(), def]);
-                 if (!node.isDestroyed?.()) { node.setAttr('constShapeId', def.id); _applyConstShapeToNode(node, def); _layer?.batchDraw(); _scheduleSave(); }
+                 if (_isLiveNode(node)) { node.setAttr('constShapeId', def.id); _applyConstShapeToNode(node, def); _layer?.batchDraw(); _scheduleSave(); }
                });
              setStatus(`Pinned position "${def.name}" created — pin any shape, image or clip to it from its right-click menu.`, 'success', 6000);
            } },

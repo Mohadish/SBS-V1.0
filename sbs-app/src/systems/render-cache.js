@@ -34,7 +34,14 @@ import { steps } from './steps.js';
 import { resolveAnimationString } from './animation.js';   // V0.3.2.73 — preset content must reach the segment key
 
 /** Bump when renderer/exporter changes make previously-cached pixels stale. */
-export const RENDER_CACHE_EPOCH = 5;   // 2: canonical hashing (V0.3.2.22); 3: scoped defs (.32); 4: pruned object roster (.33); 5: overlay defs — shape AND text — reach the span key (.156/.158); anything cached before that was keyed without them
+export const RENDER_CACHE_EPOCH = 5;   // 2: canonical hashing (V0.3.2.22); 3: scoped defs (.32); 4: pruned object roster (.33); 5: overlay defs — shape AND text — reach the span key (.156/.158)
+// 🎭 Crop masks (V0.3.2.218) deliberately did NOT bump this. A PRIVATE mask
+// is a node attr, so it already re-keys through _stepKeyView's overlay parse;
+// a GLOBAL one re-keys through _overlayDefs below. A bump would have been
+// belt-and-braces at a real cost: purgeOrphans deletes epoch mismatches
+// UNCONDITIONALLY (the hidden-step guard covers only 'superseded'), so every
+// existing segment in every project would be destroyed on the next assembly
+// — including the ones "import step as rendered video" reads.
 
 const _groupKeyOf = (s) => s.groupHead ? s.id : (s.groupId || null);
 
@@ -233,6 +240,11 @@ export async function computeSegmentPlan() {
     // constTextBoxes owns pinned text position + style binding, same story.
     styleTemplates: (state.get('styleTemplates') || []).slice().sort(_byId),
     constTextBoxes: (state.get('constTextBoxes') || []).slice().sort(_byId),
+    // 🎭 V0.3.2.218 — global crop masks resolve at DRAW time from a node's
+    // cropMaskId, so editing one leaves every stored overlay string
+    // byte-identical. Without this the cache would hand back segments drawn
+    // through the old hole — the .156 stale-definition bug, but total.
+    cropMasks:      (state.get('cropMasks')      || []).slice().sort(_byId),
   };
 
   const _defScope = {
