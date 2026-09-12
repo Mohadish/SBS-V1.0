@@ -1049,6 +1049,88 @@ function _cancelMaskEdit() {
 /** Public: true while the handle rect is up (callers can avoid clashing). */
 export function isMaskEditing() { return !!_maskEdit; }
 
+// ── 🗂 Library management, shared by masks and pinned positions (V0.3.2.221) ─
+// Both are "project-level definition + per-node id attr", so one set of
+// helpers serves the management panel for both. Usage is a RAW STRING SCAN of
+// every step's overlay — no JSON.parse, which would flatten the interned
+// overlay ropes (see core/intern.js). Snapshot, not live: re-run to refresh.
+
+/** Map defId → { count, stepIds } for one id-bearing attr across all steps. */
+export function countAttrUsage(attrName, ids) {
+  flushSave();   // the current step's edits must be in its overlay string first
+  const out = new Map();
+  for (const id of ids) out.set(id, { count: 0, stepIds: [] });
+  for (const s of (state.get('steps') || [])) {
+    const str = typeof s.overlay === 'string' ? s.overlay : '';
+    if (!str) continue;
+    for (const [id, u] of out) {
+      const needle = `"${attrName}":"${id}"`;
+      let i = str.indexOf(needle), n = 0;
+      while (i !== -1) { n++; i = str.indexOf(needle, i + needle.length); }
+      if (n) { u.count += n; u.stepIds.push(s.id); }
+    }
+  }
+  return out;
+}
+
+export function listCropMaskDefs()  { return _cropMaskDefs().map(d => ({ ...d })); }
+export function listPinnedPosDefs() { return _constShapeDefs().map(d => ({ ...d })); }
+
+export function renameCropMaskDef(id, name) {
+  const n = String(name || '').trim();
+  if (!n) return false;
+  return updateCropMaskDef(id, { name: n }, `Rename mask to "${n}"`);
+}
+
+/** Rename a pinned position. Position-only defs, so this is name-only. */
+export function renamePinnedPosDef(id, name) {
+  const n = String(name || '').trim();
+  const def = _constShapeDefs().find(d => d.id === id);
+  if (!n || !def) return false;
+  const before = def.name;
+  const write = (v) => {
+    const live = _constShapeDefs().find(d => d.id === id);
+    if (!live) return;
+    live.name = v;
+    _saveConstShapeDefs([..._constShapeDefs()]);
+  };
+  write(n);
+  undoManager.push(`Rename pinned position to "${n}"`, () => write(before), () => write(n));
+  return true;
+}
+
+/** Delete a pinned position. Items still carrying the id keep their current
+ *  place and offer "Pin definition missing — unpin" in their right-click
+ *  menu, exactly like a mask whose definition is gone. */
+export function deletePinnedPosDef(id) {
+  const def = _constShapeDefs().find(d => d.id === id);
+  if (!def) return false;
+  const apply  = () => _saveConstShapeDefs(_constShapeDefs().filter(d => d.id !== id));
+  const revert = () => { if (!_constShapeDefs().some(d => d.id === id)) _saveConstShapeDefs([..._constShapeDefs(), def]); };
+  apply();
+  undoManager.push(`Delete pinned position "${def.name}"`, revert, apply);
+  return true;
+}
+
+/** Select an item on the CURRENT step that carries `attrName === defId`.
+ *  Returns false when this step has none. */
+export function selectByAttr(attrName, defId) {
+  if (!_stage || !_layer || !defId) return false;
+  const node = (_layer.getChildren() || []).find(n => n.getAttr?.(attrName) === defId);
+  if (!node) return false;
+  if (!_editing) setEditingMode(true);
+  _setSelection(node);
+  return true;
+}
+
+/** Open the mask editor on whichever image on this step uses `defId`. */
+export function editCropMaskById(defId) {
+  const node = (_layer?.getChildren() || []).find(n => n.getAttr?.('cropMaskId') === defId);
+  if (!node) { setStatus('No image on this step uses that mask — go to a step that does.', 'warn', 5000); return false; }
+  if (!_editing) setEditingMode(true);
+  return beginMaskEdit(node, { defId });
+}
+
 function _maskedDraw(node, ctx, base, isHit = false) {
   const m = _resolveMask(node);
   if (!m || m.kind !== 'rect' || !(m.w > 0) || !(m.h > 0)) { base.call(node, ctx); return; }
@@ -4638,6 +4720,11 @@ function _showOverlayContextMenu(node, x, y) {
                  })) }]
             : []),
           { separator: true },
+          { label: '🗂 Manage masks…',
+            action: async () => {
+              const { openMaskPinPanel } = await import('../ui/mask-pin-panel.js');
+              openMaskPinPanel('masks');
+            } },
           { label: '✂ Remove mask (show the whole image)',
             action: () => { if (boundId) useCropMask(node, null); else setCropMask(node, null); } },
         ] },

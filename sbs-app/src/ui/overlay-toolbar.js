@@ -236,7 +236,16 @@ export function initOverlayToolbar() {
     b.style.display = 'none';
     _tools.appendChild(b);
   }
-  _tools.append(btnText, btnConst, _sep(), btnShape, btnAssets, _sep(), btnDel, btnHdrLock);
+  // 🗂 V0.3.2.221 — the library manager for the two overlay definition sets
+  // that never had one: crop masks and pinned positions. Loaded on demand so
+  // it costs nothing until opened.
+  const btnLibs = _btn('🗂', 'Manage crop masks and pinned positions (rename, find users, delete)');
+  btnLibs.addEventListener('click', async () => {
+    const { openMaskPinPanel } = await import('./mask-pin-panel.js');
+    openMaskPinPanel('masks');
+  });
+
+  _tools.append(btnText, btnConst, _sep(), btnShape, btnAssets, _sep(), btnLibs, btnDel, btnHdrLock);
 
   // The editing toggle is rightmost — always visible, single source of
   // truth for entering/leaving overlay editing. The old "Done" button
