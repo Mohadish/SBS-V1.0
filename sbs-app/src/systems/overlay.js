@@ -787,6 +787,150 @@ function _updateConstShapeDef(def, patch, label) {
   undoManager.push(label, () => write(before), () => write(after));
 }
 
+/**
+ * 🖼 V0.3.2.217 — the ONE gate for "plain image or video clip". Four other
+ * things are Konva.Image in this layer and must stay out: text boxes
+ * (textHtml), the table of contents (isToc + textHtml), interface images
+ * (interfaces.isInterfaceNode — addName makes name() 'userImage interface',
+ * so strict name equality excludes them only by accident), and interface
+ * zoom crops (isZoom / attachedTo, which own a Konva crop() of their own).
+ * Pins and crop masks both build on this; keep them on the same predicate.
+ */
+function _isPlainImageOrVideo(node) {
+  if (!node || node.getClassName?.() !== 'Image') return false;
+  if (node.getAttr('textHtml') || node.getAttr('isToc')) return false;
+  // isZoom alone identifies zoom crops. attachedTo is NOT a zoom marker: the
+  // generic dragend bond sets it on ANY node dropped over an interface, plain
+  // images included — testing it here locked such images out of their own
+  // mask / pin menus (review find, V0.3.2.217).
+  if (node.getAttr('isZoom')) return false;
+  if (interfaces.isInterfaceNode(node)) return false;
+  return !!(node.getAttr('src') || node.getAttr('isVideo'));
+}
+
+/** Pin / unpin one node with undo. A wrong pin snaps the node across the
+ *  canvas, so Ctrl+Z has to bring it back (the earlier setAttr-only path
+ *  pushed nothing). `beforePos` is where the node sat BEFORE the forward
+ *  snap; the undo side restores it when it has no definition to snap to.
+ *  Holds the node by reference: a node destroyed by a step switch makes
+ *  the entry a no-op rather than a crash. */
+function _pushPinUndo(node, label, beforeId, afterId, beforePos = null) {
+  const apply = (id, pos) => {
+    if (!node || node.isDestroyed?.()) return;
+    node.setAttr('constShapeId', id);
+    const def = id ? _constShapeDefs().find(d => d.id === id) : null;
+    if (def) _applyConstShapeToNode(node, def);
+    else if (pos) { node.x(pos.x); node.y(pos.y); }
+    _layer?.batchDraw();
+    _scheduleSave();
+  };
+  undoManager.push(label, () => apply(beforeId, beforePos), () => apply(afterId, null));
+}
+
+// ─── 🎭 Crop masks — draw-time clip (P0 spike, V0.3.2.217) ─────────────────
+// A mask lives on the node as `cropMask` = { kind:'rect', x, y, w, h } in
+// NORMALIZED canonical units (0..1 of canonical width / height). It is FIXED
+// IN CANVAS SPACE: dragging or scaling the node changes what shows through
+// the hole; the hole itself never moves. Nothing here writes the node's
+// geometry into the mask or the mask into the node's geometry — the two are
+// independent by design, and must stay that way.
+//
+// Mechanism: the node's sceneFunc AND hitFunc are wrapped so that, when a
+// mask is present, a clip path is applied before Konva's own Image routine
+// runs (Konva's Image._sceneFunc already clips this way for cornerRadius, so
+// the pattern is native). Unmasked nodes fall straight through — the wrapper
+// is inert until a mask exists, which is why it is installed on EVERY image
+// in _attachNode and never needs re-installing when a mask is assigned.
+// Function-valued attrs are dropped by Konva's toObject (never persisted)
+// and copied by reference by clone() (the sequence-crossfade clone keeps
+// its mask). The clip path is rebuilt on EVERY draw from the node's current
+// absolute transform: the live stage carries the safe-frame scale/offset
+// that rasterizeOverlay zeroes for export, so a cached path would be right
+// on screen and wrong in the file. Hit-testing is clipped too — only the
+// visible part of a masked image is clickable (user spec).
+function _maskedDraw(node, ctx, base) {
+  const m = node.getAttr('cropMask');
+  if (!m || m.kind !== 'rect' || !(m.w > 0) || !(m.h > 0)) { base.call(node, ctx); return; }
+  const c = getCanonicalSize();
+  const layer = node.getLayer();
+  // layer (= canonical) space → node-local space; copy() first — Konva
+  // caches the transform object and invert() mutates in place.
+  const t = node.getAbsoluteTransform().copy().invert();
+  if (layer) t.multiply(layer.getAbsoluteTransform());
+  const px = m.x * c.width, py = m.y * c.height, pw = m.w * c.width, ph = m.h * c.height;
+  const p0 = t.point({ x: px,      y: py });
+  const p1 = t.point({ x: px + pw, y: py });
+  const p2 = t.point({ x: px + pw, y: py + ph });
+  const p3 = t.point({ x: px,      y: py + ph });
+  ctx.save();
+  ctx.beginPath();
+  ctx.moveTo(p0.x, p0.y);
+  ctx.lineTo(p1.x, p1.y);
+  ctx.lineTo(p2.x, p2.y);
+  ctx.lineTo(p3.x, p3.y);
+  ctx.closePath();
+  ctx.clip();
+  try { base.call(node, ctx); } finally { ctx.restore(); }
+}
+
+function _installMaskDraw(node) {
+  if (!node || node.getClassName?.() !== 'Image' || node.__maskWrapped) return;
+  node.__maskWrapped = true;   // own property, not an attr — never serialises
+  const baseScene = Konva.Image.prototype._sceneFunc;
+  const baseHit   = Konva.Image.prototype._hitFunc;
+  node.sceneFunc(function (ctx) { _maskedDraw(this, ctx, baseScene); });
+  node.hitFunc(function (ctx)   { _maskedDraw(this, ctx, baseHit); });
+}
+
+/**
+ * Set (or clear with null) a node's crop mask, with undo. `mask` is
+ * { x, y, w, h } normalized to the canonical frame; kind defaults to 'rect'.
+ * Exported for the upcoming right-click UI; the console tool below is the
+ * P0 driver.
+ */
+export function setCropMask(node, mask, label = null) {
+  if (!_isPlainImageOrVideo(node)) { console.warn('[mask] target must be a plain image or video clip'); return false; }
+  const before = node.getAttr('cropMask') ? { ...node.getAttr('cropMask') } : null;
+  const after  = mask ? { kind: 'rect', ...mask } : null;
+  const write = (v) => {
+    if (node.isDestroyed?.()) return;
+    node.setAttr('cropMask', v);
+    _installMaskDraw(node);
+    node.getLayer()?.batchDraw();
+    _scheduleSave();
+  };
+  write(after);
+  undoManager.push(label || (after ? 'Set crop mask' : 'Clear crop mask'), () => write(before), () => write(after));
+  return true;
+}
+
+// Console driver for the P0 spike (house habit: sbsIface / sbsMirror / sbsDiag).
+//   sbsMask.set({x:.3,y:.2,w:.4,h:.5})   normalized rect on the selected image
+//   sbsMask.setPx({x,y,w,h})             same, in canonical pixels
+//   sbsMask.fromBox(0.2)                 the selected image's own box, inset 20%
+//   sbsMask.clear() / sbsMask.get() / sbsMask.list()
+if (typeof window !== 'undefined') {
+  const sel = (node) => node || _transformer?.nodes?.()?.[0] || null;
+  window.sbsMask = {
+    get:   (node) => sel(node)?.getAttr?.('cropMask') || null,
+    set:   (m, node) => setCropMask(sel(node), m),
+    setPx: ({ x, y, w, h }, node) => {
+      const c = getCanonicalSize();
+      return setCropMask(sel(node), { x: x / c.width, y: y / c.height, w: w / c.width, h: h / c.height });
+    },
+    fromBox: (inset = 0.2, node) => {
+      const n = sel(node);
+      if (!n) return false;
+      const b = n.getClientRect({ relativeTo: _layer, skipStroke: true });
+      const c = getCanonicalSize();
+      const ix = b.width * inset, iy = b.height * inset;
+      return setCropMask(n, { x: (b.x + ix) / c.width, y: (b.y + iy) / c.height, w: (b.width - 2 * ix) / c.width, h: (b.height - 2 * iy) / c.height });
+    },
+    clear: (node) => setCropMask(sel(node), null),
+    list:  () => (_layer?.getChildren() || []).filter(n => n.getAttr?.('cropMask')).map(n => ({ name: n.name(), mask: n.getAttr('cropMask') })),
+  };
+}
+
 /** Write a style change through to the definition + every sibling instance
  *  on the CURRENT step (other steps re-sync at their next load). */
 function _propagateConstStyle(node, styleId) {
@@ -2534,6 +2678,7 @@ function _summariseShapeAttrs(nodes) {
 }
 
 function _attachNode(node) {
+  _installMaskDraw(node);   // 🎭 inert until the node carries a cropMask
   // Single click selects (or toggles when held with Shift/Ctrl/Meta for
   // multi-select).
   //
@@ -2865,6 +3010,8 @@ function _serializeNode(node) {
     // something to draw before the file loads (or if it's gone missing).
     'isVideo', 'videoId', 'videoPath', 'videoRel', 'videoDurationMs',
     'trimInMs', 'trimOutMs', 'muted', 'volume', 'posterSrc', 'posterAtMs',
+    'cropMask',   // 🎭 V0.3.2.217 — canvas-fixed crop rect; without it a
+                  // copied / duplicated / undo-restored image came back unmasked
   ]) {
     if (a[k] != null) out.attrs[k] = Array.isArray(a[k]) ? a[k].slice()
                                     : (a[k] && typeof a[k] === 'object' ? { ...a[k] } : a[k]);
@@ -3947,7 +4094,14 @@ function _showOverlayContextMenu(node, x, y) {
 
   // 📌 Constant SHAPE positions (V0.3.2.143) — mirrors the text block
   // above. Position only: no style, and size stays per-instance.
-  const isShape       = node.name?.() === 'userShape';
+  // 🖼 V0.3.2.217 — plain images and video clips pin the same way: the
+  // apply path is bbox-based and the load-time re-snap keys on the attr
+  // alone, so widening the gate is the whole change (3D-anchored arrows,
+  // interfaces, zoom crops and text stay out via _isPlainImageOrVideo).
+  // Creation gates on the predicate; MANAGEMENT gates on the attr itself, so
+  // a pinned item never loses its Unpin entry because some later runtime
+  // state (an interface bond, say) changed what the predicate says.
+  const isShape       = node.name?.() === 'userShape' || _isPlainImageOrVideo(node) || !!node.getAttr('constShapeId');
   const constShapeDef = isShape ? _constShapeDefOf(node) : null;
   const constShapeItems = !isShape ? [] : (constShapeDef
     ? [{ label: `📌 Pinned "${constShapeDef.name}"`, submenu: [
@@ -3959,7 +4113,14 @@ function _showOverlayContextMenu(node, x, y) {
               setStatus(`"${constShapeDef.name}" repositioned — every step follows.`, 'success', 4000);
             } },
           { label: '↺ Snap back to pinned position',
-            action: () => { _applyConstShapeToNode(node, constShapeDef); _layer.batchDraw(); _scheduleSave(); } },
+            action: () => {
+              const was = { x: node.x(), y: node.y() };
+              _applyConstShapeToNode(node, constShapeDef); _layer.batchDraw(); _scheduleSave();
+              const id = constShapeDef.id;
+              undoManager.push(`Snap back to "${constShapeDef.name}"`,
+                () => { if (!node.isDestroyed?.()) { node.x(was.x); node.y(was.y); _layer?.batchDraw(); _scheduleSave(); } },
+                () => { const d = _constShapeDefs().find(x => x.id === id); if (d && !node.isDestroyed?.()) { _applyConstShapeToNode(node, d); _layer?.batchDraw(); _scheduleSave(); } });
+            } },
           { separator: true },
           { label: `${constShapeDef.anchor !== 'tr' ? '✓ ' : ''}Anchor: ⌜ top-left`,
             action: () => {
@@ -3974,13 +4135,22 @@ function _showOverlayContextMenu(node, x, y) {
               _updateConstShapeDef(constShapeDef, { anchor: 'tr', x: p.x, y: p.y }, 'Anchor pinned shape right');
             } },
           { separator: true },
-          { label: '✂ Unpin (this shape only)',
-            action: () => { node.setAttr('constShapeId', null); _scheduleSave(); setStatus('Unpinned — now a normal shape.', 'info', 3000); } },
+          { label: '✂ Unpin (this item only)',
+            action: () => {
+              const prev = node.getAttr('constShapeId');
+              node.setAttr('constShapeId', null); _scheduleSave();
+              _pushPinUndo(node, `Unpin from "${constShapeDef.name}"`, prev, null);
+              setStatus('Unpinned — now a free item.', 'info', 3000);
+            } },
         ] },
         { separator: true }]
     : node.getAttr('constShapeId')
       ? [{ label: '📌 Pin definition missing — unpin',
-           action: () => { node.setAttr('constShapeId', null); _scheduleSave(); } },
+           action: () => {
+             const prev = node.getAttr('constShapeId');
+             node.setAttr('constShapeId', null); _scheduleSave();
+             _pushPinUndo(node, 'Unpin (definition missing)', prev, null);
+           } },
          { separator: true }]
       : [
          ...(_constShapeDefs().length ? [{
@@ -3988,10 +4158,13 @@ function _showOverlayContextMenu(node, x, y) {
            submenu: _constShapeDefs().map(d => ({
              label: `📌 ${d.name}`,
              action: () => {
+               const prev = node.getAttr('constShapeId') || null;
+               const was  = { x: node.x(), y: node.y() };   // undo brings it back HERE
                node.setAttr('constShapeId', d.id);
                _applyConstShapeToNode(node, d);
                _layer.batchDraw();
                _scheduleSave();
+               _pushPinUndo(node, `Pin to "${d.name}"`, prev, d.id, was);
                setStatus(`Pinned to "${d.name}" — snapped to its position; size kept.`, 'success', 4500);
              },
            })),
@@ -4008,7 +4181,18 @@ function _showOverlayContextMenu(node, x, y) {
              _saveConstShapeDefs([..._constShapeDefs(), def]);
              node.setAttr('constShapeId', def.id);
              _scheduleSave();
-             setStatus(`Pinned position "${def.name}" created — pin any shape to it from its right-click menu.`, 'success', 6000);
+             // Undo removes the definition too — a half-undone "create" that
+             // leaves an orphan pin in the list is worse than none.
+             undoManager.push(`Create pinned position "${def.name}"`,
+               () => {
+                 _saveConstShapeDefs(_constShapeDefs().filter(x => x.id !== def.id));
+                 if (!node.isDestroyed?.()) { node.setAttr('constShapeId', null); _scheduleSave(); }
+               },
+               () => {
+                 if (!_constShapeDefs().some(x => x.id === def.id)) _saveConstShapeDefs([..._constShapeDefs(), def]);
+                 if (!node.isDestroyed?.()) { node.setAttr('constShapeId', def.id); _applyConstShapeToNode(node, def); _layer?.batchDraw(); _scheduleSave(); }
+               });
+             setStatus(`Pinned position "${def.name}" created — pin any shape, image or clip to it from its right-click menu.`, 'success', 6000);
            } },
          { separator: true }]);
 
