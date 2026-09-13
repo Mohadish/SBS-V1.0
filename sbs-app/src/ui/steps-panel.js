@@ -3739,10 +3739,7 @@ function _buildTransitionRow(step) {
       <select class="tran-anim-preset" style="flex:1">${presetOptions}</select>
       ${isPrivate ? `<button class="btn tran-anim-edit" title="Edit this step's private animation" style="flex-shrink:0;padding:2px 9px">✎</button>` : ''}
     </div>
-    <div class="grid2">
-      <select class="tran-cam-ease">${easingOptions(t.cameraEasing)}</select>
-      <select class="tran-obj-ease">${easingOptions(t.objectEasing)}</select>
-    </div>
+    <select class="tran-cam-ease" title="How this step is animated INTO — camera and objects together. Smooth eases out of the previous step and into this one; Linear holds a constant speed; Instant snaps with no animation.">${easingOptions(t.cameraEasing)}</select>
     <!-- "Fade visibility changes" checkbox REMOVED (V0.3.2.193): the
          transition.visibilityFade flag was written by the UI and stored in
          the schema but NEVER read by the transition engine — visibility
@@ -3809,11 +3806,13 @@ function _buildTransitionRow(step) {
     e.stopPropagation();
     openPrivateAnimationEditor(stepId);
   });
+  // ONE easing per step (V0.3.2.237). Two dropdowns — one for the camera,
+  // one for objects — read as a single setting that behaved unpredictably:
+  // whichever of the two actually moved in a given step looked like "the"
+  // control, and a step whose values disagreed animated at two speeds.
+  // Both fields are still written so older builds keep loading the file.
   wrap.querySelector('.tran-cam-ease').addEventListener('change', e => {
-    actions.updateTransition(stepId, { cameraEasing: e.target.value });
-  });
-  wrap.querySelector('.tran-obj-ease').addEventListener('change', e => {
-    actions.updateTransition(stepId, { objectEasing: e.target.value });
+    actions.updateTransition(stepId, { cameraEasing: e.target.value, objectEasing: e.target.value });
   });
   wrap.querySelector('.tran-reparent').addEventListener('change', e => {
     actions.updateTransition(stepId, { reparentArc: e.target.checked });

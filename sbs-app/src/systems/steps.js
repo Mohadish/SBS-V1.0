@@ -686,8 +686,14 @@ class StepManager {
 
     const globalCam = state.get('cameraAnimDurationMs') ?? 1500;
     const globalObj = state.get('objectAnimDurationMs') ?? 1500;
-    const easing    = transition.cameraEasing ?? 'smooth';
-    const objEasing = transition.objectEasing ?? 'smooth';
+    // ONE easing governs the whole move into this step — camera and objects
+    // alike (V0.3.2.237). They used to be separate fields with separate
+    // dropdowns, so a step could ease its objects while its camera ran
+    // linear, which read as the camera being out of sync with everything
+    // else. cameraEasing is the surviving field; objectEasing is still
+    // written by the UI for older builds but no longer consulted here.
+    const easing    = transition.cameraEasing ?? transition.objectEasing ?? 'smooth';
+    const objEasing = easing;
     const easeFn    = EASING[objEasing] ?? easeSmooth;
     let { nodeById } = state.pick('nodeById');
 
