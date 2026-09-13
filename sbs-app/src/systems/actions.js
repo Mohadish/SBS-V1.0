@@ -20,6 +20,10 @@ import { selectionActs }        from './select-act.js';
 import { materials }            from '../systems/materials.js';
 import steps                    from '../systems/steps.js';
 import { notePrimitiveDef }     from '../systems/steps.js';   // 🔩 V0.3.2.67: param edits refresh the definition registry
+import {
+  planFolderRemoval, verifyPlan, applyPlan, revertPlan,
+  reapplyActiveStep, captureLiveWorld, compareLiveWorld,
+} from './folder-flatten.js';   // 📦 V0.3.2.244: remove redundant folders (backlog #16 phase 2a)
 import sceneCore                from '../core/scene.js';
 import { createAnimationPreset, createCameraView, createNode, createNoteNode, createNoteTemplate, createShapeTemplate, createShapeTemplateGroup, createFlatShapeNode, createPrimitiveNode, generateId } from '../core/schema.js';
 import * as editSession         from './edit-session.js';   // P7-A: gate Ctrl-Z while in overlay edit
@@ -13626,5 +13630,76 @@ export function resolveRaySelectEntities(clientX, clientY) {
     entities.push({ key, targetId, name, meshIds: [...clickSet] });
   }
   return entities;
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+//  📦 REMOVE REDUNDANT FOLDERS (V0.3.2.244, backlog #16 phase 2a)
+// ═══════════════════════════════════════════════════════════════════════════
+
+/**
+ * Take the given FREE folders out of the project — live tree and every step —
+ * putting each one's contents where it stood. One undo entry.
+ *
+ * Only folders the scanner still rates free are touched (it re-scans). Two
+ * independent checks guard the change, and the first runs before anything
+ * is committed:
+ *   1. DATA — every object's world pose and visibility, computed from each
+ *      affected step's data before and after. Any difference → stop, nothing
+ *      was changed.
+ *   2. LIVE — the scene of the step being viewed, measured after re-applying
+ *      its OLD data (so pre-existing drift of the Rebuild Cascade kind can't
+ *      read as "the cleanup moved it") and again after the change. Any
+ *      difference → revert on the spot.
+ *
+ * The save-first prompt is the caller's job (ui/folder-flatten-panel.js).
+ *
+ * @param {string[]} ids
+ * @param {{onProgress?: (done:number, total:number) => void}} [opts]
+ * @returns {Promise<object>} { ok, reason?, removed?, steps?, check?, dropped? }
+ */
+export async function removeRedundantFolders(ids, opts = {}) {
+  if (state.get('_exporting')) return { ok: false, reason: 'exporting' };
+  if (steps._animRunning)      return { ok: false, reason: 'animating' };
+
+  steps.flushSync();   // the active step's snapshot must match the live scene first
+
+  const plan = planFolderRemoval(ids);
+  if (!plan.removed.size) return { ok: false, reason: 'nothing', dropped: plan.dropped };
+
+  const check = await verifyPlan(plan, opts.onProgress);
+  if (!check.ok) return { ok: false, reason: 'verify', check };
+
+  // Guard against the project changing under the async check.
+  if (state.get('_exporting') || steps._animRunning) return { ok: false, reason: 'busy' };
+
+  reapplyActiveStep();
+  const before = captureLiveWorld(plan.removed);
+  applyPlan(plan);
+  const after  = captureLiveWorld(plan.removed);
+  const bad    = compareLiveWorld(before, after);
+  if (bad) {
+    revertPlan(plan);
+    console.warn('[flatten] live check failed — reverted:', bad);
+    return { ok: false, reason: 'live', check: { ok: false, stepName: 'the step you are viewing', nodeName: bad.name, why: bad.why } };
+  }
+
+  // A removed folder may be the current selection (the scan panel selects on
+  // click). Clear it BEFORE pushing the removal, so Ctrl+Z reaches the removal
+  // first rather than a selection slot.
+  const sel   = state.get('selectedId');
+  const multi = state.get('multiSelectedIds');
+  if (plan.removed.has(sel) || [...(multi || [])].some(id => plan.removed.has(id))) {
+    try { setSelection(null, new Set()); } catch { /* selection is cosmetic here */ }
+  }
+
+  const n = plan.removed.size;
+  undoManager.push(
+    `Remove ${n} redundant folder${n === 1 ? '' : 's'}`,
+    () => revertPlan(plan),
+    () => applyPlan(plan),
+  );
+
+  console.log(`[flatten] removed ${n} folder(s) across ${plan.changes.length} step(s):`, plan.names);
+  return { ok: true, removed: n, steps: plan.changes.length, names: plan.names, dropped: plan.dropped };
 }
 
