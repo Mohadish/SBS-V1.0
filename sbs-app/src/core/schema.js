@@ -27,7 +27,7 @@ export const SCHEMA_VERSIONS = {
   screen:     1,
 };
 
-export const APP_VERSION  = 'V0.3.2.238';
+export const APP_VERSION  = 'V0.3.2.239';
 // Format: YYYY-MM-DD. Bump along with APP_VERSION on every build worth
 // labelling so the File tab shows you're running the expected slice.
 export const APP_RELEASED = '2026-09-03';
@@ -668,8 +668,14 @@ export function createStep(overrides = {}) {
     // Transition settings (how to animate INTO this step)
     transition: {
       durationMs:       1500,       // camera + object animation duration (simultaneous fallback)
-      cameraEasing:     'smooth',   // 'smooth' | 'linear' | 'instant'
+      // ONE easing per step since V0.3.2.237 — cameraEasing is the surviving
+      // field and drives camera + objects alike; objectEasing is still
+      // written so older builds load the file, but is no longer consulted.
+      // 'instantFade' (V0.3.2.239) is motionless: dissolve out, snap, in.
+      cameraEasing:     'smooth',   // 'smooth' | 'linear' | 'instant' | 'instantFade'
       objectEasing:     'smooth',
+      fadeMs:           500,        // instantFade's only timing
+
       visibilityFade:   true,       // fade visibility changes
       animPresetId:     null,       // null = use project default (or simultaneous fallback)
     },

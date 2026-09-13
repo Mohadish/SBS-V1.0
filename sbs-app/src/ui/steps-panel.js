@@ -3729,17 +3729,25 @@ function _buildTransitionRow(step) {
   ].join('');
 
   // Easing dropdowns (no titles)
-  const easingOptions = cur => ['smooth','linear','instant']
-    .map(v => `<option value="${v}" ${(cur ?? 'smooth') === v ? 'selected' : ''}>${v[0].toUpperCase()+v.slice(1)}</option>`)
+  // 🌒 instantFade (V0.3.2.239) — no motion at all: the previous step holds,
+  // dissolves out, the scene snaps, this step dissolves in already final.
+  const _EASE_LABEL = { smooth: 'Smooth', linear: 'Linear', instant: 'Instant', instantFade: 'Instant fade' };
+  const easingOptions = cur => ['smooth','linear','instant','instantFade']
+    .map(v => `<option value="${v}" ${(cur ?? 'smooth') === v ? 'selected' : ''}>${_EASE_LABEL[v]}</option>`)
     .join('');
 
   wrap.innerHTML = `
     <select class="tran-cam-binding" title="Step camera. Free = uses this step's own snapshot. Template = follows a named camera that propagates updates to every step bound to it.">${cameraOptions}</select>
     <div style="display:flex;gap:4px;align-items:center">
-      <select class="tran-anim-preset" style="flex:1">${presetOptions}</select>
+      <select class="tran-anim-preset" style="flex:1" ${t.cameraEasing === 'instantFade' ? 'disabled title="Instant fade has no motion to choreograph — nothing to edit here."' : ''}>${presetOptions}</select>
       ${isPrivate ? `<button class="btn tran-anim-edit" title="Edit this step's private animation" style="flex-shrink:0;padding:2px 9px">✎</button>` : ''}
     </div>
-    <select class="tran-cam-ease" title="How this step is animated INTO — camera and objects together. Smooth eases out of the previous step and into this one; Linear holds a constant speed; Instant snaps with no animation.">${easingOptions(t.cameraEasing)}</select>
+    <div style="display:flex;gap:4px;align-items:center">
+      <select class="tran-cam-ease" style="flex:1" title="How this step is animated INTO — camera and objects together. Smooth eases out of the previous step and into this one; Linear holds a constant speed; Instant snaps with no animation; Instant fade dissolves out, snaps, and dissolves back in.">${easingOptions(t.cameraEasing)}</select>
+      <input type="number" class="tran-fade-ms" min="50" step="50" value="${t.fadeMs ?? 500}"
+             title="Fade duration in milliseconds — the only timing Instant fade has."
+             style="width:58px;${t.cameraEasing === 'instantFade' ? '' : 'display:none'}" />
+    </div>
     <!-- "Fade visibility changes" checkbox REMOVED (V0.3.2.193): the
          transition.visibilityFade flag was written by the UI and stored in
          the schema but NEVER read by the transition engine — visibility
@@ -3812,7 +3820,24 @@ function _buildTransitionRow(step) {
   // control, and a step whose values disagreed animated at two speeds.
   // Both fields are still written so older builds keep loading the file.
   wrap.querySelector('.tran-cam-ease').addEventListener('change', e => {
-    actions.updateTransition(stepId, { cameraEasing: e.target.value, objectEasing: e.target.value });
+    const v = e.target.value;
+    // Show the fade field immediately rather than waiting for a re-render —
+    // picking the mode and not seeing its one setting appear reads as broken.
+    const msEl = wrap.querySelector('.tran-fade-ms');
+    if (msEl) msEl.style.display = v === 'instantFade' ? '' : 'none';
+    // Instant fade has no motion to choreograph, so the preset picker goes
+    // dead rather than pretending to matter.
+    const presetEl = wrap.querySelector('.tran-anim-preset');
+    if (presetEl) {
+      presetEl.disabled = v === 'instantFade';
+      presetEl.title = presetEl.disabled ? 'Instant fade has no motion to choreograph — nothing to edit here.' : '';
+    }
+    actions.updateTransition(stepId, { cameraEasing: v, objectEasing: v });
+  });
+  wrap.querySelector('.tran-fade-ms')?.addEventListener('change', e => {
+    const n = Math.max(50, Math.round(Number(e.target.value) || 500));
+    e.target.value = n;
+    actions.updateTransition(stepId, { fadeMs: n });
   });
   wrap.querySelector('.tran-reparent').addEventListener('change', e => {
     actions.updateTransition(stepId, { reparentArc: e.target.checked });

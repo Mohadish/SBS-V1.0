@@ -151,7 +151,9 @@ class StepManager {
     // camera, so the loop's camera check alone wouldn't notice it.
     this._tickUnsubscribe = sceneCore.addTickHook((nowMs) => {
       this._advanceObjectTransitions(nowMs);
-      if (this._animRunning || (this._objectTransitions && this._objectTransitions.length)) {
+      this._advanceFadeTransition(nowMs);
+      if (this._animRunning || this._fadeTransition
+          || (this._objectTransitions && this._objectTransitions.length)) {
         sceneCore.requestRender?.(150);
       }
     });
@@ -695,6 +697,15 @@ class StepManager {
     const easing    = transition.cameraEasing ?? transition.objectEasing ?? 'smooth';
     const objEasing = easing;
     const easeFn    = EASING[objEasing] ?? easeSmooth;
+
+    // 🌒 INSTANT FADE short-circuits the whole engine (V0.3.2.239). There is
+    // no motion to plan — no object tweens, no camera fly, no reparent-arc
+    // handling — so it returns before any of that is built. Narration is not
+    // touched: it starts with the step exactly as it always does.
+    if (easing === 'instantFade') {
+      await this._beginFadeTransition(toSnapshot, transition.fadeMs);
+      return;
+    }
     let { nodeById } = state.pick('nodeById');
 
     // ── Capture FROM world positions (before any hierarchy or transform change) ─
@@ -1831,6 +1842,90 @@ class StepManager {
   }
 
   // ─── Object transition tick ────────────────────────────────────────────
+  /**
+   * 🌒 INSTANT FADE (V0.3.2.239, backlog #25).
+   *
+   * Nothing travels. The previous step holds its final state, dissolves out,
+   * the scene snaps — objects AND camera — and the new step dissolves in
+   * already at ITS final state. For a transition whose motion is a mess and
+   * you just want it clean.
+   *
+   * Deliberately a dissolve to nothing and back, not a cross-dissolve of two
+   * frames. A frozen frame cannot follow a camera, so a true cross-dissolve
+   * only works when the camera holds still; this one is camera-proof, costs
+   * no duplicate geometry, and rides the same per-node opacity driver the
+   * visibility fades already use. The snap happens at the midpoint, when the
+   * screen is empty, so the camera jump is invisible.
+   *
+   * Narration is untouched — it starts with the step as usual (the user's
+   * explicit rule: fade the visuals, never the voice).
+   */
+  _beginFadeTransition(toSnapshot, durationMs) {
+    const dur = Math.max(1, Number(durationMs) || 500);
+    return new Promise((resolve) => {
+      // A newer transition supersedes an older one, the same way the camera
+      // tween cancels itself.
+      if (this._fadeTransition?.resolve) {
+        const old = this._fadeTransition;
+        this._fadeTransition = null;
+        old.resolve();
+      }
+      this._fadeTransition = {
+        startMs: clock.now(),
+        durationMs: dur,
+        toSnapshot,
+        snapped: false,
+        resolve,
+      };
+      sceneCore.requestRender?.(dur + 200);
+    });
+  }
+
+  /** Drive every registered mesh + flat shape to opacity `t`. */
+  _setSceneFadeOpacity(t) {
+    if (!this._materials) return;
+    const outlineSettings = state.get('geometryOutline');
+    for (const [nodeId] of this._materials.meshById) {
+      const obj = this.object3dById.get(nodeId);
+      if (!obj || obj.visible === false) continue;
+      this._materials._setNodeTransitionOpacity(nodeId, t, outlineSettings, 0);
+    }
+  }
+
+  _advanceFadeTransition(nowMs) {
+    const f = this._fadeTransition;
+    if (!f) return;
+    const raw = Math.max(0, Math.min((nowMs - f.startMs) / f.durationMs, 1));
+
+    if (raw < 0.5) {
+      // Out: 1 → 0 over the first half.
+      this._setSceneFadeOpacity(1 - raw * 2);
+      return;
+    }
+
+    if (!f.snapped) {
+      // Midpoint: the screen is empty, so everything can teleport unseen.
+      f.snapped = true;
+      this._setSceneFadeOpacity(0);
+      this.applySnapshotInstant(f.toSnapshot);
+      // applySnapshotInstant forces opacities back to 1 (it is normally the
+      // END of a transition) — pull them straight back down so the second
+      // half has something to fade in.
+      this._setSceneFadeOpacity(0);
+    }
+
+    if (raw < 1) {
+      this._setSceneFadeOpacity((raw - 0.5) * 2);
+      return;
+    }
+
+    this._setSceneFadeOpacity(1);
+    this.snapMeshesOpaque();
+    const resolve = f.resolve;
+    this._fadeTransition = null;
+    resolve();
+  }
+
   _advanceObjectTransitions(nowMs) {
     this._fadeTraceNodeFrame();   // V0.3.0.122 — per-frame node trace (sbsDiag.fadeTraceNode)
     // V0.1.77 diag: trace the first 12 frames of OBJ animation. Shows
@@ -2097,7 +2192,11 @@ class StepManager {
 
     // Animate if: animate=true AND (legacy durationMs > 0 OR a phased preset is active)
     const animStr = resolveAnimationString(tr, state.get('animationPresets') || []);
-    const shouldAnimate = animate && (durationMs > 0 || animStr !== null);
+    // 🌒 instantFade has no duration of its own in `durationMs` (it carries
+    // fadeMs), so a step whose legacy duration is 0 would otherwise skip
+    // straight to the instant snap and never fade.
+    const shouldAnimate = animate
+      && (durationMs > 0 || animStr !== null || tr.cameraEasing === 'instantFade');
 
     // Stamp a unique token for this activation. Only the activation that OWNS
     // the current token is allowed to clear _animRunning when it completes.
