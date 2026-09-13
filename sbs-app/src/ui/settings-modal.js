@@ -157,7 +157,11 @@ function _renderKeysTab(body) {
       if (overrides[k] === defaultKeyFor(k)) delete overrides[k];
     }
     setKeyOverrides(overrides);
-    await userSettings.patch({ keymap: overrides });
+    // REPLACE, not patch. patch() shallow-merges a section, so a binding the
+    // line above deleted would stay on disk and come back on the next launch
+    // — which is exactly what made a key reset to its default revert to the
+    // old override every restart.
+    await userSettings.replace({ keymap: overrides });
     window.dispatchEvent(new CustomEvent('sbs:keymap-changed'));
     _renderKeysTab(body);   // re-render with fresh labels
   };

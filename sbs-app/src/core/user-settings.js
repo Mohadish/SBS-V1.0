@@ -237,6 +237,31 @@ export async function patch(updates) {
   return _deepClone(_cache);
 }
 
+/**
+ * Replace whole sections instead of merging into them, and persist.
+ *
+ * patch() cannot express a REMOVAL: it spreads the new values over the old
+ * ones, so a key the caller dropped stays in the file forever. That is fine
+ * for settings that only ever gain values, and wrong for any map the user
+ * can shrink — the keybindings were rebound, set back to their default (which
+ * the panel stores by deleting the override), and came back on every restart
+ * because the deleted key was still on disk.
+ *
+ * Use this whenever the object you pass is the COMPLETE desired contents of
+ * the section.
+ */
+export async function replace(updates) {
+  if (!_cache) await initUserSettings();
+  for (const [section, vals] of Object.entries(updates || {})) {
+    _cache[section] = (vals && typeof vals === 'object' && !Array.isArray(vals))
+      ? _deepClone(vals) : vals;
+  }
+  if (window.sbsNative?.userSettings) {
+    await window.sbsNative.userSettings.write(_cache);
+  }
+  return _deepClone(_cache);
+}
+
 // ─── Helpers ────────────────────────────────────────────────────────────────
 
 function _mergeDefaults(stored) {
