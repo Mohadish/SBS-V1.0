@@ -82,6 +82,7 @@ contextBridge.exposeInMainWorld('sbsNative', {
       'menu:cleanupConstTitles',
       'menu:languagePanel',        // 🌍 V0.3.2.116 — language packs
       'menu:rebuildCascade',       // 🧭 V0.3.2.162 — Edit ▸ Rebuild Cascade
+      'menu:folderFlatten',        // 📦 V0.3.2.243 — Edit ▸ Find redundant folders…
       'key:altCombo',              // 🎹 V0.3.2.175 — Alt+<key> combos forwarded
                                    // from before-input-event (Windows menu-bar
                                    // pre-arming eats the first page-level

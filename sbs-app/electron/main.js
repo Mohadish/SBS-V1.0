@@ -515,6 +515,14 @@ function buildMenu() {
           label: 'Rebuild Cascade (fix rogue objects)',
           click: () => mainWindow?.webContents.send('menu:rebuildCascade'),
         },
+        {
+          // 📦 V0.3.2.243 (backlog #16) — READ-ONLY scan for folder levels that
+          // add nothing: ↪ Adj compensation wrappers nested in each other and
+          // pass-through folders holding a single container. Reports what
+          // collapsing each one would cost; collapsing itself is Phase 2.
+          label: 'Find redundant folders…',
+          click: () => mainWindow?.webContents.send('menu:folderFlatten'),
+        },
         { type: 'separator' },
         { label: 'Model source transform…', click: () => mainWindow?.webContents.send('menu:modelSourceTransform') },
       ],

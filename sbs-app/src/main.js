@@ -1613,6 +1613,28 @@ window.sbsNative?.onMenu?.('menu:languagePanel', () => {
   window.sbsLangPanel().catch(err => console.error('[lang-panel] failed:', err));
 });
 
+// 📦 Edit → "Find redundant folders…" (V0.3.2.243, backlog #16 Phase 1).
+//
+// READ-ONLY. Lists folder levels that add nothing — ↪ Adj compensation
+// wrappers nested in each other, pass-through folders holding a single
+// container — and says what collapsing each would cost: free (identity
+// everywhere), bake (its transform must be composed into every child, per
+// step), or skip (something points at it by id, or its pose cannot be
+// composed away). Collapsing is Phase 2 and will be its own undoable action.
+window.sbsFlatten = {
+  scan: async () => (await import('./systems/folder-flatten.js')).logScan(),
+  panel: async () => (await import('./ui/folder-flatten-panel.js')).openFolderFlattenPanel(),
+};
+window.sbsNative?.onMenu?.('menu:folderFlatten', async () => {
+  try {
+    const m = await import('./ui/folder-flatten-panel.js');
+    m.openFolderFlattenPanel();
+  } catch (err) {
+    console.error('[flatten] panel failed:', err);
+    setStatus('Could not open the redundant-folder scan — see console.', 'warn', 6000);
+  }
+});
+
 // 🧭 Edit → "Rebuild Cascade (fix rogue objects)" (V0.3.2.162).
 //
 // Re-derives the live scene's world transforms from the stored tree. For the
