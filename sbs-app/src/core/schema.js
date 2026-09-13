@@ -27,7 +27,7 @@ export const SCHEMA_VERSIONS = {
   screen:     1,
 };
 
-export const APP_VERSION  = 'V0.3.2.240';
+export const APP_VERSION  = 'V0.3.2.241';
 // Format: YYYY-MM-DD. Bump along with APP_VERSION on every build worth
 // labelling so the File tab shows you're running the expected slice.
 export const APP_RELEASED = '2026-09-03';
@@ -672,9 +672,11 @@ export function createStep(overrides = {}) {
       // field and drives camera + objects alike; objectEasing is still
       // written so older builds load the file, but is no longer consulted.
       // 'instantFade' (V0.3.2.239) is motionless: dissolve out, snap, in.
+      // It has NO timing field of its own (the V0.3.2.240 `fadeMs` was
+      // dropped in .241): the step's animation resolves to `fade(AL1)`, and
+      // going custom re-times it with the ordinary time-block duration.
       cameraEasing:     'smooth',   // 'smooth' | 'linear' | 'instant' | 'instantFade'
       objectEasing:     'smooth',
-      fadeMs:           null,       // instantFade's only timing; null = inherit AL1
 
       visibilityFade:   true,       // fade visibility changes
       animPresetId:     null,       // null = use project default (or simultaneous fallback)

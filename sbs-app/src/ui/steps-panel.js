@@ -3739,15 +3739,11 @@ function _buildTransitionRow(step) {
   wrap.innerHTML = `
     <select class="tran-cam-binding" title="Step camera. Free = uses this step's own snapshot. Template = follows a named camera that propagates updates to every step bound to it.">${cameraOptions}</select>
     <div style="display:flex;gap:4px;align-items:center">
-      <select class="tran-anim-preset" style="flex:1" ${t.cameraEasing === 'instantFade' ? 'disabled title="Instant fade has no motion to choreograph — nothing to edit here."' : ''}>${presetOptions}</select>
+      <select class="tran-anim-preset" style="flex:1">${presetOptions}</select>
       ${isPrivate ? `<button class="btn tran-anim-edit" title="Edit this step's private animation" style="flex-shrink:0;padding:2px 9px">✎</button>` : ''}
     </div>
     <div style="display:flex;gap:4px;align-items:center">
-      <select class="tran-cam-ease" style="flex:1" title="How this step is animated INTO — camera and objects together. Smooth eases out of the previous step and into this one; Linear holds a constant speed; Instant snaps with no animation; Instant fade dissolves out, snaps, and dissolves back in.">${easingOptions(t.cameraEasing)}</select>
-      <input type="number" class="tran-fade-ms" min="50" step="50" value="${t.fadeMs ?? ''}"
-             placeholder="${state.get('cameraAnimDurationMs') ?? 1500}"
-             title="Fade duration in ms — the only timing Instant fade has. Leave empty to follow the global camera duration (AL1)."
-             style="width:58px;${t.cameraEasing === 'instantFade' ? '' : 'display:none'}" />
+      <select class="tran-cam-ease" style="flex:1" title="How this step is animated INTO — camera and objects together. Smooth eases out of the previous step and into this one; Linear holds a constant speed; Instant snaps with no animation; Instant fade dissolves out, snaps, and dissolves back in over AL1 (pick a custom animation above to re-time it).">${easingOptions(t.cameraEasing)}</select>
     </div>
     <!-- "Fade visibility changes" checkbox REMOVED (V0.3.2.193): the
          transition.visibilityFade flag was written by the UI and stored in
@@ -3821,27 +3817,12 @@ function _buildTransitionRow(step) {
   // control, and a step whose values disagreed animated at two speeds.
   // Both fields are still written so older builds keep loading the file.
   wrap.querySelector('.tran-cam-ease').addEventListener('change', e => {
-    const v = e.target.value;
-    // Show the fade field immediately rather than waiting for a re-render —
-    // picking the mode and not seeing its one setting appear reads as broken.
-    const msEl = wrap.querySelector('.tran-fade-ms');
-    if (msEl) msEl.style.display = v === 'instantFade' ? '' : 'none';
-    // Instant fade has no motion to choreograph, so the preset picker goes
-    // dead rather than pretending to matter.
-    const presetEl = wrap.querySelector('.tran-anim-preset');
-    if (presetEl) {
-      presetEl.disabled = v === 'instantFade';
-      presetEl.title = presetEl.disabled ? 'Instant fade has no motion to choreograph — nothing to edit here.' : '';
-    }
-    actions.updateTransition(stepId, { cameraEasing: v, objectEasing: v });
-  });
-  wrap.querySelector('.tran-fade-ms')?.addEventListener('change', e => {
-    // Empty = inherit AL1. Clearing the field is the way back to the global.
-    const raw = String(e.target.value).trim();
-    if (!raw) { actions.updateTransition(stepId, { fadeMs: null }); return; }
-    const n = Math.max(50, Math.round(Number(raw) || 0));
-    e.target.value = n;
-    actions.updateTransition(stepId, { fadeMs: n });
+    // 🌒 Instant fade needs no extra control: the step's animation resolves
+    // to `fade(AL1)`, and the animation picker above stays LIVE so a custom
+    // animation can re-time the fade (or run blocks before it) the ordinary
+    // way. It used to grey that picker out and offer a bespoke ms field —
+    // a second, worse duration control the user could not read.
+    actions.updateTransition(stepId, { cameraEasing: e.target.value, objectEasing: e.target.value });
   });
   wrap.querySelector('.tran-reparent').addEventListener('change', e => {
     actions.updateTransition(stepId, { reparentArc: e.target.checked });

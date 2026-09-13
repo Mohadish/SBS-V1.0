@@ -304,6 +304,27 @@ export function serializePhasesForEdit(phases) {
  * @returns {string|null}
  */
 export function resolveAnimationString(transition, animationPresets) {
+  const str = _resolvePresetString(transition, animationPresets);
+
+  // 🌒 INSTANT FADE (V0.3.2.241) — the easing IS a one-block animation.
+  // A step set to Instant fade has no motion to choreograph, so unless its
+  // own animation already contains a fade block, the whole animation is one:
+  // `fade(AL1)`. Going custom (private animation / a preset with a fade
+  // block) is how you change the fade's length — with the ordinary time-block
+  // duration field, AL1 / AL2 / a number, like everything else.
+  //
+  // The substitution lives HERE, not in the transition engine, because the
+  // narration timeline, the video-export frame plan and the render-cache key
+  // all resolve the step's animation through this one function. Faking it
+  // deeper down would have made the export's idea of the step's length
+  // disagree with what the engine actually plays.
+  if (transition?.cameraEasing === 'instantFade' && !/\bfade\b/i.test(str || '')) {
+    return 'fade(AL1)';
+  }
+  return str;
+}
+
+function _resolvePresetString(transition, animationPresets) {
   const presets = animationPresets || [];
 
   // V0.1.98: per-step PRIVATE animation. The sentinel animPresetId

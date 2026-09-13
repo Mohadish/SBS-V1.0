@@ -698,18 +698,13 @@ class StepManager {
     const objEasing = easing;
     const easeFn    = EASING[objEasing] ?? easeSmooth;
 
-    // 🌒 INSTANT FADE short-circuits the whole engine (V0.3.2.239). There is
-    // no motion to plan — no object tweens, no camera fly, no reparent-arc
-    // handling — so it returns before any of that is built. Narration is not
-    // touched: it starts with the step exactly as it always does.
-    if (easing === 'instantFade') {
-      // Timing INHERITS AL1 (the global camera duration) when the step has no
-      // explicit fadeMs — the same token every animation string already uses,
-      // so moving the global slider moves the fades with it. A number in the
-      // step's field overrides, like any other per-step duration.
-      await this._beginFadeTransition(toSnapshot, transition.fadeMs || globalCam);
-      return;
-    }
+    // 🌒 INSTANT FADE has no branch here (V0.3.2.241). It used to short-circuit
+    // the whole engine with a bespoke duration field; now it is simply a step
+    // whose animation resolves to `fade(AL1)` — see resolveAnimationString —
+    // so it runs down the ordinary phased path and the fade block does the
+    // work. That is what lets the animation editor stay live for these steps:
+    // the fade is a time block like any other, movable, re-timed with AL1 /
+    // AL2 / a number, and other blocks can run before it.
     let { nodeById } = state.pick('nodeById');
 
     // ── Capture FROM world positions (before any hierarchy or transform change) ─
@@ -1915,14 +1910,24 @@ class StepManager {
     });
   }
 
-  /** Drive every registered mesh + flat shape to opacity `t`. */
-  _setSceneFadeOpacity(t) {
+  /**
+   * Drive every registered mesh + flat shape to opacity `t`.
+   *
+   * `holdStaged` matters only during the dissolve-OUT half. The phased path
+   * pre-snaps items that are about to APPEAR to opacity 0 while leaving them
+   * visible (`_pendingShowingHidden`); driving those up to `t` would make the
+   * incoming step's objects materialise while the outgoing one is still
+   * leaving. They stay at 0 until the snap, then fade in with everything else.
+   */
+  _setSceneFadeOpacity(t, holdStaged = false) {
     if (!this._materials) return;
     const outlineSettings = state.get('geometryOutline');
+    const staged = holdStaged ? this._materials._pendingShowingHidden : null;
     for (const [nodeId] of this._materials.meshById) {
       const obj = this.object3dById.get(nodeId);
       if (!obj || obj.visible === false) continue;
-      this._materials._setNodeTransitionOpacity(nodeId, t, outlineSettings, 0);
+      const v = staged?.has?.(nodeId) ? 0 : t;
+      this._materials._setNodeTransitionOpacity(nodeId, v, outlineSettings, 0);
     }
   }
 
@@ -1932,8 +1937,8 @@ class StepManager {
     const raw = Math.max(0, Math.min((nowMs - f.startMs) / f.durationMs, 1));
 
     if (raw < 0.5) {
-      // Out: 1 → 0 over the first half.
-      this._setSceneFadeOpacity(1 - raw * 2);
+      // Out: 1 → 0 over the first half. Items staged to appear stay hidden.
+      this._setSceneFadeOpacity(1 - raw * 2, true);
       return;
     }
 
@@ -2226,9 +2231,10 @@ class StepManager {
 
     // Animate if: animate=true AND (legacy durationMs > 0 OR a phased preset is active)
     const animStr = resolveAnimationString(tr, state.get('animationPresets') || []);
-    // 🌒 instantFade has no duration of its own in `durationMs` (it carries
-    // fadeMs), so a step whose legacy duration is 0 would otherwise skip
-    // straight to the instant snap and never fade.
+    // 🌒 instantFade carries no legacy `durationMs`, so a step whose legacy
+    // duration is 0 would otherwise skip straight to the instant snap and
+    // never fade. (resolveAnimationString already guarantees a non-null
+    // string for it — the explicit clause is belt-and-braces.)
     const shouldAnimate = animate
       && (durationMs > 0 || animStr !== null || tr.cameraEasing === 'instantFade');
 
