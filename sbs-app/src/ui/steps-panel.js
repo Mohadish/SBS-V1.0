@@ -41,7 +41,10 @@ async function _askExportPath(title, defaultName, ext) {
 import { listVoices as ttsListVoices, synthesize as ttsSynthesize } from '../systems/tts.js';
 import * as userSettings    from '../core/user-settings.js';
 import * as narrationCache  from '../systems/narration-cache.js';
-import { parseAnimation, resolveAnimationString } from '../systems/animation.js';
+import { parseAnimation, resolveAnimationString,
+         hasInstantBlock, stripInstantBlock, makeInstantBlock,
+         parseAnimationForEdit, serializePhasesForEdit,
+         INSTANT_BLOCK_CHANNELS } from '../systems/animation.js';
 import { openPrivateAnimationEditor } from './animation-tab.js';
 import { getPlugActionStepIds, getStepCableActions } from '../systems/cables.js';   // V0.3.0.152/153 🔌 step marker + manager
 
@@ -3743,7 +3746,7 @@ function _buildTransitionRow(step) {
       ${isPrivate ? `<button class="btn tran-anim-edit" title="Edit this step's private animation" style="flex-shrink:0;padding:2px 9px">✎</button>` : ''}
     </div>
     <div style="display:flex;gap:4px;align-items:center">
-      <select class="tran-cam-ease" style="flex:1" title="How this step is animated INTO — camera and objects together. Smooth eases out of the previous step and into this one; Linear holds a constant speed; Instant snaps with no animation; Instant fade dissolves out, snaps, and dissolves back in over AL1 (pick a custom animation above to re-time it).">${easingOptions(t.cameraEasing)}</select>
+      <select class="tran-cam-ease" style="flex:1" title="How this step is animated INTO — camera and objects together. Smooth eases out of the previous step and into this one; Linear holds a constant speed. Instant and Instant fade instead pin a purple INSTANT BLOCK to the top of this step's animation, holding every channel: the step arrives all at once (Instant fade dissolves out and back in over AL1 while it does). Open a private animation to drag a channel DOWN out of that block — it then animates after the step has arrived.">${easingOptions(t.cameraEasing)}</select>
     </div>
     <!-- "Fade visibility changes" checkbox REMOVED (V0.3.2.193): the
          transition.visibilityFade flag was written by the UI and stored in
@@ -3817,12 +3820,44 @@ function _buildTransitionRow(step) {
   // control, and a step whose values disagreed animated at two speeds.
   // Both fields are still written so older builds keep loading the file.
   wrap.querySelector('.tran-cam-ease').addEventListener('change', e => {
-    // 🌒 Instant fade needs no extra control: the step's animation resolves
-    // to `fade(AL1)`, and the animation picker above stays LIVE so a custom
-    // animation can re-time the fade (or run blocks before it) the ordinary
-    // way. It used to grey that picker out and offer a bespoke ms field —
-    // a second, worse duration control the user could not read.
-    actions.updateTransition(stepId, { cameraEasing: e.target.value, objectEasing: e.target.value });
+    const v = e.target.value;
+    const patch = { cameraEasing: v, objectEasing: v };
+
+    // ⚡🌒 The easing OWNS the instant block (V0.3.2.242). A step on Default
+    // needs nothing written — resolveAnimationString synthesises the block —
+    // but a step with a PRIVATE animation is edited as a literal string, so
+    // the block has to be put into it (and taken back out) here, or the
+    // editor would show a sequence that is not what the engine plays.
+    const priv = t.privateAnimation?.trim();
+    if (priv) {
+      const instantish = v === 'instant' || v === 'instantFade';
+      if (instantish && !hasInstantBlock(priv)) {
+        // Pin it on top, holding every channel the step doesn't already
+        // schedule — those blocks are now its "after the snap" blocks.
+        const later = new Set((parseAnimationForEdit(priv) || []).flatMap(p => p.types));
+        const block = makeInstantBlock(
+          INSTANT_BLOCK_CHANNELS.filter(c => !later.has(c) && !(c === 'overlays' && later.has('overlay'))),
+          v === 'instant' ? '0' : 'AL1',
+        );
+        patch.privateAnimation = `${block}, ${priv}`;
+      } else if (!instantish && hasInstantBlock(priv)) {
+        // Back to Smooth / Linear — the only way out. The channels that rode
+        // in the block stay put as an ordinary first time block.
+        patch.privateAnimation = stripInstantBlock(priv);
+      } else if (instantish && hasInstantBlock(priv)) {
+        // Switching between the two flavours only re-times the block: 0 for
+        // the plain snap, AL1 for the dissolve.
+        const phases = parseAnimationForEdit(priv) || [];
+        const blk = phases.find(p => p.types.includes('fade'));
+        if (blk) {
+          const wasInstant = String(blk.durationRaw) === '0';
+          if (v === 'instant' && !wasInstant)      blk.durationRaw = '0';
+          if (v === 'instantFade' && wasInstant)   blk.durationRaw = 'AL1';
+          patch.privateAnimation = serializePhasesForEdit(phases);
+        }
+      }
+    }
+    actions.updateTransition(stepId, patch);
   });
   wrap.querySelector('.tran-reparent').addEventListener('change', e => {
     actions.updateTransition(stepId, { reparentArc: e.target.checked });

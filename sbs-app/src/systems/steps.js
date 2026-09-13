@@ -472,10 +472,24 @@ class StepManager {
     if (!snapshot) return;
     let { nodeById } = state.pick('nodeById');
 
+    // ⚡ HELD SECTIONS (V0.3.2.242). The instant block's midpoint snap passes
+    // the snapshot sections belonging to channels the user moved to a LATER
+    // time block. Those keep whatever the live scene currently holds — the
+    // previous step's state — so their own block can still animate them.
+    // Everything else lands final while the screen is dark.
+    const held = opts.holdSections || null;
+    const holds = (s) => !!held?.has(s);
+
     // ── Tree arrangement (hierarchy rebuild) ────────────────────────────────
     // v0.266 approach: tear down all folder groups, rebuild from full tree spec.
     // Falls back to parentMap for old snapshots that pre-date the tree field.
-    if (snapshot.tree) {
+    if (holds('tree')) {
+      // Skipped only by the instant block, which runs INSIDE applySnapshot-
+      // Animated — the target tree was already rebuilt there before the
+      // phases started. Rebuilding again would tear down every folder group
+      // and reparent live objects a second time, which moves anything whose
+      // transforms are being held back.
+    } else if (snapshot.tree) {
       const root = state.get('treeData');
       if (root) {
         // Clean up all stale folder Three.js groups first
@@ -497,19 +511,19 @@ class StepManager {
     }
 
     // Visibility
-    if (snapshot.visibility) {
+    if (snapshot.visibility && !holds('visibility')) {
       applyVisibilitySnapshot(nodeById, snapshot.visibility);
       applyAllVisibilityToScene(nodeById, this.object3dById);
     }
 
     // Transforms
-    if (snapshot.transforms) {
+    if (snapshot.transforms && !holds('transforms')) {
       applyAllTransformSnapshots(nodeById, snapshot.transforms);
       applyAllTransformsToScene(nodeById, this.object3dById);
     }
 
     // Materials
-    if (snapshot.materials && this._materials) {
+    if (snapshot.materials && this._materials && !holds('materials')) {
       this._materials.applySnapshot(snapshot.materials);
     }
 
@@ -517,7 +531,7 @@ class StepManager {
     // present in the override get their panelOffset rewritten. Notes
     // not in the map keep whatever offset they had (which is fine —
     // their global default will show).
-    if (snapshot.notePanelOffsets) {
+    if (snapshot.notePanelOffsets && !holds('notePanelOffsets')) {
       _applyNotePanelOffsets(nodeById, snapshot.notePanelOffsets);
     }
 
@@ -694,7 +708,12 @@ class StepManager {
     // linear, which read as the camera being out of sync with everything
     // else. cameraEasing is the surviving field; objectEasing is still
     // written by the UI for older builds but no longer consulted here.
-    const easing    = transition.cameraEasing ?? transition.objectEasing ?? 'smooth';
+    const rawEasing = transition.cameraEasing ?? transition.objectEasing ?? 'smooth';
+    // ⚡🌒 Instant / Instant fade are not easings for the MOTION any more
+    // (V0.3.2.242) — they mean "put an instant block at the top". Whatever the
+    // user drags OUT of that block is there precisely because they want to see
+    // it move, so it animates smoothly; the instantness lives in the block.
+    const easing    = (rawEasing === 'instant' || rawEasing === 'instantFade') ? 'smooth' : rawEasing;
     const objEasing = easing;
     const easeFn    = EASING[objEasing] ?? easeSmooth;
 
@@ -1402,30 +1421,56 @@ class StepManager {
 
     let fadeHandled      = false;
 
+    // ⚡🌒 THE INSTANT BLOCK (V0.3.2.242) — what the step panel's Instant /
+    // Instant fade easing puts at the top of the sequence. Everything in it
+    // arrives already final; a channel the user dragged to a block BELOW is
+    // HELD at the previous step's state through the snap and animates in its
+    // own block afterwards. So the set that matters is not the block's own
+    // chip list but what comes AFTER it.
+    const _fadeIdx = phases.findIndex(p => p.types.includes('fade'));
+    const _afterFade = new Set();
+    if (_fadeIdx >= 0) {
+      for (const p of phases.slice(_fadeIdx + 1)) for (const t of p.types) _afterFade.add(t);
+    }
+
     for (const phase of phases) {
-      const { types, durationMs } = phase;
+      const { types } = phase;
+      // The Instant block runs at `(0)` — a snap with no dissolve. Only the
+      // fade itself may see that zero: every other handler divides by its
+      // slot duration, and 0/0 is NaN, which lands as a NaN opacity or a
+      // stalled tween. 1ms is imperceptible and arithmetic-safe.
+      const rawDurationMs = phase.durationMs;
+      const durationMs    = Math.max(1, rawDurationMs);
       const phasePromises = [];
 
-      // 🌒 FADE BLOCK (V0.3.2.240). Dissolve out, snap the scene to its final
-      // state while the screen is empty, dissolve back in — the per-step
-      // Instant fade, placeable anywhere in a choreography.
-      //
-      // It brings the WHOLE scene to final, so every channel it does not
-      // explicitly list is marked handled too: a later phase animating from
-      // target to target would be a dead slot, and the post-loop fallbacks
-      // would re-apply what is already applied. Channels in EARLIER phases
-      // have already run normally, which is what makes "camera flies, then
-      // the new state appears" work.
       if (types.includes('fade') && !fadeHandled) {
         fadeHandled = true;
-        if (toSnapshot.camera) cameraHandled = true;
-        objHandled = colorHandled = visHandled = cableHandled = true;
-        shapeHandled = notesHandled = insertHandled = true;
-        this._objectTransitions = [];   // nothing travels through a dissolve
-        // overlay + narration are NOT claimed. The dissolve is the 3D scene
-        // (meshes + flat shapes); overlay art and the voice keep their own
-        // slots, exactly like the per-step Instant fade leaves them alone.
-        phasePromises.push(this._beginFadeTransition(toSnapshot, durationMs));
+        // Sections of the snapshot to leave alone at the snap, one per held
+        // channel. `tree` is always held: applySnapshotAnimated already
+        // rebuilt the target hierarchy before the phases started.
+        const hold = new Set(['tree']);
+        if (_afterFade.has('obj') || _afterFade.has('insert'))  hold.add('transforms');
+        if (_afterFade.has('visibility') || _afterFade.has('shape')) hold.add('visibility');
+        if (_afterFade.has('color')) hold.add('materials');
+        if (_afterFade.has('notes')) hold.add('notePanelOffsets');
+
+        // Claim every channel that is not waiting in a later block, so its
+        // own handler and the post-loop fallback both stand down — the snap
+        // has already done it. `cable`, `overlay(s)` and `narration` are never
+        // claimed: they are not part of the snapshot snap, so their ordinary
+        // handlers run in this very phase (behind the dissolve) or later.
+        if (!_afterFade.has('obj'))        { objHandled = true; this._objectTransitions = []; }
+        if (!_afterFade.has('color'))       colorHandled  = true;
+        if (!_afterFade.has('visibility'))  visHandled    = true;
+        if (!_afterFade.has('shape'))       shapeHandled  = true;
+        if (!_afterFade.has('notes'))       notesHandled  = true;
+        if (!_afterFade.has('insert'))      insertHandled = true;
+        if (!_afterFade.has('camera') && toSnapshot.camera) cameraHandled = true;
+
+        phasePromises.push(this._beginFadeTransition(toSnapshot, rawDurationMs, {
+          holdSections:   hold,
+          suppressCamera: _afterFade.has('camera'),
+        }));
       }
       // Sleep span for this phase. The insert handler extends it to cover the
       // full reposition+pause+assemble chain, so offline export fires synthetic
@@ -1888,9 +1933,31 @@ class StepManager {
    *
    * Narration is untouched — it starts with the step as usual (the user's
    * explicit rule: fade the visuals, never the voice).
+   *
+   * V0.3.2.242: `opts.holdSections` names the snapshot sections to leave at
+   * the previous step's state (their channel is in a later time block), and a
+   * duration of 0 is the Instant flavour — the snap with no dissolve at all.
    */
-  _beginFadeTransition(toSnapshot, durationMs) {
-    const dur = Math.max(1, Number(durationMs) || 500);
+  _beginFadeTransition(toSnapshot, durationMs, opts = {}) {
+    const applyOpts = {
+      holdSections:   opts.holdSections || null,
+      suppressCamera: !!opts.suppressCamera,
+    };
+    const dur = Math.max(0, Math.round(Number(durationMs) || 0));
+
+    // ⚡ Instant (no dissolve). Nothing to drive per-frame, so don't register
+    // a tween at all — just land the snap and let the later blocks run.
+    if (dur === 0) {
+      if (this._fadeTransition?.resolve) {
+        const old = this._fadeTransition;
+        this._fadeTransition = null;
+        old.resolve();
+      }
+      this.applySnapshotInstant(toSnapshot, applyOpts);
+      sceneCore.requestRender?.(100);
+      return Promise.resolve();
+    }
+
     return new Promise((resolve) => {
       // A newer transition supersedes an older one, the same way the camera
       // tween cancels itself.
@@ -1903,6 +1970,7 @@ class StepManager {
         startMs: clock.now(),
         durationMs: dur,
         toSnapshot,
+        applyOpts,
         snapped: false,
         resolve,
       };
@@ -1946,7 +2014,7 @@ class StepManager {
       // Midpoint: the screen is empty, so everything can teleport unseen.
       f.snapped = true;
       this._setSceneFadeOpacity(0);
-      this.applySnapshotInstant(f.toSnapshot);
+      this.applySnapshotInstant(f.toSnapshot, f.applyOpts);
       // applySnapshotInstant forces opacities back to 1 (it is normally the
       // END of a transition) — pull them straight back down so the second
       // half has something to fade in.
@@ -2231,12 +2299,13 @@ class StepManager {
 
     // Animate if: animate=true AND (legacy durationMs > 0 OR a phased preset is active)
     const animStr = resolveAnimationString(tr, state.get('animationPresets') || []);
-    // 🌒 instantFade carries no legacy `durationMs`, so a step whose legacy
-    // duration is 0 would otherwise skip straight to the instant snap and
-    // never fade. (resolveAnimationString already guarantees a non-null
-    // string for it — the explicit clause is belt-and-braces.)
+    // ⚡🌒 Instant / Instant fade carry no legacy `durationMs`, so a step whose
+    // legacy duration is 0 would otherwise skip straight to the instant snap
+    // and never run its blocks. (resolveAnimationString already guarantees a
+    // non-null string for them — the explicit clause is belt-and-braces.)
     const shouldAnimate = animate
-      && (durationMs > 0 || animStr !== null || tr.cameraEasing === 'instantFade');
+      && (durationMs > 0 || animStr !== null
+          || tr.cameraEasing === 'instantFade' || tr.cameraEasing === 'instant');
 
     // Stamp a unique token for this activation. Only the activation that OWNS
     // the current token is allowed to clear _animRunning when it completes.

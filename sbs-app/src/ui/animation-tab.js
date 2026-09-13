@@ -382,15 +382,20 @@ function _renderPhasesView(host, ctx) {
     const phaseTypes = new Set(phase.types);
     const orderedTypes = CHANNEL_ORDER.filter(t => phaseTypes.has(t));
     for (const t of phase.types) {
-      if (!CHANNEL_ORDER.includes(t)) orderedTypes.push(t);
+      // `fade` is a marker, not a channel — it renders as the row's badge,
+      // never as a draggable chip (dragging it out would silently destroy
+      // the block the step's easing owns).
+      if (!CHANNEL_ORDER.includes(t) && t !== 'fade') orderedTypes.push(t);
     }
     const isPauseBlock = phase.types.length === 1 && phase.types[0] === 'pause';
-    // 🌒 FADE BLOCK (V0.3.2.240) — like pause, a whole-row concept rather
-    // than a chip: the scene dissolves out, everything left to happen snaps
-    // while the screen is empty, and it dissolves back in. Rejects chip
-    // drops for the same reason pause does — it has no channels of its own.
-    const isFadeBlock  = phase.types.length === 1 && phase.types[0] === 'fade';
-    const noDrop       = isPauseBlock || isFadeBlock;
+    // ⚡🌒 THE INSTANT BLOCK (V0.3.2.242) — created ONLY by the step's
+    // Instant / Instant fade easing, always the first row, never removable
+    // from in here. It HOLDS channel chips like any other block; the whole
+    // point is dragging them OUT, down into a block that animates after the
+    // snap. `(0)` = Instant (plain snap), anything else = Instant fade.
+    const isFadeBlock  = phase.types.includes('fade');
+    const isDissolve   = isFadeBlock && String(phase.durationRaw || '') !== '0';
+    const noDrop       = isPauseBlock;
 
     const durRaw     = phase.durationRaw || 'AL1';
     const durDisplay = /^AL[12]$/i.test(durRaw) ? durRaw.toUpperCase() : durRaw;
@@ -436,13 +441,24 @@ function _renderPhasesView(host, ctx) {
         </span>`;
     }).join('');
 
-    const bodyHtml = isFadeBlock
-      ? `<span style="font-style:italic;padding:0 4px;color:#a78bfa;font-size:12px;font-weight:600">🌒 fade block — everything after this arrives finished</span>`
-      : (orderedTypes.length
-          ? chipsHtml
-          : (isPauseBlock
-              ? `<span style="font-style:italic;padding:0 4px;color:#7c2d12;font-size:12px;font-weight:600">⏸ pause time block</span>`
-              : `<span style="font-style:italic;padding:0 4px;color:var(--text);opacity:0.65;font-size:12px">drop a channel here</span>`));
+    const fadeBadge = isFadeBlock
+      ? `<span style="padding:2px 7px;margin:2px 6px 2px 0;border-radius:4px;
+                      background:rgba(139,92,246,0.35);color:var(--text);
+                      font-size:11px;font-weight:700;white-space:nowrap;user-select:none"
+               title="${isDissolve
+                 ? 'Instant fade — the scene dissolves out, everything in this block arrives final while the screen is empty, then it dissolves back in.'
+                 : 'Instant — everything in this block arrives final with no dissolve.'} Set by the step’s easing; change it there to remove this block. Drag a chip DOWN into a block below to make that channel animate after the snap instead.">
+           ${isDissolve ? '🌒 instant fade' : '⚡ instant'}
+         </span>`
+      : '';
+
+    const bodyHtml = fadeBadge + (orderedTypes.length
+      ? chipsHtml
+      : (isPauseBlock
+          ? `<span style="font-style:italic;padding:0 4px;color:#7c2d12;font-size:12px;font-weight:600">⏸ pause time block</span>`
+          : isFadeBlock
+            ? `<span style="font-style:italic;padding:0 4px;color:var(--text);opacity:0.65;font-size:12px">everything animates below — drag a chip back to snap it</span>`
+            : `<span style="font-style:italic;padding:0 4px;color:var(--text);opacity:0.65;font-size:12px">drop a channel here</span>`));
 
     // Pause blocks get an orange tint, fade blocks a violet one, so the
     // user sees them as structurally different from a channel time block.
@@ -454,7 +470,8 @@ function _renderPhasesView(host, ctx) {
     return `
       <div class="cap-phase-row ${isPauseBlock ? 'cap-phase-pause' : ''} ${isFadeBlock ? 'cap-phase-fade' : ''}" data-phase-idx="${idx}"
            data-is-pause="${isPauseBlock ? '1' : '0'}"
-           draggable="true"
+           data-is-fade="${isFadeBlock ? '1' : '0'}"
+           draggable="${isFadeBlock ? 'false' : 'true'}"
            style="display:grid;
                   grid-template-columns:20px 62px 1fr;
                   align-items:center;column-gap:6px;
@@ -463,12 +480,14 @@ function _renderPhasesView(host, ctx) {
                   background:${rowBg};
                   color:var(--text);
                   min-height:28px"
-           title="Drag this row to reorder. Right-click to remove the time block.">
+           title="${isFadeBlock
+             ? 'Pinned to the top by the step’s easing — it can’t be moved or removed here. Change the easing to Smooth / Linear to get rid of it.'
+             : 'Drag this row to reorder. Right-click to remove the time block.'}">
         <span class="cap-phase-handle"
               style="display:inline-flex;align-items:center;justify-content:center;
-                     cursor:grab;font-size:16px;color:var(--text);opacity:0.55;
-                     user-select:none;padding:0">
-          ⋮
+                     font-size:16px;color:var(--text);user-select:none;padding:0;
+                     ${isFadeBlock ? 'cursor:default;opacity:0.28' : 'cursor:grab;opacity:0.55'}">
+          ${isFadeBlock ? '📌' : '⋮'}
         </span>
         ${durControlHtml}
         <div class="cap-phase-body"
@@ -512,16 +531,11 @@ function _renderPhasesView(host, ctx) {
               title="Append a pause time block — a time spacer with no channels.">
         + Add pause
       </button>
-      <button class="cap-add-fade"
-              style="flex:1;padding:6px 10px;font-size:12px;
-                     background:rgba(139,92,246,0.22);
-                     border:1px dashed rgba(139,92,246,0.65);
-                     border-radius:6px;color:var(--text);cursor:pointer;
-                     font-weight:600"
-              title="Append a fade block — the scene dissolves out, everything still to happen snaps while the screen is empty, and it dissolves back in. Put it last for a clean cut; put it after camera for 'camera flies, then the new state appears'.">
-        + Add fade
-      </button>
     </div>`;
+  // NOTE: there is deliberately no "+ Add instant block" button. That block
+  // is owned by the step's Instant / Instant fade easing — it appears when
+  // the easing is set and disappears when it is cleared, so it can never
+  // drift out of sync with what the step panel says the step does.
 
   host.innerHTML = headerHtml + rowsHtml + addButtonsHtml;
 
@@ -609,15 +623,6 @@ function _renderPhasesView(host, ctx) {
     });
   });
 
-  // + Add fade — dissolve block (types:['fade']). Violet tint, rejects
-  // chip drops. Only one is honoured per preset: the engine runs the
-  // FIRST fade and everything the dissolve brought to final is marked
-  // handled, so a second one would have nothing left to dissolve.
-  host.querySelector('.cap-add-fade')?.addEventListener('click', () => {
-    _mutatePhases(preset, phases => {
-      phases.push({ types: ['fade'], durationRaw: 'AL1' });
-    });
-  });
 
   // Drag-source: chip
   host.querySelectorAll('.cap-chip').forEach(chip => {
@@ -694,6 +699,8 @@ function _renderPhasesView(host, ctx) {
         e.preventDefault();
         return;
       }
+      // The instant block is pinned to the top by the step's easing.
+      if (row.dataset.isFade === '1') { e.preventDefault(); return; }
       const payload = { fromIdx: Number(row.dataset.phaseIdx) };
       e.dataTransfer.setData('application/x-sbs-phase', JSON.stringify(payload));
       e.dataTransfer.effectAllowed = 'move';
@@ -711,6 +718,10 @@ function _renderPhasesView(host, ctx) {
       const currentPhases = parseAnimationForEdit(preset.animation);
       if (!currentPhases || currentPhases.length <= 1) return;   // only phase — no remove
       const idx = Number(row.dataset.phaseIdx);
+      if (row.dataset.isFade === '1') {
+        setStatus('The instant block belongs to the step’s easing — set the easing to Smooth or Linear to remove it.');
+        return;
+      }
       showContextMenu([
         {
           label: '🗑 Remove time block',
@@ -814,6 +825,10 @@ function _renderPhasesView(host, ctx) {
         if (toIdx > fromIdx) target = toIdx - 1;
         if (!insertAbove) target += 1;
         target = Math.max(0, Math.min(phases.length, target));
+        // Nothing may land above the instant block — it is the step's
+        // arrival, and a block running before it would animate into a state
+        // the snap is about to overwrite.
+        if (phases.some(p => p.types.includes('fade'))) target = Math.max(1, target);
         phases.splice(target, 0, moving);
       });
     });
@@ -1272,10 +1287,13 @@ function _renderPhasesPreview(host, animStr) {
     const phaseTypes = new Set(phase.types);
     const orderedTypes = CHANNEL_ORDER.filter(t => phaseTypes.has(t));
     for (const t of phase.types) {
-      if (!CHANNEL_ORDER.includes(t)) orderedTypes.push(t);
+      // `fade` is a marker, not a channel — it renders as the row's badge,
+      // never as a draggable chip (dragging it out would silently destroy
+      // the block the step's easing owns).
+      if (!CHANNEL_ORDER.includes(t) && t !== 'fade') orderedTypes.push(t);
     }
     const isPauseBlock = phase.types.length === 1 && phase.types[0] === 'pause';
-    const isFadeBlock  = phase.types.length === 1 && phase.types[0] === 'fade';
+    const isFadeBlock  = phase.types.includes('fade');
     const durRaw       = phase.durationRaw || 'AL1';
     const durDisplay   = /^AL[12]$/i.test(durRaw) ? durRaw.toUpperCase() : durRaw;
 
@@ -1292,12 +1310,16 @@ function _renderPhasesPreview(host, animStr) {
         </span>`;
     }).join('');
 
-    const bodyHtml = isFadeBlock
-      ? `<span style="font-style:italic;padding:0 4px;color:#a78bfa;font-size:11px;font-weight:600">🌒 fade block</span>`
-      : (orderedTypes.length
+    const bodyHtml = (isFadeBlock
+        ? `<span style="padding:2px 6px;margin-right:5px;border-radius:4px;background:rgba(139,92,246,0.35);
+                        color:var(--text);font-size:10px;font-weight:700;white-space:nowrap">${
+            String(durRaw) === '0' ? '⚡ instant' : '🌒 instant fade'}</span>`
+        : '')
+      + (orderedTypes.length
           ? chipsHtml
           : (isPauseBlock
               ? `<span style="font-style:italic;padding:0 4px;color:#7c2d12;font-size:11px;font-weight:600">⏸ pause time block</span>`
+              : isFadeBlock ? ''
               : `<span style="font-style:italic;padding:0 4px;color:var(--text);opacity:0.65;font-size:11px">empty</span>`));
 
     const rowBg     = isFadeBlock ? 'rgba(139,92,246,0.22)'

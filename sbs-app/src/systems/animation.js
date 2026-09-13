@@ -62,18 +62,52 @@ export const DEFAULT_ANIMATION_STR =
 // back into the final placed position over N ms. No actors flagged →
 // the slot is an inert dwell (like pause). See systems/hardware-insert-
 // anim.js for the effect implementation.
-// `fade` (V0.3.2.240) = a DISSOLVE block. The scene dissolves out over the
-// first half of its slot, everything snaps to its final state while the
-// screen is empty, and it dissolves back in. Whatever is left to happen
-// arrives already finished, so nothing travels. Put it last and it ends the
-// sequence cleanly; put it after `camera` and you get the camera flying
-// through the old scene, then the new one appearing — which is the case the
-// per-step Instant fade cannot express.
+// `fade` (V0.3.2.242) is not a channel — it is a MARKER that turns its phase
+// into THE INSTANT BLOCK: the purple block the step panel's Instant / Instant
+// fade easing puts at the top of the sequence. The channels sharing that
+// phase arrive already final; with a duration they arrive behind a dissolve
+// (Instant fade), with `(0)` they simply snap (Instant).
+//
+// The block is authored ONLY by the easing dropdown — never by hand in the
+// editor — and it is always first. Its power is what you drag OUT of it: a
+// channel moved to a block BELOW is held at its previous state through the
+// snap and animates afterwards. "Camera and objects arrive, then the overlay
+// appears" is `fade+camera+obj+…(AL1), overlays(AL1)`.
 const VALID_TYPES = new Set([
   'camera', 'color', 'obj', 'visibility', 'cable',
   'overlay', 'overlays', 'shape',
   'narration', 'notes', 'pause', 'insert', 'fade',
 ]);
+
+// The channels the instant block holds when the easing creates it. Everything
+// the engine knows about except `pause` (a spacer) and `overlay` (the classic
+// crossfade variant — `overlays`, the sustained one, is the default).
+export const INSTANT_BLOCK_CHANNELS = [
+  'camera', 'obj', 'color', 'visibility', 'cable',
+  'shape', 'notes', 'insert', 'overlays', 'narration',
+];
+
+/** Build the instant block's token, holding `channels`, `durRaw` long. */
+export function makeInstantBlock(channels, durRaw) {
+  const chips = (channels || []).filter(c => VALID_TYPES.has(c) && c !== 'fade');
+  return `fade${chips.length ? '+' + chips.join('+') : ''}(${durRaw})`;
+}
+
+/** True when `str` already carries an instant block. */
+export function hasInstantBlock(str) {
+  return /(^|[(,+\s])fade([+(]|$)/i.test(String(str || ''));
+}
+
+/** Strip the instant block marker, keeping the channels that rode in it. */
+export function stripInstantBlock(str) {
+  const phases = parseAnimationForEdit(str);
+  if (!phases) return str;
+  const kept = phases
+    .map(p => ({ ...p, types: p.types.filter(t => t !== 'fade') }))
+    // A block that held nothing but the marker leaves nothing behind.
+    .filter(p => p.types.length);
+  return kept.length ? serializePhasesForEdit(kept) : '';
+}
 
 // Matches: 'camera(500)' or 'obj+visibility(AL1)' or 'pause(AL2)'.
 // Duration is either digits OR the named variable AL1 / AL2 / al1 / al2.
@@ -109,12 +143,10 @@ export function parseAnimation(str, resolveToken = null) {
     if (types.includes('pause') && types.length > 1) {
       types = types.filter(t => t !== 'pause');
     }
-    // Fade is SOLO too, but the other way round — fade WINS. A dissolve
-    // brings the whole scene to final, so anything sharing its slot would
-    // be animating from target to target. `fade+camera(N)` → `fade(N)`.
-    if (types.includes('fade') && types.length > 1) {
-      types = ['fade'];
-    }
+    // NOTE: `fade` deliberately does NOT coerce to solo. It is a marker on
+    // the phase, and the channels sharing that phase are exactly the ones
+    // that arrive already final. (V0.3.2.240 had it solo; that was the
+    // version with no way to say "these arrive, those animate after".)
     // Duration: raw int or AL token
     const durRaw = m[2];
     let durationMs;
@@ -169,10 +201,6 @@ export function parseAnimationForEdit(str) {
     // Pause-coercion mirrors parseAnimation: pause is solo-only.
     if (types.includes('pause') && types.length > 1) {
       types = types.filter(t => t !== 'pause');
-    }
-    // Fade-coercion mirrors parseAnimation: fade is solo, and fade wins.
-    if (types.includes('fade') && types.length > 1) {
-      types = ['fade'];
     }
     // Normalise the duration token: AL1/AL2 uppercase, digits as-is.
     const durRaw = /^al[12]$/i.test(m[2]) ? m[2].toUpperCase() : m[2];
@@ -272,10 +300,6 @@ export function serializePhasesForEdit(phases) {
     if (types.includes('pause') && types.length > 1) {
       types = types.filter(t => t !== 'pause');
     }
-    // Fade-coercion: fade is solo and fade wins (see parseAnimation).
-    if (types.includes('fade') && types.length > 1) {
-      types = ['fade'];
-    }
     // Empty time block — write `null(0)` as a no-op placeholder. The
     // engine's parseAnimation drops these (null isn't valid). They only
     // exist as a UI affordance — a transient empty slot the user added
@@ -304,22 +328,39 @@ export function serializePhasesForEdit(phases) {
  * @returns {string|null}
  */
 export function resolveAnimationString(transition, animationPresets) {
-  const str = _resolvePresetString(transition, animationPresets);
+  const str  = _resolvePresetString(transition, animationPresets);
+  const ease = transition?.cameraEasing;
 
-  // 🌒 INSTANT FADE (V0.3.2.241) — the easing IS a one-block animation.
-  // A step set to Instant fade has no motion to choreograph, so unless its
-  // own animation already contains a fade block, the whole animation is one:
-  // `fade(AL1)`. Going custom (private animation / a preset with a fade
-  // block) is how you change the fade's length — with the ordinary time-block
-  // duration field, AL1 / AL2 / a number, like everything else.
+  // ⚡🌒 INSTANT / INSTANT FADE (V0.3.2.242) — the easing OWNS the instant
+  // block, and the block is always the first phase. `instant` gives it a
+  // zero duration (a plain snap); `instantFade` gives it AL1 (dissolve out,
+  // snap, dissolve in).
   //
   // The substitution lives HERE, not in the transition engine, because the
   // narration timeline, the video-export frame plan and the render-cache key
   // all resolve the step's animation through this one function. Faking it
   // deeper down would have made the export's idea of the step's length
   // disagree with what the engine actually plays.
-  if (transition?.cameraEasing === 'instantFade' && !/\bfade\b/i.test(str || '')) {
-    return 'fade(AL1)';
+  if ((ease === 'instantFade' || ease === 'instant') && !hasInstantBlock(str)) {
+    const dur = ease === 'instant' ? '0' : 'AL1';
+    // The block holds EVERYTHING unless the step has a private animation of
+    // its own. On Default that is the whole meaning of picking the easing;
+    // on a NAMED preset it is the honest reading too — a preset is shared
+    // across steps and cannot be re-choreographed for this one, so its motion
+    // has nowhere to live once the step is set to arrive instantly.
+    const priv = transition?.animPresetId === '__private__'
+      && transition?.privateAnimation?.trim();
+    if (!priv) return makeInstantBlock(INSTANT_BLOCK_CHANNELS, dur);
+
+    // With a private animation, the block is prepended and holds only the
+    // channels that animation does NOT schedule — the step's own blocks are
+    // its later blocks, so they keep animating after the snap.
+    const later = new Set((parseAnimationForEdit(str) || []).flatMap(p => p.types));
+    const block = makeInstantBlock(
+      INSTANT_BLOCK_CHANNELS.filter(c => !later.has(c) && !(c === 'overlays' && later.has('overlay'))),
+      dur,
+    );
+    return str ? `${block}, ${str}` : block;
   }
   return str;
 }
