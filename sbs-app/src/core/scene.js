@@ -84,14 +84,14 @@ function _sphericalAbout(pos, pivot) {
  * A degenerate radius (camera sitting on the pivot) also declines, since an
  * orbit of radius zero has no direction to interpolate.
  */
-function _buildOrbitTween(fromPos, toPos, fromPivot, toPivot, fromPinned, toPinned, fromQ, toQ) {
-  if (!fromPinned && !toPinned) return null;
-  // The pivots the two ends are MEASURED against, kept on the tween and used
+function _buildOrbitTween(fromPos, toPos, fromAnim, toAnim, fromQ, toQ) {
+  if (!fromAnim && !toAnim) return null;
+  // The points the two ends are MEASURED against, kept on the tween and used
   // again for reconstruction. Measuring about one point and rebuilding about
   // another is what made the camera jump the instant a move began when only
-  // one end was pinned.
-  const p0 = (fromPinned ? fromPivot : toPivot).clone();
-  const p1 = (toPinned   ? toPivot   : fromPivot).clone();
+  // one end had a centre.
+  const p0 = (fromAnim || toAnim).clone();
+  const p1 = (toAnim || fromAnim).clone();
   const a = _sphericalAbout(fromPos, p0);
   const b = _sphericalAbout(toPos,   p1);
   if (a.r < 1e-6 || b.r < 1e-6) return null;
@@ -173,6 +173,11 @@ export class SceneCore extends Emitter {
 
     // Custom orbit controls state
     this.controls     = null;
+    // 🎯 The active step's ANIMATION orbit centre: an absolute world point
+    // (THREE.Vector3) or null. Distinct from controls.pivot, which is the
+    // transient CAD orbit centre the cursor's raycast replaces on every
+    // manual orbit. Only the step-to-step camera move reads this one.
+    this._animPivot   = null;
 
     // Camera transition state
     this._transition  = null;
@@ -984,12 +989,13 @@ export class SceneCore extends Emitter {
       pivot:      [this.controls.pivot.x, this.controls.pivot.y, this.controls.pivot.z],
       up:         [up.x, up.y, up.z],
       fov:        this.camera.fov,
-      // 🎯 V0.3.2.231 — a PINNED orbit centre. The pivot itself has always
-      // ridden in the camera state (so it already saves, copy-pastes and
-      // tweens per step); what this flag adds is that orbiting stops
-      // re-picking it from whatever is under the cursor. Only written when
-      // set, so unpinned steps serialise exactly as before.
-      ...(this.controls.pivotPinned ? { pivotPinned: true } : {}),
+      // 🎯 V0.3.2.234 — the step's ANIMATION orbit centre: an absolute world
+      // point, like a 3D-anchored arrow's endpoint, bound to nothing and
+      // following nothing. Kept separate from `pivot` above, which is the
+      // transient CAD orbit centre the cursor's raycast keeps replacing —
+      // sharing one field made manual orbiting overwrite the step's choice.
+      // Only written when set, so steps without one serialise as before.
+      ...(this._animPivot ? { orbitPivot: [this._animPivot.x, this._animPivot.y, this._animPivot.z] } : {}),
     };
   }
 
@@ -1010,10 +1016,9 @@ export class SceneCore extends Emitter {
       this.controls.pivot.set(...state.pivot);
       this.controls.syncSpherical();
     }
-    if (this.controls) {
-      this.controls.pivotPinned = !!state.pivotPinned;
-      this.updateOrbitPivotMarker();
-    }
+    this._animPivot = Array.isArray(state.orbitPivot)
+      ? new THREE.Vector3(...state.orbitPivot) : null;
+    this.updateOrbitPivotMarker();
   }
 
   // ═══════════════════════════════════════════════════════════════════════
@@ -1030,21 +1035,13 @@ export class SceneCore extends Emitter {
    * whatever the pivot is.
    */
   setOrbitPivot(worldPoint) {
-    if (!this.controls) return;
-    if (worldPoint) {
-      this.controls.pivot.copy(worldPoint);
-      this.controls.pivotPinned = true;
-    } else {
-      this.controls.pivotPinned = false;
-    }
-    this.controls.syncSpherical();
+    this._animPivot = worldPoint ? worldPoint.clone() : null;
     this.updateOrbitPivotMarker();
     this.emit('controls:change');
   }
 
   getOrbitPivot() {
-    if (!this.controls?.pivotPinned) return null;
-    return this.controls.pivot.clone();
+    return this._animPivot ? this._animPivot.clone() : null;
   }
 
   /**
@@ -1057,7 +1054,7 @@ export class SceneCore extends Emitter {
   updateOrbitPivotMarker() {
     if (!this.overlayScene || !window.THREE) return;
     const T = window.THREE;
-    const want = !!this.controls?.pivotPinned;
+    const want = !!this._animPivot;
     if (!this._orbitPivotMarker) {
       if (!want) return;
       const g = new T.Group();
@@ -1083,10 +1080,10 @@ export class SceneCore extends Emitter {
     const m = this._orbitPivotMarker;
     m.visible = want && !state.get('_exporting');
     if (!m.visible) return;
-    m.position.copy(this.controls.pivot);
+    m.position.copy(this._animPivot);
     // Constant on-screen size: scale with distance so it never becomes a dot
     // on a big assembly or a wall on a small one.
-    const d = Math.max(this.camera.position.distanceTo(this.controls.pivot), 1e-3);
+    const d = Math.max(this.camera.position.distanceTo(this._animPivot), 1e-3);
     const s = d * 0.045;
     m.scale.set(s, s, s);
   }
@@ -1130,11 +1127,9 @@ export class SceneCore extends Emitter {
     //
     // Strictly opt-in: with no pin on either end, `orbit` is null and every
     // line below runs exactly as it did before.
-    const orbit = _buildOrbitTween(
-      fromPos, toPos, fromPivot, toPivot,
-      !!fromState.pivotPinned, !!targetState.pivotPinned,
-      fromQ, toQ,
-    );
+    const fromAnim = Array.isArray(fromState.orbitPivot)   ? new THREE.Vector3(...fromState.orbitPivot)   : null;
+    const toAnim   = Array.isArray(targetState.orbitPivot) ? new THREE.Vector3(...targetState.orbitPivot) : null;
+    const orbit = _buildOrbitTween(fromPos, toPos, fromAnim, toAnim, fromQ, toQ);
 
     return new Promise((resolve) => {
       // Cancel any previous transition
@@ -1155,11 +1150,11 @@ export class SceneCore extends Emitter {
         fromPos, fromQ, fromPivot, fromFov,
         toPos, toQ, toPivot, toFov,
         orbit,
-        // Arriving by ANIMATION must leave the same pin state as arriving
+        // Arriving by ANIMATION must leave the same orbit centre as arriving
         // instantly through applyCameraState — otherwise the step is reached
-        // still carrying the previous step's pin, and manual orbiting (and
-        // the right-click menu that reads it) disagree with the step.
-        toPinned: !!targetState.pivotPinned,
+        // still carrying the previous step's, and the marker and right-click
+        // menu disagree with the step you are on.
+        toAnim,
         resolve,
         reject: null,
       };
@@ -1232,7 +1227,7 @@ export class SceneCore extends Emitter {
     }
 
     if (raw >= 1) {
-      this.controls.pivotPinned = !!t.toPinned;
+      this._animPivot = t.toAnim ? t.toAnim.clone() : null;
       this.controls.syncSpherical();
       this.updateOrbitPivotMarker();
       const resolve = t.resolve;
@@ -1464,7 +1459,6 @@ export class SceneCore extends Emitter {
       zoomSpeed:   4.8,
       rotateSpeed: 0.008,
       pivot:       new THREE.Vector3(0, 0, 0),
-      pivotPinned: false,          // 🎯 true = this step chose its orbit centre
       spherical:   new THREE.Spherical(),
       orbit: {
         startMouseX:  0,
@@ -1500,10 +1494,11 @@ export class SceneCore extends Emitter {
     //      pivot distance stays sane, so orbit radius stays sane.
     //   3. Miss AND pivot has never been set (e.g. brand-new scene) →
     //      fall back to scene center as a one-time initialiser.
+    // 🎯 NOTE (V0.3.2.234): the step's orbit centre deliberately does NOT
+    // appear here. That point exists for the step-to-step ANIMATION only;
+    // exploring the scene by hand keeps orbiting around whatever the cursor
+    // is over, which is the CAD behaviour the user relies on.
     const _updatePivotFromHit = (clientX, clientY) => {
-      // 🎯 A pinned pivot is the user's explicit choice for this step — the
-      // raycast-under-the-cursor policy below must not quietly replace it.
-      if (ctrl.pivotPinned) { ctrl.syncSpherical(); return; }
       const hit = this.pick(clientX, clientY);
       if (hit) {
         ctrl.pivot.copy(hit.point);
