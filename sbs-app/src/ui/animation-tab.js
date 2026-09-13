@@ -385,6 +385,12 @@ function _renderPhasesView(host, ctx) {
       if (!CHANNEL_ORDER.includes(t)) orderedTypes.push(t);
     }
     const isPauseBlock = phase.types.length === 1 && phase.types[0] === 'pause';
+    // 🌒 FADE BLOCK (V0.3.2.240) — like pause, a whole-row concept rather
+    // than a chip: the scene dissolves out, everything left to happen snaps
+    // while the screen is empty, and it dissolves back in. Rejects chip
+    // drops for the same reason pause does — it has no channels of its own.
+    const isFadeBlock  = phase.types.length === 1 && phase.types[0] === 'fade';
+    const noDrop       = isPauseBlock || isFadeBlock;
 
     const durRaw     = phase.durationRaw || 'AL1';
     const durDisplay = /^AL[12]$/i.test(durRaw) ? durRaw.toUpperCase() : durRaw;
@@ -430,19 +436,23 @@ function _renderPhasesView(host, ctx) {
         </span>`;
     }).join('');
 
-    const bodyHtml = orderedTypes.length
-      ? chipsHtml
-      : (isPauseBlock
-          ? `<span style="font-style:italic;padding:0 4px;color:#7c2d12;font-size:12px;font-weight:600">⏸ pause time block</span>`
-          : `<span style="font-style:italic;padding:0 4px;color:var(--text);opacity:0.65;font-size:12px">drop a channel here</span>`);
+    const bodyHtml = isFadeBlock
+      ? `<span style="font-style:italic;padding:0 4px;color:#a78bfa;font-size:12px;font-weight:600">🌒 fade block — everything after this arrives finished</span>`
+      : (orderedTypes.length
+          ? chipsHtml
+          : (isPauseBlock
+              ? `<span style="font-style:italic;padding:0 4px;color:#7c2d12;font-size:12px;font-weight:600">⏸ pause time block</span>`
+              : `<span style="font-style:italic;padding:0 4px;color:var(--text);opacity:0.65;font-size:12px">drop a channel here</span>`));
 
-    // Pause blocks get an orange tint so the user sees them as
-    // structurally different from a channel time block.
-    const rowBg     = isPauseBlock ? 'rgba(251,146,60,0.22)'  : 'rgba(100,116,139,0.18)';
-    const rowBorder = isPauseBlock ? 'rgba(251,146,60,0.55)'  : 'var(--line)';
+    // Pause blocks get an orange tint, fade blocks a violet one, so the
+    // user sees them as structurally different from a channel time block.
+    const rowBg     = isFadeBlock ? 'rgba(139,92,246,0.22)'
+                    : isPauseBlock ? 'rgba(251,146,60,0.22)'  : 'rgba(100,116,139,0.18)';
+    const rowBorder = isFadeBlock ? 'rgba(139,92,246,0.55)'
+                    : isPauseBlock ? 'rgba(251,146,60,0.55)'  : 'var(--line)';
 
     return `
-      <div class="cap-phase-row ${isPauseBlock ? 'cap-phase-pause' : ''}" data-phase-idx="${idx}"
+      <div class="cap-phase-row ${isPauseBlock ? 'cap-phase-pause' : ''} ${isFadeBlock ? 'cap-phase-fade' : ''}" data-phase-idx="${idx}"
            data-is-pause="${isPauseBlock ? '1' : '0'}"
            draggable="true"
            style="display:grid;
@@ -463,7 +473,7 @@ function _renderPhasesView(host, ctx) {
         ${durControlHtml}
         <div class="cap-phase-body"
              data-phase-idx="${idx}"
-             data-is-pause="${isPauseBlock ? '1' : '0'}"
+             data-no-drop="${noDrop ? '1' : '0'}"
              style="display:flex;flex-wrap:wrap;align-items:center;
                     min-height:24px;color:var(--text)">
           ${bodyHtml}
@@ -501,6 +511,15 @@ function _renderPhasesView(host, ctx) {
                      font-weight:600"
               title="Append a pause time block — a time spacer with no channels.">
         + Add pause
+      </button>
+      <button class="cap-add-fade"
+              style="flex:1;padding:6px 10px;font-size:12px;
+                     background:rgba(139,92,246,0.22);
+                     border:1px dashed rgba(139,92,246,0.65);
+                     border-radius:6px;color:var(--text);cursor:pointer;
+                     font-weight:600"
+              title="Append a fade block — the scene dissolves out, everything still to happen snaps while the screen is empty, and it dissolves back in. Put it last for a clean cut; put it after camera for 'camera flies, then the new state appears'.">
+        + Add fade
       </button>
     </div>`;
 
@@ -587,6 +606,16 @@ function _renderPhasesView(host, ctx) {
   host.querySelector('.cap-add-pause')?.addEventListener('click', () => {
     _mutatePhases(preset, phases => {
       phases.push({ types: ['pause'], durationRaw: 'AL1' });
+    });
+  });
+
+  // + Add fade — dissolve block (types:['fade']). Violet tint, rejects
+  // chip drops. Only one is honoured per preset: the engine runs the
+  // FIRST fade and everything the dissolve brought to final is marked
+  // handled, so a second one would have nothing left to dissolve.
+  host.querySelector('.cap-add-fade')?.addEventListener('click', () => {
+    _mutatePhases(preset, phases => {
+      phases.push({ types: ['fade'], durationRaw: 'AL1' });
     });
   });
 
@@ -692,12 +721,12 @@ function _renderPhasesView(host, ctx) {
   });
 
   // Drop target: time block body — accepts CHIPS.
-  // PAUSE blocks (data-is-pause="1") reject drops outright: the
+  // PAUSE and FADE blocks (data-no-drop="1") reject drops outright: the
   // dragover doesn't preventDefault, so dropEffect stays 'none' and
   // the chip springs back to the source. This is the visual contract
-  // for "pause blocks can't hold channels".
+  // for "these blocks can't hold channels".
   host.querySelectorAll('.cap-phase-body').forEach(body => {
-    const isPause = body.dataset.isPause === '1';
+    const isPause = body.dataset.noDrop === '1';
     body.addEventListener('dragover', (e) => {
       const hasChip = e.dataTransfer.types.includes('application/x-sbs-chip');
       if (!hasChip) return;
@@ -1246,6 +1275,7 @@ function _renderPhasesPreview(host, animStr) {
       if (!CHANNEL_ORDER.includes(t)) orderedTypes.push(t);
     }
     const isPauseBlock = phase.types.length === 1 && phase.types[0] === 'pause';
+    const isFadeBlock  = phase.types.length === 1 && phase.types[0] === 'fade';
     const durRaw       = phase.durationRaw || 'AL1';
     const durDisplay   = /^AL[12]$/i.test(durRaw) ? durRaw.toUpperCase() : durRaw;
 
@@ -1262,14 +1292,18 @@ function _renderPhasesPreview(host, animStr) {
         </span>`;
     }).join('');
 
-    const bodyHtml = orderedTypes.length
-      ? chipsHtml
-      : (isPauseBlock
-          ? `<span style="font-style:italic;padding:0 4px;color:#7c2d12;font-size:11px;font-weight:600">⏸ pause time block</span>`
-          : `<span style="font-style:italic;padding:0 4px;color:var(--text);opacity:0.65;font-size:11px">empty</span>`);
+    const bodyHtml = isFadeBlock
+      ? `<span style="font-style:italic;padding:0 4px;color:#a78bfa;font-size:11px;font-weight:600">🌒 fade block</span>`
+      : (orderedTypes.length
+          ? chipsHtml
+          : (isPauseBlock
+              ? `<span style="font-style:italic;padding:0 4px;color:#7c2d12;font-size:11px;font-weight:600">⏸ pause time block</span>`
+              : `<span style="font-style:italic;padding:0 4px;color:var(--text);opacity:0.65;font-size:11px">empty</span>`));
 
-    const rowBg     = isPauseBlock ? 'rgba(251,146,60,0.22)'  : 'rgba(100,116,139,0.18)';
-    const rowBorder = isPauseBlock ? 'rgba(251,146,60,0.55)'  : 'var(--line)';
+    const rowBg     = isFadeBlock ? 'rgba(139,92,246,0.22)'
+                    : isPauseBlock ? 'rgba(251,146,60,0.22)'  : 'rgba(100,116,139,0.18)';
+    const rowBorder = isFadeBlock ? 'rgba(139,92,246,0.55)'
+                    : isPauseBlock ? 'rgba(251,146,60,0.55)'  : 'var(--line)';
 
     return `
       <div style="display:grid;grid-template-columns:20px 50px 1fr;

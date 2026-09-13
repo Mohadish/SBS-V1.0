@@ -703,7 +703,11 @@ class StepManager {
     // handling — so it returns before any of that is built. Narration is not
     // touched: it starts with the step exactly as it always does.
     if (easing === 'instantFade') {
-      await this._beginFadeTransition(toSnapshot, transition.fadeMs);
+      // Timing INHERITS AL1 (the global camera duration) when the step has no
+      // explicit fadeMs — the same token every animation string already uses,
+      // so moving the global slider moves the fades with it. A number in the
+      // step's field overrides, like any other per-step duration.
+      await this._beginFadeTransition(toSnapshot, transition.fadeMs || globalCam);
       return;
     }
     let { nodeById } = state.pick('nodeById');
@@ -1401,9 +1405,33 @@ class StepManager {
     // phase loop already enforces the time).
     // `notesHandled` gates the FADE channel; note movement still rides obj.
 
+    let fadeHandled      = false;
+
     for (const phase of phases) {
       const { types, durationMs } = phase;
       const phasePromises = [];
+
+      // 🌒 FADE BLOCK (V0.3.2.240). Dissolve out, snap the scene to its final
+      // state while the screen is empty, dissolve back in — the per-step
+      // Instant fade, placeable anywhere in a choreography.
+      //
+      // It brings the WHOLE scene to final, so every channel it does not
+      // explicitly list is marked handled too: a later phase animating from
+      // target to target would be a dead slot, and the post-loop fallbacks
+      // would re-apply what is already applied. Channels in EARLIER phases
+      // have already run normally, which is what makes "camera flies, then
+      // the new state appears" work.
+      if (types.includes('fade') && !fadeHandled) {
+        fadeHandled = true;
+        if (toSnapshot.camera) cameraHandled = true;
+        objHandled = colorHandled = visHandled = cableHandled = true;
+        shapeHandled = notesHandled = insertHandled = true;
+        this._objectTransitions = [];   // nothing travels through a dissolve
+        // overlay + narration are NOT claimed. The dissolve is the 3D scene
+        // (meshes + flat shapes); overlay art and the voice keep their own
+        // slots, exactly like the per-step Instant fade leaves them alone.
+        phasePromises.push(this._beginFadeTransition(toSnapshot, durationMs));
+      }
       // Sleep span for this phase. The insert handler extends it to cover the
       // full reposition+pause+assemble chain, so offline export fires synthetic
       // ticks for the whole insert (else insertSimP hangs — same bug as the
@@ -1815,6 +1843,12 @@ class StepManager {
       }));
       if (stagedActorIds.size) showInsertTags();   // V0.2.22.57 — tags at overlay fallback
     }
+    // `fade` deliberately has NO fallback, breaking the four-step rule
+    // above (V0.3.2.240). It is not a channel — it is an opt-in way to
+    // perform the other channels. A missing fade must stay missing, so it
+    // is also absent from _CHANNELS_REQUIRED in io/project.js: back-filling
+    // it would dissolve every preset in the project.
+    //
     // narration / notes / pause have no fallback — narration's legacy
     // step:applied auto-play covers it, notes ride obj phase when no
     // notes slot is in the string (handled inside _scheduleNoteAnims),

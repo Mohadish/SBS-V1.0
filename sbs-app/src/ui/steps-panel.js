@@ -3744,8 +3744,9 @@ function _buildTransitionRow(step) {
     </div>
     <div style="display:flex;gap:4px;align-items:center">
       <select class="tran-cam-ease" style="flex:1" title="How this step is animated INTO — camera and objects together. Smooth eases out of the previous step and into this one; Linear holds a constant speed; Instant snaps with no animation; Instant fade dissolves out, snaps, and dissolves back in.">${easingOptions(t.cameraEasing)}</select>
-      <input type="number" class="tran-fade-ms" min="50" step="50" value="${t.fadeMs ?? 500}"
-             title="Fade duration in milliseconds — the only timing Instant fade has."
+      <input type="number" class="tran-fade-ms" min="50" step="50" value="${t.fadeMs ?? ''}"
+             placeholder="${state.get('cameraAnimDurationMs') ?? 1500}"
+             title="Fade duration in ms — the only timing Instant fade has. Leave empty to follow the global camera duration (AL1)."
              style="width:58px;${t.cameraEasing === 'instantFade' ? '' : 'display:none'}" />
     </div>
     <!-- "Fade visibility changes" checkbox REMOVED (V0.3.2.193): the
@@ -3835,7 +3836,10 @@ function _buildTransitionRow(step) {
     actions.updateTransition(stepId, { cameraEasing: v, objectEasing: v });
   });
   wrap.querySelector('.tran-fade-ms')?.addEventListener('change', e => {
-    const n = Math.max(50, Math.round(Number(e.target.value) || 500));
+    // Empty = inherit AL1. Clearing the field is the way back to the global.
+    const raw = String(e.target.value).trim();
+    if (!raw) { actions.updateTransition(stepId, { fadeMs: null }); return; }
+    const n = Math.max(50, Math.round(Number(raw) || 0));
     e.target.value = n;
     actions.updateTransition(stepId, { fadeMs: n });
   });

@@ -62,10 +62,17 @@ export const DEFAULT_ANIMATION_STR =
 // back into the final placed position over N ms. No actors flagged →
 // the slot is an inert dwell (like pause). See systems/hardware-insert-
 // anim.js for the effect implementation.
+// `fade` (V0.3.2.240) = a DISSOLVE block. The scene dissolves out over the
+// first half of its slot, everything snaps to its final state while the
+// screen is empty, and it dissolves back in. Whatever is left to happen
+// arrives already finished, so nothing travels. Put it last and it ends the
+// sequence cleanly; put it after `camera` and you get the camera flying
+// through the old scene, then the new one appearing — which is the case the
+// per-step Instant fade cannot express.
 const VALID_TYPES = new Set([
   'camera', 'color', 'obj', 'visibility', 'cable',
   'overlay', 'overlays', 'shape',
-  'narration', 'notes', 'pause', 'insert',
+  'narration', 'notes', 'pause', 'insert', 'fade',
 ]);
 
 // Matches: 'camera(500)' or 'obj+visibility(AL1)' or 'pause(AL2)'.
@@ -101,6 +108,12 @@ export function parseAnimation(str, resolveToken = null) {
     // `pause(N)` alone stays as-is.
     if (types.includes('pause') && types.length > 1) {
       types = types.filter(t => t !== 'pause');
+    }
+    // Fade is SOLO too, but the other way round — fade WINS. A dissolve
+    // brings the whole scene to final, so anything sharing its slot would
+    // be animating from target to target. `fade+camera(N)` → `fade(N)`.
+    if (types.includes('fade') && types.length > 1) {
+      types = ['fade'];
     }
     // Duration: raw int or AL token
     const durRaw = m[2];
@@ -156,6 +169,10 @@ export function parseAnimationForEdit(str) {
     // Pause-coercion mirrors parseAnimation: pause is solo-only.
     if (types.includes('pause') && types.length > 1) {
       types = types.filter(t => t !== 'pause');
+    }
+    // Fade-coercion mirrors parseAnimation: fade is solo, and fade wins.
+    if (types.includes('fade') && types.length > 1) {
+      types = ['fade'];
     }
     // Normalise the duration token: AL1/AL2 uppercase, digits as-is.
     const durRaw = /^al[12]$/i.test(m[2]) ? m[2].toUpperCase() : m[2];
@@ -254,6 +271,10 @@ export function serializePhasesForEdit(phases) {
     // engine doesn't see contradictory tokens.
     if (types.includes('pause') && types.length > 1) {
       types = types.filter(t => t !== 'pause');
+    }
+    // Fade-coercion: fade is solo and fade wins (see parseAnimation).
+    if (types.includes('fade') && types.length > 1) {
+      types = ['fade'];
     }
     // Empty time block — write `null(0)` as a no-op placeholder. The
     // engine's parseAnimation drops these (null isn't valid). They only

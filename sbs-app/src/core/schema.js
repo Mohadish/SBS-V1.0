@@ -27,7 +27,7 @@ export const SCHEMA_VERSIONS = {
   screen:     1,
 };
 
-export const APP_VERSION  = 'V0.3.2.239';
+export const APP_VERSION  = 'V0.3.2.240';
 // Format: YYYY-MM-DD. Bump along with APP_VERSION on every build worth
 // labelling so the File tab shows you're running the expected slice.
 export const APP_RELEASED = '2026-09-03';
@@ -674,7 +674,7 @@ export function createStep(overrides = {}) {
       // 'instantFade' (V0.3.2.239) is motionless: dissolve out, snap, in.
       cameraEasing:     'smooth',   // 'smooth' | 'linear' | 'instant' | 'instantFade'
       objectEasing:     'smooth',
-      fadeMs:           500,        // instantFade's only timing
+      fadeMs:           null,       // instantFade's only timing; null = inherit AL1
 
       visibilityFade:   true,       // fade visibility changes
       animPresetId:     null,       // null = use project default (or simultaneous fallback)
