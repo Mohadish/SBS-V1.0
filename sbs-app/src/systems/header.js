@@ -58,6 +58,7 @@ import { textEffectsCss }   from './text-effects.js';           // V0.3.2.149: s
 import { undoManager }      from './undo.js';                   // P7-C: drag / resize undo entries
 import { chapterProgressSpan } from './narration-timeline.js';  // chapter progress bar (#15)
 import { sceneCore }        from '../core/scene.js';             // tick hook drives the continuous fill
+import { showContextMenu }  from '../ui/context-menu.js';        // 🚫 per-step header hiding (V0.3.2.230)
 import * as clock           from '../core/clock.js';             // synthetic during export, wall live
 
 // ─── Pure data helpers (no DOM / Konva — usable from export, tests) ─────────
@@ -700,6 +701,10 @@ export function refreshHeaderLayer() {
   }
   _selection = new Set(restored.map(n => n.getAttr('headerId')));
   _transformer.nodes(restored);
+  // 🚫 Ghost + badge whatever this step hides. Here rather than on a step
+  // listener of its own: refreshHeaderLayer already runs on every step
+  // change (it re-resolves per-step text), so this cannot fall out of sync.
+  _applyPerStepHiding();
   _layer.batchDraw();
 
   // Settle the tracked refresh promise once all hydrate promises
@@ -965,7 +970,53 @@ async function _hydrateHeaderText(node, textHtml, item) {
   }
 }
 
+/** Steps the action applies to: the multi-step selection when there is one,
+ *  otherwise just the active step. */
+function _targetStepIds() {
+  const sel = state.get('selectedStepIds');
+  const ids = sel instanceof Set ? [...sel] : Array.isArray(sel) ? sel : [];
+  if (ids.length) return ids;
+  const active = state.get('activeStepId');
+  return active ? [active] : [];
+}
+
+function _showHeaderContextMenu(node, x, y) {
+  const ids = [...(_selection.size ? _selection : new Set([node.getAttr('headerId')]))].filter(Boolean);
+  const steps = _targetStepIds();
+  const hidden = hiddenHeaderIdsForStep();
+  const anyHidden = ids.some(id => hidden.has(id));
+  const where = steps.length > 1 ? `${steps.length} selected steps` : 'this step';
+  const what  = ids.length > 1 ? `${ids.length} headers` : 'header';
+  showContextMenu([
+    anyHidden
+      ? { label: `👁 Show ${what} on ${where}`,
+          action: () => {
+            const n = setHeaderHiddenOnSteps(ids, steps, false);
+            setStatus(n ? `Shown again on ${n} step(s).` : 'Nothing to change.', 'info', 3000);
+          } }
+      : { label: `🚫 Hide ${what} on ${where}`,
+          action: () => {
+            const n = setHeaderHiddenOnSteps(ids, steps, true);
+            setStatus(n ? `Hidden on ${n} step(s) — ghosted here, absent from renders.` : 'Nothing to change.', 'info', 4500);
+          } },
+    ...(anyHidden && ids.length === 1
+      ? [{ label: '👁 Show on every step',
+           action: () => {
+             const all = (state.get('steps') || []).map(s => s.id);
+             const n = setHeaderHiddenOnSteps(ids, all, false);
+             setStatus(n ? `Cleared on ${n} step(s).` : 'Nothing to change.', 'info', 3000);
+           } }]
+      : []),
+  ], x, y);
+}
+
 function _attachItemHandlers(node, item) {
+  node.on('contextmenu', (e) => {
+    e.evt?.preventDefault?.();
+    e.cancelBubble = true;
+    if (!_selection.has(node.getAttr('headerId'))) _selectHeaderNode(node, false);
+    _showHeaderContextMenu(node, e.evt?.clientX ?? 0, e.evt?.clientY ?? 0);
+  });
   // Caller (refreshHeaderLayer) only attaches handlers when the header
   // is interactive (overlay editing on AND not locked). No lock-check
   // needed here — by the time we're called, the node is interactive.
@@ -1639,6 +1690,94 @@ function _uniqueName(name, taken) {
  *
  * @param {{width?:number, height?:number}} [opts]
  */
+// ── 🚫 Per-step header hiding (V0.3.2.230) ─────────────────────────────────
+// Headers are project-level and draw on every step, but occasionally one has
+// to sit out a single step — a logo that must not cover something, say.
+//
+// The exclusion is stored ON THE STEP (`step.hiddenHeaderIds`), not on the
+// header item, and the reasons are practical: duplicating or pasting a step
+// carries the exclusion with it (an item-side list keyed by step id would not
+// know the new step), deleting a step disposes of it instead of leaving dead
+// ids behind, and a step imported from another project simply names header
+// ids that do not exist here — so the header SHOWS, which is the safe way to
+// be wrong. A missing field reads as "nothing hidden", so old projects load
+// unchanged.
+//
+// In the editor a hidden item is ghosted and badged rather than removed, so
+// it can be found and brought back. It is genuinely absent from renders:
+// rasterizeHeaderLayer already hides edit-only nodes before the snapshot and
+// restores them after, and these join that list.
+const HDR_HIDDEN_ALPHA = 0.3;
+const HDR_BADGE_NAME   = 'sbs-hdr-hidden-badge';
+
+/** Ids of header items hidden on `stepId` (defaults to the active step). */
+export function hiddenHeaderIdsForStep(stepId = null) {
+  const id = stepId || state.get('activeStepId');
+  const step = (state.get('steps') || []).find(s => s.id === id);
+  return new Set(step?.hiddenHeaderIds || []);
+}
+
+export function isHeaderHiddenOnStep(headerId, stepId = null) {
+  return hiddenHeaderIdsForStep(stepId).has(headerId);
+}
+
+/**
+ * Hide or show `headerIds` across `stepIds`, as ONE undoable change.
+ * Returns the number of steps actually altered.
+ */
+export function setHeaderHiddenOnSteps(headerIds, stepIds, hidden) {
+  const ids = [...new Set(headerIds)].filter(Boolean);
+  const targets = [...new Set(stepIds)].filter(Boolean);
+  if (!ids.length || !targets.length) return 0;
+  const steps = state.get('steps') || [];
+  let changed = 0;
+  const next = steps.map(s => {
+    if (!targets.includes(s.id)) return s;
+    const cur = new Set(s.hiddenHeaderIds || []);
+    const before = cur.size;
+    for (const hid of ids) { if (hidden) cur.add(hid); else cur.delete(hid); }
+    if (cur.size === before) return s;
+    changed++;
+    return { ...s, hiddenHeaderIds: [...cur] };
+  });
+  if (!changed) return 0;
+  const label = `${hidden ? 'Hide' : 'Show'} ${ids.length > 1 ? `${ids.length} headers` : 'header'} on ${changed > 1 ? `${changed} steps` : 'this step'}`;
+  const before = steps;
+  const write = (list) => { state.setState({ steps: list }); state.markDirty(); refreshHeaderLayer(); };
+  write(next);
+  undoManager.push(label, () => write(before), () => write(next));
+  return changed;
+}
+
+/** Ghost + badge every item hidden on the active step. Called at the end of
+ *  refreshHeaderLayer, so it re-applies on every step change automatically. */
+function _applyPerStepHiding() {
+  if (!_layer) return;
+  const hidden = hiddenHeaderIdsForStep();
+  for (const node of _layer.getChildren()) {
+    if (node === _transformer || node.name?.() === HDR_BADGE_NAME) continue;
+    const hid = node.getAttr?.('headerId');
+    if (!hid) continue;
+    const off = hidden.has(hid);
+    node.opacity(off ? HDR_HIDDEN_ALPHA : 1);
+    if (off) _layer.add(_makeHiddenBadge(node));
+  }
+  _layer.batchDraw();
+}
+
+/** A crossed-out eye pinned to the item's top-left — the same "hidden"
+ *  vocabulary the tree uses, so it reads without explanation. */
+function _makeHiddenBadge(node) {
+  const box = node.getClientRect({ relativeTo: _layer, skipStroke: true });
+  const g = new Konva.Group({ name: HDR_BADGE_NAME, x: box.x + 12, y: box.y + 12, listening: false });
+  g.add(new Konva.Circle({ radius: 11, fill: 'rgba(15,23,42,0.85)', stroke: '#f87171', strokeWidth: 1.5 }));
+  // Eye: two arcs meeting at the corners, with a pupil.
+  g.add(new Konva.Ellipse({ radiusX: 6.5, radiusY: 4, stroke: '#f87171', strokeWidth: 1.3 }));
+  g.add(new Konva.Circle({ radius: 1.8, fill: '#f87171' }));
+  g.add(new Konva.Line({ points: [-7.5, -7.5, 7.5, 7.5], stroke: '#f87171', strokeWidth: 2, lineCap: 'round' }));
+  return g;
+}
+
 export function rasterizeHeaderLayer(opts = {}) {
   if (!_layer || !_stage) return null;
   if (state.get('headersHidden')) return null;
@@ -1657,6 +1796,14 @@ export function rasterizeHeaderLayer(opts = {}) {
   const chips = _layer.getChildren().filter(c => c.name?.() === 'sbs-subtitle-chip');
   const chipVis = chips.map(c => c.visible());
   chips.forEach(c => c.visible(false));
+  // 🚫 Items the active step hides are ghosted + badged in the editor, and
+  // genuinely ABSENT here — same hide/restore pattern as the transformer and
+  // the chips above, which is why this stays a one-place change.
+  const hiddenIds = hiddenHeaderIdsForStep();
+  const ghosted = _layer.getChildren().filter(c =>
+    c.name?.() === HDR_BADGE_NAME || (c.getAttr?.('headerId') && hiddenIds.has(c.getAttr('headerId'))));
+  const ghostVis = ghosted.map(c => c.visible());
+  ghosted.forEach(c => c.visible(false));
 
   // Render at canonical size (matches the overlay rasteriser). Header
   // items live in canonical coordinates. Same as overlay: zero the
@@ -1688,6 +1835,7 @@ export function rasterizeHeaderLayer(opts = {}) {
 
   _transformer.visible(wasVisible);
   chips.forEach((c, i) => c.visible(chipVis[i]));
+  ghosted.forEach((c, i) => c.visible(ghostVis[i]));
   return canvas;
 }
 

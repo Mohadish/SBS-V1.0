@@ -91,6 +91,9 @@ function _stepKeyView(s, keep, animStr) {
   delete c.subtitles;               // 🌐 V0.3.2.63: subtitle overrides/translations composite at
                                     // ASSEMBLY (header layer) — editing a caption must never
                                     // re-key or re-render a 3D segment
+  delete c.hiddenHeaderIds;         // 🚫 V0.3.2.230: same class as subtitles — segments are
+                                    // header-less by design, headers composite at assembly, so
+                                    // hiding one on a step changes no segment pixel
   if (c.narration) {
     // Fixed-shape view: the narration object is wholesale-replaced by the
     // synth/precache passes (audio body, property order, re-measured
