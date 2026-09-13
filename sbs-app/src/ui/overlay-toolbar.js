@@ -26,6 +26,7 @@ let _bar = null;
 let _mainBtn = null;
 let _tools = null;
 let _textSlot = null;   // populated by text-toolbar.js while editing
+let _xrayBtn = null;    // 👓 overlay X-ray toggle (V0.3.2.229, keybound .238)
 
 // Overlay-mode awareness (V0.3.0.23): viewport clicks while editing do nothing,
 // which is easy to forget. Blink the toggle on each such click; after 3, offer to
@@ -257,13 +258,8 @@ export function initOverlayToolbar() {
   // arranging. Lives NEXT TO the edit toggle rather than inside the tools
   // row, because it is just as useful out of edit mode (matching a camera to
   // a reference image) as in it (placing a title against geometry).
-  const _xrayBtn = _btn('👓 X-ray', 'Ghost the overlay so you can see the 3D scene underneath. Arranging aid only — renders, exports and thumbnails are unaffected.');
-  const _syncXray = () => {
-    const on = overlay.isOverlayXray();
-    _xrayBtn.textContent = on ? '👓 X-ray on' : '👓 X-ray';
-    _xrayBtn.style.background = on ? 'rgba(56,189,248,0.28)' : '';
-  };
-  _xrayBtn.addEventListener('click', () => { overlay.setOverlayXray(!overlay.isOverlayXray()); _syncXray(); });
+  _xrayBtn = _btn('👓 X-ray', 'Ghost the overlay so you can see the 3D scene underneath. Arranging aid only — renders, exports and thumbnails are unaffected.');
+  _xrayBtn.addEventListener('click', () => toggleOverlayXray());
   _syncXray();
 
   // Append in left-to-right DOM order: text slot · tools · toggle.
@@ -273,9 +269,11 @@ export function initOverlayToolbar() {
 
   // 🎹 rebound key → refresh the advertised "(O)" on the toggle.
   window.addEventListener('sbs:keymap-changed', () => {
-    if (!_mainBtn) return;
-    const k = keyHint('overlayEdit');
-    _mainBtn.textContent = overlay.isEditing() ? `✏ Editing… ${k}` : `✏ Edit overlay ${k}`;
+    if (_mainBtn) {
+      const k = keyHint('overlayEdit');
+      _mainBtn.textContent = overlay.isEditing() ? `✏ Editing… ${k}` : `✏ Edit overlay ${k}`;
+    }
+    _syncXray();
   });
 
   // Blink + (after 3) prompt when the user clicks the viewport while editing.
@@ -446,6 +444,21 @@ function _setEditing(on) {
 export function toggleOverlayEditing() {
   if (!_mainBtn) return;
   _setEditing(!overlay.isEditing());
+}
+
+/** 👓 V0.3.2.238 — the X-ray toggle's single entry point, so the button and
+ *  the keyboard shortcut can never disagree about the label. */
+export function toggleOverlayXray() {
+  overlay.setOverlayXray(!overlay.isOverlayXray());
+  _syncXray();
+}
+
+function _syncXray() {
+  if (!_xrayBtn) return;
+  const on = overlay.isOverlayXray();
+  const k  = keyHint('overlayXray');
+  _xrayBtn.textContent = on ? `👓 X-ray on ${k}` : `👓 X-ray ${k}`;
+  _xrayBtn.style.background = on ? 'rgba(56,189,248,0.28)' : '';
 }
 
 // ── Utils ──────────────────────────────────────────────────────────────────

@@ -26,6 +26,7 @@ const DEFAULTS = {
   globalMode:        'Space',  // 🌐 transform edits carry across steps
   gizmoSpace:        'KeyL',   // ⤧ gizmo Local ↔ World
   captureStepCamera: 'KeyC',   // 📷 save the current view as the step's camera (free binding)
+  overlayXray:       'KeyX',   // 👓 ghost the overlay to arrange against the 3D (never rendered)
 };
 
 let _overrides = {};
