@@ -94,6 +94,13 @@ function _stepKeyView(s, keep, animStr) {
   delete c.hiddenHeaderIds;         // 🚫 V0.3.2.230: same class as subtitles — segments are
                                     // header-less by design, headers composite at assembly, so
                                     // hiding one on a step changes no segment pixel
+  // 🎯 V0.3.2.231: the orbit PIVOT stays in the key (the camera tween lerps
+  // it, so it does move pixels) but the PINNED flag is authoring-only — it
+  // decides whether orbiting re-picks the point, nothing a frame can show.
+  if (c.snapshot?.camera?.pivotPinned !== undefined) {
+    c.snapshot = { ...c.snapshot, camera: { ...c.snapshot.camera } };
+    delete c.snapshot.camera.pivotPinned;
+  }
   if (c.narration) {
     // Fixed-shape view: the narration object is wholesale-replaced by the
     // synth/precache passes (audio body, property order, re-measured

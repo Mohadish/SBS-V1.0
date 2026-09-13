@@ -7884,7 +7884,13 @@ export function previewModelSourceTransform(nodeId, sourceLocalPosition, sourceL
 // implicitly moves every bound step (steps.activateStep resolves cameras
 // through the binding at activation time).
 
-const CAMERA_FIELDS = ['position', 'quaternion', 'pivot', 'up', 'fov'];
+// 🎯 pivotPinned rides along (V0.3.2.231): without it, "Update step camera"
+// would silently drop a pinned orbit centre the next time the user pressed
+// C. getCameraState only emits it when true, so an unpinned capture writes
+// undefined — which JSON.stringify omits, leaving old files byte-identical.
+// Camera TEMPLATES carry it too, deliberately: a template is a whole view,
+// and applying one should bring its orbit centre with it.
+const CAMERA_FIELDS = ['position', 'quaternion', 'pivot', 'up', 'fov', 'pivotPinned'];
 
 function _captureCameraState() {
   // Snapshot just the fields a CameraView holds. Avoids leaking unrelated
@@ -8149,6 +8155,56 @@ export function updateStepCameraFromCurrent(stepId) {
     () => { state.setState({ steps: allSteps });  state.markDirty(); state.emit('step:synced', prev); },
     () => { state.setState({ steps: nextSteps }); state.markDirty(); state.emit('step:synced', next); },
   );
+}
+
+/**
+ * 🎯 Pin (or clear) the orbit centre for a step — backlog #12.
+ *
+ * The pivot has always ridden in `snapshot.camera`, so this writes no new
+ * step field: saving, copy-paste and the between-step camera tween already
+ * carry it. `pivotPinned` is the only addition, and it just stops orbiting
+ * from re-picking the point from whatever sits under the cursor.
+ *
+ * `worldPoint` = a THREE.Vector3 to pin, or null to release. Applies to the
+ * given steps (defaults to the active one) as ONE undo entry, so it works
+ * from a multi-step selection like the camera actions beside it.
+ */
+export function setStepOrbitPivot(worldPoint, stepIds = null) {
+  const ids = (stepIds?.length ? stepIds : [state.get('activeStepId')]).filter(Boolean);
+  if (!ids.length) return 0;
+  const allSteps = state.get('steps') || [];
+  const pivot = worldPoint ? [worldPoint.x, worldPoint.y, worldPoint.z] : null;
+
+  let n = 0;
+  const nextSteps = allSteps.map(s => {
+    if (!ids.includes(s.id)) return s;
+    const cam = { ...(s.snapshot?.camera || {}) };
+    if (!cam.position) return s;                 // never captured a camera yet
+    if (pivot) { cam.pivot = pivot; cam.pivotPinned = true; }
+    else       { delete cam.pivotPinned; }       // keep the pivot, just unpin
+    n++;
+    return { ...s, snapshot: { ...(s.snapshot || {}), camera: cam } };
+  });
+  if (!n) return 0;
+
+  const apply = (list) => {
+    state.setState({ steps: list });
+    state.markDirty();
+    // Re-assert on the live camera when the ACTIVE step is one of them, so
+    // the change is visible immediately rather than at the next activation.
+    const act = list.find(s => s.id === state.get('activeStepId'));
+    if (act && ids.includes(act.id) && act.snapshot?.camera) {
+      sceneCore.setOrbitPivot(act.snapshot.camera.pivotPinned
+        ? new window.THREE.Vector3(...act.snapshot.camera.pivot) : null);
+    }
+    for (const s of list) if (ids.includes(s.id)) state.emit('step:synced', s);
+  };
+  apply(nextSteps);
+  undoManager.push(
+    `${pivot ? 'Set' : 'Clear'} orbit centre on ${n > 1 ? `${n} steps` : 'this step'}`,
+    () => apply(allSteps), () => apply(nextSteps),
+  );
+  return n;
 }
 
 /**

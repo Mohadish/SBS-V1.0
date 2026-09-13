@@ -29,6 +29,9 @@
  */
 
 import { getCanonicalSize, computeSafeFrameRect } from './safe-frame.js';
+// 🎯 V0.3.2.231 — only to read '_exporting' for the orbit-pivot marker.
+// state.js imports schema.js alone, so this closes no cycle.
+import { state } from './state.js';
 import * as clock from './clock.js';
 // V0.2.22.21 — combined silhouette outline pass. Runs after the main
 // scene render to composite a single outline around the union of
@@ -523,6 +526,12 @@ export class SceneCore extends Emitter {
     // the just-drawn scene). Early-exits when nothing is selected.
     renderOutlinePass(this.scene, this.camera);
 
+    // 🎯 Keep the pinned-pivot crosshair honest every frame: it tracks the
+    // camera for constant screen size, and it must vanish while exporting.
+    // (Thumbnails are already safe — _pendingThumb grabs the canvas ABOVE,
+    // before overlayScene is composited.)
+    if (this._orbitPivotMarker) this.updateOrbitPivotMarker();
+
     // Overlay scene (gizmos / transform handles) — depth-cleared so they
     // always appear on top
     if (this.overlayScene.children.length > 0) {
@@ -892,6 +901,12 @@ export class SceneCore extends Emitter {
       pivot:      [this.controls.pivot.x, this.controls.pivot.y, this.controls.pivot.z],
       up:         [up.x, up.y, up.z],
       fov:        this.camera.fov,
+      // 🎯 V0.3.2.231 — a PINNED orbit centre. The pivot itself has always
+      // ridden in the camera state (so it already saves, copy-pastes and
+      // tweens per step); what this flag adds is that orbiting stops
+      // re-picking it from whatever is under the cursor. Only written when
+      // set, so unpinned steps serialise exactly as before.
+      ...(this.controls.pivotPinned ? { pivotPinned: true } : {}),
     };
   }
 
@@ -912,6 +927,85 @@ export class SceneCore extends Emitter {
       this.controls.pivot.set(...state.pivot);
       this.controls.syncSpherical();
     }
+    if (this.controls) {
+      this.controls.pivotPinned = !!state.pivotPinned;
+      this.updateOrbitPivotMarker();
+    }
+  }
+
+  // ═══════════════════════════════════════════════════════════════════════
+  //  🎯 PINNED ORBIT CENTRE (V0.3.2.231)
+  // ═══════════════════════════════════════════════════════════════════════
+  /**
+   * Pin the orbit centre to a world point (or unpin with null). The point is
+   * the same `controls.pivot` the camera state already carries per step, so
+   * saving, copy-paste and the between-step camera tween all come for free —
+   * the only new behaviour is that orbiting stops re-picking it.
+   *
+   * No roll risk: the orbit rebuilds its basis from world Y every frame
+   * (right = forward × Y, up = right × forward), so the horizon stays level
+   * whatever the pivot is.
+   */
+  setOrbitPivot(worldPoint) {
+    if (!this.controls) return;
+    if (worldPoint) {
+      this.controls.pivot.copy(worldPoint);
+      this.controls.pivotPinned = true;
+    } else {
+      this.controls.pivotPinned = false;
+    }
+    this.controls.syncSpherical();
+    this.updateOrbitPivotMarker();
+    this.emit('controls:change');
+  }
+
+  getOrbitPivot() {
+    if (!this.controls?.pivotPinned) return null;
+    return this.controls.pivot.clone();
+  }
+
+  /**
+   * Show a small crosshair at a pinned pivot so the step's orbit centre is
+   * visible instead of invisible state. Lives in overlayScene, which
+   * renderFrame draws depth-cleared on top — and which the export path also
+   * draws, so the marker is explicitly hidden while exporting or grabbing a
+   * thumbnail. Authoring aid only, exactly like the work camera.
+   */
+  updateOrbitPivotMarker() {
+    if (!this.overlayScene || !window.THREE) return;
+    const T = window.THREE;
+    const want = !!this.controls?.pivotPinned;
+    if (!this._orbitPivotMarker) {
+      if (!want) return;
+      const g = new T.Group();
+      g.name = 'sbs-orbit-pivot';
+      const mat = new T.LineBasicMaterial({ color: 0xf59e0b, depthTest: false, transparent: true, opacity: 0.95 });
+      const arm = (a, b) => {
+        const geo = new T.BufferGeometry().setFromPoints([a, b]);
+        return new T.Line(geo, mat);
+      };
+      const R = 1;   // unit crosshair — scaled to a constant screen size below
+      g.add(arm(new T.Vector3(-R, 0, 0), new T.Vector3(R, 0, 0)));
+      g.add(arm(new T.Vector3(0, -R, 0), new T.Vector3(0, R, 0)));
+      g.add(arm(new T.Vector3(0, 0, -R), new T.Vector3(0, 0, R)));
+      const ring = new T.Mesh(
+        new T.SphereGeometry(0.18, 12, 8),
+        new T.MeshBasicMaterial({ color: 0xf59e0b, depthTest: false, transparent: true, opacity: 0.9 }),
+      );
+      g.add(ring);
+      g.renderOrder = 9999;
+      this._orbitPivotMarker = g;
+      this.overlayScene.add(g);
+    }
+    const m = this._orbitPivotMarker;
+    m.visible = want && !state.get('_exporting');
+    if (!m.visible) return;
+    m.position.copy(this.controls.pivot);
+    // Constant on-screen size: scale with distance so it never becomes a dot
+    // on a big assembly or a wall on a small one.
+    const d = Math.max(this.camera.position.distanceTo(this.controls.pivot), 1e-3);
+    const s = d * 0.045;
+    m.scale.set(s, s, s);
   }
 
   /**
@@ -1238,6 +1332,7 @@ export class SceneCore extends Emitter {
       zoomSpeed:   4.8,
       rotateSpeed: 0.008,
       pivot:       new THREE.Vector3(0, 0, 0),
+      pivotPinned: false,          // 🎯 true = this step chose its orbit centre
       spherical:   new THREE.Spherical(),
       orbit: {
         startMouseX:  0,
@@ -1274,6 +1369,9 @@ export class SceneCore extends Emitter {
     //   3. Miss AND pivot has never been set (e.g. brand-new scene) →
     //      fall back to scene center as a one-time initialiser.
     const _updatePivotFromHit = (clientX, clientY) => {
+      // 🎯 A pinned pivot is the user's explicit choice for this step — the
+      // raycast-under-the-cursor policy below must not quietly replace it.
+      if (ctrl.pivotPinned) { ctrl.syncSpherical(); return; }
       const hit = this.pick(clientX, clientY);
       if (hit) {
         ctrl.pivot.copy(hit.point);

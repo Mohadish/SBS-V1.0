@@ -4451,6 +4451,36 @@ canvas.addEventListener('contextmenu', e => {
     disabled: _camTargets.ids.length === 0,
     action: () => _openCameraTemplatePicker(),
   });
+  // 🎯 V0.3.2.231 (backlog #12) — pin the point the camera orbits around for
+  // this step. The pivot already lives in the step's camera state, so it
+  // saves, copy-pastes and tweens between steps like the rest of the camera;
+  // pinning only stops orbiting from re-picking it off whatever is under the
+  // cursor. Level horizon is guaranteed by the controls themselves — they
+  // rebuild the camera basis from world Y every frame, so no barrel roll.
+  {
+    const pinned  = !!sceneCore.getOrbitPivot();
+    const canPin  = !!noteHit?.point && _camTargets.ids.length > 0;
+    const scope   = _camTargets.ids.length > 1 ? ` (${_camTargets.ids.length} selected steps)` : '';
+    items.push({
+      label: (pinned ? '🎯 Reposition orbit centre here' : '🎯 Set orbit centre here') + scope,
+      disabled: !canPin,
+      action: () => {
+        const n = actions.setStepOrbitPivot(noteHit.point, _camTargets.ids);
+        setStatus(n
+          ? `Orbit centre set on ${n > 1 ? `${n} steps` : 'this step'} — orbiting now turns around it.`
+          : 'This step has no saved camera yet — update the step camera first.', n ? 'success' : 'warn', 5000);
+      },
+    });
+    if (pinned) {
+      items.push({
+        label: `🎯 Remove orbit centre${scope}`,
+        action: () => {
+          const n = actions.setStepOrbitPivot(null, _camTargets.ids);
+          setStatus(n ? 'Orbit centre removed — back to picking it under the cursor.' : 'Nothing to remove.', 'info', 4000);
+        },
+      });
+    }
+  }
   items.push({
     label: _viewportActiveStepTplName
       ? `📷🔗 Update template "${_viewportActiveStepTplName}"`
