@@ -42,19 +42,25 @@ import { state } from './state.js';
  * forward), so a move can never introduce roll. Degenerate straight-up or
  * straight-down views fall back to a fixed right vector.
  */
-function _lookAtLevel(camera, target) {
-  const fwd = target.clone().sub(camera.position);
-  if (fwd.lengthSq() < 1e-12) return;
+function _levelQuat(eye, target) {
+  const fwd = target.clone().sub(eye);
+  if (fwd.lengthSq() < 1e-12) return null;
   fwd.normalize();
   const Y = new THREE.Vector3(0, 1, 0);
   let right = new THREE.Vector3().crossVectors(fwd, Y);
   if (right.lengthSq() < 1e-10) right.set(1, 0, 0);
   right.normalize();
   const up = new THREE.Vector3().crossVectors(right, fwd).normalize();
-  camera.up.copy(up);
-  camera.quaternion.setFromRotationMatrix(
+  return new THREE.Quaternion().setFromRotationMatrix(
     new THREE.Matrix4().makeBasis(right, up, fwd.clone().negate()),
   );
+}
+
+function _lookAtLevel(camera, target) {
+  const q = _levelQuat(camera.position, target);
+  if (!q) return;
+  camera.quaternion.copy(q);
+  camera.up.set(0, 1, 0).applyQuaternion(q);
 }
 
 /** Spherical coordinates of `pos` about `pivot`: azimuth about world Y,
@@ -78,17 +84,36 @@ function _sphericalAbout(pos, pivot) {
  * A degenerate radius (camera sitting on the pivot) also declines, since an
  * orbit of radius zero has no direction to interpolate.
  */
-function _buildOrbitTween(fromPos, toPos, fromPivot, toPivot, fromPinned, toPinned) {
+function _buildOrbitTween(fromPos, toPos, fromPivot, toPivot, fromPinned, toPinned, fromQ, toQ) {
   if (!fromPinned && !toPinned) return null;
-  const a = _sphericalAbout(fromPos, fromPinned ? fromPivot : toPivot);
-  const b = _sphericalAbout(toPos,   toPinned   ? toPivot   : fromPivot);
+  // The pivots the two ends are MEASURED against, kept on the tween and used
+  // again for reconstruction. Measuring about one point and rebuilding about
+  // another is what made the camera jump the instant a move began when only
+  // one end was pinned.
+  const p0 = (fromPinned ? fromPivot : toPivot).clone();
+  const p1 = (toPinned   ? toPivot   : fromPivot).clone();
+  const a = _sphericalAbout(fromPos, p0);
+  const b = _sphericalAbout(toPos,   p1);
   if (a.r < 1e-6 || b.r < 1e-6) return null;
   // Take the SHORT way round: raw azimuths can differ by more than half a
   // turn, and lerping those spins the camera the long way for no reason.
   let dAz = b.az - a.az;
   while (dAz >  Math.PI) dAz -= Math.PI * 2;
   while (dAz < -Math.PI) dAz += Math.PI * 2;
-  return { fromAz: a.az, dAz, fromEl: a.el, toEl: b.el, fromR: a.r, toR: b.r };
+
+  // AIM OFFSET. A recorded camera does not necessarily point AT its pivot —
+  // the pivot is an orbit centre, not a look-at target. Forcing the rig's
+  // aim would snap the view to re-centre on frame one and land on the wrong
+  // framing at the end. So each end keeps the rotation BETWEEN "aimed at the
+  // pivot" and its own recorded orientation, and that offset is slerped
+  // across the move: frame 0 is exactly step A's view, frame N exactly step
+  // B's, and in between the aim drifts over while the rig orbits.
+  const lvlA = _levelQuat(fromPos, p0);
+  const lvlB = _levelQuat(toPos,   p1);
+  const dFrom = lvlA ? lvlA.clone().invert().multiply(fromQ) : new THREE.Quaternion();
+  const dTo   = lvlB ? lvlB.clone().invert().multiply(toQ)   : new THREE.Quaternion();
+
+  return { p0, p1, fromAz: a.az, dAz, fromEl: a.el, toEl: b.el, fromR: a.r, toR: b.r, dFrom, dTo };
 }
 import * as clock from './clock.js';
 // V0.2.22.21 — combined silhouette outline pass. Runs after the main
@@ -1108,6 +1133,7 @@ export class SceneCore extends Emitter {
     const orbit = _buildOrbitTween(
       fromPos, toPos, fromPivot, toPivot,
       !!fromState.pivotPinned, !!targetState.pivotPinned,
+      fromQ, toQ,
     );
 
     return new Promise((resolve) => {
@@ -1166,18 +1192,28 @@ export class SceneCore extends Emitter {
     this.controls.pivot.copy(pivot);
 
     if (t.orbit) {
-      // 🎯 Orbit move: azimuth, elevation and dolly together, then look at
-      // the pivot. The basis is rebuilt from world Y exactly as the manual
-      // orbit controls do, so the horizon stays level and no roll can creep
-      // in through a slerp.
+      // 🎯 Orbit move: azimuth, elevation and dolly advance together around
+      // the pivot, then the aim offset is blended on top. The rig's own
+      // pivot track (p0→p1) is used here, NOT the camera-state pivots — they
+      // can differ when only one end is pinned, and mixing the two is what
+      // made the camera jump on the first frame.
       const o   = t.orbit;
+      const p   = o.p0.clone().lerp(o.p1, alpha);
       const az  = o.fromAz + o.dAz * alpha;
       const el  = o.fromEl + (o.toEl - o.fromEl) * alpha;
       const r   = o.fromR  + (o.toR  - o.fromR)  * alpha;
       const ce  = Math.cos(el);
       const dir = new THREE.Vector3(ce * Math.sin(az), Math.sin(el), ce * Math.cos(az));
-      this.camera.position.copy(pivot).addScaledVector(dir, r);
-      _lookAtLevel(this.camera, pivot);
+      this.camera.position.copy(p).addScaledVector(dir, r);
+      const lvl = _levelQuat(this.camera.position, p);
+      if (lvl) {
+        // Level aim × the blended offset → frame 0 is exactly step A's
+        // recorded view and the last frame exactly step B's, with the
+        // re-aiming spread smoothly across the move instead of snapping.
+        const d = o.dFrom.clone().slerp(o.dTo, alpha);
+        this.camera.quaternion.copy(lvl).multiply(d);
+        this.camera.up.set(0, 1, 0).applyQuaternion(this.camera.quaternion);
+      }
     } else {
       // Interpolate position
       const pos = t.fromPos.clone().lerp(t.toPos, alpha);
