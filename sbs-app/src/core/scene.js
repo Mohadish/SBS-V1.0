@@ -32,6 +32,64 @@ import { getCanonicalSize, computeSafeFrameRect } from './safe-frame.js';
 // 🎯 V0.3.2.231 — only to read '_exporting' for the orbit-pivot marker.
 // state.js imports schema.js alone, so this closes no cycle.
 import { state } from './state.js';
+
+// ═══════════════════════════════════════════════════════════════════════════
+//  🎯 ORBIT CAMERA MOVE (V0.3.2.232)
+// ═══════════════════════════════════════════════════════════════════════════
+/**
+ * Point the camera at `target` with the horizon level — the same basis the
+ * manual orbit controls build (right = forward × worldY, up = right ×
+ * forward), so a move can never introduce roll. Degenerate straight-up or
+ * straight-down views fall back to a fixed right vector.
+ */
+function _lookAtLevel(camera, target) {
+  const fwd = target.clone().sub(camera.position);
+  if (fwd.lengthSq() < 1e-12) return;
+  fwd.normalize();
+  const Y = new THREE.Vector3(0, 1, 0);
+  let right = new THREE.Vector3().crossVectors(fwd, Y);
+  if (right.lengthSq() < 1e-10) right.set(1, 0, 0);
+  right.normalize();
+  const up = new THREE.Vector3().crossVectors(right, fwd).normalize();
+  camera.up.copy(up);
+  camera.quaternion.setFromRotationMatrix(
+    new THREE.Matrix4().makeBasis(right, up, fwd.clone().negate()),
+  );
+}
+
+/** Spherical coordinates of `pos` about `pivot`: azimuth about world Y,
+ *  elevation from the horizontal plane, and radius. */
+function _sphericalAbout(pos, pivot) {
+  const v = pos.clone().sub(pivot);
+  const r = v.length();
+  if (r < 1e-9) return { az: 0, el: 0, r: 0 };
+  const horiz = Math.hypot(v.x, v.z);
+  return { az: Math.atan2(v.x, v.z), el: Math.atan2(v.y, horiz), r };
+}
+
+/**
+ * Describe the move from `fromPos` to `toPos` as an orbit, or return null to
+ * leave the caller on its original straight interpolation.
+ *
+ * Returns null unless at least one END pinned a pivot — that opt-in is what
+ * keeps every existing project's camera moves byte-identical. When only one
+ * end is pinned, its point serves both ends, which is the sensible default
+ * for "I set a centre on this step and want the move into it to respect it".
+ * A degenerate radius (camera sitting on the pivot) also declines, since an
+ * orbit of radius zero has no direction to interpolate.
+ */
+function _buildOrbitTween(fromPos, toPos, fromPivot, toPivot, fromPinned, toPinned) {
+  if (!fromPinned && !toPinned) return null;
+  const a = _sphericalAbout(fromPos, fromPinned ? fromPivot : toPivot);
+  const b = _sphericalAbout(toPos,   toPinned   ? toPivot   : fromPivot);
+  if (a.r < 1e-6 || b.r < 1e-6) return null;
+  // Take the SHORT way round: raw azimuths can differ by more than half a
+  // turn, and lerping those spins the camera the long way for no reason.
+  let dAz = b.az - a.az;
+  while (dAz >  Math.PI) dAz -= Math.PI * 2;
+  while (dAz < -Math.PI) dAz += Math.PI * 2;
+  return { fromAz: a.az, dAz, fromEl: a.el, toEl: b.el, fromR: a.r, toR: b.r };
+}
 import * as clock from './clock.js';
 // V0.2.22.21 — combined silhouette outline pass. Runs after the main
 // scene render to composite a single outline around the union of
@@ -1037,6 +1095,21 @@ export class SceneCore extends Emitter {
     const toPivot  = new THREE.Vector3(...(targetState.pivot      ?? fromState.pivot));
     const toFov    = targetState.fov ?? fromFov;
 
+    // 🎯 ORBIT MOVE (V0.3.2.232). Lerping position and slerping rotation
+    // independently walks the camera along a near-straight line and lets the
+    // subject drift across the frame. When a pivot is PINNED, interpolate in
+    // SPHERICAL space around it instead — azimuth about world up, elevation,
+    // and dolly distance, all together — and rebuild the look direction from
+    // the pivot each frame. The pinned point then stays put in frame, which
+    // is the whole point of choosing it.
+    //
+    // Strictly opt-in: with no pin on either end, `orbit` is null and every
+    // line below runs exactly as it did before.
+    const orbit = _buildOrbitTween(
+      fromPos, toPos, fromPivot, toPivot,
+      !!fromState.pivotPinned, !!targetState.pivotPinned,
+    );
+
     return new Promise((resolve) => {
       // Cancel any previous transition
       if (this._transition?.reject) this._transition.reject('cancelled');
@@ -1055,6 +1128,12 @@ export class SceneCore extends Emitter {
         easeFn:   ease[easing] ?? ease.smooth,
         fromPos, fromQ, fromPivot, fromFov,
         toPos, toQ, toPivot, toFov,
+        orbit,
+        // Arriving by ANIMATION must leave the same pin state as arriving
+        // instantly through applyCameraState — otherwise the step is reached
+        // still carrying the previous step's pin, and manual orbiting (and
+        // the right-click menu that reads it) disagree with the step.
+        toPinned: !!targetState.pivotPinned,
         resolve,
         reject: null,
       };
@@ -1082,17 +1161,32 @@ export class SceneCore extends Emitter {
     const raw     = Math.max(0, Math.min(elapsed / t.durationMs, 1));
     const alpha   = t.easeFn(raw);
 
-    // Interpolate position
-    const pos = t.fromPos.clone().lerp(t.toPos, alpha);
-    this.camera.position.copy(pos);
-
-    // Slerp quaternion
-    const q = t.fromQ.clone().slerp(t.toQ, alpha);
-    this.camera.quaternion.copy(q);
-
-    // Interpolate pivot
+    // Pivot first — the orbit path is expressed relative to it.
     const pivot = t.fromPivot.clone().lerp(t.toPivot, alpha);
     this.controls.pivot.copy(pivot);
+
+    if (t.orbit) {
+      // 🎯 Orbit move: azimuth, elevation and dolly together, then look at
+      // the pivot. The basis is rebuilt from world Y exactly as the manual
+      // orbit controls do, so the horizon stays level and no roll can creep
+      // in through a slerp.
+      const o   = t.orbit;
+      const az  = o.fromAz + o.dAz * alpha;
+      const el  = o.fromEl + (o.toEl - o.fromEl) * alpha;
+      const r   = o.fromR  + (o.toR  - o.fromR)  * alpha;
+      const ce  = Math.cos(el);
+      const dir = new THREE.Vector3(ce * Math.sin(az), Math.sin(el), ce * Math.cos(az));
+      this.camera.position.copy(pivot).addScaledVector(dir, r);
+      _lookAtLevel(this.camera, pivot);
+    } else {
+      // Interpolate position
+      const pos = t.fromPos.clone().lerp(t.toPos, alpha);
+      this.camera.position.copy(pos);
+
+      // Slerp quaternion
+      const q = t.fromQ.clone().slerp(t.toQ, alpha);
+      this.camera.quaternion.copy(q);
+    }
 
     // Interpolate FOV
     const fov = t.fromFov + (t.toFov - t.fromFov) * alpha;
@@ -1102,7 +1196,9 @@ export class SceneCore extends Emitter {
     }
 
     if (raw >= 1) {
+      this.controls.pivotPinned = !!t.toPinned;
       this.controls.syncSpherical();
+      this.updateOrbitPivotMarker();
       const resolve = t.resolve;
       this._transition = null;
       resolve();
