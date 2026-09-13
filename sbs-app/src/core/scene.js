@@ -84,7 +84,7 @@ function _sphericalAbout(pos, pivot) {
  * A degenerate radius (camera sitting on the pivot) also declines, since an
  * orbit of radius zero has no direction to interpolate.
  */
-function _buildOrbitTween(fromPos, toPos, fromAnim, toAnim, fromQ, toQ) {
+function _buildOrbitTween(fromPos, toPos, fromAnim, toAnim, fromQ, toQ, pullout = 0) {
   if (!fromAnim && !toAnim) return null;
   // The points the two ends are MEASURED against, kept on the tween and used
   // again for reconstruction. Measuring about one point and rebuilding about
@@ -113,7 +113,8 @@ function _buildOrbitTween(fromPos, toPos, fromAnim, toAnim, fromQ, toQ) {
   const dFrom = lvlA ? lvlA.clone().invert().multiply(fromQ) : new THREE.Quaternion();
   const dTo   = lvlB ? lvlB.clone().invert().multiply(toQ)   : new THREE.Quaternion();
 
-  return { p0, p1, fromAz: a.az, dAz, fromEl: a.el, toEl: b.el, fromR: a.r, toR: b.r, dFrom, dTo };
+  return { p0, p1, fromAz: a.az, dAz, fromEl: a.el, toEl: b.el, fromR: a.r, toR: b.r, dFrom, dTo,
+           pull: Math.max(0, pullout) };
 }
 import * as clock from './clock.js';
 // V0.2.22.21 — combined silhouette outline pass. Runs after the main
@@ -178,6 +179,9 @@ export class SceneCore extends Emitter {
     // transient CAD orbit centre the cursor's raycast replaces on every
     // manual orbit. Only the step-to-step camera move reads this one.
     this._animPivot   = null;
+    // 🎯 Mid-move dolly pull-back, as a fraction of the distance the camera
+    // would otherwise be at (0 = none, 0.5 = half again as far).
+    this._animPullout = 0;
 
     // Camera transition state
     this._transition  = null;
@@ -996,6 +1000,7 @@ export class SceneCore extends Emitter {
       // sharing one field made manual orbiting overwrite the step's choice.
       // Only written when set, so steps without one serialise as before.
       ...(this._animPivot ? { orbitPivot: [this._animPivot.x, this._animPivot.y, this._animPivot.z] } : {}),
+      ...(this._animPullout ? { orbitPullout: this._animPullout } : {}),
     };
   }
 
@@ -1018,6 +1023,7 @@ export class SceneCore extends Emitter {
     }
     this._animPivot = Array.isArray(state.orbitPivot)
       ? new THREE.Vector3(...state.orbitPivot) : null;
+    this._animPullout = Number(state.orbitPullout) || 0;
     this.updateOrbitPivotMarker();
   }
 
@@ -1043,6 +1049,9 @@ export class SceneCore extends Emitter {
   getOrbitPivot() {
     return this._animPivot ? this._animPivot.clone() : null;
   }
+
+  setOrbitPullout(mult) { this._animPullout = Math.max(0, Number(mult) || 0); }
+  getOrbitPullout() { return this._animPullout || 0; }
 
   /**
    * Show a small crosshair at a pinned pivot so the step's orbit centre is
@@ -1129,7 +1138,10 @@ export class SceneCore extends Emitter {
     // line below runs exactly as it did before.
     const fromAnim = Array.isArray(fromState.orbitPivot)   ? new THREE.Vector3(...fromState.orbitPivot)   : null;
     const toAnim   = Array.isArray(targetState.orbitPivot) ? new THREE.Vector3(...targetState.orbitPivot) : null;
-    const orbit = _buildOrbitTween(fromPos, toPos, fromAnim, toAnim, fromQ, toQ);
+    // The pull-out belongs to the step being moved INTO — it describes that
+    // step's arrival, not the departure from the previous one.
+    const orbit = _buildOrbitTween(fromPos, toPos, fromAnim, toAnim, fromQ, toQ,
+      Number(targetState.orbitPullout) || 0);
 
     return new Promise((resolve) => {
       // Cancel any previous transition
@@ -1155,6 +1167,7 @@ export class SceneCore extends Emitter {
         // still carrying the previous step's, and the marker and right-click
         // menu disagree with the step you are on.
         toAnim,
+        toPullout: Number(targetState.orbitPullout) || 0,
         resolve,
         reject: null,
       };
@@ -1196,7 +1209,13 @@ export class SceneCore extends Emitter {
       const p   = o.p0.clone().lerp(o.p1, alpha);
       const az  = o.fromAz + o.dAz * alpha;
       const el  = o.fromEl + (o.toEl - o.fromEl) * alpha;
-      const r   = o.fromR  + (o.toR  - o.fromR)  * alpha;
+      let   r   = o.fromR  + (o.toR  - o.fromR)  * alpha;
+      // Pull-out: a raised-cosine hump on the dolly distance — zero at both
+      // ends with zero slope (so departure and arrival are untouched and the
+      // rise eases out and back in), peaking mid-move at (1 + pull)× the
+      // distance the camera would otherwise be at. Lets a big swing rise
+      // away to show the whole object and dive back into the final framing.
+      if (o.pull > 0) r *= 1 + o.pull * (1 - Math.cos(2 * Math.PI * alpha)) / 2;
       const ce  = Math.cos(el);
       const dir = new THREE.Vector3(ce * Math.sin(az), Math.sin(el), ce * Math.cos(az));
       this.camera.position.copy(p).addScaledVector(dir, r);
@@ -1228,6 +1247,7 @@ export class SceneCore extends Emitter {
 
     if (raw >= 1) {
       this._animPivot = t.toAnim ? t.toAnim.clone() : null;
+      this._animPullout = t.toPullout || 0;
       this.controls.syncSpherical();
       this.updateOrbitPivotMarker();
       const resolve = t.resolve;

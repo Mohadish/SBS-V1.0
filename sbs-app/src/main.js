@@ -4458,25 +4458,52 @@ canvas.addEventListener('contextmenu', e => {
   // cursor. Level horizon is guaranteed by the controls themselves — they
   // rebuild the camera basis from world Y every frame, so no barrel roll.
   {
+    // Scope deliberately NOT _camTargets: a single selected step must not
+    // beat the step actually on screen, since the two can drift apart and
+    // placing a point you are looking at onto another step is never meant.
+    const _orbTargets = actions.orbitTargetSteps();
     const pinned  = !!sceneCore.getOrbitPivot();
-    const canPin  = !!noteHit?.point && _camTargets.ids.length > 0;
-    const scope   = _camTargets.ids.length > 1 ? ` (${_camTargets.ids.length} selected steps)` : '';
+    const canPin  = !!noteHit?.point && _orbTargets.ids.length > 0;
+    const scope   = _orbTargets.ids.length > 1 ? ` (${_orbTargets.ids.length} selected steps)` : '';
     items.push({
       label: (pinned ? '🎯 Reposition orbit centre here' : '🎯 Set orbit centre here') + scope,
       disabled: !canPin,
       action: () => {
-        const n = actions.setStepOrbitPivot(noteHit.point, _camTargets.ids);
+        const n = actions.setStepOrbitPivot(noteHit.point);
         setStatus(n
-          ? `Orbit centre set on ${n > 1 ? `${n} steps` : 'this step'} — orbiting now turns around it.`
+          ? `Orbit centre set on ${n > 1 ? `${n} steps` : 'this step'} — the move into it now orbits around it.`
           : 'This step has no saved camera yet — update the step camera first.', n ? 'success' : 'warn', 5000);
       },
     });
     if (pinned) {
+      const cur = sceneCore.getOrbitPullout();
+      const tick = (v) => (Math.abs(cur - v) < 1e-6 ? '✓ ' : '');
+      const setPull = (v, name) => {
+        const n = actions.setStepOrbitPullout(v);
+        setStatus(n ? `Pull-out: ${name}.` : 'Nothing to change.', 'info', 3500);
+      };
+      items.push({
+        label: `🎯 Pull-out during the move${scope}`,
+        submenu: [
+          { label: `${tick(0)}None`,          action: () => setPull(0, 'none') },
+          { label: `${tick(0.5)}Small (+50%)`,  action: () => setPull(0.5, 'small, +50%') },
+          { label: `${tick(1)}Medium (+100%)`,  action: () => setPull(1, 'medium, +100%') },
+          { label: `${tick(1.5)}Large (+150%)`, action: () => setPull(1.5, 'large, +150%') },
+          { separator: true },
+          { label: 'Custom…', action: async () => {
+              const txt = await promptString('Pull back by how much, in percent?', String(Math.round(cur * 100)));
+              if (txt == null) return;
+              const pct = Number(String(txt).trim());
+              if (!Number.isFinite(pct) || pct < 0) { setStatus('Enter a percentage, e.g. 80.', 'warn', 4000); return; }
+              setPull(pct / 100, `${Math.round(pct)}%`);
+            } },
+        ],
+      });
       items.push({
         label: `🎯 Remove orbit centre${scope}`,
         action: () => {
-          const n = actions.setStepOrbitPivot(null, _camTargets.ids);
-          setStatus(n ? 'Orbit centre removed — back to picking it under the cursor.' : 'Nothing to remove.', 'info', 4000);
+          const n = actions.setStepOrbitPivot(null);
+          setStatus(n ? 'Orbit centre removed — the move goes back to a straight interpolation.' : 'Nothing to remove.', 'info', 4000);
         },
       });
     }

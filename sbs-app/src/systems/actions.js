@@ -7892,7 +7892,7 @@ export function previewModelSourceTransform(nodeId, sourceLocalPosition, sourceL
 // template is a whole view, and applying one brings its orbit centre along.
 // NOTE it is NOT the same thing as `pivot`, which is the transient CAD orbit
 // centre the cursor's raycast keeps replacing as you explore.
-const CAMERA_FIELDS = ['position', 'quaternion', 'pivot', 'up', 'fov', 'orbitPivot'];
+const CAMERA_FIELDS = ['position', 'quaternion', 'pivot', 'up', 'fov', 'orbitPivot', 'orbitPullout'];
 
 function _captureCameraState() {
   // Snapshot just the fields a CameraView holds. Avoids leaking unrelated
@@ -8174,8 +8174,27 @@ export function updateStepCameraFromCurrent(stepId) {
  * given steps (defaults to the active one) as ONE undo entry, so it works
  * from a multi-step selection like the camera actions beside it.
  */
+/**
+ * Steps an orbit-centre edit applies to. Unlike cameraTargetSteps(), a
+ * selection of ONE does not win over the active step: the active step is the
+ * one on screen, and the two can drift apart. Placing a point you are looking
+ * at onto some other step is never what was meant, so only a real
+ * multi-selection (2+) redirects it.
+ */
+export function orbitTargetSteps() {
+  const sel = state.get('selectedStepIds');
+  if (sel instanceof Set && sel.size >= 2) {
+    const all  = state.get('steps') || [];
+    const keep = sel;
+    const ordered = all.filter(s => keep.has(s.id)).map(s => s.id);
+    if (ordered.length >= 2) return { ids: ordered, fromSelection: true };
+  }
+  const activeId = state.get('activeStepId');
+  return { ids: activeId ? [activeId] : [], fromSelection: false };
+}
+
 export function setStepOrbitPivot(worldPoint, stepIds = null) {
-  const ids = (stepIds?.length ? stepIds : [state.get('activeStepId')]).filter(Boolean);
+  const ids = (stepIds?.length ? stepIds : orbitTargetSteps().ids).filter(Boolean);
   if (!ids.length) return 0;
   const allSteps = state.get('steps') || [];
   const pivot = worldPoint ? [worldPoint.x, worldPoint.y, worldPoint.z] : null;
@@ -8207,6 +8226,49 @@ export function setStepOrbitPivot(worldPoint, stepIds = null) {
   apply(nextSteps);
   undoManager.push(
     `${pivot ? 'Set' : 'Clear'} orbit centre on ${n > 1 ? `${n} steps` : 'this step'}`,
+    () => apply(allSteps), () => apply(nextSteps),
+  );
+  return n;
+}
+
+/**
+ * 🎯 Pull-out: how far the camera backs off along the dolly axis at the
+ * MIDDLE of an orbit move, as a fraction of the distance it would otherwise
+ * be at (0.5 = half again as far, 1 = twice). It eases out and back in, so
+ * a big swing round an object can rise away to show the whole thing and dive
+ * back into the final framing. 0 removes it.
+ *
+ * Stored on the step being moved INTO, since that is the step whose
+ * transition it describes.
+ */
+export function setStepOrbitPullout(mult, stepIds = null) {
+  const ids = (stepIds?.length ? stepIds : orbitTargetSteps().ids).filter(Boolean);
+  if (!ids.length) return 0;
+  const allSteps = state.get('steps') || [];
+  const v = Math.max(0, Number(mult) || 0);
+
+  let n = 0;
+  const nextSteps = allSteps.map(s => {
+    if (!ids.includes(s.id)) return s;
+    const cam = { ...(s.snapshot?.camera || {}) };
+    if (!cam.position) return s;
+    if (v > 0) cam.orbitPullout = v;
+    else       delete cam.orbitPullout;
+    n++;
+    return { ...s, snapshot: { ...(s.snapshot || {}), camera: cam } };
+  });
+  if (!n) return 0;
+
+  const apply = (list) => {
+    state.setState({ steps: list });
+    state.markDirty();
+    const act = list.find(s => s.id === state.get('activeStepId'));
+    if (act && ids.includes(act.id)) sceneCore.setOrbitPullout(act.snapshot?.camera?.orbitPullout || 0);
+    for (const s of list) if (ids.includes(s.id)) state.emit('step:synced', s);
+  };
+  apply(nextSteps);
+  undoManager.push(
+    `${v ? `Pull-out ${Math.round(v * 100)}%` : 'No pull-out'} on ${n > 1 ? `${n} steps` : 'this step'}`,
     () => apply(allSteps), () => apply(nextSteps),
   );
   return n;
