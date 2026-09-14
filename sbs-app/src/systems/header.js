@@ -602,7 +602,7 @@ export function initHeaderLayer(stage) {
  * item.w×item.h, drawn at item.x/item.y in canonical coordinates).
  * Returns the canvas, or null when headers are hidden / nothing to draw.
  */
-export async function rasterizeHeaderDataToCanvas(ctx, { width = 1920, height = 1080 } = {}) {
+export async function rasterizeHeaderDataToCanvas(ctx, { width = 1920, height = 1080, hiddenIds = null } = {}) {
   if (state.get('headersHidden')) return null;
   const items = (state.get('headerItems') || [])
     .filter(it => it.visible !== false && it.kind !== 'chapterProgress');
@@ -610,7 +610,15 @@ export async function rasterizeHeaderDataToCanvas(ctx, { width = 1920, height = 
   const cnv = document.createElement('canvas');
   cnv.width = width; cnv.height = height;
   const g = cnv.getContext('2d');
+  // 🚫 V0.3.2.245 — per-step hiding (V0.3.2.230) was wired into the LIVE layer
+  // and rasterizeHeaderLayer only. THIS is the path the render-cache assembly
+  // burns into the finished video, and it drew every item regardless — so a
+  // header hidden on a step was ghosted in the editor and fully present in the
+  // export. A step that hides everything still gets a (transparent) canvas:
+  // the caller reads null as "no header track at all" and would drop headers
+  // from the WHOLE video.
   for (const item of items) {
+    if (hiddenIds?.has?.(item.id)) continue;
     try {
       if (item.kind === 'image') {
         if (!item.dataUrl) continue;

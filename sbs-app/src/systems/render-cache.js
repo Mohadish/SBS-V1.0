@@ -645,21 +645,30 @@ export async function assembleFromCache({ onProgress, signal, output, force = fa
         // — spans with no speaking sub-steps collapse back to the old one-
         // PNG-per-span (dynamic kinds all resolve via the head, so only the
         // subtitle owner can differ inside a span).
-        const wins = [];   // { stepId, startMs }
+        const wins = [];   // { stepId, ownerId, hideKey, startMs }
         for (const s of span.steps) {
           const sctx    = header.buildRenderContext(s.id);
           const ownerId = sctx.subtitleStep?.id || sctx.step?.id || null;
+          // 🚫 V0.3.2.245 — a step can hide header items of its own (V0.3.2.230),
+          // so a window must also break where the HIDDEN SET changes: a sub-step
+          // hiding the logo mid-group needs its own PNG, exactly like a sub-step
+          // taking over the caption. Merging on the caption owner alone would
+          // stamp the first step's hides (or lack of them) over the rest.
+          const hideKey = [...header.hiddenHeaderIdsForStep(s.id)].sort().join('|');
           const abs     = markersByStepId.get(s.id);
           const startMs = Math.max(0, (Number.isFinite(abs) ? abs : span._startMs) - span._startMs);
           const last    = wins[wins.length - 1];
-          if (last && last.ownerId === ownerId) continue;   // same caption → extend
-          wins.push({ stepId: s.id, ownerId, startMs });
+          if (last && last.ownerId === ownerId && last.hideKey === hideKey) continue;   // same caption + same hides → extend
+          wins.push({ stepId: s.id, ownerId, hideKey, startMs });
         }
         for (let k = 0; k < wins.length; k++) {
           const endMs = (k + 1 < wins.length) ? wins[k + 1].startMs : span._durMs;
           const durMs = Math.max(40, endMs - wins[k].startMs);
           const ctx = header.buildRenderContext(wins[k].stepId);
-          const cnv = await header.rasterizeHeaderDataToCanvas(ctx, { width: expW, height: expH });
+          const cnv = await header.rasterizeHeaderDataToCanvas(ctx, {
+            width: expW, height: expH,
+            hiddenIds: header.hiddenHeaderIdsForStep(wins[k].stepId),
+          });
           if (!cnv) { lines.length = 0; break outer; }
           const blob  = await new Promise(res => cnv.toBlob(res, 'image/png'));
           const bytes = new Uint8Array(await blob.arrayBuffer());
@@ -692,17 +701,62 @@ export async function assembleFromCache({ onProgress, signal, output, force = fa
       // the THICKNESS, not time (the stuck-full-bar bug). The fill is instead a
       // solid color source CROPPED to a growing width (crop DOES evaluate `t`
       // as timestamp per frame) and overlaid during its chapter's window.
+      // 🚫 V0.3.2.245 — per-step hiding reaches the progress bars too. Slice the
+      // assembled timeline per STEP (same sidecar markers the caption windows
+      // use) and draw each bar only in slices whose step doesn't hide it.
+      const slices = [];   // { start, end, hidden: Set } — absolute ms
+      for (const span of plan.spans) {
+        const spanEnd = span._startMs + span._durMs;
+        const starts = span.steps.map(s => {
+          const abs = markersByStepId.get(s.id);
+          return Number.isFinite(abs) ? Math.min(spanEnd, Math.max(span._startMs, abs)) : span._startMs;
+        });
+        span.steps.forEach((s, j) => {
+          const end = j + 1 < starts.length ? starts[j + 1] : spanEnd;
+          if (end > starts[j]) slices.push({ start: starts[j], end, hidden: header.hiddenHeaderIdsForStep(s.id) });
+        });
+      }
+      const sec = ms => (ms / 1000).toFixed(3);
+      // Visible time ranges for one item (merged), or null when no step hides it.
+      const visibleRanges = (id) => {
+        if (!slices.some(sl => sl.hidden.has(id))) return null;
+        const out = [];
+        for (const sl of slices) {
+          if (sl.hidden.has(id)) continue;
+          const last = out[out.length - 1];
+          if (last && sl.start - last.end < 1) last.end = sl.end;
+          else out.push({ start: sl.start, end: sl.end });
+        }
+        return out;
+      };
+      // `enable` is ffmpeg's generic TIMELINE option: there `t` IS the timestamp,
+      // unlike drawbox's own x/y/w/h expressions where `t` is the thickness (the
+      // note above). It is emitted only for a bar hidden somewhere, so a project
+      // without hides builds exactly the graph it always did.
+      const enableExpr = ranges => ranges.map(r => `between(t,${sec(r.start)},${sec(r.end)})`).join('+');
       for (const item of progItems) {
         const x = Math.round(item.x), y = Math.round(item.y), w = Math.round(item.w), h = Math.round(item.h);
-        boxFilters.push(`drawbox=x=${x}:y=${y}:w=${w}:h=${h}:color=${_ffColor(item.trackColor, 'white@0.4')}:t=fill`);
+        const ranges = visibleRanges(item.id);
+        if (ranges && !ranges.length) continue;          // hidden on every step
+        boxFilters.push(`drawbox=x=${x}:y=${y}:w=${w}:h=${h}:color=${_ffColor(item.trackColor, 'white@0.4')}:t=fill`
+          + (ranges ? `:enable='${enableExpr(ranges)}'` : ''));
         for (const win of wins) {
           if (!win.ch) continue;                       // outside chapters the bar stays empty
+          let enable = null;
+          if (ranges) {
+            const cut = ranges
+              .map(r => ({ start: Math.max(win.start, r.start), end: Math.min(win.end, r.end) }))
+              .filter(r => r.end > r.start);
+            if (!cut.length) continue;                  // hidden for this whole chapter
+            enable = enableExpr(cut);
+          }
           fillChains.push({
             color: _ffColor(item.fillColor, '0x3b82f6'),
             w, h, x, y,
             cs: (win.start / 1000).toFixed(3),
             ce: (win.end   / 1000).toFixed(3),
             cd: Math.max(0.001, (win.end - win.start) / 1000).toFixed(3),
+            enable,                                     // null → the whole chapter window, as before
           });
         }
       }
@@ -763,7 +817,7 @@ export async function assembleFromCache({ onProgress, signal, output, force = fa
     chains.push(`color=c=${f.color}:s=${f.w}x${f.h}:r=25:d=${dTot}[pf${i}]`);
     chains.push(`color=c=black@0.0:s=${f.w}x${f.h}:r=25:d=${dTot},format=rgba[pc${i}]`);
     chains.push(`[pc${i}][pf${i}]overlay=x='-${f.w}+${f.w}*clip((t-${f.cs})/${f.cd},0,1)':y=0[pm${i}]`);
-    chains.push(`${vLabel}[pm${i}]overlay=x=${f.x}:y=${f.y}:eof_action=pass:enable='between(t,${f.cs},${f.ce})'[vf${i}]`);
+    chains.push(`${vLabel}[pm${i}]overlay=x=${f.x}:y=${f.y}:eof_action=pass:enable='${f.enable || `between(t,${f.cs},${f.ce})`}'[vf${i}]`);
     vLabel = `[vf${i}]`;
   });
   if (chains.length) {
