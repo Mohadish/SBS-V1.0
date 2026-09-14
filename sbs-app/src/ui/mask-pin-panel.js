@@ -25,7 +25,7 @@ import { steps } from '../systems/steps.js';
 import {
   countAttrUsage, listCropMaskDefs, listPinnedPosDefs,
   renameCropMaskDef, renamePinnedPosDef, deletePinnedPosDef, deleteCropMaskDef,
-  selectByAttr, editCropMaskById,
+  selectByAttr, editCropMaskById, waitForOverlayStable,
 } from '../systems/overlay.js';
 import { promptString } from './prompt.js';
 import { setStatus } from './status.js';
@@ -236,9 +236,16 @@ async function _jump(kind, defId) {
   const stepId = u.stepIds[at];
   try { await steps.activateStep(stepId, false); }
   catch (err) { console.warn('[masks] jump failed:', err?.message); return; }
-  setStatus(`Step ${at + 1} of ${u.stepIds.length} using this.`, 'info', 3000);
-  // The overlay reloads asynchronously; select once its nodes exist.
-  setTimeout(() => selectByAttr(kind.attr, defId), 350);
+  // The overlay reloads asynchronously after step:applied — wait for THAT,
+  // not a guessed 350 ms (V0.3.2.246): steps carrying large inline images or a
+  // clip decode longer than any guess, and the jump then landed with nothing
+  // selected and no word why. Same pattern as the constant-titles panel.
+  try { await waitForOverlayStable(); } catch { /* overlay load failed — select will say so */ }
+  const ok = selectByAttr(kind.attr, defId);
+  setStatus(ok
+    ? `Step ${at + 1} of ${u.stepIds.length} using this.`
+    : `Jumped to step ${at + 1} of ${u.stepIds.length}, but could not select the item there.`,
+    ok ? 'info' : 'warn', ok ? 3000 : 5000);
 }
 
 function _esc(s) {

@@ -89,14 +89,25 @@ export async function openSettingsModal(initialTab = 'language') {
 
 export function closeSettingsModal() {
   if (!_dlg) return;
+  _disarmKeyCapture();
   try { _dlg.close(); _dlg.remove(); } catch {}
   _dlg = null;
+}
+
+/** Drop a pending "Press a key…" capture (V0.3.2.246). It is a WINDOW-level
+ *  keydown listener: left armed past a close or a tab switch, the next key
+ *  pressed anywhere in the app was swallowed and silently saved as a rebind. */
+function _disarmKeyCapture() {
+  if (!_kbCapture) return;
+  window.removeEventListener('keydown', _kbCapture, true);
+  _kbCapture = null;
 }
 
 // ─── Tabs ───────────────────────────────────────────────────────────────────
 
 function _showTab(name) {
   if (!_dlg) return;
+  _disarmKeyCapture();   // a capture armed on the Keys tab must not outlive it
   for (const tab of _dlg.querySelectorAll('.settings-tab')) {
     tab.classList.toggle('active', tab.dataset.tab === name);
   }

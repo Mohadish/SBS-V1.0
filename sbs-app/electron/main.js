@@ -516,11 +516,13 @@ function buildMenu() {
           click: () => mainWindow?.webContents.send('menu:rebuildCascade'),
         },
         {
-          // 📦 V0.3.2.243 (backlog #16) — READ-ONLY scan for folder levels that
-          // add nothing: ↪ Adj compensation wrappers nested in each other and
-          // pass-through folders holding a single container. Reports what
-          // collapsing each one would cost; collapsing itself is Phase 2.
-          label: 'Find redundant folders…',
+          // 📦 V0.3.2.243/.244 (backlog #16) — finds folder levels that add
+          // nothing (↪ Adj compensation wrappers, pass-through folders holding
+          // a single container) and, since .244, REMOVES the ticked free ones
+          // across every step after a save prompt, with a data check before
+          // and a live check after, one undo entry. The label says what the
+          // window does; .243's "Find…" wording survived a release too long.
+          label: 'Clean up folders…',
           click: () => mainWindow?.webContents.send('menu:folderFlatten'),
         },
         { type: 'separator' },

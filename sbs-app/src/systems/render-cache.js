@@ -86,6 +86,19 @@ function _stepKeyView(s, keep, animStr) {
   // dependency explicit, and keeps it SCOPED: only spans whose steps
   // actually resolve to a changed string re-render.
   if (animStr !== undefined) c._animResolved = String(animStr || '');
+  // 🎬 V0.3.2.246 — SCOPED salts, not a global EPOCH bump (which would
+  // re-render every project). Two classes of segment changed TIMING this
+  // week without any keyed field moving, so the cache still reported HITs:
+  //   • video-bearing steps — .196 clip-start inside the segment, .203 hold
+  //     floor, and .246 (floor no longer doubled under an overlay slot);
+  //   • steps whose two easings disagreed — .237 made cameraEasing govern
+  //     objects too, so they render a different curve under the same key.
+  // Only those spans re-key; everything else keeps its segment.
+  if (typeof c.overlay === 'string' && c.overlay.includes('"isVideo":true')) c._videoTimingRev = 2;
+  {
+    const _ce = c.transition?.cameraEasing, _oe = c.transition?.objectEasing;
+    if (_ce && _oe && _ce !== _oe) c._easingRev = 2;
+  }
   delete c.thumbnail;
   delete c.renderedDurationMs;      // measurement, not content (durations enter via the chapter vector)
   delete c.subtitles;               // 🌐 V0.3.2.63: subtitle overrides/translations composite at
@@ -234,6 +247,7 @@ export async function computeSegmentPlan() {
   // that exists, any change to an overlay definition invalidates every
   // cached segment — slower re-exports, but never a stale frame. Correct and
   // slow beats fast and wrong for a deliverable the user ships.
+  const _cropMaskDefs = (state.get('cropMasks') || []).slice().sort(_byId);
   const _overlayDefs = {
     shapeStyles: (state.get('shapeStyles') || []).slice().sort(_byId),
     constShapes: (state.get('constShapes') || []).slice().sort(_byId),
@@ -251,7 +265,13 @@ export async function computeSegmentPlan() {
     // cropMaskId, so editing one leaves every stored overlay string
     // byte-identical. Without this the cache would hand back segments drawn
     // through the old hole — the .156 stale-definition bug, but total.
-    cropMasks:      (state.get('cropMasks')      || []).slice().sort(_byId),
+    // V0.3.2.246: spread ONLY when the library is non-empty. An always-present
+    // `cropMasks: []` changed the defs half of EVERY span key in EVERY
+    // project — a full re-render on the first assembly after upgrade, the
+    // exact cost the .218 note above the EPOCH says was avoided. Same
+    // pattern as exportBoundaryBoxes in settingsKey: default-off keys stay
+    // byte-identical; a project that uses shared masks re-keys once.
+    ...(_cropMaskDefs.length ? { cropMasks: _cropMaskDefs } : {}),
   };
 
   const _defScope = {
@@ -908,7 +928,9 @@ export async function purgeOrphans(plan, { force = false } = {}) {
       else if (sweepSuperseded) reason = 'superseded';
     }
     if (!reason) { kept++; continue; }
-    for (const ext of ['mp4', 'json']) {
+    // 🅰 V0.3.2.246 — the alpha-mask companion (V0.3.2.198) dies with its
+    // segment; it was never in this list, so masks of dead segments piled up.
+    for (const ext of ['mp4', 'json', 'alpha.mp4']) {
       const name = `seg-${key}.${ext}`;
       if (!sizeOf.has(name)) continue;
       const r = await window.sbsNative.deletePath(`${plan.dir}/${name}`);

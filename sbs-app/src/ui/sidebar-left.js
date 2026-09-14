@@ -3158,9 +3158,14 @@ function _renderCamerasTab() {
     const tplId = e.target.value || null;
     // 📷🔗 V0.3.2.176 — honour the step selection: with several steps
     // selected the binding applies to all of them (one undo entry), same
-    // scoping as "Update step camera". No selection → the active step.
+    // scoping as "Update step camera".
+    // V0.3.2.246 — only a REAL multi-selection (2+) redirects it. The card is
+    // labelled "Active step camera" and built from the active step, but a
+    // single selected step that is not the active one used to win — the
+    // change looked like it did nothing and landed on another step (the
+    // same active/selected drift orbitTargetSteps was written for).
     const { ids } = actions.cameraTargetSteps();
-    const targets = ids.length ? ids : [activeId];
+    const targets = ids.length > 1 ? ids : [activeId];
     if (targets.length > 1) actions.setStepCameraBindingMulti(targets, tplId);
     else                    actions.setStepCameraBinding(targets[0], tplId);
     const tplName = views.find(v => v.id === tplId)?.name;

@@ -17,7 +17,7 @@
  * breath are not modelled. Good enough for "vicinity" word alignment.
  */
 import { state } from '../core/state.js';
-import { parseAnimation, resolveAnimationString, DEFAULT_ANIMATION_STR } from './animation.js';
+import { parseAnimation, resolveAnimationString, DEFAULT_ANIMATION_STR, hasInstantBlock } from './animation.js';
 import { stepVideoWindowMs } from './video-overlay.js';   // 🎬 V0.3.2.82 — video length drives step duration
 
 const _groupKeyOf = (s) => (s?.groupHead ? s.id : (s?.groupId || null));
@@ -132,8 +132,13 @@ function _stepTimelineMs(step, stepHoldMs) {
   // animation (additive → over-counts). Group audio-tail is approximated per-step.
   const globalObjDur = state.get('objectAnimDurationMs') ?? 1500;
   const t = step.transition || {};
-  const animMs = (t.durationOverride === true) ? (t.objectDurationMs ?? globalObjDur) : globalObjDur;
-  const { narrOffsetMs } = _animTiming(step);   // === exporter's _narrationStartOffsetMs
+  const { totalMs: phasedMs, narrOffsetMs } = _animTiming(step);   // narrOffsetMs === exporter's _narrationStartOffsetMs
+  // ⚡ V0.3.2.246 — mirror of the exporter's _estimateAnimDur: an Instant /
+  // Instant-fade step resolves to an instant block whose transition is the
+  // phased total (~0 ms for the block itself), not the global object duration.
+  const _str = resolveAnimationString(t, state.get('animationPresets') || []);
+  const animMs = hasInstantBlock(_str) ? phasedMs
+    : (t.durationOverride === true) ? (t.objectDurationMs ?? globalObjDur) : globalObjDur;
   const narrMs = step.narration?.durationMs || 0;
   // 🎬 V0.3.2.84 — a video on the step's overlay is a third duration input,
   // and its placement depends on the animation string. With an overlay slot

@@ -36,7 +36,7 @@ import * as narrationCache from './narration-cache.js';
 // V0.2.22.11 — animation phase string parser, used to compute the
 // per-step narration start offset (live app fires narration when its
 // phase is reached; export must place audio at marker+offset to match).
-import { parseAnimation, resolveAnimationString } from './animation.js';
+import { parseAnimation, resolveAnimationString, hasInstantBlock } from './animation.js';
 
 // Vendored ES module (see sbs-app/vendor/mp4-muxer.mjs).
 import { Muxer as Mp4Muxer, ArrayBufferTarget } from '../../vendor/mp4-muxer.mjs';
@@ -273,8 +273,17 @@ export async function saveBlobToPath(blob, outPath) {
  */
 function _computePerStepHolds(stepsToPlay, stepHoldMs) {
   const globalObjDur = state.get('objectAnimDurationMs') ?? 1500;
+  const _presets     = state.get('animationPresets') || [];
   const _estimateAnimDur = (s) => {
     const t = s.transition || {};
+    // ⚡ V0.3.2.246 — an Instant / Instant-fade step (V0.3.2.242) resolves to
+    // an instant block whose real transition is ~0 ms, not the global object
+    // duration. Modelling 1500 ms of animation that never plays put the next
+    // marker 1.5 s late and this hold 1.5 s short — narration bled into the
+    // next step. For those strings the phased total IS the transition: every
+    // block sleeps exactly its slot, so it is measured, not estimated.
+    const str = resolveAnimationString(t, _presets);
+    if (hasInstantBlock(str)) return _phasedTotalMs(str);
     return t.durationOverride === true ? (t.objectDurationMs ?? globalObjDur) : globalObjDur;
   };
   const groupKeyOf  = (s) => s.groupHead ? s.id : (s.groupId || null);
@@ -327,7 +336,15 @@ function _computePerStepHolds(stepsToPlay, stepHoldMs) {
     // clip). The floor here covers BOTH modes at the duration model.
     try {
       const vMs = videoOverlay.stepVideoWindowMs(step);
-      if (vMs > 0 && hold < vMs) {
+      // V0.3.2.246 — only when the string has NO overlay slot. With one, the
+      // phased engine already holds its overlay block open for the whole
+      // clip window (steps.js: beginPlayback + _sleep(vMs)), so flooring the
+      // hold too counted the clip twice — a frozen last frame as long as the
+      // clip after every video step under the default preset, and an export
+      // longer than the timeline estimate that counts the window once.
+      const _str = resolveAnimationString(step.transition || {}, _presets);
+      const _hasSlot = !!_str && /\boverlays?\s*\(/i.test(_str);
+      if (vMs > 0 && !_hasSlot && hold < vMs) {
         if (_diagTiming) console.log(`  [${i}] video floor: hold ${hold} → ${vMs}`);
         hold = vMs;
         reason += ' +video-floor';
@@ -1385,6 +1402,22 @@ async function _decodeNarrationSegments(stepsToPlay, sampleRate) {
  *   - The animation string has no `narration` phase (legacy strings)
  *   - The narration phase is the FIRST phase (offset is 0)
  */
+/** Sum of a resolved animation string's phase slots — what the phased engine
+ *  actually sleeps (each block sleeps its slot; a `(0)` instant block sleeps
+ *  1 ms, which rounds away). Used for strings whose real length is known to
+ *  differ from the global object duration (V0.3.2.246). */
+function _phasedTotalMs(animStr) {
+  if (!animStr) return 0;
+  const resolveAL = (tk) => {
+    if (tk === 'AL1') return state.get('cameraAnimDurationMs') ?? 1500;
+    if (tk === 'AL2') return state.get('objectAnimDurationMs')  ?? 1500;
+    return 0;
+  };
+  const phases = parseAnimation(animStr, resolveAL);
+  if (!phases) return 0;
+  return phases.reduce((s, p) => s + (p.durationMs || 0), 0);
+}
+
 function _narrationStartOffsetMs(step) {
   const transition = step.transition || {};
   const presets = state.get('animationPresets') || [];

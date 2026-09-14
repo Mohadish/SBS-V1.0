@@ -1613,14 +1613,15 @@ window.sbsNative?.onMenu?.('menu:languagePanel', () => {
   window.sbsLangPanel().catch(err => console.error('[lang-panel] failed:', err));
 });
 
-// 📦 Edit → "Find redundant folders…" (V0.3.2.243, backlog #16 Phase 1).
+// 📦 Edit → "Clean up folders…" (V0.3.2.243 scan, .244 removal — backlog #16).
 //
-// READ-ONLY. Lists folder levels that add nothing — ↪ Adj compensation
-// wrappers nested in each other, pass-through folders holding a single
-// container — and says what collapsing each would cost: free (identity
-// everywhere), bake (its transform must be composed into every child, per
-// step), or skip (something points at it by id, or its pose cannot be
-// composed away). Collapsing is Phase 2 and will be its own undoable action.
+// Lists folder levels that add nothing — ↪ Adj compensation wrappers nested
+// in each other, pass-through folders holding a single container — and
+// removes the ticked FREE ones (identity in the live tree and every step)
+// across all steps: save prompt first, a data-side check that nothing moves
+// before anything is committed, a live check after, one undo entry. Folders
+// that carry a pose or are referenced by id are listed as "doing a job" and
+// never touched (see systems/folder-flatten.js for the verdicts).
 window.sbsFlatten = {
   scan: async () => (await import('./systems/folder-flatten.js')).logScan(),
   panel: async () => (await import('./ui/folder-flatten-panel.js')).openFolderFlattenPanel(),
