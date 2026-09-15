@@ -645,6 +645,17 @@ function _buildChapterHeader(chapter, number) {
   name.style.color = 'var(--text)';
   name.textContent = chapter.name || 'Chapter';
 
+  // ★ V0.3.2.254 — the chapter carries the star when ANY of its steps does,
+  // so a change inside a collapsed chapter is never invisible.
+  const starredIn = (state.get('steps') || []).filter(s => s.chapterId === chapter.id && s.altered === true).length;
+  const chStar = document.createElement('span');
+  if (starredIn) {
+    chStar.className   = 'chapter-altered-star';
+    chStar.textContent = starredIn > 1 ? `★ ${starredIn}` : '★';
+    chStar.title       = `${starredIn} step${starredIn === 1 ? '' : 's'} in this chapter changed since the last render.`;
+    chStar.style.cssText = 'flex-shrink:0;font-size:11px;line-height:1;color:#fbbf24;filter:drop-shadow(0 0 1px rgba(0,0,0,0.7));';
+  }
+
   // Lock: on (blue) = always expanded; off (grey) = collapsable. Lock is
   // the only collapse control — arrow toggle removed to reduce redundancy.
   const btnLock = _mkBtn(chapter.locked ? '🔒' : '🔓', chapter.locked ? 'Unlock (allow collapse)' : 'Lock open');
@@ -681,7 +692,7 @@ function _buildChapterHeader(chapter, number) {
   btnRename.addEventListener('click', e => { e.stopPropagation(); _renameChapter(chapter.id); });
   btnDel.addEventListener('click',    e => { e.stopPropagation(); _deleteChapter(chapter.id); });
 
-  wrap.append(badge, name, btnEye, btnLock, btnRename, btnDel);
+  wrap.append(badge, name, ...(starredIn ? [chStar] : []), btnEye, btnLock, btnRename, btnDel);
 
   // Right-click → chapter context menu (rename, copy, paste, lock, delete,
   // and the multi-step selection helpers — see _showChapterContextMenu).
