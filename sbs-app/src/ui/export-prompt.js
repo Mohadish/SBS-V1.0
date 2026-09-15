@@ -150,10 +150,10 @@ export function openExportPrompt() {
         <div class="small muted" style="margin:12px 0 6px;">— or the steps you changed since the last render —</div>
         <button class="btn" id="xp-starred" style="width:100%;font-weight:600;color:#fbbf24;" ${starred.length ? '' : 'disabled'}
                 title="Renders the segments of every ★ step (a changed step's own segment, plus the segment after it — its transition starts from the changed state). Stars clear once rendered.">★ Re-render ${starred.length} starred step${starred.length === 1 ? '' : 's'}</button>
-        <label style="display:flex;align-items:flex-start;gap:6px;margin-top:6px;${starred.length ? '' : 'opacity:.5;'}"
-               title="Normally every segment whose fingerprint changed is re-rendered — a colour preset or a style edit re-keys the whole timeline. Tick this to say: only the starred steps really changed; re-file last time's segments for everything else instead of rendering them. If you are wrong, those segments stay as they were.">
-          <input type="checkbox" id="xp-trust-stars" ${starred.length ? '' : 'disabled'} />
-          <span>Trust the stars — reuse every other segment as-is, even if its fingerprint changed</span>
+        <label style="display:flex;align-items:flex-start;gap:6px;margin-top:6px;"
+               title="Normally every segment whose fingerprint changed is re-rendered. Tick this to say: only the starred steps really changed — reuse last time's segment for every other step instead of rendering it. Applies to BOTH buttons (full render and starred). Refused automatically if render settings (resolution, fps, AL1/AL2, background…) changed since the last render. Use it once after an app update that changes how fingerprints are computed.">
+          <input type="checkbox" id="xp-trust-stars" />
+          <span>Trust the stars — reuse every un-starred segment as-is, even if its fingerprint changed</span>
         </label>
 
         <div class="small muted" style="margin:12px 0 6px;">— or re-render specific steps (overwrites their cache; C4 = all of chapter 4) —</div>
@@ -270,7 +270,7 @@ export function openExportPrompt() {
           'Render the full project with alpha masks?');
         if (!ok) return;
       }
-      done({ mode: 'full' });
+      done({ mode: 'full', trustStars: !!el.querySelector('#xp-trust-stars').checked });
     });
     el.querySelector('#xp-selection').addEventListener('click', () => {
       if (parsed.error || !parsed.base.length) return;

@@ -101,6 +101,11 @@ function _stepKeyView(s, keep, animStr) {
   }
   delete c.thumbnail;
   delete c.altered;                 // ★ V0.3.2.247: advisory "changed since render" star — never content
+  delete c.name;                    // 🎯 V0.3.2.248: the name reaches only the .sbsproc manifest title and
+                                    // the assembly-time header — renaming a step re-rendered its segment
+  delete c.chapterId;               // 🎯 V0.3.2.248: chapter membership decides PLAYABILITY (the plan), and
+                                    // chapter names / progress windows composite at assembly — moving a
+                                    // step between chapters changes no segment pixel
   delete c.renderedDurationMs;      // measurement, not content (durations enter via the chapter vector)
   delete c.subtitles;               // 🌐 V0.3.2.63: subtitle overrides/translations composite at
                                     // ASSEMBLY (header layer) — editing a caption must never
@@ -364,7 +369,73 @@ function _spanVisible(span) {
  *   - DELETE → it WAS present+visible (so it was in the list) → drops out →
  *     key changes → re-render. No stale.
  *   - V null (missing data) → full defs (conservative). */
-function _scopedDefs(V, plan) {
+// ── 🎯 V0.3.2.248 — overlay definitions scoped to the steps that USE them ──
+//
+// Until .248 every overlay definition rode on every span key (see the note
+// inside _scopedDefs), so editing ONE shape style re-rendered the whole
+// timeline. Each definition kind is reached from a step through exactly one
+// node attr in that step's stored overlay string (reference audit, 2026-09-15):
+//
+//   shapeStyleId → shapeStyles     constShapeId → constShapes (pinned shape pos)
+//   linkId       → shapeLinks      styleId      → styleTemplates (text styles)
+//   constId      → constTextBoxes  cropMaskId   → cropMasks
+//
+// plus two INDIRECT hops resolved at load: a link def paints its own
+// shapeStyleId onto the node, and a constant text box overwrites the node's
+// styleId with its own. The PREVIOUS step's overlay counts too — its nodes are
+// moved to the ghost layer and painted during the transition that opens the
+// segment. A referenced id with no definition keys as {id, gone:true}, so
+// deleting a definition still re-renders the steps that used it.
+//
+// The scan is a regex over the raw string, not a parse: it sees attrs on nodes
+// at ANY depth and in ANY layer (over-inclusion is the safe direction — an
+// extra re-render, never a stale frame), and it never materialises the inline
+// base64 the way JSON.parse does (the renderer-heap lesson).
+const _OV_REF_RE = /"(shapeStyleId|constShapeId|linkId|styleId|constId|cropMaskId)"\s*:\s*"((?:[^"\\]|\\.)*)"/g;
+const _OV_KIND_OF = {
+  shapeStyleId: 'shapeStyles', constShapeId: 'constShapes', linkId: 'shapeLinks',
+  styleId: 'styleTemplates', constId: 'constTextBoxes', cropMaskId: 'cropMasks',
+};
+
+/** Referenced definition ids per kind for one step (memoised per plan). */
+function _overlayRefsOf(step, plan) {
+  const memo = plan._ovRefMemo || (plan._ovRefMemo = new Map());
+  const hit = memo.get(step);
+  if (hit) return hit;
+  const out = { shapeStyles: new Set(), constShapes: new Set(), shapeLinks: new Set(),
+                styleTemplates: new Set(), constTextBoxes: new Set(), cropMasks: new Set() };
+  const raw = step?.overlay;
+  const s = typeof raw === 'string' ? raw : (raw ? JSON.stringify(raw) : '');
+  if (s) for (const m of s.matchAll(_OV_REF_RE)) if (m[2]) out[_OV_KIND_OF[m[1]]].add(m[2]);
+  memo.set(step, out);
+  return out;
+}
+
+/** The overlay definitions a span's pixels depend on — and nothing else. */
+function _scopedOverlayDefs(span, plan) {
+  const all = plan._defScope.overlay;
+  const maps = plan._ovDefMaps || (plan._ovDefMaps = Object.fromEntries(
+    ['shapeStyles', 'constShapes', 'shapeLinks', 'styleTemplates', 'constTextBoxes', 'cropMasks']
+      .map(k => [k, new Map((all[k] || []).map(d => [d.id, d]))])));
+  const ids = { shapeStyles: new Set(), constShapes: new Set(), shapeLinks: new Set(),
+                styleTemplates: new Set(), constTextBoxes: new Set(), cropMasks: new Set() };
+  const forRefs = span._prevRef ? [span._prevRef, ...span.steps] : span.steps;
+  for (const st of forRefs) {
+    const r = _overlayRefsOf(st, plan);
+    for (const k of Object.keys(ids)) for (const id of r[k]) ids[k].add(id);
+  }
+  // Indirect hops (see header): link → its shape style; constant text box → its text style.
+  for (const id of ids.shapeLinks)     { const d = maps.shapeLinks.get(id);     if (d?.shapeStyleId) ids.shapeStyles.add(d.shapeStyleId); }
+  for (const id of ids.constTextBoxes) { const d = maps.constTextBoxes.get(id); if (d?.styleId)      ids.styleTemplates.add(d.styleId); }
+  const out = {};
+  for (const [k, set] of Object.entries(ids)) {
+    if (!set.size) continue;   // absent kind = no dependency; keeps unrelated spans byte-stable
+    out[k] = [...set].sort().map(id => maps[k].get(id) || { id, gone: true });
+  }
+  return out;
+}
+
+function _scopedDefs(V, plan, span) {
   const sc = plan._defScope;
   // Overlay defs are NOT scoped by visible 3D nodes — a shape style or a
   // linked shape has nothing to do with which meshes a span shows — so they
@@ -379,14 +450,20 @@ function _scopedDefs(V, plan) {
   // unopened step's stored overlay string byte-identical — so every span was a
   // cache HIT and an incremental export silently shipped the OLD paint,
   // geometry and positions.
-  if (!V) return { prims: sc.allPrims, shapes: sc.allShapes, colors: sc.colors, cables: sc.cables, overlay: sc.overlay };
+  //
+  // V0.3.2.248 — no longer unconditional: _scopedOverlayDefs (above) keys each
+  // span on exactly the definitions its steps' overlays reference. Overlay
+  // scoping does not depend on the visible 3D set, so it applies on the
+  // conservative !V path too. Without a span (never, today) → the full roster.
+  const overlay = span ? _scopedOverlayDefs(span, plan) : sc.overlay;
+  if (!V) return { prims: sc.allPrims, shapes: sc.allShapes, colors: sc.colors, cables: sc.cables, overlay };
   const prims = [];
   for (const id of V) { const d = sc.primById.get(id); if (d) prims.push(d); }
   prims.sort(sc.byId);
   const tplIds = new Set();
   for (const id of V) { const t = sc.shapeTplOfNode.get(id); if (t) tplIds.add(t); }
   const shapes = [...tplIds].map(t => sc.tplById.get(t) || { id: t, gone: true }).sort(sc.byId);
-  return { prims, shapes, colors: sc.colors, cables: sc.cables, overlay: sc.overlay };
+  return { prims, shapes, colors: sc.colors, cables: sc.cables, overlay };
 }
 
 /** (Re)compute a span's key + part-hashes from the CURRENT live objects.
@@ -400,7 +477,7 @@ async function _keySpan(span, plan) {
   // which definitions this segment depends on, and which objects' step
   // records it keys on.
   span._keep     = _spanVisible(span);                                  // null → key everything (conservative)
-  span._defsJson = JSON.stringify(_canon(_scopedDefs(span._keep, plan)));
+  span._defsJson = JSON.stringify(_canon(_scopedDefs(span._keep, plan, span)));
   const p = _spanPayload(span, plan);
   span._prevH  = await _sha1hex(p.prevJson);
   span._stepsH = await _sha1hex(p.stepsJson);
@@ -977,6 +1054,23 @@ export async function assembleToSbsProc(opts = {}) {
  */
 async function _adoptPriorSegments(plan, keepIds, onProgress) {
   if (!plan.dir || !window.sbsNative?.listDir) return 0;
+  // Never across a RENDER-SETTINGS change (resolution, fps, bitrate, hold,
+  // AL1/AL2, background, render quality, cache epoch): those genuinely change
+  // every frame, and concatenating segments of two resolutions breaks the
+  // assembly outright. Trust covers data / definition re-keys only — which is
+  // also what makes it the safe way through a keying upgrade like .248's.
+  try {
+    const ki = await window.sbsNative.readFile(`${plan.dir}/_keyinputs.json`, 'utf8');
+    const prevSettings = ki?.ok ? JSON.parse(ki.data)?.settings : null;
+    if (!prevSettings || JSON.stringify(_canon(prevSettings)) !== JSON.stringify(_canon(plan.settingsKey))) {
+      plan.adoptRefused = prevSettings ? 'render settings changed since the last render' : "no record of the last render's settings";
+      console.warn(`[render-cache] ★ trust-the-stars refused: ${plan.adoptRefused} — rendering normally.`);
+      return 0;
+    }
+  } catch {
+    plan.adoptRefused = "could not read the last render's settings";
+    return 0;
+  }
   let entries;
   try { entries = await window.sbsNative.listDir(plan.dir); } catch { return 0; }
   if (!Array.isArray(entries)) return 0;
@@ -1043,7 +1137,9 @@ export async function renderMissingSegments({ onProgress, signal, force = false,
   // ★ "trust the stars": re-file last time's segments for every un-starred span
   // (except the ones right after a starred step) instead of re-rendering them.
   let adopted = 0;
-  if (adoptExcept?.size) adopted = await _adoptPriorSegments(plan, adoptExcept, onProgress);
+  // An EMPTY set is meaningful: a full render with "trust the stars" and no stars
+  // = reuse last time's segment for every step (the one-time re-key escape).
+  if (adoptExcept) adopted = await _adoptPriorSegments(plan, adoptExcept, onProgress);
   const misses = plan.spans.filter(s => !s.cached);
   let done = 0, failed = 0;
   for (const span of misses) {

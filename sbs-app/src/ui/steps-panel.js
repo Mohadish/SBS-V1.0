@@ -4046,6 +4046,11 @@ async function _onExportVideo() {
     if (!forceIds.length) { setStatus('No starred steps.', 'warn', 4000); return; }
     if (choice.trustStars) adoptExcept = new Set(forceIds);
   }
+  // ★ "Trust the stars" also applies to a FULL render — with zero stars it
+  // means "stitch last time's segments for everything" (the safe way through a
+  // one-time fingerprint change after an app update). render-cache refuses it
+  // on its own if render settings changed since the last render.
+  if (choice.mode === 'full' && choice.trustStars) adoptExcept = new Set(steps.alteredStepIds());
   const needsAssemble = choice.mode === 'full' || choice.thenFull;
 
   const exp         = state.get('export') || {};
