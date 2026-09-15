@@ -998,6 +998,7 @@ export function setGroupLocked(stepId, locked) {
 export function duplicateStep(stepId) {
   const copy = steps.duplicateStep(stepId);
   if (!copy) return null;
+  copy.altered = true;   // ★ a duplicate is a new step — never rendered under its own id
   undoManager.push(
     `Duplicate step`,
     () => { steps.deleteStep(copy.id); },

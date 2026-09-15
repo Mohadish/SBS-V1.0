@@ -1245,6 +1245,28 @@ function _buildStepCard(step, displayNumber, isActive, isExpanded, total, groupO
     card.appendChild(badge);
   }
 
+  // ★ V0.3.2.247 — altered since the last render. Set by every writer that
+  // stores a change on the step, cleared by the render cache once the step's
+  // segment is rendered or verified cached. Export ▸ "Re-render starred" uses
+  // exactly this set. Sits left of the 🔌 badge when both are present.
+  if (step.altered === true) {
+    card.style.position = card.style.position || 'relative';
+    const star = document.createElement('div');
+    star.className = 'step-altered-star';
+    star.textContent = '★';
+    star.title = 'Changed since the last render — its segment will be rendered on the next export.\nExport ▸ "Re-render starred steps" renders just these. Right-click to clear the star.';
+    star.style.cssText = `position:absolute;top:0;right:${_plugActionStepIds.has(step.id) ? '16px' : '0'};font-size:11px;line-height:1;z-index:5;padding:2px 3px;color:#fbbf24;cursor:default;filter:drop-shadow(0 0 1px rgba(0,0,0,0.7));`;
+    star.addEventListener('click', e => e.stopPropagation());
+    star.addEventListener('contextmenu', e => {
+      e.preventDefault(); e.stopPropagation();
+      showContextMenu([
+        { label: '☆ Clear star (treat as rendered)', action: () => steps.clearAltered([step.id]) },
+        { label: '☆ Clear all stars', action: () => { const n = steps.clearAltered(); setStatus(`Cleared ${n} star(s).`); } },
+      ], e.clientX, e.clientY);
+    });
+    card.appendChild(star);
+  }
+
   // Top row identical in both states — except the thumbnail is hidden when
   // the card is expanded (per the original step-layout spec).
   card.appendChild(_buildStepTopCollapsed(step, displayNumber, !isExpanded, {
@@ -1924,6 +1946,7 @@ function _pasteOverlay(stepId, mode) {
 function _cloneStep(step) {
   const copy = cloneShareStrings(step);   // shares the big base64 strings; structure is independent
   copy.id = generateId('step');
+  copy.altered = true;   // ★ pasted / imported copies have never been rendered under their new id
   return copy;
 }
 
@@ -3645,6 +3668,7 @@ export async function previewStepNarration(step, currentText) {
       stepId:   step.id,
     }).catch(() => null);
     step.narration = { text, voiceId, speed, ...out };
+    step.altered = true;   // ★ narration length sets the hold → segment length
     if (dataFile) step.narration.dataFile = dataFile;
     state.markDirty();
     setStatus(`Real voice ready (${(out.durationMs / 1000).toFixed(1)}s) — click ▶ to hear it.`);
@@ -4009,9 +4033,18 @@ async function _onExportVideo() {
   const choice = await openExportPrompt();
   if (!choice) return;
   let forceIds = null;
+  let adoptExcept = null;   // ★ "trust the stars": reuse un-starred segments even on a changed fingerprint
   if (choice.mode === 'selection') {
     forceIds = _stepIdsForTopLevelNumbers(choice.withNeighbors);
     if (!forceIds.length) { setStatus('That range matched no steps.', 'warn', 5000); return; }
+  } else if (choice.mode === 'starred') {
+    // ★ V0.3.2.247 — the starred steps are the selection. No n−1/n+1 padding
+    // here: a segment renders FROM the previous step's state automatically,
+    // and the segment AFTER a starred step re-keys on its own (its start pose
+    // changed) — the adoption pass refuses to adopt exactly that one.
+    forceIds = choice.stepIds;
+    if (!forceIds.length) { setStatus('No starred steps.', 'warn', 4000); return; }
+    if (choice.trustStars) adoptExcept = new Set(forceIds);
   }
   const needsAssemble = choice.mode === 'full' || choice.thenFull;
 
@@ -4040,11 +4073,12 @@ async function _onExportVideo() {
       const rc = await import('../systems/render-cache.js');
       const r = await rc.renderMissingSegments({
         forceStepIds: new Set(forceIds),
+        adoptExcept,
         signal: _exportingCtrl.signal,
-        onProgress: (p) => setStatus(`Re-rendering segment ${p.current}/${p.total}: ${p.stepName}…`, 'info', 0),
+        onProgress: (p) => setStatus(p.total ? `Re-rendering segment ${p.current}/${p.total}: ${p.stepName}…` : `${p.stepName || 'Working…'}`, 'info', 0),
       });
       if (!needsAssemble) {
-        setStatus(`Re-rendered ${r.rendered} segment(s)${r.failed ? ` (${r.failed} FAILED)` : ''} — next export picks them up from cache.`, r.failed ? 'warning' : 'success', 10000);
+        setStatus(`Re-rendered ${r.rendered} segment(s)${r.adopted ? `, reused ${r.adopted} on your say-so` : ''}${r.failed ? ` (${r.failed} FAILED)` : ''} — next export picks them up from cache.`, r.failed ? 'warning' : 'success', 10000);
         return;
       }
       setStatus(`Re-rendered ${r.rendered} segment(s) — assembling the complete video…`, 'info', 0);
@@ -4064,6 +4098,7 @@ async function _onExportVideo() {
       const r = await rc.assembleFromCache({
         signal: _exportingCtrl.signal,
         output: outPath || undefined,   // user-chosen destination (V0.3.2.30)
+        adoptExcept,                    // ★ null unless "trust the stars" was ticked
         onProgress: (p) => setStatus(p.total ? `Segment ${p.current}/${p.total}: ${p.stepName}…` : `${p.stepName || 'Working…'}`, 'info', 0),
       });
       setStatus(`Incremental export done: reused ${r.reused}, rendered ${r.rendered} → ${r.path}`, 'success', 10000);

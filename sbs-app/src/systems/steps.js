@@ -2711,6 +2711,7 @@ class StepManager {
     }
     newSnapshot.cables = _merged;
     step.snapshot = newSnapshot;
+    step.altered  = true;   // ★ a dirty sync only runs after an edit landed on this step
     if (!cablesRender.hasActiveCableTransitions?.()) {
       cablesSystem.commitLiveCablesToDefiningSteps(activeId);
     }
@@ -2753,6 +2754,7 @@ class StepManager {
     if (!step.cameraBinding) step.cameraBinding = { mode: 'free', templateId: null };
     step.cameraBinding.mode       = 'free';
     step.cameraBinding.templateId = null;
+    step.altered = true;   // ★ a new camera pose is a new segment
     state.setState({ steps: [...allSteps] });
     state.markDirty();
     state.emit('step:synced', step);
@@ -2861,6 +2863,7 @@ class StepManager {
     const label = name ?? this._nextStepLabel(steps);
     const step  = createStep({ name: label, ...overrides, chapterId: inheritedChapterId, groupId: inheritedGroupId });
     step.snapshot = this.captureSnapshot();
+    step.altered  = true;   // ★ new step — never rendered
 
     // Insert after active step, or at end
     const activeIdx = steps.findIndex(s => s.id === activeId);
@@ -3182,8 +3185,47 @@ class StepManager {
     const step  = steps.find(s => s.id === stepId);
     if (!step) return;
     step.transition = { ...step.transition, ...transitionPatch };
+    step.altered = true;   // ★ transition timing/easing changes the rendered segment
     state.setState({ steps: [...steps] });
     state.markDirty();
+  }
+
+  // ═══════════════════════════════════════════════════════════════════════
+  //  ★ ALTERED SINCE LAST RENDER (V0.3.2.247)
+  // ═══════════════════════════════════════════════════════════════════════
+  /**
+   * `step.altered` is the star on a step card: "something was stored on this
+   * step since it was last rendered". It is set by every writer that lands a
+   * user change on a step (snapshot sync, camera, transition, overlay,
+   * narration, new / duplicated / imported steps) and cleared by the render
+   * cache once the step's segment has been rendered or verified cached.
+   *
+   * It is ADVISORY, not the truth: the truth is the segment fingerprint at
+   * export time. An extra star costs one segment render; a missing star costs
+   * nothing (the fingerprint still catches the change). So writers err on the
+   * side of starring. It is not an undo entry — undo restores the data, and a
+   * star on data that ends up unchanged is the harmless direction.
+   *
+   * Persisted with the project (steps save wholesale), absent = false, and
+   * stripped from the segment key in render-cache._stepKeyView.
+   */
+  clearAltered(stepIds = null) {
+    const steps = state.get('steps') || [];
+    const only  = stepIds ? new Set(stepIds) : null;
+    let n = 0;
+    for (const s of steps) {
+      if (!s.altered) continue;
+      if (only && !only.has(s.id)) continue;
+      delete s.altered;
+      n++;
+    }
+    if (n) { state.setState({ steps: [...steps] }); state.markDirty(); }
+    return n;
+  }
+
+  /** Ids of playable steps carrying the star. */
+  alteredStepIds() {
+    return this.getVisibleSteps().filter(s => s.altered === true).map(s => s.id);
   }
 
   /**

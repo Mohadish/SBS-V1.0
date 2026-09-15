@@ -100,6 +100,7 @@ function _stepKeyView(s, keep, animStr) {
     if (_ce && _oe && _ce !== _oe) c._easingRev = 2;
   }
   delete c.thumbnail;
+  delete c.altered;                 // ★ V0.3.2.247: advisory "changed since render" star — never content
   delete c.renderedDurationMs;      // measurement, not content (durations enter via the chapter vector)
   delete c.subtitles;               // 🌐 V0.3.2.63: subtitle overrides/translations composite at
                                     // ASSEMBLY (header layer) — editing a caption must never
@@ -538,7 +539,7 @@ function _wavFromFloat32(pcm, rate) {
  * NOT YET: header layer / progress bar composite (slice 3c) — the output is
  * header-less for now. Returns { path, totalMs, segments, reused, rendered }.
  */
-export async function assembleFromCache({ onProgress, signal, output, force = false } = {}) {
+export async function assembleFromCache({ onProgress, signal, output, force = false, adoptExcept = null } = {}) {
   const ve = await import('./video-export.js');
   const timings = [];
   let renderedCount = 0;
@@ -578,7 +579,7 @@ export async function assembleFromCache({ onProgress, signal, output, force = fa
     return { markersByStepId, files, totalMs: cum };
   };
 
-  const fill1 = await renderMissingSegments({ onProgress, signal, force });
+  const fill1 = await renderMissingSegments({ onProgress, signal, force, adoptExcept });
   let plan = _checkFill(fill1);
   renderedCount += fill1.rendered;
   _mark('render segments');
@@ -962,7 +963,69 @@ export async function assembleToSbsProc(opts = {}) {
   return { ...r, blob, manifest, extension: 'sbsproc', totalDurationMs: r.totalMs };
 }
 
-export async function renderMissingSegments({ onProgress, signal, force = false, forceStepIds = null } = {}) {
+/**
+ * ★ V0.3.2.247 — ADOPT prior segments for the spans the user vouches for.
+ *
+ * "Re-render starred steps, reuse everything else as-is": when a global
+ * definition re-keyed the whole timeline but the user knows only the starred
+ * steps really changed, every un-starred MISS span is paired with the segment
+ * that was rendered for the SAME step sequence last time (the sidecar names
+ * its steps) and that file is re-filed under the new key. Two refusals keep
+ * it honest: a span whose PREVIOUS step is starred is not adopted — its first
+ * frames are the transition out of a changed state (the "one after" rule) —
+ * and nothing is adopted across a cache generation (epoch).
+ */
+async function _adoptPriorSegments(plan, keepIds, onProgress) {
+  if (!plan.dir || !window.sbsNative?.listDir) return 0;
+  let entries;
+  try { entries = await window.sbsNative.listDir(plan.dir); } catch { return 0; }
+  if (!Array.isArray(entries)) return 0;
+  const byStepSeq = new Map();   // "id|id|…" → { key, hasAlpha }
+  for (const e of entries) {
+    if (e.isDir || !/^seg-[0-9a-f]{16}\.json$/.test(e.name)) continue;
+    try {
+      const r = await window.sbsNative.readFile(`${plan.dir}/${e.name}`, 'utf8');
+      if (!r?.ok) continue;
+      const sc = JSON.parse(r.data);
+      if (sc?.epoch !== RENDER_CACHE_EPOCH || !Array.isArray(sc.steps) || !sc.steps.length) continue;
+      byStepSeq.set(sc.steps.map(s => s.stepId).join('|'), { key: sc.key, hasAlpha: sc.hasAlpha === true, sc });
+    } catch { /* unreadable sidecar — not a candidate */ }
+  }
+  let adopted = 0;
+  for (const span of plan.spans) {
+    if (span.cached) continue;
+    if (span.steps.some(st => keepIds.has(st.id))) continue;          // starred → must render
+    if (span._prevRef && keepIds.has(span._prevRef.id)) continue;      // follows a starred step → must render
+    const prior = byStepSeq.get(span.steps.map(st => st.id).join('|'));
+    if (!prior || prior.key === span.key) continue;
+    try {
+      const mp4 = await window.sbsNative.readFile(`${plan.dir}/seg-${prior.key}.mp4`, 'buffer');
+      if (!mp4?.ok) continue;
+      onProgress?.({ stepName: `adopting cached segment for ${span.name}` });
+      const b = mp4.data instanceof Uint8Array ? mp4.data : new Uint8Array(mp4.data);
+      let w = await window.sbsNative.writeFile(`${plan.dir}/seg-${span.key}.mp4`, b, null);
+      if (!w?.ok) continue;
+      w = await window.sbsNative.writeFile(`${plan.dir}/seg-${span.key}.json`, JSON.stringify({ ...prior.sc, key: span.key }), 'utf8');
+      if (!w?.ok) continue;
+      if (prior.hasAlpha) {
+        try {
+          const am = await window.sbsNative.readFile(`${plan.dir}/seg-${prior.key}.alpha.mp4`, 'buffer');
+          if (am?.ok) await window.sbsNative.writeFile(`${plan.dir}/seg-${span.key}.alpha.mp4`,
+            am.data instanceof Uint8Array ? am.data : new Uint8Array(am.data), null);
+        } catch { /* no mask — fine */ }
+      }
+      span.cached = true;
+      adopted++;
+    } catch (e) { console.warn(`[render-cache] adopt failed for "${span.name}":`, e?.message); }
+  }
+  if (adopted) {
+    plan.hits = plan.spans.filter(s => s.cached).length;
+    console.warn(`[render-cache] ★ adopted ${adopted} prior segment(s) on the user's say-so — their fingerprints had changed; only the starred steps (and the steps after them) render.`);
+  }
+  return adopted;
+}
+
+export async function renderMissingSegments({ onProgress, signal, force = false, forceStepIds = null, adoptExcept = null } = {}) {
   const { exportTimelineVideo } = await import('./video-export.js');
   onProgress?.({ stepName: 'fingerprinting steps… (a few seconds on big projects)' });
   const plan = await planWithCacheStatus();
@@ -977,6 +1040,10 @@ export async function renderMissingSegments({ onProgress, signal, force = false,
     for (const s of plan.spans) if (s.steps.some(st => forceStepIds.has(st.id))) s.cached = false;
     plan.hits = plan.spans.filter(s => s.cached).length;
   }
+  // ★ "trust the stars": re-file last time's segments for every un-starred span
+  // (except the ones right after a starred step) instead of re-rendering them.
+  let adopted = 0;
+  if (adoptExcept?.size) adopted = await _adoptPriorSegments(plan, adoptExcept, onProgress);
   const misses = plan.spans.filter(s => !s.cached);
   let done = 0, failed = 0;
   for (const span of misses) {
@@ -1094,7 +1161,15 @@ export async function renderMissingSegments({ onProgress, signal, force = false,
   // recomputed AFTER the fill can differ from the ones the files were written
   // under. One run = one plan — the assembly must consume THIS plan, never
   // re-derive it.
-  return { rendered: done, reused: plan.hits, failed, dir: plan.dir, total: plan.spans.length, plan };
+  // ★ V0.3.2.247 — every span in the plan is now rendered, adopted or verified
+  // cached, so the stars on its steps have done their job. Hidden steps are
+  // not in the plan and keep theirs (the user's rule: a star stays until that
+  // step is actually rendered). A failed fill clears nothing.
+  if (!failed) {
+    try { steps.clearAltered(plan.spans.flatMap(s => s.steps.map(st => st.id))); }
+    catch (e) { console.warn('[render-cache] clearing stars failed:', e?.message); }
+  }
+  return { rendered: done, reused: plan.hits, adopted, failed, dir: plan.dir, total: plan.spans.length, plan };
 }
 
 /** Plan + check which segments already exist in <project>/_rendercache/. */

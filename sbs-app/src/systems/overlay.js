@@ -6123,6 +6123,7 @@ function _writeOverlayToStep(stepId) {
   const json = _serialiseStageJson();
   if (step.overlay === json) return;
   step.overlay = json;
+  step.altered = true;   // ★ overlay pixels are part of the segment
   state.markDirty();
 }
 
@@ -6181,9 +6182,10 @@ export function pasteStepOverlay(stepId, mode = 'replace') {
   layer.children = (mode === 'add') ? [...existingUser, ..._overlayClip, ...headers]
                                     : [..._overlayClip, ...headers];
   step.overlay = JSON.stringify(spec);
+  step.altered = true;   // ★
   const after = step.overlay;
   state.markDirty();
-  const restore = (str) => { const s = _stepById(stepId); if (!s) return; s.overlay = str; state.markDirty(); if (stepId === state.get('activeStepId')) _markOverlayStringsAuthoritative(); };
+  const restore = (str) => { const s = _stepById(stepId); if (!s) return; s.overlay = str; s.altered = true; state.markDirty(); if (stepId === state.get('activeStepId')) _markOverlayStringsAuthoritative(); };
   if (stepId === state.get('activeStepId')) _markOverlayStringsAuthoritative();
   undoManager.push(`Paste overlay (${mode})`, () => restore(before), () => restore(after));
   return { ok: true, count: _overlayClip.length, mode };

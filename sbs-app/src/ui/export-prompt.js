@@ -27,6 +27,7 @@
  */
 
 import { state }     from '../core/state.js';
+import { steps }     from '../systems/steps.js';   // ★ V0.3.2.247 — starred (altered) steps
 import { setStatus } from './status.js';
 
 /**
@@ -128,6 +129,7 @@ export function openExportPrompt() {
     document.getElementById('sbs-export-prompt')?.remove();   // never two at once
 
     const max = _topLevelCount();
+    const starred = steps.alteredStepIds();   // ★ playable steps changed since their last render
     const el = document.createElement('div');
     el.id = 'sbs-export-prompt';
     el.style.cssText = [
@@ -144,6 +146,15 @@ export function openExportPrompt() {
       </div>
       <div style="padding:12px;">
         <button class="btn" id="xp-full" style="width:100%;font-weight:600;color:#22d3ee;">▶ Render full project (incremental)</button>
+
+        <div class="small muted" style="margin:12px 0 6px;">— or the steps you changed since the last render —</div>
+        <button class="btn" id="xp-starred" style="width:100%;font-weight:600;color:#fbbf24;" ${starred.length ? '' : 'disabled'}
+                title="Renders the segments of every ★ step (a changed step's own segment, plus the segment after it — its transition starts from the changed state). Stars clear once rendered.">★ Re-render ${starred.length} starred step${starred.length === 1 ? '' : 's'}</button>
+        <label style="display:flex;align-items:flex-start;gap:6px;margin-top:6px;${starred.length ? '' : 'opacity:.5;'}"
+               title="Normally every segment whose fingerprint changed is re-rendered — a colour preset or a style edit re-keys the whole timeline. Tick this to say: only the starred steps really changed; re-file last time's segments for everything else instead of rendering them. If you are wrong, those segments stay as they were.">
+          <input type="checkbox" id="xp-trust-stars" ${starred.length ? '' : 'disabled'} />
+          <span>Trust the stars — reuse every other segment as-is, even if its fingerprint changed</span>
+        </label>
 
         <div class="small muted" style="margin:12px 0 6px;">— or re-render specific steps (overwrites their cache; C4 = all of chapter 4) —</div>
         <div style="display:flex;gap:6px;">
@@ -268,6 +279,19 @@ export function openExportPrompt() {
         base: parsed.base,
         withNeighbors: parsed.withNeighbors,
         thenFull: el.querySelector('#xp-then-full').checked,
+      });
+    });
+    // ★ V0.3.2.247 — the starred steps ARE the selection; "then full" is
+    // shared with the range mode above. trustStars = adopt last time's
+    // segments for everything un-starred instead of re-rendering on a
+    // changed fingerprint (the user's override for project-wide re-keys).
+    el.querySelector('#xp-starred').addEventListener('click', () => {
+      if (!starred.length) return;
+      done({
+        mode: 'starred',
+        stepIds: starred,
+        thenFull: el.querySelector('#xp-then-full').checked,
+        trustStars: !!el.querySelector('#xp-trust-stars').checked,
       });
     });
     el.querySelector('#xp-purge').addEventListener('click', async (e) => {
