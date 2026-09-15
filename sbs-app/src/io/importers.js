@@ -519,21 +519,32 @@ function normalizeMaterial(mat) {
  * @returns {TreeNode}
  */
 /**
- * V0.3.2.251 — remember the pose a mesh was imported with. A mesh's pose is
- * never its own (parent chain × baked vertices), but the step transition
- * machinery writes mesh locals during world-space lerps and snaps; every
- * landing on a step puts each mesh back at THIS pose (steps.js
+ * V0.3.2.251/.252 — remember the pose each mesh was imported with. A mesh's
+ * pose is never its own (parent chain × baked vertices), but the step
+ * transition machinery writes mesh locals during world-space lerps and
+ * snaps; every landing on a step puts each mesh back at THIS pose (steps.js
  * _resetMeshImportPoses), the way folders are re-derived from their data.
  * Stamped on the Object3D — no saved field, no dependence on the data node
  * (which may be a phantom clone with default base arrays).
+ *
+ * Called ONCE per import from finalizeModelImport, i.e. AFTER every
+ * format-specific bake: GLB/FBX run bakeAndFlattenImport first, which folds
+ * the group transforms into the vertices and zeroes each mesh's local pose.
+ * A stamp taken before that (as .251 did in the node builders) held the
+ * pre-bake pose, and the reset would have applied it a second time.
  */
-function _stampImportPose(obj) {
-  if (!obj) return;
-  obj.userData.importPose = {
-    p: [obj.position.x, obj.position.y, obj.position.z],
-    q: [obj.quaternion.x, obj.quaternion.y, obj.quaternion.z, obj.quaternion.w],
-    s: [obj.scale.x, obj.scale.y, obj.scale.z],
-  };
+function _stampImportPoses(innerRoot) {
+  (function visit(node) {
+    if (node?.type === 'mesh' && node.object3d) {
+      const o = node.object3d;
+      o.userData.importPose = {
+        p: [o.position.x, o.position.y, o.position.z],
+        q: [o.quaternion.x, o.quaternion.y, o.quaternion.z, o.quaternion.w],
+        s: [o.scale.x, o.scale.y, o.scale.z],
+      };
+    }
+    for (const c of (node?.children || [])) visit(c);
+  })(innerRoot);
 }
 
 function buildNodeFromOcct(occtNode, meshes, parent3d, prefix, obj3dMap) {
@@ -568,7 +579,6 @@ function buildNodeFromOcct(occtNode, meshes, parent3d, prefix, obj3dMap) {
     const threeMesh  = new THREE.Mesh(geom, mat);
     threeMesh.name   = occtNode.name ?? `Mesh ${i + 1}`;
     threeMesh.userData.nodeId = meshId;
-    _stampImportPose(threeMesh);
     group.add(threeMesh);
 
     // Store bounding box for placeholder visualisation when this asset is missing.
@@ -647,7 +657,6 @@ export function buildNodeFromThreeObject(obj, obj3dMap) {
     }
     meshNode.object3d = obj;
     obj3dMap.set(meshId, obj);
-    _stampImportPose(obj);
     materials.registerMesh(meshId, obj);
     return meshNode;
   }
@@ -902,6 +911,7 @@ export function finalizeModelImport(group3d, innerRoot, name, assetInfo, obj3dMa
   _remapToStableIds(innerRoot, assetId, obj3dMap);
   for (const oldId of preRemapMeshIds) materials.unregisterMesh(oldId);
   _reregisterMeshes(innerRoot);
+  _stampImportPoses(innerRoot);   // after every bake — see the helper
 
   // Create the model node (wraps the entire loaded file)
   const modelNode = createNode('model', {
