@@ -33,6 +33,7 @@ import * as projectPaths from '../core/project-paths.js';   // 📁 folder layou
 import { steps } from './steps.js';
 import { resolveAnimationString } from './animation.js';   // V0.3.2.73 — preset content must reach the segment key
 import { materials } from './materials.js';                 // 🎨 V0.3.2.257 — default colours, to scope presets per span
+import * as frameVis from './frame-visibility.js';          // 🎞 V0.3.2.259 — signed in-frame records narrow the visible set
 
 /** Bump when renderer/exporter changes make previously-cached pixels stale. */
 export const RENDER_CACHE_EPOCH = 5;   // 2: canonical hashing (V0.3.2.22); 3: scoped defs (.32); 4: pruned object roster (.33); 5: overlay defs — shape AND text — reach the span key (.156/.158)
@@ -331,6 +332,12 @@ export async function computeSegmentPlan() {
       try { return resolveAnimationString(st?.transition || {}, _animPresets) || ''; }
       catch { return ''; }
     },
+    // 🎞 V0.3.2.259 — the in-frame record of a step, ONLY while the step still
+    // matches the record's signature; and the camera the renderer will use for
+    // it (a span whose camera moves is never narrowed — see _spanVisible).
+    _inFrame: (st) => { try { return frameVis.visibleInIfFresh(st); } catch { return null; } },
+    _camOf:   (st) => { try { return steps._resolveStepCamera(st) ?? st?.snapshot?.camera ?? null; } catch { return st?.snapshot?.camera ?? null; } },
+    narrowed: 0,
   };
   for (const span of spans) {
     span._prevRef = span.from > 0 ? playable[span.from - 1] : null;
@@ -338,6 +345,7 @@ export async function computeSegmentPlan() {
     span.count = span.steps.length;
     await _keySpan(span, plan);
   }
+  if (plan.narrowed) console.log(`[render-cache] ${plan.narrowed}/${spans.length} span(s) keyed on what is in frame (signed records, static camera)`);
   return plan;
 }
 
@@ -351,7 +359,7 @@ export async function computeSegmentPlan() {
  *  Deliberately does NOT propagate a hidden parent down to its children: that
  *  would only shrink the set further, and over-including is the safe direction
  *  (a harmless extra re-render, never a stale frame). */
-function _spanVisible(span) {
+function _spanVisible(span, plan = null) {
   const ids = new Set();
   const forVis = span._prevRef ? [span._prevRef, ...span.steps] : span.steps;
   for (const st of forVis) {
@@ -369,7 +377,48 @@ function _spanVisible(span) {
       (n.children || []).forEach(c => walk(c, shown));
     })(tree, true);
   }
+  // 🎞 V0.3.2.259 — NARROW TO WHAT IS IN FRAME, when it is safe to:
+  //   • every step of the span (prev included) has a record whose signature
+  //     still matches the step — a stale record is never consulted;
+  //   • the camera holds still across the span (prev → each step: same pose,
+  //     fov, no orbit centre / pull-out). A moving camera sweeps parts into
+  //     view mid-transition that neither end frame shows; those spans keep the
+  //     scene rule.
+  // The records are end frames; a part off-frame at both ends that crosses the
+  // frame mid-motion is the accepted blind spot (documented, rare).
+  if (plan?._inFrame && plan?._camOf) {
+    const cam0 = plan._camOf(forVis[0]);
+    const still = forVis.every(st => _cameraStill(cam0, plan._camOf(st)));
+    if (still) {
+      const inFrame = new Set();
+      let complete = true;
+      for (const st of forVis) {
+        const rec = plan._inFrame(st);
+        if (!rec) { complete = false; break; }
+        for (const id of rec) inFrame.add(id);
+      }
+      if (complete) {
+        const narrowed = new Set();
+        for (const id of ids) if (inFrame.has(id)) narrowed.add(id);
+        plan.narrowed = (plan.narrowed || 0) + 1;
+        return narrowed;
+      }
+    }
+  }
   return ids;
+}
+
+// Same camera, to the renderer: pose, fov, up — and no animated orbit centre or
+// pull-out on the target (those move the camera mid-transition). Missing on
+// both sides counts as still (nothing to fly between).
+function _cameraStill(a, b) {
+  if (!a && !b) return true;
+  if (!a || !b) return false;
+  if (b.orbitPullout) return false;
+  if (Array.isArray(b.orbitPivot) || Array.isArray(a.orbitPivot)) return false;
+  const near = (x, y, n) => { for (let i = 0; i < n; i++) if (Math.abs((x?.[i] ?? 0) - (y?.[i] ?? 0)) > 1e-6) return false; return true; };
+  return near(a.position, b.position, 3) && near(a.quaternion, b.quaternion, 4) && near(a.up, b.up, 3)
+      && Math.abs((a.fov ?? 0) - (b.fov ?? 0)) < 1e-6;
 }
 
 /** Per-segment scoped definitions, from the span's visible set. cables stay
@@ -515,7 +564,7 @@ async function _keySpan(span, plan) {
   // ONE visible set drives both halves of the fingerprint (V0.3.2.33):
   // which definitions this segment depends on, and which objects' step
   // records it keys on.
-  span._keep     = _spanVisible(span);                                  // null → key everything (conservative)
+  span._keep     = _spanVisible(span, plan);                            // null → key everything (conservative)
   span._defsJson = JSON.stringify(_canon(_scopedDefs(span._keep, plan, span)));
   const p = _spanPayload(span, plan);
   span._prevH  = await _sha1hex(p.prevJson);
@@ -1306,7 +1355,7 @@ export async function renderMissingSegments({ onProgress, signal, force = false,
   }
   // 🎞 V0.3.2.255 — every step was left during the fill (recorded then); the
   // last one is still on screen — record it too.
-  try { const fv = await import('./frame-visibility.js'); fv.captureActive(); await fv.save(); }
+  try { frameVis.captureActive(); await frameVis.save(); }
   catch (e) { console.warn('[render-cache] frame record failed:', e?.message); }
   return { rendered: done, reused: plan.hits, adopted, failed, dir: plan.dir, total: plan.spans.length, plan };
 }

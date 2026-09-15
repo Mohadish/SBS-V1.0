@@ -61,17 +61,40 @@ export function base64ToMask(b64) {
   return m;
 }
 
-/** File format: { v, ids: [...partIds], steps: { stepId: base64mask } }. */
-export function serializeRecords(ids, masks) {
+/** Fast, deterministic 64-bit-ish hash of a string (two FNV-1a 32 lanes), hex. */
+export function hashString(str) {
+  let a = 0x811c9dc5, b = 0x01000193 ^ 0x5bd1e995;
+  for (let i = 0; i < str.length; i++) {
+    const c = str.charCodeAt(i);
+    a = Math.imul(a ^ c, 0x01000193) >>> 0;
+    b = Math.imul(b ^ c, 0x9e3779b1) >>> 0;
+  }
+  return a.toString(16).padStart(8, '0') + b.toString(16).padStart(8, '0');
+}
+
+/**
+ * File format v2: { v:2, ids: [...partIds], steps: { stepId: { m: base64mask, sig } } }.
+ * `sig` is the signature of the step's key-relevant state when the record was
+ * taken (see frame-visibility.js stepSignature) — the render cache trusts a
+ * record only while the step still matches it. v1 files (no sig) still load;
+ * their records serve the stars but never the cache key.
+ */
+export function serializeRecords(ids, records) {
   const steps = {};
-  for (const [stepId, mask] of masks) steps[stepId] = maskToBase64(mask);
-  return JSON.stringify({ v: 1, ids, steps });
+  for (const [stepId, rec] of records) {
+    const mask = rec?.mask || rec;
+    steps[stepId] = { m: maskToBase64(mask), ...(rec?.sig ? { sig: rec.sig } : {}) };
+  }
+  return JSON.stringify({ v: 2, ids, steps });
 }
 
 export function parseRecords(text) {
   const j = JSON.parse(text);
-  if (!j || j.v !== 1 || !Array.isArray(j.ids)) throw new Error('not a frame-visibility record');
-  const masks = new Map();
-  for (const [stepId, b64] of Object.entries(j.steps || {})) masks.set(stepId, base64ToMask(b64));
-  return { ids: j.ids.map(String), masks };
+  if (!j || (j.v !== 1 && j.v !== 2) || !Array.isArray(j.ids)) throw new Error('not a frame-visibility record');
+  const records = new Map();
+  for (const [stepId, v] of Object.entries(j.steps || {})) {
+    if (typeof v === 'string') records.set(stepId, { mask: base64ToMask(v), sig: null });
+    else if (v && typeof v.m === 'string') records.set(stepId, { mask: base64ToMask(v.m), sig: v.sig || null });
+  }
+  return { ids: j.ids.map(String), records };
 }

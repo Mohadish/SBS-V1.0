@@ -1,4 +1,4 @@
-// 🎞 In-frame visibility records — the GPU/wiring half (V0.3.2.255).
+// 🎞 In-frame visibility records — the GPU/wiring half (V0.3.2.255, signatures .259).
 //
 // "Is this part visible in the scene?" (own flag, ancestors, archive) was the
 // best the star rules could ask. This answers the real question — "does it
@@ -13,11 +13,20 @@
 // When a record is taken: every time a step is LEFT (activateStep, after
 // flushSync — the scene stands at that step's final state, the record uses
 // the step's SAVED camera, so orbiting the viewport does not matter), at the
-// end of a cache fill, and on demand (window.sbsDiag.scanFrames()). A step
-// with no record — or whose snapshot was rebuilt by a tool since — falls back
-// to the scene rule. Records are bitmasks over a project-wide part index
-// (~1 bit per part per step), kept in memory and mirrored to
-// <render cache dir>/_visible.json.
+// end of a cache fill, and on demand (Edit ▸ Scan steps for what is in frame…,
+// window.sbsDiag.scanFrames()). A step with no record — or whose snapshot was
+// rebuilt by a tool since — falls back to the scene rule. Records are bitmasks
+// over a project-wide part index (~1 bit per part per step), kept in memory
+// and mirrored to <render cache dir>/_visible.json.
+//
+// 🔏 V0.3.2.259 — SIGNED RECORDS FOR THE CACHE KEY. Every record carries the
+// signature of the step as it was when the picture was taken: its tree,
+// visibility, transforms, per-step colours, resolved camera, plus the global
+// definitions that move pixels (primitive params, shape + hardware templates,
+// preset solidness). The render cache narrows a span's visible set with a
+// record ONLY while the step still matches that signature; anything else is
+// the scene rule. That is the guard against the one failure that must never
+// happen — a stale record shipping a stale frame.
 
 import state          from '../core/state.js';
 import sceneCore      from '../core/scene.js';
@@ -29,28 +38,87 @@ const W = 320;                 // ID-pass width; height follows the export aspec
 let _rt = null, _mat = null, _rtH = 0;
 let _ids = [];                 // bit index → part (mesh node) id
 let _idx = new Map();          // part id → bit index
-let _masks = new Map();        // stepId → Uint8Array
+let _recs = new Map();         // stepId → { mask: Uint8Array, sig: string|null }
 const _setMemo = new WeakMap();// mask → Set of ids
 let _saveTimer = null;
-let _fileDir = null;
 
 // ── records ─────────────────────────────────────────────────────────────────
-/** Set of part ids in frame for the step, or null when no record exists. */
-export function visibleIn(stepId) {
-  const mask = _masks.get(stepId);
-  if (!mask) return null;
-  let s = _setMemo.get(mask);
-  if (!s) { s = F.maskToIds(mask, _ids); _setMemo.set(mask, s); }
+function _setOf(rec) {
+  if (!rec) return null;
+  let s = _setMemo.get(rec.mask);
+  if (!s) { s = F.maskToIds(rec.mask, _ids); _setMemo.set(rec.mask, s); }
   return s;
 }
-export function hasRecord(stepId) { return _masks.has(stepId); }
-export function invalidate(stepId) { if (_masks.delete(stepId)) _scheduleSave(); }
-export function recordCount() { return _masks.size; }
+/** Set of part ids in frame for the step, or null when no record exists (stars: staleness handled by invalidate). */
+export function visibleIn(stepId) { return _setOf(_recs.get(stepId)); }
+/** Same, but ONLY while the step still matches the record's signature (the cache key's rule). */
+export function visibleInIfFresh(step) {
+  const rec = step?.id ? _recs.get(step.id) : null;
+  if (!rec || !rec.sig) return null;
+  return rec.sig === stepSignature(step) ? _setOf(rec) : null;
+}
+export function hasRecord(stepId) { return _recs.has(stepId); }
+export function isFresh(step) { const rec = step?.id ? _recs.get(step.id) : null; return !!rec?.sig && rec.sig === stepSignature(step); }
+export function invalidate(stepId) { if (_recs.delete(stepId)) _scheduleSave(); }
+export function recordCount() { return _recs.size; }
 
 function _bitOf(id) {
   let b = _idx.get(id);
   if (b == null) { b = _ids.length; _ids.push(id); _idx.set(id, b); }
   return b;
+}
+
+// ── signatures ──────────────────────────────────────────────────────────────
+/** The step's camera as the renderer resolves it: bound template, else its own. */
+function _cameraStateOf(step) {
+  const b = step?.cameraBinding;
+  if (b?.mode === 'template' && b.templateId) {
+    const tpl = (state.get('cameraViews') || []).find(v => v.id === b.templateId);
+    if (tpl) return tpl;
+  }
+  return step?.snapshot?.camera || null;
+}
+
+// Global definitions that change what occupies pixels without touching any
+// step: primitive dimensions, shape + hardware templates, preset solidness.
+// Memoised for a moment so a plan over 500 steps computes it once.
+let _globalSigAt = 0, _globalSigVal = '';
+function _globalSig() {
+  const now = Date.now();
+  if (now - _globalSigAt < 250 && _globalSigVal) return _globalSigVal;
+  const prims = [];
+  for (const [id, n] of (state.get('nodeById') || new Map())) {
+    if (n?.type === 'primitive') prims.push([id, n.primKind, n.primParams, n.primQuality, n.baseAtOrigin]);
+  }
+  prims.sort((a, b) => (a[0] < b[0] ? -1 : a[0] > b[0] ? 1 : 0));
+  const pick = (list, f) => (list || []).map(f).sort((a, b) => (a[0] < b[0] ? -1 : a[0] > b[0] ? 1 : 0));
+  const payload = JSON.stringify({
+    prims,
+    shapes: pick(state.get('shapeTemplates'), t => [t.id, t.points ?? t.path ?? t.shapePath ?? null, t.w, t.h, t.width, t.height]),
+    hw:     pick(state.get('hardwareTemplates'), t => [t.id, t.kind, t.params, t.washerNames]),
+    solid:  pick(state.get('colorPresets'), p => [p.id, p.solidness ?? 1, p.opacity ?? 1, p.flatMirror ?? false]),
+  });
+  _globalSigVal = F.hashString(payload);
+  _globalSigAt = now;
+  return _globalSigVal;
+}
+
+const _sigMemo = new WeakMap();   // snapshot → { cam, glob, sig }
+/** Signature of everything that decides what is in this step's frame. */
+export function stepSignature(step) {
+  const snap = step?.snapshot;
+  if (!snap) return '';
+  const cam  = JSON.stringify(_cameraStateOf(step) || null);
+  const glob = _globalSig();
+  const memo = _sigMemo.get(snap);
+  if (memo && memo.cam === cam && memo.glob === glob) return memo.sig;
+  const own = F.hashString(JSON.stringify({
+    tree: snap.tree || null, vis: snap.visibility || null, xf: snap.transforms || null, mats: snap.materials || null,
+    cables: snap.cables || null,
+  }));
+  const sig = `${own}.${F.hashString(cam)}.${glob}`;
+  _sigMemo.set(snap, { cam, glob, sig });
+  return sig;
 }
 
 // ── the ID pass ─────────────────────────────────────────────────────────────
@@ -81,12 +149,7 @@ function _isTransparent(m) {
 /** Camera for a step: its saved state (or bound template), export aspect. */
 function _cameraFor(step, T, aspect) {
   const live = sceneCore.camera;
-  let cs = step?.snapshot?.camera || null;
-  const b = step?.cameraBinding;
-  if (b?.mode === 'template' && b.templateId) {
-    const tpl = (state.get('cameraViews') || []).find(v => v.id === b.templateId);
-    if (tpl) cs = tpl;
-  }
+  const cs = _cameraStateOf(step);
   const cam = new T.PerspectiveCamera(cs?.fov ?? live?.fov ?? 45, aspect, live?.near ?? 0.1, live?.far ?? 1e6);
   if (cs?.position)   cam.position.set(...cs.position);   else if (live) cam.position.copy(live.position);
   if (cs?.quaternion) cam.quaternion.set(...cs.quaternion); else if (live) cam.quaternion.copy(live.quaternion);
@@ -165,7 +228,7 @@ export function captureStep(step) {
     box.setFromObject(obj);
     if (!box.isEmpty() && frustum.intersectsBox(box)) indices.add(_bitOf(id));
   }
-  _masks.set(step.id, F.maskFromIndices(indices, _ids.length));
+  _recs.set(step.id, { mask: F.maskFromIndices(indices, _ids.length), sig: stepSignature(step) });
   _scheduleSave();
   return indices.size;
 }
@@ -188,22 +251,22 @@ function _scheduleSave() {
 }
 export async function save() {
   const p = _filePath();
-  if (!p || !window.sbsNative?.writeFile || !_masks.size) return false;
-  const r = await window.sbsNative.writeFile(p, F.serializeRecords(_ids, _masks));
+  if (!p || !window.sbsNative?.writeFile || !_recs.size) return false;
+  const r = await window.sbsNative.writeFile(p, F.serializeRecords(_ids, _recs));
   return !!r?.ok;
 }
 export async function load() {
-  _ids = []; _idx = new Map(); _masks = new Map(); _fileDir = null;
+  _ids = []; _idx = new Map(); _recs = new Map();
   const p = _filePath();
   if (!p || !window.sbsNative?.readFile) return 0;
   try {
     if (window.sbsNative.fileExists && !(await window.sbsNative.fileExists(p))) return 0;
     const r = await window.sbsNative.readFile(p, 'utf8');
     if (!r?.ok) return 0;
-    const { ids, masks } = F.parseRecords(r.data);
-    _ids = ids; _idx = new Map(ids.map((id, i) => [id, i])); _masks = masks; _fileDir = p;
-    console.log(`[frame-vis] ${masks.size} step record(s) loaded (${ids.length} parts indexed)`);
-    return masks.size;
+    const { ids, records } = F.parseRecords(r.data);
+    _ids = ids; _idx = new Map(ids.map((id, i) => [id, i])); _recs = records;
+    console.log(`[frame-vis] ${records.size} step record(s) loaded (${ids.length} parts indexed)`);
+    return records.size;
   } catch (e) { console.warn('[frame-vis] load failed:', e?.message); return 0; }
 }
 
@@ -235,18 +298,25 @@ export function initFrameVisibility() {
   if (_inited) return;
   _inited = true;
   // The leaving step's final state is on screen (activateStep: snap → flushSync → here).
-  // Recorded when the step was EDITED (it wears the star) or has no record
-  // yet — plain navigation through recorded, unchanged steps costs nothing.
+  // Recorded when the step was EDITED (it wears the star), has no record yet, or
+  // its record no longer matches it — plain navigation through recorded,
+  // unchanged steps costs nothing.
   state.on('step:leaving', ({ stepId } = {}) => {
     const step = (state.get('steps') || []).find(s => s.id === stepId);
     if (!step || step.isBaseStep) return;
-    if (step.altered !== true && _masks.has(step.id)) return;
+    if (step.altered !== true && isFresh(step)) return;
     try { captureStep(step); } catch (e) { console.warn('[frame-vis] capture failed:', e?.message); }
   });
   state.on('project:modelsSettled', () => { load().catch(() => {}); });
   if (typeof window !== 'undefined') {
     window.sbsDiag = window.sbsDiag || {};
     window.sbsDiag.scanFrames = () => scanAllSteps();
-    window.sbsDiag.frameVis = (stepId) => { const s = visibleIn(stepId || state.get('activeStepId')); console.log(s ? `${s.size} part(s) in frame` : 'no record for this step'); return s; };
+    window.sbsDiag.frameVis = (stepId) => {
+      const id = stepId || state.get('activeStepId');
+      const step = (state.get('steps') || []).find(s => s.id === id);
+      const s = visibleIn(id);
+      console.log(s ? `${s.size} part(s) in frame — ${isFresh(step) ? 'record is CURRENT (usable by the cache key)' : 'record is STALE (stars only; re-taken when the step is left)'}` : 'no record for this step');
+      return s;
+    };
   }
 }
