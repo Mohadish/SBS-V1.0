@@ -49,19 +49,26 @@ export function predecessorChanges(prevOrder, nextOrder) {
   return out;
 }
 
-/** Stable signature of a definition (keys sorted, `ignore` keys dropped). */
-export function defSig(item, ignore = []) {
+/**
+ * Stable signature of a definition. `spec` is either the list of keys to
+ * IGNORE (keys sorted, the rest kept) or a PROJECTION function returning the
+ * fields that count — for definitions that also carry live per-step state
+ * (a cable's current nodes / visibility ride on its record; only its style
+ * is a definition).
+ */
+export function defSig(item, spec = []) {
   if (!item || typeof item !== 'object') return JSON.stringify(item ?? null);
-  const skip = new Set(ignore);
+  if (typeof spec === 'function') return JSON.stringify(spec(item) ?? null);
+  const skip = new Set(spec);
   const sorted = {};
   for (const k of Object.keys(item).sort()) if (!skip.has(k)) sorted[k] = item[k];
   return JSON.stringify(sorted);
 }
 
-/** id → signature for a definition list. */
-export function sigMap(list, ignore = []) {
+/** id → signature for a definition list (see defSig for `spec`). */
+export function sigMap(list, spec = []) {
   const m = new Map();
-  for (const it of (list || [])) if (it && it.id != null) m.set(it.id, defSig(it, ignore));
+  for (const it of (list || [])) if (it && it.id != null) m.set(it.id, defSig(it, spec));
   return m;
 }
 

@@ -176,7 +176,12 @@ const DEF_LISTS = {
   constTextBoxes: ['name'],
   cropMasks:      ['name'],
   shapeTemplates: ['name'],
-  cables:         ['name'],
+  // A cable record carries its LIVE state too (nodes, visible, highlight —
+  // rewritten on every step activation, per-step truth lives in
+  // snapshot.cables). Only the style is a definition — the same projection the
+  // render cache keys on. Comparing the whole record starred every step that
+  // showed the cable after every render (press project, "always starred").
+  cables:         (c) => ({ id: c.id, style: c.style ?? null, flexible: c.flexible ?? null }),
 };
 const OVERLAY_DEF_KEYS = ['shapeStyles', 'constShapes', 'shapeLinks', 'styleTemplates', 'constTextBoxes', 'cropMasks'];
 
