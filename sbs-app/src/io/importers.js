@@ -518,6 +518,24 @@ function normalizeMaterial(mat) {
  * @param {Map<id, Object3D>} obj3dMap  filled in as we go
  * @returns {TreeNode}
  */
+/**
+ * V0.3.2.251 — remember the pose a mesh was imported with. A mesh's pose is
+ * never its own (parent chain × baked vertices), but the step transition
+ * machinery writes mesh locals during world-space lerps and snaps; every
+ * landing on a step puts each mesh back at THIS pose (steps.js
+ * _resetMeshImportPoses), the way folders are re-derived from their data.
+ * Stamped on the Object3D — no saved field, no dependence on the data node
+ * (which may be a phantom clone with default base arrays).
+ */
+function _stampImportPose(obj) {
+  if (!obj) return;
+  obj.userData.importPose = {
+    p: [obj.position.x, obj.position.y, obj.position.z],
+    q: [obj.quaternion.x, obj.quaternion.y, obj.quaternion.z, obj.quaternion.w],
+    s: [obj.scale.x, obj.scale.y, obj.scale.z],
+  };
+}
+
 function buildNodeFromOcct(occtNode, meshes, parent3d, prefix, obj3dMap) {
   const nodeId  = generateId('node');
   const group   = new THREE.Group();
@@ -550,6 +568,7 @@ function buildNodeFromOcct(occtNode, meshes, parent3d, prefix, obj3dMap) {
     const threeMesh  = new THREE.Mesh(geom, mat);
     threeMesh.name   = occtNode.name ?? `Mesh ${i + 1}`;
     threeMesh.userData.nodeId = meshId;
+    _stampImportPose(threeMesh);
     group.add(threeMesh);
 
     // Store bounding box for placeholder visualisation when this asset is missing.
@@ -628,6 +647,7 @@ export function buildNodeFromThreeObject(obj, obj3dMap) {
     }
     meshNode.object3d = obj;
     obj3dMap.set(meshId, obj);
+    _stampImportPose(obj);
     materials.registerMesh(meshId, obj);
     return meshNode;
   }

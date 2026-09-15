@@ -517,9 +517,16 @@ class StepManager {
     }
 
     // Transforms
-    if (snapshot.transforms && !holds('transforms')) {
-      applyAllTransformSnapshots(nodeById, snapshot.transforms);
-      applyAllTransformsToScene(nodeById, this.object3dById);
+    if (!holds('transforms')) {
+      // V0.3.2.251 — meshes first (see _resetMeshImportPoses), then the
+      // data-driven folder/model poses + one matrix-world update for all.
+      _resetMeshImportPoses(nodeById, this.object3dById);
+      if (snapshot.transforms) {
+        applyAllTransformSnapshots(nodeById, snapshot.transforms);
+        applyAllTransformsToScene(nodeById, this.object3dById);
+      } else {
+        sceneCore.rootGroup?.updateMatrixWorld(true);
+      }
     }
 
     // Materials
@@ -4260,6 +4267,37 @@ function applyAllTransformsToScene(nodeById, object3dById) {
   // Batch matrix world update
   const root3d = sceneCore.rootGroup;
   if (root3d) root3d.updateMatrixWorld(true);
+}
+
+/**
+ * V0.3.2.251 — put every real mesh back at the pose it was imported with.
+ *
+ * A mesh's pose is never its own: parent chain × baked vertices. But the
+ * transition machinery still writes mesh LOCALS — applySnapshotAnimated
+ * rebuilds the target hierarchy and then parks every animatable object at
+ * its FROM world pose through a world→local conversion (a reparented mesh
+ * gets a compensating local such as [-955,0,-743]), and each lerp tick does
+ * the same. The smooth path drives those meshes to their target and lands
+ * clean; the Instant block (V0.3.2.242) cancels the object lerp, so the
+ * compensated local simply stayed on the mesh — and rode along into every
+ * later step. Folders never had this problem because
+ * applyAllTransformsToScene re-derives them from data on every landing;
+ * this is the mesh equivalent (the importers stamp `userData.importPose`).
+ *
+ * Skipped: Replace-Model copies (sourceNodeId — their pose is theirs),
+ * placeholders / anything that is not a real Mesh, and objects with no
+ * stamp (an import path this build doesn't know — left untouched).
+ */
+function _resetMeshImportPoses(nodeById, object3dById) {
+  for (const [id, node] of nodeById) {
+    if (node?.type !== 'mesh' || node.sourceNodeId) continue;
+    const obj  = object3dById.get(id);
+    const pose = obj?.userData?.importPose;
+    if (!obj?.isMesh || !pose || obj.userData.isPlaceholder) continue;
+    obj.position.fromArray(pose.p);
+    obj.quaternion.fromArray(pose.q);
+    obj.scale.fromArray(pose.s);
+  }
 }
 
 
