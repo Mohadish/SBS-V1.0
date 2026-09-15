@@ -32,6 +32,7 @@ import { state } from '../core/state.js';
 import * as projectPaths from '../core/project-paths.js';   // 📁 folder layout
 import { steps } from './steps.js';
 import { resolveAnimationString } from './animation.js';   // V0.3.2.73 — preset content must reach the segment key
+import { materials } from './materials.js';                 // 🎨 V0.3.2.257 — default colours, to scope presets per span
 
 /** Bump when renderer/exporter changes make previously-cached pixels stale. */
 export const RENDER_CACHE_EPOCH = 5;   // 2: canonical hashing (V0.3.2.22); 3: scoped defs (.32); 4: pruned object roster (.33); 5: overlay defs — shape AND text — reach the span key (.156/.158)
@@ -280,12 +281,17 @@ export async function computeSegmentPlan() {
     ...(_cropMaskDefs.length ? { cropMasks: _cropMaskDefs } : {}),
   };
 
+  const _colors = (state.get('colorPresets') || []).slice().sort(_byId);
   const _defScope = {
     primById, shapeTplOfNode, tplById, allPrims, allShapes, byId: _byId,
     // V0.3.2.156 — overlay-side definitions belong on the SPAN key, not just
     // the drift report. See _scopedDefs.
     overlay: _overlayDefs,
-    colors: (state.get('colorPresets') || []).slice().sort(_byId),
+    colors: _colors,
+    // 🎨 V0.3.2.257 — what each part wears when a step has no override: the
+    // second half of the per-span colour scoping (see _scopedColors).
+    presetById: new Map(_colors.map(c => [c.id, c])),
+    defaults:   { ...(materials?.meshDefaultColors || {}) },
     cables: (state.get('cables') || []).map(c => ({ id: c.id, style: c.style })).sort(_byId),
   };
   // Coarse global roster — for the drift report / _keyinputs only, NOT per-span keys.
@@ -352,18 +358,22 @@ function _spanVisible(span) {
     const snap = st?.snapshot;
     const tree = snap?.tree, vis = snap?.visibility;
     if (!tree || !vis) return null;
-    (function walk(n) {
+    // 🎨 V0.3.2.257 — EFFECTIVE visibility, the renderer's rule: a part inside a
+    // hidden (or archived) folder draws nothing, whatever its own flag says.
+    // Until now such parts counted as shown, so their records, primitives and
+    // — since .257 — colours rode on keys they could not affect.
+    (function walk(n, ancestorsShown) {
       if (!n) return;
-      const hidden = vis[n.id] === false || n.localVisible === false || n.archived === true;
-      if (!hidden) ids.add(n.id);
-      (n.children || []).forEach(walk);
-    })(tree);
+      const shown = ancestorsShown && !(vis[n.id] === false || n.localVisible === false || n.archived === true);
+      if (shown) ids.add(n.id);
+      (n.children || []).forEach(c => walk(c, shown));
+    })(tree, true);
   }
   return ids;
 }
 
-/** Per-segment scoped definitions, from the span's visible set. colors/cables
- *  stay global (cross-cutting). Safe under every edit:
+/** Per-segment scoped definitions, from the span's visible set. cables stay
+ *  global (cross-cutting); colours are scoped since .257. Safe under every edit:
  *   - ADD a primitive/shape hidden here → not in V → key unchanged → reused.
  *   - EDIT params → only spans whose visible nodes reference it re-key.
  *   - DELETE → it WAS present+visible (so it was in the list) → drops out →
@@ -435,6 +445,32 @@ function _scopedOverlayDefs(span, plan) {
   return out;
 }
 
+// 🎨 V0.3.2.257 — COLOUR PRESETS SCOPED TO WHAT THE SPAN SHOWS.
+//
+// Until now every colour preset of the project rode on every span key, so
+// editing ONE colour re-rendered the whole timeline — the "changed a style used
+// by 7 steps, 260 re-rendered" report. A span depends only on the presets its
+// visible parts wear: the step's own assignment when it has one, else the
+// part's default colour. The previous step counts (the transition that opens
+// the segment fades from its look). A worn preset that no longer exists keys
+// as {id, gone:true}, so deleting a colour still re-renders the spans that
+// showed it. Same visible set V as the roster prune and the primitive/shape
+// scoping — one notion of "shown here" for the whole fingerprint.
+function _scopedColors(V, plan, span) {
+  const sc = plan._defScope;
+  const D = sc.defaults || {};
+  const worn = new Set();
+  const forVis = span._prevRef ? [span._prevRef, ...span.steps] : span.steps;
+  for (const st of forVis) {
+    const mats = st?.snapshot?.materials || {};
+    for (const id of V) {
+      const p = mats[id] ?? D[id];
+      if (p != null) worn.add(p);
+    }
+  }
+  return [...worn].sort().map(id => sc.presetById?.get(id) || { id, gone: true });
+}
+
 function _scopedDefs(V, plan, span) {
   const sc = plan._defScope;
   // Overlay defs are NOT scoped by visible 3D nodes — a shape style or a
@@ -463,7 +499,10 @@ function _scopedDefs(V, plan, span) {
   const tplIds = new Set();
   for (const id of V) { const t = sc.shapeTplOfNode.get(id); if (t) tplIds.add(t); }
   const shapes = [...tplIds].map(t => sc.tplById.get(t) || { id: t, gone: true }).sort(sc.byId);
-  return { prims, shapes, colors: sc.colors, cables: sc.cables, overlay };
+  // 🎨 V0.3.2.257 — colours worn by the span's visible parts only (see _scopedColors);
+  // no span → the full roster, as before.
+  const colors = span ? _scopedColors(V, plan, span) : sc.colors;
+  return { prims, shapes, colors, cables: sc.cables, overlay };
 }
 
 /** (Re)compute a span's key + part-hashes from the CURRENT live objects.
