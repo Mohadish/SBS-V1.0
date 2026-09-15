@@ -2286,6 +2286,12 @@ class StepManager {
     // toggles all rely on this same race.
     this.flushSync();
 
+    // 🎞 V0.3.2.255 — the leaving step stands at its final state right here:
+    // let the in-frame visibility recorder take its picture before anything moves.
+    {
+      const leavingId = state.get('activeStepId');
+      if (leavingId && leavingId !== stepId) state.emit('step:leaving', { stepId: leavingId });
+    }
 
     // Capture the OUTGOING step's final viewport state before we switch away.
     // Force bypasses the 5-fps throttle so nothing is lost on quick step changes.

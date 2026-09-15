@@ -44,6 +44,7 @@ import { steps }                 from './steps.js';
 import { materials }             from './materials.js';
 import { resolveAnimationString } from './animation.js';
 import * as C                    from './altered-stars-core.js';
+import * as frameVis             from './frame-visibility.js';
 
 const DEBOUNCE_MS = 250;   // slider drags fire change:colorPresets per tick — evaluate once, after
 
@@ -59,8 +60,9 @@ const _rendered = {
   anim:     [],          // animationPresets array
   settings: '',          // signature of the pixel-affecting global settings
 };
-const _reasons = new Map();   // stepId → Set<reason>
-const _mine    = new Set();   // steps whose star THIS module added (the only ones it may remove)
+const _reasons  = new Map();   // stepId → Set<reason>
+const _mine     = new Set();   // steps whose star THIS module added (the only ones it may remove)
+const _lastSnap = new Map();   // stepId → snapshot object last seen (stale-record detection)
 
 // ── helpers ─────────────────────────────────────────────────────────────────
 function _playable() { return steps.getVisibleSteps(); }
@@ -88,14 +90,29 @@ function _settingsSig() {
   });
 }
 
-// Effective visibility per step, memoised on the snapshot object.
+// Effective visibility per step, memoised on the snapshot object. When the
+// step has an in-frame record (frame-visibility.js) the answer narrows to the
+// parts that really occupy pixels — still intersected with the scene rule, so
+// a record older than a hide never resurrects a hidden part.
 const _visMemo = new WeakMap();
-function _visibleOf(step) {
+function _sceneVisibleOf(step) {
   const snap = step?.snapshot;
   if (!snap || !snap.tree) return new Set();
   let v = _visMemo.get(snap);
   if (!v) { v = C.visibleIds(snap.tree, snap.visibility); _visMemo.set(snap, v); }
   return v;
+}
+const _frameMemo = new WeakMap();   // snapshot → { frame, set }
+function _visibleOf(step) {
+  const scene = _sceneVisibleOf(step);
+  const frame = frameVis.visibleIn(step?.id);
+  if (!frame) return scene;
+  const memo = _frameMemo.get(step.snapshot);
+  if (memo && memo.frame === frame) return memo.set;
+  const set = new Set();
+  for (const id of frame) if (scene.has(id)) set.add(id);
+  if (step.snapshot) _frameMemo.set(step.snapshot, { frame, set });
+  return set;
 }
 
 function _reason(id, r, on) {
@@ -213,6 +230,11 @@ function _onSteps(list) {
     const base = _rendered.steps.get(s.id);
     if (!base) { _rendered.steps.set(s.id, _refsOf(s)); continue; }   // new step — its creator stars it
     _reason(s.id, 'ref', !_sameRefs(base, _refsOf(s)));
+    // A snapshot rebuilt by a tool (not by leaving the step) makes its
+    // in-frame record stale → back to the scene rule until it is re-taken.
+    const seen = _lastSnap.get(s.id);
+    if (seen && seen !== s.snapshot) frameVis.invalidate(s.id);
+    _lastSnap.set(s.id, s.snapshot);
   }
   for (const id of order) {
     if (!_rendered.pred.has(id)) { _rendered.pred.set(id, pred.get(id)); continue; }
@@ -315,7 +337,8 @@ function _explain(stepId) {
   for (const s of targets) {
     const rs = [..._reasons.get(s.id) || []];
     const who = s.altered !== true ? 'not starred' : _mine.has(s.id) ? 'starred by a rule' : 'starred by a hand edit on this step';
-    lines.push(`"${s.name}" (${s.id}): ${who}${rs.length ? ' — ' + rs.join(', ') : ''}`);
+    const rec = frameVis.hasRecord(s.id) ? `in-frame record: ${frameVis.visibleIn(s.id).size} part(s)` : 'no in-frame record (scene rule)';
+    lines.push(`"${s.name}" (${s.id}): ${who}${rs.length ? ' — ' + rs.join(', ') : ''} [${rec}]`);
     for (const r of rs) {
       const m = /^def:colorPresets:(.+)$/.exec(r);
       if (!m) continue;
@@ -347,6 +370,7 @@ export function initAlteredStars() {
   state.on('change:steps',    _onSteps);
   state.on('change:chapters', _onChapters);
   _initDefListeners();
+  frameVis.initFrameVisibility();
 
   if (typeof window !== 'undefined') {
     window.sbsDiag = window.sbsDiag || {};

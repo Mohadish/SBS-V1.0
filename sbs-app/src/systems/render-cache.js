@@ -1265,6 +1265,10 @@ export async function renderMissingSegments({ onProgress, signal, force = false,
     try { steps.clearAltered(plan.spans.flatMap(s => s.steps.map(st => st.id))); }
     catch (e) { console.warn('[render-cache] clearing stars failed:', e?.message); }
   }
+  // 🎞 V0.3.2.255 — every step was left during the fill (recorded then); the
+  // last one is still on screen — record it too.
+  try { const fv = await import('./frame-visibility.js'); fv.captureActive(); await fv.save(); }
+  catch (e) { console.warn('[render-cache] frame record failed:', e?.message); }
   return { rendered: done, reused: plan.hits, adopted, failed, dir: plan.dir, total: plan.spans.length, plan };
 }
 
