@@ -208,20 +208,25 @@ export async function load() {
 }
 
 // ── on-demand scan: visit every playable step instantly and record it ──────
-export async function scanAllSteps({ settleMs = 120 } = {}) {
+export async function scanAllSteps({ settleMs = 120, onProgress = null, signal = null } = {}) {
   const { steps } = await import('./steps.js');
   const startId = state.get('activeStepId');
   const list = steps.getVisibleSteps();
-  let n = 0;
+  const t0 = performance.now();
+  let n = 0, i = 0;
   for (const s of list) {
+    if (signal?.aborted) break;
+    i++;
+    onProgress?.({ index: i, total: list.length, step: s });
     await steps.activateStep(s.id, false);
     await new Promise(r => setTimeout(r, settleMs));
     if (captureStep(s) >= 0) n++;
   }
   if (startId) await steps.activateStep(startId, false);
   await save();
-  console.log(`[frame-vis] scanned ${n}/${list.length} step(s)`);
-  return n;
+  const ms = Math.round(performance.now() - t0);
+  console.log(`[frame-vis] scanned ${n}/${list.length} step(s) in ${ms} ms`);
+  return { scanned: n, total: list.length, ms };
 }
 
 // ── init ────────────────────────────────────────────────────────────────────

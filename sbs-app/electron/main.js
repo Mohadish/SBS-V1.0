@@ -525,6 +525,14 @@ function buildMenu() {
           label: 'Clean up folders…',
           click: () => mainWindow?.webContents.send('menu:folderFlatten'),
         },
+        {
+          // 🎞 V0.3.2.256 — visits every step once and records which parts are
+          // really in its frame (camera + occlusion), so a later colour/definition
+          // edit stars only the steps that show the part. Also refreshed on its
+          // own when an edited step is left and at the end of every render.
+          label: 'Scan steps for what is in frame…',
+          click: () => mainWindow?.webContents.send('menu:frameScan'),
+        },
         { type: 'separator' },
         { label: 'Model source transform…', click: () => mainWindow?.webContents.send('menu:modelSourceTransform') },
       ],

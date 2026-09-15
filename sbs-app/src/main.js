@@ -1628,6 +1628,35 @@ window.sbsFlatten = {
   scan: async () => (await import('./systems/folder-flatten.js')).logScan(),
   panel: async () => (await import('./ui/folder-flatten-panel.js')).openFolderFlattenPanel(),
 };
+// 🎞 Edit → "Scan steps for what is in frame…" (V0.3.2.256). Visits every
+// playable step once and records the parts that really occupy pixels in its
+// frame, so a later colour / definition edit stars only the steps that show
+// the part. The same record is refreshed on its own when an edited step is
+// left and at the end of every render — this is the one-time seed (and the
+// "I don't trust it, redo it" button).
+window.sbsNative?.onMenu?.('menu:frameScan', async () => {
+  try {
+    const fv = await import('./systems/frame-visibility.js');
+    const { chooseFromButtons } = await import('./ui/prompt.js');
+    const total = steps.getVisibleSteps().length;
+    if (!total) { setStatus('No steps to scan.', 'info', 3000); return; }
+    const secs = Math.max(1, Math.round(total * 0.2));
+    const choice = await chooseFromButtons(
+      'Scan steps for what is in frame?',
+      `Visits each of the ${total} steps once and records which parts are actually in its frame (camera and hidden-behind). `
+      + `Roughly ${secs} second${secs === 1 ? '' : 's'}; the viewport will flick through the steps and come back. `
+      + `Afterwards a colour or definition edit stars only the steps that really show the part. `
+      + `Steps you edit later are re-recorded when you leave them, and every render refreshes the record.`,
+      [{ id: 'scan', label: 'Scan now', primary: true }, { id: 'later', label: 'Not now' }],
+    );
+    if (choice !== 'scan') return;
+    const r = await fv.scanAllSteps({ onProgress: ({ index, total: n, step }) => setStatus(`Scanning frames… ${index}/${n} — ${step.name || step.id}`, 'info', 0) });
+    setStatus(`Recorded what is in frame for ${r.scanned} of ${r.total} steps (${(r.ms / 1000).toFixed(1)} s).`, 'success', 8000);
+  } catch (err) {
+    console.error('[frame-vis] scan failed:', err);
+    setStatus('Frame scan failed — see console.', 'warn', 6000);
+  }
+});
 window.sbsNative?.onMenu?.('menu:folderFlatten', async () => {
   try {
     const m = await import('./ui/folder-flatten-panel.js');
