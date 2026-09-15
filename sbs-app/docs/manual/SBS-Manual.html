@@ -1,0 +1,1055 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>SBS Step Browser — User Manual</title>
+<style>
+:root{
+  --bg:#f7f7f5; --panel:#ffffff; --ink:#1d1d1b; --muted:#5f5f5a; --line:#e2e2dc;
+  --accent:#2b6fd6; --accent-ink:#ffffff; --mark:#ffe58a; --code:#f0f0ec; --warn:#fff4d6; --warn-line:#e8c777;
+  --tip:#e8f3ff; --tip-line:#9cc4f5; --star:#f5b400; --sidebar-w:290px;
+}
+:root[data-theme="dark"]{
+  --bg:#141517; --panel:#1c1e22; --ink:#e8e8e4; --muted:#a3a39c; --line:#2d3037;
+  --accent:#6ea3ff; --accent-ink:#0b1220; --mark:#7a5d00; --code:#22252b; --warn:#3a2f10; --warn-line:#8a6d1e;
+  --tip:#10243a; --tip-line:#2f5c99; --star:#ffcf3f;
+}
+*{box-sizing:border-box}
+html{scroll-behavior:smooth}
+body{margin:0;background:var(--bg);color:var(--ink);font:15px/1.55 system-ui,"Segoe UI",Roboto,Helvetica,Arial,sans-serif}
+a{color:var(--accent)}
+code,kbd,pre{font-family:ui-monospace,Consolas,"Cascadia Mono",Menlo,monospace;font-size:.92em}
+code{background:var(--code);padding:1px 5px;border-radius:4px}
+pre{background:var(--code);padding:10px 12px;border-radius:6px;overflow-x:auto;border:1px solid var(--line)}
+kbd{display:inline-block;background:var(--panel);border:1px solid var(--line);border-bottom-width:2px;border-radius:4px;padding:0 6px;font-size:.85em;line-height:1.6;white-space:nowrap}
+mark{background:var(--mark);color:inherit;padding:0 1px;border-radius:2px}
+h1,h2,h3,h4{line-height:1.25;scroll-margin-top:70px}
+h1{font-size:2rem;margin:0 0 .4em;border-bottom:2px solid var(--line);padding-bottom:.3em}
+h2{font-size:1.4rem;margin:2em 0 .5em}
+h3{font-size:1.1rem;margin:1.5em 0 .4em}
+p{margin:.55em 0}
+table{border-collapse:collapse;width:100%;margin:.8em 0;font-size:.94em}
+th,td{border:1px solid var(--line);padding:6px 9px;text-align:left;vertical-align:top}
+th{background:var(--code)}
+tr:nth-child(even) td{background:color-mix(in srgb,var(--code) 45%,transparent)}
+.wrap{display:flex;min-height:100vh}
+/* sidebar */
+#side{width:var(--sidebar-w);flex:0 0 auto;position:sticky;top:0;height:100vh;overflow:auto;background:var(--panel);border-right:1px solid var(--line);padding:14px 12px 40px}
+#side .brand{font-weight:700;font-size:1.05rem;margin:2px 4px 10px;display:flex;align-items:center;gap:8px}
+#side .brand small{font-weight:400;color:var(--muted)}
+#search{width:100%;padding:8px 10px;border:1px solid var(--line);border-radius:8px;background:var(--bg);color:var(--ink);font-size:.95rem}
+#search:focus{outline:2px solid var(--accent);border-color:transparent}
+#hint{color:var(--muted);font-size:.78rem;margin:5px 4px 10px}
+#results{display:none;margin:0 0 12px}
+#results.on{display:block}
+#results .r{display:block;padding:7px 8px;border:1px solid var(--line);border-radius:6px;margin-bottom:6px;text-decoration:none;color:var(--ink);background:var(--bg)}
+#results .r:hover{border-color:var(--accent)}
+#results .r b{display:block;font-size:.9rem}
+#results .r small{color:var(--muted);display:block;font-size:.8rem;line-height:1.35}
+#results .none{color:var(--muted);font-size:.9rem;padding:6px 4px}
+#toc{list-style:none;margin:0;padding:0}
+#toc li{margin:0}
+#toc a{display:block;padding:5px 8px;border-radius:6px;text-decoration:none;color:var(--ink);font-size:.92rem}
+#toc a:hover{background:var(--bg)}
+#toc a.active{background:var(--accent);color:var(--accent-ink)}
+#toc .ch{font-weight:600;margin-top:6px}
+#toc ul{list-style:none;margin:0 0 0 10px;padding:0;display:none}
+#toc li.open>ul{display:block}
+#toc ul a{font-size:.86rem;color:var(--muted);padding:3px 8px}
+#toc ul a.active{color:var(--accent-ink)}
+/* top bar */
+#bar{position:sticky;top:0;z-index:5;display:flex;gap:10px;align-items:center;padding:8px 22px;background:color-mix(in srgb,var(--bg) 88%,transparent);backdrop-filter:blur(6px);border-bottom:1px solid var(--line)}
+#bar .crumb{color:var(--muted);font-size:.88rem;flex:1;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.btn{border:1px solid var(--line);background:var(--panel);color:var(--ink);border-radius:6px;padding:4px 10px;cursor:pointer;font-size:.86rem}
+.btn:hover{border-color:var(--accent)}
+#menuBtn{display:none}
+/* content */
+main{flex:1;min-width:0}
+.page{max-width:920px;margin:0 auto;padding:18px 28px 80px}
+section.ch{margin-bottom:56px}
+.lead{font-size:1.06rem;color:var(--muted)}
+.note,.tip,.warn{border-left:4px solid var(--tip-line);background:var(--tip);padding:8px 12px;margin:.9em 0;border-radius:0 6px 6px 0}
+.warn{border-color:var(--warn-line);background:var(--warn)}
+.note b:first-child,.tip b:first-child,.warn b:first-child{margin-right:4px}
+figure{margin:1.1em 0;padding:0}
+figure svg{max-width:100%;height:auto;display:block;border:1px solid var(--line);border-radius:8px;background:var(--panel)}
+figcaption{color:var(--muted);font-size:.86rem;margin-top:6px}
+figure.shot{border:1px dashed var(--line);border-radius:8px;padding:10px}
+figure.shot img{max-width:100%;display:block;border-radius:4px}
+figure.shot.missing img{display:none}
+figure.shot.missing::before{content:"Screenshot slot — drop a PNG at the path shown below.";display:block;color:var(--muted);font-size:.85rem;padding:26px 0;text-align:center;background:var(--code);border-radius:4px}
+figure.shot.missing figcaption code{opacity:.8}
+.grid2{display:grid;grid-template-columns:repeat(auto-fit,minmax(260px,1fr));gap:10px 22px}
+.pill{display:inline-block;border:1px solid var(--line);border-radius:999px;padding:0 8px;font-size:.82em;color:var(--muted)}
+.star{color:var(--star)}
+.ui{font-weight:600}
+dl.def dt{font-weight:600;margin-top:.6em}
+dl.def dd{margin:0 0 .3em 1.2em;color:var(--muted)}
+.svg-ink{fill:var(--ink)} .svg-mut{fill:var(--muted)} .svg-line{stroke:var(--line)} .svg-acc{fill:var(--accent)} .svg-accs{stroke:var(--accent)}
+.svg-panel{fill:var(--panel)} .svg-code{fill:var(--code)}
+svg text{font-family:system-ui,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;font-size:12px;fill:var(--ink)}
+svg .small{font-size:10.5px;fill:var(--muted)}
+svg .box{fill:var(--panel);stroke:var(--line);stroke-width:1.2}
+svg .boxa{fill:var(--tip);stroke:var(--tip-line);stroke-width:1.2}
+svg .boxw{fill:var(--warn);stroke:var(--warn-line);stroke-width:1.2}
+svg .arrow{stroke:var(--muted);stroke-width:1.4;fill:none;marker-end:url(#ah)}
+@media (max-width:900px){
+  #side{position:fixed;left:0;top:0;transform:translateX(-100%);transition:transform .2s;z-index:20;width:min(88vw,var(--sidebar-w))}
+  #side.open{transform:none}
+  #menuBtn{display:inline-block}
+  .page{padding:14px 16px 60px}
+}
+@media print{
+  #side,#bar,.noprint{display:none !important}
+  body{background:#fff;color:#000;font-size:11pt}
+  .page{max-width:none;padding:0}
+  section.ch{break-before:page;margin-bottom:0}
+  section.ch:first-of-type{break-before:auto}
+  h2,h3{break-after:avoid}
+  figure,table,pre,.note,.tip,.warn{break-inside:avoid}
+  a{color:#000;text-decoration:none}
+  figure svg{border-color:#bbb;background:#fff}
+  figure.shot.missing::before{background:#f3f3f3}
+  :root{--bg:#fff;--panel:#fff;--ink:#000;--muted:#444;--line:#c8c8c8;--code:#f2f2f2;--tip:#eef4fc;--tip-line:#8fb2e6;--warn:#fff6dc;--warn-line:#d9b45a;--mark:#fff}
+  mark{background:none}
+}
+</style>
+</head>
+<body>
+<div class="wrap">
+<nav id="side" aria-label="Manual contents">
+  <div class="brand">📘 SBS Step Browser <small>manual</small></div>
+  <input id="search" type="search" placeholder="Search the manual…  ( / )" autocomplete="off" spellcheck="false">
+  <div id="hint">Type to search every topic. Enter opens the first hit, Esc clears.</div>
+  <div id="results"></div>
+  <ul id="toc"></ul>
+</nav>
+<main>
+  <div id="bar">
+    <button class="btn" id="menuBtn" title="Contents">☰</button>
+    <div class="crumb" id="crumb">SBS Step Browser — User Manual</div>
+    <button class="btn" id="expandBtn" title="Expand or collapse the contents">⊞ Contents</button>
+    <button class="btn" id="themeBtn" title="Switch light / dark">◐ Theme</button>
+    <button class="btn" id="printBtn" title="Print or save as PDF">🖨 Print</button>
+  </div>
+  <div class="page" id="page">
+<svg width="0" height="0" style="position:absolute"><defs><marker id="ah" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0 0L10 5L0 10z" fill="var(--muted)"/></marker></defs></svg>
+<section class="ch" id="welcome">
+<h1>1. Welcome to SBS Step Browser</h1>
+<p class="lead">SBS turns a CAD assembly into a narrated, step-by-step illustration: every step is a complete picture of the scene — which parts are visible, where they are, what colour they wear, where the camera stands, what is drawn on top — and SBS animates the journey from one step to the next, speaks the narration, and renders the whole thing to video.</p>
+
+<h2 id="welcome-what">What SBS is for</h2>
+<p>Assembly and service instructions, training videos, exploded-view walkthroughs, sales demos of mechanical products. You load a model once, then <em>author steps</em>: hide a cover, move a screw out, point a camera, write a sentence. SBS handles the in-between motion, the voice, the subtitles, the header, the translation into other languages and the final MP4.</p>
+
+<h2 id="welcome-core">The five ideas you need</h2>
+<figure>
+<svg viewBox="0 0 860 300" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="Core concepts diagram">
+  <rect x="20" y="20" width="250" height="260" rx="10" class="box"/>
+  <text x="145" y="45" text-anchor="middle" font-weight="700">Model + Tree</text>
+  <text x="40" y="72" class="small">🗂 Assembly</text>
+  <text x="58" y="92" class="small">🗂 Frame</text>
+  <text x="76" y="112" class="small">▪ base plate</text>
+  <text x="76" y="132" class="small">▪ bracket L</text>
+  <text x="58" y="152" class="small">🗂 Cover</text>
+  <text x="76" y="172" class="small">▪ lid</text>
+  <text x="76" y="192" class="small">🔩 M4 × 12 (×4)</text>
+  <text x="40" y="228" class="small">Loaded once. Folders are yours to</text>
+  <text x="40" y="244" class="small">reorganise; parts keep a stable id.</text>
+
+  <rect x="305" y="20" width="250" height="260" rx="10" class="boxa"/>
+  <text x="430" y="45" text-anchor="middle" font-weight="700">Steps = snapshots</text>
+  <rect x="325" y="60" width="210" height="46" rx="6" class="box"/>
+  <text x="335" y="78" class="small">Step 12 · "Remove the lid"</text>
+  <text x="335" y="96" class="small">vis · transforms · colours · camera · overlay</text>
+  <rect x="325" y="114" width="210" height="46" rx="6" class="box"/>
+  <text x="335" y="132" class="small">Step 13 · "Loosen four screws"</text>
+  <text x="335" y="150" class="small">vis · transforms · colours · camera · overlay</text>
+  <rect x="325" y="168" width="210" height="46" rx="6" class="box"/>
+  <text x="335" y="186" class="small">Step 14 · "Lift the frame"</text>
+  <text x="335" y="204" class="small">vis · transforms · colours · camera · overlay</text>
+  <text x="325" y="240" class="small">Each step stands on its own. SBS computes</text>
+  <text x="325" y="256" class="small">the difference between two steps and animates it.</text>
+
+  <rect x="590" y="20" width="250" height="120" rx="10" class="box"/>
+  <text x="715" y="45" text-anchor="middle" font-weight="700">Transition</text>
+  <text x="610" y="70" class="small">camera · objects · colours · fades · overlay</text>
+  <text x="610" y="90" class="small">Smooth · Linear · Instant · Instant fade</text>
+  <text x="610" y="110" class="small">+ optional private animation per step</text>
+
+  <rect x="590" y="160" width="250" height="120" rx="10" class="box"/>
+  <text x="715" y="185" text-anchor="middle" font-weight="700">Narration → Export</text>
+  <text x="610" y="210" class="small">text per step → voice (local or cloud)</text>
+  <text x="610" y="230" class="small">→ subtitles, header, languages</text>
+  <text x="610" y="250" class="small">→ MP4 / WebM, cached per step (★ = changed)</text>
+  <path d="M270 150 L305 150" class="arrow"/>
+  <path d="M555 80 L590 80" class="arrow"/>
+  <path d="M555 220 L590 220" class="arrow"/>
+</svg>
+<figcaption>Figure 1 — Model and tree on the left, steps (self-contained snapshots) in the middle, transitions and export on the right.</figcaption>
+</figure>
+
+<dl class="def">
+<dt>Project</dt><dd>One <code>.sbsproj</code> file inside its own folder, plus sidecar folders for audio, render cache, media, languages, exports and backups. The project folder is meant to be moved or copied as a unit.</dd>
+<dt>Model and tree</dt><dd>The CAD geometry (STEP, IGES, OBJ, GLB/glTF, STL) shown as a tree of folders and parts in the <span class="ui">Tree</span> tab. You can regroup, rename, archive, add hardware, cables, primitives, notes.</dd>
+<dt>Step</dt><dd>A complete snapshot of the scene: visibility, transforms, colours, camera, overlay, narration. Steps are grouped into <em>chapters</em>. A step never depends on the steps around it — you can jump anywhere and the scene is correct.</dd>
+<dt>Transition</dt><dd>What the viewer sees between two steps. SBS diffs the two snapshots and animates the difference according to the step's easing (Smooth / Linear / Instant / Instant fade) and an optional private animation.</dd>
+<dt>Export and cache</dt><dd>Each step is rendered once into a per-step cache. When you edit something, only the steps it touches get a <span class="star">★</span> star and are re-rendered. Everything else is stitched from cache.</dd>
+</dl>
+
+<h2 id="welcome-manual">How to use this manual</h2>
+<p>The left column is a searchable table of contents. Type anything — a button label, a shortcut, a symptom — and matching topics appear with a snippet. Press <kbd>/</kbd> to jump to the search box, <kbd>Esc</kbd> to clear it. The <span class="ui">◐ Theme</span> button switches light and dark. <span class="ui">🖨 Print</span> produces a PDF with one chapter per page section.</p>
+<p>Labels written like <span class="ui">Tree</span> are the exact words you see in the app. Keys are written like <kbd>Ctrl</kbd>+<kbd>S</kbd>. Menu paths are written <span class="ui">Edit ▸ Languages…</span>.</p>
+</section>
+
+<section class="ch" id="start">
+<h1>2. Getting started</h1>
+
+<h2 id="start-install">Install and launch</h2>
+<p>Run <code>SBS Step Browser Setup &lt;version&gt;.exe</code>. The installer lets you choose the folder, creates a desktop and Start-menu shortcut, and does not touch your projects on uninstall. SBS is fully offline: the text-to-speech voices, the CAD converters and the video encoder ship inside the installer. Cloud text-to-speech and machine translation are optional and need an internet connection plus an API key.</p>
+<p>First launch is slower: the local voice engine warms up in the background (a few hundred megabytes of models are loaded once per session). You can start working immediately; narration playback becomes available when the status bar stops reporting the warm-up.</p>
+
+<h2 id="start-first">Your first project in ten minutes</h2>
+<ol>
+<li><span class="ui">File ▸ New</span> (<kbd>Ctrl</kbd>+<kbd>N</kbd>), then <span class="ui">File ▸ Save As…</span> to give the project a folder. Save early — the render cache, audio and backups live next to the project file.</li>
+<li>Open the <span class="ui">Files</span> tab and click <span class="ui">Import</span>. Pick a STEP, IGES, OBJ, GLB or STL file. STEP and IGES are tessellated on import; large assemblies take a while the first time and are then cached as fast-loading <code>.sbsobj</code> files.</li>
+<li>Look at the <span class="ui">Tree</span> tab. Rename or regroup folders so that they match how you want to explain the assembly (see <a href="#tree">chapter 4</a>).</li>
+<li>Orbit with the left mouse button, pan with the right button or middle button, zoom with the wheel. Press <kbd>F</kbd> to fit the selection (or everything) in view.</li>
+<li>In the steps panel at the bottom, add a step. Hide a part (eye icon in the tree, or the Visibility commands in the right-click menu), move another with the gizmo, press <kbd>C</kbd> to capture the camera into the step. Add the next step and repeat.</li>
+<li>Type the narration for each step in the text field under the viewport. Press the 🔊 button to hear it.</li>
+<li>Press the ▶ button to play the sequence. Adjust transition easing per step if something should snap instead of glide.</li>
+<li>Open the <span class="ui">Export</span> tab, choose size, frame rate and format, and click <span class="ui">Start Export</span>. Steps are rendered once into the cache; later exports only re-render starred steps.</li>
+</ol>
+
+<h2 id="start-layout">What a project folder looks like</h2>
+<figure>
+<svg viewBox="0 0 860 250" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="Project folder layout">
+  <text x="20" y="28" font-weight="700">📁 MyProduct/</text>
+  <text x="48" y="54">📄 MyProduct.sbsproj</text><text x="330" y="54" class="small">the project — single source of truth</text>
+  <text x="48" y="78">📄 MyProduct.he.sbslang.json</text><text x="330" y="78" class="small">one language pack per extra language (see chapter 13)</text>
+  <text x="48" y="102">📁 audio/&lt;lang&gt;/</text><text x="330" y="102" class="small">synthesised narration clips per language and voice</text>
+  <text x="48" y="126">📁 render/&lt;lang&gt;/</text><text x="330" y="126" class="small">per-step render cache, frame records, alpha masks</text>
+  <text x="48" y="150">📁 media/</text><text x="330" y="150" class="small">images and video clips used by overlays</text>
+  <text x="48" y="174">📁 exports/</text><text x="330" y="174" class="small">finished MP4 / WebM / .sbsproc files</text>
+  <text x="48" y="198">📁 backups/</text><text x="330" y="198" class="small">automatic backups (Settings ▸ Auto-backup)</text>
+  <text x="48" y="222">📄 model.sbsobj</text><text x="330" y="222" class="small">fast-load copies of tessellated CAD (offered after the first STEP load)</text>
+</svg>
+<figcaption>Figure 2 — A self-contained project folder. Move or copy the whole folder; never move only the <code>.sbsproj</code>.</figcaption>
+</figure>
+<div class="note"><b>Older projects.</b> Projects saved before the folder layout existed keep their files next to the project (for example a <code>_rendercache</code> folder). SBS reads both layouts; new material is written to the new one.</div>
+
+<h2 id="start-save">Saving, autosave, backups</h2>
+<p><kbd>Ctrl</kbd>+<kbd>S</kbd> saves, <kbd>Ctrl</kbd>+<kbd>Shift</kbd>+<kbd>S</kbd> saves as. Saves are atomic — the previous file is only replaced once the new one is completely written. <span class="ui">Settings ▸ Auto-backup</span> keeps timestamped copies in <code>backups/</code>; <span class="ui">Back up now</span> makes one immediately. Closing the window with unsaved changes asks you first.</p>
+<div class="tip"><b>Rule of thumb.</b> The project file is the truth. Anything you see in the viewport is rebuilt from it when a project loads, so a reload (<kbd>Ctrl</kbd>+<kbd>R</kbd> in the app window) is always a safe way to make the live scene match the data.</div>
+</section>
+
+<section class="ch" id="interface">
+<h1>3. The interface</h1>
+<figure>
+<svg viewBox="0 0 860 470" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="Interface layout map">
+  <rect x="10" y="10" width="840" height="24" rx="4" class="box"/>
+  <text x="20" y="27" class="small">File   Edit   View   Window   Help</text>
+  <rect x="10" y="40" width="230" height="330" rx="6" class="boxa"/>
+  <text x="125" y="60" text-anchor="middle" font-weight="700">Sidebar</text>
+  <text x="20" y="82" class="small">Tabs: Files · Env · Tree · Colors · Select ·</text>
+  <text x="20" y="97" class="small">Cameras · Anim · Header · Style · 🔌 · 💬 ·</text>
+  <text x="20" y="112" class="small">▰ · ⬡ · 🔩 · ↶ · Export</text>
+  <rect x="20" y="124" width="210" height="236" rx="4" class="box"/>
+  <text x="30" y="142" class="small">Active tab content</text>
+  <text x="30" y="160" class="small">(tree, colour presets, camera</text>
+  <text x="30" y="175" class="small">templates, export settings …)</text>
+  <rect x="250" y="40" width="600" height="290" rx="6" class="box"/>
+  <text x="550" y="62" text-anchor="middle" font-weight="700">3D viewport</text>
+  <text x="550" y="80" text-anchor="middle" class="small">orbit · pan · zoom · click to select · gizmo to move</text>
+  <rect x="262" y="52" width="150" height="20" rx="3" class="boxw"/>
+  <text x="268" y="66" class="small">Header (step name, chapter…)</text>
+  <rect x="740" y="52" width="100" height="20" rx="3" class="boxw"/>
+  <text x="748" y="66" class="small">HUD / status</text>
+  <text x="550" y="200" text-anchor="middle" class="small">Overlay layer (2D text, images, arrows, video) sits on top — press O to edit</text>
+  <rect x="250" y="336" width="600" height="34" rx="6" class="box"/>
+  <text x="262" y="358" class="small">◀  ▶  ▶  Voice-over text for this step…                                     🔊</text>
+  <rect x="10" y="378" width="840" height="82" rx="6" class="boxa"/>
+  <text x="430" y="398" text-anchor="middle" font-weight="700">Steps panel</text>
+  <rect x="22" y="408" width="120" height="42" rx="4" class="box"/><text x="30" y="424" class="small">Chapter 1  ★ 2</text><text x="30" y="440" class="small">▸ steps…</text>
+  <rect x="150" y="408" width="120" height="42" rx="4" class="box"/><text x="158" y="424" class="small">12  Remove lid</text><text x="158" y="440" class="small">📷 ✎ ⧉ 🗑  Smooth</text>
+  <rect x="278" y="408" width="120" height="42" rx="4" class="box"/><text x="286" y="424" class="small">13 ★ Loosen…</text><text x="286" y="440" class="small">📷 ✎ ⧉ 🗑  Instant</text>
+  <rect x="406" y="408" width="120" height="42" rx="4" class="box"/><text x="414" y="424" class="small">14  Lift frame</text><text x="414" y="440" class="small">📷 ✎ ⧉ 🗑  Smooth</text>
+  <text x="540" y="432" class="small">… right-click a card or a chapter for the full command list</text>
+</svg>
+<figcaption>Figure 3 — Layout map: menus on top, sidebar on the left, the 3D viewport with the header and overlay layer, the narration bar, and the steps panel along the bottom.</figcaption>
+</figure>
+
+<h2 id="interface-menus">Menus</h2>
+<table>
+<tr><th>Menu</th><th>Items</th></tr>
+<tr><td><span class="ui">File</span></td><td>New <kbd>Ctrl</kbd>+<kbd>N</kbd> · Open… <kbd>Ctrl</kbd>+<kbd>O</kbd> · Save <kbd>Ctrl</kbd>+<kbd>S</kbd> · Save As… <kbd>Ctrl</kbd>+<kbd>Shift</kbd>+<kbd>S</kbd> · Browse Assets <kbd>Ctrl</kbd>+<kbd>B</kbd> · Settings <kbd>Ctrl</kbd>+<kbd>,</kbd> · Exit</td></tr>
+<tr><td><span class="ui">Edit</span></td><td>Undo / Redo · Cut / Copy / Paste / Select All · Recover stuck inputs · Apply Camera Template… · Unify Constant Titles · Title Manager… · Clean Up Unused Constant Titles · Languages… · Rebuild Cascade · Clean up folders… · Scan steps for what is in frame… · Model source transform…</td></tr>
+<tr><td><span class="ui">View</span></td><td>Zoom In / Zoom Out / Reset Zoom (interface scale) · Toggle Full Screen · Developer Tools <kbd>Ctrl</kbd>+<kbd>Shift</kbd>+<kbd>I</kbd> · Reload <kbd>Ctrl</kbd>+<kbd>R</kbd> · Hard Reload <kbd>Ctrl</kbd>+<kbd>Shift</kbd>+<kbd>R</kbd></td></tr>
+<tr><td><span class="ui">Window</span></td><td>Minimize · Close</td></tr>
+<tr><td><span class="ui">Help</span></td><td>SBS Step Browser Help</td></tr>
+</table>
+<p>Each Edit command is explained in the chapter it belongs to: camera templates in <a href="#cameras">chapter 8</a>, titles and languages in <a href="#narration">12</a> and <a href="#languages">13</a>, Rebuild Cascade / Clean up folders / Model source transform in <a href="#maintenance">chapter 20</a>, the frame scan in <a href="#export">chapter 19</a>.</p>
+
+<h2 id="interface-sidebar">Sidebar tabs</h2>
+<table>
+<tr><th>Tab</th><th>What lives there</th><th>Chapter</th></tr>
+<tr><td><span class="ui">Files</span></td><td>Import models, the list of loaded assets, browse / relink, missing-asset warnings.</td><td><a href="#tree">4</a></td></tr>
+<tr><td><span class="ui">Env</span></td><td>Background, grid, outline, theme, lights, production-render look (AO, reflections, grade).</td><td><a href="#environment">18</a></td></tr>
+<tr><td><span class="ui">Tree</span></td><td>The assembly hierarchy: folders, parts, hardware, cables, primitives, shapes, notes. Filters, locks, visibility.</td><td><a href="#tree">4</a></td></tr>
+<tr><td><span class="ui">Colors</span></td><td>Colour presets and material properties; assign to the selection; highlight colour.</td><td><a href="#colors">6</a></td></tr>
+<tr><td><span class="ui">Select</span></td><td>Saved selection groups you can load, update or delete.</td><td><a href="#select">5</a></td></tr>
+<tr><td><span class="ui">Cameras</span></td><td>Named camera templates; bind steps to them; go to / update / refit.</td><td><a href="#cameras">8</a></td></tr>
+<tr><td><span class="ui">Anim</span></td><td>Animation presets, AL1 / AL2 timing variables, the private-animation editor.</td><td><a href="#animation">9</a></td></tr>
+<tr><td><span class="ui">Header</span></td><td>The on-screen header: step number / name, chapter, text, image, progress bar, subtitle.</td><td><a href="#headers">11</a></td></tr>
+<tr><td><span class="ui">Style</span></td><td>Text styles and shape styles for the overlay.</td><td><a href="#overlay">10</a></td></tr>
+<tr><td>🔌</td><td>Cables and sockets.</td><td><a href="#cables">15</a></td></tr>
+<tr><td>💬</td><td>Notes attached to parts, and note templates.</td><td><a href="#notes">17</a></td></tr>
+<tr><td>▰</td><td>Flat shapes traced from model faces, shape groups, textured planes.</td><td><a href="#shapes">16</a></td></tr>
+<tr><td>⬡</td><td>Primitives (boxes, cylinders and so on) placed on faces.</td><td><a href="#shapes">16</a></td></tr>
+<tr><td>🔩</td><td>Hardware templates (screws, nuts, washers) and placement.</td><td><a href="#hardware">14</a></td></tr>
+<tr><td>↶</td><td>Undo history — jump back to any earlier state, or clear it.</td><td><a href="#select">5</a></td></tr>
+<tr><td><span class="ui">Export</span></td><td>Resolution, frame rate, hold, voice, format, range; the render cache; start the export.</td><td><a href="#export">19</a></td></tr>
+</table>
+
+<h2 id="interface-viewport">Viewport basics</h2>
+<ul>
+<li><b>Orbit</b> left-drag, <b>pan</b> right- or middle-drag, <b>zoom</b> wheel. <kbd>F</kbd> fits the selection; with nothing selected it fits everything. <span class="ui">Cameras ▸ 🎯 Refit camera</span> recomputes orbit distance and pivot after a model rescale.</li>
+<li><b>Work camera</b> (<kbd>W</kbd>): a scratch camera you can move freely without touching the step's saved camera. Press <kbd>W</kbd> again to return to the step camera. <kbd>C</kbd> captures the current view into the active step.</li>
+<li><b>Select</b> by clicking a part. Click again on the same spot to climb one level up the tree (part → folder → model). Double-click a locked folder to temporarily unlock it; it relocks when nothing inside is selected any more. <kbd>Shift</kbd> adds to the selection, <kbd>Ctrl</kbd> toggles, <kbd>Alt</kbd> inverts within the clicked unit. The cursor shows a small badge for the active modifier.</li>
+<li><b>Gizmo</b> appears on the selection: drag the arrows to move, the rings to rotate. <kbd>L</kbd> switches the gizmo between local and world axes. Type exact values in the numeric fields next to it.</li>
+<li><b>Overlay edit</b> (<kbd>O</kbd>) switches the mouse to the 2D layer on top of the viewport (see <a href="#overlay">chapter 10</a>). <kbd>X</kbd> toggles overlay x-ray so you can see the model through the overlay while editing.</li>
+<li><b>Global mode</b> (<kbd>Space</kbd>): while it is on, a transform you make carries into every step, not only the active one (see <a href="#select-global">5.5</a>).</li>
+<li><kbd>Esc</kbd> cancels a placement tool or picker, closes a popup, or deselects.</li>
+</ul>
+
+<h2 id="interface-narration-bar">Narration bar and playback</h2>
+<p>Below the viewport: ◀ ▶ step back and forward, ▶ plays the sequence from the active step, the text field holds the voice-over for this step, 🔊 speaks it. <kbd>←</kbd> / <kbd>→</kbd> also move between steps when the focus is not in a text field.</p>
+
+<h2 id="interface-steps-panel">Steps panel</h2>
+<p>Chapters are the grey headers; steps are the cards. A card shows its number, name, easing, and small buttons: 📷 update this step's camera from the current view, ✎ edit this step's private animation, ⧉ duplicate, 🗑 delete. A <span class="star">★</span> means the step changed since it was last rendered; a chapter header shows how many of its steps are starred. Right-click anything for the full command list (<a href="#steps">chapter 7</a>).</p>
+<figure class="shot"><img src="img/steps-panel.png" alt="Steps panel with chapters and cards"><figcaption>Screenshot: the steps panel with a chapter header, starred cards and the easing dropdown. File: <code>docs/manual/img/steps-panel.png</code></figcaption></figure>
+</section>
+
+<section class="ch" id="tree">
+<h1>4. Models and the tree</h1>
+
+<h2 id="tree-import">Importing models</h2>
+<p><span class="ui">Files ▸ Import</span> accepts <code>.step / .stp</code>, <code>.iges / .igs</code>, <code>.obj</code>, <code>.glb / .gltf</code>, <code>.stl</code> and SBS's own <code>.sbsobj</code>. Several models can live in one project; each becomes a root node in the tree.</p>
+<ul>
+<li><b>STEP / IGES</b> are tessellated by the bundled converter. <span class="ui">Settings ▸ CAD import</span> sets the quality. After the first successful load SBS offers to save a <code>.sbsobj</code> next to the project — the exact same tessellation, loading in seconds instead of minutes. Accept it.</li>
+<li><b>GLB / glTF / FBX / OBJ</b> arrive with their own hierarchy and, sometimes, baked transforms. SBS flattens what it must and records each mesh's resting pose so that steps land on it exactly.</li>
+<li><b>Units.</b> <span class="ui">Edit ▸ Model source transform…</span> lets you scale, rotate or offset a whole model at the source level (Metric / Imperial helpers, per-axis reset). Do this once, before authoring steps.</li>
+</ul>
+<div class="warn"><b>Keep the source files.</b> The project stores the tree and identities, not the geometry. On load, SBS looks for the asset at the recorded path (absolute or relative to the project). If it is missing you get the asset check dialog: <span class="ui">Browse…</span> to relink, <span class="ui">Override</span> to load anyway with a placeholder, <span class="ui">Clear All Warnings</span> once you have fixed the paths. <span class="ui">File ▸ Browse Assets</span> (<kbd>Ctrl</kbd>+<kbd>B</kbd>) shows the same list any time.</div>
+
+<h2 id="tree-reading">Reading the tree</h2>
+<p>The <span class="ui">Tree</span> tab lists the hierarchy. Icons tell the node type: folder, mesh, 🔩 hardware, cable, primitive, flat shape, note. Left of every row: the eye (visible in this step), the lock (locked folders select as one unit and refuse edits inside). The filter bar narrows the list: <span class="ui">Sel</span> only selected objects, <span class="ui">Arch</span> only archived, <span class="ui">HW</span> only hardware, <span class="ui">Vis</span> only visible, <span class="ui">Hid</span> only hidden, <span class="ui">Fold</span> only containers (selected parts stay visible). Type in the search field to filter by name. <span class="ui">Unhide all</span> shows everything in the current step.</p>
+<figure class="shot"><img src="img/tree-tab.png" alt="Tree tab"><figcaption>Screenshot: the Tree tab with filters, eyes and locks. File: <code>docs/manual/img/tree-tab.png</code></figcaption></figure>
+
+<h2 id="tree-organising">Organising folders</h2>
+<p>Drag rows to reparent. Right-click a node for:</p>
+<table>
+<tr><th>Command</th><th>What it does</th></tr>
+<tr><td>✏ Rename</td><td>Renames the node. Names are what the header, notes and diagnostics show.</td></tr>
+<tr><td>📁＋ New Folder Inside</td><td>Creates an empty folder under the node.</td></tr>
+<tr><td>⤵ Move Selected Here</td><td>Reparents the current selection into this folder.</td></tr>
+<tr><td>⊟ Collapse</td><td>Collapses the branch in the list.</td></tr>
+<tr><td>🧹 Clean redundant folders</td><td>Removes single-child wrapper folders below this node (CAD exports love those). The project-wide version is <span class="ui">Edit ▸ Clean up folders…</span>, which previews the changes, then offers <span class="ui">Save first, then remove</span>.</td></tr>
+<tr><td>🗑 Delete Empty Folder / Delete Folder (empty first)</td><td>Folders with content are protected — empty them before deleting.</td></tr>
+<tr><td>🗑 Delete assembly…</td><td>Removes a whole loaded model and every reference to it. Asks first.</td></tr>
+<tr><td>📋 Copy tree</td><td>Copies the branch as text (for reports or for pasting into a message).</td></tr>
+<tr><td>🗃️ Archive / 📤 Unarchive</td><td>Archived parts drop out of every step and out of the picture, without being deleted. Use it for the fasteners you never want to explain. The <span class="ui">Arch</span> filter shows them.</td></tr>
+<tr><td>🔍 Isolate / 🌐 Un-isolate</td><td>Temporarily shows only the node (a viewing aid — it does not change the step).</td></tr>
+<tr><td>🪄 Make transformable</td><td>Turns a raw imported mesh into a node with its own pivot and transform so it can be moved in steps.</td></tr>
+</table>
+
+<h2 id="tree-visibility">Visibility across steps</h2>
+<p>The eye icon changes visibility for the <em>active</em> step only. To cascade, right-click ▸ <span class="ui">👁 Visibility</span>:</p>
+<ul>
+<li><span class="ui">▶ 👁 Show on all following steps</span> / <span class="ui">▶ 🚫 Hide on all following steps</span></li>
+<li><span class="ui">◀ 👁 Show on all previous steps</span> / <span class="ui">◀ 🚫 Hide on all previous steps</span></li>
+<li><span class="ui">⦿ 👁 Show ONLY on this step</span></li>
+</ul>
+<p>Hiding a folder hides everything inside. A part that is hidden by an ancestor shows a dimmed eye. During a transition a part that becomes hidden fades out; one that appears fades in (the fade length is the visibility channel of the animation, <a href="#animation">chapter 9</a>).</p>
+
+<h2 id="tree-replace">Replace-models and following</h2>
+<p>Two ways to say "this object should look different in some steps":</p>
+<ul>
+<li><b>🔄 Convert to Replace-Model</b> makes the node a holder for alternative geometry. <span class="ui">＋ Add to replace…</span> adds a variant; each step can show one of them. <span class="ui">🚫🔄 Remove from replace-model</span> undoes it.</li>
+<li><b>🔗 Follow object…</b> makes object A ride along with object B: wherever B's folder moves in later steps, A comes along, while A keeps its own visibility and colour. <span class="ui">🔗 Stop following…</span> releases it. Following is the recommended way to attach hardware, labels or tools to a moving part.</li>
+</ul>
+
+<h2 id="tree-notes-quick">Notes on a part</h2>
+<p><span class="ui">💬 Add Note…</span> attaches a callout to the node; <span class="ui">🗒 Notes on this folder (n)</span> lists them, with <span class="ui">↺ Reposition Note…</span> and <span class="ui">🗑 Delete Note</span>. See <a href="#notes">chapter 17</a>.</p>
+</section>
+
+<section class="ch" id="select">
+<h1>5. Selecting, moving, pivots</h1>
+
+<h2 id="select-rules">Selection rules</h2>
+<ul>
+<li>Single click selects the smallest thing under the cursor (a part). Clicking the same spot again selects its folder, then the model — a climb up the tree. In the tree, click a row or <kbd>Ctrl</kbd>/<kbd>Shift</kbd>-click for multi-select.</li>
+<li>A <b>locked folder</b> (🔒 in the tree) behaves as one object: clicking any member selects the whole folder. Double-click it to unlock temporarily and edit a part inside; it relocks by itself once nothing inside is selected.</li>
+<li><span class="ui">Colors ▸ Select All Meshes</span> / <span class="ui">Deselect All</span> do what they say. The Colors tab can also select every part wearing a colour.</li>
+<li><span class="ui">Select</span> tab: <span class="ui">💾 Save…</span> stores the current selection as a named group; <span class="ui">📥 Load…</span> re-selects it; <span class="ui">🔄 Update</span> overwrites it from the current selection; <span class="ui">🗑 Delete</span> removes it. Groups survive save/load and are handy for "all the screws of the cover".</li>
+</ul>
+
+<h2 id="select-gizmo">Moving with the gizmo</h2>
+<p>The gizmo appears at the selection's pivot. Drag an axis arrow to move along it, a plane handle to move in a plane, a ring to rotate. <kbd>L</kbd> toggles <b>local</b> (the part's own axes) and <b>world</b>. The numeric fields accept exact values — type a number and press <kbd>Enter</kbd>. Every gizmo edit is undoable (<kbd>Ctrl</kbd>+<kbd>Z</kbd>).</p>
+<p>What you move is stored in the <em>active step</em> only. Go to the next step and the part is back where that step says. That is by design: a step is a full snapshot. To move a part in many steps at once use <a href="#select-global">Global mode</a> or <a href="#select-globalfix">Group for global edit</a>.</p>
+
+<h2 id="select-transforms">Transform commands (right-click)</h2>
+<table>
+<tr><th>Command</th><th>Use</th></tr>
+<tr><td>📋 Copy Transforms / 📌 Paste Transforms</td><td>Copy a part's position and rotation in this step and paste onto another part (or the same part in another step).</td></tr>
+<tr><td>↺ Reset Move / ↺ Reset Rotation / ↺ Reset All Transforms</td><td>Send the part back to its imported pose in this step.</td></tr>
+<tr><td>🌐 Global transform…</td><td>Apply one numeric move / rotation to the selection across all steps at once.</td></tr>
+<tr><td>🎯 Align to surface…</td><td>Click a face on another part; the selection's base face is laid tangent onto it.</td></tr>
+<tr><td>🎯 Align by 3 points (concentric)…</td><td>Pick three points on a circular edge of the target and three on the moving part: the axes are matched (screws into holes, shafts into bearings).</td></tr>
+<tr><td>🎯 Fit To</td><td>Frames the node in the viewport.</td></tr>
+</table>
+
+<h2 id="select-pivot">Pivots</h2>
+<p>Rotation happens around the pivot. <span class="ui">⊕ Copy Pivot</span> / <span class="ui">⊕ Paste Pivot</span> move a pivot between parts, and <span class="ui">⊕ Paste Pivot → selected steps (n)</span> pushes it into a step selection. <span class="ui">⊕ Pivot Center via 3 Points…</span> sets the pivot on the centre of a circle you click three times (hinges, shafts). <span class="ui">🧲 Snap Pivot to Surface…</span> puts it on a clicked face. When a part rotates around a pivot between two steps, SBS animates the arc, not a straight line — also when the part sits inside a moving parent folder.</p>
+
+<h2 id="select-global">Global mode (Space)</h2>
+<p>Press <kbd>Space</kbd> to toggle Global mode (the HUD shows it). While it is on, a move or rotation you make is applied as a <em>delta</em> to the selected objects in <em>every step</em> the moment you deselect. Use it to fix an assembly-wide placement error without touching each step. Press <kbd>Space</kbd> again to go back to per-step editing.</p>
+
+<h2 id="select-globalfix">Group for global edit</h2>
+<p><span class="ui">📦 Group for global edit…</span> wraps scattered parts into a helper folder so that one transform can drive them together across all steps; it shows a dry-run of what it will change before doing it. Pair it with Global mode.</p>
+
+<h2 id="select-undo">Undo and the history tab</h2>
+<p>Every edit — tree, transforms, colours, steps, overlay, cables, hardware, settings — goes through one undo stack. <kbd>Ctrl</kbd>+<kbd>Z</kbd> / <kbd>Ctrl</kbd>+<kbd>Y</kbd>, or open the ↶ tab to see the list and jump back several entries at once. <span class="ui">🗑 Clear history</span> frees memory on very long sessions. Loading a project clears the history.</p>
+</section>
+
+<section class="ch" id="colors">
+<h1>6. Colours and materials</h1>
+
+<h2 id="colors-presets">Colour presets</h2>
+<p>The <span class="ui">Colors</span> tab holds a list of named presets. Every part wears exactly one preset per step; the preset is what steps store, not raw RGB. Change a preset and every part wearing it changes everywhere. <span class="ui">+ Add Color</span> creates one; double-click to rename; the <span class="ui">★ Set as Default</span> preset is the one new parts get.</p>
+<ul>
+<li><span class="ui">Assign to Selected</span> applies the highlighted preset to the selection in the active step (a visible colour change between two steps animates as a cross-fade).</li>
+<li><span class="ui">↩ Revert to Default</span> restores each selected mesh to its default colour.</li>
+<li><span class="ui">Highlight Color</span> is the colour used for selection highlighting and for parts that a note points at.</li>
+<li>The sort buttons float the colours used by currently visible objects (or by the selection) to the top; the rest turn grey but stay clickable.</li>
+</ul>
+<figure class="shot"><img src="img/colors-tab.png" alt="Colors tab"><figcaption>Screenshot: the Colors tab with presets and material sliders. File: <code>docs/manual/img/colors-tab.png</code></figcaption></figure>
+
+<h2 id="colors-material">Material properties per preset</h2>
+<table>
+<tr><th>Property</th><th>Effect</th></tr>
+<tr><td>Solid color</td><td>The base colour.</td></tr>
+<tr><td>Opacity</td><td>Classic transparency (0–1). Transparent parts are drawn after solid ones.</td></tr>
+<tr><td>Solidness</td><td>X-ray strength. Below 1 the part becomes a ghost through which other parts show — this is the usual way to reveal an interior without hiding the cover.</td></tr>
+<tr><td>Metalness / Roughness</td><td>Physically based shading: metals reflect the environment, rough surfaces spread the highlight.</td></tr>
+<tr><td>Reflection Intensity · Reflective (SSR contact reflections)</td><td>Screen-space reflections for floors and polished plates. Cost is real; use on a few presets.</td></tr>
+<tr><td>Strip textures (pure solid color)</td><td>Ignore the texture that came with the mesh and use the flat colour.</td></tr>
+<tr><td>Outline: Global default / Always on / Always off</td><td>Whether parts with this preset get the silhouette outline from the Env tab.</td></tr>
+<tr><td>Flat mirror</td><td>Turns a planar face into a true mirror (console-driven feature; see <a href="#troubleshooting">chapter 21</a>).</td></tr>
+</table>
+<p>Slider drags are batched into one undo entry per drag.</p>
+
+<h2 id="colors-steps">Colours and steps</h2>
+<p>A colour assignment is part of the step snapshot. To make a part red only in step 12, assign it in step 12. To make it red from step 12 on, assign it in step 12 and use the step's copy/duplicate to carry it forward, or assign it in each later step. Changing a <em>preset's</em> values (its RGB or solidness) affects every step and stars only the steps where a part wearing that preset is actually in frame (see <a href="#export-stars">19.4</a>).</p>
+<div class="tip"><b>Deleting a preset</b> is refused while a part still wears it, and the default preset cannot be deleted. Assign the parts elsewhere first.</div>
+</section>
+<section class="ch" id="steps">
+<h1>7. Steps and chapters</h1>
+
+<h2 id="steps-model">What a step stores</h2>
+<figure>
+<svg viewBox="0 0 860 210" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="Step snapshot contents">
+  <rect x="20" y="20" width="820" height="170" rx="10" class="boxa"/>
+  <text x="40" y="46" font-weight="700">Step 13 · "Loosen the four screws" · chapter 2 · easing: Smooth</text>
+  <rect x="40" y="62" width="150" height="110" rx="6" class="box"/><text x="50" y="82" font-weight="600">Visibility</text><text x="50" y="100" class="small">per node: on / off</text><text x="50" y="116" class="small">replace-model choice</text><text x="50" y="132" class="small">shape / cable states</text>
+  <rect x="200" y="62" width="150" height="110" rx="6" class="box"/><text x="210" y="82" font-weight="600">Transforms</text><text x="210" y="100" class="small">position + rotation</text><text x="210" y="116" class="small">of every movable node</text><text x="210" y="132" class="small">pivots, parent folder</text>
+  <rect x="360" y="62" width="150" height="110" rx="6" class="box"/><text x="370" y="82" font-weight="600">Colours</text><text x="370" y="100" class="small">preset worn per part</text><text x="370" y="116" class="small">(presets themselves are</text><text x="370" y="132" class="small">project-wide)</text>
+  <rect x="520" y="62" width="150" height="110" rx="6" class="box"/><text x="530" y="82" font-weight="600">Camera</text><text x="530" y="100" class="small">Free: own saved view</text><text x="530" y="116" class="small">Template: bound to a</text><text x="530" y="132" class="small">named camera</text>
+  <rect x="680" y="62" width="150" height="110" rx="6" class="box"/><text x="690" y="82" font-weight="600">Overlay + voice</text><text x="690" y="100" class="small">2D layer, header hides</text><text x="690" y="116" class="small">narration text, private</text><text x="690" y="132" class="small">animation, hold time</text>
+</svg>
+<figcaption>Figure 4 — Everything a step needs to stand alone. Jumping to any step rebuilds exactly this picture.</figcaption>
+</figure>
+
+<h2 id="steps-create">Creating and arranging steps</h2>
+<ul>
+<li><b>Add</b> a step with the panel's add button: the new step starts as a copy of the active one, so you only change what differs. ⧉ on a card duplicates it in place.</li>
+<li><b>Reorder</b> by dragging cards; drag into another chapter to move it. Multi-select with <kbd>Ctrl</kbd>/<kbd>Shift</kbd>-click, then drag, copy or delete the whole selection.</li>
+<li><b>Chapters</b> group steps and give the header its chapter number and name. Right-click a chapter header for <span class="ui">✏ Rename…</span>, <span class="ui">📋 Copy</span>, <span class="ui">🗑 Delete</span>, selection helpers and <span class="ui">📥 Paste steps into chapter</span>.</li>
+<li><b>Step groups</b>: <span class="ui">⊞ Convert to step group</span> turns a step into a container whose children play as one continuous clip (one narration, several motions). <span class="ui">⊟ Ungroup step</span> reverses it.</li>
+<li><b>Delete</b> with 🗑, <kbd>Delete</kbd> or <kbd>Backspace</kbd> when the card has focus. The last step cannot be deleted.</li>
+</ul>
+
+<h2 id="steps-context">Step context menu</h2>
+<table>
+<tr><th>Command</th><th>What it does</th></tr>
+<tr><td>✏ Rename…</td><td>Step name (shown in the header and in exports).</td></tr>
+<tr><td>🔢 Auto-name all (by chapter) · 📝 Auto-name all (from narration)</td><td>Name every step "Chapter n – step m" or from the first words of its narration.</td></tr>
+<tr><td>⎘ Duplicate · 📋 Copy · 📥 Paste under</td><td>Copy carries the complete snapshot, including overlay and narration. Paste inserts after the clicked step; with several copied, all of them.</td></tr>
+<tr><td>📦 Import steps from another project…</td><td>Opens a second <code>.sbsproj</code> and lets you pick steps to bring in. Works best when both projects load the same CAD (part identities match); missing parts are reported.</td></tr>
+<tr><td>🎨 Copy overlay · 🖌️ Paste overlay — Replace / ➕ Add on top</td><td>Move the 2D layer between steps without touching the 3D snapshot.</td></tr>
+<tr><td>📷 Update step camera</td><td>Store the current viewport camera in this step (same as <kbd>C</kbd>). With several steps selected, all of them.</td></tr>
+<tr><td>🔁 Re-render cache segment</td><td>Force this step (or the selection) to be rendered again at the next export.</td></tr>
+<tr><td>☆ Clear star (treat as rendered) · ☆ Clear all stars</td><td>Tell SBS the cached clip is fine even though something changed (<a href="#export-stars">19.4</a>).</td></tr>
+<tr><td>&lt;cable&gt; · &lt;verb&gt; · &lt;socket&gt; · State n</td><td>Cable actions recorded on this step (plug / unplug); <span class="ui">✕ Remove this action</span> deletes one.</td></tr>
+<tr><td>☑ Select all steps in chapter · Select all steps &amp; chapters · ⇄ Invert selected</td><td>Selection helpers for bulk operations.</td></tr>
+<tr><td>🗑 Delete</td><td>Removes the step (or the selection). Undoable.</td></tr>
+</table>
+
+<h2 id="steps-transition-row">The transition row</h2>
+<p>Under the active card sits the transition row: <b>easing</b>, <b>camera mode</b> (Free / Template), <b>AL1 / AL2</b> durations and <b>Smooth reparent jumps</b>.</p>
+<table>
+<tr><th>Easing</th><th>What the viewer sees when arriving at this step</th></tr>
+<tr><td>Smooth</td><td>Eases out of the previous step and into this one. Default.</td></tr>
+<tr><td>Linear</td><td>Constant speed. Good for conveyor-like motions and camera slides that continue into the next step.</td></tr>
+<tr><td>Instant</td><td>The step arrives all at once: a purple <b>INSTANT BLOCK</b> is pinned to the top of the step's animation and holds every channel (camera, objects, colours, visibility, overlay, cables…). Use it for cuts.</td></tr>
+<tr><td>Instant fade</td><td>Same, but the picture dissolves to nothing and back over AL1 while it cuts.</td></tr>
+</table>
+<p><b>AL1</b> and <b>AL2</b> are the two animation-length variables in milliseconds. Presets reference them instead of fixed numbers: AL1 is the default home of the camera channel, AL2 of the object, visibility and colour channels. Change them on the step to speed up or slow down that one transition; change the defaults in the <span class="ui">Anim</span> tab.</p>
+<p><b>Smooth reparent jumps</b>: when an object changes folders between two steps but barely moves, hold it still instead of letting it swing through a large arc. The threshold is the distance its visual centre may move before the arc is animated normally.</p>
+<div class="note"><b>Instant on the first step of a chapter.</b> Works like any other step. If an old project shows a strange half-transition on such a step, re-pick the easing once from the dropdown — that rewrites the instant block in the current format.</div>
+
+<h2 id="steps-videostep">Steps that are videos</h2>
+<p>A step can also be a rendered clip imported from a render cache (marked "This step IS a rendered video") or contain a video overlay playing alongside the scene. Video steps are exported as-is and cannot be edited in 3D; edit the original project instead.</p>
+</section>
+
+<section class="ch" id="cameras">
+<h1>8. Cameras</h1>
+
+<h2 id="cameras-free">Free cameras</h2>
+<p>By default a step's camera is <b>Free</b>: whatever view you capture with <kbd>C</kbd> (or 📷 on the card) is saved in that step. Moving the viewport does not change the saved camera until you capture again. Press <kbd>W</kbd> to enter the work camera — a scratch view for inspecting the model — and <kbd>W</kbd> again to snap back to the step's saved camera.</p>
+
+<h2 id="cameras-templates">Camera templates</h2>
+<p>The <span class="ui">Cameras</span> tab holds named views. <span class="ui">+ Save current view as template</span> creates one from the viewport. For each template: <span class="ui">▶ Go To</span> moves the live camera there (bindings untouched), <span class="ui">🔄 Update</span> sets the template to the current view <em>and</em> binds the active step to it, <span class="ui">🔒 Lock</span> protects it from accidental updates, <span class="ui">★ Set as Default</span> makes it the camera new steps get, <span class="ui">🗑 Delete</span> removes it (bound steps become Free with the last view baked in).</p>
+<p>Switch a step's camera mode to <b>Template</b> in the transition row and pick a name: from then on the step follows the template, and updating the template updates every step bound to it. <span class="ui">Edit ▸ Apply Camera Template…</span> binds a whole range of steps at once. <span class="ui">🎯 Refit camera</span> recomputes distance and pivot to frame the entire scene — useful after a model rescale.</p>
+<figure class="shot"><img src="img/cameras-tab.png" alt="Cameras tab"><figcaption>Screenshot: camera templates with Go To / Update / Lock. File: <code>docs/manual/img/cameras-tab.png</code></figcaption></figure>
+
+<h2 id="cameras-transition">How the camera animates</h2>
+<p>Between two steps the camera interpolates position, target and zoom over AL1 (or over the camera channel of a private animation). With <b>Instant</b> easing it cuts. Orbit pivots and pull-outs stored on a step are honoured. The export renders exactly what the step camera sees at the export aspect ratio; the viewport may show a little more or less on the sides.</p>
+<div class="tip"><b>Settings ▸ Camera</b> holds the defaults for new projects (field of view, orbit behaviour, default background).</div>
+</section>
+
+<section class="ch" id="animation">
+<h1>9. Transitions and the animation editor</h1>
+
+<h2 id="animation-channels">Channels</h2>
+<p>A transition is made of channels, each with its own duration. SBS animates whichever channels actually changed between the two steps:</p>
+<table>
+<tr><th>Channel</th><th>Animates</th></tr>
+<tr><td><code>camera</code></td><td>Camera position, target, zoom (home: AL1).</td></tr>
+<tr><td><code>obj</code></td><td>Object moves and rotations, pivot arcs, reparent jumps (home: AL2).</td></tr>
+<tr><td><code>visibility</code></td><td>Fade-in / fade-out of parts that appear or disappear (home: AL2).</td></tr>
+<tr><td><code>color</code></td><td>Cross-fade between colour presets (home: AL2).</td></tr>
+<tr><td><code>overlay</code> / <code>overlays</code></td><td>The 2D layer's fade-out of the old overlay and fade-in of the new one.</td></tr>
+<tr><td><code>insert</code></td><td>Hardware insertion (screws driving in, with the reposition pre-step).</td></tr>
+<tr><td><code>cable</code></td><td>Cable morphs and socket plug / unplug.</td></tr>
+<tr><td><code>shape</code></td><td>Flat shapes and primitives appearing, moving, resizing.</td></tr>
+<tr><td><code>notes</code></td><td>Note callouts appearing and following their parts.</td></tr>
+<tr><td><code>narration</code></td><td>Where the voice-over starts relative to the motion.</td></tr>
+<tr><td><code>pause</code></td><td>A time spacer with no channels — a deliberate hold inside a transition.</td></tr>
+</table>
+
+<h2 id="animation-strings">Animation strings and presets</h2>
+<p>The <span class="ui">Anim</span> tab shows the default preset as a string such as <code>camera(AL1), color(500), visibility(AL2), obj(AL2)</code>. Channels listed together in one block run at the same time; blocks separated by a phase run one after the other. Numbers are milliseconds; <code>AL1</code> / <code>AL2</code> resolve at transition time from the step (or the project defaults).</p>
+<ul>
+<li><span class="ui">+ New Preset</span> creates a preset; the ★ marks the <b>Project default</b> used by steps that have no private animation.</li>
+<li>Presets can be imported from your personal collection (kept in user settings, across projects) and exported to it.</li>
+<li>The three <b>search zones</b> filter the preset list by dragging channel chips into them; <span class="ui">Clear all 3 search zones</span> resets.</li>
+</ul>
+
+<h2 id="animation-private">Private animation per step</h2>
+<p>Press ✎ on a card to open the editor for that step only. It shows the phases as blocks; drag channel chips between blocks to reorder what happens first, add an empty time block or a pause block, type a custom duration or pick AL1 / AL2, and remove blocks with <span class="ui">🗑 Remove time block</span>. The raw string is shown underneath and can be edited by hand.</p>
+<figure>
+<svg viewBox="0 0 860 220" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="Instant block and private animation">
+  <text x="20" y="26" font-weight="700">Easing = Instant fade</text>
+  <rect x="20" y="40" width="380" height="54" rx="6" fill="#6b4fd6" opacity=".85"/>
+  <text x="32" y="62" fill="#fff" font-weight="700">INSTANT BLOCK (0 ms)</text>
+  <text x="32" y="82" fill="#fff" class="small" style="fill:#fff">holds camera · obj · visibility · color · overlays · insert · cable · shape · notes</text>
+  <rect x="410" y="40" width="160" height="54" rx="6" class="boxw"/>
+  <text x="420" y="62" font-weight="600">fade (AL1)</text>
+  <text x="420" y="82" class="small">dissolve out / in</text>
+  <text x="20" y="130" font-weight="700">Same step after dragging obj DOWN out of the block</text>
+  <rect x="20" y="144" width="380" height="54" rx="6" fill="#6b4fd6" opacity=".85"/>
+  <text x="32" y="166" fill="#fff" font-weight="700">INSTANT BLOCK (0 ms)</text>
+  <text x="32" y="186" fill="#fff" class="small" style="fill:#fff">camera · visibility · color · overlays · …</text>
+  <rect x="410" y="144" width="160" height="54" rx="6" class="box"/>
+  <text x="420" y="166" font-weight="600">obj (AL2)</text>
+  <text x="420" y="186" class="small">parts glide after the cut</text>
+  <rect x="580" y="144" width="120" height="54" rx="6" class="box"/>
+  <text x="590" y="166" font-weight="600">pause (400)</text>
+  <text x="590" y="186" class="small">spacer</text>
+  <path d="M400 67 L410 67" class="arrow"/><path d="M400 171 L410 171" class="arrow"/><path d="M570 171 L580 171" class="arrow"/>
+</svg>
+<figcaption>Figure 5 — Instant easing pins a purple block that holds every channel. Drag a chip down out of it and that channel animates after the cut.</figcaption>
+</figure>
+<div class="note"><b>Order of precedence.</b> A step's private animation wins over the project default. The easing dropdown edits the private animation (it inserts or removes the instant block). Deleting the private animation returns the step to the default preset.</div>
+
+<h2 id="animation-hold">Holds and narration timing</h2>
+<p>After the transition the step is <em>held</em> while the narration plays. In the exported video the hold is the narration length plus <span class="ui">Export ▸ Step hold (ms)</span>. A pause <em>inside</em> a transition is authored with the pause channel, not with the hold.</p>
+</section>
+
+<section class="ch" id="overlay">
+<h1>10. The overlay layer</h1>
+
+<h2 id="overlay-enter">Entering overlay edit</h2>
+<p>The overlay is a 2D canvas locked to the picture: text boxes, images, arrows, rectangles, zoom insets, video clips, 3D-anchored arrows. Press <kbd>O</kbd> (or the overlay button) to edit it; the 3D mouse is suspended until you exit (<kbd>O</kbd> again, or <span class="ui">Exit overlay</span> in the prompt that appears when you leave the step). <kbd>X</kbd> toggles x-ray so the model stays visible under dense overlays while editing. Each step has its own overlay; use <span class="ui">Copy overlay</span> / <span class="ui">Paste overlay</span> on the card menu to move it.</p>
+
+<h2 id="overlay-tools">Tools</h2>
+<table>
+<tr><th>Tool</th><th>Notes</th></tr>
+<tr><td>Text</td><td>Double-click to edit. The text toolbar sets font, size, colour, alignment, effects (shadow, outline) and a saved <b>text style</b> from the Style tab. Right-click ▸ <span class="ui">Edit text</span>.</td></tr>
+<tr><td>Image</td><td>PNG / JPG / SVG from disk; copied into <code>media/</code>. Right-click ▸ <span class="ui">🖼 Change image…</span>, <span class="ui">↩ Reset to natural size</span>, <span class="ui">🔍 Add zoom</span> (an inset crop), <span class="ui">🔎 Zoom level</span> 1× … Custom.</td></tr>
+<tr><td>Shapes and arrows</td><td>Rectangle, line / arrow (arrowhead on tail / head), corner radius, fill and stroke from the shape toolbar or a <b>shape style</b>. <span class="ui">⊹ Reposition HEAD… / TAIL…</span> re-anchor an arrow by clicking.</td></tr>
+<tr><td>🎯 3D arrow</td><td>An arrow whose head is pinned to a point on the model: it follows the part across steps and camera moves.</td></tr>
+<tr><td>Video</td><td>A clip from disk (never copied into the project file). Right-click ▸ <span class="ui">🎬 Trim &amp; audio…</span> for in/out points and mute. The clip plays in the viewport and is included in the export.</td></tr>
+<tr><td>Image sequence</td><td>A flipbook of frames with timing (the sequence editor: <span class="ui">+ Add frame…</span>, seconds per frame, <span class="ui">Clear sequence</span>).</td></tr>
+</table>
+<p>Common commands: <span class="ui">📋 Copy</span>, <span class="ui">📥 Paste</span>, <span class="ui">📥 Paste in place</span>, <span class="ui">⎘ Duplicate</span>, <span class="ui">🗑 Delete</span>, <span class="ui">🔼 Arrange</span> (Bring to front / forward, Send backward / to back). Arrow keys nudge; <kbd>Shift</kbd> while rotating levels to 45° / 90°; the rotation field accepts a typed angle.</p>
+
+<h2 id="overlay-links">Links, constants and pins</h2>
+<dl class="def">
+<dt>🔗 Make linked shape… / Link to</dt><dd>Several items across steps share one definition: edit one and every linked copy follows. <span class="ui">✂ Break link (make unique)</span> detaches a copy; <span class="ui">↺ Reset this one to the link</span> re-syncs it; <span class="ui">✏ Rename link…</span>.</dd>
+<dt>📌 Make constant text box… / Attach to constant</dt><dd>A text box that appears in the same place on many steps with the same style — chapter titles, part callouts. The anchor (⌜ top-left / ⌝ top-right) decides which corner stays put when the text length changes. <span class="ui">↺ Snap back to constant position</span>, <span class="ui">⊹ Set as new position (all steps)</span>, <span class="ui">✂ Detach from constant (this box only)</span>. Constant <em>titles</em> (their texts and translations) are managed in <span class="ui">Edit ▸ Title Manager…</span> (<a href="#narration-titles">12.5</a>).</dd>
+<dt>📌 Make pinned position… / Pin to position</dt><dd>The same idea for images and shapes: a named position in the frame. <span class="ui">↺ Snap back to pinned position</span>, <span class="ui">⊹ Set as default position</span>, <span class="ui">✂ Unpin (this item only)</span>.</dd>
+</dl>
+
+<h2 id="overlay-masks">Crop masks</h2>
+<p>A mask crops an image or video to a rectangle fixed on the canvas (a window through which the picture is seen). Right-click an image ▸ <span class="ui">🎭 Add mask…</span> ▸ <span class="ui">▭ New rectangle mask…</span> (private to this image) or <span class="ui">🌐 Use a shared mask…</span> from the project library. <span class="ui">✎ Edit mask</span> (moves every image using a shared one), <span class="ui">✂ Remove mask (show the whole image)</span>, <span class="ui">🎭 Use another mask…</span>, <span class="ui">🌐 Set as global mask…</span> publishes a private mask to the library. <span class="ui">🗂 Manage masks…</span> opens the <b>Masks &amp; pinned positions</b> panel, which lists every mask and pin with the steps that use them and jumps to each.</p>
+
+<h2 id="overlay-styles">Text and shape styles (Style tab)</h2>
+<p><span class="ui">+ New style</span> (text) and <span class="ui">+ New shape style</span> capture font, size, colour, fill, outline and thickness under a name. Apply from the toolbars' style dropdown. <span class="ui">Save Setup</span> / <span class="ui">Load Setup</span> write and read the whole style set as a file, so a house style travels between projects. Changing a style re-styles every item using it and stars the steps where those items are.</p>
+
+<h2 id="overlay-interfaces">Interface panels</h2>
+<p>An <em>interface</em> is a reusable image panel (a control panel, a display) whose buttons are traced as bonded flat shapes and whose crops act as zoom windows. Interfaces are authored from the overlay and the ▰ tab; their library folder and default pose are stored in the project. Ask for the interface guide if you need this feature — it has its own workflow.</p>
+</section>
+
+<section class="ch" id="headers">
+<h1>11. Headers</h1>
+<p>The header is the strip of live text drawn over the picture on every step: step number and name, chapter number and name, free text, an image (logo), a progress bar, and the subtitle line. It is one shared layout, evaluated per step.</p>
+<h2 id="headers-tab">Header tab</h2>
+<p>Add items with <span class="ui">+ Step #</span>, <span class="ui">+ Step Name</span>, <span class="ui">+ Chapter #</span>, <span class="ui">+ Chapter Name</span>, <span class="ui">+ Text</span>, <span class="ui">+ Image</span>, <span class="ui">+ Progress Bar</span>, <span class="ui">💬 Subtitle</span>. Each item has X / Y (px), Width / Height, Font size, Color, Direction (L / C / R alignment), Language (which language's text it shows) and, for images, <span class="ui">Replace image…</span>. Reorder with ↑ ↓, hide with the eye, delete with ✕. <span class="ui">Save Setup</span> / <span class="ui">Load Setup</span> store the layout as a file.</p>
+<p>The <b>Text</b> item's placeholder reads "Header text (used in Default / template modes)": it is the fallback when a step has no own text; it can be translated with the 🌐 button once language packs exist.</p>
+<h2 id="headers-perstep">Hiding a header on some steps</h2>
+<p>Right-click a header element in the viewport ▸ hide on this step or on the selected steps. The hide list is stored on the step, so it travels with copies and imports. The eye in the Header tab hides an item globally instead.</p>
+<h2 id="headers-export">Headers in export</h2>
+<p>Headers are composited after the 3D render, so editing a header never invalidates the 3D cache; only the stitching is redone. The subtitle item shows the current narration sentence, timed from the synthesised audio.</p>
+</section>
+
+<section class="ch" id="narration">
+<h1>12. Narration, voices and subtitles</h1>
+
+<h2 id="narration-text">Writing the narration</h2>
+<p>Type in the field under the viewport. The text is stored on the step. Pasting from a document is sanitised (smart quotes, invisible characters and paragraph breaks that upset the voice engine are normalised). A change to the text stars the step for re-render because its audio and duration change.</p>
+
+<h2 id="narration-voices">Local voices</h2>
+<p>SBS ships a neural text-to-speech engine that runs on your GPU (WebGPU) with an automatic CPU fallback. The voice is chosen per language in <span class="ui">Edit ▸ Languages…</span> (🎙 click to choose). The <span class="ui">Export</span> tab has <span class="ui">Voice</span> and <span class="ui">Speed</span> for the active language. Clips are cached under <code>audio/&lt;lang&gt;/&lt;voice&gt;/</code>; <span class="ui">Clear inactive voices</span> deletes the subfolders of voices you no longer use (safe — they re-synthesise on next play), <span class="ui">Clear all cache</span> wipes everything.</p>
+<div class="tip"><b>Slow or silent voice?</b> Open Developer Tools (<kbd>Ctrl</kbd>+<kbd>Shift</kbd>+<kbd>I</kbd>), Console, and run <code>await window.sbsTTSDiag()</code>. It reports the engine, device, warm-up state and the last error in plain words. See <a href="#troubleshooting">chapter 21</a>.</div>
+
+<h2 id="narration-cloud">Cloud text-to-speech (optional)</h2>
+<p><span class="ui">Settings ▸ Cloud TTS</span> accepts a Google Cloud Text-to-Speech API key. When set, cloud voices appear in the voice picker. Audio still lands in the same cache folder, so exports are offline once synthesised.</p>
+
+<h2 id="narration-subtitles">Subtitles</h2>
+<p>Add the <span class="ui">💬 Subtitle</span> item in the Header tab. Subtitles are split into sentences and timed from the audio. The narration of other languages comes from their language packs (<a href="#languages">chapter 13</a>).</p>
+
+<h2 id="narration-titles">Title Manager (constant titles)</h2>
+<p><span class="ui">Edit ▸ Title Manager…</span> manages the texts that repeat across steps:</p>
+<ul>
+<li><span class="ui">📌 Constant titles</span>: each constant text box type, how many instances it has, and ◀ ▶ to jump to the previous / next step using it. <span class="ui">Delete every type with zero instances</span> tidies up; the menu item <span class="ui">Clean Up Unused Constant Titles</span> does the same.</li>
+<li><span class="ui">🌍 Translated titles</span>: side-by-side original and translation per language; <span class="ui">✓ Accept translation</span>, <span class="ui">↺ Update to translated version</span>, ❗ marks rows changed since you last looked.</li>
+<li><span class="ui">🔤 Replace rules</span>: find / replace rules applied to titles and narration in one language. <span class="ui">🔥 Bake</span> applies every rule and then deletes the rules — the corrected text becomes the text.</li>
+</ul>
+<p><span class="ui">Edit ▸ Unify Constant Titles</span> (<kbd>Ctrl</kbd>+<kbd>Alt</kbd>+<kbd>U</kbd>) merges text boxes that carry the same text into one constant, so a later edit changes them all.</p>
+</section>
+
+<section class="ch" id="languages">
+<h1>13. Languages</h1>
+<p>One project, many languages. The project file keeps the <b>source language</b>. Every extra language is a sidecar file <code>&lt;project&gt;.&lt;lang&gt;.sbslang.json</code> holding that language's narration, header texts, overlay texts and constant titles, plus its own audio and render folders.</p>
+<h2 id="languages-panel">Edit ▸ Languages…</h2>
+<ul>
+<li><span class="ui">＋ Add language</span> creates a pack (for example <code>he</code>) and translates the whole project into it with the engine chosen in <span class="ui">Settings ▸ Translation engine</span> (an OpenAI-compatible server URL and model name, with a glossary of terms that must not be translated; parallel requests configurable).</li>
+<li>Click a language to make it <b>active</b>: the viewport, narration field, header and exports switch to it. The status bar shows the active language.</li>
+<li>🎙 chooses the voice for that language; 🔄 re-translates the parts that changed in the source; ✕ removes the pack (the sidecar file is deleted after confirmation).</li>
+<li><span class="ui">Settings ▸ Preferred narration languages</span> orders the languages the voice picker offers first.</li>
+</ul>
+<h2 id="languages-rules">What is per language and what is shared</h2>
+<table>
+<tr><th>Per language (in the pack)</th><th>Shared (in the project)</th></tr>
+<tr><td>Narration text, subtitles, header texts, overlay text boxes, constant titles, replace rules, voice choice, audio cache, render cache</td><td>Model, tree, steps, cameras, colours, overlay geometry (positions, images, shapes), header layout, animation, hardware, cables, notes</td></tr>
+</table>
+<p>Editing a text in a non-source language edits only that pack. Editing the source marks the corresponding rows in the other packs as stale (❗ in the Title Manager and in the Languages panel) so you can re-translate just those. Exports are made per language; the render cache is per language too, so a text-only change in Hebrew never re-renders the English video.</p>
+</section>
+<section class="ch" id="hardware">
+<h1>14. Hardware: screws, nuts, washers</h1>
+<p>CAD assemblies often ship without fasteners, or with hundreds of identical ones. The 🔩 tab lets you define a screw once and drop instances onto faces.</p>
+<h2 id="hardware-templates">Templates</h2>
+<p><span class="ui">＋ Create template</span> opens the editor: <span class="ui">Head type</span>, <span class="ui">Drive style</span>, <span class="ui">Ø Diameter (mm)</span>, <span class="ui">Length (mm)</span>, <span class="ui">Thickness</span>, <span class="ui">Colour</span>, washer names, <span class="ui">Spacing X (mm)</span> and <span class="ui">Gap scale</span> for stacked washers, <span class="ui">Reposition (ms)</span> for the pre-insertion move. Save with <span class="ui">Save changes</span>. ✎ edits, 🗑 deletes, ↺ restores the defaults from <span class="ui">Settings ▸ Hardware insertion defaults</span>. Editing a template changes every instance made from it (the tree menu says so: <span class="ui">🔩 Edit template (affects all instances)…</span>).</p>
+<h2 id="hardware-place">Placing</h2>
+<p>Click <span class="ui">Assign</span> on a template, then click a face on the model: the screw is placed normal to that face, head outside. <kbd>Esc</kbd> or right-click cancels. In the tree, right-click a screw for <span class="ui">🔩 Duplicate (same template)</span>, <span class="ui">🔩 Add nut</span> / <span class="ui">🗑 Delete nut</span>, the washer stack (<span class="ui">⊕ No washers</span> … <span class="ui">⊕ Spring + flat washer</span>) and <span class="ui">📏 Adjust insertion animation…</span>. The <span class="ui">HW</span> filter in the tree shows only hardware.</p>
+<h2 id="hardware-anim">Insertion animation</h2>
+<p>When a screw is hidden in step n and visible in step n+1, SBS animates it driving in: it first appears at the reposition distance along its axis (over <span class="ui">Reposition (ms)</span>), then travels in over the <code>insert</code> channel. Nuts and washers follow the same rule in reverse order. Hide a screw in a later step and it backs out.</p>
+</section>
+
+<section class="ch" id="cables">
+<h1>15. Cables and sockets</h1>
+<p>A cable is a smooth tube between two sockets with a controllable path. Sockets are small blocks you attach to parts; cables plug into them. Both are animated between steps.</p>
+<h2 id="cables-create">Creating</h2>
+<p>🔌 tab ▸ <span class="ui">+ New Cable</span>: name, <span class="ui">Cable color</span>, <span class="ui">Diameter (mm)</span> (the tab's diameter field sets the default for new cables), socket <span class="ui">W / H / D (mm)</span> and <span class="ui">Socket color</span>. Place each end by clicking a face (the placement icon on the row), then add mid-points by clicking along the path. Duplicate a cable with <span class="ui">Duplicate</span> and choose <span class="ui">Keep connections</span> or <span class="ui">Clean connections</span>.</p>
+<h2 id="cables-steps">Cables in steps</h2>
+<p>Each step stores the cable's point positions and which socket each end is plugged into, so a cable can be unplugged in step 12, dangle in step 13 and be plugged into another socket in step 14. Editing points in a step changes only that step; the eye and highlight toggles on the row are per step too. When the part a socket is attached to moves, the socket and the cable end follow. A step's context menu lists the recorded cable actions (<span class="ui">cable · plug/unplug · socket · State n</span>).</p>
+<div class="note"><b>Sizes are absolute millimetres.</b> Projects made with the older percentage sizing are converted on load so they look the same.</div>
+</section>
+
+<section class="ch" id="shapes">
+<h1>16. Flat shapes and primitives</h1>
+<h2 id="shapes-flat">Flat shapes (▰)</h2>
+<p>A flat shape is a filled outline traced from a model face: highlight a gasket surface, mark a sealing area, show a footprint. Click the trace button, then a face — adjacent triangles within <span class="ui">Crease angle (degrees)</span> of the picked triangle's normal join the face set and their outline becomes the shape. Tighter = only flat regions; wider = catches gently curved surfaces. Shapes belong to <b>shape groups</b> (double-click to rename); the eye on a group toggles every instance in it; the lock makes the group select as one.</p>
+<ul>
+<li><span class="ui">Edit</span> re-opens the polygon in the viewport editor seeded at an existing instance. <span class="ui">✏ Edit shape…</span> in the tree does the same.</li>
+<li><span class="ui">Style</span>: fill colour and opacity, outline colour and thickness — per shape, or from a shape style.</li>
+<li>Textured plane: pick an image file, then click a face (or empty space) to drop a 2D plane sized to the image's aspect ratio — decals, labels, screens.</li>
+<li>Shapes appear, move and fade with the <code>shape</code> channel and keep their end state exactly as the step says, even when the part under them fades out.</li>
+</ul>
+<h2 id="shapes-primitives">Primitives (⬡)</h2>
+<p>Boxes, cylinders, spheres and similar helpers built inside SBS, used as stand-ins (a missing bolt, a tool, a fluid volume) or as containers. Choose a type and size in the ⬡ tab, then click a face to place it tangent (<kbd>Esc</kbd> cancels), or <span class="ui">🎯 Align to surface…</span> / <span class="ui">Align by 3 points</span> later. Primitives have a base face at the origin so they sit on surfaces naturally, and they can hold children like folders: drop parts inside and they move with it. Right-click a primitive: <span class="ui">📄 Paste (independent)</span> versus <span class="ui">🔗 Paste Instance (linked parameters)</span> decides whether a copy shares its dimensions with the original. Sizes and quality settings live in the project and are part of what the render cache fingerprints.</p>
+</section>
+
+<section class="ch" id="notes">
+<h1>17. Notes</h1>
+<p>A note is a callout attached to a part: a label with a leader line that follows the part through steps and camera moves. Right-click a part ▸ <span class="ui">💬 Add Note…</span>, type the text, pick a size (<span class="ui">● Size: Small / Medium / Large</span>) and a template from the 💬 tab. <span class="ui">↺ Reposition Note…</span> lets you click a new anchor; <span class="ui">🗑 Delete Note</span> removes it. Notes are per step: the part's note list is stored in the snapshot, so a note can exist in steps 5–8 only. The 💬 tab keeps <b>note templates</b> (style, size, leader look) and the list of notes in the active step. Note text is translated with the language packs.</p>
+</section>
+
+<section class="ch" id="environment">
+<h1>18. Environment and look</h1>
+<h2 id="environment-tab">Env tab</h2>
+<ul>
+<li><span class="ui">Theme: Light / Dark</span> for the interface; <span class="ui">Default background</span> in Settings for the viewport colour of new projects, and the background picker here for this project.</li>
+<li><span class="ui">Grid</span> on/off, <span class="ui">Outline</span> on/off with <span class="ui">Outline color</span> and the <span class="ui">Small / Medium / Large (px)</span> thickness presets. Outlines are a silhouette pass around parts; per-preset override in the Colors tab.</li>
+<li>Lights: <span class="ui">Key light (warm)</span>, <span class="ui">Fill light (cool)</span>, <span class="ui">Rim / backlight</span> — intensity and angle. The light stage window lets you drag them around the model.</li>
+<li><span class="ui">Load an environment from a .sbsenv file — or grab it straight from another .sbsproj</span>: copy a whole look between projects.</li>
+</ul>
+<h2 id="environment-render">Production render settings</h2>
+<p>The render settings panel (from the Env tab) controls what the export looks like: studio presets (<span class="ui">Built-in studio (default)</span>, <span class="ui">Studio — bright</span>, <span class="ui">Studio — soft boxes</span>, <span class="ui">Photo studio — warm / earthy</span>), <span class="ui">Environment strength</span> and <span class="ui">blur</span>, <span class="ui">Exposure</span>, <span class="ui">Contrast</span> and <span class="ui">Saturation (grade)</span>, ambient occlusion (<span class="ui">Intensity</span>, <span class="ui">Radius (px)</span>, <span class="ui">Steps</span>, <span class="ui">Thickness</span>, <span class="ui">Distance falloff</span>, <span class="ui">Max distance</span>) and the rim light spread. Changing any of these changes every frame, so it stars all steps.</p>
+<div class="tip"><b>Preview versus export.</b> The viewport shows the same renderer as the export, at the viewport's size. Exports add supersampling per frame, so edges are cleaner than on screen.</div>
+</section>
+
+<section class="ch" id="export">
+<h1>19. Export, render cache and stars</h1>
+
+<h2 id="export-tab">Export tab</h2>
+<table>
+<tr><th>Field</th><th>Meaning</th></tr>
+<tr><td>From / To</td><td>Step range to export. Leave empty for the whole project.</td></tr>
+<tr><td>Width / Height (px), Format preset</td><td>Output size. Cache clips are rendered at this size; changing it re-renders everything.</td></tr>
+<tr><td>Frame rate (fps)</td><td>Typically 30. Part of the cache key.</td></tr>
+<tr><td>Step hold (ms)</td><td>Extra dwell appended to each step after its narration. A pause <em>within</em> a transition is authored in the animation preset (pause channel).</td></tr>
+<tr><td>Voice · Speed</td><td>Narration voice and rate for the active language.</td></tr>
+<tr><td>Output format · Quality</td><td>MP4 (H.264) or WebM; the quality slider is the encoder bitrate cap (variable bitrate — static content uses less).</td></tr>
+<tr><td>File name · Choose folder…</td><td>Defaults to <code>exports/</code> inside the project.</td></tr>
+<tr><td>Alpha masks</td><td>Also write a per-frame alpha (matte) alongside, for compositing in another tool. Off by default.</td></tr>
+<tr><td>.sbsproc</td><td>Export a single self-contained file (MP4 + step manifest) for the SBS viewer.</td></tr>
+<tr><td>Start Export · Cancel Export</td><td>Run / abort. Progress and the current step are shown in the status bar.</td></tr>
+</table>
+<p><span class="ui">Settings ▸ Export defaults</span> sets the defaults for new projects (output format, frame rate, step hold).</p>
+
+<h2 id="export-cache">How the render cache works</h2>
+<figure>
+<svg viewBox="0 0 860 300" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="Render cache flow">
+  <rect x="20" y="30" width="200" height="60" rx="8" class="box"/><text x="120" y="55" text-anchor="middle" font-weight="600">Step snapshot</text><text x="120" y="75" text-anchor="middle" class="small">+ previous step (the transition)</text>
+  <rect x="260" y="30" width="200" height="60" rx="8" class="box"/><text x="360" y="55" text-anchor="middle" font-weight="600">Fingerprint</text><text x="360" y="75" text-anchor="middle" class="small">what is in frame · colours worn · camera</text>
+  <rect x="500" y="30" width="160" height="60" rx="8" class="boxa"/><text x="580" y="55" text-anchor="middle" font-weight="600">Cache hit?</text><text x="580" y="75" text-anchor="middle" class="small">render/&lt;lang&gt;/</text>
+  <rect x="700" y="10" width="140" height="44" rx="8" class="box"/><text x="770" y="37" text-anchor="middle">reuse clip</text>
+  <rect x="700" y="76" width="140" height="44" rx="8" class="boxw"/><text x="770" y="103" text-anchor="middle">render step ★</text>
+  <path d="M220 60 L260 60" class="arrow"/><path d="M460 60 L500 60" class="arrow"/><path d="M660 50 L700 32" class="arrow"/><path d="M660 70 L700 98" class="arrow"/>
+  <rect x="20" y="150" width="820" height="130" rx="8" class="box"/>
+  <text x="40" y="176" font-weight="600">Stitch (always fast)</text>
+  <text x="40" y="198" class="small">clip 1 + clip 2 + … + clip n  →  headers and subtitles composited  →  narration audio laid in  →  MP4 / WebM</text>
+  <text x="40" y="226" class="small">Headers, subtitles and voice never re-render the 3D. Only 3D-affecting changes star a step: visibility, transforms, colours worn by</text>
+  <text x="40" y="244" class="small">something in frame, camera, overlay, cables, shapes, hardware, environment, animation, export size / fps.</text>
+  <text x="40" y="266" class="small">★ on a card = "this step will be rendered again". A chapter header sums its stars.</text>
+</svg>
+<figcaption>Figure 6 — Each step is a clip in the cache. Export = render the starred clips, then stitch everything.</figcaption>
+</figure>
+<p>The first export renders every step. From then on, <span class="ui">Start Export</span> opens a small prompt:</p>
+<ul>
+<li><span class="ui">★ Re-render starred</span> — render the starred steps, reuse the rest. The normal choice.</li>
+<li><span class="ui">Trust the stars</span> — if the cache keys changed for a technical reason (an app update changed the fingerprint format) but nothing in your project did, adopt the existing clips instead of rendering. Use it once after such an update; if a clip then looks stale, star the step and re-render.</li>
+<li><span class="ui">+ current</span> — also re-render the active step even if it is not starred.</li>
+<li><span class="ui">▶ Render full project (incremental)</span> and <span class="ui">🎯 Re-render selection</span> with a range like <code>0-10, C11, 124, 89-102</code> (<code>C11</code> = chapter 11).</li>
+<li><span class="ui">🧹 Purge stale cache</span> — delete clips no step refers to any more (old sizes, deleted steps). Never deletes clips that are in use.</li>
+</ul>
+
+<h2 id="export-stars">Stars: what changes what</h2>
+<p>A step gets a <span class="star">★</span> when something that affects <em>its rendered frames</em> changed since it was last rendered. SBS compares against the rendered version, so undoing the change removes the star again. The rules:</p>
+<table>
+<tr><th>You change…</th><th>Stars…</th></tr>
+<tr><td>Visibility, a transform, a colour assignment, the camera, the overlay, narration text, hold, easing, private animation of step n</td><td>Step n, and step n+1 (its transition starts from n).</td></tr>
+<tr><td>A colour preset's values</td><td>Every step where a part wearing that preset is in frame (see the frame scan below). Presets nobody wears in frame star nothing.</td></tr>
+<tr><td>A text style, shape style, linked shape, constant title, pinned position, crop mask</td><td>Every step whose overlay uses it.</td></tr>
+<tr><td>A camera template</td><td>Every step bound to it.</td></tr>
+<tr><td>A cable's look (colour, diameter, style), a primitive's size or quality, a flat shape</td><td>Every step where it is visible.</td></tr>
+<tr><td>Step order, chapter membership</td><td>The steps whose predecessor changed.</td></tr>
+<tr><td>Animation preset (project default), AL1 / AL2 defaults, environment, export size, fps</td><td>All steps.</td></tr>
+<tr><td>Header layout, subtitles, voice, narration speed, language texts</td><td>Nothing — composited at stitch time.</td></tr>
+</table>
+<div class="note"><b>Deliberately not starred.</b> Editing a hardware template, a note template, or the geometry of a loaded model (relink, source transform) does not star steps automatically. After such edits, right-click ▸ <span class="ui">🔁 Re-render cache segment</span> on the affected steps, or clear the cache.</div>
+<div class="tip"><b>Cleared the star by mistake?</b> <span class="ui">☆ Clear star</span> only tells SBS to keep the current clip. If the clip looks wrong, right-click ▸ <span class="ui">🔁 Re-render cache segment</span>.</div>
+
+<h2 id="export-framescan">Scan steps for what is in frame</h2>
+<p><span class="ui">Edit ▸ Scan steps for what is in frame…</span> walks through every step with its own camera, at the export aspect ratio, and records which parts actually appear in the picture (ghosted and transparent parts count as visible). The record is saved next to the render cache and has two uses:</p>
+<ul>
+<li>Stars become precise: changing a colour preset stars only steps where a part wearing it is really on screen, not merely un-hidden somewhere behind the camera.</li>
+<li>Cache keys become narrower: a change to something off-screen no longer invalidates the step's clip.</li>
+</ul>
+<p>The scan takes a moment per step (it is a GPU pass) and reports progress in the status bar. Records are refreshed automatically for steps you leave after editing them and at the end of every export; run the menu command after large reorganisations or when you want the stars to settle before a big export.</p>
+
+<h2 id="export-languages">Exporting other languages</h2>
+<p>Make the language active in <span class="ui">Edit ▸ Languages…</span>, then export. Each language has its own render cache folder, so switching languages does not throw away work; only steps whose overlay text differs are rendered per language.</p>
+</section>
+
+<section class="ch" id="maintenance">
+<h1>20. Settings, maintenance and housekeeping</h1>
+
+<h2 id="maintenance-settings">Settings (Ctrl+,)</h2>
+<table>
+<tr><th>Section</th><th>Contents</th></tr>
+<tr><td>Keybindings</td><td>Rebind the single-key actions (work camera, overlay edit, global mode, gizmo local/world, capture camera, overlay x-ray): click, then press the new key. <span class="ui">Default</span> restores the factory key.</td></tr>
+<tr><td>Auto-backup / Autosave</td><td>Interval, how many backups to keep, <span class="ui">Back up now</span>.</td></tr>
+<tr><td>Hardware insertion defaults</td><td>Nuts, spacing, gap scale, reposition pre-step (ms) used when a template does not override them.</td></tr>
+<tr><td>Cloud TTS</td><td>Google Cloud Text-to-Speech API key; <span class="ui">Test</span>.</td></tr>
+<tr><td>Preferred narration languages</td><td>Order of languages offered first in pickers.</td></tr>
+<tr><td>Camera</td><td>Field of view and orbit defaults for new projects.</td></tr>
+<tr><td>Default background</td><td>Solid colour for new projects' viewport.</td></tr>
+<tr><td>CAD import (STEP / IGES)</td><td>Tessellation quality and default tree structure for imports.</td></tr>
+<tr><td>Export defaults</td><td>Default output format, frame rate, step hold.</td></tr>
+<tr><td>Translation engine</td><td>Server URL (OpenAI-compatible), model name, glossary, parallel requests.</td></tr>
+</table>
+
+<h2 id="maintenance-commands">Maintenance commands (Edit menu)</h2>
+<dl class="def">
+<dt>Recover stuck inputs</dt><dd>If a text field stops accepting keystrokes (rare, after certain popups), this releases it without a reload.</dd>
+<dt>Rebuild Cascade</dt><dd>Recomputes the folder-to-part inheritance for every step from the stored data. Use after a big tree reorganisation if some step shows a stale hierarchy.</dd>
+<dt>Clean up folders…</dt><dd>Finds wrapper folders with a single child across the loaded models, previews the flattening, and offers <span class="ui">Save first, then remove</span> or <span class="ui">Remove without saving</span>.</dd>
+<dt>Model source transform…</dt><dd>Per-model scale (Metric / Imperial), rotation and offset applied at the source, with per-axis reset and <span class="ui">Reset all to identity</span>. Steps are not re-baked automatically — re-render afterwards.</dd>
+<dt>Scan steps for what is in frame…</dt><dd>See <a href="#export-framescan">19.5</a>.</dd>
+<dt>Title Manager… / Unify Constant Titles / Clean Up Unused Constant Titles / Languages…</dt><dd>See <a href="#narration-titles">12.5</a> and <a href="#languages">chapter 13</a>.</dd>
+</dl>
+
+<h2 id="maintenance-reload">Reload versus restart</h2>
+<p><kbd>Ctrl</kbd>+<kbd>R</kbd> reloads the app window and re-opens the current project from disk: the live scene is rebuilt from the saved data, which cures most "the picture looks wrong but the data is right" situations. Save first — the reload is not guarded. <kbd>Ctrl</kbd>+<kbd>Shift</kbd>+<kbd>R</kbd> also clears the window cache. A full restart of the application is only needed after installing a new version.</p>
+
+<h2 id="maintenance-memory">Memory</h2>
+<p>The app window has a hard memory ceiling of roughly 3.5 GB. Very large projects (hundreds of overlay images, long image sequences, many voices) approach it. Symptoms: slow undo, a white window, an export that dies mid-way. Remedies: keep overlay images small, store video as files (they are never inlined), <span class="ui">Clear inactive voices</span>, split the project into books and stitch the exports, and <span class="ui">🗑 Clear history</span> in the ↶ tab on long sessions.</p>
+</section>
+
+<section class="ch" id="troubleshooting">
+<h1>21. Troubleshooting</h1>
+
+<h2 id="troubleshooting-symptoms">Symptom → what to do</h2>
+<table>
+<tr><th>Symptom</th><th>Likely cause</th><th>Do this</th></tr>
+<tr><td>A part is missing or sits in the wrong place in one step, but only after jumping around</td><td>The live scene drifted from the data (an old bug, fixed in V0.3.3)</td><td>Save, then <kbd>Ctrl</kbd>+<kbd>R</kbd>. If it comes back, run <code>window.sbsDiag.visibilityAudit()</code> in the console and send the output.</td></tr>
+<tr><td>Project opens with an asset warning</td><td>Model file moved or renamed</td><td><span class="ui">Browse…</span> to relink, or <span class="ui">Override</span> to open with placeholders; fix the path later via <kbd>Ctrl</kbd>+<kbd>B</kbd>.</td></tr>
+<tr><td>Narration is slow, silent, or the first play hangs</td><td>Voice engine still warming up, or GPU path failed and fell back to CPU</td><td>Wait for the warm-up message; then <code>await window.sbsTTSDiag()</code> in the console. <code>window.sbsTTS.forceCPU()</code> forces the CPU path for this session.</td></tr>
+<tr><td>Text field ignores typing</td><td>Focus stuck after a popup</td><td><span class="ui">Edit ▸ Recover stuck inputs</span>.</td></tr>
+<tr><td>Steps 55–57 (say) always show ★ even after rendering</td><td>Something on those steps changes every time the project loads</td><td><code>window.sbsDiag.stars(stepId)</code> lists the reason per step; send it.</td></tr>
+<tr><td>Export re-renders everything after an app update</td><td>Fingerprint format changed</td><td>Choose <span class="ui">Trust the stars</span> once.</td></tr>
+<tr><td>Instant step on a chapter start plays a half transition</td><td>Old instant block format</td><td>Re-pick the easing from the dropdown on that step.</td></tr>
+<tr><td>Duplicate flat shapes vanish after reload</td><td>Known, rare</td><td><code>window.sbsDiag.shapes()</code> then <code>window.sbsFix.pruneShapes()</code>; report the console output.</td></tr>
+<tr><td>White window, or export dies mid-way</td><td>Memory ceiling</td><td>See <a href="#maintenance-memory">20.4</a>.</td></tr>
+</table>
+
+<h2 id="troubleshooting-console">Console diagnostics</h2>
+<p>Open Developer Tools with <kbd>Ctrl</kbd>+<kbd>Shift</kbd>+<kbd>I</kbd> and pick <b>Console</b>. Everything under <code>window.sbsDiag</code> only reads and reports; everything under <code>window.sbsFix</code> repairs and is undoable or asks first. Paste the output when reporting a problem.</p>
+<table>
+<tr><th>Command</th><th>Reports</th></tr>
+<tr><td><code>window.sbsDiag.stars()</code> / <code>stars('step_id')</code></td><td>Which steps are starred and why (reference, order, definition, animation, settings, node, tool).</td></tr>
+<tr><td><code>window.sbsDiag.frameVis('step_id')</code> / <code>await window.sbsDiag.scanFrames()</code></td><td>The in-frame record of a step; run the scan from the console.</td></tr>
+<tr><td><code>window.sbsDiag.visibilityAudit()</code> → <code>visibilityRepair()</code></td><td>Parts whose effective visibility disagrees with the step data.</td></tr>
+<tr><td><code>window.sbsDiag.verifyHome()</code></td><td>Objects whose live home position disagrees with the stored data.</td></tr>
+<tr><td><code>window.sbsDiag.prims()</code> → <code>window.sbsFix.prims()</code></td><td>Primitive parameter health.</td></tr>
+<tr><td><code>window.sbsDiag.shapes()</code>, <code>cablesAudit()</code>, <code>cableSteps()</code>, <code>iface()</code>, <code>videos()</code>, <code>archived()</code>, <code>rmHealth()</code></td><td>Per-feature audits: flat shapes, cables, interfaces, video overlays, archived nodes, replace-models.</td></tr>
+<tr><td><code>window.sbsDiag.fadeTrace()</code>, <code>animTrace()</code>, <code>cableTrace()</code>, <code>traceSelected()</code>, <code>traceOff()</code></td><td>Live traces of a transition for the selected objects; turn off with traceOff.</td></tr>
+<tr><td><code>window.sbsDiag.input()</code> → <code>window.sbsFix.input()</code></td><td>Stuck input diagnosis and release.</td></tr>
+<tr><td><code>await window.sbsTTSDiag()</code></td><td>Voice engine: device, warm-up, cache, last error.</td></tr>
+<tr><td><code>window.sbsMemReport()</code>, <code>window.sbsFreeMemory()</code></td><td>Heap usage by category; drop caches.</td></tr>
+<tr><td><code>window.sbsRenderPlan()</code>, <code>window.sbsCachePurge()</code></td><td>What the next export would render; purge stale clips.</td></tr>
+</table>
+</section>
+
+<section class="ch" id="shortcuts">
+<h1>22. Keyboard shortcuts</h1>
+<div class="grid2">
+<div>
+<h3>Project</h3>
+<table>
+<tr><td><kbd>Ctrl</kbd>+<kbd>N</kbd></td><td>New project</td></tr>
+<tr><td><kbd>Ctrl</kbd>+<kbd>O</kbd></td><td>Open</td></tr>
+<tr><td><kbd>Ctrl</kbd>+<kbd>S</kbd> / <kbd>Ctrl</kbd>+<kbd>Shift</kbd>+<kbd>S</kbd></td><td>Save / Save As</td></tr>
+<tr><td><kbd>Ctrl</kbd>+<kbd>B</kbd></td><td>Browse assets</td></tr>
+<tr><td><kbd>Ctrl</kbd>+<kbd>,</kbd></td><td>Settings</td></tr>
+<tr><td><kbd>Ctrl</kbd>+<kbd>Z</kbd> / <kbd>Ctrl</kbd>+<kbd>Y</kbd></td><td>Undo / Redo</td></tr>
+<tr><td><kbd>Ctrl</kbd>+<kbd>X</kbd> <kbd>C</kbd> <kbd>V</kbd> <kbd>A</kbd></td><td>Cut, copy, paste, select all (context-aware: tree, steps, overlay)</td></tr>
+<tr><td><kbd>Ctrl</kbd>+<kbd>Alt</kbd>+<kbd>U</kbd></td><td>Unify constant titles</td></tr>
+<tr><td><kbd>Ctrl</kbd>+<kbd>R</kbd> / <kbd>Ctrl</kbd>+<kbd>Shift</kbd>+<kbd>R</kbd></td><td>Reload / hard reload the window</td></tr>
+<tr><td><kbd>Ctrl</kbd>+<kbd>Shift</kbd>+<kbd>I</kbd></td><td>Developer tools (console)</td></tr>
+</table>
+</div>
+<div>
+<h3>Viewport (rebindable in Settings ▸ Keybindings)</h3>
+<table>
+<tr><td><kbd>W</kbd></td><td>Work camera on / off</td></tr>
+<tr><td><kbd>C</kbd></td><td>Capture the view into the step camera</td></tr>
+<tr><td><kbd>F</kbd></td><td>Fit selection (or all)</td></tr>
+<tr><td><kbd>L</kbd></td><td>Gizmo local / world</td></tr>
+<tr><td><kbd>Space</kbd></td><td>Global mode on / off</td></tr>
+<tr><td><kbd>O</kbd></td><td>Overlay edit on / off</td></tr>
+<tr><td><kbd>X</kbd></td><td>Overlay x-ray</td></tr>
+<tr><td><kbd>Esc</kbd></td><td>Cancel tool / deselect / close popup</td></tr>
+<tr><td><kbd>Delete</kbd> / <kbd>Backspace</kbd></td><td>Delete the selected step, overlay item or node (with confirmation where destructive)</td></tr>
+<tr><td><kbd>←</kbd> / <kbd>→</kbd></td><td>Previous / next step</td></tr>
+<tr><td><kbd>Shift</kbd> / <kbd>Ctrl</kbd> / <kbd>Alt</kbd> + click</td><td>Add / toggle / invert selection</td></tr>
+</table>
+</div>
+</div>
+</section>
+
+<section class="ch" id="glossary">
+<h1>23. Glossary</h1>
+<dl class="def">
+<dt>AL1 / AL2</dt><dd>Animation-length variables (ms) that presets reference; AL1 is the camera's home, AL2 the objects'.</dd>
+<dt>Archive</dt><dd>Remove a part from every step without deleting it.</dd>
+<dt>Cascade</dt><dd>The inheritance of visibility and transforms from folders to their contents inside a step.</dd>
+<dt>Constant (title / position)</dt><dd>An overlay item defined once and shown at the same place on many steps.</dd>
+<dt>Fingerprint</dt><dd>The hash of everything that influences a step's rendered frames; the render cache key.</dd>
+<dt>Frame record</dt><dd>The list of parts that are actually inside a step's picture, produced by the frame scan.</dd>
+<dt>Global mode</dt><dd>Transform edits carry into every step.</dd>
+<dt>Instant block</dt><dd>A zero-length phase pinned to the top of a step's animation that holds every channel: a cut.</dd>
+<dt>Language pack</dt><dd>The <code>.sbslang.json</code> sidecar holding one language's texts and voice choice.</dd>
+<dt>Pivot</dt><dd>The point a part rotates around; also the centre of its animated arc.</dd>
+<dt>Preset (colour)</dt><dd>A named material (colour, opacity, solidness, metalness, roughness) worn by parts.</dd>
+<dt>Replace-model</dt><dd>A node that can show one of several alternative geometries per step.</dd>
+<dt>Segment / clip</dt><dd>The cached render of one step (its transition and hold).</dd>
+<dt>Snapshot</dt><dd>The complete scene state stored on a step.</dd>
+<dt>Solidness</dt><dd>X-ray strength of a preset; below 1 the part becomes see-through.</dd>
+<dt>Star ★</dt><dd>"Changed since last rendered" marker on a step; chapters sum their stars.</dd>
+<dt>Template (camera / hardware / note)</dt><dd>A named definition that instances follow; edit once, apply everywhere.</dd>
+<dt>Work camera</dt><dd>A scratch camera (W) that does not touch the step's saved view.</dd>
+</dl>
+<p class="noprint" style="color:var(--muted);font-size:.85rem;margin-top:2em">SBS Step Browser manual · matches app version V0.3.3 · This document is generated from the application's own labels; if a label here differs from the one on screen, the screen is right — please report it.</p>
+</section>
+  </div>
+</main>
+</div>
+<script>
+(function(){
+  var page=document.getElementById('page'), toc=document.getElementById('toc'), search=document.getElementById('search'),
+      results=document.getElementById('results'), crumb=document.getElementById('crumb'), side=document.getElementById('side');
+  /* ---------- theme ---------- */
+  var root=document.documentElement;
+  function getTheme(){ try{ return localStorage.getItem('sbsManualTheme')||''; }catch(e){ return ''; } }
+  function setTheme(t){ if(t) root.setAttribute('data-theme',t); else root.removeAttribute('data-theme'); try{ localStorage.setItem('sbsManualTheme',t); }catch(e){} }
+  var saved=getTheme(); if(saved) root.setAttribute('data-theme',saved);
+  else if(window.matchMedia&&window.matchMedia('(prefers-color-scheme: dark)').matches) root.setAttribute('data-theme','dark');
+  document.getElementById('themeBtn').onclick=function(){ setTheme(root.getAttribute('data-theme')==='dark'?'light':'dark'); };
+  document.getElementById('printBtn').onclick=function(){ window.print(); };
+  document.getElementById('menuBtn').onclick=function(){ side.classList.toggle('open'); };
+  /* ---------- table of contents ---------- */
+  var sections=[]; // {id,title,chapter,el,text}
+  var chapters=page.querySelectorAll('section.ch');
+  var allOpen=false;
+  Array.prototype.forEach.call(chapters,function(sec){
+    var h1=sec.querySelector('h1'); if(!h1) return;
+    var li=document.createElement('li'); li.className='chli';
+    var a=document.createElement('a'); a.href='#'+sec.id; a.className='ch'; a.textContent=h1.textContent; li.appendChild(a);
+    var ul=document.createElement('ul');
+    var h2s=sec.querySelectorAll('h2');
+    Array.prototype.forEach.call(h2s,function(h2){
+      var sli=document.createElement('li'); var sa=document.createElement('a'); sa.href='#'+h2.id; sa.textContent=h2.textContent.replace(/^\d+(\.\d+)*\s*/,''); sli.appendChild(sa); ul.appendChild(sli);
+    });
+    if(h2s.length) li.appendChild(ul);
+    toc.appendChild(li);
+    /* index: chapter intro (before first h2) + each h2 block */
+    var chapTitle=h1.textContent;
+    var block=[], cur={id:sec.id,title:chapTitle,chapter:chapTitle,el:sec,nodes:[]};
+    Array.prototype.forEach.call(sec.children,function(ch){
+      if(ch.tagName==='H1') return;
+      if(ch.tagName==='H2'){ if(cur.nodes.length) sections.push(cur); cur={id:ch.id,title:ch.textContent,chapter:chapTitle,el:ch,nodes:[]}; return; }
+      cur.nodes.push(ch);
+    });
+    if(cur.nodes.length||cur.id===sec.id) sections.push(cur);
+  });
+  function textOf(n){ if(n.tagName==='FIGURE'){ var fc=n.querySelector('figcaption'); return fc?(fc.innerText||fc.textContent):''; } return n.innerText||n.textContent; }
+  sections.forEach(function(s){ s.text=s.nodes.map(textOf).join(' ').replace(/\s+/g,' ').trim(); s.lower=(s.title+' '+s.text).toLowerCase(); });
+  function openFor(hash){
+    var el=hash&&document.getElementById(hash.replace('#','')); if(!el) return;
+    var sec=el.closest('section.ch'); if(!sec) return;
+    Array.prototype.forEach.call(toc.querySelectorAll('a'),function(a){ a.classList.toggle('active',a.getAttribute('href')==='#'+(el.id)); });
+    if(!allOpen) Array.prototype.forEach.call(toc.children,function(li){ li.classList.toggle('open',li.firstChild.getAttribute('href')==='#'+sec.id); });
+    var h1=sec.querySelector('h1'); crumb.textContent=h1?h1.textContent+(el!==sec?'  ›  '+el.textContent:''):'';
+  }
+  document.getElementById('expandBtn').onclick=function(){ allOpen=!allOpen; Array.prototype.forEach.call(toc.children,function(li){ li.classList.toggle('open',allOpen); }); if(!allOpen) openFor(location.hash); };
+  toc.addEventListener('click',function(e){ var a=e.target.closest('a'); if(!a) return; side.classList.remove('open'); setTimeout(function(){ openFor(a.getAttribute('href')); },0); });
+  /* scroll spy */
+  var heads=Array.prototype.slice.call(page.querySelectorAll('section.ch > h1, section.ch > h2'));
+  var ticking=false;
+  function spy(){ ticking=false; var y=window.scrollY+90, best=null; for(var i=0;i<heads.length;i++){ if(heads[i].getBoundingClientRect().top+window.scrollY<=y) best=heads[i]; else break; } if(best){ var id=best.tagName==='H1'?best.parentNode.id:best.id; openFor('#'+id); } }
+  window.addEventListener('scroll',function(){ if(!ticking){ ticking=true; requestAnimationFrame(spy); } });
+  openFor(location.hash||'#welcome'); if(!location.hash) toc.firstChild.classList.add('open');
+  /* ---------- search ---------- */
+  var marks=[];
+  function clearMarks(){ marks.forEach(function(m){ var p=m.parentNode; if(!p) return; p.replaceChild(document.createTextNode(m.textContent),m); p.normalize(); }); marks=[]; }
+  function markIn(el,terms){
+    var walker=document.createTreeWalker(el,NodeFilter.SHOW_TEXT,{acceptNode:function(n){ var p=n.parentNode, t=p.tagName; if(t==='SCRIPT'||t==='STYLE'||t==='MARK') return NodeFilter.FILTER_REJECT; if(p.namespaceURI&&p.namespaceURI.indexOf('svg')>=0) return NodeFilter.FILTER_REJECT; return NodeFilter.FILTER_ACCEPT; }});
+    var nodes=[]; while(walker.nextNode()) nodes.push(walker.currentNode);
+    var re=new RegExp('('+terms.map(function(t){ return t.replace(/[.*+?^${}()|[\]\\]/g,'\\$&'); }).join('|')+')','gi');
+    nodes.forEach(function(n){
+      if(!re.test(n.nodeValue)) return; re.lastIndex=0;
+      var frag=document.createDocumentFragment(), last=0, m, s=n.nodeValue;
+      while((m=re.exec(s))){ frag.appendChild(document.createTextNode(s.slice(last,m.index))); var mk=document.createElement('mark'); mk.textContent=m[0]; frag.appendChild(mk); marks.push(mk); last=m.index+m[0].length; }
+      frag.appendChild(document.createTextNode(s.slice(last))); n.parentNode.replaceChild(frag,n);
+    });
+  }
+  function snippet(text,terms){
+    var lower=text.toLowerCase(), best=-1;
+    for(var i=0;i<terms.length;i++){ var k=lower.indexOf(terms[i]); if(k>=0&&(best<0||k<best)) best=k; }
+    if(best<0) return text.slice(0,140)+(text.length>140?'…':'');
+    var a=Math.max(0,best-60), b=Math.min(text.length,best+100);
+    return (a>0?'…':'')+text.slice(a,b)+(b<text.length?'…':'');
+  }
+  function esc(s){ return s.replace(/[&<>]/g,function(c){ return {'&':'&amp;','<':'&lt;','>':'&gt;'}[c]; }); }
+  function hl(s,terms){ var re=new RegExp('('+terms.map(function(t){ return t.replace(/[.*+?^${}()|[\]\\]/g,'\\$&'); }).join('|')+')','gi'); return esc(s).replace(re,'<mark>$1</mark>'); }
+  var timer=null;
+  function runSearch(){
+    var q=search.value.trim().toLowerCase(); clearMarks(); results.innerHTML='';
+    if(q.length<2){ results.classList.remove('on'); return; }
+    var terms=q.split(/\s+/).filter(Boolean);
+    var hits=sections.map(function(s){
+      var score=0; for(var i=0;i<terms.length;i++){ var t=terms[i]; if(s.lower.indexOf(t)<0) return null; score+= (s.title.toLowerCase().indexOf(t)>=0?5:0) + Math.min(6,(s.lower.split(t).length-1)); }
+      return {s:s,score:score};
+    }).filter(Boolean).sort(function(a,b){ return b.score-a.score; }).slice(0,30);
+    results.classList.add('on');
+    if(!hits.length){ results.innerHTML='<div class="none">No topic matches “'+esc(q)+'”.</div>'; return; }
+    hits.forEach(function(h){
+      var a=document.createElement('a'); a.className='r'; a.href='#'+h.s.id;
+      a.innerHTML='<b>'+hl(h.s.title,terms)+'</b><small>'+esc(h.s.chapter)+'</small><small>'+hl(snippet(h.s.text,terms),terms)+'</small>';
+      a.onclick=function(){ side.classList.remove('open'); setTimeout(function(){ openFor('#'+h.s.id); },0); };
+      results.appendChild(a);
+    });
+    hits.forEach(function(h){ var scope=h.s.el.tagName==='SECTION'?h.s.el:null; if(scope){ markIn(scope,terms); } else { h.s.nodes.forEach(function(n){ markIn(n,terms); }); markIn(h.s.el,terms); } });
+  }
+  search.addEventListener('input',function(){ clearTimeout(timer); timer=setTimeout(runSearch,120); });
+  search.addEventListener('keydown',function(e){
+    if(e.key==='Enter'){ var first=results.querySelector('a.r'); if(first){ first.click(); location.hash=first.getAttribute('href'); } }
+    if(e.key==='Escape'){ search.value=''; runSearch(); search.blur(); }
+  });
+  document.addEventListener('keydown',function(e){
+    if(e.key==='/'&&document.activeElement!==search&&!/INPUT|TEXTAREA/.test(document.activeElement.tagName)){ e.preventDefault(); search.focus(); search.select(); }
+  });
+  /* ---------- screenshot slots ---------- */
+  Array.prototype.forEach.call(document.querySelectorAll('figure.shot img'),function(img){
+    img.addEventListener('error',function(){ img.parentNode.classList.add('missing'); });
+    if(img.complete&&img.naturalWidth===0) img.parentNode.classList.add('missing');
+  });
+})();
+</script>
+</body>
+</html>
