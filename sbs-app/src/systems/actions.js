@@ -999,6 +999,10 @@ export function duplicateStep(stepId) {
   const copy = steps.duplicateStep(stepId);
   if (!copy) return null;
   copy.altered = true;   // ★ a duplicate is a new step — never rendered under its own id
+  // V0.3.2.249 — the copy becomes the SELECTED step too, not just the active
+  // (highlighted) one. Before, the selection stayed on the source, so every
+  // edit made right after duplicating landed on the ORIGINAL step.
+  forceUniteStepSelection(copy.id);
   undoManager.push(
     `Duplicate step`,
     () => { steps.deleteStep(copy.id); },
@@ -1009,6 +1013,7 @@ export function duplicateStep(stepId) {
         cur.splice(srcIdx + 1, 0, copy);
         state.setState({ steps: cur });
         state.setActiveStep(copy.id);
+        forceUniteStepSelection(copy.id);
         state.markDirty();
       }
     },
