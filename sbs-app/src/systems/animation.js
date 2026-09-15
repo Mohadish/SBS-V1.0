@@ -98,6 +98,23 @@ export function hasInstantBlock(str) {
   return /(^|[(,+\s])fade([+(]|$)/i.test(String(str || ''));
 }
 
+/**
+ * ⚡ V0.3.2.258 — put an instant block holding EVERY channel in front of a
+ * private animation. The later blocks keep only what the block does not claim
+ * (a pause spacer); `overlay` (classic crossfade) is replaced by the block's
+ * `overlays`. This is what "arrive instantly, then drag out what should move"
+ * means: the user starts from everything snapped.
+ */
+export function claimAllForInstantBlock(str, durRaw) {
+  const block = makeInstantBlock(INSTANT_BLOCK_CHANNELS, durRaw);
+  const claimed = new Set([...INSTANT_BLOCK_CHANNELS, 'overlay', 'fade']);
+  const rest = (parseAnimationForEdit(str) || [])
+    .map(p => ({ ...p, types: (p.types || []).filter(t => !claimed.has(t)) }))
+    .filter(p => p.types.length);
+  const tail = rest.length ? serializePhasesForEdit(rest) : '';
+  return tail ? `${block}, ${tail}` : block;
+}
+
 /** Strip the instant block marker, keeping the channels that rode in it. */
 export function stripInstantBlock(str) {
   const phases = parseAnimationForEdit(str);
@@ -352,15 +369,15 @@ export function resolveAnimationString(transition, animationPresets) {
       && transition?.privateAnimation?.trim();
     if (!priv) return makeInstantBlock(INSTANT_BLOCK_CHANNELS, dur);
 
-    // With a private animation, the block is prepended and holds only the
-    // channels that animation does NOT schedule — the step's own blocks are
-    // its later blocks, so they keep animating after the snap.
-    const later = new Set((parseAnimationForEdit(str) || []).flatMap(p => p.types));
-    const block = makeInstantBlock(
-      INSTANT_BLOCK_CHANNELS.filter(c => !later.has(c) && !(c === 'overlays' && later.has('overlay'))),
-      dur,
-    );
-    return str ? `${block}, ${str}` : block;
+    // ⚡ V0.3.2.258 — a private animation WITHOUT a block (a file from before
+    // the editor wrote it, or an easing set outside the editor): the block
+    // takes every channel, as the editor now does (claimAllForInstantBlock).
+    // It used to hold only the channels the private string did not schedule —
+    // usually none, since a private animation starts as a copy of Default —
+    // so the step arrived with an empty block and kept animating smoothly.
+    // A private string that already HAS a block is the user's arrangement
+    // (channels dragged out of it are meant to move) and is played as-is.
+    return claimAllForInstantBlock(str, dur);
   }
   return str;
 }

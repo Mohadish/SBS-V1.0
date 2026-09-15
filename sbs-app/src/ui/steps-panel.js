@@ -44,7 +44,7 @@ import * as narrationCache  from '../systems/narration-cache.js';
 import { parseAnimation, resolveAnimationString,
          hasInstantBlock, stripInstantBlock, makeInstantBlock,
          parseAnimationForEdit, serializePhasesForEdit,
-         INSTANT_BLOCK_CHANNELS } from '../systems/animation.js';
+         INSTANT_BLOCK_CHANNELS, claimAllForInstantBlock } from '../systems/animation.js';
 import { openPrivateAnimationEditor } from './animation-tab.js';
 import { getPlugActionStepIds, getStepCableActions } from '../systems/cables.js';   // V0.3.0.152/153 🔌 step marker + manager
 
@@ -3867,14 +3867,17 @@ function _buildTransitionRow(step) {
     if (priv) {
       const instantish = v === 'instant' || v === 'instantFade';
       if (instantish && !hasInstantBlock(priv)) {
-        // Pin it on top, holding every channel the step doesn't already
-        // schedule — those blocks are now its "after the snap" blocks.
-        const later = new Set((parseAnimationForEdit(priv) || []).flatMap(p => p.types));
-        const block = makeInstantBlock(
-          INSTANT_BLOCK_CHANNELS.filter(c => !later.has(c) && !(c === 'overlays' && later.has('overlay'))),
-          v === 'instant' ? '0' : 'AL1',
-        );
-        patch.privateAnimation = `${block}, ${priv}`;
+        // ⚡ V0.3.2.258 — the block takes EVERY channel; the step arrives
+        // instantly and the user drags out what should still move. Until now
+        // it held only the channels the private animation did NOT schedule —
+        // and a private animation normally schedules all of them (it starts
+        // life as a copy of Default), so the block came out EMPTY (`fade(0)`),
+        // the snap held nothing, and the step kept animating smoothly. Seen on
+        // every chapter-first step of the press project, where a private
+        // choreography is the norm. Later blocks lose the claimed channels
+        // (`overlay` too — the block's `overlays` replaces it); a block left
+        // with nothing but a pause stays as a spacer after the snap.
+        patch.privateAnimation = claimAllForInstantBlock(priv, v === 'instant' ? '0' : 'AL1');
       } else if (!instantish && hasInstantBlock(priv)) {
         // Back to Smooth / Linear — the only way out. The channels that rode
         // in the block stay put as an ordinary first time block.
