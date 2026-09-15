@@ -10,7 +10,11 @@ import { steps }           from '../systems/steps.js';
 import { materials }       from '../systems/materials.js';
 import * as actions        from '../systems/actions.js';
 import { sceneCore }       from '../core/scene.js';
-import { loadModelFile, disposeSceneSubtree } from '../io/importers.js';
+import { loadModelFile, disposeSceneSubtree,
+         beginProjectBakeCollection, pendingProjectBakes,
+         discardPendingProjectBakes, bakePendingProjectCaches,
+         applyProjectBakePlacement, rememberedCacheMode } from '../io/importers.js';
+import { chooseFromButtons } from './prompt.js';   // ⚡ V0.3.2.250 — post-load fast-load offer
 import { showAssetVerifyDialog } from './asset-verify.js';
 import {
   saveProject, loadProject, pickProjectFile, getSuggestedFilename,
@@ -946,6 +950,8 @@ async function _onOpenProject() {
 
     // 📦 V0.3.2.163 — where each file was actually found this time, written
     // back to the asset records after the loop (see _applyAssetPathHeals).
+    // ⚡ V0.3.2.250 — park raw-STEP tessellations for the post-load fast-load offer.
+    beginProjectBakeCollection();
     const pathHeals = new Map();
 
     for (const { assetEntry, resolvedPath } of resolvedAssets) {
@@ -1155,10 +1161,107 @@ async function _onOpenProject() {
       await _reconcileOverriddenAssets(userFiles.overridden, resolvedAssets);
       _showOverrideSavePrompt(userFiles.overridden.size);
     }
+
+    // ⚡ V0.3.2.250 — LAST: after the path heals and the metadata reconcile,
+    // either of which would write the .step path back over an earlier repoint.
+    await _offerProjectBakes();
   } catch (err) {
+    discardPendingProjectBakes();
     console.error('Open project failed:', err);
     setStatus('Failed to open project.', 'danger');
   }
+}
+
+// ⚡ V0.3.2.250 — FAST-LOAD COPIES FOR PROJECTS THAT STILL OPEN A RAW STEP.
+//
+// A project that references an unconverted .step re-tessellated it on EVERY
+// open: restoring a project never prompts, so it was never offered the .sbsobj
+// a fresh import gets. importers.js now parks the bake it could have made (see
+// beginProjectBakeCollection) and this asks ONCE, after everything has loaded.
+//
+// Why here rather than "convert the STEP in another project and relink": the
+// copy is made from the exact tessellation this open just matched the project's
+// parts against — same file, same quality, same part order, same asset id — so
+// every step keeps pointing at the same parts on the next open. A file
+// converted elsewhere hands the part-identity matcher different input.
+//
+// Never overwrites a file: the next free "<name> (2).sbsobj" is used instead —
+// unless the existing file IS this exact bake, which is reused without writing.
+// Assets backed by the same STEP share one copy. A remembered "stop asking"
+// choice from the fresh-import prompt skips the question; "Never for this
+// project" is stored on the asset records (fastLoadDeclined) and stops the
+// parking itself on later opens.
+async function _offerProjectBakes() {
+  const pending = pendingProjectBakes();
+  if (!pending.length) { discardPendingProjectBakes(); return; }
+  const assets  = state.get('assets') || [];
+  const sources = new Map();                          // assetId → source STEP path
+  const names   = new Set();
+  for (const p of pending) {
+    const a   = assets.find(x => x.id === p.assetId);
+    const src = a?.originalPath || '';
+    if (!/\.(step|stp)$/i.test(src)) continue;        // only a real on-disk STEP gets a sibling copy
+    sources.set(p.assetId, src);
+    names.add(a?.name || p.fileName);
+  }
+  if (!sources.size) { discardPendingProjectBakes(); return; }
+
+  const remembered = rememberedCacheMode();
+  if (remembered !== 'sbsobj' && remembered !== 'inplace') {
+    const list = [...names];
+    const n = list.length;
+    const choice = await chooseFromButtons(
+      'Open this project faster next time?',
+      `${n === 1 ? `"${list[0]}" is` : `${n} models (${list.join(', ')}) are`} opened from the original STEP file, which is re-processed every time the project opens. `
+      + `SBS can save a fast-load copy (.sbsobj) next to ${n === 1 ? 'it' : 'each one'} and open this project from ${n === 1 ? 'it' : 'them'} from now on. `
+      + `The STEP file is not changed, and the copy is made from exactly what was just loaded, so every step keeps pointing at the same parts.`,
+      [
+        { id: 'bake',  label: n === 1 ? 'Save fast-load copy' : 'Save fast-load copies', primary: true },
+        { id: 'later', label: 'Not now' },
+        { id: 'never', label: 'Never for this project' },
+      ],
+    );
+    if (choice === 'never') {
+      discardPendingProjectBakes();
+      const ids = new Set(sources.keys());
+      state.setState({ assets: (state.get('assets') || []).map(a => ids.has(a.id) ? { ...a, fastLoadDeclined: true } : a) });
+      state.markDirty();
+      setStatus("Won't ask again for this project — save it to keep that choice.", 'info', 6000);
+      return;
+    }
+    if (choice !== 'bake') { discardPendingProjectBakes(); return; }
+  }
+
+  setStatus('Saving fast-load copy…', 'info', 0);
+  const r = await bakePendingProjectCaches(sources, { inPlace: remembered === 'inplace' });
+  // A save that serialised the OLD path and finishes after the repoint would
+  // clear the dirty flag and silently drop it — repoint only once none runs.
+  await _waitForNoProjectSave();
+  for (const pl of r.placed) applyProjectBakePlacement(pl);
+  if (r.placed.length) state.markDirty();
+
+  const models = r.placed.reduce((s, pl) => s + pl.assetIds.length, 0);
+  const reused = r.placed.filter(pl => pl.reused).length;
+  const parts  = [];
+  if (models) {
+    parts.push(`${models} model${models === 1 ? '' : 's'} now open${models === 1 ? 's' : ''} from a fast-load copy`
+      + (reused ? ` (${reused} already on disk, reused)` : '')
+      + ' — save the project (Ctrl+S) to keep it');
+  }
+  if (r.failed.length) {
+    parts.push(`failed for ${r.failed.map(f => f.name).join(', ')} (${r.failed[0].error}) — `
+      + (r.failed.length === 1 ? 'that model still opens' : 'those still open') + ' from the STEP');
+  }
+  if (parts.length) setStatus(parts.join('; ') + '.', r.failed.length ? 'warn' : 'success', 12000);
+}
+
+// Save tracker for _offerProjectBakes. Every save — Ctrl+S, Save As, the menu
+// and autosave — reports its stages on save:progress.
+let _projectSaveRunning = false;
+state.on('save:progress', (p) => { _projectSaveRunning = !['done', 'error', 'cancelled'].includes(p?.stage); });
+async function _waitForNoProjectSave(maxMs = 180000) {
+  const t0 = performance.now();
+  while (_projectSaveRunning && performance.now() - t0 < maxMs) await new Promise(r => setTimeout(r, 150));
 }
 
 // Suggest (never force) a tree cleanup when a freshly-loaded project carries a
@@ -1633,11 +1736,20 @@ async function _onBrowseAssets() {
     userFiles = await showAssetVerifyDialog(entries, isElectron, { forceShow: true });
   } catch { return; }
 
-  for (const [assetId, file] of userFiles) {
-    const asset = assets.find(a => a.id === assetId);
-    if (asset) await _relinkAsset(file, asset);
+  // ⚡ V0.3.2.250 — ONE fast-load question for the whole batch, after every
+  // relink, instead of a blocking dialog between each file.
+  beginProjectBakeCollection();
+  try {
+    for (const [assetId, file] of userFiles) {
+      const asset = assets.find(a => a.id === assetId);
+      if (asset) await _relinkAsset(file, asset, { batch: true });
+    }
+  } catch (err) {
+    discardPendingProjectBakes();
+    throw err;
   }
   _renderFilesTab();
+  await _offerProjectBakes();
 }
 
 async function _onBrowseSingleAsset(asset) {
@@ -1672,13 +1784,16 @@ async function _onBrowseSingleAsset(asset) {
  *   snapshot, giving every subsequent activateStep a clean, known-good
  *   foundation to build on.
  */
-async function _relinkAsset(file, assetEntry) {
+async function _relinkAsset(file, assetEntry, { batch = false } = {}) {
   // Capture active step BEFORE any async work so we restore the right step.
   const activeStep = state.get('activeStepId');
   const phantom    = _phantomNodes.get(assetEntry.id);
 
+  // ⚡ V0.3.2.250 — a relinked raw STEP gets the same fast-load offer. In a
+  // batch (Browse Assets) the caller owns the collection and asks once at the end.
+  if (!batch) beginProjectBakeCollection();
   const modelNode = await _loadModelFile(file, assetEntry, true);
-  if (!modelNode) return;
+  if (!modelNode) { if (!batch) discardPendingProjectBakes(); return; }
 
   // 📦 V0.3.2.163 — record where the user found it. Without this the relink
   // was in-memory only: the asset entry kept the dead originalPath, save wrote
@@ -1772,6 +1887,10 @@ async function _relinkAsset(file, assetEntry) {
 
   // Single reintegration contract: step 0 → active step → placeholder sweep.
   steps.reintegrateFromStep0(activeStep);
+
+  // ⚡ V0.3.2.250 — after the path heal at the top of this function, so the
+  // repoint to the .sbsobj is the one that sticks.
+  if (!batch) await _offerProjectBakes();
 
   // Audit folder/model home anchors once the tree is fully rebuilt.
   // Logs to console only — silent if everything is identity (the common

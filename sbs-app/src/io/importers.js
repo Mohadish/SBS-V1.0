@@ -251,6 +251,153 @@ export function getFileExt(name) {
 // ── Module-level flag: skip color extraction when loading a saved project ─
 let _loadingFromProject = false;
 
+// ⚡ V0.3.2.250 — POST-LOAD FAST-LOAD BAKE for projects that still open a raw
+// STEP. Restoring a project never prompts (see the BAKE block in loadOcctFile),
+// so such a project re-tessellated its STEP on EVERY open and was never offered
+// the .sbsobj a fresh import gets. While a caller holds a collection open
+// (sidebar-left: project open + relink), the slow path STARTS the bake from the
+// tessellation it just produced and parks the promise here until the user
+// answers one question after the load. buildBakedFile serialises the result
+// synchronously, before its first await — so the copy is taken before the load
+// goes on to bake source transforms into the live geometry in place.
+let _collectProjectBakes = false;
+const _pendingProjectBakes = new Map();   // assetId → { fileName, baked: Promise<Uint8Array|null> }
+
+export function beginProjectBakeCollection() {
+  _pendingProjectBakes.clear();
+  _collectProjectBakes = true;
+}
+
+/** [{ assetId, fileName }] — what a post-load prompt can offer. */
+export function pendingProjectBakes() {
+  return [..._pendingProjectBakes].map(([assetId, p]) => ({ assetId, fileName: p.fileName }));
+}
+
+export function discardPendingProjectBakes() {
+  _pendingProjectBakes.clear();
+  _collectProjectBakes = false;
+}
+
+/** The fresh-import prompt's remembered choice: 'ask' | 'sbsobj' | 'inplace' | 'off'. */
+export function rememberedCacheMode() {
+  try { return userSettings.get()?.cad?.cacheMode || 'ask'; } catch { return 'ask'; }
+}
+
+const _normPath = (p) => String(p || '').replace(/\\/g, '/').toLowerCase();
+
+/** Byte-identical from `from` to the end (callers guarantee equal lengths). */
+function _sameBytesFrom(a, b, from) {
+  const n = a.length;
+  let i = from;
+  // 8-byte stride over the bulk, then the tail — early exit on the first difference.
+  if (a.byteOffset % 8 === 0 && b.byteOffset % 8 === 0 && n - i >= 16) {
+    while (i % 8) { if (a[i] !== b[i]) return false; i++; }
+    const w = Math.floor((n - i) / 8);
+    const A = new BigUint64Array(a.buffer, a.byteOffset + i, w);
+    const B = new BigUint64Array(b.buffer, b.byteOffset + i, w);
+    for (let k = 0; k < w; k++) if (A[k] !== B[k]) return false;
+    i += w * 8;
+  }
+  for (; i < n; i++) if (a[i] !== b[i]) return false;
+  return true;
+}
+
+/**
+ * Decide where a finished bake goes, without ever clobbering a file:
+ * `<base>.sbsobj`, then `<base> (2).sbsobj`, … — skipping paths already
+ * claimed in this batch, and REUSING a file already on disk that is this exact
+ * bake (same head hash and payload length in its footer), so answering yes,
+ * closing without saving and reopening does not pile up copies. `inPlace`
+ * (remembered 'Into this .step in place') → the source itself.
+ * @returns {Promise<{target:string, reused:boolean}>}
+ */
+async function _placeProjectBake(baked, srcPath, claimed, inPlace) {
+  if (inPlace) return { target: srcPath, reused: false };
+  const base = String(srcPath).replace(/\.[^.\\/]+$/, '');
+  const mine = modelCache.readFooter(baked);
+  for (let k = 1; k <= 50; k++) {
+    const target = k === 1 ? `${base}.sbsobj` : `${base} (${k}).sbsobj`;
+    if (claimed.has(_normPath(target))) continue;
+    let exists = true;                                   // unknown → treat as taken
+    try { exists = !!(await window.sbsNative?.fileExists?.(target)); } catch { exists = true; }
+    if (!exists) return { target, reused: false };
+    try {
+      const st = await window.sbsNative?.statFile?.(target);
+      if (mine && st && st.size === baked.length) {      // only read a file that could be identical
+        const rd = await window.sbsNative.readFile(target, 'buffer');
+        const buf = rd?.ok ? (rd.data instanceof Uint8Array ? rd.data : new Uint8Array(rd.data)) : null;
+        const theirs = buf ? modelCache.readFooter(buf) : null;
+        // Same STEP head is NOT enough: a copy converted elsewhere (another
+        // project, the native converter, another quality) can share the head
+        // AND the byte count while its geometry differs — the exact file that
+        // breaks a project. Reuse only when the geometry bytes are identical.
+        if (theirs && theirs.headHashHex === mine.headHashHex && buf.length === baked.length
+            && _sameBytesFrom(buf, baked, mine.headLength)) {
+          return { target, reused: true };
+        }
+      }
+    } catch { /* unreadable → not reusable, try the next name */ }
+  }
+  throw new Error('no free file name next to the STEP (50 tried)');
+}
+
+/**
+ * Write each parked bake next to its source STEP and report where it went.
+ * Assets backed by the SAME source file share one bake and one copy. Repointing
+ * is left to the caller (applyProjectBakePlacement) so it can first wait out a
+ * project save already in flight: a save that serialised the old path and
+ * finished after the repoint would clear the dirty flag and silently lose it.
+ * @param {Map<string,string>} sources  assetId → absolute path of its source STEP
+ * @param {{inPlace?:boolean}} [opts]
+ * @returns {Promise<{placed:{assetIds:string[], fileName:string, target:string, size:number, mtime:number, reused:boolean, inPlace:boolean}[], failed:{name:string,error:string}[]}>}
+ */
+export async function bakePendingProjectCaches(sources, opts = {}) {
+  _collectProjectBakes = false;
+  const entries = [..._pendingProjectBakes];
+  _pendingProjectBakes.clear();                        // release as soon as they're claimed
+  const groups = new Map();                            // normalised source → { src, fileName, baked, assetIds }
+  for (const [assetId, p] of entries) {
+    const src = sources.get(assetId);
+    if (!src) continue;
+    const g = groups.get(_normPath(src));
+    if (g) g.assetIds.push(assetId);
+    else groups.set(_normPath(src), { src, fileName: p.fileName, baked: p.baked, assetIds: [assetId] });
+  }
+  const claimed = new Set();
+  const placed = [], failed = [];
+  for (const g of groups.values()) {
+    try {
+      const baked = await g.baked;
+      if (!baked) throw new Error('the fast-load copy could not be prepared');
+      const { target, reused } = await _placeProjectBake(baked, g.src, claimed, !!opts.inPlace);
+      claimed.add(_normPath(target));
+      if (!reused) {
+        const res = await window.sbsNative?.writeFile?.(target, baked);
+        if (!res?.ok) throw new Error(res?.error || 'write failed');
+      }
+      let size = baked.length, mtime = Date.now();
+      try {
+        const st = await window.sbsNative?.statFile?.(target);
+        if (st) { size = st.size; mtime = st.mtimeMs; }
+      } catch { /* keep fallbacks */ }
+      placed.push({ assetIds: g.assetIds, fileName: g.fileName, target, size, mtime, reused, inPlace: !!opts.inPlace });
+      console.log(`[import] project fast-load copy ${reused ? 'REUSED' : 'written'} → ${target}  (${(baked.length / 1e6).toFixed(1)} MB, ${g.assetIds.length} asset(s))`);
+    } catch (err) {
+      failed.push({ name: g.fileName, error: err?.message || String(err) });
+      console.warn(`[import] project fast-load copy failed for ${g.fileName}:`, err?.message || err);
+    }
+  }
+  return { placed, failed };
+}
+
+/** Point every asset of one placement at its fast-load copy (same asset ids). */
+export function applyProjectBakePlacement(pl) {
+  for (const assetId of pl.assetIds) {
+    if (pl.inPlace) _reconcileAssetMeta(assetId, pl.size, pl.mtime);
+    else            _repointAsset(assetId, pl.target, pl.size, pl.mtime);
+  }
+}
+
 // ── Singleton OCCT instance ───────────────────────────────────────────────
 let _occt = null;
 async function ensureOCCT() {
@@ -968,6 +1115,20 @@ async function loadOcctFile(file, format, assetEntry = null, opts = {}) {
       _maybeBakeCache(srcPath, head, result, node?.assetId)
         .catch(err => console.warn('[import] bake skipped:', err?.message || err));
     }
+  } else if (!footer && !opts.skipBake && _loadingFromProject && _collectProjectBakes
+             && format === 'step' && node?.assetId
+             && assetEntry?.fastLoadDeclined !== true          // "Never for this project"
+             && rememberedCacheMode() !== 'off') {
+    // ⚡ V0.3.2.250 — restoring a project: no prompt now, but keep the bake for
+    // the one post-load question (bakePendingProjectCaches). Started HERE so the
+    // tessellation is copied before anything mutates the live geometry.
+    _pendingProjectBakes.set(node.assetId, {
+      fileName: file.name,
+      baked: modelCache.buildBakedFile(head, result).catch(err => {
+        console.warn('[import] fast-load copy prep failed:', err?.message || err);
+        return null;
+      }),
+    });
   }
 
   return node;
