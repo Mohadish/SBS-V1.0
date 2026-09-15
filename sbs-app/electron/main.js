@@ -448,7 +448,9 @@ function buildMenu() {
         { label: 'Save Project',      accelerator: 'CmdOrCtrl+S', click: () => mainWindow?.webContents.send('menu:saveProject') },
         { label: 'Save Project As…',  accelerator: 'CmdOrCtrl+Shift+S', click: () => mainWindow?.webContents.send('menu:saveProjectAs') },
         { type: 'separator' },
-        { label: 'Load Model…',       accelerator: 'CmdOrCtrl+L', click: () => mainWindow?.webContents.send('menu:loadModel') },
+        // "Load Model…" (Ctrl+L) removed in V0.3.3.0 — no renderer subscriber since
+        // April; models come in through the Files tab. The channel stays
+        // whitelisted in preload for older builds.
         { label: 'Browse Assets…',    accelerator: 'CmdOrCtrl+B', click: () => mainWindow?.webContents.send('menu:browseAssets') },
         { type: 'separator' },
         { label: 'Settings…',         accelerator: 'CmdOrCtrl+,', click: () => mainWindow?.webContents.send('menu:openSettings') },
@@ -566,9 +568,8 @@ function buildMenu() {
         },
         { type: 'separator' },
         { role: 'togglefullscreen' },
-        { type: 'separator' },
-        { label: 'Fit All',     accelerator: 'F', click: () => mainWindow?.webContents.send('menu:fitAll') },
-        { label: 'Show All',    click: () => mainWindow?.webContents.send('menu:showAll') },
+        // "Fit All" / "Show All" removed in V0.3.3.0 — dead since April (no renderer
+        // subscriber). The F key and the tree's unhide-all do the work.
         { type: 'separator' },
         ...(IS_DEV ? [{ role: 'toggleDevTools' }] : [
           { label: 'Developer Tools', accelerator: 'CmdOrCtrl+Shift+I', click: () => mainWindow?.webContents.toggleDevTools() },

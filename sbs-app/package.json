@@ -1,6 +1,6 @@
 {
   "name": "sbs-step-browser",
-  "version": "0.3.2-162",
+  "version": "0.3.3-0",
   "description": "SBS Step Browser — CAD Presentation Tool",
   "author": "SBS Step Browser",
   "main": "electron/main.js",
@@ -19,7 +19,7 @@
   },
   "overrides": {
     "protobufjs": "8.7.1",
-    "sharp": "0.35.3",
+    "sharp": "0.35.4",
     "brace-expansion": "5.0.8"
   },
   "build": {
