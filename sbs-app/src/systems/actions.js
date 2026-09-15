@@ -20,6 +20,7 @@ import { selectionActs }        from './select-act.js';
 import { materials }            from '../systems/materials.js';
 import steps                    from '../systems/steps.js';
 import { notePrimitiveDef }     from '../systems/steps.js';   // 🔩 V0.3.2.67: param edits refresh the definition registry
+import { starStepsWhereNodesVisible } from './altered-stars.js';   // ★ V0.3.2.253
 import {
   planFolderRemoval, verifyPlan, applyPlan, revertPlan,
   reapplyActiveStep, captureLiveWorld, compareLiveWorld,
@@ -10659,7 +10660,8 @@ function _setPrimParamsRaw(nodeId, params) {
   if (!n) return;
   // Ripple to every member of the parameter-link group (shared parameters).
   const group = n.primLinkId ? _primitivesInLink(n.primLinkId) : [];
-  for (const t of (group.length ? group : [n])) {
+  const targets = group.length ? group : [n];
+  for (const t of targets) {
     t.primParams = { ...params };
     // V0.3.2.67: stamp the edit + refresh the definition registry NOW.
     // _paramsUserEdited shields this session's edits from the post-load
@@ -10670,6 +10672,9 @@ function _setPrimParamsRaw(nodeId, params) {
     rebuildPrimitive(t);
   }
   state.emit('change:treeData', state.get('treeData'));
+  // ★ V0.3.2.253 — a primitive's size is a DEFINITION: every step that shows
+  // it renders differently, not just the one being edited.
+  starStepsWhereNodesVisible(targets.map(t => t.id), 'primitive resized');
 }
 
 /** Live-update a primitive's tessellation quality (1-5) + rebuild geometry. */
@@ -10692,8 +10697,10 @@ function _setPrimQualityRaw(nodeId, q) {
   if (!n) return;
   // Ripple to every member of the parameter-link group (shared quality).
   const group = n.primLinkId ? _primitivesInLink(n.primLinkId) : [];
-  for (const t of (group.length ? group : [n])) { t.primQuality = q; rebuildPrimitive(t); }
+  const targets = group.length ? group : [n];
+  for (const t of targets) { t.primQuality = q; rebuildPrimitive(t); }
   state.emit('change:treeData', state.get('treeData'));
+  starStepsWhereNodesVisible(targets.map(t => t.id), 'primitive quality changed');   // ★ V0.3.2.253
 }
 
 /**

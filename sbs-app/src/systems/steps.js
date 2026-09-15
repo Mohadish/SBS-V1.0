@@ -3489,8 +3489,10 @@ class StepManager {
     const steps = state.get('steps');
     const step  = steps.find(s => s.id === stepId);
     if (!step) return;
+    const before = step.voiceText ?? '';
     step.voiceText    = text ?? '';
     step.voiceEnabled = typeof text === 'string' && text.trim().length > 0;
+    if (before !== step.voiceText) step.altered = true;   // ★ V0.3.2.253 — new words = new hold, before any synth
     state.setState({ steps: [...steps] });
     state.markDirty();
   }

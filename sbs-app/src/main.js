@@ -19,6 +19,7 @@
 import { state }          from './core/state.js';
 import { sceneCore }      from './core/scene.js';
 import { steps }          from './systems/steps.js';
+import { initAlteredStars } from './systems/altered-stars.js';
 import { materials }      from './systems/materials.js';
 import { setOutlinePreview, clearOutlinePreview } from './systems/outline-pass.js';
 import * as actions from './systems/actions.js';
@@ -111,6 +112,7 @@ const viewer = document.getElementById('viewer');
 sceneCore.init(viewer, { antialias: true, preserveDrawingBuffer: true });
 gizmo.init();
 initGizmoNumeric(gizmo);   // live drag readout + numeric input mode
+initAlteredStars();        // ★ V0.3.2.253: definition / tool / order edits star the steps they touch
 
 // Debug surface — exposes core handles on window.__sbs for live console
 // inspection during development. Not used by app code.
