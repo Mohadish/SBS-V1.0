@@ -754,6 +754,82 @@ function _constShapeDefs()        { return state.get('constShapes') || []; }
 function _constShapeDefOf(node)   { const id = node?.getAttr?.('constShapeId'); return id ? _constShapeDefs().find(d => d.id === id) : null; }
 function _saveConstShapeDefs(items) { state.setState({ constShapes: items }); state.markDirty(); }
 
+// ─── 📌 Pinned = immovable (V0.3.3.2) ────────────────────────────────────────
+// A definition owns the position of a pinned shape / image / video
+// (constShapeId) and of a constant text box (constId). Dragging or nudging
+// such a node used to move it anyway (it snapped home on the next load, or
+// stayed put until "Set as new position" was clicked) — now the gesture is
+// refused with a status-bar reminder. The ONE sanctioned way to move a pin
+// for every step: right-click ▸ "⊹ Set as new position (all steps)" arms the
+// node, its next drag rewrites the definition (undoable), every step follows.
+
+/** The definition that owns this node's position, if any. */
+function _pinnedDefOf(node) { return _constShapeDefOf(node) || _constDefOf(node); }
+
+let _pinMoveOnce    = null;   // node armed by "Set as new position" — its next drag is allowed and commits
+let _pinDragBlocked = null;   // node whose drag is being refused right now (dragend handlers must ignore it)
+
+function _notifyPinned(node) {
+  const def = _pinnedDefOf(node);
+  if (!def) return;
+  const free = node.getAttr('constShapeId') ? '✂ Unpin' : '✂ Detach from constant';
+  setStatus(`📌 "${def.name}" is pinned to a position — unpin it to move it (right-click ▸ ${free}), or right-click ▸ ⊹ Set as new position (all steps) to move the pin itself.`, 'warn', 6000);
+}
+
+/** Refuse a drag that has just started. Konva checks isDragging() right after
+ *  firing dragstart and skips the position update when it is false, so the
+ *  node never moves; stopDrag() fires dragend synchronously, which is why
+ *  _pinDragBlocked is held across the call for the dragend handlers. */
+function _blockPinnedDrag(node) {
+  _pinDragBlocked = node;
+  try { node.stopDrag(); } finally { _pinDragBlocked = null; }
+  _notifyPinned(node);
+}
+
+/** Commit a new anchor position for a constant text box definition, with
+ *  undo — the text-box twin of _updateConstShapeDef. */
+function _updateConstDef(def, patch, label) {
+  const before = { x: def.x, y: def.y, anchor: def.anchor };
+  const after  = { ...before, ...patch };
+  const write  = (vals) => {
+    const live = _constDefs().find(d => d.id === def.id);
+    if (!live) return;
+    Object.assign(live, vals);
+    _saveConstDefs([..._constDefs()]);
+    for (const n of _layer?.getChildren() || []) if (n.getAttr?.('constId') === live.id) _applyConstToNode(n, live);
+    _layer?.batchDraw();
+    _scheduleSave();
+  };
+  write(after);
+  undoManager.push(label, () => write(before), () => write(after));
+}
+
+/** The armed drag just ended: write where the node sits now into its
+ *  definition. Every instance on this step snaps to it; other steps follow
+ *  at their next load. */
+function _commitPinMove(node) {
+  const shapeDef = _constShapeDefOf(node);
+  if (shapeDef) {
+    const p = _constShapeAnchorPos(node, shapeDef.anchor);
+    _updateConstShapeDef(shapeDef, { x: p.x, y: p.y }, `Reposition "${shapeDef.name}"`);
+    setStatus(`"${shapeDef.name}" repositioned — every step follows.`, 'success', 4000);
+    return;
+  }
+  const textDef = _constDefOf(node);
+  if (textDef) {
+    _updateConstDef(textDef, { x: _constAnchorX(node, textDef.anchor), y: node.y() }, `Reposition "${textDef.name}"`);
+    setStatus(`Constant "${textDef.name}" repositioned — every step follows.`, 'success', 4000);
+  }
+}
+
+/** Menu action: allow ONE drag of this pinned node; that drag rewrites the definition. */
+function _armPinMove(node) {
+  const def = _pinnedDefOf(node);
+  if (!def) return;
+  _pinMoveOnce = node;
+  setStatus(`Drag "${def.name}" to its new spot — the pin moves for every step (Ctrl+Z undoes).`, 'info', 8000);
+}
+
 /**
  * The node's bounding box in LAYER coordinates — the same space its x/y
  * lives in. skipStroke keeps the pin on the shape's geometry, so changing
@@ -1648,8 +1724,13 @@ export function nudgeSelection(arrowKey, big = false) {
   // rides on a real drag gesture, and faking one here leaked a permanent
   // interface blink and left the bonded shapes behind. Anchored 3D arrows
   // derive their geometry from the camera, so nudging them means nothing.
-  const nodes = (_transformer?.nodes() || []).filter(n =>
+  const movable = (_transformer?.nodes() || []).filter(n =>
     !isAnchoredNode(n) && !n.getAttr('isInterface') && !n.getAttr('attachedTo') && !n.getAttr('isZoom'));
+  // 📌 Pinned / constant nodes never nudge. A pinned-only selection still
+  // consumes the key (returns true) so the arrow does not fall through.
+  const pinned = movable.filter(n => _pinnedDefOf(n));
+  const nodes  = movable.filter(n => !pinned.includes(n));
+  if (pinned.length && !nodes.length) { _notifyPinned(pinned[0]); return true; }
   if (!nodes.length) return false;
   const step = big ? 10 : 1;
   const d = arrowKey === 'ArrowLeft'  ? { x: -step, y: 0 }
@@ -3861,6 +3942,10 @@ function _attachNode(node) {
   let _multiDragStarts = null;
   node.on('dragstart', () => {
     _commitNudgeBatch();   // ⬅➡ close any open nudge entry before this drag's
+    // 📌 A pinned / constant node does not drag — unless "Set as new
+    // position" armed exactly this node for exactly this drag.
+    if (_pinnedDefOf(node) && _pinMoveOnce !== node) { _blockPinnedDrag(node); return; }
+    if (_pinMoveOnce && _pinMoveOnce !== node) _pinMoveOnce = null;   // armed one, dragged another → disarm
     const own  = _transformer?.nodes() || [];
     const peer = getLayerSelection('header');
     let sel  = [...own, ...peer];
@@ -3875,8 +3960,12 @@ function _attachNode(node) {
     // item(s)" undo entry. Multi-drag delta logic (in dragmove) still
     // gates on sel.length > 1.
     const draggedSet = sel.length ? sel : [node];
+    // 📌 Pinned siblings in a multi-drag stay put (the grabbed node itself
+    // was vetted above).
+    const pinnedPeers = draggedSet.filter(n => n !== node && _pinnedDefOf(n));
+    if (pinnedPeers.length) setStatus(`📌 ${pinnedPeers.length} pinned item${pinnedPeers.length > 1 ? 's' : ''} stayed put — unpin to move.`, 'warn', 5000);
     _multiDragStarts = new Map();
-    for (const n of draggedSet) _multiDragStarts.set(n, { x: n.x(), y: n.y() });
+    for (const n of draggedSet) if (!pinnedPeers.includes(n)) _multiDragStarts.set(n, { x: n.x(), y: n.y() });
   });
   node.on('dragmove', () => {
     if (!_multiDragStarts || _multiDragStarts.size <= 1) return;   // single-node = let Konva drag normally
@@ -3897,6 +3986,7 @@ function _attachNode(node) {
     _multiDragStarts.peerLayer?.batchDraw?.();
   });
   node.on('dragend', () => {
+    if (_pinDragBlocked === node) return;   // 📌 refused drag — nothing moved
     const beforeMap = _multiDragStarts;
     _multiDragStarts = null;
     if (!beforeMap) return;
@@ -3905,6 +3995,9 @@ function _attachNode(node) {
     for (const n of beforeMap.keys()) {
       if (n !== node) persistNodeIfHeader(n);
     }
+    // 📌 The armed pin move: the definition entry IS the undo (it restores
+    // every instance), so no separate "Move" entry.
+    if (_pinMoveOnce === node) { _pinMoveOnce = null; _commitPinMove(node); return; }
     // P7-C-2: push a "Move" undo entry for ALL nodes that ended up
     // somewhere different from where they started. Single-node and
     // multi-node drags both go through this path.
@@ -3929,6 +4022,7 @@ function _attachNode(node) {
   });
   node.on('dragend', () => {
     if (node.getAttr('isInterface')) return;           // interface move handled above
+    if (_pinDragBlocked === node) return;              // 📌 refused drag — keep the bond as it was
     const pt = _stage.getPointerPosition() || _rectCenter(node);
     const iface = _ifaceUnderPoint(pt);
     _clearInterfaceBlink();
@@ -5106,13 +5200,8 @@ function _showOverlayContextMenu(node, x, y) {
   const constDef  = isTextBox ? _constDefOf(node) : null;
   const constItems = !isTextBox ? [] : (constDef
     ? [{ label: `📌 Constant "${constDef.name}"`, submenu: [
-          { label: '⊹ Set as new position (all steps)',
-            action: () => {
-              constDef.x = _constAnchorX(node, constDef.anchor);
-              constDef.y = node.y();
-              _saveConstDefs([..._constDefs()]);
-              setStatus(`Constant "${constDef.name}" repositioned — every step follows.`, 'success', 4000);
-            } },
+          { label: '⊹ Set as new position (all steps) — then drag it once',
+            action: () => _armPinMove(node) },
           { label: '↺ Snap back to constant position',
             action: () => { _applyConstToNode(node, constDef); _layer.batchDraw(); } },
           { separator: true },
@@ -5259,13 +5348,8 @@ function _showOverlayContextMenu(node, x, y) {
   const constShapeDef = isShape ? _constShapeDefOf(node) : null;
   const constShapeItems = !isShape ? [] : (constShapeDef
     ? [{ label: `📌 Pinned "${constShapeDef.name}"`, submenu: [
-          { label: '⊹ Set as new position (all steps)',
-            action: () => {
-              const p = _constShapeAnchorPos(node, constShapeDef.anchor);
-              _updateConstShapeDef(constShapeDef, { x: p.x, y: p.y },
-                `Reposition "${constShapeDef.name}"`);
-              setStatus(`"${constShapeDef.name}" repositioned — every step follows.`, 'success', 4000);
-            } },
+          { label: '⊹ Set as new position (all steps) — then drag it once',
+            action: () => _armPinMove(node) },
           { label: '↺ Snap back to pinned position',
             action: () => {
               const was = { x: node.x(), y: node.y() };
