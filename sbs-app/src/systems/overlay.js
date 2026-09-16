@@ -296,6 +296,8 @@ function _syncSize() {
   // follow or it ends up pointing at empty canvas.
   _repositionFloatingToolbar();
   _maskEdit?.place?.();   // 🎭 keep the Apply/Cancel bar centred too
+  _placePinBadges();      // 📌 badges keep screen size; the bubble stays centred
+  _pinPlace();
   if (_xray) _applyXray();   // 👓 a resize can hand the layer a fresh canvas
 }
 
@@ -766,24 +768,17 @@ function _saveConstShapeDefs(items) { state.setState({ constShapes: items }); st
 /** The definition that owns this node's position, if any. */
 function _pinnedDefOf(node) { return _constShapeDefOf(node) || _constDefOf(node); }
 
-let _pinMoveOnce    = null;   // node armed by "Set as new position" — its next drag is allowed and commits
 let _pinDragBlocked = null;   // node whose drag is being refused right now (dragend handlers must ignore it)
-
-function _notifyPinned(node) {
-  const def = _pinnedDefOf(node);
-  if (!def) return;
-  const free = node.getAttr('constShapeId') ? '✂ Unpin' : '✂ Detach from constant';
-  setStatus(`📌 "${def.name}" is pinned to a position — unpin it to move it (right-click ▸ ${free}), or right-click ▸ ⊹ Set as new position (all steps) to move the pin itself.`, 'warn', 6000);
-}
 
 /** Refuse a drag that has just started. Konva checks isDragging() right after
  *  firing dragstart and skips the position update when it is false, so the
  *  node never moves; stopDrag() fires dragend synchronously, which is why
- *  _pinDragBlocked is held across the call for the dragend handlers. */
+ *  _pinDragBlocked is held across the call for the dragend handlers. The
+ *  refusal opens the pin bubble on the item (V0.3.3.3). */
 function _blockPinnedDrag(node) {
   _pinDragBlocked = node;
   try { node.stopDrag(); } finally { _pinDragBlocked = null; }
-  _notifyPinned(node);
+  _pinOpen(node, 'idle');
 }
 
 /** Commit a new anchor position for a constant text box definition, with
@@ -822,12 +817,213 @@ function _commitPinMove(node) {
   }
 }
 
-/** Menu action: allow ONE drag of this pinned node; that drag rewrites the definition. */
-function _armPinMove(node) {
+// ─── 📌 Pin badge + reposition bubble (V0.3.3.3) ─────────────────────────────
+// A SELECTED pinned node wears a red pin on _uiLayer at the definition's
+// anchor corner of what the user actually sees — the crop window when the
+// image is masked (rotated or not), else the bounding box. _uiLayer never
+// reaches a thumbnail or an exported frame. A refused drag (or nudge) opens
+// a small bubble centred on the item: "⊹ Reposition" arms it — drag / nudge
+// freely, the bubble follows — then "✓ Set new position" rewrites the
+// definition for every step (undoable) or "↺ Reset" snaps it home. Leaving
+// the step while pending cancels it (the definition was never touched) and
+// says so in the status bar.
+
+const _pinBadges = new Map();   // node → Konva.Group on _uiLayer
+let _pinUI = null;              // { node, def, mode:'idle'|'armed'|'moved', stepId, bubble, onKey }
+
+function _pinRepositionActive(node) { return !!(_pinUI && _pinUI.node === node && _pinUI.mode !== 'idle'); }
+function _pinEsc(s) { return String(s).replace(/[&<>"]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c])); }
+
+/** What the user sees of the node, in LAYER coords: {x,y,w,h,rot}, rot about (x,y). */
+function _pinVisibleRect(node) {
+  const m = _isPlainImageOrVideo(node) ? _resolveMask(node) : null;
+  if (m && m.kind === 'rect') {
+    const c = getCanonicalSize();
+    return { x: m.x * c.width, y: m.y * c.height, w: m.w * c.width, h: m.h * c.height, rot: m.rot || 0 };
+  }
+  const b = _shapeBox(node);
+  return { x: b.x, y: b.y, w: b.width, h: b.height, rot: 0 };
+}
+
+/** The badge point: the definition's anchor corner (⌜ / ⌝) of the visible rect. */
+function _pinBadgePoint(node, def) {
+  const r = _pinVisibleRect(node);
+  if (def.anchor !== 'tr') return { x: r.x, y: r.y };
+  const a = (r.rot || 0) * Math.PI / 180;
+  return { x: r.x + r.w * Math.cos(a), y: r.y + r.w * Math.sin(a) };
+}
+
+/** Centre of the visible rect in PAGE pixels (the DOM bubble sits there). */
+function _pinCentrePage(node) {
+  const r = _pinVisibleRect(node);
+  const a = (r.rot || 0) * Math.PI / 180;
+  const cx = r.x + (r.w / 2) * Math.cos(a) - (r.h / 2) * Math.sin(a);
+  const cy = r.y + (r.w / 2) * Math.sin(a) + (r.h / 2) * Math.cos(a);
+  const p  = _stage.getAbsoluteTransform().point({ x: cx, y: cy });
+  const cr = _container.getBoundingClientRect();
+  return { x: cr.left + p.x, y: cr.top + p.y, cr };
+}
+
+function _makePinBadge() {
+  const g = new Konva.Group({ listening: false, name: 'sbs-pin-badge' });
+  g.add(new Konva.Line({ points: [0, 0, 0, -13], stroke: '#fff', strokeWidth: 4.5, lineCap: 'round' }));
+  g.add(new Konva.Line({ points: [0, 0, 0, -13], stroke: '#ef4444', strokeWidth: 2.5, lineCap: 'round' }));
+  g.add(new Konva.Circle({ x: 0, y: -18, radius: 7, fill: '#ef4444', stroke: '#fff', strokeWidth: 1.5 }));
+  g.add(new Konva.Circle({ x: -2.2, y: -20.2, radius: 1.7, fill: '#fff' }));
+  return g;
+}
+
+/** A badge for every SELECTED pinned node; any other badge goes. */
+function _refreshPinBadges() {
+  if (!_uiLayer) return;
+  const sel = _transformer?.nodes() || [];
+  for (const [n, g] of _pinBadges) {
+    if (sel.includes(n) && _isLiveNode(n) && _pinnedDefOf(n)) continue;
+    g.destroy(); _pinBadges.delete(n); n.off?.('.pinbadge');
+  }
+  for (const n of sel) {
+    if (!_pinnedDefOf(n) || _pinBadges.has(n) || !_isLiveNode(n)) continue;
+    const g = _makePinBadge();
+    _uiLayer.add(g);
+    _pinBadges.set(n, g);
+    n.on('dragmove.pinbadge transform.pinbadge transformend.pinbadge dragend.pinbadge', _placePinBadges);
+  }
+  _placePinBadges();
+}
+
+/** Every badge onto its corner, at constant SCREEN size whatever the stage scale. */
+function _placePinBadges() {
+  if (!_uiLayer) return;
+  const s = _stage?.scaleX() || 1;
+  for (const [n, g] of _pinBadges) {
+    const def = _pinnedDefOf(n);
+    if (!def || !_isLiveNode(n)) { g.destroy(); _pinBadges.delete(n); n.off?.('.pinbadge'); continue; }
+    g.position(_pinBadgePoint(n, def));
+    g.scale({ x: 1 / s, y: 1 / s });
+    g.moveToTop();
+  }
+  _uiLayer.batchDraw();
+}
+
+function _pinPlace() {
+  const ui = _pinUI;
+  if (!ui?.bubble || !_isLiveNode(ui.node) || !_stage || !_container) return;
+  const { x, y, cr } = _pinCentrePage(ui.node);
+  const w = ui.bubble.offsetWidth, h = ui.bubble.offsetHeight;
+  ui.bubble.style.left = `${Math.round(Math.min(Math.max(cr.left + 4, x - w / 2), cr.right - w - 4))}px`;
+  ui.bubble.style.top  = `${Math.round(Math.min(Math.max(cr.top + 4, y - h / 2), cr.bottom - h - 4))}px`;
+}
+
+function _pinBubbleRender() {
+  const ui = _pinUI;
+  if (!ui?.bubble) return;
+  const name = _pinEsc(ui.def.name);
+  const btn = (id, text, primary) => `<button class="btn" data-pin="${id}" style="pointer-events:auto;height:24px;padding:0 10px;${primary ? 'background:rgba(239,68,68,0.25);font-weight:600;' : ''}">${text}</button>`;
+  const free = ui.node.getAttr('constShapeId') ? '✂ Unpin' : '✂ Detach from constant';
+  let html;
+  if (ui.mode === 'idle') {
+    html = `<div style="font-weight:600;">📌 Pinned to "${name}"</div>`
+         + `<div style="display:flex;gap:6px;">${btn('arm', '⊹ Reposition (all steps)', true)}${btn('close', '✕')}</div>`
+         + `<div class="small muted">to move only this copy: right-click ▸ ${free}</div>`;
+  } else if (ui.mode === 'armed') {
+    html = `<div style="font-weight:600;">⊹ Repositioning "${name}"</div>`
+         + `<div class="small muted">drag it (or use the arrow keys) to the new spot</div>`
+         + `<div style="display:flex;gap:6px;">${btn('cancel', '✕ Cancel (Esc)')}</div>`;
+  } else {
+    html = `<div style="font-weight:600;">⊹ "${name}" — keep this spot?</div>`
+         + `<div style="display:flex;gap:6px;">${btn('commit', '✓ Set new position (Enter)', true)}${btn('cancel', '↺ Reset to original')}</div>`
+         + `<div class="small muted">you can keep moving it until you choose</div>`;
+  }
+  ui.bubble.innerHTML = html;
+  ui.bubble.querySelectorAll('[data-pin]').forEach(b => b.addEventListener('click', (e) => {
+    e.stopPropagation();
+    const k = b.dataset.pin;
+    if (k === 'arm') _pinArm();
+    else if (k === 'commit') _pinCommit();
+    else if (k === 'cancel') _cancelPinReposition('user');
+    else _pinTeardown();
+  }));
+  _pinPlace();
+}
+
+/** Open (or re-mode) the bubble on `node`. 'idle' = the reminder, 'armed' = repositioning. */
+function _pinOpen(node, mode) {
   const def = _pinnedDefOf(node);
-  if (!def) return;
-  _pinMoveOnce = node;
-  setStatus(`Drag "${def.name}" to its new spot — the pin moves for every step (Ctrl+Z undoes).`, 'info', 8000);
+  if (!def || !_isLiveNode(node)) return;
+  if (_pinUI && _pinUI.node !== node) { if (_pinUI.mode === 'idle') _pinTeardown(); else _cancelPinReposition('other'); }
+  if (!_pinUI) {
+    const bubble = document.createElement('div');
+    bubble.className = 'sbs-pin-bubble';
+    bubble.style.cssText = 'position:fixed;z-index:9999;pointer-events:none;display:flex;flex-direction:column;gap:6px;align-items:center;'
+      + 'padding:8px 12px;background:var(--panel,#0f172a);border:1px solid #ef4444;border-radius:10px;'
+      + 'box-shadow:0 10px 30px rgba(0,0,0,.55);color:var(--text,#e2e8f0);font-size:12px;white-space:nowrap;';
+    document.body.appendChild(bubble);
+    const onKey = (e) => {
+      if (e.key !== 'Enter' && e.key !== 'Escape') return;
+      const el = document.activeElement, tag = el?.tagName;
+      if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT' || el?.isContentEditable) return;
+      if (document.querySelector('dialog[open]')) return;
+      if (!_pinUI) return;
+      if (e.key === 'Escape') { e.preventDefault(); e.stopPropagation(); if (_pinUI.mode === 'idle') _pinTeardown(); else _cancelPinReposition('user'); }
+      else if (_pinUI.mode === 'moved') { e.preventDefault(); e.stopPropagation(); _pinCommit(); }
+    };
+    window.addEventListener('keydown', onKey, true);
+    window.addEventListener('resize', _pinPlace);
+    node.on('dragmove.pinui transform.pinui transformend.pinui dragend.pinui', _pinPlace);
+    _pinUI = { node, def, mode: 'idle', stepId: state.get('activeStepId'), bubble, onKey };
+  }
+  _pinUI.def = def;
+  if (mode === 'armed') _pinArm(); else { _pinUI.mode = 'idle'; _pinBubbleRender(); }
+}
+
+function _pinArm() {
+  if (!_pinUI) return;
+  _pinUI.mode   = 'armed';
+  _pinUI.stepId = state.get('activeStepId');
+  _pinBubbleRender();
+}
+
+/** A drag or nudge ended while armed → offer Set / Reset (or just follow the item). */
+function _pinMarkMoved() {
+  if (!_pinUI || _pinUI.mode === 'idle') return;
+  if (_pinUI.mode !== 'moved') { _pinUI.mode = 'moved'; _pinBubbleRender(); }
+  else _pinPlace();
+}
+
+function _pinCommit() {
+  const ui = _pinUI;
+  if (!ui || ui.mode === 'idle') return;
+  if (_isLiveNode(ui.node)) _commitPinMove(ui.node);
+  _pinTeardown();
+}
+
+/** Snap the item home and close. 'step' = the user left the step mid-way:
+ *  the leaving step's overlay is rewritten NOW, while its nodes still exist. */
+function _cancelPinReposition(reason) {
+  const ui = _pinUI;
+  if (!ui) return;
+  const { node } = ui;
+  const def = _pinnedDefOf(node);
+  if (ui.mode !== 'idle' && def && _isLiveNode(node)) {
+    if (node.getAttr('constShapeId')) _applyConstShapeToNode(node, def); else _applyConstToNode(node, def);
+    _layer?.batchDraw();
+    _transformer?.forceUpdate?.();
+    if (reason === 'step') _writeOverlayToStep(ui.stepId); else _scheduleSave();
+    if (reason === 'step') setStatus(`Repositioning "${def.name}" cancelled — you left the step before choosing, so the pin stays where it was.`, 'warn', 6000);
+    else if (ui.mode === 'moved') setStatus(`"${def.name}" is back at its pinned position.`, 'info', 3000);
+  }
+  _pinTeardown();
+}
+
+function _pinTeardown() {
+  const ui = _pinUI;
+  if (!ui) return;
+  _pinUI = null;
+  try { ui.bubble.remove(); } catch { /* already gone */ }
+  window.removeEventListener('keydown', ui.onKey, true);
+  window.removeEventListener('resize', _pinPlace);
+  ui.node.off?.('.pinui');
+  _refreshPinBadges();
 }
 
 /**
@@ -881,6 +1077,7 @@ function _updateConstShapeDef(def, patch, label) {
     Object.assign(live, vals);
     _saveConstShapeDefs([..._constShapeDefs()]);
     _applyConstShapeToStep(live);
+    _scheduleSave();   // the instances just moved — the step's overlay must say so (undo path too)
   };
   write(after);
   undoManager.push(label, () => write(before), () => write(after));
@@ -1728,9 +1925,9 @@ export function nudgeSelection(arrowKey, big = false) {
     !isAnchoredNode(n) && !n.getAttr('isInterface') && !n.getAttr('attachedTo') && !n.getAttr('isZoom'));
   // 📌 Pinned / constant nodes never nudge. A pinned-only selection still
   // consumes the key (returns true) so the arrow does not fall through.
-  const pinned = movable.filter(n => _pinnedDefOf(n));
+  const pinned = movable.filter(n => _pinnedDefOf(n) && !_pinRepositionActive(n));
   const nodes  = movable.filter(n => !pinned.includes(n));
-  if (pinned.length && !nodes.length) { _notifyPinned(pinned[0]); return true; }
+  if (pinned.length && !nodes.length) { _pinOpen(pinned[0], 'idle'); return true; }
   if (!nodes.length) return false;
   const step = big ? 10 : 1;
   const d = arrowKey === 'ArrowLeft'  ? { x: -step, y: 0 }
@@ -1755,6 +1952,8 @@ export function nudgeSelection(arrowKey, big = false) {
   _layer.batchDraw();
   _uiLayer.batchDraw();
   _repositionFloatingToolbar();
+  _placePinBadges();
+  if (_pinUI && nodes.includes(_pinUI.node) && _pinUI.mode !== 'idle') _pinMarkMoved();
 
   clearTimeout(_nudgeBatch.timer);
   _nudgeBatch.label = `Nudge ${nodes.length > 1 ? `${nodes.length} items` : 'item'}`;
@@ -3944,8 +4143,8 @@ function _attachNode(node) {
     _commitNudgeBatch();   // ⬅➡ close any open nudge entry before this drag's
     // 📌 A pinned / constant node does not drag — unless "Set as new
     // position" armed exactly this node for exactly this drag.
-    if (_pinnedDefOf(node) && _pinMoveOnce !== node) { _blockPinnedDrag(node); return; }
-    if (_pinMoveOnce && _pinMoveOnce !== node) _pinMoveOnce = null;   // armed one, dragged another → disarm
+    if (_pinnedDefOf(node) && !_pinRepositionActive(node)) { _blockPinnedDrag(node); return; }
+    if (_pinUI?.mode === 'idle' && _pinUI.node !== node) _pinTeardown();   // the reminder bubble closes; a pending reposition stays
     const own  = _transformer?.nodes() || [];
     const peer = getLayerSelection('header');
     let sel  = [...own, ...peer];
@@ -3995,9 +4194,10 @@ function _attachNode(node) {
     for (const n of beforeMap.keys()) {
       if (n !== node) persistNodeIfHeader(n);
     }
-    // 📌 The armed pin move: the definition entry IS the undo (it restores
-    // every instance), so no separate "Move" entry.
-    if (_pinMoveOnce === node) { _pinMoveOnce = null; _commitPinMove(node); return; }
+    // 📌 Repositioning a pin: no "Move" entry — "✓ Set new position" pushes
+    // the definition entry (which restores every instance) and "↺ Reset"
+    // snaps back without one.
+    if (_pinRepositionActive(node)) { _pinMarkMoved(); return; }
     // P7-C-2: push a "Move" undo entry for ALL nodes that ended up
     // somewhere different from where they started. Single-node and
     // multi-node drags both go through this path.
@@ -5200,8 +5400,8 @@ function _showOverlayContextMenu(node, x, y) {
   const constDef  = isTextBox ? _constDefOf(node) : null;
   const constItems = !isTextBox ? [] : (constDef
     ? [{ label: `📌 Constant "${constDef.name}"`, submenu: [
-          { label: '⊹ Set as new position (all steps) — then drag it once',
-            action: () => _armPinMove(node) },
+          { label: '⊹ Set as new position (all steps)…',
+            action: () => _pinOpen(node, 'armed') },
           { label: '↺ Snap back to constant position',
             action: () => { _applyConstToNode(node, constDef); _layer.batchDraw(); } },
           { separator: true },
@@ -5348,8 +5548,8 @@ function _showOverlayContextMenu(node, x, y) {
   const constShapeDef = isShape ? _constShapeDefOf(node) : null;
   const constShapeItems = !isShape ? [] : (constShapeDef
     ? [{ label: `📌 Pinned "${constShapeDef.name}"`, submenu: [
-          { label: '⊹ Set as new position (all steps) — then drag it once',
-            action: () => _armPinMove(node) },
+          { label: '⊹ Set as new position (all steps)…',
+            action: () => _pinOpen(node, 'armed') },
           { label: '↺ Snap back to pinned position',
             action: () => {
               const was = { x: node.x(), y: node.y() };
@@ -5554,6 +5754,10 @@ function _setSelection(node, additive = false) {
   _transformer.nodes(nodes);
   _configTransformerForNodes(nodes);
   _uiLayer.batchDraw();
+  // 📌 Pin badges follow the selection; the reminder bubble closes with it
+  // (a pending reposition stays open until Set / Reset / step change).
+  _refreshPinBadges();
+  if (_pinUI?.mode === 'idle' && !nodes.includes(_pinUI.node)) _pinTeardown();
 
   // Multi-textbox toolbar: when ≥1 text box is selected and we're not
   // already inside the in-place editor, surface the style toolbar in
@@ -6188,6 +6392,7 @@ function _flushPendingSave() {
   const stepId = _pendingSaveStepId;
   _pendingSaveStepId = null;
   if (stepId) _writeOverlayToStep(stepId);
+  _refreshPinBadges();   // 📌 pin / unpin / mask edits all pass through here
 }
 
 function _writeOverlayToStep(stepId) {
@@ -6637,6 +6842,9 @@ async function _loadFromActiveStep() {
   // 🎭 The editor's node is about to be destroyed with the rest of the layer.
   if (_maskEdit) _cancelMaskEdit();
   if (_angleEntry) _endAngleEntry(false);
+  // 📌 A pin reposition left hanging: snap home + rewrite the LEAVING step
+  // while its nodes still exist (the definition was never touched).
+  if (_pinUI) { if (_pinUI.mode === 'idle') _pinTeardown(); else _cancelPinReposition('step'); }
   const activeId = state.get('activeStepId');
   // Tag this load so a later step-change invalidates a still-running one.
   // Without this, two rapid step switches can interleave: load #1's awaits
@@ -6659,6 +6867,7 @@ async function _loadFromActiveStep() {
   // clip is silent, but an unmuted one would keep playing into the next step).
   videoOverlay.detachAll();
   _transformer.nodes([]);
+  _refreshPinBadges();
   _layer.destroyChildren();
 
   if (!step?.overlay) { _layer.batchDraw(); return; }
