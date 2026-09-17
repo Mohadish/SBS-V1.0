@@ -221,7 +221,11 @@ export async function buildXlsx(spec) {
     const wrap     = new Set(s.wrapCols || []);
     const styleFor = (c, isHeader) => isHeader ? 1 : (wrap.has(c) ? (unlocked.has(c) ? 3 : 2) : (unlocked.has(c) ? 4 : 0));
     const cell = (r, c, v, isHeader) => {
-      if (v == null || v === '') return '';
+      // An EMPTY cell in an unlocked column must still exist, carrying the
+      // unlocked style — otherwise it inherits the sheet default (locked)
+      // and the reviewer cannot type into the very cells meant for them
+      // (LibreOffice / OpenOffice showed exactly that, V0.3.3.9).
+      if (v == null || v === '') return (!isHeader && unlocked.has(c)) ? `<c r="${colLetter(c)}${r}" s="${styleFor(c, false)}"/>` : '';
       return `<c r="${colLetter(c)}${r}" s="${styleFor(c, isHeader)}" t="inlineStr"><is><t xml:space="preserve">${_xmlEsc(v)}</t></is></c>`;
     };
     const rowsXml = [];
@@ -232,8 +236,10 @@ export async function buildXlsx(spec) {
       const ht = s.rowHeights?.[r];
       rowsXml.push(`<row r="${r}"${ht ? ` ht="${ht}" customHeight="1"` : ''}>${(row || []).map((v, c) => cell(r, c, v, false)).join('')}</row>`);
     });
+    // Column default style: cells the reviewer ADDS below our rows (or that a
+    // re-save materialises) in an unlocked column stay unlocked too.
     const colsXml = (s.cols || []).length
-      ? `<cols>${s.cols.map((c, ci) => `<col min="${ci + 1}" max="${ci + 1}" width="${c.width || 10}" customWidth="1"${c.hidden ? ' hidden="1"' : ''}/>`).join('')}</cols>`
+      ? `<cols>${s.cols.map((c, ci) => `<col min="${ci + 1}" max="${ci + 1}" width="${c.width || 10}" customWidth="1"${c.hidden ? ' hidden="1"' : ''}${unlocked.has(ci) ? ` style="${styleFor(ci, false)}"` : ''}/>`).join('')}</cols>`
       : '';
     const lastCol = Math.max(hdr.length, ...(s.rows || []).map(r => (r || []).length), 1);
     const lastRow = (s.rows || []).length + 1;

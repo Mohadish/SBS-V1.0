@@ -2615,7 +2615,9 @@ export function scanTextUnitsAndGeometry() {
       if (!a.tid || seen.has(a.tid)) { a.tid = _newTid(); dirty = true; }
       seen.add(a.tid);
       const key = `text:${a.tid}`;
-      units.push({ key, html: a.textHtml, stepId: s.id, constId: a.constId || null });
+      // attachedTo: the box is bonded to an interface panel (V0.3.3.9 — the
+      // translation sheet leaves those out; interface content is not copy).
+      units.push({ key, html: a.textHtml, stepId: s.id, constId: a.constId || null, attachedTo: a.attachedTo || null });
       geom.set(key, { x: a.x ?? 0, y: a.y ?? 0, textWidth: a.textWidth ?? null });
     }
     // Assign IN THE LOOP so the old overlay string becomes garbage

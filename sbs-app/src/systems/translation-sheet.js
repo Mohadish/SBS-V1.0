@@ -46,6 +46,13 @@ function _projectBase() {
   return file.replace(/\.sbsproj$/i, '');
 }
 
+/** The units a sheet carries: every voiceover / name (empty ones too), titles,
+ *  text boxes, headers — minus text boxes bonded to an interface panel, which
+ *  are part of that panel's artwork rather than copy to translate. */
+function _sheetUnits(allSteps) {
+  return augmentUnits(lang.scanUnits(), allSteps).filter(u => !u.attachedTo);
+}
+
 function _guard() {
   if (!state.get('projectPath')) { setStatus('Save the project first — sheets are built from the saved project.', 'warn', 6000); return false; }
   if (lang.activeLang() !== lang.sourceLang()) {
@@ -154,7 +161,7 @@ export async function exportTranslationSheet() {
     thumbs = r.thumbs; tw = r.w; th = r.h;
   }
   const allSteps = state.get('steps') || [];
-  const units = augmentUnits(lang.scanUnits(), allSteps);
+  const units = _sheetUnits(allSteps);
   const perChapter = !!state.get('headerStepNumberPerChapter');
   const sheets = [];
   let total = 0, imageCount = 0;
@@ -238,7 +245,7 @@ export async function importTranslationSheet() {
   if (!jobs.length) { setStatus('No language tab found in that workbook (tabs are named by language code, e.g. "he").', 'warn', 8000); return null; }
 
   const allSteps = state.get('steps') || [];
-  const units = augmentUnits(lang.scanUnits(), allSteps);
+  const units = _sheetUnits(allSteps);
   let importedLines = 0, importedNotes = 0;
   for (const { code, sheet } of jobs) {
     const r = await _importSheet(code, sheet, units, fileName);

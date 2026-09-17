@@ -144,7 +144,7 @@ export function scanUnits(shared = null) {
   for (const u of ov.units) {
     // stepId rides along so the Title Manager can jump to the step a text
     // box actually lives on.
-    units.push({ key: u.key, fmt: 'html', src: u.html, label: 'Text box', stepId: u.stepId });
+    units.push({ key: u.key, fmt: 'html', src: u.html, label: u.constId ? 'Title' : 'Text box', stepId: u.stepId, constId: u.constId || null, attachedTo: u.attachedTo || null });
   }
   for (const h of (state.get('headerItems') || [])) {
     if (h.kind !== 'custom') continue;                    // other kinds are derived
