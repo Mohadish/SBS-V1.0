@@ -409,8 +409,21 @@ function _select(kind, options, onChange) {
   }
   if (kind === 'font') sel.value = 'Arial';
   if (kind === 'size') sel.value = '16';
-  sel.addEventListener('mousedown', e => e.stopPropagation()); // keep selection alive while menu opens
-  sel.addEventListener('change',    () => onChange(sel.value));
+  // V0.3.3.5 — re-picking the value already shown must still fire. A
+  // <select> stays silent when you choose the option it displays, and the
+  // box mirrors the caret's value — so on a mixed-size selection "40 → 40"
+  // did nothing while "40 → 48" restyled everything. Blank the box while
+  // the list is open (any pick is then a change); put the value back if
+  // the list closes without one.
+  sel.addEventListener('mousedown', e => {
+    e.stopPropagation();                       // keep selection alive while menu opens
+    sel.dataset.prev = sel.value;
+    sel.selectedIndex = -1;
+  });
+  sel.addEventListener('blur', () => {
+    if (sel.selectedIndex === -1 && sel.dataset.prev != null) sel.value = sel.dataset.prev;
+  });
+  sel.addEventListener('change', () => { if (sel.value !== '') onChange(sel.value); });
   return sel;
 }
 

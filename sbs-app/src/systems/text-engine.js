@@ -91,7 +91,16 @@ export function apply(root, range, action, value) {
  * Normalise the styling tree inside `root`. Safe to call repeatedly.
  * No-op if root has no children.
  */
-export function normalize(root) {
+export function normalize(root) { _normalize(root, {}); }
+
+/**
+ * @param {{keepNeutral?: boolean}} opts  keepNeutral — leave explicit
+ *   "normal" weight / style declarations alone. Used inside the range
+ *   sandbox, where the bold / italic ancestor that those declarations
+ *   cancel lives OUTSIDE the sandbox root and cannot be seen; the final
+ *   normalize of the live block decides for real.
+ */
+function _normalize(root, opts) {
   if (!root || !root.querySelectorAll) return;
 
   // 1. Promote legacy <u> / <s> / <strike> / <font> to span style.
@@ -144,54 +153,85 @@ export function normalize(root) {
   }
 
   // 6. Strip redundant ancestor property declarations.
-  //    Per CSS cascade only the INNERMOST ancestor's declaration of a
-  //    given property reaches the text. Outer declarations of the same
-  //    property are dead weight — they don't affect rendering of THIS
-  //    text run, but they DO inflate line-box layout (font-size on a
-  //    parent contributes to the line height even when an inner span
-  //    overrides it).
-  //    For every text run, walk its ancestor chain. The innermost
-  //    declaration of each property wins — strip the property from
-  //    every outer ancestor.
-  //    This is the layer that fixes "set size 40 → set size 20 → line
-  //    height stays at 40": the outer wrapper's stale font-size:40 was
-  //    surviving flatten when it had siblings, but it no longer needs
-  //    to declare font-size at all because the inner span:20 fully
-  //    covers the text inside it.
+  //    An ancestor's declaration is dead weight when EVERY text run under
+  //    it has a closer declaration of the same property — nothing reads it
+  //    any more, and a stale font-size on a wrapper still inflates the
+  //    line box ("set size 40 → set size 20 → line height stays at 40").
+  //    V0.3.3.5 — it must be EVERY run. The old per-run walk stripped the
+  //    ancestor as soon as ONE run underneath overrode it, so recolouring
+  //    a few letters inside a red bold span stripped red + bold from the
+  //    span and the untouched letters fell back to white 16px.
   _stripRedundantAncestorProps(root);
+
+  // 7. Strip declarations that merely repeat what already reaches them:
+  //    same value as the nearest declaring ancestor, or "normal" weight /
+  //    style with no bold / italic ancestor to cancel. Keeps the tree from
+  //    silting up with copies after many range edits.
+  _stripSameAsAncestor(root, !!opts.keepNeutral);
 }
 
+const TRACKED_PROPS = ['color', 'font-family', 'font-size', 'font-weight', 'font-style'];
+
 function _stripRedundantAncestorProps(root) {
-  const TRACKED = ['color', 'font-family', 'font-size', 'font-weight', 'font-style'];
-  const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT);
-  let n;
+  for (const el of root.querySelectorAll('[style]')) {
+    for (const prop of TRACKED_PROPS) {
+      if (!el.style.getPropertyValue(prop)) continue;
+      if (_everyRunCoveredBelow(el, prop)) el.style.removeProperty(prop);
+    }
+  }
+}
+
+/** True when every non-empty text run under `el` has a closer ancestor
+ *  (strictly below `el`) declaring `prop` — `el`'s own value reaches no text. */
+function _everyRunCoveredBelow(el, prop) {
+  const walker = document.createTreeWalker(el, NodeFilter.SHOW_TEXT);
+  let n, any = false;
   while ((n = walker.nextNode())) {
     if (!n.textContent.length) continue;
-    const seen = new Set();
-    let p = n.parentElement;
-    while (p && p !== root) {
-      if (p.style) {
-        for (const prop of TRACKED) {
-          const v = p.style.getPropertyValue(prop);
-          if (!v) continue;
-          if (seen.has(prop)) {
-            p.style[prop] = '';     // outer ancestor — strip, inner already wins
-          } else {
-            seen.add(prop);          // first (= innermost) declaration — keep
-          }
-        }
-      }
+    any = true;
+    let p = n.parentElement, covered = false;
+    while (p && p !== el) {
+      if (p.style && p.style.getPropertyValue(prop)) { covered = true; break; }
       p = p.parentElement;
+    }
+    if (!covered) return false;
+  }
+  return any;
+}
+
+const NEUTRAL_VALUES = { 'font-weight': ['normal', '400'], 'font-style': ['normal'] };
+
+function _stripSameAsAncestor(root, keepNeutral = false) {
+  for (const el of root.querySelectorAll('[style]')) {
+    for (const prop of TRACKED_PROPS) {
+      const v = el.style.getPropertyValue(prop);
+      if (!v) continue;
+      let p = el.parentElement, above = null;
+      while (p && p !== root) {
+        const pv = p.style?.getPropertyValue(prop);
+        if (pv) { above = pv; break; }
+        p = p.parentElement;
+      }
+      const redundant = above != null ? above === v : (!keepNeutral && (NEUTRAL_VALUES[prop] || []).includes(v));
+      if (redundant) el.style.removeProperty(prop);
     }
   }
 }
 
 /**
- * Walk up from the range's start container to root, collecting the
+ * Walk up from the range's COMMON ANCESTOR to root, collecting the
  * INNERMOST declaration of each tracked property. Returns an object
  * { color, fontFamily, fontSize, fontWeight, fontStyle, textDecoration }
  * with only the keys that have a value — used to wrap an extracted
  * fragment with the styling it would have inherited in the live doc.
+ *
+ * Why the common ancestor (V0.3.3.5): extractContents() clones the
+ * partially-selected elements INSIDE the common ancestor but never the
+ * common ancestor itself or anything above it — exactly the styles that
+ * cover the whole selection and that the fragment silently loses. The
+ * old start-container walk over-applied styles that covered only the
+ * start of a multi-region selection; the common-ancestor chain, by
+ * construction, covers all of it.
  *
  * "Innermost wins" is consistent with CSS inheritance — and with how
  * _stripRedundantAncestorProps treats overlapping declarations during
@@ -201,7 +241,7 @@ function _stripRedundantAncestorProps(root) {
 function _captureInheritedStyles(root, range) {
   const TRACKED = ['color', 'fontFamily', 'fontSize', 'fontWeight', 'fontStyle', 'textDecoration'];
   const out = {};
-  let p = range.startContainer;
+  let p = range.commonAncestorContainer;
   if (p && p.nodeType === 3) p = p.parentElement;
   while (p && p !== root) {
     if (p.style) {
@@ -246,9 +286,10 @@ function _applyToRange(root, range, action, value) {
   // bug. Per-text-node check is sufficient because every place where
   // extract drops styling reduces to a within-one-text-node range.
   const sel = window.getSelection();
-  const isInternal = range.startContainer === range.endContainer
-                     && range.startContainer?.nodeType === 3;
-  const inherited = isInternal ? _captureInheritedStyles(root, range) : {};
+  // V0.3.3.5 — always: the chain above the range's common ancestor is
+  // exactly what extraction loses, whether the range sits inside one text
+  // node or spans several styled regions (see _captureInheritedStyles).
+  const inherited = _captureInheritedStyles(root, range);
   const fragment = range.extractContents();
   const tmp = document.createElement('div');
   tmp.appendChild(fragment);
@@ -259,9 +300,14 @@ function _applyToRange(root, range, action, value) {
     tmp.appendChild(wrap);
   }
 
-  normalize(tmp);
-  _operate(tmp, action, value);
-  normalize(tmp);
+  _normalize(tmp, { keepNeutral: true });
+  // explicitOff: a toggle turning OFF inside a bold / italic ancestor must
+  // WRITE font-weight:normal (etc.) on the runs — merely stripping leaves
+  // the ancestor's value showing through once the fragment goes back in.
+  // keepNeutral: that ancestor is outside the sandbox, so the sandbox
+  // normalize must not "tidy away" the very declaration that cancels it.
+  _operate(tmp, action, value, true);
+  _normalize(tmp, { keepNeutral: true });
 
   // Re-insert and track first/last for selection restore.
   const frag = document.createDocumentFragment();
@@ -369,13 +415,14 @@ function _writeInlineStyleAtCaret(span, action, value, ancestor) {
 
 // ─── Operation dispatch ────────────────────────────────────────────────────
 
-function _operate(root, action, value) {
+function _operate(root, action, value, explicitOff = false) {
+  const off = explicitOff ? 'normal' : null;
   switch (action) {
     case 'color':      _setProp(root, 'color',       String(value));       break;
     case 'fontFamily': _setProp(root, 'fontFamily',  String(value));       break;
     case 'fontSize':   _setProp(root, 'fontSize',    `${Number(value)}px`); break;
-    case 'bold':       _toggleProp(root, 'fontWeight', 'bold');             break;
-    case 'italic':     _toggleProp(root, 'fontStyle',  'italic');           break;
+    case 'bold':       _toggleProp(root, 'fontWeight', 'bold',   off);      break;
+    case 'italic':     _toggleProp(root, 'fontStyle',  'italic', off);      break;
     case 'underline':  _toggleDecoration(root, 'underline');                break;
     case 'alignLeft':
     case 'alignCenter':
@@ -391,12 +438,16 @@ function _setProp(root, prop, value) {
   _wrapTextRuns(root, (span) => { span.style[prop] = value; });
 }
 
-/** Toggle: if every text run has prop=value, strip it everywhere; else apply uniformly. */
-function _toggleProp(root, prop, onValue) {
+/** Toggle: if every text run has prop=value, strip it everywhere (writing
+ *  `offValue` on the runs when given, so an ancestor outside `root` cannot
+ *  show through); else apply uniformly. */
+function _toggleProp(root, prop, onValue, offValue = null) {
   const all = _everyTextRunHasProp(root, prop, onValue);
   root.querySelectorAll('[style]').forEach(el => { el.style[prop] = ''; });
   if (!all) {
     _wrapTextRuns(root, (span) => { span.style[prop] = onValue; });
+  } else if (offValue) {
+    _wrapTextRuns(root, (span) => { span.style[prop] = offValue; });
   }
 }
 
