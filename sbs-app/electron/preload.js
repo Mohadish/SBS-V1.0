@@ -83,7 +83,8 @@ contextBridge.exposeInMainWorld('sbsNative', {
       'menu:languagePanel',        // 🌍 V0.3.2.116 — language packs
       'menu:rebuildCascade',       // 🧭 V0.3.2.162 — Edit ▸ Rebuild Cascade
       'menu:folderFlatten',        // 📦 V0.3.2.243 — Edit ▸ Find redundant folders…
-      'menu:frameScan',            // 🎞 V0.3.2.256 — Edit ▸ Scan steps for what is in frame…
+      'menu:frameScan',            // 🎞 V0.3.2.256 — Tools ▸ Scan steps for what is in frame…
+      'menu:reviewForm',           // 📊 V0.3.3.11 — Tools ▸ Review form… (translation / proofing sheets)
       'key:altCombo',              // 🎹 V0.3.2.175 — Alt+<key> combos forwarded
                                    // from before-input-event (Windows menu-bar
                                    // pre-arming eats the first page-level

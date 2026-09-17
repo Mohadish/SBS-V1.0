@@ -17,7 +17,6 @@ import { setStatus } from './status.js';
 import { promptString } from './prompt.js';
 import * as lang from '../systems/language-packs.js';
 import * as tts from '../systems/tts.js';
-import { exportTranslationSheet, importTranslationSheet } from '../systems/translation-sheet.js';
 import { showContextMenu } from './context-menu.js';
 
 let _win = null;
@@ -59,8 +58,6 @@ function _build() {
       background:rgba(59,130,246,0.18);border-bottom:1px solid var(--line,#334155);
       border-top-left-radius:10px;border-top-right-radius:10px;">
       <span style="flex:1;font-weight:600;font-size:13px;color:#dbeafe;">🌍 Languages</span>
-      <button class="btn" id="lang-sheet-export" type="button" title="Export a translation / proofing workbook (.xlsx) — one tab per language you pick. Built from the original text, so the project must be showing its source language." style="padding:2px 8px;font-size:12px;">📤 Sheet</button>
-      <button class="btn" id="lang-sheet-import" type="button" title="Import a returned workbook: every language tab is matched by key, previewed, applied with one undo; Notes become review notes (📝 tab)." style="padding:2px 8px;font-size:12px;">📥 Sheet</button>
       <button class="btn" id="lang-refresh" type="button" title="Rescan the project" style="padding:2px 8px;font-size:12px;">🔄</button>
       <button class="btn" id="lang-close"   type="button" style="padding:2px 8px;font-size:12px;">✕</button>
     </div>
@@ -147,14 +144,6 @@ function _statsOf(pack) {
 
 function _render() {
   if (!_win) return;
-  // 📊 sheet buttons live in the header; wired here so they follow _busy.
-  for (const [sel, dir] of [['#lang-sheet-export', 'export'], ['#lang-sheet-import', 'import']]) {
-    const b = _win.querySelector(sel);
-    if (!b) continue;
-    b.onclick = () => _onSheet(dir);
-    b.disabled = _busy;
-    b.style.opacity = _busy ? '0.45' : '';
-  }
   const src = lang.sourceLang();
   const act = lang.activeLang();
   const saved = !!state.get('projectPath');
@@ -359,22 +348,6 @@ async function _onAdd() {
   if (!/^[a-z]{2}(-[a-z]{2,4})?$/i.test(code)) { setStatus('Use a language code like he, es, pt-br.', 'warn', 6000); return; }
   if (code === lang.sourceLang()) { setStatus(`"${code}" is the project's own language.`, 'warn', 5000); return; }
   await _onScan(code);
-}
-
-async function _onSheet(dir) {
-  if (_busy) return;
-  _busy = true; _render(); _say(dir === 'export' ? 'Building the sheet…' : 'Reading the sheet…');
-  try {
-    if (dir === 'export') await exportTranslationSheet();
-    else await importTranslationSheet();
-  } catch (e) {
-    console.error('[lang] sheet failed:', e);
-    setStatus(`Sheet ${dir} failed: ${e?.message || e}`, 'warn', 8000);
-  } finally {
-    _busy = false;
-    _say('');
-    await _refresh();
-  }
 }
 
 async function _onScan(code) {

@@ -352,6 +352,65 @@ export function notesFrom(matches, images, idx) {
   return out;
 }
 
+// ─── colour bands (V0.3.3.11) ───────────────────────────────────────────────
+
+export const BAND = {
+  chapter:     'FFBDD7EE',   // chapter rows — blue
+  stepA:       'FFDDEBF7',   // step tone A — light blue
+  stepB:       null,         // step tone B — plain
+  header:      'FFEDEDED',   // project header rows — grey
+  headerRow:   'FF9BC2E6',   // row 1
+  stepBorder:  'FF2F75B5',   // medium line where a new step starts
+};
+
+/**
+ * Fills + top borders per SHEET row so a step reads as one block: chapter
+ * rows blue, steps alternating two tones, a line where each step starts.
+ * @param {Array<{cells:string[], stepId:string|null}>} rows   buildRows()
+ * @returns {{fills: Object<number,string>, borders: Object<number,string>}}
+ */
+export function rowBands(rows) {
+  const fills = {}, borders = {};
+  let tone = false, lastStep = null;
+  rows.forEach((r, i) => {
+    const sheetRow = i + 2;
+    const type = r.cells[COL.Type] || '';
+    if (type === 'Chapter') { fills[sheetRow] = BAND.chapter; borders[sheetRow] = BAND.stepBorder; lastStep = null; return; }
+    if (!r.stepId) { fills[sheetRow] = BAND.header; if (lastStep !== 'header') borders[sheetRow] = BAND.stepBorder; lastStep = 'header'; return; }
+    if (r.stepId !== lastStep) { tone = !tone; borders[sheetRow] = BAND.stepBorder; lastStep = r.stepId; }
+    const f = tone ? BAND.stepA : BAND.stepB;
+    if (f) fills[sheetRow] = f;
+  });
+  return { fills, borders };
+}
+
+// ─── notes: one per step ────────────────────────────────────────────────────
+
+/**
+ * A step has several rows (voiceover, name, titles…) and the reviewer may
+ * write in any of their Notes cells: fold them into ONE note per step (and
+ * one per chapter / header row), text sections labelled by row type,
+ * pictures collected.
+ * @param {Array<{row, key, unit, text, images}>} notes   notesFrom()
+ * @returns {Array<{stepId:string|null, key:string|null, type:string, text:string, images:string[]}>}
+ */
+export function groupNotesByStep(notes) {
+  const groups = new Map();   // group key → note
+  for (const n of notes) {
+    const stepId = stepIdOfUnit(n.unit);
+    const gk = stepId ? `step:${stepId}` : (n.key || `row:${n.row}`);
+    if (!groups.has(gk)) groups.set(gk, { stepId, key: stepId ? null : (n.key || null), type: stepId ? 'Step' : (n.unit?.label || ''), parts: [], images: [] });
+    const g = groups.get(gk);
+    if (n.text) g.parts.push({ label: n.unit?.label || '', text: n.text });
+    g.images.push(...(n.images || []));
+  }
+  return [...groups.values()].map(g => ({
+    stepId: g.stepId, key: g.key, type: g.type, images: g.images,
+    text: g.parts.length === 1 && !g.parts[0].label ? g.parts[0].text
+        : g.parts.map(p => (p.label ? `${p.label}: ${p.text}` : p.text)).join('\n\n'),
+  }));
+}
+
 /** stepId a unit belongs to (null for chapters / headers). */
 export function stepIdOfUnit(unit) {
   if (!unit) return null;

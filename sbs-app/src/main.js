@@ -1615,6 +1615,13 @@ window.sbsNative?.onMenu?.('menu:languagePanel', () => {
   window.sbsLangPanel().catch(err => console.error('[lang-panel] failed:', err));
 });
 
+// 📊 Tools ▸ Review form… (V0.3.3.11) — translation / proofing sheets + review notes.
+window.sbsNative?.onMenu?.('menu:reviewForm', () => {
+  import('./ui/review-form-panel.js')
+    .then(m => m.openReviewFormPanel())
+    .catch(err => console.error('[review-form] failed:', err));
+});
+
 // 📦 Edit → "Clean up folders…" (V0.3.2.243 scan, .244 removal — backlog #16).
 //
 // Lists folder levels that add nothing — ↪ Adj compensation wrappers nested

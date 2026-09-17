@@ -32,8 +32,8 @@ import { APP_VERSION }  from '../core/schema.js';
 import { buildXlsx, parseSpreadsheet, bytesToBase64, base64ToBytes } from '../io/xlsx.js';
 import { addReviewNotes } from './review-notes.js';
 import {
-  LEGACY_SHEET_NAME, META_SHEET, FORMAT_VERSION, COLUMNS, COL, sheetNameFor,
-  augmentUnits, buildRows, parseHeader, matchRows, summarize, notesFrom, stepIdOfUnit,
+  LEGACY_SHEET_NAME, META_SHEET, FORMAT_VERSION, COLUMNS, COL, BAND, sheetNameFor,
+  augmentUnits, buildRows, rowBands, parseHeader, matchRows, summarize, notesFrom, groupNotesByStep,
   plainIntoHtml, htmlToPlain, normText,
 } from './translation-sheet-core.js';
 
@@ -178,14 +178,18 @@ export async function exportTranslationSheet() {
       rowHeights[i + 2] = Math.ceil(th * 0.75) + 6;   // px → points, plus breathing room
     });
     total += rows.length; imageCount += images.length;
+    const bands = rowBands(rows);   // chapter rows blue, steps in two tones, a line where a step starts
     sheets.push({
       name: sheetNameFor(code), header: COLUMNS, rows: rows.map(r => r.cells),
       cols: [
-        { width: 8, hidden: true }, { width: 8, hidden: true }, { width: 8 }, { width: 12 },
+        { width: 26 },                  // key — visible (locked): the step's permanent identity
+        { width: 8, hidden: true },     // srcHash
+        { width: 8 }, { width: 12 },
         { width: opts.previews === 'none' ? 3 : Math.ceil(tw / 7) + 2 }, { width: 13 }, { width: 55 }, { width: 55 }, { width: 28 },
       ],
       unlockedCols: [COL.Target, COL.Notes], wrapCols: [COL.Source, COL.Target, COL.Notes],
       protect: true, freezeHeader: true, autoFilter: true, rowHeights, images,
+      rowFills: bands.fills, rowTopBorders: bands.borders, headerFill: BAND.headerRow,
     });
   }
   const base = _projectBase();
@@ -294,17 +298,15 @@ async function _importSheet(code, sheet, units, fileName) {
   const apply = choice === 'safe' ? changes.filter(m => !m.stale) : changes;
   if (apply.length) await _applyChanges(code, isSource, pack, apply);
 
-  // Review notes: text and/or pictures, shrunk so the project stays light.
+  // Review notes — ONE per step (voiceover / name / title cells folded
+  // together, V0.3.3.11), pictures shrunk so the project stays light.
   let added = 0;
   if (notes.length) {
     const list = [];
-    for (const n of notes) {
+    for (const g of groupNotesByStep(notes)) {
       const images = [];
-      for (const u of n.images) { try { images.push(await _shrinkImage(u)); } catch { images.push(u); } }
-      list.push({
-        key: n.key, stepId: stepIdOfUnit(n.unit), lang: code, type: n.unit?.label || '',
-        text: n.text, images, file: fileName,
-      });
+      for (const u of g.images) { try { images.push(await _shrinkImage(u)); } catch { images.push(u); } }
+      list.push({ key: g.key, stepId: g.stepId, lang: code, type: g.type, text: g.text, images, file: fileName });
     }
     added = addReviewNotes(list, `Import notes from "${sheet.name}"`).length;
   }

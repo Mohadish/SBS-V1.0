@@ -488,10 +488,25 @@ function buildMenu() {
           accelerator: `Alt+${_camAccelLetter}`,
           click: () => mainWindow?.webContents.send('menu:cameraTemplates'),
         },
+        { type: 'separator' },
         {
-          label: 'Unify Constant Titles',
-          click: () => mainWindow?.webContents.send('menu:unifyConstTitles'),
+          label: 'Languages…',
+          click: () => mainWindow?.webContents.send('menu:languagePanel'),
         },
+        { type: 'separator' },
+        { label: 'Model source transform…', click: () => mainWindow?.webContents.send('menu:modelSourceTransform') },
+      ],
+    },
+    // Tools — V0.3.3.11: the project-wide utilities moved out of Edit, plus
+    // the review form (translation / proofing sheets + the notes they bring back).
+    {
+      label: 'Tools',
+      submenu: [
+        {
+          label: 'Review form…',
+          click: () => mainWindow?.webContents.send('menu:reviewForm'),
+        },
+        { type: 'separator' },
         {
           // Renamed V0.3.2.127 — the panel now manages constant titles AND
           // the per-language translation review. Channel name kept so the
@@ -500,13 +515,12 @@ function buildMenu() {
           click: () => mainWindow?.webContents.send('menu:constTitlesPanel'),
         },
         {
+          label: 'Unify Constant Titles',
+          click: () => mainWindow?.webContents.send('menu:unifyConstTitles'),
+        },
+        {
           label: 'Clean Up Unused Constant Titles',
           click: () => mainWindow?.webContents.send('menu:cleanupConstTitles'),
-        },
-        { type: 'separator' },
-        {
-          label: 'Languages…',
-          click: () => mainWindow?.webContents.send('menu:languagePanel'),
         },
         { type: 'separator' },
         {
@@ -535,8 +549,6 @@ function buildMenu() {
           label: 'Scan steps for what is in frame…',
           click: () => mainWindow?.webContents.send('menu:frameScan'),
         },
-        { type: 'separator' },
-        { label: 'Model source transform…', click: () => mainWindow?.webContents.send('menu:modelSourceTransform') },
       ],
     },
     // View

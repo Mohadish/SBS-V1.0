@@ -182,6 +182,9 @@ export function colIndex(ref) {    // "AB12" → 27
  * @property {boolean}  [freezeHeader]
  * @property {boolean}  [autoFilter]
  * @property {Object<number, number>} [rowHeights]   1-based sheet row → height in points
+ * @property {Object<number, string>} [rowFills]     1-based sheet row → ARGB solid fill ("FFDDEBF7")
+ * @property {Object<number, string>} [rowTopBorders] 1-based sheet row → ARGB colour of a medium top border
+ * @property {string} [headerFill]                   ARGB fill for row 1
  * @property {Array<{row:number, col:number, dataUrl:string, wPx:number, hPx:number}>} [images]  row = 0-based DATA row
  */
 
@@ -197,6 +200,7 @@ export async function buildXlsx(spec) {
   const media = [];   // { name, data }
   const mediaByUrl = new Map();   // dataUrl → media part name (the same preview on several sheets = ONE part)
   let imageNo = 0;
+  const styles = _styleRegistry();   // cellXfs handed out on demand (locked / wrap / fill / border combos)
 
   const workbookSheets = sheets.map((s, i) =>
     `<sheet name="${_xmlEsc(_sheetName(s.name))}" sheetId="${i + 1}"${s.hidden ? ' state="hidden"' : ''} r:id="rId${i + 1}"/>`).join('');
@@ -211,7 +215,6 @@ export async function buildXlsx(spec) {
     + `<sheets>${workbookSheets}</sheets></workbook>`) });
   files.push({ name: 'xl/_rels/workbook.xml.rels', data: enc.encode(
     `<?xml version="1.0" encoding="UTF-8" standalone="yes"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">${workbookRels}</Relationships>`) });
-  files.push({ name: 'xl/styles.xml', data: enc.encode(STYLES_XML) });
   overrides.push('/xl/workbook.xml|application/vnd.openxmlformats-officedocument.spreadsheetml.sheet.main+xml');
   overrides.push('/xl/styles.xml|application/vnd.openxmlformats-officedocument.spreadsheetml.styles+xml');
 
@@ -219,14 +222,25 @@ export async function buildXlsx(spec) {
     const n = i + 1;
     const unlocked = new Set(s.unlockedCols || []);
     const wrap     = new Set(s.wrapCols || []);
-    const styleFor = (c, isHeader) => isHeader ? 1 : (wrap.has(c) ? (unlocked.has(c) ? 3 : 2) : (unlocked.has(c) ? 4 : 0));
+    const rowFills = s.rowFills || {};          // sheet row → ARGB fill (bands: chapter / step tones)
+    const rowTops  = s.rowTopBorders || {};     // sheet row → ARGB colour of a medium top border (step start)
+    const styleFor = (c, isHeader, r) => styles.xf({
+      bold: !!isHeader,
+      wrap: !isHeader && wrap.has(c),
+      unlocked: !isHeader && unlocked.has(c),
+      fill: isHeader ? (s.headerFill || null) : (rowFills[r] || null),
+      topBorder: isHeader ? null : (rowTops[r] || null),
+    });
     const cell = (r, c, v, isHeader) => {
-      // An EMPTY cell in an unlocked column must still exist, carrying the
-      // unlocked style — otherwise it inherits the sheet default (locked)
-      // and the reviewer cannot type into the very cells meant for them
-      // (LibreOffice / OpenOffice showed exactly that, V0.3.3.9).
-      if (v == null || v === '') return (!isHeader && unlocked.has(c)) ? `<c r="${colLetter(c)}${r}" s="${styleFor(c, false)}"/>` : '';
-      return `<c r="${colLetter(c)}${r}" s="${styleFor(c, isHeader)}" t="inlineStr"><is><t xml:space="preserve">${_xmlEsc(v)}</t></is></c>`;
+      // An EMPTY cell must still exist when it carries something visible or
+      // usable: the unlocked style (else it inherits the sheet default —
+      // locked — and the reviewer cannot type into the very cells meant for
+      // them, as LibreOffice showed in V0.3.3.9), a band fill, a top border.
+      if (v == null || v === '') {
+        const needed = !isHeader && (unlocked.has(c) || rowFills[r] || rowTops[r]);
+        return needed ? `<c r="${colLetter(c)}${r}" s="${styleFor(c, false, r)}"/>` : '';
+      }
+      return `<c r="${colLetter(c)}${r}" s="${styleFor(c, isHeader, r)}" t="inlineStr"><is><t xml:space="preserve">${_xmlEsc(v)}</t></is></c>`;
     };
     const rowsXml = [];
     const hdr = s.header || [];
@@ -239,7 +253,7 @@ export async function buildXlsx(spec) {
     // Column default style: cells the reviewer ADDS below our rows (or that a
     // re-save materialises) in an unlocked column stay unlocked too.
     const colsXml = (s.cols || []).length
-      ? `<cols>${s.cols.map((c, ci) => `<col min="${ci + 1}" max="${ci + 1}" width="${c.width || 10}" customWidth="1"${c.hidden ? ' hidden="1"' : ''}${unlocked.has(ci) ? ` style="${styleFor(ci, false)}"` : ''}/>`).join('')}</cols>`
+      ? `<cols>${s.cols.map((c, ci) => `<col min="${ci + 1}" max="${ci + 1}" width="${c.width || 10}" customWidth="1"${c.hidden ? ' hidden="1"' : ''}${unlocked.has(ci) ? ` style="${styles.xf({ wrap: wrap.has(ci), unlocked: true })}"` : ''}/>`).join('')}</cols>`
       : '';
     const lastCol = Math.max(hdr.length, ...(s.rows || []).map(r => (r || []).length), 1);
     const lastRow = (s.rows || []).length + 1;
@@ -300,6 +314,7 @@ export async function buildXlsx(spec) {
     overrides.push(`/xl/worksheets/sheet${n}.xml|application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml`);
   });
 
+  files.push({ name: 'xl/styles.xml', data: enc.encode(styles.xml()) });   // after the sheets: xfs are handed out on demand
   files.push(...media);
   files.unshift({ name: '_rels/.rels', data: enc.encode(
     `<?xml version="1.0" encoding="UTF-8" standalone="yes"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">`
@@ -314,19 +329,51 @@ export async function buildXlsx(spec) {
   return buildZip(files);
 }
 
-const STYLES_XML = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>`
-  + `<styleSheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main">`
-  + `<fonts count="2"><font><sz val="11"/><name val="Calibri"/></font><font><b/><sz val="11"/><name val="Calibri"/></font></fonts>`
-  + `<fills count="2"><fill><patternFill patternType="none"/></fill><fill><patternFill patternType="gray125"/></fill></fills>`
-  + `<borders count="1"><border><left/><right/><top/><bottom/><diagonal/></border></borders>`
-  + `<cellStyleXfs count="1"><xf numFmtId="0" fontId="0" fillId="0" borderId="0"/></cellStyleXfs>`
-  + `<cellXfs count="5">`
-  + `<xf numFmtId="0" fontId="0" fillId="0" borderId="0" xfId="0"/>`                                                                              // 0 locked plain
-  + `<xf numFmtId="0" fontId="1" fillId="0" borderId="0" xfId="0" applyFont="1"/>`                                                                // 1 header
-  + `<xf numFmtId="0" fontId="0" fillId="0" borderId="0" xfId="0" applyAlignment="1"><alignment wrapText="1" vertical="top"/></xf>`               // 2 locked wrap
-  + `<xf numFmtId="0" fontId="0" fillId="0" borderId="0" xfId="0" applyAlignment="1" applyProtection="1"><alignment wrapText="1" vertical="top"/><protection locked="0"/></xf>`   // 3 unlocked wrap
-  + `<xf numFmtId="0" fontId="0" fillId="0" borderId="0" xfId="0" applyProtection="1"><protection locked="0"/></xf>`                              // 4 unlocked plain
-  + `</cellXfs><cellStyles count="1"><cellStyle name="Normal" xfId="0" builtinId="0"/></cellStyles></styleSheet>`;
+/**
+ * Cell styles on demand. Excel wants every (font, fill, border, alignment,
+ * protection) combination as its own cellXfs entry; the registry hands out
+ * an index per combination and writes styles.xml at the end.
+ */
+function _styleRegistry() {
+  const fills   = ['<fill><patternFill patternType="none"/></fill>', '<fill><patternFill patternType="gray125"/></fill>'];
+  const borders = ['<border><left/><right/><top/><bottom/><diagonal/></border>'];
+  const xfs     = ['<xf numFmtId="0" fontId="0" fillId="0" borderId="0" xfId="0"/>'];
+  const fillIdx = new Map(), borderIdx = new Map(), xfIdx = new Map([['0|0|0|0|0', 0]]);
+  const fillId = (argb) => {
+    if (!argb) return 0;
+    if (!fillIdx.has(argb)) { fills.push(`<fill><patternFill patternType="solid"><fgColor rgb="${argb}"/><bgColor indexed="64"/></patternFill></fill>`); fillIdx.set(argb, fills.length - 1); }
+    return fillIdx.get(argb);
+  };
+  const borderId = (argb) => {
+    if (!argb) return 0;
+    if (!borderIdx.has(argb)) { borders.push(`<border><left/><right/><top style="medium"><color rgb="${argb}"/></top><bottom/><diagonal/></border>`); borderIdx.set(argb, borders.length - 1); }
+    return borderIdx.get(argb);
+  };
+  return {
+    xf({ bold = false, wrap = false, unlocked = false, fill = null, topBorder = null } = {}) {
+      const f = fillId(fill), b = borderId(topBorder);
+      const key = `${bold ? 1 : 0}|${wrap ? 1 : 0}|${unlocked ? 1 : 0}|${f}|${b}`;
+      if (xfIdx.has(key)) return xfIdx.get(key);
+      const attrs = [`numFmtId="0"`, `fontId="${bold ? 1 : 0}"`, `fillId="${f}"`, `borderId="${b}"`, `xfId="0"`,
+        bold ? 'applyFont="1"' : '', f ? 'applyFill="1"' : '', b ? 'applyBorder="1"' : '',
+        wrap ? 'applyAlignment="1"' : '', unlocked ? 'applyProtection="1"' : ''].filter(Boolean).join(' ');
+      const inner = `${wrap ? '<alignment wrapText="1" vertical="top"/>' : ''}${unlocked ? '<protection locked="0"/>' : ''}`;
+      xfs.push(inner ? `<xf ${attrs}>${inner}</xf>` : `<xf ${attrs}/>`);
+      xfIdx.set(key, xfs.length - 1);
+      return xfs.length - 1;
+    },
+    xml() {
+      return `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>`
+        + `<styleSheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main">`
+        + `<fonts count="2"><font><sz val="11"/><name val="Calibri"/></font><font><b/><sz val="11"/><name val="Calibri"/></font></fonts>`
+        + `<fills count="${fills.length}">${fills.join('')}</fills>`
+        + `<borders count="${borders.length}">${borders.join('')}</borders>`
+        + `<cellStyleXfs count="1"><xf numFmtId="0" fontId="0" fillId="0" borderId="0"/></cellStyleXfs>`
+        + `<cellXfs count="${xfs.length}">${xfs.join('')}</cellXfs>`
+        + `<cellStyles count="1"><cellStyle name="Normal" xfId="0" builtinId="0"/></cellStyles></styleSheet>`;
+    },
+  };
+}
 
 function _sheetName(n) { return String(n || 'Sheet').replace(/[[\]:*?/\\]/g, ' ').slice(0, 31); }
 
