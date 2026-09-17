@@ -443,6 +443,87 @@ function _sheetImages(sheetPath, get, getBytes) {
   return out;
 }
 
+// ─── OpenDocument (.ods) reader — V0.3.3.10 ─────────────────────────────────
+// Apache OpenOffice opens .xlsx but only SAVES the old binary .xls or its
+// native .ods; LibreOffice users reach for .ods too. An .ods is the same
+// idea as an .xlsx — a zip of XML — so the returned sheet comes back through
+// the same reader shape: { sheets: [{ name, hidden, rows, images }] }.
+
+/**
+ * @param {Uint8Array} bytes
+ * @returns {Promise<{sheets: Array<{name:string, hidden:boolean, rows:string[][], images:Array<{row:number,col:number,dataUrl:string}>}>}>}
+ */
+export async function parseOds(bytes) {
+  const files = await readZip(bytes);
+  const content = files.get('content.xml');
+  if (!content) throw new Error('Not an .ods spreadsheet (content.xml missing)');
+  const xml = dec.decode(content);
+  // Hidden tables: a table style with table:display="false".
+  const hiddenStyles = new Set();
+  for (const m of xml.matchAll(/<style:style\b([^>]*)>([\s\S]*?)<\/style:style>/g)) {
+    if (/table:display="false"/.test(m[2])) { const n = _attr(m[1], 'style:name'); if (n) hiddenStyles.add(n); }
+  }
+  const sheets = [];
+  const tableRe = /<table:table\b([^>]*)>([\s\S]*?)<\/table:table>/g;
+  let tm;
+  while ((tm = tableRe.exec(xml))) {
+    const name = _attr(tm[1], 'table:name') || `Sheet${sheets.length + 1}`;
+    const hidden = hiddenStyles.has(_attr(tm[1], 'table:style-name') || '');
+    const rows = [], images = [];
+    const imageRows = new Set();   // rows that hold only a picture must survive the empty-tail trim
+    const rowRe = /<table:table-row\b([^>]*?)(?:\/>|>([\s\S]*?)<\/table:table-row>)/g;
+    let rm;
+    while ((rm = rowRe.exec(tm[2]))) {
+      const repeat = Math.max(1, parseInt(_attr(rm[1], 'table:number-rows-repeated') || '1', 10));
+      const cells = [];
+      const cellRe = /<table:(table-cell|covered-table-cell)\b([^>]*?)(?:\/>|>([\s\S]*?)<\/table:\1>)/g;
+      let cm;
+      while ((cm = cellRe.exec(rm[2] || ''))) {
+        const tag = cm[2], inner = cm[3] || '';
+        const rep = Math.max(1, parseInt(_attr(tag, 'table:number-columns-repeated') || '1', 10));
+        let v = '';
+        if (cm[1] === 'table-cell') {
+          const paras = [...inner.matchAll(/<text:p\b[^>]*>([\s\S]*?)<\/text:p>|<text:p\b[^>]*\/>/g)].map(p => _odsText(p[1] || ''));
+          v = paras.length ? paras.join('\n') : (_attr(tag, 'office:value') ?? '');
+          for (const im of inner.matchAll(/<draw:image\b([^>]*)\/?>/g)) {
+            const href = _attr(im[1], 'xlink:href');
+            const data = href && files.get(href.replace(/^\.\//, ''));
+            const mime = href && _MIME[(href.split('.').pop() || '').toLowerCase()];
+            if (data && mime) { images.push({ row: rows.length, col: cells.length, dataUrl: `data:${mime};base64,${bytesToBase64(data)}` }); imageRows.add(rows.length); }
+          }
+        }
+        // A trailing "repeated 1000 columns" empty cell is padding, not data.
+        const n = (v === '' && rep > 50) ? 1 : rep;
+        for (let i = 0; i < n; i++) cells.push(v);
+      }
+      while (cells.length && cells[cells.length - 1] === '') cells.pop();
+      // Blank rows repeated by the thousands are the sheet's tail, not content.
+      const n = cells.length ? Math.min(repeat, 200) : Math.min(repeat, 1);
+      for (let i = 0; i < n; i++) rows.push(i === 0 ? cells : cells.slice());
+    }
+    while (rows.length && !rows[rows.length - 1].length && !imageRows.has(rows.length - 1)) rows.pop();
+    const width = Math.max(0, ...rows.map(r => r.length));
+    sheets.push({ name, hidden, rows: rows.map(r => { const o = r.slice(); while (o.length < width) o.push(''); return o; }), images });
+  }
+  return { sheets };
+}
+
+function _odsText(p) {
+  return _xmlUnesc(String(p)
+    .replace(/<text:line-break\s*\/>/g, '\n')
+    .replace(/<text:tab\s*\/>/g, '\t')
+    .replace(/<text:s\b([^>]*)\/>/g, (m, a) => ' '.repeat(Math.max(1, parseInt(_attr(a, 'text:c') || '1', 10))))
+    .replace(/<[^>]+>/g, ''));
+}
+
+/** Either format, sniffed from the zip: xl/workbook.xml → xlsx, content.xml → ods. */
+export async function parseSpreadsheet(bytes) {
+  const files = await readZip(bytes);
+  if (files.has('xl/workbook.xml')) return parseXlsx(bytes);
+  if (files.has('content.xml')) return parseOds(bytes);
+  throw new Error('Not an .xlsx or .ods spreadsheet');
+}
+
 function _parseSheet(xml, shared) {
   const rows = [];
   const rowRe = /<row\b([^>]*)>([\s\S]*?)<\/row>|<row\b([^>]*)\/>/g;

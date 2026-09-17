@@ -29,7 +29,7 @@ import sceneCore        from '../core/scene.js';
 import { rasterizeOverlay } from './overlay.js';
 import { steps }        from './steps.js';
 import { APP_VERSION }  from '../core/schema.js';
-import { buildXlsx, parseXlsx, bytesToBase64, base64ToBytes } from '../io/xlsx.js';
+import { buildXlsx, parseSpreadsheet, bytesToBase64, base64ToBytes } from '../io/xlsx.js';
 import { addReviewNotes } from './review-notes.js';
 import {
   LEGACY_SHEET_NAME, META_SHEET, FORMAT_VERSION, COLUMNS, COL, sheetNameFor,
@@ -211,13 +211,16 @@ export async function exportTranslationSheet() {
 
 export async function importTranslationSheet() {
   if (!_guard()) return null;
-  const path = await window.sbsNative.openFile({ title: 'Import a translation sheet', filters: XLSX_FILTER });
+  // .ods too (V0.3.3.10): Apache OpenOffice cannot save .xlsx, only its own
+  // .ods (or the binary .xls, which nothing here reads).
+  const path = await window.sbsNative.openFile({ title: 'Import a translation sheet', filters: [{ name: 'Spreadsheet (Excel .xlsx, OpenDocument .ods)', extensions: ['xlsx', 'ods'] }] });
   if (!path) return null;
+  if (/\.xls$/i.test(path)) { setStatus('That is the old binary .xls format — in OpenOffice / LibreOffice use File ▸ Save As ▸ ODF Spreadsheet (.ods), or Excel 2007+ (.xlsx).', 'warn', 10000); return null; }
   const rd = await window.sbsNative.readFile(path, 'base64');
   if (!rd?.ok) { setStatus(`Could not read the file: ${rd?.error || 'unknown error'}`, 'warn', 8000); return null; }
   let wb;
-  try { wb = await parseXlsx(base64ToBytes(rd.data)); }
-  catch (e) { setStatus(`Not a readable .xlsx: ${e?.message || e}`, 'warn', 8000); return null; }
+  try { wb = await parseSpreadsheet(base64ToBytes(rd.data)); }
+  catch (e) { setStatus(`Not a readable .xlsx / .ods: ${e?.message || e}`, 'warn', 8000); return null; }
   const fileName = path.split(/[\\/]/).pop();
 
   const meta = Object.fromEntries((wb.sheets.find(s => s.name === META_SHEET)?.rows || []).slice(1).map(r => [String(r[0] || ''), String(r[1] || '')]));
