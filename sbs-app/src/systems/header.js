@@ -1288,6 +1288,9 @@ function _openHeaderTextEditor(node, item) {
   const ctx = {
     transformer: _transformer,
     configureTransformer: () => _configTransformerForNodes(_transformer.nodes()),
+    // ✎ V0.3.3.4 — what the custom-HTML raster branch adds around the HTML
+    // (readability shadow + the item's alignment), so the editor matches.
+    editorStyle: () => ({ textShadow: '0 1px 2px rgba(0,0,0,0.45)', textAlign: _safeAlign(itemSnapshot.align) }),
     onCommit: async (html) => {
       // No-edit short-circuit — opening + closing the editor without
       // touching anything must NOT silently flip the item to 'custom'

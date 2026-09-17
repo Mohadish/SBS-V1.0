@@ -78,6 +78,7 @@ export function initOverlay() {
   // Sticky shape defaults from last session. Async, but shapes can't be
   // created before the UI is interactive, so it always lands in time.
   _hydrateShapeDefaults();
+  _hydrateTextDefaults();
 
   // Editing a shape style repaints every bound shape currently on stage.
   // Shapes in other steps re-resolve from their id when those steps load.
@@ -2829,25 +2830,30 @@ export async function insertConstTextBox(defId) {
 
 export async function addTextBox() {
   if (!_stage) return null;
-  const html = '<div>Text</div>';
+  // ✎ V0.3.3.4 — born in the sticky look (font / size / colour / B I U /
+  // alignment / fill / effects / direction last used on a text box).
+  const html = _defaultTextHtml();
+  const node = new Konva.Image({ x: 0, y: 0, width: 400, height: 40, draggable: true, name: 'userTextBox' });
+  node.setAttr('textHtml', html);
+  if (TEXT_DEFAULTS.fillColor) node.setAttr('fillColor',   TEXT_DEFAULTS.fillColor);
+  if (TEXT_DEFAULTS.shadow)    node.setAttr('textShadow',  { ...TEXT_DEFAULTS.shadow });
+  if (TEXT_DEFAULTS.outline)   node.setAttr('textOutline', { ...TEXT_DEFAULTS.outline });
+  if (TEXT_DEFAULTS.textDir === 'rtl' || TEXT_DEFAULTS.textDir === 'ltr') node.setAttr('textDir', TEXT_DEFAULTS.textDir);
 
-  const canvas = await _htmlToCanvas(html, { width: 400 });
+  const { renderHtml, opts } = _textRenderOpts(node);
+  const canvas = await _htmlToCanvas(renderHtml, opts);
   if (!canvas) return null;
   if (!canvas.width || !canvas.height) {
     console.warn('[overlay] addTextBox: 0-sized canvas — aborting', canvas.width, canvas.height);
     return null;
   }
-
-  const node = new Konva.Image({
+  node.image(canvas);
+  node.width(canvas.width);
+  node.height(canvas.height);
+  node.position({
     x: (_stage.width()  - canvas.width)  / 2,
     y: (_stage.height() - canvas.height) / 2,
-    image: canvas,
-    width:  canvas.width,
-    height: canvas.height,
-    draggable: true,
-    name: 'userTextBox',
   });
-  node.setAttr('textHtml',  html);
   node.setAttr('textWidth', canvas.width);
   // Stash the natural (un-scaled) dimensions so right-click → Reset can
   // restore the original raster size without recomputing the editor pass.
@@ -3008,6 +3014,8 @@ function _overlayEditorCtx(node) {
       }
     },
     onSave:        _scheduleSave,
+    // ✎ V0.3.3.4 — the editor mirrors the raster's options (WYSIWYG).
+    editorStyle:   () => _textRenderOpts(node).opts,
     getStyleId:    () => node.getAttr('styleId') || '',
     setStyleId:    (id) => {
       // P7-A: snapshot before style binding changes so the toolbar
@@ -3089,21 +3097,43 @@ function _enterTextEdit(node, ctxOverride) {
   // box snapped smaller on click-out.
   const _sf = computeSafeFrameRect({ width: containerRect.width, height: containerRect.height });
   const _editorScale = _sf.scale > 0 ? _sf.scale : 1;
+  // ✎ V0.3.3.4 — WYSIWYG: the editor wears the SAME options the raster will
+  // use (ctx.editorStyle → _textRenderOpts for overlay boxes): template
+  // font / size / weight / colour, drop shadow + outline, fill, widened
+  // padding, reading direction, rotation. Before this the editor was a
+  // plain 16px Arial preview that snapped into its real look on click-out.
+  const es      = ctx.editorStyle?.() || {};
+  const eFont   = es.fontFamily || 'Arial';
+  const eSize   = es.fontSize   || 16;
+  const eColor  = es.color      || '#ffffff';
+  const eWeight = es.fontWeight || 'normal';
+  const eStyle  = es.fontStyle  || 'normal';
+  const eDeco   = es.textDecoration || 'none';
+  const ePad    = Number.isFinite(es.padding) ? es.padding : 8;
+  const eBg     = es.bgColor && es.bgColor !== 'transparent' ? es.bgColor : 'transparent';
+  const eForced = es.textDir === 'rtl' || es.textDir === 'ltr';
+  const eRot    = node.rotation?.() || 0;
   div.style.cssText = [
     'position:fixed',
     `left:${Math.round(containerRect.left + pos.x)}px`,
     `top:${Math.round(containerRect.top + pos.y)}px`,
     `width:${Math.round(node.width())}px`,
     'min-height:0',
-    'padding:8px',                     // matches _htmlToCanvas default (canonical)
+    `padding:${ePad}px`,               // matches _htmlToCanvas (canonical)
     'margin:0',
     'border:0',
     'outline:2px dashed #f59e0b',
     'outline-offset:0',
-    'background:rgba(15,23,42,0.55)',
-    'color:#ffffff',                   // matches _htmlToCanvas default
-    'font-family:Arial',               // matches _htmlToCanvas default
-    'font-size:16px',                  // matches _htmlToCanvas default (canonical)
+    `background:${eBg}`,               // the box's own fill — transparent stays transparent
+    `color:${eColor}`,
+    `font-family:${eFont}`,
+    `font-size:${eSize}px`,            // canonical px, scaled down below
+    `font-weight:${eWeight}`,
+    `font-style:${eStyle}`,
+    `text-decoration:${eDeco}`,
+    ...(es.textShadow ? [`text-shadow:${es.textShadow}`] : []),
+    ...(eForced ? [`direction:${es.textDir}`, 'unicode-bidi:isolate'] : ['unicode-bidi:plaintext']),
+    `text-align:${es.textAlign || 'start'}`,
     'line-height:1.2',                 // matches _htmlToCanvas default
     'white-space:pre-wrap',
     'word-wrap:break-word',
@@ -3111,10 +3141,22 @@ function _enterTextEdit(node, ctxOverride) {
     'z-index:10000',
     'cursor:text',
     'user-select:text',
-    `transform:scale(${_editorScale})`,
+    `transform:scale(${_editorScale}) rotate(${eRot}deg)`,
     'transform-origin:0 0',
   ].join(';');
   document.body.appendChild(div);
+  // Scoped rules the inline style cannot express: per-paragraph direction
+  // (auto mode), and — for a template-bound box — the template winning over
+  // any inline span, exactly as the raster strips them.
+  const styleEl = document.createElement('style');
+  const scope = '[data-sbs-text-editor="1"]';
+  let css = eForced ? '' : `${scope} div:not([dir]),${scope} p:not([dir]){unicode-bidi:plaintext}`;
+  if (es.bound) {
+    css += `${scope} *{font-family:${eFont} !important;font-size:${eSize}px !important;color:${eColor} !important;`
+         + `font-weight:${eWeight} !important;font-style:${eStyle} !important;text-decoration:${eDeco} !important}`;
+  }
+  styleEl.textContent = css;
+  document.head.appendChild(styleEl);
 
   // Hide the rasterised image but KEEP the node addressable so the
   // transformer stays attached — that way the user can resize the box
@@ -3308,7 +3350,7 @@ function _enterTextEdit(node, ctxOverride) {
   document.addEventListener('selectionchange', onSelectionChange);
   onSelectionChange();   // initial sync
 
-  _activeTextEditor = { node, div, onDocMouseDown, onKeyDown, onPaste, prevOpacity, onSelectionChange, ctx };
+  _activeTextEditor = { node, div, onDocMouseDown, onKeyDown, onPaste, prevOpacity, onSelectionChange, ctx, styleEl };
 
   // P7-A: open an edit session so toolbar / engine ops can be undone
   // locally (Ctrl-Z inside the editor) and the WHOLE session collapses
@@ -3330,7 +3372,7 @@ function _enterTextEdit(node, ctxOverride) {
       div.innerHTML = snap.html;
       node.setAttr('fillColor', snap.fillColor);
       node.setAttr('styleId',   snap.styleId);
-      div.style.backgroundColor = snap.fillColor || 'rgba(15,23,42,0.55)';
+      div.style.backgroundColor = snap.fillColor || 'transparent';
     },
     restoreCommitted: async (snap) => {
       // Editor already torn down — operate on the Konva.Image directly.
@@ -3396,6 +3438,7 @@ async function _exitTextEdit(opts = {}) {
   } finally {
     try { node.opacity(typeof prevOpacity === 'number' ? prevOpacity : 1); } catch {}
     div.remove();                                  // ALWAYS — the ghost dies here
+    try { sess.styleEl?.remove(); } catch {}       // ✎ the editor's scoped rules go with it
     try { ctx.configureTransformer?.(); } catch {}
     try {
       const nodeLayer = node.getLayer();
@@ -3424,9 +3467,14 @@ async function _exitTextEdit(opts = {}) {
  * bug where the node snapped back to the content's natural height,
  * making the user's height drag look ignored.
  */
-async function _reflowTextBox(node) {
-  const html = node.getAttr('textHtml');
-  if (!html) return false;
+/**
+ * Everything the rasteriser needs for this box: the HTML to draw and the
+ * options. Since V0.3.3.4 the in-place editor mirrors the SAME options, so
+ * what you type in looks like the raster you get on click-out (template
+ * font / size / weight, effects, fill, padding, reading direction).
+ */
+function _textRenderOpts(node) {
+  const html = node.getAttr('textHtml') || '';
   // Defensive width: node.width() can return undefined / NaN if the node
   // was just constructed without explicit width (e.g. legacy save). NaN
   // through Math.round → NaN → canvas.width = NaN → canvas coerces to
@@ -3444,7 +3492,12 @@ async function _reflowTextBox(node) {
   // <div text-align:...> wrappers because alignment IS the box-level
   // override).
   let renderHtml = html;
-  let opts = { width: w, bgColor: node.getAttr('fillColor') || 'transparent' };
+  let opts = {
+    width: w,
+    bgColor: node.getAttr('fillColor') || 'transparent',
+    textDir: node.getAttr('textDir') || 'auto',   // ¶ V0.3.3.4 — reading direction
+    bound:   !!tpl,                               // editor: enforce the template over inline spans
+  };
   if (tpl) {
     renderHtml = _stripInlineStylingExceptAlign(html);
     opts = {
@@ -3475,6 +3528,14 @@ async function _reflowTextBox(node) {
     // the text inward, and it's that or a clipped effect.
     if (fx.extent > 8) opts.padding = fx.extent;
   }
+  return { renderHtml, opts };
+}
+
+async function _reflowTextBox(node) {
+  const html = node.getAttr('textHtml');
+  if (!html) return false;
+  const { renderHtml, opts } = _textRenderOpts(node);
+  const w = opts.width;
 
   // Auto-height: do NOT pass `height` to the rasteriser. The canvas
   // ends up exactly as tall as the wrapped text needs at this width.
@@ -3636,6 +3697,83 @@ const SHAPE_DEFAULTS = {
 
 /** Keys the shape toolbar can emit, and therefore the ones that stick. */
 const STICKY_SHAPE_KEYS = ['fill', 'stroke', 'strokeWidth', 'cornerRadius'];
+
+// ─── ✎ Sticky TEXT defaults (V0.3.3.4) ──────────────────────────────────────
+// The text-box twin of SHAPE_DEFAULTS: font, size, colour, B/I/U, alignment,
+// fill, effects and reading direction picked on a text box become what the
+// next "Add text box" is born with. Machine-scope (user settings), like a
+// brush setting — not project data.
+const TEXT_DEFAULTS = {
+  fontFamily: 'Arial', fontSize: 16, color: '#ffffff',
+  bold: false, italic: false, underline: false,
+  align: 'left', fillColor: null, shadow: null, outline: null, textDir: 'auto',
+};
+const STICKY_TEXT_KEYS = Object.keys(TEXT_DEFAULTS);
+
+async function _hydrateTextDefaults() {
+  try {
+    await userSettings.initUserSettings();
+    const saved = userSettings.get()?.overlay?.textDefaults || {};
+    for (const k of STICKY_TEXT_KEYS) if (k in saved) TEXT_DEFAULTS[k] = saved[k];
+  } catch { /* factory defaults stand */ }
+}
+
+function _rememberTextDefaults(patch) {
+  let touched = false;
+  for (const k of STICKY_TEXT_KEYS) {
+    if (!(k in patch) || patch[k] === undefined) continue;
+    TEXT_DEFAULTS[k] = patch[k];
+    touched = true;
+  }
+  if (!touched) return;
+  const toSave = {};
+  for (const k of STICKY_TEXT_KEYS) toSave[k] = TEXT_DEFAULTS[k];
+  userSettings.patch({ overlay: { textDefaults: toSave } }).catch(() => {});
+}
+
+/** Mass-mode toggles have no caret to read: infer the resulting state from the first box's HTML. */
+function _rememberTextDefaultsFromAction(action, value, html) {
+  const h = String(html || '');
+  const patch = {};
+  if (action === 'fontFamily')      patch.fontFamily = value;
+  else if (action === 'fontSize')   patch.fontSize = Number(value) || undefined;
+  else if (action === 'color')      patch.color = value;
+  else if (action === 'fillColor')  patch.fillColor = value;
+  else if (action === 'bold')       patch.bold = /font-weight:\s*(bold|[6-9]00)|<(b|strong)\b/i.test(h);
+  else if (action === 'italic')     patch.italic = /font-style:\s*italic|<(i|em)\b/i.test(h);
+  else if (action === 'underline')  patch.underline = /text-decoration:[^;"]*underline|<u\b/i.test(h);
+  else if (action === 'alignLeft' || action === 'alignCenter' || action === 'alignRight') patch.align = action.slice(5).toLowerCase();
+  _rememberTextDefaults(patch);
+}
+
+/** Read B / I / U at the caret AFTER an engine op, so a toggle sticks as the resulting STATE. */
+function _readTogglesAtCaret(editor) {
+  const sel = window.getSelection();
+  if (!sel || !sel.rangeCount) return {};
+  let n = sel.getRangeAt(0).startContainer;
+  if (n && n.nodeType === 3) n = n.parentNode;
+  if (!n || !(n instanceof Element) || !editor.contains(n)) return {};
+  const cs = window.getComputedStyle(n);
+  const w  = cs.fontWeight;
+  return {
+    bold:      w === 'bold' || (parseInt(w, 10) || 400) >= 600,
+    italic:    cs.fontStyle === 'italic',
+    underline: /underline/.test(cs.textDecorationLine || cs.textDecoration || ''),
+  };
+}
+
+/** The HTML a NEW text box starts with, in the sticky look. */
+function _defaultTextHtml(text = 'Text') {
+  const d = TEXT_DEFAULTS;
+  const span = [
+    `font-family:${d.fontFamily}`, `font-size:${d.fontSize}px`, `color:${d.color}`,
+    ...(d.bold      ? ['font-weight:bold']          : []),
+    ...(d.italic    ? ['font-style:italic']         : []),
+    ...(d.underline ? ['text-decoration:underline'] : []),
+  ].join(';');
+  const align = d.align && d.align !== 'left' ? ` style="text-align:${d.align}"` : '';
+  return `<div${align}><span style="${span}">${text}</span></div>`;
+}
 
 // ─── Shape style templates (V0.3.2.139) ─────────────────────────────────────
 //
@@ -4439,6 +4577,7 @@ function _serializeNode(node) {
     // shape; its `points` are derived per frame and deliberately not trusted.
     'anchorA', 'anchorB', 'headA', 'headB',
     'textShadow', 'textOutline',   // V0.3.2.144 — per-box drop shadow + outline
+    'textDir',                     // ¶ V0.3.3.4 — forced reading direction ('rtl' | 'ltr'; absent = auto)
     'radius', 'radiusX', 'radiusY', 'sides', 'data',
     // Line/Arrow geometry (V0.3.2.30) — omitting these was why a pasted
     // arrow lost its tail (points defaulted to [] and could never grow back).
@@ -5700,6 +5839,28 @@ function _showOverlayContextMenu(node, x, y) {
     ] },
     { separator: true },
   ];
+  // ¶ Reading direction (V0.3.3.4). Auto follows the first strong character
+  // of each paragraph; force it when a Hebrew line OPENS with a number or a
+  // Latin term and Auto guesses wrong. Node-level, like fillColor.
+  const curDir = node.getAttr('textDir') || 'auto';
+  const setDir = (d) => {
+    const prev = node.getAttr('textDir') || 'auto';
+    if (prev === d) return;
+    const write = (v) => {
+      if (!_isLiveNode(node)) return;
+      node.setAttr('textDir', v === 'auto' ? null : v);
+      _reflowTextBox(node).catch(() => {});
+      _scheduleSave();
+    };
+    write(d);
+    _rememberTextDefaults({ textDir: d });
+    undoManager.push('Text direction', () => write(prev), () => write(d));
+  };
+  const dirItems = !isTextBox ? [] : [{ label: '¶ Text direction', submenu: [
+    { label: `${curDir === 'auto' ? '✓ ' : ''}Auto (each paragraph by its first letter)`, action: () => setDir('auto') },
+    { label: `${curDir === 'rtl'  ? '✓ ' : ''}Right-to-left (עברית)`,                    action: () => setDir('rtl') },
+    { label: `${curDir === 'ltr'  ? '✓ ' : ''}Left-to-right`,                            action: () => setDir('ltr') },
+  ] }];
   showContextMenu([
     ...videoItems,
     ...ifaceItems,
@@ -5707,6 +5868,7 @@ function _showOverlayContextMenu(node, x, y) {
     ...seqItems,
     ...tocItems,
     ...constItems,
+    ...dirItems,
     ...anchorItems,
     ...linkItems,
     ...constShapeItems,
@@ -5927,6 +6089,8 @@ function _endTextEffectsSession(nodes) {
   const after = _fxSnapshot(nodes);
   const key = (m) => JSON.stringify([...m.values()]);
   if (key(before) === key(after)) return;              // opened and changed nothing
+  const first = [...after.values()][0];                // ✎ sticky defaults: the effects just set
+  if (first) _rememberTextDefaults({ shadow: first.shadow ? { ...first.shadow } : null, outline: first.outline ? { ...first.outline } : null });
   undoManager.push('Text effects',
     () => _fxRestore(before),
     () => _fxRestore(after),
@@ -6161,9 +6325,18 @@ function _singleEditorApplier(action, value) {
     if (!_activeTextEditor || !value) return;
     _activeTextEditor.node.setAttr('fillColor', value);
     _activeTextEditor.div.style.backgroundColor = value;
+    _rememberTextDefaults({ fillColor: value });
     return;
   }
   execCommandApplier(action, value);
+  // ✎ Sticky defaults: values as picked; B / I / U as the resulting state
+  // at the caret (a toggle "pressed" tells us nothing by itself).
+  const div = _activeTextEditor?.div;
+  if (action === 'bold' || action === 'italic' || action === 'underline') {
+    if (div) _rememberTextDefaults(_readTogglesAtCaret(div));
+  } else {
+    _rememberTextDefaultsFromAction(action, value, '');
+  }
 }
 
 /**
@@ -6211,6 +6384,7 @@ function _multiTextApplier(action, value) {
     b.styleId !== after[i].styleId,
   );
   if (changed) {
+    _rememberTextDefaultsFromAction(action, value, after[0]?.textHtml || '');   // ✎ sticky defaults
     const label = `Style ${targets.length} text box${targets.length > 1 ? 'es' : ''}`;
     undoManager.push(label,
       () => _restoreTextBoxes(before),
@@ -7582,7 +7756,21 @@ async function _htmlToCanvas(html, opts = {}) {
     fontStyle  = 'normal',
     textDecoration = '',
     textShadow = '',                 // compiled drop shadow + outline
+    textDir    = 'auto',             // ¶ V0.3.3.4 — 'auto' | 'rtl' | 'ltr'
   } = opts;
+  // ¶ Reading direction. 'auto' = every paragraph picks its own base
+  // direction from its first strong character (unicode-bidi: plaintext), so
+  // "עברית, then English" keeps its reading order instead of scrambling
+  // inside an LTR box; text-align:start then puts a Hebrew paragraph on the
+  // right unless the user aligned it explicitly. 'rtl' / 'ltr' force one
+  // direction for the whole box (a Hebrew line that OPENS with a number or a
+  // Latin term guesses wrong under auto).
+  const forced  = textDir === 'rtl' || textDir === 'ltr';
+  const bidiCss = forced ? [`direction:${textDir}`, 'unicode-bidi:isolate', 'text-align:start']
+                         : ['unicode-bidi:plaintext', 'text-align:start'];
+  // :not([dir]) — a subtitle line carrying dir="rtl"/"ltr"/"auto" (header.js)
+  // keeps its own rule; plaintext would silently override a forced direction.
+  const paraCss = forced ? '' : '<style xmlns="http://www.w3.org/1999/xhtml">div:not([dir]),p:not([dir]){unicode-bidi:plaintext}</style>';
 
   // XHTML normalisation. SVG foreignObject parses its inner content as
   // XHTML, which is strict about void elements:
@@ -7622,12 +7810,16 @@ async function _htmlToCanvas(html, opts = {}) {
       `color:${color}`,
       `font-family:${fontFamily}`,
       `font-size:${fontSize}px`,
+      `font-weight:${fontWeight}`,
+      `font-style:${fontStyle}`,
+      ...bidiCss,
       'box-sizing:border-box',
       'white-space:pre-wrap',
       'word-wrap:break-word',
       'line-height:1.2',
     ].join(';');
     host.innerHTML = html;
+    if (!forced) host.querySelectorAll('div:not([dir]),p:not([dir])').forEach(el => { el.style.unicodeBidi = 'plaintext'; });
     document.body.appendChild(host);
     h = Math.max(1, Math.ceil(host.getBoundingClientRect().height));
     document.body.removeChild(host);
@@ -7649,6 +7841,7 @@ async function _htmlToCanvas(html, opts = {}) {
     `text-decoration:${textDecoration || 'none'}`,
     ...(textShadow ? [`text-shadow:${textShadow}`] : []),
     `background-color:${bgColor}`,
+    ...bidiCss,
     'box-sizing:border-box',
     'white-space:pre-wrap',
     'word-wrap:break-word',
@@ -7658,7 +7851,7 @@ async function _htmlToCanvas(html, opts = {}) {
   const svg =
     `<svg xmlns="http://www.w3.org/2000/svg" width="${width}" height="${h}">` +
       `<foreignObject width="${width}" height="${h}">` +
-        `<div xmlns="http://www.w3.org/1999/xhtml" style="${bodyStyle}">${html}</div>` +
+        `<div xmlns="http://www.w3.org/1999/xhtml" style="${bodyStyle}">${paraCss}${html}</div>` +
       `</foreignObject>` +
     `</svg>`;
   const dataUrl = 'data:image/svg+xml;charset=utf-8,' + encodeURIComponent(svg);

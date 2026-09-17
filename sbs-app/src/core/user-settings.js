@@ -49,6 +49,22 @@ const DEFAULTS = {
       strokeWidth:  3,
       cornerRadius: 0,
     },
+    // V0.3.3.4 — the text-box twin: font / size / colour / B I U / alignment /
+    // fill / effects / reading direction last picked on a text box become
+    // what the next "Add text box" is born with.
+    textDefaults: {
+      fontFamily: 'Arial',
+      fontSize:   16,
+      color:      '#ffffff',
+      bold:       false,
+      italic:     false,
+      underline:  false,
+      align:      'left',
+      fillColor:  null,
+      shadow:     null,
+      outline:    null,
+      textDir:    'auto',
+    },
   },
   scene: {
     // Wheel-zoom step multiplier. Step = distance × baseFactor × cameraZoomScale.
