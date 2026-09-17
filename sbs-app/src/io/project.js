@@ -293,6 +293,10 @@ export function serialize(targetPath = null) {
   project.cropMasks = project.cropMasks || { schema_version: 1, items: [] };
   project.cropMasks.items = cloneShareStrings((state.get('cropMasks') || []));
 
+  // 📝 Review notes (V0.3.3.8) — remarks from translation / proofing sheets.
+  project.reviewNotes = project.reviewNotes || { schema_version: 1, items: [] };
+  project.reviewNotes.items = cloneShareStrings((state.get('reviewNotes') || []));
+
   // Flat-shape templates — project-level polygon library. Instances live
   // as regular tree nodes (type='flatShape', templateId pointer) and
   // round-trip via stripNode like every other tree node.
@@ -1034,7 +1038,7 @@ export const PROJECT_STATE_KEYS = [
   'noteTemplates', 'notePresets', 'selectionGroups', 'selectionOutlineColor',
   'assets',
   'headerItems', 'headersLocked', 'headersHidden', 'headerDefault', 'headerStepNumberPerChapter',
-  'styleTemplates', 'shapeStyles', 'constTextBoxes', 'constShapes', 'shapeLinks', 'cropMasks',
+  'styleTemplates', 'shapeStyles', 'constTextBoxes', 'constShapes', 'shapeLinks', 'cropMasks', 'reviewNotes',
   'shapeTemplates', 'hardwareTemplates', 'shapeTemplateGroups',
   'selectedShapeTemplateIds', 'selectedShapeTemplateGroupIds', 'selectedColorPresetIds',
   'cables', 'cableGlobalScale', 'cableGlobalRadius', 'cableDefaultDiameter', 'cableHighlightColor',
@@ -1161,6 +1165,7 @@ export function applyProjectToState(project) {
     constShapes:          project.constShapes?.items         || [],   // 📌 V0.3.2.143 — safe [] on legacy files
     shapeLinks:           project.shapeLinks?.items         || [],   // 🔗 V0.3.2.150 — safe [] on legacy files
     cropMasks:            project.cropMasks?.items          || [],   // 🎭 V0.3.2.218 — safe [] on legacy files
+    reviewNotes:          project.reviewNotes?.items        || [],   // 📝 V0.3.3.8 — safe [] on legacy files
     shapeTemplates:       project.shapes?.items              || [],
     // V0.2.22.38 — hardware template library, see core/schema.js
     // createHardwareTemplate. Missing on legacy files → empty list, no

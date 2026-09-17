@@ -2,16 +2,22 @@
  * SBS — translation / proofing sheet: the PURE part (no app state, no DOM
  * required). Numbering exactly as the header shows it, row building, the
  * match of a returned sheet against the project, plain ↔ HTML for text
- * boxes. Wired by translation-sheet.js; tested offline in node.
+ * boxes, review notes out of the Notes column. Wired by
+ * translation-sheet.js; tested offline in node.
  */
 
-export const SHEET_NAME  = 'Translation';
+export const LEGACY_SHEET_NAME = 'Translation';   // V0.3.3.7 single-language files
 export const META_SHEET  = '_sbs';
-export const FORMAT_VERSION = 1;
+export const FORMAT_VERSION = 2;                  // 2 = one sheet per language (V0.3.3.8)
 
 /** Column order in the sheet. Names are the contract — the reader matches by header text, never by position. */
-export const COLUMNS = ['key', 'srcHash', 'Step', 'Chapter', 'Type', 'Preview', 'Source', 'Target', 'Notes'];
+export const COLUMNS = ['key', 'srcHash', 'Step', 'Chapter', 'Preview', 'Type', 'Source', 'Target', 'Notes'];
 export const COL = Object.fromEntries(COLUMNS.map((c, i) => [c, i]));
+
+/** Sheet (tab) name for a language: the code itself, Excel-safe. */
+export function sheetNameFor(code) {
+  return String(code || 'lang').replace(/[[\]:*?/\\]/g, ' ').trim().slice(0, 31) || 'lang';
+}
 
 // ─── numbering (mirrors header.js buildRenderContext) ───────────────────────
 
@@ -20,7 +26,7 @@ export const COL = Object.fromEntries(COLUMNS.map((c, i) => [c, i]));
  * (sub-steps of a group carry the head's number plus their own index),
  * hidden steps and hidden chapters get no number, and with `perChapter` the
  * counter restarts at 1 in every chapter.
- * @returns {Map<string, {label:string, chapterIndex:number, chapterLabel:string, hidden:boolean}>}
+ * @returns {Map<string, {label:string, chapterIndex:number, chapterLabel:string, chapterName:string, hidden:boolean}>}
  */
 export function numberSteps(steps, chapters, perChapter = false) {
   const out = new Map();
@@ -63,6 +69,36 @@ function _entry(label, s, chIndex, chapters) {
   return { label, chapterIndex: ci, chapterLabel: ci >= 0 ? `Chapter ${ci + 1}` : '', hidden: false, chapterName: ci >= 0 ? (chapters[ci]?.name || '') : '' };
 }
 
+/** "Step 5 · Chapter 2" style label for one step id (review notes, previews). */
+export function stepLabelOf(stepId, steps, chapters, perChapter = false) {
+  const n = numberSteps(steps, chapters, perChapter).get(stepId);
+  if (!n) return '';
+  const parts = [];
+  if (n.label) parts.push(`Step ${n.label}`); else parts.push('Hidden step');
+  if (n.chapterLabel) parts.push(n.chapterLabel);
+  return parts.join(' · ');
+}
+
+// ─── units ──────────────────────────────────────────────────────────────────
+
+/**
+ * scanUnits() only lists steps that HAVE a voiceover / name. A client must
+ * be able to add one where the project has none, so every step gets a
+ * (possibly empty) voiceover and name unit. Synthetic units carry
+ * `synthetic: true` and src ''.
+ */
+export function augmentUnits(units, steps) {
+  const have = new Set(units.map(u => u.key));
+  const out = units.slice();
+  for (const s of (steps || [])) {
+    if (s.isBaseStep) continue;
+    const kn = `step:${s.id}:narration`, kk = `step:${s.id}:name`;
+    if (!have.has(kn)) out.push({ key: kn, fmt: 'text', src: '', label: 'Voiceover', synthetic: true });
+    if (!have.has(kk)) out.push({ key: kk, fmt: 'text', src: '', label: 'Step name', synthetic: true });
+  }
+  return out;
+}
+
 // ─── text helpers ───────────────────────────────────────────────────────────
 
 /** HTML text box → plain lines (one per block / <br>), entities decoded. */
@@ -93,8 +129,6 @@ const _escHtml = (s) => String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;').r
 
 /**
  * Put translated PLAIN text back into a styled text box:
- *   • one line of source text → the translation replaces its text run(s),
- *     the first run's styling wraps everything;
  *   • N source lines and N translated lines → line by line, each keeping
  *     its own line's styling;
  *   • otherwise → every translated line wrapped in the FIRST line's styling.
@@ -111,7 +145,6 @@ function _plainIntoHtmlDom(srcHtml, lines) {
   root.innerHTML = String(srcHtml || '');
   const blocks = [...root.children].filter(el => /^(DIV|P)$/.test(el.tagName));
   const styleChainOf = (block) => {
-    // innermost text run's ancestor spans, outermost first → nested wrapper
     const walker = document.createTreeWalker(block, NodeFilter.SHOW_TEXT);
     let tn;
     while ((tn = walker.nextNode())) if (tn.textContent.trim()) break;
@@ -154,19 +187,21 @@ function _plainIntoHtmlRegex(srcHtml, lines) {
 /**
  * Build the sheet rows in timeline order: a chapter row wherever a chapter
  * starts, then per step its voiceover (with the preview), step name, text
- * boxes; project headers at the end.
+ * boxes; project headers at the end. Hidden steps (and steps in hidden
+ * chapters) are left out unless `includeHidden`.
  *
  * @param {Object} p
  * @param {Array}  p.steps        state.steps (timeline order)
  * @param {Array}  p.chapters
- * @param {Array<{key,fmt,src,label,stepId?,constId?}>} p.units   scanUnits()
+ * @param {Array<{key,fmt,src,label,stepId?,constId?}>} p.units   augmentUnits(scanUnits())
  * @param {Object} p.entries      pack.entries (target language) or {} for the source language
  * @param {boolean} p.perChapter  header numbering restarts per chapter
+ * @param {boolean} [p.includeHidden]
  * @param {(text:string)=>string} p.hashOf
  * @param {Map<string,string>} [p.thumbs]   stepId → data URL
  * @returns {Array<{cells:string[], stepId:string|null, thumb:string|null}>}
  */
-export function buildRows({ steps, chapters, units, entries = {}, perChapter = false, hashOf, thumbs = null }) {
+export function buildRows({ steps, chapters, units, entries = {}, perChapter = false, includeHidden = false, hashOf, thumbs = null }) {
   const nums = numberSteps(steps, chapters, perChapter);
   const byStep = new Map();     // stepId → units on that step (text boxes)
   const stepUnit = new Map();   // `${stepId}:${what}` → unit
@@ -187,20 +222,22 @@ export function buildRows({ steps, chapters, units, entries = {}, perChapter = f
     return u.fmt === 'html' ? htmlToPlain(e.tgt) : normText(e.tgt);
   };
   const srcOf = (u) => u.fmt === 'html' ? htmlToPlain(u.src) : normText(u.src);
-  const push = (u, type, num, stepId, thumb) => {
-    rows.push({
-      cells: [u.key, hashOf(u.src), num?.label ?? '', num?.chapterLabel ?? '', type, '', srcOf(u), tgtOf(u), ''],
-      stepId, thumb: thumb || null,
-    });
+  const cellsFor = (u, type, num, srcText, tgtText) => {
+    const c = new Array(COLUMNS.length).fill('');
+    c[COL.key] = u.key; c[COL.srcHash] = hashOf(u.src); c[COL.Step] = num?.label ?? ''; c[COL.Chapter] = num?.chapterLabel ?? '';
+    c[COL.Type] = type; c[COL.Source] = srcText; c[COL.Target] = tgtText;
+    return c;
   };
-  let lastChapter = undefined;
+  const push = (u, type, num, stepId, thumb) => rows.push({ cells: cellsFor(u, type, num, srcOf(u), tgtOf(u)), stepId, thumb: thumb || null });
+  let lastChapter;
   for (const s of steps || []) {
     if (s.isBaseStep) continue;
     const num = nums.get(s.id);
+    if (num?.hidden && !includeHidden) continue;
     if (s.chapterId !== lastChapter) {
       lastChapter = s.chapterId;
       const cu = s.chapterId ? chapterUnit.get(s.chapterId) : null;
-      if (cu) rows.push({ cells: [cu.key, hashOf(cu.src), '', num?.chapterLabel ?? '', 'Chapter', '', normText(cu.src), tgtOf(cu), ''], stepId: null, thumb: null });
+      if (cu) rows.push({ cells: cellsFor(cu, 'Chapter', { label: '', chapterLabel: num?.chapterLabel ?? '' }, normText(cu.src), tgtOf(cu)), stepId: null, thumb: null });
     }
     const hiddenTag = num?.hidden ? ' (hidden)' : '';
     const narr = stepUnit.get(`${s.id}:narration`);
@@ -231,17 +268,19 @@ export function parseHeader(headerRow) {
  * Match every data row of a returned sheet against the CURRENT project.
  * @param {string[][]} rows        data rows (header excluded)
  * @param {Object} idx             parseHeader()
- * @param {Array<{key,fmt,src}>} units   scanUnits() now
+ * @param {Array<{key,fmt,src}>} units   augmentUnits(scanUnits()) now
  * @param {(text:string)=>string} hashOf
  * @returns {Array<{row:number, key:string|null, unit:Object|null, how:'key'|'hash'|'text'|'none',
  *                  stale:boolean, target:string, notes:string, blank:boolean, duplicate:boolean}>}
+ *   `row` is the 1-based SHEET row (header = 1).
  */
 export function matchRows(rows, idx, units, hashOf) {
   const byKey  = new Map(units.map(u => [u.key, u]));
   const srcPlain = (u) => u.fmt === 'html' ? htmlToPlain(u.src) : normText(u.src);
-  const byHash = new Map();   // srcHash → units (may collide: identical texts)
+  const byHash = new Map();   // srcHash → units (may collide: identical texts, empty voiceovers)
   const byText = new Map();
   for (const u of units) {
+    if (!u.src) continue;      // empty sources are never unique
     const h = hashOf(u.src);
     if (!byHash.has(h)) byHash.set(h, []);
     byHash.get(h).push(u);
@@ -283,4 +322,40 @@ export function summarize(matches) {
     if (m.duplicate) s.duplicate++;
   }
   return s;
+}
+
+/**
+ * Review notes out of a sheet: every row with text in Notes, plus every
+ * picture the client floated over a row (any column but Preview).
+ * @param {Array} matches   matchRows()
+ * @param {Array<{row:number, col:number, dataUrl:string}>} images   0-based sheet row / col (parseXlsx)
+ * @param {Object} idx      parseHeader()
+ * @returns {Array<{row:number, key:string|null, unit:Object|null, text:string, images:string[]}>}
+ */
+export function notesFrom(matches, images, idx) {
+  const byRow = new Map(matches.map(m => [m.row, m]));
+  const imgs = new Map();   // sheet row (1-based) → data URLs
+  for (const im of images || []) {
+    if (!im?.dataUrl) continue;
+    if (idx.Preview != null && im.col === idx.Preview) continue;   // our own preview
+    const r = im.row + 1;
+    if (!imgs.has(r)) imgs.set(r, []);
+    imgs.get(r).push(im.dataUrl);
+  }
+  const out = [];
+  const rowsWithNotes = new Set([...[...byRow.keys()].filter(r => byRow.get(r).notes), ...imgs.keys()]);
+  for (const r of [...rowsWithNotes].sort((a, b) => a - b)) {
+    const m = byRow.get(r);
+    if (!m && !imgs.has(r)) continue;
+    out.push({ row: r, key: m?.key || null, unit: m?.unit || null, text: m?.notes || '', images: imgs.get(r) || [] });
+  }
+  return out;
+}
+
+/** stepId a unit belongs to (null for chapters / headers). */
+export function stepIdOfUnit(unit) {
+  if (!unit) return null;
+  const m = /^step:(.+):(name|narration)$/.exec(unit.key);
+  if (m) return m[1];
+  return unit.stepId || null;
 }

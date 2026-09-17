@@ -99,6 +99,7 @@ import { renderAnimationTab } from './animation-tab.js';
 import { renderHeaderTab }    from './header-tab.js';
 import { renderStyleTab }     from './style-tab.js';
 import { renderCableTab, clearActiveCable } from './cable-tab.js';
+import { renderReviewNotesTab } from './review-notes-tab.js';   // 📝 V0.3.3.8 — remarks from translation sheets
 export { clearActiveCable };
 import { renderHardwareTab, startEditTemplate as _hwStartEditTemplate } from './hardware-tab.js';
 import { renderPrimitivesTab } from './primitives-tab.js';   // V0.2.22.90: parametric primitives
@@ -109,7 +110,7 @@ import * as userSettings    from '../core/user-settings.js';
 import { buildRenderSettingsPanel } from './render-settings-panel.js';
 import * as narrationCache  from '../systems/narration-cache.js';
 
-const TABS = ['files', 'env', 'tree', 'colors', 'select', 'cameras', 'animation', 'header', 'style', 'cables', 'notes', 'shapes', 'primitives', 'hardware', 'undo', 'export'];
+const TABS = ['files', 'env', 'tree', 'colors', 'select', 'cameras', 'animation', 'header', 'style', 'cables', 'notes', 'shapes', 'primitives', 'hardware', 'undo', 'review', 'export'];
 let _activeTab   = 'files';
 let _container   = null;
 let _treeInited  = false;
@@ -139,6 +140,7 @@ export function initSidebarLeft() {
       <button class="tabBtn"        data-tab="primitives">⬡</button>
       <button class="tabBtn"        data-tab="hardware">🔩</button>
       <button class="tabBtn"        data-tab="undo">↶</button>
+      <button class="tabBtn"        data-tab="review" title="Review notes — remarks that came back on translation / proofing sheets">📝</button>
       <button class="tabBtn"        data-tab="export">Export</button>
     </div>
     <div class="sidebar-panels" id="left-panels"></div>
@@ -183,6 +185,8 @@ export function initSidebarLeft() {
   state.on('change:selectedColorPresetIds',       _queueColorsRender);
   // V0.2.16: keep the Undo tab's stack lists live.
   state.on('undo:change',                         () => { if (_activeTab === 'undo') _renderUndoTab(); });
+  state.on('change:reviewNotes',                  () => { if (_activeTab === 'review') renderReviewNotesTab(_panel('review')); });
+  state.on('change:activeStepId',                 () => { if (_activeTab === 'review') renderReviewNotesTab(_panel('review')); });
   // Expanded-color viewport highlight stays live across selection / step /
   // visibility changes even when the user has switched away from the tab.
   state.on('change:selectedId',          _syncExpandedColorHighlight);
@@ -393,6 +397,7 @@ function _renderActiveTab() {
     case 'primitives': _renderPrimitivesTabPanel(); break;
     case 'hardware':  _renderHardwareTabPanel(); break;
     case 'undo':      _renderUndoTab();    break;
+    case 'review':    renderReviewNotesTab(_panel('review')); break;
     case 'export':    _renderExportTab();  break;
   }
 }

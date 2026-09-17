@@ -195,6 +195,7 @@ export async function buildXlsx(spec) {
   const files = [];
   const overrides = [];
   const media = [];   // { name, data }
+  const mediaByUrl = new Map();   // dataUrl → media part name (the same preview on several sheets = ONE part)
   let imageNo = 0;
 
   const workbookSheets = sheets.map((s, i) =>
@@ -252,11 +253,16 @@ export async function buildXlsx(spec) {
       const anchors = imgs.map((im, k) => {
         const m = /^data:image\/(png|jpe?g);base64,(.+)$/i.exec(im.dataUrl);
         if (!m) return '';
-        imageNo++;
-        const ext = m[1].toLowerCase() === 'png' ? 'png' : 'jpeg';
-        media.push({ name: `xl/media/image${imageNo}.${ext}`, data: _b64ToBytes(m[2]) });
+        let part = mediaByUrl.get(im.dataUrl);
+        if (!part) {
+          imageNo++;
+          const ext = m[1].toLowerCase() === 'png' ? 'png' : 'jpeg';
+          part = `xl/media/image${imageNo}.${ext}`;
+          media.push({ name: part, data: _b64ToBytes(m[2]) });
+          mediaByUrl.set(im.dataUrl, part);
+        }
         const rid = `rId${k + 1}`;
-        drawingRels += `<Relationship Id="${rid}" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/image" Target="../media/image${imageNo}.${ext}"/>`;
+        drawingRels += `<Relationship Id="${rid}" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/image" Target="../${part.slice(3)}"/>`;
         const cx = Math.round((im.wPx || 300) * 9525), cy = Math.round((im.hPx || 169) * 9525);
         return `<xdr:oneCellAnchor><xdr:from><xdr:col>${im.col}</xdr:col><xdr:colOff>19050</xdr:colOff><xdr:row>${im.row + 1}</xdr:row><xdr:rowOff>19050</xdr:rowOff></xdr:from>`
           + `<xdr:ext cx="${cx}" cy="${cy}"/>`
@@ -336,12 +342,16 @@ export function base64ToBytes(b64) { return _b64ToBytes(b64); }
 
 /**
  * @param {Uint8Array} bytes
- * @returns {Promise<{sheets: Array<{name:string, hidden:boolean, rows:string[][]}>}>}
- *   rows are dense (missing cells → ''), values are strings.
+ * @returns {Promise<{sheets: Array<{name:string, hidden:boolean, rows:string[][], images:Array<{row:number,col:number,dataUrl:string}>}>}>}
+ *   rows are dense (missing cells → ''), values are strings. images = the
+ *   pictures floating over the sheet (drawing parts), with the 0-based cell
+ *   their top-left corner sits in — how a reviewer's screenshot in a Notes
+ *   cell comes back. (Excel's newer "picture in cell" objects are not read.)
  */
 export async function parseXlsx(bytes) {
   const files = await readZip(bytes);
   const get = (name) => { const d = files.get(name) || files.get(name.replace(/^\//, '')); return d ? dec.decode(d) : null; };
+  const getBytes = (name) => files.get(name) || files.get(name.replace(/^\//, '')) || null;
   const wb = get('xl/workbook.xml');
   if (!wb) throw new Error('Not an .xlsx workbook (xl/workbook.xml missing)');
   const relsXml = get('xl/_rels/workbook.xml.rels') || '';
@@ -363,9 +373,68 @@ export async function parseXlsx(bytes) {
     const hidden = /state="(hidden|veryHidden)"/.test(tag);
     const path = rels.get(rid);
     const xml  = path ? get(path) : null;
-    sheets.push({ name, hidden, rows: xml ? _parseSheet(xml, shared) : [] });
+    sheets.push({ name, hidden, rows: xml ? _parseSheet(xml, shared) : [], images: path ? _sheetImages(path, get, getBytes) : [] });
   }
   return { sheets };
+}
+
+/** Resolve a relationship Target against the folder of the part that holds the .rels. */
+function _resolveRel(partPath, target) {
+  if (target.startsWith('/')) return target.slice(1);
+  const dir = partPath.split('/').slice(0, -1);
+  for (const seg of target.split('/')) {
+    if (seg === '..') dir.pop();
+    else if (seg && seg !== '.') dir.push(seg);
+  }
+  return dir.join('/');
+}
+
+function _relsOf(partPath, get) {
+  const parts = partPath.split('/');
+  const file = parts.pop();
+  const xml = get(`${parts.join('/')}/_rels/${file}.rels`);
+  const map = new Map();
+  if (!xml) return map;
+  for (const m of xml.matchAll(/<Relationship\b([^>]*)\/?>/g)) {
+    const id = _attr(m[1], 'Id'), target = _attr(m[1], 'Target'), type = _attr(m[1], 'Type') || '';
+    if (id && target) map.set(id, { target: _resolveRel(partPath, target), type });
+  }
+  return map;
+}
+
+const _MIME = { png: 'image/png', jpg: 'image/jpeg', jpeg: 'image/jpeg', gif: 'image/gif', bmp: 'image/bmp', webp: 'image/webp' };
+
+function _sheetImages(sheetPath, get, getBytes) {
+  const out = [];
+  try {
+    const sheetRels = _relsOf(sheetPath, get);
+    for (const { target, type } of sheetRels.values()) {
+      if (!/\/drawing$/.test(type)) continue;
+      const dxml = get(target);
+      if (!dxml) continue;
+      const drels = _relsOf(target, get);
+      const anchorRe = /<(?:\w+:)?(oneCellAnchor|twoCellAnchor|absoluteAnchor)\b[\s\S]*?<\/(?:\w+:)?\1>/g;
+      let am;
+      while ((am = anchorRe.exec(dxml))) {
+        const a = am[0];
+        const from = /<(?:\w+:)?from>([\s\S]*?)<\/(?:\w+:)?from>/.exec(a)?.[1] || '';
+        const col = parseInt(/<(?:\w+:)?col>(\d+)</.exec(from)?.[1] ?? '-1', 10);
+        const row = parseInt(/<(?:\w+:)?row>(\d+)</.exec(from)?.[1] ?? '-1', 10);
+        const embed = /\b(?:\w+:)?embed="([^"]+)"/.exec(a)?.[1];
+        if (row < 0 || !embed) continue;
+        const rel = drels.get(embed);
+        if (!rel) continue;
+        const ext = (rel.target.split('.').pop() || '').toLowerCase();
+        const mime = _MIME[ext];
+        const bytes = getBytes(rel.target);
+        if (!mime || !bytes) continue;
+        out.push({ row, col, dataUrl: `data:${mime};base64,${bytesToBase64(bytes)}` });
+      }
+    }
+  } catch (e) {
+    console.warn?.('[xlsx] drawing parse skipped:', e?.message || e);
+  }
+  return out;
 }
 
 function _parseSheet(xml, shared) {

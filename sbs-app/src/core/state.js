@@ -164,6 +164,10 @@ function createInitialState() {
     // cropMaskId; a mask kept private to one node lives inline on it as a
     // cropMask attr instead and never appears here.
     cropMasks:      [],               // CropMaskDef[]
+    // 📝 Review notes (V0.3.3.8) — remarks a translator / proofreader typed
+    // into a sheet's Notes column (text + pictures), tied to a step, with an
+    // "addressed" tick. See systems/review-notes.js.
+    reviewNotes:    [],               // ReviewNote[]
 
     // ── Flat-shape templates — project-level polygon library. Each entry
     // owns a polygon + fill; placed instances live in the scene tree

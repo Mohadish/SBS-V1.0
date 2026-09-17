@@ -59,6 +59,8 @@ function _build() {
       background:rgba(59,130,246,0.18);border-bottom:1px solid var(--line,#334155);
       border-top-left-radius:10px;border-top-right-radius:10px;">
       <span style="flex:1;font-weight:600;font-size:13px;color:#dbeafe;">🌍 Languages</span>
+      <button class="btn" id="lang-sheet-export" type="button" title="Export a translation / proofing workbook (.xlsx) — one tab per language you pick. Built from the original text, so the project must be showing its source language." style="padding:2px 8px;font-size:12px;">📤 Sheet</button>
+      <button class="btn" id="lang-sheet-import" type="button" title="Import a returned workbook: every language tab is matched by key, previewed, applied with one undo; Notes become review notes (📝 tab)." style="padding:2px 8px;font-size:12px;">📥 Sheet</button>
       <button class="btn" id="lang-refresh" type="button" title="Rescan the project" style="padding:2px 8px;font-size:12px;">🔄</button>
       <button class="btn" id="lang-close"   type="button" style="padding:2px 8px;font-size:12px;">✕</button>
     </div>
@@ -145,6 +147,14 @@ function _statsOf(pack) {
 
 function _render() {
   if (!_win) return;
+  // 📊 sheet buttons live in the header; wired here so they follow _busy.
+  for (const [sel, dir] of [['#lang-sheet-export', 'export'], ['#lang-sheet-import', 'import']]) {
+    const b = _win.querySelector(sel);
+    if (!b) continue;
+    b.onclick = () => _onSheet(dir);
+    b.disabled = _busy;
+    b.style.opacity = _busy ? '0.45' : '';
+  }
   const src = lang.sourceLang();
   const act = lang.activeLang();
   const saved = !!state.get('projectPath');
@@ -250,16 +260,6 @@ function _langRow({ code, isSource, active, stats, error }) {
     }
   }
   top.appendChild(mkBtn(active ? 'Showing' : 'Switch to', 'Put this language into the project', () => _onSwitch(code), active));
-  // 📊 V0.3.3.7 — translation / proofing sheets. Built from the ORIGINAL text,
-  // so both buttons want the project showing its source language.
-  top.appendChild(mkBtn('📤 Sheet', isSource
-    ? 'Export a proofing sheet (.xlsx): every line of the original with an empty column for corrections'
-    : `Export a translation sheet (.xlsx) for "${code}": original text beside the current translation`,
-    () => _onSheet(code, 'export')));
-  top.appendChild(mkBtn('📥 Sheet', isSource
-    ? 'Import a returned proofing sheet: corrections go into the project (previewed first, one undo)'
-    : `Import a returned sheet into the "${code}" pack (previewed first, one undo)`,
-    () => _onSheet(code, 'import')));
   row.appendChild(top);
 
   if (error) {
@@ -361,12 +361,12 @@ async function _onAdd() {
   await _onScan(code);
 }
 
-async function _onSheet(code, dir) {
+async function _onSheet(dir) {
   if (_busy) return;
-  _busy = true; _render(); _say(dir === 'export' ? `Building the ${code} sheet…` : `Reading the ${code} sheet…`);
+  _busy = true; _render(); _say(dir === 'export' ? 'Building the sheet…' : 'Reading the sheet…');
   try {
-    if (dir === 'export') await exportTranslationSheet(code);
-    else await importTranslationSheet(code);
+    if (dir === 'export') await exportTranslationSheet();
+    else await importTranslationSheet();
   } catch (e) {
     console.error('[lang] sheet failed:', e);
     setStatus(`Sheet ${dir} failed: ${e?.message || e}`, 'warn', 8000);
