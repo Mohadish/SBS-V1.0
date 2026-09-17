@@ -906,6 +906,31 @@ function _placePinBadges() {
   _uiLayer.batchDraw();
 }
 
+/** Is a PAGE point inside the node's visible rect (mask window or bbox, rotation honoured)? */
+function _pinPointerInItem(node, px, py) {
+  if (!_stage || !_container || !_isLiveNode(node)) return false;
+  const cr = _container.getBoundingClientRect();
+  const p  = _stage.getAbsoluteTransform().copy().invert().point({ x: px - cr.left, y: py - cr.top });
+  const r  = _pinVisibleRect(node);
+  const a  = -(r.rot || 0) * Math.PI / 180;
+  const dx = p.x - r.x, dy = p.y - r.y;
+  const lx = dx * Math.cos(a) - dy * Math.sin(a);
+  const ly = dx * Math.sin(a) + dy * Math.cos(a);
+  return lx >= 0 && ly >= 0 && lx <= r.w && ly <= r.h;
+}
+
+/** Bubble opacity: full while the pointer is over the item or the bubble
+ *  (or the item is being dragged), a faint 10% otherwise so the text under
+ *  it stays readable while you judge the new spot (V0.3.3.6). */
+function _pinHover(e) {
+  const ui = _pinUI;
+  if (!ui?.bubble) return;
+  const b = ui.bubble.getBoundingClientRect();
+  const inBubble = e.clientX >= b.left && e.clientX <= b.right && e.clientY >= b.top && e.clientY <= b.bottom;
+  const near = inBubble || _pinPointerInItem(ui.node, e.clientX, e.clientY) || !!ui.node.isDragging?.();
+  ui.bubble.style.opacity = near ? '1' : '0.1';
+}
+
 function _pinPlace() {
   const ui = _pinUI;
   if (!ui?.bubble || !_isLiveNode(ui.node) || !_stage || !_container) return;
@@ -957,8 +982,10 @@ function _pinOpen(node, mode) {
     bubble.className = 'sbs-pin-bubble';
     bubble.style.cssText = 'position:fixed;z-index:9999;pointer-events:none;display:flex;flex-direction:column;gap:6px;align-items:center;'
       + 'padding:8px 12px;background:var(--panel,#0f172a);border:1px solid #ef4444;border-radius:10px;'
-      + 'box-shadow:0 10px 30px rgba(0,0,0,.55);color:var(--text,#e2e8f0);font-size:12px;white-space:nowrap;';
+      + 'box-shadow:0 10px 30px rgba(0,0,0,.55);color:var(--text,#e2e8f0);font-size:12px;white-space:nowrap;'
+      + 'transition:opacity .15s;';
     document.body.appendChild(bubble);
+    document.addEventListener('mousemove', _pinHover);
     const onKey = (e) => {
       if (e.key !== 'Enter' && e.key !== 'Escape') return;
       const el = document.activeElement, tag = el?.tagName;
@@ -982,6 +1009,7 @@ function _pinArm() {
   _pinUI.mode   = 'armed';
   _pinUI.stepId = state.get('activeStepId');
   _pinBubbleRender();
+  _refreshMultiToolbar();   // hides the floating style panel while repositioning (see there)
 }
 
 /** A drag or nudge ended while armed → offer Set / Reset (or just follow the item). */
@@ -1019,12 +1047,15 @@ function _cancelPinReposition(reason) {
 function _pinTeardown() {
   const ui = _pinUI;
   if (!ui) return;
+  const wasPending = ui.mode !== 'idle';
   _pinUI = null;
   try { ui.bubble.remove(); } catch { /* already gone */ }
   window.removeEventListener('keydown', ui.onKey, true);
   window.removeEventListener('resize', _pinPlace);
+  document.removeEventListener('mousemove', _pinHover);
   ui.node.off?.('.pinui');
   _refreshPinBadges();
+  if (wasPending) { try { _refreshMultiToolbar(); } catch { /* panel is a nicety */ } }   // the style panel comes back
 }
 
 /**
@@ -5936,6 +5967,15 @@ function _setSelection(node, additive = false) {
  */
 function _refreshMultiToolbar() {
   if (_activeTextEditor) return;     // single-editor mode owns the slot
+  // 📌 V0.3.3.6 — while a pin reposition is pending the floating style
+  // panel gets out of the way: the point of the exercise is to SEE the
+  // item where it lands. _pinTeardown brings the panel back.
+  if (_pinUI && _pinUI.mode !== 'idle') {
+    unmountTextToolbar();
+    unmountShapeToolbar();
+    _clearFloatingToolbar();
+    return;
+  }
   const host = getTextToolbarSlot();
   if (!host) return;
   const sel = _transformer?.nodes() || [];
