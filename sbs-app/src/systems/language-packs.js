@@ -1218,6 +1218,18 @@ export function applyOneEntry(key, value) {
   return _applyStrings((k) => (k === key ? value : null), key.startsWith('text:') ? [key] : []);
 }
 
+/**
+ * Push MANY units' text into the live project in one pass (one setState, one
+ * overlay parse) — the translation-sheet import (V0.3.3.7) and its undo.
+ * @param {Map<string,string>} map  unit key → text / html
+ * @returns {number} units changed
+ */
+export function applyEntries(map) {
+  if (!map || !map.size) return 0;
+  const textKeys = [...map.keys()].filter(k => k.startsWith('text:'));
+  return _applyStrings((k) => (map.has(k) ? map.get(k) : null), textKeys);
+}
+
 function _markReview(entry, side, value) {
   const review = { ...(entry.review || {}) };
   review[side] = value;

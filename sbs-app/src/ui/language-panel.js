@@ -17,6 +17,7 @@ import { setStatus } from './status.js';
 import { promptString } from './prompt.js';
 import * as lang from '../systems/language-packs.js';
 import * as tts from '../systems/tts.js';
+import { exportTranslationSheet, importTranslationSheet } from '../systems/translation-sheet.js';
 import { showContextMenu } from './context-menu.js';
 
 let _win = null;
@@ -249,6 +250,16 @@ function _langRow({ code, isSource, active, stats, error }) {
     }
   }
   top.appendChild(mkBtn(active ? 'Showing' : 'Switch to', 'Put this language into the project', () => _onSwitch(code), active));
+  // 📊 V0.3.3.7 — translation / proofing sheets. Built from the ORIGINAL text,
+  // so both buttons want the project showing its source language.
+  top.appendChild(mkBtn('📤 Sheet', isSource
+    ? 'Export a proofing sheet (.xlsx): every line of the original with an empty column for corrections'
+    : `Export a translation sheet (.xlsx) for "${code}": original text beside the current translation`,
+    () => _onSheet(code, 'export')));
+  top.appendChild(mkBtn('📥 Sheet', isSource
+    ? 'Import a returned proofing sheet: corrections go into the project (previewed first, one undo)'
+    : `Import a returned sheet into the "${code}" pack (previewed first, one undo)`,
+    () => _onSheet(code, 'import')));
   row.appendChild(top);
 
   if (error) {
@@ -348,6 +359,22 @@ async function _onAdd() {
   if (!/^[a-z]{2}(-[a-z]{2,4})?$/i.test(code)) { setStatus('Use a language code like he, es, pt-br.', 'warn', 6000); return; }
   if (code === lang.sourceLang()) { setStatus(`"${code}" is the project's own language.`, 'warn', 5000); return; }
   await _onScan(code);
+}
+
+async function _onSheet(code, dir) {
+  if (_busy) return;
+  _busy = true; _render(); _say(dir === 'export' ? `Building the ${code} sheet…` : `Reading the ${code} sheet…`);
+  try {
+    if (dir === 'export') await exportTranslationSheet(code);
+    else await importTranslationSheet(code);
+  } catch (e) {
+    console.error('[lang] sheet failed:', e);
+    setStatus(`Sheet ${dir} failed: ${e?.message || e}`, 'warn', 8000);
+  } finally {
+    _busy = false;
+    _say('');
+    await _refresh();
+  }
 }
 
 async function _onScan(code) {
