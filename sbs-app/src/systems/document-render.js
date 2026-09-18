@@ -8,6 +8,7 @@
  */
 
 import { watermarkHtml, watermarkCss, WATERMARK_CSS } from './watermark-core.js';
+import { pictureBox } from './document-core.js';
 export { watermarkCss };
 
 const _esc = (s) => String(s ?? '').replace(/[&<>"]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
@@ -35,8 +36,9 @@ body { font-family: Arial, Helvetica, sans-serif; color: #111; -webkit-print-col
 .it .no { flex: 0 0 auto; min-width: 9mm; height: 6.2mm; padding: 0 1.6mm; border-radius: 3.1mm; background: #111; color: #fff; font-weight: 700; font-size: 9.5pt; display: flex; align-items: center; justify-content: center; }
 .it .tx { flex: 1; white-space: pre-wrap; word-break: break-word; }
 .it .nm { display: block; font-weight: 700; font-size: 10pt; margin-bottom: 0.6mm; }
-.slot { border: 0.25mm solid #999; background: #f4f4f4; display: flex; align-items: center; justify-content: center; }
-.slot img { width: 100%; height: 100%; object-fit: contain; display: block; }
+.slot { border: 0.25mm solid #999; background: #fff; display: flex; align-items: center; justify-content: center; }
+.slot.none { background: #f4f4f4; }
+.slot img.pic { position: absolute; display: block; height: auto; max-width: none; transform: translate(-50%, -50%); }
 .slot .ph { color: #888; font-size: 9pt; text-align: center; padding: 3mm; }
 .cap { position: absolute; font-size: 8pt; color: #555; }
 ` + WATERMARK_CSS;
@@ -56,6 +58,18 @@ export function renderDocumentHtml(model, o = {}) {
 }
 
 /**
+ * What sits inside a picture slot: the picture, CROPPED by the slot — placed by
+ * its centre (slot centre + the user's offset) and sized in % of the slot width
+ * (100 % × zoom of "fills the slot"). Exported: the workspace patches a slot with
+ * the same markup when a picture arrives.
+ */
+export function slotInnerHtml(im, url, k) {
+  if (!url) return `<div class="ph">${im.stepId ? 'picture not rendered yet' : `picture ${k + 1} — empty`}</div>`;
+  const b = pictureBox(im.rect, im.aspect, im.fit);
+  return `<img class="pic" src="${_esc(url)}" alt="" draggable="false" style="left:calc(50% + ${b.dxMm}mm);top:calc(50% + ${b.dyMm}mm);width:${b.widthPct}%;">`;
+}
+
+/**
  * ONE page as a <section> — the PDF, the preview and the workspace's live page
  * are all this same markup, so what is edited is what prints. Rows carry
  * data-step and slots data-slot: the workspace hangs its editing on them.
@@ -68,9 +82,8 @@ export function renderPageHtml(p, o = {}) {
   const chapterHead = (o.chapterHead ?? p.chapterHead) && p.chapter ? `<h2 dir="auto">${_esc(p.chapter)}</h2>` : '';
   const items = p.items.map(it => `<div class="it" dir="${_dirOf(it.text)}" data-step="${_esc(it.stepId)}">${it.label ? `<span class="no">${_esc(it.label)}</span>` : ''}<div class="tx" dir="auto">${o.showStepNames && it.name ? `<span class="nm">${_esc(it.name)}</span>` : ''}${_esc(it.text)}</div></div>`).join('');
   const slots = p.images.map((im, k) => {
-    const url = im.stepId ? still(im.stepId) : null;
-    const inner = url ? `<img src="${_esc(url)}" alt="">` : `<div class="ph">${im.stepId ? 'picture not rendered yet' : `picture ${k + 1} — choose a step`}</div>`;
-    return `<div class="zone slot" data-slot="${k}" style="${_mm(im.rect)}">${inner}</div>`;
+    const url = im.src || (im.stepId ? still(im.stepId) : null);
+    return `<div class="zone slot${url ? '' : ' none'}" data-slot="${k}" style="${_mm(im.rect)}">${slotInnerHtml(im, url, k)}</div>`;
   }).join('');
   // 💧 'under' = painted first (the text and the pictures cover it); 'over' = last, on top of the pictures too
   const wm = watermarkHtml(o.watermark);

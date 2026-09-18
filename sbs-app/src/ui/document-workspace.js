@@ -17,8 +17,8 @@ import { undoManager } from '../systems/undo.js';
 import { setStatus } from './status.js';
 import { srcHashOf } from '../systems/language-packs.js';
 import { numberSteps } from '../systems/translation-sheet-core.js';
-import { builtinTemplates, docTextFor, pageRangeLabel, unitsOf, stillsNeeded } from '../systems/document-core.js';
-import { DOCUMENT_CSS, renderPageHtml } from '../systems/document-render.js';
+import { builtinTemplates, docTextFor, pageRangeLabel, unitsOf, stillsNeeded, pictureBox, containZoom, slotState } from '../systems/document-core.js';
+import { DOCUMENT_CSS, renderPageHtml, slotInnerHtml } from '../systems/document-render.js';
 import { watermarkOf, watermarkHtml, watermarkCss, watermarkVisible, detectWatermarkMode, bakeWatermarkPixels, fitWithin } from '../systems/watermark-core.js';
 import * as D from '../systems/document.js';
 
@@ -31,6 +31,7 @@ let _sel = new Set(), _anchor = null, _pageId = null, _zoom = 'fit';
 let _walking = false, _walkAgain = false, _exporting = false, _deferred = false, _menu = null, _renderTimer = 0;
 let _ptrDown = false, _renderHeld = false;
 let _wmOpen = false, _wmDlg = null;
+let _slotSel = null, _pageModel = null, _assetSlot = 0;
 
 // page-editing affordances — live ONLY in the workspace, never in the PDF
 const EDIT_CSS = `
@@ -43,7 +44,10 @@ const EDIT_CSS = `
 .it.edited .no { box-shadow: 0 0 0 0.5mm #2563eb; }
 .it.drifted .no { box-shadow: 0 0 0 0.5mm #f59e0b; }
 .slot { cursor: pointer; }
-.slot:hover { outline: 0.5mm solid #2563eb; outline-offset: -0.5mm; }
+.slot:hover { outline: 0.4mm solid #60a5fa; outline-offset: -0.4mm; }
+.slot.sel { outline: 0.7mm solid #2563eb; outline-offset: -0.7mm; }
+.slot img.pic { cursor: grab; user-select: none; -webkit-user-drag: none; }
+.slot.sel img.pic:active { cursor: grabbing; }
 .hdr, .ftr { cursor: pointer; }
 .hdr:hover, .ftr:hover { background: #eff6ff; }
 .txt.over { outline: 0.5mm solid #dc2626; outline-offset: -0.5mm; }
@@ -66,6 +70,7 @@ export function closeDocumentWorkspace() {
   _commitFocusedText();
   _closeMenu();
   _wmDlg?.remove(); _wmDlg = null;
+  _flushWheel(); _slotSel = null; _placeSlotBar();
   _root.style.display = 'none';
 }
 const _isOpen = () => !!_root && _root.style.display !== 'none';
@@ -97,6 +102,11 @@ function _build() {
       #document-workspace .dw-step:hover { background:#16213a; }
       #document-workspace .dw-step.sel { background:#1d3a5f; }
       #document-workspace .dw-step.pending { opacity:.5; }
+      #document-workspace .dw-step.hid > :not(.dw-eye) { opacity:.38; }
+      #document-workspace .dw-step.hid .dw-name { text-decoration:line-through; }
+      #document-workspace .dw-eye { flex:0 0 auto;width:26px;text-align:center;font-size:14px;opacity:.25;border-radius:5px;padding:2px 0; }
+      #document-workspace .dw-step:hover .dw-eye, #document-workspace .dw-step.hid .dw-eye { opacity:1; }
+      #document-workspace .dw-eye:hover { background:#273449;text-decoration:none; }
       #document-workspace .dw-thumb { width:84px;height:48px;flex:0 0 auto;border-radius:4px;background:#1e293b;border:1px solid #334155;object-fit:cover;display:block; }
       #document-workspace .dw-no { flex:0 0 auto;min-width:26px;text-align:center;font-weight:700;font-size:11.5px;background:#0b1220;border:1px solid #334155;border-radius:9px;padding:1px 6px; }
       #document-workspace .dw-chap { margin:10px 10px 6px;font-size:11px;font-weight:700;color:#cbd5e1;letter-spacing:.04em; }
@@ -107,6 +117,7 @@ function _build() {
       <span style="font-weight:700;font-size:14px;">📄 Document</span>
       <span id="dw-status" style="flex:1;min-width:0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;color:#94a3b8;font-size:12px;padding:0 10px;"></span>
       <span id="dw-actions" style="display:flex;gap:8px;align-items:center;"></span>
+      <input type="file" id="dw-asset-file" accept="image/*" hidden>
       <button class="dw-btn" data-act="close" title="Close the document workspace — nothing is lost, the document is part of the project">◀ Back to the animation</button>
     </div>
     <div style="flex:1 1 auto;min-height:0;display:flex;">
@@ -170,12 +181,21 @@ function _build() {
   // the re-render it triggers would replace the element under the pointer
   // before mouseup: the click was lost. Hold every re-render while a button is down.
   _root.addEventListener('pointerdown', () => { _ptrDown = true; }, true);
-  const release = () => { if (!_ptrDown) return; _ptrDown = false; if (_renderHeld) { _renderHeld = false; setTimeout(() => { if (_isOpen()) _renderAll(); }, 0); } };
+  const release = () => { if (!_ptrDown) return; _ptrDown = false; if (_pan) _onSlotPointerUp();   // a drag released outside the page still ends (and commits) here
+    if (_renderHeld) { _renderHeld = false; setTimeout(() => { if (_isOpen()) _renderAll(); }, 0); } };
   window.addEventListener('pointerup', release, true);
   window.addEventListener('pointercancel', release, true);
   _shadow.addEventListener('focusout', (e) => { if (e.target?.classList?.contains('tx')) _commitText(e.target); });
   _shadow.addEventListener('input', () => _markOverflow());
   _shadow.addEventListener('click', _onPageClick);
+  _shadow.addEventListener('pointerdown', _onSlotPointerDown);
+  _shadow.addEventListener('pointermove', _onSlotPointerMove);
+  _shadow.addEventListener('pointerup', _onSlotPointerUp);
+  _shadow.addEventListener('pointercancel', _onSlotPointerUp);
+  _shadow.addEventListener('wheel', _onSlotWheel, { passive: false });
+  _root.addEventListener('contextmenu', _onContextMenu);
+  _root.querySelector('#dw-center').addEventListener('scroll', () => _placeSlotBar());
+  _root.querySelector('#dw-center').addEventListener('pointerdown', (e) => { if (e.target.id === 'dw-center' && _slotSel != null) _selectSlot(null); });
 
   window.addEventListener('resize', () => { if (_isOpen()) _fit(); });
   // coalesced: a pictures walk activates steps and can fire change:steps once per step
@@ -201,7 +221,7 @@ function _ctx() {
   const units = unitsOf(steps, chapters, doc?.options);
   const pageOfUnit = new Map();
   for (const p of doc?.pages || []) for (const id of p.stepIds || []) if (!pageOfUnit.has(id)) pageOfUnit.set(id, p);
-  return { doc, steps, chapters, perChapter, units, pageOfUnit, stepById: new Map(steps.map(s => [s.id, s])), nums: numberSteps(steps, chapters, perChapter) };
+  return { doc, steps, chapters, perChapter, units, pageOfUnit, hidden: new Set(doc?.hiddenSteps || []), stepById: new Map(steps.map(s => [s.id, s])), nums: numberSteps(steps, chapters, perChapter) };
 }
 
 function _renderAll() {
@@ -284,16 +304,19 @@ function _renderLeft(c) {
       <select class="dw-in" data-opt="numbering">${[['step', 'The same numbers as the animation'], ['page', '1, 2, 3 on every page'], ['none', 'No numbers']].map(([v, l]) => `<option value="${v}"${(c.doc.options?.numbering || 'step') === v ? ' selected' : ''}>${l}</option>`).join('')}</select></label>`;
   const pageHtml = `
     <div class="dw-h">Page ${pi + 1} of ${c.doc.pages.length}</div>
-    <div style="font-size:12px;color:#cbd5e1;margin-bottom:8px;">${_esc(pageRangeLabel(page, c.steps, c.chapters, c.perChapter))}</div>
+    <div style="font-size:12px;color:#cbd5e1;margin-bottom:8px;">${_esc(pageRangeLabel(page, c.steps, c.chapters, c.perChapter, c.doc.hiddenSteps))}</div>
     ${flags.length ? `<div style="margin:0 0 10px;padding:7px 9px;border-radius:7px;background:rgba(245,158,11,.13);border:1px solid #b45309;font-size:11.5px;line-height:1.5;">${flags.map(x => `${FLAG_ICON[x.kind] || '!'} ${_esc(x.note)}`).join('<br>')}
       <div style="margin-top:5px;"><a data-act="reviewed">✓ Seen — clear these marks</a></div></div>` : ''}
     <label class="dw-lab">Page template
       <select class="dw-in" data-page-opt="template">${tpls.map(t => `<option value="${_esc(t.id)}"${t.id === page.templateId ? ' selected' : ''}>${_esc(t.name)}</option>`).join('')}</select></label>
-    ${(tplNow.images || []).map((_, k) => `<label class="dw-lab">Picture ${k + 1}
+    ${(tplNow.images || []).map((_, k) => { const st = slotState(page, k), im = page.images?.[k]; return `<label class="dw-lab">Picture ${k + 1}
       <select class="dw-in" data-page-opt="picture" data-slot="${k}">
-        ${k === 0 ? `<option value=""${(page.images?.[0]?.auto || !page.images?.[0]?.stepId) ? ' selected' : ''}>Automatic — the page's last step</option>` : `<option value=""${!page.images?.[k]?.stepId ? ' selected' : ''}>— empty —</option>`}
-        ${members.map(sid => `<option value="${_esc(sid)}"${(page.images?.[k]?.stepId === sid && !(k === 0 && page.images?.[0]?.auto)) ? ' selected' : ''}>${_esc(label(sid))}</option>`).join('')}
-      </select></label>`).join('')}
+        ${st === 'asset' ? `<option value="__asset" selected>External image: ${_esc(c.doc.assets?.[im.assetId]?.name || 'image')}</option>` : ''}
+        <option value=""${st === 'auto' ? ' selected' : ''}>Automatic — follows the page's steps</option>
+        <option value="__empty"${st === 'empty' ? ' selected' : ''}>— empty —</option>
+        ${members.map(sid => `<option value="${_esc(sid)}"${(st === 'step' && im?.stepId === sid) ? ' selected' : ''}>${_esc(label(sid))}</option>`).join('')}
+      </select></label>`; }).join('')}
+    <div style="font-size:11.5px;color:#94a3b8;margin:0 0 6px;">Click a picture on the page: drag moves it behind its frame, the wheel scales it.</div>
     <div style="font-size:11.5px;margin:0 0 8px;"><a data-act="rerender-pictures" title="Pictures refresh by themselves when a step, its overlay, a colour or a style changes. Use this after anything else — a reloaded model, render settings.">↻ Render the pictures again</a></div>
     ${page.stepIds.length > 1 ? `<div style="margin:4px 0 0;"><button class="dw-btn" data-act="split-all" title="Undo the merge: every step of this page gets a page of its own again">Un-merge — one page per step</button></div>` : ''}
 
@@ -450,13 +473,14 @@ function _renderList(c) {
     const s = c.stepById.get(u.id);
     const t = s ? docTextFor(s, c.doc.texts, srcHashOf) : { text: '' };
     const th = thumbOf(u);
-    return `<div class="dw-step${_sel.has(u.id) ? ' sel' : ''}${pending ? ' pending' : ''}" data-unit="${_esc(u.id)}" title="${pending ? 'Not in the document yet — sync to add it' : 'Click to show its page · Ctrl / Shift-click to select several'}">
+    const hid = c.hidden.has(u.id);
+    return `<div class="dw-step${_sel.has(u.id) ? ' sel' : ''}${pending ? ' pending' : ''}${hid ? ' hid' : ''}" data-unit="${_esc(u.id)}" title="${pending ? 'Not in the document yet — sync to add it' : hid ? 'Left out of the document — the eye puts it back' : 'Click to show its page · Shift / Ctrl-click selects the whole range · right-click for more'}">
       ${th ? `<img class="dw-thumb" src="${_esc(th)}" alt="" draggable="false">` : '<div class="dw-thumb"></div>'}
       <span class="dw-no">${_esc(c.nums.get(u.id)?.label || '–')}</span>
       <div style="min-width:0;flex:1;">
-        <div style="font-size:12px;font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">${_esc(s?.name || u.id)}${u.members.length > 1 ? ` <span style="color:#94a3b8;font-weight:400;">+${u.members.length - 1} sub</span>` : ''}</div>
-        <div dir="auto" style="font-size:11px;color:#94a3b8;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">${pending ? 'new in the animation — sync to add' : _esc(t.text)}</div>
-      </div></div>`;
+        <div class="dw-name" style="font-size:12px;font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">${_esc(s?.name || u.id)}${u.members.length > 1 ? ` <span style="color:#94a3b8;font-weight:400;">+${u.members.length - 1} sub</span>` : ''}</div>
+        <div dir="auto" style="font-size:11px;color:#94a3b8;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">${pending ? 'new in the animation — sync to add' : hid ? 'left out of the document' : _esc(t.text)}</div>
+      </div>${pending ? '' : `<a class="dw-eye" data-act="hide-toggle" data-unit="${_esc(u.id)}" title="${hid ? 'Put it back into the document' : 'Leave it out of the document (the animation is not touched)'}">${hid ? '🙈' : '👁'}</a>`}</div>`;
   };
 
   // walk the timeline; open a page box whenever the page changes
@@ -476,7 +500,7 @@ function _renderList(c) {
       close();
       const flags = p.flags || [];
       html += `<div class="dw-pagebox${p.id === _pageId ? ' cur' : ''}${flags.length ? ' flag' : ''}" data-pagebox="${_esc(p.id)}">
-        <div class="dw-pagehead" data-goto-page="${_esc(p.id)}"><b style="color:#e2e8f0;">Page ${pageNo.get(p.id)}</b>${p.stepIds.length > 1 ? `<span>· ${p.stepIds.length} steps merged</span>` : ''}<span style="flex:1"></span>${flags.length ? `<span title="${_esc(flags.map(x => x.note).join('\n'))}" style="color:#fbbf24;">❗ ${flags.map(x => FLAG_ICON[x.kind] || '!').join(' ')}</span>` : ''}</div>`;
+        <div class="dw-pagehead" data-goto-page="${_esc(p.id)}"><b style="color:#e2e8f0;">Page ${pageNo.get(p.id)}</b>${p.stepIds.length > 1 ? `<span>· ${p.stepIds.length} steps merged</span>` : ''}${p.stepIds.every(id => c.hidden.has(id)) ? '<span style="color:#f87171;">· not printed</span>' : ''}<span style="flex:1"></span>${flags.length ? `<span title="${_esc(flags.map(x => x.note).join('\n'))}" style="color:#fbbf24;">❗ ${flags.map(x => FLAG_ICON[x.kind] || '!').join(' ')}</span>` : ''}</div>`;
       openPage = p.id;
     }
     html += stepRow(u, false);
@@ -491,24 +515,14 @@ function _renderList(c) {
 
 function _renderSelBar(c) {
   const bar = _root.querySelector('#dw-selbar');
-  const order = c.units.map(u => u.id);
-  const sel = order.filter(id => _sel.has(id) && c.pageOfUnit.has(id));
-  let html = '';
-  if (sel.length >= 2) {
-    const lo = order.indexOf(sel[0]), hi = order.indexOf(sel[sel.length - 1]);
-    const range = order.slice(lo, hi + 1).filter(id => c.pageOfUnit.has(id));
-    const pagesTouched = new Set(range.map(id => c.pageOfUnit.get(id).id));
-    const a = c.nums.get(range[0])?.label || '', b = c.nums.get(range[range.length - 1])?.label || '';
-    html = pagesTouched.size > 1
-      ? `<button class="dw-btn primary" data-act="merge-sel" title="The document only — the animation and its step numbers stay as they are">⤵ Merge steps ${_esc(a)}–${_esc(b)} into one page${range.length > sel.length ? ` <span style="font-weight:400;color:#94a3b8;">(${range.length} steps — everything in between comes along)</span>` : ''}</button>`
-      : `<div style="font-size:11.5px;color:#94a3b8;">Steps ${_esc(a)}–${_esc(b)} are already on one page.</div>`;
-  } else if (sel.length === 1) {
-    const p = c.pageOfUnit.get(sel[0]);
-    const k = p.stepIds.indexOf(sel[0]);
-    if (p.stepIds.length > 1 && k > 0) html = `<button class="dw-btn" data-act="split-here" data-step="${_esc(sel[0])}">✂ Start a new page at step ${_esc(c.nums.get(sel[0])?.label || '')}</button>`;
-  }
-  bar.innerHTML = html || `<div style="font-size:11.5px;color:#94a3b8;line-height:1.45;">Select two or more steps (Shift- or Ctrl-click) to merge them into one page.</div>`;
+  const a = _selectionActions(c);
+  _selBarActions = [a.merge, a.split, a.hide && a.sel.length > 1 ? a.hide : null, a.show && a.sel.length > 1 ? a.show : null].filter(Boolean);
+  const html = _selBarActions.map((it, i) => `<button class="dw-btn${it === a.merge ? ' primary' : ''}" data-act="sel-action" data-i="${i}" title="The document only — the animation and its step numbers stay as they are">${it === a.merge ? '⤵ ' : it === a.split ? '✂ ' : ''}${_esc(it.label)}</button>`).join('');
+  bar.innerHTML = html || (a.sel.length >= 2
+    ? '<div style="font-size:11.5px;color:#94a3b8;">These steps are already on one page.</div>'
+    : '<div style="font-size:11.5px;color:#94a3b8;line-height:1.45;">Select a range of steps (Shift- or Ctrl-click the other end) to join them into one page. Right-click a step for more.</div>');
 }
+let _selBarActions = [];
 
 // ─── CENTRE: the page ───────────────────────────────────────────────────────
 
@@ -518,7 +532,9 @@ function _renderPage(c) {
   if (focused?.classList?.contains('tx')) { _deferred = true; return; }
   const model = D.renderModel();
   const mp = model.pages.find(p => p.id === _pageId);
-  if (!mp) { _shadow.innerHTML = `<style>${EDIT_CSS}</style><div style="font:13px Arial;color:#e2e8f0;padding:30px;">This page has no steps left. Delete it from the list on the right.</div>`; _fit(); return; }
+  _pageModel = mp || null;
+  if (_slotSel != null && (!mp || _slotSel >= mp.images.length)) _slotSel = null;
+  if (!mp) { _placeSlotBar(); _shadow.innerHTML = `<style>${EDIT_CSS}</style><div style="font:13px Arial;color:#e2e8f0;padding:30px;">${(D.getDocument()?.pages.find(p => p.id === _pageId)?.stepIds || []).length ? 'Every step of this page is left out of the document, so the page is not printed. Click the eye of a step on the right to put it back.' : 'This page has no steps left. Delete it from the list on the right.'}</div>`; _fit(); return; }
   const need = stillsNeeded({ pages: [mp] });
   const have = D.cachedStills(need);
   _shadow.innerHTML = `<style>${DOCUMENT_CSS}${watermarkCss(model.watermark)}${EDIT_CSS}</style><div class="fit">${renderPageHtml(mp, { stills: have, logo: D.documentLogo(), watermark: model.watermark })}</div>`;
@@ -532,6 +548,7 @@ function _renderPage(c) {
   }
   for (const ph of _shadow.querySelectorAll('.slot .ph')) if (/not rendered/.test(ph.textContent)) ph.textContent = 'rendering the picture…';
   _fit(); _markOverflow();
+  if (_slotSel != null) _selectSlot(_slotSel);
   if (need.some(id => !have.has(id))) _loadStills();
 }
 
@@ -557,11 +574,14 @@ async function _loadStills() {
       if (forPage !== _pageId) { _walkAgain = true; continue; }
       const now = D.renderModel().pages.find(p => p.id === _pageId);
       for (const slot of _shadow.querySelectorAll('.slot')) {
-        const sid = now?.images?.[Number(slot.dataset.slot)]?.stepId;
+        const k = Number(slot.dataset.slot), im = now?.images?.[k];
+        const sid = im?.stepId;
         const url = sid ? stills?.get(sid) : null;
-        if (url) slot.innerHTML = `<img src="${_esc(url)}" alt="">`;
+        if (url) { slot.innerHTML = slotInnerHtml(im, url, k); slot.classList.remove('none'); }
         else if (sid) { const ph = slot.querySelector('.ph'); if (ph) ph.textContent = 'the picture could not be rendered'; }
       }
+      _pageModel = now || _pageModel;
+      _placeSlotBar();
     } while (_walkAgain);
   } finally { _walking = false; }
 }
@@ -577,6 +597,7 @@ function _fit() {
   host.style.width = `${w}px`; host.style.height = `${h + pad}px`;
   host.style.left = `${Math.max(pad, (centre.clientWidth - w) / 2)}px`;
   host.style.top = `${_zoom === '100' ? pad : Math.max(pad, (centre.clientHeight - h) / 2)}px`;
+  _placeSlotBar();
 }
 
 function _markOverflow() {
@@ -601,53 +622,223 @@ function _commitFocusedText() {
 }
 
 function _onPageClick(e) {
-  const slot = e.target.closest?.('.slot');
-  if (slot) return _slotMenu(Number(slot.dataset.slot), e.clientX, e.clientY);
+  if (e.target.closest?.('.slot')) return;                    // handled on pointerdown: select, drag, wheel
   if (e.target.closest?.('.hdr, .ftr')) {
     const inp = _root.querySelector('#dw-left input[data-field="title"]');
     if (inp) { inp.focus(); inp.select(); }
   }
 }
 
+// ─── 🖼 pictures: select a slot, move / scale the picture behind it ─────────
+// A slot is a MASK: the picture fills it (cropped) and can be dragged and
+// wheel-scaled behind it; where it does not reach, the white page shows.
+
+const _slotEl = (k) => _shadow.querySelector(`.slot[data-slot="${k}"]`);
+const _slotIm = (k) => _pageModel?.images?.[k] || null;
+
+/** Redraw ONE picture with a fit that is not committed yet (dragging / wheeling). */
+function _applyFitLive(k, fit) {
+  const im = _slotIm(k), img = _slotEl(k)?.querySelector('img.pic');
+  if (!im || !img) return;
+  const b = pictureBox(im.rect, im.aspect, fit);
+  img.style.left = `calc(50% + ${b.dxMm}mm)`; img.style.top = `calc(50% + ${b.dyMm}mm)`; img.style.width = `${b.widthPct}%`;
+}
+
+function _selectSlot(k) {
+  _slotSel = k;
+  for (const s of _shadow.querySelectorAll('.slot')) s.classList.toggle('sel', Number(s.dataset.slot) === k);
+  _placeSlotBar();
+}
+
+/** The little bar over the selected picture (light DOM, so it keeps its size whatever the page zoom). */
+function _placeSlotBar() {
+  let bar = _root.querySelector('#dw-slotbar');
+  const el = _slotSel == null ? null : _slotEl(_slotSel);
+  if (!el) { bar?.remove(); return; }
+  if (!bar) {
+    bar = document.createElement('div');
+    bar.id = 'dw-slotbar';
+    bar.style.cssText = 'position:fixed;z-index:9050;display:flex;gap:4px;align-items:center;background:#0f172a;border:1px solid #38bdf8;border-radius:8px;padding:4px 6px;box-shadow:0 6px 20px rgba(0,0,0,.5);font-size:11.5px;color:#94a3b8;white-space:nowrap;';
+    _root.appendChild(bar);
+  }
+  const im = _slotIm(_slotSel), has = !!el.querySelector('img.pic');
+  const what = !im ? '' : im.state === 'asset' ? `external: ${im.name || 'image'}` : im.state === 'auto' ? 'automatic' : im.state === 'step' ? 'chosen step' : 'empty';
+  bar.innerHTML = `<button class="dw-btn" data-act="slot-menu" style="padding:2px 9px;" title="Which picture goes here">Picture ▾</button>
+    ${has ? `<button class="dw-btn" data-act="slot-fill" style="padding:2px 9px;" title="Fill the frame, centred (cropping what does not fit)">Fill</button>
+    <button class="dw-btn" data-act="slot-whole" style="padding:2px 9px;" title="Show the whole picture inside the frame">Whole</button>
+    <button class="dw-btn" data-act="slot-zoom" data-f="0.9" style="padding:2px 8px;">−</button><button class="dw-btn" data-act="slot-zoom" data-f="1.1111" style="padding:2px 8px;">+</button>
+    <span style="padding:0 4px;">drag to move · wheel to scale</span>` : ''}<span style="padding:0 4px;color:#64748b;">${_esc(what)}</span>`;
+  const r = el.getBoundingClientRect(), cr = _root.querySelector('#dw-center').getBoundingClientRect();
+  bar.style.left = `${Math.max(cr.left + 4, Math.min(r.left, cr.right - bar.offsetWidth - 4))}px`;
+  bar.style.top = `${Math.max(cr.top + 4, r.top - bar.offsetHeight - 6)}px`;
+}
+
+let _pan = null, _wheelTimer = 0, _wheelFit = null;
+
+function _onSlotPointerDown(e) {
+  const el = e.target.closest?.('.slot');
+  if (!el) { if (_slotSel != null && !e.target.closest?.('.tx')) _selectSlot(null); return; }
+  if (e.button !== 0) return;
+  const k = Number(el.dataset.slot);
+  _commitFocusedText();
+  _selectSlot(k);
+  const im = _slotIm(k);
+  if (!im || !el.querySelector('img.pic')) return;
+  e.preventDefault();                                         // no native image drag, no text selection
+  _pan = { k, x: e.clientX, y: e.clientY, start: { ...im.fit }, fit: { ...im.fit }, moved: false, el };
+  try { el.setPointerCapture?.(e.pointerId); } catch { /* a pointer that is already gone — the window-level pointerup still ends the drag */ }
+}
+function _onSlotPointerMove(e) {
+  if (!_pan) return;
+  const r = _pan.el.getBoundingClientRect();
+  const dx = e.clientX - _pan.x, dy = e.clientY - _pan.y;
+  if (!_pan.moved && Math.hypot(dx, dy) < 3) return;
+  _pan.moved = true;
+  _pan.fit = { zoom: _pan.start.zoom, ox: _pan.start.ox + dx / r.width, oy: _pan.start.oy + dy / r.height };
+  _applyFitLive(_pan.k, _pan.fit);
+}
+function _onSlotPointerUp() {
+  const p = _pan; _pan = null;
+  if (p?.moved) D.setPagePictureFit(_pageId, p.k, p.fit);     // ONE undo entry per drag
+}
+/** Wheel = scale about the pointer; the commit waits until the wheel has been quiet for a moment (one undo entry). */
+function _onSlotWheel(e) {
+  const el = e.target.closest?.('.slot');
+  if (!el || _slotSel == null || Number(el.dataset.slot) !== _slotSel || !el.querySelector('img.pic')) return;
+  e.preventDefault();
+  const k = _slotSel, im = _slotIm(k); if (!im) return;
+  const cur = _wheelFit?.k === k ? _wheelFit.fit : { ...im.fit };
+  const zoom = Math.max(0.05, Math.min(20, cur.zoom * Math.exp(-e.deltaY * 0.0015)));
+  const f = zoom / cur.zoom, r = el.getBoundingClientRect();
+  const px = (e.clientX - (r.left + r.width / 2)) / r.width, py = (e.clientY - (r.top + r.height / 2)) / r.height;
+  const fit = { zoom, ox: px + (cur.ox - px) * f, oy: py + (cur.oy - py) * f };
+  _wheelFit = { k, fit, pageId: _pageId };
+  _applyFitLive(k, fit);
+  clearTimeout(_wheelTimer);
+  _wheelTimer = setTimeout(_flushWheel, 350);
+}
+function _flushWheel() {
+  clearTimeout(_wheelTimer);
+  const w = _wheelFit; _wheelFit = null;
+  if (w && w.pageId === _pageId) D.setPagePictureFit(w.pageId, w.k, w.fit);
+}
+
+/** Which picture goes into the slot: automatic · a step of the page · an external image · empty. */
 function _slotMenu(slot, x, y) {
-  _closeMenu();
   const c = _ctx();
   const page = c.doc.pages.find(p => p.id === _pageId); if (!page) return;
-  const members = (page.stepIds || []).flatMap(id => c.units.find(u => u.id === id)?.members || []);
+  const members = (page.stepIds || []).filter(id => !c.hidden.has(id)).flatMap(id => c.units.find(u => u.id === id)?.members || []);
+  _openMenu([
+    { label: 'Automatic — follows the steps of the page', run: () => D.setPagePicture(_pageId, slot, null) },
+    ...members.map(sid => ({ html: `<b>${_esc(c.nums.get(sid)?.label || '')}</b> ${_esc(c.stepById.get(sid)?.name || sid)}`, run: () => D.setPagePicture(_pageId, slot, sid) })),
+    { sep: true },
+    { label: '🖼 External image… (a photo, a drawing — not from the animation)', run: () => { _assetSlot = slot; _root.querySelector('#dw-asset-file')?.click(); } },
+    { label: 'Leave this frame empty', run: () => D.setPagePicture(_pageId, slot, 'empty') },
+  ], x, y);
+}
+
+/** External picture → downscaled, stored in the document (JPEG unless it really has transparency). */
+async function _importAsset(file, slot) {
+  try {
+    const url = await new Promise((res, rej) => { const rd = new FileReader(); rd.onload = () => res(String(rd.result)); rd.onerror = rej; rd.readAsDataURL(file); });
+    const im = new Image(); im.src = url; await im.decode();
+    const size = fitWithin(im.naturalWidth || 1200, im.naturalHeight || 800, 2400);
+    const cv = document.createElement('canvas'); cv.width = size.w; cv.height = size.h;
+    const x = cv.getContext('2d', { willReadFrequently: true });
+    x.drawImage(im, 0, 0, size.w, size.h);
+    const px = x.getImageData(0, 0, size.w, size.h).data;
+    let clear = false;
+    for (let i = 3, step = Math.max(4, Math.floor(px.length / 200000) * 4); i < px.length; i += step) if (px[i] < 250) { clear = true; break; }
+    let dataUrl;
+    if (clear) dataUrl = cv.toDataURL('image/png');
+    else { const flat = document.createElement('canvas'); flat.width = size.w; flat.height = size.h; const fx = flat.getContext('2d'); fx.fillStyle = '#fff'; fx.fillRect(0, 0, size.w, size.h); fx.drawImage(cv, 0, 0); dataUrl = flat.toDataURL('image/jpeg', 0.9); }
+    D.setPagePictureAsset(_pageId, slot, { dataUrl, w: size.w, h: size.h, name: file.name });
+    setStatus(`"${file.name}" added to the document (${size.w} × ${size.h}). Drag it to place it, wheel to scale.`, 'success', 6000);
+  } catch (err) {
+    console.error('[document] external image failed:', err);
+    setStatus('That file could not be read as an image.', 'warn', 6000);
+  }
+}
+
+// ─── menus ──────────────────────────────────────────────────────────────────
+
+/** items: { label | html, run } · { sep:true } */
+function _openMenu(items, x, y) {
+  _closeMenu();
   _menu = document.createElement('div');
   _menu.className = 'dw-menu';
-  _menu.innerHTML = `<div data-pick="">${slot === 0 ? 'Automatic — the page\'s last step' : '— leave this picture empty —'}</div>`
-    + members.map(sid => `<div data-pick="${_esc(sid)}"><b>${_esc(c.nums.get(sid)?.label || '')}</b> ${_esc(c.stepById.get(sid)?.name || sid)}</div>`).join('');
-  _menu.style.left = `${Math.min(x, window.innerWidth - 250)}px`;
-  _menu.style.top = `${Math.min(y, window.innerHeight - 40 - 30 * (members.length + 1))}px`;
+  _menu.innerHTML = items.map((it, i) => it.sep ? '<hr style="border:0;border-top:1px solid #334155;margin:4px 2px;">' : `<div data-i="${i}">${it.html || _esc(it.label)}</div>`).join('');
   _menu.addEventListener('click', (ev) => {
-    const d = ev.target.closest('[data-pick]'); if (!d) return;
+    const d = ev.target.closest('[data-i]'); if (!d) return;
     ev.stopPropagation();
-    const pid = _pageId; _closeMenu();
-    D.setPagePicture(pid, slot, d.dataset.pick || null);
+    const it = items[Number(d.dataset.i)];
+    _closeMenu();
+    it?.run?.();
   });
   _root.appendChild(_menu);
+  _menu.style.left = `${Math.max(4, Math.min(x, window.innerWidth - _menu.offsetWidth - 6))}px`;
+  _menu.style.top = `${Math.max(4, Math.min(y, window.innerHeight - _menu.offsetHeight - 6))}px`;
 }
 function _closeMenu() { _menu?.remove(); _menu = null; }
+
+/** What the current selection allows — shared by the bar above the list and the right-click menu. */
+function _selectionActions(c) {
+  const order = c.units.map(u => u.id);
+  const sel = order.filter(id => _sel.has(id) && c.pageOfUnit.has(id));
+  const out = { sel, merge: null, split: null, unmerge: null, hide: null, show: null };
+  if (!sel.length) return out;
+  const lbl = (id) => c.nums.get(id)?.label || '';
+  if (sel.length >= 2) {
+    const pagesTouched = new Set(sel.map(id => c.pageOfUnit.get(id).id));
+    if (pagesTouched.size > 1) out.merge = { label: `Join steps ${lbl(sel[0])}–${lbl(sel[sel.length - 1])} into one page`, run: () => { const pid = D.mergeSteps(sel); if (pid && _showPage(pid)) _renderAll(); } };
+  } else {
+    const p = c.pageOfUnit.get(sel[0]), k = p.stepIds.indexOf(sel[0]);
+    if (p.stepIds.length > 1 && k > 0) out.split = { label: `Start a new page at step ${lbl(sel[0])}`, run: () => { D.splitPageBefore(p.id, sel[0]); const np = _ctx().pageOfUnit.get(sel[0]); if (np && _showPage(np.id)) _renderAll(); } };
+  }
+  const pg = c.pageOfUnit.get(sel[0]);
+  if (sel.length === 1 && pg.stepIds.length > 1) out.unmerge = { label: 'Un-merge — one page per step', run: () => D.splitPageAll(pg.id) };
+  const n = sel.length === 1 ? `step ${lbl(sel[0])}` : `steps ${lbl(sel[0])}–${lbl(sel[sel.length - 1])}`;
+  if (sel.some(id => !c.hidden.has(id))) out.hide = { label: `🙈 Leave ${n} out of the document`, run: () => D.setStepsHidden(sel, true) };
+  if (sel.some(id => c.hidden.has(id))) out.show = { label: `👁 Put ${n} back into the document`, run: () => D.setStepsHidden(sel, false) };
+  return out;
+}
+
+function _onContextMenu(e) {
+  const row = e.target.closest?.('.dw-step');
+  if (!row || row.classList.contains('pending')) return;
+  e.preventDefault();
+  const id = row.dataset.unit;
+  if (!_sel.has(id)) { _sel = new Set([id]); _anchor = id; const c0 = _ctx(); if (_showPage(c0.pageOfUnit.get(id)?.id)) _renderAll(); else _renderList(c0); }
+  const a = _selectionActions(_ctx());
+  const items = [a.merge, a.split, a.unmerge].filter(Boolean);
+  if (items.length && (a.hide || a.show)) items.push({ sep: true });
+  items.push(...[a.hide, a.show].filter(Boolean));
+  if (items.length) _openMenu(items, e.clientX, e.clientY);
+}
 
 // ─── events ─────────────────────────────────────────────────────────────────
 
 function _showPage(pageId) {
   if (!pageId || pageId === _pageId) return false;
   _commitFocusedText();
-  _pageId = pageId;
+  _flushWheel();
+  _pageId = pageId; _slotSel = null;
   return true;
 }
 
 async function _onClick(e) {
+  const eye = e.target.closest?.('[data-act="hide-toggle"]');
+  if (eye) { e.preventDefault(); const c0 = _ctx(), id0 = eye.dataset.unit; const ids = _sel.has(id0) && _sel.size > 1 ? [..._sel] : [id0]; D.setStepsHidden(ids, !c0.hidden.has(id0)); return; }
   const stepEl = e.target.closest?.('.dw-step');
   if (stepEl) {
     const c = _ctx(), id = stepEl.dataset.unit, order = c.units.map(u => u.id);
-    if (e.shiftKey && _anchor && order.includes(_anchor)) {
+    // A selection is ALWAYS one unbroken range: Shift OR Ctrl + click = everything from the anchor to here.
+    // (Ctrl used to toggle single steps — Ctrl-clicking the step that was already selected silently dropped
+    // it, and the join then left it outside.)
+    if ((e.shiftKey || e.ctrlKey || e.metaKey) && _anchor && order.includes(_anchor)) {
       const a = order.indexOf(_anchor), b = order.indexOf(id);
       _sel = new Set(order.slice(Math.min(a, b), Math.max(a, b) + 1));
-    } else if (e.ctrlKey || e.metaKey) { if (_sel.has(id)) _sel.delete(id); else _sel.add(id); _anchor = id; }
-    else { _sel = new Set([id]); _anchor = id; }
+    } else { _sel = new Set([id]); _anchor = id; }
     const changed = _showPage(c.pageOfUnit.get(id)?.id);
     if (changed) _renderAll(); else { _renderList(_ctx()); _holdFocus(); }
     return;
@@ -664,6 +855,11 @@ async function _onClick(e) {
   if (act === 'zoom-fit' || act === 'zoom-100') { _zoom = act === 'zoom-fit' ? 'fit' : '100'; _renderTop(_ctx()); _fit(); _holdFocus(); return; }
   if (act === 'wm-toggle') { _wmOpen = !_wmOpen; _renderLeft(_ctx()); _holdFocus(); return; }
   if (act === 'wm-choose') { _root.querySelector('input[data-wm-file]')?.click(); return; }
+  if (act === 'sel-action') { _commitFocusedText(); _selBarActions[Number(el.dataset.i)]?.run?.(); return; }
+  if (act === 'slot-menu') { const r = el.getBoundingClientRect(); _slotMenu(_slotSel ?? 0, r.left, r.bottom + 4); return; }
+  if (act === 'slot-fill') { if (_slotSel != null) D.setPagePictureFit(_pageId, _slotSel, null); return; }
+  if (act === 'slot-whole') { const im = _slotIm(_slotSel); if (im) D.setPagePictureFit(_pageId, _slotSel, { zoom: containZoom(im.rect, im.aspect), ox: 0, oy: 0 }); return; }
+  if (act === 'slot-zoom') { const im = _slotIm(_slotSel); if (im) D.setPagePictureFit(_pageId, _slotSel, { ...im.fit, zoom: Math.max(0.05, Math.min(20, im.fit.zoom * Number(el.dataset.f))) }); return; }
   if (act === 'rerender-pictures') { D.clearStills(); _renderPage(_ctx()); return; }
   _commitFocusedText();
   if (act === 'sync') return void D.syncWithAnimation();
@@ -673,19 +869,6 @@ async function _onClick(e) {
   if (act === 'reset-text') return D.setDocText(el.dataset.step, null);
   if (act === 'accept-drift') return D.acceptDrift(el.dataset.step);
   if (act === 'split-all') return D.splitPageAll(_pageId);
-  if (act === 'split-here') {
-    const c = _ctx(), p = c.pageOfUnit.get(el.dataset.step);
-    if (!p) return;
-    D.splitPageBefore(p.id, el.dataset.step);
-    const np = _ctx().pageOfUnit.get(el.dataset.step);
-    if (np && _showPage(np.id)) _renderAll();
-    return;
-  }
-  if (act === 'merge-sel') {
-    const pid = D.mergeSteps([..._sel]);
-    if (pid && _showPage(pid)) _renderAll();
-    return;
-  }
   if (act === 'export') {
     if (_exporting || _walking) return;
     _exporting = true;
@@ -710,11 +893,13 @@ function _onChange(e) {
   if (t.dataset?.field) return D.setFields({ [t.dataset.field]: t.value });
   if (t.dataset?.opt === 'numbering') return D.setOptions({ numbering: t.value });
   if (t.dataset?.pageOpt === 'template') return D.setPageTemplate(_pageId, t.value);
-  if (t.dataset?.pageOpt === 'picture') return D.setPagePicture(_pageId, Number(t.dataset.slot), t.value || null);
+  if (t.dataset?.pageOpt === 'picture') { if (t.value === '__asset') return; return D.setPagePicture(_pageId, Number(t.dataset.slot), t.value === '__empty' ? 'empty' : (t.value || null)); }
+  if (t.id === 'dw-asset-file') { const file = t.files?.[0]; t.value = ''; if (file) _importAsset(file, _assetSlot); return; }
 }
 
 function _onKey(e, editable) {
   if (e.key === 'Escape') {
+    if (_slotSel != null && !_menu && !_wmDlg) { _selectSlot(null); return; }
     if (_wmDlg) { _wmDlg.remove(); _wmDlg = null; _holdFocus(); return; }
     if (_menu) { _closeMenu(); return; }
     const f = _shadow.activeElement;

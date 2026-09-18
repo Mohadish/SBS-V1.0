@@ -53,7 +53,7 @@ function _commit(label, next) {
 /** First build (or a rebuild from scratch): one page per step, texts kept. */
 export function buildPages({ rebuild = false } = {}) {
   const cur = getDocument();
-  const doc = cur && !rebuild ? _clone(cur) : { ...emptyDocument(), ...(cur ? { fields: cur.fields, header: cur.header, footer: cur.footer, options: cur.options, texts: cur.texts, templates: cur.templates, templateId: cur.templateId, watermark: watermarkOf(cur) } : {}) };
+  const doc = cur && !rebuild ? _clone(cur) : { ...emptyDocument(), ...(cur ? { fields: cur.fields, header: cur.header, footer: cur.footer, options: cur.options, texts: cur.texts, templates: cur.templates, templateId: cur.templateId, watermark: watermarkOf(cur), hiddenSteps: cur.hiddenSteps || [] } : {}) };
   if (!doc.fields.title) doc.fields.title = projectDisplayName();
   doc.pages = autoPaginate(_steps(), _chapters(), doc);
   doc.order = orderOf(_steps(), _chapters(), doc);
@@ -115,16 +115,49 @@ export function setPageTemplate(pageId, templateId) {
   const cur = getDocument(); if (!cur) return;
   _commit('Page template', { ...cur, pages: cur.pages.map(p => p.id === pageId ? { ...p, templateId } : p) });
 }
-/** stepId null = back to automatic (slot 0 follows the page's last step). */
-export function setPagePicture(pageId, slot, stepId) {
+const _withSlot = (p, slot, make) => {
+  const images = (p.images || []).map(i => ({ ...i }));
+  while (images.length <= slot) images.push({ stepId: null, auto: true });     // a slot nobody touched yet is automatic
+  images[slot] = make(images[slot]);
+  return { ...p, images };
+};
+/** Pictures nobody shows any more are dropped from the document (undo brings the whole snapshot back). */
+const _pruneAssets = (doc) => {
+  const used = new Set((doc.pages || []).flatMap(p => (p.images || []).map(i => i.assetId).filter(Boolean)));
+  const assets = {};
+  for (const [id, a] of Object.entries(doc.assets || {})) if (used.has(id)) assets[id] = a;
+  return { ...doc, assets };
+};
+const _editPage = (label, pageId, fn) => {
   const cur = getDocument(); if (!cur) return;
-  _commit('Page picture', { ...cur, pages: cur.pages.map(p => {
-    if (p.id !== pageId) return p;
-    const images = (p.images || []).map(i => ({ ...i }));
-    while (images.length <= slot) images.push({ stepId: null });
-    images[slot] = stepId ? { stepId } : { stepId: null, auto: slot === 0 };
-    return { ...p, images };
-  }) });
+  _commit(label, _pruneAssets({ ...cur, pages: cur.pages.map(p => (p.id === pageId ? fn(p, cur) : p)) }));
+};
+
+/** choice: a step id · null = automatic (the page's steps are shared out over the slots) · 'empty'. A new picture starts un-cropped. */
+export function setPagePicture(pageId, slot, choice) {
+  _editPage('Page picture', pageId, (p) => _withSlot(p, slot, () => (
+    choice === 'empty' ? { stepId: null, empty: true } : choice ? { stepId: choice } : { stepId: null, auto: true })));
+}
+/** How the picture sits behind its slot: { zoom, ox, oy } (see document-core pictureBox). null = fill the slot, centred. */
+export function setPagePictureFit(pageId, slot, fit) {
+  _editPage('Move / scale picture', pageId, (p) => _withSlot(p, slot, (im) => {
+    const next = { ...im }; if (fit) next.fit = { zoom: fit.zoom, ox: fit.ox, oy: fit.oy }; else delete next.fit;
+    return next;
+  }));
+}
+/** A picture that is NOT part of the animation (a photo, a drawing). Stored in the document — asset = { dataUrl, w, h, name }. */
+export function setPagePictureAsset(pageId, slot, asset) {
+  const cur = getDocument(); if (!cur || !asset?.dataUrl) return;
+  const id = `asset_${Date.now().toString(36)}${Math.floor(performance.now() % 1e6).toString(36)}`;
+  const withAsset = { ...cur, assets: { ...(cur.assets || {}), [id]: { dataUrl: asset.dataUrl, w: asset.w, h: asset.h, name: asset.name || '' } } };
+  _commit('External picture', _pruneAssets({ ...withAsset, pages: withAsset.pages.map(p => (p.id === pageId ? _withSlot(p, slot, () => ({ assetId: id })) : p)) }));
+}
+/** Leave steps out of the DOCUMENT (or bring them back). The animation is not touched; the page keeps them, so un-hiding restores everything. */
+export function setStepsHidden(unitIds, hidden) {
+  const cur = getDocument(); if (!cur) return;
+  const set = new Set(cur.hiddenSteps || []);
+  for (const id of unitIds || []) { if (hidden) set.add(id); else set.delete(id); }
+  _commit(hidden ? 'Hide from the document' : 'Show in the document', { ...cur, hiddenSteps: [...set] });
 }
 export function markPageReviewed(pageId = null) {
   const cur = getDocument(); if (!cur) return;
@@ -176,6 +209,7 @@ export function renderModel() {
   return buildRenderModel(doc, _steps(), _chapters(), {
     projectName: projectDisplayName(), date: new Date().toISOString().slice(0, 10),
     hashOf: srcHashOf, perChapter: !!state.get('headerStepNumberPerChapter'),
+    stillAspect: getCanonicalSize().aspect,          // a step picture is the export frame
   });
 }
 

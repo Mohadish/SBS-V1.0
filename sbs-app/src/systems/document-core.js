@@ -24,27 +24,22 @@ export { watermarkOf };
 
 const _img169 = (x, y, w) => ({ x, y, w, h: Math.round(w * 9 / 16 * 10) / 10 });
 
-/** The prefab templates every document starts with. Strict by design: a picture lives in a slot, nowhere else. */
+/**
+ * The prefab templates every document starts with. Strict by design: a picture
+ * lives in a slot, nowhere else. V0.3.4.3 — a slot no longer has to be 16:9:
+ * the picture is CROPPED into it (and can be moved / scaled behind it), so the
+ * layouts can use the page properly. Content area: x 12…198, y 32…270 (mm).
+ */
 export function builtinTemplates() {
+  const P = { page: { w: 210, h: 297 }, header: { x: 12, y: 10, w: 186, h: 18 }, footer: { x: 12, y: 275, w: 186, h: 12 }, builtin: true };
+  const R = (x, y, w, h) => ({ x, y, w, h });
   return [
-    {
-      id: 'tpl_standard', name: 'Standard — text above, picture below', builtin: true,
-      page: { w: 210, h: 297 }, header: { x: 12, y: 10, w: 186, h: 18 }, footer: { x: 12, y: 275, w: 186, h: 12 },
-      text: { x: 12, y: 32, w: 186, h: 126 },
-      images: [_img169(12, 164, 186)],
-    },
-    {
-      id: 'tpl_two', name: 'Two pictures side by side', builtin: true,
-      page: { w: 210, h: 297 }, header: { x: 12, y: 10, w: 186, h: 18 }, footer: { x: 12, y: 275, w: 186, h: 12 },
-      text: { x: 12, y: 32, w: 186, h: 176 },
-      images: [_img169(12, 214, 91), _img169(107, 214, 91)],
-    },
-    {
-      id: 'tpl_picture', name: 'Large picture, short text', builtin: true,
-      page: { w: 210, h: 297 }, header: { x: 12, y: 10, w: 186, h: 18 }, footer: { x: 12, y: 275, w: 186, h: 12 },
-      text: { x: 12, y: 32, w: 186, h: 60 },
-      images: [_img169(12, 98, 186), _img169(12, 98 + 104.6 + 4, 120)],
-    },
+    { ...P, id: 'tpl_standard', name: 'One picture — wide (16:9)',              text: R(12, 32, 186, 126), images: [_img169(12, 164, 186)] },
+    { ...P, id: 'tpl_tall',     name: 'One picture — tall (3:2)',               text: R(12, 32, 186, 108), images: [R(12, 146, 186, 124)] },
+    { ...P, id: 'tpl_two',      name: 'Two pictures side by side',              text: R(12, 32, 186, 124), images: [R(12, 162, 91, 108), R(107, 162, 91, 108)] },
+    { ...P, id: 'tpl_three',    name: 'Three pictures — one large, two below',  text: R(12, 32, 186, 66),  images: [R(12, 104, 186, 102), R(12, 210, 91, 60), R(107, 210, 91, 60)] },
+    { ...P, id: 'tpl_four',     name: 'Four pictures — two by two',             text: R(12, 32, 186, 66),  images: [R(12, 104, 91, 81), R(107, 104, 91, 81), R(12, 189, 91, 81), R(107, 189, 91, 81)] },
+    { ...P, id: 'tpl_picture',  name: 'Large picture, short text',              text: R(12, 32, 186, 60),  images: [_img169(12, 98, 186), _img169(12, 98 + 104.6 + 4, 112)] },
   ];
 }
 
@@ -60,6 +55,8 @@ export function emptyDocument() {
     pages: [],
     texts: {},                           // stepId → { text, srcHash }   (absent = follows the voiceover)
     watermark: { ...WATERMARK_DEFAULTS },
+    hiddenSteps: [],                     // step (unit) ids left OUT of the document — the animation is not touched
+    assets: {},                          // assetId → { dataUrl, w, h, name } : pictures that are not part of the animation
   };
 }
 
@@ -243,6 +240,7 @@ function _resolvePictures(p, unitById, nameOf) {
   const last = lastUnit ? lastUnit.members[lastUnit.members.length - 1] : null;
   if (!p.images || !p.images.length) p.images = [{ stepId: last, auto: true }];
   p.images.forEach((im, k) => {
+    if (im.assetId || im.empty) return;                       // an external image / a slot left empty on purpose: nothing to follow
     if (k === 0 && (im.auto || !im.stepId)) { im.stepId = last; im.auto = true; return; }
     if (im.stepId && !members.has(im.stepId)) _flag(p, 'image-left', im.stepId, `Picture ${k + 1} shows "${nameOf ? nameOf(im.stepId) : im.stepId}", which is not on this page any more`);
   });
@@ -355,6 +353,36 @@ export function docTextFor(step, texts, hashOf) {
   return { text: String(e.text ?? ''), edited: true, drifted: !!e.srcHash && e.srcHash !== hashOf(narr) };
 }
 
+// ─── pictures in slots ──────────────────────────────────────────────────────
+
+const _clampN = (v, lo, hi, d) => { const n = Number(v); return Number.isFinite(n) ? Math.max(lo, Math.min(hi, n)) : d; };
+
+/** A slot's fit, sanitised. zoom 1 = the picture exactly FILLS the slot (cropped); ox / oy = its centre's offset, in slot widths / heights. */
+export function fitOf(im) {
+  const f = im?.fit || {};
+  return { zoom: _clampN(f.zoom, 0.05, 20, 1), ox: _clampN(f.ox, -5, 5, 0), oy: _clampN(f.oy, -5, 5, 0) };
+}
+
+/**
+ * Where a picture of the given aspect sits in a slot: its width in % of the
+ * slot width, and its centre's offset from the slot centre in mm. The slot
+ * clips it; where the picture does not reach, the white page shows.
+ */
+export function pictureBox(rect, aspect, fit) {
+  const a = aspect > 0 ? aspect : 16 / 9;
+  const f = fitOf({ fit });
+  const cover = Math.max(1, a / (rect.w / rect.h)) * 100;       // fills the slot on both axes
+  return { widthPct: cover * f.zoom, dxMm: f.ox * rect.w, dyMm: f.oy * rect.h };
+}
+
+/** The zoom at which the WHOLE picture is visible inside the slot (nothing cropped). */
+export function containZoom(rect, aspect) {
+  const a = aspect > 0 ? aspect : 16 / 9, sa = rect.w / rect.h;
+  return Math.min(1, a / sa) / Math.max(1, a / sa);
+}
+
+export const ASSET_URL_RX = /^data:image\/[a-z0-9.+-]+;base64,[A-Za-z0-9+\/=]+$/i;
+
 // ─── render model ───────────────────────────────────────────────────────────
 
 const _sub = (tpl, vars) => String(tpl || '').replace(/\{(\w+)\}/g, (m, k) => (k in vars ? String(vars[k] ?? '') : m));
@@ -371,12 +399,14 @@ export function buildRenderModel(doc, steps, chapters, ctx) {
   const units = unitsOf(steps, chapters, doc?.options);
   const unitById = new Map(units.map(u => [u.id, u]));
   const nums = numberSteps(steps, chapters, !!ctx?.perChapter);
-  const live = (doc?.pages || []).filter(p => (p.stepIds || []).some(id => unitById.has(id)));
+  const hidden = new Set(doc?.hiddenSteps || []);
+  const shown = (id) => unitById.has(id) && !hidden.has(id);
+  const live = (doc?.pages || []).filter(p => (p.stepIds || []).some(shown));          // a page whose steps are all hidden is not printed
   const total = live.length;
   let prevChapter = null;
   const pages = live.map((p, pi) => {
     const tpl = templateById(doc, p.templateId);
-    const first = stepById.get(p.stepIds.find(id => unitById.has(id)));
+    const first = stepById.get(p.stepIds.find(shown));
     const ch = (chapters || []).find(c => c.id === first?.chapterId) || null;
     const chapterHead = !!ch && ch.id !== prevChapter;          // the chapter title prints once, on the chapter's first page
     prevChapter = ch ? ch.id : prevChapter;
@@ -389,7 +419,7 @@ export function buildRenderModel(doc, steps, chapters, ctx) {
     let n = 0;
     for (const uid of p.stepIds) {
       const u = unitById.get(uid);
-      if (!u) continue;
+      if (!u || hidden.has(uid)) continue;
       for (const sid of u.members) {
         const s = stepById.get(sid);
         if (!s) continue;
@@ -405,22 +435,45 @@ export function buildRenderModel(doc, steps, chapters, ctx) {
       header: { left: _sub(doc.header?.left, vars), center: _sub(doc.header?.center, vars), right: _sub(doc.header?.right, vars) },
       footer: { left: _sub(doc.footer?.left, vars), center: _sub(doc.footer?.center, vars), right: _sub(doc.footer?.right, vars) },
       chapter: ch ? ch.name : '', chapterHead, items,
-      images: (tpl.images || []).map((rect, k) => ({ rect, stepId: _pictureOf(p, k, unitById) })),
+      images: (tpl.images || []).map((rect, k) => _slotOf(p, k, rect, (tpl.images || []).length, unitById, hidden, doc, ctx)),
       flags: p.flags || [],
     };
   });
   return { pages, total, watermark: watermarkOf(doc) };
 }
 
-/** The step a slot shows: slot 0 follows the page's last step while automatic. */
-function _pictureOf(p, k, unitById) {
+/**
+ * What a slot shows. AUTOMATIC slots share out the page's visible steps so the
+ * LAST slot always shows the page's final state: with n slots and m steps, slot k
+ * shows step m − n + k (3 steps in a 2-picture page → steps 2 and 3); with fewer
+ * steps than slots the first m slots are used. A missing entry counts as automatic
+ * (a page switched to a template with more slots). An external image wins over both.
+ */
+export function slotState(p, k) {
   const im = p.images?.[k];
-  if (k === 0 && (!im || im.auto || !im.stepId)) {
-    const ids = (p.stepIds || []).filter(id => unitById.has(id));
-    const u = unitById.get(ids[ids.length - 1]);
-    return u ? u.members[u.members.length - 1] : null;
+  if (!im) return 'auto';
+  if (im.assetId) return 'asset';
+  if (im.auto) return 'auto';
+  if (im.stepId) return 'step';
+  return k === 0 && !im.empty ? 'auto' : 'empty';        // legacy: slot 0 without a choice was always automatic
+}
+function _slotOf(p, k, rect, nSlots, unitById, hidden, doc, ctx) {
+  const im = p.images?.[k] || null;
+  const state = slotState(p, k);
+  const base = { rect, fit: fitOf(im), state, stepId: null, assetId: null, src: null, aspect: ctx?.stillAspect > 0 ? ctx.stillAspect : 16 / 9 };
+  if (state === 'asset') {
+    const a = doc?.assets?.[im.assetId];
+    if (a && ASSET_URL_RX.test(String(a.dataUrl || '')) && a.w > 0 && a.h > 0) return { ...base, assetId: im.assetId, src: a.dataUrl, aspect: a.w / a.h, name: a.name || '' };
+    return { ...base, state: 'empty' };
   }
-  return im?.stepId || null;
+  if (state === 'step') return { ...base, stepId: im.stepId };
+  if (state === 'auto') {
+    const units = (p.stepIds || []).filter(id => unitById.has(id) && !hidden.has(id)).map(id => unitById.get(id));
+    const i = units.length >= nSlots ? units.length - nSlots + k : k;
+    const u = units[i];
+    return { ...base, stepId: u ? u.members[u.members.length - 1] : null };
+  }
+  return base;
 }
 
 /** Every step a document needs a picture of. */
@@ -431,11 +484,12 @@ export function stillsNeeded(model) {
 }
 
 /** Human label of a page's range: "Steps 3–5 · Chapter 2". */
-export function pageRangeLabel(page, steps, chapters, perChapter = false) {
+export function pageRangeLabel(page, steps, chapters, perChapter = false, hiddenSteps = null) {
   const nums = numberSteps(steps, chapters, perChapter);
-  const labels = (page.stepIds || []).map(id => nums.get(id)?.label).filter(Boolean);
-  if (!labels.length) return '(no steps)';
+  const hid = new Set(hiddenSteps || []);
+  const labels = (page.stepIds || []).filter(id => !hid.has(id)).map(id => nums.get(id)?.label).filter(Boolean);
+  if (!labels.length) return (page.stepIds || []).length ? '(all its steps are hidden)' : '(no steps)';
   const first = labels[0], last = labels[labels.length - 1];
-  const ch = nums.get(page.stepIds[0])?.chapterLabel || '';
+  const ch = nums.get((page.stepIds || []).find(id => !hid.has(id)))?.chapterLabel || '';
   return `${labels.length > 1 ? `Steps ${first}–${last}` : `Step ${first}`}${ch ? ` · ${ch}` : ''}`;
 }
