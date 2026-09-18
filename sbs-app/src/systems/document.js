@@ -26,7 +26,7 @@ import { projectDisplayName } from './header.js';
 import * as projectPaths from '../core/project-paths.js';
 import {
   emptyDocument, autoPaginate, reconcile, orderOf, mergeWithPrevious, splitBefore, clearFlags,
-  buildRenderModel, stillsNeeded, narrationOf, mergeUnits, splitAll, autoTemplates, parseStillKey,
+  buildRenderModel, stillsNeeded, narrationOf, mergeUnits, splitAll, autoTemplates, parseStillKey, sanitizeTemplate, templateProblems,
 } from './document-core.js';
 import { renderDocumentHtml } from './document-render.js';
 
@@ -118,6 +118,26 @@ export function splitPageBefore(pageId, stepId) {
 export function setPageTemplate(pageId, templateId) {
   const cur = getDocument(); if (!cur) return;
   _commit('Page template', _auto({ ...cur, pages: cur.pages.map(p => p.id === pageId ? (templateId ? { ...p, templateId, templateAuto: false } : { ...p, templateAuto: true }) : p) }));
+}
+/**
+ * 📐 A layout the user drew. Saved INTO the document (it travels with the project); a new one gets an id.
+ * applyToPageId: that page starts using it at once (one undo entry for both).
+ * @returns {string|null} the template id
+ */
+export function saveTemplate(tpl, applyToPageId = null) {
+  const cur = getDocument(); if (!cur) return null;
+  const clean = sanitizeTemplate(tpl);
+  if (templateProblems(clean).length) { setStatus('That layout has overlapping boxes — it was not saved.', 'warn', 6000); return null; }
+  if (!clean.id) clean.id = `utpl_${Date.now().toString(36)}${Math.floor(performance.now() % 1e6).toString(36)}`;
+  const templates = [...(cur.templates || []).filter(t => t.id !== clean.id), clean];
+  const pages = applyToPageId ? cur.pages.map(p => (p.id === applyToPageId ? { ...p, templateId: clean.id, templateAuto: false } : p)) : cur.pages;
+  _commit('Save page template', { ...cur, templates, pages });
+  return clean.id;
+}
+/** Pages that wore it go back to AUTOMATIC. */
+export function deleteTemplate(id) {
+  const cur = getDocument(); if (!cur) return;
+  _commit('Delete page template', _auto({ ...cur, templates: (cur.templates || []).filter(t => t.id !== id), pages: cur.pages.map(p => (p.templateId === id ? { ...p, templateAuto: true } : p)) }));
 }
 const _withSlot = (p, slot, make) => {
   const images = (p.images || []).map(i => ({ ...i }));

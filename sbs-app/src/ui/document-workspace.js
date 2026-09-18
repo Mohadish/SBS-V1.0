@@ -21,6 +21,7 @@ import { builtinTemplates, docTextFor, pageRangeLabel, unitsOf, stillsNeeded, pi
 import { DOCUMENT_CSS, renderPageHtml, slotInnerHtml } from '../systems/document-render.js';
 import { watermarkOf, watermarkHtml, watermarkCss, watermarkVisible, detectWatermarkMode, bakeWatermarkPixels, fitWithin } from '../systems/watermark-core.js';
 import * as D from '../systems/document.js';
+import { openTemplateEditor } from './document-template-editor.js';
 
 const _esc = (s) => String(s ?? '').replace(/[&<>"]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
 const FLAG_ICON = { added: '➕', removed: '➖', 'moved-out': '↗', new: '🆕', 'image-left': '🖼', empty: '∅' };
@@ -32,6 +33,7 @@ let _walking = false, _walkAgain = false, _exporting = false, _deferred = false,
 let _ptrDown = false, _renderHeld = false;
 let _wmOpen = false, _wmDlg = null;
 let _slotSel = null, _pageModel = null, _pageLang = null, _assetSlot = 0;
+let _tplEd = null;                        // the open template editor, if any
 
 // page-editing affordances — live ONLY in the workspace, never in the PDF
 const EDIT_CSS = `
@@ -71,6 +73,7 @@ export function closeDocumentWorkspace() {
   _closeMenu();
   _wmDlg?.remove(); _wmDlg = null;
   _flushWheel(); _slotSel = null; _placeSlotBar();
+  _tplEd?.close(); _tplEd = null; _dimPanes(false);
   _root.style.display = 'none';
 }
 const _isOpen = () => !!_root && _root.style.display !== 'none';
@@ -312,7 +315,8 @@ function _renderLeft(c) {
       <div style="margin-top:5px;"><a data-act="reviewed">✓ Seen — clear these marks</a></div></div>` : ''}
     <label class="dw-lab">Page template
       <select class="dw-in" data-page-opt="template"><option value=""${page.templateAuto !== false ? ' selected' : ''}>Automatic — ${_esc(tplNow.name)}</option>${tpls.map(t => `<option value="${_esc(t.id)}"${(page.templateAuto === false && t.id === page.templateId) ? ' selected' : ''}>${_esc(t.name)}</option>`).join('')}</select></label>
-    <div style="font-size:11px;color:#64748b;margin:-2px 0 8px;">Automatic = as many pictures as the page has steps (2, 3, 4).</div>
+    <div style="font-size:11px;color:#64748b;margin:-2px 0 4px;">Automatic = as many pictures as the page has steps (2, 3, 4).</div>
+    <div style="font-size:11.5px;margin:0 0 9px;display:flex;gap:10px;flex-wrap:wrap;"><a data-act="tpl-new" title="Draw your own layout: where the text goes and where each picture frame goes. It starts from this page's layout.">📐 New template…</a>${tplNow.builtin ? '' : `<a data-act="tpl-edit">✎ Edit “${_esc(tplNow.name)}”</a><a data-act="tpl-delete" style="color:#fca5a5;">Delete it</a>`}</div>
     ${(tplNow.images || []).map((_, k) => { const st = slotState(page, k), im = page.images?.[k]; return `<label class="dw-lab">Picture ${k + 1}
       <select class="dw-in" data-page-opt="picture" data-slot="${k}">
         ${st === 'asset' ? `<option value="__asset" selected>External image: ${_esc(c.doc.assets?.[im.assetId]?.name || 'image')}</option>` : ''}
@@ -767,6 +771,29 @@ async function _importAsset(file, slot) {
   }
 }
 
+// ─── 📐 template editor ─────────────────────────────────────────────────────
+
+function _dimPanes(on) {
+  for (const id of ['#dw-left', '#dw-right', '#dw-actions']) { const p = _root.querySelector(id); if (p) { p.style.opacity = on ? '.35' : ''; p.style.pointerEvents = on ? 'none' : ''; } }
+}
+
+/** Draw a layout, starting from the current page's. Saving stores it in the document and puts this page on it. */
+function _openTemplateEditor(asNew) {
+  const c = _ctx();
+  const page = c.doc?.pages.find(p => p.id === _pageId); if (!page || _tplEd) return;
+  _commitFocusedText(); _flushWheel(); _selectSlot(null); _closeMenu();
+  const tpls = [...builtinTemplates(), ...(c.doc.templates || [])];
+  const from = tpls.find(t => t.id === page.templateId) || tpls[0];
+  const forPage = _pageId;
+  _dimPanes(true);
+  const done = () => { _tplEd = null; _dimPanes(false); _holdFocus(); };
+  _tplEd = openTemplateEditor({
+    host: _root.querySelector('#dw-center'), template: from, isNew: asNew || !!from.builtin,
+    onSave: (tpl) => { done(); const id = D.saveTemplate(tpl, forPage); if (id) setStatus(`Template “${tpl.name}” saved — this page uses it now, and it is in the template list of every page.`, 'success', 7000); },
+    onCancel: done,
+  });
+}
+
 // ─── menus ──────────────────────────────────────────────────────────────────
 
 /** items: { label | html, run } · { sep:true } */
@@ -862,6 +889,8 @@ async function _onClick(e) {
   if (act === 'zoom-fit' || act === 'zoom-100') { _zoom = act === 'zoom-fit' ? 'fit' : '100'; _renderTop(_ctx()); _fit(); _holdFocus(); return; }
   if (act === 'wm-toggle') { _wmOpen = !_wmOpen; _renderLeft(_ctx()); _holdFocus(); return; }
   if (act === 'wm-choose') { _root.querySelector('input[data-wm-file]')?.click(); return; }
+  if (act === 'tpl-new' || act === 'tpl-edit') { _openTemplateEditor(act === 'tpl-new'); return; }
+  if (act === 'tpl-delete') { const pg = _ctx().doc.pages.find(p => p.id === _pageId); if (pg && confirm('Delete this template? Pages that use it go back to the automatic layout. (Undo brings it back.)')) D.deleteTemplate(pg.templateId); return; }
   if (act === 'sel-action') { _commitFocusedText(); _selBarActions[Number(el.dataset.i)]?.run?.(); return; }
   if (act === 'slot-menu') { const r = el.getBoundingClientRect(); _slotMenu(_slotSel ?? 0, r.left, r.bottom + 4); return; }
   if (act === 'slot-fill') { if (_slotSel != null) D.setPagePictureFit(_pageId, _slotSel, null); return; }
@@ -911,6 +940,7 @@ function _onChange(e) {
 }
 
 function _onKey(e, editable) {
+  if (_tplEd) return;                                          // the template editor has the keyboard (arrows nudge a box there)
   if (e.key === 'Escape') {
     if (_slotSel != null && !_menu && !_wmDlg) { _selectSlot(null); return; }
     if (_wmDlg) { _wmDlg.remove(); _wmDlg = null; _holdFocus(); return; }

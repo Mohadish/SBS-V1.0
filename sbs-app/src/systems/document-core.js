@@ -85,8 +85,54 @@ export function autoTemplates(pages, opts = {}) {
   });
 }
 
+// ─── user templates ─────────────────────────────────────────────────────────
+// A template a user draws is the same record as a prefab one. It is STRICT in the same way:
+// the text box and every picture frame live inside the content area (between the header
+// and the footer, inside the side margins) and never overlap — that is what keeps every page
+// of a manual lined up. Header and footer zones are not part of a user template (yet).
+
+export const PAGE_MM = Object.freeze({ w: 210, h: 297 });
+export const CONTENT_MM = Object.freeze({ x: 12, y: 32, w: 186, h: 238.5 });     // x 12…198, y 32…270.5
+export const MAX_FRAMES = 8;
+const MIN_FRAME = 15, MIN_TEXT_H = 12, MIN_TEXT_W = 40;
+
+const _r1 = (v) => Math.round(Number(v) * 2) / 2;                                // half-millimetre grid
+/** A rect forced to be numbers, on the grid, at least min size, inside the content area. */
+export function clampRect(r, minW = MIN_FRAME, minH = MIN_FRAME) {
+  const C = CONTENT_MM;
+  let w = Math.max(minW, Math.min(C.w, _r1(r?.w) || minW)), h = Math.max(minH, Math.min(C.h, _r1(r?.h) || minH));
+  let x = _r1(r?.x), y = _r1(r?.y);
+  if (!Number.isFinite(x)) x = C.x; if (!Number.isFinite(y)) y = C.y;
+  x = Math.max(C.x, Math.min(C.x + C.w - w, x)); y = Math.max(C.y, Math.min(C.y + C.h - h, y));
+  return { x, y, w, h };
+}
+
+/** Whatever came in (the editor, an old file, a hand-edited file) → a well-formed template record, numbers only. */
+export function sanitizeTemplate(t) {
+  const base = builtinTemplates()[0];
+  return {
+    id: String(t?.id || ''),
+    name: String(t?.name || 'My template').slice(0, 80),
+    builtin: false,
+    page: { ...base.page }, header: { ...base.header }, footer: { ...base.footer },
+    text: clampRect(t?.text || base.text, MIN_TEXT_W, MIN_TEXT_H),
+    images: (Array.isArray(t?.images) ? t.images : []).slice(0, MAX_FRAMES).map(r => clampRect(r)),
+  };
+}
+
+const _overlap = (a, b) => a.x < b.x + b.w - 0.01 && b.x < a.x + a.w - 0.01 && a.y < b.y + b.h - 0.01 && b.y < a.y + a.h - 0.01;
+/** What stops a template from being saved — in plain words, naming the boxes. [] = fine. */
+export function templateProblems(t) {
+  const zones = [{ name: 'the text box', r: t.text }, ...(t.images || []).map((r, i) => ({ name: `picture ${i + 1}`, r }))];
+  const out = [];
+  for (let i = 0; i < zones.length; i++) for (let j = i + 1; j < zones.length; j++) if (_overlap(zones[i].r, zones[j].r)) out.push({ a: i, b: j, text: `${zones[i].name} and ${zones[j].name} overlap` });
+  return out;
+}
+
 export function templateById(doc, id) {
-  return (doc?.templates || []).find(t => t.id === id) || builtinTemplates().find(t => t.id === id) || builtinTemplates()[0];
+  const mine = (doc?.templates || []).find(t => t.id === id);
+  if (mine) return sanitizeTemplate(mine);                    // never trust stored geometry: it is written into style attributes
+  return builtinTemplates().find(t => t.id === id) || builtinTemplates()[0];
 }
 
 // ─── the timeline as the document sees it ───────────────────────────────────
