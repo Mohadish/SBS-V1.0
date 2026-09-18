@@ -17,7 +17,7 @@ import { undoManager } from '../systems/undo.js';
 import { setStatus } from './status.js';
 import { srcHashOf } from '../systems/language-packs.js';
 import { numberSteps } from '../systems/translation-sheet-core.js';
-import { builtinTemplates, docTextFor, pageRangeLabel, unitsOf, stillsNeeded, pictureBox, containZoom, slotState } from '../systems/document-core.js';
+import { builtinTemplates, docTextFor, pageRangeLabel, unitsOf, stillsNeeded, pictureBox, containZoom, slotState, directionOf } from '../systems/document-core.js';
 import { DOCUMENT_CSS, renderPageHtml, slotInnerHtml } from '../systems/document-render.js';
 import { watermarkOf, watermarkHtml, watermarkCss, watermarkVisible, detectWatermarkMode, bakeWatermarkPixels, fitWithin } from '../systems/watermark-core.js';
 import * as D from '../systems/document.js';
@@ -31,7 +31,7 @@ let _sel = new Set(), _anchor = null, _pageId = null, _zoom = 'fit';
 let _walking = false, _walkAgain = false, _exporting = false, _deferred = false, _menu = null, _renderTimer = 0;
 let _ptrDown = false, _renderHeld = false;
 let _wmOpen = false, _wmDlg = null;
-let _slotSel = null, _pageModel = null, _assetSlot = 0;
+let _slotSel = null, _pageModel = null, _pageLang = null, _assetSlot = 0;
 
 // page-editing affordances — live ONLY in the workspace, never in the PDF
 const EDIT_CSS = `
@@ -301,20 +301,24 @@ function _renderLeft(c) {
     <div class="dw-h">Document</div>
     ${[['title', 'Title'], ['company', 'Company'], ['docNo', 'Document no.'], ['rev', 'Revision']].map(([k, l]) => `<label class="dw-lab">${l}<input class="dw-in" data-field="${k}" value="${_esc(f[k] || '')}" dir="auto"></label>`).join('')}
     <label class="dw-lab">Step numbers
-      <select class="dw-in" data-opt="numbering">${[['step', 'The same numbers as the animation'], ['page', '1, 2, 3 on every page'], ['none', 'No numbers']].map(([v, l]) => `<option value="${v}"${(c.doc.options?.numbering || 'step') === v ? ' selected' : ''}>${l}</option>`).join('')}</select></label>`;
+      <select class="dw-in" data-opt="numbering">${[['step', 'The same numbers as the animation'], ['page', '1, 2, 3 on every page'], ['none', 'No numbers']].map(([v, l]) => `<option value="${v}"${(c.doc.options?.numbering || 'step') === v ? ' selected' : ''}>${l}</option>`).join('')}</select></label>
+    <label style="display:flex;gap:8px;align-items:center;margin:0 0 7px;font-size:11.5px;color:#cbd5e1;"><input type="checkbox" data-opt="pictureNumbers"${c.doc.options?.pictureNumbers !== false ? ' checked' : ''}> Step number on each picture (pages with several steps)</label>
+    <label class="dw-lab">Reading direction
+      <select class="dw-in" data-opt="direction">${(() => { const r = directionOf(c.doc, c.steps, c.chapters); const cur = c.doc.options?.direction || 'auto'; return [['auto', `Automatic — now ${r.detected === 'rtl' ? 'right-to-left (Hebrew / Arabic text)' : 'left-to-right'}`], ['ltr', 'Left-to-right'], ['rtl', 'Right-to-left']].map(([v, l]) => `<option value="${v}"${cur === v ? ' selected' : ''}>${l}</option>`).join(''); })()}</select></label>`;
   const pageHtml = `
     <div class="dw-h">Page ${pi + 1} of ${c.doc.pages.length}</div>
     <div style="font-size:12px;color:#cbd5e1;margin-bottom:8px;">${_esc(pageRangeLabel(page, c.steps, c.chapters, c.perChapter, c.doc.hiddenSteps))}</div>
     ${flags.length ? `<div style="margin:0 0 10px;padding:7px 9px;border-radius:7px;background:rgba(245,158,11,.13);border:1px solid #b45309;font-size:11.5px;line-height:1.5;">${flags.map(x => `${FLAG_ICON[x.kind] || '!'} ${_esc(x.note)}`).join('<br>')}
       <div style="margin-top:5px;"><a data-act="reviewed">✓ Seen — clear these marks</a></div></div>` : ''}
     <label class="dw-lab">Page template
-      <select class="dw-in" data-page-opt="template">${tpls.map(t => `<option value="${_esc(t.id)}"${t.id === page.templateId ? ' selected' : ''}>${_esc(t.name)}</option>`).join('')}</select></label>
+      <select class="dw-in" data-page-opt="template"><option value=""${page.templateAuto !== false ? ' selected' : ''}>Automatic — ${_esc(tplNow.name)}</option>${tpls.map(t => `<option value="${_esc(t.id)}"${(page.templateAuto === false && t.id === page.templateId) ? ' selected' : ''}>${_esc(t.name)}</option>`).join('')}</select></label>
+    <div style="font-size:11px;color:#64748b;margin:-2px 0 8px;">Automatic = as many pictures as the page has steps (2, 3, 4).</div>
     ${(tplNow.images || []).map((_, k) => { const st = slotState(page, k), im = page.images?.[k]; return `<label class="dw-lab">Picture ${k + 1}
       <select class="dw-in" data-page-opt="picture" data-slot="${k}">
         ${st === 'asset' ? `<option value="__asset" selected>External image: ${_esc(c.doc.assets?.[im.assetId]?.name || 'image')}</option>` : ''}
         <option value=""${st === 'auto' ? ' selected' : ''}>Automatic — follows the page's steps</option>
         <option value="__empty"${st === 'empty' ? ' selected' : ''}>— empty —</option>
-        ${members.map(sid => `<option value="${_esc(sid)}"${(st === 'step' && im?.stepId === sid) ? ' selected' : ''}>${_esc(label(sid))}</option>`).join('')}
+        ${members.map(sid => `<option value="${_esc(sid)}"${(st === 'step' && im?.stepId === sid && im?.moment !== 'start') ? ' selected' : ''}>${_esc(label(sid))}</option><option value="${_esc(sid)}@start"${(st === 'step' && im?.stepId === sid && im?.moment === 'start') ? ' selected' : ''}>   ↳ before ${_esc(label(sid))}</option>`).join('')}
       </select></label>`; }).join('')}
     <div style="font-size:11.5px;color:#94a3b8;margin:0 0 6px;">Click a picture on the page: drag moves it behind its frame, the wheel scales it.</div>
     <div style="font-size:11.5px;margin:0 0 8px;"><a data-act="rerender-pictures" title="Pictures refresh by themselves when a step, its overlay, a colour or a style changes. Use this after anything else — a reloaded model, render settings.">↻ Render the pictures again</a></div>
@@ -532,12 +536,12 @@ function _renderPage(c) {
   if (focused?.classList?.contains('tx')) { _deferred = true; return; }
   const model = D.renderModel();
   const mp = model.pages.find(p => p.id === _pageId);
-  _pageModel = mp || null;
+  _pageModel = mp || null; _pageLang = model.lang || null;
   if (_slotSel != null && (!mp || _slotSel >= mp.images.length)) _slotSel = null;
   if (!mp) { _placeSlotBar(); _shadow.innerHTML = `<style>${EDIT_CSS}</style><div style="font:13px Arial;color:#e2e8f0;padding:30px;">${(D.getDocument()?.pages.find(p => p.id === _pageId)?.stepIds || []).length ? 'Every step of this page is left out of the document, so the page is not printed. Click the eye of a step on the right to put it back.' : 'This page has no steps left. Delete it from the list on the right.'}</div>`; _fit(); return; }
   const need = stillsNeeded({ pages: [mp] });
   const have = D.cachedStills(need);
-  _shadow.innerHTML = `<style>${DOCUMENT_CSS}${watermarkCss(model.watermark)}${EDIT_CSS}</style><div class="fit">${renderPageHtml(mp, { stills: have, logo: D.documentLogo(), watermark: model.watermark })}</div>`;
+  _shadow.innerHTML = `<style>${DOCUMENT_CSS}${watermarkCss(model.watermark)}${EDIT_CSS}</style><div class="fit">${renderPageHtml(mp, { stills: have, logo: D.documentLogo(), watermark: model.watermark, dir: model.dir, lang: model.lang })}</div>`;
   for (const row of _shadow.querySelectorAll('.it')) {
     const it = mp.items.find(i => i.stepId === row.dataset.step);
     if (it?.edited) row.classList.add(it.drifted ? 'drifted' : 'edited');
@@ -576,8 +580,8 @@ async function _loadStills() {
       for (const slot of _shadow.querySelectorAll('.slot')) {
         const k = Number(slot.dataset.slot), im = now?.images?.[k];
         const sid = im?.stepId;
-        const url = sid ? stills?.get(sid) : null;
-        if (url) { slot.innerHTML = slotInnerHtml(im, url, k); slot.classList.remove('none'); }
+        const url = sid ? stills?.get(im.key) : null;
+        if (url) { slot.innerHTML = slotInnerHtml(im, url, k, _pageLang); slot.classList.remove('none'); }
         else if (sid) { const ph = slot.querySelector('.ph'); if (ph) ph.textContent = 'the picture could not be rendered'; }
       }
       _pageModel = now || _pageModel;
@@ -662,7 +666,7 @@ function _placeSlotBar() {
     _root.appendChild(bar);
   }
   const im = _slotIm(_slotSel), has = !!el.querySelector('img.pic');
-  const what = !im ? '' : im.state === 'asset' ? `external: ${im.name || 'image'}` : im.state === 'auto' ? 'automatic' : im.state === 'step' ? 'chosen step' : 'empty';
+  const what = !im ? '' : im.state === 'asset' ? `external: ${im.name || 'image'}` : im.state === 'auto' ? 'automatic' : im.state === 'step' ? (im.moment === 'start' ? `before step ${im.label || ''}` : 'chosen step') : 'empty';
   bar.innerHTML = `<button class="dw-btn" data-act="slot-menu" style="padding:2px 9px;" title="Which picture goes here">Picture ▾</button>
     ${has ? `<button class="dw-btn" data-act="slot-fill" style="padding:2px 9px;" title="Fill the frame, centred (cropping what does not fit)">Fill</button>
     <button class="dw-btn" data-act="slot-whole" style="padding:2px 9px;" title="Show the whole picture inside the frame">Whole</button>
@@ -730,7 +734,10 @@ function _slotMenu(slot, x, y) {
   const members = (page.stepIds || []).filter(id => !c.hidden.has(id)).flatMap(id => c.units.find(u => u.id === id)?.members || []);
   _openMenu([
     { label: 'Automatic — follows the steps of the page', run: () => D.setPagePicture(_pageId, slot, null) },
-    ...members.map(sid => ({ html: `<b>${_esc(c.nums.get(sid)?.label || '')}</b> ${_esc(c.stepById.get(sid)?.name || sid)}`, run: () => D.setPagePicture(_pageId, slot, sid) })),
+    ...members.flatMap(sid => [
+      { html: `<b>${_esc(c.nums.get(sid)?.label || '')}</b> ${_esc(c.stepById.get(sid)?.name || sid)}`, run: () => D.setPagePicture(_pageId, slot, sid) },
+      { html: `<span style="color:#94a3b8;padding-inline-start:14px;">↳ <b>before</b> step ${_esc(c.nums.get(sid)?.label || '')} — the state it starts from, seen from its camera</span>`, run: () => D.setPagePicture(_pageId, slot, sid, 'start') },
+    ]),
     { sep: true },
     { label: '🖼 External image… (a photo, a drawing — not from the animation)', run: () => { _assetSlot = slot; _root.querySelector('#dw-asset-file')?.click(); } },
     { label: 'Leave this frame empty', run: () => D.setPagePicture(_pageId, slot, 'empty') },
@@ -892,8 +899,14 @@ function _onChange(e) {
   }
   if (t.dataset?.field) return D.setFields({ [t.dataset.field]: t.value });
   if (t.dataset?.opt === 'numbering') return D.setOptions({ numbering: t.value });
-  if (t.dataset?.pageOpt === 'template') return D.setPageTemplate(_pageId, t.value);
-  if (t.dataset?.pageOpt === 'picture') { if (t.value === '__asset') return; return D.setPagePicture(_pageId, Number(t.dataset.slot), t.value === '__empty' ? 'empty' : (t.value || null)); }
+  if (t.dataset?.opt === 'direction') return D.setOptions({ direction: t.value });
+  if (t.dataset?.opt === 'pictureNumbers') return D.setOptions({ pictureNumbers: t.checked });
+  if (t.dataset?.pageOpt === 'template') return D.setPageTemplate(_pageId, t.value || null);
+  if (t.dataset?.pageOpt === 'picture') {
+    if (t.value === '__asset') return;
+    const before = t.value.endsWith('@start');
+    return D.setPagePicture(_pageId, Number(t.dataset.slot), t.value === '__empty' ? 'empty' : ((before ? t.value.slice(0, -6) : t.value) || null), before ? 'start' : 'end');
+  }
   if (t.id === 'dw-asset-file') { const file = t.files?.[0]; t.value = ''; if (file) _importAsset(file, _assetSlot); return; }
 }
 
@@ -915,11 +928,11 @@ function _onKey(e, editable) {
     const cur = order.indexOf(_anchor);
     return move(order[Math.max(0, Math.min(order.length - 1, (cur < 0 ? 0 : cur + (e.key === 'ArrowDown' ? 1 : -1))))]);
   }
-  if (e.key === 'PageDown' || e.key === 'PageUp') {
+  if (e.key === 'PageDown' || e.key === 'PageUp' || e.key === 'ArrowRight' || e.key === 'ArrowLeft') {
     const i = c.doc.pages.findIndex(p => p.id === _pageId);
     const live = c.doc.pages.filter(p => p.stepIds.length);
     const k = live.findIndex(p => p.id === _pageId);
-    const np = live[Math.max(0, Math.min(live.length - 1, (k < 0 ? i : k) + (e.key === 'PageDown' ? 1 : -1)))];
+    const np = live[Math.max(0, Math.min(live.length - 1, (k < 0 ? i : k) + ((e.key === 'PageDown' || e.key === 'ArrowRight') ? 1 : -1)))];
     return move(np?.stepIds[0]);
   }
 }

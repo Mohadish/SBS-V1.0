@@ -51,13 +51,38 @@ export function emptyDocument() {
     fields: { title: '', docNo: '', rev: 'A', company: '' },
     header: { left: '{company}', center: '{title}', right: '{docNo} · rev {rev}' },
     footer: { left: '{project}', center: '{chapter}', right: 'Page {page} / {pages}' },
-    options: { includeHidden: false, numbering: 'step' },   // 'step' = the animation's step numbers · 'page' = 1,2,3 per page · 'none'
+    // numbering: 'step' = the animation's step numbers · 'page' = 1,2,3 per page · 'none'
+    // direction: 'auto' (from the text: Hebrew / Arabic → right-to-left) · 'ltr' · 'rtl'   ·   pictureNumbers: the step number on each picture
+    options: { includeHidden: false, numbering: 'step', direction: 'auto', pictureNumbers: true },
     pages: [],
     texts: {},                           // stepId → { text, srcHash }   (absent = follows the voiceover)
     watermark: { ...WATERMARK_DEFAULTS },
     hiddenSteps: [],                     // step (unit) ids left OUT of the document — the animation is not touched
     assets: {},                          // assetId → { dataUrl, w, h, name } : pictures that are not part of the animation
   };
+}
+
+/** The layout a page gets by itself: as many pictures as it has steps — 1 → the document's default, 2, 3, 4 (and 4 for more: sort the rest out by hand). */
+export function templateForCount(n, defaultId = 'tpl_standard') {
+  return n <= 1 ? defaultId : n === 2 ? 'tpl_two' : n === 3 ? 'tpl_three' : 'tpl_four';
+}
+
+/**
+ * Re-pick the template of every page that is still on AUTOMATIC (the user has not chosen
+ * one: templateAuto !== false). Pages saved before this flag existed count as automatic only
+ * if their template is what automatic would have given them anyway, or the plain default —
+ * a layout somebody picked by hand is never taken away.
+ */
+export function autoTemplates(pages, opts = {}) {
+  const hidden = new Set(opts.hidden || []);
+  const dflt = opts.defaultId || 'tpl_standard';
+  return (pages || []).map(p => {
+    const n = (p.stepIds || []).filter(id => !hidden.has(id)).length;
+    const want = templateForCount(n, dflt);
+    const auto = p.templateAuto === true || (p.templateAuto === undefined && (p.templateId === dflt || p.templateId === want || !p.templateId));
+    if (!auto) return p;
+    return (p.templateId === want && p.templateAuto === true) ? p : { ...p, templateId: want, templateAuto: true };
+  });
 }
 
 export function templateById(doc, id) {
@@ -90,7 +115,7 @@ let _seq = 0;
 const _defaultId = (p) => `${p}_${Date.now().toString(36)}${(++_seq).toString(36)}`;
 
 function _newPage(unit, templateId, newId) {
-  return { id: newId('page'), stepIds: [unit.id], templateId, images: [{ stepId: unit.members[unit.members.length - 1], auto: true }], flags: [] };
+  return { id: newId('page'), stepIds: [unit.id], templateId, templateAuto: true, images: [{ stepId: unit.members[unit.members.length - 1], auto: true }], flags: [] };
 }
 
 /** One page per unit — the starting point; the user merges from there. */
@@ -268,7 +293,7 @@ export function splitBefore(pages, pageId, stepId, opts = {}) {
   const k = p.stepIds.indexOf(stepId);
   if (k <= 0) return pages;
   const a = { ...p, stepIds: p.stepIds.slice(0, k) };
-  const b = { id: newId('page'), stepIds: p.stepIds.slice(k), templateId: p.templateId, images: [{ stepId: null, auto: true }], flags: [] };
+  const b = { id: newId('page'), stepIds: p.stepIds.slice(k), templateId: p.templateId, templateAuto: p.templateAuto, images: [{ stepId: null, auto: true }], flags: [] };
   return [...pages.slice(0, i), a, b, ...pages.slice(i + 1)];
 }
 
@@ -297,7 +322,7 @@ export function mergeUnits(pages, unitIds, order, opts = {}) {
   if (touched.length <= 1) return { pages, pageId: touched[0]?.id || null, range };   // already one page
   let target = touched.find(p => p.stepIds.every(id => inRange.has(id))) || null;
   const made = !target;
-  if (made) target = { id: newId('page'), stepIds: [], templateId: touched[0].templateId, images: [{ stepId: null, auto: true }], flags: [] };
+  if (made) target = { id: newId('page'), stepIds: [], templateId: touched[0].templateId, templateAuto: touched[0].templateAuto, images: [{ stepId: null, auto: true }], flags: [] };
   const out = [];
   for (const p of pages) {
     if (p === target) { out.push(null); continue; }              // placeholder — filled below
@@ -330,7 +355,7 @@ export function splitAll(pages, pageId, opts = {}) {
   const p = pages[i];
   const parts = p.stepIds.map((id, k) => k === 0
     ? { ...p, stepIds: [id], images: [{ stepId: null, auto: true }, ...(p.images || []).slice(1).map(() => ({ stepId: null }))] }
-    : { id: newId('page'), stepIds: [id], templateId: p.templateId, images: [{ stepId: null, auto: true }], flags: [] });
+    : { id: newId('page'), stepIds: [id], templateId: p.templateId, templateAuto: p.templateAuto, images: [{ stepId: null, auto: true }], flags: [] });
   return [...pages.slice(0, i), ...parts, ...pages.slice(i + 1)];
 }
 
@@ -352,6 +377,38 @@ export function docTextFor(step, texts, hashOf) {
   if (!e) return { text: narr, edited: false, drifted: false };
   return { text: String(e.text ?? ''), edited: true, drifted: !!e.srcHash && e.srcHash !== hashOf(narr) };
 }
+
+// ─── reading direction ──────────────────────────────────────────────────────
+
+const _RTL_RX = /[\u0590-\u08FF\uFB1D-\uFDFF\uFE70-\uFEFC]/g, _LTR_RX = /[A-Za-z\u00C0-\u024F\u0370-\u03FF\u0400-\u04FF]/g;
+
+/**
+ * The document's reading direction. 'auto' counts letters over everything the document
+ * prints (its own texts where they exist, the voiceover elsewhere, the title): more
+ * right-to-left letters than left-to-right ones → rtl. lang = 'he' | 'ar' | null picks
+ * the wording of the built-in header / footer phrases.
+ */
+export function directionOf(doc, steps, chapters) {
+  const pick = doc?.options?.direction;
+  let text = String(doc?.fields?.title || '');
+  for (const u of unitsOf(steps, chapters, doc?.options)) for (const sid of u.members) {
+    const st = (steps || []).find(x => x.id === sid);
+    text += ' ' + (doc?.texts?.[sid]?.text ?? narrationOf(st));
+  }
+  const he = (text.match(/[\u0590-\u05FF]/g) || []).length, ar = (text.match(/[\u0600-\u06FF]/g) || []).length;
+  const rtlN = (text.match(_RTL_RX) || []).length, ltrN = (text.match(_LTR_RX) || []).length;
+  const detected = rtlN > ltrN ? 'rtl' : 'ltr';
+  const dir = pick === 'rtl' || pick === 'ltr' ? pick : detected;
+  return { dir, detected, lang: dir === 'rtl' ? (ar > he ? 'ar' : 'he') : null };
+}
+
+// The phrases a new document starts with. A right-to-left document that still carries them
+// (nobody re-worded the header / footer) prints them in its own language.
+const _PHRASES = {
+  'Page {page} / {pages}': { he: 'עמוד {page} מתוך {pages}', ar: 'صفحة {page} من {pages}' },
+  '{docNo} · rev {rev}':   { he: '{docNo} · מהדורה {rev}',   ar: '{docNo} · إصدار {rev}' },
+};
+const _phrase = (tpl, lang) => (lang && _PHRASES[tpl]?.[lang]) || tpl;
 
 // ─── pictures in slots ──────────────────────────────────────────────────────
 
@@ -403,6 +460,8 @@ export function buildRenderModel(doc, steps, chapters, ctx) {
   const shown = (id) => unitById.has(id) && !hidden.has(id);
   const live = (doc?.pages || []).filter(p => (p.stepIds || []).some(shown));          // a page whose steps are all hidden is not printed
   const total = live.length;
+  const reading = directionOf(doc, steps, chapters);
+  const headOf = new Map(); for (const u of units) for (const m of u.members) headOf.set(m, u.id);
   let prevChapter = null;
   const pages = live.map((p, pi) => {
     const tpl = templateById(doc, p.templateId);
@@ -432,14 +491,24 @@ export function buildRenderModel(doc, steps, chapters, ctx) {
     }
     return {
       id: p.id, number: pi + 1, total, template: tpl,
-      header: { left: _sub(doc.header?.left, vars), center: _sub(doc.header?.center, vars), right: _sub(doc.header?.right, vars) },
-      footer: { left: _sub(doc.footer?.left, vars), center: _sub(doc.footer?.center, vars), right: _sub(doc.footer?.right, vars) },
+      header: { left: _sub(_phrase(doc.header?.left, reading.lang), vars), center: _sub(_phrase(doc.header?.center, reading.lang), vars), right: _sub(_phrase(doc.header?.right, reading.lang), vars) },
+      footer: { left: _sub(_phrase(doc.footer?.left, reading.lang), vars), center: _sub(_phrase(doc.footer?.center, reading.lang), vars), right: _sub(_phrase(doc.footer?.right, reading.lang), vars) },
       chapter: ch ? ch.name : '', chapterHead, items,
-      images: (tpl.images || []).map((rect, k) => _slotOf(p, k, rect, (tpl.images || []).length, unitById, hidden, doc, ctx)),
+      images: (tpl.images || []).map((rect, k) => {
+        // right-to-left: the FIRST picture is the right-hand one — mirror the frame across the page
+        const r = reading.dir === 'rtl' ? { ...rect, x: (tpl.page?.w || 210) - rect.x - rect.w } : rect;
+        const im = _slotOf(p, k, r, (tpl.images || []).length, unitById, hidden, doc, ctx);
+        // the number the picture refers to = the number of its line on this page (a silent sub-step borrows its step's)
+        let label = '';
+        if (im.stepId && doc.options?.pictureNumbers !== false && (items.length > 1 || im.moment === 'start')) {
+          label = (items.find(i => i.stepId === im.stepId) || items.find(i => i.stepId === headOf.get(im.stepId)))?.label || '';
+        }
+        return { ...im, label, key: im.stepId ? stillKey(im.stepId, im.moment) : null };
+      }),
       flags: p.flags || [],
     };
   });
-  return { pages, total, watermark: watermarkOf(doc) };
+  return { pages, total, watermark: watermarkOf(doc), dir: reading.dir, lang: reading.lang };
 }
 
 /**
@@ -460,13 +529,13 @@ export function slotState(p, k) {
 function _slotOf(p, k, rect, nSlots, unitById, hidden, doc, ctx) {
   const im = p.images?.[k] || null;
   const state = slotState(p, k);
-  const base = { rect, fit: fitOf(im), state, stepId: null, assetId: null, src: null, aspect: ctx?.stillAspect > 0 ? ctx.stillAspect : 16 / 9 };
+  const base = { rect, fit: fitOf(im), state, stepId: null, moment: 'end', assetId: null, src: null, aspect: ctx?.stillAspect > 0 ? ctx.stillAspect : 16 / 9 };
   if (state === 'asset') {
     const a = doc?.assets?.[im.assetId];
     if (a && ASSET_URL_RX.test(String(a.dataUrl || '')) && a.w > 0 && a.h > 0) return { ...base, assetId: im.assetId, src: a.dataUrl, aspect: a.w / a.h, name: a.name || '' };
     return { ...base, state: 'empty' };
   }
-  if (state === 'step') return { ...base, stepId: im.stepId };
+  if (state === 'step') return { ...base, stepId: im.stepId, moment: im.moment === 'start' ? 'start' : 'end' };
   if (state === 'auto') {
     const units = (p.stepIds || []).filter(id => unitById.has(id) && !hidden.has(id)).map(id => unitById.get(id));
     const i = units.length >= nSlots ? units.length - nSlots + k : k;
@@ -476,10 +545,18 @@ function _slotOf(p, k, rect, nSlots, unitById, hidden, doc, ctx) {
   return base;
 }
 
-/** Every step a document needs a picture of. */
+/**
+ * A step can be pictured at two moments: 'end' — its final state (the usual picture) — and
+ * 'start' — the state it begins from: the PREVIOUS step's end state seen through THIS step's
+ * camera, i.e. the "before" of a before / after pair. Key: "<stepId>" or "<stepId>@start".
+ */
+export const stillKey = (stepId, moment) => (moment === 'start' ? `${stepId}@start` : String(stepId));
+export const parseStillKey = (key) => { const s = String(key); return s.endsWith('@start') ? { stepId: s.slice(0, -6), moment: 'start' } : { stepId: s, moment: 'end' }; };
+
+/** Every picture a document needs rendered — as still keys. */
 export function stillsNeeded(model) {
   const out = new Set();
-  for (const p of model.pages) for (const im of p.images) if (im.stepId) out.add(im.stepId);
+  for (const p of model.pages) for (const im of p.images) if (im.stepId) out.add(im.key || stillKey(im.stepId, im.moment));
   return [...out];
 }
 

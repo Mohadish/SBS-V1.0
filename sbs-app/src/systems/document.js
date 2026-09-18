@@ -26,7 +26,7 @@ import { projectDisplayName } from './header.js';
 import * as projectPaths from '../core/project-paths.js';
 import {
   emptyDocument, autoPaginate, reconcile, orderOf, mergeWithPrevious, splitBefore, clearFlags,
-  buildRenderModel, stillsNeeded, narrationOf, mergeUnits, splitAll,
+  buildRenderModel, stillsNeeded, narrationOf, mergeUnits, splitAll, autoTemplates, parseStillKey,
 } from './document-core.js';
 import { renderDocumentHtml } from './document-render.js';
 
@@ -37,6 +37,9 @@ const _steps = () => state.get('steps') || [];
 const _chapters = () => state.get('chapters') || [];
 
 export function getDocument() { return state.get('document') || null; }
+
+/** Pages still on AUTOMATIC get the layout that fits their number of (visible) steps: 2 → two pictures, 3 → three, 4+ → four. */
+const _auto = (doc) => ({ ...doc, pages: autoTemplates(doc.pages, { hidden: doc.hiddenSteps, defaultId: doc.templateId }) });
 
 /** One undoable write of the whole document record. */
 function _commit(label, next) {
@@ -72,7 +75,7 @@ export function syncWithAnimation() {
     setStatus('Document is in line with the animation.', 'info', 4000);
     return r;
   }
-  _commit('Sync document with the animation', { ...cur, pages: r.pages, order: r.order });
+  _commit('Sync document with the animation', _auto({ ...cur, pages: r.pages, order: r.order }));
   setStatus(`Document synced — ${r.report.length} change(s) flagged ❗ on the pages they touched.`, 'warn', 8000);
   return r;
 }
@@ -98,22 +101,23 @@ export function mergePageUp(pageId) {
 export function mergeSteps(unitIds) {
   const cur = getDocument(); if (!cur) return null;
   const r = mergeUnits(cur.pages, unitIds, orderOf(_steps(), _chapters(), cur));
-  if (r.pages !== cur.pages) _commit('Merge steps into one page', { ...cur, pages: r.pages });
+  if (r.pages !== cur.pages) _commit('Merge steps into one page', _auto({ ...cur, pages: r.pages }));
   return r.pageId;
 }
 /** Every step of the page back on a page of its own. */
 export function splitPageAll(pageId) {
   const cur = getDocument(); if (!cur) return;
   const pages = splitAll(cur.pages, pageId);
-  if (pages !== cur.pages) _commit('One page per step', { ...cur, pages });
+  if (pages !== cur.pages) _commit('One page per step', _auto({ ...cur, pages }));
 }
 export function splitPageBefore(pageId, stepId) {
   const cur = getDocument(); if (!cur) return;
-  _commit('Split page', { ...cur, pages: splitBefore(cur.pages, pageId, stepId) });
+  _commit('Split page', _auto({ ...cur, pages: splitBefore(cur.pages, pageId, stepId) }));
 }
+/** templateId null = back to AUTOMATIC (by the number of steps). A chosen template is never changed behind the user's back. */
 export function setPageTemplate(pageId, templateId) {
   const cur = getDocument(); if (!cur) return;
-  _commit('Page template', { ...cur, pages: cur.pages.map(p => p.id === pageId ? { ...p, templateId } : p) });
+  _commit('Page template', _auto({ ...cur, pages: cur.pages.map(p => p.id === pageId ? (templateId ? { ...p, templateId, templateAuto: false } : { ...p, templateAuto: true }) : p) }));
 }
 const _withSlot = (p, slot, make) => {
   const images = (p.images || []).map(i => ({ ...i }));
@@ -134,9 +138,9 @@ const _editPage = (label, pageId, fn) => {
 };
 
 /** choice: a step id · null = automatic (the page's steps are shared out over the slots) · 'empty'. A new picture starts un-cropped. */
-export function setPagePicture(pageId, slot, choice) {
+export function setPagePicture(pageId, slot, choice, moment = 'end') {
   _editPage('Page picture', pageId, (p) => _withSlot(p, slot, () => (
-    choice === 'empty' ? { stepId: null, empty: true } : choice ? { stepId: choice } : { stepId: null, auto: true })));
+    choice === 'empty' ? { stepId: null, empty: true } : choice ? (moment === 'start' ? { stepId: choice, moment: 'start' } : { stepId: choice }) : { stepId: null, auto: true })));
 }
 /** How the picture sits behind its slot: { zoom, ox, oy } (see document-core pictureBox). null = fill the slot, centred. */
 export function setPagePictureFit(pageId, slot, fit) {
@@ -157,7 +161,7 @@ export function setStepsHidden(unitIds, hidden) {
   const cur = getDocument(); if (!cur) return;
   const set = new Set(cur.hiddenSteps || []);
   for (const id of unitIds || []) { if (hidden) set.add(id); else set.delete(id); }
-  _commit(hidden ? 'Hide from the document' : 'Show in the document', { ...cur, hiddenSteps: [...set] });
+  _commit(hidden ? 'Hide from the document' : 'Show in the document', _auto({ ...cur, hiddenSteps: [...set] }));
 }
 export function markPageReviewed(pageId = null) {
   const cur = getDocument(); if (!cur) return;
@@ -240,7 +244,7 @@ export function clearStills() { _stills.clear(); }
  * export framing on for the walk; the centre crop below only covers a grab
  * that happens with overscan still in force.
  */
-function _captureStill(W, H, dom) {
+function _captureStill(W, H, dom, layers = true) {
   if (!dom || !dom.width || !dom.height) return null;
   const c = document.createElement('canvas');
   c.width = W; c.height = H;
@@ -250,7 +254,7 @@ function _captureStill(W, H, dom) {
   const ov = sceneCore.getEffectiveOverscan?.() || 1;
   const sw = dom.width / ov, sh = dom.height / ov;
   ctx.drawImage(dom, (dom.width - sw) / 2, (dom.height - sh) / 2, sw, sh, 0, 0, W, H);
-  for (const [name, fn] of [['overlay', rasterizeOverlay], ['notes', rasterizeNotesLayer], ['tags', rasterizeTagsLayer]]) {
+  for (const [name, fn] of (layers ? [['overlay', rasterizeOverlay], ['notes', rasterizeNotesLayer], ['tags', rasterizeTagsLayer]] : [])) {
     try { const l = fn({ width: W, height: H }); if (l) ctx.drawImage(l, 0, 0, W, H); }
     catch (e) { console.warn(`[document] ${name} layer skipped:`, e?.message || e); }
   }
@@ -275,13 +279,13 @@ export function abortStillsWalk() { _walkAbort = true; }
  * walked and only cached pictures are returned.
  * @returns {Promise<Map<string,string>>} stepId → data URL
  */
-export async function ensureStills(stepIds, { onProgress = null } = {}) {
+export async function ensureStills(keys, { onProgress = null } = {}) {
   const c = getCanonicalSize();
   const W = Math.min(c.width, 1920), H = Math.round(W * c.height / c.width);
   const all = _steps();
   const defs = _defsSig();
   const foreign = !!state.get('_exporting');
-  const todo = foreign ? [] : stepIds.filter(id => { const s = all.find(x => x.id === id); return s && _stills.get(id)?.sig !== _sigOf(s, defs); });
+  const todo = foreign ? [] : (keys || []).filter(key => { const sig = _sigOfKey(key, all, defs); return sig && _stills.get(key)?.sig !== sig; });
   const once = new Map();      // a fallback grab is shown but never cached as fresh
   if (todo.length) {
     _walkAbort = false;
@@ -296,25 +300,38 @@ export async function ensureStills(stepIds, { onProgress = null } = {}) {
     if (hideBoxes) steps.setPlaceholderBboxesVisible(false);
     let i = 0;
     try {
-      for (const id of todo) {
+      for (const key of todo) {
         if (_walkAbort) break;
         i++;
         onProgress?.(i, todo.length);
-        await steps.activateStep(id, false);
+        const { stepId: id, moment } = parseStillKey(key);
+        const before = moment === 'start';
+        if (before) {
+          // BEFORE-frame: the state this step starts from — the previous step's end state — seen
+          // through THIS step's camera, so a before / after pair is framed identically. No overlay,
+          // notes or tags: those belong to a step's END.
+          const prev = _stepBefore(id);
+          if (prev?.isBaseStep) steps.applySnapshotInstant(prev.snapshot, { suppressCamera: true });
+          else if (prev) await steps.activateStep(prev.id, false);
+          const cam = steps._resolveStepCamera(all.find(x => x.id === id));
+          if (cam) sceneCore.applyCameraState(cam);
+        } else {
+          await steps.activateStep(id, false);
+        }
         try { await Promise.race([waitForOverlayStable?.(), new Promise(r => setTimeout(r, 1500))]); } catch { /* best effort */ }
         // activation re-applies materials and with them the selection highlight — hide it per step
         try { materials.setSelectionVisualsVisible(false); } catch { /* no meshes yet */ }
         // grab INSIDE the next render, before the outline + gizmo are composited
         let url = await Promise.race([
-          sceneCore.requestCleanFrame((dom) => _captureStill(W, H, dom)),
+          sceneCore.requestCleanFrame((dom) => _captureStill(W, H, dom, !before)),
           new Promise(r => setTimeout(() => r(null), 1500)),
         ]);
-        const s = all.find(x => x.id === id);
-        if (url && s) _stills.set(id, { sig: _sigOf(s, defs), url });
+        const sig = _sigOfKey(key, all, defs);
+        if (url && sig) _stills.set(key, { sig, url });
         else {
           sceneCore._pendingFrame = null;
-          url = _captureStill(W, H, sceneCore.renderer?.domElement);
-          if (url) once.set(id, url);
+          url = _captureStill(W, H, sceneCore.renderer?.domElement, !before);
+          if (url) once.set(key, url);
           console.warn('[document] no clean frame for step', id, '— used the canvas as it is; it will be rendered again next time');
         }
       }
@@ -329,16 +346,32 @@ export async function ensureStills(stepIds, { onProgress = null } = {}) {
     if (userCam) { try { sceneCore.applyCameraState(userCam); } catch { /* keep the step's camera */ } }   // Work Camera: the free view comes back
   }
   const out = new Map();
-  for (const id of stepIds) { const e = _stills.get(id); if (e) out.set(id, e.url); else if (once.has(id)) out.set(id, once.get(id)); }
+  for (const key of keys || []) { const e = _stills.get(key); if (e) out.set(key, e.url); else if (once.has(key)) out.set(key, once.get(key)); }
   return out;
+}
+
+/** The step whose end state a step starts from: the playable step before it, or the base step (the scene as loaded). */
+function _stepBefore(stepId) {
+  const vis = steps.getVisibleSteps();
+  const i = vis.findIndex(x => x.id === stepId);
+  return i > 0 ? vis[i - 1] : (steps.getBaseStep?.() || null);
+}
+/** Freshness of one picture. A before-frame depends on TWO steps: the one it borrows the state from and the one it borrows the camera from. */
+function _sigOfKey(key, all, defs) {
+  const { stepId, moment } = parseStillKey(key);
+  const s = all.find(x => x.id === stepId);
+  if (!s) return null;
+  if (moment !== 'start') return _sigOf(s, defs);
+  const prev = _stepBefore(stepId);
+  return `B.${srcHashOf(JSON.stringify(prev?.snapshot ?? null))}.${srcHashOf(JSON.stringify(steps._resolveStepCamera(s) ?? null))}.${defs}`;
 }
 
 /** The pictures already rendered this session and still fresh — no step is activated. */
 export function cachedStills(stepIds) {
   const all = _steps(), out = new Map(), defs = _defsSig();
-  for (const id of stepIds || []) {
-    const s = all.find(x => x.id === id), e = _stills.get(id);
-    if (s && e && e.sig === _sigOf(s, defs)) out.set(id, e.url);
+  for (const key of stepIds || []) {
+    const e = _stills.get(key), sig = e ? _sigOfKey(key, all, defs) : null;
+    if (e && sig && e.sig === sig) out.set(key, e.url);
   }
   return out;
 }
