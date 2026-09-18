@@ -114,7 +114,15 @@ function _build() {
       #document-workspace .dw-no { flex:0 0 auto;min-width:26px;text-align:center;font-weight:700;font-size:11.5px;background:#0b1220;border:1px solid #334155;border-radius:9px;padding:1px 6px; }
       #document-workspace .dw-chap { margin:10px 10px 6px;font-size:11px;font-weight:700;color:#cbd5e1;letter-spacing:.04em; }
       #document-workspace .dw-menu { position:fixed;z-index:9100;background:#0f172a;border:1px solid #334155;border-radius:8px;box-shadow:0 10px 30px rgba(0,0,0,.6);padding:4px;min-width:230px;max-height:60vh;overflow:auto; }
-      #document-workspace .dw-menu div { padding:6px 10px;border-radius:5px;cursor:pointer;font-size:12.5px; } #document-workspace .dw-menu div:hover { background:#1d3a5f; }
+      #document-workspace .dw-menu > div { padding:6px 10px;border-radius:5px;cursor:pointer;font-size:12.5px; } #document-workspace .dw-menu > div:hover { background:#1d3a5f; }
+      #document-workspace .dw-menu > div.cur { background:#16324f;box-shadow:inset 3px 0 0 #38bdf8; }
+      #document-workspace .dw-prow { display:flex;gap:10px;align-items:center; }
+      #document-workspace .dw-pthumb { position:relative;flex:0 0 auto;width:96px;height:54px;border-radius:5px;border:1px solid #334155;background:#1e293b;overflow:hidden;display:flex;align-items:center;justify-content:center;color:#64748b;font-size:10.5px; }
+      #document-workspace .dw-pthumb img { width:100%;height:100%;object-fit:cover;display:block; }
+      #document-workspace .dw-pthumb .tag { position:absolute;left:0;bottom:0;background:#f59e0b;color:#111;font-size:9.5px;font-weight:700;padding:0 5px;border-top-right-radius:4px; }
+      #document-workspace .dw-pick { display:flex;gap:9px;align-items:center;width:100%;box-sizing:border-box;background:#0b1220;color:#e2e8f0;border:1px solid #334155;border-radius:7px;padding:4px 8px 4px 4px;font:inherit;font-size:12px;cursor:pointer;text-align:start; }
+      #document-workspace .dw-pick:hover { border-color:#38bdf8; }
+      #document-workspace .dw-pick .dw-pthumb { width:64px;height:36px; }
     </style>
     <div id="dw-top" style="flex:0 0 auto;display:flex;align-items:center;gap:8px;padding:8px 12px;background:#111a2c;border-bottom:1px solid #334155;">
       <span style="font-weight:700;font-size:14px;">📄 Document</span>
@@ -287,6 +295,7 @@ function _renderLeft(c) {
   const members = (page.stepIds || []).flatMap(id => c.units.find(u => u.id === id)?.members || []);
   const flags = page.flags || [];
   const label = (sid) => `${c.nums.get(sid)?.label ? c.nums.get(sid).label + ' · ' : ''}${c.stepById.get(sid)?.name || sid}`;
+  const modelPage = D.renderModel().pages.find(p => p.id === _pageId) || null;     // what each frame resolves to right now
 
   const lines = members.map(sid => {
     const s = c.stepById.get(sid); if (!s) return '';
@@ -317,13 +326,8 @@ function _renderLeft(c) {
       <select class="dw-in" data-page-opt="template"><option value=""${page.templateAuto !== false ? ' selected' : ''}>Automatic — ${_esc(tplNow.name)}</option>${tpls.map(t => `<option value="${_esc(t.id)}"${(page.templateAuto === false && t.id === page.templateId) ? ' selected' : ''}>${_esc(t.name)}</option>`).join('')}</select></label>
     <div style="font-size:11px;color:#64748b;margin:-2px 0 4px;">Automatic = as many pictures as the page has steps (2, 3, 4).</div>
     <div style="font-size:11.5px;margin:0 0 9px;display:flex;gap:10px;flex-wrap:wrap;"><a data-act="tpl-new" title="Draw your own layout: where the text goes and where each picture frame goes. It starts from this page's layout.">📐 New template…</a>${tplNow.builtin ? '' : `<a data-act="tpl-edit">✎ Edit “${_esc(tplNow.name)}”</a><a data-act="tpl-delete" style="color:#fca5a5;">Delete it</a>`}</div>
-    ${(tplNow.images || []).map((_, k) => { const st = slotState(page, k), im = page.images?.[k]; return `<label class="dw-lab">Picture ${k + 1}
-      <select class="dw-in" data-page-opt="picture" data-slot="${k}">
-        ${st === 'asset' ? `<option value="__asset" selected>External image: ${_esc(c.doc.assets?.[im.assetId]?.name || 'image')}</option>` : ''}
-        <option value=""${st === 'auto' ? ' selected' : ''}>Automatic — follows the page's steps</option>
-        <option value="__empty"${st === 'empty' ? ' selected' : ''}>— empty —</option>
-        ${members.map(sid => `<option value="${_esc(sid)}"${(st === 'step' && im?.stepId === sid && im?.moment !== 'start') ? ' selected' : ''}>${_esc(label(sid))}</option><option value="${_esc(sid)}@start"${(st === 'step' && im?.stepId === sid && im?.moment === 'start') ? ' selected' : ''}>   ↳ before ${_esc(label(sid))}</option>`).join('')}
-      </select></label>`; }).join('')}
+    ${(tplNow.images || []).map((_, k) => { const ch = _pictureChoice(c, page, k, modelPage); return `<div class="dw-lab">Picture ${k + 1}
+      <button class="dw-pick" data-act="slot-pick" data-slot="${k}" title="Choose which picture goes into this frame">${_thumbBox(ch.thumb, ch.before)}<span style="flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">${_esc(ch.text)}</span><span style="color:#64748b;">▾</span></button></div>`; }).join('')}
     <div style="font-size:11.5px;color:#94a3b8;margin:0 0 6px;">Click a picture on the page: drag moves it behind its frame, the wheel scales it.</div>
     <div style="font-size:11.5px;margin:0 0 8px;"><a data-act="rerender-pictures" title="Pictures refresh by themselves when a step, its overlay, a colour or a style changes. Use this after anything else — a reloaded model, render settings.">↻ Render the pictures again</a></div>
     ${page.stepIds.length > 1 ? `<div style="margin:4px 0 0;"><button class="dw-btn" data-act="split-all" title="Undo the merge: every step of this page gets a page of its own again">Un-merge — one page per step</button></div>` : ''}
@@ -736,16 +740,58 @@ function _slotMenu(slot, x, y) {
   const c = _ctx();
   const page = c.doc.pages.find(p => p.id === _pageId); if (!page) return;
   const members = (page.stepIds || []).filter(id => !c.hidden.has(id)).flatMap(id => c.units.find(u => u.id === id)?.members || []);
+  const st = slotState(page, slot), im = page.images?.[slot];
+  const thumbs = _thumbsFor(c, members);
+  const mp = D.renderModel().pages.find(p => p.id === _pageId);
+  const autoStep = mp?.images?.[slot]?.state === 'auto' ? mp.images[slot].stepId : null;
+  const row = (thumb, before, html) => `<span class="dw-prow">${_thumbBox(thumb, before)}<span style="min-width:0;">${html}</span></span>`;
+  const no = (sid) => `<span class="dw-no" style="margin-inline-end:6px;">${_esc(c.nums.get(sid)?.label || '–')}</span>`;
   _openMenu([
-    { label: 'Automatic — follows the steps of the page', run: () => D.setPagePicture(_pageId, slot, null) },
+    { cur: st === 'auto', html: row(autoStep ? thumbs.end.get(autoStep) : '', false, `<b>Automatic</b><div style="color:#94a3b8;font-size:11px;">follows the steps of the page${autoStep ? ` — now step ${_esc(c.nums.get(autoStep)?.label || '')}` : ''}</div>`), run: () => D.setPagePicture(_pageId, slot, null) },
+    { sep: true },
     ...members.flatMap(sid => [
-      { html: `<b>${_esc(c.nums.get(sid)?.label || '')}</b> ${_esc(c.stepById.get(sid)?.name || sid)}`, run: () => D.setPagePicture(_pageId, slot, sid) },
-      { html: `<span style="color:#94a3b8;padding-inline-start:14px;">↳ <b>before</b> step ${_esc(c.nums.get(sid)?.label || '')} — the state it starts from, seen from its camera</span>`, run: () => D.setPagePicture(_pageId, slot, sid, 'start') },
+      { cur: st === 'step' && im?.stepId === sid && im?.moment !== 'start', html: row(thumbs.end.get(sid), false, `${no(sid)}<b>${_esc(c.stepById.get(sid)?.name || sid)}</b>`), run: () => D.setPagePicture(_pageId, slot, sid) },
+      { cur: st === 'step' && im?.stepId === sid && im?.moment === 'start', html: `<span style="display:block;padding-inline-start:22px;">${row(thumbs.start.get(sid), true, `↳ <b>before</b> step ${_esc(c.nums.get(sid)?.label || '')}<div style="color:#94a3b8;font-size:11px;">the state it starts from, seen from its camera</div>`)}</span>`, run: () => D.setPagePicture(_pageId, slot, sid, 'start') },
     ]),
     { sep: true },
-    { label: '🖼 External image… (a photo, a drawing — not from the animation)', run: () => { _assetSlot = slot; _root.querySelector('#dw-asset-file')?.click(); } },
-    { label: 'Leave this frame empty', run: () => D.setPagePicture(_pageId, slot, 'empty') },
+    { cur: st === 'asset', html: row(st === 'asset' ? (c.doc.assets?.[im.assetId]?.dataUrl || '') : '', false, `🖼 <b>External image…</b><div style="color:#94a3b8;font-size:11px;">a photo, a drawing — not from the animation${st === 'asset' ? ` · now: ${_esc(c.doc.assets?.[im.assetId]?.name || 'image')}` : ''}</div>`), run: () => { _assetSlot = slot; _root.querySelector('#dw-asset-file')?.click(); } },
+    { cur: st === 'empty', label: 'Leave this frame empty', run: () => D.setPagePicture(_pageId, slot, 'empty') },
   ], x, y);
+}
+
+/** A thumbnail cell (or a grey placeholder); before = the amber "before" tag. */
+function _thumbBox(url, before = false) {
+  return `<span class="dw-pthumb">${url ? `<img src="${_esc(url)}" alt="" draggable="false">` : '—'}${before ? '<span class="tag">before</span>' : ''}</span>`;
+}
+
+/**
+ * Small pictures for a picker. The rendered document picture when there is a fresh one (for a
+ * BEFORE-frame that is the only true picture); otherwise the step's animation thumbnail — and for
+ * a before-frame the thumbnail of the step BEFORE it, which shows the same state (from that step's camera).
+ */
+function _thumbsFor(c, stepIds) {
+  const cached = D.cachedStills(stepIds.flatMap(id => [id, `${id}@start`]));
+  const flat = c.units.flatMap(u => u.members);
+  const end = new Map(), start = new Map();
+  for (const id of stepIds) {
+    end.set(id, cached.get(id) || c.stepById.get(id)?.thumbnail || '');
+    const i = flat.indexOf(id);
+    start.set(id, cached.get(`${id}@start`) || (i > 0 ? c.stepById.get(flat[i - 1])?.thumbnail : '') || '');
+  }
+  return { end, start };
+}
+
+/** What a frame shows right now — for the picker button in the left pane. */
+function _pictureChoice(c, page, k, modelPage) {
+  const st = slotState(page, k), im = page.images?.[k], mi = modelPage?.images?.[k];
+  const name = (sid) => `${c.nums.get(sid)?.label ? c.nums.get(sid).label + ' · ' : ''}${c.stepById.get(sid)?.name || sid}`;
+  if (st === 'asset') return { thumb: c.doc.assets?.[im.assetId]?.dataUrl || '', before: false, text: `External image: ${c.doc.assets?.[im.assetId]?.name || 'image'}` };
+  if (st === 'empty') return { thumb: '', before: false, text: '— empty —' };
+  const sid = st === 'auto' ? mi?.stepId : im?.stepId;
+  if (!sid) return { thumb: '', before: false, text: st === 'auto' ? 'Automatic — no step left for this frame' : '—' };
+  const before = st === 'step' && im?.moment === 'start';
+  const t = _thumbsFor(c, [sid]);
+  return { thumb: before ? t.start.get(sid) : t.end.get(sid), before, text: st === 'auto' ? `Automatic — ${name(sid)}` : before ? `before ${name(sid)}` : name(sid) };
 }
 
 /** External picture → downscaled, stored in the document (JPEG unless it really has transparency). */
@@ -801,9 +847,9 @@ function _openMenu(items, x, y) {
   _closeMenu();
   _menu = document.createElement('div');
   _menu.className = 'dw-menu';
-  _menu.innerHTML = items.map((it, i) => it.sep ? '<hr style="border:0;border-top:1px solid #334155;margin:4px 2px;">' : `<div data-i="${i}">${it.html || _esc(it.label)}</div>`).join('');
+  _menu.innerHTML = items.map((it, i) => it.sep ? '<hr style="border:0;border-top:1px solid #334155;margin:4px 2px;">' : `<div data-i="${i}"${it.cur ? ' class="cur"' : ''}>${it.html || _esc(it.label)}</div>`).join('');
   _menu.addEventListener('click', (ev) => {
-    const d = ev.target.closest('[data-i]'); if (!d) return;
+    const d = ev.target.closest('.dw-menu > [data-i]'); if (!d) return;
     ev.stopPropagation();
     const it = items[Number(d.dataset.i)];
     _closeMenu();
@@ -892,6 +938,7 @@ async function _onClick(e) {
   if (act === 'tpl-new' || act === 'tpl-edit') { _openTemplateEditor(act === 'tpl-new'); return; }
   if (act === 'tpl-delete') { const pg = _ctx().doc.pages.find(p => p.id === _pageId); if (pg && confirm('Delete this template? Pages that use it go back to the automatic layout. (Undo brings it back.)')) D.deleteTemplate(pg.templateId); return; }
   if (act === 'sel-action') { _commitFocusedText(); _selBarActions[Number(el.dataset.i)]?.run?.(); return; }
+  if (act === 'slot-pick') { const r = el.getBoundingClientRect(); _slotMenu(Number(el.dataset.slot), r.left, r.bottom + 4); return; }
   if (act === 'slot-menu') { const r = el.getBoundingClientRect(); _slotMenu(_slotSel ?? 0, r.left, r.bottom + 4); return; }
   if (act === 'slot-fill') { if (_slotSel != null) D.setPagePictureFit(_pageId, _slotSel, null); return; }
   if (act === 'slot-whole') { const im = _slotIm(_slotSel); if (im) D.setPagePictureFit(_pageId, _slotSel, { zoom: containZoom(im.rect, im.aspect), ox: 0, oy: 0 }); return; }
@@ -931,11 +978,6 @@ function _onChange(e) {
   if (t.dataset?.opt === 'direction') return D.setOptions({ direction: t.value });
   if (t.dataset?.opt === 'pictureNumbers') return D.setOptions({ pictureNumbers: t.checked });
   if (t.dataset?.pageOpt === 'template') return D.setPageTemplate(_pageId, t.value || null);
-  if (t.dataset?.pageOpt === 'picture') {
-    if (t.value === '__asset') return;
-    const before = t.value.endsWith('@start');
-    return D.setPagePicture(_pageId, Number(t.dataset.slot), t.value === '__empty' ? 'empty' : ((before ? t.value.slice(0, -6) : t.value) || null), before ? 'start' : 'end');
-  }
   if (t.id === 'dw-asset-file') { const file = t.files?.[0]; t.value = ''; if (file) _importAsset(file, _assetSlot); return; }
 }
 
