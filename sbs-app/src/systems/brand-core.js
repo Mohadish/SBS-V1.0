@@ -151,11 +151,24 @@ export function mergeBrand(project, brand, opts = {}) {
     const map = brandToProject[sec.key] = new Map();
     const touched = [];
 
+    // What "the same definition" means for an UNLINKED project: the exact
+    // name — or, for header items (which have no name), the kind, and only
+    // when that kind is unique on both sides (one logo ↔ one logo, one step
+    // name ↔ one step name; two free-text items are never guessed).
+    const keyOf = (d) => sec.key === 'headerItems' ? (d.kind ? `kind:${d.kind}` : '') : (d.name || '');
     for (const b of bdefs) {
       let target = byBrandId.get(b.id) || null;
       let action = target ? 'update' : null;
       if (!target) {
-        target = cur.find(d => !links[d.id]?.brandId && !claimed.has(d.id) && (d.name || '') !== '' && d.name === b.name) || null;
+        const k = keyOf(b);
+        if (k) {
+          const cands = cur.filter(d => !links[d.id]?.brandId && !claimed.has(d.id) && keyOf(d) === k);
+          if (sec.key === 'headerItems') {
+            if (cands.length === 1 && bdefs.filter(x => keyOf(x) === k).length === 1) target = cands[0];
+          } else {
+            target = cands[0] || null;
+          }
+        }
         if (target) action = 'link';
       }
       // The brand's values, in this project's terms.
