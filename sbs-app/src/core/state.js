@@ -168,6 +168,11 @@ function createInitialState() {
     // into a sheet's Notes column (text + pictures), tied to a step, with an
     // "addressed" tick. See systems/review-notes.js.
     reviewNotes:    [],               // ReviewNote[]
+    // 🏷 Brand link (V0.3.3.12) — which .sbsbrand this project follows:
+    // { id, name, revision, file, links: { section: { projectDefId: { brandId, hash } } } }.
+    // The link map lives HERE, not on the definitions, so linking never
+    // changes a definition's signature (stars / render-cache keys).
+    brand:          null,
 
     // ── Flat-shape templates — project-level polygon library. Each entry
     // owns a polygon + fill; placed instances live in the scene tree

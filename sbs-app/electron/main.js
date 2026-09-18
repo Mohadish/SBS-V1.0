@@ -503,6 +503,12 @@ function buildMenu() {
       label: 'Tools',
       submenu: [
         {
+          // 🏷 V0.3.3.12 — the company standard (.sbsbrand): header + logo, styles,
+          // constant / pinned positions, shared masks. Save it, load it, update from it.
+          label: 'Brand…',
+          click: () => mainWindow?.webContents.send('menu:brandPanel'),
+        },
+        {
           label: 'Review form…',
           click: () => mainWindow?.webContents.send('menu:reviewForm'),
         },

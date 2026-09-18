@@ -5487,6 +5487,19 @@ export function scheduleSave() { _scheduleSave(); }
  *  Used before a cross-step edit so the active step isn't left stale. */
 export function flushSave() { _writeOverlayToStep(state.get('activeStepId')); }
 
+/**
+ * 🏷 V0.3.3.12 — rebuild the live stage from the active step's stored
+ * overlay. A brand update rewrites DEFINITIONS (constant positions, pins,
+ * masks, styles); the load-time sync pass is what snaps the step's nodes
+ * onto them, so a reload is the honest way to make the picture follow.
+ * Pending edits are flushed first — nothing the user did is lost.
+ */
+export function reloadActiveOverlay() {
+  if (!_stage) return;
+  flushSave();
+  _scheduleLoad();
+}
+
 function _showOverlayContextMenu(node, x, y) {
   const sel = _transformer?.nodes() || [node];
   const hasClipboard = !!_overlayClipboard?.length;

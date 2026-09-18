@@ -20,6 +20,7 @@ import { state }          from './core/state.js';
 import { sceneCore }      from './core/scene.js';
 import { steps }          from './systems/steps.js';
 import { initAlteredStars } from './systems/altered-stars.js';
+import { initBrand } from './systems/brand.js';   // 🏷 V0.3.3.12 — brand kit link + newer-revision notice
 import { materials }      from './systems/materials.js';
 import { setOutlinePreview, clearOutlinePreview } from './systems/outline-pass.js';
 import * as actions from './systems/actions.js';
@@ -113,6 +114,7 @@ sceneCore.init(viewer, { antialias: true, preserveDrawingBuffer: true });
 gizmo.init();
 initGizmoNumeric(gizmo);   // live drag readout + numeric input mode
 initAlteredStars();        // ★ V0.3.2.253: definition / tool / order edits star the steps they touch
+initBrand();               // 🏷 V0.3.3.12: notices a newer revision of the linked brand after a project loads
 
 // Debug surface — exposes core handles on window.__sbs for live console
 // inspection during development. Not used by app code.
@@ -1613,6 +1615,13 @@ window.sbsLangPanel = async () => {
 };
 window.sbsNative?.onMenu?.('menu:languagePanel', () => {
   window.sbsLangPanel().catch(err => console.error('[lang-panel] failed:', err));
+});
+
+// 🏷 Tools ▸ Brand… (V0.3.3.12) — the company standard: save / load / update.
+window.sbsNative?.onMenu?.('menu:brandPanel', () => {
+  import('./ui/brand-panel.js')
+    .then(m => m.openBrandPanel())
+    .catch(err => console.error('[brand] failed:', err));
 });
 
 // 📊 Tools ▸ Review form… (V0.3.3.11) — translation / proofing sheets + review notes.
