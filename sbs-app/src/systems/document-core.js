@@ -15,8 +15,10 @@
  */
 
 import { numberSteps } from './translation-sheet-core.js';
+import { WATERMARK_DEFAULTS, watermarkOf } from './watermark-core.js';
 
 export const DOC_VERSION = 1;
+export { watermarkOf };
 
 // ─── templates (millimetres, A4 portrait) ───────────────────────────────────
 
@@ -57,6 +59,7 @@ export function emptyDocument() {
     options: { includeHidden: false, numbering: 'step' },   // 'step' = the animation's step numbers · 'page' = 1,2,3 per page · 'none'
     pages: [],
     texts: {},                           // stepId → { text, srcHash }   (absent = follows the voiceover)
+    watermark: { ...WATERMARK_DEFAULTS },
   };
 }
 
@@ -406,7 +409,7 @@ export function buildRenderModel(doc, steps, chapters, ctx) {
       flags: p.flags || [],
     };
   });
-  return { pages, total };
+  return { pages, total, watermark: watermarkOf(doc) };
 }
 
 /** The step a slot shows: slot 0 follows the page's last step while automatic. */

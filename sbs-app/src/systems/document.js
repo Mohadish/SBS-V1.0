@@ -10,6 +10,8 @@
 
 import { state }        from '../core/state.js';
 import { undoManager }  from './undo.js';
+import { cloneShareStrings } from '../core/clone.js';
+import { watermarkOf }  from './watermark-core.js';
 import { setStatus }    from '../ui/status.js';
 import sceneCore        from '../core/scene.js';
 import { getCanonicalSize } from '../core/safe-frame.js';
@@ -28,7 +30,9 @@ import {
 } from './document-core.js';
 import { renderDocumentHtml } from './document-render.js';
 
-const _clone = (v) => JSON.parse(JSON.stringify(v ?? null));
+// structure cloned, STRINGS SHARED: the document can hold a baked watermark image, and a
+// JSON round-trip would copy that data URL into every undo entry (the heap cage is ~3.5 GB)
+const _clone = (v) => cloneShareStrings(v ?? null);
 const _steps = () => state.get('steps') || [];
 const _chapters = () => state.get('chapters') || [];
 
@@ -49,7 +53,7 @@ function _commit(label, next) {
 /** First build (or a rebuild from scratch): one page per step, texts kept. */
 export function buildPages({ rebuild = false } = {}) {
   const cur = getDocument();
-  const doc = cur && !rebuild ? _clone(cur) : { ...emptyDocument(), ...(cur ? { fields: cur.fields, header: cur.header, footer: cur.footer, options: cur.options, texts: cur.texts, templates: cur.templates, templateId: cur.templateId } : {}) };
+  const doc = cur && !rebuild ? _clone(cur) : { ...emptyDocument(), ...(cur ? { fields: cur.fields, header: cur.header, footer: cur.footer, options: cur.options, texts: cur.texts, templates: cur.templates, templateId: cur.templateId, watermark: watermarkOf(cur) } : {}) };
   if (!doc.fields.title) doc.fields.title = projectDisplayName();
   doc.pages = autoPaginate(_steps(), _chapters(), doc);
   doc.order = orderOf(_steps(), _chapters(), doc);
@@ -153,6 +157,11 @@ export function setFields(patch) {
 export function setOptions(patch) {
   const cur = getDocument(); if (!cur) return;
   _commit('Document options', { ...cur, options: { ...(cur.options || {}), ...patch } });
+}
+/** 💧 The watermark printed on every page. patch = any of watermark-core's WATERMARK_DEFAULTS keys. */
+export function setWatermark(patch) {
+  const cur = getDocument(); if (!cur) return;
+  _commit('Document watermark', { ...cur, watermark: { ...watermarkOf(cur), ...patch } });
 }
 export function setDefaultTemplate(templateId) {
   const cur = getDocument(); if (!cur) return;

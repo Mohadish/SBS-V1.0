@@ -19,6 +19,7 @@ import { srcHashOf } from '../systems/language-packs.js';
 import { numberSteps } from '../systems/translation-sheet-core.js';
 import { builtinTemplates, docTextFor, pageRangeLabel, unitsOf, stillsNeeded } from '../systems/document-core.js';
 import { DOCUMENT_CSS, renderPageHtml } from '../systems/document-render.js';
+import { watermarkOf, watermarkHtml, watermarkCss, watermarkVisible, detectWatermarkMode, bakeWatermarkPixels, fitWithin } from '../systems/watermark-core.js';
 import * as D from '../systems/document.js';
 
 const _esc = (s) => String(s ?? '').replace(/[&<>"]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
@@ -29,6 +30,7 @@ let _root = null, _shadow = null, _statusObs = null;
 let _sel = new Set(), _anchor = null, _pageId = null, _zoom = 'fit';
 let _walking = false, _walkAgain = false, _exporting = false, _deferred = false, _menu = null, _renderTimer = 0;
 let _ptrDown = false, _renderHeld = false;
+let _wmOpen = false, _wmDlg = null;
 
 // page-editing affordances — live ONLY in the workspace, never in the PDF
 const EDIT_CSS = `
@@ -63,6 +65,7 @@ export function closeDocumentWorkspace() {
   D.abortStillsWalk();          // the walk drives the live scene; it must not go on behind an open animation
   _commitFocusedText();
   _closeMenu();
+  _wmDlg?.remove(); _wmDlg = null;
   _root.style.display = 'none';
 }
 const _isOpen = () => !!_root && _root.style.display !== 'none';
@@ -126,6 +129,14 @@ function _build() {
 
   _root.addEventListener('click', _onClick);
   _root.addEventListener('change', _onChange);
+  // 💧 live: sliders, colour and text redraw the mark while they move; the commit (one undo entry) comes with 'change'
+  _root.addEventListener('input', (e) => {
+    const t = e.target; if (!t.dataset?.wm) return;
+    const v = _wmValue(t);
+    _previewWatermark({ [t.dataset.wm]: v });
+    const out = _root.querySelector(`[data-wm-out="${t.dataset.wm}"]`);
+    if (out) out.textContent = t.dataset.wm === 'opacity' ? _pct(v) : t.dataset.wm === 'angle' ? `${Math.round(v)}°` : `${Math.round(v)}%`;
+  });
   _root.addEventListener('mousedown', (e) => {
     if (_menu && !_menu.contains(e.target)) _closeMenu();
     // keep the keyboard inside the workspace: a click on dead space must not drop focus to <body>
@@ -292,13 +303,141 @@ function _renderLeft(c) {
   // two halves: the fields half is NOT rebuilt while one of its inputs has the
   // focus — Tab from Title to Company commits Title, and a rebuild would throw
   // the caret (and whatever was typed meanwhile) out of Company
-  let docBox = left.querySelector('#dw-left-doc'), pageBox = left.querySelector('#dw-left-page');
-  if (!docBox) { left.innerHTML = '<div id="dw-left-doc"></div><div id="dw-left-page"></div>'; docBox = left.querySelector('#dw-left-doc'); pageBox = left.querySelector('#dw-left-page'); }
+  let docBox = left.querySelector('#dw-left-doc'), wmBox = left.querySelector('#dw-left-wm'), pageBox = left.querySelector('#dw-left-page');
+  if (!docBox) { left.innerHTML = '<div id="dw-left-doc"></div><div id="dw-left-wm"></div><div id="dw-left-page"></div>'; docBox = left.querySelector('#dw-left-doc'); wmBox = left.querySelector('#dw-left-wm'); pageBox = left.querySelector('#dw-left-page'); }
   if (docBox.contains(document.activeElement)) {
     for (const inp of docBox.querySelectorAll('input[data-field]')) if (inp !== document.activeElement) inp.value = f[inp.dataset.field] || '';
   } else docBox.innerHTML = docHtml;
+  _renderWatermarkBox(wmBox, watermarkOf(c.doc));
   pageBox.innerHTML = pageHtml;
   left.scrollTop = keep;
+}
+
+// ─── 💧 watermark ────────────────────────────────────────────────────────────
+
+const _pct = (v) => `${Math.round(v * 100)}%`;
+
+function _renderWatermarkBox(box, w) {
+  const act = document.activeElement;
+  const inside = box.contains(act);
+  // typing in a text / number field: leave the box alone (the caret lives there)
+  if (inside && (act.tagName === 'TEXTAREA' || (act.tagName === 'INPUT' && /^(text|number)$/.test(act.type)))) return;
+  const refocus = inside ? act.dataset?.wm || null : null;
+  const summary = !w.enabled ? 'off' : w.kind === 'image' ? (w.image ? `image · ${_pct(w.opacity)}` : 'image — none chosen yet') : `“${w.text.trim().slice(0, 18) || '…'}” · ${_pct(w.opacity)}`;
+  const row = 'display:flex;align-items:center;gap:8px;margin:0 0 7px;font-size:11.5px;color:#cbd5e1;';
+  const textControls = `
+        <label class="dw-lab">Text<textarea class="dw-in" data-wm="text" rows="2" dir="auto" style="resize:vertical;">${_esc(w.text)}</textarea></label>
+        <div style="${row}"><span style="flex:0 0 52px;">Size</span><input class="dw-in" data-wm="fontSize" type="number" min="6" max="600" step="1" value="${w.fontSize}" style="width:74px;" title="Any size, in points"><span>pt</span>
+          <span style="flex:1"></span><span>Colour</span><input data-wm="color" type="color" value="${_esc(w.color)}" style="width:34px;height:24px;padding:0;border:1px solid #334155;border-radius:5px;background:none;"></div>`;
+  const imageControls = `
+        <div style="${row}align-items:flex-start;">
+          <div style="flex:0 0 96px;height:64px;border:1px solid #334155;border-radius:6px;background:repeating-conic-gradient(#cbd5e1 0% 25%, #f8fafc 0% 50%) 0 0/14px 14px;display:flex;align-items:center;justify-content:center;overflow:hidden;">${w.image ? `<img src="${_esc(w.image.dataUrl)}" alt="" style="max-width:100%;max-height:100%;">` : '<span style="color:#475569;font-size:10.5px;">no image</span>'}</div>
+          <div style="min-width:0;flex:1;"><div style="white-space:nowrap;overflow:hidden;text-overflow:ellipsis;color:#94a3b8;margin-bottom:5px;">${_esc(w.image?.name || '')}</div>
+            <button class="dw-btn" data-act="wm-choose">${w.image ? 'Replace image…' : 'Choose image…'}</button><input type="file" data-wm-file accept="image/*" hidden></div></div>
+        <div style="${row}"><span style="flex:0 0 52px;">Width</span><input data-wm="imageWidth" type="range" min="5" max="150" step="1" value="${w.imageWidth}" style="flex:1;"><span data-wm-out="imageWidth" style="flex:0 0 40px;text-align:right;">${Math.round(w.imageWidth)}%</span></div>`;
+  const body = !_wmOpen ? '' : `
+    <label style="${row}"><input type="checkbox" data-wm="enabled"${w.enabled ? ' checked' : ''}> Print a watermark on every page</label>
+    <div style="${w.enabled ? '' : 'opacity:.45;pointer-events:none;'}">
+      <label class="dw-lab">Kind
+        <select class="dw-in" data-wm="kind"><option value="text"${w.kind === 'text' ? ' selected' : ''}>Text</option><option value="image"${w.kind === 'image' ? ' selected' : ''}>Image (a logo, a stamp)</option></select></label>
+      ${w.kind === 'text' ? textControls : imageControls}
+      <div style="${row}"><span style="flex:0 0 52px;">Opacity</span><input data-wm="opacity" type="range" min="1" max="100" step="1" value="${Math.round(w.opacity * 100)}" style="flex:1;"><span data-wm-out="opacity" style="flex:0 0 40px;text-align:right;">${_pct(w.opacity)}</span></div>
+      <div style="${row}"><span style="flex:0 0 52px;">Angle</span><input data-wm="angle" type="range" min="-90" max="90" step="1" value="${w.angle}" style="flex:1;"><span data-wm-out="angle" style="flex:0 0 40px;text-align:right;">${Math.round(w.angle)}°</span></div>
+      <label class="dw-lab">Where
+        <select class="dw-in" data-wm="layer"><option value="over"${w.layer === 'over' ? ' selected' : ''}>Over everything — the pictures too</option><option value="under"${w.layer === 'under' ? ' selected' : ''}>Behind the text and the pictures</option></select></label>
+    </div>`;
+  box.innerHTML = `
+    <div class="dw-h" data-act="wm-toggle" style="cursor:pointer;display:flex;gap:6px;align-items:center;" title="A mark printed on every page of the PDF — DRAFT, CONFIDENTIAL, a logo…">
+      <span>${_wmOpen ? '▾' : '▸'} 💧 Watermark</span><span data-wm-summary style="text-transform:none;letter-spacing:0;color:${w.enabled ? '#4ade80' : '#64748b'};">${_esc(summary)}</span></div>${body}`;
+  if (refocus) box.querySelector(`[data-wm="${refocus}"]`)?.focus({ preventScroll: true });
+}
+
+/** A watermark control's value, typed for the model. */
+function _wmValue(el) {
+  const k = el.dataset.wm;
+  if (k === 'enabled') return el.checked;
+  if (k === 'opacity') return Number(el.value) / 100;
+  if (k === 'fontSize' || k === 'angle' || k === 'imageWidth') return Number(el.value);
+  return el.value;
+}
+
+/** While a slider / colour / text is being changed: redraw ONLY the mark on the page — no commit, no undo entry yet. */
+function _previewWatermark(patch) {
+  const pageEl = _shadow.querySelector('.page'); if (!pageEl) return;
+  const w = watermarkOf({ watermark: { ...watermarkOf(D.getDocument()), ...patch } });
+  pageEl.querySelector('.wm')?.remove();
+  if (!watermarkVisible(w)) return;
+  pageEl.insertAdjacentHTML(w.layer === 'under' ? 'afterbegin' : 'beforeend', watermarkHtml(w));
+}
+
+/**
+ * Import dialog: an image becomes a watermark by being BAKED to real transparency
+ * once (see watermark-core) — shown here over a white page and over a dark
+ * picture, at full strength, so the matte can be judged before it is used.
+ */
+async function _openWatermarkDialog(srcUrl, name) {
+  _wmDlg?.remove();
+  const im = new Image();
+  im.src = srcUrl;
+  try { await im.decode(); } catch { setStatus('That file could not be read as an image.', 'warn', 6000); return; }
+  const size = fitWithin(im.naturalWidth || 800, im.naturalHeight || 800, 1600);
+  const srcC = document.createElement('canvas'); srcC.width = size.w; srcC.height = size.h;
+  const sctx = srcC.getContext('2d', { willReadFrequently: true });
+  sctx.drawImage(im, 0, 0, size.w, size.h);
+  const src = sctx.getImageData(0, 0, size.w, size.h);
+  const detected = detectWatermarkMode(src.data, size.w, size.h);
+  const outC = document.createElement('canvas'); outC.width = size.w; outC.height = size.h;
+  const st = { mode: detected, tintOn: false, tint: '#6b7280' };
+
+  const dlg = _wmDlg = document.createElement('div');
+  dlg.id = 'dw-wm-dialog';
+  dlg.style.cssText = 'position:fixed;inset:0;z-index:9200;background:rgba(2,6,23,.72);display:flex;align-items:center;justify-content:center;';
+  const opt = (v, label) => `<label style="display:flex;gap:8px;align-items:flex-start;margin:0 0 7px;cursor:pointer;"><input type="radio" name="wm-mode" value="${v}"${st.mode === v ? ' checked' : ''} style="margin-top:2px;"><span>${label}${detected === v ? ' <span style="color:#4ade80;">— looks like this one</span>' : ''}</span></label>`;
+  dlg.innerHTML = `<div style="width:640px;max-width:94vw;background:#0f172a;border:1px solid #334155;border-radius:12px;padding:18px 20px;box-shadow:0 20px 60px rgba(0,0,0,.6);font-size:12.5px;line-height:1.5;">
+      <div style="font-size:15px;font-weight:700;margin-bottom:4px;">💧 Watermark image</div>
+      <div style="color:#94a3b8;margin-bottom:12px;">${_esc(name || '')} · ${size.w} × ${size.h} px. Shown at full strength; on the page it gets the opacity you set.</div>
+      <div style="display:flex;gap:12px;margin-bottom:14px;">
+        <div style="flex:1;"><canvas data-pv="light" width="290" height="180" style="width:100%;border-radius:8px;border:1px solid #334155;display:block;"></canvas><div style="color:#94a3b8;font-size:11px;margin-top:3px;">over the white page</div></div>
+        <div style="flex:1;"><canvas data-pv="dark" width="290" height="180" style="width:100%;border-radius:8px;border:1px solid #334155;display:block;"></canvas><div style="color:#94a3b8;font-size:11px;margin-top:3px;">over a dark picture</div></div>
+      </div>
+      <div style="font-weight:600;margin-bottom:6px;">What kind of image is this?</div>
+      ${opt('white', 'Artwork on a <b>white</b> background — make the white transparent')}
+      ${opt('black', 'Artwork on a <b>black</b> background — make the black transparent')}
+      ${opt('keep', 'It already has a <b>transparent</b> background — keep it as it is')}
+      <label style="display:flex;gap:8px;align-items:center;margin:10px 0 0;cursor:pointer;"><input type="checkbox" data-wmd="tintOn"> Make it one flat colour <input type="color" data-wmd="tint" value="${st.tint}" style="width:34px;height:24px;padding:0;border:1px solid #334155;border-radius:5px;background:none;"><span style="color:#94a3b8;">(a grey mark from a coloured logo, for instance)</span></label>
+      <div style="display:flex;justify-content:flex-end;gap:8px;margin-top:16px;"><button class="dw-btn" data-wmd="cancel">Cancel</button><button class="dw-btn primary" data-wmd="use">Use this image</button></div>
+    </div>`;
+  const paint = () => {
+    const baked = bakeWatermarkPixels(src.data, size.w, size.h, { mode: st.mode, tint: st.tintOn ? st.tint : null });
+    outC.getContext('2d').putImageData(new ImageData(baked, size.w, size.h), 0, 0);
+    for (const [key, bg] of [['light', '#ffffff'], ['dark', '#1e293b']]) {
+      const cv = dlg.querySelector(`canvas[data-pv="${key}"]`), x = cv.getContext('2d');
+      x.fillStyle = bg; x.fillRect(0, 0, cv.width, cv.height);
+      const k = Math.min((cv.width - 24) / size.w, (cv.height - 24) / size.h);
+      x.drawImage(outC, (cv.width - size.w * k) / 2, (cv.height - size.h * k) / 2, size.w * k, size.h * k);
+    }
+  };
+  const close = () => { dlg.remove(); if (_wmDlg === dlg) _wmDlg = null; _holdFocus(); };
+  dlg.addEventListener('change', (e) => {
+    e.stopPropagation();                                       // not a document field — keep it away from _onChange
+    if (e.target.name === 'wm-mode') st.mode = e.target.value;
+    else if (e.target.dataset.wmd === 'tintOn') st.tintOn = e.target.checked;
+    else if (e.target.dataset.wmd === 'tint') { st.tint = e.target.value; st.tintOn = true; dlg.querySelector('[data-wmd="tintOn"]').checked = true; }
+    paint();
+  });
+  dlg.addEventListener('input', (e) => { e.stopPropagation(); if (e.target.dataset.wmd === 'tint') { st.tint = e.target.value; if (st.tintOn) paint(); } });
+  dlg.addEventListener('click', (e) => {
+    e.stopPropagation();
+    const a = e.target.closest?.('[data-wmd]')?.dataset.wmd;
+    if (a === 'cancel' || e.target === dlg) return close();
+    if (a !== 'use') return;
+    const dataUrl = outC.toDataURL('image/png');
+    close();
+    D.setWatermark({ enabled: true, kind: 'image', image: { dataUrl, w: size.w, h: size.h, mode: st.mode, tint: st.tintOn ? st.tint : null, name: name || '' } });
+  });
+  _root.appendChild(dlg);
+  paint();
+  dlg.querySelector('[data-wmd="use"]').focus();
 }
 
 // ─── RIGHT: the steps, boxed by page ────────────────────────────────────────
@@ -382,7 +521,7 @@ function _renderPage(c) {
   if (!mp) { _shadow.innerHTML = `<style>${EDIT_CSS}</style><div style="font:13px Arial;color:#e2e8f0;padding:30px;">This page has no steps left. Delete it from the list on the right.</div>`; _fit(); return; }
   const need = stillsNeeded({ pages: [mp] });
   const have = D.cachedStills(need);
-  _shadow.innerHTML = `<style>${DOCUMENT_CSS}${EDIT_CSS}</style><div class="fit">${renderPageHtml(mp, { stills: have, logo: D.documentLogo() })}</div>`;
+  _shadow.innerHTML = `<style>${DOCUMENT_CSS}${watermarkCss(model.watermark)}${EDIT_CSS}</style><div class="fit">${renderPageHtml(mp, { stills: have, logo: D.documentLogo(), watermark: model.watermark })}</div>`;
   for (const row of _shadow.querySelectorAll('.it')) {
     const it = mp.items.find(i => i.stepId === row.dataset.step);
     if (it?.edited) row.classList.add(it.drifted ? 'drifted' : 'edited');
@@ -523,6 +662,8 @@ async function _onClick(e) {
   if (act === 'close') return closeDocumentWorkspace();
   if (act === 'build') { const d = D.buildPages(); _pageId = d?.pages?.[0]?.id || null; return; }
   if (act === 'zoom-fit' || act === 'zoom-100') { _zoom = act === 'zoom-fit' ? 'fit' : '100'; _renderTop(_ctx()); _fit(); _holdFocus(); return; }
+  if (act === 'wm-toggle') { _wmOpen = !_wmOpen; _renderLeft(_ctx()); _holdFocus(); return; }
+  if (act === 'wm-choose') { _root.querySelector('input[data-wm-file]')?.click(); return; }
   if (act === 'rerender-pictures') { D.clearStills(); _renderPage(_ctx()); return; }
   _commitFocusedText();
   if (act === 'sync') return void D.syncWithAnimation();
@@ -556,6 +697,16 @@ async function _onClick(e) {
 
 function _onChange(e) {
   const t = e.target;
+  if (t.dataset?.wm) return D.setWatermark({ [t.dataset.wm]: _wmValue(t) });
+  if (t.matches?.('input[data-wm-file]')) {
+    const file = t.files?.[0]; if (!file) return;
+    const rd = new FileReader();
+    rd.onload = () => _openWatermarkDialog(String(rd.result), file.name);
+    rd.onerror = () => setStatus('That file could not be read.', 'warn', 6000);
+    rd.readAsDataURL(file);
+    t.value = '';
+    return;
+  }
   if (t.dataset?.field) return D.setFields({ [t.dataset.field]: t.value });
   if (t.dataset?.opt === 'numbering') return D.setOptions({ numbering: t.value });
   if (t.dataset?.pageOpt === 'template') return D.setPageTemplate(_pageId, t.value);
@@ -564,6 +715,7 @@ function _onChange(e) {
 
 function _onKey(e, editable) {
   if (e.key === 'Escape') {
+    if (_wmDlg) { _wmDlg.remove(); _wmDlg = null; _holdFocus(); return; }
     if (_menu) { _closeMenu(); return; }
     const f = _shadow.activeElement;
     if (f?.classList?.contains('tx')) { f.innerText = f.dataset.orig ?? ''; f.blur(); _markOverflow(); _root.focus({ preventScroll: true }); }

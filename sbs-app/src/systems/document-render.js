@@ -7,8 +7,11 @@
  * HTML feeds the in-app preview and Electron's printToPDF.
  */
 
+import { watermarkHtml, watermarkCss, WATERMARK_CSS } from './watermark-core.js';
+export { watermarkCss };
+
 const _esc = (s) => String(s ?? '').replace(/[&<>"]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
-const _mm = (r) => `left:${r.x}mm;top:${r.y}mm;width:${r.w}mm;height:${r.h}mm;`;
+const _mm =(r) => `left:${r.x}mm;top:${r.y}mm;width:${r.w}mm;height:${r.h}mm;`;
 /** Row direction = the first strong character (so a Hebrew line puts its number badge on the right). */
 const _dirOf = (s) => {
   const m = /[A-Za-zÀ-ɏͰ-ϿЀ-ӿ֐-ࣿיִ-﷿ﹰ-ﻼ]/.exec(String(s ?? ''));
@@ -36,7 +39,7 @@ body { font-family: Arial, Helvetica, sans-serif; color: #111; -webkit-print-col
 .slot img { width: 100%; height: 100%; object-fit: contain; display: block; }
 .slot .ph { color: #888; font-size: 9pt; text-align: center; padding: 3mm; }
 .cap { position: absolute; font-size: 8pt; color: #555; }
-`;
+` + WATERMARK_CSS;
 
 /**
  * @param {{pages:Array,total:number}} model        document-core.buildRenderModel()
@@ -47,8 +50,9 @@ body { font-family: Arial, Helvetica, sans-serif; color: #111; -webkit-print-col
  * @param {boolean} [o.showStepNames]               bold step name above each text
  */
 export function renderDocumentHtml(model, o = {}) {
-  const pages = (model.pages || []).map(p => renderPageHtml(p, o)).join('\n');
-  return `<!doctype html><html><head><meta charset="utf-8"><title>${_esc(o.title || 'Document')}</title><style>${DOCUMENT_CSS}${o.extraCss || ''}</style></head><body>${pages}</body></html>`;
+  const oo = { ...o, watermark: o.watermark ?? model.watermark };
+  const pages = (model.pages || []).map(p => renderPageHtml(p, oo)).join('\n');
+  return `<!doctype html><html><head><meta charset="utf-8"><title>${_esc(o.title || 'Document')}</title><style>${DOCUMENT_CSS}${watermarkCss(oo.watermark)}${o.extraCss || ''}</style></head><body>${pages}</body></html>`;
 }
 
 /**
@@ -68,10 +72,15 @@ export function renderPageHtml(p, o = {}) {
     const inner = url ? `<img src="${_esc(url)}" alt="">` : `<div class="ph">${im.stepId ? 'picture not rendered yet' : `picture ${k + 1} — choose a step`}</div>`;
     return `<div class="zone slot" data-slot="${k}" style="${_mm(im.rect)}">${inner}</div>`;
   }).join('');
+  // 💧 'under' = painted first (the text and the pictures cover it); 'over' = last, on top of the pictures too
+  const wm = watermarkHtml(o.watermark);
+  const under = !!wm && o.watermark.layer === 'under';
   return `<section class="page" data-page="${p.number}" data-id="${_esc(p.id)}">`
+    + (under ? wm : '')
     + `<div class="zone hdr" style="${_mm(t.header)}">${o.logo ? `<img class="logo" src="${_esc(o.logo)}" alt="">` : ''}<div class="l" dir="auto">${_esc(p.header.left)}</div><div class="c" dir="auto">${_esc(p.header.center)}</div><div class="r" dir="auto">${_esc(p.header.right)}</div></div>`
     + `<div class="zone txt" style="${_mm(t.text)}">${chapterHead}${items}</div>`
     + slots
     + `<div class="zone ftr" style="${_mm(t.footer)}"><div class="l" dir="auto">${_esc(p.footer.left)}</div><div class="c" dir="auto">${_esc(p.footer.center)}</div><div class="r" dir="auto">${_esc(p.footer.right)}</div></div>`
+    + (wm && !under ? wm : '')
     + `</section>`;
 }
