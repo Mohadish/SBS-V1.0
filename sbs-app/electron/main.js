@@ -512,6 +512,11 @@ function buildMenu() {
           label: 'Review form…',
           click: () => mainWindow?.webContents.send('menu:reviewForm'),
         },
+        {
+          // 📄 V0.3.4.0 — the approved animation as a paged 2D manual (PDF).
+          label: 'Document…',
+          click: () => mainWindow?.webContents.send('menu:documentPanel'),
+        },
         { type: 'separator' },
         {
           // Renamed V0.3.2.127 — the panel now manages constant titles AND
@@ -1052,6 +1057,40 @@ ipcMain.handle('cad:cancel', () => {
 ipcMain.handle('app:getVersion', () => app.getVersion());
 
 // Open file in system explorer
+// 📄 V0.3.4.0 — Document export. The renderer hands over a finished, script-free
+// HTML document (A4 pages laid out in mm); a hidden window prints it to PDF
+// with Chromium's own engine — text stays text, bookmarks from the headings.
+// The HTML goes through a temp FILE (it embeds the step pictures and can be
+// tens of MB — far too long for a data: URL).
+ipcMain.handle('doc:printPdf', async (_, { html, outPath } = {}) => {
+  if (typeof html !== 'string' || !html || !outPath) return { ok: false, error: 'Nothing to print.' };
+  // next to the PDF, not in the system temp folder: it can be large and C: may be nearly full
+  const tmp = path.join(path.dirname(outPath), `.sbs-doc-${process.pid}-${Date.now().toString(36)}.html`);
+  let win = null;
+  try {
+    fs.mkdirSync(path.dirname(outPath), { recursive: true });
+    fs.writeFileSync(tmp, html, 'utf8');
+    win = new BrowserWindow({
+      show: false, width: 900, height: 1200,
+      webPreferences: { javascript: false, sandbox: true, contextIsolation: true, nodeIntegration: false },
+    });
+    await win.loadFile(tmp);
+    const pdf = await win.webContents.printToPDF({
+      printBackground: true, pageSize: 'A4', preferCSSPageSize: true,
+      margins: { top: 0, bottom: 0, left: 0, right: 0 },
+      generateTaggedPDF: true, generateDocumentOutline: true,
+    });
+    fs.mkdirSync(path.dirname(outPath), { recursive: true });
+    fs.writeFileSync(outPath, pdf);
+    return { ok: true, bytes: pdf.length };
+  } catch (err) {
+    return { ok: false, error: err?.message || String(err) };
+  } finally {
+    try { if (win && !win.isDestroyed()) win.destroy(); } catch { /* already gone */ }
+    try { fs.unlinkSync(tmp); } catch { /* best effort */ }
+  }
+});
+
 ipcMain.handle('shell:showItemInFolder', (_, filePath) => {
   shell.showItemInFolder(filePath);
 });

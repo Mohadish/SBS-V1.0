@@ -546,6 +546,18 @@ export class SceneCore extends Emitter {
     });
   }
 
+  /**
+   * 📄 Run `fn(canvas)` on the NEXT main render, at the same clean moment a
+   * thumbnail is grabbed (scene+AO, before outline / gizmo). Forces that render.
+   * @returns {Promise<any>} whatever fn returned, or null
+   */
+  requestCleanFrame(fn) {
+    return new Promise((resolve) => {
+      this._pendingFrame = { fn, resolve };
+      this.requestRender(0);
+    });
+  }
+
   /** Read the just-rendered live canvas into a downscaled JPEG (no re-render). */
   _grabCanvasThumb(w, h, quality, opts) {
     const dom = this.renderer?.domElement;
@@ -611,6 +623,13 @@ export class SceneCore extends Emitter {
     if (this._pendingThumb) {
       const p = this._pendingThumb; this._pendingThumb = null;
       try { p.resolve(this._grabCanvasThumb(p.w, p.h, p.quality, p.opts)); }
+      catch (e) { p.resolve(null); }
+    }
+    // 📄 Same moment, full resolution: the document's step pictures read the
+    // clean canvas themselves (own slot, so a step thumbnail is never clobbered).
+    if (this._pendingFrame) {
+      const p = this._pendingFrame; this._pendingFrame = null;
+      try { p.resolve(p.fn(this.renderer.domElement)); }
       catch (e) { p.resolve(null); }
     }
 

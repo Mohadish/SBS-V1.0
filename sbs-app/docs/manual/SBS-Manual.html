@@ -284,7 +284,7 @@ svg .arrow{stroke:var(--muted);stroke-width:1.4;fill:none;marker-end:url(#ah)}
 <tr><th>Menu</th><th>Items</th></tr>
 <tr><td><span class="ui">File</span></td><td>New <kbd>Ctrl</kbd>+<kbd>N</kbd> · Open… <kbd>Ctrl</kbd>+<kbd>O</kbd> · Save <kbd>Ctrl</kbd>+<kbd>S</kbd> · Save As… <kbd>Ctrl</kbd>+<kbd>Shift</kbd>+<kbd>S</kbd> · Browse Assets <kbd>Ctrl</kbd>+<kbd>B</kbd> · Settings <kbd>Ctrl</kbd>+<kbd>,</kbd> · Exit</td></tr>
 <tr><td><span class="ui">Edit</span></td><td>Undo / Redo · Cut / Copy / Paste / Select All · Recover stuck inputs · Apply Camera Template… · Languages… · Model source transform…</td></tr>
-<tr><td><span class="ui">Tools</span></td><td>Brand… · Review form… · Title Manager… · Unify Constant Titles · Clean Up Unused Constant Titles · Rebuild Cascade · Clean up folders… · Scan steps for what is in frame…</td></tr>
+<tr><td><span class="ui">Tools</span></td><td>Brand… · Review form… · Document… · Title Manager… · Unify Constant Titles · Clean Up Unused Constant Titles · Rebuild Cascade · Clean up folders… · Scan steps for what is in frame…</td></tr>
 <tr><td><span class="ui">View</span></td><td>Zoom In / Zoom Out / Reset Zoom (interface scale) · Toggle Full Screen · Developer Tools <kbd>Ctrl</kbd>+<kbd>Shift</kbd>+<kbd>I</kbd> · Reload <kbd>Ctrl</kbd>+<kbd>R</kbd> · Hard Reload <kbd>Ctrl</kbd>+<kbd>Shift</kbd>+<kbd>R</kbd></td></tr>
 <tr><td><span class="ui">Window</span></td><td>Minimize · Close</td></tr>
 <tr><td><span class="ui">Help</span></td><td>SBS Step Browser Help</td></tr>
@@ -819,6 +819,33 @@ svg .arrow{stroke:var(--muted);stroke-width:1.4;fill:none;marker-end:url(#ah)}
 
 <h2 id="export-languages">Exporting other languages</h2>
 <p>Make the language active in <span class="ui">Edit ▸ Languages…</span>, then export. Each language has its own render cache folder, so switching languages does not throw away work; only steps whose overlay text differs are rendered per language.</p>
+
+<h2 id="export-document">Document — the animation as a printed manual (PDF)</h2>
+<p><span class="ui">Tools ▸ Document…</span> turns the approved animation into a paged A4 document: every page covers one or more steps, with their text on top and a picture of their final state below, inside a fixed page template with a header and a footer. The document lives inside the project file — there is nothing separate to keep in sync by hand.</p>
+<h3 id="export-document-pages">Pages</h3>
+<ul>
+<li><span class="ui">Build pages from the steps</span> starts with one page per step. A step with sub-steps counts as one unit (it plays as one clip); its sub-steps become extra lines on the same page. Hidden steps and hidden chapters are left out.</li>
+<li><span class="ui">⤒</span> merges a page into the one above it — this is how "steps 50 to 55 are one page" is made. Open a page (click its title) and use <span class="ui">Split</span> to start a new page at any of its steps.</li>
+<li>Each page has a <b>template</b>: <i>Standard</i> (text above, one picture), <i>Two pictures side by side</i>, or <i>Large picture, short text</i>. Templates are strict on purpose: a picture can only live in a template slot, so every page of the manual lines up.</li>
+<li><b>Pictures.</b> The first slot is <i>Automatic</i> — it shows the final state of the page's last step and keeps following it when you merge or split. You can pin any slot to a specific step of the page instead. Pictures are rendered when you preview or export (the app walks the needed steps once and then returns to where you were); they are not stored in the project, so the file does not grow.</li>
+<li><b>Numbers</b> in front of each line: the same step numbers the animation's header shows, or 1, 2, 3 per page, or none.</li>
+</ul>
+<h3 id="export-document-text">Text</h3>
+<p>Every line starts as the step's voiceover and <i>follows</i> it: change the narration and the document changes with it. The moment you edit a line in the Document panel it becomes the document's own copy (<i>edited for the document</i>) — the voiceover is not touched, and the other way round. If the voiceover changes later, the line is marked <span class="ui">⚠ the voiceover changed after you edited this</span> and shows the new voiceover underneath, so you can decide: <span class="ui">keep mine</span> or <span class="ui">use the voiceover again</span>. Hebrew and other right-to-left lines are laid out right-to-left automatically, number badge included.</p>
+<p>A page marked <span class="ui">✂ text does not fit</span> has more text than its template has room for; the end of it would be cut off. Shorten the text, split the page, or choose a template with a larger text area. Export asks before it writes a PDF with a cut page.</p>
+<h3 id="export-document-sync">When the animation changes afterwards</h3>
+<p>Pages refer to steps by their permanent identity, not by position, so you can keep working on the animation. When the step list no longer matches the pages, the <span class="ui">⟳ Sync with the animation</span> button turns amber. Syncing never changes anything silently — every adjustment leaves an <span class="ui">❗</span> on the page it touched, with a sentence saying what happened:</p>
+<table>
+<tr><th>What changed in the animation</th><th>What sync does</th></tr>
+<tr><td>A new step between two steps of the same page</td><td>It joins that page (➕).</td></tr>
+<tr><td>A new step anywhere else</td><td>It gets a page of its own, in order (🆕).</td></tr>
+<tr><td>A step was deleted or hidden</td><td>It leaves its page (➖). A page left with no steps stays, marked ∅, until you delete it.</td></tr>
+<tr><td>A step was moved to another place</td><td>It leaves its page (↗) and is placed like a new step where it landed. A whole page that moved together simply moves, untouched.</td></tr>
+<tr><td>A picture was pinned to a step that left the page</td><td>The picture is kept and flagged (🖼) — you decide.</td></tr>
+</table>
+<p>Read the marks, fix what needs fixing, then <span class="ui">✓ Seen — clear these marks</span> on the page or <span class="ui">✓ Clear all ❗</span>.</p>
+<h3 id="export-document-pdf">Header, footer and the PDF</h3>
+<p>The four fields at the top of the panel — title, company, document number, revision — feed the page header; the footer shows the project name, the chapter and <i>Page n / N</i>. The project's first header image is used as the logo. <span class="ui">👁</span> previews one page inside the panel. <span class="ui">⬇ Export PDF…</span> writes the whole document (into the project's <code>exports</code> folder by default): real, selectable, searchable text — not a picture of text — with a bookmark per chapter. Every edit in the panel is undoable with Ctrl+Z.</p>
 </section>
 
 <section class="ch" id="maintenance">

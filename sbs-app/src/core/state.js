@@ -173,6 +173,11 @@ function createInitialState() {
     // The link map lives HERE, not on the definitions, so linking never
     // changes a definition's signature (stars / render-cache keys).
     brand:          null,
+    // 📄 Document (V0.3.4.0) — the 2D manual derived from the animation:
+    // pages (step ids, template, picture choices, flags), per-step document
+    // text, header / footer fields. See systems/document-core.js. null until
+    // the user builds one.
+    document:       null,
 
     // ── Flat-shape templates — project-level polygon library. Each entry
     // owns a polygon + fill; placed instances live in the scene tree

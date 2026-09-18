@@ -1624,6 +1624,13 @@ window.sbsNative?.onMenu?.('menu:brandPanel', () => {
     .catch(err => console.error('[brand] failed:', err));
 });
 
+// 📄 Tools ▸ Document… (V0.3.4.0) — the animation as a paged 2D manual.
+window.sbsNative?.onMenu?.('menu:documentPanel', () => {
+  import('./ui/document-panel.js')
+    .then(m => m.openDocumentPanel())
+    .catch(err => console.error('[document] failed:', err));
+});
+
 // 📊 Tools ▸ Review form… (V0.3.3.11) — translation / proofing sheets + review notes.
 window.sbsNative?.onMenu?.('menu:reviewForm', () => {
   import('./ui/review-form-panel.js')

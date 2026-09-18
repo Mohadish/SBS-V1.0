@@ -300,6 +300,10 @@ export function serialize(targetPath = null) {
   // 🏷 Brand link (V0.3.3.12) — id / name / revision / file + the def link map.
   project.brand = state.get('brand') ? cloneShareStrings(state.get('brand')) : null;
 
+  // 📄 Document (V0.3.4.0) — pages, per-step document text, fields. No pictures
+  // in here: stills are rendered on demand from the steps themselves.
+  project.document = state.get('document') ? cloneShareStrings(state.get('document')) : null;
+
   // Flat-shape templates — project-level polygon library. Instances live
   // as regular tree nodes (type='flatShape', templateId pointer) and
   // round-trip via stripNode like every other tree node.
@@ -1041,7 +1045,7 @@ export const PROJECT_STATE_KEYS = [
   'noteTemplates', 'notePresets', 'selectionGroups', 'selectionOutlineColor',
   'assets',
   'headerItems', 'headersLocked', 'headersHidden', 'headerDefault', 'headerStepNumberPerChapter',
-  'styleTemplates', 'shapeStyles', 'constTextBoxes', 'constShapes', 'shapeLinks', 'cropMasks', 'reviewNotes', 'brand',
+  'styleTemplates', 'shapeStyles', 'constTextBoxes', 'constShapes', 'shapeLinks', 'cropMasks', 'reviewNotes', 'brand', 'document',
   'shapeTemplates', 'hardwareTemplates', 'shapeTemplateGroups',
   'selectedShapeTemplateIds', 'selectedShapeTemplateGroupIds', 'selectedColorPresetIds',
   'cables', 'cableGlobalScale', 'cableGlobalRadius', 'cableDefaultDiameter', 'cableHighlightColor',
@@ -1170,6 +1174,7 @@ export function applyProjectToState(project) {
     cropMasks:            project.cropMasks?.items          || [],   // 🎭 V0.3.2.218 — safe [] on legacy files
     reviewNotes:          project.reviewNotes?.items        || [],   // 📝 V0.3.3.8 — safe [] on legacy files
     brand:                project.brand                     || null, // 🏷 V0.3.3.12 — safe null on legacy files
+    document:             project.document                  || null, // 📄 V0.3.4.0 — safe null on legacy files
     shapeTemplates:       project.shapes?.items              || [],
     // V0.2.22.38 — hardware template library, see core/schema.js
     // createHardwareTemplate. Missing on legacy files → empty list, no

@@ -49,6 +49,7 @@ contextBridge.exposeInMainWorld('sbsNative', {
   // ── App ──────────────────────────────────────────────────────────────────
   getVersion:         ()          => ipcRenderer.invoke('app:getVersion'),
   showInFolder:       (filePath)  => ipcRenderer.invoke('shell:showItemInFolder', filePath),
+  printPdf:           (html, outPath) => ipcRenderer.invoke('doc:printPdf', { html, outPath }),   // 📄 V0.3.4.0 document export
 
   // ── Native CAD converter (optional 64-bit OpenCascade sidecar) ───────────
   cad: {
@@ -86,6 +87,7 @@ contextBridge.exposeInMainWorld('sbsNative', {
       'menu:frameScan',            // 🎞 V0.3.2.256 — Tools ▸ Scan steps for what is in frame…
       'menu:reviewForm',           // 📊 V0.3.3.11 — Tools ▸ Review form… (translation / proofing sheets)
       'menu:brandPanel',           // 🏷 V0.3.3.12 — Tools ▸ Brand… (company standard file)
+      'menu:documentPanel',        // 📄 V0.3.4.0 — Tools ▸ Document… (2D manual from the animation)
       'key:altCombo',              // 🎹 V0.3.2.175 — Alt+<key> combos forwarded
                                    // from before-input-event (Windows menu-bar
                                    // pre-arming eats the first page-level
