@@ -12,15 +12,19 @@ import { state }        from '../core/state.js';
 import { undoManager }  from './undo.js';
 import { setStatus }    from '../ui/status.js';
 import sceneCore        from '../core/scene.js';
-import { computeSafeFrameRect, getCanonicalSize } from '../core/safe-frame.js';
+import { getCanonicalSize } from '../core/safe-frame.js';
 import { rasterizeOverlay, waitForOverlayStable } from './overlay.js';
+import { rasterizeNotesLayer } from './notes-render.js';
+import { rasterizeTagsLayer } from './hardware-insert-anim.js';
+import { materials }     from './materials.js';
+import { isIsolateEngaged, suspendIsolate, resumeIsolate } from '../core/isolate-state.js';
 import { steps }        from './steps.js';
 import { srcHashOf }    from './language-packs.js';
 import { projectDisplayName } from './header.js';
 import * as projectPaths from '../core/project-paths.js';
 import {
   emptyDocument, autoPaginate, reconcile, orderOf, mergeWithPrevious, splitBefore, clearFlags,
-  buildRenderModel, stillsNeeded, narrationOf,
+  buildRenderModel, stillsNeeded, narrationOf, mergeUnits, splitAll,
 } from './document-core.js';
 import { renderDocumentHtml } from './document-render.js';
 
@@ -36,7 +40,8 @@ function _commit(label, next) {
   const after  = _clone(next);
   const write = (d) => { state.setState({ document: d ? _clone(d) : null }); state.markDirty(); };
   write(after);
-  undoManager.push(label, () => write(before), () => write(after));
+  // scope: the workspace covers the animation — its Ctrl+Z must only ever act on entries like this one
+  undoManager.push(label, () => write(before), () => write(after), { scope: 'document' });
 }
 
 // ─── building + syncing ─────────────────────────────────────────────────────
@@ -79,6 +84,24 @@ export function pendingSync() {
 export function mergePageUp(pageId) {
   const cur = getDocument(); if (!cur) return;
   _commit('Merge page with the previous', { ...cur, pages: mergeWithPrevious(cur.pages, pageId) });
+}
+/**
+ * The workspace's multi-select merge: the selected steps (widened to the whole
+ * range first..last) become ONE page. Document-side only — the animation, its
+ * step groups and its numbering are not touched.
+ * @returns {string|null} id of the merged page
+ */
+export function mergeSteps(unitIds) {
+  const cur = getDocument(); if (!cur) return null;
+  const r = mergeUnits(cur.pages, unitIds, orderOf(_steps(), _chapters(), cur));
+  if (r.pages !== cur.pages) _commit('Merge steps into one page', { ...cur, pages: r.pages });
+  return r.pageId;
+}
+/** Every step of the page back on a page of its own. */
+export function splitPageAll(pageId) {
+  const cur = getDocument(); if (!cur) return;
+  const pages = splitAll(cur.pages, pageId);
+  if (pages !== cur.pages) _commit('One page per step', { ...cur, pages });
 }
 export function splitPageBefore(pageId, stepId) {
   const cur = getDocument(); if (!cur) return;
@@ -153,58 +176,130 @@ function _logo() {
 }
 
 const _stills = new Map();   // stepId → { sig, url }   (session cache)
-const _sigOf = (s) => `${srcHashOf(JSON.stringify(s?.snapshot ?? null))}.${srcHashOf(String(s?.overlay ?? ''))}.${getCanonicalSize().width}`;
 
-/** The export frame of the live viewport + the step's overlay, as a JPEG data URL. */
+// A picture is fresh while everything it is drawn from is unchanged: the step's
+// own snapshot + overlay, AND the project-level definitions those only refer to
+// by id (a colour preset, a text style, a pinned position, a crop mask…).
+const PICTURE_KEYS = ['colorPresets', 'styleTemplates', 'shapeStyles', 'constTextBoxes', 'constShapes', 'cropMasks', 'backgroundColor', 'activeLang', 'export'];
+const _defsSig = () => srcHashOf(JSON.stringify(PICTURE_KEYS.map(k => state.get(k) ?? null)));
+const _sigOf = (s, defs = _defsSig()) => `${srcHashOf(JSON.stringify(s?.snapshot ?? null))}.${srcHashOf(String(s?.overlay ?? ''))}.${defs}`;
+/** "Render the pictures again" — for the changes no signature can see (geometry reloaded, render settings…). */
+export function clearStills() { _stills.clear(); }
+
+/**
+ * One export frame, composed exactly like a video frame (minus the header —
+ * the page has its own): 3D, then overlay, notes, hardware tags.
+ *
+ * The renderer's buffer IS the canonical frame (fitToCanonical sizes it to
+ * export W × H at the canonical aspect) — it is NOT the viewport, so there is
+ * nothing to letterbox-crop. What does differ from the export is the live
+ * OVERSCAN (safe frame shown → camera zoomed out by 1/ov): ensureStills turns
+ * export framing on for the walk; the centre crop below only covers a grab
+ * that happens with overscan still in force.
+ */
 function _captureStill(W, H, dom) {
   if (!dom || !dom.width || !dom.height) return null;
-  const cw = dom.clientWidth || dom.width, ch = dom.clientHeight || dom.height;
-  const sf = computeSafeFrameRect({ width: cw, height: ch });
-  if (!sf.width || !sf.height) return null;
-  const k = dom.width / cw;
   const c = document.createElement('canvas');
   c.width = W; c.height = H;
   const ctx = c.getContext('2d');
   ctx.fillStyle = state.get('backgroundColor') || '#0f172a';
   ctx.fillRect(0, 0, W, H);
-  ctx.drawImage(dom, sf.x * k, sf.y * k, sf.width * k, sf.height * k, 0, 0, W, H);
-  try { const ov = rasterizeOverlay({ width: W, height: H }); if (ov) ctx.drawImage(ov, 0, 0, W, H); } catch (e) { console.warn('[document] overlay raster skipped:', e?.message || e); }
+  const ov = sceneCore.getEffectiveOverscan?.() || 1;
+  const sw = dom.width / ov, sh = dom.height / ov;
+  ctx.drawImage(dom, (dom.width - sw) / 2, (dom.height - sh) / 2, sw, sh, 0, 0, W, H);
+  for (const [name, fn] of [['overlay', rasterizeOverlay], ['notes', rasterizeNotesLayer], ['tags', rasterizeTagsLayer]]) {
+    try { const l = fn({ width: W, height: H }); if (l) ctx.drawImage(l, 0, 0, W, H); }
+    catch (e) { console.warn(`[document] ${name} layer skipped:`, e?.message || e); }
+  }
   return c.toDataURL('image/jpeg', 0.88);
 }
+
+let _walkAbort = false;
+/** Stop a pictures walk after the step it is on (the workspace closed). */
+export function abortStillsWalk() { _walkAbort = true; }
 
 /**
  * Pictures of the given steps' final state. Walks the steps that have no
  * fresh picture yet (each is activated once, instantly), then returns to
  * where the user was.
+ *
+ * The walk borrows the VIDEO EXPORT's capture context, because a page picture
+ * must be the frame the video shows: _exporting (recorded cameras even with
+ * Work Camera on, no authoring markers, no autosave mid-walk), the tight export
+ * framing, isolate suspended, placeholder boxes per the export setting, the
+ * selection highlight hidden. Everything is put back in finally.
+ * A video export that is already running owns the scene — then nothing is
+ * walked and only cached pictures are returned.
  * @returns {Promise<Map<string,string>>} stepId → data URL
  */
 export async function ensureStills(stepIds, { onProgress = null } = {}) {
   const c = getCanonicalSize();
-  const W = 1600, H = Math.round(W * c.height / c.width);
+  const W = Math.min(c.width, 1920), H = Math.round(W * c.height / c.width);
   const all = _steps();
-  const todo = stepIds.filter(id => { const s = all.find(x => x.id === id); return s && _stills.get(id)?.sig !== _sigOf(s); });
-  const startId = state.get('activeStepId');
-  let i = 0;
-  for (const id of todo) {
-    i++;
-    onProgress?.(i, todo.length);
-    await steps.activateStep(id, false);
-    try { await Promise.race([waitForOverlayStable?.(), new Promise(r => setTimeout(r, 1500))]); } catch { /* best effort */ }
-    // grab INSIDE the next render, before the selection outline + gizmo are
-    // composited; a frozen loop that never draws falls back to the canvas as is
-    let url = await Promise.race([
-      sceneCore.requestCleanFrame((dom) => _captureStill(W, H, dom)),
-      new Promise(r => setTimeout(() => r(null), 600)),
-    ]);
-    if (!url) { sceneCore._pendingFrame = null; url = _captureStill(W, H, sceneCore.renderer?.domElement); }
-    const s = all.find(x => x.id === id);
-    if (url && s) _stills.set(id, { sig: _sigOf(s), url });
+  const defs = _defsSig();
+  const foreign = !!state.get('_exporting');
+  const todo = foreign ? [] : stepIds.filter(id => { const s = all.find(x => x.id === id); return s && _stills.get(id)?.sig !== _sigOf(s, defs); });
+  const once = new Map();      // a fallback grab is shown but never cached as fresh
+  if (todo.length) {
+    _walkAbort = false;
+    const startId = state.get('activeStepId');
+    const userCam = state.get('workCamera') === true ? sceneCore.getCameraState?.() : null;
+    const hadIso = isIsolateEngaged();
+    const hideBoxes = !(state.get('export') || {}).exportBoundaryBoxes;
+    const prevFraming = !!sceneCore._exportFraming;
+    state.setState({ _exporting: true });
+    sceneCore.setExportFraming(true);
+    if (hadIso) suspendIsolate();
+    if (hideBoxes) steps.setPlaceholderBboxesVisible(false);
+    let i = 0;
+    try {
+      for (const id of todo) {
+        if (_walkAbort) break;
+        i++;
+        onProgress?.(i, todo.length);
+        await steps.activateStep(id, false);
+        try { await Promise.race([waitForOverlayStable?.(), new Promise(r => setTimeout(r, 1500))]); } catch { /* best effort */ }
+        // activation re-applies materials and with them the selection highlight — hide it per step
+        try { materials.setSelectionVisualsVisible(false); } catch { /* no meshes yet */ }
+        // grab INSIDE the next render, before the outline + gizmo are composited
+        let url = await Promise.race([
+          sceneCore.requestCleanFrame((dom) => _captureStill(W, H, dom)),
+          new Promise(r => setTimeout(() => r(null), 1500)),
+        ]);
+        const s = all.find(x => x.id === id);
+        if (url && s) _stills.set(id, { sig: _sigOf(s, defs), url });
+        else {
+          sceneCore._pendingFrame = null;
+          url = _captureStill(W, H, sceneCore.renderer?.domElement);
+          if (url) once.set(id, url);
+          console.warn('[document] no clean frame for step', id, '— used the canvas as it is; it will be rendered again next time');
+        }
+      }
+    } finally {
+      try { materials.setSelectionVisualsVisible(true); } catch { /* nothing to restore */ }
+      if (hideBoxes) steps.setPlaceholderBboxesVisible(true);
+      if (hadIso) resumeIsolate();
+      sceneCore.setExportFraming(prevFraming);
+      state.setState({ _exporting: false });
+    }
+    if (startId) await steps.activateStep(startId, false);
+    if (userCam) { try { sceneCore.applyCameraState(userCam); } catch { /* keep the step's camera */ } }   // Work Camera: the free view comes back
   }
-  if (todo.length && startId) await steps.activateStep(startId, false);
   const out = new Map();
-  for (const id of stepIds) { const e = _stills.get(id); if (e) out.set(id, e.url); }
+  for (const id of stepIds) { const e = _stills.get(id); if (e) out.set(id, e.url); else if (once.has(id)) out.set(id, once.get(id)); }
   return out;
 }
+
+/** The pictures already rendered this session and still fresh — no step is activated. */
+export function cachedStills(stepIds) {
+  const all = _steps(), out = new Map(), defs = _defsSig();
+  for (const id of stepIds || []) {
+    const s = all.find(x => x.id === id), e = _stills.get(id);
+    if (s && e && e.sig === _sigOf(s, defs)) out.set(id, e.url);
+  }
+  return out;
+}
+export const documentLogo = () => _logo();
 
 /** HTML of the whole document (or of one page) — preview and PDF share it. */
 export async function documentHtml({ pageId = null, withStills = true, onProgress = null } = {}) {
@@ -242,6 +337,7 @@ export async function overflowingPages() {
 export async function exportPdf() {
   const doc = getDocument();
   if (!doc?.pages?.length) { setStatus('Build the document pages first.', 'warn', 5000); return null; }
+  if (state.get('_exporting')) { setStatus('A video export is running — export the PDF when it has finished.', 'warn', 7000); return null; }
   if (!window.sbsNative?.printPdf) { setStatus('PDF export needs a full restart of the app (the export engine lives in the main process).', 'warn', 9000); return null; }
   const over = await overflowingPages().catch(() => []);
   if (over.length && !confirm(`The text does not fit on page ${over.map(o => o.number).join(', ')} —the end of it would be cut off in the PDF.\n\nShorten the text, split the page, or pick a template with more room for text.\n\nExport anyway?`)) return null;

@@ -554,7 +554,9 @@ export class SceneCore extends Emitter {
   requestCleanFrame(fn) {
     return new Promise((resolve) => {
       this._pendingFrame = { fn, resolve };
-      this.requestRender(0);
+      // a window, not 0: requestRender(0) stamps "now", and by the next tick
+      // now > stamp — an idle (frozen) loop would never draw the frame we wait for
+      this.requestRender(250);
     });
   }
 
@@ -567,7 +569,16 @@ export class SceneCore extends Emitter {
     const ctx = off.getContext('2d');
     if (!ctx) return null;
     try {
-      ctx.drawImage(dom, 0, 0, w, h);
+      // Same rule as captureThumbnail (V0.3.0.86): under live OVERSCAN the export
+      // frame is the centre 1/ov of the buffer — without the crop the 3D came out
+      // zoomed-out under a full-size overlay layer.
+      const ov = this._exportFraming ? 1 : (this._overscan || 1);
+      if (ov > 1) {
+        const sw = dom.width / ov, sh = dom.height / ov;
+        ctx.drawImage(dom, (dom.width - sw) / 2, (dom.height - sh) / 2, sw, sh, 0, 0, w, h);
+      } else {
+        ctx.drawImage(dom, 0, 0, w, h);
+      }
       if (typeof opts.extraLayers === 'function') {
         const layers = opts.extraLayers(w, h) || [];
         for (const layer of layers) { if (layer) ctx.drawImage(layer, 0, 0, w, h); }

@@ -66,6 +66,7 @@ class UndoManager {
       this._undo.push({
         label, undo: undoFn, redo: redoFn,
         coalesceKey: opts.coalesceKey,
+        scope: opts.scope,          // 📄 e.g. 'document' — lets a takeover workspace undo only its own edits
         _t: now,
       });
       if (this._undo.length > this._maxSize) this._undo.shift();
@@ -96,6 +97,9 @@ class UndoManager {
   canRedo()   { return this._redo.length > 0; }
   undoLabel() { return this._undo.at(-1)?.label ?? null; }
   redoLabel() { return this._redo.at(-1)?.label ?? null; }
+  /** Scope of the entry Ctrl+Z / Ctrl+Y would act on next (null = an ordinary animation edit). */
+  undoScope() { return this._undo.at(-1)?.scope ?? null; }
+  redoScope() { return this._redo.at(-1)?.scope ?? null; }
 
   /** Clear both stacks (e.g. after project load). */
   clear() {

@@ -20,7 +20,7 @@ export const DOCUMENT_CSS = `
 * { box-sizing: border-box; }
 html, body { margin: 0; padding: 0; background: #fff; }
 body { font-family: Arial, Helvetica, sans-serif; color: #111; -webkit-print-color-adjust: exact; print-color-adjust: exact; }
-.page { position: relative; width: 210mm; height: 297mm; overflow: hidden; background: #fff; page-break-after: always; break-after: page; }
+.page { position: relative; width: 210mm; height: 297mm; overflow: hidden; background: #fff; page-break-after: always; break-after: page; font-family: Arial, Helvetica, sans-serif; color: #111; text-align: start; line-height: normal; }
 .page:last-child { page-break-after: auto; break-after: auto; }
 .zone { position: absolute; overflow: hidden; }
 .hdr { display: flex; align-items: center; gap: 4mm; border-bottom: 0.4mm solid #222; padding-bottom: 1.5mm; font-size: 9.5pt; }
@@ -47,24 +47,31 @@ body { font-family: Arial, Helvetica, sans-serif; color: #111; -webkit-print-col
  * @param {boolean} [o.showStepNames]               bold step name above each text
  */
 export function renderDocumentHtml(model, o = {}) {
-  const still = (id) => (o.stills instanceof Map ? o.stills.get(id) : o.stills?.[id]) || null;
-  let lastChapter = null;
-  const pages = (model.pages || []).map(p => {
-    const t = p.template;
-    const chapterHead = p.chapter && p.chapter !== lastChapter ? `<h2 dir="auto">${_esc(p.chapter)}</h2>` : '';
-    lastChapter = p.chapter || lastChapter;
-    const items = p.items.map(it => `<div class="it" dir="${_dirOf(it.text)}">${it.label ? `<span class="no">${_esc(it.label)}</span>` : ''}<div class="tx" dir="auto">${o.showStepNames && it.name ? `<span class="nm">${_esc(it.name)}</span>` : ''}${_esc(it.text)}</div></div>`).join('');
-    const slots = p.images.map((im, k) => {
-      const url = im.stepId ? still(im.stepId) : null;
-      const inner = url ? `<img src="${_esc(url)}" alt="">` : `<div class="ph">${im.stepId ? 'picture not rendered yet' : `picture ${k + 1} — choose a step`}</div>`;
-      return `<div class="zone slot" style="${_mm(im.rect)}">${inner}</div>`;
-    }).join('');
-    return `<section class="page" data-page="${p.number}" data-id="${_esc(p.id)}">`
-      + `<div class="zone hdr" style="${_mm(t.header)}">${o.logo ? `<img class="logo" src="${_esc(o.logo)}" alt="">` : ''}<div class="l" dir="auto">${_esc(p.header.left)}</div><div class="c" dir="auto">${_esc(p.header.center)}</div><div class="r" dir="auto">${_esc(p.header.right)}</div></div>`
-      + `<div class="zone txt" style="${_mm(t.text)}">${chapterHead}${items}</div>`
-      + slots
-      + `<div class="zone ftr" style="${_mm(t.footer)}"><div class="l" dir="auto">${_esc(p.footer.left)}</div><div class="c" dir="auto">${_esc(p.footer.center)}</div><div class="r" dir="auto">${_esc(p.footer.right)}</div></div>`
-      + `</section>`;
-  }).join('\n');
+  const pages = (model.pages || []).map(p => renderPageHtml(p, o)).join('\n');
   return `<!doctype html><html><head><meta charset="utf-8"><title>${_esc(o.title || 'Document')}</title><style>${DOCUMENT_CSS}${o.extraCss || ''}</style></head><body>${pages}</body></html>`;
+}
+
+/**
+ * ONE page as a <section> — the PDF, the preview and the workspace's live page
+ * are all this same markup, so what is edited is what prints. Rows carry
+ * data-step and slots data-slot: the workspace hangs its editing on them.
+ * @param {Object} p   a page of buildRenderModel()
+ * @param {Object} o   same options as renderDocumentHtml; chapterHead overrides p.chapterHead
+ */
+export function renderPageHtml(p, o = {}) {
+  const still = (id) => (o.stills instanceof Map ? o.stills.get(id) : o.stills?.[id]) || null;
+  const t = p.template;
+  const chapterHead = (o.chapterHead ?? p.chapterHead) && p.chapter ? `<h2 dir="auto">${_esc(p.chapter)}</h2>` : '';
+  const items = p.items.map(it => `<div class="it" dir="${_dirOf(it.text)}" data-step="${_esc(it.stepId)}">${it.label ? `<span class="no">${_esc(it.label)}</span>` : ''}<div class="tx" dir="auto">${o.showStepNames && it.name ? `<span class="nm">${_esc(it.name)}</span>` : ''}${_esc(it.text)}</div></div>`).join('');
+  const slots = p.images.map((im, k) => {
+    const url = im.stepId ? still(im.stepId) : null;
+    const inner = url ? `<img src="${_esc(url)}" alt="">` : `<div class="ph">${im.stepId ? 'picture not rendered yet' : `picture ${k + 1} — choose a step`}</div>`;
+    return `<div class="zone slot" data-slot="${k}" style="${_mm(im.rect)}">${inner}</div>`;
+  }).join('');
+  return `<section class="page" data-page="${p.number}" data-id="${_esc(p.id)}">`
+    + `<div class="zone hdr" style="${_mm(t.header)}">${o.logo ? `<img class="logo" src="${_esc(o.logo)}" alt="">` : ''}<div class="l" dir="auto">${_esc(p.header.left)}</div><div class="c" dir="auto">${_esc(p.header.center)}</div><div class="r" dir="auto">${_esc(p.header.right)}</div></div>`
+    + `<div class="zone txt" style="${_mm(t.text)}">${chapterHead}${items}</div>`
+    + slots
+    + `<div class="zone ftr" style="${_mm(t.footer)}"><div class="l" dir="auto">${_esc(p.footer.left)}</div><div class="c" dir="auto">${_esc(p.footer.center)}</div><div class="r" dir="auto">${_esc(p.footer.right)}</div></div>`
+    + `</section>`;
 }

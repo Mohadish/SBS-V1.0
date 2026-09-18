@@ -1625,9 +1625,10 @@ window.sbsNative?.onMenu?.('menu:brandPanel', () => {
 });
 
 // 📄 Tools ▸ Document… (V0.3.4.0) — the animation as a paged 2D manual.
+// V0.3.4.1: a full-window workspace (steps list · A4 page · page settings).
 window.sbsNative?.onMenu?.('menu:documentPanel', () => {
-  import('./ui/document-panel.js')
-    .then(m => m.openDocumentPanel())
+  import('./ui/document-workspace.js')
+    .then(m => m.openDocumentWorkspace())
     .catch(err => console.error('[document] failed:', err));
 });
 
@@ -4961,7 +4962,7 @@ function _openCameraTemplatePicker() {
 // second a no-op.
 let _lastPickerMs = 0;
 function _openPickerDeduped() {
-  if (_isInputFocused()) return;
+  if (_isInputFocused() || _takeoverOpen()) return;
   const now = performance.now();
   if (now - _lastPickerMs < 200) return;
   _lastPickerMs = now;
@@ -5081,6 +5082,11 @@ window.addEventListener('keydown', async e => {
     if (r.saved) setStatus(`Saved: ${state.get('projectName')}.`);
     return;
   }
+
+  // 📄 V0.3.4.1 — the Document workspace is a full takeover: past Save, no
+  // animation shortcut may run behind its cover. This handler is CAPTURE-phase
+  // on window, so the workspace cannot stop the event itself — the gate is here.
+  if (_takeoverOpen()) return;
 
   // ── Step navigation ──────────────────────────────────────────────────────
   // After moving the active step, keep the selection united with it UNLESS
@@ -5385,14 +5391,25 @@ window.addEventListener('keydown', async e => {
   }
 }, { capture: true });
 
+/** A full-window workspace (📄 Document) is covering the animation UI. */
+function _takeoverOpen() {
+  const dw = document.getElementById('document-workspace');
+  return !!dw && dw.style.display !== 'none';
+}
+
 function _isInputFocused() {
-  const el = document.activeElement;
+  let el = document.activeElement;
   if (!el) return false;
   // Reject elements detached from the live document (rare but happens
   // when a dialog closes and the user-agent restores focus to a stale
   // node). Treating these as "input focused" would mask legitimate
   // keyboard shortcuts.
   if (!document.body.contains(el)) return false;
+  // 📄 V0.3.4.1 — look INSIDE open shadow roots. With the caret in a line of
+  // the Document page (which lives in a shadow root) document.activeElement is
+  // only the shadow HOST, a plain div — every letter typed there ran as an
+  // animation shortcut (C even overwrote the step's camera).
+  while (el.shadowRoot?.activeElement) el = el.shadowRoot.activeElement;
   const tag = el.tagName.toLowerCase();
   return tag === 'input' || tag === 'textarea' || tag === 'select' || el.isContentEditable;
 }

@@ -271,6 +271,68 @@ export function splitBefore(pages, pageId, stepId, opts = {}) {
   return [...pages.slice(0, i), a, b, ...pages.slice(i + 1)];
 }
 
+/**
+ * "Merge these steps into one page" — the workspace's multi-select action.
+ * The selection is widened to the whole timeline RANGE first..last (a page is
+ * a run of the sequence; a page holding steps 25 and 28 but not 26–27 would
+ * read as a mistake in print). Steps outside the range stay on their pages.
+ * The first page that lies wholly inside the range becomes the merged page
+ * (keeps its id / template / picture choices); if none does, a new page is made.
+ * @param {Array} pages
+ * @param {string[]} unitIds   selected units (any order)
+ * @param {string[]} order     all units in timeline order (orderOf)
+ * @returns {{pages:Array, pageId:string|null, range:string[]}}
+ */
+export function mergeUnits(pages, unitIds, order, opts = {}) {
+  const newId = opts.newId || _defaultId;
+  const idx = new Map((order || []).map((id, i) => [id, i]));
+  const sel = (unitIds || []).filter(id => idx.has(id)).sort((a, b) => idx.get(a) - idx.get(b));
+  if (!sel.length) return { pages, pageId: null, range: [] };
+  const range = order.slice(idx.get(sel[0]), idx.get(sel[sel.length - 1]) + 1);
+  const inRange = new Set(range);
+  const onPages = new Set(pages.flatMap(p => p.stepIds || []));
+  const members = range.filter(id => onPages.has(id));          // a step no page holds yet (pending sync) is not pulled in
+  const touched = pages.filter(p => (p.stepIds || []).some(id => inRange.has(id)));
+  if (touched.length <= 1) return { pages, pageId: touched[0]?.id || null, range };   // already one page
+  let target = touched.find(p => p.stepIds.every(id => inRange.has(id))) || null;
+  const made = !target;
+  if (made) target = { id: newId('page'), stepIds: [], templateId: touched[0].templateId, images: [{ stepId: null, auto: true }], flags: [] };
+  const out = [];
+  for (const p of pages) {
+    if (p === target) { out.push(null); continue; }              // placeholder — filled below
+    const keep = (p.stepIds || []).filter(id => !inRange.has(id));
+    if (keep.length === (p.stepIds || []).length) { out.push(p); continue; }
+    if (!keep.length) continue;                                  // wholly inside → folded into the target
+    out.push({ ...p, stepIds: keep, images: (p.images || []).map(im => ({ ...im })) });
+    if (made && p === touched[0]) out.push(null);                // a new page sits right after the first page it took from
+  }
+  const flags = [...(target.flags || [])];
+  for (const p of touched) if (p !== target) for (const f of (p.flags || [])) if (inRange.has(f.stepId) && !flags.some(x => x.kind === f.kind && x.stepId === f.stepId)) flags.push(f);
+  const merged = { ...target, stepIds: members, images: (target.images || []).map(im => ({ ...im })), flags };
+  const at = out.indexOf(null);
+  const res = out.filter(Boolean);
+  res.splice(at < 0 ? res.length : out.slice(0, at).filter(Boolean).length, 0, merged);
+  // page order = timeline position of each page's first step (empties stay where they were)
+  // by its first LIVE step: a page whose leading step was just deleted from the animation (not synced yet) must not jump to the end
+  const key = (p) => { const first = (p.stepIds || []).find(id => idx.has(id)); return first === undefined ? null : idx.get(first); };
+  const filled = res.filter(p => key(p) !== null).sort((a, b) => key(a) - key(b));
+  let k = 0;
+  const pagesOut = res.map(p => (key(p) === null ? p : filled[k++]));
+  return { pages: pagesOut, pageId: merged.id, range };
+}
+
+/** Give every step of a page its own page again (the first keeps the page's id, template and pictures). */
+export function splitAll(pages, pageId, opts = {}) {
+  const newId = opts.newId || _defaultId;
+  const i = pages.findIndex(p => p.id === pageId);
+  if (i < 0 || (pages[i].stepIds || []).length < 2) return pages;
+  const p = pages[i];
+  const parts = p.stepIds.map((id, k) => k === 0
+    ? { ...p, stepIds: [id], images: [{ stepId: null, auto: true }, ...(p.images || []).slice(1).map(() => ({ stepId: null }))] }
+    : { id: newId('page'), stepIds: [id], templateId: p.templateId, images: [{ stepId: null, auto: true }], flags: [] });
+  return [...pages.slice(0, i), ...parts, ...pages.slice(i + 1)];
+}
+
 export function clearFlags(pages, pageId = null) {
   return pages.map(p => (pageId && p.id !== pageId) ? p : { ...p, flags: [] });
 }
@@ -308,10 +370,13 @@ export function buildRenderModel(doc, steps, chapters, ctx) {
   const nums = numberSteps(steps, chapters, !!ctx?.perChapter);
   const live = (doc?.pages || []).filter(p => (p.stepIds || []).some(id => unitById.has(id)));
   const total = live.length;
+  let prevChapter = null;
   const pages = live.map((p, pi) => {
     const tpl = templateById(doc, p.templateId);
     const first = stepById.get(p.stepIds.find(id => unitById.has(id)));
     const ch = (chapters || []).find(c => c.id === first?.chapterId) || null;
+    const chapterHead = !!ch && ch.id !== prevChapter;          // the chapter title prints once, on the chapter's first page
+    prevChapter = ch ? ch.id : prevChapter;
     const chIdx = ch ? (chapters || []).indexOf(ch) : -1;
     const vars = {
       ...(doc.fields || {}), project: ctx?.projectName || '', date: ctx?.date || '',
@@ -336,7 +401,7 @@ export function buildRenderModel(doc, steps, chapters, ctx) {
       id: p.id, number: pi + 1, total, template: tpl,
       header: { left: _sub(doc.header?.left, vars), center: _sub(doc.header?.center, vars), right: _sub(doc.header?.right, vars) },
       footer: { left: _sub(doc.footer?.left, vars), center: _sub(doc.footer?.center, vars), right: _sub(doc.footer?.right, vars) },
-      chapter: ch ? ch.name : '', items,
+      chapter: ch ? ch.name : '', chapterHead, items,
       images: (tpl.images || []).map((rect, k) => ({ rect, stepId: _pictureOf(p, k, unitById) })),
       flags: p.flags || [],
     };

@@ -32,6 +32,8 @@ const FONTS = [
   'Courier New', 'Verdana', 'Tahoma', 'Trebuchet MS', 'Impact', 'Comic Sans MS',
 ];
 const SIZES = [10, 12, 14, 16, 20, 24, 28, 32, 40, 48, 64, 96, 128];
+const CUSTOM_SIZE = 'Custom…';
+const SIZE_MIN = 4, SIZE_MAX = 1000;
 
 let _toolbar = null;   // host element (provided by overlay-toolbar.js)
 let _editor  = null;   // contenteditable in single-editor mode (null in multi-mode)
@@ -82,7 +84,8 @@ export function mountTextToolbar(host, applier, editorEl = null, opts = {}) {
   const alphaCtl = _alpha('Fill alpha (0 = transparent, 100 = opaque)',
                           (v) => _apply('fillColor', _composeRgba(_fillInput?.value, v)));
 
-  _sizeSel    = _select('size', SIZES.map(s => `${s}`), (v) => _apply('fontSize',   Number(v)));
+  // V0.3.4.1 — presets + "Custom…": any size can be typed (78, 150, …)
+  _sizeSel    = _select('size', [...SIZES.map(s => `${s}`), CUSTOM_SIZE], (v) => (v === CUSTOM_SIZE ? _askCustomSize(_sizeSel) : _apply('fontSize', Number(v))));
   _fontSel    = _select('font', FONTS,                  (v) => _apply('fontFamily', v));
   _colorInput = colorCtl.querySelector('input[type=color]');
   _fillInput  = fillCtl.querySelector('input[type=color]');
@@ -296,7 +299,7 @@ export function setStyleLocked(locked) {
  * differ across multi-select).
  */
 export function setToolbarValues({ fontSize, fontName, color, fillColor, fillAlpha } = {}) {
-  if (_sizeSel  && fontSize != null) _sizeSel.value = String(fontSize);
+  if (_sizeSel  && fontSize != null) { _ensureSizeOption(_sizeSel, fontSize); _sizeSel.value = String(_sizeKey(fontSize)); }
   if (_fontSel  && fontName)         _fontSel.value = fontName;
   if (_colorInput && color) {
     _colorInput.value = color;
@@ -425,6 +428,61 @@ function _select(kind, options, onChange) {
   });
   sel.addEventListener('change', () => { if (sel.value !== '') onChange(sel.value); });
   return sel;
+}
+
+// ─── custom text size (V0.3.4.1) ────────────────────────────────────────────
+// The list keeps its presets; a size that is not one of them (typed here, or
+// found on the text under the caret) gets its own entry, kept in numeric order.
+
+const _sizeKey = (n) => { const v = Math.round(Number(n) * 10) / 10; return Number.isFinite(v) ? v : 16; };
+
+function _ensureSizeOption(sel, size) {
+  const key = String(_sizeKey(size));
+  if ([...sel.options].some(o => o.value === key)) return;
+  const opt = document.createElement('option');
+  opt.value = key; opt.textContent = key; opt.dataset.custom = '1';
+  const after = [...sel.options].find(o => o.value !== CUSTOM_SIZE && Number(o.value) > Number(key)) || [...sel.options].find(o => o.value === CUSTOM_SIZE) || null;
+  sel.insertBefore(opt, after);
+}
+
+/** Swap the list for a number box; Enter / click-away applies, Esc abandons. */
+function _askCustomSize(sel) {
+  // typing in a box takes the window selection away from the text being
+  // edited — keep the range and put it back before the size is applied
+  const ws = window.getSelection();
+  const saved = (_editor && ws && ws.rangeCount && _editor.contains(ws.anchorNode)) ? ws.getRangeAt(0).cloneRange() : null;
+  const prev = sel.dataset.prev && sel.dataset.prev !== CUSTOM_SIZE ? sel.dataset.prev : '16';
+  const inp = document.createElement('input');
+  inp.type = 'text'; inp.inputMode = 'decimal'; inp.value = prev;
+  inp.title = `Text size in pixels of the export frame (${SIZE_MIN}–${SIZE_MAX}). Enter applies, Esc cancels.`;
+  inp.style.cssText = 'background:#0b1220;color:#e5e7eb;border:1px solid #38bdf8;border-radius:6px;height:28px;width:64px;padding:0 6px;font-size:13px;box-sizing:border-box;';
+  sel.style.display = 'none';
+  sel.after(inp);
+  let done = false;
+  const restoreRange = () => {
+    if (!saved || !_editor) return;
+    try { _editor.focus(); const w = window.getSelection(); w.removeAllRanges(); w.addRange(saved); } catch { /* the text changed under us — apply to the whole box instead */ }
+  };
+  const finish = (apply) => {
+    if (done) return; done = true;
+    const n = _sizeKey(String(inp.value).replace(',', '.'));
+    const valid = apply && Number.isFinite(Number(String(inp.value).replace(',', '.'))) && n >= SIZE_MIN && n <= SIZE_MAX;
+    inp.remove();
+    sel.style.display = '';
+    if (!valid) { sel.value = prev; restoreRange(); return; }
+    _ensureSizeOption(sel, n);
+    sel.value = String(n);
+    restoreRange();
+    _apply('fontSize', n);
+  };
+  inp.addEventListener('mousedown', e => e.stopPropagation());
+  inp.addEventListener('keydown', e => {
+    e.stopPropagation();
+    if (e.key === 'Enter') { e.preventDefault(); finish(true); }
+    else if (e.key === 'Escape') { e.preventDefault(); finish(false); }
+  });
+  inp.addEventListener('blur', () => finish(true));
+  inp.focus(); inp.select();
 }
 
 function _color(title, label = 'A', defaultBadge = '#fbbf24', onChange) {
