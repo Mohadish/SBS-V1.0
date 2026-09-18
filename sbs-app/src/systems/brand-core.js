@@ -117,20 +117,34 @@ function _summary(secKey, d) {
   return '';
 }
 
+/** The overlay node attribute that binds a node to a definition of each section. */
+export const OVERLAY_ATTR = { textStyles: 'styleId', shapeStyles: 'shapeStyleId', constTexts: 'constId', constShapes: 'constShapeId', cropMasks: 'cropMaskId' };
+
 /**
  * Plan AND compute the merge of a brand into a project.
  *
- * Matching per brand definition: a project def already linked to that brand
- * id → UPDATE in place (project id kept, so every binding survives); else an
- * UNLINKED project def of the same section with the exact same name → LINK
- * (and update); else ADD. Linked project defs the brand no longer carries
- * are ORPHANS — kept, reported. Unlinked project defs are the project's own
- * ("utility") and never touched.
+ * Per brand definition: a project def already LINKED to that brand id →
+ * UPDATE in place (project id kept, so every binding survives). For project
+ * defs that are not linked yet there are two modes:
+ *
+ *   • opts.mapping given (the matching wizard, V0.3.3.15) — the user decides:
+ *       mapping[section][projectDefId] = '<brandId>' | '@keep' | '@delete'
+ *     The first project def mapped to a brand def becomes it (LINK, id kept);
+ *     every further one mapped to the same brand def is MERGED into it — its
+ *     id is rebound to the target everywhere (result.rebinds lists the
+ *     overlay re-stamps to perform; references between definitions are
+ *     re-pointed here) and the def is removed. '@keep' / unmapped = the
+ *     project's own, untouched. '@delete' = removed.
+ *   • no mapping — the exact-name rule (header items: unique kind) of phase 1.
+ *
+ * Brand defs nothing maps to are ADDED. Linked defs the brand no longer
+ * carries are ORPHANS — kept, reported.
  *
  * @param {Object} project   { sections:{secKey:defs[]}, links, headerDefault, canonical:{width,height} }
  * @param {Object} brand     parsed .sbsbrand payload
- * @param {Object} opts      { newId:(prefix)=>string, skipLocalChanged?:boolean }
- * @returns {{rows:Array, sections:Object, links:Object, headerDefault:Object|null, changed:{[stateKey]:string[]}}}
+ * @param {Object} opts      { newId:(prefix)=>string, skipLocalChanged?:boolean, mapping?:Object }
+ * @returns {{rows:Array, sections:Object, links:Object, headerDefault:Object|null,
+ *            changed:{[stateKey]:string[]}, rebinds:{[secKey]:Array<{from,into}>}, deleted:{[secKey]:string[]}}}
  */
 export function mergeBrand(project, brand, opts = {}) {
   const newId = opts.newId || ((p) => `${p}_${Math.random().toString(36).slice(2, 10)}`);
@@ -138,28 +152,60 @@ export function mergeBrand(project, brand, opts = {}) {
   const sx = bc && pc && bc.width  ? pc.width  / bc.width  : 1;
   const sy = bc && pc && bc.height ? pc.height / bc.height : 1;
   const rows = [];
-  const outSections = {}, outLinks = {}, changed = {};
+  const outSections = {}, outLinks = {}, changed = {}, rebinds = {}, deleted = {};
   const brandToProject = {};   // section → Map(brandId → projectId)
+  const absorbedInto   = {};   // section → Map(absorbed project id → target project id)
 
   for (const sec of SECTIONS) {
-    const cur = (project.sections?.[sec.key] || []).map(_clone);
+    let cur = (project.sections?.[sec.key] || []).map(_clone);
     const links = { ...(project.links?.[sec.key] || {}) };
     const bdefs = brand?.sections?.[sec.key] || [];
-    const byBrandId = new Map();                       // brandId → project def
+    const mapSec = opts.mapping ? (opts.mapping[sec.key] || {}) : null;
+    const touched = new Set();
+    rebinds[sec.key] = []; deleted[sec.key] = [];
+    absorbedInto[sec.key] = new Map();
+
+    // References to definitions that an EARLIER section merged away follow their target.
+    for (const d of cur) {
+      for (const r of sec.refs || []) {
+        const into = absorbedInto[r.section]?.get(d[r.field]);
+        if (into) { d[r.field] = into; touched.add(d.id); }
+      }
+    }
+    // '@delete' first, so a deleted def can never be picked as a target.
+    if (mapSec) {
+      for (const d of cur.slice()) {
+        if (mapSec[d.id] === '@delete' && !links[d.id]?.brandId) {
+          cur = cur.filter(x => x !== d);
+          deleted[sec.key].push(d.id);
+          rows.push({ section: sec.key, label: sec.label, action: 'delete', name: d.name || d.kind || d.id, projectId: d.id, brandId: null, localChanged: false, before: _summary(sec.key, d), after: '' });
+        }
+      }
+    }
+    const byBrandId = new Map();                       // brandId → linked project def
     for (const d of cur) { const l = links[d.id]; if (l?.brandId) byBrandId.set(l.brandId, d); }
+    const mappedTo = new Map();                        // brandId → unlinked project defs the user mapped to it
+    if (mapSec) {
+      for (const d of cur) {
+        const t = mapSec[d.id];
+        if (!t || t[0] === '@' || links[d.id]?.brandId) continue;
+        if (!mappedTo.has(t)) mappedTo.set(t, []);
+        mappedTo.get(t).push(d);
+      }
+    }
     const claimed = new Set();
     const map = brandToProject[sec.key] = new Map();
-    const touched = [];
-
-    // What "the same definition" means for an UNLINKED project: the exact
-    // name — or, for header items (which have no name), the kind, and only
-    // when that kind is unique on both sides (one logo ↔ one logo, one step
-    // name ↔ one step name; two free-text items are never guessed).
     const keyOf = (d) => sec.key === 'headerItems' ? (d.kind ? `kind:${d.kind}` : '') : (d.name || '');
+
     for (const b of bdefs) {
       let target = byBrandId.get(b.id) || null;
       let action = target ? 'update' : null;
-      if (!target) {
+      let absorb = [];
+      if (mapSec) {
+        const list = mappedTo.get(b.id) || [];
+        if (target) absorb = list;
+        else if (list.length) { target = list[0]; action = 'link'; absorb = list.slice(1); }
+      } else if (!target) {
         const k = keyOf(b);
         if (k) {
           const cands = cur.filter(d => !links[d.id]?.brandId && !claimed.has(d.id) && keyOf(d) === k);
@@ -187,12 +233,22 @@ export function mergeBrand(project, brand, opts = {}) {
         cur.push(added);
         links[id] = { brandId: b.id, hash: defHash(added) };
         map.set(b.id, id);
-        touched.push(id);
+        touched.add(id);
         rows.push({ section: sec.key, label: sec.label, action: 'add', name: b.name || b.kind || b.id, projectId: id, brandId: b.id, localChanged: false, before: '', after: _summary(sec.key, added) });
         continue;
       }
       claimed.add(target.id);
       map.set(b.id, target.id);
+      // Everything else the user dropped on this brand def dissolves into the target.
+      for (const a of absorb) {
+        if (a === target) continue;
+        cur = cur.filter(x => x !== a);
+        delete links[a.id];
+        absorbedInto[sec.key].set(a.id, target.id);
+        rebinds[sec.key].push({ from: a.id, into: target.id });
+        touched.add(target.id);
+        rows.push({ section: sec.key, label: sec.label, action: 'merge', name: a.name || a.kind || a.id, projectId: a.id, brandId: b.id, into: target.id, localChanged: false, before: _summary(sec.key, a), after: `merged into "${b.name || b.kind || b.id}"` });
+      }
       const merged = { ...vals, id: target.id };
       const localChanged = action === 'update' && !!links[target.id]?.hash && links[target.id].hash !== defHash(target);
       const same = defHash(merged) === defHash(target);
@@ -207,7 +263,7 @@ export function mergeBrand(project, brand, opts = {}) {
       }
       cur[cur.indexOf(target)] = merged;
       links[target.id] = { brandId: b.id, hash: defHash(merged) };
-      touched.push(target.id);
+      touched.add(target.id);
       rows.push({ section: sec.key, label: sec.label, action, name: merged.name || b.kind || b.id, projectId: target.id, brandId: b.id, localChanged, before: _summary(sec.key, target), after: _summary(sec.key, merged) });
     }
     // Linked defs the brand dropped → orphans (kept).
@@ -220,15 +276,89 @@ export function mergeBrand(project, brand, opts = {}) {
     }
     outSections[sec.key] = cur;
     outLinks[sec.key] = links;
-    changed[sec.stateKey] = touched;
+    changed[sec.stateKey] = [...touched].filter(id => cur.some(d => d.id === id));
   }
   const headerDefault = brand?.headerDefault ? { ...(project.headerDefault || {}), ..._clone(brand.headerDefault) } : (project.headerDefault || null);
-  return { rows, sections: outSections, links: outLinks, headerDefault, changed };
+  return { rows, sections: outSections, links: outLinks, headerDefault, changed, rebinds, deleted };
 }
+
+// ─── suggestions for the matching wizard ────────────────────────────────────
+
+const _hex = (c) => { const m = /^#?([0-9a-f]{6})$/i.exec(String(c || '').trim()); return m ? m[1].toLowerCase() : String(c || '').toLowerCase(); };
+
+/**
+ * A first guess for the wizard: which brand definition each UNLINKED project
+ * definition probably is. Exact name (case-insensitive) → 'name'; otherwise a
+ * cautious similarity → 'similar' (same font + close size, same colours, same
+ * anchor + close position, overlapping mask). Header items: a kind that is
+ * unique on both sides. Anything else is left for the user.
+ * @returns {{[secKey]: {[projectId]: {brandId:string, why:'name'|'similar'}}}}
+ */
+export function suggestMapping(project, brand) {
+  const bc = brand?._sbsbrand?.canonical, pc = project.canonical;
+  const sx = bc && pc && bc.width  ? pc.width  / bc.width  : 1;
+  const sy = bc && pc && bc.height ? pc.height / bc.height : 1;
+  const W = pc?.width || 1920, H = pc?.height || 1080;
+  const out = {};
+  for (const sec of SECTIONS) {
+    const o = out[sec.key] = {};
+    const bdefs = brand?.sections?.[sec.key] || [];
+    const secLinks = project.links?.[sec.key] || {};
+    const linkedBrandIds = new Set(Object.values(secLinks).map(l => l.brandId));
+    const unlinked = (project.sections?.[sec.key] || []).filter(d => !secLinks[d.id]?.brandId);
+    for (const d of unlinked) {
+      if (sec.key === 'headerItems') {
+        const bk = bdefs.filter(b => b.kind === d.kind), pk = unlinked.filter(x => x.kind === d.kind);
+        if (bk.length === 1 && pk.length === 1 && !linkedBrandIds.has(bk[0].id)) o[d.id] = { brandId: bk[0].id, why: 'name' };
+        continue;
+      }
+      const nm = String(d.name || '').trim().toLowerCase();
+      let hit = nm ? bdefs.find(b => String(b.name || '').trim().toLowerCase() === nm) : null;
+      if (hit) { o[d.id] = { brandId: hit.id, why: 'name' }; continue; }
+      if (sec.key === 'textStyles') {
+        hit = bdefs.find(b => b.fontFamily === d.fontFamily && Math.abs((b.fontSize || 16) - (d.fontSize || 16)) / Math.max(b.fontSize || 16, d.fontSize || 16) <= 0.25)
+           || bdefs.find(b => _hex(b.color) === _hex(d.color) && !!b.fillColor === !!d.fillColor && (b.fontWeight || 'normal') === (d.fontWeight || 'normal'));
+      } else if (sec.key === 'shapeStyles') {
+        hit = bdefs.find(b => _hex(b.stroke) === _hex(d.stroke) || String(b.fill) === String(d.fill));
+      } else if (sec.key === 'constTexts' || sec.key === 'constShapes') {
+        let best = null, bestD = 0.08;
+        for (const b of bdefs) {
+          if ((b.anchor || 'tl') !== (d.anchor || 'tl')) continue;
+          const dist = Math.hypot(((b.x || 0) * sx - (d.x || 0)) / W, ((b.y || 0) * sy - (d.y || 0)) / H);
+          if (dist < bestD) { best = b; bestD = dist; }
+        }
+        hit = best;
+      } else if (sec.key === 'cropMasks') {
+        let best = null, bestI = 0.5;
+        for (const b of bdefs) {
+          const ix = Math.max(0, Math.min(b.x + b.w, d.x + d.w) - Math.max(b.x, d.x)), iy = Math.max(0, Math.min(b.y + b.h, d.y + d.h) - Math.max(b.y, d.y));
+          const inter = ix * iy, uni = b.w * b.h + d.w * d.h - inter;
+          const iou = uni > 0 ? inter / uni : 0;
+          if (iou > bestI) { best = b; bestI = iou; }
+        }
+        hit = best;
+      }
+      if (hit) o[d.id] = { brandId: hit.id, why: 'similar' };
+    }
+  }
+  return out;
+}
+
+/** How many of the project's definitions still need a decision (unlinked, in a section the brand covers). */
+export function unlinkedCount(project, brand) {
+  let n = 0;
+  for (const sec of SECTIONS) {
+    if (!(brand?.sections?.[sec.key] || []).length) continue;
+    for (const d of project.sections?.[sec.key] || []) if (!project.links?.[sec.key]?.[d.id]?.brandId) n++;
+  }
+  return n;
+}
+
+export { _summary as summaryOf };
 
 /** Counts for the preview line. */
 export function summarizeMerge(rows) {
-  const s = { update: 0, link: 0, add: 0, same: 0, orphan: 0, skipLocal: 0, localChanged: 0 };
+  const s = { update: 0, link: 0, add: 0, same: 0, orphan: 0, merge: 0, delete: 0, skipLocal: 0, localChanged: 0 };
   for (const r of rows) {
     if (r.action === 'skip-local') s.skipLocal++; else s[r.action] = (s[r.action] || 0) + 1;
     if (r.localChanged) s.localChanged++;

@@ -16,8 +16,9 @@ import { setStatus }    from '../ui/status.js';
 import { chooseFromButtons, chooseWithPreview, promptString } from '../ui/prompt.js';
 import { generateId }   from '../core/schema.js';
 import { getCanonicalSize } from '../core/safe-frame.js';
-import { reloadActiveOverlay } from './overlay.js';
-import { SECTIONS, buildBrand, mergeBrand, brandFromLegacyHeader, summarizeMerge, ownership } from './brand-core.js';
+import { reloadActiveOverlay, countAttrUsage, rebindOverlayAttr, restoreOverlayStrings } from './overlay.js';
+import { SECTIONS, OVERLAY_ATTR, buildBrand, mergeBrand, suggestMapping, unlinkedCount, brandFromLegacyHeader, summarizeMerge, ownership } from './brand-core.js';
+import { openBrandMapDialog } from '../ui/brand-map-dialog.js';
 
 const BRAND_FILTER = [{ name: 'SBS Brand (.sbsbrand) / header setup (.sbsheader)', extensions: ['sbsbrand', 'sbsheader'] }];
 const _clone = (v) => JSON.parse(JSON.stringify(v ?? null));
@@ -96,16 +97,25 @@ export async function loadBrand(pathOverride = null) {
   if (link?.id && meta.id && link.id !== meta.id) view.links = {};
   const newId = (prefix) => generateId(prefix);
 
-  const plan = mergeBrand(view, brand, { newId });
+  // 🧩 V0.3.3.15 — definitions this project has that are not linked to the
+  // brand yet need a human decision: which brand definition each really is
+  // (several may fold into one), which stay the project's own, which go.
+  let mapping;
+  if (unlinkedCount(view, brand) > 0) {
+    mapping = await openBrandMapDialog({ project: view, brand, suggestions: suggestMapping(view, brand), usage: _usageCounts(view.sections) });
+    if (!mapping) return null;
+  }
+
+  const plan = mergeBrand(view, brand, { newId, mapping });
   const sum = summarizeMerge(plan.rows);
   const show = plan.rows.filter(r => r.action !== 'same');
-  const verb = { update: 'update', link: 'take over (same name)', add: 'new', orphan: 'no longer in the brand — kept', 'skip-local': 'kept' };
+  const verb = { update: 'update', link: 'becomes the brand definition', add: 'new', merge: 'merged', delete: 'delete', orphan: 'no longer in the brand — kept', 'skip-local': 'kept' };
   const rowsPreview = show.map(r => ({
     label: `${r.label} · ${r.name} · ${verb[r.action] || r.action}${r.localChanged ? ' · ⚠ edited in this project since the last brand load' : ''}`,
     from: r.before || '—', to: r.action === 'orphan' ? r.before : (r.after || '—'),
   }));
   const msg = `Brand "${meta.name}" revision ${meta.revision ?? '—'}${meta.legacy ? ' (header setup file)' : ''}. `
-    + `${sum.update} to update, ${sum.link} taken over by name, ${sum.add} new, ${sum.same} already up to date, ${sum.orphan} no longer in the brand (kept). `
+    + `${sum.update} to update, ${sum.link} matched to a brand definition, ${sum.merge || 0} merged into another, ${sum.delete || 0} deleted, ${sum.add} new, ${sum.same} already up to date, ${sum.orphan} no longer in the brand (kept). `
     + `The project's own definitions are not touched.${sum.localChanged ? ` ${sum.localChanged} were edited in this project since the last brand load.` : ''}`;
   if (!show.length) {
     _setLink(meta, path, plan.links);
@@ -117,17 +127,51 @@ export async function loadBrand(pathOverride = null) {
   buttons.push({ id: 'cancel', label: 'Cancel' });
   const choice = await chooseWithPreview(`Update from brand "${meta.name}"`, msg, rowsPreview, buttons);
   if (!choice || choice === 'cancel') return null;
-  const result = choice === 'safe' ? mergeBrand(view, brand, { newId, skipLocalChanged: true }) : plan;
+  const result = choice === 'safe' ? mergeBrand(view, brand, { newId, mapping, skipLocalChanged: true }) : plan;
 
   const before = { sections: _clone(view.sections), headerDefault: _clone(view.headerDefault), brand: _clone(link) };
   const after  = { sections: result.sections, headerDefault: result.headerDefault,
                    brand: { id: meta.id || link?.id || generateId('brand'), name: meta.name, revision: meta.revision || 0, file: path, links: result.links } };
+  // Merged-away definitions: every overlay node bound to one follows its
+  // target BEFORE the definitions change, so nothing is ever left pointing at
+  // an id that no longer exists.
+  let prevOverlays = _rebindAll(result.rebinds);
   _apply(after, result.changed);
   undoManager.push(`Update from brand "${meta.name}"`,
-    () => _apply(before, result.changed),
-    () => _apply(after, result.changed));
-  setStatus(`Brand "${meta.name}" applied — ${sum.update + sum.link} updated, ${sum.add} added.`, 'success', 8000);
+    () => { restoreOverlayStrings(prevOverlays); _apply(before, result.changed); },
+    () => { prevOverlays = _rebindAll(result.rebinds); _apply(after, result.changed); });
+  const merged = Object.values(result.rebinds || {}).reduce((a, l) => a + l.length, 0);
+  setStatus(`Brand "${meta.name}" applied — ${sum.update + sum.link} matched / updated, ${merged} merged, ${sum.add} added.`, 'success', 8000);
   return path;
+}
+
+/** Re-stamp every overlay node bound to a merged-away definition; returns the strings to restore on undo. */
+function _rebindAll(rebinds) {
+  const prev = new Map();   // stepId → ORIGINAL overlay (first capture wins across sections)
+  for (const sec of SECTIONS) {
+    const pairs = rebinds?.[sec.key] || [];
+    const attr = OVERLAY_ATTR[sec.key];
+    if (!attr || !pairs.length) continue;
+    for (const p of rebindOverlayAttr(attr, pairs).prev) if (!prev.has(p.id)) prev.set(p.id, p.overlay);
+  }
+  return [...prev].map(([id, overlay]) => ({ id, overlay }));
+}
+
+/** How much each project definition is used — overlay nodes, plus the definitions that reference a text style. */
+function _usageCounts(sections) {
+  const out = {};
+  for (const sec of SECTIONS) {
+    const m = out[sec.key] = new Map();
+    const attr = OVERLAY_ATTR[sec.key];
+    const ids = (sections[sec.key] || []).map(d => d.id);
+    if (attr && ids.length) for (const [id, u] of countAttrUsage(attr, ids)) m.set(id, u.count);
+  }
+  for (const key of ['constTexts', 'headerItems']) {
+    for (const d of sections[key] || []) {
+      if (d.styleId && out.textStyles.has(d.styleId)) out.textStyles.set(d.styleId, (out.textStyles.get(d.styleId) || 0) + 1);
+    }
+  }
+  return out;
 }
 
 function _setLink(meta, file, links) {

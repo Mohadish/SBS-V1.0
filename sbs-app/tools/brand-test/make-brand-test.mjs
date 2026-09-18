@@ -6,7 +6,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { buildBrand, mergeBrand, summarizeMerge } from 'file:///E:/SBS-dev-V0.3.1/sbs-app/src/systems/brand-core.js';
 
-const OUT = 'E:/SBS-brand-test';
+const OUT = process.env.SBS_BRAND_TEST_OUT || 'E:/SBS-brand-test';   // set SBS_BRAND_TEST_OUT to write somewhere else (never overwrite projects someone is testing with)
 let n = 0;
 const id = (p) => `${p}_bt${(++n).toString(36).padStart(3, '0')}`;
 const b64 = (s) => Buffer.from(s, 'utf8').toString('base64');

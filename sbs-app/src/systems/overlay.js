@@ -2043,6 +2043,58 @@ export function countAttrUsage(attrName, ids) {
   return out;
 }
 
+/**
+ * 🏷 V0.3.3.15 — raw re-stamp of an id-bearing node attr across every step:
+ * the brand matching wizard merges several project definitions into one, and
+ * every node bound to a merged-away id has to follow its target. Same string
+ * technique as mergeConstDefs (the `"attr":"id"` needle is structurally
+ * unique in compact stage JSON). NO undo entry here — the caller owns one
+ * entry for the whole brand update and gets back what it needs to restore.
+ * @param {string} attrName   'styleId' | 'shapeStyleId' | 'constId' | 'constShapeId' | 'cropMaskId'
+ * @param {Array<{from:string, into:string}>} pairs
+ * @returns {{prev:Array<{id:string, overlay:string}>, count:number}}
+ */
+export function rebindOverlayAttr(attrName, pairs) {
+  const prev = [];
+  let count = 0;
+  if (!attrName || !pairs?.length) return { prev, count };
+  flushSave();
+  const arr = state.get('steps') || [];
+  for (const s of arr) {
+    const str = typeof s.overlay === 'string' ? s.overlay : '';
+    if (!str) continue;
+    let out = str;
+    for (const { from, into } of pairs) {
+      const needle = `"${attrName}":"${from}"`;
+      if (!out.includes(needle)) continue;
+      const parts = out.split(needle);
+      count += parts.length - 1;
+      out = parts.join(`"${attrName}":"${into}"`);
+    }
+    if (out !== str) { prev.push({ id: s.id, overlay: str }); s.overlay = out; s.altered = true; }
+  }
+  if (prev.length) {
+    state.setState({ steps: [...arr] });
+    state.markDirty();
+    _markOverlayStringsAuthoritative();   // patched strings win over the stale stage until reload
+  }
+  for (const n of (_layer?.getChildren?.() || [])) {
+    for (const { from, into } of pairs) if (n.getAttr?.(attrName) === from) n.setAttr(attrName, into);
+  }
+  return { prev, count };
+}
+
+/** Put back overlay strings captured by rebindOverlayAttr (the undo side). */
+export function restoreOverlayStrings(list) {
+  if (!list?.length) return;
+  flushSave();
+  const arr = state.get('steps') || [];
+  for (const p of list) { const st = arr.find(x => x.id === p.id); if (st) { st.overlay = p.overlay; st.altered = true; } }
+  state.setState({ steps: [...arr] });
+  state.markDirty();
+  _markOverlayStringsAuthoritative();
+}
+
 export function listCropMaskDefs()  { return _cropMaskDefs().map(d => ({ ...d })); }
 export function listPinnedPosDefs() { return _constShapeDefs().map(d => ({ ...d })); }
 
