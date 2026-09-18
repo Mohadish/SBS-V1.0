@@ -8,7 +8,7 @@
  * Header item shape (HeaderItem):
  *   {
  *     id:        string,           // generated, stable
- *     kind:      'custom' | 'stepName' | 'stepNumber' | 'chapterName' | 'chapterNumber' | 'image' | 'chapterProgress',
+ *     kind:      'custom' | 'stepName' | 'stepNumber' | 'chapterName' | 'chapterNumber' | 'projectName' | 'image' | 'chapterProgress',
  *     visible:   boolean,          // hide toggle (order preserved)
  *     x:         number,           // px (relative to render canvas, top-left origin)
  *     y:         number,
@@ -146,6 +146,9 @@ export function resolveHeaderText(item, ctx) {
     case 'stepNumber':     return String(ctx?.stepIndex != null ? ctx.stepIndex + 1 : '');
     case 'chapterName':    return String(ctx?.chapter?.name ?? '');
     case 'chapterNumber':  return String(ctx?.chapterIndex != null ? ctx.chapterIndex + 1 : '');
+    // 🏷 Project name (V0.3.3.13) — the project FILE's name, verbatim. One
+    // more reason to name the file after the procedure it documents.
+    case 'projectName':    return String(ctx?.projectName ?? '');
     // 🎬 Subtitle (V0.3.2.57) — the step's spoken narration, VERBATIM. Resolves
     // against ctx.step (the group-effective step, like every other dynamic
     // header): a group plays ONE voiceover (the head's, overflowing across its
@@ -257,7 +260,14 @@ export function buildRenderContext(activeIdOverride) {
       if (String(s.narration?.text ?? s.voiceText ?? '').trim()) { subtitleStep = s; break; }
     }
   }
-  return { step: effectiveStep, stepIndex, chapter, chapterIndex, subtitleStep };
+  return { step: effectiveStep, stepIndex, chapter, chapterIndex, subtitleStep, projectName: projectDisplayName() };
+}
+
+/** The project file's name without folder or extension ('Untitled' before the first save). */
+export function projectDisplayName() {
+  const p = String(state.get('projectPath') || '');
+  const file = p.split(/[\\/]/).pop() || '';
+  return file.replace(/\.sbsproj$/i, '') || 'Untitled';
 }
 
 // ── Chapter progress bar: CONTINUOUS fill (V0.3.1.80) ───────────────────────
@@ -555,6 +565,7 @@ export function initHeaderLayer(stage) {
   state.on('change:activeStepId',   refreshHeaderLayer);
   state.on('change:steps',          refreshHeaderLayer);
   state.on('change:chapters',       refreshHeaderLayer);
+  state.on('change:projectPath',    refreshHeaderLayer);   // 🏷 Project Name item follows Save As / Open
   state.on('header:refresh',        refreshHeaderLayer);   // explicit kick from step/chapter rename
 
   // Register with the cross-layer registry — overlay reads this to

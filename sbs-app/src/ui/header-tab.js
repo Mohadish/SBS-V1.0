@@ -76,6 +76,7 @@ const KIND_LABELS = {
   stepNumber:      'Step Number',
   chapterName:     'Chapter Name',
   chapterNumber:   'Chapter Number',
+  projectName:     'Project Name',
   image:           'Header Image',
   chapterProgress: 'Chapter Progress',
   subtitle:        'Subtitle (voiceover)',
@@ -110,6 +111,7 @@ export function renderHeaderTab(container) {
         <button class="btn" id="hdr-new-step-name">+ Step Name</button>
         <button class="btn" id="hdr-new-ch-num">+ Chapter #</button>
         <button class="btn" id="hdr-new-ch-name">+ Chapter Name</button>
+        <button class="btn" id="hdr-new-proj-name" title="The project file's name (without .sbsproj) — name the file after the procedure it documents">+ Project Name</button>
         <button class="btn" id="hdr-new-ch-prog" title="Progress bar that fills as the current chapter advances (empty at chapter start, full at its last step)">+ Progress Bar</button>
         <button class="btn" id="hdr-new-subtitle" title="Caption showing each step's voiceover text, verbatim. Position once; it auto-fills per step. Wraps in its box.">💬 Subtitle</button>
       </div>
@@ -184,6 +186,7 @@ export function renderHeaderTab(container) {
   container.querySelector('#hdr-new-step-name').addEventListener('click', () => _create('stepName'));
   container.querySelector('#hdr-new-ch-num')   .addEventListener('click', () => _create('chapterNumber'));
   container.querySelector('#hdr-new-ch-name')  .addEventListener('click', () => _create('chapterName'));
+  container.querySelector('#hdr-new-proj-name').addEventListener('click', () => _create('projectName'));
   container.querySelector('#hdr-new-ch-prog')  .addEventListener('click', () => _create('chapterProgress'));
   container.querySelector('#hdr-new-subtitle') .addEventListener('click', () => _create('subtitle'));
   container.querySelector('#hdr-new-image')    .addEventListener('click', () => _createImage());
