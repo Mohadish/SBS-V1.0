@@ -26,7 +26,9 @@ let _bar = null;
 let _mainBtn = null;
 let _tools = null;
 let _textSlot = null;   // populated by text-toolbar.js while editing
-let _xrayBtn = null;    // 👓 overlay X-ray toggle (V0.3.2.229, keybound .238)
+let _xrayBtn = null;    // 👓 overlay X-ray toggle (V0.3.2.229, keybound .238) — lives in the Helpers panel since V0.3.4.12
+let _helpersBtn = null, _helpersPanel = null, _helpersOpen = false;   // 🧰 Helpers: X-ray + 🧲 magnet
+let _magnetBtn = null, _magnetItems = null, _magnetFrame = null, _magnetDist = null;
 
 // Overlay-mode awareness (V0.3.0.23): viewport clicks while editing do nothing,
 // which is easy to forget. Blink the toggle on each such click; after 3, offer to
@@ -254,16 +256,45 @@ export function initOverlayToolbar() {
   _mainBtn = _btn(`✏ Edit overlay ${keyHint('overlayEdit')}`, 'Toggle overlay editing mode');
   _mainBtn.addEventListener('click', () => _setEditing(!overlay.isEditing()));
 
-  // 👓 V0.3.2.229 — ghost the overlay to see the 3D underneath while
-  // arranging. Lives NEXT TO the edit toggle rather than inside the tools
-  // row, because it is just as useful out of edit mode (matching a camera to
-  // a reference image) as in it (placing a title against geometry).
+  // 🧰 Helpers (V0.3.4.12) — the arranging aids in ONE place under the bar: 👓 X-ray (it used to sit on the
+  // bar itself) and 🧲 the magnet. Aids only: nothing here is rendered, exported or saved with the project —
+  // the magnet's settings are this machine's (user settings), like the shape defaults.
   _xrayBtn = _btn('👓 X-ray', 'Ghost the overlay so you can see the 3D scene underneath. Arranging aid only — renders, exports and thumbnails are unaffected.');
   _xrayBtn.addEventListener('click', () => toggleOverlayXray());
+  _helpersBtn = _btn('🧰 Helpers ▾', 'Arranging aids: 👓 X-ray and 🧲 the magnet (snapping)');
+  _helpersPanel = document.createElement('div');
+  _helpersPanel.id = 'overlay-helpers-panel';
+  _helpersPanel.style.cssText = [
+    'position:absolute', 'top:100%', 'right:0', 'margin-top:6px', 'z-index:31',
+    'display:none', 'flex-direction:column', 'gap:7px', 'min-width:250px',
+    'background:rgba(10,15,25,0.94)', 'border:1px solid rgba(255,255,255,0.12)', 'border-radius:8px',
+    'padding:9px 10px', 'font-size:12px', 'color:#cbd5e1', 'backdrop-filter:blur(4px)',
+  ].join(';');
+  _magnetBtn = _btn('🧲 Magnet', 'While you drag, the item\'s edges and centre stick to the edges and centres of the other items and of the picture. Hold Alt while dragging to let go of it for a moment.');
+  const row = (html) => { const d = document.createElement('label'); d.style.cssText = 'display:flex;gap:7px;align-items:center;cursor:pointer;'; d.innerHTML = html; return d; };
+  _magnetItems = row('<input type="checkbox" data-snap="items"> to the other items (and header items)');
+  _magnetFrame = row('<input type="checkbox" data-snap="frame"> to the picture: its edges and its centre');
+  _magnetDist  = row('pull from <input type="number" data-snap="distance" min="1" max="60" step="1" style="width:52px;background:#0b1220;color:#e2e8f0;border:1px solid #334155;border-radius:5px;padding:2px 5px;"> px away');
+  const hint = document.createElement('div');
+  hint.style.cssText = 'color:#94a3b8;line-height:1.45;';
+  hint.textContent = 'The part you hold is the part that sticks: hold an item by an edge and that edge snaps, by the middle and its centre does. Several items move — and snap — as one. Alt = no magnet while held.';
+  const xrayRow = document.createElement('div'); xrayRow.style.cssText = 'display:flex;gap:6px;'; xrayRow.append(_xrayBtn);
+  const magRow = document.createElement('div'); magRow.style.cssText = 'display:flex;gap:6px;border-top:1px solid rgba(255,255,255,0.1);padding-top:8px;'; magRow.append(_magnetBtn);
+  _helpersPanel.append(xrayRow, magRow, _magnetItems, _magnetFrame, _magnetDist, hint);
+  _helpersBtn.addEventListener('click', (e) => { e.stopPropagation(); _helpersOpen = !_helpersOpen; _syncHelpers(); });
+  _magnetBtn.addEventListener('click', async () => { await overlay.setSnapPrefs({ enabled: !overlay.getSnapPrefs().enabled }); _syncHelpers(); });
+  _helpersPanel.addEventListener('change', async (e) => {
+    const k = e.target?.dataset?.snap; if (!k) return;
+    await overlay.setSnapPrefs({ [k]: k === 'distance' ? Math.max(1, Math.min(60, Number(e.target.value) || 8)) : !!e.target.checked });
+    _syncHelpers();
+  });
+  _helpersPanel.addEventListener('pointerdown', (e) => e.stopPropagation());
+  _helpersPanel.addEventListener('keydown', (e) => e.stopPropagation());        // typing a distance must not fire the app's single-key shortcuts
+  document.addEventListener('pointerdown', (e) => { if (_helpersOpen && !_helpersPanel.contains(e.target) && e.target !== _helpersBtn) { _helpersOpen = false; _syncHelpers(); } }, true);
   _syncXray();
 
-  // Append in left-to-right DOM order: text slot · tools · toggle.
-  _bar.append(_textSlot, _tools, _xrayBtn, _mainBtn);
+  // Append in left-to-right DOM order: text slot · tools · helpers · toggle (the panel hangs under the bar).
+  _bar.append(_textSlot, _tools, _helpersBtn, _mainBtn, _helpersPanel);
 
   surface.appendChild(_bar);
 
@@ -459,6 +490,23 @@ function _syncXray() {
   const k  = keyHint('overlayXray');
   _xrayBtn.textContent = on ? `👓 X-ray on ${k}` : `👓 X-ray ${k}`;
   _xrayBtn.style.background = on ? 'rgba(56,189,248,0.28)' : '';
+  _syncHelpers();
+}
+
+/** 🧰 The Helpers button shows what is switched on; the panel mirrors the magnet's settings. */
+function _syncHelpers() {
+  if (!_helpersBtn) return;
+  const p = overlay.getSnapPrefs(), x = overlay.isOverlayXray();
+  _helpersBtn.textContent = `🧰 Helpers${x ? ' 👓' : ''}${p.enabled ? ' 🧲' : ''} ▾`;
+  _helpersBtn.style.background = _helpersOpen ? 'rgba(56,189,248,0.28)' : '';
+  _helpersPanel.style.display = _helpersOpen ? 'flex' : 'none';
+  _magnetBtn.textContent = p.enabled ? '🧲 Magnet is ON' : '🧲 Magnet is off';
+  _magnetBtn.style.background = p.enabled ? 'rgba(244,114,182,0.30)' : '';
+  _magnetItems.querySelector('input').checked = p.items;
+  _magnetFrame.querySelector('input').checked = p.frame;
+  const d = _magnetDist.querySelector('input');
+  if (document.activeElement !== d) d.value = String(p.distance);
+  for (const r of [_magnetItems, _magnetFrame, _magnetDist]) { r.style.opacity = p.enabled ? '1' : '.45'; r.querySelector('input').disabled = !p.enabled; }
 }
 
 // ── Utils ──────────────────────────────────────────────────────────────────

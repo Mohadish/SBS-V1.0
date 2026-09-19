@@ -45,6 +45,8 @@ import { getStyleTemplate, listStyleTemplates } from './style-templates.js';
 import { registerLayer, getLayerSelection, persistNodeIfHeader, useOwnMultiDrag, reapplyGroupDelta, clearLayerSelection } from './cross-layer.js';
 import { MARQUEE_THRESHOLD_PX, rectOf, marqueeOp, pickInMarquee, applyMarquee } from './marquee-core.js';
 import { showMarqueeBox, setMarqueeBadge, hideMarqueeBox } from '../ui/marquee-box.js';
+import { snapBox, unionBox } from './snap-core.js';
+import { showSnapGuides, hideSnapGuides } from '../ui/snap-guides.js';
 import * as editSession from './edit-session.js';   // P7-A: in-session local undo + commit-time main-undo entry
 import { undoManager } from './undo.js';            // P7-B: mass-mode + structural ops push undo entries directly
 
@@ -401,6 +403,7 @@ export function setEditingMode(on) {
   if (_maskEdit) _cancelMaskEdit();   // 🎭 its handle lives on the UI layer; never leave it up
   if (_angleEntry) _endAngleEntry(false);   // ⌨ never leave the keyboard captured
   _cancelBand();                            // ⬚ a rubber-band in progress dies with the mode
+  _snapEnd();                               // 🧲 …and so do the magnet's guides
   _editing = !!on;
   if (_container) _container.classList.toggle('editing', _editing);
   if (!_editing) _setSelection(null);
@@ -4428,8 +4431,11 @@ function _attachNode(node) {
       // a CARRIED interface leaves its "default position" like a grabbed one does (its own dragstart never fires)
       if (n !== node && n.getAttr?.('isInterface') && n.getAttr('atDefault')) n.setAttr('atDefault', false);
     }
+    _snapBegin(node, _multiDragStarts);   // 🧲 the magnet measures the moving box and its targets once, here
   });
-  node.on('dragmove', () => {
+  node.on('dragmove', (e) => {
+    // 🧲 FIRST: the magnet corrects the grabbed node — before its delta is copied to the carried items below
+    if (_multiDragStarts) _snapMove(node, e?.evt);
     if (!_multiDragStarts || _multiDragStarts.size <= 1) return;   // single-node = let Konva drag normally
     const start = _multiDragStarts.get(node);
     if (!start) return;
@@ -4449,6 +4455,7 @@ function _attachNode(node) {
   });
   node.on('dragend', () => {
     if (_pinDragBlocked === node) return;   // 📌 refused drag — nothing moved
+    _snapEnd();                             // 🧲 guides off — the node already stands where the magnet put it
     const beforeMap = _multiDragStarts;
     _multiDragStarts = null;
     if (!beforeMap) return;
@@ -6092,6 +6099,95 @@ function _showOverlayContextMenu(node, x, y) {
   ], x, y);
 }
 
+// ─── 🧲 The magnet (V0.3.4.12) ──────────────────────────────────────────────
+// While an item — or a whole selection, as ONE box — is dragged, its left / centre / right and
+// top / middle / bottom lines snap to the same lines of the other items, of the header items,
+// and of the picture frame (edges + centre). The maths is pure (snap-core.js); the guides are
+// DOM (ui/snap-guides.js). "The part you hold wins": the line nearest the pointer is asked
+// first. Alt held = no magnet for that moment. Preferences are the user's (machine-level:
+// userSettings.overlay.snap), not the project's.
+//
+// How it rides the drag: Konva puts the grabbed node at (pointer − the offset taken at the
+// press) on EVERY move, so a correction written in 'dragmove' never accumulates — the next move
+// starts from the true pointer again. It is written BEFORE our one mover copies the grabbed
+// node's delta to the carried items, so the group stays rigid and lands on the line together,
+// and the undo entry / the release re-check simply see the corrected place. The moving box and
+// every target are measured ONCE, at dragstart (the group is rigid and nothing else moves).
+
+let _snap = null;   // { box0, g0, grabOff, targets, frame, distance }
+
+export function getSnapPrefs() {
+  const s = userSettings.get()?.overlay?.snap || {};
+  const d = Number(s.distance);
+  return { enabled: s.enabled !== false, items: s.items !== false, frame: s.frame !== false, distance: d >= 1 && d <= 60 ? d : 8 };
+}
+export async function setSnapPrefs(patch) {
+  const next = { ...getSnapPrefs(), ...(patch || {}) };
+  await userSettings.patch({ overlay: { snap: next } });
+  return next;
+}
+
+/** An item's box for the magnet, in its own layer's coordinates (both layers are identity on the one stage). */
+function _snapBoxOf(n) {
+  try {
+    if (_isPlainImageOrVideo(n) && _resolveMask(n)) {          // 🎭 what you SEE of a masked picture: its window
+      const v = _pinVisibleRect(n), a = (v.rot || 0) * Math.PI / 180, c = Math.cos(a), s = Math.sin(a);
+      const xs = [0, v.w * c, v.w * c - v.h * s, -v.h * s].map(d => v.x + d), ys = [0, v.w * s, v.w * s + v.h * c, v.h * c].map(d => v.y + d);
+      return { x: Math.min(...xs), y: Math.min(...ys), w: Math.max(...xs) - Math.min(...xs), h: Math.max(...ys) - Math.min(...ys) };
+    }
+    const r = n.getClientRect({ relativeTo: n.getLayer(), skipShadow: true, skipStroke: true });
+    return (r && r.width > 0 && r.height > 0) ? { x: r.x, y: r.y, w: r.width, h: r.height } : null;
+  } catch { return null; }
+}
+
+function _snapBegin(node, starts) {
+  _snap = null;
+  const prefs = getSnapPrefs();
+  if (!prefs.enabled || !_stage || !_layer || !(prefs.items || prefs.frame)) return;
+  const moving = new Set(starts.keys());
+  const box0 = unionBox([...moving].map(_snapBoxOf));
+  if (!box0) return;
+  const targets = [];
+  if (prefs.items) {
+    for (const n of _layer.getChildren()) {
+      if (moving.has(n) || !n.isVisible() || isAnchoredNode(n)) continue;    // a 3D-anchored arrow follows the camera: no line to stand on
+      const b = _snapBoxOf(n); if (b) targets.push(b);
+    }
+    for (const n of _stage.find(h => !!h.getAttr?.('headerId'))) {           // header items: titles and logos are what things get lined up with
+      if (moving.has(n) || !n.isVisible()) continue;
+      const b = _snapBoxOf(n); if (b) targets.push(b);
+    }
+  }
+  const c = getCanonicalSize();
+  const p = _layer.getRelativePointerPosition();
+  _snap = {
+    box0, g0: { x: node.x(), y: node.y() }, targets,
+    frame: prefs.frame ? { w: c.width, h: c.height } : null,
+    grabOff: p ? { x: p.x - box0.x, y: p.y - box0.y } : null,
+    distance: prefs.distance / (Math.abs(_stage.scaleX()) || 1),             // the magnet distance is SCREEN px: the same pull at any zoom
+  };
+}
+
+/** Correct the grabbed node (in place) and draw the guides. Called first thing in its dragmove. */
+function _snapMove(node, evt) {
+  const s = _snap; if (!s) return;
+  if (evt?.altKey) { hideSnapGuides(); return; }                             // Alt = let go of the magnet for now
+  const dx = node.x() - s.g0.x, dy = node.y() - s.g0.y;
+  const moved = { x: s.box0.x + dx, y: s.box0.y + dy, w: s.box0.w, h: s.box0.h };
+  const r = snapBox(moved, s.targets, { distance: s.distance, frame: s.frame, grab: s.grabOff ? { x: moved.x + s.grabOff.x, y: moved.y + s.grabOff.y } : null });
+  if (r.dx) node.x(node.x() + r.dx);
+  if (r.dy) node.y(node.y() + r.dy);
+  if (!r.guides.length) { hideSnapGuides(); return; }
+  const cr = _container.getBoundingClientRect(), T = _stage.getAbsoluteTransform();
+  const C = (x, y) => { const q = T.point({ x, y }); return { x: cr.left + q.x, y: cr.top + q.y }; };
+  showSnapGuides(r.guides.map(g => {
+    const a = g.axis === 'x' ? C(g.at, g.from) : C(g.from, g.at), b = g.axis === 'x' ? C(g.at, g.to) : C(g.to, g.at);
+    return { x1: a.x, y1: a.y, x2: b.x, y2: b.y };
+  }));
+}
+
+function _snapEnd() { _snap = null; hideSnapGuides(); }
+
 // ─── ⬚ Rubber-band selection (V0.3.4.11) ────────────────────────────────────
 // Press on EMPTY stage and drag: a box; release: what it caught is the selection. The rules are
 // the 3D scene's box-select, to the key (src/main.js, "V0.1.94 box-select modifiers"):
@@ -7379,6 +7475,7 @@ export function waitForOverlayStable() {
 async function _loadFromActiveStep() {
   if (!_stage) return;
   _cancelBand();   // ⬚ the nodes under a rubber-band are about to be replaced
+  _snapEnd();
   // 🎭 The editor's node is about to be destroyed with the rest of the layer.
   if (_maskEdit) _cancelMaskEdit();
   if (_angleEntry) _endAngleEntry(false);

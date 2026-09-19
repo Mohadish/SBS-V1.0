@@ -43,6 +43,9 @@ const DEFAULTS = {
   // it's a tool setting (like a brush), not project data, so it follows
   // the user across projects and survives a restart.
   overlay: {
+    // 🧲 V0.3.4.12 — the magnet (snapping while dragging overlay items). A tool setting, like the brush-style
+    // defaults below: it follows the user, not the project. distance = screen px.
+    snap: { enabled: true, items: true, frame: true, distance: 8 },
     shapeDefaults: {
       fill:         'rgba(74,144,217,0.45)',
       stroke:       '#4A90D9',
