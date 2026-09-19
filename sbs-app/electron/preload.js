@@ -70,6 +70,7 @@ contextBridge.exposeInMainWorld('sbsNative', {
     const allowed = [
       'menu:newProject', 'menu:openProject', 'menu:saveProject', 'menu:saveProjectAs',
       'menu:saveForClose',         // 🚪 V0.3.2.216 — save requested by the close guard
+      'menu:brandSaveForClose',    // 🏷 V0.3.4.9 — "Save the brand…" chosen in the close question
       'menu:loadModel',  'menu:browseAssets',
       'menu:fitAll',     'menu:showAll',
       'menu:openSettings',
@@ -106,6 +107,9 @@ contextBridge.exposeInMainWorld('sbsNative', {
   // Answer to a 'menu:saveForClose' request — true only when the file was
   // actually written (a cancelled Save-As dialog answers false).
   saveResult: (ok) => ipcRenderer.send('app:saveResult', !!ok),
+  // 🏷 V0.3.4.9 — brand elements edited in this session and not saved to the brand file
+  // ({ brand, count, names[] } | null): the close handler asks about them first.
+  setBrandPending: (info) => ipcRenderer.send('app:brandPending', info || null),
 
   // ── 🎹 Keymap → native menu accelerators (V0.3.2.178) ────────────────────
   // The renderer tells main the current letter for rebindable shortcuts that

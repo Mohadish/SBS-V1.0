@@ -17,7 +17,7 @@ import { chooseFromButtons, chooseWithPreview, promptString } from '../ui/prompt
 import { generateId }   from '../core/schema.js';
 import { getCanonicalSize } from '../core/safe-frame.js';
 import { reloadActiveOverlay, countAttrUsage, rebindOverlayAttr, restoreOverlayStrings } from './overlay.js';
-import { SECTIONS, OVERLAY_ATTR, buildBrand, mergeBrand, suggestMapping, unlinkedCount, brandFromLegacyHeader, summarizeMerge, ownership } from './brand-core.js';
+import { SECTIONS, OVERLAY_ATTR, buildBrand, mergeBrand, suggestMapping, unlinkedCount, brandFromLegacyHeader, summarizeMerge, ownership, brandDrift, driftSince } from './brand-core.js';
 import { openBrandMapDialog } from '../ui/brand-map-dialog.js';
 
 const BRAND_FILTER = [{ name: 'SBS Brand (.sbsbrand) / header setup (.sbsheader)', extensions: ['sbsbrand', 'sbsheader'] }];
@@ -221,13 +221,61 @@ export async function checkBrandUpdate() {
   return null;
 }
 
+// ─── 🏷 "you changed a brand element" (V0.3.4.9) ─────────────────────────────
+// A brand-linked definition edited here is the project's own business until the brand file is
+// saved — but the user must KNOW it happened: one notice per definition per session, and a
+// question before the window closes (the main process asks; it is told what is pending).
+// Only what changed in THIS session counts: what was already different when the project opened
+// was asked about in the session that changed it.
+
+let _driftBase = new Map(), _driftTold = new Set(), _driftTimer = 0, _pendingSig = 'null';
+const _driftKey = (r) => `${r.section}/${r.id}`;
+function _driftNow() {
+  const link = getBrandLink();
+  return link?.id ? brandDrift(_projectSections(), link.links || {}) : [];
+}
+/** Brand elements edited in this session and not saved to the brand file. */
+export function brandChangesThisSession() { return driftSince(_driftNow(), _driftBase); }
+
+function _mirrorPending(rows) {
+  const link = getBrandLink();
+  const info = (link?.id && rows.length) ? { brand: String(link.name || ''), count: rows.length, names: rows.slice(0, 6).map(r => `${r.label} "${r.name}"`) } : null;
+  const sig = JSON.stringify(info);
+  if (sig === _pendingSig) return;
+  _pendingSig = sig;
+  try { window.sbsNative?.setBrandPending?.(info); } catch { /* no bridge before a full restart */ }
+}
+function _rebaseDrift() {
+  clearTimeout(_driftTimer);
+  _driftBase = new Map(_driftNow().map(r => [_driftKey(r), r.hash]));
+  _driftTold = new Set();
+  _mirrorPending([]);
+}
+function _checkDrift() {
+  const rows = brandChangesThisSession();
+  const fresh = rows.filter(r => !_driftTold.has(_driftKey(r)));
+  for (const r of fresh) _driftTold.add(_driftKey(r));
+  if (fresh.length) {
+    const link = getBrandLink();
+    const what = fresh.length === 1 ? `${fresh[0].label} "${fresh[0].name}" belongs` : `${fresh.length} elements you changed belong`;
+    setStatus(`🏷 ${what} to the brand "${link?.name || ''}". The change is in this project only — Tools ▸ Brand… ▸ Save brand makes it the standard for every project.`, 'info', 14000);
+  }
+  _mirrorPending(rows);
+}
+const _scheduleDrift = () => { clearTimeout(_driftTimer); _driftTimer = setTimeout(_checkDrift, 900); };      // a slider drag is ONE change
+
 let _inited = false;
 export function initBrand() {
   if (_inited) return;
   _inited = true;
+  for (const sec of SECTIONS) state.on(`change:${sec.stateKey}`, _scheduleDrift);
+  state.on('change:brand', _scheduleDrift);
+  state.on('project:loaded', _rebaseDrift);
+  window.sbsNative?.onMenu?.('menu:brandSaveForClose', () => { saveBrand().catch(e => console.error('[brand] save failed:', e)); });
+  _rebaseDrift();
   state.on('project:modelsSettled', async () => {
     const up = await checkBrandUpdate();
     if (up) setStatus(`Brand "${up.name}" has a newer revision on disk (r${up.fileRevision}, this project is at r${up.projectRevision}) — Tools ▸ Brand… to update.`, 'info', 12000);
   });
-  if (typeof window !== 'undefined') window.sbsBrand = { save: saveBrand, load: loadBrand, check: checkBrandUpdate, overview: brandOverview };
+  if (typeof window !== 'undefined') window.sbsBrand = { save: saveBrand, load: loadBrand, check: checkBrandUpdate, overview: brandOverview, changes: brandChangesThisSession };
 }

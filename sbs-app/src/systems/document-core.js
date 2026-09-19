@@ -61,6 +61,7 @@ export function emptyDocument() {
     hiddenSteps: [],                     // step (unit) ids left OUT of the document — the animation is not touched
     assets: {},                          // assetId → { dataUrl, w, h, name } : pictures that are not part of the animation
     extras: [],                          // what is not a step page: the contents' place, custom pages — each anchored before a step
+    bands: null,                         // { header:{items,rule}, footer:{…} } once the header / footer were edited; null = the classic three cells
   };
 }
 
@@ -100,8 +101,8 @@ const MIN_FRAME = 15, MIN_TEXT_H = 12, MIN_TEXT_W = 40;
 
 const _r1 = (v) => Math.round(Number(v) * 2) / 2;                                // half-millimetre grid
 /** A rect forced to be numbers, on the grid, at least min size, inside the content area. */
-export function clampRect(r, minW = MIN_FRAME, minH = MIN_FRAME) {
-  const C = CONTENT_MM;
+export function clampRect(r, minW = MIN_FRAME, minH = MIN_FRAME, area = CONTENT_MM) {
+  const C = area;
   let w = Math.max(minW, Math.min(C.w, _r1(r?.w) || minW)), h = Math.max(minH, Math.min(C.h, _r1(r?.h) || minH));
   let x = _r1(r?.x), y = _r1(r?.y);
   if (!Number.isFinite(x)) x = C.x; if (!Number.isFinite(y)) y = C.y;
@@ -566,10 +567,10 @@ function _reanchor(seq) {
 export const MAX_CUSTOM_ITEMS = 60;
 const _hex = (c, d) => (/^#[0-9a-f]{6}$/i.test(String(c || '')) ? c : d);
 
-export function sanitizeCustomItem(it) {
-  const rect = clampRect(it, 5, 4);
+export function sanitizeCustomItem(it, area = CONTENT_MM) {
+  const rect = clampRect(it, area === CONTENT_MM ? 5 : 3, area === CONTENT_MM ? 4 : 2, area);
   const base = { id: String(it?.id || ''), ...rect };
-  if (it?.type === 'image') return { ...base, type: 'image', assetId: String(it.assetId || ''), fit: fitOf(it) };
+  if (it?.type === 'image') return { ...base, type: 'image', assetId: String(it.assetId || ''), stepId: it.stepId ? String(it.stepId) : '', moment: it.moment === 'start' ? 'start' : 'end', logo: !!it.logo, fit: fitOf(it) };
   return {
     ...base, type: 'text', text: String(it?.text ?? '').slice(0, 8000),
     size: _clampN(it?.size, 6, 120, 11), bold: !!it?.bold, italic: !!it?.italic,
@@ -578,7 +579,43 @@ export function sanitizeCustomItem(it) {
 }
 export function sanitizeCustomPage(x) {
   return { id: String(x?.id || ''), kind: 'custom', beforeUnit: x?.beforeUnit || '@end', name: String(x?.name || 'Custom page').slice(0, 80),
-    items: (Array.isArray(x?.items) ? x.items : []).slice(0, MAX_CUSTOM_ITEMS).map(sanitizeCustomItem) };
+    items: (Array.isArray(x?.items) ? x.items : []).slice(0, MAX_CUSTOM_ITEMS).map(it => sanitizeCustomItem(it)) };      // NOT .map(sanitizeCustomItem): map's index would arrive as the clamp area
+}
+
+// ─── header / footer bands ──────────────────────────────────────────────────
+// Until somebody edits them the header and the footer are three text cells (left / centre /
+// right) and the project's logo. Editing turns a band into FREE ITEMS — the same records as a
+// custom page's, clamped to the band: text (it may carry {title} {company} {docNo} {rev}
+// {project} {chapter} {chapterNo} {page} {pages} {date}) and pictures (a file, or the project's
+// logo). doc.bands = { header:{items,rule}, footer:{items,rule} }; a missing side stays classic.
+
+export const BAND_MM = Object.freeze({ header: Object.freeze({ x: 12, y: 10, w: 186, h: 18 }), footer: Object.freeze({ x: 12, y: 275, w: 186, h: 12 }) });
+export const BAND_FIELDS = ['title', 'company', 'docNo', 'rev', 'project', 'chapter', 'chapterNo', 'page', 'pages', 'date'];
+export const MAX_BAND_ITEMS = 12;
+
+/** The classic layout as free items — what the editor starts from, so "customise" changes nothing until the user does. */
+export function defaultBandItems(side, doc, hasLogo = false) {
+  const B = BAND_MM[side], head = side === 'header';
+  const t = (id, x, w, text, align, bold) => ({ id: `${side[0]}_${id}`, type: 'text', x, y: head ? B.y + 2 : B.y + 3, w, h: head ? 12 : 7, text: String(text || ''), size: head ? 9.5 : 8.5, bold: !!bold, italic: false, align, color: head ? '#111111' : '#333333' });
+  const src = (head ? doc?.header : doc?.footer) || {};
+  const logoW = head && hasLogo ? 32 : 0;
+  const items = [
+    t('l', B.x + (logoW ? logoW + 3 : 0), 58 - (logoW ? logoW + 3 : 0), src.left, 'start', false),
+    t('c', B.x + 60, 66, src.center, 'center', true),
+    t('r', B.x + 128, 58, src.right, 'end', false),
+  ];
+  if (logoW) items.unshift({ id: 'h_logo', type: 'image', logo: true, x: B.x, y: B.y, w: logoW, h: 14, fit: { zoom: containZoom({ w: logoW, h: 14 }, 3), ox: 0, oy: 0 } });
+  return items.map(it => sanitizeCustomItem(it, B));
+}
+
+/** doc.bands, well-formed: { header: null | {items, rule}, footer: … } — null = the classic three cells. */
+export function bandsOf(doc) {
+  const out = {};
+  for (const side of ['header', 'footer']) {
+    const b = doc?.bands?.[side];
+    out[side] = (b && Array.isArray(b.items)) ? { rule: b.rule !== false, items: b.items.slice(0, MAX_BAND_ITEMS).map(it => sanitizeCustomItem(it, BAND_MM[side])) } : null;
+  }
+  return out;
 }
 
 // ─── render model ───────────────────────────────────────────────────────────
@@ -624,9 +661,22 @@ export function buildRenderModel(doc, steps, chapters, ctx) {
     const chIdx = ch ? (chapters || []).indexOf(ch) : -1;
     return { ...(doc.fields || {}), project: ctx?.projectName || '', date: ctx?.date || '', chapter: ch ? ch.name : '', chapterNo: chIdx >= 0 ? chIdx + 1 : '', page: number, pages: total };
   };
+  const custom = bandsOf(doc);
+  const pageW = 210;
+  const bandItems = (side, vars) => (!custom[side] ? null : {
+    rule: custom[side].rule,
+    items: custom[side].items.map(it => {
+      const m = reading.dir === 'rtl' ? { ...it, x: pageW - it.x - it.w } : it;           // a right-to-left page mirrors its bands like its picture frames
+      if (m.type !== 'image') return { ...m, text: _sub(_phrase(m.text, reading.lang), vars) };
+      const a = m.logo ? null : doc?.assets?.[m.assetId];
+      const good = a && ASSET_URL_RX.test(String(a.dataUrl || '')) && a.w > 0 && a.h > 0;
+      return { ...m, src: good ? a.dataUrl : null, aspect: good ? a.w / a.h : (ctx?.logoAspect > 0 ? ctx.logoAspect : 3) };
+    }),
+  });
   const bands = (vars) => {
     const H = (side) => _sub(_phrase(doc.header?.[side], reading.lang), vars), F = (side) => _sub(_phrase(doc.footer?.[side], reading.lang), vars);
-    return { header: { left: H('left'), center: H('center'), right: H('right') }, footer: { left: F('left'), center: F('center'), right: F('right') } };
+    return { header: { left: H('left'), center: H('center'), right: H('right') }, footer: { left: F('left'), center: F('center'), right: F('right') },
+      bandItems: { header: bandItems('header', vars), footer: bandItems('footer', vars) } };
   };
 
   let prevChapter = null;
@@ -674,6 +724,8 @@ export function buildRenderModel(doc, steps, chapters, ctx) {
       id: c.id, kind: 'custom', number, total, name: c.name, template: templateById(doc, doc?.templateId), ...bands(varsFor(number, null)),
       items: c.items.map(it => {
         if (it.type !== 'image') return it;
+        // a picture taken from the ANIMATION: rendered on demand like a page picture (end of the step, or its BEFORE frame)
+        if (it.stepId) return stepById.has(it.stepId) ? { ...it, src: null, key: stillKey(it.stepId, it.moment), aspect: ctx?.stillAspect > 0 ? ctx.stillAspect : 16 / 9, label: nums.get(it.stepId)?.label || '' } : { ...it, src: null, stepId: '', aspect: 16 / 9 };
         const a = doc?.assets?.[it.assetId];
         const good = a && ASSET_URL_RX.test(String(a.dataUrl || '')) && a.w > 0 && a.h > 0;
         return { ...it, src: good ? a.dataUrl : null, aspect: good ? a.w / a.h : 1, name: good ? (a.name || '') : '' };
@@ -748,7 +800,8 @@ export const parseStillKey = (key) => { const s = String(key); return s.endsWith
 /** Every picture a document needs rendered — as still keys. */
 export function stillsNeeded(model) {
   const out = new Set();
-  for (const p of model.pages) for (const im of p.images) if (im.stepId) out.add(im.key || stillKey(im.stepId, im.moment));
+  for (const p of model.pages || []) for (const im of p.images) if (im.stepId) out.add(im.key || stillKey(im.stepId, im.moment));
+  for (const c of model.customs || []) for (const it of c.items) if (it.type === 'image' && it.stepId) out.add(it.key || stillKey(it.stepId, it.moment));
   return [...out];
 }
 

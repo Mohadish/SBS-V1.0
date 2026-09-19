@@ -27,7 +27,7 @@ import * as projectPaths from '../core/project-paths.js';
 import {
   emptyDocument, autoPaginate, reconcile, orderOf, mergeWithPrevious, splitBefore, clearFlags,
   buildRenderModel, stillsNeeded, narrationOf, mergeUnits, splitAll, autoTemplates, parseStillKey, sanitizeTemplate, templateProblems,
-  extrasOf, sequenceOf, moveExtra, sanitizeCustomPage, sanitizeCustomItem, TOC_ID,
+  extrasOf, sequenceOf, moveExtra, sanitizeCustomPage, sanitizeCustomItem, TOC_ID, bandsOf, defaultBandItems, BAND_MM,
 } from './document-core.js';
 import { renderDocumentHtml } from './document-render.js';
 
@@ -57,7 +57,7 @@ function _commit(label, next /* , opts */) {
 /** First build (or a rebuild from scratch): one page per step, texts kept. */
 export function buildPages({ rebuild = false } = {}) {
   const cur = getDocument();
-  const doc = cur && !rebuild ? _clone(cur) : { ...emptyDocument(), ...(cur ? { fields: cur.fields, header: cur.header, footer: cur.footer, options: cur.options, texts: cur.texts, templates: cur.templates, templateId: cur.templateId, watermark: watermarkOf(cur), hiddenSteps: cur.hiddenSteps || [], extras: cur.extras || [], assets: cur.assets || {} } : {}) };
+  const doc = cur && !rebuild ? _clone(cur) : { ...emptyDocument(), ...(cur ? { fields: cur.fields, header: cur.header, footer: cur.footer, options: cur.options, texts: cur.texts, templates: cur.templates, templateId: cur.templateId, watermark: watermarkOf(cur), hiddenSteps: cur.hiddenSteps || [], extras: cur.extras || [], assets: cur.assets || {}, bands: cur.bands || null } : {}) };
   if (!doc.fields.title) doc.fields.title = projectDisplayName();
   doc.pages = autoPaginate(_steps(), _chapters(), doc);
   doc.order = orderOf(_steps(), _chapters(), doc);
@@ -151,6 +151,7 @@ const _pruneAssets = (doc) => {
   const used = new Set([
     ...(doc.pages || []).flatMap(p => (p.images || []).map(i => i.assetId)),
     ...(doc.extras || []).flatMap(x => (x.items || []).map(i => i.assetId)),
+    ...['header', 'footer'].flatMap(side => (doc.bands?.[side]?.items || []).map(i => i.assetId)),
   ].filter(Boolean));
   const assets = {};
   for (const [id, a] of Object.entries(doc.assets || {})) if (used.has(id)) assets[id] = a;
@@ -180,6 +181,43 @@ export function setPagePictureAsset(pageId, slot, asset) {
   const withAsset = { ...cur, assets: { ...(cur.assets || {}), [id]: { dataUrl: asset.dataUrl, w: asset.w, h: asset.h, name: asset.name || '' } } };
   _commit('External picture', _pruneAssets({ ...withAsset, pages: withAsset.pages.map(p => (p.id === pageId ? _withSlot(p, slot, () => ({ assetId: id })) : p)) }));
 }
+// ─── header / footer ────────────────────────────────────────────────────────
+
+/** The first edit: both bands become free items that LOOK exactly like the classic cells (so nothing moves until the user moves it). */
+export function customiseBands() {
+  const cur = getDocument(); if (!cur) return;
+  const now = bandsOf(cur);
+  if (now.header && now.footer) return;
+  const hasLogo = !!_logo();
+  _commit('Edit header and footer', { ...cur, bands: {
+    header: now.header || { rule: true, items: defaultBandItems('header', cur, hasLogo) },
+    footer: now.footer || { rule: true, items: defaultBandItems('footer', cur, false) },
+  } });
+}
+/** patch = { header?: {items?, rule?}, footer?: {…} } — one undo entry. */
+export function setBands(patch, label = 'Edit header / footer') {
+  const cur = getDocument(); if (!cur) return;
+  const now = bandsOf(cur), next = {};
+  for (const side of ['header', 'footer']) next[side] = patch[side] ? { ...(now[side] || { rule: true, items: [] }), ...patch[side] } : now[side];
+  _commit(label, _pruneAssets({ ...cur, bands: next }));
+}
+/** Back to the classic three cells + logo. */
+export function resetBands() {
+  const cur = getDocument(); if (!cur || !cur.bands) return;
+  _commit('Reset header and footer', _pruneAssets({ ...cur, bands: null }));
+}
+/** A picture (a file) for a band. @returns {string|null} the item id */
+export function addBandImage(side, asset, rect) {
+  const cur = getDocument(); if (!cur || !asset?.dataUrl || !BAND_MM[side]) return null;
+  const stamp = `${Date.now().toString(36)}${Math.floor(performance.now() % 1e6).toString(36)}`;
+  const assetId = `asset_${stamp}`, itemId = `b_${stamp}`;
+  const now = bandsOf(cur);
+  const band = now[side] || { rule: true, items: [] };
+  _commit('Add picture', { ...cur, assets: { ...(cur.assets || {}), [assetId]: { dataUrl: asset.dataUrl, w: asset.w, h: asset.h, name: asset.name || '' } },
+    bands: { ...now, [side]: { ...band, items: [...band.items, sanitizeCustomItem({ id: itemId, type: 'image', assetId, ...rect }, BAND_MM[side])] } } });
+  return itemId;
+}
+
 // ─── the sequence: the contents' place, custom pages ────────────────────────
 
 const _order = (doc) => orderOf(_steps(), _chapters(), doc);

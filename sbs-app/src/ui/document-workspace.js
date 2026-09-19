@@ -17,7 +17,7 @@ import { undoManager } from '../systems/undo.js';
 import { setStatus } from './status.js';
 import { srcHashOf } from '../systems/language-packs.js';
 import { numberSteps } from '../systems/translation-sheet-core.js';
-import { builtinTemplates, docTextFor, pageRangeLabel, unitsOf, stillsNeeded, pictureBox, containZoom, slotState, directionOf } from '../systems/document-core.js';
+import { builtinTemplates, docTextFor, pageRangeLabel, unitsOf, stillsNeeded, pictureBox, containZoom, slotState, directionOf, bandsOf, BAND_MM } from '../systems/document-core.js';
 import { DOCUMENT_CSS, renderPageHtml, renderTocPageHtml, renderCustomPageHtml, slotInnerHtml } from '../systems/document-render.js';
 import { watermarkOf, watermarkHtml, watermarkCss, watermarkVisible, detectWatermarkMode, bakeWatermarkPixels, fitWithin } from '../systems/watermark-core.js';
 import * as D from '../systems/document.js';
@@ -51,8 +51,11 @@ const EDIT_CSS = `
 .slot.sel { outline: 0.7mm solid #2563eb; outline-offset: -0.7mm; }
 .slot img.pic { cursor: grab; user-select: none; -webkit-user-drag: none; }
 .slot.sel img.pic:active { cursor: grabbing; }
-.hdr, .ftr { cursor: pointer; }
+.hdr, .ftr, .ci[data-band] { cursor: pointer; }
 .hdr:hover, .ftr:hover { background: #eff6ff; }
+.fit:not(.bandmode) .ci[data-band]:hover { outline: 0.3mm dashed #60a5fa; }
+.bandmode .page > :not([data-band]):not(.brule):not(.csel):not(.cguide) { opacity: .28; pointer-events: none; }
+.bandmode .ci[data-band] { cursor: move; }
 .txt.over { outline: 0.5mm solid #dc2626; outline-offset: -0.5mm; }
 .txt.over::after { content: '✂ the text does not fit — the end is cut off in the PDF'; position: absolute; right: 0; bottom: 0; background: #dc2626; color: #fff; font-size: 8pt; padding: 0.6mm 2mm; border-top-left-radius: 1.2mm; }
 `;
@@ -75,7 +78,8 @@ export function closeDocumentWorkspace() {
   _wmDlg?.remove(); _wmDlg = null;
   _flushWheel(); _slotSel = null; _placeSlotBar();
   _tplEd?.close(); _tplEd = null; _dimPanes(false);
-  _customSel = null; _root.querySelector('#dw-custombar')?.remove();
+  { const a = _shadow?.activeElement; if (a?.isContentEditable) a.blur(); }
+  _customSel = null; _bandEdit = null; _root.querySelector('#dw-custombar')?.remove();
   _root.style.display = 'none';
 }
 const _isOpen = () => !!_root && _root.style.display !== 'none';
@@ -144,7 +148,7 @@ function _build() {
       <span id="dw-status" style="flex:1;min-width:0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;color:#94a3b8;font-size:12px;padding:0 10px;"></span>
       <span id="dw-actions" style="display:flex;gap:8px;align-items:center;"></span>
       <input type="file" id="dw-asset-file" accept="image/*" hidden>
-      <button class="dw-btn" data-act="close" title="Close the document workspace — nothing is lost, the document is part of the project">◀ Back to the animation</button>
+      <button class="dw-btn" data-act="close" title="Close the document workspace — nothing is lost, the document is part of the project">◀ Edit animation</button>
     </div>
     <div style="flex:1 1 auto;min-height:0;display:flex;">
       <div id="dw-left"  style="flex:0 0 290px;min-width:0;min-height:0;overflow:auto;padding:4px 14px 16px;background:#0f172a;box-sizing:border-box;"></div>
@@ -350,7 +354,9 @@ function _renderLeft(c) {
     <label style="display:flex;gap:8px;align-items:center;margin:0 0 7px;font-size:11.5px;color:#cbd5e1;"><input type="checkbox" data-opt="pictureNumbers"${c.doc.options?.pictureNumbers !== false ? ' checked' : ''}> Step number on each picture (pages with several steps)</label>
     <label style="display:flex;gap:8px;align-items:center;margin:0 0 7px;font-size:11.5px;color:#cbd5e1;" title="A contents page opens the document: every chapter with the page it starts on. It counts as page 1."><input type="checkbox" data-opt="toc"${c.doc.options?.toc !== false ? ' checked' : ''}> Table of contents (chapters → pages)</label>
     <label class="dw-lab">Reading direction
-      <select class="dw-in" data-opt="direction">${(() => { const r = directionOf(c.doc, c.steps, c.chapters); const cur = c.doc.options?.direction || 'auto'; return [['auto', `Automatic — now ${r.detected === 'rtl' ? 'right-to-left (Hebrew / Arabic text)' : 'left-to-right'}`], ['ltr', 'Left-to-right'], ['rtl', 'Right-to-left']].map(([v, l]) => `<option value="${v}"${cur === v ? ' selected' : ''}>${l}</option>`).join(''); })()}</select></label>`;
+      <select class="dw-in" data-opt="direction">${(() => { const r = directionOf(c.doc, c.steps, c.chapters); const cur = c.doc.options?.direction || 'auto'; return [['auto', `Automatic — now ${r.detected === 'rtl' ? 'right-to-left (Hebrew / Arabic text)' : 'left-to-right'}`], ['ltr', 'Left-to-right'], ['rtl', 'Right-to-left']].map(([v, l]) => `<option value="${v}"${cur === v ? ' selected' : ''}>${l}</option>`).join(''); })()}</select></label>
+    <div class="dw-lab">Header and footer${c.doc.bands ? ' — your own design' : ' — standard'}
+      <div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap;font-size:11.5px;"><button class="dw-btn" data-act="band-edit" data-side="header" title="Place the logo, texts, page numbers and pictures of the header and the footer yourself — or click the header / footer on the page">✎ Edit…</button>${c.doc.bands ? '<a data-act="band-reset">back to the standard one</a>' : ''}</div></div>`;
   const pageHtml = `
     <div class="dw-h">Page ${c.model.pages.find(p => p.id === page.id)?.number ?? '—'} of ${c.model.total}</div>
     <div style="font-size:12px;color:#cbd5e1;margin-bottom:8px;">${_esc(pageRangeLabel(page, c.steps, c.chapters, c.perChapter, c.doc.hiddenSteps))}</div>
@@ -378,7 +384,7 @@ function _renderLeft(c) {
     for (const inp of docBox.querySelectorAll('input[data-field]')) if (inp !== document.activeElement) inp.value = f[inp.dataset.field] || '';
   } else docBox.innerHTML = docHtml;
   _renderWatermarkBox(wmBox, watermarkOf(c.doc));
-  pageBox.innerHTML = custom ? _customLeftHtml(c, custom) : onToc
+  pageBox.innerHTML = _bandEdit ? _bandLeftHtml() : custom ? _customLeftHtml(c, custom) : onToc
     ? `<div class="dw-h">Contents — page 1${c.model.toc?.pages.length > 1 ? `–${c.model.toc.pages.length}` : ''} of ${c.model.total}</div><div style="font-size:11.5px;color:#94a3b8;line-height:1.5;">Built from the chapters: every chapter that prints, with the page it starts on. The numbers follow by themselves when you join, split or leave out steps. In the PDF every line is a link.<br><br>It counts as page 1, so the first step page is page ${(c.model.toc?.pages.length || 0) + 1}. Switch it off with <b>Table of contents</b> above.</div>`
     : pageHtml;
   left.scrollTop = keep;
@@ -701,6 +707,7 @@ function _renderPage(c) {
   const focused = _shadow.activeElement;
   if (focused?.classList?.contains('tx')) { _deferred = true; return; }
   const model = D.renderModel();
+  if (_bandEdit) return _renderBandEdit(model);
   if (_pageId === TOC && model.toc) {
     _pageModel = null; _slotSel = null; _placeSlotBar(); _customSel = null; _placeCustomBar();
     const o = { logo: D.documentLogo(), watermark: model.watermark, dir: model.dir, lang: model.lang, tocTitle: model.toc.title };
@@ -743,14 +750,17 @@ async function _loadStills() {
     do {
       _walkAgain = false;
       const forPage = _pageId;
-      const mp = D.renderModel().pages.find(p => p.id === forPage);
-      const need = mp ? stillsNeeded({ pages: [mp] }) : [];
+      const m0 = D.renderModel();
+      const mp = m0.pages.find(p => p.id === forPage), cp = mp ? null : (m0.customs || []).find(x => x.id === forPage);
+      const need = mp ? stillsNeeded({ pages: [mp] }) : cp ? stillsNeeded({ customs: [cp] }) : [];
       if (!need.length || D.cachedStills(need).size === need.length) continue;
       let stills = null;
       try { stills = await D.ensureStills(need, {}); }
       catch (e) { console.error('[document] pictures failed:', e); }
       if (!_isOpen()) break;
       if (forPage !== _pageId) { _walkAgain = true; continue; }
+      for (const k of need) if (!stills?.get(k)) _stillsFailed.add(k);
+      if (cp) { if (_ptrDown) _renderHeld = true; else _renderPage(); continue; }      // a custom page is redrawn whole (never under a caret — it defers itself)
       const now = D.renderModel().pages.find(p => p.id === _pageId);
       for (const slot of _shadow.querySelectorAll('.slot')) {
         const k = Number(slot.dataset.slot), im = now?.images?.[k];
@@ -806,10 +816,10 @@ function _commitFocusedText() {
 
 function _onPageClick(e) {
   if (e.target.closest?.('.slot')) return;                    // handled on pointerdown: select, drag, wheel
-  if (e.target.closest?.('.hdr, .ftr')) {
-    const inp = _root.querySelector('#dw-left input[data-field="title"]');
-    if (inp) { inp.focus(); inp.select(); }
-  }
+  if (_bandEdit) return;
+  // the header / the footer: a click opens their editor (they are the document's — every page wears them)
+  const zone = e.target.closest?.('.hdr, .ftr, .ci[data-band], .brule');
+  if (zone) _enterBandEdit(zone.dataset?.band || (zone.matches('.ftr, .brule.footer') ? 'footer' : 'header'));
 }
 
 // ─── 🖼 pictures: select a slot, move / scale the picture behind it ─────────
@@ -1024,6 +1034,8 @@ function _openTemplateEditor(asNew) {
 // (a drag, a resize, a typed text, a delete) is ONE undo entry.
 
 let _customSel = null, _cdrag = null, _customModel = null;
+let _bandEdit = null;                     // 'header' | 'footer' while the header / footer editor is open
+let _stillsFailed = new Set();            // pictures that were asked for and did not come back: never walk for them in a loop
 const C_AREA = { x: 12, y: 32, w: 186, h: 238.5 };
 const CUSTOM_CSS = `
 .cguide { position: absolute; border: 0.3mm dashed #cbd5e1; pointer-events: none; }
@@ -1033,26 +1045,81 @@ const CUSTOM_CSS = `
 .csel { position: absolute; border: 0.5mm solid #f59e0b; pointer-events: none; box-sizing: border-box; }
 .csel i { position: absolute; width: 3mm; height: 3mm; margin: -1.5mm 0 0 -1.5mm; background: #fff; border: 0.5mm solid #f59e0b; border-radius: 0.5mm; pointer-events: auto; box-sizing: border-box; }
 .cempty { position: absolute; left: 12mm; right: 12mm; top: 120mm; text-align: center; color: #94a3b8; font-size: 12pt; pointer-events: none; }
+.fit:not(.bandmode) .ci[data-band] { cursor: pointer; }
+.fit:not(.bandmode) .ci[data-band]:hover { outline: 0.3mm dashed #60a5fa; }
+.bandmode .cguide { border-color: #f59e0b; }
+.bandmode .csel i { width: 2.4mm; height: 2.4mm; margin: -1.2mm 0 0 -1.2mm; }
 `;
 const C_HANDLES = ['nw', 'n', 'ne', 'e', 'se', 's', 'sw', 'w'];
 const _mmPerPx = () => { const pg = _shadow.querySelector('.page'); return pg ? 210 / pg.getBoundingClientRect().width : 1; };
 const _customExtra = () => (D.getDocument()?.extras || []).find(x => x?.kind === 'custom' && x.id === _pageId) || null;
 const _snap = (v) => Math.round(v * 2) / 2;
+
+// ONE item editor, two hosts: the items of a custom page — or, while ✎ header / footer is open, the items
+// of one BAND. A band is a smaller area, and on a right-to-left page it is SHOWN mirrored while it is
+// stored left-to-right (like the picture frames): screen rectangles are converted on their way in.
+const _editHost = () => (_bandEdit ? 'band' : _customExtra() ? 'custom' : null);
+const _area = () => (_bandEdit ? BAND_MM[_bandEdit] : C_AREA);
+const _minW = () => (_bandEdit ? 3 : 5), _minH = () => (_bandEdit ? 2 : 4);
+const _toStored = (r) => ((_bandEdit && _customModel?.dir === 'rtl') ? { ...r, x: 210 - r.x - r.w } : r);
 function _clampItemRect(r) {
-  const w = Math.max(5, Math.min(C_AREA.w, _snap(r.w))), h = Math.max(4, Math.min(C_AREA.h, _snap(r.h)));
-  return { x: Math.max(C_AREA.x, Math.min(C_AREA.x + C_AREA.w - w, _snap(r.x))), y: Math.max(C_AREA.y, Math.min(C_AREA.y + C_AREA.h - h, _snap(r.y))), w, h };
+  const A = _area();
+  const w = Math.max(_minW(), Math.min(A.w, _snap(r.w))), h = Math.max(_minH(), Math.min(A.h, _snap(r.h)));
+  return { x: Math.max(A.x, Math.min(A.x + A.w - w, _snap(r.x))), y: Math.max(A.y, Math.min(A.y + A.h - h, _snap(r.y))), w, h };
 }
+const _newItemId = (p, n) => `${p}_${Date.now().toString(36)}${n}`;
 
 function _renderCustomPage(model, cp) {
   const editing = _shadow.activeElement;
   if (editing?.classList?.contains('ct') && editing.isContentEditable) { _deferred = true; return; }     // never rebuild under the caret
   _customModel = cp;
-  const o = { logo: D.documentLogo(), watermark: model.watermark, dir: model.dir, lang: model.lang };
+  const need = stillsNeeded({ customs: [cp] }), have = D.cachedStills(need);        // pictures taken from the animation
+  const o = { stills: have, logo: D.documentLogo(), watermark: model.watermark, dir: model.dir, lang: model.lang };
   _shadow.innerHTML = `<style>${DOCUMENT_CSS}${watermarkCss(model.watermark)}${EDIT_CSS}${CUSTOM_CSS}</style><div class="fit">${renderCustomPageHtml(cp, o)}</div>`;
   const pg = _shadow.querySelector('.page');
   pg.insertAdjacentHTML('beforeend', `<div class="cguide" style="left:${C_AREA.x}mm;top:${C_AREA.y}mm;width:${C_AREA.w}mm;height:${C_AREA.h}mm;"></div>${cp.items.length ? '' : '<div class="cempty">An empty page. Add a text box or a picture with the bar above.</div>'}`);
+  for (const el of _shadow.querySelectorAll('.ci.cp.none:not([data-band])')) { const it = cp.items.find(i => i.id === el.dataset.item); if (it?.key && _stillsFailed.has(it.key)) el.textContent = 'the picture could not be rendered'; }
   if (_customSel && !cp.items.some(i => i.id === _customSel)) _customSel = null;
   _placeCustomBar(); _fit(); _drawCustomSel();
+  if (need.some(k => !have.has(k) && !_stillsFailed.has(k))) _loadStills();
+}
+
+/**
+ * ✎ header / footer. The page on show is only the BACKDROP (dimmed, dead to the pointer); the items of
+ * one band are live and the custom page's editor drives them. Whatever is done here is the document's
+ * header / footer — every page wears it.
+ */
+function _renderBandEdit(model) {
+  const editing = _shadow.activeElement;
+  if (editing?.classList?.contains('ct') && editing.isContentEditable) { _deferred = true; return; }
+  _pageModel = null; _slotSel = null; _placeSlotBar();
+  const o = { logo: D.documentLogo(), watermark: model.watermark, dir: model.dir, lang: model.lang, tocTitle: model.toc?.title };
+  let pm = null, html = '';
+  if (_pageId === TOC && model.toc) { pm = model.toc.pages[0]; html = renderTocPageHtml(pm, o); }
+  else if ((pm = model.customs.find(x => x.id === _pageId) || null)) html = renderCustomPageHtml(pm, { ...o, stills: D.cachedStills(stillsNeeded({ customs: [pm] })) });
+  else if ((pm = model.pages.find(p => p.id === _pageId) || model.pages[0] || null)) html = renderPageHtml(pm, { ...o, stills: D.cachedStills(stillsNeeded({ pages: [pm] })) });
+  const band = pm?.bandItems?.[_bandEdit];
+  if (!band) { _bandEdit = null; _customSel = null; _placeCustomBar(); return _renderPage(); }       // the design was thrown away (an undo, ↺): back to the page
+  _customModel = { items: band.items, dir: model.dir };
+  const A = BAND_MM[_bandEdit];
+  _shadow.innerHTML = `<style>${DOCUMENT_CSS}${watermarkCss(model.watermark)}${EDIT_CSS}${CUSTOM_CSS}</style><div class="fit bandmode">${html}</div>`;
+  _shadow.querySelector('.page').insertAdjacentHTML('beforeend', `<div class="cguide" style="left:${A.x}mm;top:${A.y}mm;width:${A.w}mm;height:${A.h}mm;"></div>`);
+  if (_customSel && !band.items.some(i => i.id === _customSel)) _customSel = null;
+  _placeCustomBar(); _fit(); _drawCustomSel();
+}
+
+function _enterBandEdit(side) {
+  if (_tplEd || _exporting) return;
+  _commitFocusedText(); _flushWheel(); _closeMenu();
+  _slotSel = null; _customSel = null;
+  _bandEdit = side === 'footer' ? 'footer' : 'header';
+  D.customiseBands();                  // the first time: the standard header and footer become free items that look exactly the same
+  _renderAll();
+}
+function _exitBandEdit() {
+  const a = _shadow.activeElement; if (a?.isContentEditable) a.blur();
+  _bandEdit = null; _customSel = null;
+  _renderAll();
 }
 
 function _drawCustomSel() {
@@ -1063,28 +1130,43 @@ function _drawCustomSel() {
   pg.insertAdjacentHTML('beforeend', `<div class="csel" style="left:${it.x}mm;top:${it.y}mm;width:${it.w}mm;height:${it.h}mm;">${C_HANDLES.map(h => `<i data-ch="${h}" style="left:${h.includes('w') ? 0 : h.includes('e') ? 100 : 50}%;top:${h.includes('n') ? 0 : h.includes('s') ? 100 : 50}%;cursor:${h === 'n' || h === 's' ? 'ns' : h === 'e' || h === 'w' ? 'ew' : h === 'nw' || h === 'se' ? 'nwse' : 'nesw'}-resize;"></i>`).join('')}</div>`);
 }
 
-/** The bar over a custom page: add things; and, with an item selected, what can be changed about it. */
+/** The bar over the page: add things; and, with an item selected, what can be changed about it. */
 function _placeCustomBar() {
   let bar = _root.querySelector('#dw-custombar');
-  if (!_customExtra() || _tplEd) { bar?.remove(); return; }
+  const host = _editHost();
+  if (!host || _tplEd) { bar?.remove(); return; }
   if (!bar) {
     bar = document.createElement('div');
     bar.id = 'dw-custombar';
-    bar.style.cssText = 'position:absolute;z-index:5;left:50%;top:8px;transform:translateX(-50%);display:flex;gap:5px;align-items:center;flex-wrap:wrap;justify-content:center;max-width:96%;background:#0f172a;border:1px solid #38bdf8;border-radius:9px;padding:5px 8px;box-shadow:0 6px 20px rgba(0,0,0,.5);font-size:11.5px;color:#94a3b8;';
+    bar.style.cssText = 'position:absolute;z-index:5;left:50%;top:8px;transform:translateX(-50%);display:flex;gap:5px;align-items:center;flex-wrap:wrap;justify-content:center;width:max-content;max-width:96%;box-sizing:border-box;background:#0f172a;border:1px solid #38bdf8;border-radius:9px;padding:5px 8px;box-shadow:0 6px 20px rgba(0,0,0,.5);font-size:11.5px;color:#94a3b8;';
     _root.querySelector('#dw-center').appendChild(bar);
   }
+  bar.style.borderColor = host === 'band' ? '#f59e0b' : '#38bdf8';
   if (bar.contains(document.activeElement) && /^(INPUT)$/.test(document.activeElement.tagName) && document.activeElement.type !== 'color') return;   // typing a size
   const it = _customModel?.items.find(i => i.id === _customSel) || null;
+  const stored = it ? _itemsNow().find(i => i.id === it.id) : null;
   const b = (act, label, title, on = false, style = '', attrs = '') => `<button class="dw-btn" data-act="${act}" ${attrs} title="${_esc(title)}" style="padding:2px 9px;${on ? 'background:#1d3a5f;border-color:#38bdf8;' : ''}${style}">${label}</button>`;
-  bar.innerHTML = b('ci-add-text', '＋ Text', 'A new text box') + b('ci-add-image', '＋ Picture', 'A picture from a file') + '<input type="file" id="dw-ci-file" accept="image/*" hidden>'
-    + (!it ? '<span style="padding:0 6px;">click an item to select it · double-click a text to type</span>' : '<span style="width:1px;height:18px;background:#334155;margin:0 3px;"></span>'
+  const sep = '<span style="width:1px;height:18px;background:#334155;margin:0 3px;"></span>';
+  const seg = (side, label) => `<button class="dw-btn" data-act="band-side" data-side="${side}" title="Edit the ${side}" style="border:0;border-radius:0;padding:2px 10px;${_bandEdit === side ? 'background:#1d3a5f;color:#38bdf8;font-weight:600;' : ''}">${label}</button>`;
+  const lead = host === 'band'
+    ? `<span style="display:inline-flex;border:1px solid #334155;border-radius:7px;overflow:hidden;">${seg('header', 'Header')}${seg('footer', 'Footer')}</span>${sep}`
+      + b('ci-add-text', '＋ Text', 'A new text box') + b('ci-add-field', '＋ Field ▾', 'A value that fills itself in on every page: the title, the chapter, the page number…')
+      + b('ci-add-picture', '＋ Picture ▾', 'The project’s logo, or a picture from a file')
+      + b('band-rule', '▁ Line', `The line between the ${_bandEdit} and the page`, bandsOf(D.getDocument())[_bandEdit]?.rule !== false)
+    : b('ci-add-text', '＋ Text', 'A new text box') + b('ci-add-picture', '＋ Picture ▾', 'A picture from a file — or a picture of any step of the animation');
+  const tail = host === 'band' ? sep + b('band-reset', '↺ Standard', 'Throw this design away: back to the standard header and footer') + b('band-done', '✓ Done', 'Back to the page (Esc)', false, 'color:#4ade80;font-weight:600;') : '';
+  const fitBtns = b('ci-fill', 'Fill', 'Fill the frame (cropping what does not fit)') + b('ci-whole', 'Whole', 'Show the whole picture inside the frame') + b('ci-zoom', '−', 'Smaller inside the frame', false, '', 'data-f="0.9"') + b('ci-zoom', '+', 'Larger inside the frame', false, '', 'data-f="1.1111"');
+  bar.innerHTML = lead + '<input type="file" id="dw-ci-file" accept="image/*" hidden>'
+    + (!it ? `<span style="padding:0 6px;">click an item to select it · double-click a text to type</span>` : sep
       + (it.type === 'text'
         ? `<label style="display:flex;gap:4px;align-items:center;">Size <input class="dw-in" data-ci="size" type="number" min="6" max="120" step="1" value="${it.size}" style="width:58px;"> pt</label>`
           + b('ci-bold', '<b>B</b>', 'Bold', it.bold) + b('ci-italic', '<i>I</i>', 'Italic', it.italic)
           + b('ci-align-start', '⫷', 'Align to the start', it.align === 'start') + b('ci-align-center', '⫿', 'Centre', it.align === 'center') + b('ci-align-end', '⫸', 'Align to the end', it.align === 'end')
           + `<input data-ci="color" type="color" value="${_esc(it.color)}" title="Text colour" style="width:30px;height:24px;padding:0;border:1px solid #334155;border-radius:5px;background:none;">`
-        : b('ci-fill', 'Fill', 'Fill the frame (cropping what does not fit)') + b('ci-whole', 'Whole', 'Show the whole picture inside the frame') + b('ci-zoom', '−', 'Smaller inside the frame', false, '', 'data-f="0.9"') + b('ci-zoom', '+', 'Larger inside the frame', false, '', 'data-f="1.1111"'))
-      + b('ci-front', '⤒ Front', 'Bring to the front') + b('ci-delete', '🗑', 'Delete this item (Delete key)', false, 'color:#fca5a5;'));
+        : it.logo ? '<span style="padding:0 4px;">the project’s logo — always shown whole</span>'
+        : (stored?.stepId ? b('ci-step', `🎞 Step ${_esc(it.label || '—')} ▾`, 'Choose another step of the animation') + b('ci-moment', '↳ Before', 'Show the state this step STARTS from (seen from its camera) instead of its final state', stored.moment === 'start') : '') + fitBtns)
+      + b('ci-front', '⤒ Front', 'Bring to the front') + b('ci-delete', '🗑', 'Delete this item (Delete key)', false, 'color:#fca5a5;'))
+    + tail;
 }
 
 function _customLeftHtml(c, x) {
@@ -1092,22 +1174,39 @@ function _customLeftHtml(c, x) {
   return `<div class="dw-h">Page ${no} of ${c.model.total} — custom page</div>
     <label class="dw-lab">Name (shown in the list only)<input class="dw-in" data-custom-name value="${_esc(x.name || '')}" dir="auto"></label>
     <div style="font-size:11.5px;color:#94a3b8;line-height:1.55;">A page that is not made of steps — a cover, a safety notice, a parts list. It has the document's header and footer; between them you place what you want with the bar above the page:<br>
-      • <b>＋ Text</b> / <b>＋ Picture</b> add an item.<br>• Drag an item to move it, drag a handle to resize it; arrows nudge 1 mm (Shift 5).<br>• <b>Double-click a text</b> to type; click away to finish, Esc to abandon.<br>• Text wears the document's font — size, bold, italic, alignment and colour are yours.<br>• Delete removes the selected item.<br><br>
+      • <b>＋ Text</b> adds a text box.<br>• <b>＋ Picture ▾</b> adds a picture from a file — or a picture of <b>any step of the animation</b> (its final state, or the state it starts from).<br>• Drag an item to move it, drag a handle to resize it; arrows nudge 1 mm (Shift 5).<br>• <b>Double-click a text</b> to type; click away to finish, Esc to abandon.<br>• Text wears the document's font — size, bold, italic, alignment and colour are yours.<br>• Delete removes the selected item.<br><br>
       Drag the <b>⠿</b> grip of the page in the list (or right-click it) to move the page anywhere in the document.</div>
     <div style="margin-top:10px;"><button class="dw-btn" data-act="custom-delete" style="color:#fca5a5;">🗑 Delete this page</button></div>`;
 }
 
-const _itemsNow = () => (_customExtra()?.items || []).map(i => ({ ...i }));
-function _commitItems(items, label) { const id = _pageId; D.setCustomItems(id, items, label); }
+const FIELD_LABELS = [['title', 'Title'], ['company', 'Company'], ['docNo', 'Document no.'], ['rev', 'Revision'], ['project', 'Project name'], ['chapter', 'Chapter name'], ['chapterNo', 'Chapter number'], ['page', 'Page number'], ['pages', 'Number of pages'], ['date', 'Date of the export']];
+function _bandLeftHtml() {
+  return `<div class="dw-h">✎ Header and footer</div>
+    <div style="font-size:11.5px;color:#94a3b8;line-height:1.55;">What you design here is printed on <b>every page</b> — step pages, the contents, custom pages. The page behind is only there to show you the result (← → walk the pages).<br><br>
+      • <b>Header / Footer</b> on the bar chooses which one you are editing — or click an item of the other one.<br>• <b>＋ Text</b> adds a text box; <b>double-click</b> a text to type.<br>• <b>＋ Field ▾</b> adds a value that fills itself in: <span style="color:#cbd5e1;">{title} {chapter} {page}…</span> While you type you see the {name}; on the page you see the value. One box can mix both: <span style="color:#cbd5e1;">Page {page} / {pages}</span>.<br>• <b>＋ Picture ▾</b> adds the project's logo or a picture from a file.<br>• <b>▁ Line</b> shows or hides the rule.<br>• Drag to move, handles to resize, arrows nudge 1 mm (Shift 5), Delete removes. Items stay inside the dashed band.<br>• On a right-to-left document the whole design is mirrored by itself.<br><br>
+      <b>↺ Standard</b> throws the design away. <b>✓ Done</b> or Esc goes back to the page.</div>`;
+}
+
+const _itemsNow = () => (_bandEdit ? (bandsOf(D.getDocument())[_bandEdit]?.items || []) : (_customExtra()?.items || [])).map(i => ({ ...i }));
+function _commitItems(items, label) {
+  if (_bandEdit) D.setBands({ [_bandEdit]: { items } }, label);
+  else D.setCustomItems(_pageId, items, label);
+}
 function _patchItem(patch, label) {
   if (!_customSel) return;
   _commitItems(_itemsNow().map(i => (i.id === _customSel ? { ...i, ...patch } : i)), label);
 }
 
 function _onCustomPointerDown(e) {
-  if (!_customExtra() || e.button !== 0) return;
+  const host = _editHost();
+  if (!host || e.button !== 0) return;
   const handle = e.target.closest?.('[data-ch]'), itemEl = e.target.closest?.('.ci[data-item]');
   if (itemEl?.isContentEditable) return;                              // typing: the text box is a text field now
+  if (itemEl && !handle) {
+    const band = itemEl.dataset.band || '';
+    if (host === 'custom' && band) return;                            // the header / footer of a custom page: a click opens their editor (_onPageClick)
+    if (host === 'band' && band && band !== _bandEdit) { e.preventDefault(); _commitFocusedText(); _bandEdit = band; _customSel = itemEl.dataset.item; _renderAll(); return; }   // an item of the OTHER band: go there
+  }
   if (!handle && !itemEl) { if (_customSel) { _customSel = null; _drawCustomSel(); _placeCustomBar(); } return; }
   const id = handle ? _customSel : itemEl.dataset.item;
   const it = _customModel?.items.find(i => i.id === id); if (!it) return;
@@ -1121,27 +1220,31 @@ function _onCustomPointerMove(e) {
   const d = _cdrag; if (!d) return;
   const dx = (e.clientX - d.x) * d.k, dy = (e.clientY - d.y) * d.k;
   if (!d.rect && Math.hypot(dx, dy) < 0.6) return;
+  const A = _area(), mw = _minW(), mh = _minH();
   let { x, y, w, h } = d.start;
   if (!d.h) { x += dx; y += dy; }
   else {
-    if (d.h.includes('e')) w = Math.max(5, d.start.w + dx);
-    if (d.h.includes('s')) h = Math.max(4, d.start.h + dy);
-    if (d.h.includes('w')) { w = Math.max(5, d.start.w - dx); x = d.start.x + d.start.w - w; }
-    if (d.h.includes('n')) { h = Math.max(4, d.start.h - dy); y = d.start.y + d.start.h - h; }
-    if (x < C_AREA.x) { w -= C_AREA.x - x; x = C_AREA.x; } if (y < C_AREA.y) { h -= C_AREA.y - y; y = C_AREA.y; }
-    w = Math.min(w, C_AREA.x + C_AREA.w - x); h = Math.min(h, C_AREA.y + C_AREA.h - y);
+    if (d.h.includes('e')) w = Math.max(mw, d.start.w + dx);
+    if (d.h.includes('s')) h = Math.max(mh, d.start.h + dy);
+    if (d.h.includes('w')) { w = Math.max(mw, d.start.w - dx); x = d.start.x + d.start.w - w; }
+    if (d.h.includes('n')) { h = Math.max(mh, d.start.h - dy); y = d.start.y + d.start.h - h; }
+    if (x < A.x) { w -= A.x - x; x = A.x; } if (y < A.y) { h -= A.y - y; y = A.y; }
+    w = Math.min(w, A.x + A.w - x); h = Math.min(h, A.y + A.h - y);
   }
   d.rect = _clampItemRect({ x, y, w, h });
   for (const el of [_shadow.querySelector(`.ci[data-item="${CSS.escape(d.id)}"]`), _shadow.querySelector('.csel')]) if (el) { el.style.left = `${d.rect.x}mm`; el.style.top = `${d.rect.y}mm`; el.style.width = `${d.rect.w}mm`; el.style.height = `${d.rect.h}mm`; }
 }
 function _onCustomPointerUp() {
   const d = _cdrag; _cdrag = null;
-  if (d?.rect) _commitItems(_itemsNow().map(i => (i.id === d.id ? { ...i, ...d.rect } : i)), d.h ? 'Resize item' : 'Move item');
+  if (d?.rect) _commitItems(_itemsNow().map(i => (i.id === d.id ? { ...i, ..._toStored(d.rect) } : i)), d.h ? 'Resize item' : 'Move item');
 }
 function _onCustomDblClick(e) {
   const el = e.target.closest?.('.ci.ct[data-item]');
-  if (!el || !_customExtra()) return;
+  const host = _editHost();
+  if (!el || !host || (el.dataset.band || '') !== (host === 'band' ? _bandEdit : '')) return;
   _customSel = el.dataset.item; _drawCustomSel(); _placeCustomBar();
+  // a band text shows its VALUES on the page ("Page 3 / 12"); to type, it shows what was written ("Page {page} / {pages}")
+  if (host === 'band') el.innerText = _itemsNow().find(i => i.id === _customSel)?.text ?? el.innerText;
   el.setAttribute('contenteditable', 'plaintext-only'); el.dataset.orig = el.innerText;
   el.focus();
   const r = document.createRange(); r.selectNodeContents(el); const w = _shadow.getSelection ? _shadow.getSelection() : window.getSelection(); w?.removeAllRanges(); w?.addRange(r);
@@ -1152,15 +1255,17 @@ function _onCustomFocusOut(e) {
   const text = String(el.innerText ?? '').replace(/ /g, ' ').replace(/\n+$/, ''), id = el.dataset.item, orig = el.dataset.orig ?? '';
   el.removeAttribute('contenteditable');
   if (text !== orig.replace(/\n+$/, '')) _commitItems(_itemsNow().map(i => (i.id === id ? { ...i, text } : i)), 'Edit text');
-  else if (_deferred) { _deferred = false; setTimeout(_renderAll, 0); }
+  else if (_deferred || _bandEdit) { _deferred = false; setTimeout(_renderAll, 0); }      // a band text goes back to showing its values
 }
 /** @returns {boolean} handled */
 function _onCustomKey(e) {
-  if (!_customExtra()) return false;
+  if (!_editHost()) return false;
   const typing = _shadow.activeElement?.isContentEditable;
   if (e.key === 'Escape') {
+    if (_menu) return false;
     if (typing) { const el = _shadow.activeElement; el.innerText = el.dataset.orig ?? ''; el.blur(); _root.focus({ preventScroll: true }); return true; }
     if (_customSel) { _customSel = null; _drawCustomSel(); _placeCustomBar(); return true; }
+    if (_bandEdit) { _exitBandEdit(); return true; }
     return false;
   }
   if (typing || !_customSel) return false;
@@ -1169,27 +1274,86 @@ function _onCustomKey(e) {
   if (/^Arrow/.test(e.key)) {
     e.preventDefault();
     const k = e.shiftKey ? 5 : 1;
-    _patchItem(_clampItemRect({ ...it, x: it.x + (e.key === 'ArrowRight' ? k : e.key === 'ArrowLeft' ? -k : 0), y: it.y + (e.key === 'ArrowDown' ? k : e.key === 'ArrowUp' ? -k : 0) }), 'Move item');
+    _patchItem(_toStored(_clampItemRect({ ...it, x: it.x + (e.key === 'ArrowRight' ? k : e.key === 'ArrowLeft' ? -k : 0), y: it.y + (e.key === 'ArrowDown' ? k : e.key === 'ArrowUp' ? -k : 0) })), 'Move item');
     return true;
   }
   return false;
 }
 
+/** Any step of the animation, with its thumbnail, chapter by chapter — for a picture on a custom page. */
+function _stepPictureMenu(x, y, cur, run) {
+  const c = _ctx();
+  const flat = c.units.flatMap(u => u.members).filter(id => c.stepById.has(id));
+  const thumbs = _thumbsFor(c, flat);
+  const items = []; let chap = null;
+  for (const sid of flat) {
+    const s = c.stepById.get(sid), ch = s.chapterId || '';
+    if (ch !== chap) { chap = ch; const name = c.chapters.find(k => k.id === ch)?.name; if (name) items.push({ head: name }); }
+    items.push({ cur: cur === sid, html: `<span class="dw-prow">${_thumbBox(thumbs.end.get(sid))}<span style="min-width:0;"><span class="dw-no" style="margin-inline-end:6px;">${_esc(c.nums.get(sid)?.label || '–')}</span><b>${_esc(s.name || sid)}</b></span></span>`, run: () => run(sid) });
+  }
+  if (!flat.length) items.push({ label: 'The animation has no steps yet', run: () => {} });
+  _openMenu(items, x, y);
+}
+
 function _customAct(act, el) {
+  const host = _editHost();
+  const r = el.getBoundingClientRect();
+  if (act === 'band-edit') { _enterBandEdit(el.dataset.side); return true; }
+  if (act === 'band-reset') {
+    if (D.getDocument()?.bands && confirm('Throw away your header and footer design and go back to the standard one? (Undo brings it back.)')) { _bandEdit = null; _customSel = null; D.resetBands(); _renderAll(); }
+    return true;
+  }
+  if (!host) return false;
   const it = _customModel?.items.find(i => i.id === _customSel) || null;
-  if (act === 'ci-add-text') {
-    const items = _itemsNow(), id = `ci_${Date.now().toString(36)}${items.length}`;
-    const lowest = items.reduce((m, i) => Math.max(m, i.y + i.h), C_AREA.y);
-    const y = lowest + 4 + 18 <= C_AREA.y + C_AREA.h ? lowest + (items.length ? 4 : 8) : C_AREA.y + 8;
+  const A = _area();
+  if (act === 'band-done') { _exitBandEdit(); return true; }
+  if (act === 'band-side') { const a = _shadow.activeElement; if (a?.isContentEditable) a.blur(); _bandEdit = el.dataset.side === 'footer' ? 'footer' : 'header'; _customSel = null; _renderAll(); return true; }
+  if (act === 'band-rule') { if (_bandEdit) D.setBands({ [_bandEdit]: { rule: bandsOf(D.getDocument())[_bandEdit]?.rule === false } }, 'Header / footer line'); return true; }
+  const addText = (text) => {
+    const items = _itemsNow(), id = _newItemId(host === 'band' ? 'b' : 'ci', items.length);
+    let box;
+    if (host === 'band') { const h = Math.min(7, A.h), w = 50; box = { x: A.x + (A.w - w) / 2, y: A.y + (A.h - h) / 2, w, h, size: 9, align: 'center' }; }
+    else {
+      const lowest = items.reduce((m, i) => Math.max(m, i.y + i.h), A.y);
+      box = { x: A.x, y: lowest + 4 + 18 <= A.y + A.h ? lowest + (items.length ? 4 : 8) : A.y + 8, w: A.w, h: 18, size: 11, align: 'start' };
+    }
     _customSel = id;
-    _commitItems([...items, { id, type: 'text', x: C_AREA.x, y, w: C_AREA.w, h: 18, text: 'Text', size: 11, bold: false, italic: false, align: 'start', color: '#111111' }], 'Add text box');
+    _commitItems([...items, { id, type: 'text', ..._clampItemRect(box), text, size: box.size, bold: false, italic: false, align: box.align, color: '#111111' }], 'Add text box');
+  };
+  if (act === 'ci-add-text') { addText('Text'); return true; }
+  if (act === 'ci-add-field') {
+    _openMenu(FIELD_LABELS.map(([k, l]) => ({ html: `<b>${_esc(l)}</b> <span style="color:#64748b;">{${k}}</span>`, run: () => {
+      const sel = _itemsNow().find(i => i.id === _customSel && i.type === 'text');
+      if (sel) _patchItem({ text: `${sel.text}${sel.text && !/\s$/.test(sel.text) ? ' ' : ''}{${k}}` }, 'Add field');      // into the selected text…
+      else addText(`{${k}}`);                                                                                              // …or a box of its own
+    } })), r.left, r.bottom + 4);
     return true;
   }
   if (act === 'ci-add-image') { _root.querySelector('#dw-ci-file')?.click(); return true; }
+  if (act === 'ci-add-picture') {
+    const file = { html: '🖼 <b>From a file…</b><div style="color:#94a3b8;font-size:11px;">a photo, a drawing, a symbol</div>', run: () => _root.querySelector('#dw-ci-file')?.click() };
+    if (host === 'band') {
+      const has = _itemsNow().some(i => i.logo), logo = D.documentLogo();
+      _openMenu([{ html: `<span class="dw-prow">${_thumbBox(logo || '')}<span><b>The project’s logo</b><div style="color:#94a3b8;font-size:11px;">${!logo ? 'this project has no logo yet (Header ▸ logo in the animation)' : has ? 'already in this band — adds another one' : 'follows the project: change the logo there and it changes here'}</div></span></span>`, run: () => {
+        const items = _itemsNow(), id = _newItemId('b', items.length), h = Math.min(14, A.h);
+        _customSel = id;
+        _commitItems([...items, { id, type: 'image', logo: true, ..._clampItemRect({ x: A.x, y: A.y + (A.h - h) / 2, w: 32, h }) }], 'Add logo');
+      } }, file], r.left, r.bottom + 4);
+    } else {
+      _openMenu([file, { html: '🎞 <b>From the animation…</b><div style="color:#94a3b8;font-size:11px;">a picture of any step — it follows the step when it changes</div>', run: () => _stepPictureMenu(r.left, r.bottom + 4, null, (sid) => {
+        const items = _itemsNow(), id = _newItemId('ci', items.length), w = Math.min(120, A.w), h = _snap(w * 9 / 16);
+        _customSel = id;
+        _commitItems([...items, { id, type: 'image', stepId: sid, moment: 'end', ..._clampItemRect({ x: A.x + (A.w - w) / 2, y: A.y + 20, w, h }) }], 'Add picture');
+      }) }], r.left, r.bottom + 4);
+    }
+    return true;
+  }
   if (act === 'custom-delete') { if (confirm('Delete this custom page and everything on it? (Undo brings it back.)')) { const id = _pageId; _pageId = null; _customSel = null; D.deleteCustomPage(id); } return true; }
   if (!it) return false;
   if (act === 'ci-delete') { const id = _customSel; _customSel = null; _commitItems(_itemsNow().filter(i => i.id !== id), 'Delete item'); return true; }
   if (act === 'ci-front') { const items = _itemsNow(); const me = items.find(i => i.id === _customSel); _commitItems([...items.filter(i => i !== me), me], 'Bring to the front'); return true; }
+  if (act === 'ci-step') { _stepPictureMenu(r.left, r.bottom + 4, _itemsNow().find(i => i.id === _customSel)?.stepId || null, (sid) => _patchItem({ stepId: sid }, 'Choose picture')); return true; }
+  if (act === 'ci-moment') { _patchItem({ moment: _itemsNow().find(i => i.id === _customSel)?.moment === 'start' ? 'end' : 'start' }, 'Before / after'); return true; }
   if (act === 'ci-bold') { _patchItem({ bold: !it.bold }, 'Bold'); return true; }
   if (act === 'ci-italic') { _patchItem({ italic: !it.italic }, 'Italic'); return true; }
   if (act.startsWith('ci-align-')) { _patchItem({ align: act.slice(9) }, 'Align text'); return true; }
@@ -1204,10 +1368,13 @@ function _customChange(t) {
   if (t.dataset?.customName !== undefined) { const n = t.value.trim(); if (n) D.renameCustomPage(_pageId, n); return true; }
   if (t.id === 'dw-ci-file') {
     const file = t.files?.[0]; t.value = '';
+    const side = _bandEdit, forPage = _pageId;
     if (file) _readAsset(file).then(asset => {
-      if (!asset) return;
-      const w = Math.min(120, C_AREA.w), h = Math.min(C_AREA.h, _snap(w / (asset.w / asset.h)));
-      const id = D.addCustomImage(_pageId, asset, _clampItemRect({ x: C_AREA.x + (C_AREA.w - w) / 2, y: C_AREA.y + 20, w, h }));
+      if (!asset || side !== _bandEdit || forPage !== _pageId) return;
+      const A = _area(), ratio = asset.w / asset.h;
+      let id = null;
+      if (side) { const h = Math.max(_minH(), A.h - 4), w = Math.min(60, _snap(h * ratio)); id = D.addBandImage(side, asset, _clampItemRect({ x: A.x + (A.w - w) / 2, y: A.y + 2, w, h })); }
+      else { const w = Math.min(120, A.w), h = Math.min(A.h, _snap(w / ratio)); id = D.addCustomImage(forPage, asset, _clampItemRect({ x: A.x + (A.w - w) / 2, y: A.y + 20, w, h })); }
       if (id) { _customSel = id; setStatus(`“${file.name}” added. Drag it to place it, drag a handle to size it.`, 'success', 6000); _renderAll(); }
     });
     return true;
@@ -1274,7 +1441,7 @@ function _openMenu(items, x, y) {
   _closeMenu();
   _menu = document.createElement('div');
   _menu.className = 'dw-menu';
-  _menu.innerHTML = items.map((it, i) => it.sep ? '<hr style="border:0;border-top:1px solid #334155;margin:4px 2px;">' : `<div data-i="${i}"${it.cur ? ' class="cur"' : ''}>${it.html || _esc(it.label)}</div>`).join('');
+  _menu.innerHTML = items.map((it, i) => it.sep ? '<hr style="border:0;border-top:1px solid #334155;margin:4px 2px;">' : it.head ? `<p style="margin:8px 10px 3px;font-size:10.5px;letter-spacing:.06em;text-transform:uppercase;color:#94a3b8;">${_esc(it.head)}</p>` : `<div data-i="${i}"${it.cur ? ' class="cur"' : ''}>${it.html || _esc(it.label)}</div>`).join('');
   _menu.addEventListener('click', (ev) => {
     const d = ev.target.closest('.dw-menu > [data-i]'); if (!d) return;
     ev.stopPropagation();
@@ -1377,7 +1544,7 @@ async function _onClick(e) {
   if (act === 'wm-toggle') { _wmOpen = !_wmOpen; _renderLeft(_ctx()); _holdFocus(); return; }
   if (act === 'wm-choose') { _root.querySelector('input[data-wm-file]')?.click(); return; }
   if (act === 'add-custom') { _addCustomPage(); return; }
-  if ((act.startsWith('ci-') || act === 'custom-delete') && _customAct(act, el)) return;
+  if ((act.startsWith('ci-') || act.startsWith('band-') || act === 'custom-delete') && _customAct(act, el)) return;
   if (act === 'tpl-new' || act === 'tpl-edit') { _openTemplateEditor(act === 'tpl-new'); return; }
   if (act === 'tpl-delete') { const pg = _ctx().doc.pages.find(p => p.id === _pageId); if (pg && confirm('Delete this template? Pages that use it go back to the automatic layout. (Undo brings it back.)')) D.deleteTemplate(pg.templateId); return; }
   if (act === 'sel-action') { _commitFocusedText(); _selBarActions[Number(el.dataset.i)]?.run?.(); return; }
@@ -1386,7 +1553,7 @@ async function _onClick(e) {
   if (act === 'slot-fill') { if (_slotSel != null) D.setPagePictureFit(_pageId, _slotSel, null); return; }
   if (act === 'slot-whole') { const im = _slotIm(_slotSel); if (im) D.setPagePictureFit(_pageId, _slotSel, { zoom: containZoom(im.rect, im.aspect), ox: 0, oy: 0 }); return; }
   if (act === 'slot-zoom') { const im = _slotIm(_slotSel); if (im) D.setPagePictureFit(_pageId, _slotSel, { ...im.fit, zoom: Math.max(0.05, Math.min(20, im.fit.zoom * Number(el.dataset.f))) }); return; }
-  if (act === 'rerender-pictures') { D.clearStills(); _renderPage(_ctx()); return; }
+  if (act === 'rerender-pictures') { D.clearStills(); _stillsFailed = new Set(); _renderPage(_ctx()); return; }
   _commitFocusedText();
   if (act === 'sync') return void D.syncWithAnimation();
   if (act === 'reviewed') return D.markPageReviewed(_pageId);

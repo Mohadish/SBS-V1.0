@@ -57,6 +57,11 @@ body { font-family: Arial, Helvetica, sans-serif; color: #111; -webkit-print-col
 .ci.cp { background: #fff; }
 .ci.cp.none { background: #f4f4f4; border: 0.25mm dashed #999; display: flex; align-items: center; justify-content: center; color: #888; font-size: 9pt; }
 .ci.cp img.pic { position: absolute; display: block; height: auto; max-width: none; transform: translate(-50%, -50%); }
+.ci.cp img.logo { width: 100%; height: 100%; object-fit: contain; display: block; }
+/* an edited header / footer: free items; text is centred vertically in its box like the classic cells were */
+.ci.ct.bt { display: flex; flex-direction: column; justify-content: center; line-height: 1.2; }
+.brule { position: absolute; height: 0; border-top: 0.4mm solid #222; }
+.brule.footer { border-top: 0.3mm solid #666; }
 ` + WATERMARK_CSS;
 
 /**
@@ -94,16 +99,39 @@ export function slotInnerHtml(im, url, k, lang = null) {
   return `<img class="pic" src="${_esc(url)}" alt="" draggable="false" style="left:calc(50% + ${b.dxMm}mm);top:calc(50% + ${b.dyMm}mm);width:${b.widthPct}%;">${pictureBadgeHtml(im, lang)}`;
 }
 
-/** One free item of a custom page. Exported: the workspace editor redraws single items with it. */
-export function customItemHtml(it) {
+/**
+ * One free item (a custom page's, or an edited header / footer's). A picture is a file (it.src),
+ * a step of the animation rendered on demand (it.key → o.stills) or the project's logo (it.logo → o.logo).
+ * @param {string} [band]  'header' | 'footer' — marks band items for the editor and centres their text vertically
+ */
+export function customItemHtml(it, o = {}, band = '') {
   const box = `left:${it.x}mm;top:${it.y}mm;width:${it.w}mm;height:${it.h}mm;`;
+  const tag = `data-item="${_esc(it.id)}"${band ? ` data-band="${band}"` : ''}`;
   if (it.type === 'image') {
-    if (!it.src) return `<div class="ci cp none" data-item="${_esc(it.id)}" style="${box}">picture</div>`;
+    const still = (id) => (o.stills instanceof Map ? o.stills.get(id) : o.stills?.[id]) || null;
+    if (it.logo) return o.logo ? `<div class="ci cp" ${tag} style="${box}"><img class="logo" src="${_esc(o.logo)}" alt="" draggable="false"></div>` : `<div class="ci cp none" ${tag} style="${box}">logo</div>`;
+    const url = it.src || (it.key ? still(it.key) : null);
+    if (!url) return `<div class="ci cp none" ${tag} style="${box}">${it.stepId ? 'rendering the picture…' : 'picture'}</div>`;
     const b = pictureBox(it, it.aspect, it.fit);
-    return `<div class="ci cp" data-item="${_esc(it.id)}" style="${box}"><img class="pic" src="${_esc(it.src)}" alt="" draggable="false" style="left:calc(50% + ${b.dxMm}mm);top:calc(50% + ${b.dyMm}mm);width:${b.widthPct}%;"></div>`;
+    return `<div class="ci cp" ${tag} style="${box}"><img class="pic" src="${_esc(url)}" alt="" draggable="false" style="left:calc(50% + ${b.dxMm}mm);top:calc(50% + ${b.dyMm}mm);width:${b.widthPct}%;"></div>`;
   }
   const align = it.align === 'center' ? 'center' : it.align === 'end' ? 'end' : 'start';
-  return `<div class="ci ct" data-item="${_esc(it.id)}" dir="auto" style="${box}font-size:${it.size}pt;font-weight:${it.bold ? 700 : 400};font-style:${it.italic ? 'italic' : 'normal'};text-align:${align};color:${_esc(it.color)};">${_esc(it.text)}</div>`;
+  return `<div class="ci ct${band ? ' bt' : ''}" ${tag} dir="auto" style="${box}font-size:${it.size}pt;font-weight:${it.bold ? 700 : 400};font-style:${it.italic ? 'italic' : 'normal'};text-align:${align};color:${_esc(it.color)};">${_esc(it.text)}</div>`;
+}
+
+/**
+ * The header or the footer of a page: the classic three cells (+ logo) — or, once it was edited, its free items.
+ * Every kind of page (steps, contents, custom) prints its bands through here.
+ */
+export function bandHtml(side, p, o = {}) {
+  const t = p.template, rect = side === 'header' ? t.header : t.footer, pd = o.dir === 'rtl' ? 'rtl' : 'ltr';
+  const bi = p.bandItems?.[side];
+  if (bi) {
+    const rule = bi.rule ? `<div class="brule ${side}" style="left:${rect.x}mm;top:${side === 'header' ? rect.y + rect.h : rect.y}mm;width:${rect.w}mm;"></div>` : '';
+    return rule + bi.items.map(it => customItemHtml(it, o, side)).join('');
+  }
+  const cells = p[side] || {};
+  return `<div class="zone ${side === 'header' ? 'hdr' : 'ftr'}" style="${_mm(rect)}">${side === 'header' && o.logo ? `<img class="logo" src="${_esc(o.logo)}" alt="">` : ''}<div class="l" dir="${pd}">${_esc(cells.left)}</div><div class="c" dir="${pd}">${_esc(cells.center)}</div><div class="r" dir="${pd}">${_esc(cells.right)}</div></div>`;
 }
 
 /** A custom page: the document's header and footer, and between them whatever the user placed. */
@@ -112,9 +140,9 @@ export function renderCustomPageHtml(cp, o = {}) {
   const wm = watermarkHtml(o.watermark), under = !!wm && o.watermark.layer === 'under';
   return `<section class="page" id="pg-${cp.number}" dir="${pd}" data-page="${cp.number}" data-id="${_esc(cp.id)}">`
     + (under ? wm : '')
-    + `<div class="zone hdr" style="${_mm(t.header)}">${o.logo ? `<img class="logo" src="${_esc(o.logo)}" alt="">` : ''}<div class="l" dir="${pd}">${_esc(cp.header.left)}</div><div class="c" dir="${pd}">${_esc(cp.header.center)}</div><div class="r" dir="${pd}">${_esc(cp.header.right)}</div></div>`
-    + (cp.items || []).map(customItemHtml).join('')
-    + `<div class="zone ftr" style="${_mm(t.footer)}"><div class="l" dir="${pd}">${_esc(cp.footer.left)}</div><div class="c" dir="${pd}">${_esc(cp.footer.center)}</div><div class="r" dir="${pd}">${_esc(cp.footer.right)}</div></div>`
+    + bandHtml('header', cp, o)
+    + (cp.items || []).map(it => customItemHtml(it, o)).join('')
+    + bandHtml('footer', cp, o)
     + (wm && !under ? wm : '')
     + `</section>`;
 }
@@ -130,9 +158,9 @@ export function renderTocPageHtml(tp, o = {}) {
   const lines = tp.lines.map(l => `<a class="tl" href="#pg-${l.page}"><span class="tn">${_esc(l.no)}</span><span class="tt" dir="auto">${_esc(l.name)}</span><span class="td"></span><span class="tp">${_esc(l.page)}</span></a>`).join('');
   return `<section class="page" id="pg-${tp.number}" dir="${pd}" data-page="${tp.number}" data-id="${_esc(tp.id)}">`
     + (under ? wm : '')
-    + `<div class="zone hdr" style="${_mm(t.header)}">${o.logo ? `<img class="logo" src="${_esc(o.logo)}" alt="">` : ''}<div class="l" dir="${pd}">${_esc(tp.header.left)}</div><div class="c" dir="${pd}">${_esc(tp.header.center)}</div><div class="r" dir="${pd}">${_esc(tp.header.right)}</div></div>`
+    + bandHtml('header', tp, o)
     + `<div class="zone toc" style="${_mm(C)}">${tp.first ? `<h1 dir="auto">${_esc(o.tocTitle || 'Contents')}</h1>` : ''}${lines}</div>`
-    + `<div class="zone ftr" style="${_mm(t.footer)}"><div class="l" dir="${pd}">${_esc(tp.footer.left)}</div><div class="c" dir="${pd}">${_esc(tp.footer.center)}</div><div class="r" dir="${pd}">${_esc(tp.footer.right)}</div></div>`
+    + bandHtml('footer', tp, o)
     + (wm && !under ? wm : '')
     + `</section>`;
 }
@@ -159,10 +187,10 @@ export function renderPageHtml(p, o = {}) {
   const under = !!wm && o.watermark.layer === 'under';
   return `<section class="page" id="pg-${p.number}" dir="${pd}" data-page="${p.number}" data-id="${_esc(p.id)}">`
     + (under ? wm : '')
-    + `<div class="zone hdr" style="${_mm(t.header)}">${o.logo ? `<img class="logo" src="${_esc(o.logo)}" alt="">` : ''}<div class="l" dir="${pd}">${_esc(p.header.left)}</div><div class="c" dir="${pd}">${_esc(p.header.center)}</div><div class="r" dir="${pd}">${_esc(p.header.right)}</div></div>`
+    + bandHtml('header', p, o)
     + `<div class="zone txt" style="${_mm(t.text)}">${chapterHead}${items}</div>`
     + slots
-    + `<div class="zone ftr" style="${_mm(t.footer)}"><div class="l" dir="${pd}">${_esc(p.footer.left)}</div><div class="c" dir="${pd}">${_esc(p.footer.center)}</div><div class="r" dir="${pd}">${_esc(p.footer.right)}</div></div>`
+    + bandHtml('footer', p, o)
     + (wm && !under ? wm : '')
     + `</section>`;
 }

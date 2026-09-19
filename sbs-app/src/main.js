@@ -1626,11 +1626,14 @@ window.sbsNative?.onMenu?.('menu:brandPanel', () => {
 
 // 📄 Tools ▸ Document… (V0.3.4.0) — the animation as a paged 2D manual.
 // V0.3.4.1: a full-window workspace (steps list · A4 page · page settings).
-window.sbsNative?.onMenu?.('menu:documentPanel', () => {
+const _openDocumentWorkspace = () => {
   import('./ui/document-workspace.js')
     .then(m => m.openDocumentWorkspace())
     .catch(err => console.error('[document] failed:', err));
-});
+};
+window.sbsNative?.onMenu?.('menu:documentPanel', _openDocumentWorkspace);
+// V0.3.4.9: the same door as a button — top-right of the animation, where "◀ Edit animation" sits inside the workspace
+document.getElementById('btn-edit-document')?.addEventListener('click', (e) => { e.currentTarget.blur(); _openDocumentWorkspace(); });
 
 // 📊 Tools ▸ Review form… (V0.3.3.11) — translation / proofing sheets + review notes.
 window.sbsNative?.onMenu?.('menu:reviewForm', () => {

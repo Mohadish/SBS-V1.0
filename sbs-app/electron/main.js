@@ -362,10 +362,35 @@ function createWindow() {
   // flag to clear — so a cancelled Save-As dialog leaves the window open
   // rather than closing anyway.
   mainWindow.on('close', (e) => {
-    if (_forceClose || !_rendererDirty) return;
+    if (_forceClose) return;
+    const brandAsk = !!_brandPending && !_brandDismissed;
+    if (!brandAsk && !_rendererDirty) return;
     e.preventDefault();
     if (_closeBusy) return;   // prompt open, or a save-for-close in flight
     _closeBusy = true;
+    // 🏷 V0.3.4.9 — brand elements were edited in this session and the brand file was not
+    // updated: say so BEFORE the unsaved-work question (other projects never get the change
+    // otherwise, and nothing else would ever mention it again).
+    if (brandAsk) {
+      const p = _brandPending;
+      dialog.showMessageBox(mainWindow, {
+        type: 'question',
+        buttons: ['Save the brand…', 'Close — keep them in this project only', 'Cancel'],
+        defaultId: 0,
+        cancelId: 2,
+        noLink: true,
+        title: 'Brand elements changed',
+        message: `You changed ${p.count} brand element${p.count === 1 ? '' : 's'} in this project.`,
+        detail: `${p.names.join('\n')}${p.count > p.names.length ? `\n… and ${p.count - p.names.length} more` : ''}\n\nThey belong to the brand "${p.brand}", and the brand file was not updated — other projects will not get these changes.`,
+      }).then(({ response }) => {
+        _closeBusy = false;
+        if (response === 2) return;                                                                // Cancel
+        if (response === 0) { mainWindow?.webContents.send('menu:brandSaveForClose'); return; }    // stay open: save the brand, then close again
+        _brandDismissed = true;                                                                    // this project only → on to the unsaved-work question (or out)
+        mainWindow?.close();
+      }).catch(() => { _closeBusy = false; });
+      return;
+    }
     dialog.showMessageBox(mainWindow, {
       type: 'warning',
       buttons: ['Save and close', 'Close without saving', 'Cancel'],
@@ -396,6 +421,13 @@ let _forceClose    = false;
 let _closeBusy     = false;   // prompt open OR save-for-close in flight
 let _saveForCloseTimer = null;
 ipcMain.on('app:dirty', (_e, isDirty) => { _rendererDirty = !!isDirty; });
+// 🏷 V0.3.4.9 — what the renderer says is pending for the brand; a NEW report re-arms the question.
+let _brandPending = null, _brandDismissed = false;
+ipcMain.on('app:brandPending', (_e, info) => {
+  const count = Number(info?.count) || 0;
+  _brandPending = count > 0 ? { brand: String(info.brand || '').slice(0, 120), count, names: (Array.isArray(info.names) ? info.names : []).slice(0, 6).map(n => String(n).slice(0, 120)) } : null;
+  _brandDismissed = false;
+});
 
 // The renderer's answer to 'menu:saveForClose'. ONCE per request: the
 // listener is installed for the attempt and removed either way, so a stray

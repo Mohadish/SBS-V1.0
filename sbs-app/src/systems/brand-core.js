@@ -366,6 +366,32 @@ export function summarizeMerge(rows) {
   return s;
 }
 
+/**
+ * 🏷 V0.3.4.9 — brand-linked definitions that no longer match what the brand last gave them
+ * (or took from them): edited in this project since the last brand load / save. ONE comparison —
+ * the definition's content hash against the hash its link remembers — so no definition editor
+ * has to report anything, and an undo that restores the content clears it by itself.
+ * @returns {Array<{section:string,label:string,id:string,name:string,hash:string}>}
+ */
+export function brandDrift(sections, links) {
+  const out = [];
+  for (const sec of SECTIONS) {
+    const l = links?.[sec.key] || {};
+    for (const d of sections?.[sec.key] || []) {
+      const k = d && l[d.id];
+      if (!k?.brandId || !k.hash) continue;
+      const hash = defHash(d);
+      if (hash !== k.hash) out.push({ section: sec.key, label: sec.label, id: d.id, name: String(d.name || d.kind || d.id), hash });
+    }
+  }
+  return out;
+}
+
+/** Of the drift now, what is new against a baseline (Map "section/id" → hash, taken when the project opened): changed in THIS session. */
+export function driftSince(drift, baseline) {
+  return (drift || []).filter(r => baseline?.get?.(`${r.section}/${r.id}`) !== r.hash);
+}
+
 /** Brand-owned / project-only / orphan counts per section (the panel's overview). */
 export function ownership(sections, links, brand = null) {
   const out = [];
