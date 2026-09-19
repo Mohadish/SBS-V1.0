@@ -60,6 +60,7 @@ export function emptyDocument() {
     watermark: { ...WATERMARK_DEFAULTS },
     hiddenSteps: [],                     // step (unit) ids left OUT of the document — the animation is not touched
     assets: {},                          // assetId → { dataUrl, w, h, name } : pictures that are not part of the animation
+    extras: [],                          // what is not a step page: the contents' place, custom pages — each anchored before a step
   };
 }
 
@@ -487,6 +488,99 @@ export function containZoom(rect, aspect) {
 
 export const ASSET_URL_RX = /^data:image\/[a-z0-9.+-]+;base64,[A-Za-z0-9+\/=]+$/i;
 
+// ─── the document as a SEQUENCE ─────────────────────────────────────────────
+// Step pages follow the animation — their order is not the user's to change. Everything
+// else the document prints is an EXTRA: the table of contents and the custom pages. An extra
+// is anchored BEFORE a step ('@start' · a unit id · '@end'), so it keeps its place when pages
+// are joined, split or re-synced; extras that share an anchor keep their order in doc.extras.
+
+export const TOC_ID = '@toc';
+export const TOC_LINES = 26;                       // chapter lines per contents page: 26 × 8.1 mm + the title fit the 238 mm content area with room to spare
+const TOC_TITLE = { en: 'Contents', he: 'תוכן עניינים', ar: 'المحتويات' };
+
+/** doc.extras, well-formed. The contents has a place even in a document saved before it could be moved: the front. */
+export function extrasOf(doc) {
+  const list = (Array.isArray(doc?.extras) ? doc.extras : []).filter(x => x && x.id && (x.kind === 'custom' || x.kind === 'toc'));
+  const seen = new Set(), out = [];
+  for (const x of list) { const id = x.kind === 'toc' ? TOC_ID : String(x.id); if (seen.has(id)) continue; seen.add(id); out.push(x.kind === 'toc' ? { ...x, id: TOC_ID } : x); }
+  return out.some(x => x.kind === 'toc') ? out : [{ id: TOC_ID, kind: 'toc', beforeUnit: '@start' }, ...out];
+}
+
+/**
+ * Everything the document holds, in reading order: [{kind:'page', page} | {kind:'toc', extra} | {kind:'custom', extra}].
+ * Over ALL pages (printed or not) — the workspace list shows this; the render model numbers the printed ones.
+ * @param {string[]} order   all units in timeline order (orderOf) — used when an anchor's step is gone
+ */
+export function sequenceOf(doc, order) {
+  const pages = doc?.pages || [];
+  const at = new Map();
+  pages.forEach((p, i) => { for (const id of p.stepIds || []) if (!at.has(id)) at.set(id, i); });
+  const pos = new Map((order || []).map((id, i) => [id, i]));
+  const indexOf = (x) => {
+    const a = x.beforeUnit;
+    if (a === '@end') return pages.length;
+    if (!a || a === '@start') return 0;
+    if (at.has(a)) return at.get(a);
+    // its step is gone (deleted / hidden in the animation): the next surviving step keeps the place
+    if (pos.has(a)) for (let k = pos.get(a) + 1; k < order.length; k++) if (at.has(order[k])) return at.get(order[k]);
+    return pages.length;
+  };
+  const byIndex = new Map();
+  for (const x of extrasOf(doc)) { const i = indexOf(x); if (!byIndex.has(i)) byIndex.set(i, []); byIndex.get(i).push(x); }
+  const seq = [];
+  for (let i = 0; i <= pages.length; i++) {
+    for (const x of byIndex.get(i) || []) seq.push({ kind: x.kind, id: x.id, extra: x });
+    if (i < pages.length) seq.push({ kind: 'page', id: pages[i].id, page: pages[i] });
+  }
+  return seq;
+}
+
+/**
+ * Put an extra at position `index` of the sequence (as if it had first been taken out).
+ * Returns the new doc.extras — EVERY extra re-anchored canonically from the resulting order:
+ * '@start' if no step page precedes it, else before the first step of the next step page, else '@end'.
+ */
+export function moveExtra(doc, extraId, index, order) {
+  const seq = sequenceOf(doc, order).filter(e => e.id !== extraId);
+  const moving = extrasOf(doc).find(x => x.id === extraId);
+  if (!moving) return extrasOf(doc);
+  seq.splice(Math.max(0, Math.min(seq.length, index)), 0, { kind: moving.kind, id: moving.id, extra: moving });
+  return _reanchor(seq);
+}
+function _reanchor(seq) {
+  const out = [];
+  seq.forEach((e, i) => {
+    if (e.kind === 'page') return;
+    const pageBefore = seq.slice(0, i).some(s => s.kind === 'page' && (s.page.stepIds || []).length);
+    const next = seq.slice(i + 1).find(s => s.kind === 'page' && (s.page.stepIds || []).length);
+    out.push({ ...e.extra, beforeUnit: !pageBefore ? '@start' : next ? next.page.stepIds[0] : '@end' });
+  });
+  return out;
+}
+
+// ─── custom pages ───────────────────────────────────────────────────────────
+// A page that is NOT made of steps: a cover, a safety notice, a parts list. The header and the
+// footer are the document's; between them the user places text boxes and pictures freely (mm).
+// Text wears the document's body font — only size, weight, slant, alignment and colour vary.
+
+export const MAX_CUSTOM_ITEMS = 60;
+const _hex = (c, d) => (/^#[0-9a-f]{6}$/i.test(String(c || '')) ? c : d);
+
+export function sanitizeCustomItem(it) {
+  const rect = clampRect(it, 5, 4);
+  const base = { id: String(it?.id || ''), ...rect };
+  if (it?.type === 'image') return { ...base, type: 'image', assetId: String(it.assetId || ''), fit: fitOf(it) };
+  return {
+    ...base, type: 'text', text: String(it?.text ?? '').slice(0, 8000),
+    size: _clampN(it?.size, 6, 120, 11), bold: !!it?.bold, italic: !!it?.italic,
+    align: ['start', 'center', 'end'].includes(it?.align) ? it.align : 'start', color: _hex(it?.color, '#111111'),
+  };
+}
+export function sanitizeCustomPage(x) {
+  return { id: String(x?.id || ''), kind: 'custom', beforeUnit: x?.beforeUnit || '@end', name: String(x?.name || 'Custom page').slice(0, 80),
+    items: (Array.isArray(x?.items) ? x.items : []).slice(0, MAX_CUSTOM_ITEMS).map(sanitizeCustomItem) };
+}
+
 // ─── render model ───────────────────────────────────────────────────────────
 
 const _sub = (tpl, vars) => String(tpl || '').replace(/\{(\w+)\}/g, (m, k) => (k in vars ? String(vars[k] ?? '') : m));
@@ -496,7 +590,9 @@ const _sub = (tpl, vars) => String(tpl || '').replace(/\{(\w+)\}/g, (m, k) => (k
  * @param {Object} doc
  * @param {Array}  steps
  * @param {Array}  chapters
- * @param {{projectName:string, date?:string, hashOf:(t:string)=>string, perChapter?:boolean}} ctx
+ * @param {{projectName:string, date?:string, hashOf:(t:string)=>string, perChapter?:boolean, stillAspect?:number}} ctx
+ * @returns {{sequence:Array, pages:Array, customs:Array, toc:Object|null, total:number, watermark, dir, lang}}
+ *   sequence = what prints, in order: {kind:'toc'|'page'|'custom', id, number, model}
  */
 export function buildRenderModel(doc, steps, chapters, ctx) {
   const stepById = new Map((steps || []).map(s => [s.id, s]));
@@ -505,32 +601,43 @@ export function buildRenderModel(doc, steps, chapters, ctx) {
   const nums = numberSteps(steps, chapters, !!ctx?.perChapter);
   const hidden = new Set(doc?.hiddenSteps || []);
   const shown = (id) => unitById.has(id) && !hidden.has(id);
-  const live = (doc?.pages || []).filter(p => (p.stepIds || []).some(shown));          // a page whose steps are all hidden is not printed
-  // ── table of contents ── one line per chapter that actually prints, pointing at the chapter's first page.
-  // Its length is known before anything is numbered (one line per chapter), so there is no chicken-and-egg:
-  // the contents take ceil(lines / TOC_LINES) pages at the front and every content page shifts by that.
-  const chapterOfPage = (p) => { const f = stepById.get((p.stepIds || []).find(shown)); return (chapters || []).find(c => c.id === f?.chapterId) || null; };
-  const tocLines = [];
-  { let prev = null; live.forEach((p, pi) => { const ch = chapterOfPage(p); if (ch && ch.id !== prev) tocLines.push({ chapterId: ch.id, name: ch.name, no: (chapters || []).indexOf(ch) + 1, at: pi }); prev = ch ? ch.id : prev; }); }
-  const tocOn = doc?.options?.toc !== false && tocLines.length > 0;
-  const tocPageCount = tocOn ? Math.ceil(tocLines.length / TOC_LINES) : 0;
-  const total = live.length + tocPageCount;
+  const prints = (p) => (p.stepIds || []).some(shown);                                  // a page whose steps are all hidden is not printed
   const reading = directionOf(doc, steps, chapters);
   const headOf = new Map(); for (const u of units) for (const m of u.members) headOf.set(m, u.id);
+  const chapterOfPage = (p) => { const f = stepById.get((p.stepIds || []).find(shown)); return (chapters || []).find(c => c.id === f?.chapterId) || null; };
+
+  // ── what prints, in order ──
+  const seq = sequenceOf(doc, units.map(u => u.id)).filter(e => e.kind !== 'page' || prints(e.page));
+  // The contents: one line per chapter that actually prints. Its LENGTH is known before anything is numbered
+  // (lines = chapters), so there is no chicken-and-egg: it takes ceil(lines / TOC_LINES) pages where it stands.
+  const chapterStarts = [];
+  { let prev = null; for (const e of seq) if (e.kind === 'page') { const ch = chapterOfPage(e.page); if (ch && ch.id !== prev) chapterStarts.push({ ch, pageId: e.page.id }); prev = ch ? ch.id : prev; } }
+  const tocOn = doc?.options?.toc !== false && chapterStarts.length > 0;
+  const tocPageCount = tocOn ? Math.ceil(chapterStarts.length / TOC_LINES) : 0;
+  const printed = seq.filter(e => e.kind !== 'toc' || tocOn);
+  let n = 0;
+  const numberOf = new Map();
+  for (const e of printed) { numberOf.set(e.id, n + 1); n += e.kind === 'toc' ? tocPageCount : 1; }
+  const total = n;
+
+  const varsFor = (number, ch) => {
+    const chIdx = ch ? (chapters || []).indexOf(ch) : -1;
+    return { ...(doc.fields || {}), project: ctx?.projectName || '', date: ctx?.date || '', chapter: ch ? ch.name : '', chapterNo: chIdx >= 0 ? chIdx + 1 : '', page: number, pages: total };
+  };
+  const bands = (vars) => {
+    const H = (side) => _sub(_phrase(doc.header?.[side], reading.lang), vars), F = (side) => _sub(_phrase(doc.footer?.[side], reading.lang), vars);
+    return { header: { left: H('left'), center: H('center'), right: H('right') }, footer: { left: F('left'), center: F('center'), right: F('right') } };
+  };
+
   let prevChapter = null;
-  const pages = live.map((p, pi) => {
+  const pageModel = (p) => {
+    const number = numberOf.get(p.id);
     const tpl = templateById(doc, p.templateId);
-    const first = stepById.get(p.stepIds.find(shown));
-    const ch = (chapters || []).find(c => c.id === first?.chapterId) || null;
+    const ch = chapterOfPage(p);
     const chapterHead = !!ch && ch.id !== prevChapter;          // the chapter's FIRST page (its title is a real heading there → a PDF bookmark); every page shows the name
     prevChapter = ch ? ch.id : prevChapter;
-    const chIdx = ch ? (chapters || []).indexOf(ch) : -1;
-    const vars = {
-      ...(doc.fields || {}), project: ctx?.projectName || '', date: ctx?.date || '',
-      chapter: ch ? ch.name : '', chapterNo: chIdx >= 0 ? chIdx + 1 : '', page: pi + 1 + tocPageCount, pages: total,
-    };
     const items = [];
-    let n = 0;
+    let k = 0;
     for (const uid of p.stepIds) {
       const u = unitById.get(uid);
       if (!u || hidden.has(uid)) continue;
@@ -539,49 +646,62 @@ export function buildRenderModel(doc, steps, chapters, ctx) {
         if (!s) continue;
         const t = docTextFor(s, doc.texts, ctx.hashOf);
         if (!t.text.trim() && sid !== u.id) continue;        // a silent sub-step adds no line
-        n++;
-        const label = doc.options?.numbering === 'none' ? '' : doc.options?.numbering === 'page' ? String(n) : (nums.get(sid)?.label || '');
+        k++;
+        const label = doc.options?.numbering === 'none' ? '' : doc.options?.numbering === 'page' ? String(k) : (nums.get(sid)?.label || '');
         items.push({ stepId: sid, label, name: s.name || '', text: t.text, edited: t.edited, drifted: t.drifted });
       }
     }
     return {
-      id: p.id, number: pi + 1 + tocPageCount, total, template: tpl,
-      header: { left: _sub(_phrase(doc.header?.left, reading.lang), vars), center: _sub(_phrase(doc.header?.center, reading.lang), vars), right: _sub(_phrase(doc.header?.right, reading.lang), vars) },
-      footer: { left: _sub(_phrase(doc.footer?.left, reading.lang), vars), center: _sub(_phrase(doc.footer?.center, reading.lang), vars), right: _sub(_phrase(doc.footer?.right, reading.lang), vars) },
+      id: p.id, number, total, template: tpl, ...bands(varsFor(number, ch)),
       chapter: ch ? ch.name : '', chapterHead, items,
-      images: (tpl.images || []).map((rect, k) => {
+      images: (tpl.images || []).map((rect, i) => {
         // right-to-left: the FIRST picture is the right-hand one — mirror the frame across the page
         const r = reading.dir === 'rtl' ? { ...rect, x: (tpl.page?.w || 210) - rect.x - rect.w } : rect;
-        const im = _slotOf(p, k, r, (tpl.images || []).length, unitById, hidden, doc, ctx);
+        const im = _slotOf(p, i, r, (tpl.images || []).length, unitById, hidden, doc, ctx);
         // the number the picture refers to = the number of its line on this page (a silent sub-step borrows its step's)
         let label = '';
         if (im.stepId && doc.options?.pictureNumbers !== false && (items.length > 1 || im.moment === 'start')) {
-          label = (items.find(i => i.stepId === im.stepId) || items.find(i => i.stepId === headOf.get(im.stepId)))?.label || '';
+          label = (items.find(x => x.stepId === im.stepId) || items.find(x => x.stepId === headOf.get(im.stepId)))?.label || '';
         }
         return { ...im, label, key: im.stepId ? stillKey(im.stepId, im.moment) : null };
       }),
       flags: p.flags || [],
     };
-  });
-  // the contents pages themselves (they wear the default template's header / footer; no chapter of their own)
-  const toc = !tocOn ? null : {
-    title: TOC_TITLE[reading.lang] || TOC_TITLE.en,
-    pages: Array.from({ length: tocPageCount }, (_, k) => {
-      const vars = { ...(doc.fields || {}), project: ctx?.projectName || '', date: ctx?.date || '', chapter: '', chapterNo: '', page: k + 1, pages: total };
-      const H = (side) => _sub(_phrase(doc.header?.[side], reading.lang), vars), F = (side) => _sub(_phrase(doc.footer?.[side], reading.lang), vars);
-      return {
-        id: `@toc${k ? k + 1 : ''}`, number: k + 1, total, template: templateById(doc, doc?.templateId),
-        header: { left: H('left'), center: H('center'), right: H('right') }, footer: { left: F('left'), center: F('center'), right: F('right') },
-        first: k === 0,
-        lines: tocLines.slice(k * TOC_LINES, (k + 1) * TOC_LINES).map(l => ({ no: l.no, name: l.name, page: l.at + 1 + tocPageCount })),
-      };
-    }),
   };
-  return { pages, total, toc, watermark: watermarkOf(doc), dir: reading.dir, lang: reading.lang };
+  const customModel = (x) => {
+    const c = sanitizeCustomPage(x), number = numberOf.get(x.id);
+    return {
+      id: c.id, kind: 'custom', number, total, name: c.name, template: templateById(doc, doc?.templateId), ...bands(varsFor(number, null)),
+      items: c.items.map(it => {
+        if (it.type !== 'image') return it;
+        const a = doc?.assets?.[it.assetId];
+        const good = a && ASSET_URL_RX.test(String(a.dataUrl || '')) && a.w > 0 && a.h > 0;
+        return { ...it, src: good ? a.dataUrl : null, aspect: good ? a.w / a.h : 1, name: good ? (a.name || '') : '' };
+      }),
+    };
+  };
+
+  const pages = [], customs = [], sequence = [];
+  let toc = null;
+  for (const e of printed) {
+    if (e.kind === 'page') { const m = pageModel(e.page); pages.push(m); sequence.push({ kind: 'page', id: m.id, number: m.number, model: m }); }
+    else if (e.kind === 'custom') { const m = customModel(e.extra); customs.push(m); sequence.push({ kind: 'custom', id: m.id, number: m.number, model: m }); }
+    else {
+      const first = numberOf.get(TOC_ID);
+      toc = {
+        title: TOC_TITLE[reading.lang] || TOC_TITLE.en, number: first,
+        pages: Array.from({ length: tocPageCount }, (_, i) => ({
+          id: `${TOC_ID}${i ? i + 1 : ''}`, number: first + i, total, template: templateById(doc, doc?.templateId), ...bands(varsFor(first + i, null)),
+          first: i === 0,
+          lines: chapterStarts.slice(i * TOC_LINES, (i + 1) * TOC_LINES).map(l => ({ no: (chapters || []).indexOf(l.ch) + 1, name: l.ch.name, page: numberOf.get(l.pageId) })),
+        })),
+      };
+      sequence.push({ kind: 'toc', id: TOC_ID, number: first, model: toc });
+    }
+  }
+  return { sequence, pages, customs, toc, total, watermark: watermarkOf(doc), dir: reading.dir, lang: reading.lang };
 }
 
-export const TOC_LINES = 26;                       // chapter lines per contents page: 26 × 8.1 mm + the title fit the 238 mm content area with room to spare
-const TOC_TITLE = { en: 'Contents', he: 'תוכן עניינים', ar: 'المحتويات' };
 
 /**
  * What a slot shows. AUTOMATIC slots share out the page's visible steps so the

@@ -27,6 +27,7 @@ import * as projectPaths from '../core/project-paths.js';
 import {
   emptyDocument, autoPaginate, reconcile, orderOf, mergeWithPrevious, splitBefore, clearFlags,
   buildRenderModel, stillsNeeded, narrationOf, mergeUnits, splitAll, autoTemplates, parseStillKey, sanitizeTemplate, templateProblems,
+  extrasOf, sequenceOf, moveExtra, sanitizeCustomPage, sanitizeCustomItem, TOC_ID,
 } from './document-core.js';
 import { renderDocumentHtml } from './document-render.js';
 
@@ -42,7 +43,7 @@ export function getDocument() { return state.get('document') || null; }
 const _auto = (doc) => ({ ...doc, pages: autoTemplates(doc.pages, { hidden: doc.hiddenSteps, defaultId: doc.templateId }) });
 
 /** One undoable write of the whole document record. */
-function _commit(label, next) {
+function _commit(label, next /* , opts */) {
   const before = _clone(getDocument());
   const after  = _clone(next);
   const write = (d) => { state.setState({ document: d ? _clone(d) : null }); state.markDirty(); };
@@ -56,7 +57,7 @@ function _commit(label, next) {
 /** First build (or a rebuild from scratch): one page per step, texts kept. */
 export function buildPages({ rebuild = false } = {}) {
   const cur = getDocument();
-  const doc = cur && !rebuild ? _clone(cur) : { ...emptyDocument(), ...(cur ? { fields: cur.fields, header: cur.header, footer: cur.footer, options: cur.options, texts: cur.texts, templates: cur.templates, templateId: cur.templateId, watermark: watermarkOf(cur), hiddenSteps: cur.hiddenSteps || [] } : {}) };
+  const doc = cur && !rebuild ? _clone(cur) : { ...emptyDocument(), ...(cur ? { fields: cur.fields, header: cur.header, footer: cur.footer, options: cur.options, texts: cur.texts, templates: cur.templates, templateId: cur.templateId, watermark: watermarkOf(cur), hiddenSteps: cur.hiddenSteps || [], extras: cur.extras || [], assets: cur.assets || {} } : {}) };
   if (!doc.fields.title) doc.fields.title = projectDisplayName();
   doc.pages = autoPaginate(_steps(), _chapters(), doc);
   doc.order = orderOf(_steps(), _chapters(), doc);
@@ -147,7 +148,10 @@ const _withSlot = (p, slot, make) => {
 };
 /** Pictures nobody shows any more are dropped from the document (undo brings the whole snapshot back). */
 const _pruneAssets = (doc) => {
-  const used = new Set((doc.pages || []).flatMap(p => (p.images || []).map(i => i.assetId).filter(Boolean)));
+  const used = new Set([
+    ...(doc.pages || []).flatMap(p => (p.images || []).map(i => i.assetId)),
+    ...(doc.extras || []).flatMap(x => (x.items || []).map(i => i.assetId)),
+  ].filter(Boolean));
   const assets = {};
   for (const [id, a] of Object.entries(doc.assets || {})) if (used.has(id)) assets[id] = a;
   return { ...doc, assets };
@@ -176,6 +180,49 @@ export function setPagePictureAsset(pageId, slot, asset) {
   const withAsset = { ...cur, assets: { ...(cur.assets || {}), [id]: { dataUrl: asset.dataUrl, w: asset.w, h: asset.h, name: asset.name || '' } } };
   _commit('External picture', _pruneAssets({ ...withAsset, pages: withAsset.pages.map(p => (p.id === pageId ? _withSlot(p, slot, () => ({ assetId: id })) : p)) }));
 }
+// ─── the sequence: the contents' place, custom pages ────────────────────────
+
+const _order = (doc) => orderOf(_steps(), _chapters(), doc);
+/** Everything the document holds, in reading order (step pages, the contents, custom pages). */
+export function documentSequence() { const cur = getDocument(); return cur ? sequenceOf(cur, _order(cur)) : []; }
+
+/** Put the contents or a custom page at position `index` of the sequence. Step pages cannot move — they follow the animation. */
+export function moveExtraTo(extraId, index) {
+  const cur = getDocument(); if (!cur) return;
+  const before = sequenceOf(cur, _order(cur)).map(e => e.id).join('|');
+  const extras = moveExtra(cur, extraId, index, _order(cur));
+  if (sequenceOf({ ...cur, extras }, _order(cur)).map(e => e.id).join('|') === before) return;      // dropped where it was
+  _commit(extraId === TOC_ID ? 'Move the table of contents' : 'Move page', { ...cur, extras });
+}
+/** A new empty custom page at position `index` of the sequence. @returns {string} its id */
+export function addCustomPage(index, name = 'Custom page') {
+  const cur = getDocument(); if (!cur) return null;
+  const id = `xp_${Date.now().toString(36)}${Math.floor(performance.now() % 1e6).toString(36)}`;
+  const withNew = { ...cur, extras: [...extrasOf(cur), sanitizeCustomPage({ id, name, items: [] })] };
+  _commit('Add custom page', { ...withNew, extras: moveExtra(withNew, id, index, _order(cur)) });
+  return id;
+}
+export function deleteCustomPage(id) {
+  const cur = getDocument(); if (!cur) return;
+  _commit('Delete custom page', _pruneAssets({ ...cur, extras: extrasOf(cur).filter(x => x.id !== id) }));
+}
+const _editCustom = (label, id, fn, opts) => {
+  const cur = getDocument(); if (!cur) return;
+  _commit(label, _pruneAssets({ ...cur, extras: extrasOf(cur).map(x => (x.id === id && x.kind === 'custom' ? sanitizeCustomPage(fn(x)) : x)) }), opts);
+};
+export function renameCustomPage(id, name) { _editCustom('Rename page', id, (x) => ({ ...x, name })); }
+/** All items of a custom page in one write — the editor commits a gesture (a drag, a typed text, a delete) as ONE undo entry. */
+export function setCustomItems(id, items, label = 'Edit custom page') { _editCustom(label, id, (x) => ({ ...x, items })); }
+/** A picture for a custom page: stored like any external picture; rect = where it goes (mm). @returns {string|null} the item id */
+export function addCustomImage(id, asset, rect) {
+  const cur = getDocument(); if (!cur || !asset?.dataUrl) return null;
+  const assetId = `asset_${Date.now().toString(36)}${Math.floor(performance.now() % 1e6).toString(36)}`;
+  const itemId = `ci_${Date.now().toString(36)}${Math.floor(performance.now() % 1e6).toString(36)}`;
+  const withAsset = { ...cur, assets: { ...(cur.assets || {}), [assetId]: { dataUrl: asset.dataUrl, w: asset.w, h: asset.h, name: asset.name || '' } } };
+  _commit('Add picture', { ...withAsset, extras: extrasOf(withAsset).map(x => (x.id === id && x.kind === 'custom' ? sanitizeCustomPage({ ...x, items: [...(x.items || []), sanitizeCustomItem({ id: itemId, type: 'image', assetId, ...rect })] }) : x)) });
+  return itemId;
+}
+
 /** Leave steps out of the DOCUMENT (or bring them back). The animation is not touched; the page keeps them, so un-hiding restores everything. */
 export function setStepsHidden(unitIds, hidden) {
   const cur = getDocument(); if (!cur) return;

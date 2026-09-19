@@ -51,6 +51,12 @@ body { font-family: Arial, Helvetica, sans-serif; color: #111; -webkit-print-col
 .slot .pn { position: absolute; top: 1.6mm; inset-inline-start: 1.6mm; min-width: 9mm; height: 6.2mm; padding: 0 1.8mm; border-radius: 3.1mm; background: #111; color: #fff; font-weight: 700; font-size: 9.5pt; display: flex; align-items: center; justify-content: center; gap: 1.2mm; box-shadow: 0 0 0 0.35mm #fff; white-space: nowrap; }
 .slot .pn small { font-weight: 400; font-size: 7.5pt; opacity: .85; }
 .cap { position: absolute; font-size: 8pt; color: #555; }
+/* custom pages: free items placed in mm; text wears the body font */
+.ci { position: absolute; overflow: hidden; }
+.ci.ct { white-space: pre-wrap; word-break: break-word; line-height: 1.38; }
+.ci.cp { background: #fff; }
+.ci.cp.none { background: #f4f4f4; border: 0.25mm dashed #999; display: flex; align-items: center; justify-content: center; color: #888; font-size: 9pt; }
+.ci.cp img.pic { position: absolute; display: block; height: auto; max-width: none; transform: translate(-50%, -50%); }
 ` + WATERMARK_CSS;
 
 /**
@@ -63,7 +69,9 @@ body { font-family: Arial, Helvetica, sans-serif; color: #111; -webkit-print-col
  */
 export function renderDocumentHtml(model, o = {}) {
   const oo = { ...o, watermark: o.watermark ?? model.watermark, dir: o.dir ?? model.dir, lang: o.lang ?? model.lang };
-  const pages = [...(model.toc?.pages || []).map(tp => renderTocPageHtml(tp, { ...oo, tocTitle: model.toc.title })), ...(model.pages || []).map(p => renderPageHtml(p, oo))].join('\n');
+  const seq = model.sequence || [...(model.toc ? [{ kind: 'toc', model: model.toc }] : []), ...(model.pages || []).map(p => ({ kind: 'page', model: p }))];
+  const pages = seq.flatMap(e => e.kind === 'toc' ? e.model.pages.map(tp => renderTocPageHtml(tp, { ...oo, tocTitle: e.model.title }))
+    : e.kind === 'custom' ? [renderCustomPageHtml(e.model, oo)] : [renderPageHtml(e.model, oo)]).join('\n');
   return `<!doctype html><html><head><meta charset="utf-8"><title>${_esc(o.title || 'Document')}</title><style>${DOCUMENT_CSS}${watermarkCss(oo.watermark)}${o.extraCss || ''}</style></head><body>${pages}</body></html>`;
 }
 
@@ -84,6 +92,31 @@ export function slotInnerHtml(im, url, k, lang = null) {
   if (!url) return `<div class="ph">${im.stepId ? 'picture not rendered yet' : `picture ${k + 1} — empty`}</div>${pictureBadgeHtml(im, lang)}`;
   const b = pictureBox(im.rect, im.aspect, im.fit);
   return `<img class="pic" src="${_esc(url)}" alt="" draggable="false" style="left:calc(50% + ${b.dxMm}mm);top:calc(50% + ${b.dyMm}mm);width:${b.widthPct}%;">${pictureBadgeHtml(im, lang)}`;
+}
+
+/** One free item of a custom page. Exported: the workspace editor redraws single items with it. */
+export function customItemHtml(it) {
+  const box = `left:${it.x}mm;top:${it.y}mm;width:${it.w}mm;height:${it.h}mm;`;
+  if (it.type === 'image') {
+    if (!it.src) return `<div class="ci cp none" data-item="${_esc(it.id)}" style="${box}">picture</div>`;
+    const b = pictureBox(it, it.aspect, it.fit);
+    return `<div class="ci cp" data-item="${_esc(it.id)}" style="${box}"><img class="pic" src="${_esc(it.src)}" alt="" draggable="false" style="left:calc(50% + ${b.dxMm}mm);top:calc(50% + ${b.dyMm}mm);width:${b.widthPct}%;"></div>`;
+  }
+  const align = it.align === 'center' ? 'center' : it.align === 'end' ? 'end' : 'start';
+  return `<div class="ci ct" data-item="${_esc(it.id)}" dir="auto" style="${box}font-size:${it.size}pt;font-weight:${it.bold ? 700 : 400};font-style:${it.italic ? 'italic' : 'normal'};text-align:${align};color:${_esc(it.color)};">${_esc(it.text)}</div>`;
+}
+
+/** A custom page: the document's header and footer, and between them whatever the user placed. */
+export function renderCustomPageHtml(cp, o = {}) {
+  const t = cp.template, pd = o.dir === 'rtl' ? 'rtl' : 'ltr';
+  const wm = watermarkHtml(o.watermark), under = !!wm && o.watermark.layer === 'under';
+  return `<section class="page" id="pg-${cp.number}" dir="${pd}" data-page="${cp.number}" data-id="${_esc(cp.id)}">`
+    + (under ? wm : '')
+    + `<div class="zone hdr" style="${_mm(t.header)}">${o.logo ? `<img class="logo" src="${_esc(o.logo)}" alt="">` : ''}<div class="l" dir="${pd}">${_esc(cp.header.left)}</div><div class="c" dir="${pd}">${_esc(cp.header.center)}</div><div class="r" dir="${pd}">${_esc(cp.header.right)}</div></div>`
+    + (cp.items || []).map(customItemHtml).join('')
+    + `<div class="zone ftr" style="${_mm(t.footer)}"><div class="l" dir="${pd}">${_esc(cp.footer.left)}</div><div class="c" dir="${pd}">${_esc(cp.footer.center)}</div><div class="r" dir="${pd}">${_esc(cp.footer.right)}</div></div>`
+    + (wm && !under ? wm : '')
+    + `</section>`;
 }
 
 /**

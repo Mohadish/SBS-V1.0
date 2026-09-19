@@ -18,7 +18,7 @@ import { setStatus } from './status.js';
 import { srcHashOf } from '../systems/language-packs.js';
 import { numberSteps } from '../systems/translation-sheet-core.js';
 import { builtinTemplates, docTextFor, pageRangeLabel, unitsOf, stillsNeeded, pictureBox, containZoom, slotState, directionOf } from '../systems/document-core.js';
-import { DOCUMENT_CSS, renderPageHtml, renderTocPageHtml, slotInnerHtml } from '../systems/document-render.js';
+import { DOCUMENT_CSS, renderPageHtml, renderTocPageHtml, renderCustomPageHtml, slotInnerHtml } from '../systems/document-render.js';
 import { watermarkOf, watermarkHtml, watermarkCss, watermarkVisible, detectWatermarkMode, bakeWatermarkPixels, fitWithin } from '../systems/watermark-core.js';
 import * as D from '../systems/document.js';
 import { openTemplateEditor } from './document-template-editor.js';
@@ -75,6 +75,7 @@ export function closeDocumentWorkspace() {
   _wmDlg?.remove(); _wmDlg = null;
   _flushWheel(); _slotSel = null; _placeSlotBar();
   _tplEd?.close(); _tplEd = null; _dimPanes(false);
+  _customSel = null; _root.querySelector('#dw-custombar')?.remove();
   _root.style.display = 'none';
 }
 const _isOpen = () => !!_root && _root.style.display !== 'none';
@@ -113,6 +114,19 @@ function _build() {
       #document-workspace .dw-eye:hover { background:#273449;text-decoration:none; }
       #document-workspace .dw-thumb { width:84px;height:48px;flex:0 0 auto;border-radius:4px;background:#1e293b;border:1px solid #334155;object-fit:cover;display:block; }
       #document-workspace .dw-no { flex:0 0 auto;min-width:26px;text-align:center;font-weight:700;font-size:11.5px;background:#0b1220;border:1px solid #334155;border-radius:9px;padding:1px 6px; }
+      #document-workspace .dw-pgrow { display:flex;gap:9px;align-items:center; }
+      #document-workspace .dw-pagehead.dw-pgrow { padding:6px 8px; }
+      #document-workspace .dw-pagehead.sel { background:#1d3a5f; }
+      #document-workspace .dw-pagethumb { flex:0 0 auto;display:block;width:64px;height:91px;border:1px solid #334155;border-radius:3px;background:#1e293b;overflow:hidden; }
+      #document-workspace .dw-step.mini { padding:3px 8px 3px 14px;gap:7px; }
+      #document-workspace .dw-grip { flex:0 0 auto;cursor:grab;color:#64748b;font-size:15px;padding:0 1px;user-select:none;touch-action:none; }
+      #document-workspace .dw-grip:hover { color:#38bdf8; }
+      #document-workspace .dw-pagebox.movable { border-style:solid;border-color:#475569;background:#0f1b30; }
+      #document-workspace .dw-pagebox.dragging { opacity:.45; }
+      #document-workspace #dw-list { position:relative; }
+      #document-workspace .dw-dropline { position:absolute;left:6px;right:6px;height:3px;border-radius:2px;background:#38bdf8;box-shadow:0 0 0 2px rgba(56,189,248,.25);pointer-events:none; }
+      #document-workspace .dw-split { flex:0 0 7px;cursor:col-resize;background:#0b1220;border-left:1px solid #334155;border-right:1px solid #334155;touch-action:none; }
+      #document-workspace .dw-split:hover, #document-workspace .dw-split.on { background:#38bdf8; }
       #document-workspace .dw-chap { margin:10px 10px 6px;font-size:11px;font-weight:700;color:#cbd5e1;letter-spacing:.04em; }
       #document-workspace .dw-menu { position:fixed;z-index:9100;background:#0f172a;border:1px solid #334155;border-radius:8px;box-shadow:0 10px 30px rgba(0,0,0,.6);padding:4px;min-width:230px;max-height:60vh;overflow:auto; }
       #document-workspace .dw-menu > div { padding:6px 10px;border-radius:5px;cursor:pointer;font-size:12.5px; } #document-workspace .dw-menu > div:hover { background:#1d3a5f; }
@@ -133,9 +147,11 @@ function _build() {
       <button class="dw-btn" data-act="close" title="Close the document workspace — nothing is lost, the document is part of the project">◀ Back to the animation</button>
     </div>
     <div style="flex:1 1 auto;min-height:0;display:flex;">
-      <div id="dw-left"  style="flex:0 0 290px;min-height:0;overflow:auto;padding:4px 14px 16px;border-right:1px solid #334155;background:#0f172a;"></div>
+      <div id="dw-left"  style="flex:0 0 290px;min-width:0;min-height:0;overflow:auto;padding:4px 14px 16px;background:#0f172a;box-sizing:border-box;"></div>
+      <div class="dw-split" data-split="l" title="Drag to resize · double-click to fold the settings away"></div>
       <div id="dw-center" style="flex:1 1 auto;min-width:0;min-height:0;overflow:auto;background:#334155;position:relative;"></div>
-      <div id="dw-right" style="flex:0 0 330px;min-height:0;display:flex;flex-direction:column;border-left:1px solid #334155;background:#0f172a;">
+      <div class="dw-split" data-split="r" title="Drag to resize · double-click to fold the page list away"></div>
+      <div id="dw-right" style="flex:0 0 330px;min-width:0;min-height:0;display:flex;flex-direction:column;background:#0f172a;">
         <div id="dw-selbar" style="flex:0 0 auto;padding:8px;border-bottom:1px solid #334155;display:flex;flex-direction:column;gap:6px;"></div>
         <div id="dw-list" style="flex:1 1 auto;min-height:0;overflow:auto;padding-top:6px;"></div>
       </div>
@@ -193,7 +209,7 @@ function _build() {
   // the re-render it triggers would replace the element under the pointer
   // before mouseup: the click was lost. Hold every re-render while a button is down.
   _root.addEventListener('pointerdown', () => { _ptrDown = true; }, true);
-  const release = () => { if (!_ptrDown) return; _ptrDown = false; if (_pan) _onSlotPointerUp();   // a drag released outside the page still ends (and commits) here
+  const release = () => { if (!_ptrDown) return; _ptrDown = false; if (_pan) _onSlotPointerUp(); if (_cdrag) _onCustomPointerUp();   // a drag released outside the page still ends (and commits) here
     if (_renderHeld) { _renderHeld = false; setTimeout(() => { if (_isOpen()) _renderAll(); }, 0); } };
   window.addEventListener('pointerup', release, true);
   window.addEventListener('pointercancel', release, true);
@@ -201,15 +217,28 @@ function _build() {
   _shadow.addEventListener('input', () => _markOverflow());
   _shadow.addEventListener('click', _onPageClick);
   _shadow.addEventListener('pointerdown', _onSlotPointerDown);
+  _shadow.addEventListener('pointerdown', _onCustomPointerDown);
+  _shadow.addEventListener('pointermove', _onCustomPointerMove);
+  _shadow.addEventListener('pointerup', _onCustomPointerUp);
+  _shadow.addEventListener('pointercancel', _onCustomPointerUp);
+  _shadow.addEventListener('dblclick', _onCustomDblClick);
+  _shadow.addEventListener('focusout', _onCustomFocusOut);
   _shadow.addEventListener('pointermove', _onSlotPointerMove);
   _shadow.addEventListener('pointerup', _onSlotPointerUp);
   _shadow.addEventListener('pointercancel', _onSlotPointerUp);
   _shadow.addEventListener('wheel', _onSlotWheel, { passive: false });
   _root.addEventListener('contextmenu', _onContextMenu);
+  _root.addEventListener('pointerdown', _onGripDown);
+  _root.addEventListener('pointerdown', _onSplitDown);
+  _root.addEventListener('dblclick', (e) => { const sp = e.target.closest?.('.dw-split'); if (sp) _togglePane(sp.dataset.split); });
+  window.addEventListener('pointermove', (e) => { _onGripMove(e); _onSplitMove(e); });
+  window.addEventListener('pointerup', () => { _onGripUp(); _onSplitUp(); });
+  window.addEventListener('pointercancel', () => { _onGripUp(); _onSplitUp(); });
+  _applyPanes();
   _root.querySelector('#dw-center').addEventListener('scroll', () => _placeSlotBar());
   _root.querySelector('#dw-center').addEventListener('pointerdown', (e) => { if (e.target.id === 'dw-center' && _slotSel != null) _selectSlot(null); });
 
-  window.addEventListener('resize', () => { if (_isOpen()) _fit(); });
+  window.addEventListener('resize', () => { if (_isOpen()) { _applyPanes(); _fit(); } });
   // coalesced: a pictures walk activates steps and can fire change:steps once per step
   const rerender = () => { if (!_isOpen()) return; clearTimeout(_renderTimer); _renderTimer = setTimeout(() => { if (_isOpen()) _renderAll(); }, 60); };
   for (const k of ['document', 'steps', 'chapters', 'headerItems', 'headerStepNumberPerChapter']) state.on(`change:${k}`, rerender);
@@ -234,7 +263,8 @@ function _ctx() {
   const pageOfUnit = new Map();
   for (const p of doc?.pages || []) for (const id of p.stepIds || []) if (!pageOfUnit.has(id)) pageOfUnit.set(id, p);
   let model = null;
-  return { get model() { return model || (model = D.renderModel()); }, doc, steps, chapters, perChapter, units, pageOfUnit, hidden: new Set(doc?.hiddenSteps || []), stepById: new Map(steps.map(s => [s.id, s])), nums: numberSteps(steps, chapters, perChapter) };
+  const customIds = new Set((doc?.extras || []).filter(x => x?.kind === 'custom').map(x => x.id));
+  return { customIds, get model() { return model || (model = D.renderModel()); }, doc, steps, chapters, perChapter, units, pageOfUnit, hidden: new Set(doc?.hiddenSteps || []), stepById: new Map(steps.map(s => [s.id, s])), nums: numberSteps(steps, chapters, perChapter) };
 }
 
 function _renderAll() {
@@ -242,7 +272,7 @@ function _renderAll() {
   if (_ptrDown) { _renderHeld = true; return; }
   const c = _ctx();
   if (!c.doc || !c.doc.pages?.length) { _renderEmpty(); return _holdFocus(); }
-  if (_pageId === TOC ? !c.model.toc : !c.doc.pages.some(p => p.id === _pageId)) _pageId = c.doc.pages[0].id;
+  if (_pageId === TOC ? !c.model.toc : !(c.doc.pages.some(p => p.id === _pageId) || c.customIds.has(_pageId))) _pageId = c.doc.pages[0].id;
   for (const id of [..._sel]) if (!c.units.some(u => u.id === id)) _sel.delete(id);
   _renderTop(c); _renderLeft(c); _renderList(c); _renderPage(c);
   _holdFocus();
@@ -290,8 +320,8 @@ function _renderLeft(c) {
   const left = _root.querySelector('#dw-left');
   const keep = left.scrollTop;
   const f = c.doc.fields || {};
-  const onToc = _pageId === TOC;
-  const page = onToc ? c.doc.pages[0] : c.doc.pages.find(p => p.id === _pageId);
+  const onToc = _pageId === TOC, custom = (c.doc.extras || []).find(x => x?.kind === 'custom' && x.id === _pageId) || null;
+  const page = (onToc || custom) ? c.doc.pages[0] : c.doc.pages.find(p => p.id === _pageId);
   const pi = c.doc.pages.indexOf(page);
   const tpls = [...builtinTemplates(), ...(c.doc.templates || [])];
   const tplNow = tpls.find(t => t.id === page.templateId) || tpls[0];
@@ -348,7 +378,7 @@ function _renderLeft(c) {
     for (const inp of docBox.querySelectorAll('input[data-field]')) if (inp !== document.activeElement) inp.value = f[inp.dataset.field] || '';
   } else docBox.innerHTML = docHtml;
   _renderWatermarkBox(wmBox, watermarkOf(c.doc));
-  pageBox.innerHTML = onToc
+  pageBox.innerHTML = custom ? _customLeftHtml(c, custom) : onToc
     ? `<div class="dw-h">Contents — page 1${c.model.toc?.pages.length > 1 ? `–${c.model.toc.pages.length}` : ''} of ${c.model.total}</div><div style="font-size:11.5px;color:#94a3b8;line-height:1.5;">Built from the chapters: every chapter that prints, with the page it starts on. The numbers follow by themselves when you join, split or leave out steps. In the PDF every line is a link.<br><br>It counts as page 1, so the first step page is page ${(c.model.toc?.pages.length || 0) + 1}. Switch it off with <b>Table of contents</b> above.</div>`
     : pageHtml;
   left.scrollTop = keep;
@@ -481,56 +511,113 @@ async function _openWatermarkDialog(srcUrl, name) {
   dlg.querySelector('[data-wmd="use"]').focus();
 }
 
-// ─── RIGHT: the steps, boxed by page ────────────────────────────────────────
+// ─── RIGHT: the document, page by page ──────────────────────────────────────
+// One box per PAGE, with a thumbnail of the page itself (not of a step): a joined page is one
+// page, and that is what the list must show. Its steps are listed under it as compact rows, so
+// every step action (select a range, split here, leave out) is still one click away.
+// The contents and the custom pages carry a grip: they are the only things that can be moved —
+// step pages follow the animation.
+
+const THUMB_W = 64, THUMB_H = Math.round(64 * 297 / 210);
+let _thumbSheet = null, _thumbIO = null;
 
 function _renderList(c) {
   const list = _root.querySelector('#dw-list');
   const keep = list.scrollTop;
-  const thumbOf = (u) => { for (let i = u.members.length - 1; i >= 0; i--) { const t = c.stepById.get(u.members[i])?.thumbnail; if (t) return t; } return ''; };
-  const stepRow = (u, pending) => {
-    const s = c.stepById.get(u.id);
-    const t = s ? docTextFor(s, c.doc.texts, srcHashOf) : { text: '' };
-    const th = thumbOf(u);
-    const hid = c.hidden.has(u.id);
-    return `<div class="dw-step${_sel.has(u.id) ? ' sel' : ''}${pending ? ' pending' : ''}${hid ? ' hid' : ''}" data-unit="${_esc(u.id)}" title="${pending ? 'Not in the document yet — sync to add it' : hid ? 'Left out of the document — the eye puts it back' : 'Click to show its page · Shift / Ctrl-click selects the whole range · right-click for more'}">
-      ${th ? `<img class="dw-thumb" src="${_esc(th)}" alt="" draggable="false">` : '<div class="dw-thumb"></div>'}
-      <span class="dw-no">${_esc(c.nums.get(u.id)?.label || '–')}</span>
-      <div style="min-width:0;flex:1;">
-        <div class="dw-name" style="font-size:12px;font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">${_esc(s?.name || u.id)}${u.members.length > 1 ? ` <span style="color:#94a3b8;font-weight:400;">+${u.members.length - 1} sub</span>` : ''}</div>
-        <div dir="auto" style="font-size:11px;color:#94a3b8;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">${pending ? 'new in the animation — sync to add' : hid ? 'left out of the document' : _esc(t.text)}</div>
-      </div>${pending ? '' : `<a class="dw-eye" data-act="hide-toggle" data-unit="${_esc(u.id)}" title="${hid ? 'Put it back into the document' : 'Leave it out of the document (the animation is not touched)'}">${hid ? '🙈' : '👁'}</a>`}</div>`;
-  };
+  const seq = D.documentSequence();
+  const printed = new Map(c.model.sequence.map(e => [e.id, e.number]));
+  const pageNo = (id) => printed.get(id) ?? '—';                     // the number that is PRINTED; what is left out has none
+  const unitAt = new Map(c.units.map((u, i) => [u.id, i]));
+  const eye = (u, hid) => `<a class="dw-eye" data-act="hide-toggle" data-unit="${_esc(u.id)}" title="${hid ? 'Put it back into the document' : 'Leave it out of the document (the animation is not touched)'}">${hid ? '🙈' : '👁'}</a>`;
+  const thumb = (id) => `<span class="dw-pagethumb" data-thumb="${_esc(id)}"></span>`;
+  const flagsHtml = (p) => { const f = p.flags || []; return f.length ? `<span title="${_esc(f.map(x => x.note).join('\n'))}" style="color:#fbbf24;">❗ ${f.map(x => FLAG_ICON[x.kind] || '!').join(' ')}</span>` : ''; };
+  const textOf = (u) => { const s = c.stepById.get(u.id); return s ? docTextFor(s, c.doc.texts, srcHashOf).text : ''; };
+  const subs = (u) => (u.members.length > 1 ? ` <span style="color:#94a3b8;font-weight:400;">+${u.members.length - 1} sub</span>` : '');
+  const tip = 'Click to show the page · Shift / Ctrl-click selects the whole range · right-click for more';
 
-  // walk the timeline; open a page box whenever the page changes
-  let html = '', lastChapter = undefined, openPage = null;
-  const close = () => { if (openPage !== null) { html += '</div>'; openPage = null; } };
-  const printed = new Map(c.model.pages.map(p => [p.id, p.number]));
-  const pageNo = { get: (id) => printed.get(id) ?? '—' };                 // the number that is PRINTED (the contents come first; pages left out have none)
-  if (c.model.toc) html += `<div class="dw-pagebox${_pageId === TOC ? ' cur' : ''}" data-pagebox="${TOC}"><div class="dw-pagehead" data-goto-page="${TOC}" style="padding:8px;"><b style="color:#e2e8f0;">Page 1${c.model.toc.pages.length > 1 ? `–${c.model.toc.pages.length}` : ''}</b><span>· 📑 ${_esc(c.model.toc.title)} — ${c.model.toc.pages.reduce((n, p) => n + p.lines.length, 0)} chapters</span></div></div>`;
-  for (const u of c.units) {
-    const p = c.pageOfUnit.get(u.id) || null;
-    if (u.chapterId !== lastChapter) {
-      close();
-      const ch = c.chapters.find(x => x.id === u.chapterId);
+  const pendingRow = (u) => `<div class="dw-pagebox" style="border-style:dashed;"><div class="dw-step pending" data-unit="${_esc(u.id)}" title="Not in the document yet — sync to add it"><span class="dw-pagethumb"></span><span class="dw-no">${_esc(c.nums.get(u.id)?.label || '–')}</span><div style="min-width:0;flex:1;"><div class="dw-name" style="font-size:12px;font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">${_esc(c.stepById.get(u.id)?.name || u.id)}</div><div style="font-size:11px;color:#94a3b8;">new in the animation — sync to add</div></div></div></div>`;
+
+  let html = '', lastChapter, nextPending = 0;
+  const flushPending = (uptoIndex) => { for (; nextPending < c.units.length && nextPending < uptoIndex; nextPending++) { const u = c.units[nextPending]; if (!c.pageOfUnit.has(u.id)) html += pendingRow(u); } };
+
+  seq.forEach((e, si) => {
+    if (e.kind === 'toc') {
+      if (!c.model.toc) return;                                       // switched off (or no chapters): it prints nothing, so it is not listed
+      const t = c.model.toc;
+      html += `<div class="dw-pagebox movable${_pageId === TOC ? ' cur' : ''}" data-pagebox="${TOC}" data-seq="${si}" data-extra="${TOC}">
+        <div class="dw-pagehead dw-pgrow" data-goto-page="${TOC}"><span class="dw-grip" data-grip="${TOC}" title="Drag to move the contents — or right-click">⠿</span>${thumb(TOC)}<div style="min-width:0;flex:1;"><div><b style="color:#e2e8f0;">Page ${t.number}${t.pages.length > 1 ? `–${t.number + t.pages.length - 1}` : ''}</b></div><div style="font-size:12px;font-weight:600;color:#e2e8f0;">📑 ${_esc(t.title)}</div><div style="font-size:11px;color:#94a3b8;">Contents — ${t.pages.reduce((n, p) => n + p.lines.length, 0)} chapters</div></div></div></div>`;
+      return;
+    }
+    if (e.kind === 'custom') {
+      html += `<div class="dw-pagebox movable${_pageId === e.id ? ' cur' : ''}" data-pagebox="${_esc(e.id)}" data-seq="${si}" data-extra="${_esc(e.id)}">
+        <div class="dw-pagehead dw-pgrow" data-goto-page="${_esc(e.id)}"><span class="dw-grip" data-grip="${_esc(e.id)}" title="Drag to move this page — or right-click">⠿</span>${thumb(e.id)}<div style="min-width:0;flex:1;"><div><b style="color:#e2e8f0;">Page ${pageNo(e.id)}</b></div><div class="dw-name" style="font-size:12px;font-weight:600;color:#e2e8f0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">✎ ${_esc(e.extra.name || 'Custom page')}</div><div style="font-size:11px;color:#94a3b8;">custom page · ${(e.extra.items || []).length} item${(e.extra.items || []).length === 1 ? '' : 's'}</div></div></div></div>`;
+      return;
+    }
+    const p = e.page;
+    const us = (p.stepIds || []).map(id => c.units.find(u => u.id === id)).filter(Boolean);
+    if (!us.length) {                                                 // a page with no steps left (flagged ∅ by a sync) — only deletable
+      html += `<div class="dw-pagebox flag" data-seq="${si}"><div class="dw-pagehead"><b style="color:#e2e8f0;">Page —</b><span>· ∅ no steps left</span><span style="flex:1"></span><a data-act="delete-page" data-page="${_esc(p.id)}" style="color:#fca5a5;">delete</a></div></div>`;
+      return;
+    }
+    flushPending(unitAt.get(us[0].id));
+    if (us[0].chapterId !== lastChapter) {
+      const ch = c.chapters.find(x => x.id === us[0].chapterId);
       if (ch) html += `<div class="dw-chap" dir="auto">${_esc(ch.name)}</div>`;
-      lastChapter = u.chapterId;
+      lastChapter = us[0].chapterId;
     }
-    if (!p) { close(); html += `<div class="dw-pagebox" style="border-style:dashed;">${stepRow(u, true)}</div>`; continue; }
-    if (openPage !== p.id) {
-      close();
-      const flags = p.flags || [];
-      html += `<div class="dw-pagebox${p.id === _pageId ? ' cur' : ''}${flags.length ? ' flag' : ''}" data-pagebox="${_esc(p.id)}">
-        <div class="dw-pagehead" data-goto-page="${_esc(p.id)}"><b style="color:#e2e8f0;">Page ${pageNo.get(p.id)}</b>${p.stepIds.length > 1 ? `<span>· ${p.stepIds.length} steps merged</span>` : ''}${p.stepIds.every(id => c.hidden.has(id)) ? '<span style="color:#f87171;">· not printed</span>' : ''}<span style="flex:1"></span>${flags.length ? `<span title="${_esc(flags.map(x => x.note).join('\n'))}" style="color:#fbbf24;">❗ ${flags.map(x => FLAG_ICON[x.kind] || '!').join(' ')}</span>` : ''}</div>`;
-      openPage = p.id;
+    const allHidden = us.every(u => c.hidden.has(u.id));
+    const cls = `dw-pagebox${p.id === _pageId ? ' cur' : ''}${(p.flags || []).length ? ' flag' : ''}`;
+    const no = `<b style="color:#e2e8f0;">Page ${pageNo(p.id)}</b>${allHidden ? ' <span style="color:#f87171;font-size:11px;">· not printed</span>' : ''}`;
+    if (us.length === 1) {
+      const u = us[0], hid = c.hidden.has(u.id);
+      html += `<div class="${cls}" data-pagebox="${_esc(p.id)}" data-seq="${si}"><div class="dw-step dw-pgrow${_sel.has(u.id) ? ' sel' : ''}${hid ? ' hid' : ''}" data-unit="${_esc(u.id)}" title="${hid ? 'Left out of the document — the eye puts it back' : tip}">${thumb(p.id)}
+        <div style="min-width:0;flex:1;"><div style="display:flex;gap:6px;align-items:center;">${no}<span style="flex:1"></span>${flagsHtml(p)}</div>
+        <div class="dw-name" style="font-size:12px;font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;"><span class="dw-no" style="margin-inline-end:5px;">${_esc(c.nums.get(u.id)?.label || '–')}</span>${_esc(c.stepById.get(u.id)?.name || u.id)}${subs(u)}</div>
+        <div dir="auto" style="font-size:11px;color:#94a3b8;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">${hid ? 'left out of the document' : _esc(textOf(u))}</div></div>${eye(u, hid)}</div></div>`;
+    } else {
+      const a = c.nums.get(us[0].id)?.label || '', b = c.nums.get(us[us.length - 1].id)?.label || '';
+      html += `<div class="${cls}" data-pagebox="${_esc(p.id)}" data-seq="${si}">
+        <div class="dw-pagehead dw-pgrow${us.every(u => _sel.has(u.id)) ? ' sel' : ''}" data-goto-page="${_esc(p.id)}" data-select-page="${_esc(p.id)}" title="${tip}">${thumb(p.id)}<div style="min-width:0;flex:1;"><div style="display:flex;gap:6px;align-items:center;">${no}<span style="flex:1"></span>${flagsHtml(p)}</div>
+          <div style="font-size:12px;font-weight:600;color:#e2e8f0;">${us.length} steps merged <span style="font-weight:400;color:#94a3b8;">(steps ${_esc(a)}–${_esc(b)})</span></div></div></div>
+        ${us.map(u => { const hid = c.hidden.has(u.id); return `<div class="dw-step mini${_sel.has(u.id) ? ' sel' : ''}${hid ? ' hid' : ''}" data-unit="${_esc(u.id)}" title="${hid ? 'Left out of the document — the eye puts it back' : tip}"><span class="dw-no">${_esc(c.nums.get(u.id)?.label || '–')}</span><div class="dw-name" style="min-width:0;flex:1;font-size:12px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">${_esc(c.stepById.get(u.id)?.name || u.id)}${subs(u)}</div>${eye(u, hid)}</div>`; }).join('')}</div>`;
     }
-    html += stepRow(u, false);
-  }
-  close();
-  // pages with no steps left (flagged ∅ by a sync) — only deletable
-  for (const p of c.doc.pages) if (!(p.stepIds || []).length) html += `<div class="dw-pagebox flag"><div class="dw-pagehead"><b style="color:#e2e8f0;">Page ${pageNo.get(p.id)}</b><span>· ∅ no steps left</span><span style="flex:1"></span><a data-act="delete-page" data-page="${_esc(p.id)}" style="color:#fca5a5;">delete</a></div></div>`;
-  list.innerHTML = html;
+    nextPending = Math.max(nextPending, unitAt.get(us[us.length - 1].id) + 1);
+  });
+  flushPending(c.units.length);
+  list.innerHTML = html + '<div class="dw-dropline" hidden></div>';
   list.scrollTop = keep;
+  _mountThumbs(c, list);
   _renderSelBar(c);
+}
+
+/** Page thumbnails: the real page markup, scaled down, filled only while the row is near the viewport. */
+function _mountThumbs(c, list) {
+  _thumbIO?.disconnect();
+  _thumbSheet = new CSSStyleSheet();
+  const k = THUMB_W / PAGE_W;
+  _thumbSheet.replaceSync(`${DOCUMENT_CSS}${watermarkCss(c.model.watermark)}:host{all:initial;display:block;width:${THUMB_W}px;height:${THUMB_H}px;overflow:hidden;background:#fff;border-radius:3px;} .fit{transform:scale(${k});transform-origin:0 0;width:210mm;height:297mm;pointer-events:none;}`);
+  const byId = new Map(c.model.sequence.map(e => [e.id, e]));
+  const o = { logo: D.documentLogo(), watermark: c.model.watermark, dir: c.model.dir, lang: c.model.lang };
+  const fill = (host) => {
+    const e = byId.get(host.dataset.thumb);
+    const root = host.shadowRoot || host.attachShadow({ mode: 'open' });
+    root.adoptedStyleSheets = [_thumbSheet];
+    if (!e) { root.innerHTML = ''; host.classList.add('off'); return; }
+    let page = '';
+    if (e.kind === 'toc') page = renderTocPageHtml(e.model.pages[0], { ...o, tocTitle: e.model.title });
+    else if (e.kind === 'custom') page = renderCustomPageHtml(e.model, o);
+    else {
+      const ids = e.model.images.map(im => im.stepId).filter(Boolean);
+      const t = _thumbsFor(c, ids);                                   // the rendered picture when there is one, else the step's own thumbnail
+      const stills = new Map(e.model.images.filter(im => im.stepId).map(im => [im.key, im.moment === 'start' ? t.start.get(im.stepId) : t.end.get(im.stepId)]));
+      page = renderPageHtml(e.model, { ...o, stills });
+    }
+    root.innerHTML = `<div class="fit">${page}</div>`;
+  };
+  _thumbIO = new IntersectionObserver((entries) => {
+    for (const en of entries) { if (en.isIntersecting) fill(en.target); else if (en.target.shadowRoot) en.target.shadowRoot.innerHTML = ''; }
+  }, { root: list, rootMargin: '300px 0px' });
+  for (const host of list.querySelectorAll('.dw-pagethumb[data-thumb]')) _thumbIO.observe(host);
 }
 
 function _renderSelBar(c) {
@@ -538,11 +625,74 @@ function _renderSelBar(c) {
   const a = _selectionActions(c);
   _selBarActions = [a.merge, a.split, a.hide && a.sel.length > 1 ? a.hide : null, a.show && a.sel.length > 1 ? a.show : null].filter(Boolean);
   const html = _selBarActions.map((it, i) => `<button class="dw-btn${it === a.merge ? ' primary' : ''}" data-act="sel-action" data-i="${i}" title="The document only — the animation and its step numbers stay as they are">${it === a.merge ? '⤵ ' : it === a.split ? '✂ ' : ''}${_esc(it.label)}</button>`).join('');
-  bar.innerHTML = html || (a.sel.length >= 2
+  bar.innerHTML = (html || (a.sel.length >= 2
     ? '<div style="font-size:11.5px;color:#94a3b8;">These steps are already on one page.</div>'
-    : '<div style="font-size:11.5px;color:#94a3b8;line-height:1.45;">Select a range of steps (Shift- or Ctrl-click the other end) to join them into one page. Right-click a step for more.</div>');
+    : '<div style="font-size:11.5px;color:#94a3b8;line-height:1.45;">Select a range of pages (Shift- or Ctrl-click the other end) to join them into one page. Right-click for more.</div>'))
+    + `<button class="dw-btn" data-act="add-custom" title="A page that is not made of steps — a cover, a safety notice, a parts list. It goes after the page you are on; drag its grip to move it.">＋ Custom page</button>`;
 }
 let _selBarActions = [];
+
+// ─── moving the contents / a custom page: drag its grip ─────────────────────
+
+let _drag = null;
+function _onGripDown(e) {
+  const grip = e.target.closest?.('[data-grip]');
+  if (!grip || e.button !== 0) return;
+  e.preventDefault(); e.stopPropagation();
+  const list = _root.querySelector('#dw-list');
+  _drag = { id: grip.dataset.grip, from: Number(grip.closest('[data-seq]').dataset.seq), to: null, list };
+  grip.closest('.dw-pagebox').classList.add('dragging');
+  try { grip.setPointerCapture(e.pointerId); } catch { /* synthetic pointer */ }
+}
+function _onGripMove(e) {
+  if (!_drag) return;
+  const boxes = [..._drag.list.querySelectorAll('.dw-pagebox[data-seq]')];
+  const line = _drag.list.querySelector('.dw-dropline');
+  // the gap the pointer is nearest to: before box i, or after the last one
+  let gap = boxes.length, y = null;
+  for (let i = 0; i < boxes.length; i++) { const r = boxes[i].getBoundingClientRect(); if (e.clientY < r.top + r.height / 2) { gap = i; y = r.top; break; } }
+  if (y === null) { const r = boxes[boxes.length - 1].getBoundingClientRect(); y = r.bottom; }
+  _drag.to = gap < boxes.length ? Number(boxes[gap].dataset.seq) : Number(boxes[boxes.length - 1].dataset.seq) + 1;
+  const lr = _drag.list.getBoundingClientRect();
+  line.hidden = false; line.style.top = `${y - lr.top + _drag.list.scrollTop - 2}px`;
+  // keep dragging usable in a long list
+  if (e.clientY < lr.top + 30) _drag.list.scrollTop -= 14; else if (e.clientY > lr.bottom - 30) _drag.list.scrollTop += 14;
+}
+function _onGripUp() {
+  const d = _drag; _drag = null;
+  if (!d) return;
+  d.list.querySelector('.dw-dropline').hidden = true;
+  d.list.querySelector('.dw-pagebox.dragging')?.classList.remove('dragging');
+  if (d.to === null) return;
+  D.moveExtraTo(d.id, d.to > d.from ? d.to - 1 : d.to);             // positions are counted with the moving item taken out
+}
+
+/** Right-click on the contents / a custom page. */
+function _extraMenu(id, x, y) {
+  const seq = D.documentSequence(), i = seq.findIndex(e => e.id === id);
+  if (i < 0) return;
+  const isToc = id === TOC, what = isToc ? 'the contents' : 'this page';
+  const items = [
+    i > 0 ? { label: `↑ Move ${what} up`, run: () => D.moveExtraTo(id, i - 1) } : null,
+    i < seq.length - 1 ? { label: `↓ Move ${what} down`, run: () => D.moveExtraTo(id, i + 1) } : null,
+    i > 0 ? { label: '⤒ Move to the start of the document', run: () => D.moveExtraTo(id, 0) } : null,
+    i < seq.length - 1 ? { label: '⤓ Move to the end of the document', run: () => D.moveExtraTo(id, seq.length) } : null,
+    { sep: true },
+    ...(isToc ? [{ label: 'Switch the contents off', run: () => D.setOptions({ toc: false }) }] : [
+      { label: '✎ Rename…', run: () => { const cur = seq[i].extra.name || ''; const n = prompt('Name of this page (shown in the list only):', cur); if (n != null && n.trim() && n !== cur) D.renameCustomPage(id, n.trim()); } },
+      { label: '🗑 Delete this page', run: () => { if (confirm('Delete this custom page and everything on it? (Undo brings it back.)')) { if (_pageId === id) _pageId = null; D.deleteCustomPage(id); } } },
+    ]),
+  ].filter(Boolean);
+  _openMenu(items, x, y);
+}
+
+/** A new custom page right after the page the user is on (or at the end). */
+function _addCustomPage() {
+  const seq = D.documentSequence();
+  const i = seq.findIndex(e => e.id === _pageId);
+  const id = D.addCustomPage(i < 0 ? seq.length : i + 1);
+  if (id) { _commitFocusedText(); _pageId = id; _slotSel = null; _sel = new Set(); _renderAll(); }
+}
 
 // ─── CENTRE: the page ───────────────────────────────────────────────────────
 
@@ -552,11 +702,14 @@ function _renderPage(c) {
   if (focused?.classList?.contains('tx')) { _deferred = true; return; }
   const model = D.renderModel();
   if (_pageId === TOC && model.toc) {
-    _pageModel = null; _slotSel = null; _placeSlotBar();
+    _pageModel = null; _slotSel = null; _placeSlotBar(); _customSel = null; _placeCustomBar();
     const o = { logo: D.documentLogo(), watermark: model.watermark, dir: model.dir, lang: model.lang, tocTitle: model.toc.title };
     _shadow.innerHTML = `<style>${DOCUMENT_CSS}${watermarkCss(model.watermark)}${EDIT_CSS}.page + .page { margin-top: 8mm; } .toc .tl { pointer-events: none; }</style><div class="fit">${model.toc.pages.map(tp => renderTocPageHtml(tp, o)).join('')}</div>`;
     _fit(); return;
   }
+  const cp = model.customs.find(x => x.id === _pageId);
+  if (cp) { _pageModel = null; _slotSel = null; _placeSlotBar(); return _renderCustomPage(model, cp); }
+  _customSel = null; _placeCustomBar();
   const mp = model.pages.find(p => p.id === _pageId);
   _pageModel = mp || null; _pageLang = model.lang || null;
   if (_slotSel != null && (!mp || _slotSel >= mp.images.length)) _slotSel = null;
@@ -617,13 +770,16 @@ function _fit() {
   const fit = _shadow.querySelector('.fit');
   if (!fit) return;
   const pad = 28;
-  const s = _zoom === '100' ? 1 : Math.max(0.2, Math.min((centre.clientWidth - pad * 2) / PAGE_W, (centre.clientHeight - pad * 2) / PAGE_H));
+  // a custom page has its bar floating over the top of the centre: the page starts below it
+  const bar = _root.querySelector('#dw-custombar');
+  const top = bar ? bar.offsetHeight + 20 : pad;
+  const s = _zoom === '100' ? 1 : Math.max(0.2, Math.min((centre.clientWidth - pad * 2) / PAGE_W, (centre.clientHeight - top - pad) / PAGE_H));
   fit.style.transform = `scale(${s})`;
   const nPages = Math.max(1, fit.querySelectorAll('.page').length);
   const w = PAGE_W * s, h = (PAGE_H * nPages + (nPages - 1) * 8 * 96 / 25.4) * s;
   host.style.width = `${w}px`; host.style.height = `${h + pad}px`;
   host.style.left = `${Math.max(pad, (centre.clientWidth - w) / 2)}px`;
-  host.style.top = `${_zoom === '100' ? pad : Math.max(pad, (centre.clientHeight - h) / 2)}px`;
+  host.style.top = `${_zoom === '100' ? top : Math.max(top, (centre.clientHeight - h + top - pad) / 2)}px`;
   _placeSlotBar();
 }
 
@@ -645,7 +801,7 @@ function _commitText(tx) {
 }
 function _commitFocusedText() {
   const f = _shadow?.activeElement;
-  if (f?.classList?.contains('tx')) f.blur();
+  if (f?.classList?.contains('tx') || (f?.classList?.contains('ct') && f.isContentEditable)) f.blur();
 }
 
 function _onPageClick(e) {
@@ -810,7 +966,7 @@ function _pictureChoice(c, page, k, modelPage) {
 }
 
 /** External picture → downscaled, stored in the document (JPEG unless it really has transparency). */
-async function _importAsset(file, slot) {
+async function _readAsset(file) {
   try {
     const url = await new Promise((res, rej) => { const rd = new FileReader(); rd.onload = () => res(String(rd.result)); rd.onerror = rej; rd.readAsDataURL(file); });
     const im = new Image(); im.src = url; await im.decode();
@@ -824,12 +980,18 @@ async function _importAsset(file, slot) {
     let dataUrl;
     if (clear) dataUrl = cv.toDataURL('image/png');
     else { const flat = document.createElement('canvas'); flat.width = size.w; flat.height = size.h; const fx = flat.getContext('2d'); fx.fillStyle = '#fff'; fx.fillRect(0, 0, size.w, size.h); fx.drawImage(cv, 0, 0); dataUrl = flat.toDataURL('image/jpeg', 0.9); }
-    D.setPagePictureAsset(_pageId, slot, { dataUrl, w: size.w, h: size.h, name: file.name });
-    setStatus(`"${file.name}" added to the document (${size.w} × ${size.h}). Drag it to place it, wheel to scale.`, 'success', 6000);
+    return { dataUrl, w: size.w, h: size.h, name: file.name };
   } catch (err) {
     console.error('[document] external image failed:', err);
     setStatus('That file could not be read as an image.', 'warn', 6000);
+    return null;
   }
+}
+async function _importAsset(file, slot) {
+  const asset = await _readAsset(file);
+  if (!asset) return;
+  D.setPagePictureAsset(_pageId, slot, asset);
+  setStatus(`"${file.name}" added to the document (${asset.w} × ${asset.h}). Drag it to place it, wheel to scale.`, 'success', 6000);
 }
 
 // ─── 📐 template editor ─────────────────────────────────────────────────────
@@ -853,6 +1015,256 @@ function _openTemplateEditor(asNew) {
     onSave: (tpl) => { done(); const id = D.saveTemplate(tpl, forPage); if (id) setStatus(`Template “${tpl.name}” saved — this page uses it now, and it is in the template list of every page.`, 'success', 7000); },
     onCancel: done,
   });
+}
+
+// ─── ✎ custom pages: free items between the header and the footer ──────────
+// A custom page is NOT made of steps: a cover, a safety notice, a parts list. The user places
+// text boxes and pictures freely (mm, half-mm grid, inside the content area). Text wears the
+// document's body font — only size, weight, slant, alignment and colour vary. Every gesture
+// (a drag, a resize, a typed text, a delete) is ONE undo entry.
+
+let _customSel = null, _cdrag = null, _customModel = null;
+const C_AREA = { x: 12, y: 32, w: 186, h: 238.5 };
+const CUSTOM_CSS = `
+.cguide { position: absolute; border: 0.3mm dashed #cbd5e1; pointer-events: none; }
+.ci { cursor: move; }
+.ci:hover { outline: 0.3mm solid #60a5fa; }
+.ci.ct[contenteditable] { cursor: text; outline: 0.4mm solid #2563eb; background: #eff6ff; overflow: visible; }
+.csel { position: absolute; border: 0.5mm solid #f59e0b; pointer-events: none; box-sizing: border-box; }
+.csel i { position: absolute; width: 3mm; height: 3mm; margin: -1.5mm 0 0 -1.5mm; background: #fff; border: 0.5mm solid #f59e0b; border-radius: 0.5mm; pointer-events: auto; box-sizing: border-box; }
+.cempty { position: absolute; left: 12mm; right: 12mm; top: 120mm; text-align: center; color: #94a3b8; font-size: 12pt; pointer-events: none; }
+`;
+const C_HANDLES = ['nw', 'n', 'ne', 'e', 'se', 's', 'sw', 'w'];
+const _mmPerPx = () => { const pg = _shadow.querySelector('.page'); return pg ? 210 / pg.getBoundingClientRect().width : 1; };
+const _customExtra = () => (D.getDocument()?.extras || []).find(x => x?.kind === 'custom' && x.id === _pageId) || null;
+const _snap = (v) => Math.round(v * 2) / 2;
+function _clampItemRect(r) {
+  const w = Math.max(5, Math.min(C_AREA.w, _snap(r.w))), h = Math.max(4, Math.min(C_AREA.h, _snap(r.h)));
+  return { x: Math.max(C_AREA.x, Math.min(C_AREA.x + C_AREA.w - w, _snap(r.x))), y: Math.max(C_AREA.y, Math.min(C_AREA.y + C_AREA.h - h, _snap(r.y))), w, h };
+}
+
+function _renderCustomPage(model, cp) {
+  const editing = _shadow.activeElement;
+  if (editing?.classList?.contains('ct') && editing.isContentEditable) { _deferred = true; return; }     // never rebuild under the caret
+  _customModel = cp;
+  const o = { logo: D.documentLogo(), watermark: model.watermark, dir: model.dir, lang: model.lang };
+  _shadow.innerHTML = `<style>${DOCUMENT_CSS}${watermarkCss(model.watermark)}${EDIT_CSS}${CUSTOM_CSS}</style><div class="fit">${renderCustomPageHtml(cp, o)}</div>`;
+  const pg = _shadow.querySelector('.page');
+  pg.insertAdjacentHTML('beforeend', `<div class="cguide" style="left:${C_AREA.x}mm;top:${C_AREA.y}mm;width:${C_AREA.w}mm;height:${C_AREA.h}mm;"></div>${cp.items.length ? '' : '<div class="cempty">An empty page. Add a text box or a picture with the bar above.</div>'}`);
+  if (_customSel && !cp.items.some(i => i.id === _customSel)) _customSel = null;
+  _placeCustomBar(); _fit(); _drawCustomSel();
+}
+
+function _drawCustomSel() {
+  _shadow.querySelector('.csel')?.remove();
+  const it = _customModel?.items.find(i => i.id === _customSel);
+  const pg = _shadow.querySelector('.page');
+  if (!it || !pg) return;
+  pg.insertAdjacentHTML('beforeend', `<div class="csel" style="left:${it.x}mm;top:${it.y}mm;width:${it.w}mm;height:${it.h}mm;">${C_HANDLES.map(h => `<i data-ch="${h}" style="left:${h.includes('w') ? 0 : h.includes('e') ? 100 : 50}%;top:${h.includes('n') ? 0 : h.includes('s') ? 100 : 50}%;cursor:${h === 'n' || h === 's' ? 'ns' : h === 'e' || h === 'w' ? 'ew' : h === 'nw' || h === 'se' ? 'nwse' : 'nesw'}-resize;"></i>`).join('')}</div>`);
+}
+
+/** The bar over a custom page: add things; and, with an item selected, what can be changed about it. */
+function _placeCustomBar() {
+  let bar = _root.querySelector('#dw-custombar');
+  if (!_customExtra() || _tplEd) { bar?.remove(); return; }
+  if (!bar) {
+    bar = document.createElement('div');
+    bar.id = 'dw-custombar';
+    bar.style.cssText = 'position:absolute;z-index:5;left:50%;top:8px;transform:translateX(-50%);display:flex;gap:5px;align-items:center;flex-wrap:wrap;justify-content:center;max-width:96%;background:#0f172a;border:1px solid #38bdf8;border-radius:9px;padding:5px 8px;box-shadow:0 6px 20px rgba(0,0,0,.5);font-size:11.5px;color:#94a3b8;';
+    _root.querySelector('#dw-center').appendChild(bar);
+  }
+  if (bar.contains(document.activeElement) && /^(INPUT)$/.test(document.activeElement.tagName) && document.activeElement.type !== 'color') return;   // typing a size
+  const it = _customModel?.items.find(i => i.id === _customSel) || null;
+  const b = (act, label, title, on = false, style = '', attrs = '') => `<button class="dw-btn" data-act="${act}" ${attrs} title="${_esc(title)}" style="padding:2px 9px;${on ? 'background:#1d3a5f;border-color:#38bdf8;' : ''}${style}">${label}</button>`;
+  bar.innerHTML = b('ci-add-text', '＋ Text', 'A new text box') + b('ci-add-image', '＋ Picture', 'A picture from a file') + '<input type="file" id="dw-ci-file" accept="image/*" hidden>'
+    + (!it ? '<span style="padding:0 6px;">click an item to select it · double-click a text to type</span>' : '<span style="width:1px;height:18px;background:#334155;margin:0 3px;"></span>'
+      + (it.type === 'text'
+        ? `<label style="display:flex;gap:4px;align-items:center;">Size <input class="dw-in" data-ci="size" type="number" min="6" max="120" step="1" value="${it.size}" style="width:58px;"> pt</label>`
+          + b('ci-bold', '<b>B</b>', 'Bold', it.bold) + b('ci-italic', '<i>I</i>', 'Italic', it.italic)
+          + b('ci-align-start', '⫷', 'Align to the start', it.align === 'start') + b('ci-align-center', '⫿', 'Centre', it.align === 'center') + b('ci-align-end', '⫸', 'Align to the end', it.align === 'end')
+          + `<input data-ci="color" type="color" value="${_esc(it.color)}" title="Text colour" style="width:30px;height:24px;padding:0;border:1px solid #334155;border-radius:5px;background:none;">`
+        : b('ci-fill', 'Fill', 'Fill the frame (cropping what does not fit)') + b('ci-whole', 'Whole', 'Show the whole picture inside the frame') + b('ci-zoom', '−', 'Smaller inside the frame', false, '', 'data-f="0.9"') + b('ci-zoom', '+', 'Larger inside the frame', false, '', 'data-f="1.1111"'))
+      + b('ci-front', '⤒ Front', 'Bring to the front') + b('ci-delete', '🗑', 'Delete this item (Delete key)', false, 'color:#fca5a5;'));
+}
+
+function _customLeftHtml(c, x) {
+  const no = c.model.sequence.find(e => e.id === x.id)?.number ?? '—';
+  return `<div class="dw-h">Page ${no} of ${c.model.total} — custom page</div>
+    <label class="dw-lab">Name (shown in the list only)<input class="dw-in" data-custom-name value="${_esc(x.name || '')}" dir="auto"></label>
+    <div style="font-size:11.5px;color:#94a3b8;line-height:1.55;">A page that is not made of steps — a cover, a safety notice, a parts list. It has the document's header and footer; between them you place what you want with the bar above the page:<br>
+      • <b>＋ Text</b> / <b>＋ Picture</b> add an item.<br>• Drag an item to move it, drag a handle to resize it; arrows nudge 1 mm (Shift 5).<br>• <b>Double-click a text</b> to type; click away to finish, Esc to abandon.<br>• Text wears the document's font — size, bold, italic, alignment and colour are yours.<br>• Delete removes the selected item.<br><br>
+      Drag the <b>⠿</b> grip of the page in the list (or right-click it) to move the page anywhere in the document.</div>
+    <div style="margin-top:10px;"><button class="dw-btn" data-act="custom-delete" style="color:#fca5a5;">🗑 Delete this page</button></div>`;
+}
+
+const _itemsNow = () => (_customExtra()?.items || []).map(i => ({ ...i }));
+function _commitItems(items, label) { const id = _pageId; D.setCustomItems(id, items, label); }
+function _patchItem(patch, label) {
+  if (!_customSel) return;
+  _commitItems(_itemsNow().map(i => (i.id === _customSel ? { ...i, ...patch } : i)), label);
+}
+
+function _onCustomPointerDown(e) {
+  if (!_customExtra() || e.button !== 0) return;
+  const handle = e.target.closest?.('[data-ch]'), itemEl = e.target.closest?.('.ci[data-item]');
+  if (itemEl?.isContentEditable) return;                              // typing: the text box is a text field now
+  if (!handle && !itemEl) { if (_customSel) { _customSel = null; _drawCustomSel(); _placeCustomBar(); } return; }
+  const id = handle ? _customSel : itemEl.dataset.item;
+  const it = _customModel?.items.find(i => i.id === id); if (!it) return;
+  e.preventDefault();
+  _commitFocusedText();
+  if (_customSel !== id) { _customSel = id; _drawCustomSel(); _placeCustomBar(); }
+  _cdrag = { id, h: handle?.dataset.ch || '', x: e.clientX, y: e.clientY, start: { x: it.x, y: it.y, w: it.w, h: it.h }, rect: null, k: _mmPerPx() };
+  try { (handle || itemEl).setPointerCapture(e.pointerId); } catch { /* synthetic pointer */ }
+}
+function _onCustomPointerMove(e) {
+  const d = _cdrag; if (!d) return;
+  const dx = (e.clientX - d.x) * d.k, dy = (e.clientY - d.y) * d.k;
+  if (!d.rect && Math.hypot(dx, dy) < 0.6) return;
+  let { x, y, w, h } = d.start;
+  if (!d.h) { x += dx; y += dy; }
+  else {
+    if (d.h.includes('e')) w = Math.max(5, d.start.w + dx);
+    if (d.h.includes('s')) h = Math.max(4, d.start.h + dy);
+    if (d.h.includes('w')) { w = Math.max(5, d.start.w - dx); x = d.start.x + d.start.w - w; }
+    if (d.h.includes('n')) { h = Math.max(4, d.start.h - dy); y = d.start.y + d.start.h - h; }
+    if (x < C_AREA.x) { w -= C_AREA.x - x; x = C_AREA.x; } if (y < C_AREA.y) { h -= C_AREA.y - y; y = C_AREA.y; }
+    w = Math.min(w, C_AREA.x + C_AREA.w - x); h = Math.min(h, C_AREA.y + C_AREA.h - y);
+  }
+  d.rect = _clampItemRect({ x, y, w, h });
+  for (const el of [_shadow.querySelector(`.ci[data-item="${CSS.escape(d.id)}"]`), _shadow.querySelector('.csel')]) if (el) { el.style.left = `${d.rect.x}mm`; el.style.top = `${d.rect.y}mm`; el.style.width = `${d.rect.w}mm`; el.style.height = `${d.rect.h}mm`; }
+}
+function _onCustomPointerUp() {
+  const d = _cdrag; _cdrag = null;
+  if (d?.rect) _commitItems(_itemsNow().map(i => (i.id === d.id ? { ...i, ...d.rect } : i)), d.h ? 'Resize item' : 'Move item');
+}
+function _onCustomDblClick(e) {
+  const el = e.target.closest?.('.ci.ct[data-item]');
+  if (!el || !_customExtra()) return;
+  _customSel = el.dataset.item; _drawCustomSel(); _placeCustomBar();
+  el.setAttribute('contenteditable', 'plaintext-only'); el.dataset.orig = el.innerText;
+  el.focus();
+  const r = document.createRange(); r.selectNodeContents(el); const w = _shadow.getSelection ? _shadow.getSelection() : window.getSelection(); w?.removeAllRanges(); w?.addRange(r);
+}
+function _onCustomFocusOut(e) {
+  const el = e.target;
+  if (!el?.classList?.contains('ct') || !el.isContentEditable) return;
+  const text = String(el.innerText ?? '').replace(/ /g, ' ').replace(/\n+$/, ''), id = el.dataset.item, orig = el.dataset.orig ?? '';
+  el.removeAttribute('contenteditable');
+  if (text !== orig.replace(/\n+$/, '')) _commitItems(_itemsNow().map(i => (i.id === id ? { ...i, text } : i)), 'Edit text');
+  else if (_deferred) { _deferred = false; setTimeout(_renderAll, 0); }
+}
+/** @returns {boolean} handled */
+function _onCustomKey(e) {
+  if (!_customExtra()) return false;
+  const typing = _shadow.activeElement?.isContentEditable;
+  if (e.key === 'Escape') {
+    if (typing) { const el = _shadow.activeElement; el.innerText = el.dataset.orig ?? ''; el.blur(); _root.focus({ preventScroll: true }); return true; }
+    if (_customSel) { _customSel = null; _drawCustomSel(); _placeCustomBar(); return true; }
+    return false;
+  }
+  if (typing || !_customSel) return false;
+  const it = _customModel?.items.find(i => i.id === _customSel); if (!it) return false;
+  if (e.key === 'Delete' || e.key === 'Backspace') { e.preventDefault(); const id = _customSel; _customSel = null; _commitItems(_itemsNow().filter(i => i.id !== id), 'Delete item'); return true; }
+  if (/^Arrow/.test(e.key)) {
+    e.preventDefault();
+    const k = e.shiftKey ? 5 : 1;
+    _patchItem(_clampItemRect({ ...it, x: it.x + (e.key === 'ArrowRight' ? k : e.key === 'ArrowLeft' ? -k : 0), y: it.y + (e.key === 'ArrowDown' ? k : e.key === 'ArrowUp' ? -k : 0) }), 'Move item');
+    return true;
+  }
+  return false;
+}
+
+function _customAct(act, el) {
+  const it = _customModel?.items.find(i => i.id === _customSel) || null;
+  if (act === 'ci-add-text') {
+    const items = _itemsNow(), id = `ci_${Date.now().toString(36)}${items.length}`;
+    const lowest = items.reduce((m, i) => Math.max(m, i.y + i.h), C_AREA.y);
+    const y = lowest + 4 + 18 <= C_AREA.y + C_AREA.h ? lowest + (items.length ? 4 : 8) : C_AREA.y + 8;
+    _customSel = id;
+    _commitItems([...items, { id, type: 'text', x: C_AREA.x, y, w: C_AREA.w, h: 18, text: 'Text', size: 11, bold: false, italic: false, align: 'start', color: '#111111' }], 'Add text box');
+    return true;
+  }
+  if (act === 'ci-add-image') { _root.querySelector('#dw-ci-file')?.click(); return true; }
+  if (act === 'custom-delete') { if (confirm('Delete this custom page and everything on it? (Undo brings it back.)')) { const id = _pageId; _pageId = null; _customSel = null; D.deleteCustomPage(id); } return true; }
+  if (!it) return false;
+  if (act === 'ci-delete') { const id = _customSel; _customSel = null; _commitItems(_itemsNow().filter(i => i.id !== id), 'Delete item'); return true; }
+  if (act === 'ci-front') { const items = _itemsNow(); const me = items.find(i => i.id === _customSel); _commitItems([...items.filter(i => i !== me), me], 'Bring to the front'); return true; }
+  if (act === 'ci-bold') { _patchItem({ bold: !it.bold }, 'Bold'); return true; }
+  if (act === 'ci-italic') { _patchItem({ italic: !it.italic }, 'Italic'); return true; }
+  if (act.startsWith('ci-align-')) { _patchItem({ align: act.slice(9) }, 'Align text'); return true; }
+  if (act === 'ci-fill') { _patchItem({ fit: { zoom: 1, ox: 0, oy: 0 } }, 'Picture fit'); return true; }
+  if (act === 'ci-whole') { _patchItem({ fit: { zoom: containZoom(it, it.aspect), ox: 0, oy: 0 } }, 'Picture fit'); return true; }
+  if (act === 'ci-zoom') { _patchItem({ fit: { ...it.fit, zoom: Math.max(0.05, Math.min(20, it.fit.zoom * Number(el.dataset.f))) } }, 'Picture fit'); return true; }
+  return false;
+}
+function _customChange(t) {
+  if (t.dataset?.ci === 'size') { _patchItem({ size: Math.max(6, Math.min(120, Number(t.value) || 11)) }, 'Text size'); return true; }
+  if (t.dataset?.ci === 'color') { _patchItem({ color: t.value }, 'Text colour'); return true; }
+  if (t.dataset?.customName !== undefined) { const n = t.value.trim(); if (n) D.renameCustomPage(_pageId, n); return true; }
+  if (t.id === 'dw-ci-file') {
+    const file = t.files?.[0]; t.value = '';
+    if (file) _readAsset(file).then(asset => {
+      if (!asset) return;
+      const w = Math.min(120, C_AREA.w), h = Math.min(C_AREA.h, _snap(w / (asset.w / asset.h)));
+      const id = D.addCustomImage(_pageId, asset, _clampItemRect({ x: C_AREA.x + (C_AREA.w - w) / 2, y: C_AREA.y + 20, w, h }));
+      if (id) { _customSel = id; setStatus(`“${file.name}” added. Drag it to place it, drag a handle to size it.`, 'success', 6000); _renderAll(); }
+    });
+    return true;
+  }
+  return false;
+}
+
+// ─── panes: draggable separators ────────────────────────────────────────────
+// The page needs room; on a small screen the two side panes must give way. Widths are the
+// user's (remembered on this machine); the centre is never squeezed below a usable size.
+
+const PANES_KEY = 'sbs.document.panes', CENTRE_MIN = 340;
+let _panes = null, _split = null;
+function _loadPanes() {
+  if (_panes) return _panes;
+  let v = null;
+  try { v = JSON.parse(localStorage.getItem(PANES_KEY) || 'null'); } catch { /* a private window, a cleared store: defaults */ }
+  _panes = { l: Number.isFinite(v?.l) ? v.l : 290, r: Number.isFinite(v?.r) ? v.r : 330, lOff: !!v?.lOff, rOff: !!v?.rOff };
+  return _panes;
+}
+function _savePanes() { try { localStorage.setItem(PANES_KEY, JSON.stringify(_panes)); } catch { /* not remembered, still works */ } }
+function _applyPanes() {
+  if (!_root) return;
+  const p = _loadPanes(), W = _root.clientWidth || window.innerWidth;
+  let l = p.lOff ? 0 : Math.max(180, Math.min(p.l, W * 0.45)), r = p.rOff ? 0 : Math.max(200, Math.min(p.r, W * 0.5));
+  // not enough room for the page: the list gives way first, then the settings fold away entirely
+  if (W - l - r - 14 < CENTRE_MIN && r) r = Math.max(200, W - l - 14 - CENTRE_MIN);
+  if (W - l - r - 14 < CENTRE_MIN && l) l = Math.max(0, W - r - 14 - CENTRE_MIN) < 180 ? 0 : W - r - 14 - CENTRE_MIN;
+  const L = _root.querySelector('#dw-left'), R = _root.querySelector('#dw-right');
+  L.style.flexBasis = `${l}px`; L.style.padding = l ? '4px 14px 16px' : '0'; L.style.overflow = l ? 'auto' : 'hidden';
+  R.style.flexBasis = `${r}px`; R.style.overflow = r ? '' : 'hidden';
+}
+function _onSplitDown(e) {
+  const sp = e.target.closest?.('.dw-split');
+  if (!sp || e.button !== 0) return;
+  e.preventDefault();
+  const p = _loadPanes(), side = sp.dataset.split;
+  _split = { side, x: e.clientX, start: side === 'l' ? _root.querySelector('#dw-left').getBoundingClientRect().width : _root.querySelector('#dw-right').getBoundingClientRect().width, el: sp };
+  if (side === 'l') p.lOff = false; else p.rOff = false;
+  sp.classList.add('on');
+  try { sp.setPointerCapture(e.pointerId); } catch { /* synthetic pointer */ }
+}
+function _onSplitMove(e) {
+  if (!_split) return;
+  const p = _loadPanes(), d = e.clientX - _split.x;
+  if (_split.side === 'l') p.l = Math.max(180, _split.start + d); else p.r = Math.max(200, _split.start - d);
+  _applyPanes(); _fit();
+}
+function _onSplitUp() {
+  if (!_split) return;
+  _split.el.classList.remove('on'); _split = null;
+  _savePanes(); _renderList(_ctx());                                  // thumbnails re-measure their rows
+}
+function _togglePane(side) {
+  const p = _loadPanes();
+  if (side === 'l') p.lOff = !p.lOff; else p.rOff = !p.rOff;
+  _savePanes(); _applyPanes(); _fit();
 }
 
 // ─── menus ──────────────────────────────────────────────────────────────────
@@ -899,6 +1311,8 @@ function _selectionActions(c) {
 }
 
 function _onContextMenu(e) {
+  const extra = e.target.closest?.('[data-extra]');
+  if (extra) { e.preventDefault(); if (_showPage(extra.dataset.extra)) { _sel = new Set(); _renderAll(); } _extraMenu(extra.dataset.extra, e.clientX, e.clientY); return; }
   const row = e.target.closest?.('.dw-step');
   if (!row || row.classList.contains('pending')) return;
   e.preventDefault();
@@ -917,7 +1331,7 @@ function _showPage(pageId) {
   if (!pageId || pageId === _pageId) return false;
   _commitFocusedText();
   _flushWheel();
-  _pageId = pageId; _slotSel = null;
+  _pageId = pageId; _slotSel = null; _customSel = null;
   return true;
 }
 
@@ -939,7 +1353,19 @@ async function _onClick(e) {
     return;
   }
   const head = e.target.closest?.('[data-goto-page]');
-  if (head && !e.target.closest('[data-act]')) { if (_showPage(head.dataset.gotoPage)) _renderAll(); return; }
+  if (head && !e.target.closest('[data-act]') && !e.target.closest('[data-grip]')) {
+    // the head of a JOINED page stands for all of its steps: clicking it selects them (Shift / Ctrl extends the range to them)
+    const c1 = _ctx(), pg = head.dataset.selectPage ? c1.doc.pages.find(p => p.id === head.dataset.selectPage) : null;
+    if (pg) {
+      const order = c1.units.map(u => u.id), mine = pg.stepIds.filter(id => order.includes(id));
+      if ((e.shiftKey || e.ctrlKey || e.metaKey) && _anchor && order.includes(_anchor)) {
+        const a = order.indexOf(_anchor), lo = Math.min(a, order.indexOf(mine[0])), hi = Math.max(a, order.indexOf(mine[mine.length - 1]));
+        _sel = new Set(order.slice(lo, hi + 1));
+      } else { _sel = new Set(mine); _anchor = mine[0]; }
+    } else _sel = new Set();
+    if (_showPage(head.dataset.gotoPage)) _renderAll(); else { _renderList(_ctx()); _holdFocus(); }
+    return;
+  }
 
   const el = e.target.closest?.('[data-act]');
   if (!el) return;
@@ -950,6 +1376,8 @@ async function _onClick(e) {
   if (act === 'zoom-fit' || act === 'zoom-100') { _zoom = act === 'zoom-fit' ? 'fit' : '100'; _renderTop(_ctx()); _fit(); _holdFocus(); return; }
   if (act === 'wm-toggle') { _wmOpen = !_wmOpen; _renderLeft(_ctx()); _holdFocus(); return; }
   if (act === 'wm-choose') { _root.querySelector('input[data-wm-file]')?.click(); return; }
+  if (act === 'add-custom') { _addCustomPage(); return; }
+  if ((act.startsWith('ci-') || act === 'custom-delete') && _customAct(act, el)) return;
   if (act === 'tpl-new' || act === 'tpl-edit') { _openTemplateEditor(act === 'tpl-new'); return; }
   if (act === 'tpl-delete') { const pg = _ctx().doc.pages.find(p => p.id === _pageId); if (pg && confirm('Delete this template? Pages that use it go back to the automatic layout. (Undo brings it back.)')) D.deleteTemplate(pg.templateId); return; }
   if (act === 'sel-action') { _commitFocusedText(); _selBarActions[Number(el.dataset.i)]?.run?.(); return; }
@@ -978,6 +1406,7 @@ async function _onClick(e) {
 
 function _onChange(e) {
   const t = e.target;
+  if (_customChange(t)) return;
   if (t.dataset?.wm) return D.setWatermark({ [t.dataset.wm]: _wmValue(t) });
   if (t.matches?.('input[data-wm-file]')) {
     const file = t.files?.[0]; if (!file) return;
@@ -998,7 +1427,8 @@ function _onChange(e) {
 }
 
 function _onKey(e, editable) {
-  if (_tplEd) return;                                          // the template editor has the keyboard (arrows nudge a box there)
+  if (_tplEd) return;
+  if (_onCustomKey(e)) return;                                          // the template editor has the keyboard (arrows nudge a box there)
   if (e.key === 'Escape') {
     if (_slotSel != null && !_menu && !_wmDlg) { _selectSlot(null); return; }
     if (_wmDlg) { _wmDlg.remove(); _wmDlg = null; _holdFocus(); return; }
@@ -1017,13 +1447,14 @@ function _onKey(e, editable) {
     return move(order[Math.max(0, Math.min(order.length - 1, (cur < 0 ? 0 : cur + (e.key === 'ArrowDown' ? 1 : -1))))]);
   }
   if (e.key === 'PageDown' || e.key === 'PageUp' || e.key === 'ArrowRight' || e.key === 'ArrowLeft') {
-    const i = c.doc.pages.findIndex(p => p.id === _pageId);
-    const live = c.doc.pages.filter(p => p.stepIds.length);
-    const fwd = e.key === 'PageDown' || e.key === 'ArrowRight';
-    if (c.model.toc && _pageId === TOC) { if (fwd) return move(live[0]?.stepIds[0]); e.preventDefault(); return; }
-    if (c.model.toc && !fwd && live[0]?.id === _pageId) { e.preventDefault(); if (_showPage(TOC)) { _sel = new Set(); _renderAll(); } return; }
-    const k = live.findIndex(p => p.id === _pageId);
-    const np = live[Math.max(0, Math.min(live.length - 1, (k < 0 ? i : k) + ((e.key === 'PageDown' || e.key === 'ArrowRight') ? 1 : -1)))];
-    return move(np?.stepIds[0]);
+    e.preventDefault();
+    const ids = c.model.sequence.map(x => x.id);                       // what prints, in order: step pages, the contents, custom pages
+    const k = ids.indexOf(_pageId), fwd = e.key === 'PageDown' || e.key === 'ArrowRight';
+    const to = ids[Math.max(0, Math.min(ids.length - 1, (k < 0 ? 0 : k + (fwd ? 1 : -1))))];
+    if (!to || to === _pageId) return;
+    const pg = c.doc.pages.find(p => p.id === to);
+    if (pg) return move(pg.stepIds.find(id => c.pageOfUnit.has(id)));
+    if (_showPage(to)) { _sel = new Set(); _renderAll(); _root.querySelector(`[data-pagebox="${CSS.escape(to)}"]`)?.scrollIntoView({ block: 'nearest' }); }
+    return;
   }
 }
