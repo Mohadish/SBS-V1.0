@@ -47,6 +47,8 @@ import { MARQUEE_THRESHOLD_PX, rectOf, marqueeOp, pickInMarquee, applyMarquee } 
 import { showMarqueeBox, setMarqueeBadge, hideMarqueeBox } from '../ui/marquee-box.js';
 import { snapBox, unionBox } from './snap-core.js';
 import { showSnapGuides, hideSnapGuides } from '../ui/snap-guides.js';
+import { toPairs, insertPoint, removePoint, movePoint, filletRadii, smoothControls, endDirection, headTriangle, headsOf, curveOf } from './polyline-core.js';
+import { showPolylineDots, hidePolylineDots } from '../ui/polyline-dots.js';
 import * as editSession from './edit-session.js';   // P7-A: in-session local undo + commit-time main-undo entry
 import { undoManager } from './undo.js';            // P7-B: mass-mode + structural ops push undo entries directly
 
@@ -315,6 +317,7 @@ function _syncSize() {
   _maskEdit?.place?.();   // 🎭 keep the Apply/Cancel bar centred too
   _placePinBadges();      // 📌 badges keep screen size; the bubble stays centred
   _pinPlace();
+  _polyRefreshDots();     // ✎ point handles are screen px too
   if (_xray) _applyXray();   // 👓 a resize can hand the layer a fresh canvas
 }
 
@@ -404,6 +407,7 @@ export function setEditingMode(on) {
   if (_angleEntry) _endAngleEntry(false);   // ⌨ never leave the keyboard captured
   _cancelBand();                            // ⬚ a rubber-band in progress dies with the mode
   _snapEnd();                               // 🧲 …and so do the magnet's guides
+  _exitPolyEdit();                          // ✎ …and a line's point handles
   _editing = !!on;
   if (_container) _container.classList.toggle('editing', _editing);
   if (!_editing) _setSelection(null);
@@ -4228,7 +4232,9 @@ export function addLine() {
     name:        'userShape',
   });
   node.setAttr('kind', 'line');
+  node.setAttrs({ sbsHeadStart: false, sbsHeadEnd: false, sbsCurve: 'fillet' });   // ✎ V0.3.4.15 — a line is an arrow with no heads; fillet = the cables' look once it has a bend
   _wireShapeTransformend(node, 'line');
+  _wirePolyline(node);
   _layer.add(node); _attachNode(node); _setSelection(node);
   _pushAddNodeUndo(node, 'Add line'); _scheduleSave();
   return node;
@@ -4252,7 +4258,9 @@ export function addArrow() {
     name:          'userShape',
   });
   node.setAttr('kind', 'arrow');
+  node.setAttrs({ sbsHeadStart: false, sbsHeadEnd: true, sbsCurve: 'fillet' });   // ✎ V0.3.4.15
   _wireShapeTransformend(node, 'arrow');
+  _wirePolyline(node);
   _layer.add(node); _attachNode(node); _setSelection(node);
   _pushAddNodeUndo(node, 'Add arrow'); _scheduleSave();
   return node;
@@ -4375,6 +4383,7 @@ function _attachNode(node) {
   // just this one node. Without this guard, every drag start collapses
   // the selection to length-1 and the multi-drag handler bails.
   node.on('pointerdown', (e) => {
+    if (_polyEdit?.node === node) return;   // ✎ its points are being edited: no unit selection — the press may be half a double-click, or a move
     const additive = !!(e.evt && (e.evt.shiftKey || e.evt.ctrlKey || e.evt.metaKey));
     const current  = _transformer?.nodes() || [];
     if (!additive && current.includes(node)) return;
@@ -4667,6 +4676,11 @@ function _attachNode(node) {
     _showOverlayContextMenu(node, ev?.clientX ?? 0, ev?.clientY ?? 0);
   });
   if (node.getClassName() === 'Text') node.on('dblclick', () => _editText(node));
+  if (_isPolyNode(node)) {
+    // ✎ first double-click = its points; in that mode a double-click on the line = a new point there
+    node.on('dblclick dbltap', () => { if (!_editing) return; if (_polyEdit?.node === node) _polyAddPointAtPointer(node); else _enterPolyEdit(node); });
+    node.on('dragmove.polydots dragend.polydots transformend.polydots', () => { if (_polyEdit?.node === node) _polyRefreshDots(); });
+  }
   // Any Konva.Image tagged as a user text box opens the in-place editor —
   // BUT only when this node is the sole selection. Editing one item of a
   // multi-selection produced flickery height changes (the editable mounts
@@ -4734,6 +4748,7 @@ function _serializeNode(node) {
     // Line/Arrow geometry (V0.3.2.30) — omitting these was why a pasted
     // arrow lost its tail (points defaulted to [] and could never grow back).
     'points', 'pointerLength', 'pointerWidth',
+    'sbsHeadStart', 'sbsHeadEnd', 'sbsCurve', 'sbsFillet', 'pointerAtBeginning', 'pointerAtEnding',   // ✎ V0.3.4.15 — heads per end + the bend
     // Zoom-crop geometry (V0.3.2.58) — omitting these made a pasted zoom lose
     // its crop, so Konva scaled the WHOLE interface image into the small frame
     // instead of showing the cropped region. cropX/Y/W/H are Konva's crop;
@@ -6076,7 +6091,23 @@ function _showOverlayContextMenu(node, x, y) {
     { label: `${curDir === 'rtl'  ? '✓ ' : ''}Right-to-left (עברית)`,                    action: () => setDir('rtl') },
     { label: `${curDir === 'ltr'  ? '✓ ' : ''}Left-to-right`,                            action: () => setDir('ltr') },
   ] }];
+  // ✎ Lines and arrows: their points and how they bend — the cables' three choices
+  const polyItems = !_isPolyNode(node) ? [] : (() => {
+    const cur = _polyCurve(node), rad = Number(node.getAttr('sbsFillet')) || POLY_DEFAULT_FILLET;
+    const bend = (v, label) => ({ label: `${cur === v ? '✓ ' : ''}${label}`, action: () => _polySetCurve(node, v) });
+    const radius = (v, label) => ({ label: `${rad === v ? '✓ ' : ''}${label}`, action: () => { const b = _polySnapshot(node); node.setAttr('sbsFillet', v); node.setAttr('sbsCurve', 'fillet'); _polyCommit(node, 'Fillet radius', b); _layer.batchDraw(); } });
+    return [
+      { label: '✎ Edit points (double-click)', action: () => _enterPolyEdit(node) },
+      { label: '〰 Bend', submenu: [
+        bend('corner', 'Corners'), bend('smooth', 'Smooth (Bézier)'), bend('fillet', 'Fillet (rounded corners)'),
+        { separator: true },
+        radius(14, 'Fillet radius: small'), radius(28, 'Fillet radius: medium'), radius(56, 'Fillet radius: large'),
+      ] },
+      { separator: true },
+    ];
+  })();
   showContextMenu([
+    ...polyItems,
     ...videoItems,
     ...ifaceItems,
     ...zoomItems,
@@ -6103,6 +6134,225 @@ function _showOverlayContextMenu(node, x, y) {
       },
     },
   ], x, y);
+}
+
+// ─── ✎ Lines and arrows: points, heads, bends (V0.3.4.15) ───────────────────
+// A line and an arrow are ONE thing: points (two ends, any number between), an arrowhead that
+// EACH end may or may not wear, and a way to bend through the points — 'corner' / 'smooth'
+// (a curve through every point) / 'fillet' (rounded corners, the cables' look). The Konva
+// class stays what it was (Line / Arrow — links, styles and old files keep working); what is
+// drawn comes from ONE sceneFunc + hitFunc installed on every user line and arrow
+// (_wirePolyline), reading plain attrs that travel through save / copy / links:
+//   sbsHeadStart / sbsHeadEnd (booleans) · sbsCurve · sbsFillet (radius, canonical px)
+// A shape from before this version has none of them: an Arrow then wears a head at its end, a
+// Line none, both bend as corners — exactly how Konva drew them (polyline-core.headsOf).
+// 3D-anchored arrows are NOT touched: their geometry belongs to the reprojection.
+//
+// Click = the unit (move / rotate / scale, as ever). DOUBLE-click = point-edit mode: a dot on
+// every point (DOM, ui/polyline-dots.js — never Konva nodes, the stage is serialised whole).
+//   drag a dot → move that point · double-click the line → a new point there
+//   double-click a middle dot → delete it · double-click an END dot → its arrowhead on / off
+// A dragged point uses the magnet: the other items, the picture — and the OTHER points of its
+// own line (never another line's points). Shift keeps it on one axis, Alt lets go of the magnet.
+// Every gesture is ONE undo entry (points + heads + bend, restored together).
+
+const POLY_DEFAULT_FILLET = 28;
+let _polyEdit = null;   // { node, drag: null | { index, before, start:{x,y} (local), snap } }
+
+const _isPolyNode = (n) => !!n && n.name?.() === 'userShape' && (n.getClassName?.() === 'Line' || n.getClassName?.() === 'Arrow') && !isAnchoredNode(n);
+const _polyHeads = (n) => headsOf({ className: n.getClassName(), headStart: n.getAttr('sbsHeadStart'), headEnd: n.getAttr('sbsHeadEnd'), pointerAtBeginning: n.getAttr('pointerAtBeginning'), pointerAtEnding: n.getAttr('pointerAtEnding') });
+const _polyCurve = (n) => curveOf(n.getAttr('sbsCurve'));
+
+function _polyTrace(ctx, pts, curve, radius) {
+  ctx.moveTo(pts[0].x, pts[0].y);
+  if (curve === 'smooth' && pts.length > 2) {
+    const cs = smoothControls(pts);
+    for (let i = 0; i + 1 < pts.length; i++) ctx.bezierCurveTo(cs[i].c1.x, cs[i].c1.y, cs[i].c2.x, cs[i].c2.y, pts[i + 1].x, pts[i + 1].y);
+    return;
+  }
+  const rr = curve === 'fillet' ? filletRadii(pts, radius) : null;
+  for (let i = 1; i < pts.length; i++) {
+    if (rr && rr[i] > 0.01) ctx.arcTo(pts[i].x, pts[i].y, pts[i + 1].x, pts[i + 1].y, rr[i]);
+    else ctx.lineTo(pts[i].x, pts[i].y);
+  }
+}
+
+function _polyHeadsPath(ctx, shape, pts, heads, curve) {
+  const len = Number(shape.getAttr('pointerLength')) || 14, wid = Number(shape.getAttr('pointerWidth')) || 14;
+  for (const end of ['start', 'end']) {
+    if (!heads[end]) continue;
+    const tip = end === 'start' ? pts[0] : pts[pts.length - 1];
+    const t = headTriangle(tip, endDirection(pts, end, curve), len, wid);
+    ctx.moveTo(t[0].x, t[0].y); ctx.lineTo(t[1].x, t[1].y); ctx.lineTo(t[2].x, t[2].y); ctx.closePath();
+  }
+}
+
+/** Install the drawing on a user line / arrow. Functions are never serialised: every birth path calls this (add, load, paste, undo). */
+function _wirePolyline(node) {
+  if (!_isPolyNode(node)) return;
+  const draw = (hit) => function (ctx, shape) {
+    const pts = toPairs(shape.points());
+    if (pts.length < 2) return;
+    const curve = _polyCurve(shape), heads = _polyHeads(shape);
+    ctx.beginPath();
+    _polyTrace(ctx, pts, curve, Number(shape.getAttr('sbsFillet')) || POLY_DEFAULT_FILLET);
+    ctx.strokeShape(shape);
+    if (!heads.start && !heads.end) return;
+    ctx.beginPath();
+    _polyHeadsPath(ctx, shape, pts, heads, curve);
+    if (hit) { ctx.fillStrokeShape(shape); return; }
+    // the head is SOLID in the line's colour (a Konva.Line has no fill of its own) and never dashed
+    const c = ctx._context, col = shape.stroke() || shape.fill() || '#000';
+    c.save(); c.setLineDash([]); c.fillStyle = col; c.strokeStyle = col; c.lineWidth = shape.strokeWidth() || 1; c.lineJoin = 'miter';
+    c.fill(); c.stroke(); c.restore();
+  };
+  node.sceneFunc(draw(false));
+  node.hitFunc(draw(true));
+}
+
+export function isPolyEditing() { return !!_polyEdit; }
+
+function _polySnapshot(n) {
+  return { points: (n.points() || []).slice(), x: n.x(), y: n.y(), sbsHeadStart: n.getAttr('sbsHeadStart'), sbsHeadEnd: n.getAttr('sbsHeadEnd'), sbsCurve: n.getAttr('sbsCurve'), sbsFillet: n.getAttr('sbsFillet') };
+}
+function _polyRestore(n, s) {
+  if (!_isLiveNode(n)) return false;
+  n.points(s.points.slice()); n.x(s.x); n.y(s.y);
+  for (const k of ['sbsHeadStart', 'sbsHeadEnd', 'sbsCurve', 'sbsFillet']) n.setAttr(k, s[k]);
+  _layer.batchDraw();
+  if (_polyEdit?.node === n) _polyRefreshDots();
+  if (n.getAttr('linkId')) _syncLinkFrom(n);
+  _scheduleSave();
+}
+/** ONE undo entry for whatever `change` does to the line. */
+function _polyCommit(n, label, before) {
+  const after = _polySnapshot(n);
+  if (JSON.stringify(after) === JSON.stringify(before)) return;
+  undoManager.push(label, () => _polyRestore(n, before), () => _polyRestore(n, after));
+  if (n.getAttr('linkId')) _syncLinkFrom(n);
+  _scheduleSave();
+}
+
+function _enterPolyEdit(node) {
+  if (!_isPolyNode(node) || !_editing) return;
+  if (_polyEdit?.node === node) return;
+  _exitPolyEdit();
+  _setSelection(null);                       // the unit's box and knobs step aside: the dots are the handles now
+  _polyEdit = { node, drag: null };
+  _polyRefreshDots();
+  setStatus('✎ Points: drag a dot · double-click the line = new point · double-click a dot = delete it (an END dot = arrowhead on / off) · Esc or click away to finish.', 'info', 9000);
+}
+
+function _exitPolyEdit() {
+  if (!_polyEdit) return false;
+  _polyEdit = null;
+  hidePolylineDots();
+  hideSnapGuides();
+  return true;
+}
+/** Esc (main.js asks first). @returns {boolean} true when a point-edit was closed */
+export function cancelOverlayPolyEdit() { return _exitPolyEdit(); }
+
+function _polyRefreshDots() {
+  const e = _polyEdit; if (!e) return;
+  if (!_isLiveNode(e.node) || !_editing) { _exitPolyEdit(); return; }
+  const pts = toPairs(e.node.points()), heads = _polyHeads(e.node);
+  const cr = _container.getBoundingClientRect(), T = e.node.getAbsoluteTransform();
+  showPolylineDots(pts.map((p, i) => {
+    const q = T.point(p), end = i === 0 || i === pts.length - 1;
+    return { x: cr.left + q.x, y: cr.top + q.y, end, head: end && (i === 0 ? heads.start : heads.end) };
+  }), { onStart: _polyDotStart, onMove: _polyDotMove, onEnd: _polyDotEnd, onDblClick: _polyDotDblClick });
+}
+
+function _polyDotStart(index) {
+  const e = _polyEdit; if (!e) return;
+  const n = e.node, pts = toPairs(n.points());
+  if (!pts[index]) return;
+  // 🧲 the magnet for a POINT: a box of no size. It looks at the other items, the picture — and at this line's
+  // OTHER points (each a box of no size too), never at another line's points. Everything in LAYER coordinates.
+  const L = n.getTransform(), prefs = getSnapPrefs();
+  let snap = null;
+  if (prefs.enabled) {
+    const targets = [];
+    if (prefs.items) {
+      for (const o of _layer.getChildren()) { if (o === n || !o.isVisible() || isAnchoredNode(o)) continue; const b = _snapBoxOf(o, true); if (b) targets.push(b); }
+      for (const o of _stage.find(h => !!h.getAttr?.('headerId'))) { if (!o.isVisible() || o.opacity() < 1) continue; const b = _snapBoxOf(o, true); if (b) targets.push(b); }
+    }
+    pts.forEach((p, i) => { if (i !== index) { const q = L.point(p); targets.push({ x: q.x, y: q.y, w: 0, h: 0 }); } });
+    const c = getCanonicalSize();
+    snap = { targets, frame: prefs.frame ? { w: c.width, h: c.height } : null, distance: prefs.distance / (Math.abs(_stage.scaleX()) || 1) };
+  }
+  e.drag = { index, before: _polySnapshot(n), start: L.point(pts[index]), snap };
+}
+
+function _polyDotMove(index, clientX, clientY, evt) {
+  const e = _polyEdit, d = e?.drag; if (!d || d.index !== index) return;
+  const n = e.node;
+  const cr = _container.getBoundingClientRect();
+  let p = _stage.getAbsoluteTransform().copy().invert().point({ x: clientX - cr.left, y: clientY - cr.top });   // pointer → layer coords
+  let lock = null;
+  if (evt?.shiftKey) { if (Math.abs(p.x - d.start.x) >= Math.abs(p.y - d.start.y)) { p = { x: p.x, y: d.start.y }; lock = 'y'; } else { p = { x: d.start.x, y: p.y }; lock = 'x'; } }
+  let guides = [];
+  if (d.snap && !evt?.altKey) {
+    const r = snapBox({ x: p.x, y: p.y, w: 0, h: 0 }, d.snap.targets, { distance: d.snap.distance, frame: d.snap.frame });
+    p = { x: p.x + (lock === 'x' ? 0 : r.dx), y: p.y + (lock === 'y' ? 0 : r.dy) };
+    guides = r.guides.filter(g => g.axis !== lock);
+  }
+  const local = n.getTransform().copy().invert().point(p);                                                     // layer → the line's own coords
+  n.points(movePoint(n.points(), index, local));
+  _layer.batchDraw();
+  _polyRefreshDots();
+  if (!guides.length) { hideSnapGuides(); return; }
+  const T = _stage.getAbsoluteTransform();
+  const C = (x, y) => { const q = T.point({ x, y }); return { x: Math.max(cr.left, Math.min(cr.right, cr.left + q.x)), y: Math.max(cr.top, Math.min(cr.bottom, cr.top + q.y)) }; };
+  showSnapGuides(guides.map(g => { const a = g.axis === 'x' ? C(g.at, g.from) : C(g.from, g.at), b = g.axis === 'x' ? C(g.at, g.to) : C(g.to, g.at); return { x1: a.x, y1: a.y, x2: b.x, y2: b.y }; }));
+}
+
+function _polyDotEnd(index, moved) {
+  const e = _polyEdit, d = e?.drag; if (!e) return;
+  e.drag = null;
+  hideSnapGuides();
+  if (d && moved) _polyCommit(e.node, 'Move line point', d.before);
+}
+
+function _polyDotDblClick(index) {
+  const e = _polyEdit; if (!e) return;
+  const n = e.node, count = toPairs(n.points()).length, before = _polySnapshot(n);
+  if (index === 0 || index === count - 1) {
+    const heads = _polyHeads(n), key = index === 0 ? 'sbsHeadStart' : 'sbsHeadEnd', now = index === 0 ? heads.start : heads.end;
+    // write BOTH ends explicitly: from now on the shape says itself what it wears (no more class defaults)
+    n.setAttr('sbsHeadStart', heads.start); n.setAttr('sbsHeadEnd', heads.end); n.setAttr(key, !now);
+    if (!n.getAttr('pointerLength')) { n.setAttr('pointerLength', 14); n.setAttr('pointerWidth', 14); }
+    _polyCommit(n, now ? 'Remove arrowhead' : 'Add arrowhead', before);
+  } else {
+    const next = removePoint(n.points(), index);
+    if (!next) return;
+    n.points(next);
+    _polyCommit(n, 'Delete line point', before);
+  }
+  _layer.batchDraw();
+  _polyRefreshDots();
+}
+
+/** Double-click on the line's body while its points are being edited: a new point right there. */
+function _polyAddPointAtPointer(node) {
+  const p = node.getRelativePointerPosition();
+  if (!p) return;
+  const before = _polySnapshot(node);
+  const r = insertPoint(node.points(), p);
+  if (!r) return;
+  node.points(r.flat);
+  if (!node.getAttr('sbsCurve')) node.setAttr('sbsCurve', 'fillet');       // its first bend: the cables' look (right-click changes it)
+  _polyCommit(node, 'Add line point', before);
+  _layer.batchDraw();
+  _polyRefreshDots();
+}
+
+function _polySetCurve(node, curve) {
+  const before = _polySnapshot(node);
+  node.setAttr('sbsCurve', curveOf(curve));
+  _polyCommit(node, 'Line bend', before);
+  _layer.batchDraw();
 }
 
 // ─── 🧲 The magnet (V0.3.4.12) ──────────────────────────────────────────────
@@ -6414,6 +6664,7 @@ function _setSelection(node, additive = false) {
 /** Select exactly these nodes — everything a selection change entails, for any set (the rubber-band's). */
 function _setSelectionNodes(nodes) {
   nodes = nodes || [];
+  if (_polyEdit) _exitPolyEdit();   // ✎ the dots belong to ONE line: selecting anything (or nothing) puts them away
   // ⌨ an angle entry belongs to the items it was opened for: any change of the selection commits it first
   // (it captures the whole keyboard — left armed it kept turning items that were no longer selected)
   if (_angleEntry && !(_angleEntry.nodes.length === nodes.length && _angleEntry.nodes.every(n => nodes.includes(n)))) _endAngleEntry(true);
@@ -7357,6 +7608,7 @@ export function beginOverlaySustainedFade(durationMs, easeFn, onDone) {
 
 function _beginOverlayFade(durationMs, easeFn, onDone, mode) {
   _cancelBand();   // ⬚ the layer's nodes are about to move to the ghost layer
+  _exitPolyEdit();
   // 🎬 V0.3.2.196 — EVERY overlay fade completion triggers parked clips,
   // centrally. Before, only the PHASED engine's overlay block did; in
   // SIMULTANEOUS mode the fade's onDone merely resolved a promise and the
@@ -7529,6 +7781,7 @@ async function _loadFromActiveStep() {
   if (!_stage) return;
   _cancelBand();   // ⬚ the nodes under a rubber-band are about to be replaced
   _snapEnd();
+  _exitPolyEdit();
   // 🎭 The editor's node is about to be destroyed with the rest of the layer.
   if (_maskEdit) _cancelMaskEdit();
   if (_angleEntry) _endAngleEntry(false);
@@ -7678,6 +7931,7 @@ async function _recreateNode(spec) {
     const Cls = Konva[spec.className];
     const node = new Cls({ ...spec.attrs, draggable: true });
     _wireShapeTransformend(node, SHAPE_CLASSES[spec.className]);
+    _wirePolyline(node);   // ✎ lines / arrows: the drawing is a function — never serialised, installed at every birth (no-op for other shapes and for 3D-anchored arrows)
     // 🔗 A linked instance takes its whole shape — geometry, paint, position —
     // from the definition. Runs BEFORE the style resolve below so a shape that
     // also carries shapeStyleId still ends up painted by the style: the

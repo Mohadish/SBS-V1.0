@@ -57,7 +57,7 @@ import { initContextMenu, hideContextMenu, showContextMenu, canonicalizeMenuOrde
 import { promptString } from './ui/prompt.js';
 import { showMoveToFolderDialog, showAddToReplaceDialog, showReplaceModeDialog, showInputDialog, showInsertAnimDialog, getFilter } from './ui/tree.js';
 import { positionSafeFrameEl }    from './core/safe-frame.js';
-import { initOverlay, getStage as getOverlayStage, handleAnchorPick, cancelAnchoredArrowPlacement, nudgeSelection as nudgeOverlaySelection, cancelOverlayMarquee } from './systems/overlay.js';
+import { initOverlay, getStage as getOverlayStage, handleAnchorPick, cancelAnchoredArrowPlacement, nudgeSelection as nudgeOverlaySelection, cancelOverlayMarquee, cancelOverlayPolyEdit } from './systems/overlay.js';
 import { initOverlayToolbar, toggleOverlayEditing, toggleOverlayXray, toggleOverlaySnap } from './ui/overlay-toolbar.js';
 import { matches as keyMatches, keyFor, keyLabel, keyHint, setKeyOverrides } from './core/keymap.js';   // 🎹 central shortcut table
 import { initHeaderLayer }     from './systems/header.js';
@@ -5246,6 +5246,11 @@ window.addEventListener('keydown', async e => {
   // ⬚ Overlay rubber-band in progress — Esc drops it and nothing else (this handler is capture-phase:
   // the Escape branches below would clear the 3D selection and the step multi-selection).
   if (key === 'Escape' && cancelOverlayMarquee()) {
+    e.preventDefault();
+    return;
+  }
+  // ✎ A line's points are being edited — Esc puts the dots away and nothing else.
+  if (key === 'Escape' && cancelOverlayPolyEdit()) {
     e.preventDefault();
     return;
   }

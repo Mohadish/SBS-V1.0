@@ -55,8 +55,10 @@ export const GEOM_KEYS = {
   Circle:         ['radius'],
   Ellipse:        ['radiusX', 'radiusY'],
   RegularPolygon: ['radius', 'sides'],
-  Line:           ['points'],
-  Arrow:          ['points', 'pointerLength', 'pointerWidth'],
+  // ✎ V0.3.4.15 — a line and an arrow are one thing: points, a head per end, a bend. Older definitions lack the new keys;
+  // applying a definition only writes the keys it HAS, so an instance keeps what it wears.
+  Line:           ['points', 'pointerLength', 'pointerWidth', 'sbsHeadStart', 'sbsHeadEnd', 'sbsCurve', 'sbsFillet'],
+  Arrow:          ['points', 'pointerLength', 'pointerWidth', 'sbsHeadStart', 'sbsHeadEnd', 'sbsCurve', 'sbsFillet'],
 };
 
 /** Paint attrs shared by every kind. */
