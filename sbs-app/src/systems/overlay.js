@@ -47,9 +47,9 @@ import { MARQUEE_THRESHOLD_PX, rectOf, marqueeOp, pickInMarquee, applyMarquee } 
 import { showMarqueeBox, setMarqueeBadge, hideMarqueeBox } from '../ui/marquee-box.js';
 import { snapBox, unionBox } from './snap-core.js';
 import { showSnapGuides, hideSnapGuides } from '../ui/snap-guides.js';
-import { toPairs, insertPoint, removePoint, movePoint, filletRadii, smoothControls, endDirection, headTriangle, headsOf, curveOf, shapeOutline } from './polyline-core.js';
+import { toPairs, insertPoint, insertPointOnCurve, removePoint, movePoint, filletRadii, smoothControls, endDirection, headTriangle, headsOf, curveOf, shapeOutline } from './polyline-core.js';
 import { showPolylineDots, hidePolylineDots } from '../ui/polyline-dots.js';
-import { skewScaleOf, linearOf, isIdentity, applyToPoints, ellipseOf } from './affine-core.js';
+import { skewScaleOf, linearOf, isIdentity, isUniform, applyToPoints, ellipseOf } from './affine-core.js';
 import * as editSession from './edit-session.js';   // P7-A: in-session local undo + commit-time main-undo entry
 import { undoManager } from './undo.js';            // P7-B: mass-mode + structural ops push undo entries directly
 
@@ -373,6 +373,13 @@ function _rescaleOnCanonicalChange() {
       const isText = !!node.getAttr?.('textHtml');
       if (typeof node.x === 'function') node.x(node.x() * xR);
       if (typeof node.y === 'function') node.y(node.y() * yR);
+      // shapes follow the image rule (uniform xR). A circle / triangle has ONE radius behind both width() and height()
+      // (scaling both scaled it twice); a line / an arrow / a polygon is its points (width / height do nothing to it).
+      if (node.name?.() === 'userShape' && !isAnchoredNode(node)) {
+        const cls = node.getClassName?.();
+        if (cls === 'Circle' || cls === 'RegularPolygon') { node.radius(node.radius() * xR); continue; }
+        if (cls === 'Line' || cls === 'Arrow') { node.points(applyToPoints(node.points(), [xR, 0, 0, xR], { x: node.offsetX(), y: node.offsetY() })); continue; }
+      }
       const wR = xR;                           // both kinds: width by xR
       const hR = isText ? yR : xR;             // text: per-axis; image: locked
       if (typeof node.width  === 'function' && typeof node.width()  === 'number') node.width(node.width()   * wR);
@@ -701,6 +708,8 @@ function _applyLinkToNode(node, def) {
   for (const k of LINK_STYLE_KEYS) {
     if (def.style && k in def.style) node.setAttr(k, def.style[k]);
   }
+  // ⬠ a line definition from before polygons has no 'closed': it describes an OPEN line
+  if (_classOf(node) === 'Line' && !('closed' in (def.geom || {}))) node.closed(false);
   node.x(def.x);
   node.y(def.y);
   node.rotation(def.rotation || 0);
@@ -4022,13 +4031,16 @@ function _wireShapeTransformend(node, kind) {
     } else if (kind === 'circle' || kind === 'ellipse') {
       const circle = kind === 'circle';
       const r0x = circle ? node.radius() : node.radiusX(), r0y = circle ? node.radius() : node.radiusY();
-      if (r0x > 0 && r0y > 0) {
-        const e = ellipseOf(linearOf({ rotation: node.rotation(), scaleX: sx, scaleY: sy, skewX: kx, skewY: ky }), r0x, r0y);
+      // nothing squished (a rotate — our knobs fire transformend too): nothing to bake, and the turn must stay the user's
+      if (r0x > 0 && r0y > 0 && !isIdentity(skewScaleOf({ scaleX: sx, scaleY: sy, skewX: kx, skewY: ky }))) {
+        // of the equivalent answers (turned 180°, or 90° with the radii swapped) the one nearest the turn it has: the
+        // selection frame and the rotate knobs never flip round (a taller-than-wide ellipse used to come back turned 90°)
+        const e = ellipseOf(linearOf({ rotation: node.rotation(), scaleX: sx, scaleY: sy, skewX: kx, skewY: ky }), r0x, r0y, node.rotation());
         const round = Math.abs(e.rx - e.ry) <= 1e-3 * Math.max(e.rx, 1e-9);
         if (!circle) { node.radiusX(e.rx); node.radiusY(e.ry); node.scaleX(1); node.scaleY(1); }
         else if (round) { node.radius(e.rx); node.scaleX(1); node.scaleY(1); }
         else { node.scaleX(e.rx / r0x); node.scaleY(e.ry / r0x); }     // a Konva.Circle has ONE radius: its squish is a clean scale (never a skew)
-        if (!round) node.rotation(e.rotation);
+        if (!round && Math.abs(e.rotation - node.rotation()) > 1e-9) node.rotation(e.rotation);
         node.skewX(0); node.skewY(0);
       }
     } else if (kind === 'triangle') {
@@ -4052,6 +4064,7 @@ function _wireShapeTransformend(node, kind) {
  * The class's own drawing is kept: only its fill-then-stroke call is replaced, for this one call. Hit testing goes
  * through the same function (Konva uses the scene function when there is no hit function), so the hit outline is even too.
  */
+const _unsquished = (n) => isUniform({ scaleX: n.scaleX(), scaleY: n.scaleY(), skewX: n.skewX(), skewY: n.skewY() });
 function _wireEvenStroke(node) {
   const own = node._sceneFunc;
   if (typeof own !== 'function' || node.getAttr('sceneFunc')) return;
@@ -4059,8 +4072,20 @@ function _wireEvenStroke(node) {
     ctx.fillStrokeShape = _fillStrokeEven;
     try { own.call(shape, ctx); } finally { delete ctx.fillStrokeShape; }
   });
+  // Konva pads a shape's box by its stroke in the shape's OWN units, then transforms it: a squished shape's outline is
+  // drawn even, so the box must be padded by stroke / (2 × the squish on each axis) — or the selection frame floats off
+  // the outline (or cuts through it). Only while the shape is squished; otherwise Konva's own box.
+  const ownRect = node.getClientRect;
+  node.getClientRect = function (cfg = {}) {
+    if (cfg.skipStroke || !this.hasStroke() || _unsquished(this)) return ownRect.call(this, cfg);
+    const r = ownRect.call(this, { ...cfg, skipStroke: true, skipTransform: true });
+    const sw = this.strokeWidth() || 0, px = sw / (2 * (Math.abs(this.scaleX()) || 1)), py = sw / (2 * (Math.abs(this.scaleY()) || 1));
+    const padded = { x: r.x - px, y: r.y - py, width: r.width + 2 * px, height: r.height + 2 * py };
+    return cfg.skipTransform ? padded : this._transformedRect(padded, cfg.relativeTo);
+  };
 }
 function _fillStrokeEven(shape) {           // `this` = the Konva context (scene or hit)
+  if (_unsquished(shape)) return Object.getPrototypeOf(this).fillStrokeShape.call(this, shape);   // not squished: exactly Konva's own drawing
   if (shape.attrs.fillAfterStrokeEnabled) { _strokeInParentSpace(this, shape); this.fillShape(shape); }
   else { this.fillShape(shape); _strokeInParentSpace(this, shape); }
 }
@@ -5918,7 +5943,7 @@ function _showOverlayContextMenu(node, x, y) {
   const isShapeNode = node.name?.() === 'userShape' && !isAnchoredNode(node);
   const linkDef     = isShapeNode ? _linkDefOf(node) : null;
   const sameKindLinks = isShapeNode
-    ? listShapeLinks().filter(l => l.className === _classOf(node))
+    ? listShapeLinks().filter(l => l.className === _classOf(node) && (_classOf(node) !== 'Line' || !!l.geom?.closed === !!node.closed?.()))   // ⬠ a polygon only takes a polygon's link, a line a line's
     : [];
   const linkItems = !isShapeNode ? [] : (linkDef
     ? [{ label: `🔗 Linked "${linkDef.name}"`, submenu: [
@@ -6288,7 +6313,7 @@ function _wirePolyline(node) {
     // that got squished: a thick side and a thin side).
     const A = skewScaleOf({ scaleX: shape.scaleX(), scaleY: shape.scaleY(), skewX: shape.skewX(), skewY: shape.skewY() });
     let framed = false;
-    if (!isIdentity(A)) {
+    if (!_unsquished(shape)) {   // a uniform scale (a bond fit) is drawn as ever: outline, heads and fillets grow with the line
       let F = null;
       try { F = c.getTransform().multiply(new DOMMatrix(shape.getTransform().getMatrix()).inverse()).translate(shape.x(), shape.y()).rotate(shape.rotation()); } catch { F = null; }
       if (F && Number.isFinite(F.a) && Number.isFinite(F.d)) {
@@ -6486,7 +6511,7 @@ function _polyAddPointAtPointer(node) {
   if (!p) return;
   const before = _polySnapshot(node);
   const closed = !!node.closed?.();
-  const r = insertPoint(node.points(), p, closed);
+  const r = _polyCurve(node) === 'smooth' ? insertPointOnCurve(node.points(), p, closed) : insertPoint(node.points(), p, closed);
   if (!r) return;
   node.points(r.flat);
   if (!closed && !node.getAttr('sbsCurve')) node.setAttr('sbsCurve', 'fillet');       // its first bend: the cables' look (right-click changes it)
@@ -6539,13 +6564,17 @@ function _polygonSpecOf(node) {
     kind: 'polygon', sbsHeadStart: false, sbsHeadEnd: false, sbsCurve: curve, ...(fillet ? { sbsFillet: fillet } : {}) };
 }
 
-/** Put `fresh` exactly where `old` stands in the stacking order, and let `old` go. */
+/**
+ * Put `fresh` exactly where `old` stands in the stacking order and take `old` OUT (removed, not destroyed: the
+ * conversion's undo puts the very same object back, so every older undo step of that shape — moves, resizes,
+ * colours — still finds it; entries that point at whichever object is out simply do nothing until it returns).
+ */
 function _swapNode(old, fresh) {
   const z = old.zIndex();
   if (_polyEdit?.node === old) _exitPolyEdit();
   _setSelection(null);
   _layer.add(fresh);
-  old.destroy();
+  old.remove();
   fresh.zIndex(Math.min(z, _layer.getChildren().length - 1));
   const iface = _interfaceOf(fresh); if (iface) _captureBondPct(fresh, iface);
 }
@@ -6553,26 +6582,20 @@ function _swapNode(old, fresh) {
 export function convertToPolygon(node) {
   if (!_isConvertibleShape(node) || !_isLiveNode(node)) return null;
   const wasLinked = !!node.getAttr('linkId');
-  const oldSpec = _serializeNode(node);
   const poly = new Konva.Line(_polygonSpecOf(node));
   _wireShapeTransformend(poly, 'polygon');
   _wirePolyline(poly);
   _swapNode(node, poly);
   _attachNode(poly);                 // like every birth path: in the layer first, then wired
-  const newSpec = _serializeNode(poly);
-  let cur = poly;
-  const swapTo = async (spec) => {
-    if (!_isLiveNode(cur)) return false;
-    const fresh = await _recreateNode(spec);
-    if (!fresh) return false;
-    _swapNode(cur, fresh);
-    _attachNode(fresh);
-    cur = fresh;
-    _setSelection(fresh);
+  // undo / redo swap the SAME two objects (still wired: remove() keeps their handlers) — nothing is rebuilt
+  const swap = (out, back) => {
+    if (!_isLiveNode(out)) return false;             // the step was left meanwhile: nothing to swap here
+    _swapNode(out, back);
+    _setSelection(back);
     _layer.batchDraw();
     _scheduleSave();
   };
-  undoManager.push('Convert to polygon', () => swapTo(oldSpec), () => swapTo(newSpec));
+  undoManager.push('Convert to polygon', () => swap(poly, node), () => swap(node, poly));
   _setSelection(poly);
   _layer.batchDraw();
   _scheduleSave();

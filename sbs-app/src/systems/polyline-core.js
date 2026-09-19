@@ -51,6 +51,30 @@ export function insertPoint(flat, p, closed = false) {
   return { flat: toFlat(pts), index: n.index + 1 };
 }
 
+/**
+ * Add a point where the SMOOTH curve really runs (not on the straight chord between two points: on a circle made
+ * of eight points the chord lies inside the round, and the new point would dent it). Each curve segment is sampled
+ * and the nearest sample is taken. @returns {{flat:number[], index:number}|null}
+ */
+export function insertPointOnCurve(flat, p, closed = false, samples = 24) {
+  const pts = toPairs(flat), n = pts.length;
+  if (n < 2) return null;
+  const cs = smoothControls(pts, closed), segs = cs.length;
+  let best = null;
+  for (let i = 0; i < segs; i++) {
+    const a = pts[i], b = pts[(i + 1) % n], c1 = cs[i].c1, c2 = cs[i].c2;
+    for (let k = 1; k < samples; k++) {
+      const t = k / samples, u = 1 - t;
+      const q = { x: u * u * u * a.x + 3 * u * u * t * c1.x + 3 * u * t * t * c2.x + t * t * t * b.x, y: u * u * u * a.y + 3 * u * u * t * c1.y + 3 * u * t * t * c2.y + t * t * t * b.y };
+      const d = Math.hypot(q.x - p.x, q.y - p.y);
+      if (!best || d < best.d) best = { d, i, q };
+    }
+  }
+  if (!best) return null;
+  pts.splice(best.i + 1, 0, best.q);
+  return { flat: toFlat(pts), index: best.i + 1 };
+}
+
 /** Remove a MIDDLE point. The two ends are what makes it a line: they stay. A polygon may lose any point while three remain. @returns {number[]|null} */
 export function removePoint(flat, index, closed = false) {
   const pts = toPairs(flat);
