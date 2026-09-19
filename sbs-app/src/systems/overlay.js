@@ -4431,11 +4431,12 @@ function _attachNode(node) {
       // a CARRIED interface leaves its "default position" like a grabbed one does (its own dragstart never fires)
       if (n !== node && n.getAttr?.('isInterface') && n.getAttr('atDefault')) n.setAttr('atDefault', false);
     }
-    _snapBegin(node, _multiDragStarts);   // 🧲 the magnet measures the moving box and its targets once, here
+    _snapBegin(node, _multiDragStarts);   // 🧲 ⇧ the drag session: the magnet measures the moving box and its targets once, here
+    if (_snap) _snap.carry = _carry;
   });
-  node.on('dragmove', (e) => {
-    // 🧲 FIRST: the magnet corrects the grabbed node — before its delta is copied to the carried items below
-    if (_multiDragStarts) _snapMove(node, e?.evt);
+  // The ONE writer of the carried items: start + the grabbed node's delta. The drag calls it on every move; the
+  // drag session's key handler calls it too (Shift / Alt may change while the pointer stands still).
+  const _carry = () => {
     if (!_multiDragStarts || _multiDragStarts.size <= 1) return;   // single-node = let Konva drag normally
     const start = _multiDragStarts.get(node);
     if (!start) return;
@@ -4452,6 +4453,11 @@ function _attachNode(node) {
     _layer.batchDraw();
     _multiDragStarts.peerLayer ??= [..._multiDragStarts.keys()].find(n => n !== node && n.getLayer && n.getLayer() !== _layer)?.getLayer();
     _multiDragStarts.peerLayer?.batchDraw?.();
+  };
+  node.on('dragmove', (e) => {
+    // 🧲 ⇧ FIRST the grabbed node is put where it belongs (axis lock, magnet) — THEN its delta goes to the carried items
+    if (_multiDragStarts) _snapMove(node, e?.evt);
+    _carry();
   });
   node.on('dragend', () => {
     if (_pinDragBlocked === node) return;   // 📌 refused drag — nothing moved
@@ -6104,8 +6110,10 @@ function _showOverlayContextMenu(node, x, y) {
 // top / middle / bottom lines snap to the same lines of the other items, of the header items,
 // and of the picture frame (edges + centre). The maths is pure (snap-core.js); the guides are
 // DOM (ui/snap-guides.js). "The part you hold wins": the line nearest the pointer is asked
-// first. Alt held = no magnet for that moment. Preferences are the user's (machine-level:
-// userSettings.overlay.snap), not the project's.
+// first. Alt held = no magnet for that moment. ⇧ Shift held = the move stays on ONE axis (X or Y,
+// from where the item stood at the press) — with or without the magnet, which then works on
+// the free axis only. Preferences are the user's (machine-level: userSettings.overlay.snap),
+// not the project's.
 //
 // How it rides the drag: Konva puts the grabbed node at (pointer − the offset taken at the
 // press) on EVERY move, so a correction written in 'dragmove' never accumulates — the next move
@@ -6114,7 +6122,7 @@ function _showOverlayContextMenu(node, x, y) {
 // and the undo entry / the release re-check simply see the corrected place. The moving box and
 // every target are measured ONCE, at dragstart (the group is rigid and nothing else moves).
 
-let _snap = null;   // { box0, g0, grabOff, targets, frame, distance }
+let _snap = null;   // the drag session: { node, g0, magnet, box0, grabOff, targets, frame, distance, lastRaw, lastOut, carry }
 
 export function getSnapPrefs() {
   const s = userSettings.get()?.overlay?.snap || {};
@@ -6145,58 +6153,93 @@ function _snapBoxOf(n, asTarget = false) {
 }
 
 function _snapBegin(node, starts) {
-  _snap = null;
+  _snapEnd();
+  if (!_stage || !_layer) return;
   const prefs = getSnapPrefs();
-  if (!prefs.enabled || !_stage || !_layer || !(prefs.items || prefs.frame)) return;
-  const moving = new Set(starts.keys());
-  const box0 = unionBox([...moving].map(_snapBoxOf));
-  if (!box0) return;
-  const targets = [];
-  if (prefs.items) {
-    for (const n of _layer.getChildren()) {
-      if (moving.has(n) || !n.isVisible() || isAnchoredNode(n)) continue;    // a 3D-anchored arrow follows the camera: no line to stand on
-      const b = _snapBoxOf(n, true); if (b) targets.push(b);
-    }
-    for (const n of _stage.find(h => !!h.getAttr?.('headerId'))) {           // header items: titles and logos are what things get lined up with
-      if (moving.has(n) || !n.isVisible() || n.opacity() < 1) continue;       // ghosted = hidden on THIS step: it is not in the picture
-      const b = _snapBoxOf(n, true); if (b) targets.push(b);
+  // The session is ALWAYS opened: it also carries the Shift axis-lock, which works with the magnet off.
+  const s = { node, g0: { x: node.x(), y: node.y() }, magnet: false, lastRaw: null, lastOut: null, carry: null };
+  if (prefs.enabled && (prefs.items || prefs.frame)) {
+    const moving = new Set(starts.keys());
+    const box0 = unionBox([...moving].map(n => _snapBoxOf(n)));
+    if (box0) {
+      const targets = [];
+      if (prefs.items) {
+        for (const n of _layer.getChildren()) {
+          if (moving.has(n) || !n.isVisible() || isAnchoredNode(n)) continue;    // a 3D-anchored arrow follows the camera: no line to stand on
+          const b = _snapBoxOf(n, true); if (b) targets.push(b);
+        }
+        for (const n of _stage.find(h => !!h.getAttr?.('headerId'))) {           // header items: titles and logos are what things get lined up with
+          if (moving.has(n) || !n.isVisible() || n.opacity() < 1) continue;       // ghosted = hidden on THIS step: it is not in the picture
+          const b = _snapBoxOf(n, true); if (b) targets.push(b);
+        }
+      }
+      const c = getCanonicalSize();
+      const p = _layer.getRelativePointerPosition();
+      Object.assign(s, {
+        magnet: true, box0, targets,
+        frame: prefs.frame ? { w: c.width, h: c.height } : null,
+        grabOff: p ? { x: p.x - box0.x, y: p.y - box0.y } : null,
+        distance: prefs.distance / (Math.abs(_stage.scaleX()) || 1),             // the magnet distance is SCREEN px: the same pull at any zoom
+      });
     }
   }
-  const c = getCanonicalSize();
-  const p = _layer.getRelativePointerPosition();
-  _snap = {
-    box0, g0: { x: node.x(), y: node.y() }, targets,
-    frame: prefs.frame ? { w: c.width, h: c.height } : null,
-    grabOff: p ? { x: p.x - box0.x, y: p.y - box0.y } : null,
-    distance: prefs.distance / (Math.abs(_stage.scaleX()) || 1),             // the magnet distance is SCREEN px: the same pull at any zoom
-    lastRaw: null, lastOut: null,
-  };
-  window.addEventListener('blur', hideSnapGuides);                            // Alt+Tab with the button held: Konva hears no mouseup — at least take the guides down
+  _snap = s;
+  window.addEventListener('blur', hideSnapGuides);                                // Alt+Tab with the button held: Konva hears no mouseup — at least take the guides down
+  document.addEventListener('keydown', _onSnapKey, true);                         // Shift / Alt pressed or let go while the pointer stands still
+  document.addEventListener('keyup', _onSnapKey, true);
 }
 
-/** Correct the grabbed node (in place) and draw the guides. Called first thing in its dragmove. */
+/**
+ * Place the grabbed node (in place) and draw the guides. Called first thing in its dragmove, and again when
+ * Shift / Alt changes while the pointer stands still. Order: the raw place Konva gave → ⇧ Shift keeps the move on
+ * ONE axis, measured from where the item stood at the press (the larger of the two displacements decides, as it
+ * is re-judged on every move you can swing from one axis to the other) → 🧲 the magnet, on the free axis only.
+ */
 function _snapMove(node, evt) {
-  const s = _snap; if (!s) return;
+  const s = _snap; if (!s || s.node !== node) return;
   let rx = node.x(), ry = node.y();
-  if (s.lastOut && rx === s.lastOut.x && ry === s.lastOut.y) { rx = s.lastRaw.x; ry = s.lastRaw.y; }   // Konva re-fired without re-placing the node: that is OUR corrected place, the raw one is remembered
+  if (s.lastOut && rx === s.lastOut.x && ry === s.lastOut.y) { rx = s.lastRaw.x; ry = s.lastRaw.y; }   // Konva re-fired without re-placing the node (or a key event): that is OUR place, the raw one is remembered
   s.lastRaw = { x: rx, y: ry };
-  if (evt?.altKey) { node.x(rx); node.y(ry); s.lastOut = { x: rx, y: ry }; hideSnapGuides(); return; }   // Alt = let go of the magnet for now
-  const dx = rx - s.g0.x, dy = ry - s.g0.y;
-  const moved = { x: s.box0.x + dx, y: s.box0.y + dy, w: s.box0.w, h: s.box0.h };
-  const r = snapBox(moved, s.targets, { distance: s.distance, frame: s.frame, grab: s.grabOff ? { x: moved.x + s.grabOff.x, y: moved.y + s.grabOff.y } : null });
-  node.x(rx + r.dx); node.y(ry + r.dy);
+  let dx = rx - s.g0.x, dy = ry - s.g0.y, lock = null;                        // lock = the axis that may NOT change
+  if (evt?.shiftKey) { if (Math.abs(dx) >= Math.abs(dy)) { dy = 0; lock = 'y'; } else { dx = 0; lock = 'x'; } }
+  let guides = [];
+  if (s.magnet && !evt?.altKey) {                                             // Alt = let go of the magnet for now
+    const moved = { x: s.box0.x + dx, y: s.box0.y + dy, w: s.box0.w, h: s.box0.h };
+    const r = snapBox(moved, s.targets, { distance: s.distance, frame: s.frame, grab: s.grabOff ? { x: moved.x + s.grabOff.x, y: moved.y + s.grabOff.y } : null });
+    if (lock !== 'x') dx += r.dx;
+    if (lock !== 'y') dy += r.dy;
+    guides = r.guides.filter(g => g.axis !== lock);
+  }
+  node.x(s.g0.x + dx); node.y(s.g0.y + dy);
   s.lastOut = { x: node.x(), y: node.y() };
-  if (!r.guides.length) { hideSnapGuides(); return; }
+  if (!guides.length) { hideSnapGuides(); return; }
   const cr = _container.getBoundingClientRect(), T = _stage.getAbsoluteTransform();
   // client px, clamped to the viewport: a guide running to an item parked outside the picture must not cross the side panels
   const C = (x, y) => { const q = T.point({ x, y }); return { x: Math.max(cr.left, Math.min(cr.right, cr.left + q.x)), y: Math.max(cr.top, Math.min(cr.bottom, cr.top + q.y)) }; };
-  showSnapGuides(r.guides.map(g => {
+  showSnapGuides(guides.map(g => {
     const a = g.axis === 'x' ? C(g.at, g.from) : C(g.from, g.at), b = g.axis === 'x' ? C(g.at, g.to) : C(g.to, g.at);
     return { x1: a.x, y1: a.y, x2: b.x, y2: b.y };
   }));
 }
 
-function _snapEnd() { _snap = null; hideSnapGuides(); window.removeEventListener('blur', hideSnapGuides); }
+/** Shift / Alt went down or up in the middle of a drag: answer at once, not at the next mouse move. */
+function _onSnapKey(e) {
+  const s = _snap;
+  if (!s) { document.removeEventListener('keydown', _onSnapKey, true); document.removeEventListener('keyup', _onSnapKey, true); return; }   // self-heal
+  if (e.key !== 'Shift' && e.key !== 'Alt') return;
+  if (e.repeat || !_isLiveNode(s.node) || !s.lastRaw) return;
+  _snapMove(s.node, e);
+  s.carry?.();                                                                 // the carried items follow the grabbed one (the same writer the drag uses)
+  _layer?.batchDraw();
+}
+
+function _snapEnd() {
+  _snap = null;
+  hideSnapGuides();
+  window.removeEventListener('blur', hideSnapGuides);
+  document.removeEventListener('keydown', _onSnapKey, true);
+  document.removeEventListener('keyup', _onSnapKey, true);
+}
 
 // ─── ⬚ Rubber-band selection (V0.3.4.11) ────────────────────────────────────
 // Press on EMPTY stage and drag: a box; release: what it caught is the selection. The rules are

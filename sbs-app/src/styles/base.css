@@ -202,12 +202,14 @@ html[data-theme="light"] .context-menu__item:not(:disabled):hover{
    which the light-theme override turns white — that mismatches the
    dark toolbar. Re-pin the buttons inside to the dark-theme .btn
    palette so the toolbar reads the same as it does in dark mode. */
+html[data-theme="light"] #overlay-helpers-bar .btn,
 html[data-theme="light"] #overlay-helpers-panel .btn,
 html[data-theme="light"] #overlay-toolbar .btn,
 html[data-theme="light"] #overlay-toolbar .filelabel,
 html[data-theme="light"] #overlay-toolbar .miniBtn{
   background:#182233;color:#e5e7eb;border-color:#334155;
 }
+html[data-theme="light"] #overlay-helpers-bar .btn:hover,
 html[data-theme="light"] #overlay-helpers-panel .btn:hover,
 html[data-theme="light"] #overlay-toolbar .btn:hover,
 html[data-theme="light"] #overlay-toolbar .filelabel:hover,

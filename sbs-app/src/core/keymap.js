@@ -27,6 +27,7 @@ const DEFAULTS = {
   gizmoSpace:        'KeyL',   // ⤧ gizmo Local ↔ World
   captureStepCamera: 'KeyC',   // 📷 save the current view as the step's camera (free binding)
   overlayXray:       'KeyX',   // 👓 ghost the overlay to arrange against the 3D (never rendered)
+  overlaySnap:       'KeyM',   // 🧲 the magnet — dragged overlay items stick to each other and to the picture
 };
 
 let _overrides = {};

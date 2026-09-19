@@ -138,6 +138,7 @@ const _KEY_ACTIONS = [
   { id: 'captureStepCamera', name: '📷 Save step camera',   desc: 'Record the current view as the step\'s camera (free binding, undoable).' },
   { id: 'overlayEdit',       name: '✏ Edit overlay',        desc: 'Enter / leave overlay editing.' },
   { id: 'overlayXray',       name: '👓 Overlay X-ray',      desc: 'Ghost the overlay to see the 3D underneath (never rendered).' },
+  { id: 'overlaySnap',       name: '🧲 Overlay magnet',     desc: 'Dragged overlay items stick to each other and to the picture (snapping on / off).' },
   { id: 'globalMode',        name: '🌐 Global Mode',         desc: 'Transform edits carry across steps on deselect.' },
   { id: 'gizmoSpace',        name: '⤧ Gizmo Local / World', desc: 'Toggle the transform gizmo\'s coordinate space.' },
 ];

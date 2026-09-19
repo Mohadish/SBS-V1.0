@@ -58,7 +58,7 @@ import { promptString } from './ui/prompt.js';
 import { showMoveToFolderDialog, showAddToReplaceDialog, showReplaceModeDialog, showInputDialog, showInsertAnimDialog, getFilter } from './ui/tree.js';
 import { positionSafeFrameEl }    from './core/safe-frame.js';
 import { initOverlay, getStage as getOverlayStage, handleAnchorPick, cancelAnchoredArrowPlacement, nudgeSelection as nudgeOverlaySelection, cancelOverlayMarquee } from './systems/overlay.js';
-import { initOverlayToolbar, toggleOverlayEditing, toggleOverlayXray } from './ui/overlay-toolbar.js';
+import { initOverlayToolbar, toggleOverlayEditing, toggleOverlayXray, toggleOverlaySnap } from './ui/overlay-toolbar.js';
 import { matches as keyMatches, keyFor, keyLabel, keyHint, setKeyOverrides } from './core/keymap.js';   // 🎹 central shortcut table
 import { initHeaderLayer }     from './systems/header.js';
 import { initCables, resolveNodeWorldPosition, flattenCablesToCascade, resolveCableSnapshotAtStep, applyStepSnapshot as applyCableStepSnapshot } from './systems/cables.js';        // C1: cables wire step:applied → applyStepSnapshot; C5-B: pos resolver for gizmo target; V0.3.0.151 cascade flatten
@@ -5129,6 +5129,12 @@ window.addEventListener('keydown', async e => {
   if (keyMatches('overlayXray', e) && !e.ctrlKey && !e.altKey && !e.metaKey) {
     e.preventDefault();
     toggleOverlayXray();
+    return;
+  }
+  // 🧲 The overlay magnet (snapping) on / off. Bare key only.
+  if (keyMatches('overlaySnap', e) && !e.ctrlKey && !e.altKey && !e.metaKey && !e.shiftKey) {
+    e.preventDefault();
+    toggleOverlaySnap();
     return;
   }
   // Alt+C (camera template picker) is NOT handled here any more —
