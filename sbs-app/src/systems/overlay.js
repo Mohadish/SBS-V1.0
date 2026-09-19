@@ -42,7 +42,7 @@ import {
 import { getTextToolbarSlot, showFloatingToolbar, hideFloatingToolbar } from '../ui/overlay-toolbar.js';
 import * as textEngine from './text-engine.js';
 import { getStyleTemplate, listStyleTemplates } from './style-templates.js';
-import { registerLayer, getLayerSelection, persistNodeIfHeader } from './cross-layer.js';
+import { registerLayer, getLayerSelection, persistNodeIfHeader, useOwnMultiDrag, reapplyGroupDelta } from './cross-layer.js';
 import * as editSession from './edit-session.js';   // P7-A: in-session local undo + commit-time main-undo entry
 import { undoManager } from './undo.js';            // P7-B: mass-mode + structural ops push undo entries directly
 
@@ -122,6 +122,7 @@ export function initOverlay() {
     enabledAnchors:   ['top-left', 'top-right', 'bottom-left', 'bottom-right'],
   });
   _uiLayer.add(_transformer);
+  useOwnMultiDrag(_transformer, 'overlay');   // ONE mover for a multi-select drag — ours (see cross-layer.js)
   // ⇧ Shift on Konva's OWN top rotater levels to 45°/90° too. Konva only
   // snaps inside rotationSnapTolerance, so widening it to 23° while Shift is
   // held makes every angle fall within reach of some multiple of 45 — i.e.
@@ -249,6 +250,8 @@ export function initOverlay() {
   registerLayer('overlay', {
     getSelection: () => _transformer?.nodes() || [],
     scheduleSave: () => _scheduleSave(),
+    peersMoved:    (nodes) => _afterPeersMoved(nodes),   // a HEADER-grabbed drag carried overlay items along
+    bondsRestored: (nodes) => _reconcileBondAfterRestore((nodes || []).filter(n => n && n.getLayer?.() === _layer)),   // …and its undo / redo put them back
   });
 }
 
@@ -4354,13 +4357,14 @@ function _attachNode(node) {
     if (node.getAttr('isInterface') && node.getAttr('atDefault')) node.setAttr('atDefault', false);
   });
 
-  // Multi-node drag — now CROSS-LAYER. Konva's per-node draggable only
-  // moves the grabbed node; siblings (in the same OR the header layer)
-  // stay put. We stash starting positions across both layers' selections
-  // on dragstart, apply the grabbed-node's delta to every sibling on
-  // dragmove, and persist any header siblings on dragend (the grabbed
-  // node + overlay siblings are in step.overlay JSON, captured by the
-  // dragend handler below; header siblings need updateHeaderItem each).
+  // Multi-node drag — CROSS-LAYER, and OURS ALONE (V0.3.4.10). Only the grabbed node is
+  // dragged natively; every other item of the gesture is moved here, to start + the grabbed
+  // node's delta, and fires NO drag events of its own: Konva's own multi-node proxy drag is
+  // switched off at the transformer (useOwnMultiDrag in cross-layer.js tells what the two
+  // movers did to each other). The set = this layer's selection + the header layer's + the
+  // bonded shapes of EVERY interface in it (they are in no transformer). Staying put: pinned
+  // items, and 3D-anchored arrows (their geometry belongs to the reprojection). What a node's
+  // own dragstart / dragend does for it is done for the carried ones below + _afterPeersMoved.
   let _multiDragStarts = null;
   node.on('dragstart', () => {
     _commitNudgeBatch();   // ⬅➡ close any open nudge entry before this drag's
@@ -4370,24 +4374,31 @@ function _attachNode(node) {
     if (_pinUI?.mode === 'idle' && _pinUI.node !== node) _pinTeardown();   // the reminder bubble closes; a pending reposition stays
     const own  = _transformer?.nodes() || [];
     const peer = getLayerSelection('header');
-    let sel  = [...own, ...peer];
-    // Interface drag → carry its bonded shapes along (move as ONE). They ride
-    // the same multi-drag delta below.
-    if (node.getAttr('isInterface')) {
-      const bonded = _attachedShapesOf(node);
-      if (bonded.length) sel = [...new Set([...sel, node, ...bonded])];
-    }
+    const sel  = [...own, ...peer];
     // P7-C-2: ALWAYS snapshot drag-start positions, even for single-node
     // drags — that snapshot is what dragend uses to push a "Move N
     // item(s)" undo entry. Multi-drag delta logic (in dragmove) still
-    // gates on sel.length > 1.
-    const draggedSet = sel.length ? sel : [node];
+    // gates on the set being > 1.
+    // The grabbed node decides: it carries the selection only if it BELONGS to it. A Shift / Ctrl
+    // press toggles it out before the drag starts — it then drags alone, with its own snapshot and
+    // undo entry (it used to move with neither). And an armed pin reposition is a ONE-item gesture:
+    // "↺ Reset" and "✓ Set new position" know the pin only, so nothing may ride along unrecorded.
+    const base = (sel.includes(node) && !_pinRepositionActive(node)) ? sel : [node];
+    // Interfaces carry their bonded shapes along (move as ONE) — the grabbed one AND any
+    // that is selected beside it: nothing else moves the shapes of a carried interface.
+    const bonded = base.filter(n => n.getAttr?.('isInterface')).flatMap(n => _attachedShapesOf(n));
+    const draggedSet = bonded.length ? [...new Set([...base, ...bonded])] : base;
     // 📌 Pinned siblings in a multi-drag stay put (the grabbed node itself
     // was vetted above).
     const pinnedPeers = draggedSet.filter(n => n !== node && _pinnedDefOf(n));
     if (pinnedPeers.length) setStatus(`📌 ${pinnedPeers.length} pinned item${pinnedPeers.length > 1 ? 's' : ''} stayed put — unpin to move.`, 'warn', 5000);
     _multiDragStarts = new Map();
-    for (const n of draggedSet) if (!pinnedPeers.includes(n)) _multiDragStarts.set(n, { x: n.x(), y: n.y() });
+    for (const n of draggedSet) {
+      if (pinnedPeers.includes(n) || (n !== node && isAnchoredNode(n))) continue;
+      _multiDragStarts.set(n, { x: n.x(), y: n.y() });
+      // a CARRIED interface leaves its "default position" like a grabbed one does (its own dragstart never fires)
+      if (n !== node && n.getAttr?.('isInterface') && n.getAttr('atDefault')) n.setAttr('atDefault', false);
+    }
   });
   node.on('dragmove', () => {
     if (!_multiDragStarts || _multiDragStarts.size <= 1) return;   // single-node = let Konva drag normally
@@ -4412,6 +4423,11 @@ function _attachNode(node) {
     const beforeMap = _multiDragStarts;
     _multiDragStarts = null;
     if (!beforeMap) return;
+    // The captured start is the truth: carried items end at start + the grabbed node's delta.
+    reapplyGroupDelta(beforeMap, node, 'overlay');
+    const before  = [...beforeMap.entries()].map(([n, p]) => ({ n, x: p.x, y: p.y }));
+    const after   = before.map(b => ({ n: b.n, x: b.n.x(), y: b.n.y() }));
+    const carried = before.filter((b, i) => b.n !== node && (b.x !== after[i].x || b.y !== after[i].y)).map(b => b.n);
     // Cross-layer header persistence (header peers don't fire their
     // own dragend since we moved them via x()/y() in dragmove).
     for (const n of beforeMap.keys()) {
@@ -4420,12 +4436,10 @@ function _attachNode(node) {
     // 📌 Repositioning a pin: no "Move" entry — "✓ Set new position" pushes
     // the definition entry (which restores every instance) and "↺ Reset"
     // snaps back without one.
-    if (_pinRepositionActive(node)) { _pinMarkMoved(); return; }
+    if (_pinRepositionActive(node)) { _pinMarkMoved(); return; }   // a one-item gesture (see dragstart): nothing was carried
     // P7-C-2: push a "Move" undo entry for ALL nodes that ended up
     // somewhere different from where they started. Single-node and
-    // multi-node drags both go through this path.
-    const before = [...beforeMap.entries()].map(([n, p]) => ({ n, x: p.x, y: p.y }));
-    const after  = before.map(b => ({ n: b.n, x: b.n.x(), y: b.n.y() }));
+    // multi-node drags both go through this path — ONE entry per gesture.
     const moved  = before.some((b, i) => b.x !== after[i].x || b.y !== after[i].y);
     if (moved) {
       const label = before.length > 1 ? `Move ${before.length} items` : 'Move';
@@ -4434,6 +4448,7 @@ function _attachNode(node) {
         () => _restoreNodePositions(after),
       );
     }
+    _afterPeersMoved(carried, node);
   });
 
   // Interface attachment: while dragging a SHAPE (not an interface), blink the
@@ -4714,6 +4729,43 @@ function _snapNodeGeom(node) {
     snap.zoomMult     = node.getAttr('zoomMult');
   }
   return snap;
+}
+
+/**
+ * Items CARRIED by a multi-drag are moved by x()/y() writes and fire no drag events of their
+ * own (one mover — see useOwnMultiDrag in cross-layer.js). What a node's own dragend does for
+ * it is done for them here.
+ *
+ * BONDS — the group follows the verdict of the item you HOLD, as it always did (until
+ * V0.3.4.10 by accident: every carried item ran its own bond handler, which asks where the
+ * POINTER was): dropped over an interface → every carried shape bonds to it; dropped over
+ * none → they are set free. Two exceptions keep their bond and only re-derive their % of the
+ * interface (the rule the move-undo already follows): a shape whose interface moved WITH it,
+ * and any gesture that has no verdict — an interface or a header item was held.
+ *
+ * LINKS — a linked instance writes its new place into the link definition.
+ *
+ * Overlay items only: header peers persist through persistNodeIfHeader.
+ * @param {object[]} nodes      the carried items that really moved
+ * @param {object}  [grabbed]   the item that was held (null when it was a header item)
+ */
+function _afterPeersMoved(nodes, grabbed = null) {
+  const mine = (nodes || []).filter(n => n && n.getLayer?.() === _layer);
+  if (!mine.length) return;
+  const moving = new Set(mine);
+  if (grabbed) moving.add(grabbed);
+  const held = !!grabbed && grabbed.getLayer?.() === _layer && !grabbed.getAttr('isInterface');
+  // the very question the held item's own bond handler asks (it runs right after this)
+  const target = held ? _ifaceUnderPoint(_stage?.getPointerPosition?.() || _rectCenter(grabbed)) : null;
+  for (const n of mine) {
+    if (n.getAttr('isInterface')) continue;
+    const own = _interfaceOf(n);
+    if (own && moving.has(own)) { _captureBondPct(n, own); continue; }        // moved WITH its interface: the bond stands
+    if (!held) { if (own) _captureBondPct(n, own); continue; }                // no verdict: keep, re-derive the %
+    if (target) { n.setAttr('attachedTo', _ensureIfaceId(target)); _captureBondPct(n, target); }
+    else        { n.setAttr('attachedTo', null); n.setAttr('bondPct', null); }
+  }
+  for (const n of mine) _syncLinkFrom(n);      // returns at once for an item that is not linked
 }
 
 /** After an undo/redo restores node geometry, re-derive each bonded shape's
@@ -5995,9 +6047,9 @@ function _showOverlayContextMenu(node, x, y) {
  *   _setSelection(node, additive)  — toggle node in/out of the existing
  *                                    set (shift/ctrl/meta-click)
  *
- * Multi-select is honoured by Konva.Transformer natively: passing an
- * array of nodes draws one bounding box around all of them and a drag
- * moves the whole group together.
+ * Multi-select: passing an array of nodes to the Transformer draws one bounding
+ * box around all of them. MOVING the group is ours, not Konva's — _attachNode's
+ * multi-drag (Konva's own proxy drag is switched off: useOwnMultiDrag).
  */
 function _setSelection(node, additive = false) {
   let nodes;

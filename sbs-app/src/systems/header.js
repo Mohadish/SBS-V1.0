@@ -52,7 +52,7 @@ import { generateId }       from '../core/schema.js';
 import { htmlToCanvas, enterTextEditor } from './overlay.js';   // P2/P3: shared rasteriser + editor
 import * as subtitles       from './subtitles.js';              // 🌐 per-step subtitle overrides + translation (V0.3.2.63)
 import { setStatus }        from '../ui/status.js';             // chip-refresh feedback
-import { registerLayer, getLayerSelection, scheduleOverlaySave } from './cross-layer.js';
+import { registerLayer, getLayerSelection, scheduleOverlaySave, useOwnMultiDrag, reapplyGroupDelta, notifyOverlayPeersMoved, notifyOverlayBondsRestored } from './cross-layer.js';
 import { getStyleTemplate } from './style-templates.js';        // P4b: per-item style binding
 import { textEffectsCss }   from './text-effects.js';           // V0.3.2.149: shadow/outline from the bound style
 import { undoManager }      from './undo.js';                   // P7-C: drag / resize undo entries
@@ -531,6 +531,7 @@ export function initHeaderLayer(stage) {
     anchorFill:       '#fff',
   });
   _layer.add(_transformer);
+  useOwnMultiDrag(_transformer, 'header');   // ONE mover for a multi-select drag — ours (see cross-layer.js)
 
   // Click on empty stage → clear header selection too. Overlay already
   // wires its own stage-pointerdown to clear its selection; without
@@ -1066,7 +1067,9 @@ function _attachItemHandlers(node, item) {
     const own  = _transformer?.nodes() || [];
     const peer = getLayerSelection('overlay');
     const sel  = [...own, ...peer];
-    const set  = sel.length ? sel : [node];
+    // The grabbed item carries the selection only if it BELONGS to it: a Shift / Ctrl press toggles it
+    // out before the drag starts — it then drags alone (it used to move unpersisted and snap back).
+    const set  = sel.includes(node) ? sel : [node];
     // Always snapshot for undo. Split into header / overlay so undo can
     // restore each side via its own mechanism (state.setState batching
     // for headers, direct Konva attr writes + scheduleOverlaySave for
@@ -1102,15 +1105,19 @@ function _attachItemHandlers(node, item) {
     _multiDragStarts.peerLayer?.batchDraw?.();
   });
 
-  // Persist drag back to data stores + push undo entry. In multi-drag,
-  // ONLY the grabbed node fires dragend; siblings moved via x()/y() in
-  // dragmove don't emit. We walk the captured drag set (header AND
-  // overlay peers) and persist each appropriately.
+  // Persist drag back to data stores + push undo entry. In a multi-drag ONLY the grabbed node
+  // fires dragend: the others are moved by x()/y() in dragmove and emit nothing. That is TRUE
+  // since V0.3.4.10 switched Konva's own multi-node proxy drag off (useOwnMultiDrag in
+  // cross-layer.js) — until then every header sibling was ALSO dragged natively and ended one
+  // first-delta out of place. We walk the captured drag set (header AND overlay peers) and
+  // persist each appropriately.
   node.on('dragend', () => {
     const before = _dragSnapBefore;
+    const starts = _multiDragStarts;
     _dragSnapBefore  = null;
     _multiDragStarts = null;
     if (!before) return;
+    reapplyGroupDelta(starts, node, 'header');   // the captured start is the truth: carried items end at start + this node's delta
 
     // Persist header peers via batched updateHeaderItem; one call per
     // header node, but they all hit the same change:headerItems event
@@ -1124,7 +1131,11 @@ function _attachItemHandlers(node, item) {
     }
     // Persist overlay peers in one shot — overlay's _stage.toJSON
     // captures every node's position.
-    if (before.overlays.length) scheduleOverlaySave();
+    if (before.overlays.length) {
+      // what an overlay item's OWN dragend would have done for it (bond %, linked definition) — it fires none here
+      notifyOverlayPeersMoved(before.overlays.filter(s => s.n && (s.n.x() !== s.x || s.n.y() !== s.y)).map(s => s.n));
+      scheduleOverlaySave();
+    }
 
     // Push "Move" undo entry covering both sides.
     const afterHeaders  = before.headers .map(s => ({ id: s.id, n: s.n, x: s.n.x(), y: s.n.y() }));
@@ -1253,6 +1264,9 @@ function _restoreCrossLayerPositions(headerSnaps, overlaySnaps) {
     }
   }
   if (overlayAlive) {
+    // a bonded shape's % of its interface follows the restored place — as the overlay's own move-undo
+    // does — or the re-fit that answers every undo would pull it straight back
+    notifyOverlayBondsRestored(overlaySnaps.map(s => s.n));
     overlaySnaps[0].n?.getLayer?.()?.batchDraw?.();
     scheduleOverlaySave();
     any = true;
