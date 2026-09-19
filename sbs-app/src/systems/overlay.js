@@ -49,6 +49,7 @@ import { snapBox, unionBox } from './snap-core.js';
 import { showSnapGuides, hideSnapGuides } from '../ui/snap-guides.js';
 import { toPairs, insertPoint, removePoint, movePoint, filletRadii, smoothControls, endDirection, headTriangle, headsOf, curveOf } from './polyline-core.js';
 import { showPolylineDots, hidePolylineDots } from '../ui/polyline-dots.js';
+import { skewScaleOf, linearOf, isIdentity, applyToPoints, ellipseOf } from './affine-core.js';
 import * as editSession from './edit-session.js';   // P7-A: in-session local undo + commit-time main-undo entry
 import { undoManager } from './undo.js';            // P7-B: mass-mode + structural ops push undo entries directly
 
@@ -677,6 +678,8 @@ function _captureLinkFrom(node) {
     rotation:     node.rotation() || 0,
     skewX:        node.skewX() || 0,
     skewY:        node.skewY() || 0,
+    scaleX:       node.scaleX(),                 // ✎ V0.3.4.17 — a squished circle / triangle keeps its squish as a scale
+    scaleY:       node.scaleY(),
     geom,
     style,
     shapeStyleId: node.getAttr('shapeStyleId') || null,
@@ -703,10 +706,10 @@ function _applyLinkToNode(node, def) {
   node.rotation(def.rotation || 0);
   if ('skewX' in def) node.skewX(def.skewX || 0);   // definitions saved before V0.3.4.11 carry no skew: leave the instance's alone
   if ('skewY' in def) node.skewY(def.skewY || 0);
-  // Scale is always identity on a linked shape: geometry is authoritative,
-  // and a stale scale would multiply it.
-  node.scaleX(1);
-  node.scaleY(1);
+  // Scale: what the definition says (a squished circle / triangle keeps its squish as a scale, V0.3.4.17);
+  // identity for a definition from before — geometry is authoritative there.
+  node.scaleX(Number.isFinite(def.scaleX) ? def.scaleX : 1);
+  node.scaleY(Number.isFinite(def.scaleY) ? def.scaleY : 1);
   if ((node.getAttr('shapeStyleId') || null) !== (def.shapeStyleId || null)) {
     node.setAttr('shapeStyleId', def.shapeStyleId || null);
   }
@@ -3997,31 +4000,76 @@ function _rememberShapeDefaults(patch) {
  * spec matches the rendered size. Different shape types need different
  * geometry rebakes; the kind tag picks the right path.
  */
+// ✎ V0.3.4.17 — squishing a shape the way a drawing program does. Konva keeps a resize in the node's TRANSFORM
+// (scale, and skew when a group of turned items is stretched) and draws everything through it — the outline too,
+// which is how a squished triangle / circle / curvy line got a thick side and a thin side. Two rules now:
+//  · at the end of a resize the squish goes into the GEOMETRY wherever the shape can hold it: a line's / an
+//    arrow's POINTS (its bends are then worked out again from them), a rectangle's width / height, an ellipse's
+//    radii and turn (a squished ellipse is still an ellipse — affine-core.ellipseOf). A circle and a triangle
+//    cannot hold a squish in their own attributes: it stays in their transform (the squish is no longer
+//    thrown away), and so does the skew of a rectangle stretched while turned (it is a parallelogram now);
+//  · the OUTLINE of a rectangle / circle / ellipse / triangle is always drawn in its parent's space, so it is
+//    even all round whatever the transform (_wireEvenStroke). Lines and arrows draw their own (_wirePolyline).
 function _wireShapeTransformend(node, kind) {
+  if (kind === 'rect' || kind === 'circle' || kind === 'ellipse' || kind === 'triangle') _wireEvenStroke(node);
   node.on('transformend', () => {
-    const sx = node.scaleX(), sy = node.scaleY();
+    const sx = node.scaleX(), sy = node.scaleY(), kx = node.skewX(), ky = node.skewY();
+    const noSkew = Math.abs(kx) < 1e-9 && Math.abs(ky) < 1e-9;
     if (kind === 'rect') {
       node.width(node.width() * sx);
       node.height(node.height() * sy);
-    } else if (kind === 'circle') {
-      // Circle uses radius; pick the larger axis.
-      node.radius(node.radius() * Math.max(Math.abs(sx), Math.abs(sy)));
-    } else if (kind === 'ellipse') {
-      node.radiusX(node.radiusX() * Math.abs(sx));
-      node.radiusY(node.radiusY() * Math.abs(sy));
+      node.scaleX(1); node.scaleY(1);                          // a skew stays: a rectangle stretched while turned is a parallelogram
+    } else if (kind === 'circle' || kind === 'ellipse') {
+      const circle = kind === 'circle';
+      const r0x = circle ? node.radius() : node.radiusX(), r0y = circle ? node.radius() : node.radiusY();
+      if (r0x > 0 && r0y > 0) {
+        const e = ellipseOf(linearOf({ rotation: node.rotation(), scaleX: sx, scaleY: sy, skewX: kx, skewY: ky }), r0x, r0y);
+        const round = Math.abs(e.rx - e.ry) <= 1e-3 * Math.max(e.rx, 1e-9);
+        if (!circle) { node.radiusX(e.rx); node.radiusY(e.ry); node.scaleX(1); node.scaleY(1); }
+        else if (round) { node.radius(e.rx); node.scaleX(1); node.scaleY(1); }
+        else { node.scaleX(e.rx / r0x); node.scaleY(e.ry / r0x); }     // a Konva.Circle has ONE radius: its squish is a clean scale (never a skew)
+        if (!round) node.rotation(e.rotation);
+        node.skewX(0); node.skewY(0);
+      }
     } else if (kind === 'triangle') {
-      node.radius(node.radius() * Math.max(Math.abs(sx), Math.abs(sy)));
+      const uniform = noSkew && Math.abs(Math.abs(sx) - Math.abs(sy)) <= 1e-3 * Math.max(Math.abs(sx), Math.abs(sy), 1e-9);
+      if (uniform) { node.radius(node.radius() * Math.abs(sx)); node.scaleX(Math.sign(sx) || 1); node.scaleY(Math.sign(sy) || 1); }
+      // squished: the scale / skew stay — that IS the squished triangle (it used to be thrown away: radius × the larger axis)
     } else if (kind === 'line' || kind === 'arrow') {
-      // Bake scale into points + position resets so future drags are
-      // local to the new pose.
-      const pts = node.points();
-      const baked = pts.map((v, i) => v * (i % 2 === 0 ? sx : sy));
-      node.points(baked);
+      // the squish goes into the POINTS; the turn stays the node's. The bends (fillet / smooth) are worked out again.
+      const A = skewScaleOf({ scaleX: sx, scaleY: sy, skewX: kx, skewY: ky });
+      if (!isIdentity(A)) node.points(applyToPoints(node.points(), A, { x: node.offsetX(), y: node.offsetY() }));
+      node.scaleX(1); node.scaleY(1); node.skewX(0); node.skewY(0);
     }
-    node.scaleX(1);
-    node.scaleY(1);
     _scheduleSave();
   });
+}
+
+/**
+ * The outline of a rectangle / circle / ellipse / triangle is stroked in its PARENT's space: the path is built through
+ * the node's transform as ever (so the shape is squished), then the stroke is laid on with the parent's transform (so the
+ * line is as thick all round as the Thickness says, times the stage's zoom — like every other line in the picture).
+ * The class's own drawing is kept: only its fill-then-stroke call is replaced, for this one call. Hit testing goes
+ * through the same function (Konva uses the scene function when there is no hit function), so the hit outline is even too.
+ */
+function _wireEvenStroke(node) {
+  const own = node._sceneFunc;
+  if (typeof own !== 'function' || node.getAttr('sceneFunc')) return;
+  node.sceneFunc(function (ctx, shape) {
+    ctx.fillStrokeShape = _fillStrokeEven;
+    try { own.call(shape, ctx); } finally { delete ctx.fillStrokeShape; }
+  });
+}
+function _fillStrokeEven(shape) {           // `this` = the Konva context (scene or hit)
+  if (shape.attrs.fillAfterStrokeEnabled) { _strokeInParentSpace(this, shape); this.fillShape(shape); }
+  else { this.fillShape(shape); _strokeInParentSpace(this, shape); }
+}
+function _strokeInParentSpace(kctx, shape) {
+  const c = kctx._context;
+  let m = null;
+  try { m = c.getTransform().multiply(new DOMMatrix(shape.getTransform().getMatrix()).inverse()); } catch { m = null; }
+  if (!m || !Number.isFinite(m.a) || !Number.isFinite(m.d)) { kctx.strokeShape(shape); return; }   // a flattened shape: nothing sensible to undo — plain stroke
+  c.save(); c.setTransform(m); kctx.strokeShape(shape); c.restore();
 }
 
 /**
@@ -4616,7 +4664,8 @@ function _attachNode(node) {
   node.on('transformend', () => {
     const sx = node.scaleX();
     const sy = node.scaleY();
-    if (sx !== 1 || sy !== 1) {
+    // a shape (userShape) has its own bake in _wireShapeTransformend — which may KEEP a scale on purpose (a squished circle / triangle)
+    if ((sx !== 1 || sy !== 1) && node.name?.() !== 'userShape') {
       node.width(node.width() * sx);
       node.height(node.height() * sy);
       node.scaleX(1);
@@ -6191,16 +6240,32 @@ function _polyHeadsPath(ctx, shape, pts, heads, curve) {
 function _wirePolyline(node) {
   if (!_isPolyNode(node)) return;
   const draw = (hit) => function (ctx, shape) {
-    const pts = toPairs(shape.points());
+    let pts = toPairs(shape.points());
     if (pts.length < 2) return;
     const curve = _polyCurve(shape), heads = _polyHeads(shape);
     const c = ctx._context;
+    // ✎ V0.3.4.17 — while a resize is under way the squish is still in the transform (scale / skew). The line is then
+    // drawn the way it will be after the release: its POINTS squished and the bends worked out again from them, in
+    // the node's turned frame — so the line stays even and the fillets stay round (it used to be the curve itself
+    // that got squished: a thick side and a thin side).
+    const A = skewScaleOf({ scaleX: shape.scaleX(), scaleY: shape.scaleY(), skewX: shape.skewX(), skewY: shape.skewY() });
+    let framed = false;
+    if (!isIdentity(A)) {
+      let F = null;
+      try { F = c.getTransform().multiply(new DOMMatrix(shape.getTransform().getMatrix()).inverse()).translate(shape.x(), shape.y()).rotate(shape.rotation()); } catch { F = null; }
+      if (F && Number.isFinite(F.a) && Number.isFinite(F.d)) {
+        const ox = shape.offsetX(), oy = shape.offsetY();
+        pts = pts.map(p => ({ x: A[0] * (p.x - ox) + A[1] * (p.y - oy), y: A[2] * (p.x - ox) + A[3] * (p.y - oy) }));
+        c.save(); c.setTransform(F); framed = true;
+      }
+    }
+    try {
     ctx.beginPath();
     _polyTrace(ctx, pts, curve, Number(shape.getAttr('sbsFillet')) || POLY_DEFAULT_FILLET);
     if (hit) {
       // A 3 px line on a scaled-down stage is ~2 screen px: nobody can double-click that. The HIT stroke is ~14 screen
       // px wide whatever the zoom. (Not the hitStrokeWidth attr: a non-default attr is written into step.overlay.)
-      const k = Math.abs(shape.getAbsoluteScale().x) || 1;
+      const k = Math.abs(shape.getParent()?.getAbsoluteScale?.().x) || 1;      // the stage's zoom (the node's own squish is not in the frame)
       c.save(); c.lineWidth = Math.max(shape.strokeWidth() || 1, 14 / k); c.lineCap = 'round'; c.lineJoin = 'round'; c.strokeStyle = shape.colorKey; c.stroke(); c.restore();
     } else ctx.strokeShape(shape);
     if (!heads.start && !heads.end) return;
@@ -6213,6 +6278,7 @@ function _wirePolyline(node) {
     const stroke = shape.stroke() || '#000';
     c.save(); c.setLineDash([]); c.fillStyle = shape.fill() || stroke; c.strokeStyle = stroke; c.lineWidth = shape.strokeWidth() || 1; c.lineJoin = shape.lineJoin() || 'miter';
     c.fill(); c.stroke(); c.restore();
+    } finally { if (framed) c.restore(); }
   };
   node.sceneFunc(draw(false));
   node.hitFunc(draw(true));
