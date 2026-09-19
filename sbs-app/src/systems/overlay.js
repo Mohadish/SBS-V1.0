@@ -129,6 +129,8 @@ export function initOverlay() {
     enabledAnchors:   ['top-left', 'top-right', 'bottom-left', 'bottom-right'],
   });
   _uiLayer.add(_transformer);
+  _transformer.boundBoxFunc((oldBox, box) => _roundBox(box));   // ⇧ Shift on a circle / an ellipse = a perfect circle
+  for (const t of ['pointerdown', 'pointermove', 'keydown', 'keyup']) window.addEventListener(t, (e) => { _shiftHeld = !!e.shiftKey; }, true);
   useOwnMultiDrag(_transformer, 'overlay');   // ONE mover for a multi-select drag — ours (see cross-layer.js)
   // ⇧ Shift on Konva's OWN top rotater levels to 45°/90° too. Konva only
   // snaps inside rotationSnapTolerance, so widening it to 23° while Shift is
@@ -4019,6 +4021,26 @@ function _rememberShapeDefaults(patch) {
 //    thrown away), and so does the skew of a rectangle stretched while turned (it is a parallelogram now);
 //  · the OUTLINE of a rectangle / circle / ellipse / triangle is always drawn in its parent's space, so it is
 //    even all round whatever the transform (_wireEvenStroke). Lines and arrows draw their own (_wirePolyline).
+// ⇧ Shift while resizing ONE circle or ellipse makes it a perfect circle — also one that was squished before. The
+// transformer's box (in the shape's own turned frame) is kept square; the side opposite the handle you hold stays put.
+// Konva hands this function no event: Shift is followed on the window.
+let _shiftHeld = false;
+function _roundBox(box) {
+  if (!_shiftHeld || !_transformer) return box;
+  const nodes = _transformer.nodes() || [];
+  if (nodes.length !== 1) return box;
+  const n = nodes[0], cls = n.getClassName?.();
+  if (n.name?.() !== 'userShape' || (cls !== 'Circle' && cls !== 'Ellipse') || isAnchoredNode(n)) return box;
+  if (Math.abs(n.skewX()) > 1e-6 || Math.abs(n.skewY()) > 1e-6) return box;     // a skewed one: its box is not its axes
+  const a = _transformer.getActiveAnchor?.() || '';
+  if (!/top|bottom|left|right/.test(a)) return box;                               // not a resize handle
+  const w = box.width, h = box.height, S = Math.max(Math.abs(w), Math.abs(h));
+  const nw = (Math.sign(w) || 1) * S, nh = (Math.sign(h) || 1) * S;
+  const fx = a.includes('left') ? 1 : a.includes('right') ? 0 : 0.5, fy = a.includes('top') ? 1 : a.includes('bottom') ? 0 : 0.5;
+  const dx = (w - nw) * fx, dy = (h - nh) * fy, c = Math.cos(box.rotation || 0), s = Math.sin(box.rotation || 0);
+  return { ...box, x: box.x + dx * c - dy * s, y: box.y + dx * s + dy * c, width: nw, height: nh };
+}
+
 function _wireShapeTransformend(node, kind) {
   if (kind === 'rect' || kind === 'circle' || kind === 'ellipse' || kind === 'triangle') _wireEvenStroke(node);
   node.on('transformend', () => {
@@ -4067,7 +4089,9 @@ function _wireShapeTransformend(node, kind) {
 const _unsquished = (n) => isUniform({ scaleX: n.scaleX(), scaleY: n.scaleY(), skewX: n.skewX(), skewY: n.skewY() });
 function _wireEvenStroke(node) {
   const own = node._sceneFunc;
-  if (typeof own !== 'function' || node.getAttr('sceneFunc')) return;
+  // attrs.sceneFunc, NOT getAttr('sceneFunc'): Konva's getter falls back to the class's own drawing, so that test was
+  // always true and the even outline was never installed (V0.3.4.17–20: squished circles / triangles kept a squished outline)
+  if (typeof own !== 'function' || node.attrs.sceneFunc) return;
   node.sceneFunc(function (ctx, shape) {
     ctx.fillStrokeShape = _fillStrokeEven;
     try { own.call(shape, ctx); } finally { delete ctx.fillStrokeShape; }
