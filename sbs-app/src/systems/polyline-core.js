@@ -62,31 +62,34 @@ export function movePoint(flat, index, p) {
 }
 
 /**
- * Fillet: the radius each MIDDLE corner can really take. A round corner touches both of its
- * segments at d = r / tan(θ/2) from the corner (θ = the angle between them); d may use at most
- * half of each segment (the neighbour corner needs the other half), so a short segment or a
- * sharp turn gets a smaller radius instead of a broken arc.
- * @returns {number[]} one radius per point; 0 for the two ends and for straight-through points
+ * Fillet — the CABLES' rule (cables-render.js): every middle corner is rounded over a constant
+ * REACH, the distance d from the corner at which the rounding starts on both of its segments —
+ * d = min(reach, 0.49 × each segment), so two neighbouring corners never meet — and the radius
+ * follows from the turn: r = d · tan(θ/2) (θ = the angle between the segments). A gentle turn
+ * therefore gets a wide arc and a sharp one a tight arc, which is what makes a routed cable look
+ * right; a nearly straight point or a reach under half a unit is left as it is.
+ * @returns {number[]} one radius per point; 0 for the two ends and for points that are not rounded
  */
-export function filletRadii(pts, radius) {
-  const R = Number.isFinite(radius) && radius > 0 ? radius : 0;
+export function filletRadii(pts, reach) {
+  const R = Number.isFinite(reach) && reach > 0 ? reach : 0;
   return pts.map((p, i) => {
     if (i === 0 || i === pts.length - 1 || !R) return 0;
     const a = _sub(pts[i - 1], p), b = _sub(pts[i + 1], p), la = _len(a), lb = _len(b);
     if (!la || !lb) return 0;
     const cos = Math.max(-1, Math.min(1, (a.x * b.x + a.y * b.y) / (la * lb)));
     const theta = Math.acos(cos);                        // π = straight through, 0 = a hairpin
-    if (theta > Math.PI - 1e-3 || theta < 1e-3) return 0;
-    const tanHalf = Math.tan(theta / 2);
-    return Math.max(0, Math.min(R, (Math.min(la, lb) / 2) * tanHalf));
+    const d = Math.min(R, 0.49 * la, 0.49 * lb);
+    if (theta > 0.997 * Math.PI || theta < 1e-3 || d < 0.5) return 0;
+    return d * Math.tan(theta / 2);
   });
 }
 
-/** Smooth: cubic Bézier control points of each segment for a curve THROUGH every point (Catmull-Rom, ends doubled). */
+/** Smooth: cubic Bézier control points of each segment for a curve THROUGH every point (Catmull-Rom; the ends are REFLECTED like the cables', so the curve leaves an end along its first chord). */
 export function smoothControls(pts) {
   const out = [];
   for (let i = 0; i + 1 < pts.length; i++) {
-    const p0 = pts[i - 1] || pts[i], p1 = pts[i], p2 = pts[i + 1], p3 = pts[i + 2] || pts[i + 1];
+    const p1 = pts[i], p2 = pts[i + 1];
+    const p0 = pts[i - 1] || { x: 2 * p1.x - p2.x, y: 2 * p1.y - p2.y }, p3 = pts[i + 2] || { x: 2 * p2.x - p1.x, y: 2 * p2.y - p1.y };
     out.push({
       c1: { x: p1.x + (p2.x - p0.x) / 6, y: p1.y + (p2.y - p0.y) / 6 },
       c2: { x: p2.x - (p3.x - p1.x) / 6, y: p2.y - (p3.y - p1.y) / 6 },

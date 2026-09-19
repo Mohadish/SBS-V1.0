@@ -58,7 +58,7 @@ export function showPolylineDots(dots, handlers) {
   while (_pool.length < dots.length) { const d = _dot(); _host.appendChild(d); _pool.push(d); }
   _pool.forEach((d, i) => {
     const p = dots[i];
-    if (!p) { d.style.display = 'none'; return; }
+    if (!p || p.hidden) { d.style.display = 'none'; d.dataset.index = String(i); return; }
     const size = p.end ? 14 : 11;
     d.dataset.index = String(i);
     d.style.width = d.style.height = `${size}px`;

@@ -6101,7 +6101,7 @@ function _showOverlayContextMenu(node, x, y) {
       { label: '〰 Bend', submenu: [
         bend('corner', 'Corners'), bend('smooth', 'Smooth (Bézier)'), bend('fillet', 'Fillet (rounded corners)'),
         { separator: true },
-        radius(14, 'Fillet radius: small'), radius(28, 'Fillet radius: medium'), radius(56, 'Fillet radius: large'),
+        radius(14, 'Fillet: tight'), radius(28, 'Fillet: medium'), radius(56, 'Fillet: wide'),
       ] },
       { separator: true },
     ];
@@ -6194,20 +6194,36 @@ function _wirePolyline(node) {
     const pts = toPairs(shape.points());
     if (pts.length < 2) return;
     const curve = _polyCurve(shape), heads = _polyHeads(shape);
+    const c = ctx._context;
     ctx.beginPath();
     _polyTrace(ctx, pts, curve, Number(shape.getAttr('sbsFillet')) || POLY_DEFAULT_FILLET);
-    ctx.strokeShape(shape);
+    if (hit) {
+      // A 3 px line on a scaled-down stage is ~2 screen px: nobody can double-click that. The HIT stroke is ~14 screen
+      // px wide whatever the zoom. (Not the hitStrokeWidth attr: a non-default attr is written into step.overlay.)
+      const k = Math.abs(shape.getAbsoluteScale().x) || 1;
+      c.save(); c.lineWidth = Math.max(shape.strokeWidth() || 1, 14 / k); c.lineCap = 'round'; c.lineJoin = 'round'; c.strokeStyle = shape.colorKey; c.stroke(); c.restore();
+    } else ctx.strokeShape(shape);
     if (!heads.start && !heads.end) return;
     ctx.beginPath();
     _polyHeadsPath(ctx, shape, pts, heads, curve);
     if (hit) { ctx.fillStrokeShape(shape); return; }
-    // the head is SOLID in the line's colour (a Konva.Line has no fill of its own) and never dashed
-    const c = ctx._context, col = shape.stroke() || shape.fill() || '#000';
-    c.save(); c.setLineDash([]); c.fillStyle = col; c.strokeStyle = col; c.lineWidth = shape.strokeWidth() || 1; c.lineJoin = 'miter';
+    // The head: filled with the node's FILL when it has one — exactly what Konva's own arrow did, so arrows from before
+    // this version (and style-bound ones) look the same and cached renders stay true — else with the line's colour
+    // (a Konva.Line has no fill). Outlined in the line's colour, never dashed.
+    const stroke = shape.stroke() || '#000';
+    c.save(); c.setLineDash([]); c.fillStyle = shape.fill() || stroke; c.strokeStyle = stroke; c.lineWidth = shape.strokeWidth() || 1; c.lineJoin = shape.lineJoin() || 'miter';
     c.fill(); c.stroke(); c.restore();
   };
   node.sceneFunc(draw(false));
   node.hitFunc(draw(true));
+  // Shaft, head fill and head outline are three paints. While an overlay FADES (layer opacity < 1) they would blend
+  // on top of each other and the head would look denser than the shaft: draw through Konva's buffer canvas then
+  // (one flat picture, faded once). Konva only does that by itself for shapes with BOTH a fill and a stroke.
+  const useBuffer = node._useBufferCanvas;
+  if (typeof useBuffer === 'function') node._useBufferCanvas = function (forceFill) {
+    const h = _polyHeads(this);
+    return ((h.start || h.end) && this.getAbsoluteOpacity() !== 1) || useBuffer.call(this, forceFill);
+  };
 }
 
 export function isPolyEditing() { return !!_polyEdit; }
@@ -6221,14 +6237,19 @@ function _polyRestore(n, s) {
   for (const k of ['sbsHeadStart', 'sbsHeadEnd', 'sbsCurve', 'sbsFillet']) n.setAttr(k, s[k]);
   _layer.batchDraw();
   if (_polyEdit?.node === n) _polyRefreshDots();
-  if (n.getAttr('linkId')) _syncLinkFrom(n);
+  // NOT _syncLinkFrom here: it goes through the link store's undo batch, which pushes an entry of its own half a second
+  // later — from inside an undo that wipes the redo stack. (No other undo closure in this file syncs links either.)
+  _polyRebond(n);
   _scheduleSave();
 }
+/** A line bonded to an interface is re-fitted from its % of the interface on every load and every undo: the % must follow an edit, or the edit is stretched back. */
+function _polyRebond(n) { const iface = _interfaceOf(n); if (iface) _captureBondPct(n, iface); }
 /** ONE undo entry for whatever `change` does to the line. */
 function _polyCommit(n, label, before) {
   const after = _polySnapshot(n);
   if (JSON.stringify(after) === JSON.stringify(before)) return;
   undoManager.push(label, () => _polyRestore(n, before), () => _polyRestore(n, after));
+  _polyRebond(n);
   if (n.getAttr('linkId')) _syncLinkFrom(n);
   _scheduleSave();
 }
@@ -6236,6 +6257,12 @@ function _polyCommit(n, label, before) {
 function _enterPolyEdit(node) {
   if (!_isPolyNode(node) || !_editing) return;
   if (_polyEdit?.node === node) return;
+  if (_pinnedDefOf(node) && !_pinRepositionActive(node)) {
+    // 📌 a pinned line stands by the corner of its box: moving a point would move that corner and the whole line
+    // would jump at the next load
+    setStatus('📌 This line is pinned — unpin it to edit its points.', 'warn', 5000);
+    return;
+  }
   _exitPolyEdit();
   _setSelection(null);                       // the unit's box and knobs step aside: the dots are the handles now
   _polyEdit = { node, drag: null };
@@ -6245,7 +6272,9 @@ function _enterPolyEdit(node) {
 
 function _exitPolyEdit() {
   if (!_polyEdit) return false;
+  const e = _polyEdit;
   _polyEdit = null;
+  if (e.drag && _isLiveNode(e.node)) _polyCommit(e.node, 'Move line point', e.drag.before);   // Esc / a step change in the middle of a drag: the move stays — with its undo entry and its save
   hidePolylineDots();
   hideSnapGuides();
   return true;
@@ -6260,7 +6289,8 @@ function _polyRefreshDots() {
   const cr = _container.getBoundingClientRect(), T = e.node.getAbsoluteTransform();
   showPolylineDots(pts.map((p, i) => {
     const q = T.point(p), end = i === 0 || i === pts.length - 1;
-    return { x: cr.left + q.x, y: cr.top + q.y, end, head: end && (i === 0 ? heads.start : heads.end) };
+    const x = cr.left + q.x, y = cr.top + q.y;
+    return { x, y, end, head: end && (i === 0 ? heads.start : heads.end), hidden: x < cr.left || x > cr.right || y < cr.top || y > cr.bottom };   // outside the viewport: no dot over the side panels
   }), { onStart: _polyDotStart, onMove: _polyDotMove, onEnd: _polyDotEnd, onDblClick: _polyDotDblClick });
 }
 
@@ -6275,7 +6305,7 @@ function _polyDotStart(index) {
   if (prefs.enabled) {
     const targets = [];
     if (prefs.items) {
-      for (const o of _layer.getChildren()) { if (o === n || !o.isVisible() || isAnchoredNode(o)) continue; const b = _snapBoxOf(o, true); if (b) targets.push(b); }
+      for (const o of _layer.getChildren()) { if (o === n || !o.isVisible() || isAnchoredNode(o) || _isPolyNode(o)) continue; const b = _snapBoxOf(o, true); if (b) targets.push(b); }   // other LINES are left out: a two-point line's box edges are its points
       for (const o of _stage.find(h => !!h.getAttr?.('headerId'))) { if (!o.isVisible() || o.opacity() < 1) continue; const b = _snapBoxOf(o, true); if (b) targets.push(b); }
     }
     pts.forEach((p, i) => { if (i !== index) { const q = L.point(p); targets.push({ x: q.x, y: q.y, w: 0, h: 0 }); } });
