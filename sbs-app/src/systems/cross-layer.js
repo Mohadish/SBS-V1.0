@@ -33,6 +33,11 @@ export function getLayerSelection(name) {
   return _layers[name]?.getSelection?.() || [];
 }
 
+/** Empty the named layer's selection (the overlay's rubber-band REPLACE also replaces a header selection). */
+export function clearLayerSelection(name) {
+  _layers[name]?.clearSelection?.();
+}
+
 /** Combined selection across overlay + header — used by multi-drag. */
 export function getCombinedSelection() {
   return [...getLayerSelection('overlay'), ...getLayerSelection('header')];

@@ -163,7 +163,10 @@ function _flushBatch() {
 }
 
 function _applySnap(id, snap) {
-  const items = listShapeLinks().map(l => l.id === id ? { ...l, ...snap } : l);
+  // REPLACE, not merge: before / after are full clones, and a merge kept every key the older snapshot never had —
+  // a definition from before V0.3.4.11 has no skew keys, so undoing a squish left the skew IN the definition and
+  // it came back on every step at the next load.
+  const items = listShapeLinks().map(l => l.id === id ? JSON.parse(JSON.stringify(snap)) : l);
   state.setState({ shapeLinks: items });
   state.markDirty();
   state.emit('shapeLink:updated', { id, patch: snap });

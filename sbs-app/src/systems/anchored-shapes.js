@@ -137,6 +137,10 @@ export function reprojectNode(node) {
   // corrupt an anchored shape, and the next tick rebuilds points anyway.
   node.x(0);
   node.y(0);
+  // …and the rest of the transform stays identity: an anchored arrow caught in a group RESIZE or rotate gets a
+  // scale / rotation / skew written onto it by the transformer, and nothing else would ever take it off again
+  // (setters are no-ops when the value is already there).
+  node.scaleX(1); node.scaleY(1); node.rotation(0); node.skewX(0); node.skewY(0);
   node.points([pa.x, pa.y, pb.x, pb.y]);
   node.visible(true);
   return true;

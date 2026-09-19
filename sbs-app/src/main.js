@@ -57,7 +57,7 @@ import { initContextMenu, hideContextMenu, showContextMenu, canonicalizeMenuOrde
 import { promptString } from './ui/prompt.js';
 import { showMoveToFolderDialog, showAddToReplaceDialog, showReplaceModeDialog, showInputDialog, showInsertAnimDialog, getFilter } from './ui/tree.js';
 import { positionSafeFrameEl }    from './core/safe-frame.js';
-import { initOverlay, getStage as getOverlayStage, handleAnchorPick, cancelAnchoredArrowPlacement, nudgeSelection as nudgeOverlaySelection } from './systems/overlay.js';
+import { initOverlay, getStage as getOverlayStage, handleAnchorPick, cancelAnchoredArrowPlacement, nudgeSelection as nudgeOverlaySelection, cancelOverlayMarquee } from './systems/overlay.js';
 import { initOverlayToolbar, toggleOverlayEditing, toggleOverlayXray } from './ui/overlay-toolbar.js';
 import { matches as keyMatches, keyFor, keyLabel, keyHint, setKeyOverrides } from './core/keymap.js';   // 🎹 central shortcut table
 import { initHeaderLayer }     from './systems/header.js';
@@ -5233,6 +5233,13 @@ window.addEventListener('keydown', async e => {
   // leaving it stuck would strand the user with the overlay disabled.
   if (key === 'Escape' && state.get('anchorArrowPicking')) {
     cancelAnchoredArrowPlacement();
+    e.preventDefault();
+    return;
+  }
+
+  // ⬚ Overlay rubber-band in progress — Esc drops it and nothing else (this handler is capture-phase:
+  // the Escape branches below would clear the 3D selection and the step multi-selection).
+  if (key === 'Escape' && cancelOverlayMarquee()) {
     e.preventDefault();
     return;
   }

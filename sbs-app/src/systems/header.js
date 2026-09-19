@@ -540,6 +540,7 @@ export function initHeaderLayer(stage) {
   stage.on('pointerdown', (e) => {
     if (e.target !== stage) return;
     if (_selection.size === 0) return;
+    if (e.evt?.shiftKey || e.evt?.altKey) return;   // ⬚ a Shift / Alt press on empty stage adds to / removes from the selection (overlay rubber-band): nothing is cleared
     _selection.clear();
     _transformer.nodes([]);
     _layer.batchDraw();
@@ -595,6 +596,12 @@ export function initHeaderLayer(stage) {
       return _layer.getChildren().filter(c =>
         c !== _transformer && _selection.has(c.getAttr?.('headerId'))
       );
+    },
+    clearSelection: () => {
+      if (!_selection.size) return;
+      _selection.clear();
+      _transformer?.nodes([]);
+      _layer?.batchDraw();
     },
     persistFromNode: (n) => {
       const id = n?.getAttr?.('headerId');

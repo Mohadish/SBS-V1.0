@@ -42,7 +42,9 @@ import {
 import { getTextToolbarSlot, showFloatingToolbar, hideFloatingToolbar } from '../ui/overlay-toolbar.js';
 import * as textEngine from './text-engine.js';
 import { getStyleTemplate, listStyleTemplates } from './style-templates.js';
-import { registerLayer, getLayerSelection, persistNodeIfHeader, useOwnMultiDrag, reapplyGroupDelta } from './cross-layer.js';
+import { registerLayer, getLayerSelection, persistNodeIfHeader, useOwnMultiDrag, reapplyGroupDelta, clearLayerSelection } from './cross-layer.js';
+import { MARQUEE_THRESHOLD_PX, rectOf, marqueeOp, pickInMarquee, applyMarquee } from './marquee-core.js';
+import { showMarqueeBox, setMarqueeBadge, hideMarqueeBox } from '../ui/marquee-box.js';
 import * as editSession from './edit-session.js';   // P7-A: in-session local undo + commit-time main-undo entry
 import { undoManager } from './undo.js';            // P7-B: mass-mode + structural ops push undo entries directly
 
@@ -148,10 +150,19 @@ export function initOverlay() {
     // Zoom-region draw mode: the next press-drag-release defines the region.
     if (_zoomDraw) { e.evt?.preventDefault?.(); _zoomDrawStart(); return; }
     if (e.target === _stage) {
-      _setSelection(null);
+      // ⬚ A press on empty stage may be the start of a rubber-band (V0.3.4.11). Shift = add to the
+      // selection, Alt = remove from it: the selection must then SURVIVE the press.
+      const ev = e.evt || {};
+      const keep = !!(ev.shiftKey || ev.altKey);
+      // The base is ALWAYS what was selected at the press: the keys are read at the RELEASE (as in the 3D scene),
+      // so Shift / Alt may go down in the middle of the drag — the badge shows it — and must then add to /
+      // remove from the real selection, not from one this press has just emptied.
+      const armed = _armBand(ev, (_transformer?.nodes() || []).slice(), !keep);
+      if (!keep) _setSelection(null);
       // Empty-area click while editing = the user (likely) tried to click a 3D
       // object but overlay edit is swallowing it. Nudge them (blink + prompt).
-      if (_editing) state.emit('overlay:misclick');
+      // With a band armed that verdict waits for the release: a DRAG is no misclick.
+      if (_editing && !armed) state.emit('overlay:misclick');
     }
   });
   // Zoom-region draw: live preview + finalize. Inert unless _zoomDraw is active.
@@ -389,6 +400,7 @@ export function setEditingMode(on) {
   if (_activeTextEditor) _exitTextEdit().catch(() => {});
   if (_maskEdit) _cancelMaskEdit();   // 🎭 its handle lives on the UI layer; never leave it up
   if (_angleEntry) _endAngleEntry(false);   // ⌨ never leave the keyboard captured
+  _cancelBand();                            // ⬚ a rubber-band in progress dies with the mode
   _editing = !!on;
   if (_container) _container.classList.toggle('editing', _editing);
   if (!_editing) _setSelection(null);
@@ -458,6 +470,11 @@ function _reprojectAnchored() {
   // Cheap bail — most projects have no anchored shapes on most steps, and
   // this runs on every rendered frame.
   if (!hasAnchoredNodes(layers)) return;
+  // Mid-resize Konva measures the group box from its nodes on every pointer move and applies the DIFFERENCE. An
+  // anchored arrow snapped back to identity between two moves makes the "old" box its original one again, so the
+  // whole scale so far is applied once more — the other items balloon. Leave it alone until the release; the
+  // first tick after it puts the arrow back (the camera does not move during a resize).
+  if (_transformer?.isTransforming?.() && (_transformer.nodes() || []).some(isAnchoredNode)) return;
   if (!refreshCameraMatrices()) return;
   reprojectAll(layers);
   _layer.batchDraw();
@@ -651,6 +668,8 @@ function _captureLinkFrom(node) {
     x:            node.x(),
     y:            node.y(),
     rotation:     node.rotation() || 0,
+    skewX:        node.skewX() || 0,
+    skewY:        node.skewY() || 0,
     geom,
     style,
     shapeStyleId: node.getAttr('shapeStyleId') || null,
@@ -675,6 +694,8 @@ function _applyLinkToNode(node, def) {
   node.x(def.x);
   node.y(def.y);
   node.rotation(def.rotation || 0);
+  if ('skewX' in def) node.skewX(def.skewX || 0);   // definitions saved before V0.3.4.11 carry no skew: leave the instance's alone
+  if ('skewY' in def) node.skewY(def.skewY || 0);
   // Scale is always identity on a linked shape: geometry is authoritative,
   // and a stale scale would multiply it.
   node.scaleX(1);
@@ -1289,6 +1310,7 @@ function _maskEditBar(titleText) {
 export function beginMaskEdit(node, { defId = null, seedFromDefId = null } = {}) {
   if (!_isPlainImageOrVideo(node)) { setStatus('Masks work on plain images and video clips.', 'warn', 4000); return false; }
   if (_maskEdit) _cancelMaskEdit();
+  _cancelBand();
   const c = getCanonicalSize();
   const def  = defId ? _cropMaskDefById(defId) : null;
   // seedFromDefId: start from a shared mask's shape but commit PRIVATELY —
@@ -1780,12 +1802,18 @@ function _onRotKnobUp() {
  * teleport the item after any window resize, which changes the stage scale.
  */
 function _fireTransformStart(nodes, evt) {
-  const n = nodes[0];
-  if (n) { try { n._fire('transformstart', { evt, target: n }); } catch { /* listener threw */ } }
+  const n = nodes[nodes.length - 1];   // ONE node, and it OWNS the gesture's undo entry (see transformstart in _attachNode)
+  if (n) { try { n._fire('transformstart', { evt, target: n, sbsOwner: true }); } catch { /* listener threw */ } }
 }
 function _fireTransformEnd(nodes) {
-  const n = nodes[0];
+  const n = nodes[nodes.length - 1];
   if (n) { try { n._fire('transformend', { target: n }); } catch { /* listener threw */ } }
+  // The OTHER items fired nothing (one node = one undo entry): a linked one still has to write its definition and
+  // a bonded one its % of the interface — or the rotation is lost on the next load / the next re-fit. Which item
+  // happened to be "the one" used to decide that silently.
+  const rest = nodes.filter(o => o !== n);
+  for (const o of rest) if (o?.getAttr?.('isZoom')) o._zoomAnchor = null;
+  _afterPeersMoved(rest);
   _scheduleSave();
 }
 
@@ -4368,6 +4396,7 @@ function _attachNode(node) {
   let _multiDragStarts = null;
   node.on('dragstart', () => {
     _commitNudgeBatch();   // ⬅➡ close any open nudge entry before this drag's
+    if (_angleEntry) _endAngleEntry(true);   // ⌨ …and an angle entry still armed — BEFORE anything moves (it ends by re-applying its start snapshot)
     // 📌 A pinned / constant node does not drag — unless "Set as new
     // position" armed exactly this node for exactly this drag.
     if (_pinnedDefOf(node) && !_pinRepositionActive(node)) { _blockPinnedDrag(node); return; }
@@ -4505,10 +4534,17 @@ function _attachNode(node) {
   // node fires transformstart — but the transformer drives all its
   // tracked nodes' attrs, so capturing the lot here is correct.
   let _xformSnapBefore = null;
-  node.on('transformstart', () => {
+  node.on('transformstart', (e) => {
     _commitNudgeBatch();   // ⬅➡ same ordering rule as dragstart
+    if (_angleEntry && !e?.sbsOwner) _endAngleEntry(true);   // ⌨ a Konva handle grabbed while an angle entry is armed (our own knob ends it itself)
     const tracked = _transformer?.nodes() || [node];
-    _xformSnapBefore = tracked.map(n => _snapNodeGeom(n));
+    // ONE undo entry per gesture. Konva fires transformstart / transformend on EVERY attached node and
+    // every node's handler covers the whole set — a 2-item resize used to push 2 entries, the first with
+    // an "after" taken while the second item had not baked its scale yet. The LAST node owns the entry:
+    // its transformend runs last, when every item has baked. Our own rotate knobs / typed angle fire on
+    // ONE node only and say so (sbsOwner) — their list leaves 3D-anchored arrows out, so "last" there
+    // need not be the transformer's last.
+    if (e?.sbsOwner || !tracked.includes(node) || tracked[tracked.length - 1] === node) _xformSnapBefore = tracked.map(n => _snapNodeGeom(n));
     // Zoom: pin the source image in space for the whole gesture. The anchor is
     // the SCREEN position of image-pixel (0,0); holding it constant means any
     // handle reveals/hides image on its side instead of sliding it. Transient
@@ -4593,7 +4629,9 @@ function _attachNode(node) {
         b.x !== after[i].x || b.y !== after[i].y ||
         b.width !== after[i].width || b.height !== after[i].height ||
         b.scaleX !== after[i].scaleX || b.scaleY !== after[i].scaleY ||
-        b.rotation !== after[i].rotation,
+        b.rotation !== after[i].rotation ||
+        b.skewX !== after[i].skewX || b.skewY !== after[i].skewY ||
+        String(b.points || '') !== String(after[i].points || ''),
       );
       if (changed) {
         const label = before.length > 1 ? `Resize ${before.length} items` : 'Resize';
@@ -4679,6 +4717,7 @@ function _serializeNode(node) {
     'textShadow', 'textOutline',   // V0.3.2.144 — per-box drop shadow + outline
     'textDir',                     // ¶ V0.3.3.4 — forced reading direction ('rtl' | 'ltr'; absent = auto)
     'radius', 'radiusX', 'radiusY', 'sides', 'data',
+    'skewX', 'skewY',   // V0.3.4.11 — a group resize of rotated items leaves a skew; without it a copy came back un-squished
     // Line/Arrow geometry (V0.3.2.30) — omitting these was why a pasted
     // arrow lost its tail (points defaulted to [] and could never grow back).
     'points', 'pointerLength', 'pointerWidth',
@@ -4718,7 +4757,16 @@ function _snapNodeGeom(node) {
     scaleX:   node.scaleX(),
     scaleY:   node.scaleY(),
     rotation: node.rotation(),
+    // V0.3.4.11 — a multi-selection's transformer box stays axis-aligned while its items are
+    // rotated; resizing it non-uniformly makes Konva write a DECOMPOSED matrix into every
+    // item: rotation, scale AND skewX. Without the skew here an undo brought back size and
+    // rotation and left the squish.
+    skewX:    node.skewX(),
+    skewY:    node.skewY(),
   };
+  // A line / an arrow bakes a resize into its POINTS (_wireShapeTransformend); width() and
+  // height() do not drive them, so without the points its resize could not be undone at all.
+  if (typeof node.points === 'function') snap.points = (node.points() || []).slice();
   // Zoom: crop + density aren't derivable from geometry — snapshot them so an
   // undone resize restores the exact viewport (bondPct is re-derived instead).
   if (node.getAttr('isZoom')) {
@@ -4823,6 +4871,9 @@ async function _restoreNodeGeom(snaps) {
     s.n.scaleX(s.scaleX);
     s.n.scaleY(s.scaleY);
     s.n.rotation(s.rotation);
+    s.n.skewX(s.skewX ?? 0);
+    s.n.skewY(s.skewY ?? 0);
+    if (s.points && typeof s.n.points === 'function') s.n.points(s.points.slice());
     if (s.n.getAttr('isZoom')) {
       if (s.crop) s.n.crop({ ...s.crop });
       if (s.zoomDensityX != null) s.n.setAttr('zoomDensityX', s.zoomDensityX);
@@ -5177,6 +5228,7 @@ function _zoomNodes() { return _layer ? _layer.getChildren(n => n.getAttr('isZoo
  *  the zoom region over this interface. */
 export function startZoomDraw(ifaceNode) {
   if (!ifaceNode || !_layer) return;
+  _cancelBand();
   _setSelection(null);
   _cancelZoomDraw();
   // Freeze dragging on existing nodes so pressing on the interface DRAWS the box
@@ -6040,6 +6092,150 @@ function _showOverlayContextMenu(node, x, y) {
   ], x, y);
 }
 
+// ─── ⬚ Rubber-band selection (V0.3.4.11) ────────────────────────────────────
+// Press on EMPTY stage and drag: a box; release: what it caught is the selection. The rules are
+// the 3D scene's box-select, to the key (src/main.js, "V0.1.94 box-select modifiers"):
+//   (no key) whatever the box TOUCHES · Ctrl / ⌘ only what lies FULLY inside
+//   Shift = add to the selection · Alt = remove from it (Alt wins) · neither = replace it
+// and the same 6 px before a press counts as a drag, the same live badge beside the pointer.
+// Geometry + rules are pure (marquee-core.js); the box and the badge are DOM (marquee-box.js) —
+// never a Konva node: the stage is serialised WHOLE into step.overlay, and a debounced save in
+// the middle of a drag would bake the box into the step.
+//
+// Candidates = what a click can select: the content layer's children that are visible and
+// listening (pinned items, interfaces, zooms, clips, 3D-anchored arrows included; the ghost
+// layer of a running crossfade and the UI layer never). Tested against the item's TRUE outline —
+// a rotated box by its corners, a circle by its rim, an arrow by its segments, a masked image by
+// the window you can see — not by its axis-aligned bounding box. OVERLAY items only: header
+// items live on every step, and a box that swept them in unnoticed would let one group drag move
+// them everywhere (Shift-click still adds a header item on purpose).
+//
+// The selection is set ONCE, at release — never while dragging (a selection change mounts
+// toolbars and parses every text box). Nothing here touches the project: a selection is not an
+// undoable mutation.
+
+let _band = null;   // { x0, y0, x1, y1 (client px), active, base: Konva.Node[] }
+
+function _bandCanArm(ev) {
+  return !!(_editing && _stage && _layer && ev && ev.button === 0 && !_band
+    && !_zoomDraw && !_maskEdit && !_activeTextEditor && !_rotDrag
+    && !(_pinUI && _pinUI.mode !== 'idle') && !_activeFade && !_loadInFlight);
+}
+
+/** @returns {boolean} armed — the press may become a band; the click verdict (misclick) then waits for the release */
+function _armBand(ev, base, cleared = false) {
+  if (!_bandCanArm(ev)) return false;
+  _band = { x0: ev.clientX, y0: ev.clientY, x1: ev.clientX, y1: ev.clientY, active: false, base: base || [], cleared };   // cleared: the press emptied the selection
+  // window-level: the release may come outside the stage, where the stage never hears it
+  window.addEventListener('pointermove', _onBandMove, true);
+  window.addEventListener('pointerup', _onBandUp, true);
+  window.addEventListener('pointercancel', _cancelBand, true);
+  window.addEventListener('blur', _cancelBand);
+  document.addEventListener('keydown', _onBandKey, true);
+  document.addEventListener('keyup', _onBandKey, true);
+  return true;
+}
+
+function _disarmBand() {
+  window.removeEventListener('pointermove', _onBandMove, true);
+  window.removeEventListener('pointerup', _onBandUp, true);
+  window.removeEventListener('pointercancel', _cancelBand, true);
+  window.removeEventListener('blur', _cancelBand);
+  document.removeEventListener('keydown', _onBandKey, true);
+  document.removeEventListener('keyup', _onBandKey, true);
+  hideMarqueeBox();
+  const b = _band;
+  _band = null;
+  return b;
+}
+
+/** Drop a band without touching the selection. Safe to call at any time. */
+function _cancelBand() { if (_band) _disarmBand(); }
+
+/** Esc (main.js asks first, its handler is capture-phase). @returns {boolean} true when a DRAGGED band was dropped */
+export function cancelOverlayMarquee() {
+  if (!_band?.active) return false;
+  _disarmBand();   // the selection stays as the press left it (a no-key press has already emptied it)
+  return true;
+}
+
+const _bandMods = (e) => ({ ctrl: !!(e.ctrlKey || e.metaKey), shift: !!e.shiftKey, alt: !!e.altKey });
+
+function _onBandMove(e) {
+  const b = _band; if (!b) return;
+  if (!(e.buttons & 1)) { _disarmBand(); return; }          // the release was lost (another window took it): no verdict
+  b.x1 = e.clientX; b.y1 = e.clientY;
+  if (!b.active && Math.hypot(b.x1 - b.x0, b.y1 - b.y0) > MARQUEE_THRESHOLD_PX) b.active = true;
+  if (b.active) showMarqueeBox(b.x0, b.y0, b.x1, b.y1, _bandMods(e));
+}
+
+function _onBandKey(e) {
+  if (!_band) { _disarmBand(); return; }                     // self-heal: a listener that outlived its band
+  if (_band.active) setMarqueeBadge(_bandMods(e));           // a modifier went down / up while the pointer stood still
+}
+
+function _onBandUp(e) {
+  const b = _disarmBand(); if (!b) return;
+  if (!b.active) {
+    // a CLICK on empty stage after all: the nudge the press held back (see the stage pointerdown)
+    if (_editing) state.emit('overlay:misclick');
+    return;
+  }
+  if (!_editing || !_stage || !_layer) return;
+  // client px → layer (canonical) space; the stage alone carries the safe-frame transform
+  const cr  = _container.getBoundingClientRect();
+  const inv = _stage.getAbsoluteTransform().copy().invert();
+  const p0  = inv.point({ x: b.x0 - cr.left, y: b.y0 - cr.top });
+  const p1  = inv.point({ x: e.clientX - cr.left, y: e.clientY - cr.top });
+  const { windowMode, op } = marqueeOp(_bandMods(e));
+  const items = _layer.getChildren()
+    .filter(n => n !== _transformer && n.isVisible() && n.isListening())
+    .map(n => ({ id: n, ..._bandOutline(n) }));
+  const found = pickInMarquee(items, rectOf(p0.x, p0.y, p1.x, p1.y), windowMode);
+  // REPLACE replaces everything: a header selection kept alive by a Shift / Alt PRESS (header.js skips its clear then)
+  // must not linger beside it when the key was let go before the release
+  if (op === 'replace') clearLayerSelection('header');
+  _setSelectionNodes(applyMarquee(b.base.filter(_isLiveNode), found, op));
+}
+
+/** An item's true outline in layer space: { kind:'poly'|'line', pts, halfWidth }. */
+function _bandOutline(node) {
+  const cls = node.getClassName?.();
+  const t = node.getTransform();                              // content-layer children: the layer is identity
+  const P = (x, y) => t.point({ x, y });
+  try {
+    if ((cls === 'Line' || cls === 'Arrow') && typeof node.points === 'function') {
+      const raw = node.points() || [], pts = [];
+      for (let i = 0; i + 1 < raw.length; i += 2) pts.push(P(raw[i], raw[i + 1]));
+      const k = (Math.abs(node.scaleX()) + Math.abs(node.scaleY())) / 2 || 1;
+      return { kind: 'line', pts, halfWidth: Math.max(1, (node.strokeWidth?.() || 1) * k / 2) };
+    }
+    if (cls === 'Circle' || cls === 'Ellipse') {
+      const rx = cls === 'Circle' ? node.radius() : node.radiusX(), ry = cls === 'Circle' ? node.radius() : node.radiusY();
+      const pts = [];
+      for (let i = 0; i < 24; i++) { const a = i / 24 * Math.PI * 2; pts.push(P(rx * Math.cos(a), ry * Math.sin(a))); }
+      return { kind: 'poly', pts };
+    }
+    if (cls === 'RegularPolygon') {
+      const n = Math.max(3, node.sides() || 3), r = node.radius(), pts = [];
+      for (let i = 0; i < n; i++) { const a = i / n * Math.PI * 2; pts.push(P(r * Math.sin(a), -r * Math.cos(a))); }
+      return { kind: 'poly', pts };
+    }
+    // 🎭 a masked image / clip is what you SEE of it: its mask window (a press outside it does not hit it either)
+    if (_isPlainImageOrVideo(node) && _resolveMask(node)) {
+      const v = _pinVisibleRect(node), a = (v.rot || 0) * Math.PI / 180, c = Math.cos(a), s = Math.sin(a);
+      const Q = (dx, dy) => ({ x: v.x + dx * c - dy * s, y: v.y + dx * s + dy * c });
+      return { kind: 'poly', pts: [Q(0, 0), Q(v.w, 0), Q(v.w, v.h), Q(0, v.h)] };
+    }
+    if (typeof node.getSelfRect === 'function') {
+      const r = node.getSelfRect();
+      if (r && r.width > 0 && r.height > 0) return { kind: 'poly', pts: [P(r.x, r.y), P(r.x + r.width, r.y), P(r.x + r.width, r.y + r.height), P(r.x, r.y + r.height)] };
+    }
+  } catch { /* an exotic node: fall through to its bounding box */ }
+  const r = node.getClientRect({ relativeTo: _layer, skipShadow: true });
+  return { kind: 'poly', pts: [{ x: r.x, y: r.y }, { x: r.x + r.width, y: r.y }, { x: r.x + r.width, y: r.y + r.height }, { x: r.x, y: r.y + r.height }] };
+}
+
 /**
  * Set or extend the overlay's node selection.
  *   _setSelection(null)            — clear all
@@ -6063,6 +6259,15 @@ function _setSelection(node, additive = false) {
   } else {
     nodes = [node];
   }
+  _setSelectionNodes(nodes);
+}
+
+/** Select exactly these nodes — everything a selection change entails, for any set (the rubber-band's). */
+function _setSelectionNodes(nodes) {
+  nodes = nodes || [];
+  // ⌨ an angle entry belongs to the items it was opened for: any change of the selection commits it first
+  // (it captures the whole keyboard — left armed it kept turning items that were no longer selected)
+  if (_angleEntry && !(_angleEntry.nodes.length === nodes.length && _angleEntry.nodes.every(n => nodes.includes(n)))) _endAngleEntry(true);
   _transformer.nodes(nodes);
   _configTransformerForNodes(nodes);
   _uiLayer.batchDraw();
@@ -7002,6 +7207,7 @@ export function beginOverlaySustainedFade(durationMs, easeFn, onDone) {
 }
 
 function _beginOverlayFade(durationMs, easeFn, onDone, mode) {
+  _cancelBand();   // ⬚ the layer's nodes are about to move to the ghost layer
   // 🎬 V0.3.2.196 — EVERY overlay fade completion triggers parked clips,
   // centrally. Before, only the PHASED engine's overlay block did; in
   // SIMULTANEOUS mode the fade's onDone merely resolved a promise and the
@@ -7172,6 +7378,7 @@ export function waitForOverlayStable() {
 
 async function _loadFromActiveStep() {
   if (!_stage) return;
+  _cancelBand();   // ⬚ the nodes under a rubber-band are about to be replaced
   // 🎭 The editor's node is about to be destroyed with the rest of the layer.
   if (_maskEdit) _cancelMaskEdit();
   if (_angleEntry) _endAngleEntry(false);
