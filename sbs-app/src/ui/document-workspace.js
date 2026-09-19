@@ -18,7 +18,7 @@ import { setStatus } from './status.js';
 import { srcHashOf } from '../systems/language-packs.js';
 import { numberSteps } from '../systems/translation-sheet-core.js';
 import { builtinTemplates, docTextFor, pageRangeLabel, unitsOf, stillsNeeded, pictureBox, containZoom, slotState, directionOf } from '../systems/document-core.js';
-import { DOCUMENT_CSS, renderPageHtml, slotInnerHtml } from '../systems/document-render.js';
+import { DOCUMENT_CSS, renderPageHtml, renderTocPageHtml, slotInnerHtml } from '../systems/document-render.js';
 import { watermarkOf, watermarkHtml, watermarkCss, watermarkVisible, detectWatermarkMode, bakeWatermarkPixels, fitWithin } from '../systems/watermark-core.js';
 import * as D from '../systems/document.js';
 import { openTemplateEditor } from './document-template-editor.js';
@@ -26,6 +26,7 @@ import { openTemplateEditor } from './document-template-editor.js';
 const _esc = (s) => String(s ?? '').replace(/[&<>"]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
 const FLAG_ICON = { added: '➕', removed: '➖', 'moved-out': '↗', new: '🆕', 'image-left': '🖼', empty: '∅' };
 const PAGE_W = 210 * 96 / 25.4, PAGE_H = 297 * 96 / 25.4;      // A4 in CSS px
+const TOC = '@toc';                                            // the "page" id of the table of contents in the workspace
 
 let _root = null, _shadow = null, _statusObs = null;
 let _sel = new Set(), _anchor = null, _pageId = null, _zoom = 'fit';
@@ -232,7 +233,8 @@ function _ctx() {
   const units = unitsOf(steps, chapters, doc?.options);
   const pageOfUnit = new Map();
   for (const p of doc?.pages || []) for (const id of p.stepIds || []) if (!pageOfUnit.has(id)) pageOfUnit.set(id, p);
-  return { doc, steps, chapters, perChapter, units, pageOfUnit, hidden: new Set(doc?.hiddenSteps || []), stepById: new Map(steps.map(s => [s.id, s])), nums: numberSteps(steps, chapters, perChapter) };
+  let model = null;
+  return { get model() { return model || (model = D.renderModel()); }, doc, steps, chapters, perChapter, units, pageOfUnit, hidden: new Set(doc?.hiddenSteps || []), stepById: new Map(steps.map(s => [s.id, s])), nums: numberSteps(steps, chapters, perChapter) };
 }
 
 function _renderAll() {
@@ -240,7 +242,7 @@ function _renderAll() {
   if (_ptrDown) { _renderHeld = true; return; }
   const c = _ctx();
   if (!c.doc || !c.doc.pages?.length) { _renderEmpty(); return _holdFocus(); }
-  if (!c.doc.pages.some(p => p.id === _pageId)) _pageId = c.doc.pages[0].id;
+  if (_pageId === TOC ? !c.model.toc : !c.doc.pages.some(p => p.id === _pageId)) _pageId = c.doc.pages[0].id;
   for (const id of [..._sel]) if (!c.units.some(u => u.id === id)) _sel.delete(id);
   _renderTop(c); _renderLeft(c); _renderList(c); _renderPage(c);
   _holdFocus();
@@ -288,7 +290,8 @@ function _renderLeft(c) {
   const left = _root.querySelector('#dw-left');
   const keep = left.scrollTop;
   const f = c.doc.fields || {};
-  const page = c.doc.pages.find(p => p.id === _pageId);
+  const onToc = _pageId === TOC;
+  const page = onToc ? c.doc.pages[0] : c.doc.pages.find(p => p.id === _pageId);
   const pi = c.doc.pages.indexOf(page);
   const tpls = [...builtinTemplates(), ...(c.doc.templates || [])];
   const tplNow = tpls.find(t => t.id === page.templateId) || tpls[0];
@@ -315,10 +318,11 @@ function _renderLeft(c) {
     <label class="dw-lab">Step numbers
       <select class="dw-in" data-opt="numbering">${[['step', 'The same numbers as the animation'], ['page', '1, 2, 3 on every page'], ['none', 'No numbers']].map(([v, l]) => `<option value="${v}"${(c.doc.options?.numbering || 'step') === v ? ' selected' : ''}>${l}</option>`).join('')}</select></label>
     <label style="display:flex;gap:8px;align-items:center;margin:0 0 7px;font-size:11.5px;color:#cbd5e1;"><input type="checkbox" data-opt="pictureNumbers"${c.doc.options?.pictureNumbers !== false ? ' checked' : ''}> Step number on each picture (pages with several steps)</label>
+    <label style="display:flex;gap:8px;align-items:center;margin:0 0 7px;font-size:11.5px;color:#cbd5e1;" title="A contents page opens the document: every chapter with the page it starts on. It counts as page 1."><input type="checkbox" data-opt="toc"${c.doc.options?.toc !== false ? ' checked' : ''}> Table of contents (chapters → pages)</label>
     <label class="dw-lab">Reading direction
       <select class="dw-in" data-opt="direction">${(() => { const r = directionOf(c.doc, c.steps, c.chapters); const cur = c.doc.options?.direction || 'auto'; return [['auto', `Automatic — now ${r.detected === 'rtl' ? 'right-to-left (Hebrew / Arabic text)' : 'left-to-right'}`], ['ltr', 'Left-to-right'], ['rtl', 'Right-to-left']].map(([v, l]) => `<option value="${v}"${cur === v ? ' selected' : ''}>${l}</option>`).join(''); })()}</select></label>`;
   const pageHtml = `
-    <div class="dw-h">Page ${pi + 1} of ${c.doc.pages.length}</div>
+    <div class="dw-h">Page ${c.model.pages.find(p => p.id === page.id)?.number ?? '—'} of ${c.model.total}</div>
     <div style="font-size:12px;color:#cbd5e1;margin-bottom:8px;">${_esc(pageRangeLabel(page, c.steps, c.chapters, c.perChapter, c.doc.hiddenSteps))}</div>
     ${flags.length ? `<div style="margin:0 0 10px;padding:7px 9px;border-radius:7px;background:rgba(245,158,11,.13);border:1px solid #b45309;font-size:11.5px;line-height:1.5;">${flags.map(x => `${FLAG_ICON[x.kind] || '!'} ${_esc(x.note)}`).join('<br>')}
       <div style="margin-top:5px;"><a data-act="reviewed">✓ Seen — clear these marks</a></div></div>` : ''}
@@ -344,7 +348,9 @@ function _renderLeft(c) {
     for (const inp of docBox.querySelectorAll('input[data-field]')) if (inp !== document.activeElement) inp.value = f[inp.dataset.field] || '';
   } else docBox.innerHTML = docHtml;
   _renderWatermarkBox(wmBox, watermarkOf(c.doc));
-  pageBox.innerHTML = pageHtml;
+  pageBox.innerHTML = onToc
+    ? `<div class="dw-h">Contents — page 1${c.model.toc?.pages.length > 1 ? `–${c.model.toc.pages.length}` : ''} of ${c.model.total}</div><div style="font-size:11.5px;color:#94a3b8;line-height:1.5;">Built from the chapters: every chapter that prints, with the page it starts on. The numbers follow by themselves when you join, split or leave out steps. In the PDF every line is a link.<br><br>It counts as page 1, so the first step page is page ${(c.model.toc?.pages.length || 0) + 1}. Switch it off with <b>Table of contents</b> above.</div>`
+    : pageHtml;
   left.scrollTop = keep;
 }
 
@@ -498,7 +504,9 @@ function _renderList(c) {
   // walk the timeline; open a page box whenever the page changes
   let html = '', lastChapter = undefined, openPage = null;
   const close = () => { if (openPage !== null) { html += '</div>'; openPage = null; } };
-  const pageNo = new Map(c.doc.pages.map((p, i) => [p.id, i + 1]));
+  const printed = new Map(c.model.pages.map(p => [p.id, p.number]));
+  const pageNo = { get: (id) => printed.get(id) ?? '—' };                 // the number that is PRINTED (the contents come first; pages left out have none)
+  if (c.model.toc) html += `<div class="dw-pagebox${_pageId === TOC ? ' cur' : ''}" data-pagebox="${TOC}"><div class="dw-pagehead" data-goto-page="${TOC}" style="padding:8px;"><b style="color:#e2e8f0;">Page 1${c.model.toc.pages.length > 1 ? `–${c.model.toc.pages.length}` : ''}</b><span>· 📑 ${_esc(c.model.toc.title)} — ${c.model.toc.pages.reduce((n, p) => n + p.lines.length, 0)} chapters</span></div></div>`;
   for (const u of c.units) {
     const p = c.pageOfUnit.get(u.id) || null;
     if (u.chapterId !== lastChapter) {
@@ -543,6 +551,12 @@ function _renderPage(c) {
   const focused = _shadow.activeElement;
   if (focused?.classList?.contains('tx')) { _deferred = true; return; }
   const model = D.renderModel();
+  if (_pageId === TOC && model.toc) {
+    _pageModel = null; _slotSel = null; _placeSlotBar();
+    const o = { logo: D.documentLogo(), watermark: model.watermark, dir: model.dir, lang: model.lang, tocTitle: model.toc.title };
+    _shadow.innerHTML = `<style>${DOCUMENT_CSS}${watermarkCss(model.watermark)}${EDIT_CSS}.page + .page { margin-top: 8mm; } .toc .tl { pointer-events: none; }</style><div class="fit">${model.toc.pages.map(tp => renderTocPageHtml(tp, o)).join('')}</div>`;
+    _fit(); return;
+  }
   const mp = model.pages.find(p => p.id === _pageId);
   _pageModel = mp || null; _pageLang = model.lang || null;
   if (_slotSel != null && (!mp || _slotSel >= mp.images.length)) _slotSel = null;
@@ -605,7 +619,8 @@ function _fit() {
   const pad = 28;
   const s = _zoom === '100' ? 1 : Math.max(0.2, Math.min((centre.clientWidth - pad * 2) / PAGE_W, (centre.clientHeight - pad * 2) / PAGE_H));
   fit.style.transform = `scale(${s})`;
-  const w = PAGE_W * s, h = PAGE_H * s;
+  const nPages = Math.max(1, fit.querySelectorAll('.page').length);
+  const w = PAGE_W * s, h = (PAGE_H * nPages + (nPages - 1) * 8 * 96 / 25.4) * s;
   host.style.width = `${w}px`; host.style.height = `${h + pad}px`;
   host.style.left = `${Math.max(pad, (centre.clientWidth - w) / 2)}px`;
   host.style.top = `${_zoom === '100' ? pad : Math.max(pad, (centre.clientHeight - h) / 2)}px`;
@@ -976,6 +991,7 @@ function _onChange(e) {
   if (t.dataset?.field) return D.setFields({ [t.dataset.field]: t.value });
   if (t.dataset?.opt === 'numbering') return D.setOptions({ numbering: t.value });
   if (t.dataset?.opt === 'direction') return D.setOptions({ direction: t.value });
+  if (t.dataset?.opt === 'toc') return D.setOptions({ toc: t.checked });
   if (t.dataset?.opt === 'pictureNumbers') return D.setOptions({ pictureNumbers: t.checked });
   if (t.dataset?.pageOpt === 'template') return D.setPageTemplate(_pageId, t.value || null);
   if (t.id === 'dw-asset-file') { const file = t.files?.[0]; t.value = ''; if (file) _importAsset(file, _assetSlot); return; }
@@ -1003,6 +1019,9 @@ function _onKey(e, editable) {
   if (e.key === 'PageDown' || e.key === 'PageUp' || e.key === 'ArrowRight' || e.key === 'ArrowLeft') {
     const i = c.doc.pages.findIndex(p => p.id === _pageId);
     const live = c.doc.pages.filter(p => p.stepIds.length);
+    const fwd = e.key === 'PageDown' || e.key === 'ArrowRight';
+    if (c.model.toc && _pageId === TOC) { if (fwd) return move(live[0]?.stepIds[0]); e.preventDefault(); return; }
+    if (c.model.toc && !fwd && live[0]?.id === _pageId) { e.preventDefault(); if (_showPage(TOC)) { _sel = new Set(); _renderAll(); } return; }
     const k = live.findIndex(p => p.id === _pageId);
     const np = live[Math.max(0, Math.min(live.length - 1, (k < 0 ? i : k) + ((e.key === 'PageDown' || e.key === 'ArrowRight') ? 1 : -1)))];
     return move(np?.stepIds[0]);

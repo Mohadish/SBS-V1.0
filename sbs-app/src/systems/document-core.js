@@ -53,7 +53,8 @@ export function emptyDocument() {
     footer: { left: '{project}', center: '{chapter}', right: 'Page {page} / {pages}' },
     // numbering: 'step' = the animation's step numbers · 'page' = 1,2,3 per page · 'none'
     // direction: 'auto' (from the text: Hebrew / Arabic → right-to-left) · 'ltr' · 'rtl'   ·   pictureNumbers: the step number on each picture
-    options: { includeHidden: false, numbering: 'step', direction: 'auto', pictureNumbers: true },
+    // toc: a contents page (chapters → page numbers) opens the document; it counts as page 1, so everything after it shifts
+    options: { includeHidden: false, numbering: 'step', direction: 'auto', pictureNumbers: true, toc: true },
     pages: [],
     texts: {},                           // stepId → { text, srcHash }   (absent = follows the voiceover)
     watermark: { ...WATERMARK_DEFAULTS },
@@ -505,7 +506,15 @@ export function buildRenderModel(doc, steps, chapters, ctx) {
   const hidden = new Set(doc?.hiddenSteps || []);
   const shown = (id) => unitById.has(id) && !hidden.has(id);
   const live = (doc?.pages || []).filter(p => (p.stepIds || []).some(shown));          // a page whose steps are all hidden is not printed
-  const total = live.length;
+  // ── table of contents ── one line per chapter that actually prints, pointing at the chapter's first page.
+  // Its length is known before anything is numbered (one line per chapter), so there is no chicken-and-egg:
+  // the contents take ceil(lines / TOC_LINES) pages at the front and every content page shifts by that.
+  const chapterOfPage = (p) => { const f = stepById.get((p.stepIds || []).find(shown)); return (chapters || []).find(c => c.id === f?.chapterId) || null; };
+  const tocLines = [];
+  { let prev = null; live.forEach((p, pi) => { const ch = chapterOfPage(p); if (ch && ch.id !== prev) tocLines.push({ chapterId: ch.id, name: ch.name, no: (chapters || []).indexOf(ch) + 1, at: pi }); prev = ch ? ch.id : prev; }); }
+  const tocOn = doc?.options?.toc !== false && tocLines.length > 0;
+  const tocPageCount = tocOn ? Math.ceil(tocLines.length / TOC_LINES) : 0;
+  const total = live.length + tocPageCount;
   const reading = directionOf(doc, steps, chapters);
   const headOf = new Map(); for (const u of units) for (const m of u.members) headOf.set(m, u.id);
   let prevChapter = null;
@@ -513,12 +522,12 @@ export function buildRenderModel(doc, steps, chapters, ctx) {
     const tpl = templateById(doc, p.templateId);
     const first = stepById.get(p.stepIds.find(shown));
     const ch = (chapters || []).find(c => c.id === first?.chapterId) || null;
-    const chapterHead = !!ch && ch.id !== prevChapter;          // the chapter title prints once, on the chapter's first page
+    const chapterHead = !!ch && ch.id !== prevChapter;          // the chapter's FIRST page (its title is a real heading there → a PDF bookmark); every page shows the name
     prevChapter = ch ? ch.id : prevChapter;
     const chIdx = ch ? (chapters || []).indexOf(ch) : -1;
     const vars = {
       ...(doc.fields || {}), project: ctx?.projectName || '', date: ctx?.date || '',
-      chapter: ch ? ch.name : '', chapterNo: chIdx >= 0 ? chIdx + 1 : '', page: pi + 1, pages: total,
+      chapter: ch ? ch.name : '', chapterNo: chIdx >= 0 ? chIdx + 1 : '', page: pi + 1 + tocPageCount, pages: total,
     };
     const items = [];
     let n = 0;
@@ -536,7 +545,7 @@ export function buildRenderModel(doc, steps, chapters, ctx) {
       }
     }
     return {
-      id: p.id, number: pi + 1, total, template: tpl,
+      id: p.id, number: pi + 1 + tocPageCount, total, template: tpl,
       header: { left: _sub(_phrase(doc.header?.left, reading.lang), vars), center: _sub(_phrase(doc.header?.center, reading.lang), vars), right: _sub(_phrase(doc.header?.right, reading.lang), vars) },
       footer: { left: _sub(_phrase(doc.footer?.left, reading.lang), vars), center: _sub(_phrase(doc.footer?.center, reading.lang), vars), right: _sub(_phrase(doc.footer?.right, reading.lang), vars) },
       chapter: ch ? ch.name : '', chapterHead, items,
@@ -554,8 +563,25 @@ export function buildRenderModel(doc, steps, chapters, ctx) {
       flags: p.flags || [],
     };
   });
-  return { pages, total, watermark: watermarkOf(doc), dir: reading.dir, lang: reading.lang };
+  // the contents pages themselves (they wear the default template's header / footer; no chapter of their own)
+  const toc = !tocOn ? null : {
+    title: TOC_TITLE[reading.lang] || TOC_TITLE.en,
+    pages: Array.from({ length: tocPageCount }, (_, k) => {
+      const vars = { ...(doc.fields || {}), project: ctx?.projectName || '', date: ctx?.date || '', chapter: '', chapterNo: '', page: k + 1, pages: total };
+      const H = (side) => _sub(_phrase(doc.header?.[side], reading.lang), vars), F = (side) => _sub(_phrase(doc.footer?.[side], reading.lang), vars);
+      return {
+        id: `@toc${k ? k + 1 : ''}`, number: k + 1, total, template: templateById(doc, doc?.templateId),
+        header: { left: H('left'), center: H('center'), right: H('right') }, footer: { left: F('left'), center: F('center'), right: F('right') },
+        first: k === 0,
+        lines: tocLines.slice(k * TOC_LINES, (k + 1) * TOC_LINES).map(l => ({ no: l.no, name: l.name, page: l.at + 1 + tocPageCount })),
+      };
+    }),
+  };
+  return { pages, total, toc, watermark: watermarkOf(doc), dir: reading.dir, lang: reading.lang };
 }
+
+export const TOC_LINES = 26;                       // chapter lines per contents page: 26 × 8.1 mm + the title fit the 238 mm content area with room to spare
+const TOC_TITLE = { en: 'Contents', he: 'תוכן עניינים', ar: 'المحتويات' };
 
 /**
  * What a slot shows. AUTOMATIC slots share out the page's visible steps so the

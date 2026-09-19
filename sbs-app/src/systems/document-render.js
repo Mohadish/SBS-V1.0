@@ -33,7 +33,13 @@ body { font-family: Arial, Helvetica, sans-serif; color: #111; -webkit-print-col
 /* right-to-left page: the flex row already runs right → left; each end cell hugs the OUTER edge whatever language its own text is in */
 .page[dir="rtl"] .hdr .l, .page[dir="rtl"] .ftr .l { text-align: right; } .page[dir="rtl"] .hdr .r, .page[dir="rtl"] .ftr .r { text-align: left; }
 .ftr { display: flex; align-items: center; gap: 4mm; border-top: 0.3mm solid #666; padding-top: 1.5mm; font-size: 8.5pt; color: #333; }
-.txt h2 { font-size: 13pt; margin: 0 0 3mm; padding-bottom: 1mm; border-bottom: 0.3mm solid #bbb; }
+.txt h2, .txt .ch { font-size: 13pt; font-weight: 700; margin: 0 0 3mm; padding-bottom: 1mm; border-bottom: 0.3mm solid #bbb; }
+.toc h1 { font-size: 18pt; margin: 0 0 7mm; padding-bottom: 2mm; border-bottom: 0.5mm solid #222; }
+.toc .tl { display: flex; align-items: baseline; gap: 2.5mm; font-size: 11pt; line-height: 1.3; margin: 0 0 3.1mm; color: inherit; text-decoration: none; }
+.toc .tl .tn { flex: 0 0 9mm; font-weight: 700; }
+.toc .tl .tt { flex: 0 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.toc .tl .td { flex: 1 1 8mm; border-bottom: 0.3mm dotted #888; transform: translateY(-1mm); }
+.toc .tl .tp { flex: 0 0 auto; font-variant-numeric: tabular-nums; font-weight: 700; }
 .it { display: flex; gap: 3mm; margin: 0 0 3.2mm; font-size: 11pt; line-height: 1.38; break-inside: avoid; }
 .it .no { flex: 0 0 auto; min-width: 9mm; height: 6.2mm; padding: 0 1.6mm; border-radius: 3.1mm; background: #111; color: #fff; font-weight: 700; font-size: 9.5pt; display: flex; align-items: center; justify-content: center; }
 .it .tx { flex: 1; white-space: pre-wrap; word-break: break-word; }
@@ -57,7 +63,7 @@ body { font-family: Arial, Helvetica, sans-serif; color: #111; -webkit-print-col
  */
 export function renderDocumentHtml(model, o = {}) {
   const oo = { ...o, watermark: o.watermark ?? model.watermark, dir: o.dir ?? model.dir, lang: o.lang ?? model.lang };
-  const pages = (model.pages || []).map(p => renderPageHtml(p, oo)).join('\n');
+  const pages = [...(model.toc?.pages || []).map(tp => renderTocPageHtml(tp, { ...oo, tocTitle: model.toc.title })), ...(model.pages || []).map(p => renderPageHtml(p, oo))].join('\n');
   return `<!doctype html><html><head><meta charset="utf-8"><title>${_esc(o.title || 'Document')}</title><style>${DOCUMENT_CSS}${watermarkCss(oo.watermark)}${o.extraCss || ''}</style></head><body>${pages}</body></html>`;
 }
 
@@ -81,6 +87,24 @@ export function slotInnerHtml(im, url, k, lang = null) {
 }
 
 /**
+ * A contents page: one line per chapter — number, name, dotted leader, page — each line a link to
+ * that page (the PDF keeps it clickable). Same header / footer / watermark as every other page.
+ */
+export function renderTocPageHtml(tp, o = {}) {
+  const t = tp.template, pd = o.dir === 'rtl' ? 'rtl' : 'ltr';
+  const wm = watermarkHtml(o.watermark), under = !!wm && o.watermark.layer === 'under';
+  const C = { x: 12, y: 32, w: 186, h: 238.5 };
+  const lines = tp.lines.map(l => `<a class="tl" href="#pg-${l.page}"><span class="tn">${_esc(l.no)}</span><span class="tt" dir="auto">${_esc(l.name)}</span><span class="td"></span><span class="tp">${_esc(l.page)}</span></a>`).join('');
+  return `<section class="page" id="pg-${tp.number}" dir="${pd}" data-page="${tp.number}" data-id="${_esc(tp.id)}">`
+    + (under ? wm : '')
+    + `<div class="zone hdr" style="${_mm(t.header)}">${o.logo ? `<img class="logo" src="${_esc(o.logo)}" alt="">` : ''}<div class="l" dir="${pd}">${_esc(tp.header.left)}</div><div class="c" dir="${pd}">${_esc(tp.header.center)}</div><div class="r" dir="${pd}">${_esc(tp.header.right)}</div></div>`
+    + `<div class="zone toc" style="${_mm(C)}">${tp.first ? `<h1 dir="auto">${_esc(o.tocTitle || 'Contents')}</h1>` : ''}${lines}</div>`
+    + `<div class="zone ftr" style="${_mm(t.footer)}"><div class="l" dir="${pd}">${_esc(tp.footer.left)}</div><div class="c" dir="${pd}">${_esc(tp.footer.center)}</div><div class="r" dir="${pd}">${_esc(tp.footer.right)}</div></div>`
+    + (wm && !under ? wm : '')
+    + `</section>`;
+}
+
+/**
  * ONE page as a <section> — the PDF, the preview and the workspace's live page
  * are all this same markup, so what is edited is what prints. Rows carry
  * data-step and slots data-slot: the workspace hangs its editing on them.
@@ -90,7 +114,7 @@ export function slotInnerHtml(im, url, k, lang = null) {
 export function renderPageHtml(p, o = {}) {
   const still = (id) => (o.stills instanceof Map ? o.stills.get(id) : o.stills?.[id]) || null;
   const t = p.template;
-  const chapterHead = (o.chapterHead ?? p.chapterHead) && p.chapter ? `<h2 dir="auto">${_esc(p.chapter)}</h2>` : '';
+  const chapterHead = !p.chapter ? '' : (o.chapterHead ?? p.chapterHead) ? `<h2 dir="auto">${_esc(p.chapter)}</h2>` : `<div class="ch" dir="auto">${_esc(p.chapter)}</div>`;
   const items = p.items.map(it => `<div class="it" dir="${_dirOf(it.text)}" data-step="${_esc(it.stepId)}">${it.label ? `<span class="no">${_esc(it.label)}</span>` : ''}<div class="tx" dir="auto">${o.showStepNames && it.name ? `<span class="nm">${_esc(it.name)}</span>` : ''}${_esc(it.text)}</div></div>`).join('');
   const slots = p.images.map((im, k) => {
     const url = im.src || (im.stepId ? (still(im.key) || (im.moment !== 'start' ? still(im.stepId) : null)) : null);
@@ -100,7 +124,7 @@ export function renderPageHtml(p, o = {}) {
   const pd = o.dir === 'rtl' ? 'rtl' : 'ltr';
   const wm = watermarkHtml(o.watermark);
   const under = !!wm && o.watermark.layer === 'under';
-  return `<section class="page" dir="${pd}" data-page="${p.number}" data-id="${_esc(p.id)}">`
+  return `<section class="page" id="pg-${p.number}" dir="${pd}" data-page="${p.number}" data-id="${_esc(p.id)}">`
     + (under ? wm : '')
     + `<div class="zone hdr" style="${_mm(t.header)}">${o.logo ? `<img class="logo" src="${_esc(o.logo)}" alt="">` : ''}<div class="l" dir="${pd}">${_esc(p.header.left)}</div><div class="c" dir="${pd}">${_esc(p.header.center)}</div><div class="r" dir="${pd}">${_esc(p.header.right)}</div></div>`
     + `<div class="zone txt" style="${_mm(t.text)}">${chapterHead}${items}</div>`
