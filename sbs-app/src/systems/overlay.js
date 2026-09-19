@@ -6127,16 +6127,20 @@ export async function setSnapPrefs(patch) {
   return next;
 }
 
-/** An item's box for the magnet, in its own layer's coordinates (both layers are identity on the one stage). */
-function _snapBoxOf(n) {
+/**
+ * An item's box for the magnet, in its own layer's coordinates (both layers are identity on the one stage).
+ * asTarget: a masked picture counts by the window you SEE — but only as a target: the window is fixed on the
+ * canvas and does not travel with the picture, so a MOVING masked picture is measured by its own box.
+ */
+function _snapBoxOf(n, asTarget = false) {
   try {
-    if (_isPlainImageOrVideo(n) && _resolveMask(n)) {          // 🎭 what you SEE of a masked picture: its window
+    if (asTarget && _isPlainImageOrVideo(n) && _resolveMask(n)) {
       const v = _pinVisibleRect(n), a = (v.rot || 0) * Math.PI / 180, c = Math.cos(a), s = Math.sin(a);
       const xs = [0, v.w * c, v.w * c - v.h * s, -v.h * s].map(d => v.x + d), ys = [0, v.w * s, v.w * s + v.h * c, v.h * c].map(d => v.y + d);
       return { x: Math.min(...xs), y: Math.min(...ys), w: Math.max(...xs) - Math.min(...xs), h: Math.max(...ys) - Math.min(...ys) };
     }
     const r = n.getClientRect({ relativeTo: n.getLayer(), skipShadow: true, skipStroke: true });
-    return (r && r.width > 0 && r.height > 0) ? { x: r.x, y: r.y, w: r.width, h: r.height } : null;
+    return (r && (r.width > 0 || r.height > 0)) ? { x: r.x, y: r.y, w: r.width, h: r.height } : null;   // a level line is w × 0: still a line to stand on
   } catch { return null; }
 }
 
@@ -6151,11 +6155,11 @@ function _snapBegin(node, starts) {
   if (prefs.items) {
     for (const n of _layer.getChildren()) {
       if (moving.has(n) || !n.isVisible() || isAnchoredNode(n)) continue;    // a 3D-anchored arrow follows the camera: no line to stand on
-      const b = _snapBoxOf(n); if (b) targets.push(b);
+      const b = _snapBoxOf(n, true); if (b) targets.push(b);
     }
     for (const n of _stage.find(h => !!h.getAttr?.('headerId'))) {           // header items: titles and logos are what things get lined up with
-      if (moving.has(n) || !n.isVisible()) continue;
-      const b = _snapBoxOf(n); if (b) targets.push(b);
+      if (moving.has(n) || !n.isVisible() || n.opacity() < 1) continue;       // ghosted = hidden on THIS step: it is not in the picture
+      const b = _snapBoxOf(n, true); if (b) targets.push(b);
     }
   }
   const c = getCanonicalSize();
@@ -6165,28 +6169,34 @@ function _snapBegin(node, starts) {
     frame: prefs.frame ? { w: c.width, h: c.height } : null,
     grabOff: p ? { x: p.x - box0.x, y: p.y - box0.y } : null,
     distance: prefs.distance / (Math.abs(_stage.scaleX()) || 1),             // the magnet distance is SCREEN px: the same pull at any zoom
+    lastRaw: null, lastOut: null,
   };
+  window.addEventListener('blur', hideSnapGuides);                            // Alt+Tab with the button held: Konva hears no mouseup — at least take the guides down
 }
 
 /** Correct the grabbed node (in place) and draw the guides. Called first thing in its dragmove. */
 function _snapMove(node, evt) {
   const s = _snap; if (!s) return;
-  if (evt?.altKey) { hideSnapGuides(); return; }                             // Alt = let go of the magnet for now
-  const dx = node.x() - s.g0.x, dy = node.y() - s.g0.y;
+  let rx = node.x(), ry = node.y();
+  if (s.lastOut && rx === s.lastOut.x && ry === s.lastOut.y) { rx = s.lastRaw.x; ry = s.lastRaw.y; }   // Konva re-fired without re-placing the node: that is OUR corrected place, the raw one is remembered
+  s.lastRaw = { x: rx, y: ry };
+  if (evt?.altKey) { node.x(rx); node.y(ry); s.lastOut = { x: rx, y: ry }; hideSnapGuides(); return; }   // Alt = let go of the magnet for now
+  const dx = rx - s.g0.x, dy = ry - s.g0.y;
   const moved = { x: s.box0.x + dx, y: s.box0.y + dy, w: s.box0.w, h: s.box0.h };
   const r = snapBox(moved, s.targets, { distance: s.distance, frame: s.frame, grab: s.grabOff ? { x: moved.x + s.grabOff.x, y: moved.y + s.grabOff.y } : null });
-  if (r.dx) node.x(node.x() + r.dx);
-  if (r.dy) node.y(node.y() + r.dy);
+  node.x(rx + r.dx); node.y(ry + r.dy);
+  s.lastOut = { x: node.x(), y: node.y() };
   if (!r.guides.length) { hideSnapGuides(); return; }
   const cr = _container.getBoundingClientRect(), T = _stage.getAbsoluteTransform();
-  const C = (x, y) => { const q = T.point({ x, y }); return { x: cr.left + q.x, y: cr.top + q.y }; };
+  // client px, clamped to the viewport: a guide running to an item parked outside the picture must not cross the side panels
+  const C = (x, y) => { const q = T.point({ x, y }); return { x: Math.max(cr.left, Math.min(cr.right, cr.left + q.x)), y: Math.max(cr.top, Math.min(cr.bottom, cr.top + q.y)) }; };
   showSnapGuides(r.guides.map(g => {
     const a = g.axis === 'x' ? C(g.at, g.from) : C(g.from, g.at), b = g.axis === 'x' ? C(g.at, g.to) : C(g.to, g.at);
     return { x1: a.x, y1: a.y, x2: b.x, y2: b.y };
   }));
 }
 
-function _snapEnd() { _snap = null; hideSnapGuides(); }
+function _snapEnd() { _snap = null; hideSnapGuides(); window.removeEventListener('blur', hideSnapGuides); }
 
 // ─── ⬚ Rubber-band selection (V0.3.4.11) ────────────────────────────────────
 // Press on EMPTY stage and drag: a box; release: what it caught is the selection. The rules are

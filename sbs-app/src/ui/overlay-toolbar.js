@@ -21,6 +21,7 @@ import { state } from '../core/state.js';
 import { showContextMenu } from './context-menu.js';   // 📌 constant-text-box picker
 import { chooseFromButtons } from './prompt.js';
 import { keyHint } from '../core/keymap.js';          // 🎹 advertised shortcut stays in sync
+import * as userSettings from '../core/user-settings.js';   // 🧲 only to know WHEN the saved magnet settings are in
 
 let _bar = null;
 let _mainBtn = null;
@@ -265,7 +266,7 @@ export function initOverlayToolbar() {
   _helpersPanel = document.createElement('div');
   _helpersPanel.id = 'overlay-helpers-panel';
   _helpersPanel.style.cssText = [
-    'position:absolute', 'top:100%', 'right:0', 'margin-top:6px', 'z-index:31',
+    'position:absolute', 'top:44px', 'right:8px', 'z-index:31',
     'display:none', 'flex-direction:column', 'gap:7px', 'min-width:250px',
     'background:rgba(10,15,25,0.94)', 'border:1px solid rgba(255,255,255,0.12)', 'border-radius:8px',
     'padding:9px 10px', 'font-size:12px', 'color:#cbd5e1', 'backdrop-filter:blur(4px)',
@@ -286,6 +287,7 @@ export function initOverlayToolbar() {
   _helpersPanel.addEventListener('change', async (e) => {
     const k = e.target?.dataset?.snap; if (!k) return;
     await overlay.setSnapPrefs({ [k]: k === 'distance' ? Math.max(1, Math.min(60, Number(e.target.value) || 8)) : !!e.target.checked });
+    e.target.blur?.();   // a focused field silences every single-key shortcut (O, X, Delete, the arrows) until focus moves
     _syncHelpers();
   });
   _helpersPanel.addEventListener('pointerdown', (e) => e.stopPropagation());
@@ -294,7 +296,10 @@ export function initOverlayToolbar() {
   _syncXray();
 
   // Append in left-to-right DOM order: text slot · tools · helpers · toggle (the panel hangs under the bar).
-  _bar.append(_textSlot, _tools, _helpersBtn, _mainBtn, _helpersPanel);
+  _bar.append(_textSlot, _tools, _helpersBtn, _mainBtn);
+  surface.appendChild(_helpersPanel);   // NOT inside the bar: the bar has overflow-x:auto (it scrolls when crowded) and would clip it
+  // the saved settings load after this toolbar is built: show the user's real magnet state once they are in
+  userSettings.initUserSettings?.().then(() => _syncHelpers()).catch(() => {});
 
   surface.appendChild(_bar);
 
@@ -500,6 +505,7 @@ function _syncHelpers() {
   _helpersBtn.textContent = `🧰 Helpers${x ? ' 👓' : ''}${p.enabled ? ' 🧲' : ''} ▾`;
   _helpersBtn.style.background = _helpersOpen ? 'rgba(56,189,248,0.28)' : '';
   _helpersPanel.style.display = _helpersOpen ? 'flex' : 'none';
+  if (_helpersOpen && _bar) _helpersPanel.style.top = `${_bar.offsetTop + _bar.offsetHeight + 6}px`;   // right under the bar, whatever its height
   _magnetBtn.textContent = p.enabled ? '🧲 Magnet is ON' : '🧲 Magnet is off';
   _magnetBtn.style.background = p.enabled ? 'rgba(244,114,182,0.30)' : '';
   _magnetItems.querySelector('input').checked = p.items;
