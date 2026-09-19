@@ -4730,6 +4730,21 @@ function _attachNode(node) {
     node.on('dblclick dbltap', () => { if (!_editing) return; if (_polyEdit?.node === node) _polyAddPointAtPointer(node); else _enterPolyEdit(node); });
     node.on('dragmove.polydots dragend.polydots transformend.polydots', () => { if (_polyEdit?.node === node) _polyRefreshDots(); });
   }
+  if (_isConvertibleShape(node)) {
+    // ⬠ double-click a rectangle / triangle / circle / ellipse = its points, like a line's: it becomes a polygon on the
+    // spot (one undo step turns it back) and its dots appear. Not while it is one of several selected items (as text boxes).
+    node.on('dblclick dbltap', () => {
+      if (!_editing || !_isLiveNode(node)) return;
+      const sel = _transformer?.nodes() || [];
+      if (sel.length > 1 && sel.includes(node)) return;
+      if (_pinnedDefOf(node) && !_pinRepositionActive(node)) { setStatus('📌 This shape is pinned — unpin it to edit its points.', 'warn', 5000); return; }
+      const was = { Rect: 'rectangle', RegularPolygon: 'triangle', Circle: 'circle', Ellipse: 'ellipse' }[node.getClassName()] || 'shape';
+      const poly = convertToPolygon(node);
+      if (!poly) return;
+      _enterPolyEdit(poly);
+      setStatus(`⬠ The ${was} is a polygon now — drag a point · double-click an edge = new point · double-click a point = delete it · Ctrl+Z turns it back.`, 'info', 9000);
+    });
+  }
   // Any Konva.Image tagged as a user text box opens the in-place editor —
   // BUT only when this node is the sole selection. Editing one item of a
   // multi-selection produced flickery height changes (the editable mounts
