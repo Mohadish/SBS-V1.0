@@ -47,7 +47,7 @@ import { MARQUEE_THRESHOLD_PX, rectOf, marqueeOp, pickInMarquee, applyMarquee } 
 import { showMarqueeBox, setMarqueeBadge, hideMarqueeBox } from '../ui/marquee-box.js';
 import { snapBox, unionBox } from './snap-core.js';
 import { showSnapGuides, hideSnapGuides } from '../ui/snap-guides.js';
-import { toPairs, insertPoint, removePoint, movePoint, filletRadii, smoothControls, endDirection, headTriangle, headsOf, curveOf } from './polyline-core.js';
+import { toPairs, insertPoint, removePoint, movePoint, filletRadii, smoothControls, endDirection, headTriangle, headsOf, curveOf, shapeOutline } from './polyline-core.js';
 import { showPolylineDots, hidePolylineDots } from '../ui/polyline-dots.js';
 import { skewScaleOf, linearOf, isIdentity, applyToPoints, ellipseOf } from './affine-core.js';
 import * as editSession from './edit-session.js';   // P7-A: in-session local undo + commit-time main-undo entry
@@ -4035,7 +4035,7 @@ function _wireShapeTransformend(node, kind) {
       const uniform = noSkew && Math.abs(Math.abs(sx) - Math.abs(sy)) <= 1e-3 * Math.max(Math.abs(sx), Math.abs(sy), 1e-9);
       if (uniform) { node.radius(node.radius() * Math.abs(sx)); node.scaleX(Math.sign(sx) || 1); node.scaleY(Math.sign(sy) || 1); }
       // squished: the scale / skew stay — that IS the squished triangle (it used to be thrown away: radius × the larger axis)
-    } else if (kind === 'line' || kind === 'arrow') {
+    } else if (kind === 'line' || kind === 'arrow' || kind === 'polygon') {
       // the squish goes into the POINTS; the turn stays the node's. The bends (fillet / smooth) are worked out again.
       const A = skewScaleOf({ scaleX: sx, scaleY: sy, skewX: kx, skewY: ky });
       if (!isIdentity(A)) node.points(applyToPoints(node.points(), A, { x: node.offsetX(), y: node.offsetY() }));
@@ -4798,6 +4798,7 @@ function _serializeNode(node) {
     // arrow lost its tail (points defaulted to [] and could never grow back).
     'points', 'pointerLength', 'pointerWidth',
     'sbsHeadStart', 'sbsHeadEnd', 'sbsCurve', 'sbsFillet', 'pointerAtBeginning', 'pointerAtEnding',   // ✎ V0.3.4.15 — heads per end + the bend
+    'closed',   // ⬠ V0.3.4.18 — a polygon
     // Zoom-crop geometry (V0.3.2.58) — omitting these made a pasted zoom lose
     // its crop, so Konva scaled the WHOLE interface image into the small frame
     // instead of showing the cropped region. cropX/Y/W/H are Konva's crop;
@@ -6141,12 +6142,17 @@ function _showOverlayContextMenu(node, x, y) {
     { label: `${curDir === 'ltr'  ? '✓ ' : ''}Left-to-right`,                            action: () => setDir('ltr') },
   ] }];
   // ✎ Lines and arrows: their points and how they bend — the cables' three choices
+  // ⬠ a rectangle / triangle / circle / ellipse can become a polygon with free points
+  const convertItems = !_isConvertibleShape(node) ? [] : [
+    { label: `⬠ Convert to polygon (editable points)${node.getAttr('linkId') ? ' — leaves its link' : ''}`, action: () => convertToPolygon(node) },
+    { separator: true },
+  ];
   const polyItems = !_isPolyNode(node) ? [] : (() => {
     const cur = _polyCurve(node), rad = Number(node.getAttr('sbsFillet')) || POLY_DEFAULT_FILLET;
     const bend = (v, label) => ({ label: `${cur === v ? '✓ ' : ''}${label}`, action: () => _polySetCurve(node, v) });
     const radius = (v, label) => ({ label: `${rad === v ? '✓ ' : ''}${label}`, action: () => { const b = _polySnapshot(node); node.setAttr('sbsFillet', v); node.setAttr('sbsCurve', 'fillet'); _polyCommit(node, 'Fillet radius', b); _layer.batchDraw(); } });
     return [
-      { label: '✎ Edit points (double-click)', action: () => _enterPolyEdit(node) },
+      { label: `✎ Edit points (double-click)`, action: () => _enterPolyEdit(node) },
       { label: '〰 Bend', submenu: [
         bend('corner', 'Corners'), bend('smooth', 'Smooth (Bézier)'), bend('fillet', 'Fillet (rounded corners)'),
         { separator: true },
@@ -6157,6 +6163,7 @@ function _showOverlayContextMenu(node, x, y) {
   })();
   showContextMenu([
     ...polyItems,
+    ...convertItems,
     ...videoItems,
     ...ifaceItems,
     ...zoomItems,
@@ -6209,10 +6216,26 @@ const POLY_DEFAULT_FILLET = 28;
 let _polyEdit = null;   // { node, drag: null | { index, before, start:{x,y} (local), snap } }
 
 const _isPolyNode = (n) => !!n && n.name?.() === 'userShape' && (n.getClassName?.() === 'Line' || n.getClassName?.() === 'Arrow') && !isAnchoredNode(n);
-const _polyHeads = (n) => headsOf({ className: n.getClassName(), headStart: n.getAttr('sbsHeadStart'), headEnd: n.getAttr('sbsHeadEnd'), pointerAtBeginning: n.getAttr('pointerAtBeginning'), pointerAtEnding: n.getAttr('pointerAtEnding') });
+const _polyHeads = (n) => (n.closed?.() ? { start: false, end: false } : headsOf({ className: n.getClassName(), headStart: n.getAttr('sbsHeadStart'), headEnd: n.getAttr('sbsHeadEnd'), pointerAtBeginning: n.getAttr('pointerAtBeginning'), pointerAtEnding: n.getAttr('pointerAtEnding') }));   // ⬠ a polygon (closed) has no ends: no heads
 const _polyCurve = (n) => curveOf(n.getAttr('sbsCurve'));
 
-function _polyTrace(ctx, pts, curve, radius) {
+function _polyTrace(ctx, pts, curve, radius, closed = false) {
+  const n = pts.length, ring = closed && n > 2;
+  if (ring) {
+    // ⬠ a polygon: every point is a corner, the last joins the first
+    if (curve === 'smooth') {
+      const cs = smoothControls(pts, true);
+      ctx.moveTo(pts[0].x, pts[0].y);
+      for (let i = 0; i < n; i++) { const b = pts[(i + 1) % n]; ctx.bezierCurveTo(cs[i].c1.x, cs[i].c1.y, cs[i].c2.x, cs[i].c2.y, b.x, b.y); }
+    } else {
+      const rr = curve === 'fillet' ? filletRadii(pts, radius, true) : null;
+      const m = { x: (pts[n - 1].x + pts[0].x) / 2, y: (pts[n - 1].y + pts[0].y) / 2 };   // start half-way along the closing edge: every corner gets its arc
+      ctx.moveTo(m.x, m.y);
+      for (let i = 0; i < n; i++) { const b = pts[(i + 1) % n]; if (rr && rr[i] > 0.01) ctx.arcTo(pts[i].x, pts[i].y, b.x, b.y, rr[i]); else ctx.lineTo(pts[i].x, pts[i].y); }
+    }
+    ctx.closePath();
+    return;
+  }
   ctx.moveTo(pts[0].x, pts[0].y);
   if (curve === 'smooth' && pts.length > 2) {
     const cs = smoothControls(pts);
@@ -6260,8 +6283,15 @@ function _wirePolyline(node) {
       }
     }
     try {
+    const closed = !!shape.closed?.() && pts.length > 2;
     ctx.beginPath();
-    _polyTrace(ctx, pts, curve, Number(shape.getAttr('sbsFillet')) || POLY_DEFAULT_FILLET);
+    _polyTrace(ctx, pts, curve, Number(shape.getAttr('sbsFillet')) || POLY_DEFAULT_FILLET, closed);
+    if (closed) {
+      // ⬠ a polygon: filled and outlined like the shape it came from; its inside is a place to click, as any shape's
+      if (hit) { ctx.fillShape(shape); const k = Math.abs(shape.getParent()?.getAbsoluteScale?.().x) || 1; c.save(); c.lineWidth = Math.max(shape.strokeWidth() || 1, 14 / k); c.lineJoin = 'round'; c.strokeStyle = shape.colorKey; c.stroke(); c.restore(); }
+      else ctx.fillStrokeShape(shape);
+      return;
+    }
     if (hit) {
       // A 3 px line on a scaled-down stage is ~2 screen px: nobody can double-click that. The HIT stroke is ~14 screen
       // px wide whatever the zoom. (Not the hitStrokeWidth attr: a non-default attr is written into step.overlay.)
@@ -6354,7 +6384,7 @@ function _polyRefreshDots() {
   const pts = toPairs(e.node.points()), heads = _polyHeads(e.node);
   const cr = _container.getBoundingClientRect(), T = e.node.getAbsoluteTransform();
   showPolylineDots(pts.map((p, i) => {
-    const q = T.point(p), end = i === 0 || i === pts.length - 1;
+    const q = T.point(p), end = !e.node.closed?.() && (i === 0 || i === pts.length - 1);   // ⬠ a polygon has no ends
     const x = cr.left + q.x, y = cr.top + q.y;
     return { x, y, end, head: end && (i === 0 ? heads.start : heads.end), hidden: x < cr.left || x > cr.right || y < cr.top || y > cr.bottom };   // outside the viewport: no dot over the side panels
   }), { onStart: _polyDotStart, onMove: _polyDotMove, onEnd: _polyDotEnd, onDblClick: _polyDotDblClick });
@@ -6371,7 +6401,7 @@ function _polyDotStart(index) {
   if (prefs.enabled) {
     const targets = [];
     if (prefs.items) {
-      for (const o of _layer.getChildren()) { if (o === n || !o.isVisible() || isAnchoredNode(o) || _isPolyNode(o)) continue; const b = _snapBoxOf(o, true); if (b) targets.push(b); }   // other LINES are left out: a two-point line's box edges are its points
+      for (const o of _layer.getChildren()) { if (o === n || !o.isVisible() || isAnchoredNode(o) || (_isPolyNode(o) && !o.closed?.())) continue; const b = _snapBoxOf(o, true); if (b) targets.push(b); }   // other LINES are left out: a two-point line's box edges are its points
       for (const o of _stage.find(h => !!h.getAttr?.('headerId'))) { if (!o.isVisible() || o.opacity() < 1) continue; const b = _snapBoxOf(o, true); if (b) targets.push(b); }
     }
     pts.forEach((p, i) => { if (i !== index) { const q = L.point(p); targets.push({ x: q.x, y: q.y, w: 0, h: 0 }); } });
@@ -6413,8 +6443,13 @@ function _polyDotEnd(index, moved) {
 
 function _polyDotDblClick(index) {
   const e = _polyEdit; if (!e) return;
-  const n = e.node, count = toPairs(n.points()).length, before = _polySnapshot(n);
-  if (index === 0 || index === count - 1) {
+  const n = e.node, count = toPairs(n.points()).length, before = _polySnapshot(n), closed = !!n.closed?.();
+  if (closed) {
+    const next = removePoint(n.points(), index, true);
+    if (!next) { setStatus('⬠ A polygon keeps at least three points.', 'info', 3000); return; }
+    n.points(next);
+    _polyCommit(n, 'Delete point', before);
+  } else if (index === 0 || index === count - 1) {
     const heads = _polyHeads(n), key = index === 0 ? 'sbsHeadStart' : 'sbsHeadEnd', now = index === 0 ? heads.start : heads.end;
     // write BOTH ends explicitly: from now on the shape says itself what it wears (no more class defaults)
     n.setAttr('sbsHeadStart', heads.start); n.setAttr('sbsHeadEnd', heads.end); n.setAttr(key, !now);
@@ -6435,10 +6470,11 @@ function _polyAddPointAtPointer(node) {
   const p = node.getRelativePointerPosition();
   if (!p) return;
   const before = _polySnapshot(node);
-  const r = insertPoint(node.points(), p);
+  const closed = !!node.closed?.();
+  const r = insertPoint(node.points(), p, closed);
   if (!r) return;
   node.points(r.flat);
-  if (!node.getAttr('sbsCurve')) node.setAttr('sbsCurve', 'fillet');       // its first bend: the cables' look (right-click changes it)
+  if (!closed && !node.getAttr('sbsCurve')) node.setAttr('sbsCurve', 'fillet');       // its first bend: the cables' look (right-click changes it)
   _polyCommit(node, 'Add line point', before);
   _layer.batchDraw();
   _polyRefreshDots();
@@ -6449,6 +6485,84 @@ function _polySetCurve(node, curve) {
   node.setAttr('sbsCurve', curveOf(curve));
   _polyCommit(node, 'Line bend', before);
   _layer.batchDraw();
+}
+
+// ─── ⬠ Convert a shape to a polygon (V0.3.4.18) ─────────────────────────────
+// A rectangle, a triangle, a circle or an ellipse becomes a CLOSED line: free points joined round, filled like the
+// shape was. Same place, same turn, same squish (baked into the points), same colours / thickness / opacity / style,
+// same bond to an interface, same pin, same place in the stacking order. From then on it is edited like a line:
+// double-click for its points (drag, add, delete — a polygon keeps at least three), right-click ▸ Bend. A rectangle's
+// rounded corners become a Fillet of the same size (at a right angle the cables' reach IS the radius); a circle /
+// an ellipse becomes eight points with Smooth — round to within 1%. One way, one undo step. A LINKED shape leaves its
+// link (a polygon is another kind of shape; the other copies keep the link).
+
+const POLY_CONVERTIBLE = new Set(['Rect', 'Circle', 'Ellipse', 'RegularPolygon']);
+const _isConvertibleShape = (n) => !!n && n.name?.() === 'userShape' && POLY_CONVERTIBLE.has(n.getClassName?.()) && !isAnchoredNode(n);
+// attributes that describe the OLD shape's geometry / kind — everything else (paint, style, bond, pin, visibility, app
+// metadata) travels to the polygon as it is
+const POLY_DROP = new Set(['width', 'height', 'radius', 'radiusX', 'radiusY', 'sides', 'cornerRadius', 'scaleX', 'scaleY', 'skewX', 'skewY',
+  'offsetX', 'offsetY', 'kind', 'linkId', 'sceneFunc', 'hitFunc', 'x', 'y', 'rotation', 'points', 'closed', 'draggable', 'name']);
+
+function _polygonSpecOf(node) {
+  const cls = node.getClassName();
+  let flat, curve = 'corner', fillet = null;
+  if (cls === 'Rect') {
+    flat = shapeOutline('rect', { w: node.width(), h: node.height() });
+    const c = node.cornerRadius(), r = Array.isArray(c) ? Math.max(0, ...c.map(Number).filter(Number.isFinite)) : (Number(c) || 0);
+    if (r > 0) { curve = 'fillet'; fillet = r; }
+  } else if (cls === 'RegularPolygon') flat = shapeOutline('ngon', { r: node.radius(), sides: node.sides() });
+  else if (cls === 'Circle') { flat = shapeOutline('ellipse', { rx: node.radius(), ry: node.radius() }); curve = 'smooth'; }
+  else { flat = shapeOutline('ellipse', { rx: node.radiusX(), ry: node.radiusY() }); curve = 'smooth'; }
+  // the squish (scale / skew) goes into the points; the turn stays the node's — exactly the line's rule
+  const A = skewScaleOf({ scaleX: node.scaleX(), scaleY: node.scaleY(), skewX: node.skewX(), skewY: node.skewY() });
+  const ox = node.offsetX(), oy = node.offsetY();
+  const pts = [];
+  for (let i = 0; i + 1 < flat.length; i += 2) { const x = flat[i] - ox, y = flat[i + 1] - oy; pts.push(A[0] * x + A[1] * y, A[2] * x + A[3] * y); }
+  const keep = {};
+  for (const [k, v] of Object.entries(node.getAttrs())) if (!POLY_DROP.has(k) && typeof v !== 'function') keep[k] = v;
+  return { ...keep, x: node.x(), y: node.y(), rotation: node.rotation(), points: pts, closed: true, draggable: true, name: 'userShape',
+    kind: 'polygon', sbsHeadStart: false, sbsHeadEnd: false, sbsCurve: curve, ...(fillet ? { sbsFillet: fillet } : {}) };
+}
+
+/** Put `fresh` exactly where `old` stands in the stacking order, and let `old` go. */
+function _swapNode(old, fresh) {
+  const z = old.zIndex();
+  if (_polyEdit?.node === old) _exitPolyEdit();
+  _setSelection(null);
+  _layer.add(fresh);
+  old.destroy();
+  fresh.zIndex(Math.min(z, _layer.getChildren().length - 1));
+  const iface = _interfaceOf(fresh); if (iface) _captureBondPct(fresh, iface);
+}
+
+export function convertToPolygon(node) {
+  if (!_isConvertibleShape(node) || !_isLiveNode(node)) return null;
+  const wasLinked = !!node.getAttr('linkId');
+  const oldSpec = _serializeNode(node);
+  const poly = new Konva.Line(_polygonSpecOf(node));
+  _wireShapeTransformend(poly, 'polygon');
+  _wirePolyline(poly);
+  _swapNode(node, poly);
+  _attachNode(poly);                 // like every birth path: in the layer first, then wired
+  const newSpec = _serializeNode(poly);
+  let cur = poly;
+  const swapTo = async (spec) => {
+    if (!_isLiveNode(cur)) return false;
+    const fresh = await _recreateNode(spec);
+    if (!fresh) return false;
+    _swapNode(cur, fresh);
+    _attachNode(fresh);
+    cur = fresh;
+    _setSelection(fresh);
+    _layer.batchDraw();
+    _scheduleSave();
+  };
+  undoManager.push('Convert to polygon', () => swapTo(oldSpec), () => swapTo(newSpec));
+  _setSelection(poly);
+  _layer.batchDraw();
+  _scheduleSave();
+  setStatus(`⬠ Now a polygon — double-click it to move, add or delete its points; right-click ▸ Bend for rounded or smooth corners.${wasLinked ? ' (It left its link: the other copies keep theirs.)' : ''}`, 'success', 8000);
+  return poly;
 }
 
 // ─── 🧲 The magnet (V0.3.4.12) ──────────────────────────────────────────────
@@ -6703,7 +6817,7 @@ function _bandOutline(node) {
       const raw = node.points() || [], pts = [];
       for (let i = 0; i + 1 < raw.length; i += 2) pts.push(P(raw[i], raw[i + 1]));
       const k = (Math.abs(node.scaleX()) + Math.abs(node.scaleY())) / 2 || 1;
-      return { kind: 'line', pts, halfWidth: Math.max(1, (node.strokeWidth?.() || 1) * k / 2) };
+      return { kind: node.closed?.() && pts.length > 2 ? 'closed' : 'line', pts, halfWidth: Math.max(1, (node.strokeWidth?.() || 1) * k / 2) };   // ⬠ a polygon: its inside counts too
     }
     if (cls === 'Circle' || cls === 'Ellipse') {
       const rx = cls === 'Circle' ? node.radius() : node.radiusX(), ry = cls === 'Circle' ? node.radius() : node.radiusY();

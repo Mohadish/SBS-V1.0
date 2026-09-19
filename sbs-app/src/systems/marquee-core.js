@@ -78,8 +78,25 @@ export function polylineIntersectsRect(pts, r, halfWidth = 0) {
   return false;
 }
 
+/** Even–odd rule: is p inside the (closed, possibly concave) polygon? */
+export function pointInPolygon(p, pts) {
+  let inside = false;
+  for (let i = 0, j = pts.length - 1; i < pts.length; j = i++) {
+    const a = pts[i], b = pts[j];
+    if ((a.y > p.y) !== (b.y > p.y) && p.x < ((b.x - a.x) * (p.y - a.y)) / (b.y - a.y) + a.x) inside = !inside;
+  }
+  return inside;
+}
+
+/** A CLOSED polygon (V0.3.4.18 — convex or not) against a rectangle: an edge (the closing one too) reaches it, or it lies inside. */
+export function closedIntersectsRect(pts, r, halfWidth = 0) {
+  if (pts.length < 3) return polylineIntersectsRect(pts, r, halfWidth);
+  if (polylineIntersectsRect([...pts, pts[0]], r, halfWidth)) return true;
+  return pointInPolygon({ x: r.x + r.w / 2, y: r.y + r.h / 2 }, pts);        // no edge reaches the box: it is either wholly inside the polygon or wholly outside
+}
+
 /**
- * @param {Array<{id:*, kind:'poly'|'line', pts:{x:number,y:number}[], halfWidth?:number}>} items
+ * @param {Array<{id:*, kind:'poly'|'line'|'closed', pts:{x:number,y:number}[], halfWidth?:number}>} items
  *        pts in the SAME space as rect. 'poly' = a convex outline (the item's own box through its
  *        transform); 'line' = an open polyline.
  * @param {{x:number,y:number,w:number,h:number}} rect
@@ -93,7 +110,7 @@ export function pickInMarquee(items, rect, windowMode = false) {
     if (!pts.length || pts.some(p => !Number.isFinite(p.x) || !Number.isFinite(p.y))) continue;
     const hit = windowMode
       ? pointsInsideRect(pts, it.kind === 'line' && it.halfWidth ? { x: rect.x + it.halfWidth, y: rect.y + it.halfWidth, w: rect.w - it.halfWidth * 2, h: rect.h - it.halfWidth * 2 } : rect)
-      : (it.kind === 'line' ? polylineIntersectsRect(pts, rect, it.halfWidth || 0) : convexIntersectsRect(pts, rect));
+      : (it.kind === 'line' ? polylineIntersectsRect(pts, rect, it.halfWidth || 0) : it.kind === 'closed' ? closedIntersectsRect(pts, rect, it.halfWidth || 0) : convexIntersectsRect(pts, rect));
     if (hit) out.push(it.id);
   }
   return out;

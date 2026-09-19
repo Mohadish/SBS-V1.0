@@ -57,7 +57,7 @@ export const GEOM_KEYS = {
   RegularPolygon: ['radius', 'sides'],
   // ✎ V0.3.4.15 — a line and an arrow are one thing: points, a head per end, a bend. Older definitions lack the new keys;
   // applying a definition only writes the keys it HAS, so an instance keeps what it wears.
-  Line:           ['points', 'pointerLength', 'pointerWidth', 'sbsHeadStart', 'sbsHeadEnd', 'sbsCurve', 'sbsFillet'],
+  Line:           ['points', 'pointerLength', 'pointerWidth', 'sbsHeadStart', 'sbsHeadEnd', 'sbsCurve', 'sbsFillet', 'closed'],   // ⬠ closed = a polygon (V0.3.4.18)
   Arrow:          ['points', 'pointerLength', 'pointerWidth', 'sbsHeadStart', 'sbsHeadEnd', 'sbsCurve', 'sbsFillet'],
 };
 

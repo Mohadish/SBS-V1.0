@@ -6,6 +6,10 @@
  * a way to bend through them — 'corner' (straight segments), 'smooth' (a curve through every
  * point) or 'fillet' (straight segments with rounded corners, the cables' look) — and an
  * arrowhead that each END may or may not wear.
+ *
+ * A CLOSED one is a polygon (V0.3.4.18): the last point joins the first, every point is a corner
+ * (there are no ends, so no heads), and it needs at least three points. Every function that cares
+ * takes `closed` as its last argument.
  */
 
 export const CURVES = ['corner', 'smooth', 'fillet'];
@@ -26,10 +30,11 @@ const _sub = (a, b) => ({ x: a.x - b.x, y: a.y - b.y });
 const _len = (v) => Math.hypot(v.x, v.y);
 
 /** The nearest place on the (straight) polyline: which segment, how far along it, where, how far away. */
-export function nearestOnPolyline(pts, p) {
+export function nearestOnPolyline(pts, p, closed = false) {
   let best = null;
-  for (let i = 0; i + 1 < pts.length; i++) {
-    const a = pts[i], b = pts[i + 1], ab = _sub(b, a), l2 = ab.x * ab.x + ab.y * ab.y;
+  const segs = closed && pts.length > 2 ? pts.length : pts.length - 1;       // a polygon has its closing edge too (index n−1: last → first)
+  for (let i = 0; i < segs; i++) {
+    const a = pts[i], b = pts[(i + 1) % pts.length], ab = _sub(b, a), l2 = ab.x * ab.x + ab.y * ab.y;
     const t = l2 ? Math.max(0, Math.min(1, ((p.x - a.x) * ab.x + (p.y - a.y) * ab.y) / l2)) : 0;
     const q = { x: a.x + ab.x * t, y: a.y + ab.y * t }, d = _len(_sub(p, q));
     if (!best || d < best.dist) best = { index: i, t, point: q, dist: d };
@@ -38,18 +43,18 @@ export function nearestOnPolyline(pts, p) {
 }
 
 /** Add a point ON the line nearest to p (the shape does not change until the new point is moved). @returns {{flat:number[], index:number}|null} */
-export function insertPoint(flat, p) {
+export function insertPoint(flat, p, closed = false) {
   const pts = toPairs(flat);
-  const n = pts.length >= 2 ? nearestOnPolyline(pts, p) : null;
+  const n = pts.length >= 2 ? nearestOnPolyline(pts, p, closed) : null;
   if (!n) return null;
   pts.splice(n.index + 1, 0, n.point);
   return { flat: toFlat(pts), index: n.index + 1 };
 }
 
-/** Remove a MIDDLE point. The two ends are what makes it a line: they stay. @returns {number[]|null} */
-export function removePoint(flat, index) {
+/** Remove a MIDDLE point. The two ends are what makes it a line: they stay. A polygon may lose any point while three remain. @returns {number[]|null} */
+export function removePoint(flat, index, closed = false) {
   const pts = toPairs(flat);
-  if (index <= 0 || index >= pts.length - 1) return null;
+  if (closed ? (index < 0 || index >= pts.length || pts.length <= 3) : (index <= 0 || index >= pts.length - 1)) return null;
   pts.splice(index, 1);
   return toFlat(pts);
 }
@@ -70,11 +75,11 @@ export function movePoint(flat, index, p) {
  * right; a nearly straight point or a reach under half a unit is left as it is.
  * @returns {number[]} one radius per point; 0 for the two ends and for points that are not rounded
  */
-export function filletRadii(pts, reach) {
-  const R = Number.isFinite(reach) && reach > 0 ? reach : 0;
+export function filletRadii(pts, reach, closed = false) {
+  const R = Number.isFinite(reach) && reach > 0 ? reach : 0, n = pts.length, ring = closed && n > 2;
   return pts.map((p, i) => {
-    if (i === 0 || i === pts.length - 1 || !R) return 0;
-    const a = _sub(pts[i - 1], p), b = _sub(pts[i + 1], p), la = _len(a), lb = _len(b);
+    if (!R || (!ring && (i === 0 || i === n - 1))) return 0;
+    const a = _sub(pts[(i - 1 + n) % n], p), b = _sub(pts[(i + 1) % n], p), la = _len(a), lb = _len(b);
     if (!la || !lb) return 0;
     const cos = Math.max(-1, Math.min(1, (a.x * b.x + a.y * b.y) / (la * lb)));
     const theta = Math.acos(cos);                        // π = straight through, 0 = a hairpin
@@ -85,11 +90,12 @@ export function filletRadii(pts, reach) {
 }
 
 /** Smooth: cubic Bézier control points of each segment for a curve THROUGH every point (Catmull-Rom; the ends are REFLECTED like the cables', so the curve leaves an end along its first chord). */
-export function smoothControls(pts) {
-  const out = [];
-  for (let i = 0; i + 1 < pts.length; i++) {
-    const p1 = pts[i], p2 = pts[i + 1];
-    const p0 = pts[i - 1] || { x: 2 * p1.x - p2.x, y: 2 * p1.y - p2.y }, p3 = pts[i + 2] || { x: 2 * p2.x - p1.x, y: 2 * p2.y - p1.y };
+export function smoothControls(pts, closed = false) {
+  const out = [], n = pts.length, ring = closed && n > 2;
+  for (let i = 0; i < (ring ? n : n - 1); i++) {
+    const p1 = pts[i], p2 = pts[(i + 1) % n];
+    const p0 = ring ? pts[(i - 1 + n) % n] : (pts[i - 1] || { x: 2 * p1.x - p2.x, y: 2 * p1.y - p2.y });
+    const p3 = ring ? pts[(i + 2) % n] : (pts[i + 2] || { x: 2 * p2.x - p1.x, y: 2 * p2.y - p1.y });
     out.push({
       c1: { x: p1.x + (p2.x - p0.x) / 6, y: p1.y + (p2.y - p0.y) / 6 },
       c2: { x: p2.x - (p3.x - p1.x) / 6, y: p2.y - (p3.y - p1.y) / 6 },
@@ -128,4 +134,25 @@ export function headsOf({ className, headStart, headEnd, pointerAtBeginning, poi
     start: typeof headStart === 'boolean' ? headStart : (isArrow ? !!pointerAtBeginning : false),
     end: typeof headEnd === 'boolean' ? headEnd : (isArrow ? pointerAtEnding !== false : false),
   };
+}
+
+/**
+ * The points of a basic shape as a polygon, in the shape's OWN coordinates (the node's transform is not applied).
+ * kind: 'rect' {w,h} (from its top-left corner) · 'ngon' {r, sides} (Konva's RegularPolygon: first point straight up) ·
+ * 'ellipse' {rx, ry, count=8} (centred; first point straight up — eight points with Smooth read as round).
+ */
+export function shapeOutline(kind, o = {}) {
+  if (kind === 'rect') { const w = Number(o.w) || 0, h = Number(o.h) || 0; return [0, 0, w, 0, w, h, 0, h]; }
+  const out = [];
+  if (kind === 'ngon') {
+    const n = Math.max(3, Math.round(Number(o.sides) || 3)), r = Number(o.r) || 0;
+    for (let i = 0; i < n; i++) { const a = (2 * Math.PI * i) / n; out.push(r * Math.sin(a), -r * Math.cos(a)); }
+    return out;
+  }
+  if (kind === 'ellipse') {
+    const n = Math.max(4, Math.round(Number(o.count) || 8)), rx = Number(o.rx) || 0, ry = Number(o.ry) || 0;
+    for (let i = 0; i < n; i++) { const a = (2 * Math.PI * i) / n - Math.PI / 2; out.push(rx * Math.cos(a), ry * Math.sin(a)); }
+    return out;
+  }
+  return out;
 }
