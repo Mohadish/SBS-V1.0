@@ -321,7 +321,7 @@ function _copyCells(st, cut) {
   const s = _sel(st);
   if (!s) return;
   const rows = s.r1 - s.r0 + 1, cols = s.c1 - s.c0 + 1;
-  const grid = [], fmt = {};
+  const grid = [], fmt = {}, imgs = {};
   for (let y = 0; y < rows; y++) {
     const row = [];
     for (let x = 0; x < cols; x++) {
@@ -329,11 +329,13 @@ function _copyCells(st, cut) {
       row.push(st.data.cells?.[rr]?.[cc] ?? '');
       const f = st.data.fmt?.[`${rr},${cc}`];
       if (f) fmt[`${y},${x}`] = f;
+      const p = st.data.imgs?.[`${rr},${cc}`];
+      if (p) imgs[`${y},${x}`] = p;                 // the pictures travel too
     }
     grid.push(row);
   }
   const tsv = grid.map(r => r.join('\t')).join('\n');
-  _clip = { rows, cols, tsv, fmt };
+  _clip = { rows, cols, tsv, fmt, imgs };
   const ta = document.createElement('textarea');
   ta.value = tsv;
   ta.style.cssText = 'position:fixed;left:-9999px;top:0;opacity:0;';
@@ -475,6 +477,30 @@ export function openOverlayTableEditor(ctx) {
     const td = e.target.closest?.('td[data-cell]');
     if (td) { e.preventDefault(); e.stopPropagation(); _editCell(st, td); }
   });
+  // ── drop a picture file straight onto a cell ──
+  host.addEventListener('dragover', (e) => {
+    if (!st.ctx.picture) return;
+    if (![...(e.dataTransfer?.items || [])].some(i => i.kind === 'file')) return;
+    e.preventDefault(); e.stopPropagation();
+    e.dataTransfer.dropEffect = 'copy';
+    const td = e.target.closest?.('td[data-cell]');
+    for (const cell of _cells(st)) cell.style.boxShadow = cell === td ? 'inset 0 0 0 3px #f59e0b' : '';
+  });
+  host.addEventListener('dragleave', () => {
+    for (const cell of _cells(st)) cell.style.boxShadow = '';
+  });
+  host.addEventListener('drop', (e) => {
+    if (!st.ctx.picture) return;
+    const td = e.target.closest?.('td[data-cell]');
+    const file = [...(e.dataTransfer?.files || [])].find(f => /^image\//.test(f.type));
+    for (const cell of _cells(st)) cell.style.boxShadow = '';
+    if (!td || !file) return;
+    e.preventDefault(); e.stopPropagation();
+    _commitOpenCell(st);
+    const [r, c] = String(td.dataset.cell).split(',').map(Number);
+    st.ctx.picture(r, c, file);
+  });
+
   host.addEventListener('contextmenu', (e) => {
     const td = e.target.closest?.('td[data-cell]');
     if (!td || !st.ctx.onMenu) return;
@@ -696,6 +722,20 @@ export function openOverlayTableEditor(ctx) {
     const s = _sel(st);
     if (!s) return;
     const text = e.clipboardData?.getData('text/plain') ?? '';
+    // A PICTURE only wins when there is no grid to read: a spreadsheet puts
+    // BOTH the cells as text AND a picture of them on the clipboard, and the
+    // cells are what the user meant.
+    if (!/[\t\n]/.test(text) && st.ctx.picture) {
+      const item = [...(e.clipboardData?.items || [])].find(i => i.type?.startsWith('image/'));
+      const file = item?.getAsFile?.();
+      if (file) {
+        e.preventDefault(); e.stopPropagation();
+        _commitOpenCell(st);
+        const at = _sel(st) || s;
+        st.ctx.picture(at.r0, at.c0, file);
+        return;
+      }
+    }
     if (!text) return;
     // A single value while a cell is open belongs to the caret; anything with
     // a tab or a newline is a block of cells, whatever is focused.

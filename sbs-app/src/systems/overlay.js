@@ -28,7 +28,7 @@ import { narrationContextForStep } from './narration-timeline.js';
 import * as interfaces from './interfaces.js';   // interface overlay (used lazily in the right-click menu)
 // ▦ V0.3.4.45 — a table on the overlay: the same table the document editor
 // works with, drawn through the same HTML rasteriser the text boxes use.
-import { tableOverlayHtml, defaultOverlayTable } from './table-html.js';
+import { tableOverlayHtml, defaultOverlayTable, DEFAULT_PIC_PX } from './table-html.js';
 import { openOverlayTableEditor, closeOverlayTableEditor, refreshOverlayTableEditor,
          TABLE_UNDO_SCOPE } from '../ui/overlay-table-editor.js';
 import { sanitizeCustomItem, tableInsertRow, tableDeleteRow, tableInsertCol, tableDeleteCol,
@@ -3133,6 +3133,61 @@ function _normaliseOverlayTable(data) {
   return { ...data, rowH };
 }
 
+/**
+ * ▦ A PICTURE FOR A CELL.
+ *
+ * The table is drawn by putting HTML inside an SVG and rasterising it, and an
+ * SVG cannot reach out to a file on disk — only a data: URI renders. So a cell
+ * picture is inlined, the way every other overlay image already is. What it is
+ * NOT is the whole camera original: it is capped at PIC_MAX_EDGE, far more
+ * than any cell can show, so the cell (or the column, or the whole table) can
+ * be made much bigger later and the picture is still drawn from pixels it
+ * really has. One stored copy, no re-baking, nothing to go stale.
+ */
+const PIC_MAX_EDGE = 1200;
+
+async function _cellPictureDataUrl(fileOrUrl) {
+  const raw = typeof fileOrUrl === 'string' ? fileOrUrl : await _fileToDataURL(fileOrUrl);
+  const img = await _loadImage(raw);
+  const k = Math.min(1, PIC_MAX_EDGE / Math.max(img.width || 1, img.height || 1));
+  if (k >= 1 && raw.length < 500000) return raw;          // already modest: keep it exactly
+  const cv = document.createElement('canvas');
+  cv.width = Math.max(1, Math.round((img.width || 1) * k));
+  cv.height = Math.max(1, Math.round((img.height || 1) * k));
+  cv.getContext('2d').drawImage(img, 0, 0, cv.width, cv.height);
+  // keep transparency where the source had it; otherwise JPEG is a fraction
+  // of the size and a photo in a cell has nothing to be transparent about
+  const alpha = /^data:image\/(png|gif|webp|svg)/i.test(raw);
+  return cv.toDataURL(alpha ? 'image/png' : 'image/jpeg', 0.88);
+}
+
+/** Put a picture in one cell, giving the row a height to show it in. */
+async function _setCellPicture(node, r, c, fileOrUrl) {
+  const data = _tableDataOf(node);
+  if (!data) return false;
+  let url;
+  try { url = await _cellPictureDataUrl(fileOrUrl); }
+  catch (err) { console.warn('[overlay] cell picture:', err); setStatus('That picture could not be read.', 'warn', 5000); return false; }
+  const imgs = { ...(data.imgs || {}), [`${r},${c}`]: url };
+  // A row that was never given a height gets one now, so the picture has
+  // somewhere to be — and the user can drag it taller from there.
+  const rowH = Array.from({ length: data.rows }, (_, i) => Number(data.rowH?.[i]) || 0);
+  if (!(rowH[r] > 0)) rowH[r] = DEFAULT_PIC_PX;
+  await _setTableData(node, { ...data, imgs, rowH }, 'Picture in a cell');
+  return true;
+}
+
+function _pickImageFile() {
+  return new Promise(resolve => {
+    const inp = document.createElement('input');
+    inp.type = 'file';
+    inp.accept = 'image/*';
+    inp.onchange = () => resolve(inp.files?.[0] || null);
+    inp.oncancel = () => resolve(null);
+    inp.click();
+  });
+}
+
 /** The table's data, always well formed (the document's own sanitiser). */
 function _tableDataOf(node) {
   const raw = node?.getAttr?.('tableData');
@@ -3229,6 +3284,25 @@ function _tableMenuItems(node, at) {
         ? { label: `🗑 Delete columns ${block.c0 + 1}–${block.c1 + 1}`, action: go(tableDeleteCols(data, block.c0, block.c1), 'Remove columns'), disabled: data.cols <= nCols }
         : { label: `🗑 Delete column ${cell.c + 1}`, action: go(tableDeleteCol(data, cell.c), 'Remove column'), disabled: data.cols <= 1 },
     ];
+    // 🖼 a picture in the cell that was right-clicked
+    const hasPic = !!data.imgs?.[`${cell.r},${cell.c}`];
+    items.push({ separator: true }, {
+      label: hasPic ? '🖼 Replace the picture in this cell…' : '🖼 Picture in this cell…',
+      action: async () => {
+        const file = await _pickImageFile();
+        if (file) await _setCellPicture(node, cell.r, cell.c, file);
+      },
+    });
+    if (hasPic) {
+      items.push({
+        label: '🗑 Remove the picture',
+        action: () => {
+          const imgs = { ...(data.imgs || {}) };
+          delete imgs[`${cell.r},${cell.c}`];
+          _setTableData(node, { ...data, imgs }, 'Remove the picture');
+        },
+      });
+    }
     const m = mergeAt(data, cell.r, cell.c);
     if (m) items.push({ separator: true }, { label: '⬚ Unmerge', action: go(tableUnmerge(data, m.r, m.c, m.r + m.rs - 1, m.c + m.cs - 1), 'Unmerge cells') });
     else if (block && canMerge(data, block.r0, block.c0, block.r1, block.c1)) {
@@ -3360,6 +3434,8 @@ function _enterTableEdit(node) {
     // right-click inside the editor = the same table menu as on the canvas,
     // already pointed at the cell under the pointer
     onMenu: (cell, cx, cy) => _showTableMenuAt(node, cell, cx, cy),
+    // a picture dropped on a cell, or pasted into one
+    picture: (r, c, fileOrUrl) => _setCellPicture(node, r, c, fileOrUrl),
     onClose: () => {
       _tableEditor = null;
       if (node.isDestroyed?.()) return;

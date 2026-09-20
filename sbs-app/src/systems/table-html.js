@@ -18,6 +18,9 @@
 
 const _esc = (s) => String(s ?? '').replace(/[&<>"]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
 
+/** How tall a picture may be in a row that was never given a height. */
+export const DEFAULT_PIC_PX = 84;
+
 /** A table as it starts life on the overlay: three by three, a heading row. */
 export function defaultOverlayTable() {
   return {
@@ -81,11 +84,22 @@ export function tableOverlayHtml(t, opts = {}) {
   }
 
   const body = (t.cells || []).map((row, r) => {
+    // A PICTURE IS BOUNDED BY ITS ROW. Without a ceiling the image would set
+    // the row's height itself and a photo would make one row taller than the
+    // whole frame; with one, the row you dragged is what the picture gets.
+    const rowPx = Number(t.rowH?.[r]) > 0 ? Math.round(Number(t.rowH[r])) : 0;
+    const picMax = Math.max(16, (rowPx || DEFAULT_PIC_PX) - 2 * pad - 2);
     const tds = (row || []).map((cell, c) => {
       if (covered.has(`${r},${c}`)) return '';
       const m = starts.get(`${r},${c}`);
       const span = m ? ` colspan="${m.cs}" rowspan="${m.rs}"` : '';
-      return `<td data-cell="${r},${c}"${span} style="${_cellStyle(t, r, c, pad)}">${_esc(cell) || '&#160;'}</td>`;
+      const pic = t.imgs?.[`${r},${c}`];
+      const text = _esc(cell);
+      // <img/> self-closed — XHTML again. object-fit keeps the aspect inside
+      // the box the row allows.
+      const body2 = (pic ? `<img src="${_esc(pic)}" style="display:block;margin:0 auto;max-width:100%;max-height:${picMax}px;object-fit:contain"/>` : '')
+        + (text || (pic ? '' : '&#160;'));
+      return `<td data-cell="${r},${c}"${span} style="${_cellStyle(t, r, c, pad)}">${body2}</td>`;
     }).join('');
     const h = Number(t.rowH?.[r]) > 0 ? `height:${Math.round(Number(t.rowH[r]))}px;` : '';
     return `<tr style="${h}">${tds}</tr>`;
