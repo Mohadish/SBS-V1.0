@@ -1169,6 +1169,41 @@ function _updateConstShapeDef(def, patch, label) {
  * zoom crops (isZoom / attachedTo, which own a Konva crop() of their own).
  * Pins and crop masks both build on this; keep them on the same predicate.
  */
+/**
+ * ↩ Back to the picture's own size, in the middle of the frame (V0.3.4.35).
+ *
+ * Resetting the size used to leave the item wherever it had been dragged, which
+ * is rarely what "back to how it came" means — a picture at its natural size in
+ * the corner is still wrong. The centring is measured on the item's REAL box
+ * (getClientRect), so a rotated or offset item lands centred too.
+ *
+ * One undo entry: size and position are one gesture.
+ */
+function _resetNaturalCentred(node) {
+  if (!node || !_layer) return false;
+  const nw = Number(node.getAttr('naturalW') || 0), nh = Number(node.getAttr('naturalH') || 0);
+  const keys = ['x', 'y', 'width', 'height', 'scaleX', 'scaleY'];
+  const snap = () => { const o = {}; for (const k of keys) o[k] = node[k](); return o; };
+  const before = snap();
+  const write = (vals) => {
+    for (const k of keys) node[k](vals[k]);
+    node.getLayer()?.batchDraw();
+    if (node.getAttr('isInterface')) syncBondedShapes(node);
+    _scheduleSave();
+  };
+  if (nw && nh) { node.width(nw); node.height(nh); node.scaleX(1); node.scaleY(1); }
+  const c = getCanonicalSize();
+  const r = node.getClientRect({ relativeTo: _layer });
+  node.x(node.x() + (c.width / 2 - (r.x + r.width / 2)));
+  node.y(node.y() + (c.height / 2 - (r.y + r.height / 2)));
+  const after = snap();
+  if (keys.every(k => before[k] === after[k])) return false;
+  write(after);
+  undoManager.push(nw && nh ? 'Reset to natural size, centred' : 'Centre in the frame',
+    () => write(before), () => write(after));
+  return true;
+}
+
 function _isPlainImageOrVideo(node) {
   if (!node || node.getClassName?.() !== 'Image') return false;
   if (node.getAttr('textHtml') || node.getAttr('isToc')) return false;
@@ -5844,6 +5879,11 @@ function _showOverlayContextMenu(node, x, y) {
         { separator: true },
       ]
     : [];
+  // A plain image had no way back to its own size: same command as a clip's.
+  const plainImageItems = (_isPlainImageOrVideo(node) && !videoOverlay.isVideoNode(node))
+    ? [{ label: Number(node.getAttr('naturalW') || 0) ? '↩ Reset to natural size, centred' : '⊹ Centre in the frame',
+         action: () => { _resetNaturalCentred(node); } }, { separator: true }]
+    : [];
   const tocItems = node.getAttr('isToc')
     ? [{ label: '🔄 Refresh timecodes', action: () => _refreshTocBox(node) }, { separator: true }]
     : [];
@@ -5859,11 +5899,8 @@ function _showOverlayContextMenu(node, x, y) {
             _scheduleSave();
             setStatus(node.getAttr('muted') !== false ? 'Clip muted — voice-over plays.' : 'Clip audio on.');
           } },
-        { label: '↩ Reset to natural size',
-          action: () => {
-            const nw = Number(node.getAttr('naturalW') || 0), nh = Number(node.getAttr('naturalH') || 0);
-            if (nw && nh) { node.width(nw); node.height(nh); node.scaleX(1); node.scaleY(1); _layer.batchDraw(); _scheduleSave(); }
-          } },
+        { label: '↩ Reset to natural size, centred',
+          action: () => { _resetNaturalCentred(node); } },
         { separator: true },
       ]
     : [];
@@ -6228,6 +6265,7 @@ function _showOverlayContextMenu(node, x, y) {
   showContextMenu([
     ...polyItems,
     ...convertItems,
+    ...plainImageItems,
     ...videoItems,
     ...ifaceItems,
     ...zoomItems,
