@@ -97,7 +97,10 @@ export function tableOverlayHtml(t, opts = {}) {
       const text = _esc(cell);
       // <img/> self-closed — XHTML again. object-fit keeps the aspect inside
       // the box the row allows.
-      const body2 = (pic ? `<img src="${_esc(pic)}" style="display:block;margin:0 auto;max-width:100%;max-height:${picMax}px;object-fit:contain"/>` : '')
+      // FILLS the box the row allows, up AND down: a small picture is blown up
+      // (and gets pixelated, which is the user's business) rather than sitting
+      // tiny in a big cell. contain keeps the aspect either way.
+      const body2 = (pic ? `<img src="${_esc(pic)}" style="display:block;margin:0 auto;width:100%;height:${picMax}px;object-fit:contain">` : '')
         + (text || (pic ? '' : '&#160;'));
       return `<td data-cell="${r},${c}"${span} style="${_cellStyle(t, r, c, pad)}">${body2}</td>`;
     }).join('');

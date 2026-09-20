@@ -3188,6 +3188,108 @@ function _pickImageFile() {
   });
 }
 
+/**
+ * 🖼 REPLACE THE PICTURE, KEEP EVERYTHING ELSE.
+ *
+ * Only the source changes: where the item sits, how big it is, how it is
+ * turned, its crop mask, its pins, its layer order and every step it appears
+ * on are all properties of the NODE, and the node is not touched. That is the
+ * whole point — re-cutting a mask around a replacement picture by hand is the
+ * tedious part, and now there is nothing to redo.
+ *
+ * A zoom crop is expressed in SOURCE pixels, so it is carried across in
+ * proportion: the same part of the picture stays framed even when the new file
+ * has a different resolution.
+ */
+async function _replaceImageSource(node) {
+  if (!node || node.isDestroyed?.()) return;
+  const file = await _pickImageFile();
+  if (!file) return;
+  let dataUrl, img;
+  try {
+    dataUrl = await _fileToDataURL(file);
+    img = await _loadImage(dataUrl);
+  } catch (err) {
+    console.warn('[overlay] replace image:', err);
+    setStatus('That picture could not be read.', 'warn', 5000);
+    return;
+  }
+  const oldW = Number(node.getAttr('naturalW')) || img.width;
+  const oldH = Number(node.getAttr('naturalH')) || img.height;
+  const oldCrop = node.crop?.();
+  const before = {
+    src: node.getAttr('src'), image: node.image?.(),
+    naturalW: node.getAttr('naturalW'), naturalH: node.getAttr('naturalH'),
+    crop: oldCrop?.width ? { ...oldCrop } : null,
+  };
+  const kx = img.width / (oldW || 1), ky = img.height / (oldH || 1);
+  const after = {
+    src: dataUrl, image: img, naturalW: img.width, naturalH: img.height,
+    crop: before.crop
+      ? { x: before.crop.x * kx, y: before.crop.y * ky, width: before.crop.width * kx, height: before.crop.height * ky }
+      : null,
+  };
+  const write = (s) => {
+    if (node.isDestroyed?.()) return;
+    node.setAttr('src', s.src);
+    node.setAttr('naturalW', s.naturalW);
+    node.setAttr('naturalH', s.naturalH);
+    if (s.image) node.image(s.image);
+    if (s.crop) node.crop(s.crop); else node.setAttr('crop', undefined);
+    _layer?.batchDraw();
+    _scheduleSave();
+  };
+  write(after);
+  undoManager.push('Replace image', () => write(before), () => write(after));
+  setStatus('Picture replaced — position, size, crop mask and pins kept.', 'success', 5000);
+}
+
+/** 🎬 The same for a clip: a new file behind the same frame. */
+async function _replaceVideoSource(node) {
+  if (!node || node.isDestroyed?.()) return;
+  const file = await new Promise(resolve => {
+    const inp = document.createElement('input');
+    inp.type = 'file';
+    inp.accept = 'video/mp4,video/webm,video/ogg,video/quicktime,.mp4,.m4v,.webm,.ogv,.mov';
+    inp.onchange = () => resolve(inp.files?.[0] || null);
+    inp.oncancel = () => resolve(null);
+    inp.click();
+  });
+  const abs = file?.path;
+  if (!abs) {
+    if (file) setStatus('That clip has no path on disk — a video is referenced, never copied in.', 'warn', 6000);
+    return;
+  }
+  const { abs: a2, rel } = videoOverlay.describeVideoPath(abs);
+  const before = {
+    videoPath: node.getAttr('videoPath'), videoRel: node.getAttr('videoRel'),
+    trimInMs: node.getAttr('trimInMs'), trimOutMs: node.getAttr('trimOutMs'),
+    posterSrc: node.getAttr('posterSrc'), videoDurationMs: node.getAttr('videoDurationMs'),
+  };
+  const write = async (s, fresh) => {
+    if (node.isDestroyed?.()) return;
+    videoOverlay.detachVideo(node);
+    node.setAttr('videoPath', s.videoPath);
+    node.setAttr('videoRel', s.videoRel);
+    node.setAttr('trimInMs', s.trimInMs ?? 0);
+    node.setAttr('trimOutMs', s.trimOutMs ?? 0);
+    if (s.posterSrc !== undefined) node.setAttr('posterSrc', s.posterSrc);
+    try {
+      await videoOverlay.attachVideoElement(node);
+      // a brand-new clip has its own length: start with the whole of it
+      if (fresh) node.setAttr('trimOutMs', Number(node.getAttr('videoDurationMs') ?? 0));
+      await videoOverlay.refreshPoster(node);
+    } catch (err) { console.warn('[overlay] replace video:', err); }
+    _layer?.batchDraw();
+    _scheduleSave();
+  };
+  const after = { videoPath: a2, videoRel: rel, trimInMs: 0, trimOutMs: 0 };
+  await write(after, true);
+  const settled = { ...after, trimOutMs: node.getAttr('trimOutMs'), posterSrc: node.getAttr('posterSrc') };
+  undoManager.push('Replace video', () => { write(before, false); }, () => { write(settled, false); });
+  setStatus('Clip replaced — position, size, masks and pins kept. Trim is the new clip’s full length.', 'success', 6000);
+}
+
 /** The table's data, always well formed (the document's own sanitiser). */
 function _tableDataOf(node) {
   const raw = node?.getAttr?.('tableData');
@@ -6302,7 +6404,8 @@ function _showOverlayContextMenu(node, x, y) {
     : [];
   // A plain image had no way back to its own size: same command as a clip's.
   const plainImageItems = (_isPlainImageOrVideo(node) && !videoOverlay.isVideoNode(node))
-    ? [{ label: Number(node.getAttr('naturalW') || 0) ? '↩ Reset to natural size, centred' : '⊹ Centre in the frame',
+    ? [{ label: '🖼 Replace picture…', action: () => { _replaceImageSource(node); } },
+       { label: Number(node.getAttr('naturalW') || 0) ? '↩ Reset to natural size, centred' : '⊹ Centre in the frame',
          action: () => { _resetNaturalCentred(node); } }, { separator: true }]
     : [];
   // ▦ a table's own commands, on the cell that was right-clicked
@@ -6317,6 +6420,7 @@ function _showOverlayContextMenu(node, x, y) {
   // click rather than a trip through the dialog.
   const videoItems = videoOverlay.isVideoNode(node)
     ? [
+        { label: '🎬 Replace clip…', action: () => { _replaceVideoSource(node); } },
         { label: '🎬 Trim & audio…', action: () => _openVideoTrim(node) },
         { label: node.getAttr('muted') !== false ? '🔊 Unmute clip' : '🔇 Mute clip (use voice-over)',
           action: () => {
@@ -9364,9 +9468,14 @@ async function _htmlToCanvas(html, opts = {}) {
   // shaping / line-break logic in the SVG renderer.
   html = String(html || '')
     .replace(/[​﻿]/g,             '')
-    .replace(/<br(\s[^>]*)?>/gi,            '<br$1/>')
-    .replace(/<hr(\s[^>]*)?>/gi,            '<hr$1/>')
-    .replace(/<img(\s[^>]*)?>/gi,           '<img$1/>')
+    // ALREADY-CLOSED TAGS MUST SURVIVE THIS. The old patterns swallowed a
+    // trailing slash into the attribute group and emitted `<img src="…"//>`,
+    // which is not XHTML — the parse failed and the whole picture came back
+    // blank. A table with a picture in it lost its text as well, because one
+    // bad tag takes the document with it. `\s*\/?` eats the slash instead.
+    .replace(/<br(\s[^>]*?)?\s*\/?>/gi,     '<br$1/>')
+    .replace(/<hr(\s[^>]*?)?\s*\/?>/gi,     '<hr$1/>')
+    .replace(/<img(\s[^>]*?)?\s*\/?>/gi,    '<img$1/>')
     .replace(/<div(\s[^>]*)?><\/div>/gi,    '<div$1><br/></div>')
     .replace(/<p(\s[^>]*)?><\/p>/gi,        '<p$1><br/></p>');
 
