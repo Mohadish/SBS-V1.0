@@ -1347,6 +1347,46 @@ function _drawTableSel() {
 
 /** The table item being edited, straight from the document. */
 /**
+ * Put the picked cells on the real clipboard. A hidden textarea and the old
+ * execCommand on purpose: it is synchronous inside the key press, needs no
+ * permission, and works the same in the packaged app.
+ */
+function _copyPickedCells(cut = false) {
+  const tb = _tableNow(); if (!tb) return;
+  const s = _tselRect(); if (!s || s.none) return;
+  const rows = s.r1 - s.r0 + 1, cols = s.c1 - s.c0 + 1;
+  const cells = [], fmt = {}, imgs = {};
+  for (let y = 0; y < rows; y++) {
+    const row = [];
+    for (let x = 0; x < cols; x++) {
+      const rr = s.r0 + y, cc = s.c0 + x;
+      row.push(tb.cells[rr]?.[cc] ?? '');
+      const f = tb.fmt?.[`${rr},${cc}`]; if (f) fmt[`${y},${x}`] = f;
+      const id = tb.imgs?.[`${rr},${cc}`]; if (id) imgs[`${y},${x}`] = id;
+    }
+    cells.push(row);
+  }
+  const tsv = cells.map(r2 => r2.join('\t')).join('\n');
+  _tableClip = { rows, cols, tsv, fmt, imgs };
+  const ta = document.createElement('textarea');
+  ta.value = tsv;
+  ta.style.cssText = 'position:fixed;left:-9999px;top:0;opacity:0;';
+  document.body.appendChild(ta);
+  ta.select();
+  let done = false;
+  try { done = document.execCommand('copy'); } catch { done = false; }
+  ta.remove();
+  if (cut) {
+    const next = tb.cells.map((row, y) => row.map((v, x) =>
+      (y >= s.r0 && y <= s.r1 && x >= s.c0 && x <= s.c1 ? '' : v)));
+    _patchItem({ cells: next, ...tableSetFmt(tb, s.r0, s.c0, s.r1, s.c1, { a: null, b: null, i: null, bg: null, c: null, s: null }) }, 'Cut cells');
+  }
+  const pics = Object.keys(imgs).length;
+  setStatus(done ? `${rows}×${cols} cells ${cut ? 'cut' : 'copied'}${pics ? `, ${pics} picture${pics === 1 ? '' : 's'} with them` : ''}.`
+    : 'Those cells could not be copied to the clipboard.', done ? 'info' : 'warn', 3500);
+}
+
+/**
  * 📋 Copy the picked cells. The clipboard gets tab-separated text, so the
  * block can go into a spreadsheet — and the app keeps what that text cannot
  * carry: each cell's look and its picture, matched back by the very same text
@@ -1557,7 +1597,8 @@ function _placeCustomBar() {
             const tb = _tableNow();
             const canM = tb && !s.none && canMerge(tb, s.r0, s.c0, s.r1, s.c1);
             const canU = tb && !s.none && !!mergeAt(tb, s.r0, s.c0);
-            return `<span style="padding:0 2px;color:#7dd3fc;">${it.rows}×${it.cols} · picked: ${_esc(where)}</span>`
+            return `<span style="padding:0 2px;color:${s.none ? '#94a3b8' : '#7dd3fc'};">${it.rows}×${it.cols} · `
+              + `${s.none ? 'nothing picked — the whole table' : `picked: ${_esc(where)}`}</span>`
               + b('ci-row-above', '＋ Row ▲', 'A row above the picked one')
               + b('ci-row-below', '＋ Row ▼', 'A row below the picked one')
               + b('ci-row-dup', '⧉ Row', 'Copy the picked row, text and all')
@@ -1570,12 +1611,12 @@ function _placeCustomBar() {
               + (canM ? b('ci-merge', '⬓ Merge', 'Make the picked cells one cell') : '')
               + (canU ? b('ci-unmerge', '⬚ Unmerge', 'Break the merged cell apart') : '')
               + (canM || canU ? sep : '')
-              + b('ci-cell-bold', '<b>B</b>', 'Bold, in the picked cells')
-              + b('ci-cell-italic', '<i>I</i>', 'Italic, in the picked cells')
-              + b('ci-cell-start', '⫷', 'Align the picked cells to the start')
-              + b('ci-cell-center', '⫿', 'Centre the picked cells')
-              + b('ci-cell-end', '⫸', 'Align the picked cells to the end')
-              + `<label style="display:flex;gap:3px;align-items:center;color:#7dd3fc;">cell pt <input class="dw-in" data-ci="cellsize" type="number" min="5" max="40" step="0.5" value="${tb?.fmt?.[`${s.r0},${s.c0}`]?.s ?? it.size}" title="Text size in the picked cells" style="width:52px;"></label>`
+              + b('ci-cell-bold', '<b>B</b>', s.none ? 'Bold — pick cells first' : 'Bold, in the picked cells')
+              + b('ci-cell-italic', '<i>I</i>', s.none ? 'Italic — pick cells first' : 'Italic, in the picked cells')
+              + b('ci-cell-start', '⫷', 'Align to the start')
+              + b('ci-cell-center', '⫿', 'Centre')
+              + b('ci-cell-end', '⫸', 'Align to the end')
+              + `<label style="display:flex;gap:3px;align-items:center;">Size <input class="dw-in" data-ci="cellsize" type="number" min="5" max="40" step="0.5" value="${(s.none ? it.size : (tb?.fmt?.[`${s.r0},${s.c0}`]?.s ?? it.size))}" title="${s.none ? 'Text size for the whole table' : 'Text size in the picked cells'}" style="width:54px;"> pt</label>`
               + `<input data-ci="cellfg" type="color" value="${_esc(tb?.fmt?.[`${s.r0},${s.c0}`]?.c || it.color)}" title="Text colour in the picked cells" style="width:30px;height:24px;padding:0;border:1px solid #334155;border-radius:5px;background:none;">`
               + `<input data-ci="cellbg" type="color" value="${_esc(tb?.fmt?.[`${s.r0},${s.c0}`]?.bg || '#ffffff')}" title="Shade the picked cells" style="width:30px;height:24px;padding:0;border:1px solid #334155;border-radius:5px;background:none;">`
               + b('ci-cell-clear', '⌫ Look', 'Clear the look of the picked cells (colour, shade, size, bold…)')
@@ -1584,10 +1625,7 @@ function _placeCustomBar() {
           + b('ci-head', 'Header', 'The first row is a heading', it.head !== false)
           + b('ci-grid', 'Grid', 'Lines around every cell — off leaves a line under each row', it.grid !== false)
           + b('ci-zebra', 'Stripes', 'Shade every other row', !!it.zebra)
-          + `<span style="padding:0 2px;color:#94a3b8;">whole table:</span><label style="display:flex;gap:4px;align-items:center;">Size <input class="dw-in" data-ci="tsize" type="number" min="5" max="40" step="0.5" value="${it.size}" style="width:54px;"> pt</label>`
-          + b('ci-align-start', '⫷', 'Align to the start', it.align === 'start') + b('ci-align-center', '⫿', 'Centre', it.align === 'center') + b('ci-align-end', '⫸', 'Align to the end', it.align === 'end')
-          + `<input data-ci="color" type="color" value="${_esc(it.color)}" title="Text colour" style="width:30px;height:24px;padding:0;border:1px solid #334155;border-radius:5px;background:none;">`
-          + `<span style="padding:0 4px;color:#64748b;">click a cell to pick it, drag to pick more · double-click to type · Tab moves on · drag a blue grip to move a row or column</span>`
+          + `<span style="padding:0 4px;color:#64748b;">click a cell to pick it, drag to pick more · double-click to type · Tab moves on · <kbd>Ctrl</kbd>+C copies the picked cells · drag a blue grip to move a row or column</span>`
         : it.type === 'text'
         ? `<label style="display:flex;gap:4px;align-items:center;">Size <input class="dw-in" data-ci="size" type="number" min="6" max="120" step="1" value="${it.size}" style="width:58px;"> pt</label>`
           + b('ci-bold', '<b>B</b>', 'Bold', it.bold) + b('ci-italic', '<i>I</i>', 'Italic', it.italic)
@@ -1913,6 +1951,12 @@ function _onCustomKey(e) {
     if (_bandEdit) { _exitBandEdit(); return true; }
     return false;
   }
+  if ((e.ctrlKey || e.metaKey) && !e.altKey && (e.code === 'KeyC' || e.code === 'KeyX')
+      && !typing && _tsel?.id === _customSel && _tableNow()) {
+    e.preventDefault();
+    _copyPickedCells(e.code === 'KeyX');
+    return true;
+  }
   if (typing || !_customSel) return false;
   const it = _customModel?.items.find(i => i.id === _customSel); if (!it) return false;
   if (e.key === 'Delete' || e.key === 'Backspace') { e.preventDefault(); const id = _customSel; _customSel = null; _commitItems(_itemsNow().filter(i => i.id !== id), 'Delete item'); return true; }
@@ -2037,12 +2081,17 @@ function _customAct(act, el) {
       const m = mergeAt(live, s.r0, s.c0);
       return patch(() => tableUnmerge(live, m ? m.r : s.r0, m ? m.c : s.c0, m ? m.r + m.rs - 1 : s.r1, m ? m.c + m.cs - 1 : s.c1), 'Unmerge cells');
     }
-    if (act === 'ci-cell-bold')   { _patchItem(tableSetFmt(live, s.r0, s.c0, s.r1, s.c1, { b: live.fmt?.[`${s.r0},${s.c0}`]?.b ? null : 1 }), 'Cell look'); return true; }
-    if (act === 'ci-cell-italic') { _patchItem(tableSetFmt(live, s.r0, s.c0, s.r1, s.c1, { i: live.fmt?.[`${s.r0},${s.c0}`]?.i ? null : 1 }), 'Cell look'); return true; }
+    // nothing picked ⇒ the whole table
+    const A = s.none ? { r0: 0, c0: 0, r1: live.rows - 1, c1: live.cols - 1 } : s;
+    if (act === 'ci-cell-bold')   { _patchItem(tableSetFmt(live, A.r0, A.c0, A.r1, A.c1, { b: live.fmt?.[`${A.r0},${A.c0}`]?.b ? null : 1 }), s.none ? 'Table look' : 'Cell look'); return true; }
+    if (act === 'ci-cell-italic') { _patchItem(tableSetFmt(live, A.r0, A.c0, A.r1, A.c1, { i: live.fmt?.[`${A.r0},${A.c0}`]?.i ? null : 1 }), s.none ? 'Table look' : 'Cell look'); return true; }
     if (act.startsWith('ci-cell-') && ['start', 'center', 'end'].includes(act.slice(8))) {
-      _patchItem(tableSetFmt(live, s.r0, s.c0, s.r1, s.c1, { a: act.slice(8) }), 'Cell look'); return true;
+      const a = act.slice(8);
+      _patchItem(s.none ? { align: a, ...tableSetFmt(live, 0, 0, live.rows - 1, live.cols - 1, { a: null }) }
+        : tableSetFmt(live, A.r0, A.c0, A.r1, A.c1, { a }), s.none ? 'Table look' : 'Cell look');
+      return true;
     }
-    if (act === 'ci-cell-clear') { _patchItem(tableSetFmt(live, s.r0, s.c0, s.r1, s.c1, { a: null, b: null, i: null, bg: null, c: null, s: null }), 'Clear the look'); return true; }
+    if (act === 'ci-cell-clear') { _patchItem(tableSetFmt(live, A.r0, A.c0, A.r1, A.c1, { a: null, b: null, i: null, bg: null, c: null, s: null }), 'Clear the look'); return true; }
     if (act === 'ci-head')  { _patchItem({ head: live.head === false }, 'Heading row'); return true; }
     if (act === 'ci-grid')  { _patchItem({ grid: live.grid === false }, 'Table lines'); return true; }
     if (act === 'ci-zebra') { _patchItem({ zebra: !live.zebra }, 'Striped rows'); return true; }
@@ -2060,14 +2109,25 @@ function _customAct(act, el) {
 function _customChange(t) {
   if (t.dataset?.ci === 'cellbg' || t.dataset?.ci === 'cellfg' || t.dataset?.ci === 'cellsize') {
     const tb = _tableNow();
-    // the rectangle the swatch was opened for — NOT whatever is picked now: the
-    // click that closes the picker lands on a cell and would re-pick just that one
+    // the rectangle the swatch was opened FOR — not whatever is picked now: the
+    // click that closes a colour picker lands on a cell and would re-pick it
     const s = (_fmtTarget?.id === _customSel && _fmtTarget.r0 !== undefined) ? _fmtTarget : _tselRect();
     if (tb && s) {
-      const patch = t.dataset.ci === 'cellbg' ? { bg: String(t.value).toLowerCase() }
-        : t.dataset.ci === 'cellfg' ? { c: String(t.value).toLowerCase() }
-        : { s: Math.max(5, Math.min(40, Number(t.value) || tb.size)) };
-      _patchItem(tableSetFmt(tb, s.r0, s.c0, s.r1, s.c1, patch), 'Cell look');
+      if (s.none) {
+        // nothing picked ⇒ the whole table, and no per-cell leftovers may
+        // override it (that was the "it changes everything" confusion)
+        const val = t.dataset.ci === 'cellsize' ? Math.max(5, Math.min(40, Number(t.value) || tb.size)) : String(t.value).toLowerCase();
+        const key = t.dataset.ci === 'cellsize' ? 's' : t.dataset.ci === 'cellfg' ? 'c' : 'bg';
+        const wipe = tableSetFmt(tb, 0, 0, tb.rows - 1, tb.cols - 1, { [key]: null });
+        _patchItem(t.dataset.ci === 'cellsize' ? { size: val, ...wipe }
+          : t.dataset.ci === 'cellfg' ? { color: val, ...wipe }
+          : tableSetFmt(tb, 0, 0, tb.rows - 1, tb.cols - 1, { bg: val }), 'Table look');
+      } else {
+        const patch = t.dataset.ci === 'cellbg' ? { bg: String(t.value).toLowerCase() }
+          : t.dataset.ci === 'cellfg' ? { c: String(t.value).toLowerCase() }
+          : { s: Math.max(5, Math.min(40, Number(t.value) || tb.size)) };
+        _patchItem(tableSetFmt(tb, s.r0, s.c0, s.r1, s.c1, patch), 'Cell look');
+      }
     }
     return true;
   }
