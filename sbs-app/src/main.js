@@ -212,12 +212,13 @@ steps.init();
 initStatus();
 
 // ── License gate ───────────────────────────────────────────────────────────
-// Run BEFORE any heavy system init so a locked install never wastes time
-// loading Three.js / Konva / Kokoro. The gate is async; we kick it off
-// and let the rest of init continue underneath. The first user-facing
-// UI (sidebar tabs) won't render until the gate resolves because the
-// dialog covers the viewport.
-_initLicenseGate();
+// AWAITED. It used to be fired and forgotten, with the rest of boot running
+// on underneath and only the dialog's backdrop standing between an
+// unactivated user and a working app. Now nothing below this line runs until
+// the licence is good — for an activated install that is one IPC round trip.
+// (The real lock is in the main process: electron/license/index.js refuses
+// the app's IPC while unlicensed. This is the polite half of the same rule.)
+await _initLicenseGate();
 
 // ── Dialog hygiene (universal close → remove) ──────────────────────────────
 // 20+ <dialog> elements across the codebase are created with showModal()
@@ -5556,11 +5557,16 @@ async function _initLicenseGate() {
     // Non-Electron (e.g. dev web preview) — skip licensing for now.
     return;
   }
+  // Did this session START without a licence? Then boot ran (or was refused)
+  // against a locked main process, and the honest way to a clean, fully
+  // initialised app after activating is to load it again.
+  let startedLocked = false;
   try {
     let status = await window.sbsNative.license.status();
     while (true) {
       if (status.state === 'valid') return;
       if (status.state === 'grace') { showGraceWarning(status); return; }
+      startedLocked = true;
 
       if (status.state === 'expired') {
         const choice = await showHardLockDialog(status);
@@ -5576,6 +5582,7 @@ async function _initLicenseGate() {
         });
         if (result?.valid) {
           setStatus(`SBS activated — ${result.daysRemaining} days remaining.`);
+          if (startedLocked) { window.location.reload(); await new Promise(() => {}); }   // never resolves: the page is going away
           return;
         }
       } catch (err) {
@@ -5586,8 +5593,18 @@ async function _initLicenseGate() {
       status = await window.sbsNative.license.status();
     }
   } catch (err) {
+    // FAILS CLOSED. This used to print a toast and let the app run — a licence
+    // check that any thrown error turned into a free pass. The main process
+    // would refuse the IPC anyway; this makes the window say so instead of
+    // presenting a dead app. The user gets the activation dialog, which can
+    // retry the whole check, or Quit.
     console.error('[license-gate] failed:', err);
-    setStatus(`License check failed: ${err?.message || err}`, 'danger', 8000);
+    try {
+      const result = await showActivationDialog({ initialEmail: '', reason: null });
+      if (result?.valid) { window.location.reload(); await new Promise(() => {}); }
+    } catch { /* cancelled, or the dialog itself failed */ }
+    window.close();
+    await new Promise(() => {});   // nothing below the gate may run
   }
 }
 

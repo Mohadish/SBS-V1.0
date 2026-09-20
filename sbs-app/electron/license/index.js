@@ -67,13 +67,73 @@ function _computeStatus() {
   };
 }
 
+// ─── THE AUTHORITY LIVES HERE, IN THE MAIN PROCESS ─────────────────────────
+//
+// The activation dialog is drawn by the renderer, and the renderer is the one
+// place a user can reach into: with DevTools open the dialog can simply be
+// removed from the page. While the renderer was also the only thing DECIDING
+// whether the app may run, removing the dialog was the whole crack.
+//
+// So the verdict is held here, and the app's own IPC is refused while it is
+// "no". A dismissed dialog then leaves a window that cannot open a project,
+// save one, export, speak or convert CAD — every one of those goes through a
+// handler below the gate. DevTools can stay available for support work (the
+// console diagnostics depend on it) because it no longer unlocks anything.
+//
+// This file is bytenode-compiled in production, so the decision is not sitting
+// in readable JavaScript either. It does not stop someone who unpacks the asar
+// and rewrites main.js — nothing offline does — but that is a different class
+// of person from one who presses Ctrl+Shift+I.
+let _ok = false;
+let _checkedAt = 0;
+const RECHECK_MS = 30 * 60 * 1000;   // an app left running across its expiry must notice
+
+function _refresh() {
+  const s = _computeStatus();
+  _ok = (s.state === 'valid' || s.state === 'grace');
+  _checkedAt = Date.now();
+  return s;
+}
+
+/** May the app's own IPC be served right now? Fails CLOSED on any error. */
+function isLicensed() {
+  if (Date.now() - _checkedAt > RECHECK_MS) {
+    try { _refresh(); } catch (err) { _ok = false; console.warn('[license] check failed:', err?.message); }
+  }
+  return _ok;
+}
+
+/**
+ * Put every ipcMain.handle() behind the verdict — ONE choke point, installed
+ * before the first handler is registered, so a handler added next year is
+ * covered without anyone remembering to. license:* stays open: those are the
+ * calls the activation dialog itself is made of.
+ *
+ * Only handle() is gated. The on() channels are one-way notes FROM the
+ * renderer (dirty flag, save result, key map) — they hand nothing back, and
+ * wrapping them would break removeListener, which matches by function identity.
+ */
+function installIpcGate() {
+  if (ipcMain.__sbsGated) return;
+  ipcMain.__sbsGated = true;
+  const raw = ipcMain.handle.bind(ipcMain);
+  ipcMain.handle = (channel, fn) => raw(channel, (event, ...args) => {
+    if (!String(channel).startsWith('license:') && !isLicensed()) {
+      throw new Error('SBS is not activated.');
+    }
+    return fn(event, ...args);
+  });
+}
+
 function registerLicenseIpc() {
+  try { _refresh(); } catch (err) { _ok = false; console.warn('[license] first check failed:', err?.message); }
+
   ipcMain.handle('license:getMachineId', () => {
     return getMachineIdCached();
   });
 
   ipcMain.handle('license:status', () => {
-    return _computeStatus();
+    return _refresh();          // every status read re-decides the verdict
   });
 
   ipcMain.handle('license:validate', (_event, { email, password, key }) => {
@@ -88,13 +148,15 @@ function registerLicenseIpc() {
     const result = validateLicense({ email, password, key, machineId });
     if (!result.valid) return result;
     saveLicense({ email, password, key });
+    _refresh();                 // re-verified FROM DISK — the same path a boot takes
     return { ...result, persisted: true };
   });
 
   ipcMain.handle('license:deactivate', () => {
     clearLicense();
+    _ok = false; _checkedAt = Date.now();
     return { state: 'unactivated', machineId: getMachineIdCached() };
   });
 }
 
-module.exports = { registerLicenseIpc };
+module.exports = { registerLicenseIpc, installIpcGate, isLicensed };

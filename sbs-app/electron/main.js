@@ -8,6 +8,15 @@ require('bytenode');
 
 const { app, BrowserWindow, Menu, ipcMain, dialog, shell } = require('electron');
 
+// 🔑 THE LICENCE GATE GOES IN FIRST — before a single ipcMain.handle() below.
+// It wraps handle() itself, so every handler in this file (and any added
+// later) is served only while the licence is valid; license:* stays open for
+// the activation dialog. See electron/license/index.js for why this lives in
+// the main process. Extension OMITTED so the resolver picks index.js in dev
+// and the bytenode index.jsc in production, where the .js is not shipped.
+const { registerLicenseIpc, installIpcGate } = require('./license/index');
+installIpcGate();
+
 // Ask V8 to use the full heap it CAN. IMPORTANT: this Electron build has V8
 // pointer compression on, which caps the renderer JS heap at a hard ~3.5 GB cage
 // (confirmed: performance.memory.jsHeapSizeLimit ≈ 3.50 GB). So this request is
@@ -656,9 +665,7 @@ function buildMenu() {
 
 // ─── License IPC bridge (must register BEFORE renderer mounts so the
 // preload's invoke() calls during boot have handlers waiting)
-// Note: extension OMITTED so Node's resolver picks index.js in dev and
-// index.jsc in production builds (where the .js source is excluded).
-const { registerLicenseIpc } = require('./license/index');
+// (required at the top of this file, where the IPC gate is installed.)
 // Time-tampering high-water mark — see electron/license/time-monitor.js.
 // Extension omitted for the same .js-vs-.jsc reason as the others.
 const { recordLaunch: _recordTimeLaunch } = require('./license/time-monitor');
