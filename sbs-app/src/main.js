@@ -48,7 +48,7 @@ import * as userSettings from './core/user-settings.js';
 
 // ── UI ────────────────────────────────────────────────────────────────────────
 import { initStatus, setStatus }  from './ui/status.js';
-import { showActivationDialog, showHardLockDialog, showGraceWarning } from './ui/license-dialog.js';
+import { showActivationDialog, showHardLockDialog, showGraceWarning, showLegacyBindingNotice } from './ui/license-dialog.js';
 import { initHud }                from './ui/hud.js';
 import { initStepNav }            from './ui/step-nav.js';
 import { initStepsPanel }         from './ui/steps-panel.js';
@@ -5564,7 +5564,7 @@ async function _initLicenseGate() {
   try {
     let status = await window.sbsNative.license.status();
     while (true) {
-      if (status.state === 'valid') return;
+      if (status.state === 'valid') { if (status.legacyBinding) showLegacyBindingNotice(status); return; }
       if (status.state === 'grace') { showGraceWarning(status); return; }
       startedLocked = true;
 

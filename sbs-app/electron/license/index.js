@@ -22,8 +22,29 @@ const { ipcMain } = require('electron');
 // Extensions OMITTED so the resolver picks .js in dev, .jsc in production.
 // See scripts/build-bytenode.js for the build-time compilation flow.
 const { validateLicense }      = require('./verify');
-const { getMachineIdCached }   = require('./machine-id');
+const { getMachineIdCached, getMachineIdCandidates } = require('./machine-id');
 const { loadLicense, saveLicense, clearLicense } = require('./store');
+
+/**
+ * Verify a licence against THIS MACHINE — under any name it can truthfully
+ * answer to (see machine-id.js). The strongest ID is tried first and is the
+ * only one the ordinary boot ever computes; the older names are consulted
+ * only when that one says MACHINE_MISMATCH, which is exactly the case of a
+ * licence issued while the machine was being read less well than it is now.
+ *
+ * `legacyBinding` on the result says the licence held, but only under an
+ * older name — worth telling the user, because that name is the fragile one.
+ */
+function _validateOnThisMachine({ email, password, key }) {
+  const primary = getMachineIdCached();
+  const first = validateLicense({ email, password, key, machineId: primary });
+  if (first.valid || first.reason !== 'MACHINE_MISMATCH') return first;
+  for (const machineId of getMachineIdCandidates().slice(1)) {
+    const r = validateLicense({ email, password, key, machineId });
+    if (r.valid) return { ...r, legacyBinding: true };
+  }
+  return first;      // none of them: report the mismatch against the ID we show
+}
 
 /**
  * Translate a verifier result + on-disk presence into the higher-level
@@ -37,12 +58,7 @@ function _computeStatus() {
     return { state: 'unactivated', machineId };
   }
 
-  const result = validateLicense({
-    email:     saved.email,
-    password:  saved.password,
-    key:       saved.key,
-    machineId,
-  });
+  const result = _validateOnThisMachine(saved);
 
   if (result.valid) {
     return {
@@ -51,6 +67,7 @@ function _computeStatus() {
       email:         result.email,
       expiry:        result.expiry,
       daysRemaining: result.daysRemaining,
+      ...(result.legacyBinding ? { legacyBinding: true } : {}),
     };
   }
 
@@ -139,13 +156,13 @@ function registerLicenseIpc() {
   ipcMain.handle('license:validate', (_event, { email, password, key }) => {
     // Live-validate without persisting. Renderer's activation dialog
     // uses this to gate the Save button.
-    const machineId = getMachineIdCached();
-    return validateLicense({ email, password, key, machineId });
+    return _validateOnThisMachine({ email, password, key });
   });
 
   ipcMain.handle('license:activate', (_event, { email, password, key }) => {
-    const machineId = getMachineIdCached();
-    const result = validateLicense({ email, password, key, machineId });
+    // a customer re-entering a key issued under this machine's older name
+    // must not be turned away by the app having learned a better one
+    const result = _validateOnThisMachine({ email, password, key });
     if (!result.valid) return result;
     saveLicense({ email, password, key });
     _refresh();                 // re-verified FROM DISK — the same path a boot takes

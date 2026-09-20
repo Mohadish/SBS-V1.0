@@ -225,6 +225,19 @@ export function showHardLockDialog(status) {
  * One-shot informational toast: "Your license expires in N days".
  * Non-blocking — shown at boot when status.state === 'grace'.
  */
+/**
+ * The licence is good, but it is bound to an OLDER fingerprint of this machine
+ * — one the app used before it could read the hardware properly. That older
+ * fingerprint is the fragile one (a Windows feature update can change it), so
+ * say so now, while everything still works, rather than let it turn into a
+ * lockout later. Logged with the ID to send, so it can be copied from the
+ * console; the status line just asks.
+ */
+export function showLegacyBindingNotice(status) {
+  console.warn('[license] valid, but bound to an older machine fingerprint. Ask your distributor to re-issue the key for machine ID:', status?.machineId);
+  setStatus('Your SBS licence is tied to an older fingerprint of this PC — please ask your distributor for an updated key (no rush; it keeps working).', 'warning', 12000);
+}
+
 export function showGraceWarning(status) {
   const days = Math.max(0, Number(status?.daysRemaining) || 0);
   const msg  = days === 0
