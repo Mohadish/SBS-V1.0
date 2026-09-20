@@ -1302,6 +1302,54 @@ function _resolveMask(node) {
   return node.getAttr('cropMask') || null;
 }
 
+/** A node's OWN mask, as a copy — null when it has none, or when it follows a
+ *  shared one (a shared mask belongs to every image using it and must not be
+ *  dragged around by one of them). */
+function _privateMaskOf(node) {
+  if (!node || node.getAttr?.('cropMaskId')) return null;
+  const m = node.getAttr?.('cropMask');
+  return m && m.w > 0 && m.h > 0 ? { ...m } : null;
+}
+
+let _maskCarryTold = false;
+
+/**
+ * 🎭 CTRL+DRAG BRINGS THE MASK ALONG.
+ *
+ * A mask is fixed in canvas space by design: normally, moving the picture
+ * changes what shows through the hole and the hole stays put. Holding Ctrl
+ * says "this time, move the window too" — the framing you cut survives the
+ * move instead of having to be cut again somewhere else.
+ *
+ * The offset is ALWAYS re-derived from where the drag started, never
+ * accumulated frame to frame. So Ctrl can be pressed halfway through a drag
+ * and the mask lands exactly where it would have had the key been down from
+ * the first pixel — and letting go puts it back, losslessly, both ways.
+ *
+ * Only a private mask travels; a shared one belongs to every image using it.
+ */
+function _carryMasks(grabbed, starts, evt) {
+  if (!starts) return;
+  const base = starts.get(grabbed);
+  if (!base) return;
+  const c = getCanonicalSize();
+  const on = !!(evt?.ctrlKey || evt?.metaKey);
+  const dx = (grabbed.x() - base.x) / (c.width || 1);
+  const dy = (grabbed.y() - base.y) / (c.height || 1);
+  let any = false;
+  for (const [n, s] of starts.entries()) {
+    if (!s.mask || n.isDestroyed?.()) continue;
+    any = true;
+    n.setAttr('cropMask', on ? { ...s.mask, x: s.mask.x + dx, y: s.mask.y + dy } : { ...s.mask });
+  }
+  if (!any) return;
+  if (on && !_maskCarryTold && (dx || dy)) {
+    _maskCarryTold = true;
+    setStatus('🎭 The mask is moving with the picture.', 'success', 2500);
+  }
+  _layer?.batchDraw();
+}
+
 // ── 🎭 Mask editor (V0.3.2.220) ────────────────────────────────────────────
 // A draggable/resizable handle rect on _uiLayer — never on the content layer,
 // so it cannot leak into step.overlay, a thumbnail or an exported frame. The
@@ -1340,7 +1388,7 @@ function _maskEditBar(titleText) {
   cancel.style.cssText = 'height:24px;padding:0 10px;';
   const hint = document.createElement('span');
   hint.className = 'small muted';
-  hint.textContent = 'drag · resize · rotate';
+  hint.textContent = 'drag · resize · turn from the ↻ knob above or to the left (Shift snaps to 15°)';
   bar.append(label, apply, cancel, hint);
   document.body.appendChild(bar);
   // Parked just ABOVE the mask rectangle and following it, rather than in a
@@ -1364,6 +1412,105 @@ function _maskEditBar(titleText) {
   };
   place();
   return { bar, apply, cancel, place };
+}
+
+/**
+ * 🎭 TURNING A MASK — a knob on TOP and a knob on the LEFT.
+ *
+ * Konva offers exactly one rotate anchor and it sits above the box, which is
+ * precisely where this editor's own Apply/Cancel bar lives: the handle was
+ * there and unreachable. So the native one is switched off and these two are
+ * ours — the same glyph the items on the canvas already use — and either one
+ * turns the rectangle about its CENTRE, so the mask pivots where the eye
+ * expects instead of swinging off a corner.
+ *
+ * Hold Shift to land on 15°. The angle is re-derived from the start of the
+ * gesture on every frame, never accumulated, so Shift can go on and off
+ * mid-turn without the rectangle drifting.
+ */
+function _maskRotKnobs(rect, onChange) {
+  const knobs = [_rotKnobGroup(), _rotKnobGroup()];
+  let drag = null;
+
+  const centreOf = () => {
+    const w = Math.abs(rect.width() * rect.scaleX());
+    const h = Math.abs(rect.height() * rect.scaleY());
+    const rad = (rect.rotation() || 0) * Math.PI / 180;
+    const cs = Math.cos(rad), sn = Math.sin(rad);
+    return { x: rect.x() + (w / 2) * cs - (h / 2) * sn, y: rect.y() + (w / 2) * sn + (h / 2) * cs, w, h, cs, sn };
+  };
+  const place = () => {
+    const c = centreOf();
+    const OFF = 30;
+    const at = [{ dx: 0, dy: -(c.h / 2 + OFF) }, { dx: -(c.w / 2 + OFF), dy: 0 }];
+    knobs.forEach((k, i) => {
+      const { dx, dy } = at[i];
+      k.visible(true);
+      k.x(c.x + dx * c.cs - dy * c.sn);
+      k.y(c.y + dx * c.sn + dy * c.cs);
+      k.rotation(0);                 // the glyph stays upright whatever the angle
+      k.moveToTop();
+    });
+  };
+  const degAt = (c) => {
+    const p = _uiLayer?.getRelativePointerPosition?.();
+    return p ? _deg(Math.atan2(p.y - c.y, p.x - c.x)) : null;
+  };
+  const frame = () => {
+    if (!drag) return;
+    let delta = _wrapDeg(drag.now - drag.start);
+    if (drag.shift) delta = Math.round((drag.rot0 + delta) / 15) * 15 - drag.rot0;
+    const rad = delta * Math.PI / 180, cs = Math.cos(rad), sn = Math.sin(rad);
+    const vx = drag.pos0.x - drag.c.x, vy = drag.pos0.y - drag.c.y;
+    rect.x(drag.c.x + vx * cs - vy * sn);
+    rect.y(drag.c.y + vx * sn + vy * cs);
+    rect.rotation(drag.rot0 + delta);
+    place();
+    onChange?.();
+  };
+  const move = (e) => {
+    if (!drag) return;
+    e.preventDefault?.();
+    const d = degAt(drag.c);
+    if (d != null) drag.now = d;
+    drag.shift = !!e.shiftKey;
+    frame();
+  };
+  const key = (e) => { if (!drag) return; drag.shift = !!e.shiftKey; frame(); };
+  const up = () => {
+    if (!drag) return;
+    drag = null;
+    window.removeEventListener('pointermove',   move, true);
+    window.removeEventListener('pointerup',     up,   true);
+    window.removeEventListener('pointercancel', up,   true);
+    window.removeEventListener('keydown',       key,  true);
+    window.removeEventListener('keyup',         key,  true);
+  };
+  const down = (e) => {
+    if (drag) return;                       // pointerdown and mousedown both land; first wins
+    if (e?.evt) { e.evt.preventDefault(); e.evt.stopPropagation(); }
+    if (e) e.cancelBubble = true;
+    const c = centreOf();
+    const d = degAt(c);
+    if (d == null) return;
+    drag = { c, start: d, now: d, rot0: rect.rotation() || 0, pos0: { x: rect.x(), y: rect.y() }, shift: !!e?.evt?.shiftKey };
+    window.addEventListener('pointermove',   move, true);
+    window.addEventListener('pointerup',     up,   true);
+    window.addEventListener('pointercancel', up,   true);
+    window.addEventListener('keydown',       key,  true);
+    window.addEventListener('keyup',         key,  true);
+  };
+  for (const k of knobs) {
+    k.on('pointerdown', down);
+    k.on('mousedown',   down);
+    _uiLayer.add(k);
+  }
+  place();
+  return {
+    nodes: knobs,
+    place,
+    destroy: () => { up(); for (const k of knobs) { try { k.destroy(); } catch { /* already gone */ } } },
+  };
 }
 
 /**
@@ -1396,7 +1543,9 @@ export function beginMaskEdit(node, { defId = null, seedFromDefId = null } = {})
     strokeScaleEnabled: false,
   });
   const tr = new Konva.Transformer({
-    rotateEnabled: true, rotateAnchorOffset: 28, keepRatio: false, anchorSize: 9,
+    // rotation is OURS — two knobs, top and left (_maskRotKnobs). Konva's
+    // single anchor sits under this editor's own bar.
+    rotateEnabled: false, rotateAnchorOffset: 28, keepRatio: false, anchorSize: 9,
     borderStroke: '#38bdf8', anchorStroke: '#38bdf8', anchorFill: '#fff',
     rotationSnapTolerance: 6, rotationSnaps: [0, 45, 90, 135, 180, 225, 270, 315],
     enabledAnchors: ['top-left', 'top-center', 'top-right', 'middle-left', 'middle-right', 'bottom-left', 'bottom-center', 'bottom-right'],
@@ -1412,8 +1561,9 @@ export function beginMaskEdit(node, { defId = null, seedFromDefId = null } = {})
     rect.height(Math.abs(rect.height() * rect.scaleY()));
     rect.scaleX(1); rect.scaleY(1);
   });
-  const redraw = () => { _layer?.batchDraw(); _uiLayer?.batchDraw(); _maskEdit?.place?.(); };
+  const redraw = () => { _layer?.batchDraw(); _uiLayer?.batchDraw(); _maskEdit?.place?.(); _maskEdit?.knobs?.place?.(); };
   rect.on('dragmove transform transformend', redraw);
+  const knobs = _maskRotKnobs(rect, redraw);
 
   _setSelection(null);   // the content transformer would fight this one
   const title = def ? `Editing shared mask "${def.name}"` : 'Editing mask';
@@ -1434,7 +1584,7 @@ export function beginMaskEdit(node, { defId = null, seedFromDefId = null } = {})
   window.addEventListener('keydown', onKey, true);
   window.addEventListener('resize', place);
 
-  _maskEdit = { node, rect, tr, defId: defId || null, bar, onKey, place };
+  _maskEdit = { node, rect, tr, defId: defId || null, bar, onKey, place, knobs };
   redraw();
   setStatus(def
     ? `Editing "${def.name}" — Apply moves every image using it.`
@@ -1444,8 +1594,9 @@ export function beginMaskEdit(node, { defId = null, seedFromDefId = null } = {})
 
 function _teardownMaskEdit() {
   if (!_maskEdit) return;
-  const { rect, tr, bar, onKey, place } = _maskEdit;
+  const { rect, tr, bar, onKey, place, knobs } = _maskEdit;
   _maskEdit = null;                       // cleared FIRST so the draw path stops previewing
+  try { knobs?.destroy?.(); } catch { /* already gone */ }
   try { tr.destroy(); rect.destroy(); } catch { /* already gone */ }
   try { bar.remove(); } catch { /* already gone */ }
   window.removeEventListener('keydown', onKey, true);
@@ -1587,11 +1738,12 @@ const ROT_KNOB_NAME = 'sbs-rot-knob';
 let _rotKnobs = [];     // [topKnob, leftKnob] — identical, both ours
 let _rotDrag  = null;   // { nodes, centre, startPointerDeg, starts, moved, shift }
 
-/** One knob: a white disc with an amber circular-arrow glyph, plus a
+/** The knob's LOOK: a white disc with an amber circular-arrow glyph, plus a
  *  generous invisible hit circle so it is easy to grab. Built from Konva
  *  primitives with the geometry computed here rather than an SVG path, so
- *  the arrow and its head can never drift apart. */
-function _makeRotKnob() {
+ *  the arrow and its head can never drift apart. Unwired — the callers add
+ *  their own handlers and decide where it lives. */
+function _rotKnobGroup() {
   const R = 5.1;                       // glyph radius
   const g = new Konva.Group({ name: ROT_KNOB_NAME, visible: false });
   g.add(new Konva.Circle({ radius: 8.5, fill: '#fff', stroke: '#f59e0b', strokeWidth: 1, strokeScaleEnabled: false }));
@@ -1618,6 +1770,11 @@ function _makeRotKnob() {
   g.add(new Konva.Circle({ radius: 11, fill: 'rgba(0,0,0,0.001)' }));   // hit area
   g.on('mouseenter', () => { const s = _stage?.container(); if (s) s.style.cursor = 'crosshair'; });
   g.on('mouseleave', () => { const s = _stage?.container(); if (s) s.style.cursor = ''; });
+  return g;
+}
+
+function _makeRotKnob() {
+  const g = _rotKnobGroup();
   // BOTH bindings on purpose: whichever of the two Konva dispatches first
   // wins and the other is ignored via the _rotDrag guard. Depending on a
   // single event family here is what left this dead once already.
@@ -1715,6 +1872,26 @@ function _rotateNodesBy(nodes, centre, deltaDeg, starts) {
   }
 }
 
+/** 🎭 Turn each captured mask by `deltaDeg` about `centreAbs`, from its start
+ *  state — the mask twin of _rotateNodesBy. A mask lives in normalized
+ *  canonical units, so the centre is brought into canonical space first. */
+function _rotateMasksBy(maskStarts, centreAbs, deltaDeg) {
+  if (!maskStarts?.size || !_layer) return;
+  const c = getCanonicalSize();
+  const cc = _layer.getAbsoluteTransform().copy().invert().point(centreAbs);
+  const rad = deltaDeg * Math.PI / 180, cs = Math.cos(rad), sn = Math.sin(rad);
+  for (const [n, m0] of maskStarts.entries()) {
+    if (!m0 || n.isDestroyed?.()) continue;
+    const vx = m0.x * c.width - cc.x, vy = m0.y * c.height - cc.y;
+    n.setAttr('cropMask', {
+      ...m0,
+      x: (cc.x + vx * cs - vy * sn) / (c.width || 1),
+      y: (cc.y + vx * sn + vy * cs) / (c.height || 1),
+      rot: (m0.rot || 0) + deltaDeg,
+    });
+  }
+}
+
 /** Nearest multiple of 45° — the levelling snap. Absolute orientation, not
  *  the delta: the point is to square up something a few degrees off. */
 const _snap45 = (deg) => Math.round(deg / 45) * 45;
@@ -1739,6 +1916,9 @@ function _applyRotDrag() {
     if (anchor) delta = _snap45(anchor.rot + delta) - anchor.rot;
   }
   _rotateNodesBy(nodes, centre, delta, starts);
+  // 🎭 Ctrl turns the mask with the picture, about the same centre. Re-derived
+  // from the captured masks every frame, so the key may go on and off mid-turn.
+  _rotateMasksBy(_rotDrag.maskStarts, centre, _rotDrag.ctrl ? delta : 0);
   _rotDrag.appliedDelta = delta;
   _transformer.forceUpdate();
   _layer.batchDraw();
@@ -1764,9 +1944,13 @@ function _onRotKnobDown(e) {
     startPointerDeg: _deg(Math.atan2(p.y - centre.y, p.x - centre.x)),
     pointerDeg: _deg(Math.atan2(p.y - centre.y, p.x - centre.x)),
     shift: !!e?.evt?.shiftKey,
+    // 🎭 the masks as they stand, so any frame can be re-derived from scratch
+    ctrl: !!(e?.evt?.ctrlKey || e?.evt?.metaKey),
+    maskStarts: new Map(nodes.map(n => [n, _privateMaskOf(n)]).filter(([, m]) => m)),
     moved: false,
     appliedDelta: 0,
   };
+  if (_rotDrag.maskStarts.size) setStatus('🎭 Hold Ctrl to turn the mask with the picture.', 'info', 4000);
   _fireTransformStart(nodes, e?.evt);
   // Arm typing IMMEDIATELY, on the press — not on a click-versus-drag verdict
   // after release. "Click and hold the tool and just type a number" is the
@@ -1829,8 +2013,10 @@ function _onRotKnobMove(ev) {
 function _onRotKnobKey(ev) {
   if (!_rotDrag) return;
   const shift = !!ev.shiftKey;
-  if (shift === _rotDrag.shift) return;
+  const ctrl  = !!(ev.ctrlKey || ev.metaKey);
+  if (shift === _rotDrag.shift && ctrl === _rotDrag.ctrl) return;
   _rotDrag.shift = shift;
+  _rotDrag.ctrl  = ctrl;      // 🎭 same rule as the drag: the mask comes along
   _applyRotDrag();
 }
 
@@ -5126,12 +5312,17 @@ function _attachNode(node) {
     _multiDragStarts = new Map();
     for (const n of draggedSet) {
       if (pinnedPeers.includes(n) || (n !== node && isAnchoredNode(n))) continue;
-      _multiDragStarts.set(n, { x: n.x(), y: n.y() });
+      _multiDragStarts.set(n, { x: n.x(), y: n.y(), mask: _privateMaskOf(n) });
       // a CARRIED interface leaves its "default position" like a grabbed one does (its own dragstart never fires)
       if (n !== node && n.getAttr?.('isInterface') && n.getAttr('atDefault')) n.setAttr('atDefault', false);
     }
     _snapBegin(node, _multiDragStarts);   // 🧲 ⇧ the drag session: the magnet measures the moving box and its targets once, here
     if (_snap) _snap.carry = _carry;
+    // 🎭 the offer, made where the user is looking, at the moment it applies
+    if ([..._multiDragStarts.values()].some(s => s.mask)) {
+      setStatus('🎭 Hold Ctrl to bring the mask along.', 'info', 4000);
+      _maskCarryTold = false;
+    }
   });
   // The ONE writer of the carried items: start + the grabbed node's delta. The drag calls it on every move; the
   // drag session's key handler calls it too (Shift / Alt may change while the pointer stands still).
@@ -5157,6 +5348,7 @@ function _attachNode(node) {
     // 🧲 ⇧ FIRST the grabbed node is put where it belongs (axis lock, magnet) — THEN its delta goes to the carried items
     if (_multiDragStarts) _snapMove(node, e?.evt);
     _carry();
+    _carryMasks(node, _multiDragStarts, e?.evt);
   });
   node.on('dragend', () => {
     if (_pinDragBlocked === node) return;   // 📌 refused drag — nothing moved
@@ -5166,8 +5358,8 @@ function _attachNode(node) {
     if (!beforeMap) return;
     // The captured start is the truth: carried items end at start + the grabbed node's delta.
     reapplyGroupDelta(beforeMap, node, 'overlay');
-    const before  = [...beforeMap.entries()].map(([n, p]) => ({ n, x: p.x, y: p.y }));
-    const after   = before.map(b => ({ n: b.n, x: b.n.x(), y: b.n.y() }));
+    const before  = [...beforeMap.entries()].map(([n, p]) => ({ n, x: p.x, y: p.y, mask: p.mask }));
+    const after   = before.map(b => ({ n: b.n, x: b.n.x(), y: b.n.y(), mask: b.mask ? _privateMaskOf(b.n) : null }));
     const carried = before.filter((b, i) => b.n !== node && (b.x !== after[i].x || b.y !== after[i].y)).map(b => b.n);
     // Cross-layer header persistence (header peers don't fire their
     // own dragend since we moved them via x()/y() in dragmove).
@@ -5181,7 +5373,8 @@ function _attachNode(node) {
     // P7-C-2: push a "Move" undo entry for ALL nodes that ended up
     // somewhere different from where they started. Single-node and
     // multi-node drags both go through this path — ONE entry per gesture.
-    const moved  = before.some((b, i) => b.x !== after[i].x || b.y !== after[i].y);
+    const moved  = before.some((b, i) => b.x !== after[i].x || b.y !== after[i].y
+      || (b.mask && after[i].mask && (b.mask.x !== after[i].mask.x || b.mask.y !== after[i].mask.y)));
     if (moved) {
       const label = before.length > 1 ? `Move ${before.length} items` : 'Move';
       undoManager.push(label,
@@ -5531,6 +5724,10 @@ function _snapNodeGeom(node) {
   // A line / an arrow bakes a resize into its POINTS (_wireShapeTransformend); width() and
   // height() do not drive them, so without the points its resize could not be undone at all.
   if (typeof node.points === 'function') snap.points = (node.points() || []).slice();
+  // 🎭 a mask turned with its picture (Ctrl + rotate) is part of the SAME
+  // gesture, so one undo puts both back
+  const pm = _privateMaskOf(node);
+  if (pm) snap.cropMask = pm;
   // Zoom: crop + density aren't derivable from geometry — snapshot them so an
   // undone resize restores the exact viewport (bondPct is re-derived instead).
   if (node.getAttr('isZoom')) {
@@ -5606,6 +5803,9 @@ function _restoreNodePositions(snaps) {
     any = true;
     s.n.x(s.x);
     s.n.y(s.y);
+    // 🎭 a mask carried by Ctrl+drag belongs to the same gesture, so it is
+    // undone by the same entry
+    if (s.mask) s.n.setAttr('cropMask', { ...s.mask });
     if (s.n.getLayer && s.n.getLayer() !== _layer) peerLayer = s.n.getLayer();
   }
   _reconcileBondAfterRestore(snaps.map(s => s.n));
@@ -5637,6 +5837,7 @@ async function _restoreNodeGeom(snaps) {
     s.n.rotation(s.rotation);
     s.n.skewX(s.skewX ?? 0);
     s.n.skewY(s.skewY ?? 0);
+    if (s.cropMask) s.n.setAttr('cropMask', { ...s.cropMask });   // 🎭 turned with the picture
     if (s.points && typeof s.n.points === 'function') s.n.points(s.points.slice());
     if (s.n.getAttr('isZoom')) {
       if (s.crop) s.n.crop({ ...s.crop });
@@ -8374,7 +8575,7 @@ function _serialiseStageJson() {
   // fork path schedules one) would bake them into step.overlay for good, and
   // the render cache fingerprints that JSON, so the stray nodes would also
   // invalidate the step's cached segment. Lift them out for the snapshot.
-  const lifted = _maskEdit ? [_maskEdit.tr, _maskEdit.rect] : [];
+  const lifted = _maskEdit ? [_maskEdit.tr, _maskEdit.rect, ...(_maskEdit.knobs?.nodes || [])] : [];
   for (const n of lifted) { try { n.remove(); } catch { /* already detached */ } }
   // ▦ A table being edited is hidden behind its panel. Konva DOES persist
   // `visible`, so a save fired mid-edit (every keystroke schedules one) would
