@@ -18,7 +18,10 @@ import { setStatus } from './status.js';
 import { srcHashOf } from '../systems/language-packs.js';
 import { numberSteps } from '../systems/translation-sheet-core.js';
 import { builtinTemplates, docTextFor, pageRangeLabel, unitsOf, stillsNeeded, pictureBox, containZoom, slotState, directionOf, bandsOf, BAND_MM,
-         zoomAfterWheel, zoomAfterButton, zoomPercent, zoomFromPercent, clampUiZoom, adjustFromFit } from '../systems/document-core.js';
+         zoomAfterWheel, zoomAfterButton, zoomPercent, zoomFromPercent, clampUiZoom, adjustFromFit,
+         mergeMap, mergeAt, canMerge, tableInsertRow, tableDeleteRow, tableInsertCol, tableDeleteCol,
+         tableMoveRow, tableMoveCol, tableRowMovable, tableColMovable, tableMerge, tableUnmerge,
+         tableSetFmt, tablePaste } from '../systems/document-core.js';
 import { DOCUMENT_CSS, renderPageHtml, renderTocPageHtml, renderCustomPageHtml, slotInnerHtml } from '../systems/document-render.js';
 import { watermarkOf, watermarkHtml, watermarkCss, watermarkVisible, detectWatermarkMode, bakeWatermarkPixels, fitWithin } from '../systems/watermark-core.js';
 import * as D from '../systems/document.js';
@@ -241,6 +244,21 @@ function _build() {
   _shadow.addEventListener('pointerup', _onCustomPointerUp);
   _shadow.addEventListener('pointercancel', _onCustomPointerUp);
   _shadow.addEventListener('dblclick', _onCustomDblClick);
+  // 📋 a block copied out of a spreadsheet — tabs between cells, line breaks
+  // between rows — fills the table from the cell being typed in, growing it if
+  // the block does not fit. A plain word still just types.
+  _shadow.addEventListener('paste', (e) => {
+    const cell = _shadow.activeElement?.dataset?.cell !== undefined ? _shadow.activeElement : null;
+    if (!cell?.isContentEditable) return;
+    const text = e.clipboardData?.getData('text/plain') || '';
+    if (!/[\t\n]/.test(text)) return;
+    const tb = _tableNow(); if (!tb) return;
+    e.preventDefault();
+    const [r, c] = String(cell.dataset.cell).split(',').map(Number);
+    cell.dataset.orig = cell.innerText;                      // the focusout must not fight the paste
+    const pch = tablePaste(tb, r, c, text);
+    if (pch) { _tsel = null; _patchItem(pch, 'Paste into the table'); }
+  });
   _shadow.addEventListener('focusout', _onCustomFocusOut);
   _shadow.addEventListener('pointermove', _onSlotPointerMove);
   _shadow.addEventListener('pointerup', _onSlotPointerUp);
@@ -1144,6 +1162,10 @@ function _openTemplateEditor(asNew) {
 // (a drag, a resize, a typed text, a delete) is ONE undo entry.
 
 let _customSel = null, _cdrag = null, _coldrag = null, _customModel = null;
+// 📋 the table being worked on: which cells are picked, and which handle is
+// being dragged. _tsel is kept in the DOCUMENT's coordinates (row, column), so
+// a re-render never invalidates it.
+let _tsel = null, _rowdrag = null, _gripdrag = null, _tdrag = false;
 let _bandEdit = null;                     // 'header' | 'footer' while the header / footer editor is open
 let _stillsFailed = new Set();            // pictures that were asked for and did not come back: never walk for them in a loop
 const C_AREA = { x: 12, y: 32, w: 186, h: 238.5 };
@@ -1153,6 +1175,8 @@ const CUSTOM_CSS = `
 .ci:hover { outline: 0.3mm solid #60a5fa; }
 .ci.ct[contenteditable] { cursor: text; outline: 0.4mm solid #2563eb; background: #eff6ff; overflow: visible; }
 .csel { position: absolute; border: 0.5mm solid #f59e0b; pointer-events: none; box-sizing: border-box; }
+.ctb td.tsel, .ctb th.tsel { outline: 0.4mm solid #2563eb; outline-offset: -0.4mm; background: rgba(37, 99, 235, 0.10); }
+.ctb .tdrop { position: absolute; background: #f59e0b; }
 .csel i { position: absolute; width: 3mm; height: 3mm; margin: -1.5mm 0 0 -1.5mm; background: #fff; border: 0.5mm solid #f59e0b; border-radius: 0.5mm; pointer-events: auto; box-sizing: border-box; }
 .cempty { position: absolute; left: 12mm; right: 12mm; top: 120mm; text-align: center; color: #94a3b8; font-size: 12pt; pointer-events: none; }
 .fit:not(.bandmode) .ci[data-band] { cursor: pointer; }
@@ -1237,18 +1261,85 @@ function _drawCustomSel() {
   const it = _customModel?.items.find(i => i.id === _customSel);
   const pg = _shadow.querySelector('.page');
   if (!it || !pg) return;
-  // 📋 a table also gets a grab bar on every column border
-  let colHandles = '';
-  if (it.type === 'table' && Array.isArray(it.widths)) {
-    const rtl = _pageRtl();                       // an RTL page draws column 1 on the RIGHT
-    let acc = 0;
-    for (let i = 0; i < it.widths.length - 1; i++) {
-      acc += it.widths[i];
-      colHandles += `<i data-colh="${i}" data-acc="${(rtl ? 1 - acc : acc).toFixed(5)}" title="Drag: how wide this column is" style="left:${((rtl ? 1 - acc : acc) * 100).toFixed(3)}%;top:0;width:7px;height:100%;margin-left:-3.5px;margin-top:0;border:0;border-radius:0;background:rgba(56,189,248,0.45);cursor:col-resize;"></i>`;
+  const isTable = it.type === 'table';
+  pg.insertAdjacentHTML('beforeend', `<div class="csel" style="left:${it.x}mm;top:${it.y}mm;width:${it.w}mm;height:${it.h}mm;">${C_HANDLES.map(h => `<i data-ch="${h}" style="left:${h.includes('w') ? 0 : h.includes('e') ? 100 : 50}%;top:${h.includes('n') ? 0 : h.includes('s') ? 100 : 50}%;cursor:${h === 'n' || h === 's' ? 'ns' : h === 'e' || h === 'w' ? 'ew' : h === 'nw' || h === 'se' ? 'nwse' : 'nesw'}-resize;"></i>`).join('')}</div>`);
+  if (isTable) _drawTableChrome(it);
+  _drawTableSel();
+}
+
+/**
+ * 📋 THE TABLE'S OWN CHROME (V0.3.4.38), measured off the table as it is really
+ * drawn — a row with no set height is as tall as its text, and only the browser
+ * knows that. Inside the selection box, in percentages of it, so it survives
+ * the page being scaled.
+ *
+ *   • a bar on every column border and every row border  → drag to resize
+ *   • a grip above each column and beside each row       → drag to MOVE it
+ */
+function _drawTableChrome(it) {
+  const sel = _shadow.querySelector('.csel');
+  const host = _shadow.querySelector(`.ci[data-item="${CSS.escape(it.id)}"]`);
+  const table = host?.querySelector('table');
+  if (!sel || !table) return;
+  const H = host.getBoundingClientRect();
+  if (!(H.width > 0 && H.height > 0)) return;
+  const pc = (v, total) => `${((v / total) * 100).toFixed(3)}%`;
+  const rows = [...table.querySelectorAll('tr')].map(tr => tr.getBoundingClientRect());
+  const firstCells = [...(table.querySelector('tr')?.children || [])];
+  // a merged first row would lie about the columns: measure the colgroup instead
+  const cols = [...table.querySelectorAll('col')].map((c, i) => {
+    const w = (Number(it.widths?.[i]) || 0) * H.width;
+    return w;
+  });
+  let html = '';
+  // column borders + grips
+  let x = 0;
+  const rtl = _pageRtl();
+  const X = (v) => (rtl ? H.width - v : v);
+  for (let i = 0; i < cols.length; i++) {
+    const w = cols[i] || (H.width / Math.max(1, cols.length));
+    html += `<i data-colg="${i}" title="Drag to move this column" style="left:${pc(X(x + (rtl ? -w : 0)), H.width)};top:-5mm;width:${pc(w, H.width)};height:4mm;margin:0;border:0;border-radius:1mm;background:rgba(56,189,248,0.55);cursor:grab;"></i>`;
+    x += w;
+    if (i < cols.length - 1) {
+      html += `<i data-colh="${i}" title="Drag: how wide this column is" style="left:${pc(X(x), H.width)};top:0;width:7px;height:100%;margin:0 0 0 -3.5px;border:0;border-radius:0;background:rgba(56,189,248,0.45);cursor:col-resize;"></i>`;
     }
   }
-  pg.insertAdjacentHTML('beforeend', `<div class="csel" style="left:${it.x}mm;top:${it.y}mm;width:${it.w}mm;height:${it.h}mm;">${C_HANDLES.map(h => `<i data-ch="${h}" style="left:${h.includes('w') ? 0 : h.includes('e') ? 100 : 50}%;top:${h.includes('n') ? 0 : h.includes('s') ? 100 : 50}%;cursor:${h === 'n' || h === 's' ? 'ns' : h === 'e' || h === 'w' ? 'ew' : h === 'nw' || h === 'se' ? 'nwse' : 'nesw'}-resize;"></i>`).join('')}</div>`);
-  if (colHandles) _shadow.querySelector('.csel')?.insertAdjacentHTML('beforeend', colHandles);
+  // row borders + grips
+  for (let r = 0; r < rows.length; r++) {
+    const top = rows[r].top - H.top, h = rows[r].height;
+    html += `<i data-rowg="${r}" title="Drag to move this row" style="left:${rtl ? '100%' : '-5mm'};top:${pc(top, H.height)};width:4mm;height:${pc(h, H.height)};margin:0;border:0;border-radius:1mm;background:rgba(56,189,248,0.55);cursor:grab;"></i>`;
+    if (r < rows.length - 1) {
+      html += `<i data-rowh="${r}" title="Drag: how tall this row is" style="left:0;top:${pc(top + h, H.height)};width:100%;height:7px;margin:-3.5px 0 0 0;border:0;border-radius:0;background:rgba(56,189,248,0.45);cursor:row-resize;"></i>`;
+    }
+  }
+  sel.insertAdjacentHTML('beforeend', html);
+}
+
+/** Paint the picked cells. Kept in row/column terms, so a re-render restores it. */
+function _drawTableSel() {
+  for (const el of _shadow.querySelectorAll('.tsel')) el.classList.remove('tsel');
+  if (!_tsel || _tsel.id !== _customSel) return;
+  const host = _shadow.querySelector(`.ci[data-item="${CSS.escape(_tsel.id)}"]`);
+  if (!host) return;
+  const r0 = Math.min(_tsel.r0, _tsel.r1), r1 = Math.max(_tsel.r0, _tsel.r1);
+  const c0 = Math.min(_tsel.c0, _tsel.c1), c1 = Math.max(_tsel.c0, _tsel.c1);
+  for (const cell of host.querySelectorAll('[data-cell]')) {
+    const [r, c] = String(cell.dataset.cell).split(',').map(Number);
+    if (r >= r0 && r <= r1 && c >= c0 && c <= c1) cell.classList.add('tsel');
+  }
+}
+
+/** The table item being edited, straight from the document. */
+function _tableNow() {
+  const it = _itemsNow().find(i => i.id === _customSel);
+  return it?.type === 'table' ? it : null;
+}
+/** The picked rectangle, or the whole of one cell if nothing is picked. */
+function _tselRect() {
+  const tb = _tableNow(); if (!tb) return null;
+  const s = _tsel?.id === _customSel ? _tsel : null;
+  if (!s) return { r0: tb.rows - 1, c0: tb.cols - 1, r1: tb.rows - 1, c1: tb.cols - 1, none: true };
+  return { r0: Math.min(s.r0, s.r1), c0: Math.min(s.c0, s.c1), r1: Math.max(s.r0, s.r1), c1: Math.max(s.c0, s.c1) };
 }
 
 /** The bar over the page: add things; and, with an item selected, what can be changed about it. */
@@ -1283,17 +1374,41 @@ function _placeCustomBar() {
   bar.innerHTML = lead + '<input type="file" id="dw-ci-file" accept="image/*" hidden>'
     + (!it ? `<span style="padding:0 6px;">click an item to select it · double-click a text to type</span>` : sep
       + (it.type === 'table'
-        ? `<span style="padding:0 2px;">${it.rows}×${it.cols}</span>`
-          + b('ci-row-add', '＋ Row', 'One more row (at the bottom)') + b('ci-row-del', '− Row', 'Take the last row away')
-          + b('ci-col-add', '＋ Col', 'One more column') + b('ci-col-del', '− Col', 'Take the last column away')
-          + sep
+        ? (() => {
+            const s = _tselRect() || { r0: 0, c0: 0, r1: 0, c1: 0, none: true };
+            const one = s.r0 === s.r1 && s.c0 === s.c1;
+            const where = s.none ? 'the last row / column' : one ? `row ${s.r0 + 1}, column ${s.c0 + 1}` : `${s.r1 - s.r0 + 1}×${s.c1 - s.c0 + 1} cells`;
+            const tb = _tableNow();
+            const canM = tb && !s.none && canMerge(tb, s.r0, s.c0, s.r1, s.c1);
+            const canU = tb && !s.none && !!mergeAt(tb, s.r0, s.c0);
+            return `<span style="padding:0 2px;">${it.rows}×${it.cols} · ${_esc(where)}</span>`
+              + b('ci-row-above', '＋ Row ▲', 'A row above the picked one')
+              + b('ci-row-below', '＋ Row ▼', 'A row below the picked one')
+              + b('ci-row-dup', '⧉ Row', 'Copy the picked row, text and all')
+              + b('ci-row-del', '🗑 Row', 'Take the picked row away')
+              + b('ci-col-before', '＋ Col ◀', 'A column before the picked one')
+              + b('ci-col-after', '＋ Col ▶', 'A column after the picked one')
+              + b('ci-col-del', '🗑 Col', 'Take the picked column away')
+              + sep
+              + (canM ? b('ci-merge', '⬓ Merge', 'Make the picked cells one cell') : '')
+              + (canU ? b('ci-unmerge', '⬚ Unmerge', 'Break the merged cell apart') : '')
+              + (canM || canU ? sep : '')
+              + b('ci-cell-bold', '<b>B</b>', 'Bold, in the picked cells')
+              + b('ci-cell-italic', '<i>I</i>', 'Italic, in the picked cells')
+              + b('ci-cell-start', '⫷', 'Align the picked cells to the start')
+              + b('ci-cell-center', '⫿', 'Centre the picked cells')
+              + b('ci-cell-end', '⫸', 'Align the picked cells to the end')
+              + `<input data-ci="cellbg" type="color" value="#ffffff" title="Shade the picked cells" style="width:30px;height:24px;padding:0;border:1px solid #334155;border-radius:5px;background:none;">`
+              + b('ci-cell-clear', '⌫ Look', 'Clear the look of the picked cells')
+              + sep;
+          })()
           + b('ci-head', 'Header', 'The first row is a heading', it.head !== false)
           + b('ci-grid', 'Grid', 'Lines around every cell — off leaves a line under each row', it.grid !== false)
           + b('ci-zebra', 'Stripes', 'Shade every other row', !!it.zebra)
           + `<label style="display:flex;gap:4px;align-items:center;">Size <input class="dw-in" data-ci="tsize" type="number" min="5" max="40" step="0.5" value="${it.size}" style="width:54px;"> pt</label>`
           + b('ci-align-start', '⫷', 'Align to the start', it.align === 'start') + b('ci-align-center', '⫿', 'Centre', it.align === 'center') + b('ci-align-end', '⫸', 'Align to the end', it.align === 'end')
           + `<input data-ci="color" type="color" value="${_esc(it.color)}" title="Text colour" style="width:30px;height:24px;padding:0;border:1px solid #334155;border-radius:5px;background:none;">`
-          + `<span style="padding:0 4px;color:#64748b;">double-click a cell to type · Tab moves on</span>`
+          + `<span style="padding:0 4px;color:#64748b;">click a cell to pick it, drag to pick more · double-click to type · Tab moves on · drag a blue grip to move a row or column</span>`
         : it.type === 'text'
         ? `<label style="display:flex;gap:4px;align-items:center;">Size <input class="dw-in" data-ci="size" type="number" min="6" max="120" step="1" value="${it.size}" style="width:58px;"> pt</label>`
           + b('ci-bold', '<b>B</b>', 'Bold', it.bold) + b('ci-italic', '<i>I</i>', 'Italic', it.italic)
@@ -1340,6 +1455,50 @@ function _onCustomPointerDown(e) {
   if (!host || e.button !== 0) return;
   if (_wheelItem) _flushWheelItem();          // a pending wheel commit must land before the drag reads the item
 
+  // 📋 a grip picked up: the row or column moves when it is dropped
+  const grip = e.target.closest?.('[data-rowg], [data-colg]');
+  if (grip && _customSel) {
+    const tb = _tableNow();
+    const kind = grip.dataset.rowg !== undefined ? 'row' : 'col';
+    const i = Number(kind === 'row' ? grip.dataset.rowg : grip.dataset.colg);
+    if (tb && (kind === 'row' ? tableRowMovable(tb, i) : tableColMovable(tb, i))) {
+      e.preventDefault(); _commitFocusedText();
+      _gripdrag = { id: _customSel, kind, i, to: i };
+      try { grip.setPointerCapture(e.pointerId); } catch { /* synthetic pointer */ }
+      return;
+    }
+    setStatus(`This ${kind === 'row' ? 'row' : 'column'} runs through a merged cell — unmerge it first.`, 'warn', 5000);
+    return;
+  }
+  // 📋 a row border: how tall that row is
+  const rowh = e.target.closest?.('[data-rowh]');
+  if (rowh && _customSel) {
+    const tb = _tableNow();
+    const host = _shadow.querySelector(`.ci[data-item="${CSS.escape(_customSel)}"]`);
+    const tr = host?.querySelectorAll('tr')[Number(rowh.dataset.rowh)];
+    if (tb && tr) {
+      e.preventDefault(); _commitFocusedText();
+      _rowdrag = { id: _customSel, i: Number(rowh.dataset.rowh), y: e.clientY, k: _mmPerPx(),
+                   h0: tr.getBoundingClientRect().height * _mmPerPx(), moved: false };
+      try { rowh.setPointerCapture(e.pointerId); } catch { /* synthetic pointer */ }
+      return;
+    }
+  }
+  // 📋 inside a table that is already selected, the pointer picks CELLS
+  const pickCell = (e.target.closest?.('[data-cell]') || _cellAtPoint(e));
+  if (pickCell && _customSel && pickCell.closest('.ci[data-item]')?.dataset.item === _customSel
+      && !pickCell.isContentEditable && _tableNow()) {
+    e.preventDefault(); _commitFocusedText();
+    const [r, c] = String(pickCell.dataset.cell).split(',').map(Number);
+    _tsel = e.shiftKey && _tsel?.id === _customSel
+      ? { ..._tsel, r1: r, c1: c }
+      : { id: _customSel, r0: r, c0: c, r1: r, c1: c };
+    _cdrag = null;
+    _tdrag = true;
+    _drawTableSel(); _placeCustomBar();
+    try { pickCell.closest('.ci[data-item]')?.setPointerCapture(e.pointerId); } catch { /* synthetic */ }
+    return;
+  }
   const colh = e.target.closest?.('[data-colh]');
   if (colh && _customSel) {
     const tb = _customModel?.items.find(i => i.id === _customSel);
@@ -1369,6 +1528,54 @@ function _onCustomPointerDown(e) {
   try { (handle || itemEl).setPointerCapture(e.pointerId); } catch { /* synthetic pointer */ }
 }
 function _onCustomPointerMove(e) {
+  // picking cells: extend the rectangle under the pointer
+  if (_tdrag && _tsel) {
+    const over = _cellAtPoint(e) || document.elementFromPoint(e.clientX, e.clientY)?.closest?.('[data-cell]');
+    if (over) {
+      const [r, c] = String(over.dataset.cell).split(',').map(Number);
+      if (r !== _tsel.r1 || c !== _tsel.c1) { _tsel = { ..._tsel, r1: r, c1: c }; _drawTableSel(); _placeCustomBar(); }
+    }
+    return;
+  }
+  // a row's height, live
+  if (_rowdrag) {
+    const h = Math.max(3, _rowdrag.h0 + (e.clientY - _rowdrag.y) * _rowdrag.k);
+    _rowdrag.h = h; _rowdrag.moved = true;
+    const tr = _shadow.querySelector(`.ci[data-item="${CSS.escape(_rowdrag.id)}"]`)?.querySelectorAll('tr')[_rowdrag.i];
+    if (tr) tr.style.height = `${h.toFixed(2)}mm`;
+    return;
+  }
+  // a grip: show where it would land
+  if (_gripdrag) {
+    const host = _shadow.querySelector(`.ci[data-item="${CSS.escape(_gripdrag.id)}"]`);
+    const table = host?.querySelector('table');
+    if (!table) return;
+    const box = host.getBoundingClientRect();
+    let to = 0;
+    if (_gripdrag.kind === 'row') {
+      const rows = [...table.querySelectorAll('tr')].map(tr => tr.getBoundingClientRect());
+      to = rows.findIndex(r => e.clientY < r.top + r.height / 2);
+      if (to < 0) to = rows.length;
+    } else {
+      const cells = [...(table.querySelector('tr')?.children || [])].map(td => td.getBoundingClientRect());
+      const rtl = _pageRtl();
+      to = cells.findIndex(r => (rtl ? e.clientX > r.left + r.width / 2 : e.clientX < r.left + r.width / 2));
+      if (to < 0) to = cells.length;
+    }
+    _gripdrag.to = to;
+    let line = _shadow.querySelector('.tdrop');
+    if (!line) { host.insertAdjacentHTML('beforeend', '<div class="tdrop"></div>'); line = _shadow.querySelector('.tdrop'); }
+    if (_gripdrag.kind === 'row') {
+      const rows = [...table.querySelectorAll('tr')].map(tr => tr.getBoundingClientRect());
+      const y = to >= rows.length ? (rows[rows.length - 1].bottom - box.top) : (rows[to].top - box.top);
+      Object.assign(line.style, { left: '0', width: '100%', height: '0.8mm', top: `${(y / box.height * 100).toFixed(3)}%` });
+    } else {
+      const cells = [...(table.querySelector('tr')?.children || [])].map(td => td.getBoundingClientRect());
+      const x = to >= cells.length ? (cells[cells.length - 1].right - box.left) : (cells[to].left - box.left);
+      Object.assign(line.style, { top: '0', height: '100%', width: '0.8mm', left: `${(x / box.width * 100).toFixed(3)}%` });
+    }
+    return;
+  }
   const cd = _coldrag;
   if (cd) {
     const f = ((e.clientX - cd.x) * cd.k * (cd.rtl ? -1 : 1)) / Math.max(1, cd.boxW);   // mm → fraction of the table (mirrored on an RTL page)
@@ -1403,6 +1610,21 @@ function _onCustomPointerMove(e) {
   for (const el of [_shadow.querySelector(`.ci[data-item="${CSS.escape(d.id)}"]`), _shadow.querySelector('.csel')]) if (el) { el.style.left = `${d.rect.x}mm`; el.style.top = `${d.rect.y}mm`; el.style.width = `${d.rect.w}mm`; el.style.height = `${d.rect.h}mm`; }
 }
 function _onCustomPointerUp() {
+  if (_tdrag) { _tdrag = false; return; }
+  const rd = _rowdrag; _rowdrag = null;
+  if (rd?.moved) {
+    const tb = _tableNow();
+    if (tb) { const rowH = (tb.rowH || []).slice(); rowH[rd.i] = Math.round(rd.h * 10) / 10; _patchItem({ rowH }, 'Row height'); }
+    return;
+  }
+  const gd = _gripdrag; _gripdrag = null;
+  _shadow.querySelector('.tdrop')?.remove();
+  if (gd) {
+    const tb = _tableNow();
+    const patch = tb && (gd.kind === 'row' ? tableMoveRow(tb, gd.i, gd.to) : tableMoveCol(tb, gd.i, gd.to));
+    if (patch) { _tsel = null; _patchItem(patch, gd.kind === 'row' ? 'Move row' : 'Move column'); }
+    return;
+  }
   const cd = _coldrag; _coldrag = null;
   if (cd?.moved && cd.next) { _patchItem({ widths: cd.next }, 'Column width'); return; }
   const d = _cdrag; _cdrag = null;
@@ -1495,7 +1717,8 @@ function _onCustomKey(e) {
   if (e.key === 'Escape') {
     if (_menu) return false;
     if (typing) { const el = _shadow.activeElement; el.innerText = el.dataset.orig ?? ''; el.blur(); _root.focus({ preventScroll: true }); return true; }
-    if (_customSel) { _customSel = null; _drawCustomSel(); _placeCustomBar(); return true; }
+    if (_tsel?.id === _customSel) { _tsel = null; _drawTableSel(); _placeCustomBar(); return true; }
+    if (_customSel) { _customSel = null; _tsel = null; _drawCustomSel(); _placeCustomBar(); return true; }
     if (_bandEdit) { _exitBandEdit(); return true; }
     return false;
   }
@@ -1608,18 +1831,26 @@ function _customAct(act, el) {
     // blur this very click caused has not reached _customModel yet, so growing
     // from the rendered one would throw the typing away.
     const live = _itemsNow().find(i => i.id === _customSel) || it;
-    const grow = (rows, cols) => {
-      const cells = Array.from({ length: rows }, (_, r) => Array.from({ length: cols }, (_, c) => live.cells?.[r]?.[c] ?? ''));
-      let widths = (live.widths || []).slice(0, cols);
-      while (widths.length < cols) widths.push(1 / cols);
-      const sum = widths.reduce((a2, b2) => a2 + b2, 0) || 1;
-      widths = widths.map(v => v / sum);
-      return { rows, cols, cells, widths };
-    };
-    if (act === 'ci-row-add') { _patchItem(grow(Math.min(live.rows + 1, 40), live.cols), 'Add row'); return true; }
-    if (act === 'ci-row-del') { if (live.rows > 1) _patchItem(grow(live.rows - 1, live.cols), 'Remove row'); return true; }
-    if (act === 'ci-col-add') { _patchItem(grow(live.rows, Math.min(live.cols + 1, 10)), 'Add column'); return true; }
-    if (act === 'ci-col-del') { if (live.cols > 1) _patchItem(grow(live.rows, live.cols - 1), 'Remove column'); return true; }
+    const s = _tselRect() || { r0: live.rows - 1, c0: live.cols - 1, r1: live.rows - 1, c1: live.cols - 1 };
+    const patch = (fn, label) => { const pch = fn(); if (pch) { _tsel = null; _patchItem(pch, label); } return true; };
+    if (act === 'ci-row-above') return patch(() => (live.rows < 40 ? tableInsertRow(live, s.r0) : null), 'Add row');
+    if (act === 'ci-row-below') return patch(() => (live.rows < 40 ? tableInsertRow(live, s.r1 + 1) : null), 'Add row');
+    if (act === 'ci-row-dup')   return patch(() => (live.rows < 40 ? tableInsertRow(live, s.r1 + 1, s.r0) : null), 'Duplicate row');
+    if (act === 'ci-row-del')   return patch(() => tableDeleteRow(live, s.r0), 'Remove row');
+    if (act === 'ci-col-before') return patch(() => (live.cols < 10 ? tableInsertCol(live, s.c0) : null), 'Add column');
+    if (act === 'ci-col-after')  return patch(() => (live.cols < 10 ? tableInsertCol(live, s.c1 + 1) : null), 'Add column');
+    if (act === 'ci-col-del')    return patch(() => tableDeleteCol(live, s.c0), 'Remove column');
+    if (act === 'ci-merge')   return patch(() => tableMerge(live, s.r0, s.c0, s.r1, s.c1), 'Merge cells');
+    if (act === 'ci-unmerge') {
+      const m = mergeAt(live, s.r0, s.c0);
+      return patch(() => tableUnmerge(live, m ? m.r : s.r0, m ? m.c : s.c0, m ? m.r + m.rs - 1 : s.r1, m ? m.c + m.cs - 1 : s.c1), 'Unmerge cells');
+    }
+    if (act === 'ci-cell-bold')   { _patchItem(tableSetFmt(live, s.r0, s.c0, s.r1, s.c1, { b: live.fmt?.[`${s.r0},${s.c0}`]?.b ? null : 1 }), 'Cell look'); return true; }
+    if (act === 'ci-cell-italic') { _patchItem(tableSetFmt(live, s.r0, s.c0, s.r1, s.c1, { i: live.fmt?.[`${s.r0},${s.c0}`]?.i ? null : 1 }), 'Cell look'); return true; }
+    if (act.startsWith('ci-cell-') && ['start', 'center', 'end'].includes(act.slice(8))) {
+      _patchItem(tableSetFmt(live, s.r0, s.c0, s.r1, s.c1, { a: act.slice(8) }), 'Cell look'); return true;
+    }
+    if (act === 'ci-cell-clear') { _patchItem(tableSetFmt(live, s.r0, s.c0, s.r1, s.c1, { a: null, b: null, i: null, bg: null }), 'Clear the look'); return true; }
     if (act === 'ci-head')  { _patchItem({ head: live.head === false }, 'Heading row'); return true; }
     if (act === 'ci-grid')  { _patchItem({ grid: live.grid === false }, 'Table lines'); return true; }
     if (act === 'ci-zebra') { _patchItem({ zebra: !live.zebra }, 'Striped rows'); return true; }
@@ -1635,6 +1866,11 @@ function _customAct(act, el) {
   return false;
 }
 function _customChange(t) {
+  if (t.dataset?.ci === 'cellbg') {
+    const tb = _tableNow(), s = _tselRect();
+    if (tb && s) _patchItem(tableSetFmt(tb, s.r0, s.c0, s.r1, s.c1, { bg: String(t.value).toLowerCase() }), 'Shade cells');
+    return true;
+  }
   if (t.dataset?.ci === 'zoom') {
     const id = t.dataset.item || _customSel;                       // the item the FIELD belongs to
     const it = _itemsNow().find(i => i.id === id);

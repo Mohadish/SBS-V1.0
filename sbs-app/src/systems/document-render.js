@@ -8,7 +8,7 @@
  */
 
 import { watermarkHtml, watermarkCss, WATERMARK_CSS } from './watermark-core.js';
-import { pictureBox } from './document-core.js';
+import { pictureBox, mergeMap } from './document-core.js';
 export { watermarkCss };
 
 const _esc = (s) => String(s ?? '').replace(/[&<>"]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
@@ -130,10 +130,21 @@ export function customItemHtml(it, o = {}, band = '') {
     // table-layout:fixed is what makes the preview and printToPDF agree — auto
     // layout re-measures against the print font and drifts.
     const cg = `<colgroup>${(it.widths || []).map(w => `<col style="width:${(w * 100).toFixed(3)}%">`).join('')}</colgroup>`;
-    const body = (it.cells || []).map((row, r) => `<tr>${(row || []).map((cell, c) => {
-      const t = (it.head && r === 0) ? 'th' : 'td';
-      return `<${t} data-cell="${r},${c}" dir="auto">${_esc(cell)}</${t}>`;
-    }).join('')}</tr>`).join('');
+    const { starts, covered } = mergeMap(it);
+    const body = (it.cells || []).map((row, r) => {
+      const hMm = Number(it.rowH?.[r]) > 0 ? `height:${Number(it.rowH[r])}mm;` : '';
+      const tds = (row || []).map((cell, c) => {
+        if (covered.has(`${r},${c}`)) return '';                  // swallowed by a merge
+        const m = starts.get(`${r},${c}`);
+        const tag2 = (it.head && r === 0) ? 'th' : 'td';
+        const f = it.fmt?.[`${r},${c}`] || {};
+        const st = (f.a ? `text-align:${f.a};` : '') + (f.b ? 'font-weight:700;' : '')
+          + (f.i ? 'font-style:italic;' : '') + (f.bg ? `background:${_esc(f.bg)};` : '');
+        return `<${tag2} data-cell="${r},${c}"${m ? ` colspan="${m.cs}" rowspan="${m.rs}"` : ''}`
+          + `${st ? ` style="${st}"` : ''} dir="auto">${_esc(cell)}</${tag2}>`;
+      }).join('');
+      return `<tr${hMm ? ` style="${hMm}"` : ''}>${tds}</tr>`;
+    }).join('');
     return `<div class="ci ctb${it.grid === false ? ' nogrid' : ''}${it.zebra ? ' zebra' : ''}" ${tag}`
       + ` style="${box}font-size:${it.size}pt;color:${_esc(it.color)};text-align:${align};">`
       + `<table>${cg}<tbody>${body}</tbody></table></div>`;

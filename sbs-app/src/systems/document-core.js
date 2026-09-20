@@ -684,6 +684,238 @@ function _reanchor(seq) {
 export const MAX_CUSTOM_ITEMS = 60;
 const _hex = (c, d) => (/^#[0-9a-f]{6}$/i.test(String(c || '')) ? c : d);
 
+/**
+ * 📋 MERGED CELLS, sanitised (V0.3.4.38): every region inside the grid, at
+ * least 2 cells, and never overlapping another — the first one to claim a cell
+ * keeps it. A grid that survives this can always be rendered and always be
+ * walked, whatever a hand-edited file or an older build left behind.
+ */
+function _mergesOf(src, rows, cols) {
+  const taken = new Set(), out = [];
+  for (const m of Array.isArray(src) ? src : []) {
+    const r = Math.max(0, Math.round(Number(m?.r) || 0)), c = Math.max(0, Math.round(Number(m?.c) || 0));
+    const rs = Math.max(1, Math.round(Number(m?.rs) || 1)), cs = Math.max(1, Math.round(Number(m?.cs) || 1));
+    if (r >= rows || c >= cols || (rs === 1 && cs === 1)) continue;
+    const R2 = Math.min(rows, r + rs), C2 = Math.min(cols, c + cs);
+    if (R2 - r < 1 || C2 - c < 1 || (R2 - r === 1 && C2 - c === 1)) continue;
+    let clash = false;
+    for (let y = r; y < R2 && !clash; y++) for (let x = c; x < C2; x++) if (taken.has(y + ',' + x)) { clash = true; break; }
+    if (clash) continue;
+    for (let y = r; y < R2; y++) for (let x = c; x < C2; x++) taken.add(y + ',' + x);
+    out.push({ r, c, rs: R2 - r, cs: C2 - c });
+  }
+  return out;
+}
+
+/** Per-cell look: alignment, bold, italic, a background. Keys "r,c" inside the grid. */
+function _cellFmtOf(src, rows, cols) {
+  const out = {};
+  for (const [k, v] of Object.entries(src && typeof src === 'object' ? src : {})) {
+    const [r, c] = String(k).split(',').map(Number);
+    if (!(r >= 0 && r < rows && c >= 0 && c < cols) || !v || typeof v !== 'object') continue;
+    const f = {};
+    if (['start', 'center', 'end'].includes(v.a)) f.a = v.a;
+    if (v.b) f.b = 1;
+    if (v.i) f.i = 1;
+    if (typeof v.bg === 'string' && /^#[0-9a-f]{6}$/i.test(v.bg)) f.bg = v.bg.toLowerCase();
+    if (Object.keys(f).length) out[`${r},${c}`] = f;
+  }
+  return out;
+}
+
+/** Which cells a merge swallows — the map a renderer and an editor both need. */
+export function mergeMap(table) {
+  const starts = new Map(), covered = new Set();
+  for (const m of table?.merges || []) {
+    starts.set(`${m.r},${m.c}`, m);
+    for (let y = m.r; y < m.r + m.rs; y++) for (let x = m.c; x < m.c + m.cs; x++) {
+      if (y !== m.r || x !== m.c) covered.add(`${y},${x}`);
+    }
+  }
+  return { starts, covered };
+}
+
+/** The merge a cell belongs to (its own, or the one covering it), or null. */
+export function mergeAt(table, r, c) {
+  for (const m of table?.merges || []) {
+    if (r >= m.r && r < m.r + m.rs && c >= m.c && c < m.c + m.cs) return m;
+  }
+  return null;
+}
+
+/**
+ * Can this rectangle be merged? It must be more than one cell and must not cut
+ * an existing merge in half — the editor asks before offering the command.
+ */
+export function canMerge(table, r0, c0, r1, c1) {
+  const r = Math.min(r0, r1), c = Math.min(c0, c1), R2 = Math.max(r0, r1) + 1, C2 = Math.max(c0, c1) + 1;
+  if ((R2 - r) * (C2 - c) < 2) return false;
+  for (const m of table?.merges || []) {
+    const hit = m.r < R2 && r < m.r + m.rs && m.c < C2 && c < m.c + m.cs;
+    if (!hit) continue;
+    if (m.r < r || m.c < c || m.r + m.rs > R2 || m.c + m.cs > C2) return false;   // it would be cut
+  }
+  return true;
+}
+
+// ─── table operations, all pure ─────────────────────────────────────────────
+// Each takes a table item and returns the PATCH to commit. They are the only
+// place that knows how merges and per-cell formats shift when the grid changes,
+// so the editor can stay a set of buttons.
+
+const _fmtShift = (fmt, fn) => {
+  const out = {};
+  for (const [k, v] of Object.entries(fmt || {})) {
+    const [r, c] = k.split(',').map(Number);
+    const at = fn(r, c);
+    if (at) out[`${at.r},${at.c}`] = v;
+  }
+  return out;
+};
+const _norm = (a, b) => [Math.min(a, b), Math.max(a, b)];
+
+/** A row is inserted at `at`; a merge that SPANS the seam grows with it. */
+export function tableInsertRow(t, at, copyFrom = -1) {
+  const rows = t.rows + 1;
+  const src = t.cells[copyFrom] || null;
+  const cells = t.cells.slice(); cells.splice(at, 0, Array.from({ length: t.cols }, (_, c) => (src ? src[c] : '')));
+  const rowH = (t.rowH || []).slice(); rowH.splice(at, 0, copyFrom >= 0 ? (t.rowH?.[copyFrom] || 0) : 0);
+  const merges = (t.merges || []).map(m => (m.r >= at ? { ...m, r: m.r + 1 }
+    : (m.r < at && at < m.r + m.rs) ? { ...m, rs: m.rs + 1 } : m));
+  const fmt = _fmtShift(t.fmt, (r, c) => ({ r: r >= at ? r + 1 : r, c }));
+  return { rows, cells, rowH, merges, fmt };
+}
+
+/** A row goes; a merge through it shrinks, one that was only it disappears. */
+export function tableDeleteRow(t, at) {
+  if (t.rows <= 1) return null;
+  const cells = t.cells.slice(); cells.splice(at, 1);
+  const rowH = (t.rowH || []).slice(); rowH.splice(at, 1);
+  const merges = [];
+  for (const m of t.merges || []) {
+    if (at < m.r) merges.push({ ...m, r: m.r - 1 });
+    else if (at >= m.r + m.rs) merges.push(m);
+    else if (m.rs > 1) merges.push({ ...m, rs: m.rs - 1 });        // the merge loses a row
+  }
+  const fmt = _fmtShift(t.fmt, (r, c) => (r === at ? null : { r: r > at ? r - 1 : r, c }));
+  return { rows: t.rows - 1, cells, rowH, merges: merges.filter(m => m.rs * m.cs > 1), fmt };
+}
+
+export function tableInsertCol(t, at, copyFrom = -1) {
+  const cols = t.cols + 1;
+  const cells = t.cells.map(row => { const r = row.slice(); r.splice(at, 0, copyFrom >= 0 ? (row[copyFrom] ?? '') : ''); return r; });
+  const widths = (t.widths || []).slice();
+  const w = copyFrom >= 0 ? (widths[copyFrom] || 1 / cols) : 1 / cols;
+  widths.splice(at, 0, w);
+  const sum = widths.reduce((a, b) => a + b, 0) || 1;
+  const merges = (t.merges || []).map(m => (m.c >= at ? { ...m, c: m.c + 1 }
+    : (m.c < at && at < m.c + m.cs) ? { ...m, cs: m.cs + 1 } : m));
+  const fmt = _fmtShift(t.fmt, (r, c) => ({ r, c: c >= at ? c + 1 : c }));
+  return { cols, cells, widths: widths.map(v => v / sum), merges, fmt };
+}
+
+export function tableDeleteCol(t, at) {
+  if (t.cols <= 1) return null;
+  const cells = t.cells.map(row => { const r = row.slice(); r.splice(at, 1); return r; });
+  const widths = (t.widths || []).slice(); widths.splice(at, 1);
+  const sum = widths.reduce((a, b) => a + b, 0) || 1;
+  const merges = [];
+  for (const m of t.merges || []) {
+    if (at < m.c) merges.push({ ...m, c: m.c - 1 });
+    else if (at >= m.c + m.cs) merges.push(m);
+    else if (m.cs > 1) merges.push({ ...m, cs: m.cs - 1 });
+  }
+  const fmt = _fmtShift(t.fmt, (r, c) => (c === at ? null : { r, c: c > at ? c - 1 : c }));
+  return { cols: t.cols - 1, cells, widths: widths.map(v => v / sum), merges: merges.filter(m => m.rs * m.cs > 1), fmt };
+}
+
+/** Is this row free of merges that reach past it? Only then can it be moved. */
+export function tableRowMovable(t, r) {
+  return !(t.merges || []).some(m => m.rs > 1 && r >= m.r && r < m.r + m.rs);
+}
+export function tableColMovable(t, c) {
+  return !(t.merges || []).some(m => m.cs > 1 && c >= m.c && c < m.c + m.cs);
+}
+
+/** Pick a row up and drop it at another index (the drop index is read BEFORE the move). */
+export function tableMoveRow(t, from, to) {
+  if (from === to || !tableRowMovable(t, from)) return null;
+  const cells = t.cells.slice(); const [row] = cells.splice(from, 1);
+  const dest = to > from ? to - 1 : to;
+  cells.splice(dest, 0, row);
+  const rowH = (t.rowH || []).slice(); const [h] = rowH.splice(from, 1); rowH.splice(dest, 0, h);
+  const map = (r) => (r === from ? dest : r > from && r <= dest ? r - 1 : r < from && r >= dest ? r + 1 : r);
+  const merges = (t.merges || []).map(m => ({ ...m, r: map(m.r) }));
+  const fmt = _fmtShift(t.fmt, (r, c) => ({ r: map(r), c }));
+  return { cells, rowH, merges, fmt };
+}
+
+export function tableMoveCol(t, from, to) {
+  if (from === to || !tableColMovable(t, from)) return null;
+  const dest = to > from ? to - 1 : to;
+  const cells = t.cells.map(row => { const r = row.slice(); const [v] = r.splice(from, 1); r.splice(dest, 0, v); return r; });
+  const widths = (t.widths || []).slice(); const [w] = widths.splice(from, 1); widths.splice(dest, 0, w);
+  const map = (c) => (c === from ? dest : c > from && c <= dest ? c - 1 : c < from && c >= dest ? c + 1 : c);
+  const merges = (t.merges || []).map(m => ({ ...m, c: map(m.c) }));
+  const fmt = _fmtShift(t.fmt, (r, c) => ({ r, c: map(c) }));
+  return { cells, widths, merges, fmt };
+}
+
+/** Merge a rectangle into one cell: the texts join, the merges inside go. */
+export function tableMerge(t, r0, c0, r1, c1) {
+  const [r, R2] = _norm(r0, r1), [c, C2] = _norm(c0, c1);
+  if (!canMerge(t, r0, c0, r1, c1)) return null;
+  const texts = [];
+  for (let y = r; y <= R2; y++) for (let x = c; x <= C2; x++) if (t.cells[y]?.[x]) texts.push(t.cells[y][x]);
+  const cells = t.cells.map((row, y) => row.map((v, x) => (y >= r && y <= R2 && x >= c && x <= C2
+    ? (y === r && x === c ? texts.join(' ') : '') : v)));
+  const merges = (t.merges || []).filter(m => !(m.r >= r && m.r + m.rs - 1 <= R2 && m.c >= c && m.c + m.cs - 1 <= C2));
+  merges.push({ r, c, rs: R2 - r + 1, cs: C2 - c + 1 });
+  return { cells, merges };
+}
+
+/** Break every merge the rectangle touches. */
+export function tableUnmerge(t, r0, c0, r1, c1) {
+  const [r, R2] = _norm(r0, r1), [c, C2] = _norm(c0, c1);
+  const merges = (t.merges || []).filter(m => !(m.r <= R2 && r <= m.r + m.rs - 1 && m.c <= C2 && c <= m.c + m.cs - 1));
+  return merges.length === (t.merges || []).length ? null : { merges };
+}
+
+/** Alignment / bold / italic / background over a rectangle. null in a field clears it. */
+export function tableSetFmt(t, r0, c0, r1, c1, patch) {
+  const [r, R2] = _norm(r0, r1), [c, C2] = _norm(c0, c1);
+  const fmt = { ...(t.fmt || {}) };
+  for (let y = r; y <= R2; y++) for (let x = c; x <= C2; x++) {
+    const k = `${y},${x}`;
+    const next = { ...(fmt[k] || {}) };
+    for (const [f, v] of Object.entries(patch || {})) { if (v === null || v === false) delete next[f]; else next[f] = v; }
+    if (Object.keys(next).length) fmt[k] = next; else delete fmt[k];
+  }
+  return { fmt };
+}
+
+/**
+ * Paste a block of text — what a spreadsheet puts on the clipboard: tabs
+ * between cells, line breaks between rows. It grows the table when the block
+ * does not fit, so a parts list arrives in one go.
+ */
+export function tablePaste(t, r, c, text) {
+  const grid = String(text ?? '').replace(/\r\n?/g, '\n').replace(/\n$/, '').split('\n').map(line => line.split('\t'));
+  if (!grid.length) return null;
+  const rows = Math.min(MAX_TABLE_ROWS, Math.max(t.rows, r + grid.length));
+  const cols = Math.min(MAX_TABLE_COLS, Math.max(t.cols, c + Math.max(...grid.map(g => g.length))));
+  const cells = Array.from({ length: rows }, (_, y) => Array.from({ length: cols }, (_, x) => {
+    const g = grid[y - r]?.[x - c];
+    return g !== undefined ? String(g).slice(0, 600) : (t.cells[y]?.[x] ?? '');
+  }));
+  const widths = (t.widths || []).slice(0, cols);
+  while (widths.length < cols) widths.push(1 / cols);
+  const sum = widths.reduce((a, b) => a + b, 0) || 1;
+  const rowH = (t.rowH || []).slice(0, rows);
+  while (rowH.length < rows) rowH.push(0);
+  return { rows, cols, cells, widths: widths.map(v => v / sum), rowH };
+}
+
 export const MAX_TABLE_COLS = 10;
 export const MAX_TABLE_ROWS = 40;
 
@@ -718,8 +950,12 @@ export function sanitizeCustomItem(it, area = CONTENT_MM) {
     w = w.map(v => Math.max(0.03, v / sum));
     const sum2 = w.reduce((a2, b2) => a2 + b2, 0);
     w = w.map(v => v / sum2);
+    // row heights in mm; 0 = as tall as its content needs
+    const rowH = Array.from({ length: rows }, (_, r) => _clampN(Array.isArray(it?.rowH) ? it.rowH[r] : 0, 0, 200, 0));
     return {
-      ...base, type: 'table', cols, rows, cells, widths: w,
+      ...base, type: 'table', cols, rows, cells, widths: w, rowH,
+      merges: _mergesOf(it?.merges, rows, cols),
+      fmt: _cellFmtOf(it?.fmt, rows, cols),
       head: it?.head !== false, grid: it?.grid !== false, zebra: !!it?.zebra,
       size: _clampN(it?.size, 5, 40, 9),
       align: ['start', 'center', 'end'].includes(it?.align) ? it.align : 'start',
