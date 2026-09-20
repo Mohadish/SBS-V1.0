@@ -101,6 +101,18 @@ function _stepKeyView(s, keep, animStr) {
     const _ce = c.transition?.cameraEasing, _oe = c.transition?.objectEasing;
     if (_ce && _oe && _ce !== _oe) c._easingRev = 2;
   }
+  // 🎯 V0.3.4.23 — one more scoped salt, same reasoning. steps.js
+  // _resolveStepCamera used to hand-list five camera fields and so DROPPED a
+  // template's orbitPivot / orbitPullout; it now passes all of them, which is
+  // what the capture always intended. For a step bound to a template that
+  // carries one, that turns a straight position lerp into an orbit arc (and
+  // brings back a pull-out hump) — different pixels under an identical key,
+  // because template CONTENT is in no span key and no star fires on a version
+  // bump. Only those spans re-key.
+  if (c.cameraBinding?.mode === 'template' && c.cameraBinding.templateId) {
+    const _tpl = (state.get('cameraViews') || []).find(v => v.id === c.cameraBinding.templateId);
+    if (_tpl && (Array.isArray(_tpl.orbitPivot) || _tpl.orbitPullout)) c._camTplOrbitRev = 1;
+  }
   delete c.thumbnail;
   delete c.altered;                 // ★ V0.3.2.247: advisory "changed since render" star — never content
   delete c.name;                    // 🎯 V0.3.2.248: the name reaches only the .sbsproc manifest title and

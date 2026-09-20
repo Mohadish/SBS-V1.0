@@ -98,6 +98,8 @@ import * as editSession from './systems/edit-session.js';
 import { openModelSourceDialog } from './ui/model-source-dialog.js';
 // 🔲 V0.3.4.22 — the Alt-wheel perspective badge (a box drawn at the current lens).
 import { showPerspectiveBadge, hidePerspectiveBadge, setPerspectiveBadgeValue } from './ui/perspective-hud.js';
+// 🧭 V0.3.4.23 — Top/Bottom · Left/Right · Front/Back under the work-camera button.
+import { initStandardViews } from './ui/standard-views.js';
 import { schedulePrecache, cancel as cancelPrecache } from './systems/narration-precache.js';
 
 // ══════════════════════════════════════════════════════════════════════════════
@@ -2815,7 +2817,11 @@ function _updateConnectArrow(clientX, clientY) {
   arrow.position.copy(hit.point);
   arrow.setDirection(n);
   const dist = sceneCore.camera.position.distanceTo(hit.point);
-  const len  = Math.max(dist * 0.09, 1);
+  // Screen size, not world size (V0.3.4.23): what a world-sized thing covers on
+  // screen is distance × tan(fov/2), so plain `dist × 0.09` grew the arrow to a
+  // hundred times the frame on an orthographic step. 0.2173 = 0.09/tan(22.5°),
+  // so the arrow is exactly the size it has always been at the default lens.
+  const len  = Math.max(dist * Math.tan(sceneCore.camera.fov * Math.PI / 360) * 0.2173, 1);
   arrow.setLength(len, len * 0.32, len * 0.2);
   arrow.visible = true;
   sceneCore.requestRender?.();
@@ -4901,9 +4907,15 @@ const _viewportSurfaceEl = document.getElementById('viewport-surface');
   // 🎹 rebound key → refresh the advertised letter everywhere in this chrome
   window.addEventListener('sbs:keymap-changed', () => syncBtn(!!state.get('workCamera')));
 
+  // 🧭 The standard views hang off this button and share its life: they are
+  // inspection tools, and inspection is what the work camera is for.
+  const stdViews = initStandardViews(surf);
+  stdViews.setVisible(false);
+
   state.on('change:workCamera', () => {
     const on = !!state.get('workCamera');
     ov.style.display = on ? 'block' : 'none';
+    stdViews.setVisible(on);
     syncBtn(on);
     if (on) {
       setStatus(`Work camera ON — steps play without moving the camera. Never rendered. ${keyLabel('workCamera')} to exit.`, 'info', 5000);

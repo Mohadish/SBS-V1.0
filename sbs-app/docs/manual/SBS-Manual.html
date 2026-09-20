@@ -315,7 +315,7 @@ svg .arrow{stroke:var(--muted);stroke-width:1.4;fill:none;marker-end:url(#ah)}
 <h2 id="interface-viewport">Viewport basics</h2>
 <ul>
 <li><b>Orbit</b> left-drag, <b>pan</b> right- or middle-drag, <b>zoom</b> wheel. <kbd>Alt</kbd> + wheel changes the <b>perspective</b> instead of the distance (see <a href="#cameras-perspective">6.4</a>). <kbd>F</kbd> fits the selection; with nothing selected it fits everything. <span class="ui">Cameras ▸ 🎯 Refit camera</span> recomputes orbit distance and pivot after a model rescale.</li>
-<li><b>Work camera</b> (<kbd>W</kbd>): a scratch camera you can move freely without touching the step's saved camera. Press <kbd>W</kbd> again to return to the step camera. <kbd>C</kbd> captures the current view into the active step.</li>
+<li><b>Work camera</b> (<kbd>W</kbd>): a scratch camera you can move freely without touching the step's saved camera. Press <kbd>W</kbd> again to return to the step camera. <kbd>C</kbd> captures the current view into the active step. While it is on, six <b>standard views</b> appear under the button — Top / Bottom, Left / Right, Front / Back, in the axis colours (X red, Y green, Z blue). Hover one to see, in the scene, the plane you would look through and an arrow along the direction you would look; click to fly there orthographically, keeping your framing. Turning the view (<kbd>Alt</kbd> + middle-drag) leaves the standard view and brings back the perspective you had before it.</li>
 <li><b>Select</b> by clicking a part. Click again on the same spot to climb one level up the tree (part → folder → model). Double-click a locked folder to temporarily unlock it; it relocks when nothing inside is selected any more. <kbd>Shift</kbd> adds to the selection, <kbd>Ctrl</kbd> toggles, <kbd>Alt</kbd> inverts within the clicked unit. The cursor shows a small badge for the active modifier.</li>
 <li><b>Gizmo</b> appears on the selection: drag the arrows to move, the rings to rotate. <kbd>L</kbd> switches the gizmo between local and world axes. Type exact values in the numeric fields next to it.</li>
 <li><b>Overlay edit</b> (<kbd>O</kbd>) switches the mouse to the 2D layer on top of the viewport (see <a href="#overlay">chapter 10</a>). <kbd>X</kbd> toggles overlay x-ray so you can see the model through the overlay while editing.</li>
@@ -1037,6 +1037,7 @@ svg .arrow{stroke:var(--muted);stroke-width:1.4;fill:none;marker-end:url(#ah)}
 <tr><td><kbd>W</kbd></td><td>Work camera on / off</td></tr>
 <tr><td><kbd>C</kbd></td><td>Capture the view into the step camera</td></tr>
 <tr><td><kbd>Alt</kbd> + wheel</td><td>Perspective: wide-angle ↔ orthographic (the framing is held)</td></tr>
+<tr><td>Middle-drag</td><td>Pan — what you grab stays under the cursor at every perspective</td></tr>
 <tr><td><kbd>F</kbd></td><td>Fit selection (or all)</td></tr>
 <tr><td><kbd>L</kbd></td><td>Gizmo local / world</td></tr>
 <tr><td><kbd>Space</kbd></td><td>Global mode on / off</td></tr>

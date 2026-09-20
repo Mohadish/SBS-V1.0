@@ -91,20 +91,47 @@ export function perspectiveShort(fovDeg) {
 }
 
 /**
- * Where the wheel lands: `notches` steps of `speed` along a GEOMETRIC ladder in
- * k, so one notch always feels like the same amount of change, wide or narrow.
- * Positive `notches` = more perspective.
+ * THE WHEEL LADDER.
+ *
+ * A notch is a fixed step along a warped axis, so turning the wheel always
+ * feels like the same amount of change — and the step is exactly reversible:
+ * up then down lands back on the value you left.
+ *
+ * The warp: plain geometric (equal RATIOS) above 3.6°, and three times coarser
+ * below it. Ratios alone are wrong down there — the difference between a 0.6°
+ * lens and a 0.66° one is nothing you can see, so the first dozen notches out
+ * of orthographic were dead travel, and nothing visibly moved until ~3.6°. Now
+ * that whole stretch is six notches instead of eighteen (user, V0.3.4.23).
+ */
+const K_NEAR_FLAT = Math.tan(3.6 * RAD / 2);   // where the coarse stretch ends
+const FLAT_BOOST = 3;                          // …and how much coarser it is
+const NOTCH = 0.11;
+
+/** k → the axis the wheel steps along (monotonic, invertible). */
+function _ladder(k) {
+  const v = Math.log(clampK(k)), edge = Math.log(K_NEAR_FLAT);
+  return v >= edge ? v : edge + (v - edge) / FLAT_BOOST;
+}
+/** …and back. */
+function _unladder(u) {
+  const edge = Math.log(K_NEAR_FLAT);
+  return u >= edge ? Math.exp(u) : K_NEAR_FLAT * Math.exp(FLAT_BOOST * (u - edge));
+}
+
+/**
+ * Where the wheel lands. Positive `notches` = more perspective.
  *
  * The flat end has a detent: the last notch before the floor snaps exactly onto
  * it, so "orthographic" is a place you can land on rather than approach.
  */
 export function stepK(k, notches, speed = 1) {
-  const from = clampK(k);
   const n = Number(notches) || 0;
   const s = Math.max(0.02, Number(speed) || 1);
-  let next = from * Math.exp(n * 0.11 * s);
-  if (next <= K_ORTHO * Math.exp(0.11 * s * 0.75)) next = K_ORTHO;   // detent at the flat end
-  return clampK(next);
+  const u = _ladder(k) + n * NOTCH * s;
+  // The detent is measured on the ladder, not in k, so it is one "almost a
+  // notch" wide at every speed — and a single notch up always escapes it.
+  if (u <= _ladder(K_ORTHO) + NOTCH * s * 0.75) return K_ORTHO;
+  return clampK(_unladder(u));
 }
 
 /** 0 (orthographic) … 1 (widest) — a geometric slider position for k. */

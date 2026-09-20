@@ -159,8 +159,8 @@ import { SSRReflectPass } from '../../vendor/three-addons/SSRReflectPass.js';
 import { PlanarMirror }   from './planar-mirror.js';
 // V0.3.4.22 — the perspective family: k = tan(fov/2), framing H = 2·d·k, and the
 // dolly-zoom blend that keeps H exact on every frame of a transition.
-import { kOf, fovOf, stepK, clampFov, blendPerspective, perspectiveDiffers, focusDistance }
-  from './perspective.js';
+import { kOf, fovOf, stepK, clampFov, blendPerspective, perspectiveDiffers, focusDistance,
+         frameHeight, distForFrame, ORTHO_FOV_DEG } from './perspective.js';
 
 // ── Mini event emitter (no dependency on state.js) ────────────────────────
 class Emitter {
@@ -1071,6 +1071,7 @@ export class SceneCore extends Emitter {
    */
   applyCameraState(state) {
     if (!state || !this.camera) return;
+    this._stdView = null; this._stdViewFov = null;   // a step's camera is not a standard view
 
     if (state.position)   this.camera.position.set(...state.position);
     if (state.quaternion) this.camera.quaternion.set(...state.quaternion);
@@ -1139,12 +1140,92 @@ export class SceneCore extends Emitter {
     this.camera.fov = fov;
     this.camera.updateProjectionMatrix();
     this.controls?.syncSpherical();
+    // A lens you dialled yourself is yours: leaving a standard view later must
+    // not overwrite it with the one the view replaced.
+    this._stdViewFov = null;
     this.emit('camera:perspective', fov);
     this.emit('controls:change');
     this.requestRender(300);
   }
 
   getPerspectiveFov() { return this.camera ? this.camera.fov : 45; }
+
+  // ═══════════════════════════════════════════════════════════════════════
+  //  🧭 STANDARD VIEWS (V0.3.4.23)
+  // ═══════════════════════════════════════════════════════════════════════
+  /**
+   * The camera state for a named axis view — top, bottom, left, right, front,
+   * back — orthographic by default, the way a technical drawing is drawn.
+   *
+   * It keeps YOUR framing: the subject stays the size it is, centred on the
+   * point you are already looking at (the on-axis focus point, not the CAD
+   * pivot, which may be anywhere the cursor last landed). Only the direction
+   * you look from, and the lens, change.
+   */
+  standardViewState(view, opts = {}) {
+    if (!this.camera) return null;
+    const V = {
+      //        where the camera goes          which way is up on screen
+      top:    { eye: [0, 1, 0],  up: [0, 0, -1] },   // +Z falls to the bottom of the frame
+      bottom: { eye: [0, -1, 0], up: [0, 0, 1] },
+      left:   { eye: [-1, 0, 0], up: [0, 1, 0] },
+      right:  { eye: [1, 0, 0],  up: [0, 1, 0] },
+      front:  { eye: [0, 0, 1],  up: [0, 1, 0] },
+      back:   { eye: [0, 0, -1], up: [0, 1, 0] },
+    }[String(view || '').toLowerCase()];
+    if (!V) return null;
+
+    const fov = clampFov(opts.fov ?? ORTHO_FOV_DEG);
+    const fwd = this.camera.getWorldDirection(new THREE.Vector3());
+    const d = this.focusDistance() || this.camera.position.distanceTo(this.controls?.pivot ?? new THREE.Vector3());
+    const focus = this.camera.position.clone().addScaledVector(fwd, d);
+    // Same frame height, new lens ⇒ the distance the dolly zoom would put us at.
+    const H = frameHeight(d || 1, this.camera.fov, this.camera.zoom);
+    const dist = Math.max(distForFrame(H, fov, this.camera.zoom), 1e-4);
+
+    const up  = new THREE.Vector3(...V.up);
+    const pos = focus.clone().addScaledVector(new THREE.Vector3(...V.eye), dist);
+    const q = new THREE.Quaternion().setFromRotationMatrix(
+      new THREE.Matrix4().lookAt(pos, focus, up));
+    return {
+      position:   [pos.x, pos.y, pos.z],
+      quaternion: [q.x, q.y, q.z, q.w],
+      pivot:      [focus.x, focus.y, focus.z],
+      up:         [up.x, up.y, up.z],
+      fov,
+    };
+  }
+
+  /** Fly to a standard view and remember the lens to come back to. */
+  applyStandardView(view, durationMs = 600) {
+    const st = this.standardViewState(view);
+    if (!st) return Promise.resolve();
+    const prevFov = this._stdView ? this._stdViewFov : this.camera.fov;
+    const p = this.animateCameraTo(st, durationMs, 'smooth');   // clears _stdView
+    this._stdView = String(view).toLowerCase();
+    this._stdViewFov = prevFov;
+    this.emit('camera:standardView', this._stdView);
+    return p;
+  }
+
+  getStandardView() { return this._stdView || null; }
+
+  /**
+   * Orbiting out of a standard view leaves it — the CAD behaviour: the named
+   * view is where you START turning the object from, not a mode you are stuck
+   * in. The perspective you had before the view comes back with it, and since
+   * that restore is a dolly zoom the framing does not change; only the depth
+   * comes back. If you dialled a lens yourself while in the view, that one is
+   * yours and nothing is restored.
+   */
+  _exitStandardView() {
+    if (!this._stdView) return;
+    const back = this._stdViewFov;
+    this._stdView = null;
+    this._stdViewFov = null;
+    if (back != null && Math.abs(back - this.camera.fov) > 1e-6) this.setPerspectiveFov(back);
+    this.emit('camera:standardView', null);
+  }
 
   /**
    * One wheel notch of perspective. Positive = more perspective (wider lens,
@@ -1243,6 +1324,9 @@ export class SceneCore extends Emitter {
    */
   animateCameraTo(targetState, durationMs = 1500, easing = 'smooth') {
     if (!targetState || !this.camera) return Promise.resolve();
+    // Any camera move that is not applyStandardView itself leaves the standard
+    // view (it re-sets the flag straight after calling in).
+    this._stdView = null;
 
     if (durationMs <= 0 || easing === 'instant') {
       this.applyCameraState(targetState);
@@ -1646,7 +1730,7 @@ export class SceneCore extends Emitter {
       active:      null,           // 'pan' | 'rotate' | null
       lastX:       0,
       lastY:       0,
-      panSpeed:    0.75,
+      panSpeed:    1,        // 1 = exactly 1:1 with the cursor (V0.3.4.23)
       zoomSpeed:   4.8,
       rotateSpeed: 0.008,
       pivot:       new THREE.Vector3(0, 0, 0),
@@ -1717,6 +1801,10 @@ export class SceneCore extends Emitter {
     };
 
     const _captureOrbit = (clientX, clientY) => {
+      // Turning the object leaves a standard view (and brings back the lens it
+      // replaced) BEFORE the rig captures its start pose — otherwise the orbit
+      // would begin from a camera that is about to move under it.
+      this._exitStandardView();
       _updatePivotFromHit(clientX, clientY);
       const o = ctrl.orbit;
       o.startMouseX = clientX;
@@ -1765,6 +1853,11 @@ export class SceneCore extends Emitter {
       const newPos = o.startPivot.clone().add(newOffset);
 
       let right = new THREE.Vector3().crossVectors(newForward, Y);
+      // Straight down or straight up: forward × worldY is zero, and the old
+      // fallback to world X rolled the view the instant you orbited out of a
+      // top view. Keep the camera's CURRENT right instead — the screen keeps
+      // its orientation and the turn starts from what you were looking at.
+      if (right.lengthSq() < 1e-10) right.setFromMatrixColumn(this.camera.matrix, 0);
       if (right.lengthSq() < 1e-10) right.set(1, 0, 0);
       right.normalize();
       const up = new THREE.Vector3().crossVectors(right, newForward).normalize();
@@ -1851,8 +1944,18 @@ export class SceneCore extends Emitter {
       ctrl.lastY = e.clientY;
 
       if (ctrl.active === 'pan') {
-        const distance = this.camera.position.distanceTo(ctrl.pivot);
-        const factor   = Math.max(distance * 0.0016, 0.02) * ctrl.panSpeed;
+        // TRUE 1:1 GRAB (V0.3.4.23). The pan step is how much world a screen
+        // pixel is worth at the focus plane — frame height ÷ canvas height —
+        // NOT the raw distance. Distance alone only works at one lens: the
+        // flatter the perspective the further the camera sits for the same
+        // framing, so on an orthographic view (~115× the frame height away)
+        // one pixel of drag threw the scene ~50 pixels. Now what you grab
+        // stays under the cursor at every perspective, which is the whole
+        // point of the gesture.
+        const hPx      = this.renderer?.domElement?.clientHeight || 1;
+        const distance = this.focusDistance() || this.camera.position.distanceTo(ctrl.pivot);
+        const factor   = Math.max(frameHeight(distance, this.camera.fov, this.camera.zoom) / hPx, 1e-6)
+                       * ctrl.panSpeed;
         const right    = new THREE.Vector3().setFromMatrixColumn(this.camera.matrix, 0).normalize();
         const up       = new THREE.Vector3().setFromMatrixColumn(this.camera.matrix, 1).normalize();
         const offset   = new THREE.Vector3()
