@@ -173,6 +173,14 @@ function _build() {
   _shadow = host.attachShadow({ mode: 'open' });
 
   _root.addEventListener('click', _onClick);
+  // A typed % belongs to the picture it was typed for. Commit it on the way
+  // DOWN: the click that follows moves the selection, and a click on dead space
+  // removes the bar — a detached input never fires `change` at all.
+  _root.addEventListener('pointerdown', (e) => {
+    const a = document.activeElement;
+    if (a instanceof HTMLInputElement && (a.dataset.slotZoom !== undefined || a.dataset.ci === 'zoom')
+        && !a.contains(e.target) && a !== e.target) a.blur();
+  }, true);
   _root.addEventListener('change', _onChange);
   // 💧 live: sliders, colour and text redraw the mark while they move; the commit (one undo entry) comes with 'change'
   _root.addEventListener('input', (e) => {
@@ -716,16 +724,16 @@ function _renderPage(c) {
   const model = D.renderModel();
   if (_bandEdit) return _renderBandEdit(model);
   if (_pageId === TOC && model.toc) {
-    _pageModel = null; _wheelFit = null; _slotSel = null; _placeSlotBar(); _customSel = null; _placeCustomBar();
+    _pageModel = null; _dropWheelFit(); _slotSel = null; _placeSlotBar(); _customSel = null; _placeCustomBar();
     const o = { logo: D.documentLogo(), watermark: model.watermark, dir: model.dir, lang: model.lang, tocTitle: model.toc.title };
     _shadow.innerHTML = `<style>${DOCUMENT_CSS}${watermarkCss(model.watermark)}${EDIT_CSS}.page + .page { margin-top: 8mm; } .toc .tl { pointer-events: none; }</style><div class="fit">${model.toc.pages.map(tp => renderTocPageHtml(tp, o)).join('')}</div>`;
     _fit(); return;
   }
   const cp = model.customs.find(x => x.id === _pageId);
-  if (cp) { _pageModel = null; _wheelFit = null; _slotSel = null; _placeSlotBar(); return _renderCustomPage(model, cp); }
+  if (cp) { _pageModel = null; _dropWheelFit(); _slotSel = null; _placeSlotBar(); return _renderCustomPage(model, cp); }
   _customSel = null; _placeCustomBar();
   const mp = model.pages.find(p => p.id === _pageId);
-  _pageModel = mp || null; _wheelFit = null; _pageLang = model.lang || null;
+  _pageModel = mp || null; _dropWheelFit(); _pageLang = model.lang || null;
   if (_slotSel != null && (!mp || _slotSel >= mp.images.length)) _slotSel = null;
   if (!mp) { _placeSlotBar(); _shadow.innerHTML = `<style>${EDIT_CSS}</style><div style="font:13px Arial;color:#e2e8f0;padding:30px;">${(D.getDocument()?.pages.find(p => p.id === _pageId)?.stepIds || []).length ? 'Every step of this page is left out of the document, so the page is not printed. Click the eye of a step on the right to put it back.' : 'This page has no steps left. Delete it from the list on the right.'}</div>`; _fit(); return; }
   const need = stillsNeeded({ pages: [mp] });
@@ -776,7 +784,7 @@ async function _loadStills() {
         if (url) { slot.innerHTML = slotInnerHtml(im, url, k, _pageLang); slot.classList.remove('none'); }
         else if (sid) { const ph = slot.querySelector('.ph'); if (ph) ph.textContent = 'the picture could not be rendered'; }
       }
-      _pageModel = now || _pageModel; _wheelFit = null;
+      _pageModel = now || _pageModel; _dropWheelFit();
       _placeSlotBar();
     } while (_walkAgain);
   } finally { _walking = false; }
@@ -869,8 +877,8 @@ function _placeSlotBar() {
   bar.innerHTML = `<button class="dw-btn" data-act="slot-menu" style="padding:2px 9px;" title="Which picture goes here">Picture ▾</button>
     ${has ? `<button class="dw-btn" data-act="slot-fill" style="padding:2px 9px;" title="Fill the frame, centred (cropping what does not fit)">Fill</button>
     <button class="dw-btn" data-act="slot-whole" style="padding:2px 9px;" title="Show the whole picture inside the frame">Whole</button>
-${im?.stepId && D.stepClips(im.stepId).length ? `<button class="dw-btn" data-act="slot-frame" style="padding:2px 9px;" title="This step holds a video — choose which frame of it this picture shows">🎞 Frame${im.atMs != null ? ` ${(im.atMs / 1000).toFixed(2)}s` : ''}…</button>` : ''}
-    <button class="dw-btn" data-act="slot-zoom" data-d="-1" style="padding:2px 8px;" title="5% smaller">−</button><input class="dw-in" data-slot-zoom type="text" inputmode="decimal" value="${zoomPercent(im ? im.fit.zoom : 1)}" title="How big the picture is inside its frame. 100% fills the frame. Type a number and press Enter." style="width:52px;text-align:right;padding:1px 4px;"><span style="margin-inline-start:-2px;">%</span><button class="dw-btn" data-act="slot-zoom" data-d="1" style="padding:2px 8px;" title="5% larger">+</button>
+${im?.stepId && im.moment !== 'start' && D.stepClips(im.stepId).length ? `<button class="dw-btn" data-act="slot-frame" style="padding:2px 9px;" title="This step holds a video — choose which frame of it this picture shows">🎞 Frame${im.atMs != null ? ` ${(im.atMs / 1000).toFixed(2)}s` : ''}…</button>` : ''}
+    <button class="dw-btn" data-act="slot-zoom" data-d="-1" style="padding:2px 8px;" title="5% smaller">−</button><input class="dw-in" data-slot-zoom type="text" inputmode="decimal" data-slot="${_slotSel}" value="${zoomPercent(im ? im.fit.zoom : 1)}" title="How big the picture is inside its frame. 100% fills the frame. Type a number and press Enter." style="width:52px;text-align:right;padding:1px 4px;"><span style="margin-inline-start:-2px;">%</span><button class="dw-btn" data-act="slot-zoom" data-d="1" style="padding:2px 8px;" title="5% larger">+</button>
     <span style="padding:0 4px;">drag to move · wheel to scale</span>` : ''}<span style="padding:0 4px;color:#64748b;">${_esc(what)}</span>`;
   _placeSlotBarAt(bar, el);
 }
@@ -953,10 +961,11 @@ function _wheelCustomPicture(e, el) {
   return true;
 }
 function _flushWheelItem() {
-  clearTimeout(_wheelTimer);
+  clearTimeout(_wheelTimer); _wheelTimer = 0;
   const w = _wheelItem;
-  if (w && _customSel === w.id) _patchItem({ fit: w.fit }, 'Picture size');
+  if (w && !w.done && _customSel === w.id) { w.done = true; _patchItem({ fit: w.fit }, 'Picture size'); }
 }
+function _dropWheelItem() { if (_wheelItem && !_wheelItem.done && _wheelTimer) _flushWheelItem(); _wheelItem = null; }
 
 /** Wheel = scale about the pointer; the commit waits until the wheel has been quiet for a moment (one undo entry). */
 function _onSlotWheel(e) {
@@ -981,10 +990,15 @@ function _onSlotWheel(e) {
   _wheelTimer = setTimeout(_flushWheel, 350);
 }
 function _flushWheel() {
-  clearTimeout(_wheelTimer);
-  const w = _wheelFit;        // kept, NOT cleared: it stays the truth until the
-  if (w && w.pageId === _pageId) D.setPagePictureFit(w.pageId, w.k, w.fit);   // page re-renders (see _pageModel)
+  clearTimeout(_wheelTimer); _wheelTimer = 0;
+  const w = _wheelFit;        // kept, NOT cleared: it stays the truth until the page
+  if (w && !w.done && w.pageId === _pageId) {   // re-renders — but committed ONCE per gesture
+    w.done = true;
+    D.setPagePictureFit(w.pageId, w.k, w.fit);
+  }
 }
+/** A re-render replaces the page under a gesture: land the pending commit, never drop it. */
+function _dropWheelFit() { if (_wheelFit && !_wheelFit.done && _wheelTimer) _flushWheel(); _wheelFit = null; }
 
 /**
  * 🎞 Choose which frame of the step's video this picture shows. The step does
@@ -1157,7 +1171,7 @@ const _newItemId = (p, n) => `${p}_${Date.now().toString(36)}${n}`;
 function _renderCustomPage(model, cp) {
   const editing = _shadow.activeElement;
   if (editing?.classList?.contains('ct') && editing.isContentEditable) { _deferred = true; return; }     // never rebuild under the caret
-  _customModel = cp; _wheelItem = null;
+  _customModel = cp; _dropWheelItem();
   const need = stillsNeeded({ customs: [cp] }), have = D.cachedStills(need);        // pictures taken from the animation
   const o = { stills: have, logo: D.documentLogo(), watermark: model.watermark, dir: model.dir, lang: model.lang };
   _shadow.innerHTML = `<style>${DOCUMENT_CSS}${watermarkCss(model.watermark)}${EDIT_CSS}${CUSTOM_CSS}</style><div class="fit">${renderCustomPageHtml(cp, o)}</div>`;
@@ -1177,7 +1191,7 @@ function _renderCustomPage(model, cp) {
 function _renderBandEdit(model) {
   const editing = _shadow.activeElement;
   if (editing?.classList?.contains('ct') && editing.isContentEditable) { _deferred = true; return; }
-  _pageModel = null; _wheelFit = null; _slotSel = null; _placeSlotBar();
+  _pageModel = null; _dropWheelFit(); _slotSel = null; _placeSlotBar();
   const o = { logo: D.documentLogo(), watermark: model.watermark, dir: model.dir, lang: model.lang, tocTitle: model.toc?.title };
   let pm = null, html = '';
   if (_pageId === TOC && model.toc) { pm = model.toc.pages[0]; html = renderTocPageHtml(pm, o); }
@@ -1185,7 +1199,7 @@ function _renderBandEdit(model) {
   else if ((pm = model.pages.find(p => p.id === _pageId) || model.pages[0] || null)) html = renderPageHtml(pm, { ...o, stills: D.cachedStills(stillsNeeded({ pages: [pm] })) });
   const band = pm?.bandItems?.[_bandEdit];
   if (!band) { _bandEdit = null; _customSel = null; _placeCustomBar(); return _renderPage(); }       // the design was thrown away (an undo, ↺): back to the page
-  _customModel = { items: band.items, dir: model.dir }; _wheelItem = null;
+  _customModel = { items: band.items, dir: model.dir }; _dropWheelItem();
   const A = BAND_MM[_bandEdit];
   _shadow.innerHTML = `<style>${DOCUMENT_CSS}${watermarkCss(model.watermark)}${EDIT_CSS}${CUSTOM_CSS}</style><div class="fit bandmode">${html}</div>`;
   _shadow.querySelector('.page').insertAdjacentHTML('beforeend', `<div class="cguide" style="left:${A.x}mm;top:${A.y}mm;width:${A.w}mm;height:${A.h}mm;"></div>`);
@@ -1241,7 +1255,7 @@ function _placeCustomBar() {
     : b('ci-add-text', '＋ Text', 'A new text box') + b('ci-add-picture', '＋ Picture ▾', 'A picture from a file — or a picture of any step of the animation');
   const tail = host === 'band' ? sep + b('band-reset', '↺ Standard', 'Throw this design away: back to the standard header and footer') + b('band-done', '✓ Done', 'Back to the page (Esc)', false, 'color:#4ade80;font-weight:600;') : '';
   const fitBtns = b('ci-fill', 'Fill', 'Fill the frame (cropping what does not fit)') + b('ci-whole', 'Whole', 'Show the whole picture inside the frame') + b('ci-zoom', '−', '5% smaller inside the frame', false, '', 'data-d="-1"')
-    + `<input class="dw-in" data-ci="zoom" type="text" inputmode="decimal" value="${zoomPercent(it.fit?.zoom ?? 1)}" title="How big the picture is inside its frame. 100% fills the frame. Type a number and press Enter." style="width:52px;text-align:right;padding:1px 4px;">%`
+    + `<input class="dw-in" data-ci="zoom" data-item="${_esc(it?.id || '')}" type="text" inputmode="decimal" value="${zoomPercent(it?.fit?.zoom ?? 1)}" title="How big the picture is inside its frame. 100% fills the frame. Type a number and press Enter." style="width:52px;text-align:right;padding:1px 4px;">%`
     + b('ci-zoom', '+', '5% larger inside the frame', false, '', 'data-d="1"');
   bar.innerHTML = lead + '<input type="file" id="dw-ci-file" accept="image/*" hidden>'
     + (!it ? `<span style="padding:0 6px;">click an item to select it · double-click a text to type</span>` : sep
@@ -1252,7 +1266,7 @@ function _placeCustomBar() {
           + `<input data-ci="color" type="color" value="${_esc(it.color)}" title="Text colour" style="width:30px;height:24px;padding:0;border:1px solid #334155;border-radius:5px;background:none;">`
         : it.logo ? '<span style="padding:0 4px;">the project’s logo — always shown whole</span>'
         : (stored?.stepId ? b('ci-step', `🎞 Step ${_esc(it.label || '—')} ▾`, 'Choose another step of the animation') + b('ci-moment', '↳ Before', 'Show the state this step STARTS from (seen from its camera) instead of its final state', stored.moment === 'start')
-            + (D.stepClips(stored.stepId).length ? b('ci-frame', `🎞 Frame${stored.atMs != null ? ` ${(stored.atMs / 1000).toFixed(2)}s` : ''}…`, 'This step holds a video — choose which frame of it this picture shows') : '') : '') + fitBtns)
+            + (stored.moment !== 'start' && D.stepClips(stored.stepId).length ? b('ci-frame', `🎞 Frame${stored.atMs != null ? ` ${(stored.atMs / 1000).toFixed(2)}s` : ''}…`, 'This step holds a video — choose which frame of it this picture shows') : '') : '') + fitBtns)
       + b('ci-front', '⤒ Front', 'Bring to the front') + b('ci-delete', '🗑', 'Delete this item (Delete key)', false, 'color:#fca5a5;'))
     + tail;
 }
@@ -1442,21 +1456,32 @@ function _customAct(act, el) {
   if (!it) return false;
   if (act === 'ci-delete') { const id = _customSel; _customSel = null; _commitItems(_itemsNow().filter(i => i.id !== id), 'Delete item'); return true; }
   if (act === 'ci-front') { const items = _itemsNow(); const me = items.find(i => i.id === _customSel); _commitItems([...items.filter(i => i !== me), me], 'Bring to the front'); return true; }
-  if (act === 'ci-step') { _stepPictureMenu(r.left, r.bottom + 4, _itemsNow().find(i => i.id === _customSel)?.stepId || null, (sid) => _patchItem({ stepId: sid }, 'Choose picture')); return true; }
-  if (act === 'ci-moment') { _patchItem({ moment: _itemsNow().find(i => i.id === _customSel)?.moment === 'start' ? 'end' : 'start' }, 'Before / after'); return true; }
+  if (act === 'ci-step') { _stepPictureMenu(r.left, r.bottom + 4, _itemsNow().find(i => i.id === _customSel)?.stepId || null, (sid) => _patchItem({ stepId: sid, atMs: undefined }, 'Choose picture')); return true; }   // another step ⇒ another clip: the old frame time is meaningless
+  if (act === 'ci-moment') {
+    const m = _itemsNow().find(i => i.id === _customSel)?.moment === 'start' ? 'end' : 'start';
+    _patchItem(m === 'start' ? { moment: m, atMs: undefined } : { moment: m }, 'Before / after');   // a before picture has no clip frame
+    return true;
+  }
   if (act === 'ci-frame') { _pickFrame(_itemsNow().find(i => i.id === _customSel), (ms) => _patchItem({ atMs: ms == null ? undefined : ms }, 'Picture frame')); return true; }
   if (act === 'ci-bold') { _patchItem({ bold: !it.bold }, 'Bold'); return true; }
   if (act === 'ci-italic') { _patchItem({ italic: !it.italic }, 'Italic'); return true; }
   if (act.startsWith('ci-align-')) { _patchItem({ align: act.slice(9) }, 'Align text'); return true; }
   if (act === 'ci-fill') { _patchItem({ fit: { zoom: 1, ox: 0, oy: 0 } }, 'Picture fit'); return true; }
   if (act === 'ci-whole') { _patchItem({ fit: { zoom: containZoom(it, it.aspect), ox: 0, oy: 0 } }, 'Picture fit'); return true; }
-  if (act === 'ci-zoom') { _patchItem({ fit: { ...it.fit, zoom: zoomAfterButton(it.fit.zoom, Number(el.dataset.d)) } }, 'Picture fit'); return true; }
+  if (act === 'ci-zoom') {
+    const cur = _wheelItem?.id === _customSel ? { ..._wheelItem.fit } : { zoom: 1, ox: 0, oy: 0, ...(it.fit || {}) };
+    if (_wheelItem?.id === _customSel) _flushWheelItem();          // land the wheel's own entry first
+    _patchItem({ fit: { ...cur, zoom: zoomAfterButton(cur.zoom, Number(el.dataset.d)) } }, 'Picture fit');
+    return true;
+  }
   return false;
 }
 function _customChange(t) {
   if (t.dataset?.ci === 'zoom') {
-    const it = _customModel?.items.find(i => i.id === _customSel);
-    if (it) _patchItem({ fit: { ...it.fit, zoom: zoomFromPercent(t.value, it.fit?.zoom ?? 1) } }, 'Picture size');
+    const id = t.dataset.item || _customSel;                       // the item the FIELD belongs to
+    const it = _itemsNow().find(i => i.id === id);
+    if (it) _commitItems(_itemsNow().map(i => (i.id === id
+      ? { ...i, fit: { ...(i.fit || {}), zoom: zoomFromPercent(t.value, i.fit?.zoom ?? 1) } } : i)), 'Picture size');
     return true;
   }
   if (t.dataset?.ci === 'size') { _patchItem({ size: Math.max(6, Math.min(120, Number(t.value) || 11)) }, 'Text size'); return true; }
@@ -1677,10 +1702,12 @@ function _onChange(e) {
   const t = e.target;
   // 🖼 the picture's size, typed as a percentage (100% = fills the frame)
   if (t.dataset?.slotZoom !== undefined) {
-    const im = _slotIm(_slotSel);
+    // the slot the FIELD was built for — the selection may already have moved
+    const k = Number(t.dataset.slot);
+    const im = Number.isFinite(k) ? _slotIm(k) : null;
     if (im) {
-      const cur = _wheelFit?.k === _slotSel ? _wheelFit.fit : im.fit;
-      D.setPagePictureFit(_pageId, _slotSel, { ...cur, zoom: zoomFromPercent(t.value, cur.zoom) });
+      const cur = _wheelFit?.k === k ? _wheelFit.fit : im.fit;
+      D.setPagePictureFit(_pageId, k, { ...cur, zoom: zoomFromPercent(t.value, cur.zoom) });
     }
     return;
   }

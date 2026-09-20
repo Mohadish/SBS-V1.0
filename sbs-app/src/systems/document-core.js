@@ -836,7 +836,12 @@ export function slotState(p, k) {
 function _slotOf(p, k, rect, nSlots, unitById, hidden, doc, ctx) {
   const im = p.images?.[k] || null;
   const state = slotState(p, k);
-  const base = { rect, fit: fitOf(im), state, stepId: null, moment: 'end', assetId: null, src: null, aspect: ctx?.stillAspect > 0 ? ctx.stillAspect : 16 / 9 };
+  // The chosen video frame rides on the slot model too (V0.3.4.32) — without it
+  // stillKey below never saw the time, so a picked frame changed nothing at all.
+  const _at = Math.round(Number(im?.atMs));
+  const base = { rect, fit: fitOf(im), state, stepId: null, moment: 'end', assetId: null, src: null,
+    ...(Number.isFinite(_at) && _at >= 0 ? { atMs: _at } : {}),
+    aspect: ctx?.stillAspect > 0 ? ctx.stillAspect : 16 / 9 };
   if (state === 'asset') {
     const a = doc?.assets?.[im.assetId];
     if (a && ASSET_URL_RX.test(String(a.dataUrl || '')) && a.w > 0 && a.h > 0) return { ...base, assetId: im.assetId, src: a.dataUrl, aspect: a.w / a.h, name: a.name || '' };
@@ -863,9 +868,11 @@ function _slotOf(p, k, rect, nSlots, unitById, hidden, doc, ctx) {
  * the same page.
  */
 export const stillKey = (stepId, moment, atMs) => {
+  // A BEFORE picture is the previous step's end state seen from this step's
+  // camera — it draws no overlay at all, so a clip frame means nothing there.
+  if (moment === 'start') return `${stepId}@start`;
   const t = Math.round(Number(atMs));
-  if (Number.isFinite(t) && t >= 0) return `${stepId}@t${t}`;
-  return moment === 'start' ? `${stepId}@start` : String(stepId);
+  return (Number.isFinite(t) && t >= 0) ? `${stepId}@t${t}` : String(stepId);
 };
 export const parseStillKey = (key) => {
   const s = String(key);

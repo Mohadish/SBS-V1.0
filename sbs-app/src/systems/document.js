@@ -453,12 +453,13 @@ export async function ensureStills(keys, { onProgress = null } = {}) {
         // holds a clip: bind it, park it on the chosen frame (or on the clip's own first
         // frame when none was chosen), and only then grab. Without this the picture came
         // out at the poster's frame — outside the trimmed window, whatever was picked.
+        let framed = true;
         if (!before && stepVideoClips(all.find(x => x.id === id)).length) {
           try {
-            const ok = await parkOverlayVideosAt(Number.isFinite(atMs) ? atMs : null);
-            if (!ok) console.warn('[document] step', id, ': the clip did not reach',
+            framed = await parkOverlayVideosAt(Number.isFinite(atMs) ? atMs : null);
+            if (!framed) console.warn('[document] step', id, ': the clip did not reach',
               Number.isFinite(atMs) ? `${atMs} ms` : 'its first frame', '— the picture shows the nearest decoded frame');
-          } catch { /* no clip / no decoder → whatever is on the node, as before */ }
+          } catch { framed = false; }
         }
         // activation re-applies materials and with them the selection highlight — hide it per step
         try { materials.setSelectionVisualsVisible(false); } catch { /* no meshes yet */ }
@@ -468,7 +469,11 @@ export async function ensureStills(keys, { onProgress = null } = {}) {
           new Promise(r => setTimeout(() => r(null), 1500)),
         ]);
         const sig = _sigOfKey(key, all, defs);
-        if (url && sig) _stills.set(key, { sig, url });
+        // A picture whose clip never reached its frame is SHOWN but not cached:
+        // it is the poster or a neighbouring frame, and the next render — when
+        // the decoder is warm — must try again instead of trusting it forever.
+        if (url && sig && framed) _stills.set(key, { sig, url });
+        else if (url && !framed) once.set(key, url);
         else {
           sceneCore._pendingFrame = null;
           url = _captureStill(W, H, sceneCore.renderer?.domElement, !before);

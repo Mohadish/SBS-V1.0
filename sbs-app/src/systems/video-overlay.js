@@ -577,12 +577,19 @@ export async function parkAtEnd() {
  * 🔊 The video clips on a step's overlay, as data (V0.3.2.88) — feeds the
  * export audio mix. Returns [{ abs, inMs, outMs, muted, volume }].
  */
+const _clipMemo = new Map();          // stepId → { ref: the overlay string, dir, clips }
 export function stepVideoClips(step) {
   const ov = step?.overlay;
   if (typeof ov !== 'string' || !ov || ov.indexOf('"isVideo":true') === -1) return [];
+  // The document's picture bars ask this on every repaint, and it parses the
+  // whole overlay: hand back the last answer while the overlay string (and the
+  // project folder, for the absolute paths) are unchanged.
+  const dir0 = _projectDir();
+  const memo = _clipMemo.get(step.id);
+  if (memo && memo.ref === ov && memo.dir === dir0) return memo.clips;
   const out = [];
   try {
-    const dir = _projectDir();
+    const dir = dir0;
     (function walk(n) {
       if (!n) return;
       const a = n.attrs;
@@ -602,6 +609,7 @@ export function stepVideoClips(step) {
       (n.children || []).forEach(walk);
     })(JSON.parse(ov));
   } catch { /* unparseable overlay → no clips */ }
+  if (step.id) _clipMemo.set(step.id, { ref: ov, dir: dir0, clips: out });
   return out;
 }
 
