@@ -3215,15 +3215,15 @@ function _tableMenuItems(node, at) {
     const items = [
       { label: '✎ Type in the table…', action: () => _enterTableEdit(node) },
       { separator: true },
-      { label: `＋ Row above (row ${cell.r + 1})`, action: go(tableInsertRow(data, cell.r), 'Add row') },
-      { label: '＋ Row below', action: go(tableInsertRow(data, cell.r + 1), 'Add row') },
+      { label: `＋ Row ▲ above (row ${cell.r + 1})`, action: go(tableInsertRow(data, cell.r), 'Add row') },
+      { label: '＋ Row ▼ below', action: go(tableInsertRow(data, cell.r + 1), 'Add row') },
       { label: '⧉ Duplicate row', action: go(tableInsertRow(data, cell.r + 1, cell.r), 'Duplicate row') },
       nRows > 1
         ? { label: `🗑 Delete rows ${block.r0 + 1}–${block.r1 + 1}`, action: go(tableDeleteRows(data, block.r0, block.r1), 'Remove rows'), disabled: data.rows <= nRows }
         : { label: `🗑 Delete row ${cell.r + 1}`, action: go(tableDeleteRow(data, cell.r), 'Remove row'), disabled: data.rows <= 1 },
       { separator: true },
-      { label: `＋ Column before (column ${cell.c + 1})`, action: go(tableInsertCol(data, cell.c), 'Add column') },
-      { label: '＋ Column after', action: go(tableInsertCol(data, cell.c + 1), 'Add column') },
+      { label: `＋ Column ◀ before (column ${cell.c + 1})`, action: go(tableInsertCol(data, cell.c), 'Add column') },
+      { label: '＋ Column ▶ after', action: go(tableInsertCol(data, cell.c + 1), 'Add column') },
       { label: '⧉ Duplicate column', action: go(tableInsertCol(data, cell.c + 1, cell.c), 'Duplicate column') },
       nCols > 1
         ? { label: `🗑 Delete columns ${block.c0 + 1}–${block.c1 + 1}`, action: go(tableDeleteCols(data, block.c0, block.c1), 'Remove columns'), disabled: data.cols <= nCols }
