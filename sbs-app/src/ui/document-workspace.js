@@ -247,18 +247,7 @@ function _build() {
   // 📋 a block copied out of a spreadsheet — tabs between cells, line breaks
   // between rows — fills the table from the cell being typed in, growing it if
   // the block does not fit. A plain word still just types.
-  _shadow.addEventListener('paste', (e) => {
-    const cell = _shadow.activeElement?.dataset?.cell !== undefined ? _shadow.activeElement : null;
-    if (!cell?.isContentEditable) return;
-    const text = e.clipboardData?.getData('text/plain') || '';
-    if (!/[\t\n]/.test(text)) return;
-    const tb = _tableNow(); if (!tb) return;
-    e.preventDefault();
-    const [r, c] = String(cell.dataset.cell).split(',').map(Number);
-    cell.dataset.orig = cell.innerText;                      // the focusout must not fight the paste
-    const pch = tablePaste(tb, r, c, text);
-    if (pch) { _tsel = null; _patchItem(pch, 'Paste into the table'); }
-  });
+  document.addEventListener('paste', _onTablePaste, true);
   _shadow.addEventListener('focusout', _onCustomFocusOut);
   _shadow.addEventListener('pointermove', _onSlotPointerMove);
   _shadow.addEventListener('pointerup', _onSlotPointerUp);
@@ -1176,6 +1165,11 @@ const CUSTOM_CSS = `
 .ci.ct[contenteditable] { cursor: text; outline: 0.4mm solid #2563eb; background: #eff6ff; overflow: visible; }
 .csel { position: absolute; border: 0.5mm solid #f59e0b; pointer-events: none; box-sizing: border-box; }
 .ctb td.tsel, .ctb th.tsel { outline: 0.4mm solid #2563eb; outline-offset: -0.4mm; background: rgba(37, 99, 235, 0.10); }
+.ctb td.tmove, .ctb th.tmove { background: rgba(245, 158, 11, 0.18); }
+.csel i[data-colh], .csel i[data-rowh] { background: transparent !important; transition: background .12s; }
+.csel i[data-colh]:hover, .csel i[data-rowh]:hover { background: rgba(56, 189, 248, 0.55) !important; }
+.csel i[data-colg], .csel i[data-rowg] { opacity: .55; transition: opacity .12s; }
+.csel i[data-colg]:hover, .csel i[data-rowg]:hover, .csel i.gripon { opacity: 1; }
 .ctb .tdrop { position: absolute; background: #f59e0b; }
 .csel i { position: absolute; width: 3mm; height: 3mm; margin: -1.5mm 0 0 -1.5mm; background: #fff; border: 0.5mm solid #f59e0b; border-radius: 0.5mm; pointer-events: auto; box-sizing: border-box; }
 .cempty { position: absolute; left: 12mm; right: 12mm; top: 120mm; text-align: center; color: #94a3b8; font-size: 12pt; pointer-events: none; }
@@ -1330,6 +1324,100 @@ function _drawTableSel() {
 }
 
 /** The table item being edited, straight from the document. */
+/**
+ * 📋 Paste into a table. A block copied out of a spreadsheet — tabs between
+ * cells, line breaks between rows — fills the table from the cell you are on
+ * and grows it to fit; a plain word lands in that one cell.
+ *
+ * On the DOCUMENT, in the capture phase: the cell you clicked is not focused
+ * (only picked), so the paste event never comes near the page.
+ */
+function _onTablePaste(e) {
+  if (!_isOpen() || _tplEd) return;
+  const tb = _tableNow(); if (!tb) return;
+  const open = _shadow.activeElement?.dataset?.cell !== undefined && _shadow.activeElement.isContentEditable
+    ? _shadow.activeElement : null;
+  const at = open ? String(open.dataset.cell).split(',').map(Number)
+    : (_tsel?.id === _customSel ? [Math.min(_tsel.r0, _tsel.r1), Math.min(_tsel.c0, _tsel.c1)] : null);
+  if (!at) return;
+  const text = e.clipboardData?.getData('text/plain') ?? '';
+  if (!text) return;
+  e.preventDefault(); e.stopPropagation();
+  if (open) open.dataset.orig = open.innerText;              // the focus-out must not fight the paste
+  const pch = /[\t\n]/.test(text)
+    ? tablePaste(tb, at[0], at[1], text)
+    : { cells: tb.cells.map((row, y) => row.map((v, x) => (y === at[0] && x === at[1] ? text.slice(0, 600) : v))) };
+  if (pch) { _tsel = null; _patchItem(pch, 'Paste into the table'); setStatus('Pasted into the table.', 'success', 3000); }
+}
+
+/**
+ * 📋 The right-click menu of a table. On a COLUMN grip it talks about columns,
+ * on a ROW grip about rows, and on a cell it offers what belongs to that one
+ * cell's row and column — plus merging, when a rectangle is picked.
+ */
+function _tableMenu(e, deep) {
+  if (!_editHost() || !_customSel) return false;
+  const tb = _tableNow(); if (!tb) return false;
+  const grip = deep.closest?.('[data-rowg], [data-colg]');
+  const cell = deep.closest?.('[data-cell]') || _cellAtPoint(e);
+  if (!grip && !cell) return false;
+  e.preventDefault();
+
+  const kind = grip ? (grip.dataset.rowg !== undefined ? 'row' : 'col') : null;
+  const at = grip ? Number(kind === 'row' ? grip.dataset.rowg : grip.dataset.colg) : null;
+  const [cr, cc] = cell ? String(cell.dataset.cell).split(',').map(Number) : [0, 0];
+  const r = kind === 'row' ? at : cr, c = kind === 'col' ? at : cc;
+
+  // picking follows the click, so the commands act on what you see picked
+  if (grip) {
+    _tsel = kind === 'row'
+      ? { id: _customSel, r0: r, c0: 0, r1: r, c1: tb.cols - 1 }
+      : { id: _customSel, r0: 0, c0: c, r1: tb.rows - 1, c1: c };
+  } else if (!(_tsel?.id === _customSel && r >= Math.min(_tsel.r0, _tsel.r1) && r <= Math.max(_tsel.r0, _tsel.r1)
+               && c >= Math.min(_tsel.c0, _tsel.c1) && c <= Math.max(_tsel.c0, _tsel.c1))) {
+    _tsel = { id: _customSel, r0: r, c0: c, r1: r, c1: c };   // a click outside the picked block picks that cell
+  }
+  _drawTableSel(); _placeCustomBar();
+
+  const run = (fn, label) => () => { const pch = fn(); if (pch) { _tsel = null; _patchItem(pch, label); } };
+  const s = _tselRect();
+  const items = [];
+  if (kind !== 'col') {
+    items.push({ html: '＋ <b>Row above</b>', run: run(() => (tb.rows < 40 ? tableInsertRow(tb, r) : null), 'Add row') });
+    items.push({ html: '＋ <b>Row below</b>', run: run(() => (tb.rows < 40 ? tableInsertRow(tb, r + 1) : null), 'Add row') });
+    items.push({ html: '⧉ Duplicate row', run: run(() => (tb.rows < 40 ? tableInsertRow(tb, r + 1, r) : null), 'Duplicate row') });
+    items.push({ html: `🗑 Delete row ${r + 1}`, run: run(() => tableDeleteRow(tb, r), 'Remove row') });
+  }
+  if (kind !== 'row') {
+    if (items.length) items.push({ sep: true });
+    items.push({ html: '＋ <b>Column before</b>', run: run(() => (tb.cols < 10 ? tableInsertCol(tb, c) : null), 'Add column') });
+    items.push({ html: '＋ <b>Column after</b>', run: run(() => (tb.cols < 10 ? tableInsertCol(tb, c + 1) : null), 'Add column') });
+    items.push({ html: `🗑 Delete column ${c + 1}`, run: run(() => tableDeleteCol(tb, c), 'Remove column') });
+  }
+  if (s && canMerge(tb, s.r0, s.c0, s.r1, s.c1)) {
+    items.push({ sep: true });
+    items.push({ html: '⬓ <b>Merge these cells</b>', run: run(() => tableMerge(tb, s.r0, s.c0, s.r1, s.c1), 'Merge cells') });
+  }
+  if (s && mergeAt(tb, s.r0, s.c0)) {
+    if (!items.some(i => i.sep)) items.push({ sep: true });
+    const m = mergeAt(tb, s.r0, s.c0);
+    items.push({ html: '⬚ Unmerge', run: run(() => tableUnmerge(tb, m.r, m.c, m.r + m.rs - 1, m.c + m.cs - 1), 'Unmerge cells') });
+  }
+  if (!items.length) return false;
+  _openMenu(items, e.clientX, e.clientY);
+  return true;
+}
+
+/** Tint the row or column being carried, so it is clear WHAT is moving. */
+function _markMoving(kind, i) {
+  const host = _shadow.querySelector(`.ci[data-item="${CSS.escape(_customSel)}"]`);
+  for (const el of _shadow.querySelectorAll('.tmove')) el.classList.remove('tmove');
+  for (const cell of host?.querySelectorAll('[data-cell]') || []) {
+    const [r, c] = String(cell.dataset.cell).split(',').map(Number);
+    if (kind === 'row' ? r === i : c === i) cell.classList.add('tmove');
+  }
+}
+
 function _tableNow() {
   const it = _itemsNow().find(i => i.id === _customSel);
   return it?.type === 'table' ? it : null;
@@ -1354,7 +1442,7 @@ function _placeCustomBar() {
     _root.querySelector('#dw-center').appendChild(bar);
   }
   bar.style.borderColor = host === 'band' ? '#f59e0b' : '#38bdf8';
-  if (bar.contains(document.activeElement) && /^(INPUT)$/.test(document.activeElement.tagName) && document.activeElement.type !== 'color') return;   // typing a size
+  if (bar.contains(document.activeElement) && /^(INPUT)$/.test(document.activeElement.tagName)) return;   // typing a size, or holding a colour swatch open
   const it = _customModel?.items.find(i => i.id === _customSel) || null;
   const stored = it ? _itemsNow().find(i => i.id === it.id) : null;
   const b = (act, label, title, on = false, style = '', attrs = '') => `<button class="dw-btn" data-act="${act}" ${attrs} title="${_esc(title)}" style="padding:2px 9px;${on ? 'background:#1d3a5f;border-color:#38bdf8;' : ''}${style}">${label}</button>`;
@@ -1398,8 +1486,10 @@ function _placeCustomBar() {
               + b('ci-cell-start', '⫷', 'Align the picked cells to the start')
               + b('ci-cell-center', '⫿', 'Centre the picked cells')
               + b('ci-cell-end', '⫸', 'Align the picked cells to the end')
-              + `<input data-ci="cellbg" type="color" value="#ffffff" title="Shade the picked cells" style="width:30px;height:24px;padding:0;border:1px solid #334155;border-radius:5px;background:none;">`
-              + b('ci-cell-clear', '⌫ Look', 'Clear the look of the picked cells')
+              + `<label style="display:flex;gap:3px;align-items:center;">pt <input class="dw-in" data-ci="cellsize" type="number" min="5" max="40" step="0.5" value="${tb?.fmt?.[`${s.r0},${s.c0}`]?.s ?? it.size}" title="Text size in the picked cells" style="width:52px;"></label>`
+              + `<input data-ci="cellfg" type="color" value="${_esc(tb?.fmt?.[`${s.r0},${s.c0}`]?.c || it.color)}" title="Text colour in the picked cells" style="width:30px;height:24px;padding:0;border:1px solid #334155;border-radius:5px;background:none;">`
+              + `<input data-ci="cellbg" type="color" value="${_esc(tb?.fmt?.[`${s.r0},${s.c0}`]?.bg || '#ffffff')}" title="Shade the picked cells" style="width:30px;height:24px;padding:0;border:1px solid #334155;border-radius:5px;background:none;">`
+              + b('ci-cell-clear', '⌫ Look', 'Clear the look of the picked cells (colour, shade, size, bold…)')
               + sep;
           })()
           + b('ci-head', 'Header', 'The first row is a heading', it.head !== false)
@@ -1461,9 +1551,19 @@ function _onCustomPointerDown(e) {
     const tb = _tableNow();
     const kind = grip.dataset.rowg !== undefined ? 'row' : 'col';
     const i = Number(kind === 'row' ? grip.dataset.rowg : grip.dataset.colg);
+    if (tb) {
+      // clicking a grip PICKS that whole row or column — the bar's commands
+      // then act on it, which is what the grip looks like it should do
+      _tsel = kind === 'row'
+        ? { id: _customSel, r0: i, c0: 0, r1: i, c1: tb.cols - 1 }
+        : { id: _customSel, r0: 0, c0: i, r1: tb.rows - 1, c1: i };
+      _drawTableSel(); _placeCustomBar();
+      grip.classList.add('gripon');
+    }
     if (tb && (kind === 'row' ? tableRowMovable(tb, i) : tableColMovable(tb, i))) {
       e.preventDefault(); _commitFocusedText();
       _gripdrag = { id: _customSel, kind, i, to: i };
+      _markMoving(kind, i);                      // the row / column being carried
       try { grip.setPointerCapture(e.pointerId); } catch { /* synthetic pointer */ }
       return;
     }
@@ -1619,6 +1719,8 @@ function _onCustomPointerUp() {
   }
   const gd = _gripdrag; _gripdrag = null;
   _shadow.querySelector('.tdrop')?.remove();
+  for (const el of _shadow.querySelectorAll('.tmove')) el.classList.remove('tmove');
+  for (const el of _shadow.querySelectorAll('.gripon')) el.classList.remove('gripon');
   if (gd) {
     const tb = _tableNow();
     const patch = tb && (gd.kind === 'row' ? tableMoveRow(tb, gd.i, gd.to) : tableMoveCol(tb, gd.i, gd.to));
@@ -1850,7 +1952,7 @@ function _customAct(act, el) {
     if (act.startsWith('ci-cell-') && ['start', 'center', 'end'].includes(act.slice(8))) {
       _patchItem(tableSetFmt(live, s.r0, s.c0, s.r1, s.c1, { a: act.slice(8) }), 'Cell look'); return true;
     }
-    if (act === 'ci-cell-clear') { _patchItem(tableSetFmt(live, s.r0, s.c0, s.r1, s.c1, { a: null, b: null, i: null, bg: null }), 'Clear the look'); return true; }
+    if (act === 'ci-cell-clear') { _patchItem(tableSetFmt(live, s.r0, s.c0, s.r1, s.c1, { a: null, b: null, i: null, bg: null, c: null, s: null }), 'Clear the look'); return true; }
     if (act === 'ci-head')  { _patchItem({ head: live.head === false }, 'Heading row'); return true; }
     if (act === 'ci-grid')  { _patchItem({ grid: live.grid === false }, 'Table lines'); return true; }
     if (act === 'ci-zebra') { _patchItem({ zebra: !live.zebra }, 'Striped rows'); return true; }
@@ -1866,9 +1968,14 @@ function _customAct(act, el) {
   return false;
 }
 function _customChange(t) {
-  if (t.dataset?.ci === 'cellbg') {
+  if (t.dataset?.ci === 'cellbg' || t.dataset?.ci === 'cellfg' || t.dataset?.ci === 'cellsize') {
     const tb = _tableNow(), s = _tselRect();
-    if (tb && s) _patchItem(tableSetFmt(tb, s.r0, s.c0, s.r1, s.c1, { bg: String(t.value).toLowerCase() }), 'Shade cells');
+    if (tb && s) {
+      const patch = t.dataset.ci === 'cellbg' ? { bg: String(t.value).toLowerCase() }
+        : t.dataset.ci === 'cellfg' ? { c: String(t.value).toLowerCase() }
+        : { s: Math.max(5, Math.min(40, Number(t.value) || tb.size)) };
+      _patchItem(tableSetFmt(tb, s.r0, s.c0, s.r1, s.c1, patch), 'Cell look');
+    }
     return true;
   }
   if (t.dataset?.ci === 'zoom') {
@@ -1994,6 +2101,9 @@ function _selectionActions(c) {
 }
 
 function _onContextMenu(e) {
+  // 📋 inside the page, the real target lives in the shadow tree
+  const deep = e.composedPath?.()[0] || e.target;
+  if (_tableMenu(e, deep)) return;
   const extra = e.target.closest?.('[data-extra]');
   if (extra) { e.preventDefault(); if (_showPage(extra.dataset.extra)) { _sel = new Set(); _renderAll(); } _extraMenu(extra.dataset.extra, e.clientX, e.clientY); return; }
   const row = e.target.closest?.('.dw-step');

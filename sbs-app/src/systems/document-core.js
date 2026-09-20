@@ -707,7 +707,7 @@ function _mergesOf(src, rows, cols) {
   return out;
 }
 
-/** Per-cell look: alignment, bold, italic, a background. Keys "r,c" inside the grid. */
+/** Per-cell look: alignment, bold, italic, a background, a text colour, a size. Keys "r,c". */
 function _cellFmtOf(src, rows, cols) {
   const out = {};
   for (const [k, v] of Object.entries(src && typeof src === 'object' ? src : {})) {
@@ -718,6 +718,8 @@ function _cellFmtOf(src, rows, cols) {
     if (v.b) f.b = 1;
     if (v.i) f.i = 1;
     if (typeof v.bg === 'string' && /^#[0-9a-f]{6}$/i.test(v.bg)) f.bg = v.bg.toLowerCase();
+    if (typeof v.c === 'string' && /^#[0-9a-f]{6}$/i.test(v.c)) f.c = v.c.toLowerCase();
+    if (Number(v.s) >= 5 && Number(v.s) <= 40) f.s = Math.round(Number(v.s) * 2) / 2;
     if (Object.keys(f).length) out[`${r},${c}`] = f;
   }
   return out;
