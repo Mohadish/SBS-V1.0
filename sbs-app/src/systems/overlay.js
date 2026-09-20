@@ -26,6 +26,11 @@ import { promptString, chooseFromList } from '../ui/prompt.js';
 import { openSequenceEditor } from '../ui/sequence-editor.js';
 import { narrationContextForStep } from './narration-timeline.js';
 import * as interfaces from './interfaces.js';   // interface overlay (used lazily in the right-click menu)
+// ▦ V0.3.4.45 — a table on the overlay: the same table the document editor
+// works with, drawn through the same HTML rasteriser the text boxes use.
+import { tableOverlayHtml, defaultOverlayTable } from './table-html.js';
+import { sanitizeCustomItem, tableInsertRow, tableDeleteRow, tableInsertCol, tableDeleteCol,
+         tableMerge, tableUnmerge, canMerge, mergeAt } from './document-core.js';
 import { mountTextToolbar, unmountTextToolbar, execCommandApplier, setToolbarValues, wasColorPickedRecently, setStyleDropdown, setStyleLocked, setConstDropdown, setTextEffects } from '../ui/text-toolbar.js';
 import { mountShapeToolbar, unmountShapeToolbar, setShapeStyleDropdown, setShapeStyleLocked } from '../ui/shape-toolbar.js';
 import * as userSettings from '../core/user-settings.js';
@@ -3086,6 +3091,213 @@ async function _generateTocHtml(style = null, chaptersOverride = null) {
  *  editable text box (edit/rename/remove lines directly in the text editor) tagged
  *  isToc so right-click → "Refresh timecodes" regenerates it from the chapters.
  *  Per-step + multiple independent instances by nature (it's overlay content). */
+/** The table's data, always well formed (the document's own sanitiser). */
+function _tableDataOf(node) {
+  const raw = node?.getAttr?.('tableData');
+  if (!raw) return null;
+  const it = sanitizeCustomItem({ ...raw, id: 'ov', type: 'table', x: 0, y: 0, w: 100, h: 50 });
+  // The document's sanitiser gives every row a default height in MILLIMETRES;
+  // on the overlay a row takes the height its text needs (and any height set
+  // here is in canvas pixels), so the overlay keeps its own — along with the
+  // look fields the document has no use for.
+  return {
+    ...it,
+    rowH: Array.isArray(raw.rowH) ? raw.rowH.map(v => Math.max(0, Number(v) || 0)) : [],
+    bg: raw.bg, line: raw.line, headBg: raw.headBg, size: raw.size ?? it.size,
+  };
+}
+
+/** Is this node a table? */
+export function isTableNode(node) { return !!node?.getAttr?.('isTable'); }
+
+/** Draw (or redraw) a table node's picture from its data. */
+async function _reflowTable(node) {
+  const data = _tableDataOf(node);
+  if (!data) return false;
+  const width = Math.max(60, Math.round(Number(node.getAttr('tableWidth')) || node.width() || 620));
+  const canvas = await _htmlToCanvas(tableOverlayHtml(data, { width }), {
+    width, padding: 0, bgColor: 'transparent', color: data.color || '#111111',
+    fontSize: Math.max(6, Number(data.size) || 15), fontFamily: 'Arial',
+  });
+  if (!canvas?.width || !canvas?.height) { console.warn('[overlay] table: 0-sized canvas'); return false; }
+  node.image(canvas);
+  node.width(canvas.width);
+  node.height(canvas.height);
+  node.setAttr('naturalW', canvas.width);
+  node.setAttr('naturalH', canvas.height);
+  node.getLayer()?.batchDraw();
+  return true;
+}
+
+/** Write new table data and redraw, as one undo entry. */
+async function _setTableData(node, next, label) {
+  const before = JSON.parse(JSON.stringify(node.getAttr('tableData') || {}));
+  const after = JSON.parse(JSON.stringify(next));
+  const write = async (data) => {
+    node.setAttr('tableData', JSON.parse(JSON.stringify(data)));
+    await _reflowTable(node);
+    _scheduleSave();
+  };
+  await write(after);
+  undoManager.push(label || 'Edit table',
+    () => { write(before); },
+    () => { write(after); });
+}
+
+let _tableEditor = null;      // { node, host, data }
+
+/**
+ * ▦ EDIT A TABLE IN PLACE. The picture on the canvas is a raster of an HTML
+ * table; while editing, the real HTML table is mounted over it — same markup,
+ * same width, scaled to the viewport the way the text editor does it — so what
+ * is typed sits exactly where it will be drawn, and Tab, arrow keys, selection
+ * and pasting all come from the browser for free.
+ */
+function _enterTableEdit(node) {
+  if (_tableEditor) _exitTableEdit();
+  const data = _tableDataOf(node);
+  if (!data) return;
+  const stage = node.getLayer()?.getStage();
+  const containerEl = stage?.container() || _container;
+  const rect = containerEl.getBoundingClientRect();
+  const pos = node.getAbsolutePosition();
+  const sf = computeSafeFrameRect({ width: rect.width, height: rect.height });
+  const scale = sf.scale > 0 ? sf.scale : 1;
+  const width = Math.max(60, Math.round(Number(node.getAttr('tableWidth')) || node.width()));
+
+  const host = document.createElement('div');
+  host.dataset.sbsTableEditor = '1';
+  host.style.cssText = [
+    'position:fixed',
+    `left:${Math.round(rect.left + pos.x)}px`,
+    `top:${Math.round(rect.top + pos.y)}px`,
+    `width:${width}px`,
+    'z-index:60',
+    'outline:2px dashed #f59e0b',
+    `transform:scale(${scale})`,
+    'transform-origin:0 0',
+    'font-family:Arial',
+  ].join(';');
+  host.innerHTML = tableOverlayHtml(data, { width });
+  const table = host.querySelector('table');
+  for (const td of host.querySelectorAll('td')) {
+    td.setAttribute('contenteditable', 'plaintext-only');
+    td.spellcheck = true;
+  }
+  document.body.appendChild(host);
+  _tableEditor = { node, host, data };
+  node.visible(false);
+  node.getLayer()?.batchDraw();
+
+  // Tab walks the cells, Esc gives up, Enter ends the line
+  host.addEventListener('keydown', (e) => {
+    if (e.key === 'Escape') { e.preventDefault(); _exitTableEdit(true); return; }
+    if (e.key === 'Tab') {
+      e.preventDefault();
+      const cells = [...host.querySelectorAll('td')];
+      const i = cells.indexOf(document.activeElement);
+      const next = cells[i + (e.shiftKey ? -1 : 1)];
+      if (next) { next.focus(); document.getSelection()?.selectAllChildren(next); }
+      return;
+    }
+    e.stopPropagation();          // the app's own shortcuts stay out of the cells
+  });
+  host.addEventListener('pointerdown', (e) => e.stopPropagation());
+  const firstCell = host.querySelector('td');
+  if (firstCell) { firstCell.focus(); document.getSelection()?.selectAllChildren(firstCell); }
+  void table;
+  setStatus('▦ Typing in the table — Tab moves on, click away when you are done.', 'info', 6000);
+
+  // clicking anywhere else finishes
+  setTimeout(() => {
+    const away = (e) => {
+      if (host.contains(e.target)) return;
+      document.removeEventListener('pointerdown', away, true);
+      _exitTableEdit();
+    };
+    document.addEventListener('pointerdown', away, true);
+    _tableEditor.away = away;
+  }, 0);
+}
+
+/** Read the cells back out of the editor and redraw. */
+function _exitTableEdit(abandon = false) {
+  const ed = _tableEditor; _tableEditor = null;
+  if (!ed) return;
+  if (ed.away) document.removeEventListener('pointerdown', ed.away, true);
+  const { node, host, data } = ed;
+  let changed = false;
+  if (!abandon) {
+    const next = JSON.parse(JSON.stringify(data));
+    const tds = [...host.querySelectorAll('td[data-cell], td')];
+    // walk the table the way it was built: row by row, skipping covered cells
+    let i = 0;
+    const covered = new Set();
+    for (const m of next.merges || []) {
+      for (let y = m.r; y < m.r + m.rs; y++) for (let x = m.c; x < m.c + m.cs; x++) if (y !== m.r || x !== m.c) covered.add(`${y},${x}`);
+    }
+    for (let r = 0; r < next.rows; r++) {
+      for (let c = 0; c < next.cols; c++) {
+        if (covered.has(`${r},${c}`)) continue;
+        const td = tds[i++];
+        if (!td) continue;
+        const text = String(td.innerText ?? '').replace(/\u00a0/g, ' ').replace(/\n+$/, '');
+        if (text !== (next.cells[r][c] ?? '')) { next.cells[r][c] = text; changed = true; }
+      }
+    }
+    if (changed) _setTableData(node, next, 'Edit table');
+  }
+  host.remove();
+  node.visible(true);
+  node.getLayer()?.batchDraw();
+}
+
+/** Which cell of a table a screen point falls in (its own proportions, no DOM). */
+function _tableCellAtPointer(node, data, clientX, clientY) {
+  try {
+    const stage = node.getLayer()?.getStage();
+    const rect = stage?.container()?.getBoundingClientRect();
+    if (!rect) return null;
+    const sf = computeSafeFrameRect({ width: rect.width, height: rect.height });
+    const scale = sf.scale > 0 ? sf.scale : 1;
+    const pos = node.getAbsolutePosition();
+    const lx = ((clientX - rect.left) / scale - pos.x) / Math.max(1, node.width());
+    const ly = ((clientY - rect.top) / scale - pos.y) / Math.max(1, node.height());
+    if (lx < 0 || lx > 1 || ly < 0 || ly > 1) return null;
+    const w = Array.from({ length: data.cols }, (_, i) => Math.max(0.02, Number(data.widths?.[i]) || 1 / data.cols));
+    const sum = w.reduce((a, b) => a + b, 0) || 1;
+    let acc = 0, c = data.cols - 1;
+    for (let i = 0; i < data.cols; i++) { acc += w[i] / sum; if (lx <= acc) { c = i; break; } }
+    const r = Math.min(data.rows - 1, Math.max(0, Math.floor(ly * data.rows)));
+    return { r, c };
+  } catch { return null; }
+}
+
+/** ▦ A new table on the overlay. */
+export async function addTableBox() {
+  if (!_stage) return null;
+  const data = defaultOverlayTable();
+  const width = Math.round(Math.min(720, Math.max(360, _stage.width() * 0.4)));
+  const canvas = await _htmlToCanvas(tableOverlayHtml(data, { width }), {
+    width, padding: 0, bgColor: 'transparent', color: data.color, fontSize: data.size, fontFamily: 'Arial',
+  });
+  if (!canvas?.width || !canvas?.height) { console.warn('[overlay] addTableBox: bad canvas'); return null; }
+  const node = new Konva.Image({
+    x: Math.max(20, _stage.width() * 0.2), y: Math.max(20, _stage.height() * 0.25),
+    image: canvas, width: canvas.width, height: canvas.height, draggable: true, name: 'userTextBox',
+  });
+  node.setAttr('isTable', true);
+  node.setAttr('tableData', data);
+  node.setAttr('tableWidth', width);
+  node.setAttr('naturalW', canvas.width);
+  node.setAttr('naturalH', canvas.height);
+  _layer.add(node); _attachNode(node); _setSelection(node);
+  _pushAddNodeUndo(node, 'Add table');
+  _scheduleSave();
+  setStatus('▦ Table added — double-click it to type in its cells.', 'info', 6000);
+  return node;
+}
+
 export async function addTocBox() {
   if (!_stage) return null;
   const html = await _generateTocHtml();
@@ -4765,6 +4977,12 @@ function _attachNode(node) {
       const div = _activeTextEditor.div;
       div.style.width     = `${Math.max(20, Math.round(node.width()))}px`;
       div.style.minHeight = '0px';
+    } else if (node.getClassName() === 'Image' && node.getAttr('isTable')) {
+      // ▦ a table is a picture of HTML: the new width is the width to draw it
+      // at, so the text re-wraps instead of being stretched
+      node.setAttr('tableWidth', Math.max(60, Math.round(node.width())));
+      node.scaleX(1); node.scaleY(1);
+      _reflowTable(node);
     } else if (node.getClassName() === 'Image' && node.getAttr('textHtml')) {
       // Selection-only state: not currently expected (we removed text-box
       // anchors outside of edit mode), but if anything ever reaches here
@@ -4842,6 +5060,14 @@ function _attachNode(node) {
       _enterTextEdit(node);
     });
   }
+  // ▦ a table opens its own editor — a real HTML table over the canvas
+  if (node.getClassName() === 'Image' && node.getAttr('isTable')) {
+    node.on('dblclick dbltap', () => {
+      const sel = _transformer?.nodes() || [];
+      if (sel.length > 1) return;
+      _enterTableEdit(node);
+    });
+  }
 }
 
 // ─── Overlay clipboard (in-memory, persists across step changes) ───────────
@@ -4877,6 +5103,7 @@ function _serializeNode(node) {
   // Inline payload — only the fields _recreateNode looks at.
   for (const k of [
     'src', 'textHtml', 'textWidth', 'naturalW', 'naturalH', 'fillColor', 'styleId',
+    'isTable', 'tableData', 'tableWidth',   // ▦ V0.3.4.45 (tableData is deep-copied below)
     'constId',   // 📌 V0.3.2.98 — membership in a constant-text-box definition
     // Shape primitives — Konva.Rect / Circle / Ellipse / Path / etc.
     'name', 'kind',
@@ -4916,8 +5143,12 @@ function _serializeNode(node) {
                     // came back unmasked
     'cropMaskId',   // 🎭 V0.3.2.218 — binding to a GLOBAL mask definition
   ]) {
-    if (a[k] != null) out.attrs[k] = Array.isArray(a[k]) ? a[k].slice()
-                                    : (a[k] && typeof a[k] === 'object' ? { ...a[k] } : a[k]);
+    if (a[k] == null) continue;
+    // ▦ a table's data nests (cells is an array OF arrays): a shallow copy
+    // would have the copy and the original typing into the same rows
+    if (k === 'tableData') { try { out.attrs[k] = JSON.parse(JSON.stringify(a[k])); } catch { /* skip a broken one */ } continue; }
+    out.attrs[k] = Array.isArray(a[k]) ? a[k].slice()
+                 : (a[k] && typeof a[k] === 'object' ? { ...a[k] } : a[k]);
   }
   return out;
 }
@@ -5884,6 +6115,34 @@ function _showOverlayContextMenu(node, x, y) {
     ? [{ label: Number(node.getAttr('naturalW') || 0) ? '↩ Reset to natural size, centred' : '⊹ Centre in the frame',
          action: () => { _resetNaturalCentred(node); } }, { separator: true }]
     : [];
+  // ▦ a table's own commands, on the cell that was right-clicked
+  const tableItems = node.getAttr('isTable') ? (() => {
+    const data = _tableDataOf(node);
+    if (!data) return [];
+    const cell = _tableCellAtPointer(node, data, x, y) || { r: 0, c: 0 };
+    const go = (patch, label) => () => { if (patch) _setTableData(node, { ...data, ...patch }, label); };
+    const items = [
+      { label: '✎ Type in the table…', action: () => _enterTableEdit(node) },
+      { separator: true },
+      { label: `＋ Row above (row ${cell.r + 1})`, action: go(tableInsertRow(data, cell.r), 'Add row') },
+      { label: '＋ Row below', action: go(tableInsertRow(data, cell.r + 1), 'Add row') },
+      { label: '⧉ Duplicate row', action: go(tableInsertRow(data, cell.r + 1, cell.r), 'Duplicate row') },
+      { label: `🗑 Delete row ${cell.r + 1}`, action: go(tableDeleteRow(data, cell.r), 'Remove row'), disabled: data.rows <= 1 },
+      { separator: true },
+      { label: `＋ Column before (column ${cell.c + 1})`, action: go(tableInsertCol(data, cell.c), 'Add column') },
+      { label: '＋ Column after', action: go(tableInsertCol(data, cell.c + 1), 'Add column') },
+      { label: '⧉ Duplicate column', action: go(tableInsertCol(data, cell.c + 1, cell.c), 'Duplicate column') },
+      { label: `🗑 Delete column ${cell.c + 1}`, action: go(tableDeleteCol(data, cell.c), 'Remove column'), disabled: data.cols <= 1 },
+    ];
+    const m = mergeAt(data, cell.r, cell.c);
+    if (m) items.push({ separator: true }, { label: '⬚ Unmerge', action: go(tableUnmerge(data, m.r, m.c, m.r + m.rs - 1, m.c + m.cs - 1), 'Unmerge cells') });
+    else if (canMerge(data, cell.r, cell.c, Math.min(cell.r + 1, data.rows - 1), Math.min(cell.c + 1, data.cols - 1))) {
+      items.push({ separator: true }, { label: '⬓ Merge with the cell to the right and below',
+        action: go(tableMerge(data, cell.r, cell.c, Math.min(cell.r + 1, data.rows - 1), Math.min(cell.c + 1, data.cols - 1)), 'Merge cells') });
+    }
+    items.push({ separator: true });
+    return items;
+  })() : [];
   const tocItems = node.getAttr('isToc')
     ? [{ label: '🔄 Refresh timecodes', action: () => _refreshTocBox(node) }, { separator: true }]
     : [];
@@ -6266,6 +6525,7 @@ function _showOverlayContextMenu(node, x, y) {
     ...polyItems,
     ...convertItems,
     ...plainImageItems,
+    ...tableItems,
     ...videoItems,
     ...ifaceItems,
     ...zoomItems,
@@ -8269,6 +8529,15 @@ async function _recreateNode(spec) {
     // here fails the next draw with a 0×0 error.
     const { src, textHtml, textWidth, naturalW, naturalH, fillColor, styleId, image, ...rest } = spec.attrs || {};
     void image;   // intentionally discarded
+
+    // ▦ A TABLE (V0.3.4.45): only its DATA was saved — the picture is drawn
+    // again here, exactly as a text box's is.
+    if (spec.attrs?.isTable) {
+      const tnode = new Konva.Image({ ...rest, textHtml: undefined, draggable: true });
+      tnode.setAttr('naturalW', naturalW); tnode.setAttr('naturalH', naturalH);
+      await _reflowTable(tnode);
+      return tnode;
+    }
 
     // 🎬 VIDEO (V0.3.2.75). The clip is a file on disk, so recreation is:
     // build the node, show the poster frame immediately (so the step never

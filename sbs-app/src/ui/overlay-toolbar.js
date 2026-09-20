@@ -88,6 +88,7 @@ export function initOverlayToolbar() {
   const btnArrow = _btn('→',   'Add arrow');
   const btn3dArrow = _btn('🎯↗', 'Add 3D arrow — click two points ON THE MODEL. The ends stay fixed in 3D space, so the arrow follows when you move the camera.');
   btn3dArrow.addEventListener('click', () => overlay.startAnchoredArrowPlacement());
+  const btnTable = _btn('▦',   'Add a table — type in its cells, right-click for rows and columns');
   const btnToc   = _btn('▤',   'Add table of contents (auto from chapters + timecodes)');
   const btnDel   = _btn('🗑',   'Delete selected');
   // 🔒 Header layer lock (V0.3.2.100) — same toggle the Header tab has,
@@ -174,6 +175,11 @@ export function initOverlayToolbar() {
   btnTri  .addEventListener('click', () => { if (overlay.addTriangle()) setStatus('Triangle added.'); });
   btnLine .addEventListener('click', () => { if (overlay.addLine())     setStatus('Line added.'); });
   btnArrow.addEventListener('click', () => { if (overlay.addArrow())    setStatus('Arrow added.'); });
+  btnTable.addEventListener('click', async () => {
+    const node = await overlay.addTableBox();
+    if (node) setStatus('▦ Table added — double-click it to type, right-click for rows and columns.', 'success', 5000);
+    else      setStatus('Couldn’t add the table.', 'warn', 2500);
+  });
   btnToc  .addEventListener('click', async () => {
     const node = await overlay.addTocBox();
     if (node) setStatus('Table of contents added — edit lines directly, or right-click → Refresh timecodes.', 'success', 4000);
@@ -227,16 +233,17 @@ export function initOverlayToolbar() {
     ['🎯', '3D arrow (anchored to the model)', btn3dArrow],
   ]));
 
-  const btnAssets = _btn('🖼 Assets ▾', 'Insert an image, video, interface or table of contents');
+  const btnAssets = _btn('🖼 Assets ▾', 'Insert an image, video, interface, table or table of contents');
   btnAssets.addEventListener('click', _menuFrom(btnAssets, [
     ['🖼', 'Image',             btnImg],
     ['🎬', 'Video clip',        btnVideo],
     ['🖥', 'Interface',         btnIface],
+    ['▦', 'Table',             btnTable],
     ['▤', 'Table of contents', btnToc],
   ]));
 
   // The originals stay live (the menu clicks them) but are never shown.
-  for (const b of [btnImg, btnVideo, btnIface, btnRect, btnCirc, btnEll, btnTri, btnLine, btnArrow, btn3dArrow, btnToc]) {
+  for (const b of [btnImg, btnVideo, btnIface, btnRect, btnCirc, btnEll, btnTri, btnLine, btnArrow, btn3dArrow, btnToc, btnTable]) {
     b.style.display = 'none';
     _tools.appendChild(b);
   }
