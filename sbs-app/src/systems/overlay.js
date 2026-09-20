@@ -29,7 +29,8 @@ import * as interfaces from './interfaces.js';   // interface overlay (used lazi
 // ▦ V0.3.4.45 — a table on the overlay: the same table the document editor
 // works with, drawn through the same HTML rasteriser the text boxes use.
 import { tableOverlayHtml, defaultOverlayTable } from './table-html.js';
-import { openOverlayTableEditor, closeOverlayTableEditor, isOverlayTableEditorOpen } from '../ui/overlay-table-editor.js';
+import { openOverlayTableEditor, closeOverlayTableEditor, refreshOverlayTableEditor,
+         TABLE_UNDO_SCOPE } from '../ui/overlay-table-editor.js';
 import { sanitizeCustomItem, tableInsertRow, tableDeleteRow, tableInsertCol, tableDeleteCol,
          tableMerge, tableUnmerge, canMerge, mergeAt } from './document-core.js';
 import { mountTextToolbar, unmountTextToolbar, execCommandApplier, setToolbarValues, wasColorPickedRecently, setStyleDropdown, setStyleLocked, setConstDropdown, setTextEffects } from '../ui/text-toolbar.js';
@@ -3089,6 +3090,48 @@ async function _generateTocHtml(style = null, chaptersOverride = null) {
   return `<div style="font-family:${st.family};font-size:${st.size}px;color:${st.color};text-align:${st.align};line-height:1.35"><div style="font-size:${titlePx}px;font-weight:bold;margin-bottom:10px">Table of Contents</div>${rows}</div>`;
 }
 
+// Where each row STARTS, as a fraction of the table's height, measured from
+// the same HTML the picture was rasterised from. Off-attr on purpose: it is
+// derived, and Konva's toJSON would otherwise bake it into every step.
+const _tableRowY = new WeakMap();
+
+/** Measure the row tops of a table, in the rasteriser's own layout. */
+function _measureTableRows(html, width, size) {
+  try {
+    const host = document.createElement('div');
+    host.style.cssText = [
+      'position:fixed', 'left:-99999px', 'top:0', 'visibility:hidden',
+      `width:${Math.max(1, Math.round(width))}px`, 'padding:0', 'margin:0', 'border:0',
+      'box-sizing:border-box', 'white-space:pre-wrap', 'word-wrap:break-word',
+      'line-height:1.2', 'font-family:Arial', `font-size:${Math.max(6, size)}px`,
+    ].join(';');
+    host.innerHTML = html;
+    document.body.appendChild(host);
+    const H = host.getBoundingClientRect();
+    const out = H.height > 0
+      ? [...host.querySelectorAll('tr')].map(tr => (tr.getBoundingClientRect().top - H.top) / H.height)
+      : [];
+    host.remove();
+    return out;
+  } catch { return []; }
+}
+
+/**
+ * ▦ ROW HEIGHTS ARE PIXELS HERE.
+ *
+ * The table operations are shared with the DOCUMENT, where a row height is in
+ * millimetres — inserting a row splices a 9 into rowH. On the overlay that 9
+ * would be a nine-PIXEL row, and the table visibly collapses a line. Anything
+ * below a line's worth of pixels therefore means "take the height you need",
+ * which is also what the overlay starts out with.
+ */
+function _normaliseOverlayTable(data) {
+  const rowH = Array.isArray(data?.rowH)
+    ? data.rowH.map(v => (Number(v) >= 12 ? Math.round(Number(v)) : 0))
+    : [];
+  return { ...data, rowH };
+}
+
 /** The table's data, always well formed (the document's own sanitiser). */
 function _tableDataOf(node) {
   const raw = node?.getAttr?.('tableData');
@@ -3135,7 +3178,16 @@ function _tableCellAtPointer(node, data, clientX, clientY) {
       run += (widths[i] / sum) * w;
       if (local.x <= run) { c = i; break; }
     }
-    const r = Math.max(0, Math.min(data.rows - 1, Math.floor((local.y / h) * data.rows)));
+    // measured row tops when we have them; equal shares only as a fallback
+    const ys = _tableRowY.get(node);
+    let r;
+    if (Array.isArray(ys) && ys.length === data.rows) {
+      const ty = local.y / h;
+      r = 0;
+      for (let i = 0; i < ys.length; i++) if (ty >= ys[i]) r = i;
+    } else {
+      r = Math.max(0, Math.min(data.rows - 1, Math.floor((local.y / h) * data.rows)));
+    }
     return { r, c };
   } catch (err) { console.warn('[overlay] table hit test:', err); return null; }
 }
@@ -3198,10 +3250,12 @@ async function _reflowTable(node) {
   if (!data) return false;
   const width = Math.max(60, Math.round(Number(node.getAttr('tableWidth')) || node.width() || 620));
   const height = Math.max(0, Math.round(Number(node.getAttr('tableHeight')) || 0));
-  const canvas = await _htmlToCanvas(tableOverlayHtml(data, { width, height }), {
+  const size = Math.max(6, Number(data.size) || 15);
+  const html = tableOverlayHtml(data, { width, height });
+  const canvas = await _htmlToCanvas(html, {
     ...(height ? { height } : {}),
     width, padding: 0, bgColor: 'transparent', color: data.color || '#111111',
-    fontSize: Math.max(6, Number(data.size) || 15), fontFamily: 'Arial',
+    fontSize: size, fontFamily: 'Arial',
   });
   if (!canvas?.width || !canvas?.height) { console.warn('[overlay] table: 0-sized canvas'); return false; }
   // Rasterising is asynchronous: a step change can destroy the node while we
@@ -3212,23 +3266,33 @@ async function _reflowTable(node) {
   node.height(canvas.height);
   node.setAttr('naturalW', canvas.width);
   node.setAttr('naturalH', canvas.height);
+  _tableRowY.set(node, _measureTableRows(html, width, size));
   node.getLayer()?.batchDraw();
   return true;
 }
 
-/** Write new table data and redraw, as one undo entry. */
+/**
+ * Write new table data and redraw, as ONE undo entry — pushed now, not when
+ * the editor closes. The entry carries a scope so that while the panel is open
+ * Ctrl+Z walks back through the table's own changes and stops there, instead
+ * of reaching into the animation behind it (and, at the bottom of the stack,
+ * deleting the very table being edited).
+ */
 async function _setTableData(node, next, label) {
   const before = JSON.parse(JSON.stringify(node.getAttr('tableData') || {}));
-  const after = JSON.parse(JSON.stringify(next));
+  const after = JSON.parse(JSON.stringify(_normaliseOverlayTable(next)));
   const write = async (data) => {
+    if (node.isDestroyed?.()) return;
     node.setAttr('tableData', JSON.parse(JSON.stringify(data)));
     await _reflowTable(node);
+    refreshOverlayTableEditor();     // the panel, if open, is showing the old one
     _scheduleSave();
   };
   await write(after);
   undoManager.push(label || 'Edit table',
     () => { write(before); },
-    () => { write(after); });
+    () => { write(after); },
+    { scope: TABLE_UNDO_SCOPE });
 }
 
 let _tableEditor = null;      // the node being edited
@@ -3236,53 +3300,58 @@ let _tableEditor = null;      // the node being edited
 /**
  * ▦ EDIT A TABLE IN PLACE. The picture on the canvas is a raster of HTML;
  * while editing, the real HTML is mounted over it at the same place and size
- * (ui/overlay-table-editor.js owns all of that). Every change comes back here
- * as data, which is redrawn and pushed as one undo entry.
+ * (ui/overlay-table-editor.js owns all of that).
+ *
+ * THE NODE HOLDS THE TABLE — the panel never does. It reads through getData()
+ * and asks for changes through apply(); every change is written here, redrawn,
+ * and pushed as its own undo entry. The first version let the panel keep a
+ * copy and write it back on exit, which quietly undid anything the right-click
+ * menu or an undo had done in the meantime.
  */
 function _enterTableEdit(node) {
-  const data = _tableDataOf(node);
-  if (!data) return;
-  const before = JSON.parse(JSON.stringify(node.getAttr('tableData') || {}));
+  if (!_tableDataOf(node)) return;
   // The picture steps aside for the real thing. visible(false) and not
-  // opacity(0) on purpose: opacity is saved with the node, visibility is not,
-  // so an autosave in the middle of typing can never leave the table hidden.
+  // opacity(0): opacity is authored state, visibility is not — and the save
+  // lifts this node back to visible for the snapshot (_serialiseStageJson).
   node.visible(false);
-  _setSelection(null);            // no resize handles floating over nothing
+  _setSelection(null);              // no resize handles floating over nothing
   node.getLayer()?.batchDraw();
   _tableEditor = node;
   openOverlayTableEditor({
-    data,
+    getData: () => _tableDataOf(node),
     rect: () => {
       const stage = node.getLayer()?.getStage();
       const box = stage?.container()?.getBoundingClientRect() || { left: 0, top: 0, width: 0, height: 0 };
       const sf = computeSafeFrameRect({ width: box.width, height: box.height });
-      const scale = sf.scale > 0 ? sf.scale : 1;
+      // getAbsolutePosition is ALREADY in viewport pixels (the stage carries
+      // the safe-frame scale and offset), so the scale belongs in the
+      // transform only — exactly as the text editor does it.
       const pos = node.getAbsolutePosition();
       return {
-        left: box.left + pos.x * scale, top: box.top + pos.y * scale,
+        left: box.left + pos.x,
+        top: box.top + pos.y,
         width: Math.max(60, Math.round(Number(node.getAttr('tableWidth')) || node.width())),
         height: Math.max(0, Math.round(Number(node.getAttr('tableHeight')) || 0)),
-        scale,
+        scale: sf.scale > 0 ? sf.scale : 1,
+        rot: node.rotation?.() || 0,
       };
+    },
+    apply: (patch, label) => {
+      const cur = _tableDataOf(node);
+      if (!cur || !patch) return null;
+      _setTableData(node, { ...cur, ...patch }, label);
+      return _tableDataOf(node);     // the attr is written before the redraw awaits
     },
     // right-click inside the editor = the same table menu as on the canvas,
     // already pointed at the cell under the pointer
     onMenu: (cell, cx, cy) => _showTableMenuAt(node, cell, cx, cy),
-    onCommit: (next) => {
-      node.setAttr('tableData', JSON.parse(JSON.stringify(next)));
-      _reflowTable(node);
-      _scheduleSave();
-    },
-    onClose: (next) => {
+    onClose: () => {
       _tableEditor = null;
+      if (node.isDestroyed?.()) return;
       node.visible(true);
-      if (!node.isDestroyed?.()) _setSelection(node);   // the handles come back
+      _setSelection(node);           // the handles come back
       node.getLayer()?.batchDraw();
-      const after = JSON.parse(JSON.stringify(next || node.getAttr('tableData') || {}));
-      if (JSON.stringify(before) === JSON.stringify(after)) return;
-      const write = (data2) => { node.setAttr('tableData', JSON.parse(JSON.stringify(data2))); _reflowTable(node); _scheduleSave(); };
-      write(after);
-      undoManager.push('Edit table', () => write(before), () => write(after));
+      _scheduleSave();               // …and the step records it visible again
     },
   });
 }
@@ -5089,6 +5158,9 @@ function _attachNode(node) {
   }
   // ▦ a table opens its own editor — a real HTML table over the canvas
   if (node.getClassName() === 'Image' && node.getAttr('isTable')) {
+    // Konva starts a drag after 3px. A double-click on a table always wobbled
+    // more than that, so the table crept a little every time it was opened.
+    node.dragDistance(8);
     node.on('dblclick dbltap', () => {
       const sel = _transformer?.nodes() || [];
       if (sel.length > 1) return;
@@ -5130,7 +5202,7 @@ function _serializeNode(node) {
   // Inline payload — only the fields _recreateNode looks at.
   for (const k of [
     'src', 'textHtml', 'textWidth', 'naturalW', 'naturalH', 'fillColor', 'styleId',
-    'isTable', 'tableData', 'tableWidth',   // ▦ V0.3.4.45 (tableData is deep-copied below)
+    'isTable', 'tableData', 'tableWidth', 'tableHeight',   // ▦ V0.3.4.45 (tableData is deep-copied below)
     'constId',   // 📌 V0.3.2.98 — membership in a constant-text-box definition
     // Shape primitives — Konva.Rect / Circle / Ellipse / Path / etc.
     'name', 'kind',
@@ -8028,10 +8100,18 @@ function _serialiseStageJson() {
   // invalidate the step's cached segment. Lift them out for the snapshot.
   const lifted = _maskEdit ? [_maskEdit.tr, _maskEdit.rect] : [];
   for (const n of lifted) { try { n.remove(); } catch { /* already detached */ } }
+  // ▦ A table being edited is hidden behind its panel. Konva DOES persist
+  // `visible`, so a save fired mid-edit (every keystroke schedules one) would
+  // write the table into the step as invisible — and it would come back
+  // invisible and un-clickable, which reads as "my table was deleted". Show it
+  // for the snapshot only.
+  const hiddenTable = (_tableEditor && !_tableEditor.isDestroyed?.() && !_tableEditor.visible()) ? _tableEditor : null;
+  if (hiddenTable) hiddenTable.visible(true);
   let parsed;
   try { parsed = JSON.parse(_stage.toJSON()); }
   catch { return _stage.toJSON(); }
   finally {
+    if (hiddenTable && !hiddenTable.isDestroyed?.()) hiddenTable.visible(false);
     for (const n of [...lifted].reverse()) { try { _uiLayer?.add(n); } catch { /* stage gone */ } }
   }
   const stripImage = (children) => {
@@ -8050,6 +8130,9 @@ function _serialiseStageJson() {
         c.attrs.y = 0;
         delete c.attrs.visible;   // cull state is derived too
       }
+      // a table's visibility is never authored — belt and braces for any
+      // project already saved with one hidden behind its editor
+      if (c?.attrs?.isTable) delete c.attrs.visible;
       if (c?.children) stripImage(c.children);
     }
   };
@@ -8553,6 +8636,7 @@ async function _recreateNode(spec) {
     // again here, exactly as a text box's is.
     if (spec.attrs?.isTable) {
       const tnode = new Konva.Image({ ...rest, textHtml: undefined, draggable: true });
+      tnode.visible(true);     // never load one hidden — see _serialiseStageJson
       tnode.setAttr('naturalW', naturalW); tnode.setAttr('naturalH', naturalH);
       await _reflowTable(tnode);
       return tnode;

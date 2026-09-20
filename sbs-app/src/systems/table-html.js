@@ -62,7 +62,10 @@ export function tableOverlayHtml(t, opts = {}) {
   const fixedH = Number(opts.height) > 0 ? Math.round(Number(opts.height)) : 0;
   if (!t?.rows || !t?.cols) return '<div></div>';
   const size = Math.max(6, Number(t.size) || 15);
-  const pad = Math.max(2, Math.round(size * 0.35));
+  // A row should look like a line of text with a little air, not a box twice
+  // the height of its letters: 0.35 of the font added top AND bottom made a
+  // 15px font sit in a 30px row. 0.22 keeps it readable at about 1.7 lines.
+  const pad = Math.max(2, Math.round(size * 0.22));
   const widths = Array.from({ length: t.cols }, (_, i) => Math.max(0.02, Number(t.widths?.[i]) || 1 / t.cols));
   const sum = widths.reduce((a, b) => a + b, 0) || 1;
   // <col/> MUST be self-closed: the rasteriser parses XHTML, and a bare <col>
@@ -93,7 +96,7 @@ export function tableOverlayHtml(t, opts = {}) {
     'border-collapse:collapse',
     'table-layout:fixed',                       // what makes the drawn width match the stored one
     `font-size:${size}px`,
-    'line-height:1.3',
+    'line-height:1.25',
     `color:${t.color || '#111111'}`,
     t.bg ? `background:${t.bg}` : '',
     // a height the user dragged: the rows share it, the way an HTML table fills

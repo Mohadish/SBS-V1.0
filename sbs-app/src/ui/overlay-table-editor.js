@@ -1,28 +1,60 @@
 /**
- * SBS — editing a table on the ANIMATION overlay (V0.3.4.46).
+ * SBS — editing an overlay table in place (V0.3.4.47).
  *
  * The table on the canvas is a picture of HTML. To edit it, the real HTML is
  * mounted over the canvas at the same place and size — so what you see is what
- * will be drawn — and this module owns everything that happens there:
- * picking cells, typing in one, the two-row bar (the look of the cells, and
- * the shape of the table), and pasting a block out of a spreadsheet.
+ * will be drawn — and this module owns everything that happens there: picking
+ * cells, typing in one, the two-row bar, the grips that move and resize rows
+ * and columns, and pasting a block out of a spreadsheet.
  *
- * It knows nothing about Konva. It is handed the data and a place to put it
- * back; the overlay turns that into a redraw and an undo entry.
+ * ONE COPY OF THE TRUTH. The first version kept its own copy of the table and
+ * wrote it back when it closed. Anything that changed the table from outside
+ * (the right-click menu, an undo) was then silently overwritten on exit — the
+ * menu looked dead, and leaving the table could put a stale shape back. So:
+ * the OWNER holds the data. This module never decides what the table is; it
+ * asks for it (`ctx.getData()`) and asks for changes (`ctx.apply(patch,
+ * label)`), and `refreshOverlayTableEditor()` tells it to re-read when the
+ * table changed underneath it. Every change is one undo entry, pushed by the
+ * owner as it happens — not one entry at the end.
+ *
+ * It knows nothing about Konva.
  */
 
 import { tableOverlayHtml } from '../systems/table-html.js';
 import {
   tableInsertRow, tableDeleteRows, tableInsertCol, tableDeleteCols,
   tableMerge, tableUnmerge, canMerge, mergeAt, tableSetFmt, tablePaste,
+  tableMoveRow, tableMoveCol, tableRowMovable, tableColMovable,
 } from '../systems/document-core.js';
+import { undoManager } from '../systems/undo.js';
 import { setStatus } from './status.js';
 
 const _esc = (s) => String(s ?? '').replace(/[&<>"]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
 
-let _open = null;   // { host, bar, data, sel, ctx, editing }
+/** Every table edit is pushed under this scope, so Ctrl+Z inside the table
+ *  undoes the table and nothing else (the same trick the document uses). */
+export const TABLE_UNDO_SCOPE = 'overlayTable';
+
+const MIN_COL = 0.05;     // a column may not be squeezed below this fraction
+const MIN_ROW_PX = 12;    // …nor a row below a line's worth of pixels
+
+let _open = null;
 
 export function isOverlayTableEditorOpen() { return !!_open; }
+
+/** The table changed underneath the panel (a menu command, an undo): re-read. */
+export function refreshOverlayTableEditor() {
+  const st = _open;
+  if (!st) return;
+  const next = st.ctx.getData?.();
+  if (!next) return;
+  // The open cell belongs to HTML that is about to be replaced. Forget it, or
+  // the next commit would write pre-undo text back over the new data.
+  st.editing = null;
+  st.data = next;
+  _clampSel(st);
+  _draw(st);
+}
 
 /** Close it, committing whatever is in the open cell. */
 export function closeOverlayTableEditor(abandon = false) {
@@ -30,22 +62,35 @@ export function closeOverlayTableEditor(abandon = false) {
   if (!st) return;
   document.removeEventListener('pointerdown', st.away, true);
   window.removeEventListener('resize', st.place);
-  if (!abandon) _commitOpenCell(st);
+  window.removeEventListener('keydown', st.keys, true);
+  window.removeEventListener('pointermove', st.move, true);
+  window.removeEventListener('pointerup', st.up, true);
+  if (!abandon) { _open = st; _commitOpenCell(st); _open = null; }
   st.host.remove();
   st.bar.remove();
-  st.ctx.onClose?.(st.data);
+  st.chrome.remove();
+  st.ctx.onClose?.();
 }
+
+// ─────────────────────────── geometry ───────────────────────────
 
 function _rect(st) { return { ...st.ctx.rect() }; }
 
 function _place(st) {
   const r = _rect(st);
+  const tf = `scale(${r.scale})${r.rot ? ` rotate(${r.rot}deg)` : ''}`;
   st.host.style.left = `${Math.round(r.left)}px`;
   st.host.style.top = `${Math.round(r.top)}px`;
   st.host.style.width = `${Math.round(r.width)}px`;
-  st.host.style.transform = `scale(${r.scale})`;
+  // A height only when one was dragged — otherwise the rows take what they
+  // need, exactly as the rasteriser lets them.
+  st.host.style.height = Number(r.height) > 0 ? `${Math.round(r.height)}px` : '';
+  st.host.style.transform = tf;
+  st.chrome.style.left = st.host.style.left;
+  st.chrome.style.top = st.host.style.top;
+  st.chrome.style.transform = tf;
   st.bar.style.left = `${Math.round(r.left)}px`;
-  st.bar.style.top = `${Math.max(6, Math.round(r.top - st.bar.offsetHeight - 8))}px`;
+  st.bar.style.top = `${Math.max(6, Math.round(r.top - st.bar.offsetHeight - 10))}px`;
 }
 
 /** The picked rectangle, normalised. */
@@ -58,9 +103,21 @@ function _sel(st) {
   };
 }
 
+/** A row or a column may have gone (an undo, a delete): keep the pick inside. */
+function _clampSel(st) {
+  if (!st.sel) return;
+  const R = Math.max(1, st.data.rows) - 1, C = Math.max(1, st.data.cols) - 1;
+  const k = (v, m) => Math.max(0, Math.min(m, Number(v) || 0));
+  st.sel = { r0: k(st.sel.r0, R), c0: k(st.sel.c0, C), r1: k(st.sel.r1, R), c1: k(st.sel.c1, C) };
+}
+
+// ─────────────────────────── drawing ───────────────────────────
+
+function _cells(st) { return st.host.querySelectorAll('td[data-cell]'); }
+
 function _paintSel(st) {
   const s = _sel(st);
-  for (const td of st.host.querySelectorAll('td')) {
+  for (const td of _cells(st)) {
     const [r, c] = String(td.dataset.cell || '').split(',').map(Number);
     const on = s && r >= s.r0 && r <= s.r1 && c >= s.c0 && c <= s.c1;
     td.style.outline = on ? '2px solid #2563eb' : '';
@@ -69,7 +126,98 @@ function _paintSel(st) {
   _bar(st);
 }
 
-/** Read the open cell back into the data (no redraw, no commit). */
+function _draw(st) {
+  const r = _rect(st);
+  st.host.innerHTML = tableOverlayHtml(st.data, {
+    width: Math.round(r.width),
+    ...(Number(r.height) > 0 ? { height: Math.round(r.height) } : {}),
+  });
+  for (const td of _cells(st)) {
+    td.style.cursor = 'cell';
+    td.style.userSelect = 'none';
+  }
+  _place(st);
+  _paintSel(st);
+  _chrome(st);
+}
+
+/**
+ * The grips: a bar above every column and beside every row (click to pick the
+ * whole line, drag to move it), and a thin handle on every inner border (drag
+ * to say how wide a column or how tall a row is). They live in their own fixed
+ * layer, NOT inside the table, so the table stays a pixel-exact twin of the
+ * picture while the grips are free to hang outside it.
+ */
+function _chrome(st) {
+  const r = _rect(st);
+  const sc = r.scale > 0 ? r.scale : 1;
+  const S = 1 / sc;                                 // keep the grips a constant size on screen
+  st.chrome.innerHTML = '';
+  const table = st.host.querySelector('table');
+  if (!table) { st.geom = null; return; }
+  const H = st.host.getBoundingClientRect();
+  if (!(H.width > 0)) { st.geom = null; return; }
+  const W = Math.round(r.width);                    // host-local width (un-scaled)
+  const rows = [...table.querySelectorAll('tr')].map(tr => {
+    const b = tr.getBoundingClientRect();
+    return { top: (b.top - H.top) / sc, h: b.height / sc };
+  });
+  const raw = Array.from({ length: st.data.cols }, (_, i) => {
+    const w = Number(st.data.widths?.[i]);
+    return w > 0 ? w : 1 / Math.max(1, st.data.cols);
+  });
+  const sum = raw.reduce((a, b) => a + b, 0) || 1;
+  const cols = raw.map(w => (w / sum) * W);
+  const TH = 15 * S, HIT = 9 * S, GAP = 5 * S;
+  const grip = 'border:0;margin:0;position:absolute;background:rgba(56,189,248,.5);border-radius:2px;pointer-events:auto;';
+  const bar = 'border:0;margin:0;position:absolute;background:rgba(56,189,248,.28);pointer-events:auto;';
+  let html = '';
+  let x = 0;
+  for (let i = 0; i < cols.length; i++) {
+    const w = cols[i];
+    html += `<i data-colg="${i}" title="Click: pick the column. Drag: move it." style="${grip}left:${x}px;top:${-TH - GAP}px;width:${Math.max(4 * S, w - 2 * S)}px;height:${TH}px;cursor:grab;"></i>`;
+    x += w;
+    if (i < cols.length - 1) {
+      html += `<i data-colh="${i}" title="Drag: how wide this column is" style="${bar}left:${x - HIT / 2}px;top:0;width:${HIT}px;height:100%;cursor:col-resize;"></i>`;
+    }
+  }
+  for (let i = 0; i < rows.length; i++) {
+    html += `<i data-rowg="${i}" title="Click: pick the row. Drag: move it." style="${grip}left:${-TH - GAP}px;top:${rows[i].top}px;width:${TH}px;height:${Math.max(4 * S, rows[i].h - 2 * S)}px;cursor:grab;"></i>`;
+    if (i < rows.length - 1) {
+      html += `<i data-rowh="${i}" title="Drag: how tall this row is" style="${bar}left:0;top:${rows[i].top + rows[i].h - HIT / 2}px;width:100%;height:${HIT}px;cursor:row-resize;"></i>`;
+    }
+  }
+  // the grip layer is a zero-sized anchor; the bars need the table's width
+  st.chrome.style.width = `${W}px`;
+  st.chrome.style.height = `${rows.length ? rows.at(-1).top + rows.at(-1).h : 0}px`;
+  st.chrome.innerHTML = html;
+  st.geom = { W, rows, cols, S };
+}
+
+/** The orange line that says where a dragged row or column will land. */
+function _dropLine(st, kind, to) {
+  const old = st.chrome.querySelector('[data-drop]');
+  if (old) old.remove();
+  const g = st.geom;
+  if (!g || to == null) return;
+  const el = document.createElement('i');
+  const base = 'position:absolute;background:#f59e0b;border-radius:2px;pointer-events:none;';
+  if (kind === 'row') {
+    const last = g.rows.at(-1);
+    const y = to >= g.rows.length ? (last ? last.top + last.h : 0) : g.rows[to].top;
+    el.style.cssText = `${base}left:0;top:${y - 1.5 * g.S}px;width:100%;height:${3 * g.S}px;`;
+  } else {
+    let x = 0;
+    for (let i = 0; i < to && i < g.cols.length; i++) x += g.cols[i];
+    el.style.cssText = `${base}top:0;left:${x - 1.5 * g.S}px;height:100%;width:${3 * g.S}px;`;
+  }
+  el.dataset.drop = '1';
+  st.chrome.appendChild(el);
+}
+
+// ─────────────────────────── writing ───────────────────────────
+
+/** Read the open cell back and commit it as its own change. */
 function _commitOpenCell(st) {
   const td = st.editing;
   if (!td) return false;
@@ -78,41 +226,38 @@ function _commitOpenCell(st) {
   const [r, c] = String(td.dataset.cell || '').split(',').map(Number);
   const text = String(td.innerText ?? '').replace(/ /g, ' ').replace(/\n+$/, '');
   if (!(r >= 0 && c >= 0)) return false;
-  if (text === (st.data.cells[r]?.[c] ?? '')) return false;
+  if (text === (st.data.cells?.[r]?.[c] ?? '')) return false;
   const cells = st.data.cells.map((row, y) => row.map((v, x) => (y === r && x === c ? text : v)));
-  _apply(st, { cells }, 'Edit table');
+  _apply(st, { cells }, 'Edit cell');
   return true;
 }
 
-/** Change the data, redraw the editor, and tell the owner. */
+/**
+ * Hand a change to the owner and take back whatever the table now is. The
+ * owner writes it, redraws the picture and pushes the undo entry.
+ */
 function _apply(st, patch, label) {
-  st.data = { ...st.data, ...patch };
-  st.ctx.onCommit?.(st.data, label);
+  if (!patch || !_open) return false;
+  const next = st.ctx.apply?.(patch, label);
+  if (!next) return false;
+  st.data = next;
+  _clampSel(st);
   _draw(st);
+  return true;
 }
 
-function _draw(st) {
-  const r = _rect(st);
-  // the same height the picture is drawn at, so the editor IS what you will get
-  st.host.innerHTML = tableOverlayHtml(st.data, {
-    width: Math.round(r.width),
-    ...(Number(r.height) > 0 ? { height: Math.round(r.height) } : {}),
-  });
-  for (const td of st.host.querySelectorAll('td')) {
-    td.style.cursor = 'cell';
-    td.style.userSelect = 'none';
-  }
-  _paintSel(st);
-  _place(st);
-}
+// ─────────────────────────── the bar ───────────────────────────
 
-/** The two-row bar: the look of the picked cells, and the shape of the table. */
 function _bar(st) {
+  // Never rebuild the bar while the user is holding a swatch open or typing a
+  // size into it — the element under their finger would vanish mid-gesture.
+  const act = document.activeElement;
+  if (act && st.bar.contains(act) && act.tagName === 'INPUT') return;
   const s = _sel(st);
   const one = s && s.r0 === s.r1 && s.c0 === s.c1;
   const f = s ? (st.data.fmt?.[`${s.r0},${s.c0}`] || {}) : {};
-  const b = (act, label, title, on) =>
-    `<button data-t="${act}" title="${_esc(title)}" style="height:22px;padding:0 7px;font-size:11.5px;border-radius:5px;cursor:pointer;`
+  const b = (a, label, title, on) =>
+    `<button data-t="${a}" title="${_esc(title)}" style="height:22px;padding:0 7px;font-size:11.5px;border-radius:5px;cursor:pointer;`
     + `border:1px solid ${on ? '#38bdf8' : 'rgba(255,255,255,.12)'};background:${on ? '#1d3a5f' : 'rgba(15,23,42,.9)'};color:#e2e8f0;">${label}</button>`;
   const where = !s ? 'no cells picked' : one ? `row ${s.r0 + 1}, column ${s.c0 + 1}` : `${s.r1 - s.r0 + 1}×${s.c1 - s.c0 + 1} cells`;
   const canM = s && canMerge(st.data, s.r0, s.c0, s.r1, s.c1);
@@ -123,7 +268,7 @@ function _bar(st) {
     + b('bold', '<b>B</b>', 'Bold', !!f.b) + b('italic', '<i>I</i>', 'Italic', !!f.i)
     + b('al-start', '⫷', 'Align to the start', f.a === 'start') + b('al-center', '⫿', 'Centre', f.a === 'center') + b('al-end', '⫸', 'Align to the end', f.a === 'end')
     + `<label style="display:flex;gap:3px;align-items:center;color:#94a3b8;font-size:11px;">size`
-    + `<input data-t="size" type="number" min="6" max="80" step="1" value="${Number(f.s) || st.data.size || 15}" style="width:52px;height:22px;background:#0f172a;color:#e2e8f0;border:1px solid rgba(255,255,255,.12);border-radius:5px;"></label>`
+    + `<input data-t="size" type="number" min="5" max="40" step="1" value="${Number(f.s) || st.data.size || 15}" style="width:52px;height:22px;background:#0f172a;color:#e2e8f0;border:1px solid rgba(255,255,255,.12);border-radius:5px;"></label>`
     + `<input data-t="fg" type="color" value="${_esc(f.c || st.data.color || '#111111')}" title="Text colour" style="width:28px;height:22px;padding:0;border:1px solid rgba(255,255,255,.12);border-radius:5px;background:none;">`
     + `<input data-t="bg" type="color" value="${_esc(f.bg || '#ffffff')}" title="Cell colour" style="width:28px;height:22px;padding:0;border:1px solid rgba(255,255,255,.12);border-radius:5px;background:none;">`
     + b('clear', '⌫', 'Clear the look of the picked cells')
@@ -135,69 +280,112 @@ function _bar(st) {
     + b('col-dup', '⧉ Col', 'Duplicate the column') + b('col-del', '🗑 Col', 'Delete the picked column(s)')
     + (canM ? b('merge', '⬓ Merge', 'Make the picked cells one') : '')
     + (canU ? b('unmerge', '⬚ Unmerge', 'Break the merged cell apart') : '')
+    + b('even-cols', '↔ Even', 'Give every column the same width')
+    + b('auto-rows', '↕ Auto', 'Let every row take the height its text needs')
     + b('head', 'Header', 'The first row is a heading', st.data.head !== false)
     + b('grid', 'Grid', 'Lines around every cell', st.data.grid !== false)
     + b('done', '✓ Done', 'Finish editing (Esc)')
     + `</div>`;
 }
 
-function _act(st, act, el) {
+function _act(st, a) {
   const s = _sel(st) || { r0: 0, c0: 0, r1: 0, c1: 0 };
   const d = st.data;
-  const go = (patch, label) => { if (patch) _apply(st, patch, label); };
-  if (act === 'bold')   return go(tableSetFmt(d, s.r0, s.c0, s.r1, s.c1, { b: d.fmt?.[`${s.r0},${s.c0}`]?.b ? null : 1 }), 'Cell look');
-  if (act === 'italic') return go(tableSetFmt(d, s.r0, s.c0, s.r1, s.c1, { i: d.fmt?.[`${s.r0},${s.c0}`]?.i ? null : 1 }), 'Cell look');
-  if (act.startsWith('al-')) return go(tableSetFmt(d, s.r0, s.c0, s.r1, s.c1, { a: act.slice(3) }), 'Cell look');
-  if (act === 'clear')  return go(tableSetFmt(d, s.r0, s.c0, s.r1, s.c1, { a: null, b: null, i: null, bg: null, c: null, s: null }), 'Clear the look');
-  if (act === 'row-above') return go(tableInsertRow(d, s.r0), 'Add row');
-  if (act === 'row-below') return go(tableInsertRow(d, s.r1 + 1), 'Add row');
-  if (act === 'row-dup')   return go(tableInsertRow(d, s.r1 + 1, s.r0), 'Duplicate row');
-  if (act === 'row-del')   return go(tableDeleteRows(d, s.r0, s.r1), 'Remove row');
-  if (act === 'col-before') return go(tableInsertCol(d, s.c0), 'Add column');
-  if (act === 'col-after')  return go(tableInsertCol(d, s.c1 + 1), 'Add column');
-  if (act === 'col-dup')    return go(tableInsertCol(d, s.c1 + 1, s.c0), 'Duplicate column');
-  if (act === 'col-del')    return go(tableDeleteCols(d, s.c0, s.c1), 'Remove column');
-  if (act === 'merge')   return go(tableMerge(d, s.r0, s.c0, s.r1, s.c1), 'Merge cells');
-  if (act === 'unmerge') { const m = mergeAt(d, s.r0, s.c0); return go(m && tableUnmerge(d, m.r, m.c, m.r + m.rs - 1, m.c + m.cs - 1), 'Unmerge cells'); }
-  if (act === 'head') return go({ head: d.head === false }, 'Heading row');
-  if (act === 'grid') return go({ grid: d.grid === false }, 'Table lines');
-  if (act === 'done') return closeOverlayTableEditor();
-  void el;
+  const go = (patch, label) => { _apply(st, patch, label); };
+  if (a === 'bold')   return go(tableSetFmt(d, s.r0, s.c0, s.r1, s.c1, { b: d.fmt?.[`${s.r0},${s.c0}`]?.b ? null : 1 }), 'Cell look');
+  if (a === 'italic') return go(tableSetFmt(d, s.r0, s.c0, s.r1, s.c1, { i: d.fmt?.[`${s.r0},${s.c0}`]?.i ? null : 1 }), 'Cell look');
+  if (a.startsWith('al-')) return go(tableSetFmt(d, s.r0, s.c0, s.r1, s.c1, { a: a.slice(3) }), 'Cell look');
+  if (a === 'clear')  return go(tableSetFmt(d, s.r0, s.c0, s.r1, s.c1, { a: null, b: null, i: null, bg: null, c: null, s: null }), 'Clear the look');
+  if (a === 'row-above') return go(tableInsertRow(d, s.r0), 'Add row');
+  if (a === 'row-below') return go(tableInsertRow(d, s.r1 + 1), 'Add row');
+  if (a === 'row-dup')   return go(tableInsertRow(d, s.r1 + 1, s.r0), 'Duplicate row');
+  if (a === 'row-del')   return go(tableDeleteRows(d, s.r0, s.r1), 'Remove row');
+  if (a === 'col-before') return go(tableInsertCol(d, s.c0), 'Add column');
+  if (a === 'col-after')  return go(tableInsertCol(d, s.c1 + 1), 'Add column');
+  if (a === 'col-dup')    return go(tableInsertCol(d, s.c1 + 1, s.c0), 'Duplicate column');
+  if (a === 'col-del')    return go(tableDeleteCols(d, s.c0, s.c1), 'Remove column');
+  if (a === 'merge')   return go(tableMerge(d, s.r0, s.c0, s.r1, s.c1), 'Merge cells');
+  if (a === 'unmerge') { const m = mergeAt(d, s.r0, s.c0); return go(m && tableUnmerge(d, m.r, m.c, m.r + m.rs - 1, m.c + m.cs - 1), 'Unmerge cells'); }
+  if (a === 'even-cols') return go({ widths: Array.from({ length: d.cols }, () => 1 / d.cols) }, 'Column width');
+  if (a === 'auto-rows') return go({ rowH: [] }, 'Row height');
+  if (a === 'head') return go({ head: d.head === false }, 'Heading row');
+  if (a === 'grid') return go({ grid: d.grid === false }, 'Table lines');
+  if (a === 'done') return closeOverlayTableEditor();
 }
 
 /** Type into one cell. */
 function _editCell(st, td) {
   if (st.editing === td) return;
+  const at = td.dataset?.cell;
   _commitOpenCell(st);
-  st.editing = td;
-  td.setAttribute('contenteditable', 'plaintext-only');
-  td.style.userSelect = 'text';
-  td.focus();
-  const rg = document.createRange(); rg.selectNodeContents(td);
+  // the commit may have redrawn: find the cell again by its address
+  const live = at ? st.host.querySelector(`td[data-cell="${at}"]`) : td;
+  if (!live) return;
+  st.editing = live;
+  live.setAttribute('contenteditable', 'plaintext-only');
+  live.style.userSelect = 'text';
+  live.focus();
+  const rg = document.createRange(); rg.selectNodeContents(live);
   const sel = window.getSelection(); sel?.removeAllRanges(); sel?.addRange(rg);
 }
 
+// ─────────────────────────── open ───────────────────────────
+
 /**
- * Open the editor.
- * @param {object} ctx { data, rect(), onCommit(data,label), onClose(data) }
+ * @param {object} ctx
+ *   getData()             the table as it is NOW (the owner holds it)
+ *   rect()                { left, top, width, height, scale, rot } on screen
+ *   apply(patch, label)   write a change; returns the new table, or null
+ *   onMenu(cell, x, y)    right-click on a cell
+ *   onClose()             the panel is gone
  */
 export function openOverlayTableEditor(ctx) {
   closeOverlayTableEditor();
+  const data = ctx.getData?.();
+  if (!data) return null;
+
   const host = document.createElement('div');
   host.dataset.sbsTableEditor = '1';
-  host.style.cssText = 'position:fixed;z-index:60;transform-origin:0 0;outline:2px dashed #f59e0b;font-family:Arial;';
+  // A PIXEL-EXACT TWIN of the rasteriser's wrapper (overlay.js _htmlToCanvas).
+  // Anything missing here shows up as "the layout changed after I exited":
+  // white-space alone moves every row that holds a line break.
+  const size = Math.max(6, Number(data.size) || 15);
+  host.style.cssText = [
+    'position:fixed', 'z-index:60', 'transform-origin:0 0',
+    'outline:2px dashed #f59e0b',
+    'padding:0', 'margin:0', 'border:0',
+    `color:${data.color || '#111111'}`,
+    'background-color:transparent',
+    'font-family:Arial', `font-size:${size}px`,
+    'font-weight:normal', 'font-style:normal', 'text-decoration:none',
+    'text-align:start', 'unicode-bidi:plaintext',
+    'box-sizing:border-box', 'white-space:pre-wrap', 'word-wrap:break-word',
+    'line-height:1.2', 'overflow:hidden',
+  ].join(';');
+
+  const chrome = document.createElement('div');
+  chrome.style.cssText = 'position:fixed;z-index:62;transform-origin:0 0;pointer-events:none;';
+
   const bar = document.createElement('div');
-  bar.style.cssText = 'position:fixed;z-index:61;background:rgba(10,15,25,.95);border:1px solid #38bdf8;border-radius:9px;'
+  bar.style.cssText = 'position:fixed;z-index:63;background:rgba(10,15,25,.95);border:1px solid #38bdf8;border-radius:9px;'
     + 'padding:5px 7px;box-shadow:0 8px 24px rgba(0,0,0,.5);color:#94a3b8;font:500 11.5px/1.2 system-ui,sans-serif;max-width:min(900px,94vw);';
+
   document.body.appendChild(host);
+  document.body.appendChild(chrome);
   document.body.appendChild(bar);
 
-  const st = { host, bar, data: JSON.parse(JSON.stringify(ctx.data)), sel: { r0: 0, c0: 0, r1: 0, c1: 0 }, ctx, editing: null, drag: false };
+  const st = {
+    host, bar, chrome, ctx, data,
+    sel: { r0: 0, c0: 0, r1: 0, c1: 0 },
+    editing: null, drag: false, grip: null, coldrag: null, rowdrag: null,
+    fmtTarget: null, geom: null,
+  };
   _open = st;
-  st.place = () => _place(st);
+
+  st.place = () => { _place(st); _chrome(st); };
   window.addEventListener('resize', st.place);
 
-  // picking cells
+  // ── picking cells ──
   host.addEventListener('pointerdown', (e) => {
     const td = e.target.closest?.('td[data-cell]');
     if (!td) return;
@@ -216,15 +404,16 @@ export function openOverlayTableEditor(ctx) {
     const [r, c] = String(td.dataset.cell).split(',').map(Number);
     if (r !== st.sel.r1 || c !== st.sel.c1) { st.sel = { ...st.sel, r1: r, c1: c }; _paintSel(st); }
   });
-  const endDrag = () => { st.drag = false; };
-  host.addEventListener('pointerup', endDrag);
-  window.addEventListener('pointerup', endDrag, { once: false });
+  host.addEventListener('dblclick', (e) => {
+    const td = e.target.closest?.('td[data-cell]');
+    if (td) { e.preventDefault(); e.stopPropagation(); _editCell(st, td); }
+  });
   host.addEventListener('contextmenu', (e) => {
     const td = e.target.closest?.('td[data-cell]');
     if (!td || !st.ctx.onMenu) return;
     e.preventDefault(); e.stopPropagation();
     const [r, c] = String(td.dataset.cell).split(',').map(Number);
-    // right-clicking INSIDE the picked block keeps the block — that is what
+    // Right-clicking INSIDE the picked block keeps the block — that is what
     // "delete these rows" has to mean. Outside it, the right-click picks a cell.
     const s = _sel(st);
     if (!(s && r >= s.r0 && r <= s.r1 && c >= s.c0 && c <= s.c1)) {
@@ -233,14 +422,152 @@ export function openOverlayTableEditor(ctx) {
     }
     st.ctx.onMenu({ r, c }, e.clientX, e.clientY);
   });
-  host.addEventListener('dblclick', (e) => {
-    const td = e.target.closest?.('td[data-cell]');
-    if (td) { e.preventDefault(); e.stopPropagation(); _editCell(st, td); }
+
+  // ── the grips: pick a line, move a line, resize a line ──
+  chrome.addEventListener('pointerdown', (e) => {
+    const el = e.target.closest?.('i[data-colg],i[data-rowg],i[data-colh],i[data-rowh]');
+    if (!el) return;
+    e.preventDefault(); e.stopPropagation();
+    _commitOpenCell(st);
+    const d = el.dataset;
+    const sc = _rect(st).scale || 1;
+    if (d.colg != null) {
+      const i = Number(d.colg);
+      st.sel = { r0: 0, c0: i, r1: Math.max(0, st.data.rows - 1), c1: i };
+      _paintSel(st);
+      st.grip = tableColMovable(st.data, i) ? { kind: 'col', i, to: i, moved: false } : null;
+      if (!st.grip) setStatus('This column runs through a merged cell — unmerge it first.', 'warn', 5000);
+    } else if (d.rowg != null) {
+      const i = Number(d.rowg);
+      st.sel = { r0: i, c0: 0, r1: i, c1: Math.max(0, st.data.cols - 1) };
+      _paintSel(st);
+      st.grip = tableRowMovable(st.data, i) ? { kind: 'row', i, to: i, moved: false } : null;
+      if (!st.grip) setStatus('This row runs through a merged cell — unmerge it first.', 'warn', 5000);
+    } else if (d.colh != null) {
+      const i = Number(d.colh);
+      const w = Array.from({ length: st.data.cols }, (_, k) => {
+        const v = Number(st.data.widths?.[k]);
+        return v > 0 ? v : 1 / Math.max(1, st.data.cols);
+      });
+      st.coldrag = { i, x: e.clientX, sc, w, next: null, moved: false, boxW: st.geom?.W || 1 };
+    } else if (d.rowh != null) {
+      const i = Number(d.rowh);
+      st.rowdrag = { i, y: e.clientY, sc, h0: st.geom?.rows?.[i]?.h || MIN_ROW_PX, h: 0, moved: false };
+    }
   });
 
-  // keys
-  host.addEventListener('keydown', (e) => {
-    e.stopPropagation();                                  // the app's shortcuts stay out
+  st.move = (e) => {
+    if (st.grip) {
+      const g = st.geom;
+      if (!g) return;
+      const H = st.host.getBoundingClientRect();
+      const sc = _rect(st).scale || 1;
+      if (st.grip.kind === 'row') {
+        const y = (e.clientY - H.top) / sc;
+        let to = g.rows.length;
+        for (let i = 0; i < g.rows.length; i++) {
+          if (y < g.rows[i].top + g.rows[i].h / 2) { to = i; break; }
+        }
+        st.grip.to = to;
+      } else {
+        const x = (e.clientX - H.left) / sc;
+        let to = g.cols.length, run = 0;
+        for (let i = 0; i < g.cols.length; i++) {
+          if (x < run + g.cols[i] / 2) { to = i; break; }
+          run += g.cols[i];
+        }
+        st.grip.to = to;
+      }
+      st.grip.moved = true;
+      _dropLine(st, st.grip.kind, st.grip.to);
+      return;
+    }
+    if (st.coldrag) {
+      const cd = st.coldrag;
+      const i = cd.i;
+      const f = ((e.clientX - cd.x) / (cd.sc || 1)) / Math.max(1, cd.boxW);
+      if (!cd.moved && Math.abs(f) < 0.002) return;
+      cd.moved = true;
+      const w = cd.w.slice();
+      const room = w[i] + w[i + 1];
+      const a = Math.max(MIN_COL, Math.min(room - MIN_COL, w[i] + f));
+      w[i] = a; w[i + 1] = room - a;
+      cd.next = w;
+      // live preview: write the <col> widths straight into the DOM
+      const sum = w.reduce((p, q) => p + q, 0) || 1;
+      st.host.querySelectorAll('col').forEach((c, k) => {
+        c.style.width = `${((w[k] / sum) * 100).toFixed(3)}%`;
+      });
+      _chrome(st);
+      return;
+    }
+    if (st.rowdrag) {
+      const rd = st.rowdrag;
+      const dy = (e.clientY - rd.y) / (rd.sc || 1);
+      if (!rd.moved && Math.abs(dy) < 1.5) return;
+      rd.moved = true;
+      rd.h = Math.max(MIN_ROW_PX, Math.round(rd.h0 + dy));
+      const tr = st.host.querySelectorAll('tr')[rd.i];
+      if (tr) tr.style.height = `${rd.h}px`;
+      _chrome(st);
+    }
+  };
+
+  st.up = () => {
+    if (st.grip) {
+      const g = st.grip; st.grip = null;
+      _dropLine(st, g.kind, null);
+      if (g.moved && g.to !== g.i && g.to !== g.i + 1) {
+        const patch = g.kind === 'row' ? tableMoveRow(st.data, g.i, g.to) : tableMoveCol(st.data, g.i, g.to);
+        if (_apply(st, patch, g.kind === 'row' ? 'Move row' : 'Move column')) {
+          const dest = g.to > g.i ? g.to - 1 : g.to;      // the pick travels with the line
+          st.sel = g.kind === 'row'
+            ? { r0: dest, c0: 0, r1: dest, c1: Math.max(0, st.data.cols - 1) }
+            : { r0: 0, c0: dest, r1: Math.max(0, st.data.rows - 1), c1: dest };
+          _paintSel(st);
+        }
+      }
+      return;
+    }
+    if (st.coldrag) {
+      const cd = st.coldrag; st.coldrag = null;
+      if (cd.moved && cd.next) _apply(st, { widths: cd.next }, 'Column width');
+      return;
+    }
+    if (st.rowdrag) {
+      const rd = st.rowdrag; st.rowdrag = null;
+      if (rd.moved) {
+        const rowH = Array.from({ length: st.data.rows }, (_, k) => Number(st.data.rowH?.[k]) || 0);
+        rowH[rd.i] = rd.h;
+        _apply(st, { rowH }, 'Row height');
+      }
+      return;
+    }
+    st.drag = false;
+  };
+  window.addEventListener('pointermove', st.move, true);
+  window.addEventListener('pointerup', st.up, true);
+
+  // ── keys. Ctrl+Z / Ctrl+Y are taken over: while a table is open they undo
+  //    the TABLE, never the animation behind it. Without this, a Ctrl+Z after
+  //    clicking a bar button reached the app's stack and could delete the very
+  //    table being edited. ──
+  st.keys = (e) => {
+    const mod = e.ctrlKey || e.metaKey;
+    if (mod && (e.code === 'KeyZ' || e.code === 'KeyY')) {
+      e.preventDefault(); e.stopPropagation();
+      const redo = e.code === 'KeyY' || e.shiftKey;
+      _commitOpenCell(st);                      // the cell in flight becomes its own entry first
+      const scope = redo ? undoManager.redoScope() : undoManager.undoScope();
+      if (scope !== TABLE_UNDO_SCOPE) {
+        setStatus(redo ? 'Nothing to redo in this table.' : 'Nothing more to undo in this table — finish (Esc) to undo the rest.', 'info', 5000);
+        return;
+      }
+      if (redo) undoManager.redo(); else undoManager.undo();
+      return;                                   // the owner calls refreshOverlayTableEditor()
+    }
+    if (!(st.host.contains(e.target) || st.bar.contains(e.target) || st.chrome.contains(e.target))) return;
+    e.stopPropagation();                        // the app's shortcuts stay out of the table
     if (e.key === 'Escape') { e.preventDefault(); closeOverlayTableEditor(); return; }
     const s = _sel(st);
     if (e.key === 'Tab' && s) {
@@ -276,40 +603,61 @@ export function openOverlayTableEditor(ctx) {
         (y >= s.r0 && y <= s.r1 && x >= s.c0 && x <= s.c1 ? '' : v)));
       _apply(st, { cells }, 'Clear cells');
     }
-  });
+  };
+  window.addEventListener('keydown', st.keys, true);
 
-  // paste: a block out of a spreadsheet fills the cells and grows the table
+  // ── paste: a block out of a spreadsheet fills the cells and grows the table ──
   host.addEventListener('paste', (e) => {
     const text = e.clipboardData?.getData('text/plain') ?? '';
     const s = _sel(st);
     if (!s || !/[\t\n]/.test(text)) return;               // one value: let the caret take it
     e.preventDefault(); e.stopPropagation();
     _commitOpenCell(st);
-    const patch = tablePaste(st.data, s.r0, s.c0, text);
-    if (patch) { _apply(st, patch, 'Paste into the table'); setStatus('Pasted into the table.', 'success', 3000); }
+    if (_apply(st, tablePaste(st.data, s.r0, s.c0, text), 'Paste into the table')) {
+      setStatus('Pasted into the table.', 'success', 3000);
+    }
   });
 
-  bar.addEventListener('pointerdown', (e) => e.stopPropagation());
+  // ── the bar ──
+  // A colour picker reports `change` only when it CLOSES — by then the user has
+  // usually clicked a cell, moving the pick. So the cells a swatch was opened
+  // FOR are snapshotted on the way down, and the commit uses that.
+  bar.addEventListener('pointerdown', (e) => {
+    e.stopPropagation();
+    if (e.target?.closest?.('[data-t="fg"],[data-t="bg"],[data-t="size"]')) st.fmtTarget = _sel(st);
+  }, true);
   bar.addEventListener('click', (e) => {
     const btn = e.target.closest?.('[data-t]');
     if (!btn || btn.tagName === 'INPUT') return;
     e.preventDefault(); e.stopPropagation();
-    _act(st, btn.dataset.t, btn);
+    _act(st, btn.dataset.t);
+  });
+  // live while the picker is open: paint the cells at once, commit on close
+  bar.addEventListener('input', (e) => {
+    const inp = e.target.closest?.('[data-t="fg"],[data-t="bg"]');
+    const s = st.fmtTarget;
+    if (!inp || !s) return;
+    for (const td of _cells(st)) {
+      const [r, c] = String(td.dataset.cell).split(',').map(Number);
+      if (r < s.r0 || r > s.r1 || c < s.c0 || c > s.c1) continue;
+      if (inp.dataset.t === 'bg') td.style.background = inp.value; else td.style.color = inp.value;
+    }
   });
   bar.addEventListener('change', (e) => {
     const inp = e.target.closest?.('[data-t]');
     if (!inp) return;
-    const s = _sel(st) || { r0: 0, c0: 0, r1: 0, c1: 0 };
+    const s = st.fmtTarget || _sel(st) || { r0: 0, c0: 0, r1: 0, c1: 0 };
+    st.fmtTarget = null;
     const key = inp.dataset.t;
-    const patch = key === 'size' ? { s: Math.max(6, Math.min(80, Number(inp.value) || st.data.size)) }
+    const patch = key === 'size' ? { s: Math.max(5, Math.min(40, Number(inp.value) || st.data.size)) }
       : key === 'fg' ? { c: String(inp.value).toLowerCase() }
       : key === 'bg' ? { bg: String(inp.value).toLowerCase() } : null;
     if (patch) _apply(st, tableSetFmt(st.data, s.r0, s.c0, s.r1, s.c1, patch), 'Cell look');
   });
 
   st.away = (e) => {
-    if (host.contains(e.target) || bar.contains(e.target)) return;
-    // the table's own right-click menu floats outside the host — clicking a
+    if (host.contains(e.target) || bar.contains(e.target) || chrome.contains(e.target)) return;
+    // the table's own right-click menu floats outside the panel — clicking a
     // command in it must not be read as "the user has left the table"
     if (e.target?.closest?.('.context-menu')) return;
     closeOverlayTableEditor();
