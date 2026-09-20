@@ -2619,11 +2619,12 @@ export function promoteCropMaskToGlobal(node, name) {
 }
 
 /** Break this node away from its global mask: copy the geometry inline so
- *  the node keeps exactly what it shows, then edit it freely on its own. */
+ *  the node keeps exactly what it shows — shape, place and angle — and simply
+ *  stops following the shared one. */
 export function forkCropMaskToCustom(node) {
   const def = _cropMaskDefById(node?.getAttr?.('cropMaskId'));
   if (!def) { console.warn('[mask] this node is not using a global mask'); return false; }
-  return setCropMask(node, { x: def.x, y: def.y, w: def.w, h: def.h, rot: def.rot || 0 }, `Fork "${def.name}" into a private mask`);
+  return setCropMask(node, { x: def.x, y: def.y, w: def.w, h: def.h, rot: def.rot || 0 }, `Make "${def.name}" mine`);
 }
 
 /** Re-draw every node on the CURRENT step bound to `id` (other steps pick
@@ -7016,7 +7017,8 @@ function _showOverlayContextMenu(node, x, y) {
   // 🎭 Crop masks (V0.3.2.220) — "Add mask…" on a bare image, "Crop options"
   // once it has one. Private vs shared is the whole vocabulary: a mask starts
   // private to this image, "Set as global" shares it, and from a shared one
-  // "Create new mask" forks a private copy back out.
+  // "Make this mask mine" breaks a private copy back out — either keeping the
+  // shape exactly, or opening the editor on a copy of it.
   const maskable = _isPlainImageOrVideo(node);
   const maskDefs = _cropMaskDefs();
   const boundId  = node.getAttr('cropMaskId') || null;
@@ -7028,7 +7030,17 @@ function _showOverlayContextMenu(node, x, y) {
           { label: '✎ Edit mask' + (boundDef ? ' (moves every image using it)' : ''),
             action: () => beginMaskEdit(node, { defId: boundDef ? boundDef.id : null }) },
           ...(boundDef
-            ? [{ label: '⑂ Create new mask (just for this image)',
+            ? [{ label: `⑂ Make this mask mine (keeps ${'“'}${boundDef.name}${'”'}’s exact shape)`,
+                 // Breaking away WITHOUT opening the editor: the image keeps
+                 // precisely what it shows, rotation and all, and simply stops
+                 // following the shared one. This existed and was never in the
+                 // menu — the only way out was to re-cut the mask by hand.
+                 action: () => {
+                   if (forkCropMaskToCustom(node)) {
+                     setStatus(`This image keeps the shape and no longer follows “${boundDef.name}”.`, 'success', 5000);
+                   }
+                 } },
+               { label: '✎ Make it mine and edit it…',
                  // Seeded from the shared shape but committed privately, so
                  // this is ONE undoable change and Cancel leaves the image
                  // still using the shared mask.
