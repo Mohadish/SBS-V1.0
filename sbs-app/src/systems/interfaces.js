@@ -165,6 +165,10 @@ export async function chooseAndInsertInterfaceFile() {
 }
 
 /** True if a Konva node is one of our interface overlays. */
+// 🎯 The interface's rectangle lives in a pure module so it can be tested
+// offline; re-exported here because this is where you would look for it.
+export { stepInterfaceRect } from './interface-rect-core.js';
+
 export function isInterfaceNode(node) {
   return !!(node && (node.getAttr?.('isInterface') || node.hasName?.('interface')));
 }

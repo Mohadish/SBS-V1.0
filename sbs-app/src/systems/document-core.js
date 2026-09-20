@@ -51,7 +51,7 @@ export function emptyDocument() {
     fields: { title: '', docNo: '', rev: 'A', company: '' },
     header: { left: '{company}', center: '{title}', right: '{docNo} · rev {rev}' },
     footer: { left: '{project}', center: '{chapter}', right: 'Page {page} / {pages}' },
-    // numbering: 'step' = the animation's step numbers · 'page' = 1,2,3 per page · 'none'
+    // numbering: 'step' = the animation's step numbers · 'page' = 1,2,3 restarting with each chapter · 'none'
     // direction: 'auto' (from the text: Hebrew / Arabic → right-to-left) · 'ltr' · 'rtl'   ·   pictureNumbers: the step number on each picture
     // toc: a contents page (chapters → page numbers) opens the document; it counts as page 1, so everything after it shifts
     options: { includeHidden: false, numbering: 'step', direction: 'auto', pictureNumbers: true, toc: true },
@@ -538,6 +538,48 @@ export function zoomFromPercent(pct, fallback = 1) {
   return Number.isFinite(n) && n > 0 ? clampUiZoom(n / 100) : clampUiZoom(fallback);
 }
 
+/**
+ * 🎯 The fit that makes one RECTANGLE OF THE PICTURE fill the slot (V0.3.4.36).
+ *
+ * `box` is in fractions of the picture ({x,y,w,h} in 0…1) — the interface's
+ * rectangle, say. The result is an ordinary { zoom, ox, oy }, so everything
+ * downstream (pictureBox, the drag, the percentage field) treats it as any
+ * other fit and the user can move it afterwards.
+ *
+ * At zoom 1 the picture already covers the slot by k = max(1, a / (w/h)); the
+ * picture is then k·zoom slot-widths across and k·zoom·w/(a·h) slot-heights
+ * tall. Filling the slot with the box means zooming until the box spans both,
+ * and shifting the picture so the box's centre is the slot's centre.
+ */
+export function fitToBox(rect, aspect, box, adjust) {
+  const a = aspect > 0 ? aspect : 16 / 9;
+  const w = rect?.w > 0 ? rect.w : 1, h = rect?.h > 0 ? rect.h : 1;
+  const bw = Math.min(Math.max(Number(box?.w) || 0, 1e-4), 1);
+  const bh = Math.min(Math.max(Number(box?.h) || 0, 1e-4), 1);
+  const cx = Number(box?.x) + bw / 2, cy = Number(box?.y) + bh / 2;
+  const k = Math.max(1, a / (w / h));
+  const zoom = Math.max(1 / (bw * k), (h * a) / (bh * k * w));
+  const adj = { zoom: Number(adjust?.zoom) > 0 ? Number(adjust.zoom) : 1, ox: Number(adjust?.ox) || 0, oy: Number(adjust?.oy) || 0 };
+  const z = zoom * adj.zoom;
+  const Pw = k * z, Ph = k * z * w / (a * h);
+  return {
+    zoom: z,
+    ox: -((Number.isFinite(cx) ? cx : 0.5) - 0.5) * Pw + adj.ox,
+    oy: -((Number.isFinite(cy) ? cy : 0.5) - 0.5) * Ph + adj.oy,
+  };
+}
+
+/** What `adjust` turns the standard framing of THIS picture into `fit` (V0.3.4.36). */
+export function adjustFromFit(rect, aspect, box, fit) {
+  const base = fitToBox(rect, aspect, box, null);
+  const zoom = base.zoom > 0 ? (Number(fit?.zoom) || base.zoom) / base.zoom : 1;
+  // The offsets are measured AT THE ZOOM THEY WILL BE APPLIED AT: the centring
+  // term scales with the zoom, so a difference taken against the unzoomed
+  // framing would not reproduce it.
+  const at = fitToBox(rect, aspect, box, { zoom, ox: 0, oy: 0 });
+  return { zoom, ox: (Number(fit?.ox) || 0) - at.ox, oy: (Number(fit?.oy) || 0) - at.oy };
+}
+
 /** The zoom at which the WHOLE picture is visible inside the slot (nothing cropped). */
 export function containZoom(rect, aspect) {
   const a = aspect > 0 ? aspect : 16 / 9, sa = rect.w / rect.h;
@@ -652,6 +694,7 @@ export function sanitizeCustomItem(it, area = CONTENT_MM) {
     const at = Math.round(Number(it?.atMs));
     return { ...base, type: 'image', assetId: String(it.assetId || ''), stepId: it.stepId ? String(it.stepId) : '',
       moment: it.moment === 'start' ? 'start' : 'end', logo: !!it.logo, fit: fitOf(it),
+      ...(it?.fit ? { fitSet: true } : {}),
       // the frame of a video step this picture is taken at (V0.3.4.30); absent = the clip's first frame
       ...(Number.isFinite(at) && at >= 0 ? { atMs: at } : {}) };
   }
@@ -767,6 +810,9 @@ export function buildRenderModel(doc, steps, chapters, ctx) {
   // number, so the numbering below can stay single-pass.
   const withSteps = doc?.options?.tocSteps !== false;
   const tocLines = [];
+  // …and the number each unit gets in "1, 2, 3 within each chapter" mode, so the
+  // contents and the page badge can never disagree (V0.3.4.36).
+  const pageNoOf = new Map();
   {
     let prevCh = null;
     // "1, 2, 3 on every page" counts within a PAGE on the page itself; in the
@@ -782,17 +828,22 @@ export function buildRenderModel(doc, steps, chapters, ctx) {
         inChapter = 0;
       }
       if (ch) prevCh = ch.id;
-      if (!withSteps) continue;
       // one line per UNIT on this page (a silent sub-step is part of its unit,
-      // and a merged page gives its units the same page number — both correct)
+      // and a merged page gives its units the same page number — both correct).
+      // The loop runs even with the step lines switched off: the page badge
+      // reads its counter.
       for (const uid of e.page.stepIds || []) {
         if (!shown(uid)) continue;
         const st = stepById.get(uid);
-        inChapter++;
+        // A step that belongs to no chapter keeps the global number and does not
+        // advance the chapter's count — the rule numberSteps and the header
+        // already follow (perChapter && s.chapterId).
+        if (ch) { inChapter++; pageNoOf.set(uid, inChapter); }
+        if (!withSteps) continue;
         tocLines.push({
           kind: 'step',
           no: doc?.options?.numbering === 'none' ? ''
-            : perChapterNo ? String(inChapter)
+            : (perChapterNo && ch) ? String(inChapter)
             : (nums.get(uid)?.label || ''),
           name: st?.name || '',
           pageId: e.page.id,
@@ -843,13 +894,22 @@ export function buildRenderModel(doc, steps, chapters, ctx) {
     for (const uid of p.stepIds) {
       const u = unitById.get(uid);
       if (!u || hidden.has(uid)) continue;
+      let sub = 0;
       for (const sid of u.members) {
         const s = stepById.get(sid);
         if (!s) continue;
         const t = docTextFor(s, doc.texts, ctx.hashOf);
         if (!t.text.trim() && sid !== u.id) continue;        // a silent sub-step adds no line
         k++;
-        const label = doc.options?.numbering === 'none' ? '' : doc.options?.numbering === 'page' ? String(k) : (nums.get(sid)?.label || '');
+        // "1, 2, 3" counts per CHAPTER, and it is the SAME counter the contents
+        // prints (V0.3.4.36) — they used to disagree on every line, the page
+        // restarting per page and the contents per chapter. Sub-steps hang off
+        // their unit's number the way numberSteps already writes groups.
+        const headNo = pageNoOf.get(uid);
+        const label = doc.options?.numbering === 'none' ? ''
+          : doc.options?.numbering === 'page'
+            ? (sid === u.id ? String(headNo ?? k) : `${headNo ?? k}.${++sub}`)
+            : (nums.get(sid)?.label || '');
         items.push({ stepId: sid, label, name: s.name || '', text: t.text, edited: t.edited, drifted: t.drifted });
       }
     }
@@ -877,7 +937,9 @@ export function buildRenderModel(doc, steps, chapters, ctx) {
       items: c.items.map(it => {
         if (it.type !== 'image') return it;
         // a picture taken from the ANIMATION: rendered on demand like a page picture (end of the step, or its BEFORE frame)
-        if (it.stepId) return stepById.has(it.stepId) ? { ...it, src: null, key: stillKey(it.stepId, it.moment, it.atMs), aspect: ctx?.stillAspect > 0 ? ctx.stillAspect : 16 / 9, label: nums.get(it.stepId)?.label || '' } : { ...it, src: null, stepId: '', aspect: 16 / 9 };
+        if (it.stepId) return stepById.has(it.stepId)
+          ? _ifaceFitFor({ ...it, rect: { w: it.w, h: it.h }, src: null, key: stillKey(it.stepId, it.moment, it.atMs), aspect: ctx?.stillAspect > 0 ? ctx.stillAspect : 16 / 9, label: nums.get(it.stepId)?.label || '' }, doc, ctx)
+          : { ...it, src: null, stepId: '', aspect: 16 / 9 };
         const a = doc?.assets?.[it.assetId];
         const good = a && ASSET_URL_RX.test(String(a.dataUrl || '')) && a.w > 0 && a.h > 0;
         return { ...it, src: good ? a.dataUrl : null, aspect: good ? a.w / a.h : 1, name: good ? (a.name || '') : '' };
@@ -922,13 +984,37 @@ export function slotState(p, k) {
   if (im.stepId) return 'step';
   return k === 0 && !im.empty ? 'auto' : 'empty';        // legacy: slot 0 without a choice was always automatic
 }
+/**
+ * 🎯 THE INTERFACE FRAMING (V0.3.4.36). When the document asks for it, a picture
+ * of a step that holds an interface is zoomed and shifted so the interface
+ * fills the frame, plus whatever standard adjustment the user has settled on.
+ *
+ * It is applied ONLY where nobody has framed the picture by hand: the moment a
+ * picture is dragged or zoomed its own fit is stored, and a stored fit always
+ * wins. That is what makes switching the option off and on again keep every
+ * picture you fixed — there is nothing to restore, because nothing was
+ * overwritten. "Back to the standard framing" simply drops the stored fit.
+ */
+function _ifaceFitFor(out, doc, ctx) {
+  if (!out?.stepId || out.moment === 'start' || out.fitSet) return out;
+  if (doc?.options?.ifaceFit !== true || typeof ctx?.ifaceRectOf !== 'function') return out;
+  const box = ctx.ifaceRectOf(out.stepId);
+  if (!box) return out;
+  return { ...out, fit: fitToBox(out.rect, out.aspect, box, doc.options.ifaceAdjust), ifaceFramed: true };
+}
+
 function _slotOf(p, k, rect, nSlots, unitById, hidden, doc, ctx) {
+  return _ifaceFitFor(_slotOfRaw(p, k, rect, nSlots, unitById, hidden, doc, ctx), doc, ctx);
+}
+
+function _slotOfRaw(p, k, rect, nSlots, unitById, hidden, doc, ctx) {
   const im = p.images?.[k] || null;
   const state = slotState(p, k);
   // The chosen video frame rides on the slot model too (V0.3.4.32) — without it
   // stillKey below never saw the time, so a picked frame changed nothing at all.
   const _at = Math.round(Number(im?.atMs));
   const base = { rect, fit: fitOf(im), state, stepId: null, moment: 'end', assetId: null, src: null,
+    ...(im?.fit ? { fitSet: true } : {}),
     ...(Number.isFinite(_at) && _at >= 0 ? { atMs: _at } : {}),
     aspect: ctx?.stillAspect > 0 ? ctx.stillAspect : 16 / 9 };
   if (state === 'asset') {

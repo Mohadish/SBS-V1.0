@@ -46,7 +46,7 @@ body { font-family: Arial, Helvetica, sans-serif; color: #111; -webkit-print-col
 .toc .tl.ts .td { border-bottom-color: #bbb; }
 .ctb { overflow: hidden; }
 .ctb table { width: 100%; border-collapse: collapse; table-layout: fixed; }
-.ctb th, .ctb td { border: 0.25mm solid #555; padding: 1.1mm 1.5mm; vertical-align: top; text-align: inherit; font-weight: 400; word-break: break-word; line-height: 1.3; }
+.ctb th, .ctb td { border: 0.25mm solid #555; padding: 1.1mm 1.5mm; vertical-align: top; text-align: inherit; font-weight: 400; white-space: pre-wrap; word-break: break-word; line-height: 1.3; }
 .ctb th { font-weight: 700; background: #ececec; }
 .ctb.nogrid th, .ctb.nogrid td { border: 0; border-bottom: 0.25mm solid #ccc; }
 .ctb.zebra tbody tr:nth-child(even) td { background: #f4f4f4; }

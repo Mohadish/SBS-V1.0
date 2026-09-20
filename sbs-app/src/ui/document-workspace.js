@@ -18,7 +18,7 @@ import { setStatus } from './status.js';
 import { srcHashOf } from '../systems/language-packs.js';
 import { numberSteps } from '../systems/translation-sheet-core.js';
 import { builtinTemplates, docTextFor, pageRangeLabel, unitsOf, stillsNeeded, pictureBox, containZoom, slotState, directionOf, bandsOf, BAND_MM,
-         zoomAfterWheel, zoomAfterButton, zoomPercent, zoomFromPercent, clampUiZoom } from '../systems/document-core.js';
+         zoomAfterWheel, zoomAfterButton, zoomPercent, zoomFromPercent, clampUiZoom, adjustFromFit } from '../systems/document-core.js';
 import { DOCUMENT_CSS, renderPageHtml, renderTocPageHtml, renderCustomPageHtml, slotInnerHtml } from '../systems/document-render.js';
 import { watermarkOf, watermarkHtml, watermarkCss, watermarkVisible, detectWatermarkMode, bakeWatermarkPixels, fitWithin } from '../systems/watermark-core.js';
 import * as D from '../systems/document.js';
@@ -365,8 +365,9 @@ function _renderLeft(c) {
     <div class="dw-h">Document</div>
     ${[['title', 'Title'], ['company', 'Company'], ['docNo', 'Document no.'], ['rev', 'Revision']].map(([k, l]) => `<label class="dw-lab">${l}<input class="dw-in" data-field="${k}" value="${_esc(f[k] || '')}" dir="auto"></label>`).join('')}
     <label class="dw-lab">Step numbers
-      <select class="dw-in" data-opt="numbering">${[['step', 'The same numbers as the animation'], ['page', '1, 2, 3 on every page'], ['none', 'No numbers']].map(([v, l]) => `<option value="${v}"${(c.doc.options?.numbering || 'step') === v ? ' selected' : ''}>${l}</option>`).join('')}</select></label>
+      <select class="dw-in" data-opt="numbering">${[['step', 'The same numbers as the animation'], ['page', '1, 2, 3 restarting with each chapter'], ['none', 'No numbers']].map(([v, l]) => `<option value="${v}"${(c.doc.options?.numbering || 'step') === v ? ' selected' : ''}>${l}</option>`).join('')}</select></label>
     <label style="display:flex;gap:8px;align-items:center;margin:0 0 7px;font-size:11.5px;color:#cbd5e1;"><input type="checkbox" data-opt="pictureNumbers"${c.doc.options?.pictureNumbers !== false ? ' checked' : ''}> Step number on each picture (pages with several steps)</label>
+    <label style="display:flex;gap:8px;align-items:center;margin:0 0 7px;font-size:11.5px;color:#cbd5e1;" title="A step that shows an interface is pictured on the interface: the picture is zoomed so the panel fills its frame. Move any picture yourself and your framing is kept — switching this off and on again never takes it back."><input type="checkbox" data-opt="ifaceFit"${c.doc.options?.ifaceFit === true ? ' checked' : ''}> 🎯 Frame the picture on the interface</label>
     <label style="display:flex;gap:8px;align-items:center;margin:0 0 7px;font-size:11.5px;color:#cbd5e1;" title="A contents page opens the document: every chapter with the page it starts on. It counts as page 1."><input type="checkbox" data-opt="toc"${c.doc.options?.toc !== false ? ' checked' : ''}> Table of contents (chapters → pages)</label>
     <label style="display:flex;gap:8px;align-items:center;margin:0 0 7px 22px;font-size:11.5px;color:${c.doc.options?.toc !== false ? '#cbd5e1' : '#64748b'};" title="Under each chapter, every step of that chapter with the page it is on."><input type="checkbox" data-opt="tocSteps"${c.doc.options?.tocSteps !== false ? ' checked' : ''}${c.doc.options?.toc !== false ? '' : ' disabled'}> …and the steps under each chapter</label>
     <label class="dw-lab">Reading direction
@@ -827,7 +828,7 @@ function _commitText(tx) {
 }
 function _commitFocusedText() {
   const f = _shadow?.activeElement;
-  if (f?.classList?.contains('tx') || (f?.classList?.contains('ct') && f.isContentEditable)) f.blur();
+  if (f?.classList?.contains('tx') || _typingInPage(f)) f.blur();
 }
 
 function _onPageClick(e) {
@@ -878,7 +879,11 @@ function _placeSlotBar() {
   bar.innerHTML = `<button class="dw-btn" data-act="slot-menu" style="padding:2px 9px;" title="Which picture goes here">Picture ▾</button>
     ${has ? `<button class="dw-btn" data-act="slot-fill" style="padding:2px 9px;" title="Fill the frame, centred (cropping what does not fit)">Fill</button>
     <button class="dw-btn" data-act="slot-whole" style="padding:2px 9px;" title="Show the whole picture inside the frame">Whole</button>
-${im?.stepId && im.moment !== 'start' && D.stepClips(im.stepId).length ? `<button class="dw-btn" data-act="slot-frame" style="padding:2px 9px;" title="This step holds a video — choose which frame of it this picture shows">🎞 Frame${im.atMs != null ? ` ${(im.atMs / 1000).toFixed(2)}s` : ''}…</button>` : ''}
+${im?.stepId && im.moment !== 'start' && _ifaceOn(im) ? (im.ifaceFramed
+      ? '<span style="padding:0 4px;color:#7dd3fc;" title="This picture follows the standard interface framing. Drag or zoom it and your own framing is kept instead.">🎯 on the interface</span>'
+      : '<button class="dw-btn" data-act="slot-iface-std" style="padding:2px 9px;" title="Frame it on the interface again, the standard way">🎯 Standard framing</button>'
+        + '<button class="dw-btn" data-act="slot-iface-set" style="padding:2px 9px;" title="Make THIS framing the standard one for every interface in the document">⊹ Set as standard</button>') : ''}
+    ${im?.stepId && im.moment !== 'start' && D.stepClips(im.stepId).length ? `<button class="dw-btn" data-act="slot-frame" style="padding:2px 9px;" title="This step holds a video — choose which frame of it this picture shows">🎞 Frame${im.atMs != null ? ` ${(im.atMs / 1000).toFixed(2)}s` : ''}…</button>` : ''}
     <button class="dw-btn" data-act="slot-zoom" data-d="-1" style="padding:2px 8px;" title="5% smaller">−</button><input class="dw-in" data-slot-zoom type="text" inputmode="decimal" data-slot="${_slotSel}" value="${zoomPercent(im ? im.fit.zoom : 1)}" title="How big the picture is inside its frame. 100% fills the frame. Type a number and press Enter." style="width:52px;text-align:right;padding:1px 4px;"><span style="margin-inline-start:-2px;">%</span><button class="dw-btn" data-act="slot-zoom" data-d="1" style="padding:2px 8px;" title="5% larger">+</button>
     <span style="padding:0 4px;">drag to move · wheel to scale</span>` : ''}<span style="padding:0 4px;color:#64748b;">${_esc(what)}</span>`;
   _placeSlotBarAt(bar, el);
@@ -1000,6 +1005,11 @@ function _flushWheel() {
 }
 /** A re-render replaces the page under a gesture: land the pending commit, never drop it. */
 function _dropWheelFit() { if (_wheelFit && !_wheelFit.done && _wheelTimer) _flushWheel(); _wheelFit = null; }
+
+/** Is the interface framing switched on, and does this picture's step have one? */
+function _ifaceOn(im) {
+  return D.getDocument()?.options?.ifaceFit === true && !!im?.stepId && !!D.stepIfaceRect(im.stepId);
+}
 
 /**
  * 🎞 Choose which frame of the step's video this picture shows. The step does
@@ -1230,10 +1240,11 @@ function _drawCustomSel() {
   // 📋 a table also gets a grab bar on every column border
   let colHandles = '';
   if (it.type === 'table' && Array.isArray(it.widths)) {
+    const rtl = _pageRtl();                       // an RTL page draws column 1 on the RIGHT
     let acc = 0;
     for (let i = 0; i < it.widths.length - 1; i++) {
       acc += it.widths[i];
-      colHandles += `<i data-colh="${i}" title="Drag: how wide this column is" style="left:${(acc * 100).toFixed(3)}%;top:0;width:7px;height:100%;margin-left:-3.5px;margin-top:0;border:0;border-radius:0;background:rgba(56,189,248,0.45);cursor:col-resize;"></i>`;
+      colHandles += `<i data-colh="${i}" data-acc="${(rtl ? 1 - acc : acc).toFixed(5)}" title="Drag: how wide this column is" style="left:${((rtl ? 1 - acc : acc) * 100).toFixed(3)}%;top:0;width:7px;height:100%;margin-left:-3.5px;margin-top:0;border:0;border-radius:0;background:rgba(56,189,248,0.45);cursor:col-resize;"></i>`;
     }
   }
   pg.insertAdjacentHTML('beforeend', `<div class="csel" style="left:${it.x}mm;top:${it.y}mm;width:${it.w}mm;height:${it.h}mm;">${C_HANDLES.map(h => `<i data-ch="${h}" style="left:${h.includes('w') ? 0 : h.includes('e') ? 100 : 50}%;top:${h.includes('n') ? 0 : h.includes('s') ? 100 : 50}%;cursor:${h === 'n' || h === 's' ? 'ns' : h === 'e' || h === 'w' ? 'ew' : h === 'nw' || h === 'se' ? 'nwse' : 'nesw'}-resize;"></i>`).join('')}</div>`);
@@ -1313,6 +1324,7 @@ function _bandLeftHtml() {
       <b>↺ Standard</b> throws the design away. <b>✓ Done</b> or Esc goes back to the page.</div>`;
 }
 
+const _pageRtl = () => _shadow.querySelector('.page')?.getAttribute('dir') === 'rtl';
 const _itemsNow = () => (_bandEdit ? (bandsOf(D.getDocument())[_bandEdit]?.items || []) : (_customExtra()?.items || [])).map(i => ({ ...i }));
 function _commitItems(items, label) {
   if (_bandEdit) D.setBands({ [_bandEdit]: { items } }, label);
@@ -1334,13 +1346,13 @@ function _onCustomPointerDown(e) {
     if (tb?.type === 'table') {
       e.preventDefault();
       _commitFocusedText();
-      _coldrag = { id: _customSel, i: Number(colh.dataset.colh), x: e.clientX, w: tb.widths.slice(), boxW: tb.w, k: _mmPerPx(), moved: false };
+      _coldrag = { id: _customSel, i: Number(colh.dataset.colh), x: e.clientX, w: tb.widths.slice(), boxW: tb.w, k: _mmPerPx(), rtl: _pageRtl(), moved: false };
       try { colh.setPointerCapture(e.pointerId); } catch { /* synthetic pointer */ }
       return;
     }
   }
   const handle = e.target.closest?.('[data-ch]'), itemEl = e.target.closest?.('.ci[data-item]');
-  if (itemEl?.isContentEditable) return;                              // typing: the text box is a text field now
+  if (itemEl?.isContentEditable || e.target.closest?.('[data-cell]')?.isContentEditable) return;   // typing: the text box — or the open table cell — is a text field now
   if (itemEl && !handle) {
     const band = itemEl.dataset.band || '';
     if (host === 'custom' && band) return;                            // the header / footer of a custom page: a click opens their editor (_onPageClick)
@@ -1358,7 +1370,7 @@ function _onCustomPointerDown(e) {
 function _onCustomPointerMove(e) {
   const cd = _coldrag;
   if (cd) {
-    const f = ((e.clientX - cd.x) * cd.k) / Math.max(1, cd.boxW);       // mm → fraction of the table
+    const f = ((e.clientX - cd.x) * cd.k * (cd.rtl ? -1 : 1)) / Math.max(1, cd.boxW);   // mm → fraction of the table (mirrored on an RTL page)
     const MIN = 0.05;
     const room = cd.w[cd.i] + cd.w[cd.i + 1];
     const a = Math.min(Math.max(cd.w[cd.i] + f, MIN), room - MIN);
@@ -1369,7 +1381,7 @@ function _onCustomPointerMove(e) {
     cols.forEach((c, i) => { c.style.width = `${(next[i] * 100).toFixed(3)}%`; });
     const hs = _shadow.querySelectorAll('.csel [data-colh]');
     let acc = 0;
-    hs.forEach((h, i) => { acc += next[i]; h.style.left = `${(acc * 100).toFixed(3)}%`; });
+    hs.forEach((h, i) => { acc += next[i]; h.style.left = `${((cd.rtl ? 1 - acc : acc) * 100).toFixed(3)}%`; });
     return;
   }
   const d = _cdrag; if (!d) return;
@@ -1456,11 +1468,16 @@ function _onCustomKey(e) {
     if (cell?.dataset?.cell !== undefined) {
       e.preventDefault();
       const owner = cell.closest('.ci[data-item]');
+      const id = owner?.dataset.item;
       const cells = owner ? [...owner.querySelectorAll('[data-cell]')] : [];
-      const i = cells.indexOf(cell);
-      const next = cells[i + (e.shiftKey ? -1 : 1)];
+      const want = cells[cells.indexOf(cell) + (e.shiftKey ? -1 : 1)]?.dataset.cell;
       cell.blur();                                            // commits this cell
-      if (next) setTimeout(() => next.dispatchEvent(new MouseEvent('dblclick', { bubbles: true })), 0);
+      // The commit re-renders the page, so the next cell is found by its
+      // ADDRESS after that, never by a node reference taken before it.
+      if (id && want) setTimeout(() => {
+        _shadow.querySelector(`.ci[data-item="${CSS.escape(id)}"] [data-cell="${want}"]`)
+          ?.dispatchEvent(new MouseEvent('dblclick', { bubbles: true }));
+      }, 0);
       return true;
     }
   }
@@ -1576,21 +1593,25 @@ function _customAct(act, el) {
   if (act === 'ci-italic') { _patchItem({ italic: !it.italic }, 'Italic'); return true; }
   if (act.startsWith('ci-align-')) { _patchItem({ align: act.slice(9) }, 'Align text'); return true; }
   if (it.type === 'table') {
+    // the DOCUMENT's table, not the rendered snapshot: a cell committed by the
+    // blur this very click caused has not reached _customModel yet, so growing
+    // from the rendered one would throw the typing away.
+    const live = _itemsNow().find(i => i.id === _customSel) || it;
     const grow = (rows, cols) => {
-      const cells = Array.from({ length: rows }, (_, r) => Array.from({ length: cols }, (_, c) => it.cells?.[r]?.[c] ?? ''));
-      let widths = it.widths.slice(0, cols);
+      const cells = Array.from({ length: rows }, (_, r) => Array.from({ length: cols }, (_, c) => live.cells?.[r]?.[c] ?? ''));
+      let widths = (live.widths || []).slice(0, cols);
       while (widths.length < cols) widths.push(1 / cols);
       const sum = widths.reduce((a2, b2) => a2 + b2, 0) || 1;
       widths = widths.map(v => v / sum);
       return { rows, cols, cells, widths };
     };
-    if (act === 'ci-row-add') { _patchItem(grow(Math.min(it.rows + 1, 40), it.cols), 'Add row'); return true; }
-    if (act === 'ci-row-del') { if (it.rows > 1) _patchItem(grow(it.rows - 1, it.cols), 'Remove row'); return true; }
-    if (act === 'ci-col-add') { _patchItem(grow(it.rows, Math.min(it.cols + 1, 10)), 'Add column'); return true; }
-    if (act === 'ci-col-del') { if (it.cols > 1) _patchItem(grow(it.rows, it.cols - 1), 'Remove column'); return true; }
-    if (act === 'ci-head')  { _patchItem({ head: it.head === false }, 'Heading row'); return true; }
-    if (act === 'ci-grid')  { _patchItem({ grid: it.grid === false }, 'Table lines'); return true; }
-    if (act === 'ci-zebra') { _patchItem({ zebra: !it.zebra }, 'Striped rows'); return true; }
+    if (act === 'ci-row-add') { _patchItem(grow(Math.min(live.rows + 1, 40), live.cols), 'Add row'); return true; }
+    if (act === 'ci-row-del') { if (live.rows > 1) _patchItem(grow(live.rows - 1, live.cols), 'Remove row'); return true; }
+    if (act === 'ci-col-add') { _patchItem(grow(live.rows, Math.min(live.cols + 1, 10)), 'Add column'); return true; }
+    if (act === 'ci-col-del') { if (live.cols > 1) _patchItem(grow(live.rows, live.cols - 1), 'Remove column'); return true; }
+    if (act === 'ci-head')  { _patchItem({ head: live.head === false }, 'Heading row'); return true; }
+    if (act === 'ci-grid')  { _patchItem({ grid: live.grid === false }, 'Table lines'); return true; }
+    if (act === 'ci-zebra') { _patchItem({ zebra: !live.zebra }, 'Striped rows'); return true; }
   }
   if (act === 'ci-fill') { _patchItem({ fit: { zoom: 1, ox: 0, oy: 0 } }, 'Picture fit'); return true; }
   if (act === 'ci-whole') { _patchItem({ fit: { zoom: containZoom(it, it.aspect), ox: 0, oy: 0 } }, 'Picture fit'); return true; }
@@ -1798,6 +1819,16 @@ async function _onClick(e) {
   if (act === 'sel-action') { _commitFocusedText(); _selBarActions[Number(el.dataset.i)]?.run?.(); return; }
   if (act === 'slot-pick') { const r = el.getBoundingClientRect(); _slotMenu(Number(el.dataset.slot), r.left, r.bottom + 4); return; }
   if (act === 'slot-menu') { const r = el.getBoundingClientRect(); _slotMenu(_slotSel ?? 0, r.left, r.bottom + 4); return; }
+  if (act === 'slot-iface-std') { if (_slotSel != null) D.setPagePictureFit(_pageId, _slotSel, null); return; }
+  if (act === 'slot-iface-set') {
+    const im = _slotIm(_slotSel); if (!im?.stepId) return;
+    const box = D.stepIfaceRect(im.stepId); if (!box) return;
+    // what MY framing is, measured against what the automatic one would have
+    // given this interface — so it carries to interfaces of other shapes
+    D.setIfaceStandard(adjustFromFit(im.rect, im.aspect, box, im.fit), _pageId, _slotSel);
+    setStatus('Every picture that follows the standard interface framing now sits like this one.', 'success', 5000);
+    return;
+  }
   if (act === 'slot-frame') { _pickFrame(_slotIm(_slotSel), (ms) => D.setPagePictureFrame(_pageId, _slotSel, ms)); return; }
   if (act === 'slot-fill') { if (_slotSel != null) D.setPagePictureFit(_pageId, _slotSel, null); return; }
   if (act === 'slot-whole') { const im = _slotIm(_slotSel); if (im) D.setPagePictureFit(_pageId, _slotSel, { zoom: containZoom(im.rect, im.aspect), ox: 0, oy: 0 }); return; }
@@ -1854,6 +1885,7 @@ function _onChange(e) {
   if (t.dataset?.opt === 'direction') return D.setOptions({ direction: t.value });
   if (t.dataset?.opt === 'toc') return D.setOptions({ toc: t.checked });
   if (t.dataset?.opt === 'tocSteps') return D.setOptions({ tocSteps: t.checked });
+  if (t.dataset?.opt === 'ifaceFit') return D.setOptions({ ifaceFit: t.checked });
   if (t.dataset?.opt === 'pictureNumbers') return D.setOptions({ pictureNumbers: t.checked });
   if (t.dataset?.pageOpt === 'template') return D.setPageTemplate(_pageId, t.value || null);
   if (t.id === 'dw-asset-file') { const file = t.files?.[0]; t.value = ''; if (file) _importAsset(file, _assetSlot); return; }

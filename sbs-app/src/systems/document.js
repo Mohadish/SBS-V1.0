@@ -23,6 +23,7 @@ import { isIsolateEngaged, suspendIsolate, resumeIsolate } from '../core/isolate
 import { steps }        from './steps.js';
 import { srcHashOf }    from './language-packs.js';
 import { stepVideoClips } from './video-overlay.js';   // 🎞 a picture of a chosen frame
+import { stepInterfaceRect } from './interface-rect-core.js';   // 🎯 where the interface sits in the frame
 import { projectDisplayName } from './header.js';
 import * as projectPaths from '../core/project-paths.js';
 import {
@@ -185,6 +186,28 @@ export function setPagePictureFrame(pageId, slot, atMs) {
   }));
 }
 
+/** Where this step's interface sits in the frame ({x,y,w,h} in 0…1), or null. */
+export function stepIfaceRect(stepId) {
+  const s = _steps().find(x => x.id === stepId);
+  try { return s ? stepInterfaceRect(s, getCanonicalSize()) : null; } catch { return null; }
+}
+
+/**
+ * 🎯 Make this picture's framing the STANDARD one for every interface
+ * (V0.3.4.36) — stored as the difference from what the automatic framing would
+ * have given THIS interface, so it carries over to interfaces of other shapes
+ * and sizes rather than pinning everything to one rectangle. The picture itself
+ * goes back to following the standard, which now matches what it already shows.
+ */
+export function setIfaceStandard(adjust, pageId, slot) {
+  const cur = getDocument(); if (!cur) return;
+  const options = { ...(cur.options || {}), ifaceAdjust: { zoom: Number(adjust?.zoom) || 1, ox: Number(adjust?.ox) || 0, oy: Number(adjust?.oy) || 0 } };
+  const pages = (cur.pages || []).map(p => (p.id === pageId
+    ? { ...p, images: (p.images || []).map((im, i) => { if (i !== slot) return im; const n = { ...im }; delete n.fit; return n; }) }
+    : p));
+  _commit('Standard interface framing', { ...cur, options, pages });
+}
+
 /** The video clips of a step, for the frame picker. [] when it has none. */
 export function stepClips(stepId) {
   const s = _steps().find(x => x.id === stepId);
@@ -342,6 +365,7 @@ export function renderModel() {
     projectName: projectDisplayName(), date: new Date().toISOString().slice(0, 10),
     hashOf: srcHashOf, perChapter: !!state.get('headerStepNumberPerChapter'),
     stillAspect: getCanonicalSize().aspect,          // a step picture is the export frame
+    ifaceRectOf: stepIfaceRect,                      // 🎯 where this step's interface sits, in fractions of the frame
   });
 }
 
