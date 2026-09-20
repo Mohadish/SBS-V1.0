@@ -1358,9 +1358,16 @@ function _onTablePaste(e) {
   const at = open ? String(open.dataset.cell).split(',').map(Number)
     : (_tsel?.id === _customSel ? [Math.min(_tsel.r0, _tsel.r1), Math.min(_tsel.c0, _tsel.c1)] : null);
   if (!at) return;
-  // a picture on the clipboard goes INTO the cell
-  const file = [...(e.clipboardData?.items || [])].find(i => i.kind === 'file' && /^image\//.test(i.type))?.getAsFile()
-    || [...(e.clipboardData?.files || [])].find(f => /^image\//.test(f.type));
+  // WHAT KIND OF PASTE IS THIS? Excel puts BOTH on the clipboard: the cells as
+  // tab-separated text AND a picture of the selection. Text that looks like a
+  // grid therefore wins — otherwise copying a block of cells silently became a
+  // screenshot glued into one cell (V0.3.4.41). A picture only wins when there
+  // is no grid to read.
+  const asText = e.clipboardData?.getData('text/plain') ?? '';
+  const looksLikeGrid = /[\t\n]/.test(asText);
+  const file = looksLikeGrid ? null
+    : ([...(e.clipboardData?.items || [])].find(i => i.kind === 'file' && /^image\//.test(i.type))?.getAsFile()
+      || [...(e.clipboardData?.files || [])].find(f => /^image\//.test(f.type)));
   if (file) {
     e.preventDefault(); e.stopPropagation();
     const rd = new FileReader();
@@ -1377,11 +1384,11 @@ function _onTablePaste(e) {
     rd.readAsDataURL(file);
     return;
   }
-  const text = e.clipboardData?.getData('text/plain') ?? '';
+  const text = asText;
   if (!text) return;
   e.preventDefault(); e.stopPropagation();
   if (open) open.dataset.orig = open.innerText;              // the focus-out must not fight the paste
-  const pch = /[\t\n]/.test(text)
+  const pch = looksLikeGrid
     ? tablePaste(tb, at[0], at[1], text)
     : { cells: tb.cells.map((row, y) => row.map((v, x) => (y === at[0] && x === at[1] ? text.slice(0, 600) : v))) };
   if (pch) { _tsel = null; _patchItem(pch, 'Paste into the table'); setStatus('Pasted into the table.', 'success', 3000); }

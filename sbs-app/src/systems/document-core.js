@@ -801,9 +801,12 @@ export function tableInsertRow(t, at, copyFrom = -1) {
     : (m.r < at && at < m.r + m.rs) ? { ...m, rs: m.rs + 1 } : m));
   const fmt = _fmtShift(t.fmt, (r, c) => ({ r: r >= at ? r + 1 : r, c }));
   const imgs = _fmtShift(t.imgs, (r, c) => ({ r: r >= at ? r + 1 : r, c }));
-  if (copyFrom >= 0) {                                   // a duplicated row keeps its pictures
+  if (copyFrom >= 0) {                                   // a duplicated row keeps its pictures AND its look
     const from = copyFrom >= at ? copyFrom + 1 : copyFrom;
-    for (let c = 0; c < t.cols; c++) { const id = imgs[`${from},${c}`]; if (id) imgs[`${at},${c}`] = id; }
+    for (let c = 0; c < t.cols; c++) {
+      const id = imgs[`${from},${c}`]; if (id) imgs[`${at},${c}`] = id;
+      const f = fmt[`${from},${c}`]; if (f) fmt[`${at},${c}`] = { ...f };
+    }
   }
   return { rows, cells, rowH, merges, fmt, imgs };
 }
@@ -837,7 +840,10 @@ export function tableInsertCol(t, at, copyFrom = -1) {
   const imgs = _fmtShift(t.imgs, (r, c) => ({ r, c: c >= at ? c + 1 : c }));
   if (copyFrom >= 0) {                                   // …and so does a duplicated column
     const from = copyFrom >= at ? copyFrom + 1 : copyFrom;
-    for (let r = 0; r < t.rows; r++) { const id = imgs[`${r},${from}`]; if (id) imgs[`${r},${at}`] = id; }
+    for (let r = 0; r < t.rows; r++) {
+      const id = imgs[`${r},${from}`]; if (id) imgs[`${r},${at}`] = id;
+      const f = fmt[`${r},${from}`]; if (f) fmt[`${r},${at}`] = { ...f };
+    }
   }
   return { cols, cells, widths: widths.map(v => v / sum), merges, fmt, imgs };
 }
