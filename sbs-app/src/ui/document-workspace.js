@@ -1352,7 +1352,8 @@ function _onCustomPointerDown(e) {
     }
   }
   const handle = e.target.closest?.('[data-ch]'), itemEl = e.target.closest?.('.ci[data-item]');
-  if (itemEl?.isContentEditable || e.target.closest?.('[data-cell]')?.isContentEditable) return;   // typing: the text box — or the open table cell — is a text field now
+  const openCell = e.target.closest?.('[data-cell]') || _cellAtPoint(e);
+  if (itemEl?.isContentEditable || openCell?.isContentEditable) return;   // typing: the text box — or the open table cell — is a text field now
   if (itemEl && !handle) {
     const band = itemEl.dataset.band || '';
     if (host === 'custom' && band) return;                            // the header / footer of a custom page: a click opens their editor (_onPageClick)
@@ -1407,10 +1408,20 @@ function _onCustomPointerUp() {
   const d = _cdrag; _cdrag = null;
   if (d?.rect) _commitItems(_itemsNow().map(i => (i.id === d.id ? { ...i, ..._toStored(d.rect) } : i)), d.h ? 'Resize item' : 'Move item');
 }
+/** The table cell under the pointer — needed because a captured pointer sends
+ *  the double-click to the item's own div instead of to the cell. */
+function _cellAtPoint(e) {
+  if (!e.target.closest?.('.ci.ctb')) return null;
+  const at = _shadow.elementFromPoint
+    ? _shadow.elementFromPoint(e.clientX, e.clientY)
+    : document.elementFromPoint(e.clientX, e.clientY);
+  return at?.closest?.('[data-cell]') || null;
+}
+
 function _onCustomDblClick(e) {
   // 📋 a table CELL types exactly like a text box — same contenteditable, same
   // commit on the way out; only what is written back differs.
-  const cell = e.target.closest?.('[data-cell]');
+  const cell = e.target.closest?.('[data-cell]') || _cellAtPoint(e);
   const el = cell || e.target.closest?.('.ci.ct[data-item]');
   const host = _editHost();
   if (cell) {
