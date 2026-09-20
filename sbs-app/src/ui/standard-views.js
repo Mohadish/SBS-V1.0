@@ -15,7 +15,11 @@
  */
 
 import sceneCore from '../core/scene.js';
-import * as state from '../core/state.js';
+// NAMED export — `import * as state` gives the module namespace, whose `.get`
+// is undefined, and the throw inside a pointerenter handler is swallowed: that
+// is why the hover preview never appeared in V0.3.4.23/.24.
+import { state } from '../core/state.js';
+import { frameHeight } from '../core/perspective.js';
 
 const AXIS = {
   top:    { axis: 'y', color: '#22c55e', hex: 0x22c55e, dir: [0, -1, 0], label: 'Top',    title: 'Look straight down the Y axis' },
@@ -79,18 +83,23 @@ function _clearPreview() {
 
 /**
  * A translucent square on the plane you would look through, plus an arrow along
- * the direction you would look. Sized to whatever is in the scene, so it reads
- * on a bolt and on a machine alike. Rebuilt on each hover — one group, reused.
+ * the direction you would look — in the middle of the frame, half a frame
+ * across, so it reads the same on a bolt and on a machine. One group, reused.
  */
 function _showPreview(view) {
   const T = window.THREE;
   const cfg = AXIS[view];
   if (!T || !cfg || !sceneCore.overlayScene || state.get('_exporting')) return;
 
-  const box = sceneCore.computeBoundingBox?.(null);
-  const sphere = box && !box.isEmpty() ? box.getBoundingSphere(new T.Sphere()) : null;
-  const centre = sphere ? sphere.center.clone() : new T.Vector3();
-  const R = Math.max(sphere?.radius || 0, 1e-3);
+  // IN THE MIDDLE OF THE FRAME, sized to the frame (V0.3.4.25): the centre of
+  // the screen at the depth you are focused on, half a frame across. Anchoring
+  // it to the model's bounding sphere instead put it off-screen on a zoomed-in
+  // shot and made it a speck on a big assembly.
+  const cam = sceneCore.camera;
+  const fwdNow = cam.getWorldDirection(new T.Vector3());
+  const dNow = Math.max(sceneCore.focusDistance?.() || 0, 1e-3);
+  const centre = cam.position.clone().addScaledVector(fwdNow, dNow);
+  const R = Math.max(frameHeight(dNow, cam.fov, cam.zoom) * 0.25, 1e-3);   // half a frame across
 
   if (!_preview) {
     _preview = new T.Group();
@@ -124,23 +133,22 @@ function _showPreview(view) {
   const head  = _preview.getObjectByName('head');
   for (const m of [plane, edge, shaft, head]) m.material.color.setHex(cfg.hex);
 
-  // The plane you look THROUGH: perpendicular to the view direction, on the
-  // near side of the model so the arrow reads as coming towards it.
-  const dir = new T.Vector3(...cfg.dir).normalize();          // the way you will look
+  // The plane you would look THROUGH — square to the view direction, sitting in
+  // the middle of the frame — and an arrow that flies in along that direction
+  // and lands on it. The arrow is a cylinder + cone rather than an ArrowHelper
+  // so both ends can be scaled to the frame.
+  const dir = new T.Vector3(...cfg.dir).normalize();           // the way you will look
   const side = dir.clone().multiplyScalar(-1);                 // where you will look FROM
-  const planePos = centre.clone().addScaledVector(side, R * 1.15);
-  const size = R * 2.3;
+  const size = R * 2;
   plane.scale.set(size, size, 1);
   edge.scale.copy(plane.scale);
   const q = new T.Quaternion().setFromUnitVectors(new T.Vector3(0, 0, 1), side);
-  plane.position.copy(planePos); plane.quaternion.copy(q);
-  edge.position.copy(planePos);  edge.quaternion.copy(q);
+  plane.position.copy(centre); plane.quaternion.copy(q);
+  edge.position.copy(centre);  edge.quaternion.copy(q);
 
-  // The arrow: from the plane, along the view direction, stopping short of the
-  // model. A cylinder + cone rather than ArrowHelper so it can be scaled freely.
-  const len = R * 0.95, headLen = R * 0.3, headR = R * 0.11, shaftR = R * 0.035;
+  const len = R * 1.6, headLen = R * 0.45, headR = R * 0.16, shaftR = R * 0.05;
   const qy = new T.Quaternion().setFromUnitVectors(new T.Vector3(0, 1, 0), dir);
-  const start = planePos.clone();
+  const start = centre.clone().addScaledVector(side, len);     // tip lands on the plane
   shaft.scale.set(shaftR, Math.max(len - headLen, 1e-4), shaftR);
   shaft.quaternion.copy(qy);
   shaft.position.copy(start).addScaledVector(dir, (len - headLen) / 2);
