@@ -27,7 +27,7 @@ import { initTree, renderTree, expandPathToNode, collapseAll, toggleFilter, getF
 import { setStatus }       from './status.js';
 import {
   createCameraView, generateId, APP_VERSION, APP_RELEASED,
-  createAnimationPreset, DEFAULT_ANIMATION_PRESET_STRING,
+  createAnimationPreset, DEFAULT_ANIMATION_PRESET_STRING, pickCameraState,
 } from '../core/schema.js';
 import { buildNodeMap, findParent }    from '../core/nodes.js';
 import { applyNodeSourceTransformToObject3D, applyAllVisibility } from '../core/transforms.js';
@@ -109,6 +109,7 @@ import { listVoices as ttsListVoices } from '../systems/tts.js';
 import * as userSettings    from '../core/user-settings.js';
 import { buildRenderSettingsPanel } from './render-settings-panel.js';
 import * as narrationCache  from '../systems/narration-cache.js';
+import { perspectiveShort } from '../core/perspective.js';   // 🔲 lens readout on a camera template
 
 const TABS = ['files', 'env', 'tree', 'colors', 'select', 'cameras', 'animation', 'header', 'style', 'cables', 'notes', 'shapes', 'primitives', 'hardware', 'undo', 'review', 'export'];
 let _activeTab   = 'files';
@@ -3314,6 +3315,7 @@ function _renderCamerasTab() {
     item.innerHTML = `
       <div class="cameraRow" style="align-items:center;gap:6px;">
         <span class="cam-name-text" style="flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;cursor:text;" title="Double-click to rename">${_esc(view.name)}</span>
+        <span class="small muted" style="font-size:11px;flex-shrink:0;" title="The amount of perspective this template holds — Alt + wheel in the viewport changes it, then ▶ Update to store it here.">${perspectiveShort(view.fov ?? 45)}</span>
         <span class="small muted" style="font-size:11px;flex-shrink:0;">${useCount} step${useCount === 1 ? '' : 's'}</span>
       </div>
       <div class="cameraActions">
@@ -3325,10 +3327,9 @@ function _renderCamerasTab() {
 
     item.querySelector('[data-goto]').addEventListener('click', e => {
       e.stopPropagation();
-      sceneCore.animateCameraTo({
-        position: view.position, quaternion: view.quaternion,
-        pivot: view.pivot, up: view.up, fov: view.fov,
-      }, 800, 'smooth');
+      // Every camera field the template holds (V0.3.4.22) — the old literal
+      // dropped its orbit centre and pull-out on the way to the viewport.
+      sceneCore.animateCameraTo(pickCameraState(view), 800, 'smooth');
     });
 
     item.querySelector('[data-update]').addEventListener('click', e => {

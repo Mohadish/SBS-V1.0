@@ -314,7 +314,7 @@ svg .arrow{stroke:var(--muted);stroke-width:1.4;fill:none;marker-end:url(#ah)}
 
 <h2 id="interface-viewport">Viewport basics</h2>
 <ul>
-<li><b>Orbit</b> left-drag, <b>pan</b> right- or middle-drag, <b>zoom</b> wheel. <kbd>F</kbd> fits the selection; with nothing selected it fits everything. <span class="ui">Cameras ▸ 🎯 Refit camera</span> recomputes orbit distance and pivot after a model rescale.</li>
+<li><b>Orbit</b> left-drag, <b>pan</b> right- or middle-drag, <b>zoom</b> wheel. <kbd>Alt</kbd> + wheel changes the <b>perspective</b> instead of the distance (see <a href="#cameras-perspective">6.4</a>). <kbd>F</kbd> fits the selection; with nothing selected it fits everything. <span class="ui">Cameras ▸ 🎯 Refit camera</span> recomputes orbit distance and pivot after a model rescale.</li>
 <li><b>Work camera</b> (<kbd>W</kbd>): a scratch camera you can move freely without touching the step's saved camera. Press <kbd>W</kbd> again to return to the step camera. <kbd>C</kbd> captures the current view into the active step.</li>
 <li><b>Select</b> by clicking a part. Click again on the same spot to climb one level up the tree (part → folder → model). Double-click a locked folder to temporarily unlock it; it relocks when nothing inside is selected any more. <kbd>Shift</kbd> adds to the selection, <kbd>Ctrl</kbd> toggles, <kbd>Alt</kbd> inverts within the clicked unit. The cursor shows a small badge for the active modifier.</li>
 <li><b>Gizmo</b> appears on the selection: drag the arrows to move, the rings to rotate. <kbd>L</kbd> switches the gizmo between local and world axes. Type exact values in the numeric fields next to it.</li>
@@ -524,8 +524,13 @@ svg .arrow{stroke:var(--muted);stroke-width:1.4;fill:none;marker-end:url(#ah)}
 <p>Switch a step's camera mode to <b>Template</b> in the transition row and pick a name: from then on the step follows the template, and updating the template updates every step bound to it. <span class="ui">Edit ▸ Apply Camera Template…</span> binds a whole range of steps at once. <span class="ui">🎯 Refit camera</span> recomputes distance and pivot to frame the entire scene — useful after a model rescale.</p>
 <figure class="shot"><img src="img/cameras-tab.png" alt="Cameras tab"><figcaption>Screenshot: camera templates with Go To / Update / Lock. File: <code>docs/manual/img/cameras-tab.png</code></figcaption></figure>
 
+<h2 id="cameras-perspective">Perspective — how wide the lens is</h2>
+<p>Hold <kbd>Alt</kbd> over the viewport and turn the <b>wheel</b>: the lens opens up or flattens while the camera moves in or out to keep your framing. The subject stays exactly the size it was — only the amount of perspective changes. A badge at the cursor shows a box drawn at the current lens, so you can see the effect before you turn the wheel. <kbd>Ctrl</kbd> makes the step finer, <kbd>Shift</kbd> coarser, the same way they change the zoom wheel.</p>
+<p>Turn it all the way down and the view becomes <b>orthographic</b>: parallel edges stay parallel, like a technical drawing. Turn it up for a dramatic, wide-angle look. A wide lens stretches whatever sits near the edges of the frame — at the default setting a part in the corner is drawn about a third longer than the same part in the middle — so if an illustration looks distorted when the camera is close, this is the control that fixes it.</p>
+<p>The perspective belongs to the camera, so it is saved the same way the view is: press <kbd>C</kbd> (or 📷 <span class="ui">Update step camera</span>) to store it in the step, or <span class="ui">🔄 Update</span> to store it in a camera template. Until you do, it is a live view like any orbit or zoom. Each template's list row shows its lens.</p>
+
 <h2 id="cameras-transition">How the camera animates</h2>
-<p>Between two steps the camera interpolates position, target and zoom over AL1 (or over the camera channel of a private animation). With <b>Instant</b> easing it cuts. Orbit pivots and pull-outs stored on a step are honoured. The export renders exactly what the step camera sees at the export aspect ratio; the viewport may show a little more or less on the sides.</p>
+<p>Between two steps the camera interpolates position, target and zoom over AL1 (or over the camera channel of a private animation). With <b>Instant</b> easing it cuts. Orbit pivots and pull-outs stored on a step are honoured. When two steps hold <b>different perspectives</b>, the move is a dolly zoom: the lens and the distance change together so the subject keeps its size for the whole transition instead of swelling and settling at the end. The export renders exactly what the step camera sees at the export aspect ratio; the viewport may show a little more or less on the sides.</p>
 <div class="tip"><b>Settings ▸ Camera</b> holds the defaults for new projects (field of view, orbit behaviour, default background).</div>
 </section>
 
@@ -1031,6 +1036,7 @@ svg .arrow{stroke:var(--muted);stroke-width:1.4;fill:none;marker-end:url(#ah)}
 <table>
 <tr><td><kbd>W</kbd></td><td>Work camera on / off</td></tr>
 <tr><td><kbd>C</kbd></td><td>Capture the view into the step camera</td></tr>
+<tr><td><kbd>Alt</kbd> + wheel</td><td>Perspective: wide-angle ↔ orthographic (the framing is held)</td></tr>
 <tr><td><kbd>F</kbd></td><td>Fit selection (or all)</td></tr>
 <tr><td><kbd>L</kbd></td><td>Gizmo local / world</td></tr>
 <tr><td><kbd>Space</kbd></td><td>Global mode on / off</td></tr>

@@ -27,10 +27,10 @@ export const SCHEMA_VERSIONS = {
   screen:     1,
 };
 
-export const APP_VERSION  = 'V0.3.4.21';
+export const APP_VERSION  = 'V0.3.4.22';
 // Format: YYYY-MM-DD. Bump along with APP_VERSION on every build worth
 // labelling so the File tab shows you're running the expected slice.
-export const APP_RELEASED = '2026-09-19';
+export const APP_RELEASED = '2026-09-20';
 
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -752,6 +752,25 @@ export function createEmptySnapshot() {
  * Camera state — exact position and orientation.
  * Stores both quaternion (precise) and pivot (orbit target).
  */
+/**
+ * Every field a saved camera holds — the ONE list, so a camera copied from a
+ * template, a step or the clipboard cannot quietly lose one. Hand-written
+ * literals of these fields dropped `orbitPivot` / `orbitPullout` for two
+ * versions (fixed V0.3.4.22); anything rebuilding a camera state field by field
+ * spreads this instead.
+ */
+export const CAMERA_STATE_FIELDS = [
+  'position', 'quaternion', 'pivot', 'up', 'fov', 'orbitPivot', 'orbitPullout',
+];
+
+/** Copy just the camera fields out of any object that carries them. */
+export function pickCameraState(src) {
+  const out = {};
+  if (!src) return out;
+  for (const k of CAMERA_STATE_FIELDS) if (src[k] !== undefined) out[k] = src[k];
+  return out;
+}
+
 export function createCameraState(overrides = {}) {
   return {
     position:   [0, 0, 100],        // [x, y, z]

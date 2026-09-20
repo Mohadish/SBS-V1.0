@@ -122,7 +122,22 @@ export function findSnapTarget(clientX, clientY) {
   const hitDepthZ = _hitV.z;
   // Small tolerance so a vert that's coplanar with the hit face still
   // qualifies (e.g. a corner vertex on the very face that was hit).
-  const DEPTH_TOL = 0.002;
+  //
+  // V0.3.4.22 — RELATIVE, not the flat 0.002 it used to be. NDC depth is not a
+  // fixed scale: it stretches or collapses with the clip planes and the lens.
+  // Across one part it spans ~0.7 at the default 45°, but only ~0.017 on an
+  // orthographic step (a 0.5° lens ~115× the frame height away), where a flat
+  // 0.002 would be 12% of the part's whole depth — back-face vertices would
+  // sail through the cull and win the screen-distance contest, which is the
+  // exact "snap lands on the far side" bug this cull exists to stop. The
+  // formula below converts a fixed fraction of the FRAME size at the hit into
+  // NDC, and gives 0.002 at 45° — the old number, unchanged where it worked.
+  const _near = camera.near, _far = camera.far;
+  const _zHit = camera.position.distanceTo(hit.point);
+  const DEPTH_TOL = (_near > 0 && _far > _near && _zHit > 1e-6)
+    ? Math.max(1e-6, 0.0136 * _far * _near * Math.tan(camera.fov * Math.PI / 360)
+                     / ((_far - _near) * _zHit))
+    : 0.002;
 
   // Project a 3D world point to canvas pixels. Returns [x, y, z(ndc)]
   // or null if behind the camera (NDC z > 1).

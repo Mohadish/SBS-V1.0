@@ -116,6 +116,34 @@ function _buildOrbitTween(fromPos, toPos, fromAnim, toAnim, fromQ, toQ, pullout 
   return { p0, p1, fromAz: a.az, dAz, fromEl: a.el, toEl: b.el, fromR: a.r, toR: b.r, dFrom, dTo,
            pull: Math.max(0, pullout) };
 }
+
+/**
+ * 🔲 DOLLY ZOOM (V0.3.4.22) — the rig for a move between two DIFFERENT amounts
+ * of perspective.
+ *
+ * Interpolating the distance and the fov separately (what this file did until
+ * now) lets their product — the framing, H = 2·d·tan(fov/2) — wander: a 50° → 1°
+ * move draws the subject at 0.076× its size halfway through and pulls it back at
+ * the end. That settling zoom is the "bob". So the transition interpolates the
+ * two things the eye actually reads, the framing and the perspective, and
+ * DERIVES the distance from them on every frame (see core/perspective.js).
+ *
+ * Returns the two on-axis focus points and focus distances, or null when either
+ * end has no usable focus plane (the caller then keeps the old behaviour).
+ */
+function _buildDollyZoom(fromPos, fromQ, fromFocusPt, fromFov, toPos, toQ, toFocusPt, toFov) {
+  if (!fromFocusPt || !toFocusPt) return null;
+  const f0 = new THREE.Vector3(0, 0, -1).applyQuaternion(fromQ);
+  const f1 = new THREE.Vector3(0, 0, -1).applyQuaternion(toQ);
+  const d0 = focusDistance(fromPos, f0, fromFocusPt, fromPos.distanceTo(fromFocusPt));
+  const d1 = focusDistance(toPos,   f1, toFocusPt,   toPos.distanceTo(toFocusPt));
+  if (!(d0 > 1e-6) || !(d1 > 1e-6)) return null;
+  return {
+    fromFov, toFov, d0, d1,
+    F0: fromPos.clone().addScaledVector(f0, d0),
+    F1: toPos.clone().addScaledVector(f1, d1),
+  };
+}
 import * as clock from './clock.js';
 // V0.2.22.21 — combined silhouette outline pass. Runs after the main
 // scene render to composite a single outline around the union of
@@ -129,6 +157,10 @@ import { RenderPass }     from '../../vendor/three-addons/postprocessing/RenderP
 import { N8AOPass }       from '../../vendor/three-addons/N8AO.js';
 import { SSRReflectPass } from '../../vendor/three-addons/SSRReflectPass.js';
 import { PlanarMirror }   from './planar-mirror.js';
+// V0.3.4.22 — the perspective family: k = tan(fov/2), framing H = 2·d·k, and the
+// dolly-zoom blend that keeps H exact on every frame of a transition.
+import { kOf, fovOf, stepK, clampFov, blendPerspective, perspectiveDiffers, focusDistance }
+  from './perspective.js';
 
 // ── Mini event emitter (no dependency on state.js) ────────────────────────
 class Emitter {
@@ -1044,7 +1076,10 @@ export class SceneCore extends Emitter {
     if (state.quaternion) this.camera.quaternion.set(...state.quaternion);
     if (state.up)         this.camera.up.set(...state.up);
     if (state.fov != null) {
-      this.camera.fov = state.fov;
+      // Clamped into the perspective family (V0.3.4.22): 0.5° is "orthographic"
+      // and anything wider than 78° is a fish-eye, not an illustration. Every
+      // fov ever written by this app is already inside it, so nothing moves.
+      this.camera.fov = clampFov(state.fov);
       this.camera.updateProjectionMatrix();
     }
     if (state.pivot && this.controls) {
@@ -1055,6 +1090,72 @@ export class SceneCore extends Emitter {
       ? new THREE.Vector3(...state.orbitPivot) : null;
     this._animPullout = Number(state.orbitPullout) || 0;
     this.updateOrbitPivotMarker();
+  }
+
+  // ═══════════════════════════════════════════════════════════════════════
+  //  🔲 PERSPECTIVE AMOUNT (V0.3.4.22)
+  // ═══════════════════════════════════════════════════════════════════════
+  /**
+   * How far along the camera's OWN view axis the orbit pivot sits — the depth
+   * of the plane whose framing must not change when the perspective does.
+   *
+   * Projected, not measured: the CAD pivot is wherever the cursor last hit a
+   * face, so the straight distance |pivot − eye| would frame a plane that is
+   * not the one on screen. A pinned step orbit centre wins when there is one,
+   * because the user chose that point on purpose.
+   */
+  focusDistance() {
+    if (!this.camera) return 0;
+    const fwd = this.camera.getWorldDirection(new THREE.Vector3());
+    const pivot = this._animPivot || this.controls?.pivot;
+    if (!pivot) return 0;
+    return focusDistance(this.camera.position, fwd, pivot,
+      this.camera.position.distanceTo(pivot));
+  }
+
+  /**
+   * Set the amount of perspective and DOLLY so the framing does not change —
+   * the cinematic dolly zoom, one instant of it. The subject keeps its size;
+   * only the perspective opens up or flattens. A plain fov change without the
+   * dolly would make everything jump in size, which is the wrong control.
+   *
+   * @param {number} fovDeg  clamped into the family (0.5° = orthographic)
+   */
+  setPerspectiveFov(fovDeg) {
+    if (!this.camera) return;
+    const fov = clampFov(fovDeg);
+    if (Math.abs(fov - this.camera.fov) < 1e-6) return;
+
+    const fwd = this.camera.getWorldDirection(new THREE.Vector3());
+    const d = this.focusDistance();
+    if (d > 1e-6) {
+      // The point the framing is measured at, then the distance that frames the
+      // SAME height at the new lens: d₂ = H / (2·k₂) with H = 2·d·k₁.
+      const H = 2 * d * kOf(this.camera.fov);
+      const d2 = H / (2 * kOf(fov));
+      const focus = this.camera.position.clone().addScaledVector(fwd, d);
+      this.camera.position.copy(focus).addScaledVector(fwd, -d2);
+    }
+    this.camera.fov = fov;
+    this.camera.updateProjectionMatrix();
+    this.controls?.syncSpherical();
+    this.emit('camera:perspective', fov);
+    this.emit('controls:change');
+    this.requestRender(300);
+  }
+
+  getPerspectiveFov() { return this.camera ? this.camera.fov : 45; }
+
+  /**
+   * One wheel notch of perspective. Positive = more perspective (wider lens,
+   * camera closer); negative flattens towards orthographic. Ctrl / Shift scale
+   * the notch exactly as they scale the ordinary wheel dolly.
+   */
+  nudgePerspective(notches, speed = 1) {
+    if (!this.camera) return this.camera?.fov ?? 45;
+    const next = stepK(kOf(this.camera.fov), notches, speed);
+    this.setPerspectiveFov(fovOf(next));
+    return this.camera.fov;
   }
 
   // ═══════════════════════════════════════════════════════════════════════
@@ -1123,7 +1224,11 @@ export class SceneCore extends Emitter {
     // Constant on-screen size: scale with distance so it never becomes a dot
     // on a big assembly or a wall on a small one.
     const d = Math.max(this.camera.position.distanceTo(this._animPivot), 1e-3);
-    const s = d * 0.045;
+    // …and with the LENS, not distance alone (V0.3.4.22): the on-screen size of
+    // a world-sized thing is d·tan(fov/2), so the old plain `d * 0.045` grew to
+    // ten times the frame once a step went orthographic. 0.1087 keeps the marker
+    // exactly the size it has always been at the default 45°.
+    const s = d * kOf(this.camera.fov) * 0.1087;
     m.scale.set(s, s, s);
   }
 
@@ -1173,6 +1278,15 @@ export class SceneCore extends Emitter {
     const orbit = _buildOrbitTween(fromPos, toPos, fromAnim, toAnim, fromQ, toQ,
       Number(targetState.orbitPullout) || 0);
 
+    // 🔲 DOLLY ZOOM (V0.3.4.22). Strictly opt-in, exactly like the orbit rig:
+    // only when the two ends really hold different amounts of perspective. With
+    // one fov across a project — which is every project written before this
+    // version — `dolly` is null and every line below runs as it always has.
+    const dolly = perspectiveDiffers(fromFov, toFov)
+      ? _buildDollyZoom(fromPos, fromQ, fromAnim || fromPivot, fromFov,
+                        toPos,   toQ,   toAnim   || toPivot,   toFov)
+      : null;
+
     return new Promise((resolve) => {
       // Cancel any previous transition
       if (this._transition?.reject) this._transition.reject('cancelled');
@@ -1191,7 +1305,7 @@ export class SceneCore extends Emitter {
         easeFn:   ease[easing] ?? ease.smooth,
         fromPos, fromQ, fromPivot, fromFov,
         toPos, toQ, toPivot, toFov,
-        orbit,
+        orbit, dolly,
         // Arriving by ANIMATION must leave the same orbit centre as arriving
         // instantly through applyCameraState — otherwise the step is reached
         // still carrying the previous step's, and the marker and right-click
@@ -1268,11 +1382,38 @@ export class SceneCore extends Emitter {
       this.camera.quaternion.copy(q);
     }
 
-    // Interpolate FOV
-    const fov = t.fromFov + (t.toFov - t.fromFov) * alpha;
-    if (Math.abs(fov - this.camera.fov) > 0.001) {
-      this.camera.fov = fov;
-      this.camera.updateProjectionMatrix();
+    if (t.dolly) {
+      // 🔲 The perspective changes across this move, so the distance is not a
+      // thing to interpolate — it is a thing to DERIVE. Blend the framing and
+      // the perspective amount, then slide the camera along its own view axis
+      // until the frame height at the focus plane is exactly the blended one.
+      // The branches above already chose the DIRECTION (orbit arc or straight
+      // line) and the orientation; only the radius is overridden here, so the
+      // path, the aim offset and the level-up all keep working as before.
+      const dz = t.dolly;
+      const r = blendPerspective({ fov: dz.fromFov, dist: dz.d0 },
+                                 { fov: dz.toFov,   dist: dz.d1 }, alpha);
+      let dist = r.dist;
+      // The pull-out hump lives on the radius in the orbit branch — which this
+      // block replaces. Re-apply it to the framing instead, or it is erased.
+      if (t.orbit?.pull > 0) dist *= 1 + t.orbit.pull * (1 - Math.cos(2 * Math.PI * alpha)) / 2;
+
+      const F = dz.F0.clone().lerp(dz.F1, alpha);        // the focus point, this frame
+      const back = this.camera.position.clone().sub(F);  // eye ← focus, whatever path chose it
+      if (back.lengthSq() < 1e-12) back.set(0, 0, 1).applyQuaternion(this.camera.quaternion);
+      this.camera.position.copy(F).addScaledVector(back.normalize(), dist);
+
+      if (Math.abs(r.fov - this.camera.fov) > 1e-6) {
+        this.camera.fov = r.fov;
+        this.camera.updateProjectionMatrix();
+      }
+    } else {
+      // Interpolate FOV
+      const fov = t.fromFov + (t.toFov - t.fromFov) * alpha;
+      if (Math.abs(fov - this.camera.fov) > 0.001) {
+        this.camera.fov = fov;
+        this.camera.updateProjectionMatrix();
+      }
     }
 
     if (raw >= 1) {
@@ -1646,9 +1787,24 @@ export class SceneCore extends Emitter {
     //   Ctrl + wheel  → 0.1× step (10× slower / finer control)
     //   Shift + wheel → 10×  step (10× faster / coarser)
     //   Bare wheel    → 1×   step (default)
+    //   Alt + wheel   → 🔲 PERSPECTIVE, not distance (V0.3.4.22): the lens opens
+    //                   up or flattens towards orthographic while the camera
+    //                   dollies to hold the framing. Ctrl / Shift scale that
+    //                   notch too. The badge that follows the cursor while Alt
+    //                   is held is wired in main.js off 'camera:perspective'.
     dom.addEventListener('wheel', (e) => {
       if (this._locked) return;
       e.preventDefault();
+
+      // Not while Alt + middle-drag is orbiting — Alt already means "orbit"
+      // for that gesture, and a wheel tick mid-orbit must not re-lens the shot.
+      if (e.altKey && !ctrl.active) {
+        const mult = e.ctrlKey ? 0.25 : (e.shiftKey ? 3 : 1);
+        // Wheel AWAY from you (deltaY < 0, the "zoom in" direction) widens the
+        // lens — the camera comes closer and the perspective grows.
+        this.nudgePerspective(-Math.sign(e.deltaY), mult);
+        return;
+      }
 
       const delta   = Math.sign(e.deltaY);
       const forward = new THREE.Vector3();

@@ -154,6 +154,20 @@ function _cameraFor(step, T, aspect) {
   if (cs?.position)   cam.position.set(...cs.position);   else if (live) cam.position.copy(live.position);
   if (cs?.quaternion) cam.quaternion.set(...cs.quaternion); else if (live) cam.quaternion.copy(live.quaternion);
   if (cs?.up)         cam.up.set(...cs.up);               else if (live) cam.up.copy(live.up);
+  // Clip planes for THIS pose, not the live camera's (V0.3.4.22). The live
+  // planes are fitted to wherever the user is parked; a step that sits far back
+  // — an orthographic one sits ~115× the frame height away — would have the
+  // whole scene beyond its far plane, count ZERO parts in frame, and the render
+  // cache would then narrow that segment to nothing. Silent, not a glitch.
+  try {
+    const box = new T.Box3().setFromObject(sceneCore.rootGroup);
+    if (!box.isEmpty()) {
+      const sph = box.getBoundingSphere(new T.Sphere());
+      const dist = cam.position.distanceTo(sph.center);
+      cam.far  = dist + sph.radius * 1.5;
+      cam.near = Math.max(cam.far / 50000, (dist - sph.radius) * 0.5) || 0.1;
+    }
+  } catch { /* keep the inherited planes */ }
   cam.updateProjectionMatrix();
   cam.updateMatrixWorld(true);
   return cam;

@@ -96,6 +96,8 @@ import { detectHex } from './core/socket-detect.js';
 import { applyFollow, clearFollow, startFollowPick, isFollowPicking, cancelFollowPick, onFollowPickClick, promptStopFollowing } from './systems/follow.js';
 import * as editSession from './systems/edit-session.js';
 import { openModelSourceDialog } from './ui/model-source-dialog.js';
+// 🔲 V0.3.4.22 — the Alt-wheel perspective badge (a box drawn at the current lens).
+import { showPerspectiveBadge, hidePerspectiveBadge, setPerspectiveBadgeValue } from './ui/perspective-hud.js';
 import { schedulePrecache, cancel as cancelPrecache } from './systems/narration-precache.js';
 
 // ══════════════════════════════════════════════════════════════════════════════
@@ -3602,7 +3604,20 @@ function _anyPickModeActive() {
     || state.get('replaceModelPickingForId') || state.get('shapeDrawing')
     || state.get('pivotCenterPickingNodeId') || state.get('addPolygonFromFacePicking') || _raySelect);
 }
+// 🔲 V0.3.4.22 — while Alt is held over the viewport, the perspective badge sits
+// under the modifier glyph: a wireframe box drawn AT THE CURRENT LENS, so you see
+// what Alt + wheel is about to do before you turn it. Same gates as the glyph
+// above (cursor in the canvas, no button down, no pick mode), so the two appear
+// and vanish together. Alt genuinely means two things here — "this click removes
+// from the selection" and "this wheel changes the perspective" — and showing both
+// is honest; hiding one would make the other look like the whole story.
+function _refreshPerspBadge(alt) {
+  if (!alt || !_modInCanvas || _modBtnDown || _anyPickModeActive()) { hidePerspectiveBadge(); return; }
+  showPerspectiveBadge(_modPX, _modPY + 24, sceneCore.getPerspectiveFov());
+}
+
 function _refreshModBadge(alt, shift, ctrl) {
+  _refreshPerspBadge(alt);
   const op = alt ? '−' : shift ? '+' : ctrl ? '±' : null;
   if (!op || !_modInCanvas || _modBtnDown || _anyPickModeActive()) { _modBadge.style.display = 'none'; return; }
   _modBadge.innerHTML = _modBadgeSVG(op);
@@ -3615,15 +3630,37 @@ canvas.addEventListener('pointermove', e => {
   _refreshModBadge(e.altKey, e.shiftKey, e.ctrlKey || e.metaKey);
 });
 canvas.addEventListener('pointerenter', () => { _modInCanvas = true; });
-canvas.addEventListener('pointerleave', () => { _modInCanvas = false; _modBadge.style.display = 'none'; });
-canvas.addEventListener('pointerdown',  () => { _modBtnDown = true;  _modBadge.style.display = 'none'; });
+canvas.addEventListener('pointerleave', () => { _modInCanvas = false; _modBadge.style.display = 'none'; hidePerspectiveBadge(); });
+canvas.addEventListener('pointerdown',  () => { _modBtnDown = true;  _modBadge.style.display = 'none'; hidePerspectiveBadge(); });
 window.addEventListener('pointerup',    e => { _modBtnDown = false; _refreshModBadge(e.altKey, e.shiftKey, e.ctrlKey || e.metaKey); });
 const _modKeyRefresh = (e) => {
   if (e.key === 'Shift' || e.key === 'Alt' || e.key === 'Control' || e.key === 'Meta')
     _refreshModBadge(e.altKey, e.shiftKey, e.ctrlKey || e.metaKey);
+  // Windows arms the menu bar on a bare Alt press-and-release and steals the
+  // keyboard — the same mnemonic behaviour that forced Alt+C onto the IPC path
+  // (see the note by the captureStepCamera branch). Swallow the release while
+  // the cursor is in the viewport, where Alt belongs to us.
+  if (e.type === 'keyup' && e.key === 'Alt' && _modInCanvas) e.preventDefault();
 };
 document.addEventListener('keydown', _modKeyRefresh);
 document.addEventListener('keyup',   _modKeyRefresh);
+// Alt+Tab away with Alt held never delivers a keyup — the badges would hang
+// around until the next pointer move. (The glyph above has always had this
+// hole; it is fixed here for both.)
+window.addEventListener('blur', () => { _modBadge.style.display = 'none'; hidePerspectiveBadge(); });
+
+// 🔲 Alt + wheel over the viewport re-lenses the shot (scene.js does the dolly).
+// The badge follows the wheel even when the cursor is perfectly still, and says
+// how to keep the value: the camera is live until a step records it, exactly
+// like orbiting or zooming.
+canvas.addEventListener('wheel', (e) => {
+  if (!e.altKey || _anyPickModeActive()) return;
+  _modPX = e.clientX; _modPY = e.clientY; _modInCanvas = true;
+  showPerspectiveBadge(e.clientX, e.clientY + 24, sceneCore.getPerspectiveFov());
+}, { capture: true, passive: true });
+sceneCore.on('camera:perspective', (fov) => {
+  setPerspectiveBadgeValue(fov, `${keyLabel('captureStepCamera')} saves it to the step`);
+});
 
 // Shift the hue of a #rrggbb hex by `deg` degrees (HSL space). Used to make
 // the candidate-preview color clearly distinct from the cyan selection while
