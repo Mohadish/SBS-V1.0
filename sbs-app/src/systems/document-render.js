@@ -44,6 +44,12 @@ body { font-family: Arial, Helvetica, sans-serif; color: #111; -webkit-print-col
 .toc .tl.ts .tn { flex: 0 0 11mm; font-weight: 600; }
 .toc .tl.ts .tp { font-weight: 400; }
 .toc .tl.ts .td { border-bottom-color: #bbb; }
+.ctb { overflow: hidden; }
+.ctb table { width: 100%; border-collapse: collapse; table-layout: fixed; }
+.ctb th, .ctb td { border: 0.25mm solid #555; padding: 1.1mm 1.5mm; vertical-align: top; text-align: inherit; font-weight: 400; word-break: break-word; line-height: 1.3; }
+.ctb th { font-weight: 700; background: #ececec; }
+.ctb.nogrid th, .ctb.nogrid td { border: 0; border-bottom: 0.25mm solid #ccc; }
+.ctb.zebra tbody tr:nth-child(even) td { background: #f4f4f4; }
 .it { display: flex; gap: 3mm; margin: 0 0 3.2mm; font-size: 11pt; line-height: 1.38; break-inside: avoid; }
 .it .no { flex: 0 0 auto; min-width: 9mm; height: 6.2mm; padding: 0 1.6mm; border-radius: 3.1mm; background: #111; color: #fff; font-weight: 700; font-size: 9.5pt; display: flex; align-items: center; justify-content: center; }
 .it .tx { flex: 1; white-space: pre-wrap; word-break: break-word; }
@@ -120,6 +126,18 @@ export function customItemHtml(it, o = {}, band = '') {
     return `<div class="ci cp" ${tag} style="${box}"><img class="pic" src="${_esc(url)}" alt="" draggable="false" style="left:calc(50% + ${b.dxMm}mm);top:calc(50% + ${b.dyMm}mm);width:${b.widthPct}%;"></div>`;
   }
   const align = it.align === 'center' ? 'center' : it.align === 'end' ? 'end' : 'start';
+  if (it.type === 'table') {
+    // table-layout:fixed is what makes the preview and printToPDF agree — auto
+    // layout re-measures against the print font and drifts.
+    const cg = `<colgroup>${(it.widths || []).map(w => `<col style="width:${(w * 100).toFixed(3)}%">`).join('')}</colgroup>`;
+    const body = (it.cells || []).map((row, r) => `<tr>${(row || []).map((cell, c) => {
+      const t = (it.head && r === 0) ? 'th' : 'td';
+      return `<${t} data-cell="${r},${c}" dir="auto">${_esc(cell)}</${t}>`;
+    }).join('')}</tr>`).join('');
+    return `<div class="ci ctb${it.grid === false ? ' nogrid' : ''}${it.zebra ? ' zebra' : ''}" ${tag}`
+      + ` style="${box}font-size:${it.size}pt;color:${_esc(it.color)};text-align:${align};">`
+      + `<table>${cg}<tbody>${body}</tbody></table></div>`;
+  }
   return `<div class="ci ct${band ? ' bt' : ''}" ${tag} dir="auto" style="${box}font-size:${it.size}pt;font-weight:${it.bold ? 700 : 400};font-style:${it.italic ? 'italic' : 'normal'};text-align:${align};color:${_esc(it.color)};">${_esc(it.text)}</div>`;
 }
 

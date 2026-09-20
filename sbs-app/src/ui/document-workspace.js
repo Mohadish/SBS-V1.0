@@ -1133,7 +1133,7 @@ function _openTemplateEditor(asNew) {
 // document's body font — only size, weight, slant, alignment and colour vary. Every gesture
 // (a drag, a resize, a typed text, a delete) is ONE undo entry.
 
-let _customSel = null, _cdrag = null, _customModel = null;
+let _customSel = null, _cdrag = null, _coldrag = null, _customModel = null;
 let _bandEdit = null;                     // 'header' | 'footer' while the header / footer editor is open
 let _stillsFailed = new Set();            // pictures that were asked for and did not come back: never walk for them in a loop
 const C_AREA = { x: 12, y: 32, w: 186, h: 238.5 };
@@ -1171,7 +1171,7 @@ const _newItemId = (p, n) => `${p}_${Date.now().toString(36)}${n}`;
 
 function _renderCustomPage(model, cp) {
   const editing = _shadow.activeElement;
-  if (editing?.classList?.contains('ct') && editing.isContentEditable) { _deferred = true; return; }     // never rebuild under the caret
+  if (_typingInPage(editing)) { _deferred = true; return; }     // never rebuild under the caret
   _customModel = cp; _dropWheelItem();
   const need = stillsNeeded({ customs: [cp] }), have = D.cachedStills(need);        // pictures taken from the animation
   const o = { stills: have, logo: D.documentLogo(), watermark: model.watermark, dir: model.dir, lang: model.lang };
@@ -1191,7 +1191,7 @@ function _renderCustomPage(model, cp) {
  */
 function _renderBandEdit(model) {
   const editing = _shadow.activeElement;
-  if (editing?.classList?.contains('ct') && editing.isContentEditable) { _deferred = true; return; }
+  if (_typingInPage(editing)) { _deferred = true; return; }
   _pageModel = null; _dropWheelFit(); _slotSel = null; _placeSlotBar();
   const o = { logo: D.documentLogo(), watermark: model.watermark, dir: model.dir, lang: model.lang, tocTitle: model.toc?.title };
   let pm = null, html = '';
@@ -1227,7 +1227,17 @@ function _drawCustomSel() {
   const it = _customModel?.items.find(i => i.id === _customSel);
   const pg = _shadow.querySelector('.page');
   if (!it || !pg) return;
+  // 📋 a table also gets a grab bar on every column border
+  let colHandles = '';
+  if (it.type === 'table' && Array.isArray(it.widths)) {
+    let acc = 0;
+    for (let i = 0; i < it.widths.length - 1; i++) {
+      acc += it.widths[i];
+      colHandles += `<i data-colh="${i}" title="Drag: how wide this column is" style="left:${(acc * 100).toFixed(3)}%;top:0;width:7px;height:100%;margin-left:-3.5px;margin-top:0;border:0;border-radius:0;background:rgba(56,189,248,0.45);cursor:col-resize;"></i>`;
+    }
+  }
   pg.insertAdjacentHTML('beforeend', `<div class="csel" style="left:${it.x}mm;top:${it.y}mm;width:${it.w}mm;height:${it.h}mm;">${C_HANDLES.map(h => `<i data-ch="${h}" style="left:${h.includes('w') ? 0 : h.includes('e') ? 100 : 50}%;top:${h.includes('n') ? 0 : h.includes('s') ? 100 : 50}%;cursor:${h === 'n' || h === 's' ? 'ns' : h === 'e' || h === 'w' ? 'ew' : h === 'nw' || h === 'se' ? 'nwse' : 'nesw'}-resize;"></i>`).join('')}</div>`);
+  if (colHandles) _shadow.querySelector('.csel')?.insertAdjacentHTML('beforeend', colHandles);
 }
 
 /** The bar over the page: add things; and, with an item selected, what can be changed about it. */
@@ -1253,14 +1263,27 @@ function _placeCustomBar() {
       + b('ci-add-text', '＋ Text', 'A new text box') + b('ci-add-field', '＋ Field ▾', 'A value that fills itself in on every page: the title, the chapter, the page number…')
       + b('ci-add-picture', '＋ Picture ▾', 'The project’s logo, or a picture from a file')
       + b('band-rule', '▁ Line', `The line between the ${_bandEdit} and the page`, bandsOf(D.getDocument())[_bandEdit]?.rule !== false)
-    : b('ci-add-text', '＋ Text', 'A new text box') + b('ci-add-picture', '＋ Picture ▾', 'A picture from a file — or a picture of any step of the animation');
+    : b('ci-add-text', '＋ Text', 'A new text box') + b('ci-add-picture', '＋ Picture ▾', 'A picture from a file — or a picture of any step of the animation')
+      + b('ci-add-table', '＋ Table', 'A table you type into — a parts list, a torque list, a specification');
   const tail = host === 'band' ? sep + b('band-reset', '↺ Standard', 'Throw this design away: back to the standard header and footer') + b('band-done', '✓ Done', 'Back to the page (Esc)', false, 'color:#4ade80;font-weight:600;') : '';
   const fitBtns = b('ci-fill', 'Fill', 'Fill the frame (cropping what does not fit)') + b('ci-whole', 'Whole', 'Show the whole picture inside the frame') + b('ci-zoom', '−', '5% smaller inside the frame', false, '', 'data-d="-1"')
     + `<input class="dw-in" data-ci="zoom" data-item="${_esc(it?.id || '')}" type="text" inputmode="decimal" value="${zoomPercent(it?.fit?.zoom ?? 1)}" title="How big the picture is inside its frame. 100% fills the frame. Type a number and press Enter." style="width:52px;text-align:right;padding:1px 4px;">%`
     + b('ci-zoom', '+', '5% larger inside the frame', false, '', 'data-d="1"');
   bar.innerHTML = lead + '<input type="file" id="dw-ci-file" accept="image/*" hidden>'
     + (!it ? `<span style="padding:0 6px;">click an item to select it · double-click a text to type</span>` : sep
-      + (it.type === 'text'
+      + (it.type === 'table'
+        ? `<span style="padding:0 2px;">${it.rows}×${it.cols}</span>`
+          + b('ci-row-add', '＋ Row', 'One more row (at the bottom)') + b('ci-row-del', '− Row', 'Take the last row away')
+          + b('ci-col-add', '＋ Col', 'One more column') + b('ci-col-del', '− Col', 'Take the last column away')
+          + sep
+          + b('ci-head', 'Header', 'The first row is a heading', it.head !== false)
+          + b('ci-grid', 'Grid', 'Lines around every cell — off leaves a line under each row', it.grid !== false)
+          + b('ci-zebra', 'Stripes', 'Shade every other row', !!it.zebra)
+          + `<label style="display:flex;gap:4px;align-items:center;">Size <input class="dw-in" data-ci="tsize" type="number" min="5" max="40" step="0.5" value="${it.size}" style="width:54px;"> pt</label>`
+          + b('ci-align-start', '⫷', 'Align to the start', it.align === 'start') + b('ci-align-center', '⫿', 'Centre', it.align === 'center') + b('ci-align-end', '⫸', 'Align to the end', it.align === 'end')
+          + `<input data-ci="color" type="color" value="${_esc(it.color)}" title="Text colour" style="width:30px;height:24px;padding:0;border:1px solid #334155;border-radius:5px;background:none;">`
+          + `<span style="padding:0 4px;color:#64748b;">double-click a cell to type · Tab moves on</span>`
+        : it.type === 'text'
         ? `<label style="display:flex;gap:4px;align-items:center;">Size <input class="dw-in" data-ci="size" type="number" min="6" max="120" step="1" value="${it.size}" style="width:58px;"> pt</label>`
           + b('ci-bold', '<b>B</b>', 'Bold', it.bold) + b('ci-italic', '<i>I</i>', 'Italic', it.italic)
           + b('ci-align-start', '⫷', 'Align to the start', it.align === 'start') + b('ci-align-center', '⫿', 'Centre', it.align === 'center') + b('ci-align-end', '⫸', 'Align to the end', it.align === 'end')
@@ -1277,7 +1300,7 @@ function _customLeftHtml(c, x) {
   return `<div class="dw-h">Page ${no} of ${c.model.total} — custom page</div>
     <label class="dw-lab">Name (shown in the list only)<input class="dw-in" data-custom-name value="${_esc(x.name || '')}" dir="auto"></label>
     <div style="font-size:11.5px;color:#94a3b8;line-height:1.55;">A page that is not made of steps — a cover, a safety notice, a parts list. It has the document's header and footer; between them you place what you want with the bar above the page:<br>
-      • <b>＋ Text</b> adds a text box.<br>• <b>＋ Picture ▾</b> adds a picture from a file — or a picture of <b>any step of the animation</b> (its final state, or the state it starts from).<br>• Drag an item to move it, drag a handle to resize it; arrows nudge 1 mm (Shift 5).<br>• <b>Double-click a text</b> to type; click away to finish, Esc to abandon.<br>• Text wears the document's font — size, bold, italic, alignment and colour are yours.<br>• Delete removes the selected item.<br><br>
+      • <b>＋ Text</b> adds a text box.<br>• <b>＋ Picture ▾</b> adds a picture from a file — or a picture of <b>any step of the animation</b> (its final state, or the state it starts from).<br>• <b>＋ Table</b> adds a table: double-click a cell to type, <b>Tab</b> moves to the next one, and the bar adds or removes rows and columns. Drag a <b>blue bar on a column border</b> to change how wide that column is.<br>• Drag an item to move it, drag a handle to resize it; arrows nudge 1 mm (Shift 5).<br>• <b>Double-click a text</b> to type; click away to finish, Esc to abandon.<br>• Text wears the document's font — size, bold, italic, alignment and colour are yours.<br>• Delete removes the selected item.<br><br>
       Drag the <b>⠿</b> grip of the page in the list (or right-click it) to move the page anywhere in the document.</div>
     <div style="margin-top:10px;"><button class="dw-btn" data-act="custom-delete" style="color:#fca5a5;">🗑 Delete this page</button></div>`;
 }
@@ -1305,6 +1328,17 @@ function _onCustomPointerDown(e) {
   if (!host || e.button !== 0) return;
   if (_wheelItem) _flushWheelItem();          // a pending wheel commit must land before the drag reads the item
 
+  const colh = e.target.closest?.('[data-colh]');
+  if (colh && _customSel) {
+    const tb = _customModel?.items.find(i => i.id === _customSel);
+    if (tb?.type === 'table') {
+      e.preventDefault();
+      _commitFocusedText();
+      _coldrag = { id: _customSel, i: Number(colh.dataset.colh), x: e.clientX, w: tb.widths.slice(), boxW: tb.w, k: _mmPerPx(), moved: false };
+      try { colh.setPointerCapture(e.pointerId); } catch { /* synthetic pointer */ }
+      return;
+    }
+  }
   const handle = e.target.closest?.('[data-ch]'), itemEl = e.target.closest?.('.ci[data-item]');
   if (itemEl?.isContentEditable) return;                              // typing: the text box is a text field now
   if (itemEl && !handle) {
@@ -1322,6 +1356,22 @@ function _onCustomPointerDown(e) {
   try { (handle || itemEl).setPointerCapture(e.pointerId); } catch { /* synthetic pointer */ }
 }
 function _onCustomPointerMove(e) {
+  const cd = _coldrag;
+  if (cd) {
+    const f = ((e.clientX - cd.x) * cd.k) / Math.max(1, cd.boxW);       // mm → fraction of the table
+    const MIN = 0.05;
+    const room = cd.w[cd.i] + cd.w[cd.i + 1];
+    const a = Math.min(Math.max(cd.w[cd.i] + f, MIN), room - MIN);
+    const next = cd.w.slice();
+    next[cd.i] = a; next[cd.i + 1] = room - a;
+    cd.next = next; cd.moved = true;
+    const cols = _shadow.querySelectorAll(`.ci[data-item="${CSS.escape(cd.id)}"] col`);
+    cols.forEach((c, i) => { c.style.width = `${(next[i] * 100).toFixed(3)}%`; });
+    const hs = _shadow.querySelectorAll('.csel [data-colh]');
+    let acc = 0;
+    hs.forEach((h, i) => { acc += next[i]; h.style.left = `${(acc * 100).toFixed(3)}%`; });
+    return;
+  }
   const d = _cdrag; if (!d) return;
   const dx = (e.clientX - d.x) * d.k, dy = (e.clientY - d.y) * d.k;
   if (!d.rect && Math.hypot(dx, dy) < 0.6) return;
@@ -1340,12 +1390,30 @@ function _onCustomPointerMove(e) {
   for (const el of [_shadow.querySelector(`.ci[data-item="${CSS.escape(d.id)}"]`), _shadow.querySelector('.csel')]) if (el) { el.style.left = `${d.rect.x}mm`; el.style.top = `${d.rect.y}mm`; el.style.width = `${d.rect.w}mm`; el.style.height = `${d.rect.h}mm`; }
 }
 function _onCustomPointerUp() {
+  const cd = _coldrag; _coldrag = null;
+  if (cd?.moved && cd.next) { _patchItem({ widths: cd.next }, 'Column width'); return; }
   const d = _cdrag; _cdrag = null;
   if (d?.rect) _commitItems(_itemsNow().map(i => (i.id === d.id ? { ...i, ..._toStored(d.rect) } : i)), d.h ? 'Resize item' : 'Move item');
 }
 function _onCustomDblClick(e) {
-  const el = e.target.closest?.('.ci.ct[data-item]');
+  // 📋 a table CELL types exactly like a text box — same contenteditable, same
+  // commit on the way out; only what is written back differs.
+  const cell = e.target.closest?.('[data-cell]');
+  const el = cell || e.target.closest?.('.ci.ct[data-item]');
   const host = _editHost();
+  if (cell) {
+    const owner = cell.closest('.ci[data-item]');
+    if (!owner || !host) return;
+    _customSel = owner.dataset.item; _drawCustomSel(); _placeCustomBar();
+    cell.setAttribute('contenteditable', 'plaintext-only');
+    cell.dataset.orig = cell.innerText;
+    cell.dataset.item = owner.dataset.item;
+    cell.focus();
+    const rg = document.createRange(); rg.selectNodeContents(cell);
+    const sel = _shadow.getSelection ? _shadow.getSelection() : window.getSelection();
+    sel?.removeAllRanges(); sel?.addRange(rg);
+    return;
+  }
   if (!el || !host || (el.dataset.band || '') !== (host === 'band' ? _bandEdit : '')) return;
   _customSel = el.dataset.item; _drawCustomSel(); _placeCustomBar();
   // a band text shows its VALUES on the page ("Page 3 / 12"); to type, it shows what was written ("Page {page} / {pages}")
@@ -1356,16 +1424,46 @@ function _onCustomDblClick(e) {
 }
 function _onCustomFocusOut(e) {
   const el = e.target;
+  if (el?.dataset?.cell !== undefined && el.isContentEditable) {
+    const [r, c] = String(el.dataset.cell).split(',').map(Number);
+    const text = String(el.innerText ?? '').replace(/ /g, ' ').replace(/\n+$/, '');
+    const id = el.dataset.item, orig = el.dataset.orig ?? '';
+    el.removeAttribute('contenteditable');
+    if (text !== orig.replace(/\n+$/, '')) {
+      _commitItems(_itemsNow().map(i => (i.id === id && i.type === 'table'
+        ? { ...i, cells: i.cells.map((row, ri) => (ri === r ? row.map((v, ci) => (ci === c ? text : v)) : row)) } : i)), 'Edit cell');
+    } else if (_deferred) { _deferred = false; setTimeout(_renderAll, 0); }
+    return;
+  }
   if (!el?.classList?.contains('ct') || !el.isContentEditable) return;
   const text = String(el.innerText ?? '').replace(/ /g, ' ').replace(/\n+$/, ''), id = el.dataset.item, orig = el.dataset.orig ?? '';
   el.removeAttribute('contenteditable');
   if (text !== orig.replace(/\n+$/, '')) _commitItems(_itemsNow().map(i => (i.id === id ? { ...i, text } : i)), 'Edit text');
   else if (_deferred || _bandEdit) { _deferred = false; setTimeout(_renderAll, 0); }      // a band text goes back to showing its values
 }
+/** Is the caret inside something on the page that must not be rebuilt under it? */
+function _typingInPage(el) {
+  return !!el?.isContentEditable && (el.classList?.contains('ct') || el.dataset?.cell !== undefined);
+}
+
 /** @returns {boolean} handled */
 function _onCustomKey(e) {
   if (!_editHost()) return false;
   const typing = _shadow.activeElement?.isContentEditable;
+  // Tab walks to the next cell of the table, which is what a table is for.
+  if (typing && e.key === 'Tab') {
+    const cell = _shadow.activeElement;
+    if (cell?.dataset?.cell !== undefined) {
+      e.preventDefault();
+      const owner = cell.closest('.ci[data-item]');
+      const cells = owner ? [...owner.querySelectorAll('[data-cell]')] : [];
+      const i = cells.indexOf(cell);
+      const next = cells[i + (e.shiftKey ? -1 : 1)];
+      cell.blur();                                            // commits this cell
+      if (next) setTimeout(() => next.dispatchEvent(new MouseEvent('dblclick', { bubbles: true })), 0);
+      return true;
+    }
+  }
   if (e.key === 'Escape') {
     if (_menu) return false;
     if (typing) { const el = _shadow.activeElement; el.innerText = el.dataset.orig ?? ''; el.blur(); _root.focus({ preventScroll: true }); return true; }
@@ -1426,6 +1524,16 @@ function _customAct(act, el) {
     _commitItems([...items, { id, type: 'text', ..._clampItemRect(box), text, size: box.size, bold: false, italic: false, align: box.align, color: '#111111' }], 'Add text box');
   };
   if (act === 'ci-add-text') { addText('Text'); return true; }
+  if (act === 'ci-add-table') {
+    const items = _itemsNow(), id = _newItemId('ci', items.length);
+    const lowest = items.reduce((m, i) => Math.max(m, i.y + i.h), A.y);
+    const box = { x: A.x, y: Math.min(lowest + (items.length ? 4 : 8), A.y + A.h - 40), w: A.w, h: 40 };
+    const cells = [['', '', ''], ['', '', ''], ['', '', '']];
+    _customSel = id;
+    _commitItems([...items, { id, type: 'table', ..._clampItemRect(box), rows: 3, cols: 3, cells,
+      widths: [1 / 3, 1 / 3, 1 / 3], head: true, grid: true, zebra: false, size: 9, align: 'start', color: '#111111' }], 'Add table');
+    return true;
+  }
   if (act === 'ci-add-field') {
     _openMenu(FIELD_LABELS.map(([k, l]) => ({ html: `<b>${_esc(l)}</b> <span style="color:#64748b;">{${k}}</span>`, run: () => {
       const sel = _itemsNow().find(i => i.id === _customSel && i.type === 'text');
@@ -1467,6 +1575,23 @@ function _customAct(act, el) {
   if (act === 'ci-bold') { _patchItem({ bold: !it.bold }, 'Bold'); return true; }
   if (act === 'ci-italic') { _patchItem({ italic: !it.italic }, 'Italic'); return true; }
   if (act.startsWith('ci-align-')) { _patchItem({ align: act.slice(9) }, 'Align text'); return true; }
+  if (it.type === 'table') {
+    const grow = (rows, cols) => {
+      const cells = Array.from({ length: rows }, (_, r) => Array.from({ length: cols }, (_, c) => it.cells?.[r]?.[c] ?? ''));
+      let widths = it.widths.slice(0, cols);
+      while (widths.length < cols) widths.push(1 / cols);
+      const sum = widths.reduce((a2, b2) => a2 + b2, 0) || 1;
+      widths = widths.map(v => v / sum);
+      return { rows, cols, cells, widths };
+    };
+    if (act === 'ci-row-add') { _patchItem(grow(Math.min(it.rows + 1, 40), it.cols), 'Add row'); return true; }
+    if (act === 'ci-row-del') { if (it.rows > 1) _patchItem(grow(it.rows - 1, it.cols), 'Remove row'); return true; }
+    if (act === 'ci-col-add') { _patchItem(grow(it.rows, Math.min(it.cols + 1, 10)), 'Add column'); return true; }
+    if (act === 'ci-col-del') { if (it.cols > 1) _patchItem(grow(it.rows, it.cols - 1), 'Remove column'); return true; }
+    if (act === 'ci-head')  { _patchItem({ head: it.head === false }, 'Heading row'); return true; }
+    if (act === 'ci-grid')  { _patchItem({ grid: it.grid === false }, 'Table lines'); return true; }
+    if (act === 'ci-zebra') { _patchItem({ zebra: !it.zebra }, 'Striped rows'); return true; }
+  }
   if (act === 'ci-fill') { _patchItem({ fit: { zoom: 1, ox: 0, oy: 0 } }, 'Picture fit'); return true; }
   if (act === 'ci-whole') { _patchItem({ fit: { zoom: containZoom(it, it.aspect), ox: 0, oy: 0 } }, 'Picture fit'); return true; }
   if (act === 'ci-zoom') {
@@ -1485,6 +1610,7 @@ function _customChange(t) {
       ? { ...i, fit: { ...(i.fit || {}), zoom: zoomFromPercent(t.value, i.fit?.zoom ?? 1) } } : i)), 'Picture size');
     return true;
   }
+  if (t.dataset?.ci === 'tsize') { _patchItem({ size: Math.max(5, Math.min(40, Number(t.value) || 9)) }, 'Table text size'); return true; }
   if (t.dataset?.ci === 'size') { _patchItem({ size: Math.max(6, Math.min(120, Number(t.value) || 11)) }, 'Text size'); return true; }
   if (t.dataset?.ci === 'color') { _patchItem({ color: t.value }, 'Text colour'); return true; }
   if (t.dataset?.customName !== undefined) { const n = t.value.trim(); if (n) D.renameCustomPage(_pageId, n); return true; }

@@ -642,6 +642,9 @@ function _reanchor(seq) {
 export const MAX_CUSTOM_ITEMS = 60;
 const _hex = (c, d) => (/^#[0-9a-f]{6}$/i.test(String(c || '')) ? c : d);
 
+export const MAX_TABLE_COLS = 10;
+export const MAX_TABLE_ROWS = 40;
+
 export function sanitizeCustomItem(it, area = CONTENT_MM) {
   const rect = clampRect(it, area === CONTENT_MM ? 5 : 3, area === CONTENT_MM ? 4 : 2, area);
   const base = { id: String(it?.id || ''), ...rect };
@@ -651,6 +654,34 @@ export function sanitizeCustomItem(it, area = CONTENT_MM) {
       moment: it.moment === 'start' ? 'start' : 'end', logo: !!it.logo, fit: fitOf(it),
       // the frame of a video step this picture is taken at (V0.3.4.30); absent = the clip's first frame
       ...(Number.isFinite(at) && at >= 0 ? { atMs: at } : {}) };
+  }
+  // 📋 A TABLE (V0.3.4.34) — rows of typed cells. Declared BEFORE the text
+  // fall-through below, which is a catch-all: an unknown type is rebuilt as an
+  // empty text box, and since every commit re-sanitises the page, a table
+  // without this branch would not merely fail to load — it would be destroyed
+  // the next time anything on the page was dragged.
+  if (it?.type === 'table') {
+    const cols = Math.max(1, Math.min(MAX_TABLE_COLS, Math.round(Number(it?.cols) || 3)));
+    const rows = Math.max(1, Math.min(MAX_TABLE_ROWS, Math.round(Number(it?.rows) || 3)));
+    const src = Array.isArray(it?.cells) ? it.cells : [];
+    const cells = Array.from({ length: rows }, (_, r) =>
+      Array.from({ length: cols }, (_, c) => String(Array.isArray(src[r]) ? (src[r][c] ?? '') : '').slice(0, 600)));
+    // column widths as fractions of the table, always summing to 1
+    let w = (Array.isArray(it?.widths) ? it.widths : []).slice(0, cols)
+      .map(v => (Number.isFinite(Number(v)) && Number(v) > 0 ? Number(v) : 0));
+    while (w.length < cols) w.push(0);
+    if (!w.some(v => v > 0)) w = w.map(() => 1 / cols);
+    const sum = w.reduce((a2, b2) => a2 + b2, 0) || 1;
+    w = w.map(v => Math.max(0.03, v / sum));
+    const sum2 = w.reduce((a2, b2) => a2 + b2, 0);
+    w = w.map(v => v / sum2);
+    return {
+      ...base, type: 'table', cols, rows, cells, widths: w,
+      head: it?.head !== false, grid: it?.grid !== false, zebra: !!it?.zebra,
+      size: _clampN(it?.size, 5, 40, 9),
+      align: ['start', 'center', 'end'].includes(it?.align) ? it.align : 'start',
+      color: _hex(it?.color, '#111111'),
+    };
   }
   return {
     ...base, type: 'text', text: String(it?.text ?? '').slice(0, 8000),
@@ -738,10 +769,18 @@ export function buildRenderModel(doc, steps, chapters, ctx) {
   const tocLines = [];
   {
     let prevCh = null;
+    // "1, 2, 3 on every page" counts within a PAGE on the page itself; in the
+    // contents the same intent is a counter that restarts with each CHAPTER
+    // (V0.3.4.34, user) — chapter one: 1, 2, 3; chapter two: 1, 2, 3 again.
+    const perChapterNo = doc?.options?.numbering === 'page';
+    let inChapter = 0;
     for (const e of seq) {
       if (e.kind !== 'page') continue;
       const ch = chapterOfPage(e.page);
-      if (ch && ch.id !== prevCh) tocLines.push({ kind: 'chapter', no: (chapters || []).indexOf(ch) + 1, name: ch.name, pageId: e.page.id });
+      if (ch && ch.id !== prevCh) {
+        tocLines.push({ kind: 'chapter', no: (chapters || []).indexOf(ch) + 1, name: ch.name, pageId: e.page.id });
+        inChapter = 0;
+      }
       if (ch) prevCh = ch.id;
       if (!withSteps) continue;
       // one line per UNIT on this page (a silent sub-step is part of its unit,
@@ -749,9 +788,12 @@ export function buildRenderModel(doc, steps, chapters, ctx) {
       for (const uid of e.page.stepIds || []) {
         if (!shown(uid)) continue;
         const st = stepById.get(uid);
+        inChapter++;
         tocLines.push({
           kind: 'step',
-          no: doc?.options?.numbering === 'none' ? '' : (nums.get(uid)?.label || ''),
+          no: doc?.options?.numbering === 'none' ? ''
+            : perChapterNo ? String(inChapter)
+            : (nums.get(uid)?.label || ''),
           name: st?.name || '',
           pageId: e.page.id,
         });
