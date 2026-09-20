@@ -23,6 +23,7 @@ import { DOCUMENT_CSS, renderPageHtml, renderTocPageHtml, renderCustomPageHtml, 
 import { watermarkOf, watermarkHtml, watermarkCss, watermarkVisible, detectWatermarkMode, bakeWatermarkPixels, fitWithin } from '../systems/watermark-core.js';
 import * as D from '../systems/document.js';
 import { openTemplateEditor } from './document-template-editor.js';
+import { openVideoFrameDialog } from './video-frame-dialog.js';   // 🎞 which frame of a step's clip this picture shows
 
 const _esc = (s) => String(s ?? '').replace(/[&<>"]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
 const FLAG_ICON = { added: '➕', removed: '➖', 'moved-out': '↗', new: '🆕', 'image-left': '🖼', empty: '∅' };
@@ -868,6 +869,7 @@ function _placeSlotBar() {
   bar.innerHTML = `<button class="dw-btn" data-act="slot-menu" style="padding:2px 9px;" title="Which picture goes here">Picture ▾</button>
     ${has ? `<button class="dw-btn" data-act="slot-fill" style="padding:2px 9px;" title="Fill the frame, centred (cropping what does not fit)">Fill</button>
     <button class="dw-btn" data-act="slot-whole" style="padding:2px 9px;" title="Show the whole picture inside the frame">Whole</button>
+${im?.stepId && D.stepClips(im.stepId).length ? `<button class="dw-btn" data-act="slot-frame" style="padding:2px 9px;" title="This step holds a video — choose which frame of it this picture shows">🎞 Frame${im.atMs != null ? ` ${(im.atMs / 1000).toFixed(2)}s` : ''}…</button>` : ''}
     <button class="dw-btn" data-act="slot-zoom" data-d="-1" style="padding:2px 8px;" title="5% smaller">−</button><input class="dw-in" data-slot-zoom type="text" inputmode="decimal" value="${zoomPercent(im ? im.fit.zoom : 1)}" title="How big the picture is inside its frame. 100% fills the frame. Type a number and press Enter." style="width:52px;text-align:right;padding:1px 4px;"><span style="margin-inline-start:-2px;">%</span><button class="dw-btn" data-act="slot-zoom" data-d="1" style="padding:2px 8px;" title="5% larger">+</button>
     <span style="padding:0 4px;">drag to move · wheel to scale</span>` : ''}<span style="padding:0 4px;color:#64748b;">${_esc(what)}</span>`;
   _placeSlotBarAt(bar, el);
@@ -898,7 +900,15 @@ function _onSlotPointerDown(e) {
   const im = _slotIm(k);
   if (!im || !el.querySelector('img.pic')) return;
   e.preventDefault();                                         // no native image drag, no text selection
-  _pan = { k, x: e.clientX, y: e.clientY, start: { ...im.fit }, fit: { ...im.fit }, moved: false, el };
+  // START FROM THE SIZE ON SCREEN (V0.3.4.30). A wheel gesture commits 350 ms
+  // after the last notch, and the page model is only refreshed a frame after
+  // that — so a drag begun straight after zooming used to read the PRE-WHEEL
+  // fit out of the model and snap the picture back to it. Flush the pending
+  // commit and take the live value.
+  const live = _wheelFit?.k === k ? { ..._wheelFit.fit } : null;
+  if (live) _flushWheel();
+  const from = live || { ...im.fit };
+  _pan = { k, x: e.clientX, y: e.clientY, start: from, fit: { ...from }, moved: false, el };
   try { el.setPointerCapture?.(e.pointerId); } catch { /* a pointer that is already gone — the window-level pointerup still ends the drag */ }
 }
 function _onSlotPointerMove(e) {
@@ -974,6 +984,21 @@ function _flushWheel() {
   clearTimeout(_wheelTimer);
   const w = _wheelFit;        // kept, NOT cleared: it stays the truth until the
   if (w && w.pageId === _pageId) D.setPagePictureFit(w.pageId, w.k, w.fit);   // page re-renders (see _pageModel)
+}
+
+/**
+ * 🎞 Choose which frame of the step's video this picture shows. The step does
+ * not have to be the one on screen, so the dialog opens the file itself from
+ * the clip's stored path.
+ */
+async function _pickFrame(im, apply) {
+  const clips = im?.stepId ? D.stepClips(im.stepId) : [];
+  const clip = clips[0];
+  if (!clip) { setStatus('That step has no video clip.', 'info', 4000); return; }
+  if (clips.length > 1) setStatus(`This step holds ${clips.length} clips — the frame is taken from the first one.`, 'info', 6000);
+  const ms = await openVideoFrameDialog(clip, im.atMs ?? null);
+  if (ms == null) return;
+  apply(ms);
 }
 
 /** Which picture goes into the slot: automatic · a step of the page · an external image · empty. */
@@ -1226,7 +1251,8 @@ function _placeCustomBar() {
           + b('ci-align-start', '⫷', 'Align to the start', it.align === 'start') + b('ci-align-center', '⫿', 'Centre', it.align === 'center') + b('ci-align-end', '⫸', 'Align to the end', it.align === 'end')
           + `<input data-ci="color" type="color" value="${_esc(it.color)}" title="Text colour" style="width:30px;height:24px;padding:0;border:1px solid #334155;border-radius:5px;background:none;">`
         : it.logo ? '<span style="padding:0 4px;">the project’s logo — always shown whole</span>'
-        : (stored?.stepId ? b('ci-step', `🎞 Step ${_esc(it.label || '—')} ▾`, 'Choose another step of the animation') + b('ci-moment', '↳ Before', 'Show the state this step STARTS from (seen from its camera) instead of its final state', stored.moment === 'start') : '') + fitBtns)
+        : (stored?.stepId ? b('ci-step', `🎞 Step ${_esc(it.label || '—')} ▾`, 'Choose another step of the animation') + b('ci-moment', '↳ Before', 'Show the state this step STARTS from (seen from its camera) instead of its final state', stored.moment === 'start')
+            + (D.stepClips(stored.stepId).length ? b('ci-frame', `🎞 Frame${stored.atMs != null ? ` ${(stored.atMs / 1000).toFixed(2)}s` : ''}…`, 'This step holds a video — choose which frame of it this picture shows') : '') : '') + fitBtns)
       + b('ci-front', '⤒ Front', 'Bring to the front') + b('ci-delete', '🗑', 'Delete this item (Delete key)', false, 'color:#fca5a5;'))
     + tail;
 }
@@ -1262,6 +1288,8 @@ function _patchItem(patch, label) {
 function _onCustomPointerDown(e) {
   const host = _editHost();
   if (!host || e.button !== 0) return;
+  if (_wheelItem) _flushWheelItem();          // a pending wheel commit must land before the drag reads the item
+
   const handle = e.target.closest?.('[data-ch]'), itemEl = e.target.closest?.('.ci[data-item]');
   if (itemEl?.isContentEditable) return;                              // typing: the text box is a text field now
   if (itemEl && !handle) {
@@ -1416,6 +1444,7 @@ function _customAct(act, el) {
   if (act === 'ci-front') { const items = _itemsNow(); const me = items.find(i => i.id === _customSel); _commitItems([...items.filter(i => i !== me), me], 'Bring to the front'); return true; }
   if (act === 'ci-step') { _stepPictureMenu(r.left, r.bottom + 4, _itemsNow().find(i => i.id === _customSel)?.stepId || null, (sid) => _patchItem({ stepId: sid }, 'Choose picture')); return true; }
   if (act === 'ci-moment') { _patchItem({ moment: _itemsNow().find(i => i.id === _customSel)?.moment === 'start' ? 'end' : 'start' }, 'Before / after'); return true; }
+  if (act === 'ci-frame') { _pickFrame(_itemsNow().find(i => i.id === _customSel), (ms) => _patchItem({ atMs: ms == null ? undefined : ms }, 'Picture frame')); return true; }
   if (act === 'ci-bold') { _patchItem({ bold: !it.bold }, 'Bold'); return true; }
   if (act === 'ci-italic') { _patchItem({ italic: !it.italic }, 'Italic'); return true; }
   if (act.startsWith('ci-align-')) { _patchItem({ align: act.slice(9) }, 'Align text'); return true; }
@@ -1617,6 +1646,7 @@ async function _onClick(e) {
   if (act === 'sel-action') { _commitFocusedText(); _selBarActions[Number(el.dataset.i)]?.run?.(); return; }
   if (act === 'slot-pick') { const r = el.getBoundingClientRect(); _slotMenu(Number(el.dataset.slot), r.left, r.bottom + 4); return; }
   if (act === 'slot-menu') { const r = el.getBoundingClientRect(); _slotMenu(_slotSel ?? 0, r.left, r.bottom + 4); return; }
+  if (act === 'slot-frame') { _pickFrame(_slotIm(_slotSel), (ms) => D.setPagePictureFrame(_pageId, _slotSel, ms)); return; }
   if (act === 'slot-fill') { if (_slotSel != null) D.setPagePictureFit(_pageId, _slotSel, null); return; }
   if (act === 'slot-whole') { const im = _slotIm(_slotSel); if (im) D.setPagePictureFit(_pageId, _slotSel, { zoom: containZoom(im.rect, im.aspect), ox: 0, oy: 0 }); return; }
   if (act === 'slot-zoom') {

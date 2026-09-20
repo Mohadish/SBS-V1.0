@@ -627,7 +627,13 @@ const _hex = (c, d) => (/^#[0-9a-f]{6}$/i.test(String(c || '')) ? c : d);
 export function sanitizeCustomItem(it, area = CONTENT_MM) {
   const rect = clampRect(it, area === CONTENT_MM ? 5 : 3, area === CONTENT_MM ? 4 : 2, area);
   const base = { id: String(it?.id || ''), ...rect };
-  if (it?.type === 'image') return { ...base, type: 'image', assetId: String(it.assetId || ''), stepId: it.stepId ? String(it.stepId) : '', moment: it.moment === 'start' ? 'start' : 'end', logo: !!it.logo, fit: fitOf(it) };
+  if (it?.type === 'image') {
+    const at = Math.round(Number(it?.atMs));
+    return { ...base, type: 'image', assetId: String(it.assetId || ''), stepId: it.stepId ? String(it.stepId) : '',
+      moment: it.moment === 'start' ? 'start' : 'end', logo: !!it.logo, fit: fitOf(it),
+      // the frame of a video step this picture is taken at (V0.3.4.30); absent = the clip's first frame
+      ...(Number.isFinite(at) && at >= 0 ? { atMs: at } : {}) };
+  }
   return {
     ...base, type: 'text', text: String(it?.text ?? '').slice(0, 8000),
     size: _clampN(it?.size, 6, 120, 11), bold: !!it?.bold, italic: !!it?.italic,
@@ -770,7 +776,7 @@ export function buildRenderModel(doc, steps, chapters, ctx) {
         if (im.stepId && doc.options?.pictureNumbers !== false && (items.length > 1 || im.moment === 'start')) {
           label = (items.find(x => x.stepId === im.stepId) || items.find(x => x.stepId === headOf.get(im.stepId)))?.label || '';
         }
-        return { ...im, label, key: im.stepId ? stillKey(im.stepId, im.moment) : null };
+        return { ...im, label, key: im.stepId ? stillKey(im.stepId, im.moment, im.atMs) : null };
       }),
       flags: p.flags || [],
     };
@@ -782,7 +788,7 @@ export function buildRenderModel(doc, steps, chapters, ctx) {
       items: c.items.map(it => {
         if (it.type !== 'image') return it;
         // a picture taken from the ANIMATION: rendered on demand like a page picture (end of the step, or its BEFORE frame)
-        if (it.stepId) return stepById.has(it.stepId) ? { ...it, src: null, key: stillKey(it.stepId, it.moment), aspect: ctx?.stillAspect > 0 ? ctx.stillAspect : 16 / 9, label: nums.get(it.stepId)?.label || '' } : { ...it, src: null, stepId: '', aspect: 16 / 9 };
+        if (it.stepId) return stepById.has(it.stepId) ? { ...it, src: null, key: stillKey(it.stepId, it.moment, it.atMs), aspect: ctx?.stillAspect > 0 ? ctx.stillAspect : 16 / 9, label: nums.get(it.stepId)?.label || '' } : { ...it, src: null, stepId: '', aspect: 16 / 9 };
         const a = doc?.assets?.[it.assetId];
         const good = a && ASSET_URL_RX.test(String(a.dataUrl || '')) && a.w > 0 && a.h > 0;
         return { ...it, src: good ? a.dataUrl : null, aspect: good ? a.w / a.h : 1, name: good ? (a.name || '') : '' };
@@ -850,15 +856,29 @@ function _slotOf(p, k, rect, nSlots, unitById, hidden, doc, ctx) {
  * A step can be pictured at two moments: 'end' — its final state (the usual picture) — and
  * 'start' — the state it begins from: the PREVIOUS step's end state seen through THIS step's
  * camera, i.e. the "before" of a before / after pair. Key: "<stepId>" or "<stepId>@start".
+ *
+ * A step holding a VIDEO can also be pictured at a chosen FRAME of that clip
+ * (V0.3.4.30) — key "<stepId>@t<ms>". The time is part of the key, so two
+ * frames of one clip are two different pictures and can sit side by side on
+ * the same page.
  */
-export const stillKey = (stepId, moment) => (moment === 'start' ? `${stepId}@start` : String(stepId));
-export const parseStillKey = (key) => { const s = String(key); return s.endsWith('@start') ? { stepId: s.slice(0, -6), moment: 'start' } : { stepId: s, moment: 'end' }; };
+export const stillKey = (stepId, moment, atMs) => {
+  const t = Math.round(Number(atMs));
+  if (Number.isFinite(t) && t >= 0) return `${stepId}@t${t}`;
+  return moment === 'start' ? `${stepId}@start` : String(stepId);
+};
+export const parseStillKey = (key) => {
+  const s = String(key);
+  const m = /^(.+)@t(\d+)$/.exec(s);
+  if (m) return { stepId: m[1], moment: 'end', atMs: Number(m[2]) };
+  return s.endsWith('@start') ? { stepId: s.slice(0, -6), moment: 'start' } : { stepId: s, moment: 'end' };
+};
 
 /** Every picture a document needs rendered — as still keys. */
 export function stillsNeeded(model) {
   const out = new Set();
-  for (const p of model.pages || []) for (const im of p.images) if (im.stepId) out.add(im.key || stillKey(im.stepId, im.moment));
-  for (const c of model.customs || []) for (const it of c.items) if (it.type === 'image' && it.stepId) out.add(it.key || stillKey(it.stepId, it.moment));
+  for (const p of model.pages || []) for (const im of p.images) if (im.stepId) out.add(im.key || stillKey(im.stepId, im.moment, im.atMs));
+  for (const c of model.customs || []) for (const it of c.items) if (it.type === 'image' && it.stepId) out.add(it.key || stillKey(it.stepId, it.moment, it.atMs));
   return [...out];
 }
 

@@ -22,6 +22,7 @@ import { materials }     from './materials.js';
 import { isIsolateEngaged, suspendIsolate, resumeIsolate } from '../core/isolate-state.js';
 import { steps }        from './steps.js';
 import { srcHashOf }    from './language-packs.js';
+import { parkAllAt, stepVideoClips } from './video-overlay.js';   // 🎞 a picture of a chosen frame
 import { projectDisplayName } from './header.js';
 import * as projectPaths from '../core/project-paths.js';
 import {
@@ -166,6 +167,28 @@ const _editPage = (label, pageId, fn) => {
 export function setPagePicture(pageId, slot, choice, moment = 'end') {
   _editPage('Page picture', pageId, (p) => _withSlot(p, slot, () => (
     choice === 'empty' ? { stepId: null, empty: true } : choice ? (moment === 'start' ? { stepId: choice, moment: 'start' } : { stepId: choice }) : { stepId: null, auto: true })));
+}
+
+/**
+ * 🎞 WHICH FRAME of the step's video this picture shows (V0.3.4.30) — a time in
+ * the clip's own file, in ms. null puts it back on the clip's first frame.
+ *
+ * The time is part of the picture's still key, so two slots on one page can
+ * hold two different frames of the same clip; nothing pixel-like is stored.
+ */
+export function setPagePictureFrame(pageId, slot, atMs) {
+  const t = Math.round(Number(atMs));
+  _editPage('Picture frame', pageId, (p) => _withSlot(p, slot, (im) => {
+    const next = { ...im };
+    if (Number.isFinite(t) && t >= 0) next.atMs = t; else delete next.atMs;
+    return next;
+  }));
+}
+
+/** The video clips of a step, for the frame picker. [] when it has none. */
+export function stepClips(stepId) {
+  const s = _steps().find(x => x.id === stepId);
+  try { return stepVideoClips(s) || []; } catch { return []; }
 }
 /** How the picture sits behind its slot: { zoom, ox, oy } (see document-core pictureBox). null = fill the slot, centred. */
 export function setPagePictureFit(pageId, slot, fit) {
@@ -409,7 +432,7 @@ export async function ensureStills(keys, { onProgress = null } = {}) {
         if (_walkAbort) break;
         i++;
         onProgress?.(i, todo.length);
-        const { stepId: id, moment } = parseStillKey(key);
+        const { stepId: id, moment, atMs } = parseStillKey(key);
         const before = moment === 'start';
         if (before) {
           // BEFORE-frame: the state this step starts from — the previous step's end state — seen
@@ -424,6 +447,15 @@ export async function ensureStills(keys, { onProgress = null } = {}) {
           await steps.activateStep(id, false);
         }
         try { await Promise.race([waitForOverlayStable?.(), new Promise(r => setTimeout(r, 1500))]); } catch { /* best effort */ }
+        // 🎞 A picture of a chosen FRAME of this step's video (V0.3.4.30). Activation parks
+        // every clip on its trim-in, which is why a video step always pictured its first
+        // frame; this moves it to the frame the user picked, and waits for the decoder.
+        if (Number.isFinite(atMs)) {
+          try {
+            const ok = await parkAllAt(atMs);
+            if (!ok) console.warn('[document] the clip did not reach', atMs, 'ms for step', id, '— the nearest decoded frame was used');
+          } catch { /* no clip / no decoder → the trim-in frame, as before */ }
+        }
         // activation re-applies materials and with them the selection highlight — hide it per step
         try { materials.setSelectionVisualsVisible(false); } catch { /* no meshes yet */ }
         // grab INSIDE the next render, before the outline + gizmo are composited
@@ -463,9 +495,11 @@ function _stepBefore(stepId) {
 }
 /** Freshness of one picture. A before-frame depends on TWO steps: the one it borrows the state from and the one it borrows the camera from. */
 function _sigOfKey(key, all, defs) {
-  const { stepId, moment } = parseStillKey(key);
+  const { stepId, moment, atMs } = parseStillKey(key);
   const s = all.find(x => x.id === stepId);
   if (!s) return null;
+  // the chosen video frame is part of the picture's identity
+  if (Number.isFinite(atMs)) return `T${atMs}.${_sigOf(s, defs)}`;
   if (moment !== 'start') return _sigOf(s, defs);
   const prev = _stepBefore(stepId);
   return `B.${srcHashOf(JSON.stringify(prev?.snapshot ?? null))}.${srcHashOf(JSON.stringify(steps._resolveStepCamera(s) ?? null))}.${defs}`;

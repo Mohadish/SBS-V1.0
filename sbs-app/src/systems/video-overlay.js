@@ -507,6 +507,46 @@ export async function seekAllToClock(synthMs) {
 }
 
 /**
+ * 🎞 Park every live clip on ONE chosen frame (V0.3.4.30) — what the document's
+ * picture of a video step is rendered from.
+ *
+ * `atMs` is a time in the clip's own file; each clip clamps it into its own
+ * trimmed window, so a step holding two clips shows both at the nearest legal
+ * frame. The wait is generous on purpose: a file with sparse keyframes can take
+ * a second to land, and a page picture is worth waiting for — unlike an export
+ * frame, where a late decoder must never stall the render. Resolves false when
+ * a clip did not reach the frame asked for, so the caller can say so.
+ */
+export async function parkAllAt(atMs, { timeoutMs = 2500 } = {}) {
+  if (!_players.size) return true;
+  const t0 = Number(atMs);
+  if (!Number.isFinite(t0)) return true;
+  const waits = [];
+  for (const p of _players.values()) {
+    const { node, video } = p;
+    if (node?.isDestroyed?.() || video.readyState < 1) continue;
+    const inMs  = _trimIn(node);
+    const outMs = _trimOut(node) || Number(node.getAttr('videoDurationMs') ?? 0) || t0;
+    const target = Math.min(Math.max(t0, inMs), Math.max(outMs, inMs)) / 1000;
+    if (Math.abs(video.currentTime - target) < 0.012) continue;
+    waits.push(new Promise((resolve) => {
+      let done = false;
+      const end = () => {
+        if (done) return;
+        done = true;
+        video.removeEventListener('seeked', end);
+        resolve(Math.abs(video.currentTime - target) < 0.05);
+      };
+      video.addEventListener('seeked', end, { once: true });
+      setTimeout(end, timeoutMs);
+      try { video.pause(); video.currentTime = target; } catch { end(); }
+    }));
+  }
+  if (!waits.length) return true;
+  return (await Promise.all(waits)).every(Boolean);
+}
+
+/**
  * 🧊 Park every live clip on its TRIM-OUT frame (V0.3.2.88). Used when a
  * step is staged as a segment's zero-hold LEAD: the clip finished during
  * its own segment, so the crossfade out of it must show the LAST frame of
@@ -552,7 +592,10 @@ export function stepVideoClips(step) {
         let outMs = Number(a.trimOutMs ?? 0) || dur;
         if (dur > 0) outMs = Math.min(outMs, dur);
         if (abs && outMs > inMs) {
-          out.push({ abs, inMs, outMs, muted: a.muted !== false, volume: Math.max(0, Math.min(1, Number(a.volume ?? 1))) });
+          // videoId / durMs / path ride along for the document's frame picker
+          // (V0.3.4.30); the export audio mix reads only the first five.
+          out.push({ abs, inMs, outMs, muted: a.muted !== false, volume: Math.max(0, Math.min(1, Number(a.volume ?? 1))),
+                     videoId: a.videoId || null, durMs: dur, videoPath: a.videoPath || '', videoRel: a.videoRel || '' });
         }
       }
       (n.children || []).forEach(walk);
