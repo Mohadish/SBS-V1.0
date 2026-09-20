@@ -8167,7 +8167,10 @@ async function _loadFromActiveStep() {
   // (which seeks, snapshots, and RESTORES the position) after the step has
   // fully loaded. Heals the stale "source second 0" fade-in slates without
   // touching element lifecycle or timing.
-  for (const vn of _videoNodes) {
+  // …but NEVER while a document picture or an export is being captured
+  // (V0.3.4.31): refreshPoster seeks the clip away and back, and a grab that
+  // lands inside that round trip shows the wrong frame.
+  for (const vn of (state.get('_exporting') ? [] : _videoNodes)) {
     const inMs = Math.max(0, Number(vn.getAttr('trimInMs') ?? 0));
     if (Number(vn.getAttr('posterAtMs') ?? -1) !== inMs) {
       videoOverlay.refreshPoster(vn).then(ok => {
@@ -8305,6 +8308,33 @@ async function _recreateNode(spec) {
  *
  * @param {{width?:number, height?:number}} [opts]
  */
+/**
+ * 🎞 Make every video clip on the step that is on screen show ONE chosen frame,
+ * and wait until it really does (V0.3.4.31) — what a document picture of a
+ * video step is rendered from. `atMs` null = each clip's own first frame.
+ *
+ * It ATTACHES first, and that is the whole point: a Konva video node shows its
+ * poster picture until the decoder binds, and the poster is a still that may
+ * have been grabbed before the clip was trimmed. The document walk gives the
+ * overlay 1.5 s to settle, which a large file can miss — so the picture came
+ * out at the poster's frame, outside the trimmed window, whatever frame the
+ * user had picked. Attaching here is idempotent (an already-bound clip returns
+ * its player) and is given a budget of its own.
+ */
+export async function parkOverlayVideosAt(atMs = null, { timeoutMs = 9000 } = {}) {
+  const nodes = (_layer?.getChildren() || []).filter(n => videoOverlay.isVideoNode(n));
+  if (!nodes.length) return true;
+  const deadline = new Promise(r => setTimeout(() => r('timeout'), timeoutMs));
+  const attached = await Promise.race([
+    Promise.all(nodes.map(n => videoOverlay.attachVideoElement(n).then(() => true).catch(() => false))),
+    deadline,
+  ]);
+  _layer?.batchDraw();
+  const ok = await videoOverlay.parkAllAt(atMs, { timeoutMs: 3000 });
+  _layer?.batchDraw();
+  return attached !== 'timeout' && Array.isArray(attached) && attached.every(Boolean) && ok;
+}
+
 export function rasterizeOverlay(opts = {}) {
   if (!_stage) return null;
   // Composite the GHOST layer (outgoing content, fading OUT during a step

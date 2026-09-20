@@ -15,14 +15,14 @@ import { watermarkOf }  from './watermark-core.js';
 import { setStatus }    from '../ui/status.js';
 import sceneCore        from '../core/scene.js';
 import { getCanonicalSize } from '../core/safe-frame.js';
-import { rasterizeOverlay, waitForOverlayStable } from './overlay.js';
+import { rasterizeOverlay, waitForOverlayStable, parkOverlayVideosAt } from './overlay.js';
 import { rasterizeNotesLayer } from './notes-render.js';
 import { rasterizeTagsLayer } from './hardware-insert-anim.js';
 import { materials }     from './materials.js';
 import { isIsolateEngaged, suspendIsolate, resumeIsolate } from '../core/isolate-state.js';
 import { steps }        from './steps.js';
 import { srcHashOf }    from './language-packs.js';
-import { parkAllAt, stepVideoClips } from './video-overlay.js';   // 🎞 a picture of a chosen frame
+import { stepVideoClips } from './video-overlay.js';   // 🎞 a picture of a chosen frame
 import { projectDisplayName } from './header.js';
 import * as projectPaths from '../core/project-paths.js';
 import {
@@ -447,14 +447,18 @@ export async function ensureStills(keys, { onProgress = null } = {}) {
           await steps.activateStep(id, false);
         }
         try { await Promise.race([waitForOverlayStable?.(), new Promise(r => setTimeout(r, 1500))]); } catch { /* best effort */ }
-        // 🎞 A picture of a chosen FRAME of this step's video (V0.3.4.30). Activation parks
-        // every clip on its trim-in, which is why a video step always pictured its first
-        // frame; this moves it to the frame the user picked, and waits for the decoder.
-        if (Number.isFinite(atMs)) {
+        // 🎞 THE FRAME (V0.3.4.30, fixed .31). A video node shows its POSTER — a still
+        // that may predate the clip's trim — until the decoder binds, and the 1.5 s the
+        // overlay is given above is not always enough for a large file. So for a step that
+        // holds a clip: bind it, park it on the chosen frame (or on the clip's own first
+        // frame when none was chosen), and only then grab. Without this the picture came
+        // out at the poster's frame — outside the trimmed window, whatever was picked.
+        if (!before && stepVideoClips(all.find(x => x.id === id)).length) {
           try {
-            const ok = await parkAllAt(atMs);
-            if (!ok) console.warn('[document] the clip did not reach', atMs, 'ms for step', id, '— the nearest decoded frame was used');
-          } catch { /* no clip / no decoder → the trim-in frame, as before */ }
+            const ok = await parkOverlayVideosAt(Number.isFinite(atMs) ? atMs : null);
+            if (!ok) console.warn('[document] step', id, ': the clip did not reach',
+              Number.isFinite(atMs) ? `${atMs} ms` : 'its first frame', '— the picture shows the nearest decoded frame');
+          } catch { /* no clip / no decoder → whatever is on the node, as before */ }
         }
         // activation re-applies materials and with them the selection highlight — hide it per step
         try { materials.setSelectionVisualsVisible(false); } catch { /* no meshes yet */ }

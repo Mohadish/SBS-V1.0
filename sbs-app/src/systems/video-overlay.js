@@ -520,14 +520,15 @@ export async function seekAllToClock(synthMs) {
 export async function parkAllAt(atMs, { timeoutMs = 2500 } = {}) {
   if (!_players.size) return true;
   const t0 = Number(atMs);
-  if (!Number.isFinite(t0)) return true;
   const waits = [];
   for (const p of _players.values()) {
     const { node, video } = p;
     if (node?.isDestroyed?.() || video.readyState < 1) continue;
     const inMs  = _trimIn(node);
-    const outMs = _trimOut(node) || Number(node.getAttr('videoDurationMs') ?? 0) || t0;
-    const target = Math.min(Math.max(t0, inMs), Math.max(outMs, inMs)) / 1000;
+    const outMs = _trimOut(node) || Number(node.getAttr('videoDurationMs') ?? 0) || (Number.isFinite(t0) ? t0 : inMs);
+    // No time asked for = the first frame of the clip's OWN window, which is
+    // what a picture of this step should show by default.
+    const target = (Number.isFinite(t0) ? Math.min(Math.max(t0, inMs), Math.max(outMs, inMs)) : inMs) / 1000;
     if (Math.abs(video.currentTime - target) < 0.012) continue;
     waits.push(new Promise((resolve) => {
       let done = false;
