@@ -3188,6 +3188,50 @@ function _pickImageFile() {
   });
 }
 
+/** The shape of what an item actually shows, as width ÷ height (0 = unknown). */
+function _naturalAspect(node) {
+  const nw = Number(node?.getAttr?.('naturalW')) || 0;
+  const nh = Number(node?.getAttr?.('naturalH')) || 0;
+  if (nw > 0 && nh > 0) return nw / nh;
+  const im = node?.image?.();
+  const w = im?.naturalWidth || im?.videoWidth || im?.width || 0;
+  const h = im?.naturalHeight || im?.videoHeight || im?.height || 0;
+  return w > 0 && h > 0 ? w / h : 0;
+}
+
+/**
+ * ↔ RESTORE THE PROPORTION, AND NOTHING ELSE.
+ *
+ * The item stays where it is and stays as big as it is — it only takes back
+ * the SHAPE of what it shows. The area is what is preserved, so a squeezed
+ * picture springs back to its own proportions without jumping or changing how
+ * much of the frame it occupies. This is the counterpart to being allowed to
+ * squeeze an item in the first place: distort freely, one command to undo it.
+ */
+function _restoreProportion(node, { label = 'Restore proportion' } = {}) {
+  if (!node || node.isDestroyed?.()) return false;
+  const ar = _naturalAspect(node);
+  if (!ar) { setStatus('That item has no natural proportion to restore.', 'warn', 4000); return false; }
+  const w = Math.abs(node.width() * (node.scaleX() || 1));
+  const h = Math.abs(node.height() * (node.scaleY() || 1));
+  if (!(w > 0 && h > 0)) return false;
+  const h2 = Math.sqrt((w * h) / ar), w2 = h2 * ar;
+  if (Math.abs(w2 - w) < 0.5 && Math.abs(h2 - h) < 0.5) {
+    setStatus('Already in proportion.', 'info', 3000);
+    return false;
+  }
+  const before = _snapNodeGeom(node);
+  node.scaleX(1); node.scaleY(1);
+  node.width(Math.round(w2)); node.height(Math.round(h2));
+  const after = _snapNodeGeom(node);
+  _layer?.batchDraw();
+  _scheduleSave();
+  undoManager.push(label,
+    () => { _restoreNodeGeom([before]); _scheduleSave(); },
+    () => { _restoreNodeGeom([after]);  _scheduleSave(); });
+  return true;
+}
+
 /**
  * 🖼 REPLACE THE PICTURE, KEEP EVERYTHING ELSE.
  *
@@ -3239,9 +3283,24 @@ async function _replaceImageSource(node) {
     _layer?.batchDraw();
     _scheduleSave();
   };
+  const geomBefore = _snapNodeGeom(node);
   write(after);
-  undoManager.push('Replace image', () => write(before), () => write(after));
-  setStatus('Picture replaced — position, size, crop mask and pins kept.', 'success', 5000);
+  // THE NEW PICTURE'S OWN SHAPE. Keeping the old item's proportions stretched
+  // the replacement to fit a frame cut for something else. It keeps its place
+  // and how much room it takes; only the shape comes from the new file.
+  node.scaleX(1); node.scaleY(1);
+  const w = Math.abs(geomBefore.width * (geomBefore.scaleX || 1));
+  const h = Math.abs(geomBefore.height * (geomBefore.scaleY || 1));
+  const ar = img.width / Math.max(1, img.height);
+  const h2 = Math.sqrt((w * h) / ar);
+  node.width(Math.round(h2 * ar)); node.height(Math.round(h2));
+  const geomAfter = _snapNodeGeom(node);
+  _layer?.batchDraw();
+  _scheduleSave();
+  undoManager.push('Replace image',
+    () => { write(before); _restoreNodeGeom([geomBefore]); _scheduleSave(); },
+    () => { write(after);  _restoreNodeGeom([geomAfter]);  _scheduleSave(); });
+  setStatus('Picture replaced in its own proportions — place, size, crop mask and pins kept.', 'success', 6000);
 }
 
 /** 🎬 The same for a clip: a new file behind the same frame. */
@@ -3255,7 +3314,12 @@ async function _replaceVideoSource(node) {
     inp.oncancel = () => resolve(null);
     inp.click();
   });
-  const abs = file?.path;
+  // Electron removed File.path; the sanctioned replacement lives in the
+  // preload (webUtils.getPathForFile). Same chain the importer uses — without
+  // it, every replacement reported "that clip has no path on disk".
+  const abs = (typeof file?.path === 'string' && file.path)
+    ? file.path
+    : (() => { try { return window.sbsNative?.pathForFile?.(file) || ''; } catch { return ''; } })();
   if (!abs) {
     if (file) setStatus('That clip has no path on disk — a video is referenced, never copied in.', 'warn', 6000);
     return;
@@ -6405,6 +6469,7 @@ function _showOverlayContextMenu(node, x, y) {
   // A plain image had no way back to its own size: same command as a clip's.
   const plainImageItems = (_isPlainImageOrVideo(node) && !videoOverlay.isVideoNode(node))
     ? [{ label: '🖼 Replace picture…', action: () => { _replaceImageSource(node); } },
+       { label: '↔ Restore proportion (stay put, stay this big)', action: () => { _restoreProportion(node); } },
        { label: Number(node.getAttr('naturalW') || 0) ? '↩ Reset to natural size, centred' : '⊹ Centre in the frame',
          action: () => { _resetNaturalCentred(node); } }, { separator: true }]
     : [];
@@ -6428,6 +6493,8 @@ function _showOverlayContextMenu(node, x, y) {
             _scheduleSave();
             setStatus(node.getAttr('muted') !== false ? 'Clip muted — voice-over plays.' : 'Clip audio on.');
           } },
+        { label: '↔ Restore proportion (stay put, stay this big)',
+          action: () => { _restoreProportion(node); } },
         { label: '↩ Reset to natural size, centred',
           action: () => { _resetNaturalCentred(node); } },
         { separator: true },
@@ -8111,7 +8178,21 @@ function _configTransformerForNodes(nodes) {
     ]);
     return;
   }
-  // Anything with an image (or mixed) — lock aspect, corners only.
+  // Plain pictures and clips: SQUEEZABLE. Free aspect on all eight handles,
+  // because deliberately distorting a picture is a real thing to want — hold
+  // Shift to keep the proportions, and right-click ▸ Restore proportion puts
+  // them back without moving the item or changing how much room it takes.
+  if (nodes.every(n => _isPlainImageOrVideo(n))) {
+    _transformer.keepRatio(false);
+    _transformer.rotateEnabled(true);
+    _transformer.enabledAnchors([
+      'top-left', 'top-center', 'top-right',
+      'middle-left', 'middle-right',
+      'bottom-left', 'bottom-center', 'bottom-right',
+    ]);
+    return;
+  }
+  // Anything else with an image (or mixed) — lock aspect, corners only.
   // Interfaces: no rotation handle (per spec — interfaces don't rotate).
   const hasInterface = nodes.some(n => n.getAttr?.('isInterface'));
   _transformer.keepRatio(true);
