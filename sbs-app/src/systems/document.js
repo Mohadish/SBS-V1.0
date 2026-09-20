@@ -209,6 +209,29 @@ export function setTableCellImage(pageId, itemId, r, c, asset) {
   _commit('Picture into a cell', _pruneAssets({ ...cur, assets, extras }));
 }
 
+/**
+ * 📋 A pasted block: the cells AND any pictures that came with them, in one
+ * commit and one undo entry. `pics` is [{ key: "r,c", dataUrl, w, h, name }];
+ * each becomes an ordinary document asset, exactly like a picture from a file.
+ */
+export function setTableBlock(pageId, itemId, patch, pics) {
+  const cur = getDocument(); if (!cur) return;
+  const assets = { ...(cur.assets || {}) };
+  const imgs = { ...(patch?.imgs || {}) };
+  let n = 0;
+  for (const pic of pics || []) {
+    if (!pic?.dataUrl || !pic.key) continue;
+    const id = `asset_${Date.now().toString(36)}${(n++).toString(36)}${Math.floor(performance.now() % 1e6).toString(36)}`;
+    assets[id] = { dataUrl: pic.dataUrl, w: pic.w, h: pic.h, name: pic.name || '' };
+    imgs[pic.key] = id;
+  }
+  const extras = (cur.extras || []).map(x => (x.id !== pageId ? x : {
+    ...x,
+    items: (x.items || []).map(i => (i.id !== itemId || i.type !== 'table' ? i : { ...i, ...patch, imgs })),
+  }));
+  _commit('Paste into the table', _pruneAssets({ ...cur, assets, extras }));
+}
+
 /** Where this step's interface sits in the frame ({x,y,w,h} in 0…1), or null. */
 export function stepIfaceRect(stepId) {
   const s = _steps().find(x => x.id === stepId);

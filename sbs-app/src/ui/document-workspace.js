@@ -1346,6 +1346,82 @@ function _drawTableSel() {
 }
 
 /** The table item being edited, straight from the document. */
+/** A local path out of a file:// URL Excel wrote (per-cent escapes and all). */
+function _pathFromFileUrl(u) {
+  try {
+    const url = new URL(u);
+    if (url.protocol !== 'file:') return null;
+    let path = decodeURIComponent(url.pathname);
+    if (/^\/[A-Za-z]:/.test(path)) path = path.slice(1);      // /C:/… → C:/…
+    return path;
+  } catch { return null; }
+}
+
+/** Measure a data URL, because an asset records its own size. */
+function _measure(dataUrl) {
+  return new Promise((resolve) => {
+    const img = new Image();
+    img.onload = () => resolve({ w: img.naturalWidth || img.width, h: img.naturalHeight || img.height });
+    img.onerror = () => resolve(null);
+    img.src = dataUrl;
+  });
+}
+
+/**
+ * 🖼 Paste an HTML table — the flavour a spreadsheet offers when the block
+ * holds pictures. The text still comes from the plain-text flavour (it is the
+ * one the user can see), and only the pictures are taken from the HTML, cell by
+ * cell, so a stray layout table in the clipboard cannot reshape the paste.
+ */
+async function _pasteHtmlBlock(tb, r, c, html, text) {
+  const itemId = _customSel, pageId = _pageId;
+  let table = null;
+  try { table = new DOMParser().parseFromString(html, 'text/html').querySelector('table'); } catch { table = null; }
+  if (!table) { const pch = tablePaste(tb, r, c, text); if (pch) _patchItem(pch, 'Paste into the table'); return; }
+
+  const found = [];
+  [...table.rows].forEach((tr, y) => {
+    [...tr.cells].forEach((td, x) => {
+      const src = td.querySelector('img')?.getAttribute('src');
+      if (src) found.push({ y, x, src });
+    });
+  });
+
+  const pics = [];
+  for (const f of found) {
+    let dataUrl = null;
+    if (/^data:image\//i.test(f.src)) dataUrl = f.src;
+    else {
+      const path = _pathFromFileUrl(f.src);
+      if (path && window.sbsNative?.readFile) {
+        try {
+          const res = await window.sbsNative.readFile(path, 'base64');
+          if (res?.ok && res.data) {
+            const ext = (path.split('.').pop() || 'png').toLowerCase();
+            const mime = ext === 'jpg' || ext === 'jpeg' ? 'image/jpeg' : ext === 'gif' ? 'image/gif' : ext === 'webp' ? 'image/webp' : 'image/png';
+            dataUrl = `data:${mime};base64,${res.data}`;
+          }
+        } catch { dataUrl = null; }
+      }
+    }
+    if (!dataUrl) continue;
+    const size = await _measure(dataUrl);
+    if (!size?.w) continue;
+    pics.push({ key: `${r + f.y},${c + f.x}`, dataUrl, w: size.w, h: size.h, name: '' });
+  }
+
+  const live = _itemsNow().find(i => i.id === itemId);
+  const patch = tablePaste(live?.type === 'table' ? live : tb, r, c, text);
+  if (!patch) return;
+  // the pictures the pasted block lands on must not keep the old cells' ones
+  const cleared = { ...(live?.imgs || tb.imgs || {}) };
+  const rows = text.replace(/\r\n?/g, '\n').replace(/\n$/, '').split('\n');
+  rows.forEach((line, y) => line.split('\t').forEach((_, x) => { delete cleared[`${r + y},${c + x}`]; }));
+  D.setTableBlock(pageId, itemId, { ...patch, imgs: cleared }, pics);
+  _tsel = null;
+  setStatus(pics.length ? `Pasted, with ${pics.length} picture${pics.length === 1 ? '' : 's'}.` : 'Pasted into the table.', 'success', 4000);
+}
+
 /**
  * Put the picked cells on the real clipboard. A hidden textarea and the old
  * execCommand on purpose: it is synchronous inside the key press, needs no
@@ -1465,6 +1541,15 @@ function _onTablePaste(e) {
   if (!text) return;
   e.preventDefault(); e.stopPropagation();
   if (open) open.dataset.orig = open.innerText;              // the focus-out must not fight the paste
+  // 🖼 A SPREADSHEET BLOCK WITH PICTURES. Excel writes an HTML table beside the
+  // plain text, and its <img> tags point at files it has just put in a temp
+  // folder — that is the only place the pictures exist, so they are read now,
+  // while the clipboard still holds them.
+  const html = e.clipboardData?.getData('text/html') || '';
+  if (looksLikeGrid && /<img\b/i.test(html) && /<table\b/i.test(html)) {
+    _pasteHtmlBlock(tb, at[0], at[1], html, text);
+    return;
+  }
   // our own copy? then the look and the pictures come with it
   const rich = _tableClip && _tableClip.tsv === text ? _tableClip : null;
   const pch = looksLikeGrid
