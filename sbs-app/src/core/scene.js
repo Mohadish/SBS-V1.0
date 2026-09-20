@@ -1364,10 +1364,26 @@ export class SceneCore extends Emitter {
     const toAnim   = Array.isArray(targetState.orbitPivot) ? new THREE.Vector3(...targetState.orbitPivot) : null;
     // The pull-out belongs to the step being moved INTO — it describes that
     // step's arrival, not the departure from the previous one.
+    // 🎯 A STILL SHOT HAS NOTHING TO PULL OUT OF (V0.3.4.27, user). A pull-out
+    // is a hump on the dolly distance — the camera rises away mid-move and
+    // dives back into the final framing. Between two steps that hold the SAME
+    // view that is a zoom out and back in over a shot that never moved, which
+    // is exactly the "bobbing" reported between identical steps. So it is
+    // ignored here, and the rig with it.
+    //
+    // Only the repeats lose it: the FIRST step of such a run arrives from a
+    // different view, so that move is real and keeps whatever pull-out it was
+    // given — n keeps it, n+1, n+2 … do not. Nothing is ever added, and the
+    // step's own setting is untouched: this is about whether the move uses it.
+    const scale = Math.max(fromPos.distanceTo(fromPivot), 1e-6);
+    const stillShot = fromPos.distanceTo(toPos) <= scale * 2e-3
+      && Math.abs(fromQ.dot(toQ)) >= 1 - 1e-7          // ≈ 0.03° of rotation
+      && !perspectiveDiffers(fromFov, toFov);
+
     // `orbitPivot: null` on the TARGET means "straight there, no rig" — what a
     // fit asks for. A step camera leaves the field out entirely (undefined),
     // so its behaviour is untouched.
-    const orbit = targetState.orbitPivot === null ? null
+    const orbit = (targetState.orbitPivot === null || stillShot) ? null
       : _buildOrbitTween(fromPos, toPos, fromAnim, toAnim, fromQ, toQ,
         Number(targetState.orbitPullout) || 0);
 

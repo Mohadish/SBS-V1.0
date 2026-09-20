@@ -1008,31 +1008,50 @@ window.sbsDiag.cameras = (from = 1, to = 0) => {
   const list = state.get('steps') || [];
   const views = state.get('cameraViews') || [];
   const a = Math.max(1, from | 0), b = to ? Math.min(list.length, to | 0) : list.length;
-  const rows = [];
-  for (let i = a - 1; i < b; i++) {
-    const s = list[i];
+  // The camera each step really plays: the template's view when bound, else its
+  // own — so "same view as the one before" is judged on what is rendered.
+  const resolved = (s) => {
     const own = s?.snapshot?.camera || null;
     const bind = s?.cameraBinding?.mode === 'template' ? s.cameraBinding.templateId : null;
     const tpl = bind ? views.find(v => v.id === bind) : null;
-    const fov = (tpl?.fov ?? own?.fov);
+    return { own, tpl, view: tpl || own };
+  };
+  const sameView = (x, y) => {
+    if (!x || !y) return false;
+    const near = (p, q) => Array.isArray(p) && Array.isArray(q)
+      && p.every((v, i) => Math.abs(v - q[i]) <= 1e-3 * (Math.abs(v) + Math.abs(q[i]) + 1));
+    return near(x.position, y.position) && near(x.quaternion, y.quaternion)
+      && Math.abs((x.fov ?? 45) - (y.fov ?? 45)) < 1e-3;
+  };
+
+  const rows = [];
+  for (let i = a - 1; i < b; i++) {
+    const s = list[i];
+    const { own, tpl, view } = resolved(s);
+    const prev = i > 0 ? resolved(list[i - 1]).view : null;
+    const still = sameView(view, prev);
+    const fov = view?.fov;
     const pull = Number(own?.orbitPullout) || 0;
     rows.push({
       '#': i + 1,
       step: s?.name || '',
       camera: tpl ? `template "${tpl.name}"` : (own ? 'free (its own)' : 'none saved'),
       lens: fov == null ? '—' : (fov <= 0.5001 ? 'Orthographic' : `${Number(fov).toFixed(1)}°`),
+      'moves in from': i === 0 ? 'first step' : (still ? 'the same view — nothing moves' : 'a different view'),
       'orbit centre': Array.isArray(own?.orbitPivot) ? 'pinned' : '—',
-      'pull-out on arrival': pull ? `+${Math.round(pull * 100)}%  ← zooms out and back in` : '—',
+      'pull-out on arrival': !pull ? '—'
+        : still ? `+${Math.round(pull * 100)}% — ignored, the view does not move`
+                : `+${Math.round(pull * 100)}%  ← zooms out and back in`,
     });
   }
   console.table(rows);
-  const humps = rows.filter(r => r['pull-out on arrival'] !== '—').map(r => r['#']);
+  const humps = rows.filter(r => String(r['pull-out on arrival']).includes('←')).map(r => r['#']);
   if (humps.length) {
     console.log(`Steps ${humps.join(', ')} pull the camera back mid-move and return. To stop it: right-click in the`
       + ` viewport on that step ▸ 🎯 Pull-out during the move ▸ None.`);
   } else {
-    console.log('No step pulls the camera back on arrival. A zoom that is not from a pull-out is a real move:'
-      + ' compare the "lens" column — two steps with different lenses are two different framings.');
+    console.log('No step pulls the camera back on a move that actually moves. A zoom you still see is a real'
+      + ' one: compare the "lens" column — two steps with different lenses are two different framings.');
   }
   return rows;
 };
