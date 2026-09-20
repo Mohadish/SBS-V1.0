@@ -1196,8 +1196,13 @@ export class SceneCore extends Emitter {
     };
   }
 
-  /** Fly to a standard view and remember the lens to come back to. */
-  applyStandardView(view, durationMs = 600) {
+  /**
+   * Go to a standard view and remember the lens to come back to.
+   * `durationMs` defaults to 0 — PLACED, not flown: the UI cross-fades the
+   * viewport instead (ui/standard-views.js), because a flight from Top to Left
+   * is a long way round that tells you nothing. Pass a duration to fly.
+   */
+  applyStandardView(view, durationMs = 0) {
     const st = this.standardViewState(view);
     if (!st) return Promise.resolve();
     const prevFov = this._stdView ? this._stdViewFov : this.camera.fov;
@@ -1359,8 +1364,12 @@ export class SceneCore extends Emitter {
     const toAnim   = Array.isArray(targetState.orbitPivot) ? new THREE.Vector3(...targetState.orbitPivot) : null;
     // The pull-out belongs to the step being moved INTO — it describes that
     // step's arrival, not the departure from the previous one.
-    const orbit = _buildOrbitTween(fromPos, toPos, fromAnim, toAnim, fromQ, toQ,
-      Number(targetState.orbitPullout) || 0);
+    // `orbitPivot: null` on the TARGET means "straight there, no rig" — what a
+    // fit asks for. A step camera leaves the field out entirely (undefined),
+    // so its behaviour is untouched.
+    const orbit = targetState.orbitPivot === null ? null
+      : _buildOrbitTween(fromPos, toPos, fromAnim, toAnim, fromQ, toQ,
+        Number(targetState.orbitPullout) || 0);
 
     // 🔲 DOLLY ZOOM (V0.3.4.22). Strictly opt-in, exactly like the orbit rig:
     // only when the two ends really hold different amounts of perspective. With
@@ -1535,16 +1544,39 @@ export class SceneCore extends Emitter {
 
     const newPos = center.clone().addScaledVector(dir, -distance);
 
-    const q = new THREE.Quaternion();
-    const m = new THREE.Matrix4().lookAt(newPos, center, this.camera.up);
-    q.setFromRotationMatrix(m);
+    // LEVEL, like every other camera move in this app (V0.3.4.24). This used to
+    // be `lookAt(newPos, center, this.camera.up)` — and camera.up is not a world
+    // up reference here: the transition writes the camera's OWN up axis into it
+    // (scene.js _lookAtLevel / _advanceTransition), while a manual orbit writes
+    // only the quaternion and leaves camera.up stale from some earlier pitch.
+    // Feeding that to lookAt tilted the basis, so F rolled the view by whatever
+    // the old pitch happened to be — and the state then claimed up = (0,1,0),
+    // so the next orbit snapped it back. That is the "weird rotation alignment"
+    // after Fit. The basis is rebuilt from world up instead, and the state
+    // reports the up it actually used.
+    const fwd = dir.clone().normalize();
+    let right = new THREE.Vector3().crossVectors(fwd, new THREE.Vector3(0, 1, 0));
+    // Straight down or straight up (a Top / Bottom view): world up gives nothing
+    // to cross with, so keep the screen exactly as it is turned now.
+    if (right.lengthSq() < 1e-10) right.setFromMatrixColumn(this.camera.matrix, 0);
+    if (right.lengthSq() < 1e-10) right.set(1, 0, 0);
+    right.normalize();
+    const up = new THREE.Vector3().crossVectors(right, fwd).normalize();
+    const q = new THREE.Quaternion().setFromRotationMatrix(
+      new THREE.Matrix4().makeBasis(right, up, fwd.clone().negate()));
 
     return {
       position:   [newPos.x, newPos.y, newPos.z],
       quaternion: [q.x, q.y, q.z, q.w],
       pivot:      [center.x, center.y, center.z],
-      up:         [0, 1, 0],
+      up:         [up.x, up.y, up.z],
       fov:        this.camera.fov,
+      // Explicitly NO orbit centre (V0.3.4.24). A fit is a reframing, not a
+      // step move: with a pinned centre live on the camera, animateCameraTo
+      // built an orbit rig and swung the whole way round that stale point,
+      // re-aiming as it went — the twist the user sees after F. `null` (not
+      // missing) is the opt-out; a step's own camera never sets it.
+      orbitPivot: null,
     };
   }
 
@@ -1865,6 +1897,11 @@ export class SceneCore extends Emitter {
       this.camera.position.copy(newPos);
       const basis = new THREE.Matrix4().makeBasis(right, up, newForward.clone().negate());
       this.camera.quaternion.setFromRotationMatrix(basis);
+      // Keep camera.up honest (V0.3.4.24). The orbit used to write the
+      // quaternion only, leaving camera.up at whatever pitch the last step
+      // camera or transition had put there — and every lookAt built from it
+      // afterwards (Fit, above all) came out rolled.
+      this.camera.up.copy(up);
       ctrl.pivot.copy(o.startPivot);
       ctrl.syncSpherical();
 

@@ -28,6 +28,46 @@ const AXIS = {
 const PAIRS = [['top', 'bottom'], ['left', 'right'], ['front', 'back']];
 
 let _wrap = null, _btns = new Map(), _preview = null, _hovering = null;
+let _surface = null, _dip = null, _dipTimers = [];
+
+/** The scene's own background, so the dip reads as the view itself fading. */
+function _bgCss() {
+  const bg = sceneCore.scene?.background;
+  if (bg && typeof bg.getStyle === 'function') { try { return bg.getStyle(); } catch {} }
+  return '#0f172a';
+}
+
+/**
+ * Switch WITHOUT moving the camera: the view fades out, the camera is placed
+ * instantly, the view fades back in — ~200 ms end to end (user, V0.3.4.24).
+ * A flight between two axis views is a long way round for no information; a
+ * dip reads as "now you are looking from there".
+ *
+ * The dip sits above the 3D canvas and the 2D overlay stage but below these
+ * buttons, so the thing you clicked never blinks out under your cursor.
+ */
+function _dipSwitch(apply, ms = 200) {
+  const half = Math.max(60, Math.round(ms / 2));
+  if (!_surface) { apply(); return; }
+  if (!_dip) {
+    _dip = document.createElement('div');
+    _dip.id = 'standard-view-dip';
+    _dip.style.cssText = 'position:absolute;inset:0;z-index:26;pointer-events:none;opacity:0;display:none;';
+    _surface.appendChild(_dip);
+  }
+  for (const t of _dipTimers) clearTimeout(t);
+  _dipTimers = [];
+  _dip.style.background = _bgCss();
+  _dip.style.transition = `opacity ${half}ms linear`;
+  _dip.style.display = 'block';
+  requestAnimationFrame(() => { _dip.style.opacity = '1'; });
+  _dipTimers.push(setTimeout(() => {
+    apply();
+    sceneCore.requestRender?.(400);
+    requestAnimationFrame(() => { _dip.style.opacity = '0'; });
+    _dipTimers.push(setTimeout(() => { _dip.style.display = 'none'; }, half + 60));
+  }, half + 20));
+}
 
 // ── the hover preview, drawn in the scene ──────────────────────────────────
 function _clearPreview() {
@@ -129,6 +169,7 @@ function _syncActive(active) {
 export function initStandardViews(surfaceEl) {
   if (!surfaceEl || _wrap) return { setVisible: (v) => { if (_wrap) _wrap.style.display = v ? 'flex' : 'none'; if (!v) _clearPreview(); } };
 
+  _surface = surfaceEl;
   _wrap = document.createElement('div');
   _wrap.id = 'standard-views';
   _wrap.style.cssText = 'position:absolute;top:38px;left:8px;z-index:30;display:none;gap:4px;'
@@ -153,7 +194,7 @@ export function initStandardViews(surfaceEl) {
       b.addEventListener('blur', () => _clearPreview());
       b.addEventListener('click', () => {
         _clearPreview();
-        sceneCore.applyStandardView(view);
+        _dipSwitch(() => sceneCore.applyStandardView(view, 0));   // 0 = placed, not flown
       });
       _btns.set(view, b);
       col.appendChild(b);
