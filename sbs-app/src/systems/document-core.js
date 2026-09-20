@@ -725,6 +725,21 @@ function _cellFmtOf(src, rows, cols) {
   return out;
 }
 
+/** A picture in a cell: the asset it shows, by id. Keys "r,c" inside the grid. */
+function _cellImgsOf(src, rows, cols) {
+  const out = {};
+  for (const [k, v] of Object.entries(src && typeof src === 'object' ? src : {})) {
+    const [r, c] = String(k).split(',').map(Number);
+    if (r >= 0 && r < rows && c >= 0 && c < cols && typeof v === 'string' && v) out[`${r},${c}`] = v;
+  }
+  return out;
+}
+
+/** Every asset a table shows, so the document's own tidy-up cannot bin them. */
+export function tableAssetIds(item) {
+  return item?.type === 'table' ? Object.values(item.imgs || {}).filter(Boolean) : [];
+}
+
 /** Which cells a merge swallows — the map a renderer and an editor both need. */
 export function mergeMap(table) {
   const starts = new Map(), covered = new Set();
@@ -781,11 +796,16 @@ export function tableInsertRow(t, at, copyFrom = -1) {
   const rows = t.rows + 1;
   const src = t.cells[copyFrom] || null;
   const cells = t.cells.slice(); cells.splice(at, 0, Array.from({ length: t.cols }, (_, c) => (src ? src[c] : '')));
-  const rowH = (t.rowH || []).slice(); rowH.splice(at, 0, copyFrom >= 0 ? (t.rowH?.[copyFrom] || 0) : 0);
+  const rowH = (t.rowH || []).slice(); rowH.splice(at, 0, copyFrom >= 0 ? (t.rowH?.[copyFrom] || DEFAULT_ROW_MM) : DEFAULT_ROW_MM);
   const merges = (t.merges || []).map(m => (m.r >= at ? { ...m, r: m.r + 1 }
     : (m.r < at && at < m.r + m.rs) ? { ...m, rs: m.rs + 1 } : m));
   const fmt = _fmtShift(t.fmt, (r, c) => ({ r: r >= at ? r + 1 : r, c }));
-  return { rows, cells, rowH, merges, fmt };
+  const imgs = _fmtShift(t.imgs, (r, c) => ({ r: r >= at ? r + 1 : r, c }));
+  if (copyFrom >= 0) {                                   // a duplicated row keeps its pictures
+    const from = copyFrom >= at ? copyFrom + 1 : copyFrom;
+    for (let c = 0; c < t.cols; c++) { const id = imgs[`${from},${c}`]; if (id) imgs[`${at},${c}`] = id; }
+  }
+  return { rows, cells, rowH, merges, fmt, imgs };
 }
 
 /** A row goes; a merge through it shrinks, one that was only it disappears. */
@@ -800,7 +820,8 @@ export function tableDeleteRow(t, at) {
     else if (m.rs > 1) merges.push({ ...m, rs: m.rs - 1 });        // the merge loses a row
   }
   const fmt = _fmtShift(t.fmt, (r, c) => (r === at ? null : { r: r > at ? r - 1 : r, c }));
-  return { rows: t.rows - 1, cells, rowH, merges: merges.filter(m => m.rs * m.cs > 1), fmt };
+  const imgs = _fmtShift(t.imgs, (r, c) => (r === at ? null : { r: r > at ? r - 1 : r, c }));
+  return { rows: t.rows - 1, cells, rowH, merges: merges.filter(m => m.rs * m.cs > 1), fmt, imgs };
 }
 
 export function tableInsertCol(t, at, copyFrom = -1) {
@@ -813,7 +834,12 @@ export function tableInsertCol(t, at, copyFrom = -1) {
   const merges = (t.merges || []).map(m => (m.c >= at ? { ...m, c: m.c + 1 }
     : (m.c < at && at < m.c + m.cs) ? { ...m, cs: m.cs + 1 } : m));
   const fmt = _fmtShift(t.fmt, (r, c) => ({ r, c: c >= at ? c + 1 : c }));
-  return { cols, cells, widths: widths.map(v => v / sum), merges, fmt };
+  const imgs = _fmtShift(t.imgs, (r, c) => ({ r, c: c >= at ? c + 1 : c }));
+  if (copyFrom >= 0) {                                   // …and so does a duplicated column
+    const from = copyFrom >= at ? copyFrom + 1 : copyFrom;
+    for (let r = 0; r < t.rows; r++) { const id = imgs[`${r},${from}`]; if (id) imgs[`${r},${at}`] = id; }
+  }
+  return { cols, cells, widths: widths.map(v => v / sum), merges, fmt, imgs };
 }
 
 export function tableDeleteCol(t, at) {
@@ -828,7 +854,32 @@ export function tableDeleteCol(t, at) {
     else if (m.cs > 1) merges.push({ ...m, cs: m.cs - 1 });
   }
   const fmt = _fmtShift(t.fmt, (r, c) => (c === at ? null : { r, c: c > at ? c - 1 : c }));
-  return { cols: t.cols - 1, cells, widths: widths.map(v => v / sum), merges: merges.filter(m => m.rs * m.cs > 1), fmt };
+  const imgs = _fmtShift(t.imgs, (r, c) => (c === at ? null : { r, c: c > at ? c - 1 : c }));
+  return { cols: t.cols - 1, cells, widths: widths.map(v => v / sum), merges: merges.filter(m => m.rs * m.cs > 1), fmt, imgs };
+}
+
+/** Several rows at once — from the bottom up, so the indexes hold. */
+export function tableDeleteRows(t, r0, r1) {
+  const from = Math.min(r0, r1), to = Math.max(r0, r1);
+  let cur = t, any = false;
+  for (let r = to; r >= from; r--) {
+    const patch = tableDeleteRow(cur, r);
+    if (!patch) break;                                   // the last row always stays
+    cur = { ...cur, ...patch }; any = true;
+  }
+  return any ? { rows: cur.rows, cells: cur.cells, rowH: cur.rowH, merges: cur.merges, fmt: cur.fmt, imgs: cur.imgs } : null;
+}
+
+/** …and several columns. */
+export function tableDeleteCols(t, c0, c1) {
+  const from = Math.min(c0, c1), to = Math.max(c0, c1);
+  let cur = t, any = false;
+  for (let c = to; c >= from; c--) {
+    const patch = tableDeleteCol(cur, c);
+    if (!patch) break;
+    cur = { ...cur, ...patch }; any = true;
+  }
+  return any ? { cols: cur.cols, cells: cur.cells, widths: cur.widths, merges: cur.merges, fmt: cur.fmt, imgs: cur.imgs } : null;
 }
 
 /** Is this row free of merges that reach past it? Only then can it be moved. */
@@ -849,7 +900,8 @@ export function tableMoveRow(t, from, to) {
   const map = (r) => (r === from ? dest : r > from && r <= dest ? r - 1 : r < from && r >= dest ? r + 1 : r);
   const merges = (t.merges || []).map(m => ({ ...m, r: map(m.r) }));
   const fmt = _fmtShift(t.fmt, (r, c) => ({ r: map(r), c }));
-  return { cells, rowH, merges, fmt };
+  const imgs = _fmtShift(t.imgs, (r, c) => ({ r: map(r), c }));
+  return { cells, rowH, merges, fmt, imgs };
 }
 
 export function tableMoveCol(t, from, to) {
@@ -860,7 +912,8 @@ export function tableMoveCol(t, from, to) {
   const map = (c) => (c === from ? dest : c > from && c <= dest ? c - 1 : c < from && c >= dest ? c + 1 : c);
   const merges = (t.merges || []).map(m => ({ ...m, c: map(m.c) }));
   const fmt = _fmtShift(t.fmt, (r, c) => ({ r, c: map(c) }));
-  return { cells, widths, merges, fmt };
+  const imgs = _fmtShift(t.imgs, (r, c) => ({ r, c: map(c) }));
+  return { cells, widths, merges, fmt, imgs };
 }
 
 /** Merge a rectangle into one cell: the texts join, the merges inside go. */
@@ -914,10 +967,12 @@ export function tablePaste(t, r, c, text) {
   while (widths.length < cols) widths.push(1 / cols);
   const sum = widths.reduce((a, b) => a + b, 0) || 1;
   const rowH = (t.rowH || []).slice(0, rows);
-  while (rowH.length < rows) rowH.push(0);
+  while (rowH.length < rows) rowH.push(DEFAULT_ROW_MM);
   return { rows, cols, cells, widths: widths.map(v => v / sum), rowH };
 }
 
+/** A row nobody has sized: tall enough to read, not a hairline (V0.3.4.40). */
+export const DEFAULT_ROW_MM = 9;
 export const MAX_TABLE_COLS = 10;
 export const MAX_TABLE_ROWS = 40;
 
@@ -953,11 +1008,12 @@ export function sanitizeCustomItem(it, area = CONTENT_MM) {
     const sum2 = w.reduce((a2, b2) => a2 + b2, 0);
     w = w.map(v => v / sum2);
     // row heights in mm; 0 = as tall as its content needs
-    const rowH = Array.from({ length: rows }, (_, r) => _clampN(Array.isArray(it?.rowH) ? it.rowH[r] : 0, 0, 200, 0));
+    const rowH = Array.from({ length: rows }, (_, r) => _clampN(Array.isArray(it?.rowH) ? it.rowH[r] : DEFAULT_ROW_MM, 0, 200, DEFAULT_ROW_MM));
     return {
       ...base, type: 'table', cols, rows, cells, widths: w, rowH,
       merges: _mergesOf(it?.merges, rows, cols),
       fmt: _cellFmtOf(it?.fmt, rows, cols),
+      imgs: _cellImgsOf(it?.imgs, rows, cols),
       head: it?.head !== false, grid: it?.grid !== false, zebra: !!it?.zebra,
       size: _clampN(it?.size, 5, 40, 9),
       align: ['start', 'center', 'end'].includes(it?.align) ? it.align : 'start',
@@ -1173,6 +1229,15 @@ export function buildRenderModel(doc, steps, chapters, ctx) {
     return {
       id: c.id, kind: 'custom', number, total, name: c.name, template: templateById(doc, doc?.templateId), ...bands(varsFor(number, null)),
       items: c.items.map(it => {
+        if (it.type === 'table') {
+          // a cell's picture, resolved to what the page can actually draw
+          const src = {};
+          for (const [k, id] of Object.entries(it.imgs || {})) {
+            const a = doc?.assets?.[id];
+            if (a && ASSET_URL_RX.test(String(a.dataUrl || '')) && a.w > 0 && a.h > 0) src[k] = a.dataUrl;
+          }
+          return Object.keys(src).length ? { ...it, imgSrc: src } : it;
+        }
         if (it.type !== 'image') return it;
         // a picture taken from the ANIMATION: rendered on demand like a page picture (end of the step, or its BEFORE frame)
         if (it.stepId) return stepById.has(it.stepId)

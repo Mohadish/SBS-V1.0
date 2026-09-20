@@ -21,7 +21,7 @@ import { builtinTemplates, docTextFor, pageRangeLabel, unitsOf, stillsNeeded, pi
          zoomAfterWheel, zoomAfterButton, zoomPercent, zoomFromPercent, clampUiZoom, adjustFromFit,
          mergeMap, mergeAt, canMerge, tableInsertRow, tableDeleteRow, tableInsertCol, tableDeleteCol,
          tableMoveRow, tableMoveCol, tableRowMovable, tableColMovable, tableMerge, tableUnmerge,
-         tableSetFmt, tablePaste } from '../systems/document-core.js';
+         tableSetFmt, tablePaste, tableDeleteRows, tableDeleteCols } from '../systems/document-core.js';
 import { DOCUMENT_CSS, renderPageHtml, renderTocPageHtml, renderCustomPageHtml, slotInnerHtml } from '../systems/document-render.js';
 import { watermarkOf, watermarkHtml, watermarkCss, watermarkVisible, detectWatermarkMode, bakeWatermarkPixels, fitWithin } from '../systems/watermark-core.js';
 import * as D from '../systems/document.js';
@@ -184,6 +184,11 @@ function _build() {
     if (a instanceof HTMLInputElement && (a.dataset.slotZoom !== undefined || a.dataset.ci === 'zoom')
         && !a.contains(e.target) && a !== e.target) a.blur();
   }, true);
+  // remember which cells a swatch belongs to BEFORE it can steal the selection
+  _root.addEventListener('pointerdown', (e) => {
+    const sw = e.target.closest?.('[data-ci="cellbg"], [data-ci="cellfg"], [data-ci="cellsize"]');
+    if (sw) _fmtTarget = { id: _customSel, ...(_tselRect() || {}) };
+  }, true);
   _root.addEventListener('change', _onChange);
   // 💧 live: sliders, colour and text redraw the mark while they move; the commit (one undo entry) comes with 'change'
   _root.addEventListener('input', (e) => {
@@ -237,6 +242,17 @@ function _build() {
   window.addEventListener('pointercancel', release, true);
   _shadow.addEventListener('focusout', (e) => { if (e.target?.classList?.contains('tx')) _commitText(e.target); });
   _shadow.addEventListener('input', () => _markOverflow());
+  // a colour picker streams input events while it is open: show them at once
+  _root.addEventListener('input', (e) => {
+    const sw = e.target.closest?.('[data-ci="cellbg"], [data-ci="cellfg"]');
+    if (!sw || _fmtTarget?.id !== _customSel) return;
+    const host = _shadow.querySelector(`.ci[data-item="${CSS.escape(_customSel)}"]`);
+    for (const cell of host?.querySelectorAll('[data-cell]') || []) {
+      const [r, c] = String(cell.dataset.cell).split(',').map(Number);
+      if (r < _fmtTarget.r0 || r > _fmtTarget.r1 || c < _fmtTarget.c0 || c > _fmtTarget.c1) continue;
+      if (sw.dataset.ci === 'cellbg') cell.style.background = sw.value; else cell.style.color = sw.value;
+    }
+  });
   _shadow.addEventListener('click', _onPageClick);
   _shadow.addEventListener('pointerdown', _onSlotPointerDown);
   _shadow.addEventListener('pointerdown', _onCustomPointerDown);
@@ -1155,6 +1171,8 @@ let _customSel = null, _cdrag = null, _coldrag = null, _customModel = null;
 // being dragged. _tsel is kept in the DOCUMENT's coordinates (row, column), so
 // a re-render never invalidates it.
 let _tsel = null, _rowdrag = null, _gripdrag = null, _tdrag = false;
+// the cells a colour / size swatch was opened FOR, and the id of the table
+let _fmtTarget = null;
 let _bandEdit = null;                     // 'header' | 'footer' while the header / footer editor is open
 let _stillsFailed = new Set();            // pictures that were asked for and did not come back: never walk for them in a loop
 const C_AREA = { x: 12, y: 32, w: 186, h: 238.5 };
@@ -1340,6 +1358,25 @@ function _onTablePaste(e) {
   const at = open ? String(open.dataset.cell).split(',').map(Number)
     : (_tsel?.id === _customSel ? [Math.min(_tsel.r0, _tsel.r1), Math.min(_tsel.c0, _tsel.c1)] : null);
   if (!at) return;
+  // a picture on the clipboard goes INTO the cell
+  const file = [...(e.clipboardData?.items || [])].find(i => i.kind === 'file' && /^image\//.test(i.type))?.getAsFile()
+    || [...(e.clipboardData?.files || [])].find(f => /^image\//.test(f.type));
+  if (file) {
+    e.preventDefault(); e.stopPropagation();
+    const rd = new FileReader();
+    rd.onload = () => {
+      const img = new Image();
+      img.onload = () => {
+        D.setTableCellImage(_pageId, _customSel, at[0], at[1], { dataUrl: String(rd.result), w: img.width, h: img.height, name: file.name || '' });
+        setStatus('Picture put into the cell.', 'success', 3000);
+      };
+      img.onerror = () => setStatus('That picture could not be read.', 'warn', 5000);
+      img.src = String(rd.result);
+    };
+    rd.onerror = () => setStatus('That picture could not be read.', 'warn', 5000);
+    rd.readAsDataURL(file);
+    return;
+  }
   const text = e.clipboardData?.getData('text/plain') ?? '';
   if (!text) return;
   e.preventDefault(); e.stopPropagation();
@@ -1386,13 +1423,18 @@ function _tableMenu(e, deep) {
     items.push({ html: '＋ <b>Row above</b>', run: run(() => (tb.rows < 40 ? tableInsertRow(tb, r) : null), 'Add row') });
     items.push({ html: '＋ <b>Row below</b>', run: run(() => (tb.rows < 40 ? tableInsertRow(tb, r + 1) : null), 'Add row') });
     items.push({ html: '⧉ Duplicate row', run: run(() => (tb.rows < 40 ? tableInsertRow(tb, r + 1, r) : null), 'Duplicate row') });
-    items.push({ html: `🗑 Delete row ${r + 1}`, run: run(() => tableDeleteRow(tb, r), 'Remove row') });
+    const rr = (s && s.r1 > s.r0 && r >= s.r0 && r <= s.r1) ? s : { r0: r, r1: r };
+    items.push({ html: rr.r1 > rr.r0 ? `🗑 Delete rows ${rr.r0 + 1}–${rr.r1 + 1}` : `🗑 Delete row ${r + 1}`,
+      run: run(() => tableDeleteRows(tb, rr.r0, rr.r1), rr.r1 > rr.r0 ? 'Remove rows' : 'Remove row') });
   }
   if (kind !== 'row') {
     if (items.length) items.push({ sep: true });
     items.push({ html: '＋ <b>Column before</b>', run: run(() => (tb.cols < 10 ? tableInsertCol(tb, c) : null), 'Add column') });
     items.push({ html: '＋ <b>Column after</b>', run: run(() => (tb.cols < 10 ? tableInsertCol(tb, c + 1) : null), 'Add column') });
-    items.push({ html: `🗑 Delete column ${c + 1}`, run: run(() => tableDeleteCol(tb, c), 'Remove column') });
+    items.push({ html: '⧉ Duplicate column', run: run(() => (tb.cols < 10 ? tableInsertCol(tb, c + 1, c) : null), 'Duplicate column') });
+    const cc = (s && s.c1 > s.c0 && c >= s.c0 && c <= s.c1) ? s : { c0: c, c1: c };
+    items.push({ html: cc.c1 > cc.c0 ? `🗑 Delete columns ${cc.c0 + 1}–${cc.c1 + 1}` : `🗑 Delete column ${c + 1}`,
+      run: run(() => tableDeleteCols(tb, cc.c0, cc.c1), cc.c1 > cc.c0 ? 'Remove columns' : 'Remove column') });
   }
   if (s && canMerge(tb, s.r0, s.c0, s.r1, s.c1)) {
     items.push({ sep: true });
@@ -1473,10 +1515,11 @@ function _placeCustomBar() {
               + b('ci-row-above', '＋ Row ▲', 'A row above the picked one')
               + b('ci-row-below', '＋ Row ▼', 'A row below the picked one')
               + b('ci-row-dup', '⧉ Row', 'Copy the picked row, text and all')
-              + b('ci-row-del', '🗑 Row', 'Take the picked row away')
+              + b('ci-row-del', s.r1 > s.r0 ? '🗑 Rows' : '🗑 Row', 'Take the picked row(s) away')
               + b('ci-col-before', '＋ Col ◀', 'A column before the picked one')
               + b('ci-col-after', '＋ Col ▶', 'A column after the picked one')
-              + b('ci-col-del', '🗑 Col', 'Take the picked column away')
+              + b('ci-col-dup', '⧉ Col', 'Copy the picked column, text and all')
+              + b('ci-col-del', s.c1 > s.c0 ? '🗑 Cols' : '🗑 Col', 'Take the picked column(s) away')
               + sep
               + (canM ? b('ci-merge', '⬓ Merge', 'Make the picked cells one cell') : '')
               + (canU ? b('ci-unmerge', '⬚ Unmerge', 'Break the merged cell apart') : '')
@@ -1938,10 +1981,11 @@ function _customAct(act, el) {
     if (act === 'ci-row-above') return patch(() => (live.rows < 40 ? tableInsertRow(live, s.r0) : null), 'Add row');
     if (act === 'ci-row-below') return patch(() => (live.rows < 40 ? tableInsertRow(live, s.r1 + 1) : null), 'Add row');
     if (act === 'ci-row-dup')   return patch(() => (live.rows < 40 ? tableInsertRow(live, s.r1 + 1, s.r0) : null), 'Duplicate row');
-    if (act === 'ci-row-del')   return patch(() => tableDeleteRow(live, s.r0), 'Remove row');
+    if (act === 'ci-row-del')   return patch(() => tableDeleteRows(live, s.r0, s.r1), s.r1 > s.r0 ? 'Remove rows' : 'Remove row');
     if (act === 'ci-col-before') return patch(() => (live.cols < 10 ? tableInsertCol(live, s.c0) : null), 'Add column');
     if (act === 'ci-col-after')  return patch(() => (live.cols < 10 ? tableInsertCol(live, s.c1 + 1) : null), 'Add column');
-    if (act === 'ci-col-del')    return patch(() => tableDeleteCol(live, s.c0), 'Remove column');
+    if (act === 'ci-col-del')    return patch(() => tableDeleteCols(live, s.c0, s.c1), s.c1 > s.c0 ? 'Remove columns' : 'Remove column');
+    if (act === 'ci-col-dup')    return patch(() => (live.cols < 10 ? tableInsertCol(live, s.c1 + 1, s.c0) : null), 'Duplicate column');
     if (act === 'ci-merge')   return patch(() => tableMerge(live, s.r0, s.c0, s.r1, s.c1), 'Merge cells');
     if (act === 'ci-unmerge') {
       const m = mergeAt(live, s.r0, s.c0);
@@ -1969,7 +2013,10 @@ function _customAct(act, el) {
 }
 function _customChange(t) {
   if (t.dataset?.ci === 'cellbg' || t.dataset?.ci === 'cellfg' || t.dataset?.ci === 'cellsize') {
-    const tb = _tableNow(), s = _tselRect();
+    const tb = _tableNow();
+    // the rectangle the swatch was opened for — NOT whatever is picked now: the
+    // click that closes the picker lands on a cell and would re-pick just that one
+    const s = (_fmtTarget?.id === _customSel && _fmtTarget.r0 !== undefined) ? _fmtTarget : _tselRect();
     if (tb && s) {
       const patch = t.dataset.ci === 'cellbg' ? { bg: String(t.value).toLowerCase() }
         : t.dataset.ci === 'cellfg' ? { c: String(t.value).toLowerCase() }

@@ -50,6 +50,7 @@ body { font-family: Arial, Helvetica, sans-serif; color: #111; -webkit-print-col
 .ctb th { font-weight: 700; background: #ececec; }
 .ctb.nogrid th, .ctb.nogrid td { border: 0; border-bottom: 0.25mm solid #ccc; }
 .ctb.zebra tbody tr:nth-child(even) td { background: #f4f4f4; }
+.ctb .tcimg { display: block; max-width: 100%; max-height: 100%; margin: 0 auto; object-fit: contain; }
 .ctb td[style*="background"], .ctb th[style*="background"] { background-image: none; }
 .it { display: flex; gap: 3mm; margin: 0 0 3.2mm; font-size: 11pt; line-height: 1.38; break-inside: avoid; }
 .it .no { flex: 0 0 auto; min-width: 9mm; height: 6.2mm; padding: 0 1.6mm; border-radius: 3.1mm; background: #111; color: #fff; font-weight: 700; font-size: 9.5pt; display: flex; align-items: center; justify-content: center; }
@@ -142,8 +143,12 @@ export function customItemHtml(it, o = {}, band = '') {
         const st = (f.a ? `text-align:${f.a};` : '') + (f.b ? 'font-weight:700;' : '')
           + (f.i ? 'font-style:italic;' : '') + (f.bg ? `background:${_esc(f.bg)};` : '')
           + (f.c ? `color:${_esc(f.c)};` : '') + (f.s ? `font-size:${Number(f.s)}pt;` : '');
+        const pic = it.imgSrc?.[`${r},${c}`];
+        const inner = pic
+          ? `<img class="tcimg" src="${_esc(pic)}" alt="" draggable="false">${cell ? `<div>${_esc(cell)}</div>` : ''}`
+          : _esc(cell);
         return `<${tag2} data-cell="${r},${c}"${m ? ` colspan="${m.cs}" rowspan="${m.rs}"` : ''}`
-          + `${st ? ` style="${st}"` : ''} dir="auto">${_esc(cell)}</${tag2}>`;
+          + `${st ? ` style="${st}"` : ''} dir="auto">${inner}</${tag2}>`;
       }).join('');
       return `<tr${hMm ? ` style="${hMm}"` : ''}>${tds}</tr>`;
     }).join('');

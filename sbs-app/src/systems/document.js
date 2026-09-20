@@ -24,6 +24,7 @@ import { steps }        from './steps.js';
 import { srcHashOf }    from './language-packs.js';
 import { stepVideoClips } from './video-overlay.js';   // 🎞 a picture of a chosen frame
 import { stepInterfaceRect } from './interface-rect-core.js';   // 🎯 where the interface sits in the frame
+import { tableAssetIds } from './document-core.js';             // 📋 pictures inside table cells are used too
 import { projectDisplayName } from './header.js';
 import * as projectPaths from '../core/project-paths.js';
 import {
@@ -150,10 +151,15 @@ const _withSlot = (p, slot, make) => {
 };
 /** Pictures nobody shows any more are dropped from the document (undo brings the whole snapshot back). */
 const _pruneAssets = (doc) => {
+  // …including every picture sitting INSIDE a table cell (V0.3.4.40) — without
+  // this the next commit would bin them and the cells would go blank.
+  const inTables = (items) => (items || []).flatMap(i => tableAssetIds(i));
   const used = new Set([
     ...(doc.pages || []).flatMap(p => (p.images || []).map(i => i.assetId)),
     ...(doc.extras || []).flatMap(x => (x.items || []).map(i => i.assetId)),
+    ...(doc.extras || []).flatMap(x => inTables(x.items)),
     ...['header', 'footer'].flatMap(side => (doc.bands?.[side]?.items || []).map(i => i.assetId)),
+    ...['header', 'footer'].flatMap(side => inTables(doc.bands?.[side]?.items)),
   ].filter(Boolean));
   const assets = {};
   for (const [id, a] of Object.entries(doc.assets || {})) if (used.has(id)) assets[id] = a;
@@ -184,6 +190,23 @@ export function setPagePictureFrame(pageId, slot, atMs) {
     if (Number.isFinite(t) && t >= 0) next.atMs = t; else delete next.atMs;
     return next;
   }));
+}
+
+/**
+ * 📋 A picture into a table cell (V0.3.4.40) — the asset is stored once in the
+ * document, like every other picture that is not part of the animation, and the
+ * cell keeps only its id. One commit, one undo entry.
+ */
+export function setTableCellImage(pageId, itemId, r, c, asset) {
+  const cur = getDocument(); if (!cur || !asset?.dataUrl) return;
+  const id = `asset_${Date.now().toString(36)}${Math.floor(performance.now() % 1e6).toString(36)}`;
+  const assets = { ...(cur.assets || {}), [id]: { dataUrl: asset.dataUrl, w: asset.w, h: asset.h, name: asset.name || '' } };
+  const extras = (cur.extras || []).map(x => (x.id !== pageId ? x : {
+    ...x,
+    items: (x.items || []).map(i => (i.id !== itemId || i.type !== 'table' ? i
+      : { ...i, imgs: { ...(i.imgs || {}), [`${r},${c}`]: id } })),
+  }));
+  _commit('Picture into a cell', _pruneAssets({ ...cur, assets, extras }));
 }
 
 /** Where this step's interface sits in the frame ({x,y,w,h} in 0…1), or null. */
