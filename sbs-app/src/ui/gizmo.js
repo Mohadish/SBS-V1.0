@@ -822,8 +822,18 @@ class GizmoController {
 
     const T = window.THREE;
     const no = this._node;
-    this._startOffset       = no?.localOffset           ? [...no.localOffset]           : [0, 0, 0];
-    this._startQuat         = no?.localQuaternion       ? [...no.localQuaternion]       : [0, 0, 0, 1];
+    // START FROM WHERE THE OBJECT ACTUALLY IS (V0.3.4.28, user). A stored
+    // offset whose ✥ Move toggle is OFF contributes nothing to the live
+    // position — the object sits at its home position. The drag used to begin
+    // from that stored value and switch the toggle back on at the first mouse
+    // move, so the folder jumped to its old stored place and only then began
+    // to follow the cursor. Starting from zero means the drag begins where you
+    // grabbed it and the stored ("blue") value is simply rewritten to wherever
+    // you let go. Same for a rotation whose ⟳ toggle is off.
+    const moveOff = no?.moveEnabled   === false;
+    const rotOff  = no?.rotateEnabled === false;
+    this._startOffset       = (!moveOff && no?.localOffset)     ? [...no.localOffset]     : [0, 0, 0];
+    this._startQuat         = (!rotOff  && no?.localQuaternion) ? [...no.localQuaternion] : [0, 0, 0, 1];
     // Pivot start values for RED-mode drags (writes to pivot fields).
     this._startPivotOffset  = no?.pivotLocalOffset      ? [...no.pivotLocalOffset]      : [0, 0, 0];
     this._startPivotQuat    = no?.pivotLocalQuaternion  ? [...no.pivotLocalQuaternion]  : [0, 0, 0, 1];

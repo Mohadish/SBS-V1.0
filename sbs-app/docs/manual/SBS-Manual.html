@@ -396,7 +396,7 @@ svg .arrow{stroke:var(--muted);stroke-width:1.4;fill:none;marker-end:url(#ah)}
 </ul>
 
 <h2 id="select-gizmo">Moving with the gizmo</h2>
-<p>The gizmo appears at the selection's pivot. Drag an axis arrow to move along it, a plane handle to move in a plane, a ring to rotate. <kbd>L</kbd> toggles <b>local</b> (the part's own axes) and <b>world</b>. The numeric fields accept exact values — type a number and press <kbd>Enter</kbd>. Every gizmo edit is undoable (<kbd>Ctrl</kbd>+<kbd>Z</kbd>).</p>
+<p>The gizmo appears at the selection's pivot. Drag an axis arrow to move along it, a plane handle to move in a plane, a ring to rotate. <kbd>L</kbd> toggles <b>local</b> (the part's own axes) and <b>world</b>. The numeric fields accept exact values — type a number and press <kbd>Enter</kbd>. Every gizmo edit is undoable (<kbd>Ctrl</kbd>+<kbd>Z</kbd>). If the row's <b>✥ Move</b> (or <b>⟳ Rotate</b>) toggle is off, the stored position is not in effect and the part sits at its home position — dragging then starts from where the part actually is, and where you let go becomes the new stored position.</p>
 <p>What you move is stored in the <em>active step</em> only. Go to the next step and the part is back where that step says. That is by design: a step is a full snapshot. To move a part in many steps at once use <a href="#select-global">Global mode</a> or <a href="#select-globalfix">Group for global edit</a>.</p>
 
 <h2 id="select-transforms">Transform commands (right-click)</h2>
