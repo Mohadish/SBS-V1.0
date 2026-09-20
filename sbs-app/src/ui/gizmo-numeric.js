@@ -119,7 +119,7 @@ function _applyTyped() {
   const label  = _active.type === 'rotate'
     ? `Rot ${_active.axis.toUpperCase()}`
     : _active.axis.toUpperCase();
-  setStickyStatus(`${label}: typing «${_input}» → ${valTxt}${unit}`);
+  setStickyStatus(`${label}: typing «${_input}» → ${valTxt}${unit}`, 'info', 'gizmo');
 }
 
 function _onKey(e) {
@@ -192,19 +192,19 @@ function _onDragEvent(kind, payload) {
     _active = { type: payload.type, axis: payload.axis, node: payload.node };
     _input  = '';
     _frozen = false;
-    setStickyStatus(_readout({ type: payload.type, axis: payload.axis, value: 0 }) || 'Drag…');
+    setStickyStatus(_readout({ type: payload.type, axis: payload.axis, value: 0 }) || 'Drag…', 'info', 'gizmo');
     return;
   }
   if (kind === 'move') {
     if (_frozen) return;     // typing owns the readout while locked
-    setStickyStatus(_readout(payload));
+    setStickyStatus(_readout(payload), 'info', 'gizmo');
     return;
   }
   if (kind === 'end') {
     _active = null;
     _input  = '';
     _frozen = false;
-    clearStickyStatus();
+    clearStickyStatus('gizmo');
     return;
   }
 }

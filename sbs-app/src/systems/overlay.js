@@ -429,6 +429,7 @@ export function setEditingMode(on) {
   // undeletable (it's not a Konva node). Commit (not discard) so no text is lost.
   if (_activeTextEditor) _exitTextEdit().catch(() => {});
   if (_tableEditor) _exitTableEdit();  // ▦ same story: its HTML is not a Konva node
+  _maskFollow = null; _maskFollowDone();    // 🎭 no gesture survives a mode flip, nor its hint
   if (_maskEdit) _cancelMaskEdit();   // 🎭 its handle lives on the UI layer; never leave it up
   if (_angleEntry) _endAngleEntry(false);   // ⌨ never leave the keyboard captured
   _cancelBand();                            // ⬚ a rubber-band in progress dies with the mode
@@ -1401,14 +1402,35 @@ function _trackCtrl(e) {
   const on = !!(e.ctrlKey || e.metaKey);
   if (on === _ctrlHeld) return;
   _ctrlHeld = on;
-  if (_maskFollow) _followMasks(_maskFollow, _ctrlHeld);
+  if (_maskFollow) { _followMasks(_maskFollow, _ctrlHeld); _maskFollowNote(_maskFollow); }
   if (_rotDrag) { _rotDrag.ctrl = _ctrlHeld; _applyRotDrag(); }
 }
 
-/** Say it once per gesture, where the user is looking. */
+/**
+ * A LIVE hint, up for exactly as long as the gesture it describes, and saying
+ * what is true right now rather than what was true when the drag began. A
+ * message that tells you about Ctrl and then vanishes after four seconds is
+ * gone by the time you think to look for it.
+ */
 function _maskFollowNote(starts) {
   if (!starts?.size) return;
-  setStatus('🎭 The mask follows — hold Ctrl to leave it where it is.', 'info', 3500);
+  setStickyStatus(_ctrlHeld
+    ? '🎭 Ctrl held — the mask stays where it is. Let go and it follows the picture.'
+    : '🎭 The mask follows the picture — hold Ctrl to leave it where it is.',
+  'info', 'maskFollow');
+}
+
+/** The gesture is over: the hint goes with it. */
+function _maskFollowDone() { clearStickyStatus('maskFollow'); }
+
+/** Read Ctrl off a pointer event — it may already have been down when the
+ *  gesture started, before any keydown of ours was seen. */
+function _ctrlFromEvent(evt) {
+  if (!evt) return;
+  const on = !!(evt.ctrlKey || evt.metaKey);
+  if (on === _ctrlHeld) return;
+  _ctrlHeld = on;
+  if (_maskFollow) _maskFollowNote(_maskFollow);
 }
 
 // ── 🎭 Mask editor (V0.3.2.220) ────────────────────────────────────────────
@@ -2022,7 +2044,7 @@ function _unbindRotKnob() {
 function _onRotKnobCancel() {
   const d = _rotDrag;
   _rotDrag = null;
-  if (_maskFollow) { _followMasks(_maskFollow, true); _maskFollow = null; }   // 🎭 back to where it started
+  if (_maskFollow) { _followMasks(_maskFollow, true); _maskFollow = null; _maskFollowDone(); }   // 🎭 back to where it started
   _unbindRotKnob();
   if (!d) return;
   _endAngleEntry(false, { keepRotation: true });     // disarm typing first
@@ -2069,7 +2091,7 @@ function _onRotKnobKey(ev) {
 function _onRotKnobUp() {
   const d = _rotDrag;
   _rotDrag = null;
-  _maskFollow = null;              // 🎭 the gesture is over
+  _maskFollow = null; _maskFollowDone();   // 🎭 the gesture is over
   _unbindRotKnob();
   if (!d) return;
   // Typed something while holding? Releasing the button ENDS the gesture and
@@ -2141,11 +2163,11 @@ function _beginAngleEntry(nodes, { silent = false } = {}) {
 function _angleEntryStatus() {
   if (!_angleEntry) return;
   const { buf } = _angleEntry;
-  if (!buf) { setStickyStatus('↻ Type an angle in degrees — maths allowed (90/3, 45*2, rad(pi/2)). Enter applies, Esc cancels.'); return; }
+  if (!buf) { setStickyStatus('↻ Type an angle in degrees — maths allowed (90/3, 45*2, rad(pi/2)). Enter applies, Esc cancels.', 'info', 'angle'); return; }
   const v = _evalExpr(buf);
   setStickyStatus(Number.isFinite(v)
     ? `↻ ${buf} = ${Math.round(v * 100) / 100}°   ·   Enter or release to apply, Esc cancels`
-    : `↻ ${buf}   ·   (incomplete)`);
+    : `↻ ${buf}   ·   (incomplete)`, 'info', 'angle');
 }
 
 function _applyAngleEntry() {
@@ -2162,7 +2184,7 @@ function _endAngleEntry(commit, { keepRotation = false } = {}) {
   const a = _angleEntry;
   _angleEntry = null;
   window.removeEventListener('keydown', _onAngleKey, true);
-  clearStickyStatus();
+  clearStickyStatus('angle');
   // Typing and holding the knob are ONE gesture, so ending either ends both:
   // after Enter the mouse must not keep turning anything.
   _rotDrag = null;
@@ -5398,7 +5420,7 @@ function _attachNode(node) {
     // 🧲 ⇧ FIRST the grabbed node is put where it belongs (axis lock, magnet) — THEN its delta goes to the carried items
     if (_multiDragStarts) _snapMove(node, e?.evt);
     _carry();
-    if (e?.evt) _ctrlHeld = !!(e.evt.ctrlKey || e.evt.metaKey);
+    _ctrlFromEvent(e?.evt);
     _followMasks(_maskFollow, _ctrlHeld);
   });
   node.on('dragend', () => {
@@ -5406,7 +5428,7 @@ function _attachNode(node) {
     _snapEnd();                             // 🧲 guides off — the node already stands where the magnet put it
     const beforeMap = _multiDragStarts;
     _multiDragStarts = null;
-    _maskFollow = null;                     // 🎭 the gesture is over
+    _maskFollow = null; _maskFollowDone();  // 🎭 the gesture is over
     if (!beforeMap) return;
     // The captured start is the truth: carried items end at start + the grabbed node's delta.
     reapplyGroupDelta(beforeMap, node, 'overlay');
@@ -5464,7 +5486,7 @@ function _attachNode(node) {
   // on release). When a BONDED SHAPE is itself resized/moved, re-capture its %.
   // 🎭 every frame of a resize / rotate, from the captured start
   node.on('transform', (e) => {
-    if (e?.evt) _ctrlHeld = !!(e.evt.ctrlKey || e.evt.metaKey);
+    _ctrlFromEvent(e?.evt);
     _followMasks(_maskFollow, _ctrlHeld);
   });
   node.on('transform', () => {
@@ -5602,7 +5624,7 @@ function _attachNode(node) {
     if (_xformSnapBefore) {
       const before = _xformSnapBefore;
       _xformSnapBefore = null;
-      _maskFollow = null;                     // 🎭 the gesture is over
+      _maskFollow = null; _maskFollowDone();  // 🎭 the gesture is over
       const after = before.map(b => _snapNodeGeom(b.n));
       const changed = before.some((b, i) =>
         b.x !== after[i].x || b.y !== after[i].y ||
@@ -7337,7 +7359,9 @@ function _enterPolyEdit(node) {
   _setSelection(null);                       // the unit's box and knobs step aside: the dots are the handles now
   _polyEdit = { node, drag: null };
   _polyRefreshDots();
-  setStatus('✎ Points: drag a dot · double-click the line = new point · double-click a dot = delete it (an END dot = arrowhead on / off) · Esc or click away to finish.', 'info', 9000);
+  // Sticky: these dots stay until the user leaves them, and so does the note
+  // that says what they do.
+  setStickyStatus('✎ Points: drag a dot · double-click the line = new point · double-click a dot = delete it (an END dot = arrowhead on / off) · Esc or click away to finish.', 'info', 'polyEdit');
 }
 
 function _exitPolyEdit() {
@@ -7347,6 +7371,7 @@ function _exitPolyEdit() {
   if (e.drag && _isLiveNode(e.node)) _polyCommit(e.node, 'Move line point', e.drag.before);   // Esc / a step change in the middle of a drag: the move stays — with its undo entry and its save
   hidePolylineDots();
   hideSnapGuides();
+  clearStickyStatus('polyEdit');   // ✎ the dots are gone; so is the note about them
   return true;
 }
 /** Esc (main.js asks first). @returns {boolean} true when a point-edit was closed */
