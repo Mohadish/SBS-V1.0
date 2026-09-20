@@ -17,7 +17,8 @@ import { undoManager } from '../systems/undo.js';
 import { setStatus } from './status.js';
 import { srcHashOf } from '../systems/language-packs.js';
 import { numberSteps } from '../systems/translation-sheet-core.js';
-import { builtinTemplates, docTextFor, pageRangeLabel, unitsOf, stillsNeeded, pictureBox, containZoom, slotState, directionOf, bandsOf, BAND_MM } from '../systems/document-core.js';
+import { builtinTemplates, docTextFor, pageRangeLabel, unitsOf, stillsNeeded, pictureBox, containZoom, slotState, directionOf, bandsOf, BAND_MM,
+         zoomAfterWheel, zoomAfterButton, zoomPercent, zoomFromPercent, clampUiZoom } from '../systems/document-core.js';
 import { DOCUMENT_CSS, renderPageHtml, renderTocPageHtml, renderCustomPageHtml, slotInnerHtml } from '../systems/document-render.js';
 import { watermarkOf, watermarkHtml, watermarkCss, watermarkVisible, detectWatermarkMode, bakeWatermarkPixels, fitWithin } from '../systems/watermark-core.js';
 import * as D from '../systems/document.js';
@@ -194,6 +195,11 @@ function _build() {
     _root.addEventListener(type, (e) => {
       const t = e.composedPath()[0];
       const editable = t instanceof HTMLElement && (t.isContentEditable || /^(INPUT|TEXTAREA|SELECT)$/.test(t.tagName));
+      if (type === 'keydown' && e.key === 'Enter' && t instanceof HTMLElement
+          && (t.dataset?.slotZoom !== undefined || t.dataset?.ci === 'zoom')) {
+        e.preventDefault(); t.blur();                       // blur fires `change` → one undo entry
+        return;
+      }
       if (type === 'keydown') _onKey(e, editable);
       const mod = e.ctrlKey || e.metaKey;
       let passes = !editable && mod && /^(Key[ZYS])$/.test(e.code);        // undo / redo / save still belong to the app…
@@ -709,16 +715,16 @@ function _renderPage(c) {
   const model = D.renderModel();
   if (_bandEdit) return _renderBandEdit(model);
   if (_pageId === TOC && model.toc) {
-    _pageModel = null; _slotSel = null; _placeSlotBar(); _customSel = null; _placeCustomBar();
+    _pageModel = null; _wheelFit = null; _slotSel = null; _placeSlotBar(); _customSel = null; _placeCustomBar();
     const o = { logo: D.documentLogo(), watermark: model.watermark, dir: model.dir, lang: model.lang, tocTitle: model.toc.title };
     _shadow.innerHTML = `<style>${DOCUMENT_CSS}${watermarkCss(model.watermark)}${EDIT_CSS}.page + .page { margin-top: 8mm; } .toc .tl { pointer-events: none; }</style><div class="fit">${model.toc.pages.map(tp => renderTocPageHtml(tp, o)).join('')}</div>`;
     _fit(); return;
   }
   const cp = model.customs.find(x => x.id === _pageId);
-  if (cp) { _pageModel = null; _slotSel = null; _placeSlotBar(); return _renderCustomPage(model, cp); }
+  if (cp) { _pageModel = null; _wheelFit = null; _slotSel = null; _placeSlotBar(); return _renderCustomPage(model, cp); }
   _customSel = null; _placeCustomBar();
   const mp = model.pages.find(p => p.id === _pageId);
-  _pageModel = mp || null; _pageLang = model.lang || null;
+  _pageModel = mp || null; _wheelFit = null; _pageLang = model.lang || null;
   if (_slotSel != null && (!mp || _slotSel >= mp.images.length)) _slotSel = null;
   if (!mp) { _placeSlotBar(); _shadow.innerHTML = `<style>${EDIT_CSS}</style><div style="font:13px Arial;color:#e2e8f0;padding:30px;">${(D.getDocument()?.pages.find(p => p.id === _pageId)?.stepIds || []).length ? 'Every step of this page is left out of the document, so the page is not printed. Click the eye of a step on the right to put it back.' : 'This page has no steps left. Delete it from the list on the right.'}</div>`; _fit(); return; }
   const need = stillsNeeded({ pages: [mp] });
@@ -769,7 +775,7 @@ async function _loadStills() {
         if (url) { slot.innerHTML = slotInnerHtml(im, url, k, _pageLang); slot.classList.remove('none'); }
         else if (sid) { const ph = slot.querySelector('.ph'); if (ph) ph.textContent = 'the picture could not be rendered'; }
       }
-      _pageModel = now || _pageModel;
+      _pageModel = now || _pageModel; _wheelFit = null;
       _placeSlotBar();
     } while (_walkAgain);
   } finally { _walking = false; }
@@ -854,19 +860,33 @@ function _placeSlotBar() {
     bar.style.cssText = 'position:fixed;z-index:9050;display:flex;gap:4px;align-items:center;background:#0f172a;border:1px solid #38bdf8;border-radius:8px;padding:4px 6px;box-shadow:0 6px 20px rgba(0,0,0,.5);font-size:11.5px;color:#94a3b8;white-space:nowrap;';
     _root.appendChild(bar);
   }
+  // Don't rebuild the bar out from under a percentage being typed (this bar is
+  // re-placed on every scroll). Same guard the custom bar has always had.
+  if (bar.contains(document.activeElement) && document.activeElement.tagName === 'INPUT') { _placeSlotBarAt(bar, el); return; }
   const im = _slotIm(_slotSel), has = !!el.querySelector('img.pic');
   const what = !im ? '' : im.state === 'asset' ? `external: ${im.name || 'image'}` : im.state === 'auto' ? 'automatic' : im.state === 'step' ? (im.moment === 'start' ? `before step ${im.label || ''}` : 'chosen step') : 'empty';
   bar.innerHTML = `<button class="dw-btn" data-act="slot-menu" style="padding:2px 9px;" title="Which picture goes here">Picture ▾</button>
     ${has ? `<button class="dw-btn" data-act="slot-fill" style="padding:2px 9px;" title="Fill the frame, centred (cropping what does not fit)">Fill</button>
     <button class="dw-btn" data-act="slot-whole" style="padding:2px 9px;" title="Show the whole picture inside the frame">Whole</button>
-    <button class="dw-btn" data-act="slot-zoom" data-f="0.9" style="padding:2px 8px;">−</button><button class="dw-btn" data-act="slot-zoom" data-f="1.1111" style="padding:2px 8px;">+</button>
+    <button class="dw-btn" data-act="slot-zoom" data-d="-1" style="padding:2px 8px;" title="5% smaller">−</button><input class="dw-in" data-slot-zoom type="text" inputmode="decimal" value="${zoomPercent(im ? im.fit.zoom : 1)}" title="How big the picture is inside its frame. 100% fills the frame. Type a number and press Enter." style="width:52px;text-align:right;padding:1px 4px;"><span style="margin-inline-start:-2px;">%</span><button class="dw-btn" data-act="slot-zoom" data-d="1" style="padding:2px 8px;" title="5% larger">+</button>
     <span style="padding:0 4px;">drag to move · wheel to scale</span>` : ''}<span style="padding:0 4px;color:#64748b;">${_esc(what)}</span>`;
+  _placeSlotBarAt(bar, el);
+}
+
+/** Just the position — used on its own while a percentage is being typed. */
+function _placeSlotBarAt(bar, el) {
   const r = el.getBoundingClientRect(), cr = _root.querySelector('#dw-center').getBoundingClientRect();
   bar.style.left = `${Math.max(cr.left + 4, Math.min(r.left, cr.right - bar.offsetWidth - 4))}px`;
   bar.style.top = `${Math.max(cr.top + 4, r.top - bar.offsetHeight - 6)}px`;
 }
 
-let _pan = null, _wheelTimer = 0, _wheelFit = null;
+/** The percentage in the bar, refreshed live while the wheel turns. */
+function _showZoomPercent(sel, zoom) {
+  const inp = _root.querySelector(sel);
+  if (inp && document.activeElement !== inp) inp.value = zoomPercent(zoom);
+}
+
+let _pan = null, _wheelTimer = 0, _wheelFit = null, _wheelItem = null;
 
 function _onSlotPointerDown(e) {
   const el = e.target.closest?.('.slot');
@@ -894,26 +914,66 @@ function _onSlotPointerUp() {
   const p = _pan; _pan = null;
   if (p?.moved) D.setPagePictureFit(_pageId, p.k, p.fit);     // ONE undo entry per drag
 }
+/** Redraw ONE custom-page picture with a fit that is not committed yet. */
+function _applyFitLiveItem(id, fit) {
+  const it = _customModel?.items.find(i => i.id === id);
+  const img = _shadow.querySelector(`.ci[data-item="${id}"] img.pic`);
+  if (!it || !img) return;
+  const b = pictureBox(it, it.aspect, fit);
+  img.style.left = `calc(50% + ${b.dxMm}mm)`; img.style.top = `calc(50% + ${b.dyMm}mm)`; img.style.width = `${b.widthPct}%`;
+}
+
+/** The same wheel, for a picture on a custom page (until now only slots scaled). */
+function _wheelCustomPicture(e, el) {
+  const id = el.dataset.item;
+  if (!id || id !== _customSel) return false;                 // only the selected picture, like a slot
+  const it = _customModel?.items.find(i => i.id === id);
+  if (!it || it.type !== 'image' || it.logo || !el.querySelector('img.pic')) return false;
+  e.preventDefault();
+  const cur = _wheelItem?.id === id ? _wheelItem.fit : { zoom: 1, ox: 0, oy: 0, ...(it.fit || {}) };
+  const zoom = zoomAfterWheel(cur.zoom, e);
+  const f = zoom / cur.zoom, r = el.getBoundingClientRect();
+  const px = (e.clientX - (r.left + r.width / 2)) / r.width, py = (e.clientY - (r.top + r.height / 2)) / r.height;
+  const fit = { zoom, ox: px + (cur.ox - px) * f, oy: py + (cur.oy - py) * f };
+  _wheelItem = { id, fit };
+  _applyFitLiveItem(id, fit);
+  _showZoomPercent('#dw-custombar input[data-ci="zoom"]', zoom);
+  clearTimeout(_wheelTimer);
+  _wheelTimer = setTimeout(_flushWheelItem, 350);
+  return true;
+}
+function _flushWheelItem() {
+  clearTimeout(_wheelTimer);
+  const w = _wheelItem;
+  if (w && _customSel === w.id) _patchItem({ fit: w.fit }, 'Picture size');
+}
+
 /** Wheel = scale about the pointer; the commit waits until the wheel has been quiet for a moment (one undo entry). */
 function _onSlotWheel(e) {
+  const ci = e.target.closest?.('.ci.cp');
+  if (ci && _wheelCustomPicture(e, ci)) return;
   const el = e.target.closest?.('.slot');
   if (!el || _slotSel == null || Number(el.dataset.slot) !== _slotSel || !el.querySelector('img.pic')) return;
   e.preventDefault();
   const k = _slotSel, im = _slotIm(k); if (!im) return;
+  // The live value wins over the model: the model is only refreshed when the
+  // page re-renders, which lags the commit by a frame or two — reading it
+  // mid-gesture used to compute from a pre-commit zoom and jump backwards.
   const cur = _wheelFit?.k === k ? _wheelFit.fit : { ...im.fit };
-  const zoom = Math.max(0.05, Math.min(20, cur.zoom * Math.exp(-e.deltaY * 0.0015)));
+  const zoom = zoomAfterWheel(cur.zoom, e);
   const f = zoom / cur.zoom, r = el.getBoundingClientRect();
   const px = (e.clientX - (r.left + r.width / 2)) / r.width, py = (e.clientY - (r.top + r.height / 2)) / r.height;
   const fit = { zoom, ox: px + (cur.ox - px) * f, oy: py + (cur.oy - py) * f };
   _wheelFit = { k, fit, pageId: _pageId };
   _applyFitLive(k, fit);
+  _showZoomPercent('#dw-slotbar input[data-slot-zoom]', fit.zoom);
   clearTimeout(_wheelTimer);
   _wheelTimer = setTimeout(_flushWheel, 350);
 }
 function _flushWheel() {
   clearTimeout(_wheelTimer);
-  const w = _wheelFit; _wheelFit = null;
-  if (w && w.pageId === _pageId) D.setPagePictureFit(w.pageId, w.k, w.fit);
+  const w = _wheelFit;        // kept, NOT cleared: it stays the truth until the
+  if (w && w.pageId === _pageId) D.setPagePictureFit(w.pageId, w.k, w.fit);   // page re-renders (see _pageModel)
 }
 
 /** Which picture goes into the slot: automatic · a step of the page · an external image · empty. */
@@ -1072,7 +1132,7 @@ const _newItemId = (p, n) => `${p}_${Date.now().toString(36)}${n}`;
 function _renderCustomPage(model, cp) {
   const editing = _shadow.activeElement;
   if (editing?.classList?.contains('ct') && editing.isContentEditable) { _deferred = true; return; }     // never rebuild under the caret
-  _customModel = cp;
+  _customModel = cp; _wheelItem = null;
   const need = stillsNeeded({ customs: [cp] }), have = D.cachedStills(need);        // pictures taken from the animation
   const o = { stills: have, logo: D.documentLogo(), watermark: model.watermark, dir: model.dir, lang: model.lang };
   _shadow.innerHTML = `<style>${DOCUMENT_CSS}${watermarkCss(model.watermark)}${EDIT_CSS}${CUSTOM_CSS}</style><div class="fit">${renderCustomPageHtml(cp, o)}</div>`;
@@ -1092,7 +1152,7 @@ function _renderCustomPage(model, cp) {
 function _renderBandEdit(model) {
   const editing = _shadow.activeElement;
   if (editing?.classList?.contains('ct') && editing.isContentEditable) { _deferred = true; return; }
-  _pageModel = null; _slotSel = null; _placeSlotBar();
+  _pageModel = null; _wheelFit = null; _slotSel = null; _placeSlotBar();
   const o = { logo: D.documentLogo(), watermark: model.watermark, dir: model.dir, lang: model.lang, tocTitle: model.toc?.title };
   let pm = null, html = '';
   if (_pageId === TOC && model.toc) { pm = model.toc.pages[0]; html = renderTocPageHtml(pm, o); }
@@ -1100,7 +1160,7 @@ function _renderBandEdit(model) {
   else if ((pm = model.pages.find(p => p.id === _pageId) || model.pages[0] || null)) html = renderPageHtml(pm, { ...o, stills: D.cachedStills(stillsNeeded({ pages: [pm] })) });
   const band = pm?.bandItems?.[_bandEdit];
   if (!band) { _bandEdit = null; _customSel = null; _placeCustomBar(); return _renderPage(); }       // the design was thrown away (an undo, ↺): back to the page
-  _customModel = { items: band.items, dir: model.dir };
+  _customModel = { items: band.items, dir: model.dir }; _wheelItem = null;
   const A = BAND_MM[_bandEdit];
   _shadow.innerHTML = `<style>${DOCUMENT_CSS}${watermarkCss(model.watermark)}${EDIT_CSS}${CUSTOM_CSS}</style><div class="fit bandmode">${html}</div>`;
   _shadow.querySelector('.page').insertAdjacentHTML('beforeend', `<div class="cguide" style="left:${A.x}mm;top:${A.y}mm;width:${A.w}mm;height:${A.h}mm;"></div>`);
@@ -1155,7 +1215,9 @@ function _placeCustomBar() {
       + b('band-rule', '▁ Line', `The line between the ${_bandEdit} and the page`, bandsOf(D.getDocument())[_bandEdit]?.rule !== false)
     : b('ci-add-text', '＋ Text', 'A new text box') + b('ci-add-picture', '＋ Picture ▾', 'A picture from a file — or a picture of any step of the animation');
   const tail = host === 'band' ? sep + b('band-reset', '↺ Standard', 'Throw this design away: back to the standard header and footer') + b('band-done', '✓ Done', 'Back to the page (Esc)', false, 'color:#4ade80;font-weight:600;') : '';
-  const fitBtns = b('ci-fill', 'Fill', 'Fill the frame (cropping what does not fit)') + b('ci-whole', 'Whole', 'Show the whole picture inside the frame') + b('ci-zoom', '−', 'Smaller inside the frame', false, '', 'data-f="0.9"') + b('ci-zoom', '+', 'Larger inside the frame', false, '', 'data-f="1.1111"');
+  const fitBtns = b('ci-fill', 'Fill', 'Fill the frame (cropping what does not fit)') + b('ci-whole', 'Whole', 'Show the whole picture inside the frame') + b('ci-zoom', '−', '5% smaller inside the frame', false, '', 'data-d="-1"')
+    + `<input class="dw-in" data-ci="zoom" type="text" inputmode="decimal" value="${zoomPercent(it.fit?.zoom ?? 1)}" title="How big the picture is inside its frame. 100% fills the frame. Type a number and press Enter." style="width:52px;text-align:right;padding:1px 4px;">%`
+    + b('ci-zoom', '+', '5% larger inside the frame', false, '', 'data-d="1"');
   bar.innerHTML = lead + '<input type="file" id="dw-ci-file" accept="image/*" hidden>'
     + (!it ? `<span style="padding:0 6px;">click an item to select it · double-click a text to type</span>` : sep
       + (it.type === 'text'
@@ -1359,10 +1421,15 @@ function _customAct(act, el) {
   if (act.startsWith('ci-align-')) { _patchItem({ align: act.slice(9) }, 'Align text'); return true; }
   if (act === 'ci-fill') { _patchItem({ fit: { zoom: 1, ox: 0, oy: 0 } }, 'Picture fit'); return true; }
   if (act === 'ci-whole') { _patchItem({ fit: { zoom: containZoom(it, it.aspect), ox: 0, oy: 0 } }, 'Picture fit'); return true; }
-  if (act === 'ci-zoom') { _patchItem({ fit: { ...it.fit, zoom: Math.max(0.05, Math.min(20, it.fit.zoom * Number(el.dataset.f))) } }, 'Picture fit'); return true; }
+  if (act === 'ci-zoom') { _patchItem({ fit: { ...it.fit, zoom: zoomAfterButton(it.fit.zoom, Number(el.dataset.d)) } }, 'Picture fit'); return true; }
   return false;
 }
 function _customChange(t) {
+  if (t.dataset?.ci === 'zoom') {
+    const it = _customModel?.items.find(i => i.id === _customSel);
+    if (it) _patchItem({ fit: { ...it.fit, zoom: zoomFromPercent(t.value, it.fit?.zoom ?? 1) } }, 'Picture size');
+    return true;
+  }
   if (t.dataset?.ci === 'size') { _patchItem({ size: Math.max(6, Math.min(120, Number(t.value) || 11)) }, 'Text size'); return true; }
   if (t.dataset?.ci === 'color') { _patchItem({ color: t.value }, 'Text colour'); return true; }
   if (t.dataset?.customName !== undefined) { const n = t.value.trim(); if (n) D.renameCustomPage(_pageId, n); return true; }
@@ -1552,7 +1619,12 @@ async function _onClick(e) {
   if (act === 'slot-menu') { const r = el.getBoundingClientRect(); _slotMenu(_slotSel ?? 0, r.left, r.bottom + 4); return; }
   if (act === 'slot-fill') { if (_slotSel != null) D.setPagePictureFit(_pageId, _slotSel, null); return; }
   if (act === 'slot-whole') { const im = _slotIm(_slotSel); if (im) D.setPagePictureFit(_pageId, _slotSel, { zoom: containZoom(im.rect, im.aspect), ox: 0, oy: 0 }); return; }
-  if (act === 'slot-zoom') { const im = _slotIm(_slotSel); if (im) D.setPagePictureFit(_pageId, _slotSel, { ...im.fit, zoom: Math.max(0.05, Math.min(20, im.fit.zoom * Number(el.dataset.f))) }); return; }
+  if (act === 'slot-zoom') {
+    const im = _slotIm(_slotSel); if (!im) return;
+    const cur = _wheelFit?.k === _slotSel ? _wheelFit.fit : im.fit;
+    D.setPagePictureFit(_pageId, _slotSel, { ...cur, zoom: zoomAfterButton(cur.zoom, Number(el.dataset.d)) });
+    return;
+  }
   if (act === 'rerender-pictures') { D.clearStills(); _stillsFailed = new Set(); _renderPage(_ctx()); return; }
   _commitFocusedText();
   if (act === 'sync') return void D.syncWithAnimation();
@@ -1573,6 +1645,15 @@ async function _onClick(e) {
 
 function _onChange(e) {
   const t = e.target;
+  // 🖼 the picture's size, typed as a percentage (100% = fills the frame)
+  if (t.dataset?.slotZoom !== undefined) {
+    const im = _slotIm(_slotSel);
+    if (im) {
+      const cur = _wheelFit?.k === _slotSel ? _wheelFit.fit : im.fit;
+      D.setPagePictureFit(_pageId, _slotSel, { ...cur, zoom: zoomFromPercent(t.value, cur.zoom) });
+    }
+    return;
+  }
   if (_customChange(t)) return;
   if (t.dataset?.wm) return D.setWatermark({ [t.dataset.wm]: _wmValue(t) });
   if (t.matches?.('input[data-wm-file]')) {

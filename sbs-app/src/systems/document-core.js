@@ -481,6 +481,63 @@ export function pictureBox(rect, aspect, fit) {
   return { widthPct: cover * f.zoom, dxMm: f.ox * rect.w, dyMm: f.oy * rect.h };
 }
 
+// ─── zooming a picture inside its frame (V0.3.4.29) ────────────────────────
+// One place for every step size, so the wheel, the buttons and the typed
+// percentage can never disagree. Fill = zoom 1 = 100%, so the number the user
+// types IS the zoom, times a hundred.
+
+/** What the picture bar offers: 10% … 800%. (The stored range stays wider, so
+ *  no existing document is re-clamped behind the user's back.) */
+export const ZOOM_UI_MIN = 0.1;
+export const ZOOM_UI_MAX = 8;
+/** − and + on the bar. */
+export const ZOOM_BUTTON_STEP = 0.05;
+/** One wheel notch — finer than the buttons, as asked. Ctrl = fine, Shift = coarse. */
+export const ZOOM_WHEEL_STEP   = 0.02;
+export const ZOOM_WHEEL_FINE   = 0.005;
+export const ZOOM_WHEEL_COARSE = 0.10;
+
+export function clampUiZoom(z) { return _clampN(z, ZOOM_UI_MIN, ZOOM_UI_MAX, 1); }
+
+/**
+ * How many NOTCHES one wheel event is worth — and never more than one.
+ *
+ * `deltaY` is not a count: a plain mouse sends ±100 per notch, a trackpad sends
+ * a stream of small fractions, and a free-spinning wheel (or an inertial
+ * trackpad fling) sends single events of 300–600. Scaling the zoom by the raw
+ * delta is what made one flick jump ~20% and, on a big inertial event, snap the
+ * picture right out — the "abrupt zoom out" mid-gesture. Small deltas still
+ * give smooth fractions; huge ones are capped.
+ */
+export function wheelNotches(e) {
+  const dy = Number(e?.deltaY) || 0;
+  const raw = e?.deltaMode === 1 ? dy / 3            // lines
+            : e?.deltaMode === 2 ? dy                // pages
+            : dy / 100;                              // pixels (the usual)
+  return Math.max(-1, Math.min(1, raw));
+}
+
+/** The zoom one wheel event lands on. Up = bigger. */
+export function zoomAfterWheel(zoom, e) {
+  const step = e?.ctrlKey || e?.metaKey ? ZOOM_WHEEL_FINE
+             : e?.shiftKey ? ZOOM_WHEEL_COARSE
+             : ZOOM_WHEEL_STEP;
+  return clampUiZoom(Number(zoom) * Math.pow(1 + step, -wheelNotches(e)));
+}
+
+/** The zoom a − / + press lands on (`dir` = −1 or +1). Exactly reversible. */
+export function zoomAfterButton(zoom, dir) {
+  return clampUiZoom(Number(zoom) * Math.pow(1 + ZOOM_BUTTON_STEP, dir < 0 ? -1 : 1));
+}
+
+/** What the bar shows: a whole percent. */
+export function zoomPercent(zoom) { return Math.round((Number(zoom) || 1) * 1000) / 10; }
+/** …and what a typed percent means. Junk keeps the current value. */
+export function zoomFromPercent(pct, fallback = 1) {
+  const n = parseFloat(String(pct).replace(/[^\d.+-]/g, ''));
+  return Number.isFinite(n) && n > 0 ? clampUiZoom(n / 100) : clampUiZoom(fallback);
+}
+
 /** The zoom at which the WHOLE picture is visible inside the slot (nothing cropped). */
 export function containZoom(rect, aspect) {
   const a = aspect > 0 ? aspect : 16 / 9, sa = rect.w / rect.h;
