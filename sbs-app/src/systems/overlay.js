@@ -156,6 +156,13 @@ export function initOverlay() {
   // beforeDraw pass is exact by construction and costs a few arithmetic ops.
   _uiLayer.on('beforeDraw', _placeRotateKnobs);
 
+  // 🎭 Ctrl pins a mask in place during a gesture. Tracked here, on the
+  // window, because a Konva `transform` event carries no reliable DOM event —
+  // and because pressing or releasing the key while the pointer stands still
+  // has to take effect at once.
+  window.addEventListener('keydown', _trackCtrl, true);
+  window.addEventListener('keyup',   _trackCtrl, true);
+
   // Click an empty area → deselect.
   _stage.on('pointerdown', (e) => {
     // Edit-preview sequences: the FIRST interaction (this fires for clicks on
@@ -1311,43 +1318,97 @@ function _privateMaskOf(node) {
   return m && m.w > 0 && m.h > 0 ? { ...m } : null;
 }
 
-let _maskCarryTold = false;
-
 /**
- * 🎭 CTRL+DRAG BRINGS THE MASK ALONG.
+ * 🎭 THE MASK FOLLOWS ITS PICTURE — AND CTRL PINS IT DOWN.
  *
- * A mask is fixed in canvas space by design: normally, moving the picture
- * changes what shows through the hole and the hole stays put. Holding Ctrl
- * says "this time, move the window too" — the framing you cut survives the
- * move instead of having to be cut again somewhere else.
+ * A mask is a window fixed on the canvas. On its own that is the right model
+ * for cutting one; it is the wrong default once the picture is placed, because
+ * then moving, turning or growing the picture slides it out of the window you
+ * cut for it. So by default a PRIVATE mask rides along with its picture, and
+ * holding Ctrl inverts that: the window stays exactly where it is while the
+ * picture moves under it — the old behaviour, now on demand.
  *
- * The offset is ALWAYS re-derived from where the drag started, never
- * accumulated frame to frame. So Ctrl can be pressed halfway through a drag
- * and the mask lands exactly where it would have had the key been down from
- * the first pixel — and letting go puts it back, losslessly, both ways.
+ * WHAT IT FOLLOWS. Position, rotation, and UNIFORM scale. Not squish: making a
+ * picture taller or wider is a deliberate distortion of the picture, and there
+ * is no reason for the window to distort with it. Growing it evenly is a
+ * different intent — "bigger, same thing" — and there the window grows too.
  *
- * Only a private mask travels; a shared one belongs to every image using it.
+ * Ctrl is its own modifier, layered over Shift: Shift keeps doing its own job
+ * (snap the angle, keep the proportions) and Ctrl independently says whether
+ * the mask comes along.
+ *
+ * Everything is re-derived from the geometry captured when the gesture STARTED
+ * — never accumulated frame to frame. That is what lets Ctrl (or Shift) go on
+ * and off mid-gesture and still land exactly where it would have: the answer
+ * depends only on where things are now and where they began.
+ *
+ * Only a private mask follows; a shared one belongs to every image using it.
  */
-function _carryMasks(grabbed, starts, evt) {
-  if (!starts) return;
-  const base = starts.get(grabbed);
-  if (!base) return;
+function _maskFollowSnap(nodes) {
+  const m = new Map();
+  for (const n of nodes || []) {
+    const mask = _privateMaskOf(n);
+    if (!mask) continue;
+    m.set(n, {
+      mask,
+      x: n.x(), y: n.y(),
+      w: Math.abs(n.width() * (n.scaleX() || 1)),
+      h: Math.abs(n.height() * (n.scaleY() || 1)),
+      rot: n.rotation() || 0,
+    });
+  }
+  return m;
+}
+
+function _followMasks(starts, hold) {
+  if (!starts?.size) return;
   const c = getCanonicalSize();
-  const on = !!(evt?.ctrlKey || evt?.metaKey);
-  const dx = (grabbed.x() - base.x) / (c.width || 1);
-  const dy = (grabbed.y() - base.y) / (c.height || 1);
-  let any = false;
   for (const [n, s] of starts.entries()) {
     if (!s.mask || n.isDestroyed?.()) continue;
-    any = true;
-    n.setAttr('cropMask', on ? { ...s.mask, x: s.mask.x + dx, y: s.mask.y + dy } : { ...s.mask });
-  }
-  if (!any) return;
-  if (on && !_maskCarryTold && (dx || dy)) {
-    _maskCarryTold = true;
-    setStatus('🎭 The mask is moving with the picture.', 'success', 2500);
+    if (hold) { n.setAttr('cropMask', { ...s.mask }); continue; }   // Ctrl: stay put
+    const w1 = Math.abs(n.width() * (n.scaleX() || 1));
+    const h1 = Math.abs(n.height() * (n.scaleY() || 1));
+    const sx = s.w > 0 ? w1 / s.w : 1;
+    const sy = s.h > 0 ? h1 / s.h : 1;
+    // Evenly bigger or smaller → the window comes too. Squished → it does not.
+    const k = Math.abs(sx - sy) <= 0.02 * Math.max(sx, sy, 1) ? (sx + sy) / 2 : 1;
+    const drot = (n.rotation() || 0) - s.rot;
+    const rad = drot * Math.PI / 180, cs = Math.cos(rad), sn = Math.sin(rad);
+    // the mask relative to where the picture's own origin stood at the start,
+    // scaled, turned, and re-hung off where that origin stands now
+    const vx = (s.mask.x * c.width - s.x) * k;
+    const vy = (s.mask.y * c.height - s.y) * k;
+    n.setAttr('cropMask', {
+      ...s.mask,
+      x: (n.x() + vx * cs - vy * sn) / (c.width || 1),
+      y: (n.y() + vx * sn + vy * cs) / (c.height || 1),
+      w: s.mask.w * k,
+      h: s.mask.h * k,
+      rot: (s.mask.rot || 0) + drot,
+    });
   }
   _layer?.batchDraw();
+}
+
+// The gesture in flight that masks are following, and whether Ctrl is down.
+// Ctrl is tracked on the window rather than read off each event: a Konva
+// `transform` event carries no reliable DOM event, and pressing or releasing
+// the key while the pointer stands still must take effect at once.
+let _maskFollow = null;
+let _ctrlHeld = false;
+
+function _trackCtrl(e) {
+  const on = !!(e.ctrlKey || e.metaKey);
+  if (on === _ctrlHeld) return;
+  _ctrlHeld = on;
+  if (_maskFollow) _followMasks(_maskFollow, _ctrlHeld);
+  if (_rotDrag) { _rotDrag.ctrl = _ctrlHeld; _applyRotDrag(); }
+}
+
+/** Say it once per gesture, where the user is looking. */
+function _maskFollowNote(starts) {
+  if (!starts?.size) return;
+  setStatus('🎭 The mask follows — hold Ctrl to leave it where it is.', 'info', 3500);
 }
 
 // ── 🎭 Mask editor (V0.3.2.220) ────────────────────────────────────────────
@@ -1872,26 +1933,6 @@ function _rotateNodesBy(nodes, centre, deltaDeg, starts) {
   }
 }
 
-/** 🎭 Turn each captured mask by `deltaDeg` about `centreAbs`, from its start
- *  state — the mask twin of _rotateNodesBy. A mask lives in normalized
- *  canonical units, so the centre is brought into canonical space first. */
-function _rotateMasksBy(maskStarts, centreAbs, deltaDeg) {
-  if (!maskStarts?.size || !_layer) return;
-  const c = getCanonicalSize();
-  const cc = _layer.getAbsoluteTransform().copy().invert().point(centreAbs);
-  const rad = deltaDeg * Math.PI / 180, cs = Math.cos(rad), sn = Math.sin(rad);
-  for (const [n, m0] of maskStarts.entries()) {
-    if (!m0 || n.isDestroyed?.()) continue;
-    const vx = m0.x * c.width - cc.x, vy = m0.y * c.height - cc.y;
-    n.setAttr('cropMask', {
-      ...m0,
-      x: (cc.x + vx * cs - vy * sn) / (c.width || 1),
-      y: (cc.y + vx * sn + vy * cs) / (c.height || 1),
-      rot: (m0.rot || 0) + deltaDeg,
-    });
-  }
-}
-
 /** Nearest multiple of 45° — the levelling snap. Absolute orientation, not
  *  the delta: the point is to square up something a few degrees off. */
 const _snap45 = (deg) => Math.round(deg / 45) * 45;
@@ -1916,9 +1957,10 @@ function _applyRotDrag() {
     if (anchor) delta = _snap45(anchor.rot + delta) - anchor.rot;
   }
   _rotateNodesBy(nodes, centre, delta, starts);
-  // 🎭 Ctrl turns the mask with the picture, about the same centre. Re-derived
-  // from the captured masks every frame, so the key may go on and off mid-turn.
-  _rotateMasksBy(_rotDrag.maskStarts, centre, _rotDrag.ctrl ? delta : 0);
+  // 🎭 the masks turn with their pictures, unless Ctrl pins them down. Same
+  // one formula the drag and the resize use: read where things are NOW against
+  // where they began.
+  _followMasks(_maskFollow, _rotDrag.ctrl);
   _rotDrag.appliedDelta = delta;
   _transformer.forceUpdate();
   _layer.batchDraw();
@@ -1944,13 +1986,15 @@ function _onRotKnobDown(e) {
     startPointerDeg: _deg(Math.atan2(p.y - centre.y, p.x - centre.x)),
     pointerDeg: _deg(Math.atan2(p.y - centre.y, p.x - centre.x)),
     shift: !!e?.evt?.shiftKey,
-    // 🎭 the masks as they stand, so any frame can be re-derived from scratch
+    // Ctrl is its own modifier, layered over Shift: Shift still snaps the
+    // angle, Ctrl independently says whether the mask comes along.
     ctrl: !!(e?.evt?.ctrlKey || e?.evt?.metaKey),
-    maskStarts: new Map(nodes.map(n => [n, _privateMaskOf(n)]).filter(([, m]) => m)),
     moved: false,
     appliedDelta: 0,
   };
-  if (_rotDrag.maskStarts.size) setStatus('🎭 Hold Ctrl to turn the mask with the picture.', 'info', 4000);
+  _ctrlHeld = _rotDrag.ctrl;
+  // 🎭 the masks as they stand, so any frame is re-derived from scratch
+  if (!_maskFollow) { _maskFollow = _maskFollowSnap(nodes); _maskFollowNote(_maskFollow); }
   _fireTransformStart(nodes, e?.evt);
   // Arm typing IMMEDIATELY, on the press — not on a click-versus-drag verdict
   // after release. "Click and hold the tool and just type a number" is the
@@ -1978,6 +2022,7 @@ function _unbindRotKnob() {
 function _onRotKnobCancel() {
   const d = _rotDrag;
   _rotDrag = null;
+  if (_maskFollow) { _followMasks(_maskFollow, true); _maskFollow = null; }   // 🎭 back to where it started
   _unbindRotKnob();
   if (!d) return;
   _endAngleEntry(false, { keepRotation: true });     // disarm typing first
@@ -2016,13 +2061,15 @@ function _onRotKnobKey(ev) {
   const ctrl  = !!(ev.ctrlKey || ev.metaKey);
   if (shift === _rotDrag.shift && ctrl === _rotDrag.ctrl) return;
   _rotDrag.shift = shift;
-  _rotDrag.ctrl  = ctrl;      // 🎭 same rule as the drag: the mask comes along
+  _rotDrag.ctrl  = ctrl;      // 🎭 independent of Shift: it pins the mask down
+  _ctrlHeld = ctrl;
   _applyRotDrag();
 }
 
 function _onRotKnobUp() {
   const d = _rotDrag;
   _rotDrag = null;
+  _maskFollow = null;              // 🎭 the gesture is over
   _unbindRotKnob();
   if (!d) return;
   // Typed something while holding? Releasing the button ENDS the gesture and
@@ -5318,11 +5365,9 @@ function _attachNode(node) {
     }
     _snapBegin(node, _multiDragStarts);   // 🧲 ⇧ the drag session: the magnet measures the moving box and its targets once, here
     if (_snap) _snap.carry = _carry;
-    // 🎭 the offer, made where the user is looking, at the moment it applies
-    if ([..._multiDragStarts.values()].some(s => s.mask)) {
-      setStatus('🎭 Hold Ctrl to bring the mask along.', 'info', 4000);
-      _maskCarryTold = false;
-    }
+    // 🎭 the masks ride along from here until dragend
+    _maskFollow = _maskFollowSnap([..._multiDragStarts.keys()]);
+    _maskFollowNote(_maskFollow);
   });
   // The ONE writer of the carried items: start + the grabbed node's delta. The drag calls it on every move; the
   // drag session's key handler calls it too (Shift / Alt may change while the pointer stands still).
@@ -5348,13 +5393,15 @@ function _attachNode(node) {
     // 🧲 ⇧ FIRST the grabbed node is put where it belongs (axis lock, magnet) — THEN its delta goes to the carried items
     if (_multiDragStarts) _snapMove(node, e?.evt);
     _carry();
-    _carryMasks(node, _multiDragStarts, e?.evt);
+    if (e?.evt) _ctrlHeld = !!(e.evt.ctrlKey || e.evt.metaKey);
+    _followMasks(_maskFollow, _ctrlHeld);
   });
   node.on('dragend', () => {
     if (_pinDragBlocked === node) return;   // 📌 refused drag — nothing moved
     _snapEnd();                             // 🧲 guides off — the node already stands where the magnet put it
     const beforeMap = _multiDragStarts;
     _multiDragStarts = null;
+    _maskFollow = null;                     // 🎭 the gesture is over
     if (!beforeMap) return;
     // The captured start is the truth: carried items end at start + the grabbed node's delta.
     reapplyGroupDelta(beforeMap, node, 'overlay');
@@ -5410,6 +5457,11 @@ function _attachNode(node) {
 
   // Interface scale → re-place/re-size its bonded shapes from their % (live and
   // on release). When a BONDED SHAPE is itself resized/moved, re-capture its %.
+  // 🎭 every frame of a resize / rotate, from the captured start
+  node.on('transform', (e) => {
+    if (e?.evt) _ctrlHeld = !!(e.evt.ctrlKey || e.evt.metaKey);
+    _followMasks(_maskFollow, _ctrlHeld);
+  });
   node.on('transform', () => {
     if (node.getAttr('isInterface')) { syncBondedShapes(node); return; }
     if (node.getAttr('isZoom')) {
@@ -5450,6 +5502,8 @@ function _attachNode(node) {
     // ONE node only and say so (sbsOwner) — their list leaves 3D-anchored arrows out, so "last" there
     // need not be the transformer's last.
     if (e?.sbsOwner || !tracked.includes(node) || tracked[tracked.length - 1] === node) _xformSnapBefore = tracked.map(n => _snapNodeGeom(n));
+    // 🎭 the masks follow this gesture too — turning and growing, not squishing
+    if (!_maskFollow) { _maskFollow = _maskFollowSnap(tracked); _maskFollowNote(_maskFollow); }
     // Zoom: pin the source image in space for the whole gesture. The anchor is
     // the SCREEN position of image-pixel (0,0); holding it constant means any
     // handle reveals/hides image on its side instead of sliding it. Transient
@@ -5543,6 +5597,7 @@ function _attachNode(node) {
     if (_xformSnapBefore) {
       const before = _xformSnapBefore;
       _xformSnapBefore = null;
+      _maskFollow = null;                     // 🎭 the gesture is over
       const after = before.map(b => _snapNodeGeom(b.n));
       const changed = before.some((b, i) =>
         b.x !== after[i].x || b.y !== after[i].y ||
@@ -5550,6 +5605,9 @@ function _attachNode(node) {
         b.scaleX !== after[i].scaleX || b.scaleY !== after[i].scaleY ||
         b.rotation !== after[i].rotation ||
         b.skewX !== after[i].skewX || b.skewY !== after[i].skewY ||
+        String(b.cropMask?.x) !== String(after[i].cropMask?.x) ||
+        String(b.cropMask?.y) !== String(after[i].cropMask?.y) ||
+        String(b.cropMask?.rot) !== String(after[i].cropMask?.rot) ||
         String(b.points || '') !== String(after[i].points || ''),
       );
       if (changed) {
