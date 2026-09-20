@@ -32,6 +32,7 @@ import { tableOverlayHtml, defaultOverlayTable } from './table-html.js';
 import { openOverlayTableEditor, closeOverlayTableEditor, refreshOverlayTableEditor,
          TABLE_UNDO_SCOPE } from '../ui/overlay-table-editor.js';
 import { sanitizeCustomItem, tableInsertRow, tableDeleteRow, tableInsertCol, tableDeleteCol,
+         tableDeleteRows, tableDeleteCols,
          tableMerge, tableUnmerge, canMerge, mergeAt } from './document-core.js';
 import { mountTextToolbar, unmountTextToolbar, execCommandApplier, setToolbarValues, wasColorPickedRecently, setStyleDropdown, setStyleLocked, setConstDropdown, setTextEffects } from '../ui/text-toolbar.js';
 import { mountShapeToolbar, unmountShapeToolbar, setShapeStyleDropdown, setShapeStyleLocked } from '../ui/shape-toolbar.js';
@@ -3203,6 +3204,13 @@ function _tableMenuItems(node, at) {
     const data = _tableDataOf(node);
     if (!data) return [];
     const cell = at || { r: 0, c: 0 };
+    // What the editor had PICKED when the menu was asked for. A block of cells
+    // is what the user means by "merge these" or "delete these rows" — the
+    // single cell under the pointer is only the fallback.
+    const s = at?.sel;
+    const block = s && (s.r1 > s.r0 || s.c1 > s.c0) ? s : null;
+    const nRows = block ? block.r1 - block.r0 + 1 : 1;
+    const nCols = block ? block.c1 - block.c0 + 1 : 1;
     const go = (patch, label) => () => { if (patch) _setTableData(node, { ...data, ...patch }, label); };
     const items = [
       { label: '✎ Type in the table…', action: () => _enterTableEdit(node) },
@@ -3210,16 +3218,23 @@ function _tableMenuItems(node, at) {
       { label: `＋ Row above (row ${cell.r + 1})`, action: go(tableInsertRow(data, cell.r), 'Add row') },
       { label: '＋ Row below', action: go(tableInsertRow(data, cell.r + 1), 'Add row') },
       { label: '⧉ Duplicate row', action: go(tableInsertRow(data, cell.r + 1, cell.r), 'Duplicate row') },
-      { label: `🗑 Delete row ${cell.r + 1}`, action: go(tableDeleteRow(data, cell.r), 'Remove row'), disabled: data.rows <= 1 },
+      nRows > 1
+        ? { label: `🗑 Delete rows ${block.r0 + 1}–${block.r1 + 1}`, action: go(tableDeleteRows(data, block.r0, block.r1), 'Remove rows'), disabled: data.rows <= nRows }
+        : { label: `🗑 Delete row ${cell.r + 1}`, action: go(tableDeleteRow(data, cell.r), 'Remove row'), disabled: data.rows <= 1 },
       { separator: true },
       { label: `＋ Column before (column ${cell.c + 1})`, action: go(tableInsertCol(data, cell.c), 'Add column') },
       { label: '＋ Column after', action: go(tableInsertCol(data, cell.c + 1), 'Add column') },
       { label: '⧉ Duplicate column', action: go(tableInsertCol(data, cell.c + 1, cell.c), 'Duplicate column') },
-      { label: `🗑 Delete column ${cell.c + 1}`, action: go(tableDeleteCol(data, cell.c), 'Remove column'), disabled: data.cols <= 1 },
+      nCols > 1
+        ? { label: `🗑 Delete columns ${block.c0 + 1}–${block.c1 + 1}`, action: go(tableDeleteCols(data, block.c0, block.c1), 'Remove columns'), disabled: data.cols <= nCols }
+        : { label: `🗑 Delete column ${cell.c + 1}`, action: go(tableDeleteCol(data, cell.c), 'Remove column'), disabled: data.cols <= 1 },
     ];
     const m = mergeAt(data, cell.r, cell.c);
     if (m) items.push({ separator: true }, { label: '⬚ Unmerge', action: go(tableUnmerge(data, m.r, m.c, m.r + m.rs - 1, m.c + m.cs - 1), 'Unmerge cells') });
-    else if (canMerge(data, cell.r, cell.c, Math.min(cell.r + 1, data.rows - 1), Math.min(cell.c + 1, data.cols - 1))) {
+    else if (block && canMerge(data, block.r0, block.c0, block.r1, block.c1)) {
+      items.push({ separator: true }, { label: `⬓ Merge the picked ${nRows}×${nCols} cells`,
+        action: go(tableMerge(data, block.r0, block.c0, block.r1, block.c1), 'Merge cells') });
+    } else if (canMerge(data, cell.r, cell.c, Math.min(cell.r + 1, data.rows - 1), Math.min(cell.c + 1, data.cols - 1))) {
       items.push({ separator: true }, { label: '⬓ Merge with the cell to the right and below',
         action: go(tableMerge(data, cell.r, cell.c, Math.min(cell.r + 1, data.rows - 1), Math.min(cell.c + 1, data.cols - 1)), 'Merge cells') });
     }

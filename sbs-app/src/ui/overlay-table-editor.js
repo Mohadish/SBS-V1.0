@@ -269,8 +269,10 @@ function _apply(st, patch, label) {
 // ─────────────────────────── the bar ───────────────────────────
 
 function _bar(st) {
-  // Never rebuild the bar while the user is holding a swatch open or typing a
-  // size into it — the element under their finger would vanish mid-gesture.
+  // Never rebuild the bar mid-gesture — while a button is being pressed, or
+  // while a swatch is held open or a size is being typed: the element under
+  // the user's finger would vanish under it.
+  if (st.holdBar) return;
   const act = document.activeElement;
   if (act && st.bar.contains(act) && act.tagName === 'INPUT') return;
   const s = _sel(st);
@@ -438,7 +440,7 @@ export function openOverlayTableEditor(ctx) {
     host, bar, chrome, ctx, data,
     sel: { r0: 0, c0: 0, r1: 0, c1: 0 },
     editing: null, drag: false, grip: null, coldrag: null, rowdrag: null,
-    fmtTarget: null, geom: null,
+    fmtTarget: null, geom: null, holdBar: false,
   };
   _open = st;
 
@@ -478,14 +480,17 @@ export function openOverlayTableEditor(ctx) {
     if (!td || !st.ctx.onMenu) return;
     e.preventDefault(); e.stopPropagation();
     const [r, c] = String(td.dataset.cell).split(',').map(Number);
+    _commitOpenCell(st);                 // never lose what is being typed
     // Right-clicking INSIDE the picked block keeps the block — that is what
-    // "delete these rows" has to mean. Outside it, the right-click picks a cell.
+    // "merge these" and "delete these rows" have to mean. Outside it, the
+    // right-click picks a cell.
     const s = _sel(st);
     if (!(s && r >= s.r0 && r <= s.r1 && c >= s.c0 && c <= s.c1)) {
       st.sel = { r0: r, c0: c, r1: r, c1: c };
       _paintSel(st);
     }
-    st.ctx.onMenu({ r, c }, e.clientX, e.clientY);
+    // the menu is built from the BLOCK, not just the cell under the pointer
+    st.ctx.onMenu({ r, c, sel: _sel(st) }, e.clientX, e.clientY);
   });
 
   // ── the grips: pick a line, move a line, resize a line ──
@@ -715,8 +720,19 @@ export function openOverlayTableEditor(ctx) {
   // FOR are snapshotted on the way down, and the commit uses that.
   bar.addEventListener('pointerdown', (e) => {
     // capture, and NOT stopped here — the swatch and the size field still need
-    // this event to focus and to open
-    if (e.target?.closest?.('[data-t="fg"],[data-t="bg"],[data-t="size"]')) st.fmtTarget = _sel(st);
+    // this event to focus and to open.
+    //
+    // WHAT IS BEING TYPED IS SAVED FIRST. Reaching for the bar mid-word used
+    // to throw the word away: the change was written onto the table as the
+    // NODE still held it, which was the text from before the cell was opened,
+    // and the redraw then put that back. Commit the open cell here, and hold
+    // the bar together for this gesture so the button under the finger is not
+    // replaced by the rebuild.
+    if (!e.target?.closest?.('[data-t]')) return;
+    st.holdBar = true;
+    _commitOpenCell(st);
+    setTimeout(() => { st.holdBar = false; }, 0);
+    if (e.target.closest('[data-t="fg"],[data-t="bg"],[data-t="size"]')) st.fmtTarget = _sel(st);
   }, true);
   bar.addEventListener('pointerdown', (e) => e.stopPropagation());
   bar.addEventListener('click', (e) => {
