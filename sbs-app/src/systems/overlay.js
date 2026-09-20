@@ -29,6 +29,7 @@ import * as interfaces from './interfaces.js';   // interface overlay (used lazi
 // ▦ V0.3.4.45 — a table on the overlay: the same table the document editor
 // works with, drawn through the same HTML rasteriser the text boxes use.
 import { tableOverlayHtml, defaultOverlayTable } from './table-html.js';
+import { openOverlayTableEditor, closeOverlayTableEditor, isOverlayTableEditorOpen } from '../ui/overlay-table-editor.js';
 import { sanitizeCustomItem, tableInsertRow, tableDeleteRow, tableInsertCol, tableDeleteCol,
          tableMerge, tableUnmerge, canMerge, mergeAt } from './document-core.js';
 import { mountTextToolbar, unmountTextToolbar, execCommandApplier, setToolbarValues, wasColorPickedRecently, setStyleDropdown, setStyleLocked, setConstDropdown, setTextEffects } from '../ui/text-toolbar.js';
@@ -418,6 +419,7 @@ export function setEditingMode(on) {
   // canvas: permanently visible across ALL steps, editable, unselectable,
   // undeletable (it's not a Konva node). Commit (not discard) so no text is lost.
   if (_activeTextEditor) _exitTextEdit().catch(() => {});
+  if (_tableEditor) _exitTableEdit();  // ▦ same story: its HTML is not a Konva node
   if (_maskEdit) _cancelMaskEdit();   // 🎭 its handle lives on the UI layer; never leave it up
   if (_angleEntry) _endAngleEntry(false);   // ⌨ never leave the keyboard captured
   _cancelBand();                            // ⬚ a rubber-band in progress dies with the mode
@@ -3087,10 +3089,6 @@ async function _generateTocHtml(style = null, chaptersOverride = null) {
   return `<div style="font-family:${st.family};font-size:${st.size}px;color:${st.color};text-align:${st.align};line-height:1.35"><div style="font-size:${titlePx}px;font-weight:bold;margin-bottom:10px">Table of Contents</div>${rows}</div>`;
 }
 
-/** Insert an auto-generated Table of Contents on the current step. It's a normal
- *  editable text box (edit/rename/remove lines directly in the text editor) tagged
- *  isToc so right-click → "Refresh timecodes" regenerates it from the chapters.
- *  Per-step + multiple independent instances by nature (it's overlay content). */
 /** The table's data, always well formed (the document's own sanitiser). */
 function _tableDataOf(node) {
   const raw = node?.getAttr?.('tableData');
@@ -3107,6 +3105,90 @@ function _tableDataOf(node) {
   };
 }
 
+/**
+ * ▦ WHICH CELL IS UNDER THE POINTER.
+ *
+ * The table on the canvas is a picture, so nothing can be asked where it was
+ * clicked — the answer has to be worked out. The columns are stored as
+ * fractions of the width, which is exactly how they are drawn; the rows are
+ * taken as equal shares of the height, which is close enough to point the
+ * right-click menu at the row the user meant. Returns null if the pointer is
+ * not on the table at all.
+ */
+function _tableCellAtPointer(node, data, clientX, clientY) {
+  try {
+    if (!node || !data?.rows || !data?.cols) return null;
+    const stage = node.getStage?.();
+    const box = stage?.container?.()?.getBoundingClientRect?.();
+    if (!box?.width || !box?.height) return null;
+    // the canvas is drawn inside the safe frame, scaled — undo that first
+    const sf = computeSafeFrameRect({ width: box.width, height: box.height });
+    const scale = sf?.scale > 0 ? sf.scale : 1;
+    const stagePt = { x: (clientX - box.left) / scale, y: (clientY - box.top) / scale };
+    const local = node.getAbsoluteTransform().copy().invert().point(stagePt);
+    const w = node.width() || 1, h = node.height() || 1;
+    if (local.x < 0 || local.y < 0 || local.x > w || local.y > h) return null;
+    const widths = Array.from({ length: data.cols }, (_, i) => Math.max(0.02, Number(data.widths?.[i]) || 1 / data.cols));
+    const sum = widths.reduce((a, b) => a + b, 0) || 1;
+    let c = data.cols - 1, run = 0;
+    for (let i = 0; i < data.cols; i++) {
+      run += (widths[i] / sum) * w;
+      if (local.x <= run) { c = i; break; }
+    }
+    const r = Math.max(0, Math.min(data.rows - 1, Math.floor((local.y / h) * data.rows)));
+    return { r, c };
+  } catch (err) { console.warn('[overlay] table hit test:', err); return null; }
+}
+
+/**
+ * ▦ The table commands, on one cell. Shared by the right-click on the canvas
+ * and by the right-click inside the editor, so both offer the same thing. It
+ * can never take the whole menu down with it: anything unexpected is logged
+ * and the table simply contributes nothing.
+ */
+function _tableMenuItems(node, at) {
+  try {
+    const data = _tableDataOf(node);
+    if (!data) return [];
+    const cell = at || { r: 0, c: 0 };
+    const go = (patch, label) => () => { if (patch) _setTableData(node, { ...data, ...patch }, label); };
+    const items = [
+      { label: '✎ Type in the table…', action: () => _enterTableEdit(node) },
+      { separator: true },
+      { label: `＋ Row above (row ${cell.r + 1})`, action: go(tableInsertRow(data, cell.r), 'Add row') },
+      { label: '＋ Row below', action: go(tableInsertRow(data, cell.r + 1), 'Add row') },
+      { label: '⧉ Duplicate row', action: go(tableInsertRow(data, cell.r + 1, cell.r), 'Duplicate row') },
+      { label: `🗑 Delete row ${cell.r + 1}`, action: go(tableDeleteRow(data, cell.r), 'Remove row'), disabled: data.rows <= 1 },
+      { separator: true },
+      { label: `＋ Column before (column ${cell.c + 1})`, action: go(tableInsertCol(data, cell.c), 'Add column') },
+      { label: '＋ Column after', action: go(tableInsertCol(data, cell.c + 1), 'Add column') },
+      { label: '⧉ Duplicate column', action: go(tableInsertCol(data, cell.c + 1, cell.c), 'Duplicate column') },
+      { label: `🗑 Delete column ${cell.c + 1}`, action: go(tableDeleteCol(data, cell.c), 'Remove column'), disabled: data.cols <= 1 },
+    ];
+    const m = mergeAt(data, cell.r, cell.c);
+    if (m) items.push({ separator: true }, { label: '⬚ Unmerge', action: go(tableUnmerge(data, m.r, m.c, m.r + m.rs - 1, m.c + m.cs - 1), 'Unmerge cells') });
+    else if (canMerge(data, cell.r, cell.c, Math.min(cell.r + 1, data.rows - 1), Math.min(cell.c + 1, data.cols - 1))) {
+      items.push({ separator: true }, { label: '⬓ Merge with the cell to the right and below',
+        action: go(tableMerge(data, cell.r, cell.c, Math.min(cell.r + 1, data.rows - 1), Math.min(cell.c + 1, data.cols - 1)), 'Merge cells') });
+    }
+    // a height you dragged is a height you can give back
+    if (Number(node.getAttr('tableHeight')) > 0) {
+      items.push({ separator: true }, {
+        label: '↕ Let the height follow the rows',
+        action: () => { node.setAttr('tableHeight', 0); _reflowTable(node); _scheduleSave(); },
+      });
+    }
+    items.push({ separator: true });
+    return items;
+  } catch (err) { console.warn('[overlay] table menu:', err); return []; }
+}
+
+/** The table menu, opened at a point on the screen — the editor calls this. */
+function _showTableMenuAt(node, cell, cx, cy) {
+  const items = _tableMenuItems(node, cell);
+  if (items.length) showContextMenu(items, cx, cy);
+}
+
 /** Is this node a table? */
 export function isTableNode(node) { return !!node?.getAttr?.('isTable'); }
 
@@ -3115,11 +3197,16 @@ async function _reflowTable(node) {
   const data = _tableDataOf(node);
   if (!data) return false;
   const width = Math.max(60, Math.round(Number(node.getAttr('tableWidth')) || node.width() || 620));
-  const canvas = await _htmlToCanvas(tableOverlayHtml(data, { width }), {
+  const height = Math.max(0, Math.round(Number(node.getAttr('tableHeight')) || 0));
+  const canvas = await _htmlToCanvas(tableOverlayHtml(data, { width, height }), {
+    ...(height ? { height } : {}),
     width, padding: 0, bgColor: 'transparent', color: data.color || '#111111',
     fontSize: Math.max(6, Number(data.size) || 15), fontFamily: 'Arial',
   });
   if (!canvas?.width || !canvas?.height) { console.warn('[overlay] table: 0-sized canvas'); return false; }
+  // Rasterising is asynchronous: a step change can destroy the node while we
+  // are drawing it, and writing to a dead node throws.
+  if (node.isDestroyed?.()) return false;
   node.image(canvas);
   node.width(canvas.width);
   node.height(canvas.height);
@@ -3144,134 +3231,63 @@ async function _setTableData(node, next, label) {
     () => { write(after); });
 }
 
-let _tableEditor = null;      // { node, host, data }
+let _tableEditor = null;      // the node being edited
 
 /**
- * ▦ EDIT A TABLE IN PLACE. The picture on the canvas is a raster of an HTML
- * table; while editing, the real HTML table is mounted over it — same markup,
- * same width, scaled to the viewport the way the text editor does it — so what
- * is typed sits exactly where it will be drawn, and Tab, arrow keys, selection
- * and pasting all come from the browser for free.
+ * ▦ EDIT A TABLE IN PLACE. The picture on the canvas is a raster of HTML;
+ * while editing, the real HTML is mounted over it at the same place and size
+ * (ui/overlay-table-editor.js owns all of that). Every change comes back here
+ * as data, which is redrawn and pushed as one undo entry.
  */
 function _enterTableEdit(node) {
-  if (_tableEditor) _exitTableEdit();
   const data = _tableDataOf(node);
   if (!data) return;
-  const stage = node.getLayer()?.getStage();
-  const containerEl = stage?.container() || _container;
-  const rect = containerEl.getBoundingClientRect();
-  const pos = node.getAbsolutePosition();
-  const sf = computeSafeFrameRect({ width: rect.width, height: rect.height });
-  const scale = sf.scale > 0 ? sf.scale : 1;
-  const width = Math.max(60, Math.round(Number(node.getAttr('tableWidth')) || node.width()));
-
-  const host = document.createElement('div');
-  host.dataset.sbsTableEditor = '1';
-  host.style.cssText = [
-    'position:fixed',
-    `left:${Math.round(rect.left + pos.x)}px`,
-    `top:${Math.round(rect.top + pos.y)}px`,
-    `width:${width}px`,
-    'z-index:60',
-    'outline:2px dashed #f59e0b',
-    `transform:scale(${scale})`,
-    'transform-origin:0 0',
-    'font-family:Arial',
-  ].join(';');
-  host.innerHTML = tableOverlayHtml(data, { width });
-  const table = host.querySelector('table');
-  for (const td of host.querySelectorAll('td')) {
-    td.setAttribute('contenteditable', 'plaintext-only');
-    td.spellcheck = true;
-  }
-  document.body.appendChild(host);
-  _tableEditor = { node, host, data };
+  const before = JSON.parse(JSON.stringify(node.getAttr('tableData') || {}));
+  // The picture steps aside for the real thing. visible(false) and not
+  // opacity(0) on purpose: opacity is saved with the node, visibility is not,
+  // so an autosave in the middle of typing can never leave the table hidden.
   node.visible(false);
+  _setSelection(null);            // no resize handles floating over nothing
   node.getLayer()?.batchDraw();
-
-  // Tab walks the cells, Esc gives up, Enter ends the line
-  host.addEventListener('keydown', (e) => {
-    if (e.key === 'Escape') { e.preventDefault(); _exitTableEdit(true); return; }
-    if (e.key === 'Tab') {
-      e.preventDefault();
-      const cells = [...host.querySelectorAll('td')];
-      const i = cells.indexOf(document.activeElement);
-      const next = cells[i + (e.shiftKey ? -1 : 1)];
-      if (next) { next.focus(); document.getSelection()?.selectAllChildren(next); }
-      return;
-    }
-    e.stopPropagation();          // the app's own shortcuts stay out of the cells
+  _tableEditor = node;
+  openOverlayTableEditor({
+    data,
+    rect: () => {
+      const stage = node.getLayer()?.getStage();
+      const box = stage?.container()?.getBoundingClientRect() || { left: 0, top: 0, width: 0, height: 0 };
+      const sf = computeSafeFrameRect({ width: box.width, height: box.height });
+      const scale = sf.scale > 0 ? sf.scale : 1;
+      const pos = node.getAbsolutePosition();
+      return {
+        left: box.left + pos.x * scale, top: box.top + pos.y * scale,
+        width: Math.max(60, Math.round(Number(node.getAttr('tableWidth')) || node.width())),
+        height: Math.max(0, Math.round(Number(node.getAttr('tableHeight')) || 0)),
+        scale,
+      };
+    },
+    // right-click inside the editor = the same table menu as on the canvas,
+    // already pointed at the cell under the pointer
+    onMenu: (cell, cx, cy) => _showTableMenuAt(node, cell, cx, cy),
+    onCommit: (next) => {
+      node.setAttr('tableData', JSON.parse(JSON.stringify(next)));
+      _reflowTable(node);
+      _scheduleSave();
+    },
+    onClose: (next) => {
+      _tableEditor = null;
+      node.visible(true);
+      if (!node.isDestroyed?.()) _setSelection(node);   // the handles come back
+      node.getLayer()?.batchDraw();
+      const after = JSON.parse(JSON.stringify(next || node.getAttr('tableData') || {}));
+      if (JSON.stringify(before) === JSON.stringify(after)) return;
+      const write = (data2) => { node.setAttr('tableData', JSON.parse(JSON.stringify(data2))); _reflowTable(node); _scheduleSave(); };
+      write(after);
+      undoManager.push('Edit table', () => write(before), () => write(after));
+    },
   });
-  host.addEventListener('pointerdown', (e) => e.stopPropagation());
-  const firstCell = host.querySelector('td');
-  if (firstCell) { firstCell.focus(); document.getSelection()?.selectAllChildren(firstCell); }
-  void table;
-  setStatus('▦ Typing in the table — Tab moves on, click away when you are done.', 'info', 6000);
-
-  // clicking anywhere else finishes
-  setTimeout(() => {
-    const away = (e) => {
-      if (host.contains(e.target)) return;
-      document.removeEventListener('pointerdown', away, true);
-      _exitTableEdit();
-    };
-    document.addEventListener('pointerdown', away, true);
-    _tableEditor.away = away;
-  }, 0);
 }
 
-/** Read the cells back out of the editor and redraw. */
-function _exitTableEdit(abandon = false) {
-  const ed = _tableEditor; _tableEditor = null;
-  if (!ed) return;
-  if (ed.away) document.removeEventListener('pointerdown', ed.away, true);
-  const { node, host, data } = ed;
-  let changed = false;
-  if (!abandon) {
-    const next = JSON.parse(JSON.stringify(data));
-    const tds = [...host.querySelectorAll('td[data-cell], td')];
-    // walk the table the way it was built: row by row, skipping covered cells
-    let i = 0;
-    const covered = new Set();
-    for (const m of next.merges || []) {
-      for (let y = m.r; y < m.r + m.rs; y++) for (let x = m.c; x < m.c + m.cs; x++) if (y !== m.r || x !== m.c) covered.add(`${y},${x}`);
-    }
-    for (let r = 0; r < next.rows; r++) {
-      for (let c = 0; c < next.cols; c++) {
-        if (covered.has(`${r},${c}`)) continue;
-        const td = tds[i++];
-        if (!td) continue;
-        const text = String(td.innerText ?? '').replace(/\u00a0/g, ' ').replace(/\n+$/, '');
-        if (text !== (next.cells[r][c] ?? '')) { next.cells[r][c] = text; changed = true; }
-      }
-    }
-    if (changed) _setTableData(node, next, 'Edit table');
-  }
-  host.remove();
-  node.visible(true);
-  node.getLayer()?.batchDraw();
-}
-
-/** Which cell of a table a screen point falls in (its own proportions, no DOM). */
-function _tableCellAtPointer(node, data, clientX, clientY) {
-  try {
-    const stage = node.getLayer()?.getStage();
-    const rect = stage?.container()?.getBoundingClientRect();
-    if (!rect) return null;
-    const sf = computeSafeFrameRect({ width: rect.width, height: rect.height });
-    const scale = sf.scale > 0 ? sf.scale : 1;
-    const pos = node.getAbsolutePosition();
-    const lx = ((clientX - rect.left) / scale - pos.x) / Math.max(1, node.width());
-    const ly = ((clientY - rect.top) / scale - pos.y) / Math.max(1, node.height());
-    if (lx < 0 || lx > 1 || ly < 0 || ly > 1) return null;
-    const w = Array.from({ length: data.cols }, (_, i) => Math.max(0.02, Number(data.widths?.[i]) || 1 / data.cols));
-    const sum = w.reduce((a, b) => a + b, 0) || 1;
-    let acc = 0, c = data.cols - 1;
-    for (let i = 0; i < data.cols; i++) { acc += w[i] / sum; if (lx <= acc) { c = i; break; } }
-    const r = Math.min(data.rows - 1, Math.max(0, Math.floor(ly * data.rows)));
-    return { r, c };
-  } catch { return null; }
-}
+function _exitTableEdit(abandon = false) { closeOverlayTableEditor(abandon); }
 
 /** ▦ A new table on the overlay. */
 export async function addTableBox() {
@@ -3298,6 +3314,10 @@ export async function addTableBox() {
   return node;
 }
 
+/** Insert an auto-generated Table of Contents on the current step. It's a normal
+ *  editable text box (edit/rename/remove lines directly in the text editor) tagged
+ *  isToc so right-click → "Refresh timecodes" regenerates it from the chapters.
+ *  Per-step + multiple independent instances by nature (it's overlay content). */
 export async function addTocBox() {
   if (!_stage) return null;
   const html = await _generateTocHtml();
@@ -4978,10 +4998,17 @@ function _attachNode(node) {
       div.style.width     = `${Math.max(20, Math.round(node.width()))}px`;
       div.style.minHeight = '0px';
     } else if (node.getClassName() === 'Image' && node.getAttr('isTable')) {
-      // ▦ a table is a picture of HTML: the new width is the width to draw it
-      // at, so the text re-wraps instead of being stretched
-      node.setAttr('tableWidth', Math.max(60, Math.round(node.width())));
+      // ▦ a table is a picture of HTML: the box you dragged is the size to DRAW
+      // it at. A HEIGHT only sticks when you actually dragged one — otherwise
+      // the table stays as tall as its rows need, and a width-only drag must
+      // not freeze the height it happened to have.
+      const w = Math.max(60, Math.round(node.width() * (node.scaleX() || 1)));
+      const h = Math.max(24, Math.round(node.height() * (node.scaleY() || 1)));
+      const had = Math.round(Number(node.getAttr('naturalH')) || 0);
+      node.setAttr('tableWidth', w);
+      if (had && Math.abs(h - had) > 2) node.setAttr('tableHeight', h);
       node.scaleX(1); node.scaleY(1);
+      node.width(w); node.height(h);
       _reflowTable(node);
     } else if (node.getClassName() === 'Image' && node.getAttr('textHtml')) {
       // Selection-only state: not currently expected (we removed text-box
@@ -6116,33 +6143,9 @@ function _showOverlayContextMenu(node, x, y) {
          action: () => { _resetNaturalCentred(node); } }, { separator: true }]
     : [];
   // ▦ a table's own commands, on the cell that was right-clicked
-  const tableItems = node.getAttr('isTable') ? (() => {
-    const data = _tableDataOf(node);
-    if (!data) return [];
-    const cell = _tableCellAtPointer(node, data, x, y) || { r: 0, c: 0 };
-    const go = (patch, label) => () => { if (patch) _setTableData(node, { ...data, ...patch }, label); };
-    const items = [
-      { label: '✎ Type in the table…', action: () => _enterTableEdit(node) },
-      { separator: true },
-      { label: `＋ Row above (row ${cell.r + 1})`, action: go(tableInsertRow(data, cell.r), 'Add row') },
-      { label: '＋ Row below', action: go(tableInsertRow(data, cell.r + 1), 'Add row') },
-      { label: '⧉ Duplicate row', action: go(tableInsertRow(data, cell.r + 1, cell.r), 'Duplicate row') },
-      { label: `🗑 Delete row ${cell.r + 1}`, action: go(tableDeleteRow(data, cell.r), 'Remove row'), disabled: data.rows <= 1 },
-      { separator: true },
-      { label: `＋ Column before (column ${cell.c + 1})`, action: go(tableInsertCol(data, cell.c), 'Add column') },
-      { label: '＋ Column after', action: go(tableInsertCol(data, cell.c + 1), 'Add column') },
-      { label: '⧉ Duplicate column', action: go(tableInsertCol(data, cell.c + 1, cell.c), 'Duplicate column') },
-      { label: `🗑 Delete column ${cell.c + 1}`, action: go(tableDeleteCol(data, cell.c), 'Remove column'), disabled: data.cols <= 1 },
-    ];
-    const m = mergeAt(data, cell.r, cell.c);
-    if (m) items.push({ separator: true }, { label: '⬚ Unmerge', action: go(tableUnmerge(data, m.r, m.c, m.r + m.rs - 1, m.c + m.cs - 1), 'Unmerge cells') });
-    else if (canMerge(data, cell.r, cell.c, Math.min(cell.r + 1, data.rows - 1), Math.min(cell.c + 1, data.cols - 1))) {
-      items.push({ separator: true }, { label: '⬓ Merge with the cell to the right and below',
-        action: go(tableMerge(data, cell.r, cell.c, Math.min(cell.r + 1, data.rows - 1), Math.min(cell.c + 1, data.cols - 1)), 'Merge cells') });
-    }
-    items.push({ separator: true });
-    return items;
-  })() : [];
+  const tableItems = node.getAttr('isTable')
+    ? _tableMenuItems(node, _tableCellAtPointer(node, _tableDataOf(node), x, y))
+    : [];
   const tocItems = node.getAttr('isToc')
     ? [{ label: '🔄 Refresh timecodes', action: () => _refreshTocBox(node) }, { separator: true }]
     : [];
@@ -7792,6 +7795,19 @@ function _configTransformerForNodes(nodes) {
   // them back. Endpoints move via right-click → reposition instead.
   nodes = (nodes || []).filter(n => !isAnchoredNode(n));
   if (!_transformer || !nodes?.length) return;
+  // A table takes every handle. The sides and the corners are how you give it
+  // a width and a height, and it is DRAWN again at that size — the text
+  // re-wraps, the rows share the height — instead of the picture stretching.
+  if (nodes.length && nodes.every(n => n.getAttr?.('isTable'))) {
+    _transformer.keepRatio(false);
+    _transformer.rotateEnabled(true);
+    _transformer.enabledAnchors([
+      'top-left', 'top-center', 'top-right',
+      'middle-left', 'middle-right',
+      'bottom-left', 'bottom-center', 'bottom-right',
+    ]);
+    return;
+  }
   const allTextBoxes = nodes.every(n => n.getClassName?.() === 'Image' && n.getAttr('textHtml'));
   if (allTextBoxes) {
     // Text boxes: WIDTH ONLY. Height is computed from content — taller
@@ -8372,6 +8388,9 @@ async function _loadFromActiveStep() {
   // click-outside commit — destroyChildren below would then orphan the live
   // contenteditable DOM above the canvas forever. Commit + tear it down first.
   if (_activeTextEditor) { try { await _exitTextEdit(); } catch { /* teardown is best-effort */ } }
+  // ▦ a table's editor is the same kind of orphan: its HTML would outlive the
+  // node it belongs to and hang over the next step.
+  if (_tableEditor) { try { _exitTableEdit(); } catch { /* teardown is best-effort */ } }
 
   // Clear current content + selection.
   // 🎬 Release video elements FIRST (V0.3.2.75) — destroyChildren would drop

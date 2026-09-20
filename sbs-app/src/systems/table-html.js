@@ -59,6 +59,7 @@ function _cellStyle(t, r, c, pad) {
  * @param {object} opts   { width }  the box width in canvas pixels
  */
 export function tableOverlayHtml(t, opts = {}) {
+  const fixedH = Number(opts.height) > 0 ? Math.round(Number(opts.height)) : 0;
   if (!t?.rows || !t?.cols) return '<div></div>';
   const size = Math.max(6, Number(t.size) || 15);
   const pad = Math.max(2, Math.round(size * 0.35));
@@ -81,7 +82,7 @@ export function tableOverlayHtml(t, opts = {}) {
       if (covered.has(`${r},${c}`)) return '';
       const m = starts.get(`${r},${c}`);
       const span = m ? ` colspan="${m.cs}" rowspan="${m.rs}"` : '';
-      return `<td${span} style="${_cellStyle(t, r, c, pad)}">${_esc(cell) || '&#160;'}</td>`;
+      return `<td data-cell="${r},${c}"${span} style="${_cellStyle(t, r, c, pad)}">${_esc(cell) || '&#160;'}</td>`;
     }).join('');
     const h = Number(t.rowH?.[r]) > 0 ? `height:${Math.round(Number(t.rowH[r]))}px;` : '';
     return `<tr style="${h}">${tds}</tr>`;
@@ -95,6 +96,9 @@ export function tableOverlayHtml(t, opts = {}) {
     'line-height:1.3',
     `color:${t.color || '#111111'}`,
     t.bg ? `background:${t.bg}` : '',
+    // a height the user dragged: the rows share it, the way an HTML table fills
+    // a box it is given
+    fixedH ? `height:${fixedH}px` : '',
   ].filter(Boolean).join(';');
 
   return `<table style="${frame}">${cg}<tbody>${body}</tbody></table>`;
