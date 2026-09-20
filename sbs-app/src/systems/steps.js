@@ -33,7 +33,7 @@ import * as videoOverlay            from './video-overlay.js';   // 🎬 V0.3.2.
 import { ensureFlatShapeObject3D }   from './flat-shapes.js'; // M1: 2D shapes in 3D — build mesh on demand
 import { ensurePrimitiveObject3D }   from './primitives.js';  // V0.2.22.90: parametric primitives — build mesh on demand
 import { ensureHardwareInstanceObject3D, ensureHardwareNutObject3D } from './hardware-templates.js'; // V0.2.22.38: procedural hardware — build mesh on demand
-import { createStep, createEmptySnapshot, CAMERA_STATE_FIELDS } from '../core/schema.js';
+import { createStep, createEmptySnapshot, pickCameraView, pickCameraOrbit } from '../core/schema.js';
 import { parseAnimation, resolveAnimationString } from './animation.js';
 import {
   stageInsertActors, runInsertReposition, runInsertPause, runInsertAssemble,
@@ -2793,13 +2793,13 @@ class StepManager {
       const views = state.get('cameraViews') || [];
       const tpl   = views.find(v => v.id === binding.templateId);
       if (tpl) {
-        // Every camera field the template holds, not a hand-listed five
-        // (V0.3.4.22): the old literal silently dropped `orbitPivot` and
-        // `orbitPullout`, so a template-bound step lost its orbit centre on
-        // every activation — and would have dropped any field added later.
-        const out = {};
-        for (const k of CAMERA_STATE_FIELDS) if (tpl[k] !== undefined) out[k] = tpl[k];
-        return out;
+        // The template supplies THE VIEW; the orbit centre and the pull-out
+        // stay with the STEP (V0.3.4.26). .22 passed the template's animation
+        // fields through as well, and a template that happened to carry a
+        // pull-out made every bound step zoom out and back in on arrival —
+        // even between two steps framed identically. A template is a framing
+        // you reuse, not a movement you inherit.
+        return { ...pickCameraView(tpl), ...pickCameraOrbit(step.snapshot?.camera) };
       }
       // Template was deleted out from under this step. Fall back to the
       // step's last-snapshotted camera so the view doesn't blank.

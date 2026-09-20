@@ -27,7 +27,7 @@ export const SCHEMA_VERSIONS = {
   screen:     1,
 };
 
-export const APP_VERSION  = 'V0.3.4.25';
+export const APP_VERSION  = 'V0.3.4.26';
 // Format: YYYY-MM-DD. Bump along with APP_VERSION on every build worth
 // labelling so the File tab shows you're running the expected slice.
 export const APP_RELEASED = '2026-09-20';
@@ -763,13 +763,32 @@ export const CAMERA_STATE_FIELDS = [
   'position', 'quaternion', 'pivot', 'up', 'fov', 'orbitPivot', 'orbitPullout',
 ];
 
-/** Copy just the camera fields out of any object that carries them. */
-export function pickCameraState(src) {
+/**
+ * …split in two, because they are two different things (V0.3.4.26):
+ *   • THE VIEW — where the camera stands, where it points, and its lens. This
+ *     is what a camera TEMPLATE is: a framing you can reuse on many steps.
+ *   • THE MOVE — the orbit centre the camera swings around on the way in, and
+ *     the pull-out hump it rides while it does. These describe an ANIMATION
+ *     INTO one step and belong to that step alone. Sharing them through a
+ *     template made every bound step breathe out and back in on arrival, even
+ *     when its framing was identical to the step before it.
+ */
+export const CAMERA_VIEW_FIELDS  = ['position', 'quaternion', 'pivot', 'up', 'fov'];
+export const CAMERA_ORBIT_FIELDS = ['orbitPivot', 'orbitPullout'];
+
+function _pick(src, keys) {
   const out = {};
   if (!src) return out;
-  for (const k of CAMERA_STATE_FIELDS) if (src[k] !== undefined) out[k] = src[k];
+  for (const k of keys) if (src[k] !== undefined) out[k] = src[k];
   return out;
 }
+
+/** Copy just the camera fields out of any object that carries them. */
+export function pickCameraState(src) { return _pick(src, CAMERA_STATE_FIELDS); }
+/** Where it stands and what lens it wears — no animation fields. */
+export function pickCameraView(src)  { return _pick(src, CAMERA_VIEW_FIELDS); }
+/** How the move INTO this step behaves — orbit centre and pull-out only. */
+export function pickCameraOrbit(src) { return _pick(src, CAMERA_ORBIT_FIELDS); }
 
 export function createCameraState(overrides = {}) {
   return {

@@ -27,7 +27,7 @@ import { initTree, renderTree, expandPathToNode, collapseAll, toggleFilter, getF
 import { setStatus }       from './status.js';
 import {
   createCameraView, generateId, APP_VERSION, APP_RELEASED,
-  createAnimationPreset, DEFAULT_ANIMATION_PRESET_STRING, pickCameraState,
+  createAnimationPreset, DEFAULT_ANIMATION_PRESET_STRING, pickCameraView,
 } from '../core/schema.js';
 import { buildNodeMap, findParent }    from '../core/nodes.js';
 import { applyNodeSourceTransformToObject3D, applyAllVisibility } from '../core/transforms.js';
@@ -3327,9 +3327,10 @@ function _renderCamerasTab() {
 
     item.querySelector('[data-goto]').addEventListener('click', e => {
       e.stopPropagation();
-      // Every camera field the template holds (V0.3.4.22) — the old literal
-      // dropped its orbit centre and pull-out on the way to the viewport.
-      sceneCore.animateCameraTo(pickCameraState(view), 800, 'smooth');
+      // The template's VIEW (V0.3.4.26). Go To is "show me this framing", so
+      // it flies straight there — no inherited orbit centre to swing around
+      // and no pull-out hump on the way.
+      sceneCore.animateCameraTo({ ...pickCameraView(view), orbitPivot: null }, 800, 'smooth');
     });
 
     item.querySelector('[data-update]').addEventListener('click', e => {

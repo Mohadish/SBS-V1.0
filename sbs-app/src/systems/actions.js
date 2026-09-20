@@ -26,7 +26,7 @@ import {
   reapplyActiveStep, captureLiveWorld, compareLiveWorld,
 } from './folder-flatten.js';   // 📦 V0.3.2.244: remove redundant folders (backlog #16 phase 2a)
 import sceneCore                from '../core/scene.js';
-import { createAnimationPreset, createCameraView, createNode, createNoteNode, createNoteTemplate, createShapeTemplate, createShapeTemplateGroup, createFlatShapeNode, createPrimitiveNode, generateId, CAMERA_STATE_FIELDS, pickCameraState } from '../core/schema.js';
+import { createAnimationPreset, createCameraView, createNode, createNoteNode, createNoteTemplate, createShapeTemplate, createShapeTemplateGroup, createFlatShapeNode, createPrimitiveNode, generateId, CAMERA_STATE_FIELDS, pickCameraView, pickCameraOrbit } from '../core/schema.js';
 import * as editSession         from './edit-session.js';   // P7-A: gate Ctrl-Z while in overlay edit
 import * as cables              from './cables.js';          // C3: cable mutators (data layer)
 import {
@@ -8033,9 +8033,10 @@ export function deleteCameraTemplate(templateId, replacement = null) {
     ? replacement
     : null;
 
-  // All of the template's camera fields — the old five-field literal dropped
-  // the orbit centre and the pull-out when a template was deleted (V0.3.4.22).
-  const tplCamSnapshot = pickCameraState(tpl);
+  // The template's VIEW only (V0.3.4.26). Each step keeps its own orbit centre
+  // and pull-out below — those describe the move into that step, not the
+  // framing the template held.
+  const tplCamSnapshot = pickCameraView(tpl);
 
   const nextViews = views.filter(v => v.id !== templateId);
   const nextSteps = allSteps.map(s => {
@@ -8049,7 +8050,10 @@ export function deleteCameraTemplate(templateId, replacement = null) {
     return {
       ...s,
       cameraBinding: { mode: 'free', templateId: null },
-      snapshot: { ...(s.snapshot || {}), camera: { ...tplCamSnapshot } },
+      snapshot: {
+        ...(s.snapshot || {}),
+        camera: { ...tplCamSnapshot, ...pickCameraOrbit(s.snapshot?.camera) },
+      },
     };
   });
 

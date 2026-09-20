@@ -996,6 +996,47 @@ window.sbsUnfollow = () => clearFollow(state.get('selectedId'));
 // call window.sbsDiag.unstuckInputs. A full `= {}` reassignment would wipe those.
 window.sbsDiag = window.sbsDiag || {};
 
+// 🎥 V0.3.4.26 — "why did the camera do THAT between these two steps?"
+// One row per step, in plain words: the lens, the camera's own binding, and —
+// the usual culprit — whether the move INTO that step orbits a pinned centre
+// and rides a pull-out hump, which reads as the camera zooming out and back in
+// even when the two framings are identical. Read-only.
+//
+//   window.sbsDiag.cameras()        // every step
+//   window.sbsDiag.cameras(5, 8)    // steps 5 to 8 (1-based, as numbered in the panel)
+window.sbsDiag.cameras = (from = 1, to = 0) => {
+  const list = state.get('steps') || [];
+  const views = state.get('cameraViews') || [];
+  const a = Math.max(1, from | 0), b = to ? Math.min(list.length, to | 0) : list.length;
+  const rows = [];
+  for (let i = a - 1; i < b; i++) {
+    const s = list[i];
+    const own = s?.snapshot?.camera || null;
+    const bind = s?.cameraBinding?.mode === 'template' ? s.cameraBinding.templateId : null;
+    const tpl = bind ? views.find(v => v.id === bind) : null;
+    const fov = (tpl?.fov ?? own?.fov);
+    const pull = Number(own?.orbitPullout) || 0;
+    rows.push({
+      '#': i + 1,
+      step: s?.name || '',
+      camera: tpl ? `template "${tpl.name}"` : (own ? 'free (its own)' : 'none saved'),
+      lens: fov == null ? '—' : (fov <= 0.5001 ? 'Orthographic' : `${Number(fov).toFixed(1)}°`),
+      'orbit centre': Array.isArray(own?.orbitPivot) ? 'pinned' : '—',
+      'pull-out on arrival': pull ? `+${Math.round(pull * 100)}%  ← zooms out and back in` : '—',
+    });
+  }
+  console.table(rows);
+  const humps = rows.filter(r => r['pull-out on arrival'] !== '—').map(r => r['#']);
+  if (humps.length) {
+    console.log(`Steps ${humps.join(', ')} pull the camera back mid-move and return. To stop it: right-click in the`
+      + ` viewport on that step ▸ 🎯 Pull-out during the move ▸ None.`);
+  } else {
+    console.log('No step pulls the camera back on arrival. A zoom that is not from a pull-out is a real move:'
+      + ' compare the "lens" column — two steps with different lenses are two different framings.');
+  }
+  return rows;
+};
+
 // V0.3.2.160 — manual cascade rebuild. Re-derives the live scene's world
 // transforms from the stored tree and REPORTS what moved. Read-only with
 // respect to project data: it rewrites no tree, no step and no snapshot, so
