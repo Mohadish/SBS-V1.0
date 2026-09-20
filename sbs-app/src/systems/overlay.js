@@ -2582,7 +2582,10 @@ export function promoteCropMaskToGlobal(node, name) {
   const def = {
     id: `cmk_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 6)}`,
     name: String(name || `Mask ${_cropMaskDefs().length + 1}`).trim(),
-    kind: 'rect', x: m.x, y: m.y, w: m.w, h: m.h,
+    // rot travels with the rest of the geometry. Leaving it out silently
+    // levelled a turned mask the moment it was shared — the shape the user
+    // cut is the shape that is published.
+    kind: 'rect', x: m.x, y: m.y, w: m.w, h: m.h, rot: m.rot || 0,
   };
   const before = { m: { ...m }, id: null };
   const apply = () => {
@@ -2620,7 +2623,7 @@ export function promoteCropMaskToGlobal(node, name) {
 export function forkCropMaskToCustom(node) {
   const def = _cropMaskDefById(node?.getAttr?.('cropMaskId'));
   if (!def) { console.warn('[mask] this node is not using a global mask'); return false; }
-  return setCropMask(node, { x: def.x, y: def.y, w: def.w, h: def.h }, `Fork "${def.name}" into a private mask`);
+  return setCropMask(node, { x: def.x, y: def.y, w: def.w, h: def.h, rot: def.rot || 0 }, `Fork "${def.name}" into a private mask`);
 }
 
 /** Re-draw every node on the CURRENT step bound to `id` (other steps pick
@@ -2637,7 +2640,8 @@ function _redrawCropMaskUsers(id) {
 export function updateCropMaskDef(defId, patch, label = null) {
   const def = _cropMaskDefById(defId);
   if (!def) return false;
-  const before = { x: def.x, y: def.y, w: def.w, h: def.h, name: def.name };
+  // rot belongs in the SNAPSHOT too, or undoing any edit levels the mask.
+  const before = { x: def.x, y: def.y, w: def.w, h: def.h, rot: def.rot || 0, name: def.name };
   const after  = { ...before, ...patch };
   const write  = (vals) => {
     const live = _cropMaskDefById(defId);
