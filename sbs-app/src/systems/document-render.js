@@ -40,6 +40,10 @@ body { font-family: Arial, Helvetica, sans-serif; color: #111; -webkit-print-col
 .toc .tl .tt { flex: 0 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .toc .tl .td { flex: 1 1 8mm; border-bottom: 0.3mm dotted #888; transform: translateY(-1mm); }
 .toc .tl .tp { flex: 0 0 auto; font-variant-numeric: tabular-nums; font-weight: 700; }
+.toc .tl.ts { font-size: 9.5pt; margin: 0 0 2.1mm; padding-inline-start: 9mm; color: #333; }
+.toc .tl.ts .tn { flex: 0 0 11mm; font-weight: 600; }
+.toc .tl.ts .tp { font-weight: 400; }
+.toc .tl.ts .td { border-bottom-color: #bbb; }
 .it { display: flex; gap: 3mm; margin: 0 0 3.2mm; font-size: 11pt; line-height: 1.38; break-inside: avoid; }
 .it .no { flex: 0 0 auto; min-width: 9mm; height: 6.2mm; padding: 0 1.6mm; border-radius: 3.1mm; background: #111; color: #fff; font-weight: 700; font-size: 9.5pt; display: flex; align-items: center; justify-content: center; }
 .it .tx { flex: 1; white-space: pre-wrap; word-break: break-word; }
@@ -155,7 +159,10 @@ export function renderTocPageHtml(tp, o = {}) {
   const t = tp.template, pd = o.dir === 'rtl' ? 'rtl' : 'ltr';
   const wm = watermarkHtml(o.watermark), under = !!wm && o.watermark.layer === 'under';
   const C = { x: 12, y: 32, w: 186, h: 238.5 };
-  const lines = tp.lines.map(l => `<a class="tl" href="#pg-${l.page}"><span class="tn">${_esc(l.no)}</span><span class="tt" dir="auto">${_esc(l.name)}</span><span class="td"></span><span class="tp">${_esc(l.page)}</span></a>`).join('');
+  // a step line is the same row, one step in and a shade lighter (V0.3.4.33)
+  const lines = tp.lines.map(l => `<a class="tl${l.kind === 'step' ? ' ts' : ''}" href="#pg-${l.page}">`
+    + `<span class="tn">${_esc(l.no)}</span><span class="tt" dir="auto">${_esc(l.name)}</span>`
+    + `<span class="td"></span><span class="tp">${_esc(l.page)}</span></a>`).join('');
   return `<section class="page" id="pg-${tp.number}" dir="${pd}" data-page="${tp.number}" data-id="${_esc(tp.id)}">`
     + (under ? wm : '')
     + bandHtml('header', tp, o)

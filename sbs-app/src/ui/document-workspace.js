@@ -368,6 +368,7 @@ function _renderLeft(c) {
       <select class="dw-in" data-opt="numbering">${[['step', 'The same numbers as the animation'], ['page', '1, 2, 3 on every page'], ['none', 'No numbers']].map(([v, l]) => `<option value="${v}"${(c.doc.options?.numbering || 'step') === v ? ' selected' : ''}>${l}</option>`).join('')}</select></label>
     <label style="display:flex;gap:8px;align-items:center;margin:0 0 7px;font-size:11.5px;color:#cbd5e1;"><input type="checkbox" data-opt="pictureNumbers"${c.doc.options?.pictureNumbers !== false ? ' checked' : ''}> Step number on each picture (pages with several steps)</label>
     <label style="display:flex;gap:8px;align-items:center;margin:0 0 7px;font-size:11.5px;color:#cbd5e1;" title="A contents page opens the document: every chapter with the page it starts on. It counts as page 1."><input type="checkbox" data-opt="toc"${c.doc.options?.toc !== false ? ' checked' : ''}> Table of contents (chapters → pages)</label>
+    <label style="display:flex;gap:8px;align-items:center;margin:0 0 7px 22px;font-size:11.5px;color:${c.doc.options?.toc !== false ? '#cbd5e1' : '#64748b'};" title="Under each chapter, every step of that chapter with the page it is on."><input type="checkbox" data-opt="tocSteps"${c.doc.options?.tocSteps !== false ? ' checked' : ''}${c.doc.options?.toc !== false ? '' : ' disabled'}> …and the steps under each chapter</label>
     <label class="dw-lab">Reading direction
       <select class="dw-in" data-opt="direction">${(() => { const r = directionOf(c.doc, c.steps, c.chapters); const cur = c.doc.options?.direction || 'auto'; return [['auto', `Automatic — now ${r.detected === 'rtl' ? 'right-to-left (Hebrew / Arabic text)' : 'left-to-right'}`], ['ltr', 'Left-to-right'], ['rtl', 'Right-to-left']].map(([v, l]) => `<option value="${v}"${cur === v ? ' selected' : ''}>${l}</option>`).join(''); })()}</select></label>
     <div class="dw-lab">Header and footer${c.doc.bands ? ' — your own design' : ' — standard'}
@@ -400,7 +401,7 @@ function _renderLeft(c) {
   } else docBox.innerHTML = docHtml;
   _renderWatermarkBox(wmBox, watermarkOf(c.doc));
   pageBox.innerHTML = _bandEdit ? _bandLeftHtml() : custom ? _customLeftHtml(c, custom) : onToc
-    ? `<div class="dw-h">Contents — page 1${c.model.toc?.pages.length > 1 ? `–${c.model.toc.pages.length}` : ''} of ${c.model.total}</div><div style="font-size:11.5px;color:#94a3b8;line-height:1.5;">Built from the chapters: every chapter that prints, with the page it starts on. The numbers follow by themselves when you join, split or leave out steps. In the PDF every line is a link.<br><br>It counts as page 1, so the first step page is page ${(c.model.toc?.pages.length || 0) + 1}. Switch it off with <b>Table of contents</b> above.</div>`
+    ? `<div class="dw-h">Contents — page 1${c.model.toc?.pages.length > 1 ? `–${c.model.toc.pages.length}` : ''} of ${c.model.total}</div><div style="font-size:11.5px;color:#94a3b8;line-height:1.5;">Built from the chapters — and, unless you switch it off, every step under its chapter, with the page it is on. The numbers follow by themselves when you join, split or leave out steps. In the PDF every line is a link.<br><br>It counts as page 1, so the first step page is page ${(c.model.toc?.pages.length || 0) + 1}. Switch it off with <b>Table of contents</b> above.</div>`
     : pageHtml;
   left.scrollTop = keep;
 }
@@ -566,7 +567,7 @@ function _renderList(c) {
       if (!c.model.toc) return;                                       // switched off (or no chapters): it prints nothing, so it is not listed
       const t = c.model.toc;
       html += `<div class="dw-pagebox movable${_pageId === TOC ? ' cur' : ''}" data-pagebox="${TOC}" data-seq="${si}" data-extra="${TOC}">
-        <div class="dw-pagehead dw-pgrow" data-goto-page="${TOC}"><span class="dw-grip" data-grip="${TOC}" title="Drag to move the contents — or right-click">⠿</span>${thumb(TOC)}<div style="min-width:0;flex:1;"><div><b style="color:#e2e8f0;">Page ${t.number}${t.pages.length > 1 ? `–${t.number + t.pages.length - 1}` : ''}</b></div><div style="font-size:12px;font-weight:600;color:#e2e8f0;">📑 ${_esc(t.title)}</div><div style="font-size:11px;color:#94a3b8;">Contents — ${t.pages.reduce((n, p) => n + p.lines.length, 0)} chapters</div></div></div></div>`;
+        <div class="dw-pagehead dw-pgrow" data-goto-page="${TOC}"><span class="dw-grip" data-grip="${TOC}" title="Drag to move the contents — or right-click">⠿</span>${thumb(TOC)}<div style="min-width:0;flex:1;"><div><b style="color:#e2e8f0;">Page ${t.number}${t.pages.length > 1 ? `–${t.number + t.pages.length - 1}` : ''}</b></div><div style="font-size:12px;font-weight:600;color:#e2e8f0;">📑 ${_esc(t.title)}</div><div style="font-size:11px;color:#94a3b8;">Contents — ${(() => { const L = t.pages.flatMap(p => p.lines); const ch = L.filter(l => l.kind !== 'step').length, st = L.length - ch; return `${ch} chapter${ch === 1 ? '' : 's'}${st ? ` · ${st} step${st === 1 ? '' : 's'}` : ''}`; })()}</div></div></div></div>`;
       return;
     }
     if (e.kind === 'custom') {
@@ -1726,6 +1727,7 @@ function _onChange(e) {
   if (t.dataset?.opt === 'numbering') return D.setOptions({ numbering: t.value });
   if (t.dataset?.opt === 'direction') return D.setOptions({ direction: t.value });
   if (t.dataset?.opt === 'toc') return D.setOptions({ toc: t.checked });
+  if (t.dataset?.opt === 'tocSteps') return D.setOptions({ tocSteps: t.checked });
   if (t.dataset?.opt === 'pictureNumbers') return D.setOptions({ pictureNumbers: t.checked });
   if (t.dataset?.pageOpt === 'template') return D.setPageTemplate(_pageId, t.value || null);
   if (t.id === 'dw-asset-file') { const file = t.files?.[0]; t.value = ''; if (file) _importAsset(file, _assetSlot); return; }

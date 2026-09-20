@@ -554,6 +554,24 @@ export const ASSET_URL_RX = /^data:image\/[a-z0-9.+-]+;base64,[A-Za-z0-9+\/=]+$/
 
 export const TOC_ID = '@toc';
 export const TOC_LINES = 26;                       // chapter lines per contents page: 26 × 8.1 mm + the title fit the 238 mm content area with room to spare
+// V0.3.4.33 — with STEP lines under each chapter the flat count no longer holds:
+// the two kinds are different heights, and page two of the contents has no title
+// to make room for. Pages are filled by HEIGHT instead, in millimetres.
+const TOC_LINE_MM = { chapter: 8.1, step: 6.6 };
+const TOC_TITLE_MM = 18;                           // the <h1>, on the first contents page only
+
+/** Fill contents pages by height. Pure: lines in, buckets out. */
+export function tocPages(lines, areaMm = CONTENT_MM.h) {
+  const out = [];
+  let cur = [], left = areaMm - TOC_TITLE_MM;
+  for (const l of lines || []) {
+    const h = TOC_LINE_MM[l.kind] || TOC_LINE_MM.chapter;
+    if (cur.length && h > left) { out.push(cur); cur = []; left = areaMm; }
+    cur.push(l); left -= h;
+  }
+  if (cur.length || !out.length) out.push(cur);
+  return out;
+}
 const TOC_TITLE = { en: 'Contents', he: 'תוכן עניינים', ar: 'المحتويات' };
 
 /** doc.extras, well-formed. The contents has a place even in a document saved before it could be moved: the front. */
@@ -712,8 +730,37 @@ export function buildRenderModel(doc, steps, chapters, ctx) {
   // (lines = chapters), so there is no chicken-and-egg: it takes ceil(lines / TOC_LINES) pages where it stands.
   const chapterStarts = [];
   { let prev = null; for (const e of seq) if (e.kind === 'page') { const ch = chapterOfPage(e.page); if (ch && ch.id !== prev) chapterStarts.push({ ch, pageId: e.page.id }); prev = ch ? ch.id : prev; } }
+  // 📖 V0.3.4.33 — the contents can also list every STEP, indented under its
+  // chapter: number, name, and the page its text sits on. Still one pass, no
+  // chicken-and-egg: which lines exist depends on the SEQUENCE, never on a page
+  // number, so the numbering below can stay single-pass.
+  const withSteps = doc?.options?.tocSteps !== false;
+  const tocLines = [];
+  {
+    let prevCh = null;
+    for (const e of seq) {
+      if (e.kind !== 'page') continue;
+      const ch = chapterOfPage(e.page);
+      if (ch && ch.id !== prevCh) tocLines.push({ kind: 'chapter', no: (chapters || []).indexOf(ch) + 1, name: ch.name, pageId: e.page.id });
+      if (ch) prevCh = ch.id;
+      if (!withSteps) continue;
+      // one line per UNIT on this page (a silent sub-step is part of its unit,
+      // and a merged page gives its units the same page number — both correct)
+      for (const uid of e.page.stepIds || []) {
+        if (!shown(uid)) continue;
+        const st = stepById.get(uid);
+        tocLines.push({
+          kind: 'step',
+          no: doc?.options?.numbering === 'none' ? '' : (nums.get(uid)?.label || ''),
+          name: st?.name || '',
+          pageId: e.page.id,
+        });
+      }
+    }
+  }
   const tocOn = doc?.options?.toc !== false && chapterStarts.length > 0;
-  const tocPageCount = tocOn ? Math.ceil(chapterStarts.length / TOC_LINES) : 0;
+  const tocBuckets = tocOn ? tocPages(tocLines) : [];
+  const tocPageCount = tocOn ? tocBuckets.length : 0;
   const printed = seq.filter(e => e.kind !== 'toc' || tocOn);
   let n = 0;
   const numberOf = new Map();
@@ -808,7 +855,7 @@ export function buildRenderModel(doc, steps, chapters, ctx) {
         pages: Array.from({ length: tocPageCount }, (_, i) => ({
           id: `${TOC_ID}${i ? i + 1 : ''}`, number: first + i, total, template: templateById(doc, doc?.templateId), ...bands(varsFor(first + i, null)),
           first: i === 0,
-          lines: chapterStarts.slice(i * TOC_LINES, (i + 1) * TOC_LINES).map(l => ({ no: (chapters || []).indexOf(l.ch) + 1, name: l.ch.name, page: numberOf.get(l.pageId) })),
+          lines: (tocBuckets[i] || []).map(l => ({ kind: l.kind, no: l.no, name: l.name, page: numberOf.get(l.pageId) })),
         })),
       };
       sequence.push({ kind: 'toc', id: TOC_ID, number: first, model: toc });
