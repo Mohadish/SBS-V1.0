@@ -23,7 +23,7 @@
 import { tableOverlayHtml } from '../systems/table-html.js';
 import {
   tableInsertRow, tableDeleteRows, tableInsertCol, tableDeleteCols,
-  tableMerge, tableUnmerge, canMerge, mergeAt, tableSetFmt, tablePaste,
+  tableMerge, tableUnmerge, canMerge, mergeAt, tableSetFmt, tablePaste, tablePasteRich,
   tableMoveRow, tableMoveCol, tableRowMovable, tableColMovable,
 } from '../systems/document-core.js';
 import { undoManager } from '../systems/undo.js';
@@ -39,6 +39,10 @@ const MIN_COL = 0.05;     // a column may not be squeezed below this fraction
 const MIN_ROW_PX = 12;    // …nor a row below a line's worth of pixels
 
 let _open = null;
+
+/** Cells copied inside the app — the look travels with the text, which the
+ *  system clipboard's plain tab-separated text cannot carry. */
+let _clip = null;
 
 export function isOverlayTableEditorOpen() { return !!_open; }
 
@@ -65,6 +69,7 @@ export function closeOverlayTableEditor(abandon = false) {
   window.removeEventListener('keydown', st.keys, true);
   window.removeEventListener('pointermove', st.move, true);
   window.removeEventListener('pointerup', st.up, true);
+  document.removeEventListener('paste', st.paste, true);
   if (!abandon) { _open = st; _commitOpenCell(st); _open = null; }
   st.host.remove();
   st.bar.remove();
@@ -89,8 +94,23 @@ function _place(st) {
   st.chrome.style.left = st.host.style.left;
   st.chrome.style.top = st.host.style.top;
   st.chrome.style.transform = tf;
-  st.bar.style.left = `${Math.round(r.left)}px`;
-  st.bar.style.top = `${Math.max(6, Math.round(r.top - st.bar.offsetHeight - 10))}px`;
+  _placeBar(st);
+}
+
+/**
+ * The bar clears the TABLE and the column grips above it — it used to sit on
+ * top of both, hiding the first row and the very grips you drag. It is
+ * measured after it is filled (its height changes with what is on it), and
+ * when there is no room above the table it goes underneath instead.
+ */
+function _placeBar(st) {
+  const H = st.host.getBoundingClientRect();
+  const barH = st.bar.offsetHeight || 58;
+  const GRIP = 30;                                   // the column grips live above the table
+  let top = H.top - GRIP - barH - 8;
+  if (top < 6) top = (H.bottom || H.top) + 16;       // no room above: under the table
+  st.bar.style.left = `${Math.round(Math.max(6, H.left))}px`;
+  st.bar.style.top = `${Math.round(top)}px`;
 }
 
 /** The picked rectangle, normalised. */
@@ -286,6 +306,46 @@ function _bar(st) {
     + b('grid', 'Grid', 'Lines around every cell', st.data.grid !== false)
     + b('done', '✓ Done', 'Finish editing (Esc)')
     + `</div>`;
+  _placeBar(st);     // its height just changed
+}
+
+/**
+ * Copy the picked cells. Chromium fires no `copy` event without a DOM
+ * selection, so this is driven from the key instead, through a throwaway
+ * textarea — and the look of the cells is kept alongside, in the app's own
+ * clipboard, because tab-separated text cannot carry it.
+ */
+function _copyCells(st, cut) {
+  const s = _sel(st);
+  if (!s) return;
+  const rows = s.r1 - s.r0 + 1, cols = s.c1 - s.c0 + 1;
+  const grid = [], fmt = {};
+  for (let y = 0; y < rows; y++) {
+    const row = [];
+    for (let x = 0; x < cols; x++) {
+      const rr = s.r0 + y, cc = s.c0 + x;
+      row.push(st.data.cells?.[rr]?.[cc] ?? '');
+      const f = st.data.fmt?.[`${rr},${cc}`];
+      if (f) fmt[`${y},${x}`] = f;
+    }
+    grid.push(row);
+  }
+  const tsv = grid.map(r => r.join('\t')).join('\n');
+  _clip = { rows, cols, tsv, fmt };
+  const ta = document.createElement('textarea');
+  ta.value = tsv;
+  ta.style.cssText = 'position:fixed;left:-9999px;top:0;opacity:0;';
+  document.body.appendChild(ta);
+  ta.select();
+  try { document.execCommand('copy'); } catch { /* the in-app clipboard still holds it */ }
+  ta.remove();
+  st.host.focus({ preventScroll: true });
+  if (cut) {
+    const cells = st.data.cells.map((row, y) => row.map((v, x) =>
+      (y >= s.r0 && y <= s.r1 && x >= s.c0 && x <= s.c1 ? '' : v)));
+    _apply(st, { cells }, 'Cut cells');
+  }
+  setStatus(`${rows}×${cols} cells ${cut ? 'cut' : 'copied'}.`, 'success', 3000);
 }
 
 function _act(st, a) {
@@ -387,10 +447,15 @@ export function openOverlayTableEditor(ctx) {
 
   // ── picking cells ──
   host.addEventListener('pointerdown', (e) => {
+    // A RIGHT-click fires pointerdown first. Collapsing the pick here is what
+    // made "right-click three cells and delete both rows" impossible: by the
+    // time the menu opened, only the cell under the pointer was picked.
+    if (e.button !== 0) return;
     const td = e.target.closest?.('td[data-cell]');
     if (!td) return;
     if (st.editing === td) return;                       // typing: let the caret work
     e.preventDefault(); e.stopPropagation();
+    st.host.focus({ preventScroll: true });              // keep the keys and the clipboard here
     _commitOpenCell(st);
     const [r, c] = String(td.dataset.cell).split(',').map(Number);
     st.sel = e.shiftKey && st.sel ? { ...st.sel, r1: r, c1: c } : { r0: r, c0: c, r1: r, c1: c };
@@ -425,6 +490,7 @@ export function openOverlayTableEditor(ctx) {
 
   // ── the grips: pick a line, move a line, resize a line ──
   chrome.addEventListener('pointerdown', (e) => {
+    if (e.button !== 0) return;
     const el = e.target.closest?.('i[data-colg],i[data-rowg],i[data-colh],i[data-rowh]');
     if (!el) return;
     e.preventDefault(); e.stopPropagation();
@@ -566,7 +632,18 @@ export function openOverlayTableEditor(ctx) {
       if (redo) undoManager.redo(); else undoManager.undo();
       return;                                   // the owner calls refreshOverlayTableEditor()
     }
+    if (mod && (e.code === 'KeyC' || e.code === 'KeyX') && !st.editing) {
+      e.preventDefault(); e.stopPropagation();
+      _copyCells(st, e.code === 'KeyX');
+      return;
+    }
     if (!(st.host.contains(e.target) || st.bar.contains(e.target) || st.chrome.contains(e.target))) return;
+    // Typing in the bar's own fields (the size) is ordinary typing: Enter,
+    // the arrows and Delete belong to that field, not to the table. Without
+    // this, Enter jumped into a cell and Delete emptied the picked cells while
+    // the user was setting a font size.
+    const tag = e.target?.tagName;
+    if (st.bar.contains(e.target) && (tag === 'INPUT' || tag === 'TEXTAREA')) return;
     e.stopPropagation();                        // the app's shortcuts stay out of the table
     if (e.key === 'Escape') { e.preventDefault(); closeOverlayTableEditor(); return; }
     const s = _sel(st);
@@ -606,26 +683,42 @@ export function openOverlayTableEditor(ctx) {
   };
   window.addEventListener('keydown', st.keys, true);
 
-  // ── paste: a block out of a spreadsheet fills the cells and grows the table ──
-  host.addEventListener('paste', (e) => {
-    const text = e.clipboardData?.getData('text/plain') ?? '';
+  // ── paste. On the DOCUMENT, in capture: the panel is not always what holds
+  //    the focus (a bar button does after you click one), and a paste that
+  //    lands anywhere else was simply lost. ──
+  st.paste = (e) => {
+    if (!_open) return;
     const s = _sel(st);
-    if (!s || !/[\t\n]/.test(text)) return;               // one value: let the caret take it
+    if (!s) return;
+    const text = e.clipboardData?.getData('text/plain') ?? '';
+    if (!text) return;
+    // A single value while a cell is open belongs to the caret; anything with
+    // a tab or a newline is a block of cells, whatever is focused.
+    if (st.editing && !/[\t\n]/.test(text)) return;
     e.preventDefault(); e.stopPropagation();
     _commitOpenCell(st);
-    if (_apply(st, tablePaste(st.data, s.r0, s.c0, text), 'Paste into the table')) {
+    const at = _sel(st) || s;
+    // Cells copied inside the app carry their look; the system clipboard only
+    // carries the text, so it is the app's copy when the text still matches.
+    const rich = _clip && _clip.tsv === text ? _clip : null;
+    const patch = rich ? tablePasteRich(st.data, at.r0, at.c0, rich)
+                       : tablePaste(st.data, at.r0, at.c0, text);
+    if (_apply(st, patch, 'Paste into the table')) {
       setStatus('Pasted into the table.', 'success', 3000);
     }
-  });
+  };
+  document.addEventListener('paste', st.paste, true);
 
   // ── the bar ──
   // A colour picker reports `change` only when it CLOSES — by then the user has
   // usually clicked a cell, moving the pick. So the cells a swatch was opened
   // FOR are snapshotted on the way down, and the commit uses that.
   bar.addEventListener('pointerdown', (e) => {
-    e.stopPropagation();
+    // capture, and NOT stopped here — the swatch and the size field still need
+    // this event to focus and to open
     if (e.target?.closest?.('[data-t="fg"],[data-t="bg"],[data-t="size"]')) st.fmtTarget = _sel(st);
   }, true);
+  bar.addEventListener('pointerdown', (e) => e.stopPropagation());
   bar.addEventListener('click', (e) => {
     const btn = e.target.closest?.('[data-t]');
     if (!btn || btn.tagName === 'INPUT') return;
