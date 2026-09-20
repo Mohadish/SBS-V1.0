@@ -21,7 +21,7 @@ import { builtinTemplates, docTextFor, pageRangeLabel, unitsOf, stillsNeeded, pi
          zoomAfterWheel, zoomAfterButton, zoomPercent, zoomFromPercent, clampUiZoom, adjustFromFit,
          mergeMap, mergeAt, canMerge, tableInsertRow, tableDeleteRow, tableInsertCol, tableDeleteCol,
          tableMoveRow, tableMoveCol, tableRowMovable, tableColMovable, tableMerge, tableUnmerge,
-         tableSetFmt, tablePaste, tableDeleteRows, tableDeleteCols } from '../systems/document-core.js';
+         tableSetFmt, tablePaste, tablePasteRich, tableDeleteRows, tableDeleteCols } from '../systems/document-core.js';
 import { DOCUMENT_CSS, renderPageHtml, renderTocPageHtml, renderCustomPageHtml, slotInnerHtml } from '../systems/document-render.js';
 import { watermarkOf, watermarkHtml, watermarkCss, watermarkVisible, detectWatermarkMode, bakeWatermarkPixels, fitWithin } from '../systems/watermark-core.js';
 import * as D from '../systems/document.js';
@@ -264,6 +264,7 @@ function _build() {
   // between rows — fills the table from the cell being typed in, growing it if
   // the block does not fit. A plain word still just types.
   document.addEventListener('paste', _onTablePaste, true);
+  document.addEventListener('copy', _onTableCopy, true);
   _shadow.addEventListener('focusout', _onCustomFocusOut);
   _shadow.addEventListener('pointermove', _onSlotPointerMove);
   _shadow.addEventListener('pointerup', _onSlotPointerUp);
@@ -1173,6 +1174,9 @@ let _customSel = null, _cdrag = null, _coldrag = null, _customModel = null;
 let _tsel = null, _rowdrag = null, _gripdrag = null, _tdrag = false;
 // the cells a colour / size swatch was opened FOR, and the id of the table
 let _fmtTarget = null;
+// what was last copied out of a table IN THIS APP — the text goes to the real
+// clipboard, this keeps the look and the pictures that text cannot carry
+let _tableClip = null;
 let _bandEdit = null;                     // 'header' | 'footer' while the header / footer editor is open
 let _stillsFailed = new Set();            // pictures that were asked for and did not come back: never walk for them in a loop
 const C_AREA = { x: 12, y: 32, w: 186, h: 238.5 };
@@ -1343,6 +1347,39 @@ function _drawTableSel() {
 
 /** The table item being edited, straight from the document. */
 /**
+ * 📋 Copy the picked cells. The clipboard gets tab-separated text, so the
+ * block can go into a spreadsheet — and the app keeps what that text cannot
+ * carry: each cell's look and its picture, matched back by the very same text
+ * when it is pasted here again.
+ */
+function _onTableCopy(e) {
+  if (!_isOpen() || _tplEd) return;
+  const tb = _tableNow(); if (!tb) return;
+  const s = _tsel?.id === _customSel ? _tselRect() : null;
+  if (!s || s.none) return;
+  // a cell being typed in, with text selected, keeps its own copy
+  const open = _shadow.activeElement?.dataset?.cell !== undefined && _shadow.activeElement.isContentEditable;
+  if (open && !((_shadow.getSelection ? _shadow.getSelection() : window.getSelection())?.isCollapsed ?? true)) return;
+  const rows = s.r1 - s.r0 + 1, cols = s.c1 - s.c0 + 1;
+  const cells = [], fmt = {}, imgs = {};
+  for (let y = 0; y < rows; y++) {
+    const row = [];
+    for (let x = 0; x < cols; x++) {
+      const rr = s.r0 + y, cc = s.c0 + x;
+      row.push(tb.cells[rr]?.[cc] ?? '');
+      const f = tb.fmt?.[`${rr},${cc}`]; if (f) fmt[`${y},${x}`] = f;
+      const id = tb.imgs?.[`${rr},${cc}`]; if (id) imgs[`${y},${x}`] = id;
+    }
+    cells.push(row);
+  }
+  const tsv = cells.map(r2 => r2.join('\t')).join('\n');
+  _tableClip = { rows, cols, tsv, fmt, imgs };
+  e.clipboardData?.setData('text/plain', tsv);
+  e.preventDefault(); e.stopPropagation();
+  setStatus(`${rows}×${cols} cells copied${Object.keys(imgs).length ? ', pictures and all' : ''}.`, 'info', 3000);
+}
+
+/**
  * 📋 Paste into a table. A block copied out of a spreadsheet — tabs between
  * cells, line breaks between rows — fills the table from the cell you are on
  * and grows it to fit; a plain word lands in that one cell.
@@ -1388,8 +1425,10 @@ function _onTablePaste(e) {
   if (!text) return;
   e.preventDefault(); e.stopPropagation();
   if (open) open.dataset.orig = open.innerText;              // the focus-out must not fight the paste
+  // our own copy? then the look and the pictures come with it
+  const rich = _tableClip && _tableClip.tsv === text ? _tableClip : null;
   const pch = looksLikeGrid
-    ? tablePaste(tb, at[0], at[1], text)
+    ? (rich ? tablePasteRich(tb, at[0], at[1], rich) : tablePaste(tb, at[0], at[1], text))
     : { cells: tb.cells.map((row, y) => row.map((v, x) => (y === at[0] && x === at[1] ? text.slice(0, 600) : v))) };
   if (pch) { _tsel = null; _patchItem(pch, 'Paste into the table'); setStatus('Pasted into the table.', 'success', 3000); }
 }
@@ -1518,7 +1557,7 @@ function _placeCustomBar() {
             const tb = _tableNow();
             const canM = tb && !s.none && canMerge(tb, s.r0, s.c0, s.r1, s.c1);
             const canU = tb && !s.none && !!mergeAt(tb, s.r0, s.c0);
-            return `<span style="padding:0 2px;">${it.rows}×${it.cols} · ${_esc(where)}</span>`
+            return `<span style="padding:0 2px;color:#7dd3fc;">${it.rows}×${it.cols} · picked: ${_esc(where)}</span>`
               + b('ci-row-above', '＋ Row ▲', 'A row above the picked one')
               + b('ci-row-below', '＋ Row ▼', 'A row below the picked one')
               + b('ci-row-dup', '⧉ Row', 'Copy the picked row, text and all')
@@ -1536,7 +1575,7 @@ function _placeCustomBar() {
               + b('ci-cell-start', '⫷', 'Align the picked cells to the start')
               + b('ci-cell-center', '⫿', 'Centre the picked cells')
               + b('ci-cell-end', '⫸', 'Align the picked cells to the end')
-              + `<label style="display:flex;gap:3px;align-items:center;">pt <input class="dw-in" data-ci="cellsize" type="number" min="5" max="40" step="0.5" value="${tb?.fmt?.[`${s.r0},${s.c0}`]?.s ?? it.size}" title="Text size in the picked cells" style="width:52px;"></label>`
+              + `<label style="display:flex;gap:3px;align-items:center;color:#7dd3fc;">cell pt <input class="dw-in" data-ci="cellsize" type="number" min="5" max="40" step="0.5" value="${tb?.fmt?.[`${s.r0},${s.c0}`]?.s ?? it.size}" title="Text size in the picked cells" style="width:52px;"></label>`
               + `<input data-ci="cellfg" type="color" value="${_esc(tb?.fmt?.[`${s.r0},${s.c0}`]?.c || it.color)}" title="Text colour in the picked cells" style="width:30px;height:24px;padding:0;border:1px solid #334155;border-radius:5px;background:none;">`
               + `<input data-ci="cellbg" type="color" value="${_esc(tb?.fmt?.[`${s.r0},${s.c0}`]?.bg || '#ffffff')}" title="Shade the picked cells" style="width:30px;height:24px;padding:0;border:1px solid #334155;border-radius:5px;background:none;">`
               + b('ci-cell-clear', '⌫ Look', 'Clear the look of the picked cells (colour, shade, size, bold…)')
@@ -1545,7 +1584,7 @@ function _placeCustomBar() {
           + b('ci-head', 'Header', 'The first row is a heading', it.head !== false)
           + b('ci-grid', 'Grid', 'Lines around every cell — off leaves a line under each row', it.grid !== false)
           + b('ci-zebra', 'Stripes', 'Shade every other row', !!it.zebra)
-          + `<label style="display:flex;gap:4px;align-items:center;">Size <input class="dw-in" data-ci="tsize" type="number" min="5" max="40" step="0.5" value="${it.size}" style="width:54px;"> pt</label>`
+          + `<span style="padding:0 2px;color:#94a3b8;">whole table:</span><label style="display:flex;gap:4px;align-items:center;">Size <input class="dw-in" data-ci="tsize" type="number" min="5" max="40" step="0.5" value="${it.size}" style="width:54px;"> pt</label>`
           + b('ci-align-start', '⫷', 'Align to the start', it.align === 'start') + b('ci-align-center', '⫿', 'Centre', it.align === 'center') + b('ci-align-end', '⫸', 'Align to the end', it.align === 'end')
           + `<input data-ci="color" type="color" value="${_esc(it.color)}" title="Text colour" style="width:30px;height:24px;padding:0;border:1px solid #334155;border-radius:5px;background:none;">`
           + `<span style="padding:0 4px;color:#64748b;">click a cell to pick it, drag to pick more · double-click to type · Tab moves on · drag a blue grip to move a row or column</span>`

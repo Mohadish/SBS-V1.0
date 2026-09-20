@@ -978,6 +978,28 @@ export function tablePaste(t, r, c, text) {
 }
 
 /** A row nobody has sized: tall enough to read, not a hairline (V0.3.4.40). */
+/**
+ * 📋 A paste of cells copied INSIDE the app: the text as always, and with it
+ * each cell's look and its picture (V0.3.4.42). A picture is carried by its
+ * asset id, which the document already holds, so nothing is duplicated.
+ */
+export function tablePasteRich(t, r, c, clip) {
+  const base = tablePaste(t, r, c, clip?.tsv ?? '');
+  if (!base) return null;
+  const fmt = { ...(t.fmt || {}) }, imgs = { ...(t.imgs || {}) };
+  for (let y = 0; y < (clip?.rows || 0); y++) {
+    for (let x = 0; x < (clip?.cols || 0); x++) {
+      const rr = r + y, cc = c + x;
+      if (rr >= base.rows || cc >= base.cols) continue;
+      const f = clip.fmt?.[`${y},${x}`];
+      if (f) fmt[`${rr},${cc}`] = { ...f }; else delete fmt[`${rr},${cc}`];
+      const id = clip.imgs?.[`${y},${x}`];
+      if (id) imgs[`${rr},${cc}`] = id; else delete imgs[`${rr},${cc}`];
+    }
+  }
+  return { ...base, fmt, imgs };
+}
+
 export const DEFAULT_ROW_MM = 9;
 export const MAX_TABLE_COLS = 10;
 export const MAX_TABLE_ROWS = 40;
