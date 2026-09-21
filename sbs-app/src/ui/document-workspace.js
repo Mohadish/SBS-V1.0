@@ -71,6 +71,7 @@ const EDIT_CSS = `
 
 export function openDocumentWorkspace() {
   if (state.get('_exporting')) { setStatus('A video export is running — open the document when it has finished.', 'warn', 7000); return; }
+  if (D.isProjectLoading()) { setStatus('The project is still loading its models — open the document when it has finished.', 'warn', 7000); return; }
   if (!_root) _build();
   _root.style.display = 'flex';
   if (!_pageId || !D.getDocument()?.pages?.some(p => p.id === _pageId)) _pageId = D.getDocument()?.pages?.[0]?.id || null;
@@ -290,6 +291,15 @@ function _build() {
   // coalesced: a pictures walk activates steps and can fire change:steps once per step
   const rerender = () => { if (!_isOpen()) return; clearTimeout(_renderTimer); _renderTimer = setTimeout(() => { if (_isOpen()) _renderAll(); }, 60); };
   for (const k of ['document', 'steps', 'chapters', 'headerItems', 'headerStepNumberPerChapter']) state.on(`change:${k}`, rerender);
+
+  // 🚪 OPENING A PROJECT ALWAYS LANDS IN THE ANIMATION — the same place a
+  // Ctrl+R leaves you. File ▸ Open works from the menu even while this
+  // workspace covers the app, and staying here meant drawing the new project's
+  // pages from a scene whose models had not arrived. Closing also stops the
+  // pictures walk (it drives the live scene). Come back once it has loaded.
+  const stepAside = () => { if (_isOpen()) { closeDocumentWorkspace(); setStatus('Project opened in the animation — reopen the document once its models have loaded.', 'info', 6000); } };
+  state.on('project:loading', stepAside);
+  state.on('project:loaded',  stepAside);
 
   // the app's status chip is covered — mirror it into the top bar
   const bar = document.getElementById('status-bar');

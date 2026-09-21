@@ -1149,6 +1149,7 @@ async function _onOpenProject() {
     // Replace-Model rebuild, orphan pruning, first-step activation, and
     // the archive re-apply. The tree-reconcile sweep anchors HERE instead
     // of project:loaded, which fires before any model starts loading.
+    state.setState({ _projectLoading: false });   // 🚧 pictures may be taken again (set in io/project.js loadProject)
     state.emit('project:modelsSettled');
 
     setStatus(`Opened: ${state.get('projectName')}.`);

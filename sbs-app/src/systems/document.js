@@ -489,6 +489,31 @@ let _walkAbort = false;
 /** Stop a pictures walk after the step it is on (the workspace closed). */
 export function abortStillsWalk() { _walkAbort = true; }
 
+// ── 🚧 A PROJECT THAT IS STILL LOADING HAS NO PICTURES TO TAKE ─────────────
+// 'project:loaded' means the STATE is in; the 3D models start loading only
+// after it, and can take a long while (or wait on a relink dialog). A page
+// picture taken in that window shows a half-built scene — and, worse, it was
+// CACHED as good: a still's signature describes the step, not whether its
+// models had arrived, so the wrong picture stayed wrong for the whole session
+// even once everything had loaded. That is the "wrong images" after opening a
+// project from inside the document editor.
+//   So, from the moment a load starts until 'project:modelsSettled' (the real
+// "everything is loaded" signal, V0.3.2.111): no walk runs, the cache is
+// emptied at both ends — whatever was taken in between is suspect — and the
+// workspace steps aside (it closes itself; see ui/document-workspace.js).
+// Same shape, and the same 3-minute safety net, as altered-stars.js: a load
+// that dies before settling must not lock pictures out for the session.
+//   THE FLAG ITSELF IS NOT KEPT HERE. This module is imported lazily — only
+// when the document is first opened — so a flag of its own never heard about a
+// load that happened before that, which is the ordinary case: open a project,
+// click Document straight away. It is state._projectLoading, set by the code
+// that does the loading (io/project.js) and cleared where the models settle.
+export function isProjectLoading() { return !!state.get('_projectLoading'); }
+function _loadStarts() { abortStillsWalk(); clearStills(); }
+state.on('project:loading', _loadStarts);
+state.on('project:loaded',  _loadStarts);
+state.on('project:modelsSettled', clearStills);  // whatever was taken in between is suspect
+
 /**
  * Pictures of the given steps' final state. Walks the steps that have no
  * fresh picture yet (each is activated once, instantly), then returns to
@@ -508,7 +533,7 @@ export async function ensureStills(keys, { onProgress = null } = {}) {
   const W = Math.min(c.width, 1920), H = Math.round(W * c.height / c.width);
   const all = _steps();
   const defs = _defsSig();
-  const foreign = !!state.get('_exporting');
+  const foreign = !!state.get('_exporting') || isProjectLoading();  // …or the models are not all in yet: nothing is walked
   const todo = foreign ? [] : (keys || []).filter(key => { const sig = _sigOfKey(key, all, defs); return sig && _stills.get(key)?.sig !== sig; });
   const once = new Map();      // a fallback grab is shown but never cached as fresh
   if (todo.length) {

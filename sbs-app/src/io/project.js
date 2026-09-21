@@ -1974,13 +1974,30 @@ export async function readProjectForImport(fileOrText) {
   return parseProjectFile(new TextDecoder().decode(raw));
 }
 
+let _loadingNet = 0;
 export async function loadProject(fileOrText, filePath = null) {
+  // 📣 BEFORE anything is read. Parsing a big project takes seconds, and until
+  // it is applied the OLD project is still live — anything that drives the
+  // scene on its own (the document's pictures walk activates steps) must stop
+  // NOW, not when the new state lands on top of it. 'project:loaded' fires far
+  // too late for that: it comes after applyProjectToState.
+  // _projectLoading: a runtime flag in state (like _exporting — never saved). It is
+  // kept HERE, in code that is always loaded, because the things that must respect
+  // it are not: systems/document.js is imported only when the document is first
+  // opened, so a flag of its own missed every load that came before that. Cleared
+  // at 'project:modelsSettled' (ui/sidebar-left.js), on a failed read (below), and
+  // by a 3-minute safety net — a load that dies half-way must not lock things out.
+  state.setState({ _projectLoading: true });
+  clearTimeout(_loadingNet);
+  _loadingNet = setTimeout(() => { if (state.get('_projectLoading')) state.setState({ _projectLoading: false }); }, 180000);
+  state.emit('project:loading');
   // A File/Blob may be gzipped (new) or plain JSON (legacy) — read its bytes and
   // auto-detect. A raw string is already decoded text. Projects whose JSON
   // exceeds ~400MB take the STREAMING parser (V0.3.2.19) — beyond ~512MB a
   // single JS string is impossible, so the old decode-then-JSON.parse path
   // simply cannot open large files.
   let project;
+  try {
   if (typeof fileOrText === 'string') {
     project = parseProjectFile(fileOrText);
   } else {
@@ -1992,6 +2009,12 @@ export async function loadProject(fileOrText, filePath = null) {
     } else {
       project = parseProjectFile(new TextDecoder().decode(raw));
     }
+  }
+  } catch (err) {
+    clearTimeout(_loadingNet);
+    state.setState({ _projectLoading: false });
+    state.emit('project:loadAborted');     // unreadable file: nothing was applied, the old project stays live
+    throw err;
   }
 
   clearIsolate();   // isolate is runtime-only — a freshly-loaded project starts un-isolated
