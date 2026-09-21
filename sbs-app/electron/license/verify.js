@@ -20,7 +20,8 @@
  *
  * MUST stay in sync with sbs_license/license_core.py — same payload
  * format, same canonical string, same Ed25519 algorithm. Tests in
- * tests/license-roundtrip.js confirm Python → JS round-trip.
+ * tests/license-roundtrip.js confirm Python → JS round-trip (npm run test:license;
+ * npm run build runs it first, so a drift cannot reach an installer).
  */
 
 const crypto = require('node:crypto');
@@ -221,4 +222,9 @@ module.exports = {
   validateLicense,
   PAYLOAD_VERSION,
   GRACE_DAYS,
+  // For tests/license-roundtrip.js ONLY: the pure halves of the verifier, so
+  // the test exercises the REAL parser and the REAL canonical string against
+  // real keygen output. Deliberately NOT exposed: any way to swap the public
+  // key. A verifier whose key can be overridden is a verifier anyone can pass.
+  _internals: { decodeKeyBlob: _decodeKeyBlob, canonicalSignedString: _canonicalSignedString, PUBLIC_KEY_B64 },
 };

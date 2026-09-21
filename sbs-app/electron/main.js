@@ -8,6 +8,26 @@ require('bytenode');
 
 const { app, BrowserWindow, Menu, ipcMain, dialog, shell } = require('electron');
 
+// 📌 WHERE THE USER'S DATA LIVES IS PINNED — NEVER CHANGE THIS STRING.
+//
+// %APPDATA%sbs-step-browser holds the customer's ACTIVATION (license.json),
+// their settings, and the clock high-water mark. Electron derives that folder
+// from the app's name: package.json "productName" if there is a top-level one,
+// otherwise "name". Ours has only "name", and that was the whole of what kept
+// the folder where it is — an accident, not a decision. Add a top-level
+// productName one day (a perfectly reasonable thing to do) and every customer's
+// installed copy silently looks in a NEW, empty folder: they are asked to
+// activate again, their settings are gone, and nothing anywhere says why. It
+// has already happened once — an orphaned "SBS Step Browser V0.2.22+" folder,
+// with its own license.json, is still sitting in AppData on the dev machine.
+//
+// So the folder is named here, outright, before anything reads it. It is the
+// same path as before, so nothing moves for anyone; it just no longer depends
+// on what the package happens to be called. (Session data — cache, local
+// storage — follows userData, which is why this runs before 'ready'.)
+const USER_DATA_DIRNAME = 'sbs-step-browser';
+app.setPath('userData', require('path').join(app.getPath('appData'), USER_DATA_DIRNAME));
+
 // 🔑 THE LICENCE GATE GOES IN FIRST — before a single ipcMain.handle() below.
 // It wraps handle() itself, so every handler in this file (and any added
 // later) is served only while the licence is valid; license:* stays open for

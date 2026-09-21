@@ -84,3 +84,6 @@ tts-textdump.json
 sbs-app/kokoro-he/
 sbs-app/out-he-test/
 sbs-app/dist-he/
+
+# python bytecode from the licence round-trip test
+sbs-app/tests/__pycache__/
