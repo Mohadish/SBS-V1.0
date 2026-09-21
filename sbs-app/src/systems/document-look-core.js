@@ -37,6 +37,7 @@
 
 import { builtinTemplates, sanitizeTemplate, templateProblems, bandsOf, tableAssetIds, emptyDocument, ASSET_URL_RX } from './document-core.js';
 import { watermarkOf } from './watermark-core.js';
+import { defHash } from './brand-core.js';
 
 /** Options that are part of the LOOK. Not: includeHidden (content), direction + ifaceAdjust (derived from one project's content). */
 export const LOOK_OPTION_KEYS = Object.freeze(['numbering', 'pictureNumbers', 'dropSilent', 'toc', 'tocSteps']);
@@ -139,6 +140,55 @@ export function sanitizeLook(raw) {
     company: String(raw.company ?? '').slice(0, 200),
     options,
   };
+}
+
+// ─── "you changed a brand element" ──────────────────────────────────────────
+// The brand's definitions are watched through one hash each (brand-core brandDrift). The look gets
+// the same treatment, PART BY PART, so the notice can name what changed: each page layout (by its
+// name), the default layout, the header and footer, the watermark, the company name, the options.
+//
+//   • A part's fingerprint must be the same in EVERY project that wears the look, so nothing
+//     project-local goes into it: no template ids, no asset ids — a header picture is fingerprinted
+//     by what it IS.
+//   • …and "what it is" is NOT the whole data URL. This runs on a debounce while the user works, and
+//     a header picture is megabytes of base64; its size, its length and its tail tell two pictures
+//     apart as well as hashing every byte, at none of the cost.
+
+const _picSig = (a) => a ? `${a.w}x${a.h}:${a.dataUrl.length}:${a.dataUrl.slice(-64)}` : '';
+
+/** { partKey: {name, hash} } — partKey 'tpl:<name, lower-case>' | 'default' | 'bands' | 'watermark' | 'company' | 'options'. */
+export function lookParts(look) {
+  if (!look) return {};
+  const out = {};
+  for (const t of look.templates || []) out[`tpl:${_norm(t.name)}`] = { name: `Page layout "${t.name}"`, hash: defHash({ text: t.text, images: t.images }) };
+  out.default = { name: 'Default page layout', hash: defHash({ d: look.defaultTemplate }) };
+  const item = (it) => it.type === 'image' ? { ...it, assetId: _picSig(look.assets?.[it.assetId]) }
+    : it.type === 'table' ? { ...it, imgs: Object.fromEntries(Object.entries(it.imgs || {}).map(([k, id]) => [k, _picSig(look.assets?.[id])])) } : it;
+  const side = (b) => b ? { rule: b.rule, items: b.items.map(item) } : null;
+  out.bands = { name: 'Header and footer', hash: defHash({ header: look.header, footer: look.footer, bands: look.bands ? { header: side(look.bands.header), footer: side(look.bands.footer) } : null }) };
+  const w = look.watermark;
+  out.watermark = { name: 'Watermark', hash: defHash({ w: w?.image ? { ...w, image: { ...w.image, dataUrl: _picSig(w.image) } } : w }) };
+  out.company = { name: 'Company name', hash: defHash({ c: look.company || '' }) };
+  out.options = { name: 'Numbering and contents options', hash: defHash({ o: look.options || {} }) };
+  return out;
+}
+
+/** What to remember about a look: { partKey: hash }, only for `keys` when given (the parts the BRAND carries — a layout of the project's own is nobody's business). */
+export function lookBaseline(look, keys = null) {
+  const parts = lookParts(look), out = {};
+  for (const k of Object.keys(parts)) if (!keys || keys.includes(k)) out[k] = parts[k].hash;
+  return out;
+}
+
+/** The parts that no longer match what was remembered — in brandDrift's own row shape, so the same notice and the same close question serve both. */
+export function lookDrift(look, baseline) {
+  if (!baseline || typeof baseline !== 'object') return [];
+  const parts = lookParts(look), rows = [];
+  for (const [key, was] of Object.entries(baseline)) {
+    const now = parts[key]?.hash ?? '';                       // a brand layout that was deleted here has no hash now — that is a change too
+    if (now !== was) rows.push({ section: 'document', id: key, label: 'Document look', name: parts[key]?.name || (key.startsWith('tpl:') ? `Page layout "${key.slice(4)}"` : key), hash: now });
+  }
+  return rows;
 }
 
 // ─── what the user is shown ─────────────────────────────────────────────────

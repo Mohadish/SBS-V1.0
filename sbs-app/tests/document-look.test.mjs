@@ -1,6 +1,6 @@
 // The document's LOOK travelling in a brand, offline:  node tests/document-look.test.mjs   (part of npm run test:brand)
 // Pure modules only — no app, no DOM.
-import { documentLookOf, sanitizeLook, applyLook } from '../src/systems/document-look-core.js';
+import { documentLookOf, sanitizeLook, applyLook, lookParts, lookBaseline, lookDrift } from '../src/systems/document-look-core.js';
 import { emptyDocument } from '../src/systems/document-core.js';
 import { buildBrand, BRAND_VERSION } from '../src/systems/brand-core.js';
 
@@ -103,6 +103,22 @@ t('the watermark picture and colour are validated', [evil.watermark.image, evil.
 t('options: only known keys with valid values', evil.options, { tocSteps: true });
 t('the company name is a bounded string', evil.company.length, 200);
 t('not an object at all → no look', [sanitizeLook(null), sanitizeLook('x')], [null, null]);
+
+console.log('\n── "you changed a brand element", for the document ──');
+{
+  const brandKeys = Object.keys(lookParts(fromFile));
+  const base = lookBaseline(documentLookOf(r.doc), brandKeys);
+  t('only the parts the BRAND carries are remembered (not "Rogue special")', Object.keys(base).sort(), ['bands', 'company', 'default', 'options', 'tpl:acme pair', 'tpl:acme wide', 'watermark']);
+  t('nothing changed → nothing to report', lookDrift(documentLookOf(r.doc), base), []);
+  t('the SAME look in two projects has the same fingerprints (no ids in them)', lookBaseline(documentLookOf(r.doc), brandKeys), lookBaseline(documentLookOf(applyLook(null, fromFile, { newId }).doc), brandKeys));
+  const edit = clone(r.doc); edit.watermark.opacity = 0.9; edit.templates.find(x => x.name === 'Rogue special').text.h = 99;
+  t('an edited watermark is named; an edit to the project\'s OWN layout is not', lookDrift(documentLookOf(edit), base).map(x => x.name), ['Watermark']);
+  const swap = clone(r.doc); const aid = swap.bands.header.items.find(i => i.id === 'b1').assetId; swap.assets[aid] = { ...swap.assets[aid], dataUrl: PNG.slice(0, -8) + 'AAAAAA==', w: 2 };
+  t('a different header PICTURE is a change (told apart without hashing every byte)', lookDrift(documentLookOf(swap), base).map(x => x.name), ['Header and footer']);
+  const gone = clone(r.doc); gone.templates = gone.templates.filter(x => x.name !== 'ACME pair');
+  t('a brand layout deleted here is a change too, and still has a name', lookDrift(documentLookOf(gone), base).map(x => x.name), ['Page layout "acme pair"']);
+  t('no baseline (brand without a look, or never loaded) → silent', [lookDrift(documentLookOf(edit), null), lookDrift(null, {})], [[], []]);
+}
 
 console.log(`\n${fail ? fail + ' FAILED' : 'all passed'}`);
 process.exit(fail ? 1 : 0);

@@ -21,7 +21,7 @@ import { getCanonicalSize } from '../core/safe-frame.js';
 import { reloadActiveOverlay, countAttrUsage, rebindOverlayAttr, restoreOverlayStrings } from './overlay.js';
 import { SECTIONS, OVERLAY_ATTR, BRAND_VERSION, brandFormatOf, buildBrand, mergeBrand, suggestMapping, unlinkedCount, brandFromLegacyHeader, summarizeMerge, ownership, brandDrift, driftSince } from './brand-core.js';
 import { openBrandMapDialog } from '../ui/brand-map-dialog.js';
-import { documentLookOf, sanitizeLook, applyLook } from './document-look-core.js';
+import { documentLookOf, sanitizeLook, applyLook, lookParts, lookBaseline, lookDrift } from './document-look-core.js';
 import { cloneShareStrings } from '../core/clone.js';
 
 const BRAND_FILTER = [{ name: 'SBS Brand (.sbsbrand) / header setup (.sbsheader)', extensions: ['sbsbrand', 'sbsheader'] }];
@@ -78,7 +78,9 @@ export async function saveBrand() {
   }
   const w = await window.sbsNative.writeFile(path, JSON.stringify(payload, null, 2), 'utf8');
   if (w && w.ok === false) { setStatus(`Could not write the brand: ${w.error}`, 'warn', 8000); return null; }
-  state.setState({ brand: { id: meta.id, name: meta.name, revision: meta.revision, file: path, links } });
+  // docSig: what the document's look was when it last agreed with the brand — the baseline of the
+  // "you changed a brand element" notice (lookDrift). Everything just written IS the brand now.
+  state.setState({ brand: { id: meta.id, name: meta.name, revision: meta.revision, file: path, links, ...(look ? { docSig: lookBaseline(look) } : {}) } });
   state.markDirty();
   const total = SECTIONS.reduce((a, s) => a + (view.sections[s.key] || []).length, 0);
   setStatus(`Brand "${meta.name}" revision ${meta.revision} saved — ${total} definition(s)${look ? `, and the document's look (${look.templates.length} page layout${look.templates.length === 1 ? '' : 's'}, header and footer, watermark)` : ''}. This project is linked to it.`, 'success', 8000);
@@ -159,7 +161,7 @@ export async function loadBrand(pathOverride = null) {
     + `The project's own definitions are not touched.${sum.localChanged ? ` ${sum.localChanged} were edited in this project since the last brand load.` : ''}`
     + (docRows.length ? ` 📄 The brand also carries the look of the printed document: ${docRows.length} part(s) of this project's document would change${docBefore ? '' : ' (this project has no document yet — it gets an empty one wearing the look; no pages are made)'}. Pages, texts and the title are never touched.` : '');
   if (!show.length) {
-    _setLink(meta, path, plan.links);
+    _setLink(meta, path, plan.links, look ? lookBaseline(documentLookOf(docBefore), Object.keys(lookParts(look))) : null);
     setStatus(`Already up to date with "${meta.name}" revision ${meta.revision ?? '—'}.`, 'info', 6000);
     return path;
   }
@@ -183,6 +185,10 @@ export async function loadBrand(pathOverride = null) {
     before.document = docBefore;
     after.document = finishBrandLook(docPlan.doc);
   }
+  // The notice's baseline: the look this project has once the update is in, for the parts the BRAND
+  // carries. With "leave the document as it is" that is the project's own, different look — on
+  // purpose: a difference the user just chose is not a change to report, only what he does next is.
+  if (look) after.brand.docSig = lookBaseline(documentLookOf(withDoc ? after.document : docBefore), Object.keys(lookParts(look)));
   // Merged-away definitions: every overlay node bound to one follows its
   // target BEFORE the definitions change, so nothing is ever left pointing at
   // an id that no longer exists.
@@ -228,9 +234,9 @@ function _usageCounts(sections) {
   return out;
 }
 
-function _setLink(meta, file, links) {
+function _setLink(meta, file, links, docSig = null) {
   const link = getBrandLink();
-  const next = { id: meta.id || link?.id || null, name: meta.name, revision: meta.revision || 0, file, links };
+  const next = { id: meta.id || link?.id || null, name: meta.name, revision: meta.revision || 0, file, links, ...(docSig ? { docSig } : {}) };
   // "Already up to date" is the common case (every project open checks) — a load that changes
   // nothing must not leave the project asking to be saved, with no undo entry to explain why
   if (link && JSON.stringify(link) === JSON.stringify(next)) return;
@@ -295,7 +301,11 @@ let _driftBase = new Map(), _driftTold = new Set(), _driftTimer = 0, _pendingSig
 const _driftKey = (r) => `${r.section}/${r.id}`;
 function _driftNow() {
   const link = getBrandLink();
-  return link?.id ? brandDrift(_projectSections(), link.links || {}) : [];
+  if (!link?.id) return [];
+  const rows = brandDrift(_projectSections(), link.links || {});
+  // 📄 the document's look, part by part — only once a brand that carries one was loaded or saved here
+  if (link.docSig) rows.push(...lookDrift(documentLookOf(state.get('document') || null), link.docSig));
+  return rows;
 }
 /** Brand elements edited in this session and not saved to the brand file. */
 export function brandChangesThisSession() { return driftSince(_driftNow(), _driftBase); }
@@ -333,6 +343,7 @@ export function initBrand() {
   _inited = true;
   for (const sec of SECTIONS) state.on(`change:${sec.stateKey}`, _scheduleDrift);
   state.on('change:brand', _scheduleDrift);
+  state.on('change:document', _scheduleDrift);      // 📄 the look is part of the brand too
   state.on('project:loaded', _rebaseDrift);
   window.sbsNative?.onMenu?.('menu:brandSaveForClose', () => { saveBrand().catch(e => console.error('[brand] save failed:', e)); });
   _rebaseDrift();
