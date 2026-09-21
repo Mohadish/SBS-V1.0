@@ -1,6 +1,6 @@
 {
   "name": "sbs-step-browser",
-  "version": "0.3.4-75",
+  "version": "0.3.4-76",
   "description": "SBS Step Browser — CAD Presentation Tool",
   "author": "SBS Step Browser",
   "main": "electron/main.js",
@@ -17,7 +17,7 @@
     "ensure-native-cad": "node scripts/ensure-native-cad.js",
     "manual-pdf": "electron docs/manual/make-pdf.cjs",
     "test:license": "node tests/license-roundtrip.js",
-    "test:brand": "node tests/brand-core.test.mjs",
+    "test:brand": "node tests/brand-core.test.mjs && node tests/document-look.test.mjs",
     "build": "npm run test:license && npm run sync-version && npm run ensure-native-cad && npm run manual-pdf && npm run ensure-models && npm run vendor-tts && npm run bytenode && npm run sanitize-sbom && electron-builder",
     "build:he": "npm run test:license && npm run sync-version && npm run ensure-native-cad && npm run manual-pdf && npm run ensure-models && npm run vendor-tts && npm run bytenode && npm run sanitize-sbom && electron-builder --config electron-builder-he.js",
     "fetch-models": "node scripts/fetch-kokoro.js"

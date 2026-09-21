@@ -235,7 +235,8 @@ function _build() {
         // …but the undo stack is shared with the animation, which is out of sight
         // behind this cover: only a DOCUMENT entry may be undone / redone from here
         const redo = e.code === 'KeyY' || e.shiftKey;
-        if ((redo ? undoManager.redoScope() : undoManager.undoScope()) !== 'document') {
+        // ('brand' = a brand update that carried the document's look: it changed what is on screen here)
+        if (!['document', 'brand'].includes(redo ? undoManager.redoScope() : undoManager.undoScope())) {
           passes = false;
           if (type === 'keydown') setStatus(redo ? 'Nothing to redo in the document.' : 'Nothing more to undo in the document — the next undo step belongs to the animation.', 'info', 5000);
         }

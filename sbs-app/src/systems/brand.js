@@ -4,7 +4,9 @@
  * newer revision on disk. The merge itself is pure (brand-core.js).
  *
  * A brand carries: header items + header default, text styles, shape
- * styles, constant-title positions, pinned positions, shared crop masks.
+ * styles, constant-title positions, pinned positions, shared crop masks —
+ * and (V0.3.4.76, format 2) the LOOK of the printed document: page layouts,
+ * header / footer, watermark, company name (document-look-core.js).
  * Loading a newer revision updates LINKED definitions in place (project ids
  * never change, so every binding survives), adds what is new, keeps what the
  * brand dropped (reported), and never touches the project's own definitions.
@@ -19,6 +21,8 @@ import { getCanonicalSize } from '../core/safe-frame.js';
 import { reloadActiveOverlay, countAttrUsage, rebindOverlayAttr, restoreOverlayStrings } from './overlay.js';
 import { SECTIONS, OVERLAY_ATTR, BRAND_VERSION, brandFormatOf, buildBrand, mergeBrand, suggestMapping, unlinkedCount, brandFromLegacyHeader, summarizeMerge, ownership, brandDrift, driftSince } from './brand-core.js';
 import { openBrandMapDialog } from '../ui/brand-map-dialog.js';
+import { documentLookOf, sanitizeLook, applyLook } from './document-look-core.js';
+import { cloneShareStrings } from '../core/clone.js';
 
 const BRAND_FILTER = [{ name: 'SBS Brand (.sbsbrand) / header setup (.sbsheader)', extensions: ['sbsbrand', 'sbsheader'] }];
 const _clone = (v) => JSON.parse(JSON.stringify(v ?? null));
@@ -60,7 +64,8 @@ export async function saveBrand() {
   }
   meta.saved = new Date().toISOString();
   const view = _projectView();
-  const { payload, links } = buildBrand({ meta, canonical: view.canonical, sections: view.sections, headerDefault: view.headerDefault, links: meta.id === link?.id ? view.links : {} });
+  const look = documentLookOf(state.get('document') || null);        // 📄 null = this project has no document: the brand carries none
+  const { payload, links } = buildBrand({ meta, canonical: view.canonical, sections: view.sections, headerDefault: view.headerDefault, links: meta.id === link?.id ? view.links : {}, document: look });
   const path = await window.sbsNative.saveFile({ title: 'Save brand', defaultPath: defaultPath || `${meta.name}.sbsbrand`, filters: [{ name: 'SBS Brand', extensions: ['sbsbrand'] }] });
   if (!path) return null;
   // 🔢 never write over a brand file of a NEWER format: this build would drop what it does not understand (see brandFormatOf)
@@ -76,7 +81,7 @@ export async function saveBrand() {
   state.setState({ brand: { id: meta.id, name: meta.name, revision: meta.revision, file: path, links } });
   state.markDirty();
   const total = SECTIONS.reduce((a, s) => a + (view.sections[s.key] || []).length, 0);
-  setStatus(`Brand "${meta.name}" revision ${meta.revision} saved — ${total} definition(s). This project is linked to it.`, 'success', 8000);
+  setStatus(`Brand "${meta.name}" revision ${meta.revision} saved — ${total} definition(s)${look ? `, and the document's look (${look.templates.length} page layout${look.templates.length === 1 ? '' : 's'}, header and footer, watermark)` : ''}. This project is linked to it.`, 'success', 8000);
   return path;
 }
 
@@ -137,7 +142,13 @@ export async function loadBrand(pathOverride = null) {
 
   const plan = mergeBrand(view, brand, { newId, mapping });
   const sum = summarizeMerge(plan.rows);
-  const show = plan.rows.filter(r => r.action !== 'same');
+  // 📄 the document's look, if the brand carries one. Everything from the file goes through
+  // sanitizeLook — the document's editors sanitise what they write, a file does not.
+  const look = brand.document ? sanitizeLook(brand.document) : null;
+  const docBefore = state.get('document') || null;
+  const docPlan = look ? applyLook(docBefore, look, { newId }) : null;
+  const docRows = docPlan?.changed ? docPlan.rows.filter(r => r.action !== 'same') : [];
+  const show = [...plan.rows.filter(r => r.action !== 'same'), ...docRows];
   const verb = { update: 'update', link: 'becomes the brand definition', add: 'new', merge: 'merged', delete: 'delete', orphan: 'no longer in the brand — kept', 'skip-local': 'kept' };
   const rowsPreview = show.map(r => ({
     label: `${r.label} · ${r.name} · ${verb[r.action] || r.action}${r.localChanged ? ' · ⚠ edited in this project since the last brand load' : ''}`,
@@ -145,7 +156,8 @@ export async function loadBrand(pathOverride = null) {
   }));
   const msg = `Brand "${meta.name}" revision ${meta.revision ?? '—'}${meta.legacy ? ' (header setup file)' : ''}. `
     + `${sum.update} to update, ${sum.link} matched to a brand definition, ${sum.merge || 0} merged into another, ${sum.delete || 0} deleted, ${sum.add} new, ${sum.same} already up to date, ${sum.orphan} no longer in the brand (kept). `
-    + `The project's own definitions are not touched.${sum.localChanged ? ` ${sum.localChanged} were edited in this project since the last brand load.` : ''}`;
+    + `The project's own definitions are not touched.${sum.localChanged ? ` ${sum.localChanged} were edited in this project since the last brand load.` : ''}`
+    + (docRows.length ? ` 📄 The brand also carries the look of the printed document: ${docRows.length} part(s) of this project's document would change${docBefore ? '' : ' (this project has no document yet — it gets an empty one wearing the look; no pages are made)'}. Pages, texts and the title are never touched.` : '');
   if (!show.length) {
     _setLink(meta, path, plan.links);
     setStatus(`Already up to date with "${meta.name}" revision ${meta.revision ?? '—'}.`, 'info', 6000);
@@ -153,6 +165,7 @@ export async function loadBrand(pathOverride = null) {
   }
   const buttons = [{ id: 'all', label: 'Apply', primary: true }];
   if (sum.localChanged) buttons.push({ id: 'safe', label: 'Apply, but keep what I edited here' });
+  if (docRows.length) buttons.push({ id: 'nodoc', label: 'Apply, but leave the document as it is' });
   buttons.push({ id: 'cancel', label: 'Cancel' });
   const choice = await chooseWithPreview(`Update from brand "${meta.name}"`, msg, rowsPreview, buttons);
   if (!choice || choice === 'cancel') return null;
@@ -161,16 +174,28 @@ export async function loadBrand(pathOverride = null) {
   const before = { sections: _clone(view.sections), headerDefault: _clone(view.headerDefault), brand: _clone(link) };
   const after  = { sections: result.sections, headerDefault: result.headerDefault,
                    brand: { id: meta.id || link?.id || generateId('brand'), name: meta.name, revision: meta.revision || 0, file: path, links: result.links } };
+  // 📄 the document rides in the SAME snapshots, so the one undo entry covers it. systems/document.js
+  // is imported here and not at the top: it is a heavy module the app otherwise loads only when the
+  // document is first opened, and most brand loads never need it.
+  const withDoc = docRows.length > 0 && choice !== 'nodoc';
+  if (withDoc) {
+    const { finishBrandLook } = await import('./document.js');
+    before.document = docBefore;
+    after.document = finishBrandLook(docPlan.doc);
+  }
   // Merged-away definitions: every overlay node bound to one follows its
   // target BEFORE the definitions change, so nothing is ever left pointing at
   // an id that no longer exists.
   let prevOverlays = _rebindAll(result.rebinds);
   _apply(after, result.changed);
+  // scope 'brand' when the document changed: the document workspace covers the animation and only
+  // lets Ctrl+Z through for entries it knows touch the document — this one does.
   undoManager.push(`Update from brand "${meta.name}"`,
     () => { restoreOverlayStrings(prevOverlays); _apply(before, result.changed); },
-    () => { prevOverlays = _rebindAll(result.rebinds); _apply(after, result.changed); });
+    () => { prevOverlays = _rebindAll(result.rebinds); _apply(after, result.changed); },
+    withDoc ? { scope: 'brand' } : undefined);
   const merged = Object.values(result.rebinds || {}).reduce((a, l) => a + l.length, 0);
-  setStatus(`Brand "${meta.name}" applied — ${sum.update + sum.link} matched / updated, ${merged} merged, ${sum.add} added.`, 'success', 8000);
+  setStatus(`Brand "${meta.name}" applied — ${sum.update + sum.link} matched / updated, ${merged} merged, ${sum.add} added${withDoc ? `, document look: ${docRows.length} part(s) updated` : ''}.`, 'success', 8000);
   return path;
 }
 
@@ -217,6 +242,11 @@ function _setLink(meta, file, links) {
 function _apply(snap, changed) {
   const patch = { brand: snap.brand ? _clone(snap.brand) : null };
   for (const sec of SECTIONS) patch[sec.stateKey] = _clone(snap.sections[sec.key] || []);
+  // 📄 only when this update carried the document. cloneShareStrings, never the JSON round-trip
+  // above: a document holds pictures as data URLs, and copying those for every undo / redo is how
+  // the renderer ran out of heap before (core/clone.js). 'in', not truthiness: the state BEFORE
+  // may be "no document at all" (null), and undo must be able to put exactly that back.
+  if ('document' in snap) patch.document = snap.document ? cloneShareStrings(snap.document) : null;
   if (snap.headerDefault) patch.headerDefault = _clone(snap.headerDefault);
   state.setState(patch);
   state.markDirty();

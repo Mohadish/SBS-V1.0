@@ -64,6 +64,14 @@ function _commit(label, next /* , opts */) {
   undoManager.push(label, () => write(before), () => write(after), { scope: 'document' });
 }
 
+/**
+ * 🏷 A document that was just given a brand's look (document-look-core applyLook), made whole:
+ * pictures nothing shows any more are dropped — the old header's — and every page still on
+ * AUTOMATIC is laid out again, because the default layout may have changed. It is NOT committed:
+ * a brand update is ONE undo entry across styles, header and document, and brand.js owns it.
+ */
+export function finishBrandLook(doc) { return doc ? _auto(_pruneAssets(doc)) : doc; }
+
 // ─── building + syncing ─────────────────────────────────────────────────────
 
 /** First build (or a rebuild from scratch): one page per step, texts kept. */

@@ -54,7 +54,7 @@ function _render() {
   const body = _win.querySelector('#bp-body');
   const rows = brandOverview();
   body.innerHTML = `
-    <div class="small muted" style="font-size:11.5px;line-height:1.5;">A brand is a company's standard in one file: header and logo, text and shape styles, constant-title positions, pinned positions, shared crop masks. Save it from a project that looks right; load it into another project to bring it to the standard — and load it again whenever the standard changes.</div>
+    <div class="small muted" style="font-size:11.5px;line-height:1.5;">A brand is a company's standard in one file: header and logo, text and shape styles, constant-title positions, pinned positions, shared crop masks — and the look of the printed document (page layouts, its header and footer, watermark, company name). Save it from a project that looks right; load it into another project to bring it to the standard — and load it again whenever the standard changes.</div>
     <div style="padding:8px 10px;border:1px solid var(--line,#334155);border-radius:8px;background:var(--panel2,#1e293b);">
       ${link?.id
         ? `<div><b>${_esc(link.name)}</b> · revision ${_esc(link.revision)}</div><div class="small muted" style="font-size:11px;word-break:break-all;">${_esc(link.file || '')}</div>`
@@ -64,13 +64,14 @@ function _render() {
     <div style="display:flex;gap:8px;flex-wrap:wrap;">
       ${_update ? '<button class="btn" data-act="update" style="padding:4px 12px;font-weight:600;color:#fbbf24;">⬆ Update to the new revision</button>' : ''}
       <button class="btn" data-act="load" style="padding:4px 12px;font-weight:600;" title="Pick a .sbsbrand (or an old .sbsheader): linked definitions update in place, new ones are added, the project's own are left alone — previewed first, one undo">📥 Load / update from a brand…</button>
-      <button class="btn" data-act="save" style="padding:4px 12px;font-weight:600;" title="Write this project's header, styles, positions and masks as a .sbsbrand">💾 Save brand…</button>
+      <button class="btn" data-act="save" style="padding:4px 12px;font-weight:600;" title="Write this project's header, styles, positions, masks and the look of its document as a .sbsbrand">💾 Save brand…</button>
       ${link?.id ? '<button class="btn" data-act="unlink" style="padding:4px 12px;" title="Forget the link; every definition stays and becomes the project\'s own">Unlink</button>' : ''}
     </div>
     <table style="width:100%;border-collapse:collapse;font-size:12px;">
       <tr style="color:var(--muted,#94a3b8);text-align:left;"><th style="padding:3px 4px;">Definitions</th><th style="padding:3px 4px;">Brand</th><th style="padding:3px 4px;">Project's own</th></tr>
       ${rows.map(r => `<tr><td style="padding:3px 4px;border-top:1px solid var(--line,#334155);">${_esc(r.label)}s</td><td style="padding:3px 4px;border-top:1px solid var(--line,#334155);">${r.brand}</td><td style="padding:3px 4px;border-top:1px solid var(--line,#334155);">${r.project}</td></tr>`).join('')}
     </table>
+    <div class="small muted" style="font-size:11px;line-height:1.45;">📄 <b>The document's look</b> travels too — page layouts (matched by name), header and footer with their pictures, watermark, company name, numbering options. Loading a brand shows what would change in the document first, and you can apply the rest without it. Pages, texts, the title and the document number are never part of a brand.</div>
     <div class="small muted" style="font-size:11px;line-height:1.45;">"Project's own" definitions are never touched by a brand update. When you load a brand into a project that has definitions of its own, a matching page opens first: drag each of yours onto the brand definition it really is (several can fold into one), keep it as the project's own, or delete it. Only exact same-name matches are filled in for you.</div>`;
   body.querySelectorAll('[data-act]').forEach(b => {
     b.disabled = _busy;

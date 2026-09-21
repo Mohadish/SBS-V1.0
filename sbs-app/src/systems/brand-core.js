@@ -15,7 +15,10 @@
  * No app imports; tested offline.
  */
 
-export const BRAND_VERSION = 1;
+// Format 2 (V0.3.4.76): the file may carry `document` — the LOOK of the printed document
+// (page layouts, header / footer, watermark, company name). See document-look-core.js for why it
+// is one block and not a row of SECTIONS. Format 1 files simply have none.
+export const BRAND_VERSION = 2;
 
 /**
  * 🔢 The file's FORMAT number — and whether this build can be trusted to write it back.
@@ -79,9 +82,10 @@ const _round = (n) => Math.round(n * 100) / 100;
  * @param {Object<string, Array>} p.sections              brand section key → project defs
  * @param {Object} [p.headerDefault]
  * @param {Object} [p.links]                              existing brand.links (may be empty)
+ * @param {Object} [p.document]                           the document's look (documentLookOf) — written as it is; null = none
  * @returns {{payload:Object, links:Object}} links = the project's link map AFTER this save
  */
-export function buildBrand({ meta, canonical, sections, headerDefault = null, links = {} }) {
+export function buildBrand({ meta, canonical, sections, headerDefault = null, links = {}, document = null }) {
   const outLinks = {};
   const brandIdOf = {};   // section → Map(projectId → brandId)
   for (const sec of SECTIONS) {
@@ -108,6 +112,7 @@ export function buildBrand({ meta, canonical, sections, headerDefault = null, li
                    canonical: canonical ? { width: canonical.width, height: canonical.height } : null },
       headerDefault: headerDefault ? _clone(headerDefault) : null,
       sections: payloadSections,
+      document: document || null,        // NOT cloned: it holds picture data URLs, and the caller serialises the payload at once
     },
     links: outLinks,
   };
