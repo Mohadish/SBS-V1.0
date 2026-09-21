@@ -17,7 +17,7 @@ import { undoManager } from '../systems/undo.js';
 import { setStatus } from './status.js';
 import { srcHashOf } from '../systems/language-packs.js';
 import { numberSteps } from '../systems/translation-sheet-core.js';
-import { builtinTemplates, docTextFor, pageRangeLabel, unitsOf, stillsNeeded, pictureBox, containZoom, slotState, directionOf, bandsOf, BAND_MM,
+import { builtinTemplates, docTextFor, pageRangeLabel, unitsOf, partInfo, stillsNeeded, pictureBox, containZoom, slotState, directionOf, bandsOf, BAND_MM,
          zoomAfterWheel, zoomAfterButton, zoomPercent, zoomFromPercent, clampUiZoom, adjustFromFit,
          mergeMap, mergeAt, canMerge, tableInsertRow, tableDeleteRow, tableInsertCol, tableDeleteCol,
          tableMoveRow, tableMoveCol, tableRowMovable, tableColMovable, tableMerge, tableUnmerge,
@@ -29,7 +29,13 @@ import { openTemplateEditor } from './document-template-editor.js';
 import { openVideoFrameDialog } from './video-frame-dialog.js';   // 🎞 which frame of a step's clip this picture shows
 
 const _esc = (s) => String(s ?? '').replace(/[&<>"]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
-const FLAG_ICON = { added: '➕', removed: '➖', 'moved-out': '↗', new: '🆕', 'image-left': '🖼', empty: '∅' };
+const FLAG_ICON = { added: '➕', removed: '➖', 'moved-out': '↗', new: '🆕', 'image-left': '🖼', empty: '∅', folded: '🧩' };
+// ❗ IN PLAIN WORDS. The mark means one thing: the ANIMATION changed after this page was laid
+// out, and a sync adjusted the page. Nothing is broken and nothing is lost — it is a note to
+// look once, then clear. Every place that shows the mark says so (the user: "I don't really
+// understand the exclamation mark").
+const FLAG_WHAT = 'The animation changed after this page was laid out, and the last sync adjusted it:';
+const FLAG_DO = 'Nothing is broken — have a look at the page, then clear the mark.';
 const PAGE_W = 210 * 96 / 25.4, PAGE_H = 297 * 96 / 25.4;      // A4 in CSS px
 const TOC = '@toc';                                            // the "page" id of the table of contents in the workspace
 
@@ -363,8 +369,8 @@ function _renderTop(c) {
   const pending = D.pendingSync();
   const flagged = c.doc.pages.filter(p => (p.flags || []).length).length;
   _root.querySelector('#dw-actions').innerHTML = `
-    <button class="dw-btn${pending ? ' warn' : ''}" data-act="sync" title="Bring the pages in line with the animation as it is now. Every change is marked ❗ on the page it touched.">${pending ? '⟳ The animation changed — sync' : '⟳ Sync with the animation'}</button>
-    ${flagged ? `<button class="dw-btn" data-act="reviewed-all">✓ Clear all ❗ (${flagged})</button>` : ''}
+    <button class="dw-btn${pending ? ' warn' : ''}" data-act="sync" title="Bring the pages in line with the animation as it is now: new steps get pages, deleted ones leave. Every page the sync had to touch is marked ❗ so you can see what changed — nothing is broken.">${pending ? '⟳ The animation changed — sync' : '⟳ Sync with the animation'}</button>
+    ${flagged ? `<button class="dw-btn" data-act="reviewed-all" title="❗ marks the pages the last sync adjusted because the animation changed. Click a marked page to read what changed on it. This clears the marks on all ${flagged} page(s) — the pages themselves are not touched.">✓ Clear all ❗ (${flagged})</button>` : ''}
     <span style="display:inline-flex;border:1px solid #334155;border-radius:7px;overflow:hidden;">
       <button class="dw-btn" data-act="zoom-fit" style="border:0;border-radius:0;${_zoom === 'fit' ? 'background:#1d3a5f;' : ''}">Fit</button>
       <button class="dw-btn" data-act="zoom-100" style="border:0;border-radius:0;${_zoom === '100' ? 'background:#1d3a5f;' : ''}">100%</button>
@@ -417,8 +423,9 @@ function _renderLeft(c) {
   const pageHtml = `
     <div class="dw-h">Page ${c.model.pages.find(p => p.id === page.id)?.number ?? '—'} of ${c.model.total}</div>
     <div style="font-size:12px;color:#cbd5e1;margin-bottom:8px;">${_esc(pageRangeLabel(page, c.steps, c.chapters, c.perChapter, c.doc.hiddenSteps))}</div>
-    ${flags.length ? `<div style="margin:0 0 10px;padding:7px 9px;border-radius:7px;background:rgba(245,158,11,.13);border:1px solid #b45309;font-size:11.5px;line-height:1.5;">${flags.map(x => `${FLAG_ICON[x.kind] || '!'} ${_esc(x.note)}`).join('<br>')}
-      <div style="margin-top:5px;"><a data-act="reviewed">✓ Seen — clear these marks</a></div></div>` : ''}
+    ${flags.length ? `<div style="margin:0 0 10px;padding:7px 9px;border-radius:7px;background:rgba(245,158,11,.13);border:1px solid #b45309;font-size:11.5px;line-height:1.5;"><div style="color:#fbbf24;font-weight:600;margin-bottom:3px;">❗ ${FLAG_WHAT}</div>${flags.map(x => `${FLAG_ICON[x.kind] || '•'} ${_esc(x.note)}`).join('<br>')}
+      <div style="margin-top:5px;color:#94a3b8;">${FLAG_DO}</div>
+      <div style="margin-top:3px;"><a data-act="reviewed">✓ Seen — clear the mark</a></div></div>` : ''}
     <label class="dw-lab">Page template
       <select class="dw-in" data-page-opt="template"><option value=""${page.templateAuto !== false ? ' selected' : ''}>Automatic — ${_esc(tplNow.name)}</option>${tpls.map(t => `<option value="${_esc(t.id)}"${(page.templateAuto === false && t.id === page.templateId) ? ' selected' : ''}>${_esc(t.name)}</option>`).join('')}</select></label>
     <div style="font-size:11px;color:#64748b;margin:-2px 0 4px;">Automatic = as many pictures as the page has steps (2, 3, 4).</div>
@@ -593,9 +600,15 @@ function _renderList(c) {
   const unitAt = new Map(c.units.map((u, i) => [u.id, i]));
   const eye = (u, hid) => `<a class="dw-eye" data-act="hide-toggle" data-unit="${_esc(u.id)}" title="${hid ? 'Put it back into the document' : 'Leave it out of the document (the animation is not touched)'}">${hid ? '🙈' : '👁'}</a>`;
   const thumb = (id) => `<span class="dw-pagethumb" data-thumb="${_esc(id)}"></span>`;
-  const flagsHtml = (p) => { const f = p.flags || []; return f.length ? `<span title="${_esc(f.map(x => x.note).join('\n'))}" style="color:#fbbf24;">❗ ${f.map(x => FLAG_ICON[x.kind] || '!').join(' ')}</span>` : ''; };
+  const flagsHtml = (p) => { const f = p.flags || []; return f.length ? `<span title="${_esc([FLAG_WHAT, ...f.map(x => '• ' + x.note), '', FLAG_DO].join('\n'))}" style="color:#fbbf24;cursor:help;">❗ ${f.map(x => FLAG_ICON[x.kind] || '').join(' ')}</span>` : ''; };
+  // 🧩 a group too long for one page is cut into PARTS, each a page of its own. A later part is
+  // named after its first sub-step, which told the user nothing — it read as a stray step. Every
+  // part now carries the GROUP's name and says which part it is.
+  const parts = partInfo(c.units);
+  const nameOf = (u) => c.stepById.get(parts.get(u.id)?.root || u.id)?.name || u.id;
+  const partTag = (u) => { const pi = parts.get(u.id); return pi ? ` <span title="This group has more than 4 steps in it, so it is spread over ${pi.n} pages — 4 pictures is the most one page takes. To have it all on one page: select the parts and merge them (and give the page a template with enough picture frames)." style="color:#7dd3fc;font-weight:400;cursor:help;">· part ${pi.k} of ${pi.n}</span>` : ''; };
   const textOf = (u) => { const s = c.stepById.get(u.id); return s ? docTextFor(s, c.doc.texts, srcHashOf).text : ''; };
-  const subs = (u) => (u.members.length > 1 ? ` <span style="color:#94a3b8;font-weight:400;">+${u.members.length - 1} sub</span>` : '');
+  const subs = (u) => (u.contOf ? ` <span style="color:#94a3b8;font-weight:400;">${u.members.length} sub</span>` : u.members.length > 1 ? ` <span style="color:#94a3b8;font-weight:400;">+${u.members.length - 1} sub</span>` : '');
   const tip = 'Click to show the page · Shift / Ctrl-click selects the whole range · right-click for more';
 
   const pendingRow = (u) => `<div class="dw-pagebox" style="border-style:dashed;"><div class="dw-step pending" data-unit="${_esc(u.id)}" title="Not in the document yet — sync to add it"><span class="dw-pagethumb"></span><span class="dw-no">${_esc(c.nums.get(u.id)?.label || '–')}</span><div style="min-width:0;flex:1;"><div class="dw-name" style="font-size:12px;font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">${_esc(c.stepById.get(u.id)?.name || u.id)}</div><div style="font-size:11px;color:#94a3b8;">new in the animation — sync to add</div></div></div></div>`;
@@ -619,7 +632,7 @@ function _renderList(c) {
     const p = e.page;
     const us = (p.stepIds || []).map(id => c.units.find(u => u.id === id)).filter(Boolean);
     if (!us.length) {                                                 // a page with no steps left (flagged ∅ by a sync) — only deletable
-      html += `<div class="dw-pagebox flag" data-seq="${si}"><div class="dw-pagehead"><b style="color:#e2e8f0;">Page —</b><span>· ∅ no steps left</span><span style="flex:1"></span><a data-act="delete-page" data-page="${_esc(p.id)}" style="color:#fca5a5;">delete</a></div></div>`;
+      html += `<div class="dw-pagebox flag" data-seq="${si}" title="Every step this page showed was deleted (or hidden) in the animation, so it has nothing left to show and is not printed. It is kept only so you can see it happened — delete it."><div class="dw-pagehead"><b style="color:#e2e8f0;">Empty page</b><span>· its steps were deleted in the animation</span><span style="flex:1"></span><a data-act="delete-page" data-page="${_esc(p.id)}" style="color:#fca5a5;">delete</a></div></div>`;
       return;
     }
     flushPending(unitAt.get(us[0].id));
@@ -635,14 +648,14 @@ function _renderList(c) {
       const u = us[0], hid = c.hidden.has(u.id);
       html += `<div class="${cls}" data-pagebox="${_esc(p.id)}" data-seq="${si}"><div class="dw-step dw-pgrow${_sel.has(u.id) ? ' sel' : ''}${hid ? ' hid' : ''}" data-unit="${_esc(u.id)}" title="${hid ? 'Left out of the document — the eye puts it back' : tip}">${thumb(p.id)}
         <div style="min-width:0;flex:1;"><div style="display:flex;gap:6px;align-items:center;">${no}<span style="flex:1"></span>${flagsHtml(p)}</div>
-        <div class="dw-name" style="font-size:12px;font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;"><span class="dw-no" style="margin-inline-end:5px;">${_esc(c.nums.get(u.id)?.label || '–')}</span>${_esc(c.stepById.get(u.id)?.name || u.id)}${subs(u)}</div>
+        <div class="dw-name" style="font-size:12px;font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;"><span class="dw-no" style="margin-inline-end:5px;">${_esc(c.nums.get(u.id)?.label || '–')}</span>${_esc(nameOf(u))}${partTag(u)}${subs(u)}</div>
         <div dir="auto" style="font-size:11px;color:#94a3b8;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">${hid ? 'left out of the document' : _esc(textOf(u))}</div></div>${eye(u, hid)}</div></div>`;
     } else {
       const a = c.nums.get(us[0].id)?.label || '', b = c.nums.get(us[us.length - 1].id)?.label || '';
       html += `<div class="${cls}" data-pagebox="${_esc(p.id)}" data-seq="${si}">
         <div class="dw-pagehead dw-pgrow${us.every(u => _sel.has(u.id)) ? ' sel' : ''}" data-goto-page="${_esc(p.id)}" data-select-page="${_esc(p.id)}" title="${tip}">${thumb(p.id)}<div style="min-width:0;flex:1;"><div style="display:flex;gap:6px;align-items:center;">${no}<span style="flex:1"></span>${flagsHtml(p)}</div>
           <div style="font-size:12px;font-weight:600;color:#e2e8f0;">${us.length} steps merged <span style="font-weight:400;color:#94a3b8;">(steps ${_esc(a)}–${_esc(b)})</span></div></div></div>
-        ${us.map(u => { const hid = c.hidden.has(u.id); return `<div class="dw-step mini${_sel.has(u.id) ? ' sel' : ''}${hid ? ' hid' : ''}" data-unit="${_esc(u.id)}" title="${hid ? 'Left out of the document — the eye puts it back' : tip}"><span class="dw-no">${_esc(c.nums.get(u.id)?.label || '–')}</span><div class="dw-name" style="min-width:0;flex:1;font-size:12px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">${_esc(c.stepById.get(u.id)?.name || u.id)}${subs(u)}</div>${eye(u, hid)}</div>`; }).join('')}</div>`;
+        ${us.map(u => { const hid = c.hidden.has(u.id); return `<div class="dw-step mini${_sel.has(u.id) ? ' sel' : ''}${hid ? ' hid' : ''}" data-unit="${_esc(u.id)}" title="${hid ? 'Left out of the document — the eye puts it back' : tip}"><span class="dw-no">${_esc(c.nums.get(u.id)?.label || '–')}</span><div class="dw-name" style="min-width:0;flex:1;font-size:12px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">${_esc(nameOf(u))}${partTag(u)}${subs(u)}</div>${eye(u, hid)}</div>`; }).join('')}</div>`;
     }
     nextPending = Math.max(nextPending, unitAt.get(us[us.length - 1].id) + 1);
   });

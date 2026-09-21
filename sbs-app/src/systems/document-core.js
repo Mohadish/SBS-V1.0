@@ -216,6 +216,18 @@ export function pictureStepsOf(doc, steps, chapters, unitsIn = null) {
   return out;
 }
 
+/**
+ * 🧩 Which units are PARTS of a group too long for one page: Map(unitId → {k, n, root}),
+ * k = 1…n. A unit that is a whole group (or a plain step) is not in the map.
+ */
+export function partInfo(units) {
+  const byRoot = new Map();
+  for (const u of units || []) { const root = u.contOf || u.id; if (!byRoot.has(root)) byRoot.set(root, []); byRoot.get(root).push(u.id); }
+  const out = new Map();
+  for (const [root, ids] of byRoot) if (ids.length > 1) ids.forEach((id, i) => out.set(id, { k: i + 1, n: ids.length, root }));
+  return out;
+}
+
 /** doc.hiddenSteps, plus every later PART of a hidden group: hiding a group hides all of it. */
 export function hiddenUnitIds(doc, units) {
   const hidden = new Set(doc?.hiddenSteps || []);
@@ -247,6 +259,68 @@ export function orderOf(steps, chapters, doc) {
 const _flag = (page, kind, stepId, note) => {
   if (!page.flags.some(f => f.kind === kind && f.stepId === stepId)) page.flags.push({ kind, stepId: stepId || null, note });
 };
+
+/**
+ * 🧩 THE PARTS OF A LONG GROUP ARE FOLLOWED BY POSITION, NOT BY NAME.
+ *
+ * A later part is named after its first sub-step (unitsOf), and that name MOVES
+ * whenever the group gains or loses a sub-step: six sub-steps are 3 + 3, the
+ * second part starts at the 4th; add one and they are 4 + 3, it starts at the
+ * 5th. Read by name, that is "the step on page 2 was deleted, and a new step
+ * appeared" — an emptied page marked ❗ beside a brand-new page, the user's own
+ * layout of page 2 orphaned, for a group that merely grew by one. And when a
+ * group shrinks back under the limit, its second page was left behind empty and
+ * flagged "no longer in the sequence" — about steps that are all still there.
+ *
+ * So before anything is compared, what the pages hold of each group is lined up
+ * with that group's parts AS THEY ARE NOW, in order: the k-th stays the k-th —
+ * renamed, silently, because nothing the user laid out has changed. What is
+ * left over on the old side has FOLDED into an earlier part; what is left over
+ * on the new side is a new part, placed like any new step.
+ *   The same lining-up covers a step that was on a page of its own and has
+ * since been put INTO a group in the animation: it is still in the document, on
+ * the group's page — not "no longer in the sequence".
+ * @returns {{renamed: Map<string,string>, folded: Map<string,{root:string, next:string}>}}
+ */
+function _followParts(pages, units) {
+  const rootOf = new Map(), partsNow = new Map(), memberAt = new Map(), lastAt = new Map();
+  units.forEach((u, i) => {
+    const root = u.contOf || u.id;
+    if (!partsNow.has(root)) partsNow.set(root, []);
+    partsNow.get(root).push(u.id);
+    lastAt.set(root, i);
+    for (const m of u.members) { rootOf.set(m, root); memberAt.set(m, memberAt.size); }
+  });
+  const held = new Map();                                     // root → what the pages hold of it
+  for (const p of pages) for (const id of p.stepIds) {
+    const root = rootOf.get(id);
+    if (root === undefined) continue;                         // gone from the animation altogether — reconcile's own business
+    if (!held.has(root)) held.set(root, new Set());
+    held.get(root).add(id);
+  }
+  const renamed = new Map(), folded = new Map();
+  for (const [root, set] of held) {
+    const now = partsNow.get(root), was = [...set].sort((a, b) => memberAt.get(a) - memberAt.get(b));
+    was.forEach((old, k) => {
+      if (k < now.length) { if (old !== now[k]) renamed.set(old, now[k]); }
+      else folded.set(old, { root, next: units[lastAt.get(root) + 1]?.id || '@end' });
+    });
+  }
+  return { renamed, folded };
+}
+
+/**
+ * What ELSE in the document names a unit, brought along after a sync that renamed or folded
+ * parts (reconcile's `renamed` / `folded`): where an extra page is anchored, and the hidden list.
+ */
+export function applyPartMoves(doc, r) {
+  const ren = r?.renamed instanceof Map ? r.renamed : new Map(), fold = r?.folded instanceof Map ? r.folded : new Map();
+  if (!doc || (!ren.size && !fold.size)) return doc;
+  const anchor = (a) => ren.has(a) ? ren.get(a) : fold.has(a) ? fold.get(a).next : a;
+  const extras = Array.isArray(doc.extras) ? doc.extras.map(x => (x && x.beforeUnit !== anchor(x.beforeUnit)) ? { ...x, beforeUnit: anchor(x.beforeUnit) } : x) : doc.extras;
+  const hiddenSteps = [...new Set((doc.hiddenSteps || []).filter(id => !fold.has(id)).map(id => ren.get(id) ?? id))];
+  return { ...doc, extras, hiddenSteps };
+}
 
 /** Indices (into `seq`) of one longest strictly-increasing subsequence. */
 function _lis(seq) {
@@ -280,9 +354,12 @@ function _lis(seq) {
  *   • any other new / moved step                        → gets a page of its own   ('new'), in timeline order
  *   • a chosen picture whose step left the page         → keeps showing it         ('image-left')
  *   • a page with no steps left                         → stays, flagged           ('empty')
+ *   • a part of a long group whose name moved           → the same page, renamed   (silent — see _followParts)
+ *   • a part that folded back into the group            → leaves; the page it joined is told ('folded');
+ *                                                          a page that held nothing else is dropped
  *
  * Page order follows the timeline position of each page's first step.
- * @returns {{pages:Array, order:string[], report:Array<{pageId, kind, stepId, note}>}}
+ * @returns {{pages:Array, order:string[], report:Array<{pageId, kind, stepId, note}>, renamed:Map, folded:Map}}
  */
 export function reconcile(doc, steps, chapters, opts = {}) {
   const newId = opts.newId || _defaultId;
@@ -293,20 +370,41 @@ export function reconcile(doc, steps, chapters, opts = {}) {
   const pages = (doc?.pages || []).map(p => ({ ...p, stepIds: [...(p.stepIds || [])], images: (p.images || []).map(i => ({ ...i })), flags: [...(p.flags || [])] }));
   const before = new Map(pages.map(p => [p.id, p.flags.length]));
 
+  // 🧩 the parts of a long group keep their PAGE when their name moves (see _followParts)
+  const { renamed, folded } = _followParts(pages, units);
+  const foldedFrom = new Map(), drop = new Set();             // page → the parts it lost to a fold · pages that held nothing else
+  for (const p of pages) {
+    const lost = p.stepIds.filter(id => folded.has(id));
+    if (lost.length) foldedFrom.set(p, lost);
+    p.stepIds = p.stepIds.filter(id => !folded.has(id)).map(id => renamed.get(id) ?? id);
+  }
+
   // who was on which page (first claim wins), minus what vanished
   const pageOf = new Map();
   for (const p of pages) {
     const alive = [];
+    let gone = 0;
     for (const id of p.stepIds) {
-      if (!index.has(id)) { _flag(p, 'removed', id, `"${nameOf(id)}" is no longer in the sequence`); continue; }
+      if (!index.has(id)) { gone++; _flag(p, 'removed', id, `"${nameOf(id)}" is no longer in the sequence`); continue; }
       if (pageOf.has(id)) continue;
       pageOf.set(id, p); alive.push(id);
     }
     p.stepIds = alive;
+    if (!alive.length && !gone && foldedFrom.has(p)) drop.add(p);        // it held nothing but parts that folded away
+  }
+  // tell the page that TOOK a folded part; drop the page that held nothing else
+  if (folded.size) {
+    const unitOfMember = new Map();
+    for (const u of units) for (const m of u.members) unitOfMember.set(m, u);
+    for (const [, lost] of foldedFrom) for (const id of lost) {
+      const into = pageOf.get(unitOfMember.get(id)?.id);
+      if (into) _flag(into, 'folded', id, `"${nameOf(id)}" no longer has a page of its own — it is shown here, with the rest of "${nameOf(folded.get(id).root)}"`);
+    }
+    for (let i = pages.length - 1; i >= 0; i--) if (drop.has(pages[i])) pages.splice(i, 1);
   }
 
   // movers: claimed units that did not keep their relative order
-  const oldOrder = (doc?.order && doc.order.length) ? doc.order : (doc?.pages || []).flatMap(p => p.stepIds || []);
+  const oldOrder = ((doc?.order && doc.order.length) ? doc.order : (doc?.pages || []).flatMap(p => p.stepIds || [])).map(id => renamed.get(id) ?? id);   // a renamed part was THERE all along — it is not a mover
   const oldIdx = new Map(oldOrder.map((id, i) => [id, i]));
   const claimed = units.filter(u => pageOf.has(u.id) && oldIdx.has(u.id));
   const keep = _lis(claimed.map(u => oldIdx.get(u.id)));
@@ -338,12 +436,12 @@ export function reconcile(doc, steps, chapters, opts = {}) {
       prev.stepIds.push(u.id);
       pageOf.set(u.id, prev);
       if (from !== prev) {
-        _flag(prev, 'added', u.id, from ? `"${nameOf(u.id)}" was moved into this page's range` : `"${nameOf(u.id)}" was added inside this page's range`);
+        _flag(prev, 'added', u.id, from ? `"${nameOf(u.id)}" was moved into this page's range` : u.contOf ? `"${nameOf(u.contOf)}" now has more than ${GROUP_PAGE_MAX} steps in it — the rest of it was added to this page` : `"${nameOf(u.id)}" was added inside this page's range`);
         if (from) _flag(from, 'moved-out', u.id, `"${nameOf(u.id)}" was moved to another page`);
       }
     } else {
       const np = _newPage(u, doc?.templateId || 'tpl_standard', newId);
-      _flag(np, 'new', u.id, from ? `"${nameOf(u.id)}" was moved here — new page` : `New page for "${nameOf(u.id)}"`);
+      _flag(np, 'new', u.id, from ? `"${nameOf(u.id)}" was moved here — new page` : u.contOf ? `"${nameOf(u.contOf)}" now has more than ${GROUP_PAGE_MAX} steps in it — it continues on this new page` : `New page for "${nameOf(u.id)}"`);
       if (from) _flag(from, 'moved-out', u.id, `"${nameOf(u.id)}" was moved to a page of its own`);
       out.push(np);
       pageOf.set(u.id, np);
@@ -367,7 +465,7 @@ export function reconcile(doc, steps, chapters, opts = {}) {
 
   const report = [];
   for (const p of out) for (const f of p.flags.slice(before.get(p.id) ?? 0)) report.push({ pageId: p.id, ...f });
-  return { pages: out, order: units.map(u => u.id), report };
+  return { pages: out, order: units.map(u => u.id), report, renamed, folded };
 }
 
 /** Slot 0 follows the page's LAST step until the user picks one (auto); a chosen picture whose step left is flagged, not dropped. */

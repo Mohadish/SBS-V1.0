@@ -28,7 +28,7 @@ import { tableAssetIds } from './document-core.js';             // 📋 pictures
 import { projectDisplayName } from './header.js';
 import * as projectPaths from '../core/project-paths.js';
 import {
-  emptyDocument, autoPaginate, reconcile, orderOf, mergeWithPrevious, splitBefore, clearFlags,
+  emptyDocument, autoPaginate, reconcile, applyPartMoves, orderOf, mergeWithPrevious, splitBefore, clearFlags,
   buildRenderModel, stillsNeeded, narrationOf, mergeUnits, splitAll, autoTemplates, parseStillKey, sanitizeTemplate, templateProblems,
   extrasOf, sequenceOf, moveExtra, sanitizeCustomPage, sanitizeCustomItem, TOC_ID, bandsOf, defaultBandItems, BAND_MM,
   unitsOf, pictureStepsOf, hiddenUnitIds,
@@ -92,8 +92,10 @@ export function syncWithAnimation() {
     setStatus(relaid ? 'Document is in line with the animation — page layouts updated to their steps.' : 'Document is in line with the animation.', 'info', 4000);
     return r;
   }
-  _commit('Sync document with the animation', _auto({ ...cur, pages: r.pages, order: r.order }));
-  setStatus(`Document synced — ${r.report.length} change(s) flagged ❗ on the pages they touched.`, 'warn', 8000);
+  // applyPartMoves: a part of a long group that was renamed / folded takes its extra pages' anchors and its hidden mark along
+  _commit('Sync document with the animation', _auto(applyPartMoves({ ...cur, pages: r.pages, order: r.order }, r)));
+  if (r.report.length) setStatus(`Document synced — ${r.report.length} change(s) marked ❗ on the pages they touched. Click a marked page to read what changed.`, 'warn', 8000);
+  else setStatus('Document is in line with the animation.', 'info', 4000);
   return r;
 }
 
