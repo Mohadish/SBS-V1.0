@@ -210,6 +210,16 @@ svg .arrow{stroke:var(--muted);stroke-width:1.4;fill:none;marker-end:url(#ah)}
 <p>Run <code>SBS Step Browser Setup &lt;version&gt;.exe</code>. The installer lets you choose the folder, creates a desktop and Start-menu shortcut, and does not touch your projects on uninstall. SBS is fully offline: the text-to-speech voices, the CAD converters and the video encoder ship inside the installer. Cloud text-to-speech and machine translation are optional and need an internet connection plus an API key.</p>
 <p>First launch is slower: the local voice engine warms up in the background (a few hundred megabytes of models are loaded once per session). You can start working immediately; narration playback becomes available when the status bar stops reporting the warm-up.</p>
 
+<h2 id="start-licence">Activating, renewing and moving your licence</h2>
+<p><b>First launch.</b> SBS shows <span class="ui">Activate SBS</span> with this computer's <b>machine ID</b>. Press <span class="ui">📋 Copy</span> and send your distributor the machine ID together with your email address. They reply with a <b>password</b> and a long <b>key</b>; paste both and press <span class="ui">🔑 Activate</span>. No internet connection is needed at any point — the key is checked on your own computer.</p>
+<p><b>Help ▸ <span class="ui">Licence…</span></b> shows who the copy is licensed to, the date it runs until and how many days are left, and the machine ID again with a copy button.</p>
+<ul>
+<li><span class="ui">🔑 Enter a new key…</span> — <b>renew early</b>. You do not have to wait for the licence to run out: paste the new password and key whenever they arrive. Nothing changes unless the new key is valid, and if it would run out <i>sooner</i> than the licence you already have (an older key pasted by mistake) SBS says so and asks before replacing it.</li>
+<li><span class="ui">Deactivate this computer…</span> — takes the licence off this computer; SBS restarts and asks for a key. Save your project first: SBS refuses while there are unsaved changes, because an unlicensed copy cannot save.</li>
+</ul>
+<p class="note"><b>A key belongs to one computer.</b> It is tied to that computer's machine ID, so deactivating does <b>not</b> move the licence somewhere else. To use SBS on a different computer — or after replacing a motherboard or a system disk, which changes the machine ID — install SBS there, copy the machine ID it shows, and ask your distributor for a key for it. Your old key is not destroyed: entered again on the original computer, it still works.</p>
+<p>A few days before the licence runs out SBS reminds you at start-up. After that date it shows <span class="ui">License expired</span> and waits for a new key; your projects are untouched.</p>
+
 <h2 id="start-first">Your first project in ten minutes</h2>
 <ol>
 <li><span class="ui">File ▸ New</span> (<kbd>Ctrl</kbd>+<kbd>N</kbd>), then <span class="ui">File ▸ Save As…</span> to give the project a folder. Save early — the render cache, audio and backups live next to the project file.</li>

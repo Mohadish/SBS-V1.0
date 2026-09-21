@@ -659,6 +659,7 @@ function buildMenu() {
         { label: 'SBS Manual', accelerator: 'F1', click: () => openHelpWindow() },
         { label: 'Save the manual as PDF…', click: () => saveManualPdf(mainWindow) },
         { type: 'separator' },
+        { label: 'Licence…', click: () => mainWindow?.webContents.send('menu:licensePanel') },
         { label: 'Show the manual\'s folder', click: () => { const d = _manualDir(); if (d) shell.openPath(d); } },
       ],
     },

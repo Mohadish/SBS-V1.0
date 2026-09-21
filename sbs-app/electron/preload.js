@@ -89,6 +89,7 @@ contextBridge.exposeInMainWorld('sbsNative', {
       'menu:reviewForm',           // 📊 V0.3.3.11 — Tools ▸ Review form… (translation / proofing sheets)
       'menu:brandPanel',           // 🏷 V0.3.3.12 — Tools ▸ Brand… (company standard file)
       'menu:documentPanel',        // 📄 V0.3.4.0 — Tools ▸ Document… (2D manual from the animation)
+      'menu:licensePanel',         // 🔑 V0.3.4.64 — Help ▸ Licence…
       'key:altCombo',              // 🎹 V0.3.2.175 — Alt+<key> combos forwarded
                                    // from before-input-event (Windows menu-bar
                                    // pre-arming eats the first page-level

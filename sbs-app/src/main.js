@@ -48,7 +48,7 @@ import * as userSettings from './core/user-settings.js';
 
 // ── UI ────────────────────────────────────────────────────────────────────────
 import { initStatus, setStatus }  from './ui/status.js';
-import { showActivationDialog, showHardLockDialog, showGraceWarning, showLegacyBindingNotice } from './ui/license-dialog.js';
+import { showActivationDialog, showHardLockDialog, showGraceWarning, showLegacyBindingNotice, showLicensePanel } from './ui/license-dialog.js';
 import { initHud }                from './ui/hud.js';
 import { initStepNav }            from './ui/step-nav.js';
 import { initStepsPanel }         from './ui/steps-panel.js';
@@ -1622,6 +1622,10 @@ window.sbsSegment = {
 
 // File → Settings… menu hook. Channel allowlist lives in preload.js.
 window.sbsNative?.onMenu?.('menu:openSettings', () => openSettingsModal());
+// 🔑 Help ▸ Licence… — the dirty flag is handed in, because taking the licence
+// off this computer with unsaved work would leave a project that cannot be
+// saved (the main process stops serving the app the moment it is unlicensed).
+window.sbsNative?.onMenu?.('menu:licensePanel', () => showLicensePanel({ isDirty: () => !!state.get('projectDirty') }));
 // Edit → Model source transform… opens a floating, draggable window.
 // No takeover, no tab — just a window. Cascade-through-snapshots
 // architecture (see ui/model-source-dialog.js + actions.js).
