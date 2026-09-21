@@ -10,8 +10,16 @@
  *     "email":       "alice@example.com",
  *     "password":    "ABCD-EFGH",
  *     "key":         "<long base64>",
- *     "activated":   "2025-05-13T10:00:00.000Z"
+ *     "activated":   "2025-05-13T10:00:00.000Z",
+ *     "hwm":         { "ms": 1790000000000, "mac": "<hex>" }
  *   }
+ *
+ * `hwm` is the clock high-water mark — written and verified by
+ * time-monitor.js, not here (it is signed with a key derived from `key` and
+ * the machine ID). It lives in THIS file on purpose: the app cannot run
+ * without license.json, so the mark cannot be deleted without deactivating.
+ * saveLicense() rewrites the file without it; index.js reads the mark first
+ * and signs it again afterwards, so an activation never resets it.
  *
  * The integrity check on these fields is the verify.js signature
  * verification — tampering with the file just causes signature failure

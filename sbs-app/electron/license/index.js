@@ -24,6 +24,7 @@ const { ipcMain } = require('electron');
 const { validateLicense }      = require('./verify');
 const { getMachineIdCached, getMachineIdCandidates } = require('./machine-id');
 const { loadLicense, saveLicense, clearLicense } = require('./store');
+const timeMonitor = require('./time-monitor');
 
 /**
  * Verify a licence against THIS MACHINE — under any name it can truthfully
@@ -115,6 +116,9 @@ function _refresh() {
 /** May the app's own IPC be served right now? Fails CLOSED on any error. */
 function isLicensed() {
   if (Date.now() - _checkedAt > RECHECK_MS) {
+    // an app left open for days must keep its high-water mark moving too,
+    // not only the copy that was written at launch
+    try { timeMonitor.recordLaunch(); } catch { /* never let bookkeeping decide the verdict */ }
     try { _refresh(); } catch (err) { _ok = false; console.warn('[license] check failed:', err?.message); }
   }
   return _ok;
@@ -170,7 +174,16 @@ function registerLicenseIpc() {
     // must not be turned away by the app having learned a better one
     const result = _validateOnThisMachine({ email, password, key });
     if (!result.valid) return result;
+    // THE MARK SURVIVES ACTIVATION. saveLicense rewrites license.json, and a
+    // renewed key makes a new signing key — without this, both "re-activate"
+    // and "renew" would quietly reset the clock memory. Read it first, under
+    // the OLD licence on disk and under the key being entered (that is what
+    // recovers it from the registry when license.json was deleted), and sign
+    // it again under the new one once it is saved.
+    let mark = 0;
+    try { mark = Math.max(timeMonitor.currentMark(), timeMonitor.currentMark(key)); } catch { /* no mark is not an error */ }
     saveLicense({ email, password, key });
+    try { timeMonitor.writeMark(Math.max(Date.now(), mark)); } catch { /* best effort */ }
     _refresh();                 // re-verified FROM DISK — the same path a boot takes
     return { ...result, persisted: true };
   });
