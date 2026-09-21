@@ -138,7 +138,7 @@ function isLicensed() {
 // of; help:* is the manual — reading it is not a licensed act, and its one
 // call only writes the manual to a path the user picked. Keep this list SHORT:
 // every prefix here is a door in the wall.
-const _OPEN_CHANNELS = ['license:', 'help:'];
+const _OPEN_CHANNELS = ['license:', 'help:', 'app:refocus'];     // app:refocus — typing can go dead in the ACTIVATION dialog too; giving the keyboard back unlocks nothing
 
 function installIpcGate() {
   if (ipcMain.__sbsGated) return;

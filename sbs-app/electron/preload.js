@@ -23,6 +23,11 @@ contextBridge.exposeInMainWorld('sbsNative', {
   // there — File.path still works natively in that case).
   pathForFile: (file) => { try { return webUtils?.getPathForFile?.(file) || ''; } catch { return ''; } },
 
+  // ⌨ Give the page the keyboard back from the MAIN process (see _refocus in
+  // electron/main.js — the renderer's own window.focus() cannot). hard = a
+  // full OS focus cycle, the same thing alt-tabbing away and back does.
+  refocusWindow: (hard = false) => ipcRenderer.invoke('app:refocus', { hard: !!hard }),
+
   // ── Dialogs ──────────────────────────────────────────────────────────────
   openModel:          ()          => ipcRenderer.invoke('dialog:openModel'),
   openImage:          ()          => ipcRenderer.invoke('dialog:openImage'),

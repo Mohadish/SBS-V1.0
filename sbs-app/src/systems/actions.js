@@ -4113,6 +4113,12 @@ export function visibilityAudit(opts = {}) {
 export function unstuckInputs() {
   const actions = [];
 
+  // 0. The OS-level focus cycle — what going to another window and back does,
+  // and the only thing that ever actually cured dead typing. Everything below
+  // tidies the PAGE; none of it can give the page the keyboard back. Only the
+  // main process can (electron/main.js _refocus).
+  try { if (window.sbsNative?.refocusWindow) { window.sbsNative.refocusWindow(true); actions.push('os-focus-cycle'); } } catch { /* not in Electron */ }
+
   // 1. Remove every <dialog> that's NOT currently open. A closed-but-
   // still-attached dialog is "inert" per the HTML spec, but its presence
   // can interfere with focus restoration and lingering event listeners

@@ -451,6 +451,9 @@ function createWindow() {
   });
 
   mainWindow.on('closed', () => { mainWindow = null; });
+
+  // ⌨ THE WINDOW HAS FOCUS — MAKE SURE THE PAGE HAS THE KEYBOARD. See _refocus.
+  mainWindow.on('focus', () => _refocus(false));
 }
 
 // 🚪 Unsaved-work state mirrored from the renderer (V0.3.2.216).
@@ -695,6 +698,54 @@ function buildMenu() {
   ];
 
   return Menu.buildFromTemplate(template);
+}
+
+// ─── ⌨ TYPING THAT GOES DEAD (V0.3.4.72) ───────────────────────────────────
+//
+// THE BUG. Every so often no text field in the app accepts typing. Fields look
+// focused, the mouse works, shortcuts may still work — letters go nowhere. The
+// user's cure, found by accident and 100% reliable over months: go to ANY other
+// window, copy something, come back. The copy is incidental. What cures it is
+// LEAVING AND RE-ENTERING THE WINDOW.
+//
+// THE CAUSE. On Windows, Electron can end up with the BrowserWindow active at
+// the OS level while its webContents does not hold KEYBOARD focus. The DOM still
+// believes an element is focused, so nothing in the page can see the problem,
+// and nothing in the page can fix it either: window.focus() in the renderer
+// does not re-acquire it. The known triggers are native modal dialogs — the
+// page's own alert / confirm / prompt (this app has 33 of them) and the file /
+// save / message dialogs shown from here (16 more). When one closes, the OS
+// hands focus back to the window and the keyboard sometimes does not follow.
+//   An OS-level focus cycle — exactly what alt-tabbing away and back is —
+// re-associates it. So that is done from here, where it can be:
+//   • GENTLE  (webContents.focus())        every time the window gains focus,
+//             and after every native dialog, on either side. Invisible.
+//   • HARD    (blur → focus → webContents) only when the user asks for it:
+//             Edit ▸ Recover stuck inputs / Ctrl+Alt+U. It flickers the title
+//             bar, which is the visible proof that the cycle happened.
+//
+// HONESTLY: this follows from the symptom and from a well-known Electron-on-
+// Windows failure, not from having caught it in the act — it would not
+// reproduce on demand. The renderer leaves a console breadcrumb when it finds
+// the page without the keyboard ("[focus] …"), so if it ever happens again we
+// will know whether this was the whole story.
+function _refocus(hard) {
+  const w = mainWindow;
+  if (!w || w.isDestroyed()) return false;
+  try {
+    if (hard) { w.blur(); w.focus(); }
+    w.webContents.focus();
+    return true;
+  } catch (err) { console.warn('[focus] refocus failed:', err?.message); return false; }
+}
+ipcMain.handle('app:refocus', (_e, opts) => _refocus(!!opts?.hard));
+
+// every native dialog shown from here hands the keyboard back when it closes
+for (const name of ['showOpenDialog', 'showSaveDialog', 'showMessageBox']) {
+  try {
+    const orig = dialog[name].bind(dialog);
+    dialog[name] = async (...args) => { try { return await orig(...args); } finally { setTimeout(() => _refocus(false), 0); } };
+  } catch (err) { console.warn('[focus] could not wrap dialog.' + name + ':', err?.message); }   // never let a nicety stop the app starting
 }
 
 // ─── 📖 Help: the manual, in the app (V0.3.4.62) ───────────────────────────

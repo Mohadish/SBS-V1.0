@@ -1587,6 +1587,31 @@ window.sbsFix.pruneShapes = () => {
   console.log(n ? `[fix] pruned ${n} orphan shape(s). Save to persist.` : '[fix] no orphan shapes.');
   return n;
 };
+// ⌨ THE KEYBOARD, HANDED BACK (V0.3.4.72) — see _refocus in electron/main.js for
+// the whole story. Three things on this side:
+//   1. every native alert / confirm / prompt asks main for the keyboard when it
+//      returns — they are the known trigger, and there are 33 of them;
+//   2. a click into a window that does NOT have the keyboard re-acquires it, and
+//      leaves a breadcrumb: that state is exactly the bug, caught in the act;
+//   3. the recovery tools below now do the one thing that was always missing —
+//      the OS-level focus cycle the user was doing by hand.
+for (const name of ['alert', 'confirm', 'prompt']) {
+  const orig = window[name]?.bind(window);
+  if (typeof orig !== 'function') continue;
+  window[name] = (...args) => { try { return orig(...args); } finally { window.sbsNative?.refocusWindow?.(false); } };
+}
+window.addEventListener('pointerdown', () => {
+  if (document.hasFocus()) return;
+  // The click that ACTIVATES the window can arrive a moment before its focus
+  // does — that is ordinary. Only a window that STILL has no keyboard after the
+  // click has settled is the bug.
+  setTimeout(() => {
+    if (document.hasFocus()) return;
+    console.warn('[focus] clicked, and the window still does not have the keyboard — re-acquiring it (this is the "typing goes dead" state).');
+    window.sbsNative?.refocusWindow?.(false);
+  }, 150);
+}, true);
+
 window.sbsFix.input = () => {
     const done = [];
     [...document.querySelectorAll('dialog')].filter(d => d.open).forEach(d => { try { d.close(); done.push('closed <dialog> ' + (d.id || '')); } catch {} });
@@ -1594,6 +1619,8 @@ window.sbsFix.input = () => {
     try { if (editSession.isActive()) { editSession.end({ commit: false }); done.push('ended edit session'); } } catch {}
     try { document.activeElement?.blur?.(); } catch {}
     try { window.focus(); document.body.focus?.(); } catch {}
+    // the part that was always missing: only the MAIN process can re-acquire the keyboard
+    try { window.sbsNative?.refocusWindow?.(true); done.push('OS focus cycle'); } catch {}
     console.log('[fix] unstick:', done.length ? done.join(', ') : 'no stray dialogs/inert/session; focus reset. If still stuck, run window.sbsDiag.input() and send me the table.');
     return done;
 };
