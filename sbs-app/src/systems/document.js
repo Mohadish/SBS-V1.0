@@ -31,6 +31,7 @@ import {
   emptyDocument, autoPaginate, reconcile, orderOf, mergeWithPrevious, splitBefore, clearFlags,
   buildRenderModel, stillsNeeded, narrationOf, mergeUnits, splitAll, autoTemplates, parseStillKey, sanitizeTemplate, templateProblems,
   extrasOf, sequenceOf, moveExtra, sanitizeCustomPage, sanitizeCustomItem, TOC_ID, bandsOf, defaultBandItems, BAND_MM,
+  unitsOf, pictureStepsOf, hiddenUnitIds,
 } from './document-core.js';
 import { renderDocumentHtml } from './document-render.js';
 
@@ -43,7 +44,15 @@ const _chapters = () => state.get('chapters') || [];
 export function getDocument() { return state.get('document') || null; }
 
 /** Pages still on AUTOMATIC get the layout that fits their number of (visible) steps: 2 → two pictures, 3 → three, 4+ → four. */
-const _auto = (doc) => ({ ...doc, pages: autoTemplates(doc.pages, { hidden: doc.hiddenSteps, defaultId: doc.templateId }) });
+const _auto = (doc) => {
+  // 🖼 how many pictures a page wants depends on WHICH sub-steps speak, so the
+  // picker is given the same "pictured steps" map the slots are filled from
+  const units = unitsOf(_steps(), _chapters(), doc?.options);
+  return { ...doc, pages: autoTemplates(doc.pages, {
+    hidden: [...hiddenUnitIds(doc, units)], defaultId: doc.templateId,
+    picturesOf: pictureStepsOf(doc, _steps(), _chapters(), units),
+  }) };
+};
 
 /** One undoable write of the whole document record. */
 function _commit(label, next /* , opts */) {
@@ -64,7 +73,7 @@ export function buildPages({ rebuild = false } = {}) {
   if (!doc.fields.title) doc.fields.title = projectDisplayName();
   doc.pages = autoPaginate(_steps(), _chapters(), doc);
   doc.order = orderOf(_steps(), _chapters(), doc);
-  _commit(rebuild ? 'Rebuild document pages' : 'Build document pages', doc);
+  _commit(rebuild ? 'Rebuild document pages' : 'Build document pages', _auto(doc));   // _auto: a group gets its pictures from the first build
   setStatus(`Document: ${doc.pages.length} page(s), one per step. Merge the ones that belong together.`, 'success', 6000);
   return doc;
 }
@@ -75,8 +84,12 @@ export function syncWithAnimation() {
   if (!cur) return null;
   const r = reconcile(cur, _steps(), _chapters());
   if (!r.report.length && JSON.stringify(r.pages.map(p => p.stepIds)) === JSON.stringify((cur.pages || []).map(p => p.stepIds))) {
-    if (JSON.stringify(cur.order || []) !== JSON.stringify(r.order)) _commit('Sync document', { ...cur, pages: r.pages, order: r.order });
-    setStatus('Document is in line with the animation.', 'info', 4000);
+    // the pages are the same, but their automatic LAYOUT may not be: a sub-step
+    // was given a sentence, or this document predates groups laying themselves out
+    const next = _auto({ ...cur, pages: r.pages, order: r.order });
+    const relaid = JSON.stringify(next.pages.map(p => p.templateId)) !== JSON.stringify((cur.pages || []).map(p => p.templateId));
+    if (relaid || JSON.stringify(cur.order || []) !== JSON.stringify(r.order)) _commit('Sync document', next);
+    setStatus(relaid ? 'Document is in line with the animation — page layouts updated to their steps.' : 'Document is in line with the animation.', 'info', 4000);
     return r;
   }
   _commit('Sync document with the animation', _auto({ ...cur, pages: r.pages, order: r.order }));
@@ -376,7 +389,7 @@ export function setDocText(stepId, text) {
   const step = _steps().find(s => s.id === stepId);
   if (text == null) delete texts[stepId];
   else texts[stepId] = { text: String(text), srcHash: srcHashOf(narrationOf(step)) };
-  _commit(text == null ? 'Document text follows the voiceover' : 'Edit document text', { ...cur, texts });
+  _commit(text == null ? 'Document text follows the voiceover' : 'Edit document text', _auto({ ...cur, texts }));
 }
 /**
  * ✎ The number the user typed for ONE line (double-click its badge). An empty
@@ -403,7 +416,7 @@ export function setFields(patch) {
 }
 export function setOptions(patch) {
   const cur = getDocument(); if (!cur) return;
-  _commit('Document options', { ...cur, options: { ...(cur.options || {}), ...patch } });
+  _commit('Document options', _auto({ ...cur, options: { ...(cur.options || {}), ...patch } }));
 }
 /** 💧 The watermark printed on every page. patch = any of watermark-core's WATERMARK_DEFAULTS keys. */
 export function setWatermark(patch) {

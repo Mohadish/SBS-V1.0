@@ -67,7 +67,7 @@ export function emptyDocument() {
   };
 }
 
-/** The layout a page gets by itself: as many pictures as it has steps — 1 → the document's default, 2, 3, 4 (and 4 for more: sort the rest out by hand). */
+/** The layout a page gets by itself: as many pictures as it has PICTURED steps (see pictureStepsOf) — 1 → the document's default, 2, 3, 4 (and 4 for more). */
 export function templateForCount(n, defaultId = 'tpl_standard') {
   return n <= 1 ? defaultId : n === 2 ? 'tpl_two' : n === 3 ? 'tpl_three' : 'tpl_four';
 }
@@ -81,8 +81,14 @@ export function templateForCount(n, defaultId = 'tpl_standard') {
 export function autoTemplates(pages, opts = {}) {
   const hidden = new Set(opts.hidden || []);
   const dflt = opts.defaultId || 'tpl_standard';
+  // opts.picturesOf: Map(unitId → the steps of that unit that get a picture).
+  // A step GROUP counts for as many pictures as it has speaking sub-steps — it
+  // used to count as ONE, which is why a group of four came out with a single
+  // picture. Without the map every unit counts once, as before.
+  const picturesOf = opts.picturesOf instanceof Map ? opts.picturesOf : null;
   return (pages || []).map(p => {
-    const n = (p.stepIds || []).filter(id => !hidden.has(id)).length;
+    const n = (p.stepIds || []).filter(id => !hidden.has(id))
+      .reduce((sum, id) => sum + Math.max(1, picturesOf?.get(id)?.length || 1), 0);
     const want = templateForCount(n, dflt);
     const auto = p.templateAuto === true || (p.templateAuto === undefined && (p.templateId === dflt || p.templateId === want || !p.templateId));
     if (!auto) return p;
@@ -159,7 +165,62 @@ export function unitsOf(steps, chapters, opts = {}) {
     const u = { id: s.id, members: [s.id], chapterId: s.chapterId ?? null };
     units.push(u); byHead.set(s.id, u);
   }
-  return units;
+  // 🧩 A BIG GROUP IS SEVERAL PAGES' WORTH. A page shows at most GROUP_PAGE_MAX
+  // pictures, one per sub-step, so a group with more sub-steps than that is cut
+  // into PARTS of up to that many — as evenly as they go (5 → 3+2, 7 → 4+3),
+  // because 4+1 leaves a page with one lonely picture. Each part is a unit of
+  // its own: the first keeps the group's id, a later one is named after its own
+  // first member and points back with contOf.
+  //   It is done HERE, where the document reads the timeline, on purpose. Pages,
+  // reconcile, merge / split, the contents and the editor's list all deal in
+  // units and nothing else — so they handle a part exactly as they handle any
+  // step, with no notion of "part" to get wrong. (Merge a part back into the
+  // page before it and the whole group is on one page again.)
+  const out = [];
+  for (const u of units) {
+    const n = u.members.length;
+    if (n <= GROUP_PAGE_MAX) { out.push(u); continue; }
+    const parts = Math.ceil(n / GROUP_PAGE_MAX), base = Math.floor(n / parts), extra = n % parts;
+    let at = 0;
+    for (let i = 0; i < parts; i++) {
+      const size = base + (i < extra ? 1 : 0), members = u.members.slice(at, at + size);
+      out.push(i === 0 ? { ...u, members, parts } : { id: members[0], members, chapterId: u.chapterId, contOf: u.id, contAt: at });
+      at += size;
+    }
+  }
+  return out;
+}
+
+/** The most pictures — and so the most sub-steps of one group — a single page takes. */
+export const GROUP_PAGE_MAX = 4;
+
+/**
+ * 🖼 WHICH STEPS OF A UNIT GET A PICTURE: the ones that get a LINE. A group of
+ * four speaking sub-steps is four pictures, each the state its own sentence
+ * describes; a sub-step with nothing to say has no line to hang a picture on.
+ * A unit where nobody speaks keeps the one picture it always had — its last
+ * member, the state the unit ends in.
+ *   ONE definition, read by the template picker (how many frames) and by the
+ * slots (which step goes in which frame), so the two cannot disagree.
+ * @returns {Map<string, string[]>} unitId → step ids, in order
+ */
+export function pictureStepsOf(doc, steps, chapters, unitsIn = null) {
+  const units = unitsIn || unitsOf(steps, chapters, doc?.options);
+  const byId = new Map((steps || []).map(s => [s.id, s]));
+  const says = (sid) => { const s = byId.get(sid); return !!s && !!docTextFor(s, doc?.texts, () => '').text.trim(); };
+  const out = new Map();
+  for (const u of units) {
+    const spoken = u.members.filter(says);
+    out.set(u.id, spoken.length ? spoken : [u.members[u.members.length - 1]]);
+  }
+  return out;
+}
+
+/** doc.hiddenSteps, plus every later PART of a hidden group: hiding a group hides all of it. */
+export function hiddenUnitIds(doc, units) {
+  const hidden = new Set(doc?.hiddenSteps || []);
+  for (const u of units || []) if (u.contOf && hidden.has(u.contOf)) hidden.add(u.id);
+  return hidden;
 }
 
 let _seq = 0;
@@ -1115,7 +1176,8 @@ export function buildRenderModel(doc, steps, chapters, ctx) {
   const units = unitsOf(steps, chapters, doc?.options);
   const unitById = new Map(units.map(u => [u.id, u]));
   const nums = numberSteps(steps, chapters, !!ctx?.perChapter);
-  const hidden = new Set(doc?.hiddenSteps || []);
+  const hidden = hiddenUnitIds(doc, units);                                             // …a hidden group hides its later parts too
+  const picturesOf = pictureStepsOf(doc, steps, chapters, units);                       // 🖼 unit → the steps that get a picture
   const shown = (id) => unitById.has(id) && !hidden.has(id);
   const prints = (p) => (p.stepIds || []).some(shown);                                  // a page whose steps are all hidden is not printed
   const reading = directionOf(doc, steps, chapters);
@@ -1184,6 +1246,12 @@ export function buildRenderModel(doc, steps, chapters, ctx) {
       for (const uid of e.page.stepIds || []) {
         if (!shown(uid)) continue;
         if (silentUnit.has(uid)) continue;      // 🔇 nothing to say → not counted, not listed
+        // 🧩 A later PART of a group is the same step carrying on: it takes the
+        // group's number and adds no line of its own to the contents. (Only if
+        // the group's first part was counted — were that one silent or hidden,
+        // this part is the first the reader meets, and it counts like any step.)
+        const cont = unitById.get(uid)?.contOf;
+        if (cont && pageNoOf.has(cont)) { pageNoOf.set(uid, pageNoOf.get(cont)); continue; }
         const st = stepById.get(uid);
         // A step that belongs to no chapter keeps the global number and does not
         // advance the chapter's count — the rule numberSteps and the header
@@ -1231,6 +1299,20 @@ export function buildRenderModel(doc, steps, chapters, ctx) {
       bandItems: { header: bandItems('header', vars), footer: bandItems('footer', vars) } };
   };
 
+  // 🧩 how many ".n" sub-numbers the EARLIER parts of a group already used, so a
+  // later part carries on instead of starting again at .1 — worked out from the
+  // timeline, not from page order, so moving pages about cannot change a number
+  const subBaseOf = new Map();
+  {
+    const used = new Map();                                   // group head → sub-lines so far
+    for (const u of units) {
+      const root = u.contOf || u.id;
+      if (u.contOf) subBaseOf.set(u.id, used.get(root) || 0);
+      const lines = u.members.filter(sid => (sid !== u.id || u.contOf) && _says(sid)).length;
+      used.set(root, (used.get(root) || 0) + lines);
+    }
+  }
+
   let prevChapter = null;
   const pageModel = (p) => {
     const number = numberOf.get(p.id);
@@ -1254,7 +1336,7 @@ export function buildRenderModel(doc, steps, chapters, ctx) {
           // empty steps back, in which case it is an ordinary numbered line.
           // If its sub-steps speak they keep their own labels (6.1 under a
           // missing 6), which is the numbering the film itself uses.
-          if (sid !== u.id || dropSilent) continue;
+          if (sid !== u.id || u.contOf || dropSilent) continue;
         }
         k++;
         // "1, 2, 3" counts per CHAPTER, and it is the SAME counter the contents
@@ -1262,9 +1344,12 @@ export function buildRenderModel(doc, steps, chapters, ctx) {
         // restarting per page and the contents per chapter. Sub-steps hang off
         // their unit's number the way numberSteps already writes groups.
         const headNo = pageNoOf.get(uid);
+        // 🧩 in a later PART every member is a sub-step, and the ".n" carries on
+        // from where the earlier parts stopped (6.1 6.2 6.3 │ 6.4 6.5)
+        const isHead = sid === u.id && !u.contOf;
         const auto = doc.options?.numbering === 'none' ? ''
           : doc.options?.numbering === 'page'
-            ? (sid === u.id ? String(headNo ?? k) : `${headNo ?? k}.${++sub}`)
+            ? (isHead ? String(headNo ?? k) : `${headNo ?? k}.${(subBaseOf.get(u.id) || 0) + (++sub)}`)
             : (nums.get(sid)?.label || '');
         const own = customLabel(sid);
         items.push({ stepId: sid, label: own ?? auto, autoLabel: auto, customLabel: own != null, name: s.name || '', text: t.text, edited: t.edited, drifted: t.drifted });
@@ -1276,7 +1361,7 @@ export function buildRenderModel(doc, steps, chapters, ctx) {
       images: (tpl.images || []).map((rect, i) => {
         // right-to-left: the FIRST picture is the right-hand one — mirror the frame across the page
         const r = reading.dir === 'rtl' ? { ...rect, x: (tpl.page?.w || 210) - rect.x - rect.w } : rect;
-        const im = _slotOf(p, i, r, (tpl.images || []).length, unitById, hidden, doc, ctx);
+        const im = _slotOf(p, i, r, (tpl.images || []).length, unitById, hidden, doc, ctx, picturesOf);
         // the number the picture refers to = the number of its line on this page (a silent sub-step borrows its step's)
         let label = '';
         if (im.stepId && doc.options?.pictureNumbers !== false && (items.length > 1 || im.moment === 'start')) {
@@ -1369,11 +1454,11 @@ function _ifaceFitFor(out, doc, ctx) {
   return { ...out, fit: fitToBox(out.rect, out.aspect, box, doc.options.ifaceAdjust), ifaceFramed: true };
 }
 
-function _slotOf(p, k, rect, nSlots, unitById, hidden, doc, ctx) {
-  return _ifaceFitFor(_slotOfRaw(p, k, rect, nSlots, unitById, hidden, doc, ctx), doc, ctx);
+function _slotOf(p, k, rect, nSlots, unitById, hidden, doc, ctx, picturesOf = null) {
+  return _ifaceFitFor(_slotOfRaw(p, k, rect, nSlots, unitById, hidden, doc, ctx, picturesOf), doc, ctx);
 }
 
-function _slotOfRaw(p, k, rect, nSlots, unitById, hidden, doc, ctx) {
+function _slotOfRaw(p, k, rect, nSlots, unitById, hidden, doc, ctx, picturesOf = null) {
   const im = p.images?.[k] || null;
   const state = slotState(p, k);
   // The chosen video frame rides on the slot model too (V0.3.4.32) — without it
@@ -1390,10 +1475,14 @@ function _slotOfRaw(p, k, rect, nSlots, unitById, hidden, doc, ctx) {
   }
   if (state === 'step') return { ...base, stepId: im.stepId, moment: im.moment === 'start' ? 'start' : 'end' };
   if (state === 'auto') {
+    // 🖼 The page's pictured steps, in order: every speaking sub-step of every
+    // unit on it (pictureStepsOf). Frame k takes the k-th — so in a group each
+    // frame is the state ITS sentence describes, and carries that sentence's
+    // number. More pictured steps than frames → the LAST ones, as before.
     const units = (p.stepIds || []).filter(id => unitById.has(id) && !hidden.has(id)).map(id => unitById.get(id));
-    const i = units.length >= nSlots ? units.length - nSlots + k : k;
-    const u = units[i];
-    return { ...base, stepId: u ? u.members[u.members.length - 1] : null };
+    const pics = units.flatMap(u => picturesOf?.get(u.id) || [u.members[u.members.length - 1]]);
+    const i = pics.length >= nSlots ? pics.length - nSlots + k : k;
+    return { ...base, stepId: pics[i] ?? null };
   }
   return base;
 }
