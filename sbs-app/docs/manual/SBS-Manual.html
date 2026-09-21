@@ -132,6 +132,7 @@ svg .arrow{stroke:var(--muted);stroke-width:1.4;fill:none;marker-end:url(#ah)}
     <button class="btn" id="expandBtn" title="Expand or collapse the contents">⊞ Contents</button>
     <button class="btn" id="themeBtn" title="Switch light / dark">◐ Theme</button>
     <button class="btn" id="printBtn" title="Print or save as PDF">🖨 Print</button>
+    <button class="btn" id="pdfBtn" title="Save the whole manual as a PDF file" hidden>⬇ PDF</button>
   </div>
   <div class="page" id="page">
 <svg width="0" height="0" style="position:absolute"><defs><marker id="ah" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0 0L10 5L0 10z" fill="var(--muted)"/></marker></defs></svg>
@@ -1106,6 +1107,17 @@ svg .arrow{stroke:var(--muted);stroke-width:1.4;fill:none;marker-end:url(#ah)}
   var saved=getTheme(); if(saved) root.setAttribute('data-theme',saved);
   else if(window.matchMedia&&window.matchMedia('(prefers-color-scheme: dark)').matches) root.setAttribute('data-theme','dark');
   document.getElementById('themeBtn').onclick=function(){ setTheme(root.getAttribute('data-theme')==='dark'?'light':'dark'); };
+  // ⬇ PDF — only inside the SBS app, which provides window.sbsHelp. In an
+  // ordinary browser the button stays hidden and 🖨 Print does the same job.
+  (function(){
+    var b=document.getElementById('pdfBtn');
+    if(!b||!window.sbsHelp||typeof window.sbsHelp.savePdf!=='function') return;
+    b.hidden=false;
+    b.onclick=function(){
+      var was=b.textContent; b.disabled=true; b.textContent='… saving';
+      Promise.resolve(window.sbsHelp.savePdf()).catch(function(){}).then(function(){ b.disabled=false; b.textContent=was; });
+    };
+  })();
   document.getElementById('printBtn').onclick=function(){ window.print(); };
   document.getElementById('menuBtn').onclick=function(){ side.classList.toggle('open'); };
   /* ---------- table of contents ---------- */

@@ -130,12 +130,18 @@ function isLicensed() {
  * renderer (dirty flag, save result, key map) — they hand nothing back, and
  * wrapping them would break removeListener, which matches by function identity.
  */
+// Served without a licence. license:* is what the activation dialog is made
+// of; help:* is the manual — reading it is not a licensed act, and its one
+// call only writes the manual to a path the user picked. Keep this list SHORT:
+// every prefix here is a door in the wall.
+const _OPEN_CHANNELS = ['license:', 'help:'];
+
 function installIpcGate() {
   if (ipcMain.__sbsGated) return;
   ipcMain.__sbsGated = true;
   const raw = ipcMain.handle.bind(ipcMain);
   ipcMain.handle = (channel, fn) => raw(channel, (event, ...args) => {
-    if (!String(channel).startsWith('license:') && !isLicensed()) {
+    if (!_OPEN_CHANNELS.some(p => String(channel).startsWith(p)) && !isLicensed()) {
       throw new Error('SBS is not activated.');
     }
     return fn(event, ...args);

@@ -651,17 +651,107 @@ function buildMenu() {
         ...(isMac ? [{ type: 'separator' }, { role: 'front' }] : []),
       ],
     },
-    // Help
+    // Help — the manual, INSIDE the app. (This used to open github.com, a
+    // placeholder, while the manual itself was not even in the installer.)
     {
       role: 'help',
       submenu: [
-        { label: 'SBS Step Browser Help', click: () => shell.openExternal('https://github.com') },
+        { label: 'SBS Manual', accelerator: 'F1', click: () => openHelpWindow() },
+        { label: 'Save the manual as PDF…', click: () => saveManualPdf(mainWindow) },
+        { type: 'separator' },
+        { label: 'Show the manual\'s folder', click: () => { const d = _manualDir(); if (d) shell.openPath(d); } },
       ],
     },
   ];
 
   return Menu.buildFromTemplate(template);
 }
+
+// ─── 📖 Help: the manual, in the app (V0.3.4.62) ───────────────────────────
+//
+// The manual ships WITH the app and opens IN the app — it works offline, it
+// always matches the version that is installed, and it needs no browser. It is
+// also available as a PDF, on purpose: a PDF of the manual is something a user
+// can hand to a language model and then simply ask questions of.
+//
+//   dev       sbs-app/docs/manual/
+//   packaged  resources/manual/        (extraResources, NOT inside the asar —
+//             so the PDF is a real file on disk that Explorer, a PDF reader or
+//             an upload dialog can open)
+const { renderManualPdf } = require('./manual-pdf');
+
+function _manualDir() {
+  const candidates = [
+    path.join(process.resourcesPath || '', 'manual'),       // packaged
+    path.join(APP_ROOT, 'docs', 'manual'),                  // dev
+  ];
+  for (const c of candidates) { try { if (fs.existsSync(path.join(c, 'SBS-Manual.html'))) return c; } catch { /* ignore */ } }
+  return null;
+}
+
+let _helpWindow = null;
+
+function openHelpWindow() {
+  if (_helpWindow && !_helpWindow.isDestroyed()) { _helpWindow.show(); _helpWindow.focus(); return _helpWindow; }
+  const dir = _manualDir();
+  if (!dir) {
+    dialog.showMessageBox(mainWindow, { type: 'warning', message: 'The manual is not installed with this copy of SBS.', detail: 'Expected SBS-Manual.html in the app\'s "manual" folder.' });
+    return null;
+  }
+  _helpWindow = new BrowserWindow({
+    width: 1180, height: 860, minWidth: 640, minHeight: 480,
+    title: 'SBS Step Browser — Manual',
+    autoHideMenuBar: true,
+    backgroundColor: '#0f172a',
+    webPreferences: {
+      preload: path.join(__dirname, 'help-preload.js'),
+      contextIsolation: true, nodeIntegration: false, sandbox: true,
+    },
+  });
+  _helpWindow.setMenuBarVisibility(false);
+  // A document, not a browser: anything that is not the manual itself opens
+  // in the user's own browser instead of navigating this window away.
+  const external = (url) => /^https?:/i.test(url);
+  _helpWindow.webContents.setWindowOpenHandler(({ url }) => { if (external(url)) shell.openExternal(url); return { action: 'deny' }; });
+  _helpWindow.webContents.on('will-navigate', (e, url) => { if (external(url)) { e.preventDefault(); shell.openExternal(url); } });
+  _helpWindow.on('closed', () => { _helpWindow = null; });
+  _helpWindow.loadFile(path.join(dir, 'SBS-Manual.html'));
+  return _helpWindow;
+}
+
+/**
+ * Save the manual as a PDF. Rendered ON DEMAND from the HTML, not copied from
+ * the shipped file, so it is right even in a dev checkout whose PDF is stale —
+ * one path, always in step with what the help window shows.
+ */
+async function saveManualPdf(parent) {
+  const dir = _manualDir();
+  if (!dir) return { ok: false, error: 'manual not installed' };
+  const pick = await dialog.showSaveDialog(parent && !parent.isDestroyed() ? parent : undefined, {
+    title: 'Save the SBS manual as PDF',
+    defaultPath: path.join(app.getPath('documents'), `SBS-Manual-${app.getVersion()}.pdf`),
+    filters: [{ name: 'PDF', extensions: ['pdf'] }],
+  });
+  if (pick.canceled || !pick.filePath) return { ok: false, cancelled: true };
+  // A hidden window of its own: printing must not disturb the theme, the
+  // scroll position or the search of a help window the user is reading.
+  const win = new BrowserWindow({ show: false, width: 1100, height: 1400, webPreferences: { contextIsolation: true, nodeIntegration: false, sandbox: true } });
+  try {
+    await win.loadFile(path.join(dir, 'SBS-Manual.html'));
+    const pdf = await renderManualPdf(win.webContents);
+    fs.writeFileSync(pick.filePath, pdf);
+    shell.showItemInFolder(pick.filePath);
+    return { ok: true, path: pick.filePath };
+  } catch (err) {
+    dialog.showMessageBox(parent && !parent.isDestroyed() ? parent : undefined, { type: 'error', message: 'The manual could not be saved as PDF.', detail: String(err?.message || err) });
+    return { ok: false, error: String(err?.message || err) };
+  } finally {
+    try { win.destroy(); } catch { /* already gone */ }
+  }
+}
+
+// the ⬇ PDF button inside the help window (see electron/help-preload.js)
+ipcMain.handle('help:savePdf', () => saveManualPdf(_helpWindow || mainWindow));
 
 // ─── License IPC bridge (must register BEFORE renderer mounts so the
 // preload's invoke() calls during boot have handlers waiting)
