@@ -1511,10 +1511,18 @@ function _maskEditBar(titleText) {
  * Hold Shift to land on 15°. The angle is re-derived from the start of the
  * gesture on every frame, never accumulated, so Shift can go on and off
  * mid-turn without the rectangle drifting.
+ *
+ * ⌨ TYPE AN ANGLE (V0.3.4.78) — the same gesture the items' knob has: click a
+ * knob and type how far to turn; maths allowed; the mask turns as you type;
+ * Enter or the next click keeps it, Esc puts it back. Typing while HOLDING the
+ * knob works too, and the typed number outranks the mouse. Kept inside this
+ * function on purpose: the items' version is wired to the selection, the
+ * transformer and their undo entry, none of which a mask editor has.
  */
 function _maskRotKnobs(rect, onChange) {
   const knobs = [_rotKnobGroup(), _rotKnobGroup()];
   let drag = null;
+  let entry = null;      // ⌨ { c, rot0, pos0, buf } — armed by a knob press, until Enter / Esc / the next press
 
   const centreOf = () => {
     const w = Math.abs(rect.width() * rect.scaleX());
@@ -1540,49 +1548,102 @@ function _maskRotKnobs(rect, onChange) {
     const p = _uiLayer?.getRelativePointerPosition?.();
     return p ? _deg(Math.atan2(p.y - c.y, p.x - c.x)) : null;
   };
-  const frame = () => {
-    if (!drag) return;
-    let delta = _wrapDeg(drag.now - drag.start);
-    if (drag.shift) delta = Math.round((drag.rot0 + delta) / 15) * 15 - drag.rot0;
+  /** The rectangle, turned `delta` degrees about `c` FROM a start pose — never from where it is now. */
+  const turnTo = (c, pos0, rot0, delta) => {
     const rad = delta * Math.PI / 180, cs = Math.cos(rad), sn = Math.sin(rad);
-    const vx = drag.pos0.x - drag.c.x, vy = drag.pos0.y - drag.c.y;
-    rect.x(drag.c.x + vx * cs - vy * sn);
-    rect.y(drag.c.y + vx * sn + vy * cs);
-    rect.rotation(drag.rot0 + delta);
+    const vx = pos0.x - c.x, vy = pos0.y - c.y;
+    rect.x(c.x + vx * cs - vy * sn);
+    rect.y(c.y + vx * sn + vy * cs);
+    rect.rotation(rot0 + delta);
     place();
     onChange?.();
+  };
+  const frame = () => {
+    if (!drag) return;
+    if (entry?.buf) return;                 // ⌨ a typed angle outranks the mouse
+    let delta = _wrapDeg(drag.now - drag.start);
+    if (drag.shift) delta = Math.round((drag.rot0 + delta) / 15) * 15 - drag.rot0;
+    turnTo(drag.c, drag.pos0, drag.rot0, delta);
   };
   const move = (e) => {
     if (!drag) return;
     e.preventDefault?.();
     const d = degAt(drag.c);
     if (d != null) drag.now = d;
+    if (Math.abs(_wrapDeg(drag.now - drag.start)) > 1.5) drag.moved = true;   // less than that is a click with a shaky hand
     drag.shift = !!e.shiftKey;
     frame();
   };
   const key = (e) => { if (!drag) return; drag.shift = !!e.shiftKey; frame(); };
+
+  // ⌨ type-an-angle
+  const say = () => {
+    if (!entry) return;
+    if (!entry.buf) { setStickyStatus('↻ Type how far to turn the mask, in degrees — maths allowed (90/3, 45*2). Enter keeps it, Esc cancels.', 'info', 'maskAngle'); return; }
+    const v = _evalExpr(entry.buf);
+    setStickyStatus(Number.isFinite(v) ? `↻ ${entry.buf} = ${Math.round(v * 100) / 100}°   ·   Enter or a click keeps it, Esc cancels` : `↻ ${entry.buf}   ·   (incomplete)`, 'info', 'maskAngle');
+  };
+  /** how: 'commit' = what was typed stays · 'cancel' = back to where the press found it · 'keep' = leave the rectangle exactly as it is (a drag turned it) */
+  const endEntry = (how) => {
+    const a = entry;
+    entry = null;
+    window.removeEventListener('keydown', typeKey, true);
+    window.removeEventListener('pointerdown', away, true);
+    clearStickyStatus('maskAngle');
+    if (!a || how === 'keep') return;
+    const v = _evalExpr(a.buf);
+    turnTo(a.c, a.pos0, a.rot0, how === 'commit' && Number.isFinite(v) ? v : 0);
+  };
+  function typeKey(ev) {
+    if (!entry) return;
+    const k = ev.key;
+    if (k === 'Shift' || k === 'Control' || k === 'Alt' || k === 'Meta') return;
+    // Enter / Esc with NOTHING typed belong to the mask editor (apply / cancel the whole edit): just stand down.
+    if ((k === 'Enter' || k === 'Escape') && !entry.buf) { endEntry('keep'); return; }
+    ev.preventDefault(); ev.stopImmediatePropagation();
+    if (k === 'Enter')  { endEntry('commit'); if (drag) up(); return; }
+    if (k === 'Escape') { endEntry('cancel'); if (drag) up(); return; }
+    if (k === 'Backspace') entry.buf = entry.buf.slice(0, -1);
+    else if (k.length === 1 && /[0-9a-zA-Z+\-*/%^().,° ]/.test(k)) entry.buf += k;
+    else return;
+    const v = _evalExpr(entry.buf);
+    turnTo(entry.c, entry.pos0, entry.rot0, Number.isFinite(v) ? v : 0);
+    say();
+  }
+  /** A press anywhere while typing is armed keeps what was typed (a press on a knob then starts a new turn). */
+  function away() { if (entry && !drag) endEntry('commit'); }
+
   const up = () => {
     if (!drag) return;
+    const d = drag;
     drag = null;
     window.removeEventListener('pointermove',   move, true);
     window.removeEventListener('pointerup',     up,   true);
     window.removeEventListener('pointercancel', up,   true);
     window.removeEventListener('keydown',       key,  true);
     window.removeEventListener('keyup',         key,  true);
+    if (!entry) return;
+    if (entry.buf) { endEntry('commit'); return; }          // typed while holding: releasing keeps the number
+    if (!d.moved) { turnTo(d.c, d.pos0, d.rot0, 0); say(); return; }   // a plain click: typing stays armed — and now says so
+    endEntry('keep');                                        // a real drag: the turn on screen is the drag's
   };
   const down = (e) => {
     if (drag) return;                       // pointerdown and mousedown both land; first wins
     if (e?.evt) { e.evt.preventDefault(); e.evt.stopPropagation(); }
     if (e) e.cancelBubble = true;
+    if (entry) endEntry('commit');          // a second grab keeps what was typed
     const c = centreOf();
     const d = degAt(c);
     if (d == null) return;
-    drag = { c, start: d, now: d, rot0: rect.rotation() || 0, pos0: { x: rect.x(), y: rect.y() }, shift: !!e?.evt?.shiftKey };
+    drag = { c, start: d, now: d, rot0: rect.rotation() || 0, pos0: { x: rect.x(), y: rect.y() }, shift: !!e?.evt?.shiftKey, moved: false };
+    entry = { c, rot0: drag.rot0, pos0: { ...drag.pos0 }, buf: '' };        // armed silently: the hint would flicker on every drag
     window.addEventListener('pointermove',   move, true);
     window.addEventListener('pointerup',     up,   true);
     window.addEventListener('pointercancel', up,   true);
     window.addEventListener('keydown',       key,  true);
     window.addEventListener('keyup',         key,  true);
+    window.addEventListener('keydown',       typeKey, true);
+    window.addEventListener('pointerdown',   away, true);   // this press is already past window's capture phase — it will not fire for itself
   };
   for (const k of knobs) {
     k.on('pointerdown', down);
@@ -1593,7 +1654,8 @@ function _maskRotKnobs(rect, onChange) {
   return {
     nodes: knobs,
     place,
-    destroy: () => { up(); for (const k of knobs) { try { k.destroy(); } catch { /* already gone */ } } },
+    typing: () => !!entry?.buf,             // the mask editor's own Enter / Esc stand aside while a number is being typed
+    destroy: () => { endEntry('keep'); up(); for (const k of knobs) { try { k.destroy(); } catch { /* already gone */ } } },
   };
 }
 
@@ -1654,6 +1716,7 @@ export function beginMaskEdit(node, { defId = null, seedFromDefId = null } = {})
   const { bar, apply, cancel, place } = _maskEditBar(title);
   const onKey = (e) => {
     if (e.key !== 'Enter' && e.key !== 'Escape') return;
+    if (knobs.typing()) return;             // ⌨ an angle is being typed on a knob: Enter keeps THAT, Esc cancels THAT
     // Never take a key that belongs to something the user is typing in, or
     // to a modal on top of us (a dialog owns its own Escape).
     const el = document.activeElement;
@@ -3580,24 +3643,35 @@ async function _replaceImageSource(node) {
 /** 🎬 The same for a clip: a new file behind the same frame. */
 async function _replaceVideoSource(node) {
   if (!node || node.isDestroyed?.()) return;
-  const file = await new Promise(resolve => {
-    const inp = document.createElement('input');
-    inp.type = 'file';
-    inp.accept = 'video/mp4,video/webm,video/ogg,video/quicktime,.mp4,.m4v,.webm,.ogv,.mov';
-    inp.onchange = () => resolve(inp.files?.[0] || null);
-    inp.oncancel = () => resolve(null);
-    inp.click();
-  });
-  // Electron removed File.path; the sanctioned replacement lives in the
-  // preload (webUtils.getPathForFile). Same chain the importer uses — without
-  // it, every replacement reported "that clip has no path on disk".
-  const abs = (typeof file?.path === 'string' && file.path)
-    ? file.path
-    : (() => { try { return window.sbsNative?.pathForFile?.(file) || ''; } catch { return ''; } })();
-  if (!abs) {
-    if (file) setStatus('That clip has no path on disk — a video is referenced, never copied in.', 'warn', 6000);
-    return;
+  // A clip is REFERENCED by its path, so what is needed here is a path — and the first two
+  // versions asked the browser for a File and then tried to turn it back into one. That round
+  // trip (File → preload → webUtils.getPathForFile) came back empty on the user's machine after
+  // it had been "fixed" once already: "that clip has no path on disk". The operating system's own
+  // open dialog returns the path itself; there is nothing to convert and nothing to come back
+  // empty. The File route stays only as a fallback for a build without the bridge.
+  let abs = '';
+  if (window.sbsNative?.openFile) {
+    abs = await window.sbsNative.openFile({ title: 'Replace clip', filters: [{ name: 'Video', extensions: ['mp4', 'm4v', 'webm', 'ogv', 'mov'] }] }) || '';
+    if (!abs) return;                                   // cancelled
+  } else {
+    const file = await new Promise(resolve => {
+      const inp = document.createElement('input');
+      inp.type = 'file';
+      inp.accept = 'video/mp4,video/webm,video/ogg,video/quicktime,.mp4,.m4v,.webm,.ogv,.mov';
+      inp.onchange = () => resolve(inp.files?.[0] || null);
+      inp.oncancel = () => resolve(null);
+      inp.click();
+    });
+    if (!file) return;
+    abs = (typeof file.path === 'string' && file.path) ? file.path
+      : (() => { try { return window.sbsNative?.pathForFile?.(file) || ''; } catch (err) { console.warn('[overlay] replace clip: pathForFile threw:', err); return ''; } })();
+    if (!abs) {
+      console.warn('[overlay] replace clip: no path for', file?.name, '· bridge:', typeof window.sbsNative?.pathForFile);
+      setStatus('That clip has no path on disk — a video is referenced, never copied in.', 'warn', 6000);
+      return;
+    }
   }
+  if (node.isDestroyed?.()) return;                     // a dialog was open: the step may have changed under it
   const { abs: a2, rel } = videoOverlay.describeVideoPath(abs);
   const before = {
     videoPath: node.getAttr('videoPath'), videoRel: node.getAttr('videoRel'),

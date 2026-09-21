@@ -70,7 +70,9 @@ export function closeOverlayTableEditor(abandon = false) {
   window.removeEventListener('pointermove', st.move, true);
   window.removeEventListener('pointerup', st.up, true);
   document.removeEventListener('paste', st.paste, true);
-  if (!abandon) { _open = st; _commitOpenCell(st); _open = null; }
+  document.removeEventListener('pointerdown', st.bake, true);
+  clearTimeout(st.fmtTimer);
+  if (!abandon) { _open = st; _flushFmt(st); _commitOpenCell(st); _open = null; }
   st.host.remove();
   st.bar.remove();
   st.chrome.remove();
@@ -250,6 +252,34 @@ function _commitOpenCell(st) {
   const cells = st.data.cells.map((row, y) => row.map((v, x) => (y === r && x === c ? text : v)));
   _apply(st, { cells }, 'Edit cell');
   return true;
+}
+
+/**
+ * 🎨 A PICKED COLOUR IS WRITTEN WHEN IT IS PICKED — not when the picker closes.
+ *
+ * It used to be painted onto the cells on `input` (looks done) and written into
+ * the table only on the swatch's `change` event — which a colour picker sends
+ * when it CLOSES, and sometimes not at all if the bar was rebuilt under it. In
+ * between, the colour existed on screen and nowhere else. Whatever the user did
+ * next was computed from a table that did not have it: merge the cells and the
+ * colour was gone, click another cell and the redraw wiped it, and it only
+ * "took" after leaving the table and coming back. (The user: "it's not baking
+ * the colours immediately — it waits for some additional step".)
+ *
+ * Now every `input` leaves a PENDING colour, and the pending colour is written:
+ *   • a quarter of a second after the last movement in the picker, by itself;
+ *   • BEFORE anything else happens — any pointer press anywhere, any key, any
+ *     command, closing — so nothing is ever computed from a table without it;
+ *   • on `change`, if that still arrives.
+ * A long session in the picker may leave a few undo entries instead of one;
+ * that is the price of never losing the colour, and it is the right way round.
+ */
+function _flushFmt(st) {
+  clearTimeout(st.fmtTimer); st.fmtTimer = 0;
+  const p = st.pendingFmt;
+  if (!p) return false;
+  st.pendingFmt = null;
+  return _apply(st, tableSetFmt(st.data, p.s.r0, p.s.c0, p.s.r1, p.s.c1, p.patch), 'Cell look');
 }
 
 /**
@@ -442,7 +472,7 @@ export function openOverlayTableEditor(ctx) {
     host, bar, chrome, ctx, data,
     sel: { r0: 0, c0: 0, r1: 0, c1: 0 },
     editing: null, drag: false, grip: null, coldrag: null, rowdrag: null,
-    fmtTarget: null, geom: null, holdBar: false,
+    fmtTarget: null, geom: null, holdBar: false, pendingFmt: null, fmtTimer: 0,
   };
   _open = st;
 
@@ -650,6 +680,7 @@ export function openOverlayTableEditor(ctx) {
   //    clicking a bar button reached the app's stack and could delete the very
   //    table being edited. ──
   st.keys = (e) => {
+    _flushFmt(st);                              // 🎨 a picked colour is in the table before this key does anything
     const mod = e.ctrlKey || e.metaKey;
     if (mod && (e.code === 'KeyZ' || e.code === 'KeyY')) {
       e.preventDefault(); e.stopPropagation();
@@ -791,6 +822,11 @@ export function openOverlayTableEditor(ctx) {
       if (r < s.r0 || r > s.r1 || c < s.c0 || c > s.c1) continue;
       if (inp.dataset.t === 'bg') td.style.background = inp.value; else td.style.color = inp.value;
     }
+    // 🎨 …and it is on its way INTO the table (see _flushFmt)
+    const v = String(inp.value).toLowerCase();
+    st.pendingFmt = { s: { ...s }, patch: inp.dataset.t === 'bg' ? { bg: v } : { c: v } };
+    clearTimeout(st.fmtTimer);
+    st.fmtTimer = setTimeout(() => { if (_open === st) _flushFmt(st); }, 250);
   });
   bar.addEventListener('change', (e) => {
     const inp = e.target.closest?.('[data-t]');
@@ -798,6 +834,13 @@ export function openOverlayTableEditor(ctx) {
     const s = st.fmtTarget || _sel(st) || { r0: 0, c0: 0, r1: 0, c1: 0 };
     st.fmtTarget = null;
     const key = inp.dataset.t;
+    if (key === 'fg' || key === 'bg') {
+      if (_flushFmt(st)) return;                                  // the usual case: what was pending is written
+      // nothing pending: already written — or a picker that sends no `input` at all, only this
+      const v = String(inp.value).toLowerCase(), have = st.data.fmt?.[`${s.r0},${s.c0}`]?.[key === 'fg' ? 'c' : 'bg'];
+      if (String(have || '').toLowerCase() !== v) _apply(st, tableSetFmt(st.data, s.r0, s.c0, s.r1, s.c1, key === 'fg' ? { c: v } : { bg: v }), 'Cell look');
+      return;
+    }
     const patch = key === 'size' ? { s: Math.max(5, Math.min(40, Number(inp.value) || st.data.size)) }
       : key === 'fg' ? { c: String(inp.value).toLowerCase() }
       : key === 'bg' ? { bg: String(inp.value).toLowerCase() } : null;
@@ -811,6 +854,10 @@ export function openOverlayTableEditor(ctx) {
     if (e.target?.closest?.('.context-menu')) return;
     closeOverlayTableEditor();
   };
+  // 🎨 any press, anywhere — a cell, a bar button, a grip, outside — writes a picked colour FIRST.
+  // Registered before st.away on purpose: listeners run in order, and the colour must be in before a close.
+  st.bake = () => { _flushFmt(st); };
+  document.addEventListener('pointerdown', st.bake, true);
   setTimeout(() => document.addEventListener('pointerdown', st.away, true), 0);
 
   _draw(st);
