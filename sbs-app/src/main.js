@@ -1587,14 +1587,13 @@ window.sbsFix.pruneShapes = () => {
   console.log(n ? `[fix] pruned ${n} orphan shape(s). Save to persist.` : '[fix] no orphan shapes.');
   return n;
 };
-// ⌨ THE KEYBOARD, HANDED BACK (V0.3.4.72) — see _refocus in electron/main.js for
-// the whole story. Three things on this side:
-//   1. every native alert / confirm / prompt asks main for the keyboard when it
-//      returns — they are the known trigger, and there are 33 of them;
-//   2. a click into a window that does NOT have the keyboard re-acquires it, and
-//      leaves a breadcrumb: that state is exactly the bug, caught in the act;
-//   3. the recovery tools below now do the one thing that was always missing —
-//      the OS-level focus cycle the user was doing by hand.
+// ⌨ Handing the keyboard back after native dialogs (V0.3.4.72, corrected .73).
+// ⚠ NOT the fix for the "typing goes dead" bug — see the block above _refocus in
+// electron/main.js: that theory (lost window focus) is contradicted by the
+// user's own evidence. This guards a different, documented Electron problem:
+//   1. every native alert / confirm / prompt asks main for the keyboard back;
+//   2. a click into a window that still has no keyboard re-acquires it and logs
+//      "[focus] …" — if that line ever shows up, THAT problem is real here too.
 for (const name of ['alert', 'confirm', 'prompt']) {
   const orig = window[name]?.bind(window);
   if (typeof orig !== 'function') continue;
@@ -1607,7 +1606,7 @@ window.addEventListener('pointerdown', () => {
   // click has settled is the bug.
   setTimeout(() => {
     if (document.hasFocus()) return;
-    console.warn('[focus] clicked, and the window still does not have the keyboard — re-acquiring it (this is the "typing goes dead" state).');
+    console.warn('[focus] clicked, and the window still does not have keyboard focus — re-acquiring it.');
     window.sbsNative?.refocusWindow?.(false);
   }, 150);
 }, true);
@@ -1619,7 +1618,7 @@ window.sbsFix.input = () => {
     try { if (editSession.isActive()) { editSession.end({ commit: false }); done.push('ended edit session'); } } catch {}
     try { document.activeElement?.blur?.(); } catch {}
     try { window.focus(); document.body.focus?.(); } catch {}
-    // the part that was always missing: only the MAIN process can re-acquire the keyboard
+    // only the MAIN process can re-acquire keyboard focus (harmless; NOT the cure for dead typing — see electron/main.js)
     try { window.sbsNative?.refocusWindow?.(true); done.push('OS focus cycle'); } catch {}
     console.log('[fix] unstick:', done.length ? done.join(', ') : 'no stray dialogs/inert/session; focus reset. If still stuck, run window.sbsDiag.input() and send me the table.');
     return done;

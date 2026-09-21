@@ -700,35 +700,35 @@ function buildMenu() {
   return Menu.buildFromTemplate(template);
 }
 
-// ─── ⌨ TYPING THAT GOES DEAD (V0.3.4.72) ───────────────────────────────────
+// ─── ⌨ HANDING THE KEYBOARD BACK TO THE PAGE (V0.3.4.72, corrected .73) ────
 //
-// THE BUG. Every so often no text field in the app accepts typing. Fields look
-// focused, the mouse works, shortcuts may still work — letters go nowhere. The
-// user's cure, found by accident and 100% reliable over months: go to ANY other
-// window, copy something, come back. The copy is incidental. What cures it is
-// LEAVING AND RE-ENTERING THE WINDOW.
+// ⚠ THIS IS NOT THE FIX FOR THE "TYPING GOES DEAD" BUG. It was written as one,
+// on the theory that the window loses KEYBOARD focus — and the user, who has
+// lived with the bug for months, says plainly that the theory is wrong: leaving
+// the window and coming back does NOT cure it. What cures it, every time, is a
+// TEXT ACTION IN ANOTHER APPLICATION (select + copy). And while it is stuck,
+// Ctrl+V still pastes here — which lost focus could never allow. The .72
+// diagnosis ignored evidence that was already on file. Do not repeat it.
 //
-// THE CAUSE. On Windows, Electron can end up with the BrowserWindow active at
-// the OS level while its webContents does not hold KEYBOARD focus. The DOM still
-// believes an element is focused, so nothing in the page can see the problem,
-// and nothing in the page can fix it either: window.focus() in the renderer
-// does not re-acquire it. The known triggers are native modal dialogs — the
-// page's own alert / confirm / prompt (this app has 33 of them) and the file /
-// save / message dialogs shown from here (16 more). When one closes, the OS
-// hands focus back to the window and the keyboard sometimes does not follow.
-//   An OS-level focus cycle — exactly what alt-tabbing away and back is —
-// re-associates it. So that is done from here, where it can be:
-//   • GENTLE  (webContents.focus())        every time the window gains focus,
-//             and after every native dialog, on either side. Invisible.
-//   • HARD    (blur → focus → webContents) only when the user asks for it:
-//             Edit ▸ Recover stuck inputs / Ctrl+Alt+U. It flickers the title
-//             bar, which is the visible proof that the cycle happened.
+// What is actually known (memory note: project_textfield_stuck_bug):
+//   • every text field stops taking typed characters; paste still works;
+//   • nothing in the page vetoes characters — there is no beforeinput /
+//     composition handler anywhere in src/, and the one keypress handler is a
+//     scoped stopPropagation; the before-input-event hook in this file only
+//     forwards Alt combos, it never preventDefaults;
+//   • so the characters are lost BELOW the page. This Electron has no
+//     TSFImeSupport switch (checked in the binary: absent), so Windows' Text
+//     Services Framework cannot be turned off from here;
+//   • best remaining suspect: the Windows text-input service losing its
+//     association with this window, re-synced by a text action elsewhere.
+//     UNPROVEN. It needs one observation from a stuck moment: do Backspace and
+//     the arrow keys still work in the field while letters do not?
 //
-// HONESTLY: this follows from the symptom and from a well-known Electron-on-
-// Windows failure, not from having caught it in the act — it would not
-// reproduce on demand. The renderer leaves a console breadcrumb when it finds
-// the page without the keyboard ("[focus] …"), so if it ever happens again we
-// will know whether this was the whole story.
+// What this code IS: a harmless guard against a DIFFERENT, documented
+// Electron-on-Windows problem — after a native alert / confirm / file dialog
+// closes, the window can be active while its webContents lacks keyboard focus.
+//   • GENTLE  webContents.focus() — on window focus, and after native dialogs
+//   • HARD    blur → focus → webContents — only from Edit ▸ Recover stuck inputs
 function _refocus(hard) {
   const w = mainWindow;
   if (!w || w.isDestroyed()) return false;

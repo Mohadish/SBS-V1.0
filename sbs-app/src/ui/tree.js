@@ -3340,12 +3340,32 @@ function _onDragEnd() {
   renderTree();
 }
 
+/**
+ * A PART TAKES SHAPES, AND ONLY SHAPES (V0.3.4.73).
+ *
+ * A flat shape placed by picking a face is BORN under that part
+ * (placeShapeInstance: parent = plane.anchorNodeId = the picked mesh), so a
+ * part with shape children is an ordinary structure — every project with a
+ * face-placed shape already saves and loads it. But the tree refused every drop
+ * onto a real mesh, reasoning that a mesh "has no .children to receive moved
+ * items". The result was a one-way door: a shape could be dragged OFF its part
+ * into a folder and never back, nor onto any other part — the drop did nothing.
+ *
+ * Anything else dragged onto a part is still refused: a part is not a
+ * container for folders, models or other parts.
+ */
+function _draggingOnlyShapes() {
+  const byId = state.get('nodeById');
+  return !!byId && _dragIds.length > 0 && _dragIds.every(id => byId.get(id)?.type === 'flatShape');
+}
+const _meshRefuses = (node) => node.type === 'mesh' && !node.missing && !_draggingOnlyShapes();
+
 function _onDragOver(e, node) {
-  // Block drops on leaf nodes (real meshes + flat shapes + notes) — they
-  // have no .children to receive moved items. Archived containers are
+  // Block drops on leaf nodes (flat shapes + notes, and real meshes unless
+  // only SHAPES are being dragged — see above). Archived containers are
   // also blocked: their tree shape is frozen and can't accept new items
   // until the user unarchives them.
-  if (!_isDragging || (node.type === 'mesh' && !node.missing) ||
+  if (!_isDragging || _meshRefuses(node) ||
       node.type === 'flatShape' || node.type === 'note' ||
       node.archived) return;
   e.preventDefault();
@@ -3370,8 +3390,9 @@ function _onDrop(e, targetNode) {
   e.preventDefault();
   _dropTarget = null;
 
-  if ((targetNode.type === 'mesh' && !targetNode.missing) ||
+  if (_meshRefuses(targetNode) ||
       targetNode.type === 'flatShape' || targetNode.type === 'note') {
+    if (targetNode.type === 'mesh') setStatus('Only shapes can be dropped onto a part.', 'info', 3500);
     renderTree(); return;
   }
 
