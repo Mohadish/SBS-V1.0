@@ -74,7 +74,16 @@ function _kokoroBundleDir() {
 // NOT SHIPPABLE: the current voice derives from SASPEECH (c IPBC) and is
 // licensed NON-COMMERCIAL. It is gitignored and excluded from the default
 // build - see `npm run build:he` for the test-only installer.
+//
+// 🔇 SHELVED (V0.3.4.65, 2026-09-21): the Hebrew voice is parked, NOT removed —
+// the project may come back to it. Every Hebrew path in the app already keys
+// off this one function returning null, so that is the only switch there is:
+// with the flag off the add-on folder may sit on disk and nothing sees it.
+// To wake it up again for a session:  set SBS_HEBREW_TTS=1  before launching.
+const HEBREW_TTS_ENABLED = process.env.SBS_HEBREW_TTS === '1';
+
 function _kokoroHeDir() {
+  if (!HEBREW_TTS_ENABLED) return null;   // shelved — see above
   if (app.isPackaged) {
     const d = path.join(process.resourcesPath, 'kokoro-he');
     try { return fs.existsSync(path.join(d, 'onnx', 'model.onnx')) ? d : null; } catch { return null; }
