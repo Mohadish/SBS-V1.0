@@ -141,6 +141,7 @@ const _KEY_ACTIONS = [
   { id: 'overlaySnap',       name: '🧲 Overlay magnet',     desc: 'Dragged overlay items stick to each other and to the picture (snapping on / off).' },
   { id: 'globalMode',        name: '🌐 Global Mode',         desc: 'Transform edits carry across steps on deselect.' },
   { id: 'gizmoSpace',        name: '⤧ Gizmo Local / World', desc: 'Toggle the transform gizmo\'s coordinate space.' },
+  { id: 'fitView',           name: '⛶ Fit view',            desc: 'Frame the selection — or the whole scene when nothing is selected.' },
 ];
 
 function _renderKeysTab(body) {

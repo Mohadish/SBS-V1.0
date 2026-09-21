@@ -5154,7 +5154,10 @@ if (typeof ResizeObserver !== 'undefined' && _viewportSurfaceEl) {
 // if another listener tries to swallow events. See unstuckInputs() in
 // systems/actions.js for what it actually does.
 window.addEventListener('keydown', (e) => {
-  if (e.ctrlKey && e.altKey && (e.key === 'u' || e.key === 'U')) {
+  // e.code, not e.key: on a Hebrew (or any non-Latin) layout the U key types
+  // 'ו', so the typed-letter test never matched — and this is the EMERGENCY
+  // shortcut, the one that has to work when everything else is stuck.
+  if (e.ctrlKey && e.altKey && e.code === 'KeyU') {
     e.preventDefault();
     e.stopPropagation();
     try {
@@ -5190,13 +5193,17 @@ window.addEventListener('keydown', async e => {
   const key = e.key;
 
   // ── File ────────────────────────────────────────────────────────────────
-  if (mod && !e.shiftKey && key === 's') {
+  // PHYSICAL keys (e.code) from here on. `key === 's'` is the letter the
+  // layout TYPES: with the keyboard on Hebrew the S key gives 'ד' and the
+  // shortcut silently did nothing. (It also missed Ctrl+S with Caps Lock on,
+  // which types 'S'.) Undo/redo learned this in V0.3.0.81; these had not.
+  if (mod && !e.shiftKey && e.code === 'KeyS') {
     e.preventDefault();
     const r = await saveProject({ mode: 'auto', suggestedName: getSuggestedFilename() });
     if (r.saved) setStatus(`Saved: ${state.get('projectName')}.`);
     return;
   }
-  if (mod && e.shiftKey && key === 'S') {
+  if (mod && e.shiftKey && e.code === 'KeyS') {
     e.preventDefault();
     const r = await saveProject({ mode: 'saveAs', suggestedName: getSuggestedFilename() });
     if (r.saved) setStatus(`Saved: ${state.get('projectName')}.`);
@@ -5290,7 +5297,7 @@ window.addEventListener('keydown', async e => {
   // F frames the SELECTION (the whole point of the shortcut). Only when nothing
   // is selected does it fall back to fitting the entire scene. V0.3.0.110 — was
   // always fitting rootGroup, so it zoomed out to the whole scene every time.
-  if (key === 'f' || key === 'F') {
+  if (keyMatches('fitView', e)) {   // 🎹 was `key === 'f'` — now layout-independent + rebindable
     e.preventDefault();
     if (!sceneCore.rootGroup || !window.THREE) return;
     const selSet = state.get('multiSelectedIds');

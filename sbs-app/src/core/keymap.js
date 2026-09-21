@@ -28,6 +28,7 @@ const DEFAULTS = {
   captureStepCamera: 'KeyC',   // 📷 save the current view as the step's camera (free binding)
   overlayXray:       'KeyX',   // 👓 ghost the overlay to arrange against the 3D (never rendered)
   overlaySnap:       'KeyM',   // 🧲 the magnet — dragged overlay items stick to each other and to the picture
+  fitView:           'KeyF',   // ⛶ frame the selection (or the whole scene) — was a bare `key === 'f'`, dead on a Hebrew keyboard
 };
 
 let _overrides = {};

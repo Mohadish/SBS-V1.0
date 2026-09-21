@@ -16,6 +16,7 @@
  */
 
 import { state }     from '../core/state.js';
+import { phrase, isRtlLang } from '../core/ui-phrases.js';   // the words the app draws INTO the picture
 import { sceneCore } from '../core/scene.js';   // H2: tick hook for overlay fade
 import * as videoOverlay from './video-overlay.js';   // 🎬 V0.3.2.75 — disk-referenced video clips
 import * as clock    from '../core/clock.js';
@@ -3345,10 +3346,23 @@ async function _generateTocHtml(style = null, chaptersOverride = null) {
   }
   const fmt = (ms) => { const s = Math.round(ms / 1000); return `${Math.floor(s / 60)}:${String(s % 60).padStart(2, '0')}`; };
   const esc = (s) => String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+  // THE FILM'S LANGUAGE, NOT THE APP'S. The heading and the "no chapters"
+  // line are words the app draws into the picture; the project never held
+  // them, so translating the project could never change them — a Hebrew film
+  // opened on the English words "Table of Contents". They now follow the
+  // project's active language (core/ui-phrases.js).
+  //   In a right-to-left language the whole block turns: dir="rtl" flips the
+  // flex rows by itself (chapter name on the right, its time on the left) and
+  // a left alignment — the default nobody chose — becomes right. The timecode
+  // stays an LTR island so "1:05" can never read as "05:1".
+  const lang = state.get('activeLang');
+  const rtl  = isRtlLang(lang);
+  const dir  = rtl ? ' dir="rtl"' : '';
+  const align = rtl && st.align === 'left' ? 'right' : st.align;
   const rows = chapters.filter(c => c.chapterId).map(c =>
-    `<div style="display:flex;justify-content:space-between;gap:40px;padding:3px 0"><span>${esc(c.name)}</span><span style="opacity:0.85">${fmt(c.startMs)}</span></div>`
-  ).join('') || '<div style="opacity:0.7">(no chapters yet)</div>';
-  return `<div style="font-family:${st.family};font-size:${st.size}px;color:${st.color};text-align:${st.align};line-height:1.35"><div style="font-size:${titlePx}px;font-weight:bold;margin-bottom:10px">Table of Contents</div>${rows}</div>`;
+    `<div${dir} style="display:flex;justify-content:space-between;gap:40px;padding:3px 0"><span>${esc(c.name)}</span><span dir="ltr" style="opacity:0.85">${fmt(c.startMs)}</span></div>`
+  ).join('') || `<div${dir} style="opacity:0.7">${esc(phrase('noChapters', lang))}</div>`;
+  return `<div${dir} style="font-family:${st.family};font-size:${st.size}px;color:${st.color};text-align:${align};line-height:1.35"><div${dir} style="font-size:${titlePx}px;font-weight:bold;margin-bottom:10px">${esc(phrase('tocTitle', lang))}</div>${rows}</div>`;
 }
 
 // Where each row STARTS, as a fraction of the table's height, measured from
@@ -9447,7 +9461,10 @@ function _onKeyDown(e) {
   // the key, then fire-and-forget the async work.
   const mod = e.ctrlKey || e.metaKey;
   if (!mod) return;
-  const k = e.key.toLowerCase();
+  // The PHYSICAL key: on a Hebrew layout Ctrl+C arrives with key 'ב', Ctrl+V
+  // with 'ה', Ctrl+D with 'ג' — so copy, paste and duplicate were all dead
+  // whenever the keyboard was left on Hebrew after typing a title.
+  const k = e.code === 'KeyC' ? 'c' : e.code === 'KeyV' ? 'v' : e.code === 'KeyD' ? 'd' : '';
   if (k === 'c') { if (_copyToOverlayClipboard()) e.preventDefault(); return; }
   if (k === 'v') {
     const inPlace = !!e.altKey;            // Ctrl+Alt+V → paste in place

@@ -26,6 +26,7 @@
  */
 
 import { state }                    from '../core/state.js';
+import { phrase }                   from '../core/ui-phrases.js';   // words drawn INTO the picture follow the project's language
 import { sceneCore }                from '../core/scene.js';
 import { steps }                    from '../systems/steps.js';
 import { computeEffectiveVisibility } from '../core/nodes.js';
@@ -306,7 +307,7 @@ function _renderTick() {
 
     // Sync content + style.
     if (_editingNoteId !== note.id) {
-      const text = srcText || '(empty note)';
+      const text = srcText || phrase('emptyNote', state.get('activeLang'));
       if (div.dataset.lastText !== text) {
         div.textContent = text;
         div.dataset.lastText = text;
@@ -800,7 +801,7 @@ export function rasterizeNotesLayer({ width, height }) {
     const fontCanonical = srcCustomFontSize ?? presets[srcSizePresetId] ?? presets.medium ?? 16;
     const fontSize = fontCanonical * (sfRect.scale || 1);
 
-    const text = (srcText && srcText.length) ? srcText : '(empty note)';
+    const text = (srcText && srcText.length) ? srcText : phrase('emptyNote', state.get('activeLang'));
 
     // Wrap text to NOTE_MAX_WIDTH_PX (in output pixels). The text wrapper
     // returns an array of lines; balloon dimensions follow.
