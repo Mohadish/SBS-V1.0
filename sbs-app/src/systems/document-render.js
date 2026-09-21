@@ -92,7 +92,6 @@ body { font-family: Arial, Helvetica, sans-serif; color: #111; -webkit-print-col
  * @param {string} [o.logo]                         image URL for the header
  * @param {string} [o.title]                        <title>
  * @param {boolean} [o.showStepNames]               bold step name above each text
- * @param {boolean} [o.editing]                     the document editor's page view: silent steps are kept as faint, typeable rows (never set when printing)
  */
 export function renderDocumentHtml(model, o = {}) {
   const oo = { ...o, watermark: o.watermark ?? model.watermark, dir: o.dir ?? model.dir, lang: o.lang ?? model.lang };
@@ -229,10 +228,7 @@ export function renderPageHtml(p, o = {}) {
   const still = (id) => (o.stills instanceof Map ? o.stills.get(id) : o.stills?.[id]) || null;
   const t = p.template;
   const chapterHead = !p.chapter ? '' : (o.chapterHead ?? p.chapterHead) ? `<h2 dir="auto">${_esc(p.chapter)}</h2>` : `<div class="ch" dir="auto">${_esc(p.chapter)}</div>`;
-  // 🔇 A silent step (it.silent — nothing to say) is NOT printed: no line, no
-  // number, and the lines below close up. Only the editor asks for it
-  // (o.editing), as a faint unnumbered row that can be typed into.
-  const items = p.items.filter(it => !it.silent || o.editing).map(it => `<div class="it${it.silent ? ' silent' : ''}" dir="${_dirOf(it.text, o.dir === 'rtl' ? 'rtl' : 'ltr')}" data-step="${_esc(it.stepId)}">${it.label ? `<span class="no">${_esc(it.label)}</span>` : ''}<div class="tx" dir="auto">${o.showStepNames && it.name ? `<span class="nm">${_esc(it.name)}</span>` : ''}${_esc(it.text)}</div></div>`).join('');
+  const items = p.items.map(it => `<div class="it" dir="${_dirOf(it.text, o.dir === 'rtl' ? 'rtl' : 'ltr')}" data-step="${_esc(it.stepId)}">${it.label ? `<span class="no${it.customLabel ? ' own' : ''}">${_esc(it.label)}</span>` : ''}<div class="tx" dir="auto">${o.showStepNames && it.name ? `<span class="nm">${_esc(it.name)}</span>` : ''}${_esc(it.text)}</div></div>`).join('');
   const slots = p.images.map((im, k) => {
     const url = im.src || (im.stepId ? (still(im.key) || (im.moment !== 'start' ? still(im.stepId) : null)) : null);
     return `<div class="zone slot${url ? '' : ' none'}" data-slot="${k}" style="${_mm(im.rect)}">${slotInnerHtml(im, url, k, o.lang)}</div>`;

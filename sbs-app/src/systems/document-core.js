@@ -54,9 +54,11 @@ export function emptyDocument() {
     // numbering: 'step' = the animation's step numbers · 'page' = 1,2,3 restarting with each chapter · 'none'
     // direction: 'auto' (from the text: Hebrew / Arabic → right-to-left) · 'ltr' · 'rtl'   ·   pictureNumbers: the step number on each picture
     // toc: a contents page (chapters → page numbers) opens the document; it counts as page 1, so everything after it shifts
-    options: { includeHidden: false, numbering: 'step', direction: 'auto', pictureNumbers: true, toc: true },
+    // dropSilent: a step with no text gets no line and no number (default). Off = it is printed as an empty numbered line.
+    options: { includeHidden: false, numbering: 'step', direction: 'auto', pictureNumbers: true, toc: true, dropSilent: true },
     pages: [],
     texts: {},                           // stepId → { text, srcHash }   (absent = follows the voiceover)
+    labels: {},                          // stepId → the number the user typed for that line (absent = automatic)
     watermark: { ...WATERMARK_DEFAULTS },
     hiddenSteps: [],                     // step (unit) ids left OUT of the document — the animation is not touched
     assets: {},                          // assetId → { dataUrl, w, h, name } : pictures that are not part of the animation
@@ -1125,8 +1127,24 @@ export function buildRenderModel(doc, steps, chapters, ctx) {
   // counter and must leave out the same units or they disagree again (the
   // V0.3.4.36 bug). Its PICTURES stay: a silent step can still be worth seeing.
   // (To leave a step out altogether there is the eye in the step list.)
+  //   GONE MEANS GONE — in the editor as well. V0.3.4.68 kept a faint
+  // placeholder row there "so it could be typed into"; on a real page it read
+  // as a hole in the list and only raised the question it was meant to answer.
+  // The way back is an OPTION (dropSilent, on by default): switch it off and
+  // every empty step is an ordinary numbered line again, in the editor and in
+  // print — which is also where you type to give one a sentence.
+  const dropSilent = doc?.options?.dropSilent !== false;
   const _says = (sid) => { const s = stepById.get(sid); return !!s && !!docTextFor(s, doc.texts, ctx.hashOf).text.trim(); };
-  const silentUnit = new Set(units.filter(u => !u.members.some(_says)).map(u => u.id));
+  const silentUnit = new Set(dropSilent ? units.filter(u => !u.members.some(_says)).map(u => u.id) : []);
+  // ✎ A NUMBER THE USER TYPED for one line (double-click the badge). It replaces
+  // that line's label wherever the label goes — the page, the picture that
+  // belongs to the step, the contents — and nothing else: the automatic count
+  // underneath is untouched, so clearing it puts the line back in sequence.
+  const customLabel = (sid) => {
+    if (doc?.options?.numbering === 'none') return null;
+    const v = doc?.labels?.[sid];
+    return typeof v === 'string' && v.trim() ? v.trim().slice(0, 12) : null;
+  };
   const chapterOfPage = (p) => { const f = stepById.get((p.stepIds || []).find(shown)); return (chapters || []).find(c => c.id === f?.chapterId) || null; };
 
   // ── what prints, in order ──
@@ -1175,8 +1193,7 @@ export function buildRenderModel(doc, steps, chapters, ctx) {
         tocLines.push({
           kind: 'step',
           no: doc?.options?.numbering === 'none' ? ''
-            : (perChapterNo && ch) ? String(inChapter)
-            : (nums.get(uid)?.label || ''),
+            : customLabel(uid) ?? ((perChapterNo && ch) ? String(inChapter) : (nums.get(uid)?.label || '')),
           name: st?.name || '',
           pageId: e.page.id,
         });
@@ -1232,15 +1249,12 @@ export function buildRenderModel(doc, steps, chapters, ctx) {
         if (!s) continue;
         const t = docTextFor(s, doc.texts, ctx.hashOf);
         if (!t.text.trim()) {
-          // 🔇 Nothing to say → no line, no number. A silent SUB-step simply
-          // vanishes, as it always did. A silent HEAD is kept in the model but
-          // flagged: the printed page drops it, while the EDITOR still shows it
-          // as a faint, unnumbered line — otherwise a step that starts out
-          // silent could never be given a sentence from inside the document.
-          // If its sub-steps speak they keep their own labels (11.1 under a
-          // missing 11), which is the numbering the film itself uses.
-          if (sid === u.id) items.push({ stepId: sid, label: '', name: s.name || '', text: '', edited: t.edited, drifted: t.drifted, silent: true });
-          continue;
+          // 🔇 Nothing to say. A silent SUB-step adds no line, as it never did.
+          // A silent HEAD goes too — completely — unless the option brings
+          // empty steps back, in which case it is an ordinary numbered line.
+          // If its sub-steps speak they keep their own labels (6.1 under a
+          // missing 6), which is the numbering the film itself uses.
+          if (sid !== u.id || dropSilent) continue;
         }
         k++;
         // "1, 2, 3" counts per CHAPTER, and it is the SAME counter the contents
@@ -1248,11 +1262,12 @@ export function buildRenderModel(doc, steps, chapters, ctx) {
         // restarting per page and the contents per chapter. Sub-steps hang off
         // their unit's number the way numberSteps already writes groups.
         const headNo = pageNoOf.get(uid);
-        const label = doc.options?.numbering === 'none' ? ''
+        const auto = doc.options?.numbering === 'none' ? ''
           : doc.options?.numbering === 'page'
             ? (sid === u.id ? String(headNo ?? k) : `${headNo ?? k}.${++sub}`)
             : (nums.get(sid)?.label || '');
-        items.push({ stepId: sid, label, name: s.name || '', text: t.text, edited: t.edited, drifted: t.drifted });
+        const own = customLabel(sid);
+        items.push({ stepId: sid, label: own ?? auto, autoLabel: auto, customLabel: own != null, name: s.name || '', text: t.text, edited: t.edited, drifted: t.drifted });
       }
     }
     return {
@@ -1264,8 +1279,7 @@ export function buildRenderModel(doc, steps, chapters, ctx) {
         const im = _slotOf(p, i, r, (tpl.images || []).length, unitById, hidden, doc, ctx);
         // the number the picture refers to = the number of its line on this page (a silent sub-step borrows its step's)
         let label = '';
-        const spoken = items.filter(x => !x.silent).length;          // "more than one LINE on this page" — silent placeholders are not lines
-        if (im.stepId && doc.options?.pictureNumbers !== false && (spoken > 1 || im.moment === 'start')) {
+        if (im.stepId && doc.options?.pictureNumbers !== false && (items.length > 1 || im.moment === 'start')) {
           label = (items.find(x => x.stepId === im.stepId) || items.find(x => x.stepId === headOf.get(im.stepId)))?.label || '';
         }
         return { ...im, label, key: im.stepId ? stillKey(im.stepId, im.moment, im.atMs) : null };

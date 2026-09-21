@@ -48,11 +48,10 @@ const EDIT_CSS = `
 .page { box-shadow: 0 6px 30px rgba(0,0,0,.55); }
 .tx { outline: 0.3mm dashed transparent; outline-offset: 0.6mm; border-radius: 0.6mm; cursor: text; min-height: 5mm; }
 .tx:hover { outline-color: #60a5fa; }
-/* 🔇 a step with nothing to say: NOT printed. Here it is a faint row so it can be given a sentence. */
-.it.silent { opacity: 0.55; }
-.it.silent .tx:empty::before { content: 'no text — this step is left out of the printed page. Type here to give it a line.'; color: #94a3b8; font-style: italic; font-size: 8.5pt; }
-.it.silent .tx:focus::before { content: ''; }
-.it.silent:focus-within { opacity: 1; }
+/* ✎ a line's number: double-click to type your own. A typed one wears a ring so it can be told from the automatic ones (editor only — never printed). */
+.it .no { cursor: pointer; }
+.it .no.own { box-shadow: 0 0 0 0.5mm #f59e0b; }
+.it .no[contenteditable] { background: #fff; color: #111; box-shadow: 0 0 0 0.5mm #2563eb; cursor: text; outline: none; min-width: 12mm; }
 .tx:focus { outline: 0.4mm solid #2563eb; background: #eff6ff; }
 .it.edited .no { box-shadow: 0 0 0 0.5mm #2563eb; }
 .it.drifted .no { box-shadow: 0 0 0 0.5mm #f59e0b; }
@@ -265,6 +264,7 @@ function _build() {
   _shadow.addEventListener('pointerup', _onCustomPointerUp);
   _shadow.addEventListener('pointercancel', _onCustomPointerUp);
   _shadow.addEventListener('dblclick', _onCustomDblClick);
+  _shadow.addEventListener('dblclick', _onBadgeDblClick);
   // 📋 a block copied out of a spreadsheet — tabs between cells, line breaks
   // between rows — fills the table from the cell being typed in, growing it if
   // the block does not fit. A plain word still just types.
@@ -396,6 +396,7 @@ function _renderLeft(c) {
     <label class="dw-lab">Step numbers
       <select class="dw-in" data-opt="numbering">${[['step', 'The same numbers as the animation'], ['page', '1, 2, 3 restarting with each chapter'], ['none', 'No numbers']].map(([v, l]) => `<option value="${v}"${(c.doc.options?.numbering || 'step') === v ? ' selected' : ''}>${l}</option>`).join('')}</select></label>
     <label style="display:flex;gap:8px;align-items:center;margin:0 0 7px;font-size:11.5px;color:#cbd5e1;"><input type="checkbox" data-opt="pictureNumbers"${c.doc.options?.pictureNumbers !== false ? ' checked' : ''}> Step number on each picture (pages with several steps)</label>
+    <label style="display:flex;gap:8px;align-items:center;margin:0 0 7px;font-size:11.5px;color:#cbd5e1;" title="A step with no text — one that only moves the camera or slides a part into place — gets no line and no number, and the lines below close up. Its pictures stay. Switch this off to see every empty step as a numbered line again (that is also where you type to give one a sentence)."><input type="checkbox" data-opt="dropSilent"${c.doc.options?.dropSilent !== false ? ' checked' : ''}> Leave out steps that have no text</label>
     <label style="display:flex;gap:8px;align-items:center;margin:0 0 7px;font-size:11.5px;color:#cbd5e1;" title="A step that shows an interface is pictured on the interface: the picture is zoomed so the panel fills its frame. Move any picture yourself and your framing is kept — switching this off and on again never takes it back."><input type="checkbox" data-opt="ifaceFit"${c.doc.options?.ifaceFit === true ? ' checked' : ''}> 🎯 Frame the picture on the interface</label>
     <label style="display:flex;gap:8px;align-items:center;margin:0 0 7px;font-size:11.5px;color:#cbd5e1;" title="A contents page opens the document: every chapter with the page it starts on. It counts as page 1."><input type="checkbox" data-opt="toc"${c.doc.options?.toc !== false ? ' checked' : ''}> Table of contents (chapters → pages)</label>
     <label style="display:flex;gap:8px;align-items:center;margin:0 0 7px 22px;font-size:11.5px;color:${c.doc.options?.toc !== false ? '#cbd5e1' : '#64748b'};" title="Under each chapter, every step of that chapter with the page it is on."><input type="checkbox" data-opt="tocSteps"${c.doc.options?.tocSteps !== false ? ' checked' : ''}${c.doc.options?.toc !== false ? '' : ' disabled'}> …and the steps under each chapter</label>
@@ -769,7 +770,7 @@ function _renderPage(c) {
   if (!mp) { _placeSlotBar(); _shadow.innerHTML = `<style>${EDIT_CSS}</style><div style="font:13px Arial;color:#e2e8f0;padding:30px;">${(D.getDocument()?.pages.find(p => p.id === _pageId)?.stepIds || []).length ? 'Every step of this page is left out of the document, so the page is not printed. Click the eye of a step on the right to put it back.' : 'This page has no steps left. Delete it from the list on the right.'}</div>`; _fit(); return; }
   const need = stillsNeeded({ pages: [mp] });
   const have = D.cachedStills(need);
-  _shadow.innerHTML = `<style>${DOCUMENT_CSS}${watermarkCss(model.watermark)}${EDIT_CSS}</style><div class="fit">${renderPageHtml(mp, { stills: have, logo: D.documentLogo(), watermark: model.watermark, dir: model.dir, lang: model.lang, editing: true })}</div>`;
+  _shadow.innerHTML = `<style>${DOCUMENT_CSS}${watermarkCss(model.watermark)}${EDIT_CSS}</style><div class="fit">${renderPageHtml(mp, { stills: have, logo: D.documentLogo(), watermark: model.watermark, dir: model.dir, lang: model.lang })}</div>`;
   for (const row of _shadow.querySelectorAll('.it')) {
     const it = mp.items.find(i => i.stepId === row.dataset.step);
     if (it?.edited) row.classList.add(it.drifted ? 'drifted' : 'edited');
@@ -777,6 +778,10 @@ function _renderPage(c) {
     tx.setAttribute('contenteditable', 'plaintext-only');
     tx.setAttribute('spellcheck', 'true');
     tx.dataset.orig = it?.text ?? '';
+    const no = row.querySelector('.no');
+    if (no) no.title = it?.customLabel
+      ? `Your own number (automatic: ${it.autoLabel || '—'}). Double-click to change it — clear it to go back to automatic.`
+      : 'Double-click to give this line your own number — the picture of this step follows.';
   }
   for (const ph of _shadow.querySelectorAll('.slot .ph')) if (/not rendered/.test(ph.textContent)) ph.textContent = 'rendering the picture…';
   _fit(); _markOverflow();
@@ -855,6 +860,43 @@ function _commitText(tx) {
   if (text !== (tx.dataset.orig ?? '')) { tx.dataset.orig = text; D.setDocText(stepId, text); }
   else if (_deferred) { _deferred = false; setTimeout(_renderAll, 0); }
 }
+/**
+ * ✎ Double-click a line's number badge → type your own. Enter or clicking away
+ * keeps it, Esc puts it back, and clearing it returns the line to the automatic
+ * count. One undo entry. The picture that belongs to the step shows the same
+ * label, because it reads the line's — there is nothing to keep in step.
+ */
+function _onBadgeDblClick(e) {
+  const no = e.target.closest?.('.it > .no');
+  if (!no || no.isContentEditable) return;
+  const stepId = no.closest('.it')?.dataset.step;
+  if (!stepId) return;
+  e.preventDefault(); e.stopPropagation();
+  const orig = no.textContent;
+  let over = false;
+  const finish = (keep) => {
+    if (over) return; over = true;
+    no.removeAttribute('contenteditable');
+    no.removeEventListener('keydown', onKey);
+    no.removeEventListener('blur', onBlur);
+    const v = (no.textContent || '').replace(/\s+/g, ' ').trim();
+    no.textContent = orig;                       // the re-render writes the real one
+    if (keep && v !== orig) D.setStepLabel(stepId, v);
+  };
+  const onKey = (ev) => {
+    if (ev.key === 'Enter') { ev.preventDefault(); finish(true); no.blur(); }
+    else if (ev.key === 'Escape') { ev.preventDefault(); ev.stopPropagation(); finish(false); no.blur(); }
+  };
+  const onBlur = () => finish(true);
+  no.setAttribute('contenteditable', 'plaintext-only');
+  no.addEventListener('keydown', onKey);
+  no.addEventListener('blur', onBlur);
+  no.focus();
+  const rg = document.createRange(); rg.selectNodeContents(no);
+  const sel = (_shadow.getSelection ? _shadow.getSelection() : window.getSelection());
+  sel?.removeAllRanges(); sel?.addRange(rg);
+}
+
 function _commitFocusedText() {
   const f = _shadow?.activeElement;
   if (f?.classList?.contains('tx') || _typingInPage(f)) f.blur();
@@ -2487,6 +2529,7 @@ function _onChange(e) {
   if (t.dataset?.opt === 'tocSteps') return D.setOptions({ tocSteps: t.checked });
   if (t.dataset?.opt === 'ifaceFit') return D.setOptions({ ifaceFit: t.checked });
   if (t.dataset?.opt === 'pictureNumbers') return D.setOptions({ pictureNumbers: t.checked });
+  if (t.dataset?.opt === 'dropSilent') return D.setOptions({ dropSilent: t.checked });
   if (t.dataset?.pageOpt === 'template') return D.setPageTemplate(_pageId, t.value || null);
   if (t.id === 'dw-asset-file') { const file = t.files?.[0]; t.value = ''; if (file) _importAsset(file, _assetSlot); return; }
 }

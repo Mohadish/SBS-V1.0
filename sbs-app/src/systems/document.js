@@ -60,7 +60,7 @@ function _commit(label, next /* , opts */) {
 /** First build (or a rebuild from scratch): one page per step, texts kept. */
 export function buildPages({ rebuild = false } = {}) {
   const cur = getDocument();
-  const doc = cur && !rebuild ? _clone(cur) : { ...emptyDocument(), ...(cur ? { fields: cur.fields, header: cur.header, footer: cur.footer, options: cur.options, texts: cur.texts, templates: cur.templates, templateId: cur.templateId, watermark: watermarkOf(cur), hiddenSteps: cur.hiddenSteps || [], extras: cur.extras || [], assets: cur.assets || {}, bands: cur.bands || null } : {}) };
+  const doc = cur && !rebuild ? _clone(cur) : { ...emptyDocument(), ...(cur ? { fields: cur.fields, header: cur.header, footer: cur.footer, options: cur.options, texts: cur.texts, labels: cur.labels || {}, templates: cur.templates, templateId: cur.templateId, watermark: watermarkOf(cur), hiddenSteps: cur.hiddenSteps || [], extras: cur.extras || [], assets: cur.assets || {}, bands: cur.bands || null } : {}) };
   if (!doc.fields.title) doc.fields.title = projectDisplayName();
   doc.pages = autoPaginate(_steps(), _chapters(), doc);
   doc.order = orderOf(_steps(), _chapters(), doc);
@@ -377,6 +377,19 @@ export function setDocText(stepId, text) {
   if (text == null) delete texts[stepId];
   else texts[stepId] = { text: String(text), srcHash: srcHashOf(narrationOf(step)) };
   _commit(text == null ? 'Document text follows the voiceover' : 'Edit document text', { ...cur, texts });
+}
+/**
+ * ✎ The number the user typed for ONE line (double-click its badge). An empty
+ * value takes it off again and the line rejoins the automatic count. A label
+ * only — it re-numbers nothing else.
+ */
+export function setStepLabel(stepId, text) {
+  const cur = getDocument(); if (!cur || !stepId) return;
+  const labels = { ...(cur.labels || {}) };
+  const v = String(text ?? '').trim().slice(0, 12);
+  if (!v) { if (!(stepId in labels)) return; delete labels[stepId]; }
+  else { if (labels[stepId] === v) return; labels[stepId] = v; }
+  _commit(v ? 'Custom step number' : 'Step number back to automatic', { ...cur, labels });
 }
 /** "I have seen the new voiceover" — keep my text, clear the drift marker. */
 export function acceptDrift(stepId) {
