@@ -13,10 +13,19 @@ export { watermarkCss };
 
 const _esc = (s) => String(s ?? '').replace(/[&<>"]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
 const _mm =(r) => `left:${r.x}mm;top:${r.y}mm;width:${r.w}mm;height:${r.h}mm;`;
-/** Row direction = the first strong character (so a Hebrew line puts its number badge on the right). */
-const _dirOf = (s) => {
-  const m = /[A-Za-zÀ-ɏͰ-ϿЀ-ӿ֐-ࣿיִ-﷿ﹰ-ﻼ]/.exec(String(s ?? ''));
-  return m && /[֐-ࣿיִ-﷿ﹰ-ﻼ]/.test(m[0]) ? 'rtl' : 'ltr';
+/**
+ * Row direction = the first strong character (so a Hebrew line puts its number
+ * badge on the right). A row with NO strong character — empty, or only digits
+ * and punctuation ("4 × 20") — has no direction of its own and takes the
+ * PAGE's. It used to fall back to 'ltr', which is why such a row sat on the
+ * left of a Hebrew page while every line around it sat on the right.
+ * (× U+00D7 and ÷ U+00F7 live INSIDE the Latin-1 letter block but are not
+ * letters; they are cut out of the range, or "4 × 20" reads as Latin text.)
+ */
+const _dirOf = (s, pageDir = 'ltr') => {
+  const m = /[A-Za-zÀ-ÖØ-öø-ɏͰ-ϿЀ-ӿ֐-ࣿיִ-﷿ﹰ-ﻼ]/.exec(String(s ?? ''));
+  if (!m) return pageDir === 'rtl' ? 'rtl' : 'ltr';
+  return /[֐-ࣿיִ-﷿ﹰ-ﻼ]/.test(m[0]) ? 'rtl' : 'ltr';
 };
 
 export const DOCUMENT_CSS = `
@@ -83,6 +92,7 @@ body { font-family: Arial, Helvetica, sans-serif; color: #111; -webkit-print-col
  * @param {string} [o.logo]                         image URL for the header
  * @param {string} [o.title]                        <title>
  * @param {boolean} [o.showStepNames]               bold step name above each text
+ * @param {boolean} [o.editing]                     the document editor's page view: silent steps are kept as faint, typeable rows (never set when printing)
  */
 export function renderDocumentHtml(model, o = {}) {
   const oo = { ...o, watermark: o.watermark ?? model.watermark, dir: o.dir ?? model.dir, lang: o.lang ?? model.lang };
@@ -219,7 +229,10 @@ export function renderPageHtml(p, o = {}) {
   const still = (id) => (o.stills instanceof Map ? o.stills.get(id) : o.stills?.[id]) || null;
   const t = p.template;
   const chapterHead = !p.chapter ? '' : (o.chapterHead ?? p.chapterHead) ? `<h2 dir="auto">${_esc(p.chapter)}</h2>` : `<div class="ch" dir="auto">${_esc(p.chapter)}</div>`;
-  const items = p.items.map(it => `<div class="it" dir="${_dirOf(it.text)}" data-step="${_esc(it.stepId)}">${it.label ? `<span class="no">${_esc(it.label)}</span>` : ''}<div class="tx" dir="auto">${o.showStepNames && it.name ? `<span class="nm">${_esc(it.name)}</span>` : ''}${_esc(it.text)}</div></div>`).join('');
+  // 🔇 A silent step (it.silent — nothing to say) is NOT printed: no line, no
+  // number, and the lines below close up. Only the editor asks for it
+  // (o.editing), as a faint unnumbered row that can be typed into.
+  const items = p.items.filter(it => !it.silent || o.editing).map(it => `<div class="it${it.silent ? ' silent' : ''}" dir="${_dirOf(it.text, o.dir === 'rtl' ? 'rtl' : 'ltr')}" data-step="${_esc(it.stepId)}">${it.label ? `<span class="no">${_esc(it.label)}</span>` : ''}<div class="tx" dir="auto">${o.showStepNames && it.name ? `<span class="nm">${_esc(it.name)}</span>` : ''}${_esc(it.text)}</div></div>`).join('');
   const slots = p.images.map((im, k) => {
     const url = im.src || (im.stepId ? (still(im.key) || (im.moment !== 'start' ? still(im.stepId) : null)) : null);
     return `<div class="zone slot${url ? '' : ' none'}" data-slot="${k}" style="${_mm(im.rect)}">${slotInnerHtml(im, url, k, o.lang)}</div>`;

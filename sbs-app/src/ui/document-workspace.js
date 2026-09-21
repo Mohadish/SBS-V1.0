@@ -48,6 +48,11 @@ const EDIT_CSS = `
 .page { box-shadow: 0 6px 30px rgba(0,0,0,.55); }
 .tx { outline: 0.3mm dashed transparent; outline-offset: 0.6mm; border-radius: 0.6mm; cursor: text; min-height: 5mm; }
 .tx:hover { outline-color: #60a5fa; }
+/* 🔇 a step with nothing to say: NOT printed. Here it is a faint row so it can be given a sentence. */
+.it.silent { opacity: 0.55; }
+.it.silent .tx:empty::before { content: 'no text — this step is left out of the printed page. Type here to give it a line.'; color: #94a3b8; font-style: italic; font-size: 8.5pt; }
+.it.silent .tx:focus::before { content: ''; }
+.it.silent:focus-within { opacity: 1; }
 .tx:focus { outline: 0.4mm solid #2563eb; background: #eff6ff; }
 .it.edited .no { box-shadow: 0 0 0 0.5mm #2563eb; }
 .it.drifted .no { box-shadow: 0 0 0 0.5mm #f59e0b; }
@@ -764,7 +769,7 @@ function _renderPage(c) {
   if (!mp) { _placeSlotBar(); _shadow.innerHTML = `<style>${EDIT_CSS}</style><div style="font:13px Arial;color:#e2e8f0;padding:30px;">${(D.getDocument()?.pages.find(p => p.id === _pageId)?.stepIds || []).length ? 'Every step of this page is left out of the document, so the page is not printed. Click the eye of a step on the right to put it back.' : 'This page has no steps left. Delete it from the list on the right.'}</div>`; _fit(); return; }
   const need = stillsNeeded({ pages: [mp] });
   const have = D.cachedStills(need);
-  _shadow.innerHTML = `<style>${DOCUMENT_CSS}${watermarkCss(model.watermark)}${EDIT_CSS}</style><div class="fit">${renderPageHtml(mp, { stills: have, logo: D.documentLogo(), watermark: model.watermark, dir: model.dir, lang: model.lang })}</div>`;
+  _shadow.innerHTML = `<style>${DOCUMENT_CSS}${watermarkCss(model.watermark)}${EDIT_CSS}</style><div class="fit">${renderPageHtml(mp, { stills: have, logo: D.documentLogo(), watermark: model.watermark, dir: model.dir, lang: model.lang, editing: true })}</div>`;
   for (const row of _shadow.querySelectorAll('.it')) {
     const it = mp.items.find(i => i.stepId === row.dataset.step);
     if (it?.edited) row.classList.add(it.drifted ? 'drifted' : 'edited');

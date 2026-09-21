@@ -1118,6 +1118,15 @@ export function buildRenderModel(doc, steps, chapters, ctx) {
   const prints = (p) => (p.stepIds || []).some(shown);                                  // a page whose steps are all hidden is not printed
   const reading = directionOf(doc, steps, chapters);
   const headOf = new Map(); for (const u of units) for (const m of u.members) headOf.set(m, u.id);
+  // 🔇 A UNIT WITH NOTHING TO SAY. No member of it has any text — typically a
+  // step that only moves the camera or slides a part into place. In a manual it
+  // is a numbered line with nothing on it: "7." and then white paper. It gets
+  // no line and no number, on the page AND in the contents — the two share one
+  // counter and must leave out the same units or they disagree again (the
+  // V0.3.4.36 bug). Its PICTURES stay: a silent step can still be worth seeing.
+  // (To leave a step out altogether there is the eye in the step list.)
+  const _says = (sid) => { const s = stepById.get(sid); return !!s && !!docTextFor(s, doc.texts, ctx.hashOf).text.trim(); };
+  const silentUnit = new Set(units.filter(u => !u.members.some(_says)).map(u => u.id));
   const chapterOfPage = (p) => { const f = stepById.get((p.stepIds || []).find(shown)); return (chapters || []).find(c => c.id === f?.chapterId) || null; };
 
   // ── what prints, in order ──
@@ -1156,6 +1165,7 @@ export function buildRenderModel(doc, steps, chapters, ctx) {
       // reads its counter.
       for (const uid of e.page.stepIds || []) {
         if (!shown(uid)) continue;
+        if (silentUnit.has(uid)) continue;      // 🔇 nothing to say → not counted, not listed
         const st = stepById.get(uid);
         // A step that belongs to no chapter keeps the global number and does not
         // advance the chapter's count — the rule numberSteps and the header
@@ -1221,7 +1231,17 @@ export function buildRenderModel(doc, steps, chapters, ctx) {
         const s = stepById.get(sid);
         if (!s) continue;
         const t = docTextFor(s, doc.texts, ctx.hashOf);
-        if (!t.text.trim() && sid !== u.id) continue;        // a silent sub-step adds no line
+        if (!t.text.trim()) {
+          // 🔇 Nothing to say → no line, no number. A silent SUB-step simply
+          // vanishes, as it always did. A silent HEAD is kept in the model but
+          // flagged: the printed page drops it, while the EDITOR still shows it
+          // as a faint, unnumbered line — otherwise a step that starts out
+          // silent could never be given a sentence from inside the document.
+          // If its sub-steps speak they keep their own labels (11.1 under a
+          // missing 11), which is the numbering the film itself uses.
+          if (sid === u.id) items.push({ stepId: sid, label: '', name: s.name || '', text: '', edited: t.edited, drifted: t.drifted, silent: true });
+          continue;
+        }
         k++;
         // "1, 2, 3" counts per CHAPTER, and it is the SAME counter the contents
         // prints (V0.3.4.36) — they used to disagree on every line, the page
@@ -1244,7 +1264,8 @@ export function buildRenderModel(doc, steps, chapters, ctx) {
         const im = _slotOf(p, i, r, (tpl.images || []).length, unitById, hidden, doc, ctx);
         // the number the picture refers to = the number of its line on this page (a silent sub-step borrows its step's)
         let label = '';
-        if (im.stepId && doc.options?.pictureNumbers !== false && (items.length > 1 || im.moment === 'start')) {
+        const spoken = items.filter(x => !x.silent).length;          // "more than one LINE on this page" — silent placeholders are not lines
+        if (im.stepId && doc.options?.pictureNumbers !== false && (spoken > 1 || im.moment === 'start')) {
           label = (items.find(x => x.stepId === im.stepId) || items.find(x => x.stepId === headOf.get(im.stepId)))?.label || '';
         }
         return { ...im, label, key: im.stepId ? stillKey(im.stepId, im.moment, im.atMs) : null };
