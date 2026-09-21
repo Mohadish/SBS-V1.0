@@ -17,7 +17,7 @@ import { chooseFromButtons, chooseWithPreview, promptString } from '../ui/prompt
 import { generateId }   from '../core/schema.js';
 import { getCanonicalSize } from '../core/safe-frame.js';
 import { reloadActiveOverlay, countAttrUsage, rebindOverlayAttr, restoreOverlayStrings } from './overlay.js';
-import { SECTIONS, OVERLAY_ATTR, buildBrand, mergeBrand, suggestMapping, unlinkedCount, brandFromLegacyHeader, summarizeMerge, ownership, brandDrift, driftSince } from './brand-core.js';
+import { SECTIONS, OVERLAY_ATTR, BRAND_VERSION, brandFormatOf, buildBrand, mergeBrand, suggestMapping, unlinkedCount, brandFromLegacyHeader, summarizeMerge, ownership, brandDrift, driftSince } from './brand-core.js';
 import { openBrandMapDialog } from '../ui/brand-map-dialog.js';
 
 const BRAND_FILTER = [{ name: 'SBS Brand (.sbsbrand) / header setup (.sbsheader)', extensions: ['sbsbrand', 'sbsheader'] }];
@@ -63,6 +63,14 @@ export async function saveBrand() {
   const { payload, links } = buildBrand({ meta, canonical: view.canonical, sections: view.sections, headerDefault: view.headerDefault, links: meta.id === link?.id ? view.links : {} });
   const path = await window.sbsNative.saveFile({ title: 'Save brand', defaultPath: defaultPath || `${meta.name}.sbsbrand`, filters: [{ name: 'SBS Brand', extensions: ['sbsbrand'] }] });
   if (!path) return null;
+  // 🔢 never write over a brand file of a NEWER format: this build would drop what it does not understand (see brandFormatOf)
+  const there = await _formatOnDisk(path);
+  if (there?.newer) {
+    await chooseFromButtons('This brand file is from a newer SBS',
+      `"${path}" was saved by a newer version of SBS (file format ${there.version}; this version writes format ${BRAND_VERSION}). Saving over it from here would silently drop everything in it that this version does not understand — and every project linked to the brand would then be told to update to the poorer file. Nothing was written. Save under a different file name, or update SBS.`,
+      [{ id: 'ok', label: 'OK', primary: true }]);
+    return null;
+  }
   const w = await window.sbsNative.writeFile(path, JSON.stringify(payload, null, 2), 'utf8');
   if (w && w.ok === false) { setStatus(`Could not write the brand: ${w.error}`, 'warn', 8000); return null; }
   state.setState({ brand: { id: meta.id, name: meta.name, revision: meta.revision, file: path, links } });
@@ -70,6 +78,18 @@ export async function saveBrand() {
   const total = SECTIONS.reduce((a, s) => a + (view.sections[s.key] || []).length, 0);
   setStatus(`Brand "${meta.name}" revision ${meta.revision} saved — ${total} definition(s). This project is linked to it.`, 'success', 8000);
   return path;
+}
+
+/** The format of a brand file already on disk — null when there is none, or it cannot be read as a brand. */
+async function _formatOnDisk(path) {
+  try {
+    if (!window.sbsNative?.readFile) return null;
+    if (window.sbsNative.fileExists && !(await window.sbsNative.fileExists(path))) return null;
+    const rd = await window.sbsNative.readFile(path, 'utf8');
+    if (!rd?.ok) return null;
+    const b = JSON.parse(rd.data);
+    return b?._sbsbrand ? brandFormatOf(b) : null;
+  } catch { return null; }
 }
 
 // ─── load / update ──────────────────────────────────────────────────────────
@@ -83,6 +103,15 @@ export async function loadBrand(pathOverride = null) {
   try { brand = JSON.parse(rd.data); } catch (e) { setStatus(`Not a brand file (bad JSON): ${e?.message || e}`, 'warn', 8000); return null; }
   if (brand?._sbsheader && !brand._sbsbrand) brand = brandFromLegacyHeader(brand);
   if (!brand?._sbsbrand) { setStatus('That file is neither a .sbsbrand nor a .sbsheader.', 'warn', 8000); return null; }
+
+  // 🔢 a brand from a NEWER SBS: reading is safe, and the user is told what that means before anything happens
+  const fmt = brandFormatOf(brand);
+  if (fmt.newer) {
+    const c = await chooseFromButtons('This brand file is from a newer SBS',
+      `This brand was saved by a newer version of SBS (file format ${fmt.version}; this version reads format ${BRAND_VERSION}). Everything this version understands will be loaded; anything newer in the file is left out. It is safe to load — but this version will refuse to save over that file.`,
+      [{ id: 'go', label: 'Load what this version understands' }, { id: 'no', label: 'Cancel', primary: true }]);
+    if (c !== 'go') return null;
+  }
 
   const link = getBrandLink();
   const meta = brand._sbsbrand;
@@ -176,7 +205,11 @@ function _usageCounts(sections) {
 
 function _setLink(meta, file, links) {
   const link = getBrandLink();
-  state.setState({ brand: { id: meta.id || link?.id || null, name: meta.name, revision: meta.revision || 0, file, links } });
+  const next = { id: meta.id || link?.id || null, name: meta.name, revision: meta.revision || 0, file, links };
+  // "Already up to date" is the common case (every project open checks) — a load that changes
+  // nothing must not leave the project asking to be saved, with no undo entry to explain why
+  if (link && JSON.stringify(link) === JSON.stringify(next)) return;
+  state.setState({ brand: next });
   state.markDirty();
 }
 

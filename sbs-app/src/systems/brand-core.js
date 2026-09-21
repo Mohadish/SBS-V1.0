@@ -17,6 +17,23 @@
 
 export const BRAND_VERSION = 1;
 
+/**
+ * 🔢 The file's FORMAT number — and whether this build can be trusted to write it back.
+ *
+ * BRAND_VERSION was written into every brand file and read by nothing. That is harmless
+ * while there is one format, and a data-loss trap the day there are two: a build reads only
+ * the sections IT knows (every read is `brand.sections[key] || []`), and SAVING a brand writes
+ * only those — so an older build updating a newer brand silently drops what it does not
+ * understand, bumps the revision, and every linked project is then told to update to the
+ * poorer file. The gate has to exist BEFORE the format grows, or no shipped build has it.
+ *   Reading a newer file is safe (what is not understood is ignored). WRITING over one is not.
+ */
+export function brandFormatOf(brand) {
+  const n = Number(brand?._sbsbrand?.version);
+  const version = Number.isFinite(n) && n > 0 ? Math.floor(n) : 1;      // files from before the field mattered are format 1
+  return { version, newer: version > BRAND_VERSION };
+}
+
 /** Brand section → the state key it lives under, how to label it, what it references, what scales. */
 export const SECTIONS = [
   { key: 'textStyles',  stateKey: 'styleTemplates', label: 'Text style',      idPrefix: 'style' },

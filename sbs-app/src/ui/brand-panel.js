@@ -71,7 +71,7 @@ function _render() {
       <tr style="color:var(--muted,#94a3b8);text-align:left;"><th style="padding:3px 4px;">Definitions</th><th style="padding:3px 4px;">Brand</th><th style="padding:3px 4px;">Project's own</th></tr>
       ${rows.map(r => `<tr><td style="padding:3px 4px;border-top:1px solid var(--line,#334155);">${_esc(r.label)}s</td><td style="padding:3px 4px;border-top:1px solid var(--line,#334155);">${r.brand}</td><td style="padding:3px 4px;border-top:1px solid var(--line,#334155);">${r.project}</td></tr>`).join('')}
     </table>
-    <div class="small muted" style="font-size:11px;line-height:1.45;">"Project's own" definitions are never touched by a brand update. Matching old styles to new ones by hand (and merging two into one) is the next phase; for now a definition is taken over when its name matches exactly.</div>`;
+    <div class="small muted" style="font-size:11px;line-height:1.45;">"Project's own" definitions are never touched by a brand update. When you load a brand into a project that has definitions of its own, a matching page opens first: drag each of yours onto the brand definition it really is (several can fold into one), keep it as the project's own, or delete it. Only exact same-name matches are filled in for you.</div>`;
   body.querySelectorAll('[data-act]').forEach(b => {
     b.disabled = _busy;
     b.addEventListener('click', () => _run(b.dataset.act));
