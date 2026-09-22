@@ -110,7 +110,7 @@ export function renderHeaderTab(container) {
       <div class="card" style="margin-top:10px;display:grid;grid-template-columns:1fr 1fr;gap:6px;">
         <button class="btn" id="hdr-new-text">+ Text</button>
         <button class="btn" id="hdr-new-image">+ Image</button>
-        <button class="btn" id="hdr-new-logo" title="The project's logo: a header image like any other, but there is one, and the printed document's header shows it. Hide it with the eye if it should not be over the film.">🏷 + Logo</button>
+        <button class="btn" id="hdr-new-logo" title="The project's logo: a header image like any other, but there is ONE — the printed document's header shows it. Pressing this again replaces the logo in place (same position and width). Hide it with the eye if it should not be over the film.">🏷 + Logo</button>
         <button class="btn" id="hdr-new-step-num">+ Step #</button>
         <button class="btn" id="hdr-new-step-name">+ Step Name</button>
         <button class="btn" id="hdr-new-ch-num">+ Chapter #</button>
@@ -540,6 +540,24 @@ function _create(kind) {
 }
 
 async function _createImage({ isLogo = false } = {}) {
+  // 🏷 ONE LOGO. The first + Logo adds it; every + Logo after that REPLACES it,
+  // in place — the same position and size, wherever the logo is shown. The first
+  // cut turned the old logo back into a plain image and added a new one beside
+  // it, which the user rightly refused: the logo sits somewhere on purpose, and
+  // a project would fill up with ex-logos.
+  if (isLogo) {
+    const cur = projectLogoItem();
+    if (cur.item && cur.defined) {
+      const c = await chooseFromButtons('Replace the logo',
+        'This project already has a logo. The new picture takes its place — same position, same width — everywhere the logo is shown: over the film and in the printed document’s header.',
+        [{ id: 'replace', label: 'Replace the logo…', primary: true }, { id: 'cancel', label: 'Cancel' }]);
+      if (c !== 'replace') return;
+      await _replaceImage(cur.item.id, { keepWidth: true });
+      _activeItemId = cur.item.id;
+      selectHeader(cur.item.id);
+      return;
+    }
+  }
   const dataUrl = await _pickImage();
   if (!dataUrl) return;
   const dims = await _imageDims(dataUrl);
@@ -566,12 +584,20 @@ async function _createImage({ isLogo = false } = {}) {
   selectHeader(item.id);
 }
 
-async function _replaceImage(id) {
+/** keepWidth: the box keeps its width and takes the new picture's proportion (a logo is never to be stretched); otherwise the box is kept as it is. */
+async function _replaceImage(id, { keepWidth = false } = {}) {
   const dataUrl = await _pickImage();
   if (!dataUrl) return;
   const dims = await _imageDims(dataUrl);
-  updateHeaderItem(id, { dataUrl, naturalW: dims.width, naturalH: dims.height });
-  setStatus('Header image replaced.');
+  const patch = { dataUrl, naturalW: dims.width, naturalH: dims.height };
+  if (keepWidth && dims.width > 0 && dims.height > 0) {
+    const cur = (state.get('headerItems') || []).find(it => it.id === id);
+    const w = Math.max(1, Math.round(cur?.w || dims.width));
+    patch.w = w;
+    patch.h = Math.max(1, Math.round(w * dims.height / dims.width));
+  }
+  updateHeaderItem(id, patch);
+  setStatus(keepWidth ? '🏷 Logo replaced — same place, same width, the new picture’s proportion.' : 'Header image replaced.', 'success', 5000);
 }
 
 function _pickImage() {
