@@ -76,6 +76,18 @@ t('brand ids are STABLE across revisions', brand2.sections.textStyles[0].id, bra
   t('"keep what I edited here" leaves that one alone', keep.sections.textStyles.find(d => d.id === 'x1').fontSize, 99);
 }
 
+console.log('\n── 🏷 the brand\'s logo matches the project\'s logo (V0.3.4.79) ──');
+{
+  const items = (p) => [{ id: `${p}_a`, kind: 'image', dataUrl: 'data:image/png;base64,AAAA', x: 10, y: 10, w: 100, h: 50 }, { id: `${p}_logo`, kind: 'image', isLogo: true, dataUrl: 'data:image/png;base64,BBBB', x: 900, y: 10, w: 100, h: 50 }];
+  const src = view({ headerItems: items('src') });
+  const b = clone(buildBrand({ meta: { id: 'bl', name: 'L', revision: 1 }, canonical: src.canonical, sections: src.sections, headerDefault: null, links: {} }).payload);
+  const dst = view({ headerItems: items('dst').reverse() });                       // the other project lists them the other way round
+  const plan = mergeBrand(dst, b, { newId });
+  const took = plan.sections.headerItems.find(d => d.id === 'dst_logo');
+  t('the logo takes over the LOGO, not the first image', [took.isLogo, took.dataUrl], [true, 'data:image/png;base64,BBBB']);
+  t('…and the plain image the plain image', plan.sections.headerItems.find(d => d.id === 'dst_a').dataUrl, 'data:image/png;base64,AAAA');
+}
+
 console.log('\n── the file format ──');
 t('a file with no version is format 1', brandFormatOf({ _sbsbrand: {} }), { version: 1, newer: false });
 t('this build\'s own files are not "newer"', brandFormatOf(brand1).newer, false);

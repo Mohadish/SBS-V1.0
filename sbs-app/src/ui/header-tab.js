@@ -67,6 +67,9 @@ const setHeaderItemStyleId = (id, styleId) =>
   actions.commitStateChange('Header item style', _HK, () => header.setHeaderItemStyleId(id, styleId));
 const setHeaderItemAlign = (id, align) =>
   actions.commitStateChange('Header item align', _HK, () => header.setHeaderItemAlign(id, align));
+const setProjectLogo = (id) =>
+  actions.commitStateChange(id ? 'Set the project logo' : 'No project logo', _HK, () => header.setProjectLogo(id));   // 🏷
+const projectLogoItem = () => header.projectLogoItem();
 const setHeaderStepNumberPerChapter = (v) =>
   actions.commitStateChange('Header step numbering', ['headerStepNumberPerChapter'], () => header.setHeaderStepNumberPerChapter(v));
 
@@ -107,6 +110,7 @@ export function renderHeaderTab(container) {
       <div class="card" style="margin-top:10px;display:grid;grid-template-columns:1fr 1fr;gap:6px;">
         <button class="btn" id="hdr-new-text">+ Text</button>
         <button class="btn" id="hdr-new-image">+ Image</button>
+        <button class="btn" id="hdr-new-logo" title="The project's logo: a header image like any other, but there is one, and the printed document's header shows it. Hide it with the eye if it should not be over the film.">🏷 + Logo</button>
         <button class="btn" id="hdr-new-step-num">+ Step #</button>
         <button class="btn" id="hdr-new-step-name">+ Step Name</button>
         <button class="btn" id="hdr-new-ch-num">+ Chapter #</button>
@@ -190,6 +194,7 @@ export function renderHeaderTab(container) {
   container.querySelector('#hdr-new-ch-prog')  .addEventListener('click', () => _create('chapterProgress'));
   container.querySelector('#hdr-new-subtitle') .addEventListener('click', () => _create('subtitle'));
   container.querySelector('#hdr-new-image')    .addEventListener('click', () => _createImage());
+  container.querySelector('#hdr-new-logo')     .addEventListener('click', () => _createImage({ isLogo: true }));
 
   // ─── Top-row toggles ───────────────────────────────────────────────────
   container.querySelector('#hdr-toggle-hidden').addEventListener('click', () => setHeadersHidden(!hidden));
@@ -255,11 +260,16 @@ export function renderHeaderTab(container) {
 }
 
 function _renderItemRow(item, index, total, styles) {
+  const logo    = item.kind === 'image' ? projectLogoItem() : null;
   const label   = (item.kind === 'subtitle' && item.subLang)
     ? `Subtitle (${subtitles.SUBTITLE_LANGS.find(l => l.code === item.subLang)?.label || item.subLang})`
+    : (item.kind === 'image' && item.isLogo) ? '🏷 Logo'
     : (KIND_LABELS[item.kind] || item.kind);
   const eye     = item.visible ? '👁' : '·';
-  const preview = _itemPreviewText(item);
+  // 🏷 an image that the document is USING as the logo without anyone having said so is told so
+  const preview = (item.kind === 'image' && item.isLogo) ? (item.visible ? 'the project’s logo — the document’s header shows it' : 'the project’s logo — hidden over the film, still in the document')
+    : (item.kind === 'image' && logo?.item?.id === item.id && !logo.defined) ? 'used as the logo by the document because no logo is defined — 🏷 + Logo, or the checkbox below, makes it official'
+    : _itemPreviewText(item);
   const isText  = item.kind !== 'image';
   const styleSel = isText ? _renderStyleSelect(item, styles) : '';
   const alignBtns = isText ? _renderAlignButtons(item) : '';
@@ -403,8 +413,11 @@ function _renderEditor(container) {
       ` : ''}
 
       ${item.kind === 'image' ? `
-        <div style="margin-top:8px;">
+        <div style="margin-top:8px;display:flex;gap:10px;align-items:center;flex-wrap:wrap;">
           <button class="btn" id="hdr-replace-image">Replace image…</button>
+          <label class="colorlab" style="display:flex;align-items:center;gap:6px;font-size:13px;cursor:pointer;" title="One image is the project's logo: the printed document's header shows it, and a brand carries it as the logo. Hiding it with the eye keeps it the logo.">
+            <input type="checkbox" id="hdr-is-logo" ${item.isLogo ? 'checked' : ''} /> 🏷 This is the project's logo
+          </label>
         </div>
       ` : ''}
 
@@ -441,6 +454,10 @@ function _renderEditor(container) {
   bind('#hdr-h',    'h', v => Math.max(20, Number(v) || 0));
 
   host.querySelector('#hdr-replace-image')?.addEventListener('click', () => _replaceImage(item.id));
+  host.querySelector('#hdr-is-logo')?.addEventListener('change', (e) => {
+    setProjectLogo(e.target.checked ? item.id : null);
+    setStatus(e.target.checked ? '🏷 This image is the project’s logo now — the document’s header shows it.' : 'No logo is defined — the document falls back to the first visible header image.', 'info', 6000);
+  });
 
   // 🌐 Subtitle controls (V0.3.2.63) — language slot + incremental batch
   // translation. Editing/refreshing individual lines happens on the canvas
@@ -522,7 +539,7 @@ function _create(kind) {
   selectHeader(item.id);
 }
 
-async function _createImage() {
+async function _createImage({ isLogo = false } = {}) {
   const dataUrl = await _pickImage();
   if (!dataUrl) return;
   const dims = await _imageDims(dataUrl);
@@ -536,12 +553,15 @@ async function _createImage() {
     ? dims.height / dims.width
     : 1;
   const h = Math.max(1, Math.round(w * ratio));
-  const item = addHeaderItem('image', {
-    dataUrl,
-    naturalW: dims.width,
-    naturalH: dims.height,
-    w, h,
-  });
+  const opts = { dataUrl, naturalW: dims.width, naturalH: dims.height, w, h };
+  let item;
+  if (isLogo) {
+    // 🏷 there is ONE logo: the new one takes the flag from any other — added and flagged as one undo entry
+    actions.commitStateChange('Add the project logo', _HK, () => { item = header.addHeaderItem('image', opts); header.setProjectLogo(item.id); });
+    setStatus('🏷 Logo added — the printed document’s header shows it. Hide it with the eye if it should not be over the film.', 'success', 7000);
+  } else {
+    item = addHeaderItem('image', opts);
+  }
   _activeItemId = item.id;
   selectHeader(item.id);
 }

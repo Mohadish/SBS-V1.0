@@ -92,6 +92,7 @@ export function makeHeaderItem(kind = 'custom', opts = {}) {
       dataUrl:  opts.dataUrl  || null,
       naturalW: opts.naturalW || null,
       naturalH: opts.naturalH || null,
+      isLogo:   !!opts.isLogo,                 // 🏷 THE project's logo (see setProjectLogo) — one per project
     };
   }
   if (kind === 'custom') {
@@ -325,6 +326,38 @@ export function addHeaderItem(kind = 'custom', opts = {}) {
   state.setState({ headerItems: items });
   state.markDirty();
   return item;
+}
+
+// ─── 🏷 THE PROJECT'S LOGO (V0.3.4.79) ──────────────────────────────────────
+// A logo is an ordinary header image with a flag — placed, sized, hidden and
+// replaced exactly like any other — but there is ONE, and it is what the printed
+// document's header shows. Before this the document silently took "the first
+// visible header image", which nothing in the app said or let you choose: the
+// document asked for a logo that could not be given. (A project with no logo
+// defined keeps that old behaviour, so nothing already printed changes.)
+//   Hidden in the animation (the eye) is still the logo: whether the logo is
+// shown over the film and whether the manual carries it are two decisions.
+
+/** The project's logo as a data URL — the flagged image; else, for projects that never defined one, the first visible header image. */
+export function projectLogo() {
+  const items = state.get('headerItems') || [];
+  const mine = items.find(h => h.kind === 'image' && h.isLogo && h.dataUrl);
+  if (mine) return mine.dataUrl;
+  return items.find(h => h.kind === 'image' && h.dataUrl && h.visible !== false)?.dataUrl || null;
+}
+/** Which item the document treats as the logo, and whether that was a choice or the old guess. */
+export function projectLogoItem() {
+  const items = state.get('headerItems') || [];
+  const mine = items.find(h => h.kind === 'image' && h.isLogo && h.dataUrl);
+  if (mine) return { item: mine, defined: true };
+  const guess = items.find(h => h.kind === 'image' && h.dataUrl && h.visible !== false);
+  return guess ? { item: guess, defined: false } : { item: null, defined: false };
+}
+/** Make this image THE logo (any other loses the flag); null = no logo defined. Raw mutator like its neighbours — the sidebar wraps it for undo. */
+export function setProjectLogo(id) {
+  const items = (state.get('headerItems') || []).map(it => (it.kind !== 'image' ? it : { ...it, isLogo: it.id === id }));
+  state.setState({ headerItems: items });
+  state.markDirty();
 }
 
 /** Patch a header item by id. Pass partial fields. */

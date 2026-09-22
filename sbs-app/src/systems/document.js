@@ -25,7 +25,7 @@ import { srcHashOf }    from './language-packs.js';
 import { stepVideoClips } from './video-overlay.js';   // 🎞 a picture of a chosen frame
 import { stepInterfaceRect } from './interface-rect-core.js';   // 🎯 where the interface sits in the frame
 import { tableAssetIds } from './document-core.js';             // 📋 pictures inside table cells are used too
-import { projectDisplayName } from './header.js';
+import { projectDisplayName, projectLogo } from './header.js';
 import * as projectPaths from '../core/project-paths.js';
 import {
   emptyDocument, autoPaginate, reconcile, applyPartMoves, orderOf, mergeWithPrevious, splitBefore, clearFlags,
@@ -451,10 +451,8 @@ export function renderModel() {
   });
 }
 
-/** The logo the header shows: the project's first header image, if it has one. */
-function _logo() {
-  return (state.get('headerItems') || []).find(h => h.kind === 'image' && h.dataUrl && h.visible !== false)?.dataUrl || null;
-}
+/** The logo the header shows: the project's logo (Header tab ▸ 🏷 + Logo); a project that never defined one falls back to its first visible header image. */
+function _logo() { return projectLogo(); }
 
 const _stills = new Map();   // stepId → { sig, url }   (session cache)
 

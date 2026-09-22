@@ -2189,7 +2189,7 @@ function _customAct(act, el) {
     const file = { html: '🖼 <b>From a file…</b><div style="color:#94a3b8;font-size:11px;">a photo, a drawing, a symbol</div>', run: () => _root.querySelector('#dw-ci-file')?.click() };
     if (host === 'band') {
       const has = _itemsNow().some(i => i.logo), logo = D.documentLogo();
-      _openMenu([{ html: `<span class="dw-prow">${_thumbBox(logo || '')}<span><b>The project’s logo</b><div style="color:#94a3b8;font-size:11px;">${!logo ? 'this project has no logo yet (Header ▸ logo in the animation)' : has ? 'already in this band — adds another one' : 'follows the project: change the logo there and it changes here'}</div></span></span>`, run: () => {
+      _openMenu([{ html: `<span class="dw-prow">${_thumbBox(logo || '')}<span><b>The project’s logo</b><div style="color:#94a3b8;font-size:11px;">${!logo ? 'this project has no logo yet — Header tab ▸ 🏷 + Logo (or tick “This is the project’s logo” on a header image)' : has ? 'already in this band — adds another one' : 'follows the project: change the logo there (Header tab) and it changes here'}</div></span></span>`, run: () => {
         const items = _itemsNow(), id = _newItemId('b', items.length), h = Math.min(14, A.h);
         _customSel = id;
         _commitItems([...items, { id, type: 'image', logo: true, ..._clampItemRect({ x: A.x, y: A.y + (A.h - h) / 2, w: 32, h }) }], 'Add logo');

@@ -135,7 +135,7 @@ function _summary(secKey, d) {
   if (secKey === 'shapeStyles') return [d.fill ? `fill ${d.fill}` : 'no fill', d.stroke ? `outline ${d.stroke} ${d.strokeWidth ?? ''}` : 'no outline'].join(' · ');
   if (secKey === 'constTexts' || secKey === 'constShapes') return `${d.anchor === 'tr' ? '⌝' : '⌜'} ${_round(d.x ?? 0)}, ${_round(d.y ?? 0)}`;
   if (secKey === 'cropMasks')   return `${_round((d.x ?? 0) * 100)}%, ${_round((d.y ?? 0) * 100)}% · ${_round((d.w ?? 0) * 100)}% × ${_round((d.h ?? 0) * 100)}%${d.rot ? ` · ${_round(d.rot)}°` : ''}`;
-  if (secKey === 'headerItems') return [d.kind, d.text ? `"${String(d.text).slice(0, 30)}"` : '', `${_round(d.x ?? 0)}, ${_round(d.y ?? 0)}`, d.src ? 'image' : ''].filter(Boolean).join(' · ');
+  if (secKey === 'headerItems') return [d.kind === 'image' && d.isLogo ? 'logo' : d.kind, d.text ? `"${String(d.text).slice(0, 30)}"` : '', `${_round(d.x ?? 0)}, ${_round(d.y ?? 0)}`, d.src ? 'image' : ''].filter(Boolean).join(' · ');
   return '';
 }
 
@@ -217,7 +217,7 @@ export function mergeBrand(project, brand, opts = {}) {
     }
     const claimed = new Set();
     const map = brandToProject[sec.key] = new Map();
-    const keyOf = (d) => sec.key === 'headerItems' ? (d.kind ? `kind:${d.kind}` : '') : (d.name || '');
+    const keyOf = (d) => sec.key === 'headerItems' ? (d.kind ? `kind:${d.kind}${d.kind === 'image' && d.isLogo ? ':logo' : ''}` : '') : (d.name || '');   // 🏷 the brand's logo matches the project's logo
 
     for (const b of bdefs) {
       let target = byBrandId.get(b.id) || null;
