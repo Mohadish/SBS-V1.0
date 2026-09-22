@@ -22,6 +22,8 @@ import { showContextMenu } from './context-menu.js';   // 📌 constant-text-box
 import { chooseFromButtons } from './prompt.js';
 import { keyHint } from '../core/keymap.js';          // 🎹 advertised shortcut stays in sync
 import * as userSettings from '../core/user-settings.js';   // 🧲 only to know WHEN the saved magnet settings are in
+import * as header from '../systems/header.js';             // 🏷 the project logo lives in the header
+import * as actions from '../systems/actions.js';           // 🏷 …and creating it from here is one undo entry, like the Header tab's
 
 let _bar = null;
 let _mainBtn = null;
@@ -210,16 +212,56 @@ export function initOverlayToolbar() {
   // their handlers. Those handlers carry real behaviour — file pickers,
   // transcode prompts, library-folder checks, error reporting — and copying
   // any of it here would be a second version to keep in step.
+  // `entries` may be a function (built when the menu opens — the logo entry
+  // depends on whether the project has one), and an entry may be a ready
+  // {label, action} instead of [icon, name, button].
   const _menuFrom = (btn, entries) => (ev) => {
     const r = btn.getBoundingClientRect();
+    const list = typeof entries === 'function' ? entries() : entries;
     showContextMenu(
-      entries.map(([icon, name, target]) => ({
-        label: `${icon} ${name}`,
-        action: () => target.click(),
-      })),
+      list.map(e => Array.isArray(e) ? { label: `${e[0]} ${e[1]}`, action: () => e[2].click() } : e),
       r.left, r.bottom + 4,
     );
     ev.stopPropagation();
+  };
+
+  // ── 🏷 THE PROJECT LOGO, ON A STEP (V0.3.4.81) ─────────────────────────
+  // The logo is a header item (Header tab ▸ 🏷 + Logo). From here it can be put
+  // on the current step's overlay as an image — at the place and size it has
+  // over the film, so a logo hidden there with the eye lands where it belongs.
+  // It is a COPY: an overlay image like any other, which later replacing the
+  // logo does not change. A project with no logo yet gets one from here: the
+  // picked file becomes the header logo (one undo entry) and is put on the
+  // step as well.
+  const _insertLogo = async (item) => {
+    try {
+      const node = await overlay.addImage(item.dataUrl, { x: item.x, y: item.y, w: item.w, h: item.h, label: 'Add the project logo' });
+      if (node) setStatus('🏷 The project logo, on this step — where it sits over the film. It is a copy: replacing the logo later does not change it.', 'success', 7000);
+    } catch (e) { setStatus(`Could not place the logo: ${e.message}`, 'danger'); }
+  };
+  const _createLogo = async () => {
+    const file = await _pickImageFile();
+    if (!file) return;
+    const dataUrl = await new Promise(res => { const r = new FileReader(); r.onload = () => res(String(r.result || '')); r.onerror = () => res(''); r.readAsDataURL(file); });
+    if (!dataUrl) { setStatus('Could not read that picture.', 'danger'); return; }
+    const dims = await new Promise(res => { const im = new Image(); im.onload = () => res({ w: im.width, h: im.height }); im.onerror = () => res({ w: 0, h: 0 }); im.src = dataUrl; });
+    const MAX_W = 480;                                     // the Header tab's own sizing rule
+    const w = Math.max(1, Math.min(dims.w || MAX_W, MAX_W));
+    const h = Math.max(1, Math.round(w * ((dims.w > 0 && dims.h > 0) ? dims.h / dims.w : 1)));
+    let item = null;
+    actions.commitStateChange('Add the project logo', ['headerItems'], () => {
+      item = header.addHeaderItem('image', { dataUrl, naturalW: dims.w, naturalH: dims.h, w, h });
+      header.setProjectLogo(item.id);
+    });
+    if (!item) return;
+    await _insertLogo(item);
+    setStatus('🏷 Logo created — it is a header item now (Header tab: hide it with the eye if it should not be over the film) and it is on this step.', 'success', 9000);
+  };
+  const _logoEntry = () => {
+    const { item, defined } = header.projectLogoItem();
+    return (item && defined)
+      ? { label: '🏷 Project logo', action: () => { _insertLogo(item); } }
+      : { label: '🏷 Project logo — none yet: pick a file…', action: () => { _createLogo(); } };
   };
 
   const btnShape = _btn('▭ Shape ▾', 'Add a shape');
@@ -233,9 +275,10 @@ export function initOverlayToolbar() {
     ['🎯', '3D arrow (anchored to the model)', btn3dArrow],
   ]));
 
-  const btnAssets = _btn('🖼 Assets ▾', 'Insert an image, video, interface, table or table of contents');
-  btnAssets.addEventListener('click', _menuFrom(btnAssets, [
+  const btnAssets = _btn('🖼 Assets ▾', 'Insert an image, the project logo, a video, an interface, a table or a table of contents');
+  btnAssets.addEventListener('click', _menuFrom(btnAssets, () => [
     ['🖼', 'Image',             btnImg],
+    _logoEntry(),
     ['🎬', 'Video clip',        btnVideo],
     ['🖥', 'Interface',         btnIface],
     ['▦', 'Table',             btnTable],

@@ -4644,19 +4644,28 @@ async function _reflowTextBox(node) {
 /**
  * @param {string|File} src  data URL or File object (e.g. from <input type="file">)
  */
-export async function addImage(src) {
+/**
+ * @param {File|string} src
+ * @param {{x?:number, y?:number, w?:number, h?:number, label?:string}} [opts]   a given place and size (canonical px)
+ *        instead of "half the stage, centred" — the project logo lands where, and as big as, it sits over the film
+ */
+export async function addImage(src, opts = {}) {
   if (!_stage) return null;
   const dataUrl = typeof src === 'string' ? src : await _fileToDataURL(src);
   const img = await _loadImage(dataUrl);
-  // Fit to 50% of stage on the larger axis, keep aspect.
-  const maxW = _stage.width()  * 0.5;
-  const maxH = _stage.height() * 0.5;
-  const scale = Math.min(maxW / img.width, maxH / img.height, 1);
-  const w = img.width * scale;
-  const h = img.height * scale;
+  let w, h;
+  if (opts.w > 0 && opts.h > 0) { w = opts.w; h = opts.h; }
+  else {
+    // Fit to 50% of stage on the larger axis, keep aspect.
+    const maxW = _stage.width()  * 0.5;
+    const maxH = _stage.height() * 0.5;
+    const scale = Math.min(maxW / img.width, maxH / img.height, 1);
+    w = img.width * scale;
+    h = img.height * scale;
+  }
   const node = new Konva.Image({
-    x: (_stage.width() - w) / 2,
-    y: (_stage.height() - h) / 2,
+    x: Number.isFinite(opts.x) ? opts.x : (_stage.width() - w) / 2,
+    y: Number.isFinite(opts.y) ? opts.y : (_stage.height() - h) / 2,
     image: img,
     width:  w,
     height: h,
@@ -4673,7 +4682,7 @@ export async function addImage(src) {
   _layer.add(node);
   _attachNode(node);
   _setSelection(node);
-  _pushAddNodeUndo(node, 'Add image');   // P7-C-1
+  _pushAddNodeUndo(node, opts.label || 'Add image');   // P7-C-1
   _scheduleSave();
   return node;
 }
