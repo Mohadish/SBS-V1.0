@@ -12,6 +12,7 @@
 
 import state                    from '../core/state.js';
 import { undoManager }          from './undo.js';
+import * as _spotlightMod from './spotlight.js';   // 🔦 V0.3.4.82 — a place in the picture, per step
 import { cloneShareStrings, structEqual } from '../core/clone.js';   // cheap undo snapshots (share base64, don't copy)
 import { applyFollow }          from './follow.js';   // paste keeps the source's attachment
 import { chooseFromButtons }    from '../ui/prompt.js';   // multi-step transform scope prompt
@@ -3566,6 +3567,12 @@ export function commitTransformEdit(nodeId) {
   const nodeById = state.get('nodeById');
   const node = nodeById?.get(nodeId);
   if (!node) return;
+  // 🔦 a spotlighted object moved with the gizmo: its place IN THE PICTURE is whatever it is
+  // now — re-captured before the "to" snapshot is taken, so the one undo entry covers both.
+  if (node.spotlight) {
+    const moved = JSON.stringify(from.localOffset) !== JSON.stringify(node.localOffset) || JSON.stringify(from.localQuaternion) !== JSON.stringify(node.localQuaternion);
+    if (moved) _spotlightMod.recaptureFromPose(node);
+  }
   const to = captureTransformSnapshot(node);
   if (JSON.stringify(from) === JSON.stringify(to)) return;
   _msXfNote(nodeId, from);   // V0.3.0.79 — start/continue a multi-step transform session
@@ -3608,6 +3615,8 @@ function _msXfNote(nodeId, fromSnap) {
   const isGlobal = !!state.get('globalMode');
   const haveSel  = (stepSel instanceof Set) && stepSel.size >= 2;
   if (!isGlobal && !haveSel) { _msXf = null; return; }
+  // 🔦 a spotlighted object's pose belongs to THIS step's picture — never carried to other steps
+  if (state.get('nodeById')?.get(nodeId)?.spotlight) { _msXf = null; return; }
   if (_msXf?.nodeId === nodeId) return;          // session already running → keep first baseline
   _msXf = { nodeId, baseline: fromSnap };
 }
@@ -4110,6 +4119,11 @@ export function visibilityAudit(opts = {}) {
  * Usage: `window.sbsDiag.unstuckInputs()` — manual recovery.
  * Also runs automatically every few seconds as a janitor.
  */
+// ─── 🔦 Spotlight at this step (V0.3.4.82) — see systems/spotlight.js ──────────
+export function setSpotlight(nodeId, on) { return _spotlightMod.setSpotlight(nodeId, on); }
+export function resetSpotlight(nodeId)   { return _spotlightMod.resetSpotlight(nodeId); }
+export function initSpotlight()          { return _spotlightMod.initSpotlight(); }
+
 export function unstuckInputs() {
   const actions = [];
 

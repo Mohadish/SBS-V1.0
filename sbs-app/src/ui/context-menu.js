@@ -231,6 +231,7 @@ const _MENU_SECTIONS = [
   [l => l.startsWith('⊕ Copy Pivot') || l.startsWith('⊕ Paste Pivot')
         || l.startsWith('🧲 Snap Pivot') || l.startsWith('⊕ Pivot'), 5],  // pivot
   [l => l.includes('Follow object') || l.includes('Stop following'), 6],  // follow
+  [l => l.startsWith('🔦'),                                          6],  // 🔦 spotlight — beside follow: both are "where this object is, on this step"
   [l => (l.startsWith('📋 Copy') && !l.includes('Transforms') && !l.includes('tree'))
         || l.startsWith('📄 Paste') || l.startsWith('🔗 Paste Instance')
         || l.startsWith('🪄 Make transformable')

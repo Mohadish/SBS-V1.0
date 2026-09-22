@@ -69,6 +69,7 @@ import {
   quarterTurnsFromQuaternion,
 } from '../core/transforms.js';
 import { isIsolateActive, getIsolateKeepSet } from '../core/isolate-state.js';
+import { bakeSpotlights, followCamera as _spotlightFollow } from './spotlight.js';   // 🔦 V0.3.4.82 — a place in the picture, derived from the step's camera
 
 // ── Easing helpers (mirror scene.js — no circular dependency) ─────────────
 const easeSmooth = t => t * t * (3 - 2 * t);
@@ -524,6 +525,7 @@ class StepManager {
       if (snapshot.transforms) {
         applyAllTransformSnapshots(nodeById, snapshot.transforms);
         applyAllTransformsToScene(nodeById, this.object3dById);
+        bakeSpotlights(snapshot, nodeById, this.object3dById);   // 🔦 from THIS step's camera, whatever the view was when it was authored
       } else {
         sceneCore.rootGroup?.updateMatrixWorld(true);
       }
@@ -796,6 +798,7 @@ class StepManager {
     if (toSnapshot.transforms) {
       applyAllTransformSnapshots(nodeById, toSnapshot.transforms);
       applyAllTransformsToScene(nodeById, this.object3dById);
+      bakeSpotlights(toSnapshot, nodeById, this.object3dById);   // 🔦 the pose the tween goes TO comes from the target step's camera
     }
     this._warmMatrices();
     const toWorldTransforms = captureWorldTransforms(state.get('treeData'), this.object3dById);
@@ -2771,6 +2774,8 @@ class StepManager {
     state.setState({ steps: [...allSteps] });
     state.markDirty();
     state.emit('step:synced', step);
+    // 🔦 the spotlighted objects were following the view; now that view IS the step's camera, their baked pose is worth keeping
+    if (id === state.get('activeStepId') && _spotlightFollow() > 0) this.scheduleTransformSync();
   }
 
   /**

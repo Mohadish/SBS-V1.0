@@ -1485,6 +1485,15 @@ function _buildContextMenuItems(node) {
       ? { label: '🔗 Stop following…', action: () => promptStopFollowing(node.id) }
       : { label: '🔗 Follow object…',  action: () => startFollowPick(node.id) });
   }
+  // 🔦 Spotlight at this step (V0.3.4.82) — parity with the viewport menu.
+  if (count === 1 && node && !node.archived && isTransformNode(node)) {
+    if (node.spotlight) {
+      items.push({ label: '🔦 Reset the spotlight place',     action: () => actions.resetSpotlight(node.id) });
+      items.push({ label: '🔦 Stop the spotlight at this step', action: () => actions.setSpotlight(node.id, false) });
+    } else {
+      items.push({ label: '🔦 Spotlight at this step', action: () => actions.setSpotlight(node.id, true) });
+    }
+  }
 
   // ── Group for global edit (V0.3.0.171) — wrap 2+ selected objects in a folder
   // ACROSS steps so one Global-Mode move/rotate fixes them all at once. Multi only.

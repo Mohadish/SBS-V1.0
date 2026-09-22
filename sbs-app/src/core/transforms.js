@@ -208,6 +208,7 @@ export function ensureTransformDefaults(node) {
   if (typeof node.moveEnabled   !== 'boolean') node.moveEnabled   = true;
   if (typeof node.rotateEnabled !== 'boolean') node.rotateEnabled = true;
   if (typeof node.pivotEnabled  !== 'boolean') node.pivotEnabled  = true;
+  if (node.spotlight === undefined) node.spotlight = null;   // 🔦 per-step: a place in the picture (systems/spotlight.js)
 
   // Source-transform fields (model nodes only — harmless on others).
   if (!Array.isArray(node.sourceLocalPosition))
@@ -801,8 +802,13 @@ export function captureTransformSnapshot(node) {
     moveEnabled:         node.moveEnabled !== false,
     rotateEnabled:       node.rotateEnabled !== false,
     pivotEnabled:        node.pivotEnabled !== false,
+    // 🔦 V0.3.4.82 — the spotlight descriptor rides the step beside the pose it was baked
+    // into: a step is self-contained (it renders from the pose alone), and the descriptor
+    // lets the pose be re-derived from the step's camera at activation.
+    spotlight:           _cloneSpotlight(node.spotlight),
   };
 }
+const _cloneSpotlight = (sp) => sp ? { ...sp, q: [...(sp.q || [0, 0, 0, 1])], q0: [...(sp.q0 || sp.q || [0, 0, 0, 1])], cl: [...(sp.cl || [0, 0, 0])] } : null;
 
 /**
  * Apply a transform snapshot back to a node (mutation).
@@ -824,6 +830,7 @@ export function applyTransformSnapshot(node, snap) {
   node.moveEnabled          = snap.moveEnabled   !== false;
   node.rotateEnabled        = snap.rotateEnabled !== false;
   node.pivotEnabled         = snap.pivotEnabled  !== false;
+  node.spotlight            = _cloneSpotlight(snap.spotlight);   // 🔦 absent in older snapshots = off
 }
 
 /**
@@ -956,5 +963,6 @@ export function interpolateTransformSnapshot(from, to, alpha) {
     moveEnabled:   true,
     rotateEnabled: true,
     pivotEnabled:  true,
+    spotlight:     _cloneSpotlight(to.spotlight),   // 🔦 discrete, like orientationSteps
   };
 }

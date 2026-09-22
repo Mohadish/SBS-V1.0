@@ -119,6 +119,7 @@ gizmo.init();
 initGizmoNumeric(gizmo);   // live drag readout + numeric input mode
 initAlteredStars();        // ★ V0.3.2.253: definition / tool / order edits star the steps they touch
 initBrand();               // 🏷 V0.3.3.12: notices a newer revision of the linked brand after a project loads
+actions.initSpotlight();   // 🔦 V0.3.4.82: spotlighted objects follow the camera while authoring
 
 // Debug surface — exposes core handles on window.__sbs for live console
 // inspection during development. Not used by app code.
@@ -4519,6 +4520,16 @@ canvas.addEventListener('contextmenu', e => {
     items.push(node.follow
       ? { label: '🔗 Stop following…', action: () => promptStopFollowing(node.id) }
       : { label: '🔗 Follow object…',  action: () => startFollowPick(node.id) });
+    items.push({ label: '─', disabled: true });
+  }
+  // 🔦 Spotlight at this step (V0.3.4.82) — a place in the picture, on THIS step only.
+  if (multiIds.size === 1 && node && !node.archived && isTransformNode(node)) {
+    if (node.spotlight) {
+      items.push({ label: '🔦 Reset the spotlight place',     action: () => actions.resetSpotlight(node.id) });
+      items.push({ label: '🔦 Stop the spotlight at this step', action: () => actions.setSpotlight(node.id, false) });
+    } else {
+      items.push({ label: '🔦 Spotlight at this step', action: () => actions.setSpotlight(node.id, true) });
+    }
     items.push({ label: '─', disabled: true });
   }
   if (hasSel) {

@@ -40,6 +40,7 @@ import {
   applyTransformSnapshot,
 } from '../core/transforms.js';
 import { setNodeWorldPoseRaw } from '../systems/hardware-actions.js';
+import * as spotlight from '../systems/spotlight.js';   // 🔦 V0.3.4.82 — the dolly handle of a spotlighted object
 import { findParent } from '../core/nodes.js';
 import { parseExpression } from './gizmo-numeric.js';
 
@@ -456,6 +457,42 @@ class GizmoController {
     // Keep references so visibility can be toggled directly from _tick().
     this._globalDot = vis;
     this._globalHit = hit;
+
+    // ── 🔦 Dolly handle (V0.3.4.82) ────────────────────────────────────────
+    // A WHITE BLOCK beside the hub, shown only for an object spotlighted on this
+    // step. It slides the object along the line from the camera through its
+    // centre: drag UP = farther (smaller on screen), DOWN = nearer (bigger).
+    // Not a scale — the object keeps its size and its place in the picture;
+    // only its distance changes, so it LOOKS like a scale that never shifts.
+    // It faces the camera and sits up-right of the hub whatever the gizmo's
+    // frame (placed every tick), so it is always reachable.
+    {
+      const dg = new T.Group();
+      const dvGeo = new T.PlaneGeometry(0.26, 0.15);
+      const dvMat = new T.MeshBasicMaterial({ color: 0xffffff, side: T.DoubleSide, depthTest: false });
+      const dv = new T.Mesh(dvGeo, dvMat);
+      const rimGeo = new T.PlaneGeometry(0.30, 0.19);
+      const rimMat = new T.MeshBasicMaterial({ color: 0x0f172a, side: T.DoubleSide, depthTest: false, transparent: true, opacity: 0.55 });
+      const rim = new T.Mesh(rimGeo, rimMat);
+      rim.position.z = -0.001;
+      const dhGeo = new T.PlaneGeometry(0.34, 0.23);
+      const dhMat = new T.MeshBasicMaterial({ visible: false, side: T.DoubleSide, depthTest: false });
+      const dh = new T.Mesh(dhGeo, dhMat);
+      dg.add(rim, dv, dh);
+      dg.visible = false;
+      this._group.add(dg);
+      const el = { hitMesh: dh, visuals: [dg], mats: [dvMat], axis: 'depth', type: 'dolly', baseColor: 0xffffff };
+      dh.userData._gEl = el;
+      this._elements.push(el);
+      this._dollyGroup = dg;
+    }
+  }
+
+  /** 🔦 The dolly handle belongs to a spotlighted object, outside pivot / global edits and cable mode. */
+  _dollyAllowed() {
+    const n = this._node;
+    return !!n?.spotlight && !this._cableTarget
+      && state.get('pivotEditNodeId') !== n.id && state.get('globalEditNodeId') !== n.id;
   }
 
   _orientAxis(obj, axis) {
@@ -623,6 +660,8 @@ class GizmoController {
       let show;
       if (el.type === 'scale') {
         show = this._scaleAllowed();   // V0.3.0.99 — flatShape only
+      } else if (el.type === 'dolly') {
+        show = this._dollyAllowed();   // 🔦 spotlighted objects only
       } else {
         show = this._mode === 'all'
           || (this._mode === 'translate' && (el.type === 'translate' || el.type === 'plane'))
@@ -685,6 +724,7 @@ class GizmoController {
       this._group.scale.setScalar(viewH * SCREEN_SIZE);
       if (this._pivotDot)  this._pivotDot.visible  = false;
       if (this._globalDot) this._globalDot.visible = false;
+      if (this._dollyGroup) this._dollyGroup.visible = false;
       return;
     }
 
@@ -762,6 +802,20 @@ class GizmoController {
     const fovRad = (cam.fov * Math.PI) / 180;
     const viewH  = 2 * dist * Math.tan(fovRad / 2);
     this._group.scale.setScalar(viewH * SCREEN_SIZE);
+
+    // 🔦 the dolly block: up-right of the hub IN THE PICTURE, facing the camera —
+    // expressed in the group's own frame, since it is a child of the group
+    if (this._dollyGroup) {
+      const showDolly = this._dollyAllowed();
+      this._dollyGroup.visible = showDolly;
+      if (showDolly) {
+        const inv = this._group.quaternion.clone().invert();
+        const camQ = cam.quaternion.clone();
+        const off = new T.Vector3(0.62, 0.62, 0).applyQuaternion(camQ);   // right + up, in camera space
+        this._dollyGroup.position.copy(off.applyQuaternion(inv));
+        this._dollyGroup.quaternion.copy(inv.multiply(camQ));
+      }
+    }
   }
 
   // ── Pointer: hover ────────────────────────────────────────────────────────
@@ -818,7 +872,12 @@ class GizmoController {
     const inGlobalEdit = !!this._node && state.get('globalEditNodeId') === this._node.id;
     // Scale drags commit through setNodeScaleGlobal (their own undo), so skip the
     // per-step transform batch for them (V0.3.0.88).
-    if (this._node && !inPivotEdit && !inGlobalEdit && this._dragEl?.type !== 'scale') actions.beginTransformEdit(this._node.id);
+    // 🔦 a dolly drag commits through spotlight.commitDollyDrag (its own undo, descriptor included)
+    if (this._node && !inPivotEdit && !inGlobalEdit && this._dragEl?.type !== 'scale' && this._dragEl?.type !== 'dolly') actions.beginTransformEdit(this._node.id);
+    if (this._node && this._dragEl?.type === 'dolly') {
+      this._startSpot     = { ...(this._node.spotlight || {}) };
+      this._startSpotSnap = captureTransformSnapshot(this._node);
+    }
 
     const T = window.THREE;
     const no = this._node;
@@ -862,8 +921,8 @@ class GizmoController {
     }
     this._startGizmoPos = liveCenter;
 
-    const plane = this._getDragPlane(el);
-    this._startWorld = this._worldPoint(clientX, clientY, plane);
+    const plane = el.type === 'dolly' ? null : this._getDragPlane(el);   // 🔦 the dolly reads screen dy only
+    this._startWorld = plane ? this._worldPoint(clientX, clientY, plane) : null;
 
     // Phase 2.1 scale handle uses screen-space dy for the factor — keep
     // the start screen coords so the math is independent of any view /
@@ -950,7 +1009,11 @@ class GizmoController {
     const inGlobalEdit = !!this._node && state.get('globalEditNodeId') === this._node.id;
     const endType      = _endEl?.type;
 
-    if (this._node && endType === 'scale') {
+    if (this._node && endType === 'dolly') {
+      // 🔦 one undo entry: the descriptor and the baked pose, from the pointerdown snapshot
+      spotlight.commitDollyDrag(this._node.id, this._startSpotSnap);
+      this._startSpot = null; this._startSpotSnap = null;
+    } else if (this._node && endType === 'scale') {
       // V0.3.0.88 — uniform scale is GLOBAL (all steps) in any mode. The drag already
       // mutated the live baseLocalScale; revert it, then re-apply it globally with
       // correct before/after undo via setNodeScaleGlobal.
@@ -1076,6 +1139,16 @@ class GizmoController {
     // grow, DOWN → shrink. The handle is only ever shown / pickable when
     // state.globalEditNodeId === flatShape, so writes always target
     // baseLocalScale (HOME pose, ripples to every step).
+    // ── 🔦 Dolly handle (V0.3.4.82) — screen dy → distance along the camera ray ──
+    if (el.type === 'dolly' && no) {
+      const factor = _factorFromScreenDy(this._startClientY, clientY);   // UP = factor > 1
+      spotlight.applyDollyLive(no, this._startSpot?.s ?? 1 / 3, factor); // s' = s0 / factor: up = farther = smaller
+      this._tick();
+      this._lastAmount = factor;
+      if (this._onDragEvent) this._onDragEvent('move', { type: 'dolly', axis: 'depth', value: factor, node: no, source: 'mouse' });
+      return;
+    }
+
     if (el.type === 'scale' && no) {
       const factor = _factorFromScreenDy(this._startClientY, clientY);
       no.baseLocalScale = [
@@ -1560,6 +1633,7 @@ class GizmoController {
 
     const active = this._elements.filter(e => {
       if (e.type === 'scale') return this._scaleAllowed();   // V0.3.0.99 — flatShape only
+      if (e.type === 'dolly') return this._dollyAllowed();   // 🔦 spotlighted objects only
       return this._mode === 'all'
         || (this._mode === 'translate' && (e.type === 'translate' || e.type === 'plane'))
         || (this._mode === 'rotate'    &&  e.type === 'rotate');
