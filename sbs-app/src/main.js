@@ -5266,11 +5266,12 @@ window.addEventListener('keydown', async e => {
   // runs first and marks the event; with an overlay selection this one stays
   // out. Otherwise: the 3D selection — screws (same template), primitives,
   // flat shapes — each by its own duplicate, one undo entry each.
-  if (mod && !e.shiftKey && !e.altKey && e.code === 'KeyD') {
+  // Ctrl+Shift+D (V0.3.4.105) = duplicate IN PLACE: the copy sits exactly on the original.
+  if (mod && !e.altKey && e.code === 'KeyD') {
     if (e.defaultPrevented) return;
     if (isOverlayEditing() && overlaySelectionCount() > 0) return;
     e.preventDefault();
-    _duplicateSceneSelection();
+    _duplicateSceneSelection({ inPlace: !!e.shiftKey });
     return;
   }
 
@@ -5602,7 +5603,7 @@ function _takeoverOpen() {
 }
 
 /** ⧉ Ctrl+D on the 3D selection: every selected item that has a duplicate gets one. */
-async function _duplicateSceneSelection() {
+async function _duplicateSceneSelection({ inPlace = false } = {}) {
   const selSet = state.get('multiSelectedIds');
   const selId  = state.get('selectedId');
   const ids = [...((selSet instanceof Set && selSet.size) ? selSet : (selId ? [selId] : []))];
@@ -5615,16 +5616,16 @@ async function _duplicateSceneSelection() {
     if (!n) continue;
     let out = null;
     try {
-      if (n.type === 'hardwareInstance')  out = hw.duplicateInstance(id)?.id || null;
-      else if (n.type === 'primitive')    out = actions.duplicatePrimitive(id);
-      else if (n.type === 'flatShape')    out = actions.duplicateFlatShape(id);
+      if (n.type === 'hardwareInstance')  out = hw.duplicateInstance(id, { inPlace })?.id || null;
+      else if (n.type === 'primitive')    out = actions.duplicatePrimitive(id, { inPlace });
+      else if (n.type === 'flatShape')    out = actions.duplicateFlatShape(id, { inPlace });
       else { skipped.push(n.name || n.type); continue; }
     } catch (err) { console.warn('[duplicate] failed for', n.name || id, err); }
     if (out) made.push(out);
   }
   if (made.length) {
     actions.setSelection(made[made.length - 1], new Set(made));
-    setStatus(`Duplicated ${made.length} item${made.length === 1 ? '' : 's'}${skipped.length ? ` · ${skipped.length} cannot be duplicated (${skipped.slice(0, 3).join(', ')}${skipped.length > 3 ? '…' : ''})` : ''}.`, 'success', 4000);
+    setStatus(`Duplicated ${made.length} item${made.length === 1 ? '' : 's'}${inPlace ? ' in place (the copy sits on the original)' : ''}${skipped.length ? ` · ${skipped.length} cannot be duplicated (${skipped.slice(0, 3).join(', ')}${skipped.length > 3 ? '…' : ''})` : ''}.`, 'success', 4000);
   } else {
     setStatus('Nothing here can be duplicated — Ctrl+D copies screws, primitives, shapes, and overlay items (text boxes, pictures).', 'warn', 5000);
   }

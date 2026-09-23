@@ -610,7 +610,7 @@ export function setInsertAnimParams(nodeIds, patch = {}) {
  * at the same template, offset by 1.5× the screw's nominal diameter so
  * the copy doesn't z-fight with the original.
  */
-export function duplicateInstance(nodeId) {
+export function duplicateInstance(nodeId, { inPlace = false } = {}) {
   const root = state.get('treeData');
   const nodeById = state.get('nodeById') || buildNodeMap(root);
   const src = nodeById.get(nodeId);
@@ -622,7 +622,7 @@ export function duplicateInstance(nodeId) {
 
   const tpls = state.get('hardwareTemplates') || [];
   const tpl  = tpls.find(t => t.id === src.templateId);
-  const offset = tpl ? (tpl.params?.diameter || 4) * 1.5 : 6;
+  const offset = inPlace ? 0 : (tpl ? (tpl.params?.diameter || 4) * 1.5 : 6);   // ⧉ V0.3.4.105 — in place = exactly on the original
 
   const copy = createHardwareInstanceNode({
     templateId: src.templateId,

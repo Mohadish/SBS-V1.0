@@ -10480,7 +10480,7 @@ export function hasPrimitiveClipboard() { return !!_primClipboard; }
  * back to a plain origin-spawn when the source no longer exists.
  *   linked=false → independent param group · linked=true → shares the source's group.
  */
-function _pastePrimitive({ linked, undoLabel = null }) {
+function _pastePrimitive({ linked, undoLabel = null, inPlace = false }) {
   if (!_primClipboard) return null;
   const cb   = _primClipboard;
   const root = state.get('treeData');
@@ -10502,7 +10502,7 @@ function _pastePrimitive({ linked, undoLabel = null }) {
   const parentId = live ? (findParent(root, live.id)?.id || null) : null;
   let transform = null;
   if (live) {
-    const off = _primLateralOffset(live.primKind, live.primParams);
+    const off = inPlace ? 0 : _primLateralOffset(live.primKind, live.primParams);   // ⧉ in place = exactly on the original
     const lo  = live.localOffset || [0, 0, 0];
     transform = {
       localOffset:         [lo[0] + off, lo[1], lo[2]],
@@ -10536,11 +10536,11 @@ export function pastePrimitive()         { return _pastePrimitive({ linked: fals
 
 /** ⧉ V0.3.4.104 — Ctrl+D on a primitive: an independent copy beside it, one undo entry.
  *  The primitive clipboard is left exactly as it was. */
-export function duplicatePrimitive(nodeId) {
+export function duplicatePrimitive(nodeId, { inPlace = false } = {}) {
   const keep = _primClipboard;
   try {
     if (!copyPrimitive(nodeId)) return null;
-    return _pastePrimitive({ linked: false, undoLabel: 'Duplicate primitive' });
+    return _pastePrimitive({ linked: false, undoLabel: inPlace ? 'Duplicate primitive in place' : 'Duplicate primitive', inPlace });
   } finally { _primClipboard = keep; }
 }
 
@@ -10550,14 +10550,14 @@ export function duplicatePrimitive(nodeId) {
  * visible on the active step, hidden on the others like a freshly placed shape.
  * One undo entry. Returns the new node id.
  */
-export function duplicateFlatShape(nodeId) {
+export function duplicateFlatShape(nodeId, { inPlace = false } = {}) {
   const root = state.get('treeData');
   const src  = nodeId ? (state.get('nodeById')?.get(nodeId) ?? findNode(root, nodeId)) : null;
   if (!root || !src || src.type !== 'flatShape') return null;
   const parent = _findDataParent(root, nodeId) || root;
   // its width, for the sideways offset — the built mesh knows; a fresh one falls back to 20
-  let off = 20;
-  try {
+  let off = inPlace ? 0 : 20;
+  if (!inPlace) try {
     const m = steps.object3dById?.get(src.id);
     const g = m?.geometry; if (g) { g.computeBoundingBox?.(); const bb = g.boundingBox; if (bb) off = Math.max(1, (bb.max.x - bb.min.x) * 1.1); }
   } catch { /* the default stands */ }
@@ -10587,7 +10587,7 @@ export function duplicateFlatShape(nodeId) {
   };
   if (!materialise(copy)) return null;
   const snapshot = JSON.parse(JSON.stringify(copy));
-  undoManager.push(`Duplicate shape "${src.name || 'shape'}"`,
+  undoManager.push(`Duplicate shape "${src.name || 'shape'}"${inPlace ? ' in place' : ''}`,
     () => _removeShapeInstance(copy.id),
     () => materialise(JSON.parse(JSON.stringify(snapshot))),
   );

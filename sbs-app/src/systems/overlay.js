@@ -6405,10 +6405,12 @@ async function _pasteFromOverlayClipboard(opts = {}) {
   return true;
 }
 
-/** Duplicate = copy current selection then immediately paste with a small offset. */
-async function _duplicateSelected() {
+/** Duplicate = copy current selection then immediately paste with a small offset —
+ *  or exactly on top of the original (Ctrl+Shift+D, V0.3.4.105: "duplicate in place"). */
+async function _duplicateSelected(opts = {}) {
+  const inPlace = opts === true || !!opts?.inPlace;
   if (!_copyToOverlayClipboard()) return false;
-  return _pasteFromOverlayClipboard({ inPlace: false, offset: 20, label: 'Duplicate' });
+  return _pasteFromOverlayClipboard({ inPlace, offset: 20, label: inPlace ? 'Duplicate in place' : 'Duplicate' });
 }
 
 /**
@@ -7445,7 +7447,8 @@ function _showOverlayContextMenu(node, x, y) {
     ...constShapeItems,
     ...maskItems,
     ...arrangeItems,
-    { label: '⎘ Duplicate',        action: _duplicateSelected },
+    { label: '⎘ Duplicate',        action: () => _duplicateSelected() },
+    { label: '⎘ Duplicate in place', action: () => _duplicateSelected({ inPlace: true }) },
     { label: '📋 Copy',            action: _copyToOverlayClipboard },
     { label: '📥 Paste',           action: () => _pasteFromOverlayClipboard({ inPlace: false }) },   // 📋 never greyed: another window may have copied
     { label: '📥 Paste in place',  action: () => _pasteFromOverlayClipboard({ inPlace: true })  },
@@ -9774,7 +9777,7 @@ function _onKeyDown(e) {
   if (k === 'd') {
     if (_transformer?.nodes()?.length) {
       e.preventDefault();
-      _duplicateSelected();
+      _duplicateSelected({ inPlace: !!e.shiftKey });   // ⧉ Ctrl+Shift+D = on top of the original
     }
     return;
   }
