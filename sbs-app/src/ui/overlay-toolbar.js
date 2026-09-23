@@ -507,7 +507,15 @@ export function showFloatingToolbar(rect) {
 }
 
 export function hideFloatingToolbar() {
-  if (_floatBar) _floatBar.style.display = 'none';
+  if (_floatBar) { _floatBar.style.display = 'none'; _floatBar.style.opacity = ''; _floatBar.style.pointerEvents = ''; }
+}
+
+/** 👻 V0.3.4.103 — fade the panel to a trace while its item is being dragged or resized (it hides nothing, catches no click); back on release. */
+export function dimFloatingToolbar(on) {
+  if (!_floatBar) return;
+  _floatBar.style.transition = 'opacity .12s';
+  _floatBar.style.opacity = on ? '0.1' : '';
+  _floatBar.style.pointerEvents = on ? 'none' : '';
 }
 
 export function isFloatingToolbarVisible() {

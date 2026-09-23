@@ -49,7 +49,7 @@ import {
   ANCHOR_KIND, isAnchoredNode, reprojectNode, reprojectAll,
   hasAnchoredNodes, refreshCameraMatrices,
 } from './anchored-shapes.js';
-import { getTextToolbarSlot, showFloatingToolbar, hideFloatingToolbar } from '../ui/overlay-toolbar.js';
+import { getTextToolbarSlot, showFloatingToolbar, hideFloatingToolbar, dimFloatingToolbar } from '../ui/overlay-toolbar.js';
 import * as textEngine from './text-engine.js';
 import { getStyleTemplate, listStyleTemplates } from './style-templates.js';
 import { registerLayer, getLayerSelection, persistNodeIfHeader, useOwnMultiDrag, reapplyGroupDelta, clearLayerSelection } from './cross-layer.js';
@@ -7700,7 +7700,7 @@ function _polyDotMove(index, clientX, clientY, evt) {
   if (!guides.length) { hideSnapGuides(); return; }
   const T = _stage.getAbsoluteTransform();
   const C = (x, y) => { const q = T.point({ x, y }); return { x: Math.max(cr.left, Math.min(cr.right, cr.left + q.x)), y: Math.max(cr.top, Math.min(cr.bottom, cr.top + q.y)) }; };
-  showSnapGuides(guides.map(g => { const a = g.axis === 'x' ? C(g.at, g.from) : C(g.from, g.at), b = g.axis === 'x' ? C(g.at, g.to) : C(g.to, g.at); return { x1: a.x, y1: a.y, x2: b.x, y2: b.y }; }));
+  showSnapGuides(guides.map(g => { const a = g.axis === 'x' ? C(g.at, g.from) : C(g.from, g.at), b = g.axis === 'x' ? C(g.at, g.to) : C(g.to, g.at); return { x1: a.x, y1: a.y, x2: b.x, y2: b.y, frame: !!g.frame }; }));
 }
 
 function _polyDotEnd(index, moved) {
@@ -7911,6 +7911,7 @@ function _snapBegin(node, starts) {
     }
   }
   _snap = s;
+  dimFloatingToolbar(true);                                                       // 👻 V0.3.4.103 — the panel fades while you drag, so it hides nothing you are placing against
   window.addEventListener('blur', hideSnapGuides);                                // Alt+Tab with the button held: Konva hears no mouseup — at least take the guides down
   document.addEventListener('keydown', _onSnapKey, true);                         // Shift / Alt pressed or let go while the pointer stands still
   document.addEventListener('keyup', _onSnapKey, true);
@@ -7945,7 +7946,7 @@ function _snapMove(node, evt) {
   const C = (x, y) => { const q = T.point({ x, y }); return { x: Math.max(cr.left, Math.min(cr.right, cr.left + q.x)), y: Math.max(cr.top, Math.min(cr.bottom, cr.top + q.y)) }; };
   showSnapGuides(guides.map(g => {
     const a = g.axis === 'x' ? C(g.at, g.from) : C(g.from, g.at), b = g.axis === 'x' ? C(g.at, g.to) : C(g.to, g.at);
-    return { x1: a.x, y1: a.y, x2: b.x, y2: b.y };
+    return { x1: a.x, y1: a.y, x2: b.x, y2: b.y, frame: !!g.frame };   // frame = the picture's own line → drawn in its own colour
   }));
 }
 
@@ -7962,6 +7963,7 @@ function _onSnapKey(e) {
 
 function _snapEnd() {
   _snap = null;
+  dimFloatingToolbar(false);
   hideSnapGuides();
   window.removeEventListener('blur', hideSnapGuides);
   document.removeEventListener('keydown', _onSnapKey, true);
@@ -8382,6 +8384,12 @@ function _anchorFloatingTo(node) {
       'dragmove.floatbar transform.floatbar transformend.floatbar dragend.floatbar',
       _repositionFloatingToolbar,
     );
+    // 👻 V0.3.4.103 — while the served item is dragged or resized the panel fades to a
+    // trace (10%), so it never hides what the item is being lined up with. Drags of
+    // any overlay item also go through _snapBegin / _snapEnd; this covers the header
+    // layer's own drags and every resize / rotate.
+    _floatAnchor.on?.('dragstart.floatbar transformstart.floatbar', () => dimFloatingToolbar(true));
+    _floatAnchor.on?.('dragend.floatbar transformend.floatbar', () => dimFloatingToolbar(false));
   }
   showFloatingToolbar(_floatRectFor(_floatAnchor));
 }
