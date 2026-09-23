@@ -524,6 +524,7 @@ svg .arrow{stroke:var(--muted);stroke-width:1.4;fill:none;marker-end:url(#ah)}
 
 <h2 id="steps-videostep">Steps that are videos</h2>
 <p>A step can also be a rendered clip imported from a render cache (marked "This step IS a rendered video") or contain a video overlay playing alongside the scene. Video steps are exported as-is and cannot be edited in 3D; edit the original project instead.</p>
+<div class="tip"><b>Imported clip looks soft, blurry, pixelated, low quality — especially its last frame?</b> The clip is the source project's cached segment, and here it is compressed a <em>second</em> time when this project exports. At the usual Medium (4 Mbps) that is fine for delivery but thin as a master, and a step whose motion runs straight into the next one (a short or zero hold) ends on a frame the encoder had no time to clean up. Fix, no code: in the <b>source</b> project set Export ▸ Quality to <span class="ui">High — 8 Mbps</span> or <span class="ui">Very High — 16 Mbps</span>, star the step (or type its number) and <span class="ui">Re-render</span>, then import it again. The final video here stays at whatever quality you export it at.</div>
 </section>
 
 <section class="ch" id="cameras">
@@ -1028,6 +1029,7 @@ svg .arrow{stroke:var(--muted);stroke-width:1.4;fill:none;marker-end:url(#ah)}
 <tr><td>Text field ignores typing</td><td>Focus stuck after a popup</td><td><span class="ui">Edit ▸ Recover stuck inputs</span>.</td></tr>
 <tr><td>Steps 55–57 (say) always show ★ even after rendering</td><td>Something on those steps changes every time the project loads</td><td><code>window.sbsDiag.stars(stepId)</code> lists the reason per step; send it.</td></tr>
 <tr><td>Export re-renders everything after an app update</td><td>Fingerprint format changed</td><td>Choose <span class="ui">Trust the stars</span> once.</td></tr>
+<tr><td>An imported video step is soft, blurry, pixelated, low resolution, low quality — worst on its final / last / held frame</td><td>The source segment was rendered at delivery quality (Medium 4 Mbps) and is compressed again here; a short hold after motion leaves the last frame unrefined</td><td>In the source project: Export quality <span class="ui">High</span> or <span class="ui">Very High</span>, re-render that step, import again. See <a href="#steps-videostep">the video-step note</a>.</td></tr>
 <tr><td>Instant step on a chapter start plays a half transition</td><td>Old instant block format</td><td>Re-pick the easing from the dropdown on that step.</td></tr>
 <tr><td>Duplicate flat shapes vanish after reload</td><td>Known, rare</td><td><code>window.sbsDiag.shapes()</code> then <code>window.sbsFix.pruneShapes()</code>; report the console output.</td></tr>
 <tr><td>White window, or export dies mid-way</td><td>Memory ceiling</td><td>See <a href="#maintenance-memory">20.4</a>.</td></tr>
