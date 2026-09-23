@@ -3,14 +3,16 @@
  * ────────────────────────────────────
  * The picker every colour swatch opens: the same layout as Chromium's own
  * popup — a saturation / brightness square, a hue strip, the preview, a
- * HEX / RGB / HSL switch with its fields — plus one difference: the 💧
- * eyedropper picks from ANYWHERE on screen (every display, the app's own
+ * HEX / RGB / HSL switch with its fields — plus one difference: the
+ * eyedropper (the pipette icon, ui/icons.js) picks from ANYWHERE on screen (every display, the app's own
  * windows made transparent for the snapshot — main's color:pickScreen).
  * Chromium's own eyedropper cannot: under Electron it sees only this window.
  *
  * Changes are live (`input` on every move) and final on close (`change`), so
  * every swatch listener in the app works exactly as with the native popup.
  */
+
+import { eyedropperSvg } from './icons.js';   // V0.3.4.115 — the pipette (was the 💧 emoji)
 
 let _dlg = null;   // { el, input, close }
 
@@ -86,7 +88,7 @@ export function openColorDialog(input) {
     <div style="display:flex;gap:10px;align-items:stretch;">
       <canvas data-sv width="236" height="170" style="width:236px;height:170px;border-radius:6px;cursor:crosshair;flex:none;"></canvas>
       <div style="display:flex;flex-direction:column;gap:8px;flex:1;">
-        <button type="button" data-drop title="Eyedropper — pick a colour from anywhere on screen: every display, other windows included (the same as Alt+click on the swatch). Esc cancels." style="height:44px;background:#0f172a;color:#e5e7eb;border:1px solid #475569;border-radius:6px;cursor:pointer;font-size:22px;">💧</button>
+        <button type="button" data-drop title="Eyedropper — pick a colour from anywhere on screen: every display, other windows included (the same as Alt+click on the swatch). Esc cancels." style="height:44px;background:#0f172a;color:#e5e7eb;border:1px solid #475569;border-radius:6px;cursor:pointer;display:flex;align-items:center;justify-content:center;padding:0;">${eyedropperSvg(30)}</button>
         <div data-preview style="flex:1;border-radius:6px;border:1px solid #475569;background:${start};"></div>
       </div>
     </div>
