@@ -92,6 +92,16 @@ const $1ed45968c1160c3c$export$c9b263b9a17dffd7 = {
         "bluenoise": {
             value: null
         },
+        // SBS V0.3.4.86 — the self-occlusion bias, see main(): 1 = slope-scaled (ours), 0 = the original 0.1/near
+        "biasMode": {
+            value: 1
+        },
+        "biasSlope": {
+            value: 1.5
+        },
+        "biasAbs": {
+            value: 0.002
+        },
         "distanceFalloff": {
             value: 1.0
         },
@@ -145,6 +155,9 @@ uniform float far;
 uniform bool logDepth;
 uniform bool ortho;
 uniform bool screenSpaceRadius;
+uniform int biasMode;
+uniform float biasSlope;
+uniform float biasAbs;
 uniform sampler2D bluenoise;
     varying vec2 vUv;
     highp float linearize_depth(highp float d, highp float zNear,highp float zFar)
@@ -258,7 +271,22 @@ void main() {
       float distanceFalloffToUse =screenSpaceRadius ?
           radiusToUse * distanceFalloff
       : distanceFalloff;
-      float bias = (0.1 / near) * fwidth(distance(worldPos, cameraPos)) / radiusToUse;
+      // SBS V0.3.4.86 — THE BIAS. The original, (0.1 / near) * …, assumes a conventional near
+      // plane (~0.1). SBS fits the near plane to the scene every frame, and under the per-step
+      // perspective the camera dollies far out as the lens narrows, so near grows into the
+      // hundreds or thousands and the bias collapses to nothing: every flat face at an angle
+      // occludes ITSELF — straight bands across whole surfaces, worse the narrower the lens.
+      // biasMode 1: a slope-scaled bias in the depth's own units — a few pixels' worth of this
+      // pixel's depth slope, plus a small fraction of the sampling radius — independent of
+      // where the near plane sits. biasMode 0 keeps the original for an A/B.
+      #ifdef LOGDEPTH
+      float centerDist = linearize_depth_log(depth, near, far);
+      #else
+      float centerDist = ortho ? linearize_depth_ortho(depth, near, far) : linearize_depth(depth, near, far);
+      #endif
+      float bias = (biasMode == 1)
+        ? (biasSlope * fwidth(centerDist) + biasAbs * radiusToUse)
+        : (0.1 / near) * fwidth(distance(worldPos, cameraPos)) / radiusToUse;
       for(float i = 0.0; i < FSAMPLES; i++) {
         vec3 sampleDirection = 
         tbn * 
@@ -1064,7 +1092,10 @@ class $87431ee93b037844$export$2489f9981ab0fa82 extends (0, $5Whe3$Pass1) {
             screenSpaceRadius: false,
             halfRes: false,
             depthAwareUpsampling: true,
-            colorMultiply: true
+            colorMultiply: true,
+            biasMode: 1,          // SBS V0.3.4.86 — see the effect shader
+            biasSlope: 1.5,
+            biasAbs: 0.002
         }, {
             set: (target, propName, value)=>{
                 const oldProp = target[propName];
@@ -1336,6 +1367,9 @@ class $87431ee93b037844$export$2489f9981ab0fa82 extends (0, $5Whe3$Pass1) {
         this.effectShaderQuad.material.uniforms["logDepth"].value = renderer.capabilities.logarithmicDepthBuffer;
         this.effectShaderQuad.material.uniforms["ortho"].value = this.camera.isOrthographicCamera;
         this.effectShaderQuad.material.uniforms["screenSpaceRadius"].value = this.configuration.screenSpaceRadius;
+        this.effectShaderQuad.material.uniforms["biasMode"].value = this.configuration.biasMode | 0;      // SBS V0.3.4.86
+        this.effectShaderQuad.material.uniforms["biasSlope"].value = +this.configuration.biasSlope || 0;
+        this.effectShaderQuad.material.uniforms["biasAbs"].value = +this.configuration.biasAbs || 0;
         // Start the AO
         renderer.setRenderTarget(this.writeTargetInternal);
         this.effectShaderQuad.render(renderer);
@@ -1778,6 +1812,9 @@ class $05f6997e4b65da14$export$2d57db20b5eb5e0a extends (0, $5Whe3$Pass) {
         this.effectShaderQuad.material.uniforms["logDepth"].value = renderer.capabilities.logarithmicDepthBuffer;
         this.effectShaderQuad.material.uniforms["ortho"].value = this.camera.isOrthographicCamera;
         this.effectShaderQuad.material.uniforms["screenSpaceRadius"].value = this.configuration.screenSpaceRadius;
+        this.effectShaderQuad.material.uniforms["biasMode"].value = this.configuration.biasMode | 0;      // SBS V0.3.4.86
+        this.effectShaderQuad.material.uniforms["biasSlope"].value = +this.configuration.biasSlope || 0;
+        this.effectShaderQuad.material.uniforms["biasAbs"].value = +this.configuration.biasAbs || 0;
         // Start the AO
         renderer.setRenderTarget(this.writeTargetInternal);
         this.effectShaderQuad.render(renderer);

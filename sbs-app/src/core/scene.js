@@ -725,6 +725,14 @@ export class SceneCore extends Emitter {
       c.denoiseRadius     = 12;
       c.gammaCorrection   = true;   // final sRGB (renderer uses NoToneMapping → no OutputPass)
       c.accumulate        = false;  // NEVER cross-frame accumulate — ghosts under motion
+      // 🩹 V0.3.4.86 — the self-occlusion bias, slope-scaled (vendored N8AO change). N8AO's own
+      // bias is 0.1/near, and the adaptive near plane grows with the camera distance under the
+      // per-step perspective: past ~10° the bias was gone and flat faces occluded themselves
+      // (straight bands across whole surfaces). sbsAO.set({ biasMode: 0 }) = the original, for an A/B;
+      // biasSlope (pixels of depth slope) / biasAbs (fraction of the radius) tune it.
+      c.biasMode          = 1;
+      c.biasSlope         = 1.5;
+      c.biasAbs           = 0.002;
       composer.addPass(n8ao);
       this._n8aoPass = n8ao;
       this._applyAoDepthType(n8ao);         // 🩹 V0.3.4.85 — float depth (see the method)
