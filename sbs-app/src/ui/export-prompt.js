@@ -130,6 +130,11 @@ export function openExportPrompt() {
 
     const max = _topLevelCount();
     const starred = steps.alteredStepIds();   // ★ playable steps changed since their last render
+    // ★ V0.3.4.102 — stars on HIDDEN steps (or in hidden chapters) are shown in the
+    // panel but never rendered; the button says both numbers so "44 starred" and
+    // "the export ignored my stars" stop looking like the same thing.
+    const _playableIds = new Set(_playableSteps().map(s => s.id));
+    const starredHidden = (state.get('steps') || []).filter(s => !s.isBaseStep && s.altered === true && !_playableIds.has(s.id)).length;
     const el = document.createElement('div');
     el.id = 'sbs-export-prompt';
     el.style.cssText = [
@@ -149,7 +154,7 @@ export function openExportPrompt() {
 
         <div class="small muted" style="margin:12px 0 6px;">— or the steps you changed since the last render —</div>
         <button class="btn" id="xp-starred" style="width:100%;font-weight:600;color:#fbbf24;" ${starred.length ? '' : 'disabled'}
-                title="Renders the segments of every ★ step (a changed step's own segment, plus the segment after it — its transition starts from the changed state). Stars clear once rendered.">★ Re-render ${starred.length} starred step${starred.length === 1 ? '' : 's'}</button>
+                title="Renders the segments of every ★ step that plays (a changed step's own segment, plus the segment after it — its transition starts from the changed state). Stars clear once rendered.&#10;Yellow = starred steps that play and will render. Grey = starred steps that are hidden (or in a hidden chapter) — they are not rendered and keep their star.">★ Re-render starred &nbsp;<span style="color:#fbbf24;">${starred.length}</span> <span style="color:#64748b;font-weight:500;" title="starred but hidden — not rendered">${starredHidden}${starredHidden ? ' hidden' : ''}</span></button>
         <label style="display:flex;align-items:flex-start;gap:6px;margin-top:6px;"
                title="Normally every segment whose fingerprint changed is re-rendered when a video is assembled. Tick this to say: only the starred (or selected) steps really changed — reuse last time's segment for every other step instead of rendering it. Applies to all three buttons. Refused automatically if render settings (resolution, fps, AL1/AL2, background…) changed since the last render. Use it once after an app update that changes how fingerprints are computed.">
           <input type="checkbox" id="xp-trust-stars" />

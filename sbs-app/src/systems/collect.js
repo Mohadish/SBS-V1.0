@@ -25,6 +25,7 @@ import { steps } from './steps.js';
 import { serialize, encodeProjectBytes, assetPathCandidates } from '../io/project.js';
 import * as projectPaths from '../core/project-paths.js';
 import { stepVideoClips } from './video-overlay.js';
+import { safeCacheFolderName } from './narration-cache.js';   // 🔊 the voice-over cache folder this project uses (old projects: a custom name)
 import { APP_VERSION } from '../core/schema.js';
 
 const _base  = (p) => String(p || '').split(/[\\/]/).pop();
@@ -118,21 +119,39 @@ export async function gatherCollectItems() {
 
   // ── the project's own folders ──
   if (dir) {
+    // 🔊 V0.3.4.102 — the voice-over cache is whatever folder the project NAMES
+    // (settings.audioCacheFolder: 'audio' in the modern layout, "<name>_audio" or
+    // another custom name in older projects). The name must survive as it is —
+    // the collected project points at it by that name.
+    const audioName = safeCacheFolderName();
     const own = [
-      ['audio',     'Voice-over audio (audio/)',      true,  ''],
-      ['languages', 'Language packs (languages/)',    true,  ''],
-      ['media',     'Media (media/)',                 true,  'imported clips, posters'],
-      ['render',    'Render cache (render/)',         false, 'rendered segments — big, and rebuilt by the next export; tick to carry them'],
+      ['audio',     projectPaths.DIR.audio, 'Voice-over audio (audio/)', true, 'synthesised narration clips — without them every line is re-synthesised on the other computer'],
+      ['languages', projectPaths.DIR.languages, 'Language packs (languages/)', true, ''],
+      ['media',     projectPaths.DIR.media, 'Media (media/)', true, 'imported clips, posters'],
+      ['render',    projectPaths.DIR.render, 'Render cache (render/)', false, 'rendered segments — big, and rebuilt by the next export; tick to carry them'],
+      ['render-legacy', projectPaths.LEGACY_RENDER_DIR, 'Render cache (_rendercache/, older layout)', false, 'rendered segments of the older layout — tick to carry them'],
     ];
-    for (const [key, label, include, note] of own) {
-      const abs = projectPaths.subDir(key);
-      const f = await _folderItem(`folder:${key}`, label, abs, projectPaths.DIR[key], { include, note });
+    if (audioName && audioName.toLowerCase() !== projectPaths.DIR.audio) own.unshift(['audio-custom', audioName, `Voice-over audio (${audioName}/)`, true, 'this project keeps its narration clips under this name']);
+    for (const [key, folder, label, include, note] of own) {
+      const abs = projectPaths.joinPath(dir, folder);
+      const f = await _folderItem(`folder:${key}`, label, abs, folder, { include, note });
       if (!f) continue;
       // a clip already listed by its step is not carried twice
       f.files = f.files.filter(x => !seenVideo.has(_norm(x.src).toLowerCase()));
       f.size = f.files.reduce((s, x) => s + (x.size || 0), 0);
       if (f.files.length) items.push(f);
     }
+    // language packs of the older layout sit BESIDE the project: <base>.<lang>.sbslang.json
+    try {
+      const parts = projectPaths.projectParts();
+      const rx = projectPaths.langPackLegacyRx(parts.base);
+      const list = await window.sbsNative?.listDir?.(dir);
+      const packs = (Array.isArray(list) ? list : []).filter(e => !e.isDir && rx.test(e.name));
+      if (packs.length) {
+        const files = packs.map(e => ({ src: projectPaths.joinPath(dir, e.name), dst: e.name, size: e.size || 0 }));
+        items.push({ id: 'folder:langpacks-legacy', kind: 'folder', label: 'Language packs (beside the project, older layout)', src: dir, files, size: files.reduce((s, x) => s + x.size, 0), status: 'ok', decision: 'copy', include: true, note: '' });
+      }
+    } catch { /* no packs — fine */ }
   }
   return items;
 }

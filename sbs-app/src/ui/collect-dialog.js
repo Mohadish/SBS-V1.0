@@ -32,7 +32,7 @@ export async function openCollectDialog() {
   const dlg = document.createElement('dialog');
   dlg.id = 'sbs-collect-dialog';
   dlg.className = 'sbs-dialog';
-  dlg.style.cssText = 'width:min(900px,96vw);max-width:96vw;max-height:90vh;overflow:hidden;';
+  dlg.style.cssText = 'width:min(1180px,96vw);max-width:96vw;max-height:90vh;overflow:hidden;';
   const parts = projectPaths.projectParts();
   const zipName = `${parts?.base || 'project'}-collected.zip`;
 
@@ -48,14 +48,14 @@ export async function openCollectDialog() {
          </select>${i.status !== 'ok' ? ' <button class="btn" data-act="browse" style="height:26px;padding:0 8px;font-size:12px;">Browse…</button>' : ''}`;
     return `
       <tr data-id="${_esc(i.id)}" style="border-bottom:1px solid var(--line);">
-        <td style="padding:6px 8px;white-space:nowrap;vertical-align:top;">${KIND[i.kind] || i.kind}</td>
-        <td style="padding:6px 8px;vertical-align:top;min-width:0;">
+        <td style="padding:6px 8px;vertical-align:top;overflow:hidden;">${KIND[i.kind] || i.kind}</td>
+        <td style="padding:6px 8px;vertical-align:top;overflow:hidden;">
           <div style="font-weight:600;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;" title="${_esc(i.src)}">${_esc(i.label)}${i.steps > 1 ? ` <span class="muted small">· ${i.steps} steps</span>` : ''}</div>
-          <div class="small muted" style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap;" title="${_esc(i.src)}">${_esc(i.src)}</div>
+          <div class="small muted" style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap;direction:rtl;text-align:left;" title="${_esc(i.src)}">${_esc(i.src)}</div>
           ${i.note ? `<div class="small muted">${_esc(i.note)}</div>` : ''}
         </td>
-        <td class="small" data-cell="status" style="padding:6px 8px;white-space:nowrap;vertical-align:top;">${st}</td>
-        <td data-cell="verdict" style="padding:6px 8px;white-space:nowrap;vertical-align:top;">${verdict}</td>
+        <td class="small" data-cell="status" style="padding:6px 8px;vertical-align:top;overflow:hidden;">${st}</td>
+        <td data-cell="verdict" style="padding:6px 8px;vertical-align:top;overflow:hidden;">${verdict}</td>
       </tr>`;
   };
 
@@ -68,7 +68,8 @@ export async function openCollectDialog() {
         </div>
       </div>
       <div style="flex:1;min-height:0;overflow:auto;margin-top:10px;border:1px solid var(--line);border-radius:8px;">
-        <table style="width:100%;border-collapse:collapse;font-size:13px;">
+        <table style="width:100%;table-layout:fixed;border-collapse:collapse;font-size:13px;">
+          <colgroup><col style="width:130px;"><col><col style="width:150px;"><col style="width:330px;"></colgroup>
           <thead><tr style="position:sticky;top:0;background:#111827;"><th style="text-align:left;padding:6px 8px;">What</th><th style="text-align:left;padding:6px 8px;">File</th><th style="text-align:left;padding:6px 8px;">Found?</th><th style="text-align:left;padding:6px 8px;">In the archive</th></tr></thead>
           <tbody id="col-rows">${items.length ? items.map(rowHtml).join('') : '<tr><td colspan="4" class="small muted" style="padding:12px;">This project refers to no external file — the archive will hold the project alone.</td></tr>'}</tbody>
         </table>
