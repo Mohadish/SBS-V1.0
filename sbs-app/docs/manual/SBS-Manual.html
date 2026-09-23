@@ -849,7 +849,7 @@ svg .arrow{stroke:var(--muted);stroke-width:1.4;fill:none;marker-end:url(#ah)}
 <li><span class="ui">★ Re-render starred</span> — render the starred steps, reuse the rest. The normal choice.</li>
 <li><span class="ui">Trust the stars</span> — if the cache keys changed for a technical reason (an app update changed the fingerprint format) but nothing in your project did, adopt the existing clips instead of rendering. Use it once after such an update; if a clip then looks stale, star the step and re-render.</li>
 <li><span class="ui">+ current</span> — also re-render the active step even if it is not starred.</li>
-<li><span class="ui">▶ Render full project (incremental)</span> and <span class="ui">🎯 Re-render selection</span> with a range like <code>0-10, C11, 124, 89-102</code> (<code>C11</code> = chapter 11).</li>
+<li><span class="ui">▶ Render full project (incremental)</span> and <span class="ui">🎯 Re-render selection</span> with a range like <code>0-10, C11, 124, 89-102</code> (<code>C11</code> = chapter 11). With <span class="ui">When finished, assemble the complete video</span> <b>unticked</b>, the selection renders into the cache and nothing else is touched — segments outside it that are out of date are left alone and counted in the status line. Ticked, the whole video is assembled: out-of-date segments outside the selection render too, unless <span class="ui">Trust the stars</span> says to reuse them.</li>
 <li><span class="ui">🧹 Purge stale cache</span> — delete clips no step refers to any more (old sizes, deleted steps). Never deletes clips that are in use.</li>
 </ul>
 

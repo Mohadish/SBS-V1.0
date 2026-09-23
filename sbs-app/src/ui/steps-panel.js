@@ -1950,9 +1950,10 @@ async function _forceRenderCache(stepIds) {
     setStatus('Re-rendering cache segment(s)…', 'info', 0);
     const r = await rc.renderMissingSegments({
       forceStepIds: new Set(stepIds),
+      onlyForced: true,   // 🎯 these segments and nothing else (V0.3.4.93)
       onProgress: (p) => setStatus(`Re-rendering segment ${p.current}/${p.total}: ${p.stepName}…`, 'info', 0),
     });
-    setStatus(`Re-rendered ${r.rendered} cache segment(s)${r.failed ? ` (${r.failed} failed)` : ''} — next export uses them.`, r.failed ? 'warning' : 'success', 6000);
+    setStatus(`Re-rendered ${r.rendered} cache segment(s)${r.failed ? ` (${r.failed} failed)` : ''}${r.skippedStale ? ` — ${r.skippedStale} other out-of-date segment(s) left alone` : ''} — next export uses them.`, r.failed ? 'warning' : 'success', 6000);
   } catch (e) {
     setStatus(`Cache re-render failed: ${e.message}`, 'danger', 6000);
   }
@@ -4146,6 +4147,9 @@ async function _onExportVideo() {
   if (choice.mode === 'selection') {
     forceIds = _stepIdsForTopLevelNumbers(choice.withNeighbors);
     if (!forceIds.length) { setStatus('That range matched no steps.', 'warn', 5000); return; }
+    // ★ with a video to assemble, "trust the stars" reuses every segment OUTSIDE the
+    // selection even on a changed fingerprint (V0.3.4.93 — the box applies to all three)
+    if (choice.trustStars) adoptExcept = new Set(forceIds);
   } else if (choice.mode === 'starred') {
     // ★ V0.3.2.247 — the starred steps are the selection. No n−1/n+1 padding
     // here: a segment renders FROM the previous step's state automatically,
@@ -4188,11 +4192,12 @@ async function _onExportVideo() {
       const r = await rc.renderMissingSegments({
         forceStepIds: new Set(forceIds),
         adoptExcept,
+        onlyForced: !needsAssemble,   // 🎯 V0.3.4.93 — no video to assemble = the selection and nothing else
         signal: _exportingCtrl.signal,
         onProgress: (p) => setStatus(p.total ? `Re-rendering segment ${p.current}/${p.total}: ${p.stepName}…` : `${p.stepName || 'Working…'}`, 'info', 0),
       });
       if (!needsAssemble) {
-        setStatus(`Re-rendered ${r.rendered} segment(s)${r.adopted ? `, reused ${r.adopted} on your say-so` : ''}${r.failed ? ` (${r.failed} FAILED)` : ''} — next export picks them up from cache.`, r.failed ? 'warning' : 'success', 10000);
+        setStatus(`Re-rendered ${r.rendered} segment(s)${r.adopted ? `, reused ${r.adopted} on your say-so` : ''}${r.failed ? ` (${r.failed} FAILED)` : ''}${r.skippedStale ? ` — ${r.skippedStale} other segment(s) are out of date and were left alone (a full export renders them)` : ''} — next export picks them up from cache.`, r.failed ? 'warning' : 'success', 12000);
         return;
       }
       setStatus(`Re-rendered ${r.rendered} segment(s) — assembling the complete video…`, 'info', 0);

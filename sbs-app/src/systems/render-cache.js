@@ -1226,11 +1226,12 @@ async function _adoptPriorSegments(plan, keepIds, onProgress) {
   return adopted;
 }
 
-export async function renderMissingSegments({ onProgress, signal, force = false, forceStepIds = null, adoptExcept = null } = {}) {
+export async function renderMissingSegments({ onProgress, signal, force = false, forceStepIds = null, adoptExcept = null, onlyForced = false } = {}) {
   const { exportTimelineVideo } = await import('./video-export.js');
   onProgress?.({ stepName: 'fingerprinting steps… (a few seconds on big projects)' });
   const plan = await planWithCacheStatus();
   if (!plan.dir) throw new Error('Save the project first — the cache lives next to the .sbsproj.');
+  let forcedSpans = null;   // 🎯 the spans the selection names
   if (force) { for (const s of plan.spans) s.cached = false; plan.hits = 0; }   // human override: re-render everything
   else if (forceStepIds?.size) {
     // Surgical override (user design): re-render the segments CONTAINING the
@@ -1238,7 +1239,8 @@ export async function renderMissingSegments({ onProgress, signal, force = false,
     // (a group IS one segment); the previous step is the render's starting
     // pose automatically; the following segment needs nothing (end states are
     // identical by construction).
-    for (const s of plan.spans) if (s.steps.some(st => forceStepIds.has(st.id))) s.cached = false;
+    forcedSpans = new Set();
+    for (const s of plan.spans) if (s.steps.some(st => forceStepIds.has(st.id))) { s.cached = false; forcedSpans.add(s); }
     plan.hits = plan.spans.filter(s => s.cached).length;
   }
   // ★ "trust the stars": re-file last time's segments for every un-starred span
@@ -1247,7 +1249,17 @@ export async function renderMissingSegments({ onProgress, signal, force = false,
   // An EMPTY set is meaningful: a full render with "trust the stars" and no stars
   // = reuse last time's segment for every step (the one-time re-key escape).
   if (adoptExcept) adopted = await _adoptPriorSegments(plan, adoptExcept, onProgress);
-  const misses = plan.spans.filter(s => !s.cached);
+  // 🎯 V0.3.4.93 — a SELECTION render with no video to assemble renders the
+  // selection and NOTHING else. Before, every span whose fingerprint had moved
+  // (an app update, a render setting, the alpha-mask toggle) was a miss like
+  // any other and rendered too — "re-render 3 steps" became the whole project
+  // ("the project ignores me completely", the user). Out-of-date spans outside
+  // the selection are left alone and named; a full export renders them when
+  // it needs them.
+  const stale  = plan.spans.filter(s => !s.cached);
+  const misses = (onlyForced && forcedSpans) ? stale.filter(s => forcedSpans.has(s)) : stale;
+  const skippedStale = stale.length - misses.length;
+  if (skippedStale) console.warn(`[render-cache] 🎯 selection only: ${skippedStale} other segment(s) are out of date and were left alone — a full export renders them.`);
   let done = 0, failed = 0;
   for (const span of misses) {
     if (signal?.aborted) throw new DOMException('aborted', 'AbortError');
@@ -1368,15 +1380,16 @@ export async function renderMissingSegments({ onProgress, signal, force = false,
   // cached, so the stars on its steps have done their job. Hidden steps are
   // not in the plan and keep theirs (the user's rule: a star stays until that
   // step is actually rendered). A failed fill clears nothing.
+  // 🎯 .93 — a selection-only run leaves out-of-date spans un-rendered: their stars stay.
   if (!failed) {
-    try { steps.clearAltered(plan.spans.flatMap(s => s.steps.map(st => st.id))); }
+    try { steps.clearAltered(plan.spans.filter(s => s.cached).flatMap(s => s.steps.map(st => st.id))); }
     catch (e) { console.warn('[render-cache] clearing stars failed:', e?.message); }
   }
   // 🎞 V0.3.2.255 — every step was left during the fill (recorded then); the
   // last one is still on screen — record it too.
   try { frameVis.captureActive(); await frameVis.save(); }
   catch (e) { console.warn('[render-cache] frame record failed:', e?.message); }
-  return { rendered: done, reused: plan.hits, adopted, failed, dir: plan.dir, total: plan.spans.length, plan };
+  return { rendered: done, reused: plan.hits, adopted, failed, skippedStale, dir: plan.dir, total: plan.spans.length, plan };
 }
 
 /** Plan + check which segments already exist in <project>/_rendercache/. */

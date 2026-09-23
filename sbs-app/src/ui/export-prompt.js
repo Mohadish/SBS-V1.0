@@ -151,7 +151,7 @@ export function openExportPrompt() {
         <button class="btn" id="xp-starred" style="width:100%;font-weight:600;color:#fbbf24;" ${starred.length ? '' : 'disabled'}
                 title="Renders the segments of every ★ step (a changed step's own segment, plus the segment after it — its transition starts from the changed state). Stars clear once rendered.">★ Re-render ${starred.length} starred step${starred.length === 1 ? '' : 's'}</button>
         <label style="display:flex;align-items:flex-start;gap:6px;margin-top:6px;"
-               title="Normally every segment whose fingerprint changed is re-rendered. Tick this to say: only the starred steps really changed — reuse last time's segment for every other step instead of rendering it. Applies to BOTH buttons (full render and starred). Refused automatically if render settings (resolution, fps, AL1/AL2, background…) changed since the last render. Use it once after an app update that changes how fingerprints are computed.">
+               title="Normally every segment whose fingerprint changed is re-rendered when a video is assembled. Tick this to say: only the starred (or selected) steps really changed — reuse last time's segment for every other step instead of rendering it. Applies to all three buttons. Refused automatically if render settings (resolution, fps, AL1/AL2, background…) changed since the last render. Use it once after an app update that changes how fingerprints are computed.">
           <input type="checkbox" id="xp-trust-stars" />
           <span>Trust the stars — reuse every un-starred segment as-is, even if its fingerprint changed</span>
         </label>
@@ -163,11 +163,12 @@ export function openExportPrompt() {
           <button class="btn" id="xp-add-cur" title="Append the active step's number">+ current</button>
         </div>
         <div class="small" id="xp-preview" style="margin-top:6px;min-height:16px;color:#94a3b8;line-height:1.4;"></div>
-        <label style="display:flex;align-items:center;gap:6px;margin-top:8px;">
+        <label style="display:flex;align-items:center;gap:6px;margin-top:8px;"
+               title="Ticked: after the selection, the whole video is assembled — segments outside the selection come from the cache, and any that are out of date render too (or are reused: Trust the stars). Unticked: the selection renders into the cache and NOTHING else is touched.">
           <input type="checkbox" id="xp-then-full" checked />
           <span>When finished, assemble the complete video (rest from cache)</span>
         </label>
-        <button class="btn" id="xp-selection" style="width:100%;margin-top:8px;" disabled>🎯 Re-render selection</button>
+        <button class="btn" id="xp-selection" style="width:100%;margin-top:8px;" disabled title="Renders the segments of the steps above (plus their n−1/n+1 neighbours). With the box above unticked, nothing else renders.">🎯 Re-render selection</button>
 
         <label style="display:flex;align-items:center;gap:6px;margin-top:10px;padding-top:10px;border-top:1px solid var(--line,#334155);cursor:pointer;"
                title="Writes a companion coverage-mask video beside each rendered segment (seg-*.alpha.mp4). Only used when another project imports a step as TRANSPARENT video — adds render time per segment; the normal export output is unchanged. Surgical with 'Re-render selection': only the rendered steps get masks.">
@@ -279,6 +280,7 @@ export function openExportPrompt() {
         base: parsed.base,
         withNeighbors: parsed.withNeighbors,
         thenFull: el.querySelector('#xp-then-full').checked,
+        trustStars: !!el.querySelector('#xp-trust-stars').checked,   // ★ reuse everything outside the selection when assembling (V0.3.4.93)
       });
     });
     // ★ V0.3.2.247 — the starred steps ARE the selection; "then full" is
