@@ -4082,6 +4082,7 @@ export async function refreshAllTocBoxesData(opts = {}) {
 // blur the selection.
 
 let _activeTextEditor = null;   // { node, div, onDocMouseDown, transformerWasVisible, ctx }
+let _editorDim = null;          // ✎ .97 — { node, prev }: the box the editor dimmed to opacity 0, until its exit restores it
 
 /**
  * Default editor controller for OVERLAY textboxes — re-raster via
@@ -4258,6 +4259,7 @@ function _enterTextEdit(node, ctxOverride) {
   // transformer's bounding box still tracks the node's geometry.
   const prevOpacity = node.opacity();
   node.opacity(0);
+  _editorDim = { node, prev: prevOpacity };   // ✎ .97 — the serialiser lifts this for a snapshot (see _serialiseStageJson)
   // Re-config the transformer for the editing node so 8 anchors show up
   // (selection-only state has no anchors). The controller knows which
   // transformer to reach for — overlay's, header's, etc.
@@ -4547,6 +4549,7 @@ async function _exitTextEdit(opts = {}) {
     catch (e) { console.warn('[text-editor] session end failed', e); }
   } finally {
     try { node.opacity(typeof prevOpacity === 'number' ? prevOpacity : 1); } catch {}
+    if (_editorDim?.node === node) _editorDim = null;
     div.remove();                                  // ALWAYS — the ghost dies here
     try { sess.styleEl?.remove(); } catch {}       // ✎ the editor's scoped rules go with it
     try { ctx.configureTransformer?.(); } catch {}
@@ -8853,11 +8856,19 @@ function _serialiseStageJson() {
   // for the snapshot only.
   const hiddenTable = (_tableEditor && !_tableEditor.isDestroyed?.() && !_tableEditor.visible()) ? _tableEditor : null;
   if (hiddenTable) hiddenTable.visible(true);
+  // ✎ V0.3.4.97 — same for the TEXT BOX under the in-place editor: it sits at
+  // opacity 0 while the editor shows the live text (and until the exit's raster
+  // lands). Konva persists opacity, and .96 made the save happen BEFORE that
+  // raster — so the box was written into the step invisible: the "phantom box"
+  // (text only while editing, blank on click-out). Snapshot it at its real opacity.
+  const dimmed = (_editorDim && !_editorDim.node.isDestroyed?.() && _editorDim.node.opacity() === 0) ? _editorDim : null;
+  if (dimmed) dimmed.node.opacity(typeof dimmed.prev === 'number' ? dimmed.prev : 1);
   let parsed;
   try { parsed = JSON.parse(_stage.toJSON()); }
   catch { return _stage.toJSON(); }
   finally {
     if (hiddenTable && !hiddenTable.isDestroyed?.()) hiddenTable.visible(false);
+    if (dimmed && !dimmed.node.isDestroyed?.()) dimmed.node.opacity(0);
     for (const n of [...lifted].reverse()) { try { _uiLayer?.add(n); } catch { /* stage gone */ } }
   }
   const stripImage = (children) => {
@@ -9423,6 +9434,11 @@ async function _recreateNode(spec) {
       return vnode;
     }
 
+    // ✎ V0.3.4.97 — HEAL a text box saved invisible. The .96 editor wrote boxes
+    // into the step at the editor's opacity 0 (the "phantom box"); a text box
+    // at opacity 0 is never authored (it cannot be seen or clicked), so it comes
+    // back at 1. Runs on every load, so projects saved by .96 mend themselves.
+    if (textHtml && rest.opacity === 0) { rest.opacity = 1; console.warn('[overlay] a text box was saved invisible (opacity 0) — restored'); }
     const node = new Konva.Image({ ...rest, draggable: true });
     if (Number.isFinite(naturalW)) node.setAttr('naturalW', naturalW);
     if (Number.isFinite(naturalH)) node.setAttr('naturalH', naturalH);
