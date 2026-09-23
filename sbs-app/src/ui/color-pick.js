@@ -12,7 +12,7 @@
  * (the popup's and the EyeDropper API's) sees only this app's window.
  */
 
-const HINT = 'Right-click: pick a colour from anywhere on screen';
+const HINT = 'Right-click (or Alt+click): pick a colour from anywhere on screen';
 
 function _commit(input, hex) {
   if (!input || input.isConnected === false) return;
@@ -31,19 +31,37 @@ function _swatchOf(target) {
 
 let _busy = false;
 
+async function _pickInto(input) {
+  if (_busy) return;
+  if (!window.sbsNative?.pickScreenColor) {
+    // the renderer is newer than the running main process (Ctrl+R, no restart)
+    const { setStatus } = await import('./status.js');
+    setStatus('Picking a colour from the screen needs a full restart of SBS (the new version\'s bridge is not loaded yet) — close and open the app.', 'warn', 9000);
+    return;
+  }
+  _busy = true;
+  try {
+    const hex = await window.sbsNative.pickScreenColor();
+    if (hex) _commit(input, hex);
+  } catch (err) { console.warn('[pick] screen colour pick failed:', err?.message || err); }
+  finally { _busy = false; }
+}
+
 export function initColorPick() {
   // Right-click on a swatch (or the label around it) → the screen picker.
-  document.addEventListener('contextmenu', async (e) => {
+  document.addEventListener('contextmenu', (e) => {
     const input = _swatchOf(e.target);
-    if (!input || input.disabled || !window.sbsNative?.pickScreenColor) return;
+    if (!input || input.disabled) return;
     e.preventDefault(); e.stopPropagation();
-    if (_busy) return;
-    _busy = true;
-    try {
-      const hex = await window.sbsNative.pickScreenColor();
-      if (hex) _commit(input, hex);
-    } catch (err) { console.warn('[pick] screen colour pick failed:', err?.message || err); }
-    finally { _busy = false; }
+    _pickInto(input);
+  }, true);
+  // Alt+click does the same — for anyone who reaches for the swatch first.
+  document.addEventListener('click', (e) => {
+    if (!e.altKey) return;
+    const input = _swatchOf(e.target);
+    if (!input || input.disabled) return;
+    e.preventDefault(); e.stopPropagation();
+    _pickInto(input);
   }, true);
   // Say so on hover: the hint joins the swatch's own tooltip.
   document.addEventListener('mouseover', (e) => {
