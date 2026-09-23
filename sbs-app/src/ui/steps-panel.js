@@ -13,7 +13,8 @@ import * as overlay from '../systems/overlay.js';   // copy/paste whole overlay 
 import { createChapter, generateId, createStep, createEmptySnapshot } from '../core/schema.js';
 import { sceneCore } from '../core/scene.js';   // 🎬 video-step snapshot camera
 import { cloneShareStrings } from '../core/clone.js';   // copy/paste steps without duplicating base64
-import { pickProjectFile, readProjectForImport, assetPathCandidates, applySpecFieldsToNodes, _migrateAnimationPresets } from '../io/project.js';   // 📥 import steps from another project
+import { pickProjectFile, readProjectForImport, assetPathCandidates, applySpecFieldsToNodes, _migrateAnimationPresets, serializeSlice } from '../io/project.js';   // 📥 import steps from another project · 📋 the slice a step copy puts in the pool
+import * as clipPool from '../systems/clip-pool.js';   // 📋 V0.3.4.92 — copied steps reach another SBS window through the pool
 import { loadModelFile } from '../io/importers.js';       // 📥 Phase 2 — import the missing CAD too
 import { materials } from '../systems/materials.js';       // 📥 Phase 2 — colour defaults for imported meshes
 import { applyNodeSourceTransformToObject3D, isTransformNode, captureTransformSnapshot, applyAllVisibility } from '../core/transforms.js';   // 📥 Phase 2 — model source transform (×100 scale case) + reverse backfill + archived sweep
@@ -1697,7 +1698,8 @@ function _toggleStepHidden(step) {
 
 // ── Step context menu (right-click on collapsed card) ───────────────────────
 
-function _showStepContextMenu(step, x, y) {
+async function _showStepContextMenu(step, x, y) {
+  const clip = await _stepsClipSource();   // 📋 what a paste would take — read before the menu is built, so its row can say
   const allSteps = state.get('steps') || [];
   const inChapterIds = step.chapterId
     ? allSteps.filter(s => s.chapterId === step.chapterId).map(s => s.id)
@@ -1737,8 +1739,13 @@ function _showStepContextMenu(step, x, y) {
           : 'This step’s overlay is empty — nothing to copy.', r.count ? 'success' : 'warn', 3500);
       } },
   ];
-  if (_clipboard?.kind === 'steps') {
-    items.push({ label: `📥 Paste under (${_clipboard.data.length})`, action: () => _pasteStepsUnder(step.id) });
+  // 📋 V0.3.4.92 — steps copied in ANOTHER window come through the pool and open the
+  // import dialog (models, colours, clips resolved like any import); this window's own
+  // copy takes the direct path, as before.
+  if (clip?.pool) {
+    items.push({ label: `📥 Paste under — ${clip.n} step${clip.n === 1 ? '' : 's'} from "${clip.from}"`, action: () => _importStepsFromPool(step.id, clip.pool) });
+  } else if (clip?.own?.kind === 'steps') {
+    items.push({ label: `📥 Paste under (${clip.own.data.length})`, action: () => _pasteStepsUnder(step.id) });
   }
   // 📥 V0.3.2.179 — bring steps in from ANOTHER .sbsproj (read-only pick →
   // step picker dialog → inserted after this step).
@@ -1869,7 +1876,8 @@ function _showMultiStepContextMenu(stepIds, x, y) {
 }
 
 /** Right-click on a chapter header — copy / paste operate on the whole chapter block. */
-function _showChapterContextMenu(chapter, x, y) {
+async function _showChapterContextMenu(chapter, x, y) {
+  const clip = await _stepsClipSource();   // 📋 see _showStepContextMenu
   const chapterIds = _chapterStepIds(chapter.id);
   const cur        = _getSel();
   const overlap    = chapterIds.filter(id => cur.has(id)).length;
@@ -1888,11 +1896,14 @@ function _showChapterContextMenu(chapter, x, y) {
     { label: '✏ Rename…', action: () => _renameChapter(chapter.id) },
     { label: '📋 Copy',   action: () => _copyChapterToClipboard(chapter.id) },
   ];
-  if (_clipboard?.kind === 'chapter') {
+  if (clip?.pool) {
+    // 📋 another window's steps (a copied chapter travels as its steps): they land at the END of this chapter
+    items.push({ label: `📥 Paste steps into chapter — ${clip.n} from "${clip.from}"`,
+                 action: () => _importStepsIntoChapterFromPool(chapter.id, clip.pool) });
+  } else if (clip?.own?.kind === 'chapter') {
     items.push({ label: '📥 Paste under', action: () => _pasteChapterUnder(chapter.id) });
-  }
-  if (_clipboard?.kind === 'steps') {
-    items.push({ label: `📥 Paste steps into chapter (${_clipboard.data.length})`,
+  } else if (clip?.own?.kind === 'steps') {
+    items.push({ label: `📥 Paste steps into chapter (${clip.own.data.length})`,
                  action: () => _pasteStepsIntoChapter(chapter.id) });
   }
   items.push(
@@ -2006,6 +2017,86 @@ async function _importStepsFlow(targetStepId) {
   if (!srcSteps.length) { setStatus(`"${srcName}" has no steps to import.`, 'warn', 5000); return; }
   setStatus(`"${srcName}" — ${srcSteps.length} step(s).`);
   _showImportStepsDialog(project, srcSteps, srcName, targetStepId, picked.path || null);
+}
+
+// ── 📋 Steps through the POOL (V0.3.4.92) ────────────────────────────────────
+// "Copy a step → paste opens the import-steps interface." A step copy writes a
+// project SLICE (serializeSlice: the whole project, only the copied steps) to a
+// file in the app's clip folder and an envelope on the OS clipboard naming it
+// (clip-pool.js). A paste in ANOTHER window reads the slice back like a
+// .sbsproj and opens the same import dialog — models it lacks, colours, cables,
+// presets, rendered clips and the voice-over cache all resolve exactly as an
+// import from a file does (asset paths are relative to the SOURCE project's
+// file, which travels in the envelope). The copied steps come pre-ticked. A
+// paste in the SAME window keeps the direct path (_clipboard): same objects, no
+// file, no dialog.
+
+/**
+ * What a paste would take: the pool's envelope when ANOTHER window wrote it, else this
+ * window's own copy. A clipboard that holds something else (an overlay copy, Word text)
+ * means the own copy is stale — one clipboard, last copy wins.
+ * @returns {Promise<{pool:object, n:number, from:string}|{own:object}|null>}
+ */
+async function _stepsClipSource() {
+  const env = await clipPool.readClip(['steps']);
+  if (env && !clipPool.isOwn(env)) {
+    const p = env.payload || {};
+    return { pool: env, n: (p.stepIds || []).length, from: p.projectName || 'another window' };
+  }
+  if (env === null) return null;
+  return _clipboard ? { own: _clipboard } : null;
+}
+
+/** Put copied steps in the pool (after _clipboard is set). Fire-and-forget; says so when it could not. */
+async function _poolSteps(picked, chapterName = null) {
+  if (!picked?.length) return;
+  const stamp = Date.now();
+  let text;
+  try {
+    steps.flushSync();   // the active step's snapshot as it is on screen
+    text = JSON.stringify(serializeSlice(picked.map(s => s.id), stamp));
+  } catch (e) {
+    console.warn('[clip] steps slice failed — this window only:', e?.message || e);
+    setStatus(`Copied ${picked.length} step(s) — this window only (too big for the pool).`, 'warn', 5000);
+    return;
+  }
+  const file = await clipPool.writeClipFile('steps.json', text);
+  if (!file) { console.warn('[clip] no clip folder — copied steps stay in this window'); return; }
+  const names = picked.map(s => s.name || '');
+  await clipPool.writeClip('steps', {
+    file, stamp, bytes: text.length,
+    projectPath: state.get('projectPath') || null,
+    projectName: state.get('projectName') || 'Untitled',
+    stepIds: picked.map(s => s.id), names, chapterName,
+  }, { text: names.join('\n') });
+}
+
+/** Paste from another window: read the slice, open the import dialog after `targetStepId`. */
+async function _importStepsFromPool(targetStepId, env) {
+  const p = env?.payload || {};
+  const from = p.projectName || 'another window';
+  const n = (p.stepIds || []).length;
+  setStatus(`Reading ${n} copied step${n === 1 ? '' : 's'} from "${from}"…`, 'info', 0);
+  const text = await clipPool.readClipFile(p.file);
+  if (!text) { setStatus(`The copied steps are not there any more — copy them again in "${from}".`, 'warn', 7000); return; }
+  let project;
+  try { project = await readProjectForImport(text); }
+  catch (err) { setStatus(`Could not read the copied steps: ${err.message}`, 'danger', 8000); return; }
+  if (p.stamp && project?._sbs?.clip && project._sbs.clip !== p.stamp) {
+    setStatus(`"${from}" has copied other steps since — copy them again.`, 'warn', 7000); return;
+  }
+  const want = new Set(p.stepIds || []);
+  const srcSteps = (project.steps?.items || []).filter(s => !s.isBaseStep && (!want.size || want.has(s.id)));
+  if (!srcSteps.length) { setStatus('Nothing to paste — the copied steps are empty.', 'warn', 5000); return; }
+  setStatus(`${srcSteps.length} step${srcSteps.length === 1 ? '' : 's'} from "${from}".`);
+  _showImportStepsDialog(project, srcSteps, `${from} (copied)`, targetStepId, p.projectPath || null, { preselectAll: true });
+}
+
+/** Chapter-header paste from another window: after the chapter's last step. */
+function _importStepsIntoChapterFromPool(chapterId, env) {
+  const ids = _chapterStepIds(chapterId);
+  if (!ids.length) { setStatus('This chapter has no steps yet — right-click a step and paste under it.', 'warn', 5000); return; }
+  return _importStepsFromPool(ids[ids.length - 1], env);
 }
 
 /**
@@ -2278,7 +2369,7 @@ async function _resolveSourceAssetFile(entry, srcProjectPath) {
   return null;
 }
 
-function _showImportStepsDialog(project, srcSteps, srcName, targetStepId, srcProjectPath = null) {
+function _showImportStepsDialog(project, srcSteps, srcName, targetStepId, srcProjectPath = null, opts = {}) {
   const targetAssetIds = new Set((state.get('assets') || []).map(a => a.id));
   const srcAssetById   = new Map((project.assets?.items || []).map(a => [a.id, a]));
   const chapterName    = new Map((project.chapters?.items || []).map(c => [c.id, c.name]));
@@ -2938,6 +3029,8 @@ function _showImportStepsDialog(project, srcSteps, srcName, targetStepId, srcPro
   refresh();
   document.body.appendChild(dlg);
   dlg.showModal();
+  // 📋 a paste from the pool: the copied steps are what the user wants — ticked on arrival
+  if (opts.preselectAll) dlg.querySelector('#imp-all')?.click();
 }
 
 async function _doImportSteps(project, srcStepIds, srcName, targetStepId, assetPlan = [], videoPlan = new Map()) {
@@ -3471,6 +3564,7 @@ function _copyStepsToClipboard(stepIds) {
   if (!picked.length) return;
   _clipboard = { kind: 'steps', data: cloneShareStrings(picked) };   // share base64, don't duplicate
   setStatus(`Copied ${picked.length} step(s).`);
+  _poolSteps(picked);   // 📋 …and to the pool, for another window
 }
 
 function _pasteStepsUnder(targetStepId) {
@@ -3535,6 +3629,7 @@ function _copyChapterToClipboard(chapterId) {
     },
   };
   setStatus(`Copied chapter "${chapter.name}" (${chSteps.length} step(s)).`);
+  _poolSteps(chSteps, chapter.name || null);   // 📋 the pool carries its steps (another window pastes them into a chapter of its own)
 }
 
 function _pasteChapterUnder(targetChapterId) {

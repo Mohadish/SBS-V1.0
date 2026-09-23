@@ -14,6 +14,12 @@
  *                payload }
  *   kind     'overlay'      payload { items:[{spec, capturedAt}], defs, links }
  *            'tableCells'   payload { rows, cols, tsv, fmt, imgs }
+ *            'steps'        payload { file, stamp, projectPath, projectName, stepIds, names, chapterName }
+ *                           — the steps themselves are a project SLICE in `file` (see
+ *                           writeClipFile); the paste opens the import-steps dialog on it
+ *
+ * origin.win is this window's id: a paste tells its OWN copy (the in-window fast path — the
+ * same objects, no file) from another window's.
  *
  * Copy from Word / Excel / a browser INTO SBS is untouched: that content carries
  * no envelope, readClip() says so, and the handlers that read text and pictures
@@ -60,13 +66,54 @@ const MAX_JSON = 48 * 1024 * 1024;                 // beyond this the clipboard 
 const ANCHOR_KIND = 'anchor3d';                    // anchored-shapes.js — a 3D-anchored arrow's points are derived per frame, never fitted
 let _mirror = null;                                // this window's last envelope — the fallback when the clipboard cannot be read
 
+/** This window's id — every envelope it writes carries it (origin.win). */
+export const WIN_ID = `w${Date.now().toString(36)}${Math.random().toString(36).slice(2, 7)}`;
+/** Was this envelope written by THIS window? */
+export const isOwn = (env) => !!env?.origin?.win && env.origin.win === WIN_ID;
+
 const _origin = () => {
   const b = state.get('brand'), c = getCanonicalSize();
   return {
+    win: WIN_ID,
     brand: b?.id ? { id: b.id, name: b.name || '', revision: b.revision || 0 } : null,
     canonical: { width: c.width, height: c.height },
   };
 };
+
+// ─── a payload too big for the clipboard itself ──────────────────────────────
+// A copied STEP is a project slice — the tree, the definitions, the step with its inline
+// pictures — easily tens of MB. That does not belong on the OS clipboard: it goes to a file
+// in this app's own folder (<userData>/clip/, one file per name — the previous copy is
+// overwritten, as a clipboard's is; one app process per userData, so no two windows share
+// a file) and the envelope carries the path. Any SBS window on this machine can read it.
+
+async function _clipFolder() {
+  try {
+    const p = await window.sbsNative?.userSettings?.path?.();
+    return p ? `${String(p).replace(/[\\/][^\\/]*$/, '')}/clip` : null;
+  } catch { return null; }
+}
+
+/** Write `text` under this app's clip folder. @returns {Promise<string|null>} the file's path */
+export async function writeClipFile(name, text) {
+  const dir = await _clipFolder();
+  if (!dir || !window.sbsNative?.writeFile) return null;
+  const path = `${dir}/${name}`;
+  try {
+    const r = await window.sbsNative.writeFile(path, text, 'utf-8');
+    if (!r?.ok) { console.warn('[clip] file write failed:', r?.error); return null; }
+    return path;
+  } catch (e) { console.warn('[clip] file write failed:', e?.message || e); return null; }
+}
+
+/** Read a clip file back as text; null when it is gone or unreadable. */
+export async function readClipFile(path) {
+  if (!path || !window.sbsNative?.readFile) return null;
+  try {
+    const r = await window.sbsNative.readFile(path, 'utf8');
+    return r?.ok && typeof r.data === 'string' ? r.data : null;
+  } catch { return null; }
+}
 
 /**
  * How much the origin's frame must be scaled to fit THIS project's: sx = width ratio, sy = height
@@ -269,4 +316,4 @@ export function remapDefs(env, specs) {
 }
 
 /** For debugging from the console. */
-if (typeof window !== 'undefined') window.sbsClip = { read: readClip, write: writeClip, defHash, canonicalScale };
+if (typeof window !== 'undefined') window.sbsClip = { read: readClip, write: writeClip, defHash, canonicalScale, WIN_ID };

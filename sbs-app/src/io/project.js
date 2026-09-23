@@ -181,7 +181,7 @@ function stripNode(node) {
  *        must pass the new location).
  * @returns {object}  complete project in createEmptyProject() shape
  */
-export function serialize(targetPath = null) {
+export function serialize(targetPath = null, { onlyStepIds = null } = {}) {
   const project = createEmptyProject();
 
   // ── _sbs metadata ────────────────────────────────────────────────────────
@@ -239,7 +239,9 @@ export function serialize(targetPath = null) {
   project.tree.root = treeData ? stripNode(treeData) : null;
 
   // ── Steps ────────────────────────────────────────────────────────────────
-  project.steps.items = cloneShareStrings((state.get('steps') || []));
+  // 📋 V0.3.4.92 — a SLICE (serializeSlice) keeps only the named steps, in timeline order.
+  const allSteps = state.get('steps') || [];
+  project.steps.items = cloneShareStrings(onlyStepIds ? allSteps.filter(s => onlyStepIds.has(s.id)) : allSteps);
 
   // When narration audio is cached on disk (dataFile present), drop the
   // bulky inline base64 dataUrl from the saved file — the WAV lives in
@@ -389,6 +391,20 @@ export function serialize(targetPath = null) {
   cfg.hardwareDefaults     = state.get('hardwareDefaults')      ?? null;
   cfg.spotlightDefaults    = state.get('spotlightDefaults')     ?? null;   // 🔦 V0.3.4.83
 
+  return project;
+}
+
+/**
+ * 📋 V0.3.4.92 — a SLICE of the live project for the clipboard pool: everything serialize()
+ * writes (tree, assets, colours, presets, definitions, settings), with only the given steps.
+ * readProjectForImport reads it back like any .sbsproj, so the import-steps dialog needs
+ * nothing new. Asset paths are relative to the REAL project file (relBase = projectPath), and
+ * the paste side resolves them against that path, which travels in the envelope.
+ * `stamp` is written into _sbs so the paste can tell the file belongs to the envelope it holds.
+ */
+export function serializeSlice(stepIds, stamp = null) {
+  const project = serialize(null, { onlyStepIds: new Set(stepIds || []) });
+  project._sbs.clip = stamp;
   return project;
 }
 
