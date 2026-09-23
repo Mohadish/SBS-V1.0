@@ -28,6 +28,25 @@ const { app, BrowserWindow, Menu, ipcMain, dialog, shell } = require('electron')
 const USER_DATA_DIRNAME = 'sbs-step-browser';
 app.setPath('userData', require('path').join(app.getPath('appData'), USER_DATA_DIRNAME));
 
+// ⧉ A SECOND INSTANCE (V0.3.4.87). The single-instance lock is keyed on the userData
+// folder, so pinning that folder above silently killed the old SBS_PARALLEL trick (which
+// only renamed the app). With SBS_PARALLEL=1 the instance gets a folder of its own
+// beside the pinned one — its own lock, cache, settings — and, the first time, a copy of
+// the licence file from the primary folder, so it does not open on the activation
+// dialog. (The clock mark rides inside the file and the registry mirror is shared; a
+// copy is what deactivate/renew expect to find. Same machine, same licence.)
+if (process.env.SBS_PARALLEL === '1') {
+  const _p = require('path'), _f = require('fs');
+  const primary = app.getPath('userData');
+  const second  = _p.join(app.getPath('appData'), USER_DATA_DIRNAME + '-2');
+  app.setPath('userData', second);
+  try {
+    _f.mkdirSync(second, { recursive: true });
+    const src = _p.join(primary, 'license.json'), dst = _p.join(second, 'license.json');
+    if (!_f.existsSync(dst) && _f.existsSync(src)) _f.copyFileSync(src, dst);
+  } catch (err) { console.warn('[main] second instance: could not prepare its userData:', err?.message); }
+}
+
 // 🔑 THE LICENCE GATE GOES IN FIRST — before a single ipcMain.handle() below.
 // It wraps handle() itself, so every handler in this file (and any added
 // later) is served only while the licence is valid; license:* stays open for
@@ -200,16 +219,12 @@ app.on('before-quit', () => {
   if (_kokoroWorker) { try { _kokoroWorker.terminate(); } catch {} _kokoroWorker = null; }
 });
 
-// V0.2.22+ side-by-side identity — when this build is launched with
-// SBS_PARALLEL=1 (the V0.2.22+ launcher sets it), rename the app so it
-// gets a separate userData dir AND a separate single-instance lock key.
-// Lets V0.2.21 stable and V0.2.22+ refactor run at the same time without
-// cache wars, settings collisions, or single-instance kicks.
-//
-// MUST happen before requestSingleInstanceLock — the lock key is derived
-// from the resolved app name.
+// SBS_PARALLEL=1 — the second instance's NAME (window title, process name). The
+// separate userData + lock now come from the block at the top of this file (the lock
+// is keyed on userData, not on the name — renaming alone stopped working when userData
+// was pinned in V0.3.4.6x).
 if (process.env.SBS_PARALLEL === '1') {
-  app.setName('SBS Step Browser V0.2.22+');
+  app.setName('SBS Step Browser (2)');
 }
 
 // Single-instance lock — prevents a second `npm start` (or a stuck
