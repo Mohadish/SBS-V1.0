@@ -6313,17 +6313,22 @@ function _pushDeleteNodesUndo(entries, label) {
  * Right-click → Copy. Snapshots every selected overlay node into the
  * module clipboard along with their captured x/y for paste-in-place.
  */
-function _copyToOverlayClipboard() {
+/** The selection as clipboard entries ({spec, capturedAt}), bottom-most first. */
+function _serializeSelection() {
   const sel = _transformer?.nodes() || [];
-  if (!sel.length) return false;
+  if (!sel.length) return [];
   // Sort by zIndex (ascending — bottom first) so paste re-creates in the
   // SAME relative order. Otherwise a multi-select clipboard captures in
   // selection order (newest-clicked last), and paste shuffles z-order.
   const sorted = [...sel].sort((a, b) => (a.zIndex?.() ?? 0) - (b.zIndex?.() ?? 0));
-  _overlayClipboard = sorted.map(n => ({
+  return sorted.map(n => ({
     spec:        _serializeNode(n),
     capturedAt:  { x: n.x() ?? 0, y: n.y() ?? 0 },
   })).filter(e => e.spec);
+}
+
+function _copyToOverlayClipboard() {
+  _overlayClipboard = _serializeSelection();
   // 📋 V0.3.4.90 — and onto the POOL (the OS clipboard): another SBS window can paste it, and the
   // definitions the items point at ride along so it can resolve them (clip-pool.js).
   if (_overlayClipboard.length) {
@@ -6349,9 +6354,14 @@ async function _pasteFromOverlayClipboard(opts = {}) {
   // something else (Word, a browser) means this window's own copy is stale. Only a clipboard
   // that cannot be read at all falls back to it. The definitions the items point at are
   // resolved to THIS project's (clip-pool.js remapDefs) — what it had to add joins the undo.
-  const env = await clipPool.readClip(['overlay']);
-  let entries = null, hooks = null, note = '';
-  if (env?.payload?.items?.length) {
+  // ⎘ V0.3.4.107 — a DUPLICATE hands its entries in directly (opts.entries) and never asks the
+  // clipboard: the pool write is asynchronous, so a duplicate that read the clipboard back
+  // could get the PREVIOUS copy — "it duplicated the last thing I selected, not this one".
+  const env = opts.entries ? undefined : await clipPool.readClip(['overlay']);
+  let entries = opts.entries || null, hooks = null, note = '';
+  if (entries) {
+    // same project, same definitions — nothing to resolve
+  } else if (env?.payload?.items?.length) {
     const r = clipPool.remapDefs(env, env.payload.items.map(e => e.spec));
     entries = env.payload.items.map((e, i) => ({ ...e, spec: r.specs[i] }));
     hooks = (r.undo || r.redo) ? { undo: r.undo, redo: r.redo } : null;
@@ -6409,8 +6419,11 @@ async function _pasteFromOverlayClipboard(opts = {}) {
  *  or exactly on top of the original (Ctrl+Shift+D, V0.3.4.105: "duplicate in place"). */
 async function _duplicateSelected(opts = {}) {
   const inPlace = opts === true || !!opts?.inPlace;
-  if (!_copyToOverlayClipboard()) return false;
-  return _pasteFromOverlayClipboard({ inPlace, offset: 20, label: inPlace ? 'Duplicate in place' : 'Duplicate' });
+  // ⎘ V0.3.4.107 — straight from the selection, never through the clipboard (see
+  // _pasteFromOverlayClipboard); the clipboard is left as it was.
+  const entries = _serializeSelection();
+  if (!entries.length) return false;
+  return _pasteFromOverlayClipboard({ inPlace, offset: 20, label: inPlace ? 'Duplicate in place' : 'Duplicate', entries });
 }
 
 /**
