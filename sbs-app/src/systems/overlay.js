@@ -424,6 +424,111 @@ function _rescaleOnCanonicalChange() {
   _syncSize();
 }
 
+// ─── 💉 Style eyedropper (V0.3.4.100) ─────────────────────────────────────
+// "Click any text box and copy its style — colour, font, size, effects, the
+// backdrop, everything — into a style definition." The Style tab asks; the
+// next press on a text box answers with the box's EFFECTIVE look (a bound box
+// = its template; an unbound box = its inline formatting, read at the FIRST
+// letter when the box is mixed — the user's rule); Esc cancels. Works in view
+// mode too: the canvas is made clickable for the duration.
+
+let _stylePick = null;   // { resolve, prevPE, onDown, onKey }
+
+/** rgb()/rgba()/#hex → '#rrggbb' (alpha dropped); anything else as given. */
+function _cssColorToHex(s) {
+  const t = String(s ?? '').trim();
+  const m = /^rgba?\(\s*(\d+)\s*,\s*(\d+)\s*,\s*(\d+)/i.exec(t);
+  if (m) { const h = (n) => Math.max(0, Math.min(255, Number(n))).toString(16).padStart(2, '0'); return `#${h(m[1])}${h(m[2])}${h(m[3])}`; }
+  const m3 = /^#([0-9a-f]{3})$/i.exec(t);
+  if (m3) return '#' + m3[1].split('').map(c => c + c).join('').toLowerCase();
+  return t;
+}
+
+/** The look of a text box as a style-template patch (no id, no name). */
+function _styleOfTextNode(node) {
+  const { renderHtml, opts } = _textRenderOpts(node);
+  const host = document.createElement('div');
+  host.style.cssText = [
+    'position:absolute', 'left:-99999px', 'top:0', `width:${opts.width || 400}px`, `padding:${opts.padding || 8}px`,
+    `color:${opts.color || '#ffffff'}`, `font-family:${opts.fontFamily || 'Arial'}`, `font-size:${opts.fontSize || 16}px`,
+    `font-weight:${opts.fontWeight || 'normal'}`, `font-style:${opts.fontStyle || 'normal'}`, `text-decoration:${opts.textDecoration || 'none'}`,
+    'visibility:hidden', 'box-sizing:border-box',
+  ].join(';');
+  host.innerHTML = renderHtml || '';
+  document.body.appendChild(host);
+  let el = host;
+  try {
+    const walker = document.createTreeWalker(host, NodeFilter.SHOW_TEXT);
+    let t;
+    while ((t = walker.nextNode())) { if (t.nodeValue && t.nodeValue.replace(/[​﻿\s]/g, '')) { el = t.parentElement || host; break; } }   // the first LETTER's run
+  } catch { /* the host itself then */ }
+  const cs = window.getComputedStyle(el);
+  const weight = parseInt(cs.fontWeight, 10);
+  const style = {
+    color:          _cssColorToHex(cs.color) || '#ffffff',
+    fontFamily:     _stripQuotes(cs.fontFamily) || 'Arial',
+    fontSize:       Math.round(parseFloat(cs.fontSize)) || 16,
+    fontWeight:     (Number.isFinite(weight) ? weight >= 600 : cs.fontWeight === 'bold') ? 'bold' : 'normal',
+    fontStyle:      /italic|oblique/.test(cs.fontStyle) ? 'italic' : 'normal',
+    textDecoration: /underline/.test(cs.textDecorationLine || cs.textDecoration || '') ? 'underline' : '',
+  };
+  host.remove();
+  // the box-level parts: backdrop + effects — a bound box wears its template's
+  const tpl = node.getAttr('styleId') ? getStyleTemplate(node.getAttr('styleId')) : null;
+  const fill = tpl ? (tpl.fillColor || node.getAttr('fillColor')) : node.getAttr('fillColor');
+  style.fillColor = fill && fill !== 'transparent' ? String(fill) : null;
+  const clone = (v) => (v && typeof v === 'object' ? JSON.parse(JSON.stringify(v)) : null);
+  style.shadow  = clone(tpl ? tpl.shadow  : node.getAttr('textShadow'));
+  style.outline = clone(tpl ? tpl.outline : node.getAttr('textOutline'));
+  return style;
+}
+
+function _endStylePick(result) {
+  const p = _stylePick;
+  if (!p) return;
+  _stylePick = null;
+  _container?.removeEventListener('pointerdown', p.onDown, true);
+  window.removeEventListener('keydown', p.onKey, true);
+  if (_container) { _container.style.pointerEvents = p.prevPE; _container.style.cursor = ''; }
+  clearStickyStatus('stylepick');
+  p.resolve(result);
+}
+
+/**
+ * Arm the eyedropper: resolves with a style patch when a text box is clicked,
+ * null on Esc (or when armed again). The canvas is clickable meanwhile even
+ * outside overlay edit mode.
+ */
+export function pickTextBoxStyle() {
+  if (_stylePick) _endStylePick(null);
+  if (!_stage || !_container) return Promise.resolve(null);
+  return new Promise((resolve) => {
+    const prevPE = _container.style.pointerEvents;
+    _container.style.pointerEvents = 'auto';
+    _container.style.cursor = 'crosshair';
+    const onDown = (e) => {
+      if (e.button !== 0) return;
+      e.preventDefault(); e.stopPropagation();
+      let node = null;
+      try {
+        _stage.setPointersPositions(e);
+        const pos = _stage.getPointerPosition();
+        const hit = pos ? _stage.getIntersection(pos) : null;
+        if (hit && hit.getLayer?.() === _layer && typeof hit.getAttr === 'function' && hit.getAttr('textHtml') && !hit.getAttr('isTable')) node = hit;
+      } catch { node = null; }
+      if (!node) { setStickyStatus('💉 That is not a text box — click a text box · Esc cancels', 'warn', 'stylepick'); return; }
+      let style = null;
+      try { style = _styleOfTextNode(node); } catch (err) { console.warn('[overlay] style pick failed:', err?.message); }
+      _endStylePick(style);
+    };
+    const onKey = (e) => { if (e.key === 'Escape') { e.preventDefault(); e.stopPropagation(); _endStylePick(null); } };
+    _stylePick = { resolve, prevPE, onDown, onKey };
+    _container.addEventListener('pointerdown', onDown, true);
+    window.addEventListener('keydown', onKey, true);
+    setStickyStatus('💉 Click a text box to copy its style · Esc cancels', 'info', 'stylepick');
+  });
+}
+
 // ─── Editing mode ──────────────────────────────────────────────────────────
 
 export function isEditing() { return _editing; }

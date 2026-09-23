@@ -32,7 +32,6 @@ const FONTS = [
   'Courier New', 'Verdana', 'Tahoma', 'Trebuchet MS', 'Impact', 'Comic Sans MS',
 ];
 const SIZES = [10, 12, 14, 16, 20, 24, 28, 32, 40, 48, 64, 96, 128];
-const CUSTOM_SIZE = 'Custom…';
 const SIZE_MIN = 4, SIZE_MAX = 1000;
 
 let _toolbar = null;   // host element (provided by overlay-toolbar.js)
@@ -41,7 +40,8 @@ let _applier = null;   // function(action, value) — caller-supplied dispatcher
 
 // References to the live dropdown / colour controls so callers can sync
 // them with the current selection's actual styling.
-let _sizeSel = null;
+let _sizeSel = null;      // the size box (wrapper: input + ▾)
+let _sizeInput = null;    // ✎ V0.3.4.100 — the typed size lives here
 let _fontSel = null;
 let _colorInput = null;
 let _fillInput  = null;
@@ -84,8 +84,10 @@ export function mountTextToolbar(host, applier, editorEl = null, opts = {}) {
   const alphaCtl = _alpha('Fill alpha (0 = transparent, 100 = opaque)',
                           (v) => _apply('fillColor', _composeRgba(_fillInput?.value, v)));
 
-  // V0.3.4.1 — presets + "Custom…": any size can be typed (78, 150, …)
-  _sizeSel    = _select('size', [...SIZES.map(s => `${s}`), CUSTOM_SIZE], (v) => (v === CUSTOM_SIZE ? _askCustomSize(_sizeSel) : _apply('fontSize', Number(v))));
+  // ✎ V0.3.4.100 — ONE box for the size: click it and the presets drop down,
+  // type into it and that IS the size (Enter applies; ↑/↓ nudge). No
+  // "Custom…" detour any more (the user's request).
+  _sizeSel    = _sizeBox();
   _fontSel    = _select('font', FONTS,                  (v) => _apply('fontFamily', v));
   _colorInput = colorCtl.querySelector('input[type=color]');
   _fillInput  = fillCtl.querySelector('input[type=color]');
@@ -299,7 +301,7 @@ export function setStyleLocked(locked) {
  * differ across multi-select).
  */
 export function setToolbarValues({ fontSize, fontName, color, fillColor, fillAlpha } = {}) {
-  if (_sizeSel  && fontSize != null) { _ensureSizeOption(_sizeSel, fontSize); _sizeSel.value = String(_sizeKey(fontSize)); }
+  if (_sizeInput && fontSize != null && document.activeElement !== _sizeInput) _sizeInput.value = String(_sizeKey(fontSize));   // never overwrite what is being typed
   if (_fontSel  && fontName)         _fontSel.value = fontName;
   if (_colorInput && color) {
     _colorInput.value = color;
@@ -327,7 +329,9 @@ export function unmountTextToolbar() {
   }
   _editor     = null;
   _applier    = null;
+  _closeSizeList();
   _sizeSel    = null;
+  _sizeInput  = null;
   _fontSel    = null;
   _colorInput = null;
   _fillInput  = null;
@@ -430,59 +434,96 @@ function _select(kind, options, onChange) {
   return sel;
 }
 
-// ─── custom text size (V0.3.4.1) ────────────────────────────────────────────
-// The list keeps its presets; a size that is not one of them (typed here, or
-// found on the text under the caret) gets its own entry, kept in numeric order.
+// ─── the text size box (V0.3.4.100; replaces V0.3.4.1's list + "Custom…") ──
+// A number box with the presets hanging under it. Click → the presets drop
+// down, pick one and it applies. Type → the list closes, what you typed is the
+// size: Enter (or leaving the box) applies it, Esc puts the old value back.
+// ↑ / ↓ nudge by 1, Shift for 10. The text's selection is kept across all of it.
 
 const _sizeKey = (n) => { const v = Math.round(Number(n) * 10) / 10; return Number.isFinite(v) ? v : 16; };
+let _sizeList = null;     // the open preset list (one at a time)
 
-function _ensureSizeOption(sel, size) {
-  const key = String(_sizeKey(size));
-  if ([...sel.options].some(o => o.value === key)) return;
-  const opt = document.createElement('option');
-  opt.value = key; opt.textContent = key; opt.dataset.custom = '1';
-  const after = [...sel.options].find(o => o.value !== CUSTOM_SIZE && Number(o.value) > Number(key)) || [...sel.options].find(o => o.value === CUSTOM_SIZE) || null;
-  sel.insertBefore(opt, after);
+function _closeSizeList() {
+  if (_sizeList) { _sizeList.remove(); _sizeList = null; }
 }
 
-/** Swap the list for a number box; Enter / click-away applies, Esc abandons. */
-function _askCustomSize(sel) {
-  // typing in a box takes the window selection away from the text being
-  // edited — keep the range and put it back before the size is applied
-  const ws = window.getSelection();
-  const saved = (_editor && ws && ws.rangeCount && _editor.contains(ws.anchorNode)) ? ws.getRangeAt(0).cloneRange() : null;
-  const prev = sel.dataset.prev && sel.dataset.prev !== CUSTOM_SIZE ? sel.dataset.prev : '16';
+function _sizeBox() {
+  const wrap = document.createElement('div');
+  wrap.title = `Text size in pixels of the export frame (${SIZE_MIN}–${SIZE_MAX}). Click for presets, or type a size and press Enter.`;
+  wrap.style.cssText = [
+    'background:#1f2937','color:#e5e7eb',
+    'border:1px solid #334155','border-radius:6px',
+    'height:28px','display:inline-flex','align-items:stretch','box-sizing:border-box','position:relative',
+  ].join(';');
   const inp = document.createElement('input');
-  inp.type = 'text'; inp.inputMode = 'decimal'; inp.value = prev;
-  inp.title = `Text size in pixels of the export frame (${SIZE_MIN}–${SIZE_MAX}). Enter applies, Esc cancels.`;
-  inp.style.cssText = 'background:#0b1220;color:#e5e7eb;border:1px solid #38bdf8;border-radius:6px;height:28px;width:64px;padding:0 6px;font-size:13px;box-sizing:border-box;';
-  sel.style.display = 'none';
-  sel.after(inp);
-  let done = false;
+  inp.type = 'text'; inp.inputMode = 'decimal'; inp.value = '16';
+  inp.setAttribute('aria-label', 'Text size');
+  inp.style.cssText = 'background:transparent;color:inherit;border:0;outline:0;width:44px;padding:0 0 0 6px;font-size:13px;box-sizing:border-box;';
+  const arrow = document.createElement('button');
+  arrow.type = 'button'; arrow.textContent = '▾'; arrow.tabIndex = -1;
+  arrow.title = 'Preset sizes';
+  arrow.style.cssText = 'background:transparent;color:#94a3b8;border:0;padding:0 5px 0 2px;cursor:pointer;font-size:12px;line-height:1;';
+  wrap.append(inp, arrow);
+  _sizeInput = inp;
+
+  // typing in the box takes the window selection away from the text being
+  // edited — keep the range and put it back before the size is applied
+  let saved = null, prev = inp.value;
+  const keepRange = () => {
+    const ws = window.getSelection();
+    saved = (_editor && ws && ws.rangeCount && _editor.contains(ws.anchorNode)) ? ws.getRangeAt(0).cloneRange() : null;
+  };
   const restoreRange = () => {
     if (!saved || !_editor) return;
     try { _editor.focus(); const w = window.getSelection(); w.removeAllRanges(); w.addRange(saved); } catch { /* the text changed under us — apply to the whole box instead */ }
   };
-  const finish = (apply) => {
-    if (done) return; done = true;
-    const n = _sizeKey(String(inp.value).replace(',', '.'));
-    const valid = apply && Number.isFinite(Number(String(inp.value).replace(',', '.'))) && n >= SIZE_MIN && n <= SIZE_MAX;
-    inp.remove();
-    sel.style.display = '';
-    if (!valid) { sel.value = prev; restoreRange(); return; }
-    _ensureSizeOption(sel, n);
-    sel.value = String(n);
+  const commit = (raw) => {
+    const txt = String(raw ?? inp.value).replace(',', '.').trim();
+    const n = _sizeKey(txt);
+    const valid = txt !== '' && Number.isFinite(Number(txt)) && n >= SIZE_MIN && n <= SIZE_MAX;
+    if (!valid) { inp.value = prev; return false; }
+    inp.value = String(n); prev = inp.value;
     restoreRange();
     _apply('fontSize', n);
+    return true;
   };
-  inp.addEventListener('mousedown', e => e.stopPropagation());
-  inp.addEventListener('keydown', e => {
+  const open = () => {
+    _closeSizeList();
+    const list = document.createElement('div');
+    list.dataset.sbsTextToolbar = '1';   // clicks inside never close the in-place editor
+    const r = wrap.getBoundingClientRect();
+    list.style.cssText = `position:fixed;left:${Math.round(r.left)}px;top:${Math.round(r.bottom + 2)}px;z-index:10050;background:#0f172a;color:#e5e7eb;border:1px solid #334155;border-radius:6px;box-shadow:0 8px 24px rgba(0,0,0,.5);padding:4px 0;min-width:${Math.round(r.width)}px;max-height:260px;overflow:auto;font-size:13px;`;
+    for (const s of SIZES) {
+      const it = document.createElement('div');
+      it.textContent = String(s);
+      it.style.cssText = `padding:3px 12px;cursor:pointer;${String(s) === inp.value ? 'background:rgba(56,189,248,0.18);' : ''}`;
+      it.addEventListener('mouseenter', () => { it.style.background = 'rgba(56,189,248,0.28)'; });
+      it.addEventListener('mouseleave', () => { it.style.background = String(s) === inp.value ? 'rgba(56,189,248,0.18)' : ''; });
+      it.addEventListener('mousedown', (e) => { e.preventDefault(); e.stopPropagation(); });   // the box keeps focus, the text keeps its selection
+      it.addEventListener('click', (e) => { e.stopPropagation(); _closeSizeList(); inp.value = String(s); commit(String(s)); });
+      list.appendChild(it);
+    }
+    document.body.appendChild(list);
+    _sizeList = list;
+  };
+  wrap.addEventListener('mousedown', (e) => { e.stopPropagation(); if (document.activeElement !== inp) keepRange(); });
+  arrow.addEventListener('mousedown', (e) => { e.preventDefault(); });
+  arrow.addEventListener('click', (e) => { e.stopPropagation(); if (_sizeList) _closeSizeList(); else { keepRange(); open(); } });
+  inp.addEventListener('focus', () => { prev = inp.value; open(); inp.select(); });
+  inp.addEventListener('input', () => { _closeSizeList(); });               // typing = a custom value, the list is out of the way
+  inp.addEventListener('keydown', (e) => {
     e.stopPropagation();
-    if (e.key === 'Enter') { e.preventDefault(); finish(true); }
-    else if (e.key === 'Escape') { e.preventDefault(); finish(false); }
+    if (e.key === 'Enter')  { e.preventDefault(); _closeSizeList(); commit(); inp.blur(); }
+    else if (e.key === 'Escape') { e.preventDefault(); _closeSizeList(); inp.value = prev; restoreRange(); inp.blur(); }
+    else if (e.key === 'ArrowUp' || e.key === 'ArrowDown') {
+      e.preventDefault();
+      const step = (e.shiftKey ? 10 : 1) * (e.key === 'ArrowUp' ? 1 : -1);
+      const n = Math.max(SIZE_MIN, Math.min(SIZE_MAX, _sizeKey(String(inp.value).replace(',', '.')) + step));
+      inp.value = String(n); commit(String(n)); inp.focus();
+    }
   });
-  inp.addEventListener('blur', () => finish(true));
-  inp.focus(); inp.select();
+  inp.addEventListener('blur', () => { setTimeout(_closeSizeList, 120); if (inp.value !== prev) commit(); });   // leaving the box with a new number applies it
+  return wrap;
 }
 
 function _color(title, label = 'A', defaultBadge = '#fbbf24', onChange) {
