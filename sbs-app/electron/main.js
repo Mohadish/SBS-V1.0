@@ -1177,21 +1177,17 @@ ipcMain.handle('fs:listTree', async (_, dirPath) => {
 // snapshot, let the user click a pixel of it (electron/screen-picker.*), and
 // answer with the hex. One at a time; Esc answers nothing.
 // V0.3.4.110 — EVERY display at once (one picker window per display, the first
-// click anywhere answers), and this app's own windows are made transparent for
-// the snapshot, so what sits behind SBS can be picked without minimising it.
+// click anywhere answers). V0.3.4.112 — this app's own windows STAY in the
+// snapshot (the user picks from SBS's interface too; .110 made them transparent
+// for the capture, which read as "the window drops").
 const _pickShots = new Map();   // display id → the snapshot's data URL
 let   _pickWins  = [];
 ipcMain.handle('color:pickScreen:image', (_, displayId) => _pickShots.get(String(displayId)) || null);
 ipcMain.handle('color:pickScreen', async () => {
   if (_pickWins.length) return null;
-  const mine = BrowserWindow.getAllWindows().filter(w => !w.isDestroyed());
-  const opacity = new Map();
-  const restore = () => { for (const [w, o] of opacity) { try { if (!w.isDestroyed()) w.setOpacity(o); } catch {} } opacity.clear(); };
+  const restore = () => {};   // (nothing to restore since .112 — kept so the paths below read the same)
   try {
     const displays = screen.getAllDisplays();
-    // our own windows out of the picture (transparent, not hidden: no minimise / restore churn)
-    for (const w of mine) { try { opacity.set(w, w.getOpacity()); w.setOpacity(0); } catch {} }
-    await new Promise(r => setTimeout(r, 160));   // the compositor needs a frame or two
     _pickShots.clear();
     // one capture per distinct native size (thumbnailSize is shared by every source in a call)
     const bySize = new Map();
@@ -1241,7 +1237,8 @@ ipcMain.handle('color:pickScreen', async () => {
     for (const w of _pickWins) { try { if (!w.isDestroyed()) w.destroy(); } catch {} }
     _pickWins = [];
     _pickShots.clear();
-    try { mainWindow?.focus(); } catch {}
+    // the app window comes back to the front, where it was
+    try { if (mainWindow && !mainWindow.isDestroyed()) { if (mainWindow.isMinimized()) mainWindow.restore(); mainWindow.moveTop?.(); mainWindow.focus(); } } catch {}
     return hex;
   } catch (e) {
     console.warn('[pick] screen colour pick failed:', e?.message);

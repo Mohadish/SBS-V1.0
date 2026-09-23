@@ -3,9 +3,9 @@
  * ─────────────────────────────────────────────────────
  * A left click on any colour swatch opens the ordinary colour dialog, exactly
  * as it always did. A RIGHT click (or Alt+click) on a swatch runs the screen
- * pick: the main process snapshots EVERY display (this app's own windows made
- * transparent for the moment, so what sits behind them can be picked without
- * minimising), shows the snapshots edge to edge, and the pixel you click —
+ * pick: the main process snapshots EVERY display (this app's own window
+ * included — its interface is pickable too), shows the snapshots edge to
+ * edge, and the pixel you click —
  * on either screen, in a browser, a picture viewer, anything — lands in the
  * swatch, with the same `input` + `change` events a pick in the dialog fires.
  *
