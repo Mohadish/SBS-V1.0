@@ -798,7 +798,7 @@ function _wavFromFloat32(pcm, rate) {
  * NOT YET: header layer / progress bar composite (slice 3c) — the output is
  * header-less for now. Returns { path, totalMs, segments, reused, rendered }.
  */
-export async function assembleFromCache({ onProgress, signal, output, force = false, adoptExcept = null } = {}) {
+export async function assembleFromCache({ onProgress, signal, output, force = false, adoptExcept = null, confirmAdopt = null } = {}) {
   const ve = await import('./video-export.js');
   const timings = [];
   let renderedCount = 0;
@@ -838,7 +838,7 @@ export async function assembleFromCache({ onProgress, signal, output, force = fa
     return { markersByStepId, files, totalMs: cum };
   };
 
-  const fill1 = await renderMissingSegments({ onProgress, signal, force, adoptExcept });
+  const fill1 = await renderMissingSegments({ onProgress, signal, force, adoptExcept, confirmAdopt });
   let plan = _checkFill(fill1);
   renderedCount += fill1.rendered;
   _mark('render segments');
@@ -1234,20 +1234,71 @@ export async function assembleToSbsProc(opts = {}) {
  * frames are the transition out of a changed state (the "one after" rule) —
  * and nothing is adopted across a cache generation (epoch).
  */
+/** How the render settings moved since the last fill: `hard` = what makes old
+ *  segments unusable (size, fps, cache generation), `soft` = everything else,
+ *  each as "key: old → new" (a new field shows "(new)"). Objects (render
+ *  options, gradient) are compared field by field. */
+function _settingsDrift(prev, cur) {
+  const hard = [], soft = [];
+  if (!prev) return { hard, soft };
+  const HARD = new Set(['w', 'h', 'fps', 'epoch']);
+  const show = (v) => (v === undefined ? '(none)' : typeof v === 'object' ? JSON.stringify(_canon(v)) : String(v));
+  const same = (a, b) => JSON.stringify(_canon(a)) === JSON.stringify(_canon(b));
+  for (const k of new Set([...Object.keys(prev), ...Object.keys(cur || {})])) {
+    const a = prev[k], b = cur?.[k];
+    if (same(a, b)) continue;
+    if (a && b && typeof a === 'object' && typeof b === 'object' && !Array.isArray(a)) {
+      const subs = [];
+      for (const s of new Set([...Object.keys(a), ...Object.keys(b)])) {
+        if (same(a[s], b[s])) continue;
+        subs.push(a[s] === undefined ? `${k}.${s} (new) = ${show(b[s])}` : `${k}.${s}: ${show(a[s])} → ${show(b[s])}`);
+      }
+      (HARD.has(k) ? hard : soft).push(...(subs.length ? subs : [`${k}: changed`]));
+    } else {
+      (HARD.has(k) ? hard : soft).push(a === undefined ? `${k} (new) = ${show(b)}` : `${k}: ${show(a)} → ${show(b)}`);
+    }
+  }
+  return { hard, soft };
+}
+
 async function _adoptPriorSegments(plan, keepIds, onProgress) {
   if (!plan.dir || !window.sbsNative?.listDir) return 0;
+  // Nothing to adopt (every un-starred span is cached already — e.g. the assembly
+  // pass right after a starred render) → no settings check, no question asked.
+  const candidate = (s) => !s.cached && !s.steps.some(st => keepIds.has(st.id)) && !(s._prevRef && keepIds.has(s._prevRef.id));
+  if (!plan.spans.some(candidate)) return 0;
   // Never across a RENDER-SETTINGS change (resolution, fps, bitrate, hold,
   // AL1/AL2, background, render quality, cache epoch): those genuinely change
   // every frame, and concatenating segments of two resolutions breaks the
   // assembly outright. Trust covers data / definition re-keys only — which is
   // also what makes it the safe way through a keying upgrade like .248's.
+  // ★ V0.3.4.99 — THE USER'S CALL (his rule): a settings drift that does not
+  // break the assembly (bitrate, hold, background, render options, AL1/AL2, a
+  // NEW field an app update added) is put to the user — "the last render used
+  // other settings: reuse its clips anyway?" — instead of a silent refusal that
+  // turned "render 44 starred steps" into 250. Resolution / fps / the cache
+  // generation still refuse outright: two resolutions cannot be concatenated.
   try {
     const ki = await window.sbsNative.readFile(`${plan.dir}/_keyinputs.json`, 'utf8');
     const prevSettings = ki?.ok ? JSON.parse(ki.data)?.settings : null;
-    if (!prevSettings || JSON.stringify(_canon(prevSettings)) !== JSON.stringify(_canon(plan.settingsKey))) {
-      plan.adoptRefused = prevSettings ? 'render settings changed since the last render' : "no record of the last render's settings";
+    const diff = _settingsDrift(prevSettings, plan.settingsKey);
+    if (diff.hard.length) {
+      plan.adoptRefused = `resolution / fps / cache generation changed since the last render (${diff.hard.join(', ')})`;
       console.warn(`[render-cache] ★ trust-the-stars refused: ${plan.adoptRefused} — rendering normally.`);
       return 0;
+    }
+    if (!prevSettings || diff.soft.length) {
+      const why = prevSettings ? `render settings changed since the last render: ${diff.soft.join(', ')}` : "no record of the last render's settings (an older cache)";
+      let ok = false;
+      if (plan._confirmAdopt) {
+        try { ok = !!(await plan._confirmAdopt({ why, changed: diff.soft, hasRecord: !!prevSettings })); } catch { ok = false; }
+      }
+      if (!ok) {
+        plan.adoptRefused = why + (plan._confirmAdopt ? ' — you chose to render everything' : '');
+        console.warn(`[render-cache] ★ trust-the-stars refused: ${plan.adoptRefused} — rendering normally.`);
+        return 0;
+      }
+      console.warn(`[render-cache] ★ trust-the-stars: ${why} — reusing anyway on the user's say-so.`);
     }
   } catch {
     plan.adoptRefused = "could not read the last render's settings";
@@ -1301,7 +1352,7 @@ async function _adoptPriorSegments(plan, keepIds, onProgress) {
   return adopted;
 }
 
-export async function renderMissingSegments({ onProgress, signal, force = false, forceStepIds = null, adoptExcept = null, onlyForced = false } = {}) {
+export async function renderMissingSegments({ onProgress, signal, force = false, forceStepIds = null, adoptExcept = null, onlyForced = false, confirmAdopt = null } = {}) {
   const { exportTimelineVideo } = await import('./video-export.js');
   onProgress?.({ stepName: 'fingerprinting steps… (a few seconds on big projects)' });
   const plan = await planWithCacheStatus();
@@ -1323,6 +1374,7 @@ export async function renderMissingSegments({ onProgress, signal, force = false,
   let adopted = 0;
   // An EMPTY set is meaningful: a full render with "trust the stars" and no stars
   // = reuse last time's segment for every step (the one-time re-key escape).
+  plan._confirmAdopt = typeof confirmAdopt === 'function' ? confirmAdopt : null;   // ★ .99 — asked when the settings drifted
   if (adoptExcept) adopted = await _adoptPriorSegments(plan, adoptExcept, onProgress);
   // 🎯 V0.3.4.93 — a SELECTION render with no video to assemble renders the
   // selection and NOTHING else. Before, every span whose fingerprint had moved
@@ -1464,7 +1516,7 @@ export async function renderMissingSegments({ onProgress, signal, force = false,
   // last one is still on screen — record it too.
   try { frameVis.captureActive(); await frameVis.save(); }
   catch (e) { console.warn('[render-cache] frame record failed:', e?.message); }
-  return { rendered: done, reused: plan.hits, adopted, failed, skippedStale, dir: plan.dir, total: plan.spans.length, plan };
+  return { rendered: done, reused: plan.hits, adopted, failed, skippedStale, adoptRefused: plan.adoptRefused || null, dir: plan.dir, total: plan.spans.length, plan };
 }
 
 /** Plan + check which segments already exist in <project>/_rendercache/. */

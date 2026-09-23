@@ -4177,6 +4177,15 @@ async function _onExportVideo() {
   // on its own if render settings changed since the last render.
   if (choice.mode === 'full' && choice.trustStars) adoptExcept = new Set(steps.alteredStepIds());
   const needsAssemble = choice.mode === 'full' || choice.thenFull;
+  // ★ V0.3.4.99 — when the render settings drifted since the last render (an app
+  // update adding a render field, a background or quality change…), trusting the
+  // stars is the USER'S call, not a silent refusal that renders everything.
+  const confirmAdopt = async ({ changed, hasRecord }) => _confirmDialog(
+    `★ Trust the stars\n\nThe last render used different settings${hasRecord
+      ? ':\n  • ' + changed.slice(0, 8).join('\n  • ') + (changed.length > 8 ? `\n  • …and ${changed.length - 8} more` : '')
+      : ' (no record of them — an older cache)'}.\n\n`
+    + `Reuse last time's clips for the un-starred steps anyway? Their pixels were rendered under the old settings.\n\n`
+    + `OK = reuse them (only the starred steps render).\nCancel = render everything.`);
 
   const exp         = state.get('export') || {};
   const projectName = exp.fileName || state.get('projectName') || 'timeline';
@@ -4204,12 +4213,13 @@ async function _onExportVideo() {
       const r = await rc.renderMissingSegments({
         forceStepIds: new Set(forceIds),
         adoptExcept,
+        confirmAdopt,                 // ★ .99 — the settings-drift question
         onlyForced: !needsAssemble,   // 🎯 V0.3.4.93 — no video to assemble = the selection and nothing else
         signal: _exportingCtrl.signal,
         onProgress: (p) => setStatus(p.total ? `Re-rendering segment ${p.current}/${p.total}: ${p.stepName}…` : `${p.stepName || 'Working…'}`, 'info', 0),
       });
       if (!needsAssemble) {
-        setStatus(`Re-rendered ${r.rendered} segment(s)${r.adopted ? `, reused ${r.adopted} on your say-so` : ''}${r.failed ? ` (${r.failed} FAILED)` : ''}${r.skippedStale ? ` — ${r.skippedStale} other segment(s) are out of date and were left alone (a full export renders them)` : ''} — next export picks them up from cache.`, r.failed ? 'warning' : 'success', 12000);
+        setStatus(`Re-rendered ${r.rendered} segment(s)${r.adopted ? `, reused ${r.adopted} on your say-so` : ''}${r.adoptRefused ? ` (trust the stars: ${r.adoptRefused})` : ''}${r.failed ? ` (${r.failed} FAILED)` : ''}${r.skippedStale ? ` — ${r.skippedStale} other segment(s) are out of date and were left alone (a full export renders them)` : ''} — next export picks them up from cache.`, r.failed ? 'warning' : 'success', 12000);
         return;
       }
       setStatus(`Re-rendered ${r.rendered} segment(s) — assembling the complete video…`, 'info', 0);
@@ -4230,6 +4240,7 @@ async function _onExportVideo() {
         signal: _exportingCtrl.signal,
         output: outPath || undefined,   // user-chosen destination (V0.3.2.30)
         adoptExcept,                    // ★ null unless "trust the stars" was ticked
+        confirmAdopt,                   // ★ .99 — the settings-drift question (asked once per export)
         onProgress: (p) => setStatus(p.total ? `Segment ${p.current}/${p.total}: ${p.stepName}…` : `${p.stepName || 'Working…'}`, 'info', 0),
       });
       setStatus(`Incremental export done: reused ${r.reused}, rendered ${r.rendered} → ${r.path}`, 'success', 10000);
