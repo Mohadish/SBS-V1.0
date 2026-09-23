@@ -62,6 +62,9 @@ const _CHANNELS_REQUIRED = [
   'insert',   // V0.2.22.52.1 — hardware explode→assemble; back-filled so
               // the 🔩 chip is always present + movable in the Anim editor.
               // Inert (no dwell, no effect) on steps with no flagged actor.
+  'spotlight', // V0.3.4.83 — the move of spotlighted objects; back-filled BESIDE
+              // `obj` (see below), where it changes nothing until something is
+              // spotlighted and the chip is dragged elsewhere.
 ];
 export function _migrateAnimationPresets(items) {
   // Bootstrap: new project (or loaded project with empty presets array)
@@ -88,6 +91,17 @@ export function _migrateAnimationPresets(items) {
 
     if (missing.length === 0) return p;
 
+    // 🔦 `spotlight` joins the phase that holds `obj`: there it is exactly what the
+    // engine did before the channel existed (spotlighted moves ride obj), so an old
+    // project's choreography — and its render cache — are untouched. Into the
+    // first phase only when the string has no obj at all.
+    if (missing.includes('spotlight') && /\bobj\b/.test(str)) {
+      const before = str;
+      str = str.replace(/(^|,\s*)([a-zA-Z+]*\bobj\b[a-zA-Z+]*)\(/, (m, pre, types) => `${pre}${types}+spotlight(`);
+      if (str !== before) missing.splice(missing.indexOf('spotlight'), 1);
+      if (missing.length === 0) return { ...p, animation: str };
+    }
+
     // Inject the missing channels into the FIRST phase. Find the first
     // type-group in the string (everything up to the first `(durMs)`)
     // and append the missing tokens to it. The duration is preserved.
@@ -102,7 +116,7 @@ export function _migrateAnimationPresets(items) {
       // No parseable phase — fall back to wholesale replacement with the
       // canonical default. Caller's data was broken; this restores it.
       // (Rare: would only hit if someone hand-edited the file to garbage.)
-      str = 'camera+visibility+obj+color+overlays+cable+narration+notes+shape(AL1)';
+      str = 'camera+visibility+obj+color+overlays+cable+narration+notes+shape+insert+spotlight(AL1)';
     }
     return { ...p, animation: str };
   });
@@ -373,6 +387,7 @@ export function serialize(targetPath = null) {
   // V0.2.22.58 — per-project hardware insertion-animation default
   // (null = none → fall back to the system "Nuts" defaults on load).
   cfg.hardwareDefaults     = state.get('hardwareDefaults')      ?? null;
+  cfg.spotlightDefaults    = state.get('spotlightDefaults')     ?? null;   // 🔦 V0.3.4.83
 
   return project;
 }
@@ -1039,7 +1054,7 @@ export const PROJECT_STATE_KEYS = [
   'backgroundColor', 'backgroundGradient',
   'render', 'solidOverride', 'gridVisible',
   'cameraAnimDurationMs', 'objectAnimDurationMs', 'cameraFillLight', 'geometryOutline',
-  'export', 'audioCacheFolder', 'hardwareDefaults',
+  'export', 'audioCacheFolder', 'hardwareDefaults', 'spotlightDefaults',
   'sourceLang', 'activeLang', 'narrationVoices', 'replaceRules',
   'steps', 'chapters', 'cameraViews', 'colorPresets',
   'noteTemplates', 'notePresets', 'selectionGroups', 'selectionOutlineColor',
@@ -1145,6 +1160,7 @@ export function applyProjectToState(project) {
     // V0.2.22.58 — per-project hardware-animation default (missing on
     // legacy files → null → system defaults apply).
     hardwareDefaults:     s.hardwareDefaults ?? null,
+    spotlightDefaults:    s.spotlightDefaults ?? null,   // 🔦 missing on older files → the built-in place
   });
 
   // ── Content arrays ────────────────────────────────────────────────────────

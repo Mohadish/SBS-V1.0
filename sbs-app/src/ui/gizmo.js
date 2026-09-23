@@ -41,6 +41,7 @@ import {
 } from '../core/transforms.js';
 import { setNodeWorldPoseRaw } from '../systems/hardware-actions.js';
 import * as spotlight from '../systems/spotlight.js';   // 🔦 V0.3.4.82 — the dolly handle of a spotlighted object
+import { showContextMenu } from './context-menu.js';   // 🔦 V0.3.4.83 — the block's own right-click menu
 import { findParent } from '../core/nodes.js';
 import { parseExpression } from './gizmo-numeric.js';
 
@@ -468,14 +469,19 @@ class GizmoController {
     // frame (placed every tick), so it is always reachable.
     {
       const dg = new T.Group();
-      const dvGeo = new T.PlaneGeometry(0.26, 0.15);
-      const dvMat = new T.MeshBasicMaterial({ color: 0xffffff, side: T.DoubleSide, depthTest: false });
+      // The user's first sight of it: "the grey rectangle… not very obvious". The dark rim was
+      // drawn OVER the white face: with depthTest off, draw order decides, and a transparent
+      // material is drawn after an opaque one. Both transparent now, and renderOrder settles it.
+      const dvGeo = new T.PlaneGeometry(0.32, 0.19);
+      const dvMat = new T.MeshBasicMaterial({ color: 0xffffff, side: T.DoubleSide, depthTest: false, transparent: true, opacity: 1 });
       const dv = new T.Mesh(dvGeo, dvMat);
-      const rimGeo = new T.PlaneGeometry(0.30, 0.19);
-      const rimMat = new T.MeshBasicMaterial({ color: 0x0f172a, side: T.DoubleSide, depthTest: false, transparent: true, opacity: 0.55 });
+      dv.renderOrder = 2;
+      const rimGeo = new T.PlaneGeometry(0.38, 0.25);
+      const rimMat = new T.MeshBasicMaterial({ color: 0x0f172a, side: T.DoubleSide, depthTest: false, transparent: true, opacity: 0.7 });
       const rim = new T.Mesh(rimGeo, rimMat);
+      rim.renderOrder = 1;
       rim.position.z = -0.001;
-      const dhGeo = new T.PlaneGeometry(0.34, 0.23);
+      const dhGeo = new T.PlaneGeometry(0.42, 0.29);
       const dhMat = new T.MeshBasicMaterial({ visible: false, side: T.DoubleSide, depthTest: false });
       const dh = new T.Mesh(dhGeo, dhMat);
       dg.add(rim, dv, dh);
@@ -1113,6 +1119,18 @@ class GizmoController {
     if (this._panel) return false;
     const el = this._raycastElements(clientX, clientY);
     if (!el) return false;
+    // 🔦 the dolly block has its own menu — what a spotlight can do (V0.3.4.83)
+    if (el.type === 'dolly' && this._node) {
+      const id = this._node.id;
+      showContextMenu([
+        { label: '🔦 Reset the spotlight place',            action: () => spotlight.resetSpotlight(id) },
+        { label: '🔦 Re-read the place from where it is now', action: () => spotlight.recaptureSpotlight(id) },
+        { label: '🔦 Make this place the project default',   action: () => spotlight.setSpotlightDefaultFrom(id) },
+        { label: '─', disabled: true },
+        { label: '🔦 Stop the spotlight at this step',       action: () => spotlight.setSpotlight(id, false) },
+      ], clientX, clientY);
+      return true;
+    }
     this._showTransformPanel(clientX, clientY);
     return true;
   }

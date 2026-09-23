@@ -61,6 +61,7 @@ const CHANNEL_META = {
   notes:     { icon: '📝', label: 'notes'     },
   shape:     { icon: '⬜', label: 'shape'     },
   insert:    { icon: '🔩', label: 'insert'    },   // V0.2.22.51 — hardware explode→assemble
+  spotlight: { icon: '🔦', label: 'spotlight' },   // V0.3.4.83 — the move of spotlighted objects, in its own slot
 };
 const CHANNEL_ORDER = Object.keys(CHANNEL_META);
 

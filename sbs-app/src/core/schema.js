@@ -27,10 +27,10 @@ export const SCHEMA_VERSIONS = {
   screen:     1,
 };
 
-export const APP_VERSION  = 'V0.3.4.82';
+export const APP_VERSION  = 'V0.3.4.83';
 // Format: YYYY-MM-DD. Bump along with APP_VERSION on every build worth
 // labelling so the File tab shows you're running the expected slice.
-export const APP_RELEASED = '2026-09-22';
+export const APP_RELEASED = '2026-09-23';
 
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -1024,7 +1024,7 @@ export function createCameraView(overrides = {}) {
 //   - `pause` is NOT in the default — it's added by the user via
 //     "+ Pause" when they want a dwell between phases.
 export const DEFAULT_ANIMATION_PRESET_STRING =
-  'camera+visibility+obj+color+overlays+cable+narration+notes+shape+insert(AL1)';
+  'camera+visibility+obj+color+overlays+cable+narration+notes+shape+insert+spotlight(AL1)';
 
 export function createAnimationPreset(overrides = {}) {
   return {

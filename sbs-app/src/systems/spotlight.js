@@ -44,8 +44,10 @@ import { frameHeight, distForFrame } from '../core/perspective.js';
 import { isTransformNode, ensureTransformDefaults, setStoredQuaternion, captureTransformSnapshot, applyTransformSnapshot, applyNodeTransformToObject3D } from '../core/transforms.js';
 import { setStatus } from '../ui/status.js';
 
-/** The global starting place: the middle of the left third of the frame, a third of its height tall. */
+/** The built-in starting place: the middle of the left third of the frame, a third of its height tall. */
 export const SPOTLIGHT_DEFAULTS = Object.freeze({ u: -1 / 3, v: 0, s: 1 / 3 });
+/** …unless the project set its own (state.spotlightDefaults, saved in the .sbsproj; null = the built-in). */
+const _defaults = () => { const d = state.get('spotlightDefaults'); return (d && Number.isFinite(d.u) && Number.isFinite(d.v) && Number.isFinite(d.s)) ? { u: d.u, v: d.v, s: d.s } : { ...SPOTLIGHT_DEFAULTS }; };
 const MIN_S = 0.02, MAX_S = 4, MIN_R = 1e-4;
 
 const _T = () => window.THREE;
@@ -284,7 +286,8 @@ export function spotlightRefusal(node) {
     ? 'A raw part has no transform of its own — put it in a folder (or "Make transformable") and spotlight that.'
     : 'Only folders, parts with a transform, hardware, primitives and shapes can be spotlighted.';
   if (node.archived) return 'An archived object is read-only.';
-  if (node.follow) return 'This object follows another one — stop following first.';
+  // A FOLLOWING object is fine: on this step its pose is the picture's, on every other step
+  // it rides its target as before. follow.js keeps each step's own descriptor when it re-bakes.
   if (!_liveObj(node.id)) return 'This object is not in the scene right now.';
   return null;
 }
@@ -305,7 +308,7 @@ export function setSpotlight(nodeId, on) {
     const T = _T();
     const wq = new T.Quaternion(); obj.getWorldQuaternion(wq);
     const q0 = _arr(fr.q.clone().invert().multiply(wq).normalize());       // the face it shows now, kept
-    node.spotlight = { ...SPOTLIGHT_DEFAULTS, q: q0, q0, cl, r, custom: false };
+    node.spotlight = { ..._defaults(), q: q0, q0, cl, r, custom: false };
     _bakeOne(node, obj, fr);
   } else {
     node.spotlight = null;                 // it stays where the spotlight left it — the user chooses where it goes next
@@ -323,9 +326,31 @@ export function resetSpotlight(nodeId) {
   if (!node?.spotlight || !obj) return false;
   const before = captureTransformSnapshot(node);
   const { cl, r } = _measure(obj);
-  node.spotlight = { ...node.spotlight, ...SPOTLIGHT_DEFAULTS, q: [...node.spotlight.q0], cl, r, custom: false };
+  node.spotlight = { ...node.spotlight, ..._defaults(), q: [...node.spotlight.q0], cl, r, custom: false };
   _bakeOne(node, obj, _frameOf(null));
   return _commit('Reset the spotlight', nodeId, before);
+}
+
+/** This object's place becomes the project's default for every spotlight switched on from now (one undo entry). */
+export function setSpotlightDefaultFrom(nodeId) {
+  const node = _liveNode(nodeId);
+  if (!node?.spotlight) return false;
+  const before = state.get('spotlightDefaults') ?? null;
+  const after = { u: node.spotlight.u, v: node.spotlight.v, s: node.spotlight.s };
+  const write = (d) => { state.setState({ spotlightDefaults: d }); state.markDirty?.(); };
+  write(after);
+  undoManager.push('Default spotlight place', () => write(before), () => write(after));
+  setStatus('🔦 This place is the default now — every spotlight switched on in this project starts here. Objects already spotlighted are not moved; Reset puts one on the new default.', 'success', 7000);
+  return true;
+}
+
+/** Re-read the place from wherever the object is now (after a numeric-panel edit or any move the gizmo did not see). One undo entry. */
+export function recaptureSpotlight(nodeId) {
+  const node = _liveNode(nodeId);
+  if (!node?.spotlight) return false;
+  const before = captureTransformSnapshot(node);
+  if (!recaptureFromPose(node)) return false;
+  return _commit('Spotlight place', nodeId, before);
 }
 
 /** The dolly drag's one undo entry (the gizmo took `before` at pointerdown). */
@@ -346,5 +371,5 @@ export function initSpotlight() {
   const kick = () => { if (_pending) return; _pending = requestAnimationFrame(() => { _pending = 0; try { followCamera(); } catch (e) { console.warn('[spotlight] follow failed:', e?.message || e); } }); };
   sceneCore.on('controls:change', kick);
   sceneCore.on('camera:perspective', kick);
-  if (typeof window !== 'undefined') window.sbsSpotlight = { nodes: spotlightedNodes, follow: followCamera, set: setSpotlight, reset: resetSpotlight };
+  if (typeof window !== 'undefined') window.sbsSpotlight = { nodes: spotlightedNodes, follow: followCamera, set: setSpotlight, reset: resetSpotlight, setDefault: setSpotlightDefaultFrom, recapture: recaptureSpotlight };
 }

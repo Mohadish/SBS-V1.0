@@ -200,6 +200,9 @@ function createInitialState() {
     // override → fall through to the system "Nuts" defaults. Same shape
     // as user-settings.nuts.
     hardwareDefaults: null,
+    // 🔦 V0.3.4.83 — the project's default spotlight place { u, v, s } (right-click the dolly
+    // block ▸ make this the default); null = the built-in left third. Saved under settings.
+    spotlightDefaults: null,
 
     // ── Shape-tab groupings (V0.1.85). Tab-only — does NOT affect tree
     // hierarchy. Each entry: { id, name, locked, collapsed, templateIds[] }.

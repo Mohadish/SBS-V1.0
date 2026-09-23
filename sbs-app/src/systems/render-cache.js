@@ -157,6 +157,20 @@ function _stepKeyView(s, keep, animStr) {
     if (sn.tree)       sn.tree       = _pruneTree(sn.tree, keep);
     c.snapshot = sn;
   }
+  // 🔦 V0.3.4.83 — the `spotlight` channel was back-filled into every preset beside
+  // `obj`. Sharing a phase with other channels it moves nothing that obj would not
+  // have moved in the same slot — unless this step spotlights something, and then its
+  // descriptor (inside the kept transforms above) is in the key already. So the token
+  // is dropped from the resolved string for a step with no spotlight, and a project
+  // that never used the feature keeps every segment it rendered before. A phase that
+  // is ONLY `spotlight(N)` is a dwell of N ms and stays.
+  if (typeof c._animResolved === 'string' && /\bspotlight\b/.test(c._animResolved)) {
+    const lit = Object.values(c.snapshot?.transforms || {}).some(t => t && t.spotlight);
+    if (!lit) c._animResolved = c._animResolved.replace(/([a-zA-Z]+(?:\+[a-zA-Z]+)*)\(/g, (m, types) => {
+      const parts = types.split('+');
+      return (parts.length > 1 && parts.includes('spotlight')) ? parts.filter(p => p !== 'spotlight').join('+') + '(' : m;
+    });
+  }
   return _canon(c);
 }
 

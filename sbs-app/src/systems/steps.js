@@ -738,6 +738,9 @@ class StepManager {
     // ── Capture FROM world positions (before any hierarchy or transform change) ─
     this._warmMatrices();
     const fromWorldTransforms = captureWorldTransforms(state.get('treeData'), this.object3dById);
+    // 🔦 the objects LEAVING a spotlight this step — read off the live nodes, which still carry the previous step's flag
+    const _leavingSpot = new Set();
+    for (const [id, n] of nodeById || []) if (n?.spotlight) _leavingSpot.add(id);
 
     // ── Reparent-arc straighten (threshold detector) ─────────────────────────
     // Find objects whose TREE PARENT changes this transition (live FROM tree vs
@@ -912,6 +915,22 @@ class StepManager {
       changedNodeIds = changedNodeIds.filter(id => !_stagedActorIds.has(id));
     }
 
+    // 🔦 `spotlight` channel (V0.3.4.83): with a slot of its own in the string, the objects
+    // coming into or leaving a spotlight — and everything inside them, which moves with
+    // them — travel in that slot, not in `obj`. Without the slot nothing changes here.
+    const hasSpotPhase = !!phases && phases.some(p => p.types.includes('spotlight'));
+    let spotChangedIds = [];
+    if (hasSpotPhase) {
+      const roots = new Set(_leavingSpot);
+      for (const id of Object.keys(toSnapshot.transforms || {})) if (toSnapshot.transforms[id]?.spotlight) roots.add(id);
+      const spotIds = new Set();
+      const nb = state.get('nodeById');
+      const walk = (n) => { if (!n) return; spotIds.add(n.id); (n.children || []).forEach(walk); };
+      for (const id of roots) { const n = nb?.get(id); if (n) walk(n); else spotIds.add(id); }
+      spotChangedIds = changedNodeIds.filter(id => spotIds.has(id));
+      changedNodeIds = changedNodeIds.filter(id => !spotIds.has(id));
+    }
+
     // All showing items (meshes + shapes) pre-snap to opacity=0 so the
     // fade-in actually starts from invisible. Without this, anything
     // appearing this step would flash at full alpha for a frame.
@@ -974,6 +993,7 @@ class StepManager {
         hidingMeshIds, showingMeshIds,
         hidingShapeIds, showingShapeIds,
         stagedActorIds: _stagedActorIds,
+        spotChangedIds,
         easing, easeFn, myGen,
       });
     } else {
@@ -1411,11 +1431,13 @@ class StepManager {
       hidingMeshIds, showingMeshIds,
       hidingShapeIds = [], showingShapeIds = [],
       stagedActorIds = new Set(),
+      spotChangedIds = [],
       easing, easeFn, myGen,
     } = opts;
 
     let cameraHandled    = false;
     let objHandled       = false;
+    let spotHandled      = false;   // 🔦
     let colorHandled     = false;
     let visHandled       = false;
     let cableHandled     = false;
@@ -1459,7 +1481,7 @@ class StepManager {
         // channel. `tree` is always held: applySnapshotAnimated already
         // rebuilt the target hierarchy before the phases started.
         const hold = new Set(['tree']);
-        if (_afterFade.has('obj') || _afterFade.has('insert'))  hold.add('transforms');
+        if (_afterFade.has('obj') || _afterFade.has('insert') || _afterFade.has('spotlight'))  hold.add('transforms');   // 🔦 a spotlight slot below the block holds the poses too
         if (_afterFade.has('visibility') || _afterFade.has('shape')) hold.add('visibility');
         if (_afterFade.has('color')) hold.add('materials');
         if (_afterFade.has('notes')) hold.add('notePanelOffsets');
@@ -1475,6 +1497,7 @@ class StepManager {
         if (!_afterFade.has('shape'))       shapeHandled  = true;
         if (!_afterFade.has('notes'))       notesHandled  = true;
         if (!_afterFade.has('insert'))      insertHandled = true;
+        if (!_afterFade.has('spotlight'))   spotHandled   = true;   // 🔦 snapped with the rest
         if (!_afterFade.has('camera') && toSnapshot.camera) cameraHandled = true;
 
         phasePromises.push(this._beginFadeTransition(toSnapshot, rawDurationMs, {
@@ -1642,6 +1665,44 @@ class StepManager {
         // Sort parents before children so world→local conversion uses correct parent matrices
         this._objectTransitions.sort((a, b) => a.depth - b.depth);
         if (this._objectTransitions.length) {
+          phasePromises.push(new Promise(resolve => {
+            this._onObjectTransitionsDone = resolve;
+          }));
+        }
+      }
+
+      // 🔦 `spotlight` — the MOVE of the spotlighted objects, in its own slot (V0.3.4.83).
+      // The same world-lerp records the obj handler builds, with THIS slot's duration and
+      // easing. When `obj` fired in this very phase its records are still in flight: these
+      // are appended and finish under its done-promise; otherwise this slot owns one.
+      if (types.includes('spotlight') && !spotHandled && spotChangedIds.length) {
+        spotHandled = true;
+        const startMs = clock.now();
+        const shared = this._objectTransitions.length > 0 && !!this._onObjectTransitionsDone;
+        if (!shared) this._objectTransitions = [];
+        for (const nodeId of spotChangedIds) {
+          const worldFrom = fromWorldTransforms[nodeId];
+          const worldTo   = toWorldTransforms[nodeId];
+          if (!worldFrom || !worldTo) continue;
+          const _straight = this._shouldReparentStraight(_arc, _structChanged, _fromCenters, nodeId);
+          const _wf = _straight ? worldTo : worldFrom;
+          const inheritExtras = _straight ? {} : _buildInheritExtras(
+            nodeId, worldFrom, worldTo,
+            parentMap, changedSet, fromWorldTransforms, toWorldTransforms,
+          );
+          const pivotExtras = _straight ? {} : (inheritExtras.inheritParentId
+            ? _buildLocalPivotExtras(worldFrom, worldTo, inheritExtras.localFrom, inheritExtras.localTo)
+            : _buildPivotExtras(worldFrom, worldTo));
+          this._objectTransitions.push({
+            nodeId, worldFrom: _wf, worldTo, startMs,
+            durationMs, easeFn, isWorld: true,
+            depth: depthMap[nodeId] ?? 0,
+            ...inheritExtras,
+            ...pivotExtras,
+          });
+        }
+        this._objectTransitions.sort((a, b) => a.depth - b.depth);
+        if (!shared && this._objectTransitions.length) {
           phasePromises.push(new Promise(resolve => {
             this._onObjectTransitionsDone = resolve;
           }));

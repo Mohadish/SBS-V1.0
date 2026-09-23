@@ -143,7 +143,10 @@ export function applyFollow(followerId, targetId, opts = {}) {
         ...snap,
         tree:       newTree,
         visibility: { ...(snap.visibility || {}), [A.id]: visFlag },
-        transforms: { ...(snap.transforms || {}), [A.id]: xfSnap },
+        // 🔦 one fixed pose for every step — except a step where A is spotlighted, which keeps its
+        // own descriptor: the pose there is derived from that step's camera at activation, under
+        // whatever parent A has by then (V0.3.4.83)
+        transforms: { ...(snap.transforms || {}), [A.id]: { ...xfSnap, spotlight: snap.transforms?.[A.id]?.spotlight ?? null } },
       },
     };
   });
@@ -242,7 +245,7 @@ export function unfollowToRoot(followerId, scope = 'all') {
       ...step,
       snapshot: { ...snap, tree: newTree,
         visibility: { ...(snap.visibility || {}), [A.id]: visFlag },
-        transforms: { ...(snap.transforms || {}), [A.id]: xfSnap } },
+        transforms: { ...(snap.transforms || {}), [A.id]: { ...xfSnap, spotlight: snap.transforms?.[A.id]?.spotlight ?? null } } },   // 🔦 each step keeps its own
     };
   });
   state.setState({ steps: updated });

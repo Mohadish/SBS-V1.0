@@ -13,7 +13,7 @@
  *     Variables are resolved fresh on every step transition, so changing
  *     the global slider live-updates every preset that uses the token.
  *   - types: camera | color | obj | visibility | overlay | overlays |
- *            shape | cable | narration | notes | pause
+ *            shape | cable | narration | notes | pause | insert | spotlight
  *   - types in same phase run simultaneously
  *   - phases run sequentially
  *
@@ -25,7 +25,7 @@
  */
 
 export const DEFAULT_ANIMATION_STR =
-  'camera(AL1), overlay(500), visibility(500), color(500), cable(500), obj(AL2), shape(500), notes(500), narration(0)';
+  'camera(AL1), overlay(500), visibility(500), color(500), cable(500), obj+spotlight(AL2), shape(500), notes(500), narration(0)';
 
 // `overlays` (lowercased from 'overlayS') = sustained-overlap variant of
 // `overlay`. Two-phase fade keeps shared items at 100% visible alpha
@@ -73,10 +73,15 @@ export const DEFAULT_ANIMATION_STR =
 // channel moved to a block BELOW is held at its previous state through the
 // snap and animates afterwards. "Camera and objects arrive, then the overlay
 // appears" is `fade+camera+obj+…(AL1), overlays(AL1)`.
+// `spotlight` channel (V0.3.4.83) = the MOVE slot of spotlighted objects: the ones
+// coming INTO the picture on this step (or a folder's children with it) and the
+// ones leaving it. With a `spotlight(N)` slot they travel in that slot, over N ms,
+// and are left out of `obj`; without one they ride `obj` like any other move.
+// Inert dwell when nothing is spotlighted either side of the step.
 const VALID_TYPES = new Set([
   'camera', 'color', 'obj', 'visibility', 'cable',
   'overlay', 'overlays', 'shape',
-  'narration', 'notes', 'pause', 'insert', 'fade',
+  'narration', 'notes', 'pause', 'insert', 'fade', 'spotlight',
 ]);
 
 // The channels the instant block holds when the easing creates it. Everything
@@ -85,7 +90,7 @@ const VALID_TYPES = new Set([
 export const INSTANT_BLOCK_CHANNELS = [
   'camera', 'obj', 'color', 'visibility', 'cable',
   'shape', 'notes', 'insert', 'overlays', 'narration',
-];
+];   // (`spotlight` is not listed: without its own slot the spotlighted moves are part of `obj`)
 
 /** Build the instant block's token, holding `channels`, `durRaw` long. */
 export function makeInstantBlock(channels, durRaw) {
