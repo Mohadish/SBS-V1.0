@@ -151,6 +151,35 @@ export function stepsWithVisibleShapeTemplates(steps, templateIds, visibleOf) {
   return out;
 }
 
+/** 🔩 Steps showing a hardware instance built from one of the templates (V0.3.4.95). */
+export function stepsWithVisibleHardwareTemplates(steps, templateIds, visibleOf) {
+  const out = [];
+  for (const s of (steps || [])) {
+    const vis = visibleOf(s);
+    let hit = false;
+    (function walk(n) {
+      if (hit || !n) return;
+      if (n.type === 'hardwareInstance' && n.templateId && templateIds.has(n.templateId) && vis.has(n.id)) { hit = true; return; }
+      for (const c of (n.children || [])) walk(c);
+    })(s.snapshot?.tree);
+    if (hit) out.push(s.id);
+  }
+  return out;
+}
+
+/**
+ * 📝 Steps in which a note linked to one of the templates can show: the note is
+ * not hidden and its anchor part is visible there (V0.3.4.95). Notes are live
+ * tree nodes, never in a snapshot — `notes` is their projection
+ * [{ id, templateId, anchorMeshId, localVisible }].
+ */
+export function stepsWithNoteTemplates(steps, templateIds, notes, visibleOf) {
+  const anchors = new Set();
+  for (const n of (notes || [])) if (n && n.templateId && templateIds.has(n.templateId) && n.localVisible !== false && n.anchorMeshId) anchors.add(n.anchorMeshId);
+  if (!anchors.size) return [];
+  return stepsWithVisibleNodes(steps, anchors, visibleOf);
+}
+
 /** Steps that carry (and show) one of the cables. */
 export function stepsWithCables(steps, cableIds) {
   const out = [];

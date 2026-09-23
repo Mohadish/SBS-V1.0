@@ -7881,6 +7881,11 @@ export function setModelSourceTransform(nodeId, sourceLocalPosition, sourceLocal
   };
 
   apply(after);
+  // ★ V0.3.4.95 — the transform sits under the whole model and no step record
+  // changes: star every step that shows any part of it (the cache keys on it too).
+  const _under = [];
+  (function walk(n) { if (!n) return; _under.push(n.id); for (const c of (n.children || [])) walk(c); })(node);
+  starStepsWhereNodesVisible(_under, 'model source transform');
 
   undoManager.push(
     `Model source transform "${node.name || 'model'}"`,
@@ -8860,6 +8865,7 @@ export function editNoteText(noteId, newText) {
   note.text = after;
   state.emit('change:treeData', state.get('treeData'));
   state.markDirty();
+  if (note.anchorMeshId) starStepsWhereNodesVisible([note.anchorMeshId], 'note text');   // ★ V0.3.4.95 — a note is drawn, never snapshotted
   undoManager.push(
     'Edit note text',
     () => {
@@ -8882,6 +8888,7 @@ export function setNoteSizePreset(noteId, presetId) {
   note.customFontSize = null;
   state.emit('change:treeData', state.get('treeData'));
   state.markDirty();
+  if (note.anchorMeshId) starStepsWhereNodesVisible([note.anchorMeshId], 'note size');   // ★ V0.3.4.95
   undoManager.push(
     'Note size preset',
     () => {
@@ -8910,6 +8917,7 @@ export function setNoteCustomFontSize(noteId, px) {
   note.customFontSize = size;
   state.emit('change:treeData', state.get('treeData'));
   state.markDirty();
+  if (note.anchorMeshId) starStepsWhereNodesVisible([note.anchorMeshId], 'note size');   // ★ V0.3.4.95
   undoManager.push(
     'Note custom size',
     () => {

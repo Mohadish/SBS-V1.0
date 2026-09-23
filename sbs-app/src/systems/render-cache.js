@@ -34,6 +34,7 @@ import { steps } from './steps.js';
 import { resolveAnimationString } from './animation.js';   // V0.3.2.73 — preset content must reach the segment key
 import { materials } from './materials.js';                 // 🎨 V0.3.2.257 — default colours, to scope presets per span
 import * as frameVis from './frame-visibility.js';          // 🎞 V0.3.2.259 — signed in-frame records narrow the visible set
+import { pickCameraView } from '../core/schema.js';         // 📷 V0.3.4.95 — a template-bound step keys on the template's VIEW
 
 /** Bump when renderer/exporter changes make previously-cached pixels stale. */
 export const RENDER_CACHE_EPOCH = 5;   // 2: canonical hashing (V0.3.2.22); 3: scoped defs (.32); 4: pruned object roster (.33); 5: overlay defs — shape AND text — reach the span key (.156/.158)
@@ -77,7 +78,7 @@ function _pruneTree(n, keep) {
 
 /** Step as it matters to pixels: strip volatile / non-rendered fields, and
  *  (V0.3.2.33) prune the PROJECT-WIDE OBJECT ROSTER down to `keep`. */
-function _stepKeyView(s, keep, animStr) {
+function _stepKeyView(s, keep, animStr, camTpl) {
   const c = { ...s };
   // 🎬 V0.3.2.73 — the RESOLVED animation string. A step stores only
   // `transition.animPresetId`; the choreography itself lives in the preset.
@@ -88,6 +89,13 @@ function _stepKeyView(s, keep, animStr) {
   // dependency explicit, and keeps it SCOPED: only spans whose steps
   // actually resolve to a changed string re-render.
   if (animStr !== undefined) c._animResolved = String(animStr || '');
+  // 📷 V0.3.4.95 — a step bound to a camera TEMPLATE renders the template's
+  // view, not the snapshot's; the key carried only the binding's id, so editing
+  // the template left every bound span a cache HIT (the stars knew — see
+  // altered-stars — but an incremental export did not). The resolved view
+  // rides here, and only when it differs from the snapshot's, so spans whose
+  // snapshot already agrees with the template keep the key they have.
+  if (camTpl) c._camTpl = camTpl;
   // 🎬 V0.3.2.246 — SCOPED salts, not a global EPOCH bump (which would
   // re-render every project). Two classes of segment changed TIMING this
   // week without any keyed field moving, so the cache still reported HITs:
@@ -253,16 +261,53 @@ export async function computeSegmentPlan() {
   // keep conservative than risk a stale colour.)
   const primById       = new Map();   // primitive node id → def
   const shapeTplOfNode = new Map();   // flatShape node id → templateId
-  (function walk(n) {
+  // 🔩📝📐 V0.3.4.95 — three more things that live OUTSIDE the step records and
+  // used to be invisible to the key ("trust holes"): a hardware instance's
+  // template (kind + params — the baked tree carries only the id), a note's
+  // content (notes are live-tree nodes, never in a baked tree; per-step
+  // positions ride the snapshot, the text / size / template do not), and a
+  // model's SOURCE transform (position / rotation / scale applied under the
+  // whole model — baked trees carry no transforms). Each is scoped per span by
+  // the nodes the span shows, like primitives.
+  const hwTplOfNode  = new Map();     // hardwareInstance node id → templateId
+  const notesByAnchor = new Map();    // anchor mesh id → [note projection]
+  const modelOfNode  = new Map();     // node id → nearest model ancestor id
+  const srcXfOfModel = new Map();     // model id → { id, p, q, s } (only models that carry one)
+  const _noteTplById = new Map((state.get('noteTemplates') || []).map(t => [t.id, t]));
+  const _noteProj = (n) => {
+    const tpl = n.templateId ? _noteTplById.get(n.templateId) : null;
+    return { id: n.id, a: n.anchorMeshId, tpl: n.templateId || null,
+      t: String((tpl ? tpl.text : n.text) ?? ''), s: (tpl ? tpl.sizePresetId : n.sizePresetId) ?? null, c: (tpl ? tpl.customFontSize : n.customFontSize) ?? null,
+      v: n.localVisible !== false, al: n.anchorLocal ?? null, ab: n.anchorBboxRelative ?? null, po: n.panelOffset ?? null, fp: n.framePosition ?? null };
+  };
+  const _isIdentityXf = (n) => {
+    const p = n.sourceLocalPosition || [0, 0, 0], q = n.sourceLocalQuaternion || [0, 0, 0, 1], s = n.sourceLocalScale || [1, 1, 1];
+    const e = 1e-9;
+    return Math.abs(p[0]) < e && Math.abs(p[1]) < e && Math.abs(p[2]) < e
+        && Math.abs(q[0]) < e && Math.abs(q[1]) < e && Math.abs(q[2]) < e && Math.abs(q[3] - 1) < e
+        && Math.abs(s[0] - 1) < e && Math.abs(s[1] - 1) < e && Math.abs(s[2] - 1) < e;
+  };
+  (function walk(n, modelId) {
     if (!n) return;
     if (n.type === 'primitive') primById.set(n.id, { id: n.id, k: n.primKind, p: n.primParams, q: n.primQuality, b: n.baseAtOrigin });
     else if (n.type === 'flatShape' && n.templateId) shapeTplOfNode.set(n.id, n.templateId);
-    (n.children || []).forEach(walk);
-  })(state.get('treeData'));
+    else if (n.type === 'hardwareInstance' && n.templateId) hwTplOfNode.set(n.id, n.templateId);
+    else if (n.type === 'note') { const a = n.anchorMeshId || '__loose__'; if (!notesByAnchor.has(a)) notesByAnchor.set(a, []); notesByAnchor.get(a).push(_noteProj(n)); }
+    if (n.type === 'model') {
+      modelId = n.id;
+      if (!_isIdentityXf(n)) srcXfOfModel.set(n.id, { id: n.id, p: n.sourceLocalPosition || [0, 0, 0], q: n.sourceLocalQuaternion || [0, 0, 0, 1], s: n.sourceLocalScale || [1, 1, 1] });
+    }
+    if (modelId) modelOfNode.set(n.id, modelId);
+    (n.children || []).forEach(c => walk(c, modelId));
+  })(state.get('treeData'), null);
   const _byId = (a, b) => String(a.id).localeCompare(String(b.id));
   const tplById   = new Map((state.get('shapeTemplates') || []).map(t => [t.id, t]));
   const allPrims  = [...primById.values()].sort(_byId);                 // conservative fallback (missing vis map)
   const allShapes = (state.get('shapeTemplates') || []).slice().sort(_byId);
+  const hwById      = new Map((state.get('hardwareTemplates') || []).map(t => [t.id, t]));
+  const allHardware = (state.get('hardwareTemplates') || []).slice().sort(_byId);
+  const allNotes    = [...notesByAnchor.values()].flat().sort(_byId);
+  const allSrcXf    = [...srcXfOfModel.values()].sort(_byId);
   // V0.3.2.150 — OVERLAY-side project definitions. These were absent, so a
   // cached segment could be re-used after the definition that draws its
   // overlay changed: edit a linked shape's size, export, and the cached
@@ -304,6 +349,7 @@ export async function computeSegmentPlan() {
   const _colors = (state.get('colorPresets') || []).slice().sort(_byId);
   const _defScope = {
     primById, shapeTplOfNode, tplById, allPrims, allShapes, byId: _byId,
+    hwTplOfNode, hwById, allHardware, notesByAnchor, allNotes, modelOfNode, srcXfOfModel, allSrcXf,   // 🔩📝📐 V0.3.4.95
     // V0.3.2.156 — overlay-side definitions belong on the SPAN key, not just
     // the drift report. See _scopedDefs.
     overlay: _overlayDefs,
@@ -356,6 +402,17 @@ export async function computeSegmentPlan() {
     // it (a span whose camera moves is never narrowed — see _spanVisible).
     _inFrame: (st) => { try { return frameVis.visibleInIfFresh(st); } catch { return null; } },
     _camOf:   (st) => { try { return steps._resolveStepCamera(st) ?? st?.snapshot?.camera ?? null; } catch { return st?.snapshot?.camera ?? null; } },
+    // 📷 V0.3.4.95 — the template's view for a bound step, when it is not what
+    // the snapshot holds (see _stepKeyView). undefined otherwise: the key is untouched.
+    _camTplOf: (st) => {
+      const b = st?.cameraBinding;
+      if (!b || b.mode !== 'template' || !b.templateId) return undefined;
+      try {
+        const tplView = pickCameraView(steps._resolveStepCamera(st));
+        const snapView = pickCameraView(st?.snapshot?.camera);
+        return JSON.stringify(_canon(tplView)) === JSON.stringify(_canon(snapView)) ? undefined : tplView;
+      } catch { return undefined; }
+    },
     narrowed: 0,
   };
   for (const span of spans) {
@@ -560,7 +617,13 @@ function _scopedDefs(V, plan, span) {
   // scoping does not depend on the visible 3D set, so it applies on the
   // conservative !V path too. Without a span (never, today) → the full roster.
   const overlay = span ? _scopedOverlayDefs(span, plan) : sc.overlay;
-  if (!V) return { prims: sc.allPrims, shapes: sc.allShapes, colors: sc.colors, cables: sc.cables, overlay };
+  // 🔩📝📐 V0.3.4.95 — spread ONLY when non-empty (the exportBoundaryBoxes /
+  // cropMasks pattern): a project with no hardware, no notes and no source
+  // transform keeps every key byte-identical — no mass re-render on upgrade.
+  const _extras = (hardware, notes, srcXf) => ({
+    ...(hardware?.length ? { hardware } : {}), ...(notes?.length ? { notes } : {}), ...(srcXf?.length ? { srcXf } : {}),
+  });
+  if (!V) return { prims: sc.allPrims, shapes: sc.allShapes, colors: sc.colors, cables: sc.cables, overlay, ..._extras(sc.allHardware, sc.allNotes, sc.allSrcXf) };
   const prims = [];
   for (const id of V) { const d = sc.primById.get(id); if (d) prims.push(d); }
   prims.sort(sc.byId);
@@ -570,7 +633,19 @@ function _scopedDefs(V, plan, span) {
   // 🎨 V0.3.2.257 — colours worn by the span's visible parts only (see _scopedColors);
   // no span → the full roster, as before.
   const colors = span ? _scopedColors(V, plan, span) : sc.colors;
-  return { prims, shapes, colors, cables: sc.cables, overlay };
+  // 🔩 the templates behind the span's visible hardware
+  const hwIds = new Set();
+  for (const id of V) { const t = sc.hwTplOfNode?.get(id); if (t) hwIds.add(t); }
+  const hardware = [...hwIds].map(t => sc.hwById.get(t) || { id: t, gone: true }).sort(sc.byId);
+  // 📝 the notes anchored on the span's visible parts (text / size / template resolved)
+  const notes = [];
+  for (const id of V) { const list = sc.notesByAnchor?.get(id); if (list) notes.push(...list); }
+  notes.sort(sc.byId);
+  // 📐 the source transform of every model the span shows a part of
+  const modelIds = new Set();
+  for (const id of V) { const m = sc.modelOfNode?.get(id); if (m && sc.srcXfOfModel?.has(m)) modelIds.add(m); }
+  const srcXf = [...modelIds].map(m => sc.srcXfOfModel.get(m)).sort(sc.byId);
+  return { prims, shapes, colors, cables: sc.cables, overlay, ..._extras(hardware, notes, srcXf) };
 }
 
 /** (Re)compute a span's key + part-hashes from the CURRENT live objects.
@@ -598,7 +673,7 @@ async function _keySpan(span, plan) {
  *  dramatically, so this is cheaper than the unpruned single-pass was. */
 function _spanPayload(span, plan) {
   const keep = span._keep;
-  const view = (st) => JSON.stringify(_stepKeyView(st, keep, plan._animOf?.(st)));
+  const view = (st) => JSON.stringify(_stepKeyView(st, keep, plan._animOf?.(st), plan._camTplOf?.(st)));
   const prevJson  = span._prevRef ? view(span._prevRef) : 'null';
   const stepsJson = '[' + span.steps.map(view).join(',') + ']';
   plan._settingsJson ||= JSON.stringify(_canon(plan.settingsKey));

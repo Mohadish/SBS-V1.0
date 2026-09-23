@@ -33,9 +33,14 @@
 // hand-edit writers (in-place, e.g. the C key) are "manual": this module
 // never removes those — only the stars it added itself.
 //
-// Deliberately NOT covered (no reliable signal in the data yet): hardware
-// templates / insert tags, note templates, model geometry (relink / source
-// transform). Those are the "trust" holes — see project memory.
+// V0.3.4.95 — three more definition-like things are covered: hardware
+// templates (steps showing an instance built from one), note templates (steps
+// where a linked note's anchor part is visible), and a model's source
+// transform + a note's own text / size (their writers call
+// starStepsWhereNodesVisible). The render cache keys on the same things now
+// (render-cache _scopedDefs), so an incremental export is correct even with
+// no star. Still NOT covered: hardware insert tags, geometry relink to a
+// changed file (stable mesh ids move with the geometry, so the key catches it).
 //
 // Console: window.sbsDiag.stars(stepId?) explains why a step is starred.
 
@@ -182,7 +187,20 @@ const DEF_LISTS = {
   // render cache keys on. Comparing the whole record starred every step that
   // showed the cable after every render (press project, "always starred").
   cables:         (c) => ({ id: c.id, style: c.style ?? null, flexible: c.flexible ?? null }),
+  hardwareTemplates: ['name'],   // 🔩 V0.3.4.95 — kind + params (+ washer names) draw the screw
+  noteTemplates:     ['name'],   // 📝 V0.3.4.95 — text + size of every linked note
 };
+
+/** 📝 The live notes, projected for the note-template rule (notes are tree nodes, never in a snapshot). */
+function _liveNotes() {
+  const out = [];
+  (function walk(n) {
+    if (!n) return;
+    if (n.type === 'note') out.push({ id: n.id, templateId: n.templateId || null, anchorMeshId: n.anchorMeshId || null, localVisible: n.localVisible !== false });
+    for (const c of (n.children || [])) walk(c);
+  })(state.get('treeData'));
+  return out;
+}
 const OVERLAY_DEF_KEYS = ['shapeStyles', 'constShapes', 'shapeLinks', 'styleTemplates', 'constTextBoxes', 'cropMasks'];
 
 function _rebaseSteps(list) {
@@ -287,6 +305,8 @@ function _initDefListeners() {
   for (const key of OVERLAY_DEF_KEYS) _watchDefs(key, (ids, all) => C.stepsReferencing(all, ids));
   _watchDefs('shapeTemplates', (ids, all) => C.stepsWithVisibleShapeTemplates(all, ids, _visibleOf));
   _watchDefs('cables',         (ids, all) => C.stepsWithCables(all, ids));
+  _watchDefs('hardwareTemplates', (ids, all) => C.stepsWithVisibleHardwareTemplates(all, ids, _visibleOf));   // 🔩 V0.3.4.95
+  _watchDefs('noteTemplates',     (ids, all) => C.stepsWithNoteTemplates(all, ids, _liveNotes(), _visibleOf));   // 📝 V0.3.4.95
 
   // Animation presets: a step stores only the preset id — compare what each
   // step RESOLVES to under the rendered presets and under the current ones.
