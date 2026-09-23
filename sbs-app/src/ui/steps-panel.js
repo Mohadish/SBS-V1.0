@@ -15,6 +15,7 @@ import { sceneCore } from '../core/scene.js';   // 🎬 video-step snapshot came
 import { cloneShareStrings } from '../core/clone.js';   // copy/paste steps without duplicating base64
 import { pickProjectFile, readProjectForImport, assetPathCandidates, applySpecFieldsToNodes, _migrateAnimationPresets, serializeSlice } from '../io/project.js';   // 📥 import steps from another project · 📋 the slice a step copy puts in the pool
 import * as clipPool from '../systems/clip-pool.js';   // 📋 V0.3.4.92 — copied steps reach another SBS window through the pool
+import { getCanonicalSize } from '../core/safe-frame.js';   // 🎬 V0.3.4.94 — an imported clip fills THIS project's export frame
 import { loadModelFile } from '../io/importers.js';       // 📥 Phase 2 — import the missing CAD too
 import { materials } from '../systems/materials.js';       // 📥 Phase 2 — colour defaults for imported meshes
 import { applyNodeSourceTransformToObject3D, isTransformNode, captureTransformSnapshot, applyAllVisibility } from '../core/transforms.js';   // 📥 Phase 2 — model source transform (×100 scale case) + reverse backfill + archived sweep
@@ -2266,11 +2267,13 @@ function _hiddenSceneSnapshot() {
 }
 
 /** Overlay JSON: one full-frame video node in the content layer (the exact
- *  attr set overlay.addVideo persists — see its whitelist). Canonical
- *  1920×1080 coords; videoRel = 'media/…' keeps the clip portable. */
+ *  attr set overlay.addVideo persists — see its whitelist). Canonical coords
+ *  of THIS project's export frame (V0.3.4.94 — a fixed 1920×1080 overflowed
+ *  a 1280×720 project's frame); videoRel = 'media/…' keeps the clip portable. */
 function _videoStepOverlayJson(absPath, relPath, seg) {
+  const c = getCanonicalSize();
   const attrs = {
-    x: 0, y: 0, width: 1920, height: 1080,
+    x: 0, y: 0, width: c.width, height: c.height,
     draggable: true, name: 'userVideo',
     isVideo:  true,
     videoId:  `vid_${generateId('imp')}`,
@@ -2282,7 +2285,7 @@ function _videoStepOverlayJson(absPath, relPath, seg) {
     videoDurationMs: Math.round(seg.segDurationMs),
   };
   return JSON.stringify({
-    attrs: { width: 1920, height: 1080 },
+    attrs: { width: c.width, height: c.height },
     className: 'Stage',
     children: [{
       attrs: { name: 'sbs-overlay-content' },
@@ -3064,13 +3067,22 @@ async function _doImportSteps(project, srcStepIds, srcName, targetStepId, assetP
             // Slow-ish encode (libvpx) but paid ONCE per imported segment.
             const rel = `media/imported-seg-${seg.key}.webm`;
             const abs = `${tgtDir}/${rel}`;
+            // 📁 V0.3.4.94 — ffmpeg does not create folders: in a project that had no
+            // media/ yet it died with "No such file or directory" (the solid path never
+            // did — fs:writeFile makes the folder). Touch the output first: the folder
+            // exists, ffmpeg's -y overwrites the empty file.
+            const touch = await window.sbsNative.writeFile(abs, '', 'utf-8');
+            if (!touch?.ok) throw new Error(touch?.error || 'could not create the media folder');
             const ff = await window.sbsNative.ffmpeg([
               '-y', '-i', seg.file, '-i', seg.alphaFile,
               '-filter_complex', '[1:v]format=gray[a];[0:v][a]alphamerge[v]',
               '-map', '[v]', '-c:v', 'libvpx-vp9', '-pix_fmt', 'yuva420p',
               '-b:v', '6M', '-an', abs,
             ]);
-            if (!ff?.ok) throw new Error(`alpha encode failed (ffmpeg ${ff?.code}): ${ff?.stderrTail?.slice(-200) || 'unknown'}`);
+            if (!ff?.ok) {
+              try { await window.sbsNative.deletePath?.(abs); } catch { /* the empty file is harmless */ }
+              throw new Error(`alpha encode failed (ffmpeg ${ff?.code}): ${ff?.stderrTail?.slice(-200) || 'unknown'}`);
+            }
             dest = { abs, rel };
           } else {
             const rd = await window.sbsNative.readFile(seg.file, 'buffer');
