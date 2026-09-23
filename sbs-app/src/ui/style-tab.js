@@ -34,7 +34,7 @@ import {
   renameStyleTemplate,
   flushStyleBatch,
 } from '../systems/style-templates.js';
-import { pickTextBoxStyle } from '../systems/overlay.js';   // 💉 V0.3.4.100 — copy a text box's look into a style
+import { pickTextBoxStyle } from '../systems/overlay.js';   // 💧 V0.3.4.100 — copy a text box's look into a style
 import {
   listShapeStyles,
   addShapeStyle,
@@ -177,7 +177,7 @@ function _renderTextBody(container) {
       return;
     }
     if (act === 'pick') {
-      // 💉 V0.3.4.100 — the next text box clicked on the canvas lends this style its look
+      // 💧 V0.3.4.100 — the next text box clicked on the canvas lends this style its look
       pickTextBoxStyle().then((st) => {
         if (!st) { setStatus('Style pick cancelled.', 'info', 2500); return; }
         updateStyleTemplate(id, st);
@@ -208,7 +208,7 @@ function _row(tpl) {
         <div class="small" style="font-weight:600;">${_esc(tpl.name || 'Untitled')}</div>
         <div class="small muted" style="font-size:11px;">${_esc(tpl.fontFamily || '')} · ${tpl.fontSize || 16}px · ${_esc(tpl.color || '#fff')}</div>
       </div>
-      <button class="btn icon" data-style-act="pick" title="Copy a text box's look into this style: click it, then click any text box on the canvas — font, size, colour, effects and backdrop (a mixed box: its first letter)" style="width:24px;height:24px;padding:0;">💉</button>
+      <button class="btn icon" data-style-act="pick" title="Copy a text box's look into this style: click it, then click any text box on the canvas — font, size, colour, effects and backdrop (a mixed box: its first letter)" style="width:24px;height:24px;padding:0;">💧</button>
       <button class="btn icon" data-style-act="rename" title="Rename" style="width:24px;height:24px;padding:0;">✎</button>
       <button class="btn icon" data-style-act="delete" title="Delete" style="width:24px;height:24px;padding:0;color:#f87171;">✕</button>
     </div>

@@ -424,7 +424,7 @@ function _rescaleOnCanonicalChange() {
   _syncSize();
 }
 
-// ─── 💉 Style eyedropper (V0.3.4.100) ─────────────────────────────────────
+// ─── 💧 Style eyedropper (V0.3.4.100) ─────────────────────────────────────
 // "Click any text box and copy its style — colour, font, size, effects, the
 // backdrop, everything — into a style definition." The Style tab asks; the
 // next press on a text box answers with the box's EFFECTIVE look (a bound box
@@ -516,7 +516,7 @@ export function pickTextBoxStyle() {
         const hit = pos ? _stage.getIntersection(pos) : null;
         if (hit && hit.getLayer?.() === _layer && typeof hit.getAttr === 'function' && hit.getAttr('textHtml') && !hit.getAttr('isTable')) node = hit;
       } catch { node = null; }
-      if (!node) { setStickyStatus('💉 That is not a text box — click a text box · Esc cancels', 'warn', 'stylepick'); return; }
+      if (!node) { setStickyStatus('💧 That is not a text box — click a text box · Esc cancels', 'warn', 'stylepick'); return; }
       let style = null;
       try { style = _styleOfTextNode(node); } catch (err) { console.warn('[overlay] style pick failed:', err?.message); }
       _endStylePick(style);
@@ -525,7 +525,7 @@ export function pickTextBoxStyle() {
     _stylePick = { resolve, prevPE, onDown, onKey };
     _container.addEventListener('pointerdown', onDown, true);
     window.addEventListener('keydown', onKey, true);
-    setStickyStatus('💉 Click a text box to copy its style · Esc cancels', 'info', 'stylepick');
+    setStickyStatus('💧 Click a text box to copy its style · Esc cancels', 'info', 'stylepick');
   });
 }
 

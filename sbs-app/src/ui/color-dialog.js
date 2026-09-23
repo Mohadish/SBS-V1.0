@@ -3,7 +3,7 @@
  * ────────────────────────────────────
  * The picker every colour swatch opens: the same layout as Chromium's own
  * popup — a saturation / brightness square, a hue strip, the preview, a
- * HEX / RGB / HSL switch with its fields — plus one difference: the 💉
+ * HEX / RGB / HSL switch with its fields — plus one difference: the 💧
  * eyedropper picks from ANYWHERE on screen (every display, the app's own
  * windows made transparent for the snapshot — main's color:pickScreen).
  * Chromium's own eyedropper cannot: under Electron it sees only this window.
@@ -86,27 +86,30 @@ export function openColorDialog(input) {
     <div style="display:flex;gap:10px;align-items:stretch;">
       <canvas data-sv width="236" height="170" style="width:236px;height:170px;border-radius:6px;cursor:crosshair;flex:none;"></canvas>
       <div style="display:flex;flex-direction:column;gap:8px;flex:1;">
-        <button type="button" data-drop title="Pick a colour from anywhere on screen — every display, other windows included (the same as Alt+click on the swatch). Esc cancels." style="height:44px;background:#0f172a;color:#e5e7eb;border:1px solid #475569;border-radius:6px;cursor:pointer;font-size:22px;">💉</button>
+        <button type="button" data-drop title="Eyedropper — pick a colour from anywhere on screen: every display, other windows included (the same as Alt+click on the swatch). Esc cancels." style="height:44px;background:#0f172a;color:#e5e7eb;border:1px solid #475569;border-radius:6px;cursor:pointer;font-size:22px;">💧</button>
         <div data-preview style="flex:1;border-radius:6px;border:1px solid #475569;background:${start};"></div>
       </div>
     </div>
     <canvas data-hue width="308" height="16" style="width:308px;height:16px;border-radius:8px;margin-top:10px;cursor:ew-resize;display:block;"></canvas>
-    <div style="display:flex;gap:8px;align-items:flex-end;margin-top:10px;">
-      <select data-mode title="How the colour is written" style="background:#0f172a;color:#e5e7eb;border:1px solid #475569;border-radius:6px;height:32px;padding:0 6px;font-size:13px;">
+    <div style="display:grid;grid-template-columns:76px minmax(0,1fr);gap:8px;align-items:end;margin-top:10px;">
+      <select data-mode title="How the colour is written" style="width:100%;background:#0f172a;color:#e5e7eb;border:1px solid #475569;border-radius:6px;height:32px;padding:0 6px;font-size:13px;box-sizing:border-box;">
         <option value="hex">HEX</option><option value="rgb">RGB</option><option value="hsl">HSL</option>
       </select>
-      <div data-fields style="display:flex;gap:6px;flex:1;"></div>
+      <div data-fields style="display:grid;grid-template-columns:1fr;gap:6px;min-width:0;"></div>
     </div>`;
   const sv = el.querySelector('[data-sv]'), hue = el.querySelector('[data-hue]'), preview = el.querySelector('[data-preview]');
   const modeSel = el.querySelector('[data-mode]'), fields = el.querySelector('[data-fields]'), drop = el.querySelector('[data-drop]');
   for (const b of [drop, modeSel]) b.addEventListener('mousedown', e => e.stopPropagation());
 
+  // V0.3.4.114 — the fields sit in a GRID (one column for hex, three for RGB /
+  // HSL), so every field gets its real share of the width: the .113 flex
+  // layout left the hex field a sliver.
   const field = (label, value, max, onChange, wide = false) => {
     const w = document.createElement('label');
-    w.style.cssText = `display:flex;flex-direction:column;gap:3px;font-size:11px;color:#94a3b8;${wide ? 'flex:1;' : 'width:64px;'}`;
+    w.style.cssText = 'display:flex;flex-direction:column;gap:3px;font-size:11px;color:#94a3b8;min-width:0;';
     const i = document.createElement('input');
     i.type = 'text'; i.value = value; i.spellcheck = false; i.inputMode = max ? 'numeric' : 'text';
-    i.style.cssText = 'background:#0f172a;color:#e5e7eb;border:1px solid #475569;border-radius:6px;height:32px;padding:0 8px;font:15px Consolas,monospace;letter-spacing:.5px;box-sizing:border-box;width:100%;';
+    i.style.cssText = `background:#0f172a;color:#e5e7eb;border:1px solid #475569;border-radius:6px;height:32px;padding:0 8px;font:${wide ? 16 : 15}px Consolas,monospace;letter-spacing:.5px;box-sizing:border-box;width:100%;min-width:0;display:block;`;
     i.addEventListener('mousedown', e => e.stopPropagation());
     i.addEventListener('keydown', (e) => { e.stopPropagation(); if (e.key === 'Enter') { e.preventDefault(); onChange(i.value, true); } if (e.key === 'Escape') { e.preventDefault(); closeColorDialog(true); } });
     i.addEventListener('input', () => onChange(i.value, false));
@@ -116,6 +119,7 @@ export function openColorDialog(input) {
   let inputs = [];
   const renderFields = () => {
     fields.innerHTML = ''; inputs = [];
+    fields.style.gridTemplateColumns = mode === 'hex' ? '1fr' : 'repeat(3, minmax(0, 1fr))';
     const [r, g, b] = hexToRgb(cur);
     if (mode === 'hex') {
       const f = field('hex', cur, 0, (val) => { const hx = hexOf(val); if (hx) setHex(hx, false); }, true);
