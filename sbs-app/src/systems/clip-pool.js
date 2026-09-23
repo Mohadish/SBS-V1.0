@@ -9,7 +9,8 @@
  * Every SBS paste reads the envelope back. Two windows, two runs of the app, or
  * one window: one path.
  *
- *   envelope = { sbs: 1, kind, at, origin: { brand: {id, name, revision} | null },
+ *   envelope = { sbs: 1, kind, at, origin: { brand: {id, name, revision} | null,
+ *                                            canonical: {width, height} },
  *                payload }
  *   kind     'overlay'      payload { items:[{spec, capturedAt}], defs, links }
  *            'tableCells'   payload { rows, cols, tsv, fmt, imgs }
@@ -35,20 +36,91 @@
  * What cannot be read (a clipboard the browser will not hand over) falls back to
  * this window's own last copy; what CAN be read and holds no envelope means the
  * user copied something else since — the last copy is then stale and is NOT used.
+ *
+ * THE FRAME (V0.3.4.91). Overlay geometry is in CANONICAL pixels — the project's
+ * export frame (safe-frame.js), not the screen. Two projects with different
+ * export sizes (1280×720 and 1920×1080) put "the same place" at different
+ * numbers, so the envelope carries the origin's frame and the paste FITS what it
+ * gets by the ratio of the two frames — the rule the brand uses for its pinned
+ * positions (brand-core mergeBrand) and the overlay uses when the export size is
+ * changed (_rescaleOnCanonicalChange): positions per axis, text boxes per axis,
+ * pictures / shapes / tables uniformly by the width ratio. A definition brought
+ * along that owns a position (constant title, pinned position) is fitted the
+ * same way. Text SIZES are definitions (a style's font size, a table's text
+ * size) and stay as they are, exactly as they do when a brand is applied.
  */
 
 import { state } from '../core/state.js';
 import { generateId } from '../core/schema.js';
+import { getCanonicalSize } from '../core/safe-frame.js';
 import { SECTIONS, OVERLAY_ATTR, defHash } from './brand-core.js';
 
 const TYPE = 'web application/x-sbs-clip';        // a custom web clipboard format (Chromium 104+)
 const MAX_JSON = 48 * 1024 * 1024;                 // beyond this the clipboard write is not attempted
+const ANCHOR_KIND = 'anchor3d';                    // anchored-shapes.js — a 3D-anchored arrow's points are derived per frame, never fitted
 let _mirror = null;                                // this window's last envelope — the fallback when the clipboard cannot be read
 
 const _origin = () => {
-  const b = state.get('brand');
-  return { brand: b?.id ? { id: b.id, name: b.name || '', revision: b.revision || 0 } : null };
+  const b = state.get('brand'), c = getCanonicalSize();
+  return {
+    brand: b?.id ? { id: b.id, name: b.name || '', revision: b.revision || 0 } : null,
+    canonical: { width: c.width, height: c.height },
+  };
 };
+
+/**
+ * How much the origin's frame must be scaled to fit THIS project's: sx = width ratio, sy = height
+ * ratio. An envelope without a frame (an older one) is taken as-is (1, 1).
+ * @returns {{ sx:number, sy:number, same:boolean, from:{width:number,height:number}|null, to:{width:number,height:number} }}
+ */
+export function canonicalScale(env) {
+  const from = env?.origin?.canonical, to = getCanonicalSize();
+  const sx = from?.width  > 0 ? to.width  / from.width  : 1;
+  const sy = from?.height > 0 ? to.height / from.height : 1;
+  const same = Math.abs(sx - 1) < 1e-6 && Math.abs(sy - 1) < 1e-6;
+  return { sx, sy, same, from: from?.width > 0 && from?.height > 0 ? { width: from.width, height: from.height } : null, to: { width: to.width, height: to.height } };
+}
+
+const _num = (v) => typeof v === 'number' && Number.isFinite(v);
+
+/**
+ * Fit copied overlay items ({spec, capturedAt}) from the origin's frame into this one — the
+ * overlay's own resolution-change rule, applied to serialised specs. Returns new objects; the
+ * input is not touched. sx = sy = 1 returns the input.
+ */
+export function scaleOverlayItems(items, { sx, sy }) {
+  if (!Array.isArray(items) || (Math.abs(sx - 1) < 1e-9 && Math.abs(sy - 1) < 1e-9)) return items;
+  return items.map(e => {
+    const spec = e?.spec;
+    if (!spec) return e;
+    const a = { ...(spec.attrs || {}) };
+    const cls = spec.className;
+    const isText = typeof a.textHtml === 'string' && !!a.textHtml;
+    if (_num(a.x)) a.x *= sx;
+    if (_num(a.y)) a.y *= sy;
+    if (a.kind === ANCHOR_KIND) {
+      // its geometry comes from the two world points every frame; only its origin is a canvas position
+    } else if (a.name === 'userShape') {
+      // shapes keep their proportions (uniform sx): one radius behind a circle / a polygon, points behind a line / an arrow
+      if (cls === 'Circle' || cls === 'RegularPolygon') { if (_num(a.radius)) a.radius *= sx; }
+      else if (cls === 'Line' || cls === 'Arrow')       { if (Array.isArray(a.points)) a.points = a.points.map(v => (_num(v) ? v * sx : v)); }
+      else if (cls === 'Ellipse')                       { if (_num(a.radiusX)) a.radiusX *= sx; if (_num(a.radiusY)) a.radiusY *= sx; }
+      else                                              { if (_num(a.width)) a.width *= sx; if (_num(a.height)) a.height *= sx; }
+    } else {
+      // a text box follows the frame per axis (it reflows into the new aspect); a picture, a video, a table keeps its proportions
+      const hR = isText ? sy : sx;
+      if (_num(a.width))       a.width       *= sx;
+      if (_num(a.height))      a.height      *= hR;
+      if (_num(a.textWidth))   a.textWidth   *= sx;
+      if (_num(a.tableWidth))  a.tableWidth  *= sx;
+      if (_num(a.tableHeight)) a.tableHeight *= sx;
+      if (a.isTable && a.tableData && Array.isArray(a.tableData.rowH)) a.tableData = { ...a.tableData, rowH: a.tableData.rowH.map(v => (_num(v) && v > 0 ? v * sx : v)) };
+      // cropX/Y/W/H are pixels of the picture itself; a private cropMask is 0..1 of the frame already
+    }
+    const cap = e.capturedAt ? { ...e.capturedAt, x: (Number(e.capturedAt.x) || 0) * sx, y: (Number(e.capturedAt.y) || 0) * sy } : e.capturedAt;
+    return { ...e, spec: { ...spec, attrs: a }, capturedAt: cap };
+  });
+}
 const _esc = (s) => String(s ?? '').replace(/[&<>"]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
 
 /** Put an envelope on the clipboard, with a stranger-readable text beside it. Fire-and-forget. */
@@ -146,6 +218,8 @@ export function remapDefs(env, specs) {
   const carried = env?.payload?.defs || {}, carriedLinks = env?.payload?.links || {};
   const myBrand = state.get('brand'), myLinks = myBrand?.links || {};
   const sameBrand = !!(myBrand?.id && env?.origin?.brand?.id && myBrand.id === env.origin.brand.id);
+  const { sx, sy } = canonicalScale(env);   // a definition that owns a position is fitted into this project's frame (rule 4 only: the others are this project's already)
+  const r2 = (v) => Math.round(v * 100) / 100;
   const before = {}, after = {}, added = [];
   for (const sec of SECTIONS) {
     const attr = OVERLAY_ATTR[sec.key];
@@ -171,6 +245,8 @@ export function remapDefs(env, specs) {
           if (nm && byName.has(nm)) target = byName.get(nm);                                   // 3. the same name here
           else {                                                                               // 4. brought along, as this project's own
             const fresh = { ...JSON.parse(JSON.stringify(def)), id: generateId(sec.idPrefix) };
+            if (sec.pos)  { if (_num(fresh.x)) fresh.x = r2(fresh.x * sx); if (_num(fresh.y)) fresh.y = r2(fresh.y * sy); }
+            if (sec.size) { if (_num(fresh.w)) fresh.w = r2(fresh.w * sx); if (_num(fresh.h)) fresh.h = r2(fresh.h * sy); }
             have.push(fresh); grew = true;
             if (nm) byName.set(nm, fresh.id);
             added.push({ section: sec.label, name: def.name || '(unnamed)' });
@@ -184,7 +260,7 @@ export function remapDefs(env, specs) {
     if (grew) { before[sec.stateKey] = state.get(sec.stateKey) || []; after[sec.stateKey] = have; }
   }
   if (added.length) { state.setState(after); state.markDirty?.(); }
-  const note = added.length ? `${added.length} definition${added.length === 1 ? '' : 's'} came along: ${added.slice(0, 4).map(a => `${a.section} "${a.name}"`).join(', ')}${added.length > 4 ? '…' : ''}` : '';
+  const note = added.length ? `${added.length} definition${added.length === 1 ? '' : 's'} came along and ${added.length === 1 ? 'is' : 'are'} this project's own now: ${added.slice(0, 4).map(a => `${a.section} "${a.name}"`).join(', ')}${added.length > 4 ? '…' : ''}` : '';
   return {
     specs: out, added, note,
     undo: added.length ? () => { state.setState(before); state.markDirty?.(); } : null,
@@ -193,4 +269,4 @@ export function remapDefs(env, specs) {
 }
 
 /** For debugging from the console. */
-if (typeof window !== 'undefined') window.sbsClip = { read: readClip, write: writeClip, defHash };
+if (typeof window !== 'undefined') window.sbsClip = { read: readClip, write: writeClip, defHash, canonicalScale };

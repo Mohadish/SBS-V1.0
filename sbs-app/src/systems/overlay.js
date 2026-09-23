@@ -6211,6 +6211,15 @@ async function _pasteFromOverlayClipboard(opts = {}) {
     entries = env.payload.items.map((e, i) => ({ ...e, spec: r.specs[i] }));
     hooks = (r.undo || r.redo) ? { undo: r.undo, redo: r.redo } : null;
     note = r.note;
+    // 🖼 V0.3.4.91 — geometry is CANONICAL pixels (the export frame), so a copy from a project
+    // with another export size is FITTED by the ratio of the two frames: same place, same share
+    // of the frame. Between two windows on the same project (or the same frame) this is 1:1.
+    const sc = clipPool.canonicalScale(env);
+    if (!sc.same) {
+      entries = clipPool.scaleOverlayItems(entries, sc);
+      const fit = `fitted from a ${sc.from.width}×${sc.from.height} frame into this ${sc.to.width}×${sc.to.height} one`;
+      note = note ? `${note}; ${fit}` : fit;
+    }
   } else if (env === undefined && _overlayClipboard?.length) {
     entries = _overlayClipboard;
   }
@@ -6247,7 +6256,7 @@ async function _pasteFromOverlayClipboard(opts = {}) {
   const label = opts.label || `Paste ${newSpecs.length} item${newSpecs.length > 1 ? 's' : ''}`;
   _pushAddNodesUndo(newNodes, newSpecs, label, hooks);
   _scheduleSave();
-  if (note) setStatus(`Pasted. ${note} — they are this project's own now.`, 'info', 7000);
+  if (note) setStatus(`Pasted — ${note}.`, 'info', 7000);
   return true;
 }
 
