@@ -5608,7 +5608,24 @@ async function _duplicateSceneSelection({ inPlace = false } = {}) {
   const selId  = state.get('selectedId');
   const ids = [...((selSet instanceof Set && selSet.size) ? selSet : (selId ? [selId] : []))];
   const nodeById = state.get('nodeById');
-  if (!ids.length) { setStatus('Select something to duplicate — a screw, a primitive, a shape, or an overlay item.', 'warn', 5000); return; }
+  // ⎘ V0.3.4.106 — nothing selected in the scene: the STEPS. The multi-selection
+  // of step cards when there is one, else the active step; each copy lands
+  // right after its original (the panel's own Duplicate), one undo each.
+  if (!ids.length) {
+    const all = state.get('steps') || [];
+    const sel = state.get('selectedStepIds');
+    const picked = (sel instanceof Set && sel.size)
+      ? all.filter(s => sel.has(s.id) && !s.isBaseStep).map(s => s.id)
+      : (state.get('activeStepId') ? [state.get('activeStepId')] : []);
+    if (!picked.length) { setStatus('Select something to duplicate — a step, a screw, a primitive, a shape, or an overlay item.', 'warn', 5000); return; }
+    steps.flushSync();
+    const made = [];
+    for (const id of picked.slice().reverse()) {   // last first: every copy still lands right after its own original
+      try { const c = actions.duplicateStep(id); if (c) made.push(c); } catch (err) { console.warn('[duplicate] step failed', id, err); }
+    }
+    setStatus(made.length === 1 ? `Duplicated "${made[0].name}".` : `Duplicated ${made.length} steps.`, made.length ? 'success' : 'warn', 4000);
+    return;
+  }
   const hw = await import('./systems/hardware-actions.js');
   const made = [], skipped = [];
   for (const id of ids) {
