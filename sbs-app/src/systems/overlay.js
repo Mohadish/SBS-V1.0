@@ -253,7 +253,19 @@ export function initOverlay() {
   // step. We capture _pendingSaveStepId at schedule time precisely so
   // this flush can target the correct (outgoing) step regardless of
   // when it actually fires.
-  state.on('change:activeStepId', _flushPendingSave);
+  // ✎ V0.3.4.96 — an OPEN EDITOR is committed here too, before the flush: its
+  // teardown stages the typed text onto the node synchronously (onStaged →
+  // _scheduleSave against the layer's step), so the flush that follows writes
+  // it with the outgoing step while its nodes are still in the content layer.
+  // Before, the editor was closed only later, in the load (after the crossfade
+  // had moved the nodes to the ghost layer), and its save went to the NEW
+  // step: the text was lost — "you go to the next title and the change is
+  // not there unless you clicked outside first" (the user).
+  state.on('change:activeStepId', () => {
+    if (_activeTextEditor) { try { _exitTextEdit(); } catch (e) { console.warn('[overlay] editor close on step change failed', e); } }   // not awaited — its synchronous half is what matters here
+    if (_tableEditor)      { try { _exitTableEdit(); } catch (e) { console.warn('[overlay] table editor close on step change failed', e); } }
+    _flushPendingSave();
+  });
   // H2: change:activeStepId previously triggered an early _scheduleLoad
   // — but that ran BEFORE the animation phases, so by the time the
   // overlay-slot crossfade fired, the new content was already in the
@@ -3888,6 +3900,7 @@ async function _setTableData(node, next, label) {
   const write = async (data) => {
     if (node.isDestroyed?.()) return;
     node.setAttr('tableData', JSON.parse(JSON.stringify(data)));
+    _scheduleSave();                 // ✎ .96 — the data is on the node: persist before the raster (a step change mid-raster must not lose it)
     await _reflowTable(node);
     refreshOverlayTableEditor();     // the panel, if open, is showing the old one
     _scheduleSave();
@@ -4093,6 +4106,7 @@ function _overlayEditorCtx(node) {
       }
     },
     onSave:        _scheduleSave,
+    onStaged:      _scheduleSave,   // ✎ .96 — the text is on the node already; persist before the raster
     // ✎ V0.3.3.4 — the editor mirrors the raster's options (WYSIWYG).
     editorStyle:   () => _textRenderOpts(node).opts,
     getStyleId:    () => node.getAttr('styleId') || '',
@@ -4429,7 +4443,10 @@ function _enterTextEdit(node, ctxOverride) {
   document.addEventListener('selectionchange', onSelectionChange);
   onSelectionChange();   // initial sync
 
-  _activeTextEditor = { node, div, onDocMouseDown, onKeyDown, onPaste, prevOpacity, onSelectionChange, ctx, styleEl };
+  // ✎ .96 — the step whose layer holds this box (null for a header box: those are
+  // project-level). The exit uses it to decide whether its late, post-raster
+  // save still belongs to the layer on screen.
+  _activeTextEditor = { node, div, onDocMouseDown, onKeyDown, onPaste, prevOpacity, onSelectionChange, ctx, styleEl, stepId: ctxOverride ? null : (_layerStepId ?? state.get('activeStepId')) };
 
   // P7-A: open an edit session so toolbar / engine ops can be undone
   // locally (Ctrl-Z inside the editor) and the WHOLE session collapses
@@ -4502,9 +4519,23 @@ async function _exitTextEdit(opts = {}) {
       // timeout so a wedged raster can only delay the ghost-free teardown,
       // never prevent it. The commit itself keeps running in the background
       // if it eventually resolves.
+      //
+      // ✎ V0.3.4.96 — THE TEXT IS PERSISTED BEFORE THE RASTER, NOT AFTER. The
+      // controller's commit writes the new HTML onto the node synchronously
+      // (its first line) and then awaits the raster; the save used to be
+      // scheduled only after that await — by which time a click on another
+      // step (the constant-titles panel, a step card) or keyboard navigation
+      // had already switched steps, and the save went to the wrong one. The
+      // user's rule: "you made a change, you clicked anywhere — it must be
+      // persistent." onStaged schedules the save NOW, against the layer's
+      // step; the step-change flush and the load's pre-destroy flush write it
+      // while the node still exists. The later onSave adds the raster's sizes.
       try {
+        let commit;
+        try { commit = Promise.resolve(ctx.onCommit?.(html)); } catch (e) { commit = Promise.reject(e); }
+        try { ctx.onStaged?.(); } catch (e) { console.warn('[text-editor] stage failed', e); }
         await Promise.race([
-          Promise.resolve(ctx.onCommit?.(html)),
+          commit,
           new Promise(res => setTimeout(res, 2000)),
         ]);
       } catch (e) { console.warn('[text-editor] commit failed', e); }
@@ -4525,7 +4556,10 @@ async function _exitTextEdit(opts = {}) {
       nodeLayer?.batchDraw();
       if (trLayer && trLayer !== nodeLayer) trLayer.batchDraw();
     } catch {}
-    try { ctx.onSave?.(); } catch {}
+    // ✎ .96 — only while the layer still holds this box's step: after a step
+    // change the text was written by onStaged + the flush, and a save now would
+    // target the step being built. Header boxes (stepId null) always save.
+    if (!sess.stepId || sess.stepId === _layerStepId) { try { ctx.onSave?.(); } catch {} }
     // V0.3.2.148 — hand the panel back in SELECTION mode for whatever is
     // still selected. Leaving the editor unmounted the toolbar and nothing
     // re-mounted it, so a freshly created text box sat there selected with
@@ -6820,7 +6854,7 @@ export function scheduleSave() { _scheduleSave(); }
 
 /** Force the ACTIVE step's overlay JSON current NOW (serialises the live stage).
  *  Used before a cross-step edit so the active step isn't left stale. */
-export function flushSave() { _writeOverlayToStep(state.get('activeStepId')); }
+export function flushSave() { _flushPendingSave(); _writeOverlayToStep(_layerStepId ?? state.get('activeStepId')); }   // ✎ .96 — the layer's step, never a just-activated one whose nodes are not here yet
 
 /**
  * 🏷 V0.3.3.12 — rebuild the live stage from the active step's stored
@@ -8679,9 +8713,17 @@ export function updateSelectedText(patch) {
 // safely destroy the layer and reinstate the new step.
 
 let _pendingSaveStepId = null;
+// ✎ V0.3.4.96 — WHICH STEP THE LAYER HOLDS. activeStepId flips the moment a step
+// is activated, but the layer keeps the OUTGOING step's nodes until
+// _loadFromActiveStep destroys them — and an in-place editor committing in
+// that window (a click on the constant-titles panel, keyboard navigation)
+// used to schedule its save against the NEW active id: the text landed on a
+// node that was about to die, and the write targeted the wrong step. Every
+// save targets the layer's step; the load flushes before it destroys.
+let _layerStepId = null;
 
 function _scheduleSave() {
-  if (!_pendingSaveStepId) _pendingSaveStepId = state.get('activeStepId');
+  if (!_pendingSaveStepId) _pendingSaveStepId = _layerStepId ?? state.get('activeStepId');
   clearTimeout(_saveTimer);
   _saveTimer = setTimeout(_flushPendingSave, 120);
 }
@@ -9178,6 +9220,12 @@ async function _loadFromActiveStep() {
   // ▦ a table's editor is the same kind of orphan: its HTML would outlive the
   // node it belongs to and hang over the next step.
   if (_tableEditor) { try { _exitTableEdit(); } catch { /* teardown is best-effort */ } }
+  // (✎ .96 — NO flush here: in a crossfade the outgoing nodes have already
+  // moved to the ghost layer, so the content layer is empty at this point and
+  // a write would blank the outgoing step. The outgoing step's pending edits —
+  // an open editor's text included — are written by the change:activeStepId
+  // handler, before any animation or handoff.)
+  if (myToken !== _loadToken) return;   // a newer load took over during the editor's teardown
 
   // Clear current content + selection.
   // 🎬 Release video elements FIRST (V0.3.2.75) — destroyChildren would drop
@@ -9188,6 +9236,7 @@ async function _loadFromActiveStep() {
   _transformer.nodes([]);
   _refreshPinBadges();
   _layer.destroyChildren();
+  _layerStepId = activeId;   // ✎ .96 — from here on, saves target this step
 
   if (!step?.overlay) { _layer.batchDraw(); return; }
 
