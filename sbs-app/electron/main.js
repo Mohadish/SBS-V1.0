@@ -28,24 +28,52 @@ const { app, BrowserWindow, Menu, ipcMain, dialog, shell } = require('electron')
 const USER_DATA_DIRNAME = 'sbs-step-browser';
 app.setPath('userData', require('path').join(app.getPath('appData'), USER_DATA_DIRNAME));
 
-// ⧉ A SECOND INSTANCE (V0.3.4.87). SBS_PARALLEL=1 in the environment, or --second on the
-// command line (a shortcut's Target on the installed exe). The single-instance lock is keyed on the userData
-// folder, so pinning that folder above silently killed the old SBS_PARALLEL trick (which
-// only renamed the app). With SBS_PARALLEL=1 the instance gets a folder of its own
-// beside the pinned one — its own lock, cache, settings — and, the first time, a copy of
-// the licence file from the primary folder, so it does not open on the activation
-// dialog. (The clock mark rides inside the file and the registry mirror is shared; a
-// copy is what deactivate/renew expect to find. Same machine, same licence.)
-if ((process.env.SBS_PARALLEL === '1' || process.argv.includes('--second'))) {
+// ⧉ EVERY LAUNCH IS A WINDOW (V0.3.4.89). Double-click the app while it is running and a
+// SECOND SBS opens — two projects side by side, as 3ds Max does — instead of the running
+// window being brought to the front.
+//
+// Two instances must not share a userData folder (Chromium's cache and local storage are
+// single-owner: the second would die with "Unable to move the cache"), and the single-
+// instance lock is keyed on exactly that folder. So the lock is TRIED: on the primary
+// folder first; if another SBS holds it, on sbs-step-browser-2, then -3 … up to 8. The
+// first free slot is this window's folder. Each slot is a SESSION profile of the primary:
+// at launch it receives the primary's licence (once — same machine, same licence; the
+// clock mark rides inside and the registry mirror is shared) and a fresh copy of the
+// primary's user settings, so the new window starts the way the first one is set up.
+// Settings changed in a second window stay in that window and are overwritten by the
+// primary's on its next launch: the FIRST window is the one that remembers.
+// SBS_PARALLEL=1 / --second skip the primary and go straight to a slot.
+const _INSTANCE_SLOTS = 8;
+let _instanceNo = 1;
+{
   const _p = require('path'), _f = require('fs');
   const primary = app.getPath('userData');
-  const second  = _p.join(app.getPath('appData'), USER_DATA_DIRNAME + '-2');
-  app.setPath('userData', second);
-  try {
-    _f.mkdirSync(second, { recursive: true });
-    const src = _p.join(primary, 'license.json'), dst = _p.join(second, 'license.json');
-    if (!_f.existsSync(dst) && _f.existsSync(src)) _f.copyFileSync(src, dst);
-  } catch (err) { console.warn('[main] second instance: could not prepare its userData:', err?.message); }
+  const forced  = process.env.SBS_PARALLEL === '1' || process.argv.includes('--second');
+  const prepare = (dir) => {
+    try {
+      _f.mkdirSync(dir, { recursive: true });
+      const lic = _p.join(primary, 'license.json'), licTo = _p.join(dir, 'license.json');
+      if (!_f.existsSync(licTo) && _f.existsSync(lic)) _f.copyFileSync(lic, licTo);
+      const us = _p.join(primary, 'user-settings.json');
+      if (_f.existsSync(us)) _f.copyFileSync(us, _p.join(dir, 'user-settings.json'));
+    } catch (err) { console.warn('[main] instance slot: could not prepare', dir, err?.message); }
+  };
+  // Electron drops the failed singleton on a refused lock, so the request can be made
+  // again on another userData folder — that is what the loop relies on.
+  let got = !forced && app.requestSingleInstanceLock();
+  for (let n = 2; !got && n <= _INSTANCE_SLOTS; n++) {
+    const dir = _p.join(app.getPath('appData'), `${USER_DATA_DIRNAME}-${n}`);
+    app.setPath('userData', dir);
+    prepare(dir);
+    got = app.requestSingleInstanceLock();
+    if (got) _instanceNo = n;
+  }
+  if (!got) {
+    console.log(`[main] ${_INSTANCE_SLOTS} SBS windows are already open — no free slot, exiting`);
+    app.quit();
+    process.exit(0);
+  }
+  if (_instanceNo > 1) { app.setName(`SBS Step Browser (${_instanceNo})`); console.log(`[main] instance ${_instanceNo} — userData ${app.getPath('userData')}`); }
 }
 
 // 🔑 THE LICENCE GATE GOES IN FIRST — before a single ipcMain.handle() below.
@@ -220,25 +248,10 @@ app.on('before-quit', () => {
   if (_kokoroWorker) { try { _kokoroWorker.terminate(); } catch {} _kokoroWorker = null; }
 });
 
-// SBS_PARALLEL=1 — the second instance's NAME (window title, process name). The
-// separate userData + lock now come from the block at the top of this file (the lock
-// is keyed on userData, not on the name — renaming alone stopped working when userData
-// was pinned in V0.3.4.6x).
-if ((process.env.SBS_PARALLEL === '1' || process.argv.includes('--second'))) {
-  app.setName('SBS Step Browser (2)');
-}
-
-// Single-instance lock — prevents a second `npm start` (or a stuck
-// Electron process from a previous launch) from cache-warring over the
-// userData directory. Without this, a hung renderer leaves the main
-// process alive; the next launch crashes with "Unable to move the cache:
-// Access is denied" and never reaches our model load. We exit cleanly
-// here; the existing instance keeps going.
-if (!app.requestSingleInstanceLock()) {
-  console.log('[main] another instance is already running — exiting');
-  app.quit();
-  process.exit(0);
-}
+// (The single-instance lock is taken at the top of this file, per userData slot — see
+// "EVERY LAUNCH IS A WINDOW". A launch that finds this slot's lock held moves to the next
+// slot rather than notifying us, so a 'second-instance' event never arrives; the handler
+// stays for the one case that can still raise it: a slot whose owner is mid-shutdown.)
 app.on('second-instance', () => {
   if (mainWindow) {
     if (mainWindow.isMinimized()) mainWindow.restore();
@@ -354,6 +367,8 @@ function createWindow() {
   });
 
   mainWindow.loadFile(path.join(APP_ROOT, 'src', 'index.html'));
+  // ⧉ a second (third…) window says which one it is in its title bar
+  if (_instanceNo > 1) mainWindow.on('page-title-updated', (e, title) => { e.preventDefault(); mainWindow.setTitle(`${title} (${_instanceNo})`); });
 
   // ── Spellcheck suggestions (V0.3.1.84) ────────────────────────────────────
   // Chromium's spellchecker is ON (uses the Windows OS spellchecker → fully
