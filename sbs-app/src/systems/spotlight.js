@@ -10,7 +10,7 @@
  * re-captured; the next step puts it back where it lives.
  *
  * THE DESCRIPTOR (node.spotlight — per step, it rides snapshot.transforms):
- *   { u, v, s, q:[x,y,z,w], q0:[…], cl:[x,y,z], r, custom }
+ *   { u, v, s, q:[x,y,z,w], q0:[…], cl:[x,y,z], r, custom, home }
  *   u, v  — where the object's CENTRE sits: fractions of the frame WIDTH and
  *           HEIGHT from the middle (u = -1/3 → the middle of the left third)
  *   s     — how big: the fraction of the frame height its bounding sphere spans
@@ -20,6 +20,10 @@
  *           measured once when the flag goes on, so the derivation is the same
  *           at every activation, whatever the camera
  *   custom — true once the user moved it: Reset puts it back on the defaults
+ *   home  — the step's OWN pose underneath (localOffset / localQuaternion /
+ *           orientationSteps + the enabled flags), taken when the flag went on.
+ *           The spotlight is a LAYER over it, absolute but not destructive:
+ *           switch it off and the object is back where this step had it.
  * Fractions, not metres and not degrees of lens: the same descriptor gives the
  * same picture at any lens (the per-step perspective) and at the export's frame.
  *
@@ -308,15 +312,27 @@ export function setSpotlight(nodeId, on) {
     const T = _T();
     const wq = new T.Quaternion(); obj.getWorldQuaternion(wq);
     const q0 = _arr(fr.q.clone().invert().multiply(wq).normalize());       // the face it shows now, kept
-    node.spotlight = { ..._defaults(), q: q0, q0, cl, r, custom: false };
+    // the pose underneath, kept: the layer is absolute, the step's own place is not lost
+    const home = { localOffset: [...node.localOffset], localQuaternion: [...node.localQuaternion], orientationSteps: [...node.orientationSteps], moveEnabled: node.moveEnabled !== false, rotateEnabled: node.rotateEnabled !== false };
+    node.spotlight = { ..._defaults(), q: q0, q0, cl, r, custom: false, home };
     _bakeOne(node, obj, fr);
   } else {
-    node.spotlight = null;                 // it stays where the spotlight left it — the user chooses where it goes next
+    // off = the layer is lifted: the object is back where this step had it before the spotlight
+    const h = node.spotlight.home;
+    node.spotlight = null;
+    if (h) {
+      node.localOffset      = [...h.localOffset];
+      node.localQuaternion  = [...h.localQuaternion];
+      node.orientationSteps = [...(h.orientationSteps || [0, 0, 0])];
+      node.moveEnabled      = h.moveEnabled !== false;
+      node.rotateEnabled    = h.rotateEnabled !== false;
+      if (obj) applyNodeTransformToObject3D(node, obj);
+    }
   }
   const changed = _commit(on ? 'Spotlight at this step' : 'Stop the spotlight', nodeId, before);
   setStatus(on
     ? '🔦 Spotlighted on this step: it sits in the picture, not in the world. Orbit and it follows; move it and its place is kept; the white block on the gizmo brings it nearer or farther. Right-click ▸ reset puts it back on the default.' + (_viewIsStepCamera() ? '' : CAM_HINT)
-    : 'Spotlight off — the object keeps this pose on this step; move it where it should be.', 'info', on ? 10000 : 6000);
+    : 'Spotlight off — back where this step had it.', 'info', on ? 10000 : 4000);
   return changed;
 }
 

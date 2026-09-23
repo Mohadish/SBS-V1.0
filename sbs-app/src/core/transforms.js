@@ -808,7 +808,10 @@ export function captureTransformSnapshot(node) {
     spotlight:           _cloneSpotlight(node.spotlight),
   };
 }
-const _cloneSpotlight = (sp) => sp ? { ...sp, q: [...(sp.q || [0, 0, 0, 1])], q0: [...(sp.q0 || sp.q || [0, 0, 0, 1])], cl: [...(sp.cl || [0, 0, 0])] } : null;
+const _cloneSpotlight = (sp) => sp ? {
+  ...sp, q: [...(sp.q || [0, 0, 0, 1])], q0: [...(sp.q0 || sp.q || [0, 0, 0, 1])], cl: [...(sp.cl || [0, 0, 0])],
+  home: sp.home ? { ...sp.home, localOffset: [...(sp.home.localOffset || [0, 0, 0])], localQuaternion: [...(sp.home.localQuaternion || [0, 0, 0, 1])], orientationSteps: [...(sp.home.orientationSteps || [0, 0, 0])] } : null,
+} : null;
 
 /**
  * Apply a transform snapshot back to a node (mutation).
