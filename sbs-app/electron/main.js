@@ -28,14 +28,15 @@ const { app, BrowserWindow, Menu, ipcMain, dialog, shell } = require('electron')
 const USER_DATA_DIRNAME = 'sbs-step-browser';
 app.setPath('userData', require('path').join(app.getPath('appData'), USER_DATA_DIRNAME));
 
-// ⧉ A SECOND INSTANCE (V0.3.4.87). The single-instance lock is keyed on the userData
+// ⧉ A SECOND INSTANCE (V0.3.4.87). SBS_PARALLEL=1 in the environment, or --second on the
+// command line (a shortcut's Target on the installed exe). The single-instance lock is keyed on the userData
 // folder, so pinning that folder above silently killed the old SBS_PARALLEL trick (which
 // only renamed the app). With SBS_PARALLEL=1 the instance gets a folder of its own
 // beside the pinned one — its own lock, cache, settings — and, the first time, a copy of
 // the licence file from the primary folder, so it does not open on the activation
 // dialog. (The clock mark rides inside the file and the registry mirror is shared; a
 // copy is what deactivate/renew expect to find. Same machine, same licence.)
-if (process.env.SBS_PARALLEL === '1') {
+if ((process.env.SBS_PARALLEL === '1' || process.argv.includes('--second'))) {
   const _p = require('path'), _f = require('fs');
   const primary = app.getPath('userData');
   const second  = _p.join(app.getPath('appData'), USER_DATA_DIRNAME + '-2');
@@ -223,7 +224,7 @@ app.on('before-quit', () => {
 // separate userData + lock now come from the block at the top of this file (the lock
 // is keyed on userData, not on the name — renaming alone stopped working when userData
 // was pinned in V0.3.4.6x).
-if (process.env.SBS_PARALLEL === '1') {
+if ((process.env.SBS_PARALLEL === '1' || process.argv.includes('--second'))) {
   app.setName('SBS Step Browser (2)');
 }
 
