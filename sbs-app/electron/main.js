@@ -6,7 +6,7 @@
 // sibling. In dev no .jsc files exist; bytenode is loaded but inert.
 require('bytenode');
 
-const { app, BrowserWindow, Menu, ipcMain, dialog, shell } = require('electron');
+const { app, BrowserWindow, Menu, ipcMain, dialog, shell, screen, desktopCapturer } = require('electron');
 
 // 📌 WHERE THE USER'S DATA LIVES IS PINNED — NEVER CHANGE THIS STRING.
 //
@@ -1167,6 +1167,56 @@ ipcMain.handle('fs:listTree', async (_, dirPath) => {
   try { if (!fs.statSync(dirPath).isDirectory()) return null; } catch { return null; }
   walk(dirPath, '');
   return out;
+});
+
+// ─── 💉 Pick a colour from ANYWHERE on screen (V0.3.4.108) ───────────────────
+// Chromium's eyedropper (the one in its colour popup, and the EyeDropper API)
+// sees only this app's own window under Electron — a browser or a picture
+// viewer beside it is invisible to it. So: snapshot the display the pointer is
+// on (desktopCapturer), open a frameless window over that display showing the
+// snapshot, let the user click a pixel of it (electron/screen-picker.*), and
+// answer with the hex. One at a time; Esc answers nothing.
+let _pickShot = null;      // the current snapshot's data URL, for the picker window
+let _pickWin  = null;
+ipcMain.handle('color:pickScreen:image', () => _pickShot);
+ipcMain.handle('color:pickScreen', async () => {
+  if (_pickWin) return null;
+  try {
+    const disp  = screen.getDisplayNearestPoint(screen.getCursorScreenPoint());
+    const scale = disp.scaleFactor || 1;
+    const size  = { width: Math.round(disp.size.width * scale), height: Math.round(disp.size.height * scale) };
+    const sources = await desktopCapturer.getSources({ types: ['screen'], thumbnailSize: size });
+    const src = sources.find(s => String(s.display_id) === String(disp.id)) || sources[0];
+    if (!src || src.thumbnail.isEmpty()) return null;
+    _pickShot = src.thumbnail.toDataURL();
+    const hex = await new Promise((resolve) => {
+      let settled = false;
+      const done = (v) => { if (settled) return; settled = true; ipcMain.removeListener('color:pickScreen:done', onDone); resolve(v); };
+      const onDone = (e, v) => { if (_pickWin && e.sender === _pickWin.webContents) done(typeof v === 'string' && /^#[0-9a-f]{6}$/i.test(v) ? v.toLowerCase() : null); };
+      ipcMain.on('color:pickScreen:done', onDone);
+      const b = disp.bounds;
+      _pickWin = new BrowserWindow({
+        x: b.x, y: b.y, width: b.width, height: b.height,
+        frame: false, alwaysOnTop: true, skipTaskbar: true, resizable: false, movable: false, minimizable: false, maximizable: false,
+        hasShadow: false, show: false, backgroundColor: '#000000', title: 'Pick a colour',
+        webPreferences: { preload: path.join(__dirname, 'screen-picker-preload.js'), contextIsolation: true, nodeIntegration: false, sandbox: true },
+      });
+      _pickWin.setMenuBarVisibility(false);
+      _pickWin.setAlwaysOnTop(true, 'screen-saver');
+      _pickWin.on('closed', () => { _pickWin = null; done(null); });
+      _pickWin.once('ready-to-show', () => { try { _pickWin.setBounds(b); _pickWin.show(); _pickWin.focus(); } catch {} });
+      _pickWin.loadFile(path.join(__dirname, 'screen-picker.html')).catch(() => done(null));
+    });
+    try { if (_pickWin && !_pickWin.isDestroyed()) _pickWin.destroy(); } catch {}
+    _pickWin = null;
+    _pickShot = null;
+    return hex;
+  } catch (e) {
+    console.warn('[pick] screen colour pick failed:', e?.message);
+    try { if (_pickWin && !_pickWin.isDestroyed()) _pickWin.destroy(); } catch {}
+    _pickWin = null; _pickShot = null;
+    return null;
+  }
 });
 
 // ─── 📦 Collect project (V0.3.4.101) ─────────────────────────────────────────

@@ -69,6 +69,7 @@ contextBridge.exposeInMainWorld('sbsNative', {
 
   // ── App ──────────────────────────────────────────────────────────────────
   getVersion:         ()          => ipcRenderer.invoke('app:getVersion'),
+  pickScreenColor:    ()          => ipcRenderer.invoke('color:pickScreen'),   // 💉 V0.3.4.108 — a hex picked from anywhere on screen, or null
   showInFolder:       (filePath)  => ipcRenderer.invoke('shell:showItemInFolder', filePath),
   printPdf:           (html, outPath) => ipcRenderer.invoke('doc:printPdf', { html, outPath }),   // 📄 V0.3.4.0 document export
 

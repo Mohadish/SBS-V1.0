@@ -1,0 +1,22 @@
+<!doctype html>
+<html><head>
+<meta charset="utf-8">
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src data:;">
+<title>Pick a colour</title>
+<style>
+  html, body { margin: 0; padding: 0; width: 100%; height: 100%; overflow: hidden; background: #000; cursor: crosshair; user-select: none; }
+  #shot { position: absolute; left: 0; top: 0; width: 100%; height: 100%; display: block; }
+  #loupe { position: fixed; width: 132px; height: 132px; border-radius: 50%; border: 2px solid rgba(255,255,255,.9); box-shadow: 0 6px 24px rgba(0,0,0,.6), inset 0 0 0 1px rgba(0,0,0,.5); overflow: hidden; pointer-events: none; display: none; background: #000; }
+  #loupe canvas { position: absolute; left: 0; top: 0; width: 132px; height: 132px; image-rendering: pixelated; }
+  #loupe .cross { position: absolute; left: 60px; top: 60px; width: 12px; height: 12px; border: 1px solid #fff; box-shadow: 0 0 0 1px #000; box-sizing: border-box; }
+  #tag { position: fixed; padding: 4px 8px; border-radius: 6px; background: rgba(15,23,42,.92); color: #e5e7eb; font: 13px Consolas, monospace; pointer-events: none; display: none; white-space: nowrap; box-shadow: 0 4px 16px rgba(0,0,0,.5); }
+  #tag i { display: inline-block; width: 12px; height: 12px; border-radius: 3px; vertical-align: -2px; margin-right: 6px; border: 1px solid rgba(255,255,255,.5); }
+  #hint { position: fixed; left: 50%; top: 14px; transform: translateX(-50%); padding: 6px 12px; border-radius: 8px; background: rgba(15,23,42,.85); color: #e5e7eb; font: 13px system-ui, sans-serif; pointer-events: none; }
+</style>
+</head><body>
+<canvas id="shot"></canvas>
+<div id="loupe"><canvas id="loupe-c" width="11" height="11"></canvas><div class="cross"></div></div>
+<div id="tag"><i></i><span></span></div>
+<div id="hint">Click a colour anywhere on this screen · Esc cancels</div>
+<script src="./screen-picker.js"></script>
+</body></html>

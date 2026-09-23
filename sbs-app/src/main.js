@@ -21,7 +21,7 @@ import { sceneCore }      from './core/scene.js';
 import { steps }          from './systems/steps.js';
 import { initAlteredStars } from './systems/altered-stars.js';
 import { initBrand } from './systems/brand.js';   // 🏷 V0.3.3.12 — brand kit link + newer-revision notice
-import { initColorPick } from './ui/color-pick.js';   // 💉 V0.3.4.100 — every colour input picks from anywhere on screen
+import { initColorPick } from './ui/color-pick.js';   // 💉 V0.3.4.108 — right-click a colour swatch: pick from anywhere on screen
 import { materials }      from './systems/materials.js';
 import { setOutlinePreview, clearOutlinePreview } from './systems/outline-pass.js';
 import * as actions from './systems/actions.js';
@@ -120,7 +120,7 @@ gizmo.init();
 initGizmoNumeric(gizmo);   // live drag readout + numeric input mode
 initAlteredStars();        // ★ V0.3.2.253: definition / tool / order edits star the steps they touch
 initBrand();               // 🏷 V0.3.3.12: notices a newer revision of the linked brand after a project loads
-initColorPick();           // 💉 V0.3.4.100: one popover for every colour input — screen eyedropper, hex, recent colours
+initColorPick();           // 💉 V0.3.4.108: right-click any colour swatch → pick a colour from anywhere on screen (left click = the usual dialog)
 actions.initSpotlight();   // 🔦 V0.3.4.82: spotlighted objects follow the camera while authoring
 
 // Debug surface — exposes core handles on window.__sbs for live console

@@ -421,6 +421,20 @@ function _renderEditor(container) {
         </div>
       ` : ''}
 
+      ${item.kind === 'chapterProgress' ? `
+        <div class="grid2" style="margin-top:8px;">
+          <label class="colorlab" title="The filled part of the bar">Fill colour
+            <input type="color" id="hdr-prog-fill" value="${_esc(_hexOf(item.fillColor) || '#3b82f6')}" />
+          </label>
+          <label class="colorlab" title="The empty part of the bar (the track)">Track colour
+            <input type="color" id="hdr-prog-track" value="${_esc(_hexOf(item.trackColor) || '#ffffff')}" />
+          </label>
+          <label class="colorlab" title="How solid the track is — 0 hides it, 100 is opaque">Track opacity (%)
+            <input type="number" id="hdr-prog-track-a" min="0" max="100" step="5" value="${_alphaOf(item.trackColor, 40)}" />
+          </label>
+        </div>
+      ` : ''}
+
       <div class="grid2" style="margin-top:8px;">
         <label class="colorlab">X (px)
           <input type="number" id="hdr-x" step="1" value="${Math.round(item.x ?? 0)}" />
@@ -448,6 +462,13 @@ function _renderEditor(container) {
     el.addEventListener('change', () => updateHeaderItem(item.id, { [key]: transform(el.value) }));
   };
   bind('#hdr-text', 'text');
+  // 📊 V0.3.4.108 — the progress bar's own colours (it is not text: the default
+  // style's colour never reached it). Live on every input; one coalesced undo.
+  const fillEl = host.querySelector('#hdr-prog-fill'), trackEl = host.querySelector('#hdr-prog-track'), trackA = host.querySelector('#hdr-prog-track-a');
+  if (fillEl)  fillEl.addEventListener('input', () => updateHeaderItem(item.id, { fillColor: fillEl.value }));
+  const _track = () => { if (trackEl) updateHeaderItem(item.id, { trackColor: _rgba(trackEl.value, Math.max(0, Math.min(100, Number(trackA?.value ?? 40))) / 100) }); };
+  if (trackEl) trackEl.addEventListener('input', _track);
+  if (trackA)  trackA.addEventListener('change', _track);
   bind('#hdr-x',    'x', v => Number(v) || 0);
   bind('#hdr-y',    'y', v => Number(v) || 0);
   bind('#hdr-w',    'w', v => Math.max(20, Number(v) || 0));
@@ -748,6 +769,26 @@ async function _onLoadSetup() {
 }
 
 // ─── Esc helper ─────────────────────────────────────────────────────────────
+
+/** '#rrggbb' out of a hex or an rgb()/rgba() string; null when it is neither. */
+function _hexOf(c) {
+  const s = String(c || '').trim();
+  const m6 = /^#([0-9a-f]{6})$/i.exec(s); if (m6) return '#' + m6[1].toLowerCase();
+  const m3 = /^#([0-9a-f]{3})$/i.exec(s); if (m3) return '#' + m3[1].split('').map(x => x + x).join('').toLowerCase();
+  const m = /^rgba?\(\s*(\d+)\s*,\s*(\d+)\s*,\s*(\d+)/i.exec(s);
+  if (m) return '#' + [m[1], m[2], m[3]].map(n => Math.max(0, Math.min(255, Number(n))).toString(16).padStart(2, '0')).join('');
+  return null;
+}
+/** The alpha of an rgba() string as a percentage (a hex has none → the default). */
+function _alphaOf(c, dflt = 100) {
+  const m = /^rgba\([^,]+,[^,]+,[^,]+,\s*([\d.]+)\s*\)/i.exec(String(c || ''));
+  return m ? Math.round(parseFloat(m[1]) * 100) : dflt;
+}
+function _rgba(hex, a) {
+  const h = _hexOf(hex) || '#ffffff';
+  const n = parseInt(h.slice(1), 16);
+  return `rgba(${(n >> 16) & 255},${(n >> 8) & 255},${n & 255},${Math.max(0, Math.min(1, a)).toFixed(2)})`;
+}
 
 function _esc(s) {
   return String(s ?? '').replace(/[&<>"']/g,
