@@ -42,6 +42,19 @@ const DST_WASM   = path.join(VENDOR_ORT, 'ort-wasm-simd-threaded.jsep.wasm');
 const JSDELIVR = 'C.wasm.wasmPaths=`https://cdn.jsdelivr.net/npm/@huggingface/transformers@${n.env.version}/dist/`';
 const LOCAL    = 'C.wasm.wasmPaths=new URL("./ort/",import.meta.url).href';
 
+// PATCH 2 (V0.3.4.98). kokoro-js 1.2.1's web bundle EXPORTS A STUB as `env`:
+//   Mf={set wasmPaths(e){Wg.backends.onnx.wasm.wasmPaths=e},get wasmPaths(){…}}
+// — only wasmPaths reaches the real transformers env (Wg = Yg.env). Everything
+// tts-webgpu.js sets on it (allowRemoteModels=false, allowLocalModels=true,
+// localModelPath=file://…) landed on the stub and changed nothing, so the
+// loader kept its browser defaults — local models OFF, remote ON — and fetched
+// config.json from huggingface.co, which the CSP blocks: "Failed to fetch",
+// engine 'unavailable', every clip on the CPU worker (~6–20 s instead of
+// ~0.7 s). Found 2026-09-23; the 0.3.3-0 installer shipped like this. The
+// export is rewritten to the real env object (identifiers matched by shape,
+// not by name — they change per build).
+const ENV_STUB = /(\w+)=\{set wasmPaths\(e\)\{(\w+)\.backends\.onnx\.wasm\.wasmPaths=e\},get wasmPaths\(\)\{return \2\.backends\.onnx\.wasm\.wasmPaths\}\}/;
+
 function fail(msg) { console.error(`[vendor-tts] FATAL: ${msg}`); process.exit(1); }
 
 for (const [label, p] of [['kokoro.web.js', SRC_BUNDLE], ['ort .mjs', SRC_MJS], ['ort .wasm', SRC_WASM]]) {
@@ -59,6 +72,16 @@ if (bundle.includes(JSDELIVR)) {
 }
 if (bundle.includes('cdn.jsdelivr.net/npm/@huggingface/transformers@${n.env.version}')) {
   fail('patch did not remove the jsdelivr default — aborting to avoid shipping an online-dependent build.');
+}
+// 2. the env export → the real env (see PATCH 2 above).
+const stub = bundle.match(ENV_STUB);
+if (stub) {
+  bundle = bundle.replace(ENV_STUB, '$1=$2');
+  console.log(`[vendor-tts] env export patched: ${stub[1]} → ${stub[2]} (the real transformers env)`);
+} else if (/set wasmPaths\(e\)/.test(bundle)) {
+  fail('kokoro.web.js exports an env stub of a new shape — update ENV_STUB in scripts/vendor-tts-webgpu.js (the engine cannot load local models through a stub).');
+} else {
+  console.log('[vendor-tts] env export: no stub found — the bundle exports the real env already');
 }
 fs.writeFileSync(DST_BUNDLE, bundle);
 

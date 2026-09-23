@@ -226,10 +226,15 @@ export async function synthesize(text, voiceId, opts = {}) {
 
     // Bound the CPU-worker call too (the GPU path already has its own timeout).
     // A wedged worker that never replies would otherwise hang this synth forever
-    // and poison the caller's de-dup key. 30s is far beyond a real CPU synth (~6s).
+    // and poison the caller's de-dup key.
+    // V0.3.4.98 — the bound SCALES WITH THE TEXT: a fixed 30 s was fine for a
+    // sentence (~6 s) but a 218-character line took 20 s on the CPU and a
+    // second synth queued behind it (the worker is serial) timed out for real —
+    // "TTS synth timed out after 30000 ms" on a healthy machine. ~250 ms per
+    // character is 3× a measured CPU synth; never below 30 s.
     const res = await _withTimeout(
       window.sbsNative.tts.synthesize(text, voiceName, speed, { source }),
-      30_000, null,
+      Math.max(30_000, Math.min(300_000, String(text || '').length * 250)), null,
     );
     if (!res.ok) throw new Error(res.error || 'TTS failed.');
     const dataUrl = `data:${res.mime};base64,${res.data}`;
@@ -268,7 +273,9 @@ export function _sanitizeForSynth(text) {
                         [0xFE00, 0xFE0F], [0xFEFF], [0xFFF9, 0xFFFB]]) {
     for (let c = a; c <= (b ?? a); c++) invisible += cc(c);
   }
-  const spaces    = cc(0xA0, 0x1680, 0x2000, 0x2001, 0x2002, 0x2003, 0x2004, 0x2005, 0x2006, 0x2007, 0x2008, 0x2009, 0x200A, 0x202F, 0x205F, 0x3000);
+  // V0.3.4.98 — U+2028 / U+2029 (line / paragraph separator — a paste from a PDF or a
+  // web page) were flagged by the diagnostic but never replaced: a space now.
+  const spaces    = cc(0xA0, 0x1680, 0x2000, 0x2001, 0x2002, 0x2003, 0x2004, 0x2005, 0x2006, 0x2007, 0x2008, 0x2009, 0x200A, 0x2028, 0x2029, 0x202F, 0x205F, 0x3000);
   const sQuote    = cc(0x2018, 0x2019, 0x201A, 0x201B, 0x2032);
   const dQuote    = cc(0x201C, 0x201D, 0x201E, 0x201F, 0x2033);
   const dash      = cc(0x2013, 0x2014, 0x2015);

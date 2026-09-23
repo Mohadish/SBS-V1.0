@@ -13,11 +13,16 @@
  * all paths are relative to this module (import.meta.url), and WebGPU is a
  * vendor-neutral abstraction (NVIDIA/AMD/Intel/integrated all work through it).
  *
- * Two gotchas this build handles (validated empirically, V0.3.0.x):
+ * Three gotchas this build handles (validated empirically):
  *   1. The web bundle defaults ORT's wasm to a jsdelivr CDN — patched out to a
  *      bundle-relative path by scripts/vendor-tts-webgpu.js (offline + CSP).
  *   2. Electron 28 = Chromium 120, which lacks ReadableStream async iteration
  *      (Chromium 124+). kokoro's phonemizer needs it → polyfilled below.
+ *   3. kokoro-js 1.2.1 exports a STUB as `env` (wasmPaths only) — the settings
+ *      below never reached transformers, the loader went to huggingface.co,
+ *      the CSP said no → 'unavailable', CPU for every clip (V0.3.4.98 found).
+ *      scripts/vendor-tts-webgpu.js now rewrites the export to the real env.
+ *      Symptom of a regression here: engine 'unavailable' with "Failed to fetch".
  */
 
 const REPO = 'onnx-community/Kokoro-82M-v1.0-ONNX';
