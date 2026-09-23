@@ -1,19 +1,19 @@
 /**
- * SBS — pick a colour from anywhere on screen (V0.3.4.111).
- * ─────────────────────────────────────────────────────
- * A left click on any colour swatch opens the ordinary colour dialog, exactly
- * as it always did. A RIGHT click (or Alt+click) on a swatch runs the screen
- * pick: the main process snapshots EVERY display (this app's own window
- * included — its interface is pickable too), shows the snapshots edge to
- * edge, and the pixel you click —
- * on either screen, in a browser, a picture viewer, anything — lands in the
- * swatch, with the same `input` + `change` events a pick in the dialog fires.
+ * SBS — colour swatches (V0.3.4.113).
+ * ─────────────────────────────────
+ * A click on any `<input type="color">` opens SBS's own colour dialog
+ * (ui/color-dialog.js): the colour square, the hue strip, HEX / RGB / HSL —
+ * and an eyedropper that picks from ANYWHERE on screen (every display, the
+ * app's own window included). Chromium's popup cannot offer that: under
+ * Electron its eyedropper sees only this window, and it is not ours to hook —
+ * so the dialog is ours (the user's call, 2026-09-23: "left-click the swatch,
+ * the interface opens, click the eyedropper, the Alt+click effect happens").
  *
- * Why not the dialog's own eyedropper: under Electron, Chromium's eyedropper
- * (the popup's and the EyeDropper API's) sees only this app's window, and the
- * popup is Chromium's, not ours — there is nothing in it to hook. (V0.3.4.110
- * replaced the popup with a dialog of our own for that reason; not wanted.)
+ * A right-click (or Alt+click) on a swatch goes straight to the screen pick.
+ * `data-native-color` on an input keeps the native popup for it.
  */
+
+import { openColorDialog, closeColorDialog, isColorDialogOpen } from './color-dialog.js';
 
 const HINT = 'Right-click (or Alt+click): pick a colour from anywhere on screen — both screens';
 
@@ -51,19 +51,22 @@ async function _pickInto(input) {
 }
 
 export function initColorPick() {
-  // Right-click on a swatch (or the label around it) → the screen picker.
+  // Left click → SBS's colour dialog (the native popup stays shut).
+  document.addEventListener('click', (e) => {
+    const t = e.target;
+    if (!(t instanceof HTMLInputElement) || t.type !== 'color' || t.disabled) return;
+    if (t.hasAttribute('data-native-color')) return;
+    e.preventDefault();
+    if (e.altKey) { e.stopPropagation(); _pickInto(t); return; }
+    if (isColorDialogOpen()) { closeColorDialog(true); return; }
+    openColorDialog(t);
+  }, true);
+  // Right-click on a swatch (or the label around it) → straight to the screen picker.
   document.addEventListener('contextmenu', (e) => {
     const input = _swatchOf(e.target);
     if (!input || input.disabled) return;
     e.preventDefault(); e.stopPropagation();
-    _pickInto(input);
-  }, true);
-  // Alt+click does the same — for anyone who reaches for the swatch first.
-  document.addEventListener('click', (e) => {
-    if (!e.altKey) return;
-    const input = _swatchOf(e.target);
-    if (!input || input.disabled) return;
-    e.preventDefault(); e.stopPropagation();
+    closeColorDialog(true);
     _pickInto(input);
   }, true);
   // Say so on hover: the hint joins the swatch's own tooltip.
