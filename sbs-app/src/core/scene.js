@@ -727,6 +727,7 @@ export class SceneCore extends Emitter {
       c.accumulate        = false;  // NEVER cross-frame accumulate — ghosts under motion
       composer.addPass(n8ao);
       this._n8aoPass = n8ao;
+      this._applyAoDepthType(n8ao);         // 🩹 V0.3.4.85 — float depth (see the method)
       this._aoIntensity ??= c.intensity;   // remember the "on" intensity for toggling
       // Pass stays ENABLED so its gammaCorrection always runs; AO "off" = intensity 0.
       n8ao.enabled = true;
@@ -756,6 +757,7 @@ export class SceneCore extends Emitter {
         window.sbsAO = {
           set:  (o) => this.setAOConfig(o),
           on:   (b) => this.setAOEnabled(b),
+          floatDepth: (b) => { this._aoFloatDepth = (b !== false); this._applyAoDepthType(); console.log('[scene] AO depth', b !== false ? '32-bit float' : '24-bit integer'); },
           pass: n8ao,
         };
         window.sbsSSR = {
@@ -772,6 +774,42 @@ export class SceneCore extends Emitter {
       this._composer = null;
       return null;
     }
+  }
+
+  /**
+   * 🩹 V0.3.4.85 — THE AO's DEPTH IN 32-BIT FLOAT.
+   *
+   * N8AO renders its own depth into a 24-bit INTEGER depth texture and reconstructs
+   * the surface normals from it (finite differences between neighbouring pixels).
+   * Under the per-step perspective the camera dollies OUT as the lens narrows —
+   * at a 200 mm lens it is ~9× as far as at 50° — and the world size of one depth
+   * step grows with that distance while the depth slope of a flat surface per
+   * pixel does not (the framing is locked). Past ~10°, a flat face at an angle
+   * quantises into contour-line steps; the reconstructed normal flips along each
+   * step, and the AO paints straight diagonal bands across whole surfaces — "two
+   * surfaces fighting on the same surface", gone the moment AO is off.
+   *   The adaptive near/far planes (V0.3.0.14) keep the RATIO tight, which is
+   * what 24 bits need at close range; they cannot buy back the bits a far camera
+   * spends. A float depth attachment (DEPTH_COMPONENT32F, core WebGL2) can. The
+   * render target rebuilds its framebuffer with the new attachment on the next
+   * render; setSize keeps the texture object, so a resize keeps the type.
+   * sbsAO.floatDepth(false) puts the integer texture back, for an A/B in place.
+   */
+  _applyAoDepthType(pass = this._n8aoPass) {
+    const rt = pass?.beautyRenderTarget;
+    if (!rt) return;
+    const want = this._aoFloatDepth !== false ? THREE.FloatType : THREE.UnsignedIntType;
+    if (rt.depthTexture?.type === want) return;
+    try {
+      const old = rt.depthTexture;
+      const dt = new THREE.DepthTexture(rt.width, rt.height, want);
+      dt.format = THREE.DepthFormat;
+      rt.depthTexture = dt;
+      rt.dispose();                       // the FBO is torn down; three re-attaches the new depth texture on the next use
+      old?.dispose?.();
+      this._aoCamKey = null;              // the frozen-noise key is stale for the rebuilt target
+      this.requestRender(300);
+    } catch (e) { console.warn('[scene] AO depth type change failed — keeping the current texture:', e?.message || e); }
   }
 
   /** Toggle ambient occlusion on/off (toggles the N8AO pass; composer stays). */
